@@ -1,0 +1,336 @@
+#pragma once
+
+#include "../core/relation.hpp"
+#include "../core/types.hpp"
+
+#include <algorithm>
+#include <cstdint>
+#include <fstream>
+#include <functional>
+#include <mutex>
+#include <numeric>
+#include <string>
+#include <unordered_set>
+#include <vector>
+
+namespace gnfs {
+namespace relation {
+
+using core::ABPair;
+using core::ABPairHash;
+using core::Relation;
+
+/// 关系收集器统计
+struct CollectorStats {
+    size_t total_relations = 0;       // 总关系数
+    size_t full_relations = 0;        // 完全光滑关系
+    size_t partial_1lp = 0;           // 1LP 部分关系
+    size_t partial_2lp = 0;           // 2LP 部分关系
+    size_t duplicates_rejected = 0;   // 拒绝的重复关系
+    size_t invalid_rejected = 0;      // 拒绝的无效关系
+};
+
+/// 关系收集器配置
+struct CollectorConfig {
+    bool check_duplicates = true;     // 检查重复
+    bool allow_partial = true;        // 允许部分关系 (含大素数)
+    size_t max_relations = 0;         // 最大关系数 (0 = 无限制)
+    std::string output_file;          // 输出文件 (可选)
+    bool flush_on_add = false;        // 每次添加后刷新
+};
+
+/// RelationCollector - 关系收集器
+/// 线程安全的关系收集器
+class RelationCollector {
+public:
+    /// 默认构造
+    RelationCollector() = default;
+
+    /// 带配置构造
+    explicit RelationCollector(const CollectorConfig& config)
+        : config_(config) {
+        if (!config_.output_file.empty()) {
+            open_output_file();
+        }
+    }
+
+    /// 析构（关闭文件）
+    ~RelationCollector() {
+        close_output_file();
+    }
+
+    // 禁止拷贝和移动（mutex 不可移动）
+    RelationCollector(const RelationCollector&) = delete;
+    RelationCollector& operator=(const RelationCollector&) = delete;
+    RelationCollector(RelationCollector&&) = delete;
+    RelationCollector& operator=(RelationCollector&&) = delete;
+
+    /// 添加关系
+    /// @return true 如果关系被接受
+    bool add(Relation&& rel) {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        // 检查限制
+        if (config_.max_relations > 0 && stats_.total_relations >= config_.max_relations) {
+            return false;
+        }
+
+        // 验证关系
+        if (!validate(rel)) {
+            ++stats_.invalid_rejected;
+            return false;
+        }
+
+        // 检查重复
+        if (config_.check_duplicates) {
+            if (seen_.count(rel.ab()) > 0) {
+                ++stats_.duplicates_rejected;
+                return false;
+            }
+            seen_.insert(rel.ab());
+        }
+
+        // 更新统计
+        update_stats(rel);
+
+        // 写入文件
+        if (output_stream_.is_open()) {
+            rel.serialize(output_stream_);
+            if (config_.flush_on_add) {
+                output_stream_.flush();
+            }
+        }
+
+        // 存储关系
+        relations_.push_back(std::move(rel));
+
+        return true;
+    }
+
+    /// 批量添加
+    size_t add_batch(std::vector<Relation>&& batch) {
+        size_t accepted = 0;
+        for (auto& rel : batch) {
+            if (add(std::move(rel))) {
+                ++accepted;
+            }
+        }
+        return accepted;
+    }
+
+    /// 获取关系数量
+    [[nodiscard]] size_t size() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return relations_.size();
+    }
+
+    /// 是否为空
+    [[nodiscard]] bool empty() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return relations_.empty();
+    }
+
+    /// 获取统计
+    [[nodiscard]] CollectorStats stats() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return stats_;
+    }
+
+    /// 获取所有关系（拷贝）
+    [[nodiscard]] std::vector<Relation> get_relations() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<Relation> result;
+        result.reserve(relations_.size());
+        for (const auto& rel : relations_) {
+            result.push_back(rel.clone());
+        }
+        return result;
+    }
+
+    /// 获取关系的只读引用
+    [[nodiscard]] const std::vector<Relation>& relations() const noexcept {
+        return relations_;
+    }
+
+    /// 清空收集器
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        relations_.clear();
+        seen_.clear();
+        stats_ = CollectorStats{};
+    }
+
+    /// 刷新输出文件
+    void flush() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (output_stream_.is_open()) {
+            output_stream_.flush();
+        }
+    }
+
+    /// 保存到文件
+    bool save(const std::string& filename) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        std::ofstream ofs(filename, std::ios::binary);
+        if (!ofs) return false;
+
+        // 写入头部
+        uint64_t count = relations_.size();
+        ofs.write(reinterpret_cast<const char*>(&count), sizeof(count));
+
+        // 写入关系
+        for (const auto& rel : relations_) {
+            rel.serialize(ofs);
+        }
+
+        return ofs.good();
+    }
+
+    /// 从文件加载
+    bool load(const std::string& filename) {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        std::ifstream ifs(filename, std::ios::binary);
+        if (!ifs) return false;
+
+        // 读取头部
+        uint64_t count = 0;
+        ifs.read(reinterpret_cast<char*>(&count), sizeof(count));
+
+        // 清空并预分配
+        relations_.clear();
+        seen_.clear();
+        relations_.reserve(count);
+
+        // 读取关系
+        for (uint64_t i = 0; i < count; ++i) {
+            auto rel = Relation::deserialize(ifs);
+            if (!ifs) return false;
+
+            if (config_.check_duplicates) {
+                seen_.insert(rel.ab());
+            }
+
+            update_stats(rel);
+            relations_.push_back(std::move(rel));
+        }
+
+        return true;
+    }
+
+    /// 合并另一个收集器的关系
+    size_t merge(const RelationCollector& other) {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        size_t added = 0;
+        for (const auto& rel : other.relations_) {
+            Relation copy = rel.clone();
+
+            // 检查重复
+            if (config_.check_duplicates) {
+                if (seen_.count(copy.ab()) > 0) {
+                    ++stats_.duplicates_rejected;
+                    continue;
+                }
+                seen_.insert(copy.ab());
+            }
+
+            update_stats(copy);
+            relations_.push_back(std::move(copy));
+            ++added;
+        }
+
+        return added;
+    }
+
+    /// 设置回调（新关系添加时调用）
+    using NewRelationCallback = std::function<void(const Relation&)>;
+    void set_callback(NewRelationCallback callback) {
+        callback_ = std::move(callback);
+    }
+
+private:
+    CollectorConfig config_;
+    std::vector<Relation> relations_;
+    std::unordered_set<ABPair, ABPairHash> seen_;
+    CollectorStats stats_;
+    mutable std::mutex mutex_;
+
+    std::ofstream output_stream_;
+    NewRelationCallback callback_;
+
+    /// 验证关系
+    [[nodiscard]] bool validate(const Relation& rel) const noexcept {
+        // b 必须 > 0
+        if (rel.b == 0) return false;
+
+        // gcd(a, b) 必须 = 1
+        if (std::gcd(std::abs(rel.a), static_cast<int64_t>(rel.b)) != 1) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /// 更新统计
+    void update_stats(const Relation& rel) noexcept {
+        ++stats_.total_relations;
+
+        // 计算大素数数量
+        size_t lp_count = rel.rational_large_prime.size() + rel.algebraic_large_prime.size();
+
+        if (lp_count == 0) {
+            ++stats_.full_relations;
+        } else if (lp_count == 1) {
+            ++stats_.partial_1lp;
+        } else {
+            ++stats_.partial_2lp;
+        }
+
+        // 调用回调
+        if (callback_) {
+            callback_(rel);
+        }
+    }
+
+    /// 打开输出文件
+    void open_output_file() {
+        output_stream_.open(config_.output_file, std::ios::binary | std::ios::app);
+    }
+
+    /// 关闭输出文件
+    void close_output_file() {
+        if (output_stream_.is_open()) {
+            output_stream_.close();
+        }
+    }
+};
+
+/// 过滤重复关系
+[[nodiscard]] inline std::vector<Relation> filter_duplicates(std::vector<Relation>&& relations) {
+    std::unordered_set<ABPair, ABPairHash> seen;
+    std::vector<Relation> result;
+    result.reserve(relations.size());
+
+    for (auto& rel : relations) {
+        if (seen.count(rel.ab()) == 0) {
+            seen.insert(rel.ab());
+            result.push_back(std::move(rel));
+        }
+    }
+
+    return result;
+}
+
+/// 按 (a, b) 排序关系
+inline void sort_relations(std::vector<Relation>& relations) {
+    std::sort(relations.begin(), relations.end(),
+              [](const Relation& r1, const Relation& r2) {
+                  if (r1.b != r2.b) return r1.b < r2.b;
+                  return r1.a < r2.a;
+              });
+}
+
+} // namespace relation
+} // namespace gnfs
