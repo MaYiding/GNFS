@@ -1,0 +1,259 @@
+#include "gnfs/sieve/lattice_sieve.hpp"
+#include "gnfs/factor_base/builder.hpp"
+#include "gnfs/polynomial/base_m.hpp"
+
+#include <cassert>
+#include <iostream>
+
+using namespace gnfs;
+using namespace gnfs::sieve;
+using namespace gnfs::factor_base;
+using namespace gnfs::polynomial;
+using namespace gnfs::core;
+
+// 测试用的半素数
+const char* test_n = "1000036000099";
+
+void test_lattice_basis() {
+    std::cout << "Testing lattice basis computation..." << std::endl;
+
+    SpecialQ sq;
+    sq.q = 1009;  // 素数
+    sq.r = 42;    // 某个根
+
+    LatticeBasis basis = compute_lattice_basis(sq);
+
+    // 验证基向量满足格条件 (GNFS convention: a - b*r ≡ 0 mod q)
+    // v0 = (e0, f0) 应该满足 e0 - f0*r ≡ 0 (mod q)
+    int64_t check0 = basis.e0 - static_cast<int64_t>(basis.f0) * sq.r;
+    int64_t mod0 = check0 % static_cast<int64_t>(sq.q);
+    if (mod0 < 0) mod0 += sq.q;
+    assert(mod0 == 0);
+
+    // v1 = (e1, f1) 应该满足 e1 - f1*r ≡ 0 (mod q)
+    int64_t check1 = basis.e1 - static_cast<int64_t>(basis.f1) * sq.r;
+    int64_t mod1 = check1 % static_cast<int64_t>(sq.q);
+    if (mod1 < 0) mod1 += sq.q;
+    assert(mod1 == 0);
+
+    // 行列式应该等于 q（或 -q）
+    int64_t det = basis.determinant();
+    assert(std::abs(det) == static_cast<int64_t>(sq.q));
+
+    // 测试 to_ab
+    auto [a, b] = basis.to_ab(1, 2);
+    int64_t expected_a = 1 * basis.e0 + 2 * basis.e1;
+    int64_t expected_b = 1 * basis.f0 + 2 * basis.f1;
+    assert(a == expected_a);
+    assert(b == expected_b);
+
+    // verify_ab 应该返回 true
+    assert(basis.verify_ab(a, b));
+
+    std::cout << "  Lattice basis: PASS (det=" << det << ")" << std::endl;
+}
+
+void test_sieve_region() {
+    std::cout << "Testing sieve region..." << std::endl;
+
+    SieveRegion region;
+    region.i_min = -100;
+    region.i_max = 99;
+    region.j_min = 1;
+    region.j_max = 50;
+
+    // 测试尺寸
+    assert(region.i_width() == 200);
+    assert(region.j_height() == 50);
+    assert(region.size() == 200 * 50);
+
+    // 测试坐标转换
+    size_t idx = region.ij_to_index(0, 1);
+    auto [i, j] = region.index_to_ij(idx);
+    assert(i == 0);
+    assert(j == 1);
+
+    // 测试边界
+    size_t idx_min = region.ij_to_index(region.i_min, region.j_min);
+    assert(idx_min == 0);
+
+    size_t idx_max = region.ij_to_index(region.i_max, region.j_max);
+    assert(idx_max == region.size() - 1);
+
+    std::cout << "  Sieve region: PASS" << std::endl;
+}
+
+void test_lattice_sieve_basic() {
+    std::cout << "Testing basic lattice sieve..." << std::endl;
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    assert(result.success);
+
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    // 构建小因子基
+    FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 1000;
+    fb_opts.algebraic_bound = 1000;
+    fb_opts.parallel = false;
+
+    auto fb = FactorBaseBuilder::build(ctx, fb_opts);
+
+    // 创建筛法
+    SieveParams params;
+    params.log_scale = 16;
+    params.rational_threshold = 50;
+    params.algebraic_threshold = 50;
+
+    LatticeSieve sieve(ctx, fb, params);
+
+    // 设置小区域
+    SieveRegion small_region;
+    small_region.i_min = -500;
+    small_region.i_max = 499;
+    small_region.j_min = 1;
+    small_region.j_max = 100;
+    sieve.set_region(small_region);
+
+    // 选择一个 special-q
+    SpecialQRange range;
+    range.min_q = 500;
+    range.max_q = 1000;
+    SpecialQGenerator gen(fb, range);
+
+    auto sq_opt = gen.next();
+    assert(sq_opt.has_value());
+
+    // 执行筛法
+    auto sieve_result = sieve.sieve_special_q(*sq_opt);
+
+    // 验证结果
+    assert(sieve_result.sieved_positions == small_region.size());
+
+    std::cout << "  Basic sieve: PASS (candidates=" << sieve_result.candidates.size()
+              << ", region_size=" << sieve_result.sieved_positions << ")" << std::endl;
+}
+
+void test_candidate_properties() {
+    std::cout << "Testing candidate properties..." << std::endl;
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    assert(result.success);
+
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 500;
+    fb_opts.algebraic_bound = 500;
+    fb_opts.parallel = false;
+
+    auto fb = FactorBaseBuilder::build(ctx, fb_opts);
+
+    SieveParams params;
+    params.log_scale = 16;
+    params.rational_threshold = 60;
+    params.algebraic_threshold = 60;
+
+    LatticeSieve sieve(ctx, fb, params);
+
+    SieveRegion region;
+    region.i_min = -200;
+    region.i_max = 199;
+    region.j_min = 1;
+    region.j_max = 50;
+    sieve.set_region(region);
+
+    SpecialQRange range;
+    range.min_q = 100;
+    range.max_q = 500;
+    SpecialQGenerator gen(fb, range);
+
+    auto sq_opt = gen.next();
+    assert(sq_opt.has_value());
+
+    auto sieve_result = sieve.sieve_special_q(*sq_opt);
+
+    // 验证所有候选点的属性
+    LatticeBasis basis = compute_lattice_basis(*sq_opt);
+
+    for (const auto& cand : sieve_result.candidates) {
+        // b 应该 > 0
+        assert(cand.b > 0);
+
+        // gcd(a, b) 应该 = 1
+        assert(std::gcd(std::abs(cand.a), static_cast<int64_t>(cand.b)) == 1);
+
+        // (a, b) 应该满足格条件
+        assert(basis.verify_ab(cand.a, static_cast<int64_t>(cand.b)));
+    }
+
+    std::cout << "  Candidate properties: PASS (" << sieve_result.candidates.size()
+              << " candidates verified)" << std::endl;
+}
+
+void test_mod_inverse() {
+    std::cout << "Testing mod_inverse..." << std::endl;
+
+    // 7 * 8 = 56 ≡ 1 (mod 11)
+    // 所以 7^{-1} ≡ 8 (mod 11)
+    auto test_inv = [](uint64_t a, uint64_t m, uint64_t expected) {
+        // 使用 LatticeSieve 的 mod_inverse 是私有的，
+        // 但我们可以通过验证 (a * inv) % m == 1 来测试
+        // 这里直接测试扩展欧几里得
+        int64_t t = 0, newt = 1;
+        int64_t r = static_cast<int64_t>(m), newr = static_cast<int64_t>(a);
+
+        while (newr != 0) {
+            int64_t quotient = r / newr;
+            t -= quotient * newt;
+            std::swap(t, newt);
+            r -= quotient * newr;
+            std::swap(r, newr);
+        }
+
+        if (t < 0) t += static_cast<int64_t>(m);
+        uint64_t inv = static_cast<uint64_t>(t);
+
+        assert(inv == expected);
+        assert((a * inv) % m == 1);
+    };
+
+    test_inv(7, 11, 8);
+    test_inv(3, 7, 5);   // 3 * 5 = 15 ≡ 1 (mod 7)
+    test_inv(2, 5, 3);   // 2 * 3 = 6 ≡ 1 (mod 5)
+
+    std::cout << "  Mod inverse: PASS" << std::endl;
+}
+
+void test_default_region() {
+    std::cout << "Testing default region with skewness..." << std::endl;
+
+    // skewness = 1.0
+    auto region1 = default_sieve_region(1.0);
+    assert(region1.i_width() > 0);
+    assert(region1.j_height() > 0);
+
+    // skewness = 4.0 应该增大 i 范围
+    auto region2 = default_sieve_region(4.0);
+    assert(region2.i_width() > region1.i_width());
+    assert(region2.j_height() < region1.j_height());
+
+    std::cout << "  Default region: PASS (skew=1: " << region1.i_width() << "x" << region1.j_height()
+              << ", skew=4: " << region2.i_width() << "x" << region2.j_height() << ")" << std::endl;
+}
+
+int main() {
+    std::cout << "=== Lattice Sieve Tests ===" << std::endl;
+
+    test_lattice_basis();
+    test_sieve_region();
+    test_mod_inverse();
+    test_default_region();
+    test_lattice_sieve_basic();
+    test_candidate_properties();
+
+    std::cout << "\nAll tests passed!" << std::endl;
+    return 0;
+}
