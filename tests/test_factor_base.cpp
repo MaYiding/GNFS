@@ -1,0 +1,205 @@
+#include "gnfs/factor_base/builder.hpp"
+#include "gnfs/polynomial/base_m.hpp"
+
+#include <cassert>
+#include <iostream>
+
+using namespace gnfs;
+using namespace gnfs::factor_base;
+using namespace gnfs::polynomial;
+using namespace gnfs::core;
+
+// 测试用的半素数: 1000003 * 1000033 = 1000036000099
+const char* test_n = "1000036000099";
+
+void test_prime_sieve() {
+    std::cout << "Testing prime sieve..." << std::endl;
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    assert(result.success);
+
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    // 小范围测试
+    FactorBaseBuilder::Options opts;
+    opts.rational_bound = 100;
+    opts.algebraic_bound = 100;
+    opts.parallel = false;
+
+    auto fb = FactorBaseBuilder::build(ctx, opts);
+
+    // 验证有理因子基
+    assert(fb.rational_count() > 0);
+    // 100 以内有 25 个素数
+    assert(fb.rational_count() == 25);
+
+    // 验证第一个素数是 2
+    auto rationals = fb.rational();
+    assert(rationals[0].p == 2);
+
+    // 验证最后一个素数是 97
+    assert(rationals[24].p == 97);
+
+    std::cout << "  Prime sieve: PASS" << std::endl;
+}
+
+void test_algebraic_roots() {
+    std::cout << "Testing algebraic roots..." << std::endl;
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    assert(result.success);
+
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    FactorBaseBuilder::Options opts;
+    opts.rational_bound = 50;
+    opts.algebraic_bound = 50;
+    opts.parallel = false;
+
+    auto fb = FactorBaseBuilder::build(ctx, opts);
+
+    // 代数侧应该有一些素理想
+    assert(fb.algebraic_count() > 0);
+
+    // 每个代数素理想 (p, r) 应该满足 f(r) ≡ 0 (mod p)
+    auto algebraics = fb.algebraic();
+    for (const auto& ap : algebraics) {
+        uint64_t fr = ctx.evaluate_mod(ap.r, ap.p);
+        assert(fr == 0);  // f(r) mod p should be 0
+    }
+
+    std::cout << "  Algebraic roots: PASS (" << fb.algebraic_count() << " primes)" << std::endl;
+}
+
+void test_index_lookup() {
+    std::cout << "Testing index lookup..." << std::endl;
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    assert(result.success);
+
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    FactorBaseBuilder::Options opts;
+    opts.rational_bound = 100;
+    opts.algebraic_bound = 100;
+    opts.parallel = false;
+
+    auto fb = FactorBaseBuilder::build(ctx, opts);
+
+    // 测试有理侧查找
+    auto idx = fb.find_rational(7);
+    assert(idx.has_value());
+    assert(fb.rational()[*idx].p == 7);
+
+    // 查找不存在的素数
+    auto not_found = fb.find_rational(6);
+    assert(!not_found.has_value());
+
+    // 测试代数侧查找
+    auto algebraics = fb.algebraic();
+    if (!algebraics.empty()) {
+        const auto& first = algebraics[0];
+        auto alg_idx = fb.find_algebraic(first.p, first.r);
+        assert(alg_idx.has_value());
+        assert(*alg_idx == 0);
+    }
+
+    std::cout << "  Index lookup: PASS" << std::endl;
+}
+
+void test_log_values() {
+    std::cout << "Testing log values..." << std::endl;
+
+    uint8_t scale = 16;
+
+    // log2(2) * 16 = 16
+    assert(compute_log_prime(2, scale) == 16);
+
+    // log2(4) * 16 = 32
+    assert(compute_log_prime(4, scale) == 32);
+
+    // log2(1024) * 16 = 160
+    assert(compute_log_prime(1024, scale) == 160);
+
+    std::cout << "  Log values: PASS" << std::endl;
+}
+
+void test_parallel_build() {
+    std::cout << "Testing parallel build..." << std::endl;
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    assert(result.success);
+
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    // 构建两个因子基：顺序和并行
+    FactorBaseBuilder::Options opts_seq;
+    opts_seq.rational_bound = 10000;
+    opts_seq.algebraic_bound = 10000;
+    opts_seq.parallel = false;
+
+    FactorBaseBuilder::Options opts_par;
+    opts_par.rational_bound = 10000;
+    opts_par.algebraic_bound = 10000;
+    opts_par.parallel = true;
+
+    auto fb_seq = FactorBaseBuilder::build(ctx, opts_seq);
+    auto fb_par = FactorBaseBuilder::build(ctx, opts_par);
+
+    // 两者应该有相同数量的元素
+    assert(fb_seq.rational_count() == fb_par.rational_count());
+    assert(fb_seq.algebraic_count() == fb_par.algebraic_count());
+
+    // 验证内容一致性
+    auto rat_seq = fb_seq.rational();
+    auto rat_par = fb_par.rational();
+    for (size_t i = 0; i < rat_seq.size(); ++i) {
+        assert(rat_seq[i].p == rat_par[i].p);
+        assert(rat_seq[i].log_p == rat_par[i].log_p);
+    }
+
+    std::cout << "  Parallel build: PASS (seq=" << fb_seq.rational_count()
+              << ", par=" << fb_par.rational_count() << " rationals)" << std::endl;
+}
+
+void test_larger_bound() {
+    std::cout << "Testing larger bound (100k)..." << std::endl;
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    assert(result.success);
+
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    FactorBaseBuilder::Options opts;
+    opts.rational_bound = 100000;
+    opts.algebraic_bound = 100000;
+    opts.parallel = true;
+
+    auto fb = FactorBaseBuilder::build(ctx, opts);
+
+    // 100000 以内约有 9592 个素数
+    assert(fb.rational_count() > 9000);
+    assert(fb.rational_count() < 10000);
+
+    std::cout << "  Larger bound: PASS (" << fb.rational_count() << " rational, "
+              << fb.algebraic_count() << " algebraic)" << std::endl;
+}
+
+int main() {
+    std::cout << "=== Factor Base Tests ===" << std::endl;
+
+    test_prime_sieve();
+    test_algebraic_roots();
+    test_index_lookup();
+    test_log_values();
+    test_parallel_build();
+    test_larger_bound();
+
+    std::cout << "\nAll tests passed!" << std::endl;
+    return 0;
+}
