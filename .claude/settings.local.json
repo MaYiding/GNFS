@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make:*)",
+      "Bash(ctest:*)",
+      "Bash(cmake:*)",
+      "Bash(clang++:*)",
+      "Bash(g++:*)",
+      "Bash(./build/*)",
+      "Bash(cd build*)",
+      "Bash(ls:*)",
+      "Bash(wc:*)",
+      "Bash(file:*)",
+      "Bash(nm:*)",
+      "Bash(otool:*)",
+      "Bash(git:*)",
+      "Bash(brew:*)",
+      "WebSearch"
+    ]
+  }
+}
