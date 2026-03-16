@@ -1,0 +1,331 @@
+cmake_minimum_required(VERSION 3.20)
+
+project(GNFS
+    VERSION 0.1.0
+    DESCRIPTION "Industrial-grade General Number Field Sieve implementation"
+    LANGUAGES CXX
+)
+
+# ============================================================
+# 编译选项
+# ============================================================
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# 编译警告
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    add_compile_options(-Wall -Wextra -Wpedantic)
+    # 优化
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        add_compile_options(-O3 -march=native -mcpu=apple-m1 -flto=thin)
+        add_link_options(-flto=thin)
+    elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        add_compile_options(-O2 -g -march=native -mcpu=apple-m1)
+    endif()
+elseif(MSVC)
+    add_compile_options(/W4)
+endif()
+
+# 导出编译命令（用于 IDE 和 clangd）
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# ============================================================
+# 依赖查找
+# ============================================================
+
+# GMP - GNU Multiple Precision Arithmetic Library
+find_library(GMP_LIBRARY gmp REQUIRED)
+find_path(GMP_INCLUDE_DIR gmp.h REQUIRED)
+
+# NTL - Number Theory Library (可选)
+find_library(NTL_LIBRARY ntl)
+find_path(NTL_INCLUDE_DIR NTL/ZZ.h)
+
+if(NTL_LIBRARY AND NTL_INCLUDE_DIR)
+    set(HAVE_NTL ON)
+    message(STATUS "Found NTL: ${NTL_LIBRARY}")
+else()
+    set(HAVE_NTL OFF)
+    message(STATUS "NTL not found, some features will be disabled")
+endif()
+
+# 线程
+find_package(Threads REQUIRED)
+
+# Metal (macOS only)
+if(APPLE)
+    find_library(METAL_FRAMEWORK Metal)
+    find_library(FOUNDATION_FRAMEWORK Foundation)
+    find_library(METALKIT_FRAMEWORK MetalKit)
+    if(METAL_FRAMEWORK)
+        set(HAVE_METAL ON)
+        message(STATUS "Found Metal framework")
+    endif()
+endif()
+
+# ============================================================
+# 核心库
+# ============================================================
+
+# gnfs_util - 工具库
+add_library(gnfs_util INTERFACE)
+target_include_directories(gnfs_util INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+# gnfs_core - 核心类型库
+add_library(gnfs_core STATIC
+    src/core/integer.cpp
+    src/core/polynomial.cpp
+    src/core/relation.cpp
+)
+
+# 添加可选的源文件（如果存在）
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/polynomial/base_m.cpp")
+    target_sources(gnfs_core PRIVATE src/polynomial/base_m.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/polynomial/murphy_evaluator.cpp")
+    target_sources(gnfs_core PRIVATE src/polynomial/murphy_evaluator.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/polynomial/kleinjung_selector.cpp")
+    target_sources(gnfs_core PRIVATE src/polynomial/kleinjung_selector.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/factor_base/builder.cpp")
+    target_sources(gnfs_core PRIVATE src/factor_base/builder.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/special_q.cpp")
+    target_sources(gnfs_core PRIVATE src/sieve/special_q.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/lattice_sieve.cpp")
+    target_sources(gnfs_core PRIVATE src/sieve/lattice_sieve.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cofactor/cofactorizer.cpp")
+    target_sources(gnfs_core PRIVATE src/cofactor/cofactorizer.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/collector.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/collector.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/filter.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/filter.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/linalg/matrix_builder.cpp")
+    target_sources(gnfs_core PRIVATE src/linalg/matrix_builder.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/linalg/block_lanczos.cpp")
+    target_sources(gnfs_core PRIVATE src/linalg/block_lanczos.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sqrt/rational_sqrt.cpp")
+    target_sources(gnfs_core PRIVATE src/sqrt/rational_sqrt.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sqrt/algebraic_sqrt.cpp")
+    target_sources(gnfs_core PRIVATE src/sqrt/algebraic_sqrt.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/util/thread_pool.cpp")
+    target_sources(gnfs_core PRIVATE src/util/thread_pool.cpp)
+endif()
+
+target_include_directories(gnfs_core PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+    ${GMP_INCLUDE_DIR}
+)
+target_link_libraries(gnfs_core PUBLIC
+    ${GMP_LIBRARY}
+    gnfs_util
+    Threads::Threads
+)
+
+if(HAVE_NTL)
+    target_include_directories(gnfs_core PUBLIC ${NTL_INCLUDE_DIR})
+    target_link_libraries(gnfs_core PUBLIC ${NTL_LIBRARY})
+    target_compile_definitions(gnfs_core PUBLIC GNFS_HAVE_NTL=1)
+endif()
+
+# ============================================================
+# 可执行文件
+# ============================================================
+
+# 主程序（暂时禁用，main.cpp 尚未创建）
+# add_executable(gnfs_main
+#     src/main.cpp
+# )
+# target_link_libraries(gnfs_main PRIVATE
+#     gnfs_core
+#     Threads::Threads
+# )
+
+# ============================================================
+# 测试
+# ============================================================
+
+option(GNFS_BUILD_TESTS "Build tests" ON)
+
+if(GNFS_BUILD_TESTS)
+    enable_testing()
+
+    # 简单测试程序
+    add_executable(test_small_vector
+        tests/test_small_vector.cpp
+    )
+    target_link_libraries(test_small_vector PRIVATE gnfs_util)
+    add_test(NAME SmallVector COMMAND test_small_vector)
+
+    add_executable(test_integer
+        tests/test_integer.cpp
+    )
+    target_link_libraries(test_integer PRIVATE gnfs_core)
+    add_test(NAME Integer COMMAND test_integer)
+
+    add_executable(test_thread_pool
+        tests/test_thread_pool.cpp
+    )
+    target_link_libraries(test_thread_pool PRIVATE gnfs_util Threads::Threads)
+    add_test(NAME ThreadPool COMMAND test_thread_pool)
+
+    add_executable(test_factor_base
+        tests/test_factor_base.cpp
+    )
+    target_link_libraries(test_factor_base PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME FactorBase COMMAND test_factor_base)
+
+    add_executable(test_special_q
+        tests/test_special_q.cpp
+    )
+    target_link_libraries(test_special_q PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SpecialQ COMMAND test_special_q)
+
+    add_executable(test_lattice_sieve
+        tests/test_lattice_sieve.cpp
+    )
+    target_link_libraries(test_lattice_sieve PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME LatticeSieve COMMAND test_lattice_sieve)
+
+    add_executable(test_relation_collector
+        tests/test_relation_collector.cpp
+    )
+    target_link_libraries(test_relation_collector PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME RelationCollector COMMAND test_relation_collector)
+
+    add_executable(test_sieve_basic
+        tests/test_sieve_basic.cpp
+    )
+    target_link_libraries(test_sieve_basic PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SieveIntegration COMMAND test_sieve_basic)
+
+    add_executable(test_cofactor
+        tests/test_cofactor.cpp
+    )
+    target_link_libraries(test_cofactor PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME Cofactor COMMAND test_cofactor)
+
+    add_executable(test_linalg
+        tests/test_linalg.cpp
+    )
+    target_link_libraries(test_linalg PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME LinearAlgebra COMMAND test_linalg)
+
+    add_executable(test_sqrt
+        tests/test_sqrt.cpp
+    )
+    target_link_libraries(test_sqrt PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SquareRoot COMMAND test_sqrt)
+
+    add_executable(test_gnfs_e2e
+        tests/test_gnfs_e2e.cpp
+    )
+    target_link_libraries(test_gnfs_e2e PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME GNFS_E2E COMMAND test_gnfs_e2e)
+
+    # Kleinjung 多项式选择测试
+    add_executable(test_murphy
+        tests/test_murphy.cpp
+    )
+    target_link_libraries(test_murphy PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME Murphy COMMAND test_murphy)
+
+    add_executable(test_kleinjung
+        tests/test_kleinjung.cpp
+    )
+    target_link_libraries(test_kleinjung PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME Kleinjung COMMAND test_kleinjung)
+
+    add_executable(test_kleinjung_large
+        tests/test_kleinjung_large.cpp
+    )
+    target_link_libraries(test_kleinjung_large PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME KleinjungLarge COMMAND test_kleinjung_large)
+
+    add_executable(test_factor_with_kleinjung
+        tests/test_factor_with_kleinjung.cpp
+    )
+    target_link_libraries(test_factor_with_kleinjung PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME FactorWithKleinjung COMMAND test_factor_with_kleinjung)
+
+    add_executable(test_sqrt_debug
+        tests/test_sqrt_debug.cpp
+    )
+    target_link_libraries(test_sqrt_debug PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SqrtDebug COMMAND test_sqrt_debug)
+
+    # 渐进式测试 — 支持命令行参数选择级别
+    add_executable(test_gnfs_progressive
+        tests/test_gnfs_progressive.cpp
+    )
+    target_link_libraries(test_gnfs_progressive PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME GNFS_Progressive_L1 COMMAND test_gnfs_progressive 1 1)
+    add_test(NAME GNFS_Progressive_L2 COMMAND test_gnfs_progressive 2 2)
+    # Level 3+ 不加入 ctest — 手动运行: ./test_gnfs_progressive 3
+
+    # 25-digit 性能测试
+    add_executable(test_25digit
+        tests/test_25digit.cpp
+    )
+    target_link_libraries(test_25digit PRIVATE gnfs_core Threads::Threads)
+    # 不加入 ctest — 手动运行
+endif()
+
+# ============================================================
+# 安装
+# ============================================================
+
+install(TARGETS gnfs_core gnfs_util
+    EXPORT GNFSTargets
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+    RUNTIME DESTINATION bin
+    INCLUDES DESTINATION include
+)
+
+install(DIRECTORY include/gnfs
+    DESTINATION include
+)
+
+# ============================================================
+# 打印配置摘要
+# ============================================================
+
+message(STATUS "")
+message(STATUS "GNFS Configuration Summary:")
+message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
+message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "  GMP: ${GMP_LIBRARY}")
+message(STATUS "  NTL: ${HAVE_NTL}")
+message(STATUS "  Metal: ${HAVE_METAL}")
+message(STATUS "  Tests: ${GNFS_BUILD_TESTS}")
+message(STATUS "")
