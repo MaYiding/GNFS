@@ -1,0 +1,37 @@
+# ===== Build Artifacts =====
+build/
+xcode-build/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+*.dSYM/
+
+# ===== IDE & Editor =====
+.vscode/
+.idea/
+*.xcodeproj/
+*.xcworkspace/
+*.swp
+*.swo
+*~
+.clangd/
+compile_commands.json
+
+# ===== OS Files =====
+.DS_Store
+Thumbs.db
+
+# ===== Cache =====
+.cache/
+
+# ===== Planning Files (Session-Specific) =====
+task_plan.md
+findings.md
+progress.md
+
+# ===== Legacy Root Scripts (Cleanup Candidates) =====
+# These are legacy files from early development.
+# If you need to track them, remove the corresponding line.
+# See CLAUDE.md "Known Limitations" for context.
