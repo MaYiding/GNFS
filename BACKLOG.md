@@ -129,7 +129,7 @@
 ### [BUG] Hensel/Couveignes 不可约性检查仅测试线性因子——度 > 3 时静默失败
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: Sqrt + LinAlg 模块逐行审计
-- **文件**: `hensel_sqrt.hpp:258-268`, `couveignes.hpp:119-125`, `matrix_builder.hpp:174-184`
+- **文件**: `hensel_sqrt.hpp:258-268`, `couveignes.hpp:119-125`, `matrix_builder.hpp:174-184`, `schirokauer.hpp:369-385`（Session 7 补充第 4 处）
 - **描述**: 三处均使用 `gcd(x^p - x, f)` 检查 f mod p 是否无根来判断不可约。但 "无根" ≠ "不可约"（degree > 3 时）。例如 `x^4+x^2+1 = (x^2+x+1)(x^2-x+1)` mod 某些 p 无根但可约。Hensel 在可约多项式上做 Fermat 求逆 (p^d-2 次方) 会得到垃圾结果；Couveignes 的 Tonelli-Shanks 也会失败
 - **影响**: **degree 5+ GNFS 静默产生错误结果**。这是当前代码对大 N 最致命的隐藏 bug
 - **建议**: 完整不可约检查需要验证 ∀k ∈ [1, d/2]: `gcd(x^{p^k} - x, f) == 1`，最终验证 `x^{p^d} ≡ x mod f`
@@ -1074,6 +1074,115 @@
 - **描述**: 终止检查 `if (V_cur.is_zero()) break` 仅在所有 64 个 block 向量同时为零时触发。Montgomery 算法的正确终止条件还应包括：当 A_cur = V_cur^T·V_cur 的秩为 0（或降到很低时），意味着在所有 block 方向上都已收敛。当前代码可能在该终止条件满足后仍继续无效迭代
 - **影响**: 可能多执行几十次无效迭代，浪费时间
 - **建议**: 添加 `if (mask_cur == 0) break;`（mask=0 表示 A_cur 秩为 0）
+
+---
+
+## P0 — Session 7 数学/指针/API 深层审计
+
+### [BUG] 4 处 `static Integer zero` 返回引用——线程不安全 + 别名陷阱
+- **发现日期**: 2026-03-09 (Session 7 审计)
+- **来源**: 指针/生命周期审计
+- **文件**:
+  - `include/gnfs/sqrt/number_field.hpp:65` — `NumberFieldElement::coeff()`
+  - `include/gnfs/sqrt/number_field.hpp:195` — `NumberField::coeff()`
+  - `include/gnfs/core/polynomial_context.hpp:77` — `PolynomialContext::coeff()`
+  - `include/gnfs/polynomial/int_polynomial.hpp:69` — `IntPolynomial::operator[]() const`
+- **描述**: 这 4 处越界访问都返回 `const Integer&` 到同一个函数级 `static Integer zero`。问题有三层：(1) **别名**：两次越界调用返回同一对象的引用，`&a == &b` 为 true，破坏值语义预期；(2) **线程安全**：`Integer` 包装 `mpz_t`（可变结构体），GMP 的 mpz_t 不是线程安全的——多线程并发调用 `coeff(out_of_bounds)` 可能在内部触发 GMP 读/写竞争；(3) **Hensel 并行路径**：`hensel_sqrt.hpp:356` 的并行乘积计算中，多线程调用 `nf.coeff(i)` 若 i 越界则共享同一 static zero
+- **影响**: 多线程因式分解（Hensel 并行乘积、sieve_parallel）中可能崩溃或静默数据损坏
+- **建议**: 返回值类型改为 `Integer`（按值），或使用 `thread_local static Integer zero`
+
+### [BUG] estimate_initial_log NaN/Inf → uint16_t 强制转换是 UB
+- **发现日期**: 2026-03-09 (Session 7 审计)
+- **来源**: C++ API 误用审计
+- **文件**: `include/gnfs/sieve/lattice_sieve.hpp:221-231`
+- **描述**: `rat_val = std::abs(typical_a - typical_b * m_val)` 在 `typical_a ≈ typical_b * m_val` 时可等于 0。`std::log2(0.0)` 返回 `-Inf`。`-Inf * scale` = `-Inf`。Line 230 `static_cast<uint16_t>(-Inf)` 是未定义行为（C++ 标准 [conv.fpint]：超出目标范围的浮点转整数是 UB）。类似地 `typical_a = 0` 时 `pow(0, d) = 0`，`log2(0)` = `-Inf`
+- **影响**: 特定 lattice basis 参数下进程崩溃或返回垃圾初始值
+- **建议**: 添加 `if (!std::isfinite(combined) || combined < 0) return 0;`
+
+---
+
+## P1 — Session 7 数学/指针/API 深层审计
+
+### [BUG] Schirokauer precompute_for_prime 同样假设"无根=不可约"——d≥4 时错误
+- **发现日期**: 2026-03-09 (Session 7 数学审计)
+- **来源**: LinAlg Schirokauer 数学正确性分析
+- **文件**: `include/gnfs/linalg/schirokauer.hpp:369-385`
+- **描述**: 与已知 Bug "Hensel/Couveignes 不可约性检查仅测试线性因子" 同一模式，但此处是**第四个**受影响位置。Line 370-378 枚举 x=0..ℓ-1 检查根，无根则声明"irreducible"并使用指数 `ℓ^d - 1`。但对 d≥4，f mod ℓ 可无根但可约（如 x⁴+x²+1 = (x²+x+1)² over F₂）。此时 `(Z/ℓZ)[x]/(f)` 不是域，乘法群阶不是 `ℓ^d - 1`，Schirokauer map 值数学上错误
+- **影响**: d≥4 多项式的 Schirokauer 列在 f mod ℓ 可约但无根时产生错误值，矩阵依赖质量下降
+- **建议**: 与 Hensel/Couveignes 一起修复——使用完整不可约检测 `gcd(x^{ℓ^k}-x, f)` for k=1..d/2
+- **注**: 此条目是对已有 P0 条目 "Hensel/Couveignes 不可约性检查" 的补充——该条目列了 3 个文件，现增加第 4 个
+
+### [BUG] SchirokaurMap 存储 `const PolynomialContext&`——潜在悬垂引用
+- **发现日期**: 2026-03-09 (Session 7 指针审计)
+- **来源**: 生命周期分析
+- **文件**: `include/gnfs/linalg/schirokauer.hpp:342`
+- **描述**: `SchirokaurMap` 的 `ctx_` 成员是 `const PolynomialContext&`，生命周期依赖于外部对象。如果构造 SchirokaurMap 后原始 PolynomialContext 被 move 或销毁，`ctx_` 变为悬垂引用。`PolynomialContext` 有 move constructor（line 44），使得 move 后引用失效成为可能
+- **影响**: 若调用方不小心 move 了 ctx，后续 compute() 读取已销毁对象——段错误或静默数据损坏
+- **建议**: 改为存储 `std::shared_ptr<const PolynomialContext>` 或 clone 一份
+
+### [BUG] LatticeSieve 存储 `const PolynomialContext&` 和 `const FactorBase&`——悬垂引用 + 线程传播
+- **发现日期**: 2026-03-09 (Session 7 指针审计)
+- **来源**: 生命周期分析
+- **文件**: `include/gnfs/sieve/lattice_sieve.hpp:186-187`
+- **描述**: `ctx_` 和 `fb_` 是 const 引用。`sieve_parallel()` (line 159) 创建线程局部 `LatticeSieve local_sieve(ctx_, fb_, params_)` 复制这些引用。所有线程共享同一对引用。若原始 ctx/fb 在线程运行期间被销毁或 move，所有工作线程同时访问已失效对象
+- **影响**: 并行筛选中若调用方过早释放 ctx/fb，全部工作线程 use-after-free
+- **建议**: `sieve_parallel` 参数改为 `const PolynomialContext&, const FactorBase&` 直接传递，或内部使用 shared_ptr
+
+### [BUG] SparseRow const_cast ensure_sorted() 多线程并发排序是 UB
+- **发现日期**: 2026-03-09 (Session 7 指针审计)
+- **来源**: 并发安全审计
+- **文件**: `include/gnfs/linalg/sparse_matrix.hpp:61-63,93,134,150`
+- **描述**: 已有 BACKLOG 条目指出 `const_cast` 违反 const 契约。此处补充**多线程角度**：`SparseRow::test()`, `weight()`, `indices()`, `xor_with(const&)` 全部通过 const_cast 调用 `ensure_sorted()` 修改内部 `indices_` 和 `sorted_`。Block Lanczos 的 `spmv_forward`/`spmv_transpose` 在多线程中可能并发调用同一矩阵的 `row(i).indices()`，触发多线程对同一 `indices_` vector 的并发排序——数据竞争 UB
+- **影响**: Block Lanczos 并行化后立即触发 UB
+- **建议**: `sorted_` 和 `indices_` 标记为 `mutable`，构造后立即调用 `ensure_sorted()`（或在 build_index() 中统一排序），消除运行时 const_cast
+
+### [BUG] RelationCollector::set_callback() 无 mutex 保护——与 add() 数据竞争
+- **发现日期**: 2026-03-09 (Session 7 指针审计)
+- **来源**: 并发安全审计
+- **文件**: `include/gnfs/relation/collector.hpp:249-251`
+- **描述**: `set_callback(callback)` 直接 move-assign `callback_` 而不加锁。`add()` 在持有 mutex 的情况下通过 `update_stats()` (line 292) 读取 `callback_`。若一个线程调用 set_callback 而另一个线程正在 add()，对 `callback_` 的读/写构成数据竞争
+- **影响**: 并发修改回调时 UB
+- **建议**: `set_callback()` 内加 `std::lock_guard<std::mutex> lock(mutex_)`
+
+### [BUG] IntPolynomial mutable operator[] 无上限检查——任意大 resize 导致 OOM
+- **发现日期**: 2026-03-09 (Session 7 API 审计)
+- **来源**: C++ 容器安全审计
+- **文件**: `include/gnfs/polynomial/int_polynomial.hpp:75-80`
+- **描述**: `operator[](size_t i)` 对越界 `i` 直接执行 `coeffs_.resize(i + 1)`。若 i 来自不可信输入（如反序列化的度数），可能分配 TB 级内存。每个新 `Integer` 条目调用 `mpz_init()`，高度 i 意味着大量 GMP 分配
+- **影响**: 恶意/损坏数据导致 OOM 崩溃
+- **建议**: 添加 `assert(i <= MAX_DEGREE)` 或 `if (i > 1000) throw`
+
+### [BUG] Eratosthenes 筛法 `p * 2` 在 p > UINT32_MAX/2 时溢出
+- **发现日期**: 2026-03-09 (Session 7 API 审计)
+- **来源**: 整数溢出审计
+- **文件**: `src/factor_base/builder.cpp:80,102,131`
+- **描述**: `for (uint32_t k = p * 2; k <= bound; k += p)` — 当 `p > UINT32_MAX / 2 ≈ 2.15×10⁹` 时，`p * 2` 溢出为小值。循环从错误位置开始，标记了错误的合数，导致因子基中包含合数或遗漏素数。当前 `rational_bound` 被 clamp 到 1e9 所以安全，但如果未来提高上限则触发
+- **影响**: 大因子基（bound > 2^31）时因子基数据损坏
+- **建议**: 改为 `for (uint64_t k = uint64_t(p) * 2; k <= bound; k += p)`
+
+### [BUG] FactorBaseBuilder 实例方法 build(uint32,uint32) 返回空 FactorBase
+- **发现日期**: 2026-03-09 (Session 7 API 审计)
+- **来源**: 死代码/非功能 API 审计
+- **文件**: `src/factor_base/builder.cpp:62-69`
+- **描述**: 实例方法 `build(rational_bound, algebraic_bound)` 因无法复制 `PolynomialContext` 而直接返回空 `FactorBase()`。虽然有注释说明，但公共 API 返回空结果而不抛异常，调用方会得到零大小因子基，后续管线静默失效
+- **影响**: 使用实例 API 的代码得到空因子基，筛选产出零关系
+- **建议**: 标记 `[[deprecated]]` 并抛异常，或完全删除
+
+### [BUG] sieve_parallel() 使用不必要的 mutex 保护独立数组写入——性能浪费
+- **发现日期**: 2026-03-09 (Session 7 API 审计)
+- **来源**: 并发模式审计
+- **文件**: `include/gnfs/sieve/lattice_sieve.hpp:153,168-169`
+- **描述**: 每个工作线程通过 `atomic fetch_add` 获得唯一索引 `idx`，写入 `all_results[idx]`。由于不同线程写入不同位置，无需 mutex。但 line 168 仍获取 `results_mutex` 锁，导致所有线程在写入时串行化
+- **影响**: 并行筛选的写入阶段被不必要地序列化，多线程加速受限
+- **建议**: 移除 `results_mutex` 和 `lock_guard`
+
+### [BUG] ThreadPool parallel_for/parallel_for_index 通过引用捕获 func——若未来添加 early return 则悬垂
+- **发现日期**: 2026-03-09 (Session 7 指针审计)
+- **来源**: Lambda 捕获安全审计
+- **文件**: `include/gnfs/util/thread_pool.hpp:104,140`
+- **描述**: `submit([..., &func]() { ... })` 将 `func` 通过引用捕获到提交给线程池的 lambda 中。当前安全：`parallel_for` 在返回前通过 `future.get()` 等待所有任务完成。但若未来添加异常处理（try/catch 跳过 get() 循环）或超时机制，func 的引用会在 parallel_for 返回后悬垂，工作线程访问已销毁的函数对象
+- **影响**: 当前无 bug，但代码脆弱。任何对等待逻辑的修改都可能引入 use-after-free
+- **建议**: 改为按值捕获 `func`（如 `[func]` 或 `[f = std::move(func)]`）
 
 ---
 
