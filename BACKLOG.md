@@ -56,12 +56,28 @@
 - **建议**: 对 p=2 做特殊处理（直接返回）
 
 ### [BUG] NumberField 假设 f 是 monic 但从不验证
-- **发现日期**: 2026-03-08 (Session 5 审计)
+- **发现日期**: 2026-03-08 (Session 5 审计), Session 6 补充
 - **来源**: Sqrt 模块审计
-- **文件**: `include/gnfs/sqrt/number_field.hpp:416-451`
-- **描述**: 多项式约化假设 f[d]=1（monic），但无任何检查。如果 f 非 monic，所有 Q[α] 中的算术都是错误的
-- **影响**: 非 monic 多项式会产生完全错误的平方根
-- **建议**: 添加构造时 assert `f[d] == 1`，或实现非 monic 支持
+- **文件**: `include/gnfs/sqrt/number_field.hpp:416-451`, `include/gnfs/sqrt/hensel_sqrt.hpp:422`, `include/gnfs/sqrt/modular_poly.hpp:141`
+- **描述**: 多项式约化假设 f[d]=1（monic），但无任何检查。影响范围远超 NumberField：(1) `number_field.hpp:reduce()` 直接用 high_coeff 乘 f[i] 归约，缺少除以 f[d]; (2) `hensel_sqrt.hpp:poly_mul_mod()` 注释明确说 "f is monic"，同样缺少; (3) `modular_poly.hpp:reduce()` 也假设 monic。Kleinjung 选择的多项式 a_d 是任意光滑数，非 monic 多项式会导致所有 Q[α] 中的算术错误
+- **影响**: 非 monic 多项式会产生完全错误的平方根——Kleinjung 多项式不可用
+- **建议**: 添加构造时 assert `f[d] == 1`，或在归约中除以 f[d]（需 mod inverse）
+
+### [BUG] polynomial_optimizer Newton 方法 divmod 覆写导致永不收敛
+- **发现日期**: 2026-03-08 (Session 6 审计)
+- **来源**: Polynomial 模块审计
+- **文件**: `include/gnfs/polynomial/polynomial_optimizer.hpp:57-68`
+- **描述**: Line 58: `Integer::divmod(delta, fm, fm, dfm)` 正确计算 `delta = fm/dfm`，但 `fm` 被覆写为余数。随后 Lines 61-68 用覆写后的 `fm`（余数）重新计算 `delta = (fm mod dfm) / dfm`，整数除法结果永远为 0。Newton 步长 Δ=0，立即退出循环，不进行任何优化
+- **影响**: Kleinjung Stage 2 牛顿法根优化完全无效——每次都返回初始值 m，浪费计算时间且不改善多项式质量
+- **建议**: 删除 Lines 61-68（if/else 两个分支做同一件事），保留 Line 58 的 divmod 结果
+
+### [BUG] polynomial_optimizer newton_root() 验证永远成功
+- **发现日期**: 2026-03-08 (Session 6 审计)
+- **来源**: Polynomial 模块审计
+- **文件**: `include/gnfs/polynomial/polynomial_optimizer.hpp:90-108`
+- **描述**: (1) Line 92: `divmod(remainder, fm_final, fm_final, n)` 中 `remainder` 实际存的是商，`fm_final` 存的是余数——变量名完全颠倒; (2) Line 95 检查 `remainder.is_zero()` 实际检查的是商是否为零; (3) Line 108: 无论验证结果如何，函数总是 `return m`——验证块是纯装饰
+- **影响**: 无效的多项式（f(m) ≢ 0 mod n）永远不会被拒绝
+- **建议**: 修正 divmod 参数顺序，在验证失败时返回 nullopt
 
 ### [BUG] params.hpp special_q_max 的 uint32 溢出
 - **发现日期**: 2026-03-08 (Session 5 审计)
@@ -473,6 +489,62 @@
 - **描述**: `if (f.leading_coeff().fits_uint64())` — 如果首项系数大于 2^64（大 N 的高阶多项式），直接跳过投影根贡献。对这些素数，alpha 值被低估
 - **影响**: 大 N 多项式的 alpha 估计不准确
 - **建议**: 使用 `Integer::mod(coeff, p_int)` 替代 uint64 取模
+
+### [BUG] Hensel poly_inverse_mod_direct p^d uint64 溢出
+- **发现日期**: 2026-03-08 (Session 6 审计)
+- **来源**: Sqrt 模块审计
+- **文件**: `include/gnfs/sqrt/hensel_sqrt.hpp:529-531`
+- **描述**: `uint64_t q_minus_2 = 1; for (i..d) q_minus_2 *= mod; q_minus_2 -= 2;` — 计算 p^d - 2 时使用 uint64_t。对 d=6, p=2000：p^6 ≈ 6.4×10^19 > UINT64_MAX。与 line 125 正确使用 Integer 的同类计算形成对比
+- **影响**: degree-6 多项式 + 中等大小素数时 Hensel 失败
+- **建议**: 改用 Integer 算术（参考 line 125-127 的模式）
+
+### [BUG] Kleinjung construct_polynomial 死代码
+- **发现日期**: 2026-03-08 (Session 6 审计)
+- **来源**: Polynomial 模块审计
+- **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp:380-439`
+- **描述**: Lines 380-435 费力计算系数（包括区间调整、余数重算），然后 Line 439 `coeffs = base_m_expansion(...)` 完全覆写所有结果。60 行代码全部是死代码
+- **影响**: 代码膨胀，维护困难，可能误导读者
+- **建议**: 删除 lines 380-435 的死代码
+
+### [BUG] Kleinjung base_m_expansion 系数不平衡
+- **发现日期**: 2026-03-08 (Session 6 审计)
+- **来源**: Polynomial 模块审计
+- **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp:466-478`
+- **描述**: Base-m 展开使用截断除法，产生 [0, m) 范围的系数。GNFS 最佳实践要求平衡系数 [-m/2, m/2]。不平衡系数导致多项式值更大、筛选产率更低
+- **影响**: 多项式质量劣化，可能需要更多筛选时间
+- **建议**: 在展开后添加平衡步骤：`if (coeffs[i] > m/2) { coeffs[i] -= m; coeffs[i+1] += 1; }`
+
+### [BUG] IntPolynomial add_mod 对大 p 的 uint64 溢出
+- **发现日期**: 2026-03-08 (Session 6 审计)
+- **来源**: Polynomial 模块审计
+- **文件**: `include/gnfs/polynomial/int_polynomial.hpp:362`
+- **描述**: `(a + b) % p` — 当 a, b < p 且 p > UINT64_MAX/2 ≈ 9.2×10^18 时，a + b 溢出 uint64_t。实际使用中 p 是 uint32_t 素数所以安全，但作为通用工具函数存在隐患
+- **影响**: 大模数下结果错误
+- **建议**: 改为 `a >= p - b ? a - (p - b) : a + b` 或使用 __uint128_t
+
+### [BUG] IntPolynomial::roots_cantor_zassenhaus 实际是 O(p) 暴力搜索
+- **发现日期**: 2026-03-08 (Session 6 审计)
+- **来源**: Polynomial 模块审计
+- **文件**: `include/gnfs/polynomial/int_polynomial.hpp:384-405`
+- **描述**: 函数名叫 `roots_cantor_zassenhaus` 但实现是暴力枚举 O(p)。Line 143 注释说"大 p：使用 Cantor-Zassenhaus 算法"也是假的。真正的 Cantor-Zassenhaus 在 `builder.cpp` 中
+- **影响**: 如果 IntPolynomial 的 roots_mod_p 被大 p 调用，性能极差
+- **建议**: 要么实现真正的 CZ，要么重命名为 `roots_brute_force`
+
+### [BUG] class_group 判别式公式对非 depressed 三次多项式错误
+- **发现日期**: 2026-03-08 (Session 6 审计)
+- **来源**: Sqrt 模块审计
+- **文件**: `include/gnfs/sqrt/class_group.hpp:168-188`
+- **描述**: 使用 Δ = -4a³ - 27b² 公式，但这只适用于 depressed cubic f(x) = x³ + ax + b（x² 系数为 0）。GNFS 多项式通常有非零 x² 系数 c₂，正确公式应包含 c₂ 项。Line 170-171 取 `a = ctx_.coeff(1), b = ctx_.coeff(0)` 完全忽略了 `ctx_.coeff(2)`
+- **影响**: 所有非 depressed 三次多项式的类群计算使用错误判别式
+- **建议**: 使用完整三次判别式公式，或先做 Tschirnhaus 变换消除 x² 项
+
+### [BUG] polynomial_optimizer divmod 参数命名与语义颠倒
+- **发现日期**: 2026-03-08 (Session 6 审计)
+- **来源**: Polynomial 模块审计
+- **文件**: `include/gnfs/polynomial/polynomial_optimizer.hpp:91-92`
+- **描述**: `Integer::divmod(remainder, fm_final, fm_final, n)` — 根据 divmod 签名 `(q, r, a, b)`，变量 `remainder` 实际接收的是商，`fm_final` 接收余数。变量名完全颠倒。后续 line 95 `remainder.is_zero()` 检查的是商=0（即 |f(m)| < n），而非 f(m) ≡ 0 mod n
+- **影响**: 验证逻辑不正确（虽然函数总是返回 m 所以影响被掩盖）
+- **建议**: 交换变量名 `Integer::divmod(quotient, remainder, fm_final, n)`
 
 ---
 
