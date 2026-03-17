@@ -25,6 +25,78 @@ cd build && ctest --output-on-failure
 
 **编译依赖:** GMP (必需), NTL (可选), Metal (macOS 可选), pthreads
 
+## 自动化测试工作流 (`scripts/test.sh`)
+
+统一入口脚本，**自带超时机制**（zsh 原生实现，不依赖 GNU coreutils），自动编译 + 运行 + 报告。
+
+### 快速参考
+
+```bash
+# ── 日常开发 (最常用) ──
+./scripts/test.sh                      # 冒烟测试: 11 个 instant 测试, <2s
+./scripts/test.sh smoke                # 同上
+./scripts/test.sh changed              # 根据 git diff 自动选择受影响模块
+./scripts/test.sh changed --deep       # 同上 + 级联依赖模块
+
+# ── 模块级 ──
+./scripts/test.sh module linalg        # 只跑线性代数模块
+./scripts/test.sh module sieve sqrt    # 多模块
+./scripts/test.sh module all           # 全部模块 (仅 instant+fast 测试)
+./scripts/test.sh module all --slow    # 全部模块 (含 slow+heavy 测试)
+
+# ── 单个测试 ──
+./scripts/test.sh run test_linalg      # 指定测试二进制
+./scripts/test.sh run sqrt             # 自动补 test_ 前缀
+
+# ── E2E & 渐进 ──
+./scripts/test.sh e2e                  # 完整 GNFS 流水线 (slow, ~5min)
+./scripts/test.sh L1                   # 渐进式 Level 1 only
+./scripts/test.sh progressive 1 3      # L1 到 L3
+
+# ── 全量 ──
+./scripts/test.sh full                 # ctest + E2E + Progressive L1-L2
+./scripts/test.sh thorough             # 全模块 + 集成 + L1-L3
+./scripts/test.sh nightly              # 全部 + L4 + L5 (过夜跑)
+
+# ── 工具 ──
+./scripts/test.sh list                 # 查看所有测试、模块、超时、分级
+./scripts/test.sh build                # 仅编译
+./scripts/test.sh --no-build smoke     # 跳过编译直接跑
+./scripts/test.sh -t Release full      # Release 模式
+./scripts/test.sh --fail-fast full     # 首个失败即停
+./scripts/test.sh --timeout 30 run test_kleinjung  # 自定义超时
+./scripts/test.sh bench --save         # 性能基准 + 保存结果
+./scripts/test.sh watch                # 监视文件变更自动重测 (需 fswatch)
+```
+
+### 测试分级 (基于实测数据)
+
+| 分级 | 超时 | 测试 | 包含在 |
+|------|------|------|--------|
+| **instant** | 10s | test_integer, test_small_vector, test_thread_pool, test_factor_base, test_special_q, test_relation_collector, test_cofactor, test_linalg, test_sqrt, test_sqrt_debug, test_murphy | smoke, module, changed |
+| **fast** | 60s | test_sieve_basic | module, changed |
+| **slow** | 180-300s | test_kleinjung, test_lattice_sieve, test_factor_with_kleinjung, test_gnfs_e2e | module --slow, e2e, full |
+| **heavy** | 600-3600s | test_kleinjung_large, test_gnfs_progressive, test_25digit | progressive, nightly, bench |
+
+### 使用场景对照
+
+| 场景 | 推荐命令 | 预计时间 |
+|------|----------|----------|
+| 改了一个函数，快速验证 | `./scripts/test.sh` | ~2s |
+| 改了 linalg 模块 | `./scripts/test.sh module linalg` | ~1s |
+| 改了核心流程，要 E2E | `./scripts/test.sh e2e` | ~5min |
+| 不确定改了什么 | `./scripts/test.sh changed` | 自动判断 |
+| 大改动，全面回归 | `./scripts/test.sh full` | ~10min |
+| PR 前最终验证 | `./scripts/test.sh thorough` | ~30min |
+| 跑完整性能基准 | `./scripts/test.sh bench --save` | ~1hr |
+
+### 超时机制
+
+- 每个测试有**分级默认超时** (instant=10s, fast=60s, slow=180-300s, heavy=600-3600s)
+- `--timeout N` 可全局覆盖所有测试的超时秒数
+- 超时后自动杀进程，显示 "TIMEOUT" + 最后 10 行输出
+- 慢测试运行时每 10 秒打一次心跳 `[10s][20s]...` 表明进程还活着
+
 ## Architecture
 
 ```
@@ -86,9 +158,15 @@ tests/              # 17 个测试文件
 
 ## Testing
 
-- **E2E 测试 (`test_gnfs_e2e`)** 是最重要的验证：对 N=143 执行完整 GNFS 流水线
-- 修改任何核心逻辑后，必须运行 E2E 测试
+**优先使用 `scripts/test.sh`**（见上方「自动化测试工作流」），它封装了编译、超时、报告的全部逻辑。
+
+- **日常开发**: `./scripts/test.sh` (冒烟, <2s) 或 `./scripts/test.sh changed` (自动检测)
+- **模块改动**: `./scripts/test.sh module <模块名>` (如 linalg, sqrt, sieve)
+- **核心改动**: `./scripts/test.sh e2e` (完整 GNFS 流水线)
+- **PR 前**: `./scripts/test.sh full` 或 `./scripts/test.sh thorough`
+- **注意超时**: slow 测试 (kleinjung, lattice_sieve, gnfs_e2e) 可能需要数分钟，脚本自带超时保护
 - 测试框架：自定义 assert 宏（非 GoogleTest/Catch2）
+- 查看全部测试列表: `./scripts/test.sh list`
 
 ## Git 规范
 
@@ -273,10 +351,15 @@ git commit -m "chore: initial commit — GNFS core codebase"
 ### 2. 测试设计原则
 
 - **持久化测试**：所有新增功能必须编写可重复运行的单元测试/集成测试，提交到 `tests/` 目录
+- **使用 `scripts/test.sh` 运行测试**，不要直接调用 `ctest` 或裸跑二进制（脚本自带超时保护）
 - **增量测试**：每次改动只需运行相关模块的测试，**不要每次都重跑整个项目**
-  - 改了 `linalg/` → 运行 `./build/test_linalg`
-  - 改了 `sqrt/` → 运行 `./build/test_sqrt`
-  - 改了核心流程 → 运行 `./build/test_gnfs_e2e` 或 `./build/test_gnfs_progressive`
+  - 改了 `linalg/` → `./scripts/test.sh module linalg`
+  - 改了 `sqrt/` → `./scripts/test.sh module sqrt`
+  - 不确定影响范围 → `./scripts/test.sh changed`
+  - 改了核心流程 → `./scripts/test.sh e2e`
+- **注意测试分级**：新测试必须在 `scripts/test.sh` 中注册超时和分级
+  - 新增 instant 测试 (<1s): 加入 `SMOKE_TESTS` 和 `MODULE_TESTS`
+  - 新增 slow/heavy 测试: 加入 `MODULE_SLOW_TESTS`，设置合理的 `TEST_TIMEOUT`
 - **边界/极端情况**：测试必须覆盖边界值、零值、最大值、溢出等极端场景
 - 测试框架：沿用项目自定义 assert 宏
 
