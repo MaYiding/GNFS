@@ -761,6 +761,94 @@
 
 ---
 
+## P1 — Session 6 深度审计新发现
+
+### [BUG] SparseRow::set() 非幂等——unsorted 时重复 set 等价于 clear
+- **发现日期**: 2026-03-08 (Session 6 审计)
+- **来源**: `include/gnfs/linalg/sparse_matrix.hpp` 行 ~70-80
+- **描述**: `SparseRow::set(col)` 在 `sorted_=false` 时不检查重复，直接 push_back。若同一 col 被 set 两次，ensure_sorted() 的 GF(2) 去重会将其抵消为 0，即 `set(5); set(5)` = `clear(5)`。这违反了 "set" 的语义契约（幂等性）。
+- **影响**: 任何在 unsorted 状态下多次调用 set() 的代码路径都会产生错误的矩阵。目前 MatrixBuilder 等调用者可能恰好不触发此路径，但这是一个隐蔽的 API 陷阱。
+- **建议**: 在 unsorted 分支中加线性扫描去重检查，或改名为 `toggle()`/`xor_bit()` 明确 GF(2) 语义。
+
+### [BUG] BitVector::xor_with() 无大小检查——不等长向量导致越界读取
+- **发现日期**: 2026-03-08 (Session 6 审计)
+- **来源**: `include/gnfs/linalg/sparse_matrix.hpp` 行 354-357
+- **描述**: `xor_with(const BitVector& other)` 直接用 `this->bits_.size()` 作为循环上限，但不检查 `other.bits_.size()` 是否相同。若 other 更短，读取 `other.bits_[i]` 越界（UB）。
+- **影响**: Block Lanczos 的依赖向量 XOR 操作可能在关系数不一致时触发 UB。
+- **建议**: 加 `assert(bits_.size() == other.bits_.size())` 或取 `min(size(), other.size())`。
+
+### [BUG] SparseMatrix::multiply_blocks() 索引计算错误（死代码）
+- **发现日期**: 2026-03-08 (Session 6 审计)
+- **来源**: `include/gnfs/linalg/sparse_matrix.hpp` 行 298-319
+- **描述**: `multiply_blocks(x, result)` 中使用 `x[block_idx * rows_.size() + i]`，但 x 的布局假设是 (block_size × num_rows)，与 BlockVector 的实际布局不一致。函数签名使用 `std::vector<uint64_t>&` 而非 `BlockVector`，表明这是早期实现的遗留代码。
+- **影响**: 此函数可能未被任何代码调用（Block Lanczos 使用 `spmv_forward`/`spmv_transpose`），但如果被调用会产生错误结果。
+- **建议**: 确认是否为死代码，若是则删除；若需保留则修正索引布局。
+
+### [BUG] rational_sqrt 中 fb.rational()[idx] 无越界检查
+- **发现日期**: 2026-03-08 (Session 6 审计)
+- **来源**: `include/gnfs/sqrt/rational_sqrt.hpp` 行 107-110
+- **描述**: `uint32_t p = fb.rational()[idx].p`，其中 `idx` 来自 `fb_exponents` 的 key（关系中的 factor base 索引）。没有检查 `idx < fb.rational().size()`，若关系中包含无效的 factor base 索引，会导致越界访问。
+- **影响**: 如果上游（cofactorizer）产出了包含非法 FB 索引的关系，rational_sqrt 会段错误而非返回有意义的错误信息。
+- **建议**: 添加 `if (idx >= fb.rational().size()) continue;` 或 assert 守护。
+
+### [BUG] MurphyEvaluator rng_ 数据竞争——Kleinjung 多线程并行使用
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: `include/gnfs/polynomial/murphy_evaluator.hpp:337` + `include/gnfs/polynomial/kleinjung_selector.hpp:133,167`
+- **描述**: `MurphyEvaluator::compute()` 内部调用 `sample_e_score_log()` 时使用成员变量 `rng_`（std::mt19937_64）生成随机数。在 `kleinjung_selector.hpp` 中，单个 `evaluator` 对象通过引用传递给 `process_candidate`，后者在 `parallel_for_index` 中被多线程并发调用。多线程同时调用 `dist_a(rng_)` 产生数据竞争（UB）
+- **影响**: Kleinjung 并行模式下的 Murphy 评分是 UB——可能产生错误排名、崩溃或不可重现结果
+- **建议**: 改用 thread_local rng，或为每个线程传递独立的 MurphyEvaluator 副本
+
+### [BUG] number_field norm_linear 符号公式错误——奇数度时差异被 abs 掩盖
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: `include/gnfs/sqrt/number_field.hpp:372-406`
+- **描述**: norm_linear 计算 `N(a - b·α) = b^d · f(a/b)`，但数学上正确的公式是 `(-b)^d · f(a/b) = (-1)^d · b^d · f(a/b)`。奇数度 d 时差 `-1` 倍。代码在 line 401-403 取 abs() 掩盖了符号错误，但这意味着所有 norm 值都是正数，丢失了符号信息
+- **影响**: 下游依赖 norm 符号的代码（如 sign column 计算）可能出错。当前 abs() 使得 GNFS 正确工作，但原理不严谨
+- **建议**: 使用 `(-b)^d · f(a/b)` 或在有符号场景保留原始符号
+
+### [BUG] next_prime() 在 couveignes/hensel 中 uint64 溢出——大素数搜索无限循环
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: `include/gnfs/sqrt/couveignes.hpp:619-628` + `include/gnfs/sqrt/hensel_sqrt.hpp:550-562`
+- **描述**: 两处独立的 `next_prime()` 实现中，`n++` / `n += 2` 当 n 接近 UINT64_MAX 时溢出 wrap 到 0 或小值，导致无限循环。在 Hensel 中还会触发 O(sqrt(n)) 的暴力试除循环，n 较大时极慢
+- **影响**: 如果 prime_start 配置为接近 UINT64_MAX 的值，进程挂起
+- **建议**: 添加溢出检查 `if (n >= UINT64_MAX - 2) return std::nullopt;`
+
+### [BUG] SmallVector move constructor/assignment 不销毁源对象的 inline 元素
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: `include/gnfs/util/small_vector.hpp:43-54, 67-79`
+- **描述**: Move constructor (line 43-54) 和 move assignment (line 67-79) 在 `other.is_inline()` 时逐个移动 inline 存储中的元素，然后设 `other.size_ = 0`。但被移动的源元素的析构函数未被调用。对于有非平凡析构函数的类型 T（如 std::string、Integer），这会导致资源泄露
+- **影响**: SmallVector<Integer> 或 SmallVector<std::string> 在 move 后泄露内存
+- **建议**: move 后调用 `other.inline_ptr()[i].~T()` 析构每个已移动的源元素
+
+### [BUG] polynomial_optimizer generate_smooth_numbers 不去重
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: `include/gnfs/polynomial/polynomial_optimizer.hpp:323-355`
+- **描述**: 光滑数生成后排序（line 344）但未去重。同一个光滑数可由不同素数组合生成（如 6=2×3 和 3×2），导致重复候选
+- **影响**: Kleinjung Stage 1 浪费时间处理重复的领导系数候选
+- **建议**: 排序后添加 `smooth.erase(std::unique(smooth.begin(), smooth.end()), smooth.end())`
+
+### [BUG] RelationCollector::merge() 未锁定 other 的 mutex——并发修改时数据竞争
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: `include/gnfs/relation/collector.hpp:227`
+- **描述**: `merge()` 获取 `this->mutex_` 但直接读取 `other.relations_` 而不加锁。若另一个线程正在对 other 执行 add()，vector 可能正在重新分配，导致 UB
+- **影响**: 并发场景下合并收集器时崩溃或数据损坏
+- **建议**: 同时锁定 `other.mutex_`（注意锁顺序避免死锁）
+
+### [BUG] RelationCollector callback 在非递归 mutex 下调用——回调内访问 collector 死锁
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: `include/gnfs/relation/collector.hpp:291-294`
+- **描述**: `update_stats()` 在 `add()` 持有 `mutex_` 时被调用，callback 在 mutex 保护内执行。若 callback 调用 `collector.size()` 或其他也需要 mutex 的方法，会死锁（mutex 不是 recursive_mutex）
+- **影响**: 使用 callback 的代码（test_relation_collector.cpp line 291-293）如果在 callback 内查询 collector 会挂起
+- **建议**: 改用 `std::recursive_mutex`，或在 mutex 外调用 callback
+
+### [BUG] Logger::level() 读取 level_ 无锁——与 set_level() 的写操作构成数据竞争
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: `include/gnfs/util/logger.hpp:63`
+- **描述**: `level()` 直接返回 `level_` 而不持有 mutex，但 `set_level()` 在 mutex 保护下写入 `level_`。C++ 标准认定这是 data race (UB)
+- **影响**: 理论上 UB，实际在大多数架构上因 uint8_t 读写原子性而无害
+- **建议**: 将 `level_` 改为 `std::atomic<LogLevel>`
+
+---
+
 ## 已完成
 
 ### [OPT] ~~Hensel Sqrt 预计算优化~~ ✅
