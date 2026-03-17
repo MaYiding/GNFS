@@ -10,12 +10,21 @@ jobs:
   build-and-test:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         build_type: [Release]
 
     steps:
     - uses: actions/checkout@v4
+
+    - name: Cache build directory
+      uses: actions/cache@v4
+      with:
+        path: build
+        key: ${{ runner.os }}-cmake-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt', 'include/**', 'src/**') }}
+        restore-keys: |
+          ${{ runner.os }}-cmake-${{ matrix.build_type }}-
 
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
