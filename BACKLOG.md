@@ -849,6 +849,98 @@
 
 ---
 
+## P1 — Session 6 跨模块交互审计新发现
+
+### [BUG] build_row() 符号列基于 a<0 而非 (a-bm)<0——不使用 QC 时符号完全错误
+- **发现日期**: 2026-03-08 (Session 6 跨模块审计)
+- **来源**: LinAlg→Sqrt 跨模块交互
+- **文件**: `include/gnfs/linalg/matrix_builder.hpp:527-530` vs `606-621`
+- **描述**: `build_row()` 中符号列设置为 `if (rel.a < 0) row.set(0)`。但正确符号应基于 `(a - b*m) < 0`。只有 `build_row_with_qc()` 才正确重新计算符号（line 607-621）。如果调用 `build()` 而非 `build_with_qc()`，符号列大量错误——例如 a=5, b=1, m=1000 时 a-bm=-995<0 但 a>0 所以符号列记为正
+- **影响**: 不使用 QC 的路径中，依赖向量含奇数个负号关系，有理平方根符号错误。E2E 测试用 `build_with_qc()` 所以不触发，但 `build()` 是公开 API
+- **建议**: `build_row()` 中使用 `ctx.rational_value(a,b).is_negative()` 计算符号
+
+### [BUG] matrix_builder FB 索引无越界检查——FB 不匹配时静默写入错误列
+- **发现日期**: 2026-03-08 (Session 6 跨模块审计)
+- **来源**: Relation→LinAlg 跨模块交互
+- **文件**: `include/gnfs/linalg/matrix_builder.hpp:540,553`
+- **描述**: `row.set(mapping.rat_fb_start() + idx)` 和 `row.set(mapping.alg_fb_start() + idx)` 中 `idx` 来自 `Relation::rational_factors[j]`，无上限检查。若关系中的 FB 索引 >= fb.rational_count()（例如 FB 被重建后缩小），set() 写入更高区段的列（QC/Schirokauer/大素数列），静默产生错误矩阵
+- **影响**: FB 重建或 pruning 后矩阵数据损坏
+- **建议**: 添加 `assert(idx < mapping.num_rational_fb)` 和 `assert(idx < mapping.num_algebraic_fb)`
+
+### [BUG] FactorBase::add_rational() 无去重——同一素数添加两次导致索引不一致
+- **发现日期**: 2026-03-08 (Session 6 跨模块审计)
+- **来源**: FactorBase→全模块交互
+- **文件**: `include/gnfs/factor_base/factor_base.hpp:94-98`
+- **描述**: `add_rational(p, log_p)` 对同一素数 p 调用两次时，第二次覆写 `rat_index_[p]` 指向新位置，但第一个条目仍留在 `rational_` 数组中。TrialDivider 遍历 rational_ 时两个条目都会匹配，但只有第二个索引能被 find_rational() 找到。第一个成为孤儿条目
+- **影响**: 如果 builder 有 bug 导致重复添加，矩阵中某些行会在两个不同列设置相同素数的 bit
+- **建议**: add_rational() 中检查 `rat_index_.count(p)` 去重
+
+### [BUG] 代数因子基射影根 (r=UINT32_MAX) 在筛选中产生算术垃圾
+- **发现日期**: 2026-03-08 (Session 6 跨模块审计)
+- **来源**: FactorBase→Sieve 跨模块交互
+- **文件**: `include/gnfs/factor_base/factor_base.hpp:78` + `include/gnfs/sieve/lattice_sieve.hpp:342`
+- **描述**: `AlgebraicPrime::PROJECTIVE_ROOT = UINT32_MAX`。筛选遍历所有代数 FB 条目，对射影根条目执行 `a - b * UINT32_MAX` 计算。此乘法在 int64_t 中虽不溢出（b≤16384 时结果≈7×10^13），但结果 mod p 不代表正确的整除性检查——射影根的正确检查应是 `p | b` 而非 `p | (a - b*r)`
+- **影响**: 射影素数的筛选位置标记完全错误，引入噪声
+- **建议**: 在 sieve 循环中检测 `r == PROJECTIVE_ROOT` 并走 `p | b` 专用路径
+
+### [BUG] sieve_batch() 是死代码——所有候选静默丢弃
+- **发现日期**: 2026-03-08 (Session 6 跨模块审计)
+- **来源**: Sieve 内部审计
+- **文件**: `include/gnfs/sieve/lattice_sieve.hpp:127-131`
+- **描述**: `sieve_batch()` 遍历 `result.candidates` 但循环体只有 TODO 注释，从不调用 cofactorizer。callback 也不被调用。调用此函数的任何代码路径会收到空的关系集合
+- **影响**: 任何使用 sieve_batch() API 的调用者静默得到零关系
+- **建议**: 完成 TODO 实现或标记为 `[[deprecated]]`
+
+### [BUG] Sieve 区域对大 N 导致灾难性内存分配（>100GB）
+- **发现日期**: 2026-03-08 (Session 6 跨模块审计)
+- **来源**: GNFSParams→Sieve 跨模块交互
+- **文件**: `include/gnfs/core/params.hpp:128-137` + `include/gnfs/sieve/lattice_sieve.hpp` 构造函数
+- **描述**: 对 40+ digit N，`params.hpp` 计算 `sieve_width = min(sqrt(rational_bound)*8, 1e6)`。即使 clamp 到 1e6，`sieve_height = sieve_width / 4 = 250000`。sieve_array 大小 = width × height = 2.5×10^11 条目 × 2 bytes = 500GB。`sieve_array_.resize(region_.size(), 0)` 会 `std::bad_alloc` 崩溃。即使默认 SieveRegion（32768×16384），大小也是 500M 条目 = 1GB
+- **影响**: 40+ digit N 直接崩溃
+- **建议**: 分块筛选（bucket sieve）或动态 clamp sieve_height 使总大小 < 可用内存的 50%
+
+### [BUG] SieveParams::combined_threshold() uint8_t 溢出
+- **发现日期**: 2026-03-08 (Session 6 跨模块审计)
+- **来源**: GNFSParams→Sieve 参数传递
+- **文件**: `include/gnfs/sieve/lattice_sieve.hpp:37`
+- **描述**: `combined_threshold()` 返回 `uint8_t(rational_threshold + algebraic_threshold)`。当两者之和 > 255 时静默溢出。对 50+ digit N，两个阈值各约 80-130，之和可能超 256。此外 sieve 数组是 `uint16_t`，可累积到 65535，但阈值只能表示到 255
+- **影响**: 阈值 wrap 到小值，几乎所有位置都被认为是候选，产生海量假阳性
+- **建议**: 改为 `uint16_t combined_threshold()` 或使用两侧分别比较
+
+### [BUG] Cofactorizer::stats_ 无 mutex 保护——多线程共享时数据竞争
+- **发现日期**: 2026-03-08 (Session 6 跨模块审计)
+- **来源**: Sieve→Cofactor 线程安全审计
+- **文件**: `include/gnfs/cofactor/cofactorizer.hpp:137,140,143,172`
+- **描述**: `verify()` 在多处修改 `stats_` 成员（smooth_count, partial_count, rejected_count 等），无任何同步。如果多个线程共享同一 Cofactorizer 调用 verify()，`stats_` 的递增操作构成数据竞争（UB）
+- **影响**: 当前 E2E 测试中 cofactorizer 在串行循环中使用，不触发。但 parallel sieve 架构中若共享 cofactorizer 则 UB
+- **建议**: 将 stats_ 成员改为 `std::atomic<uint64_t>` 或添加 mutex
+
+### [BUG] Hensel 提升无精度充分性验证——系数超出 modulus/2 时静默错误
+- **发现日期**: 2026-03-08 (Session 6 跨模块审计)
+- **来源**: Sqrt 模块精度分析
+- **文件**: `include/gnfs/sqrt/hensel_sqrt.hpp:226-240`
+- **描述**: Hensel 提升后在 `extract_algebraic_sqrt()` 中将系数 centered（选 S[i] 或 S[i]-modulus 中绝对值较小者）。正确性前提是 modulus > 2×|真实系数|。精度估计在 line 73-87 使用启发式 `∑ log2(|a|+b×|m|) + 200`，但未验证结果。若估计不足，centering 选错值，所有后续计算基于错误系数
+- **影响**: 大规模因式分解（关系多、b值大）时精度可能不够
+- **建议**: 提升后添加验证：计算 sqrt² mod p^k 并与 product 比较
+
+### [BUG] 无 N 素性检测——素数 N 导致完整管线空转后静默失败
+- **发现日期**: 2026-03-08 (Session 6 跨模块审计)
+- **来源**: 全管线边缘情况分析
+- **文件**: 管线入口（如 `tests/test_gnfs_e2e.cpp:136`）
+- **描述**: GNFS 管线无任何早期素性测试。如果 N 是素数，所有阶段正常执行（多项式选择、FB 构建、筛选、线性代数），直到 sqrt 阶段所有 GCD 都产生 1 或 N，才返回失败。对 50+ digit 的素数 N，可能浪费数小时计算
+- **影响**: 用户提供素数 N 时无提示地浪费大量计算
+- **建议**: 在管线入口添加 `mpz_probab_prime_p(n, 25)` 快速素性测试
+
+### [BUG] Couveignes 回退公式 (N+1)/2 对所有 N 都数学错误
+- **发现日期**: 2026-03-08 (Session 6 跨模块审计)
+- **来源**: Sqrt 模块数学正确性分析
+- **文件**: `include/gnfs/sqrt/couveignes.hpp:325-328`
+- **描述**: 当 `rat_product^((N+1)/4) mod N` 不是正确平方根时，代码回退到 `(N+1)/2` 指数。但 `a^((N+1)/2) = a * a^((N-1)/2)` 是 Euler 准则（仅对素数 N 有意义），对合数 N 完全无定义。即使对素数 N，(N+1)/2 指数给出 `a * Legendre(a,N)` 而非 sqrt(a)。这使得 Couveignes 的 `verify_current()` 永远不匹配，回退路径 100% 失败
+- **影响**: Couveignes 作为 Hensel 失败后的唯一回退路径，其内部验证机制完全失效。如果 N ≡ 1 mod 4 且 Hensel 失败，因式分解无法完成
+- **建议**: 有理平方根应通过因子指数直接累积（rational_sqrt.hpp 已有此功能），不应在 Couveignes 内重算
+
+---
+
 ## 已完成
 
 ### [OPT] ~~Hensel Sqrt 预计算优化~~ ✅
