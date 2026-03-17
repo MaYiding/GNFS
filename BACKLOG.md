@@ -110,6 +110,154 @@
 - **影响**: 多线程场景下 UB
 - **建议**: 返回 const 引用或 `std::span<const Relation>`
 
+### [BUG] Hensel/Couveignes 不可约性检查仅测试线性因子——度 > 3 时静默失败
+- **发现日期**: 2026-03-08 (Session 5 深度审计)
+- **来源**: Sqrt + LinAlg 模块逐行审计
+- **文件**: `hensel_sqrt.hpp:258-268`, `couveignes.hpp:119-125`, `matrix_builder.hpp:174-184`
+- **描述**: 三处均使用 `gcd(x^p - x, f)` 检查 f mod p 是否无根来判断不可约。但 "无根" ≠ "不可约"（degree > 3 时）。例如 `x^4+x^2+1 = (x^2+x+1)(x^2-x+1)` mod 某些 p 无根但可约。Hensel 在可约多项式上做 Fermat 求逆 (p^d-2 次方) 会得到垃圾结果；Couveignes 的 Tonelli-Shanks 也会失败
+- **影响**: **degree 5+ GNFS 静默产生错误结果**。这是当前代码对大 N 最致命的隐藏 bug
+- **建议**: 完整不可约检查需要验证 ∀k ∈ [1, d/2]: `gcd(x^{p^k} - x, f) == 1`，最终验证 `x^{p^d} ≡ x mod f`
+
+### [BUG] trial_division divide_exact() int64 反向转换溢出
+- **发现日期**: 2026-03-08 (Session 5 深度审计)
+- **来源**: Cofactor 模块逐行审计
+- **文件**: `include/gnfs/cofactor/trial_division.hpp:204-206`
+- **描述**: `uint64_t v = value.to_uint64() / p; value = Integer(static_cast<int64_t>(v))` — 当 v > INT64_MAX（即 value/p > 2^63），static_cast 溢出为负数，后续所有除法都在错误值上进行
+- **影响**: 大 N 的试除产生完全错误的因式分解结果
+- **建议**: 走 GMP 的 `mpz_divexact_ui` 路径（已有 else 分支）或检查 fits_int64()
+
+### [BUG] 全局性 uint64_t b → long long/int64_t 截断溢出（13 处）
+- **发现日期**: 2026-03-08 (Session 5 深度审计)
+- **来源**: 全代码库逐行审计
+- **文件（按模块）**:
+  - `polynomial_context.hpp:160` — `b_powers[i] *= static_cast<long long>(b)`
+  - `number_field.hpp:230` — `Integer(-static_cast<long long>(b))` in from_ab()
+  - `number_field.hpp:383` — `b_powers[i] *= static_cast<long long>(b)` in norm_linear()
+  - `trial_division.hpp:128` — `static_cast<int64_t>(b) * static_cast<int64_t>(r)` in divide_algebraic()
+  - `trial_division.hpp:238` — `bm *= static_cast<long long>(b)` in compute_rational_value()
+  - `trial_division.hpp:264` — `b_powers[i] *= static_cast<long long>(b)` in compute_algebraic_norm()
+  - `cofactorizer.hpp:95` — `static_cast<int64_t>(b)` in verify()
+  - `collector.hpp:269` — `static_cast<int64_t>(rel.b)` in validate()
+  - `lattice_sieve.hpp:268-269` — intermediate overflow in sieve
+  - `class_group.hpp:383` — `static_cast<int64_t>(b) * static_cast<int64_t>(pi.r)` in factor_ideal()
+  - `class_group.hpp:418` — same in factor_principal_ideal()
+  - `lattice_basis.hpp:44` — `static_cast<int64_t>(b) * r` in verify_ab()
+  - `couveignes.hpp:305` — `Integer(static_cast<int64_t>(b))` in rat_product calculation
+- **描述**: `b` 是 uint64_t，当 b > INT64_MAX (≈ 9.2e18) 时，cast 到 long long/int64_t 产生 UB。当前测试 N ≤ 25 位时 b 很小不触发，但大 N 筛选时 b 可能很大
+- **影响**: 大 N 因式分解时 13 个位置产生静默数据损坏
+- **建议**: 统一使用 `Integer(b)` 或添加 `uint64_t` 版本的乘法运算符
+
+### [BUG] modular_poly sub()/mod_inverse() 对 p > INT64_MAX 溢出
+- **发现日期**: 2026-03-08 (Session 5 深度审计)
+- **来源**: Sqrt 模块逐行审计
+- **文件**: `include/gnfs/sqrt/modular_poly.hpp:90,420`
+- **描述**: `sub()` 将 uint64 系数 cast 到 int64 再相减，p > INT64_MAX 时溢出。`mod_inverse()` 将 p cast 到 int64，同样溢出。影响 Tonelli-Shanks、GCD、除法等所有依赖 ModularPoly 的操作
+- **影响**: 使用大素数（>2^63）的 Couveignes/Hensel 崩溃或产生错误
+- **建议**: 使用 unsigned 算术或 `__int128_t`
+
+### [BUG] Couveignes compute_from_element() 无上限搜索循环
+- **发现日期**: 2026-03-08 (Session 5 深度审计)
+- **来源**: Sqrt 模块逐行审计
+- **文件**: `include/gnfs/sqrt/couveignes.hpp:483`
+- **描述**: `while (primes.size() < config_.num_primes)` 没有 attempts 上限。如果几乎所有素数都使 f 可约（或导致零乘积），此循环永不终止
+- **影响**: 某些多项式可能导致进程永久挂起
+- **建议**: 添加 `&& attempts < 100000` 条件（与 compute() 的 primes_checked < 100000 一致）
+
+### [BUG] Relation::b 是 int64_t 但应为 uint64_t — 全局类型不匹配
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: 全代码库类型追溯
+- **文件**: `include/gnfs/core/relation.hpp:17`
+- **描述**: `Relation::b` 声明为 `int64_t`，但 GNFS 中 b > 0 始终为正。ABPair::b 是 uint64_t，sieve 输出 uint64_t b，algebraic_norm/Schirokauer/ClassGroup 等全部期望 uint64_t。当 sieve 产生 b > INT64_MAX 时：(1) `Relation(a, b)` 构造时 uint64_t→int64_t 溢出为负数 (2) `ab()` 计算 `-b` 得到错误值 (3) 传递给期望 uint64_t 的函数时再次回转但值已错
+- **影响**: 大 N 筛选（b > 2^63）时全部关系数据被静默损坏
+- **建议**: 将 Relation::b 改为 uint64_t，构造函数参数对应修改
+
+### [BUG] rational_sqrt 验证函数声称验证但实际什么也不做
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: Sqrt 模块逐行审计
+- **文件**: `include/gnfs/sqrt/rational_sqrt.hpp:143-162`
+- **描述**: 当 `config_.verify = true`（默认），代码进入验证分支但只有一个空的 for 循环和 `// TODO: 完整验证` 注释。函数总是返回 `success = true`。这是一个欺骗性 API：调用者以为启用了验证，但实际从未验证
+- **影响**: 错误的有理平方根不会被检测到，直到最终 GCD 步骤才发现因式分解失败
+- **建议**: 实现完整验证：计算 sqrt²  mod N 并与原始乘积比较
+
+### [BUG] MatrixBuilderConfig 默认 schirokauer_primes = {2, 3}，ℓ=3 不兼容 GF(2)
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: LinAlg 模块逐行审计
+- **文件**: `include/gnfs/linalg/matrix_builder.hpp:113`
+- **描述**: 默认配置 `schirokauer_primes = {2, 3}`。对于 ℓ=3，Schirokauer map 值在 {0, 1, 2} 中，但矩阵是 GF(2)。代码在 line 305 取 `sm_values[j] % 2`，将 mod-3 值截断为 mod-2。这数学上不正确：ℓ=3 的 Schirokauer 约束是 Σλ ≡ 0 mod 3，取 mod 2 后变成了不同的约束
+- **影响**: 矩阵零空间可能遗漏正确依赖或包含虚假依赖，导致 sqrt 阶段失败概率增加
+- **建议**: GF(2) 矩阵只能使用 ℓ=2（CLAUDE.md 已明确记录此约定）。默认值应改为 {2}
+
+### [BUG] Couveignes rat_sqrt 对合数 N 计算根本性错误
+- **发现日期**: 2026-03-08 (Session 5 深度审计)
+- **来源**: Sqrt 模块逐行审计
+- **文件**: `include/gnfs/sqrt/couveignes.hpp:311-329`
+- **描述**: `powmod(rat_product, (N+1)/4, N)` 假设 N ≡ 3 mod 4 且 N 是素数。但 N 是合数（正在被因式分解的数），(N+1)/4 次方不是合法的平方根公式。实际上，如果我们已经知道 rat_product 的平方根，就不需要因式分解了。正确做法应该是通过有理侧因式分解直接累积平方根，而不是对乘积取"半次方"
+- **影响**: 对合数 N，这个"平方根"几乎总是错误的，但由于后续用 GCD 验证，它只影响 Couveignes 找到正确符号模式的成功率（严重降低）
+- **建议**: 有理平方根应该在 rational_sqrt.hpp 中独立计算，通过因子指数的半次方累积
+
+### [BUG] ECM sieve_primes(B2) 内存爆炸
+- **发现日期**: 2026-03-08 (Session 5 深度审计)
+- **来源**: Cofactor 模块逐行审计
+- **文件**: `include/gnfs/cofactor/ecm.hpp:405`
+- **描述**: `sieve_primes(B2)` 分配 B2 个 bool 做素数筛。B2=5e9 时分配 ~5GB 内存，B2=1e10 时 ~10GB
+- **影响**: 大 B2 参数导致 OOM 或系统卡顿
+- **建议**: 分段筛法（segmented sieve）或直接用 Miller-Rabin 测试范围内的素数
+
+### [BUG] smooth_check large_prime_bound² uint64 溢出
+- **发现日期**: 2026-03-08 (Session 5 深度审计)
+- **来源**: Cofactor 模块逐行审计
+- **文件**: `include/gnfs/cofactor/smooth_check.hpp:195`
+- **描述**: `classify_cofactor()` 中 `large_prime_bound * large_prime_bound` 当 lpb > 2^32 时溢出 uint64。对大 N，large_prime_bound 可达 10^10+
+- **影响**: 余因子分类阈值错误，可能接受非光滑关系或拒绝有效关系
+- **建议**: 使用 `__uint128_t` 或 `Integer` 做平方比较
+
+### [BUG] class_group SNF 实现不是真正的 Smith Normal Form
+- **发现日期**: 2026-03-08 (Session 5 深度审计)
+- **来源**: Sqrt 模块逐行审计
+- **文件**: `include/gnfs/sqrt/class_group.hpp:450-517`
+- **描述**: `compute_smith_normal_form()` 实际只做了整数 Gaussian 消元，不是 SNF。类数用 `1u << generators.size()` 计算是粗略近似（假设每个 generator 的 order 都是 2），实际类数可能差几个数量级
+- **影响**: 类群结构完全错误，但目前类群只用于 Couveignes 的辅助检查，不影响主路径
+- **建议**: 实现真正的 SNF（需要 elementary divisors），或标记为 "approximate"
+
+### [BUG] class_group factor_ideal/factor_principal_ideal int64 乘法溢出
+- **发现日期**: 2026-03-08 (Session 5 深度审计)
+- **来源**: Sqrt 模块逐行审计
+- **文件**: `include/gnfs/sqrt/class_group.hpp:383, 418`
+- **描述**: `static_cast<int64_t>(b) * static_cast<int64_t>(pi.r)` — 当 b 和 r 都较大时（各 ~10^9），乘积可达 ~10^18，接近 INT64_MAX。更大的值会溢出
+- **影响**: 大参数时理想分解错误
+- **建议**: 使用 `__int128_t` 或 `Integer`
+
+### [BUG] SparseMatrix multiply_blocks() 索引错误
+- **发现日期**: 2026-03-08 (Session 5 深度审计)
+- **来源**: LinAlg 模块逐行审计
+- **文件**: `include/gnfs/linalg/sparse_matrix.hpp`
+- **描述**: `multiply_blocks()` 中 `x[block_idx * rows_.size() + i]` 假设 x 按 (block, row) 布局，但调用者可能传入按 (row, block) 布局的数据。接口缺少明确的布局文档
+- **影响**: Block Lanczos 使用此函数时，如果布局不匹配会产生错误的 SpMV 结果
+- **建议**: 明确文档布局约定，或提供两种布局的重载
+
+### [BUG] Kleinjung is_valid_polynomial() 浮点验证无意义
+- **发现日期**: 2026-03-08 (Session 5 深度审计)
+- **来源**: Polynomial 模块逐行审计
+- **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp:505-512`
+- **描述**: `remainder.to_double()` 和 `n.to_double()` 对 N > 2^53 都损失精度。`rel_error > 1e-10` 的检查对大 N 完全无效——两个大数的 double 表示可能相等即使实际值差很远
+- **影响**: 无效多项式可能通过验证，或有效多项式被错误拒绝
+- **建议**: 直接用 Integer 精确验证 `f(m) == N`
+
+### [BUG] base_m_expansion 非零余数处理
+- **发现日期**: 2026-03-08 (Session 5 深度审计)
+- **来源**: Polynomial 模块逐行审计
+- **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp:476-478`
+- **描述**: `base_m_expansion()` 如果展开后有非零余数，将其加到 `coeffs[d-1]`。这使得该系数可能远大于 m，违反了 GNFS 对小系数的要求。正确做法是 m 值需要调整使得 N 能被精确表示
+- **影响**: 产生低质量多项式，降低筛选效率
+
+### [BUG] Schirokauer factorize_and_setup 重复根处理
+- **发现日期**: 2026-03-08 (Session 5 深度审计)
+- **来源**: LinAlg 模块逐行审计
+- **文件**: `include/gnfs/linalg/schirokauer.hpp`
+- **描述**: 当 f mod ℓ 有重复根时（即 ℓ | disc(f)），`factorize_and_setup` 不区分重复根和单根。对重复根的 Schirokauer map 计算需要特殊的 valuation lifting，当前代码简单跳过或错误处理
+- **影响**: ℓ | disc(f) 时 Schirokauer 列值错误，矩阵零空间不正确
+- **建议**: 检测 disc(f) mod ℓ == 0 并避开这些 ℓ，或实现正确的 ramified case
+
 ---
 
 ## P1 — 高优先级（影响正确性或大数支持）
@@ -221,6 +369,110 @@
 - **文件**: `include/gnfs/util/logger.hpp:140-141`
 - **描述**: 如果日志回调或异常处理器中再次调用 log()，会导致 `lock_guard` 死锁
 - **建议**: 改用 `recursive_mutex` 或线程局部嵌套计数器
+
+### [BUG] matrix_builder 存储 config 的 schirokauer_primes 而非实际使用的素数
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: LinAlg 模块逐行审计
+- **文件**: `include/gnfs/linalg/matrix_builder.hpp:267`
+- **描述**: `result.mapping.schirokauer_primes = config_.schirokauer_primes` 存储的是配置中的素数列表，但实际用于计算的是经过过滤的 `sm_primes`（移除了 f 可约的素数）。如果后续代码读取 mapping.schirokauer_primes 进行验证，会得到不一致的信息
+- **影响**: 矩阵元信息与实际矩阵结构不匹配
+- **建议**: 改为 `result.mapping.schirokauer_primes = sm_primes`
+
+### [BUG] types.hpp ABPair 注释错误：写 "a + b*m" 但应为 "a - b*m"
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: Core 模块逐行审计
+- **文件**: `include/gnfs/core/types.hpp:11`
+- **描述**: 注释写 `a + b*m 在有理侧，a + b*alpha 在代数侧`，但 GNFS 约定是 `a - b*m` 和 `a - b*α`。这个注释会误导开发者
+- **影响**: 文档级问题，可能导致新代码写反符号
+- **建议**: 修正注释为 `a - b*m 在有理侧, a - b*α 在代数侧`
+
+### [BUG] FactorBaseParams::large_prime_bound 是 uint32_t 但 GNFSParams 用 uint64_t
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: Core + FactorBase 模块类型对比
+- **文件**: `include/gnfs/core/types.hpp:128` vs `include/gnfs/core/params.hpp:30`
+- **描述**: `FactorBaseParams::large_prime_bound` 是 `uint32_t`，但 `GNFSParams::large_prime_bound` 是 `uint64_t`。从 GNFSParams 复制到 FactorBaseParams 时静默截断。对 50+ 位 N，lpb > 4×10^9 > UINT32_MAX
+- **影响**: 大 N 的大素数界被截断，大量有效 1LP/2LP 关系被拒绝
+- **建议**: FactorBaseParams::large_prime_bound 改为 uint64_t
+
+### [BUG] rational_sqrt 负号检测到但未应用
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: Sqrt 模块逐行审计
+- **文件**: `include/gnfs/sqrt/rational_sqrt.hpp:138-141`
+- **描述**: `has_negative` 跟踪 (a-bm) 负值的奇偶性。当 `has_negative = true` 时（有奇数个负值），代码注释说"不应该发生"但什么也不做。正确做法应该对平方根取反（`sqrt_value = n - sqrt_value`）
+- **影响**: 当符号列缺失或依赖未完全消除负号时，有理平方根有 50% 概率符号错误。虽然 extract_factors 会同时检查 X±Y，但浪费一次 GCD 机会
+- **建议**: 当 has_negative 时，应用 `sqrt_value = n - sqrt_value`
+
+### [BUG] Schirokauer Hensel 提升 quadratic factor 访问未构建的 prime_info_
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: LinAlg 模块逐行审计
+- **文件**: `include/gnfs/linalg/schirokauer.hpp:528`
+- **描述**: `hensel_lift_factor()` 中 `for (const auto& other_fi : prime_info_.back().factors)` 在 precompute 阶段被调用，此时当前 PrimeInfo 尚未 push 到 prime_info_。`prime_info_.back()` 引用的是上一个 prime 的信息，而不是当前的。对 ℓ=2 且 f mod 2 有 degree-2 cofactor 的情况，代码虽然 fall-through 到 "skip" 而不崩溃，但 quadratic factor 未被正确 Hensel 提升
+- **影响**: Split Schirokauer 的精度降低
+- **建议**: 从 `info.factors`（已部分构建）中查找 sibling linear factor
+
+### [BUG] Relation 反序列化无输入验证——可 OOM 或产生损坏数据
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: Core 模块逐行审计
+- **文件**: `include/gnfs/core/relation.hpp:104-148`
+- **描述**: `deserialize()` 从流中读取 rat_count/alg_count/lp_count 后直接 `resize()` 分配内存，无上限检查。(1) 恶意/损坏文件中 count = 4294967295 会尝试分配 ~16GB 内存 (2) 每次 read() 后不检查 `is.good()`，流耗尽时 vector 中充满未初始化数据 (3) 无 magic number/版本号，任何文件都能"成功"反序列化
+- **影响**: 加载损坏关系文件时 OOM 或静默数据损坏
+- **建议**: 添加 count 上限检查（如 < 1M）、读后检查 `is.good()`、添加文件头
+
+### [BUG] matrix_builder exponent 累积用 uint8_t — 大 FB 关系可溢出
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: LinAlg 模块逐行审计
+- **文件**: `include/gnfs/linalg/matrix_builder.hpp:534, 548`
+- **描述**: `std::unordered_map<uint32_t, uint8_t> exponents` 用于累积每个因子基索引的出现次数。如果一个关系中同一素数出现 256+ 次（高次幂因子），uint8_t 溢出为 0，导致该列不被设置
+- **影响**: 极端情况（小素数高次幂）下矩阵行数据丢失
+- **建议**: 改用 uint32_t 或检测溢出
+
+### [BUG] smooth_check quick_cofactor_check 也有 lpb² 溢出
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: Cofactor 模块逐行审计
+- **文件**: `include/gnfs/cofactor/smooth_check.hpp:319`
+- **描述**: `c <= large_prime_bound * large_prime_bound` 与 line 195 相同的 uint64 溢出问题
+- **影响**: 快速筛选函数误判余因子状态
+- **建议**: 同 line 195 的修复方案
+
+### [BUG] Pollard rho 只使用单一多项式 x²+1
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: Cofactor 模块逐行审计
+- **文件**: `include/gnfs/cofactor/smooth_check.hpp:148`
+- **描述**: Pollard's rho 使用固定的 `f(x) = x² + 1 mod n`。对某些 n 值（如 n = p² 或某些特定合数），这个多项式可能进入短循环永远找不到因子。标准做法是失败后尝试 f(x) = x² + c 对不同 c
+- **影响**: 部分可分解的余因子被错误分类为 Composite/Unknown
+- **建议**: 增加循环在 max_iterations 后用不同 c 重试
+
+### [BUG] Integer operator+=/operator-=/operator/=/operator%= 对 INT64_MIN 参数 UB
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: Core 模块逐行审计
+- **文件**: `src/core/integer.cpp:356-357, 374-375, 384`
+- **描述**: 当 value == INT64_MIN 时，`-value` 是有符号整数溢出（UB）。operator+=(-INT64_MIN)、operator-=(-INT64_MIN)、operator/=(INT64_MIN)、operator%=(INT64_MIN) 全部触发。虽然二进制补码机器上碰巧产生正确结果，但这是标准不保证的行为
+- **影响**: 理论上 UB，实践中在 x86/ARM 上碰巧正确
+- **建议**: 使用 `static_cast<unsigned long>(value) * (value < 0 ? -1 : 1)` 的无 UB 等价形式，或特殊处理 INT64_MIN
+
+### [BUG] SieveRegion default_sieve_region 大 skewness 时 int32 溢出
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: Sieve 模块逐行审计
+- **文件**: `include/gnfs/sieve/lattice_basis.hpp:175-178`
+- **描述**: `base_size * factor` 其中 base_size = 16384，factor = sqrt(skewness)。当 skewness > 1.7e10 时，factor > 130K，乘积 > 2.1×10^9 > INT32_MAX。`static_cast<int32_t>()` 产生未定义行为
+- **影响**: 大 skewness 的多项式（50+ 位 N）导致筛区域参数垃圾化
+- **建议**: 添加 clamp：`std::min(base_size * factor, static_cast<double>(INT32_MAX))`
+
+### [BUG] MurphyEvaluator n.to_double() 对 N > 10^308 返回 infinity
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: Polynomial 模块逐行审计
+- **文件**: `include/gnfs/polynomial/murphy_evaluator.hpp:331`
+- **描述**: `std::sqrt(n.to_double()) / skewness` — 对 N > ~1024 位，`n.to_double()` 返回 `+inf`。`sqrt(inf)/skewness = inf`。`std::uniform_real_distribution(1.0, inf)` 产生 NaN
+- **影响**: 大 N 的 Murphy 评分全部为 NaN，多项式选择失败
+- **建议**: 使用对数空间采样或限制 B_range 上界
+
+### [BUG] MurphyEvaluator alpha 计算跳过不 fit uint64 的首项系数
+- **发现日期**: 2026-03-08 (Session 6 深度审计)
+- **来源**: Polynomial 模块逐行审计
+- **文件**: `include/gnfs/polynomial/murphy_evaluator.hpp:143-147`
+- **描述**: `if (f.leading_coeff().fits_uint64())` — 如果首项系数大于 2^64（大 N 的高阶多项式），直接跳过投影根贡献。对这些素数，alpha 值被低估
+- **影响**: 大 N 多项式的 alpha 估计不准确
+- **建议**: 使用 `Integer::mod(coeff, p_int)` 替代 uint64 取模
 
 ---
 
