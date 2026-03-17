@@ -155,13 +155,32 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 已配置，排除：`build/`, `xcode-build/`, `.cache/`, `.DS_Store`, IDE 文件, 计划文件（`task_plan.md` 等会话级文件）
 
+### 自动 Push 策略（已授权）
+
+**这是非公开私有仓库，Claude Code 被授权在每个 to-do 大阶段完成后自动 push**。
+
+- **何时 push**：每个大阶段（如 1.x 全部完成）检查点时 push，确保远程有最新备份
+- **也可提前 push**：如果当前小步骤涉及重要突破或关键修复，可立即 push 保护成果
+- **push 命令**：`git push origin <当前分支>` （带 `-u` 如果是新分支首次 push）
+- **禁止 force push 到 `main`**
+
 ### Git 操作安全
 
 - **禁止** `git reset --hard` 除非用户明确要求
-- **禁止** `git push --force` 到 `main`
+- **禁止** `git push --force` 到 `main`（其他分支允许 force push）
 - **禁止** `--no-verify` 跳过 hooks
 - 优先创建**新 commit** 而非 `--amend`（amend 会覆盖历史）
 - 每次 commit 前用 `git diff --staged` 确认内容
+
+### 代码质量提升实践
+
+为写出更好的代码，在开发过程中应主动采用以下手段：
+
+- **查阅文档**：对不确定的 API 或算法，使用 `context7` MCP 或 `WebSearch` 查最新文档
+- **参考实现**：实现复杂数论算法前，先搜索论文或成熟开源实现确认正确性
+- **渐进式验证**：先用小规模数据验证算法正确性，再推广到大规模
+- **性能意识**：hot path 中避免不必要的内存分配和拷贝，优先使用 `std::span`、`const&`
+- **可读性优先**：清晰的变量命名和函数拆分胜过行内注释
 
 ## Error Handling 约定
 
