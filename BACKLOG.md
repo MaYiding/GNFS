@@ -941,6 +941,142 @@
 
 ---
 
+## P0 — Session 6 深层审计（第二轮）
+
+### [BUG] compute_log_prime() 系统性低估所有素数对数值
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: FactorBase 模块逐行审计
+- **文件**: `include/gnfs/factor_base/factor_base.hpp:175-181`
+- **描述**: `compute_log_prime()` 计算 `floor(log2(p)) * scale`，但注释和语义应为 `floor(log2(p) * scale)`。例如 p=5, scale=16: floor(log2(5))×16 = 2×16 = 32，但 floor(log2(5)×16) = floor(37.15) = 37。偏差达 15.6%。对所有非 2 的幂的素数都有类似低估。代码旁边有一个 `compute_log_prime_precise()` 使用 `std::log2(double(p)) * scale` 做精确计算，但 builder.cpp 三处全部调用的是不精确版本
+- **影响**: 筛法中所有因子基素数的 log 贡献被系统性低估 → 光滑候选的筛值偏低 → 阈值比较失效 → 漏检光滑关系或产生大量假阳性（取决于阈值设置方向）
+- **建议**: builder.cpp 改用 `compute_log_prime_precise()`，或修正 fast 版本使用定点算术
+
+### [BUG] 代数侧大素数映射仅按 p 索引，忽略根 r——不同素理想被合并为同一列
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: LinAlg 矩阵构建逐行审计
+- **文件**: `include/gnfs/linalg/matrix_builder.hpp:350,363-364,579-591`
+- **描述**: `collect_large_primes()` (line 363) 将代数大素数插入 `alg_primes` 集合时仅使用 `p`。`build_row()` (line 586) 查找大素数列时也用 `alg_lp_to_col.find(p)`。但在 GNFS 中，同一素数 p 上方可能有多个不同的素理想 (p, α-r₁), (p, α-r₂),...，它们是不同的代数因子。两个关系可能有相同的大素数 p 但不同的根 r，对应不同的素理想。当前代码将它们合并到同一矩阵列，违反了代数侧因子分解的唯一性
+- **影响**: 矩阵中不同素理想被错误合并，产生虚假的 GF(2) 依赖 → 平方根阶段使用这些依赖时乘积不是完全平方 → 因式分解失败率增加。对 d>3 的多项式（有更多根）问题更严重
+- **建议**: 将 `alg_lp_to_col` 的键改为 `(p, r)` 对（如 `(uint64_t(p) << 32) | r`），与 factor base 的 `alg_index_` 保持一致
+
+### [BUG] Block Lanczos partial_inverse() 未将非主元行清零——D·A·D ≠ D
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: LinAlg Block Lanczos 逐行审计
+- **文件**: `include/gnfs/linalg/block_lanczos.hpp:119-157`
+- **描述**: `partial_inverse()` 做增广矩阵 [A|I] 的高斯消元后，将 right[] 全部 64 行复制到 D.rows[]。对于主元行（mask 中对应位为 1），D 包含正确的逆矩阵行。但对于非主元行（A 在该维度上秩亏），D 包含消元过程中的垃圾值。Montgomery Block Lanczos 要求 D 是 A 的"偏逆"，满足 D·A·D = D，即 D 在非可逆子空间上必须为零
+- **影响**: 当 V_i^T·V_i 不满秩时（接近收敛或矩阵退化），Lanczos 递推公式错误，可能无法收敛或产生错误的零空间向量。当前 <10K 矩阵用 Gaussian fallback 不触发，≥10K 矩阵用 BL 时可能出问题
+- **建议**: 第 154 行改为 `D.rows[i] = (mask & (1ULL << i)) ? right[i] : 0;`
+
+---
+
+## P1 — Session 6 深层审计（第二轮）
+
+### [BUG] Block Lanczos add_identity() 添加完整 64×64 单位矩阵——应为 mask 子空间
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: LinAlg Block Lanczos 逐行审计
+- **文件**: `src/linalg/block_lanczos.cpp:356-361` + `include/gnfs/linalg/block_lanczos.hpp:112-115`
+- **描述**: BL 递推公式中 `V_{next} += V_cur * (D*A + S̃)` 的 S̃ 应是非可逆子空间上的投影（即 mask 的补集上的单位矩阵）。但代码 `DA.add_identity()` 添加的是完整 64×64 单位矩阵 I，而非 `I & ~mask`。当 A_i 满秩时 D·A = I，D·A + I = 0（正确：无校正项）。但当 A_i 秩亏时（rank < 64），完整 I 在可逆子空间上添加了多余的 1，破坏递推
+- **影响**: A_i 秩亏时 Lanczos 递推不收敛。通常只在接近终止时发生，但可能导致产出的零空间向量质量下降
+- **建议**: 改为 `DA.add_identity_masked(~mask_cur)`（需新增方法），或手动 `for (int i = 0; i < 64; i++) if (!(mask_cur & (1ULL<<i))) DA.rows[i] ^= (1ULL<<i);`
+
+### [BUG] Couveignes Gray Code 系数漂移——翻转间无 mod M 约化导致 CRT 不一致
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: Sqrt 模块数学正确性分析
+- **文件**: `include/gnfs/sqrt/couveignes.hpp:415-437`
+- **描述**: Gray code 迭代中 `current_coeffs[ci] -= two_weights[bit_pos][ci]` (line 426) 和 `+= two_weights[bit_pos][ci]` (line 428) 对 Integer 系数做加减，但从不执行 mod M 约化。two_weights 值可以很大（是 CRT 权重的两倍），迭代 65536 次后系数可能远超 [-M/2, M/2] 范围。`verify_current()` 和 `extract_result()` 期望系数在 [-M/2, M/2] 范围内进行 centered reduction，但实际值可能超出数倍
+- **影响**: 后期 Gray code 模式的 verify 检查基于漂移值，可能错过正确模式或产生错误匹配。对 num_primes > 10 时影响显著
+- **建议**: 每次加减后添加 `current_coeffs[ci] %= M` 并 center，或在 verify_current() 中先约化再检查
+
+### [BUG] estimate_initial_log typical_i 是半宽度但 typical_j 是中点——不一致导致初值偏高
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: Sieve 模块逐行审计
+- **文件**: `include/gnfs/sieve/lattice_sieve.hpp:213-214`
+- **描述**: `typical_i = (i_max - i_min) / 2.0` 是区间半宽度（如 [-16384, 16384] → 16384），而 `typical_j = (j_max + j_min) / 2.0` 是区间中点（如 [1, 8192] → 4096）。typical_i 代表 |i| 的最大值而非平均值（平均值应为 ~W/3），而 typical_j 代表 |j| 的平均值。这使得 typical_a 和 typical_b 被高估约 2 倍
+- **影响**: 初始筛值偏高 → 需要更多的素数贡献才能使位置低于阈值 → 漏检部分光滑候选。对小 N 影响不大（因为 init_val 被 uint16 截断），但大 N 时可能显著影响产率
+- **建议**: 两者统一使用区间均值绝对值：`typical_i = (i_max - i_min) / 3.0`（RMS 近似），`typical_j = (j_max - j_min) / 3.0`
+
+### [BUG] params.hpp special_q_min = rational_bound/5 落入因子基范围——浪费 Special-Q
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: Core→Sieve 参数分析
+- **文件**: `include/gnfs/core/params.hpp:165`
+- **描述**: `special_q_min = max(rational_bound / 5, 100)` 将最小 special-Q 设为 FB 界的 1/5。GNFS 中 special-Q 应位于因子基之上（即 >= algebraic_bound），否则该素数已在因子基中被计入，选它做 special-Q 不提供额外的稀疏化。当前设置使约 80% 的 special-Q 范围 [rb/5, rb*2] 与 FB 重叠
+- **影响**: 80% 的 special-Q 选择在 FB 内部，筛选效率低下。不是正确性 bug，但严重影响性能
+- **建议**: 改为 `special_q_min = algebraic_bound + 1` 或 `rational_bound + 1`
+
+### [BUG] base_m.cpp select() 不验证 f 在 Q 上不可约——可约多项式导致 GNFS 失败
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: Polynomial 模块审计
+- **文件**: `src/polynomial/base_m.cpp:8-37`
+- **描述**: `BaseMSelector::select()` 通过 base-m 展开构造多项式 f 后直接返回，不检查 f 是否在 Q[x] 上不可约。如果 f 可约（例如 f = g·h），则 Q[α] 不是数域（而是直和 Q[α]/g × Q[α]/h），所有基于数域算术的后续步骤（factor base、algebraic norm、Schirokauer maps、algebraic sqrt）都数学上无效
+- **影响**: 如果碰巧选到可约的 f，整个 GNFS 管线在数学上无效。对小 N 的低次多项式（d=3,4）不太可能可约，但对大 N 的高次多项式概率增加
+- **建议**: 选多项式后添加不可约性验证（如用 Berlekamp 或 LLL 算法），不可约时重选 m
+
+### [BUG] Integer bit_length(0) 返回 1——GMP 约定导致下游边界条件错误
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: Core 模块逐行审计
+- **文件**: `src/core/integer.cpp:93-94`
+- **描述**: `mpz_sizeinbase(0, 2)` 按 GMP 规范返回 1。这使得 `Integer(0).bit_length() == 1`。下游代码如 `ecm.hpp:233-235` 中 `if (n_val.bit_length() == 0)` 作为零值守护永远不触发。类似地，任何用 `bit_length()` 估算数值大小的代码对零值都多估一位
+- **影响**: 代码中的零值守护条件成为死代码。ECM 中 bit_length==0 守护不生效
+- **建议**: 包装 bit_length()：`return is_zero() ? 0 : mpz_sizeinbase(value_, 2);`
+
+### [BUG] Integer 除零行为不一致——Integer(0) 除法 GMP abort，int64_t(0) 除法抛异常
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: Core 模块逐行审计
+- **文件**: `src/core/integer.cpp`
+- **描述**: `operator/=(const Integer& other)` 中如果 other 为零，`mpz_tdiv_q` 直接导致 GMP abort（进程终止，不可捕获）。`operator/=(int64_t value)` 中如果 value 为零，代码 `mpz_tdiv_q_ui(..., -value)` 的 -0 参数传给 unsigned 参数仍为 0，GMP 同样 abort。两条路径的错误处理都是不可恢复的进程终止，而非异常
+- **影响**: 除零错误导致整个进程 abort，无法被 try/catch 捕获。调试时不友好
+- **建议**: 添加前置检查 `if (other.is_zero()) throw std::domain_error("division by zero")`
+
+### [BUG] Integer::sqrt() 对负数输入无检查——mpz_sqrt 调用 GMP abort
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: Core 模块逐行审计
+- **文件**: `include/gnfs/core/integer.hpp` (sqrt 方法)
+- **描述**: `Integer::sqrt()` 直接调用 `mpz_sqrt()`。GMP 规定 mpz_sqrt 的参数必须非负，否则行为未定义（通常 abort）。当前无前置检查
+- **影响**: 对负整数调用 sqrt 时进程 abort
+- **建议**: 添加 `if (is_negative()) throw std::domain_error("sqrt of negative")`
+
+### [BUG] Integer::powmod() 不验证负指数——负指数时结果未定义
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: Core 模块逐行审计
+- **文件**: `include/gnfs/core/integer.hpp` (powmod 方法)
+- **描述**: `powmod(base, exp, mod)` 使用 `mpz_powm`。GMP 的 mpz_powm 对负指数要求 base 和 mod 互素，否则行为未定义。当前无指数符号检查
+- **影响**: 传入负指数且 base 不可逆时 GMP abort
+- **建议**: 添加 `if (exp.is_negative()) { /* 检查互素或抛异常 */ }`
+
+### [BUG] class_group factor_ideal val=0 且 a=b·r 时无限循环
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: Sqrt/ClassGroup 模块逐行审计
+- **文件**: `include/gnfs/sqrt/class_group.hpp:383-393`
+- **描述**: `val = a - int64_t(b) * int64_t(pi.r)`。若 a == b*r（精确整除），val = 0。while 循环条件 `val % p == 0 && val != 0` 中 `val != 0` 阻止进入循环，exp 保持 0。但数学上 a - b·r = 0 意味着素理想 (p, α-r) 的赋值是无穷大（或说分子完全被该理想整除），exp 应为某个正数。代码静默返回 exp=0，丢失了这个因子的全部贡献
+- **影响**: 特定 (a,b) 对的理想分解不完整。类群字符计算使用错误的赋值
+- **建议**: val==0 时使用 `Integer::valuation(a - b·α, p)` 精确计算赋值
+
+### [BUG] ECM Stage 2 链式乘法增加因子丢失概率
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: Cofactor 模块算法分析
+- **文件**: `include/gnfs/cofactor/ecm.hpp:410-413`
+- **描述**: Stage 2 中 `Qcurr = mont_mul(Qcurr, p, a24, n)` 将每个素数链式累乘（∏pᵢ·Q0），而非标准做法的独立计算 p·Q0。数学上 chaining 等价但有微妙缺陷：若 N=p₁·q₁ 且恰好 E(Z/p₁Z) 和 E(Z/q₁Z) 的阶各有一个素数在 (B1, B2] 中，chaining 使 Z 坐标在两侧都变为 0 → accum 被 N 整除 → gcd(accum, N)=N → 因子丢失（line 425 返回 nullopt）。独立计算不会有此问题
+- **影响**: 少数情况下（两侧阶各有一个 Stage 2 范围内素数）因子丢失，ECM 需要更多曲线尝试
+- **建议**: 改为独立计算每个 p·Q0 并检查 Z 坐标，或至少在 gcd=N 时回溯逐个检查
+
+### [BUG] gauss.hpp build_null_space() 的 `history` 参数从未使用——死参数
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: LinAlg 模块逐行审计
+- **文件**: `include/gnfs/linalg/gauss.hpp:161-219`
+- **描述**: `build_null_space(result, matrix, history, is_pivot_col)` 声明了 `const std::vector<BitVector>& history` 参数，但函数体中从未引用 `history`。消元阶段（lines 77-92）正确维护了 history，但 null space 构建阶段完全忽略它。函数直接在消元后的矩阵上做反向代入
+- **影响**: history 的计算开销被浪费（O(n²) 空间 + O(n³) XOR 操作）。功能上不影响正确性（因为直接在 RREF 上反向代入是等价的），但如果有人期望 history-based 提取会得到错误结果
+- **建议**: 移除 history 参数，或重写使用 history 的高效版本
+
+### [BUG] Block Lanczos 终止条件仅检查 V_cur 是否为零——应额外检查 A_cur 秩
+- **发现日期**: 2026-03-09 (Session 6 深层审计)
+- **来源**: LinAlg Block Lanczos 算法分析
+- **文件**: `src/linalg/block_lanczos.cpp:336`
+- **描述**: 终止检查 `if (V_cur.is_zero()) break` 仅在所有 64 个 block 向量同时为零时触发。Montgomery 算法的正确终止条件还应包括：当 A_cur = V_cur^T·V_cur 的秩为 0（或降到很低时），意味着在所有 block 方向上都已收敛。当前代码可能在该终止条件满足后仍继续无效迭代
+- **影响**: 可能多执行几十次无效迭代，浪费时间
+- **建议**: 添加 `if (mask_cur == 0) break;`（mask=0 表示 A_cur 秩为 0）
+
+---
+
 ## 已完成
 
 ### [OPT] ~~Hensel Sqrt 预计算优化~~ ✅
