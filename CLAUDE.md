@@ -138,18 +138,56 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### 分支规范
 
-| 分支 | 用途 |
-|------|------|
-| `main` | 稳定版本，所有测试必须通过 |
-| `dev` | 日常开发主线 |
-| `feat/<name>` | 新功能开发 |
-| `fix/<name>` | Bug 修复 |
-| `perf/<name>` | 性能优化 |
-| `exp/<name>` | 实验性改动（可能丢弃） |
+#### 核心原则
 
-- 功能完成后合并到 `dev`，`dev` 稳定后合并到 `main`
-- **禁止 force push 到 `main`**
-- 用 `git worktree` 进行并行实验
+**`main` 必须始终可编译、可测试通过。** 如果当前 `main` 能跑，任何新工作都必须在新分支上进行，直到编译通过、测试通过后再合并回 `main`。合并后的分支**保留不删除**，作为历史记录。
+
+#### 命名格式
+
+分支名包含**日期前缀**，格式：`<type>/<YYMMDD>-<简短描述>`
+
+| 类型 | 格式 | 示例 |
+|------|------|------|
+| `main` | 稳定主线，始终可编译通过 | — |
+| `feat/` | `feat/YYMMDD-描述` | `feat/260308-bucket-sieve` |
+| `fix/` | `fix/YYMMDD-描述` | `fix/260308-hensel-overflow` |
+| `perf/` | `perf/YYMMDD-描述` | `perf/260308-lanczos-simd` |
+| `refactor/` | `refactor/YYMMDD-描述` | `refactor/260308-extract-poly-ctx` |
+| `exp/` | `exp/YYMMDD-描述` | `exp/260308-neon-sieve` |
+
+#### 分支生命周期
+
+```
+main (稳定，能跑)
+  ↓ git checkout -b feat/260308-bucket-sieve
+feat/260308-bucket-sieve
+  ↓ 开发中：频繁 commit，允许编译不通过
+  ↓ 完成：编译通过 + 测试通过
+  ↓ git checkout main && git merge --no-ff feat/260308-bucket-sieve
+main (合并后仍然稳定)
+  ↓ 分支保留，不删除
+```
+
+#### 何时必须新建分支
+
+- `main` 当前编译+测试通过，且即将进行的改动**可能破坏编译**
+- 开发新功能（涉及 3+ 文件改动）
+- 性能优化实验（结果不确定时）
+- 任何可能引入回归的重构
+
+#### 何时可以直接在 `main` 上工作
+
+- `main` 当前已经编译不通过（在修复过程中）
+- 纯文档修改（`CLAUDE.md`、`README.md`）
+- `.gitignore`、CI 配置等不影响编译的文件
+- 单行 hotfix（如修一个明显的 typo）
+
+#### 合并规则
+
+- 合并前：**必须**确认分支上编译通过 + 相关测试通过
+- 合并方式：`git merge --no-ff`（保留分支合并记录）
+- 合并后：分支**保留不删除**（`git branch -d` 禁止）
+- 合并消息：`Merge branch 'feat/260308-bucket-sieve'`（默认即可）
 
 ### .gitignore
 
