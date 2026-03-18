@@ -395,6 +395,119 @@ void test_is_irreducible() {
     std::cout << "  ALL is_irreducible tests PASSED" << std::endl;
 }
 
+/// Test ModularPoly::reduce and mul with non-monic f(x)
+/// This is the core bug: reduce() assumed f is monic (leading coeff = 1).
+/// For non-monic f, we need to divide by the leading coefficient.
+void test_non_monic_modular_poly() {
+    std::cout << "Testing non-monic ModularPoly reduction..." << std::endl;
+    using MP = ModularPoly;
+
+    // f(x) = 3x^2 + x + 2 over F_7
+    // f_d = 3, inv(3, 7) = 5 (since 3*5 = 15 ≡ 1 mod 7)
+    // α^2 = -(α + 2) / 3 = -(α + 2) * 5 = (-5α - 10) ≡ (2α + 4) mod 7
+    std::vector<uint64_t> f = {2, 1, 3};
+    uint64_t p = 7;
+
+    // (x + 1)^2 = x^2 + 2x + 1
+    // Correct: x^2 → (2x + 4), so (x+1)^2 = (2x + 4) + 2x + 1 = 4x + 5
+    MP a({1, 1});  // x + 1
+    auto a_sq = MP::mul(a, a, f, p);
+
+    assert(a_sq.coeff(0) == 5);  // constant = 5
+    assert(a_sq.coeff(1) == 4);  // x coeff = 4
+    assert(a_sq.degree() <= 1);
+    std::cout << "  non-monic (x+1)^2 mod (3x^2+x+2, 7): PASSED" << std::endl;
+
+    // Verify with monic f for regression: f(x) = x^2 + x + 2 over F_7
+    // α^2 = -(α + 2) = 6α + 5 (mod 7)
+    // (x+1)^2 = (6α + 5) + 2α + 1 = α + 6 → {6, 1}
+    std::vector<uint64_t> f_monic = {2, 1, 1};
+    auto a_sq_monic = MP::mul(a, a, f_monic, p);
+    assert(a_sq_monic.coeff(0) == 6);
+    assert(a_sq_monic.coeff(1) == 1);
+    std::cout << "  monic regression (x+1)^2 mod (x^2+x+2, 7): PASSED" << std::endl;
+
+    // Higher degree non-monic: f(x) = 2x^3 + x + 1 over F_5
+    // f_d = 2, inv(2, 5) = 3
+    std::vector<uint64_t> f3 = {1, 1, 0, 2};
+    uint64_t p3 = 5;
+    MP b({1, 0, 1});  // x^2 + 1
+    // x^3 = -(x + 1)/2 = -(x + 1)*3 = -3x - 3 ≡ 2x + 2 (mod 5)
+    // b^2 = (x^2+1)^2 = x^4 + 2x^2 + 1
+    // x^4 = x·x^3 = x·(2x+2) = 2x^2 + 2x
+    // So b^2 = (2x^2 + 2x) + 2x^2 + 1 = 4x^2 + 2x + 1
+    auto b_sq = MP::mul(b, b, f3, p3);
+    assert(b_sq.coeff(0) == 1);
+    assert(b_sq.coeff(1) == 2);
+    assert(b_sq.coeff(2) == 4);
+    assert(b_sq.degree() <= 2);
+    std::cout << "  non-monic degree-3 (x^2+1)^2 mod (2x^3+x+1, 5): PASSED" << std::endl;
+
+    std::cout << "  ALL non-monic ModularPoly tests PASSED" << std::endl;
+}
+
+/// Test NumberField::multiply_mod_n with non-monic f(x)
+void test_non_monic_number_field() {
+    std::cout << "Testing non-monic NumberField multiply_mod_n..." << std::endl;
+
+    // f(x) = 3x^2 + x + 2, m = 5
+    // N = f(5) = 3*25 + 5 + 2 = 82
+    // gcd(3, 82) = 1, so modular inverse exists
+    std::vector<Integer> coeffs;
+    coeffs.push_back(Integer(2));    // f_0
+    coeffs.push_back(Integer(1));    // f_1
+    coeffs.push_back(Integer(3));    // f_2 (non-monic: f_d = 3)
+
+    Integer n(82);
+    Integer m(5);
+
+    PolynomialContext ctx(std::move(n), std::move(coeffs), std::move(m));
+    NumberField nf(ctx);
+
+    // Element: (1 - α), i.e., from_ab(1, 1)
+    auto elem = nf.from_ab(1, 1);
+
+    // (1 - α)^2 evaluated at α = m = 5: (1 - 5)^2 = 16
+    auto squared = nf.multiply_mod_n(elem, elem.clone());
+    Integer val = nf.evaluate_at_m_mod_n(squared);
+    assert(val.to_int64() == 16);
+    std::cout << "  (1-α)^2 at m=5 mod 82 = " << val.to_string() << " (expected 16): PASSED" << std::endl;
+
+    // Another element: (3 - 2α)
+    auto elem2 = nf.from_ab(3, 2);
+    // (3 - 2*5) = -7, (-7)^2 = 49 mod 82 = 49
+    auto sq2 = nf.multiply_mod_n(elem2, elem2.clone());
+    Integer val2 = nf.evaluate_at_m_mod_n(sq2);
+    assert(val2.to_int64() == 49);
+    std::cout << "  (3-2α)^2 at m=5 mod 82 = " << val2.to_string() << " (expected 49): PASSED" << std::endl;
+
+    // Product of two different elements: (1-α)(3-2α)
+    // At α=5: (1-5)(3-10) = (-4)(-7) = 28 mod 82 = 28
+    auto product = nf.multiply_mod_n(nf.from_ab(1, 1), nf.from_ab(3, 2));
+    Integer val3 = nf.evaluate_at_m_mod_n(product);
+    assert(val3.to_int64() == 28);
+    std::cout << "  (1-α)(3-2α) at m=5 mod 82 = " << val3.to_string() << " (expected 28): PASSED" << std::endl;
+
+    // Verify monic case still works (regression)
+    // f(x) = x^2 + x + 2, m = 5, N = 25 + 5 + 2 = 32
+    std::vector<Integer> monic_coeffs;
+    monic_coeffs.push_back(Integer(2));
+    monic_coeffs.push_back(Integer(1));
+    monic_coeffs.push_back(Integer(1));
+
+    PolynomialContext ctx2(Integer(32), std::move(monic_coeffs), Integer(5));
+    NumberField nf2(ctx2);
+
+    auto e = nf2.from_ab(1, 1);
+    auto e_sq = nf2.multiply_mod_n(e, e.clone());
+    Integer v = nf2.evaluate_at_m_mod_n(e_sq);
+    // (1-5)^2 = 16 mod 32 = 16
+    assert(v.to_int64() == 16);
+    std::cout << "  monic regression: PASSED" << std::endl;
+
+    std::cout << "  ALL non-monic NumberField tests PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Square Root Tests ===" << std::endl;
     std::cout << std::endl;
@@ -409,6 +522,8 @@ int main() {
     test_factor_extraction();
     test_norm_linear();
     test_is_irreducible();
+    test_non_monic_modular_poly();
+    test_non_monic_number_field();
 
     std::cout << std::endl;
     std::cout << "=== All Square Root Tests PASSED ===" << std::endl;
