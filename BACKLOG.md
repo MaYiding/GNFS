@@ -7,14 +7,13 @@
 
 ## P0 — 正确性关键（必须修复）
 
-### [BUG] Integer 缺少 uint64_t 构造函数，导致大值静默溢出
-- **状态**: 🔴 待处理
+### [BUG] ~~Integer 缺少 uint64_t 构造函数，导致大值静默溢出~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-02-20 (Session 2), 2026-03-08 审计确认
-- **来源**: Core 模块审计
-- **文件**: `include/gnfs/core/integer.hpp:16-20`
-- **描述**: `Integer` 只有 `explicit Integer(int64_t)` 构造函数，无 `uint64_t` 版本。值在 [2^63, 2^64) 范围内会静默溢出为负数。代码中多处使用 `Integer(static_cast<unsigned long long>(p))` 这种不安全的转换
-- **影响**: 任何 p > 2^63 的素数或参数会产生错误结果
-- **优先级**: P0
+- **解决日期**: 2026-03-09
+- **解决方式**: 新增 `Integer(uint64_t)` 构造函数（使用 `mpz_init_set_ui`），同时新增 `Integer(int)` 和 `Integer(unsigned int)` 重载消除字面量歧义，以及 `operator=(uint64_t)` 赋值运算符
+- **验证**: 8 个新测试用例（含 2^63、UINT64_MAX、赋值、算术、回归）全部通过，冒烟测试 11/11 通过
+- **Commit**: `b0e79f9`
 
 ### [BUG] Relation::ab() 中 b=INT64_MIN 时未定义行为
 - **状态**: 🔴 待处理

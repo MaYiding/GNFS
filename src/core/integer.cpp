@@ -14,8 +14,22 @@ Integer::Integer() {
     mpz_init(value_);
 }
 
+Integer::Integer(int value) {
+    mpz_init_set_si(value_, value);
+}
+
 Integer::Integer(int64_t value) {
     mpz_init_set_si(value_, value);
+}
+
+Integer::Integer(unsigned int value) {
+    mpz_init_set_ui(value_, value);
+}
+
+Integer::Integer(uint64_t value) {
+    static_assert(sizeof(unsigned long) >= sizeof(uint64_t),
+                  "mpz_set_ui requires unsigned long to hold uint64_t");
+    mpz_init_set_ui(value_, value);
 }
 
 Integer::Integer(const char* str, int base) {
@@ -61,6 +75,13 @@ Integer& Integer::operator=(Integer&& other) noexcept {
 
 Integer& Integer::operator=(int64_t value) {
     mpz_set_si(value_, value);
+    return *this;
+}
+
+Integer& Integer::operator=(uint64_t value) {
+    static_assert(sizeof(unsigned long) >= sizeof(uint64_t),
+                  "mpz_set_ui requires unsigned long to hold uint64_t");
+    mpz_set_ui(value_, value);
     return *this;
 }
 

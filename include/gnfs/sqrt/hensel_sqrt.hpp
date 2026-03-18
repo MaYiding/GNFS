@@ -123,12 +123,12 @@ public:
             }
             // Compute p^d - 2 using Integer to avoid uint64 overflow for large p/d
             Integer q_minus_2(int64_t(1));
-            for (uint32_t i = 0; i < d; ++i) q_minus_2 *= Integer(static_cast<int64_t>(p));
+            for (uint32_t i = 0; i < d; ++i) q_minus_2 *= Integer(p);
             q_minus_2 -= Integer(int64_t(2));
             auto inv_mp = ModularPoly::power(ModularPoly(two_s_mod), q_minus_2, f_mod_p_vec, p);
             for (uint32_t i = 0; i < d; ++i) {
-                T[i] = Integer(static_cast<int64_t>(
-                    (i <= static_cast<uint32_t>(inv_mp.degree())) ? inv_mp.coeff(i) : 0));
+                uint64_t coeff_val = (i <= static_cast<uint32_t>(inv_mp.degree())) ? inv_mp.coeff(i) : 0;
+                T[i] = Integer(coeff_val);
             }
         }
 

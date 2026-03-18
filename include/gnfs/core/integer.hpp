@@ -12,7 +12,10 @@ class Integer {
 public:
     // Construction & Destruction
     Integer();
+    explicit Integer(int value);
     explicit Integer(int64_t value);
+    explicit Integer(unsigned int value);
+    explicit Integer(uint64_t value);
     Integer(const char* str, int base = 10);
     Integer(const std::string& str, int base = 10);
     Integer(const Integer& other);
@@ -23,6 +26,7 @@ public:
     Integer& operator=(const Integer& other);
     Integer& operator=(Integer&& other) noexcept;
     Integer& operator=(int64_t value);
+    Integer& operator=(uint64_t value);
 
     // Cloning
     Integer clone() const;
