@@ -419,7 +419,13 @@ private:
             f_d %= modulus;
             if (f_d.is_negative()) f_d += modulus;
             if (!f_d.is_one()) {
-                mpz_invert(f_lead_inv.get_mpz(), f_d.get_mpz(), modulus.get_mpz());
+                int ok = mpz_invert(f_lead_inv.get_mpz(), f_d.get_mpz(),
+                                    modulus.get_mpz());
+                // f_d must be invertible mod modulus for Hensel lifting.
+                // For Hensel, modulus = p^k where p doesn't divide f_d
+                // (ensured by find_inert_prime checking f_mod.back() != 0).
+                assert(ok && "f[d] must be invertible mod modulus in poly_mul_mod");
+                (void)ok;
             }
         }
 

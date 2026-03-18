@@ -479,10 +479,12 @@ private:
                 int ok = mpz_invert(f_d_inv.get_mpz(), f_d.get_mpz(),
                                     modulus.get_mpz());
                 if (!ok) {
-                    // f_d 不可逆 — 意味着 gcd(f_d, modulus) > 1
-                    // 在 GNFS 中 modulus = N，gcd(f_d, N) > 1 意味着找到因子
-                    // 此处退化处理：假设 monic
-                    f_d_inv = Integer(int64_t(1));
+                    // f_d 不可逆 — gcd(f_d, modulus) > 1
+                    // 在 GNFS 中 modulus = N，这意味着找到了非平凡因子！
+                    // 抛出异常让调用者处理（或捕获因子）
+                    throw std::runtime_error(
+                        "reduce_mod: f_d not invertible mod N — "
+                        "gcd(f_d, N) > 1, nontrivial factor found");
                 }
             }
         }

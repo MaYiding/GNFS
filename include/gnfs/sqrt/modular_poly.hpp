@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../core/integer.hpp"
+#include <cassert>
 #include <vector>
 #include <cstdint>
 
@@ -153,6 +154,8 @@ public:
         int f_deg = static_cast<int>(f.size()) - 1;
 
         // Inverse of leading coefficient: α^d = -(f[0]+...+f[d-1]α^{d-1}) / f[d]
+        // f[f_deg] must be non-zero mod p (otherwise f doesn't have the expected degree)
+        assert(f[f_deg] % p != 0 && "leading coefficient of f must be non-zero mod p");
         uint64_t f_lead_inv = mod_inverse(f[f_deg], p);
 
         // Reduce from highest degree down
