@@ -286,7 +286,7 @@ public:
         for (const auto& [a, b] : ab_pairs) {
             Integer term(a);
             Integer bm = nf.m().clone();
-            bm *= Integer(static_cast<int64_t>(b));
+            bm *= Integer(b);
             term -= bm;
             term %= n;
             if (term.is_negative()) term += n;
@@ -381,7 +381,7 @@ public:
         for (const auto& [a, b] : ab_pairs) {
             Integer term(a);
             Integer bm = nf.m().clone();
-            bm *= Integer(static_cast<int64_t>(b));
+            bm *= Integer(b);
             term -= bm;
             term %= n;
             if (term.is_negative()) term += n;

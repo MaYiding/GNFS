@@ -79,6 +79,8 @@ Integer& Integer::operator=(int64_t value) {
 }
 
 Integer& Integer::operator=(uint64_t value) {
+    static_assert(sizeof(unsigned long) >= sizeof(uint64_t),
+                  "mpz_set_ui requires unsigned long to hold uint64_t");
     mpz_set_ui(value_, value);
     return *this;
 }

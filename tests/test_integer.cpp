@@ -226,6 +226,14 @@ void test_uint64_construction() {
         assert(n.is_zero());
     }
 
+    // --- Case 4b: Value in (2^32, 2^63) range ---
+    {
+        uint64_t val = uint64_t(1) << 40;  // 1099511627776, > UINT32_MAX, < INT64_MAX
+        Integer n(val);
+        assert(n.is_positive());
+        assert(n.to_string() == "1099511627776");
+    }
+
     // --- Case 5: Assignment from uint64_t ---
     {
         Integer n(int64_t(0));
