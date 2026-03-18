@@ -8,6 +8,7 @@
 ## P0 — 正确性关键（必须修复）
 
 ### [BUG] Integer 缺少 uint64_t 构造函数，导致大值静默溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-02-20 (Session 2), 2026-03-08 审计确认
 - **来源**: Core 模块审计
 - **文件**: `include/gnfs/core/integer.hpp:16-20`
@@ -16,6 +17,7 @@
 - **优先级**: P0
 
 ### [BUG] Relation::ab() 中 b=INT64_MIN 时未定义行为
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Core 模块审计
 - **文件**: `include/gnfs/core/relation.hpp:37`
@@ -24,6 +26,7 @@
 - **建议**: 先检查 `b == INT64_MIN` 或用 `uint64_t(~b) + 1`
 
 ### [BUG] std::abs(INT64_MIN) 未定义行为（多处）
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Sieve + Cofactor + Relation 模块审计
 - **文件**: `lattice_sieve.hpp:404`, `cofactorizer.hpp:95`, `collector.hpp:269`
@@ -32,6 +35,7 @@
 - **建议**: 统一封装 `safe_abs()` 函数，检查 INT64_MIN
 
 ### [BUG] Hensel Sqrt S[i].to_uint64() 截断：N > 2^64 时 Hensel 失败
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Sqrt 模块审计
 - **文件**: `include/gnfs/sqrt/hensel_sqrt.hpp:113-122`
@@ -40,6 +44,7 @@
 - **建议**: 改用 Integer 算术或在 to_uint64() 前检查 fits_uint64()
 
 ### [BUG] Couveignes Gray Code `__builtin_ctzll(0)` 未定义行为
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Sqrt 模块审计
 - **文件**: `include/gnfs/sqrt/couveignes.hpp:425-429`
@@ -48,6 +53,7 @@
 - **建议**: 添加 `if (changed_bit == 0) continue;` 守卫
 
 ### [BUG] modular_poly p=2 时 Tonelli-Shanks 无限循环
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Sqrt 模块审计
 - **文件**: `include/gnfs/sqrt/modular_poly.hpp:353-362`
@@ -56,6 +62,7 @@
 - **建议**: 对 p=2 做特殊处理（直接返回）
 
 ### [BUG] NumberField 假设 f 是 monic 但从不验证
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计), Session 6 补充
 - **来源**: Sqrt 模块审计
 - **文件**: `include/gnfs/sqrt/number_field.hpp:416-451`, `include/gnfs/sqrt/hensel_sqrt.hpp:422`, `include/gnfs/sqrt/modular_poly.hpp:141`
@@ -64,6 +71,7 @@
 - **建议**: 添加构造时 assert `f[d] == 1`，或在归约中除以 f[d]（需 mod inverse）
 
 ### [BUG] polynomial_optimizer Newton 方法 divmod 覆写导致永不收敛
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 审计)
 - **来源**: Polynomial 模块审计
 - **文件**: `include/gnfs/polynomial/polynomial_optimizer.hpp:57-68`
@@ -72,6 +80,7 @@
 - **建议**: 删除 Lines 61-68（if/else 两个分支做同一件事），保留 Line 58 的 divmod 结果
 
 ### [BUG] polynomial_optimizer newton_root() 验证永远成功
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 审计)
 - **来源**: Polynomial 模块审计
 - **文件**: `include/gnfs/polynomial/polynomial_optimizer.hpp:90-108`
@@ -80,6 +89,7 @@
 - **建议**: 修正 divmod 参数顺序，在验证失败时返回 nullopt
 
 ### [BUG] params.hpp special_q_max 的 uint32 溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Core 模块审计
 - **文件**: `include/gnfs/core/params.hpp:166`
@@ -88,6 +98,7 @@
 - **建议**: 改用 uint64_t 或 `std::min(uint64_t(rb)*2, UINT32_MAX)`
 
 ### [BUG] trial_division.hpp uint8_t 指数溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Cofactor 模块审计
 - **文件**: `include/gnfs/cofactor/trial_division.hpp:62-64`
@@ -96,6 +107,7 @@
 - **建议**: 改用 uint16_t 或添加溢出检查
 
 ### [BUG] Gaussian 消元 pivot_cols.back() 空容器 UB
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: LinAlg 模块审计
 - **文件**: `include/gnfs/linalg/gauss.hpp:100-105`
@@ -104,6 +116,7 @@
 - **建议**: 添加 `if (pivot_cols.empty())` 守卫
 
 ### [BUG] SparseMatrix::test() const_cast 违反 const 契约
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: LinAlg 模块审计
 - **文件**: `include/gnfs/linalg/sparse_matrix.hpp:62-63`
@@ -111,6 +124,7 @@
 - **建议**: 将 `sorted_` 和 `indices_` 标记为 `mutable`
 
 ### [BUG] ThreadPool pending_ 计数竞态条件
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Util 模块审计
 - **文件**: `include/gnfs/util/thread_pool.hpp:188-189`
@@ -119,6 +133,7 @@
 - **建议**: 在互斥锁内递减和检查
 
 ### [BUG] RelationCollector::relations() 返回非安全引用
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Relation 模块审计
 - **文件**: `include/gnfs/relation/collector.hpp:151-152`
@@ -127,6 +142,7 @@
 - **建议**: 返回 const 引用或 `std::span<const Relation>`
 
 ### [BUG] Hensel/Couveignes 不可约性检查仅测试线性因子——度 > 3 时静默失败
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: Sqrt + LinAlg 模块逐行审计
 - **文件**: `hensel_sqrt.hpp:258-268`, `couveignes.hpp:119-125`, `matrix_builder.hpp:174-184`, `schirokauer.hpp:369-385`（Session 7 补充第 4 处）
@@ -135,6 +151,7 @@
 - **建议**: 完整不可约检查需要验证 ∀k ∈ [1, d/2]: `gcd(x^{p^k} - x, f) == 1`，最终验证 `x^{p^d} ≡ x mod f`
 
 ### [BUG] trial_division divide_exact() int64 反向转换溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: Cofactor 模块逐行审计
 - **文件**: `include/gnfs/cofactor/trial_division.hpp:204-206`
@@ -143,6 +160,7 @@
 - **建议**: 走 GMP 的 `mpz_divexact_ui` 路径（已有 else 分支）或检查 fits_int64()
 
 ### [BUG] 全局性 uint64_t b → long long/int64_t 截断溢出（13 处）
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: 全代码库逐行审计
 - **文件（按模块）**:
@@ -164,6 +182,7 @@
 - **建议**: 统一使用 `Integer(b)` 或添加 `uint64_t` 版本的乘法运算符
 
 ### [BUG] modular_poly sub()/mod_inverse() 对 p > INT64_MAX 溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: Sqrt 模块逐行审计
 - **文件**: `include/gnfs/sqrt/modular_poly.hpp:90,420`
@@ -172,6 +191,7 @@
 - **建议**: 使用 unsigned 算术或 `__int128_t`
 
 ### [BUG] Couveignes compute_from_element() 无上限搜索循环
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: Sqrt 模块逐行审计
 - **文件**: `include/gnfs/sqrt/couveignes.hpp:483`
@@ -180,6 +200,7 @@
 - **建议**: 添加 `&& attempts < 100000` 条件（与 compute() 的 primes_checked < 100000 一致）
 
 ### [BUG] Relation::b 是 int64_t 但应为 uint64_t — 全局类型不匹配
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: 全代码库类型追溯
 - **文件**: `include/gnfs/core/relation.hpp:17`
@@ -188,6 +209,7 @@
 - **建议**: 将 Relation::b 改为 uint64_t，构造函数参数对应修改
 
 ### [BUG] rational_sqrt 验证函数声称验证但实际什么也不做
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: Sqrt 模块逐行审计
 - **文件**: `include/gnfs/sqrt/rational_sqrt.hpp:143-162`
@@ -196,6 +218,7 @@
 - **建议**: 实现完整验证：计算 sqrt²  mod N 并与原始乘积比较
 
 ### [BUG] MatrixBuilderConfig 默认 schirokauer_primes = {2, 3}，ℓ=3 不兼容 GF(2)
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: LinAlg 模块逐行审计
 - **文件**: `include/gnfs/linalg/matrix_builder.hpp:113`
@@ -204,6 +227,7 @@
 - **建议**: GF(2) 矩阵只能使用 ℓ=2（CLAUDE.md 已明确记录此约定）。默认值应改为 {2}
 
 ### [BUG] Couveignes rat_sqrt 对合数 N 计算根本性错误
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: Sqrt 模块逐行审计
 - **文件**: `include/gnfs/sqrt/couveignes.hpp:311-329`
@@ -212,6 +236,7 @@
 - **建议**: 有理平方根应该在 rational_sqrt.hpp 中独立计算，通过因子指数的半次方累积
 
 ### [BUG] ECM sieve_primes(B2) 内存爆炸
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: Cofactor 模块逐行审计
 - **文件**: `include/gnfs/cofactor/ecm.hpp:405`
@@ -220,6 +245,7 @@
 - **建议**: 分段筛法（segmented sieve）或直接用 Miller-Rabin 测试范围内的素数
 
 ### [BUG] smooth_check large_prime_bound² uint64 溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: Cofactor 模块逐行审计
 - **文件**: `include/gnfs/cofactor/smooth_check.hpp:195`
@@ -228,6 +254,7 @@
 - **建议**: 使用 `__uint128_t` 或 `Integer` 做平方比较
 
 ### [BUG] class_group SNF 实现不是真正的 Smith Normal Form
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: Sqrt 模块逐行审计
 - **文件**: `include/gnfs/sqrt/class_group.hpp:450-517`
@@ -236,6 +263,7 @@
 - **建议**: 实现真正的 SNF（需要 elementary divisors），或标记为 "approximate"
 
 ### [BUG] class_group factor_ideal/factor_principal_ideal int64 乘法溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: Sqrt 模块逐行审计
 - **文件**: `include/gnfs/sqrt/class_group.hpp:383, 418`
@@ -244,6 +272,7 @@
 - **建议**: 使用 `__int128_t` 或 `Integer`
 
 ### [BUG] SparseMatrix multiply_blocks() 索引错误
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: LinAlg 模块逐行审计
 - **文件**: `include/gnfs/linalg/sparse_matrix.hpp`
@@ -252,6 +281,7 @@
 - **建议**: 明确文档布局约定，或提供两种布局的重载
 
 ### [BUG] Kleinjung is_valid_polynomial() 浮点验证无意义
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: Polynomial 模块逐行审计
 - **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp:505-512`
@@ -260,6 +290,7 @@
 - **建议**: 直接用 Integer 精确验证 `f(m) == N`
 
 ### [BUG] base_m_expansion 非零余数处理
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: Polynomial 模块逐行审计
 - **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp:476-478`
@@ -267,6 +298,7 @@
 - **影响**: 产生低质量多项式，降低筛选效率
 
 ### [BUG] Schirokauer factorize_and_setup 重复根处理
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
 - **来源**: LinAlg 模块逐行审计
 - **文件**: `include/gnfs/linalg/schirokauer.hpp`
@@ -279,6 +311,7 @@
 ## P1 — 高优先级（影响正确性或大数支持）
 
 ### [BUG] Split Schirokauer: f mod 2 可约时映射计算错误
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-02-20 (Session 2)
 - **来源**: Schirokauer maps 测试中发现
 - **文件**: `include/gnfs/linalg/schirokauer.hpp`
@@ -288,6 +321,7 @@
 - **优先级**: P1
 
 ### [BUG] Couveignes 符号归一化不一致导致 CRT 重建错误
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Sqrt 模块审计
 - **文件**: `include/gnfs/sqrt/couveignes.hpp:510-524`
@@ -295,6 +329,7 @@
 - **影响**: ~50% 的有效符号模式被错误丢弃，大幅降低 Couveignes 成功率
 
 ### [BUG] algebraic_sqrt compute_heuristic() 数学不正确
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Sqrt 模块审计
 - **文件**: `include/gnfs/sqrt/algebraic_sqrt.hpp:173-195`
@@ -302,6 +337,7 @@
 - **影响**: Hensel 失败时的 fallback 路径不可用
 
 ### [BUG] matrix_builder f mod 2 检查在大系数时 uint64 截断
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: LinAlg 模块审计
 - **文件**: `include/gnfs/linalg/matrix_builder.hpp:174-184`
@@ -309,6 +345,7 @@
 - **影响**: 错误判断 f mod 2 的可约性，导致 Schirokauer 或 QC 列数错误
 
 ### [BUG] matrix_builder 多项式度 > 8 时数组越界
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: LinAlg 模块审计
 - **文件**: `include/gnfs/linalg/matrix_builder.hpp:416`
@@ -317,6 +354,7 @@
 - **建议**: 添加 degree 边界检查
 
 ### [BUG] matrix_builder QC 系数 int64 截断
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: LinAlg 模块审计
 - **文件**: `include/gnfs/linalg/matrix_builder.hpp:387-388`
@@ -324,6 +362,7 @@
 - **影响**: QC 列不正确，矩阵零空间求解失败
 
 ### [BUG] Schirokauer FastPoly 系数潜在溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: LinAlg 模块审计
 - **文件**: `include/gnfs/linalg/schirokauer.hpp:73, 87-91`
@@ -331,6 +370,7 @@
 - **影响**: Schirokauer map 值不正确
 
 ### [BUG] lattice_sieve 模运算中间值 int64 溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Sieve 模块审计
 - **文件**: `include/gnfs/sieve/lattice_sieve.hpp:268-269`
@@ -338,6 +378,7 @@
 - **建议**: 使用 `__int128_t` 或先做模约化再乘
 
 ### [BUG] lattice_basis 行列式计算 int64 溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Sieve 模块审计
 - **文件**: `include/gnfs/sieve/lattice_basis.hpp:52`
@@ -345,6 +386,7 @@
 - **影响**: 大 special-Q 时格行列式错误
 
 ### [BUG] cofactorizer 大素数存储 uint32 截断
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Cofactor 模块审计
 - **文件**: `include/gnfs/cofactor/cofactorizer.hpp:160, 170`
@@ -352,6 +394,7 @@
 - **建议**: PrimePower 改用 uint64_t 或 Integer
 
 ### [BUG] ECM 固定随机种子导致重复曲线
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Cofactor 模块审计
 - **文件**: `include/gnfs/cofactor/ecm.hpp:49`
@@ -359,6 +402,7 @@
 - **建议**: 使用非确定性种子或曲线索引 + 哈希
 
 ### [BUG] modular_poly q_minus_2 uint64 溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Sqrt 模块审计
 - **文件**: `include/gnfs/sqrt/modular_poly.hpp:529-531`
@@ -366,6 +410,7 @@
 - **影响**: Tonelli-Shanks 平方根失败
 
 ### [BUG] class_group 判别式计算仅对 d=3 正确
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Sqrt 模块审计
 - **文件**: `include/gnfs/sqrt/class_group.hpp:165-209`
@@ -373,6 +418,7 @@
 - **影响**: 类群计算对高阶多项式不正确
 
 ### [BUG] filter.hpp 合并关系硬编码 1000 上限
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Relation 模块审计
 - **文件**: `include/gnfs/relation/filter.hpp:262`
@@ -380,6 +426,7 @@
 - **建议**: 改为可配置参数
 
 ### [BUG] Logger 递归日志死锁
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Util 模块审计
 - **文件**: `include/gnfs/util/logger.hpp:140-141`
@@ -387,6 +434,7 @@
 - **建议**: 改用 `recursive_mutex` 或线程局部嵌套计数器
 
 ### [BUG] matrix_builder 存储 config 的 schirokauer_primes 而非实际使用的素数
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: LinAlg 模块逐行审计
 - **文件**: `include/gnfs/linalg/matrix_builder.hpp:267`
@@ -395,6 +443,7 @@
 - **建议**: 改为 `result.mapping.schirokauer_primes = sm_primes`
 
 ### [BUG] types.hpp ABPair 注释错误：写 "a + b*m" 但应为 "a - b*m"
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: Core 模块逐行审计
 - **文件**: `include/gnfs/core/types.hpp:11`
@@ -403,6 +452,7 @@
 - **建议**: 修正注释为 `a - b*m 在有理侧, a - b*α 在代数侧`
 
 ### [BUG] FactorBaseParams::large_prime_bound 是 uint32_t 但 GNFSParams 用 uint64_t
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: Core + FactorBase 模块类型对比
 - **文件**: `include/gnfs/core/types.hpp:128` vs `include/gnfs/core/params.hpp:30`
@@ -411,6 +461,7 @@
 - **建议**: FactorBaseParams::large_prime_bound 改为 uint64_t
 
 ### [BUG] rational_sqrt 负号检测到但未应用
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: Sqrt 模块逐行审计
 - **文件**: `include/gnfs/sqrt/rational_sqrt.hpp:138-141`
@@ -419,6 +470,7 @@
 - **建议**: 当 has_negative 时，应用 `sqrt_value = n - sqrt_value`
 
 ### [BUG] Schirokauer Hensel 提升 quadratic factor 访问未构建的 prime_info_
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: LinAlg 模块逐行审计
 - **文件**: `include/gnfs/linalg/schirokauer.hpp:528`
@@ -427,6 +479,7 @@
 - **建议**: 从 `info.factors`（已部分构建）中查找 sibling linear factor
 
 ### [BUG] Relation 反序列化无输入验证——可 OOM 或产生损坏数据
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: Core 模块逐行审计
 - **文件**: `include/gnfs/core/relation.hpp:104-148`
@@ -435,6 +488,7 @@
 - **建议**: 添加 count 上限检查（如 < 1M）、读后检查 `is.good()`、添加文件头
 
 ### [BUG] matrix_builder exponent 累积用 uint8_t — 大 FB 关系可溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: LinAlg 模块逐行审计
 - **文件**: `include/gnfs/linalg/matrix_builder.hpp:534, 548`
@@ -443,6 +497,7 @@
 - **建议**: 改用 uint32_t 或检测溢出
 
 ### [BUG] smooth_check quick_cofactor_check 也有 lpb² 溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: Cofactor 模块逐行审计
 - **文件**: `include/gnfs/cofactor/smooth_check.hpp:319`
@@ -451,6 +506,7 @@
 - **建议**: 同 line 195 的修复方案
 
 ### [BUG] Pollard rho 只使用单一多项式 x²+1
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: Cofactor 模块逐行审计
 - **文件**: `include/gnfs/cofactor/smooth_check.hpp:148`
@@ -459,6 +515,7 @@
 - **建议**: 增加循环在 max_iterations 后用不同 c 重试
 
 ### [BUG] Integer operator+=/operator-=/operator/=/operator%= 对 INT64_MIN 参数 UB
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: Core 模块逐行审计
 - **文件**: `src/core/integer.cpp:356-357, 374-375, 384`
@@ -467,6 +524,7 @@
 - **建议**: 使用 `static_cast<unsigned long>(value) * (value < 0 ? -1 : 1)` 的无 UB 等价形式，或特殊处理 INT64_MIN
 
 ### [BUG] SieveRegion default_sieve_region 大 skewness 时 int32 溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: Sieve 模块逐行审计
 - **文件**: `include/gnfs/sieve/lattice_basis.hpp:175-178`
@@ -475,6 +533,7 @@
 - **建议**: 添加 clamp：`std::min(base_size * factor, static_cast<double>(INT32_MAX))`
 
 ### [BUG] MurphyEvaluator n.to_double() 对 N > 10^308 返回 infinity
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: Polynomial 模块逐行审计
 - **文件**: `include/gnfs/polynomial/murphy_evaluator.hpp:331`
@@ -483,6 +542,7 @@
 - **建议**: 使用对数空间采样或限制 B_range 上界
 
 ### [BUG] MurphyEvaluator alpha 计算跳过不 fit uint64 的首项系数
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: Polynomial 模块逐行审计
 - **文件**: `include/gnfs/polynomial/murphy_evaluator.hpp:143-147`
@@ -491,6 +551,7 @@
 - **建议**: 使用 `Integer::mod(coeff, p_int)` 替代 uint64 取模
 
 ### [BUG] Hensel poly_inverse_mod_direct p^d uint64 溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 审计)
 - **来源**: Sqrt 模块审计
 - **文件**: `include/gnfs/sqrt/hensel_sqrt.hpp:529-531`
@@ -499,6 +560,7 @@
 - **建议**: 改用 Integer 算术（参考 line 125-127 的模式）
 
 ### [BUG] Kleinjung construct_polynomial 死代码
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 审计)
 - **来源**: Polynomial 模块审计
 - **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp:380-439`
@@ -507,6 +569,7 @@
 - **建议**: 删除 lines 380-435 的死代码
 
 ### [BUG] Kleinjung base_m_expansion 系数不平衡
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 审计)
 - **来源**: Polynomial 模块审计
 - **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp:466-478`
@@ -515,6 +578,7 @@
 - **建议**: 在展开后添加平衡步骤：`if (coeffs[i] > m/2) { coeffs[i] -= m; coeffs[i+1] += 1; }`
 
 ### [BUG] IntPolynomial add_mod 对大 p 的 uint64 溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 审计)
 - **来源**: Polynomial 模块审计
 - **文件**: `include/gnfs/polynomial/int_polynomial.hpp:362`
@@ -523,6 +587,7 @@
 - **建议**: 改为 `a >= p - b ? a - (p - b) : a + b` 或使用 __uint128_t
 
 ### [BUG] IntPolynomial::roots_cantor_zassenhaus 实际是 O(p) 暴力搜索
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 审计)
 - **来源**: Polynomial 模块审计
 - **文件**: `include/gnfs/polynomial/int_polynomial.hpp:384-405`
@@ -531,6 +596,7 @@
 - **建议**: 要么实现真正的 CZ，要么重命名为 `roots_brute_force`
 
 ### [BUG] class_group 判别式公式对非 depressed 三次多项式错误
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 审计)
 - **来源**: Sqrt 模块审计
 - **文件**: `include/gnfs/sqrt/class_group.hpp:168-188`
@@ -539,6 +605,7 @@
 - **建议**: 使用完整三次判别式公式，或先做 Tschirnhaus 变换消除 x² 项
 
 ### [BUG] polynomial_optimizer divmod 参数命名与语义颠倒
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 审计)
 - **来源**: Polynomial 模块审计
 - **文件**: `include/gnfs/polynomial/polynomial_optimizer.hpp:91-92`
@@ -551,6 +618,7 @@
 ## P1-OPT — 高优先级性能优化
 
 ### [OPT] Block Lanczos 是 25-digit 的主要瓶颈（需并行化）
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-02-22 (Session 3), 2026-03-08 审计补充
 - **来源**: 25-digit 性能分析（193s = 81.6%）
 - **文件**: `src/linalg/block_lanczos.cpp`
@@ -559,6 +627,7 @@
 - **建议**: OpenMP 并行 SpMV，预计 4-8× 加速
 
 ### [OPT] ECM Stage 2 BSGS 优化
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-02-20 (Session 2)
 - **来源**: 性能分析 + 2026-03-08 审计确认
 - **文件**: `include/gnfs/cofactor/ecm.hpp:410-430`
@@ -566,6 +635,7 @@
 - **影响**: 60 位余因子的 Stage 2 比 BSGS 慢 5-10×
 
 ### [OPT] lattice_basis 浮点高斯约化不够精确
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Sieve 模块审计
 - **文件**: `include/gnfs/sieve/lattice_basis.hpp:83-109`
@@ -573,6 +643,7 @@
 - **影响**: 大 special-Q 时格基质量差，筛选效率降低
 
 ### [OPT] Gauss 消元 history 矩阵 O(n^2) 空间
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: LinAlg 模块审计
 - **文件**: `include/gnfs/linalg/gauss.hpp`
@@ -585,24 +656,28 @@
 ## P2 — 中优先级（50+ 位数支持和架构改进）
 
 ### [FEAT] Bucket Sieve 架构
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-02-20 (Session 2)
 - **来源**: 大因子基性能需求
 - **描述**: 当前 sieve 对大因子基不够 cache-friendly。需要重新设计为 bucket sieve 架构
 - **影响**: 大 N（50-digit+）的 sieve 阶段性能瓶颈
 
 ### [FEAT] NEON SIMD 加速
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-02-20 (Session 2)
 - **来源**: 性能优化规划
 - **描述**: 利用 ARM NEON 指令加速关键路径：`vqsubq_u16` 用于 sieve，`vminvq_u16` 用于候选扫描，`veorq_u64` 用于 GF(2) XOR
 - **影响**: 预计 sieve 和 linalg 各有 2-4× 提升
 
 ### [OPT] Kleinjung 多项式选择质量提升
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-02-20 (Session 2), 2026-03-08 审计补充
 - **来源**: Polynomial 模块审计
 - **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp`
 - **描述**: 审计新发现：(1) search_radius=100 硬编码，大 N 需 >1000 (line 238) (2) 系数边界 O(m) 太松，应为 O(m^{1/d}) (line 275) (3) 不检查 f 在 Q 上不可约性。原有问题：缺少 lattice-based search 和 coefficient rotation
 
 ### [FEAT] Factor Base 支持 ramified/projective 素数
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: FactorBase 模块审计
 - **文件**: `src/factor_base/builder.cpp`
@@ -610,6 +685,7 @@
 - **影响**: 大约丢失 ~1% 代数侧素数，大 N 时关系收集效率降低
 
 ### [FEAT] Out-of-core Relations 支持
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-02-20 (Session 2), 2026-03-08 审计强化为 P2
 - **来源**: Relation 模块审计
 - **文件**: `include/gnfs/relation/collector.hpp`
@@ -617,12 +693,14 @@
 - **影响**: 50+ 位 N 时 OOM
 
 ### [FEAT] Block Lanczos Out-of-core 矩阵支持
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: LinAlg 模块审计
 - **描述**: 矩阵必须完全在 RAM 中。50+ 位 GNFS 的 500K 关系矩阵可能需要数十 GB
 - **建议**: 流式 SpMV + 磁盘矩阵存储
 
 ### [DEBT] params.hpp 对 100+ 位 N 参数不足
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Core 模块审计
 - **文件**: `include/gnfs/core/params.hpp`
@@ -630,6 +708,7 @@
 - **建议**: 动态度缩放，移除硬编码上限
 
 ### [FEAT] Relation Filter 完成 clique-based 合并
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Relation 模块审计
 - **文件**: `include/gnfs/relation/filter.hpp:286-287`
@@ -637,6 +716,7 @@
 - **建议**: 实现完整的基于图的 clique 解析
 
 ### [FEAT] ThreadPool Work-Stealing
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Util 模块审计
 - **文件**: `include/gnfs/util/thread_pool.hpp`
@@ -644,6 +724,7 @@
 - **建议**: 实现工作窃取队列
 
 ### [DEBT] Relation 序列化格式缺陷
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Core 模块审计
 - **文件**: `include/gnfs/core/relation.hpp:73-144`
@@ -651,6 +732,7 @@
 - **影响**: 截断文件产生静默损坏的关系
 
 ### [BUG] smooth_check 浮点精度损失
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Cofactor 模块审计
 - **文件**: `include/gnfs/cofactor/smooth_check.hpp:107-108`
@@ -658,6 +740,7 @@
 - **建议**: 使用 GMP 的 mpz_root / mpz_perfect_square_p
 
 ### [OPT] Murphy E-score 低估 20-40%
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Polynomial 模块审计
 - **文件**: `include/gnfs/polynomial/murphy_evaluator.hpp`
@@ -665,6 +748,7 @@
 - **影响**: 多项式排名不准确
 
 ### [DEBT] PrimePowerHash 忽略指数字段
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Core 模块审计
 - **文件**: `include/gnfs/core/types.hpp:87-92`
@@ -676,14 +760,17 @@
 ## P3 — 低优先级（代码质量和长期改进）
 
 ### [DEBT] Integer(uint64_t) 构造函数缺失（重复项，主修在 P0）
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-02-20 (Session 2)
 - **描述**: 见 P0 同名条目。此处保留历史记录
 
 ### [DEBT] 根目录遗留文件清理
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 4)
 - **描述**: 根目录有 ~70 个遗留文件（.sh 脚本、过时 .md、扁平命名文件）
 
 ### [DEBT] SmallVector 缺少边界检查
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Util 模块审计
 - **文件**: `include/gnfs/util/small_vector.hpp:96-103`
@@ -691,12 +778,14 @@
 - **建议**: Debug 模式添加 assert
 
 ### [DEBT] FactorBase 缺少序列化
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: FactorBase 模块审计
 - **文件**: `include/gnfs/factor_base/factor_base.hpp:137-141`
 - **描述**: 标记为 TODO。大 FB (100K+) 重建耗时，应支持保存/加载
 
 ### [DEBT] Block Lanczos 阈值判断逻辑错误 (AND vs OR)
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: LinAlg 模块审计
 - **文件**: `src/linalg/block_lanczos.cpp:284`
@@ -704,24 +793,28 @@
 - **建议**: 改为 `||`
 
 ### [DEBT] Schirokauer 文档注释与代码不一致
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: LinAlg 模块审计
 - **文件**: `include/gnfs/linalg/schirokauer.hpp:138`
 - **描述**: 注释写的指数公式 ℓ^(k-1)·(ℓ-1) 与代码实际使用的 ℓ^d-1 不一致。代码是对的，注释是错的
 
 ### [DEBT] polynomial_context coeff() 返回可变静态引用
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Core 模块审计
 - **文件**: `include/gnfs/core/polynomial_context.hpp:76-80`
 - **描述**: 越界访问返回同一个静态 zero Integer 引用，多次调用返回同一引用可能产生别名 bug
 
 ### [DEBT] SpecialQ from_indices 忽略 end_index 参数
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Sieve 模块审计
 - **文件**: `include/gnfs/sieve/special_q.hpp:36`
 - **描述**: `from_indices(uint32_t start, uint32_t /* end_index */)` 中 end_index 被注释掉但仍在签名中
 
 ### [DEBT] number_field evaluate 无溢出保护
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: Sqrt 模块审计
 - **文件**: `include/gnfs/sqrt/number_field.hpp:328-343`
@@ -732,12 +825,14 @@
 ## TEST — 测试覆盖率缺口
 
 ### [TEST] 7 个模块无专属单元测试
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: 测试覆盖率审计
 - **缺失测试**: `base_m`, `params`, `polynomial_context`, `polynomial_optimizer`, `int_polynomial`, `filter`, `class_group`
 - **建议**: 至少为 params 和 polynomial_context 添加单元测试
 
 ### [TEST] 0 个已修复 bug 的回归测试
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: 测试覆盖率审计
 - **描述**: Session 1-3 修复的 10 个关键 bug 均无专属回归测试。包括：N-divisible 关系过滤、Schirokauer ℓ=2 only、指数公式、QC degree>3、evaluate_mod 溢出、extract_factors、Hensel p^d 溢出等
@@ -745,16 +840,19 @@
 - **建议**: 优先添加 P0 级回归测试
 
 ### [TEST] 边界/极端情况覆盖率约 5%
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: 测试覆盖率审计
 - **描述**: 缺失的关键边界测试：Integer 溢出、负数 mod、空矩阵、度 0 多项式、FB 边界素数、Single row 矩阵、Hensel p^d 溢出等
 
 ### [TEST] 缺少模块间集成测试
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: 测试覆盖率审计
 - **描述**: 约 22/30 跨模块场景未测试，包括：FB→Sieve（空FB）、Sieve→Cofactorizer（1LP→2LP 升级）、Filter→MatrixBuilder（singleton 链）、BL→Sqrt（多依赖→多次 sqrt 尝试）、Sqrt→GCD（X=Y 退化情况）
 
 ### [TEST] 缺少压力/模糊测试
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 5 审计)
 - **来源**: 测试覆盖率审计
 - **描述**: 无 1000+ 关系过滤、100K+ FB 构建、1M 筛选位置、50K×50K 矩阵构建等压力测试
@@ -764,6 +862,7 @@
 ## P1 — Session 6 深度审计新发现
 
 ### [BUG] SparseRow::set() 非幂等——unsorted 时重复 set 等价于 clear
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 审计)
 - **来源**: `include/gnfs/linalg/sparse_matrix.hpp` 行 ~70-80
 - **描述**: `SparseRow::set(col)` 在 `sorted_=false` 时不检查重复，直接 push_back。若同一 col 被 set 两次，ensure_sorted() 的 GF(2) 去重会将其抵消为 0，即 `set(5); set(5)` = `clear(5)`。这违反了 "set" 的语义契约（幂等性）。
@@ -771,6 +870,7 @@
 - **建议**: 在 unsorted 分支中加线性扫描去重检查，或改名为 `toggle()`/`xor_bit()` 明确 GF(2) 语义。
 
 ### [BUG] BitVector::xor_with() 无大小检查——不等长向量导致越界读取
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 审计)
 - **来源**: `include/gnfs/linalg/sparse_matrix.hpp` 行 354-357
 - **描述**: `xor_with(const BitVector& other)` 直接用 `this->bits_.size()` 作为循环上限，但不检查 `other.bits_.size()` 是否相同。若 other 更短，读取 `other.bits_[i]` 越界（UB）。
@@ -778,6 +878,7 @@
 - **建议**: 加 `assert(bits_.size() == other.bits_.size())` 或取 `min(size(), other.size())`。
 
 ### [BUG] SparseMatrix::multiply_blocks() 索引计算错误（死代码）
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 审计)
 - **来源**: `include/gnfs/linalg/sparse_matrix.hpp` 行 298-319
 - **描述**: `multiply_blocks(x, result)` 中使用 `x[block_idx * rows_.size() + i]`，但 x 的布局假设是 (block_size × num_rows)，与 BlockVector 的实际布局不一致。函数签名使用 `std::vector<uint64_t>&` 而非 `BlockVector`，表明这是早期实现的遗留代码。
@@ -785,6 +886,7 @@
 - **建议**: 确认是否为死代码，若是则删除；若需保留则修正索引布局。
 
 ### [BUG] rational_sqrt 中 fb.rational()[idx] 无越界检查
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 审计)
 - **来源**: `include/gnfs/sqrt/rational_sqrt.hpp` 行 107-110
 - **描述**: `uint32_t p = fb.rational()[idx].p`，其中 `idx` 来自 `fb_exponents` 的 key（关系中的 factor base 索引）。没有检查 `idx < fb.rational().size()`，若关系中包含无效的 factor base 索引，会导致越界访问。
@@ -792,6 +894,7 @@
 - **建议**: 添加 `if (idx >= fb.rational().size()) continue;` 或 assert 守护。
 
 ### [BUG] MurphyEvaluator rng_ 数据竞争——Kleinjung 多线程并行使用
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: `include/gnfs/polynomial/murphy_evaluator.hpp:337` + `include/gnfs/polynomial/kleinjung_selector.hpp:133,167`
 - **描述**: `MurphyEvaluator::compute()` 内部调用 `sample_e_score_log()` 时使用成员变量 `rng_`（std::mt19937_64）生成随机数。在 `kleinjung_selector.hpp` 中，单个 `evaluator` 对象通过引用传递给 `process_candidate`，后者在 `parallel_for_index` 中被多线程并发调用。多线程同时调用 `dist_a(rng_)` 产生数据竞争（UB）
@@ -799,6 +902,7 @@
 - **建议**: 改用 thread_local rng，或为每个线程传递独立的 MurphyEvaluator 副本
 
 ### [BUG] number_field norm_linear 符号公式错误——奇数度时差异被 abs 掩盖
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: `include/gnfs/sqrt/number_field.hpp:372-406`
 - **描述**: norm_linear 计算 `N(a - b·α) = b^d · f(a/b)`，但数学上正确的公式是 `(-b)^d · f(a/b) = (-1)^d · b^d · f(a/b)`。奇数度 d 时差 `-1` 倍。代码在 line 401-403 取 abs() 掩盖了符号错误，但这意味着所有 norm 值都是正数，丢失了符号信息
@@ -806,6 +910,7 @@
 - **建议**: 使用 `(-b)^d · f(a/b)` 或在有符号场景保留原始符号
 
 ### [BUG] next_prime() 在 couveignes/hensel 中 uint64 溢出——大素数搜索无限循环
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: `include/gnfs/sqrt/couveignes.hpp:619-628` + `include/gnfs/sqrt/hensel_sqrt.hpp:550-562`
 - **描述**: 两处独立的 `next_prime()` 实现中，`n++` / `n += 2` 当 n 接近 UINT64_MAX 时溢出 wrap 到 0 或小值，导致无限循环。在 Hensel 中还会触发 O(sqrt(n)) 的暴力试除循环，n 较大时极慢
@@ -813,6 +918,7 @@
 - **建议**: 添加溢出检查 `if (n >= UINT64_MAX - 2) return std::nullopt;`
 
 ### [BUG] SmallVector move constructor/assignment 不销毁源对象的 inline 元素
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: `include/gnfs/util/small_vector.hpp:43-54, 67-79`
 - **描述**: Move constructor (line 43-54) 和 move assignment (line 67-79) 在 `other.is_inline()` 时逐个移动 inline 存储中的元素，然后设 `other.size_ = 0`。但被移动的源元素的析构函数未被调用。对于有非平凡析构函数的类型 T（如 std::string、Integer），这会导致资源泄露
@@ -820,6 +926,7 @@
 - **建议**: move 后调用 `other.inline_ptr()[i].~T()` 析构每个已移动的源元素
 
 ### [BUG] polynomial_optimizer generate_smooth_numbers 不去重
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: `include/gnfs/polynomial/polynomial_optimizer.hpp:323-355`
 - **描述**: 光滑数生成后排序（line 344）但未去重。同一个光滑数可由不同素数组合生成（如 6=2×3 和 3×2），导致重复候选
@@ -827,6 +934,7 @@
 - **建议**: 排序后添加 `smooth.erase(std::unique(smooth.begin(), smooth.end()), smooth.end())`
 
 ### [BUG] RelationCollector::merge() 未锁定 other 的 mutex——并发修改时数据竞争
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: `include/gnfs/relation/collector.hpp:227`
 - **描述**: `merge()` 获取 `this->mutex_` 但直接读取 `other.relations_` 而不加锁。若另一个线程正在对 other 执行 add()，vector 可能正在重新分配，导致 UB
@@ -834,6 +942,7 @@
 - **建议**: 同时锁定 `other.mutex_`（注意锁顺序避免死锁）
 
 ### [BUG] RelationCollector callback 在非递归 mutex 下调用——回调内访问 collector 死锁
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: `include/gnfs/relation/collector.hpp:291-294`
 - **描述**: `update_stats()` 在 `add()` 持有 `mutex_` 时被调用，callback 在 mutex 保护内执行。若 callback 调用 `collector.size()` 或其他也需要 mutex 的方法，会死锁（mutex 不是 recursive_mutex）
@@ -841,6 +950,7 @@
 - **建议**: 改用 `std::recursive_mutex`，或在 mutex 外调用 callback
 
 ### [BUG] Logger::level() 读取 level_ 无锁——与 set_level() 的写操作构成数据竞争
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
 - **来源**: `include/gnfs/util/logger.hpp:63`
 - **描述**: `level()` 直接返回 `level_` 而不持有 mutex，但 `set_level()` 在 mutex 保护下写入 `level_`。C++ 标准认定这是 data race (UB)
@@ -852,6 +962,7 @@
 ## P1 — Session 6 跨模块交互审计新发现
 
 ### [BUG] build_row() 符号列基于 a<0 而非 (a-bm)<0——不使用 QC 时符号完全错误
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 跨模块审计)
 - **来源**: LinAlg→Sqrt 跨模块交互
 - **文件**: `include/gnfs/linalg/matrix_builder.hpp:527-530` vs `606-621`
@@ -860,6 +971,7 @@
 - **建议**: `build_row()` 中使用 `ctx.rational_value(a,b).is_negative()` 计算符号
 
 ### [BUG] matrix_builder FB 索引无越界检查——FB 不匹配时静默写入错误列
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 跨模块审计)
 - **来源**: Relation→LinAlg 跨模块交互
 - **文件**: `include/gnfs/linalg/matrix_builder.hpp:540,553`
@@ -868,6 +980,7 @@
 - **建议**: 添加 `assert(idx < mapping.num_rational_fb)` 和 `assert(idx < mapping.num_algebraic_fb)`
 
 ### [BUG] FactorBase::add_rational() 无去重——同一素数添加两次导致索引不一致
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 跨模块审计)
 - **来源**: FactorBase→全模块交互
 - **文件**: `include/gnfs/factor_base/factor_base.hpp:94-98`
@@ -876,6 +989,7 @@
 - **建议**: add_rational() 中检查 `rat_index_.count(p)` 去重
 
 ### [BUG] 代数因子基射影根 (r=UINT32_MAX) 在筛选中产生算术垃圾
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 跨模块审计)
 - **来源**: FactorBase→Sieve 跨模块交互
 - **文件**: `include/gnfs/factor_base/factor_base.hpp:78` + `include/gnfs/sieve/lattice_sieve.hpp:342`
@@ -884,6 +998,7 @@
 - **建议**: 在 sieve 循环中检测 `r == PROJECTIVE_ROOT` 并走 `p | b` 专用路径
 
 ### [BUG] sieve_batch() 是死代码——所有候选静默丢弃
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 跨模块审计)
 - **来源**: Sieve 内部审计
 - **文件**: `include/gnfs/sieve/lattice_sieve.hpp:127-131`
@@ -892,6 +1007,7 @@
 - **建议**: 完成 TODO 实现或标记为 `[[deprecated]]`
 
 ### [BUG] Sieve 区域对大 N 导致灾难性内存分配（>100GB）
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 跨模块审计)
 - **来源**: GNFSParams→Sieve 跨模块交互
 - **文件**: `include/gnfs/core/params.hpp:128-137` + `include/gnfs/sieve/lattice_sieve.hpp` 构造函数
@@ -900,6 +1016,7 @@
 - **建议**: 分块筛选（bucket sieve）或动态 clamp sieve_height 使总大小 < 可用内存的 50%
 
 ### [BUG] SieveParams::combined_threshold() uint8_t 溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 跨模块审计)
 - **来源**: GNFSParams→Sieve 参数传递
 - **文件**: `include/gnfs/sieve/lattice_sieve.hpp:37`
@@ -908,6 +1025,7 @@
 - **建议**: 改为 `uint16_t combined_threshold()` 或使用两侧分别比较
 
 ### [BUG] Cofactorizer::stats_ 无 mutex 保护——多线程共享时数据竞争
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 跨模块审计)
 - **来源**: Sieve→Cofactor 线程安全审计
 - **文件**: `include/gnfs/cofactor/cofactorizer.hpp:137,140,143,172`
@@ -916,6 +1034,7 @@
 - **建议**: 将 stats_ 成员改为 `std::atomic<uint64_t>` 或添加 mutex
 
 ### [BUG] Hensel 提升无精度充分性验证——系数超出 modulus/2 时静默错误
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 跨模块审计)
 - **来源**: Sqrt 模块精度分析
 - **文件**: `include/gnfs/sqrt/hensel_sqrt.hpp:226-240`
@@ -924,6 +1043,7 @@
 - **建议**: 提升后添加验证：计算 sqrt² mod p^k 并与 product 比较
 
 ### [BUG] 无 N 素性检测——素数 N 导致完整管线空转后静默失败
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 跨模块审计)
 - **来源**: 全管线边缘情况分析
 - **文件**: 管线入口（如 `tests/test_gnfs_e2e.cpp:136`）
@@ -932,6 +1052,7 @@
 - **建议**: 在管线入口添加 `mpz_probab_prime_p(n, 25)` 快速素性测试
 
 ### [BUG] Couveignes 回退公式 (N+1)/2 对所有 N 都数学错误
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6 跨模块审计)
 - **来源**: Sqrt 模块数学正确性分析
 - **文件**: `include/gnfs/sqrt/couveignes.hpp:325-328`
@@ -944,6 +1065,7 @@
 ## P0 — Session 6 深层审计（第二轮）
 
 ### [BUG] compute_log_prime() 系统性低估所有素数对数值
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: FactorBase 模块逐行审计
 - **文件**: `include/gnfs/factor_base/factor_base.hpp:175-181`
@@ -952,6 +1074,7 @@
 - **建议**: builder.cpp 改用 `compute_log_prime_precise()`，或修正 fast 版本使用定点算术
 
 ### [BUG] 代数侧大素数映射仅按 p 索引，忽略根 r——不同素理想被合并为同一列
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: LinAlg 矩阵构建逐行审计
 - **文件**: `include/gnfs/linalg/matrix_builder.hpp:350,363-364,579-591`
@@ -960,6 +1083,7 @@
 - **建议**: 将 `alg_lp_to_col` 的键改为 `(p, r)` 对（如 `(uint64_t(p) << 32) | r`），与 factor base 的 `alg_index_` 保持一致
 
 ### [BUG] Block Lanczos partial_inverse() 未将非主元行清零——D·A·D ≠ D
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: LinAlg Block Lanczos 逐行审计
 - **文件**: `include/gnfs/linalg/block_lanczos.hpp:119-157`
@@ -972,6 +1096,7 @@
 ## P1 — Session 6 深层审计（第二轮）
 
 ### [BUG] Block Lanczos add_identity() 添加完整 64×64 单位矩阵——应为 mask 子空间
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: LinAlg Block Lanczos 逐行审计
 - **文件**: `src/linalg/block_lanczos.cpp:356-361` + `include/gnfs/linalg/block_lanczos.hpp:112-115`
@@ -980,6 +1105,7 @@
 - **建议**: 改为 `DA.add_identity_masked(~mask_cur)`（需新增方法），或手动 `for (int i = 0; i < 64; i++) if (!(mask_cur & (1ULL<<i))) DA.rows[i] ^= (1ULL<<i);`
 
 ### [BUG] Couveignes Gray Code 系数漂移——翻转间无 mod M 约化导致 CRT 不一致
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: Sqrt 模块数学正确性分析
 - **文件**: `include/gnfs/sqrt/couveignes.hpp:415-437`
@@ -988,6 +1114,7 @@
 - **建议**: 每次加减后添加 `current_coeffs[ci] %= M` 并 center，或在 verify_current() 中先约化再检查
 
 ### [BUG] estimate_initial_log typical_i 是半宽度但 typical_j 是中点——不一致导致初值偏高
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: Sieve 模块逐行审计
 - **文件**: `include/gnfs/sieve/lattice_sieve.hpp:213-214`
@@ -996,6 +1123,7 @@
 - **建议**: 两者统一使用区间均值绝对值：`typical_i = (i_max - i_min) / 3.0`（RMS 近似），`typical_j = (j_max - j_min) / 3.0`
 
 ### [BUG] params.hpp special_q_min = rational_bound/5 落入因子基范围——浪费 Special-Q
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: Core→Sieve 参数分析
 - **文件**: `include/gnfs/core/params.hpp:165`
@@ -1004,6 +1132,7 @@
 - **建议**: 改为 `special_q_min = algebraic_bound + 1` 或 `rational_bound + 1`
 
 ### [BUG] base_m.cpp select() 不验证 f 在 Q 上不可约——可约多项式导致 GNFS 失败
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: Polynomial 模块审计
 - **文件**: `src/polynomial/base_m.cpp:8-37`
@@ -1012,6 +1141,7 @@
 - **建议**: 选多项式后添加不可约性验证（如用 Berlekamp 或 LLL 算法），不可约时重选 m
 
 ### [BUG] Integer bit_length(0) 返回 1——GMP 约定导致下游边界条件错误
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: Core 模块逐行审计
 - **文件**: `src/core/integer.cpp:93-94`
@@ -1020,6 +1150,7 @@
 - **建议**: 包装 bit_length()：`return is_zero() ? 0 : mpz_sizeinbase(value_, 2);`
 
 ### [BUG] Integer 除零行为不一致——Integer(0) 除法 GMP abort，int64_t(0) 除法抛异常
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: Core 模块逐行审计
 - **文件**: `src/core/integer.cpp`
@@ -1028,6 +1159,7 @@
 - **建议**: 添加前置检查 `if (other.is_zero()) throw std::domain_error("division by zero")`
 
 ### [BUG] Integer::sqrt() 对负数输入无检查——mpz_sqrt 调用 GMP abort
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: Core 模块逐行审计
 - **文件**: `include/gnfs/core/integer.hpp` (sqrt 方法)
@@ -1036,6 +1168,7 @@
 - **建议**: 添加 `if (is_negative()) throw std::domain_error("sqrt of negative")`
 
 ### [BUG] Integer::powmod() 不验证负指数——负指数时结果未定义
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: Core 模块逐行审计
 - **文件**: `include/gnfs/core/integer.hpp` (powmod 方法)
@@ -1044,6 +1177,7 @@
 - **建议**: 添加 `if (exp.is_negative()) { /* 检查互素或抛异常 */ }`
 
 ### [BUG] class_group factor_ideal val=0 且 a=b·r 时无限循环
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: Sqrt/ClassGroup 模块逐行审计
 - **文件**: `include/gnfs/sqrt/class_group.hpp:383-393`
@@ -1052,6 +1186,7 @@
 - **建议**: val==0 时使用 `Integer::valuation(a - b·α, p)` 精确计算赋值
 
 ### [BUG] ECM Stage 2 链式乘法增加因子丢失概率
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: Cofactor 模块算法分析
 - **文件**: `include/gnfs/cofactor/ecm.hpp:410-413`
@@ -1060,6 +1195,7 @@
 - **建议**: 改为独立计算每个 p·Q0 并检查 Z 坐标，或至少在 gcd=N 时回溯逐个检查
 
 ### [BUG] gauss.hpp build_null_space() 的 `history` 参数从未使用——死参数
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: LinAlg 模块逐行审计
 - **文件**: `include/gnfs/linalg/gauss.hpp:161-219`
@@ -1068,6 +1204,7 @@
 - **建议**: 移除 history 参数，或重写使用 history 的高效版本
 
 ### [BUG] Block Lanczos 终止条件仅检查 V_cur 是否为零——应额外检查 A_cur 秩
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6 深层审计)
 - **来源**: LinAlg Block Lanczos 算法分析
 - **文件**: `src/linalg/block_lanczos.cpp:336`
@@ -1080,6 +1217,7 @@
 ## P0 — Session 7 数学/指针/API 深层审计
 
 ### [BUG] 4 处 `static Integer zero` 返回引用——线程不安全 + 别名陷阱
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 7 审计)
 - **来源**: 指针/生命周期审计
 - **文件**:
@@ -1092,6 +1230,7 @@
 - **建议**: 返回值类型改为 `Integer`（按值），或使用 `thread_local static Integer zero`
 
 ### [BUG] estimate_initial_log NaN/Inf → uint16_t 强制转换是 UB
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 7 审计)
 - **来源**: C++ API 误用审计
 - **文件**: `include/gnfs/sieve/lattice_sieve.hpp:221-231`
@@ -1104,6 +1243,7 @@
 ## P1 — Session 7 数学/指针/API 深层审计
 
 ### [BUG] Schirokauer precompute_for_prime 同样假设"无根=不可约"——d≥4 时错误
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 7 数学审计)
 - **来源**: LinAlg Schirokauer 数学正确性分析
 - **文件**: `include/gnfs/linalg/schirokauer.hpp:369-385`
@@ -1113,6 +1253,7 @@
 - **注**: 此条目是对已有 P0 条目 "Hensel/Couveignes 不可约性检查" 的补充——该条目列了 3 个文件，现增加第 4 个
 
 ### [BUG] SchirokaurMap 存储 `const PolynomialContext&`——潜在悬垂引用
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 7 指针审计)
 - **来源**: 生命周期分析
 - **文件**: `include/gnfs/linalg/schirokauer.hpp:342`
@@ -1121,6 +1262,7 @@
 - **建议**: 改为存储 `std::shared_ptr<const PolynomialContext>` 或 clone 一份
 
 ### [BUG] LatticeSieve 存储 `const PolynomialContext&` 和 `const FactorBase&`——悬垂引用 + 线程传播
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 7 指针审计)
 - **来源**: 生命周期分析
 - **文件**: `include/gnfs/sieve/lattice_sieve.hpp:186-187`
@@ -1129,6 +1271,7 @@
 - **建议**: `sieve_parallel` 参数改为 `const PolynomialContext&, const FactorBase&` 直接传递，或内部使用 shared_ptr
 
 ### [BUG] SparseRow const_cast ensure_sorted() 多线程并发排序是 UB
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 7 指针审计)
 - **来源**: 并发安全审计
 - **文件**: `include/gnfs/linalg/sparse_matrix.hpp:61-63,93,134,150`
@@ -1137,6 +1280,7 @@
 - **建议**: `sorted_` 和 `indices_` 标记为 `mutable`，构造后立即调用 `ensure_sorted()`（或在 build_index() 中统一排序），消除运行时 const_cast
 
 ### [BUG] RelationCollector::set_callback() 无 mutex 保护——与 add() 数据竞争
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 7 指针审计)
 - **来源**: 并发安全审计
 - **文件**: `include/gnfs/relation/collector.hpp:249-251`
@@ -1145,6 +1289,7 @@
 - **建议**: `set_callback()` 内加 `std::lock_guard<std::mutex> lock(mutex_)`
 
 ### [BUG] IntPolynomial mutable operator[] 无上限检查——任意大 resize 导致 OOM
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 7 API 审计)
 - **来源**: C++ 容器安全审计
 - **文件**: `include/gnfs/polynomial/int_polynomial.hpp:75-80`
@@ -1153,6 +1298,7 @@
 - **建议**: 添加 `assert(i <= MAX_DEGREE)` 或 `if (i > 1000) throw`
 
 ### [BUG] Eratosthenes 筛法 `p * 2` 在 p > UINT32_MAX/2 时溢出
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 7 API 审计)
 - **来源**: 整数溢出审计
 - **文件**: `src/factor_base/builder.cpp:80,102,131`
@@ -1161,6 +1307,7 @@
 - **建议**: 改为 `for (uint64_t k = uint64_t(p) * 2; k <= bound; k += p)`
 
 ### [BUG] FactorBaseBuilder 实例方法 build(uint32,uint32) 返回空 FactorBase
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 7 API 审计)
 - **来源**: 死代码/非功能 API 审计
 - **文件**: `src/factor_base/builder.cpp:62-69`
@@ -1169,6 +1316,7 @@
 - **建议**: 标记 `[[deprecated]]` 并抛异常，或完全删除
 
 ### [BUG] sieve_parallel() 使用不必要的 mutex 保护独立数组写入——性能浪费
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 7 API 审计)
 - **来源**: 并发模式审计
 - **文件**: `include/gnfs/sieve/lattice_sieve.hpp:153,168-169`
@@ -1177,6 +1325,7 @@
 - **建议**: 移除 `results_mutex` 和 `lock_guard`
 
 ### [BUG] ThreadPool parallel_for/parallel_for_index 通过引用捕获 func——若未来添加 early return 则悬垂
+- **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 7 指针审计)
 - **来源**: Lambda 捕获安全审计
 - **文件**: `include/gnfs/util/thread_pool.hpp:104,140`
@@ -1189,6 +1338,7 @@
 ## 已完成
 
 ### [OPT] ~~Hensel Sqrt 预计算优化~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-02-20 (Session 2)
 - **解决日期**: 2026-02-22 (Session 3)
 - **结果**: Hensel 15.5× 加速，25-digit 总耗时 603s → 236.5s
