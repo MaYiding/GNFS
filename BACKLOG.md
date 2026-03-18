@@ -70,23 +70,21 @@
 - **影响**: 非 monic 多项式会产生完全错误的平方根——Kleinjung 多项式不可用
 - **建议**: 添加构造时 assert `f[d] == 1`，或在归约中除以 f[d]（需 mod inverse）
 
-### [BUG] polynomial_optimizer Newton 方法 divmod 覆写导致永不收敛
-- **状态**: 🔴 待处理
+### [BUG] ~~polynomial_optimizer Newton 方法 divmod 覆写导致永不收敛~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 6 审计)
-- **来源**: Polynomial 模块审计
-- **文件**: `include/gnfs/polynomial/polynomial_optimizer.hpp:57-68`
-- **描述**: Line 58: `Integer::divmod(delta, fm, fm, dfm)` 正确计算 `delta = fm/dfm`，但 `fm` 被覆写为余数。随后 Lines 61-68 用覆写后的 `fm`（余数）重新计算 `delta = (fm mod dfm) / dfm`，整数除法结果永远为 0。Newton 步长 Δ=0，立即退出循环，不进行任何优化
-- **影响**: Kleinjung Stage 2 牛顿法根优化完全无效——每次都返回初始值 m，浪费计算时间且不改善多项式质量
-- **建议**: 删除 Lines 61-68（if/else 两个分支做同一件事），保留 Line 58 的 divmod 结果
+- **解决日期**: 2026-03-09
+- **解决方式**: 删除冗余的 lines 61-68，保留 divmod 结果；添加起始点短路检查
+- **验证**: test_newton_root 4 个测试用例全部通过，冒烟测试 11/11 通过
+- **Commit**: `82bbec1`
 
-### [BUG] polynomial_optimizer newton_root() 验证永远成功
-- **状态**: 🔴 待处理
+### [BUG] ~~polynomial_optimizer newton_root() 验证永远成功~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 6 审计)
-- **来源**: Polynomial 模块审计
-- **文件**: `include/gnfs/polynomial/polynomial_optimizer.hpp:90-108`
-- **描述**: (1) Line 92: `divmod(remainder, fm_final, fm_final, n)` 中 `remainder` 实际存的是商，`fm_final` 存的是余数——变量名完全颠倒; (2) Line 95 检查 `remainder.is_zero()` 实际检查的是商是否为零; (3) Line 108: 无论验证结果如何，函数总是 `return m`——验证块是纯装饰
-- **影响**: 无效的多项式（f(m) ≢ 0 mod n）永远不会被拒绝
-- **建议**: 修正 divmod 参数顺序，在验证失败时返回 nullopt
+- **解决日期**: 2026-03-09
+- **解决方式**: 修正 divmod 参数名（quotient/actual_rem），验证失败时返回 nullopt
+- **验证**: test_newton_root Case 2 验证 nullopt 返回正确
+- **Commit**: `82bbec1`
 
 ### [BUG] params.hpp special_q_max 的 uint32 溢出
 - **状态**: 🔴 待处理
@@ -604,14 +602,12 @@
 - **影响**: 所有非 depressed 三次多项式的类群计算使用错误判别式
 - **建议**: 使用完整三次判别式公式，或先做 Tschirnhaus 变换消除 x² 项
 
-### [BUG] polynomial_optimizer divmod 参数命名与语义颠倒
-- **状态**: 🔴 待处理
+### [BUG] ~~polynomial_optimizer divmod 参数命名与语义颠倒~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 6 审计)
-- **来源**: Polynomial 模块审计
-- **文件**: `include/gnfs/polynomial/polynomial_optimizer.hpp:91-92`
-- **描述**: `Integer::divmod(remainder, fm_final, fm_final, n)` — 根据 divmod 签名 `(q, r, a, b)`，变量 `remainder` 实际接收的是商，`fm_final` 接收余数。变量名完全颠倒。后续 line 95 `remainder.is_zero()` 检查的是商=0（即 |f(m)| < n），而非 f(m) ≡ 0 mod n
-- **影响**: 验证逻辑不正确（虽然函数总是返回 m 所以影响被掩盖）
-- **建议**: 交换变量名 `Integer::divmod(quotient, remainder, fm_final, n)`
+- **解决日期**: 2026-03-09
+- **解决方式**: 变量名改为 `quotient` 和 `actual_rem`，语义与 divmod 签名一致
+- **Commit**: `82bbec1`
 
 ---
 
