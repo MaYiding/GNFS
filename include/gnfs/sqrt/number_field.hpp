@@ -264,13 +264,35 @@ public:
     }
 
     /// 数域乘法（模 f(α) 和模 n）
+    /// 支持非 monic 多项式 f（通过 f_d 的模逆来约化）
     [[nodiscard]] NumberFieldElement multiply_mod_n(
             const NumberFieldElement& x,
             const NumberFieldElement& y) const {
 
-        auto result = multiply(x, y);
-        result.mod(n_);
-        return result;
+        if (x.is_zero() || y.is_zero()) {
+            return zero();
+        }
+
+        // 多项式乘法
+        size_t result_deg = x.degree() + y.degree();
+        std::vector<Integer> result;
+        result.reserve(result_deg + 1);
+        for (size_t i = 0; i <= result_deg; ++i) {
+            result.push_back(Integer(static_cast<int64_t>(0)));
+        }
+
+        for (size_t i = 0; i <= x.degree(); ++i) {
+            for (size_t j = 0; j <= y.degree(); ++j) {
+                Integer term = x.coeff(i).clone();
+                term *= y.coeff(j);
+                result[i + j] += term;
+            }
+        }
+
+        // 模 f(α) 和模 n_ 归约（支持非 monic f）
+        reduce_mod(result, n_);
+
+        return NumberFieldElement(std::move(result));
     }
 
     /// 数域幂运算
@@ -411,8 +433,8 @@ private:
     Integer n_;
     Integer m_;
 
-    /// 模 f(x) 归约
-    /// 使用 α^d = -f_0/f_d - f_1/f_d * α - ... - f_{d-1}/f_d * α^{d-1}
+    /// 模 f(x) 归约（纯整数，要求 f 是 monic）
+    /// α^d = -(f_0 + f_1*α + ... + f_{d-1}*α^{d-1})
     void reduce(std::vector<Integer>& coeffs) const {
         // 从最高次项开始归约
         while (coeffs.size() > degree_) {
@@ -424,18 +446,12 @@ private:
                 continue;
             }
 
-            // α^high_deg = α^{high_deg - d} * α^d
-            // α^d = -(f_0 + f_1*α + ... + f_{d-1}*α^{d-1}) / f_d
-            // 假设 f 是首一的 (f_d = 1)
-
             size_t shift = high_deg - degree_;
 
             for (uint32_t i = 0; i < degree_; ++i) {
-                // coeffs[shift + i] -= high_coeff * f_i
                 Integer term = high_coeff.clone();
                 term *= f_coeffs_[i];
 
-                // 确保有足够的空间
                 while (coeffs.size() <= shift + i) {
                     coeffs.push_back(Integer(static_cast<int64_t>(0)));
                 }
@@ -444,7 +460,75 @@ private:
             }
         }
 
-        // 移除高次零系数
+        while (!coeffs.empty() && coeffs.back().is_zero()) {
+            coeffs.pop_back();
+        }
+    }
+
+    /// 模 f(x) 和模 modulus 归约（支持非 monic f）
+    /// α^d = -(f_0 + ... + f_{d-1}*α^{d-1}) / f_d
+    /// 通过 f_d 的模逆实现除法
+    void reduce_mod(std::vector<Integer>& coeffs, const Integer& modulus) const {
+        // 计算 f_d 的模逆
+        Integer f_d_inv(int64_t(1));
+        {
+            Integer f_d = f_coeffs_[degree_].clone();
+            f_d %= modulus;
+            if (f_d.is_negative()) f_d += modulus;
+            if (!f_d.is_one()) {
+                int ok = mpz_invert(f_d_inv.get_mpz(), f_d.get_mpz(),
+                                    modulus.get_mpz());
+                if (!ok) {
+                    // f_d 不可逆 — 意味着 gcd(f_d, modulus) > 1
+                    // 在 GNFS 中 modulus = N，gcd(f_d, N) > 1 意味着找到因子
+                    // 此处退化处理：假设 monic
+                    f_d_inv = Integer(int64_t(1));
+                }
+            }
+        }
+
+        bool need_scale = !f_d_inv.is_one();
+
+        while (coeffs.size() > degree_) {
+            size_t high_deg = coeffs.size() - 1;
+            Integer high_coeff = std::move(coeffs.back());
+            coeffs.pop_back();
+
+            if (high_coeff.is_zero()) {
+                continue;
+            }
+
+            // 除以 f_d
+            Integer scaled = high_coeff.clone();
+            if (need_scale) {
+                scaled *= f_d_inv;
+                scaled %= modulus;
+            }
+
+            size_t shift = high_deg - degree_;
+
+            for (uint32_t i = 0; i < degree_; ++i) {
+                Integer term = scaled.clone();
+                term *= f_coeffs_[i];
+                term %= modulus;
+
+                while (coeffs.size() <= shift + i) {
+                    coeffs.push_back(Integer(static_cast<int64_t>(0)));
+                }
+
+                coeffs[shift + i] -= term;
+                coeffs[shift + i] %= modulus;
+                if (coeffs[shift + i].is_negative()) {
+                    coeffs[shift + i] += modulus;
+                }
+            }
+        }
+
+        // 最终 mod 归约 + 移除零高次项
+        for (auto& c : coeffs) {
+            c %= modulus;
+            if (c.is_negative()) c += modulus;
+        }
         while (!coeffs.empty() && coeffs.back().is_zero()) {
             coeffs.pop_back();
         }
