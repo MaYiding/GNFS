@@ -192,6 +192,77 @@ void test_stream_output() {
     std::cout << "  Stream output: PASS" << std::endl;
 }
 
+void test_uint64_construction() {
+    std::cout << "Testing uint64_t construction..." << std::endl;
+
+    // --- Case 1: Value exactly at 2^63 (first value that overflows int64_t) ---
+    {
+        uint64_t val = uint64_t(1) << 63;  // 9223372036854775808
+        Integer n(val);
+        assert(n.is_positive() && "2^63 should be positive, not negative from int64_t overflow");
+        assert(n.to_string() == "9223372036854775808");
+        assert(n.bit_length() == 64);
+    }
+
+    // --- Case 2: UINT64_MAX ---
+    {
+        uint64_t val = UINT64_MAX;  // 18446744073709551615
+        Integer n(val);
+        assert(n.is_positive());
+        assert(n.to_string() == "18446744073709551615");
+    }
+
+    // --- Case 3: Value in safe range (< 2^63) still works ---
+    {
+        uint64_t val = 42;
+        Integer n(val);
+        assert(n.to_int64() == 42);
+    }
+
+    // --- Case 4: Zero via uint64_t ---
+    {
+        uint64_t val = 0;
+        Integer n(val);
+        assert(n.is_zero());
+    }
+
+    // --- Case 5: Assignment from uint64_t ---
+    {
+        Integer n(int64_t(0));
+        uint64_t val = uint64_t(1) << 63;
+        n = val;
+        assert(n.is_positive());
+        assert(n.to_string() == "9223372036854775808");
+    }
+
+    // --- Case 6: Arithmetic with large uint64_t Integer ---
+    {
+        uint64_t val = uint64_t(1) << 63;
+        Integer a(val);
+        Integer b(val);
+        Integer sum = a + b;
+        // 2^63 + 2^63 = 2^64
+        assert(sum.to_string() == "18446744073709551616");
+    }
+
+    // --- Case 7: Regression — int literals still work (no ambiguity) ---
+    {
+        Integer a(42);      // int literal
+        Integer b(-17);     // negative int literal
+        assert(a.to_int64() == 42);
+        assert(b.to_int64() == -17);
+    }
+
+    // --- Case 8: Regression — int64_t explicit still works ---
+    {
+        Integer a(int64_t(-1));
+        assert(a.to_int64() == -1);
+        assert(a.is_negative());
+    }
+
+    std::cout << "  uint64_t construction: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== Integer Tests ===" << std::endl;
 
@@ -204,6 +275,7 @@ int main() {
     test_powmod();
     test_primality();
     test_stream_output();
+    test_uint64_construction();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
