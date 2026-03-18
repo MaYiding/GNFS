@@ -37,6 +37,17 @@ public:
             return std::nullopt;
         }
 
+        // 如果起始点已满足 f(m) ≡ 0 mod n，直接返回
+        // （GNFS base-m 展开保证 f(m) = N，此检查短路常见情况）
+        {
+            Integer fm_init = f.evaluate(initial);
+            Integer q_init, r_init;
+            Integer::divmod(q_init, r_init, fm_init, n);
+            if (r_init.is_zero()) {
+                return initial.clone();
+            }
+        }
+
         Integer m = initial.clone();
         Integer prev_m = m.clone();
 
@@ -53,19 +64,9 @@ public:
             }
 
             // 牛顿更新: m_new = m - f(m)/f'(m)
-            // 为了避免精度问题，使用整数除法
-            Integer delta;
-            Integer::divmod(delta, fm, fm, dfm);
-
-            // delta = fm / dfm (取整)
-            if (fm.is_negative() != dfm.is_negative()) {
-                // 负除法需要调整
-                delta = fm.clone();
-                delta /= dfm;
-            } else {
-                delta = fm.clone();
-                delta /= dfm;
-            }
+            // divmod(q, r, a, b): q = a/b, r = a%b
+            Integer delta, rem;
+            Integer::divmod(delta, rem, fm, dfm);
 
             prev_m = m.clone();
             m -= delta;
@@ -86,26 +87,17 @@ public:
             }
         }
 
-        // 验证结果
+        // 验证结果: f(m) ≡ 0 mod n?
         Integer fm_final = f.evaluate(m);
-        Integer remainder;
-        Integer::divmod(remainder, fm_final, fm_final, n);
+        Integer quotient, actual_rem;
+        Integer::divmod(quotient, actual_rem, fm_final, n);
 
-        // 如果 f(m) mod n 接近 0 或 n，认为成功
-        if (remainder.is_zero()) {
+        if (actual_rem.is_zero()) {
             return m;
         }
 
-        // 检查是否接近 n
-        Integer n_minus_rem = n.clone();
-        n_minus_rem -= remainder;
-        if (n_minus_rem.is_zero() ||
-            remainder.to_double() < n.to_double() * 1e-10 ||
-            n_minus_rem.to_double() < n.to_double() * 1e-10) {
-            return m;
-        }
-
-        return m;  // 返回最佳结果
+        // 验证失败：f(m) 不是 n 的倍数
+        return std::nullopt;
     }
 
     /// 简化版牛顿法（自动计算导数）

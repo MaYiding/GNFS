@@ -283,6 +283,81 @@ void test_polynomial_optimizer() {
     std::cout << "  PASSED" << std::endl;
 }
 
+/// 测试 newton_root: delta 非零 + 验证逻辑
+void test_newton_root() {
+    std::cout << "Testing newton_root..." << std::endl;
+
+    // Case 1: 起始点满足 f(m) ≡ 0 mod n → 直接返回 m
+    // f(x) = x^2 + 2x, m=11, f(11)=143, n=143 → f(m) mod n = 0
+    {
+        std::vector<Integer> c;
+        c.push_back(Integer(static_cast<int64_t>(0)));  // a0 = 0
+        c.push_back(Integer(2));                         // a1 = 2
+        c.push_back(Integer(1));                         // a2 = 1
+        IntPolynomial f(std::move(c));
+        Integer n(143);
+        Integer m0(11);
+
+        auto result = PolynomialOptimizer::newton_root(f, m0, n);
+        assert(result.has_value());
+        assert(result.value().to_int64() == 11);
+        std::cout << "  Case 1 (valid starting point): PASSED" << std::endl;
+    }
+
+    // Case 2: f(m) ≢ 0 mod n → Newton 迭代后验证失败 → nullopt
+    // f(x) = x^2 - 5, m=3, f(3)=4, n=143 → 4 mod 143 ≠ 0
+    {
+        std::vector<Integer> c;
+        c.push_back(Integer(-5));  // a0 = -5
+        c.push_back(Integer(static_cast<int64_t>(0)));   // a1 = 0
+        c.push_back(Integer(1));   // a2 = 1
+        IntPolynomial f(std::move(c));
+        Integer n(143);
+        Integer m0(3);
+
+        auto result = PolynomialOptimizer::newton_root(f, m0, n);
+        // f(x) = x^2 - 5 的整数根是 ±√5（非整数），Newton 不会找到 f(m) ≡ 0 mod 143 的根
+        // 验证应正确拒绝
+        if (result.has_value()) {
+            // 如果找到了根，验证它确实满足 f(m) ≡ 0 mod n
+            Integer fm = f.evaluate(result.value());
+            Integer q, r;
+            Integer::divmod(q, r, fm, n);
+            assert(r.is_zero() && "newton_root returned value must satisfy f(m) ≡ 0 mod n");
+        }
+        std::cout << "  Case 2 (invalid starting point): PASSED (returned "
+                  << (result.has_value() ? "valid root" : "nullopt") << ")" << std::endl;
+    }
+
+    // Case 3: 线性多项式 f(x) = x - 11, n=143
+    // Newton 精确收敛到 x=11，f(11)=0 ≡ 0 mod 143
+    {
+        std::vector<Integer> c;
+        c.push_back(Integer(-11));  // a0 = -11
+        c.push_back(Integer(1));    // a1 = 1
+        IntPolynomial f(std::move(c));
+        Integer n(143);
+        Integer m0(15);  // 起点偏离
+
+        auto result = PolynomialOptimizer::newton_root(f, m0, n);
+        assert(result.has_value());
+        assert(result.value().to_int64() == 11);
+        std::cout << "  Case 3 (linear convergence): PASSED" << std::endl;
+    }
+
+    // Case 4: 零多项式 → nullopt
+    {
+        IntPolynomial f(0);
+        Integer n(143);
+        Integer m0(10);
+        auto result = PolynomialOptimizer::newton_root(f, m0, n);
+        assert(!result.has_value());
+        std::cout << "  Case 4 (zero polynomial): PASSED" << std::endl;
+    }
+
+    std::cout << "  ALL newton_root tests PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Kleinjung Selector Tests ===" << std::endl << std::endl;
 
@@ -290,8 +365,11 @@ int main() {
     test_polynomial_translate();
     test_polynomial_multiplication();
     test_smooth_coefficient_generation();
-    test_stage1_candidates();
     test_polynomial_optimizer();
+    test_newton_root();
+
+    // 以下测试涉及 Kleinjung 完整搜索，耗时较长（slow tier）
+    test_stage1_candidates();
     test_progress_callback();
     test_cancellation();
     test_compare_with_basem();
