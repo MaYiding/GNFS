@@ -251,19 +251,12 @@ private:
         for (size_t attempts = 0; attempts < 100000; ++attempts) {
             p = next_prime(p);
 
-            // Check f irreducible mod p
+            // Check f irreducible mod p (full Rabin test)
             auto f_mod = get_f_mod_p(nf, p);
             if (f_mod.back() == 0) continue;
 
-            ModularPoly fp(f_mod);
-            ModularPoly xp;
-            xp.set_coeff(1, 1);
-            auto x_to_p = ModularPoly::power(xp, Integer(p), f_mod, p);
-            auto diff = ModularPoly::sub(x_to_p, xp, p);
-            auto g = ModularPoly::gcd(diff, fp, p);
-
-            if (g.degree() == 0) {
-                return p;  // f is irreducible mod p
+            if (ModularPoly::is_irreducible(f_mod, p)) {
+                return p;
             }
         }
         return 0;

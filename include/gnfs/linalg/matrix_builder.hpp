@@ -169,20 +169,16 @@ public:
         // If Schirokauer will be unavailable (f reducible mod 2), use extra QC primes
         uint32_t effective_qc_count = config_.num_qc_primes;
         if (config_.include_schirokauer) {
-            // Quick check: is f irreducible mod 2?
+            // Full irreducibility check mod 2 (not just "no roots")
             uint32_t d_check = ctx.degree();
-            bool f_irred_mod2 = true;
-            for (uint32_t x = 0; x < 2; ++x) {
-                uint64_t val = 0, xp = 1;
-                for (uint32_t i = 0; i <= d_check; ++i) {
-                    Integer c = ctx.coeff(i).clone();
-                    c %= Integer(uint64_t(2));
-                    if (c.is_negative()) c += Integer(uint64_t(2));
-                    val = (val + (c.to_uint64() * xp) % 2) % 2;
-                    xp = (xp * x) % 2;
-                }
-                if (val == 0) { f_irred_mod2 = false; break; }
+            std::vector<uint64_t> f_mod2(d_check + 1);
+            for (uint32_t i = 0; i <= d_check; ++i) {
+                Integer c = ctx.coeff(i).clone();
+                c %= Integer(uint64_t(2));
+                if (c.is_negative()) c += Integer(uint64_t(2));
+                f_mod2[i] = c.to_uint64();
             }
+            bool f_irred_mod2 = sqrt::ModularPoly::is_irreducible(f_mod2, 2);
             if (!f_irred_mod2) {
                 // Compensate: more QC primes to replace missing Schirokauer
                 effective_qc_count = std::max(effective_qc_count, static_cast<uint32_t>(config_.num_qc_primes + d_check * 8));
@@ -217,20 +213,15 @@ public:
                 // Validate user-specified primes: only keep inert ones
                 uint32_t d = ctx.degree();
                 for (uint32_t ell : config_.schirokauer_primes) {
-                    // Check if f is irreducible mod ell
-                    bool has_root = false;
-                    for (uint32_t x = 0; x < ell && !has_root; ++x) {
-                        uint64_t val = 0, xp = 1;
-                        for (uint32_t i = 0; i <= d; ++i) {
-                            Integer c = ctx.coeff(i).clone();
-                            c %= Integer(static_cast<uint64_t>(ell));
-                            if (c.is_negative()) c += Integer(static_cast<uint64_t>(ell));
-                            val = (val + (c.to_uint64() * xp) % ell) % ell;
-                            xp = (xp * x) % ell;
-                        }
-                        if (val == 0) has_root = true;
+                    // Full Rabin irreducibility test (not just "no roots")
+                    std::vector<uint64_t> f_mod_ell(d + 1);
+                    for (uint32_t i = 0; i <= d; ++i) {
+                        Integer c = ctx.coeff(i).clone();
+                        c %= Integer(static_cast<uint64_t>(ell));
+                        if (c.is_negative()) c += Integer(static_cast<uint64_t>(ell));
+                        f_mod_ell[i] = c.to_uint64();
                     }
-                    if (!has_root) {
+                    if (sqrt::ModularPoly::is_irreducible(f_mod_ell, ell)) {
                         sm_primes.push_back(ell);
                     }
                 }

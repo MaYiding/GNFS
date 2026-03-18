@@ -366,25 +366,31 @@ private:
             info.f_mod[i] = c.to_uint64();
         }
 
-        // Check if f is irreducible mod ℓ (find roots)
-        std::vector<uint32_t> roots;
-        for (uint32_t x = 0; x < ell; ++x) {
-            uint64_t val = 0, xp = 1;
-            for (uint32_t i = 0; i <= degree_; ++i) {
-                val = (val + (info.f_mod[i] % ell) * (xp % ell)) % ell;
-                xp = (xp * x) % ell;
-            }
-            if (val == 0) roots.push_back(x);
+        // Full Rabin irreducibility test (not just "no roots")
+        // For degree > 3, "no roots" ≠ "irreducible"
+        std::vector<uint64_t> f_mod_ell(degree_ + 1);
+        for (uint32_t i = 0; i <= degree_; ++i) {
+            f_mod_ell[i] = info.f_mod[i] % ell;
         }
+        bool is_irred = ModularPoly::is_irreducible(f_mod_ell, ell);
 
-        if (roots.empty()) {
+        if (is_irred) {
             // f is irreducible mod ℓ — standard case
             info.is_split = false;
             uint64_t q = 1;
             for (uint32_t i = 0; i < degree_; ++i) q *= ell;
             info.exponent = q - 1;
         } else {
-            // f splits mod ℓ — need split Schirokauer
+            // f is reducible mod ℓ — find roots for split Schirokauer
+            std::vector<uint32_t> roots;
+            for (uint32_t x = 0; x < ell; ++x) {
+                uint64_t val = 0, xp = 1;
+                for (uint32_t i = 0; i <= degree_; ++i) {
+                    val = (val + f_mod_ell[i] * (xp % ell)) % ell;
+                    xp = (xp * x) % ell;
+                }
+                if (val == 0) roots.push_back(x);
+            }
             info.is_split = true;
             factorize_and_setup(info, ell, roots);
         }

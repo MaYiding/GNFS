@@ -3,6 +3,7 @@
 #include <gnfs/sqrt/number_field.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/sqrt/modular_poly.hpp>
 #include <gnfs/core/polynomial_context.hpp>
 
 #include <cassert>
@@ -337,6 +338,63 @@ void test_norm_linear() {
     std::cout << "  norm_linear: PASSED" << std::endl;
 }
 
+/// Test ModularPoly::is_irreducible — Rabin irreducibility test
+void test_is_irreducible() {
+    std::cout << "Testing ModularPoly::is_irreducible..." << std::endl;
+    using MP = ModularPoly;
+
+    // --- Degree 1: always irreducible ---
+    // x + 1 over F_5
+    assert(MP::is_irreducible({1, 1}, 5));
+    std::cout << "  degree 1: PASSED" << std::endl;
+
+    // --- Degree 2 over F_2 ---
+    // x^2 + x + 1 is the only irreducible degree-2 polynomial over F_2
+    assert(MP::is_irreducible({1, 1, 1}, 2));    // x^2+x+1: irreducible
+    assert(!MP::is_irreducible({0, 0, 1}, 2));   // x^2 = x·x: reducible
+    assert(!MP::is_irreducible({0, 1, 1}, 2));   // x^2+x = x(x+1): reducible
+    std::cout << "  degree 2 / F_2: PASSED" << std::endl;
+
+    // --- Degree 3 over F_2 ---
+    // x^3 + x + 1 and x^3 + x^2 + 1 are irreducible over F_2
+    assert(MP::is_irreducible({1, 1, 0, 1}, 2));  // x^3+x+1: irreducible
+    assert(MP::is_irreducible({1, 0, 1, 1}, 2));  // x^3+x^2+1: irreducible
+    assert(!MP::is_irreducible({1, 1, 1, 1}, 2)); // x^3+x^2+x+1 = (x+1)(x^2+1) = (x+1)^3: reducible
+    std::cout << "  degree 3 / F_2: PASSED" << std::endl;
+
+    // --- Degree 4 over F_2: THE CRITICAL CASE ---
+    // x^4 + x + 1 is irreducible over F_2
+    assert(MP::is_irreducible({1, 1, 0, 0, 1}, 2));
+
+    // x^4 + x^2 + 1 = (x^2+x+1)^2 over F_2: REDUCIBLE but has NO roots!
+    // This is the bug the old "no roots" check would miss.
+    assert(!MP::is_irreducible({1, 0, 1, 0, 1}, 2));
+    std::cout << "  degree 4 / F_2 (critical: reducible without roots): PASSED" << std::endl;
+
+    // --- Degree 5 over F_2 ---
+    // x^5 + x^2 + 1 is irreducible over F_2
+    assert(MP::is_irreducible({1, 0, 1, 0, 0, 1}, 2));
+    std::cout << "  degree 5 / F_2: PASSED" << std::endl;
+
+    // --- Degree 3 over F_5 ---
+    // x^3 + x + 1 over F_5: check by evaluating at all x in F_5
+    // f(0)=1, f(1)=3, f(2)=11≡1, f(3)=31≡1, f(4)=69≡4 → no roots → irreducible (degree 3)
+    assert(MP::is_irreducible({1, 1, 0, 1}, 5));
+    // x^3 - 1 = (x-1)(x^2+x+1) over F_5: has root x=1
+    assert(!MP::is_irreducible({4, 0, 0, 1}, 5));  // -1≡4 mod 5
+    std::cout << "  degree 3 / F_5: PASSED" << std::endl;
+
+    // --- Degree 4 over F_3 ---
+    // x^4 + x^2 + 2 over F_3: no roots (f(0)=2, f(1)=1+1+2=1, f(2)=16+4+2=22≡1)
+    // but is it irreducible? Need full Rabin test.
+    // x^4 + 1 over F_3 = (x^2+x+2)(x^2+2x+2) → reducible without roots
+    // f(0)=1, f(1)=2, f(2)=17≡2 → no roots
+    assert(!MP::is_irreducible({1, 0, 0, 0, 1}, 3));  // x^4+1 reducible mod 3
+    std::cout << "  degree 4 / F_3 (reducible without roots): PASSED" << std::endl;
+
+    std::cout << "  ALL is_irreducible tests PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Square Root Tests ===" << std::endl;
     std::cout << std::endl;
@@ -350,6 +408,7 @@ int main() {
     test_rational_sqrt_simple();
     test_factor_extraction();
     test_norm_linear();
+    test_is_irreducible();
 
     std::cout << std::endl;
     std::cout << "=== All Square Root Tests PASSED ===" << std::endl;

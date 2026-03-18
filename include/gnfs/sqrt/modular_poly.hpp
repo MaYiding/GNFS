@@ -317,6 +317,56 @@ public:
         return result.is_one();
     }
 
+    /// Rabin irreducibility test: check if f(x) is irreducible over F_p.
+    /// f is irreducible iff:
+    ///   (1) for every prime factor q of deg(f): gcd(x^{p^{d/q}} - x, f) = 1
+    ///   (2) x^{p^d} ≡ x mod f
+    /// Cost: O(d^2 * d * log p) — d steps of modular exponentiation.
+    [[nodiscard]] static bool is_irreducible(const std::vector<uint64_t>& f, uint64_t p) {
+        int d = static_cast<int>(f.size()) - 1;
+        if (d <= 0) return false;
+        if (d == 1) return true;  // linear polynomials are always irreducible
+
+        // Find distinct prime factors of d
+        std::vector<int> prime_factors;
+        {
+            int temp = d;
+            for (int q = 2; q * q <= temp; ++q) {
+                if (temp % q == 0) {
+                    prime_factors.push_back(q);
+                    while (temp % q == 0) temp /= q;
+                }
+            }
+            if (temp > 1) prime_factors.push_back(temp);
+        }
+
+        // Compute x^{p^k} mod f iteratively: x^{p^1}, x^{p^2}, ..., x^{p^d}
+        // Each step: x^{p^{k}} = (x^{p^{k-1}})^p mod f
+        ModularPoly x_poly;
+        x_poly.set_coeff(1, 1);  // x
+
+        std::vector<ModularPoly> x_pow_pk(d + 1);
+        x_pow_pk[0] = x_poly;  // x^{p^0} = x
+        for (int k = 1; k <= d; ++k) {
+            x_pow_pk[k] = power(x_pow_pk[k - 1], Integer(p), f, p);
+        }
+
+        // Step 1: for each prime factor q of d, check gcd(x^{p^{d/q}} - x, f) = 1
+        ModularPoly f_poly(f);
+        for (int q : prime_factors) {
+            int exp = d / q;
+            auto diff = sub(x_pow_pk[exp], x_poly, p);
+            auto g = gcd(diff, f_poly, p);
+            if (g.degree() > 0) return false;
+        }
+
+        // Step 2: x^{p^d} ≡ x mod f
+        auto diff_final = sub(x_pow_pk[d], x_poly, p);
+        if (!diff_final.is_zero()) return false;
+
+        return true;
+    }
+
     /// Tonelli-Shanks square root in F_p[x]/f(x)
     /// Returns sqrt(a) if a is a square, zero polynomial otherwise
     [[nodiscard]] static ModularPoly sqrt_tonelli_shanks(

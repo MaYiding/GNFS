@@ -102,26 +102,11 @@ public:
                 continue;
             }
 
-            // Check that f has no roots mod p using gcd(x^p - x, f(x))
-            // This is O(d * log p) instead of O(p)
-            // If gcd is non-trivial, f has roots
-            ModularPoly f_poly(f_mod_p);
-            ModularPoly x_poly;
-            x_poly.set_coeff(1, 1);  // x
-
-            // Compute x^p mod f mod p
-            ModularPoly x_to_p = ModularPoly::power(x_poly, Integer(p), f_mod_p, p);
-
-            // Compute x^p - x mod f mod p
-            ModularPoly x_p_minus_x = ModularPoly::sub(x_to_p, x_poly, p);
-
-            // Compute gcd(x^p - x, f)
-            ModularPoly g = ModularPoly::gcd(x_p_minus_x, f_poly, p);
-
-            // If gcd has degree > 0, f has roots
-            if (g.degree() > 0) {
+            // Full Rabin irreducibility test (not just "no roots")
+            // For degree > 3, "no roots" ≠ "irreducible"
+            if (!ModularPoly::is_irreducible(f_mod_p, p)) {
                 primes_reducible++;
-                continue;  // Skip this prime - f is reducible
+                continue;
             }
 
             // Compute product mod p
