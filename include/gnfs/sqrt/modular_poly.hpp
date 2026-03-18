@@ -127,10 +127,11 @@ public:
     }
 
     /// Polynomial multiplication mod f(x) and mod p
+    /// f need not be monic; leading coefficient must be invertible mod p
     [[nodiscard]] static ModularPoly mul(
             const ModularPoly& a,
             const ModularPoly& b,
-            const std::vector<uint64_t>& f,  // monic polynomial f(x)
+            const std::vector<uint64_t>& f,
             uint64_t p) {
 
         auto product = mul_raw(a, b, p);
@@ -138,7 +139,7 @@ public:
     }
 
     /// Reduce polynomial mod f(x) and mod p
-    /// Assumes f is monic (leading coeff = 1)
+    /// Handles both monic and non-monic f via modular inverse of leading coeff
     [[nodiscard]] static ModularPoly reduce(
             const ModularPoly& a,
             const std::vector<uint64_t>& f,
@@ -151,6 +152,9 @@ public:
         std::vector<uint64_t> result = a.coeffs_;
         int f_deg = static_cast<int>(f.size()) - 1;
 
+        // Inverse of leading coefficient: α^d = -(f[0]+...+f[d-1]α^{d-1}) / f[d]
+        uint64_t f_lead_inv = mod_inverse(f[f_deg], p);
+
         // Reduce from highest degree down
         while (static_cast<int>(result.size()) > f_deg) {
             uint64_t lead = result.back();
@@ -158,10 +162,11 @@ public:
 
             if (lead == 0) continue;
 
-            // Subtract lead * x^(deg(result) - deg(f)) * f
-            // Since f is monic, we just need to handle lower terms
+            // Scale by inverse of leading coefficient
+            uint64_t lead_scaled = mul_mod(lead, f_lead_inv, p);
+
             for (int i = 0; i < f_deg; ++i) {
-                uint64_t term = mul_mod(lead, f[i], p);
+                uint64_t term = mul_mod(lead_scaled, f[i], p);
                 int idx = static_cast<int>(result.size()) - f_deg + i;
                 if (idx >= 0 && idx < static_cast<int>(result.size())) {
                     if (result[idx] >= term) {

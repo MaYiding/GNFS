@@ -411,16 +411,33 @@ private:
             }
         }
 
-        // Reduce mod f: for each degree >= d, subtract lead * f shifted
-        // f is monic (f[d] = 1), so reduction is straightforward
+        // Reduce mod f: for each degree >= d, subtract (lead/f[d]) * f[i]
+        // Handles non-monic f via modular inverse of leading coefficient
+        Integer f_lead_inv(int64_t(1));
+        {
+            Integer f_d = f[d].clone();
+            f_d %= modulus;
+            if (f_d.is_negative()) f_d += modulus;
+            if (!f_d.is_one()) {
+                mpz_invert(f_lead_inv.get_mpz(), f_d.get_mpz(), modulus.get_mpz());
+            }
+        }
+
         for (int k = static_cast<int>(2 * d - 2); k >= static_cast<int>(d); --k) {
             Integer lead = std::move(result[k]);
             result[k] = Integer(int64_t(0));
             if (lead.is_zero()) continue;
 
-            // Subtract lead * f[0..d-1] from result[k-d..k-1]
+            // Scale by inverse of leading coefficient
+            Integer lead_scaled = lead.clone();
+            if (!f_lead_inv.is_one()) {
+                lead_scaled *= f_lead_inv;
+                lead_scaled %= modulus;
+            }
+
+            // Subtract lead_scaled * f[0..d-1] from result[k-d..k-1]
             for (uint32_t i = 0; i < d; ++i) {
-                Integer sub = lead.clone();
+                Integer sub = lead_scaled.clone();
                 sub *= f[i];
                 sub %= modulus;
                 result[k - d + i] -= sub;

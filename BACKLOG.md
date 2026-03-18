@@ -61,14 +61,13 @@
 - **影响**: 任何使用 p=2 的 Tonelli-Shanks 调用会挂起
 - **建议**: 对 p=2 做特殊处理（直接返回）
 
-### [BUG] NumberField 假设 f 是 monic 但从不验证
-- **状态**: 🔴 待处理
+### [BUG] ~~NumberField 假设 f 是 monic 但从不验证~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 5 审计), Session 6 补充
-- **来源**: Sqrt 模块审计
-- **文件**: `include/gnfs/sqrt/number_field.hpp:416-451`, `include/gnfs/sqrt/hensel_sqrt.hpp:422`, `include/gnfs/sqrt/modular_poly.hpp:141`
-- **描述**: 多项式约化假设 f[d]=1（monic），但无任何检查。影响范围远超 NumberField：(1) `number_field.hpp:reduce()` 直接用 high_coeff 乘 f[i] 归约，缺少除以 f[d]; (2) `hensel_sqrt.hpp:poly_mul_mod()` 注释明确说 "f is monic"，同样缺少; (3) `modular_poly.hpp:reduce()` 也假设 monic。Kleinjung 选择的多项式 a_d 是任意光滑数，非 monic 多项式会导致所有 Q[α] 中的算术错误
-- **影响**: 非 monic 多项式会产生完全错误的平方根——Kleinjung 多项式不可用
-- **建议**: 添加构造时 assert `f[d] == 1`，或在归约中除以 f[d]（需 mod inverse）
+- **解决日期**: 2026-03-09
+- **解决方式**: 三处 reduce 函数均已修复：(1) `modular_poly.hpp:reduce()` 用 `mod_inverse(f[d], p)` 缩放; (2) `hensel_sqrt.hpp:poly_mul_mod()` 用 `mpz_invert(f[d], modulus)` 缩放; (3) `number_field.hpp` 新增 `reduce_mod()` 方法，`multiply_mod_n()` 改用此方法。纯 Z 上的 `reduce()` 保留 monic 假设（仅用于测试和不经过 mod 路径的调用）
+- **验证**: 7 个新测试（非 monic ModularPoly 3 + NumberField 4）全部通过，冒烟测试 11/11 无回归
+- **Commit**: `ec2aa32`
 
 ### [BUG] ~~polynomial_optimizer Newton 方法 divmod 覆写导致永不收敛~~ ✅
 - **状态**: ✅ 已完成
