@@ -139,14 +139,13 @@
 - **影响**: 多线程场景下 UB
 - **建议**: 返回 const 引用或 `std::span<const Relation>`
 
-### [BUG] Hensel/Couveignes 不可约性检查仅测试线性因子——度 > 3 时静默失败
-- **状态**: 🔴 待处理
+### [BUG] ~~Hensel/Couveignes 不可约性检查仅测试线性因子——度 > 3 时静默失败~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
-- **来源**: Sqrt + LinAlg 模块逐行审计
-- **文件**: `hensel_sqrt.hpp:258-268`, `couveignes.hpp:119-125`, `matrix_builder.hpp:174-184`, `schirokauer.hpp:369-385`（Session 7 补充第 4 处）
-- **描述**: 三处均使用 `gcd(x^p - x, f)` 检查 f mod p 是否无根来判断不可约。但 "无根" ≠ "不可约"（degree > 3 时）。例如 `x^4+x^2+1 = (x^2+x+1)(x^2-x+1)` mod 某些 p 无根但可约。Hensel 在可约多项式上做 Fermat 求逆 (p^d-2 次方) 会得到垃圾结果；Couveignes 的 Tonelli-Shanks 也会失败
-- **影响**: **degree 5+ GNFS 静默产生错误结果**。这是当前代码对大 N 最致命的隐藏 bug
-- **建议**: 完整不可约检查需要验证 ∀k ∈ [1, d/2]: `gcd(x^{p^k} - x, f) == 1`，最终验证 `x^{p^d} ≡ x mod f`
+- **解决日期**: 2026-03-09
+- **解决方式**: 实现完整 Rabin 不可约性测试 `ModularPoly::is_irreducible()`，替换 4 处调用点 (hensel_sqrt, couveignes, matrix_builder, schirokauer)
+- **验证**: 11 个测试用例通过，含关键的 "reducible without roots" 用例 (x^4+x^2+1 over F_2)，冒烟测试 11/11 通过
+- **Commit**: `7516710`
 
 ### [BUG] trial_division divide_exact() int64 反向转换溢出
 - **状态**: 🔴 待处理
