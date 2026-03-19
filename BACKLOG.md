@@ -119,14 +119,13 @@
 - **描述**: `const_cast<SparseRow*>(this)->ensure_sorted()` 在 const 方法中修改内部状态，技术上是 UB
 - **建议**: 将 `sorted_` 和 `indices_` 标记为 `mutable`
 
-### [BUG] ThreadPool pending_ 计数竞态条件
-- **状态**: 🔴 待处理
+### [BUG] ~~ThreadPool pending_ 计数竞态条件~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 5 审计)
-- **来源**: Util 模块审计
-- **文件**: `include/gnfs/util/thread_pool.hpp:188-189`
-- **描述**: `--pending_` 和后续 `done_cv_.notify_all()` 在锁外执行。另一线程可能在递减和检查之间增加 pending_
-- **影响**: `wait_all()` 可能过早返回或永不返回
-- **建议**: 在互斥锁内递减和检查
+- **解决日期**: 2026-03-09
+- **解决方式**: 将 `--pending_` 移入 `std::lock_guard<std::mutex>` 保护区内，`notify_all()` 在锁外触发。添加注释说明 `pending_` 混合同步模型（atomic 用于无锁读，mutex 用于 done_cv_ 同步）
+- **验证**: 新增 2 个压力测试（5000 轮 wait_all 竞态 + 1000 轮并发 submit），修复前稳定死锁，修复后 ~600ms 通过。冒烟测试 11/11 通过
+- **Commit**: `e6dd3f7`
 
 ### [BUG] RelationCollector::relations() 返回非安全引用
 - **状态**: 🔴 待处理
@@ -145,14 +144,13 @@
 - **验证**: 11 个测试用例通过，含关键的 "reducible without roots" 用例 (x^4+x^2+1 over F_2)，冒烟测试 11/11 通过
 - **Commit**: `7516710`
 
-### [BUG] trial_division divide_exact() int64 反向转换溢出
-- **状态**: 🔴 待处理
+### [BUG] ~~trial_division divide_exact() int64 反向转换溢出~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
-- **来源**: Cofactor 模块逐行审计
-- **文件**: `include/gnfs/cofactor/trial_division.hpp:204-206`
-- **描述**: `uint64_t v = value.to_uint64() / p; value = Integer(static_cast<int64_t>(v))` — 当 v > INT64_MAX（即 value/p > 2^63），static_cast 溢出为负数，后续所有除法都在错误值上进行
-- **影响**: 大 N 的试除产生完全错误的因式分解结果
-- **建议**: 走 GMP 的 `mpz_divexact_ui` 路径（已有 else 分支）或检查 fits_int64()
+- **解决日期**: 2026-03-09
+- **解决方式**: 改为 `value = Integer(v)` 直接使用 uint64_t 构造（依赖新增的 Integer(uint64_t) 构造函数）
+- **验证**: 冒烟测试 11/11 通过，作为 Integer uint64_t 构造函数修复的一部分
+- **Commit**: `b0e79f9`
 
 ### [BUG] 全局性 uint64_t b → long long/int64_t 截断溢出（13 处）
 - **状态**: 🔴 待处理
