@@ -185,7 +185,15 @@ private:
             task();
 
             // 任务完成，减少计数
-            if (--pending_ == 0) {
+            // 必须在 mutex 下递减，与 wait_all() 的谓词检查同步。
+            // 否则 done_cv_.notify_all() 可能在 wait_all() 阻塞前触发，
+            // 导致通知丢失 → 死锁。
+            bool should_notify = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                should_notify = (--pending_ == 0);
+            }
+            if (should_notify) {
                 done_cv_.notify_all();
             }
         }
