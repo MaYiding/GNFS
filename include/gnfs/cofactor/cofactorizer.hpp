@@ -6,6 +6,7 @@
 #include "../core/relation.hpp"
 #include "../factor_base/factor_base.hpp"
 #include "../sieve/lattice_sieve.hpp"
+#include "../util/safe_math.hpp"
 
 #include <optional>
 
@@ -92,7 +93,7 @@ public:
         ++stats_.total_candidates;
 
         // 基本验证
-        if (b == 0 || std::gcd(std::abs(a), static_cast<int64_t>(b)) != 1) {
+        if (b == 0 || std::gcd(util::safe_abs(a), b) != 1) {
             return std::nullopt;
         }
 
