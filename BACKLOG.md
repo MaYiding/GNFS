@@ -207,14 +207,13 @@
 - **影响**: 错误的有理平方根不会被检测到，直到最终 GCD 步骤才发现因式分解失败
 - **建议**: 实现完整验证：计算 sqrt²  mod N 并与原始乘积比较
 
-### [BUG] MatrixBuilderConfig 默认 schirokauer_primes = {2, 3}，ℓ=3 不兼容 GF(2)
-- **状态**: 🔴 待处理
+### [BUG] ~~MatrixBuilderConfig 默认 schirokauer_primes = {2, 3}，ℓ=3 不兼容 GF(2)~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
-- **来源**: LinAlg 模块逐行审计
-- **文件**: `include/gnfs/linalg/matrix_builder.hpp:113`
-- **描述**: 默认配置 `schirokauer_primes = {2, 3}`。对于 ℓ=3，Schirokauer map 值在 {0, 1, 2} 中，但矩阵是 GF(2)。代码在 line 305 取 `sm_values[j] % 2`，将 mod-3 值截断为 mod-2。这数学上不正确：ℓ=3 的 Schirokauer 约束是 Σλ ≡ 0 mod 3，取 mod 2 后变成了不同的约束
-- **影响**: 矩阵零空间可能遗漏正确依赖或包含虚假依赖，导致 sqrt 阶段失败概率增加
-- **建议**: GF(2) 矩阵只能使用 ℓ=2（CLAUDE.md 已明确记录此约定）。默认值应改为 {2}
+- **解决日期**: 2026-03-09
+- **解决方式**: 默认值从 `{2, 3}` 改为 `{2}`。同时修复 mapping 存储使用 `schirokauer->primes()`（实际过滤后的素数），verbose 输出也改用 `sm_primes`
+- **验证**: 新增 `test_default_schirokauer_primes()` 测试，冒烟测试 11/11 通过
+- **Commit**: `5791463`
 
 ### [BUG] Couveignes rat_sqrt 对合数 N 计算根本性错误
 - **状态**: 🔴 待处理
@@ -423,14 +422,13 @@
 - **描述**: 如果日志回调或异常处理器中再次调用 log()，会导致 `lock_guard` 死锁
 - **建议**: 改用 `recursive_mutex` 或线程局部嵌套计数器
 
-### [BUG] matrix_builder 存储 config 的 schirokauer_primes 而非实际使用的素数
-- **状态**: 🔴 待处理
+### [BUG] ~~matrix_builder 存储 config 的 schirokauer_primes 而非实际使用的素数~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
-- **来源**: LinAlg 模块逐行审计
-- **文件**: `include/gnfs/linalg/matrix_builder.hpp:267`
-- **描述**: `result.mapping.schirokauer_primes = config_.schirokauer_primes` 存储的是配置中的素数列表，但实际用于计算的是经过过滤的 `sm_primes`（移除了 f 可约的素数）。如果后续代码读取 mapping.schirokauer_primes 进行验证，会得到不一致的信息
-- **影响**: 矩阵元信息与实际矩阵结构不匹配
-- **建议**: 改为 `result.mapping.schirokauer_primes = sm_primes`
+- **解决日期**: 2026-03-09
+- **解决方式**: `result.mapping.schirokauer_primes = schirokauer->primes()` 改为使用实际过滤后的素数列表
+- **验证**: 冒烟测试 11/11 通过
+- **Commit**: `5791463`（与 schirokauer_primes 默认值修复同一 commit）
 
 ### [BUG] types.hpp ABPair 注释错误：写 "a + b*m" 但应为 "a - b*m"
 - **状态**: 🔴 待处理
