@@ -480,6 +480,11 @@ public:
                 continue;
             }
 
+            // f must be irreducible mod p for F_p[x]/(f) to be a field
+            if (!ModularPoly::is_irreducible(f_mod_p, p)) {
+                continue;
+            }
+
             auto elem_mod_p = elem_to_mod_p(p);
 
             if (elem_mod_p.is_zero()) {

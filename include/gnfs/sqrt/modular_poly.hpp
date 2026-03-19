@@ -396,6 +396,7 @@ public:
         // Inverse Frobenius gives sqrt: sqrt(a) = a^{2^{d-1}}.
         // Proof: (a^{2^{d-1}})² = a^{2^d} = a (by Fermat in F_{2^d}).
         if (p == 2) {
+            assert(d >= 1 && "sqrt_tonelli_shanks: f must have degree >= 1");
             auto result = a;
             for (int i = 0; i < d - 1; ++i) {
                 result = mul(result, result, f, p);
