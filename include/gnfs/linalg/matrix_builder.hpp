@@ -110,7 +110,7 @@ struct MatrixBuilderConfig {
     bool include_schirokauer = true;       // 是否包含 Schirokauer map 列
     size_t num_qc_primes = 10;             // 二次特征素数数量
     uint32_t qc_prime_start = 1000;        // 二次特征素数搜索起点
-    std::vector<uint32_t> schirokauer_primes = {2, 3};  // Schirokauer map 素数
+    std::vector<uint32_t> schirokauer_primes = {2};  // GF(2) 矩阵只能用 ℓ=2
     bool verbose = false;                   // 详细输出
 };
 
@@ -238,7 +238,7 @@ public:
 
             if (config_.verbose) {
                 std::cerr << "[Schirokauer] Primes: ";
-                for (auto p : config_.schirokauer_primes) std::cerr << p << " ";
+                for (auto p : sm_primes) std::cerr << p << " ";
                 std::cerr << "\n[Schirokauer] Columns per prime: " << ctx.degree() << "\n"
                           << "[Schirokauer] Total columns: " << schirokauer->num_columns() << "\n";
             }
@@ -255,7 +255,7 @@ public:
         // 添加 Schirokauer map 列
         if (schirokauer) {
             result.mapping.num_schirokauer_columns = schirokauer->num_columns();
-            result.mapping.schirokauer_primes = config_.schirokauer_primes;
+            result.mapping.schirokauer_primes = schirokauer->primes();  // 存储实际使用的素数，非 config 原始值
         }
 
         // 第六步：构建矩阵
