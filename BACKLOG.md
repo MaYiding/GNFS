@@ -52,13 +52,16 @@
 - **建议**: 添加 `if (changed_bit == 0) continue;` 守卫
 
 ### [BUG] modular_poly p=2 时 Tonelli-Shanks 无限循环
-- **状态**: 🔴 待处理
+- **状态**: 🟡 进行中
 - **发现日期**: 2026-03-08 (Session 5 审计)
+- **开始修复**: 2026-03-09，分支 `fix/260309-tonelli-shanks-p2`
 - **来源**: Sqrt 模块审计
 - **文件**: `include/gnfs/sqrt/modular_poly.hpp:353-362`
-- **描述**: 查找非二次剩余的循环 z=2,3,... 在 F_2 中永远找不到非平方，导致无限循环
-- **影响**: 任何使用 p=2 的 Tonelli-Shanks 调用会挂起
-- **建议**: 对 p=2 做特殊处理（直接返回）
+- **描述**: 查找非二次剩余的循环 z=2,3,... 在 F_2 中永远找不到非平方，导致无限循环。同时 `is_square()` 的 Euler 判据对 p=2 也不正确（2^d-1 为奇数，除 2 截断）
+- **影响**: 任何使用 p=2 的 Tonelli-Shanks 调用会挂起；is_square 返回错误结果
+- **改动记录**:
+  - `modular_poly.hpp:is_square()` — p=2 时直接返回 true（F_{2^d} 中所有元素都是平方数）
+  - `modular_poly.hpp:sqrt_tonelli_shanks()` — p=2 时用逆 Frobenius：sqrt(a) = a^{2^{d-1}}
 
 ### [BUG] ~~NumberField 假设 f 是 monic 但从不验证~~ ✅
 - **状态**: ✅ 已完成

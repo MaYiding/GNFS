@@ -508,6 +508,89 @@ void test_non_monic_number_field() {
     std::cout << "  ALL non-monic NumberField tests PASSED" << std::endl;
 }
 
+/// Test is_square() and sqrt_tonelli_shanks() for p=2 (characteristic 2).
+///
+/// In F_{2^d}, the Frobenius x → x² is a bijection (mult group order = 2^d-1 is odd),
+/// so EVERY element is a square. sqrt(a) = a^{2^{d-1}} (inverse Frobenius).
+///
+/// The bug: is_square() uses Euler's criterion a^{(p^d-1)/2} which is not an integer
+/// for p=2 (2^d-1 is odd), and sqrt_tonelli_shanks() searches for a non-square element
+/// that doesn't exist in characteristic 2 → infinite loop.
+void test_characteristic_2_sqrt() {
+    std::cout << "Testing characteristic 2 is_square + sqrt..." << std::endl;
+    using MP = ModularPoly;
+
+    // ---- is_square over F_{2^2} ----
+    // f(x) = x^2 + x + 1 (irreducible over F_2, so F_2[x]/f = F_4)
+    // F_4 = {0, 1, α, α+1} where α^2 = α + 1
+    // All nonzero elements are squares in F_{2^d}
+    std::vector<uint64_t> f2 = {1, 1, 1};  // x^2+x+1
+    assert(MP::is_square(MP(0), f2, 2));  // 0 is trivially square
+    assert(MP::is_square(MP(1), f2, 2));  // 1 = 1^2
+    // α is also a square in F_4 (α = (α+1)^2 since (α+1)^2 = α^2+1 = α+1+1 = α)
+    MP alpha;
+    alpha.set_coeff(1, 1);  // x
+    assert(MP::is_square(alpha, f2, 2));
+    // α+1 is also a square
+    MP alpha_plus_1;
+    alpha_plus_1.set_coeff(0, 1);
+    alpha_plus_1.set_coeff(1, 1);  // x+1
+    assert(MP::is_square(alpha_plus_1, f2, 2));
+    std::cout << "  is_square F_4: PASSED" << std::endl;
+
+    // ---- is_square over F_{2^3} ----
+    // f(x) = x^3 + x + 1 (irreducible over F_2, so F_2[x]/f = F_8)
+    // All 7 nonzero elements are squares
+    std::vector<uint64_t> f3 = {1, 1, 0, 1};  // x^3+x+1
+    assert(MP::is_square(MP(1), f3, 2));
+    assert(MP::is_square(alpha, f3, 2));       // α in F_8
+    std::cout << "  is_square F_8: PASSED" << std::endl;
+
+    // ---- sqrt_tonelli_shanks over F_4 ----
+    // sqrt(α) should satisfy s^2 = α mod (f, 2)
+    auto sqrt_alpha = MP::sqrt_tonelli_shanks(alpha, f2, 2);
+    // Verify: sqrt^2 = alpha
+    auto sq = MP::mul(sqrt_alpha, sqrt_alpha, f2, 2);
+    assert(sq.degree() == alpha.degree());
+    for (int i = 0; i <= std::max(sq.degree(), alpha.degree()); ++i) {
+        assert(sq.coeff(i) == alpha.coeff(i));
+    }
+    std::cout << "  sqrt F_4 (alpha): PASSED" << std::endl;
+
+    // sqrt(α+1) in F_4
+    auto sqrt_ap1 = MP::sqrt_tonelli_shanks(alpha_plus_1, f2, 2);
+    auto sq2 = MP::mul(sqrt_ap1, sqrt_ap1, f2, 2);
+    for (int i = 0; i <= std::max(sq2.degree(), alpha_plus_1.degree()); ++i) {
+        assert(sq2.coeff(i) == alpha_plus_1.coeff(i));
+    }
+    std::cout << "  sqrt F_4 (alpha+1): PASSED" << std::endl;
+
+    // sqrt(1) in F_4 should be 1
+    auto sqrt_one = MP::sqrt_tonelli_shanks(MP(1), f2, 2);
+    assert(sqrt_one.is_one());
+    std::cout << "  sqrt F_4 (1): PASSED" << std::endl;
+
+    // ---- sqrt_tonelli_shanks over F_8 ----
+    // sqrt(α) in F_8 = F_2[x]/(x^3+x+1)
+    auto sqrt_alpha_f8 = MP::sqrt_tonelli_shanks(alpha, f3, 2);
+    auto sq3 = MP::mul(sqrt_alpha_f8, sqrt_alpha_f8, f3, 2);
+    for (int i = 0; i <= std::max(sq3.degree(), alpha.degree()); ++i) {
+        assert(sq3.coeff(i) == alpha.coeff(i));
+    }
+    std::cout << "  sqrt F_8 (alpha): PASSED" << std::endl;
+
+    // ---- Edge case: p=2, d=1 (F_2 itself) ----
+    // F_2 = {0, 1}, sqrt(1) = 1
+    std::vector<uint64_t> f1 = {1, 1};  // x+1 (irreducible, degree 1)
+    assert(MP::is_square(MP(1), f1, 2));
+    // Note: sqrt_tonelli_shanks on F_2 is trivial — only element is 1
+    auto sqrt_f2 = MP::sqrt_tonelli_shanks(MP(1), f1, 2);
+    assert(sqrt_f2.is_one());
+    std::cout << "  sqrt F_2: PASSED" << std::endl;
+
+    std::cout << "  ALL characteristic 2 tests PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Square Root Tests ===" << std::endl;
     std::cout << std::endl;
@@ -524,6 +607,7 @@ int main() {
     test_is_irreducible();
     test_non_monic_modular_poly();
     test_non_monic_number_field();
+    test_characteristic_2_sqrt();
 
     std::cout << std::endl;
     std::cout << "=== All Square Root Tests PASSED ===" << std::endl;
