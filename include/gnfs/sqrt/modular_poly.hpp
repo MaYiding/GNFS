@@ -311,6 +311,11 @@ public:
         if (a.is_zero()) return true;
         if (a.is_one()) return true;
 
+        // Characteristic 2: Frobenius x→x² is a bijection on F_{2^d}
+        // (mult group order 2^d-1 is odd → squaring is an automorphism).
+        // Every element is a square.
+        if (p == 2) return true;
+
         int d = static_cast<int>(f.size()) - 1;
 
         // Compute (p^d - 1) / 2
@@ -386,6 +391,17 @@ public:
         if (a.is_one()) return ModularPoly(1);
 
         int d = static_cast<int>(f.size()) - 1;
+
+        // Characteristic 2: Frobenius x→x² is a bijection on F_{2^d}.
+        // Inverse Frobenius gives sqrt: sqrt(a) = a^{2^{d-1}}.
+        // Proof: (a^{2^{d-1}})² = a^{2^d} = a (by Fermat in F_{2^d}).
+        if (p == 2) {
+            auto result = a;
+            for (int i = 0; i < d - 1; ++i) {
+                result = mul(result, result, f, p);
+            }
+            return result;
+        }
 
         // Check if a is a square
         if (!is_square(a, f, p)) {
