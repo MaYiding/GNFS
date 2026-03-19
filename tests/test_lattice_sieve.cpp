@@ -1,6 +1,7 @@
 #include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/factor_base/builder.hpp"
 #include "gnfs/polynomial/base_m.hpp"
+#include "gnfs/util/safe_math.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -183,7 +184,7 @@ void test_candidate_properties() {
         assert(cand.b > 0);
 
         // gcd(a, b) 应该 = 1
-        assert(std::gcd(std::abs(cand.a), static_cast<int64_t>(cand.b)) == 1);
+        assert(std::gcd(util::safe_abs(cand.a), cand.b) == 1);
 
         // (a, b) 应该满足格条件
         assert(basis.verify_ab(cand.a, static_cast<int64_t>(cand.b)));

@@ -267,7 +267,7 @@ private:
         if (rel.b == 0) return false;
 
         // gcd(a, b) 必须 = 1
-        if (std::gcd(util::safe_abs(rel.a), static_cast<uint64_t>(rel.b)) != 1) {
+        if (std::gcd(util::safe_abs(rel.a), util::safe_abs(rel.b)) != 1) {
             return false;
         }
 
