@@ -207,6 +207,10 @@ private:
     std::condition_variable done_cv_;
 
     bool stop_;
+    // atomic: allows lock-free read in pending_tasks() public API.
+    // Also guarded by mutex_ in submit()/worker_loop() for correct
+    // synchronization with done_cv_ in wait_all(). Do NOT remove
+    // the mutex protection — see worker_loop() comment.
     std::atomic<size_t> pending_;
 };
 
