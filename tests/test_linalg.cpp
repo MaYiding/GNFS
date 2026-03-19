@@ -366,6 +366,28 @@ void test_verify_dependency() {
     std::cout << "  verify_dependency: PASSED" << std::endl;
 }
 
+// Test: default schirokauer_primes must be {2} only (GF(2) compatible)
+void test_default_schirokauer_primes() {
+    std::cout << "Testing default schirokauer_primes..." << std::endl;
+
+    // Default config must use only ℓ=2 for GF(2) matrix.
+    // ℓ=3 produces values in {0,1,2} which cannot be faithfully represented
+    // in GF(2) — taking mod 2 destroys the mod-3 constraint.
+    MatrixBuilderConfig config;
+    assert(config.schirokauer_primes.size() == 1 &&
+           "Default should have exactly 1 Schirokauer prime");
+    assert(config.schirokauer_primes[0] == 2 &&
+           "Default Schirokauer prime must be 2 for GF(2) matrix");
+
+    // Explicitly setting {2} should also work
+    MatrixBuilderConfig config2;
+    config2.schirokauer_primes = {2};
+    assert(config2.schirokauer_primes.size() == 1);
+    assert(config2.schirokauer_primes[0] == 2);
+
+    std::cout << "  Default schirokauer_primes: PASSED" << std::endl;
+}
+
 // Test matrix stats
 void test_matrix_stats() {
     std::cout << "Testing matrix stats..." << std::endl;
@@ -434,6 +456,7 @@ int main() {
     test_gaussian_simple();
     test_gaussian_larger();
     test_matrix_builder();
+    test_default_schirokauer_primes();
     test_find_dependencies();
     test_verify_dependency();
     test_matrix_stats();
