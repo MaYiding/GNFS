@@ -15,23 +15,21 @@
 - **验证**: 8 个新测试用例（含 2^63、UINT64_MAX、赋值、算术、回归）全部通过，冒烟测试 11/11 通过
 - **Commit**: `b0e79f9`
 
-### [BUG] Relation::ab() 中 b=INT64_MIN 时未定义行为
-- **状态**: 🔴 待处理
+### [BUG] ~~Relation::ab() 中 b=INT64_MIN 时未定义行为~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 5 审计)
-- **来源**: Core 模块审计
-- **文件**: `include/gnfs/core/relation.hpp:37`
-- **描述**: `static_cast<uint64_t>(b > 0 ? b : -b)` 当 b=INT64_MIN 时，`-b` 溢出为 INT64_MIN（UB）
-- **影响**: 罕见但对特定 b 值是致命的
-- **建议**: 先检查 `b == INT64_MIN` 或用 `uint64_t(~b) + 1`
+- **解决日期**: 2026-03-09
+- **解决方式**: 新增 `util::safe_abs()` 工具函数（`include/gnfs/util/safe_math.hpp`），使用 `-(value+1)+1` 技巧避免 UB。`Relation::ab()` 改用 `util::safe_abs(b)` 替代 `b > 0 ? b : -b`
+- **验证**: 11 个断言测试覆盖 safe_abs 边界值、Relation::ab() 极端值、gcd 组合。冒烟测试 11/11 通过
+- **Commit**: `4b4ec08`
 
-### [BUG] std::abs(INT64_MIN) 未定义行为（多处）
-- **状态**: 🔴 待处理
+### [BUG] ~~std::abs(INT64_MIN) 未定义行为（多处）~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 5 审计)
-- **来源**: Sieve + Cofactor + Relation 模块审计
-- **文件**: `lattice_sieve.hpp:404`, `cofactorizer.hpp:95`, `collector.hpp:269`
-- **描述**: 多处使用 `std::abs(a)` 或 `std::gcd(std::abs(a), b)` 但未检查 a=INT64_MIN 的情况
-- **影响**: 当 a=INT64_MIN 时产生 UB（通常返回 INT64_MIN 本身）
-- **建议**: 统一封装 `safe_abs()` 函数，检查 INT64_MIN
+- **解决日期**: 2026-03-09
+- **解决方式**: 7 处 `std::abs(int64_t)` 调用全部替换为 `util::safe_abs()`：`cofactorizer.hpp:95`、`lattice_sieve.hpp:409`、`collector.hpp:270`（生产代码 3 处）+ `test_sieve_basic.cpp:171`、`test_relation_collector.cpp:189`、`test_lattice_sieve.cpp:186`（测试代码 3 处）。同时修复 `collector.hpp` 中 `static_cast<uint64_t>(rel.b)` 对负 b 的逻辑错误
+- **验证**: 冒烟测试 11/11 + test_sieve_basic 通过
+- **Commit**: `4b4ec08`, `3789872`
 
 ### [BUG] Hensel Sqrt S[i].to_uint64() 截断：N > 2^64 时 Hensel 失败
 - **状态**: 🔴 待处理
