@@ -4,6 +4,7 @@
 #include "../core/relation.hpp"
 #include "../core/types.hpp"
 #include "../factor_base/factor_base.hpp"
+#include "../util/safe_math.hpp"
 #include "lattice_basis.hpp"
 #include "special_q.hpp"
 
@@ -405,7 +406,7 @@ private:
                 if (b <= 0) continue;
 
                 // 确保 gcd(a, b) = 1
-                if (std::gcd(std::abs(a), b) != 1) continue;
+                if (std::gcd(util::safe_abs(a), b) != 1) continue;
 
                 SieveCandidate cand;
                 cand.i = i;

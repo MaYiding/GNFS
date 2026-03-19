@@ -3,6 +3,7 @@
 #include "gnfs/sieve/special_q.hpp"
 #include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/relation/collector.hpp"
+#include "gnfs/util/safe_math.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -168,7 +169,7 @@ void test_full_sieve_pipeline() {
             bool lattice_ok = basis.verify_ab(cand.a, static_cast<int64_t>(cand.b));
 
             // 验证 gcd(a, b) = 1
-            bool coprime_ok = std::gcd(std::abs(cand.a), static_cast<int64_t>(cand.b)) == 1;
+            bool coprime_ok = std::gcd(util::safe_abs(cand.a), cand.b) == 1;
 
             // 验证 b > 0
             bool b_positive = cand.b > 0;

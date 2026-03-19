@@ -2,6 +2,7 @@
 
 #include "../core/relation.hpp"
 #include "../core/types.hpp"
+#include "../util/safe_math.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -266,7 +267,7 @@ private:
         if (rel.b == 0) return false;
 
         // gcd(a, b) 必须 = 1
-        if (std::gcd(std::abs(rel.a), static_cast<int64_t>(rel.b)) != 1) {
+        if (std::gcd(util::safe_abs(rel.a), util::safe_abs(rel.b)) != 1) {
             return false;
         }
 

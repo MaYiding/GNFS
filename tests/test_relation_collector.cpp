@@ -1,4 +1,5 @@
 #include "gnfs/relation/collector.hpp"
+#include "gnfs/util/safe_math.hpp"
 
 #include <cassert>
 #include <filesystem>
@@ -186,7 +187,7 @@ void test_concurrent_add() {
                 int64_t a = t * per_thread + i;
                 uint64_t b = static_cast<uint64_t>(t * per_thread + i + 1);
                 // 确保 gcd(a, b) = 1
-                while (std::gcd(std::abs(a), static_cast<int64_t>(b)) != 1) {
+                while (std::gcd(util::safe_abs(a), b) != 1) {
                     ++b;
                 }
                 Relation rel(a, b);

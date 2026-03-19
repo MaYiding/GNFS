@@ -2,6 +2,7 @@
 
 #include "gnfs/core/integer.hpp"
 #include "gnfs/core/types.hpp"
+#include "gnfs/util/safe_math.hpp"
 #include <vector>
 #include <cstdint>
 #include <iostream>
@@ -34,7 +35,7 @@ struct Relation {
 
     // Get as ABPair
     [[nodiscard]] ABPair ab() const {
-        return ABPair(a, static_cast<uint64_t>(b > 0 ? b : -b));
+        return ABPair(a, util::safe_abs(b));
     }
 
     // Check if valid (b != 0)

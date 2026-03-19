@@ -1,9 +1,13 @@
 #include "gnfs/core/integer.hpp"
+#include "gnfs/core/relation.hpp"
+#include "gnfs/util/safe_math.hpp"
 
 #include "gnfs/core/integer.hpp"
 
 #include <cassert>
+#include <climits>
 #include <iostream>
+#include <numeric>
 #include <sstream>
 
 using namespace gnfs::core;
@@ -271,6 +275,100 @@ void test_uint64_construction() {
     std::cout << "  uint64_t construction: PASS" << std::endl;
 }
 
+void test_safe_abs() {
+    std::cout << "Testing safe_abs..." << std::endl;
+
+    using gnfs::util::safe_abs;
+
+    // Normal positive value
+    assert(safe_abs(int64_t(42)) == 42u);
+
+    // Normal negative value
+    assert(safe_abs(int64_t(-42)) == 42u);
+
+    // Zero
+    assert(safe_abs(int64_t(0)) == 0u);
+
+    // INT64_MAX
+    assert(safe_abs(INT64_MAX) == static_cast<uint64_t>(INT64_MAX));
+
+    // -1
+    assert(safe_abs(int64_t(-1)) == 1u);
+
+    // INT64_MIN — the critical case!
+    // |INT64_MIN| = 2^63 = 9223372036854775808, which is INT64_MAX + 1
+    // std::abs(INT64_MIN) is UB, but safe_abs must handle it correctly.
+    constexpr uint64_t expected = static_cast<uint64_t>(INT64_MAX) + 1u;
+    assert(safe_abs(INT64_MIN) == expected);
+    assert(safe_abs(INT64_MIN) == uint64_t(9223372036854775808ull));
+
+    // INT64_MIN + 1 (= -INT64_MAX)
+    assert(safe_abs(INT64_MIN + 1) == static_cast<uint64_t>(INT64_MAX));
+
+    std::cout << "  safe_abs: PASS" << std::endl;
+}
+
+void test_relation_ab_int64_min() {
+    std::cout << "Testing Relation::ab() with extreme b values..." << std::endl;
+
+    using gnfs::core::Relation;
+
+    // Normal case: positive b
+    {
+        Relation r(5, 3);
+        auto ab = r.ab();
+        assert(ab.a == 5);
+        assert(ab.b == 3u);
+    }
+
+    // Normal case: negative b
+    {
+        Relation r(5, -3);
+        auto ab = r.ab();
+        assert(ab.a == 5);
+        assert(ab.b == 3u);
+    }
+
+    // Critical case: b = INT64_MIN
+    // |INT64_MIN| = 2^63, which must be represented correctly as uint64_t
+    {
+        Relation r(5, INT64_MIN);
+        auto ab = r.ab();
+        assert(ab.a == 5);
+        assert(ab.b == uint64_t(9223372036854775808ull));
+    }
+
+    // b = INT64_MAX
+    {
+        Relation r(5, INT64_MAX);
+        auto ab = r.ab();
+        assert(ab.a == 5);
+        assert(ab.b == static_cast<uint64_t>(INT64_MAX));
+    }
+
+    std::cout << "  Relation::ab() extreme b: PASS" << std::endl;
+}
+
+void test_safe_gcd_with_int64_min() {
+    std::cout << "Testing std::gcd with safe_abs (no UB)..." << std::endl;
+
+    using gnfs::util::safe_abs;
+
+    // gcd(|INT64_MIN|, 2) = gcd(2^63, 2) = 2
+    assert(std::gcd(safe_abs(INT64_MIN), uint64_t(2)) == 2u);
+
+    // gcd(|INT64_MIN|, 1) = 1
+    assert(std::gcd(safe_abs(INT64_MIN), uint64_t(1)) == 1u);
+
+    // gcd(|INT64_MIN|, 3) = gcd(2^63, 3) = 1
+    assert(std::gcd(safe_abs(INT64_MIN), uint64_t(3)) == 1u);
+
+    // gcd(|INT64_MIN|, 4) = gcd(2^63, 4) = 4
+    assert(std::gcd(safe_abs(INT64_MIN), uint64_t(4)) == 4u);
+
+    std::cout << "  safe_gcd with INT64_MIN: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== Integer Tests ===" << std::endl;
 
@@ -284,6 +382,9 @@ int main() {
     test_primality();
     test_stream_output();
     test_uint64_construction();
+    test_safe_abs();
+    test_relation_ab_int64_min();
+    test_safe_gcd_with_int64_min();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
