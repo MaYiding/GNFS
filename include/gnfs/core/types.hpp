@@ -55,17 +55,18 @@ struct ABPairHash {
 };
 
 /// PrimePower - 素数幂，因子分解的基本单位
+/// p/r 使用 uint64_t 以支持大素数（50+ digit N 的 large prime bound > UINT32_MAX）
 struct PrimePower {
-    uint32_t p;   // 素数
-    uint32_t r;   // 代数侧的根 mod p（有理侧可忽略，设为0）
+    uint64_t p;   // 素数
+    uint64_t r;   // 代数侧的根 mod p（有理侧可忽略，设为0）
     uint8_t  e;   // 指数
 
     constexpr PrimePower() noexcept : p(0), r(0), e(0) {}
-    constexpr PrimePower(uint32_t p_, uint32_t r_, uint8_t e_) noexcept
+    constexpr PrimePower(uint64_t p_, uint64_t r_, uint8_t e_) noexcept
         : p(p_), r(r_), e(e_) {}
 
     // 仅用于有理侧
-    constexpr PrimePower(uint32_t p_, uint8_t e_) noexcept
+    constexpr PrimePower(uint64_t p_, uint8_t e_) noexcept
         : p(p_), r(0), e(e_) {}
 
     constexpr bool operator==(const PrimePower& other) const noexcept {
@@ -86,9 +87,13 @@ struct PrimePower {
 /// PrimePower 的哈希函数
 struct PrimePowerHash {
     size_t operator()(const PrimePower& pp) const noexcept {
-        // 将 (p, r) 组合成一个 64 位值
-        uint64_t combined = (static_cast<uint64_t>(pp.p) << 32) | pp.r;
-        return std::hash<uint64_t>{}(combined);
+        // FNV-1a 风格混合 p 和 r（两者都是 uint64_t）
+        size_t h = 14695981039346656037ULL;
+        h ^= std::hash<uint64_t>{}(pp.p);
+        h *= 1099511628211ULL;
+        h ^= std::hash<uint64_t>{}(pp.r);
+        h *= 1099511628211ULL;
+        return h;
     }
 };
 
@@ -125,11 +130,11 @@ struct AlgebraicPrime {
 struct FactorBaseParams {
     uint32_t rational_bound = 0;      // 有理侧上界 B_r
     uint32_t algebraic_bound = 0;     // 代数侧上界 B_a
-    uint32_t large_prime_bound = 0;   // 大素数上界（通常 100*B）
+    uint64_t large_prime_bound = 0;   // 大素数上界（通常 100*B），uint64_t 以匹配 GNFSParams
     uint8_t  log_scale = 10;          // 对数缩放因子
 
     constexpr FactorBaseParams() noexcept = default;
-    constexpr FactorBaseParams(uint32_t rat, uint32_t alg, uint32_t lp, uint8_t scale = 10) noexcept
+    constexpr FactorBaseParams(uint32_t rat, uint32_t alg, uint64_t lp, uint8_t scale = 10) noexcept
         : rational_bound(rat), algebraic_bound(alg), large_prime_bound(lp), log_scale(scale) {}
 };
 

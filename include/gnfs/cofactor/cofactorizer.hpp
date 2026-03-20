@@ -245,20 +245,16 @@ private:
 
         switch (cls.type) {
             case CofactorClass::Prime:
-                list.push_back(PrimePower{
-                    static_cast<uint32_t>(cls.factor1), 1});
+                list.push_back(PrimePower{cls.factor1, static_cast<uint8_t>(1)});
                 break;
 
             case CofactorClass::PrimePower:
-                list.push_back(PrimePower{
-                    static_cast<uint32_t>(cls.factor1), cls.power});
+                list.push_back(PrimePower{cls.factor1, cls.power});
                 break;
 
             case CofactorClass::Semiprime:
-                list.push_back(PrimePower{
-                    static_cast<uint32_t>(cls.factor1), 1});
-                list.push_back(PrimePower{
-                    static_cast<uint32_t>(cls.factor2), 1});
+                list.push_back(PrimePower{cls.factor1, static_cast<uint8_t>(1)});
+                list.push_back(PrimePower{cls.factor2, static_cast<uint8_t>(1)});
                 break;
 
             default:

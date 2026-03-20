@@ -148,7 +148,7 @@ public:
         size_t algebraic_count;
         uint32_t rational_bound;
         uint32_t algebraic_bound;
-        uint32_t large_prime_bound;
+        uint64_t large_prime_bound;
     };
 
     [[nodiscard]] Stats stats() const {
