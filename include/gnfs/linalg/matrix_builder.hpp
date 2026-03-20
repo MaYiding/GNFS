@@ -25,6 +25,28 @@ using core::PrimePower;
 using core::PolynomialContext;
 using factor_base::FactorBase;
 
+/// 代数侧素理想键 (p, r)——区分同一素数上方的不同素理想
+struct PrimeIdealKey {
+    uint64_t p;  // 素数
+    uint64_t r;  // 根 mod p
+
+    bool operator==(const PrimeIdealKey& other) const noexcept {
+        return p == other.p && r == other.r;
+    }
+};
+
+/// PrimeIdealKey 的哈希函数
+struct PrimeIdealKeyHash {
+    size_t operator()(const PrimeIdealKey& k) const noexcept {
+        size_t h = 14695981039346656037ULL;
+        h ^= std::hash<uint64_t>{}(k.p);
+        h *= 1099511628211ULL;
+        h ^= std::hash<uint64_t>{}(k.r);
+        h *= 1099511628211ULL;
+        return h;
+    }
+};
+
 /// 矩阵列映射
 /// 管理素数到列索引的映射
 struct ColumnMapping {
@@ -38,11 +60,11 @@ struct ColumnMapping {
     size_t sign_column = 0;            // 符号列（如果有）
     bool has_sign_column = false;      // 是否有符号列
 
-    // 有理大素数 -> 列索引
+    // 有理大素数 -> 列索引（有理侧无根，按 p 即可）
     std::unordered_map<uint64_t, uint32_t> rat_lp_to_col;
 
-    // 代数大素数 -> 列索引
-    std::unordered_map<uint64_t, uint32_t> alg_lp_to_col;
+    // 代数大素数 -> 列索引（按 (p, r) 键，区分不同素理想）
+    std::unordered_map<PrimeIdealKey, uint32_t, PrimeIdealKeyHash> alg_lp_to_col;
 
     // 二次特征素数列表
     std::vector<uint32_t> qc_primes;
@@ -338,7 +360,7 @@ private:
     /// 大素数收集结果
     struct LargePrimeInfo {
         std::unordered_set<uint64_t> rat_primes;  // 有理侧大素数集合
-        std::unordered_set<uint64_t> alg_primes;  // 代数侧大素数集合
+        std::unordered_set<PrimeIdealKey, PrimeIdealKeyHash> alg_primes;  // 代数侧素理想 (p,r) 集合
     };
 
     /// 收集所有大素数
@@ -352,7 +374,8 @@ private:
                 info.rat_primes.insert(rel.rational_large_prime[j].p);
             }
             for (size_t j = 0; j < rel.algebraic_large_prime.size(); ++j) {
-                info.alg_primes.insert(rel.algebraic_large_prime[j].p);
+                info.alg_primes.insert({rel.algebraic_large_prime[j].p,
+                                        rel.algebraic_large_prime[j].r});
             }
         }
 
@@ -484,10 +507,10 @@ private:
             mapping.rat_lp_to_col[p] = col++;
         }
 
-        // 为代数大素数分配列索引
+        // 为代数大素数（素理想）分配列索引——按 (p, r) 键
         col = static_cast<uint32_t>(mapping.alg_lp_start());
-        for (uint64_t p : lp_info.alg_primes) {
-            mapping.alg_lp_to_col[p] = col++;
+        for (const auto& key : lp_info.alg_primes) {
+            mapping.alg_lp_to_col[key] = col++;
         }
     }
 
@@ -565,16 +588,18 @@ private:
             }
         }
 
-        // 代数大素数
+        // 代数大素数——按 (p, r) 素理想键累积指数
         {
-            std::unordered_map<uint64_t, uint8_t> exponents;
+            std::unordered_map<PrimeIdealKey, uint8_t, PrimeIdealKeyHash> exponents;
             for (size_t j = 0; j < rel.algebraic_large_prime.size(); ++j) {
-                exponents[rel.algebraic_large_prime[j].p] += rel.algebraic_large_prime[j].e;
+                PrimeIdealKey key{rel.algebraic_large_prime[j].p,
+                                  rel.algebraic_large_prime[j].r};
+                exponents[key] += rel.algebraic_large_prime[j].e;
             }
 
-            for (const auto& [p, exp] : exponents) {
+            for (const auto& [key, exp] : exponents) {
                 if (exp % 2 == 1) {
-                    auto it = mapping.alg_lp_to_col.find(p);
+                    auto it = mapping.alg_lp_to_col.find(key);
                     if (it != mapping.alg_lp_to_col.end()) {
                         row.set(it->second);
                     }
