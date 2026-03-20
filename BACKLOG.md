@@ -223,14 +223,13 @@
 - **影响**: 大 B2 参数导致 OOM 或系统卡顿
 - **建议**: 分段筛法（segmented sieve）或直接用 Miller-Rabin 测试范围内的素数
 
-### [BUG] smooth_check large_prime_bound² uint64 溢出
-- **状态**: 🔴 待处理
+### [BUG] ~~smooth_check large_prime_bound² uint64 溢出~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
-- **来源**: Cofactor 模块逐行审计
-- **文件**: `include/gnfs/cofactor/smooth_check.hpp:195`
-- **描述**: `classify_cofactor()` 中 `large_prime_bound * large_prime_bound` 当 lpb > 2^32 时溢出 uint64。对大 N，large_prime_bound 可达 10^10+
-- **影响**: 余因子分类阈值错误，可能接受非光滑关系或拒绝有效关系
-- **建议**: 使用 `__uint128_t` 或 `Integer` 做平方比较
+- **解决日期**: 2026-03-09
+- **解决方式**: `classify_cofactor()` (line 195) 和 `quick_cofactor_check()` (line 319) 中的 `large_prime_bound * large_prime_bound` 改为 `static_cast<__uint128_t>(large_prime_bound) * large_prime_bound`，避免 lpb > 2^32 时的 uint64 溢出
+- **验证**: 新增 7 个测试用例（lpb = 5e9，覆盖溢出范围内/外/边界/单LP/2LP禁用/classify_cofactor），冒烟测试 11/11 通过
+- **Commit**: `783294a`
 
 ### [BUG] class_group SNF 实现不是真正的 Smith Normal Form
 - **状态**: 🔴 待处理
@@ -474,14 +473,13 @@
 - **影响**: 极端情况（小素数高次幂）下矩阵行数据丢失
 - **建议**: 改用 uint32_t 或检测溢出
 
-### [BUG] smooth_check quick_cofactor_check 也有 lpb² 溢出
-- **状态**: 🔴 待处理
+### [BUG] ~~smooth_check quick_cofactor_check 也有 lpb² 溢出~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
-- **来源**: Cofactor 模块逐行审计
-- **文件**: `include/gnfs/cofactor/smooth_check.hpp:319`
-- **描述**: `c <= large_prime_bound * large_prime_bound` 与 line 195 相同的 uint64 溢出问题
-- **影响**: 快速筛选函数误判余因子状态
-- **建议**: 同 line 195 的修复方案
+- **解决日期**: 2026-03-09
+- **解决方式**: 与 line 195 同批修复，使用 `__uint128_t` 中间乘积
+- **验证**: 同 `783294a` commit
+- **Commit**: `783294a`
 
 ### [BUG] Pollard rho 只使用单一多项式 x²+1
 - **状态**: 🔴 待处理
