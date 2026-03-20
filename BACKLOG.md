@@ -37,13 +37,14 @@
 
 ## P1 — 高优先级（影响正确性或大数支持）
 
-### [BUG] Split Schirokauer: f mod 2 可约时映射计算错误
-- **状态**: 🔴 待处理
+### [BUG] Split Schirokauer: f mod 2 可约时映射精度不足
+- **状态**: 🟡 部分解决
 - **发现日期**: 2026-02-20 (Session 2)
-- **核查结果**: ✅ 真实 P1（已知问题，有 TODO 代码）
+- **核查结果**: ✅ 真实 P1（崩溃已修复，精度问题仍存）
 - **文件**: `include/gnfs/linalg/schirokauer.hpp`
-- **描述**: f mod 2 可约时需要 valuation stripping，当前部分实现有 bug。degree-2 factor 提升代码标注为 "less precise but functional for k=3, ell=2"
-- **当前规避**: 选择 f mod 2 不可约的测试 N
+- **描述**: f mod 2 可约时需要 valuation stripping，当前 split 路径可工作但精度可能不如 unsplit 路径。Hensel 提升崩溃已修复（`ab278c6`），但高次因子的提升可能在 ℓ>2 或 k>3 时精度不足
+- **已修复**: hensel_lift_factor 崩溃（Session 10）。现在通过 synthetic division 正确计算提升后的余因子
+- **残留问题**: 无线性因子的可约情况（如两个二次因子）仍回退到 mod-ℓ 精度
 
 ### [BUG] ECM sieve_primes(B2) 内存爆炸
 - **状态**: 🔴 待处理
@@ -361,14 +362,12 @@
 - **文件**: `include/gnfs/linalg/matrix_builder.hpp:540,553`
 - **描述**: FB 索引无上限检查
 
-### [BUG] Schirokauer Hensel 提升 quadratic factor 访问未构建的 prime_info_
-- **状态**: 🔴 待处理
+### [BUG] ~~Schirokauer Hensel 提升 quadratic factor 访问未构建的 prime_info_~~ ✅
 - **发现日期**: 2026-03-08 (Session 6)
-- **核查结果**: ✅ 真实 P2→**P0 升级** (Session 9 确认导致 N=9991 segfault)
-- **文件**: `include/gnfs/linalg/schirokauer.hpp:534`
-- **描述**: `hensel_lift_factor()` 中 `prime_info_.back()` 引用上一个 prime 的信息。N=9991 (f mod 2 可约) 时在矩阵构建阶段触发 SIGSEGV (EXC_BAD_ACCESS at 0xffffffffffffffe8)
-- **复现**: `./build/test_gnfs_progressive 1 1` → N=9991 Phase 5 崩溃（main 分支同样复现）
-- **影响**: 所有 f mod 2 可约的 N 值矩阵构建必崩
+- **解决日期**: 2026-03-09 (Session 10)
+- **解决方式**: `schirokauer.hpp` hensel_lift_factor 改用 info.factors + synthetic division 计算提升后余因子
+- **验证**: `./build/test_gnfs_progressive 1 1` N=9991 成功分解 97×103
+- **Commit**: `ab278c6`
 
 ### [FEAT] Bucket Sieve 架构
 - **状态**: 🔴 待处理
@@ -836,3 +835,4 @@
 ### ✅ smooth_check quick_cofactor_check lpb² — `783294a`
 ### ✅ Hensel Sqrt 预计算优化 — Session 3
 ### ✅ 代数侧大素数映射按 (p,r) 素理想键索引 — `273dcdd`
+### ✅ Schirokauer split 路径 hensel_lift_factor SIGSEGV — `ab278c6`
