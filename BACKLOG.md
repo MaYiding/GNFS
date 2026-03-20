@@ -363,13 +363,13 @@
 - **描述**: `e0 * f1 - e1 * f0` 对大格基值溢出 int64，无边界检查
 - **影响**: 大 special-Q 时格行列式错误
 
-### [BUG] cofactorizer 大素数存储 uint32 截断
-- **状态**: 🔴 待处理
+### [BUG] ~~cofactorizer 大素数存储 uint32 截断~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 5 审计)
-- **来源**: Cofactor 模块审计
-- **文件**: `include/gnfs/cofactor/cofactorizer.hpp:160, 170`
-- **描述**: 余因子 > UINT32_MAX（50+ 位素数）时，PrimePower 中存储为 0。50+ 位 N 需要更大的大素数
-- **建议**: PrimePower 改用 uint64_t 或 Integer
+- **解决日期**: 2026-03-09
+- **解决方式**: `PrimePower::p` 和 `PrimePower::r` 从 `uint32_t` 升级为 `uint64_t`，移除 `cofactorizer.hpp` 中的 `static_cast<uint32_t>` 截断。同时更新 `PrimePowerHash` 和 `FactorBase::Stats::large_prime_bound`
+- **验证**: 3 组测试（17 个断言）覆盖 uint64 存储、序列化/反序列化保真。冒烟测试 11/11 通过
+- **Commit**: `3b93104`
 
 ### [BUG] ECM 固定随机种子导致重复曲线
 - **状态**: 🔴 待处理
@@ -428,14 +428,13 @@
 - **影响**: 文档级问题，可能导致新代码写反符号
 - **建议**: 修正注释为 `a - b*m 在有理侧, a - b*α 在代数侧`
 
-### [BUG] FactorBaseParams::large_prime_bound 是 uint32_t 但 GNFSParams 用 uint64_t
-- **状态**: 🔴 待处理
+### [BUG] ~~FactorBaseParams::large_prime_bound 是 uint32_t 但 GNFSParams 用 uint64_t~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 6 深度审计)
-- **来源**: Core + FactorBase 模块类型对比
-- **文件**: `include/gnfs/core/types.hpp:128` vs `include/gnfs/core/params.hpp:30`
-- **描述**: `FactorBaseParams::large_prime_bound` 是 `uint32_t`，但 `GNFSParams::large_prime_bound` 是 `uint64_t`。从 GNFSParams 复制到 FactorBaseParams 时静默截断。对 50+ 位 N，lpb > 4×10^9 > UINT32_MAX
-- **影响**: 大 N 的大素数界被截断，大量有效 1LP/2LP 关系被拒绝
-- **建议**: FactorBaseParams::large_prime_bound 改为 uint64_t
+- **解决日期**: 2026-03-09
+- **解决方式**: `FactorBaseParams::large_prime_bound` 从 `uint32_t` 改为 `uint64_t`，构造函数参数同步更新。`FactorBase::Stats::large_prime_bound` 也改为 `uint64_t`
+- **验证**: 冒烟测试 11/11 通过，新增 `test_factor_base_params_uint64_lpb()` 测试
+- **Commit**: `3b93104`
 
 ### [BUG] rational_sqrt 负号检测到但未应用
 - **状态**: 🔴 待处理
