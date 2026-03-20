@@ -82,7 +82,7 @@ void FactorBaseBuilder::find_rational_primes(FactorBase& fb, uint32_t bound, uin
         }
 
         // Compute log value
-        uint32_t log_p = compute_log_prime(p, log_scale);
+        uint32_t log_p = compute_log_prime_precise(p, log_scale);
 
         // Add to factor base
         fb.add_rational(p, log_p);
@@ -111,7 +111,7 @@ void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialCon
         }
 
         // Compute log value
-        uint32_t log_p = compute_log_prime(p, log_scale);
+        uint32_t log_p = compute_log_prime_precise(p, log_scale);
 
         // Add to factor base
         fb.add_rational(p, log_p);
@@ -143,7 +143,7 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
         auto roots = find_roots_mod_p(ctx, p);
 
         // Compute log value
-        uint32_t log_p = compute_log_prime(p, log_scale);
+        uint32_t log_p = compute_log_prime_precise(p, log_scale);
 
         for (uint32_t root : roots) {
             fb.add_algebraic(p, root, log_p, 1);
