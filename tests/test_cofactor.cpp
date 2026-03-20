@@ -419,6 +419,61 @@ void test_quick_cofactor_check() {
     std::cout << "  Quick cofactor check: PASSED" << std::endl;
 }
 
+// Test lpb² overflow protection for large_prime_bound > 2^32
+// Bug: large_prime_bound * large_prime_bound overflows uint64 when lpb > ~4.29e9
+// causing valid 2LP cofactors to be incorrectly rejected
+void test_lpb_squared_overflow() {
+    std::cout << "Testing lpb² overflow protection..." << std::endl;
+
+    // lpb = 5×10^9 > 2^32 (4.29×10^9)
+    // Real lpb² = 2.5×10^19 (overflows uint64_t, max ≈ 1.84×10^19)
+    // Without fix, lpb*lpb wraps to ≈6.55×10^18
+    uint64_t lpb = 5000000000ULL;
+
+    // --- quick_cofactor_check tests ---
+
+    // Case 1: cofactor = 1e19, between overflowed lpb² and real lpb²
+    // 1e19 > 6.55e18 (overflowed) but < 2.5e19 (real)
+    // Without fix: rejected. With fix: accepted as potential 2LP.
+    core::Integer cof_in_range(static_cast<uint64_t>(10000000000000000000ULL));
+    assert(quick_cofactor_check(cof_in_range, lpb, true) &&
+           "Cofactor in valid 2LP range must not be rejected due to overflow");
+
+    // Case 2: cofactor = 1.8e19, near UINT64_MAX but still < real lpb²
+    core::Integer cof_near_max(static_cast<uint64_t>(18000000000000000000ULL));
+    assert(quick_cofactor_check(cof_near_max, lpb, true) &&
+           "Cofactor near UINT64_MAX but below real lpb² must pass");
+
+    // Case 3: cofactor > real lpb² (as Integer, since 3e19 > UINT64_MAX)
+    core::Integer cof_too_large("30000000000000000000");  // 3e19 > 2.5e19
+    assert(!quick_cofactor_check(cof_too_large, lpb, true) &&
+           "Cofactor above real lpb² must be rejected");
+
+    // Case 4: single LP within bound still works
+    core::Integer cof_single_lp(static_cast<uint64_t>(4000000000ULL));
+    assert(quick_cofactor_check(cof_single_lp, lpb, true) &&
+           "Single LP within bound must pass");
+
+    // Case 5: 2LP disabled, cofactor > lpb should fail
+    core::Integer cof_above_lpb(static_cast<uint64_t>(6000000000ULL));
+    assert(!quick_cofactor_check(cof_above_lpb, lpb, false) &&
+           "With 2LP disabled, cofactor > lpb must fail");
+
+    // --- classify_cofactor tests ---
+
+    // Case 6: classify_cofactor must NOT prematurely return TooLarge
+    auto cls = classify_cofactor(cof_in_range, lpb);
+    assert(cls.type != CofactorClass::TooLarge &&
+           "classify_cofactor must not return TooLarge for cofactor < real lpb²");
+
+    // Case 7: cofactor > real lpb² should be TooLarge
+    auto cls2 = classify_cofactor(cof_too_large, lpb);
+    assert(cls2.type == CofactorClass::TooLarge &&
+           "classify_cofactor must return TooLarge for cofactor > real lpb²");
+
+    std::cout << "  lpb² overflow protection: PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Cofactorization Tests ===" << std::endl;
     std::cout << std::endl;
@@ -433,6 +488,7 @@ int main() {
     test_relation_requirements();
     test_separate_relations();
     test_quick_cofactor_check();
+    test_lpb_squared_overflow();
 
     std::cout << std::endl;
     std::cout << "=== All Cofactorization Tests PASSED ===" << std::endl;
