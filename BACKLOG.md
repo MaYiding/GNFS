@@ -31,23 +31,17 @@
 - **验证**: 冒烟测试 11/11 + test_sieve_basic 通过
 - **Commit**: `4b4ec08`, `3789872`
 
-### [BUG] Hensel Sqrt S[i].to_uint64() 截断：N > 2^64 时 Hensel 失败
-- **状态**: 🔴 待处理
+### [BUG] ~~Hensel Sqrt S[i].to_uint64() 截断：N > 2^64 时 Hensel 失败~~ ❌ 误报（严重性夸大）
+- **状态**: ❌ 误报 (已验证关闭)
 - **发现日期**: 2026-03-08 (Session 5 审计)
-- **来源**: Sqrt 模块审计
-- **文件**: `include/gnfs/sqrt/hensel_sqrt.hpp:113-122`
-- **描述**: Hensel 提升中 `uint64_t si = S[i].to_uint64()` 在 S[i] 系数大于 2^64 时静默截断。对 N > 65 位数的因式分解，系数可超过此范围
-- **影响**: 65+ 位 N 的 Hensel 提升产生垃圾结果，因式分解失败
-- **建议**: 改用 Integer 算术或在 to_uint64() 前检查 fits_uint64()
+- **验证日期**: 2026-03-09
+- **验证结论**: `S[i].to_uint64()` (line 115) 仅在**初始步骤**使用，此时 S 是 mod p（小素数），值 < p < UINT64_MAX。主 Hensel 提升循环（line 164-217）全部使用 Integer 算术，不受影响。`poly_inverse_mod_direct` 中的 `to_uint64()` (line 528-540) 有 `if (modulus.fits_uint64())` 守卫。**注意**: `poly_inverse_mod_direct` 中 line 545-547 的 `q_minus_2 = p^d` uint64 溢出是一个独立 bug（影响大 p 或大 d），但该函数未在主流程中调用
 
-### [BUG] Couveignes Gray Code `__builtin_ctzll(0)` 未定义行为
-- **状态**: 🔴 待处理
+### [BUG] ~~Couveignes Gray Code `__builtin_ctzll(0)` 未定义行为~~ ❌ 误报
+- **状态**: ❌ 误报 (已验证关闭)
 - **发现日期**: 2026-03-08 (Session 5 审计)
-- **来源**: Sqrt 模块审计
-- **文件**: `include/gnfs/sqrt/couveignes.hpp:425-429`
-- **描述**: `__builtin_ctzll(changed_bit)` 在 `changed_bit == 0` 时为未定义行为。如果 Gray Code 转换不翻转任何位，会崩溃
-- **影响**: 潜在崩溃
-- **建议**: 添加 `if (changed_bit == 0) continue;` 守卫
+- **验证日期**: 2026-03-09
+- **验证结论**: 连续 Gray 码恰好差 1 位（Gray Code 数学性质保证），`changed_bit = prev_gray ^ gray` 永远是 2 的幂（非零）。`prev_gray` 在循环末尾正确更新（line 417）。`__builtin_ctzll` 的输入不可能为 0。Block Lanczos 中的 3 处调用均有 `while (v)` 循环守卫，同样安全
 
 ### [BUG] ~~modular_poly p=2 时 Tonelli-Shanks 无限循环~~ ✅
 - **状态**: ✅ 已完成
@@ -81,14 +75,14 @@
 - **验证**: test_newton_root Case 2 验证 nullopt 返回正确
 - **Commit**: `82bbec1`
 
-### [BUG] params.hpp special_q_max 的 uint32 溢出
-- **状态**: 🔴 待处理
+### [BUG] params.hpp special_q_max 的 uint32 溢出（当前被 cap 保护）
+- **状态**: 🟢 当前安全（待观察）
 - **发现日期**: 2026-03-08 (Session 5 审计)
-- **来源**: Core 模块审计
+- **验证日期**: 2026-03-09
 - **文件**: `include/gnfs/core/params.hpp:166`
-- **描述**: `p.special_q_max = p.rational_bound * 2` 当 rational_bound > 2^31 时 uint32 溢出。对 100+ 位 N，rational_bound ≈ 1e9，翻倍后溢出
-- **影响**: special_q_max 变为极小值，算法失效
-- **建议**: 改用 uint64_t 或 `std::min(uint64_t(rb)*2, UINT32_MAX)`
+- **描述**: `p.special_q_max = p.rational_bound * 2` 当 rational_bound > 2^31 时 uint32 溢出
+- **当前安全原因**: `compute()` 函数在 line 100 将 B 上限 cap 在 1e9，因此 rational_bound ≤ 1e9，×2 = 2e9 < UINT32_MAX (4.29e9)。但如果未来提高 cap 或手动设置参数，会触发溢出
+- **建议**: 仍应改用 uint64_t 以防 cap 变更时引入问题
 
 ### [BUG] trial_division.hpp uint8_t 指数溢出
 - **状态**: 🔴 待处理
@@ -99,14 +93,11 @@
 - **影响**: 数据损坏：关系中该因子指数记为 0
 - **建议**: 改用 uint16_t 或添加溢出检查
 
-### [BUG] Gaussian 消元 pivot_cols.back() 空容器 UB
-- **状态**: 🔴 待处理
+### [BUG] ~~Gaussian 消元 pivot_cols.back() 空容器 UB~~ ❌ 误报
+- **状态**: ❌ 误报 (已验证关闭)
 - **发现日期**: 2026-03-08 (Session 5 审计)
-- **来源**: LinAlg 模块审计
-- **文件**: `include/gnfs/linalg/gauss.hpp:100-105`
-- **描述**: 检测 free columns 时调用 `pivot_cols.back()` 但未检查 `pivot_cols.empty()`
-- **影响**: 空矩阵或全零矩阵时 UB
-- **建议**: 添加 `if (pivot_cols.empty())` 守卫
+- **验证日期**: 2026-03-09
+- **验证结论**: 代码已有三元运算符守卫：`result.pivot_cols.empty() ? 0 : result.pivot_cols.back() + 1`（gauss.hpp:100-101）。空容器时使用 `0` 作为起始列，不调用 `back()`
 
 ### [BUG] SparseMatrix::test() const_cast 违反 const 契约
 - **状态**: 🔴 待处理
@@ -180,14 +171,13 @@
 - **影响**: 使用大素数（>2^63）的 Couveignes/Hensel 崩溃或产生错误
 - **建议**: 使用 unsigned 算术或 `__int128_t`
 
-### [BUG] Couveignes compute_from_element() 无上限搜索循环
-- **状态**: 🔴 待处理
+### [BUG] ~~Couveignes compute_from_element() 无上限搜索循环~~ ✅
+- **状态**: ✅ 已完成
 - **发现日期**: 2026-03-08 (Session 5 深度审计)
-- **来源**: Sqrt 模块逐行审计
-- **文件**: `include/gnfs/sqrt/couveignes.hpp:483`
-- **描述**: `while (primes.size() < config_.num_primes)` 没有 attempts 上限。如果几乎所有素数都使 f 可约（或导致零乘积），此循环永不终止
-- **影响**: 某些多项式可能导致进程永久挂起
-- **建议**: 添加 `&& attempts < 100000` 条件（与 compute() 的 primes_checked < 100000 一致）
+- **解决日期**: 2026-03-09
+- **解决方式**: 添加 `max_prime_checks` 可配置字段（默认 100000）到 `CouveignesSqrtConfig`，同时应用到 `compute()` 和 `compute_from_element()`。替换原硬编码的 100000 为 `config_.max_prime_checks`
+- **验证**: 新增 2 个测试（终止性测试 + 正常用例），冒烟测试 11/11 通过
+- **Commit**: `41213e1`
 
 ### [BUG] Relation::b 是 int64_t 但应为 uint64_t — 全局类型不匹配
 - **状态**: 🔴 待处理

@@ -22,6 +22,7 @@ struct CouveignesSqrtConfig {
     size_t num_primes = 16;        // Number of primes for CRT
     uint64_t prime_start = 1000;   // Starting point for prime search (larger = better)
     size_t max_attempts = 100;     // Max attempts for sign resolution
+    size_t max_prime_checks = 100000;  // Max prime candidates to check (prevents infinite loop)
 };
 
 /// CouveignesSqrt - Compute algebraic square root using Couveignes method
@@ -81,7 +82,7 @@ public:
         size_t primes_no_sqrt = 0;
 
         uint64_t p = config_.prime_start;
-        while (primes.size() < config_.num_primes && primes_checked < 100000) {
+        while (primes.size() < config_.num_primes && primes_checked < config_.max_prime_checks) {
             p = next_prime(p);
             primes_checked++;
 
@@ -465,8 +466,10 @@ public:
         std::vector<std::vector<uint64_t>> sqrt_coeffs;
 
         uint64_t p = config_.prime_start;
-        while (primes.size() < config_.num_primes) {
+        size_t primes_checked = 0;
+        while (primes.size() < config_.num_primes && primes_checked < config_.max_prime_checks) {
             p = next_prime(p);
+            primes_checked++;
 
             // Skip primes that divide N
             Integer n_mod_p = n.clone();
