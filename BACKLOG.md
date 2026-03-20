@@ -7,15 +7,6 @@
 
 ## P0 — 正确性关键（必须修复）
 
-### [BUG] 代数侧大素数映射仅按 p 索引，忽略根 r——不同素理想被合并为同一列
-- **状态**: 🔴 待处理
-- **发现日期**: 2026-03-09 (Session 6)
-- **核查结果**: ✅ 真实 P0
-- **文件**: `include/gnfs/linalg/matrix_builder.hpp:350,363-364,579-591`
-- **描述**: `collect_large_primes()` 和 `build_row()` 将代数大素数按 `p` 键入 `alg_lp_to_col`，不包含根 `r`。同一素数 p 上方多个不同素理想 (p,α-r₁), (p,α-r₂) 被合并到同一列，违反代数侧因子分解唯一性
-- **影响**: 矩阵中不同素理想被错误合并 → 虚假 GF(2) 依赖 → 平方根非完全平方 → 因式分解失败率增加。对 d>3 更严重
-- **建议**: 键改为 `(p, r)` 对
-
 ### [BUG] compute_log_prime() 系统性低估所有素数对数值
 - **状态**: 🔴 待处理
 - **发现日期**: 2026-03-09 (Session 6)
@@ -373,9 +364,11 @@
 ### [BUG] Schirokauer Hensel 提升 quadratic factor 访问未构建的 prime_info_
 - **状态**: 🔴 待处理
 - **发现日期**: 2026-03-08 (Session 6)
-- **核查结果**: ✅ 真实 P2
-- **文件**: `include/gnfs/linalg/schirokauer.hpp:528`
-- **描述**: prime_info_.back() 引用上一个 prime 的信息
+- **核查结果**: ✅ 真实 P2→**P0 升级** (Session 9 确认导致 N=9991 segfault)
+- **文件**: `include/gnfs/linalg/schirokauer.hpp:534`
+- **描述**: `hensel_lift_factor()` 中 `prime_info_.back()` 引用上一个 prime 的信息。N=9991 (f mod 2 可约) 时在矩阵构建阶段触发 SIGSEGV (EXC_BAD_ACCESS at 0xffffffffffffffe8)
+- **复现**: `./build/test_gnfs_progressive 1 1` → N=9991 Phase 5 崩溃（main 分支同样复现）
+- **影响**: 所有 f mod 2 可约的 N 值矩阵构建必崩
 
 ### [FEAT] Bucket Sieve 架构
 - **状态**: 🔴 待处理
@@ -842,3 +835,4 @@
 ### ✅ FactorBaseParams large_prime_bound uint64 — `3b93104`
 ### ✅ smooth_check quick_cofactor_check lpb² — `783294a`
 ### ✅ Hensel Sqrt 预计算优化 — Session 3
+### ✅ 代数侧大素数映射按 (p,r) 素理想键索引 — `273dcdd`
