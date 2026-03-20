@@ -518,30 +518,42 @@ private:
             return;
         }
 
-        // For higher-degree factors: more complex Hensel lifting
-        // For now, use mod-ℓ factor directly (less precise but functional for k=3, ℓ=2)
-        // The mod-ℓ^k version would require polynomial Hensel lifting
-        // For ℓ=2, k=3: ℓ^k = 8, we can compute the lifted factor directly
-        if (ell == 2 && fi.degree == 2) {
-            // Factor is x²+x+1 mod 2. Lift to mod 8.
-            // f mod 8 = x³ + c₁x + c₀
-            // f = (x - r_lifted)(x² + ax + b) mod 8
-            // From the linear factor lift, we know r_lifted.
-            // Then the quadratic is f / (x - r_lifted) mod 8.
-            // Find the other factor by polynomial division mod 8
-            uint64_t r = 0;
-            // Find the lifted root from the linear factor sibling
-            for (const auto& other_fi : prime_info_.back().factors) {
-                if (other_fi.degree == 1) {
-                    r = (info.ell_k - other_fi.f_mod[0]) % info.ell_k;
-                    break;
-                }
+        // For higher-degree factors: compute lifted factor via polynomial division.
+        // All linear factors have already been Hensel-lifted and appear earlier in
+        // info.factors. We divide f(x) mod ℓ^k by each lifted linear factor
+        // (x - r_lifted) to obtain the exact lifted cofactor. The division is exact
+        // because f(r_lifted) ≡ 0 (mod ℓ^k) by construction.
+        {
+            // Start with f mod ℓ^k
+            std::vector<uint64_t> poly(degree_ + 1);
+            for (uint32_t i = 0; i <= degree_; ++i) {
+                poly[i] = info.f_mod[i];
             }
-            // But prime_info_ isn't fully built yet. Use info.factors instead.
-            // Actually, this function is called DURING setup, before factors are pushed.
-            // We need to find r differently.
-            // For ℓ=2, k=3: just do brute-force polynomial division of f mod 8 by the linear factor
-            // Skip for now — use the mod-ℓ values (less precise but gives some constraint)
+            uint32_t poly_deg = degree_;
+
+            // Divide out each already-lifted linear factor
+            for (const auto& other_fi : info.factors) {
+                if (other_fi.degree != 1) continue;
+                // Root r from factor (x - r) stored as [ℓ^k - r, 1]
+                uint64_t r = (info.ell_k - other_fi.f_mod[0]) % info.ell_k;
+                // Synthetic division by (x - r) mod ℓ^k
+                for (int i = static_cast<int>(poly_deg) - 1; i >= 0; --i) {
+                    __uint128_t prod = static_cast<__uint128_t>(r) * poly[i + 1] % info.ell_k;
+                    poly[i] = static_cast<uint64_t>((poly[i] + prod) % info.ell_k);
+                }
+                // poly[0] is remainder (should be ≡ 0 mod ℓ^k), shift quotient down
+                for (uint32_t i = 0; i < poly_deg; ++i) {
+                    poly[i] = poly[i + 1];
+                }
+                poly[poly_deg] = 0;
+                poly_deg--;
+            }
+
+            // Store the lifted cofactor
+            fi.f_mod.fill(0);
+            for (uint32_t i = 0; i <= fi.degree && i <= poly_deg; ++i) {
+                fi.f_mod[i] = poly[i];
+            }
         }
     }
 };
