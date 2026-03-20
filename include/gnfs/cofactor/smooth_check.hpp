@@ -191,8 +191,8 @@ struct CofactorClassification {
             return result;
         }
 
-        // 检查是否超出界限
-        if (c > large_prime_bound * large_prime_bound) {
+        // 检查是否超出界限 (use __uint128_t to avoid overflow when lpb > 2^32)
+        if (c > static_cast<__uint128_t>(large_prime_bound) * large_prime_bound) {
             // 可能是 3LP 或更多
             result.type = CofactorClass::TooLarge;
             return result;
@@ -315,8 +315,8 @@ struct CofactorClassification {
         // 单个大素数
         if (c <= large_prime_bound) return true;
 
-        // 2LP: cofactor <= B^2
-        if (allow_2lp && c <= large_prime_bound * large_prime_bound) {
+        // 2LP: cofactor <= B^2 (use __uint128_t to avoid overflow when lpb > 2^32)
+        if (allow_2lp && c <= static_cast<__uint128_t>(large_prime_bound) * large_prime_bound) {
             return true;
         }
 
