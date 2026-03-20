@@ -7,14 +7,13 @@
 
 ## P0 — 正确性关键（必须修复）
 
-### [BUG] compute_log_prime() 系统性低估所有素数对数值
-- **状态**: 🔴 待处理
+### [BUG] ~~compute_log_prime() 系统性低估所有素数对数值~~ ✅
+- **状态**: ✅ 已修复
 - **发现日期**: 2026-03-09 (Session 6)
-- **核查结果**: ✅ 真实，但降级为 P1（有 precise 版本可用）
-- **文件**: `include/gnfs/factor_base/factor_base.hpp:175-181`
-- **描述**: `compute_log_prime()` 计算 `floor(log2(p)) * scale` 而非 `floor(log2(p) * scale)`。p=5, scale=16 时偏差 15.6%。旁边有 `compute_log_prime_precise()` 但 builder.cpp 三处调用不精确版
-- **影响**: 筛法中素数 log 贡献被系统低估，影响候选筛选
-- **建议**: builder.cpp 改用 `compute_log_prime_precise()`
+- **解决日期**: 2026-03-09 (Session 11)
+- **解决方式**: `src/factor_base/builder.cpp` 3 处调用改为 `compute_log_prime_precise()`
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 5/5 通过
+- **Commit**: `b3bbe3a`
 
 ### [BUG] Couveignes rat_sqrt 对合数 N 计算根本性错误
 - **状态**: 🔴 待处理
@@ -835,4 +834,5 @@
 ### ✅ smooth_check quick_cofactor_check lpb² — `783294a`
 ### ✅ Hensel Sqrt 预计算优化 — Session 3
 ### ✅ 代数侧大素数映射按 (p,r) 素理想键索引 — `273dcdd`
+### ✅ compute_log_prime() 系统性低估所有素数对数值 — `b3bbe3a`
 ### ✅ Schirokauer split 路径 hensel_lift_factor SIGSEGV — `ab278c6`
