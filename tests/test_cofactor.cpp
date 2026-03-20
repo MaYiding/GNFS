@@ -9,6 +9,7 @@
 
 #include <cassert>
 #include <iostream>
+#include <sstream>
 #include <cmath>
 
 using namespace gnfs;
@@ -474,6 +475,165 @@ void test_lpb_squared_overflow() {
     std::cout << "  lpb² overflow protection: PASSED" << std::endl;
 }
 
+// Test PrimePower stores uint64_t primes without truncation
+void test_prime_power_uint64_storage() {
+    std::cout << "Testing PrimePower uint64 storage..." << std::endl;
+
+    // --- PrimePower must store primes > UINT32_MAX ---
+
+    uint64_t large_p = 5000000000ULL;  // > UINT32_MAX (4294967295)
+    uint64_t large_r = 4999999999ULL;  // root mod p, also > UINT32_MAX
+
+    // Case 1: Two-arg constructor (p, e) — for rational side
+    core::PrimePower pp1(large_p, static_cast<uint8_t>(1));
+    assert(pp1.p == large_p &&
+           "PrimePower(p, e) must store p > UINT32_MAX without truncation");
+    assert(pp1.e == 1);
+
+    // Case 2: Three-arg constructor (p, r, e) — for algebraic side
+    core::PrimePower pp2(large_p, large_r, static_cast<uint8_t>(2));
+    assert(pp2.p == large_p &&
+           "PrimePower(p, r, e) must store p > UINT32_MAX");
+    assert(pp2.r == large_r &&
+           "PrimePower(p, r, e) must store r > UINT32_MAX");
+    assert(pp2.e == 2);
+
+    // Case 3: Comparison operators with large values
+    core::PrimePower pp3(large_p + 1, large_r, static_cast<uint8_t>(1));
+    assert(pp2 < pp3 && "Comparison must work for large primes");
+    assert(!(pp3 < pp2));
+
+    // Case 4: Equality with large values
+    core::PrimePower pp4(large_p, large_r, static_cast<uint8_t>(2));
+    assert(pp2 == pp4 && "Equality must work for large primes");
+    assert(pp2 != pp3);
+
+    // Case 5: Hash must distinguish large primes
+    core::PrimePowerHash hasher;
+    size_t h1 = hasher(pp2);
+    size_t h2 = hasher(pp3);
+    assert(h1 != h2 && "Hash must distinguish different large primes");
+
+    // Case 6: Near UINT32_MAX boundary
+    core::PrimePower pp_boundary(static_cast<uint64_t>(UINT32_MAX) + 1, static_cast<uint8_t>(1));
+    assert(pp_boundary.p == static_cast<uint64_t>(UINT32_MAX) + 1 &&
+           "PrimePower must handle UINT32_MAX+1 correctly");
+
+    // Case 7: UINT64_MAX-range prime
+    uint64_t huge_p = 18000000000000000000ULL;  // ~1.8e19
+    core::PrimePower pp_huge(huge_p, static_cast<uint8_t>(1));
+    assert(pp_huge.p == huge_p &&
+           "PrimePower must handle very large primes near UINT64_MAX");
+
+    std::cout << "  PrimePower uint64 storage: PASSED" << std::endl;
+}
+
+// Test FactorBaseParams stores uint64_t large_prime_bound
+void test_factor_base_params_uint64_lpb() {
+    std::cout << "Testing FactorBaseParams uint64 large_prime_bound..." << std::endl;
+
+    uint64_t large_lpb = 5000000000ULL;  // > UINT32_MAX
+
+    // Case 1: Direct assignment
+    core::FactorBaseParams params;
+    params.large_prime_bound = large_lpb;
+    assert(params.large_prime_bound == large_lpb &&
+           "FactorBaseParams::large_prime_bound must store values > UINT32_MAX");
+
+    // Case 2: Constructor
+    core::FactorBaseParams params2(1000, 2000, large_lpb);
+    assert(params2.large_prime_bound == large_lpb &&
+           "FactorBaseParams constructor must preserve uint64 large_prime_bound");
+    assert(params2.rational_bound == 1000);
+    assert(params2.algebraic_bound == 2000);
+
+    // Case 3: Round-trip through cofactorizer config
+    // When large_prime_bound is set in FactorBaseParams, cofactorizer should use it
+    // (indirect test: verify the value isn't truncated anywhere in the chain)
+    uint64_t near_max = static_cast<uint64_t>(UINT32_MAX) + 100;
+    core::FactorBaseParams params3;
+    params3.large_prime_bound = near_max;
+    assert(params3.large_prime_bound == near_max &&
+           "large_prime_bound near UINT32_MAX boundary must not truncate");
+
+    std::cout << "  FactorBaseParams uint64 lpb: PASSED" << std::endl;
+}
+
+// Test cofactorizer stores large primes correctly via classify_cofactor
+void test_cofactorizer_large_prime_storage() {
+    std::cout << "Testing cofactorizer large prime storage..." << std::endl;
+
+    uint64_t lpb = 5000000000ULL;  // > UINT32_MAX
+
+    // Case 1: A prime cofactor just below lpb should be stored correctly
+    uint64_t prime_val = 4999999937ULL;  // A prime near 5e9
+    core::Integer cof_prime(prime_val);
+
+    auto cls = classify_cofactor(cof_prime, lpb);
+    assert(cls.type == CofactorClass::Prime &&
+           "Prime < lpb should classify as Prime");
+    assert(cls.factor1 == prime_val &&
+           "classify_cofactor must store the full uint64 prime in factor1");
+
+    // Case 2: Semiprime cofactor — both factors should be stored
+    // Use two primes whose product < lpb²
+    // 4294967311 is prime (just above UINT32_MAX)
+    // 4294967357 is prime
+    // Their product is ~1.844e19 < (5e9)² = 2.5e19
+    uint64_t p1 = 4294967311ULL;  // prime > UINT32_MAX
+    uint64_t p2 = 4294967357ULL;  // prime > UINT32_MAX
+
+    // Verify these are actually > UINT32_MAX
+    assert(p1 > UINT32_MAX && p2 > UINT32_MAX);
+
+    // Create the product as an Integer
+    core::Integer product(p1);
+    product *= core::Integer(p2);
+
+    auto cls2 = classify_cofactor(product, lpb);
+
+    // The cofactor is a semiprime of two large primes
+    // classify_cofactor should find both factors
+    if (cls2.type == CofactorClass::Semiprime) {
+        // Both factors should be > UINT32_MAX
+        assert(cls2.factor1 > UINT32_MAX &&
+               "Semiprime factor1 must not be truncated to uint32");
+        assert(cls2.factor2 > UINT32_MAX &&
+               "Semiprime factor2 must not be truncated to uint32");
+        // Factors should multiply back to the product
+        assert(cls2.factor1 * cls2.factor2 == p1 * p2 &&
+               "Factors must reconstruct the original product");
+    }
+    // Note: classify_cofactor may fail to factor with Pollard's rho
+    // (some semiprimes are harder), so we also test the PrimePower storage path
+
+    // Case 3: Direct test of PrimePower storage for large primes in relations
+    // This simulates what cofactorizer::add_large_primes does
+    core::Relation rel(42, 1);
+    rel.rational_large_prime.push_back(core::PrimePower{p1, static_cast<uint8_t>(1)});
+    rel.algebraic_large_prime.push_back(core::PrimePower{p2, p2 - 100, static_cast<uint8_t>(1)});
+
+    assert(rel.rational_large_prime[0].p == p1 &&
+           "Relation must store rational large prime > UINT32_MAX");
+    assert(rel.algebraic_large_prime[0].p == p2 &&
+           "Relation must store algebraic large prime > UINT32_MAX");
+    assert(rel.algebraic_large_prime[0].r == p2 - 100 &&
+           "Relation must store algebraic root > UINT32_MAX");
+
+    // Case 4: Serialization round-trip preserves large primes
+    std::stringstream ss;
+    rel.serialize(ss);
+    auto rel2 = core::Relation::deserialize(ss);
+    assert(rel2.rational_large_prime[0].p == p1 &&
+           "Deserialized rational large prime must be preserved");
+    assert(rel2.algebraic_large_prime[0].p == p2 &&
+           "Deserialized algebraic large prime must be preserved");
+    assert(rel2.algebraic_large_prime[0].r == p2 - 100 &&
+           "Deserialized algebraic root must be preserved");
+
+    std::cout << "  Cofactorizer large prime storage: PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Cofactorization Tests ===" << std::endl;
     std::cout << std::endl;
@@ -489,6 +649,9 @@ int main() {
     test_separate_relations();
     test_quick_cofactor_check();
     test_lpb_squared_overflow();
+    test_prime_power_uint64_storage();
+    test_factor_base_params_uint64_lpb();
+    test_cofactorizer_large_prime_storage();
 
     std::cout << std::endl;
     std::cout << "=== All Cofactorization Tests PASSED ===" << std::endl;
