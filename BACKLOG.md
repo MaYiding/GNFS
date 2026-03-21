@@ -44,13 +44,13 @@
 - **已修复**: hensel_lift_factor 崩溃（Session 10）。现在通过 synthetic division 正确计算提升后的余因子
 - **残留问题**: 无线性因子的可约情况（如两个二次因子）仍回退到 mod-ℓ 精度
 
-### [BUG] ECM sieve_primes(B2) 内存爆炸
-- **状态**: 🔴 待处理
+### [BUG] ~~ECM sieve_primes(B2) 内存爆炸~~ ✅
+- **状态**: ✅ 已修复
 - **发现日期**: 2026-03-08 (Session 5)
-- **核查结果**: ✅ 真实 P1
-- **文件**: `include/gnfs/cofactor/ecm.hpp:405`
-- **描述**: `sieve_primes(B2)` 分配 B2 个 bool。B2=5e9 时 ~625MB，B2=1e10 时无法分配
-- **建议**: 分段筛法或 Miller-Rabin 测试
+- **解决日期**: 2026-03-09 (Session 14)
+- **解决方式**: 新增 `for_each_prime_in_range()` 分段筛法，内存从 O(B2) 降到 O(√B2 + 1M)。Stage 2 不再整筛 [2, B2]，改为分段处理 (B1, B2]
+- **验证**: smoke 11/11 通过 + cofactor 测试通过
+- **Commit**: `8974849`
 
 ### [BUG] Sieve 区域对大 N 导致灾难性内存分配（>100GB）
 - **状态**: 🔴 待处理
