@@ -250,7 +250,7 @@ private:
         return R0;
     }
 
-    /// 简单素数筛 (用于 Stage 1)
+    /// 简单素数筛 (用于 Stage 1，bound 较小)
     static std::vector<uint64_t> sieve_primes(uint64_t bound) {
         std::vector<bool> is_prime(bound + 1, true);
         is_prime[0] = is_prime[1] = false;
@@ -266,6 +266,55 @@ private:
             if (is_prime[i]) primes.push_back(i);
         }
         return primes;
+    }
+
+    /// 分段筛法: 对 (low, high] 中的每个素数调用 callback
+    /// callback 返回 false 表示提前终止
+    /// 内存: O(√high + SEGMENT_SIZE) 而非 O(high)
+    template<typename Callback>
+    static void for_each_prime_in_range(uint64_t low, uint64_t high, Callback&& callback) {
+        if (high <= low) return;
+
+        // 筛出 ≤ √high 的小素数
+        uint64_t sqrt_high = static_cast<uint64_t>(std::sqrt(static_cast<double>(high))) + 1;
+        auto small_primes = sieve_primes(sqrt_high);
+
+        // 分段处理，每段 ~1M entries = 128KB for vector<bool>
+        constexpr uint64_t SEGMENT_SIZE = 1ULL << 20;
+
+        for (uint64_t seg_lo = low + 1; seg_lo <= high; seg_lo += SEGMENT_SIZE) {
+            uint64_t seg_hi = std::min(seg_lo + SEGMENT_SIZE - 1, high);
+            uint64_t seg_len = seg_hi - seg_lo + 1;
+
+            std::vector<bool> is_prime_seg(seg_len, true);
+
+            // 用小素数标记合数
+            for (uint64_t p : small_primes) {
+                if (p * p > seg_hi) break;
+
+                // 段内第一个 p 的倍数
+                uint64_t start = ((seg_lo + p - 1) / p) * p;
+                if (start == p) start += p;  // 不标记 p 本身
+
+                for (uint64_t j = start; j <= seg_hi; j += p) {
+                    is_prime_seg[j - seg_lo] = false;
+                }
+            }
+
+            // 处理 seg_lo <= 1 的边界情况
+            if (seg_lo <= 1) {
+                for (uint64_t v = seg_lo; v <= std::min(uint64_t(1), seg_hi); ++v) {
+                    is_prime_seg[v - seg_lo] = false;
+                }
+            }
+
+            // 回调每个素数，返回 false 则提前终止
+            for (uint64_t i = 0; i < seg_len; ++i) {
+                if (is_prime_seg[i]) {
+                    if (!callback(seg_lo + i)) return;
+                }
+            }
+        }
     }
 
     /// 尝试一条曲线
@@ -389,27 +438,20 @@ private:
         return std::nullopt;
     }
 
-    /// Stage 2: 标准续步
+    /// Stage 2: 标准续步（使用分段筛法，内存安全）
     [[nodiscard]] static std::optional<Integer> stage2(
             const Point& Q0, const Integer& n, const Integer& a24,
             uint64_t B1, uint64_t B2) {
 
-        // 使用简单的逐步法 (对小 B2 足够)
-        // 对每个 B1 < p <= B2 的素数，检查 p*Q 是否为无穷远点
-        // 预计算
-        Point Q2 = mont_double(Q0, a24, n);
-        (void)Q2;  // reserved for optimized stage 2
-
-        // 累积乘积以减少 gcd 计算次数
+        // 使用分段筛法逐步处理 (B1, B2] 中的素数
+        // 内存: O(√B2) 而非 O(B2)
         Integer accum(int64_t(1));
-        auto primes_stage2 = sieve_primes(B2);
-
         Point Qcurr(Q0.x.clone(), Q0.z.clone());
         uint64_t check_interval = 0;
+        std::optional<Integer> found;
+        bool gcd_equals_n = false;
 
-        for (uint64_t p : primes_stage2) {
-            if (p <= B1) continue;
-
+        for_each_prime_in_range(B1, B2, [&](uint64_t p) -> bool {
             Qcurr = mont_mul(Qcurr, p, a24, n);
 
             // 累积 z 坐标
@@ -420,14 +462,20 @@ private:
             if (check_interval >= 100) {
                 Integer g = core::gcd(accum.clone(), n);
                 if (!g.is_one() && g.compare(n) != 0) {
-                    return g;
+                    found = std::move(g);
+                    return false;  // 找到因子，停止
                 }
                 if (g.compare(n) == 0) {
-                    return std::nullopt;
+                    gcd_equals_n = true;
+                    return false;  // gcd == n，停止
                 }
                 check_interval = 0;
             }
-        }
+            return true;  // 继续
+        });
+
+        if (found) return found;
+        if (gcd_equals_n) return std::nullopt;
 
         // 最终检查
         Integer g = core::gcd(accum.clone(), n);
