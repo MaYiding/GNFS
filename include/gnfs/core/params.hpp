@@ -131,6 +131,18 @@ struct GNFSParams {
             sieve_height = sieve_width / 4.0;
         }
 
+        // Cap total sieve area to prevent catastrophic memory allocation.
+        // Without this cap, rational_bound=1e9 produces 16 billion positions
+        // = 32 GB per sieve array (× num_threads in sieve_parallel).
+        // 256M positions × sizeof(uint16_t) = 512 MB per sieve array.
+        constexpr double MAX_SIEVE_AREA = 256.0 * 1024 * 1024;
+        double sieve_area = sieve_width * sieve_height;
+        if (sieve_area > MAX_SIEVE_AREA) {
+            double scale = std::sqrt(MAX_SIEVE_AREA / sieve_area);
+            sieve_width = std::floor(sieve_width * scale);
+            sieve_height = std::floor(sieve_height * scale);
+        }
+
         p.sieve_i_min = -static_cast<int32_t>(sieve_width / 2);
         p.sieve_i_max = static_cast<int32_t>(sieve_width / 2) - 1;
         p.sieve_j_min = 1;

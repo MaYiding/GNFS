@@ -52,14 +52,13 @@
 - **验证**: smoke 11/11 通过 + cofactor 测试通过
 - **Commit**: `8974849`
 
-### [BUG] Sieve 区域对大 N 导致灾难性内存分配（>100GB）
-- **状态**: 🔴 待处理
+### [BUG] ~~Sieve 区域对大 N 导致灾难性内存分配（>100GB）~~ ✅
+- **状态**: ✅ 已修复
 - **发现日期**: 2026-03-08 (Session 6)
-- **核查结果**: ✅ 真实 P1
-- **文件**: `include/gnfs/core/params.hpp:128-137`
-- **描述**: sieve_width 上限 1e6, height = width/4 = 250K。总面积 = 250 billion × 2 bytes = 500GB
-- **影响**: 30+ digit N 直接 OOM
-- **建议**: cap 应对总面积而非仅宽度
+- **解决日期**: 2026-03-09 (Session 15)
+- **解决方式**: `params.hpp` 和 `lattice_basis.hpp` 新增 `MAX_SIEVE_AREA = 256M positions` 面积上限。计算 width×height 后若超限则等比缩小。100-digit N: 32GB/线程 → 512MB/线程（减少 62.5×）
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 5/5 通过 + 200/332-bit 参数验证
+- **Commit**: `86a746c`
 
 ### [BUG] RelationCollector callback 在非递归 mutex 下调用——回调内访问 collector 死锁
 - **状态**: 🔴 待处理
