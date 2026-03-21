@@ -303,6 +303,36 @@ void test_callback() {
     std::cout << "  Callback: PASS" << std::endl;
 }
 
+void test_callback_no_deadlock() {
+    std::cout << "Testing callback does not deadlock when calling collector methods..." << std::endl;
+
+    RelationCollector collector;
+
+    // This callback calls size() and stats() on the collector.
+    // Before the fix, this would deadlock because add() held the
+    // non-recursive mutex while invoking the callback.
+    size_t last_size = 0;
+    size_t callback_count = 0;
+    collector.set_callback([&](const Relation&) {
+        // These calls acquire mutex_ — would deadlock if callback
+        // were invoked inside the lock.
+        last_size = collector.size();
+        auto st = collector.stats();
+        assert(st.total_relations == last_size);
+        ++callback_count;
+    });
+
+    for (int i = 1; i <= 5; ++i) {
+        Relation rel(i, i + 1);
+        collector.add(std::move(rel));
+    }
+
+    assert(callback_count == 5);
+    assert(last_size == 5);
+
+    std::cout << "  Callback no-deadlock: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== Relation Collector Tests ===" << std::endl;
 
@@ -317,6 +347,7 @@ int main() {
     test_filter_duplicates();
     test_sort_relations();
     test_callback();
+    test_callback_no_deadlock();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

@@ -60,13 +60,13 @@
 - **验证**: smoke 11/11 通过 + L1-L2 progressive 5/5 通过 + 200/332-bit 参数验证
 - **Commit**: `86a746c`
 
-### [BUG] RelationCollector callback 在非递归 mutex 下调用——回调内访问 collector 死锁
-- **状态**: 🔴 待处理
+### [BUG] ~~RelationCollector callback 在非递归 mutex 下调用——回调内访问 collector 死锁~~ ✅
+- **状态**: ✅ 已修复
 - **发现日期**: 2026-03-08 (Session 6)
-- **核查结果**: ✅ 真实 P1
-- **文件**: `include/gnfs/relation/collector.hpp:291-294`
-- **描述**: `add()` 持有 `mutex_` 时调用 callback，callback 若调用 `size()` 等方法会死锁（非 recursive_mutex）
-- **建议**: 改用 `std::recursive_mutex` 或 mutex 外调用 callback
+- **解决日期**: 2026-03-09 (Session 16)
+- **解决方式**: callback 调用移至 mutex 作用域外；add() 在锁内 clone 关系数据，锁外调用 callback；set_callback() 新增 mutex 保护。新增回归测试 test_callback_no_deadlock
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 通过
+- **Commit**: `c27804c`
 
 ### [BUG] ~~Couveignes 回退公式 (N+1)/2 对所有 N 都数学错误~~ ✅
 - **状态**: ✅ 已修复（随 P0 Couveignes rat_sqrt 一并修复）
@@ -282,12 +282,13 @@
 - **文件**: `include/gnfs/relation/collector.hpp:227`
 - **描述**: 读取 other.relations_ 不加锁
 
-### [BUG] RelationCollector::set_callback() 无 mutex 保护
-- **状态**: 🔴 待处理
+### [BUG] ~~RelationCollector::set_callback() 无 mutex 保护~~ ✅
+- **状态**: ✅ 已修复（随 P1 callback 死锁一并修复）
 - **发现日期**: 2026-03-09 (Session 7)
-- **核查结果**: ✅ 真实 P2
-- **文件**: `include/gnfs/relation/collector.hpp:249-251`
-- **描述**: set_callback() 与 add() 数据竞争
+- **解决日期**: 2026-03-09 (Session 16)
+- **解决方式**: set_callback() 新增 `std::lock_guard<std::mutex>` 保护
+- **验证**: smoke 11/11 通过
+- **Commit**: `c27804c`
 
 ### [BUG] Pollard rho 只使用单一多项式 x²+1
 - **状态**: 🔴 待处理
