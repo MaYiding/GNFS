@@ -15,14 +15,13 @@
 - **验证**: smoke 11/11 通过 + L1-L2 progressive 5/5 通过
 - **Commit**: `b3bbe3a`
 
-### [BUG] Couveignes rat_sqrt 对合数 N 计算根本性错误
-- **状态**: 🔴 待处理
+### [BUG] ~~Couveignes rat_sqrt 对合数 N 计算根本性错误~~ ✅
+- **状态**: ✅ 已修复
 - **发现日期**: 2026-03-08 (Session 5)
-- **核查结果**: ⚠️ 部分正确（数学不正确但实际作为启发式工作）
-- **文件**: `include/gnfs/sqrt/couveignes.hpp:311-329`
-- **描述**: `powmod(rat_product, (N+1)/4, N)` 假设 N ≡ 3 mod 4 且 N 是素数，但 N 是合数
-- **影响**: 降低 Couveignes 找到正确符号的成功率。有理平方根应通过 rational_sqrt.hpp 独立计算
-- **建议**: 使用因子指数直接累积有理平方根
+- **解决日期**: 2026-03-09 (Session 13)
+- **解决方式**: 移除错误的 `powmod(rat_product, (N+1)/4, N)` 计算，改用 `Y² ≡ ∏(a_i - b_i·m) mod N` 直接验证。无需计算模合数平方根。
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 全部通过
+- **Commit**: `8abb0d3`
 
 ### [BUG] ~~rational_sqrt 验证函数声称验证但实际什么也不做~~ ✅
 - **状态**: ✅ 已修复
@@ -70,12 +69,13 @@
 - **描述**: `add()` 持有 `mutex_` 时调用 callback，callback 若调用 `size()` 等方法会死锁（非 recursive_mutex）
 - **建议**: 改用 `std::recursive_mutex` 或 mutex 外调用 callback
 
-### [BUG] Couveignes 回退公式 (N+1)/2 对所有 N 都数学错误
-- **状态**: 🔴 待处理
+### [BUG] ~~Couveignes 回退公式 (N+1)/2 对所有 N 都数学错误~~ ✅
+- **状态**: ✅ 已修复（随 P0 Couveignes rat_sqrt 一并修复）
 - **发现日期**: 2026-03-08 (Session 6)
-- **核查结果**: ✅ 真实 P1
-- **文件**: `include/gnfs/sqrt/couveignes.hpp:325-328`
-- **描述**: `a^((N+1)/2) = a * Legendre(a,N)` 对合数 N 无定义。Couveignes 回退路径 100% 失败
+- **解决日期**: 2026-03-09 (Session 13)
+- **解决方式**: 整个 `powmod((N+1)/4)` + `(N+1)/2` 回退块被移除，改用 Y² 直接验证
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 全部通过
+- **Commit**: `8abb0d3`
 
 ### [BUG] algebraic_sqrt compute_heuristic() 数学不正确
 - **状态**: 🔴 待处理
@@ -837,3 +837,5 @@
 ### ✅ compute_log_prime() 系统性低估所有素数对数值 — `b3bbe3a`
 ### ✅ Schirokauer split 路径 hensel_lift_factor SIGSEGV — `ab278c6`
 ### ✅ rational_sqrt 验证函数 no-op → 实际验证 X²≡∏(a-bm) mod N — `5786188`
+### ✅ Couveignes rat_sqrt 对合数 N 错误 → Y² 直接验证 — `8abb0d3`
+### ✅ Couveignes (N+1)/2 回退公式错误 → 随 rat_sqrt 一并移除 — `8abb0d3`

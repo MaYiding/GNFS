@@ -277,13 +277,11 @@ public:
             current_coeffs[i] = base_coeffs[i].clone();
         }
 
-        // Precompute rational product sqrt for GCD-based verification
-        // Instead of verifying S^2 == product (which has reduction order issues),
-        // compute rational sqrt X and check if gcd(S(m) - X, N) is non-trivial.
-        // The correct sign pattern will give a non-trivial gcd ~50% of the time.
-        //
-        // We compute X^2 = ∏(a_i - b_i·m) mod N via direct multiplication
-        Integer rat_product(int64_t(1));
+        // Precompute expected_X2 = ∏(a_i - b_i·m) mod N
+        // The correct sign pattern yields Y such that Y² ≡ expected_X2 mod N.
+        // Note: Computing sqrt of expected_X2 mod composite N is equivalent to
+        // factoring N, so we verify via Y² instead.
+        Integer expected_X2(int64_t(1));
         for (const auto& [a, b] : ab_pairs) {
             Integer term(a);
             Integer bm = nf.m().clone();
@@ -291,33 +289,12 @@ public:
             term -= bm;
             term %= n;
             if (term.is_negative()) term += n;
-            rat_product *= term;
-            rat_product %= n;
-        }
-        // Compute rational sqrt via X = rat_product^((N+1)/4) if N ≡ 3 mod 4
-        // or use Tonelli-Shanks otherwise
-        Integer rat_sqrt;
-        {
-            Integer exp = n.clone();
-            exp += Integer(int64_t(1));
-            mpz_tdiv_q_2exp(exp.get_mpz(), exp.get_mpz(), 2);  // (N+1)/4 for N ≡ 3 mod 4
-            rat_sqrt = core::powmod(rat_product, exp, n);
-            // Verify
-            Integer check = rat_sqrt.clone();
-            check *= rat_sqrt;
-            check %= n;
-            if (check.compare(rat_product) != 0) {
-                // Try (N+1)/2 instead (general case)
-                exp = n.clone();
-                exp += Integer(int64_t(1));
-                mpz_tdiv_q_2exp(exp.get_mpz(), exp.get_mpz(), 1);
-                rat_sqrt = core::powmod(rat_product, exp, n);
-            }
+            expected_X2 *= term;
+            expected_X2 %= n;
         }
 
         auto verify_current = [&]() -> bool {
-            // GCD-based verification: compute Y = candidate(m) mod N,
-            // then check if gcd(Y - rat_sqrt, N) is non-trivial
+            // Compute Y = candidate(m) mod N, then check Y² ≡ expected_X2 mod N
             std::vector<Integer> cand_mod_n(d);
             for (uint32_t i = 0; i < d; ++i) {
                 cand_mod_n[i] = current_coeffs[i].clone();
@@ -327,40 +304,11 @@ public:
             NumberFieldElement candidate(std::move(cand_mod_n));
             Integer Y = nf.evaluate_at_m_mod_n(candidate);
 
-            // Check gcd(Y - rat_sqrt, N) and gcd(Y + rat_sqrt, N)
-            Integer diff = Y.clone();
-            diff -= rat_sqrt;
-            diff %= n;
-            if (diff.is_negative()) diff += n;
-            Integer g1 = core::gcd(diff, n);
+            Integer Y2 = Y.clone();
+            Y2 *= Y;
+            Y2 %= n;
 
-            if (!g1.is_one() && g1.compare(n) != 0) return true;
-
-            Integer sum = Y.clone();
-            sum += rat_sqrt;
-            sum %= n;
-            Integer g2 = core::gcd(sum, n);
-
-            if (!g2.is_one() && g2.compare(n) != 0) return true;
-
-            // Also try with -Y
-            Integer neg_Y = n.clone();
-            neg_Y -= Y;
-
-            diff = neg_Y.clone();
-            diff -= rat_sqrt;
-            diff %= n;
-            if (diff.is_negative()) diff += n;
-            g1 = core::gcd(diff, n);
-            if (!g1.is_one() && g1.compare(n) != 0) return true;
-
-            sum = neg_Y.clone();
-            sum += rat_sqrt;
-            sum %= n;
-            g2 = core::gcd(sum, n);
-            if (!g2.is_one() && g2.compare(n) != 0) return true;
-
-            return false;  // Trivial gcd — this pattern doesn't work
+            return Y2.compare(expected_X2) == 0;
         };
 
         auto extract_result = [&]() -> std::vector<Integer> {
@@ -375,20 +323,6 @@ public:
             }
             return r;
         };
-
-        // Also precompute: expected_product_at_m = ∏(a_i - b_i·m) mod N
-        // This is what Y^2 should equal if everything is correct.
-        Integer expected_X2(int64_t(1));
-        for (const auto& [a, b] : ab_pairs) {
-            Integer term(a);
-            Integer bm = nf.m().clone();
-            bm *= Integer(b);
-            term -= bm;
-            term %= n;
-            if (term.is_negative()) term += n;
-            expected_X2 *= term;
-            expected_X2 %= n;
-        }
 
         // Check pattern 0 (all positive)
         if (verify_current()) {
