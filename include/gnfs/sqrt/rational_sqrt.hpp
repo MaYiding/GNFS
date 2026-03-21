@@ -140,25 +140,34 @@ public:
             // 但为了安全起见，处理这种情况
         }
 
-        // 验证
+        // 验证: X² mod N == ∏(a_i - b_i·m) mod N
         if (config_.verify) {
-            // 计算 sqrt_value^2 mod n
             Integer squared = sqrt_value.clone();
             squared *= sqrt_value;
             squared %= n;
 
-            // 计算原始乘积 mod n
             Integer product(1);
             for (size_t i = 0; i < relations.size(); ++i) {
                 if (!dependency.test(i)) continue;
 
                 const auto& rel = relations[i];
 
-                // 有理侧值 = a + b*m
-                // 这里我们简化处理，只验证因子分解部分
+                // 有理侧范数 = a - b*m (GNFS convention: elements are a - b·α)
+                Integer val = Integer(rel.a);
+                Integer bm = m.clone();
+                bm *= Integer(static_cast<int64_t>(rel.b));
+                val -= bm;
+                val %= n;
+                if (val.is_negative()) val += n;
+
+                product *= val;
+                product %= n;
             }
 
-            // TODO: 完整验证
+            if (squared.compare(product) != 0) {
+                result.error = "Rational sqrt verification failed: X^2 != product mod N";
+                return result;
+            }
         }
 
         result.value = std::move(sqrt_value);

@@ -24,13 +24,13 @@
 - **影响**: 降低 Couveignes 找到正确符号的成功率。有理平方根应通过 rational_sqrt.hpp 独立计算
 - **建议**: 使用因子指数直接累积有理平方根
 
-### [BUG] rational_sqrt 验证函数声称验证但实际什么也不做
-- **状态**: 🔴 待处理
+### [BUG] ~~rational_sqrt 验证函数声称验证但实际什么也不做~~ ✅
+- **状态**: ✅ 已修复
 - **发现日期**: 2026-03-08 (Session 6)
-- **核查结果**: ✅ 真实 P1
-- **文件**: `include/gnfs/sqrt/rational_sqrt.hpp:143-162`
-- **描述**: `verify=true`（默认）时只有空 for 循环和 `// TODO: 完整验证`。函数总是返回 `success=true`
-- **影响**: 错误的有理平方根不会被检测到
+- **解决日期**: 2026-03-09 (Session 12)
+- **解决方式**: `rational_sqrt.hpp:143-170` 实现验证逻辑：计算 ∏(a_i - b_i·m) mod N 与 X² mod N 对比
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 全部通过
+- **Commit**: `5786188`
 
 ---
 
@@ -836,3 +836,4 @@
 ### ✅ 代数侧大素数映射按 (p,r) 素理想键索引 — `273dcdd`
 ### ✅ compute_log_prime() 系统性低估所有素数对数值 — `b3bbe3a`
 ### ✅ Schirokauer split 路径 hensel_lift_factor SIGSEGV — `ab278c6`
+### ✅ rational_sqrt 验证函数 no-op → 实际验证 X²≡∏(a-bm) mod N — `5786188`
