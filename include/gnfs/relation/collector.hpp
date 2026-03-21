@@ -69,41 +69,63 @@ public:
     /// 添加关系
     /// @return true 如果关系被接受
     bool add(Relation&& rel) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        // Callback is invoked outside the lock to prevent deadlock.
+        // If callback calls size()/stats()/etc., it would deadlock
+        // on the non-recursive mutex if called inside the lock.
+        NewRelationCallback cb_copy;
+        Relation cb_rel;
+        bool fire_callback = false;
 
-        // 检查限制
-        if (config_.max_relations > 0 && stats_.total_relations >= config_.max_relations) {
-            return false;
-        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
 
-        // 验证关系
-        if (!validate(rel)) {
-            ++stats_.invalid_rejected;
-            return false;
-        }
-
-        // 检查重复
-        if (config_.check_duplicates) {
-            if (seen_.count(rel.ab()) > 0) {
-                ++stats_.duplicates_rejected;
+            // 检查限制
+            if (config_.max_relations > 0 && stats_.total_relations >= config_.max_relations) {
                 return false;
             }
-            seen_.insert(rel.ab());
-        }
 
-        // 更新统计
-        update_stats(rel);
-
-        // 写入文件
-        if (output_stream_.is_open()) {
-            rel.serialize(output_stream_);
-            if (config_.flush_on_add) {
-                output_stream_.flush();
+            // 验证关系
+            if (!validate(rel)) {
+                ++stats_.invalid_rejected;
+                return false;
             }
+
+            // 检查重复
+            if (config_.check_duplicates) {
+                if (seen_.count(rel.ab()) > 0) {
+                    ++stats_.duplicates_rejected;
+                    return false;
+                }
+                seen_.insert(rel.ab());
+            }
+
+            // 更新统计
+            update_stats(rel);
+
+            // 写入文件
+            if (output_stream_.is_open()) {
+                rel.serialize(output_stream_);
+                if (config_.flush_on_add) {
+                    output_stream_.flush();
+                }
+            }
+
+            // Prepare callback data before moving rel
+            if (callback_) {
+                cb_copy = callback_;
+                cb_rel = rel.clone();
+                fire_callback = true;
+            }
+
+            // 存储关系
+            relations_.push_back(std::move(rel));
         }
 
-        // 存储关系
-        relations_.push_back(std::move(rel));
+        // Invoke callback outside the lock — safe for callback to call
+        // size(), stats(), or any other method on this collector.
+        if (fire_callback) {
+            cb_copy(cb_rel);
+        }
 
         return true;
     }
@@ -245,9 +267,10 @@ public:
         return added;
     }
 
-    /// 设置回调（新关系添加时调用）
+    /// 设置回调（新关系添加时调用，callback 在 mutex 外执行）
     using NewRelationCallback = std::function<void(const Relation&)>;
     void set_callback(NewRelationCallback callback) {
+        std::lock_guard<std::mutex> lock(mutex_);
         callback_ = std::move(callback);
     }
 
@@ -274,7 +297,7 @@ private:
         return true;
     }
 
-    /// 更新统计
+    /// 更新统计（不含 callback，callback 在 mutex 外调用以防死锁）
     void update_stats(const Relation& rel) noexcept {
         ++stats_.total_relations;
 
@@ -287,11 +310,6 @@ private:
             ++stats_.partial_1lp;
         } else {
             ++stats_.partial_2lp;
-        }
-
-        // 调用回调
-        if (callback_) {
-            callback_(rel);
         }
     }
 
