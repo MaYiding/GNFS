@@ -169,19 +169,29 @@ struct SieveRegion {
     // skewness > 1 意味着 |a| 通常比 |b| 大
     int32_t base_size = 16384;  // 2^14
 
+    double i_half, j_size;
     if (skewness > 1.0) {
-        // 增大 i 范围，减小 j 范围
         double factor = std::sqrt(skewness);
-        region.i_min = -static_cast<int32_t>(base_size * factor);
-        region.i_max = static_cast<int32_t>(base_size * factor) - 1;
-        region.j_min = 1;
-        region.j_max = static_cast<int32_t>(base_size / factor);
+        i_half = base_size * factor;
+        j_size = base_size / factor;
     } else {
-        region.i_min = -base_size;
-        region.i_max = base_size - 1;
-        region.j_min = 1;
-        region.j_max = base_size;
+        i_half = base_size;
+        j_size = base_size;
     }
+
+    // Cap total area to prevent catastrophic memory allocation
+    constexpr double MAX_SIEVE_AREA = 256.0 * 1024 * 1024;
+    double area = (2.0 * i_half) * j_size;
+    if (area > MAX_SIEVE_AREA) {
+        double scale = std::sqrt(MAX_SIEVE_AREA / area);
+        i_half = std::floor(i_half * scale);
+        j_size = std::floor(j_size * scale);
+    }
+
+    region.i_min = -static_cast<int32_t>(i_half);
+    region.i_max = static_cast<int32_t>(i_half) - 1;
+    region.j_min = 1;
+    region.j_max = static_cast<int32_t>(j_size);
 
     return region;
 }
