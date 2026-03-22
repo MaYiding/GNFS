@@ -342,16 +342,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
         auto alg = compute_algebraic_sqrt(to_bv(dep), relations, ctx);
         if (!alg.success) {
-            // Couveignes failed — try heuristic as fallback
-            AlgebraicSqrtConfig hcfg;
-            hcfg.use_couveignes = false;
-            AlgebraicSqrt heuristic(hcfg);
-            alg = heuristic.compute(to_bv(dep), relations, ctx);
-            if (!alg.success) {
-                std::cout << " alg_fail\n" << std::flush;
-                continue;
-            }
-            std::cout << " [h]" << std::flush;
+            std::cout << " alg_fail\n" << std::flush;
+            continue;
         }
 
         // Debug: show X and Y values for first 3 deps
@@ -413,12 +405,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
                 auto rat = compute_rational_sqrt(combined, relations, fb, n, ctx.m());
                 if (!rat.success) continue;
 
-                // Try heuristic for algebraic sqrt on combined dep
-                AlgebraicSqrtConfig hcfg;
-                hcfg.use_couveignes = false;
-                AlgebraicSqrt heuristic(hcfg);
-                // Convert BitVector to dependency for compute
-                auto alg = heuristic.compute(combined, relations, ctx);
+                // Use full algorithm (Hensel → Couveignes) for combined dep
+                auto alg = compute_algebraic_sqrt(combined, relations, ctx);
                 if (!alg.success) continue;
 
                 for (int sign = 0; sign < 2; ++sign) {
