@@ -13,20 +13,6 @@
 - **描述**: f mod 2 可约时需要 valuation stripping，当前 split 路径可工作但精度可能不如 unsplit 路径。Hensel 提升崩溃已修复（`ab278c6`），但高次因子的提升可能在 ℓ>2 或 k>3 时精度不足
 - **残留问题**: 无线性因子的可约情况（如两个二次因子）仍回退到 mod-ℓ 精度
 
-### [BUG] matrix_builder f mod 2 检查在大系数时 uint64 截断
-- **发现日期**: 2026-03-08 (Session 5)
-- **文件**: `include/gnfs/linalg/matrix_builder.hpp:174-184`
-- **描述**: 先 `c.to_uint64()` 再 mod 2，大系数截断导致可约性误判
-
-### [BUG] matrix_builder 多项式度 > 8 时数组越界
-- **发现日期**: 2026-03-08 (Session 5)
-- **文件**: `include/gnfs/linalg/matrix_builder.hpp:416`
-- **描述**: `FastPoly::MAX_DEGREE = 8`，`select_qc_primes()` 未验证 degree ≤ 8
-
-### [BUG] matrix_builder QC 系数 int64 截断
-- **发现日期**: 2026-03-08 (Session 5)
-- **文件**: `include/gnfs/linalg/matrix_builder.hpp:387-388`
-- **描述**: `ctx.coeff(i).to_int64()` 大系数截断
 
 ### [BUG] Schirokauer FastPoly 系数潜在溢出
 - **发现日期**: 2026-03-08 (Session 5)
