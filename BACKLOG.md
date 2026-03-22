@@ -76,12 +76,13 @@
 - **验证**: smoke 11/11 通过 + L1-L2 progressive 全部通过
 - **Commit**: `8abb0d3`
 
-### [BUG] algebraic_sqrt compute_heuristic() 数学不正确
-- **状态**: 🔴 待处理
+### [BUG] ~~algebraic_sqrt compute_heuristic() 数学不正确~~ ✅
+- **状态**: ✅ 已修复
 - **发现日期**: 2026-03-08 (Session 5)
-- **核查结果**: ✅ 真实 P1
-- **文件**: `include/gnfs/sqrt/algebraic_sqrt.hpp:173-195`
-- **描述**: `elem^((n+1)/2)` 在 Q[α]/f(α) 中不是有效的平方根公式
+- **解决日期**: 2026-03-09 (Session 17)
+- **解决方式**: `compute_heuristic()` 改为始终返回失败（`product^((N+1)/2)` 仅对素数有效，对合数 N 无数学依据）。测试中两处 `use_couveignes=false` 的 heuristic fallback 改为使用正常 Hensel→Couveignes 流程
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 通过
+- **Commit**: `088a48d`
 
 ### [BUG] Couveignes 符号归一化不一致导致 CRT 重建错误
 - **状态**: 🔴 待处理

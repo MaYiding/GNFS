@@ -155,42 +155,17 @@ private:
         return result;
     }
 
-    /// 启发式方法（后备）
+    /// 启发式后备（已废弃——数学不正确）
+    /// product^((N+1)/2) 仅对素数 p ≡ 3 (mod 4) 的 Z/pZ 有效，
+    /// 对合数 N 的数域环 (Z/NZ)[α]/f(α) 没有数学依据。
+    /// 此方法现在始终返回失败。
     [[nodiscard]] AlgebraicSqrtResult compute_heuristic(
-            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
-            const NumberField& nf) const {
+            const std::vector<std::pair<int64_t, uint64_t>>& /* ab_pairs */,
+            const NumberField& /* nf */) const {
 
         AlgebraicSqrtResult result;
-
-        // 计算乘积
-        NumberFieldElement product = nf.one();
-        for (const auto& [a, b] : ab_pairs) {
-            auto factor = nf.from_ab(a, b);
-            product = nf.multiply_mod_n(product, factor);
-        }
-
-        if (product.is_zero()) {
-            result.value = Integer(static_cast<int64_t>(0));
-            result.success = true;
-            return result;
-        }
-
-        if (product.is_one()) {
-            result.value = Integer(static_cast<int64_t>(1));
-            result.success = true;
-            return result;
-        }
-
-        // 尝试 elem^((n+1)/2)
-        const Integer& n = nf.n();
-        Integer exp = n.clone();
-        exp += Integer(static_cast<int64_t>(1));
-        mpz_tdiv_q_2exp(exp.get_mpz(), exp.get_mpz(), 1);
-
-        auto candidate = nf.power_mod_n(product, exp);
-        result.value = nf.evaluate_at_m_mod_n(candidate);
-        result.success = true;
-
+        result.error = "Heuristic sqrt via elem^((N+1)/2) is mathematically "
+                       "invalid for composite N; use Hensel or Couveignes";
         return result;
     }
 };
