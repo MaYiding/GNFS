@@ -294,10 +294,15 @@ public:
         }
 
         auto verify_current = [&]() -> bool {
-            // Compute Y = candidate(m) mod N, then check Y² ≡ expected_X2 mod N
+            // Reduce mod M → center → mod N to handle Gray code coefficient drift.
+            // Without mod M, drifted coefficients produce wrong values mod N
+            // because k*M mod N ≠ 0 when gcd(M,N) = 1.
             std::vector<Integer> cand_mod_n(d);
             for (uint32_t i = 0; i < d; ++i) {
                 cand_mod_n[i] = current_coeffs[i].clone();
+                cand_mod_n[i] %= M;
+                if (cand_mod_n[i].is_negative()) cand_mod_n[i] += M;
+                if (cand_mod_n[i].compare(half_M) > 0) cand_mod_n[i] -= M;
                 cand_mod_n[i] %= n;
                 if (cand_mod_n[i].is_negative()) cand_mod_n[i] += n;
             }
@@ -312,12 +317,13 @@ public:
         };
 
         auto extract_result = [&]() -> std::vector<Integer> {
-            // CRT gives coefficients that represent an element of Z[α]/(f) already
-            // (degree < d), so no polynomial reduction is needed.
-            // Reduce each coefficient mod N for the number field ring Z[α]/(f, N).
+            // Reduce mod M → center → mod N to handle Gray code coefficient drift
             std::vector<Integer> r(d);
             for (uint32_t i = 0; i < d; ++i) {
                 r[i] = current_coeffs[i].clone();
+                r[i] %= M;
+                if (r[i].is_negative()) r[i] += M;
+                if (r[i].compare(half_M) > 0) r[i] -= M;
                 r[i] %= n;
                 if (r[i].is_negative()) r[i] += n;
             }
@@ -360,6 +366,9 @@ public:
     }
 
     /// Compute square root directly from NumberFieldElement
+    /// Uses Gray code sign enumeration (same as compute()) instead of
+    /// the broken eval-at-1 heuristic which used different thresholds p/2
+    /// per prime, producing inconsistent signs → CRT reconstruction garbage.
     [[nodiscard]] std::optional<NumberFieldElement> compute_from_element(
             const NumberFieldElement& elem,
             const NumberField& nf) const {
@@ -367,35 +376,29 @@ public:
         uint32_t d = nf.degree();
         const Integer& n = nf.n();
 
-        // Get polynomial coefficients
         auto get_f_mod_p = [&nf, d](uint64_t p) -> std::vector<uint64_t> {
             std::vector<uint64_t> f(d + 1);
             for (uint32_t i = 0; i <= d; ++i) {
                 Integer coeff = nf.coeff(i).clone();
                 coeff %= Integer(p);
-                if (coeff.is_negative()) {
-                    coeff += Integer(p);
-                }
+                if (coeff.is_negative()) coeff += Integer(p);
                 f[i] = coeff.to_uint64();
             }
             return f;
         };
 
-        // Convert element to ModularPoly mod p
         auto elem_to_mod_p = [&elem, d](uint64_t p) -> ModularPoly {
             std::vector<uint64_t> coeffs(d);
             for (uint32_t i = 0; i < d && i <= elem.degree(); ++i) {
                 Integer c = elem.coeff(i).clone();
                 c %= Integer(p);
-                if (c.is_negative()) {
-                    c += Integer(p);
-                }
+                if (c.is_negative()) c += Integer(p);
                 coeffs[i] = c.to_uint64();
             }
             return ModularPoly(std::move(coeffs));
         };
 
-        // Collect suitable primes
+        // Collect suitable primes — store raw sqrt coefficients without sign normalization
         std::vector<uint64_t> primes;
         std::vector<std::vector<uint64_t>> sqrt_coeffs;
 
@@ -405,109 +408,166 @@ public:
             p = next_prime(p);
             primes_checked++;
 
-            // Skip primes that divide N
             Integer n_mod_p = n.clone();
             n_mod_p %= Integer(p);
-            if (n_mod_p.is_zero()) {
-                continue;
-            }
+            if (n_mod_p.is_zero()) continue;
 
             auto f_mod_p = get_f_mod_p(p);
-            if (f_mod_p.back() == 0) {
-                continue;
-            }
+            if (f_mod_p.back() == 0) continue;
 
-            // f must be irreducible mod p for F_p[x]/(f) to be a field
-            if (!ModularPoly::is_irreducible(f_mod_p, p)) {
-                continue;
-            }
+            if (!ModularPoly::is_irreducible(f_mod_p, p)) continue;
 
             auto elem_mod_p = elem_to_mod_p(p);
+            if (elem_mod_p.is_zero()) continue;
 
-            if (elem_mod_p.is_zero()) {
-                continue;
-            }
+            if (!ModularPoly::is_square(elem_mod_p, f_mod_p, p)) continue;
 
             auto sqrt_p = ModularPoly::sqrt_tonelli_shanks(elem_mod_p, f_mod_p, p);
+            if (sqrt_p.is_zero() && !elem_mod_p.is_zero()) continue;
 
-            if (sqrt_p.is_zero() && !elem_mod_p.is_zero()) {
-                continue;
+            // Verify: sqrt^2 == elem mod p
+            auto sq = ModularPoly::mul(sqrt_p, sqrt_p, f_mod_p, p);
+            bool valid = true;
+            for (size_t i = 0; i <= std::max(static_cast<size_t>(sq.degree()),
+                                              static_cast<size_t>(elem_mod_p.degree())); ++i) {
+                if (sq.coeff(i) != elem_mod_p.coeff(i)) { valid = false; break; }
             }
+            if (!valid) continue;
 
-            // Sign normalization: evaluate sqrt at t=1 and pick sign such that result < p/2
-            uint64_t eval_at_1 = 0;
-            for (int i = 0; i <= sqrt_p.degree(); ++i) {
-                eval_at_1 = (eval_at_1 + sqrt_p.coeff(i)) % p;
-            }
-            bool needs_negate = (eval_at_1 > p / 2);
-
+            // Store raw coefficients — sign resolved via Gray code below
             primes.push_back(p);
             std::vector<uint64_t> coeffs(d, 0);
             for (size_t i = 0; i < d && i <= static_cast<size_t>(sqrt_p.degree()); ++i) {
-                uint64_t c = sqrt_p.coeff(i);
-                if (needs_negate) {
-                    c = (c == 0) ? 0 : (p - c);
-                }
-                coeffs[i] = c;
+                coeffs[i] = sqrt_p.coeff(i);
             }
             sqrt_coeffs.push_back(std::move(coeffs));
         }
 
-        if (primes.size() < 2) {
-            return std::nullopt;
-        }
+        if (primes.size() < 2) return std::nullopt;
 
-        // CRT reconstruction
-        std::vector<Integer> result_coeffs(d);
+        // CRT modulus
         Integer M(1);
-        for (uint64_t prime : primes) {
-            M *= Integer(prime);
+        for (uint64_t prime : primes) M *= Integer(prime);
+
+        // Precompute CRT weights: weight[j][i] = c_ij * M_j * M_j_inv mod M
+        std::vector<std::vector<Integer>> weights(primes.size());
+        for (size_t j = 0; j < primes.size(); ++j) {
+            uint64_t p_j = primes[j];
+            Integer M_j = M.clone();
+            M_j /= Integer(p_j);
+            Integer M_j_mod_pj = M_j.clone();
+            M_j_mod_pj %= Integer(p_j);
+            uint64_t M_j_inv = mod_inverse_u64(M_j_mod_pj.to_uint64(), p_j);
+
+            weights[j].resize(d);
+            for (uint32_t i = 0; i < d; ++i) {
+                Integer w(sqrt_coeffs[j][i]);
+                w *= M_j;
+                w *= Integer(M_j_inv);
+                w %= M;
+                weights[j][i] = std::move(w);
+            }
         }
 
+        // Base CRT (all signs = +)
+        std::vector<Integer> base_coeffs(d);
         for (uint32_t i = 0; i < d; ++i) {
             Integer coeff_i(static_cast<int64_t>(0));
-
             for (size_t j = 0; j < primes.size(); ++j) {
-                uint64_t p_j = primes[j];
-                uint64_t c_ij = sqrt_coeffs[j][i];
-
-                Integer M_j = M.clone();
-                M_j /= Integer(p_j);
-
-                Integer M_j_mod_pj = M_j.clone();
-                M_j_mod_pj %= Integer(p_j);
-                uint64_t M_j_inv = mod_inverse_u64(M_j_mod_pj.to_uint64(), p_j);
-
-                Integer term = Integer(c_ij);
-                term *= M_j;
-                term *= Integer(M_j_inv);
-
-                coeff_i += term;
+                coeff_i += weights[j][i];
             }
-
             coeff_i %= M;
-            result_coeffs[i] = std::move(coeff_i);
+            base_coeffs[i] = std::move(coeff_i);
         }
 
-        // Center coefficients
         Integer half_M = M.clone();
         mpz_tdiv_q_2exp(half_M.get_mpz(), half_M.get_mpz(), 1);
 
-        for (auto& c : result_coeffs) {
-            if (c.compare(half_M) > 0) {
-                c -= M;
+        // Center around 0
+        for (auto& c : base_coeffs) {
+            if (c.compare(half_M) > 0) c -= M;
+        }
+
+        // Precompute 2 * weight for incremental Gray code updates
+        std::vector<std::vector<Integer>> two_weights(primes.size());
+        for (size_t j = 0; j < primes.size(); ++j) {
+            two_weights[j].resize(d);
+            for (uint32_t i = 0; i < d; ++i) {
+                two_weights[j][i] = weights[j][i].clone();
+                two_weights[j][i] *= Integer(static_cast<int64_t>(2));
             }
         }
 
-        // Reduce mod N
-        for (auto& c : result_coeffs) {
-            c %= n;
-            if (c.is_negative()) {
-                c += n;
+        // Expected value: elem(m) mod N — candidate Y must satisfy Y² ≡ elem(m) mod N
+        Integer expected_X2 = nf.evaluate_at_m_mod_n(elem);
+
+        std::vector<Integer> current_coeffs(d);
+        for (uint32_t i = 0; i < d; ++i) {
+            current_coeffs[i] = base_coeffs[i].clone();
+        }
+
+        size_t num_to_search = std::min(primes.size(), static_cast<size_t>(16));
+        uint64_t max_patterns = 1ULL << num_to_search;
+
+        auto verify_current = [&]() -> bool {
+            std::vector<Integer> cand(d);
+            for (uint32_t i = 0; i < d; ++i) {
+                cand[i] = current_coeffs[i].clone();
+                cand[i] %= M;
+                if (cand[i].is_negative()) cand[i] += M;
+                if (cand[i].compare(half_M) > 0) cand[i] -= M;
+                cand[i] %= n;
+                if (cand[i].is_negative()) cand[i] += n;
+            }
+            Integer Y = nf.evaluate_at_m_mod_n(NumberFieldElement(std::move(cand)));
+            Integer Y2 = Y.clone();
+            Y2 *= Y;
+            Y2 %= n;
+            return Y2.compare(expected_X2) == 0;
+        };
+
+        auto extract_result = [&]() -> std::vector<Integer> {
+            std::vector<Integer> r(d);
+            for (uint32_t i = 0; i < d; ++i) {
+                r[i] = current_coeffs[i].clone();
+                r[i] %= M;
+                if (r[i].is_negative()) r[i] += M;
+                if (r[i].compare(half_M) > 0) r[i] -= M;
+                r[i] %= n;
+                if (r[i].is_negative()) r[i] += n;
+            }
+            return r;
+        };
+
+        // Check pattern 0 (all positive)
+        if (verify_current()) {
+            return NumberFieldElement(extract_result());
+        }
+
+        // Gray code enumeration over sign combinations
+        uint64_t prev_gray = 0;
+        for (uint64_t i = 1; i < max_patterns; ++i) {
+            uint64_t gray = i ^ (i >> 1);
+            uint64_t changed_bit = prev_gray ^ gray;
+            size_t bit_pos = __builtin_ctzll(changed_bit);
+            bool new_sign = (gray >> bit_pos) & 1;
+
+            for (uint32_t ci = 0; ci < d; ++ci) {
+                if (new_sign) {
+                    current_coeffs[ci] -= two_weights[bit_pos][ci];
+                } else {
+                    current_coeffs[ci] += two_weights[bit_pos][ci];
+                }
+            }
+
+            prev_gray = gray;
+
+            if (verify_current()) {
+                return NumberFieldElement(extract_result());
             }
         }
 
-        return NumberFieldElement(std::move(result_coeffs));
+        return std::nullopt;
     }
 
 private:
