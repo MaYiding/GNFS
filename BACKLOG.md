@@ -13,16 +13,6 @@
 - **描述**: f mod 2 可约时需要 valuation stripping，当前 split 路径可工作但精度可能不如 unsplit 路径。Hensel 提升崩溃已修复（`ab278c6`），但高次因子的提升可能在 ℓ>2 或 k>3 时精度不足
 - **残留问题**: 无线性因子的可约情况（如两个二次因子）仍回退到 mod-ℓ 精度
 
-### [BUG] Couveignes 符号归一化不一致导致 CRT 重建错误
-- **发现日期**: 2026-03-08 (Session 5)
-- **文件**: `include/gnfs/sqrt/couveignes.hpp:510-524`
-- **描述**: 不同素数用不同阈值 p/2 做符号归一化，CRT 重建错误
-
-### [BUG] Couveignes Gray Code 系数漂移——翻转间无 mod M 约化
-- **发现日期**: 2026-03-09 (Session 6)
-- **文件**: `include/gnfs/sqrt/couveignes.hpp:415-437`
-- **描述**: 65536 次 Gray code 迭代中每次加减 two_weights 但从不做 mod M 约化，系数漂移
-
 ### [BUG] matrix_builder f mod 2 检查在大系数时 uint64 截断
 - **发现日期**: 2026-03-08 (Session 5)
 - **文件**: `include/gnfs/linalg/matrix_builder.hpp:174-184`

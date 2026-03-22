@@ -32,6 +32,20 @@
 
 ### P1 级修复
 
+#### [BUG] ~~Couveignes 符号归一化不一致导致 CRT 重建错误~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 17)
+- **修复**: `couveignes.hpp` compute_from_element() 移除错误的 eval_at_1 > p/2 per-prime 归一化（不同素数阈值不同 → 符号不一致），改用 Gray code 枚举 + Y² 验证，与 compute() 统一
+- **验证**: smoke 11/11 通过 + sqrt 模块测试全部通过
+- **Commit**: `29ce7fc`
+
+#### [BUG] ~~Couveignes Gray Code 系数漂移——翻转间无 mod M 约化~~ ✅
+- **发现**: 2026-03-09 (Session 6)
+- **解决**: 2026-03-10 (Session 17)
+- **修复**: `couveignes.hpp` compute() 的 verify_current/extract_result 在 % N 前先 % M → center → % N，防止漂移的 k*M 项（gcd(M,N)=1 → k*M mod N ≠ 0）破坏结果
+- **验证**: smoke 11/11 通过 + sqrt 模块测试全部通过
+- **Commit**: `29ce7fc`
+
 #### [BUG] ~~ECM sieve_primes(B2) 内存爆炸~~ ✅
 - **发现**: 2026-03-08 (Session 5)
 - **解决**: 2026-03-09 (Session 14)
