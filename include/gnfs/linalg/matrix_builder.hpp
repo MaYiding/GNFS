@@ -190,7 +190,9 @@ public:
         // 第二步：选择二次特征素数
         // If Schirokauer will be unavailable (f reducible mod 2), use extra QC primes
         uint32_t effective_qc_count = config_.num_qc_primes;
-        if (config_.include_schirokauer) {
+        bool can_use_schirokauer = config_.include_schirokauer &&
+                                   ctx.degree() <= FastPoly::MAX_DEGREE;
+        if (can_use_schirokauer) {
             // Full irreducibility check mod 2 (not just "no roots")
             uint32_t d_check = ctx.degree();
             std::vector<uint64_t> f_mod2(d_check + 1);
@@ -205,6 +207,11 @@ public:
                 // Compensate: more QC primes to replace missing Schirokauer
                 effective_qc_count = std::max(effective_qc_count, static_cast<uint32_t>(config_.num_qc_primes + d_check * 8));
             }
+        } else if (config_.include_schirokauer) {
+            // Degree exceeds FastPoly::MAX_DEGREE — cannot use Schirokauer maps
+            // Compensate with extra QC primes
+            effective_qc_count = std::max(effective_qc_count,
+                static_cast<uint32_t>(config_.num_qc_primes + ctx.degree() * 8));
         }
         std::vector<uint32_t> qc_primes;
         if (config_.include_qc_columns) {
@@ -226,10 +233,10 @@ public:
             }
         }
 
-        // 第四步：创建 Schirokauer map 计算器（如果启用）
+        // 第四步：创建 Schirokauer map 计算器（如果启用且 degree <= MAX_DEGREE）
         // AUTO-SELECT: find primes where f is irreducible (inert)
         std::unique_ptr<SchirokaurMap> schirokauer;
-        if (config_.include_schirokauer) {
+        if (can_use_schirokauer) {
             std::vector<uint32_t> sm_primes;
             if (!config_.schirokauer_primes.empty()) {
                 // Validate user-specified primes: only keep inert ones
@@ -395,31 +402,25 @@ private:
         const Integer& n = ctx.n();
         uint32_t d = ctx.degree();
 
-        // Pre-compute f coefficients as uint64_t (assuming small coefficients)
-        std::vector<int64_t> f_coeffs(d + 1);
-        for (uint32_t i = 0; i <= d; ++i) {
-            f_coeffs[i] = ctx.coeff(i).fits_int64() ? ctx.coeff(i).to_int64() : 0;
-        }
-
-        // Pre-compute N mod small primes
-        uint64_t n_val = n.fits_uint64() ? n.to_uint64() : 0;
-
         uint32_t p = config_.qc_prime_start;
 
         while (qc_primes.size() < num_primes) {
             p = next_prime(p);
 
-            // Skip primes that divide N (use native arithmetic)
-            if (n_val > 0 && n_val % p == 0) {
-                continue;
+            // Skip primes that divide N (use Integer arithmetic — safe for N > 2^64)
+            {
+                Integer n_mod = n.clone();
+                n_mod %= Integer(static_cast<uint64_t>(p));
+                if (n_mod.is_zero()) continue;
             }
 
-            // Compute f coefficients mod p
+            // Compute f coefficients mod p using Integer arithmetic (safe for large coefficients)
             std::vector<uint64_t> f_mod(d + 1);
             for (uint32_t i = 0; i <= d; ++i) {
-                int64_t c = f_coeffs[i] % static_cast<int64_t>(p);
-                if (c < 0) c += static_cast<int64_t>(p);
-                f_mod[i] = static_cast<uint64_t>(c);
+                Integer c = ctx.coeff(i).clone();
+                c %= Integer(static_cast<uint64_t>(p));
+                if (c.is_negative()) c += Integer(static_cast<uint64_t>(p));
+                f_mod[i] = c.to_uint64();
             }
 
             // Check if f has a root mod p using native arithmetic

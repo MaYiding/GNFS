@@ -145,6 +145,12 @@ public:
     explicit SchirokaurMap(const PolynomialContext& ctx, const Config& config = Config{})
         : ctx_(ctx), config_(config), degree_(ctx.degree()) {
 
+        // FastPoly uses fixed-size arrays — degree must not exceed MAX_DEGREE
+        if (degree_ > FastPoly::MAX_DEGREE) {
+            config_.primes.clear();
+            return;
+        }
+
         // Pre-compute values for each prime
         for (uint32_t p : config_.primes) {
             precompute_for_prime(p);
