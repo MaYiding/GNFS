@@ -55,7 +55,7 @@ void test_primality() {
 void test_perfect_power() {
     std::cout << "Testing perfect power detection..." << std::endl;
 
-    uint64_t base, exp_out;
+    uint64_t base;
     uint8_t exp;
 
     // Perfect squares

@@ -150,7 +150,7 @@ void test_full_sieve_pipeline() {
 
     // 重新筛一个 special-q 来获取候选点
     sq_gen.reset_to(0);
-    sq_gen.next();  // 跳到 min_q
+    (void)sq_gen.next();  // 跳到 min_q
 
     size_t verified = 0;
     size_t total_checked = 0;

@@ -108,7 +108,7 @@ public:
 
         // 构建零空间基
         if (config_.compute_null_space) {
-            build_null_space(result, matrix, history, is_pivot_col);
+            build_null_space(result, matrix);
         }
 
         return result;
@@ -159,11 +159,8 @@ private:
 
     /// 从消元后的矩阵构建零空间基
     void build_null_space(GaussianResult& result,
-                          const SparseMatrix& matrix,
-                          const std::vector<BitVector>& history,
-                          const std::vector<bool>& is_pivot_col) const {
+                          const SparseMatrix& matrix) const {
 
-        size_t num_rows = matrix.num_rows();
         size_t num_cols = matrix.num_cols();
 
         // 对于每个自由变量列，构建一个零空间向量

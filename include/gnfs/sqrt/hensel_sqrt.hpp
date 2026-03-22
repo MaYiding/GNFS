@@ -245,7 +245,6 @@ private:
 
     /// Find a prime p where f(x) is irreducible mod p
     [[nodiscard]] uint64_t find_inert_prime(const NumberField& nf) const {
-        uint32_t d = nf.degree();
         uint64_t p = config_.prime_start;
 
         for (size_t attempts = 0; attempts < 100000; ++attempts) {

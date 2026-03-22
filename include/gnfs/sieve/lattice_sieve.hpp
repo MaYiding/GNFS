@@ -125,11 +125,9 @@ public:
         for (size_t i = 0; i < batch.size(); ++i) {
             auto result = sieve_special_q(batch[i]);
 
-            // 处理候选点
-            for (const auto& cand : result.candidates) {
-                // TODO: 进行分解验证，构建完整关系
-                // 这里需要调用 trial division 或 cofactorization
-            }
+            // TODO: 进行分解验证，构建完整关系
+            // 这里需要调用 trial division 或 cofactorization
+            (void)result;
 
             if (progress_callback_) {
                 progress_callback_(i + 1, batch.size(), "Sieving");

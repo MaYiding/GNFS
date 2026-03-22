@@ -326,7 +326,6 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
 
     // 64x64 matrices for recurrence
     DenseGF2_64x64 D_prev, D_pprev;
-    uint64_t mask_prev = 0, mask_pprev = 0;
 
     for (size_t iter = 0; iter < max_iter; ++iter) {
         // Step 1: Inner product A_i = V_cur^T * V_cur
@@ -385,8 +384,6 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
         V_cur = std::move(V_next);
         D_pprev = D_prev;
         D_prev = D_cur;
-        mask_pprev = mask_prev;
-        mask_prev = mask_cur;
     }
 
     // Step 9: Extract and verify dependencies
