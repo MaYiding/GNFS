@@ -1,0 +1,132 @@
+# RESOLVED — 已完成与误报记录
+
+> 从 `BACKLOG.md` 拆分而来。记录所有已修复、已验证通过的条目和经核查确认的误报。
+> 作为项目审计和知识沉淀，避免重复上报、记录修复方案供后续参考。
+
+---
+
+## 已完成 ✅
+
+### P0 级修复
+
+#### [BUG] ~~compute_log_prime() 系统性低估所有素数对数值~~ ✅
+- **发现**: 2026-03-09 (Session 6)
+- **解决**: 2026-03-09 (Session 11)
+- **修复**: `src/factor_base/builder.cpp` 3 处调用改为 `compute_log_prime_precise()`
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 5/5 通过
+- **Commit**: `b3bbe3a`
+
+#### [BUG] ~~Couveignes rat_sqrt 对合数 N 计算根本性错误~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-09 (Session 13)
+- **修复**: 移除错误的 `powmod(rat_product, (N+1)/4, N)` 计算，改用 `Y² ≡ ∏(a_i - b_i·m) mod N` 直接验证。无需计算模合数平方根
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 全部通过
+- **Commit**: `8abb0d3`
+
+#### [BUG] ~~rational_sqrt 验证函数声称验证但实际什么也不做~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-09 (Session 12)
+- **修复**: `rational_sqrt.hpp:143-170` 实现验证逻辑：计算 ∏(a_i - b_i·m) mod N 与 X² mod N 对比
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 全部通过
+- **Commit**: `5786188`
+
+### P1 级修复
+
+#### [BUG] ~~ECM sieve_primes(B2) 内存爆炸~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-09 (Session 14)
+- **修复**: 新增 `for_each_prime_in_range()` 分段筛法，内存从 O(B2) 降到 O(√B2 + 1M)。Stage 2 不再整筛 [2, B2]，改为分段处理 (B1, B2]
+- **验证**: smoke 11/11 通过 + cofactor 测试通过
+- **Commit**: `8974849`
+
+#### [BUG] ~~Sieve 区域对大 N 导致灾难性内存分配（>100GB）~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-09 (Session 15)
+- **修复**: `params.hpp` 和 `lattice_basis.hpp` 新增 `MAX_SIEVE_AREA = 256M positions` 面积上限。计算 width×height 后若超限则等比缩小。100-digit N: 32GB/线程 → 512MB/线程（减少 62.5×）
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 5/5 通过 + 200/332-bit 参数验证
+- **Commit**: `86a746c`
+
+#### [BUG] ~~RelationCollector callback 在非递归 mutex 下调用——回调内访问 collector 死锁~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-09 (Session 16)
+- **修复**: callback 调用移至 mutex 作用域外；add() 在锁内 clone 关系数据，锁外调用 callback；set_callback() 新增 mutex 保护。新增回归测试 test_callback_no_deadlock
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 通过
+- **Commit**: `c27804c`
+
+#### [BUG] ~~Couveignes 回退公式 (N+1)/2 对所有 N 都数学错误~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-09 (Session 13)
+- **修复**: 整个 `powmod((N+1)/4)` + `(N+1)/2` 回退块被移除，改用 Y² 直接验证
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 全部通过
+- **Commit**: `8abb0d3`（随 Couveignes rat_sqrt 一并修复）
+
+#### [BUG] ~~algebraic_sqrt compute_heuristic() 数学不正确~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-09 (Session 17)
+- **修复**: `compute_heuristic()` 改为始终返回失败（`product^((N+1)/2)` 仅对素数有效，对合数 N 无数学依据）。测试中两处 `use_couveignes=false` 的 heuristic fallback 改为使用正常 Hensel→Couveignes 流程
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 通过
+- **Commit**: `088a48d`
+
+#### [BUG] ~~Schirokauer Hensel 提升 quadratic factor 访问未构建的 prime_info_~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-09 (Session 10)
+- **修复**: `schirokauer.hpp` hensel_lift_factor 改用 info.factors + synthetic division 计算提升后余因子
+- **验证**: `./build/test_gnfs_progressive 1 1` N=9991 成功分解 97×103
+- **Commit**: `ab278c6`
+
+### P2 级修复
+
+#### [BUG] ~~RelationCollector::set_callback() 无 mutex 保护~~ ✅
+- **发现**: 2026-03-09 (Session 7)
+- **解决**: 2026-03-09 (Session 16)
+- **修复**: set_callback() 新增 `std::lock_guard<std::mutex>` 保护（随 P1 callback 死锁一并修复）
+- **验证**: smoke 11/11 通过
+- **Commit**: `c27804c`
+
+### 早期修复（Session 1-3）
+
+| 条目 | Commit |
+|------|--------|
+| Integer(uint64_t) 构造函数 | `b0e79f9` |
+| Relation::ab() b=INT64_MIN UB | `4b4ec08` |
+| std::abs(INT64_MIN) UB（7 处） | `4b4ec08`, `3789872` |
+| modular_poly p=2 Tonelli-Shanks | `145201c` |
+| NumberField monic 假设 | `ec2aa32` |
+| polynomial_optimizer Newton divmod | `82bbec1` |
+| newton_root() 验证永远成功 | `82bbec1` |
+| Hensel/Couveignes 不可约性检查（Rabin 测试） | `7516710` |
+| trial_division divide_exact() int64 溢出 | `b0e79f9` |
+| ThreadPool pending_ 竞态 | `e6dd3f7` |
+| MatrixBuilderConfig schirokauer_primes {2,3}→{2} | `5791463` |
+| smooth_check large_prime_bound² uint64 溢出 | `783294a` |
+| cofactorizer 大素数 uint32→uint64 | `3b93104` |
+| Couveignes 无上限搜索循环 | `41213e1` |
+| polynomial_optimizer divmod 参数命名 | `82bbec1` |
+| matrix_builder 存储实际 primes | `5791463` |
+| FactorBaseParams large_prime_bound uint64 | `3b93104` |
+| smooth_check quick_cofactor_check lpb² | `783294a` |
+| Hensel Sqrt 预计算优化 | Session 3 |
+| 代数侧大素数映射按 (p,r) 素理想键索引 | `273dcdd` |
+| compute_log_prime() 系统性低估 | `b3bbe3a` |
+| Schirokauer split 路径 hensel_lift_factor SIGSEGV | `ab278c6` |
+| rational_sqrt 验证函数 no-op → 实际验证 | `5786188` |
+| Couveignes rat_sqrt 对合数 N 错误 → Y² 直接验证 | `8abb0d3` |
+| Couveignes (N+1)/2 回退公式错误 → 随 rat_sqrt 移除 | `8abb0d3` |
+
+---
+
+## 核查为误报
+
+> 经源码验证确认不存在的问题。保留作为审计记录，避免后续重复上报。
+
+| 原始分类 | 条目 | 文件 | 误报原因 |
+|----------|------|------|----------|
+| P1 | modular_poly q_minus_2 uint64 溢出 | `modular_poly.hpp:529-531` | 代码中不存在此模式，所有大指数运算使用 Integer/uint128 |
+| P1 | Eratosthenes 筛法 p*2 溢出 | `builder.cpp:80,102,131` | p 最大 = rational_bound（cap 在 1e9），p*2 < UINT32_MAX |
+| P1 | class_group factor_ideal val=0 无限循环 | `class_group.hpp:383-393` | `val != 0` 守卫阻止了循环（exp=0 丢失贡献是独立 P3 条目） |
+| P1 | Schirokauer precompute_for_prime "无根=不可约" d≥4 | `schirokauer.hpp:369-385` | 已修复——代码已调用 `ModularPoly::is_irreducible()`（Rabin 测试） |
+| P1 | ThreadPool func 引用捕获 | `thread_pool.hpp:104,140` | parallel_for 通过 future.get() 等待完成，func 存活期间安全 |
+| P0 | Hensel S[i].to_uint64() 截断 | `hensel_sqrt.hpp:115` | 初始步骤中 S 是 mod p（小素数），值安全 |
+| P0 | Couveignes Gray Code __builtin_ctzll(0) | `couveignes.hpp` | Gray 码恰差 1 位，输入永远非零 |
+| P0 | Gaussian 消元 pivot_cols.back() 空容器 | `gauss.hpp:100-101` | 三元运算符守卫 |
+| P1 | Integer::powmod() 不验证负指数 | `integer.hpp` | GMP mpz_powm 正确处理负指数（计算逆元） |
