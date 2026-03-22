@@ -46,6 +46,20 @@
 - **验证**: smoke 11/11 通过 + sqrt 模块测试全部通过
 - **Commit**: `29ce7fc`
 
+#### [BUG] ~~matrix_builder QC 系数 int64 截断~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 18)
+- **修复**: `matrix_builder.hpp` select_qc_primes() 用 `Integer % p` 替换 `fits_int64() ? to_int64() : 0` 截断逻辑；同时修复 N > 2^64 时整除性检查被跳过
+- **验证**: smoke 11/11 通过
+- **Commit**: `becd25a`
+
+#### [BUG] ~~matrix_builder 多项式度 > 8 时数组越界~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 18)
+- **修复**: `schirokauer.hpp` SchirokaurMap 构造函数新增 `degree > FastPoly::MAX_DEGREE` 守卫；`matrix_builder.hpp` 前置 `can_use_schirokauer` 检查，degree 过大时用额外 QC 列补偿
+- **验证**: smoke 11/11 通过
+- **Commit**: `becd25a`
+
 #### [BUG] ~~ECM sieve_primes(B2) 内存爆炸~~ ✅
 - **发现**: 2026-03-08 (Session 5)
 - **解决**: 2026-03-09 (Session 14)
@@ -144,3 +158,4 @@
 | P0 | Couveignes Gray Code __builtin_ctzll(0) | `couveignes.hpp` | Gray 码恰差 1 位，输入永远非零 |
 | P0 | Gaussian 消元 pivot_cols.back() 空容器 | `gauss.hpp:100-101` | 三元运算符守卫 |
 | P1 | Integer::powmod() 不验证负指数 | `integer.hpp` | GMP mpz_powm 正确处理负指数（计算逆元） |
+| P1 | matrix_builder f mod 2 检查 uint64 截断 | `matrix_builder.hpp:196-201` | 代码已使用 `Integer % 2` 后再 `to_uint64()`，结果为 0/1，无截断风险 |
