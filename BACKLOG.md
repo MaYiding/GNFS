@@ -304,14 +304,17 @@
 - **发现日期**: 2026-03-08 (Session 6) | 从未被调用
 - **文件**: `include/gnfs/linalg/sparse_matrix.hpp:298-319`
 
-### [BUG] gauss.hpp build_null_space() history 参数从未使用
+### [BUG] gauss.hpp history 矩阵 O(n²) 空间浪费——计算但从未使用
 - **发现日期**: 2026-03-09 (Session 6) | O(n²) 空间浪费
-- **文件**: `include/gnfs/linalg/gauss.hpp:161-219`
+- **文件**: `include/gnfs/linalg/gauss.hpp:50-58,77-78,88-93`
+- **描述**: `eliminate()` 花费 O(n²) 空间维护 history 矩阵（行交换 + XOR 同步），但 `build_null_space()` 从未使用它——零空间构建采用回代法直接从 reduced matrix 推导。Session 18 已移除 `build_null_space` 中的 history/is_pivot_col 参数（`ff4e9b8`），但 eliminate() 中 O(n²) 的 history 计算逻辑仍在。50K 矩阵 ≈ 300MB 浪费
+- **建议**: 删除 eliminate() 中的 history 计算逻辑（条件编译为 #if 0 或直接移除）
 
 ### [BUG] Block Lanczos 终止条件仅检查 V_cur 为零
 - **发现日期**: 2026-03-09 (Session 6) | 可能多几十次无效迭代
-- **文件**: `src/linalg/block_lanczos.cpp:336`
-- **建议**: 添加 `if (mask_cur == 0) break;`
+- **文件**: `src/linalg/block_lanczos.cpp:335`
+- **描述**: `partial_inverse()` 返回的 `mask_cur` 追踪 64 个块列中哪些仍活跃。当 mask_cur == 0 时所有列已耗尽，应立即终止。Session 18 排查确认：D 矩阵的非活跃行/列隐式为零，所以 mask 值在递推公式中不需要显式使用；但缺少 mask_cur == 0 的提前终止导致多余迭代。已移除废弃的 mask_prev/mask_pprev 变量（`ff4e9b8`）
+- **建议**: 在 `V_cur.is_zero()` 检查后添加 `if (mask_cur == 0) break;`
 
 ### [BUG] next_prime() uint64 溢出
 - **发现日期**: 2026-03-08 (Session 6) | 理论问题，prime_start 默认 1000
@@ -420,8 +423,9 @@
 - **文件**: `include/gnfs/polynomial/murphy_evaluator.hpp`
 
 ### [OPT] Gauss 消元 history 矩阵 O(n²) 空间
-- **发现日期**: 2026-03-08 (Session 5)
+- **发现日期**: 2026-03-08 (Session 5) | 已与 P3 gauss history 条目合并
 - **文件**: `include/gnfs/linalg/gauss.hpp`
+- **描述**: 见 P3 中 "gauss.hpp history 矩阵 O(n²) 空间浪费" 条目。Session 18 已移除 unused 参数，history 计算逻辑待清理
 
 ### [DEBT] 全局性 uint64_t b → int64_t 截断（13 处）
 - **发现日期**: 2026-03-08 (Session 5) | b 值始终远小于 INT64_MAX
@@ -453,6 +457,10 @@
 
 ### [DEBT] Relation 序列化格式缺陷（无版本/校验和）
 - **文件**: `include/gnfs/core/relation.hpp:73-144`
+
+### [DEBT] -Wconversion 清理（~60 处 sign-conversion）
+- **发现日期**: 2026-03-10 (Session 18)
+- **描述**: `-Wall -Wextra -Wpedantic` 已清零 warning。`-Wconversion` 下有 ~60 处 sign-conversion（int→size_t 数组下标、int64→uint64 等），大多 cosmetic。最可疑的是 `modular_poly.hpp` 中 ~20 处 int degree 循环变量做 vector 下标、`Relation::b` int64→uint64 传参。无安全隐患但降低代码严谨度
 
 ### [DEBT] 根目录遗留文件清理
 
