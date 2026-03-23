@@ -182,7 +182,7 @@ void test_concurrent_add() {
     std::vector<std::thread> threads;
 
     for (int t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&collector, t, per_thread]() {
+        threads.emplace_back([&collector, t]() {
             for (int i = 0; i < per_thread; ++i) {
                 int64_t a = t * per_thread + i;
                 uint64_t b = static_cast<uint64_t>(t * per_thread + i + 1);
