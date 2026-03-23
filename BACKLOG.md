@@ -7,13 +7,6 @@
 
 ## P1 — 高优先级（影响正确性或大数支持）
 
-### [BUG] Split Schirokauer: f mod 2 可约时映射精度不足
-- **发现日期**: 2026-02-20 (Session 2) | 🟡 部分解决
-- **文件**: `include/gnfs/linalg/schirokauer.hpp`
-- **描述**: f mod 2 可约时需要 valuation stripping，当前 split 路径可工作但精度可能不如 unsplit 路径。Hensel 提升崩溃已修复（`ab278c6`），但高次因子的提升可能在 ℓ>2 或 k>3 时精度不足
-- **残留问题**: 无线性因子的可约情况（如两个二次因子）仍回退到 mod-ℓ 精度
-
-
 ### [BUG] Schirokauer factorize_and_setup 重复根处理
 - **发现日期**: 2026-03-08 (Session 5) | ⚠️ ℓ=2 时不太可能出现重复根
 - **文件**: `include/gnfs/linalg/schirokauer.hpp`
