@@ -541,12 +541,13 @@ private:
 
             // Compute a^{q-2} mod (f, p) where q = p^d (Fermat's little theorem in F_{p^d})
             // For the inverse: a^{-1} = a^{p^d - 2} mod (f, p)
-            uint64_t q_minus_2 = 1;
-            for (uint32_t i = 0; i < d; ++i) q_minus_2 *= mod;
-            q_minus_2 -= 2;
+            // Use Integer to avoid uint64_t overflow when p^d > 2^64 (e.g. p=2000, d=6)
+            Integer q_minus_2(1);
+            for (uint32_t i = 0; i < d; ++i) q_minus_2 *= Integer(static_cast<uint64_t>(mod));
+            q_minus_2 -= Integer(2);
 
             ModularPoly ap(a_mod);
-            auto inv_mp = ModularPoly::power(ap, Integer(q_minus_2), f_mod, mod);
+            auto inv_mp = ModularPoly::power(ap, q_minus_2, f_mod, mod);
 
             std::vector<Integer> result(d);
             for (uint32_t i = 0; i < d; ++i) {
