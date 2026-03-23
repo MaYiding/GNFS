@@ -53,6 +53,13 @@
 - **验证**: smoke 11/11 通过
 - **Commit**: `becd25a`
 
+#### [BUG] ~~Hensel poly_inverse_mod_direct p^d uint64 溢出~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 19)
+- **修复**: `hensel_sqrt.hpp:544-546` 费马小定理计算 a^{p^d-2} 的指数从 uint64_t 改为 Integer。d=6, p=2000 时 p^d=6.4×10^19 超过 UINT64_MAX。同文件 line 126 和 modular_poly.hpp:322 已有正确写法
+- **验证**: sqrt 模块测试全部通过 + E2E 通过
+- **Commit**: `576d933`
+
 #### [BUG] ~~matrix_builder 多项式度 > 8 时数组越界~~ ✅
 - **发现**: 2026-03-08 (Session 5)
 - **解决**: 2026-03-10 (Session 18)
@@ -159,3 +166,4 @@
 | P0 | Gaussian 消元 pivot_cols.back() 空容器 | `gauss.hpp:100-101` | 三元运算符守卫 |
 | P1 | Integer::powmod() 不验证负指数 | `integer.hpp` | GMP mpz_powm 正确处理负指数（计算逆元） |
 | P1 | matrix_builder f mod 2 检查 uint64 截断 | `matrix_builder.hpp:196-201` | 代码已使用 `Integer % 2` 后再 `to_uint64()`，结果为 0/1，无截断风险 |
+| P1 | FastPoly reduce_inplace 系数潜在溢出 | `schirokauer.hpp:87-91` | 公式 `m - (t - a.coeffs[idx])` 数学正确：t 和 a.coeffs[idx] 均在 [0,m)，差值在 (0,m)，结果在 (0,m)。mul_raw 确保输入 ∈ [0,m)，reduce_inplace 维持不变量。Schirokauer 中 m=ℓ^k=8，远离溢出边界 |
