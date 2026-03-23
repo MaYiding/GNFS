@@ -7,6 +7,31 @@
 
 ## 已完成 ✅
 
+### P2 级修复 (Session 19)
+
+#### [BUG] ~~编译器 warning: test_relation_collector.cpp 未使用的 lambda 捕获~~ ✅
+- **发现**: 2026-03-10 (Session 19)
+- **解决**: 2026-03-10 (Session 19)
+- **修复**: `tests/test_relation_collector.cpp:185` 从 lambda 捕获列表移除 `per_thread`（const int 隐式 constexpr 不需要捕获）
+- **验证**: 编译零 warning + `test_relation_collector` 全部通过
+- **Commit**: `ac964aa`
+
+#### [BUG] ~~VSCode CMake 配置 CMAKE_BUILD_TYPE 丢失~~ ✅
+- **发现**: 2026-03-10 (Session 19)
+- **解决**: 2026-03-10 (Session 19)
+- **修复**: 创建 `CMakePresets.json`（debug/release/relwithdebinfo 三个 preset），持久化 BUILD_TYPE 配置
+- **验证**: `cmake --preset debug` 输出 `Build Type: Debug` ✓
+- **Commit**: `9136853`
+
+### P3 级修复 (Session 19)
+
+#### [DEBT] ~~ninja 构建系统未安装~~ ✅
+- **发现**: 2026-03-10 (Session 19)
+- **解决**: 2026-03-10 (Session 19)
+- **修复**: `brew install ninja` + CMakePresets.json 添加 `"generator": "Ninja"` + `scripts/test.sh` 改用 `cmake --build`（generator 无关）
+- **验证**: ninja 1.13.2 安装成功 + smoke 11/11 通过
+- **Commit**: `2bafff6`
+
 ### P0 级修复
 
 #### [BUG] ~~compute_log_prime() 系统性低估所有素数对数值~~ ✅
