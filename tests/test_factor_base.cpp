@@ -1,5 +1,6 @@
 #include "gnfs/factor_base/builder.hpp"
 #include "gnfs/polynomial/base_m.hpp"
+#include "gnfs/sqrt/modular_poly.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -190,6 +191,88 @@ void test_larger_bound() {
               << fb.algebraic_count() << " algebraic)" << std::endl;
 }
 
+/// Regression test: base-m irreducibility check.
+/// N = 1320, d = 3: m_base = 10 gives f(x) = x³ + 3x² + 2x = x(x+1)(x+2) — reducible!
+/// The fix should select a different m (e.g., m=9 → f = x³ + 7x² + 2x + 6, irreducible).
+void test_base_m_irreducibility() {
+    std::cout << "Testing base-m irreducibility check..." << std::endl;
+
+    // --- Case 1: N where m_base gives a reducible polynomial ---
+    // N=1320, d=3, m_base=10 → f = x³+3x²+2x = x(x+1)(x+2) — reducible!
+    {
+        Integer n("1320");
+        auto result = BaseMSelector::select(n, 3);
+        assert(result.success);
+        assert(result.f.degree() == 3);
+
+        // Verify f(m) = N
+        Integer fm = result.f.evaluate(result.m);
+        assert(fm == n);
+
+        // m should NOT be 10 (the base value with reducible polynomial)
+        assert(result.m != Integer(10));
+
+        // Verify the selected polynomial is irreducible over Q:
+        // For degree 3, no rational roots ⟹ irreducible.
+        // Rational roots must divide the constant term.
+        Integer c0 = result.f[0].clone();
+        if (c0.is_zero()) {
+            // If constant term is 0, x=0 is a root → reducible → should not happen
+            assert(false && "selected polynomial has root 0");
+        }
+        // Check small integer roots: ±1, ±2, ±3, ±6 (divisors up to |c0|)
+        for (int r : {1, -1, 2, -2, 3, -3, 6, -6}) {
+            Integer val = result.f.evaluate(Integer(r));
+            assert(!val.is_zero());  // no rational roots allowed
+        }
+
+        // Verify irreducibility via mod-p test for at least one prime
+        bool found_irred = false;
+        uint32_t d = result.f.degree();
+        for (uint64_t p : {uint64_t(2), uint64_t(3), uint64_t(5), uint64_t(7),
+                           uint64_t(11), uint64_t(13)}) {
+            std::vector<uint64_t> f_mod(d + 1);
+            for (uint32_t i = 0; i <= d; ++i) {
+                Integer c = result.f[i] % Integer(p);
+                if (c.is_negative()) c += Integer(p);
+                f_mod[i] = c.to_uint64();
+            }
+            if (f_mod[d] == 0) continue;
+            if (gnfs::sqrt::ModularPoly::is_irreducible(f_mod, p)) {
+                found_irred = true;
+                break;
+            }
+        }
+        assert(found_irred);
+
+        std::cout << "  N=1320 reducible case: PASS (m=" << result.m.to_string() << ")" << std::endl;
+    }
+
+    // --- Case 2: standard semiprimes still work ---
+    {
+        Integer n("10403");  // 101 × 103
+        auto result = BaseMSelector::select(n, 3);
+        assert(result.success);
+        assert(result.f.degree() == 3);
+        Integer fm = result.f.evaluate(result.m);
+        assert(fm == n);
+        std::cout << "  N=10403 normal case: PASS" << std::endl;
+    }
+
+    // --- Case 3: larger N ---
+    {
+        Integer n(test_n);  // 1000036000099 = 1000003 × 1000033
+        auto result = BaseMSelector::select(n, 3);
+        assert(result.success);
+        assert(result.f.degree() == 3);
+        Integer fm = result.f.evaluate(result.m);
+        assert(fm == n);
+        std::cout << "  N=1000036000099 normal case: PASS" << std::endl;
+    }
+
+    std::cout << "  ALL base-m irreducibility tests PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Factor Base Tests ===" << std::endl;
 
@@ -199,6 +282,7 @@ int main() {
     test_log_values();
     test_parallel_build();
     test_larger_bound();
+    test_base_m_irreducibility();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
