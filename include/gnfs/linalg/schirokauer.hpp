@@ -7,6 +7,9 @@
 #include <vector>
 #include <cstdint>
 #include <array>
+#include <random>
+#include <tuple>
+#include <numeric>
 
 namespace gnfs {
 namespace linalg {
@@ -14,6 +17,390 @@ namespace linalg {
 using core::Integer;
 using core::PolynomialContext;
 using sqrt::ModularPoly;
+
+// ============================================================================
+// GF(ℓ) Polynomial Arithmetic and Factorization
+// For proper Schirokauer map split-case handling when f mod ℓ is reducible
+// ============================================================================
+struct GFPolyOps {
+    using Poly = std::vector<uint64_t>;
+
+    static Poly trim(Poly p) {
+        while (p.size() > 1 && p.back() == 0) p.pop_back();
+        return p;
+    }
+
+    static bool is_zero(const Poly& p) {
+        return p.empty() || (p.size() == 1 && p[0] == 0);
+    }
+
+    static uint64_t inv_mod(uint64_t a, uint64_t p) {
+        if (a == 0) return 0;
+        int64_t t = 0, nt = 1;
+        int64_t r = static_cast<int64_t>(p), nr = static_cast<int64_t>(a % p);
+        while (nr != 0) {
+            int64_t q = r / nr;
+            t -= q * nt; std::swap(t, nt);
+            r -= q * nr; std::swap(r, nr);
+        }
+        return static_cast<uint64_t>((t % static_cast<int64_t>(p) +
+                                       static_cast<int64_t>(p)) % static_cast<int64_t>(p));
+    }
+
+    static Poly add(const Poly& a, const Poly& b, uint64_t p) {
+        Poly r(std::max(a.size(), b.size()), 0);
+        for (size_t i = 0; i < r.size(); ++i) {
+            uint64_t ai = i < a.size() ? a[i] : 0;
+            uint64_t bi = i < b.size() ? b[i] : 0;
+            r[i] = (ai + bi) % p;
+        }
+        return trim(r);
+    }
+
+    static Poly sub(const Poly& a, const Poly& b, uint64_t p) {
+        Poly r(std::max(a.size(), b.size()), 0);
+        for (size_t i = 0; i < r.size(); ++i) {
+            uint64_t ai = i < a.size() ? a[i] : 0;
+            uint64_t bi = i < b.size() ? b[i] : 0;
+            r[i] = (ai + p - bi) % p;
+        }
+        return trim(r);
+    }
+
+    static Poly mul(const Poly& a, const Poly& b, uint64_t p) {
+        if (is_zero(a) || is_zero(b)) return {0};
+        Poly r(a.size() + b.size() - 1, 0);
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (a[i] == 0) continue;
+            for (size_t j = 0; j < b.size(); ++j) {
+                r[i + j] = (r[i + j] + a[i] * b[j]) % p;
+            }
+        }
+        return trim(r);
+    }
+
+    /// Polynomial division: returns (quotient, remainder)
+    static std::pair<Poly, Poly> divmod(Poly a, const Poly& b, uint64_t p) {
+        a = trim(a);
+        if (is_zero(b)) return {{0}, a};
+        if (a.size() < b.size()) return {{0}, a};
+        uint64_t b_inv = inv_mod(b.back(), p);
+        Poly q(a.size() - b.size() + 1, 0);
+        for (int i = static_cast<int>(a.size()) - 1;
+             i >= static_cast<int>(b.size()) - 1; --i) {
+            uint64_t c = a[i] * b_inv % p;
+            q[i - (static_cast<int>(b.size()) - 1)] = c;
+            for (size_t j = 0; j < b.size(); ++j) {
+                a[i - (static_cast<int>(b.size()) - 1) + j] =
+                    (a[i - (static_cast<int>(b.size()) - 1) + j] + p - c * b[j] % p) % p;
+            }
+        }
+        return {trim(q), trim(a)};
+    }
+
+    static Poly gcd(Poly a, Poly b, uint64_t p) {
+        a = trim(a); b = trim(b);
+        while (!is_zero(b)) {
+            auto [q, r] = divmod(a, b, p);
+            a = b; b = r;
+        }
+        // Make monic
+        if (!a.empty() && a.back() != 0 && a.back() != 1) {
+            uint64_t inv = inv_mod(a.back(), p);
+            for (auto& c : a) c = c * inv % p;
+        }
+        return a;
+    }
+
+    /// Extended GCD: returns (gcd, s, t) with s*a + t*b = gcd
+    static std::tuple<Poly, Poly, Poly> extended_gcd(Poly a, Poly b, uint64_t p) {
+        Poly old_r = trim(a), r = trim(b);
+        Poly old_s = {1}, s = {0};
+        Poly old_t = {0}, t = {1};
+        while (!is_zero(r)) {
+            auto [q, rem] = divmod(old_r, r, p);
+            old_r = r; r = rem;
+            Poly ns = sub(old_s, mul(q, s, p), p);
+            old_s = s; s = ns;
+            Poly nt_new = sub(old_t, mul(q, t, p), p);
+            old_t = t; t = nt_new;
+        }
+        // Make gcd monic
+        if (!old_r.empty() && old_r.back() != 0 && old_r.back() != 1) {
+            uint64_t inv = inv_mod(old_r.back(), p);
+            for (auto& c : old_r) c = c * inv % p;
+            for (auto& c : old_s) c = c * inv % p;
+            for (auto& c : old_t) c = c * inv % p;
+        }
+        return {old_r, old_s, old_t};
+    }
+
+    /// x^exp mod (f, p) using square-and-multiply
+    static Poly powmod(Poly base, uint64_t exp, const Poly& mod, uint64_t p) {
+        Poly result = {1};
+        base = divmod(base, mod, p).second;
+        while (exp > 0) {
+            if (exp & 1) {
+                result = mul(result, base, p);
+                result = divmod(result, mod, p).second;
+            }
+            base = mul(base, base, p);
+            base = divmod(base, mod, p).second;
+            exp >>= 1;
+        }
+        return result;
+    }
+
+    /// Distinct-degree factorization of squarefree monic f over GF(p)
+    /// Returns pairs (degree, product_of_factors_of_that_degree)
+    static std::vector<std::pair<uint32_t, Poly>> ddf(Poly f, uint64_t p) {
+        std::vector<std::pair<uint32_t, Poly>> result;
+        f = trim(f);
+        if (f.size() <= 1) return result;
+        // Make monic
+        if (f.back() != 1) {
+            uint64_t inv = inv_mod(f.back(), p);
+            for (auto& c : f) c = c * inv % p;
+        }
+
+        Poly h = {0, 1};  // h = x
+        for (uint32_t d = 1; 2 * d <= static_cast<uint32_t>(f.size() - 1); ++d) {
+            // h = h^p mod f (so h = x^{p^d} mod f at step d)
+            h = powmod(h, p, f, p);
+
+            // g_d = gcd(h - x, f)
+            Poly h_minus_x = h;
+            if (h_minus_x.size() < 2) h_minus_x.resize(2, 0);
+            h_minus_x[1] = (h_minus_x[1] + p - 1) % p;
+            h_minus_x = trim(h_minus_x);
+
+            Poly g_d = gcd(h_minus_x, f, p);
+
+            if (g_d.size() > 1) {
+                result.push_back({d, g_d});
+                f = divmod(f, g_d, p).first;
+                f = trim(f);
+                if (f.size() <= 1) break;
+                h = divmod(h, f, p).second;
+            }
+        }
+        if (f.size() > 1) {
+            result.push_back({static_cast<uint32_t>(f.size() - 1), f});
+        }
+        return result;
+    }
+
+    /// Equal-degree factorization (Cantor-Zassenhaus) over GF(p)
+    /// f is a product of distinct irreducible polys each of degree d
+    static std::vector<Poly> edf(const Poly& f, uint32_t d, uint64_t p) {
+        if (static_cast<uint32_t>(f.size() - 1) == d) return {f};
+        if (f.size() <= 1) return {};
+
+        std::mt19937 rng(12345 + d);
+        for (int attempt = 0; attempt < 200; ++attempt) {
+            Poly t(f.size() - 1, 0);
+            for (size_t i = 0; i < t.size(); ++i) t[i] = rng() % p;
+            t = trim(t);
+            if (is_zero(t)) continue;
+
+            Poly g;
+            if (p == 2) {
+                // Trace map: Tr(t) = t + t^2 + t^{2^2} + ... + t^{2^{d-1}}
+                Poly trace = t;
+                Poly ti = t;
+                for (uint32_t i = 1; i < d; ++i) {
+                    ti = mul(ti, ti, p);
+                    ti = divmod(ti, f, p).second;
+                    trace = add(trace, ti, p);
+                }
+                g = gcd(trace, f, p);
+            } else {
+                // g = gcd(t^{(p^d-1)/2} - 1, f)
+                uint64_t exp = 1;
+                for (uint32_t i = 0; i < d; ++i) exp *= p;
+                exp = (exp - 1) / 2;
+                Poly tp = powmod(t, exp, f, p);
+                tp[0] = (tp[0] + p - 1) % p;
+                tp = trim(tp);
+                g = gcd(tp, f, p);
+            }
+
+            if (g.size() > 1 && g.size() < f.size()) {
+                auto left = edf(g, d, p);
+                auto right_poly = divmod(f, g, p).first;
+                auto right = edf(right_poly, d, p);
+                left.insert(left.end(), right.begin(), right.end());
+                return left;
+            }
+        }
+        return {f};  // failed to split
+    }
+
+    /// Full factorization of squarefree part of f over GF(p)
+    /// Returns monic irreducible factors (multiplicities stripped)
+    /// Returns empty if f has repeated factors and can't be squarefree-decomposed
+    static std::vector<Poly> factor(Poly f, uint64_t p) {
+        f = trim(f);
+        if (f.size() <= 1) return {};
+
+        // Make monic
+        if (f.back() != 1) {
+            uint64_t inv = inv_mod(f.back(), p);
+            for (auto& c : f) c = c * inv % p;
+        }
+
+        // Square-free check: gcd(f, f')
+        Poly fp(f.size() - 1, 0);
+        for (size_t i = 1; i < f.size(); ++i) {
+            fp[i - 1] = (i % p) * f[i] % p;
+        }
+        fp = trim(fp);
+
+        Poly g = gcd(f, fp, p);
+        Poly f_sqfree;
+        if (g.size() <= 1) {
+            f_sqfree = f;  // already squarefree
+        } else {
+            f_sqfree = divmod(f, g, p).first;
+            f_sqfree = trim(f_sqfree);
+        }
+
+        if (f_sqfree.size() <= 1) {
+            // f is a perfect power — can't easily extract factors
+            return {};  // signal caller to use fallback
+        }
+
+        // DDF + EDF on squarefree part
+        auto ddf_result = ddf(f_sqfree, p);
+
+        std::vector<Poly> factors;
+        for (auto& [d, h] : ddf_result) {
+            auto parts = edf(h, d, p);
+            for (auto& part : parts) {
+                if (!part.empty() && part.back() != 1) {
+                    uint64_t inv = inv_mod(part.back(), p);
+                    for (auto& c : part) c = c * inv % p;
+                }
+                factors.push_back(part);
+            }
+        }
+        return factors;
+    }
+
+    /// Hensel lift two coprime factors g, h (mod ℓ) to mod ℓ^k
+    /// such that f ≡ g*h (mod ℓ^k)
+    /// g0, h0: original mod-ℓ factors (kept for Bezout reference)
+    /// t_bezout: h0^{-1} mod g0 in GF(ℓ) (from extended GCD: s*g0 + t*h0 = 1)
+    static void hensel_lift_pair(
+        const std::vector<uint64_t>& f_pk,
+        std::vector<uint64_t>& g,
+        std::vector<uint64_t>& h,
+        const Poly& g0, const Poly& h0,
+        const Poly& t_bezout,
+        uint32_t ell, uint32_t k)
+    {
+        uint64_t target = 1;
+        for (uint32_t i = 0; i < k; ++i) target *= ell;
+
+        uint64_t modulus = ell;
+        for (uint32_t step = 1; step < k; ++step) {
+            // Compute g*h over Z (using modular arithmetic at target precision)
+            size_t g_sz = g.size(), h_sz = h.size();
+            std::vector<int64_t> prod(g_sz + h_sz - 1, 0);
+            for (size_t i = 0; i < g_sz; ++i) {
+                for (size_t j = 0; j < h_sz; ++j) {
+                    int64_t p = static_cast<int64_t>(
+                        static_cast<__uint128_t>(g[i]) * h[j] % target);
+                    prod[i + j] = (prod[i + j] + p) % static_cast<int64_t>(target);
+                }
+            }
+
+            // epsilon = (f - g*h) / modulus mod ℓ
+            Poly eps(f_pk.size(), 0);
+            for (size_t i = 0; i < f_pk.size(); ++i) {
+                int64_t fi = static_cast<int64_t>(f_pk[i]);
+                int64_t pi = (i < prod.size()) ?
+                    ((prod[i] % static_cast<int64_t>(target)) + static_cast<int64_t>(target))
+                        % static_cast<int64_t>(target) : 0;
+                int64_t diff = fi - pi;
+                if (diff < 0) diff += static_cast<int64_t>(target);
+                // diff is divisible by modulus (by induction)
+                int64_t ei = (diff / static_cast<int64_t>(modulus))
+                             % static_cast<int64_t>(ell);
+                if (ei < 0) ei += static_cast<int64_t>(ell);
+                eps[i] = static_cast<uint64_t>(ei);
+            }
+            eps = trim(eps);
+
+            // δg = (t_bezout * eps) mod g0 in GF(ℓ)
+            auto t_eps = mul(t_bezout, eps, ell);
+            auto delta_g = divmod(t_eps, g0, ell).second;
+
+            // δh = (eps - h0 * delta_g) / g0 in GF(ℓ) (exact division)
+            auto h0_dg = mul(h0, delta_g, ell);
+            auto num = sub(eps, h0_dg, ell);
+            auto delta_h = divmod(num, g0, ell).first;
+
+            // Update g and h
+            uint64_t new_mod = modulus * ell;
+            for (size_t i = 0; i < g.size(); ++i) {
+                uint64_t dg = i < delta_g.size() ? delta_g[i] : 0;
+                g[i] = (g[i] + modulus * dg) % new_mod;
+            }
+            for (size_t i = 0; i < h.size(); ++i) {
+                uint64_t dh = i < delta_h.size() ? delta_h[i] : 0;
+                h[i] = (h[i] + modulus * dh) % new_mod;
+            }
+            modulus = new_mod;
+        }
+    }
+
+    /// Recursively Hensel lift multiple coprime factors from mod ℓ to mod ℓ^k
+    static std::vector<std::vector<uint64_t>> hensel_lift_all(
+        const std::vector<uint64_t>& f_pk,
+        const std::vector<Poly>& factors,
+        uint32_t ell, uint32_t k)
+    {
+        if (factors.size() == 1) {
+            return {f_pk};
+        }
+
+        if (factors.size() == 2) {
+            auto& g0 = factors[0];
+            auto& h0 = factors[1];
+            auto [gcd_val, s, t] = extended_gcd(g0, h0, ell);
+            std::vector<uint64_t> g(g0.begin(), g0.end());
+            std::vector<uint64_t> h(h0.begin(), h0.end());
+            hensel_lift_pair(f_pk, g, h, g0, h0, t, ell, k);
+            return {g, h};
+        }
+
+        // Split into two groups and recurse
+        size_t mid = factors.size() / 2;
+
+        Poly product_a = {1};
+        for (size_t i = 0; i < mid; ++i)
+            product_a = mul(product_a, factors[i], ell);
+
+        Poly product_b = {1};
+        for (size_t i = mid; i < factors.size(); ++i)
+            product_b = mul(product_b, factors[i], ell);
+
+        auto [gcd_val, s, t] = extended_gcd(product_a, product_b, ell);
+        std::vector<uint64_t> lifted_a(product_a.begin(), product_a.end());
+        std::vector<uint64_t> lifted_b(product_b.begin(), product_b.end());
+        hensel_lift_pair(f_pk, lifted_a, lifted_b, product_a, product_b, t, ell, k);
+
+        std::vector<Poly> group_a(factors.begin(), factors.begin() + mid);
+        std::vector<Poly> group_b(factors.begin() + mid, factors.end());
+
+        auto result_a = hensel_lift_all(lifted_a, group_a, ell, k);
+        auto result_b = hensel_lift_all(lifted_b, group_b, ell, k);
+
+        result_a.insert(result_a.end(), result_b.begin(), result_b.end());
+        return result_a;
+    }
+};
 
 /// Schirokauer map configuration
 struct SchirokaurConfig {
@@ -387,179 +774,64 @@ private:
             for (uint32_t i = 0; i < degree_; ++i) q *= ell;
             info.exponent = q - 1;
         } else {
-            // f is reducible mod ℓ — find roots for split Schirokauer
-            std::vector<uint32_t> roots;
-            for (uint32_t x = 0; x < ell; ++x) {
-                uint64_t val = 0, xp = 1;
-                for (uint32_t i = 0; i <= degree_; ++i) {
-                    val = (val + f_mod_ell[i] * (xp % ell)) % ell;
-                    xp = (xp * x) % ell;
-                }
-                if (val == 0) roots.push_back(x);
-            }
+            // f is reducible mod ℓ — proper factorization using DDF + EDF
             info.is_split = true;
-            factorize_and_setup(info, ell, roots);
+            factorize_and_setup(info, ell, f_mod_ell);
         }
 
         prime_info_.push_back(info);
     }
 
-    /// Factorize f mod ℓ and set up split Schirokauer
-    void factorize_and_setup(PrimeInfo& info, uint32_t ell, const std::vector<uint32_t>& roots) {
-        // For degree 3 polynomial with roots mod ℓ:
-        // - 1 root: f = (x - r) · g(x) where g is irreducible degree-2
-        // - 3 roots: f = (x - r1)(x - r2)(x - r3)
-        // For degree > 3, more complex factorization needed
+    /// Factorize f mod ℓ using DDF+EDF and Hensel lift all factors to mod ℓ^k
+    void factorize_and_setup(PrimeInfo& info, uint32_t ell,
+                             const std::vector<uint64_t>& f_mod_ell) {
+        // Factor f mod ℓ into irreducible factors
+        auto irred_factors = GFPolyOps::factor(f_mod_ell, ell);
 
-        // Polynomial division: divide f by (x - r) for each root
-        std::vector<uint64_t> f_coeffs(degree_ + 1);
+        // Validate: factor degrees must sum to polynomial degree
+        uint32_t deg_sum = 0;
+        for (const auto& fac : irred_factors) {
+            deg_sum += static_cast<uint32_t>(fac.size()) - 1;
+        }
+
+        if (irred_factors.size() < 2 || deg_sum != degree_) {
+            // Can't properly factorize (repeated factors or single factor)
+            // Fall back to unsplit behavior
+            info.is_split = false;
+            uint64_t q = 1;
+            for (uint32_t i = 0; i < degree_; ++i) q *= ell;
+            info.exponent = q - 1;
+            return;
+        }
+
+        // f mod ℓ^k for Hensel lifting
+        std::vector<uint64_t> f_pk(degree_ + 1);
         for (uint32_t i = 0; i <= degree_; ++i) {
-            f_coeffs[i] = info.f_mod[i] % ell;
+            f_pk[i] = info.f_mod[i];
         }
 
-        std::vector<std::vector<uint64_t>> irred_factors;
+        // Hensel lift all factors from mod ℓ to mod ℓ^k
+        auto lifted = GFPolyOps::hensel_lift_all(
+            f_pk, irred_factors, ell, config_.exponent_k);
 
-        // Divide out linear factors
-        auto remaining = f_coeffs;
-        for (uint32_t r : roots) {
-            // Divide remaining by (x - r) mod ℓ
-            // (x - r) = [ell - r, 1]
-            uint32_t rem_deg = 0;
-            for (int i = static_cast<int>(remaining.size()) - 1; i >= 0; --i) {
-                if (remaining[i] != 0) { rem_deg = static_cast<uint32_t>(i); break; }
-            }
-            if (rem_deg == 0) break;
-
-            std::vector<uint64_t> quotient(rem_deg, 0);
-            uint64_t carry = 0;
-            for (int i = static_cast<int>(rem_deg); i >= 1; --i) {
-                uint64_t coeff = (remaining[i] + carry) % ell;
-                quotient[i - 1] = coeff;
-                carry = (coeff * r) % ell;
-            }
-
-            // Linear factor: (x - r) mod ℓ^k → stored as [ℓ^k - r_lifted, 1]
-            std::vector<uint64_t> lin_factor = {(ell - r) % ell, 1};
-            irred_factors.push_back(lin_factor);
-            remaining = quotient;
-        }
-
-        // Whatever remains is the cofactor (should be irreducible if degree > 0)
-        uint32_t rem_deg = 0;
-        for (int i = static_cast<int>(remaining.size()) - 1; i >= 0; --i) {
-            if (remaining[i] != 0) { rem_deg = static_cast<uint32_t>(i); break; }
-        }
-        if (rem_deg > 0) {
-            remaining.resize(rem_deg + 1);
-            irred_factors.push_back(remaining);
-        }
-
-        // Set up FactorInfo for each irreducible factor
-        for (const auto& factor : irred_factors) {
+        // Set up FactorInfo for each lifted factor
+        info.factors.clear();
+        for (size_t idx = 0; idx < irred_factors.size(); ++idx) {
             FactorInfo fi;
-            fi.degree = static_cast<uint32_t>(factor.size()) - 1;
+            fi.degree = static_cast<uint32_t>(irred_factors[idx].size()) - 1;
 
             // Exponent = ℓ^{deg} - 1
             uint64_t q = 1;
             for (uint32_t i = 0; i < fi.degree; ++i) q *= ell;
             fi.exponent = q - 1;
 
-            // Lift factor to mod ℓ^k using Hensel lifting
-            // For now, use the mod-ℓ factor directly mod ℓ^k
-            // (simple lift: just use the factor as-is, with coefficients in [0, ℓ))
+            // Copy lifted coefficients
             fi.f_mod.fill(0);
-            for (size_t i = 0; i < factor.size(); ++i) {
-                // Lift coefficient: find factor mod ℓ^k that divides f mod ℓ^k
-                fi.f_mod[i] = factor[i];  // Start with mod-ℓ values
+            for (size_t i = 0; i < lifted[idx].size() && i <= FastPoly::MAX_DEGREE; ++i) {
+                fi.f_mod[i] = lifted[idx][i];
             }
-
-            // Hensel lift the factor to mod ℓ^k
-            hensel_lift_factor(fi, info, ell);
 
             info.factors.push_back(fi);
-        }
-    }
-
-    /// Hensel lift a factor of f from mod ℓ to mod ℓ^k
-    void hensel_lift_factor(FactorInfo& fi, const PrimeInfo& info, uint32_t ell) {
-        // For a linear factor (x - r) mod ℓ:
-        // Lift to (x - r_lifted) mod ℓ^k where f(r_lifted) ≡ 0 mod ℓ^k
-        if (fi.degree == 1) {
-            // Linear factor: root r = (ℓ - fi.f_mod[0]) % ℓ
-            uint64_t r = (ell - fi.f_mod[0]) % ell;
-            // Hensel lift root: Newton's method
-            // r_{new} = r - f(r)/f'(r) mod ℓ^k
-            uint64_t modulus = ell;
-            for (uint32_t step = 0; step < 20 && modulus < info.ell_k; ++step) {
-                uint64_t new_mod = std::min(modulus * modulus, info.ell_k);
-                // Evaluate f(r) mod new_mod
-                uint64_t fr = 0, rp = 1;
-                for (uint32_t i = 0; i <= degree_; ++i) {
-                    fr = (fr + (__uint128_t)info.f_mod[i] * rp) % new_mod;
-                    if (i < degree_) rp = ((__uint128_t)rp * r) % new_mod;
-                }
-                // Evaluate f'(r) mod new_mod
-                uint64_t fpr = 0;
-                rp = 1;
-                for (uint32_t i = 1; i <= degree_; ++i) {
-                    fpr = (fpr + (__uint128_t)i * ((__uint128_t)info.f_mod[i] * rp % new_mod)) % new_mod;
-                    if (i < degree_) rp = ((__uint128_t)rp * r) % new_mod;
-                }
-                // Newton step: r = r - f(r) * f'(r)^{-1} mod new_mod
-                // Need inverse of f'(r) mod new_mod
-                // Use extended GCD
-                int64_t t = 0, nt = 1, rv = static_cast<int64_t>(new_mod), nr = static_cast<int64_t>(fpr);
-                while (nr != 0) {
-                    int64_t q = rv / nr;
-                    t -= q * nt; std::swap(t, nt);
-                    rv -= q * nr; std::swap(rv, nr);
-                }
-                if (t < 0) t += static_cast<int64_t>(new_mod);
-                uint64_t fpr_inv = static_cast<uint64_t>(t);
-                r = (r + new_mod - (__uint128_t)fr * fpr_inv % new_mod) % new_mod;
-                modulus = new_mod;
-            }
-            fi.f_mod[0] = (info.ell_k - r) % info.ell_k;
-            fi.f_mod[1] = 1;
-            return;
-        }
-
-        // For higher-degree factors: compute lifted factor via polynomial division.
-        // All linear factors have already been Hensel-lifted and appear earlier in
-        // info.factors. We divide f(x) mod ℓ^k by each lifted linear factor
-        // (x - r_lifted) to obtain the exact lifted cofactor. The division is exact
-        // because f(r_lifted) ≡ 0 (mod ℓ^k) by construction.
-        {
-            // Start with f mod ℓ^k
-            std::vector<uint64_t> poly(degree_ + 1);
-            for (uint32_t i = 0; i <= degree_; ++i) {
-                poly[i] = info.f_mod[i];
-            }
-            uint32_t poly_deg = degree_;
-
-            // Divide out each already-lifted linear factor
-            for (const auto& other_fi : info.factors) {
-                if (other_fi.degree != 1) continue;
-                // Root r from factor (x - r) stored as [ℓ^k - r, 1]
-                uint64_t r = (info.ell_k - other_fi.f_mod[0]) % info.ell_k;
-                // Synthetic division by (x - r) mod ℓ^k
-                for (int i = static_cast<int>(poly_deg) - 1; i >= 0; --i) {
-                    __uint128_t prod = static_cast<__uint128_t>(r) * poly[i + 1] % info.ell_k;
-                    poly[i] = static_cast<uint64_t>((poly[i] + prod) % info.ell_k);
-                }
-                // poly[0] is remainder (should be ≡ 0 mod ℓ^k), shift quotient down
-                for (uint32_t i = 0; i < poly_deg; ++i) {
-                    poly[i] = poly[i + 1];
-                }
-                poly[poly_deg] = 0;
-                poly_deg--;
-            }
-
-            // Store the lifted cofactor
-            fi.f_mod.fill(0);
-            for (uint32_t i = 0; i <= fi.degree && i <= poly_deg; ++i) {
-                fi.f_mod[i] = poly[i];
-            }
         }
     }
 };
