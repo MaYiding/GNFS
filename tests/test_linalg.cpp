@@ -4,7 +4,9 @@
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/gauss.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
+#include <gnfs/linalg/schirokauer.hpp>
 #include <gnfs/core/relation.hpp>
+#include <gnfs/core/polynomial_context.hpp>
 
 #include <cassert>
 #include <iostream>
@@ -444,6 +446,160 @@ void test_structured_gauss() {
     std::cout << "  Block Lanczos: PASSED" << std::endl;
 }
 
+// Regression test: Schirokauer map with f having repeated roots mod 2.
+// Before fix, code fell back to unsplit mode computing γ^(ℓ^d-1) mod (f, ℓ^k)
+// which is mathematically wrong when f is not irreducible mod ℓ.
+void test_schirokauer_repeated_roots() {
+    std::cout << "Testing Schirokauer map with repeated roots mod 2..." << std::endl;
+
+    using core::Integer;
+    using core::PolynomialContext;
+
+    // f(x) = x³ + 3x² + 4x + 2
+    // f mod 2 = x³ + x² = x²(x+1) — has repeated root x=0 with multiplicity 2
+    // f(10) = 1000 + 300 + 40 + 2 = 1342
+    std::vector<Integer> coeffs = {Integer(2), Integer(4), Integer(3), Integer(1)};
+    PolynomialContext ctx(Integer(1342), std::move(coeffs), Integer(10), 1.0);
+
+    SchirokaurConfig config;
+    config.primes = {2};
+    config.exponent_k = 3;
+
+    SchirokaurMap smap(ctx, config);
+
+    // Should produce degree=3 columns (one per Schirokauer prime)
+    assert(smap.num_columns() == 3 &&
+           "Schirokauer map must produce degree_ columns even with repeated roots");
+
+    // Verify map is in split mode (not unsplit)
+    assert(!smap.prime_info_.empty());
+    assert(smap.prime_info_[0].is_split &&
+           "f with repeated roots mod 2 must use split mode, not unsplit");
+
+    // The squarefree factor x+1 (multiplicity 1 in f) should be lifted
+    // The x² factor (multiplicity 2) should be skipped → those columns zero-padded
+    // So we expect exactly 1 factor of degree 1
+    assert(smap.prime_info_[0].factors.size() == 1 &&
+           "Only multiplicity-1 factor (x+1) should be lifted");
+    assert(smap.prime_info_[0].factors[0].degree == 1 &&
+           "Lifted factor (x+1) should have degree 1");
+
+    // Compute map for several (a, b) values — must not crash and return valid values
+    std::vector<std::pair<int64_t, uint64_t>> test_cases = {
+        {3, 2}, {7, 1}, {1, 5}, {11, 3}, {-1, 4}, {0, 1}
+    };
+
+    for (auto [a, b] : test_cases) {
+        auto maps = smap.compute(a, b);
+        assert(maps.size() == 1 && "Should have maps for 1 prime");
+        assert(maps[0].size() == 3 && "Each map should have degree_ = 3 values");
+        for (uint32_t v : maps[0]) {
+            assert(v < 2 && "Map values must be in [0, ℓ)");
+        }
+    }
+
+    // Determinism: same input should give same output
+    auto map1 = smap.compute(3, 2);
+    auto map2 = smap.compute(3, 2);
+    assert(map1[0] == map2[0] && "Schirokauer map must be deterministic");
+
+    std::cout << "  Repeated roots (x^2*(x+1) mod 2): PASSED" << std::endl;
+}
+
+// Test Schirokauer map with f being a perfect power mod 2
+void test_schirokauer_perfect_power() {
+    std::cout << "Testing Schirokauer map with perfect power mod 2..." << std::endl;
+
+    using core::Integer;
+    using core::PolynomialContext;
+
+    // f(x) = x³ + 2x² + 4x + 8
+    // f mod 2 = x³ (a perfect cube of x — all zeros except leading)
+    // f(10) = 1000 + 200 + 40 + 8 = 1248
+    std::vector<Integer> coeffs = {Integer(8), Integer(4), Integer(2), Integer(1)};
+    PolynomialContext ctx(Integer(1248), std::move(coeffs), Integer(10), 1.0);
+
+    SchirokaurConfig config;
+    config.primes = {2};
+    config.exponent_k = 3;
+
+    SchirokaurMap smap(ctx, config);
+
+    assert(smap.num_columns() == 3);
+    assert(smap.prime_info_[0].is_split &&
+           "Perfect power mod 2 must use split mode");
+    assert(smap.prime_info_[0].factors.empty() &&
+           "Perfect power mod 2 should have no liftable factors");
+
+    // All Schirokauer values should be zero (no constraints available)
+    auto maps = smap.compute(5, 3);
+    assert(maps[0].size() == 3);
+    for (uint32_t v : maps[0]) {
+        assert(v == 0 && "Perfect power case should zero-fill all columns");
+    }
+
+    std::cout << "  Perfect power (x^3 mod 2): PASSED" << std::endl;
+}
+
+// Test Schirokauer map with squarefree reducible f (existing split path, should still work)
+void test_schirokauer_squarefree_reducible() {
+    std::cout << "Testing Schirokauer map with squarefree reducible f mod 2..." << std::endl;
+
+    using core::Integer;
+    using core::PolynomialContext;
+
+    // f(x) = x³ + x² + x + 1 = (x+1)(x²+1) over Z
+    // f mod 2 = x³ + x² + x + 1 = (x+1)(x²+1) = (x+1)(x+1)² = (x+1)³ mod 2?
+    // No: x²+1 = (x+1)² mod 2. So f mod 2 = (x+1)³ — repeated!
+    // Need a TRULY squarefree example.
+    //
+    // f(x) = x³ + x + 2 → f mod 2 = x³ + x = x(x²+1) = x(x+1)² — still repeated
+    //
+    // f(x) = x³ + x² + 2 → f mod 2 = x³ + x² = x²(x+1) — repeated
+    //
+    // For degree 3 squarefree-reducible over GF(2), we need 3 distinct linear roots:
+    // x(x+1)(x+a) but GF(2) only has 0 and 1, so x(x+1) times... no third root exists.
+    // Actually deg-3 squarefree reducible over GF(2) must factor into a linear × irreducible quadratic.
+    // (x+1)(x²+x+1) = x³+1+x²+x = x³+x²+x+1 mod 2 = the same as above.
+    // Wait: (x+1)(x²+x+1) = x³ + x²·1 + x·1 + 1·1 + x² + x = ?
+    // Let me expand: x·(x²+x+1) = x³+x²+x, plus 1·(x²+x+1) = x²+x+1
+    // Total: x³+x²+x + x²+x+1 = x³ + 2x² + 2x + 1 = x³ + 1 (mod 2)
+    // So (x+1)(x²+x+1) = x³+1 mod 2.
+    // f mod 2 = x³+1 = (x+1)(x²+x+1) — squarefree! Two coprime factors.
+    //
+    // Use f(x) = x³ + 3, so f mod 2 = x³ + 1 = (x+1)(x²+x+1)
+    // f(10) = 1000 + 3 = 1003
+    std::vector<Integer> coeffs = {Integer(3), Integer(0), Integer(0), Integer(1)};
+    PolynomialContext ctx(Integer(1003), std::move(coeffs), Integer(10), 1.0);
+
+    SchirokaurConfig config;
+    config.primes = {2};
+    config.exponent_k = 3;
+
+    SchirokaurMap smap(ctx, config);
+
+    assert(smap.num_columns() == 3);
+    assert(smap.prime_info_[0].is_split);
+    // Should have 2 factors: (x+1) of degree 1, (x²+x+1) of degree 2
+    assert(smap.prime_info_[0].factors.size() == 2 &&
+           "Squarefree reducible should have 2 lifted factors");
+
+    uint32_t total_deg = 0;
+    for (const auto& fi : smap.prime_info_[0].factors) {
+        total_deg += fi.degree;
+    }
+    assert(total_deg == 3 && "Factor degrees should sum to polynomial degree");
+
+    // Compute and verify
+    auto maps = smap.compute(7, 1);
+    assert(maps[0].size() == 3);
+    for (uint32_t v : maps[0]) {
+        assert(v < 2);
+    }
+
+    std::cout << "  Squarefree reducible ((x+1)(x^2+x+1) mod 2): PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Linear Algebra Tests ===" << std::endl;
     std::cout << std::endl;
@@ -461,6 +617,9 @@ int main() {
     test_verify_dependency();
     test_matrix_stats();
     test_structured_gauss();
+    test_schirokauer_repeated_roots();
+    test_schirokauer_perfect_power();
+    test_schirokauer_squarefree_reducible();
 
     std::cout << std::endl;
     std::cout << "=== All Linear Algebra Tests PASSED ===" << std::endl;
