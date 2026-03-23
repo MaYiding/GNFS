@@ -32,6 +32,13 @@
 
 ### P1 级修复
 
+#### [BUG] ~~Split Schirokauer: f mod 2 可约时映射精度不足~~ ✅
+- **发现**: 2026-02-20 (Session 2)
+- **解决**: 2026-03-10
+- **修复**: `schirokauer.hpp` 新增 `GFPolyOps` 结构体实现 GF(ℓ) 上完整多项式因式分解（DDF + EDF/Cantor-Zassenhaus）和递归多因子 Hensel 提升。替换旧的暴力搜根逻辑，使无线性因子的可约情况（如 x⁵+x⁴+1 ≡ (x²+x+1)(x³+x+1) mod 2）也能正确分解并提升到 mod ℓ^k
+- **验证**: smoke 11/11 通过 + L1-L2 progressive 通过 + linalg/sqrt 模块全部通过
+- **Commit**: `d1293f6`
+
 #### [BUG] ~~Couveignes 符号归一化不一致导致 CRT 重建错误~~ ✅
 - **发现**: 2026-03-08 (Session 5)
 - **解决**: 2026-03-10 (Session 17)
