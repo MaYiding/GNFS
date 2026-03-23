@@ -57,6 +57,13 @@
 
 ### P1 级修复
 
+#### [BUG] ~~base_m.cpp select() 不验证 f 不可约~~ ✅
+- **发现**: 2026-03-09 (Session 6)
+- **解决**: 2026-03-10 (Session 21)
+- **修复**: `base_m.cpp:select()` 新增 `check_irreducible_over_Q()` 对 15 个小素数做 mod-p Rabin 测试；若 m_base 的多项式可约，自动尝试 m±1..±5 共 11 个候选。附带修复 `construct_base_m_poly()` 使 f(m)=N 对任意 m 成立（旧代码 f[d]=temp 替换导致扰动时 f(m)≠N）
+- **验证**: smoke 11/11 通过 + 回归测试 N=1320 (m=10 可约→自动选 m=9 不可约) 通过
+- **Commit**: `d38ab90`
+
 #### [BUG] ~~Schirokauer factorize_and_setup 重复根处理~~ ✅
 - **发现**: 2026-03-08 (Session 5)
 - **解决**: 2026-03-10 (Session 20)

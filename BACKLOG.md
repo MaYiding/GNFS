@@ -7,11 +7,6 @@
 
 ## P1 — 高优先级（影响正确性或大数支持）
 
-### [BUG] base_m.cpp select() 不验证 f 不可约
-- **发现日期**: 2026-03-09 (Session 6) | 低次多项式可约概率极低
-- **文件**: `src/polynomial/base_m.cpp:8-37`
-- **描述**: 不检查 f 在 Q[x] 上不可约性
-
 ### [BUG] modular_poly sub()/mod_inverse() 对 p > INT64_MAX 溢出
 - **发现日期**: 2026-03-08 (Session 5) | 实际不可达（所有素数 < 2^32）
 - **文件**: `include/gnfs/sqrt/modular_poly.hpp:90,420`
