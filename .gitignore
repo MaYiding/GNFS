@@ -23,6 +23,9 @@ compile_commands.json
 .DS_Store
 Thumbs.db
 
+# ===== CMake User Presets (user-specific, not tracked) =====
+CMakeUserPresets.json
+
 # ===== Cache =====
 .cache/
 
