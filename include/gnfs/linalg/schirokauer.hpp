@@ -782,57 +782,110 @@ private:
         prime_info_.push_back(info);
     }
 
-    /// Factorize f mod ℓ using DDF+EDF and Hensel lift all factors to mod ℓ^k
+    /// Factorize f mod ℓ using DDF+EDF and Hensel lift factors to mod ℓ^k.
+    /// Handles three cases:
+    ///   1. f is a perfect power mod ℓ → zero-fill all Schirokauer columns
+    ///   2. f is squarefree mod ℓ → standard multi-factor Hensel lift
+    ///   3. f has repeated roots mod ℓ → lift only multiplicity-1 factors, zero-pad rest
     void factorize_and_setup(PrimeInfo& info, uint32_t ell,
                              const std::vector<uint64_t>& f_mod_ell) {
-        // Factor f mod ℓ into irreducible factors
+        // Factor the squarefree part of f mod ℓ into irreducible factors
         auto irred_factors = GFPolyOps::factor(f_mod_ell, ell);
 
-        // Validate: factor degrees must sum to polynomial degree
         uint32_t deg_sum = 0;
         for (const auto& fac : irred_factors) {
             deg_sum += static_cast<uint32_t>(fac.size()) - 1;
         }
 
-        if (irred_factors.size() < 2 || deg_sum != degree_) {
-            // Can't properly factorize (repeated factors or single factor)
-            // Fall back to unsplit behavior
-            info.is_split = false;
-            uint64_t q = 1;
-            for (uint32_t i = 0; i < degree_; ++i) q *= ell;
-            info.exponent = q - 1;
-            return;
+        // Case 1: f is a perfect power mod ℓ — no squarefree factors found
+        // info.is_split is already true (set by caller in precompute_for_prime)
+        if (irred_factors.empty()) {
+            info.factors.clear();
+            return;  // compute_split() will zero-pad all degree_ columns
         }
 
-        // f mod ℓ^k for Hensel lifting
+        // Prepare f mod ℓ^k for Hensel lifting
         std::vector<uint64_t> f_pk(degree_ + 1);
         for (uint32_t i = 0; i <= degree_; ++i) {
             f_pk[i] = info.f_mod[i];
         }
 
-        // Hensel lift all factors from mod ℓ to mod ℓ^k
-        auto lifted = GFPolyOps::hensel_lift_all(
-            f_pk, irred_factors, ell, config_.exponent_k);
+        // Case 2: f is squarefree mod ℓ (factor degrees sum to polynomial degree)
+        if (deg_sum == degree_ && irred_factors.size() >= 2) {
+            auto lifted = GFPolyOps::hensel_lift_all(
+                f_pk, irred_factors, ell, config_.exponent_k);
 
-        // Set up FactorInfo for each lifted factor
+            info.factors.clear();
+            for (size_t idx = 0; idx < irred_factors.size(); ++idx) {
+                FactorInfo fi;
+                fi.degree = static_cast<uint32_t>(irred_factors[idx].size()) - 1;
+                uint64_t q = 1;
+                for (uint32_t i = 0; i < fi.degree; ++i) q *= ell;
+                fi.exponent = q - 1;
+                fi.f_mod.fill(0);
+                for (size_t i = 0; i < lifted[idx].size() && i <= FastPoly::MAX_DEGREE; ++i) {
+                    fi.f_mod[i] = lifted[idx][i];
+                }
+                info.factors.push_back(fi);
+            }
+            return;
+        }
+
+        // Case 3: f has repeated roots mod ℓ (deg_sum < degree_ or single factor)
+        // Only multiplicity-1 factors can be Hensel-lifted (coprime with cofactor).
+        // Multiplicity > 1 factors share roots with their cofactor, making Hensel
+        // lifting impossible. Those columns are zero-padded — fewer constraints
+        // but still correct (just slightly less efficient).
         info.factors.clear();
-        for (size_t idx = 0; idx < irred_factors.size(); ++idx) {
-            FactorInfo fi;
-            fi.degree = static_cast<uint32_t>(irred_factors[idx].size()) - 1;
 
-            // Exponent = ℓ^{deg} - 1
+        GFPolyOps::Poly f_ell = GFPolyOps::trim(
+            GFPolyOps::Poly(f_mod_ell.begin(), f_mod_ell.end()));
+
+        for (const auto& fac : irred_factors) {
+            // Compute multiplicity of this factor in f mod ℓ
+            uint32_t multiplicity = 0;
+            GFPolyOps::Poly remaining = f_ell;
+            while (remaining.size() >= fac.size()) {
+                auto [quot, r] = GFPolyOps::divmod(remaining, fac, ell);
+                if (GFPolyOps::is_zero(r)) {
+                    multiplicity++;
+                    remaining = quot;
+                } else {
+                    break;
+                }
+            }
+
+            if (multiplicity != 1) continue;  // Can't Hensel-lift repeated factors
+
+            // Cofactor = f / fac mod ℓ (coprime since multiplicity == 1)
+            auto [cofactor, rem] = GFPolyOps::divmod(f_ell, fac, ell);
+
+            // Verify coprimality (should hold for multiplicity-1 factors)
+            auto gcd_check = GFPolyOps::gcd(fac, cofactor, ell);
+            if (gcd_check.size() > 1) continue;  // Not coprime — skip
+
+            // Extended GCD for Bezout coefficients needed by Hensel lifting
+            auto [gcd_val, s_bezout, t_bezout] = GFPolyOps::extended_gcd(fac, cofactor, ell);
+
+            // Hensel lift this factor individually against f
+            std::vector<uint64_t> g_lift(fac.begin(), fac.end());
+            std::vector<uint64_t> h_lift(cofactor.begin(), cofactor.end());
+            GFPolyOps::hensel_lift_pair(
+                f_pk, g_lift, h_lift, fac, cofactor, t_bezout, ell, config_.exponent_k);
+
+            // Store the lifted factor
+            FactorInfo fi;
+            fi.degree = static_cast<uint32_t>(fac.size()) - 1;
             uint64_t q = 1;
             for (uint32_t i = 0; i < fi.degree; ++i) q *= ell;
             fi.exponent = q - 1;
-
-            // Copy lifted coefficients
             fi.f_mod.fill(0);
-            for (size_t i = 0; i < lifted[idx].size() && i <= FastPoly::MAX_DEGREE; ++i) {
-                fi.f_mod[i] = lifted[idx][i];
+            for (size_t i = 0; i < g_lift.size() && i <= FastPoly::MAX_DEGREE; ++i) {
+                fi.f_mod[i] = g_lift[i];
             }
-
             info.factors.push_back(fi);
         }
+        // compute_split() will zero-pad any remaining columns up to degree_
     }
 };
 

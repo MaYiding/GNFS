@@ -7,11 +7,6 @@
 
 ## P1 — 高优先级（影响正确性或大数支持）
 
-### [BUG] Schirokauer factorize_and_setup 重复根处理
-- **发现日期**: 2026-03-08 (Session 5) | ⚠️ ℓ=2 时不太可能出现重复根
-- **文件**: `include/gnfs/linalg/schirokauer.hpp`
-- **描述**: ℓ | disc(f) 时重复根未正确处理
-
 ### [BUG] base_m.cpp select() 不验证 f 不可约
 - **发现日期**: 2026-03-09 (Session 6) | 低次多项式可约概率极低
 - **文件**: `src/polynomial/base_m.cpp:8-37`

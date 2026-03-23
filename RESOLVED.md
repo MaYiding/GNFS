@@ -57,6 +57,13 @@
 
 ### P1 级修复
 
+#### [BUG] ~~Schirokauer factorize_and_setup 重复根处理~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 20)
+- **修复**: `schirokauer.hpp:factorize_and_setup()` 三情况处理：(1) f 是完美幂 → 零填充所有列；(2) f 无平方因子 → 标准多因子 Hensel 提升（不变）；(3) 重复根 → 计算每个因子在 f 中的重数，仅 Hensel 提升重数=1 的因子（与余因子互素），其余列零填充。旧代码回退到 unsplit 模式用 γ^(ℓ^d-1)，但 f 不可约时才正确——导致错误 Schirokauer 值使依赖全部无效
+- **验证**: smoke 11/11 通过 + 3 个新回归测试（重复根、完美幂、无平方可约）全部通过
+- **Commit**: `56cb783`
+
 #### [BUG] ~~Split Schirokauer: f mod 2 可约时映射精度不足~~ ✅
 - **发现**: 2026-02-20 (Session 2)
 - **解决**: 2026-03-10
