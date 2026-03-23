@@ -377,9 +377,9 @@ do_build() {
 
     local build_output exit_code=0
     if (( VERBOSE )); then
-        make -C "$BUILD_DIR" -j"$PARALLEL_JOBS" VERBOSE=1 2>&1 || exit_code=$?
+        cmake --build "$BUILD_DIR" -j"$PARALLEL_JOBS" -- -v 2>&1 || exit_code=$?
     else
-        build_output=$(make -C "$BUILD_DIR" -j"$PARALLEL_JOBS" 2>&1) || exit_code=$?
+        build_output=$(cmake --build "$BUILD_DIR" -j"$PARALLEL_JOBS" 2>&1) || exit_code=$?
     fi
 
     local end_ms
