@@ -14,20 +14,10 @@
 - **残留问题**: 无线性因子的可约情况（如两个二次因子）仍回退到 mod-ℓ 精度
 
 
-### [BUG] Schirokauer FastPoly 系数潜在溢出
-- **发现日期**: 2026-03-08 (Session 5)
-- **文件**: `include/gnfs/linalg/schirokauer.hpp:73,87-91`
-- **描述**: `reduce_inplace()` 中 `t > a.coeffs[idx]` 时公式错误
-
 ### [BUG] Schirokauer factorize_and_setup 重复根处理
 - **发现日期**: 2026-03-08 (Session 5) | ⚠️ ℓ=2 时不太可能出现重复根
 - **文件**: `include/gnfs/linalg/schirokauer.hpp`
 - **描述**: ℓ | disc(f) 时重复根未正确处理
-
-### [BUG] Hensel poly_inverse_mod_direct p^d uint64 溢出
-- **发现日期**: 2026-03-08 (Session 6)
-- **文件**: `include/gnfs/sqrt/hensel_sqrt.hpp:529-531`
-- **描述**: uint64_t 计算 p^d-2，d=6,p=2000 时溢出
 
 ### [BUG] base_m.cpp select() 不验证 f 不可约
 - **发现日期**: 2026-03-09 (Session 6) | 低次多项式可约概率极低
