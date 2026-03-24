@@ -279,9 +279,90 @@ void test_small_factorization_setup() {
     std::cout << "Small factorization setup: PASS" << std::endl;
 }
 
+/// 回归测试：estimate_initial_log 对退化/零值区域不产生 UB
+/// 修复前：log2(0) = -Inf → static_cast<uint16_t>(-Inf) 是未定义行为
+void test_estimate_initial_log_no_ub() {
+    std::cout << "\n=== Regression: estimate_initial_log NaN/Inf UB ===" << std::endl;
+
+    // 设置：N=143=11×13，小因子基
+    Integer n(143);
+    auto result = BaseMSelector::select(n, 2);
+    assert(result.success);
+    auto ctx = BaseMSelector::create_context(n, result);
+    assert(ctx.verify());
+
+    FactorBaseBuilder::Options opts;
+    opts.rational_bound = 50;
+    opts.algebraic_bound = 50;
+    opts.parallel = false;
+    auto fb = FactorBaseBuilder::build(ctx, opts);
+
+    SieveParams params;
+    params.log_scale = 10;
+    params.rational_threshold = 20;
+    params.algebraic_threshold = 20;
+
+    // Case 1: 退化的 1×1 区域 → 旧代码 typical_i=0, typical_j=0 → log2(0)=-Inf → UB
+    {
+        LatticeSieve sieve(ctx, fb, params);
+        SieveRegion region;
+        region.i_min = 0;
+        region.i_max = 0;
+        region.j_min = 0;
+        region.j_max = 0;
+        sieve.set_region(region);
+
+        SpecialQ sq;
+        sq.q = 7;
+        sq.r = 3;
+        auto sieve_result = sieve.sieve_special_q(sq);
+        std::cout << "    Degenerate 1x1 region: OK (no crash)" << std::endl;
+        (void)sieve_result;
+    }
+
+    // Case 2: 宽区域但 j_min = j_max = 0 → typical_j = 0
+    {
+        LatticeSieve sieve(ctx, fb, params);
+        SieveRegion region;
+        region.i_min = -100;
+        region.i_max = 100;
+        region.j_min = 0;
+        region.j_max = 0;
+        sieve.set_region(region);
+
+        SpecialQ sq;
+        sq.q = 7;
+        sq.r = 3;
+        auto sieve_result = sieve.sieve_special_q(sq);
+        std::cout << "    Zero-j region: OK (no crash)" << std::endl;
+        (void)sieve_result;
+    }
+
+    // Case 3: 正常区域（验证修复不破坏正常行为）
+    {
+        LatticeSieve sieve(ctx, fb, params);
+        SieveRegion region;
+        region.i_min = -50;
+        region.i_max = 49;
+        region.j_min = 1;
+        region.j_max = 20;
+        sieve.set_region(region);
+
+        SpecialQ sq;
+        sq.q = 7;
+        sq.r = 3;
+        auto sieve_result = sieve.sieve_special_q(sq);
+        std::cout << "    Normal region: " << sieve_result.candidates.size()
+                  << " candidates" << std::endl;
+    }
+
+    std::cout << "    PASSED" << std::endl;
+}
+
 int main() {
     test_full_sieve_pipeline();
     test_small_factorization_setup();
+    test_estimate_initial_log_no_ub();
 
     std::cout << "\n==============================" << std::endl;
     std::cout << "All integration tests passed!" << std::endl;
