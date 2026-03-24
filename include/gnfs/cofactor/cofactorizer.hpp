@@ -167,8 +167,8 @@ public:
             }
         }
 
-        // 添加代数侧大素数
-        add_large_primes(rel.algebraic_large_prime, alg_class);
+        // 添加代数侧大素数（含正确的根 r = a·b⁻¹ mod p）
+        add_algebraic_large_primes(rel.algebraic_large_prime, alg_class, a, b);
 
         // 更新统计
         update_stats(rel);
@@ -239,7 +239,7 @@ private:
         }
     }
 
-    /// 添加大素数到关系
+    /// 添加大素数到关系（有理侧，无需根）
     void add_large_primes(Relation::LargePrimeList& list,
                           const CofactorClassification& cls) const {
 
@@ -257,6 +257,54 @@ private:
                 list.push_back(PrimePower{cls.factor2, static_cast<uint8_t>(1)});
                 break;
 
+            default:
+                break;
+        }
+    }
+
+    /// 计算代数侧大素数对应的根 r = a·b⁻¹ mod p
+    /// 这是 f(x) mod p 的一个根，标识 p 上方的具体素理想 (p, α-r)
+    [[nodiscard]] static uint64_t compute_alg_lp_root(int64_t a, uint64_t b, uint64_t p) {
+        uint64_t a_mod = static_cast<uint64_t>(
+            ((a % static_cast<int64_t>(p)) + static_cast<int64_t>(p)) % static_cast<int64_t>(p));
+        // b^{-1} mod p via extended GCD
+        uint64_t b_mod = b % p;
+        // p ∤ b is guaranteed (see proof: if p|b and gcd(a,b)=1 then p ∤ Norm)
+        int64_t t = 0, nt = 1;
+        int64_t r = static_cast<int64_t>(p), nr = static_cast<int64_t>(b_mod);
+        while (nr != 0) {
+            int64_t q = r / nr;
+            t -= q * nt; std::swap(t, nt);
+            r -= q * nr; std::swap(r, nr);
+        }
+        uint64_t b_inv = static_cast<uint64_t>((t % static_cast<int64_t>(p) +
+                                                  static_cast<int64_t>(p)) % static_cast<int64_t>(p));
+        return static_cast<uint64_t>(
+            (static_cast<__uint128_t>(a_mod) * b_inv) % p);
+    }
+
+    /// 添加代数侧大素数（带正确的素理想根 r）
+    void add_algebraic_large_primes(Relation::LargePrimeList& list,
+                                     const CofactorClassification& cls,
+                                     int64_t a, uint64_t b) const {
+        switch (cls.type) {
+            case CofactorClass::Prime: {
+                uint64_t r = compute_alg_lp_root(a, b, cls.factor1);
+                list.push_back(PrimePower{cls.factor1, r, static_cast<uint8_t>(1)});
+                break;
+            }
+            case CofactorClass::PrimePower: {
+                uint64_t r = compute_alg_lp_root(a, b, cls.factor1);
+                list.push_back(PrimePower{cls.factor1, r, cls.power});
+                break;
+            }
+            case CofactorClass::Semiprime: {
+                uint64_t r1 = compute_alg_lp_root(a, b, cls.factor1);
+                uint64_t r2 = compute_alg_lp_root(a, b, cls.factor2);
+                list.push_back(PrimePower{cls.factor1, r1, static_cast<uint8_t>(1)});
+                list.push_back(PrimePower{cls.factor2, r2, static_cast<uint8_t>(1)});
+                break;
+            }
             default:
                 break;
         }
