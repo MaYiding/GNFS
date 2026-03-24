@@ -7,12 +7,6 @@
 
 ## P1 — 高优先级（影响正确性或大数支持）
 
-### [BUG] L5/25-digit 测试因关系不足而失败（base-m irreducibility fix 回归）
-- **发现日期**: 2026-03-10 (Session 22)
-- **文件**: 管线整体（多项式选择→筛选→关系收集）
-- **描述**: base-m irreducibility fix (commit `d38ab90`) 改变了多项式选择策略，导致 L5 (N=1253371692427905599) 和 25-digit (N=1669994516749619561652133) 筛选产生的关系数不足矩阵列数。L5: 9403 rels < 11690 cols; 25-digit: 20928 rels < 38136 cols。在 fix 之前（Session 3）两者都能通过
-- **建议**: (1) 增加筛选区域或 special-Q 范围；(2) 调整 params.hpp 对该规模 N 的参数；(3) 或调查新多项式质量是否更差
-
 ### [BUG] modular_poly sub()/mod_inverse() 对 p > INT64_MAX 溢出
 - **发现日期**: 2026-03-08 (Session 5) | 实际不可达（所有素数 < 2^32）
 - **文件**: `include/gnfs/sqrt/modular_poly.hpp:90,420`

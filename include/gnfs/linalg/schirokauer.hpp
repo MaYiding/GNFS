@@ -798,10 +798,16 @@ private:
         }
 
         // Case 1: f is a perfect power mod ℓ — no squarefree factors found
-        // info.is_split is already true (set by caller in precompute_for_prime)
+        // Fall back to unsplit mode: use γ^(ℓ^d-1) mod (f, ℓ^k).
+        // Zero-filling would remove all Schirokauer constraints from the matrix,
+        // causing ALL dependencies to give trivial factors.
         if (irred_factors.empty()) {
+            info.is_split = false;
             info.factors.clear();
-            return;  // compute_split() will zero-pad all degree_ columns
+            uint64_t q = 1;
+            for (uint32_t i = 0; i < degree_; ++i) q *= ell;
+            info.exponent = q - 1;
+            return;  // compute_unsplit() will handle this
         }
 
         // Prepare f mod ℓ^k for Hensel lifting
@@ -885,7 +891,18 @@ private:
             }
             info.factors.push_back(fi);
         }
-        // compute_split() will zero-pad any remaining columns up to degree_
+
+        // If no multiplicity-1 factors survived, fall back to unsplit mode.
+        // Zero-padding all columns removes Schirokauer constraints entirely,
+        // which makes ALL dependencies trivial (same failure as Case 1).
+        if (info.factors.empty()) {
+            info.is_split = false;
+            uint64_t q = 1;
+            for (uint32_t i = 0; i < degree_; ++i) q *= ell;
+            info.exponent = q - 1;
+            return;  // compute_unsplit() will handle this
+        }
+        // Otherwise, compute_split() will zero-pad remaining columns up to degree_
     }
 };
 

@@ -7,6 +7,16 @@
 
 ## 已完成 ✅
 
+### P1 级修复 (Session 23)
+
+#### [BUG] ~~L5/25-digit 测试失败 — 代数大素数缺失素理想根 r~~ ✅
+- **发现**: 2026-03-10 (Session 22)
+- **解决**: 2026-03-10 (Session 23)
+- **根因**: `cofactorizer.hpp:add_large_primes()` 对代数侧大素数使用 2-arg `PrimePower{p, e}`（r=0），但 `matrix_builder.hpp` 使用 per-(p,r) 列映射。所有代数 LP 映射到 `(p,0)` 列，无法区分同一素数 p 上方的不同素理想。零空间给出的依赖中各理想指数非偶数，代数乘积非完全平方，sqrt 必然失败
+- **修复**: (1) `cofactorizer.hpp` 新增 `compute_alg_lp_root(a,b,p)` 计算 `r = a·b⁻¹ mod p`；(2) 新增 `add_algebraic_large_primes()` 使用 3-arg `PrimePower{p, r, e}`；(3) `params.hpp` 阈值改为 `3.5*log_scale` + target_excess 覆盖额外列；(4) `schirokauer.hpp` 完美幂/无 mult-1 因子回退到 unsplit 而非零填充；(5) `hensel_sqrt.hpp` f'(α)² 技巧处理 O_K/Z[α] 指标
+- **验证**: smoke 11/11 通过 + L1-L5 全部通过（L5: 38.53s, dep#2 成功）
+- **Commit**: `9950450` (cofactorizer), `f509907` (params), `5c89f2c` (schirokauer), `0d5f6ea` (hensel+algebraic_sqrt)
+
 ### P1-OPT 级修复 (Session 22)
 
 #### [OPT] ~~Block Lanczos 是 25-digit 的主要瓶颈（需并行化）~~ ✅

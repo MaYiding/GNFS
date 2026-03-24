@@ -149,20 +149,13 @@ struct GNFSParams {
         p.sieve_j_max = static_cast<int32_t>(sieve_height);
 
         // === 筛阈值 ===
-        // 较大的数需要更宽松的阈值以收集更多候选
-        if (p.digits < 15) {
-            p.rational_threshold = 50;
-            p.algebraic_threshold = 50;
-        } else if (p.digits < 30) {
-            p.rational_threshold = 60;
-            p.algebraic_threshold = 60;
-        } else if (p.digits < 50) {
-            p.rational_threshold = 70;
-            p.algebraic_threshold = 70;
-        } else {
-            p.rational_threshold = 80;
-            p.algebraic_threshold = 80;
-        }
+        // 合并筛残差 ≈ log2(rat_cofactor)*scale + log2(alg_cofactor)*scale。
+        // 使用 3.5 * log_scale 作为每侧阈值。此值补偿了 compute_log_prime_precise
+        // 相对旧 compute_log_prime 的精度提升（旧 log_p 系统性低估 ~(scale-1)/2
+        // 每个素数，累积 ~40-80 偏差被旧阈值 50-80 隐含补偿）。
+        p.rational_threshold = static_cast<uint8_t>(
+            std::min(255.0, 3.5 * p.log_scale));
+        p.algebraic_threshold = p.rational_threshold;
 
         // 对数缩放因子: 更大的因子基需要更大的缩放
         if (p.rational_bound > 100000)
@@ -208,7 +201,13 @@ struct GNFSParams {
 
         // === 线性代数 ===
         p.num_qc_primes = std::max(32u, std::min(128u, static_cast<uint32_t>(p.digits * 2)));
-        p.target_excess = std::max(50u, static_cast<uint32_t>(p.digits * 5));
+        // target_excess 需要覆盖矩阵额外列（QC + Schirokauer + sign + 大素数列）
+        // 以及单例过滤带来的关系损失。经验公式: ~20% 的因子基大小。
+        p.target_excess = std::max(200u,
+            static_cast<uint32_t>(
+                p.num_qc_primes + p.degree + 1 +       // QC + Schirokauer + sign
+                (p.rational_bound / std::log(static_cast<double>(p.rational_bound))) * 0.15  // ~15% of FB for LP columns + filter loss
+            ));
 
         // === 进度报告间隔 ===
         if (p.max_special_q > 10000) {

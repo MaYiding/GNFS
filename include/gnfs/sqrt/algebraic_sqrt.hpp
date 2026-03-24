@@ -77,13 +77,15 @@ public:
         }
 
         // Try Hensel lifting first (most reliable for all sizes)
+        // compute() returns the algebraic sqrt value mod N directly
+        // (handles the O_K vs Z[α] index via the f'(α)² trick internally)
         {
             HenselSqrt::Config hcfg;
             hcfg.verbose = (ab_pairs.size() >= 500);
             HenselSqrt hensel(hcfg);
-            auto sqrt_opt = hensel.compute(ab_pairs, nf);
-            if (sqrt_opt) {
-                result.value = nf.evaluate_at_m_mod_n(*sqrt_opt);
+            auto sqrt_val = hensel.compute(ab_pairs, nf);
+            if (sqrt_val) {
+                result.value = std::move(*sqrt_val);
                 result.success = true;
                 return result;
             }
