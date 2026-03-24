@@ -334,6 +334,35 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
         std::cout << "  Dep #" << (di+1) << " (size=" << popcnt(dep) << ")..." << std::flush;
 
+        // --- Diagnostic: check if norm product is a perfect square ---
+        if (di < 3) {
+            Integer norm_product(1);
+            for (size_t ri = 0; ri < relations.size(); ++ri) {
+                if (!(ri < dep.size() && dep[ri])) continue;
+                Integer anorm = ctx.algebraic_norm(relations[ri].a, relations[ri].b);
+                if (anorm.is_negative()) anorm.negate();
+                norm_product *= anorm;
+            }
+            bool norm_is_square = (mpz_perfect_square_p(norm_product.get_mpz()) != 0);
+            std::cout << " norm²=" << (norm_is_square ? "YES" : "NO") << std::flush;
+
+            // Also check rational product mod N
+            Integer rat_product(1);
+            for (size_t ri = 0; ri < relations.size(); ++ri) {
+                if (!(ri < dep.size() && dep[ri])) continue;
+                Integer val = Integer(relations[ri].a);
+                Integer bm = ctx.m().clone();
+                bm *= Integer(static_cast<int64_t>(relations[ri].b));
+                val -= bm;
+                rat_product *= val;
+                rat_product %= n;
+            }
+            if (rat_product.is_negative()) rat_product += n;
+            // Check if rat_product is a QR mod N by checking Jacobi symbol
+            int jacobi_val = mpz_jacobi(rat_product.get_mpz(), n.get_mpz());
+            std::cout << " rat_jacobi=" << jacobi_val << std::flush;
+        }
+
         auto rat = compute_rational_sqrt(to_bv(dep), relations, fb, n, ctx.m());
         if (!rat.success) {
             std::cout << " rat_fail\n" << std::flush;
@@ -346,10 +375,31 @@ FactResult factor_with_progress(const Integer& n, int level) {
             continue;
         }
 
-        // Debug: show X and Y values for first 3 deps
+        // Debug: verify rational product and show X, Y for first 3 deps
         if (di < 3) {
             std::cout << " X=" << rat.value.to_string()
                       << " Y=" << alg.value.to_string() << std::flush;
+
+            // Verify: product(a_i - b_i*m) mod N should equal ±X^2 mod N
+            Integer rat_product(1);
+            for (size_t ri = 0; ri < relations.size(); ++ri) {
+                if (!(ri < dep.size() && dep[ri])) continue;
+                const auto& rel = relations[ri];
+                Integer val = Integer(rel.a);
+                Integer bm = ctx.m().clone();
+                bm *= Integer(static_cast<int64_t>(rel.b));
+                val -= bm;  // a - b*m
+                rat_product *= val;
+                rat_product %= n;
+            }
+            Integer x2 = rat.value.clone();
+            x2 *= rat.value;
+            x2 %= n;
+            if (rat_product.is_negative()) { rat_product += n; }
+            Integer neg_rat = n.clone();
+            neg_rat -= rat_product;
+            bool rat_ok = (rat_product.compare(x2) == 0) || (neg_rat.compare(x2) == 0);
+            std::cout << " rat_check=" << (rat_ok ? "OK" : "FAIL") << std::flush;
         }
 
         // Try Y and -Y
