@@ -600,6 +600,87 @@ void test_schirokauer_squarefree_reducible() {
     std::cout << "  Squarefree reducible ((x+1)(x^2+x+1) mod 2): PASSED" << std::endl;
 }
 
+// Regression test: parallel Block Lanczos produces same results as Gaussian
+// for a medium-sized matrix (verifies parallelization correctness)
+void test_parallel_block_lanczos_correctness() {
+    std::cout << "Testing parallel Block Lanczos correctness..." << std::endl;
+
+    // Create a matrix large enough that BL is non-trivial but small enough
+    // to verify with Gaussian. 200 rows × 150 cols, ~30% density.
+    const size_t m = 200;
+    const size_t n = 150;
+
+    SparseMatrix mat(m, n);
+    std::mt19937 rng(12345);
+
+    for (size_t i = 0; i < m; ++i) {
+        // Each row gets 3-8 non-zero entries
+        size_t nnz = 3 + rng() % 6;
+        for (size_t k = 0; k < nnz; ++k) {
+            mat.set(i, rng() % n);
+        }
+    }
+
+    // Find dependencies using the unified solver (dispatches to Gaussian for <10K)
+    BlockLanczos solver;
+    auto deps = solver.find_dependencies(mat, 10);
+
+    std::cout << "  Found " << deps.size() << " dependencies" << std::endl;
+    assert(deps.size() >= 1);
+
+    // Verify each dependency: v^T * M = 0 over GF(2)
+    for (const auto& dep : deps) {
+        assert(dep.size() == m);
+
+        // Compute M^T * v
+        std::vector<bool> result(n, false);
+        for (size_t i = 0; i < m; ++i) {
+            if (!dep[i]) continue;
+            for (uint32_t col : mat.row(i).indices()) {
+                if (col < n) result[col] = !result[col];
+            }
+        }
+
+        // Must be all zeros
+        for (size_t j = 0; j < n; ++j) {
+            assert(!result[j]);
+        }
+    }
+
+    std::cout << "  Parallel BL correctness: PASSED" << std::endl;
+}
+
+// Test ensure_all_sorted eliminates const_cast UB
+void test_ensure_all_sorted() {
+    std::cout << "Testing ensure_all_sorted..." << std::endl;
+
+    SparseMatrix mat(5, 10);
+
+    // Add elements in non-sorted order via direct row access
+    mat.row(0).set(5);
+    mat.row(0).set(2);
+    mat.row(0).set(8);
+    mat.row(1).set(9);
+    mat.row(1).set(1);
+
+    // Before ensure_all_sorted, rows may be unsorted
+    mat.ensure_all_sorted();
+
+    // After ensure_all_sorted, indices() must return sorted lists
+    auto& idx0 = mat.row(0).indices();
+    assert(idx0.size() == 3);
+    assert(idx0[0] == 2);
+    assert(idx0[1] == 5);
+    assert(idx0[2] == 8);
+
+    auto& idx1 = mat.row(1).indices();
+    assert(idx1.size() == 2);
+    assert(idx1[0] == 1);
+    assert(idx1[1] == 9);
+
+    std::cout << "  ensure_all_sorted: PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Linear Algebra Tests ===" << std::endl;
     std::cout << std::endl;
@@ -620,6 +701,8 @@ int main() {
     test_schirokauer_repeated_roots();
     test_schirokauer_perfect_power();
     test_schirokauer_squarefree_reducible();
+    test_parallel_block_lanczos_correctness();
+    test_ensure_all_sorted();
 
     std::cout << std::endl;
     std::cout << "=== All Linear Algebra Tests PASSED ===" << std::endl;

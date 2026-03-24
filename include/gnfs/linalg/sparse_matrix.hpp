@@ -253,6 +253,14 @@ public:
         return static_cast<double>(total_weight()) / rows_.size();
     }
 
+    /// Ensure all rows are sorted and deduplicated.
+    /// Must be called before concurrent read access (e.g., parallel SpMV).
+    void ensure_all_sorted() {
+        for (auto& row : rows_) {
+            row.ensure_sorted();
+        }
+    }
+
     /// 获取所有行（用于迭代）
     [[nodiscard]] const std::vector<SparseRow>& rows() const noexcept {
         return rows_;
