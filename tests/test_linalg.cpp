@@ -526,19 +526,20 @@ void test_schirokauer_perfect_power() {
     SchirokaurMap smap(ctx, config);
 
     assert(smap.num_columns() == 3);
-    assert(smap.prime_info_[0].is_split &&
-           "Perfect power mod 2 must use split mode");
-    assert(smap.prime_info_[0].factors.empty() &&
-           "Perfect power mod 2 should have no liftable factors");
+    // Perfect power mod ℓ has no multiplicity-1 factors → falls back to unsplit mode
+    // (zero-filling would remove all Schirokauer constraints, making every dependency trivial)
+    assert(!smap.prime_info_[0].is_split &&
+           "Perfect power mod 2 must fall back to unsplit mode");
+    assert(smap.prime_info_[0].exponent == 7 &&
+           "Unsplit exponent should be ℓ^d - 1 = 2^3 - 1 = 7");
 
-    // All Schirokauer values should be zero (no constraints available)
+    // Unsplit mode produces actual Schirokauer values (not all zeros)
     auto maps = smap.compute(5, 3);
     assert(maps[0].size() == 3);
-    for (uint32_t v : maps[0]) {
-        assert(v == 0 && "Perfect power case should zero-fill all columns");
-    }
+    // Values are computed from (a - b*α)^7 mod (f, 2^3), then extract bits
+    // Just verify we get 3 values (actual values depend on element)
 
-    std::cout << "  Perfect power (x^3 mod 2): PASSED" << std::endl;
+    std::cout << "  Perfect power (x^3 mod 2, unsplit fallback): PASSED" << std::endl;
 }
 
 // Test Schirokauer map with squarefree reducible f (existing split path, should still work)
