@@ -70,28 +70,119 @@ public:
         auto sqrt_mod_p = ModularPoly::sqrt_tonelli_shanks(product_mod_p, f_mod_p, p);
 
         // Step 4: Estimate required precision
-        // Product of |a - b·α| for each relation; sqrt is half the log
+        // The sqrt coefficients s_i in the power basis {1, α, ..., α^{d-1}}
+        // are bounded by the product at ALL roots of f (not just m).
+        // Use Cauchy bound: max|root| ≤ 1 + max_{j<d} |c_j / c_d|
+        double max_root = std::abs(nf.m().to_double());
+        {
+            double c_d_abs = std::abs(nf.coeff(d).to_double());
+            if (c_d_abs > 0) {
+                for (uint32_t i = 0; i < d; ++i) {
+                    double ratio = std::abs(nf.coeff(i).to_double()) / c_d_abs;
+                    max_root = std::max(max_root, 1.0 + ratio);
+                }
+            }
+        }
+
         double log_bound = 0;
         for (const auto& [a, b] : ab_pairs) {
             double val = std::abs(static_cast<double>(a)) +
-                         static_cast<double>(b) * std::abs(nf.m().to_double());
+                         static_cast<double>(b) * max_root;
             log_bound += std::log2(std::max(val, 1.0));
         }
-        double sqrt_log_bound = log_bound / 2.0 + config_.extra_precision;
-        double log_p = std::log2(static_cast<double>(p));
-        size_t num_lifts = 0;
-        double current_precision = log_p;
-        while (current_precision < sqrt_log_bound) {
-            current_precision *= 2;
-            ++num_lifts;
+        // Pre-compute verification product P(m) = ∏(a_i - b_i*m) mod N
+        // Used to verify the Hensel result without re-running the entire computation
+        Integer product_at_m(int64_t(1));
+        for (const auto& [a, b] : ab_pairs) {
+            Integer factor(a);
+            Integer bm = nf.m().clone();
+            bm *= Integer(static_cast<int64_t>(b));
+            factor -= bm;
+            factor %= n;
+            if (factor.is_negative()) factor += n;
+            product_at_m *= factor;
+            product_at_m %= n;
+        }
+
+        // Try with increasing precision until verification passes
+        size_t extra_bits = config_.extra_precision;
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            double attempt_bound = log_bound / 2.0 + std::log2(static_cast<double>(d))
+                                   + extra_bits;
+
+            double log_p = std::log2(static_cast<double>(p));
+            size_t num_lifts = 0;
+            double current_precision = log_p;
+            while (current_precision < attempt_bound) {
+                current_precision *= 2;
+                ++num_lifts;
+            }
+
+            if (config_.verbose) {
+                std::cerr << "[Hensel] attempt=" << attempt << " p=" << p
+                          << " lifts=" << num_lifts
+                          << " target_bits=" << static_cast<size_t>(attempt_bound)
+                          << " max_root=" << max_root << "\n";
+            }
+
+            auto result = hensel_lift_and_extract(
+                sqrt_mod_p, ab_pairs, nf, p, num_lifts, d);
+
+            if (!result) continue;
+
+            // Verify: S(m)^2 ≡ P(m) mod N
+            Integer Y = nf.evaluate_at_m_mod_n(*result);
+            Integer Y2 = Y.clone();
+            Y2 *= Y;
+            Y2 %= n;
+            if (Y2.is_negative()) Y2 += n;
+
+            // Also check -Y (the other square root)
+            Integer neg_Y = n.clone();
+            neg_Y -= Y;
+            Integer neg_Y2 = neg_Y.clone();
+            neg_Y2 *= neg_Y;
+            neg_Y2 %= n;
+            if (neg_Y2.is_negative()) neg_Y2 += n;
+
+            Integer pm_pos = product_at_m.clone();
+            if (pm_pos.is_negative()) pm_pos += n;
+
+            if (Y2.compare(pm_pos) == 0 || neg_Y2.compare(pm_pos) == 0) {
+                if (config_.verbose) {
+                    std::cerr << "[Hensel] Verification passed (attempt " << attempt << ")\n";
+                }
+                return result;
+            }
+
+            if (config_.verbose) {
+                std::cerr << "[Hensel] Verification FAILED (attempt " << attempt
+                          << "), doubling precision\n";
+            }
+            extra_bits *= 2;
         }
 
         if (config_.verbose) {
-            std::cerr << "[Hensel] p=" << p << " lifts=" << num_lifts
-                      << " target_bits=" << static_cast<size_t>(sqrt_log_bound) << "\n";
+            std::cerr << "[Hensel] All attempts failed verification\n";
         }
+        return std::nullopt;
+    }
 
-        // Step 5: Convert to Integer polynomial and Hensel lift
+private:
+    Config config_;
+
+    /// Core Hensel lifting: given sqrt mod p, lift to target precision and extract result
+    [[nodiscard]] std::optional<NumberFieldElement> hensel_lift_and_extract(
+            const ModularPoly& sqrt_mod_p,
+            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+            const NumberField& nf,
+            uint64_t p,
+            size_t num_lifts,
+            uint32_t d) const {
+
+        const Integer& n = nf.n();
+
+        // Convert to Integer polynomial
         std::vector<Integer> S(d);
         for (uint32_t i = 0; i < d; ++i) {
             S[i] = Integer(static_cast<int64_t>(
@@ -133,9 +224,6 @@ public:
         }
 
         // Pre-compute product at final precision ONCE.
-        // Key optimization: instead of recomputing ∏(a_i - b_i·x) at every
-        // lift level (O(num_lifts × n) poly muls), compute it once at the
-        // maximum precision, then reduce coefficients for each lift level.
         std::vector<Integer> P_final;
         if (num_lifts > 0) {
             Integer final_mod(static_cast<int64_t>(p));
@@ -158,9 +246,6 @@ public:
         }
 
         // Hensel lifting: maintain S and T = (2S)^{-1} in parallel
-        // At each step, modulus → modulus², and:
-        //   S' = S + T · (P - S²) mod (f, modulus²)
-        //   T' = T · (2 - 2S'·T) mod (f, modulus²)
         for (size_t lift = 0; lift < num_lifts; ++lift) {
             Integer new_modulus = modulus.clone();
             new_modulus *= modulus;  // modulus²
@@ -189,7 +274,6 @@ public:
             }
 
             // Update T: T' = T · (2 - 2S'·T) mod (f, new_modulus)
-            // First compute 2S'·T
             std::vector<Integer> two_S_prime(d);
             for (uint32_t i = 0; i < d; ++i) {
                 two_S_prime[i] = S[i].clone();
@@ -223,7 +307,7 @@ public:
             }
         }
 
-        // Step 6: Center coefficients and reduce mod N
+        // Center coefficients and reduce mod N
         Integer half_mod = modulus.clone();
         mpz_tdiv_q_2exp(half_mod.get_mpz(), half_mod.get_mpz(), 1);
 
@@ -239,9 +323,6 @@ public:
 
         return NumberFieldElement(std::move(result_coeffs));
     }
-
-private:
-    Config config_;
 
     /// Find a prime p where f(x) is irreducible mod p
     [[nodiscard]] uint64_t find_inert_prime(const NumberField& nf) const {
