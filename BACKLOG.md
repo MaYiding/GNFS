@@ -16,12 +16,6 @@
 
 ## P1-OPT — 高优先级性能优化
 
-### [OPT] Block Lanczos 是 25-digit 的主要瓶颈（需并行化）
-- **发现日期**: 2026-02-22 (Session 3)
-- **文件**: `src/linalg/block_lanczos.cpp`
-- **描述**: SpMV 顺序执行，193s = 81.6% 耗时
-- **建议**: OpenMP 并行 SpMV
-
 ### [OPT] ECM Stage 2 BSGS 优化
 - **发现日期**: 2026-02-20 (Session 2)
 - **文件**: `include/gnfs/cofactor/ecm.hpp:410-430`
@@ -35,12 +29,6 @@
 ---
 
 ## P2 — 中优先级（大数支持和架构改进）
-
-### [BUG] SparseRow const_cast ensure_sorted() 多线程并发排序是 UB
-- **发现日期**: 2026-03-09 (Session 7)
-- **文件**: `include/gnfs/linalg/sparse_matrix.hpp:61-63,93,134,150`
-- **描述**: const_cast 修改 indices_ 和 sorted_，Block Lanczos SpMV 并发读取同一行时 UB
-- **建议**: 标记为 `mutable`，构造后立即排序
 
 ### [BUG] MurphyEvaluator rng_ 数据竞争——Kleinjung 多线程并行使用
 - **发现日期**: 2026-03-08 (Session 6)
@@ -282,12 +270,6 @@
 - **文件**: `include/gnfs/linalg/gauss.hpp:50-58,77-78,88-93`
 - **描述**: `eliminate()` 花费 O(n²) 空间维护 history 矩阵（行交换 + XOR 同步），但 `build_null_space()` 从未使用它——零空间构建采用回代法直接从 reduced matrix 推导。Session 18 已移除 `build_null_space` 中的 history/is_pivot_col 参数（`ff4e9b8`），但 eliminate() 中 O(n²) 的 history 计算逻辑仍在。50K 矩阵 ≈ 300MB 浪费
 - **建议**: 删除 eliminate() 中的 history 计算逻辑（条件编译为 #if 0 或直接移除）
-
-### [BUG] Block Lanczos 终止条件仅检查 V_cur 为零
-- **发现日期**: 2026-03-09 (Session 6) | 可能多几十次无效迭代
-- **文件**: `src/linalg/block_lanczos.cpp:335`
-- **描述**: `partial_inverse()` 返回的 `mask_cur` 追踪 64 个块列中哪些仍活跃。当 mask_cur == 0 时所有列已耗尽，应立即终止。Session 18 排查确认：D 矩阵的非活跃行/列隐式为零，所以 mask 值在递推公式中不需要显式使用；但缺少 mask_cur == 0 的提前终止导致多余迭代。已移除废弃的 mask_prev/mask_pprev 变量（`ff4e9b8`）
-- **建议**: 在 `V_cur.is_zero()` 检查后添加 `if (mask_cur == 0) break;`
 
 ### [BUG] next_prime() uint64 溢出
 - **发现日期**: 2026-03-08 (Session 6) | 理论问题，prime_start 默认 1000

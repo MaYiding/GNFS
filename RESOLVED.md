@@ -7,6 +7,29 @@
 
 ## 已完成 ✅
 
+### P1-OPT 级修复 (Session 22)
+
+#### [OPT] ~~Block Lanczos 是 25-digit 的主要瓶颈（需并行化）~~ ✅
+- **发现**: 2026-02-22 (Session 3)
+- **解决**: 2026-03-10 (Session 22)
+- **修复**: `src/linalg/block_lanczos.cpp` 完全重写 `block_lanczos_solve()`：(1) SpMV forward/transpose 使用 ThreadPool parallel_for_index 并行化；(2) inner_product 和 xor_with_mul 使用 thread-local 归约并行化；(3) 旋转指针池替代 per-iteration BlockVector 分配；(4) ParallelContext 预分配所有线程局部缓冲区；(5) `mask_cur == 0` 提前终止
+- **验证**: smoke 11/11 通过 + linalg 模块全部通过（含新增的 parallel BL correctness 测试）
+- **Commit**: `0de6280`, `f70bf21`
+
+#### [BUG] ~~SparseRow const_cast ensure_sorted() 多线程并发排序是 UB~~ ✅
+- **发现**: 2026-03-09 (Session 7)
+- **解决**: 2026-03-10 (Session 22)
+- **修复**: `include/gnfs/linalg/sparse_matrix.hpp` 新增 `SparseMatrix::ensure_all_sorted()` 方法，在 Block Lanczos 并行 SpMV 前一次性排序所有行，避免并发 const_cast 修改
+- **验证**: smoke 11/11 通过 + 新增 `test_ensure_all_sorted()` 测试
+- **Commit**: `8bbb6e8`
+
+#### [BUG] ~~Block Lanczos 终止条件仅检查 V_cur 为零~~ ✅
+- **发现**: 2026-03-09 (Session 6)
+- **解决**: 2026-03-10 (Session 22)
+- **修复**: `src/linalg/block_lanczos.cpp` 在 `V_cur.is_zero()` 检查后添加 `if (mask_cur == 0) break;` 提前终止
+- **验证**: smoke 11/11 通过
+- **Commit**: `0de6280`
+
 ### P2 级修复 (Session 19)
 
 #### [BUG] ~~编译器 warning: test_relation_collector.cpp 未使用的 lambda 捕获~~ ✅
