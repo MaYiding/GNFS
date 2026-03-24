@@ -66,16 +66,6 @@
 - **文件**: `include/gnfs/sqrt/class_group.hpp:168-188`
 - **描述**: Δ = -4a³ - 27b² 仅对 x³ + ax + b 正确，忽略 coeff(2)
 
-### [BUG] estimate_initial_log NaN/Inf → uint16_t 强制转换是 UB
-- **发现日期**: 2026-03-09 (Session 7)
-- **文件**: `include/gnfs/sieve/lattice_sieve.hpp:221-231`
-- **描述**: `log2(0) = -Inf`, `static_cast<uint16_t>(-Inf)` 是 UB
-- **建议**: 添加 `if (!std::isfinite(combined) || combined < 0) return 0;`
-
-### [BUG] estimate_initial_log typical_i/typical_j 不一致
-- **发现日期**: 2026-03-09 (Session 6)
-- **文件**: `include/gnfs/sieve/lattice_sieve.hpp:213-214`
-- **描述**: typical_i = 半宽度，typical_j = 中点，不一致导致初值偏高
 
 ### [BUG] params.hpp special_q_min = rational_bound/5 落入因子基范围
 - **发现日期**: 2026-03-09 (Session 6)

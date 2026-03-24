@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -209,8 +210,10 @@ private:
     [[nodiscard]] uint16_t estimate_initial_log(const LatticeBasis& basis) const {
         // 估计 (a, b) 在区域中的典型大小
         // |a| ~ |i * e0 + j * e1|, |b| ~ |i * f0 + j * f1|
-        double typical_i = (region_.i_max - region_.i_min) / 2.0;
-        double typical_j = (region_.j_max + region_.j_min) / 2.0;
+        // E[|i|] ≈ range/4 for symmetric distribution on [i_min, i_max]
+        // E[j]   ≈ midpoint for [j_min, j_max] (j > 0)
+        double typical_i = std::max(1.0, (region_.i_max - region_.i_min) / 4.0);
+        double typical_j = std::max(1.0, (region_.j_max + region_.j_min) / 2.0);
 
         double typical_a = std::abs(typical_i * basis.e0 + typical_j * basis.e1);
         double typical_b = std::abs(typical_i * basis.f0 + typical_j * basis.f1);
@@ -218,15 +221,20 @@ private:
         // 有理侧 (GNFS convention): |a - b*m|
         double m_val = ctx_.m().to_double();
         double rat_val = std::abs(typical_a - typical_b * m_val);
+
+        // Guard: log2(0) = -Inf, static_cast<uint16_t>(-Inf) is UB
+        if (rat_val < 1.0) rat_val = 1.0;
         double rat_log = std::log2(rat_val) * params_.log_scale;
 
         // 代数侧: |N(a,b)| ~ |a|^d * some_factor
         uint32_t d = ctx_.degree();
-        double alg_val = std::pow(typical_a, d);  // 简化估计
+        double alg_val = std::pow(std::max(typical_a, 1.0), d);  // clamp to avoid log2(0)
         double alg_log = std::log2(alg_val) * params_.log_scale;
 
-        // 返回合并值
-        return static_cast<uint16_t>(std::min(rat_log + alg_log,
+        // 返回合并值（final guard against NaN/Inf from edge cases）
+        double combined = rat_log + alg_log;
+        if (!std::isfinite(combined) || combined < 0.0) return 0;
+        return static_cast<uint16_t>(std::min(combined,
                                                static_cast<double>(UINT16_MAX)));
     }
 

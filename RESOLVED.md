@@ -7,6 +7,21 @@
 
 ## 已完成 ✅
 
+### P2 级修复 (Session 24)
+
+#### [BUG] ~~estimate_initial_log NaN/Inf → uint16_t UB~~ ✅
+- **发现**: 2026-03-09 (Session 7)
+- **解决**: 2026-03-10 (Session 24)
+- **修复**: `include/gnfs/sieve/lattice_sieve.hpp:209-231` — (1) `typical_i` 从半宽度改为 `range/4`（E[|i|]），与 `typical_j` 一致；(2) `rat_val` 和 `typical_a` 添加 `std::max(1.0, ...)` 下限防止 `log2(0)=-Inf`；(3) 最终 `isfinite + 非负` guard 防止所有 NaN/Inf 到 uint16_t 的 UB
+- **验证**: 回归测试（退化 1×1 区域、零 j 区域、正常区域）+ smoke 11/11 通过
+- **Commit**: `5a2c4ea`
+
+#### [BUG] ~~estimate_initial_log typical_i/typical_j 不一致~~ ✅
+- **发现**: 2026-03-09 (Session 6)
+- **解决**: 2026-03-10 (Session 24)
+- **修复**: 同上（typical_i 改为 range/4，消除 2x 偏高）
+- **Commit**: `5a2c4ea`
+
 ### P1 级修复 (Session 23)
 
 #### [BUG] ~~L5/25-digit 测试失败 — 代数大素数缺失素理想根 r~~ ✅
