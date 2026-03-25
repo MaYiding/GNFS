@@ -310,7 +310,7 @@ private:
             const Integer& n,
             const Integer& ad,
             const Integer& m_init,
-            MurphyEvaluator& evaluator) {
+            const MurphyEvaluator& evaluator) {
 
         uint32_t d = params_.degree;
 

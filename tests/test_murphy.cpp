@@ -7,6 +7,8 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <thread>
+#include <vector>
 
 using namespace gnfs::polynomial;
 using namespace gnfs::core;
@@ -177,6 +179,56 @@ void test_quick_compare() {
     std::cout << "  PASSED" << std::endl;
 }
 
+/// 回归测试：多线程并发调用 compute() 不崩溃且结果一致
+/// 修复前：多线程共享 rng_ 导致数据竞争 (UB)
+void test_concurrent_evaluation() {
+    std::cout << "Testing concurrent evaluation (thread safety)..." << std::endl;
+
+    MurphyParams params;
+    params.sample_points = 500;
+    params.alpha_bound = 100;
+    params.skewness_steps = 10;
+
+    // 单个 evaluator，多线程共享（修复前会触发数据竞争）
+    const MurphyEvaluator evaluator(params);
+
+    // 构造测试多项式 f(x) = x^3 - 2, g(x) = x - 10
+    std::vector<Integer> f_coeffs;
+    f_coeffs.push_back(Integer(-2));
+    f_coeffs.push_back(Integer(static_cast<int64_t>(0)));
+    f_coeffs.push_back(Integer(static_cast<int64_t>(0)));
+    f_coeffs.push_back(Integer(static_cast<int64_t>(1)));
+    IntPolynomial f(std::move(f_coeffs));
+
+    std::vector<Integer> g_coeffs;
+    g_coeffs.push_back(Integer(-10));
+    g_coeffs.push_back(Integer(static_cast<int64_t>(1)));
+    IntPolynomial g(std::move(g_coeffs));
+
+    Integer n("1000000007");
+
+    constexpr size_t NUM_THREADS = 8;
+    std::vector<MurphyScore> results(NUM_THREADS);
+    std::vector<std::thread> threads;
+
+    for (size_t t = 0; t < NUM_THREADS; ++t) {
+        threads.emplace_back([&, t]() {
+            results[t] = evaluator.compute(f, g, n, 100.0);
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    // 所有线程应得到完全相同的结果（相同 seed → 相同采样）
+    for (size_t t = 1; t < NUM_THREADS; ++t) {
+        assert(results[t].log_e_score == results[0].log_e_score);
+        assert(results[t].alpha_f == results[0].alpha_f);
+    }
+
+    std::cout << "  " << NUM_THREADS << " threads, all scores identical: "
+              << results[0].log_e_score << std::endl;
+    std::cout << "  PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Murphy Evaluator Tests ===" << std::endl << std::endl;
 
@@ -185,6 +237,7 @@ int main() {
     test_score_consistency();
     test_skewness_optimization();
     test_quick_compare();
+    test_concurrent_evaluation();
 
     std::cout << std::endl << "All Murphy evaluator tests passed!" << std::endl;
     return 0;
