@@ -7,6 +7,15 @@
 
 ## 已完成 ✅
 
+### P2 级修复 (Session 26)
+
+#### [BUG] ~~params.hpp special_q_min = rational_bound/5 落入因子基范围~~ ✅
+- **发现**: 2026-03-09 (Session 6)
+- **解决**: 2026-03-10 (Session 26)
+- **修复**: 三层修复：(1) `factor_base.hpp` 新增 `sieve_algebraic_count_` 追踪筛选/SQ 边界；(2) `builder.cpp` 新增 `special_q_bound` 选项 + `find_algebraic_primes_range()` 在因子基界以上构建 SQ 专用代数素数；(3) `params.hpp` 修改 `special_q_min = algebraic_bound + 1`, `special_q_max = 3×algebraic_bound`；(4) `lattice_sieve.hpp` 筛选只使用 ≤ algebraic_bound 的素数
+- **验证**: 回归测试（SQ 全在 FB 界以上）+ smoke 11/11 + E2E + progressive L1-L2 通过
+- **Commit**: `c6c6f9f`
+
 ### P2 级修复 (Session 25)
 
 #### [BUG] ~~MurphyEvaluator rng_ 多线程数据竞争~~ ✅
