@@ -22,7 +22,7 @@
   7. **MurphyEvaluator + PolyCtx**: N=10403 评分有限（log_e=-0.375）
   8. **FB sieve count 不变式**: 三种 N 均满足 sieve_alg_count≤alg_count
 - **验证**: `./build/test_integration` 全通过；elapsed <2s
-- **Commit**: TBD
+- **Commit**: `9e0ecfc`
 
 ### TEST 级修复 (Session 28)
 
