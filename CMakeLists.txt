@@ -303,6 +303,34 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME GNFS_Progressive_L2 COMMAND test_gnfs_progressive 2 2)
     # Level 3+ 不加入 ctest — 手动运行: ./test_gnfs_progressive 3
 
+    # 参数计算器测试
+    add_executable(test_params
+        tests/test_params.cpp
+    )
+    target_link_libraries(test_params PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME Params COMMAND test_params)
+
+    # 整系数多项式测试
+    add_executable(test_int_polynomial
+        tests/test_int_polynomial.cpp
+    )
+    target_link_libraries(test_int_polynomial PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME IntPolynomial COMMAND test_int_polynomial)
+
+    # 关系过滤器测试
+    add_executable(test_filter
+        tests/test_filter.cpp
+    )
+    target_link_libraries(test_filter PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME Filter COMMAND test_filter)
+
+    # 回归测试
+    add_executable(test_regressions
+        tests/test_regressions.cpp
+    )
+    target_link_libraries(test_regressions PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME Regressions COMMAND test_regressions)
+
     # 25-digit 性能测试
     add_executable(test_25digit
         tests/test_25digit.cpp
