@@ -221,7 +221,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
     coll_config.check_duplicates = true;
     RelationCollector collector(coll_config);
 
-    size_t target = fb.rational_count() + fb.algebraic_count() + params.target_excess;
+    size_t target = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
     size_t sq_count = 0;
     size_t cand_total = 0;
 

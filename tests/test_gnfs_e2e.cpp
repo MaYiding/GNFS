@@ -245,7 +245,7 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     RelationCollector collector(coll_config);
 
     // Target: we need more relations than columns (factor base size + large primes)
-    size_t target_relations = fb.rational_count() + fb.algebraic_count() + params.target_excess;
+    size_t target_relations = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
 
     if (verbose) {
         std::cout << "Sieve region: i=[" << sieve_region.i_min << ", "

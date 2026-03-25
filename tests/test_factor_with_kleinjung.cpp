@@ -191,7 +191,7 @@ GNFSFactorResult factor_with_context(
     coll_config.check_duplicates = true;
     RelationCollector collector(coll_config);
 
-    size_t target_relations = fb.rational_count() + fb.algebraic_count() + 100;
+    size_t target_relations = fb.rational_count() + fb.sieve_algebraic_count() + 100;
 
     LatticeSieve sieve(ctx, fb, sieve_params);
     sieve.set_region(sieve_region);

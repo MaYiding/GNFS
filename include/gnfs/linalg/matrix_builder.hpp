@@ -493,7 +493,7 @@ private:
 
         // 因子基列
         mapping.num_rational_fb = fb.rational_count();
-        mapping.num_algebraic_fb = fb.algebraic_count();
+        mapping.num_algebraic_fb = fb.sieve_algebraic_count();
 
         // 大素数列
         mapping.num_large_primes_rat = lp_info.rat_primes.size();

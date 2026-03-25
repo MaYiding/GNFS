@@ -176,7 +176,9 @@ private:
     std::vector<RationalPrime> rational_;
     std::vector<AlgebraicPrime> algebraic_;
     FactorBaseParams params_;
-    size_t sieve_algebraic_count_ = 0;  // 筛选用的代数素数数量（0 = 全部）
+    // 筛选用的代数素数数量（0 = 全部）
+    // IMPORTANT: 实现 save()/load() 时必须序列化此字段
+    size_t sieve_algebraic_count_ = 0;
 
     // 快速查找表
     std::unordered_map<uint32_t, uint32_t> rat_index_;      // p -> index

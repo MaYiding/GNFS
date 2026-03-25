@@ -96,7 +96,7 @@ int main() {
     colc.check_duplicates = true;
     RelationCollector collector(colc);
 
-    size_t target = fb.rational_count() + fb.algebraic_count() + params.target_excess;
+    size_t target = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
     size_t sq_count = 0;
     LatticeSieve sieve(ctx, fb, sp);
     sieve.set_region(sr);
