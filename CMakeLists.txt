@@ -359,6 +359,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_class_group PRIVATE gnfs_core Threads::Threads)
     add_test(NAME ClassGroup COMMAND test_class_group)
 
+    # 边界/极端情况测试
+    add_executable(test_edge_cases
+        tests/test_edge_cases.cpp
+    )
+    target_link_libraries(test_edge_cases PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME EdgeCases COMMAND test_edge_cases)
+
     # 25-digit 性能测试
     add_executable(test_25digit
         tests/test_25digit.cpp

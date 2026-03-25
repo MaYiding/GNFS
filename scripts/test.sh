@@ -177,19 +177,20 @@ ALL_TEST_BINARIES=(
     test_base_m
     test_polynomial_optimizer
     test_class_group
+    test_edge_cases
 )
 
 # 模块 → 测试二进制映射 (仅 instant+fast 的测试)
 typeset -A MODULE_TESTS
 MODULE_TESTS=(
-    core           "test_integer test_params test_regressions"
+    core           "test_integer test_params test_regressions test_edge_cases"
     util           "test_small_vector test_thread_pool"
     polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer"
     factor_base    "test_factor_base"
     sieve          "test_special_q test_sieve_basic"
     cofactor       "test_cofactor"
     relation       "test_relation_collector test_filter"
-    linalg         "test_linalg"
+    linalg         "test_linalg test_edge_cases"
     sqrt           "test_sqrt test_sqrt_debug test_class_group"
 )
 
@@ -222,6 +223,7 @@ SMOKE_TESTS=(
     test_base_m
     test_polynomial_optimizer
     test_class_group
+    test_edge_cases
 )
 
 # ── 每个测试的超时秒数 (基于实测) ──
@@ -250,6 +252,7 @@ TEST_TIMEOUT=(
     test_base_m              10
     test_polynomial_optimizer 10
     test_class_group         10
+    test_edge_cases          10
     test_sieve_basic         60
     test_kleinjung           180
     test_kleinjung_large     600
@@ -282,6 +285,7 @@ TEST_TIER=(
     test_base_m              "instant"
     test_polynomial_optimizer "instant"
     test_class_group         "instant"
+    test_edge_cases          "instant"
     test_sieve_basic         "fast"
     test_kleinjung           "slow"
     test_kleinjung_large     "heavy"
