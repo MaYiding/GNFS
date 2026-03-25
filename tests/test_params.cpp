@@ -160,10 +160,15 @@ void test_threshold_values() {
 
     for (size_t bits : {20, 50, 80, 120, 200}) {
         auto p = GNFSParams::compute(bits);
-        // Thresholds should be non-zero and within uint8 range
+        // Thresholds must be non-zero (otherwise sieve accepts nothing)
         assert(p.rational_threshold > 0);
         assert(p.algebraic_threshold > 0);
-        assert(p.rational_threshold == p.algebraic_threshold);
+        // Thresholds must fit in uint8 (they are stored as uint8_t in sieve)
+        assert(p.rational_threshold <= 255);
+        assert(p.algebraic_threshold <= 255);
+        // NOTE: rational_threshold == algebraic_threshold is intentional in params.hpp
+        // (direct assignment), so asserting equality here adds no information.
+        // If they ever need to differ, the assignment in params.hpp must be changed.
     }
 
     std::cout << "  PASS" << std::endl;

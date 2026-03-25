@@ -52,7 +52,12 @@ void test_integer_uint64_constructor() {
 // Correct formula: ℓ^d - 1 (number field group order)
 // ============================================================
 void test_schirokauer_exponent() {
-    std::cout << "Testing Schirokauer exponent formula (Bug #3)..." << std::endl;
+    // NOTE: This test verifies the *mathematical formula* ℓ^d - 1 in isolation.
+    // It does NOT call schirokauer.hpp directly (the exponent is private/internal).
+    // If the production code ever regresses to the old formula (ℓ^(d-1)·(ℓ-1)),
+    // this test will NOT catch it. A proper integration test would require setting
+    // up a full SplitSchirokauer context and inspecting computed map values.
+    std::cout << "Testing Schirokauer exponent formula (Bug #3, math only)..." << std::endl;
 
     // For ℓ=2, d=3: exponent should be 2^3 - 1 = 7
     // Old formula: 2^(3-1)·(2-1) = 4 (WRONG)
@@ -61,6 +66,12 @@ void test_schirokauer_exponent() {
     for (uint32_t i = 0; i < d; ++i) correct *= ell;
     correct -= 1;  // ℓ^d - 1
     assert(correct == 7);
+    // Verify OLD formula would have given wrong answer (catches copy-paste regression)
+    uint64_t old_wrong = 1;
+    for (uint32_t i = 0; i < d - 1; ++i) old_wrong *= ell;
+    old_wrong *= (ell - 1);  // ℓ^(d-1)·(ℓ-1)
+    assert(old_wrong == 4);
+    assert(old_wrong != correct);  // formulas differ
 
     // For ℓ=2, d=5: exponent should be 31
     uint64_t exp5 = 1;
@@ -159,9 +170,13 @@ void test_base_m_irreducibility() {
     // Verify f(m) ≡ 0 (mod N)
     assert(ctx.verify());
 
-    // The selected m should NOT be 10 (reducible polynomial)
-    // It should be a value that gives an irreducible polynomial
-    // We can't assert the exact m, but we verify f(m)≡0 mod N
+    // The selected m should NOT be 10 (m=10 gives reducible f(x)=x(x+1)(x+2))
+    // This directly guards the bug: old code always used floor(N^(1/d)) = 10
+    // Fixed code tries m±1, m±2, ... until finding an irreducible polynomial
+    assert(result.m != Integer(10));
+
+    // Also verify m is close to N^(1/d) ≈ 10 (not some arbitrary value)
+    assert(result.m >= Integer(8) && result.m <= Integer(12));
 
     std::cout << "  PASS (m=" << ctx.m().to_string() << ")" << std::endl;
 }
