@@ -52,8 +52,7 @@ class MurphyEvaluator {
 public:
     /// 构造评估器
     explicit MurphyEvaluator(const MurphyParams& params = MurphyParams{})
-        : params_(params)
-        , rng_(params.seed) {
+        : params_(params) {
         init_primes();
         init_dickman_table();
     }
@@ -74,7 +73,7 @@ public:
     [[nodiscard]] MurphyScore compute(
             const IntPolynomial& f,
             const IntPolynomial& g,
-            const Integer& n) {
+            const Integer& n) const {
 
         double best_skewness = optimize_skewness(f, g, n);
         return compute(f, g, n, best_skewness);
@@ -85,7 +84,7 @@ public:
             const IntPolynomial& f,
             const IntPolynomial& g,
             const Integer& n,
-            double skewness) {
+            double skewness) const {
 
         MurphyScore score;
         score.skewness = skewness;
@@ -116,12 +115,12 @@ public:
     /// 计算多项式的 alpha 值
     /// alpha 衡量多项式值被小素数整除的期望贡献
     /// 负的 alpha 表示更容易被小素数整除（更好）
-    [[nodiscard]] double compute_alpha(const IntPolynomial& f) {
+    [[nodiscard]] double compute_alpha(const IntPolynomial& f) const {
         return compute_alpha(f, params_.alpha_bound);
     }
 
     /// 计算 alpha 值（指定素数上界）
-    [[nodiscard]] double compute_alpha(const IntPolynomial& f, double prime_bound) {
+    [[nodiscard]] double compute_alpha(const IntPolynomial& f, double prime_bound) const {
         double alpha = 0.0;
 
         for (uint32_t p : small_primes_) {
@@ -157,7 +156,7 @@ public:
     [[nodiscard]] double optimize_skewness(
             const IntPolynomial& f,
             const IntPolynomial& g,
-            const Integer& n) {
+            const Integer& n) const {
 
         // 首先估计初始 skewness
         double init_skew = estimate_initial_skewness(f);
@@ -195,7 +194,6 @@ public:
 
 private:
     MurphyParams params_;
-    std::mt19937_64 rng_;
     std::vector<uint32_t> small_primes_;
     std::vector<double> dickman_table_;  // Dickman rho 查找表
 
@@ -312,11 +310,12 @@ private:
     }
 
     /// 基于采样计算 E-score（返回 log(E-score) 和线性 E-score）
+    /// 线程安全：使用函数局部 RNG，每次调用用相同 seed 产生一致采样点
     [[nodiscard]] std::pair<double, double> sample_e_score_log(
             const IntPolynomial& f,
             const IntPolynomial& g,
             const Integer& n,
-            double skewness) {
+            double skewness) const {
 
         uint32_t d = f.degree();
         uint32_t valid_samples = 0;
@@ -333,9 +332,11 @@ private:
         std::uniform_real_distribution<double> dist_a(-A, A);
         std::uniform_real_distribution<double> dist_b(1.0, std::max(2.0, B_range));
 
+        // 局部 RNG：每个调用独立，消除多线程共享 rng_ 的数据竞争
+        std::mt19937_64 rng(params_.seed);
         for (uint32_t i = 0; i < params_.sample_points; ++i) {
-            double a = dist_a(rng_);
-            double b = dist_b(rng_);
+            double a = dist_a(rng);
+            double b = dist_b(rng);
 
             // 跳过 gcd(a,b) != 1 的情况（简化处理）
             if (std::abs(a) < 1.0 || b < 1.0) continue;
@@ -390,7 +391,7 @@ private:
             const IntPolynomial& f,
             const IntPolynomial& g,
             const Integer& n,
-            double skewness) {
+            double skewness) const {
         auto [log_score, linear_score] = sample_e_score_log(f, g, n, skewness);
         return linear_score;
     }
