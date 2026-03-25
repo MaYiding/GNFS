@@ -1,6 +1,7 @@
 #include "gnfs/sieve/special_q.hpp"
 #include "gnfs/factor_base/builder.hpp"
 #include "gnfs/polynomial/base_m.hpp"
+#include "gnfs/core/params.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -10,6 +11,7 @@ using namespace gnfs::sieve;
 using namespace gnfs::factor_base;
 using namespace gnfs::polynomial;
 using namespace gnfs::core;
+using core::GNFSParams;
 
 // 测试用的半素数
 const char* test_n = "1000036000099";
@@ -254,6 +256,81 @@ void test_empty_range() {
     std::cout << "  Empty range: PASS" << std::endl;
 }
 
+/// 回归测试：special-Q 范围应在因子基界以上
+/// 修复前：special_q_min = algebraic_bound/5，大量 SQ 在 FB 内部浪费筛选效率
+/// 修复后：Builder 支持 special_q_bound，构建 FB 以上的代数素数供 SQ 使用
+void test_special_q_above_fb_bound() {
+    std::cout << "Testing special-Q above FB bound (regression)..." << std::endl;
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    assert(result.success);
+
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    uint32_t alg_bound = 5000;
+    uint32_t sq_bound = 15000;  // 3× algebraic_bound
+
+    FactorBaseBuilder::Options opts;
+    opts.rational_bound = alg_bound;
+    opts.algebraic_bound = alg_bound;
+    opts.special_q_bound = sq_bound;
+    opts.parallel = false;
+
+    auto fb = FactorBaseBuilder::build(ctx, opts);
+
+    // (1) 总代数素数数量应大于筛选用数量
+    size_t total = fb.algebraic_count();
+    size_t sieve = fb.sieve_algebraic_count();
+    std::cout << "  Sieve algebraic: " << sieve
+              << ", Total algebraic: " << total << std::endl;
+    assert(total > sieve);  // SQ 范围提供了额外素数
+
+    // (2) 筛选用素数都应 ≤ algebraic_bound
+    const auto& algs = fb.algebraic();
+    for (size_t i = 0; i < sieve; ++i) {
+        assert(algs[i].p <= alg_bound);
+    }
+
+    // (3) 额外的 SQ 素数应 > algebraic_bound 且 ≤ special_q_bound
+    for (size_t i = sieve; i < total; ++i) {
+        assert(algs[i].p > alg_bound);
+        assert(algs[i].p <= sq_bound);
+    }
+
+    // (4) SpecialQGenerator 应能从 SQ 范围找到素数
+    SpecialQRange range;
+    range.min_q = alg_bound + 1;
+    range.max_q = sq_bound;
+
+    SpecialQGenerator gen(fb, range);
+    size_t sq_count = 0;
+    uint32_t first_q = 0, last_q = 0;
+    while (gen.has_next()) {
+        auto sq = gen.next();
+        if (!sq) break;
+        assert(sq->q > alg_bound);
+        assert(sq->q <= sq_bound);
+        if (sq_count == 0) first_q = sq->q;
+        last_q = sq->q;
+        ++sq_count;
+    }
+    assert(sq_count > 0);
+
+    std::cout << "  SQ range: [" << first_q << ", " << last_q
+              << "], count=" << sq_count << std::endl;
+
+    // (5) 验证 GNFSParams::compute 也设置了正确的 SQ 范围
+    auto params = GNFSParams::compute(n.bit_length());
+    assert(params.special_q_min > params.algebraic_bound);
+    assert(params.special_q_max > params.special_q_min);
+    std::cout << "  GNFSParams: alg_bound=" << params.algebraic_bound
+              << ", sq_min=" << params.special_q_min
+              << ", sq_max=" << params.special_q_max << std::endl;
+
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== Special-Q Tests ===" << std::endl;
 
@@ -263,6 +340,7 @@ int main() {
     test_generator_reset();
     test_range_selector();
     test_empty_range();
+    test_special_q_above_fb_bound();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
