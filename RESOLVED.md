@@ -18,7 +18,7 @@
   - `test_polynomial_optimizer`（22 项）: derivative/translate/rotate/skewness/golden section/smooth numbers/newton root
   - `test_class_group`（16 项）: PrimeIdeal/IdealClass/discriminant公式/MB/trivial判定/generators
 - **验证**: smoke 19/19 通过，各测试独立全通过
-- **Commit**: 本次
+- **Commit**: `e34c800`
 
 #### [TEST] ~~7 个模块无专属单元测试~~ ✅ (部分，Session 27)
 - **发现**: 2026-03-08 (Session 5)
