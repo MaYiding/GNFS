@@ -7,6 +7,22 @@
 
 ## 已完成 ✅
 
+### TEST 级修复 (Session 27)
+
+#### [TEST] ~~7 个模块无专属单元测试~~ ✅ (部分)
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 27)
+- **修复**: 新增 3 个模块专属测试：`test_params`（14 项）、`test_int_polynomial`（15 项）、`test_filter`（13 项）。覆盖 params、int_polynomial、filter 模块。剩余 4 模块（base_m、polynomial_context、polynomial_optimizer、class_group）待后续
+- **验证**: smoke 15/15 通过
+- **Commit**: `bbe711d`
+
+#### [TEST] ~~0 个已修复 bug 的回归测试~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 27)
+- **修复**: 新增 `test_regressions`（14 项回归测试）覆盖：Integer uint64_t 构造、Schirokauer 指数公式、evaluate_mod 溢出、非 monic 多项式、base-m 不可约、代数范数 a-bα 约定、rational_value、SQ 范围、筛区上限、ℓ=2 约定、导数边界、mod_inverse、params 边界
+- **验证**: smoke 15/15 通过
+- **Commit**: `bbe711d`
+
 ### P2 级修复 (Session 26)
 
 #### [BUG] ~~params.hpp special_q_min = rational_bound/5 落入因子基范围~~ ✅
