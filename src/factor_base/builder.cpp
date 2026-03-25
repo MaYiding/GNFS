@@ -44,16 +44,33 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
     );
     fb.set_params(params);
 
+    // 实际代数素数上界：含 special-Q 范围
+    uint32_t effective_alg_bound = opts.algebraic_bound;
+    if (opts.special_q_bound > opts.algebraic_bound) {
+        effective_alg_bound = opts.special_q_bound;
+    }
+
     // Estimate sizes for preallocation
     // Prime counting function: π(n) ≈ n / ln(n)
     size_t estimated_rational = static_cast<size_t>(
         opts.rational_bound / std::log(static_cast<double>(opts.rational_bound + 1)) * 1.2
     );
-    size_t estimated_algebraic = estimated_rational * ctx.degree();  // rough estimate
+    size_t estimated_algebraic = static_cast<size_t>(
+        effective_alg_bound / std::log(static_cast<double>(effective_alg_bound + 1)) * 1.2
+    ) * ctx.degree();
     fb.reserve(estimated_rational, estimated_algebraic);
 
     find_rational_primes(fb, ctx, opts.rational_bound, opts.log_scale);
     find_algebraic_primes(fb, ctx, opts.algebraic_bound, opts.log_scale);
+
+    // 记录筛选用的代数素数数量（≤ algebraic_bound 的部分）
+    fb.set_sieve_algebraic_count(fb.algebraic_count());
+
+    // 如果 special_q_bound > algebraic_bound，继续构建 SQ 范围的代数素数
+    if (opts.special_q_bound > opts.algebraic_bound) {
+        find_algebraic_primes_range(fb, ctx,
+            opts.algebraic_bound + 1, opts.special_q_bound, opts.log_scale);
+    }
 
     fb.build_index();
     return fb;
@@ -341,6 +358,39 @@ sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(
     }
 
     return sqrt::ModularPoly(quotient);
+}
+
+void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const PolynomialContext& ctx,
+                                                     uint32_t min_p, uint32_t max_p, uint8_t log_scale) {
+    // 对 (min_p, max_p] 范围内的素数求根并加入因子基
+    // 使用 Sieve of Eratosthenes 筛出范围内的素数
+    std::vector<bool> is_prime(max_p + 1, true);
+    is_prime[0] = is_prime[1] = false;
+
+    for (uint32_t p = 2; static_cast<uint64_t>(p) * p <= max_p; ++p) {
+        if (!is_prime[p]) continue;
+        for (uint32_t k = p * 2; k <= max_p; k += p) {
+            is_prime[k] = false;
+        }
+    }
+
+    for (uint32_t p = min_p; p <= max_p; ++p) {
+        if (!is_prime[p]) continue;
+
+        // Skip primes that divide N
+        core::Integer p_int(static_cast<unsigned long long>(p));
+        core::Integer gcd_result = core::gcd(p_int, ctx.n());
+        if (!gcd_result.is_one()) {
+            continue;
+        }
+
+        auto roots = find_roots_mod_p(ctx, p);
+        uint32_t log_p = compute_log_prime_precise(p, log_scale);
+
+        for (uint32_t root : roots) {
+            fb.add_algebraic(p, root, log_p, 1);
+        }
+    }
 }
 
 } // namespace gnfs::factor_base

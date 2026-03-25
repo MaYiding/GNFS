@@ -182,12 +182,14 @@ FactResult factor_with_progress(const Integer& n, int level) {
     FactorBaseBuilder::Options fb_opts;
     fb_opts.rational_bound = params.rational_bound;
     fb_opts.algebraic_bound = params.algebraic_bound;
+    fb_opts.special_q_bound = params.special_q_max;
     fb_opts.parallel = true;
 
     auto fb = FactorBaseBuilder::build(ctx, fb_opts);
     std::cout << " done (" << phase.ms() << " ms)\n";
     std::cout << "  Rational: " << fb.rational_count()
-              << ", Algebraic: " << fb.algebraic_count() << "\n" << std::flush;
+              << ", Algebraic: " << fb.algebraic_count()
+              << " (sieve: " << fb.sieve_algebraic_count() << ")\n" << std::flush;
 
     // ── Phase 3: Sieving ──
     std::cout << "[Phase 3] Sieving with special-Q...\n" << std::flush;

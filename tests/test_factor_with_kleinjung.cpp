@@ -144,9 +144,12 @@ GNFSFactorResult factor_with_context(
     if (bits > 50) fb_bound = 10000;
     if (bits > 70) fb_bound = 30000;
 
+    uint32_t sq_max = fb_bound * 3;
+
     FactorBaseBuilder::Options fb_opts;
     fb_opts.rational_bound = fb_bound;
     fb_opts.algebraic_bound = fb_bound;
+    fb_opts.special_q_bound = sq_max;
     fb_opts.parallel = true;
 
     // Use static build method
@@ -179,8 +182,8 @@ GNFSFactorResult factor_with_context(
     Cofactorizer cofactorizer(ctx, fb, cofac_config);
 
     SpecialQRange sq_range;
-    sq_range.min_q = fb_bound / 5;
-    sq_range.max_q = fb_bound;
+    sq_range.min_q = fb_bound + 1;
+    sq_range.max_q = sq_max;
 
     SpecialQGenerator sq_gen(fb, sq_range);
 

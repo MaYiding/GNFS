@@ -166,9 +166,12 @@ struct GNFSParams {
             p.log_scale = 16;
 
         // === Special-Q 范围 ===
-        // 通常从因子基界附近开始
-        p.special_q_min = std::max(p.rational_bound / 5, 100u);
-        p.special_q_max = p.rational_bound * 2;
+        // Special-Q 应在因子基界以上，提供更好的格结构
+        // 在 FB 内的 SQ 会被筛选重复计算，浪费效率
+        p.special_q_min = p.algebraic_bound + 1;
+        p.special_q_max = static_cast<uint32_t>(
+            std::min(static_cast<uint64_t>(p.algebraic_bound) * 3,
+                     static_cast<uint64_t>(UINT32_MAX)));
 
         // 最大 special-q 数量随问题规模增长
         if (p.digits < 15) {

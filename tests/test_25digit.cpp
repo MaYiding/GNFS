@@ -68,6 +68,7 @@ int main() {
     FactorBaseBuilder::Options fb_opts;
     fb_opts.rational_bound = params.rational_bound;
     fb_opts.algebraic_bound = params.algebraic_bound;
+    fb_opts.special_q_bound = params.special_q_max;
     fb_opts.parallel = true;
     auto fb = FactorBaseBuilder::build(ctx, fb_opts);
     std::cout << "[Phase 2] FB: " << fb.rational_count() << "+" << fb.algebraic_count()
