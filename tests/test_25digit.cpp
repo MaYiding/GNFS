@@ -68,6 +68,7 @@ int main() {
     FactorBaseBuilder::Options fb_opts;
     fb_opts.rational_bound = params.rational_bound;
     fb_opts.algebraic_bound = params.algebraic_bound;
+    fb_opts.special_q_bound = params.special_q_max;
     fb_opts.parallel = true;
     auto fb = FactorBaseBuilder::build(ctx, fb_opts);
     std::cout << "[Phase 2] FB: " << fb.rational_count() << "+" << fb.algebraic_count()
@@ -95,7 +96,7 @@ int main() {
     colc.check_duplicates = true;
     RelationCollector collector(colc);
 
-    size_t target = fb.rational_count() + fb.algebraic_count() + params.target_excess;
+    size_t target = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
     size_t sq_count = 0;
     LatticeSieve sieve(ctx, fb, sp);
     sieve.set_region(sr);

@@ -61,11 +61,6 @@
 - **描述**: Δ = -4a³ - 27b² 仅对 x³ + ax + b 正确，忽略 coeff(2)
 
 
-### [BUG] params.hpp special_q_min = rational_bound/5 落入因子基范围
-- **发现日期**: 2026-03-09 (Session 6)
-- **文件**: `include/gnfs/core/params.hpp:165`
-- **描述**: 80% special-Q 在 FB 内部，筛选效率低
-- **建议**: 改为 `special_q_min = algebraic_bound + 1`
 
 ### [BUG] Kleinjung base_m_expansion 系数不平衡
 - **发现日期**: 2026-03-08 (Session 6)

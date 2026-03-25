@@ -193,13 +193,15 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     FactorBaseBuilder::Options fb_opts;
     fb_opts.rational_bound = params.rational_bound;
     fb_opts.algebraic_bound = params.algebraic_bound;
+    fb_opts.special_q_bound = params.special_q_max;
     fb_opts.parallel = true;
 
     auto fb = FactorBaseBuilder::build(ctx, fb_opts);
 
     if (verbose) {
         std::cout << "Rational primes: " << fb.rational_count() << "\n";
-        std::cout << "Algebraic primes: " << fb.algebraic_count() << "\n";
+        std::cout << "Algebraic primes: " << fb.algebraic_count()
+                  << " (sieve: " << fb.sieve_algebraic_count() << ")\n";
         std::cout << "Factor base bound: " << params.rational_bound << "\n";
         std::cout << "Phase 2 time: " << phase_timer.elapsed_ms() << " ms\n";
     }
@@ -243,7 +245,7 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     RelationCollector collector(coll_config);
 
     // Target: we need more relations than columns (factor base size + large primes)
-    size_t target_relations = fb.rational_count() + fb.algebraic_count() + params.target_excess;
+    size_t target_relations = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
 
     if (verbose) {
         std::cout << "Sieve region: i=[" << sieve_region.i_min << ", "

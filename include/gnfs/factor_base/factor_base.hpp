@@ -57,9 +57,20 @@ public:
         return rational_.size();
     }
 
-    /// 代数因子基大小
+    /// 代数因子基大小（包括 special-Q 范围的素数）
     [[nodiscard]] size_t algebraic_count() const noexcept {
         return algebraic_.size();
+    }
+
+    /// 用于筛选的代数素数数量（≤ algebraic_bound 的部分）
+    /// special-Q 范围的素数（> algebraic_bound）不参与筛选
+    [[nodiscard]] size_t sieve_algebraic_count() const noexcept {
+        return sieve_algebraic_count_ > 0 ? sieve_algebraic_count_ : algebraic_.size();
+    }
+
+    /// 设置筛选代数素数计数（由 builder 调用）
+    void set_sieve_algebraic_count(size_t count) noexcept {
+        sieve_algebraic_count_ = count;
     }
 
     // ==================== 查找 ====================
@@ -165,6 +176,9 @@ private:
     std::vector<RationalPrime> rational_;
     std::vector<AlgebraicPrime> algebraic_;
     FactorBaseParams params_;
+    // 筛选用的代数素数数量（0 = 全部）
+    // IMPORTANT: 实现 save()/load() 时必须序列化此字段
+    size_t sieve_algebraic_count_ = 0;
 
     // 快速查找表
     std::unordered_map<uint32_t, uint32_t> rat_index_;      // p -> index

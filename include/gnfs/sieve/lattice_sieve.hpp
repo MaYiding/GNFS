@@ -332,10 +332,14 @@ private:
     }
 
     /// 代数侧筛
+    /// 只使用筛选范围内的代数素数（≤ algebraic_bound），
+    /// 跳过 special-Q 范围的素数（它们只供 SpecialQGenerator 使用）
     void sieve_algebraic_side(const LatticeBasis& basis, const SpecialQ& sq) {
         const auto& algebraics = fb_.algebraic();
+        const size_t sieve_count = fb_.sieve_algebraic_count();
 
-        for (const auto& ap : algebraics) {
+        for (size_t idx = 0; idx < sieve_count; ++idx) {
+            const auto& ap = algebraics[idx];
             // 跳过 special-q 本身
             if (ap.p == sq.q && ap.r == sq.r) {
                 continue;
