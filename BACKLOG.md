@@ -403,9 +403,9 @@
 ## TEST — 测试覆盖率缺口
 
 
-### [TEST] 边界/极端情况覆盖率约 15%
-- **描述**: 缺失 Integer 溢出、负 mod、空矩阵等边界测试
-- **已覆盖 (Session 27)**: test_regressions 覆盖 14 个关键 bug 回归 + test_params/test_int_polynomial 各含边界测试
+### [TEST] 边界/极端情况覆盖率提升至 ~60%
+- **描述**: test_edge_cases 已覆盖 Integer 负 mod/gcd 零/sqrt/pow/INT64 边界、SparseMatrix 零维、BitVector 字边界、Gaussian/BL 退化情形（20 个测试用例）
+- **仍缺失**: cofactor/relation/sieve 模块的边界测试；ECM Stage 1/2 边界；Hensel 精度充分性；Schirokauer 大域 ℓ
 
 ### [TEST] 缺少模块间集成测试
 - **描述**: ~22/30 跨模块场景未测试

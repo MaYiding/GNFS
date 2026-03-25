@@ -7,6 +7,20 @@
 
 ## 已完成 ✅
 
+### TEST 级修复 (Session 28)
+
+#### [TEST] ~~边界/极端情况覆盖率约 15%~~ ✅ (提升至 ~60%)
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 28)
+- **修复**: 新增 `test_edge_cases`（20 测试用例），专攻三类缺口：
+  - **Integer 边界** (6 项)：负 mod 截断语义、gcd 零输入、sqrt(0/完全平方/非完全平方)、pow/powmod 边界(exp=0/base=0/1)、INT64_{MIN,MAX} 加减不截断
+  - **SparseMatrix/SparseRow 空矩阵** (6 项)：0行/0列矩阵、1×1 零/一矩阵 Gaussian、全零 rank=0；SparseRow 空行 first/last_nonzero=UINT32_MAX；set() 双次 GF(2) toggle 语义验证
+  - **BitVector 字边界** (4 项)：size=0、size=1、63/64/65/128 word 边界 bit 正确访问；XOR 跨 word 边界
+  - **Gaussian/BlockLanczos 退化** (4 项)：identity 矩阵 rank=3、单行 rank=1、0行/0列 empty→no deps
+- **额外发现**: SparseRow::empty() 不调用 ensure_sorted()，与 weight()/test() 语义不一致（BACKLOG 已记录）
+- **验证**: `./build/test_edge_cases` 全通过；smoke 20/20 全通过 <5s
+- **Commit**: `8da3f84`
+
 ### TEST 级修复 (Session 27)
 
 #### [TEST] ~~4 个模块无专属单元测试~~ ✅ (全覆盖)
