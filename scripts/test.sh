@@ -169,6 +169,10 @@ ALL_TEST_BINARIES=(
     test_gnfs_e2e
     test_gnfs_progressive
     test_25digit
+    test_params
+    test_int_polynomial
+    test_filter
+    test_regressions
 )
 
 # 模块 → 测试二进制映射 (仅 instant+fast 的测试)
@@ -176,7 +180,7 @@ typeset -A MODULE_TESTS
 MODULE_TESTS=(
     core           "test_integer test_params test_regressions"
     util           "test_small_vector test_thread_pool"
-    polynomial     "test_murphy test_int_polynomial"
+    polynomial     "test_murphy test_int_polynomial test_regressions"
     factor_base    "test_factor_base"
     sieve          "test_special_q test_sieve_basic"
     cofactor       "test_cofactor"

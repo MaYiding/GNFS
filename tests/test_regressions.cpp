@@ -273,11 +273,26 @@ void test_schirokauer_ell2_only() {
     Integer exp_d3(7);   // 2^3 - 1
     Integer exp_d5(31);  // 2^5 - 1
 
-    // γ^7 mod 2 should give the Schirokauer map value
-    // For γ=3: 3^7 = 2187, 2187 mod 2 = 1
-    Integer result = powmod(gamma, exp_d3, ell);
-    // The map is (γ^e - 1) / ℓ mod ℓ
-    // But the key test is that exponent is 7, not 4
+    // γ^(ℓ^d - 1) mod ℓ should be 1 (Fermat)
+    // 3^7 mod 2 = 2187 mod 2 = 1
+    Integer r3 = powmod(gamma, exp_d3, ell);
+    assert(r3.to_int64() == 1);
+
+    // 3^31 mod 2 = 1
+    Integer r5 = powmod(gamma, exp_d5, ell);
+    assert(r5.to_int64() == 1);
+
+    // Schirokauer map: (γ^e - 1) / ℓ mod ℓ
+    // Need full integer γ^e, NOT γ^e mod ℓ
+    // 3^7 = 2187, (2187 - 1) / 2 mod 2 = 1093 mod 2 = 1
+    Integer gamma_pow = gamma.clone();
+    for (int i = 1; i < 7; ++i) gamma_pow *= gamma;  // 3^7 = 2187
+    assert(gamma_pow.to_int64() == 2187);
+    Integer map_val = gamma_pow.clone();
+    map_val -= Integer(1);  // γ^e - 1 = 2186
+    map_val /= int64_t(2); // / ℓ = 1093
+    map_val %= int64_t(2); // mod ℓ = 1
+    assert(map_val.to_int64() == 1);
 
     std::cout << "  PASS" << std::endl;
 }
