@@ -407,8 +407,9 @@
 - **描述**: test_edge_cases 已覆盖 Integer 负 mod/gcd 零/sqrt/pow/INT64 边界、SparseMatrix 零维、BitVector 字边界、Gaussian/BL 退化情形（20 个测试用例）
 - **仍缺失**: cofactor/relation/sieve 模块的边界测试；ECM Stage 1/2 边界；Hensel 精度充分性；Schirokauer 大域 ℓ
 
-### [TEST] 缺少模块间集成测试
-- **描述**: ~22/30 跨模块场景未测试
+### [TEST] 缺少模块间集成测试（部分解决）
+- **描述**: test_integration 已覆盖 8 个跨模块场景（Cofactorizer+PolyCtx+FB、Cofactor→Collector、Collector→Filter、MatrixBuilder+FB、MatrixBuilder→BL、MurphyEvaluator+PolyCtx、FB 不变式）
+- **仍缺失**: cofactor→sieve 联合测试、Schirokauer+MatrixBuilder 集成、RationalSqrt+AlgebraicSqrt 联合、大规模关系到矩阵流水线（~15/30 未覆盖）
 
 ### [TEST] 缺少压力/模糊测试
 - **描述**: 无大规模数据压力测试

@@ -366,6 +366,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_edge_cases PRIVATE gnfs_core Threads::Threads)
     add_test(NAME EdgeCases COMMAND test_edge_cases)
 
+    # 跨模块集成测试
+    add_executable(test_integration
+        tests/test_integration.cpp
+    )
+    target_link_libraries(test_integration PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME Integration COMMAND test_integration)
+
     # 25-digit 性能测试
     add_executable(test_25digit
         tests/test_25digit.cpp

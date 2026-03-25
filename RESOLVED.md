@@ -7,6 +7,23 @@
 
 ## 已完成 ✅
 
+### TEST 级修复 (Session 29)
+
+#### [TEST] ~~缺少模块间集成测试（大部分）~~ ✅ (部分，8/30 主要接口覆盖)
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 29)
+- **修复**: 新增 `test_integration`（8 个跨模块测试用例）：
+  1. **Cofactorizer + PolyCtx + FB**: N-divisible 对被拒绝（Session 1 bug regression 集成验证）
+  2. **Cofactorizer stats**: 141 候选中 accepted/rejected 统计正确
+  3. **Cofactorizer → RelationCollector**: 100 个关系正确流入 collector
+  4. **RelationCollector → RelationFilter**: 7→5，单例被删，配对被保留
+  5. **MatrixBuilder + real FB**: 4 行 × 23 列（rat=13, alg=10）维度正确
+  6. **MatrixBuilder → BlockLanczos**: r0⊕r1⊕r2=0 依赖被 BL 正确发现
+  7. **MurphyEvaluator + PolyCtx**: N=10403 评分有限（log_e=-0.375）
+  8. **FB sieve count 不变式**: 三种 N 均满足 sieve_alg_count≤alg_count
+- **验证**: `./build/test_integration` 全通过；elapsed <2s
+- **Commit**: TBD
+
 ### TEST 级修复 (Session 28)
 
 #### [TEST] ~~边界/极端情况覆盖率约 15%~~ ✅ (提升至 ~60%)

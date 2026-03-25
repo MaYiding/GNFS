@@ -178,6 +178,7 @@ ALL_TEST_BINARIES=(
     test_polynomial_optimizer
     test_class_group
     test_edge_cases
+    test_integration
 )
 
 # 模块 → 测试二进制映射 (仅 instant+fast 的测试)
@@ -188,9 +189,10 @@ MODULE_TESTS=(
     polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer"
     factor_base    "test_factor_base"
     sieve          "test_special_q test_sieve_basic"
-    cofactor       "test_cofactor"
-    relation       "test_relation_collector test_filter"
-    linalg         "test_linalg test_edge_cases"
+    cofactor       "test_cofactor test_integration"
+    relation       "test_relation_collector test_filter test_integration"
+    linalg         "test_linalg test_edge_cases test_integration"
+    integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_class_group"
 )
 
@@ -253,6 +255,7 @@ TEST_TIMEOUT=(
     test_polynomial_optimizer 10
     test_class_group         10
     test_edge_cases          10
+    test_integration         30
     test_sieve_basic         60
     test_kleinjung           180
     test_kleinjung_large     600
@@ -286,6 +289,7 @@ TEST_TIER=(
     test_polynomial_optimizer "instant"
     test_class_group         "instant"
     test_edge_cases          "instant"
+    test_integration         "fast"
     test_sieve_basic         "fast"
     test_kleinjung           "slow"
     test_kleinjung_large     "heavy"
