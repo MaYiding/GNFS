@@ -30,12 +30,6 @@
 
 ## P2 — 中优先级（大数支持和架构改进）
 
-### [BUG] MurphyEvaluator rng_ 数据竞争——Kleinjung 多线程并行使用
-- **发现日期**: 2026-03-08 (Session 6)
-- **文件**: `include/gnfs/polynomial/murphy_evaluator.hpp:337` + `include/gnfs/polynomial/kleinjung_selector.hpp:133,167`
-- **描述**: 多线程共享 rng_ 产生数据竞争
-- **建议**: 使用 thread_local rng
-
 ### [BUG] Cofactorizer::stats_ 无 mutex 保护
 - **发现日期**: 2026-03-08 (Session 6)
 - **文件**: `include/gnfs/cofactor/cofactorizer.hpp:137,140,143,172`

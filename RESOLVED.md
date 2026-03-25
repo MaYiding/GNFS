@@ -7,6 +7,15 @@
 
 ## 已完成 ✅
 
+### P2 级修复 (Session 25)
+
+#### [BUG] ~~MurphyEvaluator rng_ 多线程数据竞争~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 25)
+- **修复**: `murphy_evaluator.hpp` — 移除类成员 `std::mt19937_64 rng_`，改为 `sample_e_score_log()` 内创建函数局部 RNG。所有评估方法标记 `const`。`kleinjung_selector.hpp` 参数改为 `const MurphyEvaluator&`
+- **验证**: 8 线程并发回归测试（结果一致） + smoke 11/11 通过
+- **Commit**: `669fed0`
+
 ### P2 级修复 (Session 24)
 
 #### [BUG] ~~estimate_initial_log NaN/Inf → uint16_t UB~~ ✅
