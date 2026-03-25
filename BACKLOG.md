@@ -402,14 +402,13 @@
 
 ## TEST — 测试覆盖率缺口
 
-### [TEST] 7 个模块无专属单元测试
-- **缺失**: base_m, params, polynomial_context, polynomial_optimizer, int_polynomial, filter, class_group
+### [TEST] 4 个模块无专属单元测试
+- **缺失**: base_m, polynomial_context, polynomial_optimizer, class_group
+- **已覆盖 (Session 27)**: params (test_params), int_polynomial (test_int_polynomial), filter (test_filter)
 
-### [TEST] 0 个已修复 bug 的回归测试
-- **描述**: Session 1-3 修复的 10 个关键 bug 无专属回归测试
-
-### [TEST] 边界/极端情况覆盖率约 5%
+### [TEST] 边界/极端情况覆盖率约 15%
 - **描述**: 缺失 Integer 溢出、负 mod、空矩阵等边界测试
+- **已覆盖 (Session 27)**: test_regressions 覆盖 14 个关键 bug 回归 + test_params/test_int_polynomial 各含边界测试
 
 ### [TEST] 缺少模块间集成测试
 - **描述**: ~22/30 跨模块场景未测试

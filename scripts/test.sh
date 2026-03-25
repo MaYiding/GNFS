@@ -174,13 +174,13 @@ ALL_TEST_BINARIES=(
 # 模块 → 测试二进制映射 (仅 instant+fast 的测试)
 typeset -A MODULE_TESTS
 MODULE_TESTS=(
-    core           "test_integer"
+    core           "test_integer test_params test_regressions"
     util           "test_small_vector test_thread_pool"
-    polynomial     "test_murphy"
+    polynomial     "test_murphy test_int_polynomial"
     factor_base    "test_factor_base"
     sieve          "test_special_q test_sieve_basic"
     cofactor       "test_cofactor"
-    relation       "test_relation_collector"
+    relation       "test_relation_collector test_filter"
     linalg         "test_linalg"
     sqrt           "test_sqrt test_sqrt_debug"
 )
@@ -196,16 +196,20 @@ MODULE_SLOW_TESTS=(
 typeset -a SMOKE_TESTS
 SMOKE_TESTS=(
     test_integer
+    test_params
+    test_int_polynomial
     test_small_vector
     test_thread_pool
     test_factor_base
     test_special_q
     test_relation_collector
+    test_filter
     test_cofactor
     test_linalg
     test_sqrt
     test_sqrt_debug
     test_murphy
+    test_regressions
 )
 
 # ── 每个测试的超时秒数 (基于实测) ──
@@ -226,6 +230,10 @@ TEST_TIMEOUT=(
     test_sqrt                10
     test_sqrt_debug          10
     test_murphy              10
+    test_params              10
+    test_int_polynomial      10
+    test_filter              10
+    test_regressions         10
     test_sieve_basic         60
     test_kleinjung           180
     test_kleinjung_large     600
@@ -250,6 +258,10 @@ TEST_TIER=(
     test_sqrt                "instant"
     test_sqrt_debug          "instant"
     test_murphy              "instant"
+    test_params              "instant"
+    test_int_polynomial      "instant"
+    test_filter              "instant"
+    test_regressions         "instant"
     test_sieve_basic         "fast"
     test_kleinjung           "slow"
     test_kleinjung_large     "heavy"
