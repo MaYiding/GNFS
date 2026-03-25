@@ -331,6 +331,34 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_regressions PRIVATE gnfs_core Threads::Threads)
     add_test(NAME Regressions COMMAND test_regressions)
 
+    # PolynomialContext 单元测试
+    add_executable(test_polynomial_context
+        tests/test_polynomial_context.cpp
+    )
+    target_link_libraries(test_polynomial_context PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME PolynomialContext COMMAND test_polynomial_context)
+
+    # BaseMSelector 单元测试
+    add_executable(test_base_m
+        tests/test_base_m.cpp
+    )
+    target_link_libraries(test_base_m PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BaseM COMMAND test_base_m)
+
+    # PolynomialOptimizer 单元测试
+    add_executable(test_polynomial_optimizer
+        tests/test_polynomial_optimizer.cpp
+    )
+    target_link_libraries(test_polynomial_optimizer PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME PolynomialOptimizer COMMAND test_polynomial_optimizer)
+
+    # ClassGroup 单元测试
+    add_executable(test_class_group
+        tests/test_class_group.cpp
+    )
+    target_link_libraries(test_class_group PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME ClassGroup COMMAND test_class_group)
+
     # 25-digit 性能测试
     add_executable(test_25digit
         tests/test_25digit.cpp

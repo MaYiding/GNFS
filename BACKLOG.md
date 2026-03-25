@@ -402,9 +402,6 @@
 
 ## TEST — 测试覆盖率缺口
 
-### [TEST] 4 个模块无专属单元测试
-- **缺失**: base_m, polynomial_context, polynomial_optimizer, class_group
-- **已覆盖 (Session 27)**: params (test_params), int_polynomial (test_int_polynomial), filter (test_filter)
 
 ### [TEST] 边界/极端情况覆盖率约 15%
 - **描述**: 缺失 Integer 溢出、负 mod、空矩阵等边界测试

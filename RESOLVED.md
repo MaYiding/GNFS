@@ -9,10 +9,21 @@
 
 ### TEST 级修复 (Session 27)
 
-#### [TEST] ~~7 个模块无专属单元测试~~ ✅ (部分)
+#### [TEST] ~~4 个模块无专属单元测试~~ ✅ (全覆盖)
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 28)
+- **修复**: 新增 4 个模块专属测试：
+  - `test_polynomial_context`（13 项）: evaluate/evaluate_mod/algebraic_norm/rational_value/verify/clone/边界
+  - `test_base_m`（12 项）: f(m)=N 精确验证/多 degree/create_context/select_poly API
+  - `test_polynomial_optimizer`（22 项）: derivative/translate/rotate/skewness/golden section/smooth numbers/newton root
+  - `test_class_group`（16 项）: PrimeIdeal/IdealClass/discriminant公式/MB/trivial判定/generators
+- **验证**: smoke 19/19 通过，各测试独立全通过
+- **Commit**: 本次
+
+#### [TEST] ~~7 个模块无专属单元测试~~ ✅ (部分，Session 27)
 - **发现**: 2026-03-08 (Session 5)
 - **解决**: 2026-03-10 (Session 27)
-- **修复**: 新增 3 个模块专属测试：`test_params`（14 项）、`test_int_polynomial`（15 项）、`test_filter`（13 项）。覆盖 params、int_polynomial、filter 模块。剩余 4 模块（base_m、polynomial_context、polynomial_optimizer、class_group）待后续
+- **修复**: 新增 3 个模块专属测试：`test_params`（14 项）、`test_int_polynomial`（15 项）、`test_filter`（13 项）。覆盖 params、int_polynomial、filter 模块。
 - **验证**: smoke 15/15 通过
 - **Commit**: `bbe711d`
 
