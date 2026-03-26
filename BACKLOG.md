@@ -7,10 +7,7 @@
 
 ## P1 — 高优先级（影响正确性或大数支持）
 
-### [BUG] modular_poly sub()/mod_inverse() 对 p > INT64_MAX 溢出
-- **发现日期**: 2026-03-08 (Session 5) | 实际不可达（所有素数 < 2^32）
-- **文件**: `include/gnfs/sqrt/modular_poly.hpp:90,420`
-- **描述**: uint64 系数 cast 到 int64 相减
+（当前无未解决条目。历史记录见 RESOLVED.md）
 
 ---
 
@@ -30,21 +27,6 @@
 
 ## P2 — 中优先级（大数支持和架构改进）
 
-### [BUG] Cofactorizer::stats_ 无 mutex 保护
-- **发现日期**: 2026-03-08 (Session 6)
-- **文件**: `include/gnfs/cofactor/cofactorizer.hpp:137,140,143,172`
-- **描述**: verify() 多处修改 stats_ 无同步
-
-### [BUG] ECM Stage 2 链式乘法增加因子丢失概率
-- **发现日期**: 2026-03-09 (Session 6)
-- **文件**: `include/gnfs/cofactor/ecm.hpp:410-413`
-- **描述**: chaining 使 Z 坐标在两侧都变为 0 → gcd=N → 因子丢失
-
-### [BUG] ECM 固定随机种子导致重复曲线
-- **发现日期**: 2026-03-08 (Session 5)
-- **文件**: `include/gnfs/cofactor/ecm.hpp:49`
-- **描述**: `std::mt19937_64 rng(42)` 硬编码种子，限制 ECM 效果
-
 ### [BUG] class_group SNF 不是真正的 Smith Normal Form
 - **发现日期**: 2026-03-08 (Session 5)
 - **文件**: `include/gnfs/sqrt/class_group.hpp:450-517`
@@ -61,12 +43,6 @@
 - **描述**: Δ = -4a³ - 27b² 仅对 x³ + ax + b 正确，忽略 coeff(2)
 
 
-
-### [BUG] ModularPoly::is_irreducible 首项系数 ≡ 0 (mod p) 时断言失败
-- **发现日期**: 2026-03-10 (Session 30)
-- **文件**: `include/gnfs/sqrt/modular_poly.hpp:158`
-- **描述**: `assert(f[f_deg] % p != 0)` 对 leading coeff ≡ 0 (mod p) 触发。例如 N=143 → f(x)=2x²+x+7，当 p=2 时首项系数 2≡0(mod 2)。FactorBaseBuilder 构建代数因子基时对每个素数调用此函数，导致小 N 崩溃
-- **建议**: 首项系数 ≡ 0 (mod p) 时应跳过（视为 ramified/projective 素数），或降阶处理
 
 ### [BUG] Kleinjung base_m_expansion 系数不平衡
 - **发现日期**: 2026-03-08 (Session 6)

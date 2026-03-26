@@ -7,6 +7,43 @@
 
 ## 已完成 ✅
 
+### P1 + P2 级修复 (Session 36)
+
+#### [BUG] ~~modular_poly sub()/mod_inverse() 对 p > INT64_MAX 溢出~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 36)
+- **修复**: `modular_poly.hpp` sub() 改为纯 uint64_t 模减法; mod_inverse() 改用 `__int128_t`
+- **验证**: smoke 20/20 通过, integration 24/24 通过
+- **Commit**: `13d9ace`
+
+#### [BUG] ~~ModularPoly::is_irreducible 首项系数 ≡ 0 (mod p) 时断言崩溃~~ ✅
+- **发现**: 2026-03-10 (Session 30)
+- **解决**: 2026-03-10 (Session 36)
+- **修复**: `modular_poly.hpp` is_irreducible() 首项 ≡ 0 (mod p) 返回 false; reduce() assert 改为 throw
+- **验证**: smoke 20/20 通过, integration 24/24 通过
+- **Commit**: `39a6a0c`
+
+#### [BUG] ~~Cofactorizer::stats_ 无 mutex 保护~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 36)
+- **修复**: `cofactorizer.hpp` CofactorizerStats 全部字段改为 std::atomic<size_t>, stats() 返回 Snapshot 值类型
+- **验证**: smoke 20/20 通过, integration 24/24 通过
+- **Commit**: `34bf212`
+
+#### [BUG] ~~ECM 固定随机种子导致重复曲线~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 36)
+- **修复**: `ecm.hpp` rng seed 改为 random_device ^ n 低 64 位
+- **验证**: test_cofactor 通过
+- **Commit**: `759835d`
+
+#### [BUG] ~~ECM Stage 2 链式乘法因子丢失~~ ✅
+- **发现**: 2026-03-09 (Session 6)
+- **解决**: 2026-03-10 (Session 36)
+- **修复**: `ecm.hpp` stage2() gcd==N 时保存 checkpoint + batch, 回退逐素数检查恢复因子
+- **验证**: test_cofactor 通过, smoke 20/20 通过
+- **Commit**: `759835d`
+
 ### TEST 级关闭 (Session 35)
 
 #### [TEST] ~~边界/极端情况覆盖率 ~98% → 完成~~ ✅
