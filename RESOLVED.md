@@ -18,7 +18,7 @@
   - **PolynomialContext 构造边界** (12 sub): 空系数→exception、degree0、尾零剥离、越界coeff→zero、evaluate(0)=f_0、evaluate_mod(p=1)=0、evaluate_mod(x=0)=f_0%p、负系数evaluate、verify()真实多项式、norm(0,0)=0、rational_value(m,1)=0、skewness默认
   - **FactorBase 查找构造** (10 sub): 空FB counts=0、空FB lookup→nullopt(rat/alg)、add+find rational、add+find algebraic(含wrong root)、sieve_algebraic_count默认、显式set_sieve_count、build_index重建、仅rational/仅algebraic
 - **验证**: `./build/test_edge_cases` 全 40 通过(1.5s)；smoke 20/20 通过(6.2s)
-- **Commit**: `pending`
+- **Commit**: `08d5147`
 
 #### [TEST] ~~模块间集成测试 16/30 → 20/30~~ ✅
 - **发现**: 2026-03-08 (Session 5)
@@ -29,7 +29,7 @@
   - **Test 19**: FactorBase bounds 敏感性→关系产出（small FB rat=15 vs large FB rat=93）
   - **Test 20**: algebraic_norm + rational_value 一致性（87个光滑关系 both non-zero）
 - **验证**: `./build/test_integration` 全 20 通过(8.3s)
-- **Commit**: `pending`
+- **Commit**: `08d5147`
 
 ### TEST 级修复 (Session 32)
 
