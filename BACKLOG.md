@@ -409,11 +409,11 @@
 ## TEST — 测试覆盖率缺口
 
 
-### [TEST] 边界/极端情况覆盖率提升至 ~75%
-- **描述**: test_edge_cases 已覆盖 31 个测试用例：Integer 边界、SparseMatrix/BitVector/Gaussian/BL 退化、ECM(n=1/prime/composite)、cofactor classify(1/2/4/lpb=1)、trial division(0/1/负数/大素数)、relation 序列化往返、collector(empty/dup/max/merge)、filter(empty/singletons/full/disabled)、sieve params overflow、special_q 有效性、quick cofactor(0/1/lpb=0)
-- **仍缺失**: Hensel 精度充分性验证；Schirokauer 大域 ℓ 边界
+### [TEST] 边界/极端情况覆盖率提升至 ~85%
+- **描述**: test_edge_cases 已覆盖 33 个测试用例（含 2 组 14 子测试）：Integer 边界、SparseMatrix/BitVector/Gaussian/BL 退化、ECM、cofactor/trial_division、relation 序列化、collector/filter、sieve params/special_q、HenselSqrt(8 sub: 空输入/Config变体/大值/负值 crash safety)、Schirokauer 大域ℓ(6 sub: ℓ=3,5,7/多素数/空/确定性)
+- **仍缺失**: Hensel 精度充分性验证需真实管线数据（已由 test_gnfs_progressive L1-L5 覆盖，非独立测试）
 
-### [TEST] 缺少模块间集成测试（大部分解决）
-- **描述**: test_integration 已覆盖 12 个跨模块场景：Cofactorizer+PolyCtx+FB、Cofactor→Collector、Collector→Filter、MatrixBuilder+FB、MatrixBuilder→BL、MurphyEvaluator+PolyCtx、FB 不变式、Schirokauer+MatrixBuilder 列数、MatrixBuilder 列映射一致性(sign+Schirokauer)、完整 mini-pipeline(Cofactorizer→Collector→Filter→MatrixBuilder→BL)、Schirokauer map 一致性(值域+确定性)
-- **仍缺失**: cofactor→sieve 联合测试（需完整筛选设置）、RationalSqrt+AlgebraicSqrt 联合（需完整筛选数据）、大规模关系到矩阵流水线（~5/30 未覆盖）
+### [TEST] 模块间集成测试（基本完成）
+- **描述**: test_integration 已覆盖 15 个跨模块场景：全部 12 个旧测试 + Sieve→Cofactorizer 联合(LatticeSieve+SpecialQ+Cofactorizer)、RationalSqrt+AlgebraicSqrt 联合(完整 gcd 分解 143→13×11)、大规模关系→矩阵流水线(1200+ 关系, sign+Schirokauer, BL 验证)
+- **仍缺失**: 无核心缺口。可选扩展：多线程 sieve_parallel 集成、Out-of-core 关系/矩阵集成（功能不存在，属 FEAT）
 

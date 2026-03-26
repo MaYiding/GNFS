@@ -7,6 +7,27 @@
 
 ## 已完成 ✅
 
+### TEST 级修复 (Session 31)
+
+#### [TEST] ~~边界/极端情况覆盖率 ~75% → ~85%~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 31)
+- **修复**: test_edge_cases 从 31→33 个测试用例（含 14 个子测试），新增 2 组：
+  - **HenselSqrt** (8 sub): 空输入→Integer(1)、Config 变体(precision=0/2000, prime_start=100000)、大 a 值、负 a 值、多种 pair 组合 crash safety
+  - **Schirokauer 大域 ℓ** (6 sub): ℓ=3/5/7 值域验证([0,ℓ))、多素数[2,3]→2×degree 列、空素数→0 列、ℓ=3 确定性
+- **验证**: `./build/test_edge_cases` 全 33 通过；smoke 20/20 通过
+- **Commit**: `f1935b3`
+
+#### [TEST] ~~缺少模块间集成测试 12/30 → 15/30（基本完成）~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 31)
+- **修复**: test_integration 从 12→15 个测试用例，新增 3 个：
+  - **Test 13**: Sieve→Cofactorizer 联合（LatticeSieve + SpecialQ + Cofactorizer，FB 扩展 special_q_bound=500）
+  - **Test 14**: RationalSqrt + AlgebraicSqrt 联合（完整 gcd 分解 N=143 → 13×11，含 sign 列矩阵构建）
+  - **Test 15**: 大规模关系→矩阵流水线（N=10403，1200+ 关系，sign+Schirokauer 列，BL 依赖验证）
+- **验证**: `./build/test_integration` 全 15 通过；smoke 20/20 通过
+- **Commit**: `f1935b3`
+
 ### TEST 级修复 (Session 30)
 
 #### [TEST] ~~边界/极端情况覆盖率 ~60% → ~75%~~ ✅
