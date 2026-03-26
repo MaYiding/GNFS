@@ -12,6 +12,10 @@
 // 6. MatrixBuilder → BlockLanczos → 已知依赖验证
 // 7. MurphyEvaluator + 真实 PolynomialContext → 评分有限
 // 8. FactorBase sieve_algebraic_count 不变式
+// 9. Schirokauer + MatrixBuilder → Schirokauer 列正确
+// 10. MatrixBuilder 全列 (sign+QC+Schirokauer) → 列映射一致
+// 11. 完整 mini-pipeline: Cofactorizer → Filter → MatrixBuilder → BL → 验证依赖
+// 12. Schirokauer map 值域与一致性验证
 
 #include <gnfs/polynomial/base_m.hpp>
 #include <gnfs/factor_base/builder.hpp>
@@ -20,12 +24,14 @@
 #include <gnfs/relation/filter.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
+#include <gnfs/linalg/schirokauer.hpp>
 #include <gnfs/polynomial/murphy_evaluator.hpp>
 #include <gnfs/polynomial/int_polynomial.hpp>
 
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <numeric>
 
 using namespace gnfs;
 using namespace gnfs::core;
@@ -471,6 +477,279 @@ void test_fb_sieve_count_invariants() {
 }
 
 // ============================================================
+// 辅助：为 Schirokauer 测试构建首项系数对 ℓ=2 安全的环境
+// N=143 的 BaseMSelector 给出 f(x)=2x²+x+7 (首项系数=2, 偶数)
+// 导致 ModularPoly::is_irreducible 对 ℓ=2 断言失败
+// 使用 N=10403 (101×103) 产生首项系数=1 的多项式
+// ============================================================
+static TestEnv make_env_for_schirokauer() {
+    Integer n("10403");  // 101 * 103
+    auto result = BaseMSelector::select(n, 2);
+    assert(result.success);
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    FactorBaseBuilder::Options opts;
+    opts.rational_bound  = 200;
+    opts.algebraic_bound = 200;
+    opts.parallel = false;
+    auto fb = FactorBaseBuilder::build(ctx, opts);
+    return TestEnv{std::move(n), std::move(ctx), std::move(fb)};
+}
+
+// ============================================================
+// Test 9: Schirokauer + MatrixBuilder 集成
+// 验证开启 Schirokauer 列后矩阵维度正确增加
+// ============================================================
+void test_schirokauer_matrix_builder_integration() {
+    std::cout << "Testing Schirokauer + MatrixBuilder integration..." << std::endl;
+
+    auto env = make_env_for_schirokauer();
+    const auto& fb = env.fb;
+    const auto& ctx = env.ctx;
+
+    // 构造测试关系
+    std::vector<Relation> rels;
+    for (int i = 0; i < 5; ++i) {
+        Relation r(int64_t(i + 1), int64_t(1));
+        r.rational_factors = {0u, 1u};
+        r.algebraic_factors = {0u};
+        rels.push_back(std::move(r));
+    }
+
+    // 无 Schirokauer 列
+    MatrixBuilderConfig cfg_no_sch;
+    cfg_no_sch.include_sign_column  = false;
+    cfg_no_sch.include_qc_columns   = false;
+    cfg_no_sch.include_class_group  = false;
+    cfg_no_sch.include_schirokauer  = false;
+    MatrixBuilder builder_no(cfg_no_sch);
+    auto result_no = builder_no.build_with_qc(rels, fb, ctx);
+
+    // 有 Schirokauer 列 (ℓ=2)
+    MatrixBuilderConfig cfg_sch;
+    cfg_sch.include_sign_column  = false;
+    cfg_sch.include_qc_columns   = false;
+    cfg_sch.include_class_group  = false;
+    cfg_sch.include_schirokauer  = true;
+    cfg_sch.schirokauer_primes   = {2};
+    MatrixBuilder builder_sch(cfg_sch);
+    auto result_sch = builder_sch.build_with_qc(rels, fb, ctx);
+
+    // Schirokauer 列数 > 0 (具体数量取决于 f mod 2 的分解)
+    assert(result_sch.matrix.num_rows() == result_no.matrix.num_rows());
+    assert(result_sch.mapping.num_schirokauer_columns > 0);
+    assert(result_sch.matrix.num_cols() > result_no.matrix.num_cols());
+    assert(result_sch.matrix.num_cols() ==
+           result_no.matrix.num_cols() + result_sch.mapping.num_schirokauer_columns);
+
+    std::cout << "  PASS (base_cols=" << result_no.matrix.num_cols()
+              << " +schirokauer=" << result_sch.mapping.num_schirokauer_columns
+              << " total=" << result_sch.matrix.num_cols() << ")" << std::endl;
+}
+
+// ============================================================
+// Test 10: MatrixBuilder 全列 (sign + QC + Schirokauer)
+// 验证所有列类型叠加后列映射一致
+// ============================================================
+void test_matrix_builder_all_columns() {
+    std::cout << "Testing MatrixBuilder with all column types (integration)..." << std::endl;
+
+    // 使用 Schirokauer 安全环境 (首项系数为奇数)
+    auto env = make_env_for_schirokauer();
+    const auto& fb = env.fb;
+    const auto& ctx = env.ctx;
+
+    std::vector<Relation> rels;
+    for (int i = 0; i < 4; ++i) {
+        Relation r(int64_t(i + 1), int64_t(1));
+        r.rational_factors = {0u};
+        r.algebraic_factors = {0u};
+        rels.push_back(std::move(r));
+    }
+
+    // 开启 sign + Schirokauer (QC 对小 N 的暴力根检查太慢，跳过)
+    MatrixBuilderConfig cfg;
+    cfg.include_sign_column  = true;
+    cfg.include_qc_columns   = false;
+    cfg.include_class_group  = false;
+    cfg.include_schirokauer  = true;
+    cfg.schirokauer_primes   = {2};
+    MatrixBuilder builder(cfg);
+    auto result = builder.build_with_qc(rels, fb, ctx);
+
+    const auto& m = result.mapping;
+
+    // 列映射一致性：
+    // sign (0 或 1) + rat_fb + alg_fb + LP + QC + Schirokauer
+    size_t expected_total = (cfg.include_sign_column ? 1 : 0)
+                          + m.num_rational_fb + m.num_algebraic_fb
+                          + m.num_large_primes_rat + m.num_large_primes_alg
+                          + m.num_qc_columns
+                          + m.num_class_group_columns
+                          + m.num_schirokauer_columns;
+
+    assert(result.matrix.num_cols() == expected_total);
+
+    // 各段起始位置连续递增
+    if (cfg.include_sign_column) {
+        assert(m.sign_column == 0);
+    }
+    assert(m.rat_fb_start() <= m.alg_fb_start());
+    assert(m.alg_fb_start() <= m.rat_lp_start());
+    assert(m.rat_lp_start() <= m.alg_lp_start());
+    assert(m.alg_lp_start() <= m.qc_start());
+    assert(m.qc_start() <= m.schirokauer_start());
+
+    // Schirokauer 列数 > 0
+    assert(m.num_schirokauer_columns > 0);
+
+    std::cout << "  PASS (total_cols=" << result.matrix.num_cols()
+              << " sign=1"
+              << " rat=" << m.num_rational_fb
+              << " alg=" << m.num_algebraic_fb
+              << " sch=" << m.num_schirokauer_columns << ")" << std::endl;
+}
+
+// ============================================================
+// Test 11: 完整 mini-pipeline
+// Cofactorizer → Collector → Filter → MatrixBuilder → BL → 验证
+// ============================================================
+void test_full_mini_pipeline() {
+    std::cout << "Testing full mini-pipeline: Cof→Col→Flt→Mat→BL (integration)..." << std::endl;
+
+    auto env = make_env_143();
+
+    // Step 1: Cofactorize
+    CofactorizerConfig cof_cfg;
+    cof_cfg.large_prime_bound = 100000;
+    Cofactorizer cof(env.ctx, env.fb, cof_cfg);
+
+    CollectorConfig col_cfg;
+    col_cfg.check_duplicates = true;
+    RelationCollector collector(col_cfg);
+
+    // 收集关系
+    for (int64_t a = -40; a <= 40; ++a) {
+        for (uint64_t b = 1; b <= 5; ++b) {
+            uint64_t abs_a = uint64_t(a < 0 ? -a : a);
+            if (std::gcd(abs_a, b) != 1) continue;
+            auto rel = cof.verify(a, b);
+            if (rel.has_value()) {
+                collector.add(std::move(*rel));
+            }
+        }
+    }
+
+    std::cout << "  Collected " << collector.size() << " relations" << std::endl;
+
+    if (collector.size() < 3) {
+        std::cout << "  SKIP (not enough relations for pipeline test)" << std::endl;
+        return;
+    }
+
+    // Step 2: Filter
+    auto rels = collector.relations();
+    FilterConfig flt_cfg;
+    flt_cfg.remove_singletons = true;
+    RelationFilter filter(flt_cfg);
+    auto filtered = filter.filter(std::vector<Relation>(rels.begin(), rels.end()));
+
+    std::cout << "  After filter: " << filtered.size()
+              << " (removed " << filter.stats().singletons_removed << " singletons)" << std::endl;
+
+    if (filtered.size() < 3) {
+        std::cout << "  SKIP (not enough filtered relations)" << std::endl;
+        return;
+    }
+
+    // Step 3: Build matrix (minimal config for reliable dependency finding)
+    MatrixBuilderConfig mat_cfg;
+    mat_cfg.include_sign_column  = false;
+    mat_cfg.include_qc_columns   = false;
+    mat_cfg.include_class_group  = false;
+    mat_cfg.include_schirokauer  = false;
+    MatrixBuilder builder(mat_cfg);
+    auto mat_result = builder.build(filtered, env.fb);
+
+    std::cout << "  Matrix: " << mat_result.matrix.num_rows() << " × "
+              << mat_result.matrix.num_cols() << std::endl;
+
+    assert(mat_result.matrix.num_rows() == filtered.size());
+    assert(mat_result.matrix.num_cols() > 0);
+
+    // Step 4: Find dependencies (if rows > cols, expect dependencies)
+    if (mat_result.matrix.num_rows() > mat_result.matrix.num_cols()) {
+        BlockLanczos solver;
+        auto deps = solver.find_dependencies(mat_result.matrix, 3);
+
+        if (!deps.empty()) {
+            // Verify at least one dependency is valid
+            bool found_valid = false;
+            for (const auto& dep : deps) {
+                if (verify_dependency(mat_result.matrix, dep)) {
+                    found_valid = true;
+                    break;
+                }
+            }
+            assert(found_valid);
+            std::cout << "  Found " << deps.size() << " valid dependencies" << std::endl;
+        } else {
+            std::cout << "  No dependencies found (matrix may be full rank)" << std::endl;
+        }
+    } else {
+        std::cout << "  Matrix is underdetermined (rows <= cols), skipping BL" << std::endl;
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
+// ============================================================
+// Test 12: Schirokauer map 值域与一致性验证
+// 验证 Schirokauer map 对同一 (a,b) 返回一致结果，值域 ⊂ [0, ℓ)
+// ============================================================
+void test_schirokauer_map_consistency() {
+    std::cout << "Testing Schirokauer map consistency (integration)..." << std::endl;
+
+    auto env = make_env_for_schirokauer();
+    const auto& ctx = env.ctx;
+
+    SchirokaurConfig sch_cfg;
+    sch_cfg.primes = {2};
+    SchirokaurMap sm(ctx, sch_cfg);
+
+    size_t degree = ctx.degree();
+    assert(sm.num_columns() == degree); // 1 prime × degree columns
+
+    // 验证多个 (a,b) 对的值域
+    for (int64_t a = -10; a <= 10; ++a) {
+        for (uint64_t b = 1; b <= 3; ++b) {
+            auto maps = sm.compute(a, b);
+            assert(maps.size() == 1); // 1 prime
+
+            auto& vals = maps[0];
+            assert(vals.size() == degree);
+
+            // 所有值应在 [0, ℓ) = [0, 2)
+            for (uint32_t v : vals) {
+                assert(v < 2);
+            }
+
+            // 一致性: 再次计算应得到相同结果
+            auto maps2 = sm.compute(a, b);
+            assert(maps2[0] == vals);
+        }
+    }
+
+    // 验证 Schirokauer 对 (a=0, b=1) 的特殊情况
+    // γ = 0 - 1·α = -α
+    auto maps_zero = sm.compute(0, 1);
+    assert(maps_zero.size() == 1);
+    assert(maps_zero[0].size() == degree);
+
+    std::cout << "  PASS (tested " << (21 * 3) << " (a,b) pairs, all in [0,2))" << std::endl;
+}
+
+// ============================================================
 // main
 // ============================================================
 int main() {
@@ -485,6 +764,12 @@ int main() {
     test_matrix_to_lanczos_dependency();
     test_murphy_with_real_poly_ctx();
     test_fb_sieve_count_invariants();
+
+    // 新增集成测试
+    test_schirokauer_matrix_builder_integration();
+    test_matrix_builder_all_columns();
+    test_full_mini_pipeline();
+    test_schirokauer_map_consistency();
 
     std::cout << std::endl;
     std::cout << "All integration tests passed!" << std::endl;

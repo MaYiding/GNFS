@@ -1,18 +1,32 @@
 // test_edge_cases.cpp — 边界/极端情况覆盖
-// 覆盖 BACKLOG [TEST] 边界/极端情况覆盖率约 15%
-// 专注于三类缺口：Integer 溢出/边界、负 mod、空矩阵
+// 覆盖 BACKLOG [TEST] 边界/极端情况覆盖率
+// 涵盖：Integer 溢出/边界、负 mod、空矩阵、cofactor 边界、relation 边界、sieve 参数
 #include "gnfs/core/integer.hpp"
+#include "gnfs/core/relation.hpp"
 #include "gnfs/linalg/sparse_matrix.hpp"
 #include "gnfs/linalg/gauss.hpp"
 #include "gnfs/linalg/block_lanczos.hpp"
+#include "gnfs/cofactor/smooth_check.hpp"
+#include "gnfs/cofactor/ecm.hpp"
+#include "gnfs/cofactor/trial_division.hpp"
+#include "gnfs/relation/collector.hpp"
+#include "gnfs/relation/filter.hpp"
+#include "gnfs/sieve/special_q.hpp"
+#include "gnfs/sieve/lattice_sieve.hpp"
+#include "gnfs/factor_base/builder.hpp"
+#include "gnfs/polynomial/base_m.hpp"
 
 #include <cassert>
 #include <climits>   // INT64_MAX, INT64_MIN, UINT32_MAX
 #include <cstdint>
 #include <iostream>
+#include <sstream>
 
 using namespace gnfs::core;
 using namespace gnfs::linalg;
+using namespace gnfs::cofactor;
+using namespace gnfs::relation;
+using namespace gnfs::sieve;
 
 // ─── Integer 负 mod ────────────────────────────────────────────────────
 
@@ -546,6 +560,426 @@ void test_integer_sign_checks() {
     std::cout << "  PASS" << std::endl;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Cofactor 模块边界测试
+// ═══════════════════════════════════════════════════════════════
+
+void test_ecm_edge_cases() {
+    std::cout << "Testing ECM edge cases..." << std::endl;
+
+    // ECM with n=1 → should return nullopt (n is "one", nothing to factor)
+    {
+        Integer one(int64_t(1));
+        auto result = ECM::factor(one);
+        assert(!result.has_value());
+    }
+
+    // ECM with a prime → should return nullopt
+    {
+        Integer prime(int64_t(997));
+        auto result = ECM::factor(prime);
+        assert(!result.has_value());
+    }
+
+    // ECM with n=2 (smallest prime) → nullopt
+    {
+        Integer two(int64_t(2));
+        auto result = ECM::factor(two);
+        assert(!result.has_value());
+    }
+
+    // ECM with a known small composite → should find a factor
+    {
+        Integer composite(int64_t(143)); // 11 * 13
+        auto result = ECM::factor(composite);
+        if (result.has_value()) {
+            int64_t f = result->to_int64();
+            assert(f == 11 || f == 13);
+        }
+        // ECM may or may not succeed — non-deterministic, but should not crash
+    }
+
+    // quick_factor with small composite
+    {
+        Integer composite(int64_t(15)); // 3 * 5
+        auto result = ECM::quick_factor(composite);
+        if (result.has_value()) {
+            int64_t f = result->to_int64();
+            assert(f == 3 || f == 5);
+        }
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_cofactor_classify_edge_cases() {
+    std::cout << "Testing cofactor classify edge cases..." << std::endl;
+
+    // classify_cofactor(1, lpb) → Smooth
+    {
+        Integer one(int64_t(1));
+        auto cls = classify_cofactor(one, 1000);
+        assert(cls.type == CofactorClass::Smooth);
+    }
+
+    // classify_cofactor(2, lpb=1000) → Prime
+    {
+        Integer two(int64_t(2));
+        auto cls = classify_cofactor(two, 1000);
+        assert(cls.type == CofactorClass::Prime);
+        assert(cls.factor1 == 2);
+    }
+
+    // classify_cofactor(4, lpb=1000) → PrimePower (2^2)
+    {
+        Integer four(int64_t(4));
+        auto cls = classify_cofactor(four, 1000);
+        assert(cls.type == CofactorClass::PrimePower);
+        assert(cls.factor1 == 2);
+        assert(cls.power == 2);
+    }
+
+    // classify_cofactor with lpb=1 → almost everything is TooLarge
+    {
+        Integer two(int64_t(2));
+        auto cls = classify_cofactor(two, 1);
+        assert(cls.type == CofactorClass::TooLarge);
+    }
+
+    // is_probable_prime_u64 edge: 0, 1
+    assert(!is_probable_prime_u64(0));
+    assert(!is_probable_prime_u64(1));
+    assert(is_probable_prime_u64(2));
+    assert(is_probable_prime_u64(3));
+
+    // is_perfect_square(0)
+    {
+        uint64_t root;
+        assert(is_perfect_square(0, root) && root == 0);
+        assert(is_perfect_square(1, root) && root == 1);
+    }
+
+    // is_perfect_power(0), (1)
+    {
+        uint64_t base;
+        uint8_t exp;
+        assert(is_perfect_power(0, base, exp));
+        assert(base == 0 && exp == 1);
+        assert(is_perfect_power(1, base, exp));
+        assert(base == 1 && exp == 1);
+    }
+
+    // pollard_rho with even number → should return 2
+    assert(pollard_rho(4) == 2);
+    assert(pollard_rho(6) == 2 || pollard_rho(6) == 3);
+
+    // pollard_rho with n divisible by 3
+    assert(pollard_rho(9) == 3);
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_trial_division_edge_cases() {
+    std::cout << "Testing trial division edge cases..." << std::endl;
+
+    // Build a minimal factor base for N=143
+    Integer n("143");
+    auto bm_result = gnfs::polynomial::BaseMSelector::select(n, 2);
+    assert(bm_result.success);
+    auto ctx = gnfs::polynomial::BaseMSelector::create_context(n, bm_result);
+
+    gnfs::factor_base::FactorBaseBuilder::Options opts;
+    opts.rational_bound = 50;
+    opts.algebraic_bound = 50;
+    opts.parallel = false;
+    auto fb = gnfs::factor_base::FactorBaseBuilder::build(ctx, opts);
+
+    TrialDivider divider(fb);
+
+    // divide_rational with value=0 → smooth (cofactor=1)
+    {
+        Integer zero(int64_t(0));
+        auto result = divider.divide_rational(std::move(zero));
+        assert(result.is_smooth);
+    }
+
+    // divide_rational with value=1 → smooth (cofactor=1)
+    {
+        Integer one(int64_t(1));
+        auto result = divider.divide_rational(std::move(one));
+        assert(result.is_smooth || result.cofactor.to_uint64() == 1);
+    }
+
+    // divide_rational with negative value → should handle sign
+    {
+        Integer neg(int64_t(-30)); // 2 * 3 * 5
+        auto result = divider.divide_rational(std::move(neg));
+        assert(result.is_smooth);
+    }
+
+    // divide_rational with a large prime > factor base → not smooth
+    {
+        Integer large(int64_t(10007)); // prime > 50
+        auto result = divider.divide_rational(std::move(large));
+        assert(!result.is_smooth);
+        assert(result.cofactor.to_uint64() == 10007);
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Relation 模块边界测试
+// ═══════════════════════════════════════════════════════════════
+
+void test_relation_serialization_edge_cases() {
+    std::cout << "Testing Relation serialization edge cases..." << std::endl;
+
+    // Relation with no factors at all
+    {
+        Relation r(int64_t(0), int64_t(1));
+        std::stringstream ss;
+        r.serialize(ss);
+        auto r2 = Relation::deserialize(ss);
+        assert(r2.a == 0);
+        assert(r2.b == 1);
+        assert(r2.rational_factors.empty());
+        assert(r2.algebraic_factors.empty());
+        assert(r2.rational_large_prime.empty());
+        assert(r2.algebraic_large_prime.empty());
+    }
+
+    // Relation with negative a
+    {
+        Relation r(int64_t(-12345), int64_t(7));
+        r.rational_factors = {0, 1, 2};
+        r.algebraic_factors = {3, 4};
+        std::stringstream ss;
+        r.serialize(ss);
+        auto r2 = Relation::deserialize(ss);
+        assert(r2.a == -12345);
+        assert(r2.b == 7);
+        assert(r2.rational_factors.size() == 3);
+        assert(r2.algebraic_factors.size() == 2);
+    }
+
+    // Relation with large primes round-trip
+    {
+        Relation r(int64_t(42), int64_t(1));
+        r.rational_large_prime.push_back(PrimePower{999983ULL, 0, 1});
+        r.algebraic_large_prime.push_back(PrimePower{999979ULL, 100, 1});
+        std::stringstream ss;
+        r.serialize(ss);
+        auto r2 = Relation::deserialize(ss);
+        assert(r2.rational_large_prime.size() == 1);
+        assert(r2.rational_large_prime[0].p == 999983ULL);
+        assert(r2.algebraic_large_prime.size() == 1);
+        assert(r2.algebraic_large_prime[0].p == 999979ULL);
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_relation_collector_edge_cases() {
+    std::cout << "Testing RelationCollector edge cases..." << std::endl;
+
+    // Empty collector
+    {
+        RelationCollector c;
+        assert(c.size() == 0);
+        assert(c.relations().empty());
+    }
+
+    // Collector with duplicate rejection
+    {
+        CollectorConfig cfg;
+        cfg.check_duplicates = true;
+        RelationCollector c(cfg);
+
+        Relation r1(int64_t(5), int64_t(1));
+        Relation r2(int64_t(5), int64_t(1)); // same (a,b)
+        c.add(std::move(r1));
+        c.add(std::move(r2));
+        assert(c.size() == 1); // duplicate rejected
+        assert(c.stats().duplicates_rejected == 1);
+    }
+
+    // Collector with max_relations limit
+    {
+        CollectorConfig cfg;
+        cfg.max_relations = 2;
+        cfg.check_duplicates = false;
+        RelationCollector c(cfg);
+
+        for (int64_t i = 1; i <= 5; ++i) {
+            Relation r(i, int64_t(1));
+            c.add(std::move(r));
+        }
+        assert(c.size() == 2); // limited to 2
+    }
+
+    // Merge two collectors
+    {
+        RelationCollector c1, c2;
+        Relation r1(int64_t(1), int64_t(1));
+        Relation r2(int64_t(2), int64_t(1));
+        c1.add(std::move(r1));
+        c2.add(std::move(r2));
+        c1.merge(c2);
+        assert(c1.size() == 2);
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_relation_filter_edge_cases() {
+    std::cout << "Testing RelationFilter edge cases..." << std::endl;
+
+    // Filter with empty input
+    {
+        FilterConfig cfg;
+        cfg.remove_singletons = true;
+        RelationFilter filter(cfg);
+        std::vector<Relation> empty;
+        auto filtered = filter.filter(std::move(empty));
+        assert(filtered.empty());
+        assert(filter.stats().input_relations == 0);
+    }
+
+    // Filter with all singletons → empty result
+    {
+        FilterConfig cfg;
+        cfg.remove_singletons = true;
+        RelationFilter filter(cfg);
+        std::vector<Relation> rels;
+        for (int i = 0; i < 5; ++i) {
+            Relation r(int64_t(i + 1), int64_t(1));
+            r.rational_large_prime.push_back(
+                PrimePower{uint64_t(10007 + i * 2), 0, 1}); // each unique
+            rels.push_back(std::move(r));
+        }
+        auto filtered = filter.filter(std::move(rels));
+        assert(filtered.empty());
+        assert(filter.stats().singletons_removed == 5);
+    }
+
+    // Filter with all full relations (no LP) → all pass
+    {
+        FilterConfig cfg;
+        cfg.remove_singletons = true;
+        RelationFilter filter(cfg);
+        std::vector<Relation> rels;
+        for (int i = 0; i < 3; ++i) {
+            Relation r(int64_t(i + 1), int64_t(1));
+            rels.push_back(std::move(r));
+        }
+        auto filtered = filter.filter(std::move(rels));
+        assert(filtered.size() == 3);
+        assert(filter.stats().singletons_removed == 0);
+    }
+
+    // Filter with singletons disabled → keeps everything
+    {
+        FilterConfig cfg;
+        cfg.remove_singletons = false;
+        RelationFilter filter(cfg);
+        std::vector<Relation> rels;
+        Relation r(int64_t(1), int64_t(1));
+        r.rational_large_prime.push_back(PrimePower{99991ULL, 0, 1}); // singleton
+        rels.push_back(std::move(r));
+        auto filtered = filter.filter(std::move(rels));
+        assert(filtered.size() == 1);
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Sieve 模块边界测试
+// ═══════════════════════════════════════════════════════════════
+
+void test_sieve_params_edge_cases() {
+    std::cout << "Testing SieveParams edge cases..." << std::endl;
+
+    // combined_threshold overflow: 200 + 200 = 400 → wraps to 144 in uint8_t
+    {
+        SieveParams params;
+        params.rational_threshold = 200;
+        params.algebraic_threshold = 200;
+        uint8_t combined = params.combined_threshold();
+        // uint8_t overflow: (200 + 200) mod 256 = 144
+        assert(combined == 144);
+        // This demonstrates the BACKLOG bug: combined_threshold uint8_t overflow
+    }
+
+    // Normal case: combined threshold within range
+    {
+        SieveParams params;
+        params.rational_threshold = 70;
+        params.algebraic_threshold = 70;
+        assert(params.combined_threshold() == 140);
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_special_q_edge_cases() {
+    std::cout << "Testing SpecialQ edge cases..." << std::endl;
+
+    // SpecialQ with q=0 → invalid
+    {
+        SpecialQ sq{0, 0, 0};
+        assert(!sq.is_valid());
+    }
+
+    // SpecialQ with q=1 → invalid
+    {
+        SpecialQ sq{1, 0, 0};
+        assert(!sq.is_valid());
+    }
+
+    // SpecialQ with q=2 → valid
+    {
+        SpecialQ sq{2, 1, 0};
+        assert(sq.is_valid());
+    }
+
+    // SpecialQRange from_indices
+    {
+        auto range = SpecialQRange::from_indices(10, 20);
+        assert(range.start_index == 10);
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_quick_cofactor_check_edge_cases() {
+    std::cout << "Testing quick_cofactor_check edge cases..." << std::endl;
+
+    // cofactor = 0 (degenerate)
+    {
+        Integer zero(int64_t(0));
+        // Implementation-specific: should this be "smooth"? Depends on definition
+        // Just verify it doesn't crash
+        auto result = quick_cofactor_check(zero, 1000, true);
+        (void)result; // no crash is the test
+    }
+
+    // cofactor = 1 → smooth
+    {
+        Integer one(int64_t(1));
+        assert(quick_cofactor_check(one, 1000, true));
+    }
+
+    // lpb = 0 → everything is too large
+    {
+        Integer two(int64_t(2));
+        assert(!quick_cofactor_check(two, 0, true));
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== Edge Case Tests ===" << std::endl;
 
@@ -590,6 +1024,21 @@ int main() {
     // BlockLanczos 空矩阵
     test_block_lanczos_empty_matrix();
     test_block_lanczos_zero_cols();
+
+    // Cofactor 边界
+    test_ecm_edge_cases();
+    test_cofactor_classify_edge_cases();
+    test_trial_division_edge_cases();
+    test_quick_cofactor_check_edge_cases();
+
+    // Relation 边界
+    test_relation_serialization_edge_cases();
+    test_relation_collector_edge_cases();
+    test_relation_filter_edge_cases();
+
+    // Sieve 参数边界
+    test_sieve_params_edge_cases();
+    test_special_q_edge_cases();
 
     std::cout << "\nAll edge case tests passed!" << std::endl;
     return 0;
