@@ -42,7 +42,10 @@ public:
             auto_tune(bits, config);
         }
 
-        std::mt19937_64 rng(42);  // 确定性种子
+        // Use n's low bits + random_device to avoid repeating the same curves
+        std::random_device rd;
+        uint64_t seed = rd() ^ n.to_uint64();
+        std::mt19937_64 rng(seed);
 
         for (uint32_t curve = 0; curve < config.num_curves; ++curve) {
             // 随机选择 sigma
