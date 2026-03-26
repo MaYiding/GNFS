@@ -18,6 +18,8 @@
 #include "gnfs/sqrt/hensel_sqrt.hpp"
 #include "gnfs/sqrt/number_field.hpp"
 #include "gnfs/linalg/schirokauer.hpp"
+#include "gnfs/linalg/matrix_builder.hpp"
+#include "gnfs/sqrt/rational_sqrt.hpp"
 
 #include <cassert>
 #include <climits>   // INT64_MAX, INT64_MIN, UINT32_MAX
@@ -33,6 +35,7 @@ using namespace gnfs::sieve;
 using gnfs::polynomial::BaseMSelector;
 using gnfs::sqrt::HenselSqrt;
 using gnfs::sqrt::NumberField;
+using gnfs::sqrt::RationalSqrt;
 
 // ─── Integer 负 mod ────────────────────────────────────────────────────
 
@@ -1172,6 +1175,236 @@ void test_schirokauer_large_ell_edge_cases() {
     std::cout << "  PASS (ℓ=3,5,7,[2,3],empty tested)" << std::endl;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// NumberField 算术边界测试
+// ═══════════════════════════════════════════════════════════════
+
+void test_number_field_edge_cases() {
+    std::cout << "Testing NumberField edge cases..." << std::endl;
+
+    // Setup: N=9991 (97×103), f(x)=x²+x+91, m=99
+    Integer n("9991");
+    auto poly_result = BaseMSelector::select(n, 2);
+    assert(poly_result.success);
+    auto ctx = BaseMSelector::create_context(n, poly_result);
+    NumberField nf(ctx);
+
+    // Test 1: zero element
+    {
+        auto z = nf.zero();
+        assert(z.is_zero());
+    }
+
+    // Test 2: one element
+    {
+        auto one = nf.one();
+        assert(!one.is_zero());
+        assert(one.coeff(0) == Integer(int64_t(1)));
+    }
+
+    // Test 3: multiply zero * alpha = zero
+    {
+        auto z = nf.zero();
+        auto alpha = nf.alpha();
+        auto result = nf.multiply(z, alpha);
+        assert(result.is_zero());
+    }
+
+    // Test 4: multiply one * alpha = alpha
+    {
+        auto one = nf.one();
+        auto alpha = nf.alpha();
+        auto result = nf.multiply(one, alpha);
+        assert(result.coeff(0) == Integer(int64_t(0)));
+        assert(result.coeff(1) == Integer(int64_t(1)));
+    }
+
+    // Test 5: from_ab(0, 0) → zero
+    {
+        auto elem = nf.from_ab(0, 0);
+        assert(elem.is_zero());
+    }
+
+    // Test 6: from_ab(5, 0) → constant 5
+    {
+        auto elem = nf.from_ab(5, 0);
+        assert(elem.coeff(0) == Integer(int64_t(5)));
+        assert(elem.degree() == 0);
+    }
+
+    // Test 7: from_ab(0, 1) → -α (coeff[0]=0, coeff[1]=-1)
+    {
+        auto elem = nf.from_ab(0, 1);
+        assert(elem.coeff(0) == Integer(int64_t(0)));
+        assert(elem.coeff(1) == Integer(int64_t(-1)));
+    }
+
+    // Test 8: from_ab(-100, 3) → -100 - 3α
+    {
+        auto elem = nf.from_ab(-100, 3);
+        assert(elem.coeff(0) == Integer(int64_t(-100)));
+        assert(elem.coeff(1) == Integer(int64_t(-3)));
+    }
+
+    // Test 9: norm_linear(0, 1) = f_0 (constant term)
+    // N(0 - 1·α) = sum f_i * 0^i * 1^{d-i} = f_0
+    {
+        auto norm = nf.norm_linear(0, 1);
+        assert(norm == nf.coeff(0));
+    }
+
+    // Test 10: norm_linear(a, 0) = f_d * a^d (only highest term survives)
+    // b=0 → b^{d-i}=0 for i<d, only i=d: f_d * a^d * b^0 = f_d * a^d
+    {
+        auto norm = nf.norm_linear(5, 0);
+        // f(x) = x² + x + 91, so f_2 = 1, norm(5,0) = 1 * 25 = 25
+        Integer expected(int64_t(25));
+        assert(norm == expected);
+    }
+
+    // Test 11: evaluate_at_m of zero = 0
+    {
+        auto z = nf.zero();
+        auto result = nf.evaluate_at_m(z);
+        assert(result == Integer(int64_t(0)));
+    }
+
+    // Test 12: evaluate_at_m_mod_n of alpha = m (mod N)
+    {
+        auto alpha = nf.alpha();
+        auto result = nf.evaluate_at_m_mod_n(alpha);
+        assert(result == nf.m());
+    }
+
+    // Test 13: norm_linear with large a — crash safety
+    {
+        auto norm = nf.norm_linear(INT64_MAX / 2, 1);
+        (void)norm; // Integer handles big values via GMP
+    }
+
+    std::cout << "  PASS (13 sub-tests)" << std::endl;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MatrixBuilder 退化输入边界测试
+// ═══════════════════════════════════════════════════════════════
+
+void test_matrix_builder_edge_cases() {
+    std::cout << "Testing MatrixBuilder edge cases..." << std::endl;
+
+    // Setup: N=9991 (97×103), f(x)=x²+x+91 — leading coeff=1 (safe for modular_poly)
+    // N=143 has f_2=2 ≡ 0 (mod 2), which triggers modular_poly assertion (known BACKLOG bug)
+    Integer n("9991");
+    auto poly_result = BaseMSelector::select(n, 2);
+    assert(poly_result.success);
+    auto ctx = BaseMSelector::create_context(n, poly_result);
+
+    gnfs::factor_base::FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 50;
+    fb_opts.algebraic_bound = 50;
+    fb_opts.parallel = false;
+    auto fb = gnfs::factor_base::FactorBaseBuilder::build(ctx, fb_opts);
+
+    // Test 1: Empty relations → 0-row matrix
+    {
+        MatrixBuilder mb;
+        std::vector<Relation> empty;
+        auto result = mb.build(empty, fb);
+        assert(result.matrix.num_rows() == 0);
+        assert(result.row_to_relation.empty());
+    }
+
+    // Test 2: Single relation → 1-row matrix
+    {
+        MatrixBuilder mb;
+        std::vector<Relation> rels;
+        Relation r(int64_t(5), int64_t(1));
+        r.rational_factors = {0, 1};
+        rels.push_back(std::move(r));
+        auto result = mb.build(rels, fb);
+        assert(result.matrix.num_rows() == 1);
+        assert(result.row_to_relation.size() == 1);
+        assert(result.row_to_relation[0] == 0);
+    }
+
+    // Test 3: Config with sign column disabled
+    {
+        MatrixBuilderConfig cfg;
+        cfg.include_sign_column = false;
+        cfg.include_qc_columns = false;
+        cfg.include_class_group = false;
+        cfg.include_schirokauer = false;
+        MatrixBuilder mb(cfg);
+        std::vector<Relation> rels;
+        Relation r(int64_t(3), int64_t(1));
+        rels.push_back(std::move(r));
+        auto result = mb.build(rels, fb);
+        assert(result.matrix.num_rows() == 1);
+        // total_columns = rational + algebraic + LP only
+        assert(result.mapping.total_columns() > 0);
+    }
+
+    // Test 4: build_with_qc on empty relations
+    {
+        MatrixBuilder mb;
+        std::vector<Relation> empty;
+        auto result = mb.build_with_qc(empty, fb, ctx);
+        assert(result.matrix.num_rows() == 0);
+    }
+
+    std::cout << "  PASS (4 sub-tests)" << std::endl;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RationalSqrt 退化输入边界测试
+// ═══════════════════════════════════════════════════════════════
+
+void test_rational_sqrt_edge_cases() {
+    std::cout << "Testing RationalSqrt edge cases..." << std::endl;
+
+    // Setup: N=9991 (97×103), same FB as MatrixBuilder tests
+    Integer n("9991");
+    auto poly_result = BaseMSelector::select(n, 2);
+    assert(poly_result.success);
+    auto ctx = BaseMSelector::create_context(n, poly_result);
+
+    gnfs::factor_base::FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 50;
+    fb_opts.algebraic_bound = 50;
+    fb_opts.parallel = false;
+    auto fb = gnfs::factor_base::FactorBaseBuilder::build(ctx, fb_opts);
+
+    // Test 1: Empty dependency (all zero bits) → no relations selected
+    {
+        BitVector dep(5);
+        // all bits zero → product is empty → should handle gracefully
+        std::vector<Relation> rels;
+        for (int i = 0; i < 5; ++i) {
+            rels.emplace_back(int64_t(i + 1), int64_t(1));
+        }
+        RationalSqrt rs;
+        auto result = rs.compute(dep, rels, fb, n, ctx.m());
+        (void)result; // crash safety — may succeed or fail, no crash
+    }
+
+    // Test 2: Single relation selected with even exponents → perfect square
+    {
+        BitVector dep(1);
+        dep.set(0);
+        std::vector<Relation> rels;
+        Relation r(int64_t(5), int64_t(1));
+        // rational_factors indices reference FB; use pairs of same index for even exp
+        r.rational_factors = {0, 0, 1, 1}; // 2² × 3²
+        rels.push_back(std::move(r));
+
+        RationalSqrt rs;
+        auto result = rs.compute(dep, rels, fb, n, ctx.m());
+        (void)result; // crash safety
+    }
+
+    std::cout << "  PASS (2 sub-tests)" << std::endl;
+}
+
 int main() {
     std::cout << "=== Edge Case Tests ===" << std::endl;
 
@@ -1237,6 +1470,15 @@ int main() {
 
     // Schirokauer 大域 ℓ 边界
     test_schirokauer_large_ell_edge_cases();
+
+    // NumberField 算术边界
+    test_number_field_edge_cases();
+
+    // MatrixBuilder 退化输入
+    test_matrix_builder_edge_cases();
+
+    // RationalSqrt 退化输入
+    test_rational_sqrt_edge_cases();
 
     std::cout << "\nAll edge case tests passed!" << std::endl;
     return 0;

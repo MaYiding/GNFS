@@ -409,11 +409,11 @@
 ## TEST — 测试覆盖率缺口
 
 
-### [TEST] 边界/极端情况覆盖率提升至 ~85%
-- **描述**: test_edge_cases 已覆盖 33 个测试用例（含 2 组 14 子测试）：Integer 边界、SparseMatrix/BitVector/Gaussian/BL 退化、ECM、cofactor/trial_division、relation 序列化、collector/filter、sieve params/special_q、HenselSqrt(8 sub: 空输入/Config变体/大值/负值 crash safety)、Schirokauer 大域ℓ(6 sub: ℓ=3,5,7/多素数/空/确定性)
+### [TEST] 边界/极端情况覆盖率 ~90%
+- **描述**: test_edge_cases 已覆盖 36 个测试用例（含 5 组 33 子测试）：Integer 边界、SparseMatrix/BitVector/Gaussian/BL 退化、ECM、cofactor/trial_division、relation 序列化、collector/filter、sieve params/special_q、HenselSqrt(8 sub)、Schirokauer 大域ℓ(6 sub)、NumberField 算术边界(13 sub: zero/one/from_ab/norm_linear/evaluate 退化)、MatrixBuilder 退化输入(4 sub: 空关系/单关系/禁用列/build_with_qc空)、RationalSqrt 退化输入(2 sub: 空依赖/单关系)
 - **仍缺失**: Hensel 精度充分性验证需真实管线数据（已由 test_gnfs_progressive L1-L5 覆盖，非独立测试）
 
 ### [TEST] 模块间集成测试（基本完成）
-- **描述**: test_integration 已覆盖 15 个跨模块场景：全部 12 个旧测试 + Sieve→Cofactorizer 联合(LatticeSieve+SpecialQ+Cofactorizer)、RationalSqrt+AlgebraicSqrt 联合(完整 gcd 分解 143→13×11)、大规模关系→矩阵流水线(1200+ 关系, sign+Schirokauer, BL 验证)
-- **仍缺失**: 无核心缺口。可选扩展：多线程 sieve_parallel 集成、Out-of-core 关系/矩阵集成（功能不存在，属 FEAT）
+- **描述**: test_integration 已覆盖 16 个跨模块场景：12 个基础测试 + Sieve→Cofactorizer 联合、RationalSqrt+AlgebraicSqrt 联合(完整 gcd 分解 143→13×11)、大规模关系→矩阵流水线(1200+ 关系)、sieve_parallel 多线程一致性验证(5 SQ sequential=parallel=8)
+- **仍缺失**: 无核心缺口。可选扩展：Out-of-core 关系/矩阵集成（功能不存在，属 FEAT）
 

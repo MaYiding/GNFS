@@ -1046,6 +1046,80 @@ void test_large_relation_to_matrix_pipeline() {
 // ============================================================
 // main
 // ============================================================
+// ============================================================
+// Test 16: sieve_parallel vs sequential 对比
+// 验证多线程筛法与单线程产生一致结果
+// ============================================================
+void test_sieve_parallel_vs_sequential() {
+    std::cout << "Testing sieve_parallel vs sequential (integration)..." << std::endl;
+
+    // N=10403 (101×103), degree=2, FB with SQ range
+    Integer n("10403");
+    auto poly_result = BaseMSelector::select(n, 2);
+    assert(poly_result.success);
+    auto ctx = BaseMSelector::create_context(n, poly_result);
+
+    FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 200;
+    fb_opts.algebraic_bound = 200;
+    fb_opts.special_q_bound = 500;
+    fb_opts.parallel = false;
+    auto fb = FactorBaseBuilder::build(ctx, fb_opts);
+
+    SieveParams sieve_params;
+    sieve_params.log_scale = 16;
+    sieve_params.rational_threshold = 30;
+    sieve_params.algebraic_threshold = 30;
+
+    SieveRegion region;
+    region.i_min = -200;
+    region.i_max = 199;
+    region.j_min = 1;
+    region.j_max = 30;
+
+    // Generate Special-Q primes
+    SpecialQRange sq_range;
+    sq_range.min_q = 200;
+    sq_range.max_q = 500;
+    SpecialQGenerator sq_gen(fb, sq_range);
+
+    std::vector<SpecialQ> sqs;
+    for (size_t i = 0; i < 5 && sq_gen.has_next(); ++i) {
+        auto sq = sq_gen.next();
+        if (sq) sqs.push_back(*sq);
+    }
+    assert(!sqs.empty());
+
+    // Sequential: sieve each SQ one by one
+    LatticeSieve sieve_seq(ctx, fb, sieve_params);
+    sieve_seq.set_region(region);
+
+    std::vector<size_t> seq_counts;
+    for (const auto& sq : sqs) {
+        auto result = sieve_seq.sieve_special_q(sq);
+        seq_counts.push_back(result.candidates.size());
+    }
+
+    // Parallel: sieve all SQs concurrently (2 threads)
+    LatticeSieve sieve_par(ctx, fb, sieve_params);
+    sieve_par.set_region(region);
+    auto par_results = sieve_par.sieve_parallel(sqs, 2);
+
+    // Per-SQ candidate count must match
+    assert(par_results.size() == sqs.size());
+    size_t total_seq = 0, total_par = 0;
+    for (size_t i = 0; i < sqs.size(); ++i) {
+        assert(seq_counts[i] == par_results[i].candidates.size());
+        total_seq += seq_counts[i];
+        total_par += par_results[i].candidates.size();
+    }
+
+    std::cout << "  SQs=" << sqs.size()
+              << " seq_total=" << total_seq
+              << " par_total=" << total_par << " (match)" << std::endl;
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== GNFS Integration Tests ===" << std::endl;
     std::cout << std::endl;
@@ -1069,6 +1143,9 @@ int main() {
     test_sieve_cofactor_joint();
     test_rational_algebraic_sqrt_joint();
     test_large_relation_to_matrix_pipeline();
+
+    // Session 32 集成测试
+    test_sieve_parallel_vs_sequential();
 
     std::cout << std::endl;
     std::cout << "All integration tests passed!" << std::endl;

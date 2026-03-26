@@ -7,6 +7,26 @@
 
 ## 已完成 ✅
 
+### TEST 级修复 (Session 32)
+
+#### [TEST] ~~边界/极端情况覆盖率 ~85% → ~90%~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 32)
+- **修复**: test_edge_cases 从 33→36 个测试用例（含 5 组 33 个子测试），新增 3 组：
+  - **NumberField 算术边界** (13 sub): zero/one 元素、multiply zero*alpha=zero、from_ab 退化(0,0/5,0/0,1/-100,3)、norm_linear b=0/a=0 退化、evaluate_at_m zero/alpha、大 a crash safety
+  - **MatrixBuilder 退化输入** (4 sub): 空关系→0行矩阵、单关系→1行、禁用所有列配置、build_with_qc 空输入
+  - **RationalSqrt 退化输入** (2 sub): 空依赖(全零 BitVector)、单关系偶指数
+- **验证**: `./build/test_edge_cases` 全 36 通过；smoke 20/20 通过
+- **Commit**: (pending)
+
+#### [TEST] ~~模块间集成测试 15/30 → 16/30 + sieve_parallel 关闭~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 32)
+- **修复**: test_integration 从 15→16 个测试用例，新增：
+  - **Test 16**: sieve_parallel vs sequential 一致性验证（N=10403, 5 SQ, 2 线程并行，候选数完全匹配 seq=par=8）
+- **验证**: `./build/test_integration` 全 16 通过
+- **Commit**: (pending)
+
 ### TEST 级修复 (Session 31)
 
 #### [TEST] ~~边界/极端情况覆盖率 ~75% → ~85%~~ ✅
