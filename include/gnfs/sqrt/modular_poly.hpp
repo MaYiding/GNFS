@@ -2,8 +2,9 @@
 
 #include "../core/integer.hpp"
 #include <cassert>
-#include <vector>
 #include <cstdint>
+#include <stdexcept>
+#include <vector>
 
 namespace gnfs {
 namespace sqrt {
@@ -155,8 +156,10 @@ public:
         int f_deg = static_cast<int>(f.size()) - 1;
 
         // Inverse of leading coefficient: α^d = -(f[0]+...+f[d-1]α^{d-1}) / f[d]
-        // f[f_deg] must be non-zero mod p (otherwise f doesn't have the expected degree)
-        assert(f[f_deg] % p != 0 && "leading coefficient of f must be non-zero mod p");
+        // f[f_deg] must be non-zero mod p (otherwise f degenerates)
+        if (f[f_deg] % p == 0) {
+            throw std::runtime_error("ModularPoly::reduce: leading coefficient ≡ 0 (mod p)");
+        }
         uint64_t f_lead_inv = mod_inverse(f[f_deg], p);
 
         // Reduce from highest degree down
@@ -339,6 +342,8 @@ public:
     [[nodiscard]] static bool is_irreducible(const std::vector<uint64_t>& f, uint64_t p) {
         int d = static_cast<int>(f.size()) - 1;
         if (d <= 0) return false;
+        // Leading coeff ≡ 0 (mod p) → f degenerates (ramified prime), not irreducible at this degree
+        if (f[d] % p == 0) return false;
         if (d == 1) return true;  // linear polynomials are always irreducible
 
         // Find distinct prime factors of d
