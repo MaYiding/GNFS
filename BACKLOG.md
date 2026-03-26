@@ -409,11 +409,11 @@
 ## TEST — 测试覆盖率缺口
 
 
-### [TEST] 边界/极端情况覆盖率 ~90%
-- **描述**: test_edge_cases 已覆盖 36 个测试用例（含 5 组 33 子测试）：Integer 边界、SparseMatrix/BitVector/Gaussian/BL 退化、ECM、cofactor/trial_division、relation 序列化、collector/filter、sieve params/special_q、HenselSqrt(8 sub)、Schirokauer 大域ℓ(6 sub)、NumberField 算术边界(13 sub: zero/one/from_ab/norm_linear/evaluate 退化)、MatrixBuilder 退化输入(4 sub: 空关系/单关系/禁用列/build_with_qc空)、RationalSqrt 退化输入(2 sub: 空依赖/单关系)
+### [TEST] 边界/极端情况覆盖率 ~95%
+- **描述**: test_edge_cases 已覆盖 40 个测试用例（含 9 组 59 子测试）：Integer 边界、SparseMatrix/BitVector/Gaussian/BL 退化、ECM、cofactor/trial_division、relation 序列化、collector/filter、sieve params/special_q、HenselSqrt(8 sub)、Schirokauer 大域ℓ(6 sub)、NumberField 算术边界(13 sub)、MatrixBuilder 退化输入(4 sub)、RationalSqrt 退化输入(2 sub)、AlgebraicSqrt 退化输入(4 sub: 空依赖/config选项/长dep/禁用Couveignes)、CouveignesSqrt 退化输入(4 sub: 空pairs→one/config构造/少prime→失败/num=0)、PolynomialContext 构造边界(12 sub: 空系数异常/degree0/尾零剥离/越界coeff/evaluate_mod退化/负系数/verify/norm/skewness)、FactorBase 查找构造(10 sub: 空FB/lookup失败/add+find/sieve_count默认/显式设置/build_index/单侧FB)
 - **仍缺失**: Hensel 精度充分性验证需真实管线数据（已由 test_gnfs_progressive L1-L5 覆盖，非独立测试）
 
 ### [TEST] 模块间集成测试（基本完成）
-- **描述**: test_integration 已覆盖 16 个跨模块场景：12 个基础测试 + Sieve→Cofactorizer 联合、RationalSqrt+AlgebraicSqrt 联合(完整 gcd 分解 143→13×11)、大规模关系→矩阵流水线(1200+ 关系)、sieve_parallel 多线程一致性验证(5 SQ sequential=parallel=8)
+- **描述**: test_integration 已覆盖 20 个跨模块场景：12 个基础测试 + Sieve→Cofactorizer 联合、RationalSqrt+AlgebraicSqrt 联合(完整 gcd 分解 143→13×11)、大规模关系→矩阵流水线(1200+ 关系)、sieve_parallel 多线程一致性(5 SQ seq=par=8)、BaseMSelector→PolynomialContext verify(6 N values)、Filter singleton→MatrixBuilder 维度缩减、FactorBase bounds→关系产出敏感性、algebraic_norm+rational_value 一致性
 - **仍缺失**: 无核心缺口。可选扩展：Out-of-core 关系/矩阵集成（功能不存在，属 FEAT）
 

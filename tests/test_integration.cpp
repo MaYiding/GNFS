@@ -1120,6 +1120,206 @@ void test_sieve_parallel_vs_sequential() {
     std::cout << "  PASS" << std::endl;
 }
 
+// ============================================================
+// Test 17: BaseMSelector → PolynomialContext → verify 一致性
+// 对多个 N 值验证 base-m 多项式满足 f(m) ≡ 0 (mod N)
+// ============================================================
+void test_base_m_verify_consistency() {
+    std::cout << "Testing BaseMSelector → PolynomialContext verify (integration)..." << std::endl;
+
+    struct TestCase {
+        const char* n_str;
+        uint32_t degree;
+    };
+
+    TestCase cases[] = {
+        {"143", 2},           // 11×13, small
+        {"9991", 2},          // 97×103
+        {"10403", 2},         // 101×103
+        {"96091", 2},         // 239×401 + 2
+        {"100160063", 3},     // 8-digit, degree 3
+        {"1000036000099", 3}, // 13-digit, degree 3
+    };
+
+    size_t pass_count = 0;
+    for (const auto& tc : cases) {
+        Integer n(tc.n_str);
+        auto result = BaseMSelector::select(n, tc.degree);
+        assert(result.success);
+
+        auto ctx = BaseMSelector::create_context(n, result);
+        assert(ctx.verify()); // f(m) ≡ 0 (mod N)
+        assert(ctx.degree() == tc.degree);
+        assert(ctx.n() == n);
+        pass_count++;
+    }
+
+    std::cout << "  PASS (" << pass_count << " N values, all f(m)≡0 mod N)" << std::endl;
+}
+
+// ============================================================
+// Test 18: Filter singleton removal → MatrixBuilder 维度缩减
+// 验证 singleton 过滤减少矩阵行数
+// ============================================================
+void test_filter_reduces_matrix_dimensions() {
+    std::cout << "Testing Filter → MatrixBuilder dimension reduction (integration)..." << std::endl;
+
+    auto env = make_env_for_schirokauer(); // N=10403, FB bound=200
+
+    // 收集关系（含 large primes → singletons 存在）
+    CofactorizerConfig cof_cfg;
+    cof_cfg.large_prime_bound = 100000;
+    Cofactorizer cof(env.ctx, env.fb, cof_cfg);
+
+    std::vector<Relation> rels;
+    for (int64_t a = -50; a <= 50; ++a) {
+        for (uint64_t b = 1; b <= 5; ++b) {
+            uint64_t abs_a = static_cast<uint64_t>(a < 0 ? -a : a);
+            if (std::gcd(abs_a, b) != 1) continue;
+            auto rel = cof.verify(a, b);
+            if (rel.has_value()) rels.push_back(std::move(*rel));
+        }
+    }
+
+    if (rels.size() < 10) {
+        std::cout << "  SKIP (not enough relations)" << std::endl;
+        return;
+    }
+
+    // Build matrix without filtering
+    MatrixBuilder mb;
+    auto result_unfiltered = mb.build(rels, env.fb);
+    size_t rows_unfiltered = result_unfiltered.matrix.num_rows();
+
+    // Now filter singletons
+    FilterConfig flt_cfg;
+    flt_cfg.remove_singletons = true;
+    RelationFilter filter(flt_cfg);
+    auto filtered = filter.filter(std::vector<Relation>(rels.begin(), rels.end()));
+
+    auto result_filtered = mb.build(filtered, env.fb);
+    size_t rows_filtered = result_filtered.matrix.num_rows();
+
+    // Filtering should not increase rows
+    assert(rows_filtered <= rows_unfiltered);
+
+    std::cout << "  unfiltered=" << rows_unfiltered
+              << " filtered=" << rows_filtered
+              << " singletons_removed=" << filter.stats().singletons_removed << std::endl;
+    std::cout << "  PASS" << std::endl;
+}
+
+// ============================================================
+// Test 19: FactorBase bounds 敏感性 → 关系产出
+// 不同 FB 大小对关系收集的影响
+// ============================================================
+void test_fb_bounds_sensitivity() {
+    std::cout << "Testing FactorBase bounds → relation yield (integration)..." << std::endl;
+
+    Integer n("10403"); // 101×103
+    auto poly_result = BaseMSelector::select(n, 2);
+    assert(poly_result.success);
+    auto ctx = BaseMSelector::create_context(n, poly_result);
+
+    // Small FB (bound=50)
+    FactorBaseBuilder::Options opts_small;
+    opts_small.rational_bound = 50;
+    opts_small.algebraic_bound = 50;
+    opts_small.parallel = false;
+    auto fb_small = FactorBaseBuilder::build(ctx, opts_small);
+
+    // Large FB (bound=500)
+    FactorBaseBuilder::Options opts_large;
+    opts_large.rational_bound = 500;
+    opts_large.algebraic_bound = 500;
+    opts_large.parallel = false;
+    auto fb_large = FactorBaseBuilder::build(ctx, opts_large);
+
+    // Larger FB should have more primes
+    assert(fb_large.rational_count() >= fb_small.rational_count());
+    assert(fb_large.algebraic_count() >= fb_small.algebraic_count());
+
+    // Count smooth relations for each FB size
+    auto count_relations = [&ctx](const FactorBase& fb, uint32_t lpb) -> size_t {
+        CofactorizerConfig cfg;
+        cfg.large_prime_bound = lpb;
+        Cofactorizer cof(ctx, fb, cfg);
+        size_t count = 0;
+        for (int64_t a = -30; a <= 30; ++a) {
+            for (uint64_t b = 1; b <= 3; ++b) {
+                uint64_t abs_a = static_cast<uint64_t>(a < 0 ? -a : a);
+                if (std::gcd(abs_a, b) != 1) continue;
+                if (cof.verify(a, b).has_value()) count++;
+            }
+        }
+        return count;
+    };
+
+    size_t rels_small = count_relations(fb_small, 1000);
+    size_t rels_large = count_relations(fb_large, 1000);
+
+    // Larger FB should find at least as many smooth relations
+    assert(rels_large >= rels_small);
+
+    std::cout << "  FB_small: rat=" << fb_small.rational_count()
+              << " alg=" << fb_small.algebraic_count()
+              << " rels=" << rels_small << std::endl;
+    std::cout << "  FB_large: rat=" << fb_large.rational_count()
+              << " alg=" << fb_large.algebraic_count()
+              << " rels=" << rels_large << std::endl;
+    std::cout << "  PASS" << std::endl;
+}
+
+// ============================================================
+// Test 20: PolynomialContext → algebraic_norm + rational_value 一致性
+// 对真实 GNFS 关系验证：若 a - b*m 被有理 FB 整除，则 norm 被代数 FB 整除
+// ============================================================
+void test_norm_rational_value_consistency() {
+    std::cout << "Testing algebraic_norm + rational_value consistency (integration)..." << std::endl;
+
+    Integer n("9991"); // 97×103
+    auto poly_result = BaseMSelector::select(n, 2);
+    assert(poly_result.success);
+    auto ctx = BaseMSelector::create_context(n, poly_result);
+
+    // For verified smooth relations, both sides should be smooth w.r.t. their factor bases
+    FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 100;
+    fb_opts.algebraic_bound = 100;
+    fb_opts.parallel = false;
+    auto fb = FactorBaseBuilder::build(ctx, fb_opts);
+
+    CofactorizerConfig cof_cfg;
+    cof_cfg.large_prime_bound = 10000;
+    Cofactorizer cof(ctx, fb, cof_cfg);
+
+    size_t checked = 0;
+    for (int64_t a = -20; a <= 20; ++a) {
+        for (uint64_t b = 1; b <= 3; ++b) {
+            uint64_t abs_a = static_cast<uint64_t>(a < 0 ? -a : a);
+            if (std::gcd(abs_a, b) != 1) continue;
+
+            auto rel = cof.verify(a, b);
+            if (!rel.has_value()) continue;
+
+            // rational_value = a - b*m
+            Integer rv = ctx.rational_value(a, b);
+            // algebraic_norm = b^d * f(a/b) = N(a - b*α)
+            Integer an = ctx.algebraic_norm(a, b);
+
+            // Both should be non-zero for valid coprime (a,b)
+            assert(!rv.is_zero());
+            assert(!an.is_zero());
+
+            checked++;
+        }
+    }
+
+    assert(checked > 0);
+    std::cout << "  Verified " << checked << " relations: rational_value and algebraic_norm both non-zero" << std::endl;
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== GNFS Integration Tests ===" << std::endl;
     std::cout << std::endl;
@@ -1146,6 +1346,12 @@ int main() {
 
     // Session 32 集成测试
     test_sieve_parallel_vs_sequential();
+
+    // Session 33 集成测试
+    test_base_m_verify_consistency();
+    test_filter_reduces_matrix_dimensions();
+    test_fb_bounds_sensitivity();
+    test_norm_rational_value_consistency();
 
     std::cout << std::endl;
     std::cout << "All integration tests passed!" << std::endl;

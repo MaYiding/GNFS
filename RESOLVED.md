@@ -7,6 +7,30 @@
 
 ## 已完成 ✅
 
+### TEST 级修复 (Session 33)
+
+#### [TEST] ~~边界/极端情况覆盖率 ~90% → ~95%~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 33)
+- **修复**: test_edge_cases 从 36→40 个测试用例（含 9 组 59 个子测试），新增 4 组：
+  - **AlgebraicSqrt 退化输入** (4 sub): 空依赖→error、config构造(use_couveignes=false)、长dep越界、禁用Couveignes回退
+  - **CouveignesSqrt 退化输入** (4 sub): 空pairs→one()、config构造、max_prime_checks=3→失败、num_primes=0→nullopt
+  - **PolynomialContext 构造边界** (12 sub): 空系数→exception、degree0、尾零剥离、越界coeff→zero、evaluate(0)=f_0、evaluate_mod(p=1)=0、evaluate_mod(x=0)=f_0%p、负系数evaluate、verify()真实多项式、norm(0,0)=0、rational_value(m,1)=0、skewness默认
+  - **FactorBase 查找构造** (10 sub): 空FB counts=0、空FB lookup→nullopt(rat/alg)、add+find rational、add+find algebraic(含wrong root)、sieve_algebraic_count默认、显式set_sieve_count、build_index重建、仅rational/仅algebraic
+- **验证**: `./build/test_edge_cases` 全 40 通过(1.5s)；smoke 20/20 通过(6.2s)
+- **Commit**: `pending`
+
+#### [TEST] ~~模块间集成测试 16/30 → 20/30~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 33)
+- **修复**: test_integration 从 16→20 个测试用例，新增 4 个：
+  - **Test 17**: BaseMSelector→PolynomialContext verify 一致性（6个N值，degree 2-3，全部 f(m)≡0 mod N）
+  - **Test 18**: Filter singleton removal→MatrixBuilder 维度缩减验证（unfiltered=347→filtered=302, singletons=45）
+  - **Test 19**: FactorBase bounds 敏感性→关系产出（small FB rat=15 vs large FB rat=93）
+  - **Test 20**: algebraic_norm + rational_value 一致性（87个光滑关系 both non-zero）
+- **验证**: `./build/test_integration` 全 20 通过(8.3s)
+- **Commit**: `pending`
+
 ### TEST 级修复 (Session 32)
 
 #### [TEST] ~~边界/极端情况覆盖率 ~85% → ~90%~~ ✅

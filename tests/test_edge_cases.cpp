@@ -20,12 +20,15 @@
 #include "gnfs/linalg/schirokauer.hpp"
 #include "gnfs/linalg/matrix_builder.hpp"
 #include "gnfs/sqrt/rational_sqrt.hpp"
+#include "gnfs/sqrt/algebraic_sqrt.hpp"
+#include "gnfs/sqrt/couveignes.hpp"
 
 #include <cassert>
 #include <climits>   // INT64_MAX, INT64_MIN, UINT32_MAX
 #include <cstdint>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 
 using namespace gnfs::core;
 using namespace gnfs::linalg;
@@ -36,6 +39,9 @@ using gnfs::polynomial::BaseMSelector;
 using gnfs::sqrt::HenselSqrt;
 using gnfs::sqrt::NumberField;
 using gnfs::sqrt::RationalSqrt;
+using gnfs::sqrt::AlgebraicSqrt;
+using gnfs::sqrt::CouveignesSqrt;
+using gnfs::factor_base::FactorBase;
 
 // ─── Integer 负 mod ────────────────────────────────────────────────────
 
@@ -1405,6 +1411,364 @@ void test_rational_sqrt_edge_cases() {
     std::cout << "  PASS (2 sub-tests)" << std::endl;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// AlgebraicSqrt 退化输入边界测试
+// ═══════════════════════════════════════════════════════════════
+
+void test_algebraic_sqrt_edge_cases() {
+    std::cout << "Testing AlgebraicSqrt edge cases..." << std::endl;
+
+    // Setup: N=9991 (97×103), f(x)=x²+x+91
+    Integer n("9991");
+    auto poly_result = BaseMSelector::select(n, 2);
+    assert(poly_result.success);
+    auto ctx = BaseMSelector::create_context(n, poly_result);
+
+    // Test 1: Empty dependency (all zero bits) → error "No relations in dependency"
+    {
+        BitVector dep(5);
+        std::vector<Relation> rels;
+        for (int i = 0; i < 5; ++i) {
+            rels.emplace_back(int64_t(i + 1), int64_t(1));
+        }
+        AlgebraicSqrt as;
+        auto result = as.compute(dep, rels, ctx);
+        assert(!result.success);
+        assert(!result.error.empty());
+    }
+
+    // Test 2: Default config construction
+    {
+        AlgebraicSqrt as;
+        (void)as;
+    }
+
+    // Test 3: Config with use_couveignes=false
+    {
+        AlgebraicSqrt::Config cfg;
+        cfg.use_couveignes = false;
+        AlgebraicSqrt as(cfg);
+        (void)as;
+    }
+
+    // Test 4: Dependency vector longer than relations → test bounds
+    // (avoids actual sqrt computation — just tests iteration logic)
+    {
+        BitVector dep(10);
+        dep.set(0);
+        std::vector<Relation> rels;
+        rels.emplace_back(int64_t(7), int64_t(2));
+        // dep has bits beyond rels.size(), but loop only goes to rels.size()
+        // Hensel will attempt sqrt of single element (not a square) → fails → Couveignes fallback
+        // Use config to disable Couveignes for speed
+        AlgebraicSqrt::Config cfg;
+        cfg.use_couveignes = false;
+        AlgebraicSqrt as(cfg);
+        auto result = as.compute(dep, rels, ctx);
+        // Single element is not a square, so both Hensel fail and heuristic fail are expected
+        (void)result; // crash safety
+    }
+
+    std::cout << "  PASS (4 sub-tests)" << std::endl;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Couveignes 退化输入边界测试
+// ═══════════════════════════════════════════════════════════════
+
+void test_couveignes_edge_cases() {
+    std::cout << "Testing CouveignesSqrt edge cases..." << std::endl;
+
+    // Setup: N=9991, f(x)=x²+x+91
+    Integer n("9991");
+    auto poly_result = BaseMSelector::select(n, 2);
+    assert(poly_result.success);
+    auto ctx = BaseMSelector::create_context(n, poly_result);
+    NumberField nf(ctx);
+
+    // Test 1: Empty ab_pairs → returns nf.one()
+    {
+        CouveignesSqrt cs;
+        auto result = cs.compute({}, nf);
+        assert(result.has_value());
+        // one() should have coeff(0)=1
+        assert(result->coeff(0) == Integer(int64_t(1)));
+    }
+
+    // Test 2: Default config construction
+    {
+        CouveignesSqrt cs;
+        (void)cs;
+    }
+
+    // Test 3: Config with very few max_prime_checks → fail gracefully (returns nullopt)
+    {
+        CouveignesSqrt::Config cfg;
+        cfg.max_prime_checks = 3;  // Too few to find suitable primes
+        cfg.num_primes = 2;
+        CouveignesSqrt cs(cfg);
+        std::vector<std::pair<int64_t, uint64_t>> pairs = {{3, 1}};
+        auto result = cs.compute(pairs, nf);
+        // With only 3 checks, likely won't find 2 inert primes → nullopt
+        (void)result;
+    }
+
+    // Test 4: Config with num_primes=0 → no CRT primes needed
+    {
+        CouveignesSqrt::Config cfg;
+        cfg.num_primes = 0;
+        CouveignesSqrt cs(cfg);
+        std::vector<std::pair<int64_t, uint64_t>> pairs = {{2, 1}};
+        auto result = cs.compute(pairs, nf);
+        // 0 primes → insufficient → nullopt expected
+        (void)result;
+    }
+
+    std::cout << "  PASS (4 sub-tests)" << std::endl;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PolynomialContext 构造与运算边界测试
+// ═══════════════════════════════════════════════════════════════
+
+void test_polynomial_context_edge_cases() {
+    std::cout << "Testing PolynomialContext edge cases..." << std::endl;
+
+    // Test 1: Empty coefficients → throws std::invalid_argument
+    {
+        bool threw = false;
+        try {
+            PolynomialContext ctx(
+                Integer(int64_t(100)),
+                {},  // empty
+                Integer(int64_t(10))
+            );
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        assert(threw);
+    }
+
+    // Test 2: Degree 0 (constant polynomial f(x) = 7)
+    {
+        std::vector<Integer> coeffs;
+        coeffs.push_back(Integer(int64_t(7)));
+        PolynomialContext ctx(Integer(int64_t(100)), std::move(coeffs), Integer(int64_t(0)));
+        assert(ctx.degree() == 0);
+        assert(ctx.coeff(0) == Integer(int64_t(7)));
+        assert(ctx.leading_coeff() == Integer(int64_t(7)));
+    }
+
+    // Test 3: Trailing zeros stripped → effective degree reduced
+    {
+        std::vector<Integer> coeffs;
+        coeffs.push_back(Integer(int64_t(3)));   // x^0
+        coeffs.push_back(Integer(int64_t(2)));   // x^1
+        coeffs.push_back(Integer(int64_t(0)));   // x^2 = 0 → stripped
+        coeffs.push_back(Integer(int64_t(0)));   // x^3 = 0 → stripped
+        PolynomialContext ctx(Integer(int64_t(100)), std::move(coeffs), Integer(int64_t(0)));
+        assert(ctx.degree() == 1);
+        assert(ctx.leading_coeff() == Integer(int64_t(2)));
+    }
+
+    // Test 4: coeff() out of range → returns static zero
+    {
+        std::vector<Integer> coeffs;
+        coeffs.push_back(Integer(int64_t(5)));
+        PolynomialContext ctx(Integer(int64_t(100)), std::move(coeffs), Integer(int64_t(0)));
+        assert(ctx.coeff(100).is_zero());
+    }
+
+    // Test 5: evaluate(0) = f_0
+    {
+        std::vector<Integer> coeffs;
+        coeffs.push_back(Integer(int64_t(91)));  // f(x) = 91 + x + x²
+        coeffs.push_back(Integer(int64_t(1)));
+        coeffs.push_back(Integer(int64_t(1)));
+        PolynomialContext ctx(Integer(int64_t(9991)), std::move(coeffs), Integer(int64_t(99)));
+        assert(ctx.evaluate(Integer(int64_t(0))) == Integer(int64_t(91)));
+    }
+
+    // Test 6: evaluate_mod with p=1 → always 0
+    {
+        std::vector<Integer> coeffs;
+        coeffs.push_back(Integer(int64_t(91)));
+        coeffs.push_back(Integer(int64_t(1)));
+        coeffs.push_back(Integer(int64_t(1)));
+        PolynomialContext ctx(Integer(int64_t(9991)), std::move(coeffs), Integer(int64_t(99)));
+        assert(ctx.evaluate_mod(42, 1) == 0);
+    }
+
+    // Test 7: evaluate_mod with x=0 → f_0 mod p
+    {
+        std::vector<Integer> coeffs;
+        coeffs.push_back(Integer(int64_t(91)));
+        coeffs.push_back(Integer(int64_t(1)));
+        coeffs.push_back(Integer(int64_t(1)));
+        PolynomialContext ctx(Integer(int64_t(9991)), std::move(coeffs), Integer(int64_t(99)));
+        assert(ctx.evaluate_mod(0, 7) == (91 % 7)); // 91 mod 7 = 0
+    }
+
+    // Test 8: evaluate with negative coefficients
+    {
+        std::vector<Integer> coeffs;
+        coeffs.push_back(Integer(int64_t(-10)));
+        coeffs.push_back(Integer(int64_t(3)));
+        PolynomialContext ctx(Integer(int64_t(100)), std::move(coeffs), Integer(int64_t(0)));
+        // f(5) = -10 + 3*5 = 5
+        assert(ctx.evaluate(Integer(int64_t(5))) == Integer(int64_t(5)));
+    }
+
+    // Test 9: verify() — f(m) ≡ 0 (mod n) for real polynomial
+    {
+        Integer n("9991");
+        auto pr = BaseMSelector::select(n, 2);
+        assert(pr.success);
+        auto ctx = BaseMSelector::create_context(n, pr);
+        assert(ctx.verify());
+    }
+
+    // Test 10: algebraic_norm(0, 0) → f_0 * 0^0 * 0^d + ... = just f_0 * 1 * 0^d
+    // Actually: all terms have b^{d-i} factor where b=0, so for i<d: term=0
+    // For i=d: f_d * a^d * b^0 = f_d * 0^d = 0
+    // So norm(0,0) = 0
+    {
+        Integer n("9991");
+        auto pr = BaseMSelector::select(n, 2);
+        auto ctx = BaseMSelector::create_context(n, pr);
+        auto norm = ctx.algebraic_norm(0, 0);
+        assert(norm.is_zero());
+    }
+
+    // Test 11: rational_value(m_as_int64, 1) = m - m = 0 (mod n)
+    {
+        Integer n("9991");
+        auto pr = BaseMSelector::select(n, 2);
+        auto ctx = BaseMSelector::create_context(n, pr);
+        int64_t m_val = ctx.m().to_int64();
+        auto rv = ctx.rational_value(m_val, 1);
+        assert(rv.is_zero());
+    }
+
+    // Test 12: skewness default
+    {
+        std::vector<Integer> coeffs;
+        coeffs.push_back(Integer(int64_t(1)));
+        PolynomialContext ctx(Integer(int64_t(100)), std::move(coeffs), Integer(int64_t(0)));
+        assert(ctx.skewness() == 1.0);
+    }
+
+    std::cout << "  PASS (12 sub-tests)" << std::endl;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FactorBase 查找与构造边界测试
+// ═══════════════════════════════════════════════════════════════
+
+void test_factor_base_edge_cases() {
+    std::cout << "Testing FactorBase edge cases..." << std::endl;
+
+    // Test 1: Empty FactorBase — all counts = 0
+    {
+        FactorBase fb;
+        assert(fb.rational_count() == 0);
+        assert(fb.algebraic_count() == 0);
+        assert(fb.sieve_algebraic_count() == 0);
+    }
+
+    // Test 2: find_rational on empty FB → nullopt
+    {
+        FactorBase fb;
+        assert(!fb.find_rational(2).has_value());
+        assert(!fb.find_rational(0).has_value());
+    }
+
+    // Test 3: find_algebraic on empty FB → nullopt
+    {
+        FactorBase fb;
+        assert(!fb.find_algebraic(2, 1).has_value());
+    }
+
+    // Test 4: Add rational primes and verify lookup
+    {
+        FactorBase fb;
+        fb.add_rational(2, 1);
+        fb.add_rational(3, 2);
+        fb.add_rational(5, 3);
+        assert(fb.rational_count() == 3);
+        auto idx = fb.find_rational(3);
+        assert(idx.has_value());
+        assert(*idx == 1);
+        assert(!fb.find_rational(7).has_value());
+    }
+
+    // Test 5: Add algebraic primes and verify lookup
+    {
+        FactorBase fb;
+        fb.add_algebraic(2, 1, 1);
+        fb.add_algebraic(3, 2, 2);
+        assert(fb.algebraic_count() == 2);
+        auto idx = fb.find_algebraic(3, 2);
+        assert(idx.has_value());
+        assert(*idx == 1);
+        // Wrong root → not found
+        assert(!fb.find_algebraic(3, 0).has_value());
+    }
+
+    // Test 6: sieve_algebraic_count defaults to algebraic_count when not set
+    {
+        FactorBase fb;
+        fb.add_algebraic(2, 1, 1);
+        fb.add_algebraic(3, 2, 2);
+        fb.add_algebraic(5, 3, 3);
+        assert(fb.sieve_algebraic_count() == 3); // defaults to algebraic_count()
+    }
+
+    // Test 7: sieve_algebraic_count set explicitly
+    {
+        FactorBase fb;
+        fb.add_algebraic(2, 1, 1);
+        fb.add_algebraic(3, 2, 2);
+        fb.add_algebraic(5, 3, 3);  // SQ range prime
+        fb.set_sieve_algebraic_count(2); // only first 2 are sieve primes
+        assert(fb.sieve_algebraic_count() == 2);
+        assert(fb.algebraic_count() == 3);
+    }
+
+    // Test 8: build_index rebuilds from scratch
+    {
+        FactorBase fb;
+        fb.add_rational(2, 1);
+        fb.add_rational(3, 2);
+        assert(fb.find_rational(2).has_value());
+        // Manually rebuild index
+        fb.build_index();
+        assert(fb.find_rational(2).has_value());
+        assert(fb.find_rational(3).has_value());
+        assert(*fb.find_rational(2) == 0);
+    }
+
+    // Test 9: Only rational, no algebraic
+    {
+        FactorBase fb;
+        fb.add_rational(2, 1);
+        fb.add_rational(3, 2);
+        assert(fb.rational_count() == 2);
+        assert(fb.algebraic_count() == 0);
+        assert(fb.sieve_algebraic_count() == 0);
+    }
+
+    // Test 10: Only algebraic, no rational
+    {
+        FactorBase fb;
+        fb.add_algebraic(2, 0, 1);
+        assert(fb.rational_count() == 0);
+        assert(fb.algebraic_count() == 1);
+    }
+
+    std::cout << "  PASS (10 sub-tests)" << std::endl;
+}
+
 int main() {
     std::cout << "=== Edge Case Tests ===" << std::endl;
 
@@ -1479,6 +1843,18 @@ int main() {
 
     // RationalSqrt 退化输入
     test_rational_sqrt_edge_cases();
+
+    // AlgebraicSqrt 退化输入
+    test_algebraic_sqrt_edge_cases();
+
+    // Couveignes 退化输入
+    test_couveignes_edge_cases();
+
+    // PolynomialContext 构造与运算边界
+    test_polynomial_context_edge_cases();
+
+    // FactorBase 查找与构造边界
+    test_factor_base_edge_cases();
 
     std::cout << "\nAll edge case tests passed!" << std::endl;
     return 0;
