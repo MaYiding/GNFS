@@ -8,6 +8,7 @@
 #include "../sieve/lattice_sieve.hpp"
 #include "../util/safe_math.hpp"
 
+#include <atomic>
 #include <optional>
 
 namespace gnfs {
@@ -39,15 +40,48 @@ struct CofactorizerConfig {
     size_t max_factorization_attempts = 10000;  // Pollard rho 最大尝试次数
 };
 
-/// Cofactorizer 统计
+/// Cofactorizer 统计（原子操作，线程安全）
 struct CofactorizerStats {
-    size_t total_candidates = 0;
-    size_t full_relations = 0;
-    size_t partial_1lp = 0;
-    size_t partial_2lp = 0;
-    size_t rational_rejects = 0;
-    size_t algebraic_rejects = 0;
-    size_t both_rejects = 0;
+    std::atomic<size_t> total_candidates{0};
+    std::atomic<size_t> full_relations{0};
+    std::atomic<size_t> partial_1lp{0};
+    std::atomic<size_t> partial_2lp{0};
+    std::atomic<size_t> rational_rejects{0};
+    std::atomic<size_t> algebraic_rejects{0};
+    std::atomic<size_t> both_rejects{0};
+
+    CofactorizerStats() = default;
+
+    // Non-atomic snapshot for reading
+    struct Snapshot {
+        size_t total_candidates;
+        size_t full_relations;
+        size_t partial_1lp;
+        size_t partial_2lp;
+        size_t rational_rejects;
+        size_t algebraic_rejects;
+        size_t both_rejects;
+    };
+
+    [[nodiscard]] Snapshot snapshot() const noexcept {
+        return {total_candidates.load(std::memory_order_relaxed),
+                full_relations.load(std::memory_order_relaxed),
+                partial_1lp.load(std::memory_order_relaxed),
+                partial_2lp.load(std::memory_order_relaxed),
+                rational_rejects.load(std::memory_order_relaxed),
+                algebraic_rejects.load(std::memory_order_relaxed),
+                both_rejects.load(std::memory_order_relaxed)};
+    }
+
+    void reset() noexcept {
+        total_candidates.store(0, std::memory_order_relaxed);
+        full_relations.store(0, std::memory_order_relaxed);
+        partial_1lp.store(0, std::memory_order_relaxed);
+        partial_2lp.store(0, std::memory_order_relaxed);
+        rational_rejects.store(0, std::memory_order_relaxed);
+        algebraic_rejects.store(0, std::memory_order_relaxed);
+        both_rejects.store(0, std::memory_order_relaxed);
+    }
 };
 
 /// Cofactorizer - 主要的分解验证类
@@ -90,7 +124,7 @@ public:
     /// @param a, b 候选对
     /// @return 如果成功，返回完整关系；否则返回空
     [[nodiscard]] std::optional<Relation> verify(int64_t a, uint64_t b) {
-        ++stats_.total_candidates;
+        stats_.total_candidates.fetch_add(1, std::memory_order_relaxed);
 
         // 基本验证
         if (b == 0 || std::gcd(util::safe_abs(a), b) != 1) {
@@ -134,15 +168,15 @@ public:
         bool alg_ok = is_acceptable_cofactor(alg_class);
 
         if (!rat_ok && !alg_ok) {
-            ++stats_.both_rejects;
+            stats_.both_rejects.fetch_add(1, std::memory_order_relaxed);
             return std::nullopt;
         }
         if (!rat_ok) {
-            ++stats_.rational_rejects;
+            stats_.rational_rejects.fetch_add(1, std::memory_order_relaxed);
             return std::nullopt;
         }
         if (!alg_ok) {
-            ++stats_.algebraic_rejects;
+            stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
             return std::nullopt;
         }
 
@@ -195,14 +229,14 @@ public:
         return relations;
     }
 
-    /// 获取统计
-    [[nodiscard]] const CofactorizerStats& stats() const noexcept {
-        return stats_;
+    /// 获取统计快照
+    [[nodiscard]] CofactorizerStats::Snapshot stats() const noexcept {
+        return stats_.snapshot();
     }
 
     /// 重置统计
-    void reset_stats() {
-        stats_ = CofactorizerStats{};
+    void reset_stats() noexcept {
+        stats_.reset();
     }
 
 private:
@@ -315,11 +349,11 @@ private:
         size_t lp_count = rel.rational_large_prime.size() + rel.algebraic_large_prime.size();
 
         if (lp_count == 0) {
-            ++stats_.full_relations;
+            stats_.full_relations.fetch_add(1, std::memory_order_relaxed);
         } else if (lp_count == 1) {
-            ++stats_.partial_1lp;
+            stats_.partial_1lp.fetch_add(1, std::memory_order_relaxed);
         } else {
-            ++stats_.partial_2lp;
+            stats_.partial_2lp.fetch_add(1, std::memory_order_relaxed);
         }
     }
 };
