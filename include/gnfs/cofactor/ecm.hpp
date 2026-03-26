@@ -44,7 +44,8 @@ public:
 
         // Use n's low bits + random_device to avoid repeating the same curves
         std::random_device rd;
-        uint64_t seed = rd() ^ n.to_uint64();
+        uint64_t n_low = mpz_getlimbn(n.get_mpz(), 0);
+        uint64_t seed = rd() ^ n_low;
         std::mt19937_64 rng(seed);
 
         for (uint32_t curve = 0; curve < config.num_curves; ++curve) {
@@ -442,20 +443,25 @@ private:
     }
 
     /// Stage 2: 标准续步（使用分段筛法，内存安全）
+    /// 当累积 gcd == n 时回退到逐素数检查，避免因子丢失
     [[nodiscard]] static std::optional<Integer> stage2(
             const Point& Q0, const Integer& n, const Integer& a24,
             uint64_t B1, uint64_t B2) {
 
         // 使用分段筛法逐步处理 (B1, B2] 中的素数
-        // 内存: O(√B2) 而非 O(B2)
         Integer accum(int64_t(1));
         Point Qcurr(Q0.x.clone(), Q0.z.clone());
         uint64_t check_interval = 0;
         std::optional<Integer> found;
-        bool gcd_equals_n = false;
+
+        // Save checkpoint for backtracking on gcd==n
+        Point checkpoint(Q0.x.clone(), Q0.z.clone());
+        std::vector<uint64_t> batch_primes;
+        batch_primes.reserve(128);
 
         for_each_prime_in_range(B1, B2, [&](uint64_t p) -> bool {
             Qcurr = mont_mul(Qcurr, p, a24, n);
+            batch_primes.push_back(p);
 
             // 累积 z 坐标
             accum *= Qcurr.z;
@@ -469,21 +475,45 @@ private:
                     return false;  // 找到因子，停止
                 }
                 if (g.compare(n) == 0) {
-                    gcd_equals_n = true;
-                    return false;  // gcd == n，停止
+                    // gcd == n: backtrack — retry this batch individually
+                    Point Q_retry(checkpoint.x.clone(), checkpoint.z.clone());
+                    for (uint64_t bp : batch_primes) {
+                        Q_retry = mont_mul(Q_retry, bp, a24, n);
+                        Integer gi = core::gcd(Q_retry.z.clone(), n);
+                        if (!gi.is_one() && gi.compare(n) != 0) {
+                            found = std::move(gi);
+                            return false;
+                        }
+                    }
+                    // All individual gcd's were 1 or n — give up on this batch
+                    // (extremely rare: both factors found in same batch)
                 }
+                // Reset for next batch
+                accum = Integer(int64_t(1));
+                checkpoint = Point(Qcurr.x.clone(), Qcurr.z.clone());
+                batch_primes.clear();
                 check_interval = 0;
             }
             return true;  // 继续
         });
 
         if (found) return found;
-        if (gcd_equals_n) return std::nullopt;
 
         // 最终检查
         Integer g = core::gcd(accum.clone(), n);
         if (!g.is_one() && g.compare(n) != 0) {
             return g;
+        }
+        if (g.compare(n) == 0 && !batch_primes.empty()) {
+            // Backtrack the final batch
+            Point Q_retry(checkpoint.x.clone(), checkpoint.z.clone());
+            for (uint64_t bp : batch_primes) {
+                Q_retry = mont_mul(Q_retry, bp, a24, n);
+                Integer gi = core::gcd(Q_retry.z.clone(), n);
+                if (!gi.is_one() && gi.compare(n) != 0) {
+                    return gi;
+                }
+            }
         }
 
         return std::nullopt;
