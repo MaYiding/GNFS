@@ -408,14 +408,5 @@
 
 ## TEST — 测试覆盖率缺口
 
-
-### [TEST] 边界/极端情况覆盖率 ~98%
-- **描述**: test_edge_cases 已覆盖 43 个测试函数（12 组 ~89 子测试）：Integer 边界、SparseMatrix/BitVector/Gaussian/BL 退化、ECM、cofactor/trial_division、relation 序列化、collector/filter、sieve params/special_q、HenselSqrt(8 sub)、Schirokauer 大域ℓ(6 sub)、NumberField 算术边界(13 sub)、MatrixBuilder 退化输入(4 sub)、RationalSqrt 退化输入(2 sub)、AlgebraicSqrt 退化输入(4 sub)、CouveignesSqrt 退化输入(4 sub)、PolynomialContext 构造边界(12 sub)、FactorBase 查找构造(10 sub)、**ModularPoly 边界(14 sub: zero/const/normalize/add-sub id/mul_raw zero/scalar_mul 0/power 0→1/divmod zero÷/gcd self→monic/is_irreducible deg0-1/reduce smaller/set_coeff)**、**LatticeBasis 边界(8 sub: small q=2,3/q=1/roundtrip verify/SieveRegion index/default_sieve_region 各 skewness/large prime q/moderate root)**、**ClassGroup 结构边界(8 sub: reduce_mod(0)/负指数/accumulation/self-cmp/all-zero→principal/degree-2 path/trivial group/config)**
-- **仍缺失**: Hensel 精度充分性验证需真实管线数据（已由 test_gnfs_progressive L1-L5 覆盖，非独立测试）
-- **Commit**: `6c0d807` (Session 34)
-
-### [TEST] 模块间集成测试（基本完成）
-- **描述**: test_integration 已覆盖 24 个跨模块场景：12 个基础测试 + Sieve→Cofactorizer 联合、RationalSqrt+AlgebraicSqrt 联合(完整 gcd 分解 143→13×11)、大规模关系→矩阵流水线(1200+ 关系)、sieve_parallel 多线程一致性、BaseMSelector→PolynomialContext verify(6 N)、Filter→MatrixBuilder 维度缩减、FactorBase bounds→关系产出、algebraic_norm+rational_value 一致性、**LatticeBasis→Sieve 几何验证(det=±q, a≡br mod q)**、**FB→MatrixBuilder 列一致性(cols≥rat+alg)**、**ClassGroup character 尺寸一致性(3 N 值)**、**MurphyE 评分有限性(2 N 值)**
-- **仍缺失**: 无核心缺口
-- **Commit**: `6c0d807` (Session 34)
+（当前无未解决条目。历史记录见 RESOLVED.md）
 

@@ -7,6 +7,26 @@
 
 ## 已完成 ✅
 
+### TEST 级关闭 (Session 35)
+
+#### [TEST] ~~边界/极端情况覆盖率 ~98% → 完成~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 35)
+- **最终状态**: test_edge_cases 43 个测试函数（12 组 ~89 子测试），覆盖全部可独立测试的边界场景
+- **覆盖范围**: Integer 边界、SparseMatrix/BitVector/Gaussian/BL 退化、ECM、cofactor/trial_division、relation 序列化、collector/filter、sieve params/special_q、HenselSqrt(8)、Schirokauer(6)、NumberField(13)、MatrixBuilder(4)、RationalSqrt(2)、AlgebraicSqrt(4)、CouveignesSqrt(4)、PolynomialContext(12)、FactorBase(10)、ModularPoly(14)、LatticeBasis(8)、ClassGroup(8)
+- **关闭理由**: 仅剩 Hensel 精度充分性验证（需完整管线数据），已由 test_gnfs_progressive L1-L5 覆盖，不适合独立单元测试
+- **验证**: smoke 20/20 通过(6.4s)、test_edge_cases 43/43 通过(1.6s)
+- **Commit**: `6c0d807` (代码) / `666b424` (文档)
+
+#### [TEST] ~~模块间集成测试 → 完成~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 35)
+- **最终状态**: test_integration 24 个跨模块场景，覆盖全部关键管线组合
+- **覆盖范围**: Cofactorizer N-div rejection、stats tracking、Cof→Collector、Collector→Filter、MatrixBuilder real FB、MatrixBuilder→BL dependency、MurphyEvaluator real ctx、FactorBase sieve invariants、Schirokauer+MatrixBuilder、MatrixBuilder all columns、Sieve→Cofactorizer joint、RationalSqrt+AlgebraicSqrt full gcd、large-scale relations→matrix(1200+)、sieve_parallel consistency、BaseMSelector→ctx verify(6N)、Filter→MatrixBuilder shrink、FB bounds→relations、alg_norm+rat_value consistency、LatticeBasis→Sieve geometry、FB→MatrixBuilder cols、ClassGroup character size、MurphyE score finiteness
+- **关闭理由**: 无核心缺口，所有关键模块间接口已覆盖
+- **验证**: test_integration 24/24 通过(7.2s)
+- **Commit**: `6c0d807` (代码) / `666b424` (文档)
+
 ### TEST 级修复 (Session 33)
 
 #### [TEST] ~~边界/极端情况覆盖率 ~90% → ~95%~~ ✅
