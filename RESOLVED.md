@@ -7,6 +7,36 @@
 
 ## 已完成 ✅
 
+### TEST 级修复 (Session 30)
+
+#### [TEST] ~~边界/极端情况覆盖率 ~60% → ~75%~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 30)
+- **修复**: test_edge_cases 从 20→31 个测试用例，新增 11 个：
+  - ECM edge cases (n=1, prime, small composite)
+  - cofactor classify (1, 2, 4, lpb=1, perfect power/square)
+  - trial division (0, 1, negative, large prime)
+  - relation serialization round-trip
+  - relation collector (empty, dup, max, merge)
+  - relation filter (empty, singletons, full, disabled)
+  - sieve params uint8 overflow
+  - special_q validity (0, 1, 2)
+  - quick cofactor check (cofactor=0, 1, lpb=0)
+- **验证**: `./build/test_edge_cases` 全 31 通过；smoke 20/20 通过
+- **Commit**: `d472e71`
+
+#### [TEST] ~~缺少模块间集成测试 8/30 → 12/30~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 30)
+- **修复**: test_integration 从 8→12 个测试用例，新增 4 个：
+  - Schirokauer + MatrixBuilder 列数验证 (build_with_qc)
+  - MatrixBuilder 列映射一致性 (sign + Schirokauer)
+  - Full mini-pipeline (Cofactorizer→Collector→Filter→MatrixBuilder→BL)
+  - Schirokauer map consistency (值域 [0,ℓ) + 确定性)
+- **注意**: 使用 N=10403 (非 N=143) 因 ModularPoly::is_irreducible 对偶数首项系数断言失败 (新 BACKLOG 条目)
+- **验证**: `./build/test_integration` 全 12 通过；smoke 20/20 通过
+- **Commit**: `d472e71`
+
 ### TEST 级修复 (Session 29)
 
 #### [TEST] ~~缺少模块间集成测试（大部分）~~ ✅ (部分，8/30 主要接口覆盖)

@@ -62,6 +62,12 @@
 
 
 
+### [BUG] ModularPoly::is_irreducible 首项系数 ≡ 0 (mod p) 时断言失败
+- **发现日期**: 2026-03-10 (Session 30)
+- **文件**: `include/gnfs/sqrt/modular_poly.hpp:158`
+- **描述**: `assert(f[f_deg] % p != 0)` 对 leading coeff ≡ 0 (mod p) 触发。例如 N=143 → f(x)=2x²+x+7，当 p=2 时首项系数 2≡0(mod 2)。FactorBaseBuilder 构建代数因子基时对每个素数调用此函数，导致小 N 崩溃
+- **建议**: 首项系数 ≡ 0 (mod p) 时应跳过（视为 ramified/projective 素数），或降阶处理
+
 ### [BUG] Kleinjung base_m_expansion 系数不平衡
 - **发现日期**: 2026-03-08 (Session 6)
 - **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp:466-478`
@@ -403,11 +409,11 @@
 ## TEST — 测试覆盖率缺口
 
 
-### [TEST] 边界/极端情况覆盖率提升至 ~60%
-- **描述**: test_edge_cases 已覆盖 Integer 负 mod/gcd 零/sqrt/pow/INT64 边界、SparseMatrix 零维、BitVector 字边界、Gaussian/BL 退化情形（20 个测试用例）
-- **仍缺失**: cofactor/relation/sieve 模块的边界测试；ECM Stage 1/2 边界；Hensel 精度充分性；Schirokauer 大域 ℓ
+### [TEST] 边界/极端情况覆盖率提升至 ~75%
+- **描述**: test_edge_cases 已覆盖 31 个测试用例：Integer 边界、SparseMatrix/BitVector/Gaussian/BL 退化、ECM(n=1/prime/composite)、cofactor classify(1/2/4/lpb=1)、trial division(0/1/负数/大素数)、relation 序列化往返、collector(empty/dup/max/merge)、filter(empty/singletons/full/disabled)、sieve params overflow、special_q 有效性、quick cofactor(0/1/lpb=0)
+- **仍缺失**: Hensel 精度充分性验证；Schirokauer 大域 ℓ 边界
 
-### [TEST] 缺少模块间集成测试（部分解决）
-- **描述**: test_integration 已覆盖 8 个跨模块场景（Cofactorizer+PolyCtx+FB、Cofactor→Collector、Collector→Filter、MatrixBuilder+FB、MatrixBuilder→BL、MurphyEvaluator+PolyCtx、FB 不变式）
-- **仍缺失**: cofactor→sieve 联合测试、Schirokauer+MatrixBuilder 集成、RationalSqrt+AlgebraicSqrt 联合、大规模关系到矩阵流水线（~15/30 未覆盖）
+### [TEST] 缺少模块间集成测试（大部分解决）
+- **描述**: test_integration 已覆盖 12 个跨模块场景：Cofactorizer+PolyCtx+FB、Cofactor→Collector、Collector→Filter、MatrixBuilder+FB、MatrixBuilder→BL、MurphyEvaluator+PolyCtx、FB 不变式、Schirokauer+MatrixBuilder 列数、MatrixBuilder 列映射一致性(sign+Schirokauer)、完整 mini-pipeline(Cofactorizer→Collector→Filter→MatrixBuilder→BL)、Schirokauer map 一致性(值域+确定性)
+- **仍缺失**: cofactor→sieve 联合测试（需完整筛选设置）、RationalSqrt+AlgebraicSqrt 联合（需完整筛选数据）、大规模关系到矩阵流水线（~5/30 未覆盖）
 
