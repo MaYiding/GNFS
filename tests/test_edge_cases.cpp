@@ -15,6 +15,9 @@
 #include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/factor_base/builder.hpp"
 #include "gnfs/polynomial/base_m.hpp"
+#include "gnfs/sqrt/hensel_sqrt.hpp"
+#include "gnfs/sqrt/number_field.hpp"
+#include "gnfs/linalg/schirokauer.hpp"
 
 #include <cassert>
 #include <climits>   // INT64_MAX, INT64_MIN, UINT32_MAX
@@ -27,6 +30,9 @@ using namespace gnfs::linalg;
 using namespace gnfs::cofactor;
 using namespace gnfs::relation;
 using namespace gnfs::sieve;
+using gnfs::polynomial::BaseMSelector;
+using gnfs::sqrt::HenselSqrt;
+using gnfs::sqrt::NumberField;
 
 // ─── Integer 负 mod ────────────────────────────────────────────────────
 
@@ -980,6 +986,192 @@ void test_quick_cofactor_check_edge_cases() {
     std::cout << "  PASS" << std::endl;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Hensel Sqrt 边界测试
+// ═══════════════════════════════════════════════════════════════
+
+void test_hensel_sqrt_edge_cases() {
+    std::cout << "Testing HenselSqrt edge cases..." << std::endl;
+
+    // Setup: N=9991 (97×103), degree=2
+    // f(x) = x² + x + 91, which is irreducible (discriminant = -363)
+    Integer n("9991");
+    auto poly_result = BaseMSelector::select(n, 2);
+    assert(poly_result.success);
+    auto ctx = BaseMSelector::create_context(n, poly_result);
+    NumberField nf(ctx);
+
+    // Test 1: Empty ab_pairs → returns Integer(1) by convention
+    {
+        HenselSqrt hs;
+        auto r = hs.compute({}, nf);
+        assert(r.has_value());
+        assert(*r == Integer(int64_t(1)));
+    }
+
+    // Test 2: Default config construction
+    {
+        HenselSqrt hs;  // default
+        (void)hs;
+    }
+
+    // Test 3: Config with extra_precision = 0 — shouldn't crash
+    {
+        HenselSqrt::Config cfg;
+        cfg.extra_precision = 0;
+        HenselSqrt hs(cfg);
+        std::vector<std::pair<int64_t, uint64_t>> pairs = {{5, 1}};
+        auto r = hs.compute(pairs, nf);
+        (void)r;  // may be nullopt, just verify no crash
+    }
+
+    // Test 4: Config with very high extra_precision — shouldn't crash
+    {
+        HenselSqrt::Config cfg;
+        cfg.extra_precision = 2000;
+        HenselSqrt hs(cfg);
+        std::vector<std::pair<int64_t, uint64_t>> pairs = {{5, 1}};
+        auto r = hs.compute(pairs, nf);
+        (void)r;
+    }
+
+    // Test 5: Config with high prime_start — may not find inert prime quickly
+    {
+        HenselSqrt::Config cfg;
+        cfg.prime_start = 100000;
+        HenselSqrt hs(cfg);
+        std::vector<std::pair<int64_t, uint64_t>> pairs = {{3, 1}, {3, 1}};
+        auto r = hs.compute(pairs, nf);
+        (void)r;
+    }
+
+    // Test 6: Multiple different pairs — product may or may not be a square
+    {
+        HenselSqrt hs;
+        std::vector<std::pair<int64_t, uint64_t>> pairs = {
+            {1, 1}, {2, 1}, {3, 1}, {4, 1}
+        };
+        auto r = hs.compute(pairs, nf);
+        (void)r;  // just crash safety
+    }
+
+    // Test 7: Large a, b values — boundary test
+    {
+        HenselSqrt hs;
+        std::vector<std::pair<int64_t, uint64_t>> pairs = {
+            {1000000, 1}, {1000000, 1}
+        };
+        auto r = hs.compute(pairs, nf);
+        (void)r;
+    }
+
+    // Test 8: Negative a values
+    {
+        HenselSqrt hs;
+        std::vector<std::pair<int64_t, uint64_t>> pairs = {
+            {-7, 2}, {-7, 2}
+        };
+        auto r = hs.compute(pairs, nf);
+        (void)r;
+    }
+
+    // Note: Hensel precision sufficiency for real smooth relations is
+    // verified by test_gnfs_progressive (L1-L5). The f'(α)² trick and
+    // centering logic are exercised there with proper pipeline data.
+
+    std::cout << "  PASS (8 sub-tests)" << std::endl;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Schirokauer 大域 ℓ 边界测试
+// ═══════════════════════════════════════════════════════════════
+
+void test_schirokauer_large_ell_edge_cases() {
+    std::cout << "Testing Schirokauer large ℓ edge cases..." << std::endl;
+
+    // Setup: N=10403, degree=2
+    Integer n("10403");
+    auto poly_result = BaseMSelector::select(n, 2);
+    assert(poly_result.success);
+    auto ctx = BaseMSelector::create_context(n, poly_result);
+    uint32_t degree = ctx.degree();
+
+    // Test 1: ℓ=3 → values in [0,3)
+    {
+        SchirokaurConfig cfg;
+        cfg.primes = {3};
+        SchirokaurMap sm(ctx, cfg);
+        assert(sm.num_columns() == degree);
+
+        for (int64_t a = -5; a <= 5; ++a) {
+            for (uint64_t b = 1; b <= 3; ++b) {
+                auto maps = sm.compute(a, b);
+                assert(maps.size() == 1);
+                assert(maps[0].size() == degree);
+                for (uint32_t v : maps[0]) assert(v < 3);
+            }
+        }
+    }
+
+    // Test 2: ℓ=5 → values in [0,5)
+    {
+        SchirokaurConfig cfg;
+        cfg.primes = {5};
+        SchirokaurMap sm(ctx, cfg);
+        auto maps = sm.compute(7, 2);
+        assert(maps.size() == 1);
+        assert(maps[0].size() == degree);
+        for (uint32_t v : maps[0]) assert(v < 5);
+    }
+
+    // Test 3: Multiple primes [2, 3] → num_columns = 2 * degree
+    {
+        SchirokaurConfig cfg;
+        cfg.primes = {2, 3};
+        SchirokaurMap sm(ctx, cfg);
+        assert(sm.num_columns() == 2 * degree);
+
+        auto maps = sm.compute(5, 1);
+        assert(maps.size() == 2);
+        for (uint32_t v : maps[0]) assert(v < 2);
+        for (uint32_t v : maps[1]) assert(v < 3);
+    }
+
+    // Test 4: Empty primes → num_columns = 0
+    {
+        SchirokaurConfig cfg;
+        cfg.primes = {};
+        SchirokaurMap sm(ctx, cfg);
+        assert(sm.num_columns() == 0);
+        auto flat = sm.compute_flat(1, 1);
+        assert(flat.empty());
+    }
+
+    // Test 5: ℓ=7 with higher exponent_k=5 → values in [0,7)
+    {
+        SchirokaurConfig cfg;
+        cfg.primes = {7};
+        cfg.exponent_k = 5;
+        SchirokaurMap sm(ctx, cfg);
+        auto maps = sm.compute(11, 3);
+        assert(maps.size() == 1);
+        assert(maps[0].size() == degree);
+        for (uint32_t v : maps[0]) assert(v < 7);
+    }
+
+    // Test 6: Determinism — same (a,b) always gives same result for ℓ=3
+    {
+        SchirokaurConfig cfg;
+        cfg.primes = {3};
+        SchirokaurMap sm(ctx, cfg);
+        auto m1 = sm.compute(13, 5);
+        auto m2 = sm.compute(13, 5);
+        assert(m1[0] == m2[0]);
+    }
+
+    std::cout << "  PASS (ℓ=3,5,7,[2,3],empty tested)" << std::endl;
+}
+
 int main() {
     std::cout << "=== Edge Case Tests ===" << std::endl;
 
@@ -1039,6 +1231,12 @@ int main() {
     // Sieve 参数边界
     test_sieve_params_edge_cases();
     test_special_q_edge_cases();
+
+    // Hensel Sqrt 边界
+    test_hensel_sqrt_edge_cases();
+
+    // Schirokauer 大域 ℓ 边界
+    test_schirokauer_large_ell_edge_cases();
 
     std::cout << "\nAll edge case tests passed!" << std::endl;
     return 0;

@@ -27,6 +27,10 @@
 #include <gnfs/linalg/schirokauer.hpp>
 #include <gnfs/polynomial/murphy_evaluator.hpp>
 #include <gnfs/polynomial/int_polynomial.hpp>
+#include <gnfs/sqrt/rational_sqrt.hpp>
+#include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/sieve/special_q.hpp>
+#include <gnfs/sieve/lattice_sieve.hpp>
 
 #include <cassert>
 #include <cmath>
@@ -40,6 +44,8 @@ using namespace gnfs::factor_base;
 using namespace gnfs::cofactor;
 using namespace gnfs::relation;
 using namespace gnfs::linalg;
+using namespace gnfs::sqrt;
+using namespace gnfs::sieve;
 
 // ============================================================
 // 辅助：为 N=143 构建小型测试环境 (ctx + fb)
@@ -750,6 +756,294 @@ void test_schirokauer_map_consistency() {
 }
 
 // ============================================================
+// Test 13: Sieve → Cofactorizer 联合测试
+// 验证 LatticeSieve 输出的候选点能正确流入 Cofactorizer
+// ============================================================
+void test_sieve_cofactor_joint() {
+    std::cout << "Testing Sieve → Cofactorizer joint (integration)..." << std::endl;
+
+    // N=10403 (101×103), degree=2, 扩展 FB 包含 SQ 范围
+    Integer n("10403");
+    auto poly_result = BaseMSelector::select(n, 2);
+    assert(poly_result.success);
+    auto ctx = BaseMSelector::create_context(n, poly_result);
+
+    FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 200;
+    fb_opts.algebraic_bound = 200;
+    fb_opts.special_q_bound = 500;  // 扩展到 500 供 SQ 使用
+    fb_opts.parallel = false;
+    auto fb = FactorBaseBuilder::build(ctx, fb_opts);
+
+    std::cout << "  FB: rat=" << fb.rational_count()
+              << " alg_sieve=" << fb.sieve_algebraic_count()
+              << " alg_total=" << fb.algebraic_count() << std::endl;
+
+    // 配置筛法（低阈值以获取更多候选）
+    SieveParams sieve_params;
+    sieve_params.log_scale = 16;
+    sieve_params.rational_threshold = 30;
+    sieve_params.algebraic_threshold = 30;
+
+    LatticeSieve sieve(ctx, fb, sieve_params);
+
+    SieveRegion region;
+    region.i_min = -200;
+    region.i_max = 199;
+    region.j_min = 1;
+    region.j_max = 30;
+    sieve.set_region(region);
+
+    // 从 SQ 范围生成 Special-Q
+    SpecialQRange sq_range;
+    sq_range.min_q = 200;
+    sq_range.max_q = 500;
+    SpecialQGenerator sq_gen(fb, sq_range);
+
+    std::vector<std::pair<int64_t, uint64_t>> candidate_pairs;
+
+    for (size_t i = 0; i < 3 && sq_gen.has_next(); ++i) {
+        auto sq = sq_gen.next();
+        if (!sq) break;
+        auto result = sieve.sieve_special_q(*sq);
+        for (const auto& c : result.candidates) {
+            candidate_pairs.emplace_back(c.a, c.b);
+        }
+    }
+
+    // 通过 Cofactorizer 验证候选
+    CofactorizerConfig cof_cfg;
+    cof_cfg.large_prime_bound = 100000;
+    Cofactorizer cof(ctx, fb, cof_cfg);
+
+    size_t verified = 0;
+    for (const auto& [a, b] : candidate_pairs) {
+        auto rel = cof.verify(a, b);
+        if (rel.has_value()) {
+            verified++;
+            assert(rel->a == a);
+            assert(rel->b == static_cast<int64_t>(b));
+        }
+    }
+
+    std::cout << "  sieve_candidates=" << candidate_pairs.size()
+              << " cofactor_verified=" << verified << std::endl;
+    std::cout << "  PASS" << std::endl;
+}
+
+// ============================================================
+// Test 14: RationalSqrt + AlgebraicSqrt 联合测试
+// 从真实关系找依赖，然后计算两侧平方根，验证 gcd 因子分解
+// ============================================================
+void test_rational_algebraic_sqrt_joint() {
+    std::cout << "Testing RationalSqrt + AlgebraicSqrt joint (integration)..." << std::endl;
+
+    auto env = make_env_143();
+
+    // 收集光滑关系
+    CofactorizerConfig cof_cfg;
+    cof_cfg.large_prime_bound = 100000;
+    Cofactorizer cof(env.ctx, env.fb, cof_cfg);
+
+    std::vector<Relation> rels;
+    for (int64_t a = -50; a <= 50; ++a) {
+        for (uint64_t b = 1; b <= 5; ++b) {
+            uint64_t abs_a = static_cast<uint64_t>(a < 0 ? -a : a);
+            if (std::gcd(abs_a, b) != 1) continue;
+            auto rel = cof.verify(a, b);
+            if (rel.has_value()) {
+                rels.push_back(std::move(*rel));
+            }
+        }
+    }
+
+    std::cout << "  Collected " << rels.size() << " relations" << std::endl;
+
+    if (rels.size() < 5) {
+        std::cout << "  SKIP (not enough relations)" << std::endl;
+        return;
+    }
+
+    // 构建矩阵（含 sign 列，确保有理侧乘积为正）
+    MatrixBuilderConfig mat_cfg;
+    mat_cfg.include_sign_column  = true;
+    mat_cfg.include_qc_columns   = false;
+    mat_cfg.include_class_group  = false;
+    mat_cfg.include_schirokauer  = false;
+    MatrixBuilder builder(mat_cfg);
+    auto mat_result = builder.build(rels, env.fb);
+
+    std::cout << "  Matrix: " << mat_result.matrix.num_rows() << "x"
+              << mat_result.matrix.num_cols() << std::endl;
+
+    if (mat_result.matrix.num_rows() <= mat_result.matrix.num_cols()) {
+        std::cout << "  SKIP (matrix not overdetermined)" << std::endl;
+        return;
+    }
+
+    // 求依赖
+    BlockLanczos solver;
+    auto deps = solver.find_dependencies(mat_result.matrix, 5);
+
+    if (deps.empty()) {
+        std::cout << "  SKIP (no dependencies found)" << std::endl;
+        return;
+    }
+
+    // 尝试每个依赖来分解 N
+    bool factor_found = false;
+    size_t deps_tried = 0;
+
+    for (const auto& dep : deps) {
+        if (!verify_dependency(mat_result.matrix, dep)) continue;
+        deps_tried++;
+
+        // 将 std::vector<bool> 转为 BitVector（sqrt API 需要）
+        BitVector dep_bv(dep.size());
+        for (size_t i = 0; i < dep.size(); ++i) {
+            if (dep[i]) dep_bv.set(i);
+        }
+
+        // 有理平方根
+        RationalSqrt rat_sqrt;
+        auto rat_result = rat_sqrt.compute(dep_bv, rels, env.fb, env.n, env.ctx.m());
+        if (!rat_result.success) continue;
+
+        // 代数平方根
+        AlgebraicSqrt alg_sqrt;
+        auto alg_result = alg_sqrt.compute(dep_bv, rels, env.ctx);
+        if (!alg_result.success) continue;
+
+        // gcd(X ± Y, N)
+        Integer diff = rat_result.value.clone();
+        diff -= alg_result.value;
+        Integer sum = rat_result.value.clone();
+        sum += alg_result.value;
+
+        Integer g1 = gcd(diff, env.n);
+        Integer g2 = gcd(sum, env.n);
+
+        bool g1_nontrivial = !g1.is_one() && g1 != env.n;
+        bool g2_nontrivial = !g2.is_one() && g2 != env.n;
+
+        if (g1_nontrivial || g2_nontrivial) {
+            factor_found = true;
+            Integer factor = g1_nontrivial ? g1.clone() : g2.clone();
+            Integer cofactor_val = env.n.clone();
+            cofactor_val /= factor;
+            std::cout << "  Factor: " << factor.to_string()
+                      << " x " << cofactor_val.to_string() << std::endl;
+
+            // 验证 factor * cofactor = N
+            Integer product = factor.clone();
+            product *= cofactor_val;
+            assert(product == env.n);
+            break;
+        }
+    }
+
+    std::cout << "  deps_tried=" << deps_tried
+              << " factor_found=" << (factor_found ? "yes" : "no") << std::endl;
+    std::cout << "  PASS" << std::endl;
+}
+
+// ============================================================
+// Test 15: 大规模关系 → 矩阵流水线
+// 用 N=10403 收集更多关系，验证完整矩阵构建和 BL 求解
+// ============================================================
+void test_large_relation_to_matrix_pipeline() {
+    std::cout << "Testing large-scale relation → matrix pipeline (integration)..." << std::endl;
+
+    auto env = make_env_for_schirokauer();  // N=10403, FB bound=200
+
+    // 收集大量关系
+    CofactorizerConfig cof_cfg;
+    cof_cfg.large_prime_bound = 100000;
+    Cofactorizer cof(env.ctx, env.fb, cof_cfg);
+
+    std::vector<Relation> rels;
+    for (int64_t a = -100; a <= 100; ++a) {
+        for (uint64_t b = 1; b <= 10; ++b) {
+            uint64_t abs_a = static_cast<uint64_t>(a < 0 ? -a : a);
+            if (std::gcd(abs_a, b) != 1) continue;
+            auto rel = cof.verify(a, b);
+            if (rel.has_value()) {
+                rels.push_back(std::move(*rel));
+            }
+        }
+    }
+
+    std::cout << "  Collected " << rels.size() << " relations" << std::endl;
+
+    if (rels.size() < 10) {
+        std::cout << "  SKIP (not enough relations)" << std::endl;
+        return;
+    }
+
+    // 过滤
+    FilterConfig flt_cfg;
+    flt_cfg.remove_singletons = true;
+    RelationFilter filter(flt_cfg);
+    auto filtered = filter.filter(std::vector<Relation>(rels.begin(), rels.end()));
+
+    std::cout << "  After filter: " << filtered.size()
+              << " (singletons removed: " << filter.stats().singletons_removed << ")" << std::endl;
+
+    if (filtered.size() < 5) {
+        std::cout << "  SKIP (not enough filtered relations)" << std::endl;
+        return;
+    }
+
+    // 构建矩阵（含 sign + Schirokauer 列）
+    MatrixBuilderConfig mat_cfg;
+    mat_cfg.include_sign_column  = true;
+    mat_cfg.include_qc_columns   = false;
+    mat_cfg.include_class_group  = false;
+    mat_cfg.include_schirokauer  = true;
+    mat_cfg.schirokauer_primes   = {2};
+    MatrixBuilder builder(mat_cfg);
+    auto mat_result = builder.build_with_qc(filtered, env.fb, env.ctx);
+
+    const auto& m = mat_result.mapping;
+    std::cout << "  Matrix: " << mat_result.matrix.num_rows() << "x"
+              << mat_result.matrix.num_cols()
+              << " (sign=1 rat=" << m.num_rational_fb
+              << " alg=" << m.num_algebraic_fb
+              << " sch=" << m.num_schirokauer_columns << ")" << std::endl;
+
+    assert(mat_result.matrix.num_rows() == filtered.size());
+    assert(m.num_schirokauer_columns > 0);
+
+    // 列总数一致性
+    size_t expected_cols = (mat_cfg.include_sign_column ? 1 : 0)
+                          + m.num_rational_fb + m.num_algebraic_fb
+                          + m.num_large_primes_rat + m.num_large_primes_alg
+                          + m.num_qc_columns + m.num_class_group_columns
+                          + m.num_schirokauer_columns;
+    assert(mat_result.matrix.num_cols() == expected_cols);
+
+    // 如果超定矩阵，尝试求依赖
+    if (mat_result.matrix.num_rows() > mat_result.matrix.num_cols()) {
+        BlockLanczos solver;
+        auto deps = solver.find_dependencies(mat_result.matrix, 3);
+        if (!deps.empty()) {
+            bool found_valid = false;
+            for (const auto& dep : deps) {
+                if (verify_dependency(mat_result.matrix, dep)) {
+                    found_valid = true;
+                    break;
+                }
+            }
+            if (found_valid) {
+                std::cout << "  Found " << deps.size() << " valid dependencies" << std::endl;
+            }
+        }
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
+// ============================================================
 // main
 // ============================================================
 int main() {
@@ -765,11 +1059,16 @@ int main() {
     test_murphy_with_real_poly_ctx();
     test_fb_sieve_count_invariants();
 
-    // 新增集成测试
+    // Session 30 集成测试
     test_schirokauer_matrix_builder_integration();
     test_matrix_builder_all_columns();
     test_full_mini_pipeline();
     test_schirokauer_map_consistency();
+
+    // Session 31 集成测试
+    test_sieve_cofactor_joint();
+    test_rational_algebraic_sqrt_joint();
+    test_large_relation_to_matrix_pipeline();
 
     std::cout << std::endl;
     std::cout << "All integration tests passed!" << std::endl;
