@@ -17,7 +17,7 @@
   - **MatrixBuilder 退化输入** (4 sub): 空关系→0行矩阵、单关系→1行、禁用所有列配置、build_with_qc 空输入
   - **RationalSqrt 退化输入** (2 sub): 空依赖(全零 BitVector)、单关系偶指数
 - **验证**: `./build/test_edge_cases` 全 36 通过；smoke 20/20 通过
-- **Commit**: (pending)
+- **Commit**: `db04dd6`
 
 #### [TEST] ~~模块间集成测试 15/30 → 16/30 + sieve_parallel 关闭~~ ✅
 - **发现**: 2026-03-08 (Session 5)
@@ -25,7 +25,7 @@
 - **修复**: test_integration 从 15→16 个测试用例，新增：
   - **Test 16**: sieve_parallel vs sequential 一致性验证（N=10403, 5 SQ, 2 线程并行，候选数完全匹配 seq=par=8）
 - **验证**: `./build/test_integration` 全 16 通过
-- **Commit**: (pending)
+- **Commit**: `db04dd6`
 
 ### TEST 级修复 (Session 31)
 
