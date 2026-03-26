@@ -2,8 +2,9 @@
 
 #include "../core/integer.hpp"
 #include <cassert>
-#include <vector>
 #include <cstdint>
+#include <stdexcept>
+#include <vector>
 
 namespace gnfs {
 namespace sqrt {
@@ -88,8 +89,9 @@ public:
         std::vector<uint64_t> result(max_size);
 
         for (size_t i = 0; i < max_size; ++i) {
-            int64_t diff = static_cast<int64_t>(a.coeff(i)) - static_cast<int64_t>(b.coeff(i));
-            result[i] = diff < 0 ? static_cast<uint64_t>(diff + static_cast<int64_t>(p)) : static_cast<uint64_t>(diff);
+            uint64_t ai = a.coeff(i);
+            uint64_t bi = b.coeff(i);
+            result[i] = ai >= bi ? ai - bi : p - (bi - ai);
         }
 
         return ModularPoly(std::move(result));
@@ -154,8 +156,10 @@ public:
         int f_deg = static_cast<int>(f.size()) - 1;
 
         // Inverse of leading coefficient: α^d = -(f[0]+...+f[d-1]α^{d-1}) / f[d]
-        // f[f_deg] must be non-zero mod p (otherwise f doesn't have the expected degree)
-        assert(f[f_deg] % p != 0 && "leading coefficient of f must be non-zero mod p");
+        // f[f_deg] must be non-zero mod p (otherwise f degenerates)
+        if (f[f_deg] % p == 0) {
+            throw std::runtime_error("ModularPoly::reduce: leading coefficient ≡ 0 (mod p)");
+        }
         uint64_t f_lead_inv = mod_inverse(f[f_deg], p);
 
         // Reduce from highest degree down
@@ -338,6 +342,8 @@ public:
     [[nodiscard]] static bool is_irreducible(const std::vector<uint64_t>& f, uint64_t p) {
         int d = static_cast<int>(f.size()) - 1;
         if (d <= 0) return false;
+        // Leading coeff ≡ 0 (mod p) → f degenerates (ramified prime), not irreducible at this degree
+        if (f[d] % p == 0) return false;
         if (d == 1) return true;  // linear polynomials are always irreducible
 
         // Find distinct prime factors of d
@@ -491,23 +497,24 @@ private:
 
     /// Modular inverse using extended Euclidean algorithm
     [[nodiscard]] static uint64_t mod_inverse(uint64_t a, uint64_t p) {
-        int64_t t = 0, new_t = 1;
-        int64_t r = static_cast<int64_t>(p), new_r = static_cast<int64_t>(a);
+        // Use __int128_t to avoid overflow for p > INT64_MAX
+        __int128_t t = 0, new_t = 1;
+        __int128_t r = static_cast<__int128_t>(p), new_r = static_cast<__int128_t>(a);
 
         while (new_r != 0) {
-            int64_t quotient = r / new_r;
+            __int128_t quotient = r / new_r;
 
-            int64_t temp_t = new_t;
+            __int128_t temp_t = new_t;
             new_t = t - quotient * new_t;
             t = temp_t;
 
-            int64_t temp_r = new_r;
+            __int128_t temp_r = new_r;
             new_r = r - quotient * new_r;
             r = temp_r;
         }
 
         if (t < 0) {
-            t += static_cast<int64_t>(p);
+            t += static_cast<__int128_t>(p);
         }
 
         return static_cast<uint64_t>(t);
