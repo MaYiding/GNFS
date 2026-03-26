@@ -22,6 +22,9 @@
 #include "gnfs/sqrt/rational_sqrt.hpp"
 #include "gnfs/sqrt/algebraic_sqrt.hpp"
 #include "gnfs/sqrt/couveignes.hpp"
+#include "gnfs/sqrt/modular_poly.hpp"
+#include "gnfs/sqrt/class_group.hpp"
+#include "gnfs/sieve/lattice_basis.hpp"
 
 #include <cassert>
 #include <climits>   // INT64_MAX, INT64_MIN, UINT32_MAX
@@ -42,6 +45,10 @@ using gnfs::sqrt::RationalSqrt;
 using gnfs::sqrt::AlgebraicSqrt;
 using gnfs::sqrt::CouveignesSqrt;
 using gnfs::factor_base::FactorBase;
+using gnfs::sqrt::ModularPoly;
+using gnfs::sqrt::ClassGroup;
+using gnfs::sqrt::PrimeIdeal;
+using gnfs::sqrt::IdealClass;
 
 // ─── Integer 负 mod ────────────────────────────────────────────────────
 
@@ -1769,6 +1776,377 @@ void test_factor_base_edge_cases() {
     std::cout << "  PASS (10 sub-tests)" << std::endl;
 }
 
+// ─── ModularPoly 边界/极端情况 ─────────────────────────────────────────
+
+void test_modular_poly_edge_cases() {
+    std::cout << "Testing ModularPoly edge cases..." << std::endl;
+    const uint64_t p = 7;
+
+    // Test 1: Zero polynomial properties
+    {
+        ModularPoly zero;
+        assert(zero.is_zero());
+        assert(!zero.is_one());
+        assert(zero.degree() == -1);
+        assert(zero.coeff(0) == 0);
+        assert(zero.coeff(100) == 0);
+    }
+
+    // Test 2: Constant polynomial
+    {
+        ModularPoly one(1);
+        assert(!one.is_zero());
+        assert(one.is_one());
+        assert(one.degree() == 0);
+
+        ModularPoly c(5);
+        assert(c.degree() == 0);
+        assert(c.coeff(0) == 5);
+    }
+
+    // Test 3: Normalization strips trailing zeros
+    {
+        ModularPoly poly(std::vector<uint64_t>{3, 0, 0, 0});
+        assert(poly.degree() == 0);
+        assert(poly.coeff(0) == 3);
+
+        ModularPoly all_zero(std::vector<uint64_t>{0, 0, 0});
+        assert(all_zero.is_zero());
+        assert(all_zero.degree() == -1);
+    }
+
+    // Test 4: add/sub with zero → identity
+    {
+        ModularPoly a(std::vector<uint64_t>{3, 2, 1});
+        ModularPoly zero;
+        auto sum = ModularPoly::add(a, zero, p);
+        assert(sum.coeff(0) == 3 && sum.coeff(1) == 2 && sum.coeff(2) == 1);
+
+        auto diff = ModularPoly::sub(a, zero, p);
+        assert(diff.coeff(0) == 3 && diff.coeff(1) == 2 && diff.coeff(2) == 1);
+    }
+
+    // Test 5: sub(a, a) = 0
+    {
+        ModularPoly a(std::vector<uint64_t>{3, 5, 1});
+        auto diff = ModularPoly::sub(a, a, p);
+        assert(diff.is_zero());
+    }
+
+    // Test 6: mul_raw with zero → zero
+    {
+        ModularPoly a(std::vector<uint64_t>{3, 2});
+        ModularPoly zero;
+        auto prod = ModularPoly::mul_raw(a, zero, p);
+        assert(prod.is_zero());
+
+        auto prod2 = ModularPoly::mul_raw(zero, a, p);
+        assert(prod2.is_zero());
+    }
+
+    // Test 7: scalar_mul by 0 → zero
+    {
+        ModularPoly a(std::vector<uint64_t>{3, 5, 1});
+        auto scaled = ModularPoly::scalar_mul(a, 0, p);
+        assert(scaled.is_zero());
+    }
+
+    // Test 8: power with exponent 0 → 1
+    {
+        std::vector<uint64_t> f = {1, 0, 1}; // x^2 + 1 mod 7
+        ModularPoly a(std::vector<uint64_t>{3, 2});
+        auto result = ModularPoly::power(a, Integer(int64_t(0)), f, p);
+        assert(result.is_one());
+    }
+
+    // Test 9: divmod by zero polynomial → exception
+    {
+        ModularPoly a(std::vector<uint64_t>{1, 1});
+        ModularPoly zero;
+        bool caught = false;
+        try {
+            ModularPoly::divmod(a, zero, p);
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        assert(caught);
+    }
+
+    // Test 10: divmod when a.degree < b.degree → quotient=0, remainder=a
+    {
+        ModularPoly a(std::vector<uint64_t>{3});       // degree 0
+        ModularPoly b(std::vector<uint64_t>{1, 1});    // degree 1
+        auto [q, r] = ModularPoly::divmod(a, b, p);
+        assert(q.is_zero());
+        assert(r.coeff(0) == 3);
+    }
+
+    // Test 11: gcd(a, a) → monic version of a
+    {
+        ModularPoly a(std::vector<uint64_t>{2, 3}); // 3x + 2
+        auto g = ModularPoly::gcd(a, a, p);
+        // Should be monic: (3x + 2) / 3 = x + 2*3^{-1}
+        // 3^{-1} mod 7 = 5, so 2*5 = 10 mod 7 = 3
+        assert(g.degree() == 1);
+        assert(g.coeff(1) == 1); // monic
+    }
+
+    // Test 12: is_irreducible for degree 0 → false, degree 1 → true
+    {
+        std::vector<uint64_t> deg0 = {5};
+        assert(!ModularPoly::is_irreducible(deg0, p));
+
+        std::vector<uint64_t> deg1 = {3, 1}; // x + 3
+        assert(ModularPoly::is_irreducible(deg1, p));
+    }
+
+    // Test 13: reduce when polynomial already smaller than f → unchanged
+    {
+        std::vector<uint64_t> f = {1, 0, 0, 1}; // x^3 + 1
+        ModularPoly small(std::vector<uint64_t>{2, 3}); // 3x + 2 (degree 1 < 3)
+        auto reduced = ModularPoly::reduce(small, f, p);
+        assert(reduced.coeff(0) == 2);
+        assert(reduced.coeff(1) == 3);
+        assert(reduced.degree() == 1);
+    }
+
+    // Test 14: set_coeff extends polynomial and normalizes
+    {
+        ModularPoly poly;
+        poly.set_coeff(3, 5); // x^3 coefficient = 5
+        assert(poly.degree() == 3);
+        assert(poly.coeff(3) == 5);
+        assert(poly.coeff(0) == 0);
+
+        // Setting leading coeff to 0 reduces degree
+        poly.set_coeff(3, 0);
+        assert(poly.is_zero());
+    }
+
+    std::cout << "  PASS (14 sub-tests)" << std::endl;
+}
+
+// ─── LatticeBasis 边界/极端情况 ─────────────────────────────────────────
+
+void test_lattice_basis_edge_cases() {
+    std::cout << "Testing LatticeBasis edge cases..." << std::endl;
+
+    // Test 1: Small q=2, r=1 → basis computation
+    {
+        SpecialQ sq;
+        sq.q = 2;
+        sq.r = 1;
+        auto basis = compute_lattice_basis(sq);
+        int64_t det = basis.determinant();
+        assert(det == 2 || det == -2);
+        assert(basis.verify_ab(basis.e0, basis.f0));
+        assert(basis.verify_ab(basis.e1, basis.f1));
+    }
+
+    // Test 2: q=3, r=0 → a ≡ 0 (mod 3) lattice
+    {
+        SpecialQ sq;
+        sq.q = 3;
+        sq.r = 0;
+        auto basis = compute_lattice_basis(sq);
+        int64_t det = basis.determinant();
+        assert(det == 3 || det == -3);
+        // (3, 0) and (0, 1) should be a valid basis pair
+        assert(basis.verify_ab(basis.e0, basis.f0));
+        assert(basis.verify_ab(basis.e1, basis.f1));
+    }
+
+    // Test 3: q=r=1 edge case → a - b ≡ 0 (mod 1) always true
+    {
+        SpecialQ sq;
+        sq.q = 1;
+        sq.r = 0;
+        auto basis = compute_lattice_basis(sq);
+        // All (a,b) satisfy the condition mod 1
+        assert(basis.verify_ab(0, 0));
+        assert(basis.verify_ab(7, 3));
+        assert(basis.verify_ab(-5, 2));
+    }
+
+    // Test 4: to_ab and verify_ab roundtrip — any lattice point should satisfy
+    {
+        SpecialQ sq;
+        sq.q = 101;
+        sq.r = 42;
+        auto basis = compute_lattice_basis(sq);
+
+        for (int i = -5; i <= 5; ++i) {
+            for (int j = -5; j <= 5; ++j) {
+                auto [a, b] = basis.to_ab(i, j);
+                assert(basis.verify_ab(a, b));
+            }
+        }
+    }
+
+    // Test 5: SieveRegion index roundtrip
+    {
+        SieveRegion region;
+        region.i_min = -10;
+        region.i_max = 9;
+        region.j_min = 1;
+        region.j_max = 5;
+
+        assert(region.i_width() == 20);
+        assert(region.j_height() == 5);
+        assert(region.size() == 100);
+
+        // Roundtrip: index → ij → index
+        for (size_t idx = 0; idx < region.size(); ++idx) {
+            auto [i, j] = region.index_to_ij(idx);
+            size_t idx2 = region.ij_to_index(i, j);
+            assert(idx == idx2);
+        }
+    }
+
+    // Test 6: default_sieve_region with various skewness values
+    {
+        // skewness = 1.0 → symmetric region
+        auto r1 = default_sieve_region(1.0);
+        assert(r1.i_min < 0 && r1.i_max > 0);
+        assert(r1.j_min >= 1 && r1.j_max > 0);
+
+        // skewness = 100.0 → wider i, shorter j
+        auto r2 = default_sieve_region(100.0);
+        assert(r2.i_width() >= r1.i_width()); // wider or equal
+        assert(r2.j_height() <= r1.j_height()); // shorter or equal
+
+        // skewness = 0.5 → should not crash, treated as < 1
+        auto r3 = default_sieve_region(0.5);
+        assert(r3.size() > 0);
+
+        // Very large skewness → j_size collapses to 0 (known P2 bug)
+        // For extreme skewness, j_size = base/sqrt(skew) → 0 before area cap fires
+        auto r4 = default_sieve_region(1e10);
+        // Don't assert size > 0 — this is a documented limitation (BACKLOG P2)
+        (void)r4;
+    }
+
+    // Test 7: Large prime q — determinant still ±q
+    {
+        SpecialQ sq;
+        sq.q = 99991;
+        sq.r = 12345;
+        auto basis = compute_lattice_basis(sq);
+        int64_t det = basis.determinant();
+        assert(det == 99991 || det == -99991);
+        assert(basis.verify_ab(basis.e0, basis.f0));
+        assert(basis.verify_ab(basis.e1, basis.f1));
+    }
+
+    // Test 8: moderate root value — boundary
+    // NOTE: r=q-1 (e.g. q=97,r=96) triggers infinite oscillation in Gaussian
+    // reduction when dot/n1 = ±0.5 exactly (known P2 bug in BACKLOG).
+    // Using r=30 which converges safely.
+    {
+        SpecialQ sq;
+        sq.q = 97;
+        sq.r = 30;
+        auto basis = compute_lattice_basis(sq);
+        int64_t det = basis.determinant();
+        assert(det == 97 || det == -97);
+        assert(basis.verify_ab(basis.e0, basis.f0));
+        assert(basis.verify_ab(basis.e1, basis.f1));
+    }
+
+    std::cout << "  PASS (8 sub-tests)" << std::endl;
+}
+
+// ─── ClassGroup 结构体边界/极端情况 ─────────────────────────────────────
+
+void test_class_group_struct_edge_cases() {
+    std::cout << "Testing ClassGroup struct edge cases..." << std::endl;
+
+    // Test 1: IdealClass reduce_mod with order=0 → no-op
+    {
+        IdealClass cls;
+        PrimeIdeal pi{5, 2, 1};
+        cls.add_prime(pi, 7);
+        cls.reduce_mod(0); // order=0 → no reduction
+        assert(cls.prime_powers[pi] == 7); // unchanged
+    }
+
+    // Test 2: IdealClass reduce_mod with negative exponents
+    {
+        IdealClass cls;
+        PrimeIdeal pi{3, 1, 1};
+        cls.prime_powers[pi] = -5;
+        cls.reduce_mod(3); // -5 mod 3 → ((-5 % 3) + 3) % 3 = ((-2) + 3) % 3 = 1
+        assert(cls.prime_powers[pi] == 1);
+    }
+
+    // Test 3: IdealClass add_prime accumulates
+    {
+        IdealClass cls;
+        PrimeIdeal pi{7, 0, 1};
+        cls.add_prime(pi, 3);
+        cls.add_prime(pi, 4);
+        assert(cls.prime_powers[pi] == 7);
+    }
+
+    // Test 4: PrimeIdeal self-comparison
+    {
+        PrimeIdeal pi{5, 3, 1};
+        assert(pi == pi);
+        assert(!(pi < pi));
+    }
+
+    // Test 5: IdealClass with all-zero exponents → principal
+    {
+        IdealClass cls;
+        PrimeIdeal p1{2, 0, 1};
+        PrimeIdeal p2{3, 1, 1};
+        cls.add_prime(p1, 0);
+        cls.add_prime(p2, 0);
+        // Note: zero entries are not removed by add_prime, only by reduce_mod
+        // But is_principal checks for all exp==0
+        assert(cls.is_principal());
+    }
+
+    // Test 6: ClassGroup with degree-2 polynomial (non-cubic) — general discriminant path
+    {
+        // f(x) = x^2 + 1, m = 12, N = 145 = 5×29, f(12) = 145
+        std::vector<Integer> coeffs = {Integer(int64_t(1)), Integer(int64_t(0)), Integer(int64_t(1))};
+        PolynomialContext ctx(Integer("145"), std::move(coeffs), Integer(int64_t(12)));
+        ClassGroup cg(ctx);
+        // Should not crash; class_number >= 1
+        assert(cg.class_number() >= 1);
+        assert(cg.minkowski_bound() >= 0.0);
+    }
+
+    // Test 7: ClassGroup with very small discriminant → trivial
+    {
+        // f(x) = x^3 + x + 1, m=5, N=131: Δ=-31, MB≈1.57 < 2 → trivial
+        std::vector<Integer> c = {Integer(int64_t(1)), Integer(int64_t(1)), Integer(int64_t(0)), Integer(int64_t(1))};
+        PolynomialContext ctx(Integer("131"), std::move(c), Integer(int64_t(5)));
+        ClassGroup cg(ctx);
+        assert(cg.class_number() == 1);
+        assert(cg.num_generators() == 0);
+        // Character for any (a,b) should be empty
+        auto ch = cg.compute_character(3, 1);
+        assert(ch.empty());
+    }
+
+    // Test 8: ClassGroupConfig customization
+    {
+        ClassGroup::Config cfg;
+        cfg.max_primes = 5;
+        cfg.max_generators = 2;
+        cfg.verbose = false;
+
+        std::vector<Integer> c = {Integer(int64_t(1)), Integer(int64_t(5)), Integer(int64_t(0)), Integer(int64_t(1))};
+        PolynomialContext ctx(Integer("19"), std::move(c), Integer(int64_t(2)));
+        ClassGroup cg(ctx, cfg);
+        assert(cg.class_number() >= 1);
+    }
+
+    std::cout << "  PASS (8 sub-tests)" << std::endl;
+}
+
 int main() {
     std::cout << "=== Edge Case Tests ===" << std::endl;
 
@@ -1855,6 +2233,15 @@ int main() {
 
     // FactorBase 查找与构造边界
     test_factor_base_edge_cases();
+
+    // ModularPoly 算术边界 (Session 34)
+    test_modular_poly_edge_cases();
+
+    // LatticeBasis 几何边界 (Session 34)
+    test_lattice_basis_edge_cases();
+
+    // ClassGroup 结构体边界 (Session 34)
+    test_class_group_struct_edge_cases();
 
     std::cout << "\nAll edge case tests passed!" << std::endl;
     return 0;

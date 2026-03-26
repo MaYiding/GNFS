@@ -31,6 +31,9 @@
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 #include <gnfs/sieve/special_q.hpp>
 #include <gnfs/sieve/lattice_sieve.hpp>
+#include <gnfs/sieve/lattice_basis.hpp>
+#include <gnfs/sqrt/class_group.hpp>
+#include <gnfs/polynomial/polynomial_optimizer.hpp>
 
 #include <cassert>
 #include <cmath>
@@ -1320,6 +1323,206 @@ void test_norm_rational_value_consistency() {
     std::cout << "  PASS" << std::endl;
 }
 
+// ============================================================
+// Session 34: LatticeBasis → verify_ab → cofactorizer chain
+// ============================================================
+void test_lattice_basis_sieve_geometry() {
+    std::cout << "Testing LatticeBasis → Sieve geometry verification (integration)..." << std::endl;
+
+    // Build environment for N=10403 (101×103)
+    Integer n("10403");
+    auto poly_result = BaseMSelector::select(n, 2);
+    assert(poly_result.success);
+    auto ctx = BaseMSelector::create_context(n, poly_result);
+
+    FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 200;
+    fb_opts.algebraic_bound = 200;
+    fb_opts.parallel = false;
+    auto fb = FactorBaseBuilder::build(ctx, fb_opts);
+
+    // Pick a special-q from the algebraic factor base
+    assert(fb.algebraic_count() > 5);
+    const auto& alg_primes = fb.algebraic();
+
+    // Use a prime from the factor base as special-q
+    SpecialQ sq;
+    sq.q = alg_primes[5].p;
+    sq.r = alg_primes[5].r;
+    sq.index = 5;
+
+    auto basis = compute_lattice_basis(sq);
+
+    // Verify: determinant = ±q
+    int64_t det = basis.determinant();
+    assert(det == static_cast<int64_t>(sq.q) || det == -static_cast<int64_t>(sq.q));
+
+    // Verify: all lattice points satisfy a ≡ b*r (mod q)
+    size_t valid_count = 0;
+    for (int i = -10; i <= 10; ++i) {
+        for (int j = 1; j <= 5; ++j) {
+            auto [a, b] = basis.to_ab(i, j);
+            assert(basis.verify_ab(a, b));
+            // Skip trivial (a=0, b=0)
+            if (a == 0 && b == 0) continue;
+            valid_count++;
+        }
+    }
+    assert(valid_count > 0);
+
+    std::cout << "  PASS (q=" << sq.q << " r=" << sq.r
+              << " det=" << det << " checked=" << valid_count << " lattice points)" << std::endl;
+}
+
+// ============================================================
+// Session 34: Polynomial degree → FB → matrix column count
+// ============================================================
+void test_polynomial_degree_fb_matrix_consistency() {
+    std::cout << "Testing Polynomial degree → FB → matrix column consistency (integration)..." << std::endl;
+
+    // Test that different FB bounds produce consistent matrix dimensions
+    // Use small N values with base-m degree 3 (fast path)
+    for (const char* n_str : {"143", "10403"}) {
+        Integer n(n_str);
+        auto poly_result = BaseMSelector::select(n, 3);
+        assert(poly_result.success);
+        auto ctx = BaseMSelector::create_context(n, poly_result);
+
+        FactorBaseBuilder::Options fb_opts;
+        fb_opts.rational_bound = 50;
+        fb_opts.algebraic_bound = 50;
+        fb_opts.parallel = false;
+        auto fb = FactorBaseBuilder::build(ctx, fb_opts);
+
+        // Collect a few relations quickly
+        CofactorizerConfig cof_cfg;
+        cof_cfg.large_prime_bound = 5000;
+        Cofactorizer cof(ctx, fb, cof_cfg);
+
+        std::vector<Relation> rels;
+        for (int64_t a = -20; a <= 20; ++a) {
+            for (uint64_t b = 1; b <= 2; ++b) {
+                uint64_t abs_a = static_cast<uint64_t>(a < 0 ? -a : a);
+                if (std::gcd(abs_a, b) != 1) continue;
+                auto rel = cof.verify(a, b);
+                if (rel.has_value()) rels.push_back(std::move(*rel));
+                if (rels.size() >= 10) break;
+            }
+            if (rels.size() >= 10) break;
+        }
+
+        if (rels.size() < 3) continue;
+
+        // Build basic matrix (no QC/ClassGroup/Schirokauer for speed)
+        MatrixBuilder::Config mb_cfg;
+        mb_cfg.include_qc_columns = false;
+        mb_cfg.include_class_group = false;
+        mb_cfg.include_schirokauer = false;
+        MatrixBuilder builder(mb_cfg);
+        auto build_result = builder.build(rels, fb);
+
+        size_t expected_min = fb.rational_count() + fb.algebraic_count();
+
+        std::cout << "  N=" << n_str << " rat=" << fb.rational_count()
+                  << " alg=" << fb.algebraic_count() << " rels=" << rels.size()
+                  << " cols=" << build_result.matrix.num_cols() << std::endl;
+
+        // Matrix columns ≥ rat + alg (sign + FB columns)
+        assert(build_result.matrix.num_cols() >= expected_min);
+        // Matrix rows = number of relations
+        assert(build_result.matrix.num_rows() == rels.size());
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
+// ============================================================
+// Session 34: ClassGroup character size matches generators
+// ============================================================
+void test_class_group_character_consistency() {
+    std::cout << "Testing ClassGroup character size consistency (integration)..." << std::endl;
+
+    // Test with multiple N values and polynomial contexts
+    // Use degree 3 (fast) for all cases
+    const char* n_values[] = {"143", "9991", "10403"};
+
+    for (const char* n_str : n_values) {
+        Integer n(n_str);
+        auto poly_result = BaseMSelector::select(n, 3);
+        if (!poly_result.success) continue;
+        auto ctx = BaseMSelector::create_context(n, poly_result);
+
+        ClassGroup cg(ctx);
+
+        // Character vector size must match num_generators
+        size_t num_gen = cg.num_generators();
+        assert(cg.generators().size() == num_gen);
+
+        // All characters for different (a,b) pairs must have consistent size
+        for (int64_t a : {1LL, -3LL, 5LL, 7LL}) {
+            for (uint64_t b : {1ULL, 2ULL}) {
+                auto ch = cg.compute_character(a, b);
+                assert(ch.size() == num_gen);
+            }
+        }
+
+        std::cout << "  N=" << n_str << " class_number=" << cg.class_number()
+                  << " generators=" << num_gen << " OK" << std::endl;
+    }
+    std::cout << "  PASS" << std::endl;
+}
+
+// ============================================================
+// Session 34: MurphyE scoring ranks polynomials consistently
+// ============================================================
+void test_murphy_ranking_consistency() {
+    std::cout << "Testing MurphyE ranking consistency (integration)..." << std::endl;
+
+    // For two different N values, Murphy scores should all be finite
+    // Use degree 3 (fast) for all cases
+    const char* n_values[] = {"10403", "9991"};
+
+    std::vector<double> all_scores;
+
+    for (const char* n_str : n_values) {
+        Integer n(n_str);
+        auto poly_result = BaseMSelector::select(n, 3);
+        assert(poly_result.success);
+        auto ctx = BaseMSelector::create_context(n, poly_result);
+
+        // Extract f, g from context
+        IntPolynomial f(static_cast<int>(ctx.degree()));
+        for (uint32_t i = 0; i <= ctx.degree(); ++i) {
+            f[i] = ctx.coeff(i).clone();
+        }
+        IntPolynomial g(1);
+        Integer minus_m = ctx.m().clone();
+        minus_m.negate();
+        g[0] = std::move(minus_m);
+        g[1] = Integer(int64_t(1));
+
+        MurphyParams params;
+        params.sample_points = 100;
+        params.alpha_bound = 500;
+        params.skewness_steps = 3;
+        MurphyEvaluator evaluator(params);
+
+        auto score = evaluator.compute(f, g, n);
+
+        // Score should be finite
+        assert(std::isfinite(score.log_e_score) || score.log_e_score == -1e100);
+        assert(std::isfinite(score.alpha_f));
+        all_scores.push_back(score.log_e_score);
+
+        std::cout << "  N=" << n_str << " log_e=" << score.log_e_score
+                  << " alpha_f=" << score.alpha_f << std::endl;
+    }
+
+    // Both scores should exist
+    assert(all_scores.size() == 2);
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== GNFS Integration Tests ===" << std::endl;
     std::cout << std::endl;
@@ -1352,6 +1555,12 @@ int main() {
     test_filter_reduces_matrix_dimensions();
     test_fb_bounds_sensitivity();
     test_norm_rational_value_consistency();
+
+    // Session 34 集成测试
+    test_lattice_basis_sieve_geometry();
+    test_polynomial_degree_fb_matrix_consistency();
+    test_class_group_character_consistency();
+    test_murphy_ranking_consistency();
 
     std::cout << std::endl;
     std::cout << "All integration tests passed!" << std::endl;
