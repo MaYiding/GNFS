@@ -54,25 +54,6 @@
 - **文件**: `include/gnfs/util/small_vector.hpp:43-54,67-79`
 - **描述**: move 后源元素析构函数未调用
 
-### [BUG] RelationCollector::merge() 未锁定 other 的 mutex
-- **发现日期**: 2026-03-08 (Session 6)
-- **文件**: `include/gnfs/relation/collector.hpp:227`
-- **描述**: 读取 other.relations_ 不加锁
-
-### [BUG] Pollard rho 只使用单一多项式 x²+1
-- **发现日期**: 2026-03-08 (Session 6)
-- **文件**: `include/gnfs/cofactor/smooth_check.hpp:148`
-- **描述**: 固定 c=1，某些 n 值永远找不到因子
-
-### [BUG] lattice_sieve 模运算中间值 int64 溢出
-- **发现日期**: 2026-03-08 (Session 5) | 大 q 时可触发但当前测试规模安全
-- **文件**: `include/gnfs/sieve/lattice_sieve.hpp:268-269`
-- **描述**: f0*m_mod_p 可溢出 int64
-
-### [BUG] SieveRegion default_sieve_region 大 skewness 时 int32 溢出
-- **发现日期**: 2026-03-08 (Session 6) | skewness > 1e10 时触发
-- **文件**: `include/gnfs/sieve/lattice_basis.hpp:175-178`
-- **描述**: base_size * factor 溢出 int32
 
 ### [BUG] Kleinjung is_valid_polynomial() 浮点验证无意义
 - **发现日期**: 2026-03-08 (Session 5)
@@ -100,15 +81,6 @@
 - **文件**: `include/gnfs/sqrt/hensel_sqrt.hpp:226-240`
 - **描述**: centering 后无验证，但 extra_precision=200 提供余量
 
-### [BUG] FactorBaseBuilder 实例 build() 返回空 FactorBase
-- **发现日期**: 2026-03-09 (Session 7)
-- **文件**: `src/factor_base/builder.cpp:62-69`
-- **描述**: 实例方法直接返回空结果，不抛异常
-
-### [BUG] matrix_builder FB 索引无越界检查
-- **发现日期**: 2026-03-08 (Session 6) | 防御性编程，上游应产生正确索引
-- **文件**: `include/gnfs/linalg/matrix_builder.hpp:540,553`
-- **描述**: FB 索引无上限检查
 
 ### [FEAT] Bucket Sieve 架构
 - **发现日期**: 2026-02-20 (Session 2)

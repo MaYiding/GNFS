@@ -7,6 +7,50 @@
 
 ## 已完成 ✅
 
+### P2 级修复 (Session 37)
+
+#### [BUG] ~~RelationCollector::merge() 未锁定 other 的 mutex~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 37)
+- **修复**: `collector.hpp:246` `std::lock_guard` → `std::scoped_lock(mutex_, other.mutex_)` 同时锁两个 mutex
+- **验证**: smoke 20/20 通过, test_relation_collector 通过
+- **Commit**: `5d81b1f`
+
+#### [BUG] ~~Pollard rho 只使用单一多项式 x²+1~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 37)
+- **修复**: `smooth_check.hpp:pollard_rho()` 从固定 c=1 改为依次尝试 c=1,3,5,...,19 共 10 个值
+- **验证**: smoke 20/20 通过, test_cofactor 通过
+- **Commit**: `3649e16`
+
+#### [BUG] ~~FactorBaseBuilder 实例 build() 返回空 FactorBase~~ ✅
+- **发现**: 2026-03-09 (Session 7)
+- **解决**: 2026-03-10 (Session 37)
+- **修复**: `builder.cpp:build(uint32_t,uint32_t)` 改为 throw std::logic_error（不再静默返回空）
+- **验证**: smoke 20/20 通过, test_factor_base 通过
+- **Commit**: `0b3af1e`
+
+#### [BUG] ~~lattice_sieve 模运算中间值 int64 溢出~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 37)
+- **修复**: `lattice_sieve.hpp` 有理侧+代数侧筛选先对 p 取模再乘法，保证中间值 < 2^64
+- **验证**: smoke 20/20 通过, test_special_q 通过
+- **Commit**: `234588d`
+
+#### [BUG] ~~SieveRegion default_sieve_region 大 skewness 时 int32 溢出~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 37)
+- **修复**: `lattice_basis.hpp:default_sieve_region()` 添加 clamp 到 INT32_MAX-1
+- **验证**: smoke 20/20 通过
+- **Commit**: `88c2274`
+
+#### [BUG] ~~matrix_builder FB 索引无越界检查~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 37)
+- **修复**: `matrix_builder.hpp:build_row()` 有理/代数 FB 索引添加 `idx < num_*_fb` 越界检查
+- **验证**: smoke 20/20 通过, test_linalg 通过, test_integration 通过
+- **Commit**: `dfebb8d`
+
 ### P1 + P2 级修复 (Session 36)
 
 #### [BUG] ~~modular_poly sub()/mod_inverse() 对 p > INT64_MAX 溢出~~ ✅
