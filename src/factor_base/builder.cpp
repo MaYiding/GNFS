@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <stdexcept>
 
 namespace gnfs::factor_base {
 
@@ -78,13 +79,12 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
     return fb;
 }
 
-FactorBase FactorBaseBuilder::build(uint32_t rational_bound, uint32_t algebraic_bound) {
-    // This method requires a valid ctx_, which we can't have with deleted copy
-    // Return empty factor base
-    Options opts;
-    opts.rational_bound = rational_bound;
-    opts.algebraic_bound = algebraic_bound;
-    return FactorBase();
+FactorBase FactorBaseBuilder::build(uint32_t /* rational_bound */, uint32_t /* algebraic_bound */) {
+    // This instance method requires a valid ctx_, which we can't have with deleted copy.
+    // The static build(ctx, opts) method should be used instead.
+    throw std::logic_error(
+        "FactorBaseBuilder::build(uint32_t, uint32_t) is deprecated — "
+        "use the static build(ctx, opts) method instead");
 }
 
 void FactorBaseBuilder::find_rational_primes(FactorBase& fb, uint32_t bound, uint8_t log_scale) {

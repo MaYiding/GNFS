@@ -188,6 +188,12 @@ struct SieveRegion {
         j_size = std::floor(j_size * scale);
     }
 
+    // Clamp to int32 range to prevent overflow on extreme skewness
+    constexpr double MAX_I_HALF = static_cast<double>(INT32_MAX - 1);
+    constexpr double MAX_J_SIZE = static_cast<double>(INT32_MAX - 1);
+    i_half = std::min(i_half, MAX_I_HALF);
+    j_size = std::max(std::min(j_size, MAX_J_SIZE), 1.0);
+
     region.i_min = -static_cast<int32_t>(i_half);
     region.i_max = static_cast<int32_t>(i_half) - 1;
     region.j_min = 1;

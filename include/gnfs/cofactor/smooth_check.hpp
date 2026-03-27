@@ -135,20 +135,11 @@ struct CofactorClassification {
 
 /// 使用 Pollard's rho 算法尝试分解
 /// @param n 要分解的数
-/// @param max_iterations 最大迭代次数
+/// @param max_iterations 每次尝试的最大迭代次数
 /// @return 找到的因子，如果失败返回 1 或 n
 [[nodiscard]] inline uint64_t pollard_rho(uint64_t n, size_t max_iterations = 100000) {
     if (n % 2 == 0) return 2;
     if (n % 3 == 0) return 3;
-
-    uint64_t x = 2, y = 2, d = 1;
-    size_t iterations = 0;
-
-    // f(x) = x^2 + 1 mod n
-    auto f = [n](uint64_t x) -> uint64_t {
-        __uint128_t xx = static_cast<__uint128_t>(x) * x + 1;
-        return static_cast<uint64_t>(xx % n);
-    };
 
     auto gcd = [](uint64_t a, uint64_t b) -> uint64_t {
         while (b != 0) {
@@ -159,17 +150,30 @@ struct CofactorClassification {
         return a;
     };
 
-    while (d == 1 && iterations < max_iterations) {
-        x = f(x);
-        y = f(f(y));
+    // 尝试多个 c 值，避免单一多项式对某些 n 永远循环
+    for (uint64_t c = 1; c <= 19; c += 2) {
+        uint64_t x = 2, y = 2, d = 1;
+        size_t iterations = 0;
 
-        uint64_t diff = (x > y) ? x - y : y - x;
-        d = gcd(diff, n);
+        auto f = [n, c](uint64_t x) -> uint64_t {
+            __uint128_t xx = static_cast<__uint128_t>(x) * x + c;
+            return static_cast<uint64_t>(xx % n);
+        };
 
-        ++iterations;
+        while (d == 1 && iterations < max_iterations) {
+            x = f(x);
+            y = f(f(y));
+
+            uint64_t diff = (x > y) ? x - y : y - x;
+            d = gcd(diff, n);
+
+            ++iterations;
+        }
+
+        if (d != 1 && d != n) return d;
     }
 
-    return (d != n) ? d : 1;
+    return 1;  // 所有 c 值均失败
 }
 
 /// 分类 cofactor

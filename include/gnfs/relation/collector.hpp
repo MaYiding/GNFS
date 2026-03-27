@@ -244,7 +244,7 @@ public:
 
     /// 合并另一个收集器的关系
     size_t merge(const RelationCollector& other) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_, other.mutex_);
 
         size_t added = 0;
         for (const auto& rel : other.relations_) {
