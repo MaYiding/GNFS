@@ -271,9 +271,21 @@ private:
         // 有理侧值 (GNFS) = a - b*m = i*(e0 - f0*m) + j*(e1 - f1*m)
         // 设 u = (e0 - f0*m) mod p, v = (e1 - f1*m) mod p
         // 需要找 (i, j) 使得 i*u + j*v ≡ 0 (mod p)
-
-        int64_t u = (basis.e0 - static_cast<int64_t>(basis.f0) * static_cast<int64_t>(m_mod_p)) % static_cast<int64_t>(p);
-        int64_t v = (basis.e1 - static_cast<int64_t>(basis.f1) * static_cast<int64_t>(m_mod_p)) % static_cast<int64_t>(p);
+        //
+        // NOTE: 先对 p 取模再做乘法，防止 f0*m_mod_p 溢出 int64
+        int64_t p64 = static_cast<int64_t>(p);
+        auto mod_reduce = [p64](int64_t val) -> int64_t {
+            int64_t r = val % p64;
+            return r < 0 ? r + p64 : r;
+        };
+        int64_t e0_mod = mod_reduce(basis.e0);
+        int64_t f0_mod = mod_reduce(basis.f0);
+        int64_t e1_mod = mod_reduce(basis.e1);
+        int64_t f1_mod = mod_reduce(basis.f1);
+        int64_t m64 = static_cast<int64_t>(m_mod_p);
+        // f_mod * m64 fits in int64: both < p < 2^32
+        int64_t u = (e0_mod - f0_mod * m64 % p64 + p64) % p64;
+        int64_t v = (e1_mod - f1_mod * m64 % p64 + p64) % p64;
 
         if (u < 0) u += p;
         if (v < 0) v += p;
@@ -353,11 +365,21 @@ private:
     void sieve_prime_algebraic(const LatticeBasis& basis, uint32_t p, uint32_t r, uint32_t log_p) {
         // 对于代数侧 (GNFS convention)，p | N(a - bα) 当且仅当 p | (a - b*r)
         // Prime ideal P = (p, α - r) divides (a - bα) iff a - b*r ≡ 0 (mod p)
-        int64_t u = (basis.e0 - static_cast<int64_t>(basis.f0) * static_cast<int64_t>(r)) % static_cast<int64_t>(p);
-        int64_t v = (basis.e1 - static_cast<int64_t>(basis.f1) * static_cast<int64_t>(r)) % static_cast<int64_t>(p);
-
-        if (u < 0) u += p;
-        if (v < 0) v += p;
+        //
+        // NOTE: 先对 p 取模再做乘法，防止 f0*r 溢出 int64
+        int64_t p64 = static_cast<int64_t>(p);
+        auto mod_reduce = [p64](int64_t val) -> int64_t {
+            int64_t rem = val % p64;
+            return rem < 0 ? rem + p64 : rem;
+        };
+        int64_t e0_mod = mod_reduce(basis.e0);
+        int64_t f0_mod = mod_reduce(basis.f0);
+        int64_t e1_mod = mod_reduce(basis.e1);
+        int64_t f1_mod = mod_reduce(basis.f1);
+        int64_t r64 = static_cast<int64_t>(r);
+        // f_mod * r64 fits in int64: both < p < 2^32
+        int64_t u = (e0_mod - f0_mod * r64 % p64 + p64) % p64;
+        int64_t v = (e1_mod - f1_mod * r64 % p64 + p64) % p64;
 
         if (u == 0 && v == 0) {
             for (size_t idx = 0; idx < sieve_array_.size(); ++idx) {
