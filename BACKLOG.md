@@ -18,11 +18,6 @@
 - **文件**: `include/gnfs/cofactor/ecm.hpp:410-430`
 - **描述**: 朴素 O(π(B2))，应优化为 BSGS O(√(B2/B1))
 
-### [OPT] lattice_basis 浮点高斯约化不够精确
-- **发现日期**: 2026-03-08 (Session 5)
-- **文件**: `include/gnfs/sieve/lattice_basis.hpp:83-109`
-- **描述**: double 精度在 |e0|, |f0| ~ 10^18 时误差 ~ 10^3
-
 ---
 
 ## P2 — 中优先级（大数支持和架构改进）
@@ -44,27 +39,6 @@
 
 
 
-### [BUG] Kleinjung base_m_expansion 系数不平衡
-- **发现日期**: 2026-03-08 (Session 6)
-- **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp:466-478`
-- **描述**: 截断除法产生 [0,m) 系数，应平衡到 [-m/2,m/2]
-
-### [BUG] SmallVector move constructor 不销毁源对象的 inline 元素
-- **发现日期**: 2026-03-08 (Session 6) | 仅影响非平凡析构类型，当前主要用于 POD
-- **文件**: `include/gnfs/util/small_vector.hpp:43-54,67-79`
-- **描述**: move 后源元素析构函数未调用
-
-
-### [BUG] Kleinjung is_valid_polynomial() 浮点验证无意义
-- **发现日期**: 2026-03-08 (Session 5)
-- **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp:505-512`
-- **描述**: double 精度对大 N 无效
-- **建议**: 用 Integer 精确验证 `f(m) == N`
-
-### [BUG] 代数因子基射影根在筛选中产生算术垃圾
-- **发现日期**: 2026-03-08 (Session 6) | 射影根较少，影响有限
-- **文件**: `include/gnfs/factor_base/factor_base.hpp:78` + `include/gnfs/sieve/lattice_sieve.hpp:342`
-- **描述**: PROJECTIVE_ROOT = UINT32_MAX 被当作普通根处理
 
 ### [BUG] IntPolynomial::roots_cantor_zassenhaus 实际是 O(p) 暴力搜索
 - **发现日期**: 2026-03-08 (Session 6)
@@ -198,11 +172,6 @@
 - **发现日期**: 2026-03-08 (Session 6) | 从未被调用
 - **文件**: `include/gnfs/linalg/sparse_matrix.hpp:298-319`
 
-### [BUG] gauss.hpp history 矩阵 O(n²) 空间浪费——计算但从未使用
-- **发现日期**: 2026-03-09 (Session 6) | O(n²) 空间浪费
-- **文件**: `include/gnfs/linalg/gauss.hpp:50-58,77-78,88-93`
-- **描述**: `eliminate()` 花费 O(n²) 空间维护 history 矩阵（行交换 + XOR 同步），但 `build_null_space()` 从未使用它——零空间构建采用回代法直接从 reduced matrix 推导。Session 18 已移除 `build_null_space` 中的 history/is_pivot_col 参数（`ff4e9b8`），但 eliminate() 中 O(n²) 的 history 计算逻辑仍在。50K 矩阵 ≈ 300MB 浪费
-- **建议**: 删除 eliminate() 中的 history 计算逻辑（条件编译为 #if 0 或直接移除）
 
 ### [BUG] next_prime() uint64 溢出
 - **发现日期**: 2026-03-08 (Session 6) | 理论问题，prime_start 默认 1000
@@ -309,11 +278,6 @@
 ### [OPT] Murphy E-score 低估 20-40%
 - **发现日期**: 2026-03-08 (Session 5)
 - **文件**: `include/gnfs/polynomial/murphy_evaluator.hpp`
-
-### [OPT] Gauss 消元 history 矩阵 O(n²) 空间
-- **发现日期**: 2026-03-08 (Session 5) | 已与 P3 gauss history 条目合并
-- **文件**: `include/gnfs/linalg/gauss.hpp`
-- **描述**: 见 P3 中 "gauss.hpp history 矩阵 O(n²) 空间浪费" 条目。Session 18 已移除 unused 参数，history 计算逻辑待清理
 
 ### [DEBT] 全局性 uint64_t b → int64_t 截断（13 处）
 - **发现日期**: 2026-03-08 (Session 5) | b 值始终远小于 INT64_MAX
