@@ -79,9 +79,20 @@ struct LatticeBasis {
     int64_t v0_a = q64, v0_b = 0;
     int64_t v1_a = r64, v1_b = 1;
 
-    // 确保 |v0| >= |v1|（按长度）
-    auto norm_sq = [](int64_t a, int64_t b) -> double {
-        return static_cast<double>(a) * a + static_cast<double>(b) * b;
+    // 使用 __int128_t 精确计算 norm² 和点积
+    // double 在 q² > 2^53 时有精度损失，导致 round(dot/n1) 可能出错
+    auto norm_sq = [](int64_t a, int64_t b) -> __int128_t {
+        __int128_t a128 = a, b128 = b;
+        return a128 * a128 + b128 * b128;
+    };
+
+    // 精确整数 round(a/b): (2a + b) / (2b) for a≥0, (2a - b) / (2b) for a<0
+    auto int_round_div = [](__int128_t a, __int128_t b) -> int64_t {
+        if (a >= 0) {
+            return static_cast<int64_t>((2 * a + b) / (2 * b));
+        } else {
+            return static_cast<int64_t>((2 * a - b) / (2 * b));
+        }
     };
 
     // 高斯规约
@@ -96,10 +107,11 @@ struct LatticeBasis {
         }
 
         // v0 = v0 - round(v0·v1 / v1·v1) * v1
-        double dot = static_cast<double>(v0_a) * v1_a + static_cast<double>(v0_b) * v1_b;
-        double n1 = norm_sq(v1_a, v1_b);
+        __int128_t dot = static_cast<__int128_t>(v0_a) * v1_a +
+                         static_cast<__int128_t>(v0_b) * v1_b;
+        __int128_t n1 = norm_sq(v1_a, v1_b);
         if (n1 > 0) {
-            int64_t mu = static_cast<int64_t>(std::round(dot / n1));
+            int64_t mu = int_round_div(dot, n1);
             if (mu != 0) {
                 v0_a -= mu * v1_a;
                 v0_b -= mu * v1_b;
