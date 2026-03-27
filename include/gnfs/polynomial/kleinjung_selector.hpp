@@ -460,12 +460,22 @@ private:
         ad_md *= m_pow_d;
         n_prime -= ad_md;
 
-        // 对 n' 进行标准 base-m 展开
+        // 对 n' 进行平衡 base-m 展开
+        // 标准展开产生 [0, m) 系数；平衡展开 centering 到 [-m/2, m/2]
         Integer remainder = std::move(n_prime);
+        Integer half_m = m.clone();
+        half_m /= Integer(2);
 
         for (uint32_t i = 0; i < d; ++i) {
             Integer quotient;
             Integer::divmod(quotient, coeffs[i], remainder, m);
+
+            // Center: if coeff > m/2, subtract m and carry +1
+            if (coeffs[i] > half_m) {
+                coeffs[i] -= m;
+                quotient += Integer(static_cast<int64_t>(1));
+            }
+
             remainder = std::move(quotient);
         }
 
@@ -496,22 +506,13 @@ private:
             return false;
         }
 
-        // 检查 f(m) ≡ 0 (mod n)
+        // 检查 f(m) ≡ 0 (mod n)（使用 Integer 精确验证）
         Integer fm = f.evaluate(m);
         Integer remainder;
         Integer quotient;
         Integer::divmod(quotient, remainder, fm, n);
 
-        // 允许小误差
-        if (!remainder.is_zero()) {
-            // 检查是否接近 n 的倍数
-            double rel_error = std::abs(remainder.to_double()) / n.to_double();
-            if (rel_error > 1e-10) {
-                return false;
-            }
-        }
-
-        return true;
+        return remainder.is_zero();
     }
 
     /// 生成光滑系数

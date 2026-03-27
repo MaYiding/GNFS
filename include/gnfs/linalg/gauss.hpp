@@ -47,17 +47,9 @@ public:
             return result;
         }
 
-        // 跟踪行变换：history[i] 记录原始行 i 参与的变换
-        // 用于后续构建零空间向量
-        std::vector<BitVector> history;
-        if (config_.compute_null_space) {
-            history.resize(num_rows, BitVector(num_rows));
-            for (size_t i = 0; i < num_rows; ++i) {
-                history[i].set(i);  // 初始时每行只包含自己
-            }
-        }
-
         // 主消元循环
+        // NOTE: history 矩阵已移除——build_null_space() 采用回代法
+        // 直接从 reduced echelon form 推导零空间，不需要行变换记录
         size_t pivot_row = 0;
         std::vector<bool> is_pivot_col(num_cols, false);
 
@@ -74,9 +66,6 @@ public:
             // 交换行
             if (pivot != pivot_row) {
                 matrix.swap_rows(pivot, pivot_row);
-                if (config_.compute_null_space) {
-                    std::swap(history[pivot], history[pivot_row]);
-                }
             }
 
             // 记录主元列
@@ -87,9 +76,6 @@ public:
             for (size_t i = 0; i < num_rows; ++i) {
                 if (i != pivot_row && matrix.test(i, col)) {
                     matrix.xor_rows(i, pivot_row);
-                    if (config_.compute_null_space) {
-                        history[i].xor_with(history[pivot_row]);
-                    }
                 }
             }
 

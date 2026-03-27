@@ -7,6 +7,50 @@
 
 ## 已完成 ✅
 
+### P1-OPT + P2 + P3 级修复 (Session 37b)
+
+#### [OPT] ~~lattice_basis 浮点高斯约化不够精确~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 37b)
+- **修复**: `lattice_basis.hpp:compute_lattice_basis()` norm²/dot/round 从 double 改为 `__int128_t` 精确整数算术
+- **验证**: smoke 20/20 通过, test_special_q 通过, test_integration 通过
+- **Commit**: `50436c4`
+
+#### [BUG] ~~Kleinjung is_valid_polynomial() 浮点验证无意义~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 37b)
+- **修复**: `kleinjung_selector.hpp:is_valid_polynomial()` 用 Integer 精确验证 f(m) mod n == 0
+- **验证**: smoke 20/20 通过
+- **Commit**: `9a4f8b5`
+
+#### [BUG] ~~Kleinjung base_m_expansion 系数不平衡~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 37b)
+- **修复**: `kleinjung_selector.hpp:base_m_expansion()` 从截断除法 [0,m) 改为平衡展开 [-m/2,m/2]
+- **验证**: smoke 20/20 通过
+- **Commit**: `9a4f8b5`
+
+#### [BUG] ~~代数因子基射影根在筛选中产生算术垃圾~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 37b)
+- **修复**: `lattice_sieve.hpp:sieve_algebraic_side()` 添加 `is_projective()` 跳过
+- **验证**: smoke 20/20 通过, test_special_q 通过
+- **Commit**: `4925590`
+
+#### [BUG] ~~SmallVector move constructor 不销毁源 inline 元素~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 37b)
+- **修复**: `small_vector.hpp` move ctor/assignment 中添加源 inline 元素析构调用
+- **验证**: smoke 20/20 通过, test_small_vector 通过
+- **Commit**: `b70381c`
+
+#### [BUG] ~~gauss.hpp history 矩阵 O(n²) 空间浪费~~ ✅
+- **发现**: 2026-03-09 (Session 6)
+- **解决**: 2026-03-10 (Session 37b)
+- **修复**: `gauss.hpp:eliminate()` 移除未使用的 history 矩阵（build_null_space 用回代法不需要）
+- **验证**: smoke 20/20 通过, test_linalg 通过
+- **Commit**: `da4cd54`
+
 ### P2 级修复 (Session 37)
 
 #### [BUG] ~~RelationCollector::merge() 未锁定 other 的 mutex~~ ✅
