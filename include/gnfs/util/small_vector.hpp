@@ -44,6 +44,10 @@ public:
                 new (inline_ptr() + i) T(std::move(other.inline_ptr()[i]));
             }
             size_ = other.size_;
+            // 销毁源的 inline 元素（move 后仍需调析构函数）
+            for (size_t i = 0; i < other.size_; ++i) {
+                other.inline_ptr()[i].~T();
+            }
         } else {
             // 直接接管堆存储
             heap_data_ = other.heap_data_;
@@ -70,6 +74,10 @@ public:
                 }
                 size_ = other.size_;
                 capacity_ = InlineCapacity;
+                // 销毁源的 inline 元素（move 后仍需调析构函数）
+                for (size_t i = 0; i < other.size_; ++i) {
+                    other.inline_ptr()[i].~T();
+                }
             } else {
                 heap_data_ = other.heap_data_;
                 size_ = other.size_;
