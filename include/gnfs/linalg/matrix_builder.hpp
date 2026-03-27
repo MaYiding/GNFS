@@ -552,7 +552,7 @@ private:
             }
 
             for (const auto& [idx, exp] : exponents) {
-                if (exp % 2 == 1) {
+                if (exp % 2 == 1 && idx < mapping.num_rational_fb) {
                     row.set(static_cast<uint32_t>(mapping.rat_fb_start() + idx));
                 }
             }
@@ -566,7 +566,7 @@ private:
             }
 
             for (const auto& [idx, exp] : exponents) {
-                if (exp % 2 == 1) {
+                if (exp % 2 == 1 && idx < mapping.num_algebraic_fb) {
                     row.set(static_cast<uint32_t>(mapping.alg_fb_start() + idx));
                 }
             }
