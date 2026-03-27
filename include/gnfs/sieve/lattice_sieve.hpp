@@ -352,6 +352,10 @@ private:
 
         for (size_t idx = 0; idx < sieve_count; ++idx) {
             const auto& ap = algebraics[idx];
+            // 跳过 projective roots（r = UINT32_MAX 不是有效的模根）
+            if (ap.is_projective()) {
+                continue;
+            }
             // 跳过 special-q 本身
             if (ap.p == sq.q && ap.r == sq.r) {
                 continue;
