@@ -358,9 +358,10 @@ public:
         return (bits_[idx / 64] >> (idx % 64)) & 1;
     }
 
-    /// XOR 操作
+    /// XOR 操作 (取两者长度的较小值，防止越界)
     void xor_with(const BitVector& other) {
-        for (size_t i = 0; i < bits_.size(); ++i) {
+        size_t len = std::min(bits_.size(), other.bits_.size());
+        for (size_t i = 0; i < len; ++i) {
             bits_[i] ^= other.bits_[i];
         }
     }
