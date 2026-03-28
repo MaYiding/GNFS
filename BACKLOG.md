@@ -13,10 +13,7 @@
 
 ## P1-OPT — 高优先级性能优化
 
-### [OPT] ECM Stage 2 BSGS 优化
-- **发现日期**: 2026-02-20 (Session 2)
-- **文件**: `include/gnfs/cofactor/ecm.hpp:410-430`
-- **描述**: 朴素 O(π(B2))，应优化为 BSGS O(√(B2/B1))
+（当前无未解决条目。历史记录见 RESOLVED.md）
 
 ---
 
@@ -91,11 +88,6 @@
 - **文件**: `include/gnfs/linalg/sparse_matrix.hpp:62-63`
 - **描述**: const_cast 在 const 方法中修改内部状态
 
-### [BUG] trial_division.hpp uint8_t 指数溢出
-- **发现日期**: 2026-03-08 (Session 5) | p^256 整除实际不可能
-- **文件**: `include/gnfs/cofactor/trial_division.hpp:62-64`
-- **描述**: uint8_t exp 在 256 次自增后溢出
-
 ### [BUG] Relation::b 是 int64_t 但应为 uint64_t
 - **发现日期**: 2026-03-08 (Session 6) | 风格问题，b 实际不超过 int64 范围
 - **文件**: `include/gnfs/core/relation.hpp:17`
@@ -112,11 +104,6 @@
 - **发现日期**: 2026-03-08 (Session 6) | extract_factors 同时检查 X±Y
 - **文件**: `include/gnfs/sqrt/rational_sqrt.hpp:138-141`
 
-### [BUG] number_field norm_linear 符号公式错误
-- **发现日期**: 2026-03-08 (Session 6) | 被 abs() 掩盖
-- **文件**: `include/gnfs/sqrt/number_field.hpp:372-406`
-- **描述**: 计算 b^d * f(a/b) 而非 (-b)^d * f(a/b)，但最终取 abs()
-
 ### [BUG] class_group factor_ideal/factor_principal_ideal int64 乘法溢出
 - **发现日期**: 2026-03-08 (Session 5) | b*r ~10^18 接近但不超过 INT64_MAX
 - **文件**: `include/gnfs/sqrt/class_group.hpp:383,418`
@@ -132,16 +119,6 @@
 ### [BUG] SparseRow::set() 非幂等——重复 set 等价于 clear
 - **发现日期**: 2026-03-08 (Session 6) | GF(2) toggle 语义正确，API 命名问题
 - **文件**: `include/gnfs/linalg/sparse_matrix.hpp`
-
-### [BUG] BitVector::xor_with() 无大小检查
-- **发现日期**: 2026-03-08 (Session 6)
-- **文件**: `include/gnfs/linalg/sparse_matrix.hpp:354-357`
-- **描述**: other 更短时越界
-
-### [BUG] multiply_blocks() 死代码——索引计算错误
-- **发现日期**: 2026-03-08 (Session 6) | 从未被调用
-- **文件**: `include/gnfs/linalg/sparse_matrix.hpp:298-319`
-
 
 ### [BUG] next_prime() uint64 溢出
 - **发现日期**: 2026-03-08 (Session 6) | 理论问题，prime_start 默认 1000
@@ -203,22 +180,9 @@
 - **发现日期**: 2026-03-09 (Session 6) | GMP 实际处理负指数（计算逆）
 - **文件**: `include/gnfs/core/integer.hpp`
 
-### [BUG] types.hpp ABPair 注释错误
-- **发现日期**: 2026-03-08 (Session 6) | 仅文档
-- **文件**: `include/gnfs/core/types.hpp:11`
-- **描述**: "a + b*m" 应为 "a - b*m"
-
 ### [BUG] matrix_builder exponent 累积用 uint8_t
 - **发现日期**: 2026-03-08 (Session 6) | 256≡0 mod 2，溢出不影响 GF(2) 奇偶性
 - **文件**: `include/gnfs/linalg/matrix_builder.hpp:534,548`
-
-### [BUG] Kleinjung construct_polynomial 死代码
-- **发现日期**: 2026-03-08 (Session 6) | 60 行被 base_m_expansion 覆写
-- **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp:380-439`
-
-### [BUG] sieve_batch() 是死代码
-- **发现日期**: 2026-03-08 (Session 6) | stub 代码，从未被管线调用
-- **文件**: `include/gnfs/sieve/lattice_sieve.hpp:127-131`
 
 ### [BUG] SieveParams::combined_threshold() uint8_t 溢出
 - **发现日期**: 2026-03-08 (Session 6) | 当前参数最大 160，不触发

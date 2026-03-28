@@ -321,6 +321,12 @@ private:
         }
     }
 
+    /// 辗转相除求 gcd (小整数)
+    static constexpr uint64_t gcd_u64(uint64_t a, uint64_t b) {
+        while (b) { uint64_t t = b; b = a % b; a = t; }
+        return a;
+    }
+
     /// 尝试一条曲线
     [[nodiscard]] static std::optional<Integer> try_curve(
             const Integer& n, uint64_t sigma, uint64_t B1, uint64_t B2) {
@@ -442,19 +448,142 @@ private:
         return std::nullopt;
     }
 
-    /// Stage 2: 标准续步（使用分段筛法，内存安全）
-    /// 当累积 gcd == n 时回退到逐素数检查，避免因子丢失
+    /// Stage 2: Baby-Step Giant-Step 优化
+    /// 将素数 p ∈ (B1, B2] 表示为 p = j·D ± d，D = 2310 = 2·3·5·7·11
+    /// 预计算 baby steps d*Q (φ(D)=480 个点)，差分加法链推进 giant steps j·D*Q
+    /// 检测: 若 p*Q = O (mod factor)，则 j·D*Q 和 d*Q 同 x 坐标，
+    ///        cross product X_j·Z_d - X_d·Z_j ≡ 0 (mod factor)
+    /// 复杂度: O(D) baby + O((B2-B1)/D) giant 曲线运算 + O(φ(D)·(B2-B1)/D) 模乘
     [[nodiscard]] static std::optional<Integer> stage2(
             const Point& Q0, const Integer& n, const Integer& a24,
             uint64_t B1, uint64_t B2) {
 
-        // 使用分段筛法逐步处理 (B1, B2] 中的素数
+        constexpr uint64_t D = 2310;  // 2·3·5·7·11, φ(D)=480
+
+        // 小范围不值得 BSGS 开销，回退朴素实现
+        if (B2 - B1 < D * 3) {
+            return stage2_naive(Q0, n, a24, B1, B2);
+        }
+
+        // === Phase 1: Baby steps — compute d*Q for d coprime to D ===
+        struct BabyStep { Integer x; Integer z; };
+        std::vector<BabyStep> baby;
+        baby.reserve(480);
+
+        // 增量链: (k+1)*Q = mont_add(k*Q, Q, (k-1)*Q)
+        Point Q_one(Q0.x.clone(), Q0.z.clone());     // Q (constant base)
+        Point km2(Q0.x.clone(), Q0.z.clone());        // (k-2)*Q, starts as 1*Q
+        Point km1 = mont_double(Q0, a24, n);          // (k-1)*Q, starts as 2*Q
+
+        // d=1: gcd(1, 2310) = 1
+        baby.push_back({Q0.x.clone(), Q0.z.clone()});
+
+        for (uint64_t k = 3; k <= D; ++k) {
+            Point curr = mont_add(km1, Q_one, km2, n);
+            if (gcd_u64(k, D) == 1) {
+                baby.push_back({curr.x.clone(), curr.z.clone()});
+            }
+            km2 = std::move(km1);
+            km1 = std::move(curr);
+        }
+        // 循环结束后 km1 = D*Q
+        Point Q_D(km1.x.clone(), km1.z.clone());
+
+        // === Phase 2: Giant steps ===
+        uint64_t j_lo = B1 / D + 1;             // 最小 j 使得 j*D > B1
+        uint64_t j_hi = (B2 + D - 1) / D;       // 最大 j 使得 (j-1)*D < B2
+        if (j_lo > j_hi) return std::nullopt;
+
+        // 两次 mont_mul 初始化差分链
+        Point G_prev = mont_mul(Q0, j_lo * D, a24, n);
+        Point G_curr = (j_lo < j_hi)
+            ? mont_mul(Q0, (j_lo + 1) * D, a24, n)
+            : Point(Integer(int64_t(0)), Integer(int64_t(0)));
+
+        // 累积 cross products
+        Integer accum(int64_t(1));
+        uint64_t batch_start_j = j_lo;
+        uint64_t steps_in_batch = 0;
+        constexpr uint64_t BATCH_SIZE = 16;
+
+        // 累积一个 giant step 的所有 cross products
+        auto accumulate_step = [&](const Point& G) {
+            for (const auto& b : baby) {
+                // cross = G.x * b.z - b.x * G.z (mod n)
+                Integer c = G.x.clone(); c *= b.z; c %= n;
+                Integer t = b.x.clone(); t *= G.z; t %= n;
+                c -= t;
+                if (c.is_negative()) c += n;
+                c %= n;
+                if (!c.is_zero()) { accum *= c; accum %= n; }
+            }
+            ++steps_in_batch;
+        };
+
+        // 检查 gcd + 回退处理
+        auto check_batch = [&](uint64_t j_current) -> std::optional<Integer> {
+            if (accum.is_one()) {
+                accum = Integer(int64_t(1));
+                batch_start_j = j_current + 1;
+                steps_in_batch = 0;
+                return std::nullopt;
+            }
+            Integer g = core::gcd(accum.clone(), n);
+            if (!g.is_one() && g.compare(n) != 0) return g;
+            if (g.compare(n) == 0) {
+                // gcd == n: 回退到朴素实现
+                uint64_t lo = (batch_start_j > 0 ? batch_start_j - 1 : 0) * D;
+                if (lo < B1) lo = B1;
+                uint64_t hi = std::min((j_current + 1) * D, B2);
+                auto fb = stage2_naive(Q0, n, a24, lo, hi);
+                if (fb) return fb;
+            }
+            accum = Integer(int64_t(1));
+            batch_start_j = j_current + 1;
+            steps_in_batch = 0;
+            return std::nullopt;
+        };
+
+        // 处理 j = j_lo
+        accumulate_step(G_prev);
+
+        if (j_lo == j_hi) {
+            return check_batch(j_lo);
+        }
+
+        // 处理 j = j_lo + 1
+        accumulate_step(G_curr);
+
+        // 差分链: j = j_lo + 2, j_lo + 3, ...
+        for (uint64_t j = j_lo + 2; j <= j_hi; ++j) {
+            // 定期 gcd 检查
+            if (steps_in_batch >= BATCH_SIZE) {
+                auto r = check_batch(j - 1);
+                if (r) return r;
+            }
+
+            // 推进链: G_next = G_curr + Q_D, diff = G_prev
+            Point G_next = mont_add(G_curr, Q_D, G_prev, n);
+            G_prev = std::move(G_curr);
+            G_curr = std::move(G_next);
+
+            accumulate_step(G_curr);
+        }
+
+        // 最终检查
+        return check_batch(j_hi);
+    }
+
+    /// Stage 2 朴素实现: 逐素数 mont_mul (用于 BSGS 回退或小范围)
+    [[nodiscard]] static std::optional<Integer> stage2_naive(
+            const Point& Q0, const Integer& n, const Integer& a24,
+            uint64_t B1, uint64_t B2) {
+
         Integer accum(int64_t(1));
         Point Qcurr(Q0.x.clone(), Q0.z.clone());
         uint64_t check_interval = 0;
         std::optional<Integer> found;
 
-        // Save checkpoint for backtracking on gcd==n
         Point checkpoint(Q0.x.clone(), Q0.z.clone());
         std::vector<uint64_t> batch_primes;
         batch_primes.reserve(128);
@@ -463,7 +592,6 @@ private:
             Qcurr = mont_mul(Qcurr, p, a24, n);
             batch_primes.push_back(p);
 
-            // 累积 z 坐标
             accum *= Qcurr.z;
             accum %= n;
 
@@ -472,10 +600,9 @@ private:
                 Integer g = core::gcd(accum.clone(), n);
                 if (!g.is_one() && g.compare(n) != 0) {
                     found = std::move(g);
-                    return false;  // 找到因子，停止
+                    return false;
                 }
                 if (g.compare(n) == 0) {
-                    // gcd == n: backtrack — retry this batch individually
                     Point Q_retry(checkpoint.x.clone(), checkpoint.z.clone());
                     for (uint64_t bp : batch_primes) {
                         Q_retry = mont_mul(Q_retry, bp, a24, n);
@@ -485,37 +612,27 @@ private:
                             return false;
                         }
                     }
-                    // All individual gcd's were 1 or n — give up on this batch
-                    // (extremely rare: both factors found in same batch)
                 }
-                // Reset for next batch
                 accum = Integer(int64_t(1));
                 checkpoint = Point(Qcurr.x.clone(), Qcurr.z.clone());
                 batch_primes.clear();
                 check_interval = 0;
             }
-            return true;  // 继续
+            return true;
         });
 
         if (found) return found;
 
-        // 最终检查
         Integer g = core::gcd(accum.clone(), n);
-        if (!g.is_one() && g.compare(n) != 0) {
-            return g;
-        }
+        if (!g.is_one() && g.compare(n) != 0) return g;
         if (g.compare(n) == 0 && !batch_primes.empty()) {
-            // Backtrack the final batch
             Point Q_retry(checkpoint.x.clone(), checkpoint.z.clone());
             for (uint64_t bp : batch_primes) {
                 Q_retry = mont_mul(Q_retry, bp, a24, n);
                 Integer gi = core::gcd(Q_retry.z.clone(), n);
-                if (!gi.is_one() && gi.compare(n) != 0) {
-                    return gi;
-                }
+                if (!gi.is_one() && gi.compare(n) != 0) return gi;
             }
         }
-
         return std::nullopt;
     }
 };

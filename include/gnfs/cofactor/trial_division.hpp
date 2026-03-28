@@ -59,7 +59,7 @@ public:
             uint32_t p = rationals[idx].p;
 
             uint8_t exp = 0;
-            while (divisible_by(value, p)) {
+            while (divisible_by(value, p) && exp < 255) {
                 divide_exact(value, p);
                 ++exp;
             }
@@ -135,7 +135,7 @@ public:
 
             // 试除
             uint8_t exp = 0;
-            while (divisible_by(norm, p)) {
+            while (divisible_by(norm, p) && exp < 255) {
                 divide_exact(norm, p);
                 ++exp;
             }

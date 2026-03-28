@@ -7,6 +7,53 @@
 
 ## 已完成 ✅
 
+### P1-OPT + P3 级修复 (Session 38)
+
+#### [OPT] ~~ECM Stage 2 BSGS 优化~~ ✅
+- **发现**: 2026-02-20 (Session 2)
+- **解决**: 2026-03-10 (Session 38)
+- **修复**: `ecm.hpp:stage2()` 从朴素逐素数 mont_mul 改为 BSGS 算法：D=2310 (2·3·5·7·11)，预计算 φ(D)=480 baby step 点 d*Q，差分加法链推进 giant step j·D*Q，cross product 检测因子。gcd==n 时回退到朴素实现。预期加速 13-17×
+- **验证**: smoke 20/20 通过, test_cofactor 通过
+- **Commit**: `6a9926a`
+
+#### [BUG] ~~BitVector::xor_with() 无大小检查~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 38)
+- **修复**: `sparse_matrix.hpp:xor_with()` 用 `std::min(bits_.size(), other.bits_.size())` 防止越界
+- **验证**: test_linalg 通过
+- **Commit**: `69e1219`
+
+#### [BUG] ~~types.hpp ABPair 注释错误~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 38)
+- **修复**: `types.hpp:10` "a + b*m" → "a - b*m"（与项目 a-bα 约定一致）
+- **Commit**: `2d2a3f1`
+
+#### [BUG] ~~trial_division uint8_t 指数溢出~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 38)
+- **修复**: `trial_division.hpp` 有理侧+代数侧 while 循环添加 `exp < 255` 上限
+- **验证**: smoke 20/20 通过
+- **Commit**: `c64c341`
+
+#### [BUG] ~~multiply_blocks() 死代码~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 38)
+- **修复**: 整个函数移除（索引计算错误且从未被调用，BL 使用 BlockVector）
+- **Commit**: `a4e39a7`
+
+#### [BUG] ~~sieve_batch() 死代码~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 38)
+- **修复**: 整个函数移除（stub，管线使用 sieve_parallel()）
+- **Commit**: `a4e39a7`
+
+#### [BUG] ~~Kleinjung construct_polynomial 死代码~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 38)
+- **修复**: 60 行手动系数提取移除，直接调用 base_m_expansion()
+- **Commit**: `f95d03d`
+
 ### P2 级修复 (Session 37c)
 
 #### [BUG] ~~class_group 判别式计算仅对 depressed cubic 正确~~ ✅
@@ -614,3 +661,4 @@
 | P1 | matrix_builder f mod 2 检查 uint64 截断 | `matrix_builder.hpp:196-201` | 代码已使用 `Integer % 2` 后再 `to_uint64()`，结果为 0/1，无截断风险 |
 | P1 | FastPoly reduce_inplace 系数潜在溢出 | `schirokauer.hpp:87-91` | 公式 `m - (t - a.coeffs[idx])` 数学正确：t 和 a.coeffs[idx] 均在 [0,m)，差值在 (0,m)，结果在 (0,m)。mul_raw 确保输入 ∈ [0,m)，reduce_inplace 维持不变量。Schirokauer 中 m=ℓ^k=8，远离溢出边界 |
 | P2 | Hensel 提升无精度充分性验证 | `hensel_sqrt.hpp` | retry 机制（4次递增精度）+ Y²≡P(mod N) 终端验证已构成完整验证系统。200-bit 余量使首次成功率极高，retry 捕获极罕见的精度不足。centering 后无需单独验证 |
+| P3 | norm_linear 符号公式 (-b)^d 应替代 b^d | `number_field.hpp:304` | 数学验证：N(a-bα) = b^d · f(a/b) 是正确公式。(-b)^d · f(a/b) = Res(a-bx, f) 是结式而非范数。用 f(x)=x³-2, a=b=1 验证：b^d·f(a/b)=-1=Π(a-bα_j)✓，(-b)^d=1≠范数✗ |
