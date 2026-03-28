@@ -161,51 +161,132 @@ private:
         compute_class_group(prime_ideals);
     }
 
-    /// Compute the discriminant of the polynomial
+    /// Compute the discriminant of the polynomial using Res(f, f')
+    /// Δ(f) = (-1)^(d(d-1)/2) · Res(f, f') / a_d
     void compute_discriminant() {
         uint32_t d = ctx_.degree();
-
-        if (d == 3) {
-            // For f(x) = x^3 + ax + b, discriminant = -4a^3 - 27b^2
-            Integer a = ctx_.coeff(1).clone();
-            Integer b = ctx_.coeff(0).clone();
-
-            // -4a^3
-            Integer a_cubed = a.clone();
-            a_cubed *= a;
-            a_cubed *= a;
-            Integer neg4(-4);
-            a_cubed *= neg4;
-
-            // -27b^2
-            Integer b_squared = b.clone();
-            b_squared *= b;
-            Integer neg27(-27);
-            b_squared *= neg27;
-
-            // discriminant = -4a^3 - 27b^2
-            a_cubed += b_squared;
-            discriminant_ = a_cubed.clone();
-        } else {
-            // For general polynomials, use resultant formula
-            // This is a simplified computation
-            discriminant_ = compute_general_discriminant();
+        if (d <= 1) {
+            discriminant_ = Integer(int64_t(1));
+            return;
         }
+
+        // Build f and f' coefficient vectors
+        std::vector<Integer> f(d + 1), f_prime(d);
+        for (uint32_t i = 0; i <= d; ++i) {
+            f[i] = ctx_.coeff(i).clone();
+        }
+        for (uint32_t i = 0; i < d; ++i) {
+            f_prime[i] = f[i + 1].clone();
+            f_prime[i] *= Integer(static_cast<int64_t>(i + 1));
+        }
+
+        // Compute Res(f, f') via Sylvester matrix determinant
+        // Sylvester matrix size = d + (d-1) = 2d-1
+        Integer res = compute_resultant(f, d, f_prime, d - 1);
+
+        // Δ = (-1)^(d(d-1)/2) · Res(f, f') / a_d
+        uint32_t sign_exp = d * (d - 1) / 2;
+        if (sign_exp % 2 == 1) {
+            res.negate();
+        }
+        Integer a_d = ctx_.coeff(d).clone();
+        if (!a_d.is_zero()) {
+            res /= a_d;
+        }
+
+        discriminant_ = std::move(res);
     }
 
-    /// Compute discriminant for general polynomial using resultant
-    [[nodiscard]] Integer compute_general_discriminant() const {
-        // Simplified: return a large value that ensures we search enough primes
-        // Proper implementation would compute Res(f, f')
-        Integer result(1);
-        for (uint32_t i = 0; i <= ctx_.degree(); ++i) {
-            Integer c = ctx_.coeff(i).clone();
-            if (!c.is_zero()) {
-                c *= c;
-                result += c;
+    /// Compute resultant Res(f, g) via Sylvester matrix determinant
+    /// f has degree deg_f, g has degree deg_g
+    /// Matrix size = deg_f + deg_g
+    [[nodiscard]] static Integer compute_resultant(
+            const std::vector<Integer>& f, uint32_t deg_f,
+            const std::vector<Integer>& g, uint32_t deg_g) {
+
+        uint32_t n = deg_f + deg_g;
+        if (n == 0) return Integer(int64_t(1));
+
+        // Build Sylvester matrix (n × n)
+        // First deg_g rows: coefficients of x^{deg_g-1}·f, ..., f (shifted copies)
+        // Last deg_f rows: coefficients of x^{deg_f-1}·g, ..., g (shifted copies)
+        std::vector<std::vector<Integer>> M(n, std::vector<Integer>(n));
+        for (uint32_t i = 0; i < n; ++i) {
+            for (uint32_t j = 0; j < n; ++j) {
+                M[i][j] = Integer(int64_t(0));
             }
         }
-        result *= Integer(1000);
+
+        // First deg_g rows from f
+        for (uint32_t row = 0; row < deg_g; ++row) {
+            for (uint32_t k = 0; k <= deg_f; ++k) {
+                // row-th shifted copy: f[k] at column row + k
+                uint32_t col = row + k;
+                if (col < n) {
+                    M[row][col] = f[deg_f - k].clone(); // coefficients in descending order
+                }
+            }
+        }
+
+        // Last deg_f rows from g
+        for (uint32_t row = 0; row < deg_f; ++row) {
+            for (uint32_t k = 0; k <= deg_g; ++k) {
+                uint32_t col = row + k;
+                if (col < n) {
+                    M[deg_g + row][col] = g[deg_g - k].clone();
+                }
+            }
+        }
+
+        // Compute determinant using Bareiss algorithm (fraction-free)
+        return bareiss_determinant(M, n);
+    }
+
+    /// Bareiss algorithm: fraction-free Gaussian elimination for Integer matrix determinant
+    [[nodiscard]] static Integer bareiss_determinant(
+            std::vector<std::vector<Integer>>& M, uint32_t n) {
+        int sign = 1;
+        Integer prev_pivot(int64_t(1));
+
+        for (uint32_t k = 0; k < n; ++k) {
+            // Find pivot in column k from rows k..n-1
+            uint32_t pivot_row = k;
+            while (pivot_row < n && M[pivot_row][k].is_zero()) {
+                ++pivot_row;
+            }
+            if (pivot_row == n) {
+                return Integer(int64_t(0)); // singular
+            }
+            if (pivot_row != k) {
+                std::swap(M[k], M[pivot_row]);
+                sign = -sign;
+            }
+
+            Integer cur_pivot = M[k][k].clone();
+
+            // Eliminate below pivot
+            for (uint32_t i = k + 1; i < n; ++i) {
+                for (uint32_t j = k + 1; j < n; ++j) {
+                    // M[i][j] = (cur_pivot * M[i][j] - M[i][k] * M[k][j]) / prev_pivot
+                    Integer term1 = cur_pivot.clone();
+                    term1 *= M[i][j];
+                    Integer term2 = M[i][k].clone();
+                    term2 *= M[k][j];
+                    term1 -= term2;
+                    term1 /= prev_pivot; // exact division guaranteed by Bareiss
+                    M[i][j] = std::move(term1);
+                }
+                M[i][k] = Integer(int64_t(0));
+            }
+
+            prev_pivot = std::move(cur_pivot);
+        }
+
+        // Determinant = sign * M[n-1][n-1]
+        Integer result = M[n - 1][n - 1].clone();
+        if (sign < 0) {
+            result.negate();
+        }
         return result;
     }
 
