@@ -103,28 +103,31 @@ struct CofactorClassification {
     }
 
     // 检查小指数 (2 到 63)
+    // std::pow(double, 1.0/k) 对 n > 2^53 有精度损失，
+    // 所以对 round 结果的 b-1, b, b+1 三个候选都验证
     for (uint8_t k = 2; k <= 63; ++k) {
         double root = std::pow(static_cast<double>(n), 1.0 / k);
-        uint64_t b = static_cast<uint64_t>(std::round(root));
+        uint64_t b_mid = static_cast<uint64_t>(std::round(root));
 
-        if (b < 2) break;  // 底数太小，不可能
+        if (b_mid < 2) break;
 
-        // 计算 b^k 并比较
-        uint64_t power = 1;
-        bool overflow = false;
+        for (uint64_t b_try = (b_mid > 2 ? b_mid - 1 : 2); b_try <= b_mid + 1; ++b_try) {
+            uint64_t power = 1;
+            bool overflow = false;
 
-        for (uint8_t i = 0; i < k && !overflow; ++i) {
-            if (power > UINT64_MAX / b) {
-                overflow = true;
-            } else {
-                power *= b;
+            for (uint8_t i = 0; i < k && !overflow; ++i) {
+                if (power > UINT64_MAX / b_try) {
+                    overflow = true;
+                } else {
+                    power *= b_try;
+                }
             }
-        }
 
-        if (!overflow && power == n) {
-            base = b;
-            exp = k;
-            return true;
+            if (!overflow && power == n) {
+                base = b_try;
+                exp = k;
+                return true;
+            }
         }
     }
 
