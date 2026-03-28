@@ -22,38 +22,8 @@
 
 ## P2 — 中优先级（大数支持和架构改进）
 
-### [BUG] class_group SNF 不是真正的 Smith Normal Form
-- **发现日期**: 2026-03-08 (Session 5)
-- **文件**: `include/gnfs/sqrt/class_group.hpp:450-517`
-- **描述**: 只做了 Gaussian 消元，类数用 `1u << generators.size()` 近似
-
-### [BUG] class_group 判别式计算仅对 d=3 depressed cubic 正确
-- **发现日期**: 2026-03-08 (Session 5)
-- **文件**: `include/gnfs/sqrt/class_group.hpp:165-209`
-- **描述**: d>3 返回启发式值；d=3 公式忽略 x² 系数
-
-### [BUG] class_group 判别式公式对非 depressed 三次多项式错误
-- **发现日期**: 2026-03-08 (Session 6)
-- **文件**: `include/gnfs/sqrt/class_group.hpp:168-188`
-- **描述**: Δ = -4a³ - 27b² 仅对 x³ + ax + b 正确，忽略 coeff(2)
 
 
-
-
-### [BUG] IntPolynomial::roots_cantor_zassenhaus 实际是 O(p) 暴力搜索
-- **发现日期**: 2026-03-08 (Session 6)
-- **文件**: `include/gnfs/polynomial/int_polynomial.hpp:384-405`
-- **描述**: 名叫 CZ 但实现是暴力枚举
-
-### [BUG] Integer 除零行为不一致
-- **发现日期**: 2026-03-09 (Session 6)
-- **文件**: `src/core/integer.cpp`
-- **描述**: Integer 除零 → GMP abort（不可捕获），int64_t 除零 → domain_error
-
-### [BUG] Hensel 提升无精度充分性验证
-- **发现日期**: 2026-03-08 (Session 6) | 200 位余量通常足够
-- **文件**: `include/gnfs/sqrt/hensel_sqrt.hpp:226-240`
-- **描述**: centering 后无验证，但 extra_precision=200 提供余量
 
 
 ### [FEAT] Bucket Sieve 架构
