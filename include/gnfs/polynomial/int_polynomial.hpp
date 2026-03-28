@@ -68,7 +68,7 @@ public:
 
     /// 获取系数
     [[nodiscard]] const Integer& operator[](size_t i) const {
-        static Integer zero(static_cast<int64_t>(0));
+        static const Integer zero(static_cast<int64_t>(0));
         if (i >= coeffs_.size()) return zero;
         return coeffs_[i];
     }

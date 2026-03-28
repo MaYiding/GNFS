@@ -62,7 +62,7 @@ public:
 
     /// 获取系数
     [[nodiscard]] const Integer& coeff(size_t i) const {
-        static Integer zero(static_cast<int64_t>(0));
+        static const Integer zero(static_cast<int64_t>(0));
         if (i >= coeffs_.size()) return zero;
         return coeffs_[i];
     }
@@ -192,7 +192,7 @@ public:
 
     /// 获取多项式系数 f_i
     [[nodiscard]] const Integer& coeff(uint32_t i) const {
-        static Integer zero(static_cast<int64_t>(0));
+        static const Integer zero(static_cast<int64_t>(0));
         if (i >= f_coeffs_.size()) return zero;
         return f_coeffs_[i];
     }
