@@ -7,7 +7,7 @@ namespace gnfs {
 namespace core {
 
 /// ABPair - 关系的原子单位
-/// 表示 (a, b) 对，其中 a + b*m 在有理侧，a + b*alpha 在代数侧
+/// 表示 (a, b) 对，其中 a - b*m 在有理侧，a - b*alpha 在代数侧
 struct ABPair {
     int64_t  a;
     uint64_t b;  // b > 0 always
