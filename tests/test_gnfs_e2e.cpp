@@ -137,6 +137,16 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     FactorizationResult result;
     result.n = n.clone();
 
+    // Primality check: GNFS only works on composites
+    if (mpz_probab_prime_p(n.get_mpz(), 25) > 0) {
+        if (verbose) std::cerr << "N is prime (or probably prime). GNFS requires a composite input.\n";
+        return result;
+    }
+    if (n <= Integer(1)) {
+        if (verbose) std::cerr << "N must be > 1.\n";
+        return result;
+    }
+
     Timer total_timer;
 
     // ============================================================

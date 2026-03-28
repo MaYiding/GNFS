@@ -138,6 +138,13 @@ struct FactResult {
 
 FactResult factor_with_progress(const Integer& n, int level) {
     FactResult result;
+
+    // Primality check: GNFS only works on composites
+    if (mpz_probab_prime_p(n.get_mpz(), 25) > 0) {
+        std::cerr << "N is prime (or probably prime). GNFS requires a composite input.\n";
+        return result;
+    }
+
     StopWatch total;
 
     size_t bits = n.bit_length();
