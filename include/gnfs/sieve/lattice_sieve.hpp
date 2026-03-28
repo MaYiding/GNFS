@@ -121,21 +121,6 @@ public:
         return result;
     }
 
-    /// 对一批 special-q 进行筛法
-    void sieve_batch(const SpecialQBatch& batch) {
-        for (size_t i = 0; i < batch.size(); ++i) {
-            auto result = sieve_special_q(batch[i]);
-
-            // TODO: 进行分解验证，构建完整关系
-            // 这里需要调用 trial division 或 cofactorization
-            (void)result;
-
-            if (progress_callback_) {
-                progress_callback_(i + 1, batch.size(), "Sieving");
-            }
-        }
-    }
-
     /// 并行处理多个 special-q
     /// @param special_qs 要处理的 special-q 列表
     /// @param num_threads 线程数 (0 = auto)

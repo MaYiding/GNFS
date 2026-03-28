@@ -302,30 +302,6 @@ public:
         return result;
     }
 
-    /// 矩阵-向量乘法，使用64位块加速
-    /// result = A * x
-    [[nodiscard]] std::vector<uint64_t> multiply_blocks(
-            const std::vector<uint64_t>& x, size_t num_blocks) const {
-
-        std::vector<uint64_t> result(rows_.size(), 0);
-
-        for (size_t i = 0; i < rows_.size(); ++i) {
-            uint64_t sum = 0;
-            for (uint32_t col : rows_[i].indices()) {
-                size_t block_idx = col / 64;
-                size_t bit_idx = col % 64;
-                if (block_idx < num_blocks) {
-                    if (x[block_idx * rows_.size() + i] & (1ULL << bit_idx)) {
-                        sum ^= 1;
-                    }
-                }
-            }
-            result[i] = sum;
-        }
-
-        return result;
-    }
-
 private:
     std::vector<SparseRow> rows_;
     size_t num_cols_ = 0;
