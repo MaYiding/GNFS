@@ -396,7 +396,9 @@ Integer& Integer::operator+=(int64_t value) {
     if (value >= 0) {
         mpz_add_ui(value_, value_, static_cast<unsigned long>(value));
     } else {
-        mpz_sub_ui(value_, value_, static_cast<unsigned long>(-value));
+        // Avoid UB: -INT64_MIN overflows int64_t
+        auto abs_val = static_cast<unsigned long>(-(value + 1)) + 1UL;
+        mpz_sub_ui(value_, value_, abs_val);
     }
     return *this;
 }
@@ -405,7 +407,8 @@ Integer& Integer::operator-=(int64_t value) {
     if (value >= 0) {
         mpz_sub_ui(value_, value_, static_cast<unsigned long>(value));
     } else {
-        mpz_add_ui(value_, value_, static_cast<unsigned long>(-value));
+        auto abs_val = static_cast<unsigned long>(-(value + 1)) + 1UL;
+        mpz_add_ui(value_, value_, abs_val);
     }
     return *this;
 }
@@ -414,7 +417,8 @@ Integer& Integer::operator/=(int64_t value) {
     if (value > 0) {
         mpz_tdiv_q_ui(value_, value_, static_cast<unsigned long>(value));
     } else if (value < 0) {
-        mpz_tdiv_q_ui(value_, value_, static_cast<unsigned long>(-value));
+        auto abs_val = static_cast<unsigned long>(-(value + 1)) + 1UL;
+        mpz_tdiv_q_ui(value_, value_, abs_val);
         mpz_neg(value_, value_);
     } else {
         throw std::domain_error("Division by zero");
