@@ -149,6 +149,31 @@ tests/              # 17 个测试文件
 - 命名: `snake_case` 用于函数和变量, `PascalCase` 用于类型
 - Namespace: `gnfs::core`, `gnfs::linalg`, `gnfs::sieve` 等
 
+## Shell 脚本规范（`scripts/test.sh`）
+
+### CJK 显示宽度
+
+终端中 CJK（中日韩）字符占 **2 列**宽，而 `${#str}` 只计字符数（1）。凡涉及对齐、框线、表格的输出，**必须**用 `display_width()` 计算显示宽度，而非 `${#str}`。
+
+```bash
+# ✅ 正确 — 用 display_width 计算终端列宽
+local -i w=$(display_width "$msg")
+local -i pad=$(( 48 - w ))
+
+# ❌ 错误 — ${#msg} 对 CJK 少算一半
+local pad=$(( 48 - ${#msg} ))
+```
+
+`display_width()` 已在 `test.sh` 中定义，基于 zsh `$((#ch))` 取 Unicode codepoint，`>U+2FFF` 按 2 列计。
+
+### Box-drawing 对齐清单
+
+修改 `log_header` / `show_summary` 等框线输出时，确认：
+- [ ] 用 `display_width` 而非 `${#str}` 计算填充
+- [ ] 每行内容 + 填充 = box 内宽（当前 50 列）
+- [ ] 所有内容行都有右边框 `║`
+- [ ] 测试: `./scripts/test.sh smoke` 肉眼检查框线对齐
+
 ## Performance-Critical Code
 
 - `PackedGF2Matrix`: 64-bit word-packed，O(1) 位访问
