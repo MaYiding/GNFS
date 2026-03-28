@@ -358,9 +358,29 @@ log_success() { echo "${GREEN} ${CHECK}${RESET} $*"; }
 log_fail()    { echo "${RED} ${CROSS}${RESET} $*"; }
 log_warn()    { echo "${YELLOW} ${WARN}${RESET}  $*"; }
 log_skip()    { echo "${DIM} - $*${RESET}"; }
+
+# 计算字符串的终端显示宽度 (CJK 字符占 2 列)
+# zsh 内置 $((#ch)) 取 Unicode codepoint，无需子进程
+display_width() {
+    local str="$1" w=0 ch
+    local -i i cp
+    for (( i = 1; i <= ${#str}; i++ )); do
+        ch="${str[$i]}"
+        cp=$(( #ch ))
+        # U+3000 以上的 CJK / 全角字符占 2 列
+        if (( cp > 0x2FFF )); then
+            (( w += 2 ))
+        else
+            (( w += 1 ))
+        fi
+    done
+    echo $w
+}
+
 log_header()  {
     local msg="$*"
-    local pad_len=$(( 47 - ${#msg} ))
+    local -i w=$(display_width "$msg")
+    local -i pad_len=$(( 48 - w ))
     (( pad_len < 0 )) && pad_len=0
     local padding="${(l:$pad_len:: :)}"
     echo ""
@@ -666,22 +686,56 @@ show_summary() {
     local total_elapsed
     total_elapsed=$(format_duration "$TOTAL_TIME_MS")
 
+    # box 内宽 50 列 (║ 与 ║ 之间)
+    local -i box_w=50
+
+    # 辅助: 根据纯文本的显示宽度生成右填充空格
+    _box_pad() {
+        local -i w=$(display_width "$1")
+        local -i pad=$(( box_w - w ))
+        (( pad < 0 )) && pad=0
+        printf '%*s' "$pad" ""
+    }
+
     echo ""
     echo "${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+
+    # 状态行
+    local status_plain pad
     if (( FAILED_TESTS == 0 && TOTAL_TESTS > 0 )); then
-        echo "${BOLD}║  ${GREEN}全部通过${RESET}${BOLD}                                       ║${RESET}"
+        status_plain="  全部通过"
+        pad=$(_box_pad "$status_plain")
+        echo "${BOLD}║${RESET}  ${GREEN}全部通过${RESET}${BOLD}${pad}║${RESET}"
     elif (( TOTAL_TESTS == 0 )); then
-        echo "${BOLD}║  ${DIM}无测试运行${RESET}${BOLD}                                     ║${RESET}"
+        status_plain="  无测试运行"
+        pad=$(_box_pad "$status_plain")
+        echo "${BOLD}║${RESET}  ${DIM}无测试运行${RESET}${BOLD}${pad}║${RESET}"
     else
-        echo "${BOLD}║  ${RED}有失败${RESET}${BOLD}                                         ║${RESET}"
+        status_plain="  有失败"
+        pad=$(_box_pad "$status_plain")
+        echo "${BOLD}║${RESET}  ${RED}有失败${RESET}${BOLD}${pad}║${RESET}"
     fi
+
     echo "${BOLD}╠──────────────────────────────────────────────────╣${RESET}"
-    printf "${BOLD}║${RESET}  通过: ${GREEN}%d${RESET}  失败: ${RED}%d${RESET}  跳过: ${DIM}%d${RESET}  总计: %d" \
-        "$PASSED_TESTS" "$FAILED_TESTS" "$SKIPPED_TESTS" "$TOTAL_TESTS"
-    local stats_line
-    stats_line=$(printf "通过: %d  失败: %d  跳过: %d  总计: %d" "$PASSED_TESTS" "$FAILED_TESTS" "$SKIPPED_TESTS" "$TOTAL_TESTS")
-    echo ""
-    echo "${BOLD}║${RESET}  耗时: ${total_elapsed}"
+
+    # 统计行
+    local stats_plain
+    stats_plain=$(printf '  通过: %d  失败: %d  跳过: %d  总计: %d' \
+        "$PASSED_TESTS" "$FAILED_TESTS" "$SKIPPED_TESTS" "$TOTAL_TESTS")
+    pad=$(_box_pad "$stats_plain")
+    printf '%s  通过: %s%d%s  失败: %s%d%s  跳过: %s%d%s  总计: %d%s%s\n' \
+        "${BOLD}║${RESET}" \
+        "${GREEN}" "$PASSED_TESTS" "${RESET}" \
+        "${RED}" "$FAILED_TESTS" "${RESET}" \
+        "${DIM}" "$SKIPPED_TESTS" "${RESET}" \
+        "$TOTAL_TESTS" \
+        "$pad" "${BOLD}║${RESET}"
+
+    # 耗时行
+    local time_plain="  耗时: ${total_elapsed}"
+    pad=$(_box_pad "$time_plain")
+    echo "${BOLD}║${RESET}  耗时: ${total_elapsed}${pad}${BOLD}║${RESET}"
+
     echo "${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
 }
 
