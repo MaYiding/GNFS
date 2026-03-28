@@ -1,9 +1,11 @@
 #pragma once
 
 #include "../core/integer.hpp"
+#include "../sqrt/modular_poly.hpp"
 
 #include <algorithm>
 #include <cstdint>
+#include <random>
 #include <vector>
 
 namespace gnfs {
@@ -381,26 +383,100 @@ private:
         return result;
     }
 
-    /// Cantor-Zassenhaus 算法求根
+    /// Cantor-Zassenhaus 算法求根 — O(d² log p)
+    /// 1. 计算 h = gcd(f, x^p - x) mod p 得到所有线性因子的乘积
+    /// 2. 从 h 中提取根（递归分裂）
     [[nodiscard]] std::vector<uint32_t> roots_cantor_zassenhaus(uint32_t p) const {
-        std::vector<uint32_t> roots;
+        using MP = sqrt::ModularPoly;
 
-        // 简化实现：对于 GNFS 的因子基构建
-        // 我们主要处理度数 5-6 的多项式
-        // 在 F_p 上，f(x) 的根数 <= degree(f)
+        // 获取 f(x) mod p
+        uint32_t d = degree();
+        std::vector<uint64_t> f_mod(d + 1);
+        for (uint32_t i = 0; i <= d; ++i) {
+            f_mod[i] = coeff_mod(i, p);
+        }
+        // f_mod 可能 leading coeff == 0 (mod p)，跳过
+        MP f_poly(f_mod);
+        if (f_poly.degree() <= 0) return {};
 
-        // 首先检查 gcd(f(x), x^p - x) 来找分裂因子
-        // 这里用简化的暴力方法（对于因子基的素数范围够用）
+        // Step 1: h = gcd(f, x^p - x) mod p
+        MP x_poly;
+        x_poly.set_coeff(1, 1);
 
-        for (uint32_t r = 0; r < p; ++r) {
-            if (evaluate_mod(r, p) == 0) {
-                roots.push_back(r);
-                if (roots.size() >= degree()) {
-                    break;  // 最多 degree() 个根
-                }
+        // x^p mod f mod p (repeated squaring, O(d² log p))
+        auto x_to_p = MP::power(x_poly, Integer(static_cast<int64_t>(p)), f_mod, p);
+        auto x_p_minus_x = MP::sub(x_to_p, x_poly, p);
+        auto h = MP::gcd(x_p_minus_x, f_poly, p);
+
+        int h_deg = h.degree();
+        if (h_deg <= 0) return {};
+
+        // Step 2: 从 h 中提取根
+        return cz_extract_roots(h, p);
+    }
+
+    /// 从度数为 deg 的 split-free 多项式中提取所有根
+    [[nodiscard]] static std::vector<uint32_t> cz_extract_roots(
+            const sqrt::ModularPoly& poly, uint32_t p) {
+        using MP = sqrt::ModularPoly;
+
+        int deg = poly.degree();
+        if (deg <= 0) return {};
+
+        if (deg == 1) {
+            // ax + b = 0 → x = -b · a^{-1} mod p
+            uint64_t a = poly.coeff(1), b = poly.coeff(0);
+            uint64_t a_inv = pow_mod(a, p - 2, p);
+            uint64_t root = static_cast<uint64_t>(
+                (static_cast<__uint128_t>(p - b) * a_inv) % p);
+            return {static_cast<uint32_t>(root)};
+        }
+
+        // Cantor-Zassenhaus splitting: pick random a, compute gcd(poly, (x+a)^{(p-1)/2} - 1)
+        std::mt19937_64 rng(static_cast<uint64_t>(p) * 31 + 17);  // deterministic seed
+        std::vector<uint64_t> poly_coeffs;
+        for (int i = 0; i <= deg; ++i) poly_coeffs.push_back(poly.coeff(i));
+
+        for (int attempt = 0; attempt < 100; ++attempt) {
+            uint64_t a = rng() % p;
+            MP x_plus_a;
+            x_plus_a.set_coeff(0, a);
+            x_plus_a.set_coeff(1, 1);
+
+            // (x+a)^{(p-1)/2} mod poly mod p
+            Integer exp_val(static_cast<int64_t>((p - 1) / 2));
+            auto power_result = MP::power(x_plus_a, exp_val, poly_coeffs, p);
+
+            // subtract 1
+            uint64_t c0 = power_result.coeff(0);
+            c0 = (c0 + p - 1) % p;
+            power_result.set_coeff(0, c0);
+
+            auto factor = MP::gcd(power_result, poly, p);
+            int f_deg = factor.degree();
+
+            if (f_deg > 0 && f_deg < deg) {
+                // 成功分裂，递归两半
+                auto roots1 = cz_extract_roots(factor, p);
+                // poly / factor
+                auto [quotient, rem] = MP::divmod(poly, factor, p);
+                auto roots2 = cz_extract_roots(quotient, p);
+                roots1.insert(roots1.end(), roots2.begin(), roots2.end());
+                return roots1;
             }
         }
 
+        // 极少数情况回退暴力
+        std::vector<uint32_t> roots;
+        for (uint32_t r = 0; r < p && static_cast<int>(roots.size()) < deg; ++r) {
+            uint64_t val = 0, rp = 1;
+            for (int i = 0; i <= deg; ++i) {
+                val = (val + static_cast<uint64_t>(
+                    (static_cast<__uint128_t>(poly.coeff(i)) * rp) % p)) % p;
+                rp = static_cast<uint64_t>((static_cast<__uint128_t>(rp) * r) % p);
+            }
+            if (val == 0) roots.push_back(r);
+        }
         return roots;
     }
 };
