@@ -528,6 +528,8 @@ private:
         std::vector<int> invariant_factors;
     };
 
+    /// Compute Smith Normal Form of the relation matrix
+    /// Returns invariant factors, class number, and generator indices
     [[nodiscard]] SNFResult compute_smith_normal_form(
             std::vector<std::vector<int>>& matrix,
             size_t num_cols) const {
@@ -540,59 +542,126 @@ private:
         }
 
         size_t num_rows = matrix.size();
+        size_t min_dim = std::min(num_rows, num_cols);
 
-        // Simplified: use Gaussian elimination to find rank
-        // The class number is related to the cokernel
-
-        std::vector<bool> pivot_col(num_cols, false);
-        size_t rank = 0;
-
-        for (size_t col = 0; col < num_cols && rank < num_rows; ++col) {
-            // Find pivot
-            size_t pivot_row = rank;
-            while (pivot_row < num_rows && matrix[pivot_row][col] == 0) {
-                ++pivot_row;
-            }
-
-            if (pivot_row == num_rows) {
-                // No pivot in this column - this contributes to class group
-                result.generator_indices.push_back(col);
-                continue;
-            }
-
-            // Swap rows
-            if (pivot_row != rank) {
-                std::swap(matrix[pivot_row], matrix[rank]);
-            }
-
-            pivot_col[col] = true;
-
-            // Eliminate
-            for (size_t row = 0; row < num_rows; ++row) {
-                if (row != rank && matrix[row][col] != 0) {
-                    int factor = matrix[row][col] / matrix[rank][col];
-                    for (size_t c = 0; c < num_cols; ++c) {
-                        matrix[row][c] -= factor * matrix[rank][c];
+        // Smith Normal Form via row/column operations over Z
+        for (size_t k = 0; k < min_dim; ++k) {
+            // Phase 1: Find smallest nonzero |entry| and move to (k,k)
+            bool found = false;
+            while (true) {
+                // Find minimum nonzero |entry| in submatrix [k:, k:]
+                int min_abs = 0;
+                size_t min_r = k, min_c = k;
+                for (size_t i = k; i < num_rows; ++i) {
+                    for (size_t j = k; j < num_cols; ++j) {
+                        if (matrix[i][j] != 0) {
+                            int abs_val = std::abs(matrix[i][j]);
+                            if (min_abs == 0 || abs_val < min_abs) {
+                                min_abs = abs_val;
+                                min_r = i;
+                                min_c = j;
+                            }
+                        }
                     }
                 }
+                if (min_abs == 0) break; // all zero in submatrix
+
+                found = true;
+
+                // Move pivot to (k,k)
+                if (min_r != k) std::swap(matrix[min_r], matrix[k]);
+                if (min_c != k) {
+                    for (size_t i = 0; i < num_rows; ++i) {
+                        std::swap(matrix[i][min_c], matrix[i][k]);
+                    }
+                }
+
+                // Phase 2: Eliminate row k and column k
+                bool changed = true;
+                while (changed) {
+                    changed = false;
+
+                    // Eliminate column k
+                    for (size_t i = k + 1; i < num_rows; ++i) {
+                        if (matrix[i][k] != 0) {
+                            int q = matrix[i][k] / matrix[k][k];
+                            for (size_t j = k; j < num_cols; ++j) {
+                                matrix[i][j] -= q * matrix[k][j];
+                            }
+                            if (matrix[i][k] != 0) {
+                                // Didn't fully eliminate — swap and retry
+                                std::swap(matrix[i], matrix[k]);
+                                changed = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (changed) continue;
+
+                    // Eliminate row k
+                    for (size_t j = k + 1; j < num_cols; ++j) {
+                        if (matrix[k][j] != 0) {
+                            int q = matrix[k][j] / matrix[k][k];
+                            for (size_t i = k; i < num_rows; ++i) {
+                                matrix[i][j] -= q * matrix[i][k];
+                            }
+                            if (matrix[k][j] != 0) {
+                                // Swap columns and retry
+                                for (size_t i = 0; i < num_rows; ++i) {
+                                    std::swap(matrix[i][j], matrix[i][k]);
+                                }
+                                changed = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Phase 3: Check divisibility — m[k][k] must divide all entries below
+                bool divisible = true;
+                for (size_t i = k + 1; i < num_rows && divisible; ++i) {
+                    for (size_t j = k + 1; j < num_cols && divisible; ++j) {
+                        if (matrix[i][j] % matrix[k][k] != 0) {
+                            // Add row i to row k, then re-eliminate
+                            for (size_t c = k; c < num_cols; ++c) {
+                                matrix[k][c] += matrix[i][c];
+                            }
+                            divisible = false;
+                        }
+                    }
+                }
+                if (divisible) break; // done with position k
+                // else: loop back — now (k,k) has a smaller value
             }
 
-            ++rank;
+            if (!found) break;
+
+            // Make diagonal entry positive
+            if (matrix[k][k] < 0) {
+                for (size_t j = k; j < num_cols; ++j) {
+                    matrix[k][j] = -matrix[k][j];
+                }
+            }
         }
 
-        // Columns without pivots generate the class group
-        // For simplicity, estimate class number as 2^(num_generators)
-        // This is a very rough approximation
-        if (!result.generator_indices.empty()) {
-            result.class_number = 1u << std::min(result.generator_indices.size(), size_t(20));
+        // Collect invariant factors (diagonal entries > 1)
+        // and compute class number
+        for (size_t k = 0; k < min_dim; ++k) {
+            int d_k = std::abs(matrix[k][k]);
+            if (d_k > 1) {
+                result.invariant_factors.push_back(d_k);
+                result.generator_indices.push_back(k);
+                // Protect against overflow
+                if (result.class_number <= UINT32_MAX / static_cast<uint32_t>(d_k)) {
+                    result.class_number *= static_cast<uint32_t>(d_k);
+                } else {
+                    result.class_number = UINT32_MAX;
+                }
+            }
         }
-
-        // Note: no hard truncation of generators — all are needed for correct
-        // character computation.  The config_.max_generators soft limit is
-        // honoured downstream; warn if the count is unusually large.
-        if (result.generator_indices.size() > config_.max_generators) {
-            // Keep all generators but emit a diagnostic (no truncation)
-        }
+        // Columns beyond min_dim that had no pivot also contribute
+        // (zero diagonal = infinite cyclic factor, but in class group context
+        // these indicate free generators needing more relations)
 
         return result;
     }
