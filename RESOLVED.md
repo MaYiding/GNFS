@@ -7,6 +7,42 @@
 
 ## 已完成 ✅
 
+### P2 级修复 (Session 37c)
+
+#### [BUG] ~~class_group 判别式计算仅对 depressed cubic 正确~~ ✅
+- **发现**: 2026-03-08 (Session 5+6)
+- **解决**: 2026-03-10 (Session 37c)
+- **修复**: `class_group.hpp:compute_discriminant()` 改用 Sylvester 矩阵 Bareiss 行列式计算 Res(f,f')，Δ = (-1)^(d(d-1)/2) · Res(f,f') / a_d，支持任意度数
+- **验证**: smoke 20/20 通过, test_class_group 通过
+- **Commit**: `36c6341`
+
+#### [BUG] ~~class_group 判别式公式对非 depressed 三次多项式错误~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 37c)
+- **修复**: 同上（合并修复）
+- **Commit**: `36c6341`
+
+#### [BUG] ~~class_group SNF 不是真正的 Smith Normal Form~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 37c)
+- **修复**: `class_group.hpp:compute_smith_normal_form()` 完整 SNF 算法（行/列操作+整除条件），class_number = ∏|d_i| 替代 2^(#generators)
+- **验证**: smoke 20/20 通过, test_class_group 通过
+- **Commit**: `4c98931`
+
+#### [BUG] ~~IntPolynomial CZ 是 O(p) 暴力搜索~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 37c)
+- **修复**: `int_polynomial.hpp:roots_cantor_zassenhaus()` 使用 ModularPoly 实现真正的 CZ 算法：gcd(f, x^p-x) + 随机分裂，O(d² log p)
+- **验证**: smoke 20/20 通过, test_int_polynomial 通过
+- **Commit**: `da87398`
+
+#### [BUG] ~~Integer 除零行为不一致~~ ✅
+- **发现**: 2026-03-09 (Session 6)
+- **解决**: 2026-03-10 (Session 37c)
+- **修复**: `integer.cpp` 所有 8 个 div/mod 运算符统一在 GMP 调用前检查零，抛出 `std::domain_error`
+- **验证**: smoke 20/20 通过, test_integer 通过
+- **Commit**: `38072fe`
+
 ### P1-OPT + P2 + P3 级修复 (Session 37b)
 
 #### [OPT] ~~lattice_basis 浮点高斯约化不够精确~~ ✅
@@ -577,3 +613,4 @@
 | P1 | Integer::powmod() 不验证负指数 | `integer.hpp` | GMP mpz_powm 正确处理负指数（计算逆元） |
 | P1 | matrix_builder f mod 2 检查 uint64 截断 | `matrix_builder.hpp:196-201` | 代码已使用 `Integer % 2` 后再 `to_uint64()`，结果为 0/1，无截断风险 |
 | P1 | FastPoly reduce_inplace 系数潜在溢出 | `schirokauer.hpp:87-91` | 公式 `m - (t - a.coeffs[idx])` 数学正确：t 和 a.coeffs[idx] 均在 [0,m)，差值在 (0,m)，结果在 (0,m)。mul_raw 确保输入 ∈ [0,m)，reduce_inplace 维持不变量。Schirokauer 中 m=ℓ^k=8，远离溢出边界 |
+| P2 | Hensel 提升无精度充分性验证 | `hensel_sqrt.hpp` | retry 机制（4次递增精度）+ Y²≡P(mod N) 终端验证已构成完整验证系统。200-bit 余量使首次成功率极高，retry 捕获极罕见的精度不足。centering 后无需单独验证 |

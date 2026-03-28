@@ -161,51 +161,132 @@ private:
         compute_class_group(prime_ideals);
     }
 
-    /// Compute the discriminant of the polynomial
+    /// Compute the discriminant of the polynomial using Res(f, f')
+    /// Δ(f) = (-1)^(d(d-1)/2) · Res(f, f') / a_d
     void compute_discriminant() {
         uint32_t d = ctx_.degree();
-
-        if (d == 3) {
-            // For f(x) = x^3 + ax + b, discriminant = -4a^3 - 27b^2
-            Integer a = ctx_.coeff(1).clone();
-            Integer b = ctx_.coeff(0).clone();
-
-            // -4a^3
-            Integer a_cubed = a.clone();
-            a_cubed *= a;
-            a_cubed *= a;
-            Integer neg4(-4);
-            a_cubed *= neg4;
-
-            // -27b^2
-            Integer b_squared = b.clone();
-            b_squared *= b;
-            Integer neg27(-27);
-            b_squared *= neg27;
-
-            // discriminant = -4a^3 - 27b^2
-            a_cubed += b_squared;
-            discriminant_ = a_cubed.clone();
-        } else {
-            // For general polynomials, use resultant formula
-            // This is a simplified computation
-            discriminant_ = compute_general_discriminant();
+        if (d <= 1) {
+            discriminant_ = Integer(int64_t(1));
+            return;
         }
+
+        // Build f and f' coefficient vectors
+        std::vector<Integer> f(d + 1), f_prime(d);
+        for (uint32_t i = 0; i <= d; ++i) {
+            f[i] = ctx_.coeff(i).clone();
+        }
+        for (uint32_t i = 0; i < d; ++i) {
+            f_prime[i] = f[i + 1].clone();
+            f_prime[i] *= Integer(static_cast<int64_t>(i + 1));
+        }
+
+        // Compute Res(f, f') via Sylvester matrix determinant
+        // Sylvester matrix size = d + (d-1) = 2d-1
+        Integer res = compute_resultant(f, d, f_prime, d - 1);
+
+        // Δ = (-1)^(d(d-1)/2) · Res(f, f') / a_d
+        uint32_t sign_exp = d * (d - 1) / 2;
+        if (sign_exp % 2 == 1) {
+            res.negate();
+        }
+        Integer a_d = ctx_.coeff(d).clone();
+        if (!a_d.is_zero()) {
+            res /= a_d;
+        }
+
+        discriminant_ = std::move(res);
     }
 
-    /// Compute discriminant for general polynomial using resultant
-    [[nodiscard]] Integer compute_general_discriminant() const {
-        // Simplified: return a large value that ensures we search enough primes
-        // Proper implementation would compute Res(f, f')
-        Integer result(1);
-        for (uint32_t i = 0; i <= ctx_.degree(); ++i) {
-            Integer c = ctx_.coeff(i).clone();
-            if (!c.is_zero()) {
-                c *= c;
-                result += c;
+    /// Compute resultant Res(f, g) via Sylvester matrix determinant
+    /// f has degree deg_f, g has degree deg_g
+    /// Matrix size = deg_f + deg_g
+    [[nodiscard]] static Integer compute_resultant(
+            const std::vector<Integer>& f, uint32_t deg_f,
+            const std::vector<Integer>& g, uint32_t deg_g) {
+
+        uint32_t n = deg_f + deg_g;
+        if (n == 0) return Integer(int64_t(1));
+
+        // Build Sylvester matrix (n × n)
+        // First deg_g rows: coefficients of x^{deg_g-1}·f, ..., f (shifted copies)
+        // Last deg_f rows: coefficients of x^{deg_f-1}·g, ..., g (shifted copies)
+        std::vector<std::vector<Integer>> M(n, std::vector<Integer>(n));
+        for (uint32_t i = 0; i < n; ++i) {
+            for (uint32_t j = 0; j < n; ++j) {
+                M[i][j] = Integer(int64_t(0));
             }
         }
-        result *= Integer(1000);
+
+        // First deg_g rows from f
+        for (uint32_t row = 0; row < deg_g; ++row) {
+            for (uint32_t k = 0; k <= deg_f; ++k) {
+                // row-th shifted copy: f[k] at column row + k
+                uint32_t col = row + k;
+                if (col < n) {
+                    M[row][col] = f[deg_f - k].clone(); // coefficients in descending order
+                }
+            }
+        }
+
+        // Last deg_f rows from g
+        for (uint32_t row = 0; row < deg_f; ++row) {
+            for (uint32_t k = 0; k <= deg_g; ++k) {
+                uint32_t col = row + k;
+                if (col < n) {
+                    M[deg_g + row][col] = g[deg_g - k].clone();
+                }
+            }
+        }
+
+        // Compute determinant using Bareiss algorithm (fraction-free)
+        return bareiss_determinant(M, n);
+    }
+
+    /// Bareiss algorithm: fraction-free Gaussian elimination for Integer matrix determinant
+    [[nodiscard]] static Integer bareiss_determinant(
+            std::vector<std::vector<Integer>>& M, uint32_t n) {
+        int sign = 1;
+        Integer prev_pivot(int64_t(1));
+
+        for (uint32_t k = 0; k < n; ++k) {
+            // Find pivot in column k from rows k..n-1
+            uint32_t pivot_row = k;
+            while (pivot_row < n && M[pivot_row][k].is_zero()) {
+                ++pivot_row;
+            }
+            if (pivot_row == n) {
+                return Integer(int64_t(0)); // singular
+            }
+            if (pivot_row != k) {
+                std::swap(M[k], M[pivot_row]);
+                sign = -sign;
+            }
+
+            Integer cur_pivot = M[k][k].clone();
+
+            // Eliminate below pivot
+            for (uint32_t i = k + 1; i < n; ++i) {
+                for (uint32_t j = k + 1; j < n; ++j) {
+                    // M[i][j] = (cur_pivot * M[i][j] - M[i][k] * M[k][j]) / prev_pivot
+                    Integer term1 = cur_pivot.clone();
+                    term1 *= M[i][j];
+                    Integer term2 = M[i][k].clone();
+                    term2 *= M[k][j];
+                    term1 -= term2;
+                    term1 /= prev_pivot; // exact division guaranteed by Bareiss
+                    M[i][j] = std::move(term1);
+                }
+                M[i][k] = Integer(int64_t(0));
+            }
+
+            prev_pivot = std::move(cur_pivot);
+        }
+
+        // Determinant = sign * M[n-1][n-1]
+        Integer result = M[n - 1][n - 1].clone();
+        if (sign < 0) {
+            result.negate();
+        }
         return result;
     }
 
@@ -447,6 +528,8 @@ private:
         std::vector<int> invariant_factors;
     };
 
+    /// Compute Smith Normal Form of the relation matrix
+    /// Returns invariant factors, class number, and generator indices
     [[nodiscard]] SNFResult compute_smith_normal_form(
             std::vector<std::vector<int>>& matrix,
             size_t num_cols) const {
@@ -459,59 +542,126 @@ private:
         }
 
         size_t num_rows = matrix.size();
+        size_t min_dim = std::min(num_rows, num_cols);
 
-        // Simplified: use Gaussian elimination to find rank
-        // The class number is related to the cokernel
-
-        std::vector<bool> pivot_col(num_cols, false);
-        size_t rank = 0;
-
-        for (size_t col = 0; col < num_cols && rank < num_rows; ++col) {
-            // Find pivot
-            size_t pivot_row = rank;
-            while (pivot_row < num_rows && matrix[pivot_row][col] == 0) {
-                ++pivot_row;
-            }
-
-            if (pivot_row == num_rows) {
-                // No pivot in this column - this contributes to class group
-                result.generator_indices.push_back(col);
-                continue;
-            }
-
-            // Swap rows
-            if (pivot_row != rank) {
-                std::swap(matrix[pivot_row], matrix[rank]);
-            }
-
-            pivot_col[col] = true;
-
-            // Eliminate
-            for (size_t row = 0; row < num_rows; ++row) {
-                if (row != rank && matrix[row][col] != 0) {
-                    int factor = matrix[row][col] / matrix[rank][col];
-                    for (size_t c = 0; c < num_cols; ++c) {
-                        matrix[row][c] -= factor * matrix[rank][c];
+        // Smith Normal Form via row/column operations over Z
+        for (size_t k = 0; k < min_dim; ++k) {
+            // Phase 1: Find smallest nonzero |entry| and move to (k,k)
+            bool found = false;
+            while (true) {
+                // Find minimum nonzero |entry| in submatrix [k:, k:]
+                int min_abs = 0;
+                size_t min_r = k, min_c = k;
+                for (size_t i = k; i < num_rows; ++i) {
+                    for (size_t j = k; j < num_cols; ++j) {
+                        if (matrix[i][j] != 0) {
+                            int abs_val = std::abs(matrix[i][j]);
+                            if (min_abs == 0 || abs_val < min_abs) {
+                                min_abs = abs_val;
+                                min_r = i;
+                                min_c = j;
+                            }
+                        }
                     }
                 }
+                if (min_abs == 0) break; // all zero in submatrix
+
+                found = true;
+
+                // Move pivot to (k,k)
+                if (min_r != k) std::swap(matrix[min_r], matrix[k]);
+                if (min_c != k) {
+                    for (size_t i = 0; i < num_rows; ++i) {
+                        std::swap(matrix[i][min_c], matrix[i][k]);
+                    }
+                }
+
+                // Phase 2: Eliminate row k and column k
+                bool changed = true;
+                while (changed) {
+                    changed = false;
+
+                    // Eliminate column k
+                    for (size_t i = k + 1; i < num_rows; ++i) {
+                        if (matrix[i][k] != 0) {
+                            int q = matrix[i][k] / matrix[k][k];
+                            for (size_t j = k; j < num_cols; ++j) {
+                                matrix[i][j] -= q * matrix[k][j];
+                            }
+                            if (matrix[i][k] != 0) {
+                                // Didn't fully eliminate — swap and retry
+                                std::swap(matrix[i], matrix[k]);
+                                changed = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (changed) continue;
+
+                    // Eliminate row k
+                    for (size_t j = k + 1; j < num_cols; ++j) {
+                        if (matrix[k][j] != 0) {
+                            int q = matrix[k][j] / matrix[k][k];
+                            for (size_t i = k; i < num_rows; ++i) {
+                                matrix[i][j] -= q * matrix[i][k];
+                            }
+                            if (matrix[k][j] != 0) {
+                                // Swap columns and retry
+                                for (size_t i = 0; i < num_rows; ++i) {
+                                    std::swap(matrix[i][j], matrix[i][k]);
+                                }
+                                changed = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Phase 3: Check divisibility — m[k][k] must divide all entries below
+                bool divisible = true;
+                for (size_t i = k + 1; i < num_rows && divisible; ++i) {
+                    for (size_t j = k + 1; j < num_cols && divisible; ++j) {
+                        if (matrix[i][j] % matrix[k][k] != 0) {
+                            // Add row i to row k, then re-eliminate
+                            for (size_t c = k; c < num_cols; ++c) {
+                                matrix[k][c] += matrix[i][c];
+                            }
+                            divisible = false;
+                        }
+                    }
+                }
+                if (divisible) break; // done with position k
+                // else: loop back — now (k,k) has a smaller value
             }
 
-            ++rank;
+            if (!found) break;
+
+            // Make diagonal entry positive
+            if (matrix[k][k] < 0) {
+                for (size_t j = k; j < num_cols; ++j) {
+                    matrix[k][j] = -matrix[k][j];
+                }
+            }
         }
 
-        // Columns without pivots generate the class group
-        // For simplicity, estimate class number as 2^(num_generators)
-        // This is a very rough approximation
-        if (!result.generator_indices.empty()) {
-            result.class_number = 1u << std::min(result.generator_indices.size(), size_t(20));
+        // Collect invariant factors (diagonal entries > 1)
+        // and compute class number
+        for (size_t k = 0; k < min_dim; ++k) {
+            int d_k = std::abs(matrix[k][k]);
+            if (d_k > 1) {
+                result.invariant_factors.push_back(d_k);
+                result.generator_indices.push_back(k);
+                // Protect against overflow
+                if (result.class_number <= UINT32_MAX / static_cast<uint32_t>(d_k)) {
+                    result.class_number *= static_cast<uint32_t>(d_k);
+                } else {
+                    result.class_number = UINT32_MAX;
+                }
+            }
         }
-
-        // Note: no hard truncation of generators — all are needed for correct
-        // character computation.  The config_.max_generators soft limit is
-        // honoured downstream; warn if the count is unusually large.
-        if (result.generator_indices.size() > config_.max_generators) {
-            // Keep all generators but emit a diagnostic (no truncation)
-        }
+        // Columns beyond min_dim that had no pivot also contribute
+        // (zero diagonal = infinite cyclic factor, but in class group context
+        // these indicate free generators needing more relations)
 
         return result;
     }
