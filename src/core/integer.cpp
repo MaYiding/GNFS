@@ -135,11 +135,17 @@ Integer& Integer::operator*=(const Integer& other) {
 }
 
 Integer& Integer::operator/=(const Integer& other) {
+    if (mpz_sgn(other.value_) == 0) {
+        throw std::domain_error("Integer division by zero");
+    }
     mpz_tdiv_q(value_, value_, other.value_);
     return *this;
 }
 
 Integer& Integer::operator%=(const Integer& other) {
+    if (mpz_sgn(other.value_) == 0) {
+        throw std::domain_error("Integer modulo by zero");
+    }
     mpz_tdiv_r(value_, value_, other.value_);
     return *this;
 }
@@ -163,12 +169,18 @@ Integer Integer::operator*(const Integer& other) const {
 }
 
 Integer Integer::operator/(const Integer& other) const {
+    if (mpz_sgn(other.value_) == 0) {
+        throw std::domain_error("Integer division by zero");
+    }
     Integer result;
     mpz_tdiv_q(result.value_, value_, other.value_);
     return result;
 }
 
 Integer Integer::operator%(const Integer& other) const {
+    if (mpz_sgn(other.value_) == 0) {
+        throw std::domain_error("Integer modulo by zero");
+    }
     Integer result;
     mpz_tdiv_r(result.value_, value_, other.value_);
     return result;
@@ -285,14 +297,23 @@ void Integer::mul(Integer& result, const Integer& a, const Integer& b) {
 }
 
 void Integer::div(Integer& result, const Integer& a, const Integer& b) {
+    if (mpz_sgn(b.value_) == 0) {
+        throw std::domain_error("Integer division by zero");
+    }
     mpz_tdiv_q(result.value_, a.value_, b.value_);
 }
 
 void Integer::mod(Integer& result, const Integer& a, const Integer& b) {
+    if (mpz_sgn(b.value_) == 0) {
+        throw std::domain_error("Integer modulo by zero");
+    }
     mpz_tdiv_r(result.value_, a.value_, b.value_);
 }
 
 void Integer::divmod(Integer& quot, Integer& rem, const Integer& a, const Integer& b) {
+    if (mpz_sgn(b.value_) == 0) {
+        throw std::domain_error("Integer division by zero");
+    }
     mpz_tdiv_qr(quot.value_, rem.value_, a.value_, b.value_);
 }
 
@@ -402,6 +423,9 @@ Integer& Integer::operator/=(int64_t value) {
 }
 
 Integer& Integer::operator%=(int64_t value) {
+    if (value == 0) {
+        throw std::domain_error("Integer modulo by zero");
+    }
     unsigned long abs_val = (value >= 0) ? value : -value;
     mpz_tdiv_r_ui(value_, value_, abs_val);
     return *this;
