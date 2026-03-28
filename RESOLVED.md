@@ -7,6 +7,50 @@
 
 ## 已完成 ✅
 
+### P3 级安全修复 (Session 39)
+
+#### [BUG] ~~Integer +=/-=/÷= INT64_MIN 取反 UB~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 39)
+- **修复**: `integer.cpp` 三个运算符中 `-value` 改为 `-(value+1)+1` 安全取绝对值，避免 INT64_MIN 取反的有符号溢出 UB
+- **验证**: smoke 20/20 通过
+- **Commit**: `7dbf26e`
+
+#### [BUG] ~~4 处 static Integer zero 别名 + 线程风险~~ ✅
+- **发现**: 2026-03-09 (Session 7)
+- **解决**: 2026-03-10 (Session 39)
+- **修复**: `number_field.hpp:65,195` / `polynomial_context.hpp:77` / `int_polynomial.hpp:71` 中 `static Integer zero` → `static const Integer zero`，消除可变性风险
+- **验证**: smoke 20/20 通过
+- **Commit**: `f74fdfe`
+
+#### [BUG] ~~rational_sqrt 负号检测到但未应用~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 39)
+- **修复**: `rational_sqrt.hpp:138` has_negative 为 true 时应用 `sqrt_value = n - sqrt_value`
+- **验证**: smoke 20/20 通过
+- **Commit**: `793435b`
+
+#### [BUG] ~~无 N 素性检测~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-10 (Session 39)
+- **修复**: `test_gnfs_e2e.cpp` 和 `test_gnfs_progressive.cpp` 管线入口添加 `mpz_probab_prime_p(n, 25)` 检查
+- **验证**: smoke 20/20 通过
+- **Commit**: `e0c6937`
+
+#### [BUG] ~~smooth_check is_perfect_power 浮点精度损失~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-10 (Session 39)
+- **修复**: `smooth_check.hpp` 对 `std::pow(double,1.0/k)` 的 round 结果检查 b-1, b, b+1 三个候选，精确验证 b^k == n
+- **验证**: smoke 20/20 通过
+- **Commit**: `c0cea89`
+
+#### [DEBT] ~~polynomial_context coeff() 返回可变静态引用~~ ✅
+- **发现**: Session 5
+- **解决**: 2026-03-10 (Session 39)
+- **修复**: 同「4 处 static Integer zero」条目，`polynomial_context.hpp:77` 加 `const`
+- **验证**: 同上
+- **Commit**: `f74fdfe`
+
 ### P1-OPT + P3 级修复 (Session 38)
 
 #### [OPT] ~~ECM Stage 2 BSGS 优化~~ ✅
