@@ -375,68 +375,7 @@ private:
             const Integer& m,
             uint32_t d) {
 
-        // n = a_d * m^d + a_{d-1} * m^{d-1} + ... + a_1 * m + a_0
-
-        std::vector<Integer> coeffs(d + 1);
-        coeffs[d] = ad.clone();
-
-        // 计算 r = n - a_d * m^d
-        Integer m_pow = core::pow(m, d);
-        Integer remainder = n.clone();
-        Integer ad_md = ad.clone();
-        ad_md *= m_pow;
-        remainder -= ad_md;
-
-        // 逐次提取系数
-        for (int i = static_cast<int>(d) - 1; i >= 0; --i) {
-            if (i > 0) {
-                m_pow = core::pow(m, static_cast<uint32_t>(i));
-            } else {
-                m_pow = Integer(static_cast<int64_t>(1));
-            }
-
-            Integer quotient;
-            Integer rem;
-            Integer::divmod(quotient, rem, remainder, m_pow);
-
-            // 调整系数范围，使其尽可能小
-            // 系数应该在 [-m/2, m/2] 范围内
-            if (i > 0) {
-                Integer half_m = m.clone();
-                Integer two(2);
-                half_m /= two;
-
-                if (quotient > half_m) {
-                    quotient -= m;
-                    remainder += m_pow;
-                    remainder *= m;
-                } else if (quotient.is_negative()) {
-                    Integer neg_half_m = half_m.clone();
-                    neg_half_m.negate();
-                    if (quotient < neg_half_m) {
-                        quotient += m;
-                        remainder -= m_pow;
-                        remainder *= m;
-                    }
-                }
-            }
-
-            coeffs[i] = remainder.clone();
-
-            // 更新 remainder
-            Integer term = coeffs[i].clone();
-            term *= m_pow;
-            remainder -= term;
-
-            // 重新计算 remainder
-            if (i > 0) {
-                Integer m_pow_prev = core::pow(m, static_cast<uint32_t>(i - 1));
-                Integer::divmod(coeffs[i], remainder, remainder, m_pow_prev);
-            }
-        }
-
-        // 使用 base-m 展开重新计算（更稳定）
-        coeffs = base_m_expansion(n, m, d, ad);
+        std::vector<Integer> coeffs = base_m_expansion(n, m, d, ad);
 
         IntPolynomial f(std::move(coeffs));
         f.normalize();
