@@ -134,10 +134,9 @@ public:
         }
 
         // 如果有奇数个负数，平方根是负的
-        // 但在模算术中，-x ≡ n - x
+        // 在模算术中，-x ≡ n - x
         if (has_negative) {
-            // 实际上这不应该发生，因为依赖应该使负号也配对
-            // 但为了安全起见，处理这种情况
+            sqrt_value = n - sqrt_value;
         }
 
         // 验证: X² mod N == ∏(a_i - b_i·m) mod N

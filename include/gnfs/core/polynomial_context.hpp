@@ -74,7 +74,7 @@ public:
 
     /// 获取系数 f_i（x^i 的系数）
     [[nodiscard]] const Integer& coeff(uint32_t i) const {
-        static Integer zero(static_cast<int64_t>(0));
+        static const Integer zero(static_cast<int64_t>(0));
         if (i >= f_coeffs_.size()) return zero;
         return f_coeffs_[i];
     }

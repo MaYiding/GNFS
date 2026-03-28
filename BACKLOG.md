@@ -68,11 +68,6 @@
 
 ## P3 — 低优先级（代码质量和长期改进）
 
-### [BUG] 4 处 static Integer zero 返回引用——别名 + 线程理论风险
-- **发现日期**: 2026-03-09 (Session 7)
-- **文件**: number_field.hpp:65,195 / polynomial_context.hpp:77 / int_polynomial.hpp:69
-- **描述**: 越界访问返回 static Integer zero 的 const&，别名陷阱
-
 ### [BUG] Block Lanczos partial_inverse() 未将非主元行清零
 - **发现日期**: 2026-03-09 (Session 6) | Montgomery BL 上下文中实际工作正确
 - **文件**: `include/gnfs/linalg/block_lanczos.hpp:119-157`
@@ -99,10 +94,6 @@
 ### [BUG] params.hpp special_q_max 的 uint32 溢出
 - **发现日期**: 2026-03-08 (Session 5) | 🟢 当前安全（cap 在 1e9）
 - **文件**: `include/gnfs/core/params.hpp:166`
-
-### [BUG] rational_sqrt 负号检测到但未应用
-- **发现日期**: 2026-03-08 (Session 6) | extract_factors 同时检查 X±Y
-- **文件**: `include/gnfs/sqrt/rational_sqrt.hpp:138-141`
 
 ### [BUG] class_group factor_ideal/factor_principal_ideal int64 乘法溢出
 - **发现日期**: 2026-03-08 (Session 5) | b*r ~10^18 接近但不超过 INT64_MAX
@@ -143,10 +134,6 @@
 ### [BUG] Relation 反序列化无输入验证
 - **发现日期**: 2026-03-08 (Session 6) | 仅内部使用，无外部攻击面
 - **文件**: `include/gnfs/core/relation.hpp:104-148`
-
-### [BUG] Integer operator+=/operator-= 对 INT64_MIN 参数 UB
-- **发现日期**: 2026-03-08 (Session 6) | INT64_MIN 在管线中不会出现
-- **文件**: `src/core/integer.cpp:356-357,374-375,384`
 
 ### [BUG] MurphyEvaluator n.to_double() 对 N > 10^308 返回 infinity
 - **发现日期**: 2026-03-08 (Session 6) | 远超实现能力范围
@@ -200,15 +187,6 @@
 - **发现日期**: 2026-03-09 (Session 6) | val!=0 守卫阻止循环，但 a=b*r 时赋值丢失
 - **文件**: `include/gnfs/sqrt/class_group.hpp:383-393`
 
-### [BUG] 无 N 素性检测
-- **发现日期**: 2026-03-08 (Session 6) | 可用性问题
-- **文件**: 管线入口
-
-### [BUG] smooth_check 浮点精度损失
-- **发现日期**: 2026-03-08 (Session 5)
-- **文件**: `include/gnfs/cofactor/smooth_check.hpp:107-108`
-- **描述**: std::pow(double,1.0/k) 精度问题
-
 ### [OPT] Murphy E-score 低估 20-40%
 - **发现日期**: 2026-03-08 (Session 5)
 - **文件**: `include/gnfs/polynomial/murphy_evaluator.hpp`
@@ -219,9 +197,6 @@
 
 ### [DEBT] Schirokauer 文档注释与代码不一致
 - **文件**: `include/gnfs/linalg/schirokauer.hpp:138`
-
-### [DEBT] polynomial_context coeff() 返回可变静态引用
-- **文件**: `include/gnfs/core/polynomial_context.hpp:76-80`
 
 ### [DEBT] SpecialQ from_indices 忽略 end_index 参数
 - **文件**: `include/gnfs/sieve/special_q.hpp:36`
