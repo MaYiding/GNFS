@@ -923,15 +923,13 @@ void test_relation_filter_edge_cases() {
 void test_sieve_params_edge_cases() {
     std::cout << "Testing SieveParams edge cases..." << std::endl;
 
-    // combined_threshold overflow: 200 + 200 = 400 → wraps to 144 in uint8_t
+    // combined_threshold: 200 + 200 = 400, now correctly returns uint16_t
     {
         SieveParams params;
         params.rational_threshold = 200;
         params.algebraic_threshold = 200;
-        uint8_t combined = params.combined_threshold();
-        // uint8_t overflow: (200 + 200) mod 256 = 144
-        assert(combined == 144);
-        // This demonstrates the BACKLOG bug: combined_threshold uint8_t overflow
+        uint16_t combined = params.combined_threshold();
+        assert(combined == 400);
     }
 
     // Normal case: combined threshold within range

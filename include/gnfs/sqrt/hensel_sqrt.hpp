@@ -844,17 +844,22 @@ private:
         return {};
     }
 
-    /// Find next prime
+    /// Find next prime (with overflow guard)
     [[nodiscard]] static uint64_t next_prime(uint64_t n) {
+        if (n >= UINT64_MAX - 2) return 0;
         n++;
         if (n <= 2) return 2;
-        if (n % 2 == 0) n++;
+        if (n % 2 == 0) {
+            if (n == UINT64_MAX) return 0;
+            n++;
+        }
         while (true) {
             bool is_p = true;
             for (uint64_t i = 3; i * i <= n; ++i) {
                 if (n % i == 0) { is_p = false; break; }
             }
             if (is_p) return n;
+            if (n > UINT64_MAX - 2) return 0;
             n += 2;
         }
     }

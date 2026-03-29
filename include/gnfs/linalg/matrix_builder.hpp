@@ -529,10 +529,8 @@ private:
         // 清空行
         row.clear_all();
 
-        // 符号列：如果 a < 0，设置符号位
-        if (mapping.has_sign_column && rel.a < 0) {
-            row.set(static_cast<uint32_t>(mapping.sign_column));
-        }
+        // 符号列：此处不设置——符号应基于 (a - b*m) 的正负而非 a 的正负。
+        // build_with_qc() 会用 PolynomialContext 正确计算并设置符号列。
 
         // 有理因子基：计算每个素数的指数模 2
         {
