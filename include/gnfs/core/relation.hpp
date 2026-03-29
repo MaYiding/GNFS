@@ -27,6 +27,11 @@ struct Relation {
     LargePrimeList rational_large_prime;
     LargePrimeList algebraic_large_prime;
 
+    // For merged relations: additional (a,b) pairs from constituent relations.
+    // The primary (a,b) is in the a/b fields; extra pairs stored here.
+    // Sqrt step must process all pairs (primary + extra) for correct computation.
+    std::vector<std::pair<int64_t, int64_t>> extra_ab_pairs;
+
     // Default constructor
     Relation() = default;
 
@@ -53,6 +58,11 @@ struct Relation {
         return rational_large_prime.size() + algebraic_large_prime.size();
     }
 
+    // Check if this is a merged relation (product of two partial relations)
+    [[nodiscard]] bool is_merged() const {
+        return !extra_ab_pairs.empty();
+    }
+
     // Clone this relation
     [[nodiscard]] Relation clone() const {
         Relation copy;
@@ -62,6 +72,7 @@ struct Relation {
         copy.algebraic_factors = algebraic_factors;
         copy.rational_large_prime = rational_large_prime;
         copy.algebraic_large_prime = algebraic_large_prime;
+        copy.extra_ab_pairs = extra_ab_pairs;
         return copy;
     }
 
