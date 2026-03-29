@@ -423,23 +423,13 @@ private:
                 f_mod[i] = c.to_uint64();
             }
 
-            // Check if f has a root mod p using native arithmetic
-            bool has_root = false;
-            for (uint32_t x = 0; x < p && !has_root; ++x) {
-                // Evaluate f(x) mod p using Horner's method
-                uint64_t val = f_mod[d];
-                for (int i = static_cast<int>(d) - 1; i >= 0; --i) {
-                    val = (val * x + f_mod[i]) % p;
-                }
-                if (val == 0) {
-                    has_root = true;
-                }
-            }
+            // Skip if leading coefficient vanishes mod p (degree drops)
+            if (f_mod[d] == 0) continue;
 
-            // No roots → irreducible for degree ≤ 3.
-            // For degree > 3, no roots is necessary but not sufficient;
-            // accept as heuristic (works well in practice for GNFS QC selection).
-            if (!has_root) {
+            // Use Rabin irreducibility test — correct for all degrees.
+            // "No roots" is only equivalent for degree ≤ 3; for degree ≥ 4,
+            // a product of irreducible quadratics has no roots but is reducible.
+            if (sqrt::ModularPoly::is_irreducible(f_mod, p)) {
                 qc_primes.push_back(p);
             }
         }

@@ -7,6 +7,29 @@
 
 ## 已完成 ✅
 
+### P1 级修复 (Session 40 — Special-Q 素数矩阵丢失)
+
+#### [BUG] ~~Special-Q 范围素数指数从矩阵静默丢失~~ ✅
+- **发现**: 2026-03-11 (Session 40) — L5 progressive 测试失败
+- **解决**: 2026-03-11 (Session 40)
+- **修复**: `cofactorizer.hpp:202-222` — trial division 产生的 SQ 范围因子基索引（>= sieve_algebraic_count()）原先直接加入 algebraic_factors，但矩阵构建器只为 sieve 范围索引分配列，导致 SQ 素数指数被静默丢弃。修复：将 SQ 范围索引路由到 algebraic_large_prime（含 p, r, exp），通过大素数列追踪
+- **验证**: L1-L5 全通过，L5: 31.91s (61-bit)，smoke 20/20 通过
+- **Commit**: `dba9262`
+
+#### [BUG] ~~Schirokauer split 路径非单位元素未剥离 ℓ-part~~ ✅
+- **发现**: 2026-03-11 (Session 40)
+- **解决**: 2026-03-11 (Session 40)
+- **修复**: `schirokauer.hpp:636-693` — 当 P_i | γ 时 γ 不是单位元素，λ_ℓ 公式未定义。修复：gamma == 0 → 返回 0；gamma % ℓ == 0 → 循环除以 ℓ 剥离 ℓ-part 得到单位元素。同时 exponent_k 从 3 提升到 8（ℓ^k=256，处理 v≤6）
+- **验证**: 同上
+- **Commit**: `dba9262`
+
+#### [BUG] ~~QC 素数选择对 degree≥4 多项式不正确~~ ✅
+- **发现**: 2026-03-11 (Session 40)
+- **解决**: 2026-03-11 (Session 40)
+- **修复**: `matrix_builder.hpp:426-444` — 旧代码用 "无根" 启发式选 QC 素数，但 degree≥4 时 f 可约 mod p 也可能无根。改用 Rabin 不可约性测试 (`ModularPoly::is_irreducible`)
+- **验证**: 同上（对 degree≤3 无影响，为 degree≥4 预防性修复）
+- **Commit**: `dba9262`
+
 ### P3 级安全修复 (Session 39)
 
 #### [BUG] ~~Integer +=/-=/÷= INT64_MIN 取反 UB~~ ✅
