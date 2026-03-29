@@ -405,7 +405,11 @@ struct GFPolyOps {
 /// Schirokauer map configuration
 struct SchirokaurConfig {
     std::vector<uint32_t> primes = {2};  // Primes for Schirokauer maps (usually just 2)
-    uint32_t exponent_k = 3;              // Exponent k (use ℓ^k), larger = more accurate
+    uint32_t exponent_k = 8;              // Exponent k (use ℓ^k), larger = more accurate
+                                          // k ≥ 8 needed for split case: non-unit elements
+                                          // require ℓ-part stripping, reducing precision by v.
+                                          // Formula (u^e-1)/ℓ mod ℓ needs ℓ^2 precision,
+                                          // so k - v ≥ 2. k=8 handles v ≤ 6 (prob 99.2%)
     bool verbose = false;
 };
 
@@ -630,7 +634,8 @@ public:
     /// Split Schirokauer (f reducible mod ℓ)
     /// For each irreducible factor fᵢ of degree dᵢ:
     ///   Reduce γ = (a - bα) mod (fᵢ, ℓ^k)
-    ///   Compute γ^(ℓ^{dᵢ} - 1) mod (fᵢ, ℓ^k)
+    ///   If γ ≡ 0 mod (fᵢ, ℓ): strip ℓ-part to get unit before computing map
+    ///   Compute unit^(ℓ^{dᵢ} - 1) mod (fᵢ, ℓ^k)
     ///   Extract (result - 1) / ℓ mod ℓ → dᵢ columns
     [[nodiscard]] std::vector<uint32_t> compute_split(
             int64_t a, uint64_t b, const PrimeInfo& info) const {
@@ -640,25 +645,47 @@ public:
 
         for (const auto& fi : info.factors) {
             if (fi.degree == 1) {
-                // Linear factor (x - r): γ mod (x - r, ℓ^k) = a - b·r (scalar)
+                // Linear factor (x - r): γ mod (x - r, ℓ^k) = a - b·r mod ℓ^k
                 uint64_t r = (info.ell_k - fi.f_mod[0]) % info.ell_k;  // root
+
+                // Compute gamma = (a - b*r) mod ℓ^k using the full Hensel-lifted root
                 int64_t a_mod = a % static_cast<int64_t>(info.ell_k);
                 if (a_mod < 0) a_mod += static_cast<int64_t>(info.ell_k);
+                uint64_t b_mod = b % info.ell_k;
                 uint64_t gamma = (static_cast<uint64_t>(a_mod) + info.ell_k -
-                                  ((__uint128_t)b * r) % info.ell_k) % info.ell_k;
+                    ((__uint128_t)b_mod * r) % info.ell_k) % info.ell_k;
+
+                // Strip ℓ-part: the ideal valuation v_P(γ) is already captured by
+                // the factor base column. The Schirokauer map should only capture
+                // the unit part. For non-units (γ ≡ 0 mod ℓ), the formula
+                // (γ^{ℓ-1} - 1)/ℓ is undefined, so we must strip ℓ first.
+                if (gamma == 0) {
+                    // γ ≡ 0 mod ℓ^k — degenerate, set Schirokauer to 0
+                    result.push_back(0);
+                    continue;
+                }
+                while (gamma % info.ell == 0) {
+                    gamma /= info.ell;
+                }
+                // gamma is now the unit part (coprime to ℓ), known mod ℓ^{k-v}
+                // where v was the stripped valuation. Need k-v ≥ 2 for formula.
 
                 // γ^(ℓ-1) for degree-1 factor (exponent = ℓ^1 - 1 = ℓ - 1)
                 // For ℓ=2: exponent = 1, so γ^1 = γ
                 uint64_t g_pow = gamma;
                 if (fi.exponent > 1) {
                     // Compute gamma^exponent mod ℓ^k
-                    uint64_t base = gamma, exp = fi.exponent;
+                    uint64_t base = gamma % info.ell_k;
+                    uint64_t exp = fi.exponent;
                     g_pow = 1;
                     while (exp > 0) {
                         if (exp & 1) g_pow = ((__uint128_t)g_pow * base) % info.ell_k;
                         base = ((__uint128_t)base * base) % info.ell_k;
                         exp >>= 1;
                     }
+                } else {
+                    gamma %= info.ell_k;
+                    g_pow = gamma;
                 }
 
                 // (g_pow - 1) / ℓ mod ℓ
@@ -673,7 +700,19 @@ public:
                 uint64_t b_mod = b % info.ell_k;
                 uint64_t neg_b = (info.ell_k - b_mod) % info.ell_k;
 
-                FastPoly g(static_cast<uint64_t>(a_mod), neg_b);
+                // Strip ℓ-part: if both coefficients are divisible by ℓ, divide out
+                uint64_t c0 = static_cast<uint64_t>(a_mod);
+                uint64_t c1 = neg_b;
+                while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
+                       (c0 != 0 || c1 != 0)) {
+                    c0 /= info.ell;
+                    c1 /= info.ell;
+                }
+                // Ensure coefficients stay in [0, ell_k)
+                c0 %= info.ell_k;
+                c1 %= info.ell_k;
+
+                FastPoly g(c0, c1);
 
                 // Compute g^(ℓ^2 - 1) mod (fᵢ, ℓ^k)
                 auto g_pow = FastPoly::power(g, fi.exponent, fi.f_mod.data(), fi.degree, info.ell_k);
@@ -692,7 +731,18 @@ public:
                 uint64_t b_mod = b % info.ell_k;
                 uint64_t neg_b = (info.ell_k - b_mod) % info.ell_k;
 
-                FastPoly g(static_cast<uint64_t>(a_mod), neg_b);
+                // Strip ℓ-part: if both coefficients are divisible by ℓ, divide out
+                uint64_t c0 = static_cast<uint64_t>(a_mod);
+                uint64_t c1 = neg_b;
+                while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
+                       (c0 != 0 || c1 != 0)) {
+                    c0 /= info.ell;
+                    c1 /= info.ell;
+                }
+                c0 %= info.ell_k;
+                c1 %= info.ell_k;
+
+                FastPoly g(c0, c1);
                 auto g_pow = FastPoly::power(g, fi.exponent, fi.f_mod.data(), fi.degree, info.ell_k);
 
                 for (uint32_t i = 0; i < fi.degree; ++i) {

@@ -195,9 +195,29 @@ public:
         add_large_primes(rel.rational_large_prime, rat_class);
 
         // 添加代数侧因子
-        for (size_t i = 0; i < alg_result.factor_indices.size(); ++i) {
-            for (uint8_t e = 0; e < alg_result.exponents[i]; ++e) {
-                rel.algebraic_factors.push_back(alg_result.factor_indices[i]);
+        // IMPORTANT: Factor base indices >= sieve_algebraic_count() are in the
+        // special-Q range. These primes are included in the FB for sieving but
+        // do NOT have matrix columns. Route them to algebraic_large_prime instead,
+        // so the matrix builder tracks them via large prime columns.
+        {
+            size_t sieve_alg_count = fb_.sieve_algebraic_count();
+            const auto& alg_primes = fb_.algebraic();
+            for (size_t i = 0; i < alg_result.factor_indices.size(); ++i) {
+                uint32_t idx = alg_result.factor_indices[i];
+                uint8_t exp = alg_result.exponents[i];
+                if (idx < sieve_alg_count) {
+                    // Standard factor base prime — add to algebraic_factors
+                    for (uint8_t e = 0; e < exp; ++e) {
+                        rel.algebraic_factors.push_back(idx);
+                    }
+                } else {
+                    // Special-Q range prime — route to large primes
+                    // Use the stored root from the factor base
+                    uint32_t p = alg_primes[idx].p;
+                    uint32_t r = alg_primes[idx].r;
+                    rel.algebraic_large_prime.push_back(
+                        PrimePower{p, r, exp});
+                }
             }
         }
 
