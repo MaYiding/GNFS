@@ -150,6 +150,13 @@ struct DenseGF2_64x64 {
             }
         }
 
+        // Zero out non-pivot rows to avoid garbage in the non-invertible subspace
+        for (int i = 0; i < 64; ++i) {
+            if (!(mask & (1ULL << i))) {
+                right[i] = 0;
+            }
+        }
+
         DenseGF2_64x64 D;
         for (int i = 0; i < 64; ++i)
             D.rows[i] = right[i];

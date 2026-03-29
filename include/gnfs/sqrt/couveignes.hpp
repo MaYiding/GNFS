@@ -602,13 +602,18 @@ private:
         return product;
     }
 
-    /// Find next prime after n
+    /// Find next prime after n (with overflow guard)
     [[nodiscard]] static uint64_t next_prime(uint64_t n) {
+        if (n >= UINT64_MAX - 2) return 0; // overflow guard
         n++;
         if (n <= 2) return 2;
-        if (n % 2 == 0) n++;
+        if (n % 2 == 0) {
+            if (n == UINT64_MAX) return 0;
+            n++;
+        }
 
         while (!is_prime_u64(n)) {
+            if (n > UINT64_MAX - 2) return 0; // overflow guard
             n += 2;
         }
         return n;
