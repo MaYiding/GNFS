@@ -394,7 +394,7 @@ void test_params_edge_cases() {
 
     // Large N (200 bits)
     auto p200 = GNFSParams::compute(200);
-    assert(p200.degree == 5);
+    assert(p200.degree == 4);  // analytical formula: d_opt ≈ 4.39 → 4
     assert(p200.rational_bound > p64.rational_bound);
 
     std::cout << "  PASS" << std::endl;
