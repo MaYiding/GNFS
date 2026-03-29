@@ -461,12 +461,25 @@ private:
 
             // Check if this prime ideal divides (a - b*alpha)
             // P = (p, alpha - r) divides (a - b*alpha) iff a - b*r ≡ 0 (mod p)
-            int64_t val = a - static_cast<int64_t>(b) * static_cast<int64_t>(pi.r);
+            // Use __int128_t to avoid overflow when b*r approaches INT64_MAX
+            __int128_t val128 = static_cast<__int128_t>(a)
+                              - static_cast<__int128_t>(b) * static_cast<__int128_t>(pi.r);
 
             int exp = 0;
-            while (val % static_cast<int64_t>(pi.p) == 0 && val != 0) {
-                exp++;
-                val /= static_cast<int64_t>(pi.p);
+            if (val128 == 0) {
+                // a = b*r exactly: (a - bα) = -b(α - r)
+                // v_P = v_p(b) + 1 for unramified degree-1 prime ideal
+                exp = 1;
+                uint64_t b_tmp = b;
+                while (b_tmp % pi.p == 0) {
+                    ++exp;
+                    b_tmp /= pi.p;
+                }
+            } else {
+                while (val128 % static_cast<__int128_t>(pi.p) == 0) {
+                    ++exp;
+                    val128 /= static_cast<__int128_t>(pi.p);
+                }
             }
 
             if (exp > 0) {
@@ -496,12 +509,25 @@ private:
             if (gen.degree != 1) continue;
 
             // Check divisibility: P = (p, α - r) divides (a - bα) iff a - b*r ≡ 0 (mod p)
-            int64_t val = a - static_cast<int64_t>(b) * static_cast<int64_t>(gen.r);
+            // Use __int128_t to avoid overflow when b*r approaches INT64_MAX
+            __int128_t val128 = static_cast<__int128_t>(a)
+                              - static_cast<__int128_t>(b) * static_cast<__int128_t>(gen.r);
 
             int exp = 0;
-            while (val != 0 && val % static_cast<int64_t>(gen.p) == 0) {
-                exp++;
-                val /= static_cast<int64_t>(gen.p);
+            if (val128 == 0) {
+                // a = b*r exactly: (a - bα) = -b(α - r)
+                // v_P = v_p(b) + 1 for unramified degree-1 prime ideal
+                exp = 1;
+                uint64_t b_tmp = b;
+                while (b_tmp % gen.p == 0) {
+                    ++exp;
+                    b_tmp /= gen.p;
+                }
+            } else {
+                while (val128 % static_cast<__int128_t>(gen.p) == 0) {
+                    ++exp;
+                    val128 /= static_cast<__int128_t>(gen.p);
+                }
             }
 
             if (exp > 0) {

@@ -56,11 +56,18 @@ public:
         }
     }
 
-    /// 测试位
+    /// 测试位（const-safe: 排序时用二分查找，未排序时用线性扫描）
     [[nodiscard]] bool test(uint32_t col) const {
-        const_cast<SparseRow*>(this)->ensure_sorted();
-        auto it = std::lower_bound(indices_.begin(), indices_.end(), col);
-        return it != indices_.end() && *it == col;
+        if (sorted_) {
+            auto it = std::lower_bound(indices_.begin(), indices_.end(), col);
+            return it != indices_.end() && *it == col;
+        }
+        // 未排序：线性扫描，计算出现次数 mod 2（GF(2) 语义）
+        size_t count = 0;
+        for (auto idx : indices_) {
+            if (idx == col) ++count;
+        }
+        return count % 2 == 1;
     }
 
     /// Ensure indices are sorted and deduplicated (call before operations that need sorted data)

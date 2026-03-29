@@ -35,9 +35,9 @@ struct SieveParams {
     bool enable_2lp = true;                    // 启用 2LP (two large primes)
     bool enable_3lp = false;                   // 启用 3LP (three large primes)
 
-    /// 计算合并阈值
-    [[nodiscard]] uint8_t combined_threshold() const noexcept {
-        return rational_threshold + algebraic_threshold;
+    /// 计算合并阈值（返回 uint16_t 以避免两个 uint8_t 相加溢出）
+    [[nodiscard]] uint16_t combined_threshold() const noexcept {
+        return static_cast<uint16_t>(rational_threshold) + algebraic_threshold;
     }
 };
 
