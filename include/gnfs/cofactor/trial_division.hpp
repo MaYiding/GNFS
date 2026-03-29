@@ -123,14 +123,16 @@ public:
             uint32_t p = algebraics[idx].p;
             uint32_t r = algebraics[idx].r;
 
-            // 检查 P | (a - bα) where P = (p, α - r)
-            // Condition: a - b*r ≡ 0 (mod p)
-            int64_t check = a - static_cast<int64_t>(b) * static_cast<int64_t>(r);
-            int64_t mod = check % static_cast<int64_t>(p);
-            if (mod < 0) mod += p;
-
-            if (mod != 0) {
-                continue;  // 这个素理想不整除
+            // 检查 P | (a - bα):
+            // Normal root: P = (p, α - r), condition: a - b*r ≡ 0 (mod p)
+            // Projective root: P = (p, ∞), condition: b ≡ 0 (mod p)
+            if (r == core::AlgebraicPrime::PROJECTIVE_ROOT) {
+                if (b % p != 0) continue;
+            } else {
+                int64_t check = a - static_cast<int64_t>(b) * static_cast<int64_t>(r);
+                int64_t mod = check % static_cast<int64_t>(p);
+                if (mod < 0) mod += p;
+                if (mod != 0) continue;
             }
 
             // 试除

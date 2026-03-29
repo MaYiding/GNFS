@@ -167,6 +167,18 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
         for (uint32_t root : roots) {
             fb.add_algebraic(p, root, log_p, 1);
         }
+
+        // Projective root: when leading coefficient f_d ≡ 0 (mod p),
+        // there is an additional first-degree prime ideal at infinity.
+        // This ideal divides N(a - bα) whenever p | b.
+        {
+            core::Integer fd = ctx.leading_coeff().clone();
+            fd %= core::Integer(static_cast<int64_t>(p));
+            if (fd.is_negative()) fd += core::Integer(static_cast<int64_t>(p));
+            if (fd.is_zero()) {
+                fb.add_algebraic(p, core::AlgebraicPrime::PROJECTIVE_ROOT, log_p, 1);
+            }
+        }
     }
 }
 
@@ -394,6 +406,16 @@ void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const Polyno
 
         for (uint32_t root : roots) {
             fb.add_algebraic(p32, root, log_p, 1);
+        }
+
+        // Projective root for SQ-range primes
+        {
+            core::Integer fd = ctx.leading_coeff().clone();
+            fd %= core::Integer(static_cast<int64_t>(p32));
+            if (fd.is_negative()) fd += core::Integer(static_cast<int64_t>(p32));
+            if (fd.is_zero()) {
+                fb.add_algebraic(p32, core::AlgebraicPrime::PROJECTIVE_ROOT, log_p, 1);
+            }
         }
     }
 }
