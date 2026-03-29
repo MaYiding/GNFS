@@ -7,6 +7,62 @@
 
 ## 已完成 ✅
 
+### P3 级修复 (Session 42 — P3 安全批次)
+
+#### [BUG] ~~class_group factor_ideal/factor_principal_ideal int64 乘法溢出~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-11 (Session 42)
+- **修复**: `class_group.hpp:464,499` 用 `__int128_t` 做 `a - b*r` 中间计算，防止 b·r 接近 INT64_MAX 时溢出
+- **验证**: smoke 20/20, module sqrt 通过, L1-L3 通过
+- **Commit**: `decd518`
+
+#### [BUG] ~~class_group factor_ideal val=0 时 exp=0~~ ✅
+- **发现**: 2026-03-09 (Session 6)
+- **解决**: 2026-03-11 (Session 42)
+- **修复**: `class_group.hpp:466-468,501-503` 当 `a = b*r`（val=0）时特殊处理：`(a - bα) = -b(α - r)`，故 `v_P = v_p(b) + 1`（非分歧一次理想）
+- **验证**: 同上
+- **Commit**: `decd518`
+
+#### [BUG] ~~SieveParams::combined_threshold() uint8_t 溢出~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-11 (Session 42)
+- **修复**: `lattice_sieve.hpp:39` 返回类型从 `uint8_t` 改为 `uint16_t`，防止两个阈值相加溢出
+- **验证**: test_edge_cases 通过（断言 200+200=400）
+- **Commit**: `decd518`
+
+#### [BUG] ~~SparseMatrix::test() const_cast 违反 const 契约~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-11 (Session 42)
+- **修复**: `sparse_matrix.hpp:60-64` 移除 const_cast，未排序时用线程安全的线性扫描（计算出现次数 mod 2），排序时用二分查找
+- **验证**: test_linalg 通过
+- **Commit**: `decd518`
+
+#### [BUG] ~~build_row() 符号列基于 a<0 而非 (a-bm)<0~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-11 (Session 42)
+- **修复**: `matrix_builder.hpp:532-534` build_row() 不再设置符号列（原先基于 `a < 0`），由 build_with_qc() 用 PolynomialContext 正确计算 `(a - b*m) < 0`
+- **验证**: E2E 通过
+- **Commit**: `ab266f0`
+
+#### [BUG] ~~Block Lanczos partial_inverse() 未将非主元行清零~~ ✅
+- **发现**: 2026-03-09 (Session 6)
+- **解决**: 2026-03-11 (Session 42)
+- **修复**: `block_lanczos.hpp:153-156` 消除后对非主元行（mask 外）清零 right[]，避免垃圾值
+- **验证**: test_linalg 通过
+- **Commit**: `ab266f0`
+
+#### [BUG] ~~next_prime() uint64 溢出~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-11 (Session 42)
+- **修复**: `couveignes.hpp:606-615` + `hensel_sqrt.hpp:848-860` 添加 `UINT64_MAX - 2` 溢出保护，溢出时返回 0
+- **验证**: test_sqrt 通过
+- **Commit**: `ab266f0`
+
+### 误报 ❌ (Session 42)
+
+#### [DEBT] ~~Block Lanczos 阈值 AND 应为 OR~~ — 误报
+- **分析**: `block_lanczos.cpp:381` `if (m < 10000 && n < 10000)` 用 AND 是正确的——Gaussian 只应在两个维度都小时使用。若改为 OR，50K×100 矩阵会被路由到 Gaussian（O(n²m) 爆炸）。AND 确保只有真正小的矩阵才走 Gaussian。
+
 ### P2 级修复 (Session 41 — 大数支持三件套)
 
 #### [DEBT] ~~params.hpp 对 100+ 位 N 参数不足~~ ✅

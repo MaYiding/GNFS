@@ -19,10 +19,6 @@
 
 ## P2 — 中优先级（大数支持和架构改进）
 
-
-
-
-
 ### [FEAT] Bucket Sieve 架构
 - **发现日期**: 2026-02-20 (Session 2)
 - **描述**: 大因子基需要 cache-friendly bucket sieve
@@ -53,20 +49,10 @@
 
 ## P3 — 低优先级（代码质量和长期改进）
 
-### [BUG] Block Lanczos partial_inverse() 未将非主元行清零
-- **发现日期**: 2026-03-09 (Session 6) | Montgomery BL 上下文中实际工作正确
-- **文件**: `include/gnfs/linalg/block_lanczos.hpp:119-157`
-- **描述**: 非主元行有垃圾值，但 D*A 乘积中自动消除
-
 ### [BUG] Block Lanczos add_identity() 添加完整单位矩阵
 - **发现日期**: 2026-03-09 (Session 6) | 影响仅在 A_i 秩亏时
 - **文件**: `src/linalg/block_lanczos.cpp:356-361`
 - **描述**: 应为 mask 子空间的单位矩阵
-
-### [BUG] SparseMatrix::test() const_cast 违反 const 契约
-- **发现日期**: 2026-03-08 (Session 5) | 单线程 OK，多线程见 P2 条目
-- **文件**: `include/gnfs/linalg/sparse_matrix.hpp:62-63`
-- **描述**: const_cast 在 const 方法中修改内部状态
 
 ### [BUG] Relation::b 是 int64_t 但应为 uint64_t
 - **发现日期**: 2026-03-08 (Session 6) | 风格问题，b 实际不超过 int64 范围
@@ -77,28 +63,16 @@
 - **文件**: `include/gnfs/relation/collector.hpp:151-152`
 
 ### [BUG] params.hpp special_q_max 的 uint32 溢出
-- **发现日期**: 2026-03-08 (Session 5) | 🟢 当前安全（cap 在 1e9）
-- **文件**: `include/gnfs/core/params.hpp:166`
-
-### [BUG] class_group factor_ideal/factor_principal_ideal int64 乘法溢出
-- **发现日期**: 2026-03-08 (Session 5) | b*r ~10^18 接近但不超过 INT64_MAX
-- **文件**: `include/gnfs/sqrt/class_group.hpp:383,418`
+- **发现日期**: 2026-03-08 (Session 5) | 🟢 当前安全（已有 UINT32_MAX clamp）
+- **文件**: `include/gnfs/core/params.hpp:174`
 
 ### [BUG] base_m_expansion 非零余数处理
 - **发现日期**: 2026-03-08 (Session 5) | 产生劣质多项式，不影响正确性
 - **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp:476-478`
 
-### [BUG] build_row() 符号列基于 a<0 而非 (a-bm)<0
-- **发现日期**: 2026-03-08 (Session 6) | build_with_qc 修正了符号，管线不走 build_row
-- **文件**: `include/gnfs/linalg/matrix_builder.hpp:527-530`
-
 ### [BUG] SparseRow::set() 非幂等——重复 set 等价于 clear
 - **发现日期**: 2026-03-08 (Session 6) | GF(2) toggle 语义正确，API 命名问题
 - **文件**: `include/gnfs/linalg/sparse_matrix.hpp`
-
-### [BUG] next_prime() uint64 溢出
-- **发现日期**: 2026-03-08 (Session 6) | 理论问题，prime_start 默认 1000
-- **文件**: couveignes.hpp:619-628 + hensel_sqrt.hpp:550-562
 
 ### [BUG] Logger 递归日志死锁
 - **发现日期**: 2026-03-08 (Session 5) | 无实际重入路径
@@ -156,10 +130,6 @@
 - **发现日期**: 2026-03-08 (Session 6) | 256≡0 mod 2，溢出不影响 GF(2) 奇偶性
 - **文件**: `include/gnfs/linalg/matrix_builder.hpp:534,548`
 
-### [BUG] SieveParams::combined_threshold() uint8_t 溢出
-- **发现日期**: 2026-03-08 (Session 6) | 当前参数最大 160，不触发
-- **文件**: `include/gnfs/sieve/lattice_sieve.hpp:37`
-
 ### [BUG] FactorBase::add_rational() 无去重
 - **发现日期**: 2026-03-08 (Session 6) | builder 使用筛法自然不重复
 - **文件**: `include/gnfs/factor_base/factor_base.hpp:94-98`
@@ -167,10 +137,6 @@
 ### [BUG] sieve_parallel() 使用不必要的 mutex
 - **发现日期**: 2026-03-09 (Session 7) | 性能浪费但不影响正确性
 - **文件**: `include/gnfs/sieve/lattice_sieve.hpp:153,168-169`
-
-### [BUG] class_group factor_ideal val=0 时 exp=0
-- **发现日期**: 2026-03-09 (Session 6) | val!=0 守卫阻止循环，但 a=b*r 时赋值丢失
-- **文件**: `include/gnfs/sqrt/class_group.hpp:383-393`
 
 ### [OPT] Murphy E-score 低估 20-40%
 - **发现日期**: 2026-03-08 (Session 5)
@@ -198,9 +164,6 @@
 ### [DEBT] FactorBase 缺少序列化
 - **文件**: `include/gnfs/factor_base/factor_base.hpp:137-141`
 
-### [DEBT] Block Lanczos 阈值 AND 应为 OR
-- **文件**: `src/linalg/block_lanczos.cpp:284`
-
 ### [DEBT] Relation 序列化格式缺陷（无版本/校验和）
 - **文件**: `include/gnfs/core/relation.hpp:73-144`
 
@@ -215,4 +178,3 @@
 ## TEST — 测试覆盖率缺口
 
 （当前无未解决条目。历史记录见 RESOLVED.md）
-
