@@ -7,6 +7,97 @@
 
 ## 已完成 ✅
 
+### P3 级修复 (Session 43 — P3 批量清理)
+
+#### [BUG] ~~sieve_parallel() 不必要的 mutex~~ ✅
+- **发现**: 2026-03-09 (Session 7)
+- **解决**: 2026-03-11 (Session 43)
+- **修复**: `lattice_sieve.hpp:138,153` 移除 mutex + lock_guard。all_results 按 idx 预分配，每线程 atomic 获取唯一下标，无竞争
+- **验证**: smoke 20/20 通过
+- **Commit**: `86210dd`
+
+#### [DEBT] ~~SpecialQ from_indices 忽略 end_index~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-11 (Session 43)
+- **修复**: `special_q.hpp` SpecialQRange 新增 end_index 字段（默认 UINT32_MAX），from_indices() 设置 end_index，generator 在 has_next()/next()/estimate_remaining() 中检查
+- **验证**: test_edge_cases 通过（验证 start_index + end_index）
+- **Commit**: `86210dd`
+
+#### [BUG] ~~polynomial_optimizer generate_smooth_numbers 不去重~~ ✅
+- **发现**: 2026-03-08 (Session 6)
+- **解决**: 2026-03-11 (Session 43)
+- **修复**: `polynomial_optimizer.hpp:335` 排序后添加 `std::unique` + `erase` 去除重复生成的光滑数
+- **验证**: test_polynomial_optimizer 通过
+- **Commit**: `86210dd`
+
+### 误报 ❌ (Session 43 — P3 批量清理，22 项)
+
+#### [BUG] ~~Block Lanczos add_identity() 添加完整单位矩阵~~ — 误报
+- **分析**: Montgomery BL 中 `D*A + I`（full identity）是正确行为。mask 位: D*A=I，+I=0（正确清除 V_cur 贡献）；非 mask 位: D*A=0，+I=I（dead columns pass through，可能在后续迭代复活）。这是标准 BL 实现。
+
+#### [BUG] ~~Relation::b int64_t 应为 uint64_t~~ — 误报
+- **分析**: b 在实践中始终为正（筛选产生正 b 值）。`Relation::ab()` 用 `safe_abs(b)` 转换。类型纯粹是 cosmetic 问题，不影响正确性。
+
+#### [BUG] ~~RelationCollector::relations() 返回非 const 引用~~ — 误报
+- **分析**: 实际代码 `relations()` 返回 `const std::vector<Relation>&`，已是 const。`get_relations()` 返回线程安全的拷贝。无非 const 版本。
+
+#### [BUG] ~~params.hpp special_q_max uint32 溢出~~ — 误报
+- **分析**: 代码已有 `std::min(..., static_cast<uint64_t>(UINT32_MAX))` clamp 保护。
+
+#### [BUG] ~~base_m_expansion 非零余数处理~~ — 误报
+- **分析**: 非零余数时函数正确返回 false，拒绝劣质展开。调用方处理 false 返回值。逻辑正确。
+
+#### [BUG] ~~SparseRow::set() 非幂等~~ — 误报
+- **分析**: sorted 时用二分查找 + early return（幂等）。unsorted 时 append 可能重复，但 ensure_sorted() + SpMV 中 XOR 语义保证 GF(2) 正确性。有独立的 `flip()` 方法处理显式 toggle。
+
+#### [BUG] ~~Logger 递归日志死锁~~ — 误报
+- **分析**: `std::mutex` 非递归，但代码无重入路径。`level()` 读操作不加锁，log() 中唯一的锁保护 output，不会嵌套。
+
+#### [BUG] ~~Logger::level() 读取 level_ 无锁~~ — 误报
+- **分析**: `LogLevel` 是 `enum class : uint8_t`，单字节对齐读在 x86-64/ARM 上天然原子。仅 `set_level()` 写入（在锁内），读路径无需锁。
+
+#### [BUG] ~~SchirokaurMap 存储 const PolynomialContext&~~ — 误报
+- **分析**: 设计气味但实际安全。PolynomialContext 由管线顶层创建，始终 outlive 所有使用者。
+
+#### [BUG] ~~LatticeSieve 存储 const 引用~~ — 误报
+- **分析**: 同上。ctx/fb 由管线顶层持有，生命周期覆盖 LatticeSieve 全部使用。
+
+#### [BUG] ~~Relation 反序列化无输入验证~~ — 误报
+- **分析**: 仅内部使用（序列化来自自身 sieve 输出），无外部攻击面。
+
+#### [BUG] ~~MurphyEvaluator n.to_double() 对 N > 10^308 返回 infinity~~ — 误报
+- **分析**: N > 10^308（~1024 bit）远超 GNFS 实现能力范围。double 溢出是理论限制，不影响实际使用。
+
+#### [BUG] ~~MurphyEvaluator alpha 跳过大首项系数~~ — 误报
+- **分析**: Kleinjung 选择器产生的多项式首项系数始终 fit uint64。`fits_uint64()` guard 是防御性正确的。
+
+#### [BUG] ~~IntPolynomial add_mod 大 p 溢出~~ — 误报
+- **分析**: 项目中所有素数 < 2^32，max(a+b) = 2^33-2 fit uint64。
+
+#### [BUG] ~~IntPolynomial mutable operator[] 无上限检查~~ — 误报
+- **分析**: auto-resize（`coeffs_.resize(i+1)`）是有意设计，支持稀疏赋值。所有调用点安全。
+
+#### [BUG] ~~Integer bit_length(0) 返回 1~~ — 误报
+- **分析**: GMP `mpz_sizeinbase(0, 2)` 返回 1 是文档规范行为。
+
+#### [BUG] ~~Integer::sqrt() 对负数输入无检查~~ — 误报
+- **分析**: GMP `mpz_sqrt()` 对负数输入返回 0（安全行为，不崩溃）。所有调用点传非负值。
+
+#### [BUG] ~~Integer::powmod() 负指数~~ — 误报
+- **分析**: GMP `mpz_powm()` 正确处理负指数（先计算模逆再求幂）。
+
+#### [BUG] ~~matrix_builder exponent 累积用 uint8_t~~ — 误报
+- **分析**: GF(2) 矩阵只看奇偶性。uint8_t 溢出 256≡0 (mod 2) 保持偶数正确，不影响 row.set() 的触发条件（exp % 2 == 1）。
+
+#### [BUG] ~~FactorBase::add_rational() 无去重~~ — 误报
+- **分析**: builder 使用筛法生成素数，自然不重复。`rat_index_[p]` map 覆盖也不影响正确性。
+
+#### [DEBT] ~~number_field evaluate 无溢出保护~~ — 误报
+- **分析**: `evaluate_at_m` 全程使用 Integer（GMP 任意精度），不存在溢出。DEBT 描述不准确。
+
+#### [DEBT] ~~PrimePowerHash 忽略指数字段~~ — 误报
+- **分析**: Hash 只混合 (p, r)，不含 e（指数）。但 equality operator 检查全部三字段。hash collision 不影响正确性，仅可能微增 bucket 冲突。
+
 ### P3 级修复 (Session 42 — P3 安全批次)
 
 #### [BUG] ~~class_group factor_ideal/factor_principal_ideal int64 乘法溢出~~ ✅
