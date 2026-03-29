@@ -7,6 +7,29 @@
 
 ## 已完成 ✅
 
+### P2 级修复 (Session 41 — 大数支持三件套)
+
+#### [DEBT] ~~params.hpp 对 100+ 位 N 参数不足~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-11 (Session 41)
+- **修复**: `params.hpp` degree 选择从硬编码表改为解析公式 `d_opt = round((3·lnN/lnlnN)^{1/3})`（>100 bit）；rational_bound cap 1e9→4e9；sieve_width cap 1e6→4e6
+- **验证**: smoke 20/20 通过, test_params 14/14 通过, E2E 通过, L1-L2 通过
+- **Commit**: `8c050c2`
+
+#### [FEAT] ~~Relation Filter 完成 clique-based 合并~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-11 (Session 41)
+- **修复**: `filter.hpp:merge()` 实现 1LP partial relation 合并：(1) concatenate rational/algebraic factors（矩阵 mod 2 自然约化）；(2) Relation 新增 `extra_ab_pairs` 存储第二关系的 (a,b)；(3) `rational_sqrt.hpp` / `algebraic_sqrt.hpp` 遍历 extra_ab_pairs 参与平方根计算；(4) `test_gnfs_e2e.cpp` 集成 merge 步骤
+- **验证**: smoke 20/20 通过, test_filter 16/16 通过, E2E 通过, L1-L2 通过
+- **Commit**: `c46dcf3`
+
+#### [FEAT] ~~Factor Base 支持 ramified/projective 素数~~ ✅
+- **发现**: 2026-03-08 (Session 5)
+- **解决**: 2026-03-11 (Session 41)
+- **修复**: `builder.cpp` 在代数因子基构建时检查 f_d ≡ 0 (mod p)，若是则添加 projective root 条目 `(p, PROJECTIVE_ROOT)`；`trial_division.hpp:divide_algebraic()` 对 projective root 检查 `b % p == 0`（而非 `a - b*r ≡ 0 (mod p)`）
+- **验证**: smoke 20/20 通过, E2E 通过, L1-L2 通过
+- **Commit**: `e972ee1`
+
 ### P1 级修复 (Session 40 — Special-Q 素数矩阵丢失)
 
 #### [BUG] ~~Special-Q 范围素数指数从矩阵静默丢失~~ ✅

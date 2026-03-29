@@ -276,15 +276,47 @@ public:
                         if (rel1.num_large_primes() == 1 &&
                             rel2.num_large_primes() == 1) {
 
-                            // 可以合并！
-                            // 合并后的关系 = rel1 * rel2 (模 2)
-                            // 大素数会消除
+                            // Merge: concatenate factor lists from both.
+                            // Matrix builder reduces mod 2 automatically.
+                            // Shared LP appears twice → even exponent → invisible.
+                            // Sqrt step uses extra_ab_pairs for both (a,b).
 
                             used.insert(idx1);
                             used.insert(idx2);
 
-                            // 创建合并关系（简化：只标记为已合并）
-                            // 实际实现需要计算因子的异或
+                            Relation m;
+                            m.a = rel1.a;
+                            m.b = rel1.b;
+                            m.extra_ab_pairs.emplace_back(rel2.a, rel2.b);
+
+                            // Concatenate rational factors
+                            m.rational_factors = rel1.rational_factors;
+                            m.rational_factors.insert(
+                                m.rational_factors.end(),
+                                rel2.rational_factors.begin(),
+                                rel2.rational_factors.end());
+
+                            // Concatenate algebraic factors
+                            m.algebraic_factors = rel1.algebraic_factors;
+                            m.algebraic_factors.insert(
+                                m.algebraic_factors.end(),
+                                rel2.algebraic_factors.begin(),
+                                rel2.algebraic_factors.end());
+
+                            // Concatenate large primes (shared LP will cancel in GF(2))
+                            m.rational_large_prime = rel1.rational_large_prime;
+                            m.rational_large_prime.insert(
+                                m.rational_large_prime.end(),
+                                rel2.rational_large_prime.begin(),
+                                rel2.rational_large_prime.end());
+
+                            m.algebraic_large_prime = rel1.algebraic_large_prime;
+                            m.algebraic_large_prime.insert(
+                                m.algebraic_large_prime.end(),
+                                rel2.algebraic_large_prime.begin(),
+                                rel2.algebraic_large_prime.end());
+
+                            merged.push_back(std::move(m));
                         }
                     }
                 }

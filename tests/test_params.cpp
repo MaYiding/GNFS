@@ -31,18 +31,16 @@ void test_degree_selection() {
     assert(GNFSParams::compute(80).degree == 3);
     assert(GNFSParams::compute(100).degree == 3);
 
-    // 101-180 bits → degree 4
-    assert(GNFSParams::compute(101).degree == 4);
-    assert(GNFSParams::compute(150).degree == 4);
-    assert(GNFSParams::compute(180).degree == 4);
-
-    // 181-350 bits → degree 5
-    assert(GNFSParams::compute(200).degree == 5);
-    assert(GNFSParams::compute(350).degree == 5);
-
-    // > 350 bits → degree 6
-    assert(GNFSParams::compute(351).degree == 6);
-    assert(GNFSParams::compute(500).degree == 6);
+    // 101+ bits: analytical formula d = round((3·lnN/lnlnN)^{1/3}), clamped to [4, 8]
+    assert(GNFSParams::compute(101).degree == 4);  // d_opt ≈ 3.67
+    assert(GNFSParams::compute(150).degree == 4);  // d_opt ≈ 4.07
+    assert(GNFSParams::compute(200).degree == 4);  // d_opt ≈ 4.39
+    assert(GNFSParams::compute(250).degree == 5);  // d_opt ≈ 4.65
+    assert(GNFSParams::compute(350).degree == 5);  // d_opt ≈ 5.10
+    assert(GNFSParams::compute(500).degree == 6);  // d_opt ≈ 5.62
+    assert(GNFSParams::compute(700).degree == 6);  // d_opt ≈ 6.17
+    assert(GNFSParams::compute(1000).degree == 7); // d_opt ≈ 6.82
+    assert(GNFSParams::compute(2000).degree == 8); // d_opt ≈ 8.07
 
     std::cout << "  PASS" << std::endl;
 }

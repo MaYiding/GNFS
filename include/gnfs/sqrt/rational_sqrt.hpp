@@ -65,12 +65,19 @@ public:
             const auto& rel = relations[i];
 
             // 检查符号：(a - b*m) 是否为负 (GNFS convention)
-            Integer a_minus_bm = Integer(rel.a);
-            Integer bm = m.clone();
-            bm *= Integer(static_cast<int64_t>(rel.b));
-            a_minus_bm -= bm;
-            if (a_minus_bm.is_negative()) {
-                has_negative = !has_negative;
+            // For merged relations, check all constituent (a,b) pairs
+            auto check_sign = [&](int64_t a_val, int64_t b_val) {
+                Integer a_minus_bm = Integer(a_val);
+                Integer bm = m.clone();
+                bm *= Integer(b_val);
+                a_minus_bm -= bm;
+                if (a_minus_bm.is_negative()) {
+                    has_negative = !has_negative;
+                }
+            };
+            check_sign(rel.a, rel.b);
+            for (const auto& [ea, eb] : rel.extra_ab_pairs) {
+                check_sign(ea, eb);
             }
 
             // 因子基素数
@@ -146,21 +153,23 @@ public:
             squared %= n;
 
             Integer product(1);
-            for (size_t i = 0; i < relations.size(); ++i) {
-                if (!dependency.test(i)) continue;
-
-                const auto& rel = relations[i];
-
-                // 有理侧范数 = a - b*m (GNFS convention: elements are a - b·α)
-                Integer val = Integer(rel.a);
+            auto multiply_ab = [&](int64_t a_val, int64_t b_val) {
+                Integer val = Integer(a_val);
                 Integer bm = m.clone();
-                bm *= Integer(static_cast<int64_t>(rel.b));
+                bm *= Integer(b_val);
                 val -= bm;
                 val %= n;
                 if (val.is_negative()) val += n;
-
                 product *= val;
                 product %= n;
+            };
+            for (size_t i = 0; i < relations.size(); ++i) {
+                if (!dependency.test(i)) continue;
+                const auto& rel = relations[i];
+                multiply_ab(rel.a, rel.b);
+                for (const auto& [ea, eb] : rel.extra_ab_pairs) {
+                    multiply_ab(ea, eb);
+                }
             }
 
             if (squared.compare(product) != 0) {

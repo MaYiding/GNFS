@@ -340,6 +340,29 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
         std::cout << "After filtering: " << relations.size() << " relations\n";
         std::cout << "Singletons removed: " << fstats.singletons_removed << "\n";
         std::cout << "Passes: " << fstats.passes << "\n";
+    }
+
+    // Merge partial 1LP relations sharing a large prime
+    {
+        auto sep = separate_relations(std::move(relations));
+        auto merged = PartialRelationMerger::merge(sep.partial);
+
+        if (verbose && !merged.empty()) {
+            std::cout << "Merged " << merged.size() << " partial relation pairs\n";
+        }
+
+        // Recombine: full + unmerged partials + merged
+        relations = std::move(sep.full);
+        relations.insert(relations.end(),
+            std::make_move_iterator(sep.partial.begin()),
+            std::make_move_iterator(sep.partial.end()));
+        relations.insert(relations.end(),
+            std::make_move_iterator(merged.begin()),
+            std::make_move_iterator(merged.end()));
+    }
+
+    if (verbose) {
+        std::cout << "Total relations for matrix: " << relations.size() << "\n";
         std::cout << "Phase 4 time: " << phase_timer.elapsed_ms() << " ms\n";
     }
 

@@ -36,11 +36,6 @@
 - **文件**: `include/gnfs/polynomial/kleinjung_selector.hpp`
 - **描述**: search_radius 硬编码 100、系数边界过松、缺少 lattice search
 
-### [FEAT] Factor Base 支持 ramified/projective 素数
-- **发现日期**: 2026-03-08 (Session 5)
-- **文件**: `src/factor_base/builder.cpp`
-- **描述**: builder 始终设 degree=1，不使用 projective root
-
 ### [FEAT] Out-of-core Relations 支持
 - **发现日期**: 2026-02-20 (Session 2)
 - **文件**: `include/gnfs/relation/collector.hpp`
@@ -49,16 +44,6 @@
 ### [FEAT] Block Lanczos Out-of-core 矩阵支持
 - **发现日期**: 2026-03-08 (Session 5)
 - **描述**: 矩阵必须完全在 RAM 中
-
-### [DEBT] params.hpp 对 100+ 位 N 参数不足
-- **发现日期**: 2026-03-08 (Session 5)
-- **文件**: `include/gnfs/core/params.hpp`
-- **描述**: degree 上限 6、rational_bound 上限 1e9
-
-### [FEAT] Relation Filter 完成 clique-based 合并
-- **发现日期**: 2026-03-08 (Session 5)
-- **文件**: `include/gnfs/relation/filter.hpp:286-287`
-- **描述**: merge 函数是 stub，从不实际合并
 
 ### [FEAT] ThreadPool Work-Stealing
 - **发现日期**: 2026-03-08 (Session 5)

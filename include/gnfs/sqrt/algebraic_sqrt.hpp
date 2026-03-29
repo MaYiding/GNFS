@@ -63,12 +63,15 @@ public:
         // 创建数域
         NumberField nf(ctx);
 
-        // 收集参与的 (a, b) 对
+        // 收集参与的 (a, b) 对（含合并关系的 extra pairs）
         std::vector<std::pair<int64_t, uint64_t>> ab_pairs;
         for (size_t i = 0; i < relations.size(); ++i) {
             if (!dependency.test(i)) continue;
             const auto& rel = relations[i];
             ab_pairs.emplace_back(rel.a, rel.b);
+            for (const auto& [ea, eb] : rel.extra_ab_pairs) {
+                ab_pairs.emplace_back(ea, static_cast<uint64_t>(eb));
+            }
         }
 
         if (ab_pairs.empty()) {

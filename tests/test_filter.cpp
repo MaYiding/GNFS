@@ -281,6 +281,107 @@ void test_merger_count() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_merger_merge() {
+    std::cout << "Testing PartialRelationMerger::merge..." << std::endl;
+
+    std::vector<Relation> partials;
+    // Two 1LP relations sharing rational LP=101
+    {
+        Relation r1(5, 1);
+        r1.rational_factors = {0, 1, 3};
+        r1.algebraic_factors = {0, 2};
+        r1.rational_large_prime.push_back(PrimePower{101, 0, 1});
+        partials.push_back(std::move(r1));
+    }
+    {
+        Relation r2(7, 2);
+        r2.rational_factors = {1, 2};
+        r2.algebraic_factors = {1};
+        r2.rational_large_prime.push_back(PrimePower{101, 0, 1});
+        partials.push_back(std::move(r2));
+    }
+    // A third 1LP with a different LP (singleton, can't merge)
+    partials.push_back(make_1lp_relation(9, 3, 103));
+
+    auto merged = PartialRelationMerger::merge(partials);
+
+    // Should produce 1 merged relation (from the pair sharing LP=101)
+    assert(merged.size() == 1);
+
+    const auto& m = merged[0];
+    // Primary (a,b) from first relation
+    assert(m.a == 5 && m.b == 1);
+    // Extra (a,b) from second relation
+    assert(m.is_merged());
+    assert(m.extra_ab_pairs.size() == 1);
+    assert(m.extra_ab_pairs[0].first == 7);
+    assert(m.extra_ab_pairs[0].second == 2);
+
+    // Factors: concatenation of both
+    assert(m.rational_factors.size() == 5);   // {0,1,3} + {1,2}
+    assert(m.algebraic_factors.size() == 3);  // {0,2} + {1}
+
+    // LP: shared LP=101 appears twice (cancels in GF(2))
+    assert(m.rational_large_prime.size() == 2);
+    assert(m.rational_large_prime[0].p == 101);
+    assert(m.rational_large_prime[1].p == 101);
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_merger_algebraic_lp() {
+    std::cout << "Testing merge with algebraic large primes..." << std::endl;
+
+    std::vector<Relation> partials;
+    // Two 1LP relations sharing algebraic LP=107
+    {
+        Relation r1(11, 1);
+        r1.rational_factors = {0};
+        r1.algebraic_factors = {0, 1};
+        r1.algebraic_large_prime.push_back(PrimePower{107, 3, 1});
+        partials.push_back(std::move(r1));
+    }
+    {
+        Relation r2(13, 2);
+        r2.rational_factors = {1};
+        r2.algebraic_factors = {2};
+        r2.algebraic_large_prime.push_back(PrimePower{107, 5, 1});
+        partials.push_back(std::move(r2));
+    }
+
+    auto merged = PartialRelationMerger::merge(partials);
+    assert(merged.size() == 1);
+
+    const auto& m = merged[0];
+    assert(m.is_merged());
+    assert(m.algebraic_large_prime.size() == 2);
+    assert(m.algebraic_large_prime[0].p == 107);
+    assert(m.algebraic_large_prime[1].p == 107);
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_merger_no_2lp() {
+    std::cout << "Testing merge skips 2LP relations..." << std::endl;
+
+    std::vector<Relation> partials;
+    // A 2LP relation with LP=101 and LP=103
+    {
+        Relation r1(5, 1);
+        r1.rational_large_prime.push_back(PrimePower{101, 0, 1});
+        r1.rational_large_prime.push_back(PrimePower{103, 0, 1});
+        partials.push_back(std::move(r1));
+    }
+    // A 1LP with LP=101 — should NOT merge with the 2LP
+    partials.push_back(make_1lp_relation(7, 1, 101));
+
+    auto merged = PartialRelationMerger::merge(partials);
+    // No merge: rel1 is 2LP, not 1LP
+    assert(merged.empty());
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_reset_stats() {
     std::cout << "Testing reset_stats..." << std::endl;
 
@@ -315,6 +416,9 @@ int main() {
     test_separate_relations();
     test_required_relations();
     test_merger_count();
+    test_merger_merge();
+    test_merger_algebraic_lp();
+    test_merger_no_2lp();
     test_reset_stats();
 
     std::cout << "\nAll tests passed!" << std::endl;

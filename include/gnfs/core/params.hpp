@@ -68,12 +68,14 @@ struct GNFSParams {
 
         // === 多项式度数 ===
         // 标准选择: degree = round((3 ln N / ln ln N)^{1/3})
-        // 实际经验值:
-        if (n_bits <= 50)       p.degree = 3;
-        else if (n_bits <= 100) p.degree = 3;
-        else if (n_bits <= 180) p.degree = 4;
-        else if (n_bits <= 350) p.degree = 5;
-        else                    p.degree = 6;
+        // 小 N 用经验值，大 N 用解析公式
+        if (n_bits <= 100) {
+            p.degree = 3;
+        } else {
+            double d_opt = std::pow(3.0 * ln_n / ln_ln_n, 1.0 / 3.0);
+            p.degree = std::max(4u, static_cast<uint32_t>(std::lround(d_opt)));
+            p.degree = std::min(p.degree, 8u);  // 理论上限: degree 8
+        }
 
         // === 因子基界 ===
         // L_N formula is asymptotic — useless for small N.
@@ -97,7 +99,7 @@ struct GNFSParams {
             double log_B = c_B * l_val;
             B = std::exp(log_B);
             B = std::max(B, 2000000.0);
-            B = std::min(B, 1e9);
+            B = std::min(B, 4e9);  // uint32_t 上限 ~4.29e9；sieve 自动缩放内存
         }
 
         p.rational_bound = static_cast<uint32_t>(std::min(B, static_cast<double>(UINT32_MAX)));
@@ -127,7 +129,7 @@ struct GNFSParams {
         } else {
             sieve_width = std::sqrt(static_cast<double>(p.rational_bound)) * 8.0;
             sieve_width = std::max(sieve_width, 32000.0);
-            sieve_width = std::min(sieve_width, 1e6);
+            sieve_width = std::min(sieve_width, 4e6);
             sieve_height = sieve_width / 4.0;
         }
 
