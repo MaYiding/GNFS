@@ -1,168 +1,247 @@
-# GNFS (General Number Field Sieve) 项目
+# GNFS — General Number Field Sieve
 
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![Tests](https://img.shields.io/badge/tests-2%2F3%20passing-green)]()
-[![C++](https://img.shields.io/badge/C%2B%2B-20-blue)]()
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
+[![License: GPL-2.0](https://img.shields.io/badge/License-GPL%202.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
 
-这是一个 C++ 实现的通用数域筛法（GNFS）整数分解库。
+Industrial-grade **General Number Field Sieve** implementation in C++20.
 
-**当前版本**: 0.2.0  
-**测试状态**: ✅ test_integer PASS, ✅ test_small_vector PASS  
-**完成度**: ~82%
+GNFS is the most powerful known classical algorithm for factoring large composite integers. This project implements the complete GNFS pipeline — from polynomial selection through square root extraction — as a high-performance C++ library with ~30K lines of code.
 
-## 🎉 最新成就
+## Highlights
 
-- ✅ **test_integer 100% 通过** (9/9 测试)
-- ✅ **test_small_vector 100% 通过**
-- ✅ GMP 库成功集成
-- ✅ 编译环境完美配置
+- **Complete pipeline**: All 8 stages of GNFS fully implemented and integrated
+- **Verified correctness**: Successfully factors integers from 8-bit to 81-bit (25-digit), with 5-level progressive test suite
+- **High performance**: Multi-threaded sieving, parallel Block Lanczos, Hensel sqrt with 12-thread precomputation
+- **Production-quality**: 29 test files, 39 headers, overflow-safe arithmetic, thread-safe relation collection
 
-## 🚀 快速开始
+## Factorization Results
 
-### 遇到编译错误？
+| Level | N (example) | Bits | Time |
+|-------|-------------|------|------|
+| L1 | 143, 9991, 10403 | 8–14 | < 0.2s |
+| L2 | 96091, 100160063 | 17–27 | < 1s |
+| L3 | 1000036000099 | 40 | ~2s |
+| L4 | 100000980001501 | 47 | ~5s |
+| L5 | 1253371692427905599 | 61 | ~38s |
+| 25-digit | 1669994516749619561652133 | 81 | ~410s |
 
-如果运行 `make` 时遇到编译错误，请使用我们的诊断和修复工具：
+## Quick Start
 
-```bash
-# 1. 诊断问题
-bash diagnose_compilation.sh
+### Prerequisites
 
-# 2. 自动修复常见问题
-bash fix_compilation_errors.sh
-
-# 3. 查看详细修复指南（如果自动修复不成功）
-cat COMPILATION_FIX_GUIDE.md
-```
-
-### 5分钟快速测试
-
-```bash
-# 1. 安装 GMP（如果还没有）
-brew install gmp  # macOS
-# 或
-sudo apt install libgmp-dev  # Ubuntu
-
-# 2. 组织文件
-bash organize_files.sh
-
-# 3. 测试基础模块
-bash fix_gmp_and_compile.sh
-
-# 4. 测试更多模块
-bash test_more_modules.sh
-
-# 5. 完整构建
-bash full_cmake_build.sh
-```
-
-详细说明查看: **QUICKSTART.md**, **START_HERE.md**
-
-## 项目状态
-
-### 核心模块 (gnfs/core)
-- ✅ `Integer`: 基于 GMP 的大整数运算类
-- ✅ `IntPolynomial`: 整数系数多项式类
-- ✅ `PolynomialContext`: 多项式上下文（存储 GNFS 所需的多项式）
-- ✅ `Relation`: 关系结构（存储筛法找到的光滑数对）
-
-### 多项式选择 (gnfs/polynomial)
-- ✅ `BaseMSelector`: Base-m 多项式选择方法
-- ✅ `KleinjungSelector`: Kleinjung 多项式选择算法（简化版）
-- ✅ `MurphyEvaluator`: Murphy E 分数评估器
-
-### 因子基 (gnfs/factor_base)
-- ✅ `FactorBaseBuilder`: 因子基构造器
-
-### 筛法 (gnfs/sieve)
-- ✅ `SpecialQGenerator`: Special-Q 生成器
-- ✅ `LatticeSieve`: 格筛法（占位符实现）
-
-### 余因子分解 (gnfs/cofactor)
-- ✅ `Cofactorizer`: 试除法和余因子处理
-
-### 关系收集 (gnfs/relation)
-- ✅ `RelationCollector`: 线程安全的关系收集器
-- ✅ `RelationFilter`: 关系过滤和去重
-
-### 线性代数 (gnfs/linalg)
-- ✅ `MatrixBuilder`: 稀疏矩阵构造器
-- ✅ `BlockLanczos`: Block Lanczos 算法（占位符实现）
-
-### 平方根计算 (gnfs/sqrt)
-- ✅ `RationalSqrt`: 有理侧平方根计算
-- ✅ `AlgebraicSqrt`: 代数侧平方根计算
-
-### 工具类 (gnfs/util)
-- ✅ `SmallVector`: 小向量优化容器
-- ✅ `ThreadPool`: 线程池
-
-## 编译要求
-
-- C++20 编译器（Clang, GCC, 或 MSVC）
+- C++20 compiler (Clang 14+ or GCC 12+)
 - CMake 3.20+
-- GMP（GNU Multiple Precision Arithmetic Library）
-- （可选）NTL（Number Theory Library）
+- [GMP](https://gmplib.org/) (GNU Multiple Precision Arithmetic Library)
 
-## 编译步骤
+**Optional**: NTL (Number Theory Library), Metal (macOS GPU)
 
 ```bash
-# 创建构建目录
-mkdir build
-cd build
+# macOS
+brew install gmp cmake
 
-# 配置项目
-cmake .. -DCMAKE_BUILD_TYPE=Release
-
-# 编译
-cmake --build .
-
-# 运行测试
-ctest
+# Ubuntu / Debian
+sudo apt install libgmp-dev cmake build-essential
 ```
 
-## 测试
+### Build
 
-项目包含以下测试：
+```bash
+git clone <repo-url> && cd GNFS
 
-- `test_integer`: Integer 类基本功能测试
-- `test_small_vector`: SmallVector 容器测试
-- `test_thread_pool`: 线程池测试
-- `test_factor_base`: 因子基构造测试
-- `test_special_q`: Special-Q 生成器测试
-- `test_lattice_sieve`: 格筛法测试
-- `test_relation_collector`: 关系收集器测试
-- `test_sieve_basic`: 筛法集成测试
-- `test_cofactor`: 余因子分解测试
-- `test_linalg`: 线性代数测试
-- `test_sqrt`: 平方根计算测试
-- `test_gnfs_e2e`: 端到端 GNFS 测试
-- `test_murphy`: Murphy E 分数测试
-- `test_kleinjung`: Kleinjung 多项式选择测试
-- `test_kleinjung_large`: 大数 Kleinjung 测试
-- `test_factor_with_kleinjung`: 使用 Kleinjung 的完整分解测试
-- `test_sqrt_debug`: 平方根调试测试
+# Configure & build
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
-## 当前限制
+# Run smoke tests (~2s)
+./scripts/test.sh
+```
 
-1. **筛法实现不完整**: `LatticeSieve` 只是占位符，需要实现实际的格筛法算法
-2. **线性代数简化**: `BlockLanczos` 需要实现完整的 Block Lanczos 算法
-3. **平方根计算简化**: 代数侧平方根计算需要在代数数域中进行
-4. **多项式选择**: Kleinjung 算法是简化版，需要加入格基约减和更复杂的搜索策略
-5. **因子基构造**: 需要找到多项式的根 mod p
+### Run a Factorization
 
-## 下一步工作
+```bash
+# Progressive test — factors integers at increasing difficulty
+./build/test_gnfs_progressive 1 5    # Run Level 1 through 5
+```
 
-1. 实现完整的格筛法
-2. 实现 Block Lanczos 算法
-3. 实现正确的代数平方根计算
-4. 优化多项式选择算法
-5. 添加更多的优化（SIMD, GPU 加速等）
-6. 完善测试覆盖率
+## Architecture
 
-## 许可证
+```
+include/gnfs/
+├── core/               # Integer, Polynomial, Relation, Params
+├── polynomial/         # Kleinjung selection, Murphy E, Base-m
+├── factor_base/        # Factor base construction (Cantor-Zassenhaus)
+├── sieve/              # Lattice sieve, Special-Q enumeration
+├── cofactor/           # Trial division, ECM (Montgomery), smoothness
+├── relation/           # Thread-safe collection, 1-LP partial merge
+├── linalg/             # GF(2) sparse matrix, Block Lanczos, Schirokauer maps
+├── sqrt/               # Hensel lifting, Couveignes, class group, rational sqrt
+└── util/               # SmallVector, ThreadPool, Logger, Timer, SafeMath
 
-（待定）
+src/                    # 10 implementation files
+tests/                  # 29 test files
+scripts/test.sh         # Unified test runner with timeout protection
+```
 
-## 贡献
+### GNFS Pipeline
 
-欢迎贡献！请提交 Pull Request 或创建 Issue。
+The algorithm proceeds through 8 stages:
+
+```
+ 1. Polynomial Selection ──→  Kleinjung algorithm picks f(x), g(x)
+ 2. Factor Base Build    ──→  Rational & algebraic primes via Cantor-Zassenhaus
+ 3. Lattice Sieving      ──→  Multi-threaded sieve with Special-Q decomposition
+ 4. Cofactorization      ──→  Trial division + ECM for residual cofactors
+ 5. Relation Collection  ──→  Gather smooth relations (with 1-large-prime merge)
+ 6. Linear Algebra       ──→  GF(2) matrix + Block Lanczos null space
+ 7. Square Root          ──→  Hensel lifting (primary) / Couveignes (fallback)
+ 8. GCD                  ──→  gcd(a ± b, N) yields non-trivial factor
+```
+
+## Testing
+
+The project uses `scripts/test.sh` — a unified test runner with automatic compilation, per-test timeouts, and tiered test levels.
+
+```bash
+# Smoke tests — 15 instant tests, <2s
+./scripts/test.sh
+
+# Run a specific module
+./scripts/test.sh module linalg
+./scripts/test.sh module sqrt
+
+# Auto-detect affected modules from git diff
+./scripts/test.sh changed
+
+# Full end-to-end GNFS pipeline (~5min)
+./scripts/test.sh e2e
+
+# Complete regression suite
+./scripts/test.sh full
+
+# List all available tests
+./scripts/test.sh list
+```
+
+### Test Tiers
+
+| Tier | Timeout | Count | Description |
+|------|---------|-------|-------------|
+| **instant** | 10s | 15 | Unit tests — integer, polynomial, linalg, sqrt, etc. |
+| **fast** | 60s | 1 | Sieve integration |
+| **slow** | 180–300s | 4 | Kleinjung, lattice sieve, E2E pipeline |
+| **heavy** | 600–3600s | 3 | Progressive L3–L5, 25-digit benchmark |
+
+## Key Implementation Details
+
+### Algorithms
+
+| Component | Algorithm | Notes |
+|-----------|-----------|-------|
+| Polynomial Selection | Kleinjung (simplified) | Murphy E scoring, coefficient optimization |
+| Root Finding | Cantor-Zassenhaus | O(d^2 log p), 460x faster than naive for large FB |
+| Sieving | Lattice sieve + Special-Q | Multi-threaded, projective root support |
+| Cofactorization | Trial division + ECM | Montgomery curves, Stage 1+2 BSGS (D=2310) |
+| Relation Merge | 1-Large-Prime partial | Partial relations merged before linear algebra |
+| Linear Algebra | Block Lanczos / Gaussian | BL for >10K rows, Gaussian fallback for small |
+| Schirokauer Maps | GF(2), l=2 only | Split detection, Hensel-based computation |
+| Square Root | Hensel lifting (primary) | 12-thread parallel precomputation; Couveignes fallback |
+
+### Design Conventions
+
+- **Element representation**: `a - b*alpha` (not `a + b*alpha`) throughout
+- **Integer type**: `gnfs::core::Integer` wrapping GMP `mpz_class`
+- **Overflow safety**: `__uint128_t` for intermediate products, `Integer` for unbounded
+- **Thread safety**: `std::atomic` counters, per-thread RNG, sorted sparse rows
+
+### Performance Optimizations
+
+- `PackedGF2Matrix`: 64-bit word-packed with O(1) bit access
+- Block Lanczos: 64-bit block parallel with ThreadPool SpMV
+- Hensel sqrt: Precomputed expected product, 12-thread parallel lifting
+- Couveignes: Gray Code CRT, 65536-pattern search, per-prime verification
+- Cantor-Zassenhaus root finding: replaces naive O(p) scan
+
+## Project Structure
+
+```
+GNFS/
+├── CMakeLists.txt          # Build configuration
+├── CLAUDE.md               # Development instructions
+├── LICENSE                  # GPL-2.0
+├── README.md               # This file
+├── BACKLOG.md              # Open issues (prioritized)
+├── RESOLVED.md             # Fixed issues & false positives
+├── include/gnfs/           # 39 header files (9 modules)
+├── src/                    # 10 source files
+├── tests/                  # 29 test files
+├── scripts/test.sh         # Test runner
+└── docs/                   # Documentation
+```
+
+### Module Overview (39 headers)
+
+| Module | Headers | Description |
+|--------|---------|-------------|
+| `core` | 5 | Integer, Polynomial, Relation, Params, PolynomialContext |
+| `polynomial` | 5 | Base-m, Kleinjung, Murphy E, IntPolynomial, Optimizer |
+| `factor_base` | 2 | Builder (Cantor-Zassenhaus), FactorBase data structure |
+| `sieve` | 3 | LatticeSieve, Special-Q, LatticeBasis |
+| `cofactor` | 4 | Cofactorizer, ECM, TrialDivision, SmoothCheck |
+| `relation` | 2 | Collector (thread-safe), Filter (1-LP merge) |
+| `linalg` | 5 | MatrixBuilder, BlockLanczos, Gaussian, Schirokauer, SparseMatrix |
+| `sqrt` | 6 | AlgebraicSqrt, HenselSqrt, Couveignes, RationalSqrt, ClassGroup, ModularPoly |
+| `util` | 5 | SmallVector, ThreadPool, Logger, Timer, SafeMath |
+
+## Build Options
+
+```bash
+# Debug build (with assertions)
+cmake -B build -DCMAKE_BUILD_TYPE=Debug
+make -C build -j$(sysctl -n hw.ncpu)
+
+# Release build (optimized, LTO)
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+make -C build -j$(sysctl -n hw.ncpu)
+
+# Disable tests
+cmake -B build -DGNFS_BUILD_TESTS=OFF
+```
+
+The build automatically detects:
+- **GMP** (required) — arbitrary precision arithmetic
+- **NTL** (optional) — additional number theory routines
+- **Metal** (macOS, optional) — GPU acceleration framework
+- **Native CPU flags** — `-mcpu=native` (Apple Silicon) or `-march=native` (x86)
+
+## Dependencies
+
+| Library | Required | Version | Purpose |
+|---------|----------|---------|---------|
+| GMP | Yes | 6.0+ | Arbitrary precision integer arithmetic |
+| NTL | No | 11.0+ | Number theory (polynomial arithmetic) |
+| pthreads | Yes | — | Multi-threading |
+| Metal | No | — | macOS GPU acceleration (future) |
+
+## Contributing
+
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch (`feat/YYMMDD-description`)
+3. Ensure all tests pass (`./scripts/test.sh full`)
+4. Submit a Pull Request
+
+The project follows [Conventional Commits](https://www.conventionalcommits.org/) for commit messages.
+
+## License
+
+This project is licensed under the **GNU General Public License v2.0** — see the [LICENSE](LICENSE) file for details.
+
+## References
+
+- Lenstra, A.K., Lenstra, H.W. (eds.) *The Development of the Number Field Sieve* (1993)
+- Buhler, J.P., Lenstra, H.W., Pomerance, C. *Factoring integers with the number field sieve* (1993)
+- Kleinjung, T. *On polynomial selection for the general number field sieve* (2006)
+- Couveignes, J.-M. *Computing a square root for the number field sieve* (1993)
+- Montgomery, P.L. *A block Lanczos algorithm for finding dependencies over GF(2)* (1995)
