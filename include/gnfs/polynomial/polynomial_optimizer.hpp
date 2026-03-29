@@ -337,6 +337,10 @@ public:
             [](const Integer& a, const Integer& b) {
                 return a < b;
             });
+        result.erase(
+            std::unique(result.begin(), result.end(),
+                [](const Integer& a, const Integer& b) { return a == b; }),
+            result.end());
 
         // 限制数量
         if (result.size() > max_count) {

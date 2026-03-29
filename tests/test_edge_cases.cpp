@@ -968,6 +968,9 @@ void test_special_q_edge_cases() {
     {
         auto range = SpecialQRange::from_indices(10, 20);
         assert(range.start_index == 10);
+        assert(range.end_index == 20);
+        assert(range.min_q == 0);
+        assert(range.max_q == UINT32_MAX);
     }
 
     std::cout << "  PASS" << std::endl;

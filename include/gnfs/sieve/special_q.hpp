@@ -31,12 +31,14 @@ struct SpecialQRange {
     uint32_t min_q = 1'000'000;     // 最小 q 值
     uint32_t max_q = 10'000'000;    // 最大 q 值
     uint32_t start_index = 0;       // 起始索引（用于恢复）
+    uint32_t end_index = UINT32_MAX; // 终止索引（UINT32_MAX = 无限制）
 
     /// 从索引范围创建
-    static SpecialQRange from_indices(uint32_t start, uint32_t /* end_index */) {
+    static SpecialQRange from_indices(uint32_t start, uint32_t end) {
         SpecialQRange range;
         range.start_index = start;
-        range.min_q = 0;  // 使用索引，忽略 q 值范围
+        range.end_index = end;
+        range.min_q = 0;  // 使用索引模式，不限制 q 值
         range.max_q = UINT32_MAX;
         return range;
     }
@@ -65,6 +67,9 @@ public:
         if (current_index_ >= fb_.algebraic_count()) {
             return false;
         }
+        if (current_index_ >= range_.end_index) {
+            return false;
+        }
         // 检查当前素数是否超出 max_q
         if (range_.max_q > 0 && fb_.algebraic()[current_index_].p > range_.max_q) {
             return false;
@@ -75,11 +80,15 @@ public:
     /// 获取下一个 special-q
     [[nodiscard]] std::optional<SpecialQ> next() {
         while (current_index_ < fb_.algebraic_count()) {
+            if (current_index_ >= range_.end_index) {
+                return std::nullopt;  // 超出索引范围
+            }
+
             const auto& ap = fb_.algebraic()[current_index_];
 
             // 检查是否在范围内
             if (ap.p > range_.max_q) {
-                return std::nullopt;  // 超出范围
+                return std::nullopt;  // 超出 q 值范围
             }
 
             if (ap.p >= range_.min_q) {
@@ -108,10 +117,11 @@ public:
 
     /// 估计剩余数量
     [[nodiscard]] size_t estimate_remaining() const {
-        if (current_index_ >= fb_.algebraic_count()) {
+        uint32_t upper = std::min(static_cast<uint32_t>(fb_.algebraic_count()), range_.end_index);
+        if (current_index_ >= upper) {
             return 0;
         }
-        return fb_.algebraic_count() - current_index_;
+        return upper - current_index_;
     }
 
 private:
