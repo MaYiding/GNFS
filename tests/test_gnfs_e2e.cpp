@@ -348,15 +348,15 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
         auto sep = separate_relations(std::move(relations));
         auto merged = PartialRelationMerger::merge(sep.partial);
 
-        if (verbose && !merged.empty()) {
-            std::cout << "Merged " << merged.size() << " partial relation pairs\n";
+        if (verbose) {
+            std::cout << "Full: " << sep.full.size()
+                      << ", Partial: " << sep.partial.size()
+                      << ", Merged: " << merged.size() << "\n";
         }
 
-        // Recombine: full + unmerged partials + merged
+        // Only keep full + merged — unmerged partials create singleton LP columns
+        // in the matrix that waste space and cannot participate in any dependency
         relations = std::move(sep.full);
-        relations.insert(relations.end(),
-            std::make_move_iterator(sep.partial.begin()),
-            std::make_move_iterator(sep.partial.end()));
         relations.insert(relations.end(),
             std::make_move_iterator(merged.begin()),
             std::make_move_iterator(merged.end()));

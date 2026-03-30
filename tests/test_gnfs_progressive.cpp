@@ -294,6 +294,27 @@ FactResult factor_with_progress(const Integer& n, int level) {
         return result;
     }
 
+    // Merge 1LP partial relations sharing a large prime
+    {
+        auto sep = separate_relations(std::move(relations));
+        auto merged = PartialRelationMerger::merge(sep.partial);
+        std::cout << "  Full=" << sep.full.size()
+                  << " Partial=" << sep.partial.size()
+                  << " Merged=" << merged.size() << "\n" << std::flush;
+
+        // Only keep full + merged — unmerged partials create singleton LP columns
+        relations = std::move(sep.full);
+        relations.insert(relations.end(),
+            std::make_move_iterator(merged.begin()),
+            std::make_move_iterator(merged.end()));
+    }
+
+    if (relations.size() < 5) {
+        std::cout << "  INSUFFICIENT RELATIONS AFTER MERGE\n";
+        result.time_sec = total.sec();
+        return result;
+    }
+
     // ── Phase 5: Linear Algebra ──
     std::cout << "[Phase 5] Matrix construction..." << std::flush;
     phase.reset();
