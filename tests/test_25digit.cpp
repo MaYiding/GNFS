@@ -110,12 +110,13 @@ int main() {
             if (rel) collector.add(std::move(*rel));
         }
         ++sq_count;
-        if (sq_count % 100 == 0) {
+        if (sq_count % 500 == 0) {
             std::cout << "  SQ#" << sq_count << " rels=" << collector.size()
                       << "/" << target << "\r" << std::flush;
         }
     }
-    std::cout << "[Phase 3] Sieve: " << collector.size() << " rels in " << phase.sec() << "s\n";
+    std::cout << "\n[Phase 3] Sieve: " << collector.size() << " rels ("
+              << sq_count << " SQs) in " << phase.sec() << "s\n";
 
     // Phase 4: Filter
     phase.reset();

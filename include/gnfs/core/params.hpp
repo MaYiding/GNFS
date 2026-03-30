@@ -150,22 +150,26 @@ struct GNFSParams {
         p.sieve_j_min = 1;
         p.sieve_j_max = static_cast<int32_t>(sieve_height);
 
-        // === 筛阈值 ===
-        // 合并筛残差 ≈ log2(rat_cofactor)*scale + log2(alg_cofactor)*scale。
-        // 使用 3.5 * log_scale 作为每侧阈值。此值补偿了 compute_log_prime_precise
-        // 相对旧 compute_log_prime 的精度提升（旧 log_p 系统性低估 ~(scale-1)/2
-        // 每个素数，累积 ~40-80 偏差被旧阈值 50-80 隐含补偿）。
-        p.rational_threshold = static_cast<uint8_t>(
-            std::min(255.0, 3.5 * p.log_scale));
-        p.algebraic_threshold = p.rational_threshold;
-
-        // 对数缩放因子: 更大的因子基需要更大的缩放
+        // === 对数缩放因子 ===
+        // GNFSParams.log_scale 供内部参考。
+        // 注意：FactorBaseBuilder::Options 和 SieveParams 各有自己的 log_scale
+        // (均默认 16)，筛阈值必须匹配 sieve 端 log_scale。
         if (p.rational_bound > 100000)
             p.log_scale = 12;
         if (p.rational_bound > 1000000)
             p.log_scale = 14;
         if (p.rational_bound > 10000000)
             p.log_scale = 16;
+
+        // === 筛阈值 ===
+        // FB 和 Sieve 实际使用的 log_scale 为各自的默认值 16。
+        // 阈值必须基于 sieve 端 log_scale 才能正确筛选。
+        // combined_threshold ≤ log2(max_cofactor_product) * sieve_log_scale
+        // 3.5 * 16 = 56 → 允许余因子积 ≤ 2^(112/16) = 2^7 = 128（两侧合并）
+        constexpr uint8_t SIEVE_LOG_SCALE = 16;
+        p.rational_threshold = static_cast<uint8_t>(
+            std::min(255.0, 3.5 * SIEVE_LOG_SCALE));
+        p.algebraic_threshold = p.rational_threshold;
 
         // === Special-Q 范围 ===
         // Special-Q 应在因子基界以上，提供更好的格结构
@@ -175,15 +179,18 @@ struct GNFSParams {
             std::min(static_cast<uint64_t>(p.algebraic_bound) * 3,
                      static_cast<uint64_t>(UINT32_MAX)));
 
-        // 最大 special-q 数量随问题规模增长
-        if (p.digits < 15) {
-            p.max_special_q = 2000;
-        } else if (p.digits < 30) {
-            p.max_special_q = 10000;
-        } else if (p.digits < 50) {
-            p.max_special_q = 100000;
-        } else {
-            p.max_special_q = 1000000;
+        // 最大 special-q 数量：基于预估关系需求量
+        // 每个 SQ 平均产出 3-5 个关系，需要足够多的 SQ 才能收集到 target
+        {
+            size_t est_rels = p.estimated_relations_needed();
+            // 假设每个 SQ 平均产出 3 个关系（保守估计），乘 2 作为安全余量
+            uint32_t needed_sq = static_cast<uint32_t>(
+                std::min(static_cast<size_t>(UINT32_MAX), est_rels * 2 / 3));
+            // 下限：按位数设置
+            uint32_t min_sq = (p.digits < 15) ? 2000u :
+                              (p.digits < 30) ? 20000u :
+                              (p.digits < 50) ? 100000u : 1000000u;
+            p.max_special_q = std::max(min_sq, needed_sq);
         }
 
         // === 多项式选择参数 ===

@@ -176,16 +176,21 @@ void test_max_special_q() {
     std::cout << "Testing max_special_q scaling..." << std::endl;
 
     auto small = GNFSParams::compute(30);  // ~10 digits
-    assert(small.max_special_q == 2000);
+    assert(small.max_special_q >= 2000);  // 下限保证
 
     auto medium = GNFSParams::compute(80);  // ~25 digits
-    assert(medium.max_special_q == 10000);
+    assert(medium.max_special_q >= 20000);  // 基于 est_rels 动态计算
 
     auto large = GNFSParams::compute(140);  // ~42 digits
-    assert(large.max_special_q == 100000);
+    assert(large.max_special_q >= 100000);
 
     auto huge = GNFSParams::compute(200);  // ~60 digits
-    assert(huge.max_special_q == 1000000);
+    assert(huge.max_special_q >= 1000000);
+
+    // 单调性：更大的 N 需要更多 SQs
+    assert(medium.max_special_q >= small.max_special_q);
+    assert(large.max_special_q >= medium.max_special_q);
+    assert(huge.max_special_q >= large.max_special_q);
 
     std::cout << "  PASS" << std::endl;
 }
