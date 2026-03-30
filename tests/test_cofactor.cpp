@@ -298,19 +298,19 @@ void test_large_prime_counting() {
     auto counts = RelationFilter::count_large_primes(relations);
 
     // 101 (rat) appears 2 times
-    LargePrimeKey key_101_rat{101, false};
+    LargePrimeKey key_101_rat{101, 0, false};
     assert(counts[key_101_rat] == 2);
 
     // 103 (rat) appears 1 time
-    LargePrimeKey key_103_rat{103, false};
+    LargePrimeKey key_103_rat{103, 0, false};
     assert(counts[key_103_rat] == 1);
 
     // 107 (alg) appears 2 times
-    LargePrimeKey key_107_alg{107, true};
+    LargePrimeKey key_107_alg{107, 0, true};
     assert(counts[key_107_alg] == 2);
 
     // 109 (alg) appears 1 time
-    LargePrimeKey key_109_alg{109, true};
+    LargePrimeKey key_109_alg{109, 0, true};
     assert(counts[key_109_alg] == 1);
 
     // Get unique primes

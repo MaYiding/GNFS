@@ -381,16 +381,16 @@ void test_mod_inverse() {
 void test_params_edge_cases() {
     std::cout << "Testing GNFSParams edge cases..." << std::endl;
 
-    // Very small N (8 bits)
+    // Very small N (8 bits, ~3 digits)
     auto p8 = GNFSParams::compute(8);
     assert(p8.degree == 3);
-    assert(p8.rational_bound >= 2000);
+    assert(p8.rational_bound >= 200);
     assert(p8.sieve_region_size() > 0);
 
-    // Medium N (64 bits)
+    // Medium N (64 bits, ~20 digits)
     auto p64 = GNFSParams::compute(64);
     assert(p64.degree == 3);
-    assert(p64.rational_bound >= 3000);
+    assert(p64.rational_bound >= 2000);
 
     // Large N (200 bits)
     auto p200 = GNFSParams::compute(200);

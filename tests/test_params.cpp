@@ -48,28 +48,28 @@ void test_degree_selection() {
 void test_factor_base_bounds() {
     std::cout << "Testing factor base bounds..." << std::endl;
 
-    // Small N: empirical values
+    // Small N: empirical values (reduced per CADO-NFS calibration)
     auto p6 = GNFSParams::compute(17);  // ~6 digits
-    assert(p6.rational_bound >= 2000);
+    assert(p6.rational_bound >= 200 && p6.rational_bound <= 2000);
 
     auto p15 = GNFSParams::compute(48);  // ~15 digits
-    assert(p15.rational_bound >= 20000);
+    assert(p15.rational_bound >= 1000 && p15.rational_bound <= 10000);
 
     auto p20 = GNFSParams::compute(65);  // ~20 digits
-    assert(p20.rational_bound >= 50000);
+    assert(p20.rational_bound >= 2000 && p20.rational_bound <= 20000);
 
     auto p30 = GNFSParams::compute(98);  // ~30 digits
-    assert(p30.rational_bound >= 200000);
+    assert(p30.rational_bound >= 10000 && p30.rational_bound <= 100000);
 
     // Bounds should increase with N size
     auto small = GNFSParams::compute(30);
     auto big = GNFSParams::compute(200);
     assert(big.rational_bound > small.rational_bound);
 
-    // rational_bound == algebraic_bound
+    // algebraic_bound >= rational_bound (typically ~2×)
     for (size_t bits : {20, 50, 80, 120, 200}) {
         auto p = GNFSParams::compute(bits);
-        assert(p.rational_bound == p.algebraic_bound);
+        assert(p.algebraic_bound >= p.rational_bound);
     }
 
     // Upper bound: never exceed UINT32_MAX
@@ -91,10 +91,10 @@ void test_special_q_above_fb_bound() {
         assert(p.special_q_min == p.algebraic_bound + 1);
     }
 
-    // Verify 3× multiplier
+    // Verify 10× multiplier
     auto p = GNFSParams::compute(80);
     uint64_t expected_max = std::min(
-        static_cast<uint64_t>(p.algebraic_bound) * 3,
+        static_cast<uint64_t>(p.algebraic_bound) * 10,
         static_cast<uint64_t>(UINT32_MAX));
     assert(p.special_q_max == static_cast<uint32_t>(expected_max));
 
@@ -145,9 +145,13 @@ void test_large_prime_bound() {
 
     for (size_t bits : {20, 50, 80, 120, 200}) {
         auto p = GNFSParams::compute(bits);
-        // LP bound should be much larger than FB bound
-        assert(p.large_prime_bound > p.rational_bound);
-        assert(p.large_prime_bound >= p.rational_bound * 100ULL);
+        // LP bound should be >= FB bound
+        assert(p.large_prime_bound >= p.rational_bound);
+        // For larger N (>60 bits → >18 digits), LP should be enabled
+        if (bits >= 60) {
+            assert(p.large_prime_bits > 0);
+            assert(p.large_prime_bound > p.rational_bound);
+        }
     }
 
     std::cout << "  PASS" << std::endl;
@@ -161,12 +165,13 @@ void test_threshold_values() {
         // Thresholds must be non-zero (otherwise sieve accepts nothing)
         assert(p.rational_threshold > 0);
         assert(p.algebraic_threshold > 0);
-        // Thresholds must fit in uint8 (they are stored as uint8_t in sieve)
-        assert(p.rational_threshold <= 255);
-        assert(p.algebraic_threshold <= 255);
-        // NOTE: rational_threshold == algebraic_threshold is intentional in params.hpp
-        // (direct assignment), so asserting equality here adds no information.
-        // If they ever need to differ, the assignment in params.hpp must be changed.
+        // Thresholds stored as uint16_t, must fit
+        assert(p.rational_threshold <= UINT16_MAX);
+        assert(p.algebraic_threshold <= UINT16_MAX);
+        // For LP-enabled N, thresholds should be larger to allow LP cofactors
+        if (p.large_prime_bits > 0) {
+            assert(p.rational_threshold > 56);  // must exceed no-LP baseline
+        }
     }
 
     std::cout << "  PASS" << std::endl;
