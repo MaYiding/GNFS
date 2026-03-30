@@ -7,6 +7,32 @@
 
 ## 已完成 ✅
 
+### P1 级修复 (Session 44 — 25-digit 基准测试)
+
+#### [BUG] ~~params.hpp threshold 使用错误的 log_scale~~ ✅
+- **发现**: 2026-03-11 (Session 44)
+- **解决**: 2026-03-11 (Session 44)
+- **文件**: `include/gnfs/core/params.hpp:162-169`
+- **修复**: threshold 公式 `3.5 * p.log_scale` 中的 `p.log_scale` (10-12) 与 FB/Sieve 实际使用的 `log_scale=16` 不匹配。导致 threshold 偏低 30-45%，筛选过严（combined=70 而非应有的 112），25-digit 测试无法收集足够关系。修复为 `3.5 * SIEVE_LOG_SCALE` (常量 16)
+- **验证**: smoke 20/20, E2E 5/5, progressive L1-L3 通过; 25-digit 分解成功 (913s)
+- **Commit**: `b11db39`
+
+#### [BUG] ~~params.hpp log_scale 初始化顺序错误~~ ✅
+- **发现**: 2026-03-11 (Session 44)
+- **解决**: 2026-03-11 (Session 44)
+- **文件**: `include/gnfs/core/params.hpp:153-161`
+- **修复**: 旧代码先用默认 `log_scale=10` 计算 threshold，再更新 `log_scale` 为 12/14/16。移动 log_scale 更新到 threshold 计算之前
+- **验证**: 同上
+- **Commit**: `b11db39`
+
+#### [BUG] ~~max_special_q 硬编码不足~~ ✅
+- **发现**: 2026-03-11 (Session 44)
+- **解决**: 2026-03-11 (Session 44)
+- **文件**: `include/gnfs/core/params.hpp:179-191`
+- **修复**: 旧 hardcoded table（如 25 digits → 10000）无法收集足够关系。改为基于 `estimated_relations_needed() * 2 / 3` 动态计算，附带位数下限兜底
+- **验证**: 同上
+- **Commit**: `b11db39`
+
 ### P3 级修复 (Session 43 — P3 批量清理)
 
 #### [BUG] ~~sieve_parallel() 不必要的 mutex~~ ✅
