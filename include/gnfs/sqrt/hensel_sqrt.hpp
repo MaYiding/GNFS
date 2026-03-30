@@ -29,11 +29,15 @@ public:
     struct Config {
         uint64_t prime_start = 1000;   // Starting prime search
         size_t extra_precision = 200;  // Extra bits of precision beyond estimate
+        uint64_t cached_inert_prime = 0; // Pre-found inert prime (0 = auto-find)
         bool verbose = false;
     };
 
     HenselSqrt() = default;
     explicit HenselSqrt(const Config& config) : config_(config) {}
+
+    /// Get the inert prime found/used during the last compute() call
+    [[nodiscard]] uint64_t last_inert_prime() const noexcept { return last_inert_prime_; }
 
     /// Compute algebraic square root value (mod N)
     ///
@@ -51,8 +55,10 @@ public:
         const Integer& n = nf.n();
 
         // Step 1: Find a suitable prime p where f is irreducible mod p
-        uint64_t p = find_inert_prime(nf);
+        uint64_t p = config_.cached_inert_prime;
+        if (p == 0) p = find_inert_prime(nf);
         if (p == 0) return std::nullopt;
+        last_inert_prime_ = p;
 
         // Step 2: Compute product mod (f, p)
         auto f_mod_p = get_f_mod_p(nf, p);
@@ -249,6 +255,7 @@ public:
 
 private:
     Config config_;
+    mutable uint64_t last_inert_prime_ = 0;
 
     /// Core Hensel lifting: given sqrt mod p, lift to target precision and extract result
     [[nodiscard]] std::optional<NumberFieldElement> hensel_lift_and_extract(
@@ -320,12 +327,10 @@ private:
                 ab_pairs, f_int, d, final_mod, config_.verbose);
 
             // Multiply P by f'(x)^2 to ensure sqrt ∈ Z[α] after lifting.
-            // The algebraic sqrt may lie in O_K \ Z[α] when [O_K : Z[α]] > 1.
-            // Since f'(α)·O_K ⊆ Z[α] (different ideal), the sqrt of P·f'(α)^2
-            // = f'(α)·sqrt(P) is guaranteed to have integer power-basis coefficients.
             auto f_prime_int = compute_f_derivative_int(f_int, d);
-            auto f_prime_sq = poly_mul_mod(f_prime_int, f_prime_int, f_int, d, final_mod);
-            P_final = poly_mul_mod(P_final, f_prime_sq, f_int, d, final_mod);
+            auto fli_final = compute_f_lead_inv(f_int, d, final_mod);
+            auto f_prime_sq = poly_mul_mod(f_prime_int, f_prime_int, f_int, d, final_mod, fli_final);
+            P_final = poly_mul_mod(P_final, f_prime_sq, f_int, d, final_mod, fli_final);
 
             if (config_.verbose) {
                 std::cerr << "[Hensel] Product pre-computed (with f'(α)^2 factor)\n";
@@ -337,6 +342,9 @@ private:
             Integer new_modulus = modulus.clone();
             new_modulus *= modulus;  // modulus²
 
+            // Pre-compute f_lead_inv for this round (all 5 poly_mul_mod share it)
+            auto fli = compute_f_lead_inv(f_int, d, new_modulus);
+
             // Reduce pre-computed product to current precision
             std::vector<Integer> P(d);
             for (uint32_t i = 0; i < d; ++i) {
@@ -345,13 +353,13 @@ private:
             }
 
             // S² mod (f, new_modulus)
-            auto S2 = poly_mul_mod(S, S, f_int, d, new_modulus);
+            auto S2 = poly_mul_mod(S, S, f_int, d, new_modulus, fli);
 
             // residual = P - S²
             auto residual = poly_sub_mod(P, S2, new_modulus);
 
             // correction = T · residual mod (f, new_modulus)
-            auto correction = poly_mul_mod(T, residual, f_int, d, new_modulus);
+            auto correction = poly_mul_mod(T, residual, f_int, d, new_modulus, fli);
 
             // S' = S + correction
             for (uint32_t i = 0; i < d; ++i) {
@@ -367,7 +375,7 @@ private:
                 two_S_prime[i] *= Integer(int64_t(2));
                 two_S_prime[i] %= new_modulus;
             }
-            auto two_S_T = poly_mul_mod(two_S_prime, T, f_int, d, new_modulus);
+            auto two_S_T = poly_mul_mod(two_S_prime, T, f_int, d, new_modulus, fli);
 
             // 2 - 2S'·T
             std::vector<Integer> factor(d);
@@ -383,7 +391,7 @@ private:
             }
 
             // T' = T · factor
-            T = poly_mul_mod(T, factor, f_int, d, new_modulus);
+            T = poly_mul_mod(T, factor, f_int, d, new_modulus, fli);
 
             modulus = std::move(new_modulus);
 
@@ -667,14 +675,44 @@ private:
         return result;
     }
 
-    /// Polynomial multiplication mod (f, modulus)
-    /// Both inputs have degree < d, result has degree < d
+    /// Compute f_lead_inv = f[d]^{-1} mod modulus (for poly_mul_mod)
+    [[nodiscard]] static Integer compute_f_lead_inv(
+            const std::vector<Integer>& f,
+            uint32_t d,
+            const Integer& modulus) {
+        Integer f_lead_inv(int64_t(1));
+        Integer f_d = f[d].clone();
+        f_d %= modulus;
+        if (f_d.is_negative()) f_d += modulus;
+        if (!f_d.is_one()) {
+            int ok = mpz_invert(f_lead_inv.get_mpz(), f_d.get_mpz(),
+                                modulus.get_mpz());
+            assert(ok && "f[d] must be invertible mod modulus");
+            (void)ok;
+        }
+        return f_lead_inv;
+    }
+
+    /// Polynomial multiplication mod (f, modulus) — convenience overload
     [[nodiscard]] static std::vector<Integer> poly_mul_mod(
             const std::vector<Integer>& a,
             const std::vector<Integer>& b,
             const std::vector<Integer>& f,
             uint32_t d,
             const Integer& modulus) {
+        auto fli = compute_f_lead_inv(f, d, modulus);
+        return poly_mul_mod(a, b, f, d, modulus, fli);
+    }
+
+    /// Polynomial multiplication mod (f, modulus) with pre-computed f_lead_inv
+    /// Both inputs have degree < d, result has degree < d
+    [[nodiscard]] static std::vector<Integer> poly_mul_mod(
+            const std::vector<Integer>& a,
+            const std::vector<Integer>& b,
+            const std::vector<Integer>& f,
+            uint32_t d,
+            const Integer& modulus,
+            const Integer& f_lead_inv) {
 
         // Multiply: result has degree up to 2d-2
         std::vector<Integer> result(2 * d - 1);
@@ -692,24 +730,7 @@ private:
             }
         }
 
-        // Reduce mod f: for each degree >= d, subtract (lead/f[d]) * f[i]
-        // Handles non-monic f via modular inverse of leading coefficient
-        Integer f_lead_inv(int64_t(1));
-        {
-            Integer f_d = f[d].clone();
-            f_d %= modulus;
-            if (f_d.is_negative()) f_d += modulus;
-            if (!f_d.is_one()) {
-                int ok = mpz_invert(f_lead_inv.get_mpz(), f_d.get_mpz(),
-                                    modulus.get_mpz());
-                // f_d must be invertible mod modulus for Hensel lifting.
-                // For Hensel, modulus = p^k where p doesn't divide f_d
-                // (ensured by find_inert_prime checking f_mod.back() != 0).
-                assert(ok && "f[d] must be invertible mod modulus in poly_mul_mod");
-                (void)ok;
-            }
-        }
-
+        // Reduce mod f using pre-computed f_lead_inv
         for (int k = static_cast<int>(2 * d - 2); k >= static_cast<int>(d); --k) {
             Integer lead = std::move(result[k]);
             result[k] = Integer(int64_t(0));

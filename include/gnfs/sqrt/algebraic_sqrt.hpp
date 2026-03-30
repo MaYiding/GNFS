@@ -85,9 +85,21 @@ public:
         {
             HenselSqrt::Config hcfg;
             hcfg.verbose = (ab_pairs.size() >= 500);
+            // Reuse cached inert prime across deps for the same polynomial
+            if (cached_inert_prime_ != 0) {
+                hcfg.cached_inert_prime = cached_inert_prime_;
+            }
             HenselSqrt hensel(hcfg);
             auto sqrt_val = hensel.compute(ab_pairs, nf);
             if (sqrt_val) {
+                // Cache the inert prime for future deps
+                if (cached_inert_prime_ == 0) {
+                    cached_inert_prime_ = hcfg.cached_inert_prime;
+                    if (cached_inert_prime_ == 0) {
+                        // Retrieve it by running find_inert_prime (already found during compute)
+                        cached_inert_prime_ = hensel.last_inert_prime();
+                    }
+                }
                 result.value = std::move(*sqrt_val);
                 result.success = true;
                 return result;
@@ -129,6 +141,7 @@ public:
 
 private:
     Config config_;
+    mutable uint64_t cached_inert_prime_ = 0;
 
     /// 使用 Couveignes 算法计算平方根
     [[nodiscard]] AlgebraicSqrtResult compute_couveignes(
