@@ -7,6 +7,40 @@
 
 ## 已完成 ✅
 
+### P1-OPT + P2 级修复 (Session 47 — BL 调优 + 1LP Merge 修复)
+
+#### [OPT] ~~Block Lanczos 调优集合 (max_deps/阈值/缓存)~~ ✅
+- **发现**: 2026-03-11 (Session 44+45)
+- **解决**: 2026-03-11 (Session 47)
+- **文件**: `src/linalg/block_lanczos.cpp`, test files
+- **修复**: 3 项子问题全部解决:
+  1. max_deps 智能 clamp: `min(max_deps, min(64, nullity_est))` — BL block size=64 上限
+  2. Gaussian/sparse 阈值: 10000→5000 — 5K-10K 矩阵走 BL 路径
+  3. transpose_locals: `vector<vector<uint64_t>>` → flat `vector<uint64_t>` (T×n) — 消除堆跳转
+- **验证**: smoke 20/20, test_linalg 通过
+- **Commit**: `b36bc27`
+
+#### [OPT] ~~1LP Merge 硬上限 1000 + 未合并 partial 直入矩阵~~ ✅
+- **发现**: 2026-03-11 (Session 45)
+- **解决**: 2026-03-11 (Session 47)
+- **文件**: `include/gnfs/relation/filter.hpp:272`, `tests/test_gnfs_e2e.cpp`, `tests/test_gnfs_progressive.cpp`
+- **修复**: 3 项子问题全部解决:
+  1. 移除 `merged.size() < 1000` 硬上限
+  2. E2E: `full + ALL partials + merged` → `full + merged` (消除重复行 + singleton LP 列)
+  3. Progressive 集成 merge 步骤（之前完全跳过）
+  4. LP 守卫: 只在 `LP > algebraic_bound` 时执行 merge+丢弃（小 N 惰性素数非真 LP）
+- **效果**: L3 矩阵 103K→2627 行（merge 消除 singleton LP 列）
+- **验证**: smoke 20/20, E2E 1/1, L1-L3 全部通过
+- **Commit**: `e89586b`, `ca1c78d`
+
+#### [OPT] ~~progressive test 跳过 merge 步骤~~ ✅
+- **发现**: 2026-03-11 (Session 45)
+- **解决**: 2026-03-11 (Session 47)
+- **文件**: `tests/test_gnfs_progressive.cpp:297-316`
+- **修复**: 在 Phase 4 filter 后添加 merge 步骤，与 E2E 对齐
+- **验证**: L1-L3 全部通过
+- **Commit**: `e89586b`, `ca1c78d`
+
 ### P0+P1 级修复 (Session 46 — 参数体系全面校准)
 
 #### [OPT] ~~参数选择体系：因子基界对 15-40 十进制位数过大 20-200×~~ ✅

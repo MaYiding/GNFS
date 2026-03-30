@@ -2,7 +2,8 @@
 
 > 只记录**未完成**的问题。已完成和误报条目见 `RESOLVED.md`。
 > 严重程度排序：P0 > P1 > P1-OPT > P2 > P3 > TEST。从文件开头往下读即为优先级。
-> **Session 45 审计 + Session 46 P0/P1 修复**: P0 参数体系全面校准完成 (913s→347s)。P1 LargePrimeKey + 阈值联动已修复。
+> **Session 47**: BL 三项调优 + 1LP merge 修复 + progressive merge 集成。
+> **Session 46**: P0 参数体系全面校准 (913s→347s), P1 LargePrimeKey + 阈值联动。
 
 ---
 
@@ -22,15 +23,6 @@
   5. **lifting 内层 5 次 poly_mul_mod** (`hensel_sqrt.hpp:336-395`): 模数指数增长，每步代价翻倍；Nguyen 方法下每个 pᵢ 的模数远小于当前
 - **预期收益**: Nguyen 改造后 437s → **几秒**（100× 加速）
 - **参考**: 优化指南 §2.7.3, Nguyen (2004)
-
-### [OPT] Block Lanczos 调优集合
-- **发现日期**: 2026-03-11 (Session 44+45 综合)
-- **文件**: `src/linalg/block_lanczos.cpp`, `include/gnfs/linalg/block_lanczos.hpp`
-- **描述**: 37K×39K 矩阵 380s（参数修正后矩阵将缩至 ~3K，此问题自动缓解）。但面向 80+ 位扩展，以下调优仍有价值:
-  1. **max_deps=200 硬编码** (`test_gnfs_progressive.cpp:326`, `test_25digit.cpp:145`): 应改为 `min(64, nrows-ncols+8)`，BL 路径最多返回 64 个
-  2. **transpose SpMV 合并 cache 不友好** (`block_lanczos.cpp:155-162`): `transpose_locals` 是 T 个独立 vector，应改为连续二维数组 `[t*n+j]`
-  3. **Gaussian 阈值偏高**: `block_lanczos.cpp:381` 阈值 10000，5K-10K 矩阵走 Gaussian O(m²) 内存路径，应降至 5000 直接用 BL
-- **实测**: L5 (61-bit) BL ~120s（参数修正后）；25-digit BL ~246s（49K×29K 矩阵）
 
 ### [OPT] 管线固定使用 base-m 多项式，忽略质量选择
 - **发现日期**: 2026-03-11 (Session 45)
@@ -60,15 +52,6 @@
 ---
 
 ## P2 — 中优先级（大数支持和架构改进）
-
-### [OPT] 1LP Merge 硬上限 1000 + 未合并 partial 直入矩阵
-- **发现日期**: 2026-03-11 (Session 45)
-- **文件**: `include/gnfs/relation/filter.hpp:262`, `tests/test_gnfs_e2e.cpp:354-362`
-- **描述**: 两个独立问题:
-  1. `merge()` 内层 `merged.size() < 1000` 硬上限，超出后静默丢弃合并机会
-  2. E2E 管线将未合并的 `sep.partial` 直接追加到关系列表中，这些关系带大素数列进入矩阵，增加列数而非减少
-  3. `test_gnfs_progressive.cpp` 完全跳过 merge 步骤
-- **建议**: 移除硬上限或改为比例上限；merge 后只用 full + merged 构建矩阵
 
 ### [FEAT] 2LP 关系合并（80+ 位必须）
 - **发现日期**: 2026-03-11 (Session 45)
@@ -150,11 +133,6 @@
   1. **链式乘法 → subproduct tree** (L560-590): 二叉树分治合并，前期节省系数膨胀
   2. **partial products 合并串行** (L660-665): 改为树状并行合并（log(T) 轮）
   3. **Couveignes verify 无增量 evaluate** (`couveignes.hpp:296-317`): Gray code 每步只改一个系数，可增量更新 evaluate_at_m_mod_n
-
-### [OPT] progressive test 跳过 merge 步骤
-- **发现日期**: 2026-03-11 (Session 45)
-- **文件**: `tests/test_gnfs_progressive.cpp:286-312`
-- **描述**: `test_gnfs_progressive.cpp` 的 Phase 5 直接从 filtered 关系构建矩阵，完全跳过 1LP merge 步骤（E2E test 有调用但效果不佳——见 1LP merge 条目）
 
 ---
 

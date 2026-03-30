@@ -269,7 +269,7 @@ public:
                 // 这些关系共享一个大素数
                 // 对于 1LP 关系，两个共享同一大素数的关系可以合并
 
-                for (size_t i = 0; i < indices.size() && merged.size() < 1000; ++i) {
+                for (size_t i = 0; i < indices.size(); ++i) {
                     for (size_t j = i + 1; j < indices.size(); ++j) {
                         size_t idx1 = indices[i];
                         size_t idx2 = indices[j];

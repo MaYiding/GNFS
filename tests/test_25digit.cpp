@@ -128,6 +128,19 @@ int main() {
     relations = filter.filter(std::move(relations));
     std::cout << "[Phase 4] Filter: " << relations.size() << " in " << phase.sec() << "s\n";
 
+    // Merge 1LP partials (LP is enabled for 25-digit: LP > algebraic_bound)
+    if (params.large_prime_bound > params.algebraic_bound) {
+        auto sep = separate_relations(std::move(relations));
+        auto merged = PartialRelationMerger::merge(sep.partial);
+        std::cout << "[Phase 4] Merge: full=" << sep.full.size()
+                  << " partial=" << sep.partial.size()
+                  << " merged=" << merged.size() << "\n";
+        relations = std::move(sep.full);
+        relations.insert(relations.end(),
+            std::make_move_iterator(merged.begin()),
+            std::make_move_iterator(merged.end()));
+    }
+
     // Phase 5: Linear Algebra
     phase.reset();
     MatrixBuilderConfig mc;
@@ -143,7 +156,7 @@ int main() {
 
     phase.reset();
     BlockLanczos solver;
-    auto deps = solver.find_dependencies(br.matrix, 200);
+    auto deps = solver.find_dependencies(br.matrix);
     std::cout << "[Phase 5] Deps: " << deps.size() << " in " << phase.sec() << "s\n";
 
     // Phase 6: Square Root

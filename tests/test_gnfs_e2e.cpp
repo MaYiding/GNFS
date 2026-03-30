@@ -39,7 +39,7 @@ using namespace gnfs::linalg;
 using namespace gnfs::sqrt;
 
 // Helper wrapper for find_dependencies (BlockLanczos method)
-inline std::vector<std::vector<bool>> find_dependencies(const SparseMatrix& mat, size_t max_deps) {
+inline std::vector<std::vector<bool>> find_dependencies(const SparseMatrix& mat, size_t max_deps = 64) {
     BlockLanczos solver;
     return solver.find_dependencies(mat, max_deps);
 }
@@ -344,19 +344,21 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     }
 
     // Merge partial 1LP relations sharing a large prime
-    {
+    // Only when LP is genuinely enabled (LP > algebraic_bound)
+    // For small N where LP ≈ FB, "partials" are just inert-prime artifacts
+    if (params.large_prime_bound > params.algebraic_bound) {
         auto sep = separate_relations(std::move(relations));
         auto merged = PartialRelationMerger::merge(sep.partial);
 
-        if (verbose && !merged.empty()) {
-            std::cout << "Merged " << merged.size() << " partial relation pairs\n";
+        if (verbose) {
+            std::cout << "Full: " << sep.full.size()
+                      << ", Partial: " << sep.partial.size()
+                      << ", Merged: " << merged.size() << "\n";
         }
 
-        // Recombine: full + unmerged partials + merged
+        // Only keep full + merged — unmerged partials create singleton LP columns
+        // in the matrix that waste space and cannot participate in any dependency
         relations = std::move(sep.full);
-        relations.insert(relations.end(),
-            std::make_move_iterator(sep.partial.begin()),
-            std::make_move_iterator(sep.partial.end()));
         relations.insert(relations.end(),
             std::make_move_iterator(merged.begin()),
             std::make_move_iterator(merged.end()));
@@ -415,7 +417,7 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
 
     // Find dependencies - try to find more for better chances
     std::cout << std::flush;  // Flush output before Block Lanczos
-    auto dependencies = find_dependencies(build_result.matrix, 100);
+    auto dependencies = find_dependencies(build_result.matrix);
     std::cout << "Dependencies found: " << dependencies.size() << "\n" << std::flush;
 
     if (verbose) {
