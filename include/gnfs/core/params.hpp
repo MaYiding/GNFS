@@ -90,12 +90,12 @@ struct GNFSParams {
         //   digits | B_rat   | B_alg   | lp_bits | 说明
         //   ≤6     | 500     | 1000    | 0       | tiny N, 全光滑
         //   ≤10    | 1000    | 2000    | 0       | small N
-        //   ≤15    | 2000    | 4000    | 0       | medium-small
-        //   ≤20    | 5000    | 10000   | 20      | 1LP 开始有用
-        //   ≤25    | 5000    | 10000   | 22      | 25-digit 关键区间
-        //   ≤30    | 20000   | 40000   | 24      |
-        //   ≤40    | 100000  | 200000  | 26      |
-        //   ≤50    | 500000  | 1000000 | 28      |
+        //   ≤15    | 3000    | 6000    | 18      | LP 使 NFS 对小 N 可行
+        //   ≤20    | 5000    | 10000   | 20      | 1LP 标准配置
+        //   ≤25    | 5000    | 10000   | 20      | LP/B ratio ~100×
+        //   ≤30    | 20000   | 40000   | 22      | LP/B ~100×
+        //   ≤40    | 100000  | 200000  | 24      | LP/B ~84×
+        //   ≤50    | 500000  | 1000000 | 26      | LP/B ~67×
         //   >50    | L_N     | 2×L_N   | L_N     | 渐近公式
 
         double B_rat, B_alg;
@@ -106,17 +106,17 @@ struct GNFSParams {
         } else if (p.digits <= 10) {
             B_rat = 1000;   B_alg = 2000;    lp_bits = 0;
         } else if (p.digits <= 15) {
-            B_rat = 2000;   B_alg = 4000;    lp_bits = 0;
+            B_rat = 3000;   B_alg = 6000;    lp_bits = 18;
         } else if (p.digits <= 20) {
             B_rat = 5000;   B_alg = 10000;   lp_bits = 20;
         } else if (p.digits <= 25) {
-            B_rat = 5000;   B_alg = 10000;   lp_bits = 22;
+            B_rat = 5000;   B_alg = 10000;   lp_bits = 20;
         } else if (p.digits <= 30) {
-            B_rat = 20000;  B_alg = 40000;   lp_bits = 24;
+            B_rat = 20000;  B_alg = 40000;   lp_bits = 22;
         } else if (p.digits <= 40) {
-            B_rat = 100000; B_alg = 200000;  lp_bits = 26;
+            B_rat = 100000; B_alg = 200000;  lp_bits = 24;
         } else if (p.digits <= 50) {
-            B_rat = 500000; B_alg = 1000000; lp_bits = 28;
+            B_rat = 500000; B_alg = 1000000; lp_bits = 26;
         } else {
             // >50 digits: L_N formula with c_B ≈ 0.9
             double c_B = 0.9;
@@ -252,15 +252,40 @@ struct GNFSParams {
         return p;
     }
 
-    /// 估算需要的关系数量
+    /// 估算需要的关系数量（原始关系，过滤前）
+    /// LP 启用时需要更多原始关系，因为单例过滤会移除大部分 LP 关系。
+    /// LP 范围内有 ~num_lp 个唯一素数，需要每个至少出现 2 次才能存活。
     [[nodiscard]] size_t estimated_relations_needed() const {
-        // rational_count ≈ π(B_r) ≈ B_r / ln(B_r)
+        // 矩阵列数 ≈ π(B_r) + π(B_a) + QC + Schirokauer + sign
         double pi_r = rational_bound / std::log(static_cast<double>(std::max(rational_bound, 2u)));
-        // algebraic_count ≈ π(B_a): 平均每个素数 ~1 个根（不是 degree 个）
-        // 对 degree-d 多项式，每个素数平均贡献 1 个根（完全分裂贡献 d 个，
-        // 惰性贡献 0 个，平均而言约 1 个）
         double pi_a = algebraic_bound / std::log(static_cast<double>(std::max(algebraic_bound, 2u)));
-        return static_cast<size_t>(pi_r + pi_a + target_excess);
+        double matrix_cols = pi_r + pi_a + target_excess;
+
+        if (large_prime_bits > 0) {
+            // LP 范围 [B_alg, LP_bound] 内的素数数量
+            double lp_bound_d = static_cast<double>(large_prime_bound);
+            double lp_primes = (lp_bound_d - algebraic_bound) /
+                               std::log(std::max(lp_bound_d, 2.0));
+            // 需要 ≥ 3× LP 素数数量的原始关系才能有足够的 LP 碰撞
+            double lp_raw = std::max(lp_primes * 3.0, matrix_cols * 5.0);
+            return static_cast<size_t>(lp_raw);
+        }
+        return static_cast<size_t>(matrix_cols);
+    }
+
+    /// 计算 LP 感知的原始关系目标
+    /// @param matrix_columns 矩阵实际列数 (FB rational + sieve algebraic + QC + etc.)
+    /// @return 需要收集的原始关系数（过滤前）
+    [[nodiscard]] size_t raw_relation_target(size_t matrix_columns) const {
+        if (large_prime_bits > 0) {
+            double lp_bound_d = static_cast<double>(large_prime_bound);
+            double lp_primes = (lp_bound_d - algebraic_bound) /
+                               std::log(std::max(lp_bound_d, 2.0));
+            // 需要 3× LP 素数数量的原始关系才能形成足够的 LP 碰撞对
+            return static_cast<size_t>(
+                std::max(lp_primes * 3.0, static_cast<double>(matrix_columns) * 5.0));
+        }
+        return matrix_columns;
     }
 
     /// 估算筛区域大小 (位置数)

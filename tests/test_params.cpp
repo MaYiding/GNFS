@@ -147,8 +147,8 @@ void test_large_prime_bound() {
         auto p = GNFSParams::compute(bits);
         // LP bound should be >= FB bound
         assert(p.large_prime_bound >= p.rational_bound);
-        // For larger N (>60 bits → >18 digits), LP should be enabled
-        if (bits >= 60) {
+        // For larger N (>40 bits → >12 digits), LP should be enabled
+        if (bits >= 40) {
             assert(p.large_prime_bits > 0);
             assert(p.large_prime_bound > p.rational_bound);
         }
