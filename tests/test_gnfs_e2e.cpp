@@ -39,7 +39,7 @@ using namespace gnfs::linalg;
 using namespace gnfs::sqrt;
 
 // Helper wrapper for find_dependencies (BlockLanczos method)
-inline std::vector<std::vector<bool>> find_dependencies(const SparseMatrix& mat, size_t max_deps) {
+inline std::vector<std::vector<bool>> find_dependencies(const SparseMatrix& mat, size_t max_deps = 64) {
     BlockLanczos solver;
     return solver.find_dependencies(mat, max_deps);
 }
@@ -415,7 +415,7 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
 
     // Find dependencies - try to find more for better chances
     std::cout << std::flush;  // Flush output before Block Lanczos
-    auto dependencies = find_dependencies(build_result.matrix, 100);
+    auto dependencies = find_dependencies(build_result.matrix);
     std::cout << "Dependencies found: " << dependencies.size() << "\n" << std::flush;
 
     if (verbose) {

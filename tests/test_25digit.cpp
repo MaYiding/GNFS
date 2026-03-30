@@ -143,7 +143,7 @@ int main() {
 
     phase.reset();
     BlockLanczos solver;
-    auto deps = solver.find_dependencies(br.matrix, 200);
+    auto deps = solver.find_dependencies(br.matrix);
     std::cout << "[Phase 5] Deps: " << deps.size() << " in " << phase.sec() << "s\n";
 
     // Phase 6: Square Root

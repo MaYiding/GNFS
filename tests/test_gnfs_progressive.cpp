@@ -323,7 +323,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
     std::cout << "  Finding dependencies..." << std::flush;
     phase.reset();
-    auto deps = find_deps(build_result.matrix, 200);
+    auto deps = find_deps(build_result.matrix, 64);
     std::cout << " found " << deps.size() << " (" << phase.ms() << " ms)\n" << std::flush;
 
     result.dependencies = deps.size();

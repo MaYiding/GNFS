@@ -92,19 +92,20 @@ namespace {
 /// Pre-allocated buffers for parallel Block Lanczos operations
 struct ParallelContext {
     gnfs::util::ThreadPool pool;
-    std::vector<std::vector<uint64_t>> transpose_locals;  // per-thread accumulators
+    std::vector<uint64_t> transpose_flat;  // contiguous T×n buffer for cache-friendly merge
+    size_t transpose_n_cols = 0;           // columns per thread slice
     std::vector<DenseGF2_64x64> ip_locals;                // per-thread 64x64 matrices
     std::vector<std::future<void>> futures;                // reusable futures buffer
     size_t num_threads;
 
-    explicit ParallelContext(size_t n_cols) : pool(0) {
+    explicit ParallelContext(size_t n_cols) : pool(0), transpose_n_cols(n_cols) {
         num_threads = pool.num_threads();
-        transpose_locals.resize(num_threads);
-        for (auto& local : transpose_locals) {
-            local.resize(n_cols, 0);
-        }
+        transpose_flat.resize(num_threads * n_cols, 0);
         ip_locals.resize(num_threads);
     }
+
+    /// Get pointer to thread t's accumulator buffer (contiguous n_cols elements)
+    uint64_t* thread_buf(size_t t) { return transpose_flat.data() + t * transpose_n_cols; }
 };
 
 /// Parallel forward SpMV: y = M * x
@@ -129,7 +130,7 @@ void spmv_transpose_par(const SparseMatrix& M, const BlockVector& x, BlockVector
     const size_t T = ctx.num_threads;
     const size_t chunk = (m + T - 1) / T;
 
-    // Phase 1: Scatter — each thread accumulates into its local buffer
+    // Phase 1: Scatter — each thread accumulates into its contiguous buffer slice
     ctx.futures.clear();
     size_t T_used = 0;
     for (size_t t = 0; t < T; ++t) {
@@ -139,8 +140,8 @@ void spmv_transpose_par(const SparseMatrix& M, const BlockVector& x, BlockVector
         T_used = t + 1;
 
         ctx.futures.push_back(ctx.pool.submit([&M, &x, &ctx, t, start, end, n]() {
-            auto& local = ctx.transpose_locals[t];
-            std::fill(local.begin(), local.end(), 0);
+            uint64_t* local = ctx.thread_buf(t);
+            std::fill(local, local + n, 0);
             for (size_t i = start; i < end; ++i) {
                 uint64_t xi = x.data[i];
                 if (xi == 0) continue;
@@ -153,10 +154,11 @@ void spmv_transpose_par(const SparseMatrix& M, const BlockVector& x, BlockVector
     for (auto& f : ctx.futures) f.get();
 
     // Phase 2: Merge thread-local results into y (parallel across columns)
+    // All T buffers are contiguous in transpose_flat — better prefetch behavior
     ctx.pool.parallel_for_index(0, n, [&y, &ctx, T_used](size_t j) {
         uint64_t val = 0;
         for (size_t t = 0; t < T_used; ++t) {
-            val ^= ctx.transpose_locals[t][j];
+            val ^= ctx.thread_buf(t)[j];
         }
         y.data[j] = val;
     });
@@ -378,11 +380,20 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies(
     // in SparseRow::indices() when accessed concurrently by parallel SpMV
     const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
 
-    if (matrix.num_rows() < 10000 && matrix.num_cols() < 10000) {
-        return find_dependencies_sparse(matrix, max_deps);
+    // BL block size = 64 — cannot produce more than 64 dependencies.
+    // For Gaussian path, cap at actual nullity estimate.
+    size_t effective_max = max_deps;
+    if (matrix.num_rows() > matrix.num_cols()) {
+        size_t nullity_est = matrix.num_rows() - matrix.num_cols() + 8;
+        effective_max = std::min(effective_max, nullity_est);
+    }
+    effective_max = std::min(effective_max, static_cast<size_t>(64));
+
+    if (matrix.num_rows() < 5000 && matrix.num_cols() < 5000) {
+        return find_dependencies_sparse(matrix, effective_max);
     }
 
-    return block_lanczos_solve(matrix, max_deps);
+    return block_lanczos_solve(matrix, effective_max);
 }
 
 // ============================================================================
