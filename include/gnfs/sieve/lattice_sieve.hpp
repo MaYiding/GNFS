@@ -28,15 +28,16 @@ using factor_base::FactorBase;
 /// 筛法参数
 struct SieveParams {
     uint8_t log_scale = 16;                    // log 值缩放因子
-    uint8_t rational_threshold = 70;           // 有理侧阈值
-    uint8_t algebraic_threshold = 70;          // 代数侧阈值
+    uint16_t rational_threshold = 70;          // 有理侧阈值 (uint16_t: LP 模式需 >255)
+    uint16_t algebraic_threshold = 70;         // 代数侧阈值 (uint16_t: LP 模式需 >255)
     uint32_t large_prime_bound = 0;            // 大素数上界（0 = 使用因子基设置）
     bool enable_2lp = true;                    // 启用 2LP (two large primes)
     bool enable_3lp = false;                   // 启用 3LP (three large primes)
 
-    /// 计算合并阈值（返回 uint16_t 以避免两个 uint8_t 相加溢出）
+    /// 计算合并阈值
     [[nodiscard]] uint16_t combined_threshold() const noexcept {
-        return static_cast<uint16_t>(rational_threshold) + algebraic_threshold;
+        uint32_t sum = static_cast<uint32_t>(rational_threshold) + algebraic_threshold;
+        return static_cast<uint16_t>(std::min(sum, static_cast<uint32_t>(UINT16_MAX)));
     }
 };
 

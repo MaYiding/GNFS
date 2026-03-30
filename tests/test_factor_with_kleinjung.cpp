@@ -192,6 +192,12 @@ GNFSFactorResult factor_with_context(
     RelationCollector collector(coll_config);
 
     size_t target_relations = fb.rational_count() + fb.sieve_algebraic_count() + 100;
+    // LP-aware: need more raw relations for singleton filtering
+    if (cofac_config.large_prime_bound > fb_bound) {
+        double lp_primes = (static_cast<double>(cofac_config.large_prime_bound) - fb_bound) /
+                           std::log(static_cast<double>(cofac_config.large_prime_bound));
+        target_relations = std::max(target_relations, static_cast<size_t>(lp_primes * 3));
+    }
 
     LatticeSieve sieve(ctx, fb, sieve_params);
     sieve.set_region(sieve_region);

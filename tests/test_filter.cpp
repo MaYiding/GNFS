@@ -208,9 +208,9 @@ void test_count_large_primes() {
     rels.push_back(make_1alp_relation(4, 1, 101));  // algebraic, different from rational 101
 
     auto counts = RelationFilter::count_large_primes(rels);
-    LargePrimeKey k101r{101, false};
-    LargePrimeKey k103r{103, false};
-    LargePrimeKey k101a{101, true};
+    LargePrimeKey k101r{101, 0, false};
+    LargePrimeKey k103r{103, 0, false};
+    LargePrimeKey k101a{101, 0, true};
     assert(counts[k101r] == 2);   // rational 101 appears twice
     assert(counts[k103r] == 1);   // rational 103 once
     assert(counts[k101a] == 1);   // algebraic 101 once
@@ -333,7 +333,7 @@ void test_merger_algebraic_lp() {
     std::cout << "Testing merge with algebraic large primes..." << std::endl;
 
     std::vector<Relation> partials;
-    // Two 1LP relations sharing algebraic LP=107
+    // Two 1LP relations sharing algebraic LP=(107, root=3) — same prime ideal
     {
         Relation r1(11, 1);
         r1.rational_factors = {0};
@@ -345,7 +345,7 @@ void test_merger_algebraic_lp() {
         Relation r2(13, 2);
         r2.rational_factors = {1};
         r2.algebraic_factors = {2};
-        r2.algebraic_large_prime.push_back(PrimePower{107, 5, 1});
+        r2.algebraic_large_prime.push_back(PrimePower{107, 3, 1});  // same root=3
         partials.push_back(std::move(r2));
     }
 
@@ -357,6 +357,21 @@ void test_merger_algebraic_lp() {
     assert(m.algebraic_large_prime.size() == 2);
     assert(m.algebraic_large_prime[0].p == 107);
     assert(m.algebraic_large_prime[1].p == 107);
+
+    // Different roots should NOT merge — they're different prime ideals
+    {
+        std::vector<Relation> partials2;
+        Relation r3(15, 1);
+        r3.algebraic_large_prime.push_back(PrimePower{109, 2, 1});
+        partials2.push_back(std::move(r3));
+
+        Relation r4(17, 2);
+        r4.algebraic_large_prime.push_back(PrimePower{109, 5, 1});  // different root
+        partials2.push_back(std::move(r4));
+
+        auto merged2 = PartialRelationMerger::merge(partials2);
+        assert(merged2.empty());  // no merge: different prime ideals
+    }
 
     std::cout << "  PASS" << std::endl;
 }

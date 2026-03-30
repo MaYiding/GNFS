@@ -254,8 +254,9 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     coll_config.check_duplicates = true;
     RelationCollector collector(coll_config);
 
-    // Target: we need more relations than columns (factor base size + large primes)
-    size_t target_relations = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
+    // Target: LP-aware — need enough raw relations to survive singleton filtering
+    size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
+    size_t target_relations = params.raw_relation_target(matrix_cols);
 
     if (verbose) {
         std::cout << "Sieve region: i=[" << sieve_region.i_min << ", "

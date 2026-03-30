@@ -26,20 +26,26 @@ struct FilterStats {
 };
 
 /// 大素数键（用于哈希）
+/// degree≥3 多项式下同一素数 p 可能有多个代数根 r₁,r₂,...，
+/// 对应不同素理想 (p, α-rᵢ)。键必须包含 root 以区分。
 struct LargePrimeKey {
     uint64_t prime;
-    bool is_algebraic;  // true = 代数侧, false = 有理侧
+    uint64_t root;         // 代数侧的根 r（有理侧为 0）
+    bool is_algebraic;     // true = 代数侧, false = 有理侧
 
     bool operator==(const LargePrimeKey& other) const noexcept {
-        return prime == other.prime && is_algebraic == other.is_algebraic;
+        return prime == other.prime && root == other.root &&
+               is_algebraic == other.is_algebraic;
     }
 };
 
 /// LargePrimeKey 哈希
 struct LargePrimeKeyHash {
     size_t operator()(const LargePrimeKey& k) const noexcept {
-        return std::hash<uint64_t>{}(k.prime) ^
-               (std::hash<bool>{}(k.is_algebraic) << 1);
+        size_t h = std::hash<uint64_t>{}(k.prime);
+        h ^= std::hash<uint64_t>{}(k.root) * 2654435761ULL;
+        h ^= std::hash<bool>{}(k.is_algebraic) << 1;
+        return h;
     }
 };
 
@@ -106,15 +112,16 @@ public:
         std::unordered_map<LargePrimeKey, size_t, LargePrimeKeyHash> counts;
 
         for (const auto& rel : relations) {
-            // 有理侧大素数
+            // 有理侧大素数 (root=0)
             for (size_t i = 0; i < rel.rational_large_prime.size(); ++i) {
-                LargePrimeKey key{rel.rational_large_prime[i].p, false};
+                LargePrimeKey key{rel.rational_large_prime[i].p, 0, false};
                 ++counts[key];
             }
 
-            // 代数侧大素数
+            // 代数侧大素数 (root=r，区分同一 p 的不同素理想)
             for (size_t i = 0; i < rel.algebraic_large_prime.size(); ++i) {
-                LargePrimeKey key{rel.algebraic_large_prime[i].p, true};
+                const auto& lp = rel.algebraic_large_prime[i];
+                LargePrimeKey key{lp.p, lp.r, true};
                 ++counts[key];
             }
         }
@@ -130,10 +137,11 @@ public:
 
         for (const auto& rel : relations) {
             for (size_t i = 0; i < rel.rational_large_prime.size(); ++i) {
-                seen.insert(LargePrimeKey{rel.rational_large_prime[i].p, false});
+                seen.insert(LargePrimeKey{rel.rational_large_prime[i].p, 0, false});
             }
             for (size_t i = 0; i < rel.algebraic_large_prime.size(); ++i) {
-                seen.insert(LargePrimeKey{rel.algebraic_large_prime[i].p, true});
+                const auto& lp = rel.algebraic_large_prime[i];
+                seen.insert(LargePrimeKey{lp.p, lp.r, true});
             }
         }
 
@@ -174,7 +182,7 @@ private:
 
             // 检查有理侧
             for (size_t i = 0; i < rel.rational_large_prime.size() && !has_singleton; ++i) {
-                LargePrimeKey key{rel.rational_large_prime[i].p, false};
+                LargePrimeKey key{rel.rational_large_prime[i].p, 0, false};
                 if (singletons.count(key) > 0) {
                     has_singleton = true;
                 }
@@ -182,7 +190,8 @@ private:
 
             // 检查代数侧
             for (size_t i = 0; i < rel.algebraic_large_prime.size() && !has_singleton; ++i) {
-                LargePrimeKey key{rel.algebraic_large_prime[i].p, true};
+                const auto& lp = rel.algebraic_large_prime[i];
+                LargePrimeKey key{lp.p, lp.r, true};
                 if (singletons.count(key) > 0) {
                     has_singleton = true;
                 }
@@ -241,12 +250,13 @@ public:
             const auto& rel = partials[i];
 
             for (size_t j = 0; j < rel.rational_large_prime.size(); ++j) {
-                LargePrimeKey key{rel.rational_large_prime[j].p, false};
+                LargePrimeKey key{rel.rational_large_prime[j].p, 0, false};
                 prime_to_relations[key].push_back(i);
             }
 
             for (size_t j = 0; j < rel.algebraic_large_prime.size(); ++j) {
-                LargePrimeKey key{rel.algebraic_large_prime[j].p, true};
+                const auto& lp = rel.algebraic_large_prime[j];
+                LargePrimeKey key{lp.p, lp.r, true};
                 prime_to_relations[key].push_back(i);
             }
         }

@@ -7,6 +7,41 @@
 
 ## 已完成 ✅
 
+### P0+P1 级修复 (Session 46 — 参数体系全面校准)
+
+#### [OPT] ~~参数选择体系：因子基界对 15-40 十进制位数过大 20-200×~~ ✅
+- **发现**: 2026-03-11 (Session 45 审计)
+- **解决**: 2026-03-11 (Session 46)
+- **文件**: `include/gnfs/core/params.hpp` (全面重写参数表)
+- **修复**: 8 项子问题全部解决:
+  1. 硬编码 B 表 → CADO-NFS 校准经验表 (B_rat 降 10-40×)
+  2. L_N 常数 c_B=1.1 → 0.9
+  3. rational = algebraic → algebraic = 2× rational
+  4. LP bound 固定乘数 → `B_alg × 30` 公式 (LP/FB ratio ~26×, CADO-NFS 典型值)
+  5. 筛区间 → 与 B 联动 (`width = B_rat × 3`)
+  6. estimated_relations_needed() → LP 感知 (3× LP 素数数量)
+  7. target_excess → 固定基础 + 额外列数
+  8. SQ 范围 → 10× B
+- **验证**: smoke 20/20, E2E 1/1, L1-L5 全部通过
+- **性能**: 25-digit: 913s → **347s** (2.63×), L5: 312s → **156s** (2×)
+- **Commit**: `3af8215`, `a338eae`, `ecb9d51`
+
+#### [BUG] ~~LargePrimeKey 丢弃代数根 r → degree≥3 时多根素数错误合并~~ ✅
+- **发现**: 2026-03-11 (Session 45 审计)
+- **解决**: 2026-03-11 (Session 46)
+- **文件**: `include/gnfs/relation/filter.hpp:29-44`
+- **修复**: LargePrimeKey 从 `(prime, is_algebraic)` 改为 `(prime, root, is_algebraic)` 三元组。哈希函数增加 root 混入。所有 10 个键创建站点更新为 3 字段格式
+- **验证**: test_filter 通过 (含新增的不同根不合并测试)
+- **Commit**: `3af8215`
+
+#### [BUG] ~~筛阈值未与大素数分级联动 → LP 关系被静默丢弃~~ ✅
+- **发现**: 2026-03-11 (Session 45 审计)
+- **解决**: 2026-03-11 (Session 46)
+- **文件**: `include/gnfs/core/params.hpp:169-172`, `include/gnfs/sieve/lattice_sieve.hpp` SieveParams
+- **修复**: 阈值从固定 56 改为 LP 联动: `per_side = (lp_bits + 3) × SIEVE_LOG_SCALE`。SieveParams 阈值类型 uint8_t → uint16_t。combined_threshold() 用 uint32_t 中间值 + UINT16_MAX 上限
+- **验证**: smoke 20/20, L4-L5 通过
+- **Commit**: `3af8215`
+
 ### P1 级修复 (Session 44 — 25-digit 基准测试)
 
 #### [BUG] ~~params.hpp threshold 使用错误的 log_scale~~ ✅

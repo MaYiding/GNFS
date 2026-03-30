@@ -12,6 +12,9 @@ namespace core {
 /// GNFS 参数计算器
 /// 根据 N 的大小自动计算最优的 GNFS 参数
 /// 基于 L_N[1/3, c] = exp(c · (ln N)^{1/3} · (ln ln N)^{2/3})
+///
+/// 参数表经过 CADO-NFS / msieve 标准校准（Session 46 P0 修复）。
+/// 旧代码因子基界对 15-40 位数过大 20-200×，导致矩阵/BL/Sqrt 时间爆炸。
 struct GNFSParams {
     // === 基本信息 ===
     size_t bits = 0;           // N 的位数
@@ -28,6 +31,7 @@ struct GNFSParams {
     uint32_t rational_bound = 5000;          // 有理侧因子基界
     uint32_t algebraic_bound = 5000;         // 代数侧因子基界
     uint64_t large_prime_bound = 500000;     // 大素数界
+    uint32_t large_prime_bits = 0;           // 大素数位数 (0 = 不启用 LP)
     uint8_t  log_scale = 10;                 // 对数缩放因子
 
     // === 筛法 ===
@@ -35,8 +39,8 @@ struct GNFSParams {
     int32_t sieve_i_max = 1999;
     int32_t sieve_j_min = 1;
     int32_t sieve_j_max = 500;
-    uint8_t rational_threshold = 50;
-    uint8_t algebraic_threshold = 50;
+    uint16_t rational_threshold = 50;
+    uint16_t algebraic_threshold = 50;
 
     // === Special-Q ===
     uint32_t special_q_min = 1000;
@@ -63,8 +67,8 @@ struct GNFSParams {
 
         // L_N 函数的核心值: (ln N)^{1/3} · (ln ln N)^{2/3}
         double ln_n = n_bits * std::log(2.0);
-        double ln_ln_n = std::log(ln_n);
-        double l_val = std::pow(ln_n, 1.0/3.0) * std::pow(ln_ln_n, 2.0/3.0);
+        double ln_ln_n = std::log(std::max(ln_n, 1.0));
+        double l_val = std::pow(ln_n, 1.0/3.0) * std::pow(std::max(ln_ln_n, 1.0), 2.0/3.0);
 
         // === 多项式度数 ===
         // 标准选择: degree = round((3 ln N / ln ln N)^{1/3})
@@ -77,65 +81,82 @@ struct GNFSParams {
             p.degree = std::min(p.degree, 8u);  // 理论上限: degree 8
         }
 
-        // === 因子基界 ===
-        // L_N formula is asymptotic — useless for small N.
-        // Use empirical values for small digits, L_N only for large.
-        double B;
+        // =============================================================
+        // === 因子基界 — 经验参数表 (CADO-NFS / msieve 校准) ===
+        // =============================================================
+        // B_alg ≈ 2 × B_rat: 代数侧有 degree 个根，需更大因子基捕获
+        // 参照: gnfs_optimization_guide.md §1.2-1.3
+        //
+        //   digits | B_rat   | B_alg   | lp_bits | LP/B  | 说明
+        //   ≤6     | 500     | 1000    | 0       | —     | tiny N, 全光滑
+        //   ≤10    | 1000    | 2000    | 0       | —     | small N
+        //   ≤15    | 3000    | 6000    | auto    | ~30×  | LP 使 NFS 对小 N 可行
+        //   ≤20    | 5000    | 10000   | auto    | ~30×  | 1LP 标准配置
+        //   ≤25    | 5000    | 10000   | auto    | ~30×  | 25-digit 关键区间
+        //   ≤30    | 20000   | 40000   | auto    | ~30×  |
+        //   ≤40    | 100000  | 200000  | auto    | ~30×  |
+        //   ≤50    | 500000  | 1000000 | auto    | ~30×  |
+        //   >50    | L_N     | 2×L_N   | auto    | ~30×  | 渐近公式
+        //
+        // LP_bound = B_alg × LP_MULTIPLIER (CADO-NFS 典型 LP/FB ≈ 30×)
+        // lp_bits = floor(log2(LP_bound))
+        constexpr double LP_MULTIPLIER = 30.0;
+
+        double B_rat, B_alg;
+        bool enable_lp = true;
+
         if (p.digits <= 6) {
-            B = 2000;
+            B_rat = 500;    B_alg = 1000;    enable_lp = false;
         } else if (p.digits <= 10) {
-            B = 3000;
+            B_rat = 1000;   B_alg = 2000;    enable_lp = false;
         } else if (p.digits <= 15) {
-            B = 20000;
+            B_rat = 3000;   B_alg = 6000;
         } else if (p.digits <= 20) {
-            B = 50000;
+            B_rat = 5000;   B_alg = 10000;
+        } else if (p.digits <= 25) {
+            B_rat = 5000;   B_alg = 10000;
         } else if (p.digits <= 30) {
-            B = 200000;
+            B_rat = 20000;  B_alg = 40000;
         } else if (p.digits <= 40) {
-            B = 1000000;
+            B_rat = 100000; B_alg = 200000;
+        } else if (p.digits <= 50) {
+            B_rat = 500000; B_alg = 1000000;
         } else {
-            // For 40+ digits, use L_N formula with c_B = 1.1
-            double c_B = 1.1;
-            double log_B = c_B * l_val;
-            B = std::exp(log_B);
-            B = std::max(B, 2000000.0);
-            B = std::min(B, 4e9);  // uint32_t 上限 ~4.29e9；sieve 自动缩放内存
+            // >50 digits: L_N formula with c_B ≈ 0.9
+            double c_B = 0.9;
+            B_rat = std::exp(c_B * l_val);
+            B_rat = std::max(B_rat, 1000000.0);
+            B_rat = std::min(B_rat, 4e9);
+            B_alg = std::min(B_rat * 2.0, 4e9);
         }
 
-        p.rational_bound = static_cast<uint32_t>(std::min(B, static_cast<double>(UINT32_MAX)));
-        p.algebraic_bound = p.rational_bound;
+        // LP bits: LP_bound = B_alg × 30, lp_bits = floor(log2(LP_bound))
+        uint32_t lp_bits = 0;
+        if (enable_lp) {
+            double lp_bound = B_alg * LP_MULTIPLIER;
+            lp_bits = static_cast<uint32_t>(std::floor(std::log2(lp_bound)));
+            lp_bits = std::min(lp_bits, 30u);  // 安全上限
+        }
+
+        p.rational_bound = static_cast<uint32_t>(std::min(B_rat, static_cast<double>(UINT32_MAX)));
+        p.algebraic_bound = static_cast<uint32_t>(std::min(B_alg, static_cast<double>(UINT32_MAX)));
+        p.large_prime_bits = lp_bits;
 
         // === 大素数界 ===
-        // 通常为 100B-1000B
-        double lp_multiplier = 100.0;
-        if (p.digits > 40) lp_multiplier = 200.0;
-        if (p.digits > 60) lp_multiplier = 500.0;
-        p.large_prime_bound = static_cast<uint64_t>(
-            std::min(static_cast<double>(p.rational_bound) * lp_multiplier,
-                     static_cast<double>(UINT64_MAX / 2)));
-
-        // === 筛区域 ===
-        // Scale with FB bound: need enough positions to find smooth relations
-        // Larger sieve = more candidates per special-q, but more memory
-        double sieve_width, sieve_height;
-        if (p.digits <= 10) {
-            sieve_width = 4000;  sieve_height = 1000;
-        } else if (p.digits <= 15) {
-            sieve_width = 8000;  sieve_height = 2000;
-        } else if (p.digits <= 20) {
-            sieve_width = 16000; sieve_height = 4000;
-        } else if (p.digits <= 30) {
-            sieve_width = 32000; sieve_height = 8000;
+        // 基于 large_prime_bits，与 CADO-NFS 参数表一致
+        if (lp_bits > 0) {
+            p.large_prime_bound = 1ULL << lp_bits;
         } else {
-            sieve_width = std::sqrt(static_cast<double>(p.rational_bound)) * 8.0;
-            sieve_width = std::max(sieve_width, 32000.0);
-            sieve_width = std::min(sieve_width, 4e6);
-            sieve_height = sieve_width / 4.0;
+            // 无 LP: 设为因子基界（cofactorizer 不接受 >B 的余因子）
+            p.large_prime_bound = p.rational_bound;
         }
 
+        // === 筛区域 ===
+        // 与因子基界联动：sieve_width ≈ B_rat × 3，受 MAX_SIEVE_AREA 约束
+        double sieve_width = std::max(static_cast<double>(p.rational_bound) * 3.0, 1000.0);
+        double sieve_height = std::max(sieve_width / 4.0, 200.0);
+
         // Cap total sieve area to prevent catastrophic memory allocation.
-        // Without this cap, rational_bound=1e9 produces 16 billion positions
-        // = 32 GB per sieve array (× num_threads in sieve_parallel).
         // 256M positions × sizeof(uint16_t) = 512 MB per sieve array.
         constexpr double MAX_SIEVE_AREA = 256.0 * 1024 * 1024;
         double sieve_area = sieve_width * sieve_height;
@@ -164,28 +185,38 @@ struct GNFSParams {
         // === 筛阈值 ===
         // FB 和 Sieve 实际使用的 log_scale 为各自的默认值 16。
         // 阈值必须基于 sieve 端 log_scale 才能正确筛选。
-        // combined_threshold ≤ log2(max_cofactor_product) * sieve_log_scale
-        // 3.5 * 16 = 56 → 允许余因子积 ≤ 2^(112/16) = 2^7 = 128（两侧合并）
-        constexpr uint8_t SIEVE_LOG_SCALE = 16;
-        p.rational_threshold = static_cast<uint8_t>(
-            std::min(255.0, 3.5 * SIEVE_LOG_SCALE));
-        p.algebraic_threshold = p.rational_threshold;
+        //
+        // 阈值 = 基础裕度（sieve 精度误差）+ LP 允许量
+        // - 无 LP: per_side = 3.5 × log_scale（允许 cofactor ≤ ~11）
+        // - 有 LP: per_side = (lp_bits + 3) × log_scale（允许 cofactor ≤ 2^lp_bits × 8）
+        constexpr uint16_t SIEVE_LOG_SCALE = 16;
+        if (lp_bits > 0) {
+            // 允许每侧有一个大素数级别的余因子
+            uint16_t per_side = static_cast<uint16_t>(
+                std::min(1000.0, (lp_bits + 3.0) * SIEVE_LOG_SCALE));
+            p.rational_threshold = per_side;
+            p.algebraic_threshold = per_side;
+        } else {
+            // 全光滑：只允许小的 sieve 精度误差
+            p.rational_threshold = static_cast<uint16_t>(3.5 * SIEVE_LOG_SCALE);
+            p.algebraic_threshold = p.rational_threshold;
+        }
 
         // === Special-Q 范围 ===
         // Special-Q 应在因子基界以上，提供更好的格结构
-        // 在 FB 内的 SQ 会被筛选重复计算，浪费效率
+        // CADO-NFS 典型用 ~10×B
         p.special_q_min = p.algebraic_bound + 1;
         p.special_q_max = static_cast<uint32_t>(
-            std::min(static_cast<uint64_t>(p.algebraic_bound) * 3,
+            std::min(static_cast<uint64_t>(p.algebraic_bound) * 10,
                      static_cast<uint64_t>(UINT32_MAX)));
 
         // 最大 special-q 数量：基于预估关系需求量
-        // 每个 SQ 平均产出 3-5 个关系，需要足够多的 SQ 才能收集到 target
+        // 每个 SQ 平均产出 1-5 个关系（取决于 B/LP），需要足够多的 SQ
         {
             size_t est_rels = p.estimated_relations_needed();
-            // 假设每个 SQ 平均产出 3 个关系（保守估计），乘 2 作为安全余量
+            // 保守假设每 SQ 平均 1 个关系（小 B 时命中率低），乘 3 安全余量
             uint32_t needed_sq = static_cast<uint32_t>(
-                std::min(static_cast<size_t>(UINT32_MAX), est_rels * 2 / 3));
+                std::min(static_cast<size_t>(UINT32_MAX), est_rels * 3));
             // 下限：按位数设置
             uint32_t min_sq = (p.digits < 15) ? 2000u :
                               (p.digits < 30) ? 20000u :
@@ -213,13 +244,10 @@ struct GNFSParams {
 
         // === 线性代数 ===
         p.num_qc_primes = std::max(32u, std::min(128u, static_cast<uint32_t>(p.digits * 2)));
-        // target_excess 需要覆盖矩阵额外列（QC + Schirokauer + sign + 大素数列）
-        // 以及单例过滤带来的关系损失。经验公式: ~20% 的因子基大小。
-        p.target_excess = std::max(200u,
-            static_cast<uint32_t>(
-                p.num_qc_primes + p.degree + 1 +       // QC + Schirokauer + sign
-                (p.rational_bound / std::log(static_cast<double>(p.rational_bound))) * 0.15  // ~15% of FB for LP columns + filter loss
-            ));
+        // target_excess: 固定基础 + 额外列数（QC + Schirokauer + sign）
+        // 不再使用 0.15·π(B) 的比例（随 B 线性增长过快）
+        uint32_t extra_cols = p.num_qc_primes + p.degree + 1;  // QC + Schirokauer + sign
+        p.target_excess = std::max(200u, extra_cols + 100);
 
         // === 进度报告间隔 ===
         if (p.max_special_q > 10000) {
@@ -233,13 +261,40 @@ struct GNFSParams {
         return p;
     }
 
-    /// 估算需要的关系数量
+    /// 估算需要的关系数量（原始关系，过滤前）
+    /// LP 启用时需要更多原始关系，因为单例过滤会移除大部分 LP 关系。
+    /// LP 范围内有 ~num_lp 个唯一素数，需要每个至少出现 2 次才能存活。
     [[nodiscard]] size_t estimated_relations_needed() const {
-        // 大约需要 rational_count + algebraic_count + excess
-        // rational_count ≈ π(B_r) ≈ B_r / ln(B_r)
-        double pi_r = rational_bound / std::log(static_cast<double>(rational_bound));
-        double pi_a = algebraic_bound / std::log(static_cast<double>(algebraic_bound)) * degree;
-        return static_cast<size_t>(pi_r + pi_a + target_excess);
+        // 矩阵列数 ≈ π(B_r) + π(B_a) + QC + Schirokauer + sign
+        double pi_r = rational_bound / std::log(static_cast<double>(std::max(rational_bound, 2u)));
+        double pi_a = algebraic_bound / std::log(static_cast<double>(std::max(algebraic_bound, 2u)));
+        double matrix_cols = pi_r + pi_a + target_excess;
+
+        if (large_prime_bits > 0) {
+            // LP 范围 [B_alg, LP_bound] 内的素数数量
+            double lp_bound_d = static_cast<double>(large_prime_bound);
+            double lp_primes = (lp_bound_d - algebraic_bound) /
+                               std::log(std::max(lp_bound_d, 2.0));
+            // 需要 ≥ 3× LP 素数数量的原始关系才能有足够的 LP 碰撞
+            double lp_raw = std::max(lp_primes * 3.0, matrix_cols * 5.0);
+            return static_cast<size_t>(lp_raw);
+        }
+        return static_cast<size_t>(matrix_cols);
+    }
+
+    /// 计算 LP 感知的原始关系目标
+    /// @param matrix_columns 矩阵实际列数 (FB rational + sieve algebraic + QC + etc.)
+    /// @return 需要收集的原始关系数（过滤前）
+    [[nodiscard]] size_t raw_relation_target(size_t matrix_columns) const {
+        if (large_prime_bits > 0) {
+            double lp_bound_d = static_cast<double>(large_prime_bound);
+            double lp_primes = (lp_bound_d - algebraic_bound) /
+                               std::log(std::max(lp_bound_d, 2.0));
+            // 需要 3× LP 素数数量的原始关系才能形成足够的 LP 碰撞对
+            return static_cast<size_t>(
+                std::max(lp_primes * 3.0, static_cast<double>(matrix_columns) * 5.0));
+        }
+        return matrix_columns;
     }
 
     /// 估算筛区域大小 (位置数)
