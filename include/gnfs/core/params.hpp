@@ -87,36 +87,40 @@ struct GNFSParams {
         // B_alg ≈ 2 × B_rat: 代数侧有 degree 个根，需更大因子基捕获
         // 参照: gnfs_optimization_guide.md §1.2-1.3
         //
-        //   digits | B_rat   | B_alg   | lp_bits | 说明
-        //   ≤6     | 500     | 1000    | 0       | tiny N, 全光滑
-        //   ≤10    | 1000    | 2000    | 0       | small N
-        //   ≤15    | 3000    | 6000    | 18      | LP 使 NFS 对小 N 可行
-        //   ≤20    | 5000    | 10000   | 20      | 1LP 标准配置
-        //   ≤25    | 5000    | 10000   | 20      | LP/B ratio ~100×
-        //   ≤30    | 20000   | 40000   | 22      | LP/B ~100×
-        //   ≤40    | 100000  | 200000  | 24      | LP/B ~84×
-        //   ≤50    | 500000  | 1000000 | 26      | LP/B ~67×
-        //   >50    | L_N     | 2×L_N   | L_N     | 渐近公式
+        //   digits | B_rat   | B_alg   | lp_bits | LP/B  | 说明
+        //   ≤6     | 500     | 1000    | 0       | —     | tiny N, 全光滑
+        //   ≤10    | 1000    | 2000    | 0       | —     | small N
+        //   ≤15    | 3000    | 6000    | auto    | ~30×  | LP 使 NFS 对小 N 可行
+        //   ≤20    | 5000    | 10000   | auto    | ~30×  | 1LP 标准配置
+        //   ≤25    | 5000    | 10000   | auto    | ~30×  | 25-digit 关键区间
+        //   ≤30    | 20000   | 40000   | auto    | ~30×  |
+        //   ≤40    | 100000  | 200000  | auto    | ~30×  |
+        //   ≤50    | 500000  | 1000000 | auto    | ~30×  |
+        //   >50    | L_N     | 2×L_N   | auto    | ~30×  | 渐近公式
+        //
+        // LP_bound = B_alg × LP_MULTIPLIER (CADO-NFS 典型 LP/FB ≈ 30×)
+        // lp_bits = floor(log2(LP_bound))
+        constexpr double LP_MULTIPLIER = 30.0;
 
         double B_rat, B_alg;
-        uint32_t lp_bits = 0;
+        bool enable_lp = true;
 
         if (p.digits <= 6) {
-            B_rat = 500;    B_alg = 1000;    lp_bits = 0;
+            B_rat = 500;    B_alg = 1000;    enable_lp = false;
         } else if (p.digits <= 10) {
-            B_rat = 1000;   B_alg = 2000;    lp_bits = 0;
+            B_rat = 1000;   B_alg = 2000;    enable_lp = false;
         } else if (p.digits <= 15) {
-            B_rat = 3000;   B_alg = 6000;    lp_bits = 18;
+            B_rat = 3000;   B_alg = 6000;
         } else if (p.digits <= 20) {
-            B_rat = 5000;   B_alg = 10000;   lp_bits = 20;
+            B_rat = 5000;   B_alg = 10000;
         } else if (p.digits <= 25) {
-            B_rat = 5000;   B_alg = 10000;   lp_bits = 20;
+            B_rat = 5000;   B_alg = 10000;
         } else if (p.digits <= 30) {
-            B_rat = 20000;  B_alg = 40000;   lp_bits = 22;
+            B_rat = 20000;  B_alg = 40000;
         } else if (p.digits <= 40) {
-            B_rat = 100000; B_alg = 200000;  lp_bits = 24;
+            B_rat = 100000; B_alg = 200000;
         } else if (p.digits <= 50) {
-            B_rat = 500000; B_alg = 1000000; lp_bits = 26;
+            B_rat = 500000; B_alg = 1000000;
         } else {
             // >50 digits: L_N formula with c_B ≈ 0.9
             double c_B = 0.9;
@@ -124,9 +128,14 @@ struct GNFSParams {
             B_rat = std::max(B_rat, 1000000.0);
             B_rat = std::min(B_rat, 4e9);
             B_alg = std::min(B_rat * 2.0, 4e9);
-            // LP bits: log2(B^2) ≈ 2 × log2(B)
-            lp_bits = static_cast<uint32_t>(
-                std::min(63.0, std::log2(B_rat) * 1.5 + 2.0));
+        }
+
+        // LP bits: LP_bound = B_alg × 30, lp_bits = floor(log2(LP_bound))
+        uint32_t lp_bits = 0;
+        if (enable_lp) {
+            double lp_bound = B_alg * LP_MULTIPLIER;
+            lp_bits = static_cast<uint32_t>(std::floor(std::log2(lp_bound)));
+            lp_bits = std::min(lp_bits, 30u);  // 安全上限
         }
 
         p.rational_bound = static_cast<uint32_t>(std::min(B_rat, static_cast<double>(UINT32_MAX)));
