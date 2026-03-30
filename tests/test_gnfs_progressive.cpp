@@ -295,7 +295,9 @@ FactResult factor_with_progress(const Integer& n, int level) {
     }
 
     // Merge 1LP partial relations sharing a large prime
-    {
+    // Only when LP is genuinely enabled (LP > algebraic_bound)
+    // For small N where LP ≈ FB, "partials" are just inert-prime artifacts
+    if (params.large_prime_bound > params.algebraic_bound) {
         auto sep = separate_relations(std::move(relations));
         auto merged = PartialRelationMerger::merge(sep.partial);
         std::cout << "  Full=" << sep.full.size()
@@ -307,12 +309,12 @@ FactResult factor_with_progress(const Integer& n, int level) {
         relations.insert(relations.end(),
             std::make_move_iterator(merged.begin()),
             std::make_move_iterator(merged.end()));
-    }
 
-    if (relations.size() < 5) {
-        std::cout << "  INSUFFICIENT RELATIONS AFTER MERGE\n";
-        result.time_sec = total.sec();
-        return result;
+        if (relations.size() < 5) {
+            std::cout << "  INSUFFICIENT RELATIONS AFTER MERGE\n";
+            result.time_sec = total.sec();
+            return result;
+        }
     }
 
     // ── Phase 5: Linear Algebra ──

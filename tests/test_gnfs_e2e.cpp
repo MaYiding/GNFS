@@ -344,7 +344,9 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     }
 
     // Merge partial 1LP relations sharing a large prime
-    {
+    // Only when LP is genuinely enabled (LP > algebraic_bound)
+    // For small N where LP ≈ FB, "partials" are just inert-prime artifacts
+    if (params.large_prime_bound > params.algebraic_bound) {
         auto sep = separate_relations(std::move(relations));
         auto merged = PartialRelationMerger::merge(sep.partial);
 
