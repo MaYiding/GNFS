@@ -286,13 +286,19 @@ struct GNFSParams {
     /// @param matrix_columns 矩阵实际列数 (FB rational + sieve algebraic + QC + etc.)
     /// @return 需要收集的原始关系数（过滤前）
     [[nodiscard]] size_t raw_relation_target(size_t matrix_columns) const {
-        if (large_prime_bits > 0) {
+        if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
             double lp_bound_d = static_cast<double>(large_prime_bound);
-            double lp_primes = (lp_bound_d - algebraic_bound) /
+            double alg_bound_d = static_cast<double>(algebraic_bound);
+            double lp_primes = (lp_bound_d - alg_bound_d) /
                                std::log(std::max(lp_bound_d, 2.0));
-            // 需要 3× LP 素数数量的原始关系才能形成足够的 LP 碰撞对
+            // LP key space = primes × roots (degree d: up to d roots per prime)
+            // Need n² / (2·key_space) ≥ matrix_columns for birthday collisions
+            // → n ≥ sqrt(2 · key_space · matrix_columns · safety_factor)
+            double key_space = lp_primes * static_cast<double>(std::max(degree, 2u));
+            double n_min = std::sqrt(2.0 * key_space * static_cast<double>(matrix_columns) * 4.0);
+            // Also ensure at least 8× matrix columns for merge overhead
             return static_cast<size_t>(
-                std::max(lp_primes * 3.0, static_cast<double>(matrix_columns) * 5.0));
+                std::max({n_min, lp_primes * 5.0, static_cast<double>(matrix_columns) * 8.0}));
         }
         return matrix_columns;
     }
