@@ -13,7 +13,6 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
-#include <mutex>
 #include <numeric>
 #include <thread>
 #include <vector>
@@ -135,12 +134,11 @@ public:
         }
 
         std::vector<SieveResult> all_results(special_qs.size());
-        std::mutex results_mutex;
         std::atomic<size_t> next_sq{0};
 
         // Worker function - each thread gets its own LatticeSieve copy
+        // No mutex needed: each thread writes to a unique all_results[idx]
         auto worker = [&]() {
-            // Each thread needs its own sieve array
             LatticeSieve local_sieve(ctx_, fb_, params_);
             local_sieve.set_region(region_);
 
@@ -148,10 +146,7 @@ public:
                 size_t idx = next_sq.fetch_add(1, std::memory_order_relaxed);
                 if (idx >= special_qs.size()) break;
 
-                auto result = local_sieve.sieve_special_q(special_qs[idx]);
-
-                std::lock_guard<std::mutex> lock(results_mutex);
-                all_results[idx] = std::move(result);
+                all_results[idx] = local_sieve.sieve_special_q(special_qs[idx]);
             }
         };
 
