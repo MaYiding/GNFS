@@ -245,21 +245,31 @@ public:
         size_t input_3lp_plus = 0;      // 输入 3LP+ 关系数（已丢弃）
     };
 
-    /// 提取关系的所有 LP key
-    [[nodiscard]] static std::vector<LargePrimeKey> get_lp_keys(const Relation& rel) {
-        std::vector<LargePrimeKey> keys;
-        keys.reserve(rel.num_large_primes());
+    /// 提取关系的"有效" LP key（奇数次出现的 = 未取消的）
+    /// 合并关系中，共享 LP 出现偶数次（已取消），只返回奇数次的
+    [[nodiscard]] static std::vector<LargePrimeKey> remaining_lp_keys(const Relation& rel) {
+        std::unordered_map<LargePrimeKey, size_t, LargePrimeKeyHash> counts;
         for (const auto& lp : rel.rational_large_prime) {
-            keys.push_back({lp.p, 0, false});
+            ++counts[{lp.p, 0, false}];
         }
         for (const auto& lp : rel.algebraic_large_prime) {
-            keys.push_back({lp.p, lp.r, true});
+            ++counts[{lp.p, lp.r, true}];
+        }
+        std::vector<LargePrimeKey> keys;
+        for (const auto& [key, count] : counts) {
+            if (count % 2 != 0) keys.push_back(key);
         }
         return keys;
     }
 
-    /// 合并两个关系，正确取消共享 LP
-    /// 共享 LP 出现偶数次 → 从结果中移除
+    /// 检查关系是否"有效完全"（所有 LP 都已取消）
+    [[nodiscard]] static bool is_effectively_full(const Relation& rel) {
+        return remaining_lp_keys(rel).empty();
+    }
+
+    /// 合并两个关系
+    /// LP 列表完整保留（不取消），因为 rational_sqrt 需要完整指数信息。
+    /// 取消判断由 remaining_lp_keys() 在 merge_all 中负责。
     [[nodiscard]] static Relation merge_two(const Relation& r1, const Relation& r2) {
         Relation m;
         m.a = r1.a;
@@ -280,39 +290,15 @@ public:
         m.algebraic_factors.insert(m.algebraic_factors.end(),
             r2.algebraic_factors.begin(), r2.algebraic_factors.end());
 
-        // 统计每个 LP key 出现次数
-        std::unordered_map<LargePrimeKey, size_t, LargePrimeKeyHash> lp_counts;
-        for (const auto& lp : r1.rational_large_prime) {
-            ++lp_counts[{lp.p, 0, false}];
-        }
-        for (const auto& lp : r2.rational_large_prime) {
-            ++lp_counts[{lp.p, 0, false}];
-        }
-        for (const auto& lp : r1.algebraic_large_prime) {
-            ++lp_counts[{lp.p, lp.r, true}];
-        }
-        for (const auto& lp : r2.algebraic_large_prime) {
-            ++lp_counts[{lp.p, lp.r, true}];
-        }
+        // LP 列表完整连接（不取消共享 LP）
+        // rational_sqrt 和 matrix_builder 都需要完整列表来正确计算指数
+        m.rational_large_prime = r1.rational_large_prime;
+        m.rational_large_prime.insert(m.rational_large_prime.end(),
+            r2.rational_large_prime.begin(), r2.rational_large_prime.end());
 
-        // 只保留奇数次出现的 LP（偶数次的取消了）
-        auto keep_odd = [&](const Relation::LargePrimeList& lps, bool is_alg,
-                            Relation::LargePrimeList& out) {
-            for (const auto& lp : lps) {
-                LargePrimeKey key{lp.p, is_alg ? lp.r : 0, is_alg};
-                auto it = lp_counts.find(key);
-                if (it != lp_counts.end() && it->second % 2 == 1) {
-                    // Only add once per key (first occurrence)
-                    out.push_back(lp);
-                    it->second = 0;  // Mark as added
-                }
-            }
-        };
-
-        keep_odd(r1.rational_large_prime, false, m.rational_large_prime);
-        keep_odd(r2.rational_large_prime, false, m.rational_large_prime);
-        keep_odd(r1.algebraic_large_prime, true, m.algebraic_large_prime);
-        keep_odd(r2.algebraic_large_prime, true, m.algebraic_large_prime);
+        m.algebraic_large_prime = r1.algebraic_large_prime;
+        m.algebraic_large_prime.insert(m.algebraic_large_prime.end(),
+            r2.algebraic_large_prime.begin(), r2.algebraic_large_prime.end());
 
         return m;
     }
@@ -330,7 +316,7 @@ public:
         MergeStats stats;
         std::vector<Relation> full_results;
 
-        // 统计并丢弃 3LP+ 关系
+        // 统计并丢弃 3LP+ 关系（基于原始 LP 数量）
         std::vector<Relation> pool;
         pool.reserve(partials.size());
         for (auto& rel : partials) {
@@ -343,12 +329,12 @@ public:
         for (size_t round = 0; round < max_rounds; ++round) {
             ++stats.rounds;
 
-            // 构建 LP 索引: key → [pool_indices]
+            // 构建 LP 索引: 使用 remaining_lp_keys（只看未取消的 LP）
             std::unordered_map<LargePrimeKey, std::vector<size_t>, LargePrimeKeyHash> lp_index;
             lp_index.reserve(pool.size() * 2);
 
             for (size_t i = 0; i < pool.size(); ++i) {
-                auto keys = get_lp_keys(pool[i]);
+                auto keys = remaining_lp_keys(pool[i]);
                 for (const auto& key : keys) {
                     lp_index[key].push_back(i);
                 }
@@ -379,7 +365,7 @@ public:
                 used.insert(j);
                 ++stats.weight2_merges;
 
-                if (m.is_full()) {
+                if (is_effectively_full(m)) {
                     full_results.push_back(std::move(m));
                 } else {
                     new_merged.push_back(std::move(m));

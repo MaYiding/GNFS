@@ -321,9 +321,12 @@ void test_merger_merge() {
     assert(m.rational_factors.size() == 5);   // {0,1,3} + {1,2}
     assert(m.algebraic_factors.size() == 3);  // {0,2} + {1}
 
-    // LP: shared LP=101 is properly canceled (appears twice → even → removed)
-    assert(m.rational_large_prime.empty());
-    assert(m.is_full());  // No remaining LPs
+    // LP: shared LP=101 appears twice (preserved for rational_sqrt exponent computation)
+    assert(m.rational_large_prime.size() == 2);
+    assert(m.rational_large_prime[0].p == 101);
+    assert(m.rational_large_prime[1].p == 101);
+    // But effectively full (all LPs have even count)
+    assert(PartialRelationMerger::is_effectively_full(m));
 
     std::cout << "  PASS" << std::endl;
 }
@@ -353,9 +356,11 @@ void test_merger_algebraic_lp() {
 
     const auto& m = merged[0];
     assert(m.is_merged());
-    // Shared algebraic LP=(107,3) is properly canceled
-    assert(m.algebraic_large_prime.empty());
-    assert(m.is_full());
+    // Shared algebraic LP=(107,3) appears twice (preserved for sqrt computation)
+    assert(m.algebraic_large_prime.size() == 2);
+    assert(m.algebraic_large_prime[0].p == 107);
+    assert(m.algebraic_large_prime[1].p == 107);
+    assert(PartialRelationMerger::is_effectively_full(m));
 
     // Different roots should NOT merge — they're different prime ideals
     {
@@ -454,9 +459,9 @@ void test_merge_all_2lp() {
     PartialRelationMerger::MergeStats stats;
     auto merged = PartialRelationMerger::merge_all(std::move(partials), 10, &stats);
 
-    // Triangle of 3 2LP relations → 1 full merged relation (in 2 rounds)
+    // Triangle of 3 2LP relations → 1 effectively-full merged relation (in 2 rounds)
     assert(merged.size() == 1);
-    assert(merged[0].is_full());
+    assert(PartialRelationMerger::is_effectively_full(merged[0]));
     assert(merged[0].is_merged());
     // Should have 3 ab pairs total (primary + 2 extra)
     assert(merged[0].extra_ab_pairs.size() == 2);
@@ -488,11 +493,11 @@ void test_merge_all_mixed() {
     PartialRelationMerger::MergeStats stats;
     auto merged = PartialRelationMerger::merge_all(std::move(partials), 10, &stats);
 
-    // 1LP pair → 1 full relation
+    // 1LP pair → 1 effectively-full relation
     // Singleton LP=109 removed
     // 2LP LP={103,107} has singletons → removed
     assert(merged.size() == 1);
-    assert(merged[0].is_full());
+    assert(PartialRelationMerger::is_effectively_full(merged[0]));
     assert(stats.input_1lp == 3);
     assert(stats.input_2lp == 1);
 
@@ -553,9 +558,9 @@ void test_merge_all_chain() {
     PartialRelationMerger::MergeStats stats;
     auto merged = PartialRelationMerger::merge_all(std::move(partials), 10, &stats);
 
-    // Should produce 1 full relation through multi-round merging
+    // Should produce 1 effectively-full relation through multi-round merging
     assert(merged.size() == 1);
-    assert(merged[0].is_full());
+    assert(PartialRelationMerger::is_effectively_full(merged[0]));
     assert(merged[0].extra_ab_pairs.size() == 3);  // 4 relations merged
 
     std::cout << "  PASS" << std::endl;
