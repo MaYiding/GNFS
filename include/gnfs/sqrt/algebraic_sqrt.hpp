@@ -9,7 +9,6 @@
 #include "../linalg/sparse_matrix.hpp"
 
 #include <vector>
-#include <memory>
 
 namespace gnfs {
 namespace sqrt {
@@ -90,16 +89,8 @@ public:
             if (cached_inert_prime_ != 0) {
                 hcfg.cached_inert_prime = cached_inert_prime_;
             }
-            // Reuse cached big CRT primes across deps
-            if (cached_big_primes_) {
-                hcfg.cached_big_primes = cached_big_primes_;
-            }
             HenselSqrt hensel(hcfg);
             auto sqrt_val = hensel.compute(ab_pairs, nf);
-            // Cache primes for future deps (always update, even on failure)
-            if (!cached_big_primes_ && hcfg.cached_big_primes) {
-                cached_big_primes_ = hcfg.cached_big_primes;
-            }
             if (sqrt_val) {
                 if (cached_inert_prime_ == 0) {
                     cached_inert_prime_ = hcfg.cached_inert_prime;
@@ -155,7 +146,6 @@ public:
 private:
     Config config_;
     mutable uint64_t cached_inert_prime_ = 0;
-    mutable std::shared_ptr<std::vector<Integer>> cached_big_primes_;
 
     /// 使用 Couveignes 算法计算平方根
     [[nodiscard]] AlgebraicSqrtResult compute_couveignes(
