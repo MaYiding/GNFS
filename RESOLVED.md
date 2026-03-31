@@ -7,6 +7,34 @@
 
 ## 已完成 ✅
 
+### P1-OPT 修复 (Session 48 — Big-Prime CRT 替换 Hensel Sqrt)
+
+#### [OPT] ~~Hensel Sqrt → Nguyen 多素数 CRT~~ ✅
+- **发现**: 2026-03-11 (Session 44+45)
+- **解决**: 2026-03-11 (Session 48)
+- **文件**: `sqrt/hensel_sqrt.hpp`, `sqrt/algebraic_sqrt.hpp`
+- **修复**: 完整重写 CRT 子系统:
+  1. 946 小素数 CRT (2^946 不可搜索) → 16 大素数 CRT (2^15 Gray code)
+  2. 每素数在 F_{p^d} 中独立计算 sqrt (Tonelli-Shanks + Integer 多项式)
+  3. 增量 mod-N 评估 (~47-bit vs 17K-bit clone)
+  4. CRT sign exhaustion 传播 (跳过无效依赖的回退)
+  5. 惰性素数跨 dep 缓存 + irreducibility early exit (d=3)
+- **性能**: L4 每 dep CRT 0.5-1.1s (旧代码用小素数 CRT 从未工作)
+- **验证**: smoke 20/20, L1-L4 7/7 ✅
+- **Commit**: `50ed746`, `4675e3c`
+
+#### [OPT] ~~find_inert_prime 每 dep 重复搜索~~ ✅
+- **发现**: 2026-03-11 (Session 45)
+- **解决**: 2026-03-11 (Session 48, CRT 重写包含)
+- **修复**: Big-prime CRT 中惰性素数通过 `shared_ptr<vector<Integer>>` 缓存在 Config 中，跨 dep 复用
+- **Commit**: `50ed746`
+
+#### [OPT] ~~poly_mul_mod 每次重算 f_lead_inv~~ ✅
+- **发现**: 2026-03-11 (Session 45)
+- **解决**: 2026-03-11 (Session 48, CRT 重写包含)
+- **修复**: Big-prime CRT 中 `poly_rem_ring` 等函数在外部预算 `f_lead_inv` 传入，不再每次重算
+- **Commit**: `50ed746`
+
 ### P1-OPT + P2 级修复 (Session 47 — BL 调优 + 1LP Merge 修复)
 
 #### [OPT] ~~Block Lanczos 调优集合 (max_deps/阈值/缓存)~~ ✅
