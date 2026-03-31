@@ -242,94 +242,96 @@ public:
 
         std::vector<Relation> merged;
 
-        // 按大素数建立索引
+        // Pre-filter: only index 1LP relations (those with exactly 1 large prime).
+        // Most partials are 2LP — indexing them all and then rejecting in O(k²)
+        // pair enumeration was the performance bottleneck (260s for 125K partials).
+        std::vector<size_t> lp1_indices;
+        lp1_indices.reserve(partials.size() / 4);
+        for (size_t i = 0; i < partials.size(); ++i) {
+            if (partials[i].num_large_primes() == 1) {
+                lp1_indices.push_back(i);
+            }
+        }
+
+        // 按大素数建立索引 (only 1LP relations)
         std::unordered_map<LargePrimeKey, std::vector<size_t>, LargePrimeKeyHash>
             prime_to_relations;
+        prime_to_relations.reserve(lp1_indices.size());
 
-        for (size_t i = 0; i < partials.size(); ++i) {
-            const auto& rel = partials[i];
+        for (size_t idx : lp1_indices) {
+            const auto& rel = partials[idx];
 
             for (size_t j = 0; j < rel.rational_large_prime.size(); ++j) {
                 LargePrimeKey key{rel.rational_large_prime[j].p, 0, false};
-                prime_to_relations[key].push_back(i);
+                prime_to_relations[key].push_back(idx);
             }
 
             for (size_t j = 0; j < rel.algebraic_large_prime.size(); ++j) {
                 const auto& lp = rel.algebraic_large_prime[j];
                 LargePrimeKey key{lp.p, lp.r, true};
-                prime_to_relations[key].push_back(i);
+                prime_to_relations[key].push_back(idx);
             }
         }
 
-        // 找到共享同一大素数的关系对
+        // Greedy matching: for each LP key with ≥2 relations, pair them off
         std::unordered_set<size_t> used;
+        used.reserve(lp1_indices.size());
 
         for (const auto& [key, indices] : prime_to_relations) {
-            if (indices.size() >= 2) {
-                // 这些关系共享一个大素数
-                // 对于 1LP 关系，两个共享同一大素数的关系可以合并
+            if (indices.size() < 2) continue;
 
-                for (size_t i = 0; i < indices.size(); ++i) {
-                    for (size_t j = i + 1; j < indices.size(); ++j) {
-                        size_t idx1 = indices[i];
-                        size_t idx2 = indices[j];
-
-                        // 跳过已使用的
-                        if (used.count(idx1) > 0 || used.count(idx2) > 0) {
-                            continue;
-                        }
-
-                        const auto& rel1 = partials[idx1];
-                        const auto& rel2 = partials[idx2];
-
-                        // 检查是否都是 1LP
-                        if (rel1.num_large_primes() == 1 &&
-                            rel2.num_large_primes() == 1) {
-
-                            // Merge: concatenate factor lists from both.
-                            // Matrix builder reduces mod 2 automatically.
-                            // Shared LP appears twice → even exponent → invisible.
-                            // Sqrt step uses extra_ab_pairs for both (a,b).
-
-                            used.insert(idx1);
-                            used.insert(idx2);
-
-                            Relation m;
-                            m.a = rel1.a;
-                            m.b = rel1.b;
-                            m.extra_ab_pairs.emplace_back(rel2.a, rel2.b);
-
-                            // Concatenate rational factors
-                            m.rational_factors = rel1.rational_factors;
-                            m.rational_factors.insert(
-                                m.rational_factors.end(),
-                                rel2.rational_factors.begin(),
-                                rel2.rational_factors.end());
-
-                            // Concatenate algebraic factors
-                            m.algebraic_factors = rel1.algebraic_factors;
-                            m.algebraic_factors.insert(
-                                m.algebraic_factors.end(),
-                                rel2.algebraic_factors.begin(),
-                                rel2.algebraic_factors.end());
-
-                            // Concatenate large primes (shared LP will cancel in GF(2))
-                            m.rational_large_prime = rel1.rational_large_prime;
-                            m.rational_large_prime.insert(
-                                m.rational_large_prime.end(),
-                                rel2.rational_large_prime.begin(),
-                                rel2.rational_large_prime.end());
-
-                            m.algebraic_large_prime = rel1.algebraic_large_prime;
-                            m.algebraic_large_prime.insert(
-                                m.algebraic_large_prime.end(),
-                                rel2.algebraic_large_prime.begin(),
-                                rel2.algebraic_large_prime.end());
-
-                            merged.push_back(std::move(m));
-                        }
-                    }
+            // Linear scan: match consecutive unused pairs
+            size_t first_unused = SIZE_MAX;
+            for (size_t idx : indices) {
+                if (used.count(idx) > 0) continue;
+                if (first_unused == SIZE_MAX) {
+                    first_unused = idx;
+                    continue;
                 }
+
+                // Merge first_unused with idx
+                const auto& rel1 = partials[first_unused];
+                const auto& rel2 = partials[idx];
+
+                used.insert(first_unused);
+                used.insert(idx);
+
+                Relation m;
+                m.a = rel1.a;
+                m.b = rel1.b;
+                m.extra_ab_pairs.emplace_back(rel2.a, rel2.b);
+
+                // Concatenate rational factors
+                m.rational_factors = rel1.rational_factors;
+                m.rational_factors.insert(
+                    m.rational_factors.end(),
+                    rel2.rational_factors.begin(),
+                    rel2.rational_factors.end());
+
+                // Concatenate algebraic factors
+                m.algebraic_factors = rel1.algebraic_factors;
+                m.algebraic_factors.insert(
+                    m.algebraic_factors.end(),
+                    rel2.algebraic_factors.begin(),
+                    rel2.algebraic_factors.end());
+
+                // Concatenate large primes (shared LP will cancel in GF(2))
+                m.rational_large_prime = rel1.rational_large_prime;
+                m.rational_large_prime.insert(
+                    m.rational_large_prime.end(),
+                    rel2.rational_large_prime.begin(),
+                    rel2.rational_large_prime.end());
+
+                m.algebraic_large_prime = rel1.algebraic_large_prime;
+                m.algebraic_large_prime.insert(
+                    m.algebraic_large_prime.end(),
+                    rel2.algebraic_large_prime.begin(),
+                    rel2.algebraic_large_prime.end());
+
+                merged.push_back(std::move(m));
+
+                // Reset for next pair in same key
+                first_unused = SIZE_MAX;
             }
         }
 

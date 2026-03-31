@@ -91,8 +91,8 @@ struct GNFSParams {
         //   ≤6     | 500     | 1000    | 0       | —     | tiny N, 全光滑
         //   ≤10    | 1000    | 2000    | 0       | —     | small N
         //   ≤15    | 3000    | 6000    | auto    | ~30×  | LP 使 NFS 对小 N 可行
-        //   ≤20    | 5000    | 10000   | auto    | ~30×  | 1LP 标准配置
-        //   ≤25    | 5000    | 10000   | auto    | ~30×  | 25-digit 关键区间
+        //   ≤20    | 8000    | 16000   | auto    | ~30×  | 增大 FB 提高 1LP/full 比例
+        //   ≤25    | 10000   | 20000   | auto    | ~30×  | 25-digit 关键区间
         //   ≤30    | 20000   | 40000   | auto    | ~30×  |
         //   ≤40    | 100000  | 200000  | auto    | ~30×  |
         //   ≤50    | 500000  | 1000000 | auto    | ~30×  |
@@ -112,9 +112,11 @@ struct GNFSParams {
         } else if (p.digits <= 15) {
             B_rat = 3000;   B_alg = 6000;
         } else if (p.digits <= 20) {
-            B_rat = 5000;   B_alg = 10000;
+            // 19-digit (61-bit): 代数范数 ~10^17, 需要更大 FB 提高 1LP 比例
+            B_rat = 8000;   B_alg = 16000;
         } else if (p.digits <= 25) {
-            B_rat = 5000;   B_alg = 10000;
+            // 25-digit (81-bit): 代数范数 ~10^22, FB 需进一步增大
+            B_rat = 10000;  B_alg = 20000;
         } else if (p.digits <= 30) {
             B_rat = 20000;  B_alg = 40000;
         } else if (p.digits <= 40) {
@@ -270,14 +272,15 @@ struct GNFSParams {
         double pi_a = algebraic_bound / std::log(static_cast<double>(std::max(algebraic_bound, 2u)));
         double matrix_cols = pi_r + pi_a + target_excess;
 
-        if (large_prime_bits > 0) {
-            // LP 范围 [B_alg, LP_bound] 内的素数数量
+        if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
+            // Birthday formula consistent with raw_relation_target()
             double lp_bound_d = static_cast<double>(large_prime_bound);
-            double lp_primes = (lp_bound_d - algebraic_bound) /
+            double alg_bound_d = static_cast<double>(algebraic_bound);
+            double lp_primes = (lp_bound_d - alg_bound_d) /
                                std::log(std::max(lp_bound_d, 2.0));
-            // 需要 ≥ 3× LP 素数数量的原始关系才能有足够的 LP 碰撞
-            double lp_raw = std::max(lp_primes * 3.0, matrix_cols * 5.0);
-            return static_cast<size_t>(lp_raw);
+            double key_space = lp_primes * static_cast<double>(std::max(degree, 2u));
+            double n_min = std::sqrt(2.0 * key_space * matrix_cols * 8.0);
+            return static_cast<size_t>(std::max(n_min, matrix_cols * 3.0));
         }
         return static_cast<size_t>(matrix_cols);
     }
@@ -285,20 +288,25 @@ struct GNFSParams {
     /// 计算 LP 感知的原始关系目标
     /// @param matrix_columns 矩阵实际列数 (FB rational + sieve algebraic + QC + etc.)
     /// @return 需要收集的原始关系数（过滤前）
+    ///
+    /// LP 模式下，full relations 极少（FB 小时几乎为 0），全靠 1LP merge。
+    /// 但很多 partial 实际是 2LP（两侧各一个大素数），无法被 1LP merge 利用。
+    /// Birthday 公式需要大 safety factor 补偿 2LP 占比。
     [[nodiscard]] size_t raw_relation_target(size_t matrix_columns) const {
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
             double lp_bound_d = static_cast<double>(large_prime_bound);
             double alg_bound_d = static_cast<double>(algebraic_bound);
             double lp_primes = (lp_bound_d - alg_bound_d) /
                                std::log(std::max(lp_bound_d, 2.0));
-            // LP key space = primes × roots (degree d: up to d roots per prime)
-            // Need n² / (2·key_space) ≥ matrix_columns for birthday collisions
-            // → n ≥ sqrt(2 · key_space · matrix_columns · safety_factor)
+            // LP key space: primes in [B_alg, LP_bound], each with up to d roots
             double key_space = lp_primes * static_cast<double>(std::max(degree, 2u));
-            double n_min = std::sqrt(2.0 * key_space * static_cast<double>(matrix_columns) * 4.0);
-            // Also ensure at least 8× matrix columns for merge overhead
+            // Birthday: need n²/(2·K) ≥ matrix_columns merged pairs
+            // Safety factor 8: compensates for 2LP fraction (~70-90% of partials
+            // are 2LP and ineligible for 1LP merge) + singleton filtering losses
+            double n_min = std::sqrt(2.0 * key_space * static_cast<double>(matrix_columns) * 8.0);
+            // Floor: at least 3× matrix columns (for non-LP full relation path)
             return static_cast<size_t>(
-                std::max({n_min, lp_primes * 5.0, static_cast<double>(matrix_columns) * 8.0}));
+                std::max(n_min, static_cast<double>(matrix_columns) * 3.0));
         }
         return matrix_columns;
     }

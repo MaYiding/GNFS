@@ -229,93 +229,107 @@ FactResult factor_with_progress(const Integer& n, int level) {
     RelationCollector collector(coll_config);
 
     size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
-    size_t target = params.raw_relation_target(matrix_cols);
+    // Initial target: small batch to test merge rate, then adaptive
+    size_t batch_target = params.raw_relation_target(matrix_cols);
     size_t sq_count = 0;
-    size_t cand_total = 0;
 
     LatticeSieve sieve(ctx, fb, sieve_params);
     sieve.set_region(sieve_region);
 
-    while (sq_gen.has_next() && collector.size() < target && sq_count < params.max_special_q) {
-        auto sq = sq_gen.next();
-        if (!sq) break;
+    // ── Adaptive sieve-filter-merge loop ──
+    // Like CADO-NFS: sieve a batch → filter + merge → check excess → repeat if needed
+    std::vector<Relation> relations;
+    bool lp_enabled = params.large_prime_bound > params.algebraic_bound;
+    constexpr int MAX_ROUNDS = 10;
 
-        auto sr = sieve.sieve_special_q(*sq);
-        cand_total += sr.candidates.size();
+    for (int round = 0; round < MAX_ROUNDS; ++round) {
+        // Sieve until batch_target or exhaustion
+        while (sq_gen.has_next() && collector.size() < batch_target && sq_count < params.max_special_q) {
+            auto sq = sq_gen.next();
+            if (!sq) break;
 
-        for (const auto& cand : sr.candidates) {
-            auto rel = cofactorizer.verify(cand);
-            if (rel) collector.add(std::move(*rel));
+            auto sr = sieve.sieve_special_q(*sq);
+            for (const auto& cand : sr.candidates) {
+                auto rel = cofactorizer.verify(cand);
+                if (rel) collector.add(std::move(*rel));
+            }
+            ++sq_count;
+
+            if (sq_count % std::max(size_t(1), static_cast<size_t>(params.progress_interval)) == 0 || collector.size() >= batch_target) {
+                double rate = collector.size() / (phase.sec() + 0.001);
+                std::cout << "  SQ #" << sq_count
+                          << ": rels=" << collector.size() << "/" << batch_target
+                          << " (" << std::fixed << std::setprecision(1)
+                          << (100.0 * collector.size() / batch_target) << "%)"
+                          << " rate=" << std::setprecision(1) << rate << "/s"
+                          << " elapsed=" << std::setprecision(1) << phase.sec() << "s"
+                          << "\n" << std::flush;
+            }
         }
-        ++sq_count;
 
-        // Progress output — rate based
-        if (sq_count % params.progress_interval == 0 || collector.size() >= target) {
-            double rate = collector.size() / (phase.sec() + 0.001);
-            double eta = (target > collector.size()) ?
-                (target - collector.size()) / (rate + 0.001) : 0;
-            std::cout << "  SQ #" << sq_count
-                      << ": rels=" << collector.size() << "/" << target
-                      << " (" << std::fixed << std::setprecision(1)
-                      << (100.0 * collector.size() / target) << "%)"
-                      << " cands=" << cand_total
-                      << " rate=" << std::setprecision(1) << rate << "/s"
-                      << " ETA=" << std::setprecision(0) << eta << "s"
-                      << " elapsed=" << std::setprecision(1) << phase.sec() << "s"
-                      << "\n" << std::flush;
+        if (collector.size() < 10) break;
+
+        // Filter + merge (with timing to diagnose bottlenecks)
+        StopWatch fm_timer;
+        relations = collector.get_relations();
+        double t_get = fm_timer.sec(); fm_timer.reset();
+
+        FilterConfig filt_config;
+        filt_config.remove_singletons = true;
+        filt_config.max_passes = 10;
+        RelationFilter filter(filt_config);
+        relations = filter.filter(std::move(relations));
+        double t_filter = fm_timer.sec(); fm_timer.reset();
+
+        double t_merge = 0;
+        if (lp_enabled) {
+            auto sep = separate_relations(std::move(relations));
+            double t_sep = fm_timer.sec(); fm_timer.reset();
+            auto merged = PartialRelationMerger::merge(sep.partial);
+            t_merge = fm_timer.sec(); fm_timer.reset();
+
+            std::cout << "  [round " << (round+1) << "] Full=" << sep.full.size()
+                      << " Partial=" << sep.partial.size()
+                      << " Merged=" << merged.size()
+                      << " (get=" << std::setprecision(1) << t_get
+                      << "s filt=" << t_filter
+                      << "s sep=" << t_sep
+                      << "s merge=" << t_merge << "s)\n" << std::flush;
+
+            relations = std::move(sep.full);
+            relations.insert(relations.end(),
+                std::make_move_iterator(merged.begin()),
+                std::make_move_iterator(merged.end()));
         }
+
+        // Check: enough for matrix?
+        if (relations.size() > matrix_cols) {
+            std::cout << "  Sieving complete: " << collector.size() << " raw relations, "
+                      << relations.size() << " usable, in " << phase.sec() << " sec\n" << std::flush;
+            break;
+        }
+
+        // Not enough — double the target and keep sieving
+        if (!sq_gen.has_next() || sq_count >= params.max_special_q) {
+            std::cout << "  SQ exhausted at " << sq_count << " — insufficient relations\n";
+            break;
+        }
+
+        double merge_rate = (collector.size() > 0) ?
+            static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
+        size_t needed_raw = static_cast<size_t>(
+            static_cast<double>(matrix_cols * 2) / std::max(merge_rate, 0.001));
+        batch_target = std::max(batch_target * 2, needed_raw);
+        std::cout << "  Need more — merge_rate=" << std::setprecision(3) << (merge_rate * 100)
+                  << "%, new target=" << batch_target << "\n" << std::flush;
     }
 
     result.relations = collector.size();
-    std::cout << "  Sieving complete: " << collector.size() << " relations"
-              << " in " << phase.sec() << " sec\n" << std::flush;
 
-    if (collector.size() < 10) {
+    if (relations.size() < 5) {
         std::cout << "  INSUFFICIENT RELATIONS\n";
         result.time_sec = total.sec();
         return result;
-    }
-
-    // ── Phase 4: Filtering ──
-    std::cout << "[Phase 4] Filtering..." << std::flush;
-    phase.reset();
-
-    auto relations = collector.get_relations();
-    FilterConfig filt_config;
-    filt_config.remove_singletons = true;
-    filt_config.max_passes = 10;
-    RelationFilter filter(filt_config);
-    relations = filter.filter(std::move(relations));
-
-    std::cout << " " << relations.size() << " relations remain (" << phase.ms() << " ms)\n" << std::flush;
-
-    if (relations.size() < 5) {
-        std::cout << "  INSUFFICIENT RELATIONS AFTER FILTER\n";
-        result.time_sec = total.sec();
-        return result;
-    }
-
-    // Merge 1LP partial relations sharing a large prime
-    // Only when LP is genuinely enabled (LP > algebraic_bound)
-    // For small N where LP ≈ FB, "partials" are just inert-prime artifacts
-    if (params.large_prime_bound > params.algebraic_bound) {
-        auto sep = separate_relations(std::move(relations));
-        auto merged = PartialRelationMerger::merge(sep.partial);
-        std::cout << "  Full=" << sep.full.size()
-                  << " Partial=" << sep.partial.size()
-                  << " Merged=" << merged.size() << "\n" << std::flush;
-
-        // Only keep full + merged — unmerged partials create singleton LP columns
-        relations = std::move(sep.full);
-        relations.insert(relations.end(),
-            std::make_move_iterator(merged.begin()),
-            std::make_move_iterator(merged.end()));
-
-        if (relations.size() < 5) {
-            std::cout << "  INSUFFICIENT RELATIONS AFTER MERGE\n";
-            result.time_sec = total.sec();
-            return result;
-        }
     }
 
     // ── Phase 5: Linear Algebra ──
@@ -368,7 +382,9 @@ FactResult factor_with_progress(const Integer& n, int level) {
         std::cout << "  Dep #" << (di+1) << " (size=" << popcnt(dep) << ")..." << std::flush;
 
         // --- Diagnostic: check if norm product is a perfect square ---
-        if (di < 3) {
+        // Skip for large deps — norm product computation is O(n²) in bit-length
+        // and dominates runtime when deps have 1000+ relations (LP merge scenario)
+        if (di < 3 && popcnt(dep) < 300) {
             Integer norm_product(1);
             for (size_t ri = 0; ri < relations.size(); ++ri) {
                 if (!(ri < dep.size() && dep[ri])) continue;
