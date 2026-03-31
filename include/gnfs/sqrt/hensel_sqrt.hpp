@@ -10,6 +10,7 @@
 #include <iostream>
 #include <thread>
 #include <memory>
+#include <chrono>
 
 namespace gnfs {
 namespace sqrt {
@@ -42,6 +43,10 @@ public:
     /// Get the inert prime found/used during the last compute() call
     [[nodiscard]] uint64_t last_inert_prime() const noexcept { return last_inert_prime_; }
 
+    /// True if CRT searched all 2^15 sign combos without finding a match.
+    /// When true, the dependency is almost certainly invalid — skip fallback methods.
+    [[nodiscard]] bool was_crt_sign_exhausted() const noexcept { return crt_sign_exhausted_; }
+
     /// Compute algebraic square root value (mod N)
     ///
     /// Uses multi-prime CRT (Nguyen 2004) for large inputs:
@@ -53,6 +58,7 @@ public:
             const NumberField& nf) const {
 
         if (ab_pairs.empty()) return Integer(int64_t(1));
+        auto t0_compute = std::chrono::steady_clock::now();
 
         const Integer& n = nf.n();
 
@@ -77,10 +83,30 @@ public:
 
         // Use multi-prime CRT for large inputs (≥100 factors)
         // For small inputs, Hensel lifting is fast regardless of precision.
+        crt_sign_exhausted_ = false;
         if (ab_pairs.size() >= 100) {
             auto result = compute_multi_prime_crt(
                 ab_pairs, nf, target_bits, product_at_m, f_prime_m, f_prime_m_inv);
-            if (result) return result;
+            if (result) {
+                if (config_.verbose) {
+                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0_compute).count();
+                    std::cerr << "[Hensel] compute() total: " << ms << "ms\n";
+                }
+                return result;
+            }
+            // If CRT searched all 2^15 sign combos and found nothing,
+            // the dependency is almost certainly invalid (product not a
+            // perfect square). Skip expensive Hensel fallback.
+            if (crt_sign_exhausted_) {
+                if (config_.verbose) {
+                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0_compute).count();
+                    std::cerr << "[Hensel] CRT exhausted (" << ms << "ms) — "
+                                 "skipping Hensel (dep likely invalid)\n";
+                }
+                return std::nullopt;
+            }
             if (config_.verbose) {
                 std::cerr << "[Hensel] Multi-prime CRT failed, falling back to Hensel lifting\n";
             }
@@ -94,6 +120,7 @@ public:
 private:
     Config config_;
     mutable uint64_t last_inert_prime_ = 0;
+    mutable bool crt_sign_exhausted_ = false;  // true if CRT searched all combos
 
     /// Estimate target bits for sqrt coefficient recovery
     [[nodiscard]] double estimate_target_bits(
@@ -442,6 +469,7 @@ private:
         uint32_t d = nf.degree();
         const Integer& n = nf.n();
         const size_t NUM_PRIMES = 16;
+        auto t0_crt = std::chrono::steady_clock::now();
 
         size_t prime_bits = static_cast<size_t>(std::ceil(target_bits / NUM_PRIMES)) + 2;
         if (prime_bits < 30) prime_bits = 30;
@@ -493,9 +521,13 @@ private:
         }
 
         if (config_.verbose) {
+            auto t1 = std::chrono::steady_clock::now();
+            auto ms_find = std::chrono::duration_cast<std::chrono::milliseconds>(
+                t1 - t0_crt).count();
             std::cerr << "[CRT-big] Found " << NUM_PRIMES << " inert primes ("
                       << inert_primes[0].bit_length() << "-"
-                      << inert_primes.back().bit_length() << " bits)\n";
+                      << inert_primes.back().bit_length() << " bits) ["
+                      << ms_find << "ms]\n";
         }
 
         // ---- Step 2: Per-prime product + sqrt (parallel) ----
@@ -577,7 +609,13 @@ private:
             }
         }
 
-        if (config_.verbose) std::cerr << "[CRT-big] All " << NUM_PRIMES << " per-prime sqrts OK\n";
+        if (config_.verbose) {
+            auto t2 = std::chrono::steady_clock::now();
+            auto ms_sqrt = std::chrono::duration_cast<std::chrono::milliseconds>(
+                t2 - t0_crt).count();
+            std::cerr << "[CRT-big] All " << NUM_PRIMES << " per-prime sqrts OK ["
+                      << ms_sqrt << "ms total]\n";
+        }
 
         // ---- Step 3: CRT + Gray code sign determination ----
         Integer M(int64_t(1));
@@ -634,13 +672,36 @@ private:
 
         Integer Mhalf = M.clone();
         mpz_tdiv_q_2exp(Mhalf.get_mpz(), Mhalf.get_mpz(), 1);
+        Integer M_mod_N = M.clone();
+        M_mod_N %= n;
 
-        // Verify: center CRT, evaluate at m mod N, check Y^2 = P(m) mod N
-        auto try_verify = [&]() -> std::optional<Integer> {
+        // Maintain crt_val[j] mod N separately for fast verification.
+        // crt_val[j] is 17K-bit (needed for centering checks),
+        // crt_mod_N[j] is ~47-bit (for evaluation at m mod N).
+        std::vector<Integer> crt_mod_N(d);
+        for (uint32_t j = 0; j < d; ++j) {
+            crt_mod_N[j] = crt_val[j].clone();
+            crt_mod_N[j] %= n;
+        }
+
+        // Pre-compute delta[i][j] mod N for fast incremental update
+        std::vector<std::vector<Integer>> delta_mod_N(NUM_PRIMES);
+        for (size_t i = 0; i < NUM_PRIMES; ++i) {
+            delta_mod_N[i].resize(d);
+            for (uint32_t j = 0; j < d; ++j) {
+                delta_mod_N[i][j] = delta[i][j].clone();
+                delta_mod_N[i][j] %= n;
+            }
+        }
+
+        // Fast verification: uses ~47-bit crt_mod_N + centering from 17K-bit crt_val
+        auto try_verify_fast = [&]() -> std::optional<Integer> {
             Integer val(int64_t(0));
             for (uint32_t j = 0; j < d; ++j) {
-                Integer c = crt_val[j].clone();
-                if (c.compare(Mhalf) > 0) c -= M;
+                Integer c = crt_mod_N[j].clone();  // ~47-bit clone
+                if (crt_val[j].compare(Mhalf) > 0) {
+                    c -= M_mod_N;  // centering
+                }
                 c %= n;
                 if (c.is_negative()) c += n;
                 c *= mpow[j];
@@ -655,7 +716,7 @@ private:
         };
 
         // Try all-positive first
-        auto result = try_verify();
+        auto result = try_verify_fast();
         if (result) {
             if (config_.verbose) std::cerr << "[CRT-big] Verified at combo 0\n";
             return result;
@@ -673,20 +734,30 @@ private:
                 // + -> -: add delta
                 for (uint32_t j = 0; j < d; ++j) {
                     crt_val[j] += delta[flip][j];
-                    crt_val[j] %= M;
+                    // crt_val[j] is in [0, 2M), check if >= M
+                    bool overflow = (crt_val[j].compare(M) >= 0);
+                    if (overflow) crt_val[j] -= M;
+                    crt_mod_N[j] += delta_mod_N[flip][j];
+                    if (overflow) crt_mod_N[j] -= M_mod_N;
+                    crt_mod_N[j] %= n;
+                    if (crt_mod_N[j].is_negative()) crt_mod_N[j] += n;
                 }
                 sgn[flip] = false;
             } else {
                 // - -> +: subtract delta
                 for (uint32_t j = 0; j < d; ++j) {
                     crt_val[j] -= delta[flip][j];
-                    crt_val[j] %= M;
-                    if (crt_val[j].is_negative()) crt_val[j] += M;
+                    bool underflow = crt_val[j].is_negative();
+                    if (underflow) crt_val[j] += M;
+                    crt_mod_N[j] -= delta_mod_N[flip][j];
+                    if (underflow) crt_mod_N[j] += M_mod_N;
+                    crt_mod_N[j] %= n;
+                    if (crt_mod_N[j].is_negative()) crt_mod_N[j] += n;
                 }
                 sgn[flip] = true;
             }
 
-            result = try_verify();
+            result = try_verify_fast();
             if (result) {
                 if (config_.verbose) {
                     std::cerr << "[CRT-big] Verified at combo " << step
@@ -699,6 +770,7 @@ private:
         if (config_.verbose) {
             std::cerr << "[CRT-big] No valid sign combo in " << total << " tried\n";
         }
+        crt_sign_exhausted_ = true;
         return std::nullopt;
     }
 

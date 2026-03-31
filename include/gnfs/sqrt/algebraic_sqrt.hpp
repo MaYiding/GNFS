@@ -111,6 +111,12 @@ public:
                 result.success = true;
                 return result;
             }
+            // If CRT exhausted all sign combos, the dependency is invalid.
+            // Skip expensive Couveignes/heuristic fallback.
+            if (hensel.was_crt_sign_exhausted()) {
+                result.error = "CRT sign search exhausted — dependency invalid";
+                return result;
+            }
         }
 
         if (config_.use_couveignes) {
