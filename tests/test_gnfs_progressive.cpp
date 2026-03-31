@@ -230,7 +230,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
     size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
     // Initial target: small batch to test merge rate, then adaptive
-    size_t batch_target = params.raw_relation_target(matrix_cols);
+    size_t initial_target = params.raw_relation_target(matrix_cols);
+    size_t batch_target = initial_target;
     size_t sq_count = 0;
 
     LatticeSieve sieve(ctx, fb, sieve_params);
@@ -306,9 +307,13 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
         double merge_rate = (collector.size() > 0) ?
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
+        // Birthday effect: merge_rate improves as ~sqrt(n), so scaling by 4× raw → ~2× yield
+        // Cap at 10× initial target to prevent runaway collection
         size_t needed_raw = static_cast<size_t>(
             static_cast<double>(matrix_cols * 2) / std::max(merge_rate, 0.001));
-        batch_target = std::max(batch_target * 2, needed_raw);
+        batch_target = std::min(
+            std::max(batch_target * 4, needed_raw),
+            initial_target * 10);
         std::cout << "  Need more — merge_rate=" << std::setprecision(3) << (merge_rate * 100)
                   << "%, new target=" << batch_target << "\n" << std::flush;
     }
