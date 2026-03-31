@@ -7,6 +7,19 @@
 
 ## 已完成 ✅
 
+### Session 49 — Nguyen Hybrid CRT + 死代码清理
+
+#### [OPT] ~~Hensel Sqrt: 大素数 CRT 性能差~~ ✅
+- **发现**: 2026-03-11 (Session 49)
+- **解决**: 2026-03-11 (Session 49)
+- **文件**: `sqrt/hensel_sqrt.hpp`, `sqrt/algebraic_sqrt.hpp`
+- **修复**: Nguyen Hybrid: K 个小素数 (~10 bit) 各自做 ModularPoly Tonelli-Shanks + Hensel Newton lift 到 ~10-20K bit, CRT 合并, Gray code 2^(K-1) sign search. K=3 (d≤3), K=5 (d≥4)
+- **旧方案**: 16 个 ~1K bit 大素数, Integer 多项式 GF(p^d) 平方根, 2^15 sign search
+- **性能**: L5 sqrt 200× 加速 (秒级→毫秒级), L1-L5 全部通过
+- **清理**: 移除 592 行死代码 (poly_rem_ring, poly_gcd_ring, is_irreducible_big_p, sqrt_in_fpd, compute_multi_prime_crt, cached_big_primes)
+- **验证**: smoke 20/20, sqrt module 全部通过
+- **Commit**: `c1238ee`, `bd845b9`
+
 ### Session 49 修复 — Merge 瓶颈 + 自适应筛选 + L5 恢复
 
 #### [OPT] ~~PartialRelationMerger::merge() O(n²) 瓶颈~~ ✅
