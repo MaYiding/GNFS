@@ -6,7 +6,7 @@
 | 级别 | 条数 | 涵盖 |
 |------|------|------|
 | **P1-OPT** | 3 | Bucket Sieve, Sieve 内存, Kleinjung 集成 |
-| **P1** | 1 | L5/25-digit Full=0 回归 |
+| **P1** | 0 | (已清空) |
 | **P2** | 7 | 2LP 合并, SGE, Murphy E, base-m, ECM 余因子, Clique, NEON |
 | **P3** | 21 | 小优化 ×4, 远期架构 ×6, 代码质量 ×10, 调查 ×1 |
 
@@ -41,15 +41,6 @@
 - **预期收益**: 更好多项式可减少筛选时间 2-5×
 
 ---
-
-## P1 — 高优先级
-
-### [BUG] L5/25-digit 分解失败: Full=0 + 合并率不足
-- **发现日期**: 2026-03-11 (Session 48)
-- **文件**: `core/params.hpp`, `tests/test_gnfs_progressive.cpp`, `tests/test_25digit.cpp`
-- **描述**: L5 (61-bit) 和 25-digit (81-bit) 均失败。Full=0 (所有关系都是 partial)，1LP 合并率仅 ~1%，导致矩阵行数 < 列数。main 分支也存在此问题，非 CRT 引起
-- **根因分析**: Session 46 参数校准后 FB 缩小 10-40× (rational_bound=5000, algebraic_bound=10000)，对 60-80 bit N 来说 FB 太小，几乎不可能完全光滑
-- **建议**: 校准 FB 大小使 60-80 bit 仍有合理比例的 full relations (≥10%)；或显著增大 max_special_q 使收集更多 partials 提高合并率
 
 ---
 

@@ -7,6 +7,27 @@
 
 ## 已完成 ✅
 
+### Session 49 修复 — Merge 瓶颈 + 自适应筛选 + L5 恢复
+
+#### [OPT] ~~PartialRelationMerger::merge() O(n²) 瓶颈~~ ✅
+- **发现**: 2026-03-11 (Session 49)
+- **解决**: 2026-03-11 (Session 49)
+- **文件**: `relation/filter.hpp:240-337`
+- **修复**: 旧代码将所有 partial（含 2LP）索引后 O(k²) 配对枚举，绝大多数因 `num_large_primes()!=1` 白费。新代码先 O(n) 过滤出 1LP 子集，只对它们建索引+线性配对。
+- **性能**: L4 merge 260s→0s, L4 总计 311s→30s (10.4×), L5 恢复通过 (312s)
+- **验证**: smoke 20/20, L1-L5 全部通过
+- **Commit**: `147fa0e`
+
+#### [BUG] ~~L5/25-digit 分解失败: Full=0 + 合并率不足~~ ✅
+- **发现**: 2026-03-11 (Session 48)
+- **解决**: 2026-03-11 (Session 49)
+- **修复**: 三重修复:
+  1. FB 增大: ≤20 digit 8000/16000, ≤25 digit 10000/20000
+  2. raw_relation_target 改为 birthday 公式 (移除 lp_primes×5 膨胀项)
+  3. 自适应 sieve-filter-merge 循环: 按实际 merge_rate 动态调整目标
+- **验证**: L5 从 Full=0 完全失败 → 312s 成功; L1-L4 无回归
+- **Commit**: `147fa0e`, `138b543`
+
 ### P1-OPT 修复 (Session 48 — Big-Prime CRT 替换 Hensel Sqrt)
 
 #### [OPT] ~~Hensel Sqrt → Nguyen 多素数 CRT~~ ✅
