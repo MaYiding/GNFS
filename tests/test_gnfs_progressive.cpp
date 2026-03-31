@@ -269,32 +269,21 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
         if (collector.size() < 10) break;
 
-        // Filter + merge (with timing to diagnose bottlenecks)
-        StopWatch fm_timer;
+        // Filter + merge
         relations = collector.get_relations();
-        double t_get = fm_timer.sec(); fm_timer.reset();
-
         FilterConfig filt_config;
         filt_config.remove_singletons = true;
         filt_config.max_passes = 10;
         RelationFilter filter(filt_config);
         relations = filter.filter(std::move(relations));
-        double t_filter = fm_timer.sec(); fm_timer.reset();
 
-        double t_merge = 0;
         if (lp_enabled) {
             auto sep = separate_relations(std::move(relations));
-            double t_sep = fm_timer.sec(); fm_timer.reset();
             auto merged = PartialRelationMerger::merge(sep.partial);
-            t_merge = fm_timer.sec(); fm_timer.reset();
 
             std::cout << "  [round " << (round+1) << "] Full=" << sep.full.size()
                       << " Partial=" << sep.partial.size()
-                      << " Merged=" << merged.size()
-                      << " (get=" << std::setprecision(1) << t_get
-                      << "s filt=" << t_filter
-                      << "s sep=" << t_sep
-                      << "s merge=" << t_merge << "s)\n" << std::flush;
+                      << " Merged=" << merged.size() << "\n" << std::flush;
 
             relations = std::move(sep.full);
             relations.insert(relations.end(),
