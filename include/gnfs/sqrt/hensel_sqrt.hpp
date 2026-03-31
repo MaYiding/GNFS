@@ -9,6 +9,8 @@
 #include <optional>
 #include <iostream>
 #include <thread>
+#include <memory>
+#include <chrono>
 
 namespace gnfs {
 namespace sqrt {
@@ -29,58 +31,102 @@ public:
     struct Config {
         uint64_t prime_start = 1000;   // Starting prime search
         size_t extra_precision = 200;  // Extra bits of precision beyond estimate
+        uint64_t cached_inert_prime = 0; // Pre-found inert prime (0 = auto-find)
         bool verbose = false;
+        // Cached big CRT primes (shared across deps for the same polynomial)
+        std::shared_ptr<std::vector<Integer>> cached_big_primes;
     };
 
     HenselSqrt() = default;
     explicit HenselSqrt(const Config& config) : config_(config) {}
 
+    /// Get the inert prime found/used during the last compute() call
+    [[nodiscard]] uint64_t last_inert_prime() const noexcept { return last_inert_prime_; }
+
+    /// True if CRT searched all 2^15 sign combos without finding a match.
+    /// When true, the dependency is almost certainly invalid — skip fallback methods.
+    [[nodiscard]] bool was_crt_sign_exhausted() const noexcept { return crt_sign_exhausted_; }
+
     /// Compute algebraic square root value (mod N)
     ///
-    /// Uses the f'(α)² trick to handle the O_K vs Z[α] index problem:
-    /// multiply the product by f'(α)² before lifting, so that the sqrt
-    /// S' = f'(α)·sqrt(P) is guaranteed to lie in Z[α] (integer coefficients).
-    /// Then divide by f'(m) mod N to recover the true algebraic sqrt value.
+    /// Uses multi-prime CRT (Nguyen 2004) for large inputs:
+    /// compute sqrt(P·f'(α)²) independently mod many small primes,
+    /// then reconstruct via CRT. Falls back to Hensel lifting for small inputs
+    /// or if CRT fails.
     [[nodiscard]] std::optional<Integer> compute(
             const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
             const NumberField& nf) const {
 
         if (ab_pairs.empty()) return Integer(int64_t(1));
+        auto t0_compute = std::chrono::steady_clock::now();
 
-        uint32_t d = nf.degree();
         const Integer& n = nf.n();
 
-        // Step 1: Find a suitable prime p where f is irreducible mod p
-        uint64_t p = find_inert_prime(nf);
-        if (p == 0) return std::nullopt;
+        // Estimate required precision for the sqrt coefficients
+        double target_bits = estimate_target_bits(ab_pairs, nf);
 
-        // Step 2: Compute product mod (f, p)
-        auto f_mod_p = get_f_mod_p(nf, p);
-        ModularPoly product_mod_p(1);
-        for (const auto& [a, b] : ab_pairs) {
-            std::vector<uint64_t> cs(2);
-            int64_t am = a % static_cast<int64_t>(p);
-            if (am < 0) am += static_cast<int64_t>(p);
-            cs[0] = static_cast<uint64_t>(am);
-            cs[1] = (p - (b % p)) % p;
-            product_mod_p = ModularPoly::mul(product_mod_p, ModularPoly(std::move(cs)), f_mod_p, p);
+        // Pre-compute verification product P(m) = ∏(a_i - b_i*m) mod N
+        Integer product_at_m = compute_product_at_m(ab_pairs, nf);
+
+        // Compute f'(m) mod N and its inverse
+        Integer f_prime_m = evaluate_f_derivative_at_m(nf);
+        Integer f_prime_m_inv;
+        {
+            int ok = mpz_invert(f_prime_m_inv.get_mpz(), f_prime_m.get_mpz(), n.get_mpz());
+            if (!ok) {
+                if (config_.verbose) {
+                    std::cerr << "[Hensel] f'(m) not invertible mod N\n";
+                }
+                return std::nullopt;
+            }
         }
 
-        if (product_mod_p.is_zero()) return std::nullopt;
-
-        // Step 3: Compute sqrt mod (f, p)
-        if (!ModularPoly::is_square(product_mod_p, f_mod_p, p)) {
-            return std::nullopt;
+        // Use multi-prime CRT for large inputs (≥100 factors)
+        // For small inputs, Hensel lifting is fast regardless of precision.
+        crt_sign_exhausted_ = false;
+        if (ab_pairs.size() >= 100) {
+            auto result = compute_multi_prime_crt(
+                ab_pairs, nf, target_bits, product_at_m, f_prime_m, f_prime_m_inv);
+            if (result) {
+                if (config_.verbose) {
+                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0_compute).count();
+                    std::cerr << "[Hensel] compute() total: " << ms << "ms\n";
+                }
+                return result;
+            }
+            // If CRT searched all 2^15 sign combos and found nothing,
+            // the dependency is almost certainly invalid (product not a
+            // perfect square). Skip expensive Hensel fallback.
+            if (crt_sign_exhausted_) {
+                if (config_.verbose) {
+                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0_compute).count();
+                    std::cerr << "[Hensel] CRT exhausted (" << ms << "ms) — "
+                                 "skipping Hensel (dep likely invalid)\n";
+                }
+                return std::nullopt;
+            }
+            if (config_.verbose) {
+                std::cerr << "[Hensel] Multi-prime CRT failed, falling back to Hensel lifting\n";
+            }
         }
-        auto sqrt_mod_p = ModularPoly::sqrt_tonelli_shanks(product_mod_p, f_mod_p, p);
 
-        // Step 3b: Multiply sqrt by f'(α) mod (f, p).
-        // This is the starting point for lifting sqrt(P·f'(α)²) = f'(α)·sqrt(P).
-        auto f_prime_mod_p = compute_f_derivative_mod_p(nf, p);
-        sqrt_mod_p = ModularPoly::mul(
-            sqrt_mod_p, ModularPoly(f_prime_mod_p), f_mod_p, p);
+        // Fallback: classic Hensel lifting
+        return compute_hensel_lifting(
+            ab_pairs, nf, target_bits, product_at_m, f_prime_m, f_prime_m_inv);
+    }
 
-        // Step 4: Estimate required precision
+private:
+    Config config_;
+    mutable uint64_t last_inert_prime_ = 0;
+    mutable bool crt_sign_exhausted_ = false;  // true if CRT searched all combos
+
+    /// Estimate target bits for sqrt coefficient recovery
+    [[nodiscard]] double estimate_target_bits(
+            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+            const NumberField& nf) const {
+        uint32_t d = nf.degree();
         double max_root = std::abs(nf.m().to_double());
         {
             double c_d_abs = std::abs(nf.coeff(d).to_double());
@@ -91,20 +137,26 @@ public:
                 }
             }
         }
-
         double log_bound = 0;
         for (const auto& [a, b] : ab_pairs) {
             double val = std::abs(static_cast<double>(a)) +
                          static_cast<double>(b) * max_root;
             log_bound += std::log2(std::max(val, 1.0));
         }
-
-        // Derivative bound: log2|f'(root)| ≤ log2(d) + d·log2(max_root)
         double log_f_prime_bound = std::log2(static_cast<double>(d));
         if (d > 1) log_f_prime_bound += static_cast<double>(d) * std::log2(max_root + 1.0);
 
-        // Pre-compute verification product P(m) = ∏(a_i - b_i*m) mod N
-        Integer product_at_m(int64_t(1));
+        return log_bound / 2.0 + log_f_prime_bound
+               + std::log2(static_cast<double>(d))
+               + config_.extra_precision;
+    }
+
+    /// Compute ∏(a_i - b_i*m) mod N
+    [[nodiscard]] static Integer compute_product_at_m(
+            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+            const NumberField& nf) {
+        const Integer& n = nf.n();
+        Integer product(int64_t(1));
         for (const auto& [a, b] : ab_pairs) {
             Integer factor(a);
             Integer bm = nf.m().clone();
@@ -112,143 +164,700 @@ public:
             factor -= bm;
             factor %= n;
             if (factor.is_negative()) factor += n;
-            product_at_m *= factor;
-            product_at_m %= n;
+            product *= factor;
+            product %= n;
+        }
+        return product;
+    }
+
+    /// Verify Y and return it or -Y if verification passes
+    [[nodiscard]] static std::optional<Integer> verify_and_return(
+            const Integer& Y, const Integer& product_at_m, const Integer& n) {
+        Integer Y2 = Y.clone();
+        Y2 *= Y;
+        Y2 %= n;
+        if (Y2.is_negative()) Y2 += n;
+
+        Integer pm_pos = product_at_m.clone();
+        if (pm_pos.is_negative()) pm_pos += n;
+
+        if (Y2.compare(pm_pos) == 0) return Y.clone();
+
+        // Check -Y
+        Integer neg_Y = n.clone();
+        neg_Y -= Y;
+        Integer neg_Y2 = neg_Y.clone();
+        neg_Y2 *= neg_Y;
+        neg_Y2 %= n;
+        if (neg_Y2.is_negative()) neg_Y2 += n;
+
+        if (neg_Y2.compare(pm_pos) == 0) return neg_Y;
+
+        return std::nullopt;
+    }
+
+    // ========================================================================
+    // Big-prime CRT: Integer polynomial arithmetic helpers
+    // ========================================================================
+
+    /// Clone a polynomial (vector of Integers)
+    [[nodiscard]] static std::vector<Integer> clone_poly(const std::vector<Integer>& a) {
+        std::vector<Integer> r;
+        r.reserve(a.size());
+        for (const auto& c : a) r.push_back(c.clone());
+        return r;
+    }
+
+    /// Polynomial exponentiation: base^exp mod (f, p), Integer coefficients
+    [[nodiscard]] static std::vector<Integer> poly_pow_mod(
+            const std::vector<Integer>& base,
+            const Integer& exp,
+            const std::vector<Integer>& f, uint32_t d,
+            const Integer& p, const Integer& fli) {
+
+        std::vector<Integer> result(d);
+        result[0] = Integer(int64_t(1));
+        for (uint32_t i = 1; i < d; ++i) result[i] = Integer(int64_t(0));
+        if (exp.is_zero()) return result;
+
+        size_t bits = exp.bit_length();
+        for (size_t i = bits; i > 0; --i) {
+            result = poly_mul_mod(result, result, f, d, p, fli);
+            if (mpz_tstbit(exp.get_mpz(), i - 1)) {
+                result = poly_mul_mod(result, base, f, d, p, fli);
+            }
+        }
+        return result;
+    }
+
+    /// Polynomial remainder in F_p[x]: a mod b (ring, not quotient)
+    [[nodiscard]] static std::vector<Integer> poly_rem_ring(
+            const std::vector<Integer>& a,
+            const std::vector<Integer>& b,
+            const Integer& p) {
+        int deg_b = static_cast<int>(b.size()) - 1;
+        while (deg_b > 0 && b[deg_b].is_zero()) --deg_b;
+        if (deg_b < 0 || (deg_b == 0 && b[0].is_zero())) return {};
+
+        size_t sz = std::max(a.size(), b.size());
+        std::vector<Integer> r;
+        r.reserve(sz);
+        for (size_t i = 0; i < sz; ++i)
+            r.push_back((i < a.size()) ? a[i].clone() : Integer(int64_t(0)));
+
+        Integer b_lead_inv;
+        mpz_invert(b_lead_inv.get_mpz(), b[deg_b].get_mpz(), p.get_mpz());
+
+        int deg_r = static_cast<int>(r.size()) - 1;
+        while (deg_r > 0 && r[deg_r].is_zero()) --deg_r;
+
+        while (deg_r >= deg_b) {
+            Integer scale = r[deg_r].clone();
+            scale *= b_lead_inv;
+            scale %= p;
+            for (int i = 0; i <= deg_b; ++i) {
+                Integer t = scale.clone();
+                t *= b[i];
+                r[deg_r - deg_b + i] -= t;
+                r[deg_r - deg_b + i] %= p;
+                if (r[deg_r - deg_b + i].is_negative()) r[deg_r - deg_b + i] += p;
+            }
+            while (deg_r >= 0 && r[deg_r].is_zero()) --deg_r;
+        }
+        return r;
+    }
+
+    /// Polynomial GCD in F_p[x] (Euclidean algorithm)
+    [[nodiscard]] static std::vector<Integer> poly_gcd_ring(
+            const std::vector<Integer>& a_in,
+            const std::vector<Integer>& b_in,
+            const Integer& p) {
+        auto a = clone_poly(a_in);
+        auto b = clone_poly(b_in);
+        while (true) {
+            int deg_b = static_cast<int>(b.size()) - 1;
+            while (deg_b > 0 && b[deg_b].is_zero()) --deg_b;
+            if (deg_b < 0 || (deg_b == 0 && b[0].is_zero())) return a;
+            auto r = poly_rem_ring(a, b, p);
+            a = std::move(b);
+            b = std::move(r);
+        }
+    }
+
+    /// Test if f is irreducible mod large prime p
+    /// Uses: f irred iff gcd(x^{p^{d/q}}-x,f)=1 for each prime q|d,
+    /// plus x^{p^d}≡x mod(f,p) (skippable when prime-divisor checks
+    /// already exclude all non-trivial factorizations, e.g. d=3,4,6).
+    [[nodiscard]] static bool is_irreducible_big_p(
+            const std::vector<Integer>& f_coeffs, uint32_t d, const Integer& p) {
+        if (d <= 1) return true;
+
+        std::vector<Integer> f_mod(d + 1);
+        for (uint32_t i = 0; i <= d; ++i) {
+            f_mod[i] = f_coeffs[i].clone();
+            f_mod[i] %= p;
+            if (f_mod[i].is_negative()) f_mod[i] += p;
+        }
+        if (f_mod[d].is_zero()) return false;
+
+        auto fli = compute_f_lead_inv(f_mod, d, p);
+
+        // x in (Z/pZ)[x]/(f)
+        std::vector<Integer> x_elem(d);
+        for (uint32_t i = 0; i < d; ++i) x_elem[i] = Integer(int64_t(0));
+        x_elem[1] = Integer(int64_t(1));
+
+        // Prime divisors of d
+        std::vector<uint32_t> prime_divs;
+        { uint32_t tmp = d;
+          for (uint32_t q = 2; q * q <= tmp; ++q) {
+              if (tmp % q == 0) { prime_divs.push_back(q); while (tmp % q == 0) tmp /= q; }
+          }
+          if (tmp > 1) prime_divs.push_back(tmp);
         }
 
-        // Compute f'(m) mod N and its inverse for post-processing
-        Integer f_prime_m = evaluate_f_derivative_at_m(nf);
-        Integer f_prime_m_inv;
-        {
-            int ok = mpz_invert(f_prime_m_inv.get_mpz(), f_prime_m.get_mpz(), n.get_mpz());
-            if (!ok) {
-                // f'(m) shares a factor with N — extremely rare but possible
-                if (config_.verbose) {
-                    std::cerr << "[Hensel] f'(m) not invertible mod N, gcd = "
-                              << core::gcd(f_prime_m, n).to_string() << "\n";
+        // Determine the highest index needed for prime-divisor gcd checks
+        uint32_t max_check = 0;
+        for (uint32_t q : prime_divs) max_check = std::max(max_check, d / q);
+
+        // For d=3,4,6: prime-divisor checks at indices ≤ max_check already
+        // exclude all factorizations, so we can skip the final x^{p^d}≡x test.
+        // Condition: every degree 1..d-1 factor is caught, which holds when
+        // 2*(max_check+1) > d (any two uncaught parts can't sum to d).
+        bool can_skip_final = (2 * max_check + 2 > d);
+        uint32_t loop_end = can_skip_final ? max_check : d;
+
+        // Compute x^{p^i} incrementally: x_pi = (x_pi)^p each step
+        auto x_pi = clone_poly(x_elem);
+        for (uint32_t i = 1; i <= loop_end; ++i) {
+            x_pi = poly_pow_mod(x_pi, p, f_mod, d, p, fli);
+
+            for (uint32_t q : prime_divs) {
+                if (d / q == i && i < d) {
+                    // gcd(x^{p^i} - x, f) must be 1
+                    auto diff = clone_poly(x_pi);
+                    for (uint32_t j = 0; j < d; ++j) {
+                        diff[j] -= x_elem[j];
+                        diff[j] %= p;
+                        if (diff[j].is_negative()) diff[j] += p;
+                    }
+                    auto g = poly_gcd_ring(f_mod, diff, p);
+                    int deg_g = static_cast<int>(g.size()) - 1;
+                    while (deg_g > 0 && g[deg_g].is_zero()) --deg_g;
+                    if (deg_g > 0) return false;
                 }
+            }
+        }
+
+        if (can_skip_final) return true;
+
+        // Full check needed (e.g. d=5,7): x^{p^d} must equal x
+        for (uint32_t j = 0; j < d; ++j) {
+            if (x_pi[j].compare(x_elem[j]) != 0) return false;
+        }
+        return true;
+    }
+
+    /// Tonelli-Shanks sqrt in F_{p^d} = (Z/pZ)[x]/(f), Integer arithmetic
+    [[nodiscard]] static std::vector<Integer> sqrt_in_fpd(
+            const std::vector<Integer>& a,
+            const std::vector<Integer>& f_mod,
+            uint32_t d, const Integer& p) {
+
+        auto fli = compute_f_lead_inv(f_mod, d, p);
+
+        // q = p^d
+        Integer q(int64_t(1));
+        for (uint32_t i = 0; i < d; ++i) q *= p;
+
+        // q-1 = 2^s · t (t odd)
+        Integer q_minus_1 = q.clone();
+        q_minus_1 -= Integer(int64_t(1));
+        unsigned long s = mpz_scan1(q_minus_1.get_mpz(), 0);
+        Integer t;
+        mpz_tdiv_q_2exp(t.get_mpz(), q_minus_1.get_mpz(), s);
+
+        auto is_one = [&](const std::vector<Integer>& e) {
+            if (!e[0].is_one()) return false;
+            for (uint32_t i = 1; i < d; ++i) if (!e[i].is_zero()) return false;
+            return true;
+        };
+        auto is_neg_one = [&](const std::vector<Integer>& e) {
+            Integer pm1 = p.clone(); pm1 -= Integer(int64_t(1));
+            if (e[0].compare(pm1) != 0) return false;
+            for (uint32_t i = 1; i < d; ++i) if (!e[i].is_zero()) return false;
+            return true;
+        };
+
+        // Find non-residue n: n^{(q-1)/2} = -1
+        Integer half_q;
+        mpz_tdiv_q_2exp(half_q.get_mpz(), q_minus_1.get_mpz(), 1);
+
+        std::vector<Integer> n_elem(d);
+        for (uint32_t i = 0; i < d; ++i) n_elem[i] = Integer(int64_t(0));
+        bool found_nr = false;
+
+        for (uint64_t v = 2; v < 200 && !found_nr; ++v) {
+            n_elem[0] = Integer(static_cast<int64_t>(v));
+            n_elem[0] %= p;
+            if (n_elem[0].is_zero()) continue;
+            auto test = poly_pow_mod(n_elem, half_q, f_mod, d, p, fli);
+            if (is_neg_one(test)) found_nr = true;
+        }
+        if (!found_nr) {
+            for (uint64_t v = 0; v < 200 && !found_nr; ++v) {
+                for (uint32_t i = 0; i < d; ++i) n_elem[i] = Integer(int64_t(0));
+                n_elem[0] = Integer(static_cast<int64_t>(v)); n_elem[0] %= p;
+                n_elem[1] = Integer(int64_t(1));
+                auto test = poly_pow_mod(n_elem, half_q, f_mod, d, p, fli);
+                if (is_neg_one(test)) found_nr = true;
+            }
+        }
+        if (!found_nr) return {};
+
+        // r = a^{(t+1)/2}, t0 = a^t, c = n^t
+        Integer tp1 = t.clone(); tp1 += Integer(int64_t(1));
+        Integer exp_r;
+        mpz_tdiv_q_2exp(exp_r.get_mpz(), tp1.get_mpz(), 1);
+
+        auto r = poly_pow_mod(a, exp_r, f_mod, d, p, fli);
+        auto t0 = poly_pow_mod(a, t, f_mod, d, p, fli);
+        auto c = poly_pow_mod(n_elem, t, f_mod, d, p, fli);
+        auto cur_s = s;
+
+        for (size_t iter = 0; iter < 10000; ++iter) {
+            if (is_one(t0)) break;
+
+            auto tmp = clone_poly(t0);
+            unsigned long i_val = 0;
+            for (i_val = 1; i_val <= cur_s; ++i_val) {
+                tmp = poly_mul_mod(tmp, tmp, f_mod, d, p, fli);
+                if (is_one(tmp)) break;
+            }
+            if (i_val > cur_s) return {};
+
+            auto b_elem = clone_poly(c);
+            for (unsigned long j = 0; j + i_val + 1 < cur_s; ++j) {
+                b_elem = poly_mul_mod(b_elem, b_elem, f_mod, d, p, fli);
+            }
+
+            r = poly_mul_mod(r, b_elem, f_mod, d, p, fli);
+            c = poly_mul_mod(b_elem, b_elem, f_mod, d, p, fli);
+            t0 = poly_mul_mod(t0, c, f_mod, d, p, fli);
+            cur_s = i_val;
+        }
+        return r;
+    }
+
+    // ========================================================================
+    // Big-prime CRT (16 large primes + Gray code sign search)
+    // ========================================================================
+
+    /// Compute sqrt via big-prime CRT:
+    /// 1. Find 16 inert primes of ~(target/16) bits each
+    /// 2. For each: compute sqrt(P·f'(α)²) mod (f, p_i) with Integer arithmetic
+    /// 3. Gray code enumeration over 2^15 sign combinations
+    /// 4. CRT-combine with correct signs, center, evaluate at m mod N
+    [[nodiscard]] std::optional<Integer> compute_multi_prime_crt(
+            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+            const NumberField& nf,
+            double target_bits,
+            const Integer& product_at_m,
+            const Integer& /* f_prime_m */,
+            const Integer& f_prime_m_inv) const {
+
+        uint32_t d = nf.degree();
+        const Integer& n = nf.n();
+        const size_t NUM_PRIMES = 16;
+        auto t0_crt = std::chrono::steady_clock::now();
+
+        size_t prime_bits = static_cast<size_t>(std::ceil(target_bits / NUM_PRIMES)) + 2;
+        if (prime_bits < 30) prime_bits = 30;
+
+        if (config_.verbose) {
+            std::cerr << "[CRT-big] target=" << static_cast<size_t>(target_bits)
+                      << " bits, " << NUM_PRIMES << " x "
+                      << prime_bits << "-bit primes\n";
+        }
+
+        std::vector<Integer> f_int(d + 1);
+        for (uint32_t i = 0; i <= d; ++i) f_int[i] = nf.coeff(i).clone();
+
+        // ---- Step 1: Find inert primes (use cache if available) ----
+        std::vector<Integer> inert_primes;
+
+        if (config_.cached_big_primes && config_.cached_big_primes->size() >= NUM_PRIMES) {
+            // Reuse cached primes from previous dependency
+            for (size_t i = 0; i < NUM_PRIMES; ++i)
+                inert_primes.push_back((*config_.cached_big_primes)[i].clone());
+        } else {
+            inert_primes.reserve(NUM_PRIMES);
+            Integer p;
+            mpz_ui_pow_ui(p.get_mpz(), 2, static_cast<unsigned long>(prime_bits));
+            mpz_nextprime(p.get_mpz(), p.get_mpz());
+
+            for (size_t att = 0; inert_primes.size() < NUM_PRIMES && att < 100000; ++att) {
+                if (is_irreducible_big_p(f_int, d, p)) {
+                    inert_primes.push_back(p.clone());
+                }
+                mpz_nextprime(p.get_mpz(), p.get_mpz());
+            }
+
+            // Cache for future deps
+            if (inert_primes.size() >= NUM_PRIMES) {
+                auto cache = std::make_shared<std::vector<Integer>>();
+                for (const auto& ip : inert_primes) cache->push_back(ip.clone());
+                const_cast<Config&>(config_).cached_big_primes = std::move(cache);
+            }
+        }
+
+        if (inert_primes.size() < NUM_PRIMES) {
+            if (config_.verbose) std::cerr << "[CRT-big] Insufficient inert primes\n";
+            return std::nullopt;
+        }
+
+        if (last_inert_prime_ == 0 && inert_primes[0].fits_uint64()) {
+            last_inert_prime_ = inert_primes[0].to_uint64();
+        }
+
+        if (config_.verbose) {
+            auto t1 = std::chrono::steady_clock::now();
+            auto ms_find = std::chrono::duration_cast<std::chrono::milliseconds>(
+                t1 - t0_crt).count();
+            std::cerr << "[CRT-big] Found " << NUM_PRIMES << " inert primes ("
+                      << inert_primes[0].bit_length() << "-"
+                      << inert_primes.back().bit_length() << " bits) ["
+                      << ms_find << "ms]\n";
+        }
+
+        // ---- Step 2: Per-prime product + sqrt (parallel) ----
+        struct BPResult {
+            std::vector<Integer> coeffs;
+            bool ok = false;
+        };
+        std::vector<BPResult> results(NUM_PRIMES);
+
+        {
+            unsigned hw = std::thread::hardware_concurrency();
+            size_t nt = std::min<size_t>((hw > 0) ? hw : 4, NUM_PRIMES);
+            std::vector<std::thread> threads;
+            size_t chunk = (NUM_PRIMES + nt - 1) / nt;
+
+            for (size_t ti = 0; ti < nt; ++ti) {
+                size_t s_idx = ti * chunk, e_idx = std::min(s_idx + chunk, NUM_PRIMES);
+                if (s_idx >= e_idx) break;
+
+                threads.emplace_back([&, s_idx, e_idx]() {
+                    for (size_t idx = s_idx; idx < e_idx; ++idx) {
+                        const Integer& p = inert_primes[idx];
+
+                        std::vector<Integer> fm(d + 1);
+                        for (uint32_t i = 0; i <= d; ++i) {
+                            fm[i] = f_int[i].clone(); fm[i] %= p;
+                            if (fm[i].is_negative()) fm[i] += p;
+                        }
+                        auto fl = compute_f_lead_inv(fm, d, p);
+
+                        // Product prod(a - b*alpha) mod (f, p)
+                        std::vector<Integer> prod(d);
+                        prod[0] = Integer(int64_t(1));
+                        for (uint32_t j = 1; j < d; ++j) prod[j] = Integer(int64_t(0));
+
+                        for (const auto& [a, b] : ab_pairs) {
+                            std::vector<Integer> fac(d);
+                            for (uint32_t j = 0; j < d; ++j) fac[j] = Integer(int64_t(0));
+                            Integer am(a); am %= p; if (am.is_negative()) am += p;
+                            fac[0] = std::move(am);
+                            if (d > 1) {
+                                Integer nb(static_cast<int64_t>(b));
+                                nb.negate(); nb %= p; if (nb.is_negative()) nb += p;
+                                fac[1] = std::move(nb);
+                            }
+                            prod = poly_mul_mod(prod, fac, fm, d, p, fl);
+                        }
+
+                        bool zero = true;
+                        for (uint32_t j = 0; j < d; ++j)
+                            if (!prod[j].is_zero()) { zero = false; break; }
+                        if (zero) continue;
+
+                        // Multiply by f'(alpha)^2
+                        std::vector<Integer> fp(d);
+                        for (uint32_t j = 0; j < d; ++j) {
+                            fp[j] = f_int[j + 1].clone();
+                            fp[j] *= Integer(static_cast<int64_t>(j + 1));
+                            fp[j] %= p; if (fp[j].is_negative()) fp[j] += p;
+                        }
+                        auto fp2 = poly_mul_mod(fp, fp, fm, d, p, fl);
+                        prod = poly_mul_mod(prod, fp2, fm, d, p, fl);
+
+                        auto sq = sqrt_in_fpd(prod, fm, d, p);
+                        if (sq.empty()) continue;
+
+                        results[idx].coeffs = std::move(sq);
+                        results[idx].ok = true;
+                    }
+                });
+            }
+            for (auto& th : threads) th.join();
+        }
+
+        for (size_t i = 0; i < NUM_PRIMES; ++i) {
+            if (!results[i].ok) {
+                if (config_.verbose) std::cerr << "[CRT-big] Prime " << i << " sqrt failed\n";
                 return std::nullopt;
             }
         }
 
-        // Coefficient bound for S' = f'(α)·sqrt(P):
-        // |S'(root_j)| ≤ |f'(root_j)| · sqrt(|P(root_j)|)
-        // With Mignotte-type amplification factor d for power-basis coefficients.
-        double base_target = log_bound / 2.0 + log_f_prime_bound
-                             + std::log2(static_cast<double>(d))
-                             + config_.extra_precision;
+        if (config_.verbose) {
+            auto t2 = std::chrono::steady_clock::now();
+            auto ms_sqrt = std::chrono::duration_cast<std::chrono::milliseconds>(
+                t2 - t0_crt).count();
+            std::cerr << "[CRT-big] All " << NUM_PRIMES << " per-prime sqrts OK ["
+                      << ms_sqrt << "ms total]\n";
+        }
 
+        // ---- Step 3: CRT + Gray code sign determination ----
+        Integer M(int64_t(1));
+        for (const auto& p : inert_primes) M *= p;
+
+        // CRT basis: e_i = (M/p_i) * (M/p_i)^{-1} mod p_i
+        std::vector<Integer> basis(NUM_PRIMES);
+        for (size_t i = 0; i < NUM_PRIMES; ++i) {
+            Integer Mi;
+            mpz_divexact(Mi.get_mpz(), M.get_mpz(), inert_primes[i].get_mpz());
+            Integer Mi_inv;
+            mpz_invert(Mi_inv.get_mpz(), Mi.get_mpz(), inert_primes[i].get_mpz());
+            basis[i] = Mi;
+            basis[i] *= Mi_inv;
+            basis[i] %= M;
+        }
+
+        // Initial CRT with all-positive signs
+        std::vector<Integer> crt_val(d);
+        for (uint32_t j = 0; j < d; ++j) {
+            crt_val[j] = Integer(int64_t(0));
+            for (size_t i = 0; i < NUM_PRIMES; ++i) {
+                Integer term = results[i].coeffs[j].clone();
+                term *= basis[i];
+                crt_val[j] += term;
+            }
+            crt_val[j] %= M;
+        }
+
+        // delta_i_j = (p_i - 2*s_{i,j}) * basis_i mod M
+        std::vector<std::vector<Integer>> delta(NUM_PRIMES);
+        for (size_t i = 0; i < NUM_PRIMES; ++i) {
+            delta[i].reserve(d);
+            for (uint32_t j = 0; j < d; ++j) {
+                Integer v = inert_primes[i].clone();
+                Integer ts = results[i].coeffs[j].clone();
+                ts *= Integer(int64_t(2));
+                v -= ts;
+                v *= basis[i];
+                v %= M;
+                if (v.is_negative()) v += M;
+                delta[i].push_back(std::move(v));
+            }
+        }
+
+        // m^j mod N
+        std::vector<Integer> mpow(d);
+        mpow[0] = Integer(int64_t(1));
+        for (uint32_t j = 1; j < d; ++j) {
+            mpow[j] = mpow[j-1].clone();
+            mpow[j] *= nf.m();
+            mpow[j] %= n;
+        }
+
+        Integer Mhalf = M.clone();
+        mpz_tdiv_q_2exp(Mhalf.get_mpz(), Mhalf.get_mpz(), 1);
+        Integer M_mod_N = M.clone();
+        M_mod_N %= n;
+
+        // Maintain crt_val[j] mod N separately for fast verification.
+        // crt_val[j] is 17K-bit (needed for centering checks),
+        // crt_mod_N[j] is ~47-bit (for evaluation at m mod N).
+        std::vector<Integer> crt_mod_N(d);
+        for (uint32_t j = 0; j < d; ++j) {
+            crt_mod_N[j] = crt_val[j].clone();
+            crt_mod_N[j] %= n;
+        }
+
+        // Pre-compute delta[i][j] mod N for fast incremental update
+        std::vector<std::vector<Integer>> delta_mod_N(NUM_PRIMES);
+        for (size_t i = 0; i < NUM_PRIMES; ++i) {
+            delta_mod_N[i].resize(d);
+            for (uint32_t j = 0; j < d; ++j) {
+                delta_mod_N[i][j] = delta[i][j].clone();
+                delta_mod_N[i][j] %= n;
+            }
+        }
+
+        // Fast verification: uses ~47-bit crt_mod_N + centering from 17K-bit crt_val
+        auto try_verify_fast = [&]() -> std::optional<Integer> {
+            Integer val(int64_t(0));
+            for (uint32_t j = 0; j < d; ++j) {
+                Integer c = crt_mod_N[j].clone();  // ~47-bit clone
+                if (crt_val[j].compare(Mhalf) > 0) {
+                    c -= M_mod_N;  // centering
+                }
+                c %= n;
+                if (c.is_negative()) c += n;
+                c *= mpow[j];
+                val += c;
+            }
+            val %= n;
+            if (val.is_negative()) val += n;
+            val *= f_prime_m_inv;
+            val %= n;
+            if (val.is_negative()) val += n;
+            return verify_and_return(val, product_at_m, n);
+        };
+
+        // Try all-positive first
+        auto result = try_verify_fast();
+        if (result) {
+            if (config_.verbose) std::cerr << "[CRT-big] Verified at combo 0\n";
+            return result;
+        }
+
+        // Gray code enumeration: flip one prime's sign per step
+        // Fix prime 0 as +, search over primes 1..15
+        std::vector<bool> sgn(NUM_PRIMES, true);
+        uint32_t total = 1u << (NUM_PRIMES - 1);
+
+        for (uint32_t step = 1; step < total; ++step) {
+            uint32_t flip = static_cast<uint32_t>(__builtin_ctz(step)) + 1;
+
+            if (sgn[flip]) {
+                // + -> -: add delta
+                for (uint32_t j = 0; j < d; ++j) {
+                    crt_val[j] += delta[flip][j];
+                    // crt_val[j] is in [0, 2M), check if >= M
+                    bool overflow = (crt_val[j].compare(M) >= 0);
+                    if (overflow) crt_val[j] -= M;
+                    crt_mod_N[j] += delta_mod_N[flip][j];
+                    if (overflow) crt_mod_N[j] -= M_mod_N;
+                    crt_mod_N[j] %= n;
+                    if (crt_mod_N[j].is_negative()) crt_mod_N[j] += n;
+                }
+                sgn[flip] = false;
+            } else {
+                // - -> +: subtract delta
+                for (uint32_t j = 0; j < d; ++j) {
+                    crt_val[j] -= delta[flip][j];
+                    bool underflow = crt_val[j].is_negative();
+                    if (underflow) crt_val[j] += M;
+                    crt_mod_N[j] -= delta_mod_N[flip][j];
+                    if (underflow) crt_mod_N[j] += M_mod_N;
+                    crt_mod_N[j] %= n;
+                    if (crt_mod_N[j].is_negative()) crt_mod_N[j] += n;
+                }
+                sgn[flip] = true;
+            }
+
+            result = try_verify_fast();
+            if (result) {
+                if (config_.verbose) {
+                    std::cerr << "[CRT-big] Verified at combo " << step
+                              << "/" << total << "\n";
+                }
+                return result;
+            }
+        }
+
+        if (config_.verbose) {
+            std::cerr << "[CRT-big] No valid sign combo in " << total << " tried\n";
+        }
+        crt_sign_exhausted_ = true;
+        return std::nullopt;
+    }
+
+
+
+    // ========================================================================
+    // Classic Hensel lifting fallback
+    // ========================================================================
+
+    /// Classic Hensel lifting approach (fallback for small inputs or CRT failure)
+    [[nodiscard]] std::optional<Integer> compute_hensel_lifting(
+            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+            const NumberField& nf,
+            double target_bits,
+            const Integer& product_at_m,
+            const Integer& /* f_prime_m */,
+            const Integer& f_prime_m_inv) const {
+
+        uint32_t d = nf.degree();
+        const Integer& n = nf.n();
+
+        // Find inert prime
+        uint64_t p = config_.cached_inert_prime;
+        if (p == 0) p = find_inert_prime(nf);
+        if (p == 0) return std::nullopt;
+        last_inert_prime_ = p;
+
+        // Compute product and sqrt mod (f, p)
+        auto f_mod_p = get_f_mod_p(nf, p);
+        ModularPoly product_mod_p(1);
+        for (const auto& [a, b] : ab_pairs) {
+            std::vector<uint64_t> cs(2);
+            int64_t am = a % static_cast<int64_t>(p);
+            if (am < 0) am += static_cast<int64_t>(p);
+            cs[0] = static_cast<uint64_t>(am);
+            cs[1] = (p - (b % p)) % p;
+            product_mod_p = ModularPoly::mul(product_mod_p, ModularPoly(std::move(cs)), f_mod_p, p);
+        }
+        if (product_mod_p.is_zero()) return std::nullopt;
+
+        if (!ModularPoly::is_square(product_mod_p, f_mod_p, p)) return std::nullopt;
+        auto sqrt_mod_p = ModularPoly::sqrt_tonelli_shanks(product_mod_p, f_mod_p, p);
+
+        // Multiply by f'(α)
+        auto f_prime_mod_p = compute_f_derivative_mod_p(nf, p);
+        sqrt_mod_p = ModularPoly::mul(
+            sqrt_mod_p, ModularPoly(f_prime_mod_p), f_mod_p, p);
+
+        // Compute lifts needed
         double log_p = std::log2(static_cast<double>(p));
         size_t base_lifts = 0;
         {
             double cur = log_p;
-            while (cur < base_target) { cur *= 2; ++base_lifts; }
+            while (cur < target_bits) { cur *= 2; ++base_lifts; }
         }
 
-        // Try with increasing precision until verification passes.
         for (int attempt = 0; attempt < 4; ++attempt) {
             size_t num_lifts = base_lifts + static_cast<size_t>(attempt);
 
             if (config_.verbose) {
                 double mod_bits = log_p;
                 for (size_t l = 0; l < num_lifts; ++l) mod_bits *= 2;
-                std::cerr << "[Hensel] attempt=" << attempt << " p=" << p
+                std::cerr << "[Hensel-lift] attempt=" << attempt << " p=" << p
                           << " lifts=" << num_lifts
                           << " modulus_bits~=" << static_cast<size_t>(mod_bits) << "\n";
             }
 
             auto result_elem = hensel_lift_and_extract(
                 sqrt_mod_p, ab_pairs, nf, p, num_lifts, d);
-
             if (!result_elem) continue;
 
-            // Diagnostic: check centered coefficient sizes
-            if (config_.verbose) {
-                size_t max_bits = 0;
-                for (uint32_t i = 0; i < d; ++i) {
-                    size_t b = result_elem->coeff(i).bit_length();
-                    max_bits = std::max(max_bits, b);
-                }
-                std::cerr << "[Hensel] max centered coeff bits=" << max_bits << "\n";
-            }
-
-            // Evaluate S'(m) = f'(m)·sqrt(P)(m) mod N
             Integer Y_prime = nf.evaluate_at_m_mod_n(*result_elem);
-
-            // Diagnostic: verify Y_prime^2 ≡ product_at_m · f'(m)^2 mod N
-            if (config_.verbose) {
-                Integer expected = product_at_m.clone();
-                Integer fpm2 = f_prime_m.clone();
-                fpm2 *= f_prime_m;
-                fpm2 %= n;
-                expected *= fpm2;
-                expected %= n;
-                if (expected.is_negative()) expected += n;
-
-                Integer yp2 = Y_prime.clone();
-                yp2 *= Y_prime;
-                yp2 %= n;
-                if (yp2.is_negative()) yp2 += n;
-
-                std::cerr << "[Hensel] Y_prime^2 mod N == P*f'(m)^2 mod N ? "
-                          << (yp2.compare(expected) == 0 ? "YES" : "NO") << "\n";
-                if (yp2.compare(expected) != 0) {
-                    std::cerr << "[Hensel]   Y_prime bits=" << Y_prime.bit_length()
-                              << " f'(m) bits=" << f_prime_m.bit_length() << "\n";
-                }
-            }
-
-            // Divide by f'(m) to recover Y = sqrt(P)(m) mod N
             Integer Y = Y_prime.clone();
             Y *= f_prime_m_inv;
             Y %= n;
             if (Y.is_negative()) Y += n;
 
-            // Verify: Y² ≡ product_at_m mod N
-            Integer Y2 = Y.clone();
-            Y2 *= Y;
-            Y2 %= n;
-            if (Y2.is_negative()) Y2 += n;
-
-            Integer pm_pos = product_at_m.clone();
-            if (pm_pos.is_negative()) pm_pos += n;
-
-            if (Y2.compare(pm_pos) == 0) {
-                if (config_.verbose) {
-                    std::cerr << "[Hensel] Verification passed (attempt " << attempt << ")\n";
-                }
-                return Y;
-            }
-
-            // Also check -Y (the other square root)
-            Integer neg_Y = n.clone();
-            neg_Y -= Y;
-            Integer neg_Y2 = neg_Y.clone();
-            neg_Y2 *= neg_Y;
-            neg_Y2 %= n;
-            if (neg_Y2.is_negative()) neg_Y2 += n;
-
-            if (neg_Y2.compare(pm_pos) == 0) {
-                if (config_.verbose) {
-                    std::cerr << "[Hensel] Verification passed with -Y (attempt " << attempt << ")\n";
-                }
-                return neg_Y;
-            }
+            auto verified = verify_and_return(Y, product_at_m, n);
+            if (verified) return verified;
 
             if (config_.verbose) {
-                std::cerr << "[Hensel] Verification FAILED (attempt " << attempt
-                          << "), adding extra lift\n";
+                std::cerr << "[Hensel-lift] Verification FAILED (attempt " << attempt << ")\n";
             }
         }
 
-        if (config_.verbose) {
-            std::cerr << "[Hensel] All attempts failed verification\n";
-        }
         return std::nullopt;
     }
-
-private:
-    Config config_;
 
     /// Core Hensel lifting: given sqrt mod p, lift to target precision and extract result
     [[nodiscard]] std::optional<NumberFieldElement> hensel_lift_and_extract(
@@ -320,12 +929,10 @@ private:
                 ab_pairs, f_int, d, final_mod, config_.verbose);
 
             // Multiply P by f'(x)^2 to ensure sqrt ∈ Z[α] after lifting.
-            // The algebraic sqrt may lie in O_K \ Z[α] when [O_K : Z[α]] > 1.
-            // Since f'(α)·O_K ⊆ Z[α] (different ideal), the sqrt of P·f'(α)^2
-            // = f'(α)·sqrt(P) is guaranteed to have integer power-basis coefficients.
             auto f_prime_int = compute_f_derivative_int(f_int, d);
-            auto f_prime_sq = poly_mul_mod(f_prime_int, f_prime_int, f_int, d, final_mod);
-            P_final = poly_mul_mod(P_final, f_prime_sq, f_int, d, final_mod);
+            auto fli_final = compute_f_lead_inv(f_int, d, final_mod);
+            auto f_prime_sq = poly_mul_mod(f_prime_int, f_prime_int, f_int, d, final_mod, fli_final);
+            P_final = poly_mul_mod(P_final, f_prime_sq, f_int, d, final_mod, fli_final);
 
             if (config_.verbose) {
                 std::cerr << "[Hensel] Product pre-computed (with f'(α)^2 factor)\n";
@@ -337,6 +944,9 @@ private:
             Integer new_modulus = modulus.clone();
             new_modulus *= modulus;  // modulus²
 
+            // Pre-compute f_lead_inv for this round (all 5 poly_mul_mod share it)
+            auto fli = compute_f_lead_inv(f_int, d, new_modulus);
+
             // Reduce pre-computed product to current precision
             std::vector<Integer> P(d);
             for (uint32_t i = 0; i < d; ++i) {
@@ -345,13 +955,13 @@ private:
             }
 
             // S² mod (f, new_modulus)
-            auto S2 = poly_mul_mod(S, S, f_int, d, new_modulus);
+            auto S2 = poly_mul_mod(S, S, f_int, d, new_modulus, fli);
 
             // residual = P - S²
             auto residual = poly_sub_mod(P, S2, new_modulus);
 
             // correction = T · residual mod (f, new_modulus)
-            auto correction = poly_mul_mod(T, residual, f_int, d, new_modulus);
+            auto correction = poly_mul_mod(T, residual, f_int, d, new_modulus, fli);
 
             // S' = S + correction
             for (uint32_t i = 0; i < d; ++i) {
@@ -367,7 +977,7 @@ private:
                 two_S_prime[i] *= Integer(int64_t(2));
                 two_S_prime[i] %= new_modulus;
             }
-            auto two_S_T = poly_mul_mod(two_S_prime, T, f_int, d, new_modulus);
+            auto two_S_T = poly_mul_mod(two_S_prime, T, f_int, d, new_modulus, fli);
 
             // 2 - 2S'·T
             std::vector<Integer> factor(d);
@@ -383,7 +993,7 @@ private:
             }
 
             // T' = T · factor
-            T = poly_mul_mod(T, factor, f_int, d, new_modulus);
+            T = poly_mul_mod(T, factor, f_int, d, new_modulus, fli);
 
             modulus = std::move(new_modulus);
 
@@ -667,14 +1277,44 @@ private:
         return result;
     }
 
-    /// Polynomial multiplication mod (f, modulus)
-    /// Both inputs have degree < d, result has degree < d
+    /// Compute f_lead_inv = f[d]^{-1} mod modulus (for poly_mul_mod)
+    [[nodiscard]] static Integer compute_f_lead_inv(
+            const std::vector<Integer>& f,
+            uint32_t d,
+            const Integer& modulus) {
+        Integer f_lead_inv(int64_t(1));
+        Integer f_d = f[d].clone();
+        f_d %= modulus;
+        if (f_d.is_negative()) f_d += modulus;
+        if (!f_d.is_one()) {
+            int ok = mpz_invert(f_lead_inv.get_mpz(), f_d.get_mpz(),
+                                modulus.get_mpz());
+            assert(ok && "f[d] must be invertible mod modulus");
+            (void)ok;
+        }
+        return f_lead_inv;
+    }
+
+    /// Polynomial multiplication mod (f, modulus) — convenience overload
     [[nodiscard]] static std::vector<Integer> poly_mul_mod(
             const std::vector<Integer>& a,
             const std::vector<Integer>& b,
             const std::vector<Integer>& f,
             uint32_t d,
             const Integer& modulus) {
+        auto fli = compute_f_lead_inv(f, d, modulus);
+        return poly_mul_mod(a, b, f, d, modulus, fli);
+    }
+
+    /// Polynomial multiplication mod (f, modulus) with pre-computed f_lead_inv
+    /// Both inputs have degree < d, result has degree < d
+    [[nodiscard]] static std::vector<Integer> poly_mul_mod(
+            const std::vector<Integer>& a,
+            const std::vector<Integer>& b,
+            const std::vector<Integer>& f,
+            uint32_t d,
+            const Integer& modulus,
+            const Integer& f_lead_inv) {
 
         // Multiply: result has degree up to 2d-2
         std::vector<Integer> result(2 * d - 1);
@@ -692,24 +1332,7 @@ private:
             }
         }
 
-        // Reduce mod f: for each degree >= d, subtract (lead/f[d]) * f[i]
-        // Handles non-monic f via modular inverse of leading coefficient
-        Integer f_lead_inv(int64_t(1));
-        {
-            Integer f_d = f[d].clone();
-            f_d %= modulus;
-            if (f_d.is_negative()) f_d += modulus;
-            if (!f_d.is_one()) {
-                int ok = mpz_invert(f_lead_inv.get_mpz(), f_d.get_mpz(),
-                                    modulus.get_mpz());
-                // f_d must be invertible mod modulus for Hensel lifting.
-                // For Hensel, modulus = p^k where p doesn't divide f_d
-                // (ensured by find_inert_prime checking f_mod.back() != 0).
-                assert(ok && "f[d] must be invertible mod modulus in poly_mul_mod");
-                (void)ok;
-            }
-        }
-
+        // Reduce mod f using pre-computed f_lead_inv
         for (int k = static_cast<int>(2 * d - 2); k >= static_cast<int>(d); --k) {
             Integer lead = std::move(result[k]);
             result[k] = Integer(int64_t(0));
