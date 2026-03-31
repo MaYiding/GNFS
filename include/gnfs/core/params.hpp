@@ -115,8 +115,8 @@ struct GNFSParams {
             // 19-digit (61-bit): 代数范数 ~10^17, 需要更大 FB 提高 1LP 比例
             B_rat = 8000;   B_alg = 16000;
         } else if (p.digits <= 25) {
-            // 25-digit (81-bit): 代数范数 ~10^22, FB 需进一步增大
-            B_rat = 10000;  B_alg = 20000;
+            // 25-digit (81-bit): 代数范数 ~10^22, 2LP 合并需更大 FB 增加 full 比例
+            B_rat = 20000;  B_alg = 40000;
         } else if (p.digits <= 30) {
             B_rat = 20000;  B_alg = 40000;
         } else if (p.digits <= 40) {
