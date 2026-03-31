@@ -97,48 +97,73 @@ int main() {
     RelationCollector collector(colc);
 
     size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
-    size_t target = params.raw_relation_target(matrix_cols);
+    size_t batch_target = params.raw_relation_target(matrix_cols);
     size_t sq_count = 0;
     LatticeSieve sieve(ctx, fb, sp);
     sieve.set_region(sr);
 
-    while (sqg.has_next() && collector.size() < target && sq_count < params.max_special_q) {
-        auto sq = sqg.next();
-        if (!sq) break;
-        auto sres = sieve.sieve_special_q(*sq);
-        for (const auto& c : sres.candidates) {
-            auto rel = cofac.verify(c);
-            if (rel) collector.add(std::move(*rel));
-        }
-        ++sq_count;
-        if (sq_count % 500 == 0) {
-            std::cout << "  SQ#" << sq_count << " rels=" << collector.size()
-                      << "/" << target << "\r" << std::flush;
-        }
-    }
-    std::cout << "\n[Phase 3] Sieve: " << collector.size() << " rels ("
-              << sq_count << " SQs) in " << phase.sec() << "s\n";
+    // Adaptive sieve-filter-merge loop
+    std::vector<Relation> relations;
+    bool lp_enabled = params.large_prime_bound > params.algebraic_bound;
+    constexpr int MAX_ROUNDS = 10;
 
-    // Phase 4: Filter
-    phase.reset();
-    auto relations = collector.get_relations();
-    FilterConfig fc;
-    fc.remove_singletons = true; fc.max_passes = 10;
-    RelationFilter filter(fc);
-    relations = filter.filter(std::move(relations));
-    std::cout << "[Phase 4] Filter: " << relations.size() << " in " << phase.sec() << "s\n";
+    for (int round = 0; round < MAX_ROUNDS; ++round) {
+        while (sqg.has_next() && collector.size() < batch_target && sq_count < params.max_special_q) {
+            auto sq = sqg.next();
+            if (!sq) break;
+            auto sres = sieve.sieve_special_q(*sq);
+            for (const auto& c : sres.candidates) {
+                auto rel = cofac.verify(c);
+                if (rel) collector.add(std::move(*rel));
+            }
+            ++sq_count;
+            if (sq_count % 500 == 0) {
+                double rate = collector.size() / (phase.sec() + 0.001);
+                std::cout << "  SQ#" << sq_count << " rels=" << collector.size()
+                          << "/" << batch_target
+                          << " rate=" << std::fixed << std::setprecision(0) << rate << "/s"
+                          << " elapsed=" << std::setprecision(1) << phase.sec() << "s\r" << std::flush;
+            }
+        }
 
-    // Merge 1LP partials (LP is enabled for 25-digit: LP > algebraic_bound)
-    if (params.large_prime_bound > params.algebraic_bound) {
-        auto sep = separate_relations(std::move(relations));
-        auto merged = PartialRelationMerger::merge(sep.partial);
-        std::cout << "[Phase 4] Merge: full=" << sep.full.size()
-                  << " partial=" << sep.partial.size()
-                  << " merged=" << merged.size() << "\n";
-        relations = std::move(sep.full);
-        relations.insert(relations.end(),
-            std::make_move_iterator(merged.begin()),
-            std::make_move_iterator(merged.end()));
+        if (collector.size() < 10) break;
+
+        relations = collector.get_relations();
+        FilterConfig fc;
+        fc.remove_singletons = true; fc.max_passes = 10;
+        RelationFilter filter(fc);
+        relations = filter.filter(std::move(relations));
+
+        if (lp_enabled) {
+            auto sep = separate_relations(std::move(relations));
+            auto merged = PartialRelationMerger::merge(sep.partial);
+            std::cout << "\n  [round " << (round+1) << "] Full=" << sep.full.size()
+                      << " Partial=" << sep.partial.size()
+                      << " Merged=" << merged.size() << "\n" << std::flush;
+            relations = std::move(sep.full);
+            relations.insert(relations.end(),
+                std::make_move_iterator(merged.begin()),
+                std::make_move_iterator(merged.end()));
+        }
+
+        if (relations.size() > matrix_cols) {
+            std::cout << "[Phase 3] Sieve: " << collector.size() << " raw, "
+                      << relations.size() << " usable (" << sq_count << " SQs) in " << phase.sec() << "s\n";
+            break;
+        }
+
+        if (!sqg.has_next() || sq_count >= params.max_special_q) {
+            std::cout << "\n  SQ exhausted at " << sq_count << "\n";
+            break;
+        }
+
+        double merge_rate = (collector.size() > 0) ?
+            static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
+        size_t needed_raw = static_cast<size_t>(
+            static_cast<double>(matrix_cols * 2) / std::max(merge_rate, 0.001));
+        batch_target = std::max(batch_target * 2, needed_raw);
+        std::cout << "\n  Need more — merge_rate=" << std::setprecision(3) << (merge_rate * 100)
+                  << "%, new target=" << batch_target << "\n" << std::flush;
     }
 
     // Phase 5: Linear Algebra
