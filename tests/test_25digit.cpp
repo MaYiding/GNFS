@@ -1,6 +1,6 @@
 // Test 25-digit factorization to measure Hensel sqrt performance improvement
 #include <gnfs/core/params.hpp>
-#include <gnfs/polynomial/base_m.hpp>
+#include <gnfs/polynomial/selector_dispatch.hpp>
 #include <gnfs/factor_base/builder.hpp>
 #include <gnfs/sieve/special_q.hpp>
 #include <gnfs/sieve/lattice_sieve.hpp>
@@ -59,8 +59,7 @@ int main() {
 
     // Phase 1: Polynomial
     Timer phase;
-    auto poly_result = BaseMSelector::select(n, params.degree);
-    auto ctx = BaseMSelector::create_context(n, poly_result);
+    auto ctx = SelectorDispatch::select(n, params.degree);
     std::cout << "[Phase 1] Polynomial: " << phase.sec() << "s\n";
 
     // Phase 2: Factor Base

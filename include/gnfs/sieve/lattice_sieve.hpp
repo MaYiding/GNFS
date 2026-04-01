@@ -177,8 +177,6 @@ private:
     /// 初始化筛数组
     /// 设置初始 log 值（基于 (a, b) 的大小估计）
     void init_sieve_array(const LatticeBasis& basis) {
-        std::fill(sieve_array_.begin(), sieve_array_.end(), 0);
-
         // 计算每个位置的初始 log 值
         // 这是基于 |a + b*m| 和 |N(a, b)| 的估计
         // 简化版本：使用均匀初始值

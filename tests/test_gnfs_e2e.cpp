@@ -10,7 +10,7 @@
 // 7. Factor extraction
 
 #include <gnfs/core/params.hpp>
-#include <gnfs/polynomial/base_m.hpp>
+#include <gnfs/polynomial/selector_dispatch.hpp>
 #include <gnfs/factor_base/builder.hpp>
 #include <gnfs/sieve/special_q.hpp>
 #include <gnfs/sieve/lattice_sieve.hpp>
@@ -26,6 +26,7 @@
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <vector>
 
 using namespace gnfs;
@@ -175,16 +176,17 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
         std::cout << "  Max special-Q: " << params.max_special_q << "\n";
     }
 
-    auto poly_result = BaseMSelector::select(n, degree);
-    if (!poly_result.success) {
-        std::cerr << "Polynomial selection failed!\n";
+    std::optional<PolynomialContext> ctx_opt;
+    try {
+        ctx_opt.emplace(SelectorDispatch::select(n, degree, verbose));
+    } catch (const std::exception& e) {
+        std::cerr << "Polynomial selection failed: " << e.what() << "\n";
         return result;
     }
-
-    auto ctx = BaseMSelector::create_context(n, poly_result);
+    auto& ctx = *ctx_opt;
 
     if (verbose) {
-        std::cout << "m = " << poly_result.m.to_string() << "\n";
+        std::cout << "m = " << ctx.m().to_string() << "\n";
         std::cout << "Polynomial: ";
         for (uint32_t i = 0; i <= ctx.degree(); ++i) {
             if (i > 0) std::cout << " + ";

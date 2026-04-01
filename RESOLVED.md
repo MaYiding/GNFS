@@ -7,6 +7,33 @@
 
 ## 已完成 ✅
 
+### Session 55 — 管线分发 + ECM 回退 + 筛法优化
+
+#### [OPT] ~~Kleinjung 管线集成（分发部分）~~ ✅
+- **发现**: 2026-03-11 (Session 45)
+- **解决**: 2026-03-12 (Session 55)
+- **文件**: `polynomial/selector_dispatch.hpp` (新), `tests/test_gnfs_e2e.cpp`, `tests/test_gnfs_progressive.cpp`, `tests/test_25digit.cpp`
+- **修复**: 新建 `SelectorDispatch` 类，按 degree 自动分发：degree<5 → BaseMSelector，degree≥5 → KleinjungSelector（含回退）。三个管线测试已迁移
+- **验证**: smoke 20/20, E2E 通过, L1 通过
+- **Commit**: `f6ad14d`
+- **注意**: Kleinjung 实现质量提升仍在 BACKLOG (search_radius、格筛等)
+
+#### [OPT] ~~2LP Cofactorization: uint64 路径 ECM 回退~~ ✅
+- **发现**: 2026-03-11 (Session 45)
+- **解决**: 2026-03-12 (Session 55)
+- **文件**: `cofactor/smooth_check.hpp:254-271`
+- **修复**: `classify_cofactor()` 的 uint64 路径 Pollard rho 失败后增加 `ECM::quick_factor()` 回退，与大数路径行为一致
+- **验证**: smoke 20/20, E2E 通过
+- **Commit**: `f6ad14d`
+
+#### [OPT] ~~筛法 init_sieve_array 冗余双重填充~~ ✅
+- **发现**: 2026-03-12 (Session 55)
+- **解决**: 2026-03-12 (Session 55)
+- **文件**: `sieve/lattice_sieve.hpp:179-180`
+- **修复**: 移除 `std::fill(0)` + `std::fill(init_val)` 中冗余的第一次填充
+- **验证**: smoke 20/20, E2E 通过
+- **Commit**: `f6ad14d`
+
 ### Session 54 — base-m 搜索窗口扩大 + Murphy E 排名
 
 #### [OPT] ~~base-m 搜索窗口 ±5（无 Murphy E 排名）~~ ✅

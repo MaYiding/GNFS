@@ -251,7 +251,30 @@ struct CofactorClassification {
             return result;
         }
 
-        // Pollard's rho 失败
+        // Pollard's rho 失败 — 尝试 ECM 作为回退
+        // 某些特殊结构的合数（如 p-1 光滑）Pollard rho 可能循环
+        {
+            Integer c_int(static_cast<unsigned long long>(c));
+            auto ecm_result = ECM::quick_factor(c_int);
+            if (ecm_result && ecm_result->fits_uint64()) {
+                uint64_t f1 = ecm_result->to_uint64();
+                if (f1 != 1 && f1 != c) {
+                    uint64_t f2 = c / f1;
+                    if (is_probable_prime_u64(f1) && is_probable_prime_u64(f2)) {
+                        if (f1 <= large_prime_bound && f2 <= large_prime_bound) {
+                            result.type = CofactorClass::Semiprime;
+                            result.factor1 = std::min(f1, f2);
+                            result.factor2 = std::max(f1, f2);
+                            return result;
+                        }
+                    }
+                    result.type = CofactorClass::Composite;
+                    return result;
+                }
+            }
+        }
+
+        // Pollard rho + ECM 均失败
         result.type = CofactorClass::Composite;
         return result;
     }
