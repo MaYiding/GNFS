@@ -326,13 +326,58 @@ public:
             else { ++stats.input_3lp_plus; }  // 丢弃
         }
 
+        // ═══ Phase 1: 1LP 贪婪匹配 (weight≥2, 与旧 merge() 行为一致) ═══
+        // 1LP+1LP 合并总是产生 full relation，对任何 weight 都值得做
+        {
+            // 识别 1LP 关系（remaining keys 恰好 1 个）
+            std::unordered_set<size_t> is_1lp;
+            std::unordered_map<LargePrimeKey, std::vector<size_t>, LargePrimeKeyHash> lp1_index;
+            for (size_t i = 0; i < pool.size(); ++i) {
+                auto keys = remaining_lp_keys(pool[i]);
+                if (keys.size() == 1) {
+                    is_1lp.insert(i);
+                    lp1_index[keys[0]].push_back(i);
+                }
+            }
+
+            std::unordered_set<size_t> used_1lp;
+            for (const auto& [key, indices] : lp1_index) {
+                if (indices.size() < 2) continue;
+                size_t first_unused = SIZE_MAX;
+                for (size_t idx : indices) {
+                    if (used_1lp.count(idx)) continue;
+                    if (first_unused == SIZE_MAX) {
+                        first_unused = idx; continue;
+                    }
+                    auto m = merge_two(pool[first_unused], pool[idx]);
+                    used_1lp.insert(first_unused);
+                    used_1lp.insert(idx);
+                    ++stats.weight2_merges;
+                    full_results.push_back(std::move(m));
+                    first_unused = SIZE_MAX;
+                }
+            }
+
+            // 从 pool 中移除已用的 1LP 关系
+            if (!used_1lp.empty()) {
+                std::vector<Relation> new_pool;
+                new_pool.reserve(pool.size() - used_1lp.size());
+                for (size_t i = 0; i < pool.size(); ++i) {
+                    if (!used_1lp.count(i)) {
+                        new_pool.push_back(std::move(pool[i]));
+                    }
+                }
+                pool = std::move(new_pool);
+            }
+        }
+
+        // ═══ Phase 2: 2LP 迭代 weight-2 处理 ═══
         for (size_t round = 0; round < max_rounds; ++round) {
             ++stats.rounds;
 
-            // 构建 LP 索引: 使用 remaining_lp_keys（只看未取消的 LP）
+            // 构建 LP 索引
             std::unordered_map<LargePrimeKey, std::vector<size_t>, LargePrimeKeyHash> lp_index;
             lp_index.reserve(pool.size() * 2);
-
             for (size_t i = 0; i < pool.size(); ++i) {
                 auto keys = remaining_lp_keys(pool[i]);
                 for (const auto& key : keys) {
@@ -340,25 +385,20 @@ public:
                 }
             }
 
-            // Phase A: 识别 singleton LP（weight-1 列）
-            // 关系中含有任何 singleton LP 的都应该被移除
-            std::unordered_set<size_t> has_singleton;
+            // Singleton detection
+            std::unordered_set<LargePrimeKey, LargePrimeKeyHash> singleton_keys;
             for (const auto& [key, indices] : lp_index) {
-                if (indices.size() == 1) {
-                    has_singleton.insert(indices[0]);
-                }
+                if (indices.size() == 1) singleton_keys.insert(key);
             }
 
-            // Phase B: 合并 weight-2 LP 列
+            // Weight-2 merge（标准 2LP 处理）
             std::unordered_set<size_t> used;
             std::vector<Relation> new_merged;
 
             for (const auto& [key, indices] : lp_index) {
                 if (indices.size() != 2) continue;
                 size_t i = indices[0], j = indices[1];
-                // Skip if already used or has singleton LP
                 if (used.count(i) || used.count(j)) continue;
-                if (has_singleton.count(i) || has_singleton.count(j)) continue;
 
                 auto m = merge_two(pool[i], pool[j]);
                 used.insert(i);
@@ -372,20 +412,28 @@ public:
                 }
             }
 
-            // 如果本轮无进展（无合并也无 singleton 移除），停止
-            if (used.empty() && has_singleton.empty()) break;
-
-            stats.singletons_removed += has_singleton.size();
-
-            // 重建 pool: 未使用的非 singleton 关系 + 新合并结果
-            std::vector<Relation> new_pool;
-            new_pool.reserve(pool.size() - used.size() - has_singleton.size()
-                             + new_merged.size());
-
+            // Singleton removal: 只移除所有剩余 LP 都是 singleton 的关系
+            std::unordered_set<size_t> dead;
             for (size_t i = 0; i < pool.size(); ++i) {
-                if (!used.count(i) && !has_singleton.count(i)) {
-                    new_pool.push_back(std::move(pool[i]));
+                if (used.count(i)) continue;
+                auto keys = remaining_lp_keys(pool[i]);
+                bool all_singleton = true;
+                for (const auto& k : keys) {
+                    if (!singleton_keys.count(k)) { all_singleton = false; break; }
                 }
+                if (all_singleton && !keys.empty()) dead.insert(i);
+            }
+
+            if (used.empty() && dead.empty()) break;
+            stats.singletons_removed += dead.size();
+
+            // 重建 pool
+            std::vector<Relation> new_pool;
+            new_pool.reserve(pool.size() - used.size() - dead.size()
+                             + new_merged.size());
+            for (size_t i = 0; i < pool.size(); ++i) {
+                if (!used.count(i) && !dead.count(i))
+                    new_pool.push_back(std::move(pool[i]));
             }
             new_pool.insert(new_pool.end(),
                 std::make_move_iterator(new_merged.begin()),
@@ -393,6 +441,11 @@ public:
 
             pool = std::move(new_pool);
             if (pool.empty()) break;
+        }
+
+        // 收集 pool 中已合并但仍有残留 LP 的关系
+        for (auto& rel : pool) {
+            if (rel.is_merged()) full_results.push_back(std::move(rel));
         }
 
         stats.full_produced = full_results.size();

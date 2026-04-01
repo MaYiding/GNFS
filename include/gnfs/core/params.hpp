@@ -115,8 +115,8 @@ struct GNFSParams {
             // 19-digit (61-bit): 代数范数 ~10^17, 需要更大 FB 提高 1LP 比例
             B_rat = 8000;   B_alg = 16000;
         } else if (p.digits <= 25) {
-            // 25-digit (81-bit): 代数范数 ~10^22, 2LP 合并需更大 FB 增加 full 比例
-            B_rat = 20000;  B_alg = 40000;
+            // 21-25 digit: 维持 Session 47 校准值（增大导致矩阵过大+merge不足）
+            B_rat = 10000;  B_alg = 20000;
         } else if (p.digits <= 30) {
             B_rat = 20000;  B_alg = 40000;
         } else if (p.digits <= 40) {
@@ -145,7 +145,7 @@ struct GNFSParams {
         p.large_prime_bits = lp_bits;
 
         // === 大素数界 ===
-        // 基于 large_prime_bits，与 CADO-NFS 参数表一致
+        // 使用 2^lp_bits（与 CADO-NFS 一致）
         if (lp_bits > 0) {
             p.large_prime_bound = 1ULL << lp_bits;
         } else {
@@ -275,14 +275,13 @@ struct GNFSParams {
         return static_cast<size_t>(matrix_cols);
     }
 
-    /// 计算 LP 感知的原始关系目标（2LP merge 适配）
+    /// 计算 LP 感知的原始关系目标
     /// @param matrix_columns 矩阵实际列数
     /// @return 需要收集的原始关系数（过滤前）
     ///
-    /// 两种合并模型取 max：
-    /// 1. Birthday (1LP): n² / (2K) ≥ M → n ≥ √(2KM×s)
-    /// 2. Graph (2LP): LP key 为节点, 2LP 关系为边, free = E - V + C
-    ///    需要 E > V + M, 即 n_raw > K + M (考虑 2LP 占比 ~30%)
+    /// Birthday model: n ≥ √(2·K·M·s)
+    ///   K = LP key space, M = matrix_columns, s = safety factor
+    ///   safety=8: 补偿 2LP 占比 (~70-90% partial) + singleton 过滤损失
     [[nodiscard]] size_t raw_relation_target(size_t matrix_columns) const {
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
             double lp_bound_d = static_cast<double>(large_prime_bound);
@@ -292,16 +291,11 @@ struct GNFSParams {
             double key_space = lp_primes * static_cast<double>(std::max(degree, 2u));
             double mc = static_cast<double>(matrix_columns);
 
-            // Model 1 (Birthday/1LP): safety=2 (reduced from 8 with 2LP merge)
-            double birthday_n = std::sqrt(2.0 * key_space * mc * 2.0);
-            // Model 2 (Graph/2LP): need enough 2LP edges to cover key_space + matrix_cols
-            // Factor 2: ~30-50% of relations are 2LP, rest are 1LP/3LP+
-            double graph_n = mc + key_space * 2.0;
-
-            double n_min = std::max(birthday_n, graph_n);
-            // Floor: at least 5× matrix columns
+            // Birthday: safety=8 (covers 2LP fraction + singleton filtering)
+            double n_min = std::sqrt(2.0 * key_space * mc * 8.0);
+            // Floor: at least 3× matrix columns
             return static_cast<size_t>(
-                std::max(n_min, mc * 5.0));
+                std::max(n_min, mc * 3.0));
         }
         return matrix_columns;
     }
