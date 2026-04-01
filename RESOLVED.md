@@ -7,6 +7,26 @@
 
 ## 已完成 ✅
 
+### Session 50 — 2LP 合并 + merge_all 2-phase 策略
+
+#### [FEAT] ~~2LP 关系合并（80+ 位必须）~~ ✅
+- **发现**: 2026-03-11 (Session 45)
+- **解决**: 2026-03-12 (Session 50)
+- **文件**: `relation/filter.hpp` (merge_all), `linalg/matrix_builder.hpp` (collect_large_primes)
+- **修复**: 2-phase merge strategy:
+  - Phase 1: 1LP 贪婪匹配 (weight≥2, 与旧 merge() 兼容)
+  - Phase 2: 2LP 迭代 weight-2 处理, merged-but-not-full 回池继续, 结束时收集 pool 中已合并关系
+  - matrix_builder: collect_large_primes 按 per-relation 奇偶指数过滤, 避免 even-exponent LP 创建全零列
+  - merge_two: LP 列表完整保留(不取消), 因为 rational_sqrt 需要完整指数信息
+- **关键修复历程**:
+  1. LP 取消 vs rational_sqrt 正确性 — 保留完整 LP 列表
+  2. LP 列爆炸 — 按 per-relation 奇偶指数过滤
+  3. Singleton 过滤粒度 — 从"关系"级改为"LP key"级
+  4. Weight-2 vs Weight≥2 — 1LP 需 weight≥2 贪婪匹配
+  5. 返回策略 — 返回所有合并结果(含残留 LP), 非仅 effectively-full
+- **验证**: smoke 20/20, filter 单元测试通过, L1-L5 通过 (96.5s), 25-digit 通过 (576s)
+- **Commit**: `c856612` → `d5657b2` (7 commits)
+
 ### Session 49 — Nguyen Hybrid CRT + 死代码清理
 
 #### [OPT] ~~Hensel Sqrt: 大素数 CRT 性能差~~ ✅

@@ -7,7 +7,7 @@
 |------|------|------|
 | **P1-OPT** | 3 | Bucket Sieve, Sieve 内存, Kleinjung 集成 |
 | **P1** | 0 | (已清空) |
-| **P2** | 7 | 2LP 合并, SGE, Murphy E, base-m, ECM 余因子, Clique, NEON |
+| **P2** | 6 | SGE, Murphy E, base-m, ECM 余因子, Clique, NEON |
 | **P3** | 21 | 小优化 ×4, 远期架构 ×6, 代码质量 ×10, 调查 ×1 |
 
 ---
@@ -46,11 +46,6 @@
 
 ## P2 — 中优先级
 
-### [FEAT] 2LP 关系合并（80+ 位必须）
-- **发现日期**: 2026-03-11 (Session 45)
-- **文件**: `relation/filter.hpp:276-278`
-- **描述**: `merge()` 仅处理 1LP×1LP，2LP 完全跳过。`cofactorizer.hpp:49-51` 已统计 `partial_2lp`，但 filter 不利用。80+ 位时 2LP 是主要关系源
-- **建议**: 图论实现——大素数为节点，关系为边，找共享节点的边对合并。参考 CADO-NFS `filter/merge.c`
 
 ### [FEAT] SGE 预处理（100+ 位必须）
 - **发现日期**: 2026-03-11 (Session 45)
