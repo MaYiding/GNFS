@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <random>
 #include <vector>
 
 namespace gnfs {
@@ -36,18 +35,26 @@ struct MurphyScore {
 
 /// Murphy 评估参数
 struct MurphyParams {
-    uint32_t sample_points = 2000;          // 采样点数
+    uint32_t sample_points = 2000;          // 积分采样点数
     double alpha_bound = 1e7;               // alpha 计算的素数上界
     uint64_t smoothness_bound = 1000000;    // 光滑性界
     double skewness_min = 1e2;              // skewness 搜索下界
     double skewness_max = 1e10;             // skewness 搜索上界
     uint32_t skewness_steps = 100;          // skewness 网格搜索步数
-    uint32_t seed = 42;                     // 随机种子
+    uint32_t seed = 42;                     // (legacy, unused)
 };
 
 /// MurphyEvaluator - Murphy E-score 评估器
 /// 用于评估 GNFS 多项式对 (f, g) 的质量
-/// E(f, g) 估计期望的光滑关系产量
+///
+/// 实现标准 Murphy E 公式（Murphy 1999, CADO-NFS）:
+///   E(f,g,s) = (1/π) ∫₀^π ρ(u_f(θ)) · ρ(u_g(θ)) dθ
+/// 其中 u_f(θ) = (log|F_s(cosθ, sinθ)| - α_f) / log(B)
+///
+/// 三处修正（相对于旧实现）:
+/// 1. Alpha 集成到 Dickman rho 参数中（非 post-hoc `/10.0` 校正）
+/// 2. 角度积分替代随机 (a,b) 采样（消除 sqrt(N) 采样区域错误）
+/// 3. Dickman rho 表使用 ODE 数值积分（非错误渐近公式）
 class MurphyEvaluator {
 public:
     /// 构造评估器
@@ -68,7 +75,7 @@ public:
     /// 计算 Murphy E-score（自动优化 skewness）
     /// @param f 代数侧多项式
     /// @param g 有理侧多项式 (通常是 g(x) = x - m)
-    /// @param n 待分解的数
+    /// @param n 待分解的数（保留参数兼容性，不再内部使用）
     /// @return Murphy 评分结构
     [[nodiscard]] MurphyScore compute(
             const IntPolynomial& f,
@@ -86,6 +93,8 @@ public:
             const Integer& n,
             double skewness) const {
 
+        (void)n;  // 角度积分不依赖 N
+
         MurphyScore score;
         score.skewness = skewness;
 
@@ -99,22 +108,20 @@ public:
         // 计算根得分
         score.root_score = compute_root_score(f);
 
-        // 基于采样计算 E-score（使用对数尺度）
-        auto [log_e, linear_e] = sample_e_score_log(f, g, n, skewness);
+        // 角度积分计算 E-score，alpha 已集成到 Dickman rho 参数中
+        auto [log_e, linear_e] = compute_e_score_log(
+            f, g, skewness, score.alpha_f, score.alpha_g);
 
-        // 综合 alpha 贡献到 e_score（在对数空间）
-        // alpha 越负，表示小素数整除的概率越高，多项式越好
-        double alpha_contribution = -(score.alpha_f + score.alpha_g) / 10.0;
-
-        score.log_e_score = log_e + alpha_contribution;
-        score.e_score = linear_e * std::exp(alpha_contribution);
+        score.log_e_score = log_e;
+        score.e_score = linear_e;
 
         return score;
     }
 
     /// 计算多项式的 alpha 值
-    /// alpha 衡量多项式值被小素数整除的期望贡献
-    /// 负的 alpha 表示更容易被小素数整除（更好）
+    /// alpha = Σ_p (r_p/p - 1/(p-1)) · log(p)
+    /// 正 alpha = 多根，值更易被小素数整除（好）
+    /// 负 alpha = 少根，值不易被小素数整除（差）
     [[nodiscard]] double compute_alpha(const IntPolynomial& f) const {
         return compute_alpha(f, params_.alpha_bound);
     }
@@ -158,6 +165,12 @@ public:
             const IntPolynomial& g,
             const Integer& n) const {
 
+        (void)n;
+
+        // Pre-compute alphas (independent of skewness)
+        double alpha_f = compute_alpha(f);
+        double alpha_g = compute_alpha(g);
+
         // 首先估计初始 skewness
         double init_skew = estimate_initial_skewness(f);
 
@@ -175,8 +188,9 @@ public:
 
         for (uint32_t i = 0; i <= params_.skewness_steps; ++i) {
             double s = std::exp(log_min + i * step);
-            auto [log_score, linear_score] = sample_e_score_log(f, g, n, s);
-            (void)linear_score;  // 不使用线性值
+            auto [log_score, linear_score] = compute_e_score_log(
+                f, g, s, alpha_f, alpha_g);
+            (void)linear_score;
 
             if (log_score > best_log_score) {
                 best_log_score = log_score;
@@ -195,7 +209,7 @@ public:
 private:
     MurphyParams params_;
     std::vector<uint32_t> small_primes_;
-    std::vector<double> dickman_table_;  // Dickman rho 查找表
+    std::vector<double> dickman_table_;  // Dickman rho 查找表 (u=0,0.1,...,20.0)
 
     /// 初始化小素数列表
     void init_primes() {
@@ -220,72 +234,72 @@ private:
         }
     }
 
-    /// 初始化 Dickman rho 查找表
+    /// 初始化 Dickman rho 查找表（积分关系 + 梯形法）
+    /// 使用 u·ρ(u) = ∫_{u-1}^{u} ρ(t) dt, h=0.001, 相对误差 < 5e-6
     void init_dickman_table() {
-        // 预计算 rho(u) for u = 0, 0.1, 0.2, ..., 20.0
-        // 使用数值积分或已知近似值
+        constexpr double h = 0.001;
+        constexpr int N_fine = 20001;   // u ∈ [0, 20.0]
+        constexpr int lag = 1000;       // 1.0 / h
+
+        std::vector<double> rho(N_fine, 0.0);
+
+        // Exact values for u ∈ [0, 2]
+        for (int i = 0; i < N_fine; ++i) {
+            double u = i * h;
+            if (u <= 1.0) {
+                rho[i] = 1.0;
+            } else if (u <= 2.0) {
+                rho[i] = 1.0 - std::log(u);
+            } else {
+                break;
+            }
+        }
+
+        // For u > 2: trapezoidal approximation of the integral relation
+        // ρ[k] = (ρ[k-lag]/2 + Σ_{j=k-lag+1}^{k-1} ρ[j]) / (k - 0.5)
+        int start = static_cast<int>(2.0 / h) + 1;
+
+        // Initialize running interior sum: Σ_{j=start-lag+1}^{start-1} ρ[j]
+        double interior_sum = 0.0;
+        for (int j = start - lag + 1; j <= start - 1; ++j) {
+            interior_sum += rho[j];
+        }
+
+        for (int k = start; k < N_fine; ++k) {
+            rho[k] = (rho[k - lag] * 0.5 + interior_sum) / (k - 0.5);
+            // Update running sum for next step
+            interior_sum = interior_sum - rho[k - lag + 1] + rho[k];
+        }
+
+        // Downsample to 0.1 resolution for lookup table
         dickman_table_.clear();
         dickman_table_.reserve(201);
-
+        constexpr int ratio = 100;  // 0.1 / 0.001
         for (int i = 0; i <= 200; ++i) {
-            double u = i * 0.1;
-            dickman_table_.push_back(dickman_rho_exact(u));
+            int fine_idx = std::min(i * ratio, N_fine - 1);
+            dickman_table_.push_back(rho[fine_idx]);
         }
     }
 
-    /// Dickman rho 函数的精确计算
-    /// rho(u) 是 [0,1] 上均匀分布的 u 个独立随机变量乘积小于 1 的概率
-    [[nodiscard]] static double dickman_rho_exact(double u) {
-        if (u <= 0.0) return 1.0;
-        if (u <= 1.0) return 1.0;
-        if (u <= 2.0) return 1.0 - std::log(u);
-
-        // 对于 u > 2，使用递推和数值积分
-        // rho(u) = (1/u) * integral_{u-1}^{u} rho(t) dt
-
-        // 使用近似公式: rho(u) ~ exp(-u * (log(u) + log(log(u)) - 1 + ...))
-        // 或使用查表插值
-
-        // 简化近似（Knuth-Trabb Pardo 近似）
-        double log_u = std::log(u);
-        double log_log_u = std::log(log_u);
-
-        // 更精确的 Hildebrand 近似
-        double xi = log_u + log_log_u - 1.0
-                  + (log_log_u - 2.0) / log_u
-                  - (log_log_u * log_log_u - 6.0 * log_log_u + 11.0) / (2.0 * log_u * log_u);
-
-        return std::exp(-u * xi + 0.5 * std::log(2.0 * M_PI * u) - u);
-    }
-
-    /// 计算 log(rho(u)) - 对数尺度避免下溢
-    [[nodiscard]] static double log_dickman_rho(double u) {
-        if (u <= 0.0) return 0.0;  // log(1) = 0
-        if (u <= 1.0) return 0.0;  // log(1) = 0
-        if (u <= 2.0) return std::log(1.0 - std::log(u));
-
-        // 对于 u > 2，直接在对数空间计算
-        double log_u = std::log(u);
-        double log_log_u = std::log(log_u);
-
-        // Hildebrand 近似的对数形式
-        double xi = log_u + log_log_u - 1.0
-                  + (log_log_u - 2.0) / log_u
-                  - (log_log_u * log_log_u - 6.0 * log_log_u + 11.0) / (2.0 * log_u * log_u);
-
-        // log(rho) ≈ -u * xi + 0.5 * log(2*pi*u) - u
-        return -u * xi + 0.5 * std::log(2.0 * M_PI * u) - u;
-    }
-
-    /// 从查找表获取 Dickman rho（带插值）
+    /// 从查找表获取 Dickman rho（带线性插值）
     [[nodiscard]] double dickman_rho(double u) const {
         if (u <= 0.0) return 1.0;
-        if (u >= 20.0) return dickman_rho_exact(u);
+
+        if (u >= 20.0) {
+            // Hildebrand 渐近: ρ(u) ≈ exp(-u·ξ)
+            double log_u = std::log(u);
+            double log_log_u = std::log(log_u);
+            double xi = log_u + log_log_u - 1.0
+                      + (log_log_u - 2.0) / log_u
+                      - (log_log_u * log_log_u - 6.0 * log_log_u + 11.0)
+                        / (2.0 * log_u * log_u);
+            return std::exp(-u * xi);
+        }
 
         // 线性插值
         double idx = u * 10.0;
         size_t i = static_cast<size_t>(idx);
-        double frac = idx - i;
+        double frac = idx - static_cast<double>(i);
 
         if (i + 1 >= dickman_table_.size()) {
             return dickman_table_.back();
@@ -294,80 +308,104 @@ private:
         return dickman_table_[i] * (1.0 - frac) + dickman_table_[i + 1] * frac;
     }
 
-    /// 计算光滑概率的对数
-    /// log(P(n is B-smooth)) ≈ log(rho(log(n) / log(B)))
-    [[nodiscard]] double log_smooth_probability(double log_value) const {
-        double log_bound = std::log(static_cast<double>(params_.smoothness_bound));
-        double u = log_value / log_bound;
-        return log_dickman_rho(u);
+    /// 计算 log(ρ(u))（使用表避免下溢）
+    [[nodiscard]] double log_dickman_rho(double u) const {
+        if (u <= 0.0) return 0.0;
+        if (u <= 1.0) return 0.0;
+
+        if (u >= 20.0) {
+            // Hildebrand 渐近: log ρ(u) ≈ -u·ξ
+            double log_u = std::log(u);
+            double log_log_u = std::log(log_u);
+            double xi = log_u + log_log_u - 1.0
+                      + (log_log_u - 2.0) / log_u
+                      - (log_log_u * log_log_u - 6.0 * log_log_u + 11.0)
+                        / (2.0 * log_u * log_u);
+            return -u * xi;
+        }
+
+        // 从 ODE 表获取并取对数
+        double val = dickman_rho(u);
+        if (val <= 0.0) return -1e100;
+        return std::log(val);
     }
 
-    /// 计算光滑概率（线性尺度，可能下溢）
-    [[nodiscard]] double smooth_probability(double log_value) const {
-        double log_bound = std::log(static_cast<double>(params_.smoothness_bound));
-        double u = log_value / log_bound;
-        return dickman_rho(u);
-    }
-
-    /// 基于采样计算 E-score（返回 log(E-score) 和线性 E-score）
-    /// 线程安全：使用函数局部 RNG，每次调用用相同 seed 产生一致采样点
-    [[nodiscard]] std::pair<double, double> sample_e_score_log(
+    /// 角度积分计算 Murphy E-score
+    /// E = (1/π) ∫₀^π ρ(u_f(θ)) · ρ(u_g(θ)) dθ
+    /// 其中 u_f = (log|F_s(cosθ, sinθ)| - α_f) / log(B)
+    ///
+    /// F_s(x,y) = Σ f_i · s^i · x^i · y^(d-i)  是 skewed 齐次多项式
+    [[nodiscard]] std::pair<double, double> compute_e_score_log(
             const IntPolynomial& f,
             const IntPolynomial& g,
-            const Integer& n,
-            double skewness) const {
+            double skewness,
+            double alpha_f,
+            double alpha_g) const {
 
-        uint32_t d = f.degree();
-        uint32_t valid_samples = 0;
+        uint32_t d_f = f.degree();
+        uint32_t d_g = g.degree();
+        double log_bound = std::log(static_cast<double>(params_.smoothness_bound));
 
-        // 使用 log-sum-exp 技巧避免下溢
-        // log(sum(exp(x_i))) = max(x) + log(sum(exp(x_i - max(x))))
+        if (log_bound <= 0) return {-1e100, 0.0};
+
+        const uint32_t num_points = params_.sample_points;
         std::vector<double> log_probs;
-        log_probs.reserve(params_.sample_points);
+        log_probs.reserve(num_points);
 
-        // 计算采样区域大小
-        double A = skewness;  // a 的范围: [-A, A]
-        double B_range = std::sqrt(n.to_double()) / skewness;  // b 的范围
+        for (uint32_t i = 0; i < num_points; ++i) {
+            // Midpoint rule: θ = π(i + 0.5) / N
+            double theta = M_PI * (i + 0.5) / num_points;
+            double ct = std::cos(theta);
+            double st = std::sin(theta);
 
-        std::uniform_real_distribution<double> dist_a(-A, A);
-        std::uniform_real_distribution<double> dist_b(1.0, std::max(2.0, B_range));
+            // F_s(cosθ, sinθ) = Σ f_i · s^i · cos^i(θ) · sin^(d_f-i)(θ)
+            double F_val = 0.0;
+            for (uint32_t j = 0; j <= d_f; ++j) {
+                double ci = f[j].to_double();
+                double term = ci * std::pow(skewness, static_cast<double>(j))
+                            * std::pow(ct, static_cast<double>(j))
+                            * std::pow(st, static_cast<double>(d_f - j));
+                F_val += term;
+            }
+            F_val = std::abs(F_val);
 
-        // 局部 RNG：每个调用独立，消除多线程共享 rng_ 的数据竞争
-        std::mt19937_64 rng(params_.seed);
-        for (uint32_t i = 0; i < params_.sample_points; ++i) {
-            double a = dist_a(rng);
-            double b = dist_b(rng);
+            // G_s(cosθ, sinθ)
+            double G_val = 0.0;
+            for (uint32_t j = 0; j <= d_g; ++j) {
+                double ci = g[j].to_double();
+                double term = ci * std::pow(skewness, static_cast<double>(j))
+                            * std::pow(ct, static_cast<double>(j))
+                            * std::pow(st, static_cast<double>(d_g - j));
+                G_val += term;
+            }
+            G_val = std::abs(G_val);
 
-            // 跳过 gcd(a,b) != 1 的情况（简化处理）
-            if (std::abs(a) < 1.0 || b < 1.0) continue;
+            if (F_val < 1e-300 || G_val < 1e-300) continue;
 
-            // 计算代数侧范数: F(a,b) = b^d * f(a/b)
-            double ratio = a / b;
-            double F_val = std::pow(b, d) * std::abs(f.evaluate_double(ratio));
-
-            // 计算有理侧值: G(a,b) = g(a/b) * b^{deg(g)}
-            double G_val = std::abs(g.evaluate_double(ratio)) * b;
-
-            if (F_val < 1.0 || G_val < 1.0) continue;
-
-            // 在对数空间计算
             double log_F = std::log(F_val);
             double log_G = std::log(G_val);
 
-            double log_p_f = log_smooth_probability(log_F);
-            double log_p_g = log_smooth_probability(log_G);
+            // Murphy E 公式: u = (log|norm| - alpha) / log(B)
+            // alpha > 0 (多根) → u 减小 → ρ 增大 → 更好
+            // alpha < 0 (少根) → u 增大 → ρ 减小 → 更差
+            double u_f = (log_F - alpha_f) / log_bound;
+            double u_g = (log_G - alpha_g) / log_bound;
 
-            // log(p_f * p_g) = log(p_f) + log(p_g)
+            // u ≤ 0 意味着范数极小，几乎必然光滑
+            if (u_f < 0.01) u_f = 0.01;
+            if (u_g < 0.01) u_g = 0.01;
+
+            double log_p_f = log_dickman_rho(u_f);
+            double log_p_g = log_dickman_rho(u_g);
+
             log_probs.push_back(log_p_f + log_p_g);
-            ++valid_samples;
         }
 
-        if (valid_samples == 0) {
+        if (log_probs.empty()) {
             return {-1e100, 0.0};
         }
 
         // Log-sum-exp 计算平均值的对数
-        // log(mean) = log(sum/n) = log(sum) - log(n)
         double max_log = *std::max_element(log_probs.begin(), log_probs.end());
         double sum_exp = 0.0;
         for (double lp : log_probs) {
@@ -375,25 +413,14 @@ private:
         }
 
         double log_sum = max_log + std::log(sum_exp);
-        double log_mean = log_sum - std::log(static_cast<double>(valid_samples));
+        double log_mean = log_sum - std::log(static_cast<double>(log_probs.size()));
 
-        // 线性尺度（如果可能）
         double linear_e_score = 0.0;
-        if (log_mean > -700) {  // 避免 exp 下溢
+        if (log_mean > -700) {
             linear_e_score = std::exp(log_mean);
         }
 
         return {log_mean, linear_e_score};
-    }
-
-    /// 基于采样计算 E-score（保留旧接口）
-    [[nodiscard]] double sample_e_score(
-            const IntPolynomial& f,
-            const IntPolynomial& g,
-            const Integer& n,
-            double skewness) const {
-        auto [log_score, linear_score] = sample_e_score_log(f, g, n, skewness);
-        return linear_score;
     }
 
     /// 计算大小得分

@@ -1,4 +1,5 @@
 #include "gnfs/polynomial/base_m.hpp"
+#include "gnfs/polynomial/polynomial_optimizer.hpp"
 #include "gnfs/sqrt/modular_poly.hpp"
 
 
@@ -110,8 +111,8 @@ PolynomialContext BaseMSelector::create_context(const Integer& n, const Polynomi
         f_coeffs.push_back(result.f[i].clone());
     }
 
-    // Compute skewness (simplified estimate)
-    double skewness = 1.0;
+    // Compute skewness from polynomial coefficients: s ≈ (c_0 / c_d)^{1/d}
+    double skewness = PolynomialOptimizer::estimate_skewness(result.f);
 
     return PolynomialContext(n.clone(), std::move(f_coeffs), result.m.clone(), skewness);
 }
