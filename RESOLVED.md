@@ -7,6 +7,15 @@
 
 ## 已完成 ✅
 
+### Session 54 — base-m 搜索窗口扩大 + Murphy E 排名
+
+#### [OPT] ~~base-m 搜索窗口 ±5（无 Murphy E 排名）~~ ✅
+- **发现**: 2026-03-11 (Session 45)
+- **解决**: 2026-03-12 (Session 54)
+- **文件**: `src/polynomial/base_m.cpp` — `BaseMSelector::select()`
+- **修复**: 按 N 位数分级扩大搜索窗口 (≤45bit: ±5, 46-60: ±50, 61-90: ±200, 91+: ±1000)；所有不可约候选用 Murphy E 排名选最优（轻量参数 alpha_bound=2000, sample_points=500）
+- **验证**: smoke 20/20, E2E 通过 (8.45s), progressive L1-L5 通过 (103.2s)
+
 ### Session 53 — Murphy E 公式修复 + base-m skewness
 
 #### [OPT] ~~Murphy E 公式多处缺陷（低估 20-40%）~~ ✅

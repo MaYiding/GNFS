@@ -7,7 +7,7 @@
 |------|------|------|
 | **P1-OPT** | 3 | Bucket Sieve, Sieve 内存, Kleinjung 集成 |
 | **P1** | 0 | (已清空) |
-| **P2** | 5 | SGE, base-m 搜索窗口, ECM 余因子, Clique, NEON |
+| **P2** | 4 | SGE, ECM 余因子, Clique, NEON |
 | **P3** | 21 | 小优化 ×4, 远期架构 ×6, 代码质量 ×10, 调查 ×1 |
 
 ---
@@ -51,13 +51,6 @@
 - **文件**: `linalg/` — 完全不存在
 - **描述**: BL 前做部分消元：weight-1 列→消去行列；weight-2 列→合并两行。3-5 轮收敛，矩阵降维 30-60%
 - **预期收益**: 100K+ 矩阵 BL 时间减少 30-60%
-
-### [OPT] base-m 搜索窗口 ±5（无 Murphy E 排名）
-- **发现日期**: 2026-03-11 (Session 45)
-- **文件**: `src/polynomial/base_m.cpp:69`
-- **描述**: 搜索仅 11 个候选 (δ∈{0,±1,...,±5})，无 Murphy E 排名
-- **建议**: 50+ 位时 δ≈1000，所有不可约候选评估 Murphy E 选最优
-- **注**: skewness 硬编码已修复 (Session 53)
 
 ### [OPT] 2LP Cofactorization: 大 cofactor 应用 ECM
 - **发现日期**: 2026-03-11 (Session 45)
