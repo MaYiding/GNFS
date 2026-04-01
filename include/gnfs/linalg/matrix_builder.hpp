@@ -370,19 +370,35 @@ private:
         std::unordered_set<PrimeIdealKey, PrimeIdealKeyHash> alg_primes;  // 代数侧素理想 (p,r) 集合
     };
 
-    /// 收集所有大素数
+    /// 收集所有大素数（仅包含有效贡献的 LP）
+    /// 合并关系中，共享 LP 的指数为偶数（在 GF(2) 矩阵中贡献为 0），
+    /// 不应为其创建列。只收集在至少一个关系中有奇数指数的 LP。
     [[nodiscard]] LargePrimeInfo collect_large_primes(
             const std::vector<Relation>& relations) const {
 
         LargePrimeInfo info;
 
         for (const auto& rel : relations) {
-            for (size_t j = 0; j < rel.rational_large_prime.size(); ++j) {
-                info.rat_primes.insert(rel.rational_large_prime[j].p);
+            // 有理侧：按素数累计指数，只收集奇数指数的
+            std::unordered_map<uint64_t, uint8_t> rat_exp;
+            for (const auto& lp : rel.rational_large_prime) {
+                rat_exp[lp.p] += lp.e;
             }
-            for (size_t j = 0; j < rel.algebraic_large_prime.size(); ++j) {
-                info.alg_primes.insert({rel.algebraic_large_prime[j].p,
-                                        rel.algebraic_large_prime[j].r});
+            for (const auto& [p, exp] : rat_exp) {
+                if (exp % 2 == 1) {
+                    info.rat_primes.insert(p);
+                }
+            }
+
+            // 代数侧：按 (p,r) 素理想累计指数，只收集奇数指数的
+            std::unordered_map<PrimeIdealKey, uint8_t, PrimeIdealKeyHash> alg_exp;
+            for (const auto& lp : rel.algebraic_large_prime) {
+                alg_exp[{lp.p, lp.r}] += lp.e;
+            }
+            for (const auto& [key, exp] : alg_exp) {
+                if (exp % 2 == 1) {
+                    info.alg_primes.insert(key);
+                }
             }
         }
 

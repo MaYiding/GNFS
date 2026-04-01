@@ -348,12 +348,19 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     // For small N where LP ≈ FB, "partials" are just inert-prime artifacts
     if (params.large_prime_bound > params.algebraic_bound) {
         auto sep = separate_relations(std::move(relations));
-        auto merged = PartialRelationMerger::merge(sep.partial);
+
+        PartialRelationMerger::MergeStats mstats;
+        auto merged = PartialRelationMerger::merge_all(
+            std::move(sep.partial), 10, &mstats);
 
         if (verbose) {
             std::cout << "Full: " << sep.full.size()
-                      << ", Partial: " << sep.partial.size()
-                      << ", Merged: " << merged.size() << "\n";
+                      << ", 1LP: " << mstats.input_1lp
+                      << ", 2LP: " << mstats.input_2lp
+                      << ", Merged: " << merged.size()
+                      << " (w2=" << mstats.weight2_merges
+                      << " sngl=" << mstats.singletons_removed
+                      << " rnd=" << mstats.rounds << ")\n";
         }
 
         // Only keep full + merged — unmerged partials create singleton LP columns

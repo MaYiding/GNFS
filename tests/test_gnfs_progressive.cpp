@@ -280,11 +280,19 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
         if (lp_enabled) {
             auto sep = separate_relations(std::move(relations));
-            auto merged = PartialRelationMerger::merge(sep.partial);
+
+            // 2LP merge: handles both 1LP×1LP and 2LP via iterative weight-2 processing
+            PartialRelationMerger::MergeStats mstats;
+            auto merged = PartialRelationMerger::merge_all(
+                std::move(sep.partial), 10, &mstats);
 
             std::cout << "  [round " << (round+1) << "] Full=" << sep.full.size()
-                      << " Partial=" << sep.partial.size()
-                      << " Merged=" << merged.size() << "\n" << std::flush;
+                      << " 1LP=" << mstats.input_1lp
+                      << " 2LP=" << mstats.input_2lp
+                      << " Merged=" << merged.size()
+                      << " (w2=" << mstats.weight2_merges
+                      << " sngl=" << mstats.singletons_removed
+                      << " rnd=" << mstats.rounds << ")\n" << std::flush;
 
             relations = std::move(sep.full);
             relations.insert(relations.end(),

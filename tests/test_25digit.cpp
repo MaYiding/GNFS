@@ -137,10 +137,19 @@ int main() {
 
         if (lp_enabled) {
             auto sep = separate_relations(std::move(relations));
-            auto merged = PartialRelationMerger::merge(sep.partial);
+
+            PartialRelationMerger::MergeStats mstats;
+            auto merged = PartialRelationMerger::merge_all(
+                std::move(sep.partial), 10, &mstats);
+
             std::cout << "\n  [round " << (round+1) << "] Full=" << sep.full.size()
-                      << " Partial=" << sep.partial.size()
-                      << " Merged=" << merged.size() << "\n" << std::flush;
+                      << " 1LP=" << mstats.input_1lp
+                      << " 2LP=" << mstats.input_2lp
+                      << " Merged=" << merged.size()
+                      << " (w2=" << mstats.weight2_merges
+                      << " sngl=" << mstats.singletons_removed
+                      << " rnd=" << mstats.rounds << ")\n" << std::flush;
+
             relations = std::move(sep.full);
             relations.insert(relations.end(),
                 std::make_move_iterator(merged.begin()),

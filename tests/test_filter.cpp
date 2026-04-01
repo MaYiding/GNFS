@@ -321,10 +321,12 @@ void test_merger_merge() {
     assert(m.rational_factors.size() == 5);   // {0,1,3} + {1,2}
     assert(m.algebraic_factors.size() == 3);  // {0,2} + {1}
 
-    // LP: shared LP=101 appears twice (cancels in GF(2))
+    // LP: shared LP=101 appears twice (preserved for rational_sqrt exponent computation)
     assert(m.rational_large_prime.size() == 2);
     assert(m.rational_large_prime[0].p == 101);
     assert(m.rational_large_prime[1].p == 101);
+    // But effectively full (all LPs have even count)
+    assert(PartialRelationMerger::is_effectively_full(m));
 
     std::cout << "  PASS" << std::endl;
 }
@@ -354,9 +356,11 @@ void test_merger_algebraic_lp() {
 
     const auto& m = merged[0];
     assert(m.is_merged());
+    // Shared algebraic LP=(107,3) appears twice (preserved for sqrt computation)
     assert(m.algebraic_large_prime.size() == 2);
     assert(m.algebraic_large_prime[0].p == 107);
     assert(m.algebraic_large_prime[1].p == 107);
+    assert(PartialRelationMerger::is_effectively_full(m));
 
     // Different roots should NOT merge — they're different prime ideals
     {
@@ -416,6 +420,152 @@ void test_reset_stats() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_merge_all_2lp() {
+    std::cout << "Testing merge_all with 2LP relations..." << std::endl;
+
+    // Create a triangle: 3 relations sharing LPs pairwise
+    // R1: LP_A=101, LP_B=103  (2LP)
+    // R2: LP_B=103, LP_C=107  (2LP)
+    // R3: LP_A=101, LP_C=107  (2LP)
+    // After merging R1+R2 → cancel LP_B=103, remaining {LP_A=101, LP_C=107}
+    // Then merge result with R3 → cancel both LP_A and LP_C → full relation!
+
+    std::vector<Relation> partials;
+    {
+        Relation r1(5, 1);
+        r1.rational_factors = {0};
+        r1.algebraic_factors = {0};
+        r1.rational_large_prime.push_back(PrimePower{101, 0, 1});
+        r1.rational_large_prime.push_back(PrimePower{103, 0, 1});
+        partials.push_back(std::move(r1));
+    }
+    {
+        Relation r2(7, 2);
+        r2.rational_factors = {1};
+        r2.algebraic_factors = {1};
+        r2.rational_large_prime.push_back(PrimePower{103, 0, 1});
+        r2.rational_large_prime.push_back(PrimePower{107, 0, 1});
+        partials.push_back(std::move(r2));
+    }
+    {
+        Relation r3(11, 3);
+        r3.rational_factors = {2};
+        r3.algebraic_factors = {2};
+        r3.rational_large_prime.push_back(PrimePower{101, 0, 1});
+        r3.rational_large_prime.push_back(PrimePower{107, 0, 1});
+        partials.push_back(std::move(r3));
+    }
+
+    PartialRelationMerger::MergeStats stats;
+    auto merged = PartialRelationMerger::merge_all(std::move(partials), 10, &stats);
+
+    // Triangle of 3 2LP relations → 1 effectively-full merged relation (in 2 rounds)
+    assert(merged.size() == 1);
+    assert(PartialRelationMerger::is_effectively_full(merged[0]));
+    assert(merged[0].is_merged());
+    // Should have 3 ab pairs total (primary + 2 extra)
+    assert(merged[0].extra_ab_pairs.size() == 2);
+    assert(stats.input_2lp == 3);
+    assert(stats.rounds >= 2);
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_merge_all_mixed() {
+    std::cout << "Testing merge_all with mixed 1LP+2LP..." << std::endl;
+
+    std::vector<Relation> partials;
+
+    // 1LP pair sharing LP=101
+    partials.push_back(make_1lp_relation(1, 1, 101));
+    partials.push_back(make_1lp_relation(2, 1, 101));
+
+    // 2LP relation with LP=103, LP=107
+    {
+        Relation r(5, 1);
+        r.rational_large_prime.push_back(PrimePower{103, 0, 1});
+        r.rational_large_prime.push_back(PrimePower{107, 0, 1});
+        partials.push_back(std::move(r));
+    }
+    // Singleton 1LP with LP=109 (should be removed)
+    partials.push_back(make_1lp_relation(9, 1, 109));
+
+    PartialRelationMerger::MergeStats stats;
+    auto merged = PartialRelationMerger::merge_all(std::move(partials), 10, &stats);
+
+    // 1LP pair → 1 effectively-full relation
+    // Singleton LP=109 removed
+    // 2LP LP={103,107} has singletons → removed
+    assert(merged.size() == 1);
+    assert(PartialRelationMerger::is_effectively_full(merged[0]));
+    assert(stats.input_1lp == 3);
+    assert(stats.input_2lp == 1);
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_merge_all_chain() {
+    std::cout << "Testing merge_all with 2LP chain..." << std::endl;
+
+    // Chain: R1(A,B) — R2(B,C) — R3(C,D) + R4(A) + R5(D)
+    // After processing:
+    //   Weight-2 LPs: B (in R1,R2), C (in R2,R3)
+    //   R1+R2 → remaining {A,D's neighbor...no wait}
+    // Let me construct properly:
+    // R1: LP_A=101, LP_B=103  (2LP)
+    // R2: LP_B=103, LP_C=107  (2LP)
+    // R3: LP_C=107  (1LP)
+    // After round 1: merge R1+R2 → {LP_A=101} (1LP, since LP_B canceled and LP_C remained)
+    //   Wait no: R2 has LP_B=103 and LP_C=107. R1 has LP_A=101 and LP_B=103.
+    //   LP_B=103 appears in R1 and R2 → weight-2 → merge → cancel LP_B
+    //   Result: {LP_A=101, LP_C=107} (2LP)
+    //   LP_C=107 appears in result and R3 → weight-2 in round 2
+    //   merge result + R3 → cancel LP_C → {LP_A=101} (1LP)
+    //   LP_A=101 now singleton → removed in round 3
+    //   So no full relation from this chain
+
+    // Better: make it a cycle. Add R4(LP_A=101) as 1LP
+    std::vector<Relation> partials;
+    {
+        Relation r1(1, 1);
+        r1.rational_factors = {0};
+        r1.rational_large_prime.push_back(PrimePower{101, 0, 1});
+        r1.rational_large_prime.push_back(PrimePower{103, 0, 1});
+        partials.push_back(std::move(r1));
+    }
+    {
+        Relation r2(2, 1);
+        r2.rational_factors = {1};
+        r2.rational_large_prime.push_back(PrimePower{103, 0, 1});
+        r2.rational_large_prime.push_back(PrimePower{107, 0, 1});
+        partials.push_back(std::move(r2));
+    }
+    {
+        // 1LP with LP_C=107
+        Relation r3(3, 1);
+        r3.rational_factors = {2};
+        r3.rational_large_prime.push_back(PrimePower{107, 0, 1});
+        partials.push_back(std::move(r3));
+    }
+    {
+        // 1LP with LP_A=101 — closes the chain
+        Relation r4(4, 1);
+        r4.rational_factors = {3};
+        r4.rational_large_prime.push_back(PrimePower{101, 0, 1});
+        partials.push_back(std::move(r4));
+    }
+
+    PartialRelationMerger::MergeStats stats;
+    auto merged = PartialRelationMerger::merge_all(std::move(partials), 10, &stats);
+
+    // Should produce 1 effectively-full relation through multi-round merging
+    assert(merged.size() == 1);
+    assert(PartialRelationMerger::is_effectively_full(merged[0]));
+    assert(merged[0].extra_ab_pairs.size() == 3);  // 4 relations merged
+
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== RelationFilter Unit Tests ===" << std::endl;
 
@@ -434,6 +584,9 @@ int main() {
     test_merger_merge();
     test_merger_algebraic_lp();
     test_merger_no_2lp();
+    test_merge_all_2lp();
+    test_merge_all_mixed();
+    test_merge_all_chain();
     test_reset_stats();
 
     std::cout << "\nAll tests passed!" << std::endl;

@@ -234,17 +234,232 @@ struct SeparatedRelations {
 /// 使用简化的 clique 方法
 class PartialRelationMerger {
 public:
-    /// 尝试合并部分关系
-    /// @param partials 部分关系列表
-    /// @return 合并后产生的新关系（作为完全关系）
+    /// 合并结果统计
+    struct MergeStats {
+        size_t full_produced = 0;       // 产出的完全关系数
+        size_t rounds = 0;              // 迭代轮数
+        size_t weight2_merges = 0;      // weight-2 合并次数
+        size_t singletons_removed = 0;  // 移除的 singleton 关系数
+        size_t input_1lp = 0;           // 输入 1LP 关系数
+        size_t input_2lp = 0;           // 输入 2LP 关系数
+        size_t input_3lp_plus = 0;      // 输入 3LP+ 关系数（已丢弃）
+    };
+
+    /// 提取关系的"有效" LP key（奇数次出现的 = 未取消的）
+    /// 合并关系中，共享 LP 出现偶数次（已取消），只返回奇数次的
+    [[nodiscard]] static std::vector<LargePrimeKey> remaining_lp_keys(const Relation& rel) {
+        std::unordered_map<LargePrimeKey, size_t, LargePrimeKeyHash> counts;
+        for (const auto& lp : rel.rational_large_prime) {
+            ++counts[{lp.p, 0, false}];
+        }
+        for (const auto& lp : rel.algebraic_large_prime) {
+            ++counts[{lp.p, lp.r, true}];
+        }
+        std::vector<LargePrimeKey> keys;
+        for (const auto& [key, count] : counts) {
+            if (count % 2 != 0) keys.push_back(key);
+        }
+        return keys;
+    }
+
+    /// 检查关系是否"有效完全"（所有 LP 都已取消）
+    [[nodiscard]] static bool is_effectively_full(const Relation& rel) {
+        return remaining_lp_keys(rel).empty();
+    }
+
+    /// 合并两个关系
+    /// LP 列表完整保留（不取消），因为 rational_sqrt 需要完整指数信息。
+    /// 取消判断由 remaining_lp_keys() 在 merge_all 中负责。
+    [[nodiscard]] static Relation merge_two(const Relation& r1, const Relation& r2) {
+        Relation m;
+        m.a = r1.a;
+        m.b = r1.b;
+
+        // 收集所有 (a,b) 对（含已有的 extra pairs）
+        m.extra_ab_pairs = r1.extra_ab_pairs;
+        m.extra_ab_pairs.emplace_back(r2.a, r2.b);
+        m.extra_ab_pairs.insert(m.extra_ab_pairs.end(),
+            r2.extra_ab_pairs.begin(), r2.extra_ab_pairs.end());
+
+        // 合并 factor base indices
+        m.rational_factors = r1.rational_factors;
+        m.rational_factors.insert(m.rational_factors.end(),
+            r2.rational_factors.begin(), r2.rational_factors.end());
+
+        m.algebraic_factors = r1.algebraic_factors;
+        m.algebraic_factors.insert(m.algebraic_factors.end(),
+            r2.algebraic_factors.begin(), r2.algebraic_factors.end());
+
+        // LP 列表完整连接（不取消共享 LP）
+        // rational_sqrt 和 matrix_builder 都需要完整列表来正确计算指数
+        m.rational_large_prime = r1.rational_large_prime;
+        m.rational_large_prime.insert(m.rational_large_prime.end(),
+            r2.rational_large_prime.begin(), r2.rational_large_prime.end());
+
+        m.algebraic_large_prime = r1.algebraic_large_prime;
+        m.algebraic_large_prime.insert(m.algebraic_large_prime.end(),
+            r2.algebraic_large_prime.begin(), r2.algebraic_large_prime.end());
+
+        return m;
+    }
+
+    /// 全类型合并：处理 1LP 和 2LP 关系
+    /// 迭代 weight-2 处理 + singleton 清理
+    /// @param partials 所有部分关系（1LP + 2LP，3LP+ 会被丢弃）
+    /// @param max_rounds 最大迭代轮数
+    /// @return 产出的完全关系列表
+    [[nodiscard]] static std::vector<Relation> merge_all(
+            std::vector<Relation> partials,
+            size_t max_rounds = 10,
+            MergeStats* stats_out = nullptr) {
+
+        MergeStats stats;
+        std::vector<Relation> full_results;
+
+        // 统计并丢弃 3LP+ 关系（基于原始 LP 数量）
+        std::vector<Relation> pool;
+        pool.reserve(partials.size());
+        for (auto& rel : partials) {
+            size_t nlp = rel.num_large_primes();
+            if (nlp == 1) { ++stats.input_1lp; pool.push_back(std::move(rel)); }
+            else if (nlp == 2) { ++stats.input_2lp; pool.push_back(std::move(rel)); }
+            else { ++stats.input_3lp_plus; }  // 丢弃
+        }
+
+        // ═══ Phase 1: 1LP 贪婪匹配 (weight≥2, 与旧 merge() 行为一致) ═══
+        // 1LP+1LP 合并总是产生 full relation，对任何 weight 都值得做
+        {
+            // 识别 1LP 关系（remaining keys 恰好 1 个）
+            std::unordered_set<size_t> is_1lp;
+            std::unordered_map<LargePrimeKey, std::vector<size_t>, LargePrimeKeyHash> lp1_index;
+            for (size_t i = 0; i < pool.size(); ++i) {
+                auto keys = remaining_lp_keys(pool[i]);
+                if (keys.size() == 1) {
+                    is_1lp.insert(i);
+                    lp1_index[keys[0]].push_back(i);
+                }
+            }
+
+            std::unordered_set<size_t> used_1lp;
+            for (const auto& [key, indices] : lp1_index) {
+                if (indices.size() < 2) continue;
+                size_t first_unused = SIZE_MAX;
+                for (size_t idx : indices) {
+                    if (used_1lp.count(idx)) continue;
+                    if (first_unused == SIZE_MAX) {
+                        first_unused = idx; continue;
+                    }
+                    auto m = merge_two(pool[first_unused], pool[idx]);
+                    used_1lp.insert(first_unused);
+                    used_1lp.insert(idx);
+                    ++stats.weight2_merges;
+                    full_results.push_back(std::move(m));
+                    first_unused = SIZE_MAX;
+                }
+            }
+
+            // 从 pool 中移除已用的 1LP 关系
+            if (!used_1lp.empty()) {
+                std::vector<Relation> new_pool;
+                new_pool.reserve(pool.size() - used_1lp.size());
+                for (size_t i = 0; i < pool.size(); ++i) {
+                    if (!used_1lp.count(i)) {
+                        new_pool.push_back(std::move(pool[i]));
+                    }
+                }
+                pool = std::move(new_pool);
+            }
+        }
+
+        // ═══ Phase 2: 2LP 迭代 weight-2 处理 ═══
+        for (size_t round = 0; round < max_rounds; ++round) {
+            ++stats.rounds;
+
+            // 构建 LP 索引
+            std::unordered_map<LargePrimeKey, std::vector<size_t>, LargePrimeKeyHash> lp_index;
+            lp_index.reserve(pool.size() * 2);
+            for (size_t i = 0; i < pool.size(); ++i) {
+                auto keys = remaining_lp_keys(pool[i]);
+                for (const auto& key : keys) {
+                    lp_index[key].push_back(i);
+                }
+            }
+
+            // Singleton detection
+            std::unordered_set<LargePrimeKey, LargePrimeKeyHash> singleton_keys;
+            for (const auto& [key, indices] : lp_index) {
+                if (indices.size() == 1) singleton_keys.insert(key);
+            }
+
+            // Weight-2 merge（标准 2LP 处理）
+            std::unordered_set<size_t> used;
+            std::vector<Relation> new_merged;
+
+            for (const auto& [key, indices] : lp_index) {
+                if (indices.size() != 2) continue;
+                size_t i = indices[0], j = indices[1];
+                if (used.count(i) || used.count(j)) continue;
+
+                auto m = merge_two(pool[i], pool[j]);
+                used.insert(i);
+                used.insert(j);
+                ++stats.weight2_merges;
+
+                if (is_effectively_full(m)) {
+                    full_results.push_back(std::move(m));
+                } else {
+                    new_merged.push_back(std::move(m));
+                }
+            }
+
+            // Singleton removal: 只移除所有剩余 LP 都是 singleton 的关系
+            std::unordered_set<size_t> dead;
+            for (size_t i = 0; i < pool.size(); ++i) {
+                if (used.count(i)) continue;
+                auto keys = remaining_lp_keys(pool[i]);
+                bool all_singleton = true;
+                for (const auto& k : keys) {
+                    if (!singleton_keys.count(k)) { all_singleton = false; break; }
+                }
+                if (all_singleton && !keys.empty()) dead.insert(i);
+            }
+
+            if (used.empty() && dead.empty()) break;
+            stats.singletons_removed += dead.size();
+
+            // 重建 pool
+            std::vector<Relation> new_pool;
+            new_pool.reserve(pool.size() - used.size() - dead.size()
+                             + new_merged.size());
+            for (size_t i = 0; i < pool.size(); ++i) {
+                if (!used.count(i) && !dead.count(i))
+                    new_pool.push_back(std::move(pool[i]));
+            }
+            new_pool.insert(new_pool.end(),
+                std::make_move_iterator(new_merged.begin()),
+                std::make_move_iterator(new_merged.end()));
+
+            pool = std::move(new_pool);
+            if (pool.empty()) break;
+        }
+
+        // 收集 pool 中已合并但仍有残留 LP 的关系
+        for (auto& rel : pool) {
+            if (rel.is_merged()) full_results.push_back(std::move(rel));
+        }
+
+        stats.full_produced = full_results.size();
+        if (stats_out) *stats_out = stats;
+        return full_results;
+    }
+
+    /// 旧版 1LP-only 合并（保留向后兼容）
     [[nodiscard]] static std::vector<Relation> merge(
             const std::vector<Relation>& partials) {
 
         std::vector<Relation> merged;
 
         // Pre-filter: only index 1LP relations (those with exactly 1 large prime).
-        // Most partials are 2LP — indexing them all and then rejecting in O(k²)
-        // pair enumeration was the performance bottleneck (260s for 125K partials).
         std::vector<size_t> lp1_indices;
         lp1_indices.reserve(partials.size() / 4);
         for (size_t i = 0; i < partials.size(); ++i) {
@@ -290,44 +505,9 @@ public:
                 }
 
                 // Merge first_unused with idx
-                const auto& rel1 = partials[first_unused];
-                const auto& rel2 = partials[idx];
-
+                auto m = merge_two(partials[first_unused], partials[idx]);
                 used.insert(first_unused);
                 used.insert(idx);
-
-                Relation m;
-                m.a = rel1.a;
-                m.b = rel1.b;
-                m.extra_ab_pairs.emplace_back(rel2.a, rel2.b);
-
-                // Concatenate rational factors
-                m.rational_factors = rel1.rational_factors;
-                m.rational_factors.insert(
-                    m.rational_factors.end(),
-                    rel2.rational_factors.begin(),
-                    rel2.rational_factors.end());
-
-                // Concatenate algebraic factors
-                m.algebraic_factors = rel1.algebraic_factors;
-                m.algebraic_factors.insert(
-                    m.algebraic_factors.end(),
-                    rel2.algebraic_factors.begin(),
-                    rel2.algebraic_factors.end());
-
-                // Concatenate large primes (shared LP will cancel in GF(2))
-                m.rational_large_prime = rel1.rational_large_prime;
-                m.rational_large_prime.insert(
-                    m.rational_large_prime.end(),
-                    rel2.rational_large_prime.begin(),
-                    rel2.rational_large_prime.end());
-
-                m.algebraic_large_prime = rel1.algebraic_large_prime;
-                m.algebraic_large_prime.insert(
-                    m.algebraic_large_prime.end(),
-                    rel2.algebraic_large_prime.begin(),
-                    rel2.algebraic_large_prime.end());
-
                 merged.push_back(std::move(m));
 
                 // Reset for next pair in same key
