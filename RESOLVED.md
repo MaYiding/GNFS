@@ -7,6 +7,27 @@
 
 ## 已完成 ✅
 
+### Session 53 — Murphy E 公式修复 + base-m skewness
+
+#### [OPT] ~~Murphy E 公式多处缺陷（低估 20-40%）~~ ✅
+- **发现**: 2026-03-08 (Session 5), 细化 2026-03-11 (Session 45)
+- **解决**: 2026-03-12 (Session 53)
+- **文件**: `polynomial/murphy_evaluator.hpp`
+- **修复**: 三个独立子问题全部修正:
+  1. Dickman rho 表: 错误渐近公式 (`+0.5*log(2πu)-u`) → 积分关系 `u·ρ(u)=∫ρ(t)dt` + 梯形法 (h=0.001, 相对误差 <5e-6)
+  2. Alpha 集成: 任意 `/10.0` 校正 → 标准 Murphy 公式 `u=(log|F|-α)/log(B)` 直接进入 Dickman ρ 参数
+  3. 采样区域: 随机 `(a,b)` + `sqrt(N)` 范围 → 角度积分 θ∈[0,π] 齐次多项式 + skewness
+- **验证**: smoke 20/20, E2E 通过 (8.4s), progressive L1-L5 通过 (95.1s)
+- **Commit**: `6474473`
+
+#### [OPT] ~~base-m skewness 硬编码 1.0~~ ✅
+- **发现**: 2026-03-11 (Session 45)
+- **解决**: 2026-03-12 (Session 53)
+- **文件**: `src/polynomial/base_m.cpp:114`
+- **修复**: `skewness=1.0` → `PolynomialOptimizer::estimate_skewness(result.f)` = `(|c₀|/|c_d|)^{1/d}`
+- **验证**: smoke 20/20, E2E 通过, L1-L5 全部通过
+- **Commit**: `05c2850`
+
 ### Session 52 — 矩阵特征列合并关系修复
 
 #### [BUG] ~~矩阵特征列对合并关系计算错误~~ ✅
