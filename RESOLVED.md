@@ -7,6 +7,20 @@
 
 ## 已完成 ✅
 
+### Session 52 — 矩阵特征列合并关系修复
+
+#### [BUG] ~~矩阵特征列对合并关系计算错误~~ ✅
+- **发现**: 2026-03-12 (Session 51 分析)
+- **解决**: 2026-03-12 (Session 52)
+- **文件**: `linalg/matrix_builder.hpp` — `build_row_with_qc()` + `build_with_qc()`
+- **修复**: 四种特征列（Sign, QC, Schirokauer, ClassGroup）对合并关系的 `extra_ab_pairs` 做累加：
+  - Sign: XOR 各对 sign bit（乘积为负 ⟺ 奇数个因子为负）
+  - QC: XOR 各对 Legendre 符号（乘法性 → GF(2) 中 XOR）
+  - Schirokauer: 各对 λ 值求和 mod ℓ，再 mod 2
+  - ClassGroup: XOR 各对特征值
+- **验证**: smoke 20/20, E2E 通过 (8.4s), progressive L1-L3 通过 (24.5s)
+- **Commit**: `e4f1e62`
+
 ### Session 50 — 2LP 合并 + merge_all 2-phase 策略
 
 #### [FEAT] ~~2LP 关系合并（80+ 位必须）~~ ✅
