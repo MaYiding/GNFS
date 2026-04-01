@@ -9,7 +9,7 @@
 //   ./test_gnfs_progressive 1 3      # Run levels 1 through 3
 
 #include <gnfs/core/params.hpp>
-#include <gnfs/polynomial/base_m.hpp>
+#include <gnfs/polynomial/selector_dispatch.hpp>
 #include <gnfs/factor_base/builder.hpp>
 #include <gnfs/sieve/special_q.hpp>
 #include <gnfs/sieve/lattice_sieve.hpp>
@@ -25,6 +25,7 @@
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -173,14 +174,16 @@ FactResult factor_with_progress(const Integer& n, int level) {
     StopWatch phase;
 
     uint32_t degree = params.degree;
-    auto poly_result = BaseMSelector::select(n, degree);
-    if (!poly_result.success) {
-        std::cout << " FAILED\n";
+    std::optional<PolynomialContext> ctx_opt;
+    try {
+        ctx_opt.emplace(SelectorDispatch::select(n, degree));
+    } catch (const std::exception& e) {
+        std::cout << " FAILED: " << e.what() << "\n";
         return result;
     }
-    auto ctx = BaseMSelector::create_context(n, poly_result);
+    auto& ctx = *ctx_opt;
     std::cout << " done (" << phase.ms() << " ms)\n";
-    std::cout << "  m = " << poly_result.m.to_string() << "\n" << std::flush;
+    std::cout << "  m = " << ctx.m().to_string() << "\n" << std::flush;
 
     // ── Phase 2: Factor Base ──
     std::cout << "[Phase 2] Factor base construction..." << std::flush;
