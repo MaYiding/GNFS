@@ -7,7 +7,7 @@
 |------|------|------|
 | **P1-OPT** | 3 | Bucket Sieve, Sieve 内存, Kleinjung 集成 |
 | **P1** | 0 | (已清空) |
-| **P2** | 6 | SGE, Murphy E, base-m, ECM 余因子, Clique, NEON |
+| **P2** | 7 | 矩阵特征列, SGE, Murphy E, base-m, ECM 余因子, Clique, NEON |
 | **P3** | 21 | 小优化 ×4, 远期架构 ×6, 代码质量 ×10, 调查 ×1 |
 
 ---
@@ -46,6 +46,17 @@
 
 ## P2 — 中优先级
 
+### [BUG] 矩阵特征列对合并关系计算错误（50+ 位必须）
+- **发现日期**: 2026-03-12 (Session 51 分析)
+- **文件**: `linalg/matrix_builder.hpp:306-307,317-319,629-644,650-661`
+- **描述**: `build_row_with_qc()` 和 `build_with_qc()` 中四种特征列（Sign、QC、Schirokauer、ClassGroup）仅对合并关系的主 `(a,b)` 计算，忽略 `extra_ab_pairs` 中的其他构成对。合并关系代表 `∏(a_i - b_i·α)`，特征值应为各对贡献的 XOR/求和 mod 2
+- **影响**: ≤25 digit 因特征列占比小（~5-10 列 vs ~3000 FB 列）+ BL 64 候选覆盖，尚未显现；50+ digit 矩阵更紧时可能导致所有依赖候选无效
+- **修复方案**: 对四种特征列分别遍历 `extra_ab_pairs`，按同态性累加结果 mod 2
+  - Sign: `XOR(sign(a_i - b_i·m))`
+  - QC: `Legendre(∏norm_i, q)` 或 `XOR(Legendre(norm_i, q))`
+  - Schirokauer: `Σλ(a_i, b_i) mod ℓ`
+  - ClassGroup: `XOR(char(a_i, b_i))`
+- **预期工作量**: ~50 行代码改动
 
 ### [FEAT] SGE 预处理（100+ 位必须）
 - **发现日期**: 2026-03-11 (Session 45)
