@@ -5,9 +5,9 @@
 
 | 级别 | 条数 | 涵盖 |
 |------|------|------|
-| **P1-OPT** | 3 | Bucket Sieve, Sieve 内存, Kleinjung 集成 |
+| **P1-OPT** | 3 | Bucket Sieve, Sieve 内存, Kleinjung 质量 |
 | **P1** | 0 | (已清空) |
-| **P2** | 4 | SGE, ECM 余因子, Clique, NEON |
+| **P2** | 3 | SGE, Clique, NEON |
 | **P3** | 21 | 小优化 ×4, 远期架构 ×6, 代码质量 ×10, 调查 ×1 |
 
 ---
@@ -31,13 +31,12 @@
   - 预分配 `num_threads` 个 LatticeSieve 对象复用（避免反复构造/析构）
   - 增量清零（只清上个 SQ 的脏位置）
 
-### [OPT] Kleinjung 多项式选择 + 管线集成
+### [OPT] Kleinjung 多项式选择 — 实现质量提升（管线集成已完成）
 - **发现日期**: 2026-03-11 (Session 45), 原始 2026-02-20 (Session 2)
-- **文件**: `polynomial/kleinjung_selector.hpp`, `tests/test_gnfs_e2e.cpp:178`, `tests/test_gnfs_progressive.cpp:176`
-- **描述**: 双重问题:
-  1. **管线未集成**: E2E/progressive 对所有 N 无条件用 `BaseMSelector::select()`，50+ 位需 Murphy E，80+ 位需 Kleinjung
-  2. **实现质量**: search_radius=100、暴力循环（非格筛）、无 α 值评估、系数边界过松
-- **建议**: 添加按位数分发的 `select_polynomial()`；100+ 十进制位用格筛搜索（参考 CADO-NFS `polyselect`）
+- **文件**: `polynomial/kleinjung_selector.hpp`
+- **已完成**: ✅ 管线集成 — `SelectorDispatch` 自动按 degree 分发（Session 55, `f6ad14d`）
+- **剩余**: 实现质量: search_radius=100、暴力循环（非格筛）、无 α 值评估、系数边界过松
+- **建议**: 100+ 十进制位用格筛搜索（参考 CADO-NFS `polyselect`）
 - **预期收益**: 更好多项式可减少筛选时间 2-5×
 
 ---
@@ -51,12 +50,6 @@
 - **文件**: `linalg/` — 完全不存在
 - **描述**: BL 前做部分消元：weight-1 列→消去行列；weight-2 列→合并两行。3-5 轮收敛，矩阵降维 30-60%
 - **预期收益**: 100K+ 矩阵 BL 时间减少 30-60%
-
-### [OPT] 2LP Cofactorization: 大 cofactor 应用 ECM
-- **发现日期**: 2026-03-11 (Session 45)
-- **文件**: `cofactor/smooth_check.hpp:232-255`
-- **描述**: `classify_cofactor()` 对 `fits_uint64()` 的 cofactor 只用 `pollard_rho(c, 100000)` + 19 个 c 值。30+ bit cofactor（2LP 常见）ECM 更高效
-- **建议**: cofactor > 2^35 时切换 ECM 路径
 
 ### [OPT] Clique removal 仅处理大素数侧 singleton
 - **发现日期**: 2026-03-11 (Session 45)
@@ -151,7 +144,11 @@
 
 #### [RISK] sieve_parallel + 高 threshold 下 cofactorizer 通过率异常
 - **发现日期**: 2026-03-11 (Session 44)
-- **描述**: threshold=84 + sieve_parallel 256 SQs 时 ~100% 通过率（单线程同配置仅 0.06%），需调查
+- **调查**: 2026-03-12 (Session 55) — **sieve_parallel 线程安全已确认**
+  - 每线程独立 LatticeSieve 对象，无共享可变状态
+  - 原子计数器 (relaxed) 分配 SQ，各线程写唯一 `all_results[idx]`
+  - 异常可能来自下游 cofactorizer 配置或报告统计口径，非筛法本身
+- **状态**: 降级为 P3 观测项，sieve 安全，关注 cofactorizer 侧
 
 ---
 
