@@ -301,10 +301,19 @@ public:
             }
             build_row_with_qc(result.matrix.row(i), relations[i], fb, ctx, result.mapping);
 
-            // 添加类群特征列
+            // ClassGroup characters: χ is a homomorphism, so for merged relation
+            // χ(∏ x_i) = Σ χ(x_i) mod 2  →  XOR individual character bits
             if (class_group && class_group->num_generators() > 0) {
-                auto cg_chars = class_group->compute_character(
-                    relations[i].a, relations[i].b);
+                const auto& rel = relations[i];
+                auto cg_chars = class_group->compute_character(rel.a, rel.b);
+
+                for (const auto& [ea, eb] : rel.extra_ab_pairs) {
+                    auto extra_chars = class_group->compute_character(ea, static_cast<uint64_t>(eb));
+                    for (size_t j = 0; j < cg_chars.size(); ++j) {
+                        cg_chars[j] = cg_chars[j] ^ extra_chars[j];
+                    }
+                }
+
                 for (size_t j = 0; j < cg_chars.size(); ++j) {
                     if (cg_chars[j]) {
                         result.matrix.row(i).set(
@@ -313,13 +322,19 @@ public:
                 }
             }
 
-            // 添加 Schirokauer map 列
+            // Schirokauer maps: λ is a homomorphism, so for merged relation
+            // λ(∏ x_i) = Σ λ(x_i) mod ℓ.  Sum all pairs, then take mod 2 for GF(2).
             if (schirokauer) {
-                auto sm_values = schirokauer->compute_flat(
-                    relations[i].a, relations[i].b);
+                const auto& rel = relations[i];
+                auto sm_values = schirokauer->compute_flat(rel.a, rel.b);
 
-                // Schirokauer maps 需要特殊处理：值不是 0/1，而是 0 到 ℓ-1
-                // 对于 GF(2) 矩阵，我们取值 mod 2
+                for (const auto& [ea, eb] : rel.extra_ab_pairs) {
+                    auto extra_sm = schirokauer->compute_flat(ea, static_cast<uint64_t>(eb));
+                    for (size_t j = 0; j < sm_values.size(); ++j) {
+                        sm_values[j] += extra_sm[j];
+                    }
+                }
+
                 size_t sm_start = result.mapping.schirokauer_start();
                 for (size_t j = 0; j < sm_values.size(); ++j) {
                     if (sm_values[j] % 2 == 1) {
@@ -623,20 +638,25 @@ private:
         // 首先构建基础行
         build_row(row, rel, fb, mapping);
 
-        // Fix sign column: should be based on (a - b*m) < 0 (GNFS convention)
+        // Sign column: product (a_0 - b_0*m)·...·(a_k - b_k*m) is negative
+        // iff an odd number of factors are negative → XOR of individual sign bits
         if (mapping.has_sign_column) {
-            // Compute a - b*m
-            Integer a_minus_bm = Integer(rel.a);
-            Integer bm = ctx.m().clone();
-            bm *= Integer(static_cast<int64_t>(rel.b));
-            a_minus_bm -= bm;
+            auto is_neg = [&](int64_t ai, int64_t bi) {
+                Integer v = Integer(ai);
+                Integer bm = ctx.m().clone();
+                bm *= Integer(static_cast<int64_t>(bi));
+                v -= bm;
+                return v.is_negative();
+            };
 
-            // Correct the sign column: set if negative, clear if positive
-            bool should_be_set = a_minus_bm.is_negative();
+            bool sign_bit = is_neg(rel.a, rel.b);
+            for (const auto& [ea, eb] : rel.extra_ab_pairs) {
+                sign_bit ^= is_neg(ea, eb);
+            }
+
             bool currently_set = row.test(static_cast<uint32_t>(mapping.sign_column));
-
-            if (should_be_set != currently_set) {
-                if (should_be_set) {
+            if (sign_bit != currently_set) {
+                if (sign_bit) {
                     row.set(static_cast<uint32_t>(mapping.sign_column));
                 } else {
                     row.clear(static_cast<uint32_t>(mapping.sign_column));
@@ -644,18 +664,28 @@ private:
             }
         }
 
-        // 添加二次特征列 - use Legendre symbol of algebraic norm
-        // For primes where f is irreducible, this equals the quadratic character
-        // in F_q[x]/f(x), which is what we need for GNFS square detection.
+        // QC columns: Legendre symbol is multiplicative, so for merged relation
+        // (∏ norm_i / q) = ∏ (norm_i / q).  In GF(2): XOR individual Legendre bits.
         Integer alg_norm = ctx.algebraic_norm(rel.a, rel.b);
+
+        // Collect all norms for merged relations
+        std::vector<Integer> extra_norms;
+        if (rel.is_merged()) {
+            extra_norms.reserve(rel.extra_ab_pairs.size());
+            for (const auto& [ea, eb] : rel.extra_ab_pairs) {
+                extra_norms.push_back(ctx.algebraic_norm(ea, static_cast<uint64_t>(eb)));
+            }
+        }
 
         for (size_t i = 0; i < mapping.qc_primes.size(); ++i) {
             uint32_t q = mapping.qc_primes[i];
 
-            int leg = legendre_symbol(alg_norm, q);
+            bool qc_bit = (legendre_symbol(alg_norm, q) == -1);
+            for (const auto& norm : extra_norms) {
+                qc_bit ^= (legendre_symbol(norm, q) == -1);
+            }
 
-            // 如果 Legendre 符号为 -1，设置该位
-            if (leg == -1) {
+            if (qc_bit) {
                 row.set(static_cast<uint32_t>(mapping.qc_start() + i));
             }
         }
