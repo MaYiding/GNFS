@@ -1,5 +1,7 @@
 #include "gnfs/polynomial/base_m.hpp"
+#include "gnfs/polynomial/murphy_evaluator.hpp"
 #include "gnfs/polynomial/polynomial_optimizer.hpp"
+#include "gnfs/core/params.hpp"
 #include "gnfs/sqrt/modular_poly.hpp"
 
 
@@ -66,35 +68,97 @@ PolynomialSelectionResult BaseMSelector::select(const Integer& n, uint32_t degre
     Integer m_base;
     mpz_root(m_base.get_mpz(), n.get_mpz(), degree);
 
-    // Try m_base and small perturbations to find an irreducible f
-    constexpr int deltas[] = {0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5};
-    for (int delta : deltas) {
+    // Search window scales with N's size:
+    //   ≤45 bit: ±5 (11 candidates, old behavior — covers L1-L5 tests)
+    //   46-60 bit: ±50
+    //   61-90 bit: ±200
+    //   91+ bit: ±1000
+    size_t n_bits = mpz_sizeinbase(n.get_mpz(), 2);
+    int max_delta;
+    if (n_bits <= 45) {
+        max_delta = 5;
+    } else if (n_bits <= 60) {
+        max_delta = 50;
+    } else if (n_bits <= 90) {
+        max_delta = 200;
+    } else {
+        max_delta = 1000;
+    }
+
+    // Collect all irreducible candidates in the search window
+    struct Candidate {
+        Integer m;
+        IntPolynomial f;
+    };
+    std::vector<Candidate> candidates;
+
+    for (int delta = -max_delta; delta <= max_delta; ++delta) {
         Integer m = m_base + Integer(delta);
         if (m <= Integer(1)) continue;
 
         auto f = construct_base_m_poly(n, m, degree);
-
-        // Must have correct degree
         if (f.degree() != degree) continue;
 
-        // Check irreducibility over Q via mod-p Rabin test
         if (check_irreducible_over_Q(f)) {
-            PolynomialSelectionResult result;
-            result.degree = degree;
-            result.m = std::move(m);
-            result.f = std::move(f);
-            result.success = true;
-            return result;
+            candidates.push_back({std::move(m), std::move(f)});
         }
     }
 
-    // Fallback: use m_base (heuristic couldn't prove irreducibility,
-    // but for degree 3-6 base-m polynomials this is overwhelmingly
-    // likely to be irreducible — just unlucky with mod-p tests)
+    if (candidates.empty()) {
+        // Fallback: use m_base (overwhelmingly likely irreducible)
+        PolynomialSelectionResult result;
+        result.degree = degree;
+        result.m = m_base.clone();
+        result.f = construct_base_m_poly(n, m_base, degree);
+        result.success = true;
+        return result;
+    }
+
+    // Small window or single candidate: return first (backward compat)
+    if (max_delta <= 5 || candidates.size() == 1) {
+        PolynomialSelectionResult result;
+        result.degree = degree;
+        result.m = std::move(candidates[0].m);
+        result.f = std::move(candidates[0].f);
+        result.success = true;
+        return result;
+    }
+
+    // Rank by Murphy E-score for larger search windows.
+    // Lightweight evaluator: alpha_bound=2000 (303 primes),
+    // sample_points=500 — sufficient for relative ranking.
+    MurphyParams mparams;
+    mparams.alpha_bound = 2000;
+    mparams.sample_points = 500;
+    auto gnfs_params = core::GNFSParams::compute(n_bits);
+    mparams.smoothness_bound = gnfs_params.algebraic_bound;
+
+    MurphyEvaluator evaluator(mparams);
+
+    size_t best_idx = 0;
+    double best_log_e = -1e100;
+
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        // g(x) = x - m
+        IntPolynomial g(0);
+        Integer neg_m = candidates[i].m.clone();
+        neg_m.negate();
+        g[0] = std::move(neg_m);
+        g[1] = Integer(1);
+
+        double skewness = PolynomialOptimizer::estimate_skewness(candidates[i].f);
+        auto score = evaluator.compute(candidates[i].f, g, n, skewness);
+
+        if (score.log_e_score > best_log_e) {
+            best_log_e = score.log_e_score;
+            best_idx = i;
+        }
+    }
+
     PolynomialSelectionResult result;
     result.degree = degree;
-    result.m = m_base.clone();
-    result.f = construct_base_m_poly(n, m_base, degree);
+    result.m = std::move(candidates[best_idx].m);
+    result.f = std::move(candidates[best_idx].f);
     result.success = true;
     return result;
 }
