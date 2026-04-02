@@ -129,11 +129,12 @@ public:
             return result;
         }
 
-        // Stage 2: 对每个候选进行根优化
+        // Stage 2: 对每个候选进行旋转 + 平移优化
         MurphyEvaluator evaluator(params_.murphy_params);
         std::optional<KleinjungResult> best_result;
         double best_log_score = -1e100;
         std::mutex result_mutex;
+        std::atomic<size_t> progress_count{0};
 
         auto process_candidate = [&](size_t idx) {
             if (is_cancelled()) return;
@@ -143,17 +144,17 @@ public:
 
             if (candidate_result.has_value()) {
                 std::lock_guard<std::mutex> lock(result_mutex);
-                // 使用 log_e_score 比较以处理大数
                 if (candidate_result->score.log_e_score > best_log_score) {
                     best_log_score = candidate_result->score.log_e_score;
                     best_result = std::move(candidate_result);
                 }
             }
 
-            // 报告进度
+            // 原子计数器确保并行下进度单调递增
+            size_t current = progress_count.fetch_add(1, std::memory_order_relaxed) + 1;
             {
                 std::lock_guard<std::mutex> lock(result_mutex);
-                report_progress(idx + 1, candidates.size(), best_log_score, "Stage 2: Optimizing");
+                report_progress(current, candidates.size(), best_log_score, "Stage 2: Optimizing");
             }
         };
 
@@ -180,7 +181,7 @@ public:
 
         if (best_result.has_value()) {
             result = std::move(best_result.value());
-            result.candidates_tested = candidates.size();
+            result.candidates_tested = progress_count.load(std::memory_order_relaxed);
             result.elapsed_seconds = elapsed;
         }
 
@@ -271,8 +272,8 @@ private:
                 double m_val = m.to_double();
                 double ad1_val = std::abs(ad1.to_double());
 
-                // 放宽条件：ad1 应该比 m 小或相近
-                if (ad1_val <= m_val * 2.0) {
+                // Stage 2 旋转优化只改 a₀/a₁，a_{d-1} 须在合理范围
+                if (ad1_val <= m_val * 1.0) {
                     candidates.emplace_back(ad.clone(), m.clone());
 
                     // 限制候选数量
@@ -303,8 +304,11 @@ private:
         return candidates;
     }
 
-    /// Stage 2: 根优化
-    /// 使用牛顿法优化 m，构造完整多项式并评分
+    /// Stage 2: 旋转 + 平移优化
+    /// 对每个 (a_d, m) 候选进行：
+    ///   1. 平移搜索 t ∈ [-5, +5]，产生 f(x+t) 与 m' = m - t
+    ///   2. 闭合形式旋转优化：k = round((m·a₀ - s²·a₁) / (m² + s²))
+    ///   3. L² norm 预筛 → Murphy E 精确评分
     [[nodiscard]] std::optional<KleinjungResult>
     stage2_root_optimization(
             const Integer& n,
@@ -314,52 +318,90 @@ private:
 
         uint32_t d = params_.degree;
 
-        // 构造初始多项式
-        auto f_opt = construct_polynomial(n, ad, m_init, d);
-        if (!f_opt.has_value()) {
-            return std::nullopt;
-        }
+        // 构造初始多项式 via base-m 展开
+        auto f_init = construct_polynomial(n, ad, m_init, d);
+        if (!f_init.has_value()) return std::nullopt;
+        if (!is_valid_polynomial(*f_init, n, m_init)) return std::nullopt;
 
-        IntPolynomial f = std::move(f_opt.value());
-        Integer m = m_init.clone();
+        IntPolynomial best_f;
+        Integer best_m;
+        double best_norm = 1e300;
 
-        // 牛顿法优化
-        IntPolynomial df = f.derivative();
-        auto m_refined = PolynomialOptimizer::newton_root(
-            f, df, m, n,
-            params_.root_opt_iterations,
-            params_.root_opt_precision);
+        // 平移 + 旋转网格搜索
+        for (int t = -5; t <= 5; ++t) {
+            IntPolynomial f_t;
+            Integer m_t;
 
-        if (m_refined.has_value()) {
-            // 用优化后的 m 重新构造多项式
-            auto f_new = construct_polynomial(n, ad, m_refined.value(), d);
-            if (f_new.has_value()) {
-                f = std::move(f_new.value());
-                m = std::move(m_refined.value());
+            if (t == 0) {
+                f_t = f_init->clone();
+                m_t = m_init.clone();
+            } else {
+                // f(x+t) 满足 f(x+t)|_{x=m-t} = f(m) ≡ 0 (mod N)
+                f_t = PolynomialOptimizer::translate(*f_init, static_cast<int64_t>(t));
+                m_t = m_init.clone();
+                m_t -= t;
+                if (m_t.is_zero() || m_t.is_negative()) continue;
+            }
+
+            // 度数可能被 normalize() 改变（极罕见：平移导致领导系数抵消）
+            if (f_t.degree() != d) continue;
+
+            // 迭代旋转优化 (3 轮)
+            // f_new = f + k·(x - m)，只改 a₀ 和 a₁
+            // 最优 k 最小化 L² norm: k = (m·a₀ - s²·a₁) / (m² + s²)
+            for (int iter = 0; iter < 3; ++iter) {
+                double s = PolynomialOptimizer::estimate_skewness(f_t);
+                if (s < 1.0) s = 1.0;
+                double s_sq = s * s;
+                double a0 = f_t[0].to_double();
+                double a1 = f_t[1].to_double();
+                double m_d = m_t.to_double();
+
+                double denom = m_d * m_d + s_sq;
+                if (denom < 1.0) break;
+
+                double k_d = (m_d * a0 - s_sq * a1) / denom;
+                int64_t k = static_cast<int64_t>(std::round(k_d));
+                if (k == 0) break;  // 已在最优点
+
+                // 限制 k 的幅度防止极端旋转
+                constexpr int64_t K_MAX = 10000;
+                if (k > K_MAX) k = K_MAX;
+                if (k < -K_MAX) k = -K_MAX;
+
+                f_t = PolynomialOptimizer::rotate_linear(f_t, m_t, k);
+            }
+
+            // L² norm 预筛
+            double s = PolynomialOptimizer::estimate_skewness(f_t);
+            double norm = PolynomialOptimizer::compute_size(f_t, s);
+
+            if (norm < best_norm) {
+                best_norm = norm;
+                best_f = std::move(f_t);
+                best_m = std::move(m_t);
             }
         }
 
-        // 验证多项式
-        if (!is_valid_polynomial(f, n, m)) {
-            return std::nullopt;
-        }
+        // 验证最佳多项式
+        if (best_norm >= 1e300) return std::nullopt;
+        if (!is_valid_polynomial(best_f, n, best_m)) return std::nullopt;
 
         // 构造 g(x) = x - m
-        std::vector<Integer> g_coeffs;
-        Integer neg_m = m.clone();
+        Integer neg_m = best_m.clone();
         neg_m.negate();
+        std::vector<Integer> g_coeffs;
         g_coeffs.push_back(std::move(neg_m));
         g_coeffs.push_back(Integer(static_cast<int64_t>(1)));
         IntPolynomial g(std::move(g_coeffs));
 
-        // 计算 Murphy E-score
-        MurphyScore score = evaluator.compute(f, g, n);
+        // 完整 Murphy E 评分
+        MurphyScore score = evaluator.compute(best_f, g, n);
 
-        // 构造结果
         KleinjungResult result;
-        result.f = std::move(f);
+        result.f = std::move(best_f);
         result.g = std::move(g);
-        result.m = std::move(m);
+        result.m = std::move(best_m);
         result.skewness = score.skewness;
         result.score = score;
         result.success = true;

@@ -208,6 +208,9 @@ void test_cancellation() {
     params.leading_coeff_bound = 100;
     params.num_candidates = 100;
     params.parallel = false;  // 串行以便测试取消
+    // 快速 Murphy 参数（测取消机制，不需精确评分）
+    params.murphy_params.alpha_bound = 50;
+    params.murphy_params.sample_points = 100;
 
     KleinjungSelector selector(params);
 
