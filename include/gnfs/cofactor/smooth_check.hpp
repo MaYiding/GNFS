@@ -137,9 +137,16 @@ struct CofactorClassification {
 }
 
 /// 使用 Pollard's rho 算法尝试分解
+/// Brent variant with batch GCD (128-step accumulation)
+///
+/// 相比 Floyd + 逐步 GCD:
+///   - Brent 减少 ~36% 函数求值（利用 2^k 步长周期探测）
+///   - 批量 GCD 减少 ~128× gcd 调用（累乘后一次性检测）
+///   - 当累积积恰好 ≡ 0 (mod n) 时自动回退逐步检测
+///
 /// @param n 要分解的数
-/// @param max_iterations 每次尝试的最大迭代次数
-/// @return 找到的因子，如果失败返回 1 或 n
+/// @param max_iterations 最大函数求值次数（跨所有 c 值的总限额）
+/// @return 找到的因子，如果失败返回 1
 [[nodiscard]] inline uint64_t pollard_rho(uint64_t n, size_t max_iterations = 100000) {
     if (n % 2 == 0) return 2;
     if (n % 3 == 0) return 3;
@@ -153,30 +160,63 @@ struct CofactorClassification {
         return a;
     };
 
-    // 尝试多个 c 值，避免单一多项式对某些 n 永远循环
-    for (uint64_t c = 1; c <= 19; c += 2) {
-        uint64_t x = 2, y = 2, d = 1;
-        size_t iterations = 0;
+    constexpr size_t BATCH_SIZE = 128;
 
+    for (uint64_t c = 1; c <= 19; c += 2) {
         auto f = [n, c](uint64_t x) -> uint64_t {
             __uint128_t xx = static_cast<__uint128_t>(x) * x + c;
             return static_cast<uint64_t>(xx % n);
         };
 
-        while (d == 1 && iterations < max_iterations) {
-            x = f(x);
-            y = f(f(y));
+        uint64_t x = 2, y = 2;
+        uint64_t d = 1;
+        uint64_t r = 1;      // Brent step size (doubles each phase)
+        uint64_t q = 1;      // accumulated product for batch GCD
+        uint64_t ys = 0;     // save point for backtracking
+        size_t total_evals = 0;
 
-            uint64_t diff = (x > y) ? x - y : y - x;
-            d = gcd(diff, n);
+        do {
+            x = y;
+            // Advance y by r steps (Brent phase advance)
+            for (uint64_t i = 0; i < r && total_evals < max_iterations; ++i, ++total_evals) {
+                y = f(y);
+            }
 
-            ++iterations;
+            // Inner loop: accumulate |x - y| products, check gcd every BATCH_SIZE
+            uint64_t k = 0;
+            do {
+                ys = y;
+                uint64_t batch = std::min(static_cast<uint64_t>(BATCH_SIZE), r - k);
+                for (uint64_t i = 0; i < batch && total_evals < max_iterations; ++i, ++total_evals) {
+                    y = f(y);
+                    uint64_t diff = (x > y) ? x - y : y - x;
+                    if (diff == 0) { d = n; break; } // cycle without factor
+                    __uint128_t qq = static_cast<__uint128_t>(q) * diff;
+                    q = static_cast<uint64_t>(qq % n);
+                }
+                if (q == 0) { d = n; break; } // product ≡ 0 (mod n)
+                d = gcd(q, n);
+                k += BATCH_SIZE;
+            } while (k < r && d == 1);
+
+            r *= 2;
+        } while (d == 1 && total_evals < max_iterations);
+
+        // Backtrack: batch product was divisible by n, check individual steps
+        if (d == n) {
+            d = 1;
+            while (d == 1) {
+                ys = f(ys);
+                uint64_t diff = (x > ys) ? x - ys : ys - x;
+                if (diff == 0) break;
+                d = gcd(diff, n);
+            }
         }
 
         if (d != 1 && d != n) return d;
     }
 
-    return 1;  // 所有 c 值均失败
+    return 1;
 }
 
 /// 分类 cofactor
