@@ -273,52 +273,7 @@ private:
         if (u < 0) u += p;
         if (v < 0) v += p;
 
-        // 简化处理：遍历 j，计算对应的 i
-        // i*u ≡ -j*v (mod p)
-        // 如果 u ≠ 0, i ≡ -j*v*u^{-1} (mod p)
-        // 加法筛：无条件 += log_p（无分支，去掉下溢检查）
-        if (u == 0 && v == 0) {
-            // 所有点都被整除
-            for (size_t idx = 0; idx < sieve_array_.size(); ++idx) {
-                sieve_array_[idx] += log_p;
-            }
-            return;
-        }
-
-        if (u == 0) {
-            // 只有 j ≡ 0 (mod p) 的行被整除
-            for (int32_t j = region_.j_min; j <= region_.j_max; ++j) {
-                if ((j % static_cast<int32_t>(p)) == 0) {
-                    for (int32_t i = region_.i_min; i <= region_.i_max; ++i) {
-                        size_t idx = region_.ij_to_index(i, j);
-                        sieve_array_[idx] += log_p;
-                    }
-                }
-            }
-            return;
-        }
-
-        // 计算 u 的模逆
-        uint64_t u_inv = mod_inverse(static_cast<uint64_t>(u), p);
-
-        // 对每个 j，计算 i_start，然后每隔 p 个位置筛一次
-        for (int32_t j = region_.j_min; j <= region_.j_max; ++j) {
-            // i ≡ -j*v*u^{-1} (mod p)
-            int64_t rhs = (-static_cast<int64_t>(j) * v) % static_cast<int64_t>(p);
-            if (rhs < 0) rhs += p;
-            int64_t i_mod = (rhs * static_cast<int64_t>(u_inv)) % static_cast<int64_t>(p);
-
-            // 找到范围内的第一个 i
-            int32_t i_start = region_.i_min + static_cast<int32_t>(
-                (static_cast<int64_t>(i_mod) - region_.i_min % static_cast<int64_t>(p) + p) % p);
-
-            for (int32_t i = i_start; i <= region_.i_max; i += static_cast<int32_t>(p)) {
-                size_t idx = region_.ij_to_index(i, j);
-                if (idx < sieve_array_.size()) {
-                    sieve_array_[idx] += log_p;
-                }
-            }
-        }
+        sieve_stride(u, v, p, log_p);
     }
 
     /// 代数侧筛
@@ -328,55 +283,52 @@ private:
         const auto& algebraics = fb_.algebraic();
         const size_t sieve_count = fb_.sieve_algebraic_count();
 
-        for (size_t idx = 0; idx < sieve_count; ++idx) {
-            const auto& ap = algebraics[idx];
-            // 跳过 projective roots（r = UINT32_MAX 不是有效的模根）
-            if (ap.is_projective()) {
-                continue;
-            }
-            // 跳过 special-q 本身
-            if (ap.p == sq.q && ap.r == sq.r) {
-                continue;
-            }
+        for (size_t ai = 0; ai < sieve_count; ++ai) {
+            const auto& ap = algebraics[ai];
+            if (ap.is_projective()) continue;
+            if (ap.p == sq.q && ap.r == sq.r) continue;
 
-            sieve_prime_algebraic(basis, ap.p, ap.r, ap.log_p);
+            // 对于代数侧 (GNFS convention)，p | (a - b*r)
+            int64_t p64 = static_cast<int64_t>(ap.p);
+            auto mod_reduce = [p64](int64_t val) -> int64_t {
+                int64_t rem = val % p64;
+                return rem < 0 ? rem + p64 : rem;
+            };
+            int64_t e0_mod = mod_reduce(basis.e0);
+            int64_t f0_mod = mod_reduce(basis.f0);
+            int64_t e1_mod = mod_reduce(basis.e1);
+            int64_t f1_mod = mod_reduce(basis.f1);
+            int64_t r64 = static_cast<int64_t>(ap.r);
+            int64_t u = (e0_mod - f0_mod * r64 % p64 + p64) % p64;
+            int64_t v = (e1_mod - f1_mod * r64 % p64 + p64) % p64;
+
+            sieve_stride(u, v, ap.p, ap.log_p);
         }
     }
 
-    /// 对单个代数侧素理想进行筛
-    void sieve_prime_algebraic(const LatticeBasis& basis, uint32_t p, uint32_t r, uint32_t log_p) {
-        // 对于代数侧 (GNFS convention)，p | N(a - bα) 当且仅当 p | (a - b*r)
-        // Prime ideal P = (p, α - r) divides (a - bα) iff a - b*r ≡ 0 (mod p)
-        //
-        // NOTE: 先对 p 取模再做乘法，防止 f0*r 溢出 int64
-        int64_t p64 = static_cast<int64_t>(p);
-        auto mod_reduce = [p64](int64_t val) -> int64_t {
-            int64_t rem = val % p64;
-            return rem < 0 ? rem + p64 : rem;
-        };
-        int64_t e0_mod = mod_reduce(basis.e0);
-        int64_t f0_mod = mod_reduce(basis.f0);
-        int64_t e1_mod = mod_reduce(basis.e1);
-        int64_t f1_mod = mod_reduce(basis.f1);
-        int64_t r64 = static_cast<int64_t>(r);
-        // f_mod * r64 fits in int64: both < p < 2^32
-        int64_t u = (e0_mod - f0_mod * r64 % p64 + p64) % p64;
-        int64_t v = (e1_mod - f1_mod * r64 % p64 + p64) % p64;
+    /// 公共筛法内循环：对给定 (u, v, p) 在筛区域中步进 += log_p
+    /// u, v: 格坐标到素数整除性的线性映射系数 (mod p)
+    ///   i*u + j*v ≡ 0 (mod p) 时该位置被 p 整除
+    /// 使用直接索引步进避免 per-hit ij_to_index 调用
+    void sieve_stride(int64_t u, int64_t v, uint32_t p, uint32_t log_p) {
+        const size_t w = static_cast<size_t>(region_.i_width());
+        const uint16_t lp = static_cast<uint16_t>(log_p);
 
-        // 加法筛：无条件 += log_p
         if (u == 0 && v == 0) {
             for (size_t idx = 0; idx < sieve_array_.size(); ++idx) {
-                sieve_array_[idx] += log_p;
+                sieve_array_[idx] += lp;
             }
             return;
         }
 
         if (u == 0) {
+            // 只有 j ≡ 0 (mod p) 的行被整除 → 整行 += log_p
+            int32_t p32 = static_cast<int32_t>(p);
             for (int32_t j = region_.j_min; j <= region_.j_max; ++j) {
-                if ((j % static_cast<int32_t>(p)) == 0) {
-                    for (int32_t i = region_.i_min; i <= region_.i_max; ++i) {
-                        size_t idx = region_.ij_to_index(i, j);
-                        sieve_array_[idx] += log_p;
+                if ((j % p32) == 0) {
+                    size_t row = static_cast<size_t>(j - region_.j_min) * w;
+                    for (size_t idx = row; idx < row + w; ++idx) {
+                        sieve_array_[idx] += lp;
                     }
                 }
             }
@@ -384,20 +336,23 @@ private:
         }
 
         uint64_t u_inv = mod_inverse(static_cast<uint64_t>(u), p);
+        const size_t stride = static_cast<size_t>(p);
 
         for (int32_t j = region_.j_min; j <= region_.j_max; ++j) {
-            int64_t rhs = (-static_cast<int64_t>(j) * v) % static_cast<int64_t>(p);
+            int64_t p64 = static_cast<int64_t>(p);
+            int64_t rhs = (-static_cast<int64_t>(j) * v) % p64;
             if (rhs < 0) rhs += p;
-            int64_t i_mod = (rhs * static_cast<int64_t>(u_inv)) % static_cast<int64_t>(p);
+            int64_t i_mod = (rhs * static_cast<int64_t>(u_inv)) % p64;
 
             int32_t i_start = region_.i_min + static_cast<int32_t>(
-                (static_cast<int64_t>(i_mod) - region_.i_min % static_cast<int64_t>(p) + p) % p);
+                (i_mod - region_.i_min % p64 + p) % p);
 
-            for (int32_t i = i_start; i <= region_.i_max; i += static_cast<int32_t>(p)) {
-                size_t idx = region_.ij_to_index(i, j);
-                if (idx < sieve_array_.size()) {
-                    sieve_array_[idx] += log_p;
-                }
+            // 直接索引步进：row_base + offset, stride = p
+            size_t row_base = static_cast<size_t>(j - region_.j_min) * w;
+            size_t row_end = row_base + w;
+            size_t idx = row_base + static_cast<size_t>(i_start - region_.i_min);
+            for (; idx < row_end; idx += stride) {
+                sieve_array_[idx] += lp;
             }
         }
     }
