@@ -7,8 +7,8 @@
 |------|------|------|
 | **P1-OPT** | 3 | Bucket Sieve, Sieve 内存, Kleinjung 质量 |
 | **P1** | 0 | (已清空) |
-| **P2** | 3 | SGE, Clique, NEON |
-| **P3** | 21 | 小优化 ×4, 远期架构 ×6, 代码质量 ×10, 调查 ×1 |
+| **P2** | 2 | Clique, NEON (SGE 已完成) |
+| **P3** | 18 | 小优化 ×2, 远期架构 ×6, 代码质量 ×9, 调查 ×1 |
 
 ---
 
@@ -45,33 +45,24 @@
 
 ## P2 — 中优先级
 
-### [FEAT] SGE 预处理（100+ 位必须）
-- **发现日期**: 2026-03-11 (Session 45)
-- **文件**: `linalg/` — 完全不存在
-- **描述**: BL 前做部分消元：weight-1 列→消去行列；weight-2 列→合并两行。3-5 轮收敛，矩阵降维 30-60%
-- **预期收益**: 100K+ 矩阵 BL 时间减少 30-60%
-
 ### [OPT] Clique removal 仅处理大素数侧 singleton
 - **发现日期**: 2026-03-11 (Session 45)
 - **文件**: `relation/filter.hpp:71-86,148-199`
 - **描述**: `filter_pass()` 只对大素数做 singleton removal，factor base 侧未处理。短期扩展为全列 singleton；中期由 SGE 处理
+- **备注**: SGE 已集成(Session 56)，可在矩阵层面处理全列 singleton
 
 ### [OPT] NEON SIMD 加速
 - **发现日期**: 2026-02-20 (Session 2), 补充 Session 45
-- **描述**: ARM NEON 加速三个方向:
+- **描述**: ARM NEON 加速两个方向:
   - Sieve: `vqsubq_u16` 减对数、`vminvq_u16` 候选扫描
   - LinAlg: `veorq_u64` GF(2) XOR
-  - BL `xor_with_mul_par` ctz 循环 (`block_lanczos.cpp:208-217`) → 4-bit lookup table (2-4×)
+- **已完成**: ✅ BL `xor_with_mul_par` ctz → 4-bit nibble LUT（Session 56, `3856308`）
 
 ---
 
 ## P3 — 低优先级
 
 ### 小优化
-
-#### [OPT] Pollard rho 无批量 GCD
-- **文件**: `cofactor/smooth_check.hpp:143-180`
-- **描述**: 每迭代一次 `gcd()`，Brent 改进每 128 步批量 GCD 可 5-10× 加速
 
 #### [OPT] Alpha 缺少判别式双根贡献
 - **文件**: `polynomial/murphy_evaluator.hpp:126-151`
@@ -80,10 +71,6 @@
 #### [OPT] BL Gaussian fallback 用 vector\<bool\> 低效
 - **文件**: `src/linalg/block_lanczos.cpp:291-365`
 - **描述**: ≤1000 才触发，影响有限，应改用 packed bitset 或标记 deprecated
-
-#### [OPT] 关系数 vs 列数余剩检查未应用
-- **文件**: `relation/filter.hpp:349-367`
-- **描述**: `required_relations()` 函数存在但几乎不被调用，管线只做最低限度 `has_excess()` 检查
 
 ### 远期架构
 
@@ -116,9 +103,6 @@
 #### [DEBT] log_scale 分散在三处
 - **文件**: `core/params.hpp`, `factor_base/builder.hpp`, `sieve/lattice_sieve.hpp`
 - **描述**: 三者独立维护默认值，Session 44 用 `SIEVE_LOG_SCALE=16` 常量临时修复
-
-#### [DEBT] test_25digit.cpp 预期因子注释错误
-- **文件**: `tests/test_25digit.cpp:44`
 
 #### [DEBT] uint64_t b → int64_t 截断（13 处）
 - **发现**: Session 5 | b 始终远小于 INT64_MAX，理论风险
