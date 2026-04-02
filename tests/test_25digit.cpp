@@ -42,7 +42,7 @@ private:
 int main() {
     // 25-digit (81-bit) semiprime
     Integer n("1669994516749619561652133");
-    // Expected: 40883763227 × 40853175319
+    // Expected: 1292282676071 × 1292282677523
 
     std::cout << "═══════════════════════════════════════════\n";
     std::cout << "  25-digit GNFS Factorization Test\n";
