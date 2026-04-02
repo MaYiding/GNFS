@@ -8,6 +8,7 @@
 #include <gnfs/relation/collector.hpp>
 #include <gnfs/relation/filter.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
+#include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
@@ -192,9 +193,24 @@ int main() {
     std::cout << "[Phase 5] Matrix: " << br.matrix.num_rows() << "×"
               << br.matrix.num_cols() << " in " << phase.sec() << "s\n";
 
+    // SGE preprocessing
+    phase.reset();
+    auto sge_result = linalg::SGE::preprocess(br.matrix);
+    std::cout << "[Phase 5] SGE: " << br.matrix.num_rows() << "×" << br.matrix.num_cols()
+              << " → " << sge_result.reduced_matrix.num_rows() << "×"
+              << sge_result.reduced_matrix.num_cols()
+              << " (w1=" << sge_result.weight1_eliminated
+              << " w2=" << sge_result.weight2_merged
+              << ") " << phase.sec() << "s\n";
+
     phase.reset();
     BlockLanczos solver;
-    auto deps = solver.find_dependencies(br.matrix);
+    auto deps = solver.find_dependencies(sge_result.reduced_matrix);
+
+    // Expand dependencies back to original matrix rows
+    for (auto& dep : deps) {
+        dep = sge_result.expand_dependency(dep);
+    }
     std::cout << "[Phase 5] Deps: " << deps.size() << " in " << phase.sec() << "s\n";
 
     // Phase 6: Square Root

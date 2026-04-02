@@ -18,6 +18,7 @@
 #include <gnfs/relation/collector.hpp>
 #include <gnfs/relation/filter.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
+#include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
@@ -424,9 +425,28 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
         return result;
     }
 
-    // Find dependencies - try to find more for better chances
-    std::cout << std::flush;  // Flush output before Block Lanczos
-    auto dependencies = find_dependencies(build_result.matrix);
+    // SGE preprocessing: eliminate weight-1/weight-2 columns to reduce matrix
+    SGEConfig sge_config;
+    sge_config.verbose = verbose;
+    auto sge_result = SGE::preprocess(build_result.matrix, sge_config);
+
+    if (verbose) {
+        std::cout << "SGE: " << build_result.matrix.num_rows() << "×"
+                  << build_result.matrix.num_cols()
+                  << " → " << sge_result.reduced_matrix.num_rows() << "×"
+                  << sge_result.reduced_matrix.num_cols()
+                  << " (w1=" << sge_result.weight1_eliminated
+                  << " w2=" << sge_result.weight2_merged << ")\n";
+    }
+
+    // Find dependencies on the reduced matrix
+    std::cout << std::flush;
+    auto dependencies = find_dependencies(sge_result.reduced_matrix);
+
+    // Expand dependencies back to original matrix rows
+    for (auto& dep : dependencies) {
+        dep = sge_result.expand_dependency(dep);
+    }
     std::cout << "Dependencies found: " << dependencies.size() << "\n" << std::flush;
 
     if (verbose) {
