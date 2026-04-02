@@ -17,6 +17,7 @@
 #include <gnfs/relation/collector.hpp>
 #include <gnfs/relation/filter.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
+#include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
@@ -364,9 +365,25 @@ FactResult factor_with_progress(const Integer& n, int level) {
         return result;
     }
 
+    // SGE preprocessing
+    phase.reset();
+    SGEConfig sge_config;
+    auto sge_result = SGE::preprocess(build_result.matrix, sge_config);
+    std::cout << "  SGE: " << mstats.num_rows << "×" << mstats.num_cols
+              << " → " << sge_result.reduced_matrix.num_rows() << "×"
+              << sge_result.reduced_matrix.num_cols()
+              << " (w1=" << sge_result.weight1_eliminated
+              << " w2=" << sge_result.weight2_merged
+              << ") " << phase.ms() << " ms\n" << std::flush;
+
     std::cout << "  Finding dependencies..." << std::flush;
     phase.reset();
-    auto deps = find_deps(build_result.matrix, 64);
+    auto deps = find_deps(sge_result.reduced_matrix, 64);
+
+    // Expand dependencies back to original matrix rows
+    for (auto& dep : deps) {
+        dep = sge_result.expand_dependency(dep);
+    }
     std::cout << " found " << deps.size() << " (" << phase.ms() << " ms)\n" << std::flush;
 
     result.dependencies = deps.size();

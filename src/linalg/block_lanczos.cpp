@@ -205,16 +205,42 @@ DenseGF2_64x64 inner_product_par(const BlockVector& A, const BlockVector& B,
 }
 
 /// Parallel xor_with_mul: dst += other * T_mat
+/// Uses 4-bit nibble lookup table for branchless GF(2) matrix-vector multiply.
+/// Pre-computes 16×16 LUT (2KB, fits L1 cache) per call.
 void xor_with_mul_par(BlockVector& dst, const BlockVector& other,
                       const uint64_t T_mat[64], gnfs::util::ThreadPool& pool) {
-    pool.parallel_for_index(0, dst.length, [&dst, &other, T_mat](size_t i) {
+    // Pre-compute 4-bit nibble lookup table
+    // lut[nibble_pos][nibble_val] = XOR of T_mat rows for set bits in nibble
+    uint64_t lut[16][16];
+    for (int n = 0; n < 16; ++n) {
+        lut[n][0] = 0;
+        for (int v = 1; v < 16; ++v) {
+            int lowest_bit = v & (-v);
+            int bit_idx = __builtin_ctz(static_cast<unsigned>(lowest_bit));
+            lut[n][v] = lut[n][v ^ lowest_bit] ^ T_mat[n * 4 + bit_idx];
+        }
+    }
+
+    pool.parallel_for_index(0, dst.length, [&dst, &other, &lut](size_t i) {
         uint64_t v = other.data[i];
         uint64_t acc = 0;
-        while (v) {
-            int j = __builtin_ctzll(v);
-            acc ^= T_mat[j];
-            v &= v - 1;
-        }
+        // Process 4 bits at a time — fixed 16 iterations, no branches
+        acc ^= lut[ 0][ v        & 0xF];
+        acc ^= lut[ 1][(v >>  4) & 0xF];
+        acc ^= lut[ 2][(v >>  8) & 0xF];
+        acc ^= lut[ 3][(v >> 12) & 0xF];
+        acc ^= lut[ 4][(v >> 16) & 0xF];
+        acc ^= lut[ 5][(v >> 20) & 0xF];
+        acc ^= lut[ 6][(v >> 24) & 0xF];
+        acc ^= lut[ 7][(v >> 28) & 0xF];
+        acc ^= lut[ 8][(v >> 32) & 0xF];
+        acc ^= lut[ 9][(v >> 36) & 0xF];
+        acc ^= lut[10][(v >> 40) & 0xF];
+        acc ^= lut[11][(v >> 44) & 0xF];
+        acc ^= lut[12][(v >> 48) & 0xF];
+        acc ^= lut[13][(v >> 52) & 0xF];
+        acc ^= lut[14][(v >> 56) & 0xF];
+        acc ^= lut[15][(v >> 60) & 0xF];
         dst.data[i] ^= acc;
     });
 }

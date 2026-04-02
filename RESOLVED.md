@@ -7,6 +7,40 @@
 
 ## 已完成 ✅
 
+### Session 56 — SGE 预处理 + BL LUT + Pollard rho 批量 GCD
+
+#### [FEAT] ~~SGE 预处理（100+ 位必须）~~ ✅
+- **发现**: 2026-03-11 (Session 45)
+- **解决**: 2026-03-12 (Session 56)
+- **文件**: `linalg/sge.hpp` (新), `tests/test_gnfs_e2e.cpp`, `tests/test_gnfs_progressive.cpp`, `tests/test_25digit.cpp`, `tests/test_linalg.cpp`
+- **修复**: SGE (Structured Gaussian Elimination) 在 BL 之前消除 weight-1 和 weight-2 列。包含依赖展开机制（reduced matrix → original rows）。4 个单元测试覆盖正确性
+- **验证**: smoke 20/20, E2E 通过, L1-L5 通过
+- **Commit**: `ea5d710`, `51a8649`
+- **备注**: 对当前测试规模(≤61bit)降维效果有限(1-11行)，因关系过滤+LP merge 已预处理了大部分低权重列。对 100+ bit N 的大矩阵预期降维 30-60%
+
+#### [OPT] ~~BL ctz 循环 → 4-bit nibble LUT~~ ✅
+- **发现**: 2026-02-20 (Session 2), 补充 Session 45
+- **解决**: 2026-03-12 (Session 56)
+- **文件**: `src/linalg/block_lanczos.cpp:207-246`
+- **修复**: `xor_with_mul_par` 内循环：ctz 逐 bit 提取(可变迭代,分支密集) → 4-bit nibble LUT 查表(固定16次,无分支)。LUT 2KB 适配 L1 cache
+- **验证**: smoke 20/20, E2E 通过, L1-L5 通过
+- **Commit**: `3856308`
+
+#### [OPT] ~~Pollard rho 无批量 GCD~~ ✅
+- **发现**: Session 2 (BACKLOG P3)
+- **解决**: 2026-03-12 (Session 56)
+- **文件**: `cofactor/smooth_check.hpp:143-213`
+- **修复**: Floyd 算法 → Brent 变种(减少 ~36% 函数求值)；逐步 GCD → 128 步批量 GCD(减少 128× gcd 调用)。含自动回退机制
+- **验证**: smoke 20/20, E2E 通过, L1-L5 通过
+- **Commit**: `1d5081e`
+
+#### [DEBT] ~~test_25digit.cpp 预期因子注释错误~~ ✅
+- **发现**: 2026-03-11 (Session 45)
+- **解决**: 2026-03-12 (Session 56)
+- **文件**: `tests/test_25digit.cpp:45`
+- **修复**: 注释 `40883763227 × 40853175319` → `1292282676071 × 1292282677523`（经 sympy 验证）
+- **Commit**: `1d62063`
+
 ### Session 55 — 管线分发 + ECM 回退 + 筛法优化
 
 #### [OPT] ~~Kleinjung 管线集成（分发部分）~~ ✅
