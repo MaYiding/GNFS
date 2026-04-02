@@ -5,9 +5,9 @@
 
 | 级别 | 条数 | 涵盖 |
 |------|------|------|
-| **P1-OPT** | 3 | Bucket Sieve, Sieve 内存, Kleinjung 质量 |
+| **P1-OPT** | 2 | Bucket Sieve, Kleinjung 质量 |
 | **P1** | 0 | (已清空) |
-| **P2** | 2 | Clique, NEON (SGE 已完成) |
+| **P2** | 0 | (已清空: Clique → SGE, NEON → 加法筛+LUT) |
 | **P3** | 18 | 小优化 ×2, 远期架构 ×6, 代码质量 ×9, 调查 ×1 |
 
 ---
@@ -21,16 +21,6 @@
 - **阈值**: `p_bucket ≈ sieve_i_width / 64`（约 2K-10K）
 - **预期收益**: 因子基 10⁵+ 时 3-10× 加速
 
-### [OPT] 筛选区域 + sieve_parallel 内存模型
-- **发现日期**: 2026-03-11 (Session 44+45)
-- **文件**: `core/params.hpp:127-134`, `sieve/lattice_sieve.hpp:141-143,179`
-- **描述**: 两个子问题:
-  1. **区域**: P0 修正后已缩小 (15K×3750 vs 旧 16K×16K)，但仍有优化空间
-  2. **sieve_parallel 内存**: 每线程构造完整 `LatticeSieve` 对象（含独立 sieve_array + resize）；每 SQ 全量 `std::fill` 清零
-- **优化方向**:
-  - 预分配 `num_threads` 个 LatticeSieve 对象复用（避免反复构造/析构）
-  - 增量清零（只清上个 SQ 的脏位置）
-
 ### [OPT] Kleinjung 多项式选择 — 实现质量提升（管线集成已完成）
 - **发现日期**: 2026-03-11 (Session 45), 原始 2026-02-20 (Session 2)
 - **文件**: `polynomial/kleinjung_selector.hpp`
@@ -40,23 +30,6 @@
 - **预期收益**: 更好多项式可减少筛选时间 2-5×
 
 ---
-
----
-
-## P2 — 中优先级
-
-### [OPT] Clique removal 仅处理大素数侧 singleton
-- **发现日期**: 2026-03-11 (Session 45)
-- **文件**: `relation/filter.hpp:71-86,148-199`
-- **描述**: `filter_pass()` 只对大素数做 singleton removal，factor base 侧未处理。短期扩展为全列 singleton；中期由 SGE 处理
-- **备注**: SGE 已集成(Session 56)，可在矩阵层面处理全列 singleton
-
-### [OPT] NEON SIMD 加速
-- **发现日期**: 2026-02-20 (Session 2), 补充 Session 45
-- **描述**: ARM NEON 加速两个方向:
-  - Sieve: `vqsubq_u16` 减对数、`vminvq_u16` 候选扫描
-  - LinAlg: `veorq_u64` GF(2) XOR
-- **已完成**: ✅ BL `xor_with_mul_par` ctz → 4-bit nibble LUT（Session 56, `3856308`）
 
 ---
 

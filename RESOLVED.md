@@ -7,6 +7,42 @@
 
 ## 已完成 ✅
 
+### Session 57 — 加法筛 + NEON 候选扫描 + 索引步进
+
+#### [OPT] ~~筛选内存模型 (sieve_parallel + init_sieve_array)~~ ✅
+- **发现**: 2026-03-11 (Session 44+45)
+- **解决**: 2026-03-12 (Session 57)
+- **文件**: `sieve/lattice_sieve.hpp`
+- **修复**: 加法筛替代减法筛：memset(0) 替代 std::fill(init_val)；无条件 `+= log_p` 替代条件分支减法；`collect_candidates` 用 effective threshold
+- **验证**: smoke 20/20, E2E 8.3s ✅, L1-L5 108s ✅ (Debug), 21.5s (Release)
+- **Commit**: `1fdc606`, `836809f`
+
+#### [OPT] ~~NEON SIMD 加速~~ ✅
+- **发现**: 2026-02-20 (Session 2), 补充 Session 45
+- **解决**: 2026-03-12 (Session 56+57)
+- **文件**: `sieve/lattice_sieve.hpp`, `src/linalg/block_lanczos.cpp`
+- **修复**: 三项 NEON/LUT 优化:
+  1. BL `xor_with_mul_par` ctz → 4-bit nibble LUT（Session 56, `3856308`）
+  2. 候选扫描 `vcgeq_u16` 8-wide + quick-reject（Session 57, `1fdc606`）
+  3. 筛法 `vqsubq_u16` 减法 → 无分支加法（加法筛消除了 SIMD 减法的需求）
+- **验证**: smoke 20/20, L1-L5 通过
+- **Commit**: `3856308`, `1fdc606`
+
+#### [OPT] ~~Clique removal 仅处理大素数侧 singleton~~ ✅ (已被 SGE 取代)
+- **发现**: 2026-03-11 (Session 45)
+- **解决**: 2026-03-12 (Session 57)
+- **文件**: `relation/filter.hpp`
+- **修复**: SGE 在矩阵层面处理全列 singleton（Session 56）。独立的 clique removal 扩展不再需要
+- **Commit**: 无代码改动（由 SGE 取代）
+
+#### [REFACTOR] ~~筛法内循环代码重复~~ ✅
+- **发现**: 2026-03-12 (Session 57)
+- **解决**: 2026-03-12 (Session 57)
+- **文件**: `sieve/lattice_sieve.hpp`
+- **修复**: 提取公共 `sieve_stride(u, v, p, log_p)` 函数，消除 rational/algebraic 两侧重复的筛法循环。内循环改为 precomputed `row_base + stride` 直接步进，消除 per-hit `ij_to_index` 调用
+- **验证**: smoke 20/20, E2E 通过, L1-L5 通过
+- **Commit**: `836809f`
+
 ### Session 56 — SGE 预处理 + BL LUT + Pollard rho 批量 GCD
 
 #### [FEAT] ~~SGE 预处理（100+ 位必须）~~ ✅
