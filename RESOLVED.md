@@ -7,6 +7,21 @@
 
 ## 已完成 ✅
 
+### Session 58 — Kleinjung rotation+translation optimization
+
+#### [OPT] ~~Kleinjung 多项式选择 — 实现质量提升~~ ✅
+- **发现**: 2026-02-20 (Session 2), 更新 2026-03-11 (Session 45/55)
+- **解决**: 2026-03-12 (Session 58)
+- **文件**: `polynomial/kleinjung_selector.hpp`, `tests/test_kleinjung.cpp`
+- **修复**: Stage 2 Newton root 是 no-op（f(m) ≡ 0 mod N → 立即返回），替换为:
+  1. 平移搜索 t ∈ [-5,+5]：f(x+t) 重平衡所有系数
+  2. 闭合形式旋转：k = (m·a₀ - s²·a₁)/(m² + s²) 迭代 3 轮
+  3. L² norm 预筛 → Murphy E 精确评分
+  附带修复：Stage 1 a_{d-1} 过滤 2.0× → 1.0×；并行进度原子计数器；candidates_tested 统计
+- **验证**: test_kleinjung 全通过, smoke 20/20, E2E 8.4s ✅, L1 ✅
+- **Commit**: `cf47804`
+- **备注**: Kleinjung 仅用于 degree ≥ 5（当前测试均 degree 3-4），真正效果需 100+ 位数 N 验证。剩余远期工作（格筛搜索、CADO-NFS 级别优化）降为 P3
+
 ### Session 58 — Row-major bucket sieve (L1 cache locality)
 
 #### [OPT] ~~Bucket Sieve 架构（80+ 位必须）~~ ✅
