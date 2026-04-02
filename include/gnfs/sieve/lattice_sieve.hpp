@@ -11,11 +11,16 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <cstdint>
 #include <functional>
 #include <numeric>
 #include <thread>
 #include <vector>
+
+#ifdef __ARM_NEON
+#include <arm_neon.h>
+#endif
 
 namespace gnfs {
 namespace sieve {
@@ -169,20 +174,19 @@ private:
     SieveParams params_;
     SieveRegion region_;
 
-    std::vector<uint16_t> sieve_array_;  // 使用 uint16_t 以支持更大的 log 值
+    std::vector<uint16_t> sieve_array_;  // 加法筛：累积 log_p 值
+    uint16_t last_init_val_ = 0;         // 当前 SQ 的初始 log 估计值
 
     RelationCallback relation_callback_;
     ProgressCallback progress_callback_;
 
-    /// 初始化筛数组
-    /// 设置初始 log 值（基于 (a, b) 的大小估计）
+    /// 初始化筛数组（加法筛：零填充）
+    /// 加法筛中数组从 0 开始，每个 FB 素数命中时 += log_p。
+    /// 候选检测时比较 accumulated >= (init_val - threshold)。
+    /// memset(0) 比 std::fill(init_val) 快：OS 级零页优化 + 无分支写入。
     void init_sieve_array(const LatticeBasis& basis) {
-        // 计算每个位置的初始 log 值
-        // 这是基于 |a + b*m| 和 |N(a, b)| 的估计
-        // 简化版本：使用均匀初始值
-        uint16_t init_val = estimate_initial_log(basis);
-
-        std::fill(sieve_array_.begin(), sieve_array_.end(), init_val);
+        last_init_val_ = estimate_initial_log(basis);
+        std::memset(sieve_array_.data(), 0, sieve_array_.size() * sizeof(uint16_t));
     }
 
     /// 估计初始 log 值
@@ -272,14 +276,11 @@ private:
         // 简化处理：遍历 j，计算对应的 i
         // i*u ≡ -j*v (mod p)
         // 如果 u ≠ 0, i ≡ -j*v*u^{-1} (mod p)
+        // 加法筛：无条件 += log_p（无分支，去掉下溢检查）
         if (u == 0 && v == 0) {
             // 所有点都被整除
             for (size_t idx = 0; idx < sieve_array_.size(); ++idx) {
-                if (sieve_array_[idx] >= log_p) {
-                    sieve_array_[idx] -= log_p;
-                } else {
-                    sieve_array_[idx] = 0;
-                }
+                sieve_array_[idx] += log_p;
             }
             return;
         }
@@ -290,9 +291,7 @@ private:
                 if ((j % static_cast<int32_t>(p)) == 0) {
                     for (int32_t i = region_.i_min; i <= region_.i_max; ++i) {
                         size_t idx = region_.ij_to_index(i, j);
-                        if (sieve_array_[idx] >= log_p) {
-                            sieve_array_[idx] -= log_p;
-                        }
+                        sieve_array_[idx] += log_p;
                     }
                 }
             }
@@ -315,8 +314,8 @@ private:
 
             for (int32_t i = i_start; i <= region_.i_max; i += static_cast<int32_t>(p)) {
                 size_t idx = region_.ij_to_index(i, j);
-                if (idx < sieve_array_.size() && sieve_array_[idx] >= log_p) {
-                    sieve_array_[idx] -= log_p;
+                if (idx < sieve_array_.size()) {
+                    sieve_array_[idx] += log_p;
                 }
             }
         }
@@ -364,11 +363,10 @@ private:
         int64_t u = (e0_mod - f0_mod * r64 % p64 + p64) % p64;
         int64_t v = (e1_mod - f1_mod * r64 % p64 + p64) % p64;
 
+        // 加法筛：无条件 += log_p
         if (u == 0 && v == 0) {
             for (size_t idx = 0; idx < sieve_array_.size(); ++idx) {
-                if (sieve_array_[idx] >= log_p) {
-                    sieve_array_[idx] -= log_p;
-                }
+                sieve_array_[idx] += log_p;
             }
             return;
         }
@@ -378,9 +376,7 @@ private:
                 if ((j % static_cast<int32_t>(p)) == 0) {
                     for (int32_t i = region_.i_min; i <= region_.i_max; ++i) {
                         size_t idx = region_.ij_to_index(i, j);
-                        if (sieve_array_[idx] >= log_p) {
-                            sieve_array_[idx] -= log_p;
-                        }
+                        sieve_array_[idx] += log_p;
                     }
                 }
             }
@@ -399,40 +395,75 @@ private:
 
             for (int32_t i = i_start; i <= region_.i_max; i += static_cast<int32_t>(p)) {
                 size_t idx = region_.ij_to_index(i, j);
-                if (idx < sieve_array_.size() && sieve_array_[idx] >= log_p) {
-                    sieve_array_[idx] -= log_p;
+                if (idx < sieve_array_.size()) {
+                    sieve_array_[idx] += log_p;
                 }
             }
         }
     }
 
-    /// 收集候选点
+    /// 收集候选点（加法筛 + NEON 向量化扫描）
+    /// 加法筛中：candidate iff accumulated >= (init_val - threshold)
+    /// 等价于旧减法筛中：residual <= threshold
     [[nodiscard]] std::vector<SieveCandidate> collect_candidates(const LatticeBasis& basis) const {
         std::vector<SieveCandidate> candidates;
 
         uint16_t threshold = params_.combined_threshold();
+        // effective_threshold = init_val - threshold (clamped to 0)
+        uint16_t eff_thresh = (last_init_val_ > threshold) ?
+            static_cast<uint16_t>(last_init_val_ - threshold) : uint16_t(0);
 
-        for (size_t idx = 0; idx < sieve_array_.size(); ++idx) {
-            if (sieve_array_[idx] <= threshold) {
-                auto [i, j] = region_.index_to_ij(idx);
-                auto [a, b] = basis.to_ab(i, j);
+        auto process_hit = [&](size_t idx) {
+            auto [i, j] = region_.index_to_ij(idx);
+            auto [a, b] = basis.to_ab(i, j);
+            if (b <= 0) return;
+            if (std::gcd(util::safe_abs(a), b) != 1) return;
 
-                // 只保留 b > 0 的情况
-                if (b <= 0) continue;
+            SieveCandidate cand;
+            cand.i = i;
+            cand.j = j;
+            cand.a = a;
+            cand.b = static_cast<uint64_t>(b);
+            // residual = init_val - accumulated (backwards compat)
+            uint16_t acc = sieve_array_[idx];
+            cand.residual = static_cast<uint8_t>(
+                std::min(static_cast<uint16_t>(acc <= last_init_val_ ?
+                    last_init_val_ - acc : 0), uint16_t(255)));
+            candidates.push_back(cand);
+        };
 
-                // 确保 gcd(a, b) = 1
-                if (std::gcd(util::safe_abs(a), b) != 1) continue;
+        const size_t n = sieve_array_.size();
 
-                SieveCandidate cand;
-                cand.i = i;
-                cand.j = j;
-                cand.a = a;
-                cand.b = static_cast<uint64_t>(b);
-                cand.residual = static_cast<uint8_t>(sieve_array_[idx]);
+#ifdef __ARM_NEON
+        // NEON: scan 8 × uint16 per iteration, quick-reject blocks with no hits
+        const uint16x8_t thresh_vec = vdupq_n_u16(eff_thresh);
+        const size_t vec_end = n & ~size_t(7);
 
-                candidates.push_back(cand);
+        for (size_t idx = 0; idx < vec_end; idx += 8) {
+            uint16x8_t vals = vld1q_u16(&sieve_array_[idx]);
+            uint16x8_t cmp = vcgeq_u16(vals, thresh_vec);
+            // Quick reject: all 128 bits zero → no candidates in this block
+            uint64x2_t cmp64 = vreinterpretq_u64_u16(cmp);
+            if ((vgetq_lane_u64(cmp64, 0) | vgetq_lane_u64(cmp64, 1)) == 0)
+                continue;
+            // At least one hit — check individual lanes
+            for (size_t k = 0; k < 8; ++k) {
+                if (sieve_array_[idx + k] >= eff_thresh)
+                    process_hit(idx + k);
             }
         }
+        // Scalar tail
+        for (size_t idx = vec_end; idx < n; ++idx) {
+            if (sieve_array_[idx] >= eff_thresh)
+                process_hit(idx);
+        }
+#else
+        // Scalar fallback
+        for (size_t idx = 0; idx < n; ++idx) {
+            if (sieve_array_[idx] >= eff_thresh)
+                process_hit(idx);
+        }
+#endif
 
         return candidates;
     }
