@@ -5,6 +5,7 @@
 #include <gnfs/linalg/gauss.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/schirokauer.hpp>
+#include <gnfs/linalg/sge.hpp>
 #include <gnfs/core/relation.hpp>
 #include <gnfs/core/polynomial_context.hpp>
 
@@ -682,6 +683,170 @@ void test_ensure_all_sorted() {
     std::cout << "  ensure_all_sorted: PASSED" << std::endl;
 }
 
+// Test SGE: weight-1 column elimination
+void test_sge_weight1() {
+    std::cout << "Testing SGE weight-1 elimination..." << std::endl;
+
+    // 4×4 matrix where column 2 has weight 1 (only row 1)
+    // Row 0: {0, 1}
+    // Row 1: {0, 2}     ← only contributor to col 2
+    // Row 2: {1, 3}
+    // Row 3: {0, 3}
+    SparseMatrix mat(4, 4);
+    mat.set(0, 0); mat.set(0, 1);
+    mat.set(1, 0); mat.set(1, 2);
+    mat.set(2, 1); mat.set(2, 3);
+    mat.set(3, 0); mat.set(3, 3);
+
+    SGEConfig config;
+    config.eliminate_weight2 = false; // only test weight-1
+    auto result = SGE::preprocess(mat, config);
+
+    // Row 1 should be eliminated (weight-1 col 2)
+    assert(result.reduced_matrix.num_rows() == 3);
+    assert(result.weight1_eliminated >= 1);
+
+    // Verify row composition: each reduced row maps to exactly one original row
+    for (auto& comp : result.row_composition) {
+        assert(!comp.empty());
+    }
+
+    std::cout << "  SGE weight-1: " << result.original_rows << "×" << result.original_cols
+              << " → " << result.reduced_matrix.num_rows() << "×"
+              << result.reduced_matrix.num_cols()
+              << " (w1=" << result.weight1_eliminated << ")" << std::endl;
+    std::cout << "  PASSED" << std::endl;
+}
+
+// Test SGE: weight-2 column merging
+void test_sge_weight2() {
+    std::cout << "Testing SGE weight-2 merging..." << std::endl;
+
+    // 5×6 matrix: cols 4,5 have weight 2; cols 0-3 have weight 3
+    // Row 0: {0, 1, 2, 3}
+    // Row 1: {0, 2, 4}
+    // Row 2: {1, 3, 4}      ← shares col 4 with row 1
+    // Row 3: {0, 1, 5}
+    // Row 4: {2, 3, 5}      ← shares col 5 with row 3
+    SparseMatrix mat(5, 6);
+    mat.set(0, 0); mat.set(0, 1); mat.set(0, 2); mat.set(0, 3);
+    mat.set(1, 0); mat.set(1, 2); mat.set(1, 4);
+    mat.set(2, 1); mat.set(2, 3); mat.set(2, 4);
+    mat.set(3, 0); mat.set(3, 1); mat.set(3, 5);
+    mat.set(4, 2); mat.set(4, 3); mat.set(4, 5);
+
+    SGEConfig config;
+    config.eliminate_weight1 = false; // only test weight-2
+    auto result = SGE::preprocess(mat, config);
+
+    // Two weight-2 merges: cols 4 and 5 → 2 rows eliminated
+    assert(result.reduced_matrix.num_rows() == 3);
+    assert(result.weight2_merged == 2);
+
+    // The merged rows' compositions should contain 2 original rows
+    size_t merged_count = 0;
+    for (auto& comp : result.row_composition) {
+        if (comp.size() == 2) ++merged_count;
+    }
+    assert(merged_count == 2);
+
+    std::cout << "  SGE weight-2: " << result.original_rows << "×" << result.original_cols
+              << " → " << result.reduced_matrix.num_rows() << "×"
+              << result.reduced_matrix.num_cols()
+              << " (w2=" << result.weight2_merged << ")" << std::endl;
+    std::cout << "  PASSED" << std::endl;
+}
+
+// Test SGE: dependency expansion correctness
+void test_sge_expand_dependency() {
+    std::cout << "Testing SGE dependency expansion..." << std::endl;
+
+    // Create a matrix with known null space, apply SGE, find deps on reduced,
+    // expand back, and verify against original.
+    // 6×4 matrix (6 rows, 4 cols) — excess = 2
+    // Design: rows 0,1,2 XOR to zero (a dependency)
+    // Row 0: {0, 1}
+    // Row 1: {1, 2}
+    // Row 2: {0, 2}        ← XOR of rows 0,1 = row 2
+    // Row 3: {0, 3}         (column 3 has weight 2: rows 3,4)
+    // Row 4: {2, 3}
+    // Row 5: {1}             (column 1 has weight 3)
+    SparseMatrix mat(6, 4);
+    mat.set(0, 0); mat.set(0, 1);
+    mat.set(1, 1); mat.set(1, 2);
+    mat.set(2, 0); mat.set(2, 2);
+    mat.set(3, 0); mat.set(3, 3);
+    mat.set(4, 2); mat.set(4, 3);
+    mat.set(5, 1);
+
+    auto sge_result = SGE::preprocess(mat);
+
+    std::cout << "  SGE: 6×4 → " << sge_result.reduced_matrix.num_rows() << "×"
+              << sge_result.reduced_matrix.num_cols()
+              << " (w1=" << sge_result.weight1_eliminated
+              << " w2=" << sge_result.weight2_merged << ")" << std::endl;
+
+    // Find deps on reduced matrix
+    BlockLanczos solver;
+    auto deps = solver.find_dependencies(sge_result.reduced_matrix);
+    assert(!deps.empty());
+
+    // Expand and verify against original matrix
+    for (auto& dep : deps) {
+        auto orig = sge_result.expand_dependency(dep);
+        assert(orig.size() == 6);
+
+        // Verify: v^T * M = 0 over GF(2)
+        std::vector<bool> check(4, false);
+        for (size_t r = 0; r < 6; ++r) {
+            if (!orig[r]) continue;
+            for (auto col : mat.row(r).indices()) {
+                check[col] = !check[col];
+            }
+        }
+        for (size_t c = 0; c < 4; ++c) {
+            assert(!check[c]);
+        }
+    }
+
+    std::cout << "  Expanded deps verified: " << deps.size() << " deps, all v^T*M=0" << std::endl;
+    std::cout << "  PASSED" << std::endl;
+}
+
+// Test SGE: empty and trivial matrices
+void test_sge_edge_cases() {
+    std::cout << "Testing SGE edge cases..." << std::endl;
+
+    // Empty matrix
+    {
+        SparseMatrix empty(0, 0);
+        auto result = SGE::preprocess(empty);
+        assert(result.reduced_matrix.num_rows() == 0);
+        assert(result.reduced_matrix.num_cols() == 0);
+    }
+
+    // 1×1 matrix
+    {
+        SparseMatrix tiny(1, 1);
+        tiny.set(0, 0);
+        auto result = SGE::preprocess(tiny);
+        // Weight-1 column → eliminated
+        assert(result.reduced_matrix.num_rows() == 0);
+        assert(result.weight1_eliminated == 1);
+    }
+
+    // Identity matrix (all weight-1 columns)
+    {
+        SparseMatrix ident(5, 5);
+        for (size_t i = 0; i < 5; ++i) ident.set(i, i);
+        auto result = SGE::preprocess(ident);
+        assert(result.reduced_matrix.num_rows() == 0);
+        assert(result.weight1_eliminated == 5);
+    }
+
+    std::cout << "  Edge cases: PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Linear Algebra Tests ===" << std::endl;
     std::cout << std::endl;
@@ -704,6 +869,10 @@ int main() {
     test_schirokauer_squarefree_reducible();
     test_parallel_block_lanczos_correctness();
     test_ensure_all_sorted();
+    test_sge_weight1();
+    test_sge_weight2();
+    test_sge_expand_dependency();
+    test_sge_edge_cases();
 
     std::cout << std::endl;
     std::cout << "=== All Linear Algebra Tests PASSED ===" << std::endl;
