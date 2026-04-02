@@ -7,6 +7,17 @@
 
 ## 已完成 ✅
 
+### Session 58 — Row-major bucket sieve (L1 cache locality)
+
+#### [OPT] ~~Bucket Sieve 架构（80+ 位必须）~~ ✅
+- **发现**: 2026-02-20 (Session 2), 更新 2026-03-11 (Session 45)
+- **解决**: 2026-03-12 (Session 58)
+- **文件**: `sieve/lattice_sieve.hpp`
+- **修复**: Row-major bucket sieve 替代 per-prime 遍历。旧方法：for each prime → for each row（L1 miss per (prime,row)）。新方法：for each row → for each prime（行在 L1 中热驻留）。预计算 PrimeEntry（mod_inverse + 格参数），逐行处理所有素数贡献。L1 miss: O(FB×j_height) → O(j_height)
+- **验证**: smoke 20/20, E2E 8.3s ✅, L1-L5 98.4s (Debug), 20.5s (Release) ✅
+- **Commit**: `82a9d19`
+- **备注**: 对当前测试规模（FB ~3K-24K）改善 ~5-9%。对 100+ 位 N（FB 50K+）改善更显著，因 cache traffic 随 FB_size 线性增长
+
 ### Session 57 — 加法筛 + NEON 候选扫描 + 索引步进
 
 #### [OPT] ~~筛选内存模型 (sieve_parallel + init_sieve_array)~~ ✅

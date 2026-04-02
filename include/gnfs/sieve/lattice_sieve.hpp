@@ -103,6 +103,9 @@ public:
     }
 
     /// 对单个 special-q 进行筛法
+    /// 使用 row-major bucket sieve：预计算所有 FB 素数的格参数，
+    /// 然后逐行处理（每行在 L1 cache 中热驻留，所有素数贡献完成后才移到下一行）。
+    /// 相比旧的 per-prime 遍历，L1 miss 从 O(FB_size × j_height) 降到 O(j_height)。
     [[nodiscard]] SieveResult sieve_special_q(const SpecialQ& sq) {
         SieveResult result;
         result.special_q = sq;
@@ -110,14 +113,14 @@ public:
         // 1. 计算格基
         LatticeBasis basis = compute_lattice_basis(sq);
 
-        // 2. 初始化筛数组
+        // 2. 初始化筛数组（memset(0)，加法筛）
         init_sieve_array(basis);
 
-        // 3. 有理侧筛
-        sieve_rational_side(basis);
+        // 3. 预计算所有 FB 素数的格参数
+        auto primes = build_prime_entries(basis, sq);
 
-        // 4. 代数侧筛
-        sieve_algebraic_side(basis, sq);
+        // 4. Row-major 筛法：逐行处理，每行在 L1 中热驻留
+        sieve_row_major(primes);
 
         // 5. 收集候选点
         result.candidates = collect_candidates(basis);
@@ -221,41 +224,35 @@ private:
                                                static_cast<double>(UINT16_MAX)));
     }
 
-    /// 有理侧筛
-    void sieve_rational_side(const LatticeBasis& basis) {
-        const auto& rationals = fb_.rational();
+    // ── Row-major bucket sieve 数据结构 ──────────────────────
 
-        for (const auto& rp : rationals) {
-            uint32_t p = rp.p;
-            uint32_t log_p = rp.log_p;
+    /// 预计算的 FB 素数条目
+    /// 存储格坐标映射参数，避免 per-row 重复计算 mod_inverse
+    struct PrimeEntry {
+        uint32_t p;        // 素数
+        uint16_t log_p;    // log 贡献
+        uint16_t flags;    // 0=normal, 1=u_zero (整行命中), 2=uv_zero (全局命中)
+        uint64_t u_inv;    // mod_inverse(u, p)，仅 flags==0 时有效
+        int64_t v;         // 格参数 v (mod p)
+    };
 
-            // 找到格中被 p 整除的位置
-            // 对于有理侧 (GNFS convention)，p | (a - b*m)
-            // 需要找到格点 (i, j) 使得 (i*e0 + j*e1) - (i*f0 + j*f1)*m ≡ 0 (mod p)
-            sieve_prime_rational(basis, p, log_p);
-        }
-    }
+    // ── 格参数计算 ──────────────────────────────────────────
 
-    /// 对单个有理侧素数进行筛
-    void sieve_prime_rational(const LatticeBasis& basis, uint32_t p, uint32_t log_p) {
-        // 计算 m mod p
+    /// 计算有理侧 (u, v) 参数
+    /// u = (e0 - f0·m) mod p, v = (e1 - f1·m) mod p
+    /// 格点 (i,j) 满足 p | (a - b·m) iff i·u + j·v ≡ 0 (mod p)
+    [[nodiscard]] std::pair<int64_t, int64_t> compute_rational_uv(
+            const LatticeBasis& basis, uint32_t p) const {
         uint64_t m_mod_p = 0;
         if (ctx_.m().fits_uint64()) {
             m_mod_p = ctx_.m().to_uint64() % p;
         } else {
-            // 大数取模
             core::Integer p_int(static_cast<unsigned long long>(p));
             core::Integer m_mod;
             core::Integer::mod(m_mod, ctx_.m(), p_int);
             m_mod_p = m_mod.to_uint64();
         }
 
-        // 对于格中的点 (a, b) = (i*e0 + j*e1, i*f0 + j*f1)
-        // 有理侧值 (GNFS) = a - b*m = i*(e0 - f0*m) + j*(e1 - f1*m)
-        // 设 u = (e0 - f0*m) mod p, v = (e1 - f1*m) mod p
-        // 需要找 (i, j) 使得 i*u + j*v ≡ 0 (mod p)
-        //
-        // NOTE: 先对 p 取模再做乘法，防止 f0*m_mod_p 溢出 int64
         int64_t p64 = static_cast<int64_t>(p);
         auto mod_reduce = [p64](int64_t val) -> int64_t {
             int64_t r = val % p64;
@@ -269,90 +266,130 @@ private:
         // f_mod * m64 fits in int64: both < p < 2^32
         int64_t u = (e0_mod - f0_mod * m64 % p64 + p64) % p64;
         int64_t v = (e1_mod - f1_mod * m64 % p64 + p64) % p64;
-
-        if (u < 0) u += p;
-        if (v < 0) v += p;
-
-        sieve_stride(u, v, p, log_p);
+        return {u, v};
     }
 
-    /// 代数侧筛
-    /// 只使用筛选范围内的代数素数（≤ algebraic_bound），
-    /// 跳过 special-Q 范围的素数（它们只供 SpecialQGenerator 使用）
-    void sieve_algebraic_side(const LatticeBasis& basis, const SpecialQ& sq) {
+    /// 计算代数侧 (u, v) 参数
+    /// u = (e0 - f0·r) mod p, v = (e1 - f1·r) mod p
+    /// 格点 (i,j) 满足 p | (a - b·r) iff i·u + j·v ≡ 0 (mod p)
+    [[nodiscard]] std::pair<int64_t, int64_t> compute_algebraic_uv(
+            const LatticeBasis& basis, uint32_t p, uint32_t r) const {
+        int64_t p64 = static_cast<int64_t>(p);
+        auto mod_reduce = [p64](int64_t val) -> int64_t {
+            int64_t rem = val % p64;
+            return rem < 0 ? rem + p64 : rem;
+        };
+        int64_t e0_mod = mod_reduce(basis.e0);
+        int64_t f0_mod = mod_reduce(basis.f0);
+        int64_t e1_mod = mod_reduce(basis.e1);
+        int64_t f1_mod = mod_reduce(basis.f1);
+        int64_t r64 = static_cast<int64_t>(r);
+        int64_t u = (e0_mod - f0_mod * r64 % p64 + p64) % p64;
+        int64_t v = (e1_mod - f1_mod * r64 % p64 + p64) % p64;
+        return {u, v};
+    }
+
+    // ── 素数预计算 ──────────────────────────────────────────
+
+    /// 为所有 FB 素数预计算格参数（mod_inverse 等）
+    /// 每个 SQ 调用一次，结果供 sieve_row_major() 使用
+    [[nodiscard]] std::vector<PrimeEntry> build_prime_entries(
+            const LatticeBasis& basis, const SpecialQ& sq) const {
+
+        std::vector<PrimeEntry> entries;
+        entries.reserve(fb_.rational_count() + fb_.sieve_algebraic_count());
+
+        auto make_entry = [](int64_t u, int64_t v, uint32_t p, uint32_t log_p) -> PrimeEntry {
+            PrimeEntry pe;
+            pe.p = p;
+            pe.log_p = static_cast<uint16_t>(log_p);
+            if (u == 0 && v == 0) {
+                pe.flags = 2; pe.u_inv = 0; pe.v = 0;
+            } else if (u == 0) {
+                pe.flags = 1; pe.u_inv = 0; pe.v = v;
+            } else {
+                pe.flags = 0;
+                pe.u_inv = mod_inverse(static_cast<uint64_t>(u), p);
+                pe.v = v;
+            }
+            return pe;
+        };
+
+        // 有理侧 FB
+        for (const auto& rp : fb_.rational()) {
+            auto [u, v] = compute_rational_uv(basis, rp.p);
+            entries.push_back(make_entry(u, v, rp.p, rp.log_p));
+        }
+
+        // 代数侧 FB（仅筛选范围，跳过投影根和 SQ 本身）
         const auto& algebraics = fb_.algebraic();
         const size_t sieve_count = fb_.sieve_algebraic_count();
-
         for (size_t ai = 0; ai < sieve_count; ++ai) {
             const auto& ap = algebraics[ai];
             if (ap.is_projective()) continue;
             if (ap.p == sq.q && ap.r == sq.r) continue;
-
-            // 对于代数侧 (GNFS convention)，p | (a - b*r)
-            int64_t p64 = static_cast<int64_t>(ap.p);
-            auto mod_reduce = [p64](int64_t val) -> int64_t {
-                int64_t rem = val % p64;
-                return rem < 0 ? rem + p64 : rem;
-            };
-            int64_t e0_mod = mod_reduce(basis.e0);
-            int64_t f0_mod = mod_reduce(basis.f0);
-            int64_t e1_mod = mod_reduce(basis.e1);
-            int64_t f1_mod = mod_reduce(basis.f1);
-            int64_t r64 = static_cast<int64_t>(ap.r);
-            int64_t u = (e0_mod - f0_mod * r64 % p64 + p64) % p64;
-            int64_t v = (e1_mod - f1_mod * r64 % p64 + p64) % p64;
-
-            sieve_stride(u, v, ap.p, ap.log_p);
+            auto [u, v] = compute_algebraic_uv(basis, ap.p, ap.r);
+            entries.push_back(make_entry(u, v, ap.p, ap.log_p));
         }
+
+        return entries;
     }
 
-    /// 公共筛法内循环：对给定 (u, v, p) 在筛区域中步进 += log_p
-    /// u, v: 格坐标到素数整除性的线性映射系数 (mod p)
-    ///   i*u + j*v ≡ 0 (mod p) 时该位置被 p 整除
-    /// 使用直接索引步进避免 per-hit ij_to_index 调用
-    void sieve_stride(int64_t u, int64_t v, uint32_t p, uint32_t log_p) {
+    // ── Row-major 筛法核心 ──────────────────────────────────
+
+    /// Row-major 筛法：逐行处理所有素数贡献
+    ///
+    /// 关键优化：旧方法 per-prime 遍历所有行（每个素数 × 每行 = L1 miss），
+    /// row-major 反转循环顺序——每行保持在 L1 cache 中，所有素数贡献完成后才换行。
+    /// L1 miss: O(FB_size × j_height) → O(j_height)
+    void sieve_row_major(const std::vector<PrimeEntry>& primes) {
         const size_t w = static_cast<size_t>(region_.i_width());
-        const uint16_t lp = static_cast<uint16_t>(log_p);
+        const int32_t i_min = region_.i_min;
 
-        if (u == 0 && v == 0) {
-            for (size_t idx = 0; idx < sieve_array_.size(); ++idx) {
-                sieve_array_[idx] += lp;
+        // Phase 0: 全局命中素数（u=0, v=0 → 每个位置都被整除，极罕见）
+        for (const auto& pe : primes) {
+            if (pe.flags == 2) {
+                uint16_t lp = pe.log_p;
+                for (size_t idx = 0; idx < sieve_array_.size(); ++idx)
+                    sieve_array_[idx] += lp;
             }
-            return;
         }
 
-        if (u == 0) {
-            // 只有 j ≡ 0 (mod p) 的行被整除 → 整行 += log_p
-            int32_t p32 = static_cast<int32_t>(p);
-            for (int32_t j = region_.j_min; j <= region_.j_max; ++j) {
-                if ((j % p32) == 0) {
-                    size_t row = static_cast<size_t>(j - region_.j_min) * w;
-                    for (size_t idx = row; idx < row + w; ++idx) {
-                        sieve_array_[idx] += lp;
-                    }
-                }
-            }
-            return;
-        }
-
-        uint64_t u_inv = mod_inverse(static_cast<uint64_t>(u), p);
-        const size_t stride = static_cast<size_t>(p);
-
+        // Phase 1: 逐行处理
         for (int32_t j = region_.j_min; j <= region_.j_max; ++j) {
-            int64_t p64 = static_cast<int64_t>(p);
-            int64_t rhs = (-static_cast<int64_t>(j) * v) % p64;
-            if (rhs < 0) rhs += p;
-            int64_t i_mod = (rhs * static_cast<int64_t>(u_inv)) % p64;
-
-            int32_t i_start = region_.i_min + static_cast<int32_t>(
-                (i_mod - region_.i_min % p64 + p) % p);
-
-            // 直接索引步进：row_base + offset, stride = p
             size_t row_base = static_cast<size_t>(j - region_.j_min) * w;
             size_t row_end = row_base + w;
-            size_t idx = row_base + static_cast<size_t>(i_start - region_.i_min);
-            for (; idx < row_end; idx += stride) {
-                sieve_array_[idx] += lp;
+
+            for (const auto& pe : primes) {
+                if (pe.flags == 2) continue;  // 已在 Phase 0 处理
+
+                if (pe.flags == 1) {
+                    // u=0: 当 j ≡ 0 (mod p) 时整行命中
+                    if ((j % static_cast<int32_t>(pe.p)) == 0) {
+                        uint16_t lp = pe.log_p;
+                        for (size_t idx = row_base; idx < row_end; ++idx)
+                            sieve_array_[idx] += lp;
+                    }
+                    continue;
+                }
+
+                // 标准情况：计算本行的起始 i 位置
+                // i·u + j·v ≡ 0 (mod p) → i ≡ -j·v·u⁻¹ (mod p)
+                int64_t p64 = static_cast<int64_t>(pe.p);
+                int64_t rhs = (-static_cast<int64_t>(j) * pe.v) % p64;
+                if (rhs < 0) rhs += pe.p;
+                int64_t i_mod = (rhs * static_cast<int64_t>(pe.u_inv)) % p64;
+
+                int32_t i_start = i_min + static_cast<int32_t>(
+                    (i_mod - i_min % p64 + pe.p) % pe.p);
+
+                // 行内步进（该行在 L1 cache 中热驻留）
+                size_t idx = row_base + static_cast<size_t>(i_start - i_min);
+                uint16_t lp = pe.log_p;
+                size_t stride = static_cast<size_t>(pe.p);
+                for (; idx < row_end; idx += stride) {
+                    sieve_array_[idx] += lp;
+                }
             }
         }
     }
