@@ -135,7 +135,7 @@ struct GFPolyOps {
         return {old_r, old_s, old_t};
     }
 
-    /// x^exp mod (f, p) using square-and-multiply
+    /// base^exp mod (mod, p) using square-and-multiply
     static Poly powmod(Poly base, uint64_t exp, const Poly& mod, uint64_t p) {
         Poly result = {1};
         base = divmod(base, mod, p).second;
