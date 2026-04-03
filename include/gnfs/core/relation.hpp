@@ -3,6 +3,7 @@
 #include "gnfs/core/integer.hpp"
 #include "gnfs/core/types.hpp"
 #include "gnfs/util/safe_math.hpp"
+#include <cassert>
 #include <vector>
 #include <cstdint>
 #include <iostream>
@@ -36,7 +37,10 @@ struct Relation {
     Relation() = default;
 
     // Constructor with (a, b) pair
-    Relation(int64_t a_, int64_t b_) : a(a_), b(b_) {}
+    // b must be positive (lattice coordinate); int64_t suffices since b << sieve_j_max
+    Relation(int64_t a_, int64_t b_) : a(a_), b(b_) {
+        assert(b_ > 0 && "Relation::b must be positive");
+    }
 
     // Get as ABPair
     [[nodiscard]] ABPair ab() const {
