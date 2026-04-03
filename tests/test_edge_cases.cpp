@@ -799,6 +799,51 @@ void test_relation_serialization_edge_cases() {
         assert(r2.algebraic_large_prime[0].p == 999979ULL);
     }
 
+    // Merged relation with extra_ab_pairs
+    {
+        Relation r(int64_t(100), int64_t(7));
+        r.rational_factors = {0, 1};
+        r.algebraic_factors = {2, 3, 4};
+        r.extra_ab_pairs = {{-50, 3}, {200, 11}};
+        std::stringstream ss;
+        r.serialize(ss);
+        auto r2 = Relation::deserialize(ss);
+        assert(r2.a == 100 && r2.b == 7);
+        assert(r2.extra_ab_pairs.size() == 2);
+        assert(r2.extra_ab_pairs[0].first == -50);
+        assert(r2.extra_ab_pairs[0].second == 3);
+        assert(r2.extra_ab_pairs[1].first == 200);
+        assert(r2.extra_ab_pairs[1].second == 11);
+        assert(r2.is_merged());
+    }
+
+    // Checksum corruption detection
+    {
+        Relation r(int64_t(42), int64_t(1));
+        std::stringstream ss;
+        r.serialize(ss);
+        // Flip a byte in the middle of the stream
+        std::string data = ss.str();
+        assert(data.size() > 16);
+        data[12] ^= 0xFF;  // corrupt a data byte
+        std::stringstream ss2(data);
+        bool caught = false;
+        try { Relation::deserialize(ss2); }
+        catch (const std::runtime_error&) { caught = true; }
+        assert(caught);
+    }
+
+    // Invalid magic detection
+    {
+        std::stringstream ss;
+        uint32_t bad_magic = 0xDEADBEEF;
+        ss.write(reinterpret_cast<const char*>(&bad_magic), sizeof(bad_magic));
+        bool caught = false;
+        try { Relation::deserialize(ss); }
+        catch (const std::runtime_error&) { caught = true; }
+        assert(caught);
+    }
+
     std::cout << "  PASS" << std::endl;
 }
 
