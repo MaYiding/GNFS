@@ -127,28 +127,44 @@ public:
     }
 
     /// 计算 alpha 值（指定素数上界）
+    ///
+    /// alpha = Σ_p [ (effective_r_p / p - 1/(p-1)) + double_root_bonus ] · log(p)
+    /// 其中 double_root_bonus = 1/p² per double root（f'(r) ≡ 0 mod p）
     [[nodiscard]] double compute_alpha(const IntPolynomial& f, double prime_bound) const {
         double alpha = 0.0;
+
+        // 预计算 f' 用于双根检测
+        IntPolynomial df = f.derivative();
 
         for (uint32_t p : small_primes_) {
             if (p > prime_bound) break;
 
-            // 计算 f mod p 的根数
+            // 计算 f mod p 的根（不含重数）
             auto roots = f.roots_mod_p(p);
             uint32_t r = static_cast<uint32_t>(roots.size());
 
-            // 贡献公式:
+            // 基础贡献:
             // contribution = (r/p - 1/(p-1)) * log(p)
             // r/p 是被 p 整除的概率
             // 1/(p-1) 是随机数被 p 整除的期望
+            double log_p = std::log(static_cast<double>(p));
             double contribution = (static_cast<double>(r) / p
-                                 - 1.0 / (p - 1)) * std::log(static_cast<double>(p));
+                                 - 1.0 / (p - 1)) * log_p;
+
+            // 双根额外贡献 (p | disc(f))
+            // 若 f(r) ≡ 0 且 f'(r) ≡ 0 mod p，则 r 是双根
+            // 双根使 p² | f(a - bα) 的概率增加 1/p²
+            for (uint32_t root : roots) {
+                if (df.evaluate_mod(root, p) == 0) {
+                    contribution += log_p / (static_cast<double>(p) * p);
+                }
+            }
 
             // 投影根的额外贡献
             // 如果 p | leading_coeff(f)，则有投影根
             if (f.leading_coeff().fits_uint64()) {
                 if (f.leading_coeff().to_uint64() % p == 0) {
-                    contribution += std::log(static_cast<double>(p)) / p;
+                    contribution += log_p / p;
                 }
             }
 
