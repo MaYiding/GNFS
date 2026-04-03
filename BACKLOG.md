@@ -8,19 +8,13 @@
 | **P1-OPT** | 0 | (已清空) |
 | **P1** | 0 | (已清空) |
 | **P2** | 0 | (已清空) |
-| **P3** | 14 | 小优化 ×1, 远期架构 ×6, 代码质量 ×6, 调查 ×1 |
+| **P3** | 9 | 远期架构 ×6, 代码质量 ×3 |
 
 ---
 
 ---
 
 ## P3 — 低优先级
-
-### 小优化
-
-#### [OPT] BL Gaussian fallback 用 vector\<bool\> 低效
-- **文件**: `src/linalg/block_lanczos.cpp:291-365`
-- **描述**: ≤1000 才触发，影响有限，应改用 packed bitset 或标记 deprecated
 
 ### 远期架构
 
@@ -46,13 +40,6 @@
 
 ### 代码质量
 
-#### [DEBT] large_prime_bits 参数字段
-- **文件**: `core/params.hpp:15-56`
-- **描述**: LP bound 存 raw uint64，应增加 `large_prime_bits` 字段（与 CADO-NFS 一致）
-
-#### [DEBT] uint64_t b → int64_t 截断（13 处）
-- **发现**: Session 5 | b 始终远小于 INT64_MAX，理论风险
-
 #### [DEBT] FactorBase 缺少序列化
 - **文件**: `factor_base/factor_base.hpp:137-141`
 
@@ -61,18 +48,6 @@
 
 #### [DEBT] -Wconversion 清理（~60 处）
 - **发现**: Session 18 | 大多 cosmetic
-
-#### [DEBT] 根目录遗留文件清理
-
-### 调查
-
-#### [RISK] sieve_parallel + 高 threshold 下 cofactorizer 通过率异常
-- **发现日期**: 2026-03-11 (Session 44)
-- **调查**: 2026-03-12 (Session 55) — **sieve_parallel 线程安全已确认**
-  - 每线程独立 LatticeSieve 对象，无共享可变状态
-  - 原子计数器 (relaxed) 分配 SQ，各线程写唯一 `all_results[idx]`
-  - 异常可能来自下游 cofactorizer 配置或报告统计口径，非筛法本身
-- **状态**: 降级为 P3 观测项，sieve 安全，关注 cofactorizer 侧
 
 ---
 

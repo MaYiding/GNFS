@@ -34,6 +34,10 @@ task_plan.md
 findings.md
 progress.md
 
+# ===== Backup Files =====
+*.bak
+*.orig
+
 # ===== Legacy Root Scripts (Cleanup Candidates) =====
 # These are legacy files from early development.
 # If you need to track them, remove the corresponding line.

@@ -3,6 +3,7 @@
 #include "gnfs/core/integer.hpp"
 #include "gnfs/core/types.hpp"
 #include "gnfs/util/safe_math.hpp"
+#include <cassert>
 #include <vector>
 #include <cstdint>
 #include <iostream>
@@ -36,6 +37,8 @@ struct Relation {
     Relation() = default;
 
     // Constructor with (a, b) pair
+    // Note: callers passing uint64_t b (sieve/cofactorizer) rely on b << INT64_MAX
+    // (b is bounded by sieve_j_max, typically < 50000). No runtime guard needed.
     Relation(int64_t a_, int64_t b_) : a(a_), b(b_) {}
 
     // Get as ABPair
