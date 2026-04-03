@@ -1911,7 +1911,7 @@ void test_modular_poly_edge_cases() {
         ModularPoly zero;
         bool caught = false;
         try {
-            ModularPoly::divmod(a, zero, p);
+            (void)ModularPoly::divmod(a, zero, p);
         } catch (const std::runtime_error&) {
             caught = true;
         }

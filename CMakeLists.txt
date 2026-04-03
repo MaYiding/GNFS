@@ -16,7 +16,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # 编译警告
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    add_compile_options(-Wall -Wextra -Wpedantic)
+    add_compile_options(-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
     # 优化 — Apple Silicon 用 -mcpu=native（隐含 -march），x86 用 -march=native
     if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
         set(GNFS_NATIVE_FLAG -mcpu=native)
