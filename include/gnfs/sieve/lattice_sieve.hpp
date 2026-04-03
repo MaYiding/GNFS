@@ -212,9 +212,20 @@ private:
         if (rat_val < 1.0) rat_val = 1.0;
         double rat_log = std::log2(rat_val) * params_.log_scale;
 
-        // 代数侧: |N(a,b)| ~ |a|^d * some_factor
+        // 代数侧: |N(a,b)| = |b^d * f(a/b)| = |sum f_i * a^i * b^(d-i)|
+        // 使用多项式系数的正确估计（旧代码忽略 b^d 和 leading_coeff）
         uint32_t d = ctx_.degree();
-        double alg_val = std::pow(std::max(typical_a, 1.0), d);  // clamp to avoid log2(0)
+        double alg_val = 0.0;
+        double a_pow = 1.0;  // a^i
+        double b_pow = std::pow(std::max(typical_b, 1.0), d);  // b^d
+        double b_inv = (typical_b > 0.1) ? (1.0 / typical_b) : 1.0;
+        for (uint32_t i = 0; i <= d; ++i) {
+            double ci = ctx_.coeff(i).to_double();
+            alg_val += std::abs(ci) * a_pow * b_pow;
+            a_pow *= std::max(typical_a, 1.0);
+            b_pow *= b_inv;  // b^(d-i) → b^(d-i-1)
+        }
+        if (alg_val < 1.0) alg_val = 1.0;
         double alg_log = std::log2(alg_val) * params_.log_scale;
 
         // 返回合并值（final guard against NaN/Inf from edge cases）
