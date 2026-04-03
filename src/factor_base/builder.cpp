@@ -2,8 +2,11 @@
 #include "gnfs/sqrt/modular_poly.hpp"
 #include <algorithm>
 #include <cmath>
+#include <istream>
+#include <ostream>
 #include <random>
 #include <stdexcept>
+#include <string>
 
 namespace gnfs::factor_base {
 
@@ -11,13 +14,93 @@ namespace gnfs::factor_base {
 // FactorBase methods (save/load - inline methods are in header)
 // ============================================================
 
-void FactorBase::save(std::ostream& /* os */) const {
-    // TODO: Implement serialization
+void FactorBase::save(std::ostream& os) const {
+    // Magic + version header
+    constexpr uint32_t MAGIC = 0x47464246;  // "GFBF" (GNFS Factor Base Format)
+    constexpr uint32_t VERSION = 1;
+    os.write(reinterpret_cast<const char*>(&MAGIC), sizeof(MAGIC));
+    os.write(reinterpret_cast<const char*>(&VERSION), sizeof(VERSION));
+
+    // Params
+    os.write(reinterpret_cast<const char*>(&params_.rational_bound), sizeof(params_.rational_bound));
+    os.write(reinterpret_cast<const char*>(&params_.algebraic_bound), sizeof(params_.algebraic_bound));
+    os.write(reinterpret_cast<const char*>(&params_.large_prime_bound), sizeof(params_.large_prime_bound));
+    os.write(reinterpret_cast<const char*>(&params_.log_scale), sizeof(params_.log_scale));
+
+    // Sieve algebraic count
+    uint64_t sac = static_cast<uint64_t>(sieve_algebraic_count_);
+    os.write(reinterpret_cast<const char*>(&sac), sizeof(sac));
+
+    // Rational primes
+    uint32_t rat_count = static_cast<uint32_t>(rational_.size());
+    os.write(reinterpret_cast<const char*>(&rat_count), sizeof(rat_count));
+    for (const auto& rp : rational_) {
+        os.write(reinterpret_cast<const char*>(&rp.p), sizeof(rp.p));
+        os.write(reinterpret_cast<const char*>(&rp.log_p), sizeof(rp.log_p));
+    }
+
+    // Algebraic primes
+    uint32_t alg_count = static_cast<uint32_t>(algebraic_.size());
+    os.write(reinterpret_cast<const char*>(&alg_count), sizeof(alg_count));
+    for (const auto& ap : algebraic_) {
+        os.write(reinterpret_cast<const char*>(&ap.p), sizeof(ap.p));
+        os.write(reinterpret_cast<const char*>(&ap.r), sizeof(ap.r));
+        os.write(reinterpret_cast<const char*>(&ap.log_p), sizeof(ap.log_p));
+        os.write(reinterpret_cast<const char*>(&ap.degree), sizeof(ap.degree));
+    }
 }
 
-FactorBase FactorBase::load(std::istream& /* is */) {
-    // TODO: Implement deserialization
-    return FactorBase();
+FactorBase FactorBase::load(std::istream& is) {
+    // Magic + version
+    uint32_t magic, version;
+    is.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+    is.read(reinterpret_cast<char*>(&version), sizeof(version));
+    if (magic != 0x47464246)
+        throw std::runtime_error("FactorBase::load: invalid magic number");
+    if (version != 1)
+        throw std::runtime_error("FactorBase::load: unsupported version " + std::to_string(version));
+
+    // Params
+    FactorBaseParams params;
+    is.read(reinterpret_cast<char*>(&params.rational_bound), sizeof(params.rational_bound));
+    is.read(reinterpret_cast<char*>(&params.algebraic_bound), sizeof(params.algebraic_bound));
+    is.read(reinterpret_cast<char*>(&params.large_prime_bound), sizeof(params.large_prime_bound));
+    is.read(reinterpret_cast<char*>(&params.log_scale), sizeof(params.log_scale));
+
+    FactorBase fb(params);
+
+    // Sieve algebraic count
+    uint64_t sac;
+    is.read(reinterpret_cast<char*>(&sac), sizeof(sac));
+    fb.sieve_algebraic_count_ = static_cast<size_t>(sac);
+
+    // Rational primes
+    uint32_t rat_count;
+    is.read(reinterpret_cast<char*>(&rat_count), sizeof(rat_count));
+    fb.rational_.resize(rat_count);
+    for (uint32_t i = 0; i < rat_count; ++i) {
+        is.read(reinterpret_cast<char*>(&fb.rational_[i].p), sizeof(uint32_t));
+        is.read(reinterpret_cast<char*>(&fb.rational_[i].log_p), sizeof(uint32_t));
+    }
+
+    // Algebraic primes
+    uint32_t alg_count;
+    is.read(reinterpret_cast<char*>(&alg_count), sizeof(alg_count));
+    fb.algebraic_.resize(alg_count);
+    for (uint32_t i = 0; i < alg_count; ++i) {
+        is.read(reinterpret_cast<char*>(&fb.algebraic_[i].p), sizeof(uint32_t));
+        is.read(reinterpret_cast<char*>(&fb.algebraic_[i].r), sizeof(uint32_t));
+        is.read(reinterpret_cast<char*>(&fb.algebraic_[i].log_p), sizeof(uint32_t));
+        is.read(reinterpret_cast<char*>(&fb.algebraic_[i].degree), sizeof(uint8_t));
+    }
+
+    // Rebuild index tables
+    fb.build_index();
+
+    if (!is)
+        throw std::runtime_error("FactorBase::load: unexpected end of stream");
+
+    return fb;
 }
 
 // ============================================================
