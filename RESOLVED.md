@@ -7,6 +7,29 @@
 
 ## 已完成 ✅
 
+### Session 60 — P3 code quality cleanup (3 items)
+
+#### [DEBT] ~~FactorBase 缺少序列化~~ ✅
+- **解决**: 2026-03-12 (Session 60)
+- **文件**: `src/factor_base/builder.cpp`, `tests/test_factor_base.cpp`
+- **修复**: 实现 `save()`/`load()`，二进制格式含 magic(0x47464246) + version(1)。序列化 params、sieve_algebraic_count、rational/algebraic primes，load 时自动重建索引表
+- **验证**: 新增 roundtrip + error handling 测试，`test_factor_base` 全部通过
+- **Commit**: `49c9b64`
+
+#### [DEBT] ~~Relation 序列化格式（无版本/校验和）~~ ✅
+- **解决**: 2026-03-12 (Session 60)
+- **文件**: `include/gnfs/core/relation.hpp`, `tests/test_edge_cases.cpp`
+- **修复**: V2 格式：magic(0x52454C46) + version(2) + XOR 校验和。修复 `extra_ab_pairs` 未被序列化的数据丢失 bug。新增 merged relation roundtrip、checksum 损坏检测、invalid magic 检测测试
+- **验证**: `test_edge_cases` + `test_cofactor` 全部通过
+- **Commit**: `c0fb684`
+
+#### [DEBT] ~~-Wconversion 清理（~60 处）~~ ✅
+- **解决**: 2026-03-12 (Session 60)
+- **文件**: `CMakeLists.txt`
+- **修复**: Session 18 发现的 ~60 处 conversion warnings 在后续 sessions 中已逐步修复。正式启用 `-Wconversion -Wsign-conversion` 到 CMakeLists.txt，0 warnings 通过。修复 `test_edge_cases.cpp` 一处 `nodiscard` warning
+- **验证**: 清洁构建 0 warnings，所有冒烟测试通过
+- **Commit**: `5212941`
+
 ### Session 59 — P3 batch cleanup #2 (5 items)
 
 #### [OPT] ~~BL Gaussian fallback 用 vector\<bool\> 低效~~ ✅

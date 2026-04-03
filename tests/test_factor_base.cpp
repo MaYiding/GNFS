@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <iostream>
+#include <sstream>
 
 using namespace gnfs;
 using namespace gnfs::factor_base;
@@ -273,6 +274,102 @@ void test_base_m_irreducibility() {
     std::cout << "  ALL base-m irreducibility tests PASSED" << std::endl;
 }
 
+void test_serialization_roundtrip() {
+    std::cout << "Testing serialization roundtrip..." << std::endl;
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    assert(result.success);
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    FactorBaseBuilder::Options opts;
+    opts.rational_bound = 1000;
+    opts.algebraic_bound = 2000;
+    opts.special_q_bound = 3000;
+    opts.parallel = false;
+
+    auto fb = FactorBaseBuilder::build(ctx, opts);
+
+    // Save to stream
+    std::stringstream ss;
+    fb.save(ss);
+
+    // Load back
+    ss.seekg(0);
+    auto fb2 = FactorBase::load(ss);
+
+    // Verify params
+    assert(fb2.params().rational_bound == fb.params().rational_bound);
+    assert(fb2.params().algebraic_bound == fb.params().algebraic_bound);
+    assert(fb2.params().large_prime_bound == fb.params().large_prime_bound);
+    assert(fb2.params().log_scale == fb.params().log_scale);
+
+    // Verify counts
+    assert(fb2.rational_count() == fb.rational_count());
+    assert(fb2.algebraic_count() == fb.algebraic_count());
+    assert(fb2.sieve_algebraic_count() == fb.sieve_algebraic_count());
+
+    // Verify rational primes content
+    auto rat1 = fb.rational();
+    auto rat2 = fb2.rational();
+    for (size_t i = 0; i < rat1.size(); ++i) {
+        assert(rat1[i].p == rat2[i].p);
+        assert(rat1[i].log_p == rat2[i].log_p);
+    }
+
+    // Verify algebraic primes content
+    auto alg1 = fb.algebraic();
+    auto alg2 = fb2.algebraic();
+    for (size_t i = 0; i < alg1.size(); ++i) {
+        assert(alg1[i].p == alg2[i].p);
+        assert(alg1[i].r == alg2[i].r);
+        assert(alg1[i].log_p == alg2[i].log_p);
+        assert(alg1[i].degree == alg2[i].degree);
+    }
+
+    // Verify index lookup works after load
+    for (const auto& rp : rat1) {
+        auto idx = fb2.find_rational(rp.p);
+        assert(idx.has_value());
+        assert(fb2.rational()[*idx].p == rp.p);
+    }
+
+    std::cout << "  Serialization roundtrip: PASS ("
+              << fb.rational_count() << " rat, "
+              << fb.algebraic_count() << " alg, "
+              << "sieve_alg=" << fb.sieve_algebraic_count() << ")" << std::endl;
+}
+
+void test_serialization_invalid() {
+    std::cout << "Testing serialization error handling..." << std::endl;
+
+    // Bad magic
+    {
+        std::stringstream ss;
+        uint32_t bad_magic = 0xDEADBEEF;
+        ss.write(reinterpret_cast<const char*>(&bad_magic), sizeof(bad_magic));
+        bool caught = false;
+        try { FactorBase::load(ss); }
+        catch (const std::runtime_error&) { caught = true; }
+        assert(caught);
+    }
+
+    // Bad version
+    {
+        std::stringstream ss;
+        uint32_t magic = 0x47464246;
+        uint32_t bad_version = 99;
+        ss.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+        ss.write(reinterpret_cast<const char*>(&bad_version), sizeof(bad_version));
+        bool caught = false;
+        try { FactorBase::load(ss); }
+        catch (const std::runtime_error&) { caught = true; }
+        assert(caught);
+    }
+
+    std::cout << "  Serialization error handling: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== Factor Base Tests ===" << std::endl;
 
@@ -283,6 +380,8 @@ int main() {
     test_parallel_build();
     test_larger_bound();
     test_base_m_irreducibility();
+    test_serialization_roundtrip();
+    test_serialization_invalid();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

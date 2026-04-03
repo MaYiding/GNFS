@@ -4,9 +4,10 @@
 #include "gnfs/core/types.hpp"
 #include "gnfs/util/safe_math.hpp"
 #include <cassert>
-#include <vector>
 #include <cstdint>
 #include <iostream>
+#include <stdexcept>
+#include <vector>
 
 namespace gnfs::core {
 
@@ -79,85 +80,149 @@ struct Relation {
         return copy;
     }
 
-    // Serialize to output stream
+    // Serialization format constants
+    static constexpr uint32_t SERIALIZE_MAGIC   = 0x52454C46;  // "RELF"
+    static constexpr uint32_t SERIALIZE_VERSION = 2;
+
+    // Serialize to output stream (v2: magic + version + extra_ab_pairs + checksum)
     void serialize(std::ostream& os) const {
-        os.write(reinterpret_cast<const char*>(&a), sizeof(a));
-        os.write(reinterpret_cast<const char*>(&b), sizeof(b));
+        uint64_t checksum = 0;
+        auto write_and_xor = [&](const void* ptr, size_t n) {
+            os.write(reinterpret_cast<const char*>(ptr), static_cast<std::streamsize>(n));
+            auto* bytes = reinterpret_cast<const uint8_t*>(ptr);
+            for (size_t i = 0; i < n; ++i)
+                checksum ^= static_cast<uint64_t>(bytes[i]) << ((i & 7) * 8);
+        };
 
-        // Write rational factors
+        // Header
+        write_and_xor(&SERIALIZE_MAGIC, sizeof(SERIALIZE_MAGIC));
+        write_and_xor(&SERIALIZE_VERSION, sizeof(SERIALIZE_VERSION));
+
+        // Core fields
+        write_and_xor(&a, sizeof(a));
+        write_and_xor(&b, sizeof(b));
+
+        // Rational factors
         uint32_t rat_count = static_cast<uint32_t>(rational_factors.size());
-        os.write(reinterpret_cast<const char*>(&rat_count), sizeof(rat_count));
-        os.write(reinterpret_cast<const char*>(rational_factors.data()),
-                 rat_count * sizeof(uint32_t));
+        write_and_xor(&rat_count, sizeof(rat_count));
+        for (uint32_t i = 0; i < rat_count; ++i)
+            write_and_xor(&rational_factors[i], sizeof(uint32_t));
 
-        // Write algebraic factors
+        // Algebraic factors
         uint32_t alg_count = static_cast<uint32_t>(algebraic_factors.size());
-        os.write(reinterpret_cast<const char*>(&alg_count), sizeof(alg_count));
-        os.write(reinterpret_cast<const char*>(algebraic_factors.data()),
-                 alg_count * sizeof(uint32_t));
+        write_and_xor(&alg_count, sizeof(alg_count));
+        for (uint32_t i = 0; i < alg_count; ++i)
+            write_and_xor(&algebraic_factors[i], sizeof(uint32_t));
 
-        // Write large primes (rational)
+        // Large primes (rational)
         uint32_t lp_rat_count = static_cast<uint32_t>(rational_large_prime.size());
-        os.write(reinterpret_cast<const char*>(&lp_rat_count), sizeof(lp_rat_count));
+        write_and_xor(&lp_rat_count, sizeof(lp_rat_count));
         for (const auto& lp : rational_large_prime) {
-            os.write(reinterpret_cast<const char*>(&lp.p), sizeof(lp.p));
-            os.write(reinterpret_cast<const char*>(&lp.r), sizeof(lp.r));
-            os.write(reinterpret_cast<const char*>(&lp.e), sizeof(lp.e));
+            write_and_xor(&lp.p, sizeof(lp.p));
+            write_and_xor(&lp.r, sizeof(lp.r));
+            write_and_xor(&lp.e, sizeof(lp.e));
         }
 
-        // Write large primes (algebraic)
+        // Large primes (algebraic)
         uint32_t lp_alg_count = static_cast<uint32_t>(algebraic_large_prime.size());
-        os.write(reinterpret_cast<const char*>(&lp_alg_count), sizeof(lp_alg_count));
+        write_and_xor(&lp_alg_count, sizeof(lp_alg_count));
         for (const auto& lp : algebraic_large_prime) {
-            os.write(reinterpret_cast<const char*>(&lp.p), sizeof(lp.p));
-            os.write(reinterpret_cast<const char*>(&lp.r), sizeof(lp.r));
-            os.write(reinterpret_cast<const char*>(&lp.e), sizeof(lp.e));
+            write_and_xor(&lp.p, sizeof(lp.p));
+            write_and_xor(&lp.r, sizeof(lp.r));
+            write_and_xor(&lp.e, sizeof(lp.e));
         }
+
+        // Extra (a,b) pairs (for merged relations)
+        uint32_t extra_count = static_cast<uint32_t>(extra_ab_pairs.size());
+        write_and_xor(&extra_count, sizeof(extra_count));
+        for (const auto& [ea, eb] : extra_ab_pairs) {
+            write_and_xor(&ea, sizeof(ea));
+            write_and_xor(&eb, sizeof(eb));
+        }
+
+        // Trailing checksum (not included in its own XOR)
+        os.write(reinterpret_cast<const char*>(&checksum), sizeof(checksum));
     }
 
-    // Deserialize from input stream
+    // Deserialize from input stream (v2 format with validation)
     static Relation deserialize(std::istream& is) {
+        uint64_t checksum = 0;
+        auto read_and_xor = [&](void* ptr, size_t n) {
+            is.read(reinterpret_cast<char*>(ptr), static_cast<std::streamsize>(n));
+            auto* bytes = reinterpret_cast<const uint8_t*>(ptr);
+            for (size_t i = 0; i < n; ++i)
+                checksum ^= static_cast<uint64_t>(bytes[i]) << ((i & 7) * 8);
+        };
+
+        // Header
+        uint32_t magic, version;
+        read_and_xor(&magic, sizeof(magic));
+        read_and_xor(&version, sizeof(version));
+        if (magic != SERIALIZE_MAGIC)
+            throw std::runtime_error("Relation::deserialize: invalid magic");
+        if (version != SERIALIZE_VERSION)
+            throw std::runtime_error("Relation::deserialize: unsupported version");
+
         Relation rel;
-        is.read(reinterpret_cast<char*>(&rel.a), sizeof(rel.a));
-        is.read(reinterpret_cast<char*>(&rel.b), sizeof(rel.b));
 
-        // Read rational factors
+        // Core fields
+        read_and_xor(&rel.a, sizeof(rel.a));
+        read_and_xor(&rel.b, sizeof(rel.b));
+
+        // Rational factors
         uint32_t rat_count;
-        is.read(reinterpret_cast<char*>(&rat_count), sizeof(rat_count));
+        read_and_xor(&rat_count, sizeof(rat_count));
         rel.rational_factors.resize(rat_count);
-        is.read(reinterpret_cast<char*>(rel.rational_factors.data()),
-                rat_count * sizeof(uint32_t));
+        for (uint32_t i = 0; i < rat_count; ++i)
+            read_and_xor(&rel.rational_factors[i], sizeof(uint32_t));
 
-        // Read algebraic factors
+        // Algebraic factors
         uint32_t alg_count;
-        is.read(reinterpret_cast<char*>(&alg_count), sizeof(alg_count));
+        read_and_xor(&alg_count, sizeof(alg_count));
         rel.algebraic_factors.resize(alg_count);
-        is.read(reinterpret_cast<char*>(rel.algebraic_factors.data()),
-                alg_count * sizeof(uint32_t));
+        for (uint32_t i = 0; i < alg_count; ++i)
+            read_and_xor(&rel.algebraic_factors[i], sizeof(uint32_t));
 
-        // Read large primes (rational)
+        // Large primes (rational)
         uint32_t lp_rat_count;
-        is.read(reinterpret_cast<char*>(&lp_rat_count), sizeof(lp_rat_count));
+        read_and_xor(&lp_rat_count, sizeof(lp_rat_count));
         rel.rational_large_prime.reserve(lp_rat_count);
         for (uint32_t i = 0; i < lp_rat_count; ++i) {
             PrimePower lp;
-            is.read(reinterpret_cast<char*>(&lp.p), sizeof(lp.p));
-            is.read(reinterpret_cast<char*>(&lp.r), sizeof(lp.r));
-            is.read(reinterpret_cast<char*>(&lp.e), sizeof(lp.e));
+            read_and_xor(&lp.p, sizeof(lp.p));
+            read_and_xor(&lp.r, sizeof(lp.r));
+            read_and_xor(&lp.e, sizeof(lp.e));
             rel.rational_large_prime.push_back(lp);
         }
 
-        // Read large primes (algebraic)
+        // Large primes (algebraic)
         uint32_t lp_alg_count;
-        is.read(reinterpret_cast<char*>(&lp_alg_count), sizeof(lp_alg_count));
+        read_and_xor(&lp_alg_count, sizeof(lp_alg_count));
         rel.algebraic_large_prime.reserve(lp_alg_count);
         for (uint32_t i = 0; i < lp_alg_count; ++i) {
             PrimePower lp;
-            is.read(reinterpret_cast<char*>(&lp.p), sizeof(lp.p));
-            is.read(reinterpret_cast<char*>(&lp.r), sizeof(lp.r));
-            is.read(reinterpret_cast<char*>(&lp.e), sizeof(lp.e));
+            read_and_xor(&lp.p, sizeof(lp.p));
+            read_and_xor(&lp.r, sizeof(lp.r));
+            read_and_xor(&lp.e, sizeof(lp.e));
             rel.algebraic_large_prime.push_back(lp);
         }
+
+        // Extra (a,b) pairs
+        uint32_t extra_count;
+        read_and_xor(&extra_count, sizeof(extra_count));
+        rel.extra_ab_pairs.reserve(extra_count);
+        for (uint32_t i = 0; i < extra_count; ++i) {
+            int64_t ea, eb;
+            read_and_xor(&ea, sizeof(ea));
+            read_and_xor(&eb, sizeof(eb));
+            rel.extra_ab_pairs.emplace_back(ea, eb);
+        }
+
+        // Verify checksum
+        uint64_t stored_checksum;
+        is.read(reinterpret_cast<char*>(&stored_checksum), sizeof(stored_checksum));
+        if (is && checksum != stored_checksum)
+            throw std::runtime_error("Relation::deserialize: checksum mismatch");
 
         return rel;
     }

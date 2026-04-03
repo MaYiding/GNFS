@@ -8,7 +8,7 @@
 | **P1-OPT** | 0 | (已清空) |
 | **P1** | 0 | (已清空) |
 | **P2** | 0 | (已清空) |
-| **P3** | 9 | 远期架构 ×6, 代码质量 ×3 |
+| **P3** | 6 | 远期架构 ×6 |
 
 ---
 
@@ -37,17 +37,6 @@
 
 #### [FEAT] ThreadPool Work-Stealing
 - **描述**: 筛选 special-Q 开销不均匀，work-stealing 可提升负载均衡
-
-### 代码质量
-
-#### [DEBT] FactorBase 缺少序列化
-- **文件**: `factor_base/factor_base.hpp:137-141`
-
-#### [DEBT] Relation 序列化格式（无版本/校验和）
-- **文件**: `core/relation.hpp:73-144`
-
-#### [DEBT] -Wconversion 清理（~60 处）
-- **发现**: Session 18 | 大多 cosmetic
 
 ---
 
