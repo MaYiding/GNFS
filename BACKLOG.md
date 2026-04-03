@@ -7,8 +7,8 @@
 |------|------|------|
 | **P1-OPT** | 0 | (已清空) |
 | **P1** | 0 | (已清空) |
-| **P2** | 0 | (已清空: Clique → SGE, NEON → 加法筛+LUT) |
-| **P3** | 18 | 小优化 ×2, 远期架构 ×6, 代码质量 ×9, 调查 ×1 |
+| **P2** | 0 | (已清空) |
+| **P3** | 14 | 小优化 ×1, 远期架构 ×6, 代码质量 ×6, 调查 ×1 |
 
 ---
 
@@ -17,10 +17,6 @@
 ## P3 — 低优先级
 
 ### 小优化
-
-#### [OPT] Alpha 缺少判别式双根贡献
-- **文件**: `polynomial/murphy_evaluator.hpp:126-151`
-- **描述**: p | disc(f) 时双根贡献应为 `log(p)/(p(p-1))` 而非 `log(p)/p`，二阶效应
 
 #### [OPT] BL Gaussian fallback 用 vector\<bool\> 低效
 - **文件**: `src/linalg/block_lanczos.cpp:291-365`
@@ -54,18 +50,8 @@
 - **文件**: `core/params.hpp:15-56`
 - **描述**: LP bound 存 raw uint64，应增加 `large_prime_bits` 字段（与 CADO-NFS 一致）
 
-#### [DEBT] log_scale 分散在三处
-- **文件**: `core/params.hpp`, `factor_base/builder.hpp`, `sieve/lattice_sieve.hpp`
-- **描述**: 三者独立维护默认值，Session 44 用 `SIEVE_LOG_SCALE=16` 常量临时修复
-
 #### [DEBT] uint64_t b → int64_t 截断（13 处）
 - **发现**: Session 5 | b 始终远小于 INT64_MAX，理论风险
-
-#### [DEBT] Schirokauer 文档注释与代码不一致
-- **文件**: `linalg/schirokauer.hpp:138`
-
-#### [DEBT] SmallVector 缺少边界检查
-- **文件**: `util/small_vector.hpp:96-103`
 
 #### [DEBT] FactorBase 缺少序列化
 - **文件**: `factor_base/factor_base.hpp:137-141`

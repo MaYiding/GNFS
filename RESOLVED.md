@@ -7,6 +7,35 @@
 
 ## 已完成 ✅
 
+### Session 58 — P3 batch cleanup (4 items)
+
+#### [DEBT] ~~Schirokauer 文档注释与代码不一致~~ ✅
+- **解决**: 2026-03-12 (Session 58)
+- **文件**: `linalg/schirokauer.hpp:138`
+- **修复**: `x^exp mod (f, p)` → `base^exp mod (mod, p)` 匹配实际参数名
+- **Commit**: `269c3a5`
+
+#### [DEBT] ~~SmallVector 缺少边界检查~~ ✅
+- **解决**: 2026-03-12 (Session 58)
+- **文件**: `util/small_vector.hpp:104-111`
+- **修复**: `operator[]` 添加 debug assert; 新增 `at()` 带异常; `front()`/`back()` 添加非空 assert
+- **验证**: smoke 20/20 ✅
+- **Commit**: `3fa6f01`
+
+#### [DEBT] ~~log_scale 分散在三处~~ ✅
+- **解决**: 2026-03-12 (Session 58)
+- **文件**: `core/types.hpp`, `core/params.hpp`, `factor_base/builder.hpp`, `sieve/lattice_sieve.hpp`
+- **修复**: 将 `SIEVE_LOG_SCALE = 16` 提升为 `core::SIEVE_LOG_SCALE` 命名空间常量 (types.hpp)。FactorBaseBuilder::Options、SieveParams、FactorBaseParams 默认值统一引用此常量
+- **验证**: smoke 20/20 ✅
+- **Commit**: `6baa9ef`
+
+#### [OPT] ~~Alpha 缺少判别式双根贡献~~ ✅
+- **解决**: 2026-03-12 (Session 58)
+- **文件**: `polynomial/murphy_evaluator.hpp:130-170`
+- **修复**: 预计算 f'，对每个根 r 检查 `f'(r) ≡ 0 mod p`（双根检测），添加 `+log(p)/p²` 额外贡献。二阶效应，p=2 时最显著
+- **验证**: smoke 20/20, test_murphy ✅
+- **Commit**: `941abb6`
+
 ### Session 58 — Kleinjung rotation+translation optimization
 
 #### [OPT] ~~Kleinjung 多项式选择 — 实现质量提升~~ ✅
