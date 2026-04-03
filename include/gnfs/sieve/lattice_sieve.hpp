@@ -32,7 +32,7 @@ using factor_base::FactorBase;
 
 /// 筛法参数
 struct SieveParams {
-    uint8_t log_scale = 16;                    // log 值缩放因子
+    uint8_t log_scale = core::SIEVE_LOG_SCALE;  // log 值缩放因子
     uint16_t rational_threshold = 70;          // 有理侧阈值 (uint16_t: LP 模式需 >255)
     uint16_t algebraic_threshold = 70;         // 代数侧阈值 (uint16_t: LP 模式需 >255)
     uint32_t large_prime_bound = 0;            // 大素数上界（0 = 使用因子基设置）
