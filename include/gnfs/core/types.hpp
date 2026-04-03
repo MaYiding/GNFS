@@ -6,6 +6,10 @@
 namespace gnfs {
 namespace core {
 
+/// 全局对数缩放因子 — FB builder 和 Sieve 必须使用同一值
+/// 筛阈值 (params.hpp) 也基于此常量计算
+constexpr uint8_t SIEVE_LOG_SCALE = 16;
+
 /// ABPair - 关系的原子单位
 /// 表示 (a, b) 对，其中 a - b*m 在有理侧，a - b*alpha 在代数侧
 struct ABPair {
@@ -131,10 +135,10 @@ struct FactorBaseParams {
     uint32_t rational_bound = 0;      // 有理侧上界 B_r
     uint32_t algebraic_bound = 0;     // 代数侧上界 B_a
     uint64_t large_prime_bound = 0;   // 大素数上界（通常 100*B），uint64_t 以匹配 GNFSParams
-    uint8_t  log_scale = 10;          // 对数缩放因子
+    uint8_t  log_scale = SIEVE_LOG_SCALE;  // 对数缩放因子
 
     constexpr FactorBaseParams() noexcept = default;
-    constexpr FactorBaseParams(uint32_t rat, uint32_t alg, uint64_t lp, uint8_t scale = 10) noexcept
+    constexpr FactorBaseParams(uint32_t rat, uint32_t alg, uint64_t lp, uint8_t scale = SIEVE_LOG_SCALE) noexcept
         : rational_bound(rat), algebraic_bound(alg), large_prime_bound(lp), log_scale(scale) {}
 };
 

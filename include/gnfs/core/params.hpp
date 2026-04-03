@@ -1,5 +1,7 @@
 #pragma once
 
+#include "types.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -32,7 +34,7 @@ struct GNFSParams {
     uint32_t algebraic_bound = 5000;         // 代数侧因子基界
     uint64_t large_prime_bound = 500000;     // 大素数界
     uint32_t large_prime_bits = 0;           // 大素数位数 (0 = 不启用 LP)
-    uint8_t  log_scale = 10;                 // 对数缩放因子
+    uint8_t  log_scale = SIEVE_LOG_SCALE;    // 对数缩放因子（动态调整）
 
     // === 筛法 ===
     int32_t sieve_i_min = -2000;
@@ -174,9 +176,8 @@ struct GNFSParams {
         p.sieve_j_max = static_cast<int32_t>(sieve_height);
 
         // === 对数缩放因子 ===
-        // GNFSParams.log_scale 供内部参考。
-        // 注意：FactorBaseBuilder::Options 和 SieveParams 各有自己的 log_scale
-        // (均默认 16)，筛阈值必须匹配 sieve 端 log_scale。
+        // 所有组件统一使用 core::SIEVE_LOG_SCALE (types.hpp)。
+        // GNFSParams.log_scale 按 FB 规模动态调整（供诊断参考）。
         if (p.rational_bound > 100000)
             p.log_scale = 12;
         if (p.rational_bound > 1000000)
@@ -185,13 +186,11 @@ struct GNFSParams {
             p.log_scale = 16;
 
         // === 筛阈值 ===
-        // FB 和 Sieve 实际使用的 log_scale 为各自的默认值 16。
-        // 阈值必须基于 sieve 端 log_scale 才能正确筛选。
+        // 使用 core::SIEVE_LOG_SCALE (types.hpp) — 全局唯一定义
         //
         // 阈值 = 基础裕度（sieve 精度误差）+ LP 允许量
         // - 无 LP: per_side = 3.5 × log_scale（允许 cofactor ≤ ~11）
         // - 有 LP: per_side = (lp_bits + 3) × log_scale（允许 cofactor ≤ 2^lp_bits × 8）
-        constexpr uint16_t SIEVE_LOG_SCALE = 16;
         if (lp_bits > 0) {
             // 允许每侧有一个大素数级别的余因子
             uint16_t per_side = static_cast<uint16_t>(

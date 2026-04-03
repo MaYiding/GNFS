@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstring>
+#include <stdexcept>
 #include <utility>
 
 namespace gnfs {
@@ -100,15 +102,43 @@ public:
     [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
     [[nodiscard]] bool is_inline() const noexcept { return heap_data_ == nullptr; }
 
-    // 元素访问
-    [[nodiscard]] T& operator[](size_t i) noexcept { return data()[i]; }
-    [[nodiscard]] const T& operator[](size_t i) const noexcept { return data()[i]; }
+    // 元素访问（operator[] 在 Debug 模式下做边界检查）
+    [[nodiscard]] T& operator[](size_t i) noexcept {
+        assert(i < size_ && "SmallVector::operator[] index out of bounds");
+        return data()[i];
+    }
+    [[nodiscard]] const T& operator[](size_t i) const noexcept {
+        assert(i < size_ && "SmallVector::operator[] index out of bounds");
+        return data()[i];
+    }
 
-    [[nodiscard]] T& front() noexcept { return data()[0]; }
-    [[nodiscard]] const T& front() const noexcept { return data()[0]; }
+    // 带异常的边界检查访问
+    [[nodiscard]] T& at(size_t i) {
+        if (i >= size_) throw std::out_of_range("SmallVector::at index out of bounds");
+        return data()[i];
+    }
+    [[nodiscard]] const T& at(size_t i) const {
+        if (i >= size_) throw std::out_of_range("SmallVector::at index out of bounds");
+        return data()[i];
+    }
 
-    [[nodiscard]] T& back() noexcept { return data()[size_ - 1]; }
-    [[nodiscard]] const T& back() const noexcept { return data()[size_ - 1]; }
+    [[nodiscard]] T& front() noexcept {
+        assert(size_ > 0 && "SmallVector::front on empty vector");
+        return data()[0];
+    }
+    [[nodiscard]] const T& front() const noexcept {
+        assert(size_ > 0 && "SmallVector::front on empty vector");
+        return data()[0];
+    }
+
+    [[nodiscard]] T& back() noexcept {
+        assert(size_ > 0 && "SmallVector::back on empty vector");
+        return data()[size_ - 1];
+    }
+    [[nodiscard]] const T& back() const noexcept {
+        assert(size_ > 0 && "SmallVector::back on empty vector");
+        return data()[size_ - 1];
+    }
 
     [[nodiscard]] T* data() noexcept {
         return heap_data_ ? heap_data_ : inline_ptr();
