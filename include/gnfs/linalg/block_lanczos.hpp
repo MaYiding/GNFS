@@ -22,11 +22,8 @@ private:
     // Complexity: O(m * w / 32) where w = total matrix weight
     std::vector<std::vector<bool>> block_lanczos_solve(const SparseMatrix& matrix, size_t max_deps);
 
-    // Gaussian elimination fallback for small matrices
+    // Gaussian elimination with packed GF(2) matrix for small matrices
     std::vector<std::vector<bool>> find_dependencies_sparse(const SparseMatrix& matrix, size_t max_deps);
-
-    // Dense Gaussian elimination for very small matrices
-    std::vector<std::vector<bool>> find_dependencies_gaussian(const SparseMatrix& matrix, size_t max_deps);
 };
 
 // ============================================================================
