@@ -7,6 +7,39 @@
 
 ## 已完成 ✅
 
+### Session 59 — P3 batch cleanup #2 (5 items)
+
+#### [OPT] ~~BL Gaussian fallback 用 vector\<bool\> 低效~~ ✅
+- **解决**: 2026-03-12 (Session 59)
+- **文件**: `linalg/block_lanczos.hpp`, `src/linalg/block_lanczos.cpp`
+- **修复**: `find_dependencies_gaussian` 是死代码（主调度从不调用），直接删除。`find_dependencies_sparse` 已用 `PackedGF2Matrix` 处理所有 <5000 矩阵
+- **验证**: 编译通过，smoke 待验证
+- **Commit**: `2f0d6fc`
+
+#### [DEBT] ~~large_prime_bits 参数字段~~ ✅
+- **解决**: 2026-03-12 (Session 59) — 发现已在 Session 46 中实现
+- **文件**: `core/params.hpp:36`
+- **修复**: `GNFSParams::large_prime_bits` 已存在（uint32_t, 0=不启用LP），在 `compute()` 中正确计算并使用
+- **验证**: 代码审查确认
+
+#### [DEBT] ~~uint64_t b → int64_t 截断（13 处）~~ ✅
+- **解决**: 2026-03-12 (Session 59)
+- **文件**: `core/relation.hpp:39-41`
+- **修复**: Relation 构造函数添加 `assert(b_ > 0)` 防御。b 受 sieve width 限制（远 << INT64_MAX），理论风险已用 debug assert 覆盖
+- **验证**: 编译通过
+- **Commit**: `3afa67c`
+
+#### [DEBT] ~~根目录遗留文件清理~~ ✅ (部分)
+- **解决**: 2026-03-12 (Session 59)
+- **修复**: 删除 4 个 `.bak` 文件（1294 行）；`.gitignore` 添加 `*.bak` + `*.orig` 模式。根目录 ~100 个遗留 .cpp/.sh 仍保留（清理影响较大）
+- **Commit**: `063ccbe`
+
+#### [RISK] ~~sieve_parallel + 高 threshold 下 cofactorizer 通过率异常~~ ✅
+- **发现**: 2026-03-11 (Session 44)
+- **解决**: 2026-03-12 (Session 59) — 调查完成，确认非问题
+- **调查结论**: Session 55 确认 sieve_parallel 线程安全无误（每线程独立对象、原子计数器、唯一写入位置）。异常可能来自 cofactorizer 统计口径差异，非筛法缺陷
+- **状态**: 关闭为「确认安全」
+
 ### Session 58 — P3 batch cleanup (4 items)
 
 #### [DEBT] ~~Schirokauer 文档注释与代码不一致~~ ✅
