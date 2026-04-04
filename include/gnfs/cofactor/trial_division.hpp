@@ -36,15 +36,16 @@ public:
     explicit TrialDivider(const FactorBase& fb) : fb_(fb) {}
 
     /// 对有理侧值进行试除
-    /// @param value 有理侧值 |a + b*m|
+    /// @param value 有理侧值 |a - b*m|
     /// @return 试除结果
     [[nodiscard]] TrialDivisionResult divide_rational(Integer value) const {
-        TrialDivisionResult result;
-
-        // 处理符号
-        if (value.is_negative()) {
-            value.negate();
+        // uint64 快路径：小值避免 GMP 开销
+        if (value.fits_uint64()) {
+            return divide_rational_u64(value.to_uint64());
         }
+
+        TrialDivisionResult result;
+        if (value.is_negative()) value.negate();
 
         if (value.is_zero()) {
             result.is_smooth = true;
@@ -52,39 +53,32 @@ public:
             return result;
         }
 
-        // 对每个有理因子基素数进行试除
         const auto& rationals = fb_.rational();
-
         for (uint32_t idx = 0; idx < rationals.size(); ++idx) {
             uint32_t p = rationals[idx].p;
-
             uint8_t exp = 0;
             while (divisible_by(value, p) && exp < 255) {
                 divide_exact(value, p);
                 ++exp;
             }
-
             if (exp > 0) {
                 result.factor_indices.push_back(idx);
                 result.exponents.push_back(exp);
             }
-
-            // 早期退出：如果 value 变成 1
             if (value.fits_uint64() && value.to_uint64() == 1) {
                 result.is_smooth = true;
                 break;
             }
-
-            // 早期退出：如果 value < next_p^2，则 value 是素数
-            // 但只有当下一个素数存在且 value < next_p 时才退出
-            // 这样可以确保如果 value 本身是因子基中的素数，我们仍会尝试它
-            if (idx + 1 < rationals.size() && value.fits_uint64()) {
-                uint64_t v = value.to_uint64();
-                uint32_t next_p = rationals[idx + 1].p;
-                if (v < next_p) {
-                    // value 比下一个因子基素数小，不可能被它整除
-                    break;
-                }
+            // 切换到 uint64 快路径
+            if (value.fits_uint64()) {
+                auto tail = divide_rational_u64_from(value.to_uint64(), idx + 1);
+                result.factor_indices.insert(result.factor_indices.end(),
+                    tail.factor_indices.begin(), tail.factor_indices.end());
+                result.exponents.insert(result.exponents.end(),
+                    tail.exponents.begin(), tail.exponents.end());
+                result.cofactor = std::move(tail.cofactor);
+                result.is_smooth = tail.is_smooth;
+                return result;
             }
         }
 
@@ -92,8 +86,12 @@ public:
         if (result.cofactor.fits_uint64() && result.cofactor.to_uint64() == 1) {
             result.is_smooth = true;
         }
-
         return result;
+    }
+
+    /// 纯 uint64 有理试除（零 GMP 分配）
+    [[nodiscard]] TrialDivisionResult divide_rational_u64(uint64_t value) const {
+        return divide_rational_u64_from(value, 0);
     }
 
     /// 对代数侧范数进行试除
@@ -118,6 +116,8 @@ public:
 
         // 对每个代数因子基素理想进行试除
         const auto& algebraics = fb_.algebraic();
+        bool use_u64 = norm.fits_uint64();
+        uint64_t norm_u64 = use_u64 ? norm.to_uint64() : 0;
 
         for (uint32_t idx = 0; idx < algebraics.size(); ++idx) {
             uint32_t p = algebraics[idx].p;
@@ -135,11 +135,23 @@ public:
                 if (mod != 0) continue;
             }
 
-            // 试除
+            // 试除 — uint64 快路径
             uint8_t exp = 0;
-            while (divisible_by(norm, p) && exp < 255) {
-                divide_exact(norm, p);
-                ++exp;
+            if (use_u64) {
+                while (norm_u64 % p == 0 && exp < 255) {
+                    norm_u64 /= p;
+                    ++exp;
+                }
+            } else {
+                while (divisible_by(norm, p) && exp < 255) {
+                    divide_exact(norm, p);
+                    ++exp;
+                }
+                // 检查是否可以切换到 uint64
+                if (norm.fits_uint64()) {
+                    use_u64 = true;
+                    norm_u64 = norm.to_uint64();
+                }
             }
 
             if (exp > 0) {
@@ -148,15 +160,22 @@ public:
             }
 
             // 早期退出
-            if (norm.fits_uint64() && norm.to_uint64() == 1) {
+            if (use_u64 && norm_u64 == 1) {
                 result.is_smooth = true;
                 break;
             }
+            // 早期退出: v < next_p^2 → v 是素数（对代数试除不完全适用因为有多根，
+            // 但如果 v < p^2 且所有 p 的根都已检查，可安全退出）
         }
 
-        result.cofactor = std::move(norm);
-        if (result.cofactor.fits_uint64() && result.cofactor.to_uint64() == 1) {
-            result.is_smooth = true;
+        if (use_u64) {
+            result.cofactor = Integer(norm_u64);
+            if (norm_u64 == 1) result.is_smooth = true;
+        } else {
+            result.cofactor = std::move(norm);
+            if (result.cofactor.fits_uint64() && result.cofactor.to_uint64() == 1) {
+                result.is_smooth = true;
+            }
         }
 
         return result;
@@ -210,6 +229,48 @@ private:
             // get_mpz() returns mpz_t& which decays to mpz_ptr
             mpz_divexact_ui(value.get_mpz(), value.get_mpz(), p);
         }
+    }
+
+    /// 纯 uint64 有理试除（从指定 FB 索引开始）
+    /// 零 GMP 分配——整个流程在原生 uint64 算术内完成
+    [[nodiscard]] TrialDivisionResult divide_rational_u64_from(uint64_t value, uint32_t start_idx) const {
+        TrialDivisionResult result;
+
+        if (value == 0) {
+            result.is_smooth = true;
+            result.cofactor = Integer(static_cast<int64_t>(1));
+            return result;
+        }
+
+        const auto& rationals = fb_.rational();
+        for (uint32_t idx = start_idx; idx < rationals.size(); ++idx) {
+            uint32_t p = rationals[idx].p;
+
+            uint8_t exp = 0;
+            while (value % p == 0 && exp < 255) {
+                value /= p;
+                ++exp;
+            }
+            if (exp > 0) {
+                result.factor_indices.push_back(idx);
+                result.exponents.push_back(exp);
+            }
+            if (value == 1) {
+                result.is_smooth = true;
+                break;
+            }
+            // 早期退出: v < next_p → 不可能被任何剩余 FB 素数整除
+            if (idx + 1 < rationals.size()) {
+                uint64_t next_p = rationals[idx + 1].p;
+                if (value < next_p) {
+                    break;
+                }
+            }
+        }
+
+        result.cofactor = Integer(value);
+        if (value == 1) result.is_smooth = true;
+        return result;
     }
 };
 

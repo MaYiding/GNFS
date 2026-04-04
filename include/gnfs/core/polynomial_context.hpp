@@ -181,11 +181,63 @@ public:
     /// 计算有理侧的值 (GNFS convention)
     /// R(a, b) = a - b*m
     [[nodiscard]] Integer rational_value(int64_t a, uint64_t b) const {
+        // uint64 快路径: 当 m fits uint64 且结果 fits int64 时避免 GMP
+        if (m_.fits_uint64()) {
+            __int128 result = static_cast<__int128>(a) -
+                              static_cast<__int128>(b) * static_cast<__int128>(m_.to_uint64());
+            // int64 range: [-2^63, 2^63)
+            if (result >= INT64_MIN && result <= INT64_MAX) {
+                return Integer(static_cast<int64_t>(result));
+            }
+        }
         Integer result(a);
         Integer bm = m_.clone();
         bm *= static_cast<long long>(b);
         result -= bm;
         return result;
+    }
+
+    /// 计算有理侧值的绝对值 (int64 快路径)
+    /// 如果值 fits int64，返回 {abs_value, true}；否则返回 {0, false}
+    [[nodiscard]] std::pair<uint64_t, bool> rational_value_abs_u64(int64_t a, uint64_t b) const {
+        if (m_.fits_uint64()) {
+            __int128 val = static_cast<__int128>(a) -
+                           static_cast<__int128>(b) * static_cast<__int128>(m_.to_uint64());
+            if (val < 0) val = -val;
+            if (val <= static_cast<__int128>(UINT64_MAX)) {
+                return {static_cast<uint64_t>(val), true};
+            }
+        }
+        return {0, false};
+    }
+
+    /// 计算代数范数 (__int128 快路径)
+    /// 当所有系数 fits int64 且结果 fits __int128 时使用纯原生算术
+    [[nodiscard]] std::pair<__int128, bool> algebraic_norm_i128(int64_t a, uint64_t b) const {
+        // 检查所有系数是否 fits int64
+        for (uint32_t i = 0; i <= degree_; ++i) {
+            if (!f_coeffs_[i].fits_int64()) return {0, false};
+        }
+
+        __int128 result = 0;
+        __int128 a_power = 1;  // a^i
+        __int128 b_val = static_cast<__int128>(b);
+
+        // 计算 b^d
+        __int128 b_pow_d = 1;
+        for (uint32_t i = 0; i < degree_; ++i) b_pow_d *= b_val;
+
+        __int128 b_pow = b_pow_d;  // starts at b^d, decreases
+        for (uint32_t i = 0; i <= degree_; ++i) {
+            __int128 ci = static_cast<__int128>(f_coeffs_[i].to_int64());
+            __int128 term = ci * a_power * b_pow;
+            result += term;
+            a_power *= static_cast<__int128>(a);
+            if (i < degree_ && b_val != 0) {
+                b_pow /= b_val;  // b^(d-i) → b^(d-i-1)
+            }
+        }
+        return {result, true};
     }
 
     // ==================== 验证 ====================
