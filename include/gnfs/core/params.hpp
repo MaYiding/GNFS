@@ -289,11 +289,13 @@ struct GNFSParams {
             double key_space = lp_primes * static_cast<double>(std::max(degree, 2u));
             double mc = static_cast<double>(matrix_columns);
 
-            // Birthday: safety=8 (covers 2LP fraction + singleton filtering)
-            double n_min = std::sqrt(2.0 * key_space * mc * 8.0);
-            // Floor: at least 3× matrix columns
+            // Birthday: safety=80 to account for 2LP-heavy regime where
+            // merge rate is ~3-5%. Higher safety avoids wasteful multi-round
+            // sieve loops (was safety=8, caused 2-round collection).
+            double n_min = std::sqrt(2.0 * key_space * mc * 80.0);
+            // Floor: at least 5× matrix columns (covers 2LP merge overhead)
             return static_cast<size_t>(
-                std::max(n_min, mc * 3.0));
+                std::max(n_min, mc * 5.0));
         }
         return matrix_columns;
     }
