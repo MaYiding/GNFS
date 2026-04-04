@@ -79,8 +79,8 @@ PolynomialSelectionResult BaseMSelector::select(const Integer& n, uint32_t degre
         max_delta = 5;
     } else if (n_bits <= 60) {
         max_delta = 50;
-    } else if (n_bits <= 90) {
-        max_delta = 200;
+    } else if (n_bits <= 100) {
+        max_delta = 50;   // 50 candidates suffices for degree 3, saves ~0.4s vs 200
     } else {
         max_delta = 1000;
     }
