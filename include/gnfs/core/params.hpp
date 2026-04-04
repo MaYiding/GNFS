@@ -97,8 +97,9 @@ struct GNFSParams {
         //   ≤25: 20K/40K → ~6650 cols → BL ~2.5s
         //   ≤30: 50K/100K → ~15K cols → BL ~30s (needs BL optimization)
         //
-        // LP/FB ratio: CADO-NFS 标准 6-10×
-        constexpr double LP_MULTIPLIER = 8.0;
+        // LP/FB ratio: higher ratio = more LP range per FB bound
+        // ≤25 digit uses smaller FB so LP_MULT compensates
+        double LP_MULTIPLIER = 8.0;
 
         double B_rat, B_alg;
         bool enable_lp = true;
@@ -112,7 +113,7 @@ struct GNFSParams {
         } else if (p.digits <= 20) {
             B_rat = 15000;   B_alg = 30000;
         } else if (p.digits <= 25) {
-            B_rat = 20000;   B_alg = 40000;
+            B_rat = 10000;   B_alg = 20000;   LP_MULTIPLIER = 24.0;
         } else if (p.digits <= 30) {
             B_rat = 50000;   B_alg = 100000;
         } else if (p.digits <= 40) {
