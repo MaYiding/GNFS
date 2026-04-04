@@ -119,7 +119,7 @@ public:
         // 3. 预计算所有 FB 素数的格参数
         auto primes = build_prime_entries(basis, sq);
 
-        // 4. Row-major 筛法：逐行处理，每行在 L1 中热驻留
+        // 4. Row-major 筛法：逐行处理，每行在 L1 中热驻留（多线程并行）
         sieve_row_major(primes);
 
         // 5. 收集候选点
@@ -366,15 +366,13 @@ private:
 
     // ── Row-major 筛法核心 ──────────────────────────────────
 
-    /// Row-major 筛法：逐行处理所有素数贡献（carry-forward 优化版）
+    /// Row-major 筛法：逐行处理所有素数贡献（carry-forward + 多线程）
     ///
-    /// 关键优化 1 (原有): row-major 循环顺序确保每行在 L1 cache 中热驻留。
-    /// 关键优化 2 (新增): carry-forward 消除 per-row per-prime 的 2 次 idiv 运算。
-    ///   旧: i_mod = (-j*v*u_inv) % p (2 次 int64 除法, 60+ cycles on ARM64)
-    ///   新: i_mod += delta; if (i_mod >= p) i_mod -= p; (1 次加法+比较, ~2 cycles)
+    /// 关键优化 1: row-major 循环顺序确保每行在 L1 cache 中热驻留
+    /// 关键优化 2: carry-forward 消除 per-row per-prime 的 2 次 idiv
+    /// 关键优化 3: 行范围分块多线程并行（线性递推允许任意行跳转）
     void sieve_row_major(const std::vector<PrimeEntry>& primes) {
         const size_t w = static_cast<size_t>(region_.i_width());
-        const int32_t i_min = region_.i_min;
 
         // Phase 0: 全局命中素数（u=0, v=0 → 每个位置都被整除，极罕见）
         for (const auto& pe : primes) {
@@ -385,24 +383,76 @@ private:
             }
         }
 
-        // 初始化 carry-forward 状态: 每个 normal prime 的当前 i_mod
-        // (i_mod_init 在 build_prime_entries 中已预计算为 j=j_min 的值)
-        std::vector<int32_t> cur_i_mod(primes.size());
-        for (size_t pi = 0; pi < primes.size(); ++pi) {
-            cur_i_mod[pi] = primes[pi].i_mod_init;
+        // Phase 1: 多线程行处理
+        const int32_t j_min = region_.j_min;
+        const int32_t j_max = region_.j_max;
+        const int32_t total_rows = j_max - j_min + 1;
+        const int32_t i_min = region_.i_min;
+
+        size_t num_threads = std::thread::hardware_concurrency();
+        if (num_threads == 0) num_threads = 4;
+        // 少于 500 行不值得开多线程
+        if (total_rows < 500) num_threads = 1;
+
+        if (num_threads <= 1) {
+            // 单线程快路径
+            sieve_row_chunk(primes, j_min, j_max, w, i_min, 0);
+            return;
         }
 
-        // Phase 1: 逐行处理 (carry-forward)
-        for (int32_t j = region_.j_min; j <= region_.j_max; ++j) {
+        // 分块并行
+        std::vector<std::thread> threads;
+        threads.reserve(num_threads);
+        int32_t rows_per_thread = total_rows / static_cast<int32_t>(num_threads);
+        int32_t remainder = total_rows % static_cast<int32_t>(num_threads);
+
+        int32_t chunk_start = j_min;
+        for (size_t t = 0; t < num_threads; ++t) {
+            int32_t chunk_rows = rows_per_thread + (static_cast<int32_t>(t) < remainder ? 1 : 0);
+            int32_t chunk_end = chunk_start + chunk_rows - 1;
+            int32_t row_offset = chunk_start - j_min;
+
+            threads.emplace_back(&LatticeSieve::sieve_row_chunk, this,
+                                 std::cref(primes), chunk_start, chunk_end,
+                                 w, i_min, row_offset);
+            chunk_start = chunk_end + 1;
+        }
+
+        for (auto& t : threads) {
+            t.join();
+        }
+    }
+
+    /// 处理一段行范围 [j_start, j_end]
+    /// row_offset = j_start - region_.j_min，用于跳转 carry-forward 状态
+    void sieve_row_chunk(const std::vector<PrimeEntry>& primes,
+                         int32_t j_start, int32_t j_end,
+                         size_t w, int32_t i_min, int32_t row_offset) {
+
+        // 计算本 chunk 的 carry-forward 起始状态
+        // i_mod 在行 k 时 = (i_mod_init + k * delta) mod p
+        std::vector<int32_t> cur_i_mod(primes.size());
+        for (size_t pi = 0; pi < primes.size(); ++pi) {
+            const auto& pe = primes[pi];
+            if (pe.flags != 0) continue;
+            int32_t p32 = static_cast<int32_t>(pe.p);
+            // 跳转 row_offset 行: i_mod = (init + offset * delta) mod p
+            int64_t advanced = static_cast<int64_t>(pe.i_mod_init) +
+                               static_cast<int64_t>(row_offset) * static_cast<int64_t>(pe.delta);
+            int64_t mod = advanced % static_cast<int64_t>(p32);
+            if (mod < 0) mod += p32;
+            cur_i_mod[pi] = static_cast<int32_t>(mod);
+        }
+
+        for (int32_t j = j_start; j <= j_end; ++j) {
             size_t row_base = static_cast<size_t>(j - region_.j_min) * w;
             size_t row_end = row_base + w;
 
             for (size_t pi = 0; pi < primes.size(); ++pi) {
                 const auto& pe = primes[pi];
-                if (pe.flags == 2) continue;  // 已在 Phase 0 处理
+                if (pe.flags == 2) continue;
 
                 if (pe.flags == 1) {
-                    // u=0: 当 j ≡ 0 (mod p) 时整行命中
                     if ((j % static_cast<int32_t>(pe.p)) == 0) {
                         uint16_t lp = pe.log_p;
                         for (size_t idx = row_base; idx < row_end; ++idx)
@@ -411,16 +461,13 @@ private:
                     continue;
                 }
 
-                // Carry-forward: 使用预计算的 i_mod 和 i_min_mod
                 int32_t i_mod = cur_i_mod[pi];
                 int32_t p32 = static_cast<int32_t>(pe.p);
 
-                // i_start = i_min + ((i_mod - i_min_mod + p) % p)
                 int32_t offset = i_mod - pe.i_min_mod;
                 if (offset < 0) offset += p32;
                 int32_t i_start = i_min + offset;
 
-                // 行内步进（该行在 L1 cache 中热驻留）
                 size_t idx = row_base + static_cast<size_t>(i_start - i_min);
                 uint16_t lp = pe.log_p;
                 size_t stride = static_cast<size_t>(pe.p);
@@ -428,7 +475,6 @@ private:
                     sieve_array_[idx] += lp;
                 }
 
-                // 更新 carry-forward: i_mod += delta; if (>=p) -= p
                 i_mod += pe.delta;
                 if (i_mod >= p32) i_mod -= p32;
                 cur_i_mod[pi] = i_mod;
