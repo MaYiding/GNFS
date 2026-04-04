@@ -22,12 +22,14 @@
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -372,13 +374,13 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
         double merge_rate = (collector.size() > 0) ?
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
-        // Birthday effect: merge_rate improves as ~sqrt(n), so scaling by 4× raw → ~2× yield
-        // Cap at 10× initial target to prevent runaway collection
+        // Birthday effect: merge_rate improves as ~sqrt(n), so conservative 2× scaling
+        // Cap at 5× initial target to prevent runaway collection (BL can't handle huge matrices)
         size_t needed_raw = static_cast<size_t>(
             static_cast<double>(matrix_cols * 2) / std::max(merge_rate, 0.001));
         batch_target = std::min(
-            std::max(batch_target * 4, needed_raw),
-            initial_target * 10);
+            std::max(batch_target * 2, needed_raw),
+            initial_target * 5);
         std::cout << "  Need more — merge_rate=" << std::setprecision(3) << (merge_rate * 100)
                   << "%, new target=" << batch_target << "\n" << std::flush;
     }
@@ -391,6 +393,20 @@ FactResult factor_with_progress(const Integer& n, int level) {
         return result;
     }
 
+    // ── Phase 4: Relation Trimming ──
+    // 防止过量关系导致矩阵过大 → BL 耗时爆炸
+    // BL 时间 ∝ rows × cols² → 多余行直接削减
+    {
+        size_t max_rels = matrix_cols * 2;  // 2× matrix cols 足够 BL 找到依赖
+        if (relations.size() > max_rels) {
+            std::cout << "  [Trim] " << relations.size() << " → " << max_rels
+                      << " relations (excess " << (relations.size() - max_rels) << " dropped)\n";
+            std::mt19937 rng(42);  // deterministic seed for reproducibility
+            std::shuffle(relations.begin(), relations.end(), rng);
+            relations.resize(max_rels);
+        }
+    }
+
     // ── Phase 5: Linear Algebra ──
     std::cout << "[Phase 5] Matrix construction..." << std::flush;
     phase.reset();
@@ -398,7 +414,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
     MatrixBuilderConfig mb_config;
     mb_config.include_sign_column = true;
     mb_config.include_qc_columns = true;
-    mb_config.include_class_group = true;
+    mb_config.include_class_group = (bits > 100);  // Skip for small N (class number 1)
     mb_config.include_schirokauer = true;
     mb_config.num_qc_primes = params.num_qc_primes;
     mb_config.qc_prime_start = 100;

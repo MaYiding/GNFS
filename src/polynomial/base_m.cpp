@@ -77,10 +77,8 @@ PolynomialSelectionResult BaseMSelector::select(const Integer& n, uint32_t degre
     int max_delta;
     if (n_bits <= 45) {
         max_delta = 5;
-    } else if (n_bits <= 60) {
-        max_delta = 50;
-    } else if (n_bits <= 90) {
-        max_delta = 200;
+    } else if (n_bits <= 100) {
+        max_delta = 50;   // 50 candidates suffices for degree 3
     } else {
         max_delta = 1000;
     }
@@ -125,11 +123,16 @@ PolynomialSelectionResult BaseMSelector::select(const Integer& n, uint32_t degre
     }
 
     // Rank by Murphy E-score for larger search windows.
-    // Lightweight evaluator: alpha_bound=2000 (303 primes),
-    // sample_points=500 — sufficient for relative ranking.
+    // For ≤85 bit: ultra-light Murphy (relative ranking only, not absolute).
+    // For larger N: standard parameters.
     MurphyParams mparams;
-    mparams.alpha_bound = 2000;
-    mparams.sample_points = 500;
+    if (n_bits <= 85) {
+        mparams.alpha_bound = 500;     // 95 primes (was 303)
+        mparams.sample_points = 100;   // was 500
+    } else {
+        mparams.alpha_bound = 2000;    // 303 primes
+        mparams.sample_points = 500;
+    }
     auto gnfs_params = core::GNFSParams::compute(n_bits);
     mparams.smoothness_bound = gnfs_params.algebraic_bound;
 

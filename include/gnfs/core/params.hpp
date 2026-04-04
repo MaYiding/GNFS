@@ -84,52 +84,47 @@ struct GNFSParams {
         }
 
         // =============================================================
-        // === 因子基界 — 经验参数表 (CADO-NFS / msieve 校准) ===
+        // === 因子基界 — 经验参数表 ===
         // =============================================================
-        // B_alg ≈ 2 × B_rat: 代数侧有 degree 个根，需更大因子基捕获
-        // 参照: gnfs_optimization_guide.md §1.2-1.3
+        // 设计约束:
+        //   1. FB 越大 → smoothness rate 越高 (u^{-u} 指数提升)
+        //   2. FB 越大 → 矩阵列数越多 → BL 耗时 ∝ cols³
+        //   3. 甜蜜点: 矩阵列数 < 7K → BL < 3s, 列数 < 10K → BL < 10s
         //
-        //   digits | B_rat   | B_alg   | lp_bits | LP/B  | 说明
-        //   ≤6     | 500     | 1000    | 0       | —     | tiny N, 全光滑
-        //   ≤10    | 1000    | 2000    | 0       | —     | small N
-        //   ≤15    | 3000    | 6000    | auto    | ~30×  | LP 使 NFS 对小 N 可行
-        //   ≤20    | 8000    | 16000   | auto    | ~30×  | 增大 FB 提高 1LP/full 比例
-        //   ≤25    | 10000   | 20000   | auto    | ~30×  | 25-digit 关键区间
-        //   ≤30    | 20000   | 40000   | auto    | ~30×  |
-        //   ≤40    | 100000  | 200000  | auto    | ~30×  |
-        //   ≤50    | 500000  | 1000000 | auto    | ~30×  |
-        //   >50    | L_N     | 2×L_N   | auto    | ~30×  | 渐近公式
+        // BL 瓶颈决定 FB 上限: π(B_rat) + π(B_alg) + extras < 7000
+        //   ≤15: 8K/16K → ~3100 cols → BL ~0.5s
+        //   ≤20: 15K/30K → ~5700 cols → BL ~1.5s
+        //   ≤25: 20K/40K → ~6650 cols → BL ~2.5s
+        //   ≤30: 50K/100K → ~15K cols → BL ~30s (needs BL optimization)
         //
-        // LP_bound = B_alg × LP_MULTIPLIER (CADO-NFS 典型 LP/FB ≈ 30×)
-        // lp_bits = floor(log2(LP_bound))
-        constexpr double LP_MULTIPLIER = 30.0;
+        // LP/FB ratio: higher ratio = more LP range per FB bound
+        // ≤25 digit uses smaller FB so LP_MULT compensates
+        double LP_MULTIPLIER = 8.0;
 
         double B_rat, B_alg;
         bool enable_lp = true;
 
         if (p.digits <= 6) {
-            B_rat = 500;    B_alg = 1000;    enable_lp = false;
+            B_rat = 500;     B_alg = 1000;     enable_lp = false;
         } else if (p.digits <= 10) {
-            B_rat = 1000;   B_alg = 2000;    enable_lp = false;
+            B_rat = 2000;    B_alg = 4000;     enable_lp = false;
         } else if (p.digits <= 15) {
-            B_rat = 3000;   B_alg = 6000;
+            B_rat = 8000;    B_alg = 16000;
         } else if (p.digits <= 20) {
-            // 19-digit (61-bit): 代数范数 ~10^17, 需要更大 FB 提高 1LP 比例
-            B_rat = 8000;   B_alg = 16000;
+            B_rat = 15000;   B_alg = 30000;
         } else if (p.digits <= 25) {
-            // 21-25 digit: 维持 Session 47 校准值（增大导致矩阵过大+merge不足）
-            B_rat = 10000;  B_alg = 20000;
+            B_rat = 6000;    B_alg = 12000;   LP_MULTIPLIER = 40.0;
         } else if (p.digits <= 30) {
-            B_rat = 20000;  B_alg = 40000;
+            B_rat = 50000;   B_alg = 100000;
         } else if (p.digits <= 40) {
-            B_rat = 100000; B_alg = 200000;
+            B_rat = 200000;  B_alg = 400000;
         } else if (p.digits <= 50) {
-            B_rat = 500000; B_alg = 1000000;
+            B_rat = 1000000; B_alg = 2000000;
         } else {
             // >50 digits: L_N formula with c_B ≈ 0.9
             double c_B = 0.9;
             B_rat = std::exp(c_B * l_val);
-            B_rat = std::max(B_rat, 1000000.0);
+            B_rat = std::max(B_rat, 4000000.0);
             B_rat = std::min(B_rat, 4e9);
             B_alg = std::min(B_rat * 2.0, 4e9);
         }
@@ -156,18 +151,24 @@ struct GNFSParams {
         }
 
         // === 筛区域 ===
-        // 与因子基界联动：sieve_width ≈ B_rat × 3，受 MAX_SIEVE_AREA 约束
-        double sieve_width = std::max(static_cast<double>(p.rational_bound) * 3.0, 1000.0);
-        double sieve_height = std::max(sieve_width / 4.0, 200.0);
-
-        // Cap total sieve area to prevent catastrophic memory allocation.
-        // 256M positions × sizeof(uint16_t) = 512 MB per sieve array.
-        constexpr double MAX_SIEVE_AREA = 256.0 * 1024 * 1024;
-        double sieve_area = sieve_width * sieve_height;
-        if (sieve_area > MAX_SIEVE_AREA) {
-            double scale = std::sqrt(MAX_SIEVE_AREA / sieve_area);
-            sieve_width = std::floor(sieve_width * scale);
-            sieve_height = std::floor(sieve_height * scale);
+        // CADO-NFS 风格：固定小筛区域 + 大 FB = 高光滑概率 + 快筛
+        // 筛区域大小与 FB 界解耦。原理：
+        //   小区域 → 小范数 → 高光滑率 u^{-u}（u 更小）
+        //   多 Special-Q 弥补单 SQ 位置少
+        // CADO C80: I=2048, 我们稍大以兼顾实现效率。
+        double sieve_width, sieve_height;
+        if (p.digits <= 6) {
+            sieve_width = 1000;   sieve_height = 400;    // tiny N
+        } else if (p.digits <= 10) {
+            sieve_width = 2000;   sieve_height = 1000;   // small N
+        } else if (p.digits <= 25) {
+            sieve_width = 4096;   sieve_height = 1024;   // 4M positions — smaller j → smaller norms → higher smoothness
+        } else if (p.digits <= 30) {
+            sieve_width = 4096;   sieve_height = 2048;   // 8M positions, ~16MB
+        } else if (p.digits <= 50) {
+            sieve_width = 8192;   sieve_height = 4096;   // 33M positions, ~67MB
+        } else {
+            sieve_width = 16384;  sieve_height = 8192;   // 134M positions, ~268MB
         }
 
         p.sieve_i_min = -static_cast<int32_t>(sieve_width / 2);
@@ -244,7 +245,13 @@ struct GNFSParams {
         p.skewness_steps = std::max(100u, static_cast<uint32_t>(p.digits * 5));
 
         // === 线性代数 ===
-        p.num_qc_primes = std::max(32u, std::min(128u, static_cast<uint32_t>(p.digits * 2)));
+        // QC primes ensure deps are squares in Z[α]. Need ≥ degree-1 columns.
+        // For small N (≤30 digits), 20 QC primes is ample (saves 60% matrix build time).
+        if (p.digits <= 30) {
+            p.num_qc_primes = 20;
+        } else {
+            p.num_qc_primes = std::max(32u, std::min(128u, static_cast<uint32_t>(p.digits * 2)));
+        }
         // target_excess: 固定基础 + 额外列数（QC + Schirokauer + sign）
         // 不再使用 0.15·π(B) 的比例（随 B 线性增长过快）
         uint32_t extra_cols = p.num_qc_primes + p.degree + 1;  // QC + Schirokauer + sign
@@ -290,11 +297,13 @@ struct GNFSParams {
             double key_space = lp_primes * static_cast<double>(std::max(degree, 2u));
             double mc = static_cast<double>(matrix_columns);
 
-            // Birthday: safety=8 (covers 2LP fraction + singleton filtering)
-            double n_min = std::sqrt(2.0 * key_space * mc * 8.0);
-            // Floor: at least 3× matrix columns
+            // Birthday: safety=50. Balance between one-round collection and
+            // not wasting time on excess raw relations. At safety=50 and 3.3%
+            // merge rate, expected usable ≈ 115% of matrix_cols (sufficient).
+            double n_min = std::sqrt(2.0 * key_space * mc * 50.0);
+            // Floor: at least 5× matrix columns (covers 2LP merge overhead)
             return static_cast<size_t>(
-                std::max(n_min, mc * 3.0));
+                std::max(n_min, mc * 5.0));
         }
         return matrix_columns;
     }

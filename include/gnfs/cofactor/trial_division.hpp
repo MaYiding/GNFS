@@ -159,13 +159,16 @@ public:
                 result.exponents.push_back(exp);
             }
 
-            // 早期退出
+            // 早期退出: cofactor == 1 → fully smooth
             if (use_u64 && norm_u64 == 1) {
                 result.is_smooth = true;
                 break;
             }
-            // 早期退出: v < next_p^2 → v 是素数（对代数试除不完全适用因为有多根，
-            // 但如果 v < p^2 且所有 p 的根都已检查，可安全退出）
+            // 早期退出: cofactor < p → can't be divided by any remaining FB prime
+            // (algebraic FB sorted by p; all subsequent p' ≥ p > norm_u64)
+            if (use_u64 && norm_u64 > 0 && norm_u64 < p) {
+                break;
+            }
         }
 
         if (use_u64) {
