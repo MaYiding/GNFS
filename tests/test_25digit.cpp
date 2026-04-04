@@ -13,9 +13,14 @@
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <iomanip>
+#include <random>
+#include <thread>
+#include <vector>
 
 using namespace gnfs;
 using namespace gnfs::core;
@@ -113,17 +118,60 @@ int main() {
             auto sq = sqg.next();
             if (!sq) break;
             auto sres = sieve.sieve_special_q(*sq);
-            for (const auto& c : sres.candidates) {
-                auto rel = cofac.verify(c);
-                if (rel) collector.add(std::move(*rel));
+
+            // 并行 cofactorization + 早停
+            {
+                const auto& cands = sres.candidates;
+                size_t n_cands = cands.size();
+                size_t n_threads = std::thread::hardware_concurrency();
+                if (n_threads == 0) n_threads = 4;
+                if (n_cands < 1000) n_threads = 1;
+
+                std::vector<std::vector<Relation>> thread_results(n_threads);
+                std::atomic<size_t> global_found{collector.size()};
+                std::atomic<size_t> next_chunk{0};
+                constexpr size_t CHUNK_SIZE = 256;
+
+                auto worker = [&](size_t tid) {
+                    Cofactorizer local_cofac(ctx, fb, cc);
+                    auto& local_rels = thread_results[tid];
+                    local_rels.reserve(n_cands / (n_threads * 4));
+                    while (true) {
+                        size_t start = next_chunk.fetch_add(CHUNK_SIZE, std::memory_order_relaxed);
+                        if (start >= n_cands) break;
+                        if (global_found.load(std::memory_order_relaxed) >= batch_target) break;
+                        size_t end = std::min(start + CHUNK_SIZE, n_cands);
+                        for (size_t ci = start; ci < end; ++ci) {
+                            auto rel = local_cofac.verify(cands[ci]);
+                            if (rel) {
+                                local_rels.push_back(std::move(*rel));
+                                global_found.fetch_add(1, std::memory_order_relaxed);
+                            }
+                        }
+                    }
+                };
+
+                if (n_threads <= 1) {
+                    worker(0);
+                } else {
+                    std::vector<std::thread> threads;
+                    threads.reserve(n_threads);
+                    for (size_t t = 0; t < n_threads; ++t)
+                        threads.emplace_back(worker, t);
+                    for (auto& t : threads) t.join();
+                }
+
+                for (auto& tr : thread_results)
+                    for (auto& rel : tr)
+                        collector.add(std::move(rel));
             }
             ++sq_count;
-            if (sq_count % 500 == 0) {
+            if (sq_count % 5 == 0 || collector.size() >= batch_target) {
                 double rate = collector.size() / (phase.sec() + 0.001);
                 std::cout << "  SQ#" << sq_count << " rels=" << collector.size()
                           << "/" << batch_target
                           << " rate=" << std::fixed << std::setprecision(0) << rate << "/s"
-                          << " elapsed=" << std::setprecision(1) << phase.sec() << "s\r" << std::flush;
+                          << " elapsed=" << std::setprecision(1) << phase.sec() << "s\n" << std::flush;
             }
         }
 
@@ -169,15 +217,25 @@ int main() {
 
         double merge_rate = (collector.size() > 0) ?
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
-        // Birthday effect: merge_rate improves as ~sqrt(n), so scaling by 4× raw → ~2× yield
-        // Cap at 10× initial target to prevent runaway collection
+        // Conservative 2× scaling, 5× cap (prevent BL-killing oversized matrices)
         size_t needed_raw = static_cast<size_t>(
             static_cast<double>(matrix_cols * 2) / std::max(merge_rate, 0.001));
         batch_target = std::min(
-            std::max(batch_target * 4, needed_raw),
-            initial_target * 10);
+            std::max(batch_target * 2, needed_raw),
+            initial_target * 5);
         std::cout << "\n  Need more — merge_rate=" << std::setprecision(3) << (merge_rate * 100)
                   << "%, new target=" << batch_target << "\n" << std::flush;
+    }
+
+    // Relation trimming: cap at 2× matrix_cols to keep BL fast
+    {
+        size_t max_rels = matrix_cols * 2;
+        if (relations.size() > max_rels) {
+            std::cout << "  [Trim] " << relations.size() << " → " << max_rels << " relations\n";
+            std::mt19937 rng(42);
+            std::shuffle(relations.begin(), relations.end(), rng);
+            relations.resize(max_rels);
+        }
     }
 
     // Phase 5: Linear Algebra
