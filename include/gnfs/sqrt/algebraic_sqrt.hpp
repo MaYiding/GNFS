@@ -8,6 +8,7 @@
 #include "../core/polynomial_context.hpp"
 #include "../linalg/sparse_matrix.hpp"
 
+#include <unordered_map>
 #include <vector>
 
 namespace gnfs {
@@ -17,6 +18,38 @@ using core::Integer;
 using core::Relation;
 using core::PolynomialContext;
 using linalg::BitVector;
+
+/// Pre-check: verify all algebraic ideal powers have even multiplicity.
+/// This is msieve's verify_alg_ideal_powers strategy — catches bad deps
+/// in O(n·d) before running expensive Hensel lifting.
+/// Returns true if parity check passes (all even), false if any odd exponent found.
+[[nodiscard]] inline bool verify_algebraic_ideal_powers(
+        const BitVector& dependency,
+        const std::vector<Relation>& relations) {
+
+    // Count algebraic FB factor multiplicities
+    std::unordered_map<uint32_t, uint64_t> fb_exponents;
+    std::unordered_map<uint64_t, uint64_t> lp_exponents;
+
+    for (size_t i = 0; i < relations.size(); ++i) {
+        if (!dependency.test(i)) continue;
+        const auto& rel = relations[i];
+        for (uint32_t idx : rel.algebraic_factors) {
+            fb_exponents[idx]++;
+        }
+        for (const auto& lp : rel.algebraic_large_prime) {
+            lp_exponents[lp.p] += lp.e;
+        }
+    }
+
+    for (const auto& [idx, exp] : fb_exponents) {
+        if (exp % 2 != 0) return false;
+    }
+    for (const auto& [p, exp] : lp_exponents) {
+        if (exp % 2 != 0) return false;
+    }
+    return true;
+}
 
 /// 代数平方根计算结果
 struct AlgebraicSqrtResult {
@@ -59,6 +92,13 @@ public:
             const PolynomialContext& ctx) const {
 
         AlgebraicSqrtResult result;
+
+        // Quick pre-check: algebraic ideal power parity (msieve strategy)
+        // Catches bad deps in O(n·d) before expensive Hensel lifting
+        if (!verify_algebraic_ideal_powers(dependency, relations)) {
+            result.error = "Algebraic ideal powers parity check failed";
+            return result;
+        }
 
         // 创建数域
         NumberField nf(ctx);

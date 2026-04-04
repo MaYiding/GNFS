@@ -223,7 +223,8 @@ private:
             uint64_t p,
             const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
             const NumberField& nf,
-            size_t num_lifts) const {
+            size_t num_lifts,
+            size_t max_threads = 0) const {
 
         uint32_t d = nf.degree();
         LiftResult result;
@@ -299,7 +300,7 @@ private:
         }
 
         auto P_final = compute_product_mod_parallel(
-            ab_pairs, f_int, d, final_mod, false);
+            ab_pairs, f_int, d, final_mod, false, max_threads);
 
         // Multiply P by f'(x)^2
         auto f_prime_int = compute_f_derivative_int(f_int, d);
@@ -374,9 +375,10 @@ private:
         const Integer& n = nf.n();
         auto t0 = std::chrono::steady_clock::now();
 
-        // Choose K: fewer primes = fewer sign combos, but each needs more lifting
-        // K=3 for d=3 (8 combos), K=5 for d>=4 (16 combos)
-        const size_t K = (d <= 3) ? 3 : 5;
+        // Choose K: fewer primes = fewer sign combos, but less oversubscription.
+        // K=2 for d≤3: 2^(K-1)=2 sign combos (sufficient since fixing prime 0 covers ±).
+        // K=3 for d≥4: more CRT redundancy for higher degree.
+        const size_t K = (d <= 3) ? 2 : 3;
 
         // Find K small inert primes
         auto inert_primes = find_inert_primes(nf, K);
@@ -413,6 +415,11 @@ private:
         }
 
         // ---- Step 1: Parallel Hensel lift for each prime ----
+        // Limit inner threads to hw/K to prevent oversubscription
+        // (K outer threads × hw inner threads = K×hw >> hw cores)
+        unsigned hw = std::thread::hardware_concurrency();
+        size_t inner_threads = std::max(size_t(1), static_cast<size_t>(hw > 0 ? hw : 4) / K);
+
         std::vector<LiftResult> lifted(K);
         {
             std::vector<std::thread> threads;
@@ -420,7 +427,8 @@ private:
             for (size_t i = 0; i < K; ++i) {
                 threads.emplace_back([&, i]() {
                     lifted[i] = hensel_lift_single_prime(
-                        inert_primes[i], ab_pairs, nf, lifts_per_prime[i]);
+                        inert_primes[i], ab_pairs, nf, lifts_per_prime[i],
+                        inner_threads);
                 });
             }
             for (auto& th : threads) th.join();
@@ -1020,19 +1028,22 @@ private:
 
     /// Parallel product computation: splits factors across threads
     /// then combines partial products. Falls back to sequential for small n.
+    /// @param max_threads_hint: 0 = auto (hw_concurrency), >0 = limit threads
     [[nodiscard]] static std::vector<Integer> compute_product_mod_parallel(
             const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
             const std::vector<Integer>& f,
             uint32_t d,
             const Integer& modulus,
-            bool verbose = false) {
+            bool verbose = false,
+            size_t max_threads_hint = 0) {
 
         size_t n = ab_pairs.size();
 
-        // Determine thread count
+        // Determine thread count (respect max_threads_hint for Nguyen shared-core)
         unsigned hw = std::thread::hardware_concurrency();
-        size_t num_threads = (hw > 0) ? hw : 4;
-        if (n < num_threads * 100) num_threads = 1;
+        size_t num_threads = (hw > 0) ? static_cast<size_t>(hw) : 4;
+        if (max_threads_hint > 0) num_threads = std::min(num_threads, max_threads_hint);
+        if (n < num_threads * 50) num_threads = 1;  // lower threshold for better utilization
 
         if (num_threads <= 1) {
             return compute_product_mod(ab_pairs, f, d, modulus);
