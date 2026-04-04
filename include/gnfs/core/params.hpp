@@ -243,7 +243,13 @@ struct GNFSParams {
         p.skewness_steps = std::max(100u, static_cast<uint32_t>(p.digits * 5));
 
         // === 线性代数 ===
-        p.num_qc_primes = std::max(32u, std::min(128u, static_cast<uint32_t>(p.digits * 2)));
+        // QC primes ensure deps are squares in Z[α]. Need ≥ degree-1 columns.
+        // For small N (≤30 digits), 20 QC primes is ample (saves 60% matrix build time).
+        if (p.digits <= 30) {
+            p.num_qc_primes = 20;
+        } else {
+            p.num_qc_primes = std::max(32u, std::min(128u, static_cast<uint32_t>(p.digits * 2)));
+        }
         // target_excess: 固定基础 + 额外列数（QC + Schirokauer + sign）
         // 不再使用 0.15·π(B) 的比例（随 B 线性增长过快）
         uint32_t extra_cols = p.num_qc_primes + p.degree + 1;  // QC + Schirokauer + sign
