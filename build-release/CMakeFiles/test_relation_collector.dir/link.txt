@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names -flto=thin CMakeFiles/test_relation_collector.dir/tests/test_relation_collector.cpp.o -o test_relation_collector  libgnfs_core.a /opt/homebrew/lib/libgmp.dylib /opt/homebrew/lib/libntl.dylib

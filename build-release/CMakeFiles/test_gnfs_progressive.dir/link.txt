@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names -flto=thin CMakeFiles/test_gnfs_progressive.dir/tests/test_gnfs_progressive.cpp.o -o test_gnfs_progressive  libgnfs_core.a /opt/homebrew/lib/libgmp.dylib /opt/homebrew/lib/libntl.dylib
