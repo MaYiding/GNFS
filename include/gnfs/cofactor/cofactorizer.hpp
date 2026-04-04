@@ -139,11 +139,15 @@ public:
         }
 
         // CRITICAL: Reject relations where gcd(a - b*m, N) > 1
-        // Such relations would produce degenerate dependencies (product ≡ 0 mod N)
+        // uint64 快路径: 小值用原生 gcd，大值用 GMP
         {
-            Integer gcd_with_n = core::gcd(rat_value.clone(), ctx_.n());
-            if (!gcd_with_n.is_one()) {
-                return std::nullopt;
+            if (rat_value.fits_uint64() && ctx_.n().fits_uint64()) {
+                uint64_t rv = rat_value.to_uint64();
+                uint64_t nv = ctx_.n().to_uint64();
+                if (std::gcd(rv, nv) != 1) return std::nullopt;
+            } else {
+                Integer gcd_with_n = core::gcd(rat_value.clone(), ctx_.n());
+                if (!gcd_with_n.is_one()) return std::nullopt;
             }
         }
 
