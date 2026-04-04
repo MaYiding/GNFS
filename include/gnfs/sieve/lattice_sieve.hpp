@@ -119,7 +119,7 @@ public:
         // 3. 预计算所有 FB 素数的格参数
         auto primes = build_prime_entries(basis, sq);
 
-        // 4. Row-major 筛法：逐行处理，每行在 L1 中热驻留
+        // 4. Row-major 筛法：逐行处理，每行在 L1 中热驻留（多线程并行）
         sieve_row_major(primes);
 
         // 5. 收集候选点
@@ -215,6 +215,7 @@ private:
         // 代数侧: |N(a,b)| ~ |a|^d * some_factor
         uint32_t d = ctx_.degree();
         double alg_val = std::pow(std::max(typical_a, 1.0), d);  // clamp to avoid log2(0)
+        if (alg_val < 1.0) alg_val = 1.0;
         double alg_log = std::log2(alg_val) * params_.log_scale;
 
         // 返回合并值（final guard against NaN/Inf from edge cases）
@@ -234,6 +235,10 @@ private:
         uint16_t flags;    // 0=normal, 1=u_zero (整行命中), 2=uv_zero (全局命中)
         uint64_t u_inv;    // mod_inverse(u, p)，仅 flags==0 时有效
         int64_t v;         // 格参数 v (mod p)
+        // Carry-forward 预计算字段 (Phase 1.1 优化)
+        int32_t delta;     // 行间增量 = (-v * u_inv) mod p
+        int32_t i_mod_init; // j=j_min 时的 i_mod 初始值
+        int32_t i_min_mod; // i_min mod p (预计算避免 per-row 除法)
     };
 
     // ── 格参数计算 ──────────────────────────────────────────
@@ -291,7 +296,7 @@ private:
 
     // ── 素数预计算 ──────────────────────────────────────────
 
-    /// 为所有 FB 素数预计算格参数（mod_inverse 等）
+    /// 为所有 FB 素数预计算格参数（mod_inverse + carry-forward delta）
     /// 每个 SQ 调用一次，结果供 sieve_row_major() 使用
     [[nodiscard]] std::vector<PrimeEntry> build_prime_entries(
             const LatticeBasis& basis, const SpecialQ& sq) const {
@@ -299,10 +304,16 @@ private:
         std::vector<PrimeEntry> entries;
         entries.reserve(fb_.rational_count() + fb_.sieve_algebraic_count());
 
-        auto make_entry = [](int64_t u, int64_t v, uint32_t p, uint32_t log_p) -> PrimeEntry {
+        const int32_t j_min = region_.j_min;
+        const int32_t i_min = region_.i_min;
+
+        auto make_entry = [j_min, i_min](int64_t u, int64_t v, uint32_t p, uint32_t log_p) -> PrimeEntry {
             PrimeEntry pe;
             pe.p = p;
             pe.log_p = static_cast<uint16_t>(log_p);
+            pe.delta = 0;
+            pe.i_mod_init = 0;
+            pe.i_min_mod = 0;
             if (u == 0 && v == 0) {
                 pe.flags = 2; pe.u_inv = 0; pe.v = 0;
             } else if (u == 0) {
@@ -311,6 +322,24 @@ private:
                 pe.flags = 0;
                 pe.u_inv = mod_inverse(static_cast<uint64_t>(u), p);
                 pe.v = v;
+
+                // Carry-forward 预计算:
+                // delta = (-v * u_inv) mod p — 每行 i_mod 的增量
+                int64_t p64 = static_cast<int64_t>(p);
+                int64_t neg_v = (-v % p64 + p64) % p64;
+                int64_t d = (neg_v * static_cast<int64_t>(pe.u_inv)) % p64;
+                pe.delta = static_cast<int32_t>(d);
+
+                // j=j_min 时的 i_mod 初始值
+                int64_t rhs = (-static_cast<int64_t>(j_min) * v) % p64;
+                if (rhs < 0) rhs += p64;
+                int64_t im = (rhs * static_cast<int64_t>(pe.u_inv)) % p64;
+                pe.i_mod_init = static_cast<int32_t>(im);
+
+                // i_min mod p (预计算)
+                int64_t imin_mod = static_cast<int64_t>(i_min) % p64;
+                if (imin_mod < 0) imin_mod += p64;
+                pe.i_min_mod = static_cast<int32_t>(imin_mod);
             }
             return pe;
         };
@@ -337,14 +366,13 @@ private:
 
     // ── Row-major 筛法核心 ──────────────────────────────────
 
-    /// Row-major 筛法：逐行处理所有素数贡献
+    /// Row-major 筛法：逐行处理所有素数贡献（carry-forward + 多线程）
     ///
-    /// 关键优化：旧方法 per-prime 遍历所有行（每个素数 × 每行 = L1 miss），
-    /// row-major 反转循环顺序——每行保持在 L1 cache 中，所有素数贡献完成后才换行。
-    /// L1 miss: O(FB_size × j_height) → O(j_height)
+    /// 关键优化 1: row-major 循环顺序确保每行在 L1 cache 中热驻留
+    /// 关键优化 2: carry-forward 消除 per-row per-prime 的 2 次 idiv
+    /// 关键优化 3: 行范围分块多线程并行（线性递推允许任意行跳转）
     void sieve_row_major(const std::vector<PrimeEntry>& primes) {
         const size_t w = static_cast<size_t>(region_.i_width());
-        const int32_t i_min = region_.i_min;
 
         // Phase 0: 全局命中素数（u=0, v=0 → 每个位置都被整除，极罕见）
         for (const auto& pe : primes) {
@@ -355,16 +383,76 @@ private:
             }
         }
 
-        // Phase 1: 逐行处理
-        for (int32_t j = region_.j_min; j <= region_.j_max; ++j) {
+        // Phase 1: 多线程行处理
+        const int32_t j_min = region_.j_min;
+        const int32_t j_max = region_.j_max;
+        const int32_t total_rows = j_max - j_min + 1;
+        const int32_t i_min = region_.i_min;
+
+        size_t num_threads = std::thread::hardware_concurrency();
+        if (num_threads == 0) num_threads = 4;
+        // 少于 500 行不值得开多线程
+        if (total_rows < 500) num_threads = 1;
+
+        if (num_threads <= 1) {
+            // 单线程快路径
+            sieve_row_chunk(primes, j_min, j_max, w, i_min, 0);
+            return;
+        }
+
+        // 分块并行
+        std::vector<std::thread> threads;
+        threads.reserve(num_threads);
+        int32_t rows_per_thread = total_rows / static_cast<int32_t>(num_threads);
+        int32_t remainder = total_rows % static_cast<int32_t>(num_threads);
+
+        int32_t chunk_start = j_min;
+        for (size_t t = 0; t < num_threads; ++t) {
+            int32_t chunk_rows = rows_per_thread + (static_cast<int32_t>(t) < remainder ? 1 : 0);
+            int32_t chunk_end = chunk_start + chunk_rows - 1;
+            int32_t row_offset = chunk_start - j_min;
+
+            threads.emplace_back(&LatticeSieve::sieve_row_chunk, this,
+                                 std::cref(primes), chunk_start, chunk_end,
+                                 w, i_min, row_offset);
+            chunk_start = chunk_end + 1;
+        }
+
+        for (auto& t : threads) {
+            t.join();
+        }
+    }
+
+    /// 处理一段行范围 [j_start, j_end]
+    /// row_offset = j_start - region_.j_min，用于跳转 carry-forward 状态
+    void sieve_row_chunk(const std::vector<PrimeEntry>& primes,
+                         int32_t j_start, int32_t j_end,
+                         size_t w, int32_t i_min, int32_t row_offset) {
+
+        // 计算本 chunk 的 carry-forward 起始状态
+        // i_mod 在行 k 时 = (i_mod_init + k * delta) mod p
+        std::vector<int32_t> cur_i_mod(primes.size());
+        for (size_t pi = 0; pi < primes.size(); ++pi) {
+            const auto& pe = primes[pi];
+            if (pe.flags != 0) continue;
+            int32_t p32 = static_cast<int32_t>(pe.p);
+            // 跳转 row_offset 行: i_mod = (init + offset * delta) mod p
+            int64_t advanced = static_cast<int64_t>(pe.i_mod_init) +
+                               static_cast<int64_t>(row_offset) * static_cast<int64_t>(pe.delta);
+            int64_t mod = advanced % static_cast<int64_t>(p32);
+            if (mod < 0) mod += p32;
+            cur_i_mod[pi] = static_cast<int32_t>(mod);
+        }
+
+        for (int32_t j = j_start; j <= j_end; ++j) {
             size_t row_base = static_cast<size_t>(j - region_.j_min) * w;
             size_t row_end = row_base + w;
 
-            for (const auto& pe : primes) {
-                if (pe.flags == 2) continue;  // 已在 Phase 0 处理
+            for (size_t pi = 0; pi < primes.size(); ++pi) {
+                const auto& pe = primes[pi];
+                if (pe.flags == 2) continue;
 
                 if (pe.flags == 1) {
-                    // u=0: 当 j ≡ 0 (mod p) 时整行命中
                     if ((j % static_cast<int32_t>(pe.p)) == 0) {
                         uint16_t lp = pe.log_p;
                         for (size_t idx = row_base; idx < row_end; ++idx)
@@ -373,23 +461,23 @@ private:
                     continue;
                 }
 
-                // 标准情况：计算本行的起始 i 位置
-                // i·u + j·v ≡ 0 (mod p) → i ≡ -j·v·u⁻¹ (mod p)
-                int64_t p64 = static_cast<int64_t>(pe.p);
-                int64_t rhs = (-static_cast<int64_t>(j) * pe.v) % p64;
-                if (rhs < 0) rhs += pe.p;
-                int64_t i_mod = (rhs * static_cast<int64_t>(pe.u_inv)) % p64;
+                int32_t i_mod = cur_i_mod[pi];
+                int32_t p32 = static_cast<int32_t>(pe.p);
 
-                int32_t i_start = i_min + static_cast<int32_t>(
-                    (i_mod - i_min % p64 + pe.p) % pe.p);
+                int32_t offset = i_mod - pe.i_min_mod;
+                if (offset < 0) offset += p32;
+                int32_t i_start = i_min + offset;
 
-                // 行内步进（该行在 L1 cache 中热驻留）
                 size_t idx = row_base + static_cast<size_t>(i_start - i_min);
                 uint16_t lp = pe.log_p;
                 size_t stride = static_cast<size_t>(pe.p);
                 for (; idx < row_end; idx += stride) {
                     sieve_array_[idx] += lp;
                 }
+
+                i_mod += pe.delta;
+                if (i_mod >= p32) i_mod -= p32;
+                cur_i_mod[pi] = i_mod;
             }
         }
     }

@@ -131,51 +131,47 @@ public:
             return std::nullopt;
         }
 
-        // 计算有理侧值和代数侧范数
+        // ── 有理侧: 计算值 + N-divisible 检查 + 试除 + 分类 ──
+        // Rational-first 短路: 如果有理侧不可接受，立即返回，跳过代数试除
         Integer rat_value = ctx_.rational_value(a, b);
         if (rat_value.is_negative()) {
             rat_value.negate();
         }
 
         // CRITICAL: Reject relations where gcd(a - b*m, N) > 1
-        // Such relations would produce degenerate dependencies (product ≡ 0 mod N)
-        Integer gcd_with_n = core::gcd(rat_value.clone(), ctx_.n());
-        if (!gcd_with_n.is_one()) {
-            return std::nullopt;  // This relation contains a factor of N
+        // uint64 快路径: 小值用原生 gcd，大值用 GMP
+        {
+            if (rat_value.fits_uint64() && ctx_.n().fits_uint64()) {
+                uint64_t rv = rat_value.to_uint64();
+                uint64_t nv = ctx_.n().to_uint64();
+                if (std::gcd(rv, nv) != 1) return std::nullopt;
+            } else {
+                Integer gcd_with_n = core::gcd(rat_value.clone(), ctx_.n());
+                if (!gcd_with_n.is_one()) return std::nullopt;
+            }
         }
 
+        auto rat_result = divider_.divide_rational(std::move(rat_value));
+        CofactorClassification rat_class = classify_cofactor(
+            rat_result.cofactor, large_prime_bound_);
+
+        // Rational-first 短路: 有理侧不可接受 → 跳过代数试除
+        if (!is_acceptable_cofactor(rat_class)) {
+            stats_.rational_rejects.fetch_add(1, std::memory_order_relaxed);
+            return std::nullopt;
+        }
+
+        // ── 代数侧: 计算范数 + 试除 + 分类 ──
         Integer alg_norm = ctx_.algebraic_norm(a, b);
         if (alg_norm.is_negative()) {
             alg_norm.negate();
         }
 
-        // 试除有理侧
-        auto rat_result = divider_.divide_rational(std::move(rat_value));
-
-        // 试除代数侧
         auto alg_result = divider_.divide_algebraic(std::move(alg_norm), a, b);
-
-        // 检查有理侧 cofactor
-        CofactorClassification rat_class = classify_cofactor(
-            rat_result.cofactor, large_prime_bound_);
-
-        // 检查代数侧 cofactor
         CofactorClassification alg_class = classify_cofactor(
             alg_result.cofactor, large_prime_bound_);
 
-        // 判断是否可接受
-        bool rat_ok = is_acceptable_cofactor(rat_class);
-        bool alg_ok = is_acceptable_cofactor(alg_class);
-
-        if (!rat_ok && !alg_ok) {
-            stats_.both_rejects.fetch_add(1, std::memory_order_relaxed);
-            return std::nullopt;
-        }
-        if (!rat_ok) {
-            stats_.rational_rejects.fetch_add(1, std::memory_order_relaxed);
-            return std::nullopt;
-        }
-        if (!alg_ok) {
+        if (!is_acceptable_cofactor(alg_class)) {
             stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
             return std::nullopt;
         }

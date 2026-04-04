@@ -26,8 +26,10 @@
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace gnfs;
@@ -254,9 +256,60 @@ FactResult factor_with_progress(const Integer& n, int level) {
             if (!sq) break;
 
             auto sr = sieve.sieve_special_q(*sq);
-            for (const auto& cand : sr.candidates) {
-                auto rel = cofactorizer.verify(cand);
-                if (rel) collector.add(std::move(*rel));
+
+            // 并行 cofactorization：将候选分块交给多线程处理
+            {
+                const auto& cands = sr.candidates;
+                size_t n_cands = cands.size();
+                size_t n_threads = std::thread::hardware_concurrency();
+                if (n_threads == 0) n_threads = 4;
+                if (n_cands < 1000) n_threads = 1;  // 太少候选不值得并行
+
+                // 每线程有自己的 cofactorizer（因为 verify() 不是线程安全的）
+                // 收集结果到 per-thread vector，最后合并
+                std::vector<std::vector<Relation>> thread_results(n_threads);
+                std::atomic<size_t> global_found{collector.size()};
+                std::atomic<size_t> next_chunk{0};
+                constexpr size_t CHUNK_SIZE = 256;  // 动态调度粒度
+
+                auto worker = [&](size_t tid) {
+                    Cofactorizer local_cofac(ctx, fb, cofac_config);
+                    auto& local_rels = thread_results[tid];
+                    local_rels.reserve(n_cands / (n_threads * 4));
+
+                    while (true) {
+                        size_t start = next_chunk.fetch_add(CHUNK_SIZE, std::memory_order_relaxed);
+                        if (start >= n_cands) break;
+                        // 早停：全局已收集足够
+                        if (global_found.load(std::memory_order_relaxed) >= batch_target) break;
+
+                        size_t end = std::min(start + CHUNK_SIZE, n_cands);
+                        for (size_t ci = start; ci < end; ++ci) {
+                            auto rel = local_cofac.verify(cands[ci]);
+                            if (rel) {
+                                local_rels.push_back(std::move(*rel));
+                                global_found.fetch_add(1, std::memory_order_relaxed);
+                            }
+                        }
+                    }
+                };
+
+                if (n_threads <= 1) {
+                    worker(0);
+                } else {
+                    std::vector<std::thread> threads;
+                    threads.reserve(n_threads);
+                    for (size_t t = 0; t < n_threads; ++t)
+                        threads.emplace_back(worker, t);
+                    for (auto& t : threads) t.join();
+                }
+
+                // 合并结果
+                for (auto& tr : thread_results) {
+                    for (auto& rel : tr) {
+                        collector.add(std::move(rel));
+                    }
+                }
             }
             ++sq_count;
 
