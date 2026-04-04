@@ -242,7 +242,8 @@ int main() {
     phase.reset();
     MatrixBuilderConfig mc;
     mc.include_sign_column = true; mc.include_qc_columns = true;
-    mc.include_class_group = true; mc.include_schirokauer = true;
+    mc.include_class_group = false; // Skip for ≤25 digit (class number 1, saves ~0.5s determinant)
+    mc.include_schirokauer = true;
     mc.num_qc_primes = params.num_qc_primes;
     mc.qc_prime_start = 100;
     mc.schirokauer_primes = {2};

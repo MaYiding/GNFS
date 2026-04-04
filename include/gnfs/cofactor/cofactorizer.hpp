@@ -162,9 +162,23 @@ public:
         }
 
         // ── 代数侧: 计算范数 + 试除 + 分类 ──
-        Integer alg_norm = ctx_.algebraic_norm(a, b);
-        if (alg_norm.is_negative()) {
-            alg_norm.negate();
+        // __int128 快路径: 避免 degree+1 次 GMP 堆分配（小系数 + 小 a,b 时）
+        Integer alg_norm;
+        {
+            auto [norm_i128, ok] = ctx_.algebraic_norm_i128(a, b);
+            if (ok) {
+                if (norm_i128 < 0) norm_i128 = -norm_i128;
+                if (norm_i128 <= static_cast<__int128>(UINT64_MAX)) {
+                    alg_norm = Integer(static_cast<uint64_t>(norm_i128));
+                } else {
+                    // Fits __int128 but not uint64 — construct via string or GMP
+                    alg_norm = ctx_.algebraic_norm(a, b);
+                    if (alg_norm.is_negative()) alg_norm.negate();
+                }
+            } else {
+                alg_norm = ctx_.algebraic_norm(a, b);
+                if (alg_norm.is_negative()) alg_norm.negate();
+            }
         }
 
         auto alg_result = divider_.divide_algebraic(std::move(alg_norm), a, b);

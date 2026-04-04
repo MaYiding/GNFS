@@ -414,7 +414,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
     MatrixBuilderConfig mb_config;
     mb_config.include_sign_column = true;
     mb_config.include_qc_columns = true;
-    mb_config.include_class_group = true;
+    mb_config.include_class_group = (bits > 100);  // Skip for small N (class number 1)
     mb_config.include_schirokauer = true;
     mb_config.num_qc_primes = params.num_qc_primes;
     mb_config.qc_prime_start = 100;

@@ -263,7 +263,7 @@ GNFSFactorResult factor_with_context(
     MatrixBuilderConfig mb_config;
     mb_config.include_sign_column = true;
     mb_config.include_qc_columns = true;
-    mb_config.include_class_group = true;
+    mb_config.include_class_group = false;  // Small N: class number 1
     mb_config.include_schirokauer = true;
     mb_config.num_qc_primes = 64;
     mb_config.verbose = false;

@@ -113,7 +113,7 @@ struct GNFSParams {
         } else if (p.digits <= 20) {
             B_rat = 15000;   B_alg = 30000;
         } else if (p.digits <= 25) {
-            B_rat = 10000;   B_alg = 20000;   LP_MULTIPLIER = 24.0;
+            B_rat = 8000;    B_alg = 16000;   LP_MULTIPLIER = 30.0;
         } else if (p.digits <= 30) {
             B_rat = 50000;   B_alg = 100000;
         } else if (p.digits <= 40) {
@@ -161,6 +161,8 @@ struct GNFSParams {
             sieve_width = 1000;   sieve_height = 400;    // tiny N
         } else if (p.digits <= 10) {
             sieve_width = 2000;   sieve_height = 1000;   // small N
+        } else if (p.digits <= 25) {
+            sieve_width = 4096;   sieve_height = 1024;   // 4M positions — smaller j → smaller norms → higher smoothness
         } else if (p.digits <= 30) {
             sieve_width = 4096;   sieve_height = 2048;   // 8M positions, ~16MB
         } else if (p.digits <= 50) {
@@ -295,10 +297,10 @@ struct GNFSParams {
             double key_space = lp_primes * static_cast<double>(std::max(degree, 2u));
             double mc = static_cast<double>(matrix_columns);
 
-            // Birthday: safety=80 to account for 2LP-heavy regime where
-            // merge rate is ~3-5%. Higher safety avoids wasteful multi-round
-            // sieve loops (was safety=8, caused 2-round collection).
-            double n_min = std::sqrt(2.0 * key_space * mc * 80.0);
+            // Birthday: safety=50. Balance between one-round collection and
+            // not wasting time on excess raw relations. At safety=50 and 3.3%
+            // merge rate, expected usable ≈ 115% of matrix_cols (sufficient).
+            double n_min = std::sqrt(2.0 * key_space * mc * 50.0);
             // Floor: at least 5× matrix columns (covers 2LP merge overhead)
             return static_cast<size_t>(
                 std::max(n_min, mc * 5.0));
