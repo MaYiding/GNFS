@@ -92,6 +92,9 @@ public:
         sieve_array_.resize(region_.size(), 0);
     }
 
+    /// 设置最大线程数（0 = auto, 1 = single-threaded）
+    void set_max_threads(size_t n) { max_threads_ = n; }
+
     /// 设置关系回调
     void set_relation_callback(RelationCallback callback) {
         relation_callback_ = std::move(callback);
@@ -179,6 +182,7 @@ private:
 
     std::vector<uint16_t> sieve_array_;  // 加法筛：累积 log_p 值
     uint16_t last_init_val_ = 0;         // 当前 SQ 的初始 log 估计值
+    size_t max_threads_ = 0;             // 0 = auto (hardware_concurrency)
 
     RelationCallback relation_callback_;
     ProgressCallback progress_callback_;
@@ -447,7 +451,7 @@ private:
         const int32_t total_rows = j_max - j_min + 1;
         const int32_t i_min = region_.i_min;
 
-        size_t num_threads = std::thread::hardware_concurrency();
+        size_t num_threads = (max_threads_ > 0) ? max_threads_ : std::thread::hardware_concurrency();
         if (num_threads == 0) num_threads = 4;
         if (total_rows < 500) num_threads = 1;
 

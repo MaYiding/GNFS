@@ -74,10 +74,25 @@ struct CofactorClassification {
         return false;
     };
 
-    // 7 witnesses: deterministic for all n < 3.317×10^24
+    // Adaptive witness selection (Jaeschke 1993 + Sinclair):
+    // n < 2,047:                  {2}
+    // n < 1,373,653:              {2, 3}
+    // n < 25,326,001:             {2, 3, 5}
+    // n < 3,215,031,751:          {2, 3, 5, 7}
+    // n < 2,152,302,898,747:      {2, 3, 5, 7, 11}
+    // n < 3,474,749,660,383:      {2, 3, 5, 7, 11, 13}
+    // n < 341,550,071,728,321:    {2, 3, 5, 7, 11, 13, 17}
     constexpr uint64_t witnesses[] = {2, 3, 5, 7, 11, 13, 17};
-    for (uint64_t a : witnesses) {
-        if (!witness_test(a)) return false;
+    int num_witnesses;
+    if      (n < 2047ULL)                num_witnesses = 1;
+    else if (n < 1373653ULL)             num_witnesses = 2;
+    else if (n < 25326001ULL)            num_witnesses = 3;
+    else if (n < 3215031751ULL)          num_witnesses = 4;
+    else if (n < 2152302898747ULL)       num_witnesses = 5;
+    else if (n < 3474749660383ULL)       num_witnesses = 6;
+    else                                 num_witnesses = 7;
+    for (int i = 0; i < num_witnesses; ++i) {
+        if (!witness_test(witnesses[i])) return false;
     }
     return true;
 }
@@ -326,9 +341,8 @@ struct CofactorClassification {
                 }
             }
 
-            // Phase 3: Pollard rho (调优参数)
+            // Phase 3: Pollard rho (Brent variant)
             if (factor == 1) {
-                // 小合数用更少迭代（c < 2^40 用 10K，否则 100K）
                 size_t max_iter = (c < (UINT64_C(1) << 40)) ? 10000 : 100000;
                 factor = pollard_rho(c, max_iter);
             }

@@ -119,7 +119,7 @@ int main() {
             if (!sq) break;
             auto sres = sieve.sieve_special_q(*sq);
 
-            // 并行 cofactorization + 早停
+            // Parallel cofactorization with early-stop
             {
                 const auto& cands = sres.candidates;
                 size_t n_cands = cands.size();
