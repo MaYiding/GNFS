@@ -109,14 +109,6 @@ public:
     /// 使用 row-major bucket sieve：预计算所有 FB 素数的格参数，
     /// 然后逐行处理（每行在 L1 cache 中热驻留，所有素数贡献完成后才移到下一行）。
     /// 相比旧的 per-prime 遍历，L1 miss 从 O(FB_size × j_height) 降到 O(j_height)。
-    /// Profiling counters (microseconds, public for testing)
-    struct SieveProfile {
-        int64_t build_entries_us = 0;
-        int64_t sieve_us = 0;
-        int64_t collect_us = 0;
-    };
-    mutable SieveProfile profile_;
-
     [[nodiscard]] SieveResult sieve_special_q(const SpecialQ& sq) {
         SieveResult result;
         result.special_q = sq;
@@ -128,21 +120,13 @@ public:
         init_sieve_array(basis);
 
         // 3. 预计算所有 FB 素数的格参数
-        auto tp0 = std::chrono::high_resolution_clock::now();
         auto primes = build_prime_entries(basis, sq);
-        auto tp1 = std::chrono::high_resolution_clock::now();
-        profile_.build_entries_us += std::chrono::duration_cast<std::chrono::microseconds>(tp1 - tp0).count();
 
         // 4. Row-major 筛法：逐行处理，每行在 L1 中热驻留（多线程并行）
         sieve_row_major(primes);
-        auto tp2 = std::chrono::high_resolution_clock::now();
-        profile_.sieve_us += std::chrono::duration_cast<std::chrono::microseconds>(tp2 - tp1).count();
 
         // 5. 收集候选点
         result.candidates = collect_candidates(basis);
-        auto tp3 = std::chrono::high_resolution_clock::now();
-        profile_.collect_us += std::chrono::duration_cast<std::chrono::microseconds>(tp3 - tp2).count();
-
         result.sieved_positions = region_.size();
 
         return result;
