@@ -411,13 +411,19 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
     const size_t n = matrix.num_cols();
     const size_t max_iter = m / 64 + 100;
 
+    // Try multiple random seeds if BL doesn't produce valid dependencies
+    constexpr int MAX_SEEDS = 3;
+    uint64_t seeds[] = {42, 12345678901ULL, 9876543210ULL};
+
+    for (int seed_idx = 0; seed_idx < MAX_SEEDS; ++seed_idx) {
+
     // Create parallel context with pre-allocated buffers
     ParallelContext ctx(n);
 
     // Random starting block vector Y
     BlockVector Y(m);
     {
-        std::mt19937_64 rng(42);
+        std::mt19937_64 rng(seeds[seed_idx]);
         for (size_t i = 0; i < m; ++i)
             Y.data[i] = rng();
     }
@@ -504,8 +510,8 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
     // Step 9: Extract and verify dependencies
     std::vector<std::vector<bool>> dependencies;
 
-    for (int j = 0; j < 64 && dependencies.size() < max_deps; ++j) {
-        auto candidate = S.extract_column(j);
+    for (size_t j = 0; j < 64 && dependencies.size() < max_deps; ++j) {
+        auto candidate = S.extract_column(static_cast<int>(j));
 
         bool nonzero = false;
         for (bool b : candidate) { if (b) { nonzero = true; break; } }
@@ -527,11 +533,21 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
         }
     }
 
-    if (dependencies.empty()) {
+    if (!dependencies.empty()) {
+        return dependencies;
+    }
+
+    // BL didn't produce valid deps with this seed — next iteration tries new seed
+
+    } // end seed loop
+
+    // All seeds exhausted — fall back to Gaussian ONLY for small matrices
+    if (m < 10000 && n < 10000) {
         return find_dependencies_sparse(matrix, max_deps);
     }
 
-    return dependencies;
+    // Large matrix: BL failed, no feasible fallback
+    return {};
 }
 
 } // namespace gnfs::linalg
