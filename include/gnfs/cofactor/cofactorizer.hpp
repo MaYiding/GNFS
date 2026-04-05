@@ -115,15 +115,19 @@ public:
 
     /// 验证单个候选
     /// @param cand 筛法候选
+    /// @param sq_q, sq_r Special-Q 素数和根 (0 = 无 SQ 优化)
     /// @return 如果成功，返回完整关系；否则返回空
-    [[nodiscard]] std::optional<Relation> verify(const SieveCandidate& cand) {
-        return verify(cand.a, cand.b);
+    [[nodiscard]] std::optional<Relation> verify(const SieveCandidate& cand,
+                                                  uint32_t sq_q = 0, uint32_t sq_r = 0) {
+        return verify(cand.a, cand.b, sq_q, sq_r);
     }
 
     /// 验证 (a, b) 对
     /// @param a, b 候选对
+    /// @param sq_q, sq_r Special-Q 素数和根 (0 = 无 SQ 优化)
     /// @return 如果成功，返回完整关系；否则返回空
-    [[nodiscard]] std::optional<Relation> verify(int64_t a, uint64_t b) {
+    [[nodiscard]] std::optional<Relation> verify(int64_t a, uint64_t b,
+                                                  uint32_t sq_q = 0, uint32_t sq_r = 0) {
         stats_.total_candidates.fetch_add(1, std::memory_order_relaxed);
 
         // 基本验证
@@ -190,7 +194,28 @@ public:
             }
         }
 
-        auto alg_result = divider_.divide_algebraic(std::move(alg_norm), a, b);
+        // Pre-divide by the Special-Q prime if provided.
+        // The SQ prime always divides the algebraic norm (by lattice construction).
+        // This allows using sieve-only trial division (skipping ~10K SQ-range entries).
+        uint8_t sq_exp = 0;
+        if (sq_q > 0) {
+            if (alg_norm.fits_uint64()) {
+                uint64_t nv = alg_norm.to_uint64();
+                while (nv % sq_q == 0 && sq_exp < 255) {
+                    nv /= sq_q;
+                    ++sq_exp;
+                }
+                alg_norm = Integer(nv);
+            } else {
+                while (mpz_divisible_ui_p(alg_norm.get_mpz(), sq_q) && sq_exp < 255) {
+                    mpz_divexact_ui(alg_norm.get_mpz(), alg_norm.get_mpz(), sq_q);
+                    ++sq_exp;
+                }
+            }
+        }
+
+        auto alg_result = divider_.divide_algebraic(
+            std::move(alg_norm), a, b, fb_.sieve_algebraic_count());
         CofactorClassification alg_class = classify_cofactor(
             alg_result.cofactor, large_prime_bound_);
 
@@ -238,6 +263,12 @@ public:
                         PrimePower{p, r, exp});
                 }
             }
+        }
+
+        // 添加 SQ 素数为代数侧大素数（SQ 被预除，不在 trial div 结果中）
+        if (sq_q > 0 && sq_exp > 0) {
+            rel.algebraic_large_prime.push_back(
+                PrimePower{sq_q, static_cast<uint64_t>(sq_r), sq_exp});
         }
 
         // 添加代数侧大素数（含正确的根 r = a·b⁻¹ mod p）
