@@ -92,6 +92,9 @@ public:
         sieve_array_.resize(region_.size(), 0);
     }
 
+    /// 设置最大线程数（0 = auto, 1 = single-threaded）
+    void set_max_threads(size_t n) { max_threads_ = n; }
+
     /// 设置关系回调
     void set_relation_callback(RelationCallback callback) {
         relation_callback_ = std::move(callback);
@@ -179,6 +182,7 @@ private:
 
     std::vector<uint16_t> sieve_array_;  // 加法筛：累积 log_p 值
     uint16_t last_init_val_ = 0;         // 当前 SQ 的初始 log 估计值
+    size_t max_threads_ = 0;             // 0 = auto (hardware_concurrency)
 
     RelationCallback relation_callback_;
     ProgressCallback progress_callback_;
@@ -225,7 +229,13 @@ private:
                                                static_cast<double>(UINT16_MAX)));
     }
 
-    // ── Row-major bucket sieve 数据结构 ──────────────────────
+    // ── Bucket sieve 数据结构 ──────────────────────────────────
+
+    /// Bucket entry: 大素数在某行的命中记录（4 bytes，紧凑 cache-friendly）
+    struct BucketEntry {
+        uint16_t offset;   // 行内偏移 (0..width-1)
+        uint16_t log_p;    // log 贡献
+    };
 
     /// 预计算的 FB 素数条目
     /// 存储格坐标映射参数，避免 per-row 重复计算 mod_inverse
@@ -235,7 +245,7 @@ private:
         uint16_t flags;    // 0=normal, 1=u_zero (整行命中), 2=uv_zero (全局命中)
         uint64_t u_inv;    // mod_inverse(u, p)，仅 flags==0 时有效
         int64_t v;         // 格参数 v (mod p)
-        // Carry-forward 预计算字段 (Phase 1.1 优化)
+        // Carry-forward 预计算字段
         int32_t delta;     // 行间增量 = (-v * u_inv) mod p
         int32_t i_mod_init; // j=j_min 时的 i_mod 初始值
         int32_t i_min_mod; // i_min mod p (预计算避免 per-row 除法)
@@ -364,15 +374,64 @@ private:
         return entries;
     }
 
-    // ── Row-major 筛法核心 ──────────────────────────────────
+    // ── Bucket sieve 核心 ─────────────────────────────────────
 
-    /// Row-major 筛法：逐行处理所有素数贡献（carry-forward + 多线程）
+    /// 预填充大素数的 per-row buckets
+    /// 对 flags==0 且 p >= width 的素数，计算其在每行的命中位置并写入 bucket。
+    /// 复杂度: O(large_primes × total_rows)，但 total_rows 仅 ~1K，所以很快。
+    [[nodiscard]] std::vector<std::vector<BucketEntry>> fill_buckets(
+            const std::vector<PrimeEntry>& primes,
+            uint32_t bucket_threshold) const {
+
+        const int32_t j_min = region_.j_min;
+        const int32_t j_max = region_.j_max;
+        const int32_t total_rows = j_max - j_min + 1;
+        const auto w = static_cast<int32_t>(region_.i_width());
+
+        std::vector<std::vector<BucketEntry>> buckets(total_rows);
+
+        // 预估每行平均条目数用于 reserve
+        size_t large_count = 0;
+        for (const auto& pe : primes) {
+            if (pe.flags == 0 && pe.p >= bucket_threshold)
+                ++large_count;
+        }
+        // 每个大素数平均每行命中 w/p ≈ 0.3-1.0 次
+        size_t avg_per_row = large_count * 2 / static_cast<size_t>(std::max(total_rows, static_cast<int32_t>(1))) + 8;
+        for (auto& b : buckets) b.reserve(avg_per_row);
+
+        for (const auto& pe : primes) {
+            if (pe.flags != 0 || pe.p < bucket_threshold) continue;
+
+            int32_t i_mod = pe.i_mod_init;
+            int32_t p32 = static_cast<int32_t>(pe.p);
+            uint16_t lp = pe.log_p;
+
+            for (int32_t row = 0; row < total_rows; ++row) {
+                int32_t off = i_mod - pe.i_min_mod;
+                if (off < 0) off += p32;
+
+                // p >= width → at most 1 hit per row
+                if (off < w) {
+                    buckets[static_cast<size_t>(row)].push_back({static_cast<uint16_t>(off), lp});
+                }
+
+                // Advance carry-forward
+                i_mod += pe.delta;
+                if (i_mod >= p32) i_mod -= p32;
+            }
+        }
+
+        return buckets;
+    }
+
+    /// Bucket sieve 主入口：分离小/大素数，预填充 bucket，多线程处理
     ///
-    /// 关键优化 1: row-major 循环顺序确保每行在 L1 cache 中热驻留
-    /// 关键优化 2: carry-forward 消除 per-row per-prime 的 2 次 idiv
-    /// 关键优化 3: 行范围分块多线程并行（线性递推允许任意行跳转）
+    /// 小素数 (p < width): stride loop（多次命中/行，L1 cache 热驻留）
+    /// 大素数 (p ≥ width): bucket apply（预排序命中，无空循环）
     void sieve_row_major(const std::vector<PrimeEntry>& primes) {
         const size_t w = static_cast<size_t>(region_.i_width());
+        const uint32_t bucket_threshold = static_cast<uint32_t>(w);
 
         // Phase 0: 全局命中素数（u=0, v=0 → 每个位置都被整除，极罕见）
         for (const auto& pe : primes) {
@@ -383,20 +442,22 @@ private:
             }
         }
 
-        // Phase 1: 多线程行处理
+        // Phase 1: 预填充大素数 buckets
+        auto buckets = fill_buckets(primes, bucket_threshold);
+
+        // Phase 2: 多线程行处理
         const int32_t j_min = region_.j_min;
         const int32_t j_max = region_.j_max;
         const int32_t total_rows = j_max - j_min + 1;
         const int32_t i_min = region_.i_min;
 
-        size_t num_threads = std::thread::hardware_concurrency();
+        size_t num_threads = (max_threads_ > 0) ? max_threads_ : std::thread::hardware_concurrency();
         if (num_threads == 0) num_threads = 4;
-        // 少于 500 行不值得开多线程
         if (total_rows < 500) num_threads = 1;
 
         if (num_threads <= 1) {
-            // 单线程快路径
-            sieve_row_chunk(primes, j_min, j_max, w, i_min, 0);
+            sieve_row_chunk(primes, buckets, bucket_threshold,
+                            j_min, j_max, w, i_min, 0);
             return;
         }
 
@@ -413,7 +474,9 @@ private:
             int32_t row_offset = chunk_start - j_min;
 
             threads.emplace_back(&LatticeSieve::sieve_row_chunk, this,
-                                 std::cref(primes), chunk_start, chunk_end,
+                                 std::cref(primes), std::cref(buckets),
+                                 bucket_threshold,
+                                 chunk_start, chunk_end,
                                  w, i_min, row_offset);
             chunk_start = chunk_end + 1;
         }
@@ -424,19 +487,20 @@ private:
     }
 
     /// 处理一段行范围 [j_start, j_end]
-    /// row_offset = j_start - region_.j_min，用于跳转 carry-forward 状态
+    /// 小素数走 stride loop，大素数从 bucket 直接 apply
     void sieve_row_chunk(const std::vector<PrimeEntry>& primes,
+                         const std::vector<std::vector<BucketEntry>>& buckets,
+                         uint32_t bucket_threshold,
                          int32_t j_start, int32_t j_end,
-                         size_t w, int32_t i_min, int32_t row_offset) {
+                         size_t w, [[maybe_unused]] int32_t i_min, int32_t row_offset) {
 
-        // 计算本 chunk 的 carry-forward 起始状态
-        // i_mod 在行 k 时 = (i_mod_init + k * delta) mod p
+        // 预计算小素数的 carry-forward 起始状态
+        // 只处理 flags==0 且 p < bucket_threshold 的素数
         std::vector<int32_t> cur_i_mod(primes.size());
         for (size_t pi = 0; pi < primes.size(); ++pi) {
             const auto& pe = primes[pi];
-            if (pe.flags != 0) continue;
+            if (pe.flags != 0 || pe.p >= bucket_threshold) continue;
             int32_t p32 = static_cast<int32_t>(pe.p);
-            // 跳转 row_offset 行: i_mod = (init + offset * delta) mod p
             int64_t advanced = static_cast<int64_t>(pe.i_mod_init) +
                                static_cast<int64_t>(row_offset) * static_cast<int64_t>(pe.delta);
             int64_t mod = advanced % static_cast<int64_t>(p32);
@@ -448,11 +512,16 @@ private:
             size_t row_base = static_cast<size_t>(j - region_.j_min) * w;
             size_t row_end = row_base + w;
 
+            // ── 小素数: stride loop ──
             for (size_t pi = 0; pi < primes.size(); ++pi) {
                 const auto& pe = primes[pi];
+
+                // Skip large primes (handled by buckets) and global hits
                 if (pe.flags == 2) continue;
+                if (pe.flags == 0 && pe.p >= bucket_threshold) continue;
 
                 if (pe.flags == 1) {
+                    // u=0: 整行命中当 j ≡ 0 (mod p)
                     if ((j % static_cast<int32_t>(pe.p)) == 0) {
                         uint16_t lp = pe.log_p;
                         for (size_t idx = row_base; idx < row_end; ++idx)
@@ -461,14 +530,14 @@ private:
                     continue;
                 }
 
+                // flags==0, p < bucket_threshold: stride loop
                 int32_t i_mod = cur_i_mod[pi];
                 int32_t p32 = static_cast<int32_t>(pe.p);
 
                 int32_t offset = i_mod - pe.i_min_mod;
                 if (offset < 0) offset += p32;
-                int32_t i_start = i_min + offset;
 
-                size_t idx = row_base + static_cast<size_t>(i_start - i_min);
+                size_t idx = row_base + static_cast<size_t>(offset);
                 uint16_t lp = pe.log_p;
                 size_t stride = static_cast<size_t>(pe.p);
                 for (; idx < row_end; idx += stride) {
@@ -478,6 +547,13 @@ private:
                 i_mod += pe.delta;
                 if (i_mod >= p32) i_mod -= p32;
                 cur_i_mod[pi] = i_mod;
+            }
+
+            // ── 大素数: bucket apply (无分支，直接索引写入) ──
+            size_t row_idx = static_cast<size_t>(j - region_.j_min);
+            const auto& bucket = buckets[row_idx];
+            for (const auto& entry : bucket) {
+                sieve_array_[row_base + entry.offset] += entry.log_p;
             }
         }
     }

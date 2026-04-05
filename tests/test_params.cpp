@@ -253,7 +253,8 @@ void test_qc_and_excess() {
 
     for (size_t bits : {30, 80, 200}) {
         auto p = GNFSParams::compute(bits);
-        assert(p.num_qc_primes >= 32);
+        // ≤30 digit uses 20 QC primes (Session 51 optimization), larger uses 32-128
+        assert(p.num_qc_primes >= 20);
         assert(p.num_qc_primes <= 128);
         assert(p.target_excess >= 200);
     }
@@ -264,11 +265,16 @@ void test_qc_and_excess() {
 void test_monotonicity() {
     std::cout << "Testing parameter monotonicity..." << std::endl;
 
-    // FB bound should generally increase with N size
+    // FB bound should generally increase with N size (with exceptions for
+    // optimized parameter bands, e.g., ≤25 digit uses smaller FB than ≤20 digit
+    // for better LP/BL trade-off)
     uint32_t prev_fb = 0;
     for (size_t bits = 20; bits <= 200; bits += 20) {
         auto p = GNFSParams::compute(bits);
-        assert(p.rational_bound >= prev_fb);
+        // Allow non-monotonic FB within the small-N optimized band (≤25 digit ≈ ≤83 bit)
+        if (bits > 90) {
+            assert(p.rational_bound >= prev_fb);
+        }
         prev_fb = p.rational_bound;
     }
 

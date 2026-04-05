@@ -147,7 +147,6 @@ public:
                     divide_exact(norm, p);
                     ++exp;
                 }
-                // 检查是否可以切换到 uint64
                 if (norm.fits_uint64()) {
                     use_u64 = true;
                     norm_u64 = norm.to_uint64();
@@ -165,8 +164,12 @@ public:
                 break;
             }
             // 早期退出: cofactor < p → can't be divided by any remaining FB prime
-            // (algebraic FB sorted by p; all subsequent p' ≥ p > norm_u64)
             if (use_u64 && norm_u64 > 0 && norm_u64 < p) {
+                break;
+            }
+            // p² 早停: cofactor < p² 且 cofactor > algebraic_bound
+            if (use_u64 && norm_u64 > fb_.params().algebraic_bound &&
+                norm_u64 < static_cast<uint64_t>(p) * p) {
                 break;
             }
         }
@@ -262,12 +265,18 @@ private:
                 result.is_smooth = true;
                 break;
             }
-            // 早期退出: v < next_p → 不可能被任何剩余 FB 素数整除
+            // 早期退出: cofactor < next_p → 不可能被任何剩余 FB 素数整除
             if (idx + 1 < rationals.size()) {
                 uint64_t next_p = rationals[idx + 1].p;
                 if (value < next_p) {
                     break;
                 }
+            }
+            // p² 早停: cofactor < p² 且 cofactor > rational_bound
+            // cofactor 是素数且不在 FB 中 → 安全退出
+            if (value > fb_.params().rational_bound &&
+                value < static_cast<uint64_t>(p) * p) {
+                break;
             }
         }
 
