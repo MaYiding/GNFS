@@ -229,9 +229,9 @@ int main() {
                   << "%, new target=" << batch_target << "\n" << std::flush;
     }
 
-    // Relation trimming: cap at 2× matrix_cols to keep BL fast
+    // Relation trimming: cap at 1.3× matrix_cols for fast Gaussian
     {
-        size_t max_rels = matrix_cols * 2;
+        size_t max_rels = static_cast<size_t>(matrix_cols * 1.3);
         if (relations.size() > max_rels) {
             std::cout << "  [Trim] " << relations.size() << " → " << max_rels << " relations\n";
             std::mt19937 rng(42);

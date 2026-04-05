@@ -279,7 +279,15 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
     // For small matrices, single-threaded is fine. For larger ones, parallelize.
     size_t n_threads = std::thread::hardware_concurrency();
     if (n_threads == 0) n_threads = 4;
-    bool use_parallel = (m > 1000 && n_threads > 1);
+
+    // Use persistent ThreadPool for parallel Gaussian elimination.
+    // Per-column thread creation (std::thread ctor ~30μs × 12 × 1000 pivots = 360ms)
+    // is catastrophic for <10K matrices. ThreadPool amortizes thread creation.
+    bool use_parallel = (m > 2000 && n_threads > 1);
+    std::unique_ptr<gnfs::util::ThreadPool> pool;
+    if (use_parallel) {
+        pool = std::make_unique<gnfs::util::ThreadPool>(static_cast<uint32_t>(n_threads));
+    }
 
     // Collect rows needing elimination to avoid branch in tight loop
     std::vector<size_t> elim_rows;
@@ -310,21 +318,22 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
             }
 
             if (elim_rows.size() > 500) {
-                // Parallel elimination: split elim_rows across threads
-                size_t chunk = elim_rows.size() / n_threads;
-                std::vector<std::thread> threads;
-                threads.reserve(n_threads);
+                // Parallel elimination via ThreadPool (zero thread creation overhead)
+                size_t chunk = (elim_rows.size() + n_threads - 1) / n_threads;
+                std::vector<std::future<void>> futures;
+                futures.reserve(n_threads);
 
                 for (size_t t = 0; t < n_threads; ++t) {
                     size_t start = t * chunk;
-                    size_t end = (t == n_threads - 1) ? elim_rows.size() : start + chunk;
-                    threads.emplace_back([&aug, &elim_rows, pivot_row, start, end]() {
+                    if (start >= elim_rows.size()) break;
+                    size_t end = std::min(start + chunk, elim_rows.size());
+                    futures.push_back(pool->submit([&aug, &elim_rows, pivot_row, start, end]() {
                         for (size_t i = start; i < end; ++i) {
                             aug.xor_rows(elim_rows[i], pivot_row);
                         }
-                    });
+                    }));
                 }
-                for (auto& t : threads) t.join();
+                for (auto& f : futures) f.get();
             } else {
                 // Few rows — single-threaded
                 for (size_t row : elim_rows) {
