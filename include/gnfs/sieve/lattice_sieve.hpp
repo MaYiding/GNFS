@@ -486,6 +486,22 @@ private:
         }
     }
 
+    /// 紧凑小素数条目（16 bytes vs PrimeEntry 36 bytes → 2.25× cache 效率）
+    struct CompactSmallPrime {
+        uint32_t p;
+        uint16_t log_p;
+        int16_t delta;       // fits in int16: delta < p < bucket_threshold (= width ≤ 4000)
+        int16_t i_min_mod;   // fits in int16: i_min_mod < p < 4000
+        int16_t i_mod;       // current carry-forward state, mutable per-thread
+        // 12 bytes, padded to 12 (no need for 16)
+    };
+
+    /// v-prime (u=0: 整行命中) 条目
+    struct VPrimeEntry {
+        uint32_t p;
+        uint16_t log_p;
+    };
+
     /// 处理一段行范围 [j_start, j_end]
     /// 小素数走 stride loop，大素数从 bucket 直接 apply
     void sieve_row_chunk(const std::vector<PrimeEntry>& primes,
@@ -494,59 +510,60 @@ private:
                          int32_t j_start, int32_t j_end,
                          size_t w, [[maybe_unused]] int32_t i_min, int32_t row_offset) {
 
-        // 预计算小素数的 carry-forward 起始状态
-        // 只处理 flags==0 且 p < bucket_threshold 的素数
-        std::vector<int32_t> cur_i_mod(primes.size());
+        // 预分离小素数和 v-primes 为紧凑数组（消除 inner loop flag 检查）
+        std::vector<CompactSmallPrime> small_primes;
+        std::vector<VPrimeEntry> v_primes;
+        small_primes.reserve(primes.size());
+
         for (size_t pi = 0; pi < primes.size(); ++pi) {
             const auto& pe = primes[pi];
-            if (pe.flags != 0 || pe.p >= bucket_threshold) continue;
-            int32_t p32 = static_cast<int32_t>(pe.p);
-            int64_t advanced = static_cast<int64_t>(pe.i_mod_init) +
-                               static_cast<int64_t>(row_offset) * static_cast<int64_t>(pe.delta);
-            int64_t mod = advanced % static_cast<int64_t>(p32);
-            if (mod < 0) mod += p32;
-            cur_i_mod[pi] = static_cast<int32_t>(mod);
+            if (pe.flags == 1) {
+                v_primes.push_back({pe.p, pe.log_p});
+            } else if (pe.flags == 0 && pe.p < bucket_threshold) {
+                int32_t p32 = static_cast<int32_t>(pe.p);
+                int64_t advanced = static_cast<int64_t>(pe.i_mod_init) +
+                                   static_cast<int64_t>(row_offset) * static_cast<int64_t>(pe.delta);
+                int64_t mod = advanced % static_cast<int64_t>(p32);
+                if (mod < 0) mod += p32;
+                small_primes.push_back({
+                    pe.p, pe.log_p,
+                    static_cast<int16_t>(pe.delta),
+                    static_cast<int16_t>(pe.i_min_mod),
+                    static_cast<int16_t>(mod)
+                });
+            }
         }
 
         for (int32_t j = j_start; j <= j_end; ++j) {
             size_t row_base = static_cast<size_t>(j - region_.j_min) * w;
             size_t row_end = row_base + w;
 
-            // ── 小素数: stride loop ──
-            for (size_t pi = 0; pi < primes.size(); ++pi) {
-                const auto& pe = primes[pi];
-
-                // Skip large primes (handled by buckets) and global hits
-                if (pe.flags == 2) continue;
-                if (pe.flags == 0 && pe.p >= bucket_threshold) continue;
-
-                if (pe.flags == 1) {
-                    // u=0: 整行命中当 j ≡ 0 (mod p)
-                    if ((j % static_cast<int32_t>(pe.p)) == 0) {
-                        uint16_t lp = pe.log_p;
-                        for (size_t idx = row_base; idx < row_end; ++idx)
-                            sieve_array_[idx] += lp;
-                    }
-                    continue;
+            // ── v-primes: 整行命中 (稀少，通常 0-2 个) ──
+            for (const auto& vp : v_primes) {
+                if ((j % static_cast<int32_t>(vp.p)) == 0) {
+                    uint16_t lp = vp.log_p;
+                    for (size_t idx = row_base; idx < row_end; ++idx)
+                        sieve_array_[idx] += lp;
                 }
+            }
 
-                // flags==0, p < bucket_threshold: stride loop
-                int32_t i_mod = cur_i_mod[pi];
-                int32_t p32 = static_cast<int32_t>(pe.p);
-
-                int32_t offset = i_mod - pe.i_min_mod;
-                if (offset < 0) offset += p32;
+            // ── 小素数: stride loop (紧凑数组, 无 flag 检查) ──
+            for (auto& sp : small_primes) {
+                int32_t offset = static_cast<int32_t>(sp.i_mod) - static_cast<int32_t>(sp.i_min_mod);
+                if (offset < 0) offset += static_cast<int32_t>(sp.p);
 
                 size_t idx = row_base + static_cast<size_t>(offset);
-                uint16_t lp = pe.log_p;
-                size_t stride = static_cast<size_t>(pe.p);
+                uint16_t lp = sp.log_p;
+                size_t stride = static_cast<size_t>(sp.p);
                 for (; idx < row_end; idx += stride) {
                     sieve_array_[idx] += lp;
                 }
 
-                i_mod += pe.delta;
-                if (i_mod >= p32) i_mod -= p32;
-                cur_i_mod[pi] = i_mod;
+                // Advance carry-forward
+                int32_t new_mod = static_cast<int32_t>(sp.i_mod) + static_cast<int32_t>(sp.delta);
+                int32_t p32 = static_cast<int32_t>(sp.p);
+                if (new_mod >= p32) new_mod -= p32;
+                sp.i_mod = static_cast<int16_t>(new_mod);
             }
 
             // ── 大素数: bucket apply (无分支，直接索引写入) ──

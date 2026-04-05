@@ -4,6 +4,7 @@
 #include <array>
 #include <random>
 #include <cstring>
+#include <thread>
 
 namespace gnfs::linalg {
 
@@ -273,6 +274,25 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
 
     size_t pivot_row = 0;
 
+    // Parallel Gaussian elimination:
+    // The XOR elimination across rows is independent and dominates the cost.
+    // For small matrices, single-threaded is fine. For larger ones, parallelize.
+    size_t n_threads = std::thread::hardware_concurrency();
+    if (n_threads == 0) n_threads = 4;
+
+    // Use persistent ThreadPool for parallel Gaussian elimination.
+    // Per-column thread creation (std::thread ctor ~30μs × 12 × 1000 pivots = 360ms)
+    // is catastrophic for <10K matrices. ThreadPool amortizes thread creation.
+    bool use_parallel = (m > 2000 && n_threads > 1);
+    std::unique_ptr<gnfs::util::ThreadPool> pool;
+    if (use_parallel) {
+        pool = std::make_unique<gnfs::util::ThreadPool>(static_cast<uint32_t>(n_threads));
+    }
+
+    // Collect rows needing elimination to avoid branch in tight loop
+    std::vector<size_t> elim_rows;
+    if (use_parallel) elim_rows.reserve(m);
+
     for (size_t col = m; col < m + n && pivot_row < m; ++col) {
         size_t best_pivot = m;
         for (size_t row = pivot_row; row < m; ++row) {
@@ -288,9 +308,43 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
             aug.swap_rows(pivot_row, best_pivot);
         }
 
-        for (size_t row = 0; row < m; ++row) {
-            if (row != pivot_row && aug.test(row, col)) {
-                aug.xor_rows(row, pivot_row);
+        if (use_parallel) {
+            // Collect rows that need XOR elimination
+            elim_rows.clear();
+            for (size_t row = 0; row < m; ++row) {
+                if (row != pivot_row && aug.test(row, col)) {
+                    elim_rows.push_back(row);
+                }
+            }
+
+            if (elim_rows.size() > 500) {
+                // Parallel elimination via ThreadPool (zero thread creation overhead)
+                size_t chunk = (elim_rows.size() + n_threads - 1) / n_threads;
+                std::vector<std::future<void>> futures;
+                futures.reserve(n_threads);
+
+                for (size_t t = 0; t < n_threads; ++t) {
+                    size_t start = t * chunk;
+                    if (start >= elim_rows.size()) break;
+                    size_t end = std::min(start + chunk, elim_rows.size());
+                    futures.push_back(pool->submit([&aug, &elim_rows, pivot_row, start, end]() {
+                        for (size_t i = start; i < end; ++i) {
+                            aug.xor_rows(elim_rows[i], pivot_row);
+                        }
+                    }));
+                }
+                for (auto& f : futures) f.get();
+            } else {
+                // Few rows — single-threaded
+                for (size_t row : elim_rows) {
+                    aug.xor_rows(row, pivot_row);
+                }
+            }
+        } else {
+            for (size_t row = 0; row < m; ++row) {
+                if (row != pivot_row && aug.test(row, col)) {
+                    aug.xor_rows(row, pivot_row);
+                }
             }
         }
 

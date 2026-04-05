@@ -97,9 +97,11 @@ public:
     /// 对代数侧范数进行试除
     /// @param norm 代数侧范数 |N(a, b)|
     /// @param a, b 用于确定哪个根 r 整除
+    /// @param max_entries 最大遍历条目数 (0 = all)。传 sieve_algebraic_count()
+    ///   可跳过 SQ 范围条目，让 classify_cofactor 处理它们。
     /// @return 试除结果
     [[nodiscard]] TrialDivisionResult divide_algebraic(
-            Integer norm, int64_t a, uint64_t b) const {
+            Integer norm, int64_t a, uint64_t b, size_t max_entries = 0) const {
 
         TrialDivisionResult result;
 
@@ -116,10 +118,12 @@ public:
 
         // 对每个代数因子基素理想进行试除
         const auto& algebraics = fb_.algebraic();
+        size_t alg_limit = (max_entries > 0 && max_entries < algebraics.size())
+                         ? max_entries : algebraics.size();
         bool use_u64 = norm.fits_uint64();
         uint64_t norm_u64 = use_u64 ? norm.to_uint64() : 0;
 
-        for (uint32_t idx = 0; idx < algebraics.size(); ++idx) {
+        for (uint32_t idx = 0; idx < alg_limit; ++idx) {
             uint32_t p = algebraics[idx].p;
             uint32_t r = algebraics[idx].r;
 

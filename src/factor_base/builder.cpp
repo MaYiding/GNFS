@@ -7,6 +7,8 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace gnfs::factor_base {
 
@@ -205,11 +207,9 @@ void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialCon
             is_prime[k] = false;
         }
 
-        // Skip primes that divide N (these are factors we're trying to find!)
-        core::Integer p_int(static_cast<unsigned long long>(p));
-        core::Integer gcd_result = core::gcd(p_int, ctx.n());
-        if (!gcd_result.is_one()) {
-            continue;  // p divides N, skip it
+        // Skip primes that divide N — use mpz_divisible_ui_p (zero GMP alloc)
+        if (mpz_divisible_ui_p(ctx.n().get_mpz(), p)) {
+            continue;
         }
 
         // Compute log value
@@ -222,45 +222,88 @@ void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialCon
 
 void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx,
                                                uint32_t bound, uint8_t log_scale) {
-    // Sieve of Eratosthenes
-    std::vector<bool> is_prime(bound + 1, true);
-    is_prime[0] = is_prime[1] = false;
+    // Step 1: Sieve of Eratosthenes to collect all primes up to bound
+    std::vector<bool> is_prime_sieve(bound + 1, true);
+    is_prime_sieve[0] = is_prime_sieve[1] = false;
+
+    for (uint64_t p = 2; p * p <= bound; ++p) {
+        if (!is_prime_sieve[static_cast<size_t>(p)]) continue;
+        for (uint64_t k = p * 2; k <= bound; k += p) {
+            is_prime_sieve[static_cast<size_t>(k)] = false;
+        }
+    }
+
+    // Collect primes into vector (excluding N-divisors)
+    // Projective root check: precompute leading_coeff mod small primes
+    uint64_t fd_u64 = 0;
+    bool fd_fits = ctx.leading_coeff().fits_uint64();
+    if (fd_fits) fd_u64 = ctx.leading_coeff().to_uint64();
+
+    std::vector<uint32_t> primes;
+    primes.reserve(static_cast<size_t>(bound / std::log(static_cast<double>(bound + 1)) * 1.1));
 
     for (uint32_t p = 2; p <= bound; ++p) {
-        if (!is_prime[p]) continue;
+        if (!is_prime_sieve[p]) continue;
+        if (mpz_divisible_ui_p(ctx.n().get_mpz(), p)) continue;
+        primes.push_back(p);
+    }
 
-        // Mark multiples
-        for (uint32_t k = p * 2; k <= bound; k += p) {
-            is_prime[k] = false;
-        }
+    // Step 2: Parallel root finding
+    // Each thread processes a chunk of primes, collecting (p, r, log_p) entries
+    struct AlgEntry {
+        uint32_t p, r, log_p;
+    };
 
-        // Skip primes that divide N (these are factors we're trying to find!)
-        core::Integer p_int(static_cast<unsigned long long>(p));
-        core::Integer gcd_result = core::gcd(p_int, ctx.n());
-        if (!gcd_result.is_one()) {
-            continue;  // p divides N, skip it
-        }
+    size_t n_threads = std::thread::hardware_concurrency();
+    if (n_threads == 0) n_threads = 4;
+    if (primes.size() < 200) n_threads = 1;
 
-        // Find roots of f(x) ≡ 0 (mod p)
-        auto roots = find_roots_mod_p(ctx, p);
+    std::vector<std::vector<AlgEntry>> thread_results(n_threads);
 
-        // Compute log value
-        uint32_t log_p = compute_log_prime_precise(p, log_scale);
+    auto worker = [&](size_t tid) {
+        size_t chunk = primes.size() / n_threads;
+        size_t start = tid * chunk;
+        size_t end = (tid == n_threads - 1) ? primes.size() : start + chunk;
 
-        for (uint32_t root : roots) {
-            fb.add_algebraic(p, root, log_p, 1);
-        }
+        auto& local = thread_results[tid];
+        local.reserve((end - start) * 2); // ~2 entries per prime avg
 
-        // Projective root: when leading coefficient f_d ≡ 0 (mod p),
-        // there is an additional first-degree prime ideal at infinity.
-        // This ideal divides N(a - bα) whenever p | b.
-        {
-            core::Integer fd = ctx.leading_coeff().clone();
-            fd %= core::Integer(static_cast<int64_t>(p));
-            if (fd.is_negative()) fd += core::Integer(static_cast<int64_t>(p));
-            if (fd.is_zero()) {
-                fb.add_algebraic(p, core::AlgebraicPrime::PROJECTIVE_ROOT, log_p, 1);
+        for (size_t i = start; i < end; ++i) {
+            uint32_t p = primes[i];
+            auto roots = find_roots_mod_p(ctx, p);
+            uint32_t lp = compute_log_prime_precise(p, log_scale);
+
+            for (uint32_t root : roots) {
+                local.push_back({p, root, lp});
             }
+
+            // Projective root
+            bool has_proj = false;
+            if (fd_fits) {
+                has_proj = (fd_u64 % p == 0);
+            } else {
+                has_proj = mpz_divisible_ui_p(ctx.leading_coeff().get_mpz(), p) != 0;
+            }
+            if (has_proj) {
+                local.push_back({p, core::AlgebraicPrime::PROJECTIVE_ROOT, lp});
+            }
+        }
+    };
+
+    if (n_threads <= 1) {
+        worker(0);
+    } else {
+        std::vector<std::thread> threads;
+        threads.reserve(n_threads);
+        for (size_t t = 0; t < n_threads; ++t)
+            threads.emplace_back(worker, t);
+        for (auto& t : threads) t.join();
+    }
+
+    // Step 3: Merge in prime order (threads process consecutive chunks, already sorted)
+    for (auto& local : thread_results) {
+        for (auto& e : local) {
+            fb.add_algebraic(e.p, e.r, e.log_p, 1);
         }
     }
 }
@@ -459,46 +502,81 @@ sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(
 
 void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const PolynomialContext& ctx,
                                                      uint32_t min_p, uint32_t max_p, uint8_t log_scale) {
-    // 对 [min_p, max_p] 范围内的素数求根并加入因子基
-    if (min_p > max_p || min_p < 2) return;  // 防止溢出或无效范围
+    if (min_p > max_p || min_p < 2) return;
 
-    // 使用 Sieve of Eratosthenes 筛出范围内的素数
-    std::vector<bool> is_prime(static_cast<size_t>(max_p) + 1, true);
-    is_prime[0] = is_prime[1] = false;
+    // Step 1: Sieve primes in [min_p, max_p]
+    std::vector<bool> is_prime_sieve(static_cast<size_t>(max_p) + 1, true);
+    is_prime_sieve[0] = is_prime_sieve[1] = false;
 
     for (uint64_t p = 2; p * p <= max_p; ++p) {
-        if (!is_prime[static_cast<size_t>(p)]) continue;
+        if (!is_prime_sieve[static_cast<size_t>(p)]) continue;
         for (uint64_t k = p * 2; k <= max_p; k += p) {
-            is_prime[static_cast<size_t>(k)] = false;
+            is_prime_sieve[static_cast<size_t>(k)] = false;
         }
     }
 
+    // Collect primes in range
+    bool fd_fits = ctx.leading_coeff().fits_uint64();
+    uint64_t fd_u64 = fd_fits ? ctx.leading_coeff().to_uint64() : 0;
+
+    std::vector<uint32_t> primes;
     for (uint64_t p = min_p; p <= max_p; ++p) {
-        if (!is_prime[static_cast<size_t>(p)]) continue;
+        if (!is_prime_sieve[static_cast<size_t>(p)]) continue;
         uint32_t p32 = static_cast<uint32_t>(p);
+        if (mpz_divisible_ui_p(ctx.n().get_mpz(), p32)) continue;
+        primes.push_back(p32);
+    }
 
-        // Skip primes that divide N
-        core::Integer p_int(static_cast<unsigned long long>(p32));
-        core::Integer gcd_result = core::gcd(p_int, ctx.n());
-        if (!gcd_result.is_one()) {
-            continue;
-        }
+    // Step 2: Parallel root finding
+    struct AlgEntry {
+        uint32_t p, r, log_p;
+    };
 
-        auto roots = find_roots_mod_p(ctx, p32);
-        uint32_t log_p = compute_log_prime_precise(p32, log_scale);
+    size_t n_threads = std::thread::hardware_concurrency();
+    if (n_threads == 0) n_threads = 4;
+    if (primes.size() < 200) n_threads = 1;
 
-        for (uint32_t root : roots) {
-            fb.add_algebraic(p32, root, log_p, 1);
-        }
+    std::vector<std::vector<AlgEntry>> thread_results(n_threads);
 
-        // Projective root for SQ-range primes
-        {
-            core::Integer fd = ctx.leading_coeff().clone();
-            fd %= core::Integer(static_cast<int64_t>(p32));
-            if (fd.is_negative()) fd += core::Integer(static_cast<int64_t>(p32));
-            if (fd.is_zero()) {
-                fb.add_algebraic(p32, core::AlgebraicPrime::PROJECTIVE_ROOT, log_p, 1);
+    auto worker = [&](size_t tid) {
+        size_t chunk = primes.size() / n_threads;
+        size_t start = tid * chunk;
+        size_t end = (tid == n_threads - 1) ? primes.size() : start + chunk;
+
+        auto& local = thread_results[tid];
+        local.reserve((end - start) * 2);
+
+        for (size_t i = start; i < end; ++i) {
+            uint32_t p = primes[i];
+            auto roots = find_roots_mod_p(ctx, p);
+            uint32_t lp = compute_log_prime_precise(p, log_scale);
+
+            for (uint32_t root : roots) {
+                local.push_back({p, root, lp});
             }
+
+            bool has_proj = fd_fits ? (fd_u64 % p == 0)
+                                    : (mpz_divisible_ui_p(ctx.leading_coeff().get_mpz(), p) != 0);
+            if (has_proj) {
+                local.push_back({p, core::AlgebraicPrime::PROJECTIVE_ROOT, lp});
+            }
+        }
+    };
+
+    if (n_threads <= 1) {
+        worker(0);
+    } else {
+        std::vector<std::thread> threads;
+        threads.reserve(n_threads);
+        for (size_t t = 0; t < n_threads; ++t)
+            threads.emplace_back(worker, t);
+        for (auto& t : threads) t.join();
+    }
+
+    // Step 3: Merge (thread chunks are consecutive, preserving prime order)
+    for (auto& local : thread_results) {
+        for (auto& e : local) {
+            fb.add_algebraic(e.p, e.r, e.log_p, 1);
         }
     }
 }

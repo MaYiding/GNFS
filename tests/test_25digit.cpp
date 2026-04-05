@@ -132,6 +132,8 @@ int main() {
                 std::atomic<size_t> next_chunk{0};
                 constexpr size_t CHUNK_SIZE = 256;
 
+                uint32_t cur_sq_q = sq->q;
+                uint32_t cur_sq_r = sq->r;
                 auto worker = [&](size_t tid) {
                     Cofactorizer local_cofac(ctx, fb, cc);
                     auto& local_rels = thread_results[tid];
@@ -142,7 +144,7 @@ int main() {
                         if (global_found.load(std::memory_order_relaxed) >= batch_target) break;
                         size_t end = std::min(start + CHUNK_SIZE, n_cands);
                         for (size_t ci = start; ci < end; ++ci) {
-                            auto rel = local_cofac.verify(cands[ci]);
+                            auto rel = local_cofac.verify(cands[ci], cur_sq_q, cur_sq_r);
                             if (rel) {
                                 local_rels.push_back(std::move(*rel));
                                 global_found.fetch_add(1, std::memory_order_relaxed);
@@ -227,9 +229,9 @@ int main() {
                   << "%, new target=" << batch_target << "\n" << std::flush;
     }
 
-    // Relation trimming: cap at 2× matrix_cols to keep BL fast
+    // Relation trimming: cap at 1.3× matrix_cols for fast Gaussian
     {
-        size_t max_rels = matrix_cols * 2;
+        size_t max_rels = static_cast<size_t>(matrix_cols * 1.3);
         if (relations.size() > max_rels) {
             std::cout << "  [Trim] " << relations.size() << " → " << max_rels << " relations\n";
             std::mt19937 rng(42);
