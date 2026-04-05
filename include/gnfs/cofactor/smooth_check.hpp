@@ -304,30 +304,51 @@ struct CofactorClassification {
         }
 
         // 检查是否是半素数 (p * q)
-        // 使用 Pollard's rho 尝试分解
-        uint64_t factor = pollard_rho(c);
+        // 分层策略: 小素数试除 → 小合数试除 → Pollard rho → ECM
+        {
+            // Phase 1: 小素数预筛 (2,3,5,...,97)
+            // 很多 semiprime 有小因子，25 次除法比 Pollard rho 快 100-1000×
+            constexpr uint64_t small_primes[] = {
+                2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,
+                53,59,61,67,71,73,79,83,89,97
+            };
+            uint64_t factor = 1;
+            for (uint64_t sp : small_primes) {
+                if (c % sp == 0) { factor = sp; break; }
+            }
 
-        if (factor != 1 && factor != c) {
-            uint64_t other = c / factor;
-
-            // 验证两个因子都是素数
-            if (is_probable_prime_u64(factor) && is_probable_prime_u64(other)) {
-                // 检查是否在界限内
-                if (factor <= large_prime_bound && other <= large_prime_bound) {
-                    result.type = CofactorClass::Semiprime;
-                    result.factor1 = std::min(factor, other);
-                    result.factor2 = std::max(factor, other);
-                    return result;
+            // Phase 2: 小合数直接试除到 sqrt(c)
+            // 对 c < 2^32 (sqrt < 2^16)，用 101-65535 的奇数试除
+            if (factor == 1 && c < UINT64_C(0x100000000)) {
+                uint64_t limit = static_cast<uint64_t>(std::sqrt(static_cast<double>(c))) + 1;
+                for (uint64_t p = 101; p <= limit; p += 2) {
+                    if (c % p == 0) { factor = p; break; }
                 }
             }
 
-            // 分解成功但因子不符合要求
-            result.type = CofactorClass::Composite;
-            return result;
+            // Phase 3: Pollard rho (调优参数)
+            if (factor == 1) {
+                // 小合数用更少迭代（c < 2^40 用 10K，否则 100K）
+                size_t max_iter = (c < (UINT64_C(1) << 40)) ? 10000 : 100000;
+                factor = pollard_rho(c, max_iter);
+            }
+
+            if (factor != 1 && factor != c) {
+                uint64_t other = c / factor;
+                if (is_probable_prime_u64(factor) && is_probable_prime_u64(other)) {
+                    if (factor <= large_prime_bound && other <= large_prime_bound) {
+                        result.type = CofactorClass::Semiprime;
+                        result.factor1 = std::min(factor, other);
+                        result.factor2 = std::max(factor, other);
+                        return result;
+                    }
+                }
+                result.type = CofactorClass::Composite;
+                return result;
+            }
         }
 
-        // Pollard's rho 失败 — 尝试 ECM 作为回退
-        // 某些特殊结构的合数（如 p-1 光滑）Pollard rho 可能循环
+        // Phase 4: ECM 回退 (仅 Pollard rho 失败时)
         {
             Integer c_int(static_cast<unsigned long long>(c));
             auto ecm_result = ECM::quick_factor(c_int);
@@ -349,7 +370,7 @@ struct CofactorClassification {
             }
         }
 
-        // Pollard rho + ECM 均失败
+        // 所有分解方法均失败
         result.type = CofactorClass::Composite;
         return result;
     }
