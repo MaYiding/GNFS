@@ -125,7 +125,7 @@ int main() {
                 size_t n_cands = cands.size();
                 size_t n_threads = std::thread::hardware_concurrency();
                 if (n_threads == 0) n_threads = 4;
-                if (n_cands < 1000) n_threads = 1;
+                if (n_cands < 200) n_threads = 1;
 
                 std::vector<std::vector<Relation>> thread_results(n_threads);
                 std::atomic<size_t> global_found{collector.size()};
