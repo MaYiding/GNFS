@@ -133,25 +133,34 @@ public:
 
         // ── 有理侧: 计算值 + N-divisible 检查 + 试除 + 分类 ──
         // Rational-first 短路: 如果有理侧不可接受，立即返回，跳过代数试除
-        Integer rat_value = ctx_.rational_value(a, b);
-        if (rat_value.is_negative()) {
-            rat_value.negate();
-        }
-
-        // CRITICAL: Reject relations where gcd(a - b*m, N) > 1
-        // uint64 快路径: 小值用原生 gcd，大值用 GMP
+        //
+        // uint64 全路径: rational_value_abs_u64 → gcd_u64 → divide_rational_u64
+        // 避免所有 GMP Integer 构造（对 ≤25 digit 100% 走此路径）
+        TrialDivisionResult rat_result;
         {
-            if (rat_value.fits_uint64() && ctx_.n().fits_uint64()) {
-                uint64_t rv = rat_value.to_uint64();
-                uint64_t nv = ctx_.n().to_uint64();
-                if (std::gcd(rv, nv) != 1) return std::nullopt;
+            auto [rat_abs, rat_ok] = ctx_.rational_value_abs_u64(a, b);
+            if (rat_ok) {
+                // 纯 uint64 路径: 零 GMP 分配
+                if (ctx_.n().fits_uint64()) {
+                    if (std::gcd(rat_abs, ctx_.n().to_uint64()) != 1) return std::nullopt;
+                } else {
+                    // rat_abs fits uint64 but N doesn't — gcd via GMP
+                    Integer rv_int(rat_abs);
+                    Integer gcd_with_n = core::gcd(std::move(rv_int), ctx_.n());
+                    if (!gcd_with_n.is_one()) return std::nullopt;
+                }
+                rat_result = divider_.divide_rational_u64(rat_abs);
             } else {
-                Integer gcd_with_n = core::gcd(rat_value.clone(), ctx_.n());
-                if (!gcd_with_n.is_one()) return std::nullopt;
+                // GMP fallback
+                Integer rat_value = ctx_.rational_value(a, b);
+                if (rat_value.is_negative()) rat_value.negate();
+                {
+                    Integer gcd_with_n = core::gcd(rat_value.clone(), ctx_.n());
+                    if (!gcd_with_n.is_one()) return std::nullopt;
+                }
+                rat_result = divider_.divide_rational(std::move(rat_value));
             }
         }
-
-        auto rat_result = divider_.divide_rational(std::move(rat_value));
         CofactorClassification rat_class = classify_cofactor(
             rat_result.cofactor, large_prime_bound_);
 
