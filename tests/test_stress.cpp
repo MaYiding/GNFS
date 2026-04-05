@@ -376,6 +376,11 @@ FactResult factor_with_progress(const Integer& n, int level) {
     result.relations = collector.size();
     result.sieve_sec = phase.sec();
 
+    // Release collector memory before BL — 11M+ raw relations consume ~5-6 GB,
+    // causing swap thrashing during BL's random-access SpMV patterns
+    collector.clear();
+    std::cout << "  [Memory] Released collector (" << result.relations << " raw relations freed)\n" << std::flush;
+
     if (relations.size() < 5) {
         std::cout << "  INSUFFICIENT RELATIONS (" << relations.size() << " usable from "
                   << collector.size() << " raw)\n";

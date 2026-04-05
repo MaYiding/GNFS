@@ -99,7 +99,7 @@ struct GNFSParams {
         //
         // LP/FB ratio: higher ratio = more LP range per FB bound
         // ≤25 digit uses smaller FB so LP_MULT compensates
-        double LP_MULTIPLIER = 8.0;
+        double LP_MULTIPLIER = 40.0;
 
         double B_rat, B_alg;
         bool enable_lp = true;
@@ -113,7 +113,7 @@ struct GNFSParams {
         } else if (p.digits <= 20) {
             B_rat = 15000;   B_alg = 30000;
         } else if (p.digits <= 25) {
-            B_rat = 6000;    B_alg = 12000;   LP_MULTIPLIER = 40.0;
+            B_rat = 6000;    B_alg = 12000;
         } else if (p.digits <= 30) {
             B_rat = 50000;   B_alg = 100000;
         } else if (p.digits <= 40) {

@@ -178,8 +178,8 @@ public:
     /// 清空收集器
     void clear() {
         std::lock_guard<std::mutex> lock(mutex_);
-        relations_.clear();
-        seen_.clear();
+        { std::vector<Relation> tmp; relations_.swap(tmp); }
+        { std::unordered_set<ABPair, ABPairHash> tmp; seen_.swap(tmp); }
         stats_ = CollectorStats{};
     }
 
