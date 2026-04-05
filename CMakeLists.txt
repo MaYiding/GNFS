@@ -379,6 +379,13 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_25digit PRIVATE gnfs_core Threads::Threads)
     # 不加入 ctest — 手动运行
+
+    # 压力测试 (50/80/100-digit) — 手动运行
+    add_executable(test_stress
+        tests/test_stress.cpp
+    )
+    target_link_libraries(test_stress PRIVATE gnfs_core Threads::Threads)
+    # 不加入 ctest — ./test_stress [min_level [max_level]]
 endif()
 
 # ============================================================

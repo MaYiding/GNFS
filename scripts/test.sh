@@ -179,6 +179,7 @@ ALL_TEST_BINARIES=(
     test_class_group
     test_edge_cases
     test_integration
+    test_stress
 )
 
 # 模块 → 测试二进制映射 (仅 instant+fast 的测试)
@@ -264,6 +265,7 @@ TEST_TIMEOUT=(
     test_gnfs_e2e            300
     test_gnfs_progressive    3600
     test_25digit             1800
+    test_stress              43200
 )
 
 # 测试速度分级 (用于 list 显示)
@@ -298,6 +300,7 @@ TEST_TIER=(
     test_gnfs_e2e            "slow"
     test_gnfs_progressive    "heavy"
     test_25digit             "heavy"
+    test_stress              "heavy"
 )
 
 # 模块依赖图 (改了 A 模块 → 需要额外测试的下游模块)
@@ -1122,6 +1125,9 @@ do_nightly() {
 
     log_section "Progressive L5 (可能非常慢)"
     run_single_test test_gnfs_progressive 5 5 || true
+
+    log_section "Stress L1: 50-digit (可能数小时)"
+    run_single_test test_stress 1 1 || true
 }
 
 # ============================================================
@@ -1326,6 +1332,7 @@ do_list() {
     echo "  ${BULLET} ${CYAN}test_gnfs_e2e${RESET}          — 完整 GNFS 流水线 (N=143)"
     echo "  ${BULLET} ${CYAN}test_gnfs_progressive${RESET}  — 渐进式 L1-L5 (8-61 bit)"
     echo "  ${BULLET} ${CYAN}test_25digit${RESET}           — 25-digit 性能基准 (81 bit)"
+    echo "  ${BULLET} ${CYAN}test_stress${RESET}            — 压力测试: 50/80/100-digit (164-330 bit)"
 
     echo ""
     echo "${BOLD}所有测试二进制 (${#ALL_TEST_BINARIES[@]}):${RESET}"
@@ -1357,7 +1364,8 @@ do_list() {
     echo ""
     echo "           ${DIM}▲ 耗时${RESET}"
     echo "           │"
-    echo "           │   ${MAGENTA}nightly${RESET}        thorough + L4 + L5"
+    echo "           │   ${RED}stress${RESET}         50/80/100-digit 压力测试
+           │   ${MAGENTA}nightly${RESET}        thorough + L4 + L5 + stress L1"
     echo "           │   ${MAGENTA}thorough${RESET}       全模块 + 集成 + L1-L3"
     echo "           │   ${YELLOW}full${RESET}           ctest + E2E + L1-L2"
     echo "           │   ${CYAN}integration${RESET}    跨模块交互"
@@ -1546,6 +1554,16 @@ case "$MODE" in
         log_header "性能测试 (25-digit)"
         log_warn "预计耗时数分钟..."
         run_single_test test_25digit
+        show_summary
+        ;;
+
+    stress)
+        do_build
+        log_header "压力测试 (50/80/100-digit)"
+        log_warn "50-digit 可能需要数小时, 80/100-digit 可能需要数天或超出当前能力..."
+        local stress_min=${2:-1}
+        local stress_max=${3:-3}
+        run_single_test test_stress "$stress_min" "$stress_max"
         show_summary
         ;;
 
