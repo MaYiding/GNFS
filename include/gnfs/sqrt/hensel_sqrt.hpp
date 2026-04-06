@@ -354,6 +354,24 @@ private:
             }
             T = poly_mul_mod(T, factor, f_int, d, new_modulus, fli);
             modulus = std::move(new_modulus);
+
+            // Early invariant check at first 2 lifts to bail fast on divergence
+            if (lift <= 1) {
+                auto S2_early = poly_mul_mod(S, S, f_int, d, modulus, fli);
+                bool early_ok = true;
+                for (uint32_t i = 0; i < d; ++i) {
+                    Integer p_i = P_final[i].clone();
+                    p_i %= modulus;
+                    if (S2_early[i].compare(p_i) != 0) {
+                        early_ok = false;
+                        break;
+                    }
+                }
+                if (!early_ok) {
+                    result.ok = false;
+                    return result;
+                }
+            }
         }
 
         result.coeffs = std::move(S);
@@ -639,6 +657,24 @@ private:
         if (!ModularPoly::is_square(product_mod_p, f_mod_p, p)) return std::nullopt;
         auto sqrt_mod_p = ModularPoly::sqrt_tonelli_shanks(product_mod_p, f_mod_p, p);
 
+        // Verify initial sqrt: sqrt^2 ≡ product mod (f, p)
+        if (config_.verbose) {
+            auto check = ModularPoly::mul(sqrt_mod_p, sqrt_mod_p, f_mod_p, p);
+            bool init_ok = true;
+            for (int i = 0; i <= std::max(check.degree(), product_mod_p.degree()); ++i) {
+                if (check.coeff(i) != product_mod_p.coeff(i)) {
+                    init_ok = false;
+                    std::cerr << "[Hensel] INITIAL sqrt verification FAILED at coeff "
+                              << i << ": got " << check.coeff(i) << " expected "
+                              << product_mod_p.coeff(i) << " (p=" << p << ")\n";
+                    break;
+                }
+            }
+            if (init_ok) {
+                std::cerr << "[Hensel] Initial sqrt verified OK (p=" << p << ")\n";
+            }
+        }
+
         // Multiply by f'(α)
         auto f_prime_mod_p = compute_f_derivative_mod_p(nf, p);
         sqrt_mod_p = ModularPoly::mul(
@@ -826,6 +862,26 @@ private:
                                     (num_lifts > 10 && lift % (num_lifts / 4) == 0))) {
                 std::cerr << "[Hensel] lift " << lift << "/" << num_lifts
                           << " modulus_bits=" << modulus.bit_length() << "\n";
+            }
+
+            // Early invariant check at first 2 lifts to bail fast on divergence
+            if (lift <= 1) {
+                auto S2_early = poly_mul_mod(S, S, f_int, d, modulus, fli);
+                bool early_ok = true;
+                for (uint32_t i = 0; i < d; ++i) {
+                    Integer p_i = P_final[i].clone();
+                    p_i %= modulus;
+                    if (S2_early[i].compare(p_i) != 0) {
+                        early_ok = false;
+                        if (config_.verbose) {
+                            std::cerr << "[Hensel] Early invariant FAIL at lift "
+                                      << lift << ": S^2[" << i << "] != P[" << i
+                                      << "] mod p^k\n";
+                        }
+                        break;
+                    }
+                }
+                if (!early_ok) return std::nullopt;  // Bail immediately
             }
         }
 
