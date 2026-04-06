@@ -671,6 +671,108 @@ void test_couveignes_compute_from_element_normal() {
               << (result.has_value() ? "found" : "nullopt") << ")" << std::endl;
 }
 
+/// Regression test: sqrt_tonelli_shanks for even degree extensions.
+///
+/// For even d, ALL constants in F_p* are squares in F_{p^d} because
+/// (p-1) | (p^d-1)/2.  The old non-square search iterated through all
+/// constants, then at i==p created ModularPoly(p) — zero in F_p but NOT
+/// detected by is_zero() (which checks coeffs_.empty(), not reduction mod p).
+/// This fake "non-square" made c = 0^q = 0, collapsing the sqrt to zero.
+///
+/// Test with p=1013, d=4 (the exact case that failed in 50-digit stress test).
+void test_sqrt_even_degree_extension() {
+    std::cout << "Testing sqrt_tonelli_shanks for even degree d=4..." << std::endl;
+    using MP = ModularPoly;
+
+    // Need an irreducible degree-4 polynomial over F_1013.
+    // x^4 + x + 2 — verify irreducibility first.
+    uint64_t p = 1013;
+    std::vector<uint64_t> f = {2, 1, 0, 0, 1};  // x^4 + x + 2
+
+    // Verify f is irreducible over F_1013
+    assert(MP::is_irreducible(f, p) && "f must be irreducible for this test");
+    std::cout << "  f(x) = x^4 + x + 2 irreducible over F_1013: OK" << std::endl;
+
+    // Test 1: sqrt of a known square (constant)
+    // 7^2 = 49 in F_1013 → sqrt(49) should give ±7
+    {
+        MP a(49);
+        auto r = MP::sqrt_tonelli_shanks(a, f, p);
+        assert(!r.is_zero() && "sqrt(49) must succeed in F_{1013^4}");
+        auto r_sq = MP::mul(r, r, f, p);
+        assert(r_sq.coeff(0) == 49 && r_sq.degree() == 0);
+        std::cout << "  sqrt(49) in F_{1013^4}: PASSED" << std::endl;
+    }
+
+    // Test 2: sqrt of a polynomial element
+    // Compute (x+1)^2 mod f, then sqrt should give ±(x+1)
+    {
+        MP xp1(std::vector<uint64_t>{1, 1});  // x + 1
+        auto sq = MP::mul(xp1, xp1, f, p);
+        auto r = MP::sqrt_tonelli_shanks(sq, f, p);
+        assert(!r.is_zero() && "sqrt of (x+1)^2 must succeed");
+        auto r_sq = MP::mul(r, r, f, p);
+        // r^2 must equal (x+1)^2 = sq
+        for (int i = 0; i <= std::max(r_sq.degree(), sq.degree()); ++i) {
+            assert(r_sq.coeff(i) == sq.coeff(i));
+        }
+        std::cout << "  sqrt((x+1)^2) in F_{1013^4}: PASSED" << std::endl;
+    }
+
+    // Test 3: sqrt of a random-looking element that is a square
+    // Compute (3x^2 + 5x + 7)^2 mod f, then sqrt
+    {
+        MP elem(std::vector<uint64_t>{7, 5, 3});  // 3x^2 + 5x + 7
+        auto sq = MP::mul(elem, elem, f, p);
+        auto r = MP::sqrt_tonelli_shanks(sq, f, p);
+        assert(!r.is_zero() && "sqrt of (3x^2+5x+7)^2 must succeed");
+        auto r_sq = MP::mul(r, r, f, p);
+        for (int i = 0; i <= std::max(r_sq.degree(), sq.degree()); ++i) {
+            assert(r_sq.coeff(i) == sq.coeff(i));
+        }
+        std::cout << "  sqrt((3x^2+5x+7)^2) in F_{1013^4}: PASSED" << std::endl;
+    }
+
+    // Test 4: Also test d=2 (simplest even case)
+    {
+        // x^2 + x + 1 is not necessarily irreducible for p=1013; find one that is.
+        // x^2 + 1 is irreducible over F_p iff p ≡ 3 (mod 4). 1013 ≡ 1 (mod 4) → NOT.
+        // x^2 + x + 1: check -3 non-square. 1013 mod 3 = 2, so...
+        // Let's just find an irreducible f2 by testing.
+        std::vector<uint64_t> f2;
+        for (uint64_t c = 1; c < p; ++c) {
+            f2 = {c, 1, 1};  // x^2 + x + c
+            if (MP::is_irreducible(f2, p)) break;
+        }
+        assert(f2.size() == 3 && "must find irreducible degree-2 poly");
+        std::cout << "  Found irreducible x^2 + x + " << f2[0] << " over F_" << p << std::endl;
+
+        MP a(42);  // constant square: 42 is an element of F_p
+        auto r = MP::sqrt_tonelli_shanks(a, f2, p);
+        // 42 must be a square in F_{p^2} (all F_p* elements are squares in even extensions)
+        assert(!r.is_zero() && "sqrt(42) must succeed in F_{1013^2}");
+        auto r_sq = MP::mul(r, r, f2, p);
+        assert(r_sq.coeff(0) == 42 && r_sq.degree() == 0);
+        std::cout << "  sqrt(42) in F_{1013^2}: PASSED" << std::endl;
+    }
+
+    // Test 5: Verify is_square correctly identifies ALL constants as squares for even d
+    {
+        bool all_sq = true;
+        for (uint64_t c = 1; c <= 20; ++c) {
+            if (!MP::is_square(MP(c), f, p)) {
+                all_sq = false;
+                std::cerr << "  ERROR: " << c << " reported as non-square in F_{1013^4}" << std::endl;
+                break;
+            }
+        }
+        assert(all_sq && "All constants must be squares in even-degree extension");
+        std::cout << "  All constants are squares in F_{1013^4}: PASSED" << std::endl;
+    }
+
+    std::cout << "  ALL even-degree sqrt tests PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Square Root Tests ===" << std::endl;
     std::cout << std::endl;
@@ -688,6 +790,7 @@ int main() {
     test_non_monic_modular_poly();
     test_non_monic_number_field();
     test_characteristic_2_sqrt();
+    test_sqrt_even_degree_extension();
     test_couveignes_compute_from_element_terminates();
     test_couveignes_compute_from_element_normal();
 

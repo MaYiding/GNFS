@@ -429,17 +429,40 @@ public:
             s++;
         }
 
-        // Find a non-square z
+        // Find a non-square z in F_{p^d}.
+        //
+        // For EVEN d: ALL constants in F_p* are squares in F_{p^d}
+        //   because (p-1) | (p^d-1)/2.  We must use polynomial non-squares.
+        //   Bug history: the old loop reached i==p, creating ModularPoly(p)
+        //   whose raw coefficient p is NOT detected as zero by is_zero()
+        //   (which checks coeffs_.empty(), not reduction mod p).  This fake
+        //   "non-square" is actually zero, making c = 0^q = 0 and the entire
+        //   Tonelli-Shanks output collapse to zero.
+        //
+        // For ODD d: F_p non-squares remain non-squares in F_{p^d}, so the
+        //   constant search z=2,3,... finds one in ~2 iterations.
         ModularPoly z;
-        for (uint64_t i = 2; ; ++i) {
-            z = ModularPoly(i);
-            if (!is_square(z, f, p)) break;
-            if (i > p) {
-                // Try polynomial non-squares
-                z.set_coeff(1, 1);
-                z.set_coeff(0, i);
-                if (!is_square(z, f, p)) break;
+        bool found_nonsq = false;
+
+        if (d % 2 != 0) {
+            // Odd d: search constants (cap at p-1 to avoid the zero-disguise bug)
+            for (uint64_t i = 2; i < p; ++i) {
+                z = ModularPoly(i);
+                if (!is_square(z, f, p)) { found_nonsq = true; break; }
             }
+        }
+
+        if (!found_nonsq) {
+            // Even d (or odd-d fallback): polynomial non-squares z = x + c.
+            // ~50% of F_{p^d}* are non-squares, so expect ~2 trials.
+            for (uint64_t c = 0; c < p; ++c) {
+                z = ModularPoly(std::vector<uint64_t>{c, 1});
+                if (!is_square(z, f, p)) { found_nonsq = true; break; }
+            }
+        }
+
+        if (!found_nonsq) {
+            return ModularPoly();  // Should not happen for irreducible f
         }
 
         // Initialize
@@ -477,6 +500,13 @@ public:
             m = i;
         }
 
+        // Self-verification: r^2 ≡ a mod (f, p)
+        auto r_sq = mul(r, r, f, p);
+        for (int i = 0; i < d; ++i) {
+            if (r_sq.coeff(i) % p != a.coeff(i) % p) {
+                return ModularPoly();  // Verification failed
+            }
+        }
         return r;
     }
 
