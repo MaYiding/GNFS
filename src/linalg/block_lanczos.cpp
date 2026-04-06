@@ -452,31 +452,41 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
     DenseGF2_64x64 D_prev, D_pprev;
 
     for (size_t iter = 0; iter < max_iter; ++iter) {
-        // Step 1: Inner product A_i = V_cur^T * V_cur
+        // Step 1: Inner product A_i = V_cur^T * V_cur (Gram matrix)
         auto A_cur = inner_product_par(*V_cur, *V_cur, ctx);
 
         // Step 2: Termination check
         if (V_cur->is_zero()) break;
 
-        // Step 3: Partial inverse of A_i
+        // Step 3: Partial inverse of A_i → D_cur, mask_cur
         auto [D_cur, mask_cur] = A_cur.partial_inverse();
         if (mask_cur == 0) break;  // All 64 block columns exhausted
 
-        // Step 4: Compute B * V_cur = M * (M^T * V_cur)
+        // Step 3b: Project V_cur by selection mask S_i (Montgomery §3)
+        // Zero non-invertible columns to prevent garbage propagation
+        // through the Krylov recurrence.
+        for (size_t i = 0; i < m; ++i) {
+            V_cur->data[i] &= mask_cur;
+        }
+
+        // Step 4: Compute B * V_cur = M * (M^T * V_cur) on masked V
         spmv_transpose_par(matrix, *V_cur, temp_n, ctx);
         spmv_forward_par(matrix, temp_n, BV_cur, ctx.pool);
 
-        // Step 5: Recurrence coefficients
+        // Step 5: Recurrence coefficients (Montgomery 1995 three-term)
+        // Self-coefficient: D * (V^T * B * V) — NOT D * (V^T * V)!
+        // V^T * B * V is the B-inner product needed for orthogonalization.
+        auto VtBV = inner_product_par(*V_cur, BV_cur, ctx);
         auto E_cur = inner_product_par(*V_prev, BV_cur, ctx);
         auto F_cur = inner_product_par(*V_pprev, BV_cur, ctx);
 
-        // Step 6: V_next = BV_cur + V_cur*(D*A+I) + V_prev*(D_prev*E) + V_pprev*(D_pprev*F)
+        // Step 6: V_next = BV ⊕ V_cur * D * VtBV ⊕ V_prev * D_prev * E ⊕ V_pprev * D_pprev * F
+        // In GF(2), subtraction = addition (XOR).
         std::copy(BV_cur.data.begin(), BV_cur.data.end(), V_next->data.begin());
 
         {
-            auto DA = D_cur.multiply(A_cur);
-            DA.add_identity();
-            xor_with_mul_par(*V_next, *V_cur, DA.rows, ctx.pool);
+            auto coeff = D_cur.multiply(VtBV);
+            xor_with_mul_par(*V_next, *V_cur, coeff.rows, ctx.pool);
         }
 
         if (iter >= 1) {
@@ -511,7 +521,7 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
     std::vector<std::vector<bool>> dependencies;
 
     for (size_t j = 0; j < 64 && dependencies.size() < max_deps; ++j) {
-        auto candidate = S.extract_column(static_cast<int>(j));
+        auto candidate = S.extract_column(j);
 
         bool nonzero = false;
         for (bool b : candidate) { if (b) { nonzero = true; break; } }
@@ -541,8 +551,11 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
 
     } // end seed loop
 
-    // All seeds exhausted — fall back to Gaussian ONLY for small matrices
-    if (m < 10000 && n < 10000) {
+    // All seeds exhausted — fall back to Gaussian if memory permits
+    // Gaussian needs PackedGF2Matrix(m, m+n) → m * ((m+n+63)/64) * 8 bytes
+    size_t gauss_bytes = m * ((m + n + 63) / 64) * sizeof(uint64_t);
+    constexpr size_t MAX_GAUSS_BYTES = 4ULL * 1024 * 1024 * 1024; // 4 GB limit
+    if (gauss_bytes <= MAX_GAUSS_BYTES) {
         return find_dependencies_sparse(matrix, max_deps);
     }
 
