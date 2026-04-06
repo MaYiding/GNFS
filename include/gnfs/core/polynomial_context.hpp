@@ -212,11 +212,32 @@ public:
     }
 
     /// 计算代数范数 (__int128 快路径)
-    /// 当所有系数 fits int64 且结果 fits __int128 时使用纯原生算术
+    /// 当所有系数 fits int64 且中间乘积 fits __int128 时使用纯原生算术
     [[nodiscard]] std::pair<__int128, bool> algebraic_norm_i128(int64_t a, uint64_t b) const {
         // 检查所有系数是否 fits int64
         for (uint32_t i = 0; i <= degree_; ++i) {
             if (!f_coeffs_[i].fits_int64()) return {0, false};
+        }
+
+        // Overflow guard: intermediate term = c_i * a^i * b^(d-i).
+        // Worst case: max|c_i| * max(|a|,b)^d.
+        // Need (d+1) * max|c_i| * max_val^d < 2^127 to be safe.
+        // Use log2 to avoid overflow in the check itself.
+        uint64_t abs_a = (a >= 0) ? static_cast<uint64_t>(a) : static_cast<uint64_t>(-(a + 1)) + 1;
+        uint64_t max_val = std::max(abs_a, b);
+        if (max_val > 1 && degree_ >= 3) {
+            // Find max |coefficient|
+            double max_coeff_log2 = 0;
+            for (uint32_t i = 0; i <= degree_; ++i) {
+                double c = std::abs(f_coeffs_[i].to_double());
+                if (c > 0) max_coeff_log2 = std::max(max_coeff_log2, std::log2(c));
+            }
+            double max_term_log2 = max_coeff_log2 +
+                static_cast<double>(degree_) * std::log2(static_cast<double>(max_val)) +
+                std::log2(static_cast<double>(degree_ + 1));
+            if (max_term_log2 > 126.0) {
+                return {0, false};  // Would overflow __int128
+            }
         }
 
         __int128 result = 0;
