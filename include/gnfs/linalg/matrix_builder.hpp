@@ -8,6 +8,7 @@
 #include "../factor_base/factor_base.hpp"
 #include "../sqrt/class_group.hpp"
 #include "../sqrt/modular_poly.hpp"
+#include "../polynomial/int_polynomial.hpp"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -215,7 +216,9 @@ public:
         }
         std::vector<std::pair<uint32_t, uint32_t>> qc_prime_roots;
         if (config_.include_qc_columns) {
-            qc_prime_roots = select_qc_prime_roots(ctx, effective_qc_count);
+            // QC primes must be above algebraic FB bound to avoid Legendre=0 corruption
+            uint32_t alg_bound = fb.params().algebraic_bound;
+            qc_prime_roots = select_qc_prime_roots(ctx, effective_qc_count, alg_bound + 1);
         }
 
         // 第三步：计算类群（如果启用）
@@ -426,7 +429,8 @@ private:
     /// This gives d independent bits per fully-split prime (vs 1 bit for norm-based QC).
     [[nodiscard]] std::vector<std::pair<uint32_t, uint32_t>> select_qc_prime_roots(
             const PolynomialContext& ctx,
-            size_t num_columns) const {
+            size_t num_columns,
+            uint32_t min_prime = 0) const {
 
         std::vector<std::pair<uint32_t, uint32_t>> qc_pairs;
         qc_pairs.reserve(num_columns);
@@ -434,7 +438,18 @@ private:
         const Integer& n = ctx.n();
         uint32_t d = ctx.degree();
 
-        uint32_t p = config_.qc_prime_start;
+        // QC primes MUST be above the factor base algebraic bound.
+        // If primes are inside FB, many relations have (a-b*r) ≡ 0 (mod q),
+        // giving Legendre symbol = 0 (undefined), corrupting the GF(2) constraints.
+        uint32_t p = std::max(config_.qc_prime_start, min_prime);
+
+        // Build IntPolynomial from ctx for efficient Cantor-Zassenhaus root finding
+        std::vector<Integer> f_coeffs;
+        f_coeffs.reserve(d + 1);
+        for (uint32_t i = 0; i <= d; ++i) {
+            f_coeffs.push_back(ctx.coeff(i).clone());
+        }
+        polynomial::IntPolynomial f_poly(std::move(f_coeffs));
 
         while (qc_pairs.size() < num_columns) {
             p = next_prime(p);
@@ -446,35 +461,20 @@ private:
                 if (n_mod.is_zero()) continue;
             }
 
-            // Compute f coefficients mod p using Integer arithmetic
-            std::vector<uint64_t> f_mod(d + 1);
-            for (uint32_t i = 0; i <= d; ++i) {
-                Integer c = ctx.coeff(i).clone();
-                c %= Integer(static_cast<uint64_t>(p));
-                if (c.is_negative()) c += Integer(static_cast<uint64_t>(p));
-                f_mod[i] = c.to_uint64();
-            }
-
             // Skip if leading coefficient vanishes mod p
-            if (f_mod[d] == 0) continue;
-
-            // Find roots of f(x) mod p via brute force (p is small, typically < 10000)
-            std::vector<uint32_t> roots;
-            for (uint32_t r = 0; r < p; ++r) {
-                uint64_t val = 0;
-                uint64_t r_pow = 1;
-                for (uint32_t i = 0; i <= d; ++i) {
-                    val = (val + (f_mod[i] * r_pow) % p) % p;
-                    r_pow = (r_pow * r) % p;
-                }
-                if (val == 0) roots.push_back(r);
+            {
+                Integer lc = ctx.coeff(d).clone();
+                lc %= Integer(static_cast<uint64_t>(p));
+                if (lc.is_zero()) continue;
             }
+
+            // Find roots using Cantor-Zassenhaus (O(d²·log p), fast for large p)
+            auto roots = f_poly.roots_mod_p(p);
 
             // Skip inert primes (no roots) — useless for per-root QC
             if (roots.empty()) continue;
 
             // Skip primes with repeated roots (gcd(f, f') non-trivial mod p)
-            // These cause (a - b*r) ≡ 0 mod q too often, providing no information
             if (roots.size() < d && has_multiple_root(ctx, p)) continue;
 
             // Add each root as a separate QC column
