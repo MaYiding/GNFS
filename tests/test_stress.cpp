@@ -77,6 +77,27 @@ inline size_t popcnt(const std::vector<bool>& v) {
     size_t c = 0; for (bool b : v) if (b) ++c; return c;
 }
 
+/// Verify that a dependency vector is in the left null space of the matrix.
+/// Returns the number of non-zero columns in v^T * M (0 means valid).
+inline size_t verify_null_space(const std::vector<bool>& dep, const SparseMatrix& matrix) {
+    // Compute r = v^T * M over GF(2) by XOR-ing rows
+    size_t n_cols = matrix.num_cols();
+    std::vector<uint8_t> column_parity(n_cols, 0);
+
+    for (size_t i = 0; i < dep.size() && i < matrix.num_rows(); ++i) {
+        if (!dep[i]) continue;
+        for (auto j : matrix.row(i).indices()) {
+            if (j < n_cols) column_parity[j] ^= 1;
+        }
+    }
+
+    size_t nonzero = 0;
+    for (size_t j = 0; j < n_cols; ++j) {
+        if (column_parity[j]) ++nonzero;
+    }
+    return nonzero;
+}
+
 // ============================================================
 // Test Level Definition
 // ============================================================
@@ -455,13 +476,39 @@ FactResult factor_with_progress(const Integer& n, int level) {
         return result;
     }
 
+    // ── Verify dependencies against ORIGINAL (pre-SGE) matrix ──
+    std::cout << "  Verifying dependencies against original matrix..." << std::flush;
+    size_t valid_deps = 0, invalid_deps = 0;
+    for (size_t di = 0; di < deps.size(); ++di) {
+        size_t bad_cols = verify_null_space(deps[di], build_result.matrix);
+        if (bad_cols == 0) {
+            ++valid_deps;
+        } else {
+            ++invalid_deps;
+            if (invalid_deps <= 5) {
+                std::cout << "\n    Dep #" << (di+1) << ": INVALID ("
+                          << bad_cols << " non-zero columns, size=" << popcnt(deps[di]) << ")";
+            }
+        }
+    }
+    std::cout << "\n  Result: " << valid_deps << " valid, " << invalid_deps << " invalid"
+              << " out of " << deps.size() << "\n" << std::flush;
+
+    if (valid_deps == 0) {
+        std::cout << "  ALL DEPENDENCIES INVALID — BL or SGE bug!\n";
+        // Still try sqrt for first few to see what happens
+    }
+
     // ── Phase 6: Square Root ──
     std::cout << "[Phase 6] Square root extraction...\n" << std::flush;
     phase.reset();
 
-    for (size_t di = 0; di < deps.size(); ++di) {
+    size_t max_dep_attempts = std::min(deps.size(), size_t(10)); // limit attempts
+    for (size_t di = 0; di < max_dep_attempts; ++di) {
         const auto& dep = deps[di];
-        std::cout << "  Dep #" << (di+1) << " (size=" << popcnt(dep) << ")..." << std::flush;
+        size_t dep_bad = verify_null_space(dep, build_result.matrix);
+        std::cout << "  Dep #" << (di+1) << " (size=" << popcnt(dep)
+                  << ", null_check=" << (dep_bad == 0 ? "OK" : "FAIL") << ")..." << std::flush;
 
         auto rat = compute_rational_sqrt(to_bv(dep), relations, fb, n, ctx.m());
         if (!rat.success) {
