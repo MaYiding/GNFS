@@ -366,6 +366,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_edge_cases PRIVATE gnfs_core Threads::Threads)
     add_test(NAME EdgeCases COMMAND test_edge_cases)
 
+    # Schirokauer degree-4 diagnostic
+    add_executable(test_schirokauer_deg4
+        tests/test_schirokauer_deg4.cpp
+    )
+    target_link_libraries(test_schirokauer_deg4 PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SchirokaurDeg4 COMMAND test_schirokauer_deg4)
+
     # 跨模块集成测试
     add_executable(test_integration
         tests/test_integration.cpp
