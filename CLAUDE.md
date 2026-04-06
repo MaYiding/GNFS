@@ -367,6 +367,41 @@ git add include/ src/ tests/ CMakeLists.txt CLAUDE.md .gitignore README.md docs/
 git commit -m "chore: initial commit — GNFS core codebase"
 ```
 
+## 长时间测试监控规范
+
+运行压力测试（50/80/100-digit）可能需要 1-3 小时。监控时**必须遵守**以下规则：
+
+### 禁止行为
+
+- **禁止堆叠多个 `sleep N && tail` 后台任务**来监控同一个日志——会造成进程泄漏和任务列表混乱
+- **禁止**用 `run_in_background` 启动多个冗余的 sleep 监控
+- **禁止** `sleep` 超过 600 秒的后台等待（容易忘记清理）
+
+### 正确做法
+
+1. **启动测试**：用 `nohup ./test_xxx > /tmp/xxx.log 2>&1 &` 并记录 PID
+2. **检查进度**：手动按需执行 `tail -5 /tmp/xxx.log`，不要自动化等待
+3. **一次最多一个后台 sleep**：如果确实需要延迟检查，只启动**一个** `sleep + tail` 后台任务
+4. **及时清理**：任务完成或不再需要时立即 `TaskStop` 清理
+5. **stdout 缓冲问题**：`nohup` 重定向到文件时 C++ `std::cout` 是全缓冲（~4KB-8KB）
+   - 代码中已在关键输出点加了 `std::flush`
+   - 但报告间隔为每 100 SQ，因此两次输出之间可能有几分钟间隔——这是**正常的**，不要因此启动更多监控进程
+
+### 监控模板
+
+```bash
+# 启动测试
+nohup ./test_stress 1 1 > /tmp/stress_test.log 2>&1 &
+echo "PID: $!"
+
+# 手动检查（按需执行，不要自动化循环）
+tail -5 /tmp/stress_test.log
+ps -p <PID> -o pid,%cpu,etime
+
+# 测试结束后查看完整结果
+cat /tmp/stress_test.log
+```
+
 ## Known Limitations
 
 - 大类群 (>20 generators) 的 Couveignes 实现可能失败
