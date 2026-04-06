@@ -120,13 +120,23 @@ struct GNFSParams {
             B_rat = 200000;  B_alg = 400000;
         } else if (p.digits <= 50) {
             B_rat = 300000;  B_alg = 600000;
+        } else if (p.digits <= 60) {
+            B_rat = 800000;  B_alg = 1600000;
+        } else if (p.digits <= 70) {
+            B_rat = 2000000; B_alg = 4000000;
+        } else if (p.digits <= 80) {
+            B_rat = 4000000; B_alg = 8000000;
+        } else if (p.digits <= 90) {
+            B_rat = 8000000; B_alg = 16000000;
+        } else if (p.digits <= 100) {
+            B_rat = 15000000; B_alg = 30000000;
         } else {
-            // >50 digits: L_N formula with c_B ≈ 0.9
-            double c_B = 0.9;
+            // >100 digits: L_N formula with conservative c_B ≈ 0.8
+            double c_B = 0.8;
             B_rat = std::exp(c_B * l_val);
-            B_rat = std::max(B_rat, 4000000.0);
-            B_rat = std::min(B_rat, 4e9);
-            B_alg = std::min(B_rat * 2.0, 4e9);
+            B_rat = std::max(B_rat, 30000000.0);
+            B_rat = std::min(B_rat, 1e9);
+            B_alg = std::min(B_rat * 2.0, 2e9);
         }
 
         // LP bits: LP_bound = B_alg × 30, lp_bits = floor(log2(LP_bound))
@@ -168,7 +178,9 @@ struct GNFSParams {
         } else if (p.digits <= 50) {
             sieve_width = 8192;   sieve_height = 4096;   // 33M positions, ~67MB
         } else {
-            sieve_width = 16384;  sieve_height = 8192;   // 134M positions, ~268MB
+            // ≥51 digits: 134M positions. For 80-100+, increase SQ count
+            // instead of sieve area to stay within 256M memory cap.
+            sieve_width = 16384;  sieve_height = 8192;
         }
 
         p.sieve_i_min = -static_cast<int32_t>(sieve_width / 2);
