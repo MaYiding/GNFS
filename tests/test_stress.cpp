@@ -254,12 +254,10 @@ FactResult factor_with_progress(const Integer& n, int level) {
     size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
     size_t initial_target = params.raw_relation_target(matrix_cols);
 
-    // For large-digit numbers, the birthday formula can produce very high first-round
-    // targets (e.g. 3.4M for 50-digit). Use a smaller first batch so the adaptive loop
-    // can filter+merge early and exit if enough full relations exist.
-    // Floor of 50K avoids penalizing small-N (25-digit) where first round must suffice.
-    size_t batch_target = std::min(initial_target,
-                                   std::max(matrix_cols * 8, size_t(50000)));
+    // Use birthday formula target directly. For 50-digit degree 4, full_count=0
+    // (all relations are LP partial) so small first batches waste time on futile
+    // filter+merge. The birthday formula correctly predicts the needed raw count.
+    size_t batch_target = initial_target;
     size_t sq_count = 0;
     size_t full_count = 0;  // Track non-LP (fully smooth) relations
 
