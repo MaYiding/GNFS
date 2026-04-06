@@ -253,8 +253,15 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
     size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
     size_t initial_target = params.raw_relation_target(matrix_cols);
-    size_t batch_target = initial_target;
+
+    // For large-digit numbers, the birthday formula can produce very high first-round
+    // targets (e.g. 3.4M for 50-digit). Use a smaller first batch so the adaptive loop
+    // can filter+merge early and exit if enough full relations exist.
+    // Floor of 50K avoids penalizing small-N (25-digit) where first round must suffice.
+    size_t batch_target = std::min(initial_target,
+                                   std::max(matrix_cols * 8, size_t(50000)));
     size_t sq_count = 0;
+    size_t full_count = 0;  // Track non-LP (fully smooth) relations
 
     LatticeSieve sieve(ctx, fb, sieve_params);
     sieve.set_region(sieve_region);
@@ -320,8 +327,10 @@ FactResult factor_with_progress(const Integer& n, int level) {
                 }
 
                 for (auto& tr : thread_results)
-                    for (auto& rel : tr)
+                    for (auto& rel : tr) {
+                        if (rel.is_full()) ++full_count;
                         collector.add(std::move(rel));
+                    }
             }
             ++sq_count;
 
@@ -330,13 +339,25 @@ FactResult factor_with_progress(const Integer& n, int level) {
                                  (collector.size() >= batch_target);
             if (should_report) {
                 double rate = collector.size() / (phase.sec() + 0.001);
+                double full_pct = collector.size() > 0 ?
+                    100.0 * full_count / collector.size() : 0.0;
                 std::cout << "  SQ #" << sq_count
                           << ": rels=" << collector.size() << "/" << batch_target
                           << " (" << std::fixed << std::setprecision(1)
                           << (100.0 * collector.size() / batch_target) << "%)"
+                          << " full=" << full_count << " (" << std::setprecision(0)
+                          << full_pct << "%)"
                           << " rate=" << std::setprecision(1) << rate << "/s"
                           << " elapsed=" << std::setprecision(1) << phase.sec() << "s"
                           << "\n" << std::flush;
+            }
+
+            // Early exit: enough full relations alone to fill the matrix.
+            // No LP merge needed — just full smooth relations.
+            if (full_count > matrix_cols * 3 / 2) {
+                std::cout << "  [Full-exit] " << full_count << " full > "
+                          << (matrix_cols * 3 / 2) << " (1.5× matrix_cols)\n" << std::flush;
+                break;
             }
         }
 
