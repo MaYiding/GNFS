@@ -315,10 +315,11 @@ struct GNFSParams {
             double key_space = lp_primes * static_cast<double>(std::max(degree, 2u));
             double mc = static_cast<double>(matrix_columns);
 
-            // Birthday: safety=20. Aggressive to minimize sieve time.
-            // With safety=20 and 6.6% merge rate (25-digit), expected usable
-            // ≈ 130% of matrix_cols. If insufficient, adaptive loop retries.
-            double n_min = std::sqrt(2.0 * key_space * mc * 20.0);
+            // Birthday: safety=25. Must account for LP columns that expand
+            // the matrix beyond matrix_columns estimate. Run 12 showed 3.4M raw
+            // → 75K usable but matrix had 77K cols (1981 LP cols).
+            // safety=25 gives ~12% more raw, producing ~10% more usable.
+            double n_min = std::sqrt(2.0 * key_space * mc * 25.0);
             // Floor: at least 5× matrix columns (covers 2LP merge overhead)
             return static_cast<size_t>(
                 std::max(n_min, mc * 5.0));

@@ -31,6 +31,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 using namespace gnfs;
@@ -390,9 +391,26 @@ FactResult factor_with_progress(const Integer& n, int level) {
                 std::make_move_iterator(merged.end()));
         }
 
-        if (relations.size() > matrix_cols) {
+        // Estimate LP columns: merged relations carry LP primes that become
+        // matrix columns. Count distinct LP entries as upper bound.
+        size_t lp_col_estimate = 0;
+        if (lp_enabled) {
+            std::unordered_set<uint64_t> lp_keys;
+            for (const auto& rel : relations) {
+                for (const auto& lp : rel.rational_large_prime)
+                    lp_keys.insert(lp.p);
+                for (const auto& lp : rel.algebraic_large_prime)
+                    lp_keys.insert(lp.p * 1000000007ULL + lp.r);
+            }
+            lp_col_estimate = lp_keys.size();
+        }
+        size_t effective_cols = matrix_cols + lp_col_estimate;
+
+        if (relations.size() > effective_cols) {
             std::cout << "  Sieving complete: " << collector.size() << " raw, "
-                      << relations.size() << " usable, in " << phase.sec() << " sec\n" << std::flush;
+                      << relations.size() << " usable (need >" << effective_cols
+                      << ", lp_cols=" << lp_col_estimate << "), in "
+                      << phase.sec() << " sec\n" << std::flush;
             break;
         }
 
@@ -403,12 +421,15 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
         double merge_rate = (collector.size() > 0) ?
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
+        // Need enough usable > effective_cols (includes LP columns)
+        size_t needed_usable = effective_cols + effective_cols / 10;  // +10% safety
         size_t needed_raw = static_cast<size_t>(
-            static_cast<double>(matrix_cols * 2) / std::max(merge_rate, 0.001));
+            static_cast<double>(needed_usable) / std::max(merge_rate, 0.001));
         batch_target = std::min(
-            std::max(batch_target * 2, needed_raw),
+            std::max(batch_target + batch_target / 4, needed_raw),  // +25% growth
             initial_target * 5);
-        std::cout << "  Need more — merge_rate=" << std::setprecision(3) << (merge_rate * 100)
+        std::cout << "  Need more — usable=" << relations.size() << "/" << effective_cols
+                  << " merge_rate=" << std::setprecision(3) << (merge_rate * 100)
                   << "%, new target=" << batch_target << "\n" << std::flush;
     }
 
