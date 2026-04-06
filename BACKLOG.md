@@ -7,10 +7,20 @@
 |------|------|------|
 | **P1-OPT** | 0 | (已清空) |
 | **P1** | 0 | (已清空) |
-| **P2** | 0 | (已清空) |
-| **P3** | 6 | 远期架构 ×6 |
+| **P2** | 1 | class group ×1 |
+| **P3** | 7 | 远期架构 ×6, scaling ×1 |
 
 ---
+
+---
+
+## P2 — 中优先级
+
+### [BUG] Class Group Characters 实现仅支持 Cubic Fields
+- **发现日期**: 2026-03-13
+- **文件**: `sqrt/class_group.hpp`
+- **描述**: `class_group.hpp` 的 Minkowski bound、signature、character computation 均假定 degree=3。对 degree≥4 产生错误列值，导致所有 BL 依赖在 sqrt 阶段失败。当前已全局禁用 (`include_class_group=false`)，QC+Schirokauer 足够替代。如需恢复 class group 功能需全面重写。
+- **建议**: 若要支持，需正确处理任意 degree 的签名 (r1,r2)、SNF、character computation。参考 PARI/GP 或 SageMath 的实现。
 
 ---
 
@@ -37,6 +47,9 @@
 
 #### [FEAT] ThreadPool Work-Stealing
 - **描述**: 筛选 special-Q 开销不均匀，work-stealing 可提升负载均衡
+
+#### [FEAT] 80/100-digit Scalability
+- **描述**: 80-digit 预估矩阵 ~500K 列、100-digit ~2M 列，远超 BL 单机能力。需要 Block Wiedemann + distributed SpMV，或极激进的 SGE (90%+ 消元) 才能在合理时间内完成。当前参数 (L_N c_B=0.9) 可能产生过大 FB
 
 ---
 
