@@ -119,7 +119,7 @@ struct GNFSParams {
         } else if (p.digits <= 40) {
             B_rat = 200000;  B_alg = 400000;
         } else if (p.digits <= 50) {
-            B_rat = 1000000; B_alg = 2000000;
+            B_rat = 300000;  B_alg = 600000;
         } else {
             // >50 digits: L_N formula with c_B ≈ 0.9
             double c_B = 0.9;
