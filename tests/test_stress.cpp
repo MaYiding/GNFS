@@ -31,7 +31,6 @@
 #include <random>
 #include <string>
 #include <thread>
-#include <unordered_set>
 #include <vector>
 
 using namespace gnfs;
@@ -391,19 +390,10 @@ FactResult factor_with_progress(const Integer& n, int level) {
                 std::make_move_iterator(merged.end()));
         }
 
-        // Estimate LP columns: merged relations carry LP primes that become
-        // matrix columns. Count distinct LP entries as upper bound.
-        size_t lp_col_estimate = 0;
-        if (lp_enabled) {
-            std::unordered_set<uint64_t> lp_keys;
-            for (const auto& rel : relations) {
-                for (const auto& lp : rel.rational_large_prime)
-                    lp_keys.insert(lp.p);
-                for (const auto& lp : rel.algebraic_large_prime)
-                    lp_keys.insert(lp.p * 1000000007ULL + lp.r);
-            }
-            lp_col_estimate = lp_keys.size();
-        }
+        // Estimate LP columns conservatively. The matrix builder only creates
+        // columns for LP primes surviving singleton filter with odd exponents.
+        // Run 12 data: 75K usable → 1,981 LP cols (2.6%). Use 5% as safe upper bound.
+        size_t lp_col_estimate = lp_enabled ? relations.size() / 20 : 0;
         size_t effective_cols = matrix_cols + lp_col_estimate;
 
         if (relations.size() > effective_cols) {
