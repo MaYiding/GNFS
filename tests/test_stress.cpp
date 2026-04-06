@@ -264,9 +264,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
     bool lp_enabled = params.large_prime_bound > params.algebraic_bound;
     constexpr int MAX_ROUNDS = 10;
 
-    // Progress reporting interval: more frequent for large FB (slower per SQ)
-    size_t report_interval = std::max(size_t(1), static_cast<size_t>(params.progress_interval));
-    // For stress tests, report every SQ for the first 10, then every report_interval
+    // Progress reporting: stress tests report every 100 SQs for visibility
+    size_t report_interval = 100;
     size_t detailed_report_count = 10;
 
     for (int round = 0; round < MAX_ROUNDS; ++round) {
@@ -433,7 +432,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
     mb_config.num_qc_primes = params.num_qc_primes;
     mb_config.qc_prime_start = 100;
     mb_config.schirokauer_primes = {2};
-    mb_config.verbose = false;
+    mb_config.verbose = true;  // Enable verbose for diagnostics
 
     MatrixBuilder mb(mb_config);
     auto build_result = mb.build_with_qc(relations, fb, ctx);
@@ -441,6 +440,20 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
     std::cout << " " << mstats.num_rows << "×" << mstats.num_cols
               << " (excess=" << mstats.excess << ") " << phase.sec() << " sec\n" << std::flush;
+
+    // Print column breakdown for diagnostics
+    {
+        const auto& mp = build_result.mapping;
+        std::cout << "  [Columns] rat_fb=" << mp.num_rational_fb
+                  << " alg_fb=" << mp.num_algebraic_fb
+                  << " rat_lp=" << mp.num_large_primes_rat
+                  << " alg_lp=" << mp.num_large_primes_alg
+                  << " qc=" << mp.num_qc_columns
+                  << " cg=" << mp.num_class_group_columns
+                  << " schiro=" << mp.num_schirokauer_columns
+                  << " sign=" << (mp.has_sign_column ? 1 : 0)
+                  << " total=" << mp.total_columns() << "\n" << std::flush;
+    }
 
     if (!mstats.has_excess()) {
         std::cout << "  NO EXCESS — need more relations\n";
@@ -503,7 +516,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
     std::cout << "[Phase 6] Square root extraction...\n" << std::flush;
     phase.reset();
 
-    size_t max_dep_attempts = std::min(deps.size(), size_t(10)); // limit attempts
+    size_t max_dep_attempts = std::min(deps.size(), size_t(2)); // limit for diagnostics
     for (size_t di = 0; di < max_dep_attempts; ++di) {
         const auto& dep = deps[di];
         size_t dep_bad = verify_null_space(dep, build_result.matrix);
