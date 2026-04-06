@@ -427,7 +427,11 @@ FactResult factor_with_progress(const Integer& n, int level) {
     MatrixBuilderConfig mb_config;
     mb_config.include_sign_column = true;
     mb_config.include_qc_columns = true;
-    mb_config.include_class_group = (bits > 100);
+    // Class group characters DISABLED: the implementation (class_group.hpp) is only
+    // correct for cubic fields. For degree >= 4, it produces wrong character values
+    // which add incorrect constraints to the matrix, causing ALL deps to fail in sqrt.
+    // QC + Schirokauer maps provide sufficient algebraic square constraints.
+    mb_config.include_class_group = false;
     mb_config.include_schirokauer = true;
     mb_config.num_qc_primes = params.num_qc_primes;
     mb_config.qc_prime_start = 100;
@@ -516,7 +520,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
     std::cout << "[Phase 6] Square root extraction...\n" << std::flush;
     phase.reset();
 
-    size_t max_dep_attempts = std::min(deps.size(), size_t(2)); // limit for diagnostics
+    size_t max_dep_attempts = std::min(deps.size(), size_t(10));
     for (size_t di = 0; di < max_dep_attempts; ++di) {
         const auto& dep = deps[di];
         size_t dep_bad = verify_null_space(dep, build_result.matrix);
@@ -525,13 +529,13 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
         auto rat = compute_rational_sqrt(to_bv(dep), relations, fb, n, ctx.m());
         if (!rat.success) {
-            std::cout << " rat_fail\n" << std::flush;
+            std::cout << " rat_fail (" << rat.error << ")\n" << std::flush;
             continue;
         }
 
         auto alg = compute_algebraic_sqrt(to_bv(dep), relations, ctx);
         if (!alg.success) {
-            std::cout << " alg_fail\n" << std::flush;
+            std::cout << " alg_fail (" << alg.error << ")\n" << std::flush;
             continue;
         }
 
