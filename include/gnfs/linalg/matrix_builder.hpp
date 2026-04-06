@@ -66,8 +66,8 @@ struct ColumnMapping {
     // 代数大素数 -> 列索引（按 (p, r) 键，区分不同素理想）
     std::unordered_map<PrimeIdealKey, uint32_t, PrimeIdealKeyHash> alg_lp_to_col;
 
-    // 二次特征素数列表
-    std::vector<uint32_t> qc_primes;
+    // 二次特征 per-root (prime, root) 对列表——每对对应一个 QC 列
+    std::vector<std::pair<uint32_t, uint32_t>> qc_prime_roots;
 
     // Schirokauer map 素数列表
     std::vector<uint32_t> schirokauer_primes;
@@ -213,9 +213,9 @@ public:
             effective_qc_count = std::max(effective_qc_count,
                 static_cast<uint32_t>(config_.num_qc_primes + ctx.degree() * 8));
         }
-        std::vector<uint32_t> qc_primes;
+        std::vector<std::pair<uint32_t, uint32_t>> qc_prime_roots;
         if (config_.include_qc_columns) {
-            qc_primes = select_qc_primes(ctx, effective_qc_count);
+            qc_prime_roots = select_qc_prime_roots(ctx, effective_qc_count);
         }
 
         // 第三步：计算类群（如果启用）
@@ -274,7 +274,7 @@ public:
         }
 
         // 第五步：设置列映射（包含类群特征和 Schirokauer）
-        setup_column_mapping_with_qc(result.mapping, fb, lp_info, qc_primes);
+        setup_column_mapping_with_qc(result.mapping, fb, lp_info, qc_prime_roots);
 
         // 添加类群特征列
         if (class_group) {
@@ -420,32 +420,33 @@ private:
         return info;
     }
 
-    /// 选择二次特征素数
-    /// Select primes where f is IRREDUCIBLE mod p, so that F_p[x]/f(x) is a field.
-    /// This allows us to compute proper quadratic characters in the field extension.
-    [[nodiscard]] std::vector<uint32_t> select_qc_primes(
+    /// 选择二次特征素数——Per-root QC (Briggs 2004)
+    /// Select SPLIT primes where f(x) has roots mod p, returning (prime, root) pairs.
+    /// Each (p, r) pair becomes one QC column: Legendre symbol ((a - b*r) / p).
+    /// This gives d independent bits per fully-split prime (vs 1 bit for norm-based QC).
+    [[nodiscard]] std::vector<std::pair<uint32_t, uint32_t>> select_qc_prime_roots(
             const PolynomialContext& ctx,
-            size_t num_primes) const {
+            size_t num_columns) const {
 
-        std::vector<uint32_t> qc_primes;
-        qc_primes.reserve(num_primes);
+        std::vector<std::pair<uint32_t, uint32_t>> qc_pairs;
+        qc_pairs.reserve(num_columns);
 
         const Integer& n = ctx.n();
         uint32_t d = ctx.degree();
 
         uint32_t p = config_.qc_prime_start;
 
-        while (qc_primes.size() < num_primes) {
+        while (qc_pairs.size() < num_columns) {
             p = next_prime(p);
 
-            // Skip primes that divide N (use Integer arithmetic — safe for N > 2^64)
+            // Skip primes that divide N
             {
                 Integer n_mod = n.clone();
                 n_mod %= Integer(static_cast<uint64_t>(p));
                 if (n_mod.is_zero()) continue;
             }
 
-            // Compute f coefficients mod p using Integer arithmetic (safe for large coefficients)
+            // Compute f coefficients mod p using Integer arithmetic
             std::vector<uint64_t> f_mod(d + 1);
             for (uint32_t i = 0; i <= d; ++i) {
                 Integer c = ctx.coeff(i).clone();
@@ -454,18 +455,36 @@ private:
                 f_mod[i] = c.to_uint64();
             }
 
-            // Skip if leading coefficient vanishes mod p (degree drops)
+            // Skip if leading coefficient vanishes mod p
             if (f_mod[d] == 0) continue;
 
-            // Use Rabin irreducibility test — correct for all degrees.
-            // "No roots" is only equivalent for degree ≤ 3; for degree ≥ 4,
-            // a product of irreducible quadratics has no roots but is reducible.
-            if (sqrt::ModularPoly::is_irreducible(f_mod, p)) {
-                qc_primes.push_back(p);
+            // Find roots of f(x) mod p via brute force (p is small, typically < 10000)
+            std::vector<uint32_t> roots;
+            for (uint32_t r = 0; r < p; ++r) {
+                uint64_t val = 0;
+                uint64_t r_pow = 1;
+                for (uint32_t i = 0; i <= d; ++i) {
+                    val = (val + (f_mod[i] * r_pow) % p) % p;
+                    r_pow = (r_pow * r) % p;
+                }
+                if (val == 0) roots.push_back(r);
+            }
+
+            // Skip inert primes (no roots) — useless for per-root QC
+            if (roots.empty()) continue;
+
+            // Skip primes with repeated roots (gcd(f, f') non-trivial mod p)
+            // These cause (a - b*r) ≡ 0 mod q too often, providing no information
+            if (roots.size() < d && has_multiple_root(ctx, p)) continue;
+
+            // Add each root as a separate QC column
+            for (uint32_t r : roots) {
+                qc_pairs.emplace_back(p, r);
+                if (qc_pairs.size() >= num_columns) break;
             }
         }
 
-        return qc_primes;
+        return qc_pairs;
     }
 
     /// 检查多项式是否在 F_p 上有重根
@@ -536,17 +555,17 @@ private:
         }
     }
 
-    /// 设置带二次特征的列映射
+    /// 设置带二次特征的列映射（per-root QC）
     void setup_column_mapping_with_qc(ColumnMapping& mapping,
                                       const FactorBase& fb,
                                       const LargePrimeInfo& lp_info,
-                                      const std::vector<uint32_t>& qc_primes) const {
+                                      const std::vector<std::pair<uint32_t, uint32_t>>& qc_prime_roots) const {
 
         setup_column_mapping(mapping, fb, lp_info);
 
-        // 添加二次特征列
-        mapping.num_qc_columns = qc_primes.size();
-        mapping.qc_primes = qc_primes;
+        // 添加二次特征列——每个 (prime, root) 对一列
+        mapping.num_qc_columns = qc_prime_roots.size();
+        mapping.qc_prime_roots = qc_prime_roots;
     }
 
     /// 构建单行
@@ -664,25 +683,27 @@ private:
             }
         }
 
-        // QC columns: Legendre symbol is multiplicative, so for merged relation
-        // (∏ norm_i / q) = ∏ (norm_i / q).  In GF(2): XOR individual Legendre bits.
-        Integer alg_norm = ctx.algebraic_norm(rel.a, rel.b);
+        // Per-root QC columns (Briggs 2004): for each (q, r) pair where r is a root
+        // of f(x) mod q, compute Legendre symbol ((a - b*r) / q).
+        // For merged relations, XOR individual bits (character is multiplicative).
+        for (size_t i = 0; i < mapping.qc_prime_roots.size(); ++i) {
+            auto [q, r] = mapping.qc_prime_roots[i];
+            int64_t q_s = static_cast<int64_t>(q);
 
-        // Collect all norms for merged relations
-        std::vector<Integer> extra_norms;
-        if (rel.is_merged()) {
-            extra_norms.reserve(rel.extra_ab_pairs.size());
+            // Compute (a - b*r) mod q for primary pair
+            auto compute_legendre_bit = [&](int64_t a, int64_t b) -> bool {
+                int64_t a_mod = ((a % q_s) + q_s) % q_s;
+                int64_t b_mod = ((b % q_s) + q_s) % q_s;
+                uint64_t br = (static_cast<uint64_t>(b_mod) * r) % q;
+                int64_t val = (a_mod - static_cast<int64_t>(br) + q_s) % q_s;
+                if (val == 0) return false;  // (0/q) = 0, contributes 0 to GF(2)
+                uint64_t leg = powmod_u64(static_cast<uint64_t>(val), (q - 1) / 2, q);
+                return (leg == q - 1);  // -1 → bit=1 (non-residue)
+            };
+
+            bool qc_bit = compute_legendre_bit(rel.a, rel.b);
             for (const auto& [ea, eb] : rel.extra_ab_pairs) {
-                extra_norms.push_back(ctx.algebraic_norm(ea, static_cast<uint64_t>(eb)));
-            }
-        }
-
-        for (size_t i = 0; i < mapping.qc_primes.size(); ++i) {
-            uint32_t q = mapping.qc_primes[i];
-
-            bool qc_bit = (legendre_symbol(alg_norm, q) == -1);
-            for (const auto& norm : extra_norms) {
-                qc_bit ^= (legendre_symbol(norm, q) == -1);
+                qc_bit ^= compute_legendre_bit(ea, eb);
             }
 
             if (qc_bit) {
