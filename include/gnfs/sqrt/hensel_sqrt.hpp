@@ -797,6 +797,32 @@ private:
 
             if (config_.verbose) {
                 std::cerr << "[Hensel] Product pre-computed (with f'(α)^2 factor)\n";
+
+                // Verify consistency: P_final mod p should match S^2 mod (f, p)
+                // where S = sqrt_mod_p (which includes f'(α) factor)
+                auto f_mod_p_check = get_f_mod_p(nf, p);
+                ModularPoly S_check = sqrt_mod_p;
+                auto S2_check_mp = ModularPoly::mul(S_check, S_check, f_mod_p_check, p);
+                bool product_consistent = true;
+                for (uint32_t i = 0; i < d; ++i) {
+                    Integer pfi = P_final[i].clone();
+                    Integer pp(static_cast<int64_t>(p));
+                    Integer::mod(pfi, pfi, pp);
+                    if (pfi.is_negative()) pfi += pp;
+                    uint64_t pfi_u64 = pfi.to_uint64();
+                    uint64_t s2i = (i <= static_cast<uint32_t>(S2_check_mp.degree()))
+                                   ? S2_check_mp.coeff(i) : 0;
+                    if (pfi_u64 != s2i) {
+                        product_consistent = false;
+                        std::cerr << "[Hensel] PRODUCT MISMATCH at coeff " << i
+                                  << ": P_final%" << p << "=" << pfi_u64
+                                  << " S^2%" << p << "=" << s2i << "\n";
+                        break;
+                    }
+                }
+                if (product_consistent) {
+                    std::cerr << "[Hensel] Product consistent with S^2 mod p ✓\n";
+                }
             }
         }
 
