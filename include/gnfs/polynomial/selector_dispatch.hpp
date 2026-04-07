@@ -84,20 +84,22 @@ private:
         kparams.degree = degree;
 
         // 按 N 位数调整参数
+        // 注意：Kleinjung 搜索时间 ∝ leading_coeff_bound × candidates
+        // 80-digit (264 bit) 应在 ≤2 min 内完成 poly 选择
         if (bits <= 150) {
             // 中等大小：少量候选，快速评估
             kparams.num_candidates = 300;
             kparams.root_opt_iterations = 128;
             kparams.leading_coeff_bound = 5000;
             kparams.search_radius = 50;
-        } else if (bits <= 250) {
-            // 标准规模
+        } else if (bits <= 300) {
+            // 标准规模 (80-90 digit)
             kparams.num_candidates = 1000;
             kparams.root_opt_iterations = 256;
             kparams.leading_coeff_bound = 10000;
             kparams.search_radius = 100;
         } else {
-            // 大规模：更多候选，更精细优化
+            // 大规模 (100+ digit): 更多候选，更精细优化
             kparams.num_candidates = 3000;
             kparams.root_opt_iterations = 512;
             kparams.leading_coeff_bound = 50000;
