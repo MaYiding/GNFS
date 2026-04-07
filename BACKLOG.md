@@ -5,9 +5,9 @@
 
 | 级别 | 条数 | 涵盖 |
 |------|------|------|
-| **P1** | 12 | trial_div b·r 溢出, UV int64 UB, Schirokauer unsplit, sieve flood, SparseRow toggle, LP ideal key, ECM j_lo, E2E/progressive exit, integer UB, ECM stage2, matrix QC |
+| **P1** | 11 | trial_div b·r 溢出, UV int64 UB, sieve flood, SparseRow toggle, LP ideal key, ECM j_lo, E2E/progressive exit, integer UB, ECM stage2, matrix QC |
 | **P1-OPT** | 0 | (已清空) |
-| **P2** | 42 | correctness ×25, performance ×9, design ×5, class group ×1, infra ×2 |
+| **P2** | 43 | correctness ×26, performance ×9, design ×5, class group ×1, infra ×2 |
 | **P3** | 27 | 远期架构 ×7, style ×6, dead code ×4, quality ×8, risk ×2 |
 | **TEST** | 8 | weak assertions ×4, logic ×1, missing coverage ×2, flaky ×1 |
 
@@ -26,12 +26,6 @@
 - **文件**: `sieve/lattice_sieve.hpp:282-284, 302-304`
 - **描述**: `f0_mod * m64` 是 int64_t 乘法，两操作数均在 [0, p-1]，p 最大可达 ~2^32（代数因子基上界）。乘积最大 (2^32-1)^2 ≈ 2^64，超出 INT64_MAX ≈ 2^63。这是 C++ 有符号溢出未定义行为（第三轮审计以 100% 置信度确认）。产出错误的 UV 参数导致对应素数的筛法命中位置错误。
 - **建议**: 用 `((__int128_t)f0_mod * m64) % p64` 做中间乘积。
-
-### [BUG] Schirokauer compute_unsplit 零常数项元素产生无效 map 值
-- **发现日期**: 2026-03-14
-- **文件**: `linalg/schirokauer.hpp:628`
-- **描述**: `compute_unsplit` 计算 `(γ^e - 1)/ℓ mod ℓ` 时，若元素 `g_pow` 的常数项为 0（非 ℓ-adic 单位），执行 `(ell_k - 1) / ell`——但 `ell_k - 1` 不能被 `ell` 整除（如 ℓ=2, k=8: (256-1)/2 = 127），整数除法截断产生错误结果。对 ℓ=2 最终 `127 % 2 = 1`，即伪造非零 map 值，注入错误 GF(2) 约束到矩阵，导致 BL 找到的依赖不对应真实平方和等式。
-- **建议**: 添加零常数项保护：`if (g_pow.coeff(0) == 0) return all-zero map values`（非单位元素的 Schirokauer map 无定义）。
 
 ### [BUG] ECM Stage2 BSGS j_lo 边界遗漏 B1 附近素数
 - **发现日期**: 2026-03-14
@@ -248,6 +242,12 @@
 - **文件**: `sqrt/hensel_sqrt.hpp:182`
 - **描述**: `bm *= Integer(static_cast<int64_t>(b));` 当 b > INT64_MAX 时是未定义行为。项目已有 `Integer(uint64_t)` 构造函数（Session 12 添加），应直接使用。
 - **建议**: `bm *= Integer(b);`
+
+#### [BUG] Schirokauer compute_unsplit 缺少非单位元素防御
+- **发现日期**: 2026-03-14（第三轮修正：P1→P2，因 gcd(|a|,|b|)=1 约束使其不可达）
+- **文件**: `linalg/schirokauer.hpp:628`
+- **描述**: `compute_unsplit` 不检查 `g = a - bα` 是否为 ℓ-adic 单位。若两系数同时为 ℓ 倍数则 `(0-1)/ℓ mod ℓ` 产生错误值。但 `gcd(|a|,|b|) = 1` 保证对素数 ℓ 不会同时整除。与 `compute_split`（有 ℓ-stripping）不一致。
+- **建议**: 添加 `assert` 或与 split 路径统一。
 
 #### [BUG] algebraic_norm_i128 溢出检查跳过 degree < 3
 - **发现日期**: 2026-03-14
