@@ -134,10 +134,11 @@ private:
 
     /// Estimate target bits for sqrt coefficient recovery.
     ///
-    /// For sqrt S in Z[α]/(f) of degree d, the Mahler measure bound gives:
-    ///   log₂|sⱼ| ≤ (d-1) + d/2 · Σlog₂(|aᵢ| + bᵢ·R) + log₂|f'(α)|
-    /// where R bounds all roots of f. The key factor d/2 (not 1/2) accounts
-    /// for sqrt coefficients spanning all d embeddings of the number field.
+    /// For sqrt S of product γ in Z[α]/(f), the coefficient bound comes from:
+    ///   |sⱼ| ≤ ||V⁻¹||∞ · max_k |σ_k(S)| · |f'(α_k)|
+    /// where σ_k are the d complex embeddings and V is the Vandermonde matrix.
+    /// The LEADING term is log_bound/2 (from the worst single embedding),
+    /// with O(d·log R) correction from the Vandermonde inverse and f'(α).
     [[nodiscard]] double estimate_target_bits(
             const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
             const NumberField& nf) const {
@@ -158,16 +159,15 @@ private:
                          static_cast<double>(b) * max_root;
             log_bound += std::log2(std::max(val, 1.0));
         }
+        // f'(α) bound: |f'(α_k)| ≤ d · R^{d-1}
         double log_f_prime_bound = std::log2(static_cast<double>(d));
         if (d > 1) log_f_prime_bound += static_cast<double>(d) * std::log2(max_root + 1.0);
 
-        // d/2 · log_bound: Mahler measure across all d embeddings
-        // (d-1): binomial coefficient bound binom(d-1, j) ≤ 2^{d-1}
-        double coeff_bits = static_cast<double>(d) * log_bound / 2.0
-                          + log_f_prime_bound
-                          + static_cast<double>(d - 1)
-                          + config_.extra_precision;
-        return coeff_bits;
+        // Leading term: log_bound/2 (sqrt of worst-case single embedding)
+        // Correction: log_f_prime_bound (f'(α)² trick), log₂(d) (Vandermonde)
+        return log_bound / 2.0 + log_f_prime_bound
+               + std::log2(static_cast<double>(d))
+               + config_.extra_precision;
     }
 
     /// Compute ∏(a_i - b_i*m) mod N
