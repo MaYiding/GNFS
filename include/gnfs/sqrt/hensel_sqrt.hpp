@@ -82,9 +82,11 @@ public:
         // For small inputs (<100 factors), single-prime Hensel is fast enough.
         // Retry Nguyen with doubled precision before falling back to slow single-prime.
         crt_sign_exhausted_ = false;
+        primes_were_replaced_ = false;
         if (ab_pairs.size() >= 100) {
             double nguyen_target = target_bits;
             for (int nguyen_attempt = 0; nguyen_attempt < 3; ++nguyen_attempt) {
+                primes_were_replaced_ = false;  // Reset for each attempt
                 auto result = compute_nguyen_hybrid(
                     ab_pairs, nf, nguyen_target, product_at_m, f_prime_m, f_prime_m_inv);
                 if (result) {
@@ -96,13 +98,24 @@ public:
                     return result;
                 }
                 if (crt_sign_exhausted_) {
-                    if (config_.verbose) {
-                        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::steady_clock::now() - t0_compute).count();
-                        std::cerr << "[Nguyen] CRT exhausted (" << ms << "ms) — "
-                                     "dep likely invalid\n";
+                    // CRT exhaustion is only reliable when no primes were replaced.
+                    // Replacement primes may have incompatible sqrt signs, causing
+                    // spurious CRT failures that don't indicate invalid dependencies.
+                    if (!primes_were_replaced_) {
+                        if (config_.verbose) {
+                            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - t0_compute).count();
+                            std::cerr << "[Nguyen] CRT exhausted with original primes ("
+                                      << ms << "ms) — dep likely invalid\n";
+                        }
+                        return std::nullopt;
                     }
-                    return std::nullopt;
+                    // Primes were replaced: fall through to single-prime fallback
+                    if (config_.verbose) {
+                        std::cerr << "[Nguyen] CRT exhausted with replaced primes"
+                                  << " — falling back to single-prime\n";
+                    }
+                    break;
                 }
                 // Double precision for next Nguyen attempt
                 nguyen_target *= 2.0;
@@ -127,8 +140,16 @@ private:
     Config config_;
     mutable uint64_t last_inert_prime_ = 0;
     mutable bool crt_sign_exhausted_ = false;  // true if CRT searched all combos
+    mutable bool primes_were_replaced_ = false;  // true if Nguyen used replacement primes
 
-    /// Estimate target bits for sqrt coefficient recovery
+    /// Estimate target bits for sqrt coefficient recovery.
+    ///
+    /// The Z[α]/(f) coefficient representation can be significantly larger
+    /// than the norm-based bound (due to polynomial reduction amplification
+    /// in non-monic or high-coefficient polynomials).  Empirically, the
+    /// sqrt coefficient needs ~2.5-3× the naive norm^{1/2} estimate.
+    /// We use a safety factor of 3 and let the Nguyen retry logic handle
+    /// edge cases that exceed this estimate.
     [[nodiscard]] double estimate_target_bits(
             const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
             const NumberField& nf) const {
@@ -487,6 +508,7 @@ private:
         // Retry failed primes with replacements (sequential, one at a time)
         for (size_t i = 0; i < K; ++i) {
             while (!lifted[i].ok && next_spare < all_inert.size()) {
+                primes_were_replaced_ = true;
                 if (config_.verbose) {
                     std::cerr << "[Nguyen] Lift failed for prime " << inert_primes[i]
                               << ", replacing with " << all_inert[next_spare] << "\n";
