@@ -5,15 +5,27 @@
 
 | 级别 | 条数 | 涵盖 |
 |------|------|------|
-| **P1** | 10 | Schirokauer unsplit, sieve flood, SparseRow toggle, LP ideal key, ECM j_lo, E2E/progressive exit, integer UB, ECM stage2, matrix QC |
+| **P1** | 12 | trial_div b·r 溢出, UV int64 UB, Schirokauer unsplit, sieve flood, SparseRow toggle, LP ideal key, ECM j_lo, E2E/progressive exit, integer UB, ECM stage2, matrix QC |
 | **P1-OPT** | 0 | (已清空) |
-| **P2** | 36 | correctness ×20, performance ×9, design ×4, class group ×1, infra ×2 |
-| **P3** | 23 | 远期架构 ×7, style ×6, dead code ×4, quality ×4, risk ×2 |
+| **P2** | 42 | correctness ×25, performance ×9, design ×5, class group ×1, infra ×2 |
+| **P3** | 27 | 远期架构 ×7, style ×6, dead code ×4, quality ×8, risk ×2 |
 | **TEST** | 8 | weak assertions ×4, logic ×1, missing coverage ×2, flaky ×1 |
 
 ---
 
 ## P1 — 高优先级（影响正确性、可靠性）
+
+### [BUG] trial_division 代数可整除性检查 b·r int64 溢出
+- **发现日期**: 2026-03-14
+- **文件**: `cofactor/trial_division.hpp:136`
+- **描述**: `int64_t check = a - static_cast<int64_t>(b) * static_cast<int64_t>(r);` 其中 b 是 `uint64_t`，r 是 `uint32_t`。当 b > 2^31 且 r 接近 p 时，乘积 b·r 溢出 `int64_t`，导致可整除性检查出错——非整除素数可能被误判为整除（或反之），腐化关系中的因子列表和指数。
+- **建议**: 先对 b 取模 p 再乘：`uint64_t b_mod = b % p; uint64_t br_mod = (b_mod * (uint64_t)r) % p;` 然后比较 `a_mod == br_mod`。
+
+### [BUG] compute_rational/algebraic_uv int64_t 有符号溢出（确认 UB）
+- **发现日期**: 2026-03-14
+- **文件**: `sieve/lattice_sieve.hpp:282-284, 302-304`
+- **描述**: `f0_mod * m64` 是 int64_t 乘法，两操作数均在 [0, p-1]，p 最大可达 ~2^32（代数因子基上界）。乘积最大 (2^32-1)^2 ≈ 2^64，超出 INT64_MAX ≈ 2^63。这是 C++ 有符号溢出未定义行为（第三轮审计以 100% 置信度确认）。产出错误的 UV 参数导致对应素数的筛法命中位置错误。
+- **建议**: 用 `((__int128_t)f0_mod * m64) % p64` 做中间乘积。
 
 ### [BUG] Schirokauer compute_unsplit 零常数项元素产生无效 map 值
 - **发现日期**: 2026-03-14
@@ -200,6 +212,42 @@
 - **文件**: `tests/test_gnfs_progressive.cpp:593`
 - **描述**: XOR 组合回退中 `verify_dep(build_result.matrix, deps[i])` 验证的是原始 `deps[i]`（已在之前单独验证过），而非组合后的 `combined = deps[i] XOR deps[j]`。对比 `test_gnfs_e2e.cpp:661` 正确验证了 combined。腐败的组合依赖会不经验证直接进入 sqrt。
 - **建议**: 改为 `verify_dep(build_result.matrix, combined)`。
+
+#### [BUG] Miller-Rabin 7-witness 对 >3.4×10^14 仅概率性
+- **发现日期**: 2026-03-14
+- **文件**: `cofactor/smooth_check.hpp:83-93`
+- **描述**: 注释声称 7-witness 集 {2,3,5,7,11,13,17} 覆盖全部 uint64，但 Jaeschke 1993 仅证明到 341,550,071,728,321 (~3.4×10^14)。对更大余因子（50-digit+ 的 LP^2 可达 ~10^18），测试是概率性的。Jim Sinclair 全 uint64 确定性需要 {2,3,5,7,11,13,17,19,23,29,31,37}（12 witnesses）。
+- **建议**: else 分支增加 witnesses 19,23（至少 9 个）或使用完整 Sinclair 集。
+
+#### [BUG] BucketEntry::offset uint16_t 对宽筛区溢出
+- **发现日期**: 2026-03-14
+- **文件**: `sieve/lattice_sieve.hpp:235-238, 416`
+- **描述**: `BucketEntry::offset` 是 `uint16_t`（max 65535）。极端 skewness（如 1,000,000）下 `i_width` 可达数百万，offset 截断导致 bucket 素数写入错误列位置，进而 `sieve_array_[row_base + entry.offset]` 可能越界写入。
+- **建议**: 改用 `uint32_t`，或在 `default_sieve_region` 中硬上限 `i_width ≤ 65535`。
+
+#### [BUG] ModularPoly::add() 大素数 uint64 溢出
+- **发现日期**: 2026-03-14
+- **文件**: `sqrt/modular_poly.hpp:79`
+- **描述**: `uint64_t sum = a.coeff(i) + b.coeff(i);` 当 p ≥ 2^63 时，两个 [0,p-1] 范围的系数相加溢出 uint64_t。当前 Hensel 使用小素数（~10-30 bit）不会触发，但类型契约错误。
+- **建议**: 用 `__uint128_t` 中间和或无溢出形式：`(ai >= p - bi) ? ai - (p - bi) : ai + bi`。
+
+#### [BUG] norm_linear 与 algebraic_norm 符号不一致
+- **发现日期**: 2026-03-14
+- **文件**: `sqrt/number_field.hpp:421-425` vs `core/polynomial_context.hpp:156-179`
+- **描述**: `NumberField::norm_linear()` 无条件取绝对值返回 |N|，但 `PolynomialContext::algebraic_norm()` 返回带符号 N。奇次多项式负范数时两函数结果不同。调用者混用两函数会得到不一致的符号。
+- **建议**: 统一符号约定或在 `norm_linear()` 中保留符号，让调用者决定是否取绝对值。
+
+#### [BUG] RelationCollector::merge() 和 load() 跳过 validate()
+- **发现日期**: 2026-03-14
+- **文件**: `relation/collector.hpp:229-242, 250-263`
+- **描述**: `merge()` 从其他 collector 复制关系时不调 `validate()`——b=0 或 gcd(|a|,|b|)≠1 的无效关系绕过全部验证。`load()` 从磁盘反序列化时同理。`add()` 正确调用了 `validate()`，但这两个路径遗漏。
+- **建议**: 在 `merge()` 和 `load()` 的内循环中添加 `validate()` 调用。
+
+#### [BUG] compute_product_at_m uint64_t b 转 int64_t UB
+- **发现日期**: 2026-03-14
+- **文件**: `sqrt/hensel_sqrt.hpp:182`
+- **描述**: `bm *= Integer(static_cast<int64_t>(b));` 当 b > INT64_MAX 时是未定义行为。项目已有 `Integer(uint64_t)` 构造函数（Session 12 添加），应直接使用。
+- **建议**: `bm *= Integer(b);`
 
 #### [BUG] algebraic_norm_i128 溢出检查跳过 degree < 3
 - **发现日期**: 2026-03-14
@@ -395,6 +443,30 @@
 - **文件**: `linalg/schirokauer.hpp:529-531`
 - **描述**: 注释写 `λ_ℓ(γ) = (γ^(ℓ^(k-1)(ℓ-1)) - 1) / ℓ^(k-1) mod ℓ`——这是 Session 3 修复的旧错误公式 (Bug #3)。代码实际使用正确的 `ℓ^d - 1` 公式，但注释误导维护者和测试编写者。
 - **建议**: 更正注释为 `λ_ℓ(γ) = (γ^(ℓ^d - 1) - 1) / ℓ mod ℓ`。
+
+#### [DEBT] Pollard rho backtrack 无迭代上限
+- **发现日期**: 2026-03-14
+- **文件**: `cofactor/smooth_check.hpp:256-264`
+- **描述**: `d == n` 时的 backtrack 循环 `while (d == 1)` 无步数上限。若输入是素数幂（`is_perfect_power` 未捕获的边缘情况），backtrack 可能长时间运行直到 cycle 完成。
+- **建议**: 添加 `backtrack_steps < BATCH_SIZE * 2` 上限。
+
+#### [DEBT] LP merge 顺序因 unordered_map 不确定
+- **发现日期**: 2026-03-14
+- **文件**: `relation/filter.hpp:344-359`
+- **描述**: Phase 1 和 Phase 2 遍历 `unordered_map`，迭代顺序依赖实现和 ASLR。相同输入不同运行产生不同 LP 配对，导致合并后关系数不确定，影响可重复性。
+- **建议**: 排序 key 后处理，或使用 `std::map`。
+
+#### [DEBT] try_verify 累积无中间取模
+- **发现日期**: 2026-03-14
+- **文件**: `sqrt/hensel_sqrt.hpp:613-621`
+- **描述**: `c *= mpow[j]` 后 `val += c` 不做中间 `val %= n`。d=6 时 val 可达 6·N² 再做最终取模。GMP 无溢出，但中间值不必要地大，影响乘法性能。
+- **建议**: 每次 `val += c` 后添加 `val %= n`。
+
+#### [DEBT] BlockVector::xor_with 无长度检查
+- **发现日期**: 2026-03-14
+- **文件**: `linalg/block_lanczos.hpp:41-44`
+- **描述**: `xor_with(other)` 用 `this->length` 做循环上界但不检查 `other.length >= length`。当前所有调用者用等长向量，但无强制保证。
+- **建议**: 添加 `assert(other.length >= length)`。
 
 ### Dead Code
 
