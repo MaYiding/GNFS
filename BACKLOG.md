@@ -48,8 +48,15 @@
 #### [FEAT] ThreadPool Work-Stealing
 - **描述**: 筛选 special-Q 开销不均匀，work-stealing 可提升负载均衡
 
+#### [OPT] Bucket Sieve for B > 500K (80+ digit 必需)
+- **发现日期**: 2026-03-12
+- **描述**: 80-digit (264 bit, degree 5) 实测 15 rels/s，需 11 天完成筛法。主因：lattice sieve O(sieve_entries × sieve_area) 对 149K 条目 × 33M 位置太慢。
+  CADO-NFS 用 bucket sieve：按 log_p 桶分配、顺序写入，O(hits) 而非 O(entries×area)。
+  还需 Kleinjung poly selection（降低有效范数 10-100×）。
+- **建议**: 实现 2 级 bucket sieve (small primes 直接筛, large primes 用 bucket)。参考 CADO-NFS `las/` 或 msieve `sieve/`。
+
 #### [FEAT] 80/100-digit Scalability
-- **描述**: 80-digit 预估矩阵 ~500K 列、100-digit ~2M 列，远超 BL 单机能力。需要 Block Wiedemann + distributed SpMV，或极激进的 SGE (90%+ 消元) 才能在合理时间内完成。当前参数 (L_N c_B=0.9) 可能产生过大 FB
+- **描述**: 已用 CADO-NFS 校准参数 (C80: B=1M/2M, C100: B=8M/16M)。矩阵大小合理但筛法太慢。需 bucket sieve + Kleinjung 才能在合理时间完成
 
 ---
 
