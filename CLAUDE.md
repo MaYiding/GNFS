@@ -59,9 +59,9 @@ cd build && ctest --output-on-failure
 ./scripts/test.sh nightly              # 全部 + L4 + L5 + stress L1 (过夜跑)
 
 # ── 压力测试 ──
-./scripts/test.sh stress               # 50/80/100-digit 全部
+./scripts/test.sh stress               # 50/60-digit 全部
 ./scripts/test.sh stress 1 1           # 仅 50-digit (164 bit)
-./scripts/test.sh stress 1 2           # 50 + 80-digit
+./scripts/test.sh stress 1 2           # 50 + 60-digit
 ./scripts/test.sh run test_stress 1 1  # 等价写法
 
 # ── 工具 ──
@@ -83,7 +83,7 @@ cd build && ctest --output-on-failure
 | **fast** | 60s | test_sieve_basic | module, changed |
 | **slow** | 180-300s | test_kleinjung, test_lattice_sieve, test_factor_with_kleinjung, test_gnfs_e2e | module --slow, e2e, full |
 | **heavy** | 600-3600s | test_kleinjung_large, test_gnfs_progressive, test_25digit | progressive, nightly, bench |
-| **stress** | 43200s | test_stress (L1=50-digit, L2=80-digit, L3=100-digit) | stress, nightly (L1 only) |
+| **stress** | 43200s | test_stress (L1=50-digit, L2=60-digit) | stress, nightly (L1 only) |
 
 ### 使用场景对照
 
@@ -96,8 +96,8 @@ cd build && ctest --output-on-failure
 | 大改动，全面回归 | `./scripts/test.sh full` | ~10min |
 | PR 前最终验证 | `./scripts/test.sh thorough` | ~30min |
 | 跑完整性能基准 | `./scripts/test.sh bench --save` | ~1hr |
-| 验证大数分解能力 | `./scripts/test.sh stress 1 1` | 50-digit: 待测 |
-| 极限压力测试 | `./scripts/test.sh stress` | 小时-天级 |
+| 验证大数分解能力 | `./scripts/test.sh stress 1 1` | 50-digit: ~2.6h |
+| 极限压力测试 | `./scripts/test.sh stress` | 50+60-digit, 小时级 |
 
 ### 超时机制
 
@@ -369,7 +369,7 @@ git commit -m "chore: initial commit — GNFS core codebase"
 
 ## 长时间测试监控规范
 
-运行压力测试（50/80/100-digit）可能需要 1-3 小时。监控时**必须遵守**以下规则：
+运行压力测试（50/60-digit）可能需要数小时。监控时**必须遵守**以下规则：
 
 ### 禁止行为
 

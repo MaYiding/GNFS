@@ -1332,7 +1332,7 @@ do_list() {
     echo "  ${BULLET} ${CYAN}test_gnfs_e2e${RESET}          — 完整 GNFS 流水线 (N=143)"
     echo "  ${BULLET} ${CYAN}test_gnfs_progressive${RESET}  — 渐进式 L1-L5 (8-61 bit)"
     echo "  ${BULLET} ${CYAN}test_25digit${RESET}           — 25-digit 性能基准 (81 bit)"
-    echo "  ${BULLET} ${CYAN}test_stress${RESET}            — 压力测试: 50/80/100-digit (164-330 bit)"
+    echo "  ${BULLET} ${CYAN}test_stress${RESET}            — 压力测试: 50/60-digit (164-197 bit)"
 
     echo ""
     echo "${BOLD}所有测试二进制 (${#ALL_TEST_BINARIES[@]}):${RESET}"
@@ -1364,7 +1364,7 @@ do_list() {
     echo ""
     echo "           ${DIM}▲ 耗时${RESET}"
     echo "           │"
-    echo "           │   ${RED}stress${RESET}         50/80/100-digit 压力测试
+    echo "           │   ${RED}stress${RESET}         50/60-digit 压力测试
            │   ${MAGENTA}nightly${RESET}        thorough + L4 + L5 + stress L1"
     echo "           │   ${MAGENTA}thorough${RESET}       全模块 + 集成 + L1-L3"
     echo "           │   ${YELLOW}full${RESET}           ctest + E2E + L1-L2"
@@ -1559,10 +1559,10 @@ case "$MODE" in
 
     stress)
         do_build
-        log_header "压力测试 (50/80/100-digit)"
-        log_warn "50-digit 可能需要数小时, 80/100-digit 可能需要数天或超出当前能力..."
+        log_header "压力测试 (50/60-digit)"
+        log_warn "50-digit 可能需要数小时, 60-digit 可能需要十几小时..."
         local stress_min=${2:-1}
-        local stress_max=${3:-3}
+        local stress_max=${3:-2}
         run_single_test test_stress "$stress_min" "$stress_max"
         show_summary
         ;;

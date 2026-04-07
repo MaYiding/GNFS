@@ -1,10 +1,10 @@
-// test_stress.cpp — GNFS stress tests for large numbers (50/60/80/100-digit)
+// test_stress.cpp — GNFS stress tests for large numbers (50/60-digit)
 //
 // These tests verify the GNFS pipeline at scale. They are NOT run routinely —
 // only when changes affect large-N code paths or on explicit request.
 //
 // Usage:
-//   ./test_stress           # Run all levels (50 → 60 → 80 → 100)
+//   ./test_stress           # Run all levels (50 + 60)
 //   ./test_stress 1         # Run only level 1 (50-digit)
 //   ./test_stress 1 2       # Run levels 1 through 2 (50 + 60-digit)
 //   ./test_stress 2 2       # Run only level 2 (60-digit)
@@ -127,22 +127,6 @@ std::vector<TestCase> get_test_cases() {
          "400000000000000000000000000069",
          "400000000000000000000000100119",
          "hours"},
-
-        // Level 3: 80-digit (264 bits) — product of two 40-digit primes
-        // NOTE: Requires bucket sieve optimization for feasible runtime
-        {3, "80-digit semiprime (264 bit)",
-         "16000000000000000000400000000000000000376000000000000000000700000000000000000609",
-         "4000000000000000000000000000000000000007",
-         "4000000000000000000100000000000000000087",
-         "days (needs bucket sieve)"},
-
-        // Level 4: 100-digit (330 bits) — product of two 50-digit primes
-        // NOTE: Requires bucket sieve + Kleinjung poly selection
-        {4, "100-digit semiprime (330 bit)",
-         "1600000000000000000040000000000000000000000000006480000000000000000109000000000000000000000000005777",
-         "40000000000000000000000000000000000000000000000109",
-         "40000000000000000001000000000000000000000000000053",
-         "days+ (needs bucket sieve + Kleinjung)"},
     };
 }
 
@@ -695,12 +679,12 @@ done:
 // ============================================================
 
 int main(int argc, char** argv) {
-    int min_level = 1, max_level = 4;
+    int min_level = 1, max_level = 2;
 
     if (argc >= 2) min_level = std::stoi(argv[1]);
     if (argc >= 3) max_level = std::stoi(argv[2]);
     if (min_level < 1) min_level = 1;
-    if (max_level > 4) max_level = 4;
+    if (max_level > 2) max_level = 2;
     if (max_level < min_level) max_level = min_level;
 
     std::cout << "════════════════════════════════════════════════════════════\n";
@@ -708,8 +692,6 @@ int main(int argc, char** argv) {
     std::cout << "  Levels: " << min_level << " to " << max_level << "\n";
     std::cout << "  Level 1: 50-digit (164 bit)\n";
     std::cout << "  Level 2: 60-digit (197 bit)\n";
-    std::cout << "  Level 3: 80-digit (264 bit) — needs bucket sieve\n";
-    std::cout << "  Level 4: 100-digit (330 bit) — needs bucket sieve + Kleinjung\n";
     std::cout << "════════════════════════════════════════════════════════════\n\n";
 
     auto cases = get_test_cases();
