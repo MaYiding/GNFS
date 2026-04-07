@@ -130,11 +130,6 @@ public:
             // 检查 P | (a - bα):
             // Normal root: P = (p, α - r), condition: a - b*r ≡ 0 (mod p)
             // Projective root: P = (p, ∞), condition: b ≡ 0 (mod p)
-            //
-            // For degree ≥ 4, a prime p can have multiple roots r₁, r₂, ...
-            // The ideal valuation v_P(a - bα) for P = (p, rᵢ) equals v_p(a - b·rᵢ).
-            // We must compute per-root valuations independently, NOT greedily
-            // divide ALL p-factors from the norm at the first matching root.
             if (r == core::AlgebraicPrime::PROJECTIVE_ROOT) {
                 if (b % p != 0) continue;
             } else {
@@ -144,42 +139,21 @@ public:
                 if (mod != 0) continue;
             }
 
-            // Per-root valuation: v_P(a - bα) = v_p(a - b·r) for normal roots,
-            // or v_p(b) for projective roots.
-            // Divide out exactly this many factors of p from the norm.
+            // 试除 — uint64 快路径
             uint8_t exp = 0;
-            if (r == core::AlgebraicPrime::PROJECTIVE_ROOT) {
-                // Projective root: valuation = v_p(b)
-                uint64_t btmp = b;
-                while (btmp % p == 0 && btmp > 0 && exp < 255) {
-                    btmp /= p;
+            if (use_u64) {
+                while (norm_u64 % p == 0 && exp < 255) {
+                    norm_u64 /= p;
                     ++exp;
                 }
             } else {
-                // Normal root: valuation = v_p(a - b·r)
-                // Use int64 arithmetic since |a - b*r| fits comfortably
-                int64_t val = a - static_cast<int64_t>(b) * static_cast<int64_t>(r);
-                if (val < 0) val = -val;
-                uint64_t uval = static_cast<uint64_t>(val);
-                while (uval % p == 0 && uval > 0 && exp < 255) {
-                    uval /= p;
+                while (divisible_by(norm, p) && exp < 255) {
+                    divide_exact(norm, p);
                     ++exp;
                 }
-            }
-            // Divide the norm by p^exp to track the remaining cofactor
-            if (exp > 0) {
-                if (use_u64) {
-                    for (uint8_t e = 0; e < exp; ++e) {
-                        norm_u64 /= p;
-                    }
-                } else {
-                    for (uint8_t e = 0; e < exp; ++e) {
-                        divide_exact(norm, p);
-                    }
-                    if (norm.fits_uint64()) {
-                        use_u64 = true;
-                        norm_u64 = norm.to_uint64();
-                    }
+                if (norm.fits_uint64()) {
+                    use_u64 = true;
+                    norm_u64 = norm.to_uint64();
                 }
             }
 
