@@ -253,7 +253,10 @@ private:
             product_mod_p = ModularPoly::mul(
                 product_mod_p, ModularPoly(std::move(cs)), f_mod_p, p);
         }
-        if (product_mod_p.is_zero()) return result;
+        if (product_mod_p.is_zero()) {
+            if (config_.verbose) std::cerr << "[Hensel-lift] p=" << p << " product is zero\n";
+            return result;
+        }
 
         // Multiply by f'(α)² mod (f, p)
         auto f_prime_mod_p_vec = compute_f_derivative_mod_p(nf, p);
@@ -261,8 +264,15 @@ private:
         auto fp2 = ModularPoly::mul(f_prime_poly, f_prime_poly, f_mod_p, p);
         product_mod_p = ModularPoly::mul(product_mod_p, fp2, f_mod_p, p);
 
-        if (!ModularPoly::is_square(product_mod_p, f_mod_p, p)) return result;
+        if (!ModularPoly::is_square(product_mod_p, f_mod_p, p)) {
+            if (config_.verbose) std::cerr << "[Hensel-lift] p=" << p << " product*f'^2 not square\n";
+            return result;
+        }
         auto sqrt_mp = ModularPoly::sqrt_tonelli_shanks(product_mod_p, f_mod_p, p);
+        if (sqrt_mp.is_zero() && !product_mod_p.is_zero()) {
+            if (config_.verbose) std::cerr << "[Hensel-lift] p=" << p << " Tonelli-Shanks returned zero\n";
+            return result;
+        }
 
         // Convert to Integer polynomial S
         std::vector<Integer> S(d);
@@ -380,6 +390,10 @@ private:
                     }
                 }
                 if (!early_ok) {
+                    if (config_.verbose) {
+                        std::cerr << "[Hensel-lift] p=" << p
+                                  << " early invariant FAILED at lift " << lift << "\n";
+                    }
                     result.ok = false;
                     return result;
                 }
