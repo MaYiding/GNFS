@@ -39,9 +39,11 @@ public:
 
         size_t bits = n.bit_length();
 
-        // Kleinjung 适用条件：degree >= 5（标准 GNFS 论文约定）
-        // 对于 degree 3-4，BaseMSelector + Murphy E 已足够
-        if (degree >= 5) {
+        // Kleinjung 适用条件：degree >= 5 AND bits >= 300 (~100 digit)
+        // 80-digit (264 bits) with degree 5: base-m is sufficient.
+        // Kleinjung's poly quality advantage only pays off at 100+ digits
+        // where sieve time dominates and a 10-20% quality gain matters.
+        if (degree >= 5 && bits >= 300) {
             if (verbose) {
                 std::cout << "  Selector: Kleinjung (degree=" << degree
                           << ", bits=" << bits << ")\n";
