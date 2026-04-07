@@ -80,33 +80,45 @@ public:
 
         // Nguyen hybrid: K small primes + Hensel lift each + CRT + small sign search
         // For small inputs (<100 factors), single-prime Hensel is fast enough.
+        // Retry Nguyen with doubled precision before falling back to slow single-prime.
         crt_sign_exhausted_ = false;
         if (ab_pairs.size() >= 100) {
-            auto result = compute_nguyen_hybrid(
-                ab_pairs, nf, target_bits, product_at_m, f_prime_m, f_prime_m_inv);
-            if (result) {
-                if (config_.verbose) {
-                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - t0_compute).count();
-                    std::cerr << "[Hensel] compute() total: " << ms << "ms\n";
+            double nguyen_target = target_bits;
+            for (int nguyen_attempt = 0; nguyen_attempt < 3; ++nguyen_attempt) {
+                auto result = compute_nguyen_hybrid(
+                    ab_pairs, nf, nguyen_target, product_at_m, f_prime_m, f_prime_m_inv);
+                if (result) {
+                    if (config_.verbose) {
+                        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0_compute).count();
+                        std::cerr << "[Hensel] compute() total: " << ms << "ms\n";
+                    }
+                    return result;
                 }
-                return result;
-            }
-            if (crt_sign_exhausted_) {
-                if (config_.verbose) {
-                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - t0_compute).count();
-                    std::cerr << "[Nguyen] CRT exhausted (" << ms << "ms) — "
-                                 "dep likely invalid\n";
+                if (crt_sign_exhausted_) {
+                    if (config_.verbose) {
+                        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0_compute).count();
+                        std::cerr << "[Nguyen] CRT exhausted (" << ms << "ms) — "
+                                     "dep likely invalid\n";
+                    }
+                    return std::nullopt;
                 }
-                return std::nullopt;
+                // Double precision for next Nguyen attempt
+                nguyen_target *= 2.0;
+                if (config_.verbose) {
+                    std::cerr << "[Nguyen] Attempt " << nguyen_attempt
+                              << " failed, retrying with target="
+                              << static_cast<size_t>(nguyen_target) << " bits\n";
+                }
             }
             if (config_.verbose) {
-                std::cerr << "[Nguyen] Hybrid failed, falling back to single-prime Hensel\n";
+                std::cerr << "[Nguyen] All Nguyen attempts exhausted, "
+                             "falling back to single-prime Hensel\n";
             }
         }
 
-        // Fallback: classic single-prime Hensel lifting
+        // Fallback: classic single-prime Hensel lifting (slow for large inputs)
         return compute_hensel_lifting(
             ab_pairs, nf, target_bits, product_at_m, f_prime_m, f_prime_m_inv);
     }
@@ -398,12 +410,15 @@ private:
         // K=3 for d≥4: more CRT redundancy for higher degree.
         const size_t K = (d <= 3) ? 2 : 3;
 
-        // Find K small inert primes
-        auto inert_primes = find_inert_primes(nf, K);
-        if (inert_primes.size() < K) {
+        // Find extra inert primes for retry on lift failure
+        const size_t extra = 5;
+        auto all_inert = find_inert_primes(nf, K + extra);
+        if (all_inert.size() < K) {
             if (config_.verbose) std::cerr << "[Nguyen] Insufficient inert primes\n";
             return std::nullopt;
         }
+        // Use first K as initial set
+        std::vector<uint64_t> inert_primes(all_inert.begin(), all_inert.begin() + K);
 
         // Compute how many lifts each prime needs
         // After num_lifts doublings: precision = p^{2^num_lifts} ≈ 2^{log2(p) * 2^num_lifts}
@@ -439,6 +454,9 @@ private:
         size_t inner_threads = std::max(size_t(1), static_cast<size_t>(hw > 0 ? hw : 4) / K);
 
         std::vector<LiftResult> lifted(K);
+        size_t next_spare = K;  // index into all_inert for replacement primes
+
+        // Initial parallel lift
         {
             std::vector<std::thread> threads;
             threads.reserve(K);
@@ -452,10 +470,29 @@ private:
             for (auto& th : threads) th.join();
         }
 
+        // Retry failed primes with replacements (sequential, one at a time)
         for (size_t i = 0; i < K; ++i) {
+            while (!lifted[i].ok && next_spare < all_inert.size()) {
+                if (config_.verbose) {
+                    std::cerr << "[Nguyen] Lift failed for prime " << inert_primes[i]
+                              << ", replacing with " << all_inert[next_spare] << "\n";
+                }
+                inert_primes[i] = all_inert[next_spare++];
+                // Recompute lifts for replacement prime
+                double log_p = std::log2(static_cast<double>(inert_primes[i]));
+                size_t nl = 0;
+                double cur = log_p;
+                while (cur < per_prime_bits) { cur *= 2; ++nl; }
+                lifts_per_prime[i] = nl;
+                // Use all threads for single retry (no contention)
+                lifted[i] = hensel_lift_single_prime(
+                    inert_primes[i], ab_pairs, nf, lifts_per_prime[i],
+                    static_cast<size_t>(hw > 0 ? hw : 4));
+            }
             if (!lifted[i].ok) {
                 if (config_.verbose)
-                    std::cerr << "[Nguyen] Lift failed for prime " << inert_primes[i] << "\n";
+                    std::cerr << "[Nguyen] All replacement primes exhausted for slot "
+                              << i << "\n";
                 return std::nullopt;
             }
         }
@@ -1080,6 +1117,9 @@ private:
             uint32_t d,
             const Integer& modulus) {
 
+        // Pre-compute f_lead_inv once (avoid recomputing per-factor)
+        auto fli = compute_f_lead_inv(f, d, modulus);
+
         // Start with 1
         std::vector<Integer> product(d);
         product[0] = Integer(int64_t(1));
@@ -1102,7 +1142,7 @@ private:
             }
             for (uint32_t i = 2; i < d; ++i) factor[i] = Integer(int64_t(0));
 
-            product = poly_mul_mod(product, factor, f, d, modulus);
+            product = poly_mul_mod(product, factor, f, d, modulus, fli);
         }
 
         return product;
@@ -1139,6 +1179,9 @@ private:
         size_t chunk = (n + num_threads - 1) / num_threads;
         size_t actual_threads = (n + chunk - 1) / chunk;
 
+        // Pre-compute f_lead_inv once (shared across all threads)
+        auto fli = compute_f_lead_inv(f, d, modulus);
+
         std::vector<std::vector<Integer>> partials(actual_threads);
         std::vector<std::thread> threads;
         threads.reserve(actual_threads);
@@ -1147,7 +1190,7 @@ private:
             size_t start = t * chunk;
             size_t end = std::min(start + chunk, n);
 
-            threads.emplace_back([&partials, &ab_pairs, &f, &modulus, d, t, start, end]() {
+            threads.emplace_back([&partials, &ab_pairs, &f, &modulus, &fli, d, t, start, end]() {
                 std::vector<Integer> product(d);
                 product[0] = Integer(int64_t(1));
                 for (uint32_t i = 1; i < d; ++i) product[i] = Integer(int64_t(0));
@@ -1169,7 +1212,7 @@ private:
                     }
                     for (uint32_t i = 2; i < d; ++i) factor[i] = Integer(int64_t(0));
 
-                    product = poly_mul_mod(product, factor, f, d, modulus);
+                    product = poly_mul_mod(product, factor, f, d, modulus, fli);
                 }
 
                 partials[t] = std::move(product);
@@ -1181,7 +1224,7 @@ private:
         // Combine partial products sequentially
         auto result = std::move(partials[0]);
         for (size_t t = 1; t < actual_threads; ++t) {
-            result = poly_mul_mod(result, partials[t], f, d, modulus);
+            result = poly_mul_mod(result, partials[t], f, d, modulus, fli);
         }
 
         return result;
