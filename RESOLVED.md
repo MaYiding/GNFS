@@ -1328,3 +1328,4 @@
 | P1 | FastPoly reduce_inplace 系数潜在溢出 | `schirokauer.hpp:87-91` | 公式 `m - (t - a.coeffs[idx])` 数学正确：t 和 a.coeffs[idx] 均在 [0,m)，差值在 (0,m)，结果在 (0,m)。mul_raw 确保输入 ∈ [0,m)，reduce_inplace 维持不变量。Schirokauer 中 m=ℓ^k=8，远离溢出边界 |
 | P2 | Hensel 提升无精度充分性验证 | `hensel_sqrt.hpp` | retry 机制（4次递增精度）+ Y²≡P(mod N) 终端验证已构成完整验证系统。200-bit 余量使首次成功率极高，retry 捕获极罕见的精度不足。centering 后无需单独验证 |
 | P3 | norm_linear 符号公式 (-b)^d 应替代 b^d | `number_field.hpp:304` | 数学验证：N(a-bα) = b^d · f(a/b) 是正确公式。(-b)^d · f(a/b) = Res(a-bx, f) 是结式而非范数。用 f(x)=x³-2, a=b=1 验证：b^d·f(a/b)=-1=Π(a-bα_j)✓，(-b)^d=1≠范数✗ |
+| P1 | Gauss build_null_space k=i 跳过早期自由变量 | `gauss.hpp:173-185` | 二次审查确认：对第 i 个零向量，free_cols[j]=0 (j<i)，跳过它们不影响计算。内层 k>i 的迭代为死代码（null_vec[free_cols[k]]=0），但无害。back-substitution 正确 |

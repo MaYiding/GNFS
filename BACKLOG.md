@@ -5,21 +5,45 @@
 
 | 级别 | 条数 | 涵盖 |
 |------|------|------|
-| **P1** | 6 | gauss null space, E2E/progressive test exit code, integer UB, ECM stage2, matrix QC |
+| **P1** | 10 | Schirokauer unsplit, sieve flood, SparseRow toggle, LP ideal key, ECM j_lo, E2E/progressive exit, integer UB, ECM stage2, matrix QC |
 | **P1-OPT** | 0 | (已清空) |
-| **P2** | 31 | correctness ×16, performance ×8, design ×4, class group ×1, infra ×2 |
-| **P3** | 21 | 远期架构 ×7, style ×6, dead code ×4, quality ×4 |
-| **TEST** | 7 | weak assertions ×4, missing coverage ×2, flaky ×1 |
+| **P2** | 36 | correctness ×20, performance ×9, design ×4, class group ×1, infra ×2 |
+| **P3** | 23 | 远期架构 ×7, style ×6, dead code ×4, quality ×4, risk ×2 |
+| **TEST** | 8 | weak assertions ×4, logic ×1, missing coverage ×2, flaky ×1 |
 
 ---
 
 ## P1 — 高优先级（影响正确性、可靠性）
 
-### [BUG] Gauss build_null_space 反向替换范围错误
+### [BUG] Schirokauer compute_unsplit 零常数项元素产生无效 map 值
 - **发现日期**: 2026-03-14
-- **文件**: `linalg/gauss.hpp:173-185`
-- **描述**: 内层循环从 `k = i` 开始，跳过了索引 < i 的自由变量。对于第 i 个零向量，之前已设置的自由变量完全被忽略，导致 nullity ≥ 2 时零向量错误。GaussianEliminator 用于小矩阵 (<5K) 路径，Block Lanczos 有自己的零空间提取。
-- **建议**: 将 `for (size_t k = i; ...)` 改为 `for (size_t k = 0; ...)`，对所有自由列检查已设置状态。
+- **文件**: `linalg/schirokauer.hpp:628`
+- **描述**: `compute_unsplit` 计算 `(γ^e - 1)/ℓ mod ℓ` 时，若元素 `g_pow` 的常数项为 0（非 ℓ-adic 单位），执行 `(ell_k - 1) / ell`——但 `ell_k - 1` 不能被 `ell` 整除（如 ℓ=2, k=8: (256-1)/2 = 127），整数除法截断产生错误结果。对 ℓ=2 最终 `127 % 2 = 1`，即伪造非零 map 值，注入错误 GF(2) 约束到矩阵，导致 BL 找到的依赖不对应真实平方和等式。
+- **建议**: 添加零常数项保护：`if (g_pow.coeff(0) == 0) return all-zero map values`（非单位元素的 Schirokauer map 无定义）。
+
+### [BUG] ECM Stage2 BSGS j_lo 边界遗漏 B1 附近素数
+- **发现日期**: 2026-03-14
+- **文件**: `cofactor/ecm.hpp:493`
+- **描述**: `j_lo = B1 / D + 1` 起始太高。素数 `p = floor(B1/D)·D + d` 其中 `d > 0` 且 `p > B1` 永远不会被检测（j = floor(B1/D) < j_lo）。对 D=2310, B1=11000，所有 (11000, 11239] 内素数被系统性跳过。
+- **建议**: `j_lo = B1 / D`（而非 `B1 / D + 1`）。
+
+### [BUG] Sieve eff_thresh=0 导致候选洪泛
+- **发现日期**: 2026-03-14
+- **文件**: `sieve/lattice_sieve.hpp:585-587`
+- **描述**: 当 `last_init_val_ <= threshold`（日志估计小于阈值，如 `estimate_initial_log` 返回 0），`eff_thresh` 被设为 0。此时 `sieve_array_[idx] >= 0` 对所有位置为真——整个筛区（最多 256M 个位置）全部成为候选，触发灾难性的伪正候选洪泛。
+- **建议**: `if (last_init_val_ <= threshold) return {};`（直接返回空，而非设 eff_thresh=0）。
+
+### [BUG] SparseRow::set() 在 unsorted 状态下重复调用翻转 bit
+- **发现日期**: 2026-03-14
+- **文件**: `linalg/sparse_matrix.hpp:26-37`
+- **描述**: GF(2) 中 `set()` 应幂等（设 bit 为 1）。但当 `sorted_==false` 时无去重检查，直接 append。之后 `ensure_sorted()` 通过对偶消除将重复项相消，使 bit 从 1→0。这违反 `set()` 的语义契约——两次 `set(col)` 反而清除了该列。
+- **建议**: 在 `set()` 开头调用 `ensure_sorted()` 再执行去重检查，或维护一个 unsorted 去重机制。
+
+### [BUG] verify_algebraic_ideal_powers 用 lp.p 做 key 忽略 prime-ideal 区分
+- **发现日期**: 2026-03-14
+- **文件**: `sqrt/algebraic_sqrt.hpp:26-52`
+- **描述**: 代数大素数指数奇偶检查用 `lp.p` 做 map key。但同一有理素数 p 上方可有多个代数理想 `(p, r1)` 和 `(p, r2)`，它们是不同的对象。用 p 做 key 会将不同理想的指数求和：两个不同理想各出现 1 次被误判为"指数 2（偶数）"。matrix_builder 中 `collect_large_primes()` 正确使用 `(p, r)` 做 key，但此检查函数遗漏。
+- **建议**: 改用 `(lp.p, lp.r)` 作为 map key。
 
 ### [BUG] test_gnfs_e2e main() 无条件返回 0
 - **发现日期**: 2026-03-14
@@ -146,6 +170,36 @@
 - **文件**: `linalg/matrix_builder.hpp:401-420`
 - **描述**: `std::unordered_map<uint64_t, uint8_t> rat_exp` 累加多个 `PrimePower::e`，在合并关系后同一 LP 指数可能超过 255，静默溢出导致奇偶检测 (`exp % 2`) 错误。
 - **建议**: 改用 `uint32_t` 或 `uint16_t` 作为指数累积类型。
+
+#### [BUG] LP 素数计数公式分母错误导致关系目标低估 ~22%
+- **发现日期**: 2026-03-14
+- **文件**: `core/params.hpp:319-320`
+- **描述**: `lp_primes = (lp_bound - alg_bound) / ln(lp_bound)`，正确公式应为 `π(lp_bound) - π(alg_bound) ≈ lp_bound/ln(lp_bound) - alg_bound/ln(alg_bound)`。25-digit 实测：正确值 ~19746，代码计算 ~12040（低估 39%），导致 `n_min` 低估 ~22%。关系目标不足可能导致矩阵行过少、依赖不足。
+- **建议**: `double lp_primes = lp_bound_d / log(lp_bound_d) - alg_bound_d / log(max(alg_bound_d, 2.0));`
+
+#### [BUG] Pollard rho 非标准 Brent 结构浪费 2× 函数求值
+- **发现日期**: 2026-03-14
+- **文件**: `cofactor/smooth_check.hpp:228-253`
+- **描述**: 每 phase 先空推进 y 步 r 步（无乘积累积），再累积另外 r 步乘积。标准 Brent 仅需 r 步。相当于 2× 函数求值，与注释声称的"减少 36%"相反。算法仍正确（能找到因子），但在固定 `max_iterations` 预算下效率减半。
+- **建议**: 移除第一个空推进循环，直接在唯一的内循环中累积乘积。
+
+#### [BUG] merge_all() 末尾丢弃未合并的原始 2LP 关系
+- **发现日期**: 2026-03-14
+- **文件**: `relation/filter.hpp:446-449`
+- **描述**: `if (rel.is_merged()) full_results.push_back(...)` 用 `extra_ab_pairs.empty()` 判断是否合并过。原始 2LP 关系从未参与合并（`extra_ab_pairs` 为空），但可能有存活的 LP 键适合作为矩阵 LP 列。这些关系被静默丢弃。
+- **建议**: 明确文档是否故意丢弃（防 LP 列爆炸），或改为也保留有 ≥2 存活 LP 键的原始关系。
+
+#### [BUG] build_row_with_qc 的 build_row() 基调用不设 sign 列
+- **发现日期**: 2026-03-14
+- **文件**: `linalg/matrix_builder.hpp:582`
+- **描述**: `build_row()` 注释说"sign 不在此设置"。但若直接调用 `build()`（非 `build_with_qc()`），sign 列永远为 0，即使 `include_sign_column = true`。sign 列错误的矩阵会导致 BL 找到非法依赖。
+- **建议**: 在 `build()` 中添加 `assert(!config_.include_sign_column)` 或将 sign 计算移入 `build_row()`。
+
+#### [BUG] Progressive 测试 XOR 组合验证了错误的依赖
+- **发现日期**: 2026-03-14
+- **文件**: `tests/test_gnfs_progressive.cpp:593`
+- **描述**: XOR 组合回退中 `verify_dep(build_result.matrix, deps[i])` 验证的是原始 `deps[i]`（已在之前单独验证过），而非组合后的 `combined = deps[i] XOR deps[j]`。对比 `test_gnfs_e2e.cpp:661` 正确验证了 combined。腐败的组合依赖会不经验证直接进入 sqrt。
+- **建议**: 改为 `verify_dep(build_result.matrix, combined)`。
 
 #### [BUG] algebraic_norm_i128 溢出检查跳过 degree < 3
 - **发现日期**: 2026-03-14
@@ -328,6 +382,20 @@
 - **描述**: 对 `const SparseRow& other` 使用 `const_cast` 调用 `ensure_sorted()`。应将 `sorted_` 标记为 `mutable`，`ensure_sorted()` 改为 `const`。
 - **建议**: `mutable bool sorted_;` + `void ensure_sorted() const`。
 
+### 潜在风险（需进一步调查）
+
+#### [RISK] Block Lanczos 三步递推与 Montgomery 1995 不一致
+- **发现日期**: 2026-03-14
+- **文件**: `src/linalg/block_lanczos.cpp:479-499`
+- **描述**: 代码使用包含 `V_pprev`（前两步向量）的三步递推，而 Montgomery 1995 论文只使用两步递推（V_cur 和 V_prev）。额外的 `F_cur = V_pprev^T · B · V_cur` 项和 `D_pprev * F_cur` 应用没有已知数学基础。然而所有测试（L1-L5, 25-digit, stress）均通过，可能是有效的变体或冗余项。
+- **建议**: 对比 Montgomery 1995 §3 公式逐项核实。若额外项冗余（恒等于零），则为死代码可移除。若实际影响结果，需确认数学正当性。
+
+#### [RISK] Schirokauer compute_unsplit docstring 引用旧公式 (Bug #3)
+- **发现日期**: 2026-03-14
+- **文件**: `linalg/schirokauer.hpp:529-531`
+- **描述**: 注释写 `λ_ℓ(γ) = (γ^(ℓ^(k-1)(ℓ-1)) - 1) / ℓ^(k-1) mod ℓ`——这是 Session 3 修复的旧错误公式 (Bug #3)。代码实际使用正确的 `ℓ^d - 1` 公式，但注释误导维护者和测试编写者。
+- **建议**: 更正注释为 `λ_ℓ(γ) = (γ^(ℓ^d - 1) - 1) / ℓ mod ℓ`。
+
 ### Dead Code
 
 #### [DEBT] params.hpp print_summary() 全空 no-op
@@ -393,6 +461,12 @@
 - **文件**: `CMakeLists.txt:384-395`
 - **描述**: 二进制编译但无 `add_test()`，`ctest -N` 看不到。`scripts/test.sh` 独立知道路径，形成隐藏依赖。
 - **建议**: 用 `DISABLED` 属性注册到 ctest 以提高可发现性。
+
+### [TEST] Progressive 测试 XOR 组合验证逻辑错误
+- **发现日期**: 2026-03-14
+- **文件**: `tests/test_gnfs_progressive.cpp:593`
+- **描述**: 与 P2 中同名条目对应。在 TEST 分类下强调：即使 progressive 测试 return 0 被修复，XOR 组合回退路径也存在验证逻辑错误，会允许无效依赖进入 sqrt 阶段。
+- **建议**: 见 P2 条目。
 
 ### [TEST] test_sqrt 时序断言易 flaky
 - **发现日期**: 2026-03-14
