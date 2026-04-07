@@ -69,6 +69,22 @@ inline bool verify_dep(const SparseMatrix& mat, const std::vector<bool>& dep) {
     return true;
 }
 
+inline bool verify_dep(const SparseMatrix& mat, const BitVector& dep) {
+    if (dep.size() != mat.num_rows()) return false;
+    std::vector<size_t> col_count(mat.num_cols(), 0);
+    for (size_t row = 0; row < mat.num_rows(); ++row) {
+        if (dep.test(row)) {
+            for (uint32_t col : mat.row(row).indices()) {
+                col_count[col]++;
+            }
+        }
+    }
+    for (size_t c = 0; c < col_count.size(); ++c) {
+        if (col_count[c] % 2 != 0) return false;
+    }
+    return true;
+}
+
 inline BitVector to_bv(const std::vector<bool>& vec) {
     BitVector bv(vec.size());
     for (size_t i = 0; i < vec.size(); ++i) {
@@ -590,7 +606,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
                 BitVector combined = to_bv(deps[i]);
                 combined.xor_with(to_bv(deps[j]));
                 if (combined.popcount() < 2) continue;
-                if (!verify_dep(build_result.matrix, deps[i])) continue;  // verify original
+                if (!verify_dep(build_result.matrix, combined)) continue;  // verify combined
 
                 auto rat = compute_rational_sqrt(combined, relations, fb, n, ctx.m());
                 if (!rat.success) continue;
