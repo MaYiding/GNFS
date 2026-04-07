@@ -121,15 +121,20 @@ struct GNFSParams {
         } else if (p.digits <= 50) {
             B_rat = 300000;  B_alg = 600000;
         } else if (p.digits <= 60) {
-            B_rat = 800000;  B_alg = 1600000;
+            // CADO-NFS C60: lim0≈400K, lim1≈800K
+            B_rat = 500000;  B_alg = 1000000;
         } else if (p.digits <= 70) {
-            B_rat = 2000000; B_alg = 4000000;
+            // CADO-NFS C70: lim0≈800K, lim1≈1.5M
+            B_rat = 800000;  B_alg = 1600000;
         } else if (p.digits <= 80) {
-            B_rat = 4000000; B_alg = 8000000;
+            // CADO-NFS C80: lim0≈1M, lim1≈2M
+            B_rat = 1000000; B_alg = 2000000;
         } else if (p.digits <= 90) {
-            B_rat = 8000000; B_alg = 16000000;
+            // CADO-NFS C90: lim0≈4M, lim1≈8M
+            B_rat = 4000000; B_alg = 8000000;
         } else if (p.digits <= 100) {
-            B_rat = 15000000; B_alg = 30000000;
+            // CADO-NFS C100: lim0≈8M, lim1≈16M
+            B_rat = 8000000; B_alg = 16000000;
         } else {
             // >100 digits: L_N formula with conservative c_B ≈ 0.8
             double c_B = 0.8;
@@ -175,11 +180,12 @@ struct GNFSParams {
             sieve_width = 4096;   sieve_height = 1024;   // 4M positions — smaller j → smaller norms → higher smoothness
         } else if (p.digits <= 30) {
             sieve_width = 4096;   sieve_height = 2048;   // 8M positions, ~16MB
-        } else if (p.digits <= 50) {
-            sieve_width = 8192;   sieve_height = 4096;   // 33M positions, ~67MB
+        } else if (p.digits <= 80) {
+            // 50-80 digit: 33M positions, ~67MB per SQ
+            // Keeping area moderate to control norms; more SQs compensate
+            sieve_width = 8192;   sieve_height = 4096;
         } else {
-            // ≥51 digits: 134M positions. For 80-100+, increase SQ count
-            // instead of sieve area to stay within 256M memory cap.
+            // ≥81 digits: 134M positions for wider SQ coverage
             sieve_width = 16384;  sieve_height = 8192;
         }
 
