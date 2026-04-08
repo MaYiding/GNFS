@@ -76,8 +76,9 @@ public:
         std::vector<uint64_t> result(max_size);
 
         for (size_t i = 0; i < max_size; ++i) {
-            uint64_t sum = a.coeff(i) + b.coeff(i);
-            result[i] = sum >= p ? sum - p : sum;
+            uint64_t ai = a.coeff(i), bi = b.coeff(i);
+            // Overflow-safe addition: avoid ai + bi > UINT64_MAX when p >= 2^63
+            result[i] = (ai >= p - bi) ? ai - (p - bi) : ai + bi;
         }
 
         return ModularPoly(std::move(result));
