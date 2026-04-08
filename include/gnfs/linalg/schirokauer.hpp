@@ -73,7 +73,9 @@ struct GFPolyOps {
         for (size_t i = 0; i < a.size(); ++i) {
             if (a[i] == 0) continue;
             for (size_t j = 0; j < b.size(); ++j) {
-                r[i + j] = (r[i + j] + a[i] * b[j]) % p;
+                // Use __uint128_t to avoid overflow when coefficients approach p-1
+                __uint128_t prod = static_cast<__uint128_t>(a[i]) * b[j];
+                r[i + j] = static_cast<uint64_t>((r[i + j] + prod % p) % p);
             }
         }
         return trim(r);
@@ -88,11 +90,12 @@ struct GFPolyOps {
         Poly q(a.size() - b.size() + 1, 0);
         for (int i = static_cast<int>(a.size()) - 1;
              i >= static_cast<int>(b.size()) - 1; --i) {
-            uint64_t c = a[i] * b_inv % p;
+            uint64_t c = static_cast<uint64_t>(static_cast<__uint128_t>(a[i]) * b_inv % p);
             q[i - (static_cast<int>(b.size()) - 1)] = c;
             for (size_t j = 0; j < b.size(); ++j) {
+                uint64_t cb = static_cast<uint64_t>(static_cast<__uint128_t>(c) * b[j] % p);
                 a[i - (static_cast<int>(b.size()) - 1) + j] =
-                    (a[i - (static_cast<int>(b.size()) - 1) + j] + p - c * b[j] % p) % p;
+                    (a[i - (static_cast<int>(b.size()) - 1) + j] + p - cb) % p;
             }
         }
         return {trim(q), trim(a)};
