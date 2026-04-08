@@ -490,7 +490,7 @@ private:
         Point Q_D(km1.x.clone(), km1.z.clone());
 
         // === Phase 2: Giant steps ===
-        uint64_t j_lo = B1 / D + 1;             // 最小 j 使得 j*D > B1
+        uint64_t j_lo = B1 / D;                  // 最小 j 使得 j*D ≥ B1 - D (covers B1-adjacent primes)
         uint64_t j_hi = (B2 + D - 1) / D;       // 最大 j 使得 (j-1)*D < B2
         if (j_lo > j_hi) return std::nullopt;
 
