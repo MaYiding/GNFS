@@ -583,9 +583,11 @@ private:
         std::vector<SieveCandidate> candidates;
 
         uint16_t threshold = params_.combined_threshold();
-        // effective_threshold = init_val - threshold (clamped to 0)
-        uint16_t eff_thresh = (last_init_val_ > threshold) ?
-            static_cast<uint16_t>(last_init_val_ - threshold) : uint16_t(0);
+        // effective_threshold = init_val - threshold (if init too low, no valid candidates)
+        if (last_init_val_ <= threshold) {
+            return {};  // Log estimate too small — all positions would pass, return empty
+        }
+        uint16_t eff_thresh = static_cast<uint16_t>(last_init_val_ - threshold);
 
         auto process_hit = [&](size_t idx) {
             auto [i, j] = region_.index_to_ij(idx);
