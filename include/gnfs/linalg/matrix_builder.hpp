@@ -398,7 +398,7 @@ private:
 
         for (const auto& rel : relations) {
             // 有理侧：按素数累计指数，只收集奇数指数的
-            std::unordered_map<uint64_t, uint8_t> rat_exp;
+            std::unordered_map<uint64_t, uint32_t> rat_exp;
             for (const auto& lp : rel.rational_large_prime) {
                 rat_exp[lp.p] += lp.e;
             }
@@ -409,7 +409,7 @@ private:
             }
 
             // 代数侧：按 (p,r) 素理想累计指数，只收集奇数指数的
-            std::unordered_map<PrimeIdealKey, uint8_t, PrimeIdealKeyHash> alg_exp;
+            std::unordered_map<PrimeIdealKey, uint32_t, PrimeIdealKeyHash> alg_exp;
             for (const auto& lp : rel.algebraic_large_prime) {
                 alg_exp[{lp.p, lp.r}] += lp.e;
             }
