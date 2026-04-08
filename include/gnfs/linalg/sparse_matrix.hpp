@@ -22,16 +22,19 @@ public:
         sorted_ = true;
     }
 
-    /// 设置位（添加列索引）- O(1) amortized using lazy sorting
+    /// 设置位（添加列索引）- 幂等：多次 set(col) 等效于一次
     void set(uint32_t col) {
         if (sorted_) {
-            // If sorted, use binary search to check for duplicate
             auto it = std::lower_bound(indices_.begin(), indices_.end(), col);
             if (it != indices_.end() && *it == col) {
                 return;  // Already set
             }
-            // Mark as unsorted and append
             sorted_ = false;
+        } else {
+            // Unsorted: linear scan to prevent duplicate append (preserves set idempotency)
+            for (auto idx : indices_) {
+                if (idx == col) return;  // Already present
+            }
         }
         indices_.push_back(col);
     }
