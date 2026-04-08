@@ -559,13 +559,14 @@ private:
         return deg(a) >= 1;
     }
 
-    /// 设置列映射
+    /// 设置列映射（无 QC 版本 — build_row 不设 sign 列，强制禁用）
     void setup_column_mapping(ColumnMapping& mapping,
                               const FactorBase& fb,
                               const LargePrimeInfo& lp_info) const {
 
-        // 符号列
-        mapping.has_sign_column = config_.include_sign_column;
+        // build_row() cannot compute sign (needs PolynomialContext),
+        // so force sign column off to avoid all-zero sign column
+        mapping.has_sign_column = false;
         mapping.sign_column = 0;
 
         // 因子基列
