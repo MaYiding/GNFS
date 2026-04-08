@@ -214,6 +214,8 @@ public:
     /// 计算代数范数 (__int128 快路径)
     /// 当所有系数 fits int64 且中间乘积 fits __int128 时使用纯原生算术
     [[nodiscard]] std::pair<__int128, bool> algebraic_norm_i128(int64_t a, uint64_t b) const {
+        if (b == 0) return {0, false};  // b^(d-i) division would be UB
+
         // 检查所有系数是否 fits int64
         for (uint32_t i = 0; i <= degree_; ++i) {
             if (!f_coeffs_[i].fits_int64()) return {0, false};
