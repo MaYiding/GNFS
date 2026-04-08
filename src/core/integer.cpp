@@ -430,7 +430,10 @@ Integer& Integer::operator%=(int64_t value) {
     if (value == 0) {
         throw std::domain_error("Integer modulo by zero");
     }
-    unsigned long abs_val = (value >= 0) ? value : -value;
+    // Safe absolute value: avoid -INT64_MIN which is UB
+    unsigned long abs_val = (value >= 0)
+        ? static_cast<unsigned long>(value)
+        : static_cast<unsigned long>(-(value + 1)) + 1UL;
     mpz_tdiv_r_ui(value_, value_, abs_val);
     return *this;
 }

@@ -277,17 +277,21 @@ void test_sparse_row_empty() {
     empty_row.xor_with(other_empty);
     assert(empty_row.empty());
 
-    // SparseRow::set() toggle semantics (BACKLOG: "重复 set 等价于 clear"):
-    // Double set WITHOUT calling ensure_sorted() in between → both appended as
-    // duplicates → ensure_sorted() removes even-count entries (GF(2) cancellation).
-    // IMPORTANT: calling test()/weight() between sets resets sorted_=true which
-    // makes the second set() idempotent. The toggle only works without intervening
-    // sorted-state operations.
+    // SparseRow::set() is idempotent: multiple set(col) = single set(col)
+    // This is the correct GF(2) "set bit to 1" semantic. Use flip() for toggle.
     {
         SparseRow row;
-        row.set(5);   // appended; sorted_=false now
-        row.set(5);   // sorted_=false → appended without dedup → indices=[5,5]
-        // weight() calls ensure_sorted(): [5,5] → count=2 (even) → removed
+        row.set(5);   // bit 5 = 1
+        row.set(5);   // idempotent: bit 5 still = 1
+        assert(row.weight() == 1);
+        assert(row.test(5));
+    }
+
+    // flip() provides GF(2) toggle: double flip cancels
+    {
+        SparseRow row;
+        row.flip(5);  // bit 5 = 1
+        row.flip(5);  // bit 5 = 0
         assert(row.weight() == 0);
         assert(!row.test(5));
     }

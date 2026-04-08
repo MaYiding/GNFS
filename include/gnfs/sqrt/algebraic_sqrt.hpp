@@ -8,6 +8,7 @@
 #include "../core/polynomial_context.hpp"
 #include "../linalg/sparse_matrix.hpp"
 
+#include <map>
 #include <unordered_map>
 #include <vector>
 
@@ -29,7 +30,8 @@ using linalg::BitVector;
 
     // Count algebraic FB factor multiplicities
     std::unordered_map<uint32_t, uint64_t> fb_exponents;
-    std::unordered_map<uint64_t, uint64_t> lp_exponents;
+    // Use (p, r) pair as key to distinguish prime ideals above the same rational prime
+    std::map<std::pair<uint64_t, uint64_t>, uint64_t> lp_exponents;
 
     for (size_t i = 0; i < relations.size(); ++i) {
         if (!dependency.test(i)) continue;
@@ -38,14 +40,14 @@ using linalg::BitVector;
             fb_exponents[idx]++;
         }
         for (const auto& lp : rel.algebraic_large_prime) {
-            lp_exponents[lp.p] += lp.e;
+            lp_exponents[{lp.p, lp.r}] += lp.e;
         }
     }
 
     for (const auto& [idx, exp] : fb_exponents) {
         if (exp % 2 != 0) return false;
     }
-    for (const auto& [p, exp] : lp_exponents) {
+    for (const auto& [key, exp] : lp_exponents) {
         if (exp % 2 != 0) return false;
     }
     return true;

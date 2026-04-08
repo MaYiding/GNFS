@@ -133,10 +133,15 @@ public:
             if (r == core::AlgebraicPrime::PROJECTIVE_ROOT) {
                 if (b % p != 0) continue;
             } else {
-                int64_t check = a - static_cast<int64_t>(b) * static_cast<int64_t>(r);
-                int64_t mod = check % static_cast<int64_t>(p);
-                if (mod < 0) mod += p;
-                if (mod != 0) continue;
+                // Compute a ≡ b·r (mod p) using mod-first to avoid int64 overflow
+                // when b > 2^31 and r is large.
+                uint64_t p64 = p;
+                uint64_t b_mod = b % p64;
+                uint64_t br_mod = (b_mod * static_cast<uint64_t>(r)) % p64;
+                // a mod p (handle negative a)
+                int64_t a_mod = a % static_cast<int64_t>(p);
+                if (a_mod < 0) a_mod += p;
+                if (static_cast<uint64_t>(a_mod) != br_mod) continue;
             }
 
             // 试除 — uint64 快路径

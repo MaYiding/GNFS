@@ -490,7 +490,7 @@ private:
         Point Q_D(km1.x.clone(), km1.z.clone());
 
         // === Phase 2: Giant steps ===
-        uint64_t j_lo = B1 / D + 1;             // 最小 j 使得 j*D > B1
+        uint64_t j_lo = B1 / D;                  // 最小 j 使得 j*D ≥ B1 - D (covers B1-adjacent primes)
         uint64_t j_hi = (B2 + D - 1) / D;       // 最大 j 使得 (j-1)*D < B2
         if (j_lo > j_hi) return std::nullopt;
 
@@ -507,7 +507,7 @@ private:
         constexpr uint64_t BATCH_SIZE = 16;
 
         // 累积一个 giant step 的所有 cross products
-        auto accumulate_step = [&](const Point& G) {
+        auto accumulate_step = [&](const Point& G) -> std::optional<Integer> {
             for (const auto& b : baby) {
                 // cross = G.x * b.z - b.x * G.z (mod n)
                 Integer c = G.x.clone(); c *= b.z; c %= n;
@@ -515,9 +515,18 @@ private:
                 c -= t;
                 if (c.is_negative()) c += n;
                 c %= n;
-                if (!c.is_zero()) { accum *= c; accum %= n; }
+                if (c.is_zero()) {
+                    // c=0 means G and baby represent same point — factor may be in Z coordinate
+                    Integer g = gcd(G.z, n);
+                    if (g.compare(Integer(int64_t(1))) != 0 && g.compare(n) != 0) {
+                        return g;
+                    }
+                } else {
+                    accum *= c; accum %= n;
+                }
             }
             ++steps_in_batch;
+            return std::nullopt;
         };
 
         // 检查 gcd + 回退处理
@@ -545,14 +554,14 @@ private:
         };
 
         // 处理 j = j_lo
-        accumulate_step(G_prev);
+        if (auto f = accumulate_step(G_prev)) return f;
 
         if (j_lo == j_hi) {
             return check_batch(j_lo);
         }
 
         // 处理 j = j_lo + 1
-        accumulate_step(G_curr);
+        if (auto f = accumulate_step(G_curr)) return f;
 
         // 差分链: j = j_lo + 2, j_lo + 3, ...
         for (uint64_t j = j_lo + 2; j <= j_hi; ++j) {
@@ -567,7 +576,7 @@ private:
             G_prev = std::move(G_curr);
             G_curr = std::move(G_next);
 
-            accumulate_step(G_curr);
+            if (auto f = accumulate_step(G_curr)) return f;
         }
 
         // 最终检查

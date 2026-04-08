@@ -7,6 +7,90 @@
 
 ## 已完成 ✅
 
+### Session 61 — P1 high-priority bug fixes (10 items + 1 false positive)
+
+#### [BUG] ~~trial_division 代数可整除性检查 b·r int64 溢出~~ ✅
+- **发现**: 2026-03-14
+- **解决**: 2026-03-14
+- **修复**: `cofactor/trial_division.hpp:136` — 先 `b%p` 再乘 r，用 uint64 安全计算
+- **验证**: smoke 20/20, cofactor 模块测试通过
+- **Commit**: `2dcea1a`
+
+#### [BUG] ~~compute_rational/algebraic_uv int64_t 有符号溢出~~ ✅
+- **发现**: 2026-03-14
+- **解决**: 2026-03-14
+- **修复**: `sieve/lattice_sieve.hpp:282,302` — 用 `__int128_t` 做中间乘积
+- **验证**: smoke 20/20, sieve_basic 通过
+- **Commit**: `2dcea1a`
+
+#### [BUG] ~~Sieve eff_thresh=0 导致候选洪泛~~ ✅
+- **发现**: 2026-03-14
+- **解决**: 2026-03-14
+- **修复**: `sieve/lattice_sieve.hpp:586` — `last_init_val_ <= threshold` 时直接 `return {}`
+- **验证**: smoke 20/20, sieve_basic 通过
+- **Commit**: `2dcea1a`
+
+#### [BUG] ~~SparseRow::set() 在 unsorted 状态下重复调用翻转 bit~~ ✅
+- **发现**: 2026-03-14
+- **解决**: 2026-03-14
+- **修复**: `linalg/sparse_matrix.hpp:26` — unsorted 分支添加线性扫描去重
+- **验证**: smoke 20/20, linalg 全部通过, edge_cases 更新为测试幂等性
+- **Commit**: `2dcea1a`, `ea9de4a`
+
+#### [BUG] ~~ECM Stage2 BSGS j_lo 边界遗漏 B1 附近素数~~ ✅
+- **发现**: 2026-03-14
+- **解决**: 2026-03-14
+- **修复**: `cofactor/ecm.hpp:493` — `j_lo = B1/D` (去掉 +1)
+- **验证**: smoke 20/20, cofactor 模块测试通过
+- **Commit**: `01a6c7f`
+
+#### [BUG] ~~ECM Stage2 BSGS 零交叉积静默跳过~~ ✅
+- **发现**: 2026-03-14
+- **解决**: 2026-03-14
+- **修复**: `cofactor/ecm.hpp:510-519` — c=0 时触发即时 `gcd(G.z, n)` 检查
+- **验证**: smoke 20/20, cofactor 模块测试通过
+- **Commit**: `01a6c7f`
+
+#### [BUG] ~~verify_algebraic_ideal_powers 用 lp.p 做 key~~ ✅
+- **发现**: 2026-03-14
+- **解决**: 2026-03-14
+- **修复**: `sqrt/algebraic_sqrt.hpp:41` — 改用 `std::map<(p,r), exp>` 区分不同理想
+- **验证**: smoke 20/20, sqrt 模块测试通过
+- **Commit**: `01a6c7f`
+
+#### [BUG] ~~Integer::operator%=(INT64_MIN) 有符号溢出 UB~~ ✅
+- **发现**: 2026-03-14
+- **解决**: 2026-03-14
+- **修复**: `src/core/integer.cpp:433` — 用 `-(value+1)+1UL` 安全取绝对值
+- **验证**: smoke 20/20, integer 模块测试通过
+- **Commit**: `01a6c7f`
+
+#### [BUG] ~~has_multiple_root 只检查 f'≡0~~ ✅
+- **发现**: 2026-03-14
+- **解决**: 2026-03-14
+- **修复**: `linalg/matrix_builder.hpp:491-522` — 实现完整 gcd(f,f') over F_p
+- **验证**: smoke 20/20, linalg 模块测试通过
+- **Commit**: `01a6c7f`
+
+#### [BUG] ~~test_gnfs_e2e main() 无条件返回 0~~ ✅
+- **发现**: 2026-03-14
+- **解决**: 2026-03-14
+- **修复**: 所有 test 函数改返回 bool，main() 收集 pass/fail 返回非零
+- **验证**: E2E 5/5 通过，退出码 0
+- **Commit**: `5879005`
+
+#### [BUG] ~~Progressive 测试 XOR 组合验证了错误的依赖~~ ✅
+- **发现**: 2026-03-14
+- **解决**: 2026-03-14
+- **修复**: `test_gnfs_progressive.cpp:593` — verify_dep(matrix, combined) 替代 deps[i]
+- **验证**: 编译通过，添加 BitVector verify_dep 重载
+- **Commit**: `5879005`
+
+### Session 61 — 误报
+
+#### [BUG] ~~test_gnfs_progressive main() 无条件返回 0~~ ❌ 误报
+- **原因**: 代码 line 718 已有 `return (fail > 0) ? 1 : 0`，BACKLOG 条目过时
+
 ### Session 60 — P3 code quality cleanup (3 items)
 
 #### [DEBT] ~~FactorBase 缺少序列化~~ ✅

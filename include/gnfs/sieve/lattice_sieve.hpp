@@ -278,9 +278,9 @@ private:
         int64_t e1_mod = mod_reduce(basis.e1);
         int64_t f1_mod = mod_reduce(basis.f1);
         int64_t m64 = static_cast<int64_t>(m_mod_p);
-        // f_mod * m64 fits in int64: both < p < 2^32
-        int64_t u = (e0_mod - f0_mod * m64 % p64 + p64) % p64;
-        int64_t v = (e1_mod - f1_mod * m64 % p64 + p64) % p64;
+        // Use __int128_t for intermediate product to avoid overflow when p ~ 2^32
+        int64_t u = (e0_mod - static_cast<int64_t>(static_cast<__int128_t>(f0_mod) * m64 % p64) + p64) % p64;
+        int64_t v = (e1_mod - static_cast<int64_t>(static_cast<__int128_t>(f1_mod) * m64 % p64) + p64) % p64;
         return {u, v};
     }
 
@@ -299,8 +299,9 @@ private:
         int64_t e1_mod = mod_reduce(basis.e1);
         int64_t f1_mod = mod_reduce(basis.f1);
         int64_t r64 = static_cast<int64_t>(r);
-        int64_t u = (e0_mod - f0_mod * r64 % p64 + p64) % p64;
-        int64_t v = (e1_mod - f1_mod * r64 % p64 + p64) % p64;
+        // Use __int128_t for intermediate product to avoid overflow when p ~ 2^32
+        int64_t u = (e0_mod - static_cast<int64_t>(static_cast<__int128_t>(f0_mod) * r64 % p64) + p64) % p64;
+        int64_t v = (e1_mod - static_cast<int64_t>(static_cast<__int128_t>(f1_mod) * r64 % p64) + p64) % p64;
         return {u, v};
     }
 
@@ -582,9 +583,11 @@ private:
         std::vector<SieveCandidate> candidates;
 
         uint16_t threshold = params_.combined_threshold();
-        // effective_threshold = init_val - threshold (clamped to 0)
-        uint16_t eff_thresh = (last_init_val_ > threshold) ?
-            static_cast<uint16_t>(last_init_val_ - threshold) : uint16_t(0);
+        // effective_threshold = init_val - threshold (if init too low, no valid candidates)
+        if (last_init_val_ <= threshold) {
+            return {};  // Log estimate too small — all positions would pass, return empty
+        }
+        uint16_t eff_thresh = static_cast<uint16_t>(last_init_val_ - threshold);
 
         auto process_hit = [&](size_t idx) {
             auto [i, j] = region_.index_to_ij(idx);

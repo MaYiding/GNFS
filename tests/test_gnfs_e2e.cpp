@@ -792,7 +792,7 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
 }
 
 // Test with a known semiprime
-void test_factor_small_semiprime() {
+bool test_factor_small_semiprime() {
     print_section("Test: Factor Small Semiprime");
 
     // N = 143 = 11 * 13
@@ -802,6 +802,7 @@ void test_factor_small_semiprime() {
 
     auto result = factor_gnfs(n, true);
 
+    bool ok = false;
     if (result.success) {
         std::cout << "\n=== VERIFICATION ===\n";
         std::cout << "N = " << result.n.to_string() << "\n";
@@ -811,10 +812,10 @@ void test_factor_small_semiprime() {
         // Verify: p * q should equal n
         Integer product = result.factor1.clone();
         product *= result.factor2;
-        bool verified = (product.compare(result.n) == 0);
+        ok = (product.compare(result.n) == 0);
 
         std::cout << "p * q = " << product.to_string() << "\n";
-        std::cout << "Verified: " << (verified ? "YES" : "NO") << "\n";
+        std::cout << "Verified: " << (ok ? "YES" : "NO") << "\n";
     } else {
         std::cout << "\nFactorization did not complete successfully.\n";
         std::cout << "Relations collected: " << result.relations_collected << "\n";
@@ -822,10 +823,11 @@ void test_factor_small_semiprime() {
     }
 
     std::cout << "\nTotal time: " << result.total_time_ms << " ms\n";
+    return ok;
 }
 
 // Test with a 4-digit semiprime
-void test_factor_4digit_semiprime() {
+bool test_factor_4digit_semiprime() {
     print_section("Test: Factor 4-Digit Semiprime");
 
     // N = 9991 = 97 * 103
@@ -835,6 +837,7 @@ void test_factor_4digit_semiprime() {
 
     auto result = factor_gnfs(n, true);
 
+    bool ok = false;
     if (result.success) {
         std::cout << "\n=== VERIFICATION ===\n";
         std::cout << "N = " << result.n.to_string() << "\n";
@@ -844,10 +847,10 @@ void test_factor_4digit_semiprime() {
         // Verify: p * q should equal n
         Integer product = result.factor1.clone();
         product *= result.factor2;
-        bool verified = (product.compare(result.n) == 0);
+        ok = (product.compare(result.n) == 0);
 
         std::cout << "p * q = " << product.to_string() << "\n";
-        std::cout << "Verified: " << (verified ? "YES" : "NO") << "\n";
+        std::cout << "Verified: " << (ok ? "YES" : "NO") << "\n";
     } else {
         std::cout << "\nFactorization did not complete successfully.\n";
         std::cout << "Relations collected: " << result.relations_collected << "\n";
@@ -855,10 +858,11 @@ void test_factor_4digit_semiprime() {
     }
 
     std::cout << "\nTotal time: " << result.total_time_ms << " ms\n";
+    return ok;
 }
 
 // Test with a 5-digit semiprime
-void test_factor_5digit_semiprime() {
+bool test_factor_5digit_semiprime() {
     print_section("Test: Factor 5-Digit Semiprime");
 
     // N = 10403 = 101 * 103
@@ -868,6 +872,7 @@ void test_factor_5digit_semiprime() {
 
     auto result = factor_gnfs(n, true);
 
+    bool ok = false;
     if (result.success) {
         std::cout << "\n=== VERIFICATION ===\n";
         std::cout << "N = " << result.n.to_string() << "\n";
@@ -877,10 +882,10 @@ void test_factor_5digit_semiprime() {
         // Verify: p * q should equal n
         Integer product = result.factor1.clone();
         product *= result.factor2;
-        bool verified = (product.compare(result.n) == 0);
+        ok = (product.compare(result.n) == 0);
 
         std::cout << "p * q = " << product.to_string() << "\n";
-        std::cout << "Verified: " << (verified ? "YES" : "NO") << "\n";
+        std::cout << "Verified: " << (ok ? "YES" : "NO") << "\n";
     } else {
         std::cout << "\nFactorization did not complete successfully.\n";
         std::cout << "Relations collected: " << result.relations_collected << "\n";
@@ -888,10 +893,11 @@ void test_factor_5digit_semiprime() {
     }
 
     std::cout << "\nTotal time: " << result.total_time_ms << " ms\n";
+    return ok;
 }
 
 // Test with 10800 = 2^4 * 3^3 * 5^2 (not a semiprime)
-void test_factor_10800() {
+bool test_factor_10800() {
     print_section("Test: Factor 10800");
 
     // N = 10800 = 2^4 * 3^3 * 5^2
@@ -902,6 +908,7 @@ void test_factor_10800() {
 
     auto result = factor_gnfs(n, true);
 
+    bool ok = false;
     if (result.success) {
         std::cout << "\n=== VERIFICATION ===\n";
         std::cout << "N = " << result.n.to_string() << "\n";
@@ -911,10 +918,10 @@ void test_factor_10800() {
         // Verify: p * q should equal n
         Integer product = result.factor1.clone();
         product *= result.factor2;
-        bool verified = (product.compare(result.n) == 0);
+        ok = (product.compare(result.n) == 0);
 
         std::cout << "p * q = " << product.to_string() << "\n";
-        std::cout << "Verified: " << (verified ? "YES" : "NO") << "\n";
+        std::cout << "Verified: " << (ok ? "YES" : "NO") << "\n";
     } else {
         std::cout << "\nFactorization did not complete successfully.\n";
         std::cout << "Relations collected: " << result.relations_collected << "\n";
@@ -922,10 +929,11 @@ void test_factor_10800() {
     }
 
     std::cout << "\nTotal time: " << result.total_time_ms << " ms\n";
+    return ok;
 }
 
 // Test with a 6-digit semiprime
-void test_factor_6digit_semiprime() {
+bool test_factor_6digit_semiprime() {
     print_section("Test: Factor 6-Digit Semiprime");
 
     // N = 96091 = 307 * 313
@@ -935,6 +943,7 @@ void test_factor_6digit_semiprime() {
 
     auto result = factor_gnfs(n, true);
 
+    bool ok = false;
     if (result.success) {
         std::cout << "\n=== VERIFICATION ===\n";
         std::cout << "N = " << result.n.to_string() << "\n";
@@ -944,10 +953,10 @@ void test_factor_6digit_semiprime() {
         // Verify: p * q should equal n
         Integer product = result.factor1.clone();
         product *= result.factor2;
-        bool verified = (product.compare(result.n) == 0);
+        ok = (product.compare(result.n) == 0);
 
         std::cout << "p * q = " << product.to_string() << "\n";
-        std::cout << "Verified: " << (verified ? "YES" : "NO") << "\n";
+        std::cout << "Verified: " << (ok ? "YES" : "NO") << "\n";
     } else {
         std::cout << "\nFactorization did not complete successfully.\n";
         std::cout << "Relations collected: " << result.relations_collected << "\n";
@@ -955,6 +964,7 @@ void test_factor_6digit_semiprime() {
     }
 
     std::cout << "\nTotal time: " << result.total_time_ms << " ms\n";
+    return ok;
 }
 
 // Test with a larger semiprime
@@ -1015,17 +1025,21 @@ int main() {
     std::cout << "\nThis test demonstrates the complete General Number Field Sieve\n";
     std::cout << "pipeline for integer factorization.\n";
 
-    // Run tests
-    test_factor_10800();
-    test_factor_small_semiprime();
-    test_factor_4digit_semiprime();
-    test_factor_5digit_semiprime();
-    test_factor_6digit_semiprime();
-    // test_pipeline_demonstration();  // Keep this commented - too slow for routine
+    int pass = 0, fail = 0;
+    auto run = [&](auto fn, const char* name) {
+        bool ok = fn();
+        if (ok) { ++pass; } else { ++fail; std::cout << "  *** FAILED: " << name << "\n"; }
+    };
+
+    run(test_factor_10800, "factor_10800");
+    run(test_factor_small_semiprime, "factor_small_semiprime");
+    run(test_factor_4digit_semiprime, "factor_4digit_semiprime");
+    run(test_factor_5digit_semiprime, "factor_5digit_semiprime");
+    run(test_factor_6digit_semiprime, "factor_6digit_semiprime");
 
     std::cout << "\n================================================================\n";
-    std::cout << "                    Tests Complete\n";
+    std::cout << "  Results: " << pass << " passed, " << fail << " failed\n";
     std::cout << "================================================================\n";
 
-    return 0;
+    return (fail > 0) ? 1 : 0;
 }

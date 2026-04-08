@@ -488,38 +488,75 @@ private:
     }
 
     /// 检查多项式是否在 F_p 上有重根
+    /// Uses gcd(f, f') — has repeated root iff deg(gcd) >= 1
     [[nodiscard]] bool has_multiple_root(const PolynomialContext& ctx, uint32_t p) const {
-        // 简化检查：计算 f(x) 和 f'(x) 的 gcd
-        // 如果 gcd 非平凡，则有重根
-
         uint32_t d = ctx.degree();
         if (d == 0) return false;
+
+        uint64_t p64 = p;
 
         // 计算 f mod p
         std::vector<uint64_t> f(d + 1);
         for (uint32_t i = 0; i <= d; ++i) {
             Integer c = ctx.coeff(i).clone();
-            c %= Integer(static_cast<uint64_t>(p));
-            if (c.is_negative()) c += Integer(static_cast<uint64_t>(p));
+            c %= Integer(p64);
+            if (c.is_negative()) c += Integer(p64);
             f[i] = c.to_uint64();
         }
 
         // 计算 f' mod p
         std::vector<uint64_t> fp(d);
         for (uint32_t i = 1; i <= d; ++i) {
-            fp[i - 1] = (f[i] * i) % p;
+            fp[i - 1] = static_cast<uint64_t>(static_cast<__uint128_t>(f[i]) * i % p64);
         }
 
-        // 简化：如果 f' 全为零，有重根
-        bool all_zero = true;
-        for (uint64_t c : fp) {
-            if (c != 0) {
-                all_zero = false;
-                break;
+        // gcd(f, f') via Euclidean algorithm over F_p[x]
+        // Copy f and fp into working buffers
+        auto a = f;    // degree d
+        auto b = fp;   // degree d-1
+
+        // Find actual degrees
+        auto deg = [](const std::vector<uint64_t>& poly) -> int {
+            for (int i = static_cast<int>(poly.size()) - 1; i >= 0; --i) {
+                if (poly[i] != 0) return i;
             }
+            return -1;  // zero polynomial
+        };
+
+        // Modular inverse via extended Euclidean
+        auto mod_inv = [p64](uint64_t x) -> uint64_t {
+            if (x == 0) return 0;
+            int64_t a0 = static_cast<int64_t>(p64), a1 = static_cast<int64_t>(x);
+            int64_t s0 = 0, s1 = 1;
+            while (a1 != 0) {
+                int64_t q = a0 / a1;
+                int64_t tmp = a0 - q * a1; a0 = a1; a1 = tmp;
+                tmp = s0 - q * s1; s0 = s1; s1 = tmp;
+            }
+            return static_cast<uint64_t>((s0 % static_cast<int64_t>(p64) + static_cast<int64_t>(p64)) % static_cast<int64_t>(p64));
+        };
+
+        while (true) {
+            int db = deg(b);
+            if (db < 0) break;  // b is zero → gcd = a
+            int da = deg(a);
+            if (da < db) { std::swap(a, b); continue; }
+
+            // a = a - (lead_a / lead_b) * x^(da-db) * b
+            uint64_t inv_lb = mod_inv(b[db]);
+            uint64_t scale = static_cast<uint64_t>(static_cast<__uint128_t>(a[da]) * inv_lb % p64);
+            int shift = da - db;
+            for (int i = 0; i <= db; ++i) {
+                uint64_t sub = static_cast<uint64_t>(static_cast<__uint128_t>(scale) * b[i] % p64);
+                a[i + shift] = (a[i + shift] + p64 - sub) % p64;
+            }
+            // Trim leading zeros
+            while (a.size() > 1 && a.back() == 0) a.pop_back();
+            std::swap(a, b);
         }
 
-        return all_zero;
+        // gcd = a; has repeated root iff deg(gcd) >= 1
+        return deg(a) >= 1;
     }
 
     /// 设置列映射
