@@ -5,81 +5,17 @@
 
 | 级别 | 条数 | 涵盖 |
 |------|------|------|
-| **P1** | 11 | trial_div b·r 溢出, UV int64 UB, sieve flood, SparseRow toggle, LP ideal key, ECM j_lo, E2E/progressive exit, integer UB, ECM stage2, matrix QC |
+| **P1** | 0 | (已全部修复 — Session 61) |
 | **P1-OPT** | 0 | (已清空) |
-| **P2** | 43 | correctness ×26, performance ×9, design ×5, class group ×1, infra ×2 |
+| **P2** | 41 | correctness ×24, performance ×9, design ×5, class group ×1, infra ×2 |
 | **P3** | 27 | 远期架构 ×7, style ×6, dead code ×4, quality ×8, risk ×2 |
-| **TEST** | 8 | weak assertions ×4, logic ×1, missing coverage ×2, flaky ×1 |
+| **TEST** | 7 | weak assertions ×4, missing coverage ×2, flaky ×1 |
 
 ---
 
 ## P1 — 高优先级（影响正确性、可靠性）
 
-### [BUG] trial_division 代数可整除性检查 b·r int64 溢出
-- **发现日期**: 2026-03-14
-- **文件**: `cofactor/trial_division.hpp:136`
-- **描述**: `int64_t check = a - static_cast<int64_t>(b) * static_cast<int64_t>(r);` 其中 b 是 `uint64_t`，r 是 `uint32_t`。当 b > 2^31 且 r 接近 p 时，乘积 b·r 溢出 `int64_t`，导致可整除性检查出错——非整除素数可能被误判为整除（或反之），腐化关系中的因子列表和指数。
-- **建议**: 先对 b 取模 p 再乘：`uint64_t b_mod = b % p; uint64_t br_mod = (b_mod * (uint64_t)r) % p;` 然后比较 `a_mod == br_mod`。
-
-### [BUG] compute_rational/algebraic_uv int64_t 有符号溢出（确认 UB）
-- **发现日期**: 2026-03-14
-- **文件**: `sieve/lattice_sieve.hpp:282-284, 302-304`
-- **描述**: `f0_mod * m64` 是 int64_t 乘法，两操作数均在 [0, p-1]，p 最大可达 ~2^32（代数因子基上界）。乘积最大 (2^32-1)^2 ≈ 2^64，超出 INT64_MAX ≈ 2^63。这是 C++ 有符号溢出未定义行为（第三轮审计以 100% 置信度确认）。产出错误的 UV 参数导致对应素数的筛法命中位置错误。
-- **建议**: 用 `((__int128_t)f0_mod * m64) % p64` 做中间乘积。
-
-### [BUG] ECM Stage2 BSGS j_lo 边界遗漏 B1 附近素数
-- **发现日期**: 2026-03-14
-- **文件**: `cofactor/ecm.hpp:493`
-- **描述**: `j_lo = B1 / D + 1` 起始太高。素数 `p = floor(B1/D)·D + d` 其中 `d > 0` 且 `p > B1` 永远不会被检测（j = floor(B1/D) < j_lo）。对 D=2310, B1=11000，所有 (11000, 11239] 内素数被系统性跳过。
-- **建议**: `j_lo = B1 / D`（而非 `B1 / D + 1`）。
-
-### [BUG] Sieve eff_thresh=0 导致候选洪泛
-- **发现日期**: 2026-03-14
-- **文件**: `sieve/lattice_sieve.hpp:585-587`
-- **描述**: 当 `last_init_val_ <= threshold`（日志估计小于阈值，如 `estimate_initial_log` 返回 0），`eff_thresh` 被设为 0。此时 `sieve_array_[idx] >= 0` 对所有位置为真——整个筛区（最多 256M 个位置）全部成为候选，触发灾难性的伪正候选洪泛。
-- **建议**: `if (last_init_val_ <= threshold) return {};`（直接返回空，而非设 eff_thresh=0）。
-
-### [BUG] SparseRow::set() 在 unsorted 状态下重复调用翻转 bit
-- **发现日期**: 2026-03-14
-- **文件**: `linalg/sparse_matrix.hpp:26-37`
-- **描述**: GF(2) 中 `set()` 应幂等（设 bit 为 1）。但当 `sorted_==false` 时无去重检查，直接 append。之后 `ensure_sorted()` 通过对偶消除将重复项相消，使 bit 从 1→0。这违反 `set()` 的语义契约——两次 `set(col)` 反而清除了该列。
-- **建议**: 在 `set()` 开头调用 `ensure_sorted()` 再执行去重检查，或维护一个 unsorted 去重机制。
-
-### [BUG] verify_algebraic_ideal_powers 用 lp.p 做 key 忽略 prime-ideal 区分
-- **发现日期**: 2026-03-14
-- **文件**: `sqrt/algebraic_sqrt.hpp:26-52`
-- **描述**: 代数大素数指数奇偶检查用 `lp.p` 做 map key。但同一有理素数 p 上方可有多个代数理想 `(p, r1)` 和 `(p, r2)`，它们是不同的对象。用 p 做 key 会将不同理想的指数求和：两个不同理想各出现 1 次被误判为"指数 2（偶数）"。matrix_builder 中 `collect_large_primes()` 正确使用 `(p, r)` 做 key，但此检查函数遗漏。
-- **建议**: 改用 `(lp.p, lp.r)` 作为 map key。
-
-### [BUG] test_gnfs_e2e main() 无条件返回 0
-- **发现日期**: 2026-03-14
-- **文件**: `tests/test_gnfs_e2e.cpp:1030`
-- **描述**: `main()` 始终 `return 0`，所有测试函数只打印 SUCCESS/FAILURE 到 stdout 但不传播退出码。这是覆盖完整 GNFS 流水线的唯一测试，任何算法回归（筛法、线性代数、平方根）在 CI 中都无法被检测。
-- **建议**: 各 test 函数返回 bool，main 收集结果返回 `ok ? 0 : 1`。
-
-### [BUG] test_gnfs_progressive main() 无条件返回 0
-- **发现日期**: 2026-03-14
-- **文件**: `tests/test_gnfs_progressive.cpp`
-- **描述**: 同 test_gnfs_e2e，L1-L5 所有 progressive 级别的分解失败都不会导致测试二进制返回非零。CI 永远绿。
-- **建议**: 收集 pass/fail 计数，返回 `(fail > 0) ? 1 : 0`。
-
-### [BUG] Integer::operator%=(INT64_MIN) 有符号溢出 UB
-- **发现日期**: 2026-03-14
-- **文件**: `src/core/integer.cpp:433`
-- **描述**: `unsigned long abs_val = (value >= 0) ? value : -value;` 当 `value == INT64_MIN` 时，`-value` 溢出有符号 64 位，是未定义行为。`operator+=` 和 `operator-=` 已用 `-(value+1)+1UL` 技巧处理，但 `operator%=` 遗漏。
-- **建议**: `unsigned long abs_val = (value >= 0) ? static_cast<unsigned long>(value) : static_cast<unsigned long>(-(value + 1)) + 1UL;`
-
-### [BUG] ECM Stage2 BSGS 零交叉积静默跳过
-- **发现日期**: 2026-03-14
-- **文件**: `cofactor/ecm.hpp:512-519`
-- **描述**: `accumulate_step` 中当 `c.is_zero()` (G.x·b.z ≡ b.x·G.z mod n) 时直接跳过，不累积到 accum 中。c=0 意味着因子可能存在于 Z 坐标中，但跳过导致 `gcd(accum, n)` 无法检测到该因子。虽然其他 baby-giant 对通常能捕获，但存在漏检风险。
-- **建议**: c=0 时触发即时 `gcd(G.z, n)` 检查，而非简单跳过。
-
-### [BUG] has_multiple_root 只检查 f'≡0，未检查 gcd(f,f')
-- **发现日期**: 2026-03-14
-- **文件**: `linalg/matrix_builder.hpp:513-522`
-- **描述**: 判断多项式 mod p 是否有重根时，只检查 f' 是否全零。这是充分条件但非必要条件——`f(x) = (x-1)²(x-2)` 的 f' 非零但有重根。遗漏重根的 QC 素数会导致 Legendre 符号计算错误（除零或错误值）。
-- **建议**: 计算 `gcd(f mod p, f' mod p)` 并检查度是否 ≥ 1。
+> **全部已修复** — Session 61, 2026-03-14。详见 RESOLVED.md。
 
 ---
 
@@ -200,12 +136,6 @@
 - **文件**: `linalg/matrix_builder.hpp:582`
 - **描述**: `build_row()` 注释说"sign 不在此设置"。但若直接调用 `build()`（非 `build_with_qc()`），sign 列永远为 0，即使 `include_sign_column = true`。sign 列错误的矩阵会导致 BL 找到非法依赖。
 - **建议**: 在 `build()` 中添加 `assert(!config_.include_sign_column)` 或将 sign 计算移入 `build_row()`。
-
-#### [BUG] Progressive 测试 XOR 组合验证了错误的依赖
-- **发现日期**: 2026-03-14
-- **文件**: `tests/test_gnfs_progressive.cpp:593`
-- **描述**: XOR 组合回退中 `verify_dep(build_result.matrix, deps[i])` 验证的是原始 `deps[i]`（已在之前单独验证过），而非组合后的 `combined = deps[i] XOR deps[j]`。对比 `test_gnfs_e2e.cpp:661` 正确验证了 combined。腐败的组合依赖会不经验证直接进入 sqrt。
-- **建议**: 改为 `verify_dep(build_result.matrix, combined)`。
 
 #### [BUG] Miller-Rabin 7-witness 对 >3.4×10^14 仅概率性
 - **发现日期**: 2026-03-14
@@ -533,12 +463,6 @@
 - **文件**: `CMakeLists.txt:384-395`
 - **描述**: 二进制编译但无 `add_test()`，`ctest -N` 看不到。`scripts/test.sh` 独立知道路径，形成隐藏依赖。
 - **建议**: 用 `DISABLED` 属性注册到 ctest 以提高可发现性。
-
-### [TEST] Progressive 测试 XOR 组合验证逻辑错误
-- **发现日期**: 2026-03-14
-- **文件**: `tests/test_gnfs_progressive.cpp:593`
-- **描述**: 与 P2 中同名条目对应。在 TEST 分类下强调：即使 progressive 测试 return 0 被修复，XOR 组合回退路径也存在验证逻辑错误，会允许无效依赖进入 sqrt 阶段。
-- **建议**: 见 P2 条目。
 
 ### [TEST] test_sqrt 时序断言易 flaky
 - **发现日期**: 2026-03-14
