@@ -225,7 +225,7 @@ public:
         // Use log2 to avoid overflow in the check itself.
         uint64_t abs_a = (a >= 0) ? static_cast<uint64_t>(a) : static_cast<uint64_t>(-(a + 1)) + 1;
         uint64_t max_val = std::max(abs_a, b);
-        if (max_val > 1 && degree_ >= 3) {
+        if (max_val > 1) {
             // Find max |coefficient|
             double max_coeff_log2 = 0;
             for (uint32_t i = 0; i <= degree_; ++i) {
