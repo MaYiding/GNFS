@@ -432,6 +432,7 @@ private:
     /// 大素数 (p ≥ width): bucket apply（预排序命中，无空循环）
     void sieve_row_major(const std::vector<PrimeEntry>& primes) {
         const size_t w = static_cast<size_t>(region_.i_width());
+        assert(w <= UINT16_MAX && "sieve width exceeds BucketEntry::offset uint16_t range");
         const uint32_t bucket_threshold = static_cast<uint32_t>(w);
 
         // Phase 0: 全局命中素数（u=0, v=0 → 每个位置都被整除，极罕见）
@@ -488,11 +489,12 @@ private:
     }
 
     /// 紧凑小素数条目（16 bytes vs PrimeEntry 36 bytes → 2.25× cache 效率）
+    /// INVARIANT: bucket_threshold must be <= INT16_MAX (32767) for int16_t fields.
     struct CompactSmallPrime {
         uint32_t p;
         uint16_t log_p;
-        int16_t delta;       // fits in int16: delta < p < bucket_threshold (= width ≤ 4000)
-        int16_t i_min_mod;   // fits in int16: i_min_mod < p < 4000
+        int16_t delta;       // fits in int16: delta < p < bucket_threshold
+        int16_t i_min_mod;   // fits in int16: i_min_mod < p
         int16_t i_mod;       // current carry-forward state, mutable per-thread
         // 12 bytes, padded to 12 (no need for 16)
     };
@@ -512,6 +514,8 @@ private:
                          size_t w, [[maybe_unused]] int32_t i_min, int32_t row_offset) {
 
         // 预分离小素数和 v-primes 为紧凑数组（消除 inner loop flag 检查）
+        assert(bucket_threshold <= INT16_MAX &&
+               "bucket_threshold exceeds int16_t range for CompactSmallPrime");
         std::vector<CompactSmallPrime> small_primes;
         std::vector<VPrimeEntry> v_primes;
         small_primes.reserve(primes.size());
