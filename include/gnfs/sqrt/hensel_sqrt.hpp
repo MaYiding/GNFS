@@ -179,7 +179,7 @@ private:
         for (const auto& [a, b] : ab_pairs) {
             Integer factor(a);
             Integer bm = nf.m().clone();
-            bm *= Integer(static_cast<int64_t>(b));
+            bm *= Integer(b);
             factor -= bm;
             factor %= n;
             if (factor.is_negative()) factor += n;

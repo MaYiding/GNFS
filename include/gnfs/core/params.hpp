@@ -316,8 +316,9 @@ struct GNFSParams {
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
             double lp_bound_d = static_cast<double>(large_prime_bound);
             double alg_bound_d = static_cast<double>(algebraic_bound);
-            double lp_primes = (lp_bound_d - alg_bound_d) /
-                               std::log(std::max(lp_bound_d, 2.0));
+            // Prime counting: π(x) ≈ x/ln(x), so LP primes ≈ π(lp) - π(alg)
+            double lp_primes = lp_bound_d / std::log(std::max(lp_bound_d, 2.0))
+                             - alg_bound_d / std::log(std::max(alg_bound_d, 2.0));
             double key_space = lp_primes * static_cast<double>(std::max(degree, 2u));
             double mc = static_cast<double>(matrix_columns);
 

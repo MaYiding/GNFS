@@ -7,7 +7,7 @@
 |------|------|------|
 | **P1** | 0 | (已全部修复 — Session 61) |
 | **P1-OPT** | 0 | (已清空) |
-| **P2** | 41 | correctness ×24, performance ×9, design ×5, class group ×1, infra ×2 |
+| **P2** | 16 | correctness ×1, performance ×7, design ×4, class group ×1, infra ×2, Pollard rho ×1 |
 | **P3** | 27 | 远期架构 ×7, style ×6, dead code ×4, quality ×8, risk ×2 |
 | **TEST** | 7 | weak assertions ×4, missing coverage ×2, flaky ×1 |
 
@@ -21,169 +21,20 @@
 
 ## P2 — 中优先级
 
+> **Session 62 已修复 25 个正确性条目 + 文档化 3 个设计决策。详见 RESOLVED.md。**
+
 ### 正确性问题
 
-#### [BUG] algebraic_norm_i128 当 b=0 时除零
-- **发现日期**: 2026-03-14
-- **文件**: `core/polynomial_context.hpp:249-259`
-- **描述**: `b_pow /= b_val` 当 b_val=0 时是未定义行为。虽然 GNFS 筛法输出的 b 总是 > 0，但函数无防护。
-- **建议**: 函数入口添加 `if (b == 0) return {0, false};`
-
-#### [BUG] Relation::deserialize 无流错误检查
-- **发现日期**: 2026-03-14
-- **文件**: `core/relation.hpp:150-228`
-- **描述**: `read_and_xor` 不检查流状态。EOF 或 I/O 错误后部分读取产生垃圾数据，checksum 检查因 `if (is)` 为 false 被跳过，腐败关系静默返回。
-- **建议**: `read_and_xor` 内部每次 read 后检查 `is.good()`，失败则 throw。
-
-#### [BUG] Relation::deserialize 无界 resize/reserve
-- **发现日期**: 2026-03-14
-- **文件**: `core/relation.hpp:175,181,189,200,213`
-- **描述**: `rat_count`, `alg_count` 等直接从流读取后用于 `resize`/`reserve`，无上界验证。腐败数据可导致 OOM。
-- **建议**: 添加 `MAX_FACTORS = 1 << 20` 等上界检查。
-
-#### [BUG] CompactSmallPrime int16_t 对大筛区脆弱
-- **发现日期**: 2026-03-14
-- **文件**: `sieve/lattice_sieve.hpp:490-497`
-- **描述**: `delta`, `i_min_mod`, `i_mod` 为 `int16_t`。当前默认 sieve_width=32768 时恰好安全（素数 < 32768，delta ≤ 32766）。但如果 sieve width 增大到 > 32768，int16_t 会静默截断。没有 assert 保护。
-- **建议**: 添加 `static_assert` 或运行时断言 `bucket_threshold <= INT16_MAX`，或改用 `int32_t`。
-
-#### [BUG] RelationCollector::relations() 线程不安全引用
-- **发现日期**: 2026-03-14
-- **文件**: `relation/collector.hpp:174-176`
-- **描述**: 返回 `const vector<Relation>&` 而不持锁。其他线程调用 `add()` 时 vector 可能重新分配，导致引用悬挂。对比 `get_relations()` 正确地在锁下克隆。
-- **建议**: 移除 `relations()` 或添加文档说明只能在无并发修改时调用。
-
-#### [BUG] RelationCollector::merge() 自我合并死锁
-- **发现日期**: 2026-03-14
-- **文件**: `relation/collector.hpp:246-248`
-- **描述**: `std::scoped_lock lock(mutex_, other.mutex_)` 当 `this == &other` 时尝试重复获取同一 `std::mutex`（不可重入），是未定义行为。
-- **建议**: 入口添加 `if (this == &other) return 0;`
-
-#### [BUG] GFPolyOps::mul uint64 乘法溢出
-- **发现日期**: 2026-03-14
-- **文件**: `linalg/schirokauer.hpp:76`
-- **描述**: `a[i] * b[j]` 是 `uint64_t` 乘法，当 ℓ > 2 时系数可接近 p-1，乘积溢出。当前主路径 ℓ=2 安全（系数 0 或 1），但 `divmod` (line 91) 和 `powmod` 同样有此问题。
-- **建议**: 中间乘积用 `__uint128_t`。
-
-#### [BUG] Schirokauer edf 固定 RNG 种子
-- **发现日期**: 2026-03-14
-- **文件**: `linalg/schirokauer.hpp:199`
-- **描述**: `std::mt19937 rng(12345 + d)` 固定种子。若随机多项式恰好对特定输入无法分裂，200 次尝试全部失败，且每次调用结果相同。
-- **建议**: 改用 `std::random_device{}()` 或从调用者传入 RNG。
-
-#### [BUG] Schirokauer ell_k 溢出无检查
-- **发现日期**: 2026-03-14
-- **文件**: `linalg/schirokauer.hpp:797-799`
-- **描述**: `info.ell_k *= ell` 循环无溢出保护。当前 k=8, ell=2 安全（ell_k=256），但 config 无上界约束。
-- **建议**: 添加 `assert(k <= 40 || ell == 2)` 或用 `__uint128_t`。
-
-#### [BUG] number_field reduce() 假设 monic 多项式
-- **发现日期**: 2026-03-14
-- **文件**: `sqrt/number_field.hpp:436-466`
-- **描述**: `reduce()` 减去 `high_coeff * f_coeffs_[i]` 时不除 `f_coeffs_[degree_]`，对非 monic 多项式结果错误。`multiply()` 和 `power()` 调用此函数。虽然当前 `power()` 似未被生产代码调用（`power_mod_n` 用 `multiply_mod_n`），但这是隐蔽的正确性陷阱。
-- **建议**: 添加 `assert(f_coeffs_[degree_].is_one())` 或实现非 monic 版本。
-
-#### [BUG] couveignes.hpp expected_product 计算后从未使用
-- **发现日期**: 2026-03-14
-- **文件**: `sqrt/couveignes.hpp:213-217`
-- **描述**: 完整的 `NumberFieldElement` 乘积通过 O(n·d²) 次多项式乘法计算，但结果从未被验证使用。纯浪费。这是旧验证代码被移除后的残留。
-- **建议**: 删除 lines 213-217 的 `expected_product` 计算。
-
-#### [BUG] classify_cofactor PrimePower 大于 LP bound 的 fallthrough
-- **发现日期**: 2026-03-14
-- **文件**: `cofactor/smooth_check.hpp:312-319`
-- **描述**: 当余因子是 `p^k`（p 是素数但 p > large_prime_bound）时，内层 if 失败，函数跌落到 Pollard rho / ECM 路径，浪费计算。应直接返回 `TooLarge`。
-- **建议**: `is_perfect_power` 块内添加 `else { result.type = CofactorClass::TooLarge; return result; }`。
-
-#### [BUG] filter.hpp 2LP merge 只处理 weight-2，忽略 weight-3+
-- **发现日期**: 2026-03-14
-- **文件**: `relation/filter.hpp:398-411`
-- **描述**: `if (indices.size() != 2) continue;` 跳过 weight ≥ 3 的 LP 键。标准 GNFS 可以通过链式合并处理 weight-3 键。当前设计保守但可能丢弃有效可合并的部分关系。
-- **建议**: 记录此限制。未来可实现 weight-3 链式合并（合并最便宜的两个）。
-
-#### [BUG] SGE w2-merge 后 col_to_rows 过时
-- **发现日期**: 2026-03-14
-- **文件**: `linalg/sge.hpp:183-228`
-- **描述**: `xor_with(r1, r2)` 后，r1 的列集变化，但 `col_to_rows` 未更新——r1 不再拥有的列仍指向 r1，r1 新获得的列未添加 r1。同一 pass 内后续 w2 决策基于过时数据，可能产生错误的行组合。
-- **建议**: 每次 w2-merge 后重建 `col_to_rows`（较慢），或每 pass 只处理一个 w2 列然后 break 强制重建。
-
-#### [BUG] matrix_builder collect_large_primes uint8_t 指数累积溢出
-- **发现日期**: 2026-03-14
-- **文件**: `linalg/matrix_builder.hpp:401-420`
-- **描述**: `std::unordered_map<uint64_t, uint8_t> rat_exp` 累加多个 `PrimePower::e`，在合并关系后同一 LP 指数可能超过 255，静默溢出导致奇偶检测 (`exp % 2`) 错误。
-- **建议**: 改用 `uint32_t` 或 `uint16_t` 作为指数累积类型。
-
-#### [BUG] LP 素数计数公式分母错误导致关系目标低估 ~22%
-- **发现日期**: 2026-03-14
-- **文件**: `core/params.hpp:319-320`
-- **描述**: `lp_primes = (lp_bound - alg_bound) / ln(lp_bound)`，正确公式应为 `π(lp_bound) - π(alg_bound) ≈ lp_bound/ln(lp_bound) - alg_bound/ln(alg_bound)`。25-digit 实测：正确值 ~19746，代码计算 ~12040（低估 39%），导致 `n_min` 低估 ~22%。关系目标不足可能导致矩阵行过少、依赖不足。
-- **建议**: `double lp_primes = lp_bound_d / log(lp_bound_d) - alg_bound_d / log(max(alg_bound_d, 2.0));`
-
-#### [BUG] Pollard rho 非标准 Brent 结构浪费 2× 函数求值
-- **发现日期**: 2026-03-14
-- **文件**: `cofactor/smooth_check.hpp:228-253`
-- **描述**: 每 phase 先空推进 y 步 r 步（无乘积累积），再累积另外 r 步乘积。标准 Brent 仅需 r 步。相当于 2× 函数求值，与注释声称的"减少 36%"相反。算法仍正确（能找到因子），但在固定 `max_iterations` 预算下效率减半。
-- **建议**: 移除第一个空推进循环，直接在唯一的内循环中累积乘积。
-
-#### [BUG] merge_all() 末尾丢弃未合并的原始 2LP 关系
-- **发现日期**: 2026-03-14
-- **文件**: `relation/filter.hpp:446-449`
-- **描述**: `if (rel.is_merged()) full_results.push_back(...)` 用 `extra_ab_pairs.empty()` 判断是否合并过。原始 2LP 关系从未参与合并（`extra_ab_pairs` 为空），但可能有存活的 LP 键适合作为矩阵 LP 列。这些关系被静默丢弃。
-- **建议**: 明确文档是否故意丢弃（防 LP 列爆炸），或改为也保留有 ≥2 存活 LP 键的原始关系。
-
-#### [BUG] build_row_with_qc 的 build_row() 基调用不设 sign 列
-- **发现日期**: 2026-03-14
-- **文件**: `linalg/matrix_builder.hpp:582`
-- **描述**: `build_row()` 注释说"sign 不在此设置"。但若直接调用 `build()`（非 `build_with_qc()`），sign 列永远为 0，即使 `include_sign_column = true`。sign 列错误的矩阵会导致 BL 找到非法依赖。
-- **建议**: 在 `build()` 中添加 `assert(!config_.include_sign_column)` 或将 sign 计算移入 `build_row()`。
-
-#### [BUG] Miller-Rabin 7-witness 对 >3.4×10^14 仅概率性
-- **发现日期**: 2026-03-14
-- **文件**: `cofactor/smooth_check.hpp:83-93`
-- **描述**: 注释声称 7-witness 集 {2,3,5,7,11,13,17} 覆盖全部 uint64，但 Jaeschke 1993 仅证明到 341,550,071,728,321 (~3.4×10^14)。对更大余因子（50-digit+ 的 LP^2 可达 ~10^18），测试是概率性的。Jim Sinclair 全 uint64 确定性需要 {2,3,5,7,11,13,17,19,23,29,31,37}（12 witnesses）。
-- **建议**: else 分支增加 witnesses 19,23（至少 9 个）或使用完整 Sinclair 集。
-
-#### [BUG] BucketEntry::offset uint16_t 对宽筛区溢出
-- **发现日期**: 2026-03-14
-- **文件**: `sieve/lattice_sieve.hpp:235-238, 416`
-- **描述**: `BucketEntry::offset` 是 `uint16_t`（max 65535）。极端 skewness（如 1,000,000）下 `i_width` 可达数百万，offset 截断导致 bucket 素数写入错误列位置，进而 `sieve_array_[row_base + entry.offset]` 可能越界写入。
-- **建议**: 改用 `uint32_t`，或在 `default_sieve_region` 中硬上限 `i_width ≤ 65535`。
-
-#### [BUG] ModularPoly::add() 大素数 uint64 溢出
-- **发现日期**: 2026-03-14
-- **文件**: `sqrt/modular_poly.hpp:79`
-- **描述**: `uint64_t sum = a.coeff(i) + b.coeff(i);` 当 p ≥ 2^63 时，两个 [0,p-1] 范围的系数相加溢出 uint64_t。当前 Hensel 使用小素数（~10-30 bit）不会触发，但类型契约错误。
-- **建议**: 用 `__uint128_t` 中间和或无溢出形式：`(ai >= p - bi) ? ai - (p - bi) : ai + bi`。
-
-#### [BUG] norm_linear 与 algebraic_norm 符号不一致
-- **发现日期**: 2026-03-14
-- **文件**: `sqrt/number_field.hpp:421-425` vs `core/polynomial_context.hpp:156-179`
-- **描述**: `NumberField::norm_linear()` 无条件取绝对值返回 |N|，但 `PolynomialContext::algebraic_norm()` 返回带符号 N。奇次多项式负范数时两函数结果不同。调用者混用两函数会得到不一致的符号。
-- **建议**: 统一符号约定或在 `norm_linear()` 中保留符号，让调用者决定是否取绝对值。
-
-#### [BUG] RelationCollector::merge() 和 load() 跳过 validate()
-- **发现日期**: 2026-03-14
-- **文件**: `relation/collector.hpp:229-242, 250-263`
-- **描述**: `merge()` 从其他 collector 复制关系时不调 `validate()`——b=0 或 gcd(|a|,|b|)≠1 的无效关系绕过全部验证。`load()` 从磁盘反序列化时同理。`add()` 正确调用了 `validate()`，但这两个路径遗漏。
-- **建议**: 在 `merge()` 和 `load()` 的内循环中添加 `validate()` 调用。
-
-#### [BUG] compute_product_at_m uint64_t b 转 int64_t UB
-- **发现日期**: 2026-03-14
-- **文件**: `sqrt/hensel_sqrt.hpp:182`
-- **描述**: `bm *= Integer(static_cast<int64_t>(b));` 当 b > INT64_MAX 时是未定义行为。项目已有 `Integer(uint64_t)` 构造函数（Session 12 添加），应直接使用。
-- **建议**: `bm *= Integer(b);`
-
 #### [BUG] Schirokauer compute_unsplit 缺少非单位元素防御
-- **发现日期**: 2026-03-14（第三轮修正：P1→P2，因 gcd(|a|,|b|)=1 约束使其不可达）
+- **发现日期**: 2026-03-14（P1→P2：gcd(|a|,|b|)=1 约束使其不可达）
 - **文件**: `linalg/schirokauer.hpp:628`
-- **描述**: `compute_unsplit` 不检查 `g = a - bα` 是否为 ℓ-adic 单位。若两系数同时为 ℓ 倍数则 `(0-1)/ℓ mod ℓ` 产生错误值。但 `gcd(|a|,|b|) = 1` 保证对素数 ℓ 不会同时整除。与 `compute_split`（有 ℓ-stripping）不一致。
+- **描述**: `compute_unsplit` 不检查 `g = a - bα` 是否为 ℓ-adic 单位。但 `gcd(|a|,|b|) = 1` 保证对素数 ℓ 不会同时整除。与 `compute_split`（有 ℓ-stripping）不一致。
 - **建议**: 添加 `assert` 或与 split 路径统一。
 
-#### [BUG] algebraic_norm_i128 溢出检查跳过 degree < 3
-- **发现日期**: 2026-03-14
-- **文件**: `core/polynomial_context.hpp:228-240`
-- **描述**: 溢出保护只对 `max_val > 1 && degree_ >= 3` 生效。degree=1 或 2 且系数大（60-bit）时，`ci * a_power * b_pow` 可溢出 `__int128` 而不被捕获。
-- **建议**: 将溢出检查扩展到所有 degree。
+#### [OPT] Pollard rho 非标准 Brent 结构浪费 2× 函数求值
+- **发现日期**: 2026-03-14（Session 62 尝试修复后回退 — 移除 pre-advance 导致发散）
+- **文件**: `cofactor/smooth_check.hpp:228-253`
+- **描述**: 双距离 Brent 变体：每 phase 先空推进 r 步再累积 r 步。非标准但可工作。标准 Brent 移除 pre-advance 会导致某些输入发散。如需优化需更彻底的重写。
 
 ### 性能问题
 

@@ -73,7 +73,9 @@ struct GFPolyOps {
         for (size_t i = 0; i < a.size(); ++i) {
             if (a[i] == 0) continue;
             for (size_t j = 0; j < b.size(); ++j) {
-                r[i + j] = (r[i + j] + a[i] * b[j]) % p;
+                // Use __uint128_t to avoid overflow when coefficients approach p-1
+                __uint128_t prod = static_cast<__uint128_t>(a[i]) * b[j];
+                r[i + j] = static_cast<uint64_t>((r[i + j] + prod % p) % p);
             }
         }
         return trim(r);
@@ -88,11 +90,12 @@ struct GFPolyOps {
         Poly q(a.size() - b.size() + 1, 0);
         for (int i = static_cast<int>(a.size()) - 1;
              i >= static_cast<int>(b.size()) - 1; --i) {
-            uint64_t c = a[i] * b_inv % p;
+            uint64_t c = static_cast<uint64_t>(static_cast<__uint128_t>(a[i]) * b_inv % p);
             q[i - (static_cast<int>(b.size()) - 1)] = c;
             for (size_t j = 0; j < b.size(); ++j) {
+                uint64_t cb = static_cast<uint64_t>(static_cast<__uint128_t>(c) * b[j] % p);
                 a[i - (static_cast<int>(b.size()) - 1) + j] =
-                    (a[i - (static_cast<int>(b.size()) - 1) + j] + p - c * b[j] % p) % p;
+                    (a[i - (static_cast<int>(b.size()) - 1) + j] + p - cb) % p;
             }
         }
         return {trim(q), trim(a)};
@@ -196,7 +199,7 @@ struct GFPolyOps {
         if (static_cast<uint32_t>(f.size() - 1) == d) return {f};
         if (f.size() <= 1) return {};
 
-        std::mt19937 rng(12345 + d);
+        std::mt19937 rng(std::random_device{}());
         for (int attempt = 0; attempt < 200; ++attempt) {
             Poly t(f.size() - 1, 0);
             for (size_t i = 0; i < t.size(); ++i) t[i] = rng() % p;
@@ -793,9 +796,10 @@ private:
         PrimeInfo info;
         info.ell = ell;
 
-        // Compute ℓ^k
+        // Compute ℓ^k (with overflow check)
         info.ell_k = 1;
         for (uint32_t i = 0; i < k; ++i) {
+            assert(info.ell_k <= UINT64_MAX / ell && "ell^k overflow");
             info.ell_k *= ell;
         }
         info.ell_k_minus_1 = info.ell_k / ell;

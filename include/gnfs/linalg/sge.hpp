@@ -162,17 +162,10 @@ public:
                 }
             }
 
-            // Phase 2: Weight-2 列合并
+            // Phase 2: Weight-2 列合并（每次合并后 break 重建 col_to_rows）
             if (config.eliminate_weight2) {
-                // 收集所有 weight-2 列（快照，因为合并过程中权重会变）
-                std::vector<uint32_t> w2_cols;
+                bool did_merge = false;
                 for (uint32_t c = 0; c < n_cols; ++c) {
-                    if (col_alive[c] && col_to_rows[c].size() == 2) {
-                        w2_cols.push_back(c);
-                    }
-                }
-
-                for (uint32_t c : w2_cols) {
                     if (!col_alive[c]) continue;
                     if (col_to_rows[c].size() != 2) continue;
 
@@ -188,7 +181,6 @@ public:
                     auto& comp2 = composition[r2];
                     // GF(2) XOR: 合并两个组成列表，去重（偶数次出现的抵消）
                     comp1.insert(comp1.end(), comp2.begin(), comp2.end());
-                    // 排序 + 去除偶数次出现的元素
                     std::sort(comp1.begin(), comp1.end());
                     std::vector<size_t> deduped;
                     deduped.reserve(comp1.size());
@@ -205,28 +197,25 @@ public:
                     }
                     comp1 = std::move(deduped);
 
-                    // 标记 r2 为死亡
+                    // 标记 r2 为死亡，消除列 c
                     row_alive[r2] = false;
                     --alive_rows;
-
-                    // 消除列 c
                     col_alive[c] = false;
                     --alive_cols;
 
-                    // 更新 col_to_rows: 移除 r2，更新 r1
-                    // 由于 row[r1] 已经 XOR 了 row[r2]，列 c 在 r1 中被消除
-                    // 其他列的变化需要在下一轮 pass 重新扫描
-                    for (auto c2 : working_rows[r2].indices()) {
-                        if (c2 < n_cols && col_alive[c2]) {
-                            auto& rows = col_to_rows[c2];
-                            rows.erase(
-                                std::remove(rows.begin(), rows.end(), r2),
-                                rows.end());
-                        }
-                    }
-
                     ++eliminated_this_pass;
                     ++result.weight2_merged;
+
+                    // XOR changes r1's column set — col_to_rows is now stale.
+                    // Break to rebuild from scratch on next pass iteration.
+                    did_merge = true;
+                    break;
+                }
+
+                // If a w2 merge happened, restart pass to rebuild col_to_rows
+                if (did_merge) {
+                    --pass;  // Counteract the ++pass at end of loop
+                    continue;
                 }
             }
 

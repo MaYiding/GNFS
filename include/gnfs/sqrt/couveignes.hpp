@@ -210,13 +210,6 @@ public:
         // Extra primes beyond 16 are always kept positive (arbitrary but consistent)
         uint64_t max_patterns = 1ULL << num_to_search;
 
-        // Precompute expected product ONCE
-        NumberFieldElement expected_product = nf.one();
-        for (const auto& [a, b] : ab_pairs) {
-            auto factor = nf.from_ab(a, b);
-            expected_product = nf.multiply_mod_n(expected_product, factor);
-        }
-
         // --- Step 1: Precompute CRT weights ---
         // weight[j][i] = c_ij * M_j * M_j_inv mod M  (for each prime j, coefficient i)
         // When sign[j] is flipped, we subtract 2 * weight[j][i] from coeff[i]

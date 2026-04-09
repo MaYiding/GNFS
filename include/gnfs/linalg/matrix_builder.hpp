@@ -398,7 +398,7 @@ private:
 
         for (const auto& rel : relations) {
             // 有理侧：按素数累计指数，只收集奇数指数的
-            std::unordered_map<uint64_t, uint8_t> rat_exp;
+            std::unordered_map<uint64_t, uint32_t> rat_exp;
             for (const auto& lp : rel.rational_large_prime) {
                 rat_exp[lp.p] += lp.e;
             }
@@ -409,7 +409,7 @@ private:
             }
 
             // 代数侧：按 (p,r) 素理想累计指数，只收集奇数指数的
-            std::unordered_map<PrimeIdealKey, uint8_t, PrimeIdealKeyHash> alg_exp;
+            std::unordered_map<PrimeIdealKey, uint32_t, PrimeIdealKeyHash> alg_exp;
             for (const auto& lp : rel.algebraic_large_prime) {
                 alg_exp[{lp.p, lp.r}] += lp.e;
             }
@@ -559,13 +559,14 @@ private:
         return deg(a) >= 1;
     }
 
-    /// 设置列映射
+    /// 设置列映射（无 QC 版本 — build_row 不设 sign 列，强制禁用）
     void setup_column_mapping(ColumnMapping& mapping,
                               const FactorBase& fb,
                               const LargePrimeInfo& lp_info) const {
 
-        // 符号列
-        mapping.has_sign_column = config_.include_sign_column;
+        // build_row() cannot compute sign (needs PolynomialContext),
+        // so force sign column off to avoid all-zero sign column
+        mapping.has_sign_column = false;
         mapping.sign_column = 0;
 
         // 因子基列

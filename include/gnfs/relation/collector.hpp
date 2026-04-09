@@ -170,7 +170,8 @@ public:
         return result;
     }
 
-    /// 获取关系的只读引用
+    /// 获取关系的只读引用（NOT thread-safe — caller must ensure no concurrent add()）
+    /// For thread-safe access, use get_relations() which copies under lock.
     [[nodiscard]] const std::vector<Relation>& relations() const noexcept {
         return relations_;
     }
@@ -231,6 +232,8 @@ public:
             auto rel = Relation::deserialize(ifs);
             if (!ifs) return false;
 
+            if (!validate(rel)) continue;
+
             if (config_.check_duplicates) {
                 seen_.insert(rel.ab());
             }
@@ -244,11 +247,14 @@ public:
 
     /// 合并另一个收集器的关系
     size_t merge(const RelationCollector& other) {
+        if (this == &other) return 0;  // Self-merge: UB with std::mutex
         std::scoped_lock lock(mutex_, other.mutex_);
 
         size_t added = 0;
         for (const auto& rel : other.relations_) {
             Relation copy = rel.clone();
+
+            if (!validate(copy)) continue;
 
             // 检查重复
             if (config_.check_duplicates) {
