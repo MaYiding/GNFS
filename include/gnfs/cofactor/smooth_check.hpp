@@ -319,6 +319,10 @@ struct CofactorClassification {
                 result.factor1 = base;
                 result.power = exp;
                 return result;
+            } else {
+                // base > LP bound or composite base — no point trying rho/ECM
+                result.type = CofactorClass::TooLarge;
+                return result;
             }
         }
 
