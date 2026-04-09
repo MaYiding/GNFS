@@ -517,11 +517,15 @@ private:
             }
         }
 
-        // 排序
+        // 排序 + 去重
         std::sort(result.begin(), result.end(),
             [](const Integer& a, const Integer& b) {
                 return a < b;
             });
+        result.erase(std::unique(result.begin(), result.end(),
+            [](const Integer& a, const Integer& b) {
+                return a == b;
+            }), result.end());
 
         return result;
     }
