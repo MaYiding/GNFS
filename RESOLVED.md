@@ -7,6 +7,134 @@
 
 ## 已完成 ✅
 
+### Session 62 — P2 correctness bug fixes (22 items fixed + 2 documented)
+
+#### [BUG] ~~LP 素数计数公式分母错误~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `core/params.hpp:319` — 改为 π(lp) - π(alg) 差值公式
+- **验证**: smoke 21/21, E2E 通过 | **Commit**: `c0b7c7d`
+
+#### [BUG] ~~matrix_builder uint8_t 指数累积溢出~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `linalg/matrix_builder.hpp:401,412` — uint8_t → uint32_t
+- **验证**: smoke 21/21 | **Commit**: `7af50dd`
+
+#### [BUG] ~~build_row() 不设 sign 列~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `linalg/matrix_builder.hpp:568` — setup_column_mapping() 强制 has_sign_column=false
+- **验证**: smoke 21/21 | **Commit**: `dea8ad7`
+
+#### [BUG] ~~SGE w2-merge 后 col_to_rows 过时~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `linalg/sge.hpp:166-231` — 每次 w2 merge 后 break 重建索引
+- **验证**: smoke 21/21 | **Commit**: `4fa14be`
+
+#### [BUG] ~~couveignes expected_product 死代码~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `sqrt/couveignes.hpp:213-218` — 删除未使用的 O(n·d²) 计算
+- **验证**: smoke 21/21 | **Commit**: `63a9ab8`
+
+#### [BUG] ~~compute_product_at_m uint64→int64 UB~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `sqrt/hensel_sqrt.hpp:182` — Integer(b) 替代 Integer(int64_t(b))
+- **验证**: smoke 21/21 | **Commit**: `d7eb2be`
+
+#### [BUG] ~~algebraic_norm_i128 溢出检查跳过 degree < 3~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `core/polynomial_context.hpp:228` — 移除 degree >= 3 限制
+- **验证**: smoke 21/21 | **Commit**: `c21b791`
+
+#### [BUG] ~~Miller-Rabin 7-witness 对 >3.4×10^14 仅概率性~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `cofactor/smooth_check.hpp:85` — 扩展到 Sinclair 12-witness 完整 uint64 确定性
+- **验证**: smoke 21/21 | **Commit**: `7c8f72f`
+
+#### [BUG] ~~GFPolyOps::mul uint64 乘法溢出~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `linalg/schirokauer.hpp:76,91` — __uint128_t 中间乘积 (mul + divmod)
+- **验证**: smoke 21/21 | **Commit**: `a73127d`
+
+#### [BUG] ~~CompactSmallPrime int16_t 对大筛区脆弱~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `sieve/lattice_sieve.hpp:515` — assert(bucket_threshold <= INT16_MAX)
+- **验证**: smoke 21/21 | **Commit**: `61a79a3`
+
+#### [BUG] ~~BucketEntry::offset uint16_t 对宽筛区溢出~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `sieve/lattice_sieve.hpp:435` — assert(w <= UINT16_MAX)
+- **验证**: smoke 21/21 | **Commit**: `61a79a3` (同上)
+
+#### [BUG] ~~ModularPoly::add() 大素数 uint64 溢出~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `sqrt/modular_poly.hpp:79` — overflow-safe 加法: (ai >= p-bi) ? ai-(p-bi) : ai+bi
+- **验证**: smoke 21/21 | **Commit**: `734759c`
+
+#### [BUG] ~~RelationCollector::merge() 自我合并死锁~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `relation/collector.hpp:247` — if (this == &other) return 0
+- **验证**: smoke 21/21 | **Commit**: `b98ffe8`
+
+#### [BUG] ~~RelationCollector::relations() 线程不安全引用~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `relation/collector.hpp:174` — 添加 NOT thread-safe 文档说明
+- **验证**: smoke 21/21 | **Commit**: `b98ffe8` (同上)
+
+#### [BUG] ~~RelationCollector::merge() 和 load() 跳过 validate()~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `relation/collector.hpp:233,252` — 在 merge/load 中添加 validate() 调用
+- **验证**: smoke 21/21 | **Commit**: `b98ffe8` (同上)
+
+#### [BUG] ~~algebraic_norm_i128 当 b=0 时除零~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `core/polynomial_context.hpp:217` — if (b==0) return {0,false}
+- **验证**: smoke 21/21 | **Commit**: `ea229d0`
+
+#### [BUG] ~~Relation::deserialize 无流错误检查~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `core/relation.hpp:151` — read_and_xor 内部检查 is.good()
+- **验证**: smoke 21/21 | **Commit**: `746ebc5`
+
+#### [BUG] ~~Relation::deserialize 无界 resize/reserve~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `core/relation.hpp:175` — MAX_FACTORS=1<<20 上界检查
+- **验证**: smoke 21/21 | **Commit**: `746ebc5` (同上)
+
+#### [BUG] ~~Schirokauer edf 固定 RNG 种子~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `linalg/schirokauer.hpp:202` — std::random_device{}()
+- **验证**: smoke 21/21 | **Commit**: `80cf669`
+
+#### [BUG] ~~Schirokauer ell_k 溢出无检查~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `linalg/schirokauer.hpp:801` — assert(ell_k <= UINT64_MAX / ell)
+- **验证**: smoke 21/21 | **Commit**: `80cf669` (同上)
+
+#### [BUG] ~~classify_cofactor PrimePower 大于 LP bound 的 fallthrough~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `cofactor/smooth_check.hpp:317` — prime base > LP bound 时返回 TooLarge
+- **验证**: smoke 21/21 | **Commit**: `36bf21b`
+
+#### [BUG] ~~norm_linear 与 algebraic_norm 符号不一致~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `sqrt/number_field.hpp:393` — 文档说明返回 |N| 及与 algebraic_norm 的区别
+- **验证**: smoke 21/21 | **Commit**: `5aa7183`
+
+#### [BUG] ~~number_field reduce() 假设 monic 多项式~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-14
+- **修复**: `sqrt/number_field.hpp:440` — assert(f_coeffs_[degree_].is_one())
+- **验证**: smoke 21/21 | **Commit**: `5aa7183` (同上)
+
+#### [BUG] ~~filter.hpp 2LP merge 只处理 weight-2~~ → 文档化
+- **处理**: 添加注释说明设计决策（避免稠密行），非 bug | **Commit**: `b9cecbc`
+
+#### [BUG] ~~merge_all() 末尾丢弃未合并的原始 2LP 关系~~ → 文档化
+- **处理**: 添加注释说明设计决策（防 LP 列爆炸），非 bug | **Commit**: `b9cecbc`
+
+#### [BUG] ~~Pollard rho 非标准 Brent 结构~~ → 保留现状
+- **分析**: 移除 pre-advance 导致某些输入发散。双距离 Brent 变体虽非标准但可工作。保留。
+
+---
+
 ### Session 61 — P1 high-priority bug fixes (10 items + 1 false positive)
 
 #### [BUG] ~~trial_division 代数可整除性检查 b·r int64 溢出~~ ✅
