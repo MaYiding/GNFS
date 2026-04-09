@@ -146,9 +146,13 @@ struct Relation {
 
     // Deserialize from input stream (v2 format with validation)
     static Relation deserialize(std::istream& is) {
+        static constexpr uint32_t MAX_FACTORS = 1 << 20;  // 1M upper bound
+
         uint64_t checksum = 0;
         auto read_and_xor = [&](void* ptr, size_t n) {
             is.read(reinterpret_cast<char*>(ptr), static_cast<std::streamsize>(n));
+            if (!is.good())
+                throw std::runtime_error("Relation::deserialize: stream read error");
             auto* bytes = reinterpret_cast<const uint8_t*>(ptr);
             for (size_t i = 0; i < n; ++i)
                 checksum ^= static_cast<uint64_t>(bytes[i]) << ((i & 7) * 8);
@@ -172,6 +176,8 @@ struct Relation {
         // Rational factors
         uint32_t rat_count;
         read_and_xor(&rat_count, sizeof(rat_count));
+        if (rat_count > MAX_FACTORS)
+            throw std::runtime_error("Relation::deserialize: rat_count exceeds limit");
         rel.rational_factors.resize(rat_count);
         for (uint32_t i = 0; i < rat_count; ++i)
             read_and_xor(&rel.rational_factors[i], sizeof(uint32_t));
@@ -179,6 +185,8 @@ struct Relation {
         // Algebraic factors
         uint32_t alg_count;
         read_and_xor(&alg_count, sizeof(alg_count));
+        if (alg_count > MAX_FACTORS)
+            throw std::runtime_error("Relation::deserialize: alg_count exceeds limit");
         rel.algebraic_factors.resize(alg_count);
         for (uint32_t i = 0; i < alg_count; ++i)
             read_and_xor(&rel.algebraic_factors[i], sizeof(uint32_t));
@@ -186,6 +194,8 @@ struct Relation {
         // Large primes (rational)
         uint32_t lp_rat_count;
         read_and_xor(&lp_rat_count, sizeof(lp_rat_count));
+        if (lp_rat_count > MAX_FACTORS)
+            throw std::runtime_error("Relation::deserialize: lp_rat_count exceeds limit");
         rel.rational_large_prime.reserve(lp_rat_count);
         for (uint32_t i = 0; i < lp_rat_count; ++i) {
             PrimePower lp;
@@ -198,6 +208,8 @@ struct Relation {
         // Large primes (algebraic)
         uint32_t lp_alg_count;
         read_and_xor(&lp_alg_count, sizeof(lp_alg_count));
+        if (lp_alg_count > MAX_FACTORS)
+            throw std::runtime_error("Relation::deserialize: lp_alg_count exceeds limit");
         rel.algebraic_large_prime.reserve(lp_alg_count);
         for (uint32_t i = 0; i < lp_alg_count; ++i) {
             PrimePower lp;
@@ -210,6 +222,8 @@ struct Relation {
         // Extra (a,b) pairs
         uint32_t extra_count;
         read_and_xor(&extra_count, sizeof(extra_count));
+        if (extra_count > MAX_FACTORS)
+            throw std::runtime_error("Relation::deserialize: extra_count exceeds limit");
         rel.extra_ab_pairs.reserve(extra_count);
         for (uint32_t i = 0; i < extra_count; ++i) {
             int64_t ea, eb;
@@ -221,7 +235,9 @@ struct Relation {
         // Verify checksum
         uint64_t stored_checksum;
         is.read(reinterpret_cast<char*>(&stored_checksum), sizeof(stored_checksum));
-        if (is && checksum != stored_checksum)
+        if (!is.good())
+            throw std::runtime_error("Relation::deserialize: stream read error at checksum");
+        if (checksum != stored_checksum)
             throw std::runtime_error("Relation::deserialize: checksum mismatch");
 
         return rel;
