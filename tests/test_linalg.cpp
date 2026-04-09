@@ -255,11 +255,9 @@ void test_gaussian_larger() {
 
     std::cout << "  Rank: " << result.rank << std::endl;
 
-    // Row 3 = Row 0, Row 4 = Row 1
-    // So rank should be 3 (rows 0, 1, 2 are independent)
-
-    assert(result.rank <= 4);
-    assert(result.rank >= 2);
+    // Row 3 = Row 0, Row 4 = Row 1, Row 2 = Row 0 XOR Row 1 (over GF(2))
+    // So rank is 2 (only rows 0, 1 are independent)
+    assert(result.rank == 2);
 
     std::cout << "  Gaussian (larger): PASSED" << std::endl;
 }
