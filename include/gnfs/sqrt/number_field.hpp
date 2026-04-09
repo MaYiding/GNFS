@@ -4,6 +4,7 @@
 #include "../core/polynomial_context.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <stdexcept>
 #include <vector>
@@ -390,9 +391,10 @@ public:
         return result;
     }
 
-    /// 计算范数 N(a - b*α) (GNFS convention)
+    /// 计算范数 |N(a - b*α)| (GNFS convention, returns absolute value)
     /// N(a - b*α) = b^d * f(a/b)
     /// 展开形式: N = sum_{i=0}^{d} f_i * a^i * b^{d-i}
+    /// NOTE: Returns |N|. For signed norm, use PolynomialContext::algebraic_norm().
     [[nodiscard]] Integer norm_linear(int64_t a, uint64_t b) const {
         Integer result(static_cast<int64_t>(0));
         Integer a_power(1);
@@ -436,6 +438,8 @@ private:
     /// 模 f(x) 归约（纯整数，要求 f 是 monic）
     /// α^d = -(f_0 + f_1*α + ... + f_{d-1}*α^{d-1})
     void reduce(std::vector<Integer>& coeffs) const {
+        assert(f_coeffs_[degree_].is_one() &&
+               "reduce() requires monic f; use reduce_mod() for non-monic");
         // 从最高次项开始归约
         while (coeffs.size() > degree_) {
             size_t high_deg = coeffs.size() - 1;
