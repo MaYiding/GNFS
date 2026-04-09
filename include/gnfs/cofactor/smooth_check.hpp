@@ -231,8 +231,12 @@ struct CofactorClassification {
 
         do {
             x = y;
+            // Brent phase advance: create initial distance
+            for (uint64_t i = 0; i < r && total_evals < max_iterations; ++i, ++total_evals) {
+                y = f(y);
+            }
 
-            // Standard Brent: accumulate |x - y| during the r-step advance
+            // Accumulate |x - y| products, check gcd every BATCH_SIZE
             uint64_t k = 0;
             do {
                 ys = y;
@@ -310,16 +314,19 @@ struct CofactorClassification {
         uint64_t base;
         uint8_t exp;
         if (is_perfect_power(c, base, exp) && exp > 1) {
-            if (is_probable_prime_u64(base) && base <= large_prime_bound) {
-                result.type = CofactorClass::PrimePower;
-                result.factor1 = base;
-                result.power = exp;
-                return result;
-            } else {
-                // base > LP bound or composite base — no point trying rho/ECM
-                result.type = CofactorClass::TooLarge;
-                return result;
+            if (is_probable_prime_u64(base)) {
+                if (base <= large_prime_bound) {
+                    result.type = CofactorClass::PrimePower;
+                    result.factor1 = base;
+                    result.power = exp;
+                    return result;
+                } else {
+                    // Prime base > LP bound — cannot be a valid LP
+                    result.type = CofactorClass::TooLarge;
+                    return result;
+                }
             }
+            // Composite base: fall through to rho/ECM for further factoring
         }
 
         // 检查是否是半素数 (p * q)
