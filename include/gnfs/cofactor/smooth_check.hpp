@@ -259,11 +259,14 @@ struct CofactorClassification {
         // Backtrack: batch product was divisible by n, check individual steps
         if (d == n) {
             d = 1;
-            while (d == 1) {
+            size_t backtrack_steps = 0;
+            constexpr size_t MAX_BACKTRACK = BATCH_SIZE * 2;
+            while (d == 1 && backtrack_steps < MAX_BACKTRACK) {
                 ys = f(ys);
                 uint64_t diff = (x > ys) ? x - ys : ys - x;
                 if (diff == 0) break;
                 d = gcd(diff, n);
+                ++backtrack_steps;
             }
         }
 
