@@ -231,12 +231,8 @@ struct CofactorClassification {
 
         do {
             x = y;
-            // Advance y by r steps (Brent phase advance)
-            for (uint64_t i = 0; i < r && total_evals < max_iterations; ++i, ++total_evals) {
-                y = f(y);
-            }
 
-            // Inner loop: accumulate |x - y| products, check gcd every BATCH_SIZE
+            // Standard Brent: accumulate |x - y| during the r-step advance
             uint64_t k = 0;
             do {
                 ys = y;
