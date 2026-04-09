@@ -199,7 +199,7 @@ struct GFPolyOps {
         if (static_cast<uint32_t>(f.size() - 1) == d) return {f};
         if (f.size() <= 1) return {};
 
-        std::mt19937 rng(12345 + d);
+        std::mt19937 rng(std::random_device{}());
         for (int attempt = 0; attempt < 200; ++attempt) {
             Poly t(f.size() - 1, 0);
             for (size_t i = 0; i < t.size(); ++i) t[i] = rng() % p;
@@ -796,9 +796,10 @@ private:
         PrimeInfo info;
         info.ell = ell;
 
-        // Compute ℓ^k
+        // Compute ℓ^k (with overflow check)
         info.ell_k = 1;
         for (uint32_t i = 0; i < k; ++i) {
+            assert(info.ell_k <= UINT64_MAX / ell && "ell^k overflow");
             info.ell_k *= ell;
         }
         info.ell_k_minus_1 = info.ell_k / ell;
