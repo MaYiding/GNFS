@@ -63,9 +63,9 @@ void test_alpha_computation() {
     double alpha = evaluator.compute_alpha(f);
     std::cout << "  Alpha for x^5-1: " << alpha << std::endl;
 
-    // alpha 应该是负的（小素数整除概率高于平均）
-    // 因为 x^5-1 在许多素数 p 下有根（x=1 总是根）
-    std::cout << "  PASSED" << std::endl;
+    // alpha should be finite; sign depends on alpha_bound and root distribution
+    assert(std::isfinite(alpha));
+    std::cout << "  PASSED (alpha=" << alpha << ")" << std::endl;
 }
 
 /// 测试评分一致性
@@ -103,9 +103,16 @@ void test_score_consistency() {
     std::cout << "  Alpha_f: " << score1.alpha_f << std::endl;
     std::cout << "  Alpha_g: " << score1.alpha_g << std::endl;
 
-    // 分数应该是正的和有限的
+    // 分数应该是有限的
     assert(std::isfinite(score1.e_score));
     assert(std::isfinite(score2.e_score));
+
+    // 两次评分应该接近（采样有随机性但同一输入应相似）
+    if (score1.e_score > 0.0 && score2.e_score > 0.0) {
+        double ratio = score1.e_score / score2.e_score;
+        assert(ratio > 0.5 && ratio < 2.0 &&
+               "Two Murphy E-score evaluations on same input should be within 2x");
+    }
 
     std::cout << "  PASSED" << std::endl;
 }
