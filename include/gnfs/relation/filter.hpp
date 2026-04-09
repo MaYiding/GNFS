@@ -395,6 +395,10 @@ public:
             std::unordered_set<size_t> used;
             std::vector<Relation> new_merged;
 
+            // NOTE: Only weight-2 LP keys are merged. Weight-3+ keys could
+            // be chain-merged in principle, but this conservative strategy avoids
+            // creating overly dense matrix rows. Future: implement weight-3 merge
+            // by pairing the two cheapest relations per LP key.
             for (const auto& [key, indices] : lp_index) {
                 if (indices.size() != 2) continue;
                 size_t i = indices[0], j = indices[1];
@@ -444,6 +448,9 @@ public:
         }
 
         // 收集 pool 中已合并但仍有残留 LP 的关系
+        // NOTE: Unmerged original 2LP relations are intentionally discarded.
+        // Including them would add LP columns that may outnumber their
+        // contribution to the matrix, causing column explosion.
         for (auto& rel : pool) {
             if (rel.is_merged()) full_results.push_back(std::move(rel));
         }
