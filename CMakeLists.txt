@@ -39,6 +39,24 @@ elseif(MSVC)
     add_compile_options(/W4)
 endif()
 
+# Sanitizer 选项
+option(GNFS_ENABLE_ASAN  "Enable AddressSanitizer"        OFF)
+option(GNFS_ENABLE_TSAN  "Enable ThreadSanitizer"         OFF)
+option(GNFS_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
+
+if(GNFS_ENABLE_ASAN)
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address)
+endif()
+if(GNFS_ENABLE_TSAN)
+    add_compile_options(-fsanitize=thread)
+    add_link_options(-fsanitize=thread)
+endif()
+if(GNFS_ENABLE_UBSAN)
+    add_compile_options(-fsanitize=undefined)
+    add_link_options(-fsanitize=undefined)
+endif()
+
 # 导出编译命令（用于 IDE 和 clangd）
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
