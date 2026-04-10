@@ -7,9 +7,9 @@
 |------|------|------|
 | **P1** | 0 | (已全部修复 — Session 61) |
 | **P1-OPT** | 0 | (已清空) |
-| **P2** | 16 | correctness ×1, performance ×7, design ×4, class group ×1, infra ×2, Pollard rho ×1 |
-| **P3** | 27 | 远期架构 ×7, style ×6, dead code ×4, quality ×8, risk ×2 |
-| **TEST** | 7 | weak assertions ×4, missing coverage ×2, flaky ×1 |
+| **P2** | 10 | performance ×7, design ×2, class group ×1 |
+| **P3** | 24 | 远期架构 ×7, style ×6, dead code ×4, quality ×5, risk ×1, LP merge ×1 |
+| **TEST** | 2 | missing coverage ×2 |
 
 ---
 
@@ -21,20 +21,7 @@
 
 ## P2 — 中优先级
 
-> **Session 62 已修复 25 个正确性条目 + 文档化 3 个设计决策。详见 RESOLVED.md。**
-
-### 正确性问题
-
-#### [BUG] Schirokauer compute_unsplit 缺少非单位元素防御
-- **发现日期**: 2026-03-14（P1→P2：gcd(|a|,|b|)=1 约束使其不可达）
-- **文件**: `linalg/schirokauer.hpp:628`
-- **描述**: `compute_unsplit` 不检查 `g = a - bα` 是否为 ℓ-adic 单位。但 `gcd(|a|,|b|) = 1` 保证对素数 ℓ 不会同时整除。与 `compute_split`（有 ℓ-stripping）不一致。
-- **建议**: 添加 `assert` 或与 split 路径统一。
-
-#### [OPT] Pollard rho 非标准 Brent 结构浪费 2× 函数求值
-- **发现日期**: 2026-03-14（Session 62 尝试修复后回退 — 移除 pre-advance 导致发散）
-- **文件**: `cofactor/smooth_check.hpp:228-253`
-- **描述**: 双距离 Brent 变体：每 phase 先空推进 r 步再累积 r 步。非标准但可工作。标准 Brent 移除 pre-advance 会导致某些输入发散。如需优化需更彻底的重写。
+> **Session 62 修复 25 条, Session 63 修复 7 条。详见 RESOLVED.md。**
 
 ### 性能问题
 
@@ -88,23 +75,11 @@
 - **描述**: `Relation::b` 是 `int64_t`，但 `ABPair::b` 和 `SieveCandidate::b` 是 `uint64_t`。GNFS 约定 b > 0。类型不一致导致每个传递点都有隐式窄化转换风险。`rel.ab()` 用 `safe_abs(b)` 恢复——暗示 b 可以为负，但语义上不应该。
 - **建议**: 统一 `Relation::b` 为 `uint64_t`。
 
-#### [BUG] IntPolynomial::discriminant() 对 degree > 2 静默返回 0
-- **发现日期**: 2026-03-14
-- **文件**: `polynomial/int_polynomial.hpp:308-335`
-- **描述**: degree > 2 时返回 `Integer(0)`，而 0 是有效判别值（表示有重根）。调用者无法区分"未实现"和"判别式确实为零"。
-- **建议**: `throw std::logic_error("discriminant not implemented for degree > 2")` 或返回 `std::optional<Integer>`。
-
 #### [DEBT] translate/derivative 在 IntPolynomial 和 PolynomialOptimizer 间重复
 - **发现日期**: 2026-03-14
 - **文件**: `polynomial/int_polynomial.hpp:230,251` + `polynomial/polynomial_optimizer.hpp:118,139`
 - **描述**: `translate()` 和 `derivative()` 两处实现完全相同。未来修复一处不会反映到另一处。
 - **建议**: 统一到一处，另一处委托调用。
-
-#### [DEBT] generate_smooth_coefficients 缺少去重
-- **发现日期**: 2026-03-14
-- **文件**: `polynomial/kleinjung_selector.hpp:501-527`
-- **描述**: 光滑系数生成后只排序不去重（对比 `PolynomialOptimizer::generate_smooth_numbers` 有 `std::unique`）。重复候选流经整个 Stage 1+2 管线，浪费计算。
-- **建议**: 排序后添加 `result.erase(std::unique(...), result.end())`。
 
 ### 基础设施
 
@@ -219,35 +194,11 @@
 - **描述**: 代码使用包含 `V_pprev`（前两步向量）的三步递推，而 Montgomery 1995 论文只使用两步递推（V_cur 和 V_prev）。额外的 `F_cur = V_pprev^T · B · V_cur` 项和 `D_pprev * F_cur` 应用没有已知数学基础。然而所有测试（L1-L5, 25-digit, stress）均通过，可能是有效的变体或冗余项。
 - **建议**: 对比 Montgomery 1995 §3 公式逐项核实。若额外项冗余（恒等于零），则为死代码可移除。若实际影响结果，需确认数学正当性。
 
-#### [RISK] Schirokauer compute_unsplit docstring 引用旧公式 (Bug #3)
-- **发现日期**: 2026-03-14
-- **文件**: `linalg/schirokauer.hpp:529-531`
-- **描述**: 注释写 `λ_ℓ(γ) = (γ^(ℓ^(k-1)(ℓ-1)) - 1) / ℓ^(k-1) mod ℓ`——这是 Session 3 修复的旧错误公式 (Bug #3)。代码实际使用正确的 `ℓ^d - 1` 公式，但注释误导维护者和测试编写者。
-- **建议**: 更正注释为 `λ_ℓ(γ) = (γ^(ℓ^d - 1) - 1) / ℓ mod ℓ`。
-
-#### [DEBT] Pollard rho backtrack 无迭代上限
-- **发现日期**: 2026-03-14
-- **文件**: `cofactor/smooth_check.hpp:256-264`
-- **描述**: `d == n` 时的 backtrack 循环 `while (d == 1)` 无步数上限。若输入是素数幂（`is_perfect_power` 未捕获的边缘情况），backtrack 可能长时间运行直到 cycle 完成。
-- **建议**: 添加 `backtrack_steps < BATCH_SIZE * 2` 上限。
-
 #### [DEBT] LP merge 顺序因 unordered_map 不确定
 - **发现日期**: 2026-03-14
 - **文件**: `relation/filter.hpp:344-359`
 - **描述**: Phase 1 和 Phase 2 遍历 `unordered_map`，迭代顺序依赖实现和 ASLR。相同输入不同运行产生不同 LP 配对，导致合并后关系数不确定，影响可重复性。
 - **建议**: 排序 key 后处理，或使用 `std::map`。
-
-#### [DEBT] try_verify 累积无中间取模
-- **发现日期**: 2026-03-14
-- **文件**: `sqrt/hensel_sqrt.hpp:613-621`
-- **描述**: `c *= mpow[j]` 后 `val += c` 不做中间 `val %= n`。d=6 时 val 可达 6·N² 再做最终取模。GMP 无溢出，但中间值不必要地大，影响乘法性能。
-- **建议**: 每次 `val += c` 后添加 `val %= n`。
-
-#### [DEBT] BlockVector::xor_with 无长度检查
-- **发现日期**: 2026-03-14
-- **文件**: `linalg/block_lanczos.hpp:41-44`
-- **描述**: `xor_with(other)` 用 `this->length` 做循环上界但不检查 `other.length >= length`。当前所有调用者用等长向量，但无强制保证。
-- **建议**: 添加 `assert(other.length >= length)`。
 
 ### Dead Code
 
@@ -279,47 +230,17 @@
 
 ## TEST — 测试质量缺口
 
-### [TEST] test_schirokauer_deg4 未注册到 test.sh
-- **发现日期**: 2026-03-14
-- **文件**: `CMakeLists.txt:374`, `scripts/test.sh`
-- **描述**: 二进制已构建并注册到 ctest（名字还有 typo: SchirokaurDeg4），但完全缺失于 `test.sh` 的 `ALL_TEST_BINARIES`、`MODULE_TESTS`、`TEST_TIMEOUT`、`TEST_TIER` 中。
-- **建议**: 添加到 test.sh 各配置项，修复 ctest 名称 typo。
-
-### [TEST] test_linalg rank 断言过于宽松
-- **发现日期**: 2026-03-14
-- **文件**: `tests/test_linalg.cpp:261-262`
-- **描述**: 已知 rank=3 的 5×4 矩阵，断言却接受 rank ∈ [2,4]。高斯消元回归到 rank=2 或 rank=4 都不会被捕获。
-- **建议**: `assert(result.rank == 3);`
-
 ### [TEST] Schirokauer 回归测试验证公式而非生产代码
 - **发现日期**: 2026-03-14
 - **文件**: `tests/test_regressions.cpp:54-83, 276-313`
 - **描述**: `test_schirokauer_exponent` 和 `test_schirokauer_ell2_only` 在局部变量中计算数学公式并断言——从未调用 `schirokauer.hpp` 中的任何函数。如果生产代码回退到旧公式，测试仍通过。
 - **建议**: 设置 PolynomialContext + 已知 (a,b) 对，调用生产代码计算实际 Schirokauer map 值并断言。
 
-### [TEST] test_concurrent_add 断言空洞
-- **发现日期**: 2026-03-14
-- **文件**: `tests/test_relation_collector.cpp:204`
-- **描述**: 4 线程各插入 100 个关系（键唯一），期望 400 个，但断言只检查 `size() > 0`。即使 399 个丢失也通过。
-- **建议**: `assert(collector.size() == 400);`
-
-### [TEST] test_murphy alpha 符号和 score 数值未断言
-- **发现日期**: 2026-03-14
-- **文件**: `tests/test_murphy.cpp:63-68, 97-110`
-- **描述**: alpha 应为负值（x^5-1 小素数整除性高于平均），但只断言 `isfinite`。score consistency 同理——只断言 `isfinite` 不检查数值接近。
-- **建议**: `assert(alpha < 0.0)` + 相对误差检查。
-
 ### [TEST] test_25digit/test_stress 对 ctest 不可见
 - **发现日期**: 2026-03-14
 - **文件**: `CMakeLists.txt:384-395`
 - **描述**: 二进制编译但无 `add_test()`，`ctest -N` 看不到。`scripts/test.sh` 独立知道路径，形成隐藏依赖。
 - **建议**: 用 `DISABLED` 属性注册到 ctest 以提高可发现性。
-
-### [TEST] test_sqrt 时序断言易 flaky
-- **发现日期**: 2026-03-14
-- **文件**: `tests/test_sqrt.cpp:633-634`
-- **描述**: 30s 内部超时与 test.sh 的 10s 外部超时不匹配。应减至 5s 以快速捕获无限循环回归。
-- **建议**: `assert(elapsed_ms < 5000)` 并确保 test.sh 超时 ≥ 10s。
 
 ---
 
