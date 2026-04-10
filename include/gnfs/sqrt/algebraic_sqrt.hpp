@@ -112,7 +112,7 @@ public:
             const auto& rel = relations[i];
             ab_pairs.emplace_back(rel.a, rel.b);
             for (const auto& [ea, eb] : rel.extra_ab_pairs) {
-                ab_pairs.emplace_back(ea, static_cast<uint64_t>(eb));
+                ab_pairs.emplace_back(ea, eb);
             }
         }
 

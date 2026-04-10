@@ -36,12 +36,11 @@ struct MurphyScore {
 /// Murphy 评估参数
 struct MurphyParams {
     uint32_t sample_points = 2000;          // 积分采样点数
-    double alpha_bound = 1e7;               // alpha 计算的素数上界
+    double alpha_bound = 1e6;               // alpha 计算的素数上界 (was 1e7; 10× smaller sieve)
     uint64_t smoothness_bound = 1000000;    // 光滑性界
     double skewness_min = 1e2;              // skewness 搜索下界
     double skewness_max = 1e10;             // skewness 搜索上界
     uint32_t skewness_steps = 100;          // skewness 网格搜索步数
-    uint32_t seed = 42;                     // (legacy, unused)
 };
 
 /// MurphyEvaluator - Murphy E-score 评估器
@@ -368,20 +367,32 @@ private:
         std::vector<double> log_probs;
         log_probs.reserve(num_points);
 
+        // Precompute skewness powers (was: 3 × std::pow per (i,j) pair)
+        uint32_t max_deg = std::max(d_f, d_g);
+        std::vector<double> skew_pow(max_deg + 1);
+        skew_pow[0] = 1.0;
+        for (uint32_t j = 1; j <= max_deg; ++j)
+            skew_pow[j] = skew_pow[j - 1] * skewness;
+
         for (uint32_t i = 0; i < num_points; ++i) {
             // Midpoint rule: θ = π(i + 0.5) / N
             double theta = M_PI * (i + 0.5) / num_points;
             double ct = std::cos(theta);
             double st = std::sin(theta);
 
+            // Precompute cos/sin powers for this angle
+            std::vector<double> ct_pow(max_deg + 1), st_pow(max_deg + 1);
+            ct_pow[0] = st_pow[0] = 1.0;
+            for (uint32_t j = 1; j <= max_deg; ++j) {
+                ct_pow[j] = ct_pow[j - 1] * ct;
+                st_pow[j] = st_pow[j - 1] * st;
+            }
+
             // F_s(cosθ, sinθ) = Σ f_i · s^i · cos^i(θ) · sin^(d_f-i)(θ)
             double F_val = 0.0;
             for (uint32_t j = 0; j <= d_f; ++j) {
                 double ci = f[j].to_double();
-                double term = ci * std::pow(skewness, static_cast<double>(j))
-                            * std::pow(ct, static_cast<double>(j))
-                            * std::pow(st, static_cast<double>(d_f - j));
-                F_val += term;
+                F_val += ci * skew_pow[j] * ct_pow[j] * st_pow[d_f - j];
             }
             F_val = std::abs(F_val);
 
@@ -389,10 +400,7 @@ private:
             double G_val = 0.0;
             for (uint32_t j = 0; j <= d_g; ++j) {
                 double ci = g[j].to_double();
-                double term = ci * std::pow(skewness, static_cast<double>(j))
-                            * std::pow(ct, static_cast<double>(j))
-                            * std::pow(st, static_cast<double>(d_g - j));
-                G_val += term;
+                G_val += ci * skew_pow[j] * ct_pow[j] * st_pow[d_g - j];
             }
             G_val = std::abs(G_val);
 

@@ -447,6 +447,9 @@ private:
         // Phase 1: 预填充大素数 buckets
         auto buckets = fill_buckets(primes, bucket_threshold);
 
+        // Pre-separate primes once (was per-thread-per-chunk)
+        auto pre = preseparate_primes(primes, bucket_threshold);
+
         // Phase 2: 多线程行处理
         const int32_t j_min = region_.j_min;
         const int32_t j_max = region_.j_max;
@@ -458,7 +461,7 @@ private:
         if (total_rows < 500) num_threads = 1;
 
         if (num_threads <= 1) {
-            sieve_row_chunk(primes, buckets, bucket_threshold,
+            sieve_row_chunk(pre, primes, buckets, bucket_threshold,
                             j_min, j_max, w, i_min, 0);
             return;
         }
@@ -476,8 +479,8 @@ private:
             int32_t row_offset = chunk_start - j_min;
 
             threads.emplace_back(&LatticeSieve::sieve_row_chunk, this,
-                                 std::cref(primes), std::cref(buckets),
-                                 bucket_threshold,
+                                 std::cref(pre), std::cref(primes),
+                                 std::cref(buckets), bucket_threshold,
                                  chunk_start, chunk_end,
                                  w, i_min, row_offset);
             chunk_start = chunk_end + 1;
@@ -505,37 +508,58 @@ private:
         uint16_t log_p;
     };
 
+    /// Pre-separated prime lists (static fields only, built once per SQ)
+    struct PreSeparatedPrimes {
+        std::vector<CompactSmallPrime> small;  // flags==0 && p < bucket_threshold
+        std::vector<VPrimeEntry> v;            // flags==1
+    };
+
+    /// Build pre-separated lists from full PrimeEntry vector (call once per SQ)
+    [[nodiscard]] PreSeparatedPrimes preseparate_primes(
+            const std::vector<PrimeEntry>& primes, uint32_t bucket_threshold) const {
+        PreSeparatedPrimes result;
+        result.small.reserve(primes.size());
+        for (const auto& pe : primes) {
+            if (pe.flags == 1) {
+                result.v.push_back({pe.p, pe.log_p});
+            } else if (pe.flags == 0 && pe.p < bucket_threshold) {
+                result.small.push_back({
+                    pe.p, pe.log_p,
+                    static_cast<int16_t>(pe.delta),
+                    static_cast<int16_t>(pe.i_min_mod),
+                    0  // i_mod filled per-chunk
+                });
+            }
+        }
+        return result;
+    }
+
     /// 处理一段行范围 [j_start, j_end]
     /// 小素数走 stride loop，大素数从 bucket 直接 apply
-    void sieve_row_chunk(const std::vector<PrimeEntry>& primes,
+    void sieve_row_chunk(const PreSeparatedPrimes& pre,
+                         const std::vector<PrimeEntry>& primes,
                          const std::vector<std::vector<BucketEntry>>& buckets,
                          uint32_t bucket_threshold,
                          int32_t j_start, int32_t j_end,
                          size_t w, [[maybe_unused]] int32_t i_min, int32_t row_offset) {
 
-        // 预分离小素数和 v-primes 为紧凑数组（消除 inner loop flag 检查）
+        // Copy pre-separated small primes, compute per-chunk i_mod
         assert(bucket_threshold <= INT16_MAX &&
                "bucket_threshold exceeds int16_t range for CompactSmallPrime");
-        std::vector<CompactSmallPrime> small_primes;
-        std::vector<VPrimeEntry> v_primes;
-        small_primes.reserve(primes.size());
+        auto small_primes = pre.small;  // shallow copy (only i_mod differs)
+        const auto& v_primes = pre.v;
 
-        for (size_t pi = 0; pi < primes.size(); ++pi) {
-            const auto& pe = primes[pi];
-            if (pe.flags == 1) {
-                v_primes.push_back({pe.p, pe.log_p});
-            } else if (pe.flags == 0 && pe.p < bucket_threshold) {
+        // Fill i_mod from initial values + row_offset * delta
+        size_t si = 0;
+        for (const auto& pe : primes) {
+            if (pe.flags == 0 && pe.p < bucket_threshold) {
                 int32_t p32 = static_cast<int32_t>(pe.p);
                 int64_t advanced = static_cast<int64_t>(pe.i_mod_init) +
                                    static_cast<int64_t>(row_offset) * static_cast<int64_t>(pe.delta);
                 int64_t mod = advanced % static_cast<int64_t>(p32);
                 if (mod < 0) mod += p32;
-                small_primes.push_back({
-                    pe.p, pe.log_p,
-                    static_cast<int16_t>(pe.delta),
-                    static_cast<int16_t>(pe.i_min_mod),
-                    static_cast<int16_t>(mod)
-                });
+                small_primes[si].i_mod = static_cast<int16_t>(mod);
+                ++si;
             }
         }
 

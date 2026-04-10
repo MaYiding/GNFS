@@ -311,7 +311,7 @@ public:
                 auto cg_chars = class_group->compute_character(rel.a, rel.b);
 
                 for (const auto& [ea, eb] : rel.extra_ab_pairs) {
-                    auto extra_chars = class_group->compute_character(ea, static_cast<uint64_t>(eb));
+                    auto extra_chars = class_group->compute_character(ea, eb);
                     for (size_t j = 0; j < cg_chars.size(); ++j) {
                         cg_chars[j] = cg_chars[j] ^ extra_chars[j];
                     }
@@ -332,7 +332,7 @@ public:
                 auto sm_values = schirokauer->compute_flat(rel.a, rel.b);
 
                 for (const auto& [ea, eb] : rel.extra_ab_pairs) {
-                    auto extra_sm = schirokauer->compute_flat(ea, static_cast<uint64_t>(eb));
+                    auto extra_sm = schirokauer->compute_flat(ea, eb);
                     for (size_t j = 0; j < sm_values.size(); ++j) {
                         sm_values[j] += extra_sm[j];
                     }
@@ -698,10 +698,10 @@ private:
         // Sign column: product (a_0 - b_0*m)·...·(a_k - b_k*m) is negative
         // iff an odd number of factors are negative → XOR of individual sign bits
         if (mapping.has_sign_column) {
-            auto is_neg = [&](int64_t ai, int64_t bi) {
+            auto is_neg = [&](int64_t ai, uint64_t bi) {
                 Integer v = Integer(ai);
                 Integer bm = ctx.m().clone();
-                bm *= Integer(static_cast<int64_t>(bi));
+                bm *= Integer(bi);
                 v -= bm;
                 return v.is_negative();
             };
@@ -729,10 +729,10 @@ private:
             int64_t q_s = static_cast<int64_t>(q);
 
             // Compute (a - b*r) mod q for primary pair
-            auto compute_legendre_bit = [&](int64_t a, int64_t b) -> bool {
+            auto compute_legendre_bit = [&](int64_t a, uint64_t b) -> bool {
                 int64_t a_mod = ((a % q_s) + q_s) % q_s;
-                int64_t b_mod = ((b % q_s) + q_s) % q_s;
-                uint64_t br = (static_cast<uint64_t>(b_mod) * r) % q;
+                uint64_t b_mod = b % q;
+                uint64_t br = (b_mod * r) % q;
                 int64_t val = (a_mod - static_cast<int64_t>(br) + q_s) % q_s;
                 if (val == 0) return false;  // (0/q) = 0, contributes 0 to GF(2)
                 uint64_t leg = powmod_u64(static_cast<uint64_t>(val), (q - 1) / 2, q);

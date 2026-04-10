@@ -11,6 +11,30 @@ namespace cofactor {
 
 using core::Integer;
 
+/// Precomputed primes in [101, 65521] for trial division Phase 2.
+/// ~6500 primes vs ~32K odd numbers — 4.7× fewer modular divisions.
+[[nodiscard]] inline const std::vector<uint64_t>& get_mid_primes() {
+    static const auto table = []() {
+        std::vector<uint64_t> primes;
+        primes.reserve(6600);
+        // Sieve of Eratosthenes for [101, 65535]
+        constexpr uint64_t LIMIT = 65536;
+        std::vector<bool> is_prime(LIMIT + 1, true);
+        is_prime[0] = is_prime[1] = false;
+        for (uint64_t i = 2; i * i <= LIMIT; ++i) {
+            if (is_prime[i]) {
+                for (uint64_t j = i * i; j <= LIMIT; j += i)
+                    is_prime[j] = false;
+            }
+        }
+        for (uint64_t i = 101; i <= LIMIT; ++i) {
+            if (is_prime[i]) primes.push_back(i);
+        }
+        return primes;
+    }();
+    return table;
+}
+
 /// Cofactor 分类
 enum class CofactorClass : uint8_t {
     Smooth = 0,        // cofactor = 1, 完全光滑
@@ -346,11 +370,13 @@ struct CofactorClassification {
                 if (c % sp == 0) { factor = sp; break; }
             }
 
-            // Phase 2: 小合数直接试除到 sqrt(c)
-            // 对 c < 2^32 (sqrt < 2^16)，用 101-65535 的奇数试除
+            // Phase 2: 素数表试除到 sqrt(c) — 只测素数 (was: 全奇数)
+            // 对 c < 2^32 (sqrt < 2^16)，用 [101..65521] 的素数试除
             if (factor == 1 && c < UINT64_C(0x100000000)) {
+                static const auto& mid_primes = get_mid_primes();
                 uint64_t limit = static_cast<uint64_t>(std::sqrt(static_cast<double>(c))) + 1;
-                for (uint64_t p = 101; p <= limit; p += 2) {
+                for (uint64_t p : mid_primes) {
+                    if (p > limit) break;
                     if (c % p == 0) { factor = p; break; }
                 }
             }

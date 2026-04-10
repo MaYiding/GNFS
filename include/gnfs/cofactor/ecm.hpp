@@ -48,11 +48,14 @@ public:
         uint64_t seed = rd() ^ n_low;
         std::mt19937_64 rng(seed);
 
+        // Pre-compute primes once for all curves (was per-curve: 200×600KB)
+        auto cached_primes = sieve_primes(config.B1);
+
         for (uint32_t curve = 0; curve < config.num_curves; ++curve) {
             // 随机选择 sigma
             uint64_t sigma = (rng() % 1000000) + 6;
 
-            auto result = try_curve(n, sigma, config.B1, config.B2);
+            auto result = try_curve(n, sigma, config.B1, config.B2, cached_primes);
             if (result) {
                 return result;
             }
@@ -329,7 +332,8 @@ private:
 
     /// 尝试一条曲线
     [[nodiscard]] static std::optional<Integer> try_curve(
-            const Integer& n, uint64_t sigma, uint64_t B1, uint64_t B2) {
+            const Integer& n, uint64_t sigma, uint64_t B1, uint64_t B2,
+            const std::vector<uint64_t>& primes_cache = {}) {
 
         // Suyama's parametrization
         Integer u(static_cast<unsigned long long>(sigma * sigma - 5));
@@ -405,7 +409,10 @@ private:
         Point Q(std::move(x0), std::move(z0));
 
         // === Stage 1: 计算 k*Q，其中 k = ∏ p^{floor(log_p(B1))} ===
-        auto primes = sieve_primes(B1);
+        // Use cached primes if provided, else compute (fallback for direct callers)
+        std::vector<uint64_t> primes_local;
+        if (primes_cache.empty()) primes_local = sieve_primes(B1);
+        const auto& primes = primes_cache.empty() ? primes_local : primes_cache;
 
         for (uint64_t p : primes) {
             // 计算 p^e <= B1 的最大 e
