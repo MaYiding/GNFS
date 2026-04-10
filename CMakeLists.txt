@@ -403,14 +403,18 @@ if(GNFS_BUILD_TESTS)
         tests/test_25digit.cpp
     )
     target_link_libraries(test_25digit PRIVATE gnfs_core Threads::Threads)
-    # 不加入 ctest — 手动运行
+    add_test(NAME 25Digit COMMAND test_25digit)
+    set_tests_properties(25Digit PROPERTIES DISABLED TRUE
+        LABELS "heavy" TIMEOUT 600)
 
-    # 压力测试 (50/80/100-digit) — 手动运行
+    # 压力测试 (50/80/100-digit)
     add_executable(test_stress
         tests/test_stress.cpp
     )
     target_link_libraries(test_stress PRIVATE gnfs_core Threads::Threads)
-    # 不加入 ctest — ./test_stress [min_level [max_level]]
+    add_test(NAME Stress COMMAND test_stress 1 1)
+    set_tests_properties(Stress PROPERTIES DISABLED TRUE
+        LABELS "stress" TIMEOUT 43200)
 endif()
 
 # ============================================================
