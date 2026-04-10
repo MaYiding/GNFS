@@ -313,37 +313,36 @@ void test_relation_ab_int64_min() {
 
     using gnfs::core::Relation;
 
-    // Normal case: positive b
+    // Normal case: small b
     {
-        Relation r(5, 3);
+        Relation r(5, 3u);
         auto ab = r.ab();
         assert(ab.a == 5);
         assert(ab.b == 3u);
     }
 
-    // Normal case: negative b
+    // Typical sieve value: b well within range
     {
-        Relation r(5, -3);
+        Relation r(-17, 42u);
         auto ab = r.ab();
-        assert(ab.a == 5);
-        assert(ab.b == 3u);
+        assert(ab.a == -17);
+        assert(ab.b == 42u);
     }
 
-    // Critical case: b = INT64_MIN
-    // |INT64_MIN| = 2^63, which must be represented correctly as uint64_t
+    // Large b (still valid — uint64_t range)
     {
-        Relation r(5, INT64_MIN);
+        Relation r(5, uint64_t(9223372036854775808ull));
         auto ab = r.ab();
         assert(ab.a == 5);
         assert(ab.b == uint64_t(9223372036854775808ull));
     }
 
-    // b = INT64_MAX
+    // b = UINT64_MAX (edge case)
     {
-        Relation r(5, INT64_MAX);
+        Relation r(5, UINT64_MAX);
         auto ab = r.ab();
         assert(ab.a == 5);
-        assert(ab.b == static_cast<uint64_t>(INT64_MAX));
+        assert(ab.b == UINT64_MAX);
     }
 
     std::cout << "  Relation::ab() extreme b: PASS" << std::endl;

@@ -17,7 +17,7 @@ struct Relation {
     using LargePrimeList = std::vector<PrimePower>;
 
     int64_t a = 0;
-    int64_t b = 0;
+    uint64_t b = 0;  // b > 0 always (matches ABPair::b / SieveCandidate::b)
 
     // Rational side factorization: indices into factor base
     std::vector<uint32_t> rational_factors;
@@ -32,19 +32,17 @@ struct Relation {
     // For merged relations: additional (a,b) pairs from constituent relations.
     // The primary (a,b) is in the a/b fields; extra pairs stored here.
     // Sqrt step must process all pairs (primary + extra) for correct computation.
-    std::vector<std::pair<int64_t, int64_t>> extra_ab_pairs;
+    std::vector<std::pair<int64_t, uint64_t>> extra_ab_pairs;
 
     // Default constructor
     Relation() = default;
 
     // Constructor with (a, b) pair
-    // Note: callers passing uint64_t b (sieve/cofactorizer) rely on b << INT64_MAX
-    // (b is bounded by sieve_j_max, typically < 50000). No runtime guard needed.
-    Relation(int64_t a_, int64_t b_) : a(a_), b(b_) {}
+    Relation(int64_t a_, uint64_t b_) : a(a_), b(b_) {}
 
     // Get as ABPair
     [[nodiscard]] ABPair ab() const {
-        return ABPair(a, util::safe_abs(b));
+        return ABPair(a, b);
     }
 
     // Check if valid (b != 0)
@@ -226,7 +224,8 @@ struct Relation {
             throw std::runtime_error("Relation::deserialize: extra_count exceeds limit");
         rel.extra_ab_pairs.reserve(extra_count);
         for (uint32_t i = 0; i < extra_count; ++i) {
-            int64_t ea, eb;
+            int64_t ea;
+            uint64_t eb;
             read_and_xor(&ea, sizeof(ea));
             read_and_xor(&eb, sizeof(eb));
             rel.extra_ab_pairs.emplace_back(ea, eb);

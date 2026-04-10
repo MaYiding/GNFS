@@ -66,7 +66,7 @@ public:
 
             // 检查符号：(a - b*m) 是否为负 (GNFS convention)
             // For merged relations, check all constituent (a,b) pairs
-            auto check_sign = [&](int64_t a_val, int64_t b_val) {
+            auto check_sign = [&](int64_t a_val, uint64_t b_val) {
                 Integer a_minus_bm = Integer(a_val);
                 Integer bm = m.clone();
                 bm *= Integer(b_val);
@@ -153,7 +153,7 @@ public:
             squared %= n;
 
             Integer product(1);
-            auto multiply_ab = [&](int64_t a_val, int64_t b_val) {
+            auto multiply_ab = [&](int64_t a_val, uint64_t b_val) {
                 Integer val = Integer(a_val);
                 Integer bm = m.clone();
                 bm *= Integer(b_val);
