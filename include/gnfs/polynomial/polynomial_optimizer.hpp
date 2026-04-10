@@ -112,78 +112,14 @@ public:
         return newton_root(f, df, initial, n, max_iterations, tolerance);
     }
 
-    /// 计算多项式的导数
-    /// f(x) = a_n*x^n + ... + a_1*x + a_0
-    /// f'(x) = n*a_n*x^{n-1} + ... + a_1
+    /// 计算多项式的导数 — 委托给 IntPolynomial::derivative()
     [[nodiscard]] static IntPolynomial derivative(const IntPolynomial& f) {
-        uint32_t d = f.degree();
-        if (d == 0) {
-            // 常数的导数是 0
-            return IntPolynomial(0);
-        }
-
-        std::vector<Integer> coeffs;
-        coeffs.reserve(d);
-
-        for (uint32_t i = 1; i <= d; ++i) {
-            Integer c = f[i].clone();
-            c *= static_cast<int64_t>(i);
-            coeffs.push_back(std::move(c));
-        }
-
-        return IntPolynomial(std::move(coeffs));
+        return f.derivative();
     }
 
-    /// 多项式平移: 计算 g(x) = f(x + t)
-    /// 使用二项式展开
+    /// 多项式平移: 计算 g(x) = f(x + t) — 委托给 IntPolynomial::translate()
     [[nodiscard]] static IntPolynomial translate(const IntPolynomial& f, int64_t t) {
-        if (t == 0) {
-            return f.clone();
-        }
-
-        uint32_t d = f.degree();
-        std::vector<Integer> new_coeffs(d + 1);
-
-        // 初始化为零
-        for (auto& c : new_coeffs) {
-            c = Integer(static_cast<int64_t>(0));
-        }
-
-        // 二项式展开: f(x+t) = sum_i f[i] * (x+t)^i
-        // (x+t)^i = sum_j C(i,j) * x^j * t^{i-j}
-
-        // 预计算 t 的幂次
-        std::vector<Integer> t_powers(d + 1);
-        t_powers[0] = Integer(static_cast<int64_t>(1));
-        for (uint32_t i = 1; i <= d; ++i) {
-            t_powers[i] = t_powers[i-1].clone();
-            t_powers[i] *= t;
-        }
-
-        // 预计算二项式系数
-        std::vector<std::vector<uint64_t>> binom(d + 1);
-        for (uint32_t i = 0; i <= d; ++i) {
-            binom[i].resize(i + 1);
-            binom[i][0] = 1;
-            binom[i][i] = 1;
-            for (uint32_t j = 1; j < i; ++j) {
-                binom[i][j] = binom[i-1][j-1] + binom[i-1][j];
-            }
-        }
-
-        // 计算新系数
-        for (uint32_t i = 0; i <= d; ++i) {
-            // f[i] * (x+t)^i 对 x^j 的贡献
-            for (uint32_t j = 0; j <= i; ++j) {
-                // 贡献: f[i] * C(i,j) * t^{i-j} 到 x^j
-                Integer term = f[i].clone();
-                term *= static_cast<int64_t>(binom[i][j]);
-                term *= t_powers[i - j];
-                new_coeffs[j] += term;
-            }
-        }
-
-        return IntPolynomial(std::move(new_coeffs));
+        return f.translate(t);
     }
 
     /// 多项式旋转: 计算 g(x) = f(x) + k * h(x)
