@@ -618,8 +618,8 @@ private:
                 if (c.is_negative()) c += n;
                 c *= mpow[j];
                 val += c;
+                val %= n;  // intermediate reduction — avoid d·N² growth
             }
-            val %= n;
             if (val.is_negative()) val += n;
             val *= f_prime_m_inv;
             val %= n;

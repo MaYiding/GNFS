@@ -200,8 +200,8 @@ void test_concurrent_add() {
         th.join();
     }
 
-    // 应该有接近 num_threads * per_thread 个关系（可能有一些被 gcd 调整）
-    assert(collector.size() > 0);
+    // 所有 400 个关系键唯一，应全部保留
+    assert(collector.size() == 400);
 
     std::cout << "  Concurrent add: PASS (" << collector.size() << " relations)" << std::endl;
 }

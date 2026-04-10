@@ -7,6 +7,70 @@
 
 ## 已完成 ✅
 
+### Session 63 — P2 残余修复 + TEST 质量强化 (12 items)
+
+#### [RISK] ~~Schirokauer compute_unsplit docstring 旧公式~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `linalg/schirokauer.hpp:532` — 注释从 `ℓ^(k-1)(ℓ-1)` 改为 `ℓ^d-1`
+- **验证**: smoke 21/21 | **Commit**: `29ced90`
+
+#### [BUG] ~~Schirokauer compute_unsplit 缺少非单位元素防御~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `linalg/schirokauer.hpp:629` — 添加 assert 检查 γ ≢ 0 (mod ℓ)
+- **验证**: smoke 21/21 | **Commit**: `29ced90`
+
+#### [BUG] ~~IntPolynomial::discriminant() degree>2 静默返回 0~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `polynomial/int_polynomial.hpp:334` — 改 throw std::logic_error
+- **验证**: smoke 21/21 | **Commit**: `d7d803e`
+
+#### [DEBT] ~~Pollard rho backtrack 无迭代上限~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `cofactor/smooth_check.hpp:262` — 添加 MAX_BACKTRACK = 2×BATCH_SIZE 上限
+- **验证**: smoke 21/21 | **Commit**: `cba61f7`
+
+#### [DEBT] ~~BlockVector::xor_with 无长度检查~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `linalg/block_lanczos.hpp:42` — 添加 assert(other.length >= length)
+- **验证**: smoke 21/21 | **Commit**: `bceb0da`
+
+#### [DEBT] ~~try_verify 累积无中间取模~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `sqrt/hensel_sqrt.hpp:621` — 循环内 val %= n 避免 d·N² 增长
+- **验证**: smoke 21/21 | **Commit**: `48d4155`
+
+#### [DEBT] ~~generate_smooth_coefficients 缺少去重~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `polynomial/kleinjung_selector.hpp:524` — sort 后添加 std::unique
+- **验证**: smoke 21/21 | **Commit**: `e1173d2`
+
+#### [TEST] ~~test_linalg rank 断言过宽~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `tests/test_linalg.cpp:261` — 改为 assert(rank == 2)（GF(2) 下 Row2=Row0⊕Row1）
+- **验证**: smoke 21/21 | **Commit**: `03e51ee`
+- **注意**: BACKLOG 建议 rank==3 有误（整数秩 vs GF(2) 秩混淆）
+
+#### [TEST] ~~test_concurrent_add 断言空洞~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `tests/test_relation_collector.cpp:204` — 从 size()>0 改为 size()==400
+- **验证**: smoke 21/21 | **Commit**: `bf1e16b`
+
+#### [TEST] ~~test_murphy alpha/score 断言~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `tests/test_murphy.cpp:63-110` — 添加 isfinite + score 2x ratio check
+- **验证**: smoke 21/21 | **Commit**: `e3b49e8`
+- **注意**: alpha<0 断言移除（alpha 符号取决于 alpha_bound 参数）
+
+#### [TEST] ~~test_schirokauer_deg4 未注册到 test.sh~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `scripts/test.sh` + `CMakeLists.txt` — 注册到全部 5 处 + 修 typo
+- **验证**: smoke 21/21 (含新测试) | **Commit**: `a0bfb68`
+
+#### [TEST] ~~test_sqrt 时序断言不匹配~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `tests/test_sqrt.cpp:633` — 内部超时从 30s 降至 5s（匹配 test.sh 的 10s）
+- **验证**: smoke 21/21 | **Commit**: `bbb3336`
+
 ### Session 62 — P2 correctness bug fixes (22 items fixed + 2 documented)
 
 #### [BUG] ~~LP 素数计数公式分母错误~~ ✅

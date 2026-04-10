@@ -177,6 +177,7 @@ ALL_TEST_BINARIES=(
     test_base_m
     test_polynomial_optimizer
     test_class_group
+    test_schirokauer_deg4
     test_edge_cases
     test_integration
     test_stress
@@ -192,7 +193,7 @@ MODULE_TESTS=(
     sieve          "test_special_q test_sieve_basic"
     cofactor       "test_cofactor test_integration"
     relation       "test_relation_collector test_filter test_integration"
-    linalg         "test_linalg test_edge_cases test_integration"
+    linalg         "test_linalg test_schirokauer_deg4 test_edge_cases test_integration"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_class_group"
 )
@@ -226,6 +227,7 @@ SMOKE_TESTS=(
     test_base_m
     test_polynomial_optimizer
     test_class_group
+    test_schirokauer_deg4
     test_edge_cases
 )
 
@@ -255,6 +257,7 @@ TEST_TIMEOUT=(
     test_base_m              10
     test_polynomial_optimizer 10
     test_class_group         10
+    test_schirokauer_deg4    10
     test_edge_cases          10
     test_integration         30
     test_sieve_basic         60
@@ -290,6 +293,7 @@ TEST_TIER=(
     test_base_m              "instant"
     test_polynomial_optimizer "instant"
     test_class_group         "instant"
+    test_schirokauer_deg4    "instant"
     test_edge_cases          "instant"
     test_integration         "fast"
     test_sieve_basic         "fast"

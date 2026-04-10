@@ -630,7 +630,7 @@ void test_couveignes_compute_from_element_terminates() {
     // The key assertion: function MUST terminate.
     // Without the max-attempts guard, this would loop indefinitely.
     // With the guard, it finishes within seconds (scans up to 100000 primes).
-    assert(elapsed_ms < 30000 &&
+    assert(elapsed_ms < 5000 &&
            "compute_from_element should terminate quickly with max-attempts guard");
 
     // For degree 3, ~1/3 of primes give irreducible f.

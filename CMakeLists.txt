@@ -371,7 +371,7 @@ if(GNFS_BUILD_TESTS)
         tests/test_schirokauer_deg4.cpp
     )
     target_link_libraries(test_schirokauer_deg4 PRIVATE gnfs_core Threads::Threads)
-    add_test(NAME SchirokaurDeg4 COMMAND test_schirokauer_deg4)
+    add_test(NAME SchirokaureDeg4 COMMAND test_schirokauer_deg4)
 
     # 跨模块集成测试
     add_executable(test_integration

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gnfs/linalg/matrix_builder.hpp"
+#include <cassert>
 #include <vector>
 #include <cstdint>
 
@@ -39,6 +40,7 @@ struct BlockVector {
     void clear() { std::fill(data.begin(), data.end(), 0); }
 
     void xor_with(const BlockVector& other) {
+        assert(other.length >= length);
         for (size_t i = 0; i < length; ++i)
             data[i] ^= other.data[i];
     }

@@ -529,7 +529,8 @@ public:
 /// additional columns in the matrix.
 ///
 /// For an element γ = a - bα in the number field K = Q(α):
-///   λ_ℓ(γ) = (γ^(ℓ^(k-1)(ℓ-1)) - 1) / ℓ^(k-1) mod ℓ
+///   λ_ℓ(γ) = (γ^(ℓ^d - 1) - 1) / ℓ mod ℓ
+///   where d = deg(f) and ℓ^d - 1 is the group order |F_{ℓ^d}^×|
 ///
 /// For a product Πγ_i to be an ℓ-th power, we need Σλ_ℓ(γ_i) ≡ 0 mod ℓ
 class SchirokaurMap {
@@ -614,6 +615,8 @@ public:
     std::vector<PrimeInfo> prime_info_;
 
     /// Standard Schirokauer (f irreducible mod ℓ)
+    /// Requires γ = a - bα to be an ℓ-adic unit (not divisible by ℓ).
+    /// This is guaranteed when gcd(|a|, b) = 1 (coprime relation convention).
     [[nodiscard]] std::vector<uint32_t> compute_unsplit(
             int64_t a, uint64_t b, const PrimeInfo& info) const {
 
@@ -621,6 +624,11 @@ public:
         if (a_mod < 0) a_mod += static_cast<int64_t>(info.ell_k);
         uint64_t b_mod = b % info.ell_k;
         uint64_t neg_b = (info.ell_k - b_mod) % info.ell_k;
+
+        // Defense: γ = (a_mod) + (neg_b)·α must not be zero mod ℓ
+        // (both coefficients zero means γ ≡ 0, not a unit)
+        assert(static_cast<uint64_t>(a_mod) % info.ell != 0 ||
+               neg_b % info.ell != 0);
 
         FastPoly g(static_cast<uint64_t>(a_mod), neg_b);
         auto g_pow = FastPoly::power(g, info.exponent, info.f_mod.data(), degree_, info.ell_k);

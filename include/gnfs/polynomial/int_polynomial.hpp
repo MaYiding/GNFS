@@ -330,8 +330,7 @@ public:
         }
 
         // 对于更高度数，需要计算 Resultant(f, f')
-        // 这里返回一个占位值，实际实现需要更复杂的算法
-        return Integer(static_cast<int64_t>(0));
+        throw std::logic_error("discriminant() not implemented for degree > 2");
     }
 
 private:
