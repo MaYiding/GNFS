@@ -7,6 +7,66 @@
 
 ## 已完成 ✅
 
+### Session 64 — P2 design/perf + TEST + infrastructure (11 items, 1 false positive)
+
+#### [BUG] ~~Relation::b int64_t/uint64_t 不一致~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `relation.hpp` b→uint64_t, extra_ab_pairs→pair<int64_t,uint64_t>, 6 files updated
+- **验证**: smoke 21/21 | **Commit**: `23b3c5d`
+
+#### [DEBT] ~~translate/derivative 重复实现~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `polynomial_optimizer.hpp` — 委托给 IntPolynomial 成员方法, -68 lines
+- **验证**: smoke 21/21 | **Commit**: `6ba4733`
+
+#### [FEAT] ~~CMake 缺少 Sanitizer 支持~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `CMakeLists.txt` — GNFS_ENABLE_ASAN/TSAN/UBSAN 选项
+- **验证**: cmake configure + ctest -N | **Commit**: `e708a25`
+
+#### [TEST] ~~Schirokauer 回归测试不调生产代码~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `test_regressions.cpp` — 重写两个测试调用 SchirokaurMap::compute()
+- **验证**: smoke 21/21 | **Commit**: `8e6f54a`
+
+#### [TEST] ~~test_25digit/test_stress 对 ctest 不可见~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `CMakeLists.txt` — add_test + DISABLED 属性
+- **验证**: ctest -N 显示 25Digit/Stress (Disabled) | **Commit**: `d0caf04`
+
+#### [OPT] ~~ECM sieve_primes 每曲线重分配~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `ecm.hpp` — factor() 预计算, 传 const ref 给 try_curve()
+- **验证**: smoke 21/21 | **Commit**: `ea4b219`
+
+#### [OPT] ~~Sieve small_primes 每线程重建~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `lattice_sieve.hpp` — preseparate_primes() 一次, per-chunk 只填 i_mod
+- **验证**: smoke 21/21 | **Commit**: `e7a6fce`
+
+#### [OPT] ~~classify_cofactor 试除遍历合数~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `smooth_check.hpp` — 预计算 [101,65521] 素数表 (~6500 vs 32K 奇数)
+- **验证**: smoke 21/21 | **Commit**: `9bd2dc2`
+
+#### [OPT] ~~algebraic_norm heap 分配~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `polynomial_context.hpp` — std::array<Integer,8> 栈分配
+- **验证**: smoke 21/21 | **Commit**: `bdedf7d`
+
+#### [OPT] ~~Murphy E-score std::pow 内循环~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `murphy_evaluator.hpp` — 预计算 skew/cos/sin 幂次表
+- **验证**: smoke 21/21 | **Commit**: `0ff6b88`
+
+#### [OPT] ~~MurphyEvaluator 默认 10M 筛 + unused seed~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `murphy_evaluator.hpp` — alpha_bound 1e7→1e6, 删除 seed 字段
+- **验证**: smoke 21/21 | **Commit**: `25a414c`
+
+**误报:**
+- [OPT] Logger log_args "检查级别前构建字符串" — 实际代码 line 147 有 early return, 描述不准确
+
 ### Session 63 — P2 残余修复 + TEST 质量强化 (12 items)
 
 #### [RISK] ~~Schirokauer compute_unsplit docstring 旧公式~~ ✅

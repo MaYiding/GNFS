@@ -7,9 +7,9 @@
 |------|------|------|
 | **P1** | 0 | (已全部修复 — Session 61) |
 | **P1-OPT** | 0 | (已清空) |
-| **P2** | 10 | performance ×7, design ×2, class group ×1 |
-| **P3** | 24 | 远期架构 ×7, style ×6, dead code ×4, quality ×5, risk ×1, LP merge ×1 |
-| **TEST** | 2 | missing coverage ×2 |
+| **P2** | 1 | class group ×1 |
+| **P3** | 24 | 远期架构 ×7, style ×5, dead code ×4, quality ×5, risk ×1, LP merge ×1 |
+| **TEST** | 0 | (已全部修复 — Session 64) |
 
 ---
 
@@ -21,65 +21,7 @@
 
 ## P2 — 中优先级
 
-> **Session 62 修复 25 条, Session 63 修复 7 条。详见 RESOLVED.md。**
-
-### 性能问题
-
-#### [OPT] ECM sieve_primes 每条曲线重新分配
-- **发现日期**: 2026-03-14
-- **文件**: `cofactor/ecm.hpp:408-427`
-- **描述**: `try_curve` 中 `sieve_primes(B1)` 为每条曲线分配 ~375KB `vector<bool>` 和全部素数列表。B1=3M, 200 曲线 = 200 次筛分配。
-- **建议**: 在 `factor()` 中预计算一次并复用。
-
-#### [OPT] Sieve small_primes 每线程每 SQ 重建
-- **发现日期**: 2026-03-14
-- **文件**: `sieve/lattice_sieve.hpp:513-535`
-- **描述**: `sieve_row_chunk` 每次调用重建 `small_primes` 和 `v_primes`，O(FB_size) per thread per SQ。4 线程 × 10K 素数 = 40K 次分离/SQ。
-- **建议**: 在 `sieve_row_major()` 中预分离一次，传引用给各线程。
-
-#### [OPT] classify_cofactor 试除遍历合数
-- **发现日期**: 2026-03-14
-- **文件**: `cofactor/smooth_check.hpp:337-342`
-- **描述**: 对 c < 2^32 的试除从 101 开始遍历所有奇数至 sqrt(c)，约 60% 是合数（永远不会整除已通过小素数检测的 c）。
-- **建议**: 使用预生成的 [101, 65537] 素数表代替全奇数遍历。
-
-#### [OPT] algebraic_norm 热路径每次 heap 分配 GMP vector
-- **发现日期**: 2026-03-14
-- **文件**: `core/polynomial_context.hpp:156-159`
-- **描述**: `algebraic_norm()` 每次调用分配 `vector<Integer>(degree_+1)`，每个 Integer 调用 `mpz_init`。当 i128 快速路径溢出时，此函数在筛法热路径中被调用。
-- **建议**: 使用 `SmallVector` 或 `std::array` 栈缓冲。
-
-#### [OPT] Logger log_args 检查级别前构建字符串
-- **发现日期**: 2026-03-14
-- **文件**: `util/logger.hpp:146-152`
-- **描述**: `log_args()` 先构建 `ostringstream` 字符串再调 `log()` 检查级别。热路径中 Debug 级别被禁用时仍支付字符串构建开销。
-- **建议**: 在 `log_args` 入口检查 `is_enabled(level)` 后再构建字符串。
-
-#### [OPT] MurphyEvaluator 默认分配 10M 筛
-- **发现日期**: 2026-03-14
-- **文件**: `polynomial/murphy_evaluator.hpp:233`
-- **描述**: 默认 `alpha_bound = 1e7`，构造时分配 ~1.25MB `vector<bool>` + 62 万素数。`compute_alpha` 遍历全部素数，大多贡献微不足道。
-- **建议**: 降低默认 alpha_bound 或为热路径提供较小的 bound 参数。
-
-#### [OPT] Murphy E-score 内循环用 std::pow
-- **发现日期**: 2026-03-14
-- **文件**: `polynomial/murphy_evaluator.hpp:381-384`
-- **描述**: 2000 × degree 次 `std::pow` 调用，可用迭代乘法替代。`skewness_pow[j]` 在角度循环外是常量。
-- **建议**: 预计算 skewness 幂次，内循环用迭代累乘。
-
-### 设计问题
-
-#### [BUG] Relation::b 类型 int64_t 与 uint64_t 不一致
-- **发现日期**: 2026-03-14
-- **文件**: `core/relation.hpp:20`, `core/types.hpp:17`, `cofactor/cofactorizer.hpp:129`
-- **描述**: `Relation::b` 是 `int64_t`，但 `ABPair::b` 和 `SieveCandidate::b` 是 `uint64_t`。GNFS 约定 b > 0。类型不一致导致每个传递点都有隐式窄化转换风险。`rel.ab()` 用 `safe_abs(b)` 恢复——暗示 b 可以为负，但语义上不应该。
-- **建议**: 统一 `Relation::b` 为 `uint64_t`。
-
-#### [DEBT] translate/derivative 在 IntPolynomial 和 PolynomialOptimizer 间重复
-- **发现日期**: 2026-03-14
-- **文件**: `polynomial/int_polynomial.hpp:230,251` + `polynomial/polynomial_optimizer.hpp:118,139`
-- **描述**: `translate()` 和 `derivative()` 两处实现完全相同。未来修复一处不会反映到另一处。
-- **建议**: 统一到一处，另一处委托调用。
+> **Session 62 修复 25 条, Session 63 修复 7 条, Session 64 修复 9 条。详见 RESOLVED.md。**
 
 ### 基础设施
 
@@ -88,12 +30,6 @@
 - **文件**: `sqrt/class_group.hpp`
 - **描述**: `class_group.hpp` 的 Minkowski bound、signature、character computation 均假定 degree=3。对 degree≥4 产生错误列值，导致所有 BL 依赖在 sqrt 阶段失败。当前已全局禁用 (`include_class_group=false`)，QC+Schirokauer 足够替代。如需恢复 class group 功能需全面重写。
 - **建议**: 若要支持，需正确处理任意 degree 的签名 (r1,r2)、SNF、character computation。参考 PARI/GP 或 SageMath 的实现。
-
-#### [FEAT] CMake 缺少 Sanitizer 支持
-- **发现日期**: 2026-03-14
-- **文件**: `CMakeLists.txt:18-40`
-- **描述**: 项目有多线程代码和复杂内存管理，但无 ASan/TSan/UBSan 构建选项。这些 sanitizer 能捕获 use-after-move、数据竞争等整类 bug。
-- **建议**: 添加 `GNFS_ENABLE_ASAN`, `GNFS_ENABLE_TSAN` CMake 选项。
 
 ---
 
@@ -174,12 +110,6 @@
 - **描述**: `n_bits * 0.30103` 是 `log10(2)` 的近似值，应使用命名常量。
 - **建议**: `constexpr double LOG10_2 = 0.30103;` 或用 `std::log10(2.0)`。
 
-#### [DEBT] MurphyParams::seed 遗留未使用字段
-- **发现日期**: 2026-03-14
-- **文件**: `polynomial/murphy_evaluator.hpp:44`
-- **描述**: `uint32_t seed = 42;` 注释标为 "legacy, unused" 但仍是公开 API。
-- **建议**: 删除或标记 `[[deprecated]]`。
-
 #### [DEBT] SparseRow::xor_with 使用 const_cast 而非 mutable
 - **发现日期**: 2026-03-14
 - **文件**: `linalg/sparse_matrix.hpp:100`
@@ -225,22 +155,6 @@
 - **文件**: `polynomial/polynomial_optimizer.hpp:243`
 - **描述**: 黄金分割搜索法定义但未被调用（Murphy 用网格搜索）。
 - **建议**: 删除。
-
----
-
-## TEST — 测试质量缺口
-
-### [TEST] Schirokauer 回归测试验证公式而非生产代码
-- **发现日期**: 2026-03-14
-- **文件**: `tests/test_regressions.cpp:54-83, 276-313`
-- **描述**: `test_schirokauer_exponent` 和 `test_schirokauer_ell2_only` 在局部变量中计算数学公式并断言——从未调用 `schirokauer.hpp` 中的任何函数。如果生产代码回退到旧公式，测试仍通过。
-- **建议**: 设置 PolynomialContext + 已知 (a,b) 对，调用生产代码计算实际 Schirokauer map 值并断言。
-
-### [TEST] test_25digit/test_stress 对 ctest 不可见
-- **发现日期**: 2026-03-14
-- **文件**: `CMakeLists.txt:384-395`
-- **描述**: 二进制编译但无 `add_test()`，`ctest -N` 看不到。`scripts/test.sh` 独立知道路径，形成隐藏依赖。
-- **建议**: 用 `DISABLED` 属性注册到 ctest 以提高可发现性。
 
 ---
 
