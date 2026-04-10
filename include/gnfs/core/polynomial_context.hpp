@@ -2,6 +2,8 @@
 
 #include "integer.hpp"
 
+#include <array>
+#include <cassert>
 #include <cmath>
 #include <stdexcept>
 #include <vector>
@@ -153,7 +155,10 @@ public:
         Integer a_power(static_cast<int64_t>(1));  // a^i
 
         // 计算 b^d, b^{d-1}, ..., b^0
-        std::vector<Integer> b_powers(degree_ + 1);
+        // Stack array avoids per-call heap allocation (degree ≤ 7 in practice)
+        static constexpr uint32_t MAX_STACK_DEG = 8;
+        assert(degree_ < MAX_STACK_DEG && "degree exceeds stack array capacity");
+        std::array<Integer, MAX_STACK_DEG> b_powers;
         b_powers[0] = Integer(int64_t(1));
         for (uint32_t i = 1; i <= degree_; ++i) {
             b_powers[i] = b_powers[i-1].clone();
