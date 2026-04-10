@@ -36,12 +36,11 @@ struct MurphyScore {
 /// Murphy 评估参数
 struct MurphyParams {
     uint32_t sample_points = 2000;          // 积分采样点数
-    double alpha_bound = 1e7;               // alpha 计算的素数上界
+    double alpha_bound = 1e6;               // alpha 计算的素数上界 (was 1e7; 10× smaller sieve)
     uint64_t smoothness_bound = 1000000;    // 光滑性界
     double skewness_min = 1e2;              // skewness 搜索下界
     double skewness_max = 1e10;             // skewness 搜索上界
     uint32_t skewness_steps = 100;          // skewness 网格搜索步数
-    uint32_t seed = 42;                     // (legacy, unused)
 };
 
 /// MurphyEvaluator - Murphy E-score 评估器
