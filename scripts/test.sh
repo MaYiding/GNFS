@@ -36,6 +36,10 @@
 #   ./scripts/test.sh L4                  # 快捷: progressive 4 4
 #   ./scripts/test.sh L5                  # 快捷: progressive 5 5
 #
+# 合并门禁:
+#   ./scripts/test.sh gate                # 三级门禁: smoke + L1-L3 + 25-digit
+#   ./scripts/test.sh gate --quick        # 快速门禁: 仅 smoke
+#
 # 智能模式:
 #   ./scripts/test.sh changed             # 根据 git diff 自动选择受影响模块
 #   ./scripts/test.sh changed --deep      # git diff + 含依赖模块的级联测试
@@ -1135,6 +1139,84 @@ do_nightly() {
 }
 
 # ============================================================
+# 模式: 合并门禁 (Merge Gate)
+# ============================================================
+# 三级递进式验证，任一级失败立即退出:
+#   Level 1: Smoke tests (22 个 instant 测试, ~2s)
+#   Level 2: Progressive L1-L3 (8-40 bit 全流水线, ~10min)
+#   Level 3: 25-digit 全流水线回归 (~1s)
+#
+# 用法:
+#   ./scripts/test.sh gate            # 运行完整门禁
+#   ./scripts/test.sh gate --quick    # 仅 Level 1 (smoke only)
+#
+# Exit code: 0=全部通过, 非0=有失败
+
+do_gate() {
+    local quick=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --quick) quick=1; shift ;;
+            *)       shift ;;
+        esac
+    done
+
+    log_header "合并门禁 (Merge Gate)"
+
+    local gate_start_ms
+    gate_start_ms=$(timer_start_ms)
+
+    # ── Level 1: Smoke ──
+    log_section "Gate Level 1: Smoke Tests"
+    local pre_fail=$FAILED_TESTS
+    for test in "${SMOKE_TESTS[@]}"; do
+        run_single_test "$test" || true
+        if (( FAIL_FAST && FAILED_TESTS > pre_fail )); then
+            log_fail "Gate Level 1 FAILED — 中止门禁"
+            return 1
+        fi
+    done
+    if (( FAILED_TESTS > pre_fail )); then
+        log_fail "Gate Level 1 FAILED — smoke 测试有失败，中止门禁"
+        return 1
+    fi
+    log_success "Gate Level 1 PASSED — smoke ${#SMOKE_TESTS[@]}/${#SMOKE_TESTS[@]}"
+
+    if (( quick )); then
+        log_info "快速模式: 跳过 Level 2 和 Level 3"
+        return 0
+    fi
+
+    # ── Level 2: Progressive L1-L3 ──
+    log_section "Gate Level 2: Progressive L1-L3"
+    pre_fail=$FAILED_TESTS
+    run_single_test test_gnfs_progressive 1 3 || true
+    if (( FAILED_TESTS > pre_fail )); then
+        log_fail "Gate Level 2 FAILED — progressive L1-L3 有失败，中止门禁"
+        return 1
+    fi
+    log_success "Gate Level 2 PASSED — progressive L1-L3"
+
+    # ── Level 3: 25-digit ──
+    log_section "Gate Level 3: 25-digit 全流水线"
+    pre_fail=$FAILED_TESTS
+    run_single_test test_25digit || true
+    if (( FAILED_TESTS > pre_fail )); then
+        log_fail "Gate Level 3 FAILED — 25-digit 回归失败"
+        return 1
+    fi
+    log_success "Gate Level 3 PASSED — 25-digit"
+
+    # ── 门禁通过 ──
+    local gate_end_ms
+    gate_end_ms=$(timer_start_ms)
+    local gate_elapsed=$(format_duration "$((gate_end_ms - gate_start_ms))")
+    echo ""
+    log_success "${BOLD}合并门禁全部通过${RESET} (${gate_elapsed})"
+    return 0
+}
+
+# ============================================================
 # 模式: 基准测试
 # ============================================================
 
@@ -1553,6 +1635,12 @@ case "$MODE" in
         show_summary
         ;;
 
+    gate)
+        do_build
+        do_gate "${MODE_ARGS[@]}"
+        show_summary
+        ;;
+
     perf)
         do_build
         log_header "性能测试 (25-digit)"
@@ -1601,7 +1689,7 @@ case "$MODE" in
         log_fail "未知模式: ${MODE}"
         echo "运行 '$0 --help' 查看完整用法"
         echo ""
-        echo "常用模式: smoke | unit | module | e2e | changed | full | list"
+        echo "常用模式: smoke | unit | module | e2e | gate | changed | full | list"
         exit 1
         ;;
 esac
