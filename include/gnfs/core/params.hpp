@@ -6,7 +6,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <string>
 
 namespace gnfs {
 namespace core {
@@ -65,7 +64,8 @@ struct GNFSParams {
     static GNFSParams compute(size_t n_bits) {
         GNFSParams p;
         p.bits = n_bits;
-        p.digits = static_cast<size_t>(n_bits * 0.30103 + 1);  // log10(2) ≈ 0.30103
+        constexpr double LOG10_2 = 0.30103;  // log10(2)
+        p.digits = static_cast<size_t>(n_bits * LOG10_2 + 1);
 
         // L_N 函数的核心值: (ln N)^{1/3} · (ln ln N)^{2/3}
         double ln_n = n_bits * std::log(2.0);
@@ -345,16 +345,6 @@ struct GNFSParams {
         return sieve_region_size() * sizeof(uint16_t);
     }
 
-    /// 打印参数摘要 (到 stdout)
-    void print_summary() const {
-        auto print_size = [](size_t bytes) {
-            if (bytes < 1024) return std::to_string(bytes) + " B";
-            if (bytes < 1024*1024) return std::to_string(bytes/1024) + " KB";
-            if (bytes < 1024*1024*1024) return std::to_string(bytes/(1024*1024)) + " MB";
-            return std::to_string(bytes/(1024*1024*1024)) + " GB";
-        };
-        (void)print_size;  // suppress unused warning in non-verbose builds
-    }
 };
 
 } // namespace core

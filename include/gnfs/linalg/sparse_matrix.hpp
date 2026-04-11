@@ -74,7 +74,8 @@ public:
     }
 
     /// Ensure indices are sorted and deduplicated (call before operations that need sorted data)
-    void ensure_sorted() {
+    /// This is logically const — sorting doesn't change GF(2) value, only internal representation.
+    void ensure_sorted() const {
         if (!sorted_) {
             std::sort(indices_.begin(), indices_.end());
             // Remove duplicates (GF(2): even count = 0)
@@ -100,7 +101,7 @@ public:
     /// this = this XOR other
     void xor_with(const SparseRow& other) {
         ensure_sorted();
-        const_cast<SparseRow&>(other).ensure_sorted();
+        other.ensure_sorted();
 
         IndexList result;
         result.reserve(indices_.size() + other.indices_.size());
@@ -142,7 +143,7 @@ public:
 
     /// 非零元素数量（行的汉明重量）
     [[nodiscard]] size_t weight() const {
-        const_cast<SparseRow*>(this)->ensure_sorted();
+        ensure_sorted();
         return indices_.size();
     }
 
@@ -158,7 +159,7 @@ public:
 
     /// 获取所有非零列索引 (ensures sorted)
     [[nodiscard]] const IndexList& indices() const {
-        const_cast<SparseRow*>(this)->ensure_sorted();
+        ensure_sorted();
         return indices_;
     }
 
@@ -175,8 +176,8 @@ public:
     }
 
 private:
-    IndexList indices_;  // 非零列索引
-    bool sorted_ = true; // 是否已排序
+    mutable IndexList indices_;  // 非零列索引 (mutable for lazy normalization)
+    mutable bool sorted_ = true; // 是否已排序
 };
 
 /// 稀疏二进制矩阵（GF(2) 上）

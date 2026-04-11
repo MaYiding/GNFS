@@ -37,6 +37,13 @@ struct LargePrimeKey {
         return prime == other.prime && root == other.root &&
                is_algebraic == other.is_algebraic;
     }
+
+    /// Deterministic ordering for reproducible merge results
+    bool operator<(const LargePrimeKey& other) const noexcept {
+        if (prime != other.prime) return prime < other.prime;
+        if (root != other.root) return root < other.root;
+        return is_algebraic < other.is_algebraic;
+    }
 };
 
 /// LargePrimeKey 哈希
@@ -340,9 +347,17 @@ public:
                 }
             }
 
-            std::unordered_set<size_t> used_1lp;
+            // Sort keys for deterministic merge order across runs
+            std::vector<LargePrimeKey> sorted_1lp_keys;
+            sorted_1lp_keys.reserve(lp1_index.size());
             for (const auto& [key, indices] : lp1_index) {
-                if (indices.size() < 2) continue;
+                if (indices.size() >= 2) sorted_1lp_keys.push_back(key);
+            }
+            std::sort(sorted_1lp_keys.begin(), sorted_1lp_keys.end());
+
+            std::unordered_set<size_t> used_1lp;
+            for (const auto& key : sorted_1lp_keys) {
+                const auto& indices = lp1_index.at(key);
                 size_t first_unused = SIZE_MAX;
                 for (size_t idx : indices) {
                     if (used_1lp.count(idx)) continue;
@@ -399,8 +414,16 @@ public:
             // be chain-merged in principle, but this conservative strategy avoids
             // creating overly dense matrix rows. Future: implement weight-3 merge
             // by pairing the two cheapest relations per LP key.
+
+            // Sort keys for deterministic merge order across runs
+            std::vector<LargePrimeKey> sorted_2lp_keys;
             for (const auto& [key, indices] : lp_index) {
-                if (indices.size() != 2) continue;
+                if (indices.size() == 2) sorted_2lp_keys.push_back(key);
+            }
+            std::sort(sorted_2lp_keys.begin(), sorted_2lp_keys.end());
+
+            for (const auto& key : sorted_2lp_keys) {
+                const auto& indices = lp_index.at(key);
                 size_t i = indices[0], j = indices[1];
                 if (used.count(i) || used.count(j)) continue;
 
