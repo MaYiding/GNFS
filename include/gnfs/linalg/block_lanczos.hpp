@@ -179,31 +179,4 @@ inline DenseGF2_64x64 inner_product_64x64(const BlockVector& A, const BlockVecto
     return C;
 }
 
-// ============================================================================
-// Sparse Matrix Block SpMV
-// ============================================================================
-
-/// y = M * x (forward SpMV with block vector)
-inline void spmv_forward(const SparseMatrix& M, const BlockVector& x, BlockVector& y) {
-    for (size_t i = 0; i < M.num_rows(); ++i) {
-        uint64_t acc = 0;
-        for (uint32_t j : M.row(i).indices()) {
-            if (j < x.length) acc ^= x.data[j];
-        }
-        y.data[i] = acc;
-    }
-}
-
-/// y = M^T * x (transpose SpMV with block vector)
-inline void spmv_transpose(const SparseMatrix& M, const BlockVector& x, BlockVector& y) {
-    y.clear();
-    for (size_t i = 0; i < M.num_rows(); ++i) {
-        uint64_t xi = x.data[i];
-        if (xi == 0) continue;
-        for (uint32_t j : M.row(i).indices()) {
-            if (j < y.length) y.data[j] ^= xi;
-        }
-    }
-}
-
 } // namespace gnfs::linalg

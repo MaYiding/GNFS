@@ -6,7 +6,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <string>
 
 namespace gnfs {
 namespace core {
@@ -345,16 +344,6 @@ struct GNFSParams {
         return sieve_region_size() * sizeof(uint16_t);
     }
 
-    /// 打印参数摘要 (到 stdout)
-    void print_summary() const {
-        auto print_size = [](size_t bytes) {
-            if (bytes < 1024) return std::to_string(bytes) + " B";
-            if (bytes < 1024*1024) return std::to_string(bytes/1024) + " KB";
-            if (bytes < 1024*1024*1024) return std::to_string(bytes/(1024*1024)) + " MB";
-            return std::to_string(bytes/(1024*1024*1024)) + " GB";
-        };
-        (void)print_size;  // suppress unused warning in non-verbose builds
-    }
 };
 
 } // namespace core
