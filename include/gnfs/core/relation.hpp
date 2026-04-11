@@ -5,7 +5,8 @@
 #include "gnfs/util/safe_math.hpp"
 #include <cassert>
 #include <cstdint>
-#include <iostream>
+#include <istream>
+#include <ostream>
 #include <stdexcept>
 #include <vector>
 
