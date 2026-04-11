@@ -184,6 +184,7 @@ ALL_TEST_BINARIES=(
     test_schirokauer_deg4
     test_edge_cases
     test_integration
+    test_bucket_sieve
     test_regression_gate
     test_stress
 )
@@ -195,7 +196,7 @@ MODULE_TESTS=(
     util           "test_small_vector test_thread_pool"
     polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer"
     factor_base    "test_factor_base"
-    sieve          "test_special_q test_sieve_basic"
+    sieve          "test_special_q test_sieve_basic test_bucket_sieve"
     cofactor       "test_cofactor test_integration"
     relation       "test_relation_collector test_filter test_integration"
     linalg         "test_linalg test_schirokauer_deg4 test_edge_cases test_integration"
@@ -271,6 +272,7 @@ TEST_TIMEOUT=(
     test_factor_with_kleinjung 300
     test_lattice_sieve       180
     test_gnfs_e2e            300
+    test_bucket_sieve        30
     test_regression_gate     120
     test_gnfs_progressive    3600
     test_25digit             1800
@@ -308,6 +310,7 @@ TEST_TIER=(
     test_factor_with_kleinjung "slow"
     test_lattice_sieve       "slow"
     test_gnfs_e2e            "slow"
+    test_bucket_sieve        "fast"
     test_regression_gate     "slow"
     test_gnfs_progressive    "heavy"
     test_25digit             "heavy"

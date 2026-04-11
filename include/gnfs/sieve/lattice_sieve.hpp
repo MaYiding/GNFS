@@ -122,8 +122,12 @@ public:
         // 3. 预计算所有 FB 素数的格参数
         auto primes = build_prime_entries(basis, sq);
 
-        // 4. Row-major 筛法：逐行处理，每行在 L1 中热驻留（多线程并行）
-        sieve_row_major(primes);
+        // 4. 筛法：大 FB 用 bucket region 模式，小 FB 用原始 row-major 模式
+        if (primes.size() >= BUCKET_REGION_FB_THRESHOLD) {
+            sieve_bucket_region(primes);
+        } else {
+            sieve_row_major(primes);
+        }
 
         // 5. 收集候选点
         result.candidates = collect_candidates(basis);
@@ -375,7 +379,240 @@ private:
         return entries;
     }
 
-    // ── Bucket sieve 核心 ─────────────────────────────────────
+    // ── Bucket Region Sieve ───────────────────────────────────
+    // CADO-NFS-style: divide sieve area into L1-friendly regions,
+    // scatter all prime hits in one pass, apply per-region.
+
+    /// Bucket region entry: 4 bytes (offset within region + log_p)
+    struct BucketRegionEntry {
+        uint16_t offset;   // Position within region (0..region_size-1)
+        uint16_t log_p;    // Log contribution
+    };
+
+    /// Log2 of bucket region size. 2^16 = 65536 positions × 2B = 128KB ≈ L1 cache.
+    static constexpr uint32_t LOG_BUCKET_REGION = 16;
+    static constexpr uint32_t BUCKET_REGION_SIZE = 1u << LOG_BUCKET_REGION;
+
+    /// Minimum total FB size to use bucket region sieve (below this, row-major is fine)
+    static constexpr size_t BUCKET_REGION_FB_THRESHOLD = 5000;
+
+    /// Bucket region sieve: scatter-then-apply for all primes.
+    /// Phase 1 (scatter): iterate all primes once, compute hit positions, scatter to region buckets.
+    /// Phase 2 (apply): for each region, apply all accumulated hits.
+    /// Complexity: O(total_hits) instead of O(height × small_primes).
+    void sieve_bucket_region(const std::vector<PrimeEntry>& primes) {
+        const size_t total_area = sieve_array_.size();
+        const size_t w = static_cast<size_t>(region_.i_width());
+        const int32_t height = region_.j_height();
+        const int32_t j_min = region_.j_min;
+
+        // Number of bucket regions
+        const size_t num_regions = (total_area + BUCKET_REGION_SIZE - 1) / BUCKET_REGION_SIZE;
+
+        // Phase 0: global hits (flags==2, extremely rare)
+        for (const auto& pe : primes) {
+            if (pe.flags == 2) {
+                uint16_t lp = pe.log_p;
+                for (size_t idx = 0; idx < total_area; ++idx)
+                    sieve_array_[idx] += lp;
+            }
+        }
+
+        // Phase 1: scatter all prime hits to bucket regions
+        // For each prime, compute all hit positions and assign to the correct region.
+        // Use flat arrays with per-region counts for CSR-like access.
+
+        // First pass: count hits per region
+        std::vector<uint32_t> region_counts(num_regions, 0);
+
+        // Tiny primes (p < 256): very high hit density, scatter is expensive.
+        // Medium primes (256 <= p < total_area): one pass scatter.
+        // Large primes (p >= total_area): at most 1 hit total, direct compute.
+        constexpr uint32_t TINY_THRESHOLD = 256;
+
+        // Count hits for medium+large primes
+        for (const auto& pe : primes) {
+            if (pe.flags != 0) continue;
+
+            if (pe.p < TINY_THRESHOLD) {
+                // Tiny primes: estimate hits per region
+                size_t hits_per_row = w / pe.p + 1;
+                size_t total_hits = hits_per_row * static_cast<size_t>(height);
+                for (size_t r = 0; r < num_regions; ++r) {
+                    size_t region_start = r * BUCKET_REGION_SIZE;
+                    size_t region_end = std::min(region_start + BUCKET_REGION_SIZE, total_area);
+                    size_t region_rows = (region_end - region_start + w - 1) / w;
+                    region_counts[r] += static_cast<uint32_t>(
+                        std::min(hits_per_row * region_rows, region_end - region_start));
+                }
+                (void)total_hits;
+            } else {
+                // Medium and large primes: exact count via row iteration
+                int32_t p32 = static_cast<int32_t>(pe.p);
+                int32_t i_mod = pe.i_mod_init;
+                int32_t imin_mod = pe.i_min_mod;
+
+                for (int32_t j = j_min; j <= j_min + height - 1; ++j) {
+                    int32_t offset = i_mod - imin_mod;
+                    if (offset < 0) offset += p32;
+
+                    size_t row_base = static_cast<size_t>(j - j_min) * w;
+
+                    for (size_t pos = row_base + static_cast<size_t>(offset);
+                         pos < row_base + w;
+                         pos += static_cast<size_t>(pe.p)) {
+                        size_t region_idx = pos >> LOG_BUCKET_REGION;
+                        if (region_idx < num_regions) region_counts[region_idx]++;
+                    }
+
+                    // advance carry-forward
+                    i_mod += pe.delta;
+                    if (i_mod >= p32) i_mod -= p32;
+                }
+            }
+        }
+
+        // Build CSR offsets
+        std::vector<uint32_t> region_offsets(num_regions + 1, 0);
+        for (size_t r = 0; r < num_regions; ++r) {
+            region_offsets[r + 1] = region_offsets[r] + region_counts[r];
+        }
+        uint32_t total_entries = region_offsets[num_regions];
+
+        // Allocate flat bucket array
+        std::vector<BucketRegionEntry> bucket_entries(total_entries);
+        std::vector<uint32_t> write_pos(num_regions);
+        std::copy(region_offsets.begin(), region_offsets.begin() + static_cast<ptrdiff_t>(num_regions),
+                  write_pos.begin());
+
+        // Second pass: scatter hits (medium + large primes only)
+        // Tiny primes handled directly in Phase 2 (stride loop).
+        for (const auto& pe : primes) {
+            if (pe.flags != 0 || pe.p < TINY_THRESHOLD) continue;
+
+            int32_t p32 = static_cast<int32_t>(pe.p);
+            int32_t i_mod = pe.i_mod_init;
+            int32_t imin_mod = pe.i_min_mod;
+
+            for (int32_t j = j_min; j <= j_min + height - 1; ++j) {
+                int32_t offset = i_mod - imin_mod;
+                if (offset < 0) offset += p32;
+
+                size_t row_base = static_cast<size_t>(j - j_min) * w;
+
+                for (size_t pos = row_base + static_cast<size_t>(offset);
+                     pos < row_base + w;
+                     pos += static_cast<size_t>(pe.p)) {
+                    size_t region_idx = pos >> LOG_BUCKET_REGION;
+                    if (region_idx < num_regions) {
+                        uint32_t wp = write_pos[region_idx]++;
+                        bucket_entries[wp] = {
+                            static_cast<uint16_t>(pos & (BUCKET_REGION_SIZE - 1)),
+                            pe.log_p
+                        };
+                    }
+                }
+
+                i_mod += pe.delta;
+                if (i_mod >= p32) i_mod -= p32;
+            }
+        }
+
+        // Phase 2: apply bucket regions + tiny prime stride
+
+        // Build tiny prime list (reuse CompactSmallPrime)
+        std::vector<CompactSmallPrime> tiny_primes;
+        for (const auto& pe : primes) {
+            if (pe.flags == 0 && pe.p < TINY_THRESHOLD) {
+                tiny_primes.push_back({
+                    pe.p, pe.log_p,
+                    static_cast<int16_t>(pe.delta),
+                    static_cast<int16_t>(pe.i_min_mod),
+                    static_cast<int16_t>(pe.i_mod_init)
+                });
+            }
+        }
+
+        // v-primes
+        std::vector<VPrimeEntry> v_primes;
+        for (const auto& pe : primes) {
+            if (pe.flags == 1) v_primes.push_back({pe.p, pe.log_p});
+        }
+
+        // Apply per-region: bucket entries + tiny prime stride + v-primes
+        for (size_t r = 0; r < num_regions; ++r) {
+            size_t region_start = r * BUCKET_REGION_SIZE;
+            size_t region_end = std::min(region_start + BUCKET_REGION_SIZE, total_area);
+
+            // Apply scattered bucket entries for this region
+            for (uint32_t bi = region_offsets[r]; bi < region_offsets[r + 1]; ++bi) {
+                const auto& entry = bucket_entries[bi];
+                size_t pos = region_start + entry.offset;
+                if (pos < total_area) {
+                    sieve_array_[pos] += entry.log_p;
+                }
+            }
+
+            // Apply tiny primes via stride within this region
+            int32_t region_j_start = static_cast<int32_t>(region_start / w) + j_min;
+            int32_t region_j_end = static_cast<int32_t>((region_end - 1) / w) + j_min;
+            region_j_end = std::min(region_j_end, j_min + height - 1);
+
+            // Make working copies for this region's i_mod state
+            auto tiny_copy = tiny_primes;
+            for (auto& tp : tiny_copy) {
+                // Advance i_mod to region_j_start
+                int32_t p32 = static_cast<int32_t>(tp.p);
+                int64_t row_offset = static_cast<int64_t>(region_j_start - j_min);
+                int64_t advanced = static_cast<int64_t>(tp.i_mod) + row_offset * static_cast<int64_t>(tp.delta);
+                int64_t mod = advanced % static_cast<int64_t>(p32);
+                if (mod < 0) mod += p32;
+                tp.i_mod = static_cast<int16_t>(mod);
+            }
+
+            for (int32_t j = region_j_start; j <= region_j_end; ++j) {
+                size_t row_base = static_cast<size_t>(j - j_min) * w;
+                size_t row_end = row_base + w;
+                // Clamp to region bounds
+                size_t eff_start = std::max(row_base, region_start);
+                size_t eff_end = std::min(row_end, region_end);
+                if (eff_start >= eff_end) continue;
+
+                // v-primes: whole row
+                for (const auto& vp : v_primes) {
+                    if ((j % static_cast<int32_t>(vp.p)) == 0) {
+                        for (size_t idx = eff_start; idx < eff_end; ++idx)
+                            sieve_array_[idx] += vp.log_p;
+                    }
+                }
+
+                // Tiny primes: stride within clamped range
+                for (auto& tp : tiny_copy) {
+                    int32_t off = static_cast<int32_t>(tp.i_mod) - static_cast<int32_t>(tp.i_min_mod);
+                    if (off < 0) off += static_cast<int32_t>(tp.p);
+
+                    size_t idx = row_base + static_cast<size_t>(off);
+                    // Skip to eff_start if needed
+                    if (idx < eff_start) {
+                        size_t stride = static_cast<size_t>(tp.p);
+                        size_t skip = (eff_start - idx + stride - 1) / stride;
+                        idx += skip * stride;
+                    }
+                    size_t stride = static_cast<size_t>(tp.p);
+                    for (; idx < eff_end; idx += stride) {
+                        sieve_array_[idx] += tp.log_p;
+                    }
+
+                    int32_t new_mod = static_cast<int32_t>(tp.i_mod) + static_cast<int32_t>(tp.delta);
+                    int32_t p32 = static_cast<int32_t>(tp.p);
+                    if (new_mod >= p32) new_mod -= p32;
+                    tp.i_mod = static_cast<int16_t>(new_mod);
+                }
+            }
+        }
+    }
+
+    // ── Row-major Bucket Sieve (original) ─────────────────────
 
     /// 预填充大素数的 per-row buckets
     /// 对 flags==0 且 p >= width 的素数，计算其在每行的命中位置并写入 bucket。
