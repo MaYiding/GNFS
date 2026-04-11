@@ -407,6 +407,14 @@ if(GNFS_BUILD_TESTS)
     set_tests_properties(25Digit PROPERTIES DISABLED TRUE
         LABELS "heavy" TIMEOUT 600)
 
+    # 回归门禁测试 (10/15/20/25-digit full pipeline)
+    add_executable(test_regression_gate
+        tests/test_regression_gate.cpp
+    )
+    target_link_libraries(test_regression_gate PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME RegressionGate COMMAND test_regression_gate)
+    set_tests_properties(RegressionGate PROPERTIES LABELS "gate" TIMEOUT 120)
+
     # 压力测试 (50/80/100-digit)
     add_executable(test_stress
         tests/test_stress.cpp
