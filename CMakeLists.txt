@@ -407,6 +407,13 @@ if(GNFS_BUILD_TESTS)
     set_tests_properties(25Digit PROPERTIES DISABLED TRUE
         LABELS "heavy" TIMEOUT 600)
 
+    # Bucket sieve 单元测试
+    add_executable(test_bucket_sieve
+        tests/test_bucket_sieve.cpp
+    )
+    target_link_libraries(test_bucket_sieve PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BucketSieve COMMAND test_bucket_sieve)
+
     # 回归门禁测试 (10/15/20/25-digit full pipeline)
     add_executable(test_regression_gate
         tests/test_regression_gate.cpp
