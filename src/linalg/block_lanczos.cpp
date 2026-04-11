@@ -553,7 +553,8 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
 
     // All seeds exhausted — fall back to Gaussian if memory permits
     // Gaussian needs PackedGF2Matrix(m, m+n) → m * ((m+n+63)/64) * 8 bytes
-    size_t gauss_bytes = m * ((m + n + 63) / 64) * sizeof(uint64_t);
+    // Use uint64_t intermediate to prevent overflow when m is large
+    uint64_t gauss_bytes = static_cast<uint64_t>(m) * ((m + n + 63) / 64) * sizeof(uint64_t);
     constexpr size_t MAX_GAUSS_BYTES = 4ULL * 1024 * 1024 * 1024; // 4 GB limit
     if (gauss_bytes <= MAX_GAUSS_BYTES) {
         return find_dependencies_sparse(matrix, max_deps);
