@@ -8,7 +8,7 @@
 | **P1** | 0 | (已全部修复 — Session 61) |
 | **P1-OPT** | 0 | (已清空) |
 | **P2** | 1 | class group ×1 |
-| **P3** | 15 | 远期架构 ×7, style ×1, risk ×1, FEAT ×1, 已搁置 ×5 |
+| **P3** | 9 | 远期架构 ×7, style ×1, FEAT ×1 |
 | **TEST** | 0 | (已全部修复 — Session 64) |
 
 ---
@@ -74,14 +74,6 @@
 - **描述**: 部分文件用 `namespace gnfs { namespace core {` (C++98)，部分用 `namespace gnfs::core {` (C++17)。项目标准为 C++20。
 - **搁置原因**: 34 文件纯机械变更，风险大于收益。无功能影响。
 - **建议**: 统一为 C++17 嵌套命名空间语法。
-
-### 潜在风险（需进一步调查）
-
-#### [RISK] Block Lanczos 三步递推与 Montgomery 1995 不一致
-- **发现日期**: 2026-03-14
-- **文件**: `src/linalg/block_lanczos.cpp:479-499`
-- **描述**: 代码使用包含 `V_pprev`（前两步向量）的三步递推，而 Montgomery 1995 论文只使用两步递推（V_cur 和 V_prev）。额外的 `F_cur = V_pprev^T · B · V_cur` 项和 `D_pprev * F_cur` 应用没有已知数学基础。然而所有测试（L1-L5, 25-digit, stress）均通过，可能是有效的变体或冗余项。
-- **建议**: 对比 Montgomery 1995 §3 公式逐项核实。若额外项冗余（恒等于零），则为死代码可移除。若实际影响结果，需确认数学正当性。
 
 ---
 

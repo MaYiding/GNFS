@@ -7,6 +7,16 @@
 
 ## 已完成 ✅
 
+### Session 66 — P3 RISK investigation: BL three-term recurrence (1 false positive)
+
+**误报 (Session 66):**
+
+| 原始分类 | 条目 | 误报原因 |
+|----------|------|----------|
+| P3 RISK | BL 三步递推与 Montgomery 1995 不一致 | Montgomery 1995 Block Lanczos **确实是三步递推** (V_cur, V_prev, V_pprev)。V_pprev 项 (F_cur) 修正列选择掩码丢弃列后的正交性损失——当 V_prev 满秩时 F=0，rank deficient 时非零。CADO-NFS (`blocklanczos.c`) 和 msieve (`lanczos.c`) 均使用相同三步结构。已改善代码注释说明数学依据。 |
+
+---
+
 ### Session 65 — P3 cleanup: dead code, style, quality, LP merge (9 items, 3 false positives)
 
 #### [DEBT] ~~params.hpp print_summary() 全空 no-op~~ ✅

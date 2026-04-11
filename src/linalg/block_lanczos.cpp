@@ -474,8 +474,13 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
         spmv_forward_par(matrix, temp_n, BV_cur, ctx.pool);
 
         // Step 5: Recurrence coefficients (Montgomery 1995 three-term)
-        // Self-coefficient: D * (V^T * B * V) — NOT D * (V^T * V)!
-        // V^T * B * V is the B-inner product needed for orthogonalization.
+        // V_{i+1} = B*W_i + W_i*C_i + W_{i-1}*D_i + W_{i-2}*F_i
+        // where W_i = V_i * S_i (masked by partial inverse selection).
+        //
+        // The W_{i-2} (V_pprev) term is standard Montgomery Block Lanczos:
+        // it corrects for orthogonality loss when columns are dropped by S_i.
+        // F_cur = 0 when V_prev has full rank (all 64 columns active), but
+        // is non-zero when rank-deficient — confirmed by CADO-NFS and msieve.
         auto VtBV = inner_product_par(*V_cur, BV_cur, ctx);
         auto E_cur = inner_product_par(*V_prev, BV_cur, ctx);
         auto F_cur = inner_product_par(*V_pprev, BV_cur, ctx);
