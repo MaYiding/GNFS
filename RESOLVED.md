@@ -7,6 +7,63 @@
 
 ## 已完成 ✅
 
+### Session 65 — P3 cleanup: dead code, style, quality, LP merge (9 items, 3 false positives)
+
+#### [DEBT] ~~params.hpp print_summary() 全空 no-op~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: 删除空函数 + 附带移除不再需要的 `<string>` include
+- **验证**: smoke 22/22 | **Commit**: `1293334`
+
+#### [DEBT] ~~BL header 串行 SpMV 函数未使用~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: 删除 `spmv_forward`/`spmv_transpose` 串行版（26 行），.cpp 只用并行版
+- **验证**: smoke 22/22 | **Commit**: `1293334`
+
+#### [DEBT] ~~SparseRow::xor_with const_cast → mutable~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `indices_`/`sorted_` 改为 mutable，`ensure_sorted()` 改为 const。同时消除 `weight()` 和 `indices()` 中的 const_cast
+- **验证**: smoke 22/22 | **Commit**: `f6b4ff6`
+
+#### [DEBT] ~~params.hpp 魔法数 0.30103~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `constexpr double LOG10_2 = 0.30103;` 命名常量
+- **验证**: smoke 22/22 | **Commit**: `2980762`
+
+#### [DEBT] ~~relation.hpp <iostream> → <istream>+<ostream>~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `<iosfwd>` 不够（内联 serialize/deserialize 需完整定义），改用 `<istream>`+`<ostream>` 避免拉入 cin/cout 全局对象
+- **验证**: smoke 22/22 | **Commit**: `cb0a6b5`
+
+#### [DEBT] ~~BL gauss_bytes size_t 溢出~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `static_cast<uint64_t>(m)` 确保中间计算不溢出
+- **验证**: smoke 22/22 | **Commit**: `d04d0db`
+
+#### [DEBT] ~~零大小筛区对极端 skewness~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `i_half = std::max(std::min(i_half, MAX_I_HALF), 1.0)` 与 j_size 一致
+- **验证**: smoke 22/22 | **Commit**: `74cdf7f`
+
+#### [DEBT] ~~Hensel verbose f_lead 不可逆 assert 崩溃~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: `compute_f_lead_inv` 中 assert 改为 graceful return 1 fallback
+- **验证**: smoke 22/22 | **Commit**: `a72dfde`
+
+#### [DEBT] ~~LP merge 顺序因 unordered_map 不确定~~ ✅
+- **发现**: 2026-03-14 | **解决**: 2026-03-15
+- **修复**: Phase 1/2 先收集 keys 排序后遍历，加 `LargePrimeKey::operator<`
+- **验证**: smoke 22/22 | **Commit**: `092504b`
+
+**误报 (Session 65):**
+
+| 原始分类 | 条目 | 误报原因 |
+|----------|------|----------|
+| P3 dead code | compute_log_prime 非精确版 | 生产代码无调用，但测试有覆盖（test_factor_base.cpp:121-127）。工具函数保留 |
+| P3 dead code | golden_section_skewness 未使用 | 生产代码无调用，但测试有覆盖（test_polynomial_optimizer.cpp:193,202）。通用工具保留 |
+| P3 quality | ECM stage2 batch 边界因子遗漏 | 代码分析：当前素数 p 在 retry 前已 push 到 batch_primes（line 609），retry 循环（lines 623-630）遍历完整 batch 含 p。逻辑正确 |
+
+---
+
 ### Session 64 — P2 design/perf + TEST + infrastructure (11 items, 1 false positive)
 
 #### [BUG] ~~Relation::b int64_t/uint64_t 不一致~~ ✅
