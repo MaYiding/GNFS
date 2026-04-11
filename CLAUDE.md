@@ -48,6 +48,10 @@ cd build && ctest --output-on-failure
 ./scripts/test.sh run test_linalg      # 指定测试二进制
 ./scripts/test.sh run sqrt             # 自动补 test_ 前缀
 
+# ── 合并门禁 ──
+./scripts/test.sh gate                 # 二级门禁: smoke + 回归 (17/27/40/81-bit) ~19s
+./scripts/test.sh gate --quick         # 快速门禁: 仅 smoke ~5s
+
 # ── E2E & 渐进 ──
 ./scripts/test.sh e2e                  # 完整 GNFS 流水线 (slow, ~5min)
 ./scripts/test.sh L1                   # 渐进式 Level 1 only
@@ -81,7 +85,7 @@ cd build && ctest --output-on-failure
 |------|------|------|--------|
 | **instant** | 10s | test_integer, test_small_vector, test_thread_pool, test_factor_base, test_special_q, test_relation_collector, test_cofactor, test_linalg, test_sqrt, test_sqrt_debug, test_murphy | smoke, module, changed |
 | **fast** | 60s | test_sieve_basic | module, changed |
-| **slow** | 180-300s | test_kleinjung, test_lattice_sieve, test_factor_with_kleinjung, test_gnfs_e2e | module --slow, e2e, full |
+| **slow** | 120-300s | test_regression_gate, test_kleinjung, test_lattice_sieve, test_factor_with_kleinjung, test_gnfs_e2e | gate, module --slow, e2e, full |
 | **heavy** | 600-3600s | test_kleinjung_large, test_gnfs_progressive, test_25digit | progressive, nightly, bench |
 | **stress** | 43200s | test_stress (L1=50-digit, L2=60-digit) | stress, nightly (L1 only) |
 
@@ -93,6 +97,7 @@ cd build && ctest --output-on-failure
 | 改了 linalg 模块 | `./scripts/test.sh module linalg` | ~1s |
 | 改了核心流程，要 E2E | `./scripts/test.sh e2e` | ~5min |
 | 不确定改了什么 | `./scripts/test.sh changed` | 自动判断 |
+| 特性分支合并前验证 | `./scripts/test.sh gate` | ~19s |
 | 大改动，全面回归 | `./scripts/test.sh full` | ~10min |
 | PR 前最终验证 | `./scripts/test.sh thorough` | ~30min |
 | 跑完整性能基准 | `./scripts/test.sh bench --save` | ~1hr |
@@ -105,6 +110,23 @@ cd build && ctest --output-on-failure
 - `--timeout N` 可全局覆盖所有测试的超时秒数
 - 超时后自动杀进程，显示 "TIMEOUT" + 最后 10 行输出
 - 慢测试运行时每 10 秒打一次心跳 `[10s][20s]...` 表明进程还活着
+
+### 特性分支工作流 (`scripts/feature-branch.sh`)
+
+```bash
+# 创建特性分支
+./scripts/feature-branch.sh create feat bucket-sieve   # → feat/260315-bucket-sieve
+
+# 开发完成后运行门禁
+./scripts/feature-branch.sh gate                        # 委托给 test.sh gate
+
+# 门禁通过后合并到 main
+./scripts/feature-branch.sh merge                       # 自动运行门禁 + --no-ff merge
+
+# 查看状态
+./scripts/feature-branch.sh status                      # 分支概览
+./scripts/feature-branch.sh list                        # 列出所有特性分支
+```
 
 ## Architecture
 
