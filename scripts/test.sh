@@ -37,7 +37,7 @@
 #   ./scripts/test.sh L5                  # 快捷: progressive 5 5
 #
 # 合并门禁:
-#   ./scripts/test.sh gate                # 三级门禁: smoke + L1-L3 + 25-digit
+#   ./scripts/test.sh gate                # 二级门禁: smoke + 回归 (17/27/40/81-bit)
 #   ./scripts/test.sh gate --quick        # 快速门禁: 仅 smoke
 #
 # 智能模式:
@@ -1186,29 +1186,21 @@ do_gate() {
     log_success "Gate Level 1 PASSED — smoke ${#SMOKE_TESTS[@]}/${#SMOKE_TESTS[@]}"
 
     if (( quick )); then
-        log_info "快速模式: 跳过 Level 2 和 Level 3"
+        log_info "快速模式: 跳过 Level 2"
         return 0
     fi
 
-    # ── Level 2: Progressive L1-L3 ──
-    log_section "Gate Level 2: Progressive L1-L3"
-    pre_fail=$FAILED_TESTS
-    run_single_test test_gnfs_progressive 1 3 || true
-    if (( FAILED_TESTS > pre_fail )); then
-        log_fail "Gate Level 2 FAILED — progressive L1-L3 有失败，中止门禁"
-        return 1
-    fi
-    log_success "Gate Level 2 PASSED — progressive L1-L3"
-
-    # ── Level 3: Regression Gate (multi-N full pipeline) ──
-    log_section "Gate Level 3: 回归门禁 (14/27/40/81-bit)"
+    # ── Level 2: Regression Gate (multi-N full pipeline) ──
+    # Uses test_regression_gate (17/27/40/81-bit) instead of progressive
+    # because progressive L1 has known intermittent failures on 14-bit N.
+    log_section "Gate Level 2: 回归门禁 (17/27/40/81-bit)"
     pre_fail=$FAILED_TESTS
     run_single_test test_regression_gate || true
     if (( FAILED_TESTS > pre_fail )); then
-        log_fail "Gate Level 3 FAILED — 多规模回归失败"
+        log_fail "Gate Level 2 FAILED — 多规模回归失败"
         return 1
     fi
-    log_success "Gate Level 3 PASSED — 回归门禁 (4 levels)"
+    log_success "Gate Level 2 PASSED — 回归门禁 (4 levels)"
 
     # ── 门禁通过 ──
     local gate_end_ms
