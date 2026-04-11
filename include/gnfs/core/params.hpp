@@ -64,7 +64,8 @@ struct GNFSParams {
     static GNFSParams compute(size_t n_bits) {
         GNFSParams p;
         p.bits = n_bits;
-        p.digits = static_cast<size_t>(n_bits * 0.30103 + 1);  // log10(2) ≈ 0.30103
+        constexpr double LOG10_2 = 0.30103;  // log10(2)
+        p.digits = static_cast<size_t>(n_bits * LOG10_2 + 1);
 
         // L_N 函数的核心值: (ln N)^{1/3} · (ln ln N)^{2/3}
         double ln_n = n_bits * std::log(2.0);
