@@ -184,6 +184,7 @@ ALL_TEST_BINARIES=(
     test_schirokauer_deg4
     test_edge_cases
     test_integration
+    test_regression_gate
     test_stress
 )
 
@@ -270,6 +271,7 @@ TEST_TIMEOUT=(
     test_factor_with_kleinjung 300
     test_lattice_sieve       180
     test_gnfs_e2e            300
+    test_regression_gate     120
     test_gnfs_progressive    3600
     test_25digit             1800
     test_stress              43200
@@ -306,6 +308,7 @@ TEST_TIER=(
     test_factor_with_kleinjung "slow"
     test_lattice_sieve       "slow"
     test_gnfs_e2e            "slow"
+    test_regression_gate     "slow"
     test_gnfs_progressive    "heavy"
     test_25digit             "heavy"
     test_stress              "heavy"
@@ -1197,15 +1200,15 @@ do_gate() {
     fi
     log_success "Gate Level 2 PASSED — progressive L1-L3"
 
-    # ── Level 3: 25-digit ──
-    log_section "Gate Level 3: 25-digit 全流水线"
+    # ── Level 3: Regression Gate (multi-N full pipeline) ──
+    log_section "Gate Level 3: 回归门禁 (14/27/40/81-bit)"
     pre_fail=$FAILED_TESTS
-    run_single_test test_25digit || true
+    run_single_test test_regression_gate || true
     if (( FAILED_TESTS > pre_fail )); then
-        log_fail "Gate Level 3 FAILED — 25-digit 回归失败"
+        log_fail "Gate Level 3 FAILED — 多规模回归失败"
         return 1
     fi
-    log_success "Gate Level 3 PASSED — 25-digit"
+    log_success "Gate Level 3 PASSED — 回归门禁 (4 levels)"
 
     # ── 门禁通过 ──
     local gate_end_ms
