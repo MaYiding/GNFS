@@ -9,8 +9,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace gnfs {
-namespace sqrt {
+namespace gnfs::sqrt {
 
 using core::Integer;
 using core::PolynomialContext;
@@ -541,5 +540,4 @@ private:
     }
 };
 
-} // namespace sqrt
-} // namespace gnfs
+} // namespace gnfs::sqrt

@@ -12,8 +12,7 @@
 #include <type_traits>
 #include <vector>
 
-namespace gnfs {
-namespace util {
+namespace gnfs::util {
 
 /// 高性能线程池
 class ThreadPool {
@@ -250,5 +249,4 @@ private:
     std::atomic<size_t> pending_;
 };
 
-} // namespace util
-} // namespace gnfs
+} // namespace gnfs::util

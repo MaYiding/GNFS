@@ -8,8 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace gnfs {
-namespace sqrt {
+namespace gnfs::sqrt {
 
 using core::Integer;
 using core::Relation;
@@ -228,5 +227,4 @@ private:
     return calculator.compute(dependency, relations, fb, n, m);
 }
 
-} // namespace sqrt
-} // namespace gnfs
+} // namespace gnfs::sqrt

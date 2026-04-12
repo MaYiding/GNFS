@@ -8,8 +8,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace gnfs {
-namespace core {
+namespace gnfs::core {
 
 /// PolynomialContext - 多项式上下文
 /// 存储 GNFS 所需的多项式信息，被 factor_base 和 sieve 模块共用
@@ -291,5 +290,4 @@ private:
     double skewness_ = 1.0;
 };
 
-} // namespace core
-} // namespace gnfs
+} // namespace gnfs::core

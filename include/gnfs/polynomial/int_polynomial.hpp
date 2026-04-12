@@ -8,8 +8,7 @@
 #include <random>
 #include <vector>
 
-namespace gnfs {
-namespace polynomial {
+namespace gnfs::polynomial {
 
 using core::Integer;
 
@@ -492,5 +491,4 @@ private:
     return std::move(a);
 }
 
-} // namespace polynomial
-} // namespace gnfs
+} // namespace gnfs::polynomial

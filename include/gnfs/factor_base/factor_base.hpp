@@ -8,8 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace gnfs {
-namespace factor_base {
+namespace gnfs::factor_base {
 
 using core::RationalPrime;
 using core::AlgebraicPrime;
@@ -200,5 +199,4 @@ private:
     return static_cast<uint32_t>(std::log2(static_cast<double>(p)) * scale);
 }
 
-} // namespace factor_base
-} // namespace gnfs
+} // namespace gnfs::factor_base

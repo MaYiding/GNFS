@@ -7,8 +7,7 @@
 #include <optional>
 #include <vector>
 
-namespace gnfs {
-namespace sieve {
+namespace gnfs::sieve {
 
 using core::AlgebraicPrime;
 using factor_base::FactorBase;
@@ -251,5 +250,4 @@ struct SpecialQRangeSelector {
     }
 };
 
-} // namespace sieve
-} // namespace gnfs
+} // namespace gnfs::sieve

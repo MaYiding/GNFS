@@ -7,8 +7,7 @@
 #include <cmath>
 #include <vector>
 
-namespace gnfs {
-namespace polynomial {
+namespace gnfs::polynomial {
 
 using core::Integer;
 
@@ -539,5 +538,4 @@ private:
     return score1 < score2;  // 较小的得分更好
 }
 
-} // namespace polynomial
-} // namespace gnfs
+} // namespace gnfs::polynomial

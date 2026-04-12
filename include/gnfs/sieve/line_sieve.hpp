@@ -10,8 +10,7 @@
 #include <cstring>
 #include <vector>
 
-namespace gnfs {
-namespace sieve {
+namespace gnfs::sieve {
 
 using core::PolynomialContext;
 using factor_base::FactorBase;
@@ -194,5 +193,4 @@ private:
     const FactorBase& fb_;
 };
 
-} // namespace sieve
-} // namespace gnfs
+} // namespace gnfs::sieve

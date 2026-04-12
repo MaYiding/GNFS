@@ -14,8 +14,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace gnfs {
-namespace relation {
+namespace gnfs::relation {
 
 using core::ABPair;
 using core::ABPairHash;
@@ -357,5 +356,4 @@ inline void sort_relations(std::vector<Relation>& relations) {
               });
 }
 
-} // namespace relation
-} // namespace gnfs
+} // namespace gnfs::relation

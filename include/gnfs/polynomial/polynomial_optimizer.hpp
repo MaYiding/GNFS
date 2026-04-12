@@ -7,8 +7,7 @@
 #include <optional>
 #include <vector>
 
-namespace gnfs {
-namespace polynomial {
+namespace gnfs::polynomial {
 
 using core::Integer;
 
@@ -287,5 +286,4 @@ public:
     }
 };
 
-} // namespace polynomial
-} // namespace gnfs
+} // namespace gnfs::polynomial

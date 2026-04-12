@@ -10,8 +10,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace gnfs {
-namespace relation {
+namespace gnfs::relation {
 
 using core::PrimePower;
 using core::Relation;
@@ -588,5 +587,4 @@ public:
         factor_base_size, unique_large_primes, excess_factor);
 }
 
-} // namespace relation
-} // namespace gnfs
+} // namespace gnfs::relation

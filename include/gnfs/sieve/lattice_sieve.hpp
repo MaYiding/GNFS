@@ -22,8 +22,7 @@
 #include <arm_neon.h>
 #endif
 
-namespace gnfs {
-namespace sieve {
+namespace gnfs::sieve {
 
 using core::ABPair;
 using core::PolynomialContext;
@@ -928,5 +927,4 @@ private:
     }
 };
 
-} // namespace sieve
-} // namespace gnfs
+} // namespace gnfs::sieve

@@ -12,8 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace gnfs {
-namespace sqrt {
+namespace gnfs::sqrt {
 
 using core::Integer;
 using core::Relation;
@@ -293,5 +292,4 @@ struct FactorResult {
     return result;
 }
 
-} // namespace sqrt
-} // namespace gnfs
+} // namespace gnfs::sqrt

@@ -7,8 +7,7 @@
 #include <iostream>
 #include <vector>
 
-namespace gnfs {
-namespace linalg {
+namespace gnfs::linalg {
 
 /// SGE (Structured Gaussian Elimination) 预处理结果
 ///
@@ -274,5 +273,4 @@ public:
     }
 };
 
-} // namespace linalg
-} // namespace gnfs
+} // namespace gnfs::linalg

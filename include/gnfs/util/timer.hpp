@@ -2,8 +2,7 @@
 
 #include <chrono>
 
-namespace gnfs {
-namespace util {
+namespace gnfs::util {
 
 /// 高精度计时器
 class Timer {
@@ -155,5 +154,4 @@ private:
     Clock::time_point start_;
 };
 
-} // namespace util
-} // namespace gnfs
+} // namespace gnfs::util

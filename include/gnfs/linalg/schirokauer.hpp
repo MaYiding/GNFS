@@ -11,8 +11,7 @@
 #include <tuple>
 #include <numeric>
 
-namespace gnfs {
-namespace linalg {
+namespace gnfs::linalg {
 
 using core::Integer;
 using core::PolynomialContext;
@@ -975,5 +974,4 @@ private:
     return primes.size() * degree;
 }
 
-} // namespace linalg
-} // namespace gnfs
+} // namespace gnfs::linalg

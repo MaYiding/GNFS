@@ -3,8 +3,7 @@
 #include <cstdint>
 #include <functional>
 
-namespace gnfs {
-namespace core {
+namespace gnfs::core {
 
 /// 全局对数缩放因子 — FB builder 和 Sieve 必须使用同一值
 /// 筛阈值 (params.hpp) 也基于此常量计算
@@ -142,5 +141,4 @@ struct FactorBaseParams {
         : rational_bound(rat), algebraic_bound(alg), large_prime_bound(lp), log_scale(scale) {}
 };
 
-} // namespace core
-} // namespace gnfs
+} // namespace gnfs::core
