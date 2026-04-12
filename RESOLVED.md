@@ -7,7 +7,23 @@
 
 ## 已完成 ✅
 
-### Session 67 — 大型特性开发 (5 features + infrastructure)
+### Session 67-68 — 大型特性开发 (8 features + infrastructure)
+
+#### [FEAT] ~~SQUFOF 余因子分解~~ ✅
+- **解决**: 2026-03-15
+- **修复**: `cofactor/squfof.hpp` Shanks SQUFOF O(N^{1/4}), 插入 Pollard rho 之前
+- **验证**: `test_squfof` 4/4, gate 23/23
+- **Commit**: `772a379`
+
+#### [OPT] ~~Bucket Sieve 多线程化~~ ✅
+- **解决**: 2026-03-15
+- **修复**: `sieve/lattice_sieve.hpp` apply phase 并行化 (atomic counter, disjoint writes)
+- **验证**: gate 23/23
+- **Commit**: `f042bef`
+
+#### [OPT] ~~NEON SIMD 向量化~~ ✅ (已存在)
+- **描述**: candidate scan 已有 NEON 向量化 (vcgeq_u16 + quick-reject)
+- **结论**: SpMV 是 scatter-gather, 无法向量化 (CADO-NFS/msieve 同理)。已有实现足够。
 
 #### [FEAT] ~~CSR 矩阵格式~~ ✅
 - **发现**: 2026-03-13
