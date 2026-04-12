@@ -455,5 +455,62 @@ private:
     size_t num_block_cols_ = 0;
 };
 
+/// CSR (Compressed Sparse Row) read-only view of a SparseMatrix.
+/// Packs all row indices into a single contiguous array for optimal SpMV performance.
+/// Construct from a SparseMatrix once, then use for repeated SpMV.
+class CSRMatrix {
+public:
+    CSRMatrix() = default;
+
+    /// Build CSR from SparseMatrix (ensures all rows are sorted first)
+    explicit CSRMatrix(const SparseMatrix& mat) {
+        num_rows_ = mat.num_rows();
+        num_cols_ = mat.num_cols();
+
+        // Compute row offsets
+        row_offsets_.resize(num_rows_ + 1);
+        row_offsets_[0] = 0;
+        size_t total_nnz = 0;
+        for (size_t i = 0; i < num_rows_; ++i) {
+            total_nnz += mat.row(i).indices().size();
+            row_offsets_[i + 1] = static_cast<uint32_t>(total_nnz);
+        }
+
+        // Pack all column indices into one contiguous array
+        col_indices_.resize(total_nnz);
+        size_t pos = 0;
+        for (size_t i = 0; i < num_rows_; ++i) {
+            const auto& idx = mat.row(i).indices();
+            std::copy(idx.begin(), idx.end(), col_indices_.begin() + static_cast<ptrdiff_t>(pos));
+            pos += idx.size();
+        }
+    }
+
+    [[nodiscard]] size_t num_rows() const noexcept { return num_rows_; }
+    [[nodiscard]] size_t num_cols() const noexcept { return num_cols_; }
+    [[nodiscard]] size_t nnz() const noexcept { return col_indices_.size(); }
+
+    /// Get column indices for row i as a contiguous span
+    [[nodiscard]] const uint32_t* row_begin(size_t i) const noexcept {
+        return col_indices_.data() + row_offsets_[i];
+    }
+    [[nodiscard]] const uint32_t* row_end(size_t i) const noexcept {
+        return col_indices_.data() + row_offsets_[i + 1];
+    }
+    [[nodiscard]] size_t row_nnz(size_t i) const noexcept {
+        return row_offsets_[i + 1] - row_offsets_[i];
+    }
+
+    /// Access underlying data for direct iteration
+    [[nodiscard]] const std::vector<uint32_t>& col_indices() const noexcept { return col_indices_; }
+    [[nodiscard]] const std::vector<uint32_t>& row_offsets() const noexcept { return row_offsets_; }
+
+private:
+    std::vector<uint32_t> col_indices_;   // All column indices, packed contiguously
+    std::vector<uint32_t> row_offsets_;   // row_offsets_[i] = start of row i in col_indices_
+    size_t num_rows_ = 0;
+    size_t num_cols_ = 0;
+};
+
 } // namespace linalg
 } // namespace gnfs
