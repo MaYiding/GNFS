@@ -8,7 +8,7 @@
 | **P1** | 0 | (已全部修复 — Session 61) |
 | **P1-OPT** | 0 | (已清空) |
 | **P2** | 1 | class group ×1 |
-| **P3** | 9 | 远期架构 ×7, style ×1, FEAT ×1 |
+| **P3** | 8 | 远期架构 ×6, style ×1, FEAT ×1 |
 | **TEST** | 0 | (已全部修复 — Session 64) |
 
 ---
@@ -38,10 +38,6 @@
 > **Session 65 修复 9 条（含 3 个误报关闭）。详见 RESOLVED.md。**
 
 ### 远期架构
-
-#### [FEAT] CSR 矩阵格式（100K+ 行）
-- **文件**: `linalg/sparse_matrix.hpp:179-315`
-- **描述**: 当前 `vector<SparseRow>` 每行独立 heap 分配。改 CSR（连续 `col_indices` + `row_offsets`）利于 prefetch 和 SIMD
 
 #### [FEAT] Block Wiedemann（130+ 位）
 - **描述**: 矩阵 >5M 时 BL 顺序迭代成瓶颈，BW 的 SpMV 可分布式并行

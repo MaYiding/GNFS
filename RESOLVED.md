@@ -7,6 +7,23 @@
 
 ## 已完成 ✅
 
+### Session 67 — 大型特性开发 (2 features, infrastructure)
+
+#### [FEAT] ~~CSR 矩阵格式~~ ✅
+- **发现**: 2026-03-13
+- **解决**: 2026-03-15
+- **修复**: `linalg/sparse_matrix.hpp` 新增 CSRMatrix 类, `block_lanczos.cpp` SpMV 使用 CSR
+- **验证**: `./scripts/test.sh gate` 22/22 通过, regression 4/4 通过
+- **Commit**: `26d2572`
+
+#### [OPT] ~~Bucket Sieve 基本实现~~ ✅ (部分)
+- **发现**: 2026-03-12
+- **解决**: 2026-03-15
+- **修复**: `sieve/lattice_sieve.hpp` 新增 bucket region sieve (64K region, 三级素数处理)
+- **验证**: `./scripts/test.sh gate` 22/22, `test_bucket_sieve` 3/3
+- **Commit**: `f0d9e84`
+- **备注**: 基本实现完成, 进一步优化（多线程 scatter、Kleinjung）仍在 BACKLOG
+
 ### Session 66 — P3 RISK investigation: BL three-term recurrence (1 false positive)
 
 **误报 (Session 66):**
