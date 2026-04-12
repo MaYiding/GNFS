@@ -229,6 +229,50 @@ void test_repeated_rows() {
     TEST_PASS("repeated rows — known dependencies");
 }
 
+void test_large_matrix_bw_path() {
+    // Matrix > 5000 rows to exercise the true Block Wiedemann path.
+    // Key: keep cols small (=200) so rank(B) ≤ 200 and scalar BM converges
+    // quickly. L = 2·200 + 100 = 500 (not 8000).
+    size_t base_rows = 200;
+    size_t cols = 200;
+    size_t extra = 5200;  // 5400 total rows >> 5000 threshold, rank ≤ 200
+
+    std::cout << "  Building large matrix (" << base_rows + extra << "×" << cols << ")..." << std::flush;
+    SparseMatrix M(base_rows + extra, cols);
+    std::mt19937 rng(314159);
+
+    // Base rows with ~10 nonzeros
+    for (size_t i = 0; i < base_rows; ++i) {
+        size_t nnz = 5 + rng() % 10;
+        for (size_t k = 0; k < nnz; ++k) {
+            M.row(i).set(static_cast<uint32_t>(rng() % cols));
+        }
+    }
+
+    // Extra rows: XOR of 2-4 base rows → guaranteed dependencies
+    for (size_t i = 0; i < extra; ++i) {
+        size_t n_src = 2 + rng() % 3;
+        for (size_t s = 0; s < n_src; ++s) {
+            M.row(base_rows + i).xor_with(M.row(rng() % base_rows));
+        }
+    }
+    std::cout << " done" << std::endl;
+
+    BlockWiedemann bw;
+    auto deps = bw.find_dependencies(M, 10);
+
+    TEST_ASSERT(deps.size() > 0, "BW should find deps in large matrix (>5000 rows)");
+
+    size_t valid = 0;
+    for (const auto& dep : deps) {
+        if (verify_dependency(M, dep)) valid++;
+    }
+    TEST_ASSERT(valid > 0, "large matrix BW deps should be valid");
+
+    std::cout << "  (found " << deps.size() << " deps, " << valid << " verified)" << std::endl;
+    TEST_PASS("large matrix — true BW path (5400×200, rank≤200)");
+}
+
 int main() {
     std::cout << "═══════════════════════════════════════════\n";
     std::cout << "  Block Wiedemann Unit Tests\n";
@@ -240,6 +284,7 @@ int main() {
     test_sparse_gnfs_like();
     test_identity_no_nullspace();
     test_repeated_rows();
+    test_large_matrix_bw_path();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";
