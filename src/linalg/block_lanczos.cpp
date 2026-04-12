@@ -109,22 +109,24 @@ struct ParallelContext {
     uint64_t* thread_buf(size_t t) { return transpose_flat.data() + t * transpose_n_cols; }
 };
 
-/// Parallel forward SpMV: y = M * x
+/// Parallel forward SpMV: y = M * x (CSR version)
 /// Each row is independent — split rows across threads
-void spmv_forward_par(const SparseMatrix& M, const BlockVector& x, BlockVector& y,
+void spmv_forward_par(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
                       gnfs::util::ThreadPool& pool) {
     pool.parallel_for_index(0, M.num_rows(), [&](size_t i) {
         uint64_t acc = 0;
-        for (uint32_t j : M.row(i).indices()) {
-            if (j < x.length) acc ^= x.data[j];
+        const uint32_t* begin = M.row_begin(i);
+        const uint32_t* end = M.row_end(i);
+        for (const uint32_t* p = begin; p != end; ++p) {
+            if (*p < x.length) acc ^= x.data[*p];
         }
         y.data[i] = acc;
     });
 }
 
-/// Parallel transpose SpMV: y = M^T * x
+/// Parallel transpose SpMV: y = M^T * x (CSR version)
 /// Uses thread-local accumulators to avoid write conflicts
-void spmv_transpose_par(const SparseMatrix& M, const BlockVector& x, BlockVector& y,
+void spmv_transpose_par(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
                          ParallelContext& ctx) {
     const size_t m = M.num_rows();
     const size_t n = y.length;
@@ -146,8 +148,10 @@ void spmv_transpose_par(const SparseMatrix& M, const BlockVector& x, BlockVector
             for (size_t i = start; i < end; ++i) {
                 uint64_t xi = x.data[i];
                 if (xi == 0) continue;
-                for (uint32_t j : M.row(i).indices()) {
-                    if (j < n) local[j] ^= xi;
+                const uint32_t* begin = M.row_begin(i);
+                const uint32_t* row_end = M.row_end(i);
+                for (const uint32_t* p = begin; p != row_end; ++p) {
+                    if (*p < n) local[*p] ^= xi;
                 }
             }
         }));
@@ -415,6 +419,10 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
     constexpr int MAX_SEEDS = 3;
     uint64_t seeds[] = {42, 12345678901ULL, 9876543210ULL};
 
+    // Build CSR representation once for cache-friendly SpMV
+    // CSR constructor calls indices() which triggers lazy ensure_sorted() per row
+    CSRMatrix csr(matrix);
+
     for (int seed_idx = 0; seed_idx < MAX_SEEDS; ++seed_idx) {
 
     // Create parallel context with pre-allocated buffers
@@ -445,8 +453,8 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
     BlockVector BV_cur(m);
 
     // B * Y = M * (M^T * Y)
-    spmv_transpose_par(matrix, Y, temp_n, ctx);
-    spmv_forward_par(matrix, temp_n, *V_cur, ctx.pool);
+    spmv_transpose_par(csr, Y, temp_n, ctx);
+    spmv_forward_par(csr, temp_n, *V_cur, ctx.pool);
 
     // 64x64 matrices for recurrence
     DenseGF2_64x64 D_prev, D_pprev;
@@ -470,8 +478,8 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
         }
 
         // Step 4: Compute B * V_cur = M * (M^T * V_cur) on masked V
-        spmv_transpose_par(matrix, *V_cur, temp_n, ctx);
-        spmv_forward_par(matrix, temp_n, BV_cur, ctx.pool);
+        spmv_transpose_par(csr, *V_cur, temp_n, ctx);
+        spmv_forward_par(csr, temp_n, BV_cur, ctx.pool);
 
         // Step 5: Recurrence coefficients (Montgomery 1995 three-term)
         // V_{i+1} = B*W_i + W_i*C_i + W_{i-1}*D_i + W_{i-2}*F_i
