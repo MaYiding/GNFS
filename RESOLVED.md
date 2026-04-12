@@ -7,7 +7,7 @@
 
 ## 已完成 ✅
 
-### Session 67 — 大型特性开发 (2 features, infrastructure)
+### Session 67 — 大型特性开发 (5 features + infrastructure)
 
 #### [FEAT] ~~CSR 矩阵格式~~ ✅
 - **发现**: 2026-03-13
@@ -23,6 +23,27 @@
 - **验证**: `./scripts/test.sh gate` 22/22, `test_bucket_sieve` 3/3
 - **Commit**: `f0d9e84`
 - **备注**: 基本实现完成, 进一步优化（多线程 scatter、Kleinjung）仍在 BACKLOG
+
+#### [FEAT] ~~行筛实现~~ ✅
+- **发现**: 2026-03-13
+- **解决**: 2026-03-15
+- **修复**: `sieve/line_sieve.hpp` 新增 LineSieve 类, 直接在 (a,b) 空间扫描
+- **验证**: `test_line_sieve` 3/3, gate 22/22
+- **Commit**: `b7e03cb`
+
+#### [FEAT] ~~ThreadPool Work-Stealing~~ ✅
+- **发现**: 2026-03-13
+- **解决**: 2026-03-15
+- **修复**: `util/thread_pool.hpp` 新增 `parallel_for_stealing()` (atomic counter 动态分配)
+- **验证**: `test_work_stealing` 6/6, gate 22/22
+- **Commit**: `7cf8d68`
+
+#### [DEBT] ~~命名空间风格不一致~~ ✅
+- **发现**: 2026-03-14
+- **解决**: 2026-03-15
+- **修复**: 35 个头文件从 C++98 `namespace gnfs { namespace X {` 统一为 C++17 `namespace gnfs::X {`
+- **验证**: gate 22/22, 零编译错误
+- **Commit**: `02ccbb5`
 
 ### Session 66 — P3 RISK investigation: BL three-term recurrence (1 false positive)
 
