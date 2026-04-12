@@ -539,7 +539,8 @@ private:
         }
 
         // Apply per-region: bucket entries + tiny prime stride + v-primes
-        for (size_t r = 0; r < num_regions; ++r) {
+        // Each region writes to a non-overlapping sieve_array segment → thread-safe.
+        auto apply_region = [&](size_t r) {
             size_t region_start = r * BUCKET_REGION_SIZE;
             size_t region_end = std::min(region_start + BUCKET_REGION_SIZE, total_area);
 
@@ -608,6 +609,30 @@ private:
                     tp.i_mod = static_cast<int16_t>(new_mod);
                 }
             }
+        };
+
+        // Dispatch regions in parallel using std::thread (no lock needed — disjoint writes)
+        size_t num_threads = (max_threads_ > 0) ? max_threads_ : std::thread::hardware_concurrency();
+        if (num_threads == 0) num_threads = 4;
+        if (num_regions < 4) num_threads = 1;  // Not enough regions to parallelize
+
+        if (num_threads <= 1) {
+            for (size_t r = 0; r < num_regions; ++r) apply_region(r);
+        } else {
+            std::vector<std::thread> threads;
+            threads.reserve(num_threads);
+            std::atomic<size_t> next_region{0};
+
+            for (size_t t = 0; t < num_threads; ++t) {
+                threads.emplace_back([&]() {
+                    while (true) {
+                        size_t r = next_region.fetch_add(1, std::memory_order_relaxed);
+                        if (r >= num_regions) break;
+                        apply_region(r);
+                    }
+                });
+            }
+            for (auto& t : threads) t.join();
         }
     }
 
