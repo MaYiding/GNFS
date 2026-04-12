@@ -263,6 +263,12 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_cofactor PRIVATE gnfs_core Threads::Threads)
     add_test(NAME Cofactor COMMAND test_cofactor)
 
+    add_executable(test_squfof
+        tests/test_squfof.cpp
+    )
+    target_link_libraries(test_squfof PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SQUFOF COMMAND test_squfof)
+
     add_executable(test_linalg
         tests/test_linalg.cpp
     )

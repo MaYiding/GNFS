@@ -2,6 +2,7 @@
 
 #include "../core/integer.hpp"
 #include "ecm.hpp"
+#include "squfof.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -380,7 +381,12 @@ struct CofactorClassification {
                 }
             }
 
-            // Phase 3: Pollard rho (Brent variant)
+            // Phase 3a: SQUFOF (O(N^{1/4}), 10-100× faster than Pollard rho for < 62 bits)
+            if (factor == 1 && c < (UINT64_C(1) << 62)) {
+                factor = SQUFOF::factor(c);
+            }
+
+            // Phase 3b: Pollard rho (Brent variant) — fallback if SQUFOF fails
             if (factor == 1) {
                 size_t max_iter = (c < (UINT64_C(1) << 40)) ? 10000 : 100000;
                 factor = pollard_rho(c, max_iter);
