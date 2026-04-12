@@ -157,6 +157,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/linalg/block_lanczos.cpp")
     target_sources(gnfs_core PRIVATE src/linalg/block_lanczos.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/linalg/block_wiedemann.cpp")
+    target_sources(gnfs_core PRIVATE src/linalg/block_wiedemann.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sqrt/rational_sqrt.cpp")
     target_sources(gnfs_core PRIVATE src/sqrt/rational_sqrt.cpp)
 endif()
@@ -433,6 +437,13 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_bucket_sieve PRIVATE gnfs_core Threads::Threads)
     add_test(NAME BucketSieve COMMAND test_bucket_sieve)
+
+    # Block Wiedemann 单元测试
+    add_executable(test_block_wiedemann
+        tests/test_block_wiedemann.cpp
+    )
+    target_link_libraries(test_block_wiedemann PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BlockWiedemann COMMAND test_block_wiedemann)
 
     # 回归门禁测试 (10/15/20/25-digit full pipeline)
     add_executable(test_regression_gate
