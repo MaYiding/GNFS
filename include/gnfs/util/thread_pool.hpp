@@ -149,6 +149,42 @@ public:
         }
     }
 
+    /// Work-stealing parallel for: dynamic task assignment via atomic counter.
+    /// Instead of static chunks, each thread grabs the next small chunk atomically.
+    /// Automatically balances load when per-index work varies (e.g., SQ sieving).
+    /// @param start  Start index (inclusive)
+    /// @param end    End index (exclusive)
+    /// @param func   Callable taking size_t index
+    /// @param grain  Chunk granularity (default: 1 for finest balancing)
+    template <typename Func>
+    void parallel_for_stealing(size_t start, size_t end, Func&& func, size_t grain = 1) {
+        if (start >= end) return;
+        if (grain == 0) grain = 1;
+
+        std::atomic<size_t> next_idx{start};
+
+        size_t num_threads = workers_.size();
+        std::vector<std::future<void>> futures;
+        futures.reserve(num_threads);
+
+        for (size_t t = 0; t < num_threads; ++t) {
+            futures.push_back(submit([&next_idx, end, grain, &func]() {
+                while (true) {
+                    size_t chunk_start = next_idx.fetch_add(grain, std::memory_order_relaxed);
+                    if (chunk_start >= end) break;
+                    size_t chunk_end = std::min(chunk_start + grain, end);
+                    for (size_t i = chunk_start; i < chunk_end; ++i) {
+                        func(i);
+                    }
+                }
+            }));
+        }
+
+        for (auto& f : futures) {
+            f.get();
+        }
+    }
+
     /// 等待所有任务完成
     void wait_all() {
         std::unique_lock<std::mutex> lock(mutex_);
