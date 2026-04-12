@@ -407,6 +407,13 @@ if(GNFS_BUILD_TESTS)
     set_tests_properties(25Digit PROPERTIES DISABLED TRUE
         LABELS "heavy" TIMEOUT 600)
 
+    # Work-stealing ThreadPool 测试
+    add_executable(test_work_stealing
+        tests/test_work_stealing.cpp
+    )
+    target_link_libraries(test_work_stealing PRIVATE gnfs_util Threads::Threads)
+    add_test(NAME WorkStealing COMMAND test_work_stealing)
+
     # Line sieve 单元测试
     add_executable(test_line_sieve
         tests/test_line_sieve.cpp
