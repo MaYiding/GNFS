@@ -6,8 +6,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace gnfs {
-namespace util {
+namespace gnfs::util {
 
 /// SmallVector - 内联小容量的向量，避免小数据的堆分配
 /// 当元素数量 <= InlineCapacity 时，数据存储在栈上
@@ -269,5 +268,4 @@ private:
     }
 };
 
-} // namespace util
-} // namespace gnfs
+} // namespace gnfs::util

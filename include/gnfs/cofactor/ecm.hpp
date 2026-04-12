@@ -7,8 +7,7 @@
 #include <random>
 #include <optional>
 
-namespace gnfs {
-namespace cofactor {
+namespace gnfs::cofactor {
 
 using core::Integer;
 
@@ -653,5 +652,4 @@ private:
     }
 };
 
-} // namespace cofactor
-} // namespace gnfs
+} // namespace gnfs::cofactor

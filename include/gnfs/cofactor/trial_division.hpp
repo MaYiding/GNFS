@@ -7,8 +7,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace gnfs {
-namespace cofactor {
+namespace gnfs::cofactor {
 
 using core::Integer;
 using core::PrimePower;
@@ -370,5 +369,4 @@ private:
     return result;
 }
 
-} // namespace cofactor
-} // namespace gnfs
+} // namespace gnfs::cofactor

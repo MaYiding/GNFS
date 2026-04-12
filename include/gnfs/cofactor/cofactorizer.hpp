@@ -11,8 +11,7 @@
 #include <atomic>
 #include <optional>
 
-namespace gnfs {
-namespace cofactor {
+namespace gnfs::cofactor {
 
 using core::Integer;
 using core::PolynomialContext;
@@ -442,5 +441,4 @@ private:
     return cofactorizer.verify(a, b);
 }
 
-} // namespace cofactor
-} // namespace gnfs
+} // namespace gnfs::cofactor

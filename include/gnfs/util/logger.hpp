@@ -12,8 +12,7 @@
 #include <string_view>
 #include <thread>
 
-namespace gnfs {
-namespace util {
+namespace gnfs::util {
 
 /// 日志级别
 enum class LogLevel : uint8_t {
@@ -193,8 +192,7 @@ inline void log_fatal(std::string_view module, std::string_view msg) {
     Logger::instance().log(LogLevel::Fatal, module, msg);
 }
 
-} // namespace util
-} // namespace gnfs
+} // namespace gnfs::util
 
 // 便捷宏
 #define GNFS_LOG(level, module, msg) \

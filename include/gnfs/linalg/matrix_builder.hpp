@@ -17,8 +17,7 @@
 #include <memory>
 #include <iostream>
 
-namespace gnfs {
-namespace linalg {
+namespace gnfs::linalg {
 
 using core::Integer;
 using core::Relation;
@@ -851,5 +850,4 @@ struct MatrixStats {
     return stats;
 }
 
-} // namespace linalg
-} // namespace gnfs
+} // namespace gnfs::linalg

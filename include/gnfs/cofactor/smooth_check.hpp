@@ -6,8 +6,7 @@
 #include <cmath>
 #include <cstdint>
 
-namespace gnfs {
-namespace cofactor {
+namespace gnfs::cofactor {
 
 using core::Integer;
 
@@ -530,5 +529,4 @@ struct CofactorClassification {
     }
 }
 
-} // namespace cofactor
-} // namespace gnfs
+} // namespace gnfs::cofactor

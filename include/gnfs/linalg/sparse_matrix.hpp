@@ -4,8 +4,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace gnfs {
-namespace linalg {
+namespace gnfs::linalg {
 
 /// 稀疏行 - 存储非零列索引（用于 GF(2) 矩阵）
 /// 在 GF(2) 中，非零元素都是 1，所以只需存储列索引
@@ -512,5 +511,4 @@ private:
     size_t num_cols_ = 0;
 };
 
-} // namespace linalg
-} // namespace gnfs
+} // namespace gnfs::linalg

@@ -6,8 +6,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace gnfs {
-namespace sqrt {
+namespace gnfs::sqrt {
 
 using core::Integer;
 
@@ -552,5 +551,4 @@ private:
     }
 };
 
-} // namespace sqrt
-} // namespace gnfs
+} // namespace gnfs::sqrt

@@ -7,8 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 
-namespace gnfs {
-namespace core {
+namespace gnfs::core {
 
 /// GNFS 参数计算器
 /// 根据 N 的大小自动计算最优的 GNFS 参数
@@ -347,5 +346,4 @@ struct GNFSParams {
 
 };
 
-} // namespace core
-} // namespace gnfs
+} // namespace gnfs::core

@@ -7,8 +7,7 @@
 #include <cmath>
 #include <cstdint>
 
-namespace gnfs {
-namespace sieve {
+namespace gnfs::sieve {
 
 using core::Integer;
 
@@ -214,5 +213,4 @@ struct SieveRegion {
     return region;
 }
 
-} // namespace sieve
-} // namespace gnfs
+} // namespace gnfs::sieve

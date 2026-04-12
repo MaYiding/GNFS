@@ -15,8 +15,7 @@
 #include <optional>
 #include <vector>
 
-namespace gnfs {
-namespace polynomial {
+namespace gnfs::polynomial {
 
 using core::Integer;
 using core::PolynomialContext;
@@ -546,5 +545,4 @@ private:
     );
 }
 
-} // namespace polynomial
-} // namespace gnfs
+} // namespace gnfs::polynomial

@@ -6,8 +6,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace gnfs {
-namespace linalg {
+namespace gnfs::linalg {
 
 /// 高斯消元结果
 struct GaussianResult {
@@ -264,5 +263,4 @@ struct GaussianStats {
     return stats;
 }
 
-} // namespace linalg
-} // namespace gnfs
+} // namespace gnfs::linalg
