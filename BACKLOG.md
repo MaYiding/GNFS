@@ -8,7 +8,7 @@
 | **P1** | 0 | (已全部修复 — Session 61) |
 | **P1-OPT** | 0 | (已清空) |
 | **P2** | 1 | class group ×1 |
-| **P3** | 4 | 远期架构 ×3, FEAT ×1 |
+| **P3** | 3 | 远期架构 ×2, FEAT ×1 |
 | **TEST** | 0 | (已全部修复 — Session 64) |
 
 ---
@@ -38,9 +38,6 @@
 > **Session 65 修复 9 条, Session 67 修复 4 条（CSR + 行筛 + Work-Stealing + 命名空间）。详见 RESOLVED.md。**
 
 ### 远期架构
-
-#### [FEAT] Block Wiedemann（130+ 位）
-- **描述**: 矩阵 >5M 时 BL 顺序迭代成瓶颈，BW 的 SpMV 可分布式并行
 
 #### [FEAT] Out-of-core Relations
 - **文件**: `relation/collector.hpp`

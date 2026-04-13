@@ -7,6 +7,15 @@
 
 ## 已完成 ✅
 
+### Session 69 — 远期架构理论开发
+
+#### [FEAT] ~~Block Wiedemann（130+ 位）~~ ✅
+- **解决**: 2026-03-15
+- **修复**: `linalg/block_wiedemann.hpp` + `block_wiedemann.cpp` — Krylov+Gaussian 方法
+- **数学**: Coppersmith 1994 三阶段架构；发现 GF(2) 标量 BM 限制（非幂零 B 时 f_0=1），改用 Krylov 子空间 + Gaussian null space
+- **验证**: `test_block_wiedemann` 7/7, gate 23/23
+- **Commit**: `9f76f00` (merge)
+
 ### Session 67-68 — 大型特性开发 (8 features + infrastructure)
 
 #### [FEAT] ~~SQUFOF 余因子分解~~ ✅
