@@ -218,6 +218,22 @@ void test_sturm_sextic() {
     TEST_PASS("Sturm: sextic");
 }
 
+void test_sturm_repeated_roots() {
+    // (x-1)^2 = x^2 - 2x + 1: one distinct real root (multiplicity 2)
+    // Sturm counts distinct roots, not multiplicities
+    std::vector<Integer> c1 = {I(1), I(-2), I(1)};
+    TEST_ASSERT(ClassGroup::count_real_roots(c1, 2) == 1, "(x-1)^2 r1=1");
+
+    // (x-1)^2 * (x+1) = x^3 - x^2 - x + 1: two distinct real roots
+    std::vector<Integer> c2 = {I(1), I(-1), I(-1), I(1)};
+    TEST_ASSERT(ClassGroup::count_real_roots(c2, 3) == 2, "(x-1)^2(x+1) r1=2");
+
+    // x^2: one root at 0 (multiplicity 2)
+    std::vector<Integer> c3 = {I(0), I(0), I(1)};
+    TEST_ASSERT(ClassGroup::count_real_roots(c3, 2) == 1, "x^2 r1=1");
+    TEST_PASS("Sturm: repeated roots");
+}
+
 void test_sturm_all_real_quintic() {
     // x^5 - 5x^3 + 4x = x(x^2-1)(x^2-4) = x(x-1)(x+1)(x-2)(x+2)
     // 5 real roots: -2, -1, 0, 1, 2
@@ -496,6 +512,7 @@ int main() {
     test_sturm_quartic();
     test_sturm_quintic();
     test_sturm_sextic();
+    test_sturm_repeated_roots();
     test_sturm_all_real_quintic();
 
     // Discriminant computation
