@@ -383,9 +383,18 @@ private:
     // scatter all prime hits in one pass, apply per-region.
 
     /// Bucket region entry: 4 bytes (offset within region + log_p)
+    /// With 64K regions, offset fits uint16_t. log_p fits uint16_t (SIEVE_LOG_SCALE).
     struct BucketRegionEntry {
         uint16_t offset;   // Position within region (0..region_size-1)
         uint16_t log_p;    // Log contribution
+    };
+
+    /// Compact bucket entry: 3 bytes (offset:16 + log_p:8)
+    /// Saves 25% memory vs BucketRegionEntry for 80+ digit where bucket arrays are huge.
+    /// log_p stored as uint8_t (max 255 after >>8 from uint16_t — suitable for SIEVE_LOG_SCALE ≤ 256).
+    struct CompactBucketEntry {
+        uint16_t offset;   // Position within region (0..region_size-1)
+        uint8_t log_p;     // Truncated log contribution (>> 8 if needed)
     };
 
     /// Log2 of bucket region size. 2^16 = 65536 positions × 2B = 128KB ≈ L1 cache.
@@ -485,35 +494,109 @@ private:
                   write_pos.begin());
 
         // Second pass: scatter hits (medium + large primes only)
-        // Tiny primes handled directly in Phase 2 (stride loop).
-        for (const auto& pe : primes) {
-            if (pe.flags != 0 || pe.p < TINY_THRESHOLD) continue;
+        // Parallel: each thread processes a chunk of primes into thread-local
+        // per-region vectors, then merge into the flat bucket array.
+        //
+        // This avoids write contention on shared write_pos counters.
 
-            int32_t p32 = static_cast<int32_t>(pe.p);
-            int32_t i_mod = pe.i_mod_init;
-            int32_t imin_mod = pe.i_min_mod;
+        // Collect medium+large prime indices for parallel dispatch
+        std::vector<size_t> medium_prime_indices;
+        for (size_t pi = 0; pi < primes.size(); ++pi) {
+            if (primes[pi].flags == 0 && primes[pi].p >= TINY_THRESHOLD)
+                medium_prime_indices.push_back(pi);
+        }
 
-            for (int32_t j = j_min; j <= j_min + height - 1; ++j) {
-                int32_t offset = i_mod - imin_mod;
-                if (offset < 0) offset += p32;
+        size_t scatter_threads = (max_threads_ > 0) ? max_threads_ : std::thread::hardware_concurrency();
+        if (scatter_threads == 0) scatter_threads = 4;
+        if (medium_prime_indices.size() < 100) scatter_threads = 1;
 
-                size_t row_base = static_cast<size_t>(j - j_min) * w;
+        if (scatter_threads <= 1) {
+            // Sequential scatter (same as before)
+            for (size_t pi : medium_prime_indices) {
+                const auto& pe = primes[pi];
+                int32_t p32 = static_cast<int32_t>(pe.p);
+                int32_t i_mod = pe.i_mod_init;
+                int32_t imin_mod = pe.i_min_mod;
+                for (int32_t j = j_min; j <= j_min + height - 1; ++j) {
+                    int32_t offset = i_mod - imin_mod;
+                    if (offset < 0) offset += p32;
+                    size_t row_base = static_cast<size_t>(j - j_min) * w;
+                    for (size_t pos = row_base + static_cast<size_t>(offset);
+                         pos < row_base + w;
+                         pos += static_cast<size_t>(pe.p)) {
+                        size_t region_idx = pos >> LOG_BUCKET_REGION;
+                        if (region_idx < num_regions) {
+                            uint32_t wp = write_pos[region_idx]++;
+                            bucket_entries[wp] = {
+                                static_cast<uint16_t>(pos & (BUCKET_REGION_SIZE - 1)),
+                                pe.log_p
+                            };
+                        }
+                    }
+                    i_mod += pe.delta;
+                    if (i_mod >= p32) i_mod -= p32;
+                }
+            }
+        } else {
+            // Parallel scatter: thread-local bucket vectors, then merge
+            struct ThreadBuckets {
+                std::vector<std::vector<BucketRegionEntry>> per_region;
+            };
+            std::vector<ThreadBuckets> thread_buckets(scatter_threads);
+            for (auto& tb : thread_buckets) {
+                tb.per_region.resize(num_regions);
+            }
 
-                for (size_t pos = row_base + static_cast<size_t>(offset);
-                     pos < row_base + w;
-                     pos += static_cast<size_t>(pe.p)) {
-                    size_t region_idx = pos >> LOG_BUCKET_REGION;
-                    if (region_idx < num_regions) {
-                        uint32_t wp = write_pos[region_idx]++;
-                        bucket_entries[wp] = {
-                            static_cast<uint16_t>(pos & (BUCKET_REGION_SIZE - 1)),
-                            pe.log_p
-                        };
+            size_t chunk = (medium_prime_indices.size() + scatter_threads - 1) / scatter_threads;
+            std::vector<std::thread> scatter_workers;
+            scatter_workers.reserve(scatter_threads);
+
+            for (size_t t = 0; t < scatter_threads; ++t) {
+                size_t start = t * chunk;
+                size_t end_idx = std::min(start + chunk, medium_prime_indices.size());
+                if (start >= medium_prime_indices.size()) break;
+
+                scatter_workers.emplace_back([&, t, start, end_idx]() {
+                    auto& local = thread_buckets[t].per_region;
+                    for (size_t pi_idx = start; pi_idx < end_idx; ++pi_idx) {
+                        const auto& pe = primes[medium_prime_indices[pi_idx]];
+                        int32_t p32 = static_cast<int32_t>(pe.p);
+                        int32_t i_mod = pe.i_mod_init;
+                        int32_t imin_mod = pe.i_min_mod;
+                        for (int32_t j = j_min; j <= j_min + height - 1; ++j) {
+                            int32_t offset = i_mod - imin_mod;
+                            if (offset < 0) offset += p32;
+                            size_t row_base = static_cast<size_t>(j - j_min) * w;
+                            for (size_t pos = row_base + static_cast<size_t>(offset);
+                                 pos < row_base + w;
+                                 pos += static_cast<size_t>(pe.p)) {
+                                size_t region_idx = pos >> LOG_BUCKET_REGION;
+                                if (region_idx < num_regions) {
+                                    local[region_idx].push_back({
+                                        static_cast<uint16_t>(pos & (BUCKET_REGION_SIZE - 1)),
+                                        pe.log_p
+                                    });
+                                }
+                            }
+                            i_mod += pe.delta;
+                            if (i_mod >= p32) i_mod -= p32;
+                        }
+                    }
+                });
+            }
+            for (auto& w_thread : scatter_workers) w_thread.join();
+
+            // Merge thread-local buckets into the flat bucket_entries array
+            for (size_t r = 0; r < num_regions; ++r) {
+                for (size_t t = 0; t < scatter_threads; ++t) {
+                    const auto& local = thread_buckets[t].per_region[r];
+                    for (const auto& entry : local) {
+                        uint32_t wp = write_pos[r]++;
+                        if (wp < total_entries) {
+                            bucket_entries[wp] = entry;
+                        }
                     }
                 }
-
-                i_mod += pe.delta;
-                if (i_mod >= p32) i_mod -= p32;
             }
         }
 
