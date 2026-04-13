@@ -394,7 +394,7 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     MatrixBuilderConfig mb_config;
     mb_config.include_sign_column = true;
     mb_config.include_qc_columns = true;
-    mb_config.include_class_group = false;  // Disabled: class_group.hpp only correct for cubic fields
+    mb_config.include_class_group = false;  // Disabled: small N typically has class number 1, no benefit
     mb_config.include_schirokauer = true;   // Enable Schirokauer maps
     mb_config.num_qc_primes = 64;   // More QC primes - powers of 2 work well
     mb_config.qc_prime_start = 100; // Start with primes around 100
