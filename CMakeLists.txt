@@ -438,6 +438,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_bucket_sieve PRIVATE gnfs_core Threads::Threads)
     add_test(NAME BucketSieve COMMAND test_bucket_sieve)
 
+    # Out-of-core Relations 单元测试
+    add_executable(test_ooc_relations
+        tests/test_ooc_relations.cpp
+    )
+    target_link_libraries(test_ooc_relations PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME OOCRelations COMMAND test_ooc_relations)
+
     # Block Wiedemann 单元测试
     add_executable(test_block_wiedemann
         tests/test_block_wiedemann.cpp
