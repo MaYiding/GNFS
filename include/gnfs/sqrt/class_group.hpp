@@ -297,6 +297,15 @@ public:
         if (degree == 0) return 0;
         if (degree == 1) return 1;
 
+        // Guard: polynomial must not be identically zero
+        bool all_zero = true;
+        for (uint32_t i = 0; i <= degree && i < coeffs.size(); ++i) {
+            if (!coeffs[i].is_zero()) { all_zero = false; break; }
+        }
+        if (all_zero) {
+            throw std::logic_error("count_real_roots: zero polynomial");
+        }
+
         // --- internal polynomial type ---
         struct IntPoly {
             std::vector<Integer> c;  // c[i] = coefficient of x^i
@@ -339,7 +348,8 @@ public:
 
             const Integer& lc_b = B.c[static_cast<size_t>(db)];
 
-            while (true) {
+            int max_iters = static_cast<int>(A.c.size()) + 10;
+            for (int iter = 0; iter < max_iters; ++iter) {
                 int dr = R.deg();
                 if (dr < db) break;
 
@@ -460,7 +470,11 @@ private:
             f[i] = ctx_.coeff(i).clone();
         }
         uint32_t r1 = count_real_roots(f, d);
-        assert(r1 <= d && (d - r1) % 2 == 0);
+        if (r1 > d || (d - r1) % 2 != 0) {
+            throw std::logic_error(
+                "compute_minkowski_bound: invalid signature r1=" +
+                std::to_string(r1) + " for degree " + std::to_string(d));
+        }
         uint32_t r2 = (d - r1) / 2;
 
         // Minkowski bound: M = (d!/d^d) * (4/π)^r2 * sqrt(|Δ|)
