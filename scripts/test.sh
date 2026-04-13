@@ -201,7 +201,7 @@ MODULE_TESTS=(
     sieve          "test_special_q test_sieve_basic test_bucket_sieve test_line_sieve"
     cofactor       "test_cofactor test_squfof test_integration"
     relation       "test_relation_collector test_filter test_ooc_relations test_integration"
-    linalg         "test_linalg test_block_wiedemann test_schirokauer_deg4 test_edge_cases test_integration"
+    linalg         "test_linalg test_block_wiedemann test_mmap_csr test_schirokauer_deg4 test_edge_cases test_integration"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_class_group"
 )
@@ -278,6 +278,7 @@ TEST_TIMEOUT=(
     test_squfof              10
     test_block_wiedemann     30
     test_ooc_relations       10
+    test_mmap_csr            10
     test_line_sieve          30
     test_bucket_sieve        30
     test_regression_gate     120
@@ -320,6 +321,7 @@ TEST_TIER=(
     test_squfof              "instant"
     test_block_wiedemann     "fast"
     test_ooc_relations       "instant"
+    test_mmap_csr            "instant"
     test_line_sieve          "fast"
     test_bucket_sieve        "fast"
     test_regression_gate     "slow"
