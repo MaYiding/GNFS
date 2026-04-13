@@ -1,0 +1,275 @@
+#pragma once
+
+#include "gnfs/core/relation.hpp"
+#include "gnfs/util/mmap_file.hpp"
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace gnfs::relation {
+
+/// Out-of-core relation storage for large-scale GNFS factorizations.
+///
+/// Design:
+///   - **Data file** (.reldata): Concatenated binary-serialized relations
+///   - **Index file** (.relidx): Array of uint64_t byte offsets into the data file
+///   - Write phase: append-only streaming (no random writes)
+///   - Read phase: mmap both files for O(1) random access to any relation
+///
+/// File format:
+///   .relidx: [uint64_t magic][uint64_t count][uint64_t offset_0][uint64_t offset_1]...
+///   .reldata: [serialized_relation_0][serialized_relation_1]...
+///
+/// Each serialized relation uses a compact binary format (not the v2 checksum format,
+/// which has overhead). Fields are written in order with explicit length prefixes.
+///
+/// For 25-digit (~10K relations, ~2MB): works but overkill.
+/// For 50+ digit (~10M relations, ~2-5GB): essential to avoid OOM.
+class OOCRelationWriter {
+public:
+    static constexpr uint64_t MAGIC = 0x474E46535245494CULL;  // "GNFSREIL"
+
+    explicit OOCRelationWriter(const std::string& base_path)
+        : base_path_(base_path),
+          data_stream_(base_path + ".reldata", std::ios::binary),
+          idx_stream_(base_path + ".relidx", std::ios::binary) {
+        if (!data_stream_ || !idx_stream_) {
+            throw std::runtime_error("OOCRelationWriter: cannot open files at " + base_path);
+        }
+        // Write index header (will be updated on close)
+        uint64_t magic = MAGIC;
+        uint64_t count = 0;
+        idx_stream_.write(reinterpret_cast<const char*>(&magic), 8);
+        idx_stream_.write(reinterpret_cast<const char*>(&count), 8);
+    }
+
+    /// Append a single relation. Returns the index of the written relation.
+    size_t write(const gnfs::core::Relation& rel) {
+        // Record offset in index
+        uint64_t offset = static_cast<uint64_t>(data_stream_.tellp());
+        idx_stream_.write(reinterpret_cast<const char*>(&offset), 8);
+
+        // Serialize relation to data file
+        serialize(rel);
+
+        count_++;
+        return count_ - 1;
+    }
+
+    /// Flush and finalize. Updates the count in the index header.
+    void close() {
+        if (!closed_) {
+            // Write final sentinel offset (= end of data)
+            uint64_t end_offset = static_cast<uint64_t>(data_stream_.tellp());
+            idx_stream_.write(reinterpret_cast<const char*>(&end_offset), 8);
+
+            // Seek back and update count
+            idx_stream_.seekp(8);
+            idx_stream_.write(reinterpret_cast<const char*>(&count_), 8);
+
+            data_stream_.flush();
+            idx_stream_.flush();
+            data_stream_.close();
+            idx_stream_.close();
+            closed_ = true;
+        }
+    }
+
+    ~OOCRelationWriter() { close(); }
+
+    [[nodiscard]] size_t count() const noexcept { return count_; }
+    [[nodiscard]] const std::string& base_path() const noexcept { return base_path_; }
+
+private:
+    void serialize(const gnfs::core::Relation& rel) {
+        write_val(rel.a);
+        write_val(rel.b);
+        write_vec32(rel.rational_factors);
+        write_vec32(rel.algebraic_factors);
+        write_pp_vec(rel.rational_large_prime);
+        write_pp_vec(rel.algebraic_large_prime);
+        // extra_ab_pairs
+        auto sz = static_cast<uint32_t>(rel.extra_ab_pairs.size());
+        write_val(sz);
+        for (const auto& [ea, eb] : rel.extra_ab_pairs) {
+            write_val(ea);
+            write_val(eb);
+        }
+    }
+
+    template <typename T>
+    void write_val(const T& v) {
+        data_stream_.write(reinterpret_cast<const char*>(&v), sizeof(T));
+    }
+
+    void write_vec32(const std::vector<uint32_t>& v) {
+        auto sz = static_cast<uint32_t>(v.size());
+        write_val(sz);
+        if (sz > 0) {
+            data_stream_.write(reinterpret_cast<const char*>(v.data()),
+                             static_cast<std::streamsize>(sz * sizeof(uint32_t)));
+        }
+    }
+
+    void write_pp_vec(const std::vector<gnfs::core::PrimePower>& v) {
+        auto sz = static_cast<uint32_t>(v.size());
+        write_val(sz);
+        for (const auto& pp : v) {
+            write_val(pp.p);
+            write_val(pp.r);
+            write_val(pp.e);
+        }
+    }
+
+    std::string base_path_;
+    std::ofstream data_stream_;
+    std::ofstream idx_stream_;
+    size_t count_ = 0;
+    bool closed_ = false;
+};
+
+/// Read-only mmap-based access to out-of-core relations.
+///
+/// Maps both .relidx and .reldata files into memory.
+/// Provides O(1) access to any relation by index.
+class OOCRelationReader {
+public:
+    OOCRelationReader() = default;
+
+    explicit OOCRelationReader(const std::string& base_path)
+        : idx_file_(base_path + ".relidx"),
+          data_file_(base_path + ".reldata") {
+
+        // Validate index header
+        if (idx_file_.size() < 16) {
+            throw std::runtime_error("OOCRelationReader: index file too small");
+        }
+        uint64_t magic = idx_file_.read_at<uint64_t>(0);
+        if (magic != OOCRelationWriter::MAGIC) {
+            throw std::runtime_error("OOCRelationReader: invalid magic in index");
+        }
+        count_ = idx_file_.read_at<uint64_t>(8);
+
+        // Index should have: 16 bytes header + (count+1) × 8 bytes offsets
+        size_t expected_idx = 16 + (count_ + 1) * 8;
+        if (idx_file_.size() < expected_idx) {
+            throw std::runtime_error("OOCRelationReader: index file truncated");
+        }
+
+        offsets_ = idx_file_.ptr_at<uint64_t>(16);
+
+        // Switch to random access pattern for data
+        data_file_.advise_random();
+    }
+
+    /// Number of stored relations.
+    [[nodiscard]] size_t count() const noexcept { return count_; }
+
+    /// Read a single relation by index.
+    [[nodiscard]] gnfs::core::Relation read(size_t idx) const {
+        assert(idx < count_);
+        uint64_t start = offsets_[idx];
+        uint64_t end = offsets_[idx + 1];
+        assert(end <= data_file_.size());
+
+        const uint8_t* ptr = data_file_.data() + start;
+        size_t avail = static_cast<size_t>(end - start);
+        return deserialize(ptr, avail);
+    }
+
+    /// Read all relations into a vector (for compatibility with in-memory pipeline).
+    [[nodiscard]] std::vector<gnfs::core::Relation> read_all() const {
+        std::vector<gnfs::core::Relation> result;
+        result.reserve(count_);
+        for (size_t i = 0; i < count_; ++i) {
+            result.push_back(read(i));
+        }
+        return result;
+    }
+
+    /// Read a range [from, to) of relations.
+    [[nodiscard]] std::vector<gnfs::core::Relation> read_range(size_t from, size_t to) const {
+        assert(to <= count_);
+        std::vector<gnfs::core::Relation> result;
+        result.reserve(to - from);
+        for (size_t i = from; i < to; ++i) {
+            result.push_back(read(i));
+        }
+        return result;
+    }
+
+private:
+    static gnfs::core::Relation deserialize(const uint8_t* ptr, size_t avail) {
+        gnfs::core::Relation rel;
+        size_t pos = 0;
+
+        auto read_val = [&](auto& v) {
+            assert(pos + sizeof(v) <= avail);
+            std::memcpy(&v, ptr + pos, sizeof(v));
+            pos += sizeof(v);
+        };
+
+        read_val(rel.a);
+        read_val(rel.b);
+
+        // rational_factors
+        uint32_t rf_count = 0;
+        read_val(rf_count);
+        rel.rational_factors.resize(rf_count);
+        if (rf_count > 0) {
+            std::memcpy(rel.rational_factors.data(), ptr + pos, rf_count * sizeof(uint32_t));
+            pos += rf_count * sizeof(uint32_t);
+        }
+
+        // algebraic_factors
+        uint32_t af_count = 0;
+        read_val(af_count);
+        rel.algebraic_factors.resize(af_count);
+        if (af_count > 0) {
+            std::memcpy(rel.algebraic_factors.data(), ptr + pos, af_count * sizeof(uint32_t));
+            pos += af_count * sizeof(uint32_t);
+        }
+
+        // rational_large_prime
+        uint32_t rlp_count = 0;
+        read_val(rlp_count);
+        rel.rational_large_prime.resize(rlp_count);
+        for (uint32_t i = 0; i < rlp_count; ++i) {
+            read_val(rel.rational_large_prime[i].p);
+            read_val(rel.rational_large_prime[i].r);
+            read_val(rel.rational_large_prime[i].e);
+        }
+
+        // algebraic_large_prime
+        uint32_t alp_count = 0;
+        read_val(alp_count);
+        rel.algebraic_large_prime.resize(alp_count);
+        for (uint32_t i = 0; i < alp_count; ++i) {
+            read_val(rel.algebraic_large_prime[i].p);
+            read_val(rel.algebraic_large_prime[i].r);
+            read_val(rel.algebraic_large_prime[i].e);
+        }
+
+        // extra_ab_pairs
+        uint32_t extra_count = 0;
+        read_val(extra_count);
+        rel.extra_ab_pairs.resize(extra_count);
+        for (uint32_t i = 0; i < extra_count; ++i) {
+            read_val(rel.extra_ab_pairs[i].first);
+            read_val(rel.extra_ab_pairs[i].second);
+        }
+
+        return rel;
+    }
+
+    gnfs::util::MmapFile idx_file_;
+    gnfs::util::MmapFile data_file_;
+    size_t count_ = 0;
+    const uint64_t* offsets_ = nullptr;
+};
+
+} // namespace gnfs::relation
