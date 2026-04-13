@@ -94,12 +94,20 @@ public:
         return (words_[bit / 64] >> (bit % 64)) & 1;
     }
     void xor_with(const PackedBitRow& other) {
+        assert(other.words_.size() >= words_.size());
         for (size_t i = 0; i < words_.size(); ++i)
             words_[i] ^= other.words_[i];
     }
     [[nodiscard]] bool is_zero(size_t from_bit, size_t to_bit) const {
-        for (size_t b = from_bit; b < to_bit; ++b)
-            if (test(b)) return false;
+        size_t w0 = from_bit / 64, w1 = (to_bit + 63) / 64;
+        for (size_t w = w0; w < w1 && w < words_.size(); ++w) {
+            uint64_t mask = ~0ULL;
+            if (w == w0 && (from_bit % 64) != 0)
+                mask &= ~((1ULL << (from_bit % 64)) - 1);
+            if (w + 1 == w1 && (to_bit % 64) != 0)
+                mask &= (1ULL << (to_bit % 64)) - 1;
+            if (words_[w] & mask) return false;
+        }
         return true;
     }
     std::vector<uint64_t> words_;
@@ -174,7 +182,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
     U_all.reserve(L);
     V_all.reserve(L);
 
-    BlockVector V(N), Vnext(N), tmp_t(n), tmp_n(n);
+    BlockVector V(N), Vnext(N), tmp_t(n);
     for (size_t i = 0; i < N; ++i) V.data[i] = Y.data[i];
 
     for (size_t k = 0; k < L; ++k) {
@@ -229,28 +237,24 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
     }
 
     // Gaussian elimination (reduce equation part to row echelon)
-    std::vector<int> pivot_row(eq_cols, -1);
+    // O(1) pivot-used lookup via boolean vector
+    std::vector<bool> row_is_pivot(num_rows, false);
     for (size_t col = 0; col < eq_cols; ++col) {
-        // Find pivot
+        // Find pivot: first non-pivot row with bit col set
         int piv = -1;
         for (size_t r = 0; r < num_rows; ++r) {
-            if (pivot_row[col] >= 0) break;  // Already pivoted
-            if (gauss_rows[r].test(col)) {
-                // Check this row isn't already a pivot for an earlier column
-                bool is_pivot = true;
-                for (size_t c2 = 0; c2 < col; ++c2) {
-                    if (pivot_row[c2] == static_cast<int>(r)) { is_pivot = false; break; }
-                }
-                if (is_pivot) { piv = static_cast<int>(r); break; }
+            if (!row_is_pivot[r] && gauss_rows[r].test(col)) {
+                piv = static_cast<int>(r);
+                break;
             }
         }
         if (piv < 0) continue;
-        pivot_row[col] = piv;
+        row_is_pivot[static_cast<size_t>(piv)] = true;
 
         // Eliminate column from all other rows
         for (size_t r = 0; r < num_rows; ++r) {
             if (static_cast<int>(r) != piv && gauss_rows[r].test(col)) {
-                gauss_rows[r].xor_with(gauss_rows[piv]);
+                gauss_rows[r].xor_with(gauss_rows[static_cast<size_t>(piv)]);
             }
         }
     }
@@ -286,7 +290,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
             for (size_t i = 0; i < N; ++i) {
                 // XOR all selected bits of V_all[k][i] into bit 0 of W[i]
                 uint64_t selected = V_all[k].data[i] & coeff;
-                uint64_t parity = __builtin_parityll(selected);
+                uint64_t parity = static_cast<uint64_t>(__builtin_parityll(selected));
                 W.data[i] ^= parity;
             }
         }
@@ -323,27 +327,19 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
 }
 
 // ============================================================================
-// Stubs for header-declared helper methods (not used in main path)
+// Reserved for future matrix BM implementation.
+// Current algorithm uses Krylov+Gaussian (block_wiedemann_solve) instead.
 // ============================================================================
 
 std::vector<DenseGF2_64x64> BlockWiedemann::compute_krylov_sequence(
-    const CSRMatrix& csr, size_t N, size_t L,
-    const BlockVector& X, BlockVector& V) {
-    gnfs::util::ThreadPool pool(0);
-    std::vector<DenseGF2_64x64> seq(L);
-    BlockVector tmp(csr.num_cols()), Vnext(N);
-    for (size_t i = 0; i < L; ++i) {
-        seq[i] = inner_product_64x64(X, V);
-        if (i + 1 < L) {
-            bw_spmv_symmetric(csr, V, Vnext, tmp, pool);
-            std::swap(V.data, Vnext.data);
-        }
-    }
-    return seq;
+    const CSRMatrix&, size_t, size_t, const BlockVector&, BlockVector&) {
+    assert(false && "compute_krylov_sequence: not used in current BW path");
+    return {};
 }
 
 BlockWiedemann::LingenResult BlockWiedemann::matrix_berlekamp_massey(
     const std::vector<DenseGF2_64x64>&, size_t) {
+    assert(false && "matrix_berlekamp_massey: not used in current BW path");
     LingenResult r;
     r.valid_mask = 0;
     r.degrees.fill(0);
@@ -352,6 +348,7 @@ BlockWiedemann::LingenResult BlockWiedemann::matrix_berlekamp_massey(
 
 std::vector<std::vector<bool>> BlockWiedemann::extract_solutions(
     const CSRMatrix&, size_t, const LingenResult&, const BlockVector&, size_t) {
+    assert(false && "extract_solutions: not used in current BW path");
     return {};
 }
 
