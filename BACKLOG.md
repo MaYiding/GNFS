@@ -8,7 +8,7 @@
 | **P1** | 0 | (已全部修复 — Session 61) |
 | **P1-OPT** | 0 | (已清空) |
 | **P2** | 1 | class group ×1 |
-| **P3** | 3 | 远期架构 ×2, FEAT ×1 |
+| **P3** | 0 | (已全部完成 — Session 69) |
 | **TEST** | 0 | (已全部修复 — Session 64) |
 
 ---
@@ -35,23 +35,9 @@
 
 ## P3 — 低优先级
 
-> **Session 65 修复 9 条, Session 67 修复 4 条（CSR + 行筛 + Work-Stealing + 命名空间）。详见 RESOLVED.md。**
-
-### 远期架构
-
-#### [FEAT] Out-of-core Relations
-- **文件**: `relation/collector.hpp`
-- **描述**: 50+ 十进制位需 10-100M 关系（数 GB），当前全在内存
-
-#### [FEAT] Block Lanczos Out-of-core 矩阵
-- **描述**: 矩阵必须完全在 RAM 中
-
-#### [OPT] Bucket Sieve 进一步优化 (80+ digit 性能瓶颈)
-- **发现日期**: 2026-03-12 (更新: 2026-03-15)
-- **描述**: Session 67 实现了基本 bucket region sieve。仍需：(1) 多线程 scatter/apply; (2) 更紧凑 bucket entry; (3) Kleinjung poly selection。
-- **建议**: 在当前 bucket region 基础上添加多线程支持和内存优化。
+> **Session 65 修复 9 条, Session 67 修复 4 条, Session 69 修复 3 条（Block Wiedemann + OOC Relations/Matrix + Bucket Sieve Deep）。全部完成。详见 RESOLVED.md。**
 
 ---
 
 ## FEAT — 80/100-digit Scalability
-- **描述**: 已用 CADO-NFS 校准参数 (C80: B=1M/2M, C100: B=8M/16M)。Session 67 实现 bucket region sieve 和 CSR SpMV。仍需 Kleinjung + 更深度 bucket 优化才能在合理时间完成
+- **描述**: 已用 CADO-NFS 校准参数 (C80: B=1M/2M, C100: B=8M/16M)。Session 67-69 实现 bucket region sieve (含多线程 scatter)、CSR SpMV、Block Wiedemann、Out-of-core Relations/Matrix。仍需 Kleinjung poly selection 改进才能在合理时间完成 100-digit

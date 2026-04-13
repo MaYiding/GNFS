@@ -7,7 +7,7 @@
 
 ## 已完成 ✅
 
-### Session 69 — 远期架构理论开发
+### Session 69 — 远期架构理论开发 (4 features)
 
 #### [FEAT] ~~Block Wiedemann（130+ 位）~~ ✅
 - **解决**: 2026-03-15
@@ -15,6 +15,27 @@
 - **数学**: Coppersmith 1994 三阶段架构；发现 GF(2) 标量 BM 限制（非幂零 B 时 f_0=1），改用 Krylov 子空间 + Gaussian null space
 - **验证**: `test_block_wiedemann` 7/7, gate 23/23
 - **Commit**: `9f76f00` (merge)
+
+#### [FEAT] ~~Out-of-core Relations~~ ✅
+- **解决**: 2026-03-15
+- **修复**: `util/mmap_file.hpp` (RAII mmap wrapper) + `relation/ooc_relation_store.hpp` (Writer+Reader)
+- **设计**: index+data 双文件方案 (.relidx + .reldata)，mmap 零拷贝读取
+- **验证**: `test_ooc_relations` 7/7, gate 23/23
+- **Commit**: `2b4d6c8` (merge)
+
+#### [FEAT] ~~Block Lanczos Out-of-core 矩阵~~ ✅
+- **解决**: 2026-03-15
+- **修复**: `linalg/mmap_csr_matrix.hpp` — MmapCSRMatrix save/load with same interface as CSRMatrix
+- **设计**: .csrmat 文件格式 (header + row_offsets + col_indices)，mmap SpMV 直接指针访问
+- **验证**: `test_mmap_csr` 5/5, SpMV 与内存 CSR 交叉验证, gate 23/23
+- **Commit**: `952f8a1` (merge)
+
+#### [OPT] ~~Bucket Sieve 多线程 scatter + 紧凑 entry~~ ✅
+- **解决**: 2026-03-15
+- **修复**: `sieve/lattice_sieve.hpp` — scatter 并行化 (thread-local per-region vectors + merge)
+- **新增**: CompactBucketEntry (3 bytes: uint16_t offset + uint8_t log_p) 供大规模使用
+- **验证**: gate 23/23
+- **Commit**: `64845ea` (merge)
 
 ### Session 67-68 — 大型特性开发 (8 features + infrastructure)
 
