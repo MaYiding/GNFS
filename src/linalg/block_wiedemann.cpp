@@ -89,8 +89,12 @@ public:
     explicit PackedBitRow(size_t total_bits)
         : words_((total_bits + 63) / 64, 0) {}
 
-    void set(size_t bit) { words_[bit / 64] |= 1ULL << (bit % 64); }
+    void set(size_t bit) {
+        assert(bit / 64 < words_.size());
+        words_[bit / 64] |= 1ULL << (bit % 64);
+    }
     [[nodiscard]] bool test(size_t bit) const {
+        assert(bit / 64 < words_.size());
         return (words_[bit / 64] >> (bit % 64)) & 1;
     }
     void xor_with(const PackedBitRow& other) {
@@ -160,8 +164,23 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
     const size_t L = (n + 63) / 64 + 10;
     const size_t total_krylov_cols = 64 * L;
 
+    // Memory estimation and guard
+    size_t mem_V = L * N * sizeof(uint64_t);
+    size_t mem_U = L * n * sizeof(uint64_t);
+    size_t gauss_words = (n + total_krylov_cols + 63) / 64;
+    size_t mem_gauss = total_krylov_cols * gauss_words * sizeof(uint64_t);
+    size_t total_mem = mem_V + mem_U + mem_gauss;
+
     std::cout << "  [BW] Krylov steps L=" << L
-              << " (" << total_krylov_cols << " columns)" << std::endl;
+              << " (" << total_krylov_cols << " columns, ~"
+              << (total_mem >> 20) << " MB)" << std::endl;
+
+    constexpr size_t MAX_BW_MEM = 4ULL * 1024 * 1024 * 1024;  // 4 GB
+    if (total_mem > MAX_BW_MEM) {
+        std::cerr << "  [BW] ERROR: estimated memory " << (total_mem >> 20)
+                  << " MB exceeds 4 GB limit. Use Block Lanczos instead." << std::endl;
+        return {};
+    }
 
     // Random initialization
     std::mt19937_64 rng(42);
@@ -262,9 +281,11 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
     // Find null vectors: rows where the equation part is all zero
     // The identity tracker part gives the linear combination coefficients
     std::vector<std::vector<bool>> deps;
+    size_t null_rows = 0, zero_candidates = 0, failed_verify = 0;
 
     for (size_t r = 0; r < num_rows && deps.size() < max_deps; ++r) {
         if (!gauss_rows[r].is_zero(0, eq_cols)) continue;
+        null_rows++;
 
         // This row is in the null space. Extract coefficients from identity part.
         // Coefficient for Krylov step k, bit j = gauss_rows[r].test(eq_cols + 64k + j)
@@ -302,7 +323,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
         bool nonzero = false;
         for (size_t i = 0; i < candidate.size(); ++i)
             if (candidate[i]) { nonzero = true; break; }
-        if (!nonzero) continue;
+        if (!nonzero) { zero_candidates++; continue; }
 
         // Verify: M^T · candidate = 0
         std::vector<uint8_t> col_sum(n, 0);
@@ -319,10 +340,20 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
 
         if (valid) {
             deps.push_back(std::move(candidate));
+        } else {
+            failed_verify++;
         }
     }
 
-    std::cout << " " << deps.size() << " deps found" << std::endl;
+    std::cout << " " << deps.size() << " deps found"
+              << " (null_rows=" << null_rows
+              << ", zero=" << zero_candidates
+              << ", failed_verify=" << failed_verify << ")" << std::endl;
+
+    if (deps.empty() && null_rows > 0) {
+        std::cerr << "  [BW] WARNING: " << null_rows << " null rows but 0 valid deps.\n"
+                  << "  Possible bug in parity accumulation or verification." << std::endl;
+    }
     return deps;
 }
 
