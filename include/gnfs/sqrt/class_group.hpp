@@ -70,7 +70,7 @@ struct ClassGroupConfig {
     size_t max_generators = 50; // Max generators to use
 };
 
-/// Class group computation for cubic number fields
+/// Class group computation for number fields of any degree
 class ClassGroup {
 public:
     using Config = ClassGroupConfig;
@@ -289,30 +289,186 @@ private:
         return result;
     }
 
-    /// Compute the Minkowski bound
+    /// Count the number of distinct real roots of f(x) using Sturm's theorem.
+    /// Works for any degree polynomial with Integer coefficients.
+    /// Uses pseudo-remainder over Z with sign correction + content reduction.
+    [[nodiscard]] static uint32_t count_real_roots(const std::vector<Integer>& coeffs, uint32_t degree) {
+        if (degree == 0) return 0;
+        if (degree == 1) return 1;
+
+        // --- internal polynomial type ---
+        struct IntPoly {
+            std::vector<Integer> c;  // c[i] = coefficient of x^i
+            IntPoly() = default;
+            explicit IntPoly(size_t n) : c(n) {
+                for (auto& x : c) x = Integer(int64_t(0));
+            }
+            [[nodiscard]] int deg() const {
+                for (int i = static_cast<int>(c.size()) - 1; i >= 0; --i)
+                    if (!c[static_cast<size_t>(i)].is_zero()) return i;
+                return -1;
+            }
+            [[nodiscard]] int leading_sign() const {
+                int d = deg();
+                if (d < 0) return 0;
+                if (c[static_cast<size_t>(d)].is_negative()) return -1;
+                return 1;
+            }
+        };
+
+        // --- build f_0 = f ---
+        IntPoly f0(static_cast<size_t>(degree) + 1);
+        for (uint32_t i = 0; i <= degree; ++i) f0.c[i] = coeffs[i].clone();
+
+        // --- build f_1 = f' ---
+        IntPoly f1(degree);
+        for (uint32_t i = 1; i <= degree; ++i) {
+            f1.c[i - 1] = coeffs[i].clone();
+            f1.c[i - 1] *= Integer(static_cast<int64_t>(i));
+        }
+
+        // --- helper: compute pseudo-remainder prem(A, B) over Z ---
+        // Satisfies: lc(B)^(deg(A)-deg(B)+1) * A = Q * B + prem(A, B)
+        auto pseudo_remainder = [](const IntPoly& A, const IntPoly& B) -> IntPoly {
+            int db = B.deg();
+            assert(db >= 0);
+
+            IntPoly R(A.c.size());
+            for (size_t i = 0; i < A.c.size(); ++i) R.c[i] = A.c[i].clone();
+
+            const Integer& lc_b = B.c[static_cast<size_t>(db)];
+
+            while (true) {
+                int dr = R.deg();
+                if (dr < db) break;
+
+                Integer lc_r = R.c[static_cast<size_t>(dr)].clone();
+                int shift = dr - db;
+
+                // R = lc_b * R - lc_r * x^shift * B
+                for (size_t i = 0; i < R.c.size(); ++i) {
+                    R.c[i] *= lc_b;
+                }
+                for (int i = 0; i <= db; ++i) {
+                    Integer term = lc_r.clone();
+                    term *= B.c[static_cast<size_t>(i)];
+                    R.c[static_cast<size_t>(i + shift)] -= term;
+                }
+            }
+            return R;
+        };
+
+        // --- helper: divide out abs(content) to prevent coefficient blowup ---
+        auto reduce_content = [](IntPoly& P) {
+            Integer content(int64_t(0));
+            for (const auto& x : P.c) {
+                if (!x.is_zero()) {
+                    Integer ax = x.clone();
+                    if (ax.is_negative()) ax.negate();
+                    if (content.is_zero()) {
+                        content = std::move(ax);
+                    } else {
+                        content = core::gcd(content, ax);
+                    }
+                }
+            }
+            if (!content.is_zero() && !(content == Integer(int64_t(1)))) {
+                for (auto& x : P.c) {
+                    x /= content;
+                }
+            }
+        };
+
+        // --- build Sturm chain ---
+        // f_0 = f, f_1 = f'
+        // f_{k+1} = -prem(f_{k-1}, f_k), with sign correction for pseudo-remainder scaling
+        std::vector<IntPoly> chain;
+        chain.push_back(std::move(f0));
+        chain.push_back(std::move(f1));
+
+        while (true) {
+            const IntPoly& prev2 = chain[chain.size() - 2];
+            const IntPoly& prev1 = chain[chain.size() - 1];
+
+            int d1 = prev1.deg();
+            if (d1 < 0) break;
+
+            IntPoly R = pseudo_remainder(prev2, prev1);
+
+            // Negate to get Sturm chain element: f_{k+1} = -rem(f_{k-1}, f_k)
+            for (auto& x : R.c) x.negate();
+
+            // Sign correction for pseudo-remainder scaling factor lc(B)^(δ+1):
+            // prem(A,B) = lc(B)^(δ+1) · rem(A,B)
+            // After negation: -prem = lc(B)^(δ+1) · (-rem) = lc(B)^(δ+1) · f_{k+1}
+            // If lc(B)^(δ+1) < 0, the signs are flipped — need to negate back.
+            // lc(B)^(δ+1) < 0 iff lc(B) < 0 AND (δ+1) is odd, i.e., δ is even.
+            int d2 = prev2.deg();
+            int delta = d2 - d1;
+            int lc_sign = prev1.leading_sign();
+            if (lc_sign < 0 && delta % 2 == 0) {
+                for (auto& x : R.c) x.negate();
+            }
+
+            // Reduce content to keep coefficients manageable
+            reduce_content(R);
+
+            if (R.deg() < 0) break;
+
+            chain.push_back(std::move(R));
+        }
+
+        // --- count sign changes at +∞ and -∞ ---
+        auto count_sign_changes = [&](bool at_neg_inf) -> uint32_t {
+            uint32_t changes = 0;
+            int prev_sign = 0;
+
+            for (const auto& p : chain) {
+                int d = p.deg();
+                if (d < 0) continue;
+
+                int sign = p.leading_sign();
+                if (at_neg_inf && d % 2 == 1) sign = -sign;
+
+                if (sign == 0) continue;
+
+                if (prev_sign != 0 && prev_sign != sign) {
+                    ++changes;
+                }
+                prev_sign = sign;
+            }
+            return changes;
+        };
+
+        uint32_t v_neg = count_sign_changes(true);
+        uint32_t v_pos = count_sign_changes(false);
+
+        return (v_neg >= v_pos) ? (v_neg - v_pos) : 0;
+    }
+
+    /// Compute the Minkowski bound using correct signature for any degree.
+    /// Signature (r1, r2): r1 = real roots, r2 = complex conjugate pairs, r1 + 2*r2 = d.
+    /// Uses Sturm's theorem to count real roots exactly.
     void compute_minkowski_bound() {
-        uint32_t n = ctx_.degree();
+        uint32_t d = ctx_.degree();
 
-        // Determine signature (r1, r2) where r1 = real roots, 2*r2 = complex roots
-        // For simplicity, assume all roots are complex for cubic with negative discriminant
-        uint32_t r2 = 0;
+        // Determine signature (r1, r2) using Sturm's theorem
+        std::vector<Integer> f(d + 1);
+        for (uint32_t i = 0; i <= d; ++i) {
+            f[i] = ctx_.coeff(i).clone();
+        }
+        uint32_t r1 = count_real_roots(f, d);
+        assert(r1 <= d && (d - r1) % 2 == 0);
+        uint32_t r2 = (d - r1) / 2;
 
-        if (discriminant_.is_negative()) {
-            // Negative discriminant means one real root, two complex conjugate
-            r2 = 1;  // One pair of complex conjugate roots
-        } else {
-            // Positive discriminant means three real roots (for cubic)
-            r2 = 0;
+        // Minkowski bound: M = (d!/d^d) * (4/π)^r2 * sqrt(|Δ|)
+        double d_factorial = 1.0;
+        for (uint32_t i = 2; i <= d; ++i) {
+            d_factorial *= i;
         }
 
-        // Minkowski bound: M = (n!/n^n) * (4/π)^r2 * sqrt(|Δ|)
-        double n_factorial = 1.0;
-        for (uint32_t i = 2; i <= n; ++i) {
-            n_factorial *= i;
-        }
-
-        double n_power_n = std::pow(static_cast<double>(n), static_cast<double>(n));
-        double four_over_pi = 4.0 / 3.14159265358979323846;
+        double d_power_d = std::pow(static_cast<double>(d), static_cast<double>(d));
+        double four_over_pi = 4.0 / M_PI;
         double four_pi_factor = std::pow(four_over_pi, static_cast<double>(r2));
 
         // Get |discriminant| as double
@@ -322,7 +478,7 @@ private:
         }
         double disc_sqrt = std::sqrt(abs_disc.to_double());
 
-        minkowski_bound_ = (n_factorial / n_power_n) * four_pi_factor * disc_sqrt;
+        minkowski_bound_ = (d_factorial / d_power_d) * four_pi_factor * disc_sqrt;
     }
 
     /// Find all prime ideals with norm up to bound
