@@ -438,6 +438,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_bucket_sieve PRIVATE gnfs_core Threads::Threads)
     add_test(NAME BucketSieve COMMAND test_bucket_sieve)
 
+    # Mmap CSR Matrix 单元测试
+    add_executable(test_mmap_csr
+        tests/test_mmap_csr.cpp
+    )
+    target_link_libraries(test_mmap_csr PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME MmapCSR COMMAND test_mmap_csr)
+
     # Out-of-core Relations 单元测试
     add_executable(test_ooc_relations
         tests/test_ooc_relations.cpp
