@@ -289,6 +289,7 @@ private:
         return result;
     }
 
+public:
     /// Count the number of distinct real roots of f(x) using Sturm's theorem.
     /// Works for any degree polynomial with Integer coefficients.
     /// Uses pseudo-remainder over Z with sign correction + content reduction.
@@ -446,6 +447,7 @@ private:
         return (v_neg >= v_pos) ? (v_neg - v_pos) : 0;
     }
 
+private:
     /// Compute the Minkowski bound using correct signature for any degree.
     /// Signature (r1, r2): r1 = real roots, r2 = complex conjugate pairs, r1 + 2*r2 = d.
     /// Uses Sturm's theorem to count real roots exactly.
