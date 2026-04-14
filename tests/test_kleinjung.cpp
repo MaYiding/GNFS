@@ -1,9 +1,11 @@
 /// test_kleinjung.cpp - Kleinjung 多项式选择器测试
 
 #include "gnfs/polynomial/kleinjung_selector.hpp"
+#include "gnfs/polynomial/selector_dispatch.hpp"
 #include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/polynomial/polynomial_optimizer.hpp"
 #include "gnfs/core/integer.hpp"
+#include "gnfs/core/params.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -361,6 +363,143 @@ void test_newton_root() {
     std::cout << "  ALL newton_root tests PASSED" << std::endl;
 }
 
+/// 测试 KleinjungParams::from_gnfs_params() 参数推导
+void test_from_gnfs_params() {
+    std::cout << "Testing KleinjungParams::from_gnfs_params()..." << std::endl;
+
+    // 25-digit (83 bits): degree=3, 应得到合理的小参数
+    {
+        auto gp = GNFSParams::compute(83);
+        assert(gp.degree == 3);
+        auto kp = KleinjungParams::from_gnfs_params(gp);
+        assert(kp.degree == 3);
+        assert(kp.leading_coeff_bound >= 10000);
+        assert(kp.search_radius >= 100);
+        assert(kp.num_candidates >= 1000);
+        std::cout << "  25-digit: degree=" << kp.degree
+                  << " lcb=" << kp.leading_coeff_bound
+                  << " radius=" << kp.search_radius
+                  << " cands=" << kp.num_candidates << std::endl;
+    }
+
+    // 80-digit (264 bits): degree=3, 参数应远大于 25-digit
+    {
+        auto gp = GNFSParams::compute(264);
+        auto kp = KleinjungParams::from_gnfs_params(gp);
+        assert(kp.leading_coeff_bound > 10000);
+        assert(kp.search_radius > 100);
+        assert(kp.num_candidates >= 1000);
+        assert(kp.murphy_params.smoothness_bound == gp.algebraic_bound);
+        std::cout << "  80-digit: degree=" << kp.degree
+                  << " lcb=" << kp.leading_coeff_bound
+                  << " radius=" << kp.search_radius
+                  << " cands=" << kp.num_candidates
+                  << " alpha_bound=" << kp.murphy_params.alpha_bound << std::endl;
+    }
+
+    // 100-digit (332 bits): degree=5, 参数应更大
+    {
+        auto gp = GNFSParams::compute(332);
+        auto kp = KleinjungParams::from_gnfs_params(gp);
+        assert(kp.degree >= 4);
+        assert(kp.leading_coeff_bound > 10000);
+        std::cout << "  100-digit: degree=" << kp.degree
+                  << " lcb=" << kp.leading_coeff_bound
+                  << " radius=" << kp.search_radius
+                  << " cands=" << kp.num_candidates << std::endl;
+    }
+
+    // 参数单调性: 更大的 N → 更大的 leading_coeff_bound
+    {
+        auto kp50 = KleinjungParams::from_gnfs_params(GNFSParams::compute(166));
+        auto kp80 = KleinjungParams::from_gnfs_params(GNFSParams::compute(264));
+        auto kp100 = KleinjungParams::from_gnfs_params(GNFSParams::compute(332));
+        assert(kp80.leading_coeff_bound >= kp50.leading_coeff_bound);
+        assert(kp100.leading_coeff_bound >= kp80.leading_coeff_bound);
+        std::cout << "  Monotonicity: lcb 50d=" << kp50.leading_coeff_bound
+                  << " 80d=" << kp80.leading_coeff_bound
+                  << " 100d=" << kp100.leading_coeff_bound << " ✓" << std::endl;
+    }
+
+    std::cout << "  PASSED" << std::endl;
+}
+
+/// 测试 25-digit 强制 degree=5 走 Kleinjung 路径
+void test_kleinjung_25digit_forced_degree5() {
+    std::cout << "Testing Kleinjung with 25-digit, forced degree=5..." << std::endl;
+
+    // 25-digit semiprime
+    Integer p1("7654321098765432111");    // 19 digits
+    Integer p2("123457");                  // 6 digits
+    Integer n = p1 * p2;
+    std::cout << "  n = " << n.to_string() << " (" << n.num_digits() << " digits, "
+              << n.bit_length() << " bits)" << std::endl;
+
+    // 从 GNFSParams 推导，但强制 degree=5 + 减少候选数以加速
+    auto gp = GNFSParams::compute(n.bit_length());
+    gp.degree = 5;
+
+    auto kp = KleinjungParams::from_gnfs_params(gp);
+    kp.num_candidates = 200;  // 减少候选数加速测试 (默认 2500)
+    kp.murphy_params.alpha_bound = 500;  // 测试用轻量 alpha
+    kp.murphy_params.sample_points = 200;
+
+    std::cout << "  Kleinjung params: lcb=" << kp.leading_coeff_bound
+              << " radius=" << kp.search_radius
+              << " cands=" << kp.num_candidates << std::endl;
+
+    KleinjungSelector selector(kp);
+    auto result = selector.select(n);
+
+    assert(result.success && "Kleinjung should succeed for 25-digit with degree=5");
+    assert(result.f.degree() == 5);
+
+    // 验证 f(m) ≡ 0 (mod N)
+    Integer fm = result.f.evaluate(result.m);
+    Integer quotient, remainder;
+    Integer::divmod(quotient, remainder, fm, n);
+    assert(remainder.is_zero() && "f(m) must be divisible by N");
+
+    // Murphy score 应是有限值
+    assert(std::isfinite(result.score.log_e_score));
+    assert(result.score.log_e_score > -1e50);
+
+    std::cout << "  f degree=" << result.f.degree()
+              << ", Murphy E=" << result.score.log_e_score
+              << ", skewness=" << result.skewness
+              << ", time=" << result.elapsed_seconds << "s" << std::endl;
+
+    std::cout << "  PASSED" << std::endl;
+}
+
+/// 测试 SelectorDispatch::select(n, GNFSParams) 重载
+void test_dispatch_with_gnfs_params() {
+    std::cout << "Testing SelectorDispatch::select(n, GNFSParams)..." << std::endl;
+
+    // degree=3 走 BaseMSelector 路径（instant）
+    Integer n("9591127858580100037");  // 19-digit
+    auto gp = GNFSParams::compute(n.bit_length());
+
+    auto ctx = SelectorDispatch::select(n, gp);
+
+    // 验证 f(m) ≡ 0 mod N
+    auto fm = ctx.evaluate(ctx.m());
+    Integer quotient, remainder;
+    Integer::divmod(quotient, remainder, fm, ctx.n());
+    assert(remainder.is_zero());
+    std::cout << "  degree=" << ctx.degree() << " via GNFSParams overload" << std::endl;
+
+    // degree=5 走 Kleinjung 路径（通过旧接口）
+    auto ctx5 = SelectorDispatch::select(n, 5u);
+    auto fm5 = ctx5.evaluate(ctx5.m());
+    Integer q5, r5;
+    Integer::divmod(q5, r5, fm5, ctx5.n());
+    assert(r5.is_zero());
+    std::cout << "  degree=5 via select(n,degree) → Kleinjung path" << std::endl;
+
+    std::cout << "  PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Kleinjung Selector Tests ===" << std::endl << std::endl;
 
@@ -371,11 +510,18 @@ int main() {
     test_polynomial_optimizer();
     test_newton_root();
 
+    // 新增: 参数推导测试
+    test_from_gnfs_params();
+
     // 以下测试涉及 Kleinjung 完整搜索，耗时较长（slow tier）
     test_stage1_candidates();
     test_progress_callback();
     test_cancellation();
     test_compare_with_basem();
+
+    // 新增: Kleinjung 路径功能测试
+    test_kleinjung_25digit_forced_degree5();
+    test_dispatch_with_gnfs_params();
 
     std::cout << std::endl << "All Kleinjung selector tests passed!" << std::endl;
     return 0;
