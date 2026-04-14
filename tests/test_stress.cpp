@@ -451,10 +451,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
     MatrixBuilderConfig mb_config;
     mb_config.include_sign_column = true;
     mb_config.include_qc_columns = true;
-    // Class group characters DISABLED: the implementation (class_group.hpp) is only
-    // correct for cubic fields. For degree >= 4, it produces wrong character values
-    // which add incorrect constraints to the matrix, causing ALL deps to fail in sqrt.
-    // QC + Schirokauer maps provide sufficient algebraic square constraints.
+    // Class group disabled: most N have class number 1; QC+Schirokauer suffice.
+    // (class_group.hpp now supports any degree — can enable for h(K)>1 fields.)
     mb_config.include_class_group = false;
     mb_config.include_schirokauer = true;
     mb_config.num_qc_primes = params.num_qc_primes;
