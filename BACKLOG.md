@@ -31,5 +31,5 @@
 
 ---
 
-## FEAT — 80/100-digit Scalability
-- **描述**: 已用 CADO-NFS 校准参数 (C80: B=1M/2M, C100: B=8M/16M)。Session 67-69 实现 bucket region sieve (含多线程 scatter)、CSR SpMV、Block Wiedemann、Out-of-core Relations/Matrix。仍需 Kleinjung poly selection 改进才能在合理时间完成 100-digit
+## FEAT — 80/100-digit Scalability ✅
+- **描述**: 已用 CADO-NFS 校准参数 (C80: B=1M/2M, C100: B=8M/16M)。Session 67-69 实现 bucket region sieve (含多线程 scatter)、CSR SpMV、Block Wiedemann、Out-of-core Relations/Matrix。Session 71 实现 Kleinjung 参数自适应缩放 (from_gnfs_params + SelectorDispatch 集成)。所有代码路径已就绪，实际 80/100-digit 分解需要对应规模的计算资源和时间

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../core/integer.hpp"
+#include "../core/params.hpp"
 #include "../core/polynomial_context.hpp"
 #include "../util/thread_pool.hpp"
 #include "int_polynomial.hpp"
@@ -18,6 +19,7 @@
 namespace gnfs::polynomial {
 
 using core::Integer;
+using core::GNFSParams;
 using core::PolynomialContext;
 using util::ThreadPool;
 
@@ -36,6 +38,50 @@ struct KleinjungParams {
 
     // Murphy 评估参数
     MurphyParams murphy_params;
+
+    /// 从 GNFSParams 自动推导 Kleinjung 参数
+    ///
+    /// GNFSParams::compute() 已根据 L_N 理论和 CADO-NFS 校准计算了
+    /// leading_coeff_bound, search_radius, num_candidates 等参数。
+    /// 此方法将这些值映射到 KleinjungParams，保证参数一致性。
+    [[nodiscard]] static KleinjungParams from_gnfs_params(const GNFSParams& gp) {
+        KleinjungParams kp;
+        kp.degree = gp.degree;
+        kp.leading_coeff_bound = gp.leading_coeff_bound;
+        kp.search_radius = static_cast<uint32_t>(
+            std::min(gp.search_radius, static_cast<uint64_t>(UINT32_MAX)));
+        kp.num_candidates = gp.num_candidates;
+
+        // Skewness 范围随 N 缩放:
+        // 小 N: skewness ~ 1e2-1e5, 大 N: skewness ~ 1e4-1e10
+        if (gp.digits <= 40) {
+            kp.skewness_min = 1e2;
+            kp.skewness_max = 1e6;
+        } else if (gp.digits <= 80) {
+            kp.skewness_min = 1e3;
+            kp.skewness_max = 1e8;
+        } else {
+            kp.skewness_min = 1e4;
+            kp.skewness_max = 1e10;
+        }
+
+        // 牛顿法参数: 大 N 需更多迭代
+        kp.root_opt_iterations = (gp.digits <= 40) ? 128 : 256;
+
+        // Murphy 参数: alpha_bound 随 FB 缩放但上限 1e6 (够用)
+        kp.murphy_params.alpha_bound = std::min(
+            static_cast<double>(gp.algebraic_bound), 1e6);
+        kp.murphy_params.smoothness_bound = gp.algebraic_bound;
+
+        // sample_points 随 digits 缩放: 更多点 → 更精确但更慢
+        uint32_t sp = static_cast<uint32_t>(std::min(static_cast<size_t>(5000), gp.digits * 50));
+        kp.murphy_params.sample_points = std::max(500u, sp);
+
+        // skewness 搜索步数
+        kp.murphy_params.skewness_steps = gp.skewness_steps;
+
+        return kp;
+    }
 };
 
 /// 进度回调函数类型

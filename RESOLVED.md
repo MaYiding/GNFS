@@ -7,6 +7,22 @@
 
 ## 已完成 ✅
 
+### Session 71 — Kleinjung 参数自适应缩放
+
+#### [FEAT] ~~Kleinjung poly selection 参数硬编码，不随 N 缩放~~ ✅
+- **发现**: 2026-03-15
+- **解决**: 2026-03-15
+- **根因**: `KleinjungParams` 默认值全部硬编码 (lcb=10000, radius=100, cands=1000)，`SelectorDispatch` 有独立硬编码参数表且门槛过高 (bits≥300)，导致 80-digit (264 bits) 永远不走 Kleinjung。而 `GNFSParams::compute()` 已有 L_N 理论校准的参数但从未被传递
+- **修复**:
+  - `KleinjungParams::from_gnfs_params()`: 静态工厂，从 GNFSParams 推导所有参数
+  - `SelectorDispatch::select(n, params)`: 新增 GNFSParams 重载，使用 from_gnfs_params
+  - Kleinjung 门槛从 `degree≥5 AND bits≥300` 降为 `degree≥5`
+  - Murphy 参数 (alpha_bound, smoothness_bound, sample_points) 也随 FB 缩放
+- **验证**: test_kleinjung 全部通过（含 from_gnfs_params 参数推导 + 25-digit forced degree=5 Kleinjung 路径），gate 23/23
+  - 参数单调性: lcb 50d=14596, 80d=198668, 100d=4600417 ✓
+  - 25-digit degree=5: f(m)≡0 mod N ✓, Murphy E finite ✓, 0.48s
+- **Commit**: `eb8a83b`
+
 ### Session 70 — Class Group Characters 任意度数支持
 
 #### [BUG] ~~Class Group Characters 实现仅支持 Cubic Fields~~ ✅
