@@ -338,8 +338,12 @@ public:
         }
 
         // --- helper: compute pseudo-remainder prem(A, B) over Z ---
-        // Satisfies: lc(B)^(deg(A)-deg(B)+1) * A = Q * B + prem(A, B)
-        auto pseudo_remainder = [](const IntPoly& A, const IntPoly& B) -> IntPoly {
+        // Returns {prem, actual_iters} where prem satisfies:
+        //   lc(B)^actual_iters * A = Q * B + prem
+        // Note: actual_iters <= deg(A)-deg(B)+1; can be less when degree
+        // drops by >1 in a single step.
+        struct PremResult { IntPoly R; int iters; };
+        auto pseudo_remainder = [](const IntPoly& A, const IntPoly& B) -> PremResult {
             int db = B.deg();
             assert(db >= 0);
 
@@ -348,6 +352,7 @@ public:
 
             const Integer& lc_b = B.c[static_cast<size_t>(db)];
 
+            int iters = 0;
             int max_iters = static_cast<int>(A.c.size()) + 10;
             for (int iter = 0; iter < max_iters; ++iter) {
                 int dr = R.deg();
@@ -365,8 +370,9 @@ public:
                     term *= B.c[static_cast<size_t>(i)];
                     R.c[static_cast<size_t>(i + shift)] -= term;
                 }
+                ++iters;
             }
-            return R;
+            return {std::move(R), iters};
         };
 
         // --- helper: divide out abs(content) to prevent coefficient blowup ---
@@ -404,20 +410,18 @@ public:
             int d1 = prev1.deg();
             if (d1 < 0) break;
 
-            IntPoly R = pseudo_remainder(prev2, prev1);
+            auto [R, actual_iters] = pseudo_remainder(prev2, prev1);
 
             // Negate to get Sturm chain element: f_{k+1} = -rem(f_{k-1}, f_k)
             for (auto& x : R.c) x.negate();
 
-            // Sign correction for pseudo-remainder scaling factor lc(B)^(δ+1):
-            // prem(A,B) = lc(B)^(δ+1) · rem(A,B)
-            // After negation: -prem = lc(B)^(δ+1) · (-rem) = lc(B)^(δ+1) · f_{k+1}
-            // If lc(B)^(δ+1) < 0, the signs are flipped — need to negate back.
-            // lc(B)^(δ+1) < 0 iff lc(B) < 0 AND (δ+1) is odd, i.e., δ is even.
-            int d2 = prev2.deg();
-            int delta = d2 - d1;
+            // Sign correction for pseudo-remainder scaling factor lc(B)^s:
+            // prem(A,B) = lc(B)^s · rem(A,B) where s = actual_iters.
+            // After negation: -prem = lc(B)^s · f_{k+1}
+            // If lc(B)^s < 0, signs are flipped — negate to restore.
+            // lc(B)^s < 0 iff lc(B) < 0 AND s is odd.
             int lc_sign = prev1.leading_sign();
-            if (lc_sign < 0 && delta % 2 == 0) {
+            if (lc_sign < 0 && actual_iters % 2 == 1) {
                 for (auto& x : R.c) x.negate();
             }
 

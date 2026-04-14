@@ -242,6 +242,32 @@ void test_sturm_all_real_quintic() {
     TEST_PASS("Sturm: all-real quintic");
 }
 
+void test_sturm_non_monic() {
+    // Non-monic polynomials exercise the sign correction branch
+    // in pseudo-remainder (when lc(B) < 0 and actual_iters is odd).
+
+    // -x^2 + 1 = -(x-1)(x+1): 2 real roots
+    std::vector<Integer> c1 = {I(1), I(0), I(-1)};
+    TEST_ASSERT(ClassGroup::count_real_roots(c1, 2) == 2, "-x^2+1 r1=2");
+
+    // 2x^2 - 1: 2 real roots (±1/√2)
+    std::vector<Integer> c2 = {I(-1), I(0), I(2)};
+    TEST_ASSERT(ClassGroup::count_real_roots(c2, 2) == 2, "2x^2-1 r1=2");
+
+    // -3x^3 + 1: 1 real root (cube root of 1/3)
+    std::vector<Integer> c3 = {I(1), I(0), I(0), I(-3)};
+    TEST_ASSERT(ClassGroup::count_real_roots(c3, 3) == 1, "-3x^3+1 r1=1");
+
+    // -x^4 + 5x^2 - 4 = -(x^2-1)(x^2-4): 4 real roots
+    std::vector<Integer> c4 = {I(-4), I(0), I(5), I(0), I(-1)};
+    TEST_ASSERT(ClassGroup::count_real_roots(c4, 4) == 4, "-(x^2-1)(x^2-4) r1=4");
+
+    // -x^4 - 1: 0 real roots (always negative)
+    std::vector<Integer> c5 = {I(-1), I(0), I(0), I(0), I(-1)};
+    TEST_ASSERT(ClassGroup::count_real_roots(c5, 4) == 0, "-x^4-1 r1=0");
+    TEST_PASS("Sturm: non-monic polynomials");
+}
+
 // ═══════════════════════════════════════════════════════════
 // Tests: Discriminant computation (Sylvester + Bareiss)
 // ═══════════════════════════════════════════════════════════
@@ -514,6 +540,7 @@ int main() {
     test_sturm_sextic();
     test_sturm_repeated_roots();
     test_sturm_all_real_quintic();
+    test_sturm_non_monic();
 
     // Discriminant computation
     test_discriminant_degree3();
