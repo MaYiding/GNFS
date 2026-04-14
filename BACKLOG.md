@@ -7,7 +7,7 @@
 |------|------|------|
 | **P1** | 0 | (已全部修复 — Session 61) |
 | **P1-OPT** | 0 | (已清空) |
-| **P2** | 1 | class group ×1 |
+| **P2** | 0 | (已全部修复 — Session 70) |
 | **P3** | 0 | (已全部完成 — Session 69) |
 | **TEST** | 0 | (已全部修复 — Session 64) |
 
@@ -21,15 +21,7 @@
 
 ## P2 — 中优先级
 
-> **Session 62 修复 25 条, Session 63 修复 7 条, Session 64 修复 9 条。详见 RESOLVED.md。**
-
-### 基础设施
-
-#### [BUG] Class Group Characters 实现仅支持 Cubic Fields
-- **发现日期**: 2026-03-13
-- **文件**: `sqrt/class_group.hpp`
-- **描述**: `class_group.hpp` 的 Minkowski bound、signature、character computation 均假定 degree=3。对 degree≥4 产生错误列值，导致所有 BL 依赖在 sqrt 阶段失败。当前已全局禁用 (`include_class_group=false`)，QC+Schirokauer 足够替代。如需恢复 class group 功能需全面重写。
-- **建议**: 若要支持，需正确处理任意 degree 的签名 (r1,r2)、SNF、character computation。参考 PARI/GP 或 SageMath 的实现。
+> **Session 62 修复 25 条, Session 63 修复 7 条, Session 64 修复 9 条, Session 70 修复 1 条。详见 RESOLVED.md。**
 
 ---
 

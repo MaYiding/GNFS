@@ -7,6 +7,24 @@
 
 ## 已完成 ✅
 
+### Session 70 — Class Group Characters 任意度数支持
+
+#### [BUG] ~~Class Group Characters 实现仅支持 Cubic Fields~~ ✅
+- **发现**: 2026-03-13
+- **解决**: 2026-03-15
+- **根因**: `compute_minkowski_bound()` 用判别式符号推导 signature (r1,r2)，仅对 degree=3 正确。degree≥4 时 disc 符号不能唯一确定 r2（如 d=4, disc>0 → r2=0 或 r2=2）
+- **修复**: 用 Sturm 定理精确计数实根 → 正确的 (r1,r2) signature
+  - `count_real_roots()`: pseudo-remainder Sturm 链 + 符号修正 + content 归一化
+  - ±∞ 变号计数法（只需 leading coefficient 符号和度数奇偶）
+  - 额外防御：零多项式 throw、signature 不变式 throw、循环终止上限
+- **验证**: 30/30 单元测试（含 LMFDB 交叉验证 4 条），gate 23/23
+  - degree 3: disc=-31/-527/-59, sig=(1,1) ✓
+  - degree 4: disc=256/96/229/-283, sig=(0,2)/(4,0)/(0,2)/(2,1) ✓
+  - degree 5: disc=3381, sig=(1,2) ✓
+  - degree 6: disc=-43531, sig=(0,3) ✓
+  - 重根边界: (x-1)², (x-1)²(x+1), x² ✓
+- **Commit**: `6b5ac4f` (merge)
+
 ### Session 69 — 远期架构理论开发 (4 features)
 
 #### [FEAT] ~~Block Wiedemann（130+ 位）~~ ✅
