@@ -482,6 +482,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_api PRIVATE gnfs_core Threads::Threads)
     add_test(NAME API COMMAND test_api)
 
+    # i18n 测试
+    add_executable(test_i18n
+        tests/test_i18n.cpp
+    )
+    target_link_libraries(test_i18n PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME I18N COMMAND test_i18n)
+
     # 压力测试 (50/80/100-digit)
     add_executable(test_stress
         tests/test_stress.cpp
