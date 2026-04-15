@@ -502,7 +502,7 @@ int main(int argc, char* argv[]) {
         output = result.to_text();
     }
 
-    // Write to file or stdout
+    // Write to file and/or stdout
     if (!output_file.empty()) {
         std::ofstream ofs(output_file);
         if (!ofs.is_open()) {
@@ -513,9 +513,9 @@ int main(int argc, char* argv[]) {
         if (!quiet) {
             std::cout << "Result written to " << output_file << "\n";
         }
+    } else {
+        std::cout << output;
     }
-
-    std::cout << output;
 
     return result.success ? 0 : 1;
 }
