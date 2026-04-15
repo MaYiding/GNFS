@@ -475,6 +475,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RegressionGate COMMAND test_regression_gate)
     set_tests_properties(RegressionGate PROPERTIES LABELS "gate" TIMEOUT 120)
 
+    # API 层测试
+    add_executable(test_api
+        tests/test_api.cpp
+    )
+    target_link_libraries(test_api PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME API COMMAND test_api)
+
     # 压力测试 (50/80/100-digit)
     add_executable(test_stress
         tests/test_stress.cpp
