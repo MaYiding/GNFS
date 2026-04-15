@@ -173,6 +173,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/util/thread_pool.cpp")
     target_sources(gnfs_core PRIVATE src/util/thread_pool.cpp)
 endif()
 
+# API 层
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/api/pipeline.cpp")
+    target_sources(gnfs_core PRIVATE src/api/pipeline.cpp)
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/api/factorizer.cpp")
+    target_sources(gnfs_core PRIVATE src/api/factorizer.cpp)
+endif()
+
 target_include_directories(gnfs_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
@@ -194,14 +202,14 @@ endif()
 # 可执行文件
 # ============================================================
 
-# 主程序（暂时禁用，main.cpp 尚未创建）
-# add_executable(gnfs_main
-#     src/main.cpp
-# )
-# target_link_libraries(gnfs_main PRIVATE
-#     gnfs_core
-#     Threads::Threads
-# )
+# GNFS CLI 主程序
+add_executable(gnfs
+    src/cli/main.cpp
+)
+target_link_libraries(gnfs PRIVATE
+    gnfs_core
+    Threads::Threads
+)
 
 # ============================================================
 # 测试
