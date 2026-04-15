@@ -30,10 +30,12 @@ CMakeUserPresets.json
 # ===== Cache =====
 .cache/
 
-# ===== Planning Files (Session-Specific) =====
+# ===== Planning & Tracking Files (Session-Specific) =====
 task_plan.md
 findings.md
 progress.md
+BACKLOG.md
+RESOLVED.md
 
 # ===== Backup Files =====
 *.bak
