@@ -378,26 +378,29 @@ main (合并后仍然稳定)
 - 除法前检查除数非零
 - 模运算前检查模数 > 0
 
-## 项目根目录清理指南
+## 项目文件结构
 
-根目录存在大量遗留文件（早期开发产物），分类如下：
+根目录只包含配置和文档文件，所有代码在子目录中：
 
-| 类型 | 文件 | 处理方式 |
-|------|------|----------|
-| 遗留脚本 | `*.sh`（compile_test, fix_*, quick_fix 等） | **不纳入 git**，后续可删除 |
-| 遗留文档 | `BUILD.md`, `*_STATUS.md`, `*_REPORT.md` 等 | **不纳入 git**，信息已过时 |
-| 遗留源码 | `algebraic_sqrt.cpp`, `base_m.cpp` 等根目录 `.cpp/.hpp` | **不纳入 git**，正式代码在 `src/` 和 `include/` |
-| 扁平命名文件 | `includegnfs*`, `src*`（无斜杠） | **不纳入 git**，是早期错误路径产物 |
-| **正式代码** | `include/`, `src/`, `tests/`, `CMakeLists.txt` | **纳入 git** |
-| **项目配置** | `CLAUDE.md`, `.gitignore`, `.claude/` | **纳入 git** |
-| **文档** | `docs/`, `README.md` | **纳入 git** |
-
-首次提交时，建议只 add 正式文件，不要 `git add -A`。推荐：
-
-```bash
-git add include/ src/ tests/ CMakeLists.txt CLAUDE.md .gitignore README.md docs/
-git commit -m "chore: initial commit — GNFS core codebase"
 ```
+GNFS/
+├── include/gnfs/       # 35 头文件 (.hpp)，按模块组织
+├── src/                # 10 源文件 (.cpp)，按模块组织
+├── tests/              # 37 测试文件 (.cpp)
+├── scripts/            # test.sh, feature-branch.sh
+├── docs/plans/         # 设计文档
+├── .claude/            # Claude Code 配置 (agents, skills, hooks)
+├── .github/workflows/  # CI/CD
+├── CMakeLists.txt      # 构建配置
+├── CLAUDE.md           # 项目指令
+├── BACKLOG.md          # 待办追踪
+├── RESOLVED.md         # 已完成记录
+├── README.md           # 项目概述
+└── LICENSE             # 许可证
+```
+
+**注意**: `.gitignore` 排除了根目录 `*.cpp`/`*.hpp`/`*.sh` 和遗留文档模式，防止误添加。
+所有代码必须放在 `include/`、`src/`、`tests/` 中。
 
 ## 长时间测试监控规范
 
@@ -437,7 +440,6 @@ cat /tmp/stress_test.log
 ## Known Limitations
 
 - 大类群 (>20 generators) 的 Couveignes 实现可能失败
-- 项目根目录有遗留脚本（`.sh`, 部分 `.md`），勿将其视为当前架构（见上方清理指南）
 
 ## 工作流规范（强制执行）
 
