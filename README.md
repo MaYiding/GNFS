@@ -13,7 +13,8 @@ GNFS is the most powerful known classical algorithm for factoring large composit
 - **Complete pipeline**: All 8 stages of GNFS fully implemented and integrated
 - **Verified correctness**: Successfully factors integers from 8-bit to 81-bit (25-digit), with 5-level progressive test suite
 - **High performance**: Multi-threaded sieving, parallel Block Lanczos, Hensel sqrt with 12-thread precomputation
-- **Production-quality**: 29 test files, 39 headers, overflow-safe arithmetic, thread-safe relation collection
+- **Production-quality**: 30 test files, 44 headers, overflow-safe arithmetic, thread-safe relation collection
+- **Unified CLI**: `./gnfs <number>` one-command factorization with progress display, JSON/CSV/report output
 
 ## Factorization Results
 
@@ -57,17 +58,111 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 ./scripts/test.sh
 ```
 
-### Run a Factorization
+### Factorize a Number
 
 ```bash
-# Progressive test — factors integers at increasing difficulty
-./build/test_gnfs_progressive 1 5    # Run Level 1 through 5
+# One-command factorization
+./build/gnfs 96091
+
+# With JSON output
+./build/gnfs 1000036000099 --json
+
+# Interactive mode
+./build/gnfs --interactive
+```
+
+### CLI Usage Example
+
+```
+   ╔══════════════════════════════════════╗
+   ║   ██████╗ ███╗   ██╗███████╗███████╗ ║
+   ║  ██╔════╝ ████╗  ██║██╔════╝██╔════╝ ║
+   ║  ██║  ███╗██╔██╗ ██║█████╗  ███████╗ ║
+   ║  ██║   ██║██║╚██╗██║██╔══╝  ╚════██║ ║
+   ║  ╚██████╔╝██║ ╚████║██║     ███████║ ║
+   ║   ╚═════╝ ╚═╝  ╚═══╝╚═╝     ╚══════╝ ║
+   ╚══════════════════════════════════════╝
+   General Number Field Sieve v0.1.0
+
+Factoring: 96091 (17 bits)
+
+   ✓ Factor Base                               [12ms]
+   ✓ Sieving                                   [1.35s]
+   ✓ Filtering                                 [<1ms]
+   ✓ Linear Algebra                            [14ms]
+   ✓ Square Root                               [6ms]
+
+   ╔══════════════════════════════════════════════════╗
+   ║  FACTORIZATION SUCCESSFUL                        ║
+   ╠══════════════════════════════════════════════════╣
+   ║  N = 96091                                       ║
+   ║      17 bits, 5 digits                           ║
+   ║                                                  ║
+   ║  = 307 * 313                                     ║
+   ╠══════════════════════════════════════════════════╣
+   ║  |-- Polynomial           <1ms    0.0%           ║
+   ║  |-- Factor Base          12ms    0.9%           ║
+   ║  |-- Sieving             1.35s   97.0%           ║
+   ║  |-- Filtering            <1ms    0.0%           ║
+   ║  |-- Linear Algebra       14ms    1.0%           ║
+   ║  `-- Square Root           6ms    0.4%           ║
+   ║                           ____________           ║
+   ║      TOTAL                       1.39s           ║
+   ╠══════════════════════════════════════════════════╣
+   ║  Rels: 512  Matrix: 512x313  Deps: 64            ║
+   ╚══════════════════════════════════════════════════╝
+```
+
+### CLI Options
+
+```bash
+./build/gnfs <number>                       # Factor a number
+./build/gnfs <number> --json                # JSON output
+./build/gnfs <number> --csv                 # CSV output
+./build/gnfs <number> --report              # Detailed report
+./build/gnfs <number> --report -o result.txt  # Save to file
+./build/gnfs <number> --verbose             # Verbose with structured log
+./build/gnfs <number> --quiet               # Minimal output
+./build/gnfs <number> -c params.cfg         # Load config file
+./build/gnfs <number> --degree 4 --fb-rational 50000  # Override params
+./build/gnfs --interactive                  # Interactive REPL
+```
+
+### C++ API
+
+```cpp
+#include <gnfs/api/factorizer.hpp>
+
+// One-line factorization
+auto result = gnfs::api::factorize(gnfs::core::Integer("96091"));
+if (result.success) {
+    std::cout << result.factors[0].to_string() << " * "
+              << result.factors[1].to_string() << "\n";
+    std::cout << result.to_json();  // Full JSON output
+}
+
+// With config and progress
+gnfs::api::Config cfg;
+cfg.set_verbose(false).set_degree(3);
+
+auto result = gnfs::api::factorize(n, cfg, [](const auto& info) {
+    std::cout << gnfs::api::phase_name(info.phase)
+              << ": " << info.phase_progress * 100 << "%\n";
+});
+
+// Step-by-step pipeline control
+gnfs::api::Pipeline pipeline(n, cfg);
+auto ctx = pipeline.select_polynomial();
+auto fb  = pipeline.build_factor_base(ctx);
+auto rels = pipeline.sieve_and_collect(ctx, fb);
+// ... continue through phases
 ```
 
 ## Architecture
 
 ```
 include/gnfs/
+├── api/                # Public API: factorizer, Pipeline, Config, Result, Progress
 ├── core/               # Integer, Polynomial, Relation, Params
 ├── polynomial/         # Kleinjung selection, Murphy E, Base-m
 ├── factor_base/        # Factor base construction (Cantor-Zassenhaus)
@@ -78,8 +173,11 @@ include/gnfs/
 ├── sqrt/               # Hensel lifting, Couveignes, class group, rational sqrt
 └── util/               # SmallVector, ThreadPool, Logger, Timer, SafeMath
 
-src/                    # 10 implementation files
-tests/                  # 29 test files
+src/
+├── api/                # Pipeline orchestration, factorizer
+├── cli/                # CLI main entry point
+└── ...                 # 10 module implementation files
+tests/                  # 30 test files
 scripts/test.sh         # Unified test runner with timeout protection
 ```
 
@@ -172,14 +270,14 @@ GNFS/
 ├── README.md               # This file
 ├── BACKLOG.md              # Open issues (prioritized)
 ├── RESOLVED.md             # Fixed issues & false positives
-├── include/gnfs/           # 39 header files (9 modules)
-├── src/                    # 10 source files
-├── tests/                  # 29 test files
+├── include/gnfs/           # 44 header files (10 modules)
+├── src/                    # 13 source files (+ CLI)
+├── tests/                  # 30 test files
 ├── scripts/test.sh         # Test runner
 └── docs/                   # Documentation
 ```
 
-### Module Overview (39 headers)
+### Module Overview (44 headers)
 
 | Module | Headers | Description |
 |--------|---------|-------------|
@@ -192,6 +290,7 @@ GNFS/
 | `linalg` | 5 | MatrixBuilder, BlockLanczos, Gaussian, Schirokauer, SparseMatrix |
 | `sqrt` | 6 | AlgebraicSqrt, HenselSqrt, Couveignes, RationalSqrt, ClassGroup, ModularPoly |
 | `util` | 5 | SmallVector, ThreadPool, Logger, Timer, SafeMath |
+| `api` | 5 | Factorizer, Pipeline, Config, Result, Progress |
 
 ## Build Options
 
