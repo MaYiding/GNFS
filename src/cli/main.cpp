@@ -95,33 +95,39 @@ static void print_help() {
 }
 
 // Real-time progress callback for terminal
-static ProgressCallback make_terminal_progress(bool verbose) {
+static ProgressCallback make_terminal_progress(bool /*verbose*/) {
     struct State {
         Phase current_phase = Phase::PolynomialSelection;
+        bool first_phase = true;
         int last_bar_len = 0;
     };
     auto state = std::make_shared<State>();
 
-    return [state, verbose](const ProgressInfo& info) {
-        if (!verbose && info.phase == state->current_phase &&
-            info.phase_progress < 0) return;
-
-        // Phase transition
+    return [state](const ProgressInfo& info) {
+        // Phase transition — print header with newline
         if (info.phase != state->current_phase) {
-            if (state->current_phase != Phase::PolynomialSelection || info.phase != Phase::PolynomialSelection) {
-                // Clear progress line
+            // Clear any progress bar on current line
+            if (state->last_bar_len > 0) {
                 std::cout << "\r" << std::string(static_cast<size_t>(state->last_bar_len + 10), ' ') << "\r";
+                state->last_bar_len = 0;
             }
+
             state->current_phase = info.phase;
-            if (info.phase == Phase::Done) return;
+            if (info.phase == Phase::Done) {
+                std::cout << "\n";
+                return;
+            }
+
+            if (!state->first_phase) std::cout << "\n";
+            state->first_phase = false;
 
             if (g_color) std::cout << BOLD << GREEN;
             std::cout << "[" << phase_name(info.phase) << "]";
             if (g_color) std::cout << RESET;
-            std::cout << " " << std::flush;
+            std::cout << std::flush;
         }
 
-        // Progress bar for sieving
+        // Sieving: progress bar (overwrites current line)
         if (info.phase == Phase::Sieving && info.phase_progress >= 0) {
             int bar_width = 30;
             int filled = static_cast<int>(info.phase_progress * bar_width);
@@ -137,9 +143,13 @@ static ProgressCallback make_terminal_progress(bool verbose) {
             std::cout << buf << std::flush;
             state->last_bar_len = static_cast<int>(std::strlen(buf));
         }
-        // Generic progress
-        else if (verbose && !info.message.empty()) {
-            std::cout << info.message << std::flush;
+        // Sqrt: show dep count on same line (don't flood)
+        else if (info.phase == Phase::SquareRoot && info.dependency_index > 0) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "\r  dep %d/%d",
+                info.dependency_index, info.dependencies_total);
+            std::cout << buf << std::flush;
+            state->last_bar_len = static_cast<int>(std::strlen(buf));
         }
     };
 }

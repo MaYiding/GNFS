@@ -496,7 +496,7 @@ endif()
 # 安装
 # ============================================================
 
-install(TARGETS gnfs_core gnfs_util
+install(TARGETS gnfs gnfs_core gnfs_util
     EXPORT GNFSTargets
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
