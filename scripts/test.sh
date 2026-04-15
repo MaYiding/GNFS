@@ -204,6 +204,7 @@ MODULE_TESTS=(
     linalg         "test_linalg test_block_wiedemann test_mmap_csr test_schirokauer_deg4 test_edge_cases test_integration"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_class_group"
+    api            "test_api"
 )
 
 # 模块 → 慢速测试映射 (slow+heavy, 可选运行)
@@ -285,6 +286,7 @@ TEST_TIMEOUT=(
     test_gnfs_progressive    3600
     test_25digit             1800
     test_stress              43200
+    test_api                 60
 )
 
 # 测试速度分级 (用于 list 显示)
@@ -356,11 +358,12 @@ MODULE_DESC=(
     relation       "关系收集与过滤"
     linalg         "线性代数 (GF(2) 矩阵, Block Lanczos)"
     sqrt           "平方根 (Hensel, Couveignes, 代数平方根)"
+    api            "公共 API (factorize, Pipeline, Config)"
 )
 
 # 有序模块列表 (按流水线顺序)
 typeset -a MODULE_ORDER
-MODULE_ORDER=(core util polynomial factor_base sieve cofactor relation linalg sqrt)
+MODULE_ORDER=(core util polynomial factor_base sieve cofactor relation linalg sqrt api)
 
 # 文件路径 → 模块映射
 path_to_module() {
