@@ -37,29 +37,165 @@ static const char* const GREEN  = "\033[32m";
 static const char* const YELLOW = "\033[33m";
 static const char* const CYAN   = "\033[36m";
 static const char* const RED    = "\033[31m";
+static const char* const WHITE  = "\033[37m";
 
 static bool g_color = true;  // auto-detect later
 
+// Format seconds as human-readable duration
+static std::string fmt_duration(double s) {
+    char buf[32];
+    if (s < 0.001) {
+        std::snprintf(buf, sizeof(buf), "<1ms");
+    } else if (s < 1.0) {
+        std::snprintf(buf, sizeof(buf), "%.0fms", s * 1000.0);
+    } else if (s < 60.0) {
+        std::snprintf(buf, sizeof(buf), "%.2fs", s);
+    } else if (s < 3600.0) {
+        int m = static_cast<int>(s) / 60;
+        double sec = s - m * 60.0;
+        std::snprintf(buf, sizeof(buf), "%dm %.1fs", m, sec);
+    } else {
+        int h = static_cast<int>(s) / 3600;
+        int m = (static_cast<int>(s) % 3600) / 60;
+        double sec = s - h * 3600 - m * 60;
+        std::snprintf(buf, sizeof(buf), "%dh %dm %.0fs", h, m, sec);
+    }
+    return buf;
+}
+
 static void print_banner() {
-    if (g_color) {
-        std::cout << BOLD << CYAN;
-    }
+    if (g_color) std::cout << BOLD << CYAN;
     std::cout << R"(
-   ██████╗ ███╗   ██╗███████╗███████╗
-  ██╔════╝ ████╗  ██║██╔════╝██╔════╝
-  ██║  ███╗██╔██╗ ██║█████╗  ███████╗
-  ██║   ██║██║╚██╗██║██╔══╝  ╚════██║
-  ╚██████╔╝██║ ╚████║██║     ███████║
-   ╚═════╝ ╚═╝  ╚═══╝╚═╝     ╚══════╝
+   ╔══════════════════════════════════════╗
+   ║   ██████╗ ███╗   ██╗███████╗███████╗ ║
+   ║  ██╔════╝ ████╗  ██║██╔════╝██╔════╝ ║
+   ║  ██║  ███╗██╔██╗ ██║█████╗  ███████╗ ║
+   ║  ██║   ██║██║╚██╗██║██╔══╝  ╚════██║ ║
+   ║  ╚██████╔╝██║ ╚████║██║     ███████║ ║
+   ║   ╚═════╝ ╚═╝  ╚═══╝╚═╝     ╚══════╝ ║
+   ╚══════════════════════════════════════╝
 )";
-    if (g_color) {
-        std::cout << DIM;
-    }
-    std::cout << "  General Number Field Sieve v" << gnfs::api::version() << "\n";
-    if (g_color) {
-        std::cout << RESET;
-    }
+    if (g_color) std::cout << DIM;
+    std::cout << "   General Number Field Sieve v" << gnfs::api::version() << "\n";
+    if (g_color) std::cout << RESET;
     std::cout << "\n";
+}
+
+// Print a padded box line: "   ║  <content>  ║" with exact 50-col inner width
+// content_display_width is the visible column count of content (excluding ANSI codes)
+static void box_line(const std::string& content, int content_display_width) {
+    auto c = [](const char* code) -> const char* { return g_color ? code : ""; };
+    int inner = 50;
+    int pad = inner - 2 - content_display_width; // 2 for leading "  "
+    if (pad < 0) pad = 0;
+    std::cout << c(CYAN) << "   \u2551  " << c(RESET)
+              << content
+              << std::string(static_cast<size_t>(pad), ' ')
+              << c(CYAN) << "\u2551" << c(RESET) << "\n";
+}
+
+static std::string repeat_str(const char* s, int n) {
+    std::string r;
+    for (int i = 0; i < n; ++i) r += s;
+    return r;
+}
+static void box_top()    { auto c = [](const char* code) { return g_color ? code : ""; };
+                           std::cout << c(CYAN) << "   " << "\u2554" << repeat_str("\u2550", 50) << "\u2557" << c(RESET) << "\n"; }
+static void box_mid()    { auto c = [](const char* code) { return g_color ? code : ""; };
+                           std::cout << c(CYAN) << "   " << "\u2560" << repeat_str("\u2550", 50) << "\u2563" << c(RESET) << "\n"; }
+static void box_bottom() { auto c = [](const char* code) { return g_color ? code : ""; };
+                           std::cout << c(CYAN) << "   " << "\u255a" << repeat_str("\u2550", 50) << "\u255d" << c(RESET) << "\n"; }
+
+// Print the final result summary box
+static void print_summary_box(const FactorResult& result) {
+    const auto& s = result.stats;
+    auto c = [](const char* code) -> const char* { return g_color ? code : ""; };
+
+    box_top();
+
+    // Title
+    if (result.success) {
+        std::string title = std::string(c(BOLD)) + c(GREEN) +
+            "FACTORIZATION SUCCESSFUL" + c(RESET);
+        box_line(title, 24);
+    } else {
+        std::string title = std::string(c(BOLD)) + c(RED) +
+            "FACTORIZATION FAILED" + c(RESET);
+        box_line(title, 20);
+    }
+
+    box_mid();
+
+    // N info
+    std::string n_str = result.n.to_string();
+    if (n_str.length() > 38) n_str = n_str.substr(0, 35) + "...";
+    box_line("N = " + n_str, static_cast<int>(4 + n_str.length()));
+
+    char info_buf[64];
+    std::snprintf(info_buf, sizeof(info_buf), "%zu bits, %zu digits",
+                  s.n_bits, s.n_digits);
+    box_line(std::string("    ") + info_buf,
+             4 + static_cast<int>(std::strlen(info_buf)));
+
+    // Factors
+    if (result.success && result.factors.size() >= 2) {
+        box_line("", 0);
+        std::string f_str = result.factors[0].to_string() + " * " +
+                            result.factors[1].to_string();
+        if (f_str.length() > 42) f_str = f_str.substr(0, 39) + "...";
+
+        std::string colored_f = std::string(c(BOLD)) + c(GREEN) + "= " +
+            f_str + c(RESET);
+        box_line(colored_f, static_cast<int>(2 + f_str.length()));
+    }
+
+    box_mid();
+
+    // Phase timings
+    struct PhaseRow { const char* name; double time; };
+    PhaseRow phases[] = {
+        {"Polynomial",     s.timings.poly_s},
+        {"Factor Base",    s.timings.fb_s},
+        {"Sieving",        s.timings.sieve_s},
+        {"Filtering",      s.timings.filter_s},
+        {"Linear Algebra", s.timings.linalg_s},
+        {"Square Root",    s.timings.sqrt_s},
+    };
+
+    for (int i = 0; i < 6; ++i) {
+        const char* tree_ascii = (i < 5) ? "|-- " : "`-- ";
+        double pct = s.timings.total_s > 0 ?
+            (phases[i].time / s.timings.total_s * 100.0) : 0.0;
+
+        char row[64];
+        std::snprintf(row, sizeof(row), "%s%-16s %8s  %5.1f%%",
+                      tree_ascii, phases[i].name,
+                      fmt_duration(phases[i].time).c_str(), pct);
+        box_line(row, static_cast<int>(std::strlen(row)));
+    }
+
+    // Separator + total
+    box_line("                         ____________", 37);
+
+    std::string total_dur = fmt_duration(s.timings.total_s);
+    std::string total_line = std::string(c(BOLD)) + c(WHITE) + "    TOTAL" + c(RESET);
+    // Pad between TOTAL and duration
+    int total_pad = 28 - static_cast<int>(total_dur.length());
+    total_line += std::string(static_cast<size_t>(std::max(total_pad, 1)), ' ');
+    total_line += std::string(c(BOLD)) + c(WHITE) + total_dur + c(RESET);
+    box_line(total_line, 9 + std::max(total_pad, 1) + static_cast<int>(total_dur.length()));
+
+    box_mid();
+
+    // Stats
+    char stat_buf[64];
+    std::snprintf(stat_buf, sizeof(stat_buf),
+                  "Rels: %zu  Matrix: %zux%zu  Deps: %zu",
+                  s.relations_found, s.matrix_rows, s.matrix_cols,
+                  s.dependencies_found);
+    box_line(stat_buf, static_cast<int>(std::strlen(stat_buf)));
+
+    box_bottom();
 }
 
 static void print_help() {
@@ -100,56 +236,105 @@ static ProgressCallback make_terminal_progress(bool /*verbose*/) {
         Phase current_phase = Phase::PolynomialSelection;
         bool first_phase = true;
         int last_bar_len = 0;
+        double phase_start_s = 0.0;
+        double sieve_start_s = 0.0;
+        size_t sieve_last_rels = 0;
     };
     auto state = std::make_shared<State>();
 
     return [state](const ProgressInfo& info) {
-        // Phase transition — print header with newline
-        if (info.phase != state->current_phase) {
-            // Clear any progress bar on current line
+        auto c = [](const char* code) { return g_color ? code : ""; };
+        auto clear_line = [&state]() {
             if (state->last_bar_len > 0) {
-                std::cout << "\r" << std::string(static_cast<size_t>(state->last_bar_len + 10), ' ') << "\r";
+                std::cout << "\r" << std::string(
+                    static_cast<size_t>(state->last_bar_len + 10), ' ') << "\r";
                 state->last_bar_len = 0;
+            }
+        };
+
+        // Phase transition
+        if (info.phase != state->current_phase) {
+            clear_line();
+
+            // Print completion mark for previous phase
+            if (!state->first_phase && state->current_phase != Phase::Done) {
+                double phase_time = info.elapsed_s - state->phase_start_s;
+                std::cout << "\r   " << c(GREEN) << "\u2713 "
+                          << c(RESET) << c(DIM)
+                          << phase_name(state->current_phase)
+                          << c(RESET);
+                // Right-align timing
+                std::string dur = fmt_duration(phase_time);
+                int pad = 42 - static_cast<int>(std::strlen(
+                    phase_name(state->current_phase)));
+                std::cout << std::string(static_cast<size_t>(std::max(pad, 1)), ' ')
+                          << c(DIM) << "[" << dur << "]" << c(RESET) << "\n";
             }
 
             state->current_phase = info.phase;
-            if (info.phase == Phase::Done) {
-                std::cout << "\n";
-                return;
+            state->phase_start_s = info.elapsed_s;
+
+            if (info.phase == Phase::Done) return;
+
+            if (info.phase == Phase::Sieving) {
+                state->sieve_start_s = info.elapsed_s;
+                state->sieve_last_rels = 0;
             }
 
-            if (!state->first_phase) std::cout << "\n";
             state->first_phase = false;
 
-            if (g_color) std::cout << BOLD << GREEN;
-            std::cout << "[" << phase_name(info.phase) << "]";
-            if (g_color) std::cout << RESET;
-            std::cout << std::flush;
+            // Print new phase indicator
+            std::cout << "   " << c(CYAN) << "\u25B6 " << c(BOLD)
+                      << phase_name(info.phase)
+                      << c(RESET) << std::flush;
         }
 
-        // Sieving: progress bar (overwrites current line)
+        // Sieving: enhanced progress bar with throughput + ETA
         if (info.phase == Phase::Sieving && info.phase_progress >= 0) {
-            int bar_width = 30;
+            int bar_width = 28;
             int filled = static_cast<int>(info.phase_progress * bar_width);
+            filled = std::min(filled, bar_width);
 
-            std::string bar(static_cast<size_t>(filled), '#');
-            bar += std::string(static_cast<size_t>(bar_width - filled), '-');
+            // Build progress bar with Unicode blocks
+            std::string bar;
+            for (int i = 0; i < bar_width; ++i) {
+                if (i < filled) bar += "\u2588";      // full block
+                else if (i == filled) bar += "\u2591"; // light shade
+                else bar += "\u2591";                  // light shade
+            }
 
-            char buf[128];
+            // Throughput: relations/sec
+            double sieve_elapsed = info.elapsed_s - state->sieve_start_s;
+            double rels_per_sec = sieve_elapsed > 0.1 ?
+                static_cast<double>(info.relations_found) / sieve_elapsed : 0;
+
+            // ETA
+            std::string eta_str;
+            if (info.phase_progress > 0.01 && info.phase_progress < 0.999) {
+                double eta = sieve_elapsed / info.phase_progress - sieve_elapsed;
+                eta_str = "ETA " + fmt_duration(eta);
+            }
+
+            char buf[256];
             std::snprintf(buf, sizeof(buf),
-                "\r  [%s] %5.1f%%  SQ=%zu rels=%zu",
-                bar.c_str(), info.phase_progress * 100.0,
-                info.special_q_done, info.relations_found);
+                "\r   %s\u25B6%s %s %s%5.1f%%%s  SQ=%zu  rels=%zu  %.0f/s  %s",
+                c(CYAN), c(RESET),
+                bar.c_str(),
+                c(BOLD), info.phase_progress * 100.0, c(RESET),
+                info.special_q_done, info.relations_found,
+                rels_per_sec, eta_str.c_str());
             std::cout << buf << std::flush;
-            state->last_bar_len = static_cast<int>(std::strlen(buf));
+            state->last_bar_len = 90; // approximate display width
+            state->sieve_last_rels = info.relations_found;
         }
-        // Sqrt: show dep count on same line (don't flood)
+        // Sqrt: dep counter
         else if (info.phase == Phase::SquareRoot && info.dependency_index > 0) {
             char buf[64];
-            std::snprintf(buf, sizeof(buf), "\r  dep %d/%d",
+            std::snprintf(buf, sizeof(buf), "\r   %s\u25B6%s dep %d/%d",
+                c(CYAN), c(RESET),
                 info.dependency_index, info.dependencies_total);
             std::cout << buf << std::flush;
-            state->last_bar_len = static_cast<int>(std::strlen(buf));
+            state->last_bar_len = 30;
         }
     };
 }
@@ -498,9 +683,13 @@ int main(int argc, char* argv[]) {
 
     auto result = pipeline.run();
 
-    if (!quiet) std::cout << "\n\n";
+    if (!quiet) {
+        std::cout << "\n\n";
+        print_summary_box(result);
+        std::cout << "\n";
+    }
 
-    // Output result
+    // Output result in requested format
     std::string output;
     if (output_format == "json") {
         output = result.to_json();
@@ -509,7 +698,9 @@ int main(int argc, char* argv[]) {
     } else if (output_format == "report") {
         output = result.to_report();
     } else {
-        output = result.to_text();
+        // In default text mode, summary box already shown — skip redundant
+        if (!quiet) output = "";
+        else output = result.to_text();
     }
 
     // Write to file and/or stdout
