@@ -7,6 +7,7 @@
 
 #include <gnfs/api/factorizer.hpp>
 #include <gnfs/api/config.hpp>
+#include <gnfs/api/i18n.hpp>
 #include <gnfs/api/pipeline.hpp>
 #include <gnfs/api/progress.hpp>
 #include <gnfs/api/result.hpp>
@@ -123,7 +124,11 @@ bool test_config_to_string() {
 // ============================================================
 
 bool test_phase_names() {
+    // Default language is ZH, so check both
+    i18n::set_lang("en");
     assert(std::string(phase_name(Phase::Sieving)) == "Sieving");
+    i18n::set_lang("zh");
+    assert(std::string(phase_name(Phase::Sieving)) == "\xe7\xad\x9b\xe6\xb3\x95");  // 筛法
     assert(std::string(phase_tag(Phase::LinearAlgebra)) == "linalg");
     assert(std::string(log_level_name(LogLevel::Error)) == "ERROR");
     return true;
