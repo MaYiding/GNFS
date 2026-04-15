@@ -173,6 +173,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/util/thread_pool.cpp")
     target_sources(gnfs_core PRIVATE src/util/thread_pool.cpp)
 endif()
 
+# API 层
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/api/pipeline.cpp")
+    target_sources(gnfs_core PRIVATE src/api/pipeline.cpp)
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/api/factorizer.cpp")
+    target_sources(gnfs_core PRIVATE src/api/factorizer.cpp)
+endif()
+
 target_include_directories(gnfs_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
@@ -194,14 +202,14 @@ endif()
 # 可执行文件
 # ============================================================
 
-# 主程序（暂时禁用，main.cpp 尚未创建）
-# add_executable(gnfs_main
-#     src/main.cpp
-# )
-# target_link_libraries(gnfs_main PRIVATE
-#     gnfs_core
-#     Threads::Threads
-# )
+# GNFS CLI 主程序
+add_executable(gnfs
+    src/cli/main.cpp
+)
+target_link_libraries(gnfs PRIVATE
+    gnfs_core
+    Threads::Threads
+)
 
 # ============================================================
 # 测试
@@ -467,6 +475,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RegressionGate COMMAND test_regression_gate)
     set_tests_properties(RegressionGate PROPERTIES LABELS "gate" TIMEOUT 120)
 
+    # API 层测试
+    add_executable(test_api
+        tests/test_api.cpp
+    )
+    target_link_libraries(test_api PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME API COMMAND test_api)
+
     # 压力测试 (50/80/100-digit)
     add_executable(test_stress
         tests/test_stress.cpp
@@ -481,7 +496,7 @@ endif()
 # 安装
 # ============================================================
 
-install(TARGETS gnfs_core gnfs_util
+install(TARGETS gnfs gnfs_core gnfs_util
     EXPORT GNFSTargets
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
