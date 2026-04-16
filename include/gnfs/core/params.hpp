@@ -315,12 +315,12 @@ struct GNFSParams {
         p.target_excess = std::max(200u, extra_cols + 100);
 
         // === 进度报告间隔 ===
-        if (p.max_special_q > 10000) {
-            p.progress_interval = 500;
-        } else if (p.max_special_q > 1000) {
+        if (p.digits >= 50) {
             p.progress_interval = 100;
-        } else {
+        } else if (p.digits >= 30) {
             p.progress_interval = 50;
+        } else {
+            p.progress_interval = 20;
         }
 
         return p;
@@ -338,49 +338,21 @@ struct GNFSParams {
         return static_cast<size_t>(matrix_cols);
     }
 
-    /// 计算 LP 感知的原始关系目标
+    /// 计算初始原始关系目标
     /// @param matrix_columns 矩阵实际列数
-    /// @return 需要收集的原始关系数（过滤前）
+    /// @return 初始目标（自适应循环会根据实际 merge rate 调整）
     ///
-    /// 策略分层:
-    ///   ≤30 digits: 简单倍率 (mc × 2.0-3.0)，LP key space 小，不需要 birthday
-    ///   >30 digits: Birthday model n ≥ √(2·K·M·s)，LP key space 大，需要足够碰撞
+    /// 策略: 保守的初始目标 + 自适应循环自动扩容
+    /// 不用 birthday 公式（对小 N 过高估计、对大 N 不够准确）
+    /// 而是从 mc × 2.0 开始，让 adaptive loop 倍增直到够用
     [[nodiscard]] size_t raw_relation_target(size_t matrix_columns) const {
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
             double mc = static_cast<double>(matrix_columns);
-
-            // For small N (≤40 digits), LP key space is manageable.
-            // Simple multiplier avoids birthday formula's overestimate.
-            // Multiplier accounts for partial→merge survival rate:
-            //   ≤15 digit: most relations full (80%+ survival) → 2.0×
-            //   ≤20 digit: mix full/partial, ~50% survival → 3.0×
-            //   ≤30 digit: more partials, ~30% survival → 5.0×
-            //   ≤40 digit: heavy partials, ~25% survival → 6.0×
-            if (digits <= 15) {
-                return static_cast<size_t>(mc * 2.0);
-            }
-            if (digits <= 20) {
-                return static_cast<size_t>(mc * 3.0);
-            }
-            if (digits <= 30) {
-                return static_cast<size_t>(mc * 5.0);
-            }
-            if (digits <= 40) {
-                return static_cast<size_t>(mc * 6.0);
-            }
-
-            // For large N (>40 digits): birthday model
-            double lp_bound_d = static_cast<double>(large_prime_bound);
-            double alg_bound_d = static_cast<double>(algebraic_bound);
-            double lp_primes = lp_bound_d / std::log(std::max(lp_bound_d, 2.0))
-                             - alg_bound_d / std::log(std::max(alg_bound_d, 2.0));
-            double key_space = lp_primes * static_cast<double>(std::max(degree, 2u));
-
-            // safety=15 (reduced from 25; empirically sufficient for 40-80 digit)
-            double n_min = std::sqrt(2.0 * key_space * mc * 15.0);
-            // Floor: at least 3× matrix columns
-            return static_cast<size_t>(
-                std::max(n_min, mc * 3.0));
+            // Start with mc × 3.0 — conservative but enough for first adaptive round.
+            // The adaptive sieve-filter-merge loop doubles each round until enough.
+            // For LP-heavy factorizations (30+ digit), typical survival rate is 5-30%,
+            // so several adaptive rounds are expected.
+            return static_cast<size_t>(mc * 3.0);
         }
         return matrix_columns;
     }

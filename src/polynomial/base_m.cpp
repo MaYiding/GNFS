@@ -77,10 +77,12 @@ PolynomialSelectionResult BaseMSelector::select(const Integer& n, uint32_t degre
     int max_delta;
     if (n_bits <= 45) {
         max_delta = 5;
-    } else if (n_bits <= 100) {
+    } else if (n_bits <= 120) {
         max_delta = 50;   // 50 candidates suffices for degree 3
+    } else if (n_bits <= 200) {
+        max_delta = 200;  // more exploration for medium N
     } else {
-        max_delta = 1000;
+        max_delta = 1000; // full exploration for large N
     }
 
     // Collect all irreducible candidates in the search window
