@@ -170,7 +170,7 @@ static void print_summary_box(const FactorResult& result) {
     }
 
     for (int i = 0; i < 6; ++i) {
-        const char* tree = (i < 5) ? "|-- " : "`-- ";
+        const char* tree = (i < 5) ? "├─ " : "└─ ";
         double pct = st.timings.total_s > 0 ?
             (row_times[i] / st.timings.total_s * 100.0) : 0.0;
 
