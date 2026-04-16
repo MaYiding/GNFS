@@ -33,7 +33,7 @@ cd build && ctest --output-on-failure
 
 ```bash
 # ── 日常开发 (最常用) ──
-./scripts/test.sh                      # 冒烟测试: 23 个 instant 测试, ~5s
+./scripts/test.sh                      # 冒烟测试: 23 个 instant 测试, ~5s (Debug) / ~5s (Release)
 ./scripts/test.sh smoke                # 同上
 ./scripts/test.sh changed              # 根据 git diff 自动选择受影响模块
 ./scripts/test.sh changed --deep       # 同上 + 级联依赖模块
@@ -49,7 +49,7 @@ cd build && ctest --output-on-failure
 ./scripts/test.sh run sqrt             # 自动补 test_ 前缀
 
 # ── 合并门禁 ──
-./scripts/test.sh gate                 # 二级门禁: smoke + 回归 (17/27/40/81-bit) ~20s
+./scripts/test.sh gate                 # 二级门禁: smoke + 回归 (17/27/40/81-bit) ~18s Debug / ~9s Release
 ./scripts/test.sh gate --quick         # 快速门禁: 仅 smoke ~5s
 
 # ── E2E & 渐进 ──
@@ -97,7 +97,7 @@ cd build && ctest --output-on-failure
 | 改了 linalg 模块 | `./scripts/test.sh module linalg` | ~1s |
 | 改了核心流程，要 E2E | `./scripts/test.sh e2e` | ~5min |
 | 不确定改了什么 | `./scripts/test.sh changed` | 自动判断 |
-| 特性分支合并前验证 | `./scripts/test.sh gate` | ~20s |
+| 特性分支合并前验证 | `./scripts/test.sh gate` | ~9s (Release) |
 | 大改动，全面回归 | `./scripts/test.sh full` | ~10min |
 | PR 前最终验证 | `./scripts/test.sh thorough` | ~30min |
 | 跑完整性能基准 | `./scripts/test.sh bench --save` | ~1hr |

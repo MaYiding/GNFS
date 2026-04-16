@@ -54,11 +54,11 @@ GNFS is the most powerful known classical algorithm for factoring large composit
 | L3 | 1000036000099 | 40 | 13 | ~4s | Quick |
 | L4 | 100000980001501 | 47 | 15 | ~11s | Seconds |
 | L5 | 1253371692427905599 | 61 | 19 | ~43s | Half-minute |
-| 25-digit | 1669994516749619561652133 | 81 | 25 | ~7s | Fully optimized |
+| 25-digit | 1669994516749619561652133 | 81 | 25 | **48ms** | Pollard rho fast path |
 | 50-digit | (164-bit semiprime) | 164 | 50 | ~2.6h | Stress test |
 | 60-digit | (200-bit semiprime) | 200 | 60 | hours | Stress test |
 
-**25-digit phase breakdown**: Polynomial 130ms, Factor Base 50ms, Sieve+Cofac 6.4s, Linear Algebra 500ms, Square Root 200ms.
+**≤27-digit**: Pollard rho Brent fast path auto-enabled, typically <100ms. **GNFS only starts at >90 bits**.
 
 ## Quick Start
 
