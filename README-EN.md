@@ -49,16 +49,16 @@ GNFS is the most powerful known classical algorithm for factoring large composit
 
 | Level | N (example) | Bits | Digits | Time | Notes |
 |-------|-------------|------|--------|------|-------|
-| L1 | 143, 9991, 10403 | 8–14 | 3–5 | < 0.2s | Trivial |
-| L2 | 96091, 100160063 | 17–27 | 5–9 | < 1s | Instant |
-| L3 | 1000036000099 | 40 | 13 | ~2s | Quick |
-| L4 | 100000980001501 | 47 | 15 | ~5s | Seconds |
-| L5 | 1253371692427905599 | 61 | 19 | ~38s | Half-minute |
-| 25-digit | 1669994516749619561652133 | 81 | 25 | ~1s (median) | Fully optimized |
+| L1 | 143, 9991, 10403 | 8–14 | 3–5 | ~1.5s | Trivial |
+| L2 | 96091, 100160063 | 17–27 | 5–9 | ~1.5s | Instant |
+| L3 | 1000036000099 | 40 | 13 | ~4s | Quick |
+| L4 | 100000980001501 | 47 | 15 | ~11s | Seconds |
+| L5 | 1253371692427905599 | 61 | 19 | ~43s | Half-minute |
+| 25-digit | 1669994516749619561652133 | 81 | 25 | ~7s | Fully optimized |
 | 50-digit | (164-bit semiprime) | 164 | 50 | ~2.6h | Stress test |
 | 60-digit | (200-bit semiprime) | 200 | 60 | hours | Stress test |
 
-**25-digit phase breakdown** (median): Polynomial 60ms, Factor Base 20ms, Sieve+Cofac 600ms, Block Lanczos 100ms, Square Root 200ms.
+**25-digit phase breakdown**: Polynomial 130ms, Factor Base 50ms, Sieve+Cofac 6.4s, Linear Algebra 500ms, Square Root 200ms.
 
 ## Quick Start
 
