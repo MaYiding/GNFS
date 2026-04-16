@@ -128,37 +128,37 @@ struct GNFSParams {
             LP_MULTIPLIER = 20.0;
         } else if (p.digits <= 45) {
             B_rat = 150000;  B_alg = 300000;
-            LP_MULTIPLIER = 20.0;
+            LP_MULTIPLIER = 15.0;
         } else if (p.digits <= 50) {
             // CADO-NFS C50: lim0≈200K
             B_rat = 200000;  B_alg = 400000;
-            LP_MULTIPLIER = 15.0;
+            LP_MULTIPLIER = 12.0;
         } else if (p.digits <= 55) {
             B_rat = 300000;  B_alg = 600000;
-            LP_MULTIPLIER = 12.0;
-        } else if (p.digits <= 60) {
-            // CADO-NFS C60: lim0≈400K, lim1≈800K
-            B_rat = 400000;  B_alg = 800000;
             LP_MULTIPLIER = 10.0;
+        } else if (p.digits <= 60) {
+            // CADO-NFS C60: lim0≈400K
+            B_rat = 400000;  B_alg = 800000;
+            LP_MULTIPLIER = 8.0;
         } else if (p.digits <= 65) {
             B_rat = 600000;  B_alg = 1200000;
-            LP_MULTIPLIER = 10.0;
-        } else if (p.digits <= 70) {
-            // CADO-NFS C70: lim0≈800K, lim1≈1.5M
-            B_rat = 800000;  B_alg = 1600000;
-            LP_MULTIPLIER = 8.0;
-        } else if (p.digits <= 80) {
-            // CADO-NFS C80: lim0≈2M, lim1≈4M
-            B_rat = 2000000; B_alg = 4000000;
             LP_MULTIPLIER = 6.0;
-        } else if (p.digits <= 90) {
-            // CADO-NFS C90: lim0≈6M, lim1≈12M
-            B_rat = 6000000; B_alg = 12000000;
+        } else if (p.digits <= 70) {
+            // CADO-NFS C70: lim0≈800K
+            B_rat = 800000;  B_alg = 1600000;
             LP_MULTIPLIER = 5.0;
-        } else if (p.digits <= 100) {
-            // CADO-NFS C100: lim0≈12M, lim1≈24M
-            B_rat = 12000000; B_alg = 24000000;
+        } else if (p.digits <= 80) {
+            // CADO-NFS C80: lim0≈2M
+            B_rat = 2000000; B_alg = 4000000;
             LP_MULTIPLIER = 4.0;
+        } else if (p.digits <= 90) {
+            // CADO-NFS C90: lim0≈6M
+            B_rat = 6000000; B_alg = 12000000;
+            LP_MULTIPLIER = 3.0;
+        } else if (p.digits <= 100) {
+            // CADO-NFS C100: lim0≈12M
+            B_rat = 12000000; B_alg = 24000000;
+            LP_MULTIPLIER = 3.0;
         } else {
             // >100 digits: L_N formula
             double c_B = 0.9;
