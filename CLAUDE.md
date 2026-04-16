@@ -33,7 +33,7 @@ cd build && ctest --output-on-failure
 
 ```bash
 # ── 日常开发 (最常用) ──
-./scripts/test.sh                      # 冒烟测试: 11 个 instant 测试, <2s
+./scripts/test.sh                      # 冒烟测试: 23 个 instant 测试, ~5s
 ./scripts/test.sh smoke                # 同上
 ./scripts/test.sh changed              # 根据 git diff 自动选择受影响模块
 ./scripts/test.sh changed --deep       # 同上 + 级联依赖模块
@@ -49,7 +49,7 @@ cd build && ctest --output-on-failure
 ./scripts/test.sh run sqrt             # 自动补 test_ 前缀
 
 # ── 合并门禁 ──
-./scripts/test.sh gate                 # 二级门禁: smoke + 回归 (17/27/40/81-bit) ~19s
+./scripts/test.sh gate                 # 二级门禁: smoke + 回归 (17/27/40/81-bit) ~20s
 ./scripts/test.sh gate --quick         # 快速门禁: 仅 smoke ~5s
 
 # ── E2E & 渐进 ──
@@ -93,11 +93,11 @@ cd build && ctest --output-on-failure
 
 | 场景 | 推荐命令 | 预计时间 |
 |------|----------|----------|
-| 改了一个函数，快速验证 | `./scripts/test.sh` | ~2s |
+| 改了一个函数，快速验证 | `./scripts/test.sh` | ~5s |
 | 改了 linalg 模块 | `./scripts/test.sh module linalg` | ~1s |
 | 改了核心流程，要 E2E | `./scripts/test.sh e2e` | ~5min |
 | 不确定改了什么 | `./scripts/test.sh changed` | 自动判断 |
-| 特性分支合并前验证 | `./scripts/test.sh gate` | ~19s |
+| 特性分支合并前验证 | `./scripts/test.sh gate` | ~20s |
 | 大改动，全面回归 | `./scripts/test.sh full` | ~10min |
 | PR 前最终验证 | `./scripts/test.sh thorough` | ~30min |
 | 跑完整性能基准 | `./scripts/test.sh bench --save` | ~1hr |
@@ -131,30 +131,40 @@ cd build && ctest --output-on-failure
 ## Architecture
 
 ```
-include/gnfs/
-├── core/           # Integer, Polynomial, Relation — 基础类型
-├── polynomial/     # Kleinjung 多项式选择, Murphy E 评估, base-m
-├── factor_base/    # 因子基构建
-├── sieve/          # Lattice sieve, Special-Q
-├── cofactor/       # 余因子分解, 试除法, 光滑性检查
-├── relation/       # 关系收集与过滤
-├── linalg/         # GF(2) 矩阵, Block Lanczos, Schirokauer maps
-├── sqrt/           # 代数平方根 (Couveignes), 有理平方根, 类群
-└── util/           # SmallVector, ThreadPool, Logger, Timer
+include/gnfs/           # 53 头文件 (.hpp)
+├── api/           (6)  # Config, Pipeline, Factorizer, i18n — 公开 API 层
+├── core/          (6)  # Integer, Polynomial, Relation, Params, Types — 基础类型
+├── polynomial/    (6)  # Kleinjung 选择, Murphy E, base-m, IntPolynomial, Optimizer, Dispatch
+├── factor_base/   (2)  # 因子基构建 (Cantor-Zassenhaus 求根)
+├── sieve/         (4)  # Lattice sieve, Line sieve, Special-Q, Lattice basis
+├── cofactor/      (5)  # 余因子分解: 试除法, ECM, SQUFOF, 光滑性检查
+├── relation/      (3)  # 关系收集, 过滤/合并 (1LP+2LP), OOC 存储
+├── linalg/        (8)  # GF(2) 矩阵, Block Lanczos, Block Wiedemann, Gaussian, SGE, Schirokauer, Mmap CSR
+├── sqrt/          (7)  # 代数平方根 (Nguyen Hybrid + Couveignes), 有理平方根, 类群, ModularPoly
+└── util/          (6)  # SmallVector, ThreadPool, Logger, Timer, MmapFile, SafeMath
 
-src/                # 对应 .cpp 实现
-tests/              # 17 个测试文件
+src/                    # 14 源文件 (.cpp)，按模块组织
+├── api/           (2)  # pipeline.cpp, factorizer.cpp
+├── cli/           (1)  # main.cpp — CLI 入口
+├── core/          (3)  # integer, polynomial, relation
+├── factor_base/   (1)  # builder (Cantor-Zassenhaus)
+├── linalg/        (3)  # block_lanczos, block_wiedemann, matrix_builder
+├── polynomial/    (1)  # base_m
+├── sieve/         (1)  # lattice_sieve
+└── sqrt/          (2)  # algebraic_sqrt, rational_sqrt
+
+tests/                  # 41 测试文件 (.cpp)
 ```
 
 ## GNFS Pipeline
 
-1. **Polynomial Selection** → Kleinjung 算法选择 f(x), g(x)
-2. **Factor Base** → 构建有理/代数因子基
-3. **Sieving** → Lattice sieve with Special-Q
-4. **Cofactorization** → 余因子试除 + 光滑性验证
-5. **Relation Collection** → 收集足够多的光滑关系
-6. **Linear Algebra** → GF(2) 矩阵 + Block Lanczos 求零空间
-7. **Square Root** → Couveignes 算法计算代数平方根
+1. **Polynomial Selection** → Kleinjung 算法选择 f(x), g(x)（SelectorDispatch 自动选 base-m / Kleinjung）
+2. **Factor Base** → 构建有理/代数因子基（并行 Cantor-Zassenhaus 求根）
+3. **Sieving** → Lattice sieve with Special-Q（bucket sieve 用于大因子基，支持多线程 scatter）
+4. **Cofactorization** → 试除 + SQUFOF + ECM (Stage 1+2 BSGS) + 光滑性验证
+5. **Relation Collection** → 收集光滑关系，自适应多轮筛-过滤-合并
+6. **Linear Algebra** → SGE 预处理 + GF(2) 矩阵 + Block Lanczos / Block Wiedemann 求零空间
+7. **Square Root** → Nguyen Hybrid (Hensel lift + CRT) 优先，Couveignes 兜底
 8. **GCD** → gcd(a ± b, N) 得到非平凡因子
 
 ## Critical Conventions
@@ -178,7 +188,7 @@ tests/              # 17 个测试文件
 - C++20 标准，使用 `std::optional`, `std::span`, concepts
 - Header-heavy 设计：大部分实现在 `.hpp` 中（模板和内联）
 - 命名: `snake_case` 用于函数和变量, `PascalCase` 用于类型
-- Namespace: `gnfs::core`, `gnfs::linalg`, `gnfs::sieve` 等
+- Namespace: `gnfs::core`, `gnfs::linalg`, `gnfs::sieve`, `gnfs::api` 等
 
 ## Shell 脚本规范（`scripts/test.sh`）
 
@@ -209,14 +219,20 @@ local pad=$(( 48 - ${#msg} ))
 
 - `PackedGF2Matrix`: 64-bit word-packed，O(1) 位访问
 - `FastPoly`: uint64_t 快速多项式算术（Schirokauer maps 专用）
-- Couveignes: 预计算期望乘积，65536 模式搜索
-- Block Lanczos: 64-bit block 并行运算
+- Couveignes: 预计算期望乘积，65536 模式搜索（Nguyen Hybrid 优先路径）
+- Block Lanczos: 64-bit block 并行 SpMV (ThreadPool)
+- Block Wiedemann: Krylov+Gaussian 三阶段零空间求解 (Coppersmith 1994)
+- SGE: 结构化 Gaussian 预处理，weight-1/2 消元，矩阵缩减 30-60%
+- SQUFOF: 2-word 余因子分解（替代 Pollard rho，10-100× 更快）
+- Bucket sieve: 大因子基多线程 scatter，按 region 分桶减少 cache miss
+- OOC 基础设施: MmapCSRMatrix（矩阵）+ OOCRelationStore（关系），支持超内存规模
+- 并行 FB 构建: Cantor-Zassenhaus 多线程求根 + `mpz_divisible_ui_p`
 
 ## Testing
 
 **优先使用 `scripts/test.sh`**（见上方「自动化测试工作流」），它封装了编译、超时、报告的全部逻辑。
 
-- **日常开发**: `./scripts/test.sh` (冒烟, <2s) 或 `./scripts/test.sh changed` (自动检测)
+- **日常开发**: `./scripts/test.sh` (冒烟, ~5s) 或 `./scripts/test.sh changed` (自动检测)
 - **模块改动**: `./scripts/test.sh module <模块名>` (如 linalg, sqrt, sieve)
 - **核心改动**: `./scripts/test.sh e2e` (完整 GNFS 流水线)
 - **PR 前**: `./scripts/test.sh full` 或 `./scripts/test.sh thorough`
@@ -269,7 +285,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 | `chore` | 构建/工具/配置 | `chore: update CMakeLists for NTL optional` |
 | `docs` | 文档 | `docs: update CLAUDE.md with git conventions` |
 
-**scope 取值**（对应目录）：`core`, `polynomial`, `factor_base`, `sieve`, `cofactor`, `relation`, `linalg`, `sqrt`, `util`
+**scope 取值**（对应目录）：`core`, `polynomial`, `factor_base`, `sieve`, `cofactor`, `relation`, `linalg`, `sqrt`, `util`, `api`, `cli`
 
 ### 分支规范
 
@@ -384,9 +400,9 @@ main (合并后仍然稳定)
 
 ```
 GNFS/
-├── include/gnfs/       # 35 头文件 (.hpp)，按模块组织
-├── src/                # 10 源文件 (.cpp)，按模块组织
-├── tests/              # 37 测试文件 (.cpp)
+├── include/gnfs/       # 53 头文件 (.hpp)，10 个子模块
+├── src/                # 14 源文件 (.cpp)，8 个子目录
+├── tests/              # 41 测试文件 (.cpp)
 ├── scripts/            # test.sh, feature-branch.sh
 ├── docs/plans/         # 设计文档
 ├── .claude/            # Claude Code 配置 (agents, skills, hooks)
@@ -439,7 +455,10 @@ cat /tmp/stress_test.log
 
 ## Known Limitations
 
-- 大类群 (>20 generators) 的 Couveignes 实现可能失败
+- 大类群 (>20 generators) 的 Couveignes 实现可能失败（Nguyen Hybrid 优先路径可回避）
+- Block Wiedemann 内存使用: Krylov 序列 O(n · L · 8 bytes)，4 GB guard 限制
+- OOC 基础设施已实现但未集成到主 pipeline（需手动调用）
+- NEON SIMD 尚未实现（P2-A，msieve/CADO-NFS 经验表明 sieve 内核收益有限）
 
 ## 工作流规范（强制执行）
 
