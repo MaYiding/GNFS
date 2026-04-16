@@ -93,7 +93,7 @@ git clone <repo-url> && cd GNFS
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
-# 冒烟测试 (~2s, 11 个即时测试)
+# 冒烟测试 (~5s, 23 个即时测试)
 ./scripts/test.sh
 ```
 
@@ -446,7 +446,7 @@ tests/                  # 41 个测试文件 (.cpp)
 
 ```bash
 # 日常开发 (最常用)
-./scripts/test.sh                      # 冒烟: 11 个即时测试, <2s
+./scripts/test.sh                      # 冒烟: 23 个即时测试, ~5s
 ./scripts/test.sh changed              # 根据 git diff 自动检测受影响模块
 ./scripts/test.sh changed --deep       # 同上 + 级联依赖模块
 
@@ -461,7 +461,7 @@ tests/                  # 41 个测试文件 (.cpp)
 ./scripts/test.sh run sqrt             # 自动补 test_ 前缀
 
 # 合并门禁
-./scripts/test.sh gate                 # 门禁: 冒烟 + 回归 (17/27/40/81-bit) ~19s
+./scripts/test.sh gate                 # 门禁: 冒烟 + 回归 (17/27/40/81-bit) ~20s
 ./scripts/test.sh gate --quick         # 快速门禁: 仅冒烟 ~5s
 
 # E2E & 渐进
@@ -521,11 +521,11 @@ tests/                  # 41 个测试文件 (.cpp)
 
 | 场景 | 命令 | 耗时 |
 |------|------|------|
-| 改了一个函数，快速验证 | `./scripts/test.sh` | ~2s |
+| 改了一个函数，快速验证 | `./scripts/test.sh` | ~5s |
 | 改了 linalg 模块 | `./scripts/test.sh module linalg` | ~1s |
 | 改了核心流程 | `./scripts/test.sh e2e` | ~5min |
 | 不确定改了什么 | `./scripts/test.sh changed` | 自动 |
-| 特性分支合并门禁 | `./scripts/test.sh gate` | ~19s |
+| 特性分支合并门禁 | `./scripts/test.sh gate` | ~20s |
 | 大改动，全面回归 | `./scripts/test.sh full` | ~10min |
 | PR 最终验证 | `./scripts/test.sh thorough` | ~30min |
 | 性能基准 | `./scripts/test.sh bench --save` | ~1hr |
@@ -677,7 +677,7 @@ GNFS/
 
 1. **Fork** 仓库
 2. **创建特性分支** (带日期前缀): `feat/YYMMDD-描述`
-3. **确保测试通过**: `./scripts/test.sh gate` (合并门禁, ~19s)
+3. **确保测试通过**: `./scripts/test.sh gate` (合并门禁, ~20s)
 4. **遵循约定**: C++20 风格, `snake_case` 函数, `PascalCase` 类型
 5. **提交 Pull Request**，附清晰描述
 
