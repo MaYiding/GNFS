@@ -126,6 +126,15 @@ public:
             uint32_t p = algebraics[idx].p;
             uint32_t r = algebraics[idx].r;
 
+            // Fast pre-check: skip primes that don't divide the norm.
+            // This is a single modular op and eliminates ~99% of primes,
+            // avoiding the more expensive root-match check below.
+            if (use_u64) {
+                if (norm_u64 % p != 0) continue;
+            } else {
+                if (mpz_divisible_ui_p(norm.get_mpz(), p) == 0) continue;
+            }
+
             // 检查 P | (a - bα):
             // Normal root: P = (p, α - r), condition: a - b*r ≡ 0 (mod p)
             // Projective root: P = (p, ∞), condition: b ≡ 0 (mod p)
@@ -176,6 +185,7 @@ public:
                 break;
             }
             // p² 早停: cofactor < p² 且 cofactor > algebraic_bound
+            // cofactor 是素数且不在 FB 中 → 安全退出
             if (use_u64 && norm_u64 > fb_.params().algebraic_bound &&
                 norm_u64 < static_cast<uint64_t>(p) * p) {
                 break;
