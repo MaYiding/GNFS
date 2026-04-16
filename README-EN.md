@@ -93,7 +93,7 @@ git clone <repo-url> && cd GNFS
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
-# Run smoke tests (~2s, 11 instant tests)
+# Run smoke tests (~5s, 23 instant tests)
 ./scripts/test.sh
 ```
 
@@ -446,7 +446,7 @@ The project uses `scripts/test.sh` — a unified test runner with automatic comp
 
 ```bash
 # Daily development (most common)
-./scripts/test.sh                      # Smoke: 11 instant tests, <2s
+./scripts/test.sh                      # Smoke: 23 instant tests, ~5s
 ./scripts/test.sh changed              # Auto-detect affected modules from git diff
 ./scripts/test.sh changed --deep       # Same + cascade to dependent modules
 
@@ -461,7 +461,7 @@ The project uses `scripts/test.sh` — a unified test runner with automatic comp
 ./scripts/test.sh run sqrt             # Auto-prepends test_ prefix
 
 # Merge gate
-./scripts/test.sh gate                 # Gate: smoke + regression (17/27/40/81-bit) ~19s
+./scripts/test.sh gate                 # Gate: smoke + regression (17/27/40/81-bit) ~20s
 ./scripts/test.sh gate --quick         # Quick gate: smoke only ~5s
 
 # E2E & Progressive
@@ -521,11 +521,11 @@ The project uses `scripts/test.sh` — a unified test runner with automatic comp
 
 | Scenario | Command | Time |
 |----------|---------|------|
-| Changed a function, quick verify | `./scripts/test.sh` | ~2s |
+| Changed a function, quick verify | `./scripts/test.sh` | ~5s |
 | Changed linalg module | `./scripts/test.sh module linalg` | ~1s |
 | Changed core pipeline | `./scripts/test.sh e2e` | ~5min |
 | Not sure what changed | `./scripts/test.sh changed` | auto |
-| Feature branch merge gate | `./scripts/test.sh gate` | ~19s |
+| Feature branch merge gate | `./scripts/test.sh gate` | ~20s |
 | Major changes, full regression | `./scripts/test.sh full` | ~10min |
 | PR final verification | `./scripts/test.sh thorough` | ~30min |
 | Performance benchmark | `./scripts/test.sh bench --save` | ~1hr |
@@ -677,7 +677,7 @@ Contributions are welcome! Please follow these guidelines:
 
 1. **Fork** the repository
 2. **Create a feature branch** with date prefix: `feat/YYMMDD-description`
-3. **Ensure all tests pass**: `./scripts/test.sh gate` (merge gate, ~19s)
+3. **Ensure all tests pass**: `./scripts/test.sh gate` (merge gate, ~20s)
 4. **Follow conventions**: C++20 style, `snake_case` functions, `PascalCase` types
 5. **Submit a Pull Request** with clear description
 
