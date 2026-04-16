@@ -1,5 +1,7 @@
 #pragma once
 
+#include "i18n.hpp"
+
 #include <cstddef>
 #include <functional>
 #include <string>
@@ -18,19 +20,20 @@ enum class Phase {
     Done
 };
 
-/// Human-readable phase name
+/// Human-readable phase name (bilingual via i18n)
 inline const char* phase_name(Phase p) {
+    using i18n::S;
     switch (p) {
-        case Phase::PolynomialSelection: return "Polynomial Selection";
-        case Phase::FactorBase:          return "Factor Base";
-        case Phase::Sieving:             return "Sieving";
-        case Phase::Filtering:           return "Filtering";
-        case Phase::LinearAlgebra:       return "Linear Algebra";
-        case Phase::SquareRoot:          return "Square Root";
-        case Phase::FactorExtraction:    return "Factor Extraction";
-        case Phase::Done:                return "Done";
+        case Phase::PolynomialSelection: return TR(S::PHASE_POLY);
+        case Phase::FactorBase:          return TR(S::PHASE_FB);
+        case Phase::Sieving:             return TR(S::PHASE_SIEVE);
+        case Phase::Filtering:           return TR(S::PHASE_FILTER);
+        case Phase::LinearAlgebra:       return TR(S::PHASE_LINALG);
+        case Phase::SquareRoot:          return TR(S::PHASE_SQRT);
+        case Phase::FactorExtraction:    return TR(S::PHASE_EXTRACT);
+        case Phase::Done:                return TR(S::PHASE_DONE);
     }
-    return "Unknown";
+    return "?";
 }
 
 /// Short phase tag for structured log

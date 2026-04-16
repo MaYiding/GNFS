@@ -204,7 +204,7 @@ MODULE_TESTS=(
     linalg         "test_linalg test_block_wiedemann test_mmap_csr test_schirokauer_deg4 test_edge_cases test_integration"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_class_group"
-    api            "test_api"
+    api            "test_api test_i18n"
 )
 
 # 模块 → 慢速测试映射 (slow+heavy, 可选运行)
@@ -239,6 +239,7 @@ SMOKE_TESTS=(
     test_schirokauer_deg4
     test_edge_cases
     test_squfof
+    test_i18n
 )
 
 # ── 每个测试的超时秒数 (基于实测) ──
@@ -287,6 +288,7 @@ TEST_TIMEOUT=(
     test_25digit             1800
     test_stress              43200
     test_api                 60
+    test_i18n                10
 )
 
 # 测试速度分级 (用于 list 显示)
