@@ -244,10 +244,12 @@ struct GNFSParams {
         if (lp_bits > 0) {
             // Tighter threshold = fewer candidates = less cofactorization time
             // But too tight = miss smooth relations = need more SQs
-            // Balance: 0.6-0.8× for most sizes
-            double thresh_factor = (p.digits <= 30) ? 0.6 :
-                                   (p.digits <= 60) ? 0.7 : 0.8;
-            double slack = (p.digits <= 30) ? 2.0 : 3.0;
+            // Key insight: with parallel cofac, sieve is cheap vs cofac.
+            // For larger FB, cofac per candidate is O(FB_size), so tighter threshold helps.
+            double thresh_factor = (p.digits <= 25) ? 0.6 :
+                                   (p.digits <= 40) ? 0.5 :
+                                   (p.digits <= 60) ? 0.5 : 0.6;
+            double slack = (p.digits <= 30) ? 2.0 : 2.5;
             uint16_t per_side = static_cast<uint16_t>(
                 std::min(1000.0, (lp_bits * thresh_factor + slack) * SIEVE_LOG_SCALE));
             p.rational_threshold = per_side;
