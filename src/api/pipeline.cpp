@@ -14,6 +14,9 @@
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <random>
+#include <thread>
 
 namespace gnfs::api {
 
@@ -278,10 +281,13 @@ std::vector<Relation> Pipeline::sieve_and_collect(
 
     // Target
     size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params_.target_excess;
-    size_t target_relations = params_.raw_relation_target(matrix_cols);
+    size_t initial_target = params_.raw_relation_target(matrix_cols);
+    size_t batch_target = initial_target;
+    bool lp_enabled = params_.large_prime_bound > params_.algebraic_bound;
 
     emit_log(LogLevel::Info, Phase::Sieving,
-             "target=" + std::to_string(target_relations) +
+             "target=" + std::to_string(initial_target) +
+             " matrix_cols=" + std::to_string(matrix_cols) +
              " sq_range=[" + std::to_string(sq_range.min_q) +
              "," + std::to_string(sq_range.max_q) + "]");
 
@@ -293,43 +299,140 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     size_t candidates_total = 0;
     size_t max_sq = params_.max_special_q;
 
-    while (sq_gen.has_next() && collector.size() < target_relations && sq_count < max_sq) {
-        auto sq = sq_gen.next();
-        if (!sq) break;
+    // Adaptive sieve-filter-merge loop:
+    // Collect raw relations, filter+merge, check if enough usable.
+    // If not, increase target and continue sieving.
+    std::vector<Relation> relations;
+    constexpr int MAX_ROUNDS = 10;
 
-        auto sieve_result = sieve_obj.sieve_special_q(*sq);
-        candidates_total += sieve_result.candidates.size();
+    // Thread count for parallel cofactorization
+    size_t n_cofac_threads = std::thread::hardware_concurrency();
+    if (n_cofac_threads == 0) n_cofac_threads = 4;
 
-        for (const auto& cand : sieve_result.candidates) {
-            auto rel_opt = cofactorizer.verify(cand);
-            if (rel_opt) {
-                collector.add(std::move(*rel_opt));
+    for (int round = 0; round < MAX_ROUNDS; ++round) {
+        // Sieve until batch_target reached or SQs exhausted
+        while (sq_gen.has_next() && collector.size() < batch_target && sq_count < max_sq) {
+            auto sq = sq_gen.next();
+            if (!sq) break;
+
+            auto sieve_result = sieve_obj.sieve_special_q(*sq);
+            candidates_total += sieve_result.candidates.size();
+
+            const auto& cands = sieve_result.candidates;
+            size_t n_cands = cands.size();
+
+            // Parallel cofactorization for large candidate sets
+            if (n_cands >= 200 && n_cofac_threads > 1) {
+                std::vector<std::vector<Relation>> thread_results(n_cofac_threads);
+                std::atomic<size_t> next_idx{0};
+                constexpr size_t CHUNK_SIZE = 256;
+
+                uint32_t cur_sq_q = sq->q;
+                uint32_t cur_sq_r = sq->r;
+
+                auto worker = [&](size_t tid) {
+                    cofactor::Cofactorizer local_cofac(ctx, fb, cofac_config);
+                    auto& local_rels = thread_results[tid];
+                    while (true) {
+                        size_t start = next_idx.fetch_add(CHUNK_SIZE, std::memory_order_relaxed);
+                        if (start >= n_cands) break;
+                        size_t end = std::min(start + CHUNK_SIZE, n_cands);
+                        for (size_t ci = start; ci < end; ++ci) {
+                            auto rel = local_cofac.verify(cands[ci], cur_sq_q, cur_sq_r);
+                            if (rel) local_rels.push_back(std::move(*rel));
+                        }
+                    }
+                };
+
+                std::vector<std::thread> threads;
+                threads.reserve(n_cofac_threads);
+                for (size_t t = 0; t < n_cofac_threads; ++t)
+                    threads.emplace_back(worker, t);
+                for (auto& t : threads) t.join();
+
+                for (auto& tr : thread_results)
+                    for (auto& rel : tr)
+                        collector.add(std::move(rel));
+            } else {
+                // Serial cofactorization for small candidate sets
+                for (const auto& cand : cands) {
+                    auto rel_opt = cofactorizer.verify(cand);
+                    if (rel_opt) {
+                        collector.add(std::move(*rel_opt));
+                    }
+                }
+            }
+
+            ++sq_count;
+
+            // Progress report
+            if (sq_count % params_.progress_interval == 0 || sq_count <= 5) {
+                auto now = std::chrono::high_resolution_clock::now();
+                double elapsed = std::chrono::duration<double>(now - t0).count();
+                size_t rels_per_sec = (elapsed > 0.01) ?
+                    static_cast<size_t>(collector.size() / elapsed) : 0;
+                double pct = static_cast<double>(collector.size()) /
+                             static_cast<double>(batch_target);
+                emit_progress(Phase::Sieving,
+                    "SQ=" + std::to_string(sq_count) + " rels=" +
+                    std::to_string(collector.size()) +
+                    " " + std::to_string(rels_per_sec) + "/s",
+                    std::min(pct, 1.0));
+
+                stats_.relations_found = collector.size();
+                stats_.special_q_processed = sq_count;
             }
         }
 
-        ++sq_count;
+        if (collector.size() < 10) break;
 
-        // Progress report
-        if (sq_count % params_.progress_interval == 0) {
-            double pct = static_cast<double>(collector.size()) /
-                         static_cast<double>(target_relations);
-            emit_progress(Phase::Sieving,
-                "SQ#" + std::to_string(sq_count) + " rels=" +
-                std::to_string(collector.size()) + "/" +
-                std::to_string(target_relations),
-                std::min(pct, 1.0));
+        // Filter + merge to check usable relation count
+        relations = collector.get_relations();
 
-            stats_.relations_found = collector.size();
-            stats_.special_q_processed = sq_count;
+        relation::FilterConfig filter_config;
+        filter_config.remove_singletons = true;
+        filter_config.max_passes = 10;
+        relation::RelationFilter rel_filter(filter_config);
+        relations = rel_filter.filter(std::move(relations));
+
+        if (lp_enabled) {
+            auto sep = relation::separate_relations(std::move(relations));
+            relation::PartialRelationMerger::MergeStats mstats;
+            auto merged = relation::PartialRelationMerger::merge_all(
+                std::move(sep.partial), 10, &mstats);
+            relations = std::move(sep.full);
+            relations.insert(relations.end(),
+                std::make_move_iterator(merged.begin()),
+                std::make_move_iterator(merged.end()));
         }
+
+        // Check: enough usable relations?
+        if (relations.size() > matrix_cols) break;
+
+        // Not enough — increase target and continue if SQs available
+        if (!sq_gen.has_next() || sq_count >= max_sq) break;
+
+        double merge_rate = (collector.size() > 0) ?
+            static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
+        size_t needed_raw = static_cast<size_t>(
+            static_cast<double>(matrix_cols * 2) / std::max(merge_rate, 0.001));
+        batch_target = std::min(
+            std::max(batch_target * 2, needed_raw),
+            initial_target * 20);  // safety cap
+
+        emit_log(LogLevel::Info, Phase::Sieving,
+                 "round " + std::to_string(round + 1) + ": usable=" +
+                 std::to_string(relations.size()) + "/" + std::to_string(matrix_cols) +
+                 " merge_rate=" + std::to_string(merge_rate) +
+                 " new_target=" + std::to_string(batch_target));
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
     stats_.timings.sieve_s = std::chrono::duration<double>(t1 - t0).count();
 
     // Collect final stats
-    auto coll_stats = collector.stats();
     stats_.relations_found = collector.size();
+    auto coll_stats = collector.stats();
     stats_.full_relations = coll_stats.full_relations;
     stats_.partial_1lp = coll_stats.partial_1lp;
     stats_.partial_2lp = coll_stats.partial_2lp;
@@ -338,13 +441,14 @@ std::vector<Relation> Pipeline::sieve_and_collect(
 
     emit_log(LogLevel::Info, Phase::Sieving,
              "done: sq=" + std::to_string(sq_count) +
-             " rels=" + std::to_string(collector.size()) +
+             " raw=" + std::to_string(collector.size()) +
+             " usable=" + std::to_string(relations.size()) +
              " (full=" + std::to_string(coll_stats.full_relations) +
              " 1lp=" + std::to_string(coll_stats.partial_1lp) +
              " 2lp=" + std::to_string(coll_stats.partial_2lp) + ")");
     emit_progress(Phase::Sieving, "Sieving complete", 1.0);
 
-    return collector.get_relations();
+    return relations;
 }
 
 // ============================================================
@@ -717,6 +821,7 @@ FactorResult Pipeline::run() {
             r.factors.push_back(f2.clone());
             r.factors.push_back(f1.clone());
         }
+        r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
         return r;
     };
@@ -747,10 +852,12 @@ FactorResult Pipeline::run() {
     // ── Full GNFS pipeline ──
     auto ctx = select_polynomial();
     auto fb = build_factor_base(ctx);
+
+    // sieve_and_collect now includes adaptive filter+merge internally
     auto relations = sieve_and_collect(ctx, fb);
 
-    if (relations.size() < 10) {
-        emit_log(LogLevel::Error, Phase::Sieving, "Not enough relations collected");
+    if (relations.size() < 5) {
+        emit_log(LogLevel::Error, Phase::Sieving, "Not enough usable relations");
         FactorResult r;
         r.n = n_.clone();
         r.stats = stats_;
@@ -758,15 +865,12 @@ FactorResult Pipeline::run() {
         return r;
     }
 
-    relations = filter(std::move(relations));
-
-    if (relations.size() < 5) {
-        emit_log(LogLevel::Error, Phase::Filtering, "Not enough relations after filtering");
-        FactorResult r;
-        r.n = n_.clone();
-        r.stats = stats_;
-        r.stats.timings.total_s = elapsed_s();
-        return r;
+    // Trim excess relations for matrix efficiency
+    size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params_.target_excess;
+    size_t max_rels = static_cast<size_t>(matrix_cols * 1.3);
+    if (relations.size() > max_rels) {
+        std::shuffle(relations.begin(), relations.end(), std::mt19937(42));
+        relations.resize(max_rels);
     }
 
     auto mr = solve_matrix(std::move(relations), fb, ctx);
