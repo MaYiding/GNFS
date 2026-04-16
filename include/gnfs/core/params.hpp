@@ -83,64 +83,90 @@ struct GNFSParams {
         }
 
         // =============================================================
-        // === 因子基界 — 经验参数表 ===
+        // === 因子基界 — CADO-NFS 校准参数表 ===
         // =============================================================
-        // 设计约束:
-        //   1. FB 越大 → smoothness rate 越高 (u^{-u} 指数提升)
-        //   2. FB 越大 → 矩阵列数越多 → BL 耗时 ∝ cols³
-        //   3. 甜蜜点: 矩阵列数 < 7K → BL < 3s, 列数 < 10K → BL < 10s
+        // 设计原则:
+        //   1. 基于 L_N[1/3, c] 理论值 + CADO-NFS 实践修正
+        //   2. 平滑过渡: 相邻区间界差 ≤ 3×, 避免参数跳跃
+        //   3. B_alg = 2 × B_rat (CADO-NFS 标准 lim1 = 2 × lim0)
+        //   4. LP multiplier 随 N 变化: 小 N 用更大倍率 (LP 覆盖少量大素数)
         //
-        // BL 瓶颈决定 FB 上限: π(B_rat) + π(B_alg) + extras < 7000
-        //   ≤15: 8K/16K → ~3100 cols → BL ~0.5s
-        //   ≤20: 15K/30K → ~5700 cols → BL ~1.5s
-        //   ≤25: 20K/40K → ~6650 cols → BL ~2.5s
-        //   ≤30: 50K/100K → ~15K cols → BL ~30s (needs BL optimization)
+        // CADO-NFS 参考 (https://cado-nfs.gitlabpages.inria.fr/cado-nfs/):
+        //   C35: lim0=50K   C40: lim0=100K  C50: lim0=200K
+        //   C60: lim0=400K  C70: lim0=800K  C80: lim0=2M
+        //   C90: lim0=6M    C100: lim0=12M
         //
-        // LP/FB ratio: higher ratio = more LP range per FB bound
-        // ≤25 digit uses smaller FB so LP_MULT compensates
-        double LP_MULTIPLIER = 40.0;
-
+        double LP_MULTIPLIER;
         double B_rat, B_alg;
         bool enable_lp = true;
 
         if (p.digits <= 6) {
             B_rat = 500;     B_alg = 1000;     enable_lp = false;
+            LP_MULTIPLIER = 1.0;
         } else if (p.digits <= 10) {
             B_rat = 2000;    B_alg = 4000;     enable_lp = false;
+            LP_MULTIPLIER = 1.0;
         } else if (p.digits <= 15) {
-            B_rat = 8000;    B_alg = 16000;
+            B_rat = 5000;    B_alg = 10000;
+            LP_MULTIPLIER = 50.0;
         } else if (p.digits <= 20) {
-            B_rat = 15000;   B_alg = 30000;
+            B_rat = 8000;    B_alg = 16000;
+            LP_MULTIPLIER = 50.0;
         } else if (p.digits <= 25) {
-            B_rat = 6000;    B_alg = 12000;
+            B_rat = 15000;   B_alg = 30000;
+            LP_MULTIPLIER = 40.0;
         } else if (p.digits <= 30) {
+            B_rat = 30000;   B_alg = 60000;
+            LP_MULTIPLIER = 30.0;
+        } else if (p.digits <= 35) {
+            // CADO-NFS C35: lim0≈50K
             B_rat = 50000;   B_alg = 100000;
+            LP_MULTIPLIER = 25.0;
         } else if (p.digits <= 40) {
-            B_rat = 200000;  B_alg = 400000;
+            // CADO-NFS C40: lim0≈100K
+            B_rat = 100000;  B_alg = 200000;
+            LP_MULTIPLIER = 20.0;
+        } else if (p.digits <= 45) {
+            B_rat = 150000;  B_alg = 300000;
+            LP_MULTIPLIER = 20.0;
         } else if (p.digits <= 50) {
+            // CADO-NFS C50: lim0≈200K
+            B_rat = 200000;  B_alg = 400000;
+            LP_MULTIPLIER = 15.0;
+        } else if (p.digits <= 55) {
             B_rat = 300000;  B_alg = 600000;
+            LP_MULTIPLIER = 12.0;
         } else if (p.digits <= 60) {
             // CADO-NFS C60: lim0≈400K, lim1≈800K
-            B_rat = 500000;  B_alg = 1000000;
+            B_rat = 400000;  B_alg = 800000;
+            LP_MULTIPLIER = 10.0;
+        } else if (p.digits <= 65) {
+            B_rat = 600000;  B_alg = 1200000;
+            LP_MULTIPLIER = 10.0;
         } else if (p.digits <= 70) {
             // CADO-NFS C70: lim0≈800K, lim1≈1.5M
             B_rat = 800000;  B_alg = 1600000;
+            LP_MULTIPLIER = 8.0;
         } else if (p.digits <= 80) {
-            // CADO-NFS C80: lim0≈1M, lim1≈2M
-            B_rat = 1000000; B_alg = 2000000;
+            // CADO-NFS C80: lim0≈2M, lim1≈4M
+            B_rat = 2000000; B_alg = 4000000;
+            LP_MULTIPLIER = 6.0;
         } else if (p.digits <= 90) {
-            // CADO-NFS C90: lim0≈4M, lim1≈8M
-            B_rat = 4000000; B_alg = 8000000;
+            // CADO-NFS C90: lim0≈6M, lim1≈12M
+            B_rat = 6000000; B_alg = 12000000;
+            LP_MULTIPLIER = 5.0;
         } else if (p.digits <= 100) {
-            // CADO-NFS C100: lim0≈8M, lim1≈16M
-            B_rat = 8000000; B_alg = 16000000;
+            // CADO-NFS C100: lim0≈12M, lim1≈24M
+            B_rat = 12000000; B_alg = 24000000;
+            LP_MULTIPLIER = 4.0;
         } else {
-            // >100 digits: L_N formula with conservative c_B ≈ 0.8
-            double c_B = 0.8;
+            // >100 digits: L_N formula
+            double c_B = 0.9;
             B_rat = std::exp(c_B * l_val);
             B_rat = std::max(B_rat, 30000000.0);
             B_rat = std::min(B_rat, 1e9);
             B_alg = std::min(B_rat * 2.0, 2e9);
+            LP_MULTIPLIER = 3.0;
         }
 
         // LP bits: LP_bound = B_alg × 30, lp_bits = floor(log2(LP_bound))
@@ -166,26 +192,27 @@ struct GNFSParams {
 
         // === 筛区域 ===
         // CADO-NFS 风格：固定小筛区域 + 大 FB = 高光滑概率 + 快筛
-        // 筛区域大小与 FB 界解耦。原理：
-        //   小区域 → 小范数 → 高光滑率 u^{-u}（u 更小）
-        //   多 Special-Q 弥补单 SQ 位置少
-        // CADO C80: I=2048, 我们稍大以兼顾实现效率。
+        // 原理: 小区域 → 小范数 → 高光滑率; 多 SQ 弥补单 SQ 位置少
+        // CADO-NFS I 参数 (sieve line = 2^I, area = 2^(2I-1)):
+        //   C35: I=11 (2K×1K), C50: I=12 (4K×2K), C60: I=13 (8K×4K)
+        //   C80: I=14 (16K×8K), C100: I=15 (32K×16K)
         double sieve_width, sieve_height;
         if (p.digits <= 6) {
-            sieve_width = 1000;   sieve_height = 400;    // tiny N
+            sieve_width = 1000;   sieve_height = 400;
         } else if (p.digits <= 10) {
-            sieve_width = 2000;   sieve_height = 1000;   // small N
+            sieve_width = 2000;   sieve_height = 800;
         } else if (p.digits <= 25) {
-            sieve_width = 4096;   sieve_height = 1024;   // 4M positions — smaller j → smaller norms → higher smoothness
-        } else if (p.digits <= 30) {
-            sieve_width = 4096;   sieve_height = 2048;   // 8M positions, ~16MB
+            sieve_width = 4096;   sieve_height = 1024;   // 4M positions
+        } else if (p.digits <= 35) {
+            sieve_width = 2048;   sieve_height = 1024;   // I=11, 2M positions
+        } else if (p.digits <= 50) {
+            sieve_width = 4096;   sieve_height = 2048;   // I=12, 8M positions
+        } else if (p.digits <= 60) {
+            sieve_width = 8192;   sieve_height = 4096;   // I=13, 33M positions
         } else if (p.digits <= 80) {
-            // 50-80 digit: 33M positions, ~67MB per SQ
-            // Keeping area moderate to control norms; more SQs compensate
-            sieve_width = 8192;   sieve_height = 4096;
+            sieve_width = 16384;  sieve_height = 8192;   // I=14, 134M positions
         } else {
-            // ≥81 digits: 134M positions for wider SQ coverage
-            sieve_width = 16384;  sieve_height = 8192;
+            sieve_width = 32768;  sieve_height = 16384;  // I=15, 536M positions
         }
 
         p.sieve_i_min = -static_cast<int32_t>(sieve_width / 2);
@@ -215,8 +242,12 @@ struct GNFSParams {
         // 虽然需要更多 SQ 补偿，但 cofac 时间大幅下降（sieve 远快于 cofac）。
         // 实测: 25-digit Phase 3 从 1.4s 降至 1.0s。
         if (lp_bits > 0) {
-            double thresh_factor = (p.digits <= 25) ? 0.6 : 1.0;
-            double slack = (p.digits <= 25) ? 2.0 : 3.0;
+            // Tighter threshold = fewer candidates = less cofactorization time
+            // But too tight = miss smooth relations = need more SQs
+            // Balance: 0.6-0.8× for most sizes
+            double thresh_factor = (p.digits <= 30) ? 0.6 :
+                                   (p.digits <= 60) ? 0.7 : 0.8;
+            double slack = (p.digits <= 30) ? 2.0 : 3.0;
             uint16_t per_side = static_cast<uint16_t>(
                 std::min(1000.0, (lp_bits * thresh_factor + slack) * SIEVE_LOG_SCALE));
             p.rational_threshold = per_side;
@@ -242,10 +273,13 @@ struct GNFSParams {
             // 保守假设每 SQ 平均 1 个关系（小 B 时命中率低），乘 3 安全余量
             uint32_t needed_sq = static_cast<uint32_t>(
                 std::min(static_cast<size_t>(UINT32_MAX), est_rels * 3));
-            // 下限：按位数设置
+            // 下限：按位数平滑设置
             uint32_t min_sq = (p.digits < 15) ? 2000u :
-                              (p.digits < 30) ? 20000u :
-                              (p.digits < 50) ? 100000u : 1000000u;
+                              (p.digits < 25) ? 10000u :
+                              (p.digits < 35) ? 50000u :
+                              (p.digits < 50) ? 200000u :
+                              (p.digits < 70) ? 500000u :
+                              (p.digits < 90) ? 2000000u : 5000000u;
             p.max_special_q = std::max(min_sq, needed_sq);
         }
 

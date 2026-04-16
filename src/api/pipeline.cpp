@@ -839,16 +839,20 @@ FactorResult Pipeline::run() {
         }
     }
 
-    // Pollard rho for N up to ~100 bits (30 digits)
-    // Expected: O(N^{1/4}) iterations
-    //   64-bit: ~200K iters, <5ms
-    //   80-bit: ~1M iters, ~50ms
-    //   90-bit: ~5M iters, ~500ms
-    //  100-bit: ~33M iters, ~3s (still faster than GNFS startup)
-    if (stats_.n_bits <= 100) {
+    // Pollard rho for N up to ~120 bits (~36 digits)
+    // Expected: O(N^{1/4}) iterations, each ~30ns for GMP modmul
+    //   64-bit: 200K iters, <5ms
+    //   80-bit: 2M iters, ~50ms
+    //   90-bit: 10M iters, ~500ms
+    //  100-bit: 50M iters, ~2s
+    //  110-bit: 200M iters, ~10s
+    //  120-bit: 1B iters, ~50s (still faster than GNFS for < 36 digits)
+    if (stats_.n_bits <= 120) {
         size_t rho_limit = (stats_.n_bits <= 64) ? 200000 :
                            (stats_.n_bits <= 80) ? 2000000 :
-                           (stats_.n_bits <= 90) ? 10000000 : 50000000;
+                           (stats_.n_bits <= 90) ? 10000000 :
+                           (stats_.n_bits <= 100) ? 50000000 :
+                           (stats_.n_bits <= 110) ? 300000000 : 1500000000;
         Integer rho_f = pollard_rho_brent(n_, rho_limit);
         if (rho_f > Integer(1) && rho_f.compare(n_) != 0) {
             emit_log(LogLevel::Info, Phase::PolynomialSelection,
