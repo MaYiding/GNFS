@@ -18,6 +18,114 @@
 namespace gnfs::api {
 
 // ============================================================
+// Fast path: trial division + Pollard rho for small N
+// ============================================================
+
+namespace {
+
+/// Trial division up to limit. Returns factor or 0.
+uint64_t trial_divide(const Integer& n, uint64_t limit) {
+    // Small primes
+    if (mpz_divisible_ui_p(n.get_mpz(), 2)) return 2;
+    if (mpz_divisible_ui_p(n.get_mpz(), 3)) return 3;
+    // 6k±1 wheel
+    for (uint64_t i = 5; i <= limit; i += 6) {
+        if (mpz_divisible_ui_p(n.get_mpz(), i)) return i;
+        if (mpz_divisible_ui_p(n.get_mpz(), i + 2)) return i + 2;
+    }
+    return 0;
+}
+
+/// Pollard rho with Brent improvement. Works on GMP integers.
+/// Returns a non-trivial factor or Integer(0) if not found within max_iters.
+Integer pollard_rho_brent(const Integer& n, size_t max_iters = 1000000) {
+    if (n <= Integer(3)) return Integer(0);
+
+    // Use GMP directly for speed
+    mpz_t y, c, m, g, r, q, x, ys, tmp;
+    mpz_init(y); mpz_init(c); mpz_init(m); mpz_init(g);
+    mpz_init(r); mpz_init(q); mpz_init(x); mpz_init(ys); mpz_init(tmp);
+
+    gmp_randstate_t state;
+    gmp_randinit_mt(state);
+    gmp_randseed_ui(state, 42);
+
+    const mpz_t& n_mpz = *reinterpret_cast<const mpz_t*>(&n.get_mpz());
+    Integer result(0);
+
+    for (int attempt = 0; attempt < 20 && result.compare(Integer(0)) == 0; ++attempt) {
+        mpz_urandomm(y, state, n_mpz);
+        mpz_urandomm(c, state, n_mpz);
+        if (mpz_sgn(c) == 0) mpz_set_ui(c, 1);
+        mpz_set_ui(m, 128);
+        mpz_set_ui(g, 1);
+        mpz_set_ui(q, 1);
+        mpz_set_ui(r, 1);
+
+        size_t iters = 0;
+
+        while (mpz_cmp_ui(g, 1) == 0 && iters < max_iters) {
+            mpz_set(x, y);
+            unsigned long r_val = mpz_get_ui(r);
+            for (unsigned long i = 0; i < r_val; ++i) {
+                // y = (y*y + c) mod n
+                mpz_mul(tmp, y, y);
+                mpz_add(tmp, tmp, c);
+                mpz_mod(y, tmp, n_mpz);
+            }
+
+            size_t k = 0;
+            while (k < r_val && mpz_cmp_ui(g, 1) == 0) {
+                mpz_set(ys, y);
+                unsigned long m_val = mpz_get_ui(m);
+                unsigned long batch = std::min(m_val, r_val - static_cast<unsigned long>(k));
+                for (unsigned long i = 0; i < batch; ++i) {
+                    // y = (y*y + c) mod n
+                    mpz_mul(tmp, y, y);
+                    mpz_add(tmp, tmp, c);
+                    mpz_mod(y, tmp, n_mpz);
+                    // q = q * |x - y| mod n
+                    mpz_sub(tmp, x, y);
+                    mpz_abs(tmp, tmp);
+                    mpz_mul(tmp, q, tmp);
+                    mpz_mod(q, tmp, n_mpz);
+                }
+                mpz_gcd(g, q, n_mpz);
+                k += batch;
+                iters += batch;
+            }
+
+            mpz_mul_ui(r, r, 2);
+        }
+
+        if (mpz_cmp(g, n_mpz) == 0) {
+            // Backtrack
+            while (true) {
+                mpz_mul(tmp, ys, ys);
+                mpz_add(tmp, tmp, c);
+                mpz_mod(ys, tmp, n_mpz);
+                mpz_sub(tmp, x, ys);
+                mpz_abs(tmp, tmp);
+                mpz_gcd(g, tmp, n_mpz);
+                if (mpz_cmp_ui(g, 1) > 0) break;
+            }
+        }
+
+        if (mpz_cmp_ui(g, 1) > 0 && mpz_cmp(g, n_mpz) < 0) {
+            mpz_set(result.get_mpz(), g);
+        }
+    }
+
+    mpz_clear(y); mpz_clear(c); mpz_clear(m); mpz_clear(g);
+    mpz_clear(r); mpz_clear(q); mpz_clear(x); mpz_clear(ys); mpz_clear(tmp);
+    gmp_randclear(state);
+
+    return result;
+}
+
+} // anonymous namespace
+
+// ============================================================
 // Construction
 // ============================================================
 
@@ -570,13 +678,10 @@ FactorResult Pipeline::run() {
     }
 
     // Check for perfect power
-    // mpz_perfect_power_p returns non-zero if n is a perfect power
     if (mpz_perfect_power_p(n_.get_mpz())) {
-        // Try small roots
         for (unsigned long exp = 2; exp <= 64; ++exp) {
             Integer root;
             if (mpz_root(root.get_mpz(), n_.get_mpz(), exp)) {
-                // Verify
                 Integer check;
                 mpz_pow_ui(check.get_mpz(), root.get_mpz(), exp);
                 if (check.compare(n_) == 0) {
@@ -596,6 +701,50 @@ FactorResult Pipeline::run() {
         }
     }
 
+    // ── Fast path: trial division + Pollard rho for small N ──
+    // GNFS has high fixed overhead; for N ≤ ~90 bits, Pollard rho is faster.
+    auto make_fast_result = [this](const Integer& f1) -> FactorResult {
+        FactorResult r;
+        r.n = n_.clone();
+        r.success = true;
+        Integer f2 = n_.clone();
+        f2 /= f1;
+        // Sort ascending
+        if (f1.compare(f2) <= 0) {
+            r.factors.push_back(f1.clone());
+            r.factors.push_back(std::move(f2));
+        } else {
+            r.factors.push_back(f2.clone());
+            r.factors.push_back(f1.clone());
+        }
+        r.stats.timings.total_s = elapsed_s();
+        return r;
+    };
+
+    // Trial division up to 10^6 — catches all factors < 10^6 instantly
+    {
+        uint64_t small_f = trial_divide(n_, 1000000);
+        if (small_f > 0) {
+            Integer f1(small_f);
+            emit_log(LogLevel::Info, Phase::PolynomialSelection,
+                     "Trial division found factor: " + std::to_string(small_f));
+            return make_fast_result(f1);
+        }
+    }
+
+    // Pollard rho for N up to ~90 bits (27 digits)
+    // Expected: O(N^{1/4}) iterations, ~50ms for 81-bit
+    if (stats_.n_bits <= 90) {
+        size_t rho_limit = (stats_.n_bits <= 64) ? 200000 : 2000000;
+        Integer rho_f = pollard_rho_brent(n_, rho_limit);
+        if (rho_f > Integer(1) && rho_f.compare(n_) != 0) {
+            emit_log(LogLevel::Info, Phase::PolynomialSelection,
+                     "Pollard rho found factor: " + rho_f.to_string());
+            return make_fast_result(rho_f);
+        }
+    }
+
+    // ── Full GNFS pipeline ──
     auto ctx = select_polynomial();
     auto fb = build_factor_base(ctx);
     auto relations = sieve_and_collect(ctx, fb);

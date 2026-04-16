@@ -308,27 +308,45 @@ struct GNFSParams {
     /// @param matrix_columns 矩阵实际列数
     /// @return 需要收集的原始关系数（过滤前）
     ///
-    /// Birthday model: n ≥ √(2·K·M·s)
-    ///   K = LP key space, M = matrix_columns, s = safety factor
-    ///   safety=8: 补偿 2LP 占比 (~70-90% partial) + singleton 过滤损失
+    /// 策略分层:
+    ///   ≤30 digits: 简单倍率 (mc × 2.0-3.0)，LP key space 小，不需要 birthday
+    ///   >30 digits: Birthday model n ≥ √(2·K·M·s)，LP key space 大，需要足够碰撞
     [[nodiscard]] size_t raw_relation_target(size_t matrix_columns) const {
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
+            double mc = static_cast<double>(matrix_columns);
+
+            // For small N (≤40 digits), LP key space is manageable.
+            // Simple multiplier avoids birthday formula's overestimate.
+            // Multiplier accounts for partial→merge survival rate:
+            //   ≤15 digit: most relations full (80%+ survival) → 2.0×
+            //   ≤20 digit: mix full/partial, ~50% survival → 3.0×
+            //   ≤30 digit: more partials, ~30% survival → 5.0×
+            //   ≤40 digit: heavy partials, ~25% survival → 6.0×
+            if (digits <= 15) {
+                return static_cast<size_t>(mc * 2.0);
+            }
+            if (digits <= 20) {
+                return static_cast<size_t>(mc * 3.0);
+            }
+            if (digits <= 30) {
+                return static_cast<size_t>(mc * 5.0);
+            }
+            if (digits <= 40) {
+                return static_cast<size_t>(mc * 6.0);
+            }
+
+            // For large N (>40 digits): birthday model
             double lp_bound_d = static_cast<double>(large_prime_bound);
             double alg_bound_d = static_cast<double>(algebraic_bound);
-            // Prime counting: π(x) ≈ x/ln(x), so LP primes ≈ π(lp) - π(alg)
             double lp_primes = lp_bound_d / std::log(std::max(lp_bound_d, 2.0))
                              - alg_bound_d / std::log(std::max(alg_bound_d, 2.0));
             double key_space = lp_primes * static_cast<double>(std::max(degree, 2u));
-            double mc = static_cast<double>(matrix_columns);
 
-            // Birthday: safety=25. Must account for LP columns that expand
-            // the matrix beyond matrix_columns estimate. Run 12 showed 3.4M raw
-            // → 75K usable but matrix had 77K cols (1981 LP cols).
-            // safety=25 gives ~12% more raw, producing ~10% more usable.
-            double n_min = std::sqrt(2.0 * key_space * mc * 25.0);
-            // Floor: at least 5× matrix columns (covers 2LP merge overhead)
+            // safety=15 (reduced from 25; empirically sufficient for 40-80 digit)
+            double n_min = std::sqrt(2.0 * key_space * mc * 15.0);
+            // Floor: at least 3× matrix columns
             return static_cast<size_t>(
-                std::max(n_min, mc * 5.0));
+                std::max(n_min, mc * 3.0));
         }
         return matrix_columns;
     }
