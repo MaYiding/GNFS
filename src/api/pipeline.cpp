@@ -806,7 +806,9 @@ FactorResult Pipeline::run() {
     }
 
     // ── Fast path: trial division + Pollard rho for small N ──
-    // GNFS has high fixed overhead; for N ≤ ~90 bits, Pollard rho is faster.
+    // GNFS has high fixed overhead; for N ≤ ~100 bits (~30 digits), Pollard rho is faster.
+    // Pollard rho complexity: O(N^{1/4}) iterations.
+    // At 100 bits: O(2^25) ≈ 33M iterations ≈ 2-5 seconds — still faster than GNFS.
     auto make_fast_result = [this](const Integer& f1) -> FactorResult {
         FactorResult r;
         r.n = n_.clone();
@@ -837,10 +839,16 @@ FactorResult Pipeline::run() {
         }
     }
 
-    // Pollard rho for N up to ~90 bits (27 digits)
-    // Expected: O(N^{1/4}) iterations, ~50ms for 81-bit
-    if (stats_.n_bits <= 90) {
-        size_t rho_limit = (stats_.n_bits <= 64) ? 200000 : 2000000;
+    // Pollard rho for N up to ~100 bits (30 digits)
+    // Expected: O(N^{1/4}) iterations
+    //   64-bit: ~200K iters, <5ms
+    //   80-bit: ~1M iters, ~50ms
+    //   90-bit: ~5M iters, ~500ms
+    //  100-bit: ~33M iters, ~3s (still faster than GNFS startup)
+    if (stats_.n_bits <= 100) {
+        size_t rho_limit = (stats_.n_bits <= 64) ? 200000 :
+                           (stats_.n_bits <= 80) ? 2000000 :
+                           (stats_.n_bits <= 90) ? 10000000 : 50000000;
         Integer rho_f = pollard_rho_brent(n_, rho_limit);
         if (rho_f > Integer(1) && rho_f.compare(n_) != 0) {
             emit_log(LogLevel::Info, Phase::PolynomialSelection,
