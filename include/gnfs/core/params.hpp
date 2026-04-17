@@ -74,12 +74,21 @@ struct GNFSParams {
         // === 多项式度数 ===
         // 标准选择: degree = round((3 ln N / ln ln N)^{1/3})
         // 小 N 用经验值，大 N 用解析公式
-        if (n_bits <= 100) {
+        // Degree selection:
+        // d_opt = round((3 ln N / ln ln N)^{1/3})
+        // For small N (≤200 bits, ~60 digits): force degree 3
+        //   - Degree 4 often produces even polynomials (f(x)=f(-x)) which are
+        //     always reducible mod p → Hensel sqrt fails to find inert primes
+        //   - Degree 3 avoids this issue and is well-tested
+        // For larger N: use formula but clamp to [4, 6] (degree 7-8 rarely needed)
+        if (n_bits <= 200) {
             p.degree = 3;
+        } else if (n_bits <= 400) {
+            p.degree = 4;
         } else {
             double d_opt = std::pow(3.0 * ln_n / ln_ln_n, 1.0 / 3.0);
-            p.degree = std::max(4u, static_cast<uint32_t>(std::lround(d_opt)));
-            p.degree = std::min(p.degree, 8u);  // 理论上限: degree 8
+            p.degree = std::max(5u, static_cast<uint32_t>(std::lround(d_opt)));
+            p.degree = std::min(p.degree, 6u);
         }
 
         // =============================================================
