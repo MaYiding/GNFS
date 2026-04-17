@@ -119,20 +119,21 @@ struct GNFSParams {
             B_rat = 30000;   B_alg = 60000;
             LP_MULTIPLIER = 30.0;
         } else if (p.digits <= 35) {
-            // CADO-NFS C35: lim0≈50K
+            // Keep matrix < 15K cols for fast BL
+            B_rat = 30000;   B_alg = 60000;
+            LP_MULTIPLIER = 40.0;
+        } else if (p.digits <= 40) {
+            // Keep matrix < 15K cols
+            B_rat = 40000;   B_alg = 80000;
+            LP_MULTIPLIER = 30.0;
+        } else if (p.digits <= 45) {
+            // Keep matrix < 20K cols
             B_rat = 50000;   B_alg = 100000;
             LP_MULTIPLIER = 25.0;
-        } else if (p.digits <= 40) {
-            // CADO-NFS C40: lim0≈100K
-            B_rat = 100000;  B_alg = 200000;
-            LP_MULTIPLIER = 20.0;
-        } else if (p.digits <= 45) {
-            B_rat = 150000;  B_alg = 300000;
-            LP_MULTIPLIER = 15.0;
         } else if (p.digits <= 50) {
-            // CADO-NFS C50: lim0≈200K
-            B_rat = 200000;  B_alg = 400000;
-            LP_MULTIPLIER = 12.0;
+            // Keep matrix < 30K cols
+            B_rat = 80000;   B_alg = 160000;
+            LP_MULTIPLIER = 20.0;
         } else if (p.digits <= 55) {
             B_rat = 300000;  B_alg = 600000;
             LP_MULTIPLIER = 10.0;
