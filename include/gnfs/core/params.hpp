@@ -141,7 +141,8 @@ struct GNFSParams {
             B_rat = 150000;  B_alg = 300000;
             LP_MULTIPLIER = 5.0;
         } else if (p.digits <= 55) {
-            B_rat = 300000;  B_alg = 600000;
+            // Keep matrix manageable (~30K cols) for Gaussian fallback
+            B_rat = 150000;  B_alg = 300000;
             LP_MULTIPLIER = 5.0;
         } else if (p.digits <= 60) {
             // CADO-NFS C60: lim0≈400K
