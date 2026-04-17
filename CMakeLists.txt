@@ -489,6 +489,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_i18n PRIVATE gnfs_core Threads::Threads)
     add_test(NAME I18N COMMAND test_i18n)
 
+    # SIQS (Self-Initializing Quadratic Sieve) 测试
+    add_executable(test_siqs
+        tests/test_siqs.cpp
+    )
+    target_link_libraries(test_siqs PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SIQS COMMAND test_siqs)
+
     # 压力测试 (50/80/100-digit)
     add_executable(test_stress
         tests/test_stress.cpp
