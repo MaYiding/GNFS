@@ -10,6 +10,7 @@
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
+#include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 
@@ -569,10 +570,19 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
              std::to_string(sge_result.reduced_matrix.num_rows()) + "x" +
              std::to_string(sge_result.reduced_matrix.num_cols()));
 
-    // Block Lanczos
+    // Block Lanczos (primary solver)
     emit_progress(Phase::LinearAlgebra, "Block Lanczos");
-    linalg::BlockLanczos solver;
-    auto dependencies = solver.find_dependencies(sge_result.reduced_matrix);
+    linalg::BlockLanczos bl_solver;
+    auto dependencies = bl_solver.find_dependencies(sge_result.reduced_matrix);
+
+    // If BL fails, try Block Wiedemann (better for large sparse matrices)
+    if (dependencies.empty() && sge_result.reduced_matrix.num_rows() > 5000) {
+        emit_log(LogLevel::Warn, Phase::LinearAlgebra,
+                 "Block Lanczos returned 0 deps, trying Block Wiedemann");
+        emit_progress(Phase::LinearAlgebra, "Block Wiedemann (fallback)");
+        linalg::BlockWiedemann bw_solver;
+        dependencies = bw_solver.find_dependencies(sge_result.reduced_matrix);
+    }
 
     // Expand dependencies back to original matrix
     for (auto& dep : dependencies) {
