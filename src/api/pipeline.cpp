@@ -310,58 +310,65 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     if (n_cofac_threads == 0) n_cofac_threads = 4;
 
     for (int round = 0; round < MAX_ROUNDS; ++round) {
-        // Sieve until batch_target reached or SQs exhausted
+        // ── Batch SQ processing: sieve + cofac in parallel ──
+        // Collect a batch of SQ primes, sieve them in parallel (each thread
+        // owns its own LatticeSieve copy), then cofac results in parallel.
         while (sq_gen.has_next() && collector.size() < batch_target && sq_count < max_sq) {
-            auto sq = sq_gen.next();
-            if (!sq) break;
+            // Collect a batch of SQs for parallel processing
+            // Batch size: balance parallelism vs memory (each thread allocates sieve array)
+            // For ≤50 digit: 4 parallel SQs (moderate FB, ~200MB total)
+            // For >50 digit: 2 parallel SQs (large FB, high memory per thread)
+            size_t SQ_BATCH_SIZE = (params_.digits <= 50) ? 4 : 2;
+            std::vector<sieve::SpecialQ> sq_batch;
+            sq_batch.reserve(SQ_BATCH_SIZE);
+            while (sq_batch.size() < SQ_BATCH_SIZE && sq_gen.has_next() && sq_count < max_sq) {
+                auto sq = sq_gen.next();
+                if (!sq) break;
+                sq_batch.push_back(*sq);
+            }
+            if (sq_batch.empty()) break;
 
-            auto sieve_result = sieve_obj.sieve_special_q(*sq);
-            candidates_total += sieve_result.candidates.size();
+            // Parallel sieve: each thread gets its own LatticeSieve + Cofactorizer
+            std::vector<std::vector<Relation>> batch_relations(sq_batch.size());
+            std::vector<size_t> batch_candidates(sq_batch.size(), 0);
+            std::atomic<size_t> next_sq_idx{0};
 
-            const auto& cands = sieve_result.candidates;
-            size_t n_cands = cands.size();
+            auto sieve_worker = [&]() {
+                sieve::LatticeSieve local_sieve(ctx, fb, sieve_params);
+                local_sieve.set_region(sieve_region);
+                cofactor::Cofactorizer local_cofac(ctx, fb, cofac_config);
 
-            // Parallel cofactorization for large candidate sets
-            if (n_cands >= 200 && n_cofac_threads > 1) {
-                std::vector<std::vector<Relation>> thread_results(n_cofac_threads);
-                std::atomic<size_t> next_idx{0};
-                constexpr size_t CHUNK_SIZE = 256;
+                while (true) {
+                    size_t idx = next_sq_idx.fetch_add(1, std::memory_order_relaxed);
+                    if (idx >= sq_batch.size()) break;
 
-                uint32_t cur_sq_q = sq->q;
-                uint32_t cur_sq_r = sq->r;
+                    auto sieve_result = local_sieve.sieve_special_q(sq_batch[idx]);
+                    batch_candidates[idx] = sieve_result.candidates.size();
 
-                auto worker = [&](size_t tid) {
-                    cofactor::Cofactorizer local_cofac(ctx, fb, cofac_config);
-                    auto& local_rels = thread_results[tid];
-                    while (true) {
-                        size_t start = next_idx.fetch_add(CHUNK_SIZE, std::memory_order_relaxed);
-                        if (start >= n_cands) break;
-                        size_t end = std::min(start + CHUNK_SIZE, n_cands);
-                        for (size_t ci = start; ci < end; ++ci) {
-                            auto rel = local_cofac.verify(cands[ci], cur_sq_q, cur_sq_r);
-                            if (rel) local_rels.push_back(std::move(*rel));
-                        }
-                    }
-                };
-
-                std::vector<std::thread> threads;
-                threads.reserve(n_cofac_threads);
-                for (size_t t = 0; t < n_cofac_threads; ++t)
-                    threads.emplace_back(worker, t);
-                for (auto& t : threads) t.join();
-
-                for (auto& tr : thread_results)
-                    for (auto& rel : tr)
-                        collector.add(std::move(rel));
-            } else {
-                // Serial cofactorization for small candidate sets
-                for (const auto& cand : cands) {
-                    auto rel_opt = cofactorizer.verify(cand);
-                    if (rel_opt) {
-                        collector.add(std::move(*rel_opt));
+                    // Cofactorize all candidates for this SQ
+                    auto& local_rels = batch_relations[idx];
+                    for (const auto& cand : sieve_result.candidates) {
+                        auto rel = local_cofac.verify(cand, sq_batch[idx].q, sq_batch[idx].r);
+                        if (rel) local_rels.push_back(std::move(*rel));
                     }
                 }
+            };
+
+            // Launch worker threads (one per SQ, capped at hardware threads)
+            size_t n_workers = std::min(n_cofac_threads, sq_batch.size());
+            std::vector<std::thread> threads;
+            threads.reserve(n_workers);
+            for (size_t t = 0; t < n_workers; ++t)
+                threads.emplace_back(sieve_worker);
+            for (auto& t : threads) t.join();
+
+            // Collect results
+            for (size_t i = 0; i < sq_batch.size(); ++i) {
+                candidates_total += batch_candidates[i];
+                for (auto& rel : batch_relations[i])
+                    collector.add(std::move(rel));
             }
+            sq_count += sq_batch.size();
 
             ++sq_count;
 
