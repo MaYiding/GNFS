@@ -211,12 +211,12 @@ struct GNFSParams {
             sieve_width = 2000;   sieve_height = 800;
         } else if (p.digits <= 25) {
             sieve_width = 4096;   sieve_height = 1024;   // 4M positions
-        } else if (p.digits <= 35) {
+        } else if (p.digits <= 40) {
             sieve_width = 2048;   sieve_height = 1024;   // I=11, 2M positions
-        } else if (p.digits <= 50) {
+        } else if (p.digits <= 55) {
+            sieve_width = 4096;   sieve_height = 1024;   // 4M positions (reduced height)
+        } else if (p.digits <= 70) {
             sieve_width = 4096;   sieve_height = 2048;   // I=12, 8M positions
-        } else if (p.digits <= 60) {
-            sieve_width = 8192;   sieve_height = 4096;   // I=13, 33M positions
         } else if (p.digits <= 80) {
             sieve_width = 16384;  sieve_height = 8192;   // I=14, 134M positions
         } else {
