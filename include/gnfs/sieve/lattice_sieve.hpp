@@ -121,11 +121,37 @@ public:
         // 3. 预计算所有 FB 素数的格参数
         auto primes = build_prime_entries(basis, sq);
 
-        // 4. 筛法：大 FB 用 bucket region 模式，小 FB 用原始 row-major 模式
-        if (primes.size() >= BUCKET_REGION_FB_THRESHOLD) {
-            sieve_bucket_region(primes);
-        } else {
-            sieve_row_major(primes);
+        // 4. 两级筛法:
+        //    小素数 (p < sieve_width): row-major 直接筛（每行命中多次，cache 友好）
+        //    大素数 (p >= sieve_width): bucket region 筛（每行最多命中一次）
+        //    这比全 bucket 快，因为小素数的 bucket scatter 开销大于直接写入。
+        uint32_t split_bound = static_cast<uint32_t>(region_.i_width());
+
+        // 分离小/大素数
+        std::vector<PrimeEntry> small_primes, large_primes;
+        for (const auto& pe : primes) {
+            if (pe.flags == 2) {
+                // Global hits: apply directly
+                uint16_t lp = pe.log_p;
+                for (size_t idx = 0; idx < sieve_array_.size(); ++idx)
+                    sieve_array_[idx] += lp;
+            } else if (pe.flags == 1 || pe.p < split_bound) {
+                small_primes.push_back(pe);
+            } else {
+                large_primes.push_back(pe);
+            }
+        }
+
+        // Phase A: row-major for small primes (excellent L1 cache locality)
+        if (!small_primes.empty()) {
+            sieve_row_major(small_primes);
+        }
+
+        // Phase B: bucket region for large primes (at most 1 hit per row)
+        if (large_primes.size() >= 100) {
+            sieve_bucket_region(large_primes);
+        } else if (!large_primes.empty()) {
+            sieve_row_major(large_primes);
         }
 
         // 5. 收集候选点
