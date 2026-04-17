@@ -264,7 +264,9 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     cofactor::CofactorizerConfig cofac_config;
     cofac_config.large_prime_bound = fb.params().large_prime_bound;
     cofac_config.allow_1lp = true;
-    cofac_config.allow_2lp = true;
+    // 2LP requires SQUFOF which is expensive for large LP ranges.
+    // Only enable for ≥50 digits where the LP key space is large enough to benefit.
+    cofac_config.allow_2lp = (params_.digits >= 50);
 
     cofactor::Cofactorizer cofactorizer(ctx, fb, cofac_config);
 

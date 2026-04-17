@@ -164,6 +164,15 @@ public:
                 rat_result = divider_.divide_rational(std::move(rat_value));
             }
         }
+        // Fast reject: if 2LP disabled and cofactor > LP_bound, skip expensive classify
+        // (classify_cofactor calls SQUFOF which is very slow)
+        if (!config_.allow_2lp && rat_result.cofactor.fits_uint64()) {
+            uint64_t rc = rat_result.cofactor.to_uint64();
+            if (rc > 1 && rc > large_prime_bound_) {
+                stats_.rational_rejects.fetch_add(1, std::memory_order_relaxed);
+                return std::nullopt;
+            }
+        }
         CofactorClassification rat_class = classify_cofactor(
             rat_result.cofactor, large_prime_bound_);
 
@@ -215,6 +224,15 @@ public:
 
         auto alg_result = divider_.divide_algebraic(
             std::move(alg_norm), a, b, fb_.sieve_algebraic_count());
+
+        // Fast reject: if 2LP disabled and cofactor > LP_bound, skip expensive classify
+        if (!config_.allow_2lp && alg_result.cofactor.fits_uint64()) {
+            uint64_t ac = alg_result.cofactor.to_uint64();
+            if (ac > 1 && ac > large_prime_bound_) {
+                stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
+                return std::nullopt;
+            }
+        }
         CofactorClassification alg_class = classify_cofactor(
             alg_result.cofactor, large_prime_bound_);
 
