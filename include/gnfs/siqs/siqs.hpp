@@ -681,17 +681,7 @@ inline std::optional<std::pair<Integer, Integer>> try_extract(
     const std::vector<size_t>& dep,
     const std::vector<FBPrime>& fb)
 {
-    // Compute X = product of (Ax_i + B_i) mod N for each relation in dep
-    Integer X(1);
-    for (size_t idx : dep) {
-        // Use mpz_mod to ensure positive result
-        Integer tmp = X * relations[idx].value;
-        mpz_mod(X.get_mpz(), tmp.get_mpz(), N.get_mpz());
-    }
-    if (X.is_zero()) X = Integer(1);
-
-    // Compute Y = sqrt(product of Q(x_i)) mod N
-    // Sum exponents across all relations in the dependency
+    // Verify exponents are all even (matrix correctness check)
     std::vector<uint32_t> total_exp(fb.size(), 0);
     for (size_t idx : dep) {
         const auto& rel = relations[idx];
@@ -699,28 +689,33 @@ inline std::optional<std::pair<Integer, Integer>> try_extract(
             total_exp[i] += rel.exponents[i];
         }
     }
+    for (size_t i = 0; i < fb.size(); i++) {
+        if (total_exp[i] & 1) return std::nullopt; // parity error → skip
+    }
 
-    // All exponents should be even (that's the point of the null space)
-    // Y = product of p_i^{e_i/2} mod N
+    // Compute X = product of value_i mod N
+    Integer X(1);
+    for (size_t idx : dep) {
+        mpz_mul(X.get_mpz(), X.get_mpz(), relations[idx].value.get_mpz());
+        mpz_mod(X.get_mpz(), X.get_mpz(), N.get_mpz());
+    }
+
+    // Compute Y = product of p_i^{exp/2} * LP_products mod N
     Integer Y(1);
-    for (size_t i = 1; i < fb.size(); i++) { // skip sign at index 0
-        if (total_exp[i] > 0) {
-            uint32_t half_exp = total_exp[i] / 2;
-            if (half_exp > 0) {
-                Integer pi(static_cast<uint64_t>(fb[i].p));
-                Integer pe;
-                mpz_powm_ui(pe.get_mpz(), pi.get_mpz(),
-                           half_exp, N.get_mpz());
-                mpz_mul(Y.get_mpz(), Y.get_mpz(), pe.get_mpz());
-                mpz_mod(Y.get_mpz(), Y.get_mpz(), N.get_mpz());
-            }
+    for (size_t i = 1; i < fb.size(); i++) {
+        uint32_t half_exp = total_exp[i] / 2;
+        if (half_exp > 0) {
+            Integer pe;
+            mpz_set_ui(pe.get_mpz(), fb[i].p);
+            mpz_powm_ui(pe.get_mpz(), pe.get_mpz(), half_exp, N.get_mpz());
+            mpz_mul(Y.get_mpz(), Y.get_mpz(), pe.get_mpz());
+            mpz_mod(Y.get_mpz(), Y.get_mpz(), N.get_mpz());
         }
     }
 
-    // Include LP values from merged relations (LP appears twice → LP^1 in Y)
+    // Include LP factors from merged relations
     for (size_t idx : dep) {
-        const auto& rel = relations[idx];
-        for (uint64_t lp : rel.merge_lps) {
+        for (uint64_t lp : relations[idx].merge_lps) {
             Integer lp_int(lp);
             mpz_mul(Y.get_mpz(), Y.get_mpz(), lp_int.get_mpz());
             mpz_mod(Y.get_mpz(), Y.get_mpz(), N.get_mpz());
@@ -730,18 +725,53 @@ inline std::optional<std::pair<Integer, Integer>> try_extract(
     // Try gcd(X - Y, N) and gcd(X + Y, N)
     Integer diff;
     mpz_sub(diff.get_mpz(), X.get_mpz(), Y.get_mpz());
-    Integer g1 = core::gcd(diff, N);
-    if (g1 > Integer(1) && g1 < N) {
-        Integer g2 = N / g1;
-        return std::make_pair(std::move(g1), std::move(g2));
+    Integer g = core::gcd(diff, N);
+    if (g > Integer(1) && g < N) {
+        return std::make_pair(g.clone(), N / g);
+    }
+    mpz_add(diff.get_mpz(), X.get_mpz(), Y.get_mpz());
+    g = core::gcd(diff, N);
+    if (g > Integer(1) && g < N) {
+        return std::make_pair(g.clone(), N / g);
+    }
+    return std::nullopt;
+}
+
+/// Try random XOR combinations of dependency vectors to increase success probability
+inline std::optional<std::pair<Integer, Integer>> try_extract_with_combos(
+    const Integer& N,
+    const std::vector<SIQSRelation>& relations,
+    const std::vector<std::vector<size_t>>& deps,
+    const std::vector<FBPrime>& fb)
+{
+    // First try each dependency individually
+    for (const auto& dep : deps) {
+        auto result = try_extract(N, relations, dep, fb);
+        if (result) return result;
     }
 
-    // Try gcd(X + Y, N)
-    Integer sum = (X + Y) % N;
-    Integer g3 = core::gcd(sum, N);
-    if (g3 > Integer(1) && g3 < N) {
-        Integer g4 = N / g3;
-        return std::make_pair(std::move(g3), std::move(g4));
+    // Then try random XOR combinations of pairs
+    std::mt19937 rng(12345);
+    size_t max_combos = std::min(deps.size() * 3, size_t(200));
+
+    for (size_t attempt = 0; attempt < max_combos; attempt++) {
+        size_t i = rng() % deps.size();
+        size_t j = rng() % deps.size();
+        if (i == j) continue;
+
+        // XOR two dependencies: symmetric difference of relation sets
+        std::vector<bool> in_dep(relations.size(), false);
+        for (size_t idx : deps[i]) in_dep[idx] = !in_dep[idx];
+        for (size_t idx : deps[j]) in_dep[idx] = !in_dep[idx];
+
+        std::vector<size_t> combined;
+        for (size_t k = 0; k < relations.size(); k++) {
+            if (in_dep[k]) combined.push_back(k);
+        }
+        if (combined.empty()) continue;
+
+        auto result = try_extract(N, relations, combined, fb);
+        if (result) return result;
     }
 
     return std::nullopt;
@@ -943,30 +973,27 @@ inline std::optional<SIQSResult> factor(
                 deps.size(), elapsed());
     }
 
-    // Try each dependency
-    for (const auto& dep : deps) {
-        auto result = try_extract(N, relations, dep, fb);
-        if (result) {
-            SIQSResult sr;
-            sr.factor1 = std::move(result->first);
-            sr.factor2 = std::move(result->second);
-            sr.time_seconds = elapsed();
-            sr.relations_found = relations.size();
-            sr.polynomials_used = num_polys;
+    // Try dependencies (individual + random XOR combos)
+    auto result = try_extract_with_combos(N, relations, deps, fb);
+    if (result) {
+        SIQSResult sr;
+        sr.factor1 = std::move(result->first);
+        sr.factor2 = std::move(result->second);
+        sr.time_seconds = elapsed();
+        sr.relations_found = relations.size();
+        sr.polynomials_used = num_polys;
 
-            if (verbose) {
-                fprintf(stderr, "[SIQS] SUCCESS: %s * %s (%.3fs, %zu polys)\n",
-                        sr.factor1.to_string().c_str(),
-                        sr.factor2.to_string().c_str(),
-                        sr.time_seconds, num_polys);
-            }
-            return sr;
+        if (verbose) {
+            fprintf(stderr, "[SIQS] SUCCESS: %s * %s (%.3fs, %zu polys)\n",
+                    sr.factor1.to_string().c_str(),
+                    sr.factor2.to_string().c_str(),
+                    sr.time_seconds, num_polys);
         }
+        return sr;
     }
 
     if (verbose) {
-        fprintf(stderr, "[SIQS] All %zu dependencies failed to produce factors\n",
-                deps.size());
+        fprintf(stderr, "[SIQS] All dependencies + combos failed\n");
     }
     return std::nullopt;
 }

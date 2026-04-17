@@ -13,6 +13,7 @@
 #include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/siqs/siqs.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -887,27 +888,57 @@ FactorResult Pipeline::run() {
         }
     }
 
-    // Pollard rho for N up to ~140 bits (~42 digits)
-    // For balanced semiprimes p*q with p≈q, Pollard rho needs O(p^{1/2}) = O(N^{1/4}) iters.
-    // Each iteration: GMP modmul + accumulate, ~30-50ns depending on N size.
-    // At 140 bits: O(2^35) ≈ 34B iters ≈ 15-30 minutes (still faster than broken GNFS)
-    if (stats_.n_bits <= 140) {
-        // Scale iteration limit with N^{1/4} + generous safety margin
+    // Pollard rho: quick attempt for unbalanced semiprimes / numbers with small factors.
+    // Trial division already covers factors < 10^6.
+    // Quick rho with 50K iterations catches factors up to ~sqrt(50K) ≈ 224.
+    // For N ≤ 80 bits: try with full limit since SIQS overhead exceeds rho time.
+    // For N > 80 bits: skip rho, go straight to SIQS.
+    if (stats_.n_bits <= 80) {
         size_t rho_limit;
-        if (stats_.n_bits <= 64)       rho_limit = 200000;
-        else if (stats_.n_bits <= 80)  rho_limit = 2000000;
-        else if (stats_.n_bits <= 90)  rho_limit = 10000000;
-        else if (stats_.n_bits <= 100) rho_limit = 50000000;
-        else if (stats_.n_bits <= 110) rho_limit = 300000000;
-        else if (stats_.n_bits <= 120) rho_limit = 1500000000;
-        else if (stats_.n_bits <= 130) rho_limit = 5000000000ULL;
-        else                           rho_limit = 20000000000ULL;
+        if (stats_.n_bits <= 50)       rho_limit = 100000;
+        else if (stats_.n_bits <= 64)  rho_limit = 500000;
+        else                           rho_limit = 20000000;
         Integer rho_f = pollard_rho_brent(n_, rho_limit);
         if (rho_f > Integer(1) && rho_f.compare(n_) != 0) {
             emit_log(LogLevel::Info, Phase::PolynomialSelection,
                      "Pollard rho found factor: " + rho_f.to_string());
             return make_fast_result(rho_f);
         }
+    }
+
+    // ── SIQS for medium N (25-95 digits, faster than GNFS) ──
+    if (stats_.n_digits >= 25 && stats_.n_digits <= 95) {
+        emit_log(LogLevel::Info, Phase::PolynomialSelection,
+                 "Trying SIQS for " + std::to_string(stats_.n_digits) + "-digit N");
+
+        size_t siqs_timeout = 600; // 10 min default
+        if (stats_.n_digits <= 50)      siqs_timeout = 30;
+        else if (stats_.n_digits <= 60) siqs_timeout = 120;
+        else if (stats_.n_digits <= 70) siqs_timeout = 300;
+        else if (stats_.n_digits <= 80) siqs_timeout = 900;
+        else                          siqs_timeout = 3600;
+
+        auto siqs_result = siqs::factor(n_, siqs_timeout, true);
+        if (siqs_result) {
+            emit_log(LogLevel::Info, Phase::PolynomialSelection,
+                     "SIQS found factor: " + siqs_result->factor1.to_string() +
+                     " * " + siqs_result->factor2.to_string());
+
+            FactorResult r;
+            r.success = true;
+            r.n = n_.clone();
+            auto f1 = siqs_result->factor1.clone();
+            auto f2 = siqs_result->factor2.clone();
+            if (f1 > f2) std::swap(f1, f2);
+            r.factors.push_back(std::move(f1));
+            r.factors.push_back(std::move(f2));
+            r.stats = stats_;
+            r.stats.timings.total_s = elapsed_s();
+            return r;
+        }
+
+        emit_log(LogLevel::Info, Phase::PolynomialSelection,
+                 "SIQS failed, falling back to GNFS");
     }
 
     // ── Full GNFS pipeline ──
