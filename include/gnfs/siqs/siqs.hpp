@@ -44,23 +44,25 @@ struct SIQSParams {
 inline SIQSParams select_params(size_t digits) {
     // Each row: {fb_size, sieve_half, lp_mult, a_factors, sieve_error, small_cutoff}
     // sieve_error: only covers log approximation + prime powers; LP subtracted separately
-    if (digits <= 20) return {50,     8192,    20, 2,  8,  5};
-    if (digits <= 25) return {80,     16384,   20, 3,  8,  5};
-    if (digits <= 30) return {150,    16384,   25, 3,  9,  10};
-    if (digits <= 34) return {250,    16384,   25, 4,  10, 10};
-    if (digits <= 39) return {500,    32768,   25, 5,  10, 15};
-    if (digits <= 44) return {1000,   32768,   30, 5,  11, 20};
-    if (digits <= 49) return {1800,   65536,   30, 6,  12, 25};
-    if (digits <= 54) return {3500,   65536,   30, 7,  12, 30};
-    if (digits <= 59) return {6000,   65536,   35, 7,  13, 30};
-    if (digits <= 64) return {10000,  65536,   35, 8,  13, 40};
-    if (digits <= 69) return {18000,  131072,  40, 8,  14, 50};
-    if (digits <= 74) return {30000,  131072,  40, 9,  14, 60};
-    if (digits <= 79) return {55000,  131072,  45, 9,  15, 70};
-    if (digits <= 84) return {90000,  262144,  45, 10, 15, 80};
-    if (digits <= 89) return {150000, 262144,  50, 10, 16, 90};
-    if (digits <= 95) return {250000, 524288,  50, 11, 16, 100};
-    return                     {400000, 524288,  60, 12, 17, 120};
+    // LP multiplier increased aggressively: in SIQS, LP doesn't add matrix columns
+    // (unlike GNFS). More partials = more merges = faster relation collection.
+    if (digits <= 20) return {50,     8192,    40,  2,  8,  5};
+    if (digits <= 25) return {80,     16384,   40,  3,  8,  5};
+    if (digits <= 30) return {150,    16384,   50,  3,  9,  10};
+    if (digits <= 34) return {250,    16384,   50,  4,  10, 10};
+    if (digits <= 39) return {500,    32768,   60,  5,  10, 15};
+    if (digits <= 44) return {1000,   32768,   80,  5,  11, 20};
+    if (digits <= 49) return {1800,   65536,   80,  6,  12, 25};
+    if (digits <= 54) return {3500,   65536,   100, 7,  12, 30};
+    if (digits <= 59) return {6000,   65536,   100, 7,  13, 30};
+    if (digits <= 64) return {10000,  131072,  100, 8,  13, 40};
+    if (digits <= 69) return {18000,  131072,  120, 8,  14, 50};
+    if (digits <= 74) return {30000,  131072,  120, 9,  14, 60};
+    if (digits <= 79) return {55000,  262144,  150, 9,  15, 70};
+    if (digits <= 84) return {90000,  262144,  150, 10, 15, 80};
+    if (digits <= 89) return {150000, 524288,  200, 10, 16, 90};
+    if (digits <= 95) return {250000, 524288,  200, 11, 16, 100};
+    return                     {400000, 1048576, 200, 12, 17, 120};
 }
 
 // ================================================================
@@ -136,6 +138,60 @@ struct FBPrime {
     uint32_t sqrt_n;    // sqrt(N) mod p
     uint8_t  logp;      // floor(log2(p))
 };
+
+// ================================================================
+// Knuth-Schroeppel multiplier selection
+// ================================================================
+
+/// Select optimal multiplier k for N. Returns k such that kN has a dense factor base.
+/// Score = -0.5*log(kN) + Σ_{p small, kN is QR mod p} log(p)/(p-1)
+inline uint32_t select_multiplier(const Integer& N) {
+    static const uint32_t candidates[] = {
+        1, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73
+    };
+    // Small primes for scoring
+    static const uint32_t test_primes[] = {
+        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71,
+        73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151,
+        157, 163, 167, 173, 179, 181, 191, 193, 197, 199
+    };
+
+    double best_score = -1e30;
+    uint32_t best_k = 1;
+
+    for (uint32_t k : candidates) {
+        Integer kN = N * Integer(static_cast<uint64_t>(k));
+        double log_kN = mpz_sizeinbase(kN.get_mpz(), 2) * 0.6931; // log(2) * bits
+        double score = -0.5 * log_kN;
+
+        // Special handling for p=2
+        uint32_t kN_mod8 = static_cast<uint32_t>(mpz_fdiv_ui(kN.get_mpz(), 8));
+        if (kN_mod8 == 1) score += 2.0 * std::log(2.0); // both roots
+        else if (kN_mod8 == 5) score += std::log(2.0); // one root
+
+        for (size_t i = 1; i < sizeof(test_primes)/sizeof(test_primes[0]); i++) {
+            uint32_t p = test_primes[i];
+            if (k % p == 0) {
+                // k divisible by p — kN mod p = 0, always in FB
+                score += std::log(static_cast<double>(p)) / (p - 1);
+                continue;
+            }
+            uint32_t kN_mod_p = static_cast<uint32_t>(mpz_fdiv_ui(kN.get_mpz(), p));
+            if (kN_mod_p == 0) {
+                score += std::log(static_cast<double>(p)) / (p - 1);
+            } else if (mod_pow32(kN_mod_p, (p - 1) / 2, p) == 1) {
+                // kN is QR mod p — two roots
+                score += 2.0 * std::log(static_cast<double>(p)) / (p - 1);
+            }
+        }
+
+        if (score > best_score) {
+            best_score = score;
+            best_k = k;
+        }
+    }
+    return best_k;
+}
 
 /// Build factor base: primes p where Legendre(N, p) = 1
 inline std::vector<FBPrime> build_factor_base(const Integer& N, size_t count) {
@@ -422,7 +478,8 @@ struct SIQSRelation {
 // Sieve kernel
 // ================================================================
 
-/// Sieve one polynomial and collect smooth relations
+/// Sieve one polynomial and collect smooth relations.
+/// sieve_buf: caller-owned buffer (avoids reallocation per polynomial)
 inline void sieve_polynomial(
     const SIQSPoly& poly,
     const Integer& N,
@@ -432,35 +489,46 @@ inline void sieve_polynomial(
     uint32_t small_cutoff,
     uint64_t lp_bound,
     std::vector<SIQSRelation>& out_relations,
-    std::mutex& relations_mutex)
+    std::mutex& relations_mutex,
+    std::vector<uint8_t>& sieve_buf)
 {
     uint32_t M = sieve_half;
     uint32_t sieve_size = 2 * M;
 
-    // Allocate sieve array
-    std::vector<uint8_t> sieve(sieve_size, 0);
+    // Reuse caller's buffer
+    sieve_buf.resize(sieve_size);
+    std::memset(sieve_buf.data(), 0, sieve_size);
+    uint8_t* sieve = sieve_buf.data();
 
     // Phase 1: Sieve — accumulate log(p) for each FB prime
+    // Split into small primes (many hits, sieve inline) and large primes
     for (size_t i = 1; i < fb.size(); i++) {
         uint32_t p = fb[i].p;
-        if (p < small_cutoff) continue;  // skip tiny primes (accounted in threshold)
+        if (p < small_cutoff) continue;
 
         uint32_t s1 = poly.solns[i].soln1;
         uint32_t s2 = poly.solns[i].soln2;
-
-        if (s1 == UINT32_MAX) continue; // A-prime, skip
+        if (s1 == UINT32_MAX) continue;
 
         uint8_t logp = fb[i].logp;
 
-        // Sieve with soln1
-        for (uint32_t pos = s1; pos < sieve_size; pos += p) {
-            sieve[pos] += logp;
-        }
-        // Sieve with soln2 (if different from soln1)
-        if (s2 != s1) {
-            for (uint32_t pos = s2; pos < sieve_size; pos += p) {
-                sieve[pos] += logp;
+        // Unrolled sieve for both roots
+        uint32_t pos1 = s1, pos2 = s2;
+        if (s1 == s2) {
+            // Single root (p | discriminant)
+            for (; pos1 < sieve_size; pos1 += p)
+                sieve[pos1] += logp;
+        } else {
+            // Interleave two roots for better branch prediction
+            if (pos1 > pos2) std::swap(pos1, pos2);
+            while (pos2 < sieve_size) {
+                sieve[pos1] += logp;
+                sieve[pos2] += logp;
+                pos1 += p;
+                pos2 += p;
             }
+            if (pos1 < sieve_size)
+                sieve[pos1] += logp;
         }
     }
 
@@ -802,14 +870,18 @@ inline std::optional<SIQSResult> factor(
     size_t digits = N.to_string().size();
     auto params = select_params(digits);
 
+    // Knuth-Schroeppel multiplier selection
+    uint32_t multiplier = select_multiplier(N);
+    Integer kN = (multiplier > 1) ? N * Integer(static_cast<uint64_t>(multiplier)) : N.clone();
+
     if (verbose) {
-        fprintf(stderr, "[SIQS] N=%zu digits, FB=%u, M=%u, A_factors=%u\n",
-                digits, params.fb_size, params.sieve_half, params.num_a_factors);
+        fprintf(stderr, "[SIQS] N=%zu digits, k=%u, FB=%u, M=%u, A_factors=%u\n",
+                digits, multiplier, params.fb_size, params.sieve_half, params.num_a_factors);
     }
 
-    // Build factor base
-    auto fb = build_factor_base(N, params.fb_size);
-    size_t fb_size = fb.size(); // includes sign at index 0
+    // Build factor base for kN (not N)
+    auto fb = build_factor_base(kN, params.fb_size);
+    size_t fb_size = fb.size();
 
     if (verbose) {
         fprintf(stderr, "[SIQS] Factor base built: %zu primes (%.3fs)\n",
@@ -823,7 +895,7 @@ inline std::optional<SIQSResult> factor(
     // We sieve Q(x)/A, where |Q(x)/A| ≈ M * sqrt(2N) at sieve boundary
     // log2(|Q(x)/A|) ≈ n_bits/2 + log2(M) + 0.5
     // Threshold = log2(target) - log2(LP_bound) - sieve_error - small_contrib
-    size_t n_bits = mpz_sizeinbase(N.get_mpz(), 2);
+    size_t n_bits = mpz_sizeinbase(kN.get_mpz(), 2);
     double log_Qmax_d = static_cast<double>(n_bits) / 2.0 + std::log2(params.sieve_half) + 0.5;
     double lp_bits = std::log2(static_cast<double>(lp_bound));
 
@@ -882,25 +954,26 @@ inline std::optional<SIQSResult> factor(
         std::mt19937 local_rng(42 + thread_id * 1000);
         std::vector<SIQSRelation> local_relations;
         local_relations.reserve(target_usable);
+        std::vector<uint8_t> sieve_buf; // reuse across polynomials
+        sieve_buf.reserve(params.sieve_half * 2);
 
         while (!enough.load(std::memory_order_relaxed) &&
                elapsed() < static_cast<double>(max_seconds))
         {
-            // Choose new A (each thread picks independently)
             SIQSPoly poly;
-            choose_A(N, params.sieve_half, params.num_a_factors, fb, local_rng,
+            choose_A(kN, params.sieve_half, params.num_a_factors, fb, local_rng,
                      poly.a_indices, poly.A);
 
-            init_poly(N, fb, params.sieve_half, poly);
+            init_poly(kN, fb, params.sieve_half, poly);
 
             size_t num_B = size_t(1) << (poly.a_indices.size() - 1);
             std::vector<bool> signs(poly.a_indices.size(), true);
-            std::mutex dummy_mutex; // local, no contention
+            std::mutex dummy_mutex;
 
             for (size_t b_idx = 0; b_idx < num_B; b_idx++) {
-                sieve_polynomial(poly, N, fb, params.sieve_half,
+                sieve_polynomial(poly, kN, fb, params.sieve_half,
                                threshold, params.small_prime_cutoff,
-                               lp_bound, local_relations, dummy_mutex);
+                               lp_bound, local_relations, dummy_mutex, sieve_buf);
 
                 size_t polys_done = atomic_polys.fetch_add(1, std::memory_order_relaxed) + 1;
 
@@ -993,24 +1066,50 @@ inline std::optional<SIQSResult> factor(
                 deps.size(), elapsed());
     }
 
-    // Try dependencies (individual + random XOR combos)
-    auto result = try_extract_with_combos(N, relations, deps, fb);
+    // Try dependencies — GCD against kN, then extract factor of original N
+    auto result = try_extract_with_combos(kN, relations, deps, fb);
     if (result) {
-        SIQSResult sr;
-        sr.factor1 = std::move(result->first);
-        sr.factor2 = std::move(result->second);
-        sr.time_seconds = elapsed();
-        sr.relations_found = relations.size();
-        sr.polynomials_used = num_polys;
+        // result gives factors of kN. Extract factor of original N.
+        Integer f1 = result->first;
+        Integer f2 = result->second;
 
-        if (verbose) {
-            fprintf(stderr, "[SIQS] SUCCESS: %s * %s (%.3fs, %zu polys)\n",
-                    sr.factor1.to_string().c_str(),
-                    sr.factor2.to_string().c_str(),
-                    sr.time_seconds, num_polys);
+        // If k > 1, one factor might be k*p and the other q, or both might contain k
+        // Use gcd with N to get the actual factor of N
+        Integer g1 = core::gcd(f1, N);
+        Integer g2 = core::gcd(f2, N);
+
+        Integer actual_f1, actual_f2;
+        if (g1 > Integer(1) && g1 < N) {
+            actual_f1 = g1.clone();
+            actual_f2 = N / g1;
+        } else if (g2 > Integer(1) && g2 < N) {
+            actual_f1 = g2.clone();
+            actual_f2 = N / g2;
+        } else {
+            // Try gcd(X-Y, N) directly
+            // The factors of kN might not directly give N's factors
+            // Fall through to next dependency
+            goto try_more;
         }
-        return sr;
+
+        {
+            SIQSResult sr;
+            sr.factor1 = std::move(actual_f1);
+            sr.factor2 = std::move(actual_f2);
+            sr.time_seconds = elapsed();
+            sr.relations_found = relations.size();
+            sr.polynomials_used = num_polys;
+
+            if (verbose) {
+                fprintf(stderr, "[SIQS] SUCCESS: %s * %s (%.3fs, %zu polys)\n",
+                        sr.factor1.to_string().c_str(),
+                        sr.factor2.to_string().c_str(),
+                        sr.time_seconds, num_polys);
+            }
+            return sr;
+        }
     }
+    try_more:
 
     if (verbose) {
         fprintf(stderr, "[SIQS] All dependencies + combos failed\n");
