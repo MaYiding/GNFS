@@ -558,6 +558,36 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
         return mr;
     }
 
+    // If matrix has huge excess (> 2× cols), trim rows to reduce matrix size.
+    // Large excess hurts BL convergence (Krylov degenerates on very sparse matrices).
+    // Keep ~1.5× cols rows for healthy excess while keeping matrix manageable.
+    if (matrix_stats.num_rows > matrix_stats.num_cols * 2) {
+        size_t target_rows = static_cast<size_t>(matrix_stats.num_cols * 1.5);
+        emit_log(LogLevel::Info, Phase::LinearAlgebra,
+                 "Trimming excess: " + std::to_string(matrix_stats.num_rows) +
+                 " rows -> " + std::to_string(target_rows) +
+                 " (keep " + std::to_string(target_rows) + "/" +
+                 std::to_string(matrix_stats.num_rows) + ")");
+
+        // Shuffle and trim relations, then rebuild matrix
+        std::mt19937 rng(42);
+        std::shuffle(relations.begin(), relations.end(), rng);
+        relations.resize(target_rows);
+
+        auto build2 = mb.build_with_qc(relations, fb, ctx);
+        build_result.matrix = std::move(build2.matrix);
+        auto ms2 = linalg::compute_matrix_stats(build_result.matrix);
+        stats_.matrix_rows = ms2.num_rows;
+        stats_.matrix_cols = ms2.num_cols;
+        stats_.matrix_weight = ms2.total_weight;
+        stats_.matrix_excess = static_cast<int64_t>(ms2.excess);
+
+        emit_log(LogLevel::Info, Phase::LinearAlgebra,
+                 "Trimmed matrix: " + std::to_string(ms2.num_rows) + "x" +
+                 std::to_string(ms2.num_cols) +
+                 " excess=" + std::to_string(ms2.excess));
+    }
+
     // SGE preprocessing
     emit_progress(Phase::LinearAlgebra, "SGE preprocessing");
     linalg::SGEConfig sge_config;
