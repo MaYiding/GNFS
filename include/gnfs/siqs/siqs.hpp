@@ -873,66 +873,86 @@ inline std::optional<SIQSResult> factor(
         return full + merged;
     };
 
-    while (elapsed() < static_cast<double>(max_seconds))
-    {
-        // Check if we have enough estimated usable relations
-        if (num_polys > 0 && num_polys % 50 == 0) {
-            size_t est = estimate_usable();
-            if (est >= target_usable) break;
+    // Multi-threaded sieve: each thread processes its own A values
+    unsigned num_threads = std::max(1u, std::thread::hardware_concurrency());
+    std::atomic<size_t> atomic_polys{0};
+    std::atomic<bool> enough{false};
+
+    auto sieve_worker = [&](unsigned thread_id) {
+        std::mt19937 local_rng(42 + thread_id * 1000);
+        std::vector<SIQSRelation> local_relations;
+        local_relations.reserve(target_usable);
+
+        while (!enough.load(std::memory_order_relaxed) &&
+               elapsed() < static_cast<double>(max_seconds))
+        {
+            // Choose new A (each thread picks independently)
+            SIQSPoly poly;
+            choose_A(N, params.sieve_half, params.num_a_factors, fb, local_rng,
+                     poly.a_indices, poly.A);
+
+            init_poly(N, fb, params.sieve_half, poly);
+
+            size_t num_B = size_t(1) << (poly.a_indices.size() - 1);
+            std::vector<bool> signs(poly.a_indices.size(), true);
+            std::mutex dummy_mutex; // local, no contention
+
+            for (size_t b_idx = 0; b_idx < num_B; b_idx++) {
+                sieve_polynomial(poly, N, fb, params.sieve_half,
+                               threshold, params.small_prime_cutoff,
+                               lp_bound, local_relations, dummy_mutex);
+
+                size_t polys_done = atomic_polys.fetch_add(1, std::memory_order_relaxed) + 1;
+
+                // Periodically flush local relations to shared pool
+                if (local_relations.size() > 200 || polys_done % 100 == 0) {
+                    std::lock_guard<std::mutex> lock(relations_mutex);
+                    for (auto& r : local_relations)
+                        all_relations.push_back(std::move(r));
+                    local_relations.clear();
+
+                    // Check if enough
+                    if (polys_done % 200 == 0) {
+                        size_t est = estimate_usable();
+                        if (est >= target_usable) {
+                            enough.store(true, std::memory_order_relaxed);
+                            break;
+                        }
+                    }
+                }
+
+                if (enough.load(std::memory_order_relaxed)) break;
+                if (elapsed() >= static_cast<double>(max_seconds)) break;
+
+                // Gray code switch to next B
+                if (b_idx + 1 < num_B) {
+                    size_t change = 0;
+                    size_t temp = b_idx + 1;
+                    while ((temp & 1) == 0) { change++; temp >>= 1; }
+                    if (change < signs.size()) {
+                        bool add = !signs[change];
+                        signs[change] = !signs[change];
+                        next_poly_B(fb, params.sieve_half, poly, change, add);
+                    }
+                }
+            }
         }
 
-        // Choose new A
-        SIQSPoly poly;
-        choose_A(N, params.sieve_half, params.num_a_factors, fb, rng,
-                 poly.a_indices, poly.A);
-
-        // Initialize first polynomial
-        init_poly(N, fb, params.sieve_half, poly);
-
-        // Enumerate 2^(s-1) B values using Gray code
-        size_t num_B = size_t(1) << (poly.a_indices.size() - 1);
-
-        // Track sign of each B_part (for Gray code)
-        std::vector<bool> signs(poly.a_indices.size(), true); // all positive initially
-
-        for (size_t b_idx = 0; b_idx < num_B; b_idx++) {
-            // Sieve this polynomial
-            sieve_polynomial(poly, N, fb, params.sieve_half,
-                           threshold, params.small_prime_cutoff,
-                           lp_bound, all_relations, relations_mutex);
-            num_polys++;
-
-            // Progress report every 200 polynomials
-            if (verbose && num_polys % 200 == 0) {
-                size_t est = estimate_usable();
-                size_t full = 0, partial = 0;
-                for (const auto& r : all_relations) {
-                    if (r.large_prime == 0) full++;
-                    else partial++;
-                }
-                fprintf(stderr, "[SIQS] polys=%zu, full=%zu, partial=%zu, "
-                        "est_usable=%zu/%zu (%.1fs)\n",
-                        num_polys, full, partial,
-                        est, target_usable, elapsed());
-            }
-
-            if (elapsed() >= static_cast<double>(max_seconds)) break;
-
-            // Switch to next B using Gray code
-            if (b_idx + 1 < num_B) {
-                // Gray code: which bit changes?
-                size_t change = 0;
-                size_t temp = b_idx + 1;
-                while ((temp & 1) == 0) { change++; temp >>= 1; }
-
-                if (change < signs.size()) {
-                    bool add = !signs[change];
-                    signs[change] = !signs[change];
-                    next_poly_B(fb, params.sieve_half, poly, change, add);
-                }
-            }
+        // Final flush
+        if (!local_relations.empty()) {
+            std::lock_guard<std::mutex> lock(relations_mutex);
+            for (auto& r : local_relations)
+                all_relations.push_back(std::move(r));
         }
+    };
+
+    // Launch threads
+    std::vector<std::thread> threads;
+    for (unsigned t = 0; t < num_threads; t++) {
+        threads.emplace_back(sieve_worker, t);
     }
+    for (auto& t : threads) t.join();
+    num_polys = atomic_polys.load();
 
     if (verbose) {
         size_t full = 0, partial = 0;
