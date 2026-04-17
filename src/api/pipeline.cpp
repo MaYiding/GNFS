@@ -370,10 +370,8 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             }
             sq_count += sq_batch.size();
 
-            ++sq_count;
-
             // Progress report
-            if (sq_count % params_.progress_interval == 0 || sq_count <= 5) {
+            if (sq_count % params_.progress_interval == 0 || sq_count <= 8) {
                 auto now = std::chrono::high_resolution_clock::now();
                 double elapsed = std::chrono::duration<double>(now - t0).count();
                 size_t rels_per_sec = (elapsed > 0.01) ?
