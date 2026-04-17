@@ -844,11 +844,11 @@ FactorResult Pipeline::run() {
         }
     }
 
-    // Pollard rho for N up to ~130 bits (~39 digits)
+    // Pollard rho for N up to ~140 bits (~42 digits)
     // For balanced semiprimes p*q with p≈q, Pollard rho needs O(p^{1/2}) = O(N^{1/4}) iters.
     // Each iteration: GMP modmul + accumulate, ~30-50ns depending on N size.
-    // At 130 bits: O(2^32.5) ≈ 6B iters ≈ 3-5 minutes (GNFS for 39-digit takes longer)
-    if (stats_.n_bits <= 130) {
+    // At 140 bits: O(2^35) ≈ 34B iters ≈ 15-30 minutes (still faster than broken GNFS)
+    if (stats_.n_bits <= 140) {
         // Scale iteration limit with N^{1/4} + generous safety margin
         size_t rho_limit;
         if (stats_.n_bits <= 64)       rho_limit = 200000;
@@ -857,7 +857,8 @@ FactorResult Pipeline::run() {
         else if (stats_.n_bits <= 100) rho_limit = 50000000;
         else if (stats_.n_bits <= 110) rho_limit = 300000000;
         else if (stats_.n_bits <= 120) rho_limit = 1500000000;
-        else                           rho_limit = 5000000000ULL;
+        else if (stats_.n_bits <= 130) rho_limit = 5000000000ULL;
+        else                           rho_limit = 20000000000ULL;
         Integer rho_f = pollard_rho_brent(n_, rho_limit);
         if (rho_f > Integer(1) && rho_f.compare(n_) != 0) {
             emit_log(LogLevel::Info, Phase::PolynomialSelection,
