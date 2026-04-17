@@ -459,7 +459,10 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
     // 64x64 matrices for recurrence
     DenseGF2_64x64 D_prev, D_pprev;
 
+    size_t actual_iter = 0;
     for (size_t iter = 0; iter < max_iter; ++iter) {
+        actual_iter = iter;
+
         // Step 1: Inner product A_i = V_cur^T * V_cur (Gram matrix)
         auto A_cur = inner_product_par(*V_cur, *V_cur, ctx);
 
@@ -565,7 +568,7 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
 
     if (dependencies.empty()) {
         std::cerr << "[BL-diag] seed=" << seeds[seed_idx]
-                  << " iter=" << max_iter
+                  << " actual_iter=" << actual_iter << "/" << max_iter
                   << " zero=" << zero_cols
                   << " nonzero=" << nonzero_cols
                   << " valid=" << valid_cols
