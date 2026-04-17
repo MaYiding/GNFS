@@ -890,12 +890,9 @@ FactorResult Pipeline::run() {
         return r;
     }
 
-    // Trim excess relations for matrix efficiency
-    size_t max_rels = static_cast<size_t>(matrix_cols * 1.3);
-    if (relations.size() > max_rels) {
-        std::shuffle(relations.begin(), relations.end(), std::mt19937(42));
-        relations.resize(max_rels);
-    }
+    // NOTE: Do NOT trim relations here. LP relations add extra matrix columns
+    // beyond the estimated matrix_cols, so trimming to matrix_cols * 1.3 can
+    // cause deficit (rows < actual_cols). SGE handles excess rows efficiently.
 
     auto mr = solve_matrix(std::move(relations), fb, ctx);
     return extract_factors(mr, fb, ctx);
