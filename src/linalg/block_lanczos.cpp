@@ -533,12 +533,16 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
     // Step 9: Extract and verify dependencies
     std::vector<std::vector<bool>> dependencies;
 
+    size_t zero_cols = 0, nonzero_cols = 0, valid_cols = 0, invalid_cols = 0;
+
     for (size_t j = 0; j < 64 && dependencies.size() < max_deps; ++j) {
         auto candidate = S.extract_column(j);
 
         bool nonzero = false;
-        for (bool b : candidate) { if (b) { nonzero = true; break; } }
-        if (!nonzero) continue;
+        size_t popcount = 0;
+        for (bool b : candidate) { if (b) { nonzero = true; ++popcount; } }
+        if (!nonzero) { ++zero_cols; continue; }
+        ++nonzero_cols;
 
         // Verify: M^T * candidate = 0
         std::vector<bool> check(n, false);
@@ -548,12 +552,24 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
                 if (col < n) check[col] = !check[col];
             }
         }
-        bool valid = true;
-        for (bool b : check) { if (b) { valid = false; break; } }
+        size_t err_count = 0;
+        for (bool b : check) { if (b) ++err_count; }
 
-        if (valid) {
+        if (err_count == 0) {
             dependencies.push_back(std::move(candidate));
+            ++valid_cols;
+        } else {
+            ++invalid_cols;
         }
+    }
+
+    if (dependencies.empty()) {
+        std::cerr << "[BL-diag] seed=" << seeds[seed_idx]
+                  << " iter=" << max_iter
+                  << " zero=" << zero_cols
+                  << " nonzero=" << nonzero_cols
+                  << " valid=" << valid_cols
+                  << " invalid=" << invalid_cols << "\n";
     }
 
     if (!dependencies.empty()) {
