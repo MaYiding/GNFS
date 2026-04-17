@@ -421,9 +421,10 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
         size_t needed_raw = static_cast<size_t>(
             static_cast<double>(matrix_cols * 2) / std::max(merge_rate, 0.001));
+        // Raise cap: for low merge rates (~2%), need up to 100× initial target
         batch_target = std::min(
             std::max(batch_target * 2, needed_raw),
-            initial_target * 20);  // safety cap
+            initial_target * 100);  // generous cap for low merge rates
 
         emit_log(LogLevel::Info, Phase::Sieving,
                  "round " + std::to_string(round + 1) + ": usable=" +
@@ -874,8 +875,12 @@ FactorResult Pipeline::run() {
     // sieve_and_collect now includes adaptive filter+merge internally
     auto relations = sieve_and_collect(ctx, fb);
 
-    if (relations.size() < 5) {
-        emit_log(LogLevel::Error, Phase::Sieving, "Not enough usable relations");
+    size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params_.target_excess;
+
+    if (relations.size() <= matrix_cols) {
+        emit_log(LogLevel::Error, Phase::Sieving,
+                 "Not enough usable relations: " + std::to_string(relations.size()) +
+                 " <= " + std::to_string(matrix_cols) + " (need excess for BL)");
         FactorResult r;
         r.n = n_.clone();
         r.stats = stats_;
@@ -884,7 +889,6 @@ FactorResult Pipeline::run() {
     }
 
     // Trim excess relations for matrix efficiency
-    size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params_.target_excess;
     size_t max_rels = static_cast<size_t>(matrix_cols * 1.3);
     if (relations.size() > max_rels) {
         std::shuffle(relations.begin(), relations.end(), std::mt19937(42));
