@@ -381,9 +381,13 @@ struct CofactorClassification {
                 }
             }
 
-            // Phase 3a: SQUFOF (O(N^{1/4}), 10-100× faster than Pollard rho for < 62 bits)
+            // Phase 3a: SQUFOF (O(N^{1/4}))
+            // Limit iterations: for 2LP cofactors (~10^12), O(N^{1/4}) ≈ 1000 iters.
+            // Cap at 2000 to avoid spending too long on hard composites.
             if (factor == 1 && c < (UINT64_C(1) << 62)) {
-                factor = SQUFOF::factor(c);
+                uint32_t squfof_limit = (c < (UINT64_C(1) << 40)) ? 2000 :
+                                        (c < (UINT64_C(1) << 50)) ? 5000 : 20000;
+                factor = SQUFOF::factor(c, squfof_limit);
             }
 
             // Phase 3b: Pollard rho (Brent variant) — fallback if SQUFOF fails
