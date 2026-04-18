@@ -780,13 +780,39 @@ inline std::vector<std::vector<size_t>> dense_gauss_left_nullspace(
         pivot_col[row] = pc;
         is_pivot[pc] = true;
 
-        // Eliminate this column from all other rows
-        for (size_t other = 0; other < ncols; other++) {
-            if (other == row) continue;
-            size_t w = pc / 64, b = pc % 64;
-            if (M[other][w] & (1ULL << b)) {
-                for (size_t k = 0; k < words_per_row; k++)
-                    M[other][k] ^= M[row][k];
+        // Eliminate this column from all other rows (parallel for large matrices)
+        size_t w_pc = pc / 64, b_pc = pc % 64;
+        uint64_t mask = 1ULL << b_pc;
+        const uint64_t* pivot_row_data = M[row].data();
+
+        if (ncols > 2000) {
+            // Parallel elimination for large matrices
+            unsigned nt = std::max(1u, std::thread::hardware_concurrency());
+            auto elim_chunk = [&](size_t start, size_t end) {
+                for (size_t other = start; other < end; other++) {
+                    if (other == row) continue;
+                    if (M[other][w_pc] & mask) {
+                        uint64_t* dst = M[other].data();
+                        for (size_t k = 0; k < words_per_row; k++)
+                            dst[k] ^= pivot_row_data[k];
+                    }
+                }
+            };
+            size_t chunk = (ncols + nt - 1) / nt;
+            std::vector<std::thread> threads;
+            for (unsigned t = 0; t < nt; t++) {
+                size_t s = t * chunk, e = std::min(s + chunk, ncols);
+                if (s < e) threads.emplace_back(elim_chunk, s, e);
+            }
+            for (auto& t : threads) t.join();
+        } else {
+            for (size_t other = 0; other < ncols; other++) {
+                if (other == row) continue;
+                if (M[other][w_pc] & mask) {
+                    uint64_t* dst = M[other].data();
+                    for (size_t k = 0; k < words_per_row; k++)
+                        dst[k] ^= pivot_row_data[k];
+                }
             }
         }
     }
