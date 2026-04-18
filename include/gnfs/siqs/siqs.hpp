@@ -518,35 +518,66 @@ inline void sieve_polynomial(
     std::memset(sieve_buf.data(), 0, sieve_size);
     uint8_t* sieve = sieve_buf.data();
 
-    // Phase 1: Sieve — accumulate log(p) for each FB prime
-    // Split into small primes (many hits, sieve inline) and large primes
-    for (size_t i = 1; i < fb.size(); i++) {
-        uint32_t p = fb[i].p;
-        if (p < small_cutoff) continue;
+    // Phase 1: Cache-blocked sieve
+    // Split primes into small (many hits/block) and large (0-1 hits/block)
+    // Process in L1-cache-sized blocks for better memory performance
+    constexpr uint32_t BLOCK_SIZE = 32768; // 32KB = typical L1 data cache
+    uint32_t block_bound = BLOCK_SIZE; // primes < block_bound sieved per-block
 
+    // Find split point: primes >= block_bound have ≤1 hit per block
+    size_t large_start = fb.size();
+    for (size_t i = 1; i < fb.size(); i++) {
+        if (fb[i].p >= block_bound) { large_start = i; break; }
+    }
+
+    // Sieve in blocks for small/medium primes (cache-friendly)
+    for (uint32_t block_start = 0; block_start < sieve_size; block_start += BLOCK_SIZE) {
+        uint32_t block_end = std::min(block_start + BLOCK_SIZE, sieve_size);
+
+        for (size_t i = 1; i < large_start; i++) {
+            uint32_t p = fb[i].p;
+            if (p < small_cutoff) continue;
+
+            uint32_t s1 = poly.solns[i].soln1;
+            uint32_t s2 = poly.solns[i].soln2;
+            if (s1 == UINT32_MAX) continue;
+
+            uint8_t logp = fb[i].logp;
+
+            // Compute start position within this block
+            uint32_t pos1 = s1;
+            if (pos1 < block_start) {
+                uint32_t skip = (block_start - pos1 + p - 1) / p;
+                pos1 += skip * p;
+            }
+            for (; pos1 < block_end; pos1 += p)
+                sieve[pos1] += logp;
+
+            if (s2 != s1) {
+                uint32_t pos2 = s2;
+                if (pos2 < block_start) {
+                    uint32_t skip = (block_start - pos2 + p - 1) / p;
+                    pos2 += skip * p;
+                }
+                for (; pos2 < block_end; pos2 += p)
+                    sieve[pos2] += logp;
+            }
+        }
+    }
+
+    // Large primes: sieve directly (few hits, not worth blocking)
+    for (size_t i = large_start; i < fb.size(); i++) {
+        uint32_t p = fb[i].p;
         uint32_t s1 = poly.solns[i].soln1;
         uint32_t s2 = poly.solns[i].soln2;
         if (s1 == UINT32_MAX) continue;
 
         uint8_t logp = fb[i].logp;
-
-        // Unrolled sieve for both roots
-        uint32_t pos1 = s1, pos2 = s2;
-        if (s1 == s2) {
-            // Single root (p | discriminant)
-            for (; pos1 < sieve_size; pos1 += p)
-                sieve[pos1] += logp;
-        } else {
-            // Interleave two roots for better branch prediction
-            if (pos1 > pos2) std::swap(pos1, pos2);
-            while (pos2 < sieve_size) {
-                sieve[pos1] += logp;
-                sieve[pos2] += logp;
-                pos1 += p;
-                pos2 += p;
-            }
-            if (pos1 < sieve_size)
-                sieve[pos1] += logp;
+        for (uint32_t pos = s1; pos < sieve_size; pos += p)
+            sieve[pos] += logp;
+        if (s2 != s1) {
+            for (uint32_t pos = s2; pos < sieve_size; pos += p)
+                sieve[pos] += logp;
         }
     }
 
@@ -587,7 +618,7 @@ inline void sieve_polynomial(
             }
         }
 
-        // Divide by all FB primes
+        // Trial divide by all FB primes
         for (size_t i = 1; i < fb.size(); i++) {
             uint32_t p = fb[i].p;
             while (mpz_divisible_ui_p(q_mpz, p)) {
