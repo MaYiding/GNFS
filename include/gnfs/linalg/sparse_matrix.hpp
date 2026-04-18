@@ -472,7 +472,7 @@ public:
         size_t total_nnz = 0;
         for (size_t i = 0; i < num_rows_; ++i) {
             total_nnz += mat.row(i).indices().size();
-            row_offsets_[i + 1] = static_cast<uint32_t>(total_nnz);
+            row_offsets_[i + 1] = total_nnz;
         }
 
         // Pack all column indices into one contiguous array
@@ -502,11 +502,11 @@ public:
 
     /// Access underlying data for direct iteration
     [[nodiscard]] const std::vector<uint32_t>& col_indices() const noexcept { return col_indices_; }
-    [[nodiscard]] const std::vector<uint32_t>& row_offsets() const noexcept { return row_offsets_; }
+    [[nodiscard]] const std::vector<size_t>& row_offsets() const noexcept { return row_offsets_; }
 
 private:
     std::vector<uint32_t> col_indices_;   // All column indices, packed contiguously
-    std::vector<uint32_t> row_offsets_;   // row_offsets_[i] = start of row i in col_indices_
+    std::vector<size_t> row_offsets_;   // row_offsets_[i] = start of row i in col_indices_
     size_t num_rows_ = 0;
     size_t num_cols_ = 0;
 };

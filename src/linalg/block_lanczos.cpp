@@ -413,7 +413,8 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
 
     const size_t m = matrix.num_rows();
     const size_t n = matrix.num_cols();
-    const size_t max_iter = m / 64 + 100;
+    // Montgomery BL converges in at most n/64 + O(1) iterations (n = cols = rank dimension)
+    const size_t max_iter = n / 64 + 100;
 
     // Try multiple random seeds if BL doesn't produce valid dependencies
     constexpr int MAX_SEEDS = 3;
