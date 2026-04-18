@@ -55,8 +55,8 @@ inline SIQSParams select_params(size_t digits) {
     if (digits <= 49) return {1200,   65536,   100, 5,  11, 20};
     if (digits <= 54) return {2500,   131072,  100, 6,  12, 25};
     if (digits <= 59) return {4000,   131072,  100, 7,  12, 25};
-    if (digits <= 64) return {7000,   262144,  100, 8,  13, 35};
-    if (digits <= 69) return {12000,  262144,  100, 8,  14, 40};
+    if (digits <= 64) return {7000,   131072,  100, 8,  13, 35};
+    if (digits <= 69) return {12000,  131072,  100, 8,  14, 40};
     if (digits <= 74) return {30000,  131072,  120, 9,  14, 60};
     if (digits <= 79) return {55000,  262144,  150, 9,  15, 70};
     if (digits <= 84) return {90000,  262144,  150, 10, 15, 80};
@@ -1063,12 +1063,12 @@ inline std::optional<SIQSResult> factor(
     std::mt19937 rng(42);
 
     // Rough estimate: usable ≈ full + partial * merge_rate
-    // Actual merge rate is ~1.5-3% for 1LP (birthday collision)
-    // Use conservative partial/50 to avoid stopping too early
+    // Merge rate ~2-3% for 1LP. Use partial/40 and add safety margin for large N
+    size_t safe_target = target_usable + std::max(size_t(50), target_usable / 10);
     auto quick_estimate = [&]() -> size_t {
         size_t f = atomic_full.load(std::memory_order_relaxed);
         size_t p = atomic_partial.load(std::memory_order_relaxed);
-        return f + p / 30;
+        return f + p / 40;
     };
 
     // Multi-threaded sieve: each thread processes its own A values
@@ -1124,7 +1124,7 @@ inline std::optional<SIQSResult> factor(
 
                     // Quick estimate without mutex
                     if (polys_done % 400 == 0) {
-                        if (quick_estimate() >= target_usable) {
+                        if (quick_estimate() >= safe_target) {
                             enough.store(true, std::memory_order_relaxed);
                             break;
                         }
