@@ -267,7 +267,7 @@ void test_special_q_range_regression() {
 void test_sieve_area_cap_regression() {
     std::cout << "Testing sieve area cap regression..." << std::endl;
 
-    constexpr size_t MAX_AREA = 256ULL * 1024 * 1024;
+    constexpr size_t MAX_AREA = 1024ULL * 1024 * 1024; // 1G positions max
 
     // Even for very large N, sieve area must be capped
     for (size_t bits : {200, 300, 500}) {
@@ -413,7 +413,7 @@ void test_params_edge_cases() {
 
     // Large N (200 bits)
     auto p200 = GNFSParams::compute(200);
-    assert(p200.degree == 4);  // analytical formula: d_opt ≈ 4.39 → 4
+    assert(p200.degree == 3);  // ≤200 bits forced to degree 3 (even-degree bug fix)
     assert(p200.rational_bound > p64.rational_bound);
 
     std::cout << "  PASS" << std::endl;
