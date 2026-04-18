@@ -52,11 +52,11 @@ inline SIQSParams select_params(size_t digits) {
     if (digits <= 34) return {250,    16384,   50,  4,  10, 10};
     if (digits <= 39) return {500,    32768,   60,  5,  10, 15};
     if (digits <= 44) return {1000,   32768,   80,  5,  11, 20};
-    if (digits <= 49) return {1800,   65536,   80,  6,  12, 25};
-    if (digits <= 54) return {3500,   65536,   100, 7,  12, 30};
-    if (digits <= 59) return {6000,   65536,   100, 7,  13, 30};
-    if (digits <= 64) return {10000,  131072,  100, 8,  13, 40};
-    if (digits <= 69) return {18000,  131072,  120, 8,  14, 50};
+    if (digits <= 49) return {1200,   65536,   100, 5,  11, 20};
+    if (digits <= 54) return {2500,   131072,  100, 6,  12, 25};
+    if (digits <= 59) return {4000,   131072,  100, 7,  12, 25};
+    if (digits <= 64) return {7000,   262144,  100, 8,  13, 35};
+    if (digits <= 69) return {12000,  262144,  100, 8,  14, 40};
     if (digits <= 74) return {30000,  131072,  120, 9,  14, 60};
     if (digits <= 79) return {55000,  262144,  150, 9,  15, 70};
     if (digits <= 84) return {90000,  262144,  150, 10, 15, 80};
