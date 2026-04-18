@@ -527,7 +527,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
         auto alg = compute_algebraic_sqrt(to_bv(dep), relations, ctx);
         if (!alg.success) {
-            std::cout << " alg_fail\n" << std::flush;
+            std::cout << " alg_fail(" << alg.error << ")\n" << std::flush;
             continue;
         }
 
