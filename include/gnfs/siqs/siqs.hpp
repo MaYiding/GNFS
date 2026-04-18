@@ -469,7 +469,8 @@ struct SIQSRelation {
     Integer value;                     // Ax + B (the "square root" side)
     std::vector<uint32_t> fb_indices;  // which FB primes divide Q(x) (with multiplicity)
     std::vector<uint8_t>  exponents;   // exponent of each FB prime (for sqrt computation)
-    uint64_t large_prime;              // 0 if fully smooth
+    uint64_t large_prime;              // LP1 (0 if fully smooth)
+    uint64_t large_prime2;             // LP2 (0 if 1LP or full)
     std::vector<uint64_t> merge_lps;   // LP values from merged partials (for Y computation)
     bool negative;                     // Q(x) < 0?
 };
@@ -553,6 +554,7 @@ inline void sieve_polynomial(
         rel.value = std::move(value);
         rel.negative = negative;
         rel.large_prime = 0;
+        rel.large_prime2 = 0;
         rel.exponents.assign(fb.size(), 0);
 
         // Divide out A primes first (they always divide Q)
@@ -577,18 +579,40 @@ inline void sieve_polynomial(
             }
         }
 
-        // Check remaining cofactor
+        // Check remaining cofactor — support 0LP, 1LP, and 2LP
         bool accept = false;
+        rel.large_prime2 = 0;
+
         if (mpz_cmp_ui(q_mpz, 1) == 0) {
             // Fully smooth
             accept = true;
         } else if (mpz_fits_ulong_p(q_mpz)) {
             uint64_t cofac = mpz_get_ui(q_mpz);
             if (cofac <= lp_bound && cofac > 1) {
-                // Partial: one large prime
+                // 1LP: single large prime
                 rel.large_prime = cofac;
                 accept = true;
+            } else if (cofac <= lp_bound * lp_bound && cofac > lp_bound) {
+                // Possible 2LP: cofactor = p1 * p2 where both ≤ lp_bound
+                // Don't try to factor here (too expensive per candidate).
+                // Store cofactor as-is; merge by matching cofactors.
+                // Quick primality check: if cofac is prime, it's a too-large 1LP → reject
+                // Use Miller-Rabin with a few witnesses
+                mpz_t tmp;
+                mpz_init_set_ui(tmp, cofac);
+                int is_prp = mpz_probab_prime_p(tmp, 2);
+                mpz_clear(tmp);
+                if (is_prp == 0) {
+                    // Composite → likely 2LP. Store full cofactor.
+                    rel.large_prime = cofac; // cofactor = lp1 * lp2
+                    rel.large_prime2 = 1;    // marker: unfactored 2LP
+                    accept = true;
+                }
             }
+        } else {
+            // Cofactor doesn't fit in uint64 — check if ≤ lp_bound^2
+            // For very large N, cofactor might be > 64 bits but still 2LP-splittable
+            // Skip for now (rare case)
         }
 
         mpz_clear(q_mpz);
@@ -611,51 +635,80 @@ inline void sieve_polynomial(
 // Large prime merging
 // ================================================================
 
-/// Merge partial relations sharing the same large prime
+/// Merge two relations: combine their values and exponents
+inline SIQSRelation merge_two(const SIQSRelation& a, const SIQSRelation& b,
+                               size_t fb_size) {
+    SIQSRelation merged;
+    merged.value = a.value * b.value;
+    merged.negative = (a.negative != b.negative);
+    merged.large_prime = 0;
+    merged.large_prime2 = 0;
+    merged.exponents.resize(fb_size, 0);
+    for (size_t i = 0; i < fb_size; i++) {
+        uint8_t ea = (i < a.exponents.size()) ? a.exponents[i] : 0;
+        uint8_t eb = (i < b.exponents.size()) ? b.exponents[i] : 0;
+        merged.exponents[i] = ea + eb;
+    }
+    // Copy existing merge_lps from both sides
+    merged.merge_lps = a.merge_lps;
+    for (auto lp : b.merge_lps) merged.merge_lps.push_back(lp);
+    // Build fb_indices
+    for (size_t i = 0; i < fb_size; i++) {
+        if (merged.exponents[i] > 0)
+            merged.fb_indices.push_back(static_cast<uint32_t>(i));
+    }
+    return merged;
+}
+
+/// Merge partial relations: 1LP pairs + 2LP graph cycles
 /// Returns merged full relations + original full relations
 inline std::vector<SIQSRelation> merge_partials(
     std::vector<SIQSRelation>& relations, size_t fb_size)
 {
     std::vector<SIQSRelation> full;
-    std::unordered_map<uint64_t, size_t> lp_map; // LP → index in partials
-    std::vector<SIQSRelation> partials;
+    std::vector<SIQSRelation> partials_1lp;
+    std::vector<SIQSRelation> partials_2lp;
+    std::unordered_map<uint64_t, size_t> lp1_map;
 
     for (auto& rel : relations) {
         if (rel.large_prime == 0) {
             full.push_back(std::move(rel));
-        } else {
-            auto it = lp_map.find(rel.large_prime);
-            if (it != lp_map.end()) {
-                // Found match — merge the two partials
-                auto& other = partials[it->second];
-
-                SIQSRelation merged;
-                // value = val1 * val2 (the product gives LP^2 which is a square)
-                merged.value = rel.value * other.value;
-                merged.negative = (rel.negative != other.negative);
-                merged.large_prime = 0; // now fully smooth
-                merged.exponents.resize(fb_size, 0);
-
-                // Add exponents from both
-                for (size_t i = 0; i < fb_size; i++) {
-                    merged.exponents[i] = rel.exponents[i] + other.exponents[i];
-                }
-
-                // LP appears twice → even exponent (doesn't affect matrix parity)
-                // But we MUST track it for Y computation: Y includes LP^1
+        } else if (rel.large_prime2 == 0) {
+            // 1LP relation — pair matching
+            auto it = lp1_map.find(rel.large_prime);
+            if (it != lp1_map.end()) {
+                auto& other = partials_1lp[it->second];
+                SIQSRelation merged = merge_two(rel, other, fb_size);
                 merged.merge_lps.push_back(rel.large_prime);
-
-                merged.fb_indices.clear();
-                for (size_t i = 0; i < fb_size; i++) {
-                    if (merged.exponents[i] > 0)
-                        merged.fb_indices.push_back(static_cast<uint32_t>(i));
-                }
-
                 full.push_back(std::move(merged));
-                lp_map.erase(it);
+                lp1_map.erase(it);
             } else {
-                lp_map[rel.large_prime] = partials.size();
-                partials.push_back(std::move(rel));
+                lp1_map[rel.large_prime] = partials_1lp.size();
+                partials_1lp.push_back(std::move(rel));
+            }
+        } else {
+            // 2LP relation — collect for graph processing
+            partials_2lp.push_back(std::move(rel));
+        }
+    }
+
+    // Process 2LP relations: match by cofactor value
+    // Two relations with the same cofactor → cofactor^2 cancels → fully smooth
+    if (!partials_2lp.empty()) {
+        std::unordered_map<uint64_t, size_t> cofac_map;
+        for (size_t i = 0; i < partials_2lp.size(); i++) {
+            uint64_t cofac = partials_2lp[i].large_prime; // stored as full cofactor
+            auto it = cofac_map.find(cofac);
+            if (it != cofac_map.end()) {
+                auto& other = partials_2lp[it->second];
+                SIQSRelation merged = merge_two(partials_2lp[i], other, fb_size);
+                merged.merge_lps.push_back(cofac); // cofac^2 in product
+                merged.large_prime = 0;
+                merged.large_prime2 = 0;
+                full.push_back(std::move(merged));
+                cofac_map.erase(it);
+            } else {
+                cofac_map[cofac] = i;
             }
         }
     }
@@ -667,75 +720,113 @@ inline std::vector<SIQSRelation> merge_partials(
 // Matrix construction and linear algebra
 // ================================================================
 
-/// Build GF(2) matrix from relations and find null space
-inline std::vector<std::vector<size_t>> solve_matrix(
-    const std::vector<SIQSRelation>& relations,
-    size_t fb_size)
+/// Dense GF(2) Gaussian elimination — much faster than sparse for SIQS matrices
+/// Finds the left null space of M (row dependencies).
+/// Matrix layout: ncols rows × nrows cols (transposed), packed in 64-bit words
+inline std::vector<std::vector<size_t>> dense_gauss_left_nullspace(
+    const std::vector<SIQSRelation>& relations, size_t fb_size, size_t max_deps = 64)
 {
     size_t nrows = relations.size();
-    size_t ncols = fb_size; // columns = FB primes (including sign at index 0)
+    size_t ncols = fb_size;
 
-    linalg::SparseMatrix matrix(nrows, ncols);
+    // Build M^T as dense packed matrix (ncols rows × nrows columns)
+    // Each row is a word-packed bit vector of nrows bits
+    size_t words_per_row = (nrows + 63) / 64;
+    std::vector<std::vector<uint64_t>> M(ncols, std::vector<uint64_t>(words_per_row, 0));
 
     for (size_t r = 0; r < nrows; r++) {
         const auto& rel = relations[r];
-        // Sign column
-        if (rel.negative) {
-            matrix.set(r, 0);
-        }
-        // FB prime exponents mod 2
+        size_t word = r / 64, bit = r % 64;
+        if (rel.negative) M[0][word] |= (1ULL << bit);
         for (size_t c = 1; c < fb_size && c < rel.exponents.size(); c++) {
             if (rel.exponents[c] & 1) {
-                matrix.set(r, c);
+                M[c][word] |= (1ULL << bit);
             }
         }
     }
 
-    // Choose solver based on matrix size
+    // Gaussian elimination on M^T (ncols × nrows)
+    // Find pivot in each row (column of M^T = relation index)
+    std::vector<size_t> pivot_col(ncols, SIZE_MAX);
+    std::vector<bool> is_pivot(nrows, false);
+
+    for (size_t row = 0; row < ncols; row++) {
+        // Find leftmost set bit
+        size_t pc = SIZE_MAX;
+        for (size_t w = 0; w < words_per_row; w++) {
+            if (M[row][w]) {
+                pc = w * 64 + static_cast<size_t>(__builtin_ctzll(M[row][w]));
+                break;
+            }
+        }
+        if (pc == SIZE_MAX || pc >= nrows) continue;
+        pivot_col[row] = pc;
+        is_pivot[pc] = true;
+
+        // Eliminate this column from all other rows
+        for (size_t other = 0; other < ncols; other++) {
+            if (other == row) continue;
+            size_t w = pc / 64, b = pc % 64;
+            if (M[other][w] & (1ULL << b)) {
+                for (size_t k = 0; k < words_per_row; k++)
+                    M[other][k] ^= M[row][k];
+            }
+        }
+    }
+
+    // Extract null space: free variables (non-pivot columns)
     std::vector<std::vector<size_t>> deps;
-
-    if (ncols <= 60000) {
-        // Gaussian elimination (fast for moderate sizes)
-        linalg::GaussianConfig cfg;
-        cfg.compute_null_space = true;
-        cfg.max_null_vectors = 64;
-
-        // Transpose: we need column dependencies but Gaussian finds row deps
-        // Actually, we need to find vectors v such that M^T * v = 0
-        // Equivalently, find left null space of M
-        linalg::SparseMatrix transposed = matrix.transpose();
-        linalg::GaussianEliminator gauss(cfg);
-        auto result = gauss.eliminate(transposed);
-
-        for (auto& null_vec : result.null_space) {
-            std::vector<size_t> dep;
-            for (size_t i = 0; i < nrows; i++) {
-                if (null_vec.test(i)) {
-                    dep.push_back(i);
-                }
-            }
-            if (!dep.empty()) {
-                deps.push_back(std::move(dep));
+    for (size_t col = 0; col < nrows && deps.size() < max_deps; col++) {
+        if (is_pivot[col]) continue;
+        // Free variable col → null vector
+        std::vector<size_t> dep;
+        dep.push_back(col);
+        // Find pivot rows that depend on this free variable
+        for (size_t row = 0; row < ncols; row++) {
+            if (pivot_col[row] == SIZE_MAX) continue;
+            size_t w = col / 64, b = col % 64;
+            if (M[row][w] & (1ULL << b)) {
+                dep.push_back(pivot_col[row]);
             }
         }
-    } else {
-        // Block Lanczos for large matrices
-        linalg::BlockLanczos bl;
-        auto bl_deps = bl.find_dependencies(matrix, 64);
-
-        for (auto& bv : bl_deps) {
-            std::vector<size_t> dep;
-            for (size_t i = 0; i < nrows; i++) {
-                if (i < bv.size() && bv[i]) {
-                    dep.push_back(i);
-                }
-            }
-            if (!dep.empty()) {
-                deps.push_back(std::move(dep));
-            }
+        if (dep.size() > 1) {
+            deps.push_back(std::move(dep));
         }
     }
+    return deps;
+}
 
+/// Build GF(2) matrix from relations and find null space
+inline std::vector<std::vector<size_t>> solve_matrix(
+    const std::vector<SIQSRelation>& relations, size_t fb_size)
+{
+    size_t nrows = relations.size();
+    size_t ncols = fb_size;
+
+    if (ncols <= 100000) {
+        // Dense Gaussian — O(ncols × nrows² / 64), fast for SIQS
+        return dense_gauss_left_nullspace(relations, fb_size, 64);
+    }
+
+    // Block Lanczos for very large matrices
+    linalg::SparseMatrix matrix(nrows, ncols);
+    for (size_t r = 0; r < nrows; r++) {
+        const auto& rel = relations[r];
+        if (rel.negative) matrix.set(r, 0);
+        for (size_t c = 1; c < fb_size && c < rel.exponents.size(); c++) {
+            if (rel.exponents[c] & 1) matrix.set(r, c);
+        }
+    }
+    linalg::BlockLanczos bl;
+    auto bl_deps = bl.find_dependencies(matrix, 64);
+    std::vector<std::vector<size_t>> deps;
+    for (auto& bv : bl_deps) {
+        std::vector<size_t> dep;
+        for (size_t i = 0; i < nrows; i++) {
+            if (i < bv.size() && bv[i]) dep.push_back(i);
+        }
+        if (!dep.empty()) deps.push_back(std::move(dep));
+    }
     return deps;
 }
 
