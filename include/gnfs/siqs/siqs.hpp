@@ -672,11 +672,12 @@ inline void sieve_polynomial(
         rel.large_prime2 = 0;
         rel.exponents.assign(fb.size(), 0);
 
-        // Divide out A primes first (they always divide Q)
+        // Trial divide Q by factor base primes
         mpz_t q_mpz;
         mpz_init(q_mpz);
         mpz_set(q_mpz, Q.get_mpz());
 
+        // Divide out A primes first (they always divide Q)
         for (uint32_t ai : poly.a_indices) {
             uint32_t p = fb[ai].p;
             while (mpz_divisible_ui_p(q_mpz, p)) {
