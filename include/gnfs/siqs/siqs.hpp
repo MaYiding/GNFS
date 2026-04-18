@@ -8,6 +8,7 @@
 /// sieve polynomials, large-prime variation, and GF(2) linear algebra.
 
 #include <gnfs/core/integer.hpp>
+#include <gnfs/cofactor/squfof.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/linalg/gauss.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -17,6 +18,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <random>
 #include <thread>
@@ -41,11 +43,14 @@ struct SIQSParams {
 };
 
 /// Parameter table calibrated from msieve/CADO-NFS/yafu
+/// Parameter table calibrated from msieve/CADO-NFS/yafu.
+/// LP multiplier: controls large prime bound = fb.back().p × mult.
+/// 2LP is only effective when LP_space is small (≤ ~500K). For ≤49d,
+/// graph-based 2LP merge finds many cycles. For ≥50d, LP space is too
+/// large → 2LP graph density is insufficient → 0 cycles. Keep mult ≤ 100.
 inline SIQSParams select_params(size_t digits) {
     // Each row: {fb_size, sieve_half, lp_mult, a_factors, sieve_error, small_cutoff}
     // sieve_error: only covers log approximation + prime powers; LP subtracted separately
-    // LP multiplier increased aggressively: in SIQS, LP doesn't add matrix columns
-    // (unlike GNFS). More partials = more merges = faster relation collection.
     if (digits <= 20) return {50,     8192,    40,  2,  8,  5};
     if (digits <= 25) return {80,     16384,   40,  3,  8,  5};
     if (digits <= 30) return {150,    16384,   50,  3,  9,  10};
@@ -127,6 +132,101 @@ inline uint32_t tonelli_shanks(uint64_t n_u64, uint32_t p) {
         t = mod_mul32(t, c, p);
         R = mod_mul32(R, b, p);
     }
+}
+
+// ================================================================
+// Fast cofactor splitting for 2LP (64-bit composites)
+// ================================================================
+
+/// Pollard rho with Brent's cycle detection for 64-bit composites.
+/// Uses __uint128_t for modular multiplication. Very fast for N ≤ 2^48.
+/// Expected O(N^{1/4}) iterations ≈ ~4K for 48-bit numbers.
+inline uint64_t pollard_rho_64(uint64_t n) {
+    if (n % 2 == 0) return 2;
+    if (n % 3 == 0) return 3;
+    if (n % 5 == 0) return 5;
+
+    auto mul_mod = [n](uint64_t a, uint64_t b) -> uint64_t {
+        return static_cast<uint64_t>(static_cast<__uint128_t>(a) * b % n);
+    };
+    auto f = [&](uint64_t x, uint64_t c) -> uint64_t {
+        return (mul_mod(x, x) + c) % n;
+    };
+
+    for (uint64_t c = 1; c < 256; c++) {
+        uint64_t y = 2, x = 2, q = 1;
+        uint64_t ys = 0, d = 1;
+        uint64_t range = 1;
+
+        // Brent's algorithm with GCD batching
+        while (d == 1) {
+            x = y;
+            for (uint64_t i = 0; i < range; i++)
+                y = f(y, c);
+
+            uint64_t k = 0;
+            while (k < range && d == 1) {
+                ys = y;
+                uint64_t batch = std::min(uint64_t(128), range - k);
+                for (uint64_t i = 0; i < batch; i++) {
+                    y = f(y, c);
+                    uint64_t diff = (x > y) ? x - y : y - x;
+                    if (diff > 0) q = mul_mod(q, diff);
+                }
+                d = std::__gcd(q, n);
+                k += batch;
+            }
+            range *= 2;
+            if (range > 2000000) break; // safety limit for large composites
+        }
+
+        if (d == n) {
+            // Batched GCD overshot — retry step by step from saved ys
+            d = 1;
+            while (d == 1) {
+                ys = f(ys, c);
+                uint64_t diff = (x > ys) ? x - ys : ys - x;
+                d = std::__gcd(diff, n);
+            }
+        }
+        if (d > 1 && d < n) return d;
+    }
+    return 1;
+}
+
+/// Split a 64-bit composite into two factors.
+/// Uses trial division for small factors, then Pollard rho.
+/// Returns {p1, p2} with p1 ≤ p2, or {0, 0} on failure.
+inline std::pair<uint64_t, uint64_t> split_cofactor_64(uint64_t n) {
+    if (n <= 1) return {0, 0};
+
+    // Quick trial division for small factors
+    for (uint64_t p : {2ULL,3ULL,5ULL,7ULL,11ULL,13ULL,17ULL,19ULL,23ULL,29ULL,
+                       31ULL,37ULL,41ULL,43ULL,47ULL,53ULL,59ULL,61ULL,67ULL,71ULL,
+                       73ULL,79ULL,83ULL,89ULL,97ULL}) {
+        if (p * p > n) break;
+        if (n % p == 0) return {p, n / p};
+    }
+    // Extended trial division with 6k±1 wheel to ~1000
+    for (uint64_t p = 101; p < 1000; p += 2) {
+        if (p * p > n) break;
+        if (n % p == 0) return {p, n / p};
+    }
+
+    // Pollard rho for larger composites (~1-10μs per number for ≤48 bit)
+    uint64_t f = pollard_rho_64(n);
+    if (f > 1 && f < n) {
+        uint64_t q = n / f;
+        return {std::min(f, q), std::max(f, q)};
+    }
+
+    // SQUFOF as last resort (handles edge cases Pollard rho misses)
+    f = cofactor::SQUFOF::factor(n, 50000);
+    if (f > 1 && f < n) {
+        uint64_t q = n / f;
+        return {std::min(f, q), std::max(f, q)};
+    }
+    return {0, 0};
 }
 
 // ================================================================
@@ -498,6 +598,7 @@ struct SIQSRelation {
 
 /// Sieve one polynomial and collect smooth relations.
 /// sieve_buf: caller-owned buffer (avoids reallocation per polynomial)
+/// @param lp_bound_sq  Upper bound for 2LP cofactors (set to 0 to disable 2LP)
 inline void sieve_polynomial(
     const SIQSPoly& poly,
     const Integer& N,
@@ -506,6 +607,7 @@ inline void sieve_polynomial(
     uint8_t threshold,
     uint32_t small_cutoff,
     uint64_t lp_bound,
+    uint64_t lp_bound_sq,
     std::vector<SIQSRelation>& out_relations,
     std::mutex& relations_mutex,
     std::vector<uint8_t>& sieve_buf)
@@ -605,7 +707,7 @@ inline void sieve_polynomial(
                 // 1LP: single large prime
                 rel.large_prime = cofac;
                 accept = true;
-            } else if (cofac <= lp_bound * lp_bound && cofac > lp_bound) {
+            } else if (lp_bound_sq > 0 && cofac <= lp_bound_sq && cofac > lp_bound) {
                 // Possible 2LP: cofactor = p1 * p2 where both ≤ lp_bound
                 // Don't try to factor here (too expensive per candidate).
                 // Store cofactor as-is; merge by matching cofactors.
@@ -673,57 +775,135 @@ inline SIQSRelation merge_two(const SIQSRelation& a, const SIQSRelation& b,
     return merged;
 }
 
-/// Merge partial relations: 1LP pairs + 2LP graph cycles
-/// Returns merged full relations + original full relations
+/// Graph-based LP merge: 1LP pair matching + 2LP cycle finding.
+///
+/// Algorithm:
+/// 1. Factor all 2LP cofactors into (p1, p2) using trial div + SQUFOF
+/// 2. Build LP graph: each relation with LP(s) is an edge
+/// 3. Iterative greedy merge: process LPs that appear in ≥2 relations
+///    - Merge pairs to eliminate the shared LP
+///    - Newly created 1LP relations feed back into the graph
+///    - Repeat until no more merges possible
 inline std::vector<SIQSRelation> merge_partials(
-    std::vector<SIQSRelation>& relations, size_t fb_size)
+    std::vector<SIQSRelation>& relations, size_t fb_size, bool verbose = false)
 {
     std::vector<SIQSRelation> full;
-    std::vector<SIQSRelation> partials_1lp;
-    std::vector<SIQSRelation> partials_2lp;
-    std::unordered_map<uint64_t, size_t> lp1_map;
+
+    // Pool of all LP relations (grows as merges create new ones)
+    std::vector<SIQSRelation> pool;
+    size_t factored_2lp = 0, failed_2lp = 0, raw_1lp = 0, raw_2lp = 0;
 
     for (auto& rel : relations) {
         if (rel.large_prime == 0) {
             full.push_back(std::move(rel));
-        } else if (rel.large_prime2 == 0) {
-            // 1LP relation — pair matching
-            auto it = lp1_map.find(rel.large_prime);
-            if (it != lp1_map.end()) {
-                auto& other = partials_1lp[it->second];
-                SIQSRelation merged = merge_two(rel, other, fb_size);
-                merged.merge_lps.push_back(rel.large_prime);
-                full.push_back(std::move(merged));
-                lp1_map.erase(it);
-            } else {
-                lp1_map[rel.large_prime] = partials_1lp.size();
-                partials_1lp.push_back(std::move(rel));
-            }
-        } else {
-            // 2LP relation — collect for graph processing
-            partials_2lp.push_back(std::move(rel));
+            continue;
         }
+        // Factor unfactored 2LP cofactors
+        if (rel.large_prime2 == 1) {
+            auto [p1, p2] = split_cofactor_64(rel.large_prime);
+            if (p1 > 0 && p2 > 0) {
+                rel.large_prime = p1;
+                rel.large_prime2 = p2;
+                factored_2lp++;
+                raw_2lp++;
+            } else {
+                failed_2lp++;
+                continue; // can't use this relation
+            }
+        } else if (rel.large_prime2 == 0) {
+            raw_1lp++;
+        } else {
+            raw_2lp++;
+        }
+        pool.push_back(std::move(rel));
     }
 
-    // Process 2LP relations: match by cofactor value
-    // Two relations with the same cofactor → cofactor^2 cancels → fully smooth
-    if (!partials_2lp.empty()) {
-        std::unordered_map<uint64_t, size_t> cofac_map;
-        for (size_t i = 0; i < partials_2lp.size(); i++) {
-            uint64_t cofac = partials_2lp[i].large_prime; // stored as full cofactor
-            auto it = cofac_map.find(cofac);
-            if (it != cofac_map.end()) {
-                auto& other = partials_2lp[it->second];
-                SIQSRelation merged = merge_two(partials_2lp[i], other, fb_size);
-                merged.merge_lps.push_back(cofac); // cofac^2 in product
-                merged.large_prime = 0;
-                merged.large_prime2 = 0;
-                full.push_back(std::move(merged));
-                cofac_map.erase(it);
-            } else {
-                cofac_map[cofac] = i;
+    if (verbose) {
+        fprintf(stderr, "[SIQS] Merge input: %zu full, %zu 1LP, %zu 2LP (factored=%zu, failed=%zu)\n",
+                full.size(), raw_1lp, raw_2lp, factored_2lp, failed_2lp);
+    }
+
+    // Iterative greedy merge (up to 10 rounds for convergence)
+    std::vector<bool> consumed(pool.size(), false);
+    size_t merged_1lp_pairs = 0, merged_2lp_cycles = 0;
+
+    for (int round = 0; round < 10; round++) {
+        // Build LP → relation index mapping
+        std::unordered_map<uint64_t, std::vector<size_t>> lp_index;
+        for (size_t i = 0; i < pool.size(); i++) {
+            if (consumed[i]) continue;
+            lp_index[pool[i].large_prime].push_back(i);
+            if (pool[i].large_prime2 > 0)
+                lp_index[pool[i].large_prime2].push_back(i);
+        }
+
+        bool any_merge = false;
+
+        // Process each LP: merge pairs that share this LP
+        for (auto& [lp, indices] : lp_index) {
+            // Remove consumed entries
+            size_t write = 0;
+            for (size_t r = 0; r < indices.size(); r++) {
+                if (!consumed[indices[r]])
+                    indices[write++] = indices[r];
+            }
+            indices.resize(write);
+
+            while (indices.size() >= 2) {
+                size_t ai = indices.back(); indices.pop_back();
+                if (consumed[ai]) continue;
+                size_t bi = SIZE_MAX;
+                while (!indices.empty()) {
+                    bi = indices.back(); indices.pop_back();
+                    if (!consumed[bi]) break;
+                    bi = SIZE_MAX;
+                }
+                if (bi == SIZE_MAX) break;
+
+                consumed[ai] = consumed[bi] = true;
+                any_merge = true;
+
+                auto& a = pool[ai];
+                auto& b = pool[bi];
+
+                // Determine other LPs after eliminating 'lp'
+                uint64_t other_a = (a.large_prime == lp) ? a.large_prime2 : a.large_prime;
+                uint64_t other_b = (b.large_prime == lp) ? b.large_prime2 : b.large_prime;
+
+                SIQSRelation merged = merge_two(a, b, fb_size);
+                merged.merge_lps.push_back(lp);
+
+                if ((other_a == 0 && other_b == 0) ||
+                    (other_a == other_b && other_a > 0)) {
+                    // Fully merged: both other LPs are zero, or they're the same and cancel
+                    merged.large_prime = 0;
+                    merged.large_prime2 = 0;
+                    if (other_a > 0) merged.merge_lps.push_back(other_a);
+                    full.push_back(std::move(merged));
+                    if (other_a == 0) merged_1lp_pairs++;
+                    else merged_2lp_cycles++;
+                } else if (other_a == 0 || other_b == 0) {
+                    // One remaining LP → new 1LP relation
+                    merged.large_prime = std::max(other_a, other_b);
+                    merged.large_prime2 = 0;
+                    consumed.push_back(false);
+                    pool.push_back(std::move(merged));
+                } else {
+                    // Two remaining LPs → new 2LP relation
+                    merged.large_prime = std::min(other_a, other_b);
+                    merged.large_prime2 = std::max(other_a, other_b);
+                    consumed.push_back(false);
+                    pool.push_back(std::move(merged));
+                }
             }
         }
+
+        if (!any_merge) break;
+    }
+
+    if (verbose) {
+        fprintf(stderr, "[SIQS] Merge result: %zu usable (%zu 1LP-pair, %zu 2LP-cycle)\n",
+                full.size(), merged_1lp_pairs, merged_2lp_cycles);
     }
 
     return full;
@@ -1041,11 +1221,16 @@ inline std::optional<SIQSResult> factor(
     double thr_d = log_Qmax_d - lp_bits - params.sieve_error - small_contrib;
     uint8_t threshold = (thr_d > 10.0) ? static_cast<uint8_t>(thr_d) : 10;
 
+    // 2LP is only effective when LP space is small enough for graph cycles.
+    // For ≥50 digits, LP space is too large → disable 2LP to save merge time.
+    uint64_t lp_bound_sq = (digits <= 49) ? lp_bound * lp_bound : 0;
+
     if (verbose) {
         fprintf(stderr, "[SIQS] log_Qmax=%.1f, lp_bits=%.1f, sieve_err=%u, "
-                "small=%.1f, threshold=%u, LP_bound=%llu\n",
+                "small=%.1f, threshold=%u, LP_bound=%llu, 2LP=%s\n",
                 log_Qmax_d, lp_bits, params.sieve_error,
-                small_contrib, threshold, (unsigned long long)lp_bound);
+                small_contrib, threshold, (unsigned long long)lp_bound,
+                lp_bound_sq > 0 ? "on" : "off");
     }
 
     // Target: enough usable relations to exceed FB size
@@ -1057,18 +1242,22 @@ inline std::optional<SIQSResult> factor(
 
     // Use atomic counters to avoid expensive estimate_usable under mutex
     std::atomic<size_t> atomic_full{0};
-    std::atomic<size_t> atomic_partial{0};
+    std::atomic<size_t> atomic_1lp{0};
+    std::atomic<size_t> atomic_2lp{0};
 
     size_t num_polys = 0;
     std::mt19937 rng(42);
 
-    // Rough estimate: usable ≈ full + partial * merge_rate
-    // Merge rate ~2-3% for 1LP. Use partial/40 and add safety margin for large N
+    // Rough estimate: usable ≈ full + 1lp_partials * 1lp_merge_rate
+    // 1LP merge rate is ~3-5% (pair matching). 2LP merge rate is ~0% for ≥50d
+    // (LP space too large for graph cycles), so we only count 1LP.
+    // Safety margin: +10% of target.
     size_t safe_target = target_usable + std::max(size_t(50), target_usable / 10);
     auto quick_estimate = [&]() -> size_t {
         size_t f = atomic_full.load(std::memory_order_relaxed);
-        size_t p = atomic_partial.load(std::memory_order_relaxed);
-        return f + p / 40;
+        size_t p1 = atomic_1lp.load(std::memory_order_relaxed);
+        // Conservative: assume ~4% of 1LP partials merge into usable relations
+        return f + p1 / 25;
     };
 
     // Multi-threaded sieve: each thread processes its own A values
@@ -1099,21 +1288,24 @@ inline std::optional<SIQSResult> factor(
             for (size_t b_idx = 0; b_idx < num_B; b_idx++) {
                 sieve_polynomial(poly, kN, fb, params.sieve_half,
                                threshold, params.small_prime_cutoff,
-                               lp_bound, local_relations, dummy_mutex, sieve_buf);
+                               lp_bound, lp_bound_sq,
+                               local_relations, dummy_mutex, sieve_buf);
 
                 size_t polys_done = atomic_polys.fetch_add(1, std::memory_order_relaxed) + 1;
 
                 // Count relations locally (for atomic updates)
-                size_t local_full = 0, local_part = 0;
+                size_t local_full = 0, local_1lp = 0, local_2lp = 0;
                 for (const auto& r : local_relations) {
                     if (r.large_prime == 0) local_full++;
-                    else local_part++;
+                    else if (r.large_prime2 == 0) local_1lp++;
+                    else local_2lp++;
                 }
 
                 // Flush every 500 relations or 200 polys (reduce mutex contention)
                 if (local_relations.size() > 500 || polys_done % 200 == 0) {
                     atomic_full.fetch_add(local_full, std::memory_order_relaxed);
-                    atomic_partial.fetch_add(local_part, std::memory_order_relaxed);
+                    atomic_1lp.fetch_add(local_1lp, std::memory_order_relaxed);
+                    atomic_2lp.fetch_add(local_2lp, std::memory_order_relaxed);
 
                     {
                         std::lock_guard<std::mutex> lock(relations_mutex);
@@ -1175,7 +1367,7 @@ inline std::optional<SIQSResult> factor(
     }
 
     // Merge partials
-    auto relations = merge_partials(all_relations, fb_size);
+    auto relations = merge_partials(all_relations, fb_size, verbose);
 
     if (verbose) {
         fprintf(stderr, "[SIQS] After merge: %zu usable relations (target=%zu, %.3fs)\n",
