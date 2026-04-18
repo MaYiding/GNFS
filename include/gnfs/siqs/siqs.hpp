@@ -1051,30 +1051,24 @@ inline std::optional<SIQSResult> factor(
     // Target: enough usable relations to exceed FB size
     size_t target_usable = fb_size + 50;
 
-    // Sieve loop — collect until estimated usable exceeds target
-    // Estimate: merge rate ~10-20% of partials. So total needed ≈ target * 5
     std::vector<SIQSRelation> all_relations;
     all_relations.reserve(target_usable * 10);
     std::mutex relations_mutex;
 
+    // Use atomic counters to avoid expensive estimate_usable under mutex
+    std::atomic<size_t> atomic_full{0};
+    std::atomic<size_t> atomic_partial{0};
+
     size_t num_polys = 0;
     std::mt19937 rng(42);
 
-    auto estimate_usable = [&]() -> size_t {
-        size_t full = 0, partial = 0;
-        std::unordered_map<uint64_t, size_t> lp_count;
-        for (const auto& r : all_relations) {
-            if (r.large_prime == 0) full++;
-            else {
-                partial++;
-                lp_count[r.large_prime]++;
-            }
-        }
-        size_t merged = 0;
-        for (auto& [lp, cnt] : lp_count) {
-            merged += cnt / 2; // pairs
-        }
-        return full + merged;
+    // Rough estimate: usable ≈ full + partial * merge_rate
+    // Actual merge rate is ~1.5-3% for 1LP (birthday collision)
+    // Use conservative partial/50 to avoid stopping too early
+    auto quick_estimate = [&]() -> size_t {
+        size_t f = atomic_full.load(std::memory_order_relaxed);
+        size_t p = atomic_partial.load(std::memory_order_relaxed);
+        return f + p / 30;
     };
 
     // Multi-threaded sieve: each thread processes its own A values
@@ -1109,17 +1103,28 @@ inline std::optional<SIQSResult> factor(
 
                 size_t polys_done = atomic_polys.fetch_add(1, std::memory_order_relaxed) + 1;
 
-                // Periodically flush local relations to shared pool
-                if (local_relations.size() > 200 || polys_done % 100 == 0) {
-                    std::lock_guard<std::mutex> lock(relations_mutex);
-                    for (auto& r : local_relations)
-                        all_relations.push_back(std::move(r));
+                // Count relations locally (for atomic updates)
+                size_t local_full = 0, local_part = 0;
+                for (const auto& r : local_relations) {
+                    if (r.large_prime == 0) local_full++;
+                    else local_part++;
+                }
+
+                // Flush every 500 relations or 200 polys (reduce mutex contention)
+                if (local_relations.size() > 500 || polys_done % 200 == 0) {
+                    atomic_full.fetch_add(local_full, std::memory_order_relaxed);
+                    atomic_partial.fetch_add(local_part, std::memory_order_relaxed);
+
+                    {
+                        std::lock_guard<std::mutex> lock(relations_mutex);
+                        for (auto& r : local_relations)
+                            all_relations.push_back(std::move(r));
+                    }
                     local_relations.clear();
 
-                    // Check if enough
-                    if (polys_done % 200 == 0) {
-                        size_t est = estimate_usable();
-                        if (est >= target_usable) {
+                    // Quick estimate without mutex
+                    if (polys_done % 400 == 0) {
+                        if (quick_estimate() >= target_usable) {
                             enough.store(true, std::memory_order_relaxed);
                             break;
                         }
