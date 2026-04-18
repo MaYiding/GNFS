@@ -505,6 +505,15 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
             xor_with_mul_par(*V_next, *V_cur, coeff.rows, ctx.pool);
         }
 
+        // Montgomery (1995) eq. 7: C_i = D_i·A_i + I_{S_i}
+        // The +I_{S_i} term is the identity restricted to mask_cur columns.
+        // Since V_cur is already masked (line 480), V_cur·I_{S_i} = V_cur.
+        // This correction maintains Lanczos orthogonality when rank-deficient
+        // blocks cause some columns to be dropped.
+        for (size_t i = 0; i < m; ++i) {
+            V_next->data[i] ^= V_cur->data[i];
+        }
+
         if (iter >= 1) {
             auto DE = D_prev.multiply(E_cur);
             xor_with_mul_par(*V_next, *V_prev, DE.rows, ctx.pool);
