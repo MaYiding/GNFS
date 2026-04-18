@@ -834,8 +834,10 @@ inline std::vector<std::vector<size_t>> solve_matrix(
 // Factor extraction: X^2 ≡ Y^2 (mod N) → gcd(X-Y, N)
 // ================================================================
 
+/// @param mod_N: modulus for X,Y computation (kN or N)
+/// @param gcd_N: target for GCD (always original N)
 inline std::optional<std::pair<Integer, Integer>> try_extract(
-    const Integer& N,
+    const Integer& mod_N, const Integer& gcd_N,
     const std::vector<SIQSRelation>& relations,
     const std::vector<size_t>& dep,
     const std::vector<FBPrime>& fb)
@@ -852,23 +854,23 @@ inline std::optional<std::pair<Integer, Integer>> try_extract(
         if (total_exp[i] & 1) return std::nullopt; // parity error → skip
     }
 
-    // Compute X = product of value_i mod N
+    // Compute X = product of value_i mod mod_N
     Integer X(1);
     for (size_t idx : dep) {
         mpz_mul(X.get_mpz(), X.get_mpz(), relations[idx].value.get_mpz());
-        mpz_mod(X.get_mpz(), X.get_mpz(), N.get_mpz());
+        mpz_mod(X.get_mpz(), X.get_mpz(), mod_N.get_mpz());
     }
 
-    // Compute Y = product of p_i^{exp/2} * LP_products mod N
+    // Compute Y = product of p_i^{exp/2} * LP_products mod mod_N
     Integer Y(1);
     for (size_t i = 1; i < fb.size(); i++) {
         uint32_t half_exp = total_exp[i] / 2;
         if (half_exp > 0) {
             Integer pe;
             mpz_set_ui(pe.get_mpz(), fb[i].p);
-            mpz_powm_ui(pe.get_mpz(), pe.get_mpz(), half_exp, N.get_mpz());
+            mpz_powm_ui(pe.get_mpz(), pe.get_mpz(), half_exp, mod_N.get_mpz());
             mpz_mul(Y.get_mpz(), Y.get_mpz(), pe.get_mpz());
-            mpz_mod(Y.get_mpz(), Y.get_mpz(), N.get_mpz());
+            mpz_mod(Y.get_mpz(), Y.get_mpz(), mod_N.get_mpz());
         }
     }
 
@@ -877,35 +879,35 @@ inline std::optional<std::pair<Integer, Integer>> try_extract(
         for (uint64_t lp : relations[idx].merge_lps) {
             Integer lp_int(lp);
             mpz_mul(Y.get_mpz(), Y.get_mpz(), lp_int.get_mpz());
-            mpz_mod(Y.get_mpz(), Y.get_mpz(), N.get_mpz());
+            mpz_mod(Y.get_mpz(), Y.get_mpz(), mod_N.get_mpz());
         }
     }
 
-    // Try gcd(X - Y, N) and gcd(X + Y, N)
+    // GCD against gcd_N (original N, not kN) to find factors
     Integer diff;
     mpz_sub(diff.get_mpz(), X.get_mpz(), Y.get_mpz());
-    Integer g = core::gcd(diff, N);
-    if (g > Integer(1) && g < N) {
-        return std::make_pair(g.clone(), N / g);
+    Integer g = core::gcd(diff, gcd_N);
+    if (g > Integer(1) && g < gcd_N) {
+        return std::make_pair(g.clone(), gcd_N / g);
     }
     mpz_add(diff.get_mpz(), X.get_mpz(), Y.get_mpz());
-    g = core::gcd(diff, N);
-    if (g > Integer(1) && g < N) {
-        return std::make_pair(g.clone(), N / g);
+    g = core::gcd(diff, gcd_N);
+    if (g > Integer(1) && g < gcd_N) {
+        return std::make_pair(g.clone(), gcd_N / g);
     }
     return std::nullopt;
 }
 
 /// Try random XOR combinations of dependency vectors to increase success probability
 inline std::optional<std::pair<Integer, Integer>> try_extract_with_combos(
-    const Integer& N,
+    const Integer& mod_N, const Integer& gcd_N,
     const std::vector<SIQSRelation>& relations,
     const std::vector<std::vector<size_t>>& deps,
     const std::vector<FBPrime>& fb)
 {
     // First try each dependency individually
     for (const auto& dep : deps) {
-        auto result = try_extract(N, relations, dep, fb);
+        auto result = try_extract(mod_N, gcd_N, relations, dep, fb);
         if (result) return result;
     }
 
@@ -929,7 +931,7 @@ inline std::optional<std::pair<Integer, Integer>> try_extract_with_combos(
         }
         if (combined.empty()) continue;
 
-        auto result = try_extract(N, relations, combined, fb);
+        auto result = try_extract(mod_N, gcd_N, relations, combined, fb);
         if (result) return result;
     }
 
@@ -1157,50 +1159,26 @@ inline std::optional<SIQSResult> factor(
                 deps.size(), elapsed());
     }
 
-    // Try dependencies — GCD against kN, then extract factor of original N
-    auto result = try_extract_with_combos(kN, relations, deps, fb);
+    // Try dependencies — use ORIGINAL N for GCD (not kN)
+    // Since kN | (X²-Y²), we have N | (X²-Y²), so gcd(X-Y, N) works directly.
+    // Compute X,Y mod kN (for correct arithmetic), but gcd against N.
+    auto result = try_extract_with_combos(kN, N, relations, deps, fb);
     if (result) {
-        // result gives factors of kN. Extract factor of original N.
-        Integer f1 = result->first;
-        Integer f2 = result->second;
+        SIQSResult sr;
+        sr.factor1 = std::move(result->first);
+        sr.factor2 = std::move(result->second);
+        sr.time_seconds = elapsed();
+        sr.relations_found = relations.size();
+        sr.polynomials_used = num_polys;
 
-        // If k > 1, one factor might be k*p and the other q, or both might contain k
-        // Use gcd with N to get the actual factor of N
-        Integer g1 = core::gcd(f1, N);
-        Integer g2 = core::gcd(f2, N);
-
-        Integer actual_f1, actual_f2;
-        if (g1 > Integer(1) && g1 < N) {
-            actual_f1 = g1.clone();
-            actual_f2 = N / g1;
-        } else if (g2 > Integer(1) && g2 < N) {
-            actual_f1 = g2.clone();
-            actual_f2 = N / g2;
-        } else {
-            // Try gcd(X-Y, N) directly
-            // The factors of kN might not directly give N's factors
-            // Fall through to next dependency
-            goto try_more;
+        if (verbose) {
+            fprintf(stderr, "[SIQS] SUCCESS: %s * %s (%.3fs, %zu polys)\n",
+                    sr.factor1.to_string().c_str(),
+                    sr.factor2.to_string().c_str(),
+                    sr.time_seconds, num_polys);
         }
-
-        {
-            SIQSResult sr;
-            sr.factor1 = std::move(actual_f1);
-            sr.factor2 = std::move(actual_f2);
-            sr.time_seconds = elapsed();
-            sr.relations_found = relations.size();
-            sr.polynomials_used = num_polys;
-
-            if (verbose) {
-                fprintf(stderr, "[SIQS] SUCCESS: %s * %s (%.3fs, %zu polys)\n",
-                        sr.factor1.to_string().c_str(),
-                        sr.factor2.to_string().c_str(),
-                        sr.time_seconds, num_polys);
-            }
-            return sr;
-        }
+        return sr;
     }
-    try_more:
 
     if (verbose) {
         fprintf(stderr, "[SIQS] All dependencies + combos failed\n");
