@@ -496,6 +496,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_siqs PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SIQS COMMAND test_siqs)
 
+    # GNFS 流水线基准测试 (20-35 digit)
+    add_executable(test_gnfs_bench
+        tests/test_gnfs_bench.cpp
+    )
+    target_link_libraries(test_gnfs_bench PRIVATE gnfs_core Threads::Threads)
+    # 不加入 ctest — 手动运行: ./test_gnfs_bench
+
     # 压力测试 (50/80/100-digit)
     add_executable(test_stress
         tests/test_stress.cpp

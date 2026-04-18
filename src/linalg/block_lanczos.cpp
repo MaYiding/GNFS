@@ -4,6 +4,7 @@
 #include <array>
 #include <random>
 #include <cstring>
+#include <iomanip>
 #include <thread>
 
 namespace gnfs::linalg {
@@ -453,94 +454,131 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
     BlockVector temp_n(n);
     BlockVector BV_cur(m);
 
-    // B * Y = M * (M^T * Y)
-    spmv_transpose_par(csr, Y, temp_n, ctx);
-    spmv_forward_par(csr, temp_n, *V_cur, ctx.pool);
+    // Start with V_cur = Y (the random vector itself, NOT B*Y)
+    // msieve: v[0] = random. The BL recurrence will apply B in step 2.
+    // Starting with B*Y loses one Krylov step and corrupts accumulation.
+    std::copy(Y.data.begin(), Y.data.end(), V_cur->data.begin());
 
-    // 64x64 matrices for recurrence
+    // ====================================================================
+    // Montgomery Block Lanczos — msieve-verified implementation
+    // Reference: msieve common/lanczos/lanczos.c (Jason Papadopoulos)
+    // ====================================================================
+
+    // Rotating state: keep previous A-Gram and B²-Gram for corrections
     DenseGF2_64x64 D_prev, D_pprev;
+    DenseGF2_64x64 vt_a_v_prev;   // previous V^T*B*V
+    DenseGF2_64x64 vt_a2_v_prev;  // previous V^T*B²*V
+    uint64_t mask_prev = UINT64_MAX;
 
     size_t actual_iter = 0;
     for (size_t iter = 0; iter < max_iter; ++iter) {
         actual_iter = iter;
 
-        // Step 1: Inner product A_i = V_cur^T * V_cur (Gram matrix)
-        auto A_cur = inner_product_par(*V_cur, *V_cur, ctx);
-
-        // Step 2: Termination check
+        // Step 1: Termination check — all zero means Krylov sequence exhausted
         if (V_cur->is_zero()) break;
 
-        // Step 3: Partial inverse of A_i → D_cur, mask_cur
-        auto [D_cur, mask_cur] = A_cur.partial_inverse();
-        if (mask_cur == 0) break;  // All 64 block columns exhausted
-
-        // Step 3b: Project V_cur by selection mask S_i (Montgomery §3)
-        // Zero non-invertible columns to prevent garbage propagation
-        // through the Krylov recurrence.
-        for (size_t i = 0; i < m; ++i) {
-            V_cur->data[i] &= mask_cur;
-        }
-
-        // Step 4: Compute B * V_cur = M * (M^T * V_cur) on masked V
+        // Step 2: Compute BV = B * V_cur = M * (M^T * V_cur)
+        // IMPORTANT: use UNMASKED V_cur (msieve approach)
         spmv_transpose_par(csr, *V_cur, temp_n, ctx);
         spmv_forward_par(csr, temp_n, BV_cur, ctx.pool);
 
-        // Step 5: Recurrence coefficients (Montgomery 1995 three-term)
-        // V_{i+1} = B*W_i + W_i*C_i + W_{i-1}*D_i + W_{i-2}*F_i
-        // where W_i = V_i * S_i (masked by partial inverse selection).
-        //
-        // The W_{i-2} (V_pprev) term is standard Montgomery Block Lanczos:
-        // it corrects for orthogonality loss when columns are dropped by S_i.
-        // F_cur = 0 when V_prev has full rank (all 64 columns active), but
-        // is non-zero when rank-deficient — confirmed by CADO-NFS and msieve.
-        auto VtBV = inner_product_par(*V_cur, BV_cur, ctx);
-        auto E_cur = inner_product_par(*V_prev, BV_cur, ctx);
-        auto F_cur = inner_product_par(*V_pprev, BV_cur, ctx);
+        // Step 3: A-Gram and B²-Gram matrices (BEFORE masking)
+        //   vt_a_v  = V^T * B * V   (A-inner product)
+        //   vt_a2_v = (BV)^T * (BV) = V^T * B² * V
+        auto vt_a_v = inner_product_par(*V_cur, BV_cur, ctx);
+        auto vt_a2_v = inner_product_par(BV_cur, BV_cur, ctx);
 
-        // Step 6: V_next = BV ⊕ V_cur * D * VtBV ⊕ V_prev * D_prev * E ⊕ V_pprev * D_pprev * F
-        // In GF(2), subtraction = addition (XOR).
-        std::copy(BV_cur.data.begin(), BV_cur.data.end(), V_next->data.begin());
-
+        // Check for zero A-Gram (all columns exhausted)
         {
-            auto coeff = D_cur.multiply(VtBV);
-            xor_with_mul_par(*V_next, *V_cur, coeff.rows, ctx.pool);
+            bool all_zero = true;
+            for (int i = 0; i < 64 && all_zero; ++i)
+                if (vt_a_v.rows[i] != 0) all_zero = false;
+            if (all_zero) break;
         }
 
-        // Montgomery (1995) eq. 7: C_i = D_i·A_i + I_{S_i}
-        // The +I_{S_i} term is the identity restricted to mask_cur columns.
-        // Since V_cur is already masked (line 480), V_cur·I_{S_i} = V_cur.
-        // This correction maintains Lanczos orthogonality when rank-deficient
-        // blocks cause some columns to be dropped.
+        // Step 4: Partial inverse of A-Gram → D_cur, mask_cur
+        auto [D_cur, mask_cur] = vt_a_v.partial_inverse();
+        if (mask_cur == 0) break;
+
+        // Step 5: Mask BV_cur (the OUTPUT vector, not V_cur)
         for (size_t i = 0; i < m; ++i) {
-            V_next->data[i] ^= V_cur->data[i];
+            BV_cur.data[i] &= mask_cur;
         }
 
+        // Step 6: C coefficient — self-correction for A-orthogonality
+        // msieve: d = D * (masked(vt_a2_v) ^ vt_a_v) ^ I
+        // This ensures V_cur^T * B * V_next = 0.
+        //
+        // Derivation: we need V^T*B*Vnext = 0 where Vnext = masked(BV) + V*C + ...
+        //   V^T*B*(masked(BV) + V*C) = masked(V^T*B²*V) + (V^T*B*V)*C = 0
+        //   => A * C = -masked(A2)  (in GF(2), minus = plus)
+        //   => C = D * masked(A2)
+        //   msieve additionally adds the I^S correction for non-invertible subspace
+        {
+            DenseGF2_64x64 d;
+            for (int i = 0; i < 64; ++i)
+                d.rows[i] = (vt_a2_v.rows[i] & mask_cur) ^ vt_a_v.rows[i];
+            d = D_cur.multiply(d);
+            for (int i = 0; i < 64; ++i)
+                d.rows[i] ^= (1ULL << i);  // XOR with identity
+            xor_with_mul_par(BV_cur, *V_cur, d.rows, ctx.pool);
+            // Note: BV_cur now serves as V_next accumulator
+        }
+
+        // Step 7: E correction — orthogonality w.r.t. V_{i-1}
+        // msieve: E = (D_prev * vt_a_v_cur) & mask_cur
+        // Note: uses current A-Gram (NOT cross product V_prev^T * BV_cur)
         if (iter >= 1) {
-            auto DE = D_prev.multiply(E_cur);
-            xor_with_mul_par(*V_next, *V_prev, DE.rows, ctx.pool);
+            auto e = D_prev.multiply(vt_a_v);
+            for (int i = 0; i < 64; ++i)
+                e.rows[i] &= mask_cur;
+            xor_with_mul_par(BV_cur, *V_prev, e.rows, ctx.pool);
         }
 
-        if (iter >= 2) {
-            auto DF = D_pprev.multiply(F_cur);
-            xor_with_mul_par(*V_next, *V_pprev, DF.rows, ctx.pool);
+        // Step 8: F correction — needed when previous mask dropped columns
+        // msieve: f = D_pprev * (vt_a_v_prev * D_prev ^ I)
+        //             * ((masked_prev(vt_a2_v_prev) ^ vt_a_v_prev) & mask_cur)
+        if (iter >= 2 && mask_prev != UINT64_MAX) {
+            // f = vt_a_v_prev * D_prev
+            auto f = vt_a_v_prev.multiply(D_prev);
+            // f = f ^ I
+            for (int i = 0; i < 64; ++i)
+                f.rows[i] ^= (1ULL << i);
+            // f = D_pprev * f
+            f = D_pprev.multiply(f);
+            // f2 = (masked_prev(vt_a2_v_prev) ^ vt_a_v_prev) & mask_cur
+            DenseGF2_64x64 f2;
+            for (int i = 0; i < 64; ++i)
+                f2.rows[i] = ((vt_a2_v_prev.rows[i] & mask_prev) ^
+                              vt_a_v_prev.rows[i]) & mask_cur;
+            // f = f * f2
+            f = f.multiply(f2);
+            xor_with_mul_par(BV_cur, *V_pprev, f.rows, ctx.pool);
         }
 
-        // Step 7: Accumulate solution S += V_cur * D_cur * (V_cur^T * Y)
+        // Step 9: Accumulate solution S += V_cur * D * (V_cur^T * Y)
+        // Uses UNMASKED V_cur (before V_cur is rotated away)
         {
             auto VtY = inner_product_par(*V_cur, Y, ctx);
             auto DVtY = D_cur.multiply(VtY);
             xor_with_mul_par(S, *V_cur, DVtY.rows, ctx.pool);
         }
 
-        // Step 8: Rotate pointers — zero allocation, zero copy
+        // Step 10: Copy V_next from BV_cur accumulator
+        std::copy(BV_cur.data.begin(), BV_cur.data.end(), V_next->data.begin());
+
+        // Step 11: Rotate pointers and state
         BlockVector* tmp = V_pprev;
         V_pprev = V_prev;
         V_prev = V_cur;
         V_cur = V_next;
-        V_next = tmp;  // reuse old V_pprev's buffer
+        V_next = tmp;
 
         D_pprev = D_prev;
         D_prev = D_cur;
+        vt_a_v_prev = vt_a_v;
+        vt_a2_v_prev = vt_a2_v;
+        mask_prev = mask_cur;
     }
 
     // Step 9: Extract and verify dependencies
@@ -573,16 +611,27 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
             ++valid_cols;
         } else {
             ++invalid_cols;
+            // Detailed error diagnostics (first seed only)
+            if (seed_idx == 0 && invalid_cols <= 3) {
+                std::cerr << "[BL-diag] dep#" << j
+                          << " pop=" << popcount
+                          << " err=" << err_count << "/" << n
+                          << " (" << std::fixed << std::setprecision(1)
+                          << (100.0 * err_count / n) << "%)\n";
+            }
         }
     }
 
     if (dependencies.empty()) {
+        // Check termination reason
+        bool v_zero = V_cur->is_zero();
         std::cerr << "[BL-diag] seed=" << seeds[seed_idx]
-                  << " actual_iter=" << actual_iter << "/" << max_iter
+                  << " iter=" << actual_iter << "/" << max_iter
                   << " zero=" << zero_cols
                   << " nonzero=" << nonzero_cols
                   << " valid=" << valid_cols
-                  << " invalid=" << invalid_cols << "\n";
+                  << " invalid=" << invalid_cols
+                  << " v_zero=" << v_zero << "\n";
     }
 
     if (!dependencies.empty()) {
