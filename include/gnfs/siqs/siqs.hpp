@@ -257,6 +257,12 @@ struct SIQSPoly {
 
     // A^{-1} mod p for each FB prime (precomputed for self-init)
     std::vector<uint32_t> a_inv_mod_p;
+
+    // Precomputed: B_parts[i] mod p for each (i, FB prime)
+    // Layout: bp_mod_p[i * fb_size + j] = B_parts[i] mod fb[j].p
+    // This avoids expensive GMP division in next_poly_B
+    std::vector<uint32_t> bp_mod_p;
+    size_t bp_fb_size = 0;  // fb.size() at time of precomputation
 };
 
 /// Choose A = product of num_factors primes from factor base
@@ -420,6 +426,18 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb,
 
         poly.solns[i] = {s1, s2};
     }
+
+    // Precompute B_parts[i] mod p for all (i, FB prime) pairs
+    // This avoids expensive mpz_fdiv_ui calls in next_poly_B
+    poly.bp_fb_size = fb.size();
+    poly.bp_mod_p.resize(s * fb.size());
+    for (size_t i = 0; i < s; i++) {
+        for (size_t j = 1; j < fb.size(); j++) {
+            uint32_t p = fb[j].p;
+            poly.bp_mod_p[i * fb.size() + j] =
+                static_cast<uint32_t>(mpz_fdiv_ui(poly.B_parts[i].get_mpz(), p));
+        }
+    }
 }
 
 /// Self-initialization: switch to next B value using Gray code
@@ -444,9 +462,8 @@ inline void next_poly_B(const std::vector<FBPrime>& fb,
 
         uint32_t p = fb[i].p;
 
-        // Delta = 2 * B_part * A^{-1} mod p
-        uint32_t bp_mod = static_cast<uint32_t>(
-            mpz_fdiv_ui(poly.B_parts[gray_bit].get_mpz(), p));
+        // Delta = 2 * B_part * A^{-1} mod p (using precomputed B_parts mod p)
+        uint32_t bp_mod = poly.bp_mod_p[gray_bit * poly.bp_fb_size + i];
         uint32_t delta = mod_mul32(mod_mul32(2, bp_mod, p), ainv, p);
 
         if (add) {
