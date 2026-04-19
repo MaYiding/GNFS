@@ -197,7 +197,7 @@ struct GNFSParams {
         } else if (p.digits <= 50) {
             sieve_width = 4096;   sieve_height = 2048;   // I=12, 8M positions
         } else if (p.digits <= 65) {
-            sieve_width = 8192;   sieve_height = 4096;   // I=13, 32M positions
+            sieve_width = 4096;   sieve_height = 2048;   // I=12, 8M positions (faster per-SQ)
         } else if (p.digits <= 80) {
             sieve_width = 16384;  sieve_height = 8192;   // I=14, 134M positions
         } else {
@@ -330,11 +330,10 @@ struct GNFSParams {
     [[nodiscard]] size_t raw_relation_target(size_t matrix_columns) const {
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
             double mc = static_cast<double>(matrix_columns);
-            // Start with mc × 3.0 — conservative but enough for first adaptive round.
+            // Start with mc × 1.5 — aggressive initial target for fast first merge attempt.
             // The adaptive sieve-filter-merge loop doubles each round until enough.
-            // For LP-heavy factorizations (30+ digit), typical survival rate is 5-30%,
-            // so several adaptive rounds are expected.
-            return static_cast<size_t>(mc * 3.0);
+            // Lower initial target gets merge rate feedback faster.
+            return static_cast<size_t>(mc * 1.5);
         }
         return matrix_columns;
     }
