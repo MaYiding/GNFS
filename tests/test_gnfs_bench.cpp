@@ -209,60 +209,41 @@ BenchResult factor_gnfs(const Integer& n) {
             }
             if (sq_batch.empty()) break;
 
-            // Parallel sieve all SQs in this batch
-            auto sieve_results = sieve.sieve_parallel(sq_batch, n_threads);
-
-            // Gather all candidates from all SQs
-            std::vector<SieveCandidate> all_cands;
-            for (auto& sr : sieve_results) {
-                all_cands.insert(all_cands.end(),
-                    std::make_move_iterator(sr.candidates.begin()),
-                    std::make_move_iterator(sr.candidates.end()));
-            }
-
-            // Parallel cofactorization over merged candidate list
+            // Parallel sieve + cofactorize: each thread handles one SQ
+            // (sieve → cofac with SQ pre-division for correct & faster results)
             {
-                size_t n_cands = all_cands.size();
-                size_t cofac_threads = (n_cands < 1000) ? 1 : n_threads;
+                std::vector<std::vector<Relation>> batch_relations(sq_batch.size());
+                std::atomic<size_t> next_sq{0};
 
-                std::vector<std::vector<Relation>> thread_results(cofac_threads);
-                std::atomic<size_t> global_found{collector.size()};
-                std::atomic<size_t> next_chunk{0};
-                constexpr size_t CHUNK_SIZE = 256;
-
-                auto worker = [&](size_t tid) {
+                auto worker = [&](size_t /*tid*/) {
+                    LatticeSieve local_sieve(ctx, fb, sieve_params);
+                    local_sieve.set_region(sieve_region);
                     Cofactorizer local_cofac(ctx, fb, cofac_config);
-                    auto& local_rels = thread_results[tid];
-                    local_rels.reserve(n_cands / (cofac_threads * 4));
 
                     while (true) {
-                        size_t start = next_chunk.fetch_add(CHUNK_SIZE, std::memory_order_relaxed);
-                        if (start >= n_cands) break;
-                        if (global_found.load(std::memory_order_relaxed) >= batch_target) break;
+                        size_t idx = next_sq.fetch_add(1, std::memory_order_relaxed);
+                        if (idx >= sq_batch.size()) break;
 
-                        size_t end = std::min(start + CHUNK_SIZE, n_cands);
-                        for (size_t ci = start; ci < end; ++ci) {
-                            auto rel = local_cofac.verify(all_cands[ci]);
-                            if (rel) {
-                                local_rels.push_back(std::move(*rel));
-                                global_found.fetch_add(1, std::memory_order_relaxed);
-                            }
+                        auto sr = local_sieve.sieve_special_q(sq_batch[idx]);
+
+                        auto& local_rels = batch_relations[idx];
+                        for (const auto& cand : sr.candidates) {
+                            auto rel = local_cofac.verify(cand,
+                                sq_batch[idx].q, sq_batch[idx].r);
+                            if (rel) local_rels.push_back(std::move(*rel));
                         }
                     }
                 };
 
-                if (cofac_threads <= 1) {
-                    worker(0);
-                } else {
-                    std::vector<std::thread> threads;
-                    threads.reserve(cofac_threads);
-                    for (size_t t = 0; t < cofac_threads; ++t)
-                        threads.emplace_back(worker, t);
-                    for (auto& t : threads) t.join();
-                }
+                std::vector<std::thread> threads;
+                size_t actual_threads = std::min(n_threads, sq_batch.size());
+                threads.reserve(actual_threads);
+                for (size_t t = 0; t < actual_threads; ++t)
+                    threads.emplace_back(worker, t);
+                for (auto& t : threads) t.join();
 
-                for (auto& tr : thread_results)
-                    for (auto& rel : tr)
+                for (auto& rels : batch_relations)
+                    for (auto& rel : rels)
                         collector.add(std::move(rel));
             }
             result.sq_count += sq_batch.size();
