@@ -139,11 +139,13 @@ struct GNFSParams {
             // Solution: use 34d-level FB with slightly higher LP.
             B_rat = 50000;    B_alg = 100000;    lp_bits = 22;
         } else if (p.digits <= 45) {
-            B_rat = 100000;   B_alg = 200000;    lp_bits = 23;
+            // Session 78: keep matrix manageable for our merge efficiency (~3%)
+            // Matrix ≈ 18K cols with 60K/120K → needs ~600K raw → feasible
+            B_rat = 60000;    B_alg = 120000;    lp_bits = 22;
         } else if (p.digits <= 50) {
-            B_rat = 150000;   B_alg = 300000;    lp_bits = 24;
+            B_rat = 80000;    B_alg = 160000;    lp_bits = 23;
         } else if (p.digits <= 55) {
-            B_rat = 200000;   B_alg = 400000;    lp_bits = 24;
+            B_rat = 100000;   B_alg = 200000;    lp_bits = 23;
         } else if (p.digits <= 60) {
             B_rat = 400000;   B_alg = 800000;    lp_bits = 26;  // CADO C60
         } else if (p.digits <= 65) {
