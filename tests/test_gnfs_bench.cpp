@@ -193,22 +193,39 @@ BenchResult factor_gnfs(const Integer& n) {
     bool lp_enabled = params.large_prime_bound > params.algebraic_bound;
     constexpr int MAX_ROUNDS = 10;
 
+    size_t n_threads = std::thread::hardware_concurrency();
+    if (n_threads == 0) n_threads = 4;
+    constexpr size_t SQ_BATCH = 12;  // Batch-parallel sieve
+
     for (int round = 0; round < MAX_ROUNDS; ++round) {
         while (sq_gen.has_next() && collector.size() < batch_target && result.sq_count < params.max_special_q) {
-            auto sq = sq_gen.next();
-            if (!sq) break;
+            // Collect a batch of SQs
+            std::vector<SpecialQ> sq_batch;
+            sq_batch.reserve(SQ_BATCH);
+            for (size_t b = 0; b < SQ_BATCH && sq_gen.has_next(); ++b) {
+                auto sq = sq_gen.next();
+                if (!sq) break;
+                sq_batch.push_back(*sq);
+            }
+            if (sq_batch.empty()) break;
 
-            auto sr = sieve.sieve_special_q(*sq);
+            // Parallel sieve all SQs in this batch
+            auto sieve_results = sieve.sieve_parallel(sq_batch, n_threads);
 
-            // Parallel cofactorization
+            // Gather all candidates from all SQs
+            std::vector<SieveCandidate> all_cands;
+            for (auto& sr : sieve_results) {
+                all_cands.insert(all_cands.end(),
+                    std::make_move_iterator(sr.candidates.begin()),
+                    std::make_move_iterator(sr.candidates.end()));
+            }
+
+            // Parallel cofactorization over merged candidate list
             {
-                const auto& cands = sr.candidates;
-                size_t n_cands = cands.size();
-                size_t n_threads = std::thread::hardware_concurrency();
-                if (n_threads == 0) n_threads = 4;
-                if (n_cands < 1000) n_threads = 1;
+                size_t n_cands = all_cands.size();
+                size_t cofac_threads = (n_cands < 1000) ? 1 : n_threads;
 
-                std::vector<std::vector<Relation>> thread_results(n_threads);
+                std::vector<std::vector<Relation>> thread_results(cofac_threads);
                 std::atomic<size_t> global_found{collector.size()};
                 std::atomic<size_t> next_chunk{0};
                 constexpr size_t CHUNK_SIZE = 256;
@@ -216,7 +233,7 @@ BenchResult factor_gnfs(const Integer& n) {
                 auto worker = [&](size_t tid) {
                     Cofactorizer local_cofac(ctx, fb, cofac_config);
                     auto& local_rels = thread_results[tid];
-                    local_rels.reserve(n_cands / (n_threads * 4));
+                    local_rels.reserve(n_cands / (cofac_threads * 4));
 
                     while (true) {
                         size_t start = next_chunk.fetch_add(CHUNK_SIZE, std::memory_order_relaxed);
@@ -225,7 +242,7 @@ BenchResult factor_gnfs(const Integer& n) {
 
                         size_t end = std::min(start + CHUNK_SIZE, n_cands);
                         for (size_t ci = start; ci < end; ++ci) {
-                            auto rel = local_cofac.verify(cands[ci]);
+                            auto rel = local_cofac.verify(all_cands[ci]);
                             if (rel) {
                                 local_rels.push_back(std::move(*rel));
                                 global_found.fetch_add(1, std::memory_order_relaxed);
@@ -234,12 +251,12 @@ BenchResult factor_gnfs(const Integer& n) {
                     }
                 };
 
-                if (n_threads <= 1) {
+                if (cofac_threads <= 1) {
                     worker(0);
                 } else {
                     std::vector<std::thread> threads;
-                    threads.reserve(n_threads);
-                    for (size_t t = 0; t < n_threads; ++t)
+                    threads.reserve(cofac_threads);
+                    for (size_t t = 0; t < cofac_threads; ++t)
                         threads.emplace_back(worker, t);
                     for (auto& t : threads) t.join();
                 }
@@ -248,14 +265,20 @@ BenchResult factor_gnfs(const Integer& n) {
                     for (auto& rel : tr)
                         collector.add(std::move(rel));
             }
-            ++result.sq_count;
+            result.sq_count += sq_batch.size();
 
-            if (result.sq_count % 100 == 0) {
+            if (result.sq_count % 10 < SQ_BATCH || result.sq_count <= SQ_BATCH) {
+                double rate = (phase.sec() > 0) ?
+                    static_cast<double>(collector.size()) / phase.sec() : 0;
+                double eta_s = (rate > 0) ?
+                    static_cast<double>(batch_target - collector.size()) / rate : 0;
                 std::cout << "    SQ #" << result.sq_count
                           << ": rels=" << collector.size() << "/" << batch_target
                           << " (" << std::setprecision(1)
                           << (100.0 * collector.size() / batch_target) << "%)"
                           << " elapsed=" << std::setprecision(1) << phase.sec() << "s"
+                          << " rate=" << std::setprecision(0) << rate << "/s"
+                          << " eta=" << std::setprecision(0) << eta_s << "s"
                           << "\n" << std::flush;
             }
         }
