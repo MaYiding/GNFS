@@ -609,8 +609,9 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
     linalg::BlockLanczos bl_solver;
     auto dependencies = bl_solver.find_dependencies(sge_result.reduced_matrix);
 
-    // If BL fails, try Block Wiedemann (better for large sparse matrices)
-    if (dependencies.empty() && sge_result.reduced_matrix.num_rows() > 5000) {
+    // If BL/Gaussian didn't find deps, use streaming Block Wiedemann.
+    // BW works for any matrix size with O(m) memory.
+    if (dependencies.empty()) {
         emit_log(LogLevel::Warn, Phase::LinearAlgebra,
                  "Block Lanczos returned 0 deps, trying Block Wiedemann");
         emit_progress(Phase::LinearAlgebra, "Block Wiedemann (fallback)");

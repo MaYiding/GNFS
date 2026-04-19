@@ -395,27 +395,20 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies(
     }
     effective_max = std::min(effective_max, static_cast<size_t>(64));
 
-    // Use packed Gaussian for matrices that fit in memory (~150K rows at 8 GB).
-    // Block Lanczos has a fundamental bug where the Krylov recurrence breaks
-    // A-orthogonality (50% error rate on all dependencies, all seeds).
-    // Root cause not yet identified — multiple fixes attempted:
-    //   - F-correction I_S handling (no effect)
-    //   - Removing BV masking (no effect)
-    //   - Cross A-gram in E correction (untested)
-    // Until BL is fixed, use Gaussian for all feasible matrices.
-    // For matrices beyond 8 GB, try BL then fall back to BW.
-    uint64_t gauss_bytes = static_cast<uint64_t>(matrix.num_rows()) *
-                           ((matrix.num_rows() + matrix.num_cols() + 63) / 64) *
-                           sizeof(uint64_t);
-    constexpr uint64_t GAUSS_THRESHOLD = 8ULL * 1024 * 1024 * 1024; // 8 GB
-    if (gauss_bytes <= GAUSS_THRESHOLD) {
+    // Dispatch strategy (BL is broken — 50% error rate on all deps):
+    //   <20K rows: Gaussian (fast, always correct)
+    //   ≥20K rows: return empty to let caller use Block Wiedemann
+    //              (streaming BW with scalar BM — O(m) memory, any size)
+    //
+    // Gaussian at 20K: ~20K² / 64 × 8 ≈ 50 MB memory, <1 second.
+    // BW at 20K: ~L × 2 × nnz ≈ 312 × 2 × 200K ≈ 125M ops ≈ <1 second.
+    // For >20K, Gaussian time grows as O(n³) vs BW's O(n × nnz).
+    constexpr size_t GAUSS_ROWS_LIMIT = 20000;
+    if (matrix.num_rows() <= GAUSS_ROWS_LIMIT && matrix.num_cols() <= GAUSS_ROWS_LIMIT) {
         return find_dependencies_sparse(matrix, effective_max);
     }
 
-    // Large matrix: try BL, then BW
-    auto bl_deps = block_lanczos_solve(matrix, effective_max);
-    if (!bl_deps.empty()) return bl_deps;
-
+    // Large matrix: return empty to trigger BW fallback in pipeline
     return {};
 }
 
