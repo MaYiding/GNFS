@@ -130,13 +130,16 @@ struct GNFSParams {
         } else if (p.digits <= 35) {
             B_rat = 50000;    B_alg = 100000;    lp_bits = 22;  // CADO C35
         } else if (p.digits <= 40) {
-            B_rat = 100000;   B_alg = 200000;    lp_bits = 23;  // CADO C40
+            // Session 78 calibration: CADO C40 params (100K/200K, lpb=23) produce
+            // too many unique LPs for our merge efficiency (~4.5% vs CADO's ~15%).
+            // Reduced LP: lp_bits=20 → LP=1M, LP range ~60K primes for good collisions.
+            B_rat = 80000;    B_alg = 160000;    lp_bits = 20;
         } else if (p.digits <= 45) {
-            B_rat = 200000;   B_alg = 400000;    lp_bits = 24;  // CADO C45
+            B_rat = 100000;   B_alg = 200000;    lp_bits = 23;
         } else if (p.digits <= 50) {
-            B_rat = 200000;   B_alg = 400000;    lp_bits = 25;  // CADO C50
+            B_rat = 150000;   B_alg = 300000;    lp_bits = 24;
         } else if (p.digits <= 55) {
-            B_rat = 400000;   B_alg = 800000;    lp_bits = 25;  // CADO C55
+            B_rat = 200000;   B_alg = 400000;    lp_bits = 24;
         } else if (p.digits <= 60) {
             B_rat = 400000;   B_alg = 800000;    lp_bits = 26;  // CADO C60
         } else if (p.digits <= 65) {
