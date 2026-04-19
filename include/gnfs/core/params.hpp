@@ -252,9 +252,11 @@ struct GNFSParams {
         // 每个 SQ 平均产出 1-5 个关系（取决于 B/LP），需要足够多的 SQ
         {
             size_t est_rels = p.estimated_relations_needed();
-            // 保守假设每 SQ 平均 1 个关系（小 B 时命中率低），乘 3 安全余量
+            // 保守假设每 SQ 平均 1 个关系（小 B 时命中率低），乘 6 安全余量
+            // Note: est_rels uses raw_relation_target which may be aggressive (1.5×),
+            // so the safety factor here must compensate.
             uint32_t needed_sq = static_cast<uint32_t>(
-                std::min(static_cast<size_t>(UINT32_MAX), est_rels * 3));
+                std::min(static_cast<size_t>(UINT32_MAX), est_rels * 6));
             // 下限：按位数平滑设置
             uint32_t min_sq = (p.digits < 15) ? 2000u :
                               (p.digits < 25) ? 10000u :
