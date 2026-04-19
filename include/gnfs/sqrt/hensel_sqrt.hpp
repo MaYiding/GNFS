@@ -431,9 +431,10 @@ private:
         const Integer& n = nf.n();
         auto t0 = std::chrono::steady_clock::now();
 
-        // Choose K: fewer primes = fewer sign combos, but less oversubscription.
-        // K=2 for d≤3: 2^(K-1)=2 sign combos (sufficient since fixing prime 0 covers ±).
+        // Choose K: fewer primes = fewer sign combos = higher success rate.
+        // K=2 for d≤3: 2^(K-1)=2 sign combos. Fast, reliable.
         // K=3 for d≥4: more CRT redundancy for higher degree.
+        // K>3 causes exponential sign search (2^(K-1)) and lower per-dep success rate.
         const size_t K = (d <= 3) ? 2 : 3;
 
         // Find extra inert primes for retry on lift failure
