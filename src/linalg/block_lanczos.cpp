@@ -1,4 +1,5 @@
 #include "gnfs/linalg/block_lanczos.hpp"
+#include "gnfs/linalg/block_wiedemann.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
 #include <array>
@@ -408,8 +409,9 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies(
         return find_dependencies_sparse(matrix, effective_max);
     }
 
-    // Large matrix: return empty to trigger BW fallback in pipeline
-    return {};
+    // Large matrix: use streaming Block Wiedemann (O(m) memory, any size)
+    BlockWiedemann bw;
+    return bw.find_dependencies(matrix, effective_max);
 }
 
 // ============================================================================
