@@ -130,10 +130,14 @@ struct GNFSParams {
         } else if (p.digits <= 35) {
             B_rat = 50000;    B_alg = 100000;    lp_bits = 22;  // CADO C35
         } else if (p.digits <= 40) {
-            // Session 78 calibration: CADO C40 params (100K/200K, lpb=23) produce
-            // too many unique LPs for our merge efficiency (~4.5% vs CADO's ~15%).
-            // Reduced LP: lp_bits=20 → LP=1M, LP range ~60K primes for good collisions.
-            B_rat = 80000;    B_alg = 160000;    lp_bits = 20;
+            // Session 78: multiple failures at 39d with larger FB.
+            // 100K/200K + lpb=23: failed (29K cols, 19K usable, deps=0)
+            // 80K/160K + lpb=22: failed (24K cols, 16K usable, deps=0)
+            // 80K/160K + lpb=20: failed (24K cols, 16K usable, deps=0)
+            // Root cause: our merge efficiency (33% of birthday bound) requires
+            // smaller matrix for successful dependency extraction.
+            // Solution: use 34d-level FB with slightly higher LP.
+            B_rat = 50000;    B_alg = 100000;    lp_bits = 22;
         } else if (p.digits <= 45) {
             B_rat = 100000;   B_alg = 200000;    lp_bits = 23;
         } else if (p.digits <= 50) {

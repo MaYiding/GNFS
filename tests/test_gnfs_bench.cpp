@@ -297,9 +297,12 @@ BenchResult factor_gnfs(const Integer& n) {
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
         size_t needed_raw = static_cast<size_t>(
             static_cast<double>(matrix_cols * 2) / std::max(merge_rate, 0.001));
+        // Cap: initial_target × 100 — generous for low merge rates (~2-5%).
+        // Session 78 bug: cap of 5× caused adaptive loop to stall at 39d
+        // (227K raw > 225K cap, but needed 450K+ for enough usable).
         batch_target = std::min(
             std::max(batch_target * 2, needed_raw),
-            params.raw_relation_target(matrix_cols) * 5);
+            params.raw_relation_target(matrix_cols) * 100);
     }
 
     result.raw_relations = collector.size();
