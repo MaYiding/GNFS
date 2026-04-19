@@ -8,7 +8,7 @@
 namespace gnfs::linalg {
 
 // ============================================================================
-// SpMV utilities
+// SpMV utilities (shared with block_lanczos.cpp)
 // ============================================================================
 
 namespace {
@@ -58,64 +58,79 @@ void bw_spmv_transpose(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
     });
 }
 
-void bw_spmv_symmetric(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
-                       BlockVector& tmp, gnfs::util::ThreadPool& pool) {
+// B * V = M * (M^T * V) — symmetric product through CSR
+void bw_spmv_B(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
+               BlockVector& tmp, gnfs::util::ThreadPool& pool) {
     bw_spmv_transpose(M, x, tmp, pool);
     bw_spmv_forward(M, tmp, y, pool);
 }
 
 // ============================================================================
-// Krylov Null Space Finder
-//
-// Instead of Berlekamp-Massey, we use a direct approach:
-// 1. Compute Krylov vectors V_k = B^k · Y for B = M·M^T
-// 2. Compute U_k = M^T · V_k for each k (n-dimensional block vectors)
-// 3. Find null space of [U_0 | U_1 | ... | U_{L-1}] via Gaussian elimination
-// 4. The null vectors give coefficients c_k such that sum_k V_k · c_k ∈ null(M^T)
-//
-// This is mathematically equivalent to finding null(M^T) ∩ Krylov(B, Y),
-// which the BW Krylov phase naturally generates.
-//
-// Complexity: O(L × n × nnz) for SpMV + O(n × (64L)²) for Gaussian.
-// For small n (columns << rows), Gaussian is cheap.
+// Scalar Berlekamp-Massey over GF(2)
 // ============================================================================
+// Given a binary sequence s[0..N-1], find the shortest LFSR that generates it.
+// Returns the LFSR polynomial coefficients (connection polynomial).
+// The polynomial p(t) = 1 + c_1*t + c_2*t^2 + ... + c_L*t^L satisfies:
+//   s[n] + c_1*s[n-1] + ... + c_L*s[n-L] = 0 for all n >= L.
+//
+// For the Wiedemann algorithm: if p(t) = t^d + ... has p(0) = 0 (constant
+// term is 0, i.e., p(t) is divisible by t), then q(t) = p(t)/t gives
+// a null vector w = q(B) * v.
 
-/// GF(2) packed row for Gaussian elimination
-/// Each row stores (64L + 64L) bits: the equation part and the identity part
-/// (for tracking which linear combination gives each null vector)
-class PackedBitRow {
-public:
-    PackedBitRow() = default;
-    explicit PackedBitRow(size_t total_bits)
-        : words_((total_bits + 63) / 64, 0) {}
-
-    void set(size_t bit) {
-        assert(bit / 64 < words_.size());
-        words_[bit / 64] |= 1ULL << (bit % 64);
-    }
-    [[nodiscard]] bool test(size_t bit) const {
-        assert(bit / 64 < words_.size());
-        return (words_[bit / 64] >> (bit % 64)) & 1;
-    }
-    void xor_with(const PackedBitRow& other) {
-        assert(other.words_.size() >= words_.size());
-        for (size_t i = 0; i < words_.size(); ++i)
-            words_[i] ^= other.words_[i];
-    }
-    [[nodiscard]] bool is_zero(size_t from_bit, size_t to_bit) const {
-        size_t w0 = from_bit / 64, w1 = (to_bit + 63) / 64;
-        for (size_t w = w0; w < w1 && w < words_.size(); ++w) {
-            uint64_t mask = ~0ULL;
-            if (w == w0 && (from_bit % 64) != 0)
-                mask &= ~((1ULL << (from_bit % 64)) - 1);
-            if (w + 1 == w1 && (to_bit % 64) != 0)
-                mask &= (1ULL << (to_bit % 64)) - 1;
-            if (words_[w] & mask) return false;
-        }
-        return true;
-    }
-    std::vector<uint64_t> words_;
+struct LFSRPolynomial {
+    std::vector<uint8_t> coeffs;  // coeffs[0] = constant term
+    size_t degree = 0;
 };
+
+LFSRPolynomial scalar_berlekamp_massey(const std::vector<uint8_t>& s) {
+    const size_t N = s.size();
+    if (N == 0) return {{1}, 0};
+
+    // Connection polynomial C (starts as 1)
+    std::vector<uint8_t> C = {1};
+    // Previous polynomial B
+    std::vector<uint8_t> B = {1};
+    size_t L = 0;     // Current LFSR length
+    size_t m = 1;     // Shift counter
+    // b = 1 (last discrepancy, always 1 in GF(2))
+
+    for (size_t n = 0; n < N; ++n) {
+        // Compute discrepancy d = s[n] + sum_{i=1}^{L} C[i] * s[n-i]
+        uint8_t d = s[n];
+        for (size_t i = 1; i <= L && i <= n; ++i) {
+            if (i < C.size() && C[i])
+                d ^= s[n - i];
+        }
+
+        if (d == 0) {
+            m++;
+        } else {
+            // T = C
+            std::vector<uint8_t> T = C;
+
+            // C = C + B * x^m (shift B by m positions and XOR)
+            size_t new_size = std::max(C.size(), B.size() + m);
+            C.resize(new_size, 0);
+            for (size_t i = 0; i < B.size(); ++i) {
+                if (B[i])
+                    C[i + m] ^= 1;
+            }
+
+            if (2 * L <= n) {
+                L = n + 1 - L;
+                B = T;
+                m = 1;
+            } else {
+                m++;
+            }
+        }
+    }
+
+    LFSRPolynomial result;
+    result.coeffs = std::move(C);
+    result.degree = L;
+    return result;
+}
 
 } // anonymous namespace
 
@@ -140,11 +155,15 @@ std::vector<std::vector<bool>> BlockWiedemann::find_dependencies(
 }
 
 // ============================================================================
-// Block Wiedemann: Krylov + Null Space via Gaussian
+// Streaming Block Wiedemann with Scalar Berlekamp-Massey
 //
-// Phase 1 (Krylov): Compute V_k = B^k·Y and U_k = M^T·V_k
-// Phase 2 (Gaussian): Find null space of [U_0 | U_1 | ... | U_{L-1}]
-// Phase 3 (Extract): Accumulate w = sum_k V_k · c_k and verify
+// Memory: O(m) — only current block vector + accumulators
+// Time: O(L × nnz) — L Krylov steps, each requires 2 SpMV
+//
+// Three phases:
+//   Phase 1: Compute projected scalar sequences a_{j,k} = X_j^T * B^k * Y_j
+//   Phase 2: Scalar BM for each of 64 sequences → 64 minimal polynomials
+//   Phase 3: Recompute Krylov, accumulate solutions w_j = q_j(B) * Y
 // ============================================================================
 
 std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
@@ -152,225 +171,236 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
 
     const size_t m = matrix.num_rows();
     const size_t n = matrix.num_cols();
-    const size_t N = m;
 
-    std::cout << "  [BW] Block Wiedemann: " << m << "×" << n
-              << " matrix, N=" << N << std::endl;
+    std::cout << "  [BW] Streaming Wiedemann: " << m << "×" << n << std::endl;
 
+    const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
     CSRMatrix csr(matrix);
 
-    // Number of Krylov steps: need 64·L > n for the Gaussian to have a null space
-    // L = ceil(n / 64) + safety
-    const size_t L = (n + 63) / 64 + 10;
-    const size_t total_krylov_cols = 64 * L;
-
-    // Memory estimation and guard
-    size_t mem_V = L * N * sizeof(uint64_t);
-    size_t mem_U = L * n * sizeof(uint64_t);
-    size_t gauss_words = (n + total_krylov_cols + 63) / 64;
-    size_t mem_gauss = total_krylov_cols * gauss_words * sizeof(uint64_t);
-    size_t total_mem = mem_V + mem_U + mem_gauss;
-
-    std::cout << "  [BW] Krylov steps L=" << L
-              << " (" << total_krylov_cols << " columns, ~"
-              << (total_mem >> 20) << " MB)" << std::endl;
-
-    constexpr size_t MAX_BW_MEM = 4ULL * 1024 * 1024 * 1024;  // 4 GB
-    if (total_mem > MAX_BW_MEM) {
-        std::cerr << "  [BW] ERROR: estimated memory " << (total_mem >> 20)
-                  << " MB exceeds 4 GB limit. Use Block Lanczos instead." << std::endl;
-        return {};
-    }
-
-    // Random initialization
-    std::mt19937_64 rng(42);
-    BlockVector Y(N);
-    for (size_t i = 0; i < N; ++i) Y.data[i] = rng();
+    // Krylov sequence length for SCALAR Berlekamp-Massey:
+    // Need seq_len ≥ 2 * deg(minpoly(B)) where minpoly degree ≤ rank(B) ≤ n.
+    // For scalar BM (not block BM), each projection needs the full length.
+    // L = n + safety, seq_len = 2L + safety.
+    const size_t L = n + 50;
+    const size_t seq_len = 2 * L + 10;
 
     gnfs::util::ThreadPool pool(0);
 
-    // === Phase 1: Krylov + Project ===
-    // Compute U_k = M^T · V_k where V_k = B^k · Y
-    // U_k is an n-dimensional block vector (n × 64)
-    // Store all U_k for Gaussian, and all V_k for extraction
+    // Random block vectors X (for projection) and Y (starting vector)
+    BlockVector X(m), Y(m);
+    {
+        std::mt19937_64 rng(42);
+        for (size_t i = 0; i < m; ++i) X.data[i] = rng();
+        for (size_t i = 0; i < m; ++i) Y.data[i] = rng();
+    }
 
-    std::cout << "  [BW] Phase 1: Krylov + projection..." << std::flush;
+    // ── Phase 1: Compute projected scalar sequences ──
+    // For each j = 0..63: s_{j,k} = X_j^T * B^k * Y_j
+    // where X_j = j-th packed column of X, Y_j = j-th packed column of Y.
+    // A_k = X^T * V_k is a 64×64 matrix; diagonal entry A_k[j][j] = s_{j,k}.
 
-    std::vector<BlockVector> U_all;  // each is n-length, 64 bits
-    std::vector<BlockVector> V_all;  // each is N-length, 64 bits
-    U_all.reserve(L);
-    V_all.reserve(L);
+    std::cout << "  [BW] Phase 1: Krylov projection (L=" << L
+              << ", seq_len=" << seq_len << ")..." << std::flush;
 
-    BlockVector V(N), Vnext(N), tmp_t(n);
-    for (size_t i = 0; i < N; ++i) V.data[i] = Y.data[i];
+    // Store 64 scalar sequences (each seq_len bits)
+    std::vector<std::vector<uint8_t>> sequences(64, std::vector<uint8_t>(seq_len, 0));
 
-    for (size_t k = 0; k < L; ++k) {
-        // Store V_k
-        V_all.emplace_back(N);
-        for (size_t i = 0; i < N; ++i) V_all.back().data[i] = V.data[i];
+    BlockVector V(m), Vnext(m), tmp(n);
+    // V_0 = Y
+    for (size_t i = 0; i < m; ++i) V.data[i] = Y.data[i];
 
-        // U_k = M^T · V_k
-        BlockVector U(n);
-        bw_spmv_transpose(csr, V, U, pool);
-        U_all.push_back(std::move(U));
+    for (size_t k = 0; k < seq_len; ++k) {
+        // Project: for each j, s_{j,k} = bit j of (X^T * V)_j
+        // Compute X^T * V inner product (only need diagonal)
+        for (int j = 0; j < 64; ++j) {
+            uint64_t mask = 1ULL << j;
+            uint64_t parity = 0;
+            for (size_t i = 0; i < m; ++i)
+                parity ^= (X.data[i] & V.data[i] & mask);
+            sequences[j][k] = (parity >> j) & 1;
+        }
 
-        // V_{k+1} = B · V_k = M · M^T · V_k
-        if (k + 1 < L) {
-            bw_spmv_symmetric(csr, V, Vnext, tmp_t, pool);
+        // V_{k+1} = B * V_k = M * (M^T * V_k)
+        if (k + 1 < seq_len) {
+            bw_spmv_B(csr, V, Vnext, tmp, pool);
             std::swap(V.data, Vnext.data);
         }
     }
     std::cout << " done" << std::endl;
 
-    // === Phase 2: Gaussian elimination on [U_0 | U_1 | ... | U_{L-1}] ===
-    // Matrix has n rows and 64·L columns (over GF(2))
-    // Each U_k contributes 64 columns: column (64k + j) is bit j of U_k
-    //
-    // We augment with an identity block of size (64L × 64L) to track
-    // which linear combination produces each null vector.
+    // ── Phase 2: Scalar BM for each of 64 sequences ──
+    std::cout << "  [BW] Phase 2: Berlekamp-Massey..." << std::flush;
 
-    std::cout << "  [BW] Phase 2: Gaussian on " << n << "×" << total_krylov_cols
-              << " matrix..." << std::flush;
+    std::vector<LFSRPolynomial> polys(64);
+    size_t valid_polys = 0;
+    size_t max_degree = 0;
 
-    // Build the transposed system: 64L rows × n columns, augmented with 64L identity
-    // Row (64k + j) = [bit j of U_k[0], bit j of U_k[1], ..., bit j of U_k[n-1] | identity row]
-    size_t num_rows = total_krylov_cols;
-    size_t eq_cols = n;
-    size_t total_bits = eq_cols + num_rows;  // equation part + identity tracker
+    for (int j = 0; j < 64; ++j) {
+        polys[j] = scalar_berlekamp_massey(sequences[j]);
+        if (polys[j].degree > 0) {
+            // The connection polynomial C(x) = 1 + c_1*x + ... + c_L*x^L
+            // has coeffs[0] = 1 always.
+            // The characteristic polynomial p(t) = t^L + c_1*t^{L-1} + ... + c_L
+            // is divisible by t iff c_L = 0 (the TRAILING coefficient of C).
+            // When p(t) = t * q(t), w = q(B) * v is a null vector of B.
+            size_t L = polys[j].degree;
+            bool div_by_t = (L < polys[j].coeffs.size()) ?
+                            (polys[j].coeffs[L] == 0) : true;
+            if (div_by_t) {
+                valid_polys++;
+                max_degree = std::max(max_degree, polys[j].degree);
+            }
+        }
+    }
 
-    std::vector<PackedBitRow> gauss_rows(num_rows, PackedBitRow(total_bits));
+    // Diagnostic: check if sequences are trivial
+    size_t trivial_seqs = 0, nonzero_seqs = 0;
+    for (int j = 0; j < 64; ++j) {
+        bool has_nonzero = false;
+        for (size_t k = 0; k < seq_len; ++k) {
+            if (sequences[j][k]) { has_nonzero = true; break; }
+        }
+        if (has_nonzero) nonzero_seqs++; else trivial_seqs++;
+    }
+    if (trivial_seqs > 0) {
+        std::cout << " [WARN: " << trivial_seqs << "/64 trivial sequences]";
+    }
 
-    // Fill equation columns
-    for (size_t k = 0; k < L; ++k) {
+    // Also print BM degree distribution
+    size_t div_by_t = 0, not_div = 0;
+    for (int j = 0; j < 64; ++j) {
+        if (polys[j].degree > 0) {
+            size_t L = polys[j].degree;
+            bool is_div = (L < polys[j].coeffs.size()) ?
+                          (polys[j].coeffs[L] == 0) : true;
+            if (is_div) div_by_t++; else not_div++;
+        }
+    }
+
+    std::cout << " " << valid_polys << " valid (div_by_t=" << div_by_t
+              << " not_div=" << not_div << " trivial=" << trivial_seqs
+              << " max_deg=" << max_degree << ")" << std::endl;
+
+    if (valid_polys == 0) {
+        std::cerr << "  [BW] No valid polynomials found" << std::endl;
+        return {};
+    }
+
+    // ── Phase 3: Recompute Krylov, accumulate solutions ──
+    // For each valid polynomial j with p_j(t) = c_0 + c_1*t + ... + c_d*t^d:
+    //   Since c_0 = 0, define q_j(t) = c_1 + c_2*t + ... + c_d*t^{d-1}
+    //   Then w_j = q_j(B) * Y_j = Σ_{k=0}^{d-1} c_{k+1} * (B^k * Y)_j
+    //   w_j should satisfy B * w_j = 0, hence M^T * w_j = 0.
+
+    std::cout << "  [BW] Phase 3: Solution extraction (max_degree=" << max_degree
+              << ")..." << std::flush;
+
+    // Accumulators: 64 solution vectors (m bools each, packed as vector<bool>)
+    // We only accumulate bit j from V_k into solution j.
+    std::vector<std::vector<bool>> solutions(64, std::vector<bool>(m, false));
+
+    // Recompute V_k = B^k * Y from scratch
+    for (size_t i = 0; i < m; ++i) V.data[i] = Y.data[i];
+
+    for (size_t k = 0; k <= max_degree; ++k) {
+        // For each valid polynomial j with connection poly C(x) = 1 + c_1*x + ... + c_L*x^L:
+        // Characteristic poly: p(t) = t^L + c_1*t^{L-1} + ... + c_{L-1}*t + c_L
+        // Since c_L = 0 (divisible by t): p(t) = t * q(t) where
+        //   q(t) = t^{L-1} + c_1*t^{L-2} + ... + c_{L-1}
+        // Null vector: w = q(B)*Y_j = B^{L-1}*Y_j + c_1*B^{L-2}*Y_j + ... + c_{L-1}*Y_j
+        // At Krylov step k: V_k = B^k * Y. We want coefficient of B^k in q(B).
+        // q(t) = sum_{i=0}^{L-1} c_i * t^{L-1-i} where c_0 = 1 (from p(t)).
+        // So the coefficient of t^k in q(t) is c_{L-1-k} from the connection polynomial.
         for (int j = 0; j < 64; ++j) {
-            size_t row_idx = k * 64 + static_cast<size_t>(j);
-            // This row's equation part: bit j of U_all[k] for each of the n components
-            for (size_t c = 0; c < n; ++c) {
-                if ((U_all[k].data[c] >> j) & 1) {
-                    gauss_rows[row_idx].set(c);
-                }
+            size_t Lj = polys[j].degree;
+            if (Lj == 0) continue;
+            bool is_div = (Lj < polys[j].coeffs.size()) ?
+                          (polys[j].coeffs[Lj] == 0) : true;
+            if (!is_div) continue;
+
+            // Coefficient of t^k in q(t) = c_{L-1-k} from connection polynomial
+            if (k >= Lj) continue;  // k can be 0..L-1
+            size_t conn_idx = Lj - 1 - k;
+            if (conn_idx >= polys[j].coeffs.size()) continue;
+            if (polys[j].coeffs[conn_idx] == 0) continue;
+
+            // Accumulate bit j of V_k into solution j
+            uint64_t mask = 1ULL << j;
+            for (size_t i = 0; i < m; ++i) {
+                if (V.data[i] & mask)
+                    solutions[j][i] = !solutions[j][i];
             }
-            // Identity tracker part
-            gauss_rows[row_idx].set(eq_cols + row_idx);
+        }
+
+        // V_{k+1} = B * V_k
+        if (k < max_degree) {
+            bw_spmv_B(csr, V, Vnext, tmp, pool);
+            std::swap(V.data, Vnext.data);
         }
     }
+    std::cout << " done" << std::endl;
 
-    // Gaussian elimination (reduce equation part to row echelon)
-    // O(1) pivot-used lookup via boolean vector
-    std::vector<bool> row_is_pivot(num_rows, false);
-    for (size_t col = 0; col < eq_cols; ++col) {
-        // Find pivot: first non-pivot row with bit col set
-        int piv = -1;
-        for (size_t r = 0; r < num_rows; ++r) {
-            if (!row_is_pivot[r] && gauss_rows[r].test(col)) {
-                piv = static_cast<int>(r);
-                break;
-            }
-        }
-        if (piv < 0) continue;
-        row_is_pivot[static_cast<size_t>(piv)] = true;
-
-        // Eliminate column from all other rows
-        for (size_t r = 0; r < num_rows; ++r) {
-            if (static_cast<int>(r) != piv && gauss_rows[r].test(col)) {
-                gauss_rows[r].xor_with(gauss_rows[static_cast<size_t>(piv)]);
-            }
-        }
-    }
-
-    // Find null vectors: rows where the equation part is all zero
-    // The identity tracker part gives the linear combination coefficients
+    // ── Verify solutions ──
     std::vector<std::vector<bool>> deps;
-    size_t null_rows = 0, zero_candidates = 0, failed_verify = 0;
+    size_t verified = 0, failed = 0, zero_vecs = 0;
 
-    for (size_t r = 0; r < num_rows && deps.size() < max_deps; ++r) {
-        if (!gauss_rows[r].is_zero(0, eq_cols)) continue;
-        null_rows++;
+    for (int j = 0; j < 64 && deps.size() < max_deps; ++j) {
+        if (polys[j].degree == 0) continue;
+        size_t Lj = polys[j].degree;
+        bool is_div = (Lj < polys[j].coeffs.size()) ?
+                      (polys[j].coeffs[Lj] == 0) : true;
+        if (!is_div) continue;
 
-        // This row is in the null space. Extract coefficients from identity part.
-        // Coefficient for Krylov step k, bit j = gauss_rows[r].test(eq_cols + 64k + j)
-        // Accumulate: w = sum_{k,j} c_{k,j} · column_j(V_k)
-
-        BlockVector W(N);
-        W.clear();
-
-        for (size_t k = 0; k < L; ++k) {
-            uint64_t coeff = 0;
-            for (int j = 0; j < 64; ++j) {
-                if (gauss_rows[r].test(eq_cols + k * 64 + static_cast<size_t>(j))) {
-                    coeff |= 1ULL << j;
-                }
-            }
-            if (coeff == 0) continue;
-
-            // W += V_all[k] masked by coeff
-            // For each row i: W[i] ^= (V_all[k][i] & coeff) reduced to single bits
-            // Actually, we need: for each bit j in coeff, W[i] ^= (V_all[k][i] >> j) & 1
-            // But W is a vector of SINGLE bits (std::vector<bool>), not a block vector.
-            // Let's use bit 0 of a block vector to accumulate:
-            for (size_t i = 0; i < N; ++i) {
-                // XOR all selected bits of V_all[k][i] into bit 0 of W[i]
-                uint64_t selected = V_all[k].data[i] & coeff;
-                uint64_t parity = static_cast<uint64_t>(__builtin_parityll(selected));
-                W.data[i] ^= parity;
-            }
-        }
-
-        // Extract bit 0 as the candidate
-        auto candidate = W.extract_column(0);
+        const auto& sol = solutions[j];
 
         // Check non-zero
         bool nonzero = false;
-        for (size_t i = 0; i < candidate.size(); ++i)
-            if (candidate[i]) { nonzero = true; break; }
-        if (!nonzero) { zero_candidates++; continue; }
+        for (size_t i = 0; i < m; ++i) {
+            if (sol[i]) { nonzero = true; break; }
+        }
+        if (!nonzero) { zero_vecs++; continue; }
 
-        // Verify: M^T · candidate = 0
-        std::vector<uint8_t> col_sum(n, 0);
-        for (size_t row = 0; row < m; ++row) {
-            if (!candidate[row]) continue;
-            for (const uint32_t* p = csr.row_begin(row); p != csr.row_end(row); ++p)
-                col_sum[*p] ^= 1;
+        // Verify: M^T * sol = 0
+        std::vector<uint8_t> check(n, 0);
+        for (size_t i = 0; i < m; ++i) {
+            if (!sol[i]) continue;
+            for (const uint32_t* p = csr.row_begin(i); p != csr.row_end(i); ++p)
+                check[*p] ^= 1;
         }
 
         bool valid = true;
         for (size_t c = 0; c < n; ++c) {
-            if (col_sum[c]) { valid = false; break; }
+            if (check[c]) { valid = false; break; }
         }
 
         if (valid) {
-            deps.push_back(std::move(candidate));
+            deps.push_back(sol);
+            verified++;
         } else {
-            failed_verify++;
+            failed++;
         }
     }
 
-    std::cout << " " << deps.size() << " deps found"
-              << " (null_rows=" << null_rows
-              << ", zero=" << zero_candidates
-              << ", failed_verify=" << failed_verify << ")" << std::endl;
+    std::cout << "  [BW] Results: " << deps.size() << " valid deps"
+              << " (verified=" << verified << " failed=" << failed
+              << " zero=" << zero_vecs << ")" << std::endl;
 
-    if (deps.empty() && null_rows > 0) {
-        std::cerr << "  [BW] WARNING: " << null_rows << " null rows but 0 valid deps.\n"
-                  << "  Possible bug in parity accumulation or verification." << std::endl;
-    }
     return deps;
 }
 
 // ============================================================================
-// Reserved for future matrix BM implementation.
-// Current algorithm uses Krylov+Gaussian (block_wiedemann_solve) instead.
+// Reserved stubs (old interface, unused in streaming BW)
 // ============================================================================
 
 std::vector<DenseGF2_64x64> BlockWiedemann::compute_krylov_sequence(
     const CSRMatrix&, size_t, size_t, const BlockVector&, BlockVector&) {
-    assert(false && "compute_krylov_sequence: not used in current BW path");
+    assert(false && "compute_krylov_sequence: not used in streaming BW");
     return {};
 }
 
 BlockWiedemann::LingenResult BlockWiedemann::matrix_berlekamp_massey(
     const std::vector<DenseGF2_64x64>&, size_t) {
-    assert(false && "matrix_berlekamp_massey: not used in current BW path");
+    assert(false && "matrix_berlekamp_massey: not used in streaming BW");
     LingenResult r;
     r.valid_mask = 0;
     r.degrees.fill(0);
@@ -379,7 +409,7 @@ BlockWiedemann::LingenResult BlockWiedemann::matrix_berlekamp_massey(
 
 std::vector<std::vector<bool>> BlockWiedemann::extract_solutions(
     const CSRMatrix&, size_t, const LingenResult&, const BlockVector&, size_t) {
-    assert(false && "extract_solutions: not used in current BW path");
+    assert(false && "extract_solutions: not used in streaming BW");
     return {};
 }
 
