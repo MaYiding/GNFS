@@ -211,15 +211,13 @@ struct GNFSParams {
             p.log_scale = 16;
 
         // === 筛阈值 ===
-        // 阈值控制多少候选从筛阶段进入 cofactorization。
-        // 关键洞察: LP bound 的增大不需要阈值同步增大！
-        //   - LP bound 控制 cofactorizer 接受什么 (更多关系通过)
-        //   - 阈值控制 sieve 产生多少候选 (影响 cofac 工作量)
-        //   - 增大 LP + 保持阈值 → 同样的候选数，更高的命中率
+        // Session 78 实测: per_side = (lp_bits × 0.5 + 2.5) × LOG_SCALE 是最优。
+        // 更大阈值 (lp_bits × 1.0) 产生的额外候选增加的 cofac 时间 > 额外 yield。
+        // - combined=270 (0.5×): 1646 rels/s — 最快
+        // - combined=480 (1.0×): 1061 rels/s — 更慢！
+        // - combined=700 (1.5×): >> 10分钟 — 不可用
         //
-        // per_side = (lp_bits × factor + slack) × LOG_SCALE
-        // - ≤25d: factor=0.6 (紧阈值，少量高质量候选)
-        // - 26+d: factor=0.5 + slack=2.5 (允许 1LP 级别的 cofactor)
+        // 优化方向应是加速 cofac (batch 试除, 更快 SQUFOF)，而非放松阈值。
         if (lp_bits > 0) {
             double thresh_factor = (p.digits <= 25) ? 0.6 : 0.5;
             double slack = (p.digits <= 30) ? 2.0 : 2.5;
