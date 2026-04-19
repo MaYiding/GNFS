@@ -536,14 +536,23 @@ std::vector<std::vector<bool>> BlockLanczos::block_lanczos_solve(
         }
 
         // Step 8: F correction — needed when previous mask dropped columns
-        // msieve: f = D_pprev * (vt_a_v_prev * D_prev ^ I)
+        // msieve: f = D_pprev * (vt_a_v_prev * D_prev ^ I_S)
         //             * ((masked_prev(vt_a2_v_prev) ^ vt_a_v_prev) & mask_cur)
+        // CRITICAL: must use I_S (identity on NON-invertible subspace of prev iteration),
+        // NOT full identity I. For non-invertible prev columns, f = A_prev * D_prev
+        // may have non-zero rows (A_prev has non-zero entries even at non-invertible
+        // column positions). XOR with identity corrupts these; ASSIGN overwrites cleanly.
         if (iter >= 2 && mask_prev != UINT64_MAX) {
             // f = vt_a_v_prev * D_prev
             auto f = vt_a_v_prev.multiply(D_prev);
-            // f = f ^ I
-            for (int i = 0; i < 64; ++i)
-                f.rows[i] ^= (1ULL << i);
+            // f = f ^ I_S (msieve-style: ASSIGN for non-invertible, XOR for invertible)
+            for (int i = 0; i < 64; ++i) {
+                uint64_t bit = 1ULL << i;
+                if (mask_prev & bit)
+                    f.rows[i] ^= bit;    // Invertible prev: XOR identity
+                else
+                    f.rows[i] = bit;      // Non-invertible prev: ASSIGN identity
+            }
             // f = D_pprev * f
             f = D_pprev.multiply(f);
             // f2 = (masked_prev(vt_a2_v_prev) ^ vt_a_v_prev) & mask_cur
