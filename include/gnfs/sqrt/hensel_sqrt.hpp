@@ -431,10 +431,13 @@ private:
         const Integer& n = nf.n();
         auto t0 = std::chrono::steady_clock::now();
 
-        // Choose K: fewer primes = fewer sign combos = higher success rate.
-        // K=2 for d≤3: 2^(K-1)=2 sign combos. Fast, reliable.
+        // Choose K: balance lift speed vs sign combo count.
+        // Lift time ∝ (target_bits/K)², so larger K = faster lifts.
+        // Sign combos = 2^(K-1): K=2→2, K=3→4, K=4→8.
+        // K=2 for d≤3: 2 combos is fast and reliable.
+        //   K=3 tested in Session 78 but CRT fails on all deps — suspected precision
+        //   issue with lower per-prime bits. Needs investigation. Deferred.
         // K=3 for d≥4: more CRT redundancy for higher degree.
-        // K>3 causes exponential sign search (2^(K-1)) and lower per-dep success rate.
         const size_t K = (d <= 3) ? 2 : 3;
 
         // Find extra inert primes for retry on lift failure
