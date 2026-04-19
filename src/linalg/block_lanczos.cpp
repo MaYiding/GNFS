@@ -395,10 +395,21 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies(
     }
     effective_max = std::min(effective_max, static_cast<size_t>(64));
 
-    if (matrix.num_rows() < 5000 && matrix.num_cols() < 5000) {
+    // Use packed Gaussian for matrices that fit in memory.
+    // Block Lanczos has a known bug (A-gram persistent rank deficiency when
+    // columns stay non-invertible for >2 iterations — E/F corrections can't
+    // compensate). Until BL is fixed, use Gaussian for all feasible matrices.
+    // Gaussian memory: m × ((m+n+63)/64) × 8 bytes.
+    // Threshold: ~8 GB → handles matrices up to ~150K rows.
+    uint64_t gauss_bytes = static_cast<uint64_t>(matrix.num_rows()) *
+                           ((matrix.num_rows() + matrix.num_cols() + 63) / 64) *
+                           sizeof(uint64_t);
+    constexpr uint64_t GAUSS_THRESHOLD = 8ULL * 1024 * 1024 * 1024; // 8 GB
+    if (gauss_bytes <= GAUSS_THRESHOLD) {
         return find_dependencies_sparse(matrix, effective_max);
     }
 
+    // For very large matrices that don't fit in Gaussian, try Block Lanczos
     return block_lanczos_solve(matrix, effective_max);
 }
 

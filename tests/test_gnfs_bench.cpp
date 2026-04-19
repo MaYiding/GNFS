@@ -320,12 +320,16 @@ BenchResult factor_gnfs(const Integer& n) {
 
     result.usable_relations = relations.size();
 
-    // Trim excess
-    size_t max_rels = matrix_cols * 2;
+    // Trim excess to 1.1× matrix_cols for optimal SGE + BL convergence.
+    // High excess causes BL A-gram persistent rank deficiency and poor SGE reduction.
+    size_t max_rels = static_cast<size_t>(matrix_cols * 1.1) + 100;
     if (relations.size() > max_rels) {
         std::mt19937 rng(42);
         std::shuffle(relations.begin(), relations.end(), rng);
         relations.resize(max_rels);
+        std::cout << "  [Trim] " << result.usable_relations << " -> " << max_rels
+                  << " relations (" << std::setprecision(1)
+                  << (100.0 * max_rels / matrix_cols) << "% of matrix_cols)\n" << std::flush;
     }
 
     // Phase 4: Linear Algebra
@@ -345,6 +349,7 @@ BenchResult factor_gnfs(const Integer& n) {
     auto build_result = mb.build_with_qc(relations, fb, ctx);
 
     SGEConfig sge_config;
+    sge_config.verbose = true;
     auto sge_result = SGE::preprocess(build_result.matrix, sge_config);
 
     result.matrix_rows = sge_result.reduced_matrix.num_rows();

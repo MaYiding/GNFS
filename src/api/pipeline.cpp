@@ -559,11 +559,14 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
         return mr;
     }
 
-    // If matrix has huge excess (> 2× cols), trim rows to reduce matrix size.
-    // Large excess hurts BL convergence (Krylov degenerates on very sparse matrices).
-    // Keep ~1.5× cols rows for healthy excess while keeping matrix manageable.
-    if (matrix_stats.num_rows > matrix_stats.num_cols * 2) {
-        size_t target_rows = static_cast<size_t>(matrix_stats.num_cols * 1.5);
+    // Trim excess rows to improve BL convergence and SGE effectiveness.
+    // High excess (>1.3×) causes: (1) BL A-gram persistent non-invertible columns
+    // (E/F corrections can only look back 2 steps, so persistent rank deficiency
+    // causes orthogonality breakdown); (2) SGE ineffectiveness (avg column weight
+    // is too high for w1/w2 elimination).
+    // Target: 1.1× cols for optimal SGE + BL. CADO-NFS typically uses 5-10% excess.
+    if (matrix_stats.num_rows > static_cast<size_t>(matrix_stats.num_cols * 1.3)) {
+        size_t target_rows = static_cast<size_t>(matrix_stats.num_cols * 1.1);
         emit_log(LogLevel::Info, Phase::LinearAlgebra,
                  "Trimming excess: " + std::to_string(matrix_stats.num_rows) +
                  " rows -> " + std::to_string(target_rows) +

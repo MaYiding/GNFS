@@ -10,36 +10,22 @@
 namespace gnfs::linalg {
 
 /// SGE (Structured Gaussian Elimination) 预处理结果
-///
-/// 在 Block Lanczos 之前对 GF(2) 矩阵进行预处理：
-///   - 消除 weight-1 列（对应行可直接移除）
-///   - 合并 weight-2 列（XOR 两行，消除一行）
-///   - 反复迭代直到无变化
-///
-/// 典型降维 30-60%，显著减少 BL 迭代次数。
 struct SGEResult {
-    SparseMatrix reduced_matrix;   ///< 降维后的矩阵
+    SparseMatrix reduced_matrix;
 
     /// 行组成：reduced_row_i 由原始矩阵的哪些行 XOR 组成
-    /// 用于将 BL 依赖展开回原始行索引
     std::vector<std::vector<size_t>> row_composition;
 
     /// 列映射：reduced_col_j → 原始列索引
     std::vector<uint32_t> col_map;
 
-    // 统计
     size_t original_rows = 0;
     size_t original_cols = 0;
     size_t passes = 0;
-    size_t weight1_eliminated = 0; ///< weight-1 消除的列/行数
-    size_t weight2_merged = 0;     ///< weight-2 合并次数
+    size_t weight1_eliminated = 0;
+    size_t weight2_merged = 0;
 
     /// 将 BL 在降维矩阵上找到的依赖展开回原始行索引
-    ///
-    /// BL 返回 reduced_dep[i] = true/false 对每个降维行。
-    /// 展开后得到 original_dep[j] = true/false 对每个原始行。
-    /// 展开逻辑：对 reduced_dep 中每个 set bit i，将 row_composition[i]
-    /// 中的原始行索引 XOR 入结果（GF(2) 语义）。
     [[nodiscard]] std::vector<bool> expand_dependency(
             const std::vector<bool>& reduced_dep) const {
         std::vector<bool> original(original_rows, false);
@@ -58,24 +44,18 @@ struct SGEResult {
 
 /// SGE 配置
 struct SGEConfig {
-    size_t max_passes = 20;        ///< 最大迭代轮数
-    bool eliminate_weight1 = true; ///< 消除 weight-1 列
-    bool eliminate_weight2 = true; ///< 合并 weight-2 列
-    bool verbose = false;          ///< 详细输出
+    size_t max_passes = 100;       ///< 最大迭代轮数 (raised from 20)
+    bool eliminate_weight1 = true;
+    bool eliminate_weight2 = true;
+    bool verbose = false;
 };
 
 /// Structured Gaussian Elimination 预处理
 ///
-/// 标准 GNFS 预处理步骤，在 Block Lanczos 之前执行。
-/// 通过消除低权重列来降低矩阵维度，减少 BL 运算量。
-///
+/// 标准 GNFS 预处理步骤。消除低权重列来降低矩阵维度。
 /// 参考：Cavallar (2000) "Strategies for Filtering in the Number Field Sieve"
 class SGE {
 public:
-    /// 执行 SGE 预处理
-    /// @param matrix 原始 GF(2) 稀疏矩阵
-    /// @param config SGE 配置
-    /// @return SGEResult 包含降维矩阵和映射信息
     [[nodiscard]] static SGEResult preprocess(
             const SparseMatrix& matrix,
             const SGEConfig& config = SGEConfig{}) {
@@ -92,33 +72,30 @@ public:
             return result;
         }
 
-        // ── 工作副本 ──
-        // 复制行数据到工作区（避免修改原始矩阵）
+        // ── Working copy ──
         std::vector<SparseRow> working_rows(n_rows);
         for (size_t r = 0; r < n_rows; ++r) {
-            // 深拷贝：获取排序后的索引，重新构造
             working_rows[r] = SparseRow(
                 SparseRow::IndexList(matrix.row(r).indices()));
         }
 
-        // 行组成追踪：working_rows[r] = XOR of original rows in composition[r]
+        // Row composition tracking
         std::vector<std::vector<size_t>> composition(n_rows);
         for (size_t r = 0; r < n_rows; ++r) {
             composition[r] = {r};
         }
 
-        // 活跃标记
+        // Active flags
         std::vector<bool> row_alive(n_rows, true);
         std::vector<bool> col_alive(n_cols, true);
         size_t alive_rows = n_rows;
         size_t alive_cols = n_cols;
 
-        // ── 迭代消除 ──
+        // ── Iterative elimination ──
         for (size_t pass = 0; pass < config.max_passes; ++pass) {
             size_t eliminated_this_pass = 0;
 
-            // 构建列→行映射（只对活跃行/列）
-            // col_to_rows[c] = 包含列 c 的活跃行列表
+            // Build col→rows map for all active rows/cols
             std::vector<std::vector<size_t>> col_to_rows(n_cols);
             for (size_t r = 0; r < n_rows; ++r) {
                 if (!row_alive[r]) continue;
@@ -129,30 +106,45 @@ public:
                 }
             }
 
-            // Phase 1: Weight-1 列消除
+            // Phase 1: Eliminate ALL weight-1 columns (cascading)
+            // When a row is removed, other columns lose a contributor.
+            // Use a worklist to handle cascading w1 columns.
             if (config.eliminate_weight1) {
+                // Seed worklist with all w1 columns
+                std::vector<uint32_t> w1_work;
                 for (uint32_t c = 0; c < n_cols; ++c) {
+                    if (col_alive[c] && col_to_rows[c].size() == 1)
+                        w1_work.push_back(c);
+                }
+
+                while (!w1_work.empty()) {
+                    uint32_t c = w1_work.back();
+                    w1_work.pop_back();
                     if (!col_alive[c]) continue;
                     if (col_to_rows[c].size() != 1) continue;
 
                     size_t r = col_to_rows[c][0];
-                    if (!row_alive[r]) continue; // 可能已被其他 w1 消除
+                    if (!row_alive[r]) continue;
 
-                    // 消除该行：它是列 c 的唯一贡献者
+                    // Kill row and column
                     row_alive[r] = false;
-                    --alive_rows;
-
-                    // 同时消除列 c
                     col_alive[c] = false;
+                    --alive_rows;
                     --alive_cols;
 
-                    // 更新 col_to_rows: 移除 r 对其他列的贡献
+                    // Remove r from all its columns. If any become w1, add to worklist.
                     for (auto c2 : working_rows[r].indices()) {
-                        if (c2 < n_cols && col_alive[c2]) {
-                            auto& rows = col_to_rows[c2];
-                            rows.erase(
-                                std::remove(rows.begin(), rows.end(), r),
-                                rows.end());
+                        if (c2 >= n_cols || !col_alive[c2]) continue;
+                        auto& rows = col_to_rows[c2];
+                        rows.erase(
+                            std::remove(rows.begin(), rows.end(), r),
+                            rows.end());
+                        if (rows.size() == 1 && col_alive[c2])
+                            w1_work.push_back(c2);
+                        else if (rows.empty() && col_alive[c2]) {
+                            // Column has no remaining rows — dead column
+                            col_alive[c2] = false;
+                            --alive_cols;
                         }
                     }
 
@@ -161,9 +153,10 @@ public:
                 }
             }
 
-            // Phase 2: Weight-2 列合并（每次合并后 break 重建 col_to_rows）
+            // Phase 2: Merge ALL weight-2 columns in one pass
+            // For each w2 column c with rows {r1, r2}: merge r2 into r1, kill r2 and c.
+            // Process greedily — if r2 was already killed by a prior merge, skip.
             if (config.eliminate_weight2) {
-                bool did_merge = false;
                 for (uint32_t c = 0; c < n_cols; ++c) {
                     if (!col_alive[c]) continue;
                     if (col_to_rows[c].size() != 2) continue;
@@ -172,49 +165,40 @@ public:
                     size_t r2 = col_to_rows[c][1];
                     if (!row_alive[r1] || !row_alive[r2]) continue;
 
-                    // 合并 r2 into r1: row[r1] = row[r1] XOR row[r2]
+                    // Prefer merging into the heavier row (preserves more structure)
+                    if (working_rows[r1].weight() < working_rows[r2].weight())
+                        std::swap(r1, r2);
+
+                    // Merge: row[r1] ^= row[r2]
                     working_rows[r1].xor_with(working_rows[r2]);
 
-                    // 更新行组成
+                    // Update composition: comp[r1] ^= comp[r2] (GF(2))
                     auto& comp1 = composition[r1];
                     auto& comp2 = composition[r2];
-                    // GF(2) XOR: 合并两个组成列表，去重（偶数次出现的抵消）
                     comp1.insert(comp1.end(), comp2.begin(), comp2.end());
                     std::sort(comp1.begin(), comp1.end());
+                    // Deduplicate with GF(2) semantics: even count → cancel
                     std::vector<size_t> deduped;
                     deduped.reserve(comp1.size());
                     for (size_t i = 0; i < comp1.size(); ) {
                         size_t val = comp1[i];
                         size_t count = 1;
-                        while (i + count < comp1.size() && comp1[i + count] == val) {
+                        while (i + count < comp1.size() && comp1[i + count] == val)
                             ++count;
-                        }
-                        if (count % 2 == 1) {
+                        if (count % 2 == 1)
                             deduped.push_back(val);
-                        }
                         i += count;
                     }
                     comp1 = std::move(deduped);
 
-                    // 标记 r2 为死亡，消除列 c
+                    // Kill r2 and column c
                     row_alive[r2] = false;
-                    --alive_rows;
                     col_alive[c] = false;
+                    --alive_rows;
                     --alive_cols;
 
                     ++eliminated_this_pass;
                     ++result.weight2_merged;
-
-                    // XOR changes r1's column set — col_to_rows is now stale.
-                    // Break to rebuild from scratch on next pass iteration.
-                    did_merge = true;
-                    break;
-                }
-
-                // If a w2 merge happened, restart pass to rebuild col_to_rows
-                if (did_merge) {
-                    --pass;  // Counteract the ++pass at end of loop
-                    continue;
                 }
             }
 
@@ -230,9 +214,7 @@ public:
             if (eliminated_this_pass == 0) break;
         }
 
-        // ── 构建降维矩阵 ──
-
-        // 列映射：active col index → original col index
+        // ── Build reduced matrix ──
         result.col_map.reserve(alive_cols);
         std::vector<uint32_t> old_to_new_col(n_cols, UINT32_MAX);
         for (uint32_t c = 0; c < n_cols; ++c) {
@@ -242,7 +224,6 @@ public:
             }
         }
 
-        // 构建降维矩阵
         result.reduced_matrix = SparseMatrix(alive_rows, alive_cols);
         result.row_composition.reserve(alive_rows);
 
@@ -250,7 +231,6 @@ public:
         for (size_t r = 0; r < n_rows; ++r) {
             if (!row_alive[r]) continue;
 
-            // 将工作行的活跃列映射到新列索引
             for (auto old_col : working_rows[r].indices()) {
                 if (old_col < n_cols && old_to_new_col[old_col] != UINT32_MAX) {
                     result.reduced_matrix.row(new_row).set(old_to_new_col[old_col]);
