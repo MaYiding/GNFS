@@ -418,40 +418,72 @@ GNFS/
 **注意**: `.gitignore` 排除了根目录 `*.cpp`/`*.hpp`/`*.sh` 和遗留文档模式，防止误添加。
 所有代码必须放在 `include/`、`src/`、`tests/` 中。
 
-## 长时间测试监控规范
+## 后台任务管理规范（强制执行）
 
-运行压力测试（50/60-digit）可能需要数小时。监控时**必须遵守**以下规则：
+运行压力测试或长时间 GNFS 筛法可能需要数小时甚至数十小时。**核心原则：后台任务不阻塞主线程工作。**
 
-### 禁止行为
+### 架构原则
 
-- **禁止堆叠多个 `sleep N && tail` 后台任务**来监控同一个日志——会造成进程泄漏和任务列表混乱
-- **禁止**用 `run_in_background` 启动多个冗余的 sleep 监控
-- **禁止** `sleep` 超过 600 秒的后台等待（容易忘记清理）
+```
+后台任务 (nohup)                 主线程 (Claude Code)
+┌─────────────────┐             ┌─────────────────────┐
+│ test_stress 50d │  日志文件    │ 继续其他优化工作      │
+│ PID: 77339      │───────────→│ 用户交互时按需查日志   │
+│ /tmp/xxx.log    │             │ 不等待、不轮询、不阻塞 │
+└─────────────────┘             └─────────────────────┘
+```
 
-### 正确做法
+### 启动规则
 
-1. **启动测试**：用 `nohup ./test_xxx > /tmp/xxx.log 2>&1 &` 并记录 PID
-2. **检查进度**：手动按需执行 `tail -5 /tmp/xxx.log`，不要自动化等待
-3. **一次最多一个后台 sleep**：如果确实需要延迟检查，只启动**一个** `sleep + tail` 后台任务
-4. **及时清理**：任务完成或不再需要时立即 `TaskStop` 清理
-5. **stdout 缓冲问题**：`nohup` 重定向到文件时 C++ `std::cout` 是全缓冲（~4KB-8KB）
-   - 代码中已在关键输出点加了 `std::flush`
-   - 但报告间隔为每 100 SQ，因此两次输出之间可能有几分钟间隔——这是**正常的**，不要因此启动更多监控进程
+1. **用 `nohup` + 文件日志**，不用 `run_in_background`
+   ```bash
+   cd build && nohup ./test_xxx args > /tmp/xxx.log 2>&1 &
+   echo "PID=$! LOG=/tmp/xxx.log" >> /tmp/bg_tasks.txt
+   ```
+2. **记录到 `/tmp/bg_tasks.txt`**：每次启动后追加 PID、日志路径、启动时间、预期用途
+3. **代码中必须加 `std::flush`**：在进度报告输出点加 flush，否则 nohup 全缓冲导致日志不更新
+4. **进度报告间隔不超过 100 个 Special-Q**：确保日志定期更新，便于监控
 
-### 监控模板
+### 监控规则（严格）
+
+- **禁止堆叠多个 `sleep N && tail` 后台任务** — 造成进程泄漏和任务混乱
+- **禁止 `run_in_background` 启动 sleep 循环** — 无法可靠取消，上下文膨胀
+- **禁止 sleep 超过 300 秒** — 容易忘记清理
+- **一次最多一个后台 sleep** — 如果确实需要延迟检查
+- **监控是按需的**：用户问进度或自己需要结果时才查，不主动轮询
+
+### 正确监控方法
 
 ```bash
-# 启动测试
-nohup ./test_stress 1 1 > /tmp/stress_test.log 2>&1 &
-echo "PID: $!"
-
-# 手动检查（按需执行，不要自动化循环）
-tail -5 /tmp/stress_test.log
+# 按需查进度（不自动化）
+tail -5 /tmp/xxx.log
 ps -p <PID> -o pid,%cpu,etime
 
+# 检查是否完成
+ps -p <PID> > /dev/null 2>&1 && echo "running" || echo "finished"
+
+# 查看所有后台任务
+cat /tmp/bg_tasks.txt
+ps -p $(awk '{print $1}' /tmp/bg_tasks.txt | tr -d 'PID=') -o pid,%cpu,etime 2>/dev/null
+
 # 测试结束后查看完整结果
-cat /tmp/stress_test.log
+tail -50 /tmp/xxx.log
 ```
+
+### 工作流集成
+
+| 场景 | 做法 |
+|------|------|
+| 启动后台测试后 | **立即继续其他优化工作**，不等待 |
+| 用户问 "跑完了吗" | `tail -5 /tmp/xxx.log` + `ps -p PID` |
+| 需要测试结果才能继续 | 先做不依赖该结果的工作，最后再查 |
+| 测试完成 | 查结果 → 记录到 progress.md → 清理 bg_tasks.txt |
+| 新会话开始 | 先读 `/tmp/bg_tasks.txt` 检查是否有遗留后台任务 |
+| 会话即将结束 | 在 progress.md 记录所有运行中的后台任务 PID 和日志路径 |
+
+### stdout 缓冲说明
+
+`nohup` 重定向到文件时 C++ `std::cout` 是全缓冲（~4KB-8KB）。代码中已在关键输出点加了 `std::flush`。报告间隔为每 100 SQ，因此两次输出之间可能有几分钟间隔——这是**正常的**，不要因此启动更多监控进程。
 
 ## Known Limitations
 
