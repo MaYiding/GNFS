@@ -331,17 +331,11 @@ BenchResult factor_gnfs(const Integer& n) {
 
     result.usable_relations = relations.size();
 
-    // Trim excess to 1.1× matrix_cols for optimal SGE + BL convergence.
-    // High excess causes BL A-gram persistent rank deficiency and poor SGE reduction.
-    size_t max_rels = static_cast<size_t>(matrix_cols * 1.1) + 100;
-    if (relations.size() > max_rels) {
-        std::mt19937 rng(42);
-        std::shuffle(relations.begin(), relations.end(), rng);
-        relations.resize(max_rels);
-        std::cout << "  [Trim] " << result.usable_relations << " -> " << max_rels
-                  << " relations (" << std::setprecision(1)
-                  << (100.0 * max_rels / matrix_cols) << "% of matrix_cols)\n" << std::flush;
-    }
+    // NOTE: Don't trim here — the actual matrix columns include LP columns
+    // (SQ primes, etc.) which aren't counted in matrix_cols estimate.
+    // Let the matrix builder determine the real column count, then use all relations.
+    // Over-determined systems (rows > cols) are fine for BW/Gaussian.
+    std::cout << "  [Relations] " << relations.size() << " (est_cols=" << matrix_cols << ")\n" << std::flush;
 
     // Phase 4: Linear Algebra
     phase.reset();
