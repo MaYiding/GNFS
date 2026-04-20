@@ -343,10 +343,10 @@ struct GNFSParams {
             target = std::min(target, mc * 50.0);
             return static_cast<size_t>(target);
         }
-        // No LP: need extra raw relations to survive singleton filter cascade.
-        // At ratio ~1.0, singleton filter removes 30-50% due to cascade.
-        // At ratio ~2.0, losses are manageable (~10-15%).
-        return matrix_columns * 2;
+        // No LP: need R/B > 3 to survive singleton filter.
+        // Each FB prime p appears ~R/p times. For p near B, need R/B > 2-3.
+        // With ratio 4×, singleton survival ≈ 60-70%.
+        return matrix_columns * 4;
     }
 
     /// 估算筛区域大小 (位置数)
