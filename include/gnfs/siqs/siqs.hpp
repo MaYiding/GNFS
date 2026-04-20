@@ -516,13 +516,12 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb,
         uint32_t diff2 = (neg_sq >= b_mod_p) ? neg_sq - b_mod_p : neg_sq + p - b_mod_p;
         uint32_t x2 = mod_mul32(diff2, ainv, p);
 
-        // Adjust to sieve array coordinates: sieve[x + M] corresponds to x
-        // We sieve x in [0, 2M), so starting position = x_val mod p
-        // But x in the formula is the polynomial variable, ranging over [-M, M)
-        // In array coords: pos = x + M, so x = pos - M
-        // x ≡ x1 (mod p) → pos ≡ x1 + M (mod p)
-        uint32_t s1 = (x1 + M) % p;
-        uint32_t s2 = (x2 + M) % p;
+        // Adjust to sieve array coordinates: pos = x + M mod p
+        uint32_t m_mod = M % p;
+        uint32_t s1 = x1 + m_mod;
+        if (s1 >= p) s1 -= p;
+        uint32_t s2 = x2 + m_mod;
+        if (s2 >= p) s2 -= p;
 
         poly.solns[i] = {s1, s2};
     }
