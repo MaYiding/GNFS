@@ -567,13 +567,20 @@ inline void next_poly_B(const std::vector<FBPrime>& fb,
         uint32_t delta = mod_mul32(mod_mul32(2, bp_mod, p), ainv, p);
 
         if (add) {
-            // B increased → x = (sq - B)*Ainv decreased
-            // soln1 -= delta, soln2 -= delta
-            poly.solns[i].soln1 = (poly.solns[i].soln1 + p - delta) % p;
-            poly.solns[i].soln2 = (poly.solns[i].soln2 + p + delta) % p;
+            // soln1 -= delta, soln2 += delta (mod p)
+            uint32_t s1 = poly.solns[i].soln1 + (p - delta); // ∈ [0, 2p)
+            if (s1 >= p) s1 -= p;
+            poly.solns[i].soln1 = s1;
+            uint32_t s2 = poly.solns[i].soln2 + delta; // ∈ [0, 2p)
+            if (s2 >= p) s2 -= p;
+            poly.solns[i].soln2 = s2;
         } else {
-            poly.solns[i].soln1 = (poly.solns[i].soln1 + delta) % p;
-            poly.solns[i].soln2 = (poly.solns[i].soln2 + p - delta) % p;
+            uint32_t s1 = poly.solns[i].soln1 + delta;
+            if (s1 >= p) s1 -= p;
+            poly.solns[i].soln1 = s1;
+            uint32_t s2 = poly.solns[i].soln2 + (p - delta);
+            if (s2 >= p) s2 -= p;
+            poly.solns[i].soln2 = s2;
         }
     }
 }
