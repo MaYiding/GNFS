@@ -563,8 +563,10 @@ inline void next_poly_B(const std::vector<FBPrime>& fb,
         uint32_t p = fb[i].p;
 
         // Delta = 2 * B_part * A^{-1} mod p (using precomputed B_parts mod p)
+        // Single mod: 2 × bp_mod × ainv ≤ 2 × p² < 2^65 fits uint64
         uint32_t bp_mod = poly.bp_mod_p[gray_bit * poly.bp_fb_size + i];
-        uint32_t delta = mod_mul32(mod_mul32(2, bp_mod, p), ainv, p);
+        uint32_t delta = static_cast<uint32_t>(
+            (static_cast<uint64_t>(2) * bp_mod % p * ainv) % p);
 
         if (add) {
             // soln1 -= delta, soln2 += delta (mod p)
