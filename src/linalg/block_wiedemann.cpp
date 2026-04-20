@@ -82,43 +82,137 @@ struct LFSRPolynomial {
     size_t degree = 0;
 };
 
+// Bit-packed GF(2) vector for fast BM
+struct BitPoly {
+    std::vector<uint64_t> words;  // packed bits, word[i] bit j = coefficient i*64+j
+    size_t len = 0;               // number of coefficients
+
+    BitPoly() = default;
+    explicit BitPoly(size_t n) : words((n + 63) / 64, 0), len(n) {}
+
+    void set(size_t i) {
+        if (i >= len) resize(i + 1);
+        words[i / 64] |= (1ULL << (i % 64));
+    }
+    bool get(size_t i) const {
+        if (i >= len) return false;
+        return (words[i / 64] >> (i % 64)) & 1;
+    }
+    void flip(size_t i) {
+        if (i >= len) resize(i + 1);
+        words[i / 64] ^= (1ULL << (i % 64));
+    }
+    void resize(size_t n) {
+        len = n;
+        words.resize((n + 63) / 64, 0);
+    }
+    void xor_shifted(const BitPoly& other, size_t shift) {
+        // this ^= other << shift (in coefficient space)
+        size_t needed = other.len + shift;
+        if (needed > len) resize(needed);
+        size_t word_shift = shift / 64;
+        size_t bit_shift = shift % 64;
+        size_t ow = other.words.size();
+        if (bit_shift == 0) {
+            for (size_t i = 0; i < ow; ++i)
+                words[i + word_shift] ^= other.words[i];
+        } else {
+            for (size_t i = 0; i < ow; ++i) {
+                words[i + word_shift] ^= (other.words[i] << bit_shift);
+                if (i + word_shift + 1 < words.size())
+                    words[i + word_shift + 1] ^= (other.words[i] >> (64 - bit_shift));
+            }
+        }
+    }
+
+    // Convert to uint8_t vector for compatibility
+    std::vector<uint8_t> to_bytes() const {
+        std::vector<uint8_t> out(len, 0);
+        for (size_t i = 0; i < len; ++i)
+            out[i] = get(i) ? 1 : 0;
+        return out;
+    }
+};
+
+// Compute discrepancy: d = s[n] XOR (C·s_reversed) using 64-bit word AND+popcount
+// C = connection poly coeffs (packed), s_window = s[n-L..n] reversed (packed)
+static uint8_t compute_discrepancy_packed(
+    const BitPoly& C, const std::vector<uint8_t>& s,
+    size_t n, size_t L) {
+    // d = s[n] + sum_{i=1}^{L} C[i] * s[n-i]
+    // Pack s[n-1], s[n-2], ..., s[n-L] into words, AND with C[1..L], popcount
+    uint8_t d = s[n];
+    size_t nw = (L + 63) / 64;
+    uint64_t parity = 0;
+    for (size_t w = 0; w < nw && w < C.words.size(); ++w) {
+        // C word w covers coefficients [w*64 .. w*64+63]
+        // We need C[i] * s[n-i] for i = w*64..w*64+63
+        // Build s_word: bit j = s[n - (w*64 + j + 1)] for j=0..63 (skip i=0, start from i=1)
+        uint64_t s_word = 0;
+        size_t base_i = w * 64 + 1;  // i starts at 1 (skip C[0])
+        for (size_t j = 0; j < 64 && (base_i + j) <= L; ++j) {
+            size_t i = base_i + j;
+            if (i <= n && s[n - i])
+                s_word |= (1ULL << j);
+        }
+        // C_word shifted: C[w*64+1..w*64+64] packed as bits 0..63
+        uint64_t c_word;
+        if (w == 0) {
+            // Need C[1..64], but C.words[0] has C[0..63]
+            // Shift right by 1 to get C[1..64] in bits 0..63
+            c_word = C.words[0] >> 1;
+            if (C.words.size() > 1)
+                c_word |= (C.words[1] << 63);
+        } else {
+            // C[w*64+1..] — need bits from words[w] shifted
+            size_t bit_off = w * 64 + 1;
+            size_t wi = bit_off / 64;
+            size_t bi = bit_off % 64;
+            c_word = (wi < C.words.size()) ? (C.words[wi] >> bi) : 0;
+            if (bi > 0 && wi + 1 < C.words.size())
+                c_word |= (C.words[wi + 1] << (64 - bi));
+        }
+        parity ^= __builtin_popcountll(c_word & s_word);
+    }
+    d ^= (parity & 1);
+    return d;
+}
+
 LFSRPolynomial scalar_berlekamp_massey(const std::vector<uint8_t>& s) {
     const size_t N = s.size();
     if (N == 0) return {{1}, 0};
 
-    // Connection polynomial C (starts as 1)
-    std::vector<uint8_t> C = {1};
+    // Bit-packed connection polynomial C (starts as 1)
+    BitPoly C(1); C.set(0);
     // Previous polynomial B
-    std::vector<uint8_t> B = {1};
+    BitPoly B(1); B.set(0);
     size_t L = 0;     // Current LFSR length
     size_t m = 1;     // Shift counter
-    // b = 1 (last discrepancy, always 1 in GF(2))
 
     for (size_t n = 0; n < N; ++n) {
-        // Compute discrepancy d = s[n] + sum_{i=1}^{L} C[i] * s[n-i]
-        uint8_t d = s[n];
-        for (size_t i = 1; i <= L && i <= n; ++i) {
-            if (i < C.size() && C[i])
-                d ^= s[n - i];
+        // Compute discrepancy using packed word operations
+        uint8_t d;
+        if (L <= 128) {
+            // Small L: scalar path (avoid overhead of packing)
+            d = s[n];
+            for (size_t i = 1; i <= L && i <= n; ++i) {
+                if (C.get(i)) d ^= s[n - i];
+            }
+        } else {
+            d = compute_discrepancy_packed(C, s, n, L);
         }
 
         if (d == 0) {
             m++;
         } else {
-            // T = C
-            std::vector<uint8_t> T = C;
+            BitPoly T = C;  // Save C
 
-            // C = C + B * x^m (shift B by m positions and XOR)
-            size_t new_size = std::max(C.size(), B.size() + m);
-            C.resize(new_size, 0);
-            for (size_t i = 0; i < B.size(); ++i) {
-                if (B[i])
-                    C[i + m] ^= 1;
-            }
+            // C = C + B * x^m
+            C.xor_shifted(B, m);
 
             if (2 * L <= n) {
                 L = n + 1 - L;
-                B = T;
+                B = std::move(T);
                 m = 1;
             } else {
                 m++;
@@ -127,7 +221,7 @@ LFSRPolynomial scalar_berlekamp_massey(const std::vector<uint8_t>& s) {
     }
 
     LFSRPolynomial result;
-    result.coeffs = std::move(C);
+    result.coeffs = C.to_bytes();
     result.degree = L;
     return result;
 }
