@@ -593,16 +593,44 @@ private:
     }
 
     /// 设置带二次特征的列映射（per-root QC）
+    /// 此版本可选启用符号列（build_with_qc 有 PolynomialContext，可以正确计算符号）
     void setup_column_mapping_with_qc(ColumnMapping& mapping,
                                       const FactorBase& fb,
                                       const LargePrimeInfo& lp_info,
                                       const std::vector<std::pair<uint32_t, uint32_t>>& qc_prime_roots) const {
 
-        setup_column_mapping(mapping, fb, lp_info);
+        // Enable sign column if requested — build_with_qc can compute it
+        if (config_.include_sign_column) {
+            mapping.has_sign_column = true;
+            mapping.sign_column = 0;  // column 0 = sign
+        } else {
+            mapping.has_sign_column = false;
+            mapping.sign_column = 0;
+        }
 
-        // 添加二次特征列——每个 (prime, root) 对一列
+        // 因子基列
+        mapping.num_rational_fb = fb.rational_count();
+        mapping.num_algebraic_fb = fb.sieve_algebraic_count();
+
+        // 大素数列
+        mapping.num_large_primes_rat = lp_info.rat_primes.size();
+        mapping.num_large_primes_alg = lp_info.alg_primes.size();
+
+        // 二次特征列
         mapping.num_qc_columns = qc_prime_roots.size();
         mapping.qc_prime_roots = qc_prime_roots;
+
+        // 为有理大素数分配列索引
+        uint32_t col = static_cast<uint32_t>(mapping.rat_lp_start());
+        for (uint64_t p : lp_info.rat_primes) {
+            mapping.rat_lp_to_col[p] = col++;
+        }
+
+        // 为代数大素数（素理想）分配列索引
+        col = static_cast<uint32_t>(mapping.alg_lp_start());
+        for (const auto& key : lp_info.alg_primes) {
+            mapping.alg_lp_to_col[key] = col++;
+        }
     }
 
     /// 构建单行
