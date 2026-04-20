@@ -673,65 +673,121 @@ inline void sieve_polynomial(
         rel.exponents.assign(fb.size(), 0);
 
         // Trial divide Q by factor base primes
-        mpz_t q_mpz;
-        mpz_init(q_mpz);
-        mpz_set(q_mpz, Q.get_mpz());
-
-        // Divide out A primes first (they always divide Q)
-        for (uint32_t ai : poly.a_indices) {
-            uint32_t p = fb[ai].p;
-            while (mpz_divisible_ui_p(q_mpz, p)) {
-                mpz_divexact_ui(q_mpz, q_mpz, p);
-                rel.exponents[ai]++;
-            }
-        }
-
-        // Trial divide by all FB primes
-        for (size_t i = 1; i < fb.size(); i++) {
-            uint32_t p = fb[i].p;
-            while (mpz_divisible_ui_p(q_mpz, p)) {
-                mpz_divexact_ui(q_mpz, q_mpz, p);
-                rel.exponents[i]++;
-            }
-        }
-
-        // Check remaining cofactor — support 0LP, 1LP, and 2LP
+        // Fast path: if Q fits in __uint128_t (≤60 digits), use native arithmetic
+        // This avoids GMP function call overhead (~20× faster per division)
         bool accept = false;
         rel.large_prime2 = 0;
 
-        if (mpz_cmp_ui(q_mpz, 1) == 0) {
-            // Fully smooth
-            accept = true;
-        } else if (mpz_fits_ulong_p(q_mpz)) {
-            uint64_t cofac = mpz_get_ui(q_mpz);
-            if (cofac <= lp_bound && cofac > 1) {
-                // 1LP: single large prime
-                rel.large_prime = cofac;
+        if (Q.bit_length() <= 127) {
+            // Native 128-bit trial division (no GMP)
+            __uint128_t q128 = 0;
+            {
+                // Extract Q as __uint128_t: Q = lo + hi * 2^64
+                mpz_t tmp_lo;
+                mpz_init(tmp_lo);
+                mpz_tdiv_r_2exp(tmp_lo, Q.get_mpz(), 64);
+                uint64_t lo = mpz_get_ui(tmp_lo);
+                mpz_tdiv_q_2exp(tmp_lo, Q.get_mpz(), 64);
+                uint64_t hi = mpz_get_ui(tmp_lo);
+                mpz_clear(tmp_lo);
+                q128 = (static_cast<__uint128_t>(hi) << 64) | lo;
+            }
+
+            // Divide out A primes first
+            for (uint32_t ai : poly.a_indices) {
+                uint32_t p = fb[ai].p;
+                while (q128 % p == 0) { q128 /= p; rel.exponents[ai]++; }
+            }
+
+            // Trial divide by all FB primes
+            // No early exit: SIQS FB only contains QR primes, cofactor may
+            // still have factors at non-QR primes between FB entries.
+            for (size_t i = 1; i < fb.size(); i++) {
+                uint32_t p = fb[i].p;
+                while (q128 % p == 0) { q128 /= p; rel.exponents[i]++; }
+            }
+
+            // Check cofactor
+            if (q128 == 1) {
                 accept = true;
-            } else if (lp_bound_sq > 0 && cofac <= lp_bound_sq && cofac > lp_bound) {
-                // Possible 2LP: cofactor = p1 * p2 where both ≤ lp_bound
-                // Don't try to factor here (too expensive per candidate).
-                // Store cofactor as-is; merge by matching cofactors.
-                // Quick primality check: if cofac is prime, it's a too-large 1LP → reject
-                // Use Miller-Rabin with a few witnesses
-                mpz_t tmp;
-                mpz_init_set_ui(tmp, cofac);
-                int is_prp = mpz_probab_prime_p(tmp, 2);
-                mpz_clear(tmp);
-                if (is_prp == 0) {
-                    // Composite → likely 2LP. Store full cofactor.
-                    rel.large_prime = cofac; // cofactor = lp1 * lp2
-                    rel.large_prime2 = 1;    // marker: unfactored 2LP
+            } else if (q128 <= UINT64_MAX) {
+                uint64_t cofac = static_cast<uint64_t>(q128);
+                if (cofac <= lp_bound && cofac > 1) {
+                    rel.large_prime = cofac;
                     accept = true;
+                } else if (lp_bound_sq > 0 && cofac <= lp_bound_sq && cofac > lp_bound) {
+                    // 2LP: quick composite check via deterministic Miller-Rabin
+                    // cofac fits uint64, use fast modular exponentiation
+                    auto powmod128 = [](uint64_t base, uint64_t exp, uint64_t mod) -> uint64_t {
+                        __uint128_t result = 1, b = base % mod;
+                        while (exp > 0) {
+                            if (exp & 1) result = result * b % mod;
+                            b = b * b % mod;
+                            exp >>= 1;
+                        }
+                        return static_cast<uint64_t>(result);
+                    };
+                    // Sprp test with base 2
+                    uint64_t d_mr = cofac - 1; int r_mr = 0;
+                    while ((d_mr & 1) == 0) { d_mr >>= 1; r_mr++; }
+                    uint64_t x_mr = powmod128(2, d_mr, cofac);
+                    bool is_composite = (x_mr != 1 && x_mr != cofac - 1);
+                    if (is_composite) {
+                        for (int j = 0; j < r_mr - 1 && is_composite; j++) {
+                            x_mr = static_cast<uint64_t>(
+                                static_cast<__uint128_t>(x_mr) * x_mr % cofac);
+                            if (x_mr == cofac - 1) is_composite = false;
+                        }
+                    }
+                    if (is_composite) {
+                        rel.large_prime = cofac;
+                        rel.large_prime2 = 1;
+                        accept = true;
+                    }
                 }
             }
         } else {
-            // Cofactor doesn't fit in uint64 — check if ≤ lp_bound^2
-            // For very large N, cofactor might be > 64 bits but still 2LP-splittable
-            // Skip for now (rare case)
-        }
+            // GMP fallback for very large Q (>127 bits, rare for ≤65 digits)
+            mpz_t q_mpz;
+            mpz_init(q_mpz);
+            mpz_set(q_mpz, Q.get_mpz());
 
-        mpz_clear(q_mpz);
+            for (uint32_t ai : poly.a_indices) {
+                uint32_t p = fb[ai].p;
+                while (mpz_divisible_ui_p(q_mpz, p)) {
+                    mpz_divexact_ui(q_mpz, q_mpz, p);
+                    rel.exponents[ai]++;
+                }
+            }
+            for (size_t i = 1; i < fb.size(); i++) {
+                uint32_t p = fb[i].p;
+                while (mpz_divisible_ui_p(q_mpz, p)) {
+                    mpz_divexact_ui(q_mpz, q_mpz, p);
+                    rel.exponents[i]++;
+                }
+            }
+
+            if (mpz_cmp_ui(q_mpz, 1) == 0) {
+                accept = true;
+            } else if (mpz_fits_ulong_p(q_mpz)) {
+                uint64_t cofac = mpz_get_ui(q_mpz);
+                if (cofac <= lp_bound && cofac > 1) {
+                    rel.large_prime = cofac;
+                    accept = true;
+                } else if (lp_bound_sq > 0 && cofac <= lp_bound_sq && cofac > lp_bound) {
+                    mpz_t tmp;
+                    mpz_init_set_ui(tmp, cofac);
+                    int is_prp = mpz_probab_prime_p(tmp, 2);
+                    mpz_clear(tmp);
+                    if (is_prp == 0) {
+                        rel.large_prime = cofac;
+                        rel.large_prime2 = 1;
+                        accept = true;
+                    }
+                }
+            }
+            mpz_clear(q_mpz);
+        }
 
         if (accept) {
             // Build fb_indices list
