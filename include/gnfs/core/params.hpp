@@ -145,7 +145,7 @@ struct GNFSParams {
         } else if (p.digits <= 50) {
             B_rat = 80000;    B_alg = 160000;    lp_bits = 23;
         } else if (p.digits <= 55) {
-            B_rat = 400000;   B_alg = 800000;    lp_bits = 0;  // No LP: rely on full rels
+            B_rat = 200000;   B_alg = 400000;    lp_bits = 24;  // LP enabled: birthday feasible at 2^24
         } else if (p.digits <= 60) {
             B_rat = 400000;   B_alg = 800000;    lp_bits = 26;  // CADO C60
         } else if (p.digits <= 65) {
