@@ -51,6 +51,8 @@ struct SIQSParams {
 inline SIQSParams select_params(size_t digits) {
     // Each row: {fb_size, sieve_half, lp_mult, a_factors, sieve_error, small_cutoff}
     // sieve_error: only covers log approximation + prime powers; LP subtracted separately
+    // NOTE: FB sizes must stay moderate until block sieve is implemented.
+    // Without block sieve, per-poly cost scales linearly with FB — larger FB is slower.
     if (digits <= 20) return {50,     8192,    40,  2,  8,  5};
     if (digits <= 25) return {80,     16384,   40,  3,  8,  5};
     if (digits <= 30) return {150,    16384,   50,  3,  9,  10};
@@ -618,7 +620,8 @@ inline void sieve_polynomial(
     uint64_t lp_bound_sq,
     std::vector<SIQSRelation>& out_relations,
     std::mutex& relations_mutex,
-    std::vector<uint8_t>& sieve_buf)
+    std::vector<uint8_t>& sieve_buf,
+    std::vector<uint8_t>& exp_buf)
 {
     uint32_t M = sieve_half;
     uint32_t sieve_size = 2 * M;
@@ -628,10 +631,13 @@ inline void sieve_polynomial(
     std::memset(sieve_buf.data(), 0, sieve_size);
     uint8_t* sieve = sieve_buf.data();
 
+    // Find first FB index with p >= small_cutoff (avoid branch in hot loop)
+    size_t fb_start = 1;
+    while (fb_start < fb.size() && fb[fb_start].p < small_cutoff) fb_start++;
+
     // Phase 1: Sieve — accumulate log(p) for each FB prime
-    for (size_t i = 1; i < fb.size(); i++) {
+    for (size_t i = fb_start; i < fb.size(); i++) {
         uint32_t p = fb[i].p;
-        if (p < small_cutoff) continue;
 
         uint32_t s1 = poly.solns[i].soln1;
         uint32_t s2 = poly.solns[i].soln2;
@@ -672,25 +678,21 @@ inline void sieve_polynomial(
         bool negative = (Q < Integer(0));
         if (negative) Q = Integer(0) - Q;
 
-        // Trial divide Q by factor base primes
-        SIQSRelation rel;
-        rel.value = std::move(value);
-        rel.negative = negative;
-        rel.large_prime = 0;
-        rel.large_prime2 = 0;
-        rel.exponents.assign(fb.size(), 0);
+        // Trial divide Q by factor base primes using reusable exponent buffer
+        // (avoids per-candidate heap allocation of fb.size() bytes)
+        uint8_t* exp = exp_buf.data();
+        // Track which indices were touched for selective clear
+        uint32_t touched[256]; // max touched indices per candidate
+        size_t n_touched = 0;
 
-        // Trial divide Q by factor base primes
-        // Fast path: if Q fits in __uint128_t (≤60 digits), use native arithmetic
-        // This avoids GMP function call overhead (~20× faster per division)
         bool accept = false;
-        rel.large_prime2 = 0;
+        uint64_t large_prime = 0;
+        uint64_t large_prime2 = 0;
 
         if (Q.bit_length() <= 127) {
             // Native 128-bit trial division (no GMP)
             __uint128_t q128 = 0;
             {
-                // Extract Q as __uint128_t: Q = lo + hi * 2^64
                 mpz_t tmp_lo;
                 mpz_init(tmp_lo);
                 mpz_tdiv_r_2exp(tmp_lo, Q.get_mpz(), 64);
@@ -704,15 +706,20 @@ inline void sieve_polynomial(
             // Divide out A primes first
             for (uint32_t ai : poly.a_indices) {
                 uint32_t p = fb[ai].p;
-                while (q128 % p == 0) { q128 /= p; rel.exponents[ai]++; }
+                while (q128 % p == 0) {
+                    q128 /= p;
+                    if (exp[ai] == 0) touched[n_touched++] = ai;
+                    exp[ai]++;
+                }
             }
 
-            // Trial divide by all FB primes
-            // No early exit: SIQS FB only contains QR primes, cofactor may
-            // still have factors at non-QR primes between FB entries.
-            for (size_t i = 1; i < fb.size(); i++) {
+            // Trial divide by all FB primes (early exit when fully smooth)
+            for (size_t i = 1; i < fb.size() && q128 > 1; i++) {
                 uint32_t p = fb[i].p;
-                while (q128 % p == 0) { q128 /= p; rel.exponents[i]++; }
+                if (q128 % p == 0) {
+                    touched[n_touched++] = static_cast<uint32_t>(i);
+                    do { q128 /= p; exp[i]++; } while (q128 % p == 0);
+                }
             }
 
             // Check cofactor
@@ -721,11 +728,9 @@ inline void sieve_polynomial(
             } else if (q128 <= UINT64_MAX) {
                 uint64_t cofac = static_cast<uint64_t>(q128);
                 if (cofac <= lp_bound && cofac > 1) {
-                    rel.large_prime = cofac;
+                    large_prime = cofac;
                     accept = true;
                 } else if (lp_bound_sq > 0 && cofac <= lp_bound_sq && cofac > lp_bound) {
-                    // 2LP: quick composite check via deterministic Miller-Rabin
-                    // cofac fits uint64, use fast modular exponentiation
                     auto powmod128 = [](uint64_t base, uint64_t exp, uint64_t mod) -> uint64_t {
                         __uint128_t result = 1, b = base % mod;
                         while (exp > 0) {
@@ -735,7 +740,6 @@ inline void sieve_polynomial(
                         }
                         return static_cast<uint64_t>(result);
                     };
-                    // Sprp test with base 2
                     uint64_t d_mr = cofac - 1; int r_mr = 0;
                     while ((d_mr & 1) == 0) { d_mr >>= 1; r_mr++; }
                     uint64_t x_mr = powmod128(2, d_mr, cofac);
@@ -748,8 +752,8 @@ inline void sieve_polynomial(
                         }
                     }
                     if (is_composite) {
-                        rel.large_prime = cofac;
-                        rel.large_prime2 = 1;
+                        large_prime = cofac;
+                        large_prime2 = 1;
                         accept = true;
                     }
                 }
@@ -762,16 +766,18 @@ inline void sieve_polynomial(
 
             for (uint32_t ai : poly.a_indices) {
                 uint32_t p = fb[ai].p;
-                while (mpz_divisible_ui_p(q_mpz, p)) {
-                    mpz_divexact_ui(q_mpz, q_mpz, p);
-                    rel.exponents[ai]++;
+                if (mpz_divisible_ui_p(q_mpz, p)) {
+                    if (exp[ai] == 0) touched[n_touched++] = ai;
+                    do { mpz_divexact_ui(q_mpz, q_mpz, p); exp[ai]++; }
+                    while (mpz_divisible_ui_p(q_mpz, p));
                 }
             }
-            for (size_t i = 1; i < fb.size(); i++) {
+            for (size_t i = 1; i < fb.size() && mpz_cmp_ui(q_mpz, 1) > 0; i++) {
                 uint32_t p = fb[i].p;
-                while (mpz_divisible_ui_p(q_mpz, p)) {
-                    mpz_divexact_ui(q_mpz, q_mpz, p);
-                    rel.exponents[i]++;
+                if (mpz_divisible_ui_p(q_mpz, p)) {
+                    touched[n_touched++] = static_cast<uint32_t>(i);
+                    do { mpz_divexact_ui(q_mpz, q_mpz, p); exp[i]++; }
+                    while (mpz_divisible_ui_p(q_mpz, p));
                 }
             }
 
@@ -780,7 +786,7 @@ inline void sieve_polynomial(
             } else if (mpz_fits_ulong_p(q_mpz)) {
                 uint64_t cofac = mpz_get_ui(q_mpz);
                 if (cofac <= lp_bound && cofac > 1) {
-                    rel.large_prime = cofac;
+                    large_prime = cofac;
                     accept = true;
                 } else if (lp_bound_sq > 0 && cofac <= lp_bound_sq && cofac > lp_bound) {
                     mpz_t tmp;
@@ -788,8 +794,8 @@ inline void sieve_polynomial(
                     int is_prp = mpz_probab_prime_p(tmp, 2);
                     mpz_clear(tmp);
                     if (is_prp == 0) {
-                        rel.large_prime = cofac;
-                        rel.large_prime2 = 1;
+                        large_prime = cofac;
+                        large_prime2 = 1;
                         accept = true;
                     }
                 }
@@ -798,15 +804,26 @@ inline void sieve_polynomial(
         }
 
         if (accept) {
-            // Build fb_indices list
-            for (size_t i = 0; i < fb.size(); i++) {
-                if (rel.exponents[i] > 0) {
-                    rel.fb_indices.push_back(static_cast<uint32_t>(i));
-                }
+            SIQSRelation rel;
+            rel.value = std::move(value);
+            rel.negative = negative;
+            rel.large_prime = large_prime;
+            rel.large_prime2 = large_prime2;
+            // Copy only touched exponents (sparse → dense)
+            rel.exponents.assign(fb.size(), 0);
+            for (size_t t = 0; t < n_touched; t++) {
+                uint32_t idx = touched[t];
+                rel.exponents[idx] = exp[idx];
+                rel.fb_indices.push_back(idx);
             }
 
             std::lock_guard<std::mutex> lock(relations_mutex);
             out_relations.push_back(std::move(rel));
+        }
+
+        // Selective clear: only reset touched indices
+        for (size_t t = 0; t < n_touched; t++) {
+            exp[touched[t]] = 0;
         }
     }
 }
@@ -1336,6 +1353,8 @@ inline std::optional<SIQSResult> factor(
         local_relations.reserve(target_usable);
         std::vector<uint8_t> sieve_buf; // reuse across polynomials
         sieve_buf.reserve(params.sieve_half * 2);
+        std::vector<uint8_t> exp_buf(params.fb_size + 100, 0); // reuse across candidates
+        size_t local_full = 0, local_1lp = 0, local_2lp = 0;
 
         while (!enough.load(std::memory_order_relaxed) &&
                elapsed() < static_cast<double>(max_seconds))
@@ -1351,26 +1370,28 @@ inline std::optional<SIQSResult> factor(
             std::mutex dummy_mutex;
 
             for (size_t b_idx = 0; b_idx < num_B; b_idx++) {
+                size_t before = local_relations.size();
                 sieve_polynomial(poly, kN, fb, params.sieve_half,
                                threshold, params.small_prime_cutoff,
                                lp_bound, lp_bound_sq,
-                               local_relations, dummy_mutex, sieve_buf);
+                               local_relations, dummy_mutex, sieve_buf, exp_buf);
 
-                size_t polys_done = atomic_polys.fetch_add(1, std::memory_order_relaxed) + 1;
-
-                // Count relations locally (for atomic updates)
-                size_t local_full = 0, local_1lp = 0, local_2lp = 0;
-                for (const auto& r : local_relations) {
+                // Incrementally count new relations by type
+                for (size_t ri = before; ri < local_relations.size(); ri++) {
+                    const auto& r = local_relations[ri];
                     if (r.large_prime == 0) local_full++;
                     else if (r.large_prime2 == 0) local_1lp++;
                     else local_2lp++;
                 }
+
+                size_t polys_done = atomic_polys.fetch_add(1, std::memory_order_relaxed) + 1;
 
                 // Flush every 500 relations or 200 polys (reduce mutex contention)
                 if (local_relations.size() > 500 || polys_done % 200 == 0) {
                     atomic_full.fetch_add(local_full, std::memory_order_relaxed);
                     atomic_1lp.fetch_add(local_1lp, std::memory_order_relaxed);
                     atomic_2lp.fetch_add(local_2lp, std::memory_order_relaxed);
+                    local_full = local_1lp = local_2lp = 0;
 
                     {
                         std::lock_guard<std::mutex> lock(relations_mutex);
