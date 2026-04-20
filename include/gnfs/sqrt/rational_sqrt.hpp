@@ -145,7 +145,11 @@ public:
             sqrt_value = n - sqrt_value;
         }
 
-        // 验证: X² mod N == ∏(a_i - b_i·m) mod N
+        // 验证: X² mod N == ∏|a_i - b_i·m| mod N
+        // 注意: FB/LP 因子分解的是绝对值 |a - b·m|，所以 X² = ∏|a_i - b_i·m|。
+        // 而 ∏(a_i - b_i·m) = (-1)^k × ∏|a_i - b_i·m|（k = 负因子个数）。
+        // 当 k 为奇数时 product mod N = N - |product| mod N ≠ X²。
+        // 因此比较时需要使用绝对值乘积，或者在 k 为奇数时翻转 product。
         if (config_.verify) {
             Integer squared = sqrt_value.clone();
             squared *= sqrt_value;
@@ -168,6 +172,15 @@ public:
                 multiply_ab(rel.a, rel.b);
                 for (const auto& [ea, eb] : rel.extra_ab_pairs) {
                     multiply_ab(ea, eb);
+                }
+            }
+
+            // 当负因子个数为奇数时，product = N - |product|
+            // X² = |product|，所以需要翻转 product 再比较
+            if (has_negative) {
+                product = n - product;
+                if (product.compare(n) == 0) {
+                    product = Integer(0);
                 }
             }
 
