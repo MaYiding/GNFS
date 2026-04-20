@@ -122,19 +122,31 @@ struct BenchResult {
     size_t sq_count = 0;
 };
 
-BenchResult factor_gnfs(const Integer& n) {
+BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
     BenchResult result;
     StopWatch total;
 
     size_t bits = n.bit_length();
     auto params = GNFSParams::compute(bits);
 
+    // Force no-LP mode: set large_prime_bound = rational_bound, lp_bits=0
+    if (force_no_lp) {
+        params.large_prime_bits = 0;
+        params.large_prime_bound = params.rational_bound;
+        // Boost FB to compensate for no-LP (need more B-smooth relations)
+        // Use 4× raw target to survive singleton filter
+        params.rational_threshold = static_cast<uint16_t>(
+            std::min(1000.0, 4.0 * params.log_scale));
+        params.algebraic_threshold = params.rational_threshold;
+    }
+
     std::cout << "  N = " << n.to_string().substr(0, 50)
               << (n.to_string().size() > 50 ? "..." : "") << "\n";
     std::cout << "  Bits=" << bits << " Digits=" << params.digits
               << " Degree=" << params.degree
               << " FB=" << params.rational_bound << "/" << params.algebraic_bound
-              << " LP=" << params.large_prime_bound << "\n" << std::flush;
+              << " LP=" << params.large_prime_bound
+              << (force_no_lp ? " [NO-LP]" : "") << "\n" << std::flush;
 
     // Phase 1: Polynomial Selection
     StopWatch phase;
@@ -170,7 +182,7 @@ BenchResult factor_gnfs(const Integer& n) {
     sieve_region.j_max = params.sieve_j_max;
 
     CofactorizerConfig cofac_config;
-    cofac_config.large_prime_bound = fb.params().large_prime_bound;
+    cofac_config.large_prime_bound = params.large_prime_bound;  // Use GNFSParams, not FB hardcoded
     cofac_config.allow_1lp = true;
     cofac_config.allow_2lp = true;
 
@@ -341,7 +353,7 @@ BenchResult factor_gnfs(const Integer& n) {
     phase.reset();
 
     MatrixBuilderConfig mb_config;
-    mb_config.include_sign_column = true;
+    mb_config.include_sign_column = false;  // Sign handled by rat_sqrt has_negative logic
     mb_config.include_qc_columns = true;
     mb_config.include_class_group = false;
     mb_config.include_schirokauer = true;
@@ -383,9 +395,57 @@ BenchResult factor_gnfs(const Integer& n) {
         size_t dep_weight = popcnt(dep);
         std::cout << "    dep#" << (di+1) << " weight=" << dep_weight << std::flush;
 
+        // ── Verify expanded dep against original matrix ──
+        {
+            std::vector<uint8_t> col_parity(build_result.matrix.num_cols(), 0);
+            for (size_t r = 0; r < dep.size(); ++r) {
+                if (!dep[r]) continue;
+                for (auto c : build_result.matrix.row(r).indices()) {
+                    col_parity[c] ^= 1;
+                }
+            }
+            size_t odd_cols = 0;
+            for (size_t c = 0; c < col_parity.size(); ++c) {
+                if (col_parity[c]) ++odd_cols;
+            }
+            if (odd_cols > 0) {
+                std::cout << " DEP_INVALID(odd_cols=" << odd_cols << "/"
+                          << col_parity.size() << ")" << std::flush;
+                // Show first few offending columns
+                size_t shown = 0;
+                for (size_t c = 0; c < col_parity.size() && shown < 10; ++c) {
+                    if (col_parity[c]) {
+                        std::cout << " col" << c;
+                        ++shown;
+                    }
+                }
+                std::cout << "\n" << std::flush;
+                continue;
+            }
+            std::cout << " dep_ok" << std::flush;
+        }
+
         auto rat = compute_rational_sqrt(to_bv(dep), relations, fb, n, ctx.m());
         if (!rat.success) {
-            std::cout << " rat_sqrt FAILED\n" << std::flush;
+            std::cout << " rat_sqrt FAILED: " << rat.error << "\n" << std::flush;
+
+            // Diagnostic: find offending FB primes
+            std::unordered_map<uint32_t, uint64_t> fb_exp;
+            std::unordered_map<uint64_t, uint64_t> lp_exp;
+            for (size_t i = 0; i < relations.size(); ++i) {
+                if (!dep[i]) continue;
+                for (auto idx : relations[i].rational_factors) fb_exp[idx]++;
+                for (const auto& lp : relations[i].rational_large_prime)
+                    lp_exp[lp.p] += lp.e;
+            }
+            size_t odd_fb = 0, odd_lp = 0;
+            for (const auto& [idx, e] : fb_exp)
+                if (e % 2 != 0) ++odd_fb;
+            for (const auto& [p, e] : lp_exp)
+                if (e % 2 != 0) ++odd_lp;
+            std::cout << "      odd_fb=" << odd_fb << " odd_lp=" << odd_lp
+                      << " total_fb_keys=" << fb_exp.size()
+                      << " total_lp_keys=" << lp_exp.size() << "\n" << std::flush;
             continue;
         }
 
@@ -443,14 +503,26 @@ BenchResult factor_gnfs(const Integer& n) {
 int main(int argc, char** argv) {
     auto cases = get_test_cases();
 
+    // Parse --no-lp flag
+    bool force_no_lp = false;
+    std::vector<std::string> positional_args;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg(argv[i]);
+        if (arg == "--no-lp") {
+            force_no_lp = true;
+        } else {
+            positional_args.push_back(arg);
+        }
+    }
+
     // Check if argument is a direct number
-    if (argc == 2) {
-        std::string arg(argv[1]);
+    if (positional_args.size() == 1) {
+        const auto& arg = positional_args[0];
         if (arg.size() > 3 && std::all_of(arg.begin(), arg.end(), ::isdigit)) {
             // Direct number mode
             Integer n(arg);
             std::cout << "═══ GNFS Direct Benchmark ═══\n" << std::flush;
-            auto result = factor_gnfs(n);
+            auto result = factor_gnfs(n, force_no_lp);
             if (result.success) {
                 std::cout << "\n  TOTAL: " << std::fixed << std::setprecision(2)
                           << result.total_sec << "s"
@@ -465,24 +537,25 @@ int main(int argc, char** argv) {
     }
 
     size_t start = 0, end = cases.size() - 1;
-    if (argc >= 2) start = static_cast<size_t>(std::max(0, std::stoi(argv[1]) - 1));
-    if (argc >= 3) end = static_cast<size_t>(std::max(0, std::stoi(argv[2]) - 1));
+    if (positional_args.size() >= 1) start = static_cast<size_t>(std::max(0, std::stoi(positional_args[0]) - 1));
+    if (positional_args.size() >= 2) end = static_cast<size_t>(std::max(0, std::stoi(positional_args[1]) - 1));
     if (start >= cases.size()) start = cases.size() - 1;
     if (end >= cases.size()) end = cases.size() - 1;
     if (end < start) end = start;
 
     std::cout << "═══════════════════════════════════════════════════\n";
-    std::cout << "  GNFS Pipeline Benchmark\n";
+    std::cout << "  GNFS Pipeline Benchmark"
+              << (force_no_lp ? " [NO-LP]" : "") << "\n";
     std::cout << "═══════════════════════════════════════════════════\n\n" << std::flush;
 
     int passed = 0, failed = 0;
 
-    for (int i = start; i <= end; ++i) {
+    for (size_t i = start; i <= end; ++i) {
         auto& tc = cases[i];
         std::cout << "─── " << tc.name << " ───\n" << std::flush;
 
         Integer n(tc.n_str);
-        auto result = factor_gnfs(n);
+        auto result = factor_gnfs(n, force_no_lp);
 
         if (result.success) {
             ++passed;
