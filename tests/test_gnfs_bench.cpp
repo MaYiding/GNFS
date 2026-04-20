@@ -267,11 +267,18 @@ BenchResult factor_gnfs(const Integer& n) {
         if (collector.size() < 10) break;
 
         relations = collector.get_relations();
+        size_t pre_filter = relations.size();
+
+        // Light filtering: 1 pass to remove obvious singletons without cascade
         FilterConfig filt_config;
         filt_config.remove_singletons = true;
-        filt_config.max_passes = 10;
+        filt_config.max_passes = lp_enabled ? 5 : 1;  // No-LP: 1 pass to avoid cascade
         RelationFilter filter(filt_config);
         relations = filter.filter(std::move(relations));
+
+        std::cout << "    [filter] " << pre_filter << " -> " << relations.size()
+                  << " (" << std::setprecision(1)
+                  << (100.0 * relations.size() / pre_filter) << "% survived)\n" << std::flush;
 
         if (lp_enabled) {
             auto sep = separate_relations(std::move(relations));
