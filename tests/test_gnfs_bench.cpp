@@ -380,12 +380,21 @@ BenchResult factor_gnfs(const Integer& n) {
 
     for (size_t di = 0; di < deps.size(); ++di) {
         const auto& dep = deps[di];
+        size_t dep_weight = popcnt(dep);
+        std::cout << "    dep#" << (di+1) << " weight=" << dep_weight << std::flush;
 
         auto rat = compute_rational_sqrt(to_bv(dep), relations, fb, n, ctx.m());
-        if (!rat.success) continue;
+        if (!rat.success) {
+            std::cout << " rat_sqrt FAILED\n" << std::flush;
+            continue;
+        }
 
         auto alg = compute_algebraic_sqrt(to_bv(dep), relations, ctx);
-        if (!alg.success) continue;
+        if (!alg.success) {
+            std::cout << " alg_sqrt FAILED\n" << std::flush;
+            continue;
+        }
+        std::cout << " sqrt OK" << std::flush;
 
         for (int sign = 0; sign < 2; ++sign) {
             Integer y = (sign == 0) ? alg.value.clone() : [&](){
