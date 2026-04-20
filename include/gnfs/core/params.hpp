@@ -145,7 +145,7 @@ struct GNFSParams {
         } else if (p.digits <= 50) {
             B_rat = 80000;    B_alg = 160000;    lp_bits = 23;
         } else if (p.digits <= 55) {
-            B_rat = 100000;   B_alg = 200000;    lp_bits = 23;
+            B_rat = 400000;   B_alg = 800000;    lp_bits = 0;  // No LP: rely on full rels
         } else if (p.digits <= 60) {
             B_rat = 400000;   B_alg = 800000;    lp_bits = 26;  // CADO C60
         } else if (p.digits <= 65) {
@@ -332,12 +332,21 @@ struct GNFSParams {
     [[nodiscard]] size_t raw_relation_target(size_t matrix_columns) const {
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
             double mc = static_cast<double>(matrix_columns);
-            // Start with mc × 1.5 — aggressive initial target for fast first merge attempt.
-            // The adaptive sieve-filter-merge loop doubles each round until enough.
-            // Lower initial target gets merge rate feedback faster.
-            return static_cast<size_t>(mc * 1.5);
+            // Birthday bound: need ~sqrt(2 × LP_space × needed_usable) raw relations
+            // for LP merge to produce enough collisions.
+            double lp_space = static_cast<double>(large_prime_bound);
+            double birthday = std::sqrt(2.0 * lp_space * mc);
+            // Use max(birthday, mc × 2.0) — birthday handles LP-heavy cases,
+            // 2.0× handles cases where most relations are full.
+            double target = std::max(birthday, mc * 2.0);
+            // Cap at mc × 50 to prevent runaway targets for huge LP spaces.
+            target = std::min(target, mc * 50.0);
+            return static_cast<size_t>(target);
         }
-        return matrix_columns;
+        // No LP: need extra raw relations to survive singleton filter cascade.
+        // At ratio ~1.0, singleton filter removes 30-50% due to cascade.
+        // At ratio ~2.0, losses are manageable (~10-15%).
+        return matrix_columns * 2;
     }
 
     /// 估算筛区域大小 (位置数)
