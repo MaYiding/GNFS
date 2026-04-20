@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <unordered_set>
 #include <iomanip>
 #include <iostream>
 #include <random>
@@ -391,9 +392,20 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
     // Phase 5: Square Root
     phase.reset();
 
+    // Track failed dep weights to skip duplicates (same weight = same dep from BW)
+    std::unordered_set<size_t> failed_weights;
+
     for (size_t di = 0; di < deps.size(); ++di) {
         const auto& dep = deps[di];
         size_t dep_weight = popcnt(dep);
+
+        // Skip deps with same weight as a previously failed dep (likely duplicate)
+        if (failed_weights.count(dep_weight)) {
+            std::cout << "    dep#" << (di+1) << " weight=" << dep_weight
+                      << " SKIP (same weight as failed dep)\n" << std::flush;
+            continue;
+        }
+
         std::cout << "    dep#" << (di+1) << " weight=" << dep_weight << std::flush;
 
         // ── Verify expanded dep against original matrix ──
@@ -453,6 +465,7 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
         auto alg = compute_algebraic_sqrt(to_bv(dep), relations, ctx);
         if (!alg.success) {
             std::cout << " alg_sqrt FAILED\n" << std::flush;
+            failed_weights.insert(dep_weight);
             continue;
         }
         std::cout << " sqrt OK" << std::flush;
