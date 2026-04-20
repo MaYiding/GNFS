@@ -223,6 +223,7 @@ FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
     fb_opts.rational_bound = params_.rational_bound;
     fb_opts.algebraic_bound = params_.algebraic_bound;
     fb_opts.special_q_bound = params_.special_q_max;
+    fb_opts.large_prime_bound = params_.large_prime_bound;
     fb_opts.parallel = true;
 
     auto fb = factor_base::FactorBaseBuilder::build(ctx, fb_opts);

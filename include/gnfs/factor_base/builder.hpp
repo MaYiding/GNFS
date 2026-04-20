@@ -21,6 +21,7 @@ public:
         uint32_t rational_bound = 1000;
         uint32_t algebraic_bound = 1000;
         uint32_t special_q_bound = 0;   // Special-Q 素数上界（0 = 同 algebraic_bound）
+        uint64_t large_prime_bound = 0; // 大素数界（0 = rational_bound × 100 默认值）
         uint8_t log_scale = core::SIEVE_LOG_SCALE;  // Scale factor for log values
         bool parallel = true;
 

@@ -122,10 +122,12 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
     FactorBase fb;
 
     // Set parameters
+    uint64_t lp_bound = opts.large_prime_bound;
+    if (lp_bound == 0) lp_bound = static_cast<uint64_t>(opts.rational_bound) * 100;
     core::FactorBaseParams params(
         opts.rational_bound,
         opts.algebraic_bound,
-        opts.rational_bound * 100,  // large prime bound
+        lp_bound,
         opts.log_scale
     );
     fb.set_params(params);

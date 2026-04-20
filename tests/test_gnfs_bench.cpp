@@ -161,6 +161,7 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
     fb_opts.rational_bound = params.rational_bound;
     fb_opts.algebraic_bound = params.algebraic_bound;
     fb_opts.special_q_bound = params.special_q_max;
+    fb_opts.large_prime_bound = params.large_prime_bound;
     fb_opts.parallel = true;
     auto fb = FactorBaseBuilder::build(ctx, fb_opts);
     double fb_ms = phase.ms();
