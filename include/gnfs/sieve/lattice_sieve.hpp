@@ -452,81 +452,15 @@ private:
             }
         }
 
-        // Phase 1: scatter all prime hits to bucket regions
-        // For each prime, compute all hit positions and assign to the correct region.
-        // Use flat arrays with per-region counts for CSR-like access.
+        // Phase 1: Single-pass scatter into per-region vectors
+        // No count pass needed — vectors grow dynamically.
+        // This eliminates the 2× iteration over all primes that the old CSR approach required.
 
-        // First pass: count hits per region
-        std::vector<uint32_t> region_counts(num_regions, 0);
-
-        // Tiny primes (p < 256): very high hit density, scatter is expensive.
-        // Medium primes (256 <= p < total_area): one pass scatter.
-        // Large primes (p >= total_area): at most 1 hit total, direct compute.
         constexpr uint32_t TINY_THRESHOLD = 256;
 
-        // Count hits for medium+large primes
-        for (const auto& pe : primes) {
-            if (pe.flags != 0) continue;
-
-            if (pe.p < TINY_THRESHOLD) {
-                // Tiny primes: estimate hits per region
-                size_t hits_per_row = w / pe.p + 1;
-                size_t total_hits = hits_per_row * static_cast<size_t>(height);
-                for (size_t r = 0; r < num_regions; ++r) {
-                    size_t region_start = r * BUCKET_REGION_SIZE;
-                    size_t region_end = std::min(region_start + BUCKET_REGION_SIZE, total_area);
-                    size_t region_rows = (region_end - region_start + w - 1) / w;
-                    region_counts[r] += static_cast<uint32_t>(
-                        std::min(hits_per_row * region_rows, region_end - region_start));
-                }
-                (void)total_hits;
-            } else {
-                // Medium and large primes: exact count via row iteration
-                int32_t p32 = static_cast<int32_t>(pe.p);
-                int32_t i_mod = pe.i_mod_init;
-                int32_t imin_mod = pe.i_min_mod;
-
-                for (int32_t j = j_min; j <= j_min + height - 1; ++j) {
-                    int32_t offset = i_mod - imin_mod;
-                    if (offset < 0) offset += p32;
-
-                    size_t row_base = static_cast<size_t>(j - j_min) * w;
-
-                    for (size_t pos = row_base + static_cast<size_t>(offset);
-                         pos < row_base + w;
-                         pos += static_cast<size_t>(pe.p)) {
-                        size_t region_idx = pos >> LOG_BUCKET_REGION;
-                        if (region_idx < num_regions) region_counts[region_idx]++;
-                    }
-
-                    // advance carry-forward
-                    i_mod += pe.delta;
-                    if (i_mod >= p32) i_mod -= p32;
-                }
-            }
-        }
-
-        // Build CSR offsets
-        std::vector<uint32_t> region_offsets(num_regions + 1, 0);
-        for (size_t r = 0; r < num_regions; ++r) {
-            region_offsets[r + 1] = region_offsets[r] + region_counts[r];
-        }
-        uint32_t total_entries = region_offsets[num_regions];
-
-        // Allocate flat bucket array
-        std::vector<BucketRegionEntry> bucket_entries(total_entries);
-        std::vector<uint32_t> write_pos(num_regions);
-        std::copy(region_offsets.begin(), region_offsets.begin() + static_cast<ptrdiff_t>(num_regions),
-                  write_pos.begin());
-
-        // Second pass: scatter hits (medium + large primes only)
-        // Parallel: each thread processes a chunk of primes into thread-local
-        // per-region vectors, then merge into the flat bucket array.
-        //
-        // This avoids write contention on shared write_pos counters.
-
-        // Collect medium+large prime indices for parallel dispatch
+        // Collect medium+large prime indices for scatter
         std::vector<size_t> medium_prime_indices;
+        medium_prime_indices.reserve(primes.size());
         for (size_t pi = 0; pi < primes.size(); ++pi) {
             if (primes[pi].flags == 0 && primes[pi].p >= TINY_THRESHOLD)
                 medium_prime_indices.push_back(pi);
@@ -536,43 +470,17 @@ private:
         if (scatter_threads == 0) scatter_threads = 4;
         if (medium_prime_indices.size() < 100) scatter_threads = 1;
 
-        if (scatter_threads <= 1) {
-            // Sequential scatter (same as before)
-            for (size_t pi : medium_prime_indices) {
-                const auto& pe = primes[pi];
-                int32_t p32 = static_cast<int32_t>(pe.p);
-                int32_t i_mod = pe.i_mod_init;
-                int32_t imin_mod = pe.i_min_mod;
-                for (int32_t j = j_min; j <= j_min + height - 1; ++j) {
-                    int32_t offset = i_mod - imin_mod;
-                    if (offset < 0) offset += p32;
-                    size_t row_base = static_cast<size_t>(j - j_min) * w;
-                    for (size_t pos = row_base + static_cast<size_t>(offset);
-                         pos < row_base + w;
-                         pos += static_cast<size_t>(pe.p)) {
-                        size_t region_idx = pos >> LOG_BUCKET_REGION;
-                        if (region_idx < num_regions) {
-                            uint32_t wp = write_pos[region_idx]++;
-                            bucket_entries[wp] = {
-                                static_cast<uint16_t>(pos & (BUCKET_REGION_SIZE - 1)),
-                                pe.log_p
-                            };
-                        }
-                    }
-                    i_mod += pe.delta;
-                    if (i_mod >= p32) i_mod -= p32;
-                }
-            }
-        } else {
-            // Parallel scatter: thread-local bucket vectors, then merge
-            struct ThreadBuckets {
-                std::vector<std::vector<BucketRegionEntry>> per_region;
-            };
-            std::vector<ThreadBuckets> thread_buckets(scatter_threads);
-            for (auto& tb : thread_buckets) {
-                tb.per_region.resize(num_regions);
-            }
+        // Thread-local per-region bucket vectors (used by both serial and parallel paths)
+        struct ThreadBuckets {
+            std::vector<std::vector<BucketRegionEntry>> per_region;
+        };
+        std::vector<ThreadBuckets> thread_buckets(scatter_threads);
+        for (auto& tb : thread_buckets) {
+            tb.per_region.resize(num_regions);
+        }
 
+        // Scatter: each thread handles a chunk of primes
+        {
             size_t chunk = (medium_prime_indices.size() + scatter_threads - 1) / scatter_threads;
             std::vector<std::thread> scatter_workers;
             scatter_workers.reserve(scatter_threads);
@@ -582,7 +490,7 @@ private:
                 size_t end_idx = std::min(start + chunk, medium_prime_indices.size());
                 if (start >= medium_prime_indices.size()) break;
 
-                scatter_workers.emplace_back([&, t, start, end_idx]() {
+                auto scatter_fn = [&, t, start, end_idx]() {
                     auto& local = thread_buckets[t].per_region;
                     for (size_t pi_idx = start; pi_idx < end_idx; ++pi_idx) {
                         const auto& pe = primes[medium_prime_indices[pi_idx]];
@@ -608,22 +516,15 @@ private:
                             if (i_mod >= p32) i_mod -= p32;
                         }
                     }
-                });
-            }
-            for (auto& w_thread : scatter_workers) w_thread.join();
+                };
 
-            // Merge thread-local buckets into the flat bucket_entries array
-            for (size_t r = 0; r < num_regions; ++r) {
-                for (size_t t = 0; t < scatter_threads; ++t) {
-                    const auto& local = thread_buckets[t].per_region[r];
-                    for (const auto& entry : local) {
-                        uint32_t wp = write_pos[r]++;
-                        if (wp < total_entries) {
-                            bucket_entries[wp] = entry;
-                        }
-                    }
+                if (scatter_threads <= 1) {
+                    scatter_fn();  // Inline for single-thread case
+                } else {
+                    scatter_workers.emplace_back(scatter_fn);
                 }
             }
+            for (auto& w_thread : scatter_workers) w_thread.join();
         }
 
         // Phase 2: apply bucket regions + tiny prime stride
@@ -653,12 +554,13 @@ private:
             size_t region_start = r * BUCKET_REGION_SIZE;
             size_t region_end = std::min(region_start + BUCKET_REGION_SIZE, total_area);
 
-            // Apply scattered bucket entries for this region
-            for (uint32_t bi = region_offsets[r]; bi < region_offsets[r + 1]; ++bi) {
-                const auto& entry = bucket_entries[bi];
-                size_t pos = region_start + entry.offset;
-                if (pos < total_area) {
-                    sieve_array_[pos] += entry.log_p;
+            // Apply scattered bucket entries for this region (from all threads)
+            for (size_t t = 0; t < scatter_threads; ++t) {
+                for (const auto& entry : thread_buckets[t].per_region[r]) {
+                    size_t pos = region_start + entry.offset;
+                    if (pos < total_area) {
+                        sieve_array_[pos] += entry.log_p;
+                    }
                 }
             }
 
