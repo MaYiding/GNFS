@@ -195,20 +195,17 @@ public:
             }
 
             // 检查 P | (a - bα):
-            // Normal root: P = (p, α - r), condition: a - b*r ≡ 0 (mod p)
-            // Projective root: P = (p, ∞), condition: b ≡ 0 (mod p)
-            if (r == core::AlgebraicPrime::PROJECTIVE_ROOT) {
-                if (b % p != 0) continue;
-            } else {
-                // Compute a ≡ b·r (mod p) using mod-first to avoid int64 overflow
-                // when b > 2^31 and r is large.
+            // Normal root (99%+): P = (p, α - r), condition: a ≡ b*r (mod p)
+            // Projective root (rare): P = (p, ∞), condition: b ≡ 0 (mod p)
+            if (r != core::AlgebraicPrime::PROJECTIVE_ROOT) [[likely]] {
                 uint64_t p64 = p;
                 uint64_t b_mod = b % p64;
                 uint64_t br_mod = (b_mod * static_cast<uint64_t>(r)) % p64;
-                // a mod p (handle negative a)
                 int64_t a_mod = a % static_cast<int64_t>(p);
                 if (a_mod < 0) a_mod += p;
                 if (static_cast<uint64_t>(a_mod) != br_mod) continue;
+            } else {
+                if (b % p != 0) continue;
             }
 
             // 试除 — uint64 / uint128 / GMP 快路径

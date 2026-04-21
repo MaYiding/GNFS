@@ -338,26 +338,26 @@ struct CofactorClassification {
         }
 
         // 检查是否是素数幂
-        uint64_t base;
-        uint8_t exp;
-        if (is_perfect_power(c, base, exp) && exp > 1) {
-            if (is_probable_prime_u64(base)) {
-                if (base <= large_prime_bound) {
-                    result.type = CofactorClass::PrimePower;
-                    result.factor1 = base;
-                    result.power = exp;
-                    return result;
-                } else {
-                    // Prime base > LP bound — cannot be a valid LP
-                    result.type = CofactorClass::TooLarge;
-                    return result;
+        {
+            uint64_t base;
+            uint8_t exp;
+            if (is_perfect_power(c, base, exp) && exp > 1) {
+                if (is_probable_prime_u64(base)) {
+                    if (base <= large_prime_bound) {
+                        result.type = CofactorClass::PrimePower;
+                        result.factor1 = base;
+                        result.power = exp;
+                        return result;
+                    } else {
+                        result.type = CofactorClass::TooLarge;
+                        return result;
+                    }
                 }
             }
-            // Composite base: fall through to rho/ECM for further factoring
         }
 
         // 检查是否是半素数 (p * q)
-        // 分层策略: 小素数试除 → 小合数试除 → Pollard rho → ECM
+        // 分层策略: 小素数试除 → 中素数试除 → SQUFOF → Pollard rho → ECM
         {
             // Phase 1: 小素数预筛 (2,3,5,...,97)
             // 很多 semiprime 有小因子，25 次除法比 Pollard rho 快 100-1000×
