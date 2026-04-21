@@ -870,12 +870,14 @@ FactorResult Pipeline::run() {
                  "N is prime or probably prime");
         FactorResult r;
         r.n = n_.clone();
+        r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
         return r;
     }
     if (n_ <= Integer(1)) {
         FactorResult r;
         r.n = n_.clone();
+        r.stats = stats_;
         return r;
     }
 

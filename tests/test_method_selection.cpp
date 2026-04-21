@@ -253,6 +253,21 @@ bool test_parse_method() {
     assert(parse_method("gnfs") == FactorizationMethod::GNFS);
     assert(parse_method("unknown") == FactorizationMethod::Auto);
     assert(parse_method("") == FactorizationMethod::Auto);
+    // Case-insensitive
+    assert(parse_method("SIQS") == FactorizationMethod::SIQS);
+    assert(parse_method("Gnfs") == FactorizationMethod::GNFS);
+    assert(parse_method("TRIAL") == FactorizationMethod::TrialDivision);
+    assert(parse_method("RHO") == FactorizationMethod::PollardRho);
+    assert(parse_method("Auto") == FactorizationMethod::Auto);
+    return true;
+}
+
+bool test_prime_input_has_stats() {
+    // Prime input: method_used should still be populated via stats_
+    auto result = factorize(Integer("17"));
+    assert(!result.success);
+    assert(result.stats.n_bits > 0);
+    assert(result.stats.n_digits > 0);
     return true;
 }
 
@@ -402,6 +417,10 @@ int main() {
     std::cout << "[Reason Strings]\n";
     TEST(reason_contains_digit_count);
     TEST(reason_user_specified);
+
+    // 8. Edge cases
+    std::cout << "[Edge Cases]\n";
+    TEST(prime_input_has_stats);
 
     std::cout << "\n=== Results: " << pass_count << " passed, "
               << fail_count << " failed ===\n";

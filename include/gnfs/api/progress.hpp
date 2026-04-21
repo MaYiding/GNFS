@@ -41,13 +41,18 @@ inline const char* method_tag(FactorizationMethod m) {
     return "?";
 }
 
-/// Parse method from string (for CLI/config). Returns Auto on unknown input.
+/// Parse method from string (for CLI/config). Case-insensitive. Returns Auto on unknown.
 inline FactorizationMethod parse_method(const std::string& s) {
-    if (s == "auto")  return FactorizationMethod::Auto;
-    if (s == "trial") return FactorizationMethod::TrialDivision;
-    if (s == "rho")   return FactorizationMethod::PollardRho;
-    if (s == "siqs")  return FactorizationMethod::SIQS;
-    if (s == "gnfs")  return FactorizationMethod::GNFS;
+    // Convert to lowercase for case-insensitive matching
+    std::string lower;
+    lower.reserve(s.size());
+    for (char c : s) lower += static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+
+    if (lower == "auto")  return FactorizationMethod::Auto;
+    if (lower == "trial") return FactorizationMethod::TrialDivision;
+    if (lower == "rho")   return FactorizationMethod::PollardRho;
+    if (lower == "siqs")  return FactorizationMethod::SIQS;
+    if (lower == "gnfs")  return FactorizationMethod::GNFS;
     return FactorizationMethod::Auto;
 }
 
