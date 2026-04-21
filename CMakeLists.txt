@@ -482,6 +482,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_api PRIVATE gnfs_core Threads::Threads)
     add_test(NAME API COMMAND test_api)
 
+    # Method selection 测试
+    add_executable(test_method_selection
+        tests/test_method_selection.cpp
+    )
+    target_link_libraries(test_method_selection PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME MethodSelection COMMAND test_method_selection)
+
     # i18n 测试
     add_executable(test_i18n
         tests/test_i18n.cpp
