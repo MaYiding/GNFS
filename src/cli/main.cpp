@@ -45,6 +45,18 @@ static bool g_color = true;
 // ANSI helper — returns code if color enabled, empty string otherwise
 static const char* C(const char* code) { return g_color ? code : ""; }
 
+// Bilingual method name for CLI display (uses i18n METHOD_* strings)
+static const char* method_display_name(FactorizationMethod m) {
+    switch (m) {
+        case FactorizationMethod::Auto:          return TR(S::METHOD_AUTO);
+        case FactorizationMethod::TrialDivision: return TR(S::METHOD_TRIAL);
+        case FactorizationMethod::PollardRho:    return TR(S::METHOD_RHO);
+        case FactorizationMethod::SIQS:          return TR(S::METHOD_SIQS);
+        case FactorizationMethod::GNFS:          return TR(S::METHOD_GNFS);
+    }
+    return "?";
+}
+
 // ============================================================
 // Duration formatting
 // ============================================================
@@ -141,7 +153,7 @@ static void print_summary_box(const FactorResult& result) {
     std::snprintf(info_buf, sizeof(info_buf), "%zu bits, %zu digits", st.n_bits, st.n_digits);
     box_line(std::string("    ") + info_buf);
     box_line(std::string("    ") + TR(S::METHOD_SELECTED) + " " +
-             C(BOLD) + method_name(st.method_used) + C(RESET));
+             C(BOLD) + method_display_name(st.method_used) + C(RESET));
 
     // Factors
     if (result.success && result.factors.size() >= 2) {
@@ -449,12 +461,12 @@ static void run_repl() {
             auto m_str = line.substr(7);
             auto m = parse_method(m_str);
             repl_config.method = m;
-            std::cout << TR(S::REPL_SET_OK) << " method = " << method_name(m) << "\n";
+            std::cout << TR(S::REPL_SET_OK) << " method = " << method_display_name(m) << "\n";
             continue;
         }
         if (line == "method") {
             auto m = repl_config.method.value_or(FactorizationMethod::Auto);
-            std::cout << TR(S::METHOD_SELECTED) << " " << method_name(m) << "\n";
+            std::cout << TR(S::METHOD_SELECTED) << " " << method_display_name(m) << "\n";
             continue;
         }
 
@@ -628,7 +640,7 @@ int main(int argc, char* argv[]) {
         // Show selected method
         auto [method, reason] = Pipeline::select_method(
             n.bit_length(), n_digits, final_config.method);
-        std::cout << TR(S::METHOD_SELECTED) << " " << C(BOLD) << method_name(method)
+        std::cout << TR(S::METHOD_SELECTED) << " " << C(BOLD) << method_display_name(method)
                   << C(RESET) << C(DIM) << " (" << reason << ")" << C(RESET) << "\n\n";
     }
 
