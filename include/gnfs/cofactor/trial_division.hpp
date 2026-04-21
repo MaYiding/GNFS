@@ -52,6 +52,49 @@ public:
             return result;
         }
 
+        // uint128 快路径: |a - b*m| often fits 65-127 bits for 40-65 digit N
+        if (value.bit_length() <= 127) {
+            mpz_t tmp;
+            mpz_init(tmp);
+            mpz_tdiv_r_2exp(tmp, value.get_mpz(), 64);
+            uint64_t lo = mpz_get_ui(tmp);
+            mpz_tdiv_q_2exp(tmp, value.get_mpz(), 64);
+            uint64_t hi = mpz_get_ui(tmp);
+            mpz_clear(tmp);
+            __uint128_t v128 = (static_cast<__uint128_t>(hi) << 64) | lo;
+
+            const auto& rationals = fb_.rational();
+            for (uint32_t idx = 0; idx < rationals.size() && v128 > 1; ++idx) {
+                uint32_t p = rationals[idx].p;
+                if (v128 % p != 0) continue;
+                uint8_t exp = 0;
+                do { v128 /= p; ++exp; } while (v128 % p == 0 && exp < 255);
+                result.factor_indices.push_back(idx);
+                result.exponents.push_back(exp);
+            }
+
+            if (v128 == 1) {
+                result.is_smooth = true;
+                result.cofactor = Integer(static_cast<int64_t>(1));
+            } else if (v128 <= UINT64_MAX) {
+                result.cofactor = Integer(static_cast<uint64_t>(v128));
+            } else {
+                // Convert uint128 back to Integer
+                uint64_t rhi = static_cast<uint64_t>(v128 >> 64);
+                uint64_t rlo = static_cast<uint64_t>(v128);
+                mpz_t rtmp;
+                mpz_init(rtmp);
+                mpz_set_ui(rtmp, rhi);
+                mpz_mul_2exp(rtmp, rtmp, 64);
+                mpz_add_ui(rtmp, rtmp, rlo);
+                result.cofactor = Integer(0);
+                mpz_set(result.cofactor.get_mpz(), rtmp);
+                mpz_clear(rtmp);
+            }
+            return result;
+        }
+
+        // GMP fallback for very large rational values
         const auto& rationals = fb_.rational();
         for (uint32_t idx = 0; idx < rationals.size(); ++idx) {
             uint32_t p = rationals[idx].p;
