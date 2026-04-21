@@ -119,18 +119,34 @@ public:
         const auto& algebraics = fb_.algebraic();
         size_t alg_limit = (max_entries > 0 && max_entries < algebraics.size())
                          ? max_entries : algebraics.size();
+
+        // Three-tier fast path: uint64 → uint128 → GMP
         bool use_u64 = norm.fits_uint64();
         uint64_t norm_u64 = use_u64 ? norm.to_uint64() : 0;
+        bool use_u128 = false;
+        __uint128_t norm_u128 = 0;
+        if (!use_u64 && norm.bit_length() <= 127) {
+            use_u128 = true;
+            mpz_t tmp;
+            mpz_init(tmp);
+            mpz_tdiv_r_2exp(tmp, norm.get_mpz(), 64);
+            uint64_t lo = mpz_get_ui(tmp);
+            mpz_tdiv_q_2exp(tmp, norm.get_mpz(), 64);
+            uint64_t hi = mpz_get_ui(tmp);
+            mpz_clear(tmp);
+            norm_u128 = (static_cast<__uint128_t>(hi) << 64) | lo;
+        }
 
         for (uint32_t idx = 0; idx < alg_limit; ++idx) {
             uint32_t p = algebraics[idx].p;
             uint32_t r = algebraics[idx].r;
 
             // Fast pre-check: skip primes that don't divide the norm.
-            // This is a single modular op and eliminates ~99% of primes,
-            // avoiding the more expensive root-match check below.
+            // Three-tier: uint64 % p, uint128 % p, or GMP mpz_divisible_ui_p.
             if (use_u64) {
                 if (norm_u64 % p != 0) continue;
+            } else if (use_u128) {
+                if (norm_u128 % p != 0) continue;
             } else {
                 if (mpz_divisible_ui_p(norm.get_mpz(), p) == 0) continue;
             }
@@ -152,21 +168,43 @@ public:
                 if (static_cast<uint64_t>(a_mod) != br_mod) continue;
             }
 
-            // 试除 — uint64 快路径
+            // 试除 — uint64 / uint128 / GMP 快路径
             uint8_t exp = 0;
             if (use_u64) {
                 while (norm_u64 % p == 0 && exp < 255) {
                     norm_u64 /= p;
                     ++exp;
                 }
+            } else if (use_u128) {
+                while (norm_u128 % p == 0 && exp < 255) {
+                    norm_u128 /= p;
+                    ++exp;
+                }
+                // Check if we can downgrade to uint64
+                if (norm_u128 <= UINT64_MAX) {
+                    use_u64 = true;
+                    use_u128 = false;
+                    norm_u64 = static_cast<uint64_t>(norm_u128);
+                }
             } else {
                 while (divisible_by(norm, p) && exp < 255) {
                     divide_exact(norm, p);
                     ++exp;
                 }
+                // Check for upgrade to uint128 or uint64
                 if (norm.fits_uint64()) {
                     use_u64 = true;
                     norm_u64 = norm.to_uint64();
+                } else if (norm.bit_length() <= 127) {
+                    use_u128 = true;
+                    mpz_t tmp;
+                    mpz_init(tmp);
+                    mpz_tdiv_r_2exp(tmp, norm.get_mpz(), 64);
+                    uint64_t lo = mpz_get_ui(tmp);
+                    mpz_tdiv_q_2exp(tmp, norm.get_mpz(), 64);
+                    uint64_t hi = mpz_get_ui(tmp);
+                    mpz_clear(tmp);
+                    norm_u128 = (static_cast<__uint128_t>(hi) << 64) | lo;
                 }
             }
 
@@ -177,6 +215,10 @@ public:
 
             // 早期退出: cofactor == 1 → fully smooth
             if (use_u64 && norm_u64 == 1) {
+                result.is_smooth = true;
+                break;
+            }
+            if (use_u128 && norm_u128 == 1) {
                 result.is_smooth = true;
                 break;
             }
@@ -195,6 +237,24 @@ public:
         if (use_u64) {
             result.cofactor = Integer(norm_u64);
             if (norm_u64 == 1) result.is_smooth = true;
+        } else if (use_u128) {
+            // Convert uint128 back to Integer
+            if (norm_u128 <= UINT64_MAX) {
+                result.cofactor = Integer(static_cast<uint64_t>(norm_u128));
+            } else {
+                // Construct Integer from uint128
+                uint64_t hi = static_cast<uint64_t>(norm_u128 >> 64);
+                uint64_t lo = static_cast<uint64_t>(norm_u128);
+                mpz_t tmp;
+                mpz_init(tmp);
+                mpz_set_ui(tmp, hi);
+                mpz_mul_2exp(tmp, tmp, 64);
+                mpz_add_ui(tmp, tmp, lo);
+                result.cofactor = Integer(0);
+                mpz_set(result.cofactor.get_mpz(), tmp);
+                mpz_clear(tmp);
+            }
+            if (norm_u128 == 1) result.is_smooth = true;
         } else {
             result.cofactor = std::move(norm);
             if (result.cofactor.fits_uint64() && result.cofactor.to_uint64() == 1) {
