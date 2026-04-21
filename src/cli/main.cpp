@@ -391,6 +391,7 @@ static void run_repl() {
     repl_config.verbose = true;
 
     std::string line;
+    std::string output_fmt = "text";  // sticky: persists across REPL iterations
     while (true) {
         std::cout << C(BOLD) << TR(S::REPL_PROMPT) << C(RESET) << std::flush;
 
@@ -494,9 +495,9 @@ static void run_repl() {
             continue;
         }
 
-        std::string output_fmt = "text";
-        if (line == "json") { output_fmt = "json"; continue; }
-        if (line == "report") { output_fmt = "report"; continue; }
+        if (line == "json") { output_fmt = "json"; std::cout << "Output: JSON\n"; continue; }
+        if (line == "report") { output_fmt = "report"; std::cout << "Output: report\n"; continue; }
+        if (line == "text") { output_fmt = "text"; std::cout << "Output: text\n"; continue; }
 
         // Try as number
         try {

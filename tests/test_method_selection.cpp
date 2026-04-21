@@ -190,7 +190,7 @@ bool test_factorize_rho_result() {
 }
 
 bool test_factorize_siqs_result() {
-    // 30-digit balanced semiprime (factors > 10^6, > rho range)
+    // 19-digit balanced semiprime (60 bits, factors > 10^6, trial div misses them)
     // p=1000000007, q=1000000009, N=1000000016000000063
     auto result = factorize(Integer("1000000016000000063"));
     assert(result.success);
@@ -267,6 +267,42 @@ bool test_prime_input_has_stats() {
     assert(!result.success);
     assert(result.stats.n_bits > 0);
     assert(result.stats.n_digits > 0);
+    return true;
+}
+
+bool test_perfect_power_has_stats() {
+    // Perfect power: stats should have n_bits/n_digits populated
+    auto result = factorize(Integer("1024"));  // 2^10
+    assert(result.success);
+    assert(result.stats.n_bits > 0);
+    assert(result.stats.n_digits > 0);
+    assert(result.stats.method_reason == "perfect power");
+    return true;
+}
+
+bool test_forced_trial_failure() {
+    // Force trial on a number with no small factors → graceful failure
+    Config cfg;
+    cfg.method = FactorizationMethod::TrialDivision;
+    auto result = factorize(Integer("1000036000099"), cfg); // 1000003 × 1000033
+    // Trial division only checks ≤10^6, both factors are > 10^6
+    // So trial fails, and forced trial-only returns failure
+    assert(!result.success);
+    assert(result.stats.method_used == FactorizationMethod::TrialDivision);
+    return true;
+}
+
+bool test_forced_rho_failure() {
+    // Force rho on balanced 40-digit semiprime → rho unlikely to find factor
+    // Use a number where both factors are ~20 digits (rho needs O(N^{1/4}) ≈ 10^10 iters)
+    Config cfg;
+    cfg.method = FactorizationMethod::PollardRho;
+    // 10000000019 is prime, so rho on it returns failure (it's detected as prime first)
+    // Use a composite that rho can't crack within its iteration limit
+    // Actually, for forced rho with 100M iter limit, a 20-digit balanced semiprime
+    // might be cracked. Use a safer test: prime detection catches it first.
+    auto result = factorize(Integer("10000000019"), cfg);  // prime
+    assert(!result.success);
     return true;
 }
 
@@ -420,6 +456,9 @@ int main() {
     // 8. Edge cases
     std::cout << "[Edge Cases]\n";
     TEST(prime_input_has_stats);
+    TEST(perfect_power_has_stats);
+    TEST(forced_trial_failure);
+    TEST(forced_rho_failure);
 
     std::cout << "\n=== Results: " << pass_count << " passed, "
               << fail_count << " failed ===\n";

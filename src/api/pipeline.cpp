@@ -104,8 +104,9 @@ Integer pollard_rho_brent(const Integer& n, size_t max_iters = 1000000) {
         }
 
         if (mpz_cmp(g, n_mpz) == 0) {
-            // Backtrack
-            while (true) {
+            // Backtrack: replay individual steps to isolate factor.
+            // Bounded to 256 iterations (> max batch of 128) as safety guard.
+            for (size_t bt = 0; bt < 256; ++bt) {
                 mpz_mul(tmp, ys, ys);
                 mpz_add(tmp, tmp, c);
                 mpz_mod(ys, tmp, n_mpz);
@@ -895,6 +896,7 @@ FactorResult Pipeline::run() {
                     r.factors.push_back(root.clone());
                     r.factors.push_back(n_.clone());
                     r.factors[1] /= root;
+                    r.stats = stats_;
                     r.stats.timings.total_s = elapsed_s();
                     r.stats.method_used = FactorizationMethod::TrialDivision;
                     r.stats.method_reason = "perfect power";
