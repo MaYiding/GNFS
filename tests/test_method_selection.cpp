@@ -16,7 +16,6 @@
 #include <gnfs/core/integer.hpp>
 
 #include <cassert>
-#include <cstdio>
 #include <iostream>
 #include <string>
 

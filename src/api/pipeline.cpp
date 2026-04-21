@@ -145,9 +145,9 @@ Pipeline::select_method(size_t n_bits, size_t n_digits,
     // Auto selection based on N size:
     //
     // Trial division: always tried first (catches factors ≤ 10^6)
-    // Pollard rho: ≤25 digits (≤83 bits) — O(N^{1/4}) fast for small balanced
+    // Pollard rho: ≤24 digits (≤80 bits) — O(N^{1/4}) fast for small balanced
     // SIQS: 25-100 digits — O(L_N(1/2,1)), best for medium N
-    // GNFS: 80+ digits — O(L_N(1/3,c)), asymptotically fastest
+    // GNFS: 101+ digits — O(L_N(1/3,c)), with SIQS probe ≤100d
     //
     // Overlap zone 80-100d: SIQS tried first (lower overhead), GNFS fallback.
     // For ≤24 digits, Pollard rho handles balanced semiprimes well.

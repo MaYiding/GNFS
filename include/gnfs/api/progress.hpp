@@ -12,9 +12,9 @@ namespace gnfs::api {
 enum class FactorizationMethod {
     Auto,           // automatic selection (default)
     TrialDivision,  // trial division up to 10^6
-    PollardRho,     // Pollard rho-Brent for small N (≤25 digits)
+    PollardRho,     // Pollard rho-Brent for small N (≤24 digits)
     SIQS,           // Self-Initializing Quadratic Sieve (25-100 digits)
-    GNFS,           // General Number Field Sieve (80+ digits)
+    GNFS,           // General Number Field Sieve (101+ digits, with SIQS probe ≤100d)
 };
 
 /// Human-readable method name
