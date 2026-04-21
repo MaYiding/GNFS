@@ -16,6 +16,8 @@
 #include <gnfs/core/integer.hpp>
 
 #include <cassert>
+#include <cstdio>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -339,6 +341,24 @@ bool test_config_method_serialize() {
     return true;
 }
 
+bool test_config_from_file_method() {
+    // Write a temp config file with method field
+    const char* path = "/tmp/test_gnfs_config_method.cfg";
+    {
+        std::ofstream ofs(path);
+        ofs << "# test config\n";
+        ofs << "method = siqs\n";
+        ofs << "verbose = true\n";
+    }
+    auto cfg = Config::from_file(path);
+    assert(cfg.method.has_value());
+    assert(*cfg.method == FactorizationMethod::SIQS);
+    assert(cfg.verbose.has_value() && *cfg.verbose == true);
+    // Clean up
+    std::remove(path);
+    return true;
+}
+
 // ============================================================
 // 6. Output format includes method
 // ============================================================
@@ -440,6 +460,7 @@ int main() {
     TEST(config_method_builder);
     TEST(config_method_merge);
     TEST(config_method_serialize);
+    TEST(config_from_file_method);
 
     // 6. Output formats
     std::cout << "[Output Formats]\n";

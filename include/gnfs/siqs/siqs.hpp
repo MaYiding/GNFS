@@ -3,7 +3,8 @@
 /// @file siqs.hpp
 /// @brief Self-Initializing Quadratic Sieve (SIQS) — Contini 1997
 ///
-/// Efficient factorization for 40-95 digit semiprimes.
+/// Efficient factorization for medium composites (optimal 40-95 digits;
+/// auto-selected by pipeline for 25-100 digits).
 /// Uses polynomial self-initialization for fast switching between
 /// sieve polynomials, large-prime variation, and GF(2) linear algebra.
 
