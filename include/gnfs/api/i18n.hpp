@@ -97,6 +97,12 @@ enum class S {
     REPL_INVALID_VALUE, REPL_N_TOO_SMALL,
     REPL_FAILED, REPL_WRITTEN_TO,
 
+    // Method selection
+    METHOD_AUTO, METHOD_TRIAL, METHOD_RHO, METHOD_SIQS, METHOD_GNFS,
+    METHOD_SELECTED,    // "Method: %s (%s)"
+    HELP_OPT_METHOD,    // --method CLI help
+    REPL_HELP_METHOD,   // REPL method help
+
     _COUNT  // sentinel
 };
 
@@ -253,6 +259,18 @@ inline const Entry& get(S key) {
         {"N \xe5\xbf\x85\xe9\xa1\xbb > 1\xe3\x80\x82", "N must be > 1."},
         {"\xe5\x88\x86\xe8\xa7\xa3\xe5\xa4\xb1\xe8\xb4\xa5\xe3\x80\x82", "Factorization failed."},
         {"\xe7\xbb\x93\xe6\x9e\x9c\xe5\xb7\xb2\xe5\x86\x99\xe5\x85\xa5", "Result written to"},
+
+        // Method selection
+        {"\xe8\x87\xaa\xe5\x8a\xa8\xe9\x80\x89\xe6\x8b\xa9", "Auto"},                              // 自动选择
+        {"\xe8\xaf\x95\xe9\x99\xa4\xe6\xb3\x95", "Trial Division"},                                  // 试除法
+        {"Pollard Rho", "Pollard Rho"},
+        {"SIQS (\xe4\xba\x8c\xe6\xac\xa1\xe7\xad\x9b)", "SIQS (Quadratic Sieve)"},                  // SIQS (二次筛)
+        {"GNFS (\xe6\x95\xb0\xe5\x9f\x9f\xe7\xad\x9b)", "GNFS (Number Field Sieve)"},               // GNFS (数域筛)
+        {"\xe6\x96\xb9\xe6\xb3\x95:", "Method:"},                                                     // 方法:
+        {"  --method METHOD     \xe5\x88\x86\xe8\xa7\xa3\xe6\x96\xb9\xe6\xb3\x95 (auto/trial/rho/siqs/gnfs)",
+         "  --method METHOD     Factorization method (auto/trial/rho/siqs/gnfs)"},
+        {"  method <\xe6\x96\xb9\xe6\xb3\x95>  \xe8\xae\xbe\xe7\xbd\xae\xe5\x88\x86\xe8\xa7\xa3\xe6\x96\xb9\xe6\xb3\x95 (auto/trial/rho/siqs/gnfs)",
+         "  method <m>      Set method (auto/trial/rho/siqs/gnfs)"},
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(S::_COUNT),
                   "i18n string table size mismatch");

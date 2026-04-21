@@ -140,6 +140,8 @@ static void print_summary_box(const FactorResult& result) {
     char info_buf[64];
     std::snprintf(info_buf, sizeof(info_buf), "%zu bits, %zu digits", st.n_bits, st.n_digits);
     box_line(std::string("    ") + info_buf);
+    box_line(std::string("    ") + TR(S::METHOD_SELECTED) + " " +
+             C(BOLD) + method_name(st.method_used) + C(RESET));
 
     // Factors
     if (result.success && result.factors.size() >= 2) {
@@ -239,7 +241,8 @@ static void print_help() {
     std::cout << TR(S::HELP_OPT_OUTPUT) << "\n";
     std::cout << TR(S::HELP_OPT_CONFIG) << "\n";
     std::cout << TR(S::HELP_OPT_NO_COLOR) << "\n";
-    std::cout << TR(S::HELP_OPT_LANG) << "\n\n";
+    std::cout << TR(S::HELP_OPT_LANG) << "\n";
+    std::cout << TR(S::HELP_OPT_METHOD) << "\n\n";
     std::cout << TR(S::HELP_PARAMS) << "\n";
     std::cout << TR(S::HELP_PARAM_DEGREE) << "\n";
     std::cout << TR(S::HELP_PARAM_FB_RAT) << "\n";
@@ -398,6 +401,7 @@ static void run_repl() {
             std::cout << TR(S::REPL_HELP_QUIET) << "\n";
             std::cout << TR(S::REPL_HELP_JSON) << "\n";
             std::cout << TR(S::REPL_HELP_REPORT) << "\n";
+            std::cout << TR(S::REPL_HELP_METHOD) << "\n";
             std::cout << TR(S::REPL_HELP_SET) << "\n";
             std::cout << TR(S::REPL_HELP_CONFIG) << "\n";
             std::cout << TR(S::REPL_HELP_RESET) << "\n";
@@ -440,6 +444,20 @@ static void run_repl() {
             continue;
         }
 
+        // Method selection: "method auto", "method siqs", etc.
+        if (line.substr(0, 7) == "method ") {
+            auto m_str = line.substr(7);
+            auto m = parse_method(m_str);
+            repl_config.method = m;
+            std::cout << TR(S::REPL_SET_OK) << " method = " << method_name(m) << "\n";
+            continue;
+        }
+        if (line == "method") {
+            auto m = repl_config.method.value_or(FactorizationMethod::Auto);
+            std::cout << TR(S::METHOD_SELECTED) << " " << method_name(m) << "\n";
+            continue;
+        }
+
         if (line.substr(0, 4) == "set ") {
             auto rest = line.substr(4);
             auto sp = rest.find(' ');
@@ -450,7 +468,8 @@ static void run_repl() {
             std::string key = rest.substr(0, sp);
             std::string val = rest.substr(sp + 1);
             try {
-                if (key == "degree") repl_config.degree = static_cast<uint32_t>(std::stoul(val));
+                if (key == "method") repl_config.method = parse_method(val);
+                else if (key == "degree") repl_config.degree = static_cast<uint32_t>(std::stoul(val));
                 else if (key == "rational_bound" || key == "fb_rational") repl_config.rational_bound = static_cast<uint32_t>(std::stoul(val));
                 else if (key == "algebraic_bound" || key == "fb_algebraic") repl_config.algebraic_bound = static_cast<uint32_t>(std::stoul(val));
                 else if (key == "large_prime_bound" || key == "lp_bound") repl_config.large_prime_bound = std::stoull(val);
@@ -545,6 +564,7 @@ int main(int argc, char* argv[]) {
         else if (arg == "--report") output_format = "report";
         else if (arg == "--no-color") g_color = false;
         else if (arg == "--lang" && i + 1 < argc) set_lang(argv[++i]);
+        else if (arg == "--method" && i + 1 < argc) cli_config.method = parse_method(argv[++i]);
         else if ((arg == "-o" || arg == "--output") && i + 1 < argc) output_file = argv[++i];
         else if ((arg == "-c" || arg == "--config") && i + 1 < argc) config_file = argv[++i];
         else if (arg == "--degree" && i + 1 < argc) cli_config.degree = static_cast<uint32_t>(std::stoul(argv[++i]));
@@ -600,8 +620,16 @@ int main(int argc, char* argv[]) {
     // Run
     if (!quiet) {
         print_banner();
+        size_t n_digits = gnfs::core::GNFSParams::compute(n.bit_length()).digits;
         std::cout << TR(S::FACTORING) << " " << n.to_string()
-                  << " (" << n.bit_length() << " bits)\n\n";
+                  << " (" << n.bit_length() << " bits, "
+                  << n_digits << " digits)\n";
+
+        // Show selected method
+        auto [method, reason] = Pipeline::select_method(
+            n.bit_length(), n_digits, final_config.method);
+        std::cout << TR(S::METHOD_SELECTED) << " " << C(BOLD) << method_name(method)
+                  << C(RESET) << C(DIM) << " (" << reason << ")" << C(RESET) << "\n\n";
     }
 
     Pipeline pipeline(n, final_config);
