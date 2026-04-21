@@ -5,7 +5,7 @@
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
 [![License: GPL-2.0](https://img.shields.io/badge/License-GPL%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
-[![Tests](https://img.shields.io/badge/tests-41%20files-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-42%20files-brightgreen.svg)]()
 [![LoC](https://img.shields.io/badge/lines%20of%20code-~41K-informational.svg)]()
 
 C++20 实现的工业级**一般数域筛法** (General Number Field Sieve)。
@@ -34,33 +34,80 @@ GNFS 是已知最强的经典大整数分解算法，RSA 破纪录分解背后�
 
 ## 亮点
 
-- **完整 8 阶段流水线**: 多项式选择 → 因子基 → 筛法 → 余因子 → 关系收集 → 线性代数 → 平方根 → GCD，全部实现并集成
-- **验证正确性**: 成功分解 8-bit 到 200-bit (60 位十进制) 的整数，配备 5 级渐进测试套件和回归门禁
-- **高性能**: 多线程格筛 + bucket sieve 处理大因子基，并行 Block Lanczos / Block Wiedemann，Nguyen 混合平方根 (比朴素 CRT 快 200 倍)
-- **生产质量**: 41 个测试文件涵盖单元/集成/回归/E2E/渐进/压力测试；全程溢出安全算术；线程安全关系收集
+- **多方法自动分解**: 根据 N 的大小自动选择最优算法——Trial Division (≤6d) → Pollard Rho (7-24d) → SIQS (25-100d) → GNFS (100d+)，也支持 `--method` 手动指定
+- **完整 8 阶段 GNFS 流水线**: 多项式选择 → 因子基 → 筛法 → 余因子 → 关系收集 → 线性代数 → 平方根 → GCD，全部实现并集成
+- **已验证到 65 位十进制 (213 bit)**: 65d 平衡半素数 24s (Release)，配备 5 级渐进测试 + 回归门禁 + 42 个测试文件
+- **高性能**: 多线程格筛 + bucket sieve，并行 Block Lanczos / Block Wiedemann，Nguyen 混合平方根 (200× 加速)
+- **SIQS 引擎**: Contini 自初始化二次筛——25d=0.17s, 49d=0.9s, 59d=6.9s, 65d=24s (Release, Apple M1)
 - **双求解器**: Block Lanczos 和 Block Wiedemann 两种 GF(2) 零空间求解器，SGE 预处理 + Gaussian 小矩阵回退
 - **Out-of-Core 支持**: mmap 支撑的 CSR 矩阵和关系存储，适用于内存受限的大规模分解
 - **多策略余因子分解**: 试除 + SQUFOF (2-word 余因子) + ECM (Montgomery 曲线, Stage 1+2 BSGS) + 光滑性验证
 - **自适应参数**: CADO-NFS 校准参数表 + L_N 启发式 + 经验微调；Kleinjung 自适应缩放适配大输入
-- **统一 CLI**: `./gnfs <数字>` 一键分解，双语 UI (中/英)，进度显示，JSON/CSV/报告输出
-- **简洁 C++ API**: 高层 `factorize()` 一行调用 + 底层 `Pipeline` 类逐步控制
+- **统一 CLI**: `./gnfs <数字>` 一键分解，`--method` 方法选择，双语 UI (中/英)，JSON/CSV/报告输出
+- **简洁 C++ API**: 高层 `factorize()` 一行调用 + 底层 `Pipeline` 类逐步控制 + 方法选择引擎
 
 ## 分解结果
 
-| 级别 | N (示例) | 位数 | 十进制位 | 耗时 | 备注 |
-|------|----------|------|----------|------|------|
-| L1 | 143, 9991, 10403 | 8–14 | 3–5 | ~1.5s | 极小 |
-| L2 | 96091, 100160063 | 17–27 | 5–9 | ~1.5s | 瞬时 |
-| L3 | 1000036000099 | 40 | 13 | ~4s | 快速 |
-| L4 | 100000980001501 | 47 | 15 | ~11s | 秒级 |
-| L5 | 1253371692427905599 | 61 | 19 | ~43s | 半分钟 |
-| 25 位 | 1669994516749619561652133 | 81 | 25 | **48ms** | Pollard rho |
-| 35 位 | (116-bit 半素数) | 116 | 35 | **2.5s** | Pollard rho |
-| 45 位 | (147-bit 半素数) | 147 | 45 | **20.7min** | GNFS |
-| 50 位 | (160-bit 半素数) | 160 | 50 | **23.7min** | GNFS |
-| 60 位 | (200-bit 半素数) | 200 | 60 | 测试中 | GNFS |
+> 以下为 **Release 模式** 在 Apple M1 上对**平衡半素数**的实测数据。
+> 自动方法选择: Trial (≤6d) → Pollard Rho (7-24d) → SIQS (25-100d) → GNFS (100d+)
 
-**≤42 位**: Pollard rho Brent 快速路径 (≤140 bit)。**>42 位**: 全自动 GNFS 管道。
+### 按方法分类
+
+**Trial Division** — O(10^6) 除法，<1ms
+
+| 十进制位 | N (示例) | bits | 耗时 | 备注 |
+|:--------:|----------|:----:|-----:|------|
+| 3 | 143 = 11 × 13 | 8 | <1ms | 瞬时 |
+| 6 | 96091 = 307 × 313 | 17 | <1ms | 瞬时 |
+| 10 | 1000036099 = 31 × 32259229 | 30 | <1ms | 有小因子 |
+
+**Pollard Rho** — O(p^{1/2}) ≈ O(N^{1/4}) 对平衡半素数
+
+| 十进制位 | N (示例) | bits | 耗时 | 备注 |
+|:--------:|----------|:----:|-----:|------|
+| 13 | 1000036000099 | 40 | **1.6ms** | 平衡 |
+| 15 | 100000980001501 | 47 | **1.3ms** | 平衡 |
+| 19 | 1253371692427905599 | 61 | **2.7ms** | 平衡 |
+| 20 | 9869605258179967459 | 64 | **3.5ms** | 平衡 |
+| 22 | 986960447655171329111 | 70 | **14ms** | 平衡 |
+
+**SIQS (二次筛)** — O(L_N(1/2, 1))，25-100d 最优
+
+| 十进制位 | bits | 耗时 | 多项式数 | 备注 |
+|:--------:|:----:|-----:|---------:|------|
+| 25 | 81 | **0.17s** | 411 | |
+| 33 | 109 | **0.51s** | 811 | |
+| 35 | 113 | **0.51s** | 411 | |
+| 39 | 127 | **0.30s** | 2,012 | |
+| 45 | 147 | **0.72s** | 2,012 | |
+| 49 | 160 | **0.90s** | 9,211 | |
+| 55 | 180 | **3.8s** | 32,012 | |
+| 59 | 193 | **6.9s** | 97,611 | |
+| 65 | 213 | **24s** | 106,011 | |
+
+**GNFS (数域筛)** — O(L_N(1/3, c))，100d+ 或 SIQS 回退
+
+| 十进制位 | bits | 耗时 | 备注 |
+|:--------:|:----:|-----:|------|
+| 34 | 116 | ~8.9min | Debug 模式实测 |
+| 45 | 147 | ~20min | Debug 模式 (SIQS 24× 更快) |
+| 50 | 164 | ~2.6h | 压力测试 |
+
+### 方法选择逻辑
+
+```
+输入 N
+  │
+  ├─ 因子 ≤ 10^6 ?  ─── Trial Division ───→ <1ms
+  │
+  ├─ ≤ 24d (80 bit) ?  ─── Pollard Rho ───→ 1-14ms
+  │
+  ├─ 25-100d ?  ─── SIQS ───→ 0.17s ~ 分钟级
+  │
+  └─ > 100d ?  ─── GNFS ───→ 小时 ~ 天级
+```
+
+用 `--method` 可手动指定: `./build/gnfs 12345 --method siqs`
 
 ## 快速开始
 
@@ -102,8 +149,13 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 ### 分解一个数
 
 ```bash
-# 一键分解
+# 一键分解 (自动选择最优方法)
 ./build/gnfs 96091
+
+# 指定分解方法
+./build/gnfs 1000036000099 --method siqs    # 强制 SIQS
+./build/gnfs 1000036000099 --method rho     # 强制 Pollard rho
+./build/gnfs 1000036000099 --method gnfs    # 强制 GNFS
 
 # JSON 输出
 ./build/gnfs 1000036000099 --json
@@ -133,7 +185,8 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
    ╚══════════════════════════════════════╝
    General Number Field Sieve v0.1.0
 
-分解: 96091 (17 bits)
+分解: 96091 (17 bits, 5 digits)
+方法: 试除法 (5d/17bit: trial division sufficient)
 
    ✓ 因子基                                   [12ms]
    ✓ 筛法                                    [1.35s]
@@ -146,6 +199,7 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
    ╠══════════════════════════════════════════════════╣
    ║  N = 96091                                       ║
    ║      17 bits, 5 digits                           ║
+   ║      方法: 试除法                                ║
    ║                                                  ║
    ║  = 307 × 313                                     ║
    ╠══════════════════════════════════════════════════╣
@@ -179,6 +233,9 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
   --quiet                          最简输出 (仅结果)
   --no-color                       禁用 ANSI 颜色
 
+方法选择:
+  --method <method>                分解方法 (auto/trial/rho/siqs/gnfs, 默认: auto)
+
 语言:
   --lang <zh|en>                   UI 语言 (默认: zh = 中文)
 
@@ -204,6 +261,7 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
 ```ini
 # gnfs.cfg — 示例配置
+method = auto                  # auto/trial/rho/siqs/gnfs
 degree = 4
 rational_bound = 50000
 algebraic_bound = 100000
@@ -232,12 +290,16 @@ auto result = gnfs::api::factorize("1000036000099");
 // 完整 JSON 输出
 std::cout << result.to_json();
 
-// 自定义配置
+// 自定义配置 + 方法选择
 gnfs::api::Config cfg;
-cfg.degree = 4;
+cfg.method = gnfs::api::FactorizationMethod::SIQS;  // 强制 SIQS
 cfg.verbose = false;
 cfg.threads = 8;
 auto result = gnfs::api::factorize(n, cfg);
+
+// 查看使用了哪种方法
+std::cout << gnfs::api::method_name(result.stats.method_used) << "\n";
+// → "SIQS" (或 "Trial Division" 如果有小因子)
 
 // 带进度回调
 auto result = gnfs::api::factorize(n, cfg, [](const auto& info) {
@@ -281,12 +343,15 @@ struct FactorResult {
     std::vector<Integer> factors; // 找到的因子 (升序)
     FactorStats stats;            // 详细统计
 
-    std::string to_text();   // "N = p * q\nTime: 1.0s (25 digits, 81 bits)"
-    std::string to_json();   // 完整 JSON (含全部统计)
-    std::string to_csv();    // "N,p,q,bits,digits,time_s,success"
+    std::string to_text();   // "N = p * q\nMethod: SIQS | Time: 0.9s"
+    std::string to_json();   // 完整 JSON (含方法 + 全部统计)
+    std::string to_csv();    // "N,success,method,p,q,bits,digits,time_s"
+    std::string to_report(); // 详细文本报告
 };
 
 struct FactorStats {
+    FactorizationMethod method_used;  // 实际使用的方法
+    std::string method_reason;        // 为什么选这个方法
     // 输入: n_bits, n_digits, degree
     // 因子基: rational/algebraic primes, bounds
     // 筛法: special_q_processed, candidates, relations
@@ -295,12 +360,21 @@ struct FactorStats {
     // 平方根: dependencies_tried
     // 计时: 各阶段耗时 + 总计
 };
+
+// 方法枚举
+enum class FactorizationMethod {
+    Auto,           // 自动选择 (默认)
+    TrialDivision,  // 试除法 (≤6d)
+    PollardRho,     // Pollard rho (7-24d)
+    SIQS,           // 二次筛 (25-100d)
+    GNFS,           // 数域筛 (100d+)
+};
 ```
 
 ## 架构
 
 ```
-include/gnfs/           # 53 个头文件 (.hpp)
+include/gnfs/           # 54 个头文件 (.hpp)
 ├── api/           (6)  # Config, Pipeline, Factorizer, Result, Progress, i18n
 ├── core/          (6)  # Integer, Polynomial, Relation, Params, PolynomialContext, Types
 ├── polynomial/    (6)  # Kleinjung, Murphy E, Base-m, IntPolynomial, Optimizer, SelectorDispatch
@@ -312,6 +386,7 @@ include/gnfs/           # 53 个头文件 (.hpp)
 │                       # Schirokauer, SparseMatrix, MmapCSRMatrix
 ├── sqrt/          (7)  # AlgebraicSqrt, HenselSqrt, Couveignes, RationalSqrt,
 │                       # ClassGroup, ModularPoly, NumberField
+├── siqs/          (1)  # SIQS — Self-Initializing Quadratic Sieve (Contini 1997)
 └── util/          (6)  # SmallVector, ThreadPool, Logger, Timer, MmapFile, SafeMath
 
 src/                    # 14 个源文件 (.cpp)
@@ -340,6 +415,7 @@ tests/                  # 41 个测试文件 (.cpp)
 | **relation** | 3 | `RelationCollector`, `RelationFilter`, `OOCRelationStore` | 线程安全收集, 1LP+2LP 图合并, mmap out-of-core 存储 |
 | **linalg** | 8 | `BlockLanczos`, `BlockWiedemann`, `Gaussian`, `SGE`, `MatrixBuilder`, `SparseMatrix`, `MmapCSR`, `Schirokauer` | GF(2) 零空间求解 + SGE 预处理 + 双求解器 + Schirokauer 映射 |
 | **sqrt** | 7 | `AlgebraicSqrt`, `HenselSqrt`, `Couveignes`, `RationalSqrt`, `ClassGroup`, `ModularPoly`, `NumberField` | 平方根: Nguyen Hybrid (Hensel+CRT) 为主, Couveignes 备选; 类群特征 |
+| **siqs** | 1 | `SIQS` | 自初始化二次筛 (Contini 1997): 多项式自初始化, 大素数变体, Knuth-Schroeppel 乘子, 1LP+2LP 合并, GF(2) 线性代数 |
 | **util** | 6 | `SmallVector`, `ThreadPool`, `Logger`, `Timer`, `MmapFile`, `SafeMath` | 工具集: 栈分配小向量、work-stealing 线程池、mmap 文件 I/O |
 
 ## 流水线 — 8 个阶段
@@ -448,7 +524,7 @@ tests/                  # 41 个测试文件 (.cpp)
 
 ```bash
 # 日常开发 (最常用)
-./scripts/test.sh                      # 冒烟: 23 个即时测试, ~5s
+./scripts/test.sh                      # 冒烟: 24 个即时测试, ~5s
 ./scripts/test.sh changed              # 根据 git diff 自动检测受影响模块
 ./scripts/test.sh changed --deep       # 同上 + 级联依赖模块
 
@@ -496,13 +572,13 @@ tests/                  # 41 个测试文件 (.cpp)
 
 | 分级 | 超时 | 测试 | 描述 |
 |------|------|------|------|
-| **instant** | 10s | 11 | 单元测试: integer, small_vector, thread_pool, factor_base, special_q, relation_collector, cofactor, linalg, sqrt, sqrt_debug, murphy |
+| **instant** | 10s | 15 | 单元测试: integer, small_vector, thread_pool, factor_base, special_q, relation_collector, cofactor, linalg, sqrt, sqrt_debug, murphy, api, i18n, method_selection 等 |
 | **fast** | 60s | 1 | 筛法集成 (test_sieve_basic) |
 | **slow** | 120–300s | 5 | 回归门禁, Kleinjung, 格筛, E2E 流水线, factor_with_kleinjung |
 | **heavy** | 600–3600s | 3 | 渐进 L3-L5, 25 位基准, Kleinjung large |
 | **stress** | 43200s | 1 | 50 位 (L1) + 60 位 (L2) + 100 位 (L3) |
 
-### 测试文件 (共 41 个)
+### 测试文件 (共 42 个)
 
 | 分类 | 测试 | 描述 |
 |------|------|------|
@@ -517,7 +593,7 @@ tests/                  # 41 个测试文件 (.cpp)
 | **集成** | test_integration, test_edge_cases, test_regressions, test_regression_gate | 跨模块, 边界条件 |
 | **E2E** | test_gnfs_e2e, test_factor_with_kleinjung, test_gnfs_progressive | 完整流水线测试 |
 | **基准** | test_25digit, test_stress | 性能基准测试 |
-| **API** | test_api, test_i18n, test_params | 公开 API, 国际化, 参数 |
+| **API** | test_api, test_i18n, test_params, test_method_selection | 公开 API, 国际化, 参数, 方法选择 (35 用例) |
 
 ### 场景推荐
 
@@ -630,7 +706,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DGNFS_BUILD_TESTS=OFF
 
 ```
 GNFS/
-├── include/gnfs/           # 53 个头文件 (.hpp), 10 个子模块
+├── include/gnfs/           # 54 个头文件 (.hpp), 11 个子模块
 │   ├── api/           (6)  # 公开 API 层
 │   ├── core/          (6)  # 基础类型
 │   ├── polynomial/    (6)  # 多项式选择
@@ -640,6 +716,7 @@ GNFS/
 │   ├── relation/      (3)  # 关系收集与合并
 │   ├── linalg/        (8)  # 线性代数求解器
 │   ├── sqrt/          (7)  # 平方根提取
+│   ├── siqs/          (1)  # 二次筛 (SIQS)
 │   └── util/          (6)  # 工具集
 ├── src/                    # 14 个源文件 (.cpp)
 │   ├── api/           (2)  # Pipeline, Factorizer
@@ -650,7 +727,7 @@ GNFS/
 │   ├── polynomial/    (1)  # Base-m
 │   ├── sieve/         (1)  # Lattice Sieve
 │   └── sqrt/          (2)  # Algebraic Sqrt, Rational Sqrt
-├── tests/                  # 41 个测试文件 (.cpp)
+├── tests/                  # 42 个测试文件 (.cpp)
 ├── scripts/
 │   ├── test.sh             # 统一测试运行器 (超时, 分级, 心跳)
 │   └── feature-branch.sh   # 特性分支工作流工具
@@ -668,10 +745,10 @@ GNFS/
 
 | 分类 | 文件 | 行数 | 描述 |
 |------|:----:|-----:|------|
-| 头文件 | 53 | ~18,700 | 模板密集设计; 大部分实现在 `.hpp` 中 |
+| 头文件 | 54 | ~20,000 | 模板密集设计; 大部分实现在 `.hpp` 中 (含 SIQS 1300+ 行) |
 | 源文件 | 14 | ~3,600 | 编译实现文件 |
-| 测试 | 41 | ~19,000 | 单元 / 集成 / 回归 / E2E / 压力 |
-| **合计** | **108** | **~41,200** | |
+| 测试 | 42 | ~19,500 | 单元 / 集成 / 回归 / E2E / 压力 / 方法选择 (35 用例) |
+| **合计** | **110** | **~43,100** | |
 
 ## 贡献
 

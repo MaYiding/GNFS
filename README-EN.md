@@ -5,7 +5,7 @@
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
 [![License: GPL-2.0](https://img.shields.io/badge/License-GPL%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
-[![Tests](https://img.shields.io/badge/tests-41%20files-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-42%20files-brightgreen.svg)]()
 [![LoC](https://img.shields.io/badge/lines%20of%20code-~41K-informational.svg)]()
 
 Industrial-grade **General Number Field Sieve** implementation in C++20.
@@ -34,31 +34,79 @@ GNFS is the most powerful known classical algorithm for factoring large composit
 
 ## Highlights
 
-- **Complete 8-stage pipeline**: Polynomial Selection → Factor Base → Sieving → Cofactorization → Relation Collection → Linear Algebra → Square Root → GCD — fully implemented and integrated
-- **Verified correctness**: Successfully factors integers from 8-bit to 200-bit (60-digit), with a 5-level progressive test suite and regression gate
-- **High performance**: Multi-threaded lattice sieve with bucket sieve for large factor bases, parallel Block Lanczos / Block Wiedemann, Nguyen Hybrid square root (200x faster than naive CRT)
-- **Production quality**: 41 test files covering unit tests, integration, regression, E2E, progressive, and stress tests; overflow-safe arithmetic throughout; thread-safe relation collection
-- **Dual solver**: Both Block Lanczos and Block Wiedemann null-space solvers for GF(2) matrices, with SGE preprocessing and Gaussian fallback for small matrices
-- **Out-of-core support**: mmap-backed CSR matrix and relation storage infrastructure for memory-constrained large factorizations
-- **Multiple cofactorization strategies**: Trial division + SQUFOF (for 2-word cofactors) + ECM (Montgomery curves, Stage 1+2 BSGS) + smoothness verification
-- **Adaptive parameters**: CADO-NFS calibrated parameter tables with L_N heuristic + empirical fine-tuning; Kleinjung adaptive scaling for large inputs
-- **Unified CLI**: `./gnfs <number>` one-command factorization with bilingual UI (Chinese/English), progress display, JSON/CSV/report output
-- **Clean C++ API**: Both high-level `factorize()` one-liner and step-by-step `Pipeline` class for full control
+- **Multi-method auto-selection**: Automatically picks the optimal algorithm by N size — Trial Division (≤6d) → Pollard Rho (7-24d) → SIQS (25-100d) → GNFS (100d+), with `--method` manual override
+- **Complete 8-stage GNFS pipeline**: Polynomial Selection → Factor Base → Sieving → Cofactorization → Relation Collection → Linear Algebra → Square Root → GCD — fully implemented and integrated
+- **Verified up to 65 decimal digits (213-bit)**: 65d balanced semiprime in 24s (Release), with progressive test suite + regression gate + 42 test files
+- **High performance**: Multi-threaded lattice sieve + bucket sieve, parallel Block Lanczos / Block Wiedemann, Nguyen Hybrid square root (200x speedup)
+- **SIQS engine**: Contini self-initializing quadratic sieve — 25d=0.17s, 49d=0.9s, 59d=6.9s, 65d=24s (Release, Apple M1)
+- **Dual solver**: Both Block Lanczos and Block Wiedemann GF(2) null-space solvers, with SGE preprocessing and Gaussian fallback
+- **Out-of-core support**: mmap-backed CSR matrix and relation storage for memory-constrained large factorizations
+- **Multiple cofactorization strategies**: Trial division + SQUFOF (2-word cofactors) + ECM (Montgomery curves, Stage 1+2 BSGS) + smoothness verification
+- **Adaptive parameters**: CADO-NFS calibrated parameter tables + L_N heuristic + empirical fine-tuning; Kleinjung adaptive scaling for large inputs
+- **Unified CLI**: `./gnfs <number>` one-command factorization, `--method` selection, bilingual UI (Chinese/English), JSON/CSV/report output
+- **Clean C++ API**: High-level `factorize()` one-liner + step-by-step `Pipeline` class + method selection engine
 
 ## Factorization Results
 
-| Level | N (example) | Bits | Digits | Time | Notes |
-|-------|-------------|------|--------|------|-------|
-| L1 | 143, 9991, 10403 | 8–14 | 3–5 | ~1.5s | Trivial |
-| L2 | 96091, 100160063 | 17–27 | 5–9 | ~1.5s | Instant |
-| L3 | 1000036000099 | 40 | 13 | ~4s | Quick |
-| L4 | 100000980001501 | 47 | 15 | ~11s | Seconds |
-| L5 | 1253371692427905599 | 61 | 19 | ~43s | Half-minute |
-| 25-digit | 1669994516749619561652133 | 81 | 25 | **48ms** | Pollard rho fast path |
-| 50-digit | (164-bit semiprime) | 164 | 50 | ~2.6h | Stress test |
-| 60-digit | (200-bit semiprime) | 200 | 60 | hours | Stress test |
+> Benchmarks in **Release mode** on Apple M1 with **balanced semiprimes**.
+> Auto method selection: Trial (≤6d) → Pollard Rho (7-24d) → SIQS (25-100d) → GNFS (100d+)
 
-**≤27-digit**: Pollard rho Brent fast path auto-enabled, typically <100ms. **GNFS only starts at >90 bits**.
+### By Method
+
+**Trial Division** — O(10^6) divisions, <1ms
+
+| Digits | N (example) | Bits | Time | Notes |
+|:------:|-------------|:----:|-----:|-------|
+| 3 | 143 = 11 × 13 | 8 | <1ms | Instant |
+| 6 | 96091 = 307 × 313 | 17 | <1ms | Instant |
+| 10 | 1000036099 = 31 × 32259229 | 30 | <1ms | Small factor |
+
+**Pollard Rho** — O(p^{1/2}) ≈ O(N^{1/4}) for balanced semiprimes
+
+| Digits | N (example) | Bits | Time | Notes |
+|:------:|-------------|:----:|-----:|-------|
+| 13 | 1000036000099 | 40 | **1.6ms** | Balanced |
+| 15 | 100000980001501 | 47 | **1.3ms** | Balanced |
+| 19 | 1253371692427905599 | 61 | **2.7ms** | Balanced |
+| 20 | 9869605258179967459 | 64 | **3.5ms** | Balanced |
+| 22 | 986960447655171329111 | 70 | **14ms** | Balanced |
+
+**SIQS (Quadratic Sieve)** — O(L_N(1/2, 1)), optimal for 25-100d
+
+| Digits | Bits | Time | Polynomials | Notes |
+|:------:|:----:|-----:|------------:|-------|
+| 25 | 81 | **0.17s** | 411 | |
+| 33 | 109 | **0.51s** | 811 | |
+| 39 | 127 | **0.30s** | 2,012 | |
+| 45 | 147 | **0.72s** | 2,012 | |
+| 49 | 160 | **0.90s** | 9,211 | |
+| 55 | 180 | **3.8s** | 32,012 | |
+| 59 | 193 | **6.9s** | 97,611 | |
+| 65 | 213 | **24s** | 106,011 | |
+
+**GNFS (Number Field Sieve)** — O(L_N(1/3, c)), for 100d+ or SIQS fallback
+
+| Digits | Bits | Time | Notes |
+|:------:|:----:|-----:|-------|
+| 34 | 116 | ~8.9min | Debug mode |
+| 45 | 147 | ~20min | Debug (SIQS is 24× faster) |
+| 50 | 164 | ~2.6h | Stress test |
+
+### Method Selection Logic
+
+```
+Input N
+  │
+  ├─ Factor ≤ 10^6 ?  ─── Trial Division ───→ <1ms
+  │
+  ├─ ≤ 24d (80 bit) ?  ─── Pollard Rho ───→ 1-14ms
+  │
+  ├─ 25-100d ?  ─── SIQS ───→ 0.17s ~ minutes
+  │
+  └─ > 100d ?  ─── GNFS ───→ hours ~ days
+```
+
+Use `--method` to override: `./build/gnfs 12345 --method siqs`
 
 ## Quick Start
 
@@ -100,8 +148,13 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 ### Factorize a Number
 
 ```bash
-# One-command factorization
+# One-command factorization (auto-selects best method)
 ./build/gnfs 96091
+
+# Specify factorization method
+./build/gnfs 1000036000099 --method siqs    # Force SIQS
+./build/gnfs 1000036000099 --method rho     # Force Pollard rho
+./build/gnfs 1000036000099 --method gnfs    # Force GNFS
 
 # With JSON output
 ./build/gnfs 1000036000099 --json
@@ -177,6 +230,9 @@ Output options:
   --quiet                          Minimal output (result only)
   --no-color                       Disable ANSI color codes
 
+Method selection:
+  --method <method>                Factorization method (auto/trial/rho/siqs/gnfs, default: auto)
+
 Language:
   --lang <zh|en>                   UI language (default: zh = Chinese)
 
@@ -202,6 +258,7 @@ Other:
 
 ```ini
 # gnfs.cfg — example configuration
+method = auto                  # auto/trial/rho/siqs/gnfs
 degree = 4
 rational_bound = 50000
 algebraic_bound = 100000
@@ -230,12 +287,16 @@ auto result = gnfs::api::factorize("1000036000099");
 // Full JSON output
 std::cout << result.to_json();
 
-// With custom config
+// With custom config + method selection
 gnfs::api::Config cfg;
-cfg.degree = 4;
+cfg.method = gnfs::api::FactorizationMethod::SIQS;  // force SIQS
 cfg.verbose = false;
 cfg.threads = 8;
 auto result = gnfs::api::factorize(n, cfg);
+
+// Check which method was actually used
+std::cout << gnfs::api::method_name(result.stats.method_used) << "\n";
+// → "SIQS" (or "Trial Division" if a small factor was found first)
 
 // With progress callback
 auto result = gnfs::api::factorize(n, cfg, [](const auto& info) {
@@ -298,7 +359,7 @@ struct FactorStats {
 ## Architecture
 
 ```
-include/gnfs/           # 53 header files (.hpp)
+include/gnfs/           # 54 header files (.hpp)
 ├── api/           (6)  # Config, Pipeline, Factorizer, Result, Progress, i18n
 ├── core/          (6)  # Integer, Polynomial, Relation, Params, PolynomialContext, Types
 ├── polynomial/    (6)  # Kleinjung, Murphy E, Base-m, IntPolynomial, Optimizer, SelectorDispatch
@@ -310,6 +371,7 @@ include/gnfs/           # 53 header files (.hpp)
 │                       # Schirokauer, SparseMatrix, MmapCSRMatrix
 ├── sqrt/          (7)  # AlgebraicSqrt, HenselSqrt, Couveignes, RationalSqrt,
 │                       # ClassGroup, ModularPoly, NumberField
+├── siqs/          (1)  # SIQS — Self-Initializing Quadratic Sieve (Contini 1997)
 └── util/          (6)  # SmallVector, ThreadPool, Logger, Timer, MmapFile, SafeMath
 
 src/                    # 14 source files (.cpp)
@@ -446,7 +508,7 @@ The project uses `scripts/test.sh` — a unified test runner with automatic comp
 
 ```bash
 # Daily development (most common)
-./scripts/test.sh                      # Smoke: 23 instant tests, ~5s
+./scripts/test.sh                      # Smoke: 24 instant tests, ~5s
 ./scripts/test.sh changed              # Auto-detect affected modules from git diff
 ./scripts/test.sh changed --deep       # Same + cascade to dependent modules
 
@@ -494,13 +556,13 @@ The project uses `scripts/test.sh` — a unified test runner with automatic comp
 
 | Tier | Timeout | Tests | Description |
 |------|---------|-------|-------------|
-| **instant** | 10s | 11 | Unit tests — integer, small_vector, thread_pool, factor_base, special_q, relation_collector, cofactor, linalg, sqrt, sqrt_debug, murphy |
+| **instant** | 10s | 15 | Unit tests — integer, small_vector, thread_pool, factor_base, special_q, relation_collector, cofactor, linalg, sqrt, sqrt_debug, murphy, api, i18n, method_selection, etc. |
 | **fast** | 60s | 1 | Sieve integration (test_sieve_basic) |
 | **slow** | 120–300s | 5 | Regression gate, Kleinjung, lattice sieve, E2E pipeline, factor_with_kleinjung |
 | **heavy** | 600–3600s | 3 | Progressive L3-L5, 25-digit benchmark, Kleinjung large |
 | **stress** | 43200s | 1 | 50-digit (L1) + 60-digit (L2) + 100-digit (L3) |
 
-### Test Files (41 total)
+### Test Files (42 total)
 
 | Category | Tests | Description |
 |----------|-------|-------------|
@@ -515,7 +577,7 @@ The project uses `scripts/test.sh` — a unified test runner with automatic comp
 | **Integration** | test_integration, test_edge_cases, test_regressions, test_regression_gate | Cross-module, boundary cases |
 | **E2E** | test_gnfs_e2e, test_factor_with_kleinjung, test_gnfs_progressive | Full pipeline tests |
 | **Benchmark** | test_25digit, test_stress | Performance benchmarks |
-| **API** | test_api, test_i18n, test_params | Public API, i18n, parameters |
+| **API** | test_api, test_i18n, test_params, test_method_selection | Public API, i18n, parameters, method selection (35 cases) |
 
 ### Scenario Recommendations
 
