@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../core/integer.hpp"
+#include "progress.hpp"
 
 #include <cstddef>
 #include <sstream>
@@ -25,6 +26,10 @@ struct PhaseTimings {
 
 /// Statistics collected during factorization
 struct FactorStats {
+    // Method selection
+    FactorizationMethod method_used = FactorizationMethod::Auto;
+    std::string method_reason;  // why this method was chosen
+
     // Input
     size_t n_bits = 0;
     size_t n_digits = 0;
@@ -81,7 +86,8 @@ struct FactorResult {
                 os << " " << factors[i].to_string();
             }
             os << "\n";
-            os << "Time: " << stats.timings.total_s << "s"
+            os << "Method: " << method_name(stats.method_used)
+               << " | Time: " << stats.timings.total_s << "s"
                << " (" << stats.n_digits << " digits, " << stats.n_bits << " bits)\n";
         } else {
             os << "Failed to factorize " << n.to_string() << "\n";
@@ -97,6 +103,10 @@ struct FactorResult {
         os << "  \"n\": \"" << n.to_string() << "\",\n";
         os << "  \"n_bits\": " << stats.n_bits << ",\n";
         os << "  \"n_digits\": " << stats.n_digits << ",\n";
+        os << "  \"method\": \"" << method_tag(stats.method_used) << "\",\n";
+        os << "  \"method_name\": \"" << method_name(stats.method_used) << "\",\n";
+        if (!stats.method_reason.empty())
+            os << "  \"method_reason\": \"" << stats.method_reason << "\",\n";
 
         os << "  \"factors\": [";
         for (size_t i = 0; i < factors.size(); ++i) {
@@ -148,12 +158,13 @@ struct FactorResult {
     [[nodiscard]] std::string to_csv_line(bool include_header = false) const {
         std::ostringstream os;
         if (include_header) {
-            os << "n,success,factor1,factor2,bits,digits,total_s,"
+            os << "n,success,method,factor1,factor2,bits,digits,total_s,"
                << "poly_s,fb_s,sieve_s,filter_s,linalg_s,sqrt_s,"
                << "relations,matrix_rows,matrix_cols,deps_found\n";
         }
         os << n.to_string() << ","
            << (success ? "true" : "false") << ","
+           << method_tag(stats.method_used) << ","
            << (factors.size() > 0 ? factors[0].to_string() : "") << ","
            << (factors.size() > 1 ? factors[1].to_string() : "") << ","
            << stats.n_bits << "," << stats.n_digits << ","
@@ -180,6 +191,9 @@ struct FactorResult {
         os << "Input\n";
         os << "  N = " << n.to_string() << "\n";
         os << "  Bits: " << stats.n_bits << ", Digits: " << stats.n_digits << "\n";
+        os << "  Method: " << method_name(stats.method_used);
+        if (!stats.method_reason.empty()) os << " (" << stats.method_reason << ")";
+        os << "\n";
         os << "  Result: " << (success ? "SUCCESS" : "FAILED") << "\n\n";
 
         if (success) {

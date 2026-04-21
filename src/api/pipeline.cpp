@@ -131,6 +131,50 @@ Integer pollard_rho_brent(const Integer& n, size_t max_iters = 1000000) {
 } // anonymous namespace
 
 // ============================================================
+// Method Selection
+// ============================================================
+
+std::pair<FactorizationMethod, std::string>
+Pipeline::select_method(size_t n_bits, size_t n_digits,
+                        std::optional<FactorizationMethod> override) {
+    // Manual override
+    if (override && *override != FactorizationMethod::Auto) {
+        return {*override, "user specified"};
+    }
+
+    // Auto selection based on N size:
+    //
+    // Trial division: always tried first (catches factors ≤ 10^6)
+    // Pollard rho: ≤25 digits (≤83 bits) — O(N^{1/4}) fast for small balanced
+    // SIQS: 25-100 digits — O(L_N(1/2,1)), best for medium N
+    // GNFS: 80+ digits — O(L_N(1/3,c)), asymptotically fastest
+    //
+    // Overlap zone 80-100d: SIQS tried first (lower overhead), GNFS fallback.
+    // For ≤24 digits, Pollard rho handles balanced semiprimes well.
+    // Trial division is always fast (<1ms), so it's always first.
+
+    if (n_digits <= 6 || n_bits <= 20) {
+        return {FactorizationMethod::TrialDivision,
+                std::to_string(n_digits) + "d/" + std::to_string(n_bits) +
+                "bit: trial division sufficient"};
+    }
+
+    if (n_digits <= 24 || n_bits <= 80) {
+        return {FactorizationMethod::PollardRho,
+                std::to_string(n_digits) + "d/" + std::to_string(n_bits) +
+                "bit: Pollard rho O(N^{1/4}) efficient"};
+    }
+
+    if (n_digits <= 100) {
+        return {FactorizationMethod::SIQS,
+                std::to_string(n_digits) + "d: SIQS O(L_N(1/2,1)) optimal range"};
+    }
+
+    return {FactorizationMethod::GNFS,
+            std::to_string(n_digits) + "d: GNFS O(L_N(1/3,c)) required"};
+}
+
+// ============================================================
 // Construction
 // ============================================================
 
@@ -850,6 +894,8 @@ FactorResult Pipeline::run() {
                     r.factors.push_back(n_.clone());
                     r.factors[1] /= root;
                     r.stats.timings.total_s = elapsed_s();
+                    r.stats.method_used = FactorizationMethod::TrialDivision;
+                    r.stats.method_reason = "perfect power";
                     emit_log(LogLevel::Info, Phase::PolynomialSelection,
                              "Perfect power detected: " + root.to_string() + "^" +
                              std::to_string(exp));
@@ -859,17 +905,23 @@ FactorResult Pipeline::run() {
         }
     }
 
-    // ── Fast path: trial division + Pollard rho for small N ──
-    // GNFS has high fixed overhead; for N ≤ ~100 bits (~30 digits), Pollard rho is faster.
-    // Pollard rho complexity: O(N^{1/4}) iterations.
-    // At 100 bits: O(2^25) ≈ 33M iterations ≈ 2-5 seconds — still faster than GNFS.
-    auto make_fast_result = [this](const Integer& f1) -> FactorResult {
+    // ── Method selection ──
+    auto [method, reason] = select_method(
+        stats_.n_bits, stats_.n_digits, config_.method);
+    stats_.method_used = method;
+    stats_.method_reason = reason;
+    emit_log(LogLevel::Info, Phase::PolynomialSelection,
+             "Method: " + std::string(method_name(method)) + " (" + reason + ")");
+
+    // Helper: build result from a found factor
+    auto make_fast_result = [this](const Integer& f1,
+                                    FactorizationMethod m,
+                                    const std::string& m_reason) -> FactorResult {
         FactorResult r;
         r.n = n_.clone();
         r.success = true;
         Integer f2 = n_.clone();
         f2 /= f1;
-        // Sort ascending
         if (f1.compare(f2) <= 0) {
             r.factors.push_back(f1.clone());
             r.factors.push_back(std::move(f2));
@@ -878,50 +930,89 @@ FactorResult Pipeline::run() {
             r.factors.push_back(f1.clone());
         }
         r.stats = stats_;
+        r.stats.method_used = m;
+        r.stats.method_reason = m_reason;
         r.stats.timings.total_s = elapsed_s();
         return r;
     };
 
-    // Trial division up to 10^6 — catches all factors < 10^6 instantly
+    // ── Phase 0: Trial division (always, instant) ──
+    // Catches all factors ≤ 10^6. Cost: O(10^6) divisions ≈ <1ms.
     {
         uint64_t small_f = trial_divide(n_, 1000000);
         if (small_f > 0) {
             Integer f1(small_f);
             emit_log(LogLevel::Info, Phase::PolynomialSelection,
                      "Trial division found factor: " + std::to_string(small_f));
-            return make_fast_result(f1);
+            return make_fast_result(f1, FactorizationMethod::TrialDivision,
+                                   "factor ≤ 10^6");
         }
     }
 
-    // Pollard rho: quick attempt for unbalanced semiprimes / numbers with small factors.
-    // Trial division already covers factors < 10^6.
-    // Quick rho with 50K iterations catches factors up to ~sqrt(50K) ≈ 224.
-    // For N ≤ 80 bits: try with full limit since SIQS overhead exceeds rho time.
-    // For N > 80 bits: skip rho, go straight to SIQS.
-    if (stats_.n_bits <= 80) {
+    // If user forced trial-only, stop here
+    if (method == FactorizationMethod::TrialDivision) {
+        FactorResult r;
+        r.n = n_.clone();
+        r.stats = stats_;
+        r.stats.timings.total_s = elapsed_s();
+        return r;
+    }
+
+    // ── Phase 1: Pollard rho for small N or quick unbalanced detection ──
+    // For N ≤ 80 bits: full rho. For N > 80 bits: quick 50K-iter probe.
+    if (method == FactorizationMethod::PollardRho || method == FactorizationMethod::SIQS ||
+        method == FactorizationMethod::GNFS) {
         size_t rho_limit;
         if (stats_.n_bits <= 50)       rho_limit = 100000;
         else if (stats_.n_bits <= 64)  rho_limit = 500000;
-        else                           rho_limit = 20000000;
+        else if (stats_.n_bits <= 80)  rho_limit = 20000000;
+        else if (method == FactorizationMethod::PollardRho)
+            rho_limit = 100000000;  // user forced rho: try harder
+        else
+            rho_limit = 50000;  // quick probe for unbalanced semiprimes
+
         Integer rho_f = pollard_rho_brent(n_, rho_limit);
         if (rho_f > Integer(1) && rho_f.compare(n_) != 0) {
             emit_log(LogLevel::Info, Phase::PolynomialSelection,
                      "Pollard rho found factor: " + rho_f.to_string());
-            return make_fast_result(rho_f);
+            return make_fast_result(rho_f, FactorizationMethod::PollardRho,
+                                   "rho found factor in " + std::to_string(rho_limit) + " iters");
         }
     }
 
-    // ── SIQS for medium N (25-95 digits, faster than GNFS) ──
-    if (stats_.n_digits >= 25 && stats_.n_digits <= 95) {
+    // If user forced rho-only, stop here
+    if (method == FactorizationMethod::PollardRho) {
+        FactorResult r;
+        r.n = n_.clone();
+        r.stats = stats_;
+        r.stats.timings.total_s = elapsed_s();
+        return r;
+    }
+
+    // ── Phase 2: SIQS for medium N ──
+    if (method == FactorizationMethod::SIQS ||
+        (method == FactorizationMethod::GNFS && stats_.n_digits <= 100)) {
         emit_log(LogLevel::Info, Phase::PolynomialSelection,
                  "Trying SIQS for " + std::to_string(stats_.n_digits) + "-digit N");
 
-        size_t siqs_timeout = 600; // 10 min default
-        if (stats_.n_digits <= 50)      siqs_timeout = 30;
-        else if (stats_.n_digits <= 60) siqs_timeout = 120;
-        else if (stats_.n_digits <= 70) siqs_timeout = 300;
-        else if (stats_.n_digits <= 80) siqs_timeout = 900;
-        else                          siqs_timeout = 3600;
+        // Adaptive timeout: generous for forced SIQS, bounded for GNFS-with-SIQS-probe
+        size_t siqs_timeout;
+        if (method == FactorizationMethod::SIQS) {
+            // User selected SIQS: give it plenty of time
+            if (stats_.n_digits <= 50)      siqs_timeout = 60;
+            else if (stats_.n_digits <= 60) siqs_timeout = 300;
+            else if (stats_.n_digits <= 70) siqs_timeout = 900;
+            else if (stats_.n_digits <= 80) siqs_timeout = 1800;
+            else if (stats_.n_digits <= 90) siqs_timeout = 3600;
+            else                            siqs_timeout = 7200;
+        } else {
+            // Auto/GNFS: SIQS as quick probe before GNFS
+            if (stats_.n_digits <= 50)      siqs_timeout = 30;
+            else if (stats_.n_digits <= 60) siqs_timeout = 120;
+            else if (stats_.n_digits <= 70) siqs_timeout = 300;
+            else if (stats_.n_digits <= 80) siqs_timeout = 900;
+            else                            siqs_timeout = 3600;
+        }
 
         auto siqs_result = siqs::factor(n_, siqs_timeout, true);
         if (siqs_result) {
@@ -938,6 +1029,19 @@ FactorResult Pipeline::run() {
             r.factors.push_back(std::move(f1));
             r.factors.push_back(std::move(f2));
             r.stats = stats_;
+            r.stats.method_used = FactorizationMethod::SIQS;
+            r.stats.method_reason = std::to_string(stats_.n_digits) + "d SIQS";
+            r.stats.timings.total_s = elapsed_s();
+            return r;
+        }
+
+        if (method == FactorizationMethod::SIQS) {
+            // User forced SIQS only — don't fall through to GNFS
+            emit_log(LogLevel::Warn, Phase::PolynomialSelection,
+                     "SIQS failed (timeout=" + std::to_string(siqs_timeout) + "s)");
+            FactorResult r;
+            r.n = n_.clone();
+            r.stats = stats_;
             r.stats.timings.total_s = elapsed_s();
             return r;
         }
@@ -946,11 +1050,12 @@ FactorResult Pipeline::run() {
                  "SIQS failed, falling back to GNFS");
     }
 
-    // ── Full GNFS pipeline ──
+    // ── Phase 3: Full GNFS pipeline ──
+    stats_.method_used = FactorizationMethod::GNFS;
+    stats_.method_reason = std::to_string(stats_.n_digits) + "d GNFS";
+
     auto ctx = select_polynomial();
     auto fb = build_factor_base(ctx);
-
-    // sieve_and_collect now includes adaptive filter+merge internally
     auto relations = sieve_and_collect(ctx, fb);
 
     size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params_.target_excess;
@@ -965,10 +1070,6 @@ FactorResult Pipeline::run() {
         r.stats.timings.total_s = elapsed_s();
         return r;
     }
-
-    // NOTE: Do NOT trim relations here. LP relations add extra matrix columns
-    // beyond the estimated matrix_cols, so trimming to matrix_cols * 1.3 can
-    // cause deficit (rows < actual_cols). SGE handles excess rows efficiently.
 
     auto mr = solve_matrix(std::move(relations), fb, ctx);
     return extract_factors(mr, fb, ctx);

@@ -8,6 +8,49 @@
 
 namespace gnfs::api {
 
+/// Factorization method identifiers
+enum class FactorizationMethod {
+    Auto,           // automatic selection (default)
+    TrialDivision,  // trial division up to 10^6
+    PollardRho,     // Pollard rho-Brent for small N (≤25 digits)
+    SIQS,           // Self-Initializing Quadratic Sieve (25-100 digits)
+    GNFS,           // General Number Field Sieve (80+ digits)
+};
+
+/// Human-readable method name
+inline const char* method_name(FactorizationMethod m) {
+    switch (m) {
+        case FactorizationMethod::Auto:          return "Auto";
+        case FactorizationMethod::TrialDivision: return "Trial Division";
+        case FactorizationMethod::PollardRho:    return "Pollard Rho";
+        case FactorizationMethod::SIQS:          return "SIQS";
+        case FactorizationMethod::GNFS:          return "GNFS";
+    }
+    return "?";
+}
+
+/// Short method tag for logs/JSON
+inline const char* method_tag(FactorizationMethod m) {
+    switch (m) {
+        case FactorizationMethod::Auto:          return "auto";
+        case FactorizationMethod::TrialDivision: return "trial";
+        case FactorizationMethod::PollardRho:    return "rho";
+        case FactorizationMethod::SIQS:          return "siqs";
+        case FactorizationMethod::GNFS:          return "gnfs";
+    }
+    return "?";
+}
+
+/// Parse method from string (for CLI/config). Returns Auto on unknown input.
+inline FactorizationMethod parse_method(const std::string& s) {
+    if (s == "auto")  return FactorizationMethod::Auto;
+    if (s == "trial") return FactorizationMethod::TrialDivision;
+    if (s == "rho")   return FactorizationMethod::PollardRho;
+    if (s == "siqs")  return FactorizationMethod::SIQS;
+    if (s == "gnfs")  return FactorizationMethod::GNFS;
+    return FactorizationMethod::Auto;
+}
+
 /// GNFS pipeline phase identifiers
 enum class Phase {
     PolynomialSelection,

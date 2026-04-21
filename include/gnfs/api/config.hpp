@@ -2,6 +2,7 @@
 
 #include "../core/integer.hpp"
 #include "../core/params.hpp"
+#include "progress.hpp"
 
 #include <cstdint>
 #include <fstream>
@@ -17,6 +18,9 @@ using core::Integer;
 /// Three-layer configuration: auto < file < override
 /// Fields use std::optional — unset means "use auto value"
 struct Config {
+    // Method selection (default: auto)
+    std::optional<FactorizationMethod> method;
+
     // Polynomial
     std::optional<uint32_t> degree;
 
@@ -89,7 +93,8 @@ struct Config {
             trim(val);
 
             // Apply
-            if      (key == "degree")           cfg.degree = static_cast<uint32_t>(std::stoul(val));
+            if      (key == "method")             cfg.method = parse_method(val);
+            else if (key == "degree")           cfg.degree = static_cast<uint32_t>(std::stoul(val));
             else if (key == "rational_bound")   cfg.rational_bound = static_cast<uint32_t>(std::stoul(val));
             else if (key == "algebraic_bound")  cfg.algebraic_bound = static_cast<uint32_t>(std::stoul(val));
             else if (key == "large_prime_bound") cfg.large_prime_bound = std::stoull(val);
@@ -108,6 +113,7 @@ struct Config {
     }
 
     // Builder-style setters for CLI override layer
+    Config& set_method(FactorizationMethod m) { method = m; return *this; }
     Config& set_degree(uint32_t d)            { degree = d; return *this; }
     Config& set_rational_bound(uint32_t b)    { rational_bound = b; return *this; }
     Config& set_algebraic_bound(uint32_t b)   { algebraic_bound = b; return *this; }
@@ -122,6 +128,7 @@ struct Config {
     /// Merge two configs: other's values override this's values
     Config merge(const Config& other) const {
         Config result = *this;
+        if (other.method)            result.method = other.method;
         if (other.degree)            result.degree = other.degree;
         if (other.rational_bound)    result.rational_bound = other.rational_bound;
         if (other.algebraic_bound)   result.algebraic_bound = other.algebraic_bound;
@@ -161,6 +168,7 @@ struct Config {
     [[nodiscard]] std::string to_string() const {
         std::ostringstream os;
         os << "# GNFS Configuration\n";
+        if (method)           os << "method = " << method_tag(*method) << "\n";
         if (degree)           os << "degree = " << *degree << "\n";
         if (rational_bound)   os << "rational_bound = " << *rational_bound << "\n";
         if (algebraic_bound)  os << "algebraic_bound = " << *algebraic_bound << "\n";

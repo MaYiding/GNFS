@@ -61,6 +61,12 @@ public:
     /// Run complete pipeline end-to-end
     FactorResult run();
 
+    /// Select the best factorization method for the given N.
+    /// Returns (method, reason_string).
+    static std::pair<FactorizationMethod, std::string>
+    select_method(size_t n_bits, size_t n_digits,
+                  std::optional<FactorizationMethod> override = std::nullopt);
+
     // Configuration
     void set_progress_callback(ProgressCallback cb) { progress_cb_ = std::move(cb); }
     void set_log_callback(LogCallback cb) { log_cb_ = std::move(cb); }
