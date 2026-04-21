@@ -499,7 +499,6 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb,
 
         uint32_t b_mod_p = static_cast<uint32_t>(
             mpz_fdiv_ui(poly.B.get_mpz(), p));
-        // Handle negative B: B might be negative, need proper mod
         if (poly.B < Integer(0)) {
             Integer abs_b = Integer(0) - poly.B;
             uint32_t abs_b_mod = static_cast<uint32_t>(
