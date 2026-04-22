@@ -63,7 +63,7 @@ inline SIQSParams select_params(size_t digits) {
     if (digits <= 54) return {1600,   65536,   120, 6,  12, 25};   // smaller FB → faster LA
     if (digits <= 59) return {1700,   32768,   200, 6,  12, 20};   // FB=1700, M=32768(L1), LP=200
     if (digits <= 62) return {2500,   32768,   200, 7,  13, 30};   // 60d: FB=2500 M=32768(L1) LP=200
-    if (digits <= 66) return {4000,   32768,   200, 8,  14, 35};   // 65d: FB↓ M=32768(L1) LP↑
+    if (digits <= 66) return {4000,   32768,   200, 8,  14, 35};   // 65d: FB=4000 M=32768(L1) LP=200
     if (digits <= 69) return {5500,   65536,   150, 8,  14, 40};   // 68-69d optimal
     if (digits <= 74) return {15000,  131072,  120, 9,  14, 60};
     if (digits <= 79) return {25000,  131072,  150, 9,  15, 70};
