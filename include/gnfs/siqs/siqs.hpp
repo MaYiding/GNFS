@@ -62,9 +62,9 @@ inline SIQSParams select_params(size_t digits) {
     if (digits <= 44) return {1000,   32768,   80,  5,  11, 20};
     if (digits <= 49) return {1200,   65536,   100, 5,  11, 20};
     if (digits <= 54) return {1600,   65536,   120, 6,  12, 25};   // smaller FB → faster LA
-    if (digits <= 59) return {3500,   65536,   100, 7,  12, 25};   // was 4000
-    if (digits <= 64) return {6000,   131072,  100, 8,  13, 35};   // was 7000
-    if (digits <= 69) return {9000,   131072,  100, 8,  14, 40};   // was 10000
+    if (digits <= 59) return {2200,   65536,   130, 6,  12, 25};   // optimal sieve/LA balance
+    if (digits <= 64) return {3500,   131072,  130, 7,  13, 35};   // was 7000→3500
+    if (digits <= 69) return {5500,   131072,  130, 8,  14, 40};   // was 10000→5500
     if (digits <= 74) return {15000,  131072,  120, 9,  14, 60};
     if (digits <= 79) return {25000,  131072,  150, 9,  15, 70};
     if (digits <= 84) return {30000,  131072,  150, 10, 15, 80};
