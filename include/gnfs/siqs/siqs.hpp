@@ -1332,8 +1332,9 @@ inline std::optional<SIQSResult> factor(
     uint8_t threshold = (thr_d > 10.0) ? static_cast<uint8_t>(thr_d) : 10;
 
     // 2LP is only effective when LP space is small enough for graph cycles.
-    // For ≥50 digits, LP space is too large → 0 cycles → merge overhead wasted.
-    uint64_t lp_bound_sq = (digits <= 49) ? lp_bound * lp_bound : 0;
+    // For ≥45 digits, LP space too large + 2LP factoring is expensive (221ms for 45d).
+    // Contribution: only ~2.6% of usable relations at 45d — not worth the cost.
+    uint64_t lp_bound_sq = (digits <= 44) ? lp_bound * lp_bound : 0;
 
     if (verbose) {
         fprintf(stderr, "[SIQS] log_Qmax=%.1f, lp_bits=%.1f, sieve_err=%u, "
@@ -1494,6 +1495,15 @@ inline std::optional<SIQSResult> factor(
                     relations.size(), fb_size);
         }
         return std::nullopt;
+    }
+
+    // Trim excess relations to reduce LA cost.
+    // O(n²) Gaussian: halving rows gives ~4× speedup.
+    // Keep fb_size + 100 relations (enough for ~64 dependencies).
+    size_t max_rels = fb_size + 100;
+    if (relations.size() > max_rels) {
+        // Prefer full relations (more reliable) — they're at the front
+        relations.resize(max_rels);
     }
 
     // Linear algebra
