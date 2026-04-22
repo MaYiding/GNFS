@@ -1163,10 +1163,12 @@ FactorResult Pipeline::run() {
     // For balanced k-digit semiprimes, p ≈ k/2 digits.
     // ECM with appropriate B1 finds factors up to ~35 digits efficiently.
     // Run ECM before SIQS for N ≤ 100 digits (factors ≤ ~50 digits).
-    // ECM probe: only for 25-55d where factor is small enough for ECM
-    // For ≥40d balanced semiprimes, SIQS is faster (lower overhead).
-    // ECM shines when the smallest factor is ≤ ~20 digits (~65 bits).
-    if (stats_.n_digits >= 25 && stats_.n_digits <= 55 &&
+    // ECM probe: only for 25-38d where factor is ≤ ~19 digits (~63 bits).
+    // For ≥40d balanced semiprimes, SIQS is faster than ECM per-curve cost.
+    // ECM at B1=11000 costs ~15ms/curve; at B1=25000 costs ~300ms/curve.
+    // ECM probe: only for 25-35d where SIQS extraction can fail for some inputs.
+    // For ≥36d, go straight to SIQS (lower overhead, consistently fast).
+    if (stats_.n_digits >= 25 && stats_.n_digits <= 32 &&
         method != FactorizationMethod::TrialDivision) {
         size_t expected_factor_bits = stats_.n_bits / 2;
 
