@@ -1081,9 +1081,12 @@ FactorResult Pipeline::run() {
     };
 
     // ── Phase 0: Trial division (always, instant) ──
-    // Catches all factors ≤ 10^6. Cost: O(10^6) divisions ≈ <1ms.
+    // For ≤12d: thorough trial to 10^6 (factors might be 6-digit).
+    // For >12d: quick trial to 10^4 only (rho/SIQS catches the rest).
+    // Saves ~3ms of overhead for medium/large N.
     {
-        uint64_t small_f = trial_divide(n_, 1000000);
+        uint64_t td_limit = (stats_.n_digits <= 12) ? 1000000 : 10000;
+        uint64_t small_f = trial_divide(n_, td_limit);
         if (small_f > 0) {
             Integer f1(small_f);
             emit_log(LogLevel::Info, Phase::PolynomialSelection,
@@ -1118,12 +1121,17 @@ FactorResult Pipeline::run() {
         if (stats_.n_bits <= 128) {
             // Quick rho probe: catch easy/unbalanced factors.
             // For balanced semiprimes, ECM is usually faster.
+            // Budget: generous when rho is target method, minimal when SIQS will handle it.
+            // For balanced semiprimes ≥25d, rho needs O(10^{d/4}) iters — too slow.
+            // Keep budget small to catch unbalanced cases only.
             size_t rho_limit;
+            bool siqs_target = (method == FactorizationMethod::SIQS ||
+                                method == FactorizationMethod::GNFS);
             if (stats_.n_bits <= 40)        rho_limit = 100000;     // ~1ms
-            else if (stats_.n_bits <= 50)   rho_limit = 200000;     // ~2ms
-            else if (stats_.n_bits <= 64)   rho_limit = 500000;     // ~5ms
-            else if (stats_.n_bits <= 80)   rho_limit = 1000000;    // ~10ms
-            else                            rho_limit = 1000000;    // ~12ms (fall to ECM fast)
+            else if (stats_.n_bits <= 50)   rho_limit = siqs_target ? 100000 : 200000;
+            else if (stats_.n_bits <= 64)   rho_limit = siqs_target ? 200000 : 500000;
+            else if (stats_.n_bits <= 80)   rho_limit = siqs_target ? 100000 : 1000000;
+            else                            rho_limit = siqs_target ? 50000  : 1000000;
 
             uint64_t f128 = pollard_rho_mpn2(n_, rho_limit);
             if (f128 > 1) {
@@ -1163,37 +1171,19 @@ FactorResult Pipeline::run() {
     // For balanced k-digit semiprimes, p ≈ k/2 digits.
     // ECM with appropriate B1 finds factors up to ~35 digits efficiently.
     // Run ECM before SIQS for N ≤ 100 digits (factors ≤ ~50 digits).
-    // ECM probe: only for 25-38d where factor is ≤ ~19 digits (~63 bits).
-    // For ≥40d balanced semiprimes, SIQS is faster than ECM per-curve cost.
-    // ECM at B1=11000 costs ~15ms/curve; at B1=25000 costs ~300ms/curve.
-    // ECM probe: only for 25-35d where SIQS extraction can fail for some inputs.
-    // For ≥36d, go straight to SIQS (lower overhead, consistently fast).
-    if (stats_.n_digits >= 25 && stats_.n_digits <= 32 &&
+    // ECM probe: minimal probe for 25-28d to catch unbalanced semiprimes.
+    // For balanced semiprimes, ECM is too slow — SIQS handles them faster.
+    // Keep ECM cost ≤ 2ms total to minimize overhead.
+    if (stats_.n_digits >= 26 && stats_.n_digits <= 28 &&
         method != FactorizationMethod::TrialDivision) {
         size_t expected_factor_bits = stats_.n_bits / 2;
 
-        // ECM as quick probe: use FEWER curves than needed for 90% success.
-        // If ECM fails, SIQS handles it. ECM cost = curves × per_curve_time.
-        // Target: ECM probe ≤ 50% of target time for each digit size.
+        // Minimal ECM probe: 3 curves at low B1. Cost: ~1ms total.
         cofactor::ECM::Config ecm_config;
         ecm_config.auto_params = false;
-        if (expected_factor_bits <= 40) {
-            // 25d balanced: 12d factor. ~0.3ms per curve at B1=2000
-            ecm_config.B1 = 2000; ecm_config.B2 = 100000; ecm_config.num_curves = 15;
-        } else if (expected_factor_bits <= 50) {
-            // 30d balanced: 15d factor. ~8ms per curve at B1=5000
-            // Need >15 curves for >90% reliability
-            ecm_config.B1 = 5000; ecm_config.B2 = 500000; ecm_config.num_curves = 20;
-        } else if (expected_factor_bits <= 60) {
-            // 35d balanced: 17d factor. ~10ms per curve at B1=11000
-            ecm_config.B1 = 11000; ecm_config.B2 = 1100000; ecm_config.num_curves = 10;
-        } else if (expected_factor_bits <= 70) {
-            // 40d balanced: 20d factor. ~50ms per curve at B1=25000
-            // Quick: 2 curves max (~100ms) — SIQS fallback is fast
-            ecm_config.B1 = 25000; ecm_config.B2 = 5000000; ecm_config.num_curves = 2;
+        if (expected_factor_bits <= 50) {
+            ecm_config.B1 = 2000; ecm_config.B2 = 50000; ecm_config.num_curves = 3;
         } else {
-            // ≥45d balanced: factors >22d. ECM per-curve cost exceeds SIQS.
-            // Skip ECM entirely — go straight to SIQS.
             ecm_config.B1 = 0; ecm_config.num_curves = 0;
         }
 

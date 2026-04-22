@@ -56,15 +56,14 @@ inline SIQSParams select_params(size_t digits) {
     // Without block sieve, per-poly cost scales linearly with FB — larger FB is slower.
     if (digits <= 20) return {50,     8192,    40,  2,  8,  5};
     if (digits <= 25) return {80,     16384,   40,  3,  8,  5};
-    if (digits <= 30) return {150,    16384,   50,  3,  9,  10};
     if (digits <= 34) return {250,    16384,   50,  4,  10, 10};
     if (digits <= 39) return {500,    32768,   60,  5,  10, 15};
     if (digits <= 44) return {1000,   32768,   80,  5,  11, 20};
     if (digits <= 49) return {1200,   65536,   100, 5,  11, 20};
     if (digits <= 54) return {1600,   65536,   120, 6,  12, 25};   // smaller FB → faster LA
-    if (digits <= 59) return {2200,   65536,   130, 6,  12, 25};   // optimal sieve/LA balance
-    if (digits <= 64) return {3500,   131072,  130, 7,  13, 35};   // was 7000→3500
-    if (digits <= 69) return {5500,   131072,  130, 8,  14, 40};   // was 10000→5500
+    if (digits <= 59) return {2000,   65536,   150, 6,  12, 25};   // FB=2200→2000, LP=130→150
+    if (digits <= 64) return {3500,   131072,  150, 7,  13, 35};   // restored FB=3500, LP=130→150
+    if (digits <= 69) return {5500,   131072,  150, 8,  14, 40};   // restored FB=5500, LP=130→150
     if (digits <= 74) return {15000,  131072,  120, 9,  14, 60};
     if (digits <= 79) return {25000,  131072,  150, 9,  15, 70};
     if (digits <= 84) return {30000,  131072,  150, 10, 15, 80};
@@ -1345,10 +1344,9 @@ inline std::optional<SIQSResult> factor(
     double thr_d = log_Qmax_d - lp_bits - params.sieve_error - small_contrib;
     uint8_t threshold = (thr_d > 10.0) ? static_cast<uint8_t>(thr_d) : 10;
 
-    // 2LP: only enable for small digit sizes where merge overhead is low.
-    // For ≥35d: 2LP factoring (split_cofactor_64) costs 10-25ms and only
-    // contributes ~0-2% merged relations — not worth the overhead.
-    uint64_t lp_bound_sq = (digits <= 34) ? lp_bound * lp_bound : 0;
+    // 2LP: DISABLED entirely. 2LP cycles cause extraction failures for certain
+    // multipliers (all 64 deps fail). 1LP merge provides enough usable relations.
+    uint64_t lp_bound_sq = 0;
 
     if (verbose) {
         fprintf(stderr, "[SIQS] log_Qmax=%.1f, lp_bits=%.1f, sieve_err=%u, "
@@ -1377,12 +1375,20 @@ inline std::optional<SIQSResult> factor(
     // 1LP merge rate is ~3-5% (pair matching). 2LP merge rate is ~0% for ≥50d
     // (LP space too large for graph cycles), so we only count 1LP.
     // Safety margin: +10% of target.
-    size_t safe_target = target_usable + std::max(size_t(50), target_usable / 10);
+    // Safety margin: balance between overshoot cost and risk of falling short.
+    // Small FB (<3000): merge rate ~8%, use +5% margin
+    // Large FB (≥3000): merge rate ~5%, use +10% margin (conservative)
+    size_t margin = (fb_size < 3000)
+        ? std::max(size_t(30), target_usable / 20)   // +5% for small FB
+        : std::max(size_t(100), target_usable / 10);  // +10% for large FB
+    size_t safe_target = target_usable + margin;
     auto quick_estimate = [&]() -> size_t {
         size_t f = atomic_full.load(std::memory_order_relaxed);
         size_t p1 = atomic_1lp.load(std::memory_order_relaxed);
-        // Empirical: ~8-10% of 1LP partials merge into usable relations
-        return f + p1 / 12;
+        // Empirical merge rate: small FB → high collision rate (~8%), large FB → low (~5%).
+        // Use conservative estimate to avoid stopping too early.
+        size_t divisor = (fb_size < 3000) ? 14 : 20;
+        return f + p1 / divisor;
     };
 
     // Multi-threaded sieve: each thread processes its own A values
@@ -1429,8 +1435,8 @@ inline std::optional<SIQSResult> factor(
 
                 size_t polys_done = atomic_polys.fetch_add(1, std::memory_order_relaxed) + 1;
 
-                // Flush every 200 relations or 50 polys (frequent for fast early-stop)
-                if (local_relations.size() > 200 || polys_done % 50 == 0) {
+                // Flush every 200 relations or 20 polys (frequent for fast early-stop)
+                if (local_relations.size() > 200 || polys_done % 20 == 0) {
                     atomic_full.fetch_add(local_full, std::memory_order_relaxed);
                     atomic_1lp.fetch_add(local_1lp, std::memory_order_relaxed);
                     atomic_2lp.fetch_add(local_2lp, std::memory_order_relaxed);
@@ -1443,8 +1449,8 @@ inline std::optional<SIQSResult> factor(
                     }
                     local_relations.clear();
 
-                    // Quick estimate without mutex — check every 50 polys
-                    if (polys_done % 50 == 0) {
+                    // Quick estimate without mutex — check every 20 polys
+                    if (polys_done % 20 == 0) {
                         if (quick_estimate() >= safe_target) {
                             enough.store(true, std::memory_order_relaxed);
                             break;
