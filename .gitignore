@@ -46,8 +46,10 @@ RESOLVED.md
 # All source code lives in include/, src/, tests/ — never in root
 /*.cpp
 /*.hpp
+
 # All scripts live in scripts/ — never in root
 /*.sh
+
 # Flat-named files from early dev (path separators lost)
 /includegnfs*
 /srccofactor*
@@ -59,6 +61,7 @@ RESOLVED.md
 /srcsieve*
 /srcsqrt*
 /srcutil*
+
 # Obsolete root documentation
 /BUILD.md
 /COMPILATION_FIX_GUIDE.md
