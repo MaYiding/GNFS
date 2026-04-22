@@ -61,9 +61,10 @@ inline SIQSParams select_params(size_t digits) {
     if (digits <= 44) return {1000,   32768,   80,  5,  11, 20};
     if (digits <= 49) return {1200,   65536,   100, 5,  11, 20};
     if (digits <= 54) return {1600,   65536,   120, 6,  12, 25};   // smaller FB → faster LA
-    if (digits <= 59) return {1900,   65536,   160, 6,  12, 25};   // FB=2200→1900, LP=130→160
-    if (digits <= 64) return {3500,   131072,  150, 7,  13, 35};   // restored FB=3500, LP=130→150
-    if (digits <= 69) return {5500,   131072,  150, 8,  14, 40};   // restored FB=5500, LP=130→150
+    if (digits <= 59) return {1700,   65536,   200, 6,  12, 25};   // FB=1700, LP=200
+    if (digits <= 62) return {2500,   32768,   200, 7,  13, 30};   // 60d: FB=2500 M=32768(L1) LP=200
+    if (digits <= 66) return {4000,   32768,   200, 8,  14, 35};   // 65d: FB↓ M=32768(L1) LP↑
+    if (digits <= 69) return {5500,   65536,   150, 8,  14, 40};   // 68-69d optimal
     if (digits <= 74) return {15000,  131072,  120, 9,  14, 60};
     if (digits <= 79) return {25000,  131072,  150, 9,  15, 70};
     if (digits <= 84) return {30000,  131072,  150, 10, 15, 80};
@@ -781,7 +782,29 @@ inline void sieve_polynomial(
                 accept = true;
             } else if (q128 <= UINT64_MAX) {
                 uint64_t cofac = static_cast<uint64_t>(q128);
-                if (cofac <= lp_bound && cofac > 1) {
+                // 1LP: cofactor must be prime (composite cofactors have untracked
+                // prime factors that break X²=Y² in extraction). Quick MR test.
+                auto is_probably_prime = [](uint64_t n) -> bool {
+                    if (n < 2) return false;
+                    if (n < 4) return true;
+                    if (n % 2 == 0) return false;
+                    uint64_t d = n - 1; int r = 0;
+                    while ((d & 1) == 0) { d >>= 1; r++; }
+                    __uint128_t x = 1, b = 2;
+                    uint64_t dd = d;
+                    while (dd > 0) {
+                        if (dd & 1) x = x * b % n;
+                        b = b * b % n;
+                        dd >>= 1;
+                    }
+                    if (x == 1 || x == n - 1) return true;
+                    for (int j = 0; j < r - 1; j++) {
+                        x = x * x % n;
+                        if (x == n - 1) return true;
+                    }
+                    return false;
+                };
+                if (cofac <= lp_bound && cofac > 1 && is_probably_prime(cofac)) {
                     large_prime = cofac;
                     accept = true;
                 } else if (lp_bound_sq > 0 && cofac <= lp_bound_sq && cofac > lp_bound) {
@@ -839,7 +862,8 @@ inline void sieve_polynomial(
                 accept = true;
             } else if (mpz_fits_ulong_p(q_mpz)) {
                 uint64_t cofac = mpz_get_ui(q_mpz);
-                if (cofac <= lp_bound && cofac > 1) {
+                // 1LP: verify cofactor is prime (composite → untracked factors → extraction fails)
+                if (cofac <= lp_bound && cofac > 1 && mpz_probab_prime_p(q_mpz, 1)) {
                     large_prime = cofac;
                     accept = true;
                 } else if (lp_bound_sq > 0 && cofac <= lp_bound_sq && cofac > lp_bound) {
