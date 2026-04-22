@@ -711,11 +711,11 @@ inline void sieve_polynomial(
     mpz_t ax_mpz, val_mpz, Q_mpz;
     mpz_init(ax_mpz); mpz_init(val_mpz); mpz_init(Q_mpz);
 
-    for (uint32_t pos = 0; pos < sieve_size; pos++) {
-        if (sieve[pos] < threshold) continue;
+    for (uint32_t cand_pos = 0; cand_pos < sieve_size; cand_pos++) {
+        if (sieve[cand_pos] < threshold) continue;
 
         // Candidate found — compute Q(x) and trial divide
-        int64_t x = static_cast<int64_t>(pos) - static_cast<int64_t>(M);
+        int64_t x = static_cast<int64_t>(cand_pos) - static_cast<int64_t>(M);
 
         // value = Ax + B (using raw GMP for speed)
         mpz_mul_ui(ax_mpz, poly.A.get_mpz(), static_cast<uint64_t>(std::abs(x)));
