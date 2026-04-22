@@ -1168,9 +1168,11 @@ FactorResult Pipeline::run() {
     // For balanced k-digit semiprimes, p ≈ k/2 digits.
     // ECM with appropriate B1 finds factors up to ~35 digits efficiently.
     // Run ECM before SIQS for N ≤ 100 digits (factors ≤ ~50 digits).
-    if (stats_.n_digits >= 25 && stats_.n_digits <= 100 &&
+    // ECM probe: only for 25-55d where factor is small enough for ECM
+    // For ≥40d balanced semiprimes, SIQS is faster (lower overhead).
+    // ECM shines when the smallest factor is ≤ ~20 digits (~65 bits).
+    if (stats_.n_digits >= 25 && stats_.n_digits <= 55 &&
         method != FactorizationMethod::TrialDivision) {
-        // Estimate expected factor size (balanced assumption)
         size_t expected_factor_bits = stats_.n_bits / 2;
 
         // ECM as quick probe: use FEWER curves than needed for 90% success.
@@ -1180,24 +1182,21 @@ FactorResult Pipeline::run() {
         ecm_config.auto_params = false;
         if (expected_factor_bits <= 40) {
             // 25d balanced: 12d factor. ~0.3ms per curve at B1=2000
-            ecm_config.B1 = 2000; ecm_config.B2 = 100000; ecm_config.num_curves = 10;
+            ecm_config.B1 = 2000; ecm_config.B2 = 100000; ecm_config.num_curves = 15;
         } else if (expected_factor_bits <= 50) {
             // 30d balanced: 15d factor. ~8ms per curve at B1=5000
-            ecm_config.B1 = 5000; ecm_config.B2 = 500000; ecm_config.num_curves = 10;
+            // Need >15 curves for >90% reliability
+            ecm_config.B1 = 5000; ecm_config.B2 = 500000; ecm_config.num_curves = 20;
         } else if (expected_factor_bits <= 60) {
             // 35d balanced: 17d factor. ~10ms per curve at B1=11000
             ecm_config.B1 = 11000; ecm_config.B2 = 1100000; ecm_config.num_curves = 10;
         } else if (expected_factor_bits <= 70) {
             // 40d balanced: 20d factor. ~50ms per curve at B1=25000
-            ecm_config.B1 = 25000; ecm_config.B2 = 5000000; ecm_config.num_curves = 5;
-        } else if (expected_factor_bits <= 83) {
-            // 50d balanced: 25d factor. ~100ms per curve at B1=50000
-            ecm_config.B1 = 50000; ecm_config.B2 = 12500000; ecm_config.num_curves = 3;
-        } else if (expected_factor_bits <= 100) {
-            // 60d balanced: 30d factor. ~500ms per curve
-            ecm_config.B1 = 250000; ecm_config.B2 = 128000000; ecm_config.num_curves = 2;
+            // Quick: 2 curves max (~100ms) — SIQS fallback is fast
+            ecm_config.B1 = 25000; ecm_config.B2 = 5000000; ecm_config.num_curves = 2;
         } else {
-            // Skip ECM for very large factors — SIQS/GNFS is better
+            // ≥45d balanced: factors >22d. ECM per-curve cost exceeds SIQS.
+            // Skip ECM entirely — go straight to SIQS.
             ecm_config.B1 = 0; ecm_config.num_curves = 0;
         }
 
