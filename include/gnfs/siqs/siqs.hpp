@@ -61,7 +61,7 @@ inline SIQSParams select_params(size_t digits) {
     if (digits <= 39) return {500,    32768,   60,  5,  10, 15};
     if (digits <= 44) return {1000,   32768,   80,  5,  11, 20};
     if (digits <= 49) return {1200,   65536,   100, 5,  11, 20};
-    if (digits <= 54) return {2000,   65536,   100, 6,  12, 25};   // was 2500 → reduce LA
+    if (digits <= 54) return {1600,   65536,   120, 6,  12, 25};   // smaller FB → faster LA
     if (digits <= 59) return {3500,   65536,   100, 7,  12, 25};   // was 4000
     if (digits <= 64) return {6000,   131072,  100, 8,  13, 35};   // was 7000
     if (digits <= 69) return {9000,   131072,  100, 8,  14, 40};   // was 10000
