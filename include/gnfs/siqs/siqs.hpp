@@ -1345,10 +1345,10 @@ inline std::optional<SIQSResult> factor(
     double thr_d = log_Qmax_d - lp_bits - params.sieve_error - small_contrib;
     uint8_t threshold = (thr_d > 10.0) ? static_cast<uint8_t>(thr_d) : 10;
 
-    // 2LP is only effective when LP space is small enough for graph cycles.
-    // For ≥45 digits, LP space too large + 2LP factoring is expensive (221ms for 45d).
-    // Contribution: only ~2.6% of usable relations at 45d — not worth the cost.
-    uint64_t lp_bound_sq = (digits <= 44) ? lp_bound * lp_bound : 0;
+    // 2LP: only enable for small digit sizes where merge overhead is low.
+    // For ≥35d: 2LP factoring (split_cofactor_64) costs 10-25ms and only
+    // contributes ~0-2% merged relations — not worth the overhead.
+    uint64_t lp_bound_sq = (digits <= 34) ? lp_bound * lp_bound : 0;
 
     if (verbose) {
         fprintf(stderr, "[SIQS] log_Qmax=%.1f, lp_bits=%.1f, sieve_err=%u, "
