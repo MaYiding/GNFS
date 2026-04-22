@@ -691,20 +691,31 @@ inline void sieve_polynomial(
     }
 
     // Phase 2: Identify candidates and trial divide
+    // Precompute raw mpz_t handles to avoid Integer wrapper overhead in hot loop
+    mpz_t ax_mpz, val_mpz, Q_mpz;
+    mpz_init(ax_mpz); mpz_init(val_mpz); mpz_init(Q_mpz);
+
     for (uint32_t pos = 0; pos < sieve_size; pos++) {
         if (sieve[pos] < threshold) continue;
 
         // Candidate found — compute Q(x) and trial divide
         int64_t x = static_cast<int64_t>(pos) - static_cast<int64_t>(M);
 
-        // value = Ax + B
-        Integer ax = poly.A * Integer(static_cast<uint64_t>(std::abs(x)));
-        Integer value = (x >= 0) ? (ax + poly.B) : (poly.B - ax);
+        // value = Ax + B (using raw GMP for speed)
+        mpz_mul_ui(ax_mpz, poly.A.get_mpz(), static_cast<uint64_t>(std::abs(x)));
+        if (x >= 0)
+            mpz_add(val_mpz, ax_mpz, poly.B.get_mpz());
+        else
+            mpz_sub(val_mpz, poly.B.get_mpz(), ax_mpz);
 
         // Q(x) = value^2 - N
-        Integer Q = value * value - N;
-        bool negative = (Q < Integer(0));
-        if (negative) Q = Integer(0) - Q;
+        mpz_mul(Q_mpz, val_mpz, val_mpz);
+        mpz_sub(Q_mpz, Q_mpz, N.get_mpz());
+        bool negative = (mpz_sgn(Q_mpz) < 0);
+        if (negative) mpz_neg(Q_mpz, Q_mpz);
+
+        Integer value(int64_t(0)); mpz_set(value.get_mpz(), val_mpz);
+        Integer Q(int64_t(0)); mpz_set(Q.get_mpz(), Q_mpz);
 
         // Trial divide Q by factor base primes using reusable exponent buffer
         // (avoids per-candidate heap allocation of fb.size() bytes)
@@ -854,6 +865,8 @@ inline void sieve_polynomial(
             exp[touched[t]] = 0;
         }
     }
+
+    mpz_clear(ax_mpz); mpz_clear(val_mpz); mpz_clear(Q_mpz);
 }
 
 // ================================================================
