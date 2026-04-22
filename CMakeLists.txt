@@ -510,6 +510,19 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_gnfs_bench PRIVATE gnfs_core Threads::Threads)
     # 不加入 ctest — 手动运行: ./test_gnfs_bench
 
+    # 性能目标基准测试 (10-70 digit)
+    add_executable(test_perf_targets
+        tests/test_perf_targets.cpp
+    )
+    target_link_libraries(test_perf_targets PRIVATE gnfs_core Threads::Threads)
+    # 不加入 ctest — 手动运行: ./test_perf_targets
+
+    # ECM 快速诊断测试
+    add_executable(test_ecm_quick
+        tests/test_ecm_quick.cpp
+    )
+    target_link_libraries(test_ecm_quick PRIVATE gnfs_core Threads::Threads)
+
     # 压力测试 (50/80/100-digit)
     add_executable(test_stress
         tests/test_stress.cpp
