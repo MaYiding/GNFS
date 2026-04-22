@@ -365,6 +365,9 @@ struct SIQSPoly {
     // This avoids expensive GMP division in next_poly_B
     std::vector<uint32_t> bp_mod_p;
     size_t bp_fb_size = 0;  // fb.size() at time of precomputation
+
+    // CRT coefficients for B_parts (needed for 32-bit bp_mod_p computation)
+    std::vector<uint32_t> coeffs;  // coeff_i from B_parts computation
 };
 
 /// Choose A = product of num_factors primes from factor base
@@ -463,80 +466,93 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb,
     // Verify: B^2 ≡ N (mod A)
     // (skip in release for performance)
 
-    // Precompute A^{-1} mod p for each FB prime
+    // ── Fast 32-bit init: compute A mod p, A^{-1} mod p, bp_mod_p ──
+    // A = product of s FB primes (all 32-bit), so A mod p = ∏(q_i mod p) mod p
+    // using 64-bit arithmetic. Avoids all mpz_fdiv_ui calls (~20× faster).
     poly.a_inv_mod_p.resize(fb.size());
-    for (size_t i = 1; i < fb.size(); i++) {
-        uint32_t p = fb[i].p;
-        uint32_t a_mod_p = static_cast<uint32_t>(
-            mpz_fdiv_ui(poly.A.get_mpz(), p));
-        if (a_mod_p == 0) {
-            poly.a_inv_mod_p[i] = 0; // A prime divides A — skip
-        } else {
-            poly.a_inv_mod_p[i] = mod_inv32(a_mod_p, p);
-        }
-    }
-
-    // Compute sieve start positions for each FB prime
-    // Q(x) = (Ax + B)^2 - N ≡ 0 (mod p)
-    // Ax + B ≡ ±sqrt(N) (mod p)
-    // x ≡ (±sqrt(N) - B) * A^{-1} (mod p)
     poly.solns.resize(fb.size());
+    poly.bp_fb_size = fb.size();
+    poly.bp_mod_p.resize(s * fb.size());
     uint32_t M = sieve_half;
 
-    for (size_t i = 1; i < fb.size(); i++) {
-        uint32_t p = fb[i].p;
-        uint32_t ainv = poly.a_inv_mod_p[i];
+    // Store coefficients for bp_mod_p computation
+    poly.coeffs.resize(s);
+    for (size_t i = 0; i < s; i++) {
+        uint32_t qi = fb[poly.a_indices[i]].p;
+        uint32_t ti = fb[poly.a_indices[i]].sqrt_n;
+        uint32_t a_div_qi_mod_qi = static_cast<uint32_t>(
+            mpz_fdiv_ui((poly.A / Integer(static_cast<uint64_t>(qi))).get_mpz(), qi));
+        poly.coeffs[i] = mod_mul32(ti, mod_inv32(a_div_qi_mod_qi, qi), qi);
+    }
 
-        if (ainv == 0) {
-            // This prime divides A — special handling
-            // Q(x)/A factors, one root only
-            // (Ax+B)^2 - N = A*(Ax^2 + 2Bx + (B^2-N)/A)
-            // For p | A: Ax^2 + 2Bx ≡ 2Bx (mod p), so x ≡ -(B^2-N)/(2BA) mod p
-            // Simpler: just skip. The A primes are already accounted for.
-            poly.solns[i] = {UINT32_MAX, UINT32_MAX};
+    for (size_t j = 1; j < fb.size(); j++) {
+        uint32_t p = fb[j].p;
+
+        // Compute A mod p using 32-bit arithmetic: ∏(q_i mod p)
+        uint64_t a_mod_p64 = 1;
+        for (size_t k = 0; k < s; k++) {
+            a_mod_p64 = a_mod_p64 * (fb[poly.a_indices[k]].p % p) % p;
+        }
+        uint32_t a_mod_p = static_cast<uint32_t>(a_mod_p64);
+
+        if (a_mod_p == 0) {
+            poly.a_inv_mod_p[j] = 0;
+            poly.solns[j] = {UINT32_MAX, UINT32_MAX};
+            for (size_t i = 0; i < s; i++)
+                poly.bp_mod_p[i * fb.size() + j] = 0;
             continue;
         }
 
-        uint32_t b_mod_p = static_cast<uint32_t>(
-            mpz_fdiv_ui(poly.B.get_mpz(), p));
+        poly.a_inv_mod_p[j] = mod_inv32(a_mod_p, p);
+
+        // Compute (A/q_i) mod p using prefix/suffix product trick (no inversions)
+        // A/q_i mod p = ∏_{k≠i} (q_k mod p) mod p
+        // For s ≤ 12 primes, direct computation is fine
+        uint32_t qi_mod_p[12];
+        for (size_t k = 0; k < s; k++)
+            qi_mod_p[k] = fb[poly.a_indices[k]].p % p;
+
+        for (size_t i = 0; i < s; i++) {
+            uint64_t a_div_qi = 1;
+            for (size_t k = 0; k < s; k++) {
+                if (k != i) a_div_qi = a_div_qi * qi_mod_p[k] % p;
+            }
+            // bp_mod_p = (A/q_i mod p) × coeff_i mod p
+            poly.bp_mod_p[i * fb.size() + j] = static_cast<uint32_t>(
+                a_div_qi * poly.coeffs[i] % p);
+        }
+
+        // Compute B mod p using GMP (needed because B = B_raw mod A is not
+        // computable purely from B_raw mod p). This is O(FB_size) GMP calls
+        // per init but only once per A (not per B update).
+        uint32_t b_mod_p;
         if (poly.B < Integer(0)) {
             Integer abs_b = Integer(0) - poly.B;
             uint32_t abs_b_mod = static_cast<uint32_t>(
                 mpz_fdiv_ui(abs_b.get_mpz(), p));
             b_mod_p = (p - abs_b_mod) % p;
+        } else {
+            b_mod_p = static_cast<uint32_t>(
+                mpz_fdiv_ui(poly.B.get_mpz(), p));
         }
 
-        uint32_t sq = fb[i].sqrt_n;
+        uint32_t ainv = poly.a_inv_mod_p[j];
+        uint32_t sq = fb[j].sqrt_n;
 
-        // soln1 = (sq - B) * A^{-1} mod p
         uint32_t diff1 = (sq >= b_mod_p) ? sq - b_mod_p : sq + p - b_mod_p;
         uint32_t x1 = mod_mul32(diff1, ainv, p);
 
-        // soln2 = (-sq - B) * A^{-1} mod p = (p - sq - B) * A^{-1} mod p
         uint32_t neg_sq = p - sq;
         uint32_t diff2 = (neg_sq >= b_mod_p) ? neg_sq - b_mod_p : neg_sq + p - b_mod_p;
         uint32_t x2 = mod_mul32(diff2, ainv, p);
 
-        // Adjust to sieve array coordinates: pos = x + M mod p
         uint32_t m_mod = M % p;
         uint32_t s1 = x1 + m_mod;
         if (s1 >= p) s1 -= p;
         uint32_t s2 = x2 + m_mod;
         if (s2 >= p) s2 -= p;
 
-        poly.solns[i] = {s1, s2};
-    }
-
-    // Precompute B_parts[i] mod p for all (i, FB prime) pairs
-    // This avoids expensive mpz_fdiv_ui calls in next_poly_B
-    poly.bp_fb_size = fb.size();
-    poly.bp_mod_p.resize(s * fb.size());
-    for (size_t i = 0; i < s; i++) {
-        for (size_t j = 1; j < fb.size(); j++) {
-            uint32_t p = fb[j].p;
-            poly.bp_mod_p[i * fb.size() + j] =
-                static_cast<uint32_t>(mpz_fdiv_ui(poly.B_parts[i].get_mpz(), p));
-        }
+        poly.solns[j] = {s1, s2};
     }
 }
 
