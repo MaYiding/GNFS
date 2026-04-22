@@ -61,7 +61,7 @@ inline SIQSParams select_params(size_t digits) {
     if (digits <= 44) return {1000,   32768,   80,  5,  11, 20};
     if (digits <= 49) return {1200,   65536,   100, 5,  11, 20};
     if (digits <= 54) return {1600,   65536,   120, 6,  12, 25};   // smaller FB → faster LA
-    if (digits <= 59) return {2000,   65536,   150, 6,  12, 25};   // FB=2200→2000, LP=130→150
+    if (digits <= 59) return {1900,   65536,   160, 6,  12, 25};   // FB=2200→1900, LP=130→160
     if (digits <= 64) return {3500,   131072,  150, 7,  13, 35};   // restored FB=3500, LP=130→150
     if (digits <= 69) return {5500,   131072,  150, 8,  14, 40};   // restored FB=5500, LP=130→150
     if (digits <= 74) return {15000,  131072,  120, 9,  14, 60};
@@ -1435,8 +1435,8 @@ inline std::optional<SIQSResult> factor(
 
                 size_t polys_done = atomic_polys.fetch_add(1, std::memory_order_relaxed) + 1;
 
-                // Flush every 200 relations or 20 polys (frequent for fast early-stop)
-                if (local_relations.size() > 200 || polys_done % 20 == 0) {
+                // Flush every 200 relations or 10 polys (frequent for fast early-stop)
+                if (local_relations.size() > 200 || polys_done % 10 == 0) {
                     atomic_full.fetch_add(local_full, std::memory_order_relaxed);
                     atomic_1lp.fetch_add(local_1lp, std::memory_order_relaxed);
                     atomic_2lp.fetch_add(local_2lp, std::memory_order_relaxed);
@@ -1449,8 +1449,8 @@ inline std::optional<SIQSResult> factor(
                     }
                     local_relations.clear();
 
-                    // Quick estimate without mutex — check every 20 polys
-                    if (polys_done % 20 == 0) {
+                    // Quick estimate without mutex — check every 10 polys
+                    if (polys_done % 10 == 0) {
                         if (quick_estimate() >= safe_target) {
                             enough.store(true, std::memory_order_relaxed);
                             break;
