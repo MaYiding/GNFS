@@ -1103,10 +1103,12 @@ FactorResult Pipeline::run() {
     }
 
     // ── Phase 1: Pollard rho for small N or quick unbalanced detection ──
-    // For N ≤ 128 bits: use native __uint128_t rho (~3ns/iter vs ~30ns/iter for GMP).
-    // For N > 128 bits: use GMP rho with adaptive iteration limit.
-    if (method == FactorizationMethod::PollardRho || method == FactorizationMethod::SIQS ||
-        method == FactorizationMethod::GNFS) {
+    // For N ≤ 128 bits: use mpn2 rho (~12ns/iter).
+    // For N > 128 bits: quick GMP rho probe (50K iters) for unbalanced semiprimes.
+    // Skip entirely for ≥40d/≥128bit when SIQS is the target (saves ~30ms overhead).
+    if (method == FactorizationMethod::PollardRho ||
+        ((method == FactorizationMethod::SIQS || method == FactorizationMethod::GNFS) &&
+         stats_.n_bits <= 128)) {
 
         // Fast mpn-based rho: N ≤ 128 bits (~38 digits)
         // Uses GMP mpn_ assembly (no mpz_t overhead): ~8-12ns/iter vs ~30ns/iter
@@ -1135,21 +1137,14 @@ FactorResult Pipeline::run() {
             }
         }
 
-        // GMP rho: only for N > 128 bits (mpn2 already handled ≤128 bits)
-        // or when user explicitly forced PollardRho method
-        if (stats_.n_bits > 128 || method == FactorizationMethod::PollardRho) {
-            size_t rho_limit;
-            if (method == FactorizationMethod::PollardRho)
-                rho_limit = 100000000;  // user forced rho: try harder
-            else
-                rho_limit = 50000;  // quick probe for unbalanced semiprimes
-
-            Integer rho_f = pollard_rho_brent(n_, rho_limit);
+        // GMP rho: only when user explicitly forced PollardRho method
+        if (method == FactorizationMethod::PollardRho) {
+            Integer rho_f = pollard_rho_brent(n_, 100000000);
             if (rho_f > Integer(1) && rho_f.compare(n_) != 0) {
                 emit_log(LogLevel::Info, Phase::PolynomialSelection,
                          "Pollard rho found factor: " + rho_f.to_string());
                 return make_fast_result(rho_f, FactorizationMethod::PollardRho,
-                                       "rho found factor in " + std::to_string(rho_limit) + " iters");
+                                       "GMP rho fallback");
             }
         }
     }

@@ -1366,8 +1366,8 @@ inline std::optional<SIQSResult> factor(
     auto quick_estimate = [&]() -> size_t {
         size_t f = atomic_full.load(std::memory_order_relaxed);
         size_t p1 = atomic_1lp.load(std::memory_order_relaxed);
-        // Conservative: assume ~4% of 1LP partials merge into usable relations
-        return f + p1 / 25;
+        // Empirical: ~8-10% of 1LP partials merge into usable relations
+        return f + p1 / 12;
     };
 
     // Multi-threaded sieve: each thread processes its own A values
@@ -1414,8 +1414,8 @@ inline std::optional<SIQSResult> factor(
 
                 size_t polys_done = atomic_polys.fetch_add(1, std::memory_order_relaxed) + 1;
 
-                // Flush every 500 relations or 200 polys (reduce mutex contention)
-                if (local_relations.size() > 500 || polys_done % 200 == 0) {
+                // Flush every 200 relations or 50 polys (frequent for fast early-stop)
+                if (local_relations.size() > 200 || polys_done % 50 == 0) {
                     atomic_full.fetch_add(local_full, std::memory_order_relaxed);
                     atomic_1lp.fetch_add(local_1lp, std::memory_order_relaxed);
                     atomic_2lp.fetch_add(local_2lp, std::memory_order_relaxed);
@@ -1428,8 +1428,8 @@ inline std::optional<SIQSResult> factor(
                     }
                     local_relations.clear();
 
-                    // Quick estimate without mutex
-                    if (polys_done % 400 == 0) {
+                    // Quick estimate without mutex — check every 50 polys
+                    if (polys_done % 50 == 0) {
                         if (quick_estimate() >= safe_target) {
                             enough.store(true, std::memory_order_relaxed);
                             break;
