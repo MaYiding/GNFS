@@ -1071,8 +1071,9 @@ inline std::vector<std::vector<size_t>> dense_gauss_left_nullspace(
         uint64_t mask = 1ULL << b_pc;
         const uint64_t* pivot_row_data = M[row].data();
 
-        if (ncols > 2000) {
-            // Parallel elimination for large matrices
+        if (ncols > 20000) {
+            // Parallel elimination only for very large matrices
+            // (thread creation per pivot: ~70μs overhead vs ~10μs work for ncols<10K)
             unsigned nt = std::max(1u, std::thread::hardware_concurrency());
             auto elim_chunk = [&](size_t start, size_t end) {
                 for (size_t other = start; other < end; other++) {
