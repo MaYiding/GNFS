@@ -178,9 +178,9 @@ bool test_result_to_csv() {
     r.factors.push_back(Integer(13));
 
     auto csv = r.to_csv_line(true);
-    // Should have header + data
+    // Should have header + data; header order: n,success,method,factor1,factor2,...
     assert(csv.find("n,success") != std::string::npos);
-    assert(csv.find("143,true,11,13") != std::string::npos);
+    assert(csv.find("143,true,auto,11,13") != std::string::npos);
     return true;
 }
 
