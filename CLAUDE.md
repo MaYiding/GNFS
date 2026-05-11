@@ -185,11 +185,12 @@ tests/                  # 41 测试文件 (.cpp)
 
 ## 跨平台编译注意事项 (macOS / Linux CI)
 
-**本地 macOS 编译通过 ≠ Linux CI 通过。** 三类常见差异:
+**本地 macOS 编译通过 ≠ Linux CI 通过。** 常见差异:
 
 1. **STL 头隐式包含**:Apple libc++ 隐式拉 `<optional>/<stdexcept>/<array>/<memory>/<string>/<atomic>/<chrono>/<cstring>/<iostream>/<iosfwd>`,Linux libstdc++ 严格 — 用就显式 `#include`。
 2. **64-bit 整数 typedef 差异**:Linux LP64 下 `int64_t == long`、`uint64_t == unsigned long`;macOS 下 `int64_t == long long`、`uint64_t == unsigned long long`。任何 `static_cast<(unsigned) long long>(...)` 传给重载函数(如 `Integer(int64_t)/Integer(uint64_t)`)在 Linux 会歧义。修法:加约束模板 `requires (std::is_same_v<T, long long> && !std::is_same_v<long long, int64_t>)`,只在 Linux 启用,委托给 `int64_t` 版本(`Integer` 已有此模式)。
 3. **Release 优化掉 UB**:`double → uint64_t` 当 double 超出 `[0, 2^64)` 是 UB。Release CI 不触发,但 Sanitizers (Debug+UBSan) 会抓。任何 cast 前先 `std::min(double_val, 1e18)` clamp。
+4. **测试期望被 NDEBUG 静默优化**:Release `assert()` 失效,所以期望本身错的测试看似通过,Debug + sanitizers 才暴露。最常见的模式是测试假设小 N 走完整 GNFS 流水线,但 `select_method` 把 ≤20-bit N 路由到 TrialDivision 快速路径(不调 progress callback,不累加 relations_found)。写测试断言时验证"路径选择"(`method_used == TrialDivision`) 比验证"流水线产生了副作用"(`relations_found > 0`) 更稳定。本地用 `cmake -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined"` 复现 CI 失败。
 
 ## Code Style
 
