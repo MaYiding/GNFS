@@ -5,7 +5,10 @@
 #include <cassert>
 #include <cstdint>
 #include <fstream>
+#include <limits>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace gnfs::linalg {
 
@@ -46,8 +49,25 @@ public:
         out.write(reinterpret_cast<const char*>(&num_cols), 8);
         out.write(reinterpret_cast<const char*>(&nnz), 8);
 
-        // row_offsets: num_rows + 1 uint32_t values
-        out.write(reinterpret_cast<const char*>(csr.row_offsets().data()),
+        // row_offsets: num_rows + 1 uint32_t values.
+        // CSRMatrix stores row_offsets as std::vector<size_t>; the on-disk
+        // format is uint32_t (matches the nnz < 2^32 invariant used elsewhere
+        // in the linalg pipeline). Narrow explicitly — reinterpreting a
+        // size_t buffer as uint32_t* would truncate every other element.
+        const auto& src_offsets = csr.row_offsets();
+        if (src_offsets.size() != num_rows + 1) {
+            throw std::runtime_error("MmapCSRMatrix::save: row_offsets size inconsistent");
+        }
+        std::vector<uint32_t> offsets32;
+        offsets32.reserve(num_rows + 1);
+        for (size_t v : src_offsets) {
+            if (v > std::numeric_limits<uint32_t>::max()) {
+                throw std::runtime_error(
+                    "MmapCSRMatrix::save: row offset exceeds uint32_t range");
+            }
+            offsets32.push_back(static_cast<uint32_t>(v));
+        }
+        out.write(reinterpret_cast<const char*>(offsets32.data()),
                   static_cast<std::streamsize>((num_rows + 1) * sizeof(uint32_t)));
 
         // col_indices: nnz uint32_t values
