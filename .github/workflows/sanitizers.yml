@@ -31,12 +31,17 @@ jobs:
     - name: Build
       run: make -C build -j$(nproc)
 
-    - name: Run tests under sanitizers
+    - name: Run tests under sanitizers (excluding slow/heavy/stress)
       working-directory: build
       env:
         ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
         UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-      run: ctest --output-on-failure --timeout 600
+      # Sanitizers slow execution 5-10x; only run instant/fast tests.
+      run: |
+        ctest --output-on-failure \
+          --label-exclude "slow|heavy|stress|gate" \
+          --parallel $(nproc) \
+          --timeout 300
 
   tsan:
     name: ThreadSanitizer
@@ -62,8 +67,12 @@ jobs:
     - name: Build
       run: make -C build -j$(nproc)
 
-    - name: Run tests under ThreadSanitizer
+    - name: Run tests under ThreadSanitizer (excluding slow/heavy/stress)
       working-directory: build
       env:
         TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-      run: ctest --output-on-failure --timeout 600
+      run: |
+        ctest --output-on-failure \
+          --label-exclude "slow|heavy|stress|gate" \
+          --parallel $(nproc) \
+          --timeout 300

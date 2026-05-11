@@ -43,6 +43,14 @@ jobs:
     - name: Build
       run: make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
-    - name: Run tests
+    - name: Run tests (excluding slow/heavy/stress)
       working-directory: build
-      run: ctest --output-on-failure --timeout 300
+      # CI runners are 2-4 vCPU; full GNFS pipelines (slow/heavy/stress
+      # labels) routinely take 5-60 min and time out. Skip them here —
+      # they are exercised in nightly/manual runs via scripts/test.sh.
+      # `gate` label tests still run (RegressionGate ~60s).
+      run: |
+        ctest --output-on-failure \
+          --label-exclude "slow|heavy|stress" \
+          --parallel $(nproc 2>/dev/null || sysctl -n hw.ncpu) \
+          --timeout 120
