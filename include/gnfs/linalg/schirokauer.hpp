@@ -407,11 +407,12 @@ struct GFPolyOps {
 /// Schirokauer map configuration
 struct SchirokaurConfig {
     std::vector<uint32_t> primes = {2};  // Primes for Schirokauer maps (usually just 2)
-    uint32_t exponent_k = 8;              // Exponent k (use ℓ^k), larger = more accurate
-                                          // k ≥ 8 needed for split case: non-unit elements
-                                          // require ℓ-part stripping, reducing precision by v.
-                                          // Formula (u^e-1)/ℓ mod ℓ needs ℓ^2 precision,
-                                          // so k - v ≥ 2. k=8 handles v ≤ 6 (prob 99.2%)
+    uint32_t exponent_k = 8;              // Exponent k (use ℓ^k), larger = more accurate.
+                                          // (coeff-1)/ℓ mod ℓ needs k-v ≥ 2 bits of ℓ-adic
+                                          // precision after stripping v ℓ-factors.
+                                          // Inputs with strip_v ≥ k-1 (e.g. γ = a - b·r
+                                          // hitting Hensel root in split-degree-1 path)
+                                          // silently fall back to zero columns.
     bool verbose = false;
 };
 
@@ -631,10 +632,18 @@ public:
         if (c0 == 0 && c1 == 0) {
             return std::vector<uint32_t>(degree_, 0);
         }
+        uint32_t strip_v = 0;
         while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
                (c0 != 0 || c1 != 0)) {
             c0 /= info.ell;
             c1 /= info.ell;
+            ++strip_v;
+        }
+        // Precision after stripping is k-v bits in ℓ^k; (coeff-1)/ℓ mod ℓ needs k-v ≥ 2.
+        // When strip_v ≥ k-1, extracted bits are below noise floor — return zeros
+        // (symmetric with the all-zero short-circuit above).
+        if (strip_v + 2 > config_.exponent_k) {
+            return std::vector<uint32_t>(degree_, 0);
         }
         c0 %= info.ell_k;
         c1 %= info.ell_k;
@@ -684,11 +693,19 @@ public:
                     result.push_back(0);
                     continue;
                 }
+                uint32_t strip_v = 0;
                 while (gamma % info.ell == 0) {
                     gamma /= info.ell;
+                    ++strip_v;
                 }
-                // gamma is now the unit part (coprime to ℓ), known mod ℓ^{k-v}
-                // where v was the stripped valuation. Need k-v ≥ 2 for formula.
+                // gamma is now the unit part (coprime to ℓ), known mod ℓ^{k-v}.
+                // (coeff-1)/ℓ mod ℓ needs k-v ≥ 2; otherwise the extracted bit is noise.
+                // Production split-degree-1 path can hit strip_v ≥ k-1 even with gcd(a,b)=1
+                // when γ = a - b·r aligns with the Hensel-lifted root r. Fallback to 0.
+                if (strip_v + 2 > config_.exponent_k) {
+                    result.push_back(0);
+                    continue;
+                }
 
                 // γ^(ℓ-1) for degree-1 factor (exponent = ℓ^1 - 1 = ℓ - 1)
                 // For ℓ=2: exponent = 1, so γ^1 = γ
@@ -727,10 +744,18 @@ public:
                     continue;
                 }
                 // Strip ℓ-part: if both coefficients are divisible by ℓ, divide out
+                uint32_t strip_v = 0;
                 while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
                        (c0 != 0 || c1 != 0)) {
                     c0 /= info.ell;
                     c1 /= info.ell;
+                    ++strip_v;
+                }
+                // Need k-v ≥ 2 bits of ℓ-adic precision for (coeff-1)/ℓ mod ℓ.
+                // Below that threshold the extracted bits are below noise floor.
+                if (strip_v + 2 > config_.exponent_k) {
+                    for (uint32_t i = 0; i < fi.degree; ++i) result.push_back(0);
+                    continue;
                 }
                 // Ensure coefficients stay in [0, ell_k)
                 c0 %= info.ell_k;
@@ -762,10 +787,17 @@ public:
                     continue;
                 }
                 // Strip ℓ-part: if both coefficients are divisible by ℓ, divide out
+                uint32_t strip_v = 0;
                 while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
                        (c0 != 0 || c1 != 0)) {
                     c0 /= info.ell;
                     c1 /= info.ell;
+                    ++strip_v;
+                }
+                // Need k-v ≥ 2 bits of ℓ-adic precision for (coeff-1)/ℓ mod ℓ.
+                if (strip_v + 2 > config_.exponent_k) {
+                    for (uint32_t i = 0; i < fi.degree; ++i) result.push_back(0);
+                    continue;
                 }
                 c0 %= info.ell_k;
                 c1 %= info.ell_k;
