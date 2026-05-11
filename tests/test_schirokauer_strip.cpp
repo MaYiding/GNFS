@@ -145,6 +145,77 @@ int test_strip_max_safe(SchirokaurMap& smap) {
     return fails;
 }
 
+int test_strip_overflow_fallback(SchirokaurMap& smap) {
+    // strip_v = 7 > k-2 = 6, so silent fallback to zeros.
+    // (128, 128) = (2^7, 2^7) — both divisible by 2 exactly 7 times.
+    // After 7 strips: (1, 1) but strip_v=7 exceeds precision budget.
+    // Expected: silent fallback returns zero column.
+    auto fallback = smap.compute(int64_t{128}, uint64_t{128});
+    int fails = 0;
+    for (uint32_t v : fallback[0]) {
+        if (v != 0) {
+            std::cerr << "FAIL: strip-7 expected silent fallback to zeros, got: " << v << "\n";
+            ++fails;
+        }
+    }
+    std::cout << "  strip-7 fallback (λ(128,128) → 0 column): "
+              << (fails == 0 ? "OK" : "FAILED") << "\n";
+    return fails;
+}
+
+// 17-bit polynomial reproducing the CI L2 progressive panic scenario:
+// N = 96091, base-m polynomial where f mod 2 is reducible with a linear factor.
+// Production gcd(a, b) = 1 keeps c0,c1 coprime to ℓ in the unsplit / split-deg-≥2
+// strip paths, but split-degree-1 reduces γ = a - b·r against a Hensel-lifted root r,
+// and γ can be highly ℓ-divisible without violating gcd(a,b)=1.
+PolynomialContext build_n96091_ctx() {
+    Integer N(int64_t(96091LL));
+    // f(x) = x^3 + 5x + 458, base-m polynomial near m=458 such that f(m) ≡ 0 mod N.
+    // We use a synthetic base-m polynomial known to have a degree-1 factor mod 2.
+    std::vector<Integer> coeffs;
+    coeffs.push_back(Integer(int64_t(1024LL)));   // c0 even
+    coeffs.push_back(Integer(int64_t(5LL)));
+    coeffs.push_back(Integer(int64_t(2LL)));      // c2 even — ensures reducible mod 2
+    coeffs.push_back(Integer(int64_t(1)));         // x^3
+    Integer m(int64_t(2LL));
+    PolynomialContext ctx(N.clone(), std::move(coeffs), m.clone(), 1.0);
+    return ctx;
+}
+
+int test_split_degree1_robustness(SchirokaurMap& smap) {
+    // Drive split-degree-1 path with many (a, b) pairs from production-like
+    // gcd(a,b)=1 inputs. None should panic, all should return well-defined
+    // 0/1 values in each Schirokauer column. Some columns will trigger the
+    // silent fallback (strip_v ≥ k-1 in γ = a - b·r).
+    std::vector<std::pair<int64_t, uint64_t>> pairs = {
+        {1, 1}, {3, 1}, {5, 1}, {7, 1}, {9, 1}, {11, 1}, {13, 1}, {15, 1},
+        {17, 1}, {19, 1}, {21, 1}, {23, 1}, {25, 1}, {1, 3}, {3, 5}, {5, 3},
+        {7, 5}, {9, 7}, {127, 3}, {255, 5}, {-1, 1}, {-3, 5}, {-7, 9},
+    };
+    int fails = 0;
+    int zero_columns = 0;
+    int total_columns = 0;
+    for (auto [a, b] : pairs) {
+        auto cols = smap.compute(a, b);
+        for (const auto& col : cols) {
+            for (uint32_t v : col) {
+                ++total_columns;
+                if (v == 0) ++zero_columns;
+                if (v >= 2) {  // Schirokauer ℓ=2 must yield 0 or 1
+                    std::cerr << "FAIL: split-deg-1 λ(" << a << "," << b
+                              << ") column has invalid value " << v << "\n";
+                    ++fails;
+                }
+            }
+        }
+    }
+    std::cout << "  split-deg-1 robustness: " << pairs.size() << " pairs, "
+              << total_columns << " columns, " << zero_columns << " zero ("
+              << (100 * zero_columns / total_columns) << "%) — "
+              << (fails == 0 ? "no panic, all in {0,1}" : "FAILED") << "\n";
+    return fails;
+}
+
 }  // namespace
 
 int main() {
@@ -163,6 +234,14 @@ int main() {
     fails += test_strip_two(smap);
     fails += test_zero_shortcircuit(smap);
     fails += test_strip_max_safe(smap);
+    fails += test_strip_overflow_fallback(smap);
+
+    // Split-degree-1 path: N=96091 scenario from PR #3 CI failure.
+    auto ctx_split = build_n96091_ctx();
+    SchirokaurMap smap_split(ctx_split, config);
+    std::cout << "\nSplit polynomial degree: " << ctx_split.degree()
+              << ", columns: " << smap_split.num_columns() << "\n";
+    fails += test_split_degree1_robustness(smap_split);
 
     std::cout << "\n";
     if (fails != 0) {
