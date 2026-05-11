@@ -3,9 +3,11 @@
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
 #include <array>
+#include <iomanip>
+#include <iostream>
+#include <memory>
 #include <random>
 #include <cstring>
-#include <iomanip>
 #include <thread>
 
 namespace gnfs::linalg {

@@ -270,16 +270,20 @@ struct GNFSParams {
         // === 多项式选择参数 ===
         // 首项系数界需要随 N^{1/d} 缩放
         // m ≈ N^{1/d}, 首项系数应在 m^{1/3} 左右
+        // NOTE: clamp the double *before* casting to uint64_t — for
+        // large N (>200 digits) std::exp(log_ad) can exceed
+        // uint64_t::max() and casting a double outside [0, 2^64) is
+        // undefined behavior (caught by UBSan).
         double log_m = ln_n / p.degree;
         double log_ad = log_m / 3.0;
-        p.leading_coeff_bound = static_cast<uint64_t>(
-            std::max(std::exp(log_ad), 10000.0));
-        p.leading_coeff_bound = std::min(p.leading_coeff_bound, uint64_t(1e12));
+        double ad_double = std::max(std::exp(log_ad), 10000.0);
+        ad_double = std::min(ad_double, 1.0e12);
+        p.leading_coeff_bound = static_cast<uint64_t>(ad_double);
 
         // 搜索半径随 m 缩放
-        p.search_radius = static_cast<uint64_t>(
-            std::max(100.0, std::exp(log_m * 0.3)));
-        p.search_radius = std::min(p.search_radius, uint64_t(1e8));
+        double sr_double = std::max(100.0, std::exp(log_m * 0.3));
+        sr_double = std::min(sr_double, 1.0e8);
+        p.search_radius = static_cast<uint64_t>(sr_double);
 
         // 候选数量
         p.num_candidates = std::max(1000u, static_cast<uint32_t>(p.digits * 100));

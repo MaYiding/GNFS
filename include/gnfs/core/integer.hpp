@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <iosfwd>
 #include <string>
+#include <type_traits>
 
 namespace gnfs::core {
 
@@ -16,6 +17,21 @@ public:
     explicit Integer(int64_t value);
     explicit Integer(unsigned int value);
     explicit Integer(uint64_t value);
+    // On platforms where uint64_t/int64_t are `unsigned long`/`long`
+    // (Linux LP64), `unsigned long long`/`long long` are distinct
+    // 64-bit integer types and constructor overload resolution
+    // becomes ambiguous between Integer(int), Integer(int64_t),
+    // Integer(uint64_t) etc. Add dedicated overloads there; on
+    // platforms where they alias (macOS), the requires-clauses
+    // disable them to avoid redefinition.
+    template <typename T>
+        requires (std::is_same_v<T, unsigned long long>
+                  && !std::is_same_v<unsigned long long, uint64_t>)
+    explicit Integer(T value) : Integer(static_cast<uint64_t>(value)) {}
+    template <typename T>
+        requires (std::is_same_v<T, long long>
+                  && !std::is_same_v<long long, int64_t>)
+    explicit Integer(T value) : Integer(static_cast<int64_t>(value)) {}
     Integer(const char* str, int base = 10);
     Integer(const std::string& str, int base = 10);
     Integer(const Integer& other);

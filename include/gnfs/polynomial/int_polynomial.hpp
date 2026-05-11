@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <random>
+#include <stdexcept>
 #include <vector>
 
 namespace gnfs::polynomial {

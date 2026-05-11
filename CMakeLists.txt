@@ -256,6 +256,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_lattice_sieve PRIVATE gnfs_core Threads::Threads)
     add_test(NAME LatticeSieve COMMAND test_lattice_sieve)
+    set_tests_properties(LatticeSieve PROPERTIES LABELS "slow" TIMEOUT 300)
 
     add_executable(test_relation_collector
         tests/test_relation_collector.cpp
@@ -298,6 +299,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_gnfs_e2e PRIVATE gnfs_core Threads::Threads)
     add_test(NAME GNFS_E2E COMMAND test_gnfs_e2e)
+    set_tests_properties(GNFS_E2E PROPERTIES LABELS "slow" TIMEOUT 600)
 
     # Kleinjung 多项式选择测试
     add_executable(test_murphy
@@ -311,18 +313,22 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_kleinjung PRIVATE gnfs_core Threads::Threads)
     add_test(NAME Kleinjung COMMAND test_kleinjung)
+    set_tests_properties(Kleinjung PROPERTIES LABELS "slow" TIMEOUT 300)
 
     add_executable(test_kleinjung_large
         tests/test_kleinjung_large.cpp
     )
     target_link_libraries(test_kleinjung_large PRIVATE gnfs_core Threads::Threads)
     add_test(NAME KleinjungLarge COMMAND test_kleinjung_large)
+    set_tests_properties(KleinjungLarge PROPERTIES LABELS "heavy" TIMEOUT 1800)
 
     add_executable(test_factor_with_kleinjung
         tests/test_factor_with_kleinjung.cpp
     )
     target_link_libraries(test_factor_with_kleinjung PRIVATE gnfs_core Threads::Threads)
     add_test(NAME FactorWithKleinjung COMMAND test_factor_with_kleinjung)
+    # 27/40/50-bit semiprime end-to-end; routinely takes > 5 minutes on CI runners.
+    set_tests_properties(FactorWithKleinjung PROPERTIES LABELS "slow" TIMEOUT 900)
 
     add_executable(test_sqrt_debug
         tests/test_sqrt_debug.cpp
@@ -337,6 +343,8 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_gnfs_progressive PRIVATE gnfs_core Threads::Threads)
     add_test(NAME GNFS_Progressive_L1 COMMAND test_gnfs_progressive 1 1)
     add_test(NAME GNFS_Progressive_L2 COMMAND test_gnfs_progressive 2 2)
+    set_tests_properties(GNFS_Progressive_L1 PROPERTIES TIMEOUT 60)
+    set_tests_properties(GNFS_Progressive_L2 PROPERTIES TIMEOUT 120)
     # Level 3+ 不加入 ctest — 手动运行: ./test_gnfs_progressive 3
 
     # 参数计算器测试

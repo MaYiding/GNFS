@@ -1,9 +1,11 @@
 #pragma once
 
 #include "gnfs/linalg/matrix_builder.hpp"
+#include <algorithm>
 #include <cassert>
-#include <vector>
 #include <cstdint>
+#include <cstring>
+#include <vector>
 
 namespace gnfs::linalg {
 

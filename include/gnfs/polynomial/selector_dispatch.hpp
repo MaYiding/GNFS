@@ -6,7 +6,9 @@
 #include "../core/polynomial_context.hpp"
 
 #include <iostream>
+#include <optional>
 #include <stdexcept>
+#include <string>
 
 namespace gnfs::polynomial {
 

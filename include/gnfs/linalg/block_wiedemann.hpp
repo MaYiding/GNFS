@@ -2,6 +2,7 @@
 
 #include "gnfs/linalg/block_lanczos.hpp"  // BlockVector, DenseGF2_64x64, CSRMatrix, etc.
 #include "gnfs/linalg/sparse_matrix.hpp"
+#include <array>
 #include <cstdint>
 #include <vector>
 
