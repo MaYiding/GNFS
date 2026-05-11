@@ -4,6 +4,7 @@
 #include "../core/polynomial_context.hpp"
 
 #include <cmath>
+#include <iosfwd>
 #include <optional>
 #include <span>
 #include <unordered_map>

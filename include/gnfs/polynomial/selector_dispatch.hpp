@@ -8,6 +8,7 @@
 #include <iostream>
 #include <optional>
 #include <stdexcept>
+#include <string>
 
 namespace gnfs::polynomial {
 

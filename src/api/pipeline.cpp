@@ -21,6 +21,7 @@
 #include <chrono>
 #include <optional>
 #include <random>
+#include <string>
 #include <thread>
 
 namespace gnfs::api {

@@ -15,6 +15,7 @@
 #include <gnfs/linalg/block_lanczos.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
