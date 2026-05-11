@@ -720,9 +720,13 @@ public:
                 uint64_t b_mod = b % info.ell_k;
                 uint64_t neg_b = (info.ell_k - b_mod) % info.ell_k;
 
-                // Strip ℓ-part: if both coefficients are divisible by ℓ, divide out
                 uint64_t c0 = static_cast<uint64_t>(a_mod);
                 uint64_t c1 = neg_b;
+                if (c0 == 0 && c1 == 0) {
+                    for (uint32_t i = 0; i < fi.degree; ++i) result.push_back(0);
+                    continue;
+                }
+                // Strip ℓ-part: if both coefficients are divisible by ℓ, divide out
                 while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
                        (c0 != 0 || c1 != 0)) {
                     c0 /= info.ell;
@@ -751,9 +755,13 @@ public:
                 uint64_t b_mod = b % info.ell_k;
                 uint64_t neg_b = (info.ell_k - b_mod) % info.ell_k;
 
-                // Strip ℓ-part: if both coefficients are divisible by ℓ, divide out
                 uint64_t c0 = static_cast<uint64_t>(a_mod);
                 uint64_t c1 = neg_b;
+                if (c0 == 0 && c1 == 0) {
+                    for (uint32_t i = 0; i < fi.degree; ++i) result.push_back(0);
+                    continue;
+                }
+                // Strip ℓ-part: if both coefficients are divisible by ℓ, divide out
                 while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
                        (c0 != 0 || c1 != 0)) {
                     c0 /= info.ell;

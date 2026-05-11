@@ -288,12 +288,22 @@ bool test_pipeline_step_by_step() {
 
     auto relations = pipeline.sieve_and_collect(ctx, fb);
     assert(!relations.empty());
+    // sieve_and_collect updates stats_.relations_found; this is the only
+    // instant-tier assertion that exercises the GNFS-side counters.
+    assert(pipeline.stats().relations_found > 0 &&
+           "Pipeline::stats().relations_found should be set after sieving");
 
     auto filtered = pipeline.filter(std::move(relations));
     assert(!filtered.empty());
 
     auto mr = pipeline.solve_matrix(std::move(filtered), fb, ctx);
     assert(!mr.dependencies.empty());
+    // solve_matrix updates stats_.dependencies_found and matrix dimensions.
+    assert(pipeline.stats().dependencies_found > 0 &&
+           "Pipeline::stats().dependencies_found should be set after solve");
+    assert(pipeline.stats().matrix_rows > 0 &&
+           pipeline.stats().matrix_cols > 0 &&
+           "Pipeline::stats() matrix dimensions should be recorded");
 
     auto result = pipeline.extract_factors(mr, fb, ctx);
     assert(result.success);
@@ -319,6 +329,36 @@ bool test_pipeline_stats() {
     // (relations_found, dependencies_found) stay at zero. Verify method
     // selection instead.
     assert(result.stats.method_used == FactorizationMethod::TrialDivision);
+    return true;
+}
+
+bool test_pipeline_progress_callback() {
+    // The mid-level Pipeline drives the GNFS phases directly (bypassing
+    // select_method), so emit_progress callbacks fire even on small N.
+    // This test pins the callback contract: stepping through phases must
+    // surface at least three distinct Phase values to the callback.
+    Integer n(143);
+    Config cfg;
+    cfg.verbose = false;
+
+    Pipeline pipeline(n, cfg);
+
+    std::vector<Phase> phases_seen;
+    pipeline.set_progress_callback([&phases_seen](const ProgressInfo& info) {
+        if (phases_seen.empty() || phases_seen.back() != info.phase) {
+            phases_seen.push_back(info.phase);
+        }
+    });
+
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+    auto rels = pipeline.sieve_and_collect(ctx, fb);
+    auto filtered = pipeline.filter(std::move(rels));
+
+    // After driving four GNFS phases, the callback should have observed
+    // at least PolynomialSelection, FactorBase, Sieving, Filtering.
+    assert(phases_seen.size() >= 3 &&
+           "Pipeline progress callback should fire on each phase transition");
     return true;
 }
 
@@ -358,6 +398,7 @@ int main() {
     std::cout << "\nPipeline tests:\n";
     TEST(pipeline_step_by_step);
     TEST(pipeline_stats);
+    TEST(pipeline_progress_callback);
 
     std::cout << "\n========================================\n";
     std::cout << "  Results: " << pass_count << " passed, " << fail_count << " failed\n";

@@ -417,6 +417,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_schirokauer_deg4 PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SchirokaureDeg4 COMMAND test_schirokauer_deg4)
 
+    # Schirokauer strip-ℓ math regression (instant)
+    add_executable(test_schirokauer_strip
+        tests/test_schirokauer_strip.cpp
+    )
+    target_link_libraries(test_schirokauer_strip PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SchirokauerStrip COMMAND test_schirokauer_strip)
+
     # 跨模块集成测试
     add_executable(test_integration
         tests/test_integration.cpp
