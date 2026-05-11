@@ -4,6 +4,8 @@
 #include "gnfs/core/params.hpp"
 #include "gnfs/sqrt/modular_poly.hpp"
 
+#include <stdexcept>
+
 
 namespace gnfs::polynomial {
 

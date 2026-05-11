@@ -7,6 +7,7 @@
 #include <map>
 #include <cmath>
 #include <algorithm>
+#include <stdexcept>
 
 namespace gnfs::sqrt {
 

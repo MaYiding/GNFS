@@ -3,6 +3,7 @@
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
 #include <array>
+#include <memory>
 #include <random>
 #include <cstring>
 #include <iomanip>
