@@ -631,11 +631,19 @@ public:
         if (c0 == 0 && c1 == 0) {
             return std::vector<uint32_t>(degree_, 0);
         }
+        uint32_t strip_v = 0;
         while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
                (c0 != 0 || c1 != 0)) {
             c0 /= info.ell;
             c1 /= info.ell;
+            ++strip_v;
         }
+        // (coeff - 1)/ℓ mod ℓ requires ≥ 2 bits of precision after stripping.
+        // strip_v ≥ k - 1 leaves only 1 bit, producing garbage. Production
+        // path (gcd(a,b)=1) keeps v=0, but fuzzed inputs or future param
+        // changes could trigger this — fail loudly in Debug.
+        assert(strip_v + 2 <= config_.exponent_k &&
+               "Schirokauer: strip-ℓ left < 2 bits of precision (v(γ) ≥ k-1)");
         c0 %= info.ell_k;
         c1 %= info.ell_k;
 
@@ -684,11 +692,15 @@ public:
                     result.push_back(0);
                     continue;
                 }
+                uint32_t strip_v = 0;
                 while (gamma % info.ell == 0) {
                     gamma /= info.ell;
+                    ++strip_v;
                 }
                 // gamma is now the unit part (coprime to ℓ), known mod ℓ^{k-v}
                 // where v was the stripped valuation. Need k-v ≥ 2 for formula.
+                assert(strip_v + 2 <= config_.exponent_k &&
+                       "Schirokauer: strip-ℓ left < 2 bits of precision (v(γ) ≥ k-1)");
 
                 // γ^(ℓ-1) for degree-1 factor (exponent = ℓ^1 - 1 = ℓ - 1)
                 // For ℓ=2: exponent = 1, so γ^1 = γ
@@ -727,11 +739,15 @@ public:
                     continue;
                 }
                 // Strip ℓ-part: if both coefficients are divisible by ℓ, divide out
+                uint32_t strip_v = 0;
                 while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
                        (c0 != 0 || c1 != 0)) {
                     c0 /= info.ell;
                     c1 /= info.ell;
+                    ++strip_v;
                 }
+                assert(strip_v + 2 <= config_.exponent_k &&
+                       "Schirokauer: strip-ℓ left < 2 bits of precision (v(γ) ≥ k-1)");
                 // Ensure coefficients stay in [0, ell_k)
                 c0 %= info.ell_k;
                 c1 %= info.ell_k;
@@ -762,11 +778,15 @@ public:
                     continue;
                 }
                 // Strip ℓ-part: if both coefficients are divisible by ℓ, divide out
+                uint32_t strip_v = 0;
                 while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
                        (c0 != 0 || c1 != 0)) {
                     c0 /= info.ell;
                     c1 /= info.ell;
+                    ++strip_v;
                 }
+                assert(strip_v + 2 <= config_.exponent_k &&
+                       "Schirokauer: strip-ℓ left < 2 bits of precision (v(γ) ≥ k-1)");
                 c0 %= info.ell_k;
                 c1 %= info.ell_k;
 
