@@ -288,12 +288,22 @@ bool test_pipeline_step_by_step() {
 
     auto relations = pipeline.sieve_and_collect(ctx, fb);
     assert(!relations.empty());
+    // sieve_and_collect updates stats_.relations_found; this is the only
+    // instant-tier assertion that exercises the GNFS-side counters.
+    assert(pipeline.stats().relations_found > 0 &&
+           "Pipeline::stats().relations_found should be set after sieving");
 
     auto filtered = pipeline.filter(std::move(relations));
     assert(!filtered.empty());
 
     auto mr = pipeline.solve_matrix(std::move(filtered), fb, ctx);
     assert(!mr.dependencies.empty());
+    // solve_matrix updates stats_.dependencies_found and matrix dimensions.
+    assert(pipeline.stats().dependencies_found > 0 &&
+           "Pipeline::stats().dependencies_found should be set after solve");
+    assert(pipeline.stats().matrix_rows > 0 &&
+           pipeline.stats().matrix_cols > 0 &&
+           "Pipeline::stats() matrix dimensions should be recorded");
 
     auto result = pipeline.extract_factors(mr, fb, ctx);
     assert(result.success);
