@@ -631,7 +631,8 @@ public:
         if (c0 == 0 && c1 == 0) {
             return std::vector<uint32_t>(degree_, 0);
         }
-        while (c0 % info.ell == 0 && c1 % info.ell == 0) {
+        while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
+               (c0 != 0 || c1 != 0)) {
             c0 /= info.ell;
             c1 /= info.ell;
         }
