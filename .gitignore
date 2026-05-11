@@ -30,6 +30,9 @@ CMakeUserPresets.json
 # ===== Cache =====
 .cache/
 
+# ===== Claude runtime artifacts =====
+.claude/scheduled_tasks.lock
+
 # ===== Planning & Tracking Files (Session-Specific) =====
 task_plan.md
 findings.md

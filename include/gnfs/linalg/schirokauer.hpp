@@ -615,7 +615,9 @@ public:
 
     /// Standard Schirokauer (f irreducible mod ℓ)
     /// Requires γ = a - bα to be an ℓ-adic unit (not divisible by ℓ).
-    /// This is guaranteed when gcd(|a|, b) = 1 (coprime relation convention).
+    /// When gcd(a, b) is divisible by ℓ we strip the ℓ-part first, matching
+    /// the split-case handling in compute_split. If γ ≡ 0 mod ℓ^k entirely,
+    /// the Schirokauer map is undefined and we return zero columns.
     [[nodiscard]] std::vector<uint32_t> compute_unsplit(
             int64_t a, uint64_t b, const PrimeInfo& info) const {
 
@@ -624,12 +626,20 @@ public:
         uint64_t b_mod = b % info.ell_k;
         uint64_t neg_b = (info.ell_k - b_mod) % info.ell_k;
 
-        // Defense: γ = (a_mod) + (neg_b)·α must not be zero mod ℓ
-        // (both coefficients zero means γ ≡ 0, not a unit)
-        assert(static_cast<uint64_t>(a_mod) % info.ell != 0 ||
-               neg_b % info.ell != 0);
+        uint64_t c0 = static_cast<uint64_t>(a_mod);
+        uint64_t c1 = neg_b;
+        if (c0 == 0 && c1 == 0) {
+            return std::vector<uint32_t>(degree_, 0);
+        }
+        while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
+               (c0 != 0 || c1 != 0)) {
+            c0 /= info.ell;
+            c1 /= info.ell;
+        }
+        c0 %= info.ell_k;
+        c1 %= info.ell_k;
 
-        FastPoly g(static_cast<uint64_t>(a_mod), neg_b);
+        FastPoly g(c0, c1);
         auto g_pow = FastPoly::power(g, info.exponent, info.f_mod.data(), degree_, info.ell_k);
 
         std::vector<uint32_t> result(degree_, 0);
