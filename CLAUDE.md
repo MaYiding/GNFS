@@ -183,6 +183,14 @@ tests/                  # 41 测试文件 (.cpp)
 - 使用 `gnfs::core::Integer` 封装 GMP `mpz_class`
 - 所有大整数运算通过 `Integer` 类完成
 
+## 跨平台编译注意事项 (macOS / Linux CI)
+
+**本地 macOS 编译通过 ≠ Linux CI 通过。** 三类常见差异:
+
+1. **STL 头隐式包含**:Apple libc++ 隐式拉 `<optional>/<stdexcept>/<array>/<memory>/<string>/<atomic>/<chrono>/<cstring>/<iostream>/<iosfwd>`,Linux libstdc++ 严格 — 用就显式 `#include`。
+2. **64-bit 整数 typedef 差异**:Linux LP64 下 `int64_t == long`、`uint64_t == unsigned long`;macOS 下 `int64_t == long long`、`uint64_t == unsigned long long`。任何 `static_cast<(unsigned) long long>(...)` 传给重载函数(如 `Integer(int64_t)/Integer(uint64_t)`)在 Linux 会歧义。修法:加约束模板 `requires (std::is_same_v<T, long long> && !std::is_same_v<long long, int64_t>)`,只在 Linux 启用,委托给 `int64_t` 版本(`Integer` 已有此模式)。
+3. **Release 优化掉 UB**:`double → uint64_t` 当 double 超出 `[0, 2^64)` 是 UB。Release CI 不触发,但 Sanitizers (Debug+UBSan) 会抓。任何 cast 前先 `std::min(double_val, 1e18)` clamp。
+
 ## Code Style
 
 - C++20 标准，使用 `std::optional`, `std::span`, concepts
@@ -239,6 +247,19 @@ local pad=$(( 48 - ${#msg} ))
 - **注意超时**: slow 测试 (kleinjung, lattice_sieve, gnfs_e2e) 可能需要数分钟，脚本自带超时保护
 - 测试框架：自定义 assert 宏（非 GoogleTest/Catch2）
 - 查看全部测试列表: `./scripts/test.sh list`
+
+### CI 上跑的测试子集
+- GitHub runners (2-4 vCPU) 跑不动 slow/heavy/stress 测试,会超时
+- `.github/workflows/ci.yml` 用 `ctest --label-exclude "slow|heavy|stress" --parallel N`
+- 新增测试在 CMakeLists.txt 必须打 LABELS:`set_tests_properties(<Name> PROPERTIES LABELS "<tier>" TIMEOUT <s>)`,tier 与 `scripts/test.sh` 的 TEST_TIER 保持一致
+- Sanitizers 还排除 `gate` label 和 `^(Integration|API)$`(后者是 Debug 下 pre-existing assert,见 BACKLOG.md)
+
+## CI 调试常用命令
+
+- `gh run list --branch <branch> --limit 5` — 查近期 CI 运行
+- `gh run view <id> --log-failed` — 只打印失败 step 的日志(全 log 太大)
+- `gh pr checks <num> --json name,bucket,state` — JSON 监控 PR 所有 check
+- 用 `Monitor` 工具配 `gh pr checks` 轮询,事件驱动等 CI 完成,不要 sleep 循环
 
 ## Git 规范
 
