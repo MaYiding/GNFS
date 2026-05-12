@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -31,17 +32,34 @@ namespace gnfs::relation {
 /// For 50+ digit (~10M relations, ~2-5GB): essential to avoid OOM.
 class OOCRelationWriter {
 public:
-    static constexpr uint64_t MAGIC = 0x474E46535245494CULL;  // "GNFSREIL"
+    // MAGIC = 'GNFSREIL' (written only after successful finalize)
+    // MAGIC_INCOMPLETE = 'GNFSREIN' (written on construction; reader rejects)
+    static constexpr uint64_t MAGIC = 0x474E46535245494CULL;
+    static constexpr uint64_t MAGIC_INCOMPLETE = 0x474E46535245494EULL;
+
+    // 1 MB stream buffer per stream — 千万级关系下减少 syscall。
+    static constexpr size_t BUFFER_BYTES = 1 << 20;
 
     explicit OOCRelationWriter(const std::string& base_path)
         : base_path_(base_path),
-          data_stream_(base_path + ".reldata", std::ios::binary),
-          idx_stream_(base_path + ".relidx", std::ios::binary) {
+          data_buf_(BUFFER_BYTES),
+          idx_buf_(BUFFER_BYTES / 4),  // 256 KB suffices for index
+          uncaught_at_ctor_(std::uncaught_exceptions()) {
+        // pubsetbuf 必须在 open 之前调用,所以 ofstream 默认构造、
+        // 然后手动 attach buffer、最后 open。
+        data_stream_.rdbuf()->pubsetbuf(data_buf_.data(),
+                                        static_cast<std::streamsize>(data_buf_.size()));
+        idx_stream_.rdbuf()->pubsetbuf(idx_buf_.data(),
+                                       static_cast<std::streamsize>(idx_buf_.size()));
+        data_stream_.open(base_path + ".reldata", std::ios::binary);
+        idx_stream_.open(base_path + ".relidx", std::ios::binary);
         if (!data_stream_ || !idx_stream_) {
             throw std::runtime_error("OOCRelationWriter: cannot open files at " + base_path);
         }
-        // Write index header (will be updated on close)
-        uint64_t magic = MAGIC;
+        // 先写 INCOMPLETE 标志。若 write 中途抛(磁盘满等),析构跳过
+        // finalize → reader 看到 INCOMPLETE 拒读,避免 idx/data 不一致。
+        // 成功 close 后再翻成 MAGIC。
+        uint64_t magic = MAGIC_INCOMPLETE;
         uint64_t count = 0;
         idx_stream_.write(reinterpret_cast<const char*>(&magic), 8);
         idx_stream_.write(reinterpret_cast<const char*>(&count), 8);
@@ -60,23 +78,36 @@ public:
         return count_ - 1;
     }
 
-    /// Flush and finalize. Updates the count in the index header.
+    /// Flush and finalize. Updates the count + flips magic to MAGIC.
     void close() {
-        if (!closed_) {
-            // Write final sentinel offset (= end of data)
-            uint64_t end_offset = static_cast<uint64_t>(data_stream_.tellp());
-            idx_stream_.write(reinterpret_cast<const char*>(&end_offset), 8);
+        if (closed_) return;
+        closed_ = true;
 
-            // Seek back and update count
-            idx_stream_.seekp(8);
-            idx_stream_.write(reinterpret_cast<const char*>(&count_), 8);
-
+        // 异常路径:不写 MAGIC,只 flush 流(让磁盘上的 INCOMPLETE 持久)
+        // reader 看到 INCOMPLETE 即拒读。std::uncaught_exceptions() 比
+        // std::uncaught_exception() 更可靠(支持嵌套析构)。
+        if (std::uncaught_exceptions() > uncaught_at_ctor_) {
             data_stream_.flush();
             idx_stream_.flush();
             data_stream_.close();
             idx_stream_.close();
-            closed_ = true;
+            return;
         }
+
+        // Write final sentinel offset (= end of data)
+        uint64_t end_offset = static_cast<uint64_t>(data_stream_.tellp());
+        idx_stream_.write(reinterpret_cast<const char*>(&end_offset), 8);
+
+        // Seek back and update magic + count
+        idx_stream_.seekp(0);
+        uint64_t final_magic = MAGIC;
+        idx_stream_.write(reinterpret_cast<const char*>(&final_magic), 8);
+        idx_stream_.write(reinterpret_cast<const char*>(&count_), 8);
+
+        data_stream_.flush();
+        idx_stream_.flush();
+        data_stream_.close();
+        idx_stream_.close();
     }
 
     ~OOCRelationWriter() { close(); }
@@ -126,9 +157,12 @@ private:
     }
 
     std::string base_path_;
+    std::vector<char> data_buf_;
+    std::vector<char> idx_buf_;
     std::ofstream data_stream_;
     std::ofstream idx_stream_;
     size_t count_ = 0;
+    int uncaught_at_ctor_ = 0;
     bool closed_ = false;
 };
 
