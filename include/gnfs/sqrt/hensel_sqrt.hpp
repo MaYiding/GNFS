@@ -432,13 +432,15 @@ private:
         auto t0 = std::chrono::steady_clock::now();
 
         // Choose K: balance lift speed vs sign combo count.
-        // Lift time ∝ (target_bits/K)², so larger K = faster lifts.
-        // Sign combos = 2^(K-1): K=2→2, K=3→4, K=4→8.
-        // K=2 for d≤3: 2 combos is fast and reliable.
-        //   K=3 tested in Session 78 but CRT fails on all deps — suspected precision
-        //   issue with lower per-prime bits. Needs investigation. Deferred.
-        // K=3 for d≥4: more CRT redundancy for higher degree.
-        const size_t K = (d <= 3) ? 2 : 3;
+        // K = number of inert primes for CRT. Sign combos = 2^(K-1).
+        // K=3 was tested in Session 78 (target_bits/K + 100 safety margin) but CRT
+        // failed on every dependency — the per-prime precision was insufficient.
+        // Until that's diagnosed,K=2 unconditionally:slower lift per prime,but
+        // deterministically correct;60+ digit deps that used to take the broken
+        // K=3 path now lift in K=2 instead of falling back to single-prime Hensel
+        // (which was both slower and untested).
+        // TODO: re-enable K=3 once safety-margin formula is corrected; see BACKLOG.
+        const size_t K = 2;
 
         // Find extra inert primes for retry on lift failure
         const size_t extra = 5;
