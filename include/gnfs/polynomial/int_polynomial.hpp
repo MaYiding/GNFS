@@ -4,6 +4,8 @@
 #include "../sqrt/modular_poly.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cassert>
 #include <cstdint>
 #include <random>
 #include <stdexcept>
@@ -269,16 +271,22 @@ public:
             t_powers[i] *= t;
         }
 
-        // 预计算二项式系数
-        std::vector<std::vector<uint64_t>> binom(d + 1);
-        for (uint32_t i = 0; i <= d; ++i) {
-            binom[i].resize(i + 1);
-            binom[i][0] = 1;
-            binom[i][i] = 1;
-            for (uint32_t j = 1; j < i; ++j) {
-                binom[i][j] = binom[i-1][j-1] + binom[i-1][j];
+        // 二项式系数表(静态初始化,线程安全)。GNFS degree 上限 6,
+        // 预表覆盖到 16 仍极小(<2KB),C(16,8)=12870 < 2^14。
+        // 之前每次 translate 调用都重建,Stage2 平移循环 ×11 重复浪费。
+        constexpr uint32_t BINOM_MAX = 16;
+        static const auto binom = []() {
+            std::array<std::array<uint64_t, BINOM_MAX + 1>, BINOM_MAX + 1> b{};
+            for (uint32_t i = 0; i <= BINOM_MAX; ++i) {
+                b[i][0] = 1;
+                b[i][i] = 1;
+                for (uint32_t j = 1; j < i; ++j) {
+                    b[i][j] = b[i-1][j-1] + b[i-1][j];
+                }
             }
-        }
+            return b;
+        }();
+        assert(d <= BINOM_MAX && "IntPolynomial::translate degree exceeds binom table");
 
         // 二项式展开: f(x+t) = sum_i f[i] * (x+t)^i
         // (x+t)^i = sum_j C(i,j) * x^j * t^{i-j}
