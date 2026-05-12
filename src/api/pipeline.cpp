@@ -1009,8 +1009,11 @@ FactorResult Pipeline::extract_factors(
 // ============================================================
 
 FactorResult Pipeline::run() {
-    // Input validation
-    if (mpz_probab_prime_p(n_.get_mpz(), 25) > 0) {
+    // Input validation.
+    // Adaptive Miller-Rabin reps: 5 for small N (fast on trial-division path),
+    // 15 for large N (target 2^-30 error rate for crypto-grade composites).
+    const int prime_reps = (stats_.n_bits <= 64) ? 5 : 15;
+    if (mpz_probab_prime_p(n_.get_mpz(), prime_reps) > 0) {
         emit_log(LogLevel::Error, Phase::PolynomialSelection,
                  "N is prime or probably prime");
         FactorResult r;
