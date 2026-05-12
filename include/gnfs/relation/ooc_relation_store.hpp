@@ -208,9 +208,19 @@ private:
         size_t pos = 0;
 
         auto read_val = [&](auto& v) {
-            assert(pos + sizeof(v) <= avail);
+            if (pos + sizeof(v) > avail) {
+                throw std::runtime_error("OOCRelationReader: corrupt record (truncated)");
+            }
             std::memcpy(&v, ptr + pos, sizeof(v));
             pos += sizeof(v);
+        };
+
+        // 检查变长数组的字节范围。count 来自磁盘,损坏文件可能是天文数字,
+        // 必须在 resize 之前 reject,否则 resize 会触发巨型 allocation 或后续 memcpy 越界。
+        auto check_bulk = [&](size_t bytes) {
+            if (bytes > avail || pos + bytes > avail) {
+                throw std::runtime_error("OOCRelationReader: corrupt record (bulk overflow)");
+            }
         };
 
         read_val(rel.a);
@@ -219,6 +229,7 @@ private:
         // rational_factors
         uint32_t rf_count = 0;
         read_val(rf_count);
+        check_bulk(static_cast<size_t>(rf_count) * sizeof(uint32_t));
         rel.rational_factors.resize(rf_count);
         if (rf_count > 0) {
             std::memcpy(rel.rational_factors.data(), ptr + pos, rf_count * sizeof(uint32_t));
@@ -228,6 +239,7 @@ private:
         // algebraic_factors
         uint32_t af_count = 0;
         read_val(af_count);
+        check_bulk(static_cast<size_t>(af_count) * sizeof(uint32_t));
         rel.algebraic_factors.resize(af_count);
         if (af_count > 0) {
             std::memcpy(rel.algebraic_factors.data(), ptr + pos, af_count * sizeof(uint32_t));
@@ -237,6 +249,9 @@ private:
         // rational_large_prime
         uint32_t rlp_count = 0;
         read_val(rlp_count);
+        // 上限保护:每条 LP 三个字段,先估算需要的总字节
+        check_bulk(static_cast<size_t>(rlp_count) *
+                   (sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint8_t)));
         rel.rational_large_prime.resize(rlp_count);
         for (uint32_t i = 0; i < rlp_count; ++i) {
             read_val(rel.rational_large_prime[i].p);
@@ -247,6 +262,8 @@ private:
         // algebraic_large_prime
         uint32_t alp_count = 0;
         read_val(alp_count);
+        check_bulk(static_cast<size_t>(alp_count) *
+                   (sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint8_t)));
         rel.algebraic_large_prime.resize(alp_count);
         for (uint32_t i = 0; i < alp_count; ++i) {
             read_val(rel.algebraic_large_prime[i].p);
@@ -257,6 +274,8 @@ private:
         // extra_ab_pairs
         uint32_t extra_count = 0;
         read_val(extra_count);
+        check_bulk(static_cast<size_t>(extra_count) *
+                   (sizeof(int64_t) + sizeof(uint64_t)));
         rel.extra_ab_pairs.resize(extra_count);
         for (uint32_t i = 0; i < extra_count; ++i) {
             read_val(rel.extra_ab_pairs[i].first);
