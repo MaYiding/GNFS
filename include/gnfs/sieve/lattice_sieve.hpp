@@ -769,16 +769,21 @@ private:
             chunk_starts[t + 1] = chunk_starts[t] + chunk_rows;
         }
 
+        // v18 优化: 单次性预算所有 chunk 的起始 i_mod (避免 N 线程独立扫 primes)
+        auto chunk_imods = precompute_chunk_imods(
+            pre, primes, bucket_threshold, chunk_starts, j_min);
+
         for (size_t t = 0; t < num_threads; ++t) {
             int32_t chunk_start_t = chunk_starts[t];
             int32_t chunk_end_t = chunk_starts[t + 1] - 1;
             int32_t row_offset = chunk_start_t - j_min;
+            const std::vector<int16_t>* imod_ptr = &chunk_imods[t];
 
             threads.emplace_back(&LatticeSieve::sieve_row_chunk, this,
                                  std::cref(pre), std::cref(primes),
                                  std::cref(buckets), bucket_threshold,
                                  chunk_start_t, chunk_end_t,
-                                 w, i_min, row_offset);
+                                 w, i_min, row_offset, imod_ptr);
         }
 
         for (auto& t : threads) {
@@ -829,14 +834,61 @@ private:
         return result;
     }
 
+    /// 单次性预计算所有 chunk 的 i_mod 起始值 (v18 — chunk init 不再在并行段内)
+    ///
+    /// 旧实现: 每个线程独立扫 `primes` (~10k 素数), 对每个 small prime 计算
+    ///   `i_mod = (i_mod_init + row_offset * delta) % p`
+    /// → 8 线程 × 10k 素数 = 80k 个 64-bit mod, 还伴随 cache 重复扫 primes 数组。
+    ///
+    /// 新实现: 在调度前**单次**扫 primes (一次 cache 加载), 内层为 num_threads
+    /// 个 chunk 计算各自的 i_mod, 整体 mod 总数相同但:
+    ///   1. primes 只 stream 一次, L2/L3 cache 重用率高
+    ///   2. 线程进入 sieve_row_chunk 后立刻可干活, 减少 wake-up 抖动
+    ///   3. 为后续 Barrett 化 mod 替换留下统一切入点
+    ///
+    /// 返回: chunk_imods[t][si] = thread t 的第 si 个 small_prime 的 i_mod 起始值
+    [[nodiscard]] std::vector<std::vector<int16_t>> precompute_chunk_imods(
+            const PreSeparatedPrimes& pre,
+            const std::vector<PrimeEntry>& primes,
+            uint32_t bucket_threshold,
+            const std::vector<int32_t>& chunk_starts,
+            int32_t j_min) const {
+        size_t num_chunks = chunk_starts.size() - 1;
+        size_t num_small = pre.small.size();
+        std::vector<std::vector<int16_t>> chunk_imods(num_chunks);
+        for (auto& v : chunk_imods) v.resize(num_small);
+
+        size_t si = 0;
+        for (const auto& pe : primes) {
+            if (pe.flags == 0 && pe.p < bucket_threshold) {
+                int32_t p32 = static_cast<int32_t>(pe.p);
+                int64_t delta = static_cast<int64_t>(pe.delta);
+                int64_t init = static_cast<int64_t>(pe.i_mod_init);
+                for (size_t t = 0; t < num_chunks; ++t) {
+                    int32_t row_offset = chunk_starts[t] - j_min;
+                    int64_t advanced = init + static_cast<int64_t>(row_offset) * delta;
+                    int64_t mod = advanced % static_cast<int64_t>(p32);
+                    if (mod < 0) mod += p32;
+                    chunk_imods[t][si] = static_cast<int16_t>(mod);
+                }
+                ++si;
+            }
+        }
+        return chunk_imods;
+    }
+
     /// 处理一段行范围 [j_start, j_end]
     /// 小素数走 stride loop，大素数从 bucket 直接 apply
+    ///
+    /// @param initial_imods 预算好的 small_primes 起始 i_mod (chunk_imods[t]),
+    ///                      nullptr 则回退到内嵌 mod 计算(单线程路径)
     void sieve_row_chunk(const PreSeparatedPrimes& pre,
                          const std::vector<PrimeEntry>& primes,
                          const std::vector<std::vector<BucketEntry>>& buckets,
                          uint32_t bucket_threshold,
                          int32_t j_start, int32_t j_end,
-                         size_t w, [[maybe_unused]] int32_t i_min, int32_t row_offset) {
+                         size_t w, [[maybe_unused]] int32_t i_min, int32_t row_offset,
+                         const std::vector<int16_t>* initial_imods = nullptr) {
 
         // Copy pre-separated small primes, compute per-chunk i_mod
         assert(bucket_threshold <= INT16_MAX &&
@@ -844,17 +896,25 @@ private:
         auto small_primes = pre.small;  // shallow copy (only i_mod differs)
         const auto& v_primes = pre.v;
 
-        // Fill i_mod from initial values + row_offset * delta
-        size_t si = 0;
-        for (const auto& pe : primes) {
-            if (pe.flags == 0 && pe.p < bucket_threshold) {
-                int32_t p32 = static_cast<int32_t>(pe.p);
-                int64_t advanced = static_cast<int64_t>(pe.i_mod_init) +
-                                   static_cast<int64_t>(row_offset) * static_cast<int64_t>(pe.delta);
-                int64_t mod = advanced % static_cast<int64_t>(p32);
-                if (mod < 0) mod += p32;
-                small_primes[si].i_mod = static_cast<int16_t>(mod);
-                ++si;
+        if (initial_imods != nullptr) {
+            // 多线程路径: 调用方已预算各 chunk 的起始 i_mod, 直接拷贝
+            assert(initial_imods->size() == small_primes.size());
+            for (size_t si = 0; si < small_primes.size(); ++si) {
+                small_primes[si].i_mod = (*initial_imods)[si];
+            }
+        } else {
+            // 单线程回退路径: 现场算 (row_offset=0 时即 i_mod_init)
+            size_t si = 0;
+            for (const auto& pe : primes) {
+                if (pe.flags == 0 && pe.p < bucket_threshold) {
+                    int32_t p32 = static_cast<int32_t>(pe.p);
+                    int64_t advanced = static_cast<int64_t>(pe.i_mod_init) +
+                                       static_cast<int64_t>(row_offset) * static_cast<int64_t>(pe.delta);
+                    int64_t mod = advanced % static_cast<int64_t>(p32);
+                    if (mod < 0) mod += p32;
+                    small_primes[si].i_mod = static_cast<int16_t>(mod);
+                    ++si;
+                }
             }
         }
 

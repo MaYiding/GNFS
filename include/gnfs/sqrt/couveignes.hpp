@@ -74,6 +74,25 @@ public:
             return f;
         };
 
+        // Compute f'(x) coefficients mod p.
+        // f'(x) = Σ_{i=1}^d i·f[i]·x^(i-1)
+        // 用于 f'(α)² · S(α) 修正(见 compute_product_mod_p 注释)
+        auto get_f_prime_mod_p = [&nf, d](uint64_t p) -> std::vector<uint64_t> {
+            std::vector<uint64_t> fp(d > 0 ? d : 1, 0);
+            for (uint32_t i = 1; i <= d; ++i) {
+                Integer coeff = nf.coeff(i).clone();
+                coeff *= Integer(static_cast<int64_t>(i));
+                coeff %= Integer(p);
+                if (coeff.is_negative()) {
+                    coeff += Integer(p);
+                }
+                fp[i - 1] = coeff.to_uint64();
+            }
+            // 去除前导 0
+            while (fp.size() > 1 && fp.back() == 0) fp.pop_back();
+            return fp;
+        };
+
         // Collect suitable primes
         std::vector<uint64_t> primes;
         std::vector<std::vector<uint64_t>> sqrt_coeffs;  // sqrt coeffs mod each prime
@@ -123,6 +142,21 @@ public:
                 primes_zero_product++;
                 continue;
             }
+
+            // ── f'(α)² 修正 (Thomé 2008, "Square Root Algorithms for the NFS") ──
+            // T(α)² = f'(α)² · S(α) — 保证 T(α) ∈ Z[α] 即使 sqrt(S(α)) ∈ O_K \ Z[α]。
+            // 在每个素数 p 上,我们改为对 (f'(x)² · S(α)) mod p 取 sqrt。
+            // CRT 后得 T(α) ≡ f'(α) · √S(α);caller 评估 T(m) 后乘 inv(f'(m)) mod N
+            // 还原真正的 sqrt 在 Z/NZ 中的表示。
+            auto f_prime_mod_p = get_f_prime_mod_p(p);
+            ModularPoly f_prime(f_prime_mod_p);
+            if (f_prime.is_zero()) {
+                // f' ≡ 0 mod p — 极少见(p | gcd(所有 i·f[i])),跳过此素数
+                primes_zero_product++;
+                continue;
+            }
+            ModularPoly f_prime_sq = ModularPoly::mul(f_prime, f_prime, f_mod_p, p);
+            product = ModularPoly::mul(product, f_prime_sq, f_mod_p, p);
 
             // Check if product is a square
             if (!ModularPoly::is_square(product, f_mod_p, p)) {
@@ -285,10 +319,14 @@ public:
             current_coeffs[i] = base_coeffs[i].clone();
         }
 
-        // Precompute expected_X2 = ∏(a_i - b_i·m) mod N
-        // The correct sign pattern yields Y such that Y² ≡ expected_X2 mod N.
-        // Note: Computing sqrt of expected_X2 mod composite N is equivalent to
-        // factoring N, so we verify via Y² instead.
+        // Precompute expected_X2 = f'(m)² · ∏(a_i - b_i·m) mod N
+        //
+        // Couveignes 在每素数 p 上对 f'(α)² · S(α) 取 sqrt (compute_product_mod_p
+        // 之后立即乘 f'(α)²),所以 Y(α) = f'(α)·sqrt(S(α));评估 Y(m) ≡
+        // f'(m)·sqrt(S)(m) mod N,故 Y² ≡ f'(m)²·S(m) mod N。verify 必须比较
+        // f'(m)² · expected_X2,否则全 search space 都对不上。
+        //
+        // 注意: 直接对 expected_X2 取 sqrt 等价于因子化 N,因此我们验证 Y² 而非 Y。
         Integer expected_X2(int64_t(1));
         for (const auto& [a, b] : ab_pairs) {
             Integer term(a);
@@ -298,6 +336,25 @@ public:
             term %= n;
             if (term.is_negative()) term += n;
             expected_X2 *= term;
+            expected_X2 %= n;
+        }
+        // 乘 f'(m)² mod N
+        {
+            // f'(m) = Σ_{i=1}^d i · f[i] · m^(i-1)
+            const Integer& m_val = nf.m();
+            Integer f_prime_m(int64_t(0));
+            for (int i = static_cast<int>(d); i >= 1; --i) {
+                f_prime_m *= m_val;
+                Integer term = nf.coeff(static_cast<uint32_t>(i)).clone();
+                term *= Integer(static_cast<int64_t>(i));
+                f_prime_m += term;
+                f_prime_m %= n;
+            }
+            if (f_prime_m.is_negative()) f_prime_m += n;
+            Integer f_prime_m_sq = f_prime_m.clone();
+            f_prime_m_sq *= f_prime_m;
+            f_prime_m_sq %= n;
+            expected_X2 *= f_prime_m_sq;
             expected_X2 %= n;
         }
 
@@ -605,12 +662,18 @@ private:
 
     /// Compute product of (a_i - b_i * x) mod f(x) mod p (GNFS a - b·α convention)
     ///
-    /// ─── [VERIFY] BACKLOG P2 ─────────────────────────────────────────────────
-    /// 注意: δ = ∏(a-bα) 一般在 O_K 而非 Z[α]。Hensel 路径 (hensel_sqrt.hpp:276-277)
-    /// 乘 f'(α)² 后于 Z[α] 取 sqrt,再除 f'(m) mod N 还原。当前 Couveignes
-    /// 直接对 ∏ 在 F_p[α] 取 sqrt — 若 δ ∉ Z[α] 则数学上不成立。
-    /// 但 Couveignes 是 fallback path (主路径 Hensel 已含 f'(α)² 修正),
-    /// 现有测试覆盖范围内未触发此分支。详见 BACKLOG。
+    /// ── f'(α)² 修正 (v18, Thomé 2008 论文 §1) ───────────────────────────────
+    /// δ = ∏(a-bα) 的 sqrt 在 O_K 一定存在(line-alg 保证),但可能不在 Z[α]。
+    /// Thomé 论文 page 1 首段定义: T(α)² = f'(α)²·S(α) — 乘 f'(α)² 后 sqrt
+    /// 落入 Z[α]。
+    ///
+    /// 现 compute() 的主循环中,在 compute_product_mod_p 返回后立即乘
+    /// f'(x)² mod f(x) mod p(见 compute() 内 `f_prime_sq` 块),Couveignes
+    /// 实际对 (f'(α)² · S(α)) mod p 取 sqrt。CRT 后得 T(α) ≡ f'(α)·√S(α);
+    /// caller (algebraic_sqrt.hpp::compute_couveignes) 评估 T(m) 后乘
+    /// inv(f'(m)) mod N 还原 √S(m) mod N。
+    ///
+    /// compute_product_mod_p 自身只算原始 ∏(a-bα) mod p,不含 f'(α)² 修正。
     /// ─────────────────────────────────────────────────────────────────────────
     [[nodiscard]] ModularPoly compute_product_mod_p(
             const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,

@@ -421,6 +421,44 @@ void test_serialization_invalid() {
     std::cout << "  Serialization error handling: PASS" << std::endl;
 }
 
+/// 验证分段并行筛 (bound ≥ PARALLEL_THRESHOLD=5M) 与简单筛输出按位等价。
+/// 边界值: 4_999_999 (走简单), 5_000_001 (走分段)。
+void test_segmented_parallel_sieve() {
+    std::cout << "Testing segmented parallel sieve correctness..." << std::endl;
+
+    // 简单筛实现 (本地 reference, 不依赖被测函数)
+    auto reference_sieve = [](uint32_t bound) {
+        std::vector<bool> is_prime(static_cast<size_t>(bound) + 1, true);
+        is_prime[0] = is_prime[1] = false;
+        for (uint64_t p = 2; p * p <= bound; ++p) {
+            if (!is_prime[static_cast<size_t>(p)]) continue;
+            for (uint64_t k = p * p; k <= bound; k += p) {
+                is_prime[static_cast<size_t>(k)] = false;
+            }
+        }
+        return is_prime;
+    };
+
+    // 临界 + 大 bound (10M, 跨越多个 256K segment 边界)
+    for (uint32_t bound : {4'999'999u, 5'000'001u, 10'000'000u}) {
+        auto got = FactorBaseBuilder::build_eratosthenes_sieve(bound);
+        auto expect = reference_sieve(bound);
+        assert(got.size() == expect.size());
+        size_t mismatches = 0;
+        for (uint32_t i = 0; i <= bound; ++i) {
+            if (got[i] != expect[i]) {
+                if (mismatches < 5) {
+                    std::cerr << "  MISMATCH at " << i << ": got=" << got[i]
+                              << " expect=" << expect[i] << std::endl;
+                }
+                ++mismatches;
+            }
+        }
+        assert(mismatches == 0);
+        std::cout << "  bound=" << bound << ": PASS (byte-by-byte match)" << std::endl;
+    }
+}
+
 int main() {
     std::cout << "=== Factor Base Tests ===" << std::endl;
 
@@ -431,6 +469,7 @@ int main() {
     test_log_values();
     test_parallel_build();
     test_larger_bound();
+    test_segmented_parallel_sieve();
     test_base_m_irreducibility();
     test_serialization_roundtrip();
     test_serialization_invalid();

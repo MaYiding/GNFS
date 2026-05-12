@@ -173,12 +173,26 @@ public:
 
             // 投影根的额外贡献
             // 如果 p | leading_coeff(f)，则有投影根
-            // ─── [VERIFY] BACKLOG P1-OPT ─────────────────────────────────────
-            // CADO-NFS polyselect/alpha.c special_val0 中投影根贡献的精确
-            // 表达可能不同 (常见为 log_p/(p*(p-1)) 或类似量级)。当前 +log_p/p
-            // 将投影根视为额外 1 个 affine root,在大多数 Murphy E 排序场景
-            // 给出合理结果,但严格 Murphy 1999 形式需 paper 核对。
-            // 改动前需先确立新公式下的 test_murphy 黄金值。
+            //
+            // ─── 核对 (v18) ──────────────────────────────────────────────────
+            // 参考 Guillevic & Singh (2021), "On the Alpha Value of Polynomials
+            // in the Tower Number Field Sieve Algorithm", Math. Cryptol. 1(1).
+            // Eq 4.7 + Prop 1 + good-prime simplification:
+            //   ν_ℓ(f) = (n_aff + n_pro) · ℓ / ((ℓ-1)(ℓ+1))
+            //   α_ℓ_Murphy = log(ℓ) · (1/(ℓ-1) - ν_ℓ(f))
+            //
+            // 项目 alpha 约定与 Murphy 原文符号相反: 正 α' = 多根 = 易 smooth = 好。
+            // 数学等价: α' = -α_Murphy = log(ℓ) · (ν_ℓ(f) - 1/(ℓ-1)).
+            //
+            // 投影根(仅 ℓ | a_d 时存在,至多一个 (1:0) ∈ P^1):
+            //   严格贡献(良好素数): log(p) · p/((p-1)(p+1)) ≈ log(p)/p + O(1/p^3)
+            //   现实现: log(p)/p — 与严格公式相差 O(1/p²),不影响 polyselect 排序。
+            // 符号: 正贡献,与我们约定的"+α 表示更多根"一致 (Murphy 原文为负贡献)。
+            //
+            // 对**坏素数**(p | Disc(f),即有重根或更高次投影根),严格公式需 Prop 1
+            // case 2 的递归 lifting 分析(CADO-NFS alpha.c 实现)。当前简化版仅捕捉
+            // i=1 项,对 Murphy E 排序仍有效但绝对值偏离 ~1-2%。改动需配套
+            // 重算 test_murphy 黄金值,优先级低。
             // ─────────────────────────────────────────────────────────────────
             if (f.leading_coeff().fits_uint64()) {
                 if (f.leading_coeff().to_uint64() % p == 0) {
