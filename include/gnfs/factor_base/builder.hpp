@@ -41,12 +41,14 @@ public:
     // 含 random splitting 多根分离)。
     static std::vector<uint32_t> find_roots_mod_p(const PolynomialContext& ctx, uint32_t p);
 
-private:
-    PolynomialContext ctx_;
-
     /// 构建 Eratosthenes 筛(从 p*p 起标),返回 is_prime[0..bound]。
     /// 拆出避免 find_rational + find_algebraic 在同 bound 下重复构建(1e8 ≈ 12.5 MB)。
+    /// bound ≥ 5e6 走分段并行筛,小 bound 走简单单线程。
+    /// 公开以便测试覆盖分段路径正确性。
     static std::vector<bool> build_eratosthenes_sieve(uint32_t bound);
+
+private:
+    PolynomialContext ctx_;
 
     static void find_rational_primes(FactorBase& fb, const PolynomialContext& ctx,
                                       uint32_t bound, uint8_t log_scale,
