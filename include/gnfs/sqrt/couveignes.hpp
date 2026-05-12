@@ -207,11 +207,21 @@ public:
         //    so each step only flips one sign → incremental CRT update in O(d)
         // 3. Early rejection: check first coefficient before full d² verification
 
-        // Exhaustive search over first 16 primes (2^16 = 65536 patterns)
-        // Remaining primes contribute to CRT modulus for precision but
-        // their sign is determined by the matching pattern of the first 16
-        size_t num_to_search = std::min(primes.size(), static_cast<size_t>(16));
-        // Extra primes beyond 16 are always kept positive (arbitrary but consistent)
+        // Exhaustive search over sign patterns (2^k where k = #primes).
+        // Cap at 16 primes (65536 patterns) — beyond 16 the search is
+        // truncated and primes 17+ are silently held positive,which can
+        // miss the correct sign combination. We assert here so config that
+        // requests >16 primes fails loudly rather than silently degrading.
+        // If you need >16 primes for precision,either:
+        //   (a) increase prime sizes so 16 of them suffice,or
+        //   (b) implement Gray-code over the full K-1 bit space with
+        //       verify short-circuit (see hensel_sqrt.hpp for the pattern).
+        if (primes.size() > 16) {
+            throw std::logic_error(
+                "Couveignes::compute: >16 primes not supported in 65536-pattern search; "
+                "either reduce num_primes or extend the search to K-1 sign bits");
+        }
+        size_t num_to_search = primes.size();
         uint64_t max_patterns = 1ULL << num_to_search;
 
         // --- Step 1: Precompute CRT weights ---
@@ -503,7 +513,13 @@ public:
             current_coeffs[i] = base_coeffs[i].clone();
         }
 
-        size_t num_to_search = std::min(primes.size(), static_cast<size_t>(16));
+        // Same cap as compute() — see comment there. Throw rather than silently
+        // truncate the search.
+        if (primes.size() > 16) {
+            throw std::logic_error(
+                "Couveignes::compute_from_element: >16 primes not supported in 65536-pattern search");
+        }
+        size_t num_to_search = primes.size();
         uint64_t max_patterns = 1ULL << num_to_search;
 
         auto verify_current = [&]() -> bool {
