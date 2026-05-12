@@ -509,8 +509,11 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb,
 
         // Compute (A/q_i) mod p using prefix/suffix product trick (no inversions)
         // A/q_i mod p = ∏_{k≠i} (q_k mod p) mod p
-        // For s ≤ 12 primes, direct computation is fine
-        uint32_t qi_mod_p[12];
+        // 100-digit config uses num_a_factors=12,刚好顶到旧上限。
+        // 升到 16 留余量,assert 防越界。
+        constexpr size_t MAX_A_FACTORS = 16;
+        assert(s <= MAX_A_FACTORS && "SIQS num_a_factors > MAX_A_FACTORS");
+        uint32_t qi_mod_p[MAX_A_FACTORS];
         for (size_t k = 0; k < s; k++)
             qi_mod_p[k] = fb[poly.a_indices[k]].p % p;
 
@@ -712,6 +715,12 @@ inline void sieve_polynomial(
     mpz_t ax_mpz, val_mpz, Q_mpz;
     mpz_init(ax_mpz); mpz_init(val_mpz); mpz_init(Q_mpz);
 
+    // Heap-allocated touched buffer (reused across candidates).
+    // Old uint32_t touched[256] on stack overflowed for fb_size > 256 when a Q(x)
+    // was hit by many small primes (each prime power contributes one touched slot).
+    std::vector<uint32_t> touched_buf;
+    touched_buf.reserve(fb.size());
+
     for (uint32_t cand_pos = 0; cand_pos < sieve_size; cand_pos++) {
         if (sieve[cand_pos] < threshold) continue;
 
@@ -737,9 +746,11 @@ inline void sieve_polynomial(
         // Trial divide Q by factor base primes using reusable exponent buffer
         // (avoids per-candidate heap allocation of fb.size() bytes)
         uint8_t* exp = exp_buf.data();
-        // Track which indices were touched for selective clear
-        uint32_t touched[256]; // max touched indices per candidate
-        size_t n_touched = 0;
+        // Track which indices were touched for selective clear.
+        // Previous code used uint32_t touched[256] on stack — for 100-digit configs
+        // with fb_size=400000, a single Q can be hit by far more than 256 FB primes.
+        touched_buf.clear();
+        auto record_touched = [&](uint32_t idx) { touched_buf.push_back(idx); };
 
         bool accept = false;
         uint64_t large_prime = 0;
@@ -764,7 +775,7 @@ inline void sieve_polynomial(
                 uint32_t p = fb[ai].p;
                 while (q128 % p == 0) {
                     q128 /= p;
-                    if (exp[ai] == 0) touched[n_touched++] = ai;
+                    if (exp[ai] == 0) record_touched(ai);
                     exp[ai]++;
                 }
             }
@@ -773,7 +784,7 @@ inline void sieve_polynomial(
             for (size_t i = 1; i < fb.size() && q128 > 1; i++) {
                 uint32_t p = fb[i].p;
                 if (q128 % p == 0) {
-                    touched[n_touched++] = static_cast<uint32_t>(i);
+                    record_touched(static_cast<uint32_t>(i));
                     do { q128 /= p; exp[i]++; } while (q128 % p == 0);
                 }
             }
@@ -807,6 +818,13 @@ inline void sieve_polynomial(
                 };
                 if (cofac <= lp_bound && cofac > 1 && is_probably_prime(cofac)) {
                     large_prime = cofac;
+                    accept = true;
+                } else if (lp_bound_sq > 0 && cofac > 1 && cofac <= lp_bound && !is_probably_prime(cofac)) {
+                    // cofac ∈ (1, lp_bound] 且是合数 — 之前被丢弃,现尝试当 2LP 处理。
+                    // split_cofactor_64 会在 merge 阶段把 cofac 分成两个因子。
+                    // 每因子 ≤ sqrt(cofac) ≤ sqrt(lp_bound) ≤ lp_bound,自动满足上界。
+                    large_prime = cofac;
+                    large_prime2 = 1;
                     accept = true;
                 } else if (lp_bound_sq > 0 && cofac <= lp_bound_sq && cofac > lp_bound) {
                     auto powmod128 = [](uint64_t base, uint64_t exp, uint64_t mod) -> uint64_t {
@@ -845,7 +863,7 @@ inline void sieve_polynomial(
             for (uint32_t ai : poly.a_indices) {
                 uint32_t p = fb[ai].p;
                 if (mpz_divisible_ui_p(q_mpz, p)) {
-                    if (exp[ai] == 0) touched[n_touched++] = ai;
+                    if (exp[ai] == 0) record_touched(ai);
                     do { mpz_divexact_ui(q_mpz, q_mpz, p); exp[ai]++; }
                     while (mpz_divisible_ui_p(q_mpz, p));
                 }
@@ -853,7 +871,7 @@ inline void sieve_polynomial(
             for (size_t i = 1; i < fb.size() && mpz_cmp_ui(q_mpz, 1) > 0; i++) {
                 uint32_t p = fb[i].p;
                 if (mpz_divisible_ui_p(q_mpz, p)) {
-                    touched[n_touched++] = static_cast<uint32_t>(i);
+                    record_touched(static_cast<uint32_t>(i));
                     do { mpz_divexact_ui(q_mpz, q_mpz, p); exp[i]++; }
                     while (mpz_divisible_ui_p(q_mpz, p));
                 }
@@ -864,8 +882,14 @@ inline void sieve_polynomial(
             } else if (mpz_fits_ulong_p(q_mpz)) {
                 uint64_t cofac = mpz_get_ui(q_mpz);
                 // 1LP: verify cofactor is prime (composite → untracked factors → extraction fails)
-                if (cofac <= lp_bound && cofac > 1 && mpz_probab_prime_p(q_mpz, 1)) {
+                bool cofac_is_prime = mpz_probab_prime_p(q_mpz, 1) > 0;
+                if (cofac <= lp_bound && cofac > 1 && cofac_is_prime) {
                     large_prime = cofac;
+                    accept = true;
+                } else if (lp_bound_sq > 0 && cofac > 1 && cofac <= lp_bound && !cofac_is_prime) {
+                    // 合数 cofac ≤ lp_bound — 旧代码丢弃,现作 2LP split 候选
+                    large_prime = cofac;
+                    large_prime2 = 1;
                     accept = true;
                 } else if (lp_bound_sq > 0 && cofac <= lp_bound_sq && cofac > lp_bound) {
                     mpz_t tmp;
@@ -890,8 +914,7 @@ inline void sieve_polynomial(
             rel.large_prime2 = large_prime2;
             // Copy only touched exponents (sparse → dense)
             rel.exponents.assign(fb.size(), 0);
-            for (size_t t = 0; t < n_touched; t++) {
-                uint32_t idx = touched[t];
+            for (uint32_t idx : touched_buf) {
                 rel.exponents[idx] = exp[idx];
                 rel.fb_indices.push_back(idx);
             }
@@ -901,8 +924,8 @@ inline void sieve_polynomial(
         }
 
         // Selective clear: only reset touched indices
-        for (size_t t = 0; t < n_touched; t++) {
-            exp[touched[t]] = 0;
+        for (uint32_t idx : touched_buf) {
+            exp[idx] = 0;
         }
     }
 
