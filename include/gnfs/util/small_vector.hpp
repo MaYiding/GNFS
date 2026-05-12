@@ -14,6 +14,11 @@ namespace gnfs::util {
 template <typename T, size_t InlineCapacity>
 class SmallVector {
     static_assert(InlineCapacity > 0, "InlineCapacity must be positive");
+    // grow() 在异常路径无法回滚 move,要求 T 的 move 构造不抛。
+    // 注意:noexcept 默认 move-ctor 包括基本类型、std::string、std::vector、unique_ptr 等。
+    static_assert(std::is_nothrow_move_constructible_v<T>,
+                  "SmallVector<T>: T must be nothrow move constructible "
+                  "(grow() cannot roll back on partial move failure)");
 
 public:
     using value_type = T;
