@@ -27,6 +27,53 @@ void test_tonelli_shanks() {
     printf("  tonelli_shanks: PASS\n");
 }
 
+/// 测试 split_cofactor_64 边界:输入是素数(应该 split 失败 → {0,0})、
+/// 输入是 1(无意义 → {0,0})、输入是平方数(应该返回 √n 两次)。
+void test_split_cofactor_edge() {
+    // 1. n=1: 无意义
+    {
+        auto [p1, p2] = split_cofactor_64(1);
+        assert(p1 == 0 && p2 == 0);
+    }
+    // 2. n=0: 无意义
+    {
+        auto [p1, p2] = split_cofactor_64(0);
+        assert(p1 == 0 && p2 == 0);
+    }
+    // 3. 大素数(无法分解 — 所有方法应失败)
+    // 1099511627791 是素数(2^40 + 15)
+    {
+        auto [p1, p2] = split_cofactor_64(1099511627791ULL);
+        // 素数情况下 trial division 和 Pollard rho 都应失败,返回 {0, 0}
+        // 注:也可能因为是边界数,SQUFOF 会循环退出 — 关键是返回的不应是 {p, n/p}
+        // 因为素数无非平凡因子。
+        assert(p1 == 0 || p1 * p2 == 1099511627791ULL);
+        if (p1 != 0) {
+            // 若声称分解了,验证 p1 * p2 == n
+            assert(p1 > 1 && p1 < 1099511627791ULL);
+        }
+    }
+    // 4. 平方数:n=p²,split 应返回 {p, p}
+    {
+        // 1009² = 1018081
+        auto [p1, p2] = split_cofactor_64(1018081ULL);
+        assert(p1 == 1009 && p2 == 1009);
+    }
+    // 5. 简单半素数:7 * 13 = 91
+    {
+        auto [p1, p2] = split_cofactor_64(91);
+        assert(p1 == 7 && p2 == 13);
+    }
+    // 6. 三因子合数:2 * 3 * 5 = 30 → split 应返回某对 (a, b) 满足 a*b=30
+    {
+        auto [p1, p2] = split_cofactor_64(30);
+        assert(p1 * p2 == 30);
+        assert(p1 > 1 && p2 > 1);
+    }
+
+    printf("  split_cofactor edge cases: PASS\n");
+}
+
 void test_factor_base() {
     Integer N("1000000007"); // prime, but we're testing FB construction
     auto fb = build_factor_base(N, 20);
@@ -120,6 +167,7 @@ int main() {
     printf("--- Helper tests ---\n");
     test_tonelli_shanks();
     test_factor_base();
+    test_split_cofactor_edge();
 
     printf("\n--- Factorization tests ---\n");
     test_siqs_small();
