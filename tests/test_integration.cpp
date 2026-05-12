@@ -419,8 +419,9 @@ void test_murphy_with_real_poly_ctx() {
 
     // E-score 应该是有限数（不能是 NaN 或 ±infinity）
     assert(std::isfinite(score.log_e_score) || score.log_e_score == -1e100);
-    // size_score 和 root_score 应为非负
-    assert(score.size_score >= 0.0 || std::isfinite(score.size_score));
+    // alpha_f / alpha_g 应该是有限数
+    assert(std::isfinite(score.alpha_f));
+    assert(std::isfinite(score.alpha_g));
 
     std::cout << "  PASS (log_e_score=" << score.log_e_score
               << " alpha_f=" << score.alpha_f << ")" << std::endl;
