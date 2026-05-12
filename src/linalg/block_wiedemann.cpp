@@ -245,7 +245,17 @@ std::vector<std::vector<bool>> BlockWiedemann::find_dependencies(
         return bl.find_dependencies(matrix, max_deps);
     }
 
-    return block_wiedemann_solve(matrix, max_deps);
+    // Retry up to 3 different seeds — Phase 1's diagonal projection produces
+    // 64 independent scalar Wiedemann sequences; if many are trivial, valid_polys
+    // can be 0 even though the null space is non-empty. A different X/Y seed
+    // typically recovers most or all 64.
+    static constexpr uint64_t seeds[] = { 42, 0xDEADBEEFCAFEBABEULL, 0x12345678ABCDEFULL };
+    for (uint64_t seed : seeds) {
+        auto deps = block_wiedemann_solve(matrix, max_deps, seed);
+        if (!deps.empty()) return deps;
+        std::cerr << "  [BW] seed=" << seed << " produced no deps, retrying\n";
+    }
+    return {};
 }
 
 // ============================================================================
@@ -261,12 +271,13 @@ std::vector<std::vector<bool>> BlockWiedemann::find_dependencies(
 // ============================================================================
 
 std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
-    const SparseMatrix& matrix, size_t max_deps) {
+    const SparseMatrix& matrix, size_t max_deps, uint64_t seed) {
 
     const size_t m = matrix.num_rows();
     const size_t n = matrix.num_cols();
 
-    std::cout << "  [BW] Streaming Wiedemann: " << m << "×" << n << std::endl;
+    std::cout << "  [BW] Streaming Wiedemann: " << m << "×" << n
+              << " (seed=" << seed << ")" << std::endl;
 
     const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
     CSRMatrix csr(matrix);
@@ -283,7 +294,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
     // Random block vectors X (for projection) and Y (starting vector)
     BlockVector X(m), Y(m);
     {
-        std::mt19937_64 rng(42);
+        std::mt19937_64 rng(seed);
         for (size_t i = 0; i < m; ++i) X.data[i] = rng();
         for (size_t i = 0; i < m; ++i) Y.data[i] = rng();
     }
@@ -303,9 +314,13 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
     // V_0 = Y
     for (size_t i = 0; i < m; ++i) V.data[i] = Y.data[i];
 
+    // NOTE: this is 64 independent SCALAR Wiedemann sequences, one per column
+    // pair (X_j, Y_j) — not a true block algorithm. sequences[j][k] depends only
+    // on V_j (the j-th packed column of V_k), so Phase 3's bit-j accumulation
+    // pairs correctly with each minpoly. A true block BW would need its own
+    // matrix BM (Coppersmith / Thomé lingen). Retried with multiple seeds in
+    // find_dependencies() if a given seed yields too many trivial sequences.
     for (size_t k = 0; k < seq_len; ++k) {
-        // Project: for each j, s_{j,k} = bit j of (X^T * V)_j
-        // Compute X^T * V inner product (only need diagonal)
         for (int j = 0; j < 64; ++j) {
             uint64_t mask = 1ULL << j;
             uint64_t parity = 0;
