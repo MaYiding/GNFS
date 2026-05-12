@@ -605,6 +605,8 @@ public:
         std::vector<Integer> current_coeffs(d);
         for (uint32_t i = 0; i < d; ++i) {
             current_coeffs[i] = base_coeffs[i].clone();
+            // v21: 保 [0, M-1] 不变量(同 compute() 路径,见 v20 注释)
+            if (current_coeffs[i].is_negative()) current_coeffs[i] += M;
         }
 
         // Same cap as compute() — see comment there. Throw rather than silently
@@ -616,17 +618,32 @@ public:
         size_t num_to_search = primes.size();
         uint64_t max_patterns = 1ULL << num_to_search;
 
+        // v21: 同步 compute() 的 v17 (mpow 缓存) + v20 ([0,M-1] 不变量) 优化
+        // 旧实现 evaluate_at_m_mod_n(NumberFieldElement(cand)) 每 iter 构造
+        // NumberFieldElement (d 次 clone + 移动) 再 Horner,~50μs/iter 开销。
+        // 内联 Horner + mpow 缓存,省 NumberFieldElement 构造,~5μs/iter。
+        std::vector<Integer> mpow(d);
+        mpow[0] = Integer(int64_t(1));
+        for (uint32_t j = 1; j < d; ++j) {
+            mpow[j] = mpow[j-1].clone();
+            mpow[j] *= nf.m();
+            mpow[j] %= n;
+        }
+
         auto verify_current = [&]() -> bool {
-            std::vector<Integer> cand(d);
+            // 不变量: current_coeffs[i] ∈ [0, M-1]
+            Integer Y(int64_t(0));
             for (uint32_t i = 0; i < d; ++i) {
-                cand[i] = current_coeffs[i].clone();
-                cand[i] %= M;
-                if (cand[i].is_negative()) cand[i] += M;
-                if (cand[i].compare(half_M) > 0) cand[i] -= M;
-                cand[i] %= n;
-                if (cand[i].is_negative()) cand[i] += n;
+                Integer c = current_coeffs[i].clone();
+                if (c.compare(half_M) > 0) c -= M;
+                c %= n;
+                if (c.is_negative()) c += n;
+                c *= mpow[i];
+                Y += c;
+                Y %= n;
             }
-            Integer Y = nf.evaluate_at_m_mod_n(NumberFieldElement(std::move(cand)));
+            if (Y.is_negative()) Y += n;
+
             Integer Y2 = Y.clone();
             Y2 *= Y;
             Y2 %= n;
@@ -637,8 +654,6 @@ public:
             std::vector<Integer> r(d);
             for (uint32_t i = 0; i < d; ++i) {
                 r[i] = current_coeffs[i].clone();
-                r[i] %= M;
-                if (r[i].is_negative()) r[i] += M;
                 if (r[i].compare(half_M) > 0) r[i] -= M;
                 r[i] %= n;
                 if (r[i].is_negative()) r[i] += n;
@@ -651,7 +666,7 @@ public:
             return NumberFieldElement(extract_result());
         }
 
-        // Gray code enumeration over sign combinations
+        // Gray code enumeration over sign combinations,同样 maintain [0, M-1]
         uint64_t prev_gray = 0;
         for (uint64_t i = 1; i < max_patterns; ++i) {
             uint64_t gray = i ^ (i >> 1);
@@ -662,8 +677,16 @@ public:
             for (uint32_t ci = 0; ci < d; ++ci) {
                 if (new_sign) {
                     current_coeffs[ci] -= two_weights[bit_pos][ci];
+                    if (current_coeffs[ci].is_negative()) {
+                        current_coeffs[ci] += M;
+                        if (current_coeffs[ci].is_negative()) current_coeffs[ci] += M;
+                    }
                 } else {
                     current_coeffs[ci] += two_weights[bit_pos][ci];
+                    if (current_coeffs[ci].compare(M) >= 0) {
+                        current_coeffs[ci] -= M;
+                        if (current_coeffs[ci].compare(M) >= 0) current_coeffs[ci] -= M;
+                    }
                 }
             }
 
