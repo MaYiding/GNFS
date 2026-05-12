@@ -66,19 +66,6 @@ struct Relation {
         return !extra_ab_pairs.empty();
     }
 
-    // Clone this relation
-    [[nodiscard]] Relation clone() const {
-        Relation copy;
-        copy.a = a;
-        copy.b = b;
-        copy.rational_factors = rational_factors;
-        copy.algebraic_factors = algebraic_factors;
-        copy.rational_large_prime = rational_large_prime;
-        copy.algebraic_large_prime = algebraic_large_prime;
-        copy.extra_ab_pairs = extra_ab_pairs;
-        return copy;
-    }
-
     // Serialization format constants
     static constexpr uint32_t SERIALIZE_MAGIC   = 0x52454C46;  // "RELF"
     static constexpr uint32_t SERIALIZE_VERSION = 2;
