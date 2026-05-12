@@ -378,20 +378,15 @@ public:
             mpow[j] %= n;
         }
 
+        // v20 优化: current_coeffs 在每次 Gray flip 后立即归约到 [0, M-1],
+        // verify_current 内省去 %=M 步骤 (~10μs / 系数 / iter)。
+        // 65536 iter × d=6 coeffs × 10μs = ~4 sec 节省 per dependency。
         auto verify_current = [&]() -> bool {
-            // Reduce mod M → center → mod N to handle Gray code coefficient drift.
-            // Without mod M, drifted coefficients produce wrong values mod N
-            // because k*M mod N ≠ 0 when gcd(M,N) = 1.
-            //
-            // BACKLOG P1-OPT 部分优化: 之前用 nf.evaluate_at_m_mod_n 每次重算
-            // m^i;现在用预算 mpow[]。完全 mod-N 增量更激进的优化(只更新
-            // current_mod_N,避免 %=M)尝试过但在 (2-α)^2 小测试上失败,
-            // 留待 careful audit (见 BACKLOG)。
+            // 不变量: current_coeffs[i] ∈ [0, M-1]。
+            // 仅需 center 到 [-M/2, M/2] 再 mod N。
             Integer Y(int64_t(0));
             for (uint32_t i = 0; i < d; ++i) {
                 Integer c = current_coeffs[i].clone();
-                c %= M;
-                if (c.is_negative()) c += M;
                 if (c.compare(half_M) > 0) c -= M;
                 c %= n;
                 if (c.is_negative()) c += n;
@@ -409,18 +404,23 @@ public:
         };
 
         auto extract_result = [&]() -> std::vector<Integer> {
-            // Reduce mod M → center → mod N to handle Gray code coefficient drift
+            // 同 verify, current_coeffs 已在 [0, M-1]
             std::vector<Integer> r(d);
             for (uint32_t i = 0; i < d; ++i) {
                 r[i] = current_coeffs[i].clone();
-                r[i] %= M;
-                if (r[i].is_negative()) r[i] += M;
                 if (r[i].compare(half_M) > 0) r[i] -= M;
                 r[i] %= n;
                 if (r[i].is_negative()) r[i] += n;
             }
             return r;
         };
+
+        // 初始 base_coeffs 已经 ∈ [0, M-1] (上面 base CRT 后 %=M 归约,
+        // 但 center 步骤可能让它 ∈ [-M/2, M/2-1]); v20 需保持 [0, M-1]
+        // 不变量,这里 undo center,让其重回 [0, M-1]。
+        for (uint32_t i = 0; i < d; ++i) {
+            if (current_coeffs[i].is_negative()) current_coeffs[i] += M;
+        }
 
         // Check pattern 0 (all positive)
         if (verify_current()) {
@@ -436,14 +436,23 @@ public:
             size_t bit_pos = __builtin_ctzll(changed_bit);
             bool new_sign = (gray >> bit_pos) & 1;  // 1 = negative
 
-            // Incremental CRT update: flip sign of prime[bit_pos]
-            // If going positive → negative: subtract 2*weight
-            // If going negative → positive: add 2*weight
+            // Incremental CRT update + 立即归约到 [0, M-1]
+            // two_weights[k][i] ∈ [0, 2M-2], current ∈ [0, M-1]
+            // Subtract: result ∈ [-(2M-2), M-1] → 最多 +M 两次
+            // Add:      result ∈ [0, 3M-3]      → 最多 -M 两次
             for (uint32_t ci = 0; ci < d; ++ci) {
                 if (new_sign) {
                     current_coeffs[ci] -= two_weights[bit_pos][ci];
+                    if (current_coeffs[ci].is_negative()) {
+                        current_coeffs[ci] += M;
+                        if (current_coeffs[ci].is_negative()) current_coeffs[ci] += M;
+                    }
                 } else {
                     current_coeffs[ci] += two_weights[bit_pos][ci];
+                    if (current_coeffs[ci].compare(M) >= 0) {
+                        current_coeffs[ci] -= M;
+                        if (current_coeffs[ci].compare(M) >= 0) current_coeffs[ci] -= M;
+                    }
                 }
             }
 
