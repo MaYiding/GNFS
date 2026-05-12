@@ -80,8 +80,14 @@ public:
             diff -= m;
             diff.abs();
 
-            double rel_change = diff.to_double() / (std::abs(m.to_double()) + 1e-10);
-            if (rel_change < tolerance) {
+            // to_double() 对超过 ~2^1023 的 Integer 会返回 ±inf,rel_change=NaN<tol 永远 false,
+            // 让循环跑满 max_iterations。改用 bit_length 比较:diff 的位长比 m 至少少 k 位时
+            // 视为相对变化 ≤ 2^-k,默认 tolerance=1e-6 → 约 20 位。
+            const size_t m_bits = m.bit_length();
+            const size_t diff_bits = diff.bit_length();
+            const int tol_bits = static_cast<int>(std::ceil(-std::log2(tolerance)));
+            if (diff.is_zero() ||
+                (m_bits > 0 && diff_bits + tol_bits <= m_bits)) {
                 break;
             }
         }
