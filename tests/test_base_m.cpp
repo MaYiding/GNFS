@@ -15,6 +15,41 @@ static Integer make_int(long long v) { return Integer(static_cast<int64_t>(v)); 
 
 // ─── tests ───────────────────────────────────────────────────
 
+/// 稳定性快照:同一 N 多次 select 必须返回相同 (f, m),验证 Murphy
+/// 排名 + tie-breaking 确定性,避免不同 build/run 产生不同多项式。
+void test_select_stability() {
+    std::cout << "Testing selection stability across runs..." << std::endl;
+
+    // 60-bit N(走 Murphy 排名路径):4 次 select 应完全一致
+    Integer n("1000000016000000063");
+    auto first = BaseMSelector::select(n, 3);
+    assert(first.success);
+
+    for (int rep = 1; rep < 4; ++rep) {
+        auto next = BaseMSelector::select(n, 3);
+        assert(next.success);
+        assert(next.degree == first.degree);
+        assert(next.m == first.m);   // 同一 m
+        assert(next.f.degree() == first.f.degree());
+        for (uint32_t i = 0; i <= first.f.degree(); ++i) {
+            assert(next.f[i] == first.f[i]);   // 同一系数
+        }
+    }
+
+    // 大 N(走标准 Murphy)
+    Integer big_n("100000000000000001500000000000000005049");
+    auto big_first = BaseMSelector::select(big_n, 4);
+    assert(big_first.success);
+    auto big_second = BaseMSelector::select(big_n, 4);
+    assert(big_second.success);
+    assert(big_first.m == big_second.m);
+    for (uint32_t i = 0; i <= big_first.f.degree(); ++i) {
+        assert(big_first.f[i] == big_second.f[i]);
+    }
+
+    std::cout << "  PASS (deterministic selection across 4+2 reps)" << std::endl;
+}
+
 void test_select_degree3_small() {
     std::cout << "Testing degree-3 selection for small N..." << std::endl;
     // N = 143 = 11 * 13
@@ -170,6 +205,7 @@ int main() {
     std::cout << "=== BaseMSelector Unit Tests ===" << std::endl;
 
     test_select_degree3_small();
+    test_select_stability();
     test_select_degree3_medium();
     test_fm_equals_n();
     test_correct_degree_produced();

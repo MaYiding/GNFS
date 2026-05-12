@@ -500,6 +500,65 @@ void test_dispatch_with_gnfs_params() {
     std::cout << "  PASSED" << std::endl;
 }
 
+/// 边界测试:N 极小或 search_radius 越界
+/// 锁定 Stage1 m=0/m<0 跳过 + m_est<search_radius 不溢出。
+void test_stage1_small_n_boundaries() {
+    std::cout << "Testing Stage 1 small-N boundaries..." << std::endl;
+
+    // N=10 (4-bit) — m_est 极小,search_radius 远超 m_est,
+    // delta=-100 会让 m 变负,代码应 continue 跳过。
+    {
+        Integer n(static_cast<int64_t>(10));
+        KleinjungParams params;
+        params.degree = 3;
+        params.leading_coeff_bound = 5;
+        params.num_candidates = 1;
+        params.search_radius = 100;  // 远大于 m_est ≈ 2
+        params.murphy_params.sample_points = 50;
+        params.murphy_params.alpha_bound = 50;
+        KleinjungSelector selector(params);
+        // 关键:不崩。可能成功也可能 success=false,都不算错。
+        auto result = selector.select(n);
+        std::cout << "  N=10 result success=" << result.success
+                  << " candidates=" << result.candidates_tested << std::endl;
+    }
+
+    // N=2 (1-bit) — m_est ≈ 1,几乎所有 delta 都让 m 失效
+    {
+        Integer n(static_cast<int64_t>(2));
+        KleinjungParams params;
+        params.degree = 3;
+        params.leading_coeff_bound = 3;
+        params.num_candidates = 1;
+        params.search_radius = 50;
+        params.murphy_params.sample_points = 50;
+        params.murphy_params.alpha_bound = 50;
+        KleinjungSelector selector(params);
+        auto result = selector.select(n);
+        // 关键:不崩,不抛
+        std::cout << "  N=2 result success=" << result.success
+                  << " candidates=" << result.candidates_tested << std::endl;
+    }
+
+    // ad=1 且 search_radius=0 — 只检查 m_est 单个点
+    {
+        Integer n("1000000007");
+        KleinjungParams params;
+        params.degree = 3;
+        params.leading_coeff_bound = 1;  // 强制 ad=1
+        params.num_candidates = 1;
+        params.search_radius = 0;  // 单点
+        params.murphy_params.sample_points = 50;
+        params.murphy_params.alpha_bound = 50;
+        KleinjungSelector selector(params);
+        auto result = selector.select(n);
+        std::cout << "  ad=1 radius=0 success=" << result.success
+                  << " candidates=" << result.candidates_tested << std::endl;
+    }
+
+    std::cout << "  PASSED (small-N boundaries don't crash)" << std::endl;
+}
+
 int main() {
     std::cout << "=== Kleinjung Selector Tests ===" << std::endl << std::endl;
 
@@ -522,6 +581,9 @@ int main() {
     // 新增: Kleinjung 路径功能测试
     test_kleinjung_25digit_forced_degree5();
     test_dispatch_with_gnfs_params();
+
+    // 边界
+    test_stage1_small_n_boundaries();
 
     std::cout << std::endl << "All Kleinjung selector tests passed!" << std::endl;
     return 0;

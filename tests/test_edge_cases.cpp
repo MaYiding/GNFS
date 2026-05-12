@@ -1263,6 +1263,66 @@ void test_schirokauer_large_ell_edge_cases() {
     std::cout << "  PASS (ℓ=3,5,7,[2,3],empty tested)" << std::endl;
 }
 
+// 覆盖 ℓ>2 且 degree ≥ 3,且 f mod ℓ 含一个 degree≥2 的 split factor。
+// 前一测试只覆盖 degree=2 polynomial(splits trivially)。
+// 这里:f(x) = x³ + x + 1 mod 3 = (x-1)(x²+x+2),degree-1 + degree-2
+// split-mixed,触发 SchirokaurMap 的 split degree>=2 lift 分支。
+void test_schirokauer_degree3_split_degree2() {
+    std::cout << "Testing Schirokauer ℓ=3 deg=3 split-degree-2..." << std::endl;
+
+    using gnfs::core::Integer;
+    using gnfs::core::PolynomialContext;
+
+    // f(x) = x³ + x + 1, N = 任意合数(不必能整除验证 f(m)=0 mod N,
+    // 这里只用 ctx 提供 f mod ℓ 的信息)
+    Integer n("10403");  // 任意 N(degree-3 ctx 需要 f(m) ≡ 0 mod N)
+    // 找 m 使 f(m) ≡ 0 mod 10403:f(0)=1, f(1)=3, ...,直接构造
+    // 简单做法:N=f(m) 自身 — N=f(10)=1011, m=10
+    Integer N_construct(static_cast<int64_t>(1011));
+    std::vector<Integer> coeffs;
+    coeffs.emplace_back(Integer(int64_t(1)));   // x^0
+    coeffs.emplace_back(Integer(int64_t(1)));   // x^1
+    coeffs.emplace_back(Integer(int64_t(0)));   // x^2
+    coeffs.emplace_back(Integer(int64_t(1)));   // x^3
+    PolynomialContext ctx(N_construct.clone(),
+                          std::move(coeffs),
+                          Integer(int64_t(10)));
+
+    // 用 ℓ=3 (CLAUDE.md: GF(2) 矩阵不能直接用 ℓ>2 的 map,但 SchirokaurMap
+    // 本身支持任意 ℓ — 这里仅作 API 单元测试)
+    SchirokaurConfig cfg;
+    cfg.primes = {3};
+    cfg.exponent_k = 4;  // ℓ^k = 81
+    SchirokaurMap sm(ctx, cfg);
+
+    // num_columns 应 = degree = 3(每根 1 列)
+    assert(sm.num_columns() == 3);
+
+    // 取若干 (a, b) 对计算 lambda 值,断言 ∈ [0, ℓ)
+    std::vector<std::pair<int64_t, uint64_t>> pairs = {
+        {1, 1}, {2, 1}, {5, 2}, {-3, 1}, {7, 3}
+    };
+    for (auto [a, b] : pairs) {
+        auto maps = sm.compute(a, b);
+        assert(maps.size() == 1);
+        assert(maps[0].size() == 3);
+        for (uint32_t v : maps[0]) {
+            assert(v < 3 && "λ value must be < ℓ=3");
+        }
+    }
+
+    // λ(g^ℓ) ≡ 0 mod ℓ:任意 g 的 ℓ 倍贡献必为 0
+    // (注:ℓ=3 时 self-sum 2v 不一定为 0 — 只有 ℓ 倍才必为 0)
+    // 用 compute_flat 简单验证多次调用相同输入返回相同值(确定性)。
+    {
+        auto a1 = sm.compute_flat(7, 2);
+        auto a2 = sm.compute_flat(7, 2);
+        assert(a1 == a2 && "deterministic");
+    }
+
+    std::cout << "  PASS (ℓ=3 deg=3 split={1,2} smoke test)" << std::endl;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // NumberField 算术边界测试
 // ═══════════════════════════════════════════════════════════════
@@ -2287,6 +2347,7 @@ int main() {
 
     // Schirokauer 大域 ℓ 边界
     test_schirokauer_large_ell_edge_cases();
+    test_schirokauer_degree3_split_degree2();
 
     // NumberField 算术边界
     test_number_field_edge_cases();
