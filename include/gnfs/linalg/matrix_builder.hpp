@@ -656,7 +656,7 @@ private:
 
             for (const auto& [idx, exp] : exponents) {
                 if (exp % 2 == 1 && idx < mapping.num_rational_fb) {
-                    row.set(static_cast<uint32_t>(mapping.rat_fb_start() + idx));
+                    row.append_unchecked(static_cast<uint32_t>(mapping.rat_fb_start() + idx));
                 }
             }
         }
@@ -670,7 +670,7 @@ private:
 
             for (const auto& [idx, exp] : exponents) {
                 if (exp % 2 == 1 && idx < mapping.num_algebraic_fb) {
-                    row.set(static_cast<uint32_t>(mapping.alg_fb_start() + idx));
+                    row.append_unchecked(static_cast<uint32_t>(mapping.alg_fb_start() + idx));
                 }
             }
         }
@@ -686,7 +686,7 @@ private:
                 if (exp % 2 == 1) {
                     auto it = mapping.rat_lp_to_col.find(p);
                     if (it != mapping.rat_lp_to_col.end()) {
-                        row.set(it->second);
+                        row.append_unchecked(it->second);
                     }
                 }
             }
@@ -705,11 +705,14 @@ private:
                 if (exp % 2 == 1) {
                     auto it = mapping.alg_lp_to_col.find(key);
                     if (it != mapping.alg_lp_to_col.end()) {
-                        row.set(it->second);
+                        row.append_unchecked(it->second);
                     }
                 }
             }
         }
+
+        // build_with_qc 后续会 test() sign 列;ensure_sorted 让 test 走 O(log n) 二分。
+        row.ensure_sorted();
     }
 
     /// 构建带二次特征的单行

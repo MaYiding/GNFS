@@ -38,6 +38,14 @@ public:
         indices_.push_back(col);
     }
 
+    /// 快速 append:**调用方必须保证 col 在此行中尚未出现**。
+    /// 用于 build_row 中按因子顺序累加 — 已知不重复时跳过 O(n) 检查。
+    /// 调用结束后必须显式 `ensure_sorted()` 来去重并恢复排序不变量。
+    void append_unchecked(uint32_t col) {
+        indices_.push_back(col);
+        sorted_ = false;
+    }
+
     /// 清除位
     void clear(uint32_t col) {
         ensure_sorted();
