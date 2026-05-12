@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <ctime>
 #include <fstream>
@@ -8,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -54,28 +56,31 @@ public:
 
     /// 设置日志级别
     void set_level(LogLevel level) noexcept {
-        std::lock_guard<std::mutex> lock(mutex_);
-        level_ = level;
+        level_.store(level, std::memory_order_relaxed);
     }
 
     /// 获取当前日志级别
     LogLevel level() const noexcept {
-        return level_;
+        return level_.load(std::memory_order_relaxed);
     }
 
-    /// 设置输出流
+    /// 设置输出流。调用方必须保证 os 的生存期长于 Logger(单例,进程退出时析构)。
+    /// 推荐传入 std::cerr / std::cout / std::clog 等具有静态生存期的标准流。
     void set_output(std::ostream& os) {
         std::lock_guard<std::mutex> lock(mutex_);
+        file_.reset();  // 释放任何之前 set_file 打开的文件
         output_ = &os;
     }
 
-    /// 设置日志文件
+    /// 设置日志文件。打开失败时抛出 std::runtime_error,output_ 保持不变。
     void set_file(const std::string& path) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        file_ = std::make_unique<std::ofstream>(path, std::ios::app);
-        if (file_->is_open()) {
-            output_ = file_.get();
+        auto f = std::make_unique<std::ofstream>(path, std::ios::app);
+        if (!f->is_open()) {
+            throw std::runtime_error("Logger::set_file: failed to open " + path);
         }
+        std::lock_guard<std::mutex> lock(mutex_);
+        file_ = std::move(f);
+        output_ = file_.get();
     }
 
     /// 启用/禁用时间戳
@@ -92,7 +97,7 @@ public:
 
     /// 检查日志级别是否启用
     bool is_enabled(LogLevel level) const noexcept {
-        return level >= level_;
+        return level >= level_.load(std::memory_order_relaxed);
     }
 
     /// 日志输出
@@ -160,7 +165,7 @@ private:
     ~Logger() = default;
 
     std::mutex mutex_;
-    LogLevel level_;
+    std::atomic<LogLevel> level_;
     std::ostream* output_;
     std::unique_ptr<std::ofstream> file_;
     bool timestamps_;
