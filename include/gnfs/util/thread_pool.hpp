@@ -196,8 +196,9 @@ public:
     }
 
     /// 获取待处理任务数量
-    [[nodiscard]] size_t pending_tasks() const noexcept {
-        return pending_.load();
+    [[nodiscard]] size_t pending_tasks() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return pending_;
     }
 
 private:
@@ -237,16 +238,14 @@ private:
     std::vector<std::thread> workers_;
     std::queue<std::function<void()>> tasks_;
 
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::condition_variable done_cv_;
 
     bool stop_;
-    // atomic: allows lock-free read in pending_tasks() public API.
-    // Also guarded by mutex_ in submit()/worker_loop() for correct
-    // synchronization with done_cv_ in wait_all(). Do NOT remove
-    // the mutex protection — see worker_loop() comment.
-    std::atomic<size_t> pending_;
+    // pending_ is always read/written under mutex_ — even pending_tasks() locks.
+    // 不用 atomic 是为了让心智模型一致:所有同步状态都走 mutex_/cv,不混 atomic 语义。
+    size_t pending_;
 };
 
 } // namespace gnfs::util
