@@ -163,11 +163,9 @@ struct CofactorClassification {
 /// @param exp 输出：指数
 /// @return true 如果是完全幂
 [[nodiscard]] inline bool is_perfect_power(uint64_t n, uint64_t& base, uint8_t& exp) {
-    if (n <= 1) {
-        base = n;
-        exp = 1;
-        return true;
-    }
+    // n=0/1 不是有意义的"完全幂"。语义上 1=1^k 对任意 k 都成立,n=0 也病态。
+    // 返回 false 避免下游 if(exp>1) 误判。
+    if (n < 2) return false;
 
     // 检查是否是 2 的幂
     if ((n & (n - 1)) == 0) {
@@ -177,6 +175,7 @@ struct CofactorClassification {
             n >>= 1;
             ++exp;
         }
+        if (exp < 2) return false;  // n=2 本身不是幂
         return true;
     }
 

@@ -685,14 +685,17 @@ void test_cofactor_classify_edge_cases() {
         assert(is_perfect_square(1, root) && root == 1);
     }
 
-    // is_perfect_power(0), (1)
+    // is_perfect_power: n<2 不是有意义的"完全幂",返回 false (新语义)
     {
         uint64_t base;
         uint8_t exp;
-        assert(is_perfect_power(0, base, exp));
-        assert(base == 0 && exp == 1);
-        assert(is_perfect_power(1, base, exp));
-        assert(base == 1 && exp == 1);
+        assert(!is_perfect_power(0, base, exp));
+        assert(!is_perfect_power(1, base, exp));
+        // n=2 是素数,不是 perfect power (b^k with k>=2)
+        assert(!is_perfect_power(2, base, exp));
+        // n=4 = 2² 是
+        assert(is_perfect_power(4, base, exp));
+        assert(base == 2 && exp == 2);
     }
 
     // pollard_rho with even number → should return 2

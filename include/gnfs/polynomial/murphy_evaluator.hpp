@@ -227,8 +227,13 @@ private:
 
     /// 初始化小素数列表
     void init_primes() {
-        // 埃拉托斯特尼筛法
-        uint64_t bound = static_cast<uint64_t>(params_.alpha_bound);
+        // 埃拉托斯特尼筛法。alpha_bound 是 double — 用户可能误传 1e18 之类
+        // 巨大值导致 bitset 试图分配 EB 级内存。clamp 到 1e7(~620k primes,
+        // ~10MB sieve)足以满足 Murphy alpha 精度需求。
+        constexpr double ALPHA_BOUND_MAX = 1e7;
+        double bound_d = std::min(params_.alpha_bound, ALPHA_BOUND_MAX);
+        if (bound_d < 2.0) bound_d = 2.0;
+        uint64_t bound = static_cast<uint64_t>(bound_d);
         std::vector<bool> is_prime(bound + 1, true);
         is_prime[0] = is_prime[1] = false;
 
@@ -414,12 +419,11 @@ private:
             double u_f = (log_F - alpha_f) / log_bound;
             double u_g = (log_G - alpha_g) / log_bound;
 
-            // u ≤ 0 意味着范数极小，几乎必然光滑
-            if (u_f < 0.01) u_f = 0.01;
-            if (u_g < 0.01) u_g = 0.01;
-
-            double log_p_f = log_dickman_rho(u_f);
-            double log_p_g = log_dickman_rho(u_g);
+            // u ≤ 0 时 ρ(u) = 1 (必然光滑)。旧代码把 u_f 抬到 0.01 让 ρ(0.01)≈1
+            // 同时 ρ(其他 u_f) 范围被压缩,导致大负 u_f 之间无法区分,排序失效。
+            // 改为:u ≤ 0 直接 log_p = 0,避免数值病态。
+            double log_p_f = (u_f <= 0.0) ? 0.0 : log_dickman_rho(u_f);
+            double log_p_g = (u_g <= 0.0) ? 0.0 : log_dickman_rho(u_g);
 
             log_probs.push_back(log_p_f + log_p_g);
         }

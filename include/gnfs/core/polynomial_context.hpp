@@ -154,10 +154,19 @@ public:
         Integer a_power(static_cast<int64_t>(1));  // a^i
 
         // 计算 b^d, b^{d-1}, ..., b^0
-        // Stack array avoids per-call heap allocation (degree ≤ 7 in practice)
+        // Stack array avoids per-call heap allocation (degree ≤ 7 in practice).
+        // Heap fallback when degree ≥ MAX_STACK_DEG — assert 在 Release 下 NDEBUG
+        // 失效会导致 b_powers[i>7] 越界写。
         static constexpr uint32_t MAX_STACK_DEG = 8;
-        assert(degree_ < MAX_STACK_DEG && "degree exceeds stack array capacity");
-        std::array<Integer, MAX_STACK_DEG> b_powers;
+        std::array<Integer, MAX_STACK_DEG> b_powers_stack;
+        std::vector<Integer> b_powers_heap;
+        Integer* b_powers;
+        if (degree_ < MAX_STACK_DEG) {
+            b_powers = b_powers_stack.data();
+        } else {
+            b_powers_heap.resize(degree_ + 1);
+            b_powers = b_powers_heap.data();
+        }
         b_powers[0] = Integer(int64_t(1));
         for (uint32_t i = 1; i <= degree_; ++i) {
             b_powers[i] = b_powers[i-1].clone();
