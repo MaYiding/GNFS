@@ -760,18 +760,25 @@ private:
         int32_t rows_per_thread = total_rows / static_cast<int32_t>(num_threads);
         int32_t remainder = total_rows % static_cast<int32_t>(num_threads);
 
-        int32_t chunk_start = j_min;
+        // 计算每个 chunk 的 row_offset (= chunk_start - j_min),
+        // 预先收集 boundary 数据,后续 sieve_row_chunk 不再重算。
+        std::vector<int32_t> chunk_starts(num_threads + 1);
+        chunk_starts[0] = j_min;
         for (size_t t = 0; t < num_threads; ++t) {
             int32_t chunk_rows = rows_per_thread + (static_cast<int32_t>(t) < remainder ? 1 : 0);
-            int32_t chunk_end = chunk_start + chunk_rows - 1;
-            int32_t row_offset = chunk_start - j_min;
+            chunk_starts[t + 1] = chunk_starts[t] + chunk_rows;
+        }
+
+        for (size_t t = 0; t < num_threads; ++t) {
+            int32_t chunk_start_t = chunk_starts[t];
+            int32_t chunk_end_t = chunk_starts[t + 1] - 1;
+            int32_t row_offset = chunk_start_t - j_min;
 
             threads.emplace_back(&LatticeSieve::sieve_row_chunk, this,
                                  std::cref(pre), std::cref(primes),
                                  std::cref(buckets), bucket_threshold,
-                                 chunk_start, chunk_end,
+                                 chunk_start_t, chunk_end_t,
                                  w, i_min, row_offset);
-            chunk_start = chunk_end + 1;
         }
 
         for (auto& t : threads) {
