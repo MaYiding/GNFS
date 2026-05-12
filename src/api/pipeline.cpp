@@ -470,6 +470,8 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     relation::CollectorConfig coll_config;
     coll_config.check_duplicates = true;
     relation::RelationCollector collector(coll_config);
+    // CLAUDE.md 强制约定:拒绝 gcd(a-bm, N)>1 的关系
+    collector.set_polynomial_context(ctx.n(), ctx.m());
 
     // Target
     size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params_.target_excess;
