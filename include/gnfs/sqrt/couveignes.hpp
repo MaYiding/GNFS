@@ -301,21 +301,37 @@ public:
             expected_X2 %= n;
         }
 
+        // m^j mod N 缓存,Gray code 内每次 verify 不再重算
+        std::vector<Integer> mpow(d);
+        mpow[0] = Integer(int64_t(1));
+        for (uint32_t j = 1; j < d; ++j) {
+            mpow[j] = mpow[j-1].clone();
+            mpow[j] *= nf.m();
+            mpow[j] %= n;
+        }
+
         auto verify_current = [&]() -> bool {
             // Reduce mod M → center → mod N to handle Gray code coefficient drift.
             // Without mod M, drifted coefficients produce wrong values mod N
             // because k*M mod N ≠ 0 when gcd(M,N) = 1.
-            std::vector<Integer> cand_mod_n(d);
+            //
+            // BACKLOG P1-OPT 部分优化: 之前用 nf.evaluate_at_m_mod_n 每次重算
+            // m^i;现在用预算 mpow[]。完全 mod-N 增量更激进的优化(只更新
+            // current_mod_N,避免 %=M)尝试过但在 (2-α)^2 小测试上失败,
+            // 留待 careful audit (见 BACKLOG)。
+            Integer Y(int64_t(0));
             for (uint32_t i = 0; i < d; ++i) {
-                cand_mod_n[i] = current_coeffs[i].clone();
-                cand_mod_n[i] %= M;
-                if (cand_mod_n[i].is_negative()) cand_mod_n[i] += M;
-                if (cand_mod_n[i].compare(half_M) > 0) cand_mod_n[i] -= M;
-                cand_mod_n[i] %= n;
-                if (cand_mod_n[i].is_negative()) cand_mod_n[i] += n;
+                Integer c = current_coeffs[i].clone();
+                c %= M;
+                if (c.is_negative()) c += M;
+                if (c.compare(half_M) > 0) c -= M;
+                c %= n;
+                if (c.is_negative()) c += n;
+                c *= mpow[i];
+                Y += c;
+                Y %= n;
             }
-            NumberFieldElement candidate(std::move(cand_mod_n));
-            Integer Y = nf.evaluate_at_m_mod_n(candidate);
+            if (Y.is_negative()) Y += n;
 
             Integer Y2 = Y.clone();
             Y2 *= Y;
