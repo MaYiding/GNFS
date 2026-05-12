@@ -57,6 +57,51 @@ if(GNFS_ENABLE_UBSAN)
     add_link_options(-fsanitize=undefined)
 endif()
 
+# ============================================================
+# Profile-Guided Optimization (PGO)
+# ============================================================
+# 两阶段 PGO 工作流（详见 docs/perf/performance-doctrine.md §5.2）:
+#   阶段 1 (训练): -DGNFS_ENABLE_PGO_GEN=ON, 跑训练样本生成 .profraw
+#   阶段 2 (优化): -DGNFS_ENABLE_PGO_USE=ON, 消费 merged.profdata 重编
+# 自动化入口: scripts/pgo-train.sh
+option(GNFS_ENABLE_PGO_GEN "Enable PGO instrumentation (training run)"   OFF)
+option(GNFS_ENABLE_PGO_USE "Enable PGO optimized build (consume profile)" OFF)
+set(GNFS_PGO_PROFILE_DIR "${CMAKE_BINARY_DIR}/pgo-profiles"
+    CACHE PATH "Directory for PGO .profraw / merged.profdata")
+
+if(GNFS_ENABLE_PGO_GEN AND GNFS_ENABLE_PGO_USE)
+    message(FATAL_ERROR
+        "GNFS PGO: cannot enable both GNFS_ENABLE_PGO_GEN and GNFS_ENABLE_PGO_USE. "
+        "Use separate build directories for the two phases.")
+endif()
+
+if(GNFS_ENABLE_PGO_GEN OR GNFS_ENABLE_PGO_USE)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "GNFS PGO requires Clang (got ${CMAKE_CXX_COMPILER_ID})")
+    endif()
+endif()
+
+if(GNFS_ENABLE_PGO_GEN)
+    file(MAKE_DIRECTORY ${GNFS_PGO_PROFILE_DIR})
+    add_compile_options(-fprofile-instr-generate)
+    add_link_options(-fprofile-instr-generate)
+    message(STATUS "GNFS PGO: instrumentation enabled, profiles -> ${GNFS_PGO_PROFILE_DIR}")
+endif()
+
+if(GNFS_ENABLE_PGO_USE)
+    set(_pgo_data "${GNFS_PGO_PROFILE_DIR}/merged.profdata")
+    if(NOT EXISTS ${_pgo_data})
+        message(FATAL_ERROR
+            "GNFS PGO_USE: profile not found at ${_pgo_data}. "
+            "Run 'scripts/pgo-train.sh' first, or set GNFS_PGO_PROFILE_DIR to a populated dir.")
+    endif()
+    add_compile_options(-fprofile-instr-use=${_pgo_data})
+    add_link_options(-fprofile-instr-use=${_pgo_data})
+    # 防止小代码改动后强失败 — PGO 数据稍旧仍可用
+    add_compile_options(-Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled)
+    message(STATUS "GNFS PGO: consuming profile ${_pgo_data}")
+endif()
+
 # 导出编译命令（用于 IDE 和 clangd）
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
