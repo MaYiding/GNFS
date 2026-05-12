@@ -206,14 +206,56 @@ private:
             return result;
         }
 
-        // 映射到 Z/NZ
-        result.value = nf.evaluate_at_m_mod_n(*sqrt_opt);
+        // 映射到 Z/NZ:T(m) ≡ f'(m) · √S(m) mod N (因 Couveignes 内已对 f'(α)²·S 取 sqrt)
+        Integer T_m = nf.evaluate_at_m_mod_n(*sqrt_opt);
+
+        // ── f'(α)² 修正还原 (Thomé 2008) ──
+        // Couveignes::compute() 在每素数 p 上对 f'(α)² · S(α) 取 sqrt;
+        // 这里把 T(m) 除以 f'(m) mod N 还原真正的 sqrt(S)(m) mod N。
+        // 若 gcd(f'(m), N) > 1,inv 不存在 — 这通常意味着 f'(m) 与 N 共享
+        // 一个非平凡因子(对 NFS 反而是"中奖"),但当前 API 不返回中间因子,
+        // 退化为失败让 caller 走 Hensel/Couveignes fallback chain。
+        const Integer& N = nf.n();
+        Integer f_prime_m = compute_f_derivative_at_m(nf);
+        Integer f_prime_m_inv;
+        if (!mpz_invert(f_prime_m_inv.get_mpz(),
+                        f_prime_m.get_mpz(),
+                        N.get_mpz())) {
+            result.error = "Couveignes: f'(m) not invertible mod N (potential factor revealed)";
+            return result;
+        }
+        T_m *= f_prime_m_inv;
+        T_m %= N;
+        if (T_m.is_negative()) T_m += N;
+
+        result.value = std::move(T_m);
         result.success = true;
 
         // Note: Couveignes internally uses per-prime verification which is more
         // reliable than verifying in Z[α]/N (different reduction orders can cause
         // multiply_mod_n to produce inconsistent products). Skip redundant verification.
 
+        return result;
+    }
+
+    /// 计算 f'(m) mod N (Horner). 与 hensel_sqrt.hpp 中同名函数复用语义.
+    [[nodiscard]] static Integer compute_f_derivative_at_m(const NumberField& nf) {
+        uint32_t d = nf.degree();
+        const Integer& m = nf.m();
+        const Integer& N = nf.n();
+
+        Integer result = nf.coeff(d).clone();
+        result *= Integer(static_cast<int64_t>(d));
+        result %= N;
+
+        for (int i = static_cast<int>(d) - 1; i >= 1; --i) {
+            result *= m;
+            Integer term = nf.coeff(i).clone();
+            term *= Integer(static_cast<int64_t>(i));
+            result += term;
+            result %= N;
+        }
+        if (result.is_negative()) result += N;
         return result;
     }
 
