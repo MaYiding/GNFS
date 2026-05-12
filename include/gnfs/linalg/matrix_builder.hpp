@@ -356,33 +356,6 @@ public:
         return result;
     }
 
-    /// 验证矩阵（检查每行是否正确表示关系的指数向量）
-    [[nodiscard]] static bool verify_matrix(
-            const SparseMatrix& matrix,
-            const std::vector<Relation>& relations,
-            const FactorBase& fb,
-            const ColumnMapping& mapping) {
-
-        if (matrix.num_rows() != relations.size()) {
-            return false;
-        }
-
-        // 验证每一行
-        for (size_t i = 0; i < relations.size(); ++i) {
-            // 重新构建行并比较
-            SparseRow expected;
-            MatrixBuilder builder;
-            builder.build_row(expected, relations[i], fb, mapping);
-
-            const auto& actual = matrix.row(i);
-            if (expected.indices() != actual.indices()) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
 private:
     Config config_;
 
