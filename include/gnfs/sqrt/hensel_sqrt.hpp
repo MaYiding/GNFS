@@ -452,14 +452,17 @@ private:
 
         // Choose K: balance lift speed vs sign combo count.
         // K = number of inert primes for CRT. Sign combos = 2^(K-1).
-        // K=3 was tested in Session 78 (target_bits/K + 100 safety margin) but CRT
-        // failed on every dependency — the per-prime precision was insufficient.
-        // Until that's diagnosed,K=2 unconditionally:slower lift per prime,but
-        // deterministically correct;60+ digit deps that used to take the broken
-        // K=3 path now lift in K=2 instead of falling back to single-prime Hensel
-        // (which was both slower and untested).
-        // TODO: re-enable K=3 once safety-margin formula is corrected; see BACKLOG.
-        const size_t K = 2;
+        //
+        // v19 重启 K=3 调研 (BACKLOG P1 DEFERRED):
+        // 历史 Session 78 K=3 用 target_bits/K + 100 失败。分析:
+        //   总 M 比特 = K · per_prime = target + K·100;K=3 仅 100 bit safety
+        //   超过 target,但 target_bits 估算可能差 ~200 bit (大类群、复杂
+        //   relation set),且 lift 重试也吃 safety。
+        // 修复: per-prime safety 从 +100 提到 +200。总 safety: K·200。
+        // 代价: 每 prime 多 lift 一轮 (~30% 单 prime lift 时间)。
+        // 收益: K=3 给 4 sign combos vs K=2 的 2,但更重要的是 per-prime
+        // bits 减少 (target/3 vs target/2) 让 lift 总开销下降。
+        const size_t K = 3;
 
         // Find extra inert primes for retry on lift failure
         const size_t extra = 5;
@@ -473,8 +476,8 @@ private:
 
         // Compute how many lifts each prime needs
         // After num_lifts doublings: precision = p^{2^num_lifts} ≈ 2^{log2(p) * 2^num_lifts}
-        // Target per prime: target_bits / K + safety margin
-        double per_prime_bits = target_bits / K + 100;
+        // Target per prime: target_bits/K + per-prime safety (v19: +200,见上方 K=3 注释)
+        double per_prime_bits = target_bits / K + 200;
         std::vector<size_t> lifts_per_prime(K);
         for (size_t i = 0; i < K; ++i) {
             double log_p = std::log2(static_cast<double>(inert_primes[i]));
