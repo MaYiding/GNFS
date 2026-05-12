@@ -1,0 +1,970 @@
+# GNFS 性能优化宪章 (Performance Doctrine)
+
+> **作者**: Claude (本宪章) + 马一丁 (审阅)
+> **创建日期**: 2026-05-12
+> **范围**: 本项目所有性能相关改动的指导原则、分析方法论与 Apple M5 调优手册
+> **状态**: 活文档 — 每次大优化结束后必更新「§6 路线图」与「附录 C 参考」
+
+---
+
+## §0  序言：为什么需要"宗旨"
+
+经 v6-v21 系统清理后，GNFS C++20 实现已达工业级稳定（8/8 progressive、gate 27/27、stress L1 通过）。**算法层 90% 的"低悬果实"已摘**：
+
+- 已做: SGE 预处理、PackedGF2 word-pack、Block Lanczos 并行 SpMV、Bucket sieve、SQUFOF k=1 D=4N、Couveignes Gray code、Murphy E thread_local、Schirokauer atomic、OOC mmap-CSR
+- 未做（真正未开荒地）:
+  1. **PGO**（项目零配置）
+  2. **NEON SIMD 仅 1 处** (`lattice_sieve::collect_candidates`)
+  3. **`[[likely]]/[[unlikely]]` 仅 1 处** (`trial_division.hpp`)
+  4. **无显式 `__builtin_prefetch`**
+  5. **未使用 SME** (M4+ 矩阵协处理器)
+  6. **无 Instruments + PMU 闭环**
+  7. **BlockWiedemann 真正 block BM** (BACKLOG 最大遗留项)
+
+再做"试错式"调参或猜测式优化已无收益；必须建立**数据驱动 + 硬件感知 + 理论严谨**的工程纪律。本文档就是这个纪律的成文化。
+
+---
+
+## §1  核心宗旨：六条铁律
+
+### 铁律 1：测量先于优化
+
+> **没有 profile 数据的改动，一律拒绝合并。**
+
+- 任何 `perf(...)` commit 必须附 before/after 实测数据（含 CPU 时间、cycles、cache miss 率三项至少其一）
+- 「直觉热点」一律先 profile 验证，不允许"我觉得这里慢"
+- 禁止仅凭 release 计时下结论；必须配合 PMU 计数器（cycles / instructions / branch_misses / dcache_load_miss）
+- **本项目实战**: `./scripts/test.sh bench --save` 接入 PGO 前后对比；自定义 `.tracetemplate` 跑 Instruments
+
+### 铁律 2：理论先于试错
+
+> **能查论文获得正解的，不允许试参数。能写更优算法的，不允许微调常数。**
+
+- 改算法核心前**必须**有论文/权威实现支撑（CADO-NFS、msieve、Pomerance、Crandall-Pomerance）
+- 不允许在"调一调 prime cap 试试" / "改 buffer 大小看看" 上花超过 10 分钟
+- 「奇怪 bug 改了就好」要追根，不接受"先放着"
+- **本项目实战**: Couveignes f'(α)² 修正引 Thomé 2008（commit `eba0c7c`）、α-projective-root 锁定 Guillevic-Singh 2021（commit `075ef73`）
+
+### 铁律 3：利用硬件，不糟蹋硬件
+
+> **M5 给的 NEON / SME / 分支预测器 / 缓存层级必须吃透；不能让 4.61 GHz P-core 跑串行 cache-miss 循环。**
+
+- 热点循环必须能解释"为什么这条指令在这一个周期能完成"
+- 数据布局必须有意识：cache line 64 B、L1D 128 KB、L2 共享池
+- `-mcpu=native` 已开（CMakeLists L21-25）— 但要知道它**没**自动开 PGO、没自动 SME、没自动 prefetch
+- E-core 不是 P-core 的弱化版，它是**完全不同的处理器**；后台任务该分流 E-core
+
+### 铁律 4：数据布局先于算法实现
+
+> **Cache-friendly 是底线，不是奖励。L2 miss 一次损失 30+ ns，是 4.61 GHz 下 130+ cycle。**
+
+- 默认 SoA 而非 AoS；除非 access pattern 明显是 row-wise
+- Hot-path 数据结构必须 64 B 对齐（`alignas(64)`）
+- 大表（>1 MB）必须考虑 mmap + `MADV_SEQUENTIAL/RANDOM`
+- Packed bitmaps 优先于 `std::vector<bool>`，且必须 word-aligned
+- **本项目实战**: `PackedGF2Matrix`（64-bit word）、`MmapCSRMatrix`（uint64 row_offsets）— 这是榜样
+
+### 铁律 5：并行是放大器，不是补丁
+
+> **串行慢 100 ns 的循环并行后只会更慢；并行前先把串行做到最优。**
+
+- 任何并行化前先 profile 单核 IPC；IPC < 2.0 时并行收益打折
+- ThreadPool 不是免费的：task overhead ~1-10 μs；粒度必须 >> 100 μs
+- 锁是性能杀手：`std::atomic` 也不便宜；优先无锁数据结构 / per-thread 累加
+- **本项目实战**: Bucket sieve 多线程 scatter（commit `41aead9` 系列）、ThreadPool work-stealing
+
+### 铁律 6：闭环验证，不轻信编译器
+
+> **`-O3 -mcpu=native -flto=thin` 不是魔法。编译器优化掉的代码可能正是你以为的"热点"，留下来的可能是 cache 灾难。**
+
+- 关键改动后必须看 disassembly（`objdump -d` / Compiler Explorer）
+- IPC 突然下降是红灯；branch_misses 突然升高是红灯
+- Release build 跑得通 ≠ Debug+Sanitizers 跑得通；性能改动**必须**两边都跑（CLAUDE.md「跨平台编译注意事项」明确要求）
+
+---
+
+## §2  分析方法论：M5 上的 Top-Down 范式
+
+### 2.1  Intel TMA 类比 → ARM / Apple 等价
+
+Intel 提出的 **Top-Down Microarchitecture Analysis (TMA)** 已成行业标准，将 CPU 时间分解为 4 大类：
+
+```
+                   Total Pipeline Slots
+                   /                  \
+                Issued                Not Issued
+               /      \                   |
+        Retiring     Bad Speculation     /  \
+                                Frontend  Backend
+                                Bound     Bound
+                                          /    \
+                                     Core      Memory
+                                     Bound     Bound
+```
+
+| TMA 类别 | 含义 | M5 PMU event (近似) | 主要修法 |
+|---------|------|--------------------|---------|
+| **Retiring** | 真正干活 | `INST_ALL` / `CYCLES` | 已经在干活，看 IPC 是否够高（M5 P-core 理论 ≥8） |
+| **Bad Speculation** | 分支误判浪费 | `BRANCH_MISPRED_NONSPEC` | 减少 unpredictable branch / 加 `[[likely]]` / branchless 算法 |
+| **Frontend Bound** | 指令取不到 / 解码慢 | `INST_DECODE_STALL` (M3+) | 减小 code footprint / 避免巨型函数 / inline 谨慎 |
+| **Backend Core Bound** | 执行单元打满 | `PMC_CORE_ACTIVE_STALL` | SIMD 化 / ILP 提升 / 减少 dependency chain |
+| **Backend Memory Bound** | 等内存 | `L1D_CACHE_MISS_LD`, `L2_TLB_MISS` | prefetch / 数据布局 / blocking |
+
+**判定流程**:
+1. 跑 Instruments → CPU Counters 选 "Microarchitecture Analysis" preset (WWDC25 新增)
+2. 看哪类占比 > 30%
+3. 对照表选修法
+4. 改完重测，**期望该类占比下降 + IPC 上升**
+
+### 2.2  Apple Silicon PMU 全景
+
+M5 (和 M3/M4 一脉相承) 提供：
+
+- **2 fixed counters**: cycles, instructions
+- **8 configurable counters**: 任选 PMU event
+- **M3+ ESR 寄存器**: 64-bit, 每个 event 16-bit（M1/M2 是 8-bit/event）
+
+可用 event（不完全列表，via reverse-engineered kperf framework）:
+
+| Event | 用途 |
+|-------|------|
+| `INST_ALL` | 总指令数（fixed） |
+| `CORE_ACTIVE_CYCLE` | 活跃周期（fixed） |
+| `INST_BRANCH` | 分支指令 |
+| `BRANCH_MISPRED_NONSPEC` | 误判分支 |
+| `L1D_CACHE_MISS_LD` | L1D load miss |
+| `L1D_CACHE_MISS_ST` | L1D store miss |
+| `L1I_CACHE_MISS` | L1I miss |
+| `L2_TLB_MISS_INST` | iTLB miss |
+| `L2_TLB_MISS_DATA` | dTLB miss |
+| `INST_INT_LD`, `INST_INT_ST` | 整数 load/store |
+| `INST_NEON` | NEON 指令数 |
+| `INST_SIMD_LD`, `INST_SIMD_ST` | SIMD load/store |
+| `MAP_DISPATCH_BUBBLE` | 前端 bubble |
+
+**关键比率**:
+- IPC = `INST_ALL / CORE_ACTIVE_CYCLE` （目标 P-core ≥ 4，理想 ≥ 6）
+- L1D miss rate = `L1D_CACHE_MISS_LD / INST_INT_LD` （目标 < 2%）
+- Branch mispred rate = `BRANCH_MISPRED_NONSPEC / INST_BRANCH` （目标 < 1%）
+
+### 2.3  Instruments 三件套
+
+Xcode 16+ 安装后开箱可用（无需付费开发者账号）：
+
+| 工具 | 用途 | 何时用 |
+|------|------|--------|
+| **Time Profiler** | 火焰图 / 函数级 wall time | 首次 profile / 找宏观热点 |
+| **CPU Counters** | PMU event 计数 + Top-down | 第二轮 / 微架构瓶颈定位 |
+| **Processor Trace** | 每条指令级 trace (M3+ 独占) | 极小热点 / 异常分支研究 |
+
+**WWDC25 #308 关键更新**: CPU Counters 新增 **preset modes** ("CPU Bottlenecks", "Instructions Retired"等)，避免手动配 8 个 event。
+
+**典型工作流**:
+```bash
+# 1. 编译 Release+debug info (推荐 RelWithDebInfo)
+cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+make -C build -j$(sysctl -n hw.ncpu) test_factor_with_kleinjung
+
+# 2. 启动 Instruments（GUI）
+open -a Instruments build/test_factor_with_kleinjung
+
+# 3. 选 "CPU Counters" template，选 "CPU Bottlenecks" preset
+# 4. Record → 跑 ~30s → Stop → 查 Top-down breakdown
+
+# 5. 或 CLI 化（更可重复）
+xctrace record --template 'CPU Counters' \
+    --launch build/test_factor_with_kleinjung \
+    --output /tmp/gnfs-cpu.trace
+xctrace export --input /tmp/gnfs-cpu.trace --xpath '//*' --output /tmp/gnfs-cpu.xml
+```
+
+### 2.4  CLI 化 + 自动化
+
+GUI Instruments 不利于回归追踪。本项目需要建立 **`.tracetemplate` + xctrace + 报告解析** 流水线（§5 详述）。
+
+参考工具:
+- `xctrace` — Apple 官方 CLI（Xcode 11+；instruments CLI 2024 已弃用）
+- `samply` — 第三方采样 profiler，输出 Firefox Profiler 兼容（推荐快速看火焰图）
+- `mperf` — 第三方 PMU CLI（macOS ARM64 hardware counters）
+- `asitop` — top-style Apple Silicon 监控（看 SoC 全局，不看进程级）
+
+### 2.5  火焰图工作流
+
+```bash
+# samply: cargo install samply
+samply record build/test_factor_with_kleinjung
+# 自动打开 Firefox Profiler，含火焰图 + 调用栈 + 时间轴
+
+# 替代：Instruments Time Profiler 导出 → speedscope
+xctrace record --template 'Time Profiler' --launch ./bin --output /tmp/t.trace
+# 用 speedscope.app 加载 /tmp/t.trace
+```
+
+### 2.6  GNFS 专用基准接入
+
+现有基准（来自 CMakeLists）:
+- `test_perf_targets` — 10-70 digit 性能目标
+- `test_gnfs_bench` — 20-35 digit 流水线基准
+- `test_stress` — 50/60-digit 极限测试
+
+**框架接入要求** (§5 实施):
+- 每个基准包装 PGO instrument/use 两阶段
+- 接入 `xctrace` 抓 Top-down 报告 → CSV
+- `./scripts/test.sh bench --save` 后端保存到 `bench/results/YYYY-MM-DD-HHMMSS/`
+- 比较脚本输出 markdown diff
+
+---
+
+## §3  优化技术目录（按抽象层从高到低）
+
+> **优化次序公理**: 算法 → 数据布局 → 指令 → 内存 → 并行 → 编译器 → I/O
+>
+> 跳过上层做下层是浪费工时（如未排除 O(n²) 算法就上 NEON）。
+
+### 3.1  算法层
+
+| 技术 | 何时用 | 注意 |
+|------|--------|------|
+| **复杂度降阶** | O(n²) → O(n log n) | 论文支撑必备 |
+| **预计算 / 表查** | 重复计算 small domain | 内存 vs CPU trade-off |
+| **增量更新** | 输入小幅变化 | 注意状态正确性（如 Couveignes Gray code commit `48c107e`） |
+| **Early reject / short-circuit** | 候选过滤 | 顺序按"廉价检查在前" |
+| **分而治之 / Block** | 数据 > cache | block size = L1 / L2 / L3 三档 |
+| **算法替换** | 旧算法已饱和 | 如 line sieve → lattice sieve (5× 加速) |
+
+### 3.2  数据布局
+
+```cpp
+// Cache line 对齐（M5: 64 B）
+struct alignas(64) HotState {
+    std::atomic<uint64_t> counter;  // 独占一行
+    char pad[64 - sizeof(std::atomic<uint64_t>)];
+};
+
+// SoA 优先（cache-friendly + SIMD-friendly）
+struct Bad_AoS { struct { double x, y, z; } points[N]; };
+struct Good_SoA { double x[N], y[N], z[N]; };
+
+// Packed bitmaps（已用：PackedGF2Matrix）
+using Word = uint64_t;  // 64-bit packed，避免 std::vector<bool> 单 bit overhead
+```
+
+| 技术 | 用途 | 项目内例 |
+|------|------|---------|
+| `alignas(64)` | False sharing / 缓存行独占 | 尚未广泛使用，是 hot-path 改进点 |
+| Packed bit storage | GF(2) 矩阵 | `PackedGF2Matrix` |
+| SoA layout | SIMD-friendly | Relations 当前是 AoS，可重审 |
+| mmap | 超内存数据 | `MmapCSRMatrix`, `OOCRelationStore` |
+| `madvise(MADV_*)` | 提示 kernel 访问模式 | 项目未显式调用，是补丁项 |
+
+### 3.3  指令级（NEON / SME / 内建）
+
+**NEON (128-bit, 已在 M1-M5 通用)**:
+```cpp
+#include <arm_neon.h>
+
+// 例：16-byte 阈值比较（lattice_sieve.collect_candidates 已用）
+uint16x8_t vals = vld1q_u16(&buf[i]);
+uint16x8_t thresh = vdupq_n_u16(eff_thresh);
+uint16x8_t cmp = vcgeq_u16(vals, thresh);
+// Quick reject: 整个 128-bit 比较结果为 0 → 跳过 8 个 lane
+uint64x2_t cmp64 = vreinterpretq_u64_u16(cmp);
+if ((vgetq_lane_u64(cmp64, 0) | vgetq_lane_u64(cmp64, 1)) == 0) continue;
+```
+
+**常用 NEON intrinsics** (附录 B 完整列表):
+
+| 类别 | intrinsic | 用途 |
+|------|-----------|------|
+| Load/Store | `vld1q_u64`, `vst1q_u64` | 16 B 对齐内存 |
+| 整数算术 | `vaddq_u64`, `vsubq_u64`, `vmulq_u32` | 2× u64 / 4× u32 并行 |
+| 位运算 | `veorq_u64`, `vandq_u64`, `vorrq_u64` | GF(2) 矩阵核心 |
+| 比较 | `vcgeq_u16`, `vceqq_u32` | 阈值 / 等值过滤 |
+| 移位 | `vshlq_n_u64`, `vshrq_n_u64` | 位 pack/unpack |
+| 水平归约 | `vaddvq_u64`, `vmaxvq_u32` | 收尾求和/最大 |
+| Pairwise | `vpaddq_u64`, `vpminq_u32` | tree reduction |
+
+**编译器内建**:
+```cpp
+__builtin_expect(cond, 1)         // 等价于 C++20 [[likely]]，旧 lambda/未来 if-init 可用
+__builtin_prefetch(ptr, 0, 3)     // (read, T0) — 拉到 L1
+__builtin_prefetch(ptr, 1, 3)     // (write, T0)
+__builtin_unreachable()           // 帮编译器消除死分支
+__builtin_clz(x)                  // count leading zeros
+__builtin_popcountll(x)           // popcount（M5 有专用指令）
+__builtin_ctzll(x)                // trailing zeros
+```
+
+**C++ 属性**:
+```cpp
+if (x > 0) [[likely]] { ... }
+if (err) [[unlikely]] { return; }
+
+[[gnu::hot]] void hot_function();    // 编译器优先优化 + 同段定位
+[[gnu::cold]] void error_path();     // 移到独立 section
+[[gnu::flatten]] void f();           // 强制 inline 所有 callee
+[[gnu::noinline]] void boundary();   // 反向：稳定函数边界利于 profile
+```
+
+### 3.4  内存子系统
+
+| 技术 | 目的 | 注意 |
+|------|------|------|
+| `__builtin_prefetch` | 隐藏 cache miss | 预取距离需调（8-32 cache line） |
+| `madvise(MADV_SEQUENTIAL)` | 大文件顺序读 | 立即生效 |
+| `posix_madvise(MADV_WILLNEED)` | 预读 | 与 `mmap` 配合 |
+| `mlock` | 防换出 | 谨慎使用 |
+| `_Alignas` / `alignas(64)` | 缓存行对齐 | 内核接口数据结构 |
+| `__restrict__` | 别名优化 | C++ 标准不含，Apple Clang 支持 |
+
+**Apple Silicon 注意**:
+- macOS 默认 16 KB page（vs Linux 4 KB），page table 压力小
+- 没有 transparent huge pages 概念（与 x86 不同）
+- 内存控制器统一寻址（UMA），无 NUMA distance
+
+### 3.5  并行
+
+| 技术 | 何时用 | 注意 |
+|------|--------|------|
+| **ThreadPool** | 同质 task 批处理 | 已有 `gnfs::util::ThreadPool` + work-stealing |
+| **`std::async`** | 一次性异步 | 注意默认 launch policy |
+| **`std::execution::par`** (C++17) | STL 算法并行 | Apple libc++ 部分实现 |
+| **Apple GCD (libdispatch)** | macOS 原生 | M5 上调度更优，但 cross-platform 受限 |
+| **`pthread_set_qos_class_self_np`** | E-core / P-core 调度提示 | macOS 专属 |
+
+**QoS Class 速查**:
+
+```cpp
+#include <pthread/qos.h>
+
+pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);  // 最高，强制 P-core
+pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);    // 高，倾向 P-core
+pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);            // 中，可能 E-core
+pthread_set_qos_class_self_np(QOS_CLASS_BACKGROUND, 0);         // 最低，强制 E-core
+```
+
+**本项目实战策略**:
+- Sieving / Linear algebra 主线程 → `QOS_CLASS_USER_INITIATED`
+- I/O flush / log 后台线程 → `QOS_CLASS_UTILITY`
+- 监控线程 → `QOS_CLASS_BACKGROUND`
+
+### 3.6  编译器优化
+
+当前 CMakeLists 已有:
+- `-O3 -mcpu=native` (Apple Silicon)
+- `-flto=thin` (Apple Clang)
+- `-Wall -Wextra -Wpedantic`
+
+**缺失项 (P0/P1 待补)**:
+
+| 选项 | 收益 | 工作量 |
+|------|------|--------|
+| **PGO** (`-fprofile-instr-generate` → `-fprofile-instr-use`) | 5-20% （热分支预测 + inline 决策） | CMakeLists + scripts 改造（§5） |
+| `-fprofile-use=...` 自动化 | 通常含在 PGO 中 | 同上 |
+| `-fvirtual-function-elimination` | 仅 LTO 下生效 | 已隐含 |
+| `-fno-semantic-interposition` | 防 libc++ symbol interpose | 默认开（Apple Clang） |
+| `-fno-omit-frame-pointer` (Release+samply) | profile 准确性 | trade-off：少 1 register |
+
+**PGO 接入提案**（§5 完整代码）:
+```cmake
+option(GNFS_ENABLE_PGO_GEN "Enable PGO profile generation" OFF)
+option(GNFS_ENABLE_PGO_USE "Enable PGO profile use" OFF)
+set(GNFS_PGO_PROFILE_DIR "${CMAKE_BINARY_DIR}/pgo-profiles" CACHE PATH "...")
+
+if(GNFS_ENABLE_PGO_GEN)
+    add_compile_options(-fprofile-instr-generate)
+    add_link_options(-fprofile-instr-generate)
+endif()
+
+if(GNFS_ENABLE_PGO_USE)
+    add_compile_options(-fprofile-instr-use=${GNFS_PGO_PROFILE_DIR}/merged.profdata)
+    add_link_options(-fprofile-instr-use=${GNFS_PGO_PROFILE_DIR}/merged.profdata)
+endif()
+```
+
+### 3.7  I/O
+
+| 技术 | 目的 | 用法 |
+|------|------|------|
+| `mmap` | 零拷贝 + 按需读 | 已用：`MmapFile`, `MmapCSRMatrix` |
+| `posix_fadvise` | 文件访问模式提示 | Apple 上有限支持 |
+| `O_DIRECT` 等价 | 绕过 page cache | macOS 用 `F_NOCACHE` (`fcntl`) |
+| `setvbuf`/`pubsetbuf` | I/O 缓冲 | 已用：`OOCRelationWriter` |
+| 异步 I/O (`dispatch_io`) | 重叠 I/O 与计算 | 项目未用，重 I/O 场景可选 |
+
+---
+
+## §4  Apple M5 调优手册
+
+### 4.1  M5 微架构关键参数 (速查)
+
+| 参数 | P-core | E-core |
+|------|--------|--------|
+| 数量 | 4 | 6 |
+| 时钟 (max) | 4.61 GHz | ~2.4 GHz |
+| 微架构代号 | 4th-gen Sawtooth | 4th-gen Sawtooth |
+| ISA | ARMv9.2-A | ARMv9.2-A |
+| L1 I | 192 KB | 128 KB |
+| L1 D | 128 KB | 64 KB |
+| L2 (cluster) | 24-32 MB (共享) | ~4 MB (共享) |
+| SLC (chip-wide) | 28 MB+ | 同上 |
+| Cache line | 128 B（注意：macOS 报告 128 B，部分 prefetcher 按 64 B 工作） |
+| SIMD | NEON 128-bit (4× FP32 / 2× FP64 / 16× I8) | NEON 128-bit |
+| SVE | 仅供 SME 协处理器 (M4+) | 同 |
+| SME | ✅ (M4 起, M5 称 Neural Accelerators) | ✅ |
+| 矩阵存储 ZA tile | 512 B per tile (32 tiles for SVL=64 B) | 同 |
+
+**重要校准**: Apple 报告的"P-core L1D = 128 KB" 是单核数据；L2 在 cluster 内共享。L1I = 192 KB 远大于 x86 同档（M5 偏向超大 L1I，对长函数体宽容）。
+
+### 4.2  P-core / E-core 分工实战
+
+```cpp
+#include <pthread/qos.h>
+#include <pthread.h>
+
+// 主线程：sieve / linalg → P-core
+int main() {
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+    // ...
+}
+
+// 后台 I/O / 监控 → E-core
+std::thread bg([](){
+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+    // flush relations, log, ...
+});
+
+// ThreadPool 工作线程 → P-core
+// 在 ThreadPool::start() 中：
+worker_thread = std::thread([this]() {
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+    // run tasks
+});
+```
+
+**禁用 E-core 仅 P-core 跑**（基准测试用）:
+```bash
+# taskpolicy 是 macOS 等价 numactl
+taskpolicy -c utility ./test_perf_targets   # 强制 E-core 跑（测试 E-core 性能）
+taskpolicy -c maintenance ./test_perf_targets  # 同
+# 反向：无法直接强制只 P-core；用 QOS_CLASS_USER_INTERACTIVE 隐式
+```
+
+### 4.3  NEON 128-bit 实战模板
+
+**模板 A: 阈值过滤 + Quick reject** (已用于 `lattice_sieve`)
+```cpp
+#ifdef __ARM_NEON
+#include <arm_neon.h>
+const uint16x8_t thresh_vec = vdupq_n_u16(threshold);
+const size_t vec_end = n & ~size_t(7);
+for (size_t i = 0; i < vec_end; i += 8) {
+    uint16x8_t vals = vld1q_u16(&buf[i]);
+    uint16x8_t cmp = vcgeq_u16(vals, thresh_vec);
+    uint64x2_t cmp64 = vreinterpretq_u64_u16(cmp);
+    if ((vgetq_lane_u64(cmp64, 0) | vgetq_lane_u64(cmp64, 1)) == 0)
+        continue;  // 8-lane reject
+    for (size_t k = 0; k < 8; ++k)
+        if (buf[i+k] >= threshold) process(i+k);
+}
+#endif
+```
+
+**模板 B: GF(2) packed XOR (BL/BW SpMV 核心)**
+```cpp
+// 等价于 y[i] ^= x[i]; 但每周期处理 128 bits = 2 words
+void xor_2words(uint64_t* __restrict y, const uint64_t* __restrict x, size_t n) {
+    const size_t vec_end = n & ~size_t(1);
+    for (size_t i = 0; i < vec_end; i += 2) {
+        uint64x2_t vy = vld1q_u64(&y[i]);
+        uint64x2_t vx = vld1q_u64(&x[i]);
+        vst1q_u64(&y[i], veorq_u64(vy, vx));
+    }
+    if (n & 1) y[vec_end] ^= x[vec_end];
+}
+```
+
+**模板 C: popcount (M5 有 vcnt 专用)**
+```cpp
+// uint8 popcount → uint64 总和
+uint64_t popcount_array(const uint64_t* p, size_t n) {
+    uint64x2_t acc = vdupq_n_u64(0);
+    const size_t vec_end = n & ~size_t(1);
+    for (size_t i = 0; i < vec_end; i += 2) {
+        uint8x16_t bytes = vreinterpretq_u8_u64(vld1q_u64(&p[i]));
+        uint8x16_t pop = vcntq_u8(bytes);  // 16× per-byte popcount
+        acc = vaddq_u64(acc, vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(pop))));
+    }
+    uint64_t total = vgetq_lane_u64(acc, 0) + vgetq_lane_u64(acc, 1);
+    for (size_t i = vec_end; i < n; ++i) total += __builtin_popcountll(p[i]);
+    return total;
+}
+```
+
+### 4.4  SME (Scalable Matrix Extension) — M4+ 矩阵协处理器
+
+> **状态**: 前沿；macOS 文档极少；CADO-NFS 未利用；潜在收益巨大（BL/BW 64×N SpMV）。
+
+**SME 关键事实** (来自 tzakharko/m4-sme-exploration):
+- SVL (Streaming Vector Length) on M4: **64 字节 = 512 bit**
+- ZA 矩阵存储: 32 个 tile，每个 SVL × SVL = 64 × 64 B = 4 KB
+- 仅在 "streaming mode" 下访问；SVE 寄存器是协处理器视图
+- 单独的 throughput / latency 特性（不与主 NEON pipeline 共享）
+
+**适用判定**（不是所有矩阵运算都该上 SME）:
+- ✅ 大矩阵（≥ 256×256）密集乘法
+- ✅ 重复执行（一次 init 摊销）
+- ❌ 稀疏矩阵（SpMV 在 SME 上 IPC 不一定优于 NEON）
+- ❌ 短向量（streaming mode 切换 ~100 cycle overhead）
+
+**对 GNFS 的潜在用法**:
+- ❓ BL/BW SpMV: 矩阵稀疏，但 packed 64×64 block 内是稠密 → 可探索 ZA tile 内积
+- ❓ Murphy E `compute_alpha` (78k 素数循环): 不适合（标量主导）
+- ❓ Couveignes 多素数 Gray code: 不适合（branchy）
+
+**最小可行实验** (FYI):
+```c
+// 需要 clang 18+ + ARMv9.2-A target，启用 -march=armv9-a+sme
+#include <arm_sme.h>
+// SVE intrinsic
+__arm_streaming void sme_kernel(svfloat32_t* a, svfloat32_t* b, svfloat32_t* c) {
+    // FMOPA: outer product accumulate into ZA tile
+    svfloat32_t va = svld1_f32(svptrue_b32(), (float*)a);
+    svfloat32_t vb = svld1_f32(svptrue_b32(), (float*)b);
+    svmopa_za32_f32_m(0, svptrue_b32(), svptrue_b32(), va, vb);
+}
+```
+
+**建议**: §6 路线图 P2，先把 NEON 全部吃干后再考虑。需要专项实验 + reverse-engineered SME PMU 才能验证收益。
+
+### 4.5  分支预测 & ARMv9 新特性
+
+M5 是 4th-gen Sawtooth，相比 M4 增强的分支预测器（Apple 官方说"new branch prediction"）。
+
+**实战意义**:
+- 间接调用（virtual function, function pointer）开销持续下降，但仍 > 直接调用
+- 紧凑分支（if-else 链）预测器表现优于稀疏分支
+- `__builtin_expect` / `[[likely]]` 影响**指令布局**（hot path linear, cold path jump out）
+
+**ARMv9.2-A 新增** (M5 已支持):
+- BFloat16（AI 训练）— GNFS 不需要
+- I8MM (Int8 matrix multiply) — GNFS 不需要
+- MTE (Memory Tagging Extension) — 调试用
+- Speculation Barrier (`SB` instruction) — Spectre 缓解；性能场景**避免**
+
+---
+
+## §5  首战路径：Instruments 闭环 + PGO
+
+### 5.1  阶段划分
+
+```
+S1. CMakeLists PGO 改造          (2-4h)
+S2. PGO 训练脚本                 (2h)
+S3. Instruments tracetemplate 抓取 (3-4h)
+S4. 报告解析 + diff 工具         (2-3h)
+S5. ./scripts/test.sh bench 集成 (2h)
+S6. 首次基线 + PGO 收益评估       (2h)
+─────────────────────────────────
+预计总工时：15-20h（1-2 个会话）
+```
+
+### 5.2  S1: CMakeLists PGO 改造
+
+```cmake
+# ===== PGO Support =====
+option(GNFS_ENABLE_PGO_GEN "Enable PGO instrumentation (training run)" OFF)
+option(GNFS_ENABLE_PGO_USE "Enable PGO optimized build (consume profile)" OFF)
+set(GNFS_PGO_PROFILE_DIR "${CMAKE_BINARY_DIR}/pgo-profiles"
+    CACHE PATH "Directory for PGO .profraw / merged.profdata")
+
+if(GNFS_ENABLE_PGO_GEN AND GNFS_ENABLE_PGO_USE)
+    message(FATAL_ERROR "Cannot enable both PGO_GEN and PGO_USE")
+endif()
+
+if(GNFS_ENABLE_PGO_GEN)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "PGO requires Clang")
+    endif()
+    file(MAKE_DIRECTORY ${GNFS_PGO_PROFILE_DIR})
+    add_compile_options(-fprofile-instr-generate)
+    add_link_options(-fprofile-instr-generate)
+    # LLVM_PROFILE_FILE 在运行时通过 env var 设置：
+    #   LLVM_PROFILE_FILE=${GNFS_PGO_PROFILE_DIR}/%m-%p.profraw
+endif()
+
+if(GNFS_ENABLE_PGO_USE)
+    set(_pgo_data "${GNFS_PGO_PROFILE_DIR}/merged.profdata")
+    if(NOT EXISTS ${_pgo_data})
+        message(FATAL_ERROR "PGO_USE: profile not found at ${_pgo_data}. Run training first.")
+    endif()
+    add_compile_options(-fprofile-instr-use=${_pgo_data})
+    add_link_options(-fprofile-instr-use=${_pgo_data})
+    # 必备：-Wno-profile-instr-out-of-date 防止小代码改动后强失败
+    add_compile_options(-Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled)
+endif()
+```
+
+### 5.3  S2: PGO 训练脚本
+
+`scripts/pgo-train.sh`:
+```bash
+#!/usr/bin/env zsh
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${0}")/.." && pwd)"
+BUILD_GEN="${ROOT}/build-pgo-gen"
+BUILD_USE="${ROOT}/build-pgo-use"
+PROFILE_DIR="${BUILD_GEN}/pgo-profiles"
+
+echo "== Phase 1: Instrumented build =="
+cmake -B "${BUILD_GEN}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DGNFS_ENABLE_PGO_GEN=ON \
+    -DGNFS_PGO_PROFILE_DIR="${PROFILE_DIR}"
+make -C "${BUILD_GEN}" -j$(sysctl -n hw.ncpu) test_factor_with_kleinjung test_lattice_sieve test_linalg
+
+echo "== Phase 2: Training runs =="
+mkdir -p "${PROFILE_DIR}"
+export LLVM_PROFILE_FILE="${PROFILE_DIR}/%m-%p.profraw"
+
+# 训练样本：选择能覆盖主要 code path 的工作负载
+# - test_factor_with_kleinjung: 完整 GNFS pipeline (27/40-bit)
+# - test_lattice_sieve: sieve 热点
+# - test_linalg: BL/BW 热点
+"${BUILD_GEN}/test_factor_with_kleinjung"
+"${BUILD_GEN}/test_lattice_sieve"
+"${BUILD_GEN}/test_linalg"
+
+echo "== Phase 3: Merge profiles =="
+xcrun llvm-profdata merge -output="${PROFILE_DIR}/merged.profdata" "${PROFILE_DIR}"/*.profraw
+
+echo "== Phase 4: PGO-optimized build =="
+cmake -B "${BUILD_USE}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DGNFS_ENABLE_PGO_USE=ON \
+    -DGNFS_PGO_PROFILE_DIR="${PROFILE_DIR}"
+make -C "${BUILD_USE}" -j$(sysctl -n hw.ncpu)
+
+echo "== Done. PGO-optimized binaries in ${BUILD_USE}/ =="
+echo "Compare:"
+echo "  time ${ROOT}/build/test_factor_with_kleinjung   # baseline"
+echo "  time ${BUILD_USE}/test_factor_with_kleinjung    # PGO"
+```
+
+### 5.4  S3: Instruments tracetemplate 自动化
+
+创建 `scripts/perf/cpu-counters.tracetemplate`（GUI 中导出）后:
+
+```bash
+# scripts/profile-cpu.sh
+#!/usr/bin/env zsh
+set -euo pipefail
+BIN="${1:?usage: $0 <binary> [args...]}"
+shift
+OUT="${ROOT}/bench/results/$(date +%Y-%m-%d-%H%M%S)-$(basename ${BIN}).trace"
+mkdir -p "$(dirname ${OUT})"
+
+xctrace record \
+    --template '/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Instruments/Templates/CPU Counters.tracetemplate' \
+    --launch "${BIN}" "$@" \
+    --output "${OUT}"
+
+# 导出 XML 供后续解析
+xctrace export --input "${OUT}" --xpath '/trace-toc/run/instrument' --output "${OUT}.xml"
+echo "Trace: ${OUT}"
+echo "XML:   ${OUT}.xml"
+```
+
+### 5.5  S4: 报告解析 + diff
+
+`scripts/perf/parse-trace.py` (Python 3, 解析 xctrace XML):
+```python
+#!/usr/bin/env python3
+"""Parse xctrace export and emit markdown summary."""
+import sys, xml.etree.ElementTree as ET
+from pathlib import Path
+
+def parse_counters(xml_path: Path) -> dict:
+    tree = ET.parse(xml_path)
+    counters = {}
+    for row in tree.iter('row'):
+        ev = row.findtext('event')
+        val = row.findtext('value')
+        if ev and val:
+            counters[ev] = int(val.replace(',', ''))
+    return counters
+
+def derived_metrics(c: dict) -> dict:
+    return {
+        'IPC':              c.get('INST_ALL', 0) / max(c.get('CORE_ACTIVE_CYCLE', 1), 1),
+        'L1D_miss_rate':    c.get('L1D_CACHE_MISS_LD', 0) / max(c.get('INST_INT_LD', 1), 1),
+        'BR_mispred_rate':  c.get('BRANCH_MISPRED_NONSPEC', 0) / max(c.get('INST_BRANCH', 1), 1),
+        'iTLB_miss_per_inst': c.get('L2_TLB_MISS_INST', 0) / max(c.get('INST_ALL', 1), 1),
+    }
+
+if __name__ == '__main__':
+    if len(sys.argv) == 2:
+        c = parse_counters(Path(sys.argv[1]))
+        m = derived_metrics(c)
+        for k, v in m.items():
+            print(f"{k:30s}: {v:.4f}")
+    elif len(sys.argv) == 3:  # diff mode
+        a = derived_metrics(parse_counters(Path(sys.argv[1])))
+        b = derived_metrics(parse_counters(Path(sys.argv[2])))
+        print(f"| Metric | Before | After | Δ% |")
+        print(f"|---|---|---|---|")
+        for k in a:
+            delta = (b[k] - a[k]) / a[k] * 100
+            print(f"| {k} | {a[k]:.4f} | {b[k]:.4f} | {delta:+.2f}% |")
+```
+
+### 5.6  S5: 集成到 test.sh
+
+`scripts/test.sh` 增加新子命令:
+```bash
+# 在 case 中：
+case "$cmd" in
+    # ... existing ...
+    pgo-train)
+        exec "${SCRIPT_DIR}/pgo-train.sh" "$@"
+        ;;
+    profile)
+        # ./scripts/test.sh profile <test_name>
+        local test_bin="${BUILD_DIR}/test_${1:-factor_with_kleinjung}"
+        exec "${SCRIPT_DIR}/perf/profile-cpu.sh" "${test_bin}" "${@:2}"
+        ;;
+esac
+```
+
+### 5.7  S6: 首次基线
+
+执行顺序:
+```bash
+# 1. baseline (无 PGO)
+cd /Users/mayiding/Desktop/GitMy/GNFS
+./scripts/test.sh build  # 现有 Release build
+time ./build/test_factor_with_kleinjung   # 记录 wall time
+./scripts/test.sh profile factor_with_kleinjung  # 抓 trace
+python3 scripts/perf/parse-trace.py bench/results/<timestamp>.trace.xml > bench/results/<timestamp>-baseline.md
+
+# 2. PGO build
+./scripts/test.sh pgo-train
+
+# 3. PGO profile
+./scripts/test.sh profile factor_with_kleinjung
+# trace 路径同上，新 timestamp
+python3 scripts/perf/parse-trace.py bench/results/<new>.trace.xml > bench/results/<new>-pgo.md
+
+# 4. diff
+python3 scripts/perf/parse-trace.py \
+    bench/results/<timestamp>-baseline.trace.xml \
+    bench/results/<new>-pgo.trace.xml \
+    > bench/results/<date>-pgo-impact.md
+```
+
+**期望 PGO 收益** (基于行业 baseline):
+- 整体 wall time: -5% 至 -20%
+- IPC: +5% 至 +15%
+- Branch mispred rate: -10% 至 -40%
+- Code size: ±3%（hot inline 增 / cold 缩）
+
+**判定标准** (是否合入):
+- 必要: wall time 不退化（小幅波动 ±2% 接受）
+- 充分: 至少一个 derived metric 提升 ≥ 5%
+- 风险: PGO 二进制对训练样本 overfit — 必须用**未参与训练**的样本（如 test_gnfs_bench）验证
+
+---
+
+## §6  本项目优化路线图
+
+### P0 — 现在 (本会话起)
+
+- ✅ **本文档** (performance-doctrine.md)
+- ⏳ **§5 完整实施**: Instruments 闭环 + PGO 接入（15-20h）
+- ⏳ 首次 baseline 报告: `bench/results/2026-05-12-baseline.md`
+- ⏳ PGO 实测收益评估，决定是否默认开启
+
+### P1 — 数据驱动的下一阶段 (基于 §5 profile 数据)
+
+按 profile 报告的 top-down 类别决定：
+
+- 若 **MemBound > 30%**:
+  - 热点全面 `__builtin_prefetch` 审计
+  - HotPath 数据结构 64 B 对齐
+  - SoA 重审 (Relations / FactorBase)
+- 若 **BadSpec > 10%**:
+  - 热点循环加 `[[likely]]/[[unlikely]]`（基于 profile，不盲加）
+  - branchless 替代
+- 若 **CoreBound > 30%**:
+  - NEON 全面化: SpMV / Couveignes Gray code / Murphy alpha
+  - ILP 提升：unroll / 多累加器
+
+### P2 — 大工程 (前提：P1 收益打满)
+
+- **BlockWiedemann 真正 block BM** (Coppersmith/Thomé lingen, ~1000 行)
+  - BACKLOG 最大遗留项；当前 streaming scalar BM × 64 慢 64×
+  - 仅大矩阵 (≥200K) 启用，但收益大
+- **SME 探索性应用** (BL/BW 64×N SpMV)
+  - 高风险高回报；先做 NEON 极限版作为对照
+  - 需要专项实验 + 小规模验证
+
+### P3 — 长期/低优先
+
+- E-core 后台分流（QoS Class 注入 ThreadPool）
+- 内存使用减半（peak RAM 优化）
+- 跨平台 Linux 同等优化（CI runners）
+
+---
+
+## §7  纪律与禁忌
+
+### 7.1  禁止
+
+1. **盲改 compiler flag** — 必须知道每个 flag 的影响 + 用对照测试证明
+2. **未 profile 加 `[[likely]]/[[unlikely]]`** — 错误的预测比无预测更糟
+3. **抄网上 micro-benchmark** — 缺乏上下文的 benchmark 几乎都有问题（搜索 Hyrum's Law of Benchmarks）
+4. **release+NDEBUG 跑性能基准而不验证 Debug+sanitizers** — CLAUDE.md 已有明确警告
+5. **改完不跑测试就 push** — 性能 commit 也是 commit，必须通过 `./scripts/test.sh module <m>` 或更高
+6. **在 E-core 跑基准** — 默认 macOS 调度可能把进程放到 E-core，必须显式 QoS
+
+### 7.2  必做
+
+1. **每个 perf commit 附实测数据** — 至少 wall time before/after，PMU 数据加分
+2. **基准跑前预热** — 至少 2 轮丢弃（cache + branch predictor + thermal）
+3. **基准用 P-core 强制** — `pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0)` 或 wrapper
+4. **PGO 训练样本 ≠ 评估样本** — 防 overfit
+5. **改完看 disassembly** — `objdump -d` 或 `Compiler Explorer` 重点确认热点
+6. **保留 trace 文件** — `bench/results/` 长期保存，便于历史回归
+
+### 7.3  红线 (违反则回滚)
+
+- 任何提升 < 2% 但增加复杂度的改动 — 不值得
+- 任何让 sanitizers 报新警告的改动 — 不安全
+- 任何破坏跨平台 (Linux CI) 的改动 — 必须有 `#ifdef` 保护
+
+---
+
+## 附录 A  M5 PMU Event 速查表
+
+> 来源: tzakharko / blog.bugsiki.dev / blog.clf3.org（reverse-engineered，非官方）
+
+| Event 名 | 描述 | 类型 |
+|---------|------|------|
+| `CORE_ACTIVE_CYCLE` | 活跃核周期 | Fixed |
+| `INST_ALL` | 总退役指令 | Fixed |
+| `INST_BRANCH` | 分支指令数 | Configurable |
+| `INST_BRANCH_TAKEN` | 取分支 | Configurable |
+| `BRANCH_COND_MISPRED_NONSPEC` | 条件分支误判 | Configurable |
+| `BRANCH_INDIR_MISPRED_NONSPEC` | 间接分支误判 | Configurable |
+| `BRANCH_RET_MISPRED_NONSPEC` | RET 误判 | Configurable |
+| `L1I_TLB_MISS` | iTLB miss | Configurable |
+| `L1D_TLB_MISS` | dTLB miss | Configurable |
+| `L1D_CACHE_MISS_LD` | L1D load miss | Configurable |
+| `L1D_CACHE_MISS_ST` | L1D store miss | Configurable |
+| `L1I_CACHE_MISS_DEMAND` | L1I miss | Configurable |
+| `L2_CACHE_MISS_LD` | L2 load miss | Configurable |
+| `L2_TLB_MISS_INST` | L2 iTLB miss | Configurable |
+| `L2_TLB_MISS_DATA` | L2 dTLB miss | Configurable |
+| `INST_INT_LD` | 整数 load | Configurable |
+| `INST_INT_ST` | 整数 store | Configurable |
+| `INST_INT_ALU` | 整数 ALU | Configurable |
+| `INST_SIMD_LD` | SIMD load | Configurable |
+| `INST_SIMD_ST` | SIMD store | Configurable |
+| `INST_NEON` | NEON 指令 | Configurable |
+| `INST_FP` | 浮点指令 | Configurable |
+| `MAP_DISPATCH_BUBBLE` | 前端 dispatch bubble | Configurable |
+| `ATOMIC_OR_EXCLUSIVE_SUCC` | 原子操作成功 | Configurable |
+| `ATOMIC_OR_EXCLUSIVE_FAIL` | 原子操作失败（争用） | Configurable |
+
+**关键计算**:
+- IPC = `INST_ALL / CORE_ACTIVE_CYCLE`
+- L1D miss rate = `L1D_CACHE_MISS_LD / INST_INT_LD`
+- Branch mispred rate (cond) = `BRANCH_COND_MISPRED_NONSPEC / INST_BRANCH`
+- Front-end bound (proxy) = `MAP_DISPATCH_BUBBLE / CORE_ACTIVE_CYCLE`
+
+## 附录 B  NEON Intrinsics 速查表（GNFS 相关子集）
+
+| 用途 | Intrinsic | Lane 形态 |
+|------|-----------|-----------|
+| **Load/Store** |
+| 16B load | `vld1q_u64`, `vld1q_u32`, `vld1q_u16`, `vld1q_u8` | 2×u64, 4×u32, 8×u16, 16×u8 |
+| 16B store | `vst1q_*` (同上) | 同 |
+| Aligned load | `vld1q_lane_u64` (interleaved) | per-lane |
+| **整数算术** |
+| Add | `vaddq_u64`, `vaddq_u32`, `vaddq_u16`, `vaddq_u8` | 同 |
+| Sub | `vsubq_*` | 同 |
+| Mul (low) | `vmulq_u32` | 4×u32 |
+| Saturating add | `vqaddq_u8`, `vqaddq_u16` | 饱和 |
+| **位运算** |
+| AND | `vandq_u64` | 128-bit |
+| OR | `vorrq_u64` | 同 |
+| XOR | `veorq_u64` | 同 (GF(2) 主力) |
+| NOT | `vmvnq_u32` | 同 |
+| AND-NOT | `vbicq_u64` (A AND NOT B) | 同 |
+| **比较** |
+| Equal | `vceqq_u64`, `vceqq_u32`, `vceqq_u16`, `vceqq_u8` | mask |
+| Greater/equal | `vcgeq_u32` etc. | mask |
+| **移位** |
+| Left shift | `vshlq_n_u64` (constant), `vshlq_u64` (variable) | 同 |
+| Right shift | `vshrq_n_u64`, `vshrq_u64` | 同 |
+| **水平归约** |
+| Sum all lanes | `vaddvq_u64` (2 lanes), `vaddvq_u32` (4 lanes) | scalar 输出 |
+| Max all lanes | `vmaxvq_u32`, `vmaxvq_u16` | scalar |
+| Pairwise add | `vpaddq_u64`, `vpaddq_u32` | 同宽度 |
+| Pairwise widen | `vpaddlq_u8` (8→16), `vpaddlq_u16` (16→32) | 升宽 |
+| **位计数** |
+| popcount per byte | `vcntq_u8` | 16×u8 |
+| 转 u64 总和 | `vaddvq_u64(vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(x))))` | scalar |
+| **类型转换** |
+| reinterpret | `vreinterpretq_u64_u8` 等 | bit-identical |
+| 拓宽 | `vmovl_u8` (8→16), `vmovl_u16` (16→32) | half→full |
+| 收窄 | `vmovn_u32` (32→16), `vmovn_u16` (16→8) | full→half |
+
+## 附录 C  参考资料
+
+### 微架构与硬件
+- [Apple M5 Wikipedia](https://en.wikipedia.org/wiki/Apple_M5)
+- [Apple unleashes M5 (newsroom, 2025-10)](https://www.apple.com/newsroom/2025/10/apple-unleashes-m5-the-next-big-leap-in-ai-performance-for-apple-silicon/)
+- [M5 Apple Silicon: It's All About the Cache And Tensors (Creative Strategies)](https://creativestrategies.com/research/m5-apple-silicon-its-all-about-the-cache-and-tensors/)
+- [Benchmarking M-series Apple CPUs (ETH Zurich, 2025)](https://acl.inf.ethz.ch/teaching/fastcode/2025/benchmarking_m_series_apple_cpus.pdf)
+
+### Apple PMU & 性能分析
+- [PMU Counters on Apple Silicon (Bugsik)](https://blog.bugsiki.dev/posts/apple-pmu/)
+- [Utilizing PMU Event Counters on Apple M3 and M4 (clf3)](https://blog.clf3.org/post/pmu-event-counters/)
+- [Quick Hardware Performance Counters on macOS ARM64 (Perpetually Curious)](https://lambdafoo.com/posts/2026-03-25-mperf-hardware-counters-macos.html)
+- [Counting cycles and instructions on the Apple M1 (Daniel Lemire)](https://lemire.me/blog/2021/03/24/counting-cycles-and-instructions-on-the-apple-m1-processor/)
+- [macos-perf (siedentop, GitHub)](https://github.com/siedentop/macos-perf)
+
+### SME / 矩阵协处理器
+- [M4 SME Exploration (tzakharko)](https://github.com/tzakharko/m4-sme-exploration)
+- [SME Overview (tzakharko)](https://github.com/tzakharko/m4-sme-exploration/blob/main/reports/01-sme-overview.md)
+- [Hello SME! (arXiv:2409.18779)](https://ar5iv.labs.arxiv.org/html/2409.18779)
+- [Hello SME Documentation (Jena)](https://scalable.uni-jena.de/opt/sme/index.html)
+
+### Instruments / xctrace
+- [Using Xcode Instruments for C++ CPU profiling (jviotti)](https://www.jviotti.com/2024/01/29/using-xcode-instruments-for-cpp-cpu-profiling.html)
+- [Optimize CPU performance with Instruments — WWDC25 #308](https://developer.apple.com/videos/play/wwdc2025/308/)
+- [asitop (tlkh)](https://github.com/tlkh/asitop)
+
+### NFS 算法
+- [CADO-NFS Official](https://cado-nfs.gitlabpages.inria.fr/)
+- [CADO-NFS Repository](https://github.com/cado-nfs/cado-nfs)
+- [Lattice Sieve Field Selection of Cado-NFS (Bai/Filbois/Thomé)](https://www.researchgate.net/publication/339683240_The_Lattice_Sieve_Field_Selection_of_Cado-NFS)
+- [CADO-NFS Talk (Zimmermann)](https://members.loria.fr/PZimmermann/talks/cado.pdf)
+
+### C++ 优化
+- [Agner Fog - Software Optimization Resources](https://www.agner.org/optimize/)
+- [Optimizing software in C++ (Agner Fog)](https://www.agner.org/optimize/optimizing_cpp.pdf)
+- [Performance Analysis and Tuning on Modern CPUs (NIU)](https://faculty.cs.niu.edu/~winans/notes/patmc.pdf)
+- [Intel TMA Cookbook 2025-4](https://www.intel.com/content/www/us/en/docs/vtune-profiler/cookbook/2025-4/top-down-microarchitecture-analysis-method.html)
+
+### 数论库
+- [The GNU MP Bignum Library](https://gmplib.org/)
+- [GMP 6.3 News](https://gmplib.org/gmp6.3)
+
+---
+
+**END of Performance Doctrine v1.0**
+
+*下一步: 实施 §5 的 S1-S6，建立 PGO + Instruments 闭环；改动产生的所有 commit 必须援引本文档某一条铁律。*
