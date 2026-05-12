@@ -412,56 +412,6 @@ private:
     size_t size_ = 0;
 };
 
-/// 64 位块矩阵，用于 Block Lanczos
-/// 每个"元素"是一个 64 位块
-class BlockMatrix {
-public:
-    BlockMatrix() = default;
-
-    BlockMatrix(size_t num_rows, size_t num_block_cols)
-        : data_(num_rows * num_block_cols, 0)
-        , num_rows_(num_rows)
-        , num_block_cols_(num_block_cols) {}
-
-    /// 访问块
-    [[nodiscard]] uint64_t& block(size_t row, size_t col) {
-        return data_[row * num_block_cols_ + col];
-    }
-
-    [[nodiscard]] uint64_t block(size_t row, size_t col) const {
-        return data_[row * num_block_cols_ + col];
-    }
-
-    /// 获取行数
-    [[nodiscard]] size_t num_rows() const noexcept {
-        return num_rows_;
-    }
-
-    /// 获取块列数
-    [[nodiscard]] size_t num_block_cols() const noexcept {
-        return num_block_cols_;
-    }
-
-    /// 清空
-    void clear() {
-        std::fill(data_.begin(), data_.end(), 0);
-    }
-
-    /// 获取底层数据
-    [[nodiscard]] const std::vector<uint64_t>& data() const noexcept {
-        return data_;
-    }
-
-    [[nodiscard]] std::vector<uint64_t>& data() noexcept {
-        return data_;
-    }
-
-private:
-    std::vector<uint64_t> data_;
-    size_t num_rows_ = 0;
-    size_t num_block_cols_ = 0;
-};
-
 /// CSR (Compressed Sparse Row) read-only view of a SparseMatrix.
 /// Packs all row indices into a single contiguous array for optimal SpMV performance.
 /// Construct from a SparseMatrix once, then use for repeated SpMV.

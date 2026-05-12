@@ -89,6 +89,7 @@ public:
     void set_region(const SieveRegion& region) {
         region_ = region;
         sieve_array_.resize(region_.size(), 0);
+        last_init_val_ = 0;  // 重置:不残留上次 SQ 的 estimate
     }
 
     /// 设置最大线程数（0 = auto, 1 = single-threaded）

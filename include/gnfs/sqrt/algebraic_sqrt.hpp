@@ -148,12 +148,11 @@ public:
             // Fall through to Couveignes as alternative method.
         }
 
-        if (config_.use_couveignes) {
-            // Fall back to Couveignes algorithm
-            return compute_couveignes(ab_pairs, nf);
-        } else {
-            return compute_heuristic(ab_pairs, nf);
-        }
+        // Couveignes is the only correct algorithm in this fallback chain.
+        // The old `compute_heuristic` branch (product^((N+1)/2)) was
+        // mathematically invalid for composite N and always returned failure;
+        // it has been removed.
+        return compute_couveignes(ab_pairs, nf);
     }
 
     /// 简化版：假设乘积已经是数域元素
@@ -215,19 +214,6 @@ private:
         return result;
     }
 
-    /// 启发式后备（已废弃——数学不正确）
-    /// product^((N+1)/2) 仅对素数 p ≡ 3 (mod 4) 的 Z/pZ 有效，
-    /// 对合数 N 的数域环 (Z/NZ)[α]/f(α) 没有数学依据。
-    /// 此方法现在始终返回失败。
-    [[nodiscard]] AlgebraicSqrtResult compute_heuristic(
-            const std::vector<std::pair<int64_t, uint64_t>>& /* ab_pairs */,
-            const NumberField& /* nf */) const {
-
-        AlgebraicSqrtResult result;
-        result.error = "Heuristic sqrt via elem^((N+1)/2) is mathematically "
-                       "invalid for composite N; use Hensel or Couveignes";
-        return result;
-    }
 };
 
 /// 便捷函数：计算代数平方根
