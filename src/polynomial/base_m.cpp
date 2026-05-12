@@ -32,11 +32,56 @@ IntPolynomial construct_base_m_poly(const Integer& n, const Integer& m, uint32_t
 
 /// Check if integer polynomial f is likely irreducible over Q[x]
 /// by testing irreducibility mod several small primes (Rabin test).
+/// Eisenstein criterion 快速判定:
+/// 若存在素数 p 使得:
+///   - p ∤ a_d (leading)
+///   - p | a_i for i = 0, ..., d-1
+///   - p² ∤ a_0
+/// 则 f 在 Q 上不可约。
+bool eisenstein_check(const IntPolynomial& f) {
+    uint32_t d = f.degree();
+    if (d <= 1) return false;
+
+    // 取 a_0 的小素因子作候选(满足 p | a_0 是必要条件)
+    Integer a0 = f[0];
+    if (a0.is_zero()) return false;
+    if (a0.is_negative()) a0.negate();
+
+    // 试小素数 p 是否满足完整 Eisenstein
+    constexpr uint64_t small_primes[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31};
+    for (uint64_t p : small_primes) {
+        Integer ip(static_cast<uint64_t>(p));
+
+        // p ∤ a_d
+        if ((f[d] % ip).is_zero()) continue;
+
+        // p | a_i for 0 ≤ i < d
+        bool all_div = true;
+        for (uint32_t i = 0; i < d; ++i) {
+            if (!(f[i] % ip).is_zero()) { all_div = false; break; }
+        }
+        if (!all_div) continue;
+
+        // p² ∤ a_0
+        Integer p_sq = ip.clone();
+        p_sq *= ip;
+        if ((f[0] % p_sq).is_zero()) continue;
+
+        return true;  // Eisenstein with this p → irreducible
+    }
+    return false;
+}
+
 /// If f mod p is irreducible over GF(p) for any prime p (not dividing
 /// the leading coefficient), then f is definitely irreducible over Q.
 bool check_irreducible_over_Q(const IntPolynomial& f) {
     uint32_t d = f.degree();
     if (d <= 1) return true;
+
+    // Eisenstein 准则:满足时直接判定不可约,极快(d 次除法)。
+    // base-m 多项式形如 f(m) = N,系数 (a_0, a_1, ..., a_d) 通常没明显
+    // 公共素因子,Eisenstein 命中率不高,但作为 hot-path 早出。
+    if (eisenstein_check(f)) return true;
 
     // 15 primes: for degree 6, false-negative rate ≈ (5/6)^15 ≈ 6.5%.
     // Combined with 11 m-perturbations, overall miss rate is negligible.
