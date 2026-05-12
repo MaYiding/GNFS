@@ -467,16 +467,20 @@ private:
             const Integer& m,
             uint32_t d) {
 
-        std::vector<Integer> coeffs = base_m_expansion(n, m, d, ad);
+        auto coeffs_opt = base_m_expansion(n, m, d, ad);
+        if (!coeffs_opt) return std::nullopt;
 
-        IntPolynomial f(std::move(coeffs));
+        IntPolynomial f(std::move(*coeffs_opt));
         f.normalize();
 
         return f;
     }
 
-    /// Base-m 展开（指定领导系数）
-    [[nodiscard]] std::vector<Integer> base_m_expansion(
+    /// Base-m 展开（指定领导系数）。
+    /// 返回 nullopt 当展开后仍有非零余数 —— 表示 a_d 选择让 n - a_d·m^d 无法
+    /// 在 [-m/2, m/2]^d 内表示;静默把 carry 注入 a_{d-1} 会让 a_{d-1} 远超 m
+    /// (违反 Stage 1 的 |a_{d-1}| ≤ m 选择标准),Stage 1 应改选下一个 m。
+    [[nodiscard]] std::optional<std::vector<Integer>> base_m_expansion(
             const Integer& n,
             const Integer& m,
             uint32_t d,
@@ -513,9 +517,11 @@ private:
         // 最高次系数
         coeffs[d] = ad.clone();
 
-        // 如果有剩余，添加到次高次系数
+        // Reject the (a_d, m) pair if expansion didn't terminate cleanly.
+        // The historical fix silently merged remainder into coeffs[d-1] which
+        // can produce a_{d-1} with magnitude many times larger than m.
         if (!remainder.is_zero()) {
-            coeffs[d - 1] += remainder;
+            return std::nullopt;
         }
 
         return coeffs;
