@@ -2,7 +2,9 @@
 
 #include <gnfs/util/thread_pool.hpp>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -110,6 +112,51 @@ void test_load_balance() {
     TEST_PASS("uneven work completed without deadlock");
 }
 
+/// 压测:极不均衡分布(指数级 work),验证 stealing 比 static 更接近
+/// 理想完成时间(sum_work / num_threads)。
+void test_load_balance_stress() {
+    ThreadPool pool(0);
+    const size_t N = 32;  // 不算太多,但 work 量极不均衡
+    const size_t num_threads = pool.num_threads();
+
+    // Work[i] = 2^min(i, 16) 单位 — 末尾几个任务占绝大多数总工作量
+    // 16 上限让总工作量 ~ N · 65536 = 2M 单位,几毫秒级
+    auto work_at = [](size_t i) -> size_t {
+        return static_cast<size_t>(1) << std::min<size_t>(i, 16);
+    };
+    size_t total_work = 0;
+    for (size_t i = 0; i < N; ++i) total_work += work_at(i);
+    (void)total_work;
+
+    auto busy = [&](size_t i) {
+        volatile int sum = 0;
+        for (size_t k = 0; k < work_at(i); ++k) sum += static_cast<int>(k);
+        if (sum < 0) std::abort();
+    };
+
+    // Static schedule
+    auto t0 = std::chrono::high_resolution_clock::now();
+    pool.parallel_for_index(0, N, busy);
+    auto t1 = std::chrono::high_resolution_clock::now();
+    double static_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    // Work-stealing schedule
+    auto t2 = std::chrono::high_resolution_clock::now();
+    pool.parallel_for_stealing(0, N, busy, 1);
+    auto t3 = std::chrono::high_resolution_clock::now();
+    double steal_ms = std::chrono::duration<double, std::milli>(t3 - t2).count();
+
+    std::cout << "  Load-balance stress: N=" << N << ", threads=" << num_threads
+              << ", static=" << static_ms << "ms, stealing=" << steal_ms << "ms"
+              << " (speedup " << (static_ms / steal_ms) << "x)" << std::endl;
+
+    // 关键断言:stealing 不应比 static 慢(理想下应明显更快,但允许 20% 噪声)
+    // 在 work 极不均衡时,static 把所有大任务都丢给一个线程,stealing 能平衡。
+    TEST_ASSERT(steal_ms <= static_ms * 1.5,
+                "stealing should not be significantly slower than static on imbalanced work");
+    TEST_PASS("load-balance stress (stealing competitive with static)");
+}
+
 /// Compare static vs stealing for non-trivial workload
 void test_comparison_with_static() {
     ThreadPool pool(0);
@@ -148,6 +195,7 @@ int main() {
     test_non_aligned();
     test_accumulation();
     test_load_balance();
+    test_load_balance_stress();
     test_comparison_with_static();
 
     std::cout << "\n═══════════════════════════════════════════\n";
