@@ -39,16 +39,21 @@ public:
     explicit CouveignesSqrt(const Config& config)
         : config_(config) {}
 
-    /// Compute square root of product of (a_i + b_i * alpha) elements
+    /// Compute square root of product of (a_i - b_i * alpha) elements.
+    /// Note: GNFS convention is `a - b*α` (see CLAUDE.md "元素表示"),
+    /// implementation in compute_product_mod_p() uses (a - b*x) factors.
     /// @param ab_pairs Vector of (a, b) pairs whose product's sqrt we want
     /// @param nf Number field
-    /// @return Square root as number field element, or empty if failed
+    /// @return Square root as number field element, or empty if failed.
+    ///   Returns nullopt for empty input — the linear-algebra layer should
+    ///   never produce an empty dependency, and silently returning 1 would
+    ///   mask a downstream bug (caller would compute trivial gcd(±1, N)).
     [[nodiscard]] std::optional<NumberFieldElement> compute(
             const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
             const NumberField& nf) const {
 
         if (ab_pairs.empty()) {
-            return nf.one();
+            return std::nullopt;
         }
 
         uint32_t d = nf.degree();
@@ -565,7 +570,7 @@ public:
 private:
     Config config_;
 
-    /// Compute product of (a_i + b_i * x) mod f(x) mod p
+    /// Compute product of (a_i - b_i * x) mod f(x) mod p (GNFS a - b·α convention)
     [[nodiscard]] ModularPoly compute_product_mod_p(
             const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
             const std::vector<uint64_t>& f,

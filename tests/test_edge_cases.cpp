@@ -1543,13 +1543,13 @@ void test_couveignes_edge_cases() {
     auto ctx = BaseMSelector::create_context(n, poly_result);
     NumberField nf(ctx);
 
-    // Test 1: Empty ab_pairs → returns nf.one()
+    // Test 1: Empty ab_pairs → returns nullopt (linalg layer should never
+    // produce an empty dependency; silently returning 1 would mask bugs by
+    // making the caller compute trivial gcd(±1, N)).
     {
         CouveignesSqrt cs;
         auto result = cs.compute({}, nf);
-        assert(result.has_value());
-        // one() should have coeff(0)=1
-        assert(result->coeff(0) == Integer(int64_t(1)));
+        assert(!result.has_value());
     }
 
     // Test 2: Default config construction
