@@ -1028,7 +1028,10 @@ FactorResult Pipeline::run() {
 
     // Check for perfect power
     if (mpz_perfect_power_p(n_.get_mpz())) {
-        for (unsigned long exp = 2; exp <= 64; ++exp) {
+        // exp upper bound: for any perfect power n = b^e with b ≥ 2,
+        // we have e ≤ log2(n) = n_bits. Capping at 64 missed N = 2^65 etc.
+        const unsigned long exp_max = static_cast<unsigned long>(stats_.n_bits);
+        for (unsigned long exp = 2; exp <= exp_max; ++exp) {
             Integer root;
             if (mpz_root(root.get_mpz(), n_.get_mpz(), exp)) {
                 Integer check;
