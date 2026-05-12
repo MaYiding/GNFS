@@ -35,7 +35,10 @@ struct CofactorizerConfig {
     uint64_t large_prime_bound = 0;      // 大素数上界 (0 = 使用因子基设置)
     bool allow_1lp = true;               // 允许 1 个大素数
     bool allow_2lp = true;               // 允许 2 个大素数
-    bool allow_3lp = false;              // 允许 3 个大素数（通常禁用）
+    // 3LP 当前未被 RelationFilter 支持(filter.hpp 显式丢弃 3LP+ 关系)。
+    // 配置保留以便将来实现 chain merge,但实际无效。不要设为 true 否则
+    // 关系会过 cofactor 但被 filter 丢弃,浪费 cofactor 工作。
+    bool allow_3lp = false;
     size_t max_factorization_attempts = 10000;  // Pollard rho 最大尝试次数
 };
 
