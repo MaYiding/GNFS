@@ -35,6 +35,12 @@ public:
     explicit FactorBaseBuilder(const PolynomialContext& ctx);
     FactorBase build(uint32_t rational_bound, uint32_t algebraic_bound);
 
+public:
+    // Find roots of f(x) ≡ 0 mod p using Cantor-Zassenhaus algorithm
+    // (公开为静态工具,主要给测试用 — p<64 走 brute-force,p≥64 走 CZ
+    // 含 random splitting 多根分离)。
+    static std::vector<uint32_t> find_roots_mod_p(const PolynomialContext& ctx, uint32_t p);
+
 private:
     PolynomialContext ctx_;
 
@@ -42,10 +48,6 @@ private:
     static void find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx, uint32_t bound, uint8_t log_scale);
     static void find_algebraic_primes_range(FactorBase& fb, const PolynomialContext& ctx,
                                              uint32_t min_p, uint32_t max_p, uint8_t log_scale);
-
-    /// Find roots of f(x) ≡ 0 mod p using Cantor-Zassenhaus algorithm
-    /// O(d^2 * log p) instead of O(p) brute force
-    static std::vector<uint32_t> find_roots_mod_p(const PolynomialContext& ctx, uint32_t p);
 
     /// Extract roots from a polynomial known to be a product of distinct linear factors
     static std::vector<uint32_t> extract_roots_from_poly(
