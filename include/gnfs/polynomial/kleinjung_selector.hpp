@@ -74,9 +74,12 @@ struct KleinjungParams {
             static_cast<double>(gp.algebraic_bound), 1e6);
         kp.murphy_params.smoothness_bound = gp.algebraic_bound;
 
-        // sample_points 随 digits 缩放: 更多点 → 更精确但更慢
-        uint32_t sp = static_cast<uint32_t>(std::min(static_cast<size_t>(5000), gp.digits * 50));
-        kp.murphy_params.sample_points = std::max(500u, sp);
+        // sample_points 随 digits 连续缩放:digits·30 + 200,clamp [100, 5000]。
+        // 原公式 max(500, min(5000, digits·50)) 在 digits∈[8,10] 处都 clamp 到 500,
+        // digits=11 跳到 550,人为台阶。连续公式让小 N 也按比例少采样。
+        double sp_cont = static_cast<double>(gp.digits) * 30.0 + 200.0;
+        uint32_t sp = static_cast<uint32_t>(std::clamp(sp_cont, 100.0, 5000.0));
+        kp.murphy_params.sample_points = sp;
 
         // skewness 搜索步数
         kp.murphy_params.skewness_steps = gp.skewness_steps;

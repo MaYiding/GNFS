@@ -634,6 +634,36 @@ void test_cofactorizer_large_prime_storage() {
     std::cout << "  Cofactorizer large prime storage: PASSED" << std::endl;
 }
 
+// compute_alg_lp_root: 当 p | b 时,b 不可逆 mod p,LP 对应"投影根"理想 (p, 1/α)。
+// 返回 AlgebraicPrime::PROJECTIVE_ROOT 让 matrix_builder 把该 LP 合并到投影根列。
+// 此测试锁住该边界:对几个 (a, b, p) 组合验证返回 PROJECTIVE_ROOT 标记。
+void test_compute_alg_lp_root_projective() {
+    std::cout << "Testing compute_alg_lp_root projective root (p | b)..." << std::endl;
+
+    const uint64_t PROJ = static_cast<uint64_t>(core::AlgebraicPrime::PROJECTIVE_ROOT);
+
+    // (a=1, b=3, p=3): p | b → projective
+    assert(Cofactorizer::compute_alg_lp_root(1, 3, 3) == PROJ);
+
+    // (a=7, b=15, p=5): p | b (5 | 15) → projective
+    assert(Cofactorizer::compute_alg_lp_root(7, 15, 5) == PROJ);
+
+    // (a=100, b=49, p=7): p | b (7 | 49) → projective
+    assert(Cofactorizer::compute_alg_lp_root(100, 49, 7) == PROJ);
+
+    // 非投影根 sanity check:(a=10, b=3, p=7): b=3 mod 7 invertible
+    // r = a * b^{-1} mod p; b^{-1} mod 7: 3*5=15≡1 mod 7 → b^{-1}=5
+    // r = 10 * 5 mod 7 = 50 mod 7 = 1
+    uint64_t r = Cofactorizer::compute_alg_lp_root(10, 3, 7);
+    assert(r != PROJ);
+    assert(r == 1);
+
+    // 负 a 投影根: (a=-5, b=11, p=11) → projective
+    assert(Cofactorizer::compute_alg_lp_root(-5, 11, 11) == PROJ);
+
+    std::cout << "  compute_alg_lp_root projective: PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Cofactorization Tests ===" << std::endl;
     std::cout << std::endl;
@@ -652,6 +682,7 @@ int main() {
     test_prime_power_uint64_storage();
     test_factor_base_params_uint64_lpb();
     test_cofactorizer_large_prime_storage();
+    test_compute_alg_lp_root_projective();
 
     std::cout << std::endl;
     std::cout << "=== All Cofactorization Tests PASSED ===" << std::endl;

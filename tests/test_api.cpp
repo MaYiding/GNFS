@@ -109,6 +109,59 @@ bool test_config_from_file() {
     return true;
 }
 
+// Config::from_file 在非法输入下应该 throw,而不是静默接受错误值或返回空 Config。
+// 此测试锁住几条解析错误路径:
+//   1. 缺 '=' (line missing equals)
+//   2. 未知 key (line with bogus key)
+//   3. 整数越界 (std::stoul throws out_of_range)
+//   4. 整数非法字符 (std::stoul throws invalid_argument)
+bool test_config_from_file_invalid() {
+    auto write_and_expect_throw = [](const std::string& content, const std::string& label) {
+        std::string path = "/tmp/gnfs_test_config_invalid.cfg";
+        {
+            std::ofstream ofs(path);
+            ofs << content;
+        }
+        bool threw = false;
+        try {
+            (void)Config::from_file(path);
+        } catch (const std::exception& e) {
+            threw = true;
+            (void)e;
+        }
+        std::remove(path.c_str());
+        if (!threw) {
+            std::cerr << "  Expected throw for " << label << "\n";
+            assert(false);
+        }
+    };
+
+    write_and_expect_throw("degree 5\n", "missing '='");
+    write_and_expect_throw("bogus_key = 42\n", "unknown key");
+    write_and_expect_throw("degree = 999999999999999999999999\n", "out-of-range integer");
+    write_and_expect_throw("degree = not-an-integer\n", "invalid integer");
+
+    // Valid: empty + comment + blank lines should not throw
+    {
+        std::string path = "/tmp/gnfs_test_config_valid.cfg";
+        {
+            std::ofstream ofs(path);
+            ofs << "# Comment\n\n  # indented comment\n   \n";
+        }
+        try {
+            auto cfg = Config::from_file(path);
+            assert(!cfg.degree.has_value());
+        } catch (const std::exception& e) {
+            std::cerr << "  Unexpected throw on comments+blanks: " << e.what() << "\n";
+            std::remove(path.c_str());
+            assert(false);
+        }
+        std::remove(path.c_str());
+    }
+
+    return true;
+}
+
 bool test_config_to_string() {
     Config cfg;
     cfg.degree = 5;
@@ -377,6 +430,7 @@ int main() {
     TEST(config_merge);
     TEST(config_apply_to);
     TEST(config_from_file);
+    TEST(config_from_file_invalid);
     TEST(config_to_string);
 
     std::cout << "\nProgress tests:\n";

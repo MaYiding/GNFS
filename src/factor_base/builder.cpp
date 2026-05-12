@@ -177,27 +177,6 @@ FactorBase FactorBaseBuilder::build(uint32_t /* rational_bound */, uint32_t /* a
         "use the static build(ctx, opts) method instead");
 }
 
-void FactorBaseBuilder::find_rational_primes(FactorBase& fb, uint32_t bound, uint8_t log_scale) {
-    // Sieve of Eratosthenes
-    std::vector<bool> is_prime(bound + 1, true);
-    is_prime[0] = is_prime[1] = false;
-
-    for (uint32_t p = 2; p <= bound; ++p) {
-        if (!is_prime[p]) continue;
-
-        // Mark multiples
-        for (uint32_t k = p * 2; k <= bound; k += p) {
-            is_prime[k] = false;
-        }
-
-        // Compute log value
-        uint32_t log_p = compute_log_prime_precise(p, log_scale);
-
-        // Add to factor base
-        fb.add_rational(p, log_p);
-    }
-}
-
 void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialContext& ctx,
                                               uint32_t bound, uint8_t log_scale) {
     // Sieve of Eratosthenes

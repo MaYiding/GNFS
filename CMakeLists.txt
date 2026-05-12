@@ -239,6 +239,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_thread_pool PRIVATE gnfs_util Threads::Threads)
     add_test(NAME ThreadPool COMMAND test_thread_pool)
 
+    add_executable(test_logger
+        tests/test_logger.cpp
+    )
+    target_link_libraries(test_logger PRIVATE gnfs_util Threads::Threads)
+    add_test(NAME Logger COMMAND test_logger)
+    set_tests_properties(Logger PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_factor_base
         tests/test_factor_base.cpp
     )

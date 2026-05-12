@@ -348,6 +348,83 @@ void test_relation_ab_int64_min() {
     std::cout << "  Relation::ab() extreme b: PASS" << std::endl;
 }
 
+// 回归保护:Integer 的 int64_t 运算符在 INT64_MIN 时不能 UB。
+// 历史上 `-(INT64_MIN)` 是 signed overflow UB,sanitizers 会抓但 Release 静默 wrap。
+// integer.cpp 用 `static_cast<unsigned long>(-(v+1)) + 1UL` 模式避免;此测试锁住。
+void test_int64_min_boundaries() {
+    std::cout << "Testing Integer int64_t boundary (INT64_MIN/MAX/UINT64_MAX)..." << std::endl;
+
+    // operator+=(int64_t) with INT64_MIN
+    {
+        Integer x(0);
+        x += INT64_MIN;
+        // x should now be INT64_MIN = -9223372036854775808
+        Integer expected("-9223372036854775808");
+        assert(x == expected);
+    }
+
+    // operator-=(int64_t) with INT64_MIN: 0 - INT64_MIN should be 2^63
+    {
+        Integer x(0);
+        x -= INT64_MIN;
+        Integer expected("9223372036854775808");  // 2^63
+        assert(x == expected);
+    }
+
+    // operator/=(int64_t) with INT64_MIN
+    {
+        Integer x("9223372036854775808");  // 2^63
+        x /= INT64_MIN;                    // 2^63 / (-2^63) = -1
+        Integer expected(-1);
+        assert(x == expected);
+    }
+
+    // operator%=(int64_t) with INT64_MIN
+    {
+        Integer x(100);
+        x %= INT64_MIN;
+        // 100 mod -2^63 = 100 (positive remainder, since |x| < |mod|)
+        assert(x.to_int64() == 100);
+    }
+
+    // operator*=(int64_t) with INT64_MIN
+    {
+        Integer x(2);
+        x *= INT64_MIN;
+        // 2 * INT64_MIN = -2^64 (does not fit int64_t)
+        Integer expected("-18446744073709551616");
+        assert(x == expected);
+    }
+
+    // operator+=(int64_t) with INT64_MAX
+    {
+        Integer x(0);
+        x += INT64_MAX;
+        Integer expected("9223372036854775807");
+        assert(x == expected);
+    }
+
+    // construction from uint64_t with UINT64_MAX
+    {
+        Integer x(UINT64_MAX);
+        Integer expected("18446744073709551615");
+        assert(x == expected);
+        assert(x.fits_uint64());
+        assert(!x.fits_int64());
+    }
+
+    // construction from int64_t with INT64_MIN
+    {
+        Integer x(INT64_MIN);
+        Integer expected("-9223372036854775808");
+        assert(x == expected);
+        assert(x.fits_int64());
+        assert(x.to_int64() == INT64_MIN);
+    }
+
+    std::cout << "  INT64_MIN/MAX/UINT64_MAX boundaries: PASS" << std::endl;
+}
+
 void test_safe_gcd_with_int64_min() {
     std::cout << "Testing std::gcd with safe_abs (no UB)..." << std::endl;
 
@@ -384,6 +461,7 @@ int main() {
     test_safe_abs();
     test_relation_ab_int64_min();
     test_safe_gcd_with_int64_min();
+    test_int64_min_boundaries();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

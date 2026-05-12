@@ -411,11 +411,13 @@ private:
         }
     }
 
+public:
     /// 计算代数侧大素数对应的根 r = a·b⁻¹ mod p
     /// 这是 f(x) mod p 的一个根，标识 p 上方的具体素理想 (p, α-r)
     /// 若 p | b,投影根 — 返回 AlgebraicPrime::PROJECTIVE_ROOT (UINT32_MAX,
     /// 与 FB 投影根列的 PrimeIdealKey 一致),让 matrix_builder 把这种 LP
     /// 与投影根理想合并到同一列。
+    /// 纯 static 工具,无实例状态依赖 → 对外暴露便于单元测试和外部调用。
     [[nodiscard]] static uint64_t compute_alg_lp_root(int64_t a, uint64_t b, uint64_t p) {
         if (b % p == 0) {
             return static_cast<uint64_t>(core::AlgebraicPrime::PROJECTIVE_ROOT);
