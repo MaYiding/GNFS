@@ -559,7 +559,9 @@ int main(int argc, char* argv[]) {
     std::string output_file;
     bool interactive = false;
     bool quiet = false;
-    bool verbose = false;
+    // verbose_explicit: did the user pass -v/--verbose or -q/--quiet on CLI?
+    // 三态语义:nullopt=未指定走 config 文件,true=用户显式 -v,false=用户显式 -q
+    std::optional<bool> verbose_explicit;
     bool show_help = false;
     bool show_version = false;
 
@@ -569,8 +571,8 @@ int main(int argc, char* argv[]) {
         if (arg == "-h" || arg == "--help") show_help = true;
         else if (arg == "-V" || arg == "--version") show_version = true;
         else if (arg == "-i" || arg == "--interactive") interactive = true;
-        else if (arg == "-q" || arg == "--quiet") quiet = true;
-        else if (arg == "-v" || arg == "--verbose") verbose = true;
+        else if (arg == "-q" || arg == "--quiet") { quiet = true; verbose_explicit = false; }
+        else if (arg == "-v" || arg == "--verbose") verbose_explicit = true;
         else if (arg == "--json") output_format = "json";
         else if (arg == "--csv") output_format = "csv";
         else if (arg == "--report") output_format = "report";
@@ -625,7 +627,13 @@ int main(int argc, char* argv[]) {
         }
     }
     final_config = final_config.merge(cli_config);
-    final_config.verbose = verbose;
+    // verbose 三态:CLI -v/-q 显式时覆盖,否则保留 config 文件值
+    if (verbose_explicit) {
+        final_config.verbose = *verbose_explicit;
+    }
+    // Derived `verbose` used elsewhere in this function:
+    bool verbose = final_config.verbose.value_or(false);
+    (void)verbose;
 
     Integer n;
     try { n = Integer(number_str); }
