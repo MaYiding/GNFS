@@ -372,9 +372,17 @@ private:
         if (!f_init.has_value()) return std::nullopt;
         if (!is_valid_polynomial(*f_init, n, m_init)) return std::nullopt;
 
-        IntPolynomial best_f;
-        Integer best_m;
-        double best_norm = 1e300;
+        // 保留 top-K (K=3) L² 最小的候选,然后用 Murphy E 二级筛。
+        // 原代码只取 L² min — 但 L² 不含 α,L² 最小 不等于 Murphy 最佳。
+        // 例: α 极负但 L² 略大的多项式实际上更优 (CADO-NFS 经验)。
+        struct Candidate {
+            IntPolynomial f;
+            Integer m;
+            double norm;
+        };
+        constexpr size_t TOP_K = 3;
+        std::vector<Candidate> top_k;
+        top_k.reserve(TOP_K + 1);
 
         // 平移 + 旋转网格搜索。t_range 之前硬编码 ±5(11 点),与 KleinjungParams
         // 的 search_radius 无关,大 N 下平移空间被严重压缩。改为按
@@ -425,22 +433,56 @@ private:
                 f_t = PolynomialOptimizer::rotate_linear(f_t, m_t, k);
             }
 
-            // L² norm 预筛
+            // L² norm 预筛 — 维护 top-K
             double s = PolynomialOptimizer::estimate_skewness(f_t);
             double norm = PolynomialOptimizer::compute_size(f_t, s);
 
-            if (norm < best_norm) {
-                best_norm = norm;
-                best_f = std::move(f_t);
-                best_m = std::move(m_t);
+            // 插入并保持按 norm 升序的 top-K 列表
+            if (top_k.size() < TOP_K ||
+                norm < top_k.back().norm) {
+                top_k.push_back({std::move(f_t), std::move(m_t), norm});
+                std::sort(top_k.begin(), top_k.end(),
+                          [](const Candidate& a, const Candidate& b) {
+                              return a.norm < b.norm;
+                          });
+                if (top_k.size() > TOP_K) top_k.pop_back();
             }
         }
 
-        // 验证最佳多项式
-        if (best_norm >= 1e300) return std::nullopt;
-        if (!is_valid_polynomial(best_f, n, best_m)) return std::nullopt;
+        if (top_k.empty()) return std::nullopt;
 
-        // 构造 g(x) = x - m
+        // Murphy E 二级评估: 对 top-K L² 候选跑完整 Murphy,挑 log_e_score 最高的。
+        // 与之前的差别: 之前 K=1, 这里 K=3。Murphy 单次成本 ~2 次 compute_alpha
+        // (v12 已去重),top-K=3 总成本约旧 K=1 的 3x,但能发现 α 优势候选。
+        IntPolynomial best_f;
+        Integer best_m;
+        MurphyScore best_score;
+        double best_log_e = -1e300;
+
+        for (auto& cand : top_k) {
+            if (!is_valid_polynomial(cand.f, n, cand.m)) continue;
+
+            // 构造 g(x) = x - m
+            Integer neg_m = cand.m.clone();
+            neg_m.negate();
+            std::vector<Integer> g_coeffs;
+            g_coeffs.push_back(std::move(neg_m));
+            g_coeffs.push_back(Integer(static_cast<int64_t>(1)));
+            IntPolynomial g_cand(std::move(g_coeffs));
+
+            MurphyScore score = evaluator.compute(cand.f, g_cand, n);
+
+            if (score.log_e_score > best_log_e) {
+                best_log_e = score.log_e_score;
+                best_f = cand.f.clone();
+                best_m = cand.m.clone();
+                best_score = score;
+            }
+        }
+
+        if (best_log_e <= -1e299) return std::nullopt;
+
+        // 构造最终 g(x) = x - m
         Integer neg_m = best_m.clone();
         neg_m.negate();
         std::vector<Integer> g_coeffs;
@@ -448,15 +490,12 @@ private:
         g_coeffs.push_back(Integer(static_cast<int64_t>(1)));
         IntPolynomial g(std::move(g_coeffs));
 
-        // 完整 Murphy E 评分
-        MurphyScore score = evaluator.compute(best_f, g, n);
-
         KleinjungResult result;
         result.f = std::move(best_f);
         result.g = std::move(g);
         result.m = std::move(best_m);
-        result.skewness = score.skewness;
-        result.score = score;
+        result.skewness = best_score.skewness;
+        result.score = best_score;
         result.success = true;
 
         return result;
