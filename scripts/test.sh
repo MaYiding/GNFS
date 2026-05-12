@@ -1678,6 +1678,41 @@ case "$MODE" in
         show_summary
         ;;
 
+    pgo-train)
+        # PGO 训练完整工作流（见 docs/perf/performance-doctrine.md §5.3）
+        # 输出: build-pgo-use/test_* (PGO-optimized)
+        log_header "PGO 训练 (Profile-Guided Optimization)"
+        log_info "四阶段: instrumented build -> training run -> merge -> optimized build"
+        log_info "预计耗时 5-15 分钟"
+        exec "${PROJECT_ROOT}/scripts/pgo-train.sh" "${MODE_ARGS[@]}"
+        ;;
+
+    profile)
+        # Instruments + xctrace 抓 CPU PMU trace（见 doctrine §5.4）
+        # 用法: ./scripts/test.sh profile <test_name> [args...]
+        # 例:   ./scripts/test.sh profile factor_with_kleinjung
+        if [[ ${#MODE_ARGS[@]} -eq 0 ]]; then
+            log_fail "用法: $0 profile <test_name> [args...]"
+            log_info "例: $0 profile factor_with_kleinjung"
+            exit 1
+        fi
+        do_build
+        local _test_name="${MODE_ARGS[1]}"
+        local _test_bin="${BUILD_DIR}/test_${_test_name}"
+        if [[ ! -x "${_test_bin}" ]]; then
+            # 允许带或不带 test_ 前缀
+            _test_bin="${BUILD_DIR}/${_test_name}"
+        fi
+        if [[ ! -x "${_test_bin}" ]]; then
+            log_fail "测试二进制不存在: ${_test_bin}"
+            exit 1
+        fi
+        log_header "性能采集 (Instruments CPU Counters)"
+        log_info "目标: ${_test_bin}"
+        # zsh 数组是 1-indexed; [2,-1] 是 "从第 2 个到末尾" 的 slice
+        exec "${PROJECT_ROOT}/scripts/perf/profile-cpu.sh" "${_test_bin}" "${MODE_ARGS[@]:1}"
+        ;;
+
     stress)
         do_build
         log_header "压力测试 (50/60-digit)"
