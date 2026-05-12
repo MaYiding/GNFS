@@ -399,15 +399,25 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies(
     effective_max = std::min(effective_max, static_cast<size_t>(64));
 
     // Dispatch strategy (BL is broken — 50% error rate on all deps):
-    //   <20K rows: Gaussian (fast, always correct)
-    //   ≥20K rows: return empty to let caller use Block Wiedemann
-    //              (streaming BW with scalar BM — O(m) memory, any size)
+    //   Gaussian path uses augmented matrix m × (m+n) packed bits ≈ m·(m+n)/8 bytes.
+    //   Cap at 4 GiB to stay well below typical RAM ceilings.
+    //   Above the byte threshold: fall through to streaming Block Wiedemann.
     //
-    // Gaussian at 20K: ~20K² / 64 × 8 ≈ 50 MB memory, <1 second.
-    // BW at 20K: ~L × 2 × nnz ≈ 312 × 2 × 200K ≈ 125M ops ≈ <1 second.
-    // For >20K, Gaussian time grows as O(n³) vs BW's O(n × nnz).
-    constexpr size_t GAUSS_ROWS_LIMIT = 20000;
-    if (matrix.num_rows() <= GAUSS_ROWS_LIMIT && matrix.num_cols() <= GAUSS_ROWS_LIMIT) {
+    // Examples:
+    //   20K × 20K  → 20K·40K/8 = 100 MB ✓ (well under 4G)
+    //   50K × 50K  → 50K·100K/8 = 625 MB ✓
+    //   90K × 90K  → 90K·180K/8 ≈ 2 GB ✓
+    //   100K × 100K → 100K·200K/8 = 2.5 GB ✓
+    //   200K × 200K → 200K·400K/8 ≈ 10 GB ✗ → BW
+    //
+    // The old row-only guard (≤20000) was overly conservative — it left Gaussian
+    // out of reach for matrices up to ~90K that would fit comfortably.
+    constexpr size_t GAUSS_BYTE_LIMIT = 4ULL * 1024 * 1024 * 1024;  // 4 GiB
+    size_t m_rows = matrix.num_rows();
+    size_t n_cols = matrix.num_cols();
+    // m * (m+n) can overflow size_t for huge matrices; use __uint128_t.
+    __uint128_t aug_bytes = (__uint128_t)m_rows * (m_rows + n_cols) / 8;
+    if (aug_bytes <= GAUSS_BYTE_LIMIT) {
         return find_dependencies_sparse(matrix, effective_max);
     }
 
