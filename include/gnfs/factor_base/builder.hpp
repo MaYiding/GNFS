@@ -44,8 +44,16 @@ public:
 private:
     PolynomialContext ctx_;
 
-    static void find_rational_primes(FactorBase& fb, const PolynomialContext& ctx, uint32_t bound, uint8_t log_scale);
-    static void find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx, uint32_t bound, uint8_t log_scale);
+    /// 构建 Eratosthenes 筛(从 p*p 起标),返回 is_prime[0..bound]。
+    /// 拆出避免 find_rational + find_algebraic 在同 bound 下重复构建(1e8 ≈ 12.5 MB)。
+    static std::vector<bool> build_eratosthenes_sieve(uint32_t bound);
+
+    static void find_rational_primes(FactorBase& fb, const PolynomialContext& ctx,
+                                      uint32_t bound, uint8_t log_scale,
+                                      const std::vector<bool>* shared_sieve = nullptr);
+    static void find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx,
+                                       uint32_t bound, uint8_t log_scale,
+                                       const std::vector<bool>* shared_sieve = nullptr);
     static void find_algebraic_primes_range(FactorBase& fb, const PolynomialContext& ctx,
                                              uint32_t min_p, uint32_t max_p, uint8_t log_scale);
 
