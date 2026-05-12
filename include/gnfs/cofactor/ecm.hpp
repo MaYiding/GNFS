@@ -497,6 +497,12 @@ private:
 
         // === Phase 2: Giant steps ===
         uint64_t j_lo = B1 / D;                  // 最小 j 使得 j*D ≥ B1 - D (covers B1-adjacent primes)
+        // j_lo=0 (B1 < D) 会让 mont_mul(Q0, 0) 返回无穷远点 (0:1),
+        // accumulate_step 计算 G.x * b.z - b.x * G.z = -b.x · 1 = -b.x,
+        // 把 baby step 的随机数据当成 cross product 累入,污染 GCD。
+        // 后面 G_curr 用 (j_lo+1)*D 也会跳过 [B1, D] 区间的素数。
+        // 修复:把 j_lo 上调到 1,保证 j_lo*D ≥ D > B1 时仍覆盖 D 以下素数已在 Stage1 处理。
+        if (j_lo == 0) j_lo = 1;
         uint64_t j_hi = (B2 + D - 1) / D;       // 最大 j 使得 (j-1)*D < B2
         if (j_lo > j_hi) return std::nullopt;
 
