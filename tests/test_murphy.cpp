@@ -42,6 +42,54 @@ void test_dickman_rho() {
     std::cout << "  PASSED" << std::endl;
 }
 
+/// 黄金值快照:固定 (f, alpha_bound) 锁住数值,防止 Dickman 表/α 公式/
+/// 积分采样回归。值由当前实现快照得到(可与 CADO-NFS polyselect/alpha.c
+/// 对照来锁外部参考)。
+void test_alpha_golden_values() {
+    std::cout << "Testing alpha golden values..." << std::endl;
+
+    MurphyParams params;
+    params.alpha_bound = 100;
+    MurphyEvaluator evaluator(params);
+
+    // f = x^5 - x + 1(常用 GNFS Stage 多项式)
+    {
+        std::vector<Integer> coeffs;
+        coeffs.push_back(Integer(int64_t(1)));
+        coeffs.push_back(Integer(int64_t(-1)));
+        coeffs.push_back(Integer(int64_t(0)));
+        coeffs.push_back(Integer(int64_t(0)));
+        coeffs.push_back(Integer(int64_t(0)));
+        coeffs.push_back(Integer(int64_t(1)));
+        IntPolynomial f(std::move(coeffs));
+        double alpha = evaluator.compute_alpha(f);
+        // 黄金值(2026-05-12 实现版本):-2.34813918493
+        // tolerance 1e-9 允许小的浮点重排,但锁定算法本身
+        const double expected = -2.34813918493;
+        std::cout << "  alpha(x^5-x+1, bound=100) = " << alpha
+                  << " (expected " << expected << ")" << std::endl;
+        assert(std::abs(alpha - expected) < 1e-9);
+    }
+
+    // f = x^4 + 1(cyclotomic,有简单结构)
+    {
+        std::vector<Integer> coeffs;
+        coeffs.push_back(Integer(int64_t(1)));
+        coeffs.push_back(Integer(int64_t(0)));
+        coeffs.push_back(Integer(int64_t(0)));
+        coeffs.push_back(Integer(int64_t(0)));
+        coeffs.push_back(Integer(int64_t(1)));
+        IntPolynomial f(std::move(coeffs));
+        double alpha = evaluator.compute_alpha(f);
+        const double expected = -1.94061743447;
+        std::cout << "  alpha(x^4+1, bound=100) = " << alpha
+                  << " (expected " << expected << ")" << std::endl;
+        assert(std::abs(alpha - expected) < 1e-9);
+    }
+
+    std::cout << "  PASSED" << std::endl;
+}
+
 /// 测试 alpha 计算
 void test_alpha_computation() {
     std::cout << "Testing alpha computation..." << std::endl;
@@ -240,6 +288,7 @@ int main() {
     std::cout << "=== Murphy Evaluator Tests ===" << std::endl << std::endl;
 
     test_dickman_rho();
+    test_alpha_golden_values();
     test_alpha_computation();
     test_score_consistency();
     test_skewness_optimization();
