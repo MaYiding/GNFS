@@ -2,6 +2,7 @@
 
 #include "../core/integer.hpp"
 #include "../core/polynomial_context.hpp"
+#include "../util/primes.hpp"
 
 #include <vector>
 #include <map>
@@ -869,17 +870,9 @@ private:
         return result;
     }
 
-    /// Simple primality test
+    /// Simple primality test — delegates to util::is_prime_u32 (robust at uint32 boundary).
     [[nodiscard]] static bool is_prime(uint32_t n) {
-        if (n < 2) return false;
-        if (n == 2) return true;
-        if (n % 2 == 0) return false;
-
-        uint32_t sqrt_n = static_cast<uint32_t>(std::sqrt(n));
-        for (uint32_t i = 3; i <= sqrt_n; i += 2) {
-            if (n % i == 0) return false;
-        }
-        return true;
+        return gnfs::util::is_prime_u32(n);
     }
 };
 

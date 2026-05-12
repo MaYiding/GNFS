@@ -4,6 +4,7 @@
 #include "modular_poly.hpp"
 #include "../core/integer.hpp"
 #include "../core/polynomial_context.hpp"
+#include "../util/primes.hpp"
 
 #include <vector>
 #include <optional>
@@ -615,81 +616,18 @@ private:
         return product;
     }
 
-    /// Find next prime after n (with overflow guard)
+    /// Delegate next_prime / is_prime_u64 / pow_mod_u64 / mul_mod_u64 to shared util.
     [[nodiscard]] static uint64_t next_prime(uint64_t n) {
-        if (n >= UINT64_MAX - 2) return 0; // overflow guard
-        n++;
-        if (n <= 2) return 2;
-        if (n % 2 == 0) {
-            if (n == UINT64_MAX) return 0;
-            n++;
-        }
-
-        while (!is_prime_u64(n)) {
-            if (n > UINT64_MAX - 2) return 0; // overflow guard
-            n += 2;
-        }
-        return n;
+        return gnfs::util::next_prime_u64(n);
     }
-
-    /// Miller-Rabin primality test
     [[nodiscard]] static bool is_prime_u64(uint64_t n) {
-        if (n < 2) return false;
-        if (n == 2 || n == 3) return true;
-        if (n % 2 == 0) return false;
-
-        // Write n-1 as d * 2^r
-        uint64_t d = n - 1;
-        uint64_t r = 0;
-        while ((d & 1) == 0) {
-            d >>= 1;
-            r++;
-        }
-
-        // Witnesses for n < 2^64
-        static const uint64_t witnesses[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37};
-
-        for (uint64_t a : witnesses) {
-            if (a >= n) continue;
-
-            uint64_t x = pow_mod_u64(a, d, n);
-            if (x == 1 || x == n - 1) continue;
-
-            bool composite = true;
-            for (uint64_t i = 0; i < r - 1; i++) {
-                x = mul_mod_u64(x, x, n);
-                if (x == n - 1) {
-                    composite = false;
-                    break;
-                }
-            }
-
-            if (composite) return false;
-        }
-
-        return true;
+        return gnfs::util::is_prime_u64(n);
     }
-
-    /// Modular exponentiation
     [[nodiscard]] static uint64_t pow_mod_u64(uint64_t base, uint64_t exp, uint64_t mod) {
-        uint64_t result = 1;
-        base %= mod;
-
-        while (exp > 0) {
-            if (exp & 1) {
-                result = mul_mod_u64(result, base, mod);
-            }
-            base = mul_mod_u64(base, base, mod);
-            exp >>= 1;
-        }
-
-        return result;
+        return gnfs::util::pow_mod_u64(base, exp, mod);
     }
-
-    /// Modular multiplication (handles overflow)
     [[nodiscard]] static uint64_t mul_mod_u64(uint64_t a, uint64_t b, uint64_t mod) {
-        __uint128_t prod = static_cast<__uint128_t>(a) * b;
-        return static_cast<uint64_t>(prod % mod);
+        return gnfs::util::mul_mod_u64(a, b, mod);
     }
 
     /// Modular inverse
