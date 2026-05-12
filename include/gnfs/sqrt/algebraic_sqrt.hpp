@@ -8,6 +8,7 @@
 #include "../core/polynomial_context.hpp"
 #include "../linalg/sparse_matrix.hpp"
 
+#include <atomic>
 #include <map>
 #include <unordered_map>
 #include <vector>
@@ -127,17 +128,17 @@ public:
             HenselSqrt::Config hcfg;
             hcfg.verbose = (ab_pairs.size() >= 500);
             // Reuse cached inert prime across deps for the same polynomial
-            if (cached_inert_prime_ != 0) {
-                hcfg.cached_inert_prime = cached_inert_prime_;
+            uint64_t cached = cached_inert_prime_.load(std::memory_order_relaxed);
+            if (cached != 0) {
+                hcfg.cached_inert_prime = cached;
             }
             HenselSqrt hensel(hcfg);
             auto sqrt_val = hensel.compute(ab_pairs, nf);
             if (sqrt_val) {
-                if (cached_inert_prime_ == 0) {
-                    cached_inert_prime_ = hcfg.cached_inert_prime;
-                    if (cached_inert_prime_ == 0) {
-                        cached_inert_prime_ = hensel.last_inert_prime();
-                    }
+                if (cached == 0) {
+                    uint64_t new_cached = hcfg.cached_inert_prime;
+                    if (new_cached == 0) new_cached = hensel.last_inert_prime();
+                    cached_inert_prime_.store(new_cached, std::memory_order_relaxed);
                 }
                 result.value = std::move(*sqrt_val);
                 result.success = true;
@@ -182,7 +183,9 @@ public:
 
 private:
     Config config_;
-    mutable uint64_t cached_inert_prime_ = 0;
+    // mutable atomic — 当前 pipeline 顺序处理 dependencies,但 const compute()
+    // 读写 cached_inert_prime_ 是潜在线程不安全。atomic relaxed 提供未来安全网。
+    mutable std::atomic<uint64_t> cached_inert_prime_{0};
 
     /// 使用 Couveignes 算法计算平方根
     [[nodiscard]] AlgebraicSqrtResult compute_couveignes(

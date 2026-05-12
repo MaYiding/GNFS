@@ -404,24 +404,6 @@ private:
     }
 };
 
-/// 批量试除器 - 对多个候选同时进行试除
-class BatchTrialDivider {
-public:
-    /// 构造函数
-    explicit BatchTrialDivider(const FactorBase& fb) : divider_(fb) {}
-
-    /// 批量处理
-    template <typename Iter, typename OutputIter>
-    void divide_batch(Iter begin, Iter end, OutputIter out) const {
-        for (auto it = begin; it != end; ++it) {
-            *out++ = divider_.divide_rational(*it);
-        }
-    }
-
-private:
-    TrialDivider divider_;
-};
-
 /// 计算有理侧值 |a - b*m| (GNFS convention)
 [[nodiscard]] inline Integer compute_rational_value(
         int64_t a, uint64_t b, const Integer& m) {
