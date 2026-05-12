@@ -1,10 +1,60 @@
 #include "gnfs/core/integer.hpp"
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
+#include <gmp.h>
 #include <iostream>
+#include <new>
 #include <stdexcept>
 
 namespace gnfs::core {
+
+namespace {
+
+// ── BACKLOG P3 DEBT: GMP OOM 默认 abort() — 改用抛 std::bad_alloc ──
+//
+// GMP 文档警告"自定义分配器不应抛异常 — GMP 内部非异常安全"。但默认
+// abort() 在大 N 下完全无法恢复,catch (std::bad_alloc) 至少允许:
+//   1. caller 优雅降级 (放弃当前 SQ, 切下个素数,等)
+//   2. RAII 析构链触发 (释放其他资源)
+// 风险: 若异常穿过 GMP 内部 mpz 函数调用,GMP state 可能不一致。
+// 但 Integer 类已用 mpz_class 等价的 RAII 包装 (mpz_clear in ~Integer),
+// 内部 GMP-only 调用栈较短,实践中较安全。
+//
+// 启用此自定义分配器: 默认开启 (GNFS_GMP_NO_THROW_OOM 定义则禁用)。
+#ifndef GNFS_GMP_NO_THROW_OOM
+
+void* gmp_alloc(size_t n) {
+    void* p = std::malloc(n);
+    if (!p) throw std::bad_alloc{};
+    return p;
+}
+
+void* gmp_realloc(void* old_ptr, size_t /*old_size*/, size_t new_size) {
+    void* p = std::realloc(old_ptr, new_size);
+    if (!p) throw std::bad_alloc{};
+    return p;
+}
+
+void gmp_free(void* p, size_t /*size*/) {
+    std::free(p);
+}
+
+struct GMPMemorySetup {
+    GMPMemorySetup() {
+        // mp_set_memory_functions 在 GMP 全局生效 — 必须在任何 mpz 操作前调用。
+        // 由于此处为静态初始化,GMP-using 代码可能在 main 前已经构造若干
+        // Integer 实例,这些实例使用 GMP 默认 malloc。setup 后才会切到我们的
+        // 抛异常 allocator。这是可以接受的: 进程启动早期内存压力低,
+        // 大量 mpz 分配发生在主算法运行时(setup 之后)。
+        mp_set_memory_functions(gmp_alloc, gmp_realloc, gmp_free);
+    }
+};
+static GMPMemorySetup gmp_memory_setup;
+
+#endif  // !GNFS_GMP_NO_THROW_OOM
+
+} // anonymous namespace
 
 // ============================================================
 // Construction & Destruction

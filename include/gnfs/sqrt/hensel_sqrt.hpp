@@ -11,6 +11,17 @@
 #include <thread>
 #include <chrono>
 
+// ─── BACKLOG P3 DEBT — Hensel verbose 编译期裁剪 ──────────────────────────
+// 大部分诊断 std::cerr 路径运行时已被 config_.verbose 门控,默认 verbose=false
+// 时分支不进入。但编译期仍生成代码占用 ~kB binary 体积。定义
+// GNFS_HENSEL_NO_VERBOSE 即可在 release 构建中完全裁剪这些块。
+// 默认行为不变 (与原 if(config_.verbose) 等价)。
+#ifndef GNFS_HENSEL_NO_VERBOSE
+  #define HENSEL_VERBOSE(stmt) do { if (config_.verbose) { stmt; } } while (0)
+#else
+  #define HENSEL_VERBOSE(stmt) ((void)0)
+#endif
+
 namespace gnfs::sqrt {
 
 using core::Integer;
@@ -274,7 +285,7 @@ private:
                 product_mod_p, ModularPoly(std::move(cs)), f_mod_p, p);
         }
         if (product_mod_p.is_zero()) {
-            if (config_.verbose) std::cerr << "[Hensel-lift] p=" << p << " product is zero\n";
+            HENSEL_VERBOSE(std::cerr << "[Hensel-lift] p=" << p << " product is zero\n");
             return result;
         }
 
@@ -285,12 +296,12 @@ private:
         product_mod_p = ModularPoly::mul(product_mod_p, fp2, f_mod_p, p);
 
         if (!ModularPoly::is_square(product_mod_p, f_mod_p, p)) {
-            if (config_.verbose) std::cerr << "[Hensel-lift] p=" << p << " product*f'^2 not square\n";
+            HENSEL_VERBOSE(std::cerr << "[Hensel-lift] p=" << p << " product*f'^2 not square\n");
             return result;
         }
         auto sqrt_mp = ModularPoly::sqrt_tonelli_shanks(product_mod_p, f_mod_p, p);
         if (sqrt_mp.is_zero() && !product_mod_p.is_zero()) {
-            if (config_.verbose) std::cerr << "[Hensel-lift] p=" << p << " Tonelli-Shanks returned zero\n";
+            HENSEL_VERBOSE(std::cerr << "[Hensel-lift] p=" << p << " Tonelli-Shanks returned zero\n");
             return result;
         }
 
@@ -454,7 +465,7 @@ private:
         const size_t extra = 5;
         auto all_inert = find_inert_primes(nf, K + extra);
         if (all_inert.size() < K) {
-            if (config_.verbose) std::cerr << "[Nguyen] Insufficient inert primes\n";
+            HENSEL_VERBOSE(std::cerr << "[Nguyen] Insufficient inert primes\n");
             return std::nullopt;
         }
         // Use first K as initial set
@@ -643,7 +654,7 @@ private:
         // Try all-positive
         auto result = try_verify();
         if (result) {
-            if (config_.verbose) std::cerr << "[Nguyen] Verified at combo 0\n";
+            HENSEL_VERBOSE(std::cerr << "[Nguyen] Verified at combo 0\n");
             return result;
         }
 
