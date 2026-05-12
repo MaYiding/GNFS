@@ -149,8 +149,13 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
     ) * ctx.degree();
     fb.reserve(estimated_rational, estimated_algebraic);
 
-    find_rational_primes(fb, ctx, opts.rational_bound, opts.log_scale);
-    find_algebraic_primes(fb, ctx, opts.algebraic_bound, opts.log_scale);
+    // 构建共享的 Eratosthenes 筛,bound = max(rational, algebraic),
+    // 避免两个 find_* 在 rational==algebraic(常见配置)下重复构建 12.5 MB。
+    uint32_t shared_bound = std::max(opts.rational_bound, opts.algebraic_bound);
+    std::vector<bool> shared_sieve = build_eratosthenes_sieve(shared_bound);
+
+    find_rational_primes(fb, ctx, opts.rational_bound, opts.log_scale, &shared_sieve);
+    find_algebraic_primes(fb, ctx, opts.algebraic_bound, opts.log_scale, &shared_sieve);
 
     // 记录筛选用的代数素数数量（≤ algebraic_bound 的部分）
     fb.set_sieve_algebraic_count(fb.algebraic_count());
@@ -177,26 +182,38 @@ FactorBase FactorBaseBuilder::build(uint32_t /* rational_bound */, uint32_t /* a
         "use the static build(ctx, opts) method instead");
 }
 
+std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
+    std::vector<bool> is_prime(static_cast<size_t>(bound) + 1, true);
+    if (bound >= 1) is_prime[0] = false;
+    if (bound >= 1) is_prime[1] = false;
+
+    for (uint64_t p = 2; p * p <= bound; ++p) {
+        if (!is_prime[static_cast<size_t>(p)]) continue;
+        // 起点 p*p,小素数倍数已标过
+        for (uint64_t k = p * p; k <= bound; k += p) {
+            is_prime[static_cast<size_t>(k)] = false;
+        }
+    }
+    return is_prime;
+}
+
 void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialContext& ctx,
-                                              uint32_t bound, uint8_t log_scale) {
-    // Sieve of Eratosthenes
-    std::vector<bool> is_prime(bound + 1, true);
-    is_prime[0] = is_prime[1] = false;
+                                              uint32_t bound, uint8_t log_scale,
+                                              const std::vector<bool>* shared_sieve) {
+    // 优先用调用方传入的共享筛(build() 一次构建供 rational+algebraic 复用);
+    // 否则自行构建(为了独立测试 find_rational_primes 的入口而保留)。
+    std::vector<bool> local_sieve;
+    const std::vector<bool>* sieve_ptr;
+    if (shared_sieve != nullptr && shared_sieve->size() > static_cast<size_t>(bound)) {
+        sieve_ptr = shared_sieve;
+    } else {
+        local_sieve = build_eratosthenes_sieve(bound);
+        sieve_ptr = &local_sieve;
+    }
+    const auto& is_prime = *sieve_ptr;
 
     for (uint32_t p = 2; p <= bound; ++p) {
         if (!is_prime[p]) continue;
-
-        // Mark multiples — 起点 p*p(小素数的倍数已被更小素数标过),
-        // 提防溢出:仅当 p*p ≤ bound 时才进入标记循环。
-        if (static_cast<uint64_t>(p) * p > bound) {
-            // p > sqrt(bound),后续不再有未标的合数;仅需继续筛选 is_prime
-            // (循环顶部 if check),不需 mark。这一分支会一直走到 bound,
-            // 但 mark 循环 0 次开销可以忽略。
-        }
-        const uint64_t start = static_cast<uint64_t>(p) * p;
-        for (uint64_t k = start; k <= bound; k += p) {
-            is_prime[static_cast<size_t>(k)] = false;
-        }
 
         // Skip primes that divide N — use mpz_divisible_ui_p (zero GMP alloc)
         if (mpz_divisible_ui_p(ctx.n().get_mpz(), p)) {
@@ -212,18 +229,18 @@ void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialCon
 }
 
 void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx,
-                                               uint32_t bound, uint8_t log_scale) {
-    // Step 1: Sieve of Eratosthenes to collect all primes up to bound
-    std::vector<bool> is_prime_sieve(bound + 1, true);
-    is_prime_sieve[0] = is_prime_sieve[1] = false;
-
-    for (uint64_t p = 2; p * p <= bound; ++p) {
-        if (!is_prime_sieve[static_cast<size_t>(p)]) continue;
-        // 标记从 p*p 开始(小素数倍数已标过),~减少一半 mark 写入
-        for (uint64_t k = p * p; k <= bound; k += p) {
-            is_prime_sieve[static_cast<size_t>(k)] = false;
-        }
+                                               uint32_t bound, uint8_t log_scale,
+                                               const std::vector<bool>* shared_sieve) {
+    // Step 1: 复用 build() 提供的筛或自建
+    std::vector<bool> local_sieve;
+    const std::vector<bool>* sieve_ptr;
+    if (shared_sieve != nullptr && shared_sieve->size() > static_cast<size_t>(bound)) {
+        sieve_ptr = shared_sieve;
+    } else {
+        local_sieve = build_eratosthenes_sieve(bound);
+        sieve_ptr = &local_sieve;
     }
+    const auto& is_prime_sieve = *sieve_ptr;
 
     // Collect primes into vector (excluding N-divisors)
     // Projective root check: precompute leading_coeff mod small primes
@@ -496,17 +513,8 @@ void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const Polyno
                                                      uint32_t min_p, uint32_t max_p, uint8_t log_scale) {
     if (min_p > max_p || min_p < 2) return;
 
-    // Step 1: Sieve primes in [min_p, max_p]
-    std::vector<bool> is_prime_sieve(static_cast<size_t>(max_p) + 1, true);
-    is_prime_sieve[0] = is_prime_sieve[1] = false;
-
-    for (uint64_t p = 2; p * p <= max_p; ++p) {
-        if (!is_prime_sieve[static_cast<size_t>(p)]) continue;
-        // 起点 p*p,~减少一半 mark
-        for (uint64_t k = p * p; k <= max_p; k += p) {
-            is_prime_sieve[static_cast<size_t>(k)] = false;
-        }
-    }
+    // Step 1: Sieve primes in [min_p, max_p](借公共 helper,统一起 p*p 优化)
+    std::vector<bool> is_prime_sieve = build_eratosthenes_sieve(max_p);
 
     // Collect primes in range
     bool fd_fits = ctx.leading_coeff().fits_uint64();

@@ -95,6 +95,11 @@ public:
     /// 设置最大线程数（0 = auto, 1 = single-threaded）
     void set_max_threads(size_t n) { max_threads_ = n; }
 
+    /// 测试钩子: 强制大素数也走 row_major (用于 bucket vs row-major 字节级一致性比对)
+    /// 默认 false: 当 large_primes.size() >= 100 走 bucket region。
+    /// 仅测试代码使用,production 路径请保持默认。
+    void set_force_row_major(bool force) { force_row_major_ = force; }
+
     /// 设置关系回调
     void set_relation_callback(RelationCallback callback) {
         relation_callback_ = std::move(callback);
@@ -157,7 +162,8 @@ public:
         }
 
         // Phase B: bucket region for large primes (at most 1 hit per row)
-        if (large_primes.size() >= 100) {
+        // force_row_major_ 是测试钩子,production 时永远 false。
+        if (large_primes.size() >= 100 && !force_row_major_) {
             sieve_bucket_region(large_primes);
         } else if (!large_primes.empty()) {
             sieve_row_major(large_primes);
@@ -221,6 +227,7 @@ private:
     std::vector<uint16_t> sieve_array_;  // 加法筛：累积 log_p 值
     uint16_t last_init_val_ = 0;         // 当前 SQ 的初始 log 估计值
     size_t max_threads_ = 0;             // 0 = auto (hardware_concurrency)
+    bool force_row_major_ = false;       // 测试钩子: 强制大素数走 row_major
 
     RelationCallback relation_callback_;
     ProgressCallback progress_callback_;
