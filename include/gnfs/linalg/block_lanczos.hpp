@@ -21,11 +21,9 @@ public:
     std::vector<std::vector<bool>> find_dependencies(const SparseMatrix& matrix, size_t max_deps = 64);
 
 private:
-    // True Block Lanczos for large sparse matrices
-    // Complexity: O(m * w / 32) where w = total matrix weight
-    std::vector<std::vector<bool>> block_lanczos_solve(const SparseMatrix& matrix, size_t max_deps);
-
-    // Gaussian elimination with packed GF(2) matrix for small matrices
+    // Gaussian elimination with packed GF(2) matrix for small matrices.
+    // (Montgomery Block Lanczos was removed — had a 50% per-dep error rate and
+    // was never reachable from find_dependencies. See git history.)
     std::vector<std::vector<bool>> find_dependencies_sparse(const SparseMatrix& matrix, size_t max_deps);
 };
 
@@ -59,20 +57,6 @@ struct BlockVector {
         for (size_t i = 0; i < length; ++i)
             col[i] = (data[i] & mask) != 0;
         return col;
-    }
-
-    /// XOR this += other * T where T is a 64x64 matrix (right-multiply then XOR)
-    void xor_with_mul(const BlockVector& other, const uint64_t T[64]) {
-        for (size_t i = 0; i < length; ++i) {
-            uint64_t v = other.data[i];
-            uint64_t acc = 0;
-            while (v) {
-                int j = __builtin_ctzll(v);
-                acc ^= T[j];
-                v &= v - 1;
-            }
-            data[i] ^= acc;
-        }
     }
 };
 
