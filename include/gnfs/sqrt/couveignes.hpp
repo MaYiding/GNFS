@@ -45,13 +45,19 @@ public:
     /// implementation in compute_product_mod_p() uses (a - b*x) factors.
     /// @param ab_pairs Vector of (a, b) pairs whose product's sqrt we want
     /// @param nf Number field
+    /// @param apply_f_prime_correction true: 乘 f'(α)² 走 Thomé 标准路径
+    ///        (caller 必须除 f'(m) mod N);false: 直接对 ∏(a-bα) 开方,
+    ///        仅当 sqrt(∏) ∈ Z[α] 时数学正确 (小 N、简单类群)。当
+    ///        gcd(f'(m), N) > 1 时 caller 切到 false 路径,避免 inversion
+    ///        失败导致整个 dependency 丢失 (v19 fix for v18 regression)。
     /// @return Square root as number field element, or empty if failed.
     ///   Returns nullopt for empty input — the linear-algebra layer should
     ///   never produce an empty dependency, and silently returning 1 would
     ///   mask a downstream bug (caller would compute trivial gcd(±1, N)).
     [[nodiscard]] std::optional<NumberFieldElement> compute(
             const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
-            const NumberField& nf) const {
+            const NumberField& nf,
+            bool apply_f_prime_correction = true) const {
 
         if (ab_pairs.empty()) {
             return std::nullopt;
@@ -148,15 +154,20 @@ public:
             // 在每个素数 p 上,我们改为对 (f'(x)² · S(α)) mod p 取 sqrt。
             // CRT 后得 T(α) ≡ f'(α) · √S(α);caller 评估 T(m) 后乘 inv(f'(m)) mod N
             // 还原真正的 sqrt 在 Z/NZ 中的表示。
-            auto f_prime_mod_p = get_f_prime_mod_p(p);
-            ModularPoly f_prime(f_prime_mod_p);
-            if (f_prime.is_zero()) {
-                // f' ≡ 0 mod p — 极少见(p | gcd(所有 i·f[i])),跳过此素数
-                primes_zero_product++;
-                continue;
+            //
+            // v19: apply_f_prime_correction=false 时跳过 (小 N + gcd(f'(m),N)>1
+            // 场景,inv 不存在; sqrt(∏) 通常恰好在 Z[α], 老路径可用)。
+            if (apply_f_prime_correction) {
+                auto f_prime_mod_p = get_f_prime_mod_p(p);
+                ModularPoly f_prime(f_prime_mod_p);
+                if (f_prime.is_zero()) {
+                    // f' ≡ 0 mod p — 极少见(p | gcd(所有 i·f[i])),跳过此素数
+                    primes_zero_product++;
+                    continue;
+                }
+                ModularPoly f_prime_sq = ModularPoly::mul(f_prime, f_prime, f_mod_p, p);
+                product = ModularPoly::mul(product, f_prime_sq, f_mod_p, p);
             }
-            ModularPoly f_prime_sq = ModularPoly::mul(f_prime, f_prime, f_mod_p, p);
-            product = ModularPoly::mul(product, f_prime_sq, f_mod_p, p);
 
             // Check if product is a square
             if (!ModularPoly::is_square(product, f_mod_p, p)) {
@@ -338,8 +349,8 @@ public:
             expected_X2 *= term;
             expected_X2 %= n;
         }
-        // 乘 f'(m)² mod N
-        {
+        // 乘 f'(m)² mod N (仅 apply_f_prime_correction=true 时)
+        if (apply_f_prime_correction) {
             // f'(m) = Σ_{i=1}^d i · f[i] · m^(i-1)
             const Integer& m_val = nf.m();
             Integer f_prime_m(int64_t(0));

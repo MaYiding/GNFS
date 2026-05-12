@@ -199,34 +199,45 @@ private:
         cfg.prime_start = config_.prime_start;
 
         CouveignesSqrt couveignes(cfg);
-        auto sqrt_opt = couveignes.compute(ab_pairs, nf);
 
+        // ── v19: 预先判定 gcd(f'(m), N) 决定走哪条路径 ──
+        // gcd == 1: 标准 f'(α)² 路径 (Thomé), inv(f'(m)) 还原 sqrt(S)(m) mod N
+        // gcd > 1 && < N: lucky factor! 跳过 f'(α)² 修正走老路径返回 sqrt(∏)(m)
+        //   (caller 用 gcd(rat - alg, N) 仍能找到 N 的因子;另外, gcd 自身就是
+        //   一个因子,我们额外通过 result.value 暴露)。
+        // gcd == N: f'(m) ≡ 0 mod N — 极少见,直接失败让 caller fallback。
+        const Integer& N = nf.n();
+        Integer f_prime_m = compute_f_derivative_at_m(nf);
+        Integer gcd_fpm;
+        mpz_gcd(gcd_fpm.get_mpz(), f_prime_m.get_mpz(), N.get_mpz());
+
+        if (gcd_fpm.compare(N) == 0) {
+            result.error = "Couveignes: f'(m) ≡ 0 mod N";
+            return result;
+        }
+
+        bool apply_correction = (gcd_fpm.compare(Integer(int64_t(1))) == 0);
+
+        auto sqrt_opt = couveignes.compute(ab_pairs, nf, apply_correction);
         if (!sqrt_opt) {
             result.error = "Couveignes algorithm failed";
             return result;
         }
 
-        // 映射到 Z/NZ:T(m) ≡ f'(m) · √S(m) mod N (因 Couveignes 内已对 f'(α)²·S 取 sqrt)
         Integer T_m = nf.evaluate_at_m_mod_n(*sqrt_opt);
 
-        // ── f'(α)² 修正还原 (Thomé 2008) ──
-        // Couveignes::compute() 在每素数 p 上对 f'(α)² · S(α) 取 sqrt;
-        // 这里把 T(m) 除以 f'(m) mod N 还原真正的 sqrt(S)(m) mod N。
-        // 若 gcd(f'(m), N) > 1,inv 不存在 — 这通常意味着 f'(m) 与 N 共享
-        // 一个非平凡因子(对 NFS 反而是"中奖"),但当前 API 不返回中间因子,
-        // 退化为失败让 caller 走 Hensel/Couveignes fallback chain。
-        const Integer& N = nf.n();
-        Integer f_prime_m = compute_f_derivative_at_m(nf);
-        Integer f_prime_m_inv;
-        if (!mpz_invert(f_prime_m_inv.get_mpz(),
-                        f_prime_m.get_mpz(),
-                        N.get_mpz())) {
-            result.error = "Couveignes: f'(m) not invertible mod N (potential factor revealed)";
-            return result;
+        if (apply_correction) {
+            // 标准 Thomé 路径: T(m) ≡ f'(m)·√S(m), 除 inv(f'(m)) 还原。
+            Integer f_prime_m_inv;
+            // mpz_invert 必成功(刚验证 gcd=1),理论不会失败。
+            mpz_invert(f_prime_m_inv.get_mpz(),
+                       f_prime_m.get_mpz(),
+                       N.get_mpz());
+            T_m *= f_prime_m_inv;
+            T_m %= N;
+            if (T_m.is_negative()) T_m += N;
         }
-        T_m *= f_prime_m_inv;
-        T_m %= N;
-        if (T_m.is_negative()) T_m += N;
+        // else: T(m) 就是 √(∏)(m) (小 N 老路径),无需进一步处理。
 
         result.value = std::move(T_m);
         result.success = true;
