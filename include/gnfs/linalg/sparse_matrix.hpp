@@ -38,6 +38,14 @@ public:
         indices_.push_back(col);
     }
 
+    /// 快速 append:**调用方必须保证 col 在此行中尚未出现**。
+    /// 用于 build_row 中按因子顺序累加 — 已知不重复时跳过 O(n) 检查。
+    /// 调用结束后必须显式 `ensure_sorted()` 来去重并恢复排序不变量。
+    void append_unchecked(uint32_t col) {
+        indices_.push_back(col);
+        sorted_ = false;
+    }
+
     /// 清除位
     void clear(uint32_t col) {
         ensure_sorted();
@@ -402,56 +410,6 @@ public:
 private:
     std::vector<uint64_t> bits_;
     size_t size_ = 0;
-};
-
-/// 64 位块矩阵，用于 Block Lanczos
-/// 每个"元素"是一个 64 位块
-class BlockMatrix {
-public:
-    BlockMatrix() = default;
-
-    BlockMatrix(size_t num_rows, size_t num_block_cols)
-        : data_(num_rows * num_block_cols, 0)
-        , num_rows_(num_rows)
-        , num_block_cols_(num_block_cols) {}
-
-    /// 访问块
-    [[nodiscard]] uint64_t& block(size_t row, size_t col) {
-        return data_[row * num_block_cols_ + col];
-    }
-
-    [[nodiscard]] uint64_t block(size_t row, size_t col) const {
-        return data_[row * num_block_cols_ + col];
-    }
-
-    /// 获取行数
-    [[nodiscard]] size_t num_rows() const noexcept {
-        return num_rows_;
-    }
-
-    /// 获取块列数
-    [[nodiscard]] size_t num_block_cols() const noexcept {
-        return num_block_cols_;
-    }
-
-    /// 清空
-    void clear() {
-        std::fill(data_.begin(), data_.end(), 0);
-    }
-
-    /// 获取底层数据
-    [[nodiscard]] const std::vector<uint64_t>& data() const noexcept {
-        return data_;
-    }
-
-    [[nodiscard]] std::vector<uint64_t>& data() noexcept {
-        return data_;
-    }
-
-private:
-    std::vector<uint64_t> data_;
-    size_t num_rows_ = 0;
-    size_t num_block_cols_ = 0;
 };
 
 /// CSR (Compressed Sparse Row) read-only view of a SparseMatrix.

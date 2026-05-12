@@ -89,6 +89,10 @@ public:
     bool operator<=(const Integer& other) const;
     bool operator>=(const Integer& other) const;
 
+    // 与 int64_t/uint64_t 直接比较,避免临时 Integer 分配 (走 mpz_cmp_si/ui)
+    bool operator==(int64_t rhs) const;
+    bool operator!=(int64_t rhs) const { return !(*this == rhs); }
+
     int compare(const Integer& other) const;
 
     // Bit operations

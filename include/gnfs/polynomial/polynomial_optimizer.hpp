@@ -221,7 +221,21 @@ public:
         double c0 = std::abs(f[0].to_double());
         double cd = std::abs(f[d].to_double());
 
-        if (cd < 1e-10 || c0 < 1e-10) {
+        // cd 极小或溢出 inf 时 fallback s=1 是粗暴的 — Murphy 评估会严重偏离最优。
+        // 当 cd 病态但其他系数可用时,尝试 (|c_{d-1}|/|c_d|) 作为近似;
+        // c0=0 时改用相邻系数比。
+        if (!std::isfinite(cd) || cd < 1e-10) {
+            // c_d 病态 → fallback s=1
+            return 1.0;
+        }
+        if (!std::isfinite(c0) || c0 < 1e-10) {
+            // c_0 ≈ 0:用 |c_1|/|c_d| 作为替代估计(degree d≥1)
+            if (d >= 1) {
+                double c1 = std::abs(f[1].to_double());
+                if (std::isfinite(c1) && c1 >= 1e-10) {
+                    return std::pow(c1 / cd, 1.0 / (d > 1 ? (d - 1) : 1));
+                }
+            }
             return 1.0;
         }
 

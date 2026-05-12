@@ -685,14 +685,17 @@ void test_cofactor_classify_edge_cases() {
         assert(is_perfect_square(1, root) && root == 1);
     }
 
-    // is_perfect_power(0), (1)
+    // is_perfect_power: n<2 不是有意义的"完全幂",返回 false (新语义)
     {
         uint64_t base;
         uint8_t exp;
-        assert(is_perfect_power(0, base, exp));
-        assert(base == 0 && exp == 1);
-        assert(is_perfect_power(1, base, exp));
-        assert(base == 1 && exp == 1);
+        assert(!is_perfect_power(0, base, exp));
+        assert(!is_perfect_power(1, base, exp));
+        // n=2 是素数,不是 perfect power (b^k with k>=2)
+        assert(!is_perfect_power(2, base, exp));
+        // n=4 = 2² 是
+        assert(is_perfect_power(4, base, exp));
+        assert(base == 2 && exp == 2);
     }
 
     // pollard_rho with even number → should return 2
@@ -1543,13 +1546,13 @@ void test_couveignes_edge_cases() {
     auto ctx = BaseMSelector::create_context(n, poly_result);
     NumberField nf(ctx);
 
-    // Test 1: Empty ab_pairs → returns nf.one()
+    // Test 1: Empty ab_pairs → returns nullopt (linalg layer should never
+    // produce an empty dependency; silently returning 1 would mask bugs by
+    // making the caller compute trivial gcd(±1, N)).
     {
         CouveignesSqrt cs;
         auto result = cs.compute({}, nf);
-        assert(result.has_value());
-        // one() should have coeff(0)=1
-        assert(result->coeff(0) == Integer(int64_t(1)));
+        assert(!result.has_value());
     }
 
     // Test 2: Default config construction

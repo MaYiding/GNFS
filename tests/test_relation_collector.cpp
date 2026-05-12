@@ -333,6 +333,64 @@ void test_callback_no_deadlock() {
     std::cout << "  Callback no-deadlock: PASS" << std::endl;
 }
 
+// CLAUDE.md 强制约定:必须拒绝 gcd(a-bm, N)>1 的关系。
+// 该约定在没 set_polynomial_context 时退化为旧行为(只查 b/gcd(a,b)),
+// 但一旦调用 set_polynomial_context(n, m) 后,add/load/merge 三条路径
+// 都必须拒绝退化关系。这是测试该回归保护。
+void test_n_divisibility_rejection() {
+    std::cout << "Testing N-divisibility rejection (CLAUDE.md mandate)..." << std::endl;
+
+    // N = 143 = 11 × 13, m = 12. (a - b*m) mod N == 0 当 a ≡ 12·b (mod 143)。
+    // 取 (a, b) = (12, 1):a - bm = 12 - 12 = 0 → gcd(0, 143) = 143 > 1。
+    Integer n("143");
+    Integer m("12");
+
+    CollectorConfig config;
+    config.check_duplicates = false;
+
+    // (1) 未设置 polynomial context:退回旧行为,任何 b>0 且 gcd(a,b)=1 的关系通过
+    {
+        RelationCollector collector(config);
+        Relation rel(12, 1);
+        bool added = collector.add(std::move(rel));
+        assert(added);
+        auto st = collector.stats();
+        assert(st.total_relations == 1);
+        assert(st.n_divisible_rejected == 0);
+    }
+
+    // (2) 设置后:gcd(a-bm, N) > 1 的关系被拒
+    {
+        RelationCollector collector(config);
+        collector.set_polynomial_context(n, m);
+
+        // 退化关系 (12, 1):a - b*m = 0 → gcd(0, 143) = 143
+        Relation bad_rel(12, 1);
+        bool added = collector.add(std::move(bad_rel));
+        assert(!added);
+        auto st = collector.stats();
+        assert(st.total_relations == 0);
+        assert(st.n_divisible_rejected == 1);
+
+        // 另一退化关系 (155, 1):155 - 12 = 143 → gcd(143, 143) = 143
+        Relation bad_rel2(155, 1);
+        added = collector.add(std::move(bad_rel2));
+        assert(!added);
+        st = collector.stats();
+        assert(st.n_divisible_rejected == 2);
+
+        // 正常关系 (5, 1):5 - 12 = -7, gcd(7, 143) = 1 → 接受
+        Relation good_rel(5, 1);
+        added = collector.add(std::move(good_rel));
+        assert(added);
+        st = collector.stats();
+        assert(st.total_relations == 1);
+        assert(st.n_divisible_rejected == 2);
+    }
+
+    std::cout << "  N-divisibility rejection: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== Relation Collector Tests ===" << std::endl;
 
@@ -348,6 +406,7 @@ int main() {
     test_sort_relations();
     test_callback();
     test_callback_no_deadlock();
+    test_n_divisibility_rejection();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

@@ -143,57 +143,28 @@ private:
     }
 
     /// 从消元后的矩阵构建零空间基
+    /// 矩阵入口必须是 RREF(eliminate() 输出),pivot 行只在 pivot_col 处为 1
+    /// (该列其他行都已被消)。对自由变量 fc_i 构造 null vector:
+    ///   null[fc_i] = 1, 其他 fc 为 0
+    ///   pivot_row[j] 方程: pivot_col[j] = M[j, fc_i] (其他 fc 贡献为 0)
+    /// 所以 null[pivot_col[j]] = M[pivot_row=j, fc_i]。
+    /// 复杂度 O(rank·num_null) — 比原版 O(rank·free²) 快一个量级。
     void build_null_space(GaussianResult& result,
                           const SparseMatrix& matrix) const {
 
         size_t num_cols = matrix.num_cols();
-
-        // 对于每个自由变量列，构建一个零空间向量
         size_t num_null = std::min(result.free_cols.size(), config_.max_null_vectors);
 
         for (size_t i = 0; i < num_null; ++i) {
             size_t free_col = result.free_cols[i];
 
-            // 构建零空间向量：设置自由变量为 1
             BitVector null_vec(num_cols);
             null_vec.set(free_col);
 
-            // 从主元行反推其他变量的值
-            // 从底部向上遍历主元
-            for (size_t j = result.pivot_cols.size(); j > 0; --j) {
-                size_t pivot_col = result.pivot_cols[j - 1];
-                size_t pivot_row = j - 1;
-
-                // 检查这个主元行在 free_col 列是否有非零
-                // 如果有，需要设置 pivot_col 为 1 来消除
-                bool need_set = false;
-
-                // 检查 pivot_row 行中，所有已设置的自由变量列
-                for (size_t k = i; k < result.free_cols.size(); ++k) {
-                    size_t fc = result.free_cols[k];
-                    if (k == i) {
-                        // 当前自由变量
-                        if (matrix.test(pivot_row, fc)) {
-                            need_set = !need_set;
-                        }
-                    } else if (null_vec.test(fc)) {
-                        // 已设置的自由变量
-                        if (matrix.test(pivot_row, fc)) {
-                            need_set = !need_set;
-                        }
-                    }
-                }
-
-                // 检查已设置的主元变量
-                for (size_t k = j; k < result.pivot_cols.size(); ++k) {
-                    size_t pc = result.pivot_cols[k];
-                    if (null_vec.test(pc) && matrix.test(pivot_row, pc)) {
-                        need_set = !need_set;
-                    }
-                }
-
-                if (need_set) {
-                    null_vec.set(pivot_col);
+            // RREF 下直接读 M[pivot_row=j, free_col]
+            for (size_t j = 0; j < result.pivot_cols.size(); ++j) {
+                if (matrix.test(j, free_col)) {
+                    null_vec.set(result.pivot_cols[j]);
                 }
             }
 

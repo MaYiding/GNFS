@@ -9,7 +9,9 @@
 #include "../sqrt/class_group.hpp"
 #include "../sqrt/modular_poly.hpp"
 #include "../polynomial/int_polynomial.hpp"
+#include "../util/thread_pool.hpp"
 
+#include <cassert>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -297,10 +299,12 @@ public:
         result.matrix = SparseMatrix(relations.size(), result.mapping.total_columns());
         result.row_to_relation.resize(relations.size());
 
-        for (size_t i = 0; i < relations.size(); ++i) {
-            if (config_.verbose && i % 1000 == 0) {
-                std::cerr << "[Matrix] Building row " << i << "/" << relations.size() << "\n";
-            }
+        // 主循环并行化:每行 i 独立写入 SparseMatrix::row(i) — vector<SparseRow>
+        // 元素互不冲突;build_row_with_qc / class_group->compute_character /
+        // schirokauer->compute_flat 全部 const,无内部状态修改。
+        // SchirokauerMap::compute_flat 1M+ relations 是热点。
+        gnfs::util::ThreadPool pool(0);
+        pool.parallel_for_index(0, relations.size(), [&](size_t i) {
             build_row_with_qc(result.matrix.row(i), relations[i], fb, ctx, result.mapping);
 
             // ClassGroup characters: χ is a homomorphism, so for merged relation
@@ -346,7 +350,7 @@ public:
             }
 
             result.row_to_relation[i] = i;
-        }
+        });
 
         return result;
     }
@@ -656,7 +660,7 @@ private:
 
             for (const auto& [idx, exp] : exponents) {
                 if (exp % 2 == 1 && idx < mapping.num_rational_fb) {
-                    row.set(static_cast<uint32_t>(mapping.rat_fb_start() + idx));
+                    row.append_unchecked(static_cast<uint32_t>(mapping.rat_fb_start() + idx));
                 }
             }
         }
@@ -670,7 +674,7 @@ private:
 
             for (const auto& [idx, exp] : exponents) {
                 if (exp % 2 == 1 && idx < mapping.num_algebraic_fb) {
-                    row.set(static_cast<uint32_t>(mapping.alg_fb_start() + idx));
+                    row.append_unchecked(static_cast<uint32_t>(mapping.alg_fb_start() + idx));
                 }
             }
         }
@@ -686,7 +690,7 @@ private:
                 if (exp % 2 == 1) {
                     auto it = mapping.rat_lp_to_col.find(p);
                     if (it != mapping.rat_lp_to_col.end()) {
-                        row.set(it->second);
+                        row.append_unchecked(it->second);
                     }
                 }
             }
@@ -705,11 +709,14 @@ private:
                 if (exp % 2 == 1) {
                     auto it = mapping.alg_lp_to_col.find(key);
                     if (it != mapping.alg_lp_to_col.end()) {
-                        row.set(it->second);
+                        row.append_unchecked(it->second);
                     }
                 }
             }
         }
+
+        // build_with_qc 后续会 test() sign 列;ensure_sorted 让 test 走 O(log n) 二分。
+        row.ensure_sorted();
     }
 
     /// 构建带二次特征的单行
@@ -816,7 +823,10 @@ private:
         if (r == 1) return 1;
         if (r == p - 1) return -1;
 
-        return 0;  // Should not reach
+        // a^((p-1)/2) mod p ∈ {0, 1, p-1} for prime p (Euler's criterion),
+        // 走到这里说明 p 不是素数或 powmod 有 bug。
+        assert(false && "legendre_symbol: unexpected residue");
+        return 0;
     }
 
     /// 找下一个素数
@@ -831,13 +841,17 @@ private:
         return n;
     }
 
-    /// 简单素性测试
+    /// 简单素性测试。整数 sqrt 避免 std::sqrt(double) 在接近 2^32 边界的精度问题。
     [[nodiscard]] static bool is_prime(uint32_t n) {
         if (n < 2) return false;
         if (n == 2) return true;
         if (n % 2 == 0) return false;
 
-        uint32_t sqrt_n = static_cast<uint32_t>(std::sqrt(n));
+        // 整数 sqrt:用 floor(sqrt(double)) + 修正,防止 n 接近 UINT32_MAX 时
+        // double 浮点丢精度导致 sqrt_n 少 1 漏检。
+        uint32_t sqrt_n = static_cast<uint32_t>(std::sqrt(static_cast<double>(n)));
+        while (static_cast<uint64_t>(sqrt_n + 1) * (sqrt_n + 1) <= n) ++sqrt_n;
+        while (static_cast<uint64_t>(sqrt_n) * sqrt_n > n) --sqrt_n;
         for (uint32_t i = 3; i <= sqrt_n; i += 2) {
             if (n % i == 0) return false;
         }

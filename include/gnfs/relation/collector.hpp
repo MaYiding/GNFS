@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../core/integer.hpp"
 #include "../core/relation.hpp"
 #include "../core/types.hpp"
 #include "../util/safe_math.hpp"
@@ -10,6 +11,7 @@
 #include <functional>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -18,6 +20,7 @@ namespace gnfs::relation {
 
 using core::ABPair;
 using core::ABPairHash;
+using core::Integer;
 using core::Relation;
 
 /// 关系收集器统计
@@ -28,6 +31,7 @@ struct CollectorStats {
     size_t partial_2lp = 0;           // 2LP 部分关系
     size_t duplicates_rejected = 0;   // 拒绝的重复关系
     size_t invalid_rejected = 0;      // 拒绝的无效关系
+    size_t n_divisible_rejected = 0;  // 拒绝的 gcd(a-bm, N) > 1 关系 (CLAUDE.md 强制)
 };
 
 /// 关系收集器配置
@@ -52,6 +56,15 @@ public:
         if (!config_.output_file.empty()) {
             open_output_file();
         }
+    }
+
+    /// 设置数论上下文(N 和 m),启用 CLAUDE.md 强制的 gcd(a-bm, N)>1 校验。
+    /// 没设置时退回旧行为(只检 gcd(a,b)=1)。引用必须在 collector 生存期内有效。
+    /// 设置后 add()/load()/merge() 都会拒绝 N|rat_value 的退化关系。
+    void set_polynomial_context(const Integer& n, const Integer& m) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        n_for_validation_ = &n;
+        m_for_validation_ = &m;
     }
 
     /// 析构（关闭文件）
@@ -84,8 +97,10 @@ public:
             }
 
             // 验证关系
-            if (!validate(rel)) {
-                ++stats_.invalid_rejected;
+            int kind = validate_with_kind(rel);
+            if (kind != 0) {
+                if (kind == -2) ++stats_.n_divisible_rejected;
+                else ++stats_.invalid_rejected;
                 return false;
             }
 
@@ -231,7 +246,12 @@ public:
             auto rel = Relation::deserialize(ifs);
             if (!ifs) return false;
 
-            if (!validate(rel)) continue;
+            int kind = validate_with_kind(rel);
+            if (kind != 0) {
+                if (kind == -2) ++stats_.n_divisible_rejected;
+                else ++stats_.invalid_rejected;
+                continue;
+            }
 
             if (config_.check_duplicates) {
                 seen_.insert(rel.ab());
@@ -253,7 +273,12 @@ public:
         for (const auto& rel : other.relations_) {
             Relation copy = rel.clone();
 
-            if (!validate(copy)) continue;
+            int kind = validate_with_kind(copy);
+            if (kind != 0) {
+                if (kind == -2) ++stats_.n_divisible_rejected;
+                else ++stats_.invalid_rejected;
+                continue;
+            }
 
             // 检查重复
             if (config_.check_duplicates) {
@@ -289,17 +314,39 @@ private:
     std::ofstream output_stream_;
     NewRelationCallback callback_;
 
-    /// 验证关系
-    [[nodiscard]] bool validate(const Relation& rel) const noexcept {
+    // CLAUDE.md 强制约定:必须拒绝 gcd(a-bm, N)>1 的关系。
+    // 通过 set_polynomial_context() 设置;未设置时退回旧行为。
+    const Integer* n_for_validation_ = nullptr;
+    const Integer* m_for_validation_ = nullptr;
+
+    /// 验证关系。mutex 内调用。
+    /// 返回 0=通过,-1=无效(b/gcd),-2=N-divisible(CLAUDE.md 强制拒绝)
+    [[nodiscard]] int validate_with_kind(const Relation& rel) const {
         // b 必须 > 0
-        if (rel.b == 0) return false;
+        if (rel.b == 0) return -1;
 
         // gcd(a, b) 必须 = 1
         if (std::gcd(util::safe_abs(rel.a), rel.b) != 1) {
-            return false;
+            return -1;
         }
 
-        return true;
+        // CLAUDE.md: gcd(a - bm, N) 必须 = 1。
+        // 否则关系是退化的 (∏(a-bm) ≡ 0 mod N → X=0 → trivial gcd)。
+        if (n_for_validation_ && m_for_validation_) {
+            Integer val(rel.a);
+            Integer bm = m_for_validation_->clone();
+            bm *= Integer(static_cast<int64_t>(rel.b));
+            val -= bm;
+            Integer g = core::gcd(val, *n_for_validation_);
+            if (g.compare(Integer(int64_t(1))) != 0) return -2;
+        }
+
+        return 0;
+    }
+
+    /// 兼容老接口
+    [[nodiscard]] bool validate(const Relation& rel) const {
+        return validate_with_kind(rel) == 0;
     }
 
     /// 更新统计（不含 callback，callback 在 mutex 外调用以防死锁）

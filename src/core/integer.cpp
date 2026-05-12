@@ -200,6 +200,10 @@ bool Integer::operator==(const Integer& other) const {
     return mpz_cmp(value_, other.value_) == 0;
 }
 
+bool Integer::operator==(int64_t rhs) const {
+    return mpz_cmp_si(value_, rhs) == 0;
+}
+
 bool Integer::operator!=(const Integer& other) const {
     return mpz_cmp(value_, other.value_) != 0;
 }

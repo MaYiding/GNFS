@@ -8,6 +8,7 @@
 #include "../core/polynomial_context.hpp"
 #include "../linalg/sparse_matrix.hpp"
 
+#include <atomic>
 #include <map>
 #include <unordered_map>
 #include <vector>
@@ -127,17 +128,17 @@ public:
             HenselSqrt::Config hcfg;
             hcfg.verbose = (ab_pairs.size() >= 500);
             // Reuse cached inert prime across deps for the same polynomial
-            if (cached_inert_prime_ != 0) {
-                hcfg.cached_inert_prime = cached_inert_prime_;
+            uint64_t cached = cached_inert_prime_.load(std::memory_order_relaxed);
+            if (cached != 0) {
+                hcfg.cached_inert_prime = cached;
             }
             HenselSqrt hensel(hcfg);
             auto sqrt_val = hensel.compute(ab_pairs, nf);
             if (sqrt_val) {
-                if (cached_inert_prime_ == 0) {
-                    cached_inert_prime_ = hcfg.cached_inert_prime;
-                    if (cached_inert_prime_ == 0) {
-                        cached_inert_prime_ = hensel.last_inert_prime();
-                    }
+                if (cached == 0) {
+                    uint64_t new_cached = hcfg.cached_inert_prime;
+                    if (new_cached == 0) new_cached = hensel.last_inert_prime();
+                    cached_inert_prime_.store(new_cached, std::memory_order_relaxed);
                 }
                 result.value = std::move(*sqrt_val);
                 result.success = true;
@@ -148,12 +149,11 @@ public:
             // Fall through to Couveignes as alternative method.
         }
 
-        if (config_.use_couveignes) {
-            // Fall back to Couveignes algorithm
-            return compute_couveignes(ab_pairs, nf);
-        } else {
-            return compute_heuristic(ab_pairs, nf);
-        }
+        // Couveignes is the only correct algorithm in this fallback chain.
+        // The old `compute_heuristic` branch (product^((N+1)/2)) was
+        // mathematically invalid for composite N and always returned failure;
+        // it has been removed.
+        return compute_couveignes(ab_pairs, nf);
     }
 
     /// 简化版：假设乘积已经是数域元素
@@ -183,7 +183,9 @@ public:
 
 private:
     Config config_;
-    mutable uint64_t cached_inert_prime_ = 0;
+    // mutable atomic — 当前 pipeline 顺序处理 dependencies,但 const compute()
+    // 读写 cached_inert_prime_ 是潜在线程不安全。atomic relaxed 提供未来安全网。
+    mutable std::atomic<uint64_t> cached_inert_prime_{0};
 
     /// 使用 Couveignes 算法计算平方根
     [[nodiscard]] AlgebraicSqrtResult compute_couveignes(
@@ -215,19 +217,6 @@ private:
         return result;
     }
 
-    /// 启发式后备（已废弃——数学不正确）
-    /// product^((N+1)/2) 仅对素数 p ≡ 3 (mod 4) 的 Z/pZ 有效，
-    /// 对合数 N 的数域环 (Z/NZ)[α]/f(α) 没有数学依据。
-    /// 此方法现在始终返回失败。
-    [[nodiscard]] AlgebraicSqrtResult compute_heuristic(
-            const std::vector<std::pair<int64_t, uint64_t>>& /* ab_pairs */,
-            const NumberField& /* nf */) const {
-
-        AlgebraicSqrtResult result;
-        result.error = "Heuristic sqrt via elem^((N+1)/2) is mathematically "
-                       "invalid for composite N; use Hensel or Couveignes";
-        return result;
-    }
 };
 
 /// 便捷函数：计算代数平方根

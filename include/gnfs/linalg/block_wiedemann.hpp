@@ -37,8 +37,10 @@ public:
 private:
     /// Three-phase Block Wiedemann for large sparse matrices.
     /// Works on the implicit symmetric matrix B = M · M^T.
+    /// seed parameterizes the X / Y random vectors so the caller can retry
+    /// with different seeds when one happens to produce trivial sequences.
     std::vector<std::vector<bool>> block_wiedemann_solve(
-        const SparseMatrix& matrix, size_t max_deps);
+        const SparseMatrix& matrix, size_t max_deps, uint64_t seed = 42);
 
     // --- BW Phase 1: Krylov sequence generation ---
 

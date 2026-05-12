@@ -41,7 +41,7 @@ public:
     /// @param relations 所有关系
     /// @param fb 因子基
     /// @param n 模数
-    /// @param m 多项式根（用于计算 a + b*m 的符号）
+    /// @param m 多项式根（用于计算 a - b*m 的符号，GNFS a - b·α 约定）
     /// @return 平方根结果（模 n）
     [[nodiscard]] RationalSqrtResult compute(
             const BitVector& dependency,
@@ -56,7 +56,7 @@ public:
         // 累积每个素数的指数
         std::unordered_map<uint32_t, uint64_t> fb_exponents;    // 因子基素数指数
         std::unordered_map<uint64_t, uint64_t> lp_exponents;    // 大素数指数
-        bool has_negative = false;  // 是否有负数的 (a + b*m) 值
+        bool has_negative = false;  // 是否有负数的 (a - b*m) 值
 
         for (size_t i = 0; i < relations.size(); ++i) {
             if (!dependency.test(i)) continue;
@@ -182,6 +182,16 @@ public:
                 if (product.compare(n) == 0) {
                     product = Integer(0);
                 }
+            }
+
+            // 退化乘积 ≡ 0 (mod N) 表示某个 (a - b·m) 与 N 不互素。
+            // 让它沉默通过会让上层算出 X=0,gcd(X-Y, N)=N 平凡。
+            // RelationCollector 应在入口拒绝 gcd(a-bm, N)>1 的关系,但 bypass
+            // (load()/merge()/直接 add()) 可能跳过校验,这里加最后一道防线。
+            if (product.is_zero()) {
+                result.error = "Rational sqrt: degenerate product ≡ 0 (mod N), "
+                               "relation set contains a - b·m divisible by N";
+                return result;
             }
 
             if (squared.compare(product) != 0) {
