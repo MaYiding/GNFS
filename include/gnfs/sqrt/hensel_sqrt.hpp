@@ -1309,16 +1309,21 @@ private:
         std::vector<Integer> result(2 * d - 1);
         for (size_t i = 0; i < result.size(); ++i) result[i] = Integer(int64_t(0));
 
+        // 累加 d² 个 a[i]*b[j] 不做 mod(每个 < modulus²,d ≤ 8 时 result
+        // 单系数 ≤ d·modulus²,GMP 自动扩存),最后对 2d-1 个系数一次性 mod。
+        // 原代码每 inner iter 双 mod (term%=mod + result%=mod) = d²·2 = 50 次 mod
+        // (d=5),新代码仅 2d-1 = 9 次 mod。Hensel lift 大循环 hot path。
         for (uint32_t i = 0; i < d; ++i) {
             if (a[i].is_zero()) continue;
             for (uint32_t j = 0; j < d; ++j) {
                 if (b[j].is_zero()) continue;
                 Integer term = a[i].clone();
                 term *= b[j];
-                term %= modulus;
                 result[i + j] += term;
-                result[i + j] %= modulus;
             }
+        }
+        for (size_t i = 0; i < result.size(); ++i) {
+            result[i] %= modulus;
         }
 
         // Reduce mod f using pre-computed f_lead_inv
