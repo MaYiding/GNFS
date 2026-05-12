@@ -91,27 +91,28 @@ public:
         size_t alive_rows = n_rows;
         size_t alive_cols = n_cols;
 
-        // col_to_rows 在 pass 循环外预分配,避免每 pass 重新 alloc
-        // n_cols 个 std::vector(标准 GNFS 50-digit ~80万列,100 passes
-        // 下原 alloc/free 是 8000 万次)。Phase 1 worklist 已增量维护,
-        // Phase 2 仍需重建外层结构 — 但每条 inner vec 通过 clear() 复用
-        // 避免 push_back 触发 reallocate。
+        // col_to_rows 在 pass 循环外预分配,且只在 pass 0 之前构建一次。
+        // 之后每 pass 都通过 Phase 1 worklist + Phase 2 incremental update 维护
+        // (而非冷启动重建)。
+        //
+        // 旧实现 (commit a203aee, v10): 每 pass 顶端 for-clear + 重建,虽
+        // 保留 capacity 但仍要扫遍全部 alive rows × nnz_per_row = O(nnz)
+        // 操作。100 passes × 1e7 nnz = 1e9 push_back。
+        //
+        // 新实现 (v15): pass 0 之前构建一次,后续 Phase 1/2 增量。
         std::vector<std::vector<size_t>> col_to_rows(n_cols);
+        for (size_t r = 0; r < n_rows; ++r) {
+            if (!row_alive[r]) continue;
+            for (auto c : working_rows[r].indices()) {
+                if (c < n_cols && col_alive[c]) {
+                    col_to_rows[c].push_back(r);
+                }
+            }
+        }
 
         // ── Iterative elimination ──
         for (size_t pass = 0; pass < config.max_passes; ++pass) {
             size_t eliminated_this_pass = 0;
-
-            // 清空但保留 inner vec capacity(下轮 push_back 通常不 realloc)
-            for (auto& v : col_to_rows) v.clear();
-            for (size_t r = 0; r < n_rows; ++r) {
-                if (!row_alive[r]) continue;
-                for (auto c : working_rows[r].indices()) {
-                    if (c < n_cols && col_alive[c]) {
-                        col_to_rows[c].push_back(r);
-                    }
-                }
-            }
 
             // Phase 1: Eliminate ALL weight-1 columns (cascading)
             // When a row is removed, other columns lose a contributor.
@@ -176,6 +177,14 @@ public:
                     if (working_rows[r1].weight() < working_rows[r2].weight())
                         std::swap(r1, r2);
 
+                    // Snapshot old indices BEFORE xor — 用于 incremental col_to_rows
+                    // 更新。observation: new_r1 = old_r1 ⊕ old_r2 (symmetric diff),
+                    // 因此 r1 在 col c2 的隶属翻转 iff c2 ∈ old_r2:
+                    //   c2 ∈ old_r1 ∩ old_r2 → r1 离开 c2 (XOR 抵消)
+                    //   c2 ∈ old_r2 \ old_r1 → r1 加入 c2
+                    auto old_r1_indices = working_rows[r1].indices();
+                    auto old_r2_indices = working_rows[r2].indices();
+
                     // Merge: row[r1] ^= row[r2]
                     working_rows[r1].xor_with(working_rows[r2]);
 
@@ -197,6 +206,42 @@ public:
                         i += count;
                     }
                     comp1 = std::move(deduped);
+
+                    // Incremental col_to_rows update: 仅扫 old_r2_indices,
+                    // 两指针法判断 c2 是否曾在 old_r1。
+                    auto it1 = old_r1_indices.begin();
+                    for (auto c2_raw : old_r2_indices) {
+                        if (c2_raw >= n_cols) continue;
+                        size_t c2 = static_cast<size_t>(c2_raw);
+                        if (!col_alive[c2]) continue;
+
+                        // Advance it1 to first element >= c2
+                        while (it1 != old_r1_indices.end() && *it1 < c2_raw) ++it1;
+                        bool was_in_r1 = (it1 != old_r1_indices.end() && *it1 == c2_raw);
+
+                        auto& rows = col_to_rows[c2];
+
+                        // 移除 r2 (r2 即将被 kill, 不应再出现在 col_to_rows)
+                        rows.erase(std::remove(rows.begin(), rows.end(), r2),
+                                   rows.end());
+
+                        if (was_in_r1) {
+                            // r1 离开 c2 (XOR 抵消)
+                            rows.erase(std::remove(rows.begin(), rows.end(), r1),
+                                       rows.end());
+                            // 若 c2 ≠ merged col c 且变 w1, 后续 pass 会捡起
+                        }
+                        // else: r1 加入 c2
+                        else {
+                            rows.push_back(r1);
+                        }
+
+                        // 若某 col 因移除变空, 它已经死
+                        if (rows.empty() && col_alive[c2] && c2 != c) {
+                            col_alive[c2] = false;
+                            --alive_cols;
+                        }
+                    }
 
                     // Kill r2 and column c
                     row_alive[r2] = false;
