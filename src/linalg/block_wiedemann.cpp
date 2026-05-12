@@ -16,10 +16,14 @@ namespace {
 
 void bw_spmv_forward(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
                      gnfs::util::ThreadPool& pool) {
+    // CSRMatrix ctor validates col < num_cols. x.length == M.num_cols() by
+    // contract, so the per-element bounds check that used to be here is
+    // redundant — removed for SpMV hot-path speed.
+    assert(x.length == M.num_cols());
     pool.parallel_for_index(0, M.num_rows(), [&](size_t i) {
         uint64_t acc = 0;
         for (const uint32_t* p = M.row_begin(i); p != M.row_end(i); ++p)
-            if (*p < x.length) acc ^= x.data[*p];
+            acc ^= x.data[*p];
         y.data[i] = acc;
     });
 }
@@ -28,6 +32,9 @@ void bw_spmv_transpose(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
                        gnfs::util::ThreadPool& pool) {
     const size_t m = M.num_rows();
     const size_t n = y.length;
+    // CSRMatrix ctor validates col < num_cols; n == num_cols by contract.
+    assert(n == M.num_cols());
+    assert(x.length == m);
     const size_t T = pool.num_threads();
     const size_t chunk = (m + T - 1) / T;
 
@@ -40,13 +47,13 @@ void bw_spmv_transpose(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
         size_t end_row = std::min(start + chunk, m);
         if (start >= m) break;
         T_used = t + 1;
-        futures.push_back(pool.submit([&M, &x, &locals, t, start, end_row, n]() {
+        futures.push_back(pool.submit([&M, &x, &locals, t, start, end_row]() {
             auto& local = locals[t];
             for (size_t i = start; i < end_row; ++i) {
                 uint64_t xi = x.data[i];
                 if (xi == 0) continue;
                 for (const uint32_t* p = M.row_begin(i); p != M.row_end(i); ++p)
-                    if (*p < n) local[*p] ^= xi;
+                    local[*p] ^= xi;
             }
         }));
     }

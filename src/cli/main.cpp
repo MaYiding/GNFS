@@ -486,7 +486,6 @@ static void run_repl() {
                 else if (key == "rational_bound" || key == "fb_rational") repl_config.rational_bound = static_cast<uint32_t>(std::stoul(val));
                 else if (key == "algebraic_bound" || key == "fb_algebraic") repl_config.algebraic_bound = static_cast<uint32_t>(std::stoul(val));
                 else if (key == "large_prime_bound" || key == "lp_bound") repl_config.large_prime_bound = std::stoull(val);
-                else if (key == "threads") repl_config.threads = std::stoi(val);
                 else { std::cout << TR(S::REPL_UNKNOWN_KEY) << " " << key << "\n"; continue; }
                 std::cout << TR(S::REPL_SET_OK) << " " << key << " = " << val << "\n";
             } catch (const std::exception& e) {
@@ -586,7 +585,13 @@ int main(int argc, char* argv[]) {
         else if (arg == "--lp-bound" && i + 1 < argc) cli_config.large_prime_bound = std::stoull(argv[++i]);
         else if (arg == "--sieve-width" && i + 1 < argc) cli_config.sieve_width = std::stoi(argv[++i]);
         else if (arg == "--sieve-height" && i + 1 < argc) cli_config.sieve_height = std::stoi(argv[++i]);
-        else if (arg == "--threads" && i + 1 < argc) cli_config.threads = std::stoi(argv[++i]);
+        else if (arg == "--threads" && i + 1 < argc) {
+            // --threads is reserved; thread count is currently auto-detected
+            // from hardware_concurrency(). Accept and ignore the value with
+            // a warning so existing scripts don't break.
+            std::stoi(argv[++i]);  // validate but discard
+            std::cerr << "[warn] --threads is currently ignored (auto-detected from hardware_concurrency)\n";
+        }
         else if (arg[0] == '-') {
             std::cerr << TR(S::ERR_UNKNOWN_OPT) << " " << arg << "\n";
             return 1;

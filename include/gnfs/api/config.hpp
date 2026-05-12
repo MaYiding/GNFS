@@ -33,8 +33,9 @@ struct Config {
     std::optional<int32_t> sieve_width;
     std::optional<int32_t> sieve_height;
 
-    // Threading
-    std::optional<int> threads;
+    // Note: thread count is auto-detected from hardware_concurrency() at
+    // ThreadPool construction; --threads CLI option was previously parsed
+    // but never propagated. Removed to avoid silent confusion.
 
     // Verbosity
     std::optional<bool> verbose;
@@ -100,7 +101,6 @@ struct Config {
             else if (key == "large_prime_bound") cfg.large_prime_bound = std::stoull(val);
             else if (key == "sieve_width")      cfg.sieve_width = std::stoi(val);
             else if (key == "sieve_height")     cfg.sieve_height = std::stoi(val);
-            else if (key == "threads")          cfg.threads = std::stoi(val);
             else if (key == "verbose")          cfg.verbose = (val == "true" || val == "1");
             else if (key == "output_file")      cfg.output_file = val;
             else if (key == "output_format")    cfg.output_format = val;
@@ -120,7 +120,6 @@ struct Config {
     Config& set_large_prime_bound(uint64_t b) { large_prime_bound = b; return *this; }
     Config& set_sieve_width(int32_t w)        { sieve_width = w; return *this; }
     Config& set_sieve_height(int32_t h)       { sieve_height = h; return *this; }
-    Config& set_threads(int t)                { threads = t; return *this; }
     Config& set_verbose(bool v)               { verbose = v; return *this; }
     Config& set_output_file(const std::string& f)   { output_file = f; return *this; }
     Config& set_output_format(const std::string& f) { output_format = f; return *this; }
@@ -135,7 +134,6 @@ struct Config {
         if (other.large_prime_bound) result.large_prime_bound = other.large_prime_bound;
         if (other.sieve_width)       result.sieve_width = other.sieve_width;
         if (other.sieve_height)      result.sieve_height = other.sieve_height;
-        if (other.threads)           result.threads = other.threads;
         if (other.verbose)           result.verbose = other.verbose;
         if (other.output_file)       result.output_file = other.output_file;
         if (other.output_format)     result.output_format = other.output_format;
@@ -175,7 +173,6 @@ struct Config {
         if (large_prime_bound) os << "large_prime_bound = " << *large_prime_bound << "\n";
         if (sieve_width)      os << "sieve_width = " << *sieve_width << "\n";
         if (sieve_height)     os << "sieve_height = " << *sieve_height << "\n";
-        if (threads)          os << "threads = " << *threads << "\n";
         if (verbose)          os << "verbose = " << (*verbose ? "true" : "false") << "\n";
         if (output_file)      os << "output_file = " << *output_file << "\n";
         if (output_format)    os << "output_format = " << *output_format << "\n";

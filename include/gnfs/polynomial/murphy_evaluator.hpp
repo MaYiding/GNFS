@@ -17,8 +17,6 @@ struct MurphyScore {
     double log_e_score = -1e100; // log(E-score)，用于大数比较（越大越好）
     double alpha_f = 0.0;       // f 的 alpha 值（越负越好）
     double alpha_g = 0.0;       // g 的 alpha 值（越负越好）
-    double size_score = 0.0;    // 大小贡献
-    double root_score = 0.0;    // 根属性贡献
     double skewness = 1.0;      // 使用的 skewness
 
     /// 比较运算符（用于排序多项式）
@@ -99,12 +97,6 @@ public:
         // 计算 alpha 值
         score.alpha_f = compute_alpha(f);
         score.alpha_g = compute_alpha(g);
-
-        // 计算大小得分
-        score.size_score = compute_size_score(f, g, skewness);
-
-        // 计算根得分
-        score.root_score = compute_root_score(f);
 
         // 角度积分计算 E-score，alpha 已集成到 Dickman rho 参数中
         auto [log_e, linear_e] = compute_e_score_log(
@@ -448,60 +440,6 @@ private:
         }
 
         return {log_mean, linear_e_score};
-    }
-
-    /// 计算大小得分
-    [[nodiscard]] double compute_size_score(
-            const IntPolynomial& f,
-            const IntPolynomial& g,
-            double skewness) const {
-
-        // 大小得分基于多项式系数在给定 skewness 下的"平衡"程度
-        // 较小的系数意味着较小的范数值
-
-        uint32_t d_f = f.degree();
-        uint32_t d_g = g.degree();
-
-        // 计算 f 的加权系数和
-        double size_f = 0.0;
-        for (uint32_t i = 0; i <= d_f; ++i) {
-            double ci = std::abs(f[i].to_double());
-            // 权重使各项在 skewness 下贡献相当
-            double weight = std::pow(skewness, static_cast<double>(i) - d_f / 2.0);
-            size_f += ci * weight;
-        }
-
-        // 计算 g 的加权系数和
-        double size_g = 0.0;
-        for (uint32_t i = 0; i <= d_g; ++i) {
-            double ci = std::abs(g[i].to_double());
-            double weight = std::pow(skewness, static_cast<double>(i) - d_g / 2.0);
-            size_g += ci * weight;
-        }
-
-        // 大小得分：越小越好，取倒数并归一化
-        return 1.0 / (std::log(size_f + 1.0) * std::log(size_g + 1.0) + 1.0);
-    }
-
-    /// 计算根得分
-    /// 基于多项式在小素数处根的分布
-    [[nodiscard]] double compute_root_score(const IntPolynomial& f) const {
-        double total_roots = 0.0;
-        uint32_t d = f.degree();
-
-        // 只检查前几个小素数
-        size_t check_count = std::min(static_cast<size_t>(50), small_primes_.size());
-
-        for (size_t i = 0; i < check_count; ++i) {
-            uint32_t p = small_primes_[i];
-            auto roots = f.roots_mod_p(p);
-            total_roots += static_cast<double>(roots.size());
-        }
-
-        // 根得分: 根数越多越好（更容易找到光滑数）
-        // 期望根数约为 degree
-        double expected = d * check_count;
-        return total_roots / expected;
     }
 
     /// 估计初始 skewness

@@ -140,11 +140,12 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
 
     // Estimate sizes for preallocation
     // Prime counting function: π(n) ≈ n / ln(n)
+    // `+1` widened to uint64_t so UINT32_MAX doesn't wrap to 0 (log(0)=-inf → 0 estimate).
     size_t estimated_rational = static_cast<size_t>(
-        opts.rational_bound / std::log(static_cast<double>(opts.rational_bound + 1)) * 1.2
+        opts.rational_bound / std::log(static_cast<double>(static_cast<uint64_t>(opts.rational_bound) + 1)) * 1.2
     );
     size_t estimated_algebraic = static_cast<size_t>(
-        effective_alg_bound / std::log(static_cast<double>(effective_alg_bound + 1)) * 1.2
+        effective_alg_bound / std::log(static_cast<double>(static_cast<uint64_t>(effective_alg_bound) + 1)) * 1.2
     ) * ctx.degree();
     fb.reserve(estimated_rational, estimated_algebraic);
 
@@ -154,8 +155,10 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
     // 记录筛选用的代数素数数量（≤ algebraic_bound 的部分）
     fb.set_sieve_algebraic_count(fb.algebraic_count());
 
-    // 如果 special_q_bound > algebraic_bound，继续构建 SQ 范围的代数素数
-    // 注意: algebraic_bound + 1 在 UINT32_MAX 时会溢出，但 params.hpp 将 B 限制在 1e9
+    // 如果 special_q_bound > algebraic_bound，继续构建 SQ 范围的代数素数。
+    // 注意: 必须显式过滤 algebraic_bound==UINT32_MAX 否则 +1 wrap=0 让 find_…_range
+    // 收到 (min_p=0, max_p>0),min_p<2 早 return 会救住但语义不对。params.hpp 实际
+    // 把 B 限到 1e9,这层是 future-proof 防御。
     if (opts.special_q_bound > opts.algebraic_bound &&
         opts.algebraic_bound < UINT32_MAX) {
         find_algebraic_primes_range(fb, ctx,
