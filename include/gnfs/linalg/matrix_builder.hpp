@@ -18,6 +18,7 @@
 #include <cmath>
 #include <memory>
 #include <iostream>
+#include <stdexcept>
 
 namespace gnfs::linalg {
 
@@ -823,10 +824,11 @@ private:
         if (r == 1) return 1;
         if (r == p - 1) return -1;
 
-        // a^((p-1)/2) mod p ∈ {0, 1, p-1} for prime p (Euler's criterion),
-        // 走到这里说明 p 不是素数或 powmod 有 bug。
+        // a^((p-1)/2) mod p ∈ {0, 1, p-1} for prime p (Euler's criterion).
+        // 走到这里说明 p 不是素数或 powmod 有 bug — Release 下不能静默返回 0
+        // (会让 QR/NQR 判定错误，下游矩阵列污染)。
         assert(false && "legendre_symbol: unexpected residue");
-        return 0;
+        throw std::logic_error("legendre_symbol: a^((p-1)/2) ∉ {0, 1, p-1}; p is not prime or powmod is broken");
     }
 
     /// 找下一个素数
