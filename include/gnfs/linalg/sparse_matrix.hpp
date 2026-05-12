@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 namespace gnfs::linalg {
@@ -419,7 +420,9 @@ class CSRMatrix {
 public:
     CSRMatrix() = default;
 
-    /// Build CSR from SparseMatrix (ensures all rows are sorted first)
+    /// Build CSR from SparseMatrix (ensures all rows are sorted first).
+    /// Validates col < num_cols at construction so SpMV hot loops can elide
+    /// per-element bounds checks.
     explicit CSRMatrix(const SparseMatrix& mat) {
         num_rows_ = mat.num_rows();
         num_cols_ = mat.num_cols();
@@ -433,11 +436,17 @@ public:
             row_offsets_[i + 1] = total_nnz;
         }
 
-        // Pack all column indices into one contiguous array
+        // Pack all column indices into one contiguous array, validating bounds.
         col_indices_.resize(total_nnz);
         size_t pos = 0;
         for (size_t i = 0; i < num_rows_; ++i) {
             const auto& idx = mat.row(i).indices();
+            for (uint32_t c : idx) {
+                if (c >= num_cols_) {
+                    throw std::out_of_range(
+                        "CSRMatrix: column index out of range");
+                }
+            }
             std::copy(idx.begin(), idx.end(), col_indices_.begin() + static_cast<ptrdiff_t>(pos));
             pos += idx.size();
         }
