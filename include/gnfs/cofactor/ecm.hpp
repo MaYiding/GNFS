@@ -2,6 +2,7 @@
 
 #include "../core/integer.hpp"
 
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <random>
@@ -334,14 +335,16 @@ private:
             const Integer& n, uint64_t sigma, uint64_t B1, uint64_t B2,
             const std::vector<uint64_t>& primes_cache = {}) {
 
-        // Suyama's parametrization
+        // Suyama's parametrization 要求 sigma >= 6,否则 sigma²-5 在 uint64
+        // 下下溢成巨大值,数学上得不到有效曲线。
+        assert(sigma >= 6 && "ECM Suyama: sigma must be >= 6");
+
+        // Integer(unsigned long long) 总是非负,is_negative() 永不为 true。
         Integer u(static_cast<unsigned long long>(sigma * sigma - 5));
         u %= n;
-        if (u.is_negative()) u += n;
 
         Integer v(static_cast<unsigned long long>(4 * sigma));
         v %= n;
-        if (v.is_negative()) v += n;
 
         // 起始点
         Integer x0 = u.clone();
