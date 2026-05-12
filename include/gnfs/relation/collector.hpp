@@ -127,7 +127,7 @@ public:
             // Prepare callback data before moving rel
             if (callback_) {
                 cb_copy = callback_;
-                cb_rel = rel.clone();
+                cb_rel = rel;
                 fire_callback = true;
             }
 
@@ -179,7 +179,7 @@ public:
         std::vector<Relation> result;
         result.reserve(relations_.size());
         for (const auto& rel : relations_) {
-            result.push_back(rel.clone());
+            result.push_back(rel);
         }
         return result;
     }
@@ -271,7 +271,7 @@ public:
 
         size_t added = 0;
         for (const auto& rel : other.relations_) {
-            Relation copy = rel.clone();
+            Relation copy = rel;
 
             int kind = validate_with_kind(copy);
             if (kind != 0) {

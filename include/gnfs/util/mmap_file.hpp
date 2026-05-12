@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cassert>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <stdexcept>
@@ -87,12 +89,26 @@ public:
     MmapFile(const MmapFile&) = delete;
     MmapFile& operator=(const MmapFile&) = delete;
 
-    void close() {
+    void close() noexcept {
         if (data_ && size_ > 0) {
-            ::munmap(const_cast<uint8_t*>(data_), size_);
+            // munmap can fail with EINVAL (already unmapped, bad addr) — bug, not
+            // recoverable here. Assert in Debug; log + continue in Release so
+            // close() stays noexcept (called from dtor).
+            int rc = ::munmap(const_cast<uint8_t*>(data_), size_);
+            assert(rc == 0 && "MmapFile::close: munmap failed");
+            if (rc != 0) {
+                // Best-effort warning; can't throw from noexcept.
+                std::fprintf(stderr, "[mmap_file] munmap failed: errno=%d size=%zu\n",
+                             errno, size_);
+            }
         }
         if (fd_ >= 0) {
-            ::close(fd_);
+            int rc = ::close(fd_);
+            assert(rc == 0 && "MmapFile::close: close(fd) failed");
+            if (rc != 0) {
+                std::fprintf(stderr, "[mmap_file] close(fd=%d) failed: errno=%d\n",
+                             fd_, errno);
+            }
         }
         data_ = nullptr;
         size_ = 0;

@@ -431,8 +431,15 @@ private:
             return {static_cast<uint32_t>(root)};
         }
 
-        // Cantor-Zassenhaus splitting: pick random a, compute gcd(poly, (x+a)^{(p-1)/2} - 1)
-        std::mt19937_64 rng(static_cast<uint64_t>(p) * 31 + 17);  // deterministic seed
+        // Cantor-Zassenhaus splitting: pick random a, compute gcd(poly, (x+a)^{(p-1)/2} - 1).
+        // Deterministic seed (reproducibility) but using SplitMix-style mixing of p and the
+        // polynomial leading coefficient so two different polynomials over the same p don't
+        // share the same random sequence. p*31+17 fed mt19937_64 well enough, but two distinct
+        // CZ calls with the same p (different polys) would attempt identical a values 1-by-1.
+        uint64_t seed = static_cast<uint64_t>(p);
+        seed ^= poly.coeff(static_cast<int>(deg)) + 0x9E3779B97F4A7C15ULL + (seed << 6) + (seed >> 2);
+        seed ^= static_cast<uint64_t>(deg) + 0x9E3779B97F4A7C15ULL + (seed << 6) + (seed >> 2);
+        std::mt19937_64 rng(seed);
         std::vector<uint64_t> poly_coeffs;
         for (int i = 0; i <= deg; ++i) poly_coeffs.push_back(poly.coeff(i));
 

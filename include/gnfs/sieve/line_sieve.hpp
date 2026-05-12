@@ -23,7 +23,12 @@ using factor_base::FactorBase;
 ///
 /// Simpler than lattice sieve: no SQ loop, no lattice basis computation,
 /// no grid coordinate transformation. Good for N < 50 digits where FB is small.
-class LineSieve {
+///
+/// NOTE: 当前未集成到 Pipeline。小 N (≤80 bit) 路径走 TrialDivision/PollardRho,
+/// 中 N 走 SIQS,大 N 走 Lattice Sieve。LineSieve 仅有 test_line_sieve 覆盖。
+/// auto_params 在 ≤20-bit 时给的搜索区域 (b_max=200, a_max=5000) 太小,实际
+/// GNFS 上不可能产关系。保留代码仅为算法对照,生产路径请勿调用。
+class [[deprecated("LineSieve 未集成到 Pipeline; 用 LatticeSieve 或 SIQS")]] LineSieve {
 public:
     struct Params {
         int64_t a_min = -100000;

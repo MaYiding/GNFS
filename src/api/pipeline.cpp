@@ -1009,8 +1009,11 @@ FactorResult Pipeline::extract_factors(
 // ============================================================
 
 FactorResult Pipeline::run() {
-    // Input validation
-    if (mpz_probab_prime_p(n_.get_mpz(), 25) > 0) {
+    // Input validation.
+    // Adaptive Miller-Rabin reps: 5 for small N (fast on trial-division path),
+    // 15 for large N (target 2^-30 error rate for crypto-grade composites).
+    const int prime_reps = (stats_.n_bits <= 64) ? 5 : 15;
+    if (mpz_probab_prime_p(n_.get_mpz(), prime_reps) > 0) {
         emit_log(LogLevel::Error, Phase::PolynomialSelection,
                  "N is prime or probably prime");
         FactorResult r;
@@ -1028,7 +1031,10 @@ FactorResult Pipeline::run() {
 
     // Check for perfect power
     if (mpz_perfect_power_p(n_.get_mpz())) {
-        for (unsigned long exp = 2; exp <= 64; ++exp) {
+        // exp upper bound: for any perfect power n = b^e with b ≥ 2,
+        // we have e ≤ log2(n) = n_bits. Capping at 64 missed N = 2^65 etc.
+        const unsigned long exp_max = static_cast<unsigned long>(stats_.n_bits);
+        for (unsigned long exp = 2; exp <= exp_max; ++exp) {
             Integer root;
             if (mpz_root(root.get_mpz(), n_.get_mpz(), exp)) {
                 Integer check;

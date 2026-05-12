@@ -411,10 +411,12 @@ private:
         Point Q(std::move(x0), std::move(z0));
 
         // === Stage 1: 计算 k*Q，其中 k = ∏ p^{floor(log_p(B1))} ===
-        // Use cached primes if provided, else compute (fallback for direct callers)
-        std::vector<uint64_t> primes_local;
-        if (primes_cache.empty()) primes_local = sieve_primes(B1);
-        const auto& primes = primes_cache.empty() ? primes_local : primes_cache;
+        // factor() always passes primes_cache. The empty-cache branch existed
+        // as a fallback for "direct callers"; grep shows there are none, so
+        // every empty cache here is a bug. Assert tight so silent re-sieving
+        // (O(B1·log log B1) per curve) can't sneak back in.
+        assert(!primes_cache.empty() && "ECM::try_curve requires non-empty primes_cache");
+        const auto& primes = primes_cache;
 
         for (uint64_t p : primes) {
             // 计算 p^e <= B1 的最大 e

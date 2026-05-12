@@ -314,8 +314,8 @@ private:
                 uint64_t si = S[i].to_uint64();
                 two_s_mod[i] = (2 * si) % p;
             }
-            Integer q_minus_2(int64_t(1));
-            for (uint32_t i = 0; i < d; ++i) q_minus_2 *= Integer(p);
+            Integer q_minus_2;
+            mpz_ui_pow_ui(q_minus_2.get_mpz(), p, d);
             q_minus_2 -= Integer(int64_t(2));
             auto inv_mp = ModularPoly::power(
                 ModularPoly(two_s_mod), q_minus_2, f_mod_p, p);
@@ -830,9 +830,9 @@ private:
                 if (c.is_negative()) c += Integer(p);
                 f_mod_p_vec[i] = c.to_uint64();
             }
-            // Compute p^d - 2 using Integer to avoid uint64 overflow for large p/d
-            Integer q_minus_2(int64_t(1));
-            for (uint32_t i = 0; i < d; ++i) q_minus_2 *= Integer(p);
+            // Compute p^d - 2 using mpz_ui_pow_ui (single GMP call)
+            Integer q_minus_2;
+            mpz_ui_pow_ui(q_minus_2.get_mpz(), p, d);
             q_minus_2 -= Integer(int64_t(2));
             auto inv_mp = ModularPoly::power(ModularPoly(two_s_mod), q_minus_2, f_mod_p_vec, p);
             for (uint32_t i = 0; i < d; ++i) {

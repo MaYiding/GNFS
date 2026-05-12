@@ -4,6 +4,7 @@
 #include <cassert>
 #include <iostream>
 #include <random>
+#include <stdexcept>
 
 namespace gnfs::linalg {
 
@@ -501,25 +502,26 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
 // Reserved stubs (old interface, unused in streaming BW)
 // ============================================================================
 
+// These stubs throw in both Debug and Release. The old code used assert(false)
+// + a default return, which under NDEBUG silently handed back an empty result
+// and the caller proceeded with a wrong zero-vector dependency. throw makes
+// any future caller fail loudly with a stack trace.
 std::vector<DenseGF2_64x64> BlockWiedemann::compute_krylov_sequence(
     const CSRMatrix&, size_t, size_t, const BlockVector&, BlockVector&) {
-    assert(false && "compute_krylov_sequence: not used in streaming BW");
-    return {};
+    throw std::logic_error("BlockWiedemann::compute_krylov_sequence: reserved for true block-BW; "
+                           "streaming BW uses find_dependencies directly");
 }
 
 BlockWiedemann::LingenResult BlockWiedemann::matrix_berlekamp_massey(
     const std::vector<DenseGF2_64x64>&, size_t) {
-    assert(false && "matrix_berlekamp_massey: not used in streaming BW");
-    LingenResult r;
-    r.valid_mask = 0;
-    r.degrees.fill(0);
-    return r;
+    throw std::logic_error("BlockWiedemann::matrix_berlekamp_massey: reserved for Coppersmith/Thomé "
+                           "lingen; not implemented (see BACKLOG.md P1-OPT)");
 }
 
 std::vector<std::vector<bool>> BlockWiedemann::extract_solutions(
     const CSRMatrix&, size_t, const LingenResult&, const BlockVector&, size_t) {
-    assert(false && "extract_solutions: not used in streaming BW");
-    return {};
+    throw std::logic_error("BlockWiedemann::extract_solutions: reserved for true block-BW; "
+                           "streaming BW extracts in find_dependencies");
 }
 
 } // namespace gnfs::linalg

@@ -41,6 +41,20 @@ public:
         uint32_t degree = params.degree;
         size_t bits = n.bit_length();
 
+        // 警告 degree/bits 不匹配的情况:
+        //   - bits>=120 但 degree=4 → 失去 Kleinjung 的优势 (Murphy E 偏低)
+        //   - bits<60 但 degree=5  → Kleinjung 浪费 (BaseMSelector 已足够)
+        // 不强制改 degree (用户可能有理由),但 verbose 模式提示。
+        if (verbose) {
+            if (bits >= 120 && degree < 5) {
+                std::cerr << "  [warn] N has " << bits << " bits but degree=" << degree
+                          << "; consider degree=5+ for Kleinjung" << std::endl;
+            } else if (bits < 60 && degree >= 5) {
+                std::cerr << "  [warn] N has " << bits << " bits but degree=" << degree
+                          << "; BaseM is typically sufficient for small N" << std::endl;
+            }
+        }
+
         // Kleinjung 适用条件: degree >= 5
         // Kleinjung 通过 smooth 领导系数 + rotation 优化产生更优多项式。
         // 对 degree 3-4，BaseMSelector 的 Murphy E 已足够好。

@@ -66,19 +66,6 @@ struct Relation {
         return !extra_ab_pairs.empty();
     }
 
-    // Clone this relation
-    [[nodiscard]] Relation clone() const {
-        Relation copy;
-        copy.a = a;
-        copy.b = b;
-        copy.rational_factors = rational_factors;
-        copy.algebraic_factors = algebraic_factors;
-        copy.rational_large_prime = rational_large_prime;
-        copy.algebraic_large_prime = algebraic_large_prime;
-        copy.extra_ab_pairs = extra_ab_pairs;
-        return copy;
-    }
-
     // Serialization format constants
     static constexpr uint32_t SERIALIZE_MAGIC   = 0x52454C46;  // "RELF"
     static constexpr uint32_t SERIALIZE_VERSION = 2;
@@ -145,7 +132,15 @@ struct Relation {
 
     // Deserialize from input stream (v2 format with validation)
     static Relation deserialize(std::istream& is) {
-        static constexpr uint32_t MAX_FACTORS = 1 << 20;  // 1M upper bound
+        // Bound for prime-factor arrays (rational/algebraic_factors).
+        // Real GNFS relations have a few dozen at most; 1M catches corrupt streams.
+        static constexpr uint32_t MAX_FACTORS = 1 << 20;
+        // Tight bound for large-prime arrays — 1/2/3LP relations have ≤4 LPs.
+        // 16 leaves headroom while rejecting obviously corrupt LP counts.
+        static constexpr uint32_t MAX_LARGE_PRIMES = 16;
+        // Bound for extra_ab_pairs chain length (chain-merge from RelationFilter).
+        // Practical chains stay <100; 64K is far above any realistic chain depth.
+        static constexpr uint32_t MAX_EXTRA_AB_PAIRS = 1u << 16;
 
         uint64_t checksum = 0;
         auto read_and_xor = [&](void* ptr, size_t n) {
@@ -193,7 +188,7 @@ struct Relation {
         // Large primes (rational)
         uint32_t lp_rat_count;
         read_and_xor(&lp_rat_count, sizeof(lp_rat_count));
-        if (lp_rat_count > MAX_FACTORS)
+        if (lp_rat_count > MAX_LARGE_PRIMES)
             throw std::runtime_error("Relation::deserialize: lp_rat_count exceeds limit");
         rel.rational_large_prime.reserve(lp_rat_count);
         for (uint32_t i = 0; i < lp_rat_count; ++i) {
@@ -207,7 +202,7 @@ struct Relation {
         // Large primes (algebraic)
         uint32_t lp_alg_count;
         read_and_xor(&lp_alg_count, sizeof(lp_alg_count));
-        if (lp_alg_count > MAX_FACTORS)
+        if (lp_alg_count > MAX_LARGE_PRIMES)
             throw std::runtime_error("Relation::deserialize: lp_alg_count exceeds limit");
         rel.algebraic_large_prime.reserve(lp_alg_count);
         for (uint32_t i = 0; i < lp_alg_count; ++i) {
@@ -221,7 +216,7 @@ struct Relation {
         // Extra (a,b) pairs
         uint32_t extra_count;
         read_and_xor(&extra_count, sizeof(extra_count));
-        if (extra_count > MAX_FACTORS)
+        if (extra_count > MAX_EXTRA_AB_PAIRS)
             throw std::runtime_error("Relation::deserialize: extra_count exceeds limit");
         rel.extra_ab_pairs.reserve(extra_count);
         for (uint32_t i = 0; i < extra_count; ++i) {
