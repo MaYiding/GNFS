@@ -11,6 +11,7 @@
 #include "../polynomial/int_polynomial.hpp"
 #include "../util/thread_pool.hpp"
 
+#include <cassert>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -822,7 +823,10 @@ private:
         if (r == 1) return 1;
         if (r == p - 1) return -1;
 
-        return 0;  // Should not reach
+        // a^((p-1)/2) mod p ∈ {0, 1, p-1} for prime p (Euler's criterion),
+        // 走到这里说明 p 不是素数或 powmod 有 bug。
+        assert(false && "legendre_symbol: unexpected residue");
+        return 0;
     }
 
     /// 找下一个素数
@@ -837,13 +841,17 @@ private:
         return n;
     }
 
-    /// 简单素性测试
+    /// 简单素性测试。整数 sqrt 避免 std::sqrt(double) 在接近 2^32 边界的精度问题。
     [[nodiscard]] static bool is_prime(uint32_t n) {
         if (n < 2) return false;
         if (n == 2) return true;
         if (n % 2 == 0) return false;
 
-        uint32_t sqrt_n = static_cast<uint32_t>(std::sqrt(n));
+        // 整数 sqrt:用 floor(sqrt(double)) + 修正,防止 n 接近 UINT32_MAX 时
+        // double 浮点丢精度导致 sqrt_n 少 1 漏检。
+        uint32_t sqrt_n = static_cast<uint32_t>(std::sqrt(static_cast<double>(n)));
+        while (static_cast<uint64_t>(sqrt_n + 1) * (sqrt_n + 1) <= n) ++sqrt_n;
+        while (static_cast<uint64_t>(sqrt_n) * sqrt_n > n) --sqrt_n;
         for (uint32_t i = 3; i <= sqrt_n; i += 2) {
             if (n % i == 0) return false;
         }
