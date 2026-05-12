@@ -47,13 +47,18 @@ struct ABPair {
 /// ABPair 的哈希函数
 struct ABPairHash {
     size_t operator()(const ABPair& ab) const noexcept {
-        // FNV-1a 风格的混合
-        size_t h = 14695981039346656037ULL;
-        h ^= static_cast<size_t>(ab.a);
+        // FNV-1a 64-bit。混合先在 64 位完成,最后才折叠到 size_t,
+        // 避免 32 位平台 size_t 截断 64 位 a/b 导致大量碰撞。
+        uint64_t h = 14695981039346656037ULL;
+        h ^= static_cast<uint64_t>(ab.a);
         h *= 1099511628211ULL;
-        h ^= static_cast<size_t>(ab.b);
+        h ^= ab.b;
         h *= 1099511628211ULL;
-        return h;
+        if constexpr (sizeof(size_t) >= sizeof(uint64_t)) {
+            return static_cast<size_t>(h);
+        } else {
+            return static_cast<size_t>(h ^ (h >> 32));
+        }
     }
 };
 
