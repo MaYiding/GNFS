@@ -112,6 +112,14 @@ public:
         SieveResult result;
         result.special_q = sq;
 
+        // r=0 退化:Gauss-reduced basis = ((0,1), (q,0)),to_ab(i,j)=(jq, i),
+        // 即 b=i 可为负。collect_candidates 过滤 b<=0 后 sieve 一半工作无效;
+        // 同时 estimate_initial_log 用 typical_a≈0 会塌缩 log 估计。
+        // r=0 仅在 q | f₀ 时出现,极罕见,直接 skip 损失可忽略。
+        if (sq.r == 0) {
+            return result;  // empty candidates, special_q recorded
+        }
+
         // 1. 计算格基
         LatticeBasis basis = compute_lattice_basis(sq);
 
