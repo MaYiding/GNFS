@@ -173,6 +173,13 @@ public:
 
             // 投影根的额外贡献
             // 如果 p | leading_coeff(f)，则有投影根
+            // ─── [VERIFY] BACKLOG P1-OPT ─────────────────────────────────────
+            // CADO-NFS polyselect/alpha.c special_val0 中投影根贡献的精确
+            // 表达可能不同 (常见为 log_p/(p*(p-1)) 或类似量级)。当前 +log_p/p
+            // 将投影根视为额外 1 个 affine root,在大多数 Murphy E 排序场景
+            // 给出合理结果,但严格 Murphy 1999 形式需 paper 核对。
+            // 改动前需先确立新公式下的 test_murphy 黄金值。
+            // ─────────────────────────────────────────────────────────────────
             if (f.leading_coeff().fits_uint64()) {
                 if (f.leading_coeff().to_uint64() % p == 0) {
                     contribution += log_p / p;

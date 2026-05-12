@@ -588,6 +588,14 @@ private:
     Config config_;
 
     /// Compute product of (a_i - b_i * x) mod f(x) mod p (GNFS a - b·α convention)
+    ///
+    /// ─── [VERIFY] BACKLOG P2 ─────────────────────────────────────────────────
+    /// 注意: δ = ∏(a-bα) 一般在 O_K 而非 Z[α]。Hensel 路径 (hensel_sqrt.hpp:276-277)
+    /// 乘 f'(α)² 后于 Z[α] 取 sqrt,再除 f'(m) mod N 还原。当前 Couveignes
+    /// 直接对 ∏ 在 F_p[α] 取 sqrt — 若 δ ∉ Z[α] 则数学上不成立。
+    /// 但 Couveignes 是 fallback path (主路径 Hensel 已含 f'(α)² 修正),
+    /// 现有测试覆盖范围内未触发此分支。详见 BACKLOG。
+    /// ─────────────────────────────────────────────────────────────────────────
     [[nodiscard]] ModularPoly compute_product_mod_p(
             const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
             const std::vector<uint64_t>& f,
