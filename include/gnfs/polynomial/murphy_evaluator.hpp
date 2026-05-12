@@ -4,6 +4,8 @@
 #include "int_polynomial.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cassert>
 #include <cmath>
 #include <vector>
 
@@ -360,12 +362,20 @@ private:
         if (log_bound <= 0) return {-1e100, 0.0};
 
         const uint32_t num_points = params_.sample_points;
-        std::vector<double> log_probs;
+
+        // Thread-local buffers — sample_points=2000 时原代码每次 alloc 3 个
+        // ~2000 向量 + 内部 2 个 (max_deg+1)。Kleinjung Stage2 调 33000 次,
+        // 几百 MB/s alloc/free 浪费。GNFS degree ≤ 6,ct_pow/st_pow 用
+        // std::array 完全栈分配。
+        thread_local std::vector<double> log_probs;
+        log_probs.clear();
         log_probs.reserve(num_points);
 
         // Precompute skewness powers (was: 3 × std::pow per (i,j) pair)
         uint32_t max_deg = std::max(d_f, d_g);
-        std::vector<double> skew_pow(max_deg + 1);
+        constexpr uint32_t MAX_DEG_STACK = 16;  // GNFS degree ≤ 6,余量到 16
+        assert(max_deg <= MAX_DEG_STACK && "Murphy compute_e_score_log: degree too high");
+        std::array<double, MAX_DEG_STACK + 1> skew_pow{};
         skew_pow[0] = 1.0;
         for (uint32_t j = 1; j <= max_deg; ++j)
             skew_pow[j] = skew_pow[j - 1] * skewness;
@@ -376,8 +386,8 @@ private:
             double ct = std::cos(theta);
             double st = std::sin(theta);
 
-            // Precompute cos/sin powers for this angle
-            std::vector<double> ct_pow(max_deg + 1), st_pow(max_deg + 1);
+            // Precompute cos/sin powers for this angle — 栈分配,零堆压力
+            std::array<double, MAX_DEG_STACK + 1> ct_pow{}, st_pow{};
             ct_pow[0] = st_pow[0] = 1.0;
             for (uint32_t j = 1; j <= max_deg; ++j) {
                 ct_pow[j] = ct_pow[j - 1] * ct;

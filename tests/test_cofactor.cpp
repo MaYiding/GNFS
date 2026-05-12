@@ -118,6 +118,17 @@ void test_pollard_rho() {
     assert(pollard_rho(4) == 2);  // 2^2
     assert(pollard_rho(6) == 2 || pollard_rho(6) == 3);  // 2 * 3
 
+    // n = p² 边界:Pollard rho 的 cycle structure 在素数平方下可能退化,
+    // 需验证多次重试(13 个 c 值)能找到唯一素因子 p。
+    f = pollard_rho(49);     // 7^2
+    assert(f == 7);
+    f = pollard_rho(169);    // 13^2
+    assert(f == 13);
+    f = pollard_rho(10609);  // 103^2
+    assert(f == 103);
+    f = pollard_rho(1018081);  // 1009^2 (中等大小,需 Brent batch GCD 顺利)
+    assert(f == 1009);
+
     std::cout << "  Pollard's rho: PASSED" << std::endl;
 }
 

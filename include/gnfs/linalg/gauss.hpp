@@ -99,14 +99,6 @@ public:
         return result;
     }
 
-    /// 对矩阵的转置进行高斯消元（用于找行依赖）
-    /// 等效于找 A^T 的零空间，即 A 的左零空间
-    [[nodiscard]] GaussianResult eliminate_transpose(const SparseMatrix& matrix) const {
-        // 创建转置矩阵
-        SparseMatrix transposed = matrix.transpose();
-        return eliminate(transposed);
-    }
-
     /// 仅计算秩（不需要零空间时更快）
     [[nodiscard]] size_t compute_rank(SparseMatrix& matrix) const {
         Config rank_config = config_;

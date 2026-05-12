@@ -258,6 +258,39 @@ void test_merged_relation_with_extras() {
     TEST_PASS("merged relation with 4 extra (a,b) pairs");
 }
 
+// Writer 析构时若有 in-flight exception,只写入 MAGIC_INCOMPLETE,
+// reader 必须拒绝读(避免 idx/data 不一致)。
+void test_writer_exception_path() {
+    TempFiles tmp("/tmp/gnfs_test_ooc_exc");
+
+    bool reader_threw = false;
+    try {
+        try {
+            OOCRelationWriter writer(tmp.base);
+            Relation r = make_relation(1, 2, 3, 2);
+            writer.write(r);
+            writer.write(r);
+            // 模拟 write 中途异常:抛出后,析构期间 std::uncaught_exceptions()
+            // 比 ctor 时多 1,close() 走异常分支不写 MAGIC。
+            throw std::runtime_error("simulated disk-full mid-write");
+        } catch (const std::runtime_error&) {
+            // swallow — Writer 析构已发生
+        }
+
+        try {
+            OOCRelationReader reader(tmp.base);
+            (void)reader;
+        } catch (const std::runtime_error& e) {
+            std::string msg = e.what();
+            if (msg.find("invalid magic") != std::string::npos) {
+                reader_threw = true;
+            }
+        }
+    } catch (...) {}
+    TEST_ASSERT(reader_threw, "reader should reject MAGIC_INCOMPLETE file");
+    TEST_PASS("writer exception path → reader rejects incomplete file");
+}
+
 int main() {
     std::cout << "═══════════════════════════════════════════\n";
     std::cout << "  Out-of-core Relations Unit Tests\n";
@@ -270,6 +303,7 @@ int main() {
     test_read_range();
     test_empty_relations();
     test_merged_relation_with_extras();
+    test_writer_exception_path();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";

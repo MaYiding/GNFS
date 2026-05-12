@@ -91,27 +91,28 @@ static constexpr int BOX_INNER = 50;  // inner column width
 
 // Print a box line: "   ║  <content padded to BOX_INNER-2>  ║"
 // Automatically computes display width of content (handles ANSI + CJK)
+// Banner/summary/progress \u8d70 stderr,\u7b26\u5408 Unix \u60ef\u4f8b(\u7ed3\u6784\u5316\u8f93\u51fa\u7559\u5728 stdout)
 static void box_line(const std::string& content) {
     int w = display_width(content);
     int pad = BOX_INNER - 2 - w;
     if (pad < 0) pad = 0;
-    std::cout << C(CYAN) << "   \u2551  " << C(RESET)
+    std::cerr << C(CYAN) << "   \u2551  " << C(RESET)
               << content
               << std::string(static_cast<size_t>(pad), ' ')
               << C(CYAN) << "\u2551" << C(RESET) << "\n";
 }
 
-static void box_top()    { std::cout << C(CYAN) << "   \u2554" << repeat_str("\u2550", BOX_INNER) << "\u2557" << C(RESET) << "\n"; }
-static void box_mid()    { std::cout << C(CYAN) << "   \u2560" << repeat_str("\u2550", BOX_INNER) << "\u2563" << C(RESET) << "\n"; }
-static void box_bottom() { std::cout << C(CYAN) << "   \u255a" << repeat_str("\u2550", BOX_INNER) << "\u255d" << C(RESET) << "\n"; }
+static void box_top()    { std::cerr << C(CYAN) << "   \u2554" << repeat_str("\u2550", BOX_INNER) << "\u2557" << C(RESET) << "\n"; }
+static void box_mid()    { std::cerr << C(CYAN) << "   \u2560" << repeat_str("\u2550", BOX_INNER) << "\u2563" << C(RESET) << "\n"; }
+static void box_bottom() { std::cerr << C(CYAN) << "   \u255a" << repeat_str("\u2550", BOX_INNER) << "\u255d" << C(RESET) << "\n"; }
 
 // ============================================================
 // Banner
 // ============================================================
 
 static void print_banner() {
-    std::cout << C(BOLD) << C(CYAN);
-    std::cout << R"(
+    std::cerr << C(BOLD) << C(CYAN);
+    std::cerr << R"(
    ╔══════════════════════════════════════╗
    ║   ██████╗ ███╗   ██╗███████╗███████╗ ║
    ║  ██╔════╝ ████╗  ██║██╔════╝██╔════╝ ║
@@ -121,9 +122,9 @@ static void print_banner() {
    ║   ╚═════╝ ╚═╝  ╚═══╝╚═╝     ╚══════╝ ║
    ╚══════════════════════════════════════╝
 )";
-    std::cout << C(DIM);
-    std::cout << "   " << TR(S::BANNER_SUBTITLE) << " v" << gnfs::api::version() << "\n";
-    std::cout << C(RESET) << "\n";
+    std::cerr << C(DIM);
+    std::cerr << "   " << TR(S::BANNER_SUBTITLE) << " v" << gnfs::api::version() << "\n";
+    std::cerr << C(RESET) << "\n";
 }
 
 // ============================================================
@@ -289,7 +290,7 @@ static ProgressCallback make_terminal_progress() {
     return [state](const ProgressInfo& info) {
         auto clear_line = [&state]() {
             if (state->last_bar_len > 0) {
-                std::cout << "\r" << std::string(
+                std::cerr << "\r" << std::string(
                     static_cast<size_t>(state->last_bar_len + 10), ' ') << "\r";
                 state->last_bar_len = 0;
             }
@@ -307,7 +308,7 @@ static ProgressCallback make_terminal_progress() {
                 std::string dur = fmt_duration(phase_time);
                 int pad = 42 - pname_w;
 
-                std::cout << "\r   " << C(GREEN) << "\u2713 "
+                std::cerr << "\r   " << C(GREEN) << "\u2713 "
                           << C(RESET) << C(DIM) << pname << C(RESET)
                           << std::string(static_cast<size_t>(std::max(pad, 1)), ' ')
                           << C(DIM) << "[" << dur << "]" << C(RESET) << "\n";
@@ -321,7 +322,7 @@ static ProgressCallback make_terminal_progress() {
 
             state->first_phase = false;
 
-            std::cout << "   " << C(CYAN) << "\u25B6 " << C(BOLD)
+            std::cerr << "   " << C(CYAN) << "\u25B6 " << C(BOLD)
                       << phase_name(info.phase) << C(RESET) << std::flush;
         }
 
@@ -350,7 +351,7 @@ static ProgressCallback make_terminal_progress() {
                 C(CYAN), C(RESET), bar.c_str(),
                 C(BOLD), info.phase_progress * 100.0, C(RESET),
                 info.special_q_done, info.relations_found, rps, eta_str.c_str());
-            std::cout << buf << std::flush;
+            std::cerr << buf << std::flush;
             state->last_bar_len = 100;
         }
         // Sqrt dep counter
@@ -358,7 +359,7 @@ static ProgressCallback make_terminal_progress() {
             char buf[64];
             std::snprintf(buf, sizeof(buf), "\r   %s\u25B6%s dep %d/%d",
                 C(CYAN), C(RESET), info.dependency_index, info.dependencies_total);
-            std::cout << buf << std::flush;
+            std::cerr << buf << std::flush;
             state->last_bar_len = 30;
         }
     };
@@ -647,14 +648,14 @@ int main(int argc, char* argv[]) {
     if (!quiet) {
         print_banner();
         size_t n_digits = gnfs::core::GNFSParams::compute(n.bit_length()).digits;
-        std::cout << TR(S::FACTORING) << " " << n.to_string()
+        std::cerr << TR(S::FACTORING) << " " << n.to_string()
                   << " (" << n.bit_length() << " bits, "
                   << n_digits << " digits)\n";
 
         // Show selected method
         auto [method, reason] = Pipeline::select_method(
             n.bit_length(), n_digits, final_config.method);
-        std::cout << TR(S::METHOD_SELECTED) << " " << C(BOLD) << method_display_name(method)
+        std::cerr << TR(S::METHOD_SELECTED) << " " << C(BOLD) << method_display_name(method)
                   << C(RESET) << C(DIM) << " (" << reason << ")" << C(RESET) << "\n\n";
     }
 
@@ -664,7 +665,7 @@ int main(int argc, char* argv[]) {
 
     auto result = pipeline.run();
 
-    if (!quiet) { std::cout << "\n\n"; print_summary_box(result); std::cout << "\n"; }
+    if (!quiet) { std::cerr << "\n\n"; print_summary_box(result); std::cerr << "\n"; }
 
     // Output
     std::string output;
@@ -677,7 +678,7 @@ int main(int argc, char* argv[]) {
         std::ofstream ofs(output_file);
         if (!ofs.is_open()) { std::cerr << TR(S::ERR_OPEN_FILE) << " " << output_file << "\n"; return 1; }
         ofs << output;
-        if (!quiet) std::cout << TR(S::REPL_WRITTEN_TO) << " " << output_file << "\n";
+        if (!quiet) std::cerr << TR(S::REPL_WRITTEN_TO) << " " << output_file << "\n";
     } else if (!output.empty()) {
         std::cout << output;
     }

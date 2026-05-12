@@ -275,16 +275,24 @@ inline uint32_t select_multiplier(const Integer& N) {
 
         for (size_t i = 1; i < sizeof(test_primes)/sizeof(test_primes[0]); i++) {
             uint32_t p = test_primes[i];
+            // 当 v_p(kN) = 1(典型情况:k 候选都是 squarefree、gcd(k,N)=1),
+            // x² ≡ kN mod p 只有 x≡0 mod p 单根,且 **不能** Hensel lift 到
+            // mod p²(geometric sum 不适用)。贡献为 log(p)/p,而非
+            // log(p)/(p-1)。msieve 与 Silverman 标准实现采用此公式。
+            //
+            // 边界:若 p² | kN(罕见,N 含平方因子),x² ≡ kN/p² mod p 又是 QR
+            // 时会有额外二次贡献 ≈ 2 log(p)/(p²·(p-1)),数量级可忽略。
             if (k % p == 0) {
-                // k divisible by p — kN mod p = 0, always in FB
-                score += std::log(static_cast<double>(p)) / (p - 1);
+                score += std::log(static_cast<double>(p)) / p;
                 continue;
             }
             uint32_t kN_mod_p = static_cast<uint32_t>(mpz_fdiv_ui(kN.get_mpz(), p));
             if (kN_mod_p == 0) {
-                score += std::log(static_cast<double>(p)) / (p - 1);
+                // p | N 但 p ∤ k:同上,v_p(kN)=v_p(N) 时根不 lift。
+                score += std::log(static_cast<double>(p)) / p;
             } else if (mod_pow32(kN_mod_p, (p - 1) / 2, p) == 1) {
-                // kN is QR mod p — two roots
+                // p ∤ kN 且 kN is QR mod p — 2 个根,Hensel lift 几何和:
+                // 2 log(p)/(p-1)
                 score += 2.0 * std::log(static_cast<double>(p)) / (p - 1);
             }
         }

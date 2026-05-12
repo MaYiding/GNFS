@@ -245,6 +245,52 @@ void test_default_region() {
               << ", skew=4: " << region2.i_width() << "x" << region2.j_height() << ")" << std::endl;
 }
 
+// r=0 退化路径:LatticeSieve 在 sq.r==0 时 early-return 空 candidates。
+// 该路径仅当 q | f₀ 时出现,极罕见,但代码必须正确 short-circuit
+// (不要 estimate_initial_log 塌缩,不要在退化 basis 上跑全 sieve)。
+void test_lattice_sieve_r_zero() {
+    std::cout << "Testing r=0 degenerate special-q..." << std::endl;
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    assert(result.success);
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 1000;
+    fb_opts.algebraic_bound = 1000;
+    fb_opts.parallel = false;
+    auto fb = FactorBaseBuilder::build(ctx, fb_opts);
+
+    SieveParams params;
+    params.log_scale = 16;
+    params.rational_threshold = 50;
+    params.algebraic_threshold = 50;
+    LatticeSieve sieve(ctx, fb, params);
+
+    SieveRegion small_region;
+    small_region.i_min = -500;
+    small_region.i_max = 499;
+    small_region.j_min = 1;
+    small_region.j_max = 100;
+    sieve.set_region(small_region);
+
+    // 手工构造 r=0 退化的 special-q(q 任选,r=0 触发退化分支)
+    SpecialQ degenerate;
+    degenerate.q = 1009;
+    degenerate.r = 0;
+    auto sieve_result = sieve.sieve_special_q(degenerate);
+
+    // 期望:retainsspecial_q 字段、不抛、candidates 空、sieved_positions 应为 0
+    // (early return 不跑 sieve)
+    assert(sieve_result.special_q.q == 1009);
+    assert(sieve_result.special_q.r == 0);
+    assert(sieve_result.candidates.empty());
+    assert(sieve_result.sieved_positions == 0);
+
+    std::cout << "  r=0 degenerate path: PASS (early-return, no sieve work)" << std::endl;
+}
+
 int main() {
     std::cout << "=== Lattice Sieve Tests ===" << std::endl;
 
@@ -254,6 +300,7 @@ int main() {
     test_default_region();
     test_lattice_sieve_basic();
     test_candidate_properties();
+    test_lattice_sieve_r_zero();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

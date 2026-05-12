@@ -2,6 +2,7 @@
 #include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/sqrt/modular_poly.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <iostream>
 #include <sstream>
@@ -44,6 +45,56 @@ void test_prime_sieve() {
     assert(rationals[24].p == 97);
 
     std::cout << "  Prime sieve: PASS" << std::endl;
+}
+
+// CZ random splitting 仅当 deg(gcd(x^p-x, f)) > 1 时触发(多个根 mod p)。
+// test_algebraic_roots 走的是 ≤50 brute-force 路径,covers p<64 but不
+// 覆盖 CZ random splitting。这里专门构造 f(x)=(x-3)(x-7) mod p,p>=64
+// 验证 CZ 能正确返回 2 个根。同时覆盖 p=2,3,5 重根边界。
+void test_cz_random_splitting() {
+    std::cout << "Testing CZ random splitting (multi-root mod p)..." << std::endl;
+
+    // f(x) = (x-3)(x-7) = x² - 10x + 21
+    std::vector<Integer> coeffs;
+    coeffs.emplace_back(static_cast<int64_t>(21));   // x^0
+    coeffs.emplace_back(static_cast<int64_t>(-10));  // x^1
+    coeffs.emplace_back(static_cast<int64_t>(1));    // x^2
+    PolynomialContext ctx(Integer(static_cast<int64_t>(10001)),
+                          std::move(coeffs),
+                          Integer(static_cast<int64_t>(3)));
+
+    // p=101: 3, 7 都是根。p<64 走 brute-force,但 101 ≥ 64 走 CZ。
+    auto roots_101 = FactorBaseBuilder::find_roots_mod_p(ctx, 101);
+    assert(roots_101.size() == 2);
+    std::sort(roots_101.begin(), roots_101.end());
+    assert(roots_101[0] == 3);
+    assert(roots_101[1] == 7);
+
+    // p=131(>64,CZ 路径)
+    auto roots_131 = FactorBaseBuilder::find_roots_mod_p(ctx, 131);
+    assert(roots_131.size() == 2);
+
+    // p=2 边界:f(0)=21 ≡ 1, f(1)=12 ≡ 0,只有 1 是根(brute-force)
+    auto roots_2 = FactorBaseBuilder::find_roots_mod_p(ctx, 2);
+    assert(roots_2.size() == 1);
+    assert(roots_2[0] == 1);
+
+    // p=3 边界:21=0, 10=1, x²-x+0 = x(x-1) → 根 0,1
+    auto roots_3 = FactorBaseBuilder::find_roots_mod_p(ctx, 3);
+    assert(roots_3.size() == 2);
+    std::sort(roots_3.begin(), roots_3.end());
+    assert(roots_3[0] == 0);
+    assert(roots_3[1] == 1);
+
+    // p=5 边界:21=1, 10=0, x²+1 没有根(5≡1 mod 4? 不是 — 5 mod 4 = 1,
+    // QR(-1, 5) = +1 实际 -1 ≡ 4 = 2² → 根 2, 3)
+    auto roots_5 = FactorBaseBuilder::find_roots_mod_p(ctx, 5);
+    assert(roots_5.size() == 2);
+    std::sort(roots_5.begin(), roots_5.end());
+    assert(roots_5[0] == 2);
+    assert(roots_5[1] == 3);
+
+    std::cout << "  CZ random splitting: PASS (2 roots @ p=101/131; p=2/3/5 边界)" << std::endl;
 }
 
 void test_algebraic_roots() {
@@ -375,6 +426,7 @@ int main() {
 
     test_prime_sieve();
     test_algebraic_roots();
+    test_cz_random_splitting();
     test_index_lookup();
     test_log_values();
     test_parallel_build();
