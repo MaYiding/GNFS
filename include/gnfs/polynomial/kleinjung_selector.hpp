@@ -373,8 +373,12 @@ private:
         Integer best_m;
         double best_norm = 1e300;
 
-        // 平移 + 旋转网格搜索
-        for (int t = -5; t <= 5; ++t) {
+        // 平移 + 旋转网格搜索。t_range 之前硬编码 ±5(11 点),与 KleinjungParams
+        // 的 search_radius 无关,大 N 下平移空间被严重压缩。改为按
+        // search_radius 缩放(默认 50),提供更充裕的平移采样。
+        const int t_range = static_cast<int>(
+            std::min<uint64_t>(params_.search_radius, 50));
+        for (int t = -t_range; t <= t_range; ++t) {
             IntPolynomial f_t;
             Integer m_t;
 
