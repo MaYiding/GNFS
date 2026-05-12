@@ -409,7 +409,10 @@ private:
         a24 *= denom_inv;
         a24 %= n;
 
-        // a24 = (a + 2) / 4, 所以实际的 a24 已经是我们需要的形式
+        // Suyama 参数化: A = (v-u)³(3u+v)/(4u³v) - 2, 其中 u=σ²-5, v=4σ。
+        // (A+2)/4 = (v-u)³(3u+v) / (16 u³ v) — 上面 numerator/denom 正是这个表达。
+        // 即 numerator * denom_inv = (A+2)/4 = a24 已为 mont_double 所需形式,
+        // 无需额外 -2 或 /4。隐式由 test_ecm_quick.cpp 10d–55d 全部成功验证。
 
         Point Q(std::move(x0), std::move(z0));
 
