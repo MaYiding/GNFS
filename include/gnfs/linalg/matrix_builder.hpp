@@ -9,6 +9,7 @@
 #include "../sqrt/class_group.hpp"
 #include "../sqrt/modular_poly.hpp"
 #include "../polynomial/int_polynomial.hpp"
+#include "../util/thread_pool.hpp"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -297,10 +298,12 @@ public:
         result.matrix = SparseMatrix(relations.size(), result.mapping.total_columns());
         result.row_to_relation.resize(relations.size());
 
-        for (size_t i = 0; i < relations.size(); ++i) {
-            if (config_.verbose && i % 1000 == 0) {
-                std::cerr << "[Matrix] Building row " << i << "/" << relations.size() << "\n";
-            }
+        // 主循环并行化:每行 i 独立写入 SparseMatrix::row(i) — vector<SparseRow>
+        // 元素互不冲突;build_row_with_qc / class_group->compute_character /
+        // schirokauer->compute_flat 全部 const,无内部状态修改。
+        // SchirokauerMap::compute_flat 1M+ relations 是热点。
+        gnfs::util::ThreadPool pool(0);
+        pool.parallel_for_index(0, relations.size(), [&](size_t i) {
             build_row_with_qc(result.matrix.row(i), relations[i], fb, ctx, result.mapping);
 
             // ClassGroup characters: χ is a homomorphism, so for merged relation
@@ -346,7 +349,7 @@ public:
             }
 
             result.row_to_relation[i] = i;
-        }
+        });
 
         return result;
     }
