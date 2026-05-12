@@ -24,7 +24,13 @@ public:
         if (n % 2 == 0) return 2;
         if (is_square(n)) return isqrt(n);
 
-        // Try multipliers to avoid short-period cases
+        // Try multipliers to avoid short-period cases.
+        // 标准 SQUFOF 对 D ≡ 1 mod 4 收敛最快 (Williams 1985)。
+        //   - N ≡ 1 mod 4: D=N 直接可用
+        //   - N ≡ 3 mod 4: D=N 给 D ≡ 3 → 周期偏长;用 k=3 或 5 提到 D ≡ 1
+        //   - N ≡ 2 mod 4 (偶数,已被 trial-div 过滤,但防御性处理)
+        // 先列对 N≡1 mod 4 最优的 k=1,然后给 k=3/5/... 系列兜底其余情况。
+        // 优先级:k=1 (N≡1 mod 4) → k=3,5,... → 复合 k
         static constexpr uint64_t multipliers[] = {
             1, 3, 5, 7, 11, 3*5, 3*7, 3*11, 5*7, 5*11, 7*11
         };
@@ -33,6 +39,12 @@ public:
             if (k > 1 && n > UINT64_MAX / k) continue;
             uint64_t D = k * n;
             if (D < 2) continue;
+            // D ≡ 2,3 mod 4 时 SQUFOF 周期偏长;对 k=1 时如果 N ≢ 1 mod 4
+            // 改用 D=4N 既避免 D≡2,3 又把 k 的搜索空间限制在奇 k。
+            if (k == 1 && (n % 4) != 1) {
+                if (n > UINT64_MAX / 4) continue;
+                D = 4 * n;
+            }
 
             uint64_t result = squfof_core(D, max_iterations);
             if (result > 1 && result < D) {
