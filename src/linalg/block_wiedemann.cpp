@@ -28,6 +28,24 @@ void bw_spmv_forward(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
     });
 }
 
+// Persistent scratch buffers for bw_spmv_transpose — 避免每次 SpMV
+// 调用都 T×n×8 bytes malloc/free。Phase 1 调 ~2L 次,Phase 3 调 ~L 次,
+// 持久化后 alloc 次数从 O(L) 降为 O(1)(只在 n 变大或 T 变大时 grow)。
+// 使用 function-local static 而非 thread_local:因为缓冲区维度是 [T][n],
+// 跨主线程的多次调用复用同一份就足够。线程安全靠 ThreadPool 的同步保证
+// (每次 spmv 顶层 future.get() 后才允许下一次调用,无重入)。
+struct BwSpmvLocals {
+    std::vector<std::vector<uint64_t>> locals;
+    void ensure(size_t T, size_t n) {
+        if (locals.size() < T) locals.resize(T);
+        for (size_t t = 0; t < T; ++t) {
+            if (locals[t].size() < n) locals[t].resize(n);
+            // 每次 SpMV 开始时必须 zero,因为是 XOR 累加
+            std::fill(locals[t].begin(), locals[t].begin() + n, 0);
+        }
+    }
+};
+
 void bw_spmv_transpose(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
                        gnfs::util::ThreadPool& pool) {
     const size_t m = M.num_rows();
@@ -38,7 +56,9 @@ void bw_spmv_transpose(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
     const size_t T = pool.num_threads();
     const size_t chunk = (m + T - 1) / T;
 
-    std::vector<std::vector<uint64_t>> locals(T, std::vector<uint64_t>(n, 0));
+    static BwSpmvLocals scratch;
+    scratch.ensure(T, n);
+    auto& locals = scratch.locals;
     std::vector<std::future<void>> futures;
     size_t T_used = 0;
 

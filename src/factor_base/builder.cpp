@@ -186,9 +186,16 @@ void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialCon
     for (uint32_t p = 2; p <= bound; ++p) {
         if (!is_prime[p]) continue;
 
-        // Mark multiples
-        for (uint32_t k = p * 2; k <= bound; k += p) {
-            is_prime[k] = false;
+        // Mark multiples — 起点 p*p(小素数的倍数已被更小素数标过),
+        // 提防溢出:仅当 p*p ≤ bound 时才进入标记循环。
+        if (static_cast<uint64_t>(p) * p > bound) {
+            // p > sqrt(bound),后续不再有未标的合数;仅需继续筛选 is_prime
+            // (循环顶部 if check),不需 mark。这一分支会一直走到 bound,
+            // 但 mark 循环 0 次开销可以忽略。
+        }
+        const uint64_t start = static_cast<uint64_t>(p) * p;
+        for (uint64_t k = start; k <= bound; k += p) {
+            is_prime[static_cast<size_t>(k)] = false;
         }
 
         // Skip primes that divide N — use mpz_divisible_ui_p (zero GMP alloc)
@@ -212,7 +219,8 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
 
     for (uint64_t p = 2; p * p <= bound; ++p) {
         if (!is_prime_sieve[static_cast<size_t>(p)]) continue;
-        for (uint64_t k = p * 2; k <= bound; k += p) {
+        // 标记从 p*p 开始(小素数倍数已标过),~减少一半 mark 写入
+        for (uint64_t k = p * p; k <= bound; k += p) {
             is_prime_sieve[static_cast<size_t>(k)] = false;
         }
     }
@@ -494,7 +502,8 @@ void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const Polyno
 
     for (uint64_t p = 2; p * p <= max_p; ++p) {
         if (!is_prime_sieve[static_cast<size_t>(p)]) continue;
-        for (uint64_t k = p * 2; k <= max_p; k += p) {
+        // 起点 p*p,~减少一半 mark
+        for (uint64_t k = p * p; k <= max_p; k += p) {
             is_prime_sieve[static_cast<size_t>(k)] = false;
         }
     }

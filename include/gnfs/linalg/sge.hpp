@@ -91,12 +91,19 @@ public:
         size_t alive_rows = n_rows;
         size_t alive_cols = n_cols;
 
+        // col_to_rows 在 pass 循环外预分配,避免每 pass 重新 alloc
+        // n_cols 个 std::vector(标准 GNFS 50-digit ~80万列,100 passes
+        // 下原 alloc/free 是 8000 万次)。Phase 1 worklist 已增量维护,
+        // Phase 2 仍需重建外层结构 — 但每条 inner vec 通过 clear() 复用
+        // 避免 push_back 触发 reallocate。
+        std::vector<std::vector<size_t>> col_to_rows(n_cols);
+
         // ── Iterative elimination ──
         for (size_t pass = 0; pass < config.max_passes; ++pass) {
             size_t eliminated_this_pass = 0;
 
-            // Build col→rows map for all active rows/cols
-            std::vector<std::vector<size_t>> col_to_rows(n_cols);
+            // 清空但保留 inner vec capacity(下轮 push_back 通常不 realloc)
+            for (auto& v : col_to_rows) v.clear();
             for (size_t r = 0; r < n_rows; ++r) {
                 if (!row_alive[r]) continue;
                 for (auto c : working_rows[r].indices()) {
