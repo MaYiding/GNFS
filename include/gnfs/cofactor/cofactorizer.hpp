@@ -35,10 +35,12 @@ struct CofactorizerConfig {
     uint64_t large_prime_bound = 0;      // 大素数上界 (0 = 使用因子基设置)
     bool allow_1lp = true;               // 允许 1 个大素数
     bool allow_2lp = true;               // 允许 2 个大素数
-    // 3LP 当前未被 RelationFilter 支持(filter.hpp 显式丢弃 3LP+ 关系)。
-    // 配置保留以便将来实现 chain merge,但实际无效。不要设为 true 否则
-    // 关系会过 cofactor 但被 filter 丢弃,浪费 cofactor 工作。
-    bool allow_3lp = false;
+    // 3LP 未被 RelationFilter 支持(filter.hpp 显式丢弃 3LP+ 关系),且 cofactorize
+    // 后被 filter 丢的 cofactor 工作完全浪费。当前无 allow_3lp 字段;若将来实现
+    // chain-merge 把 3LP 链合并为 0LP 等价,需要同时:
+    //   (1) cofactorizer 接受 Composite 分类
+    //   (2) RelationFilter::merge_3lp 实现
+    // 两端同时上线才能恢复;只放开一端只会浪费 CPU。
     size_t max_factorization_attempts = 10000;  // Pollard rho 最大尝试次数
 };
 
@@ -352,7 +354,7 @@ private:
                 return config_.allow_2lp;
 
             case CofactorClass::Composite:
-                return config_.allow_3lp;  // 可能是 3LP
+                return false;  // 3LP+ 未实现 chain-merge,拒绝以节省工作
 
             case CofactorClass::TooLarge:
             case CofactorClass::Unknown:
