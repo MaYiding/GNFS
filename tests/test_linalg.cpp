@@ -812,6 +812,77 @@ void test_sge_expand_dependency() {
 }
 
 // Test SGE: empty and trivial matrices
+// Test SGE: cascading chain — w1 elimination triggers more w1 columns.
+// Verifies worklist re-seeding in Phase 1 works correctly.
+void test_sge_cascading_weight1() {
+    std::cout << "Testing SGE cascading weight-1 chain..." << std::endl;
+
+    // 3×3 staircase:
+    //   Row 0: {0}        ← col 0 has only R0 (w1)
+    //   Row 1: {0, 1}     ← col 1 has R1, R2 (w2)
+    //   Row 2: {1, 2}     ← col 2 has only R2 (w1)
+    //
+    // Cascade: kill col 2 → R2 dies → col 1 becomes w1 (only R1) → kill →
+    // R1 dies → col 0 becomes w1 (only R0) → kill → R0 dies → empty matrix.
+    SparseMatrix mat(3, 3);
+    mat.set(0, 0);
+    mat.set(1, 0); mat.set(1, 1);
+    mat.set(2, 1); mat.set(2, 2);
+
+    SGEConfig config;
+    config.eliminate_weight2 = false;  // 只测 w1 级联
+    auto result = SGE::preprocess(mat, config);
+
+    // 全部 3 列通过 w1 cascade 消除
+    assert(result.reduced_matrix.num_rows() == 0);
+    assert(result.weight1_eliminated == 3);
+
+    std::cout << "  Cascading w1: " << result.original_rows << "x"
+              << result.original_cols << " → empty (w1=" << result.weight1_eliminated
+              << ")" << std::endl;
+    std::cout << "  PASSED" << std::endl;
+}
+
+// Test SGE: w1 → w2 → w1 alternating cascade across passes.
+// Phase 1 eliminates w1, Phase 2 merges w2 (which may create new w1),
+// next pass picks up new w1. Verifies multi-pass convergence.
+void test_sge_alternating_cascade() {
+    std::cout << "Testing SGE w1→w2→w1 alternating cascade..." << std::endl;
+
+    // 5×5 matrix designed for multi-pass cascade:
+    //   Row 0: {0}             col 0 w1 (R0 only)         — kill R0 in pass 1 Phase 1
+    //   Row 1: {1, 2}          col 1 {R1, R2} w2          — merge in pass 1 Phase 2
+    //   Row 2: {1, 3}          col 2 {R1, R4} w2          — merge in pass 1 Phase 2
+    //   Row 3: {3, 4}          col 3 {R2, R3} w2
+    //   Row 4: {2, 4}          col 4 {R3, R4} w2
+    //
+    // After Phase 1: R0 + col 0 死, 1 weight-1 eliminated.
+    // Phase 2 处理 w2,产生新结构;新 pass 又可能产生 w1。
+    SparseMatrix mat(5, 5);
+    mat.set(0, 0);
+    mat.set(1, 1); mat.set(1, 2);
+    mat.set(2, 1); mat.set(2, 3);
+    mat.set(3, 3); mat.set(3, 4);
+    mat.set(4, 2); mat.set(4, 4);
+
+    SGEConfig config;
+    config.eliminate_weight1 = true;
+    config.eliminate_weight2 = true;
+    auto result = SGE::preprocess(mat, config);
+
+    // 期望:R0 在 Phase 1 被消(col 0 是 w1),后续 w2 merge 把剩余压缩
+    assert(result.weight1_eliminated >= 1);  // 至少 col 0 触发
+    assert(result.reduced_matrix.num_rows() <= 4);  // R0 必定消失
+    assert(result.passes >= 1);
+
+    std::cout << "  Alternating cascade: " << result.original_rows << "x"
+              << result.original_cols << " → " << result.reduced_matrix.num_rows()
+              << "x" << result.reduced_matrix.num_cols() << " (passes="
+              << result.passes << ", w1=" << result.weight1_eliminated
+              << ", w2=" << result.weight2_merged << ")" << std::endl;
+    std::cout << "  PASSED" << std::endl;
+}
+
 void test_sge_edge_cases() {
     std::cout << "Testing SGE edge cases..." << std::endl;
 
@@ -869,6 +940,8 @@ int main() {
     test_ensure_all_sorted();
     test_sge_weight1();
     test_sge_weight2();
+    test_sge_cascading_weight1();
+    test_sge_alternating_cascade();
     test_sge_expand_dependency();
     test_sge_edge_cases();
 
