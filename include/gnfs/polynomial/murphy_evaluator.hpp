@@ -80,29 +80,47 @@ public:
             const IntPolynomial& g,
             const Integer& n) const {
 
-        double best_skewness = optimize_skewness(f, g, n);
-        return compute(f, g, n, best_skewness);
+        (void)n;
+
+        // alpha 计算极慢 (compute_alpha 扫 ~78k 素数 + Cantor-Zassenhaus 求根)。
+        // 原代码: compute() → optimize_skewness() 算 2 次 + 内部 compute(…,skew)
+        // 又算 2 次 = 共 4 次 alpha。alpha 不依赖 skewness,只算一次然后传入。
+        double alpha_f = compute_alpha(f);
+        double alpha_g = compute_alpha(g);
+
+        double best_skewness = optimize_skewness_with_alphas(f, g, alpha_f, alpha_g);
+        return compute_with_alphas(f, g, best_skewness, alpha_f, alpha_g);
     }
 
-    /// 计算 Murphy E-score（指定 skewness）
+    /// 计算 Murphy E-score（指定 skewness,内部入口,重算 alpha)
     [[nodiscard]] MurphyScore compute(
             const IntPolynomial& f,
             const IntPolynomial& g,
             const Integer& n,
             double skewness) const {
 
-        (void)n;  // 角度积分不依赖 N
+        (void)n;
+        return compute_with_alphas(f, g, skewness,
+                                    compute_alpha(f), compute_alpha(g));
+    }
+
+private:
+    /// 内部:已知 alpha 的 score 构造,避免重复计算。
+    [[nodiscard]] MurphyScore compute_with_alphas(
+            const IntPolynomial& f,
+            const IntPolynomial& g,
+            double skewness,
+            double alpha_f,
+            double alpha_g) const {
 
         MurphyScore score;
         score.skewness = skewness;
-
-        // 计算 alpha 值
-        score.alpha_f = compute_alpha(f);
-        score.alpha_g = compute_alpha(g);
+        score.alpha_f = alpha_f;
+        score.alpha_g = alpha_g;
 
         // 角度积分计算 E-score，alpha 已集成到 Dickman rho 参数中
         auto [log_e, linear_e] = compute_e_score_log(
-            f, g, skewness, score.alpha_f, score.alpha_g);
+            f, g, skewness, alpha_f, alpha_g);
 
         score.log_e_score = log_e;
         score.e_score = linear_e;
@@ -110,6 +128,7 @@ public:
         return score;
     }
 
+public:
     /// 计算多项式的 alpha 值
     /// alpha = Σ_p (r_p/p - 1/(p-1)) · log(p)
     /// 正 alpha = 多根，值更易被小素数整除（好）
@@ -174,10 +193,16 @@ public:
             const Integer& n) const {
 
         (void)n;
+        return optimize_skewness_with_alphas(
+            f, g, compute_alpha(f), compute_alpha(g));
+    }
 
-        // Pre-compute alphas (independent of skewness)
-        double alpha_f = compute_alpha(f);
-        double alpha_g = compute_alpha(g);
+    /// 已知 alpha 的 skewness 优化(避免外部已算 alpha 后再次重算)
+    [[nodiscard]] double optimize_skewness_with_alphas(
+            const IntPolynomial& f,
+            const IntPolynomial& g,
+            double alpha_f,
+            double alpha_g) const {
 
         // 首先估计初始 skewness
         double init_skew = estimate_initial_skewness(f);
