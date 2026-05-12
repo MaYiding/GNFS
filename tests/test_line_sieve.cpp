@@ -1,4 +1,12 @@
 // test_line_sieve.cpp — Verify line sieve produces valid candidates
+//
+// LineSieve 已标 [[deprecated]] (未集成到 Pipeline);此测试仅做算法对照,
+// 抑制 deprecated 警告。Pipeline 用 LatticeSieve / SIQS。
+
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
 
 #include <gnfs/core/params.hpp>
 #include <gnfs/polynomial/selector_dispatch.hpp>
@@ -122,3 +130,7 @@ int main() {
 
     return tests_failed > 0 ? 1 : 0;
 }
+
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
