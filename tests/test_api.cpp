@@ -112,10 +112,10 @@ bool test_config_from_file() {
 bool test_config_to_string() {
     Config cfg;
     cfg.degree = 5;
-    cfg.threads = 8;
+    cfg.rational_bound = 10000u;
     auto s = cfg.to_string();
     assert(s.find("degree = 5") != std::string::npos);
-    assert(s.find("threads = 8") != std::string::npos);
+    assert(s.find("rational_bound = 10000") != std::string::npos);
     return true;
 }
 
