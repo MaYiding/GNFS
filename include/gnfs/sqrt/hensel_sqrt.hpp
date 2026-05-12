@@ -164,9 +164,17 @@ private:
 
         // Leading term: log_bound/2 (sqrt of worst-case single embedding)
         // Correction: log_f_prime_bound (f'(α)² trick), log₂(d) (Vandermonde)
+        // Adaptive safety margin:大类群/大 R 下 extra_precision=200 常量
+        // 可能偏低 ~50 bits 导致 center 步骤错位 → -Y 兜底失败 50% 概率。
+        // 改为 max(extra_precision, 0.05 * log_bound) 让安全余量随关系数
+        // 量级 scaling。Stage1 估算 log_bound ≈ 10000 时 safety = 500,
+        // 远超原 200。小问题(<4000 bits)不受影响。
+        double adaptive_safety = std::max(
+            static_cast<double>(config_.extra_precision),
+            log_bound * 0.05);
         return log_bound / 2.0 + log_f_prime_bound
                + std::log2(static_cast<double>(d))
-               + config_.extra_precision;
+               + adaptive_safety;
     }
 
     /// Compute ∏(a_i - b_i*m) mod N
