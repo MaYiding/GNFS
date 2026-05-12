@@ -38,7 +38,6 @@ public:
 private:
     PolynomialContext ctx_;
 
-    static void find_rational_primes(FactorBase& fb, uint32_t bound, uint8_t log_scale);
     static void find_rational_primes(FactorBase& fb, const PolynomialContext& ctx, uint32_t bound, uint8_t log_scale);
     static void find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx, uint32_t bound, uint8_t log_scale);
     static void find_algebraic_primes_range(FactorBase& fb, const PolynomialContext& ctx,
