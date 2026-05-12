@@ -35,10 +35,12 @@ struct CofactorizerConfig {
     uint64_t large_prime_bound = 0;      // 大素数上界 (0 = 使用因子基设置)
     bool allow_1lp = true;               // 允许 1 个大素数
     bool allow_2lp = true;               // 允许 2 个大素数
-    // 3LP 当前未被 RelationFilter 支持(filter.hpp 显式丢弃 3LP+ 关系)。
-    // 配置保留以便将来实现 chain merge,但实际无效。不要设为 true 否则
-    // 关系会过 cofactor 但被 filter 丢弃,浪费 cofactor 工作。
-    bool allow_3lp = false;
+    // 3LP 未被 RelationFilter 支持(filter.hpp 显式丢弃 3LP+ 关系),且 cofactorize
+    // 后被 filter 丢的 cofactor 工作完全浪费。当前无 allow_3lp 字段;若将来实现
+    // chain-merge 把 3LP 链合并为 0LP 等价,需要同时:
+    //   (1) cofactorizer 接受 Composite 分类
+    //   (2) RelationFilter::merge_3lp 实现
+    // 两端同时上线才能恢复;只放开一端只会浪费 CPU。
     size_t max_factorization_attempts = 10000;  // Pollard rho 最大尝试次数
 };
 
@@ -51,6 +53,10 @@ struct CofactorizerStats {
     std::atomic<size_t> rational_rejects{0};
     std::atomic<size_t> algebraic_rejects{0};
     std::atomic<size_t> both_rejects{0};
+    // gcd(rat_value, N) ∈ (1, N) 命中:这本身就是 N 的非平凡因子。Pipeline 可读
+    // 此计数判断是否发生"侥幸命中"。具体因子尚未暴露在 stats(线程多份难放),
+    // 但计数 > 0 时 Pipeline 可重启 sieve 用更小的 N 节省工作。
+    std::atomic<size_t> lucky_factor_hits{0};
 
     CofactorizerStats() = default;
 
@@ -63,6 +69,7 @@ struct CofactorizerStats {
         size_t rational_rejects;
         size_t algebraic_rejects;
         size_t both_rejects;
+        size_t lucky_factor_hits;
     };
 
     [[nodiscard]] Snapshot snapshot() const noexcept {
@@ -72,7 +79,8 @@ struct CofactorizerStats {
                 partial_2lp.load(std::memory_order_relaxed),
                 rational_rejects.load(std::memory_order_relaxed),
                 algebraic_rejects.load(std::memory_order_relaxed),
-                both_rejects.load(std::memory_order_relaxed)};
+                both_rejects.load(std::memory_order_relaxed),
+                lucky_factor_hits.load(std::memory_order_relaxed)};
     }
 
     void reset() noexcept {
@@ -83,6 +91,7 @@ struct CofactorizerStats {
         rational_rejects.store(0, std::memory_order_relaxed);
         algebraic_rejects.store(0, std::memory_order_relaxed);
         both_rejects.store(0, std::memory_order_relaxed);
+        lucky_factor_hits.store(0, std::memory_order_relaxed);
     }
 };
 
@@ -148,12 +157,23 @@ public:
             if (rat_ok) {
                 // 纯 uint64 路径: 零 GMP 分配
                 if (ctx_.n().fits_uint64()) {
-                    if (std::gcd(rat_abs, ctx_.n().to_uint64()) != 1) return std::nullopt;
+                    uint64_t g = std::gcd(rat_abs, ctx_.n().to_uint64());
+                    if (g != 1) {
+                        // gcd > 1 且 < N 是 N 的非平凡因子 — 记录 lucky strike。
+                        if (g != ctx_.n().to_uint64()) {
+                            stats_.lucky_factor_hits.fetch_add(1, std::memory_order_relaxed);
+                        }
+                        return std::nullopt;
+                    }
                 } else {
-                    // rat_abs fits uint64 but N doesn't — gcd via GMP
                     Integer rv_int(rat_abs);
                     Integer gcd_with_n = core::gcd(std::move(rv_int), ctx_.n());
-                    if (!gcd_with_n.is_one()) return std::nullopt;
+                    if (!gcd_with_n.is_one()) {
+                        if (gcd_with_n.compare(ctx_.n()) < 0) {
+                            stats_.lucky_factor_hits.fetch_add(1, std::memory_order_relaxed);
+                        }
+                        return std::nullopt;
+                    }
                 }
                 rat_result = divider_.divide_rational_u64(rat_abs);
             } else {
@@ -162,7 +182,12 @@ public:
                 if (rat_value.is_negative()) rat_value.negate();
                 {
                     Integer gcd_with_n = core::gcd(rat_value.clone(), ctx_.n());
-                    if (!gcd_with_n.is_one()) return std::nullopt;
+                    if (!gcd_with_n.is_one()) {
+                        if (gcd_with_n.compare(ctx_.n()) < 0) {
+                            stats_.lucky_factor_hits.fetch_add(1, std::memory_order_relaxed);
+                        }
+                        return std::nullopt;
+                    }
                 }
                 rat_result = divider_.divide_rational(std::move(rat_value));
             }
@@ -352,7 +377,7 @@ private:
                 return config_.allow_2lp;
 
             case CofactorClass::Composite:
-                return config_.allow_3lp;  // 可能是 3LP
+                return false;  // 3LP+ 未实现 chain-merge,拒绝以节省工作
 
             case CofactorClass::TooLarge:
             case CofactorClass::Unknown:

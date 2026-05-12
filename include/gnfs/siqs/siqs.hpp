@@ -1250,12 +1250,18 @@ inline std::optional<std::pair<Integer, Integer>> try_extract(
 {
     // Verify exponents are all even (matrix correctness check)
     std::vector<uint32_t> total_exp(fb.size(), 0);
+    // Track sign parity: M[0] column encodes value sign; XOR of `negative`
+    // flags across dep must be 0 (even count) or product of values is negative
+    // and Y² ≡ -X² mod N → fake congruence (gcd(X-Y, N) returns 1 or N).
+    uint32_t sign_parity = 0;
     for (size_t idx : dep) {
         const auto& rel = relations[idx];
+        if (rel.negative) sign_parity ^= 1;
         for (size_t i = 0; i < fb.size() && i < rel.exponents.size(); i++) {
             total_exp[i] += rel.exponents[i];
         }
     }
+    if (sign_parity) return std::nullopt; // odd number of negative values → skip
     for (size_t i = 0; i < fb.size(); i++) {
         if (total_exp[i] & 1) return std::nullopt; // parity error → skip
     }
