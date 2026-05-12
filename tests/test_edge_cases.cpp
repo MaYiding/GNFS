@@ -1148,7 +1148,29 @@ void test_hensel_sqrt_edge_cases() {
     // verified by test_gnfs_progressive (L1-L5). The f'(α)² trick and
     // centering logic are exercised there with proper pipeline data.
 
-    std::cout << "  PASS (8 sub-tests)" << std::endl;
+    // Test 9: CRT-sign-exhausted 路径 — 100+ ab_pairs 触发 Nguyen hybrid
+    // 分支,product 非平方时 CRT 试遍 2^(K-1) sign combo 全失败,设置
+    // was_crt_sign_exhausted() == true。
+    {
+        HenselSqrt hs;
+        std::vector<std::pair<int64_t, uint64_t>> pairs;
+        // 100 个 (a, b) 对,且乘积 ∏(a - b*α) 在 Z[α] 中明显不是平方
+        // (奇数个不同的 prime 元素相乘,product 必含 squarefree 部分)。
+        for (int64_t i = 1; i <= 100; ++i) {
+            pairs.push_back({2 * i + 1, 1});  // 奇数 a,产品含 odd primes
+        }
+        auto r = hs.compute(pairs, nf);
+        // 不强制 r=nullopt(可能巧合是平方),但若 r=nullopt 应有 sign-exhausted
+        // 标记;若 r 有值则 hensel 成功(也合理)。仅验证 API 调用不崩。
+        if (!r) {
+            // 若失败,可查 was_crt_sign_exhausted() 给 caller 判断 dep 无效
+            std::cout << "    [info] crt_sign_exhausted="
+                      << (hs.was_crt_sign_exhausted() ? "true" : "false") << "\n";
+        }
+        (void)r;  // 不强制断言结果,仅锁住 API 不崩
+    }
+
+    std::cout << "  PASS (9 sub-tests)" << std::endl;
 }
 
 // ═══════════════════════════════════════════════════════════════
