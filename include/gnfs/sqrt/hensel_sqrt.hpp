@@ -1369,92 +1369,9 @@ private:
         return result;
     }
 
-    /// Compute polynomial inverse mod (f, new_modulus)
-    /// Given that we know the inverse mod (f, old_modulus), lift it
-    [[nodiscard]] static std::vector<Integer> poly_inverse_mod(
-            const std::vector<Integer>& a,
-            const std::vector<Integer>& f,
-            uint32_t d,
-            const Integer& old_modulus,
-            const Integer& new_modulus) {
-
-        // First compute inverse mod old_modulus using extended GCD
-        // For small modulus, use brute force or direct computation
-        auto inv = poly_inverse_mod_direct(a, f, d, old_modulus);
-        if (inv.empty()) return inv;
-
-        // Newton lifting: inv' = 2·inv - a·inv² mod (f, new_modulus)
-        auto a_inv2 = poly_mul_mod(a, inv, f, d, new_modulus);
-        // a·inv should be ≡ 1 mod old_modulus
-        // Compute 2·inv - a·inv·inv = inv·(2 - a·inv) mod (f, new_modulus)
-
-        // t = a · inv mod (f, new_modulus)
-        auto t = poly_mul_mod(a, inv, f, d, new_modulus);
-
-        // 2 - t
-        std::vector<Integer> two_minus_t(d);
-        two_minus_t[0] = Integer(int64_t(2));
-        two_minus_t[0] -= t[0];
-        two_minus_t[0] %= new_modulus;
-        if (two_minus_t[0].is_negative()) two_minus_t[0] += new_modulus;
-        for (uint32_t i = 1; i < d; ++i) {
-            two_minus_t[i] = t[i].clone();
-            two_minus_t[i].negate();
-            two_minus_t[i] %= new_modulus;
-            if (two_minus_t[i].is_negative()) two_minus_t[i] += new_modulus;
-        }
-
-        // result = inv · (2 - t) mod (f, new_modulus)
-        return poly_mul_mod(inv, two_minus_t, f, d, new_modulus);
-    }
-
-    /// Compute polynomial inverse mod (f, modulus) directly
-    /// Uses the fact that (Z/mZ)[x]/(f) is a ring and we need a^{-1}
-    [[nodiscard]] static std::vector<Integer> poly_inverse_mod_direct(
-            const std::vector<Integer>& a,
-            const std::vector<Integer>& f,
-            uint32_t d,
-            const Integer& modulus) {
-
-        // For small modulus (fits uint64), use ModularPoly inverse
-        if (modulus.fits_uint64()) {
-            uint64_t mod = modulus.to_uint64();
-            std::vector<uint64_t> a_mod(d), f_mod(d + 1);
-            for (uint32_t i = 0; i < d; ++i) {
-                Integer c = a[i].clone();
-                c %= modulus;
-                if (c.is_negative()) c += modulus;
-                a_mod[i] = c.to_uint64();
-            }
-            for (uint32_t i = 0; i <= d; ++i) {
-                Integer c = f[i].clone();
-                c %= modulus;
-                if (c.is_negative()) c += modulus;
-                f_mod[i] = c.to_uint64();
-            }
-
-            // Compute a^{q-2} mod (f, p) where q = p^d (Fermat's little theorem in F_{p^d})
-            // For the inverse: a^{-1} = a^{p^d - 2} mod (f, p)
-            // Use Integer to avoid uint64_t overflow when p^d > 2^64 (e.g. p=2000, d=6)
-            Integer q_minus_2(1);
-            for (uint32_t i = 0; i < d; ++i) q_minus_2 *= Integer(static_cast<uint64_t>(mod));
-            q_minus_2 -= Integer(2);
-
-            ModularPoly ap(a_mod);
-            auto inv_mp = ModularPoly::power(ap, q_minus_2, f_mod, mod);
-
-            std::vector<Integer> result(d);
-            for (uint32_t i = 0; i < d; ++i) {
-                result[i] = Integer(static_cast<int64_t>(
-                    (i <= static_cast<uint32_t>(inv_mp.degree())) ? inv_mp.coeff(i) : 0));
-            }
-            return result;
-        }
-
-        // For large modulus, we'd need extended polynomial GCD
-        // For now, return empty (failure)
-        return {};
-    }
+    // poly_inverse_mod / poly_inverse_mod_direct removed (dead code).
+    // Hensel sqrt maintains T explicitly throughout the lift so the
+    // ring-inverse helpers were never reached from any caller.
 
     /// Find next prime (with overflow guard)
     [[nodiscard]] static uint64_t next_prime(uint64_t n) {
