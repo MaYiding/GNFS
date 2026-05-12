@@ -110,7 +110,10 @@ private:
             config.B2 = 1000000000;
             config.num_curves = 100;
         } else {
-            // 对非常大的余因子，使用更激进的参数
+            // >130-bit 余因子(~40+ digit 素因子) Stage 2 极慢(B2=5e9 需要
+            // 数分钟/曲线)。理论上 GNFS pipeline 应在更早把这类大余因子
+            // 直接拒掉(大于 algebraic_bound²的 cofactor 不可能光滑),不
+            // 走到 ECM。此分支只是兜底,避免 num_curves 等参数完全失配。
             config.B1 = 3000000;
             config.B2 = 5000000000ULL;
             config.num_curves = 200;
