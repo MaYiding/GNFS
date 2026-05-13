@@ -43,8 +43,31 @@ EVENT_KEYS = [
 
 
 def load_counters(p: Path) -> tuple[dict[str, int], dict]:
-    """Load mperf JSON. Returns (counters_dict, full_json)."""
-    raw = json.loads(p.read_text())
+    """Load mperf JSON. Returns (counters_dict, full_json).
+
+    mperf writes its JSON to stdout *after* the target binary's stdout,
+    so the captured file is target-output + JSON concatenated. Find the
+    last `{\\n  "counters"` anchor and parse from there to EOF.
+    """
+    text = p.read_text()
+    # Try whole-file first (e.g. when target is silent like /bin/echo "")
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        # Locate the mperf JSON block by its anchor
+        anchor = '{\n  "counters"'
+        idx = text.rfind(anchor)
+        if idx < 0:
+            # Looser fallback: last bare '{' line
+            idx = text.rfind('\n{')
+            if idx >= 0:
+                idx += 1
+            else:
+                idx = text.rfind('{')
+        if idx < 0:
+            raise ValueError(f"no JSON object found in {p}")
+        # Find matching close — simplest: scan to EOF and try to parse
+        raw = json.loads(text[idx:])
     counters_raw = raw.get("counters", {}) if isinstance(raw, dict) else {}
 
     counters: dict[str, int] = {}
