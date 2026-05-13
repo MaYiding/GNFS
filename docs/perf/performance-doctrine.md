@@ -778,12 +778,19 @@ python3 scripts/perf/parse-trace.py \
 
 ## §6  本项目优化路线图
 
-### P0 — 现在 (本会话起)
+### P0 — 已完成 (2026-05-12)
 
 - ✅ **本文档** (performance-doctrine.md)
-- ⏳ **§5 完整实施**: Instruments 闭环 + PGO 接入（15-20h）
-- ⏳ 首次 baseline 报告: `bench/results/2026-05-12-baseline.md`
-- ⏳ PGO 实测收益评估，决定是否默认开启
+- ✅ **§5 完整实施**: Instruments 闭环 + PGO 接入
+  - CMakeLists `GNFS_ENABLE_PGO_GEN/USE` (commit `5ac809d`)
+  - `scripts/pgo-train.sh` 4-phase 自动化 (commit `31a4b95`)
+  - `scripts/perf/profile-cpu.sh` xctrace recorder (commit `3a42087`)
+  - `scripts/perf/parse-trace.py` TMA 4-col diff parser (commit `0d6da7c`)
+  - `scripts/test.sh pgo-train` / `profile` 子命令 (commit `099018c`)
+- ✅ 首次 PGO 影响评估: `bench/results/2026-05-12-pgo-impact.md`
+  - Verdict: PGO 接受为可工作 baseline；wall time -2.09% (median)，PMU total counter -7.11%
+  - 训练样本过度集中（factor_with_kleinjung 既是训练又是评估）— 建议扩展样本集
+  - 决定: PGO **保留为 opt-in**，不默认开启；用于 release / 基准发布
 
 ### P1 — 数据驱动的下一阶段 (基于 §5 profile 数据)
 

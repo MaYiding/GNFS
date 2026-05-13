@@ -89,3 +89,16 @@ RESOLVED.md
 /TEST_STATUS.md
 /TESTING_GUIDE.md
 Testing/
+
+# ===== Performance Profiling Artifacts =====
+# Trace binaries are large and machine-specific; reports (.md) ARE tracked.
+bench/results/*.trace
+bench/results/*.trace/
+bench/results/*.xml
+bench/results/*.profraw
+bench/results/*.profdata
+
+# PGO profile data (when produced outside build-*/ dirs)
+pgo-profiles/
+*.profraw
+*.profdata
