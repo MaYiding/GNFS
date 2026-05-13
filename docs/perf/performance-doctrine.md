@@ -792,20 +792,49 @@ python3 scripts/perf/parse-trace.py \
   - 训练样本过度集中（factor_with_kleinjung 既是训练又是评估）— 建议扩展样本集
   - 决定: PGO **保留为 opt-in**，不默认开启；用于 release / 基准发布
 
-### P1 — 数据驱动的下一阶段 (基于 §5 profile 数据)
+### P1.A — 已完成 (2026-05-13)
 
-按 profile 报告的 top-down 类别决定：
+xctrace "CPU Counters" 4 列聚合（P0 用）无法区分 MemBound vs CoreBound。P1.A 切换到 mperf + as5.plist (M5 PMU 数据库)，采集 10 个真实事件：
 
-- 若 **MemBound > 30%**:
-  - 热点全面 `__builtin_prefetch` 审计
-  - HotPath 数据结构 64 B 对齐
-  - SoA 重审 (Relations / FactorBase)
-- 若 **BadSpec > 10%**:
-  - 热点循环加 `[[likely]]/[[unlikely]]`（基于 profile，不盲加）
-  - branchless 替代
-- 若 **CoreBound > 30%**:
-  - NEON 全面化: SpMV / Couveignes Gray code / Murphy alpha
-  - ILP 提升：unroll / 多累加器
+- `scripts/perf/install-mperf.sh` — mperf 外部工具安装 (commit `c47f6a5`)
+- `scripts/perf/pmu-stat.sh` — 10-event wrapper (commit `83f9b76`, `25dcd0c`, `64b449f`)
+- `scripts/perf/pmu-derive.py` — JSON 解析 + 派生指标 + P1 分类器 (commit `83f9b76`, `c1bd380`)
+- `scripts/test.sh pmu` 子命令 (commit `1f18bbb`)
+- 首次实测报告: `bench/results/2026-05-13-pmu-deepening.md` (commit `509bbf4`)
+
+**实测决策依据（test_factor_with_kleinjung baseline）**:
+
+| Metric | 值 | 阈值 | 触发 |
+|---|---:|---:|---|
+| BackendStallRate   | **74.79%** | >30% | ✅ |
+| L1DMissRate        | **12.80%** | >5%  | ✅ |
+| BranchMispredRate  | 0.55%      | >5%  | ❌ |
+| FrontendStallRate  | 2.26%      | >20% | ❌ |
+| SIMDDensity        | 5.85%      | -    | n/a |
+
+→ **MemBound 触发**，BadSpec / FrontendBound / CoreBound 均不触发。
+
+### P1.B — MemBound 治理 (基于 P1.A 实测，doctrine 铁律 1 数据驱动)
+
+按 GNFS pipeline 热度排序，逐项实施：
+
+1. **`__builtin_prefetch` 审计 Block Lanczos SpMV** (优先级 1)
+   - 文件: `include/gnfs/linalg/packed_gf2_matrix.hpp`, `src/linalg/block_lanczos.cpp`
+   - 模式: `__builtin_prefetch(&v[col_indices[k + N_AHEAD]], 0, 0)`，N_AHEAD ≈ 8-16
+   - 预期: linalg wall time -15% 至 -30%（矩阵超 L1 working set 时）
+
+2. **`lattice_sieve::scatter_bucket` 缓存行对齐** (优先级 2)
+   - 文件: `src/sieve/lattice_sieve.cpp`
+   - 检查: `Bucket` 结构 `alignas(64)` + `region_size` 是 64 B 整数倍
+   - 若 AoS 仍 miss → SoA 重构
+
+3. **TLBMissRate 60% 调查** (优先级 3，可能是 metric artifact)
+   - 先在 `test_integer` 等纯计算 benchmark 校准 L1D_TLB_MISS 语义
+   - 若真实 → `madvise(MADV_HUGEPAGE)` for relation buffer + Block Lanczos vectors
+
+**P1.B 不做的事**:
+- NEON 全面化 (SIMDDensity 5.85% 偏低，但 CoreBound **未触发** — 内存才是瓶颈，不是执行宽度)。NEON 推迟到 P1.C，仅当 MemBound 修复后重测仍有 backend stall > 30%
+- `[[likely]]/[[unlikely]]` 标注 (BranchMispredRate 0.55%，无信号)
 
 ### P2 — 大工程 (前提：P1 收益打满)
 
@@ -855,6 +884,18 @@ python3 scripts/perf/parse-trace.py \
 ## 附录 A  M5 PMU Event 速查表
 
 > 来源: tzakharko / blog.bugsiki.dev / blog.clf3.org（reverse-engineered，非官方）
+>
+> **M5 本机实测**（2026-05-13）：事件名取自 `/usr/share/kpep/as5.plist`（macOS 25.4 / Darwin 25.4.0 自带，M5 P/E 核分别为 `as5-1.plist` / `as5-2.plist`）。完整 135 事件清单导出:
+>   ```bash
+>   plutil -convert xml1 -o - /usr/share/kpep/as5.plist | grep -oE '<key>[A-Z][A-Z_0-9]+</key>' | sort -u
+>   ```
+> **mperf -l** 列出当前可编程的子集（~80 事件 + 别名）。
+>
+> **counters_mask 约束**: 部分事件不能任意分配 slot。如 `INST_BRANCH` / `BRANCH_MISPRED_NONSPEC` / `INST_ALL` / `INST_BRANCH_TAKEN` mask = `0b11111100`（仅 slots 0/1 可用）。mperf 按用户顺序贪心分配，约束事件必须放最前面，否则 `Failed to add event (conflict: 0xfc)`。检查方法:
+>   ```bash
+>   plutil -convert xml1 -o - /usr/share/kpep/as5.plist | \
+>     awk '/<key>EVENT_NAME<\/key>/,/<\/dict>/'  # 找 counters_mask 字段
+>   ```
 
 | Event 名 | 描述 | 类型 |
 |---------|------|------|
