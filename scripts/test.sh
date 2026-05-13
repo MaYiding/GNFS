@@ -1713,6 +1713,33 @@ case "$MODE" in
         exec "${PROJECT_ROOT}/scripts/perf/profile-cpu.sh" "${_test_bin}" "${MODE_ARGS[@]:1}"
         ;;
 
+    pmu)
+        # mperf 直接读 M5 PMU 计数器（10 events，见 doctrine §5 + P1.A 计划）
+        # 用法: ./scripts/test.sh pmu <test_name> [args...]
+        # 例:   ./scripts/test.sh pmu factor_with_kleinjung
+        # 需要 sudo（kpc API 内核限制）。先跑 ./scripts/perf/install-mperf.sh 一次。
+        if [[ ${#MODE_ARGS[@]} -eq 0 ]]; then
+            log_fail "用法: $0 pmu <test_name> [args...]"
+            log_info "例: $0 pmu factor_with_kleinjung"
+            log_info "首次需安装: ./scripts/perf/install-mperf.sh"
+            exit 1
+        fi
+        do_build
+        local _test_name="${MODE_ARGS[1]}"
+        local _test_bin="${BUILD_DIR}/test_${_test_name}"
+        if [[ ! -x "${_test_bin}" ]]; then
+            _test_bin="${BUILD_DIR}/${_test_name}"
+        fi
+        if [[ ! -x "${_test_bin}" ]]; then
+            log_fail "测试二进制不存在: ${_test_bin}"
+            exit 1
+        fi
+        log_header "PMU 采集 (mperf, GNFS P1.A 10 events)"
+        log_info "目标: ${_test_bin}"
+        log_warn "需要 sudo (kpc API)"
+        exec "${PROJECT_ROOT}/scripts/perf/pmu-stat.sh" "${_test_bin}" "${MODE_ARGS[@]:1}"
+        ;;
+
     stress)
         do_build
         log_header "压力测试 (50/60-digit)"
