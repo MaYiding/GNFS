@@ -181,15 +181,16 @@ RESULTS_DIR="${ROOT}/bench/results"
 
 # GNFS P1.A event set — see docs/superpowers/plans/2026-05-13-pmu-events-deepening.md
 EVENTS=(
+    # Order matters — events with restrictive counters_mask come first.
     FIXED_CYCLES
     FIXED_INSTRUCTIONS
+    INST_BRANCH                # mask=0b11111100 (slots 0/1 only)
+    BRANCH_MISPRED_NONSPEC     # mask=0b11111100 (slots 0/1 only)
     ARM_STALL_BACKEND
     ARM_STALL_FRONTEND
     L1D_CACHE_MISS_LD
     L1D_TLB_MISS
     ARM_MEM_ACCESS
-    BRANCH_MISPRED_NONSPEC
-    INST_BRANCH
     MAP_SIMD_UOP
 )
 

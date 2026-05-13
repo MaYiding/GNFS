@@ -18,18 +18,22 @@ SCRIPT_DIR="$(cd "$(dirname "${0}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 RESULTS_DIR="${ROOT}/bench/results"
 
-# GNFS P1.A event set — aligned with mperf-stat -l on M5 (as5.plist)
+# GNFS P1.A event set — aligned with mperf-stat -l on M5 (as5.plist).
+# Order matters: mperf assigns slots greedily, so events with restrictive
+# counters_mask (slot constraints) MUST come first. INST_BRANCH and
+# BRANCH_MISPRED_NONSPEC have mask=0b11111100 (slots 0/1 only); putting
+# them after free events causes "Failed to add event (conflict: 0xfc)".
 EVENTS=(
-    FIXED_CYCLES
-    FIXED_INSTRUCTIONS
-    ARM_STALL_BACKEND
-    ARM_STALL_FRONTEND
-    L1D_CACHE_MISS_LD
-    L1D_TLB_MISS
-    ARM_MEM_ACCESS
-    BRANCH_MISPRED_NONSPEC
-    INST_BRANCH
-    MAP_SIMD_UOP
+    FIXED_CYCLES                    # fixed slot 0
+    FIXED_INSTRUCTIONS              # fixed slot 1
+    INST_BRANCH                     # config: mask=252, MUST be early
+    BRANCH_MISPRED_NONSPEC          # config: mask=252, MUST be early
+    ARM_STALL_BACKEND               # config: no mask
+    ARM_STALL_FRONTEND              # config: no mask
+    L1D_CACHE_MISS_LD               # config: no mask
+    L1D_TLB_MISS                    # config: no mask
+    ARM_MEM_ACCESS                  # config: no mask
+    MAP_SIMD_UOP                    # config: no mask
 )
 
 OUT_SUFFIX=""

@@ -31,11 +31,13 @@ from typing import Optional
 
 
 # Must match scripts/perf/pmu-stat.sh EVENTS array order/spelling.
+# Mask-constrained events (INST_BRANCH, BRANCH_MISPRED_NONSPEC) come
+# first to claim their restricted slots before greedy allocation runs out.
 EVENT_KEYS = [
     "FIXED_CYCLES", "FIXED_INSTRUCTIONS",
+    "INST_BRANCH", "BRANCH_MISPRED_NONSPEC",
     "ARM_STALL_BACKEND", "ARM_STALL_FRONTEND",
     "L1D_CACHE_MISS_LD", "L1D_TLB_MISS", "ARM_MEM_ACCESS",
-    "BRANCH_MISPRED_NONSPEC", "INST_BRANCH",
     "MAP_SIMD_UOP",
 ]
 
