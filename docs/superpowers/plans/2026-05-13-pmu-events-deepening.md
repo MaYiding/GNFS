@@ -14,6 +14,8 @@
 
 ## 事件集（10 槽满采，无 multiplexing）
 
+> **修订 (Task 1 调查后)**: mperf v0.1 `mperf-stat -l` 在 M5 上**未暴露** as5.plist 中的细分事件 `BRANCH_COND_MISPRED_NONSPEC`、`INST_LDST`、`INST_SIMD_ALU`。已替换为 mperf 暴露的等价物。完整可用事件清单见 `~/.local/bin/mperf-stat -l`。
+
 | 类型 | 名称 | 用途 |
 |---|---|---|
 | Fixed | `FIXED_CYCLES` | IPC 分母 |
@@ -22,19 +24,19 @@
 | Config | `ARM_STALL_FRONTEND` | **前端 stall（FrontendBound）** |
 | Config | `L1D_CACHE_MISS_LD` | L1D load miss（细分 MemBound） |
 | Config | `L1D_TLB_MISS` | TLB miss |
-| Config | `INST_LDST` | 访存指令总数（miss rate 分母） |
-| Config | `BRANCH_COND_MISPRED_NONSPEC` | 条件分支误判（BadSpec 主指标） |
+| Config | `ARM_MEM_ACCESS` | 数据访存总数（miss rate 分母，原 INST_LDST 替代） |
+| Config | `BRANCH_MISPRED_NONSPEC` | 误判分支（BadSpec 主指标，含 cond+indir，原 BRANCH_COND_MISPRED_NONSPEC 替代） |
 | Config | `INST_BRANCH` | 分支总数（mispred rate 分母） |
-| Config | `INST_SIMD_ALU` | SIMD 利用率（CoreBound NEON 收益） |
+| Config | `MAP_SIMD_UOP` | SIMD/FP uop 映射数（NEON 利用率，原 INST_SIMD_ALU 替代） |
 
 派生指标：
 - `IPC = INSTRUCTIONS / CYCLES`
 - `BackendStallRate = STALL_BACKEND / CYCLES`
 - `FrontendStallRate = STALL_FRONTEND / CYCLES`
-- `L1DMissRate = L1D_CACHE_MISS_LD / INST_LDST`
-- `TLBMissRate = L1D_TLB_MISS / INST_LDST`
-- `BranchMispredRate = BRANCH_COND_MISPRED_NONSPEC / INST_BRANCH`
-- `SIMDDensity = INST_SIMD_ALU / INSTRUCTIONS`
+- `L1DMissRate = L1D_CACHE_MISS_LD / ARM_MEM_ACCESS`
+- `TLBMissRate = L1D_TLB_MISS / ARM_MEM_ACCESS`
+- `BranchMispredRate = BRANCH_MISPRED_NONSPEC / INST_BRANCH`
+- `SIMDDensity = MAP_SIMD_UOP / INSTRUCTIONS` (mapped 不是 retired，作为相对指标尚可)
 
 P1.B 决策规则（doctrine §6）：
 - `BackendStallRate > 30%` 且 `L1DMissRate > 5%` → **MemBound** → prefetch / 对齐 / SoA
@@ -124,11 +126,11 @@ Expected: 输出 "hi" + cycles/instructions 计数（非零）
 `.gitignore` 末尾追加：
 
 ```
-# mperf 源码缓存（不进项目）
-.cache/mperf-src/
+# PMU 采集 JSON (单次运行结果不入 git; 报告 .md 入 git)
+bench/results/*.pmu.json
 ```
 
-注：实际 cache 在 `${HOME}/.cache/`，不在项目内。但保留这条防御性 ignore。
+(mperf 源码缓存在 `${HOME}/.cache/mperf-src/`，不在项目内，无需 ignore)
 
 - [ ] **Step 6: Commit**
 
@@ -185,10 +187,10 @@ EVENTS=(
     ARM_STALL_FRONTEND
     L1D_CACHE_MISS_LD
     L1D_TLB_MISS
-    INST_LDST
-    BRANCH_COND_MISPRED_NONSPEC
+    ARM_MEM_ACCESS
+    BRANCH_MISPRED_NONSPEC
     INST_BRANCH
-    INST_SIMD_ALU
+    MAP_SIMD_UOP
 )
 
 while [[ $# -gt 0 ]]; do
@@ -326,9 +328,9 @@ from typing import Optional
 EVENT_KEYS = [
     "FIXED_CYCLES", "FIXED_INSTRUCTIONS",
     "ARM_STALL_BACKEND", "ARM_STALL_FRONTEND",
-    "L1D_CACHE_MISS_LD", "L1D_TLB_MISS", "INST_LDST",
-    "BRANCH_COND_MISPRED_NONSPEC", "INST_BRANCH",
-    "INST_SIMD_ALU",
+    "L1D_CACHE_MISS_LD", "L1D_TLB_MISS", "ARM_MEM_ACCESS",
+    "BRANCH_MISPRED_NONSPEC", "INST_BRANCH",
+    "MAP_SIMD_UOP",
 ]
 
 
@@ -373,10 +375,10 @@ def derive(c: dict[str, int]) -> dict[str, Optional[float]]:
         "IPC":               safe_div("FIXED_INSTRUCTIONS", "FIXED_CYCLES"),
         "BackendStallRate":  safe_div("ARM_STALL_BACKEND", "FIXED_CYCLES"),
         "FrontendStallRate": safe_div("ARM_STALL_FRONTEND", "FIXED_CYCLES"),
-        "L1DMissRate":       safe_div("L1D_CACHE_MISS_LD", "INST_LDST"),
-        "TLBMissRate":       safe_div("L1D_TLB_MISS", "INST_LDST"),
-        "BranchMispredRate": safe_div("BRANCH_COND_MISPRED_NONSPEC", "INST_BRANCH"),
-        "SIMDDensity":       safe_div("INST_SIMD_ALU", "FIXED_INSTRUCTIONS"),
+        "L1DMissRate":       safe_div("L1D_CACHE_MISS_LD", "ARM_MEM_ACCESS"),
+        "TLBMissRate":       safe_div("L1D_TLB_MISS", "ARM_MEM_ACCESS"),
+        "BranchMispredRate": safe_div("BRANCH_MISPRED_NONSPEC", "INST_BRANCH"),
+        "SIMDDensity":       safe_div("MAP_SIMD_UOP", "FIXED_INSTRUCTIONS"),
     }
 
 
