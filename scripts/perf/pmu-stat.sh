@@ -79,10 +79,18 @@ echo "== Recording PMU =="
 echo "  binary:  ${BIN} $*"
 echo "  events:  ${(j:,:)EVENTS}"
 echo "  out:     ${JSON_OUT}"
-echo "  (mperf needs sudo for kpc API; you may be prompted)"
 echo ""
 
-sudo "${MPERF}" -j "${ARGS[@]}" -- "${BIN}" "$@" > "${JSON_OUT}"
+# mperf needs kpc which requires root. If already root (e.g. user did
+# `sudo bash` for a batch of runs), skip the inner sudo. Otherwise call
+# sudo so the prompt reaches the user's terminal.
+if [[ $EUID -eq 0 ]]; then
+    "${MPERF}" -j "${ARGS[@]}" -- "${BIN}" "$@" > "${JSON_OUT}"
+else
+    echo "  (mperf needs sudo for kpc API; you may be prompted)"
+    echo ""
+    sudo "${MPERF}" -j "${ARGS[@]}" -- "${BIN}" "$@" > "${JSON_OUT}"
+fi
 
 echo ""
 echo "== Done =="
