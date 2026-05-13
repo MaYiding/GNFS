@@ -97,6 +97,8 @@ bench/results/*.trace/
 bench/results/*.xml
 bench/results/*.profraw
 bench/results/*.profdata
+# PMU 单次采集 JSON 较小但与机器/时刻绑定；报告 .md 才入 git
+bench/results/*.pmu.json
 
 # PGO profile data (when produced outside build-*/ dirs)
 pgo-profiles/
