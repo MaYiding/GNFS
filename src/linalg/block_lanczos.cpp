@@ -3,6 +3,7 @@
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -143,6 +144,14 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
     std::vector<size_t> elim_rows;
     if (use_parallel) elim_rows.reserve(m);
 
+    // Instrumentation (env var GNFS_DEBUG_GAUSSIAN=1 to enable output, no runtime cost otherwise)
+    size_t stat_pivots = 0;
+    size_t stat_pivots_in_parallel = 0;
+    size_t stat_parallel_calls = 0;
+    size_t stat_serial_subcalls = 0;
+    size_t stat_sum_elim_rows = 0;
+    size_t stat_max_elim_rows = 0;
+
     for (size_t col = m; col < m + n && pivot_row < m; ++col) {
         size_t best_pivot = m;
         for (size_t row = pivot_row; row < m; ++row) {
@@ -158,6 +167,8 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
             aug.swap_rows(pivot_row, best_pivot);
         }
 
+        ++stat_pivots;
+
         if (use_parallel) {
             // Collect rows that need XOR elimination
             elim_rows.clear();
@@ -167,7 +178,12 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
                 }
             }
 
+            ++stat_pivots_in_parallel;
+            stat_sum_elim_rows += elim_rows.size();
+            if (elim_rows.size() > stat_max_elim_rows) stat_max_elim_rows = elim_rows.size();
+
             if (elim_rows.size() > 500) {
+                ++stat_parallel_calls;
                 // Parallel elimination via ThreadPool (zero thread creation overhead)
                 size_t chunk = (elim_rows.size() + n_threads - 1) / n_threads;
                 std::vector<std::future<void>> futures;
@@ -185,6 +201,7 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
                 }
                 for (auto& f : futures) f.get();
             } else {
+                ++stat_serial_subcalls;
                 // Few rows — single-threaded
                 for (size_t row : elim_rows) {
                     aug.xor_rows(row, pivot_row);
@@ -212,6 +229,26 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
                 dependencies.push_back(std::move(dep));
             }
         }
+    }
+
+    // Debug output (no runtime cost unless env var set)
+    const char* gnfs_dbg = std::getenv("GNFS_DEBUG_GAUSSIAN");
+    if (gnfs_dbg && gnfs_dbg[0] != '0' && gnfs_dbg[0] != '\0') {
+        __uint128_t aug_bytes_128 = (__uint128_t)m * (m + n) / 8;
+        size_t avg_elim = stat_pivots_in_parallel ? stat_sum_elim_rows / stat_pivots_in_parallel : 0;
+        std::cerr << "[Gaussian] m=" << m
+                  << " n=" << n
+                  << " aug_KB=" << (size_t)(aug_bytes_128 / 1024)
+                  << " pivots=" << stat_pivots
+                  << " in_parallel=" << stat_pivots_in_parallel
+                  << " parallel_calls=" << stat_parallel_calls
+                  << " serial_subcalls=" << stat_serial_subcalls
+                  << " avg_elim=" << avg_elim
+                  << " max_elim=" << stat_max_elim_rows
+                  << " use_parallel=" << (use_parallel ? 1 : 0)
+                  << " n_threads=" << n_threads
+                  << " deps_found=" << dependencies.size()
+                  << "\n";
     }
 
     return dependencies;
