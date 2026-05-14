@@ -111,6 +111,36 @@ struct LingenResult {
     uint64_t valid_mask = 0;
 };
 
+// ============================================================================
+// Phase 3 (mksol) primitive: accumulator += V_k · F_k
+// ============================================================================
+//
+// V_k is a BlockVector of length m (packs 64 column-vectors as bits).
+// F_k is a 64×64 GF(2) matrix (the k-th coefficient of the generator poly).
+// `accumulator` is a BlockVector of length m being summed over k.
+//
+// (V·F)[r, j] = XOR_i V[r, i] · F[i, j], computed by iterating set bits of
+// V.data[r] and XOR-ing F.rows[bit] into accumulator.data[r].
+//
+// This mirrors DenseGF2_64x64::multiply but with the left operand a BlockVector
+// of arbitrary length (m), not a 64×64 matrix.
+inline void mksol_accumulate(const BlockVector& V_k,
+                              const DenseGF2_64x64& F_k,
+                              BlockVector& accumulator) noexcept {
+    assert(V_k.length == accumulator.length);
+    const size_t m = V_k.length;
+    for (size_t r = 0; r < m; ++r) {
+        uint64_t v = V_k.data[r];
+        uint64_t acc = 0;
+        while (v) {
+            int i = __builtin_ctzll(v);
+            acc ^= F_k.rows[i];
+            v &= v - 1;
+        }
+        accumulator.data[r] ^= acc;
+    }
+}
+
 /// Block Wiedemann algorithm for finding GF(2) null space vectors
 /// (Coppersmith 1994, with Berlekamp-Massey for matrix sequences)
 ///

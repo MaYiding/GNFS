@@ -163,6 +163,109 @@ void test_dense_64x128_is_zero() {
     TEST_PASS("DenseGF2_64x128 is_zero");
 }
 
+void test_mksol_accumulate_identity() {
+    // V · I = V
+    using gnfs::linalg::BlockVector;
+    using gnfs::linalg::DenseGF2_64x64;
+    using gnfs::linalg::mksol_accumulate;
+
+    const size_t m = 100;
+    BlockVector V(m), acc(m);
+    std::mt19937_64 rng(0x1234);
+    for (size_t r = 0; r < m; ++r) V.data[r] = rng();
+
+    DenseGF2_64x64 I;
+    I.set_identity();
+    mksol_accumulate(V, I, acc);
+
+    for (size_t r = 0; r < m; ++r)
+        TEST_ASSERT(acc.data[r] == V.data[r], "V·I row matches V");
+    TEST_PASS("mksol_accumulate identity (acc += V·I = V)");
+}
+
+void test_mksol_accumulate_zero() {
+    using gnfs::linalg::BlockVector;
+    using gnfs::linalg::DenseGF2_64x64;
+    using gnfs::linalg::mksol_accumulate;
+
+    const size_t m = 50;
+    BlockVector V(m), acc(m);
+    std::mt19937_64 rng(0xABCD);
+    for (size_t r = 0; r < m; ++r) {
+        V.data[r] = rng();
+        acc.data[r] = rng();  // non-zero starting accumulator
+    }
+    BlockVector acc_before = acc;
+
+    DenseGF2_64x64 Z;
+    Z.clear();
+    mksol_accumulate(V, Z, acc);
+
+    for (size_t r = 0; r < m; ++r)
+        TEST_ASSERT(acc.data[r] == acc_before.data[r], "V·0 = 0, acc unchanged");
+    TEST_PASS("mksol_accumulate zero matrix (acc += V·0 = 0)");
+}
+
+void test_mksol_accumulate_xor_accumulation() {
+    // acc += V·F1, then acc += V·F2 should equal V·(F1 ^ F2) (linearity over GF(2))
+    using gnfs::linalg::BlockVector;
+    using gnfs::linalg::DenseGF2_64x64;
+    using gnfs::linalg::mksol_accumulate;
+
+    const size_t m = 30;
+    BlockVector V(m), acc1(m), acc2(m);
+    std::mt19937_64 rng(0xDEED);
+    for (size_t r = 0; r < m; ++r) V.data[r] = rng();
+
+    DenseGF2_64x64 F1, F2, F_xor;
+    for (int i = 0; i < 64; ++i) {
+        F1.rows[i] = rng();
+        F2.rows[i] = rng();
+        F_xor.rows[i] = F1.rows[i] ^ F2.rows[i];
+    }
+
+    mksol_accumulate(V, F1, acc1);
+    mksol_accumulate(V, F2, acc1);
+
+    mksol_accumulate(V, F_xor, acc2);
+
+    for (size_t r = 0; r < m; ++r)
+        TEST_ASSERT(acc1.data[r] == acc2.data[r], "linearity: V·F1 + V·F2 = V·(F1+F2)");
+    TEST_PASS("mksol_accumulate linearity over GF(2)");
+}
+
+void test_mksol_accumulate_against_naive() {
+    // Direct V·F computation: (V·F)[r, j] = XOR_i V[r, i] · F[i, j]
+    using gnfs::linalg::BlockVector;
+    using gnfs::linalg::DenseGF2_64x64;
+    using gnfs::linalg::mksol_accumulate;
+
+    const size_t m = 17;
+    BlockVector V(m), acc(m);
+    std::mt19937_64 rng(0x42424242);
+    for (size_t r = 0; r < m; ++r) V.data[r] = rng();
+
+    DenseGF2_64x64 F;
+    for (int i = 0; i < 64; ++i) F.rows[i] = rng();
+
+    mksol_accumulate(V, F, acc);
+
+    // Naive: for each (r, j), XOR over i where V[r,i]=1 of F[i,j]
+    for (size_t r = 0; r < m; ++r) {
+        uint64_t expected = 0;
+        for (int j = 0; j < 64; ++j) {
+            uint64_t bit_j = 0;
+            for (int i = 0; i < 64; ++i) {
+                if (((V.data[r] >> i) & 1) && ((F.rows[i] >> j) & 1))
+                    bit_j ^= 1;
+            }
+            if (bit_j) expected |= (1ULL << j);
+        }
+        TEST_ASSERT(acc.data[r] == expected, "matches naive XOR computation");
+    }
+    TEST_PASS("mksol_accumulate matches naive entry-by-entry");
+}
+
 void test_dense_64x128_extract_halves() {
     using gnfs::linalg::DenseGF2_64x128;
     using gnfs::linalg::DenseGF2_64x64;
@@ -402,6 +505,12 @@ int main() {
     test_dense_64x128_xor_with();
     test_dense_64x128_is_zero();
     test_dense_64x128_extract_halves();
+
+    // P2 Stage A.2 — mksol_accumulate primitive (Phase 3)
+    test_mksol_accumulate_identity();
+    test_mksol_accumulate_zero();
+    test_mksol_accumulate_xor_accumulation();
+    test_mksol_accumulate_against_naive();
 
     // Original BW tests
     test_scalar_bm_basic();
