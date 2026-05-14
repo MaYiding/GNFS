@@ -170,18 +170,21 @@ public:
     /// Coppersmith's Block Berlekamp-Massey algorithm (public for unit testing).
     /// Input: sequence of L matrices A_0, A_1, ..., A_{L-1} (each 64×64 over GF(2))
     /// Output: minimal generating matrix polynomial F such that
-    ///   for sufficient t:  A(z)·F(z) has zero coefficient at z^t
-    /// where A(z) = sum_k A_k·z^k (the input sequence as formal polynomial).
+    ///   for sufficient t:  (A·F)_t = 0
+    /// where the convolution (A·F)_t = sum_k A_{t-k} · F_k.
     ///
-    /// Algorithm: column-extended Coppersmith — maintains 128-column polynomial
-    /// state Pi(z) starting from [I_64 | 0_64], tracks per-column delay δ_j,
-    /// at each step computes discrepancy and runs row-pivot Gaussian on Δ in
-    /// δ-ascending column order (smallest-δ columns get pivot priority and are
-    /// z-multiplied; larger-δ columns are corrected by XOR).
+    /// Algorithm: column-extended Coppersmith quadratic basecase (CADO-NFS
+    /// lingen_qcode_binary.cpp). Maintains 64×128 extended polynomial matrix
+    /// E (input: A | I@z=0) and 128×128 polynomial matrix P (output), with
+    /// per-column delta. Each step e processes m=64 rows: for each row find
+    /// the smallest-delta column j_p with E[i,j_p][e]=1, XOR pivot into other
+    /// columns where E[i,k][e]=1, then shift pivot col up by 1 ("consume"
+    /// bit e). After L steps, the n=64 cols of P with smallest delta give F.
     ///
-    /// Complexity: O(64^2 · L^2) bit-ops. Suitable for L ≤ ~10K (b=64 block size,
-    /// L = 2n/64+O(1) for matrix dim n, so n ≤ ~300K). For larger matrices,
-    /// Thomé's subquadratic lingen would be needed (P2 follow-up).
+    /// Complexity: O(L · m · b² · W) bit-ops where W = ⌈(L+10)/64⌉ words/poly.
+    /// For L = 2n/b (matrix dim n, block size b=64): O(n³/b · W) ≈ O(n³/64²).
+    /// Suitable for n ≤ ~300K. For larger matrices, Thomé's subquadratic
+    /// lingen would be needed (P2 follow-up).
     static LingenResult matrix_berlekamp_massey(
         const std::vector<DenseGF2_64x64>& sequence, size_t N);
 

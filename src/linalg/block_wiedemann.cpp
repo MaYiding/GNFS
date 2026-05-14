@@ -611,108 +611,120 @@ LingenResult BlockWiedemann::matrix_berlekamp_massey(
     const int L = static_cast<int>(A.size());
 
     if (L == 0) return LingenResult{};
-    if (L > 64) {
-        // TODO: multi-word polynomials for L > 64 (see findings.md).
-        // For now, refuse rather than silently truncate.
-        throw std::logic_error(
-            "matrix_berlekamp_massey: L > 64 not yet supported (multi-word "
-            "polynomials needed; falls back to scalar BM via env var)");
-    }
 
-    // ── Build E ∈ GF(2)[z]^{m × b} ──
-    // E[i][j] is a uint64_t polynomial: bit e = coefficient at degree e.
-    // Storage: row-major flat array E[i*b + j]. (m=n=64, b=128 → 8192 uint64.)
-    std::vector<uint64_t> E(m * b, 0);
+    // W = words per polynomial. Polynomial degree can grow to L (max shifts
+    // per col over L steps), plus buffer for the extraction phase.
+    const int W = (L + 10 + 63) / 64;
+
+    // E ∈ GF(2)[z]^{m × b}: flat layout E[(i*b + j)*W + w].
+    // P ∈ GF(2)[z]^{b × b}: flat layout P[(i*b + j)*W + w].
+    std::vector<uint64_t> E(static_cast<size_t>(m) * b * W, 0);
+    std::vector<uint64_t> P(static_cast<size_t>(b) * b * W, 0);
+
+    auto E_at = [&E, W](int i, int j) -> uint64_t* {
+        return &E[(static_cast<size_t>(i) * b + j) * W];
+    };
+    auto P_at = [&P, W](int i, int j) -> uint64_t* {
+        return &P[(static_cast<size_t>(i) * b + j) * W];
+    };
+
+    // ── Build E: left 64 cols = A sequence, right 64 cols = I_{64} at z=0 ──
     for (int e = 0; e < L; ++e) {
         const DenseGF2_64x64& Ae = A[e];
+        const int e_w = e / 64, e_b = e % 64;
+        const uint64_t e_mask = 1ULL << e_b;
         for (int i = 0; i < m; ++i) {
-            const uint64_t row_bits = Ae.rows[i];  // bit j of row_bits = A_e[i,j]
-            // Distribute bit j of row_bits to E[i][j] bit e.
-            uint64_t bits = row_bits;
-            while (bits) {
-                int j = __builtin_ctzll(bits);
-                E[i * b + j] |= (1ULL << e);
-                bits &= bits - 1;
+            uint64_t row_bits = Ae.rows[i];
+            while (row_bits) {
+                int j = __builtin_ctzll(row_bits);
+                E_at(i, j)[e_w] |= e_mask;
+                row_bits &= row_bits - 1;
             }
         }
     }
-    // Append identity-at-z=0 in cols [n, n+m): E[i][n+i] = 1 (bit 0 set).
     for (int i = 0; i < m; ++i) {
-        E[i * b + (n + i)] |= 1ULL;
+        E_at(i, n + i)[0] |= 1ULL;
     }
 
-    // ── Initialize P ∈ GF(2)[z]^{b × b} = I_{b} at z=0 ──
-    // P[i][j] is a uint64_t polynomial. Diagonal entries have bit 0 = 1.
-    std::vector<uint64_t> P(b * b, 0);
+    // ── Init P = I_{b} at z=0 ──
     for (int i = 0; i < b; ++i) {
-        P[i * b + i] |= 1ULL;
+        P_at(i, i)[0] |= 1ULL;
     }
 
-    // ── Per-column delta ──
     std::array<int, b> delta{};
     delta.fill(0);
+
+    // Poly helpers (W-word polynomials).
+    auto poly_xor = [W](uint64_t* dst, const uint64_t* src) noexcept {
+        for (int w = 0; w < W; ++w) dst[w] ^= src[w];
+    };
+    auto poly_lshift1 = [W](uint64_t* poly) noexcept {
+        uint64_t carry = 0;
+        for (int w = 0; w < W; ++w) {
+            uint64_t new_carry = poly[w] >> 63;
+            poly[w] = (poly[w] << 1) | carry;
+            carry = new_carry;
+        }
+    };
+    auto poly_get_bit = [](const uint64_t* poly, int e) noexcept -> bool {
+        return (poly[e / 64] >> (e % 64)) & 1ULL;
+    };
 
     // ── Main loop ──
     for (int e = 0; e < L; ++e) {
         for (int i = 0; i < m; ++i) {
-            // Find pivot: smallest-delta column j with bit e of E[i][j] = 1.
             int pivot = -1;
             int min_delta = INT_MAX;
             for (int j = 0; j < b; ++j) {
-                if (((E[i * b + j] >> e) & 1ULL) && delta[j] < min_delta) {
+                if (poly_get_bit(E_at(i, j), e) && delta[j] < min_delta) {
                     min_delta = delta[j];
                     pivot = j;
                 }
             }
-            if (pivot < 0) {
-                // No column has bit e set in row i. (Row i is "spontaneously
-                // zero" at step e — counts as a "lucky" condition for
-                // generator detection, but for our basic implementation we
-                // just skip.) Continue to next row.
-                continue;
-            }
+            if (pivot < 0) continue;
 
-            // XOR pivot column into all other columns k where E[i][k] bit e = 1.
+            const uint64_t* E_piv_col = nullptr;  // for caching pivot col data
+            const uint64_t* P_piv_col = nullptr;
             for (int k = 0; k < b; ++k) {
                 if (k == pivot) continue;
-                if (!((E[i * b + k] >> e) & 1ULL)) continue;
-                // E[:, k] ^= E[:, pivot] — XOR over all m rows.
+                if (!poly_get_bit(E_at(i, k), e)) continue;
+                // E[:, k] ^= E[:, pivot]
                 for (int l = 0; l < m; ++l) {
-                    E[l * b + k] ^= E[l * b + pivot];
+                    poly_xor(E_at(l, k), E_at(l, pivot));
                 }
-                // P[:, k] ^= P[:, pivot] — XOR over all b rows.
+                // P[:, k] ^= P[:, pivot]
                 for (int l = 0; l < b; ++l) {
-                    P[l * b + k] ^= P[l * b + pivot];
+                    poly_xor(P_at(l, k), P_at(l, pivot));
                 }
             }
+            (void)E_piv_col; (void)P_piv_col;
 
-            // Shift pivot column up by 1 (consume bit e, delay).
-            for (int l = 0; l < m; ++l) {
-                E[l * b + pivot] <<= 1;
-            }
-            for (int l = 0; l < b; ++l) {
-                P[l * b + pivot] <<= 1;
-            }
+            // Shift pivot col up by 1 (consume bit e).
+            for (int l = 0; l < m; ++l) poly_lshift1(E_at(l, pivot));
+            for (int l = 0; l < b; ++l) poly_lshift1(P_at(l, pivot));
             delta[pivot]++;
         }
     }
 
-    // ── Extract F: top n rows of the n cols of P with smallest delta ──
+    // ── Extract F from top n rows of n smallest-delta cols of P ──
     std::array<int, b> col_order;
     for (int j = 0; j < b; ++j) col_order[j] = j;
     std::sort(col_order.begin(), col_order.end(),
               [&delta](int a, int c) { return delta[a] < delta[c]; });
 
-    // Compute max polynomial degree among the top n cols' top n rows.
+    auto poly_max_degree = [W](const uint64_t* poly) -> int {
+        for (int w = W - 1; w >= 0; --w) {
+            if (poly[w]) return w * 64 + (63 - __builtin_clzll(poly[w]));
+        }
+        return -1;
+    };
+
     int max_deg = 0;
     for (int idx = 0; idx < n; ++idx) {
         int c = col_order[idx];
-        for (int i = 0; i < n; ++i) {  // only top n rows of P (rows of F)
-            uint64_t poly = P[i * b + c];
-            if (poly != 0) {
-                int bit = 63 - __builtin_clzll(poly);
-                if (bit > max_deg) max_deg = bit;
-            }
+        for (int i = 0; i < n; ++i) {
+            int deg = poly_max_degree(P_at(i, c));
+            if (deg > max_deg) max_deg = deg;
         }
     }
 
@@ -725,18 +737,22 @@ LingenResult BlockWiedemann::matrix_berlekamp_massey(
         int c = col_order[j_out];
         bool nontrivial = false;
         int dj = 0;
-        // F[k][i, j_out] = bit k of P[i][c] for i = 0..n-1.
         for (int i = 0; i < n; ++i) {
-            uint64_t poly = P[i * b + c];
-            if (poly == 0) continue;
+            const uint64_t* poly = P_at(i, c);
+            int deg = poly_max_degree(poly);
+            if (deg < 0) continue;
             nontrivial = true;
-            int bit = 63 - __builtin_clzll(poly);
-            if (bit > dj) dj = bit;
-            uint64_t bits = poly;
-            while (bits) {
-                int k = __builtin_ctzll(bits);
-                result.poly[k].rows[i] |= (1ULL << j_out);
-                bits &= bits - 1;
+            if (deg > dj) dj = deg;
+            for (int w = 0; w < W; ++w) {
+                uint64_t bits = poly[w];
+                while (bits) {
+                    int local_bit = __builtin_ctzll(bits);
+                    int k = w * 64 + local_bit;
+                    if (k <= max_deg) {
+                        result.poly[k].rows[i] |= (1ULL << j_out);
+                    }
+                    bits &= bits - 1;
+                }
             }
         }
         if (nontrivial) {

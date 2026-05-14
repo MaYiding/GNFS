@@ -384,6 +384,38 @@ void test_matrix_bm_powers_of_random_B() {
     TEST_PASS("matrix BM on A_k = B^k (annihilation verified)");
 }
 
+void test_matrix_bm_multiword_L128() {
+    // L > 64 — exercises multi-word polynomial path (W = 3 for L=128+10).
+    using gnfs::linalg::DenseGF2_64x64;
+    using gnfs::linalg::BlockWiedemann;
+
+    const size_t L = 128;
+    DenseGF2_64x64 B;
+    std::mt19937_64 rng(0xC0DECAFE);
+    for (int r = 0; r < 64; ++r) B.rows[r] = rng();
+
+    std::vector<DenseGF2_64x64> A(L);
+    A[0].set_identity();
+    for (size_t k = 1; k < L; ++k) A[k] = A[k-1].multiply(B);
+
+    auto F = BlockWiedemann::matrix_berlekamp_massey(A, 64);
+    TEST_ASSERT(F.valid_mask != 0, "BM should find valid cols (L=128 multi-word)");
+
+    int annihilating = 0;
+    for (int j = 0; j < 64; ++j) {
+        if (!((F.valid_mask >> j) & 1)) continue;
+        int dj = F.degrees[j];
+        bool ok = true;
+        for (size_t t = static_cast<size_t>(dj); t < L && ok; ++t) {
+            if (compute_AF_col(A, F, j, t, dj) != 0) ok = false;
+        }
+        if (ok) annihilating++;
+    }
+    std::cout << "  (L=128 annihilating cols: " << annihilating << "/64)" << std::endl;
+    TEST_ASSERT(annihilating > 0, "L=128 multi-word should yield annihilators");
+    TEST_PASS("matrix BM multi-word (L=128)");
+}
+
 void test_matrix_bm_constant_sequence() {
     // A_k = I for all k. minpoly is (z - 1) = z + 1 over GF(2).
     // F should find a generator with this minpoly (or a multiple).
@@ -634,6 +666,7 @@ int main() {
     test_matrix_bm_zero_sequence();
     test_matrix_bm_constant_sequence();
     test_matrix_bm_powers_of_random_B();
+    test_matrix_bm_multiword_L128();
 
     // Original BW tests
     test_scalar_bm_basic();
