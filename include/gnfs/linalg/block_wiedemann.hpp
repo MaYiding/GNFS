@@ -189,11 +189,17 @@ public:
         const std::vector<DenseGF2_64x64>& sequence, size_t N);
 
 private:
-    /// Three-phase Block Wiedemann for large sparse matrices.
-    /// Works on the implicit symmetric matrix B = M · M^T.
-    /// seed parameterizes the X / Y random vectors so the caller can retry
-    /// with different seeds when one happens to produce trivial sequences.
-    std::vector<std::vector<bool>> block_wiedemann_solve(
+    /// Scalar-BM fallback path (legacy, O(n) SpMV count).
+    /// Used when env GNFS_BW_ALGORITHM=scalar, or as automatic fallback if
+    /// block_solve returns empty.
+    std::vector<std::vector<bool>> block_wiedemann_scalar_solve(
+        const SparseMatrix& matrix, size_t max_deps, uint64_t seed = 42);
+
+    /// True block Wiedemann with Coppersmith matrix BM (O(n/64) SpMV count).
+    /// Phase 1 collects matrix sequence A_k = X^T · V_k (L = 2⌈n/64⌉+32 iters);
+    /// Phase 2 runs matrix_berlekamp_massey; Phase 3 recomputes Krylov and
+    /// accumulates W = sum_k V_k · F_k (block-mksol).
+    std::vector<std::vector<bool>> block_wiedemann_block_solve(
         const SparseMatrix& matrix, size_t max_deps, uint64_t seed = 42);
 
     // --- BW Phase 1: Krylov sequence generation ---
