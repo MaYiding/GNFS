@@ -14,6 +14,12 @@ namespace gnfs::linalg {
 
 namespace {
 
+// P1.B-1: SpMV prefetch (MemBound treatment, doctrine §6)
+// Baseline 2026-05-13: BackendStallRate=74.79%, L1DMissRate=12.80% — split-loop
+// prefetch addresses the pointer-chase x.data[*p]. N_AHEAD=8 chosen from M5
+// L1D line=64B, load-to-use~4cy; locality hint=0 (streaming, no L2 retention).
+constexpr ptrdiff_t SPMV_PREFETCH_AHEAD = 8;
+
 void bw_spmv_forward(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
                      gnfs::util::ThreadPool& pool) {
     // CSRMatrix ctor validates col < num_cols. x.length == M.num_cols() by
@@ -22,7 +28,16 @@ void bw_spmv_forward(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
     assert(x.length == M.num_cols());
     pool.parallel_for_index(0, M.num_rows(), [&](size_t i) {
         uint64_t acc = 0;
-        for (const uint32_t* p = M.row_begin(i); p != M.row_end(i); ++p)
+        const uint32_t* p_end  = M.row_end(i);
+        const uint32_t* p_pref = (p_end - M.row_begin(i) > SPMV_PREFETCH_AHEAD)
+                                     ? p_end - SPMV_PREFETCH_AHEAD
+                                     : M.row_begin(i);
+        const uint32_t* p = M.row_begin(i);
+        for (; p < p_pref; ++p) {
+            __builtin_prefetch(&x.data[*(p + SPMV_PREFETCH_AHEAD)], 0, 0);
+            acc ^= x.data[*p];
+        }
+        for (; p < p_end; ++p)
             acc ^= x.data[*p];
         y.data[i] = acc;
     });
