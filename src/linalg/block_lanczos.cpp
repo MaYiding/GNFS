@@ -194,13 +194,20 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
                 size_t chunk = (elim_rows.size() + n_threads - 1) / n_threads;
                 std::vector<std::future<void>> futures;
                 futures.reserve(n_threads);
+                const size_t wpr = aug.words_per_row_;
 
                 for (size_t t = 0; t < n_threads; ++t) {
                     size_t start = t * chunk;
                     if (start >= elim_rows.size()) break;
                     size_t end = std::min(start + chunk, elim_rows.size());
-                    futures.push_back(pool->submit([&aug, &elim_rows, pivot_row, start, end]() {
+                    futures.push_back(pool->submit([&aug, &elim_rows, pivot_row, start, end, wpr]() {
+                        // Prefetch next-row start: aug.data_ size ≥ 100 MB on real workload,
+                        // dst row jumps by random elim_rows[i+1] which misses L1/L2.
+                        // rw=1 (write intent — xor_rows writes dst), locality=1 (may revisit).
                         for (size_t i = start; i < end; ++i) {
+                            if (i + 1 < end) {
+                                __builtin_prefetch(&aug.data_[elim_rows[i + 1] * wpr], 1, 1);
+                            }
                             aug.xor_rows(elim_rows[i], pivot_row);
                         }
                     }));
@@ -208,9 +215,14 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
                 for (auto& f : futures) f.get();
             } else {
                 ++stat_serial_subcalls;
-                // Few rows — single-threaded
-                for (size_t row : elim_rows) {
-                    aug.xor_rows(row, pivot_row);
+                // Few rows — single-threaded, same prefetch pattern
+                const size_t wpr = aug.words_per_row_;
+                const size_t er_n = elim_rows.size();
+                for (size_t k = 0; k < er_n; ++k) {
+                    if (k + 1 < er_n) {
+                        __builtin_prefetch(&aug.data_[elim_rows[k + 1] * wpr], 1, 1);
+                    }
+                    aug.xor_rows(elim_rows[k], pivot_row);
                 }
             }
         } else {
