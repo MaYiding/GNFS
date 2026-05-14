@@ -814,27 +814,50 @@ xctrace "CPU Counters" 4 列聚合（P0 用）无法区分 MemBound vs CoreBound
 
 → **MemBound 触发**，BadSpec / FrontendBound / CoreBound 均不触发。
 
-### P1.B — MemBound 治理 (基于 P1.A 实测，doctrine 铁律 1 数据驱动)
+### P1.B — MemBound 治理 (基于 P1.A 实测 + 2026-05-14 attribution 校准)
 
-按 GNFS pipeline 热度排序，逐项实施：
+P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation）要求验证：**真正在烧 cycles 的代码段是什么**。2026-05-14 用 Apple `sample` 抓 20s hot-symbol 攻破"哪个函数 cache miss"的 attribution 黑盒。结论与原计划的目标顺序大幅不同。
 
-1. **`__builtin_prefetch` 审计 Block Lanczos SpMV** (优先级 1)
-   - 文件: `include/gnfs/linalg/packed_gf2_matrix.hpp`, `src/linalg/block_lanczos.cpp`
-   - 模式: `__builtin_prefetch(&v[col_indices[k + N_AHEAD]], 0, 0)`，N_AHEAD ≈ 8-16
-   - 预期: linalg wall time -15% 至 -30%（矩阵超 L1 working set 时）
+#### P1.B-1: SpMV prefetch（已实施，pending 大矩阵验证）
 
-2. **`lattice_sieve::scatter_bucket` 缓存行对齐** (优先级 2)
-   - 文件: `src/sieve/lattice_sieve.cpp`
-   - 检查: `Bucket` 结构 `alignas(64)` + `region_size` 是 64 B 整数倍
-   - 若 AoS 仍 miss → SoA 重构
+- **改动**: `src/linalg/block_wiedemann.cpp` `bw_spmv_forward` / `bw_spmv_transpose` 加 split-loop `__builtin_prefetch`，N_AHEAD=8 (commits `eab6245`, `5dbce80`)
+- **正确性**: smoke 26/26 + module linalg 全 PASS + test_block_wiedemann 7/7（含 5400×200 BW 路径）
+- **测试结果**: `test_factor_with_kleinjung` PMU 无变化（详见 `bench/results/2026-05-14-spmv-prefetch.md`）
+- **根因**: `BlockLanczos::find_dependencies` dispatcher 在 `m × (m+n) ≤ 4 GiB` 时路由到 Gaussian on PackedGF2Matrix (`find_dependencies_sparse`)。 `test_factor_with_kleinjung` 跑 ≤50-bit 案例，**所有矩阵**都走 Gaussian，BW SpMV 0 samples。
+- **决策**: 保留改动（零副作用，对 ≥4GiB 矩阵理论生效），但 P1.B-1 视为 implementation-only。 验证路径：`test_25digit`（heavy tier，~1h）或专用 micro-bench。
 
-3. **TLBMissRate 60% 调查** (优先级 3，可能是 metric artifact)
-   - 先在 `test_integer` 等纯计算 benchmark 校准 L1D_TLB_MISS 语义
-   - 若真实 → `madvise(MADV_HUGEPAGE)` for relation buffer + Block Lanczos vectors
+#### P1.B-1b: Gaussian xor_rows / ThreadPool 竞争（promoted from sample 数据）
+
+20s sample 实测命中：
+| 符号 | 样本数 | 实质 |
+|---|---:|---|
+| `BlockLanczos::find_dependencies_sparse` worker lambda | ~80,000 | Gaussian `aug.xor_rows(elim_rows[i], pivot_row)` 随机行访问 |
+| `__psynch_cvwait` | ~40,000 | ThreadPool 等条件变量（过度订阅 / 小矩阵下不必要的同步） |
+| `SQUFOF::factor` | ~4,000 | cofactor 试除 |
+| `LatticeSieve::sieve_row_chunk` | ~2,000 | sieve scatter |
+
+**两个真正的攻击面**：
+
+- **B-1b-α**: `aug.xor_rows` 在 inner loop 中按 `elim_rows[i]` 跳行，random row access。对 >L2 矩阵 prefetch 才有意义；先验证 `aug` 实际大小是否超 L2 (M5 P-core 8 MB) 再决定是否加 prefetch
+- **B-1b-β**: ThreadPool 在小矩阵 (m < few thousand) 时陷入"启动 worker → worker 立即条件等待"循环；40k samples 的 `__psynch_cvwait` 是 pure idle cost，但被 PMU 计入 BackendStall（线程睡眠时 stage 仍然 stall）。 这是 BackendStallRate 74.79% 偏高的隐藏 contributor，**不修复无法准确测 P1.B-1 真实效果**
+
+#### P1.B-2: `lattice_sieve` 对齐（仍排程，sample 命中 2k 样本）
+
+- 文件: `src/sieve/lattice_sieve.cpp`
+- 检查: `Bucket` 结构 `alignas(64)` + `region_size` 是 64 B 整数倍
+- 若 AoS 仍 miss → SoA 重构
+- **sample 数据**：`sieve_row_chunk` 命中 2k 样本，非主导但稳定可见
+
+#### P1.B-3: TLBMissRate 60% 调查（仍排程，calibration 任务）
+
+- 先在 `test_integer` 等纯计算 benchmark 校准 `L1D_TLB_MISS` 语义
+- 若真实 → `madvise(MADV_HUGEPAGE)` for relation buffer + 线性代数矩阵
 
 **P1.B 不做的事**:
 - NEON 全面化 (SIMDDensity 5.85% 偏低，但 CoreBound **未触发** — 内存才是瓶颈，不是执行宽度)。NEON 推迟到 P1.C，仅当 MemBound 修复后重测仍有 backend stall > 30%
 - `[[likely]]/[[unlikely]]` 标注 (BranchMispredRate 0.55%，无信号)
+
+**doctrine 铁律 5（新增，源自本次校准）**: 在采用任何 PMU 决策前，先用 `sample` / xctrace Time Profiler 验证 attribution。否则容易把 hardware-prefetcher-friendly 的代码当作 prefetch 受益者。SpMV prefetch 是教科书 prefetch 题目，但放错代码段就是 null result。
 
 ### P2 — 大工程 (前提：P1 收益打满)
 
