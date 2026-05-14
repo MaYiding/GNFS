@@ -597,6 +597,48 @@ void test_repeated_rows() {
     TEST_PASS("repeated rows — known dependencies");
 }
 
+void test_block_vs_scalar_cross_validate() {
+    // Same matrix, run both scalar BM path (via env GNFS_BW_ALGORITHM=scalar)
+    // and block path (default), verify both produce valid deps.
+    size_t base_rows = 200;
+    size_t cols = 200;
+    size_t extra = 5200;
+
+    SparseMatrix M(base_rows + extra, cols);
+    std::mt19937 rng(0xC4055);
+    for (size_t i = 0; i < base_rows; ++i) {
+        size_t nnz = 5 + rng() % 10;
+        for (size_t k = 0; k < nnz; ++k)
+            M.row(i).set(static_cast<uint32_t>(rng() % cols));
+    }
+    for (size_t i = 0; i < extra; ++i) {
+        size_t n_src = 2 + rng() % 3;
+        for (size_t s = 0; s < n_src; ++s)
+            M.row(base_rows + i).xor_with(M.row(rng() % base_rows));
+    }
+
+    // Block path (default)
+    BlockWiedemann bw_block;
+    auto deps_block = bw_block.find_dependencies(M, 10);
+    size_t valid_block = 0;
+    for (const auto& d : deps_block) if (verify_dependency(M, d)) valid_block++;
+
+    // Scalar path (env-forced)
+    setenv("GNFS_BW_ALGORITHM", "scalar", 1);
+    BlockWiedemann bw_scalar;
+    auto deps_scalar = bw_scalar.find_dependencies(M, 10);
+    unsetenv("GNFS_BW_ALGORITHM");
+    size_t valid_scalar = 0;
+    for (const auto& d : deps_scalar) if (verify_dependency(M, d)) valid_scalar++;
+
+    std::cout << "  block: " << valid_block << "/" << deps_block.size()
+              << " valid; scalar: " << valid_scalar << "/" << deps_scalar.size()
+              << " valid" << std::endl;
+    TEST_ASSERT(valid_block > 0, "block BW should produce valid deps");
+    TEST_ASSERT(valid_scalar > 0, "scalar BW should produce valid deps");
+    TEST_PASS("block vs scalar cross-validate (both produce valid deps)");
+}
+
 void test_large_matrix_bw_path() {
     // Matrix > 5000 rows to exercise the true Block Wiedemann path.
     // Key: keep cols small (=200) so rank(B) ≤ 200 and scalar BM converges
@@ -676,6 +718,7 @@ int main() {
     test_identity_no_nullspace();
     test_repeated_rows();
     test_large_matrix_bw_path();
+    test_block_vs_scalar_cross_validate();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";
