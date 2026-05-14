@@ -182,7 +182,13 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
             stat_sum_elim_rows += elim_rows.size();
             if (elim_rows.size() > stat_max_elim_rows) stat_max_elim_rows = elim_rows.size();
 
-            if (elim_rows.size() > 500) {
+            // Threshold raised from 500 → 5000 (P1.B-1b, 2026-05-14):
+            //   work_per_chunk = (elim_rows.size()/n_threads) × words_per_row × ~0.5 ns
+            //   submit + future.get overhead ≈ 10 μs each (mutex + cv_signal)
+            //   At elim_rows=500, chunk≈50 rows × ~1700 words ≈ 42 μs work : 10 μs overhead = 4:1
+            //   At elim_rows=5000, chunk≈500 rows × ~1700 words ≈ 420 μs work : 10 μs overhead = 42:1
+            //   Lower ratio under 500 caused 40k __psynch_cvwait samples in 20s on test_factor_with_kleinjung
+            if (elim_rows.size() > 5000) {
                 ++stat_parallel_calls;
                 // Parallel elimination via ThreadPool (zero thread creation overhead)
                 size_t chunk = (elim_rows.size() + n_threads - 1) / n_threads;
