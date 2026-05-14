@@ -87,7 +87,20 @@ void bw_spmv_transpose(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
             for (size_t i = start; i < end_row; ++i) {
                 uint64_t xi = x.data[i];
                 if (xi == 0) continue;
-                for (const uint32_t* p = M.row_begin(i); p != M.row_end(i); ++p)
+                // P1.B-1: split-loop prefetch on local[*p] (write target).
+                // rw=0 still beneficial — ARM PRFM PLD primes the line into
+                // L1D for the impending RMW; PSTL would help store-buffer
+                // but is benched separately if PMU shows store-side stalls.
+                const uint32_t* p_end  = M.row_end(i);
+                const uint32_t* p_pref = (p_end - M.row_begin(i) > SPMV_PREFETCH_AHEAD)
+                                             ? p_end - SPMV_PREFETCH_AHEAD
+                                             : M.row_begin(i);
+                const uint32_t* p = M.row_begin(i);
+                for (; p < p_pref; ++p) {
+                    __builtin_prefetch(&local[*(p + SPMV_PREFETCH_AHEAD)], 0, 0);
+                    local[*p] ^= xi;
+                }
+                for (; p < p_end; ++p)
                     local[*p] ^= xi;
             }
         }));
