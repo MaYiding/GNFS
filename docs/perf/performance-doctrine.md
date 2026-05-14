@@ -898,12 +898,18 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
 
 **未做**: spin budget 调优（静态 2000 → 测试 1000/5000）。暂搁置，等 wall time 长 workload 出现回归再启动。
 
-#### P1.B-2: `lattice_sieve` 对齐（仍排程，sample 命中 2k 样本）
+#### P1.B-2: `lattice_sieve` 对齐（**null result，关闭** — 2026-05-14）
 
-- 文件: `src/sieve/lattice_sieve.cpp`
-- 检查: `Bucket` 结构 `alignas(64)` + `region_size` 是 64 B 整数倍
-- 若 AoS 仍 miss → SoA 重构
-- **sample 数据**：`sieve_row_chunk` 命中 2k 样本，非主导但稳定可见
+- 文件: `include/gnfs/sieve/lattice_sieve.hpp:885-960` (`sieve_row_chunk` 热内循环)
+- doctrine 假设: row stride `i_width × 2B` 非 128B(M5 cache line) 整数倍 → 撕裂
+- **实测结论**: alignment 不影响热路径
+  - sample attribution: `sieve_row_chunk` 占 2103/总 25s × 10 worker × 复用 ≈ **2-4% wall**
+  - inner loop 反汇编 6 指令 (offset +1116~+1136)：`ldrh w16, [x15, x11, lsl#1]` (1228 samples) → `add` → `strh` (508) → `add idx` → `cmp` → `b.lo`
+  - micro-bench (`/tmp/p1b2_microbench/bench.cpp`)：width 6000(misaligned, mod128=96) vs 6016(aligned, mod128=0) → per-iter **5.79 vs 5.78 ms**，<0.5% 差异，在噪声内
+  - 根因: `strh`/`ldrh` 16-bit 永不跨 cache line + M5 HW prefetcher 对小 stride 模式不依赖 row base 对齐
+- **未做（也不该做）**: `alignas(64)`、SoA 重构、padding 到 64 元素倍数 — 均无效
+- **报告**: [`bench/results/2026-05-14-lattice-sieve-align-null.md`](../../bench/results/2026-05-14-lattice-sieve-align-null.md)
+- **教训扩展**: doctrine 铁律 5 在此场景的延伸 — **测量精度 < 改善幅度时，应放弃 micro-optimization**。`test_factor_with_kleinjung` wall 噪声 33% (50-67s)，远超 P1.B-2 即使 lucky 给的 1-2% 改善幅度，**不可分辨即不可优化**
 
 #### P1.B-3: TLBMissRate 60% 调查（仍排程，calibration 任务）
 
