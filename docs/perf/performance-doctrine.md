@@ -19,7 +19,7 @@
   4. **无显式 `__builtin_prefetch`**
   5. **未使用 SME** (M4+ 矩阵协处理器)
   6. **无 Instruments + PMU 闭环**
-  7. **BlockWiedemann 真正 block BM** (BACKLOG 最大遗留项)
+  7. ~~BlockWiedemann 真 block BM~~ ✅ **已完成 2026-05-14** (Coppersmith matrix BM, 48× speedup on 62K×10K, §6 P2 详见)
 
 再做"试错式"调参或猜测式优化已无收益；必须建立**数据驱动 + 硬件感知 + 理论严谨**的工程纪律。本文档就是这个纪律的成文化。
 
@@ -924,9 +924,17 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
 
 ### P2 — 大工程 (前提：P1 收益打满)
 
-- **BlockWiedemann 真正 block BM** (Coppersmith/Thomé lingen, ~1000 行)
-  - BACKLOG 最大遗留项；当前 streaming scalar BM × 64 慢 64×
-  - 仅大矩阵 (≥200K) 启用，但收益大
+- ✅ **BlockWiedemann 真 block BM** (Coppersmith matrix BM) — **关闭 2026-05-14**
+  - 实施: column-extended quadratic basecase, 严格按 CADO-NFS `lingen_qcode_binary.cpp::lingen_qcode_do_tmpl` (clone 至 /tmp 离线参考)
+  - 6 commits: foundation (DenseGF2_64x128 列主序 + mksol_accumulate Phase 3 原子) → matrix BM (single uint64 PoC → multi-word W = ⌈(L+10)/64⌉) → wire 3-phase pipeline (env GNFS_BW_ALGORITHM=scalar 强制 fallback) → cross-validate + benchmark
+  - **关键调试**: Phase 3 mksol 必须用反向 F 系数 (`F_{D-k}` at Krylov step k), 类比 scalar BM 的 `c_{L-1-k}` extraction. 没反向 → 64/64 全部 M^T·w ≠ 0.
+  - 实测加速 (`bench/microbench/bw_block_vs_scalar.cpp`, Release single-run):
+    - 14K×2K: 3.45s → 0.15s = **22.5×**
+    - 35K×5K: 14.98s → 0.69s = **21.8×**
+    - 62K×10K: **53.52s → 1.12s = 48.0×** (符合 doctrine 30-60× 预期)
+  - 路径选择: env `GNFS_BW_ALGORITHM=scalar` 强制旧路径用于调试/校验; 默认 block, 失败自动 fallback scalar
+  - 限制: matrix BM 仍是 quadratic O(L²·b²·W), n > 500K 后需 Thomé subquadratic lingen (P2 后续)
+  - 报告: `bench/results/2026-05-14-blockwiedemann-block-bm.md`
 - **SME 探索性应用** (BL/BW 64×N SpMV)
   - 高风险高回报；先做 NEON 极限版作为对照
   - 需要专项实验 + 小规模验证
