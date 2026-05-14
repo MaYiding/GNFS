@@ -826,20 +826,63 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
 - **根因**: `BlockLanczos::find_dependencies` dispatcher 在 `m × (m+n) ≤ 4 GiB` 时路由到 Gaussian on PackedGF2Matrix (`find_dependencies_sparse`)。 `test_factor_with_kleinjung` 跑 ≤50-bit 案例，**所有矩阵**都走 Gaussian，BW SpMV 0 samples。
 - **决策**: 保留改动（零副作用，对 ≥4GiB 矩阵理论生效），但 P1.B-1 视为 implementation-only。 验证路径：`test_25digit`（heavy tier，~1h）或专用 micro-bench。
 
-#### P1.B-1b: Gaussian xor_rows / ThreadPool 竞争（promoted from sample 数据）
+#### P1.B-1b: Gaussian xor_rows / ThreadPool 竞争（已实施 path B+D，2026-05-14）
 
-20s sample 实测命中：
-| 符号 | 样本数 | 实质 |
-|---|---:|---|
-| `BlockLanczos::find_dependencies_sparse` worker lambda | ~80,000 | Gaussian `aug.xor_rows(elim_rows[i], pivot_row)` 随机行访问 |
-| `__psynch_cvwait` | ~40,000 | ThreadPool 等条件变量（过度订阅 / 小矩阵下不必要的同步） |
-| `SQUFOF::factor` | ~4,000 | cofactor 试除 |
-| `LatticeSieve::sieve_row_chunk` | ~2,000 | sieve scatter |
+**Instrumentation** (commit `1d522cf`，GNFS_DEBUG_GAUSSIAN=1 env-gated) 实测 `test_factor_with_kleinjung` 三个矩阵：
 
-**两个真正的攻击面**：
+| Run | m | n | aug | pivots | parallel_calls (旧 500 阈值) | serial_subcalls | avg_elim |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 105095 | 5582 | **1.39 GB** | 5581 | 1099 | 4482 | 7274 |
+| 2 | 100813 | 7895 | **1.31 GB** | 7891 | 1100 | 6791 | 5062 |
+| 3 | 35928 | 6517 | **186 MB** | 6515 | 1578 | 4937 | 4005 |
 
-- **B-1b-α**: `aug.xor_rows` 在 inner loop 中按 `elim_rows[i]` 跳行，random row access。对 >L2 矩阵 prefetch 才有意义；先验证 `aug` 实际大小是否超 L2 (M5 P-core 8 MB) 再决定是否加 prefetch
-- **B-1b-β**: ThreadPool 在小矩阵 (m < few thousand) 时陷入"启动 worker → worker 立即条件等待"循环；40k samples 的 `__psynch_cvwait` 是 pure idle cost，但被 PMU 计入 BackendStall（线程睡眠时 stage 仍然 stall）。 这是 BackendStallRate 74.79% 偏高的隐藏 contributor，**不修复无法准确测 P1.B-1 真实效果**
+**关键发现**：
+- `aug_bytes` **全部远超 L2 (8 MB) / L3 (~32 MB)** → row 跳变 cache miss prefetch 有效
+- `m` 全部 > 阈值 2000 → ThreadPool 总会启动
+- serial_subcalls : parallel_calls ≈ 4-6:1，但 ThreadPool 仍持有 10 个 worker 在 `cv_wait`
+- 每 parallel_call 启动 10 submit + 10 future.get，全部走 mutex → 11-16k 同步事件量级与 sample 一致
+
+**修复方案 (commits `14050a3` + `1f5e3bf`)**：
+
+- **Path B**: 并行 elim 阈值 500 → 5000
+  - work:overhead 比从 4:1 升到 42:1
+  - 实测 parallel_calls 下降 25-28%（Run 1/2），9%（Run 3，elim 分布偏小）
+- **Path D**: `xor_rows` 内 `__builtin_prefetch(&aug.data_[elim_rows[i+1] * wpr], rw=1, locality=1)`
+  - 在 parallel chunk 内 + serial subcall 内均加
+  - 覆盖 186 MB - 1.4 GB aug 的 row-跳变 cache miss
+
+**测试结果（详 `bench/results/2026-05-14-gaussian-threadpool.md`）**：
+
+| 项 | Baseline | Fix | Δ |
+|---|---:|---:|---:|
+| Wall | 48.29 s | 47.78 s | **-1.06%** |
+| **TLBMissRate** | **61.62%** | **52.69%** | **-8.93pp (大改善)** |
+| L1DMissRate | 12.86% | 13.06% | +0.20pp (prefetch 自身) |
+| BackendStallRate | 73.79% | 74.30% | +0.50pp (噪声内) |
+| IPC | 1.323 | 1.326 | +0.003 |
+| 正确性 | 100% | 100% | OK |
+
+**核心收益意外集中在 TLB**：aug 186 MB-1.4 GB 跨多 hugepage，`__builtin_prefetch` 不只拉 cache line **还触发 ARM TLB 预取** → page-table walker 提前算好 PTE。L1DMissRate 反而微升（prefetch 自身 cold fetch），但被 TLB -8.93pp 覆盖。
+
+**为什么 wall -1% 而非更多**：
+- submit/get overhead 仅占总 wall ~0.2%（11k × 10us / 47s）
+- TLB 收益巨大但被 prefetch instruction 自身成本（+2.5% instructions）抵消一半
+- **worker idle wait 是 ThreadPool 设计固有成本**，~50k samples，fix 无法消除
+
+**决策**：保留改动（正向、零回归），但 promote **ThreadPool atomic-spin worker** 到独立任务（BACKLOG.md `[OPT] ThreadPool atomic-spin worker`，~200 LOC，risk medium）。
+
+#### P1.B-1c: ThreadPool atomic-spin worker（仍排程）
+
+P1.B-1b 已暴露 worker idle wait 是 __psynch_cvwait 主导。`std::condition_variable::wait` 每 col 唤醒 worker，每次 worker 完成又陷入 cv_wait。**这是 BackendStallRate 偏高的真正隐藏推手**。
+
+修复方向（独立任务，未实施）：
+- atomic spin (M5 wfe/sev 节能指令) — 不进入内核等条件，spin on atomic flag
+- persistent task / fork-join — 把整个 Gaussian elim 当一个大任务塞进 ThreadPool，worker 内循环处理多 col
+- OpenMP `#pragma omp parallel` region (项目当前不依赖 OpenMP，引入需 build system 改动)
+
+成本：~200 LOC ThreadPool 重写 + 适配 SpMV/Gaussian 用例 + 测试。
+
+启动条件：P1.B-1b post-fix PMU 显示 BackendStallRate 仍 >50%。
 
 #### P1.B-2: `lattice_sieve` 对齐（仍排程，sample 命中 2k 样本）
 
