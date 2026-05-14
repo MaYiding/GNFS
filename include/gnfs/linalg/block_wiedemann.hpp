@@ -3,10 +3,143 @@
 #include "gnfs/linalg/block_lanczos.hpp"  // BlockVector, DenseGF2_64x64, CSRMatrix, etc.
 #include "gnfs/linalg/sparse_matrix.hpp"
 #include <array>
+#include <cassert>
 #include <cstdint>
+#include <cstring>
+#include <utility>
 #include <vector>
 
 namespace gnfs::linalg {
+
+// ============================================================================
+// 64×128 GF(2) Matrix — Coppersmith block-BM extended state
+// ============================================================================
+//
+// Storage layout: column-major, cols[j] packs 64 bits where bit r is the
+// element at (row r, col j). All BM hot operations (xor_cols, swap_cols,
+// get/set col) are O(1).
+//
+// Logical role: F^{(t)}(z) coefficient F_k ∈ GF(2)^{64×128} for Coppersmith's
+// column-extended matrix Berlekamp-Massey. Columns 0..63 = "active" (left
+// half), columns 64..127 = "auxiliary" (right half).
+//
+// Tests in tests/test_block_wiedemann.cpp.
+struct DenseGF2_64x128 {
+    uint64_t cols[128] = {};
+
+    void clear() noexcept { std::memset(cols, 0, sizeof(cols)); }
+
+    // Initialize as [I_64 | 0_64]: left half identity, right half zero.
+    void set_left_identity() noexcept {
+        clear();
+        for (int i = 0; i < 64; ++i) cols[i] = 1ULL << i;
+    }
+
+    [[nodiscard]] uint64_t get_col(int j) const noexcept {
+        assert(j >= 0 && j < 128);
+        return cols[j];
+    }
+    void set_col(int j, uint64_t v) noexcept {
+        assert(j >= 0 && j < 128);
+        cols[j] = v;
+    }
+
+    // dst column ^= src column (in-place column XOR).
+    void xor_cols(int dst, int src) noexcept {
+        assert(dst >= 0 && dst < 128 && src >= 0 && src < 128 && dst != src);
+        cols[dst] ^= cols[src];
+    }
+
+    void swap_cols(int a, int b) noexcept {
+        assert(a >= 0 && a < 128 && b >= 0 && b < 128);
+        if (a == b) return;
+        std::swap(cols[a], cols[b]);
+    }
+
+    // Full matrix XOR (used to combine polynomial coefficients).
+    void xor_with(const DenseGF2_64x128& other) noexcept {
+        for (int j = 0; j < 128; ++j) cols[j] ^= other.cols[j];
+    }
+
+    [[nodiscard]] bool is_zero() const noexcept {
+        for (int j = 0; j < 128; ++j)
+            if (cols[j] != 0) return false;
+        return true;
+    }
+
+    // Extract left half (cols 0..63) as 64×64 row-packed DenseGF2_64x64.
+    // Convention: m.rows[i] bit j = entry (row i, col j) of left half.
+    [[nodiscard]] DenseGF2_64x64 extract_left() const noexcept {
+        DenseGF2_64x64 m;
+        for (int i = 0; i < 64; ++i) {
+            uint64_t r = 0;
+            for (int j = 0; j < 64; ++j) {
+                if ((cols[j] >> i) & 1ULL) r |= (1ULL << j);
+            }
+            m.rows[i] = r;
+        }
+        return m;
+    }
+
+    // Extract right half (cols 64..127) as 64×64.
+    [[nodiscard]] DenseGF2_64x64 extract_right() const noexcept {
+        DenseGF2_64x64 m;
+        for (int i = 0; i < 64; ++i) {
+            uint64_t r = 0;
+            for (int j = 0; j < 64; ++j) {
+                if ((cols[64 + j] >> i) & 1ULL) r |= (1ULL << j);
+            }
+            m.rows[i] = r;
+        }
+        return m;
+    }
+};
+
+// Matrix polynomial: F(z) = F[0] + F[1]·z + ... + F[D]·z^D.
+// Used both for the BM extended state (with 64×128 coefficients via parallel
+// std::vector<DenseGF2_64x128>) and for the final LingenResult output (with
+// 64×64 coefficients, after extracting the "good" half).
+using MatrixPoly = std::vector<DenseGF2_64x64>;
+
+// Output of Coppersmith block BM: 64-column generator polynomial.
+// `degrees[j]` is the degree of column j in `poly` (entries of poly[k] columns
+// > degrees[j] are 0 by construction). `valid_mask` bit j = 1 iff column j
+// produced a non-trivial generator (used by Phase 3 mksol).
+struct LingenResult {
+    MatrixPoly poly;
+    std::array<int, 64> degrees{};
+    uint64_t valid_mask = 0;
+};
+
+// ============================================================================
+// Phase 3 (mksol) primitive: accumulator += V_k · F_k
+// ============================================================================
+//
+// V_k is a BlockVector of length m (packs 64 column-vectors as bits).
+// F_k is a 64×64 GF(2) matrix (the k-th coefficient of the generator poly).
+// `accumulator` is a BlockVector of length m being summed over k.
+//
+// (V·F)[r, j] = XOR_i V[r, i] · F[i, j], computed by iterating set bits of
+// V.data[r] and XOR-ing F.rows[bit] into accumulator.data[r].
+//
+// This mirrors DenseGF2_64x64::multiply but with the left operand a BlockVector
+// of arbitrary length (m), not a 64×64 matrix.
+inline void mksol_accumulate(const BlockVector& V_k,
+                              const DenseGF2_64x64& F_k,
+                              BlockVector& accumulator) noexcept {
+    assert(V_k.length == accumulator.length);
+    const size_t m = V_k.length;
+    for (size_t r = 0; r < m; ++r) {
+        uint64_t v = V_k.data[r];
+        uint64_t acc = 0;
+        while (v) {
+            int i = __builtin_ctzll(v);
+            acc ^= F_k.rows[i];
+            v &= v - 1;
+        }
+        accumulator.data[r] ^= acc;
+    }
+}
 
 /// Block Wiedemann algorithm for finding GF(2) null space vectors
 /// (Coppersmith 1994, with Berlekamp-Massey for matrix sequences)
@@ -34,12 +167,39 @@ public:
     std::vector<std::vector<bool>> find_dependencies(
         const SparseMatrix& matrix, size_t max_deps = 64);
 
+    /// Coppersmith's Block Berlekamp-Massey algorithm (public for unit testing).
+    /// Input: sequence of L matrices A_0, A_1, ..., A_{L-1} (each 64×64 over GF(2))
+    /// Output: minimal generating matrix polynomial F such that
+    ///   for sufficient t:  (A·F)_t = 0
+    /// where the convolution (A·F)_t = sum_k A_{t-k} · F_k.
+    ///
+    /// Algorithm: column-extended Coppersmith quadratic basecase (CADO-NFS
+    /// lingen_qcode_binary.cpp). Maintains 64×128 extended polynomial matrix
+    /// E (input: A | I@z=0) and 128×128 polynomial matrix P (output), with
+    /// per-column delta. Each step e processes m=64 rows: for each row find
+    /// the smallest-delta column j_p with E[i,j_p][e]=1, XOR pivot into other
+    /// columns where E[i,k][e]=1, then shift pivot col up by 1 ("consume"
+    /// bit e). After L steps, the n=64 cols of P with smallest delta give F.
+    ///
+    /// Complexity: O(L · m · b² · W) bit-ops where W = ⌈(L+10)/64⌉ words/poly.
+    /// For L = 2n/b (matrix dim n, block size b=64): O(n³/b · W) ≈ O(n³/64²).
+    /// Suitable for n ≤ ~300K. For larger matrices, Thomé's subquadratic
+    /// lingen would be needed (P2 follow-up).
+    static LingenResult matrix_berlekamp_massey(
+        const std::vector<DenseGF2_64x64>& sequence, size_t N);
+
 private:
-    /// Three-phase Block Wiedemann for large sparse matrices.
-    /// Works on the implicit symmetric matrix B = M · M^T.
-    /// seed parameterizes the X / Y random vectors so the caller can retry
-    /// with different seeds when one happens to produce trivial sequences.
-    std::vector<std::vector<bool>> block_wiedemann_solve(
+    /// Scalar-BM fallback path (legacy, O(n) SpMV count).
+    /// Used when env GNFS_BW_ALGORITHM=scalar, or as automatic fallback if
+    /// block_solve returns empty.
+    std::vector<std::vector<bool>> block_wiedemann_scalar_solve(
+        const SparseMatrix& matrix, size_t max_deps, uint64_t seed = 42);
+
+    /// True block Wiedemann with Coppersmith matrix BM (O(n/64) SpMV count).
+    /// Phase 1 collects matrix sequence A_k = X^T · V_k (L = 2⌈n/64⌉+32 iters);
+    /// Phase 2 runs matrix_berlekamp_massey; Phase 3 recomputes Krylov and
+    /// accumulates W = sum_k V_k · F_k (block-mksol).
+    std::vector<std::vector<bool>> block_wiedemann_block_solve(
         const SparseMatrix& matrix, size_t max_deps, uint64_t seed = 42);
 
     // --- BW Phase 1: Krylov sequence generation ---
@@ -56,35 +216,8 @@ private:
         const BlockVector& X, BlockVector& Y);
 
     // --- BW Phase 2: Matrix Berlekamp-Massey (lingen) ---
-
-    /// Matrix polynomial representation: F(t) = F[0] + F[1]·t + ... + F[D]·t^D
-    /// Each F[k] is a 64×64 GF(2) matrix.
-    using MatrixPoly = std::vector<DenseGF2_64x64>;
-
-    /// Column-wise generating polynomial for the Krylov sequence.
-    /// Each column j of the result polynomial is the minimal generator
-    /// for column j of the sequence.
-    struct LingenResult {
-        /// Polynomial coefficients (each is 64×64 matrix)
-        MatrixPoly poly;
-        /// Degree of each of the 64 columns
-        std::array<int, 64> degrees;
-        /// Which columns are valid generators (non-zero)
-        uint64_t valid_mask;
-    };
-
-    /// Coppersmith's Block Berlekamp-Massey algorithm.
-    /// Input: sequence of L matrices A_0, A_1, ..., A_{L-1} (each 64×64 over GF(2))
-    /// Output: minimal generating matrix polynomial F
-    ///
-    /// The algorithm maintains a 64×128 "extended" system and tracks per-column
-    /// degrees, performing Gaussian pivoting at each step to minimize degree growth.
-    ///
-    /// Complexity: O(64^2 · L^2) — quadratic in sequence length, suitable for
-    /// matrices up to ~10M. For larger matrices, Thomé's subquadratic variant
-    /// would be needed.
-    static LingenResult matrix_berlekamp_massey(
-        const std::vector<DenseGF2_64x64>& sequence, size_t N);
+    // (matrix_berlekamp_massey is public, declared above. Types MatrixPoly /
+    // LingenResult are at namespace level so tests can construct them directly.)
 
     // --- BW Phase 3: Solution extraction (mksol) ---
 

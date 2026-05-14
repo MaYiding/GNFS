@@ -1,10 +1,16 @@
 #include "gnfs/linalg/block_wiedemann.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
+#include <array>
 #include <cassert>
+#include <climits>
+#include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace gnfs::linalg {
 
@@ -301,15 +307,34 @@ std::vector<std::vector<bool>> BlockWiedemann::find_dependencies(
         return bl.find_dependencies(matrix, max_deps);
     }
 
-    // Retry up to 3 different seeds — Phase 1's diagonal projection produces
-    // 64 independent scalar Wiedemann sequences; if many are trivial, valid_polys
-    // can be 0 even though the null space is non-empty. A different X/Y seed
-    // typically recovers most or all 64.
+    // Algorithm selection: env GNFS_BW_ALGORITHM=scalar forces the legacy
+    // scalar-BM × 64 path (validation / debug); default uses true block BM
+    // (Coppersmith) for ~64× fewer SpMV calls.
+    const char* algo_env = std::getenv("GNFS_BW_ALGORITHM");
+    const bool use_scalar = (algo_env != nullptr &&
+                             std::string(algo_env) == "scalar");
+
+    // Retry up to 3 seeds — Phase 1's projections can occasionally be rank-
+    // deficient, producing too few valid generators. Different seeds recover.
     static constexpr uint64_t seeds[] = { 42, 0xDEADBEEFCAFEBABEULL, 0x12345678ABCDEFULL };
     for (uint64_t seed : seeds) {
-        auto deps = block_wiedemann_solve(matrix, max_deps, seed);
+        auto deps = use_scalar
+                  ? block_wiedemann_scalar_solve(matrix, max_deps, seed)
+                  : block_wiedemann_block_solve(matrix, max_deps, seed);
         if (!deps.empty()) return deps;
-        std::cerr << "  [BW] seed=" << seed << " produced no deps, retrying\n";
+        std::cerr << "  [BW] seed=" << seed
+                  << (use_scalar ? " (scalar)" : " (block)")
+                  << " produced no deps, retrying\n";
+    }
+
+    // If block-BM path failed for all seeds, fall back to scalar (in case
+    // the block-BM extraction has issues for this matrix).
+    if (!use_scalar) {
+        std::cerr << "  [BW] block path exhausted seeds, falling back to scalar\n";
+        for (uint64_t seed : seeds) {
+            auto deps = block_wiedemann_scalar_solve(matrix, max_deps, seed);
+            if (!deps.empty()) return deps;
+        }
     }
     return {};
 }
@@ -326,13 +351,13 @@ std::vector<std::vector<bool>> BlockWiedemann::find_dependencies(
 //   Phase 3: Recompute Krylov, accumulate solutions w_j = q_j(B) * Y
 // ============================================================================
 
-std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
+std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
     const SparseMatrix& matrix, size_t max_deps, uint64_t seed) {
 
     const size_t m = matrix.num_rows();
     const size_t n = matrix.num_cols();
 
-    std::cout << "  [BW] Streaming Wiedemann: " << m << "×" << n
+    std::cout << "  [BW-scalar] Streaming Wiedemann: " << m << "×" << n
               << " (seed=" << seed << ")" << std::endl;
 
     const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
@@ -546,7 +571,163 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_solve(
         }
     }
 
-    std::cout << "  [BW] Results: " << deps.size() << " valid deps"
+    std::cout << "  [BW-scalar] Results: " << deps.size() << " valid deps"
+              << " (verified=" << verified << " failed=" << failed
+              << " zero=" << zero_vecs << ")" << std::endl;
+
+    return deps;
+}
+
+// ============================================================================
+// Block Wiedemann with Coppersmith Matrix BM
+//
+// Phase 1: Collect L = 2·⌈n/64⌉ + 32 matrices A_k = X^T · V_k (~64× fewer
+//          SpMV than scalar path's 2n+110).
+// Phase 2: matrix_berlekamp_massey → F(z), 64-column generator polynomial.
+// Phase 3: Block mksol: W = sum_k V_k · F_k. Each column of W is a candidate
+//          null vector; verify M^T · w_j = 0.
+// ============================================================================
+
+std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
+    const SparseMatrix& matrix, size_t max_deps, uint64_t seed) {
+
+    const size_t m = matrix.num_rows();
+    const size_t n = matrix.num_cols();
+
+    std::cout << "  [BW-block] Block Wiedemann (matrix BM): " << m << "×" << n
+              << " (seed=" << seed << ")" << std::endl;
+
+    const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
+    CSRMatrix csr(matrix);
+
+    // Krylov sequence length for matrix BM: L = 2·⌈n/64⌉ + 32 (buffer).
+    // Compared to scalar BM's 2n+110, this is ~64× fewer SpMV calls.
+    const size_t L = 2 * ((n + 63) / 64) + 32;
+
+    gnfs::util::ThreadPool pool(0);
+
+    BlockVector X(m), Y(m);
+    {
+        std::mt19937_64 rng(seed);
+        for (size_t i = 0; i < m; ++i) X.data[i] = rng();
+        for (size_t i = 0; i < m; ++i) Y.data[i] = rng();
+    }
+
+    // ── Phase 1: Krylov sequence A_k = X^T · V_k ──
+    std::cout << "  [BW-block] Phase 1: Krylov (L=" << L << ")..." << std::flush;
+    std::vector<DenseGF2_64x64> A_seq(L);
+
+    BlockVector V(m), Vnext(m), tmp(n);
+    for (size_t i = 0; i < m; ++i) V.data[i] = Y.data[i];
+
+    for (size_t k = 0; k < L; ++k) {
+        A_seq[k] = inner_product_64x64(X, V);
+        if (k + 1 < L) {
+            bw_spmv_B(csr, V, Vnext, tmp, pool);
+            std::swap(V.data, Vnext.data);
+        }
+    }
+    std::cout << " done" << std::endl;
+
+    // ── Phase 2: Matrix Berlekamp-Massey ──
+    std::cout << "  [BW-block] Phase 2: matrix BM..." << std::flush;
+    auto F = matrix_berlekamp_massey(A_seq, n);
+    const int valid_count = __builtin_popcountll(F.valid_mask);
+    const int max_deg = static_cast<int>(F.poly.size()) - 1;
+    std::cout << " " << valid_count << " valid cols, max_deg=" << max_deg << std::endl;
+
+    if (F.valid_mask == 0 || max_deg < 0) {
+        std::cerr << "  [BW-block] No valid generator — falling through" << std::endl;
+        return {};
+    }
+
+    // ── Phase 3: Block mksol ──
+    // Analog of scalar Wiedemann extraction. Scalar uses w = q(B)·y where
+    // q(z) = z^{-1} · (reverse of connection poly C). So at Krylov step k,
+    // multiply V_k by c_{L-1-k} (reversed coefficient).
+    //
+    // Block analog: w_j = sum_k V_k · F_{D_j - k}[*, j], i.e., per column j,
+    // use F's coefficient at degree (D_j - k) at Krylov step k. Combine all
+    // columns into one m×64 accumulator block.
+    std::cout << "  [BW-block] Phase 3: block mksol (max_deg=" << max_deg
+              << ")..." << std::flush;
+
+    for (size_t i = 0; i < m; ++i) V.data[i] = Y.data[i];
+
+    BlockVector accumulator(m);
+    for (size_t i = 0; i < m; ++i) accumulator.data[i] = 0;
+
+    // At step k, build F_step: column j = F.poly[F.degrees[j] - k][:, j] (or 0
+    // if k > degrees[j]). Then accumulator += V_k · F_step.
+    for (int k = 0; k <= max_deg; ++k) {
+        DenseGF2_64x64 F_step;
+        F_step.clear();
+        bool any_active = false;
+        for (int j = 0; j < 64; ++j) {
+            if (!((F.valid_mask >> j) & 1ULL)) continue;
+            const int D_j = F.degrees[j];
+            const int coef_idx = D_j - k;
+            if (coef_idx < 0) continue;  // exhausted column j's polynomial
+            if (coef_idx >= static_cast<int>(F.poly.size())) continue;
+            // Extract column j of F.poly[coef_idx] into column j of F_step
+            const DenseGF2_64x64& src = F.poly[coef_idx];
+            for (int i = 0; i < 64; ++i) {
+                if ((src.rows[i] >> j) & 1ULL) {
+                    F_step.rows[i] |= (1ULL << j);
+                    any_active = true;
+                }
+            }
+        }
+        if (any_active) {
+            mksol_accumulate(V, F_step, accumulator);
+        }
+        if (k < max_deg) {
+            bw_spmv_B(csr, V, Vnext, tmp, pool);
+            std::swap(V.data, Vnext.data);
+        }
+    }
+    std::cout << " done" << std::endl;
+
+    // ── Verify each candidate column of accumulator ──
+    std::vector<std::vector<bool>> deps;
+    size_t verified = 0, failed = 0, zero_vecs = 0;
+
+    for (int j = 0; j < 64 && deps.size() < max_deps; ++j) {
+        if (!((F.valid_mask >> j) & 1ULL)) continue;
+
+        const uint64_t mask = 1ULL << j;
+        std::vector<bool> sol(m, false);
+        bool nonzero = false;
+        for (size_t i = 0; i < m; ++i) {
+            if (accumulator.data[i] & mask) {
+                sol[i] = true;
+                nonzero = true;
+            }
+        }
+        if (!nonzero) { zero_vecs++; continue; }
+
+        // Verify M^T · sol = 0
+        std::vector<uint8_t> check(n, 0);
+        for (size_t i = 0; i < m; ++i) {
+            if (!sol[i]) continue;
+            for (const uint32_t* p = csr.row_begin(i); p != csr.row_end(i); ++p)
+                check[*p] ^= 1;
+        }
+
+        bool valid = true;
+        for (size_t c = 0; c < n; ++c) {
+            if (check[c]) { valid = false; break; }
+        }
+
+        if (valid) {
+            deps.push_back(std::move(sol));
+            verified++;
+        } else {
+            failed++;
+        }
+    }
+
+    std::cout << "  [BW-block] Results: " << deps.size() << " valid deps"
               << " (verified=" << verified << " failed=" << failed
               << " zero=" << zero_vecs << ")" << std::endl;
 
@@ -567,10 +748,197 @@ std::vector<DenseGF2_64x64> BlockWiedemann::compute_krylov_sequence(
                            "streaming BW uses find_dependencies directly");
 }
 
-BlockWiedemann::LingenResult BlockWiedemann::matrix_berlekamp_massey(
-    const std::vector<DenseGF2_64x64>&, size_t) {
-    throw std::logic_error("BlockWiedemann::matrix_berlekamp_massey: reserved for Coppersmith/Thomé "
-                           "lingen; not implemented (see BACKLOG.md P1-OPT)");
+// ============================================================================
+// Coppersmith Block Berlekamp-Massey (lingen base case)
+// ============================================================================
+// Algorithm: column-extended Coppersmith with quadratic basecase, following
+// CADO-NFS lingen_qcode_binary.cpp.
+//
+// Input: sequence A_0, ..., A_{L-1} ∈ GF(2)^{64×64}. L ≤ 64 in this initial
+// implementation (single uint64_t per polynomial entry — bit e = degree e
+// coefficient).
+//
+// Construct input matpoly E ∈ GF(2)[z]^{64×128}:
+//   E[i, j]  for j ∈ [0, 64): the (i,j) entry of the sequence A (bit e = A_e[i,j])
+//   E[i, j+64]: identity at z=0 (E[i, i+64] = 1 at z=0, all others zero)
+//
+// Initialize P ∈ GF(2)[z]^{128×128} = I_{128} at z=0 (diagonal ones).
+// Per-column delta[j] = 0 for all j.
+//
+// For each step e = 0..L-1:
+//   For each row i = 0..63:
+//     Find pivot j_p ∈ [0, 128) with min delta[j_p] such that bit e of E[i, j_p] = 1.
+//     For all other cols k where bit e of E[i, k] = 1:
+//       E[:, k] ^= E[:, j_p]   (column XOR over all 64 rows of E)
+//       P[:, k] ^= P[:, j_p]   (column XOR over all 128 rows of P)
+//     E[:, j_p] <<= 1   (shift pivot column up — "delay" / consume bit e)
+//     P[:, j_p] <<= 1
+//     delta[j_p]++
+//
+// Output: F ∈ GF(2)[z]^{64×64} extracted from top 64 rows of the 64 columns of
+// P with smallest delta (these are the "good" generator columns).
+//
+// Reference: CADO-NFS source linalg/bwc/lingen_qcode_binary.cpp,
+// function lingen_qcode_do_tmpl (read 2026-05-14).
+LingenResult BlockWiedemann::matrix_berlekamp_massey(
+    const std::vector<DenseGF2_64x64>& A, size_t /*N*/) {
+    constexpr int m = 64;
+    constexpr int n = 64;
+    constexpr int b = m + n;  // 128
+    const int L = static_cast<int>(A.size());
+
+    if (L == 0) return LingenResult{};
+
+    // W = words per polynomial. Polynomial degree can grow to L (max shifts
+    // per col over L steps), plus buffer for the extraction phase.
+    const int W = (L + 10 + 63) / 64;
+
+    // E ∈ GF(2)[z]^{m × b}: flat layout E[(i*b + j)*W + w].
+    // P ∈ GF(2)[z]^{b × b}: flat layout P[(i*b + j)*W + w].
+    std::vector<uint64_t> E(static_cast<size_t>(m) * b * W, 0);
+    std::vector<uint64_t> P(static_cast<size_t>(b) * b * W, 0);
+
+    auto E_at = [&E, W](int i, int j) -> uint64_t* {
+        return &E[(static_cast<size_t>(i) * b + j) * W];
+    };
+    auto P_at = [&P, W](int i, int j) -> uint64_t* {
+        return &P[(static_cast<size_t>(i) * b + j) * W];
+    };
+
+    // ── Build E: left 64 cols = A sequence, right 64 cols = I_{64} at z=0 ──
+    for (int e = 0; e < L; ++e) {
+        const DenseGF2_64x64& Ae = A[e];
+        const int e_w = e / 64, e_b = e % 64;
+        const uint64_t e_mask = 1ULL << e_b;
+        for (int i = 0; i < m; ++i) {
+            uint64_t row_bits = Ae.rows[i];
+            while (row_bits) {
+                int j = __builtin_ctzll(row_bits);
+                E_at(i, j)[e_w] |= e_mask;
+                row_bits &= row_bits - 1;
+            }
+        }
+    }
+    for (int i = 0; i < m; ++i) {
+        E_at(i, n + i)[0] |= 1ULL;
+    }
+
+    // ── Init P = I_{b} at z=0 ──
+    for (int i = 0; i < b; ++i) {
+        P_at(i, i)[0] |= 1ULL;
+    }
+
+    std::array<int, b> delta{};
+    delta.fill(0);
+
+    // Poly helpers (W-word polynomials).
+    auto poly_xor = [W](uint64_t* dst, const uint64_t* src) noexcept {
+        for (int w = 0; w < W; ++w) dst[w] ^= src[w];
+    };
+    auto poly_lshift1 = [W](uint64_t* poly) noexcept {
+        uint64_t carry = 0;
+        for (int w = 0; w < W; ++w) {
+            uint64_t new_carry = poly[w] >> 63;
+            poly[w] = (poly[w] << 1) | carry;
+            carry = new_carry;
+        }
+    };
+    auto poly_get_bit = [](const uint64_t* poly, int e) noexcept -> bool {
+        return (poly[e / 64] >> (e % 64)) & 1ULL;
+    };
+
+    // ── Main loop ──
+    for (int e = 0; e < L; ++e) {
+        for (int i = 0; i < m; ++i) {
+            int pivot = -1;
+            int min_delta = INT_MAX;
+            for (int j = 0; j < b; ++j) {
+                if (poly_get_bit(E_at(i, j), e) && delta[j] < min_delta) {
+                    min_delta = delta[j];
+                    pivot = j;
+                }
+            }
+            if (pivot < 0) continue;
+
+            const uint64_t* E_piv_col = nullptr;  // for caching pivot col data
+            const uint64_t* P_piv_col = nullptr;
+            for (int k = 0; k < b; ++k) {
+                if (k == pivot) continue;
+                if (!poly_get_bit(E_at(i, k), e)) continue;
+                // E[:, k] ^= E[:, pivot]
+                for (int l = 0; l < m; ++l) {
+                    poly_xor(E_at(l, k), E_at(l, pivot));
+                }
+                // P[:, k] ^= P[:, pivot]
+                for (int l = 0; l < b; ++l) {
+                    poly_xor(P_at(l, k), P_at(l, pivot));
+                }
+            }
+            (void)E_piv_col; (void)P_piv_col;
+
+            // Shift pivot col up by 1 (consume bit e).
+            for (int l = 0; l < m; ++l) poly_lshift1(E_at(l, pivot));
+            for (int l = 0; l < b; ++l) poly_lshift1(P_at(l, pivot));
+            delta[pivot]++;
+        }
+    }
+
+    // ── Extract F from top n rows of n smallest-delta cols of P ──
+    std::array<int, b> col_order;
+    for (int j = 0; j < b; ++j) col_order[j] = j;
+    std::sort(col_order.begin(), col_order.end(),
+              [&delta](int a, int c) { return delta[a] < delta[c]; });
+
+    auto poly_max_degree = [W](const uint64_t* poly) -> int {
+        for (int w = W - 1; w >= 0; --w) {
+            if (poly[w]) return w * 64 + (63 - __builtin_clzll(poly[w]));
+        }
+        return -1;
+    };
+
+    int max_deg = 0;
+    for (int idx = 0; idx < n; ++idx) {
+        int c = col_order[idx];
+        for (int i = 0; i < n; ++i) {
+            int deg = poly_max_degree(P_at(i, c));
+            if (deg > max_deg) max_deg = deg;
+        }
+    }
+
+    LingenResult result;
+    result.poly.assign(max_deg + 1, DenseGF2_64x64{});
+    result.degrees.fill(0);
+    result.valid_mask = 0;
+
+    for (int j_out = 0; j_out < n; ++j_out) {
+        int c = col_order[j_out];
+        bool nontrivial = false;
+        int dj = 0;
+        for (int i = 0; i < n; ++i) {
+            const uint64_t* poly = P_at(i, c);
+            int deg = poly_max_degree(poly);
+            if (deg < 0) continue;
+            nontrivial = true;
+            if (deg > dj) dj = deg;
+            for (int w = 0; w < W; ++w) {
+                uint64_t bits = poly[w];
+                while (bits) {
+                    int local_bit = __builtin_ctzll(bits);
+                    int k = w * 64 + local_bit;
+                    if (k <= max_deg) {
+                        result.poly[k].rows[i] |= (1ULL << j_out);
+                    }
+                    bits &= bits - 1;
+                }
+            }
+        }
+        if (nontrivial) {
+            result.valid_mask |= (1ULL << j_out);
+            result.degrees[j_out] = dj;
+        }
+    }
+
+    return result;
 }
 
 std::vector<std::vector<bool>> BlockWiedemann::extract_solutions(
