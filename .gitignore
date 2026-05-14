@@ -35,6 +35,7 @@ CMakeUserPresets.json
 
 # ===== Planning & Tracking Files (Session-Specific) =====
 task_plan.md
+task_plan_*.md
 findings.md
 progress.md
 BACKLOG.md
