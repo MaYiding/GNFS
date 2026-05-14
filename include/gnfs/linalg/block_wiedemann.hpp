@@ -3,10 +3,113 @@
 #include "gnfs/linalg/block_lanczos.hpp"  // BlockVector, DenseGF2_64x64, CSRMatrix, etc.
 #include "gnfs/linalg/sparse_matrix.hpp"
 #include <array>
+#include <cassert>
 #include <cstdint>
+#include <cstring>
+#include <utility>
 #include <vector>
 
 namespace gnfs::linalg {
+
+// ============================================================================
+// 64×128 GF(2) Matrix — Coppersmith block-BM extended state
+// ============================================================================
+//
+// Storage layout: column-major, cols[j] packs 64 bits where bit r is the
+// element at (row r, col j). All BM hot operations (xor_cols, swap_cols,
+// get/set col) are O(1).
+//
+// Logical role: F^{(t)}(z) coefficient F_k ∈ GF(2)^{64×128} for Coppersmith's
+// column-extended matrix Berlekamp-Massey. Columns 0..63 = "active" (left
+// half), columns 64..127 = "auxiliary" (right half).
+//
+// Tests in tests/test_block_wiedemann.cpp.
+struct DenseGF2_64x128 {
+    uint64_t cols[128] = {};
+
+    void clear() noexcept { std::memset(cols, 0, sizeof(cols)); }
+
+    // Initialize as [I_64 | 0_64]: left half identity, right half zero.
+    void set_left_identity() noexcept {
+        clear();
+        for (int i = 0; i < 64; ++i) cols[i] = 1ULL << i;
+    }
+
+    [[nodiscard]] uint64_t get_col(int j) const noexcept {
+        assert(j >= 0 && j < 128);
+        return cols[j];
+    }
+    void set_col(int j, uint64_t v) noexcept {
+        assert(j >= 0 && j < 128);
+        cols[j] = v;
+    }
+
+    // dst column ^= src column (in-place column XOR).
+    void xor_cols(int dst, int src) noexcept {
+        assert(dst >= 0 && dst < 128 && src >= 0 && src < 128 && dst != src);
+        cols[dst] ^= cols[src];
+    }
+
+    void swap_cols(int a, int b) noexcept {
+        assert(a >= 0 && a < 128 && b >= 0 && b < 128);
+        if (a == b) return;
+        std::swap(cols[a], cols[b]);
+    }
+
+    // Full matrix XOR (used to combine polynomial coefficients).
+    void xor_with(const DenseGF2_64x128& other) noexcept {
+        for (int j = 0; j < 128; ++j) cols[j] ^= other.cols[j];
+    }
+
+    [[nodiscard]] bool is_zero() const noexcept {
+        for (int j = 0; j < 128; ++j)
+            if (cols[j] != 0) return false;
+        return true;
+    }
+
+    // Extract left half (cols 0..63) as 64×64 row-packed DenseGF2_64x64.
+    // Convention: m.rows[i] bit j = entry (row i, col j) of left half.
+    [[nodiscard]] DenseGF2_64x64 extract_left() const noexcept {
+        DenseGF2_64x64 m;
+        for (int i = 0; i < 64; ++i) {
+            uint64_t r = 0;
+            for (int j = 0; j < 64; ++j) {
+                if ((cols[j] >> i) & 1ULL) r |= (1ULL << j);
+            }
+            m.rows[i] = r;
+        }
+        return m;
+    }
+
+    // Extract right half (cols 64..127) as 64×64.
+    [[nodiscard]] DenseGF2_64x64 extract_right() const noexcept {
+        DenseGF2_64x64 m;
+        for (int i = 0; i < 64; ++i) {
+            uint64_t r = 0;
+            for (int j = 0; j < 64; ++j) {
+                if ((cols[64 + j] >> i) & 1ULL) r |= (1ULL << j);
+            }
+            m.rows[i] = r;
+        }
+        return m;
+    }
+};
+
+// Matrix polynomial: F(z) = F[0] + F[1]·z + ... + F[D]·z^D.
+// Used both for the BM extended state (with 64×128 coefficients via parallel
+// std::vector<DenseGF2_64x128>) and for the final LingenResult output (with
+// 64×64 coefficients, after extracting the "good" half).
+using MatrixPoly = std::vector<DenseGF2_64x64>;
+
+// Output of Coppersmith block BM: 64-column generator polynomial.
+// `degrees[j]` is the degree of column j in `poly` (entries of poly[k] columns
+// > degrees[j] are 0 by construction). `valid_mask` bit j = 1 iff column j
+// produced a non-trivial generator (used by Phase 3 mksol).
+struct LingenResult {
+    MatrixPoly poly;
+    std::array<int, 64> degrees{};
+    uint64_t valid_mask = 0;
+};
 
 /// Block Wiedemann algorithm for finding GF(2) null space vectors
 /// (Coppersmith 1994, with Berlekamp-Massey for matrix sequences)
@@ -56,22 +159,9 @@ private:
         const BlockVector& X, BlockVector& Y);
 
     // --- BW Phase 2: Matrix Berlekamp-Massey (lingen) ---
-
-    /// Matrix polynomial representation: F(t) = F[0] + F[1]·t + ... + F[D]·t^D
-    /// Each F[k] is a 64×64 GF(2) matrix.
-    using MatrixPoly = std::vector<DenseGF2_64x64>;
-
-    /// Column-wise generating polynomial for the Krylov sequence.
-    /// Each column j of the result polynomial is the minimal generator
-    /// for column j of the sequence.
-    struct LingenResult {
-        /// Polynomial coefficients (each is 64×64 matrix)
-        MatrixPoly poly;
-        /// Degree of each of the 64 columns
-        std::array<int, 64> degrees;
-        /// Which columns are valid generators (non-zero)
-        uint64_t valid_mask;
-    };
+    //
+    // Types (MatrixPoly, LingenResult) are defined at namespace level above so
+    // unit tests can construct them directly.
 
     /// Coppersmith's Block Berlekamp-Massey algorithm.
     /// Input: sequence of L matrices A_0, A_1, ..., A_{L-1} (each 64×64 over GF(2))

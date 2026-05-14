@@ -567,7 +567,7 @@ std::vector<DenseGF2_64x64> BlockWiedemann::compute_krylov_sequence(
                            "streaming BW uses find_dependencies directly");
 }
 
-BlockWiedemann::LingenResult BlockWiedemann::matrix_berlekamp_massey(
+LingenResult BlockWiedemann::matrix_berlekamp_massey(
     const std::vector<DenseGF2_64x64>&, size_t) {
     throw std::logic_error("BlockWiedemann::matrix_berlekamp_massey: reserved for Coppersmith/Thomé "
                            "lingen; not implemented (see BACKLOG.md P1-OPT)");

@@ -77,7 +77,123 @@ static SparseMatrix build_matrix_with_nullspace(size_t rows, size_t cols,
 }
 
 // ============================================================================
-// Test cases
+// Test cases — DenseGF2_64x128 foundation (P2 Stage A.1)
+// ============================================================================
+
+void test_dense_64x128_clear_and_identity() {
+    using gnfs::linalg::DenseGF2_64x128;
+    DenseGF2_64x128 m;
+    m.clear();
+    for (int j = 0; j < 128; ++j) TEST_ASSERT(m.get_col(j) == 0, "clear: all cols zero");
+
+    m.set_left_identity();
+    for (int j = 0; j < 64; ++j)
+        TEST_ASSERT(m.get_col(j) == (1ULL << j), "left identity: cols 0..63 = e_j");
+    for (int j = 64; j < 128; ++j)
+        TEST_ASSERT(m.get_col(j) == 0, "left identity: cols 64..127 zero");
+    TEST_PASS("DenseGF2_64x128 clear + set_left_identity");
+}
+
+void test_dense_64x128_set_get_col() {
+    using gnfs::linalg::DenseGF2_64x128;
+    DenseGF2_64x128 m;
+    m.clear();
+    std::mt19937_64 rng(0xC0FFEE);
+    uint64_t expected[128];
+    for (int j = 0; j < 128; ++j) {
+        expected[j] = rng();
+        m.set_col(j, expected[j]);
+    }
+    for (int j = 0; j < 128; ++j)
+        TEST_ASSERT(m.get_col(j) == expected[j], "set/get round-trip");
+    TEST_PASS("DenseGF2_64x128 set_col / get_col round-trip");
+}
+
+void test_dense_64x128_xor_cols() {
+    using gnfs::linalg::DenseGF2_64x128;
+    DenseGF2_64x128 m;
+    m.clear();
+    m.set_col(10, 0xAAAAAAAAAAAAAAAAULL);
+    m.set_col(20, 0x5555555555555555ULL);
+    m.xor_cols(10, 20);
+    TEST_ASSERT(m.get_col(10) == 0xFFFFFFFFFFFFFFFFULL, "xor_cols result");
+    TEST_ASSERT(m.get_col(20) == 0x5555555555555555ULL, "xor_cols src unchanged");
+    TEST_PASS("DenseGF2_64x128 xor_cols");
+}
+
+void test_dense_64x128_swap_cols() {
+    using gnfs::linalg::DenseGF2_64x128;
+    DenseGF2_64x128 m;
+    m.clear();
+    m.set_col(5, 0xDEADBEEFCAFEBABEULL);
+    m.set_col(100, 0x1234567890ABCDEFULL);
+    m.swap_cols(5, 100);
+    TEST_ASSERT(m.get_col(5) == 0x1234567890ABCDEFULL, "swap: col5 got col100");
+    TEST_ASSERT(m.get_col(100) == 0xDEADBEEFCAFEBABEULL, "swap: col100 got col5");
+    // self-swap is no-op
+    m.swap_cols(5, 5);
+    TEST_ASSERT(m.get_col(5) == 0x1234567890ABCDEFULL, "self-swap no-op");
+    TEST_PASS("DenseGF2_64x128 swap_cols");
+}
+
+void test_dense_64x128_xor_with() {
+    using gnfs::linalg::DenseGF2_64x128;
+    DenseGF2_64x128 a, b;
+    std::mt19937_64 rng(0xBEEF);
+    for (int j = 0; j < 128; ++j) {
+        a.set_col(j, rng());
+        b.set_col(j, rng());
+    }
+    DenseGF2_64x128 a_copy = a;
+    a.xor_with(b);
+    for (int j = 0; j < 128; ++j)
+        TEST_ASSERT(a.get_col(j) == (a_copy.get_col(j) ^ b.get_col(j)), "xor_with per col");
+    TEST_PASS("DenseGF2_64x128 xor_with (full matrix)");
+}
+
+void test_dense_64x128_is_zero() {
+    using gnfs::linalg::DenseGF2_64x128;
+    DenseGF2_64x128 m;
+    m.clear();
+    TEST_ASSERT(m.is_zero(), "cleared is zero");
+    m.set_col(64, 1ULL << 7);
+    TEST_ASSERT(!m.is_zero(), "after set_col not zero");
+    m.set_col(64, 0);
+    TEST_ASSERT(m.is_zero(), "after clear back to zero");
+    TEST_PASS("DenseGF2_64x128 is_zero");
+}
+
+void test_dense_64x128_extract_halves() {
+    using gnfs::linalg::DenseGF2_64x128;
+    using gnfs::linalg::DenseGF2_64x64;
+    DenseGF2_64x128 m;
+    // Build a known pattern: col j (left) = j, col j+64 (right) = j+1
+    // i.e., cols[j] is the bit pattern of integer j (treating j as a 64-bit number)
+    for (int j = 0; j < 64; ++j) m.set_col(j, static_cast<uint64_t>(j));
+    for (int j = 0; j < 64; ++j) m.set_col(64 + j, static_cast<uint64_t>(j + 1));
+
+    DenseGF2_64x64 left = m.extract_left();
+    DenseGF2_64x64 right = m.extract_right();
+
+    // left[i] (row i) bit j = bit i of cols[j] = bit i of j (as integer)
+    // bit i of j is 1 iff (j >> i) & 1
+    for (int i = 0; i < 64; ++i) {
+        uint64_t expected_left = 0;
+        for (int j = 0; j < 64; ++j) {
+            if ((static_cast<uint64_t>(j) >> i) & 1) expected_left |= (1ULL << j);
+        }
+        TEST_ASSERT(left.rows[i] == expected_left, "extract_left row");
+        uint64_t expected_right = 0;
+        for (int j = 0; j < 64; ++j) {
+            if ((static_cast<uint64_t>(j + 1) >> i) & 1) expected_right |= (1ULL << j);
+        }
+        TEST_ASSERT(right.rows[i] == expected_right, "extract_right row");
+    }
+    TEST_PASS("DenseGF2_64x128 extract_left / extract_right");
+}
+
+// ============================================================================
+// Test cases — original Block Wiedemann tests
 // ============================================================================
 
 void test_scalar_bm_basic() {
@@ -278,6 +394,16 @@ int main() {
     std::cout << "  Block Wiedemann Unit Tests\n";
     std::cout << "═══════════════════════════════════════════\n\n";
 
+    // P2 Stage A.1 — DenseGF2_64x128 foundation
+    test_dense_64x128_clear_and_identity();
+    test_dense_64x128_set_get_col();
+    test_dense_64x128_xor_cols();
+    test_dense_64x128_swap_cols();
+    test_dense_64x128_xor_with();
+    test_dense_64x128_is_zero();
+    test_dense_64x128_extract_halves();
+
+    // Original BW tests
     test_scalar_bm_basic();
     test_cross_validate_small();
     test_overdetermined_matrix();
