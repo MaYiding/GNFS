@@ -20,7 +20,7 @@ public:
     /// 构造函数
     /// @param num_threads 线程数量，0 表示使用硬件并发数
     explicit ThreadPool(uint32_t num_threads = 0)
-        : stop_(false), pending_(0) {
+        : stop_(false), pending_(0), queue_size_(0) {
         if (num_threads == 0) {
             num_threads = std::thread::hardware_concurrency();
             if (num_threads == 0) {
@@ -48,6 +48,12 @@ public:
         }
     }
 
+    /// P1.B-1c: spin budget for worker idle-wait — short busy-wait before falling
+    /// back to cv_wait. M5 P-core ~4.6 GHz, `yield` ≈ 1-2 ns/iter → 2000 ≈ 2-4 μs.
+    /// Covers burst-submit patterns (Gaussian col-by-col, SpMV per-iter chunks)
+    /// where next wave arrives within μs of wait_all.
+    static constexpr int kSpinBudget = 2000;
+
     // 禁止拷贝和移动
     ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;
@@ -73,6 +79,7 @@ public:
             }
             tasks_.emplace([task]() { (*task)(); });
             ++pending_;
+            queue_size_.fetch_add(1, std::memory_order_release);
         }
         cv_.notify_one();
 
@@ -202,10 +209,64 @@ public:
     }
 
 private:
-    void worker_loop() {
-        while (true) {
-            std::function<void()> task;
+    /// Hint to the CPU we are in a spin loop — on ARM `yield` lowers SMT priority
+    /// (M5 P-core has no SMT but the instruction still puts the pipeline in a
+    /// low-power hint state). On x86 emit `pause`.
+    static inline void cpu_relax() noexcept {
+#if defined(__aarch64__) || defined(__arm__)
+        asm volatile("yield" ::: "memory");
+#elif defined(__x86_64__) || defined(__i386__)
+        asm volatile("pause" ::: "memory");
+#else
+        std::this_thread::yield();
+#endif
+    }
 
+    void worker_loop() {
+        // P1.B-1c: spin-then-cv. Worker spins atomic-load on queue_size_ for a
+        // short budget before falling back to cv_.wait. Covers Gaussian/SpMV
+        // burst-submit (next wave arrives in μs of wait_all) without burning
+        // CPU for long-idle periods.
+        int spin = 0;
+        while (true) {
+            // Fast path: atomic peek — if work is available, lock+grab.
+            if (queue_size_.load(std::memory_order_acquire) > 0) {
+                std::function<void()> task;
+                bool got_task = false;
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    if (!tasks_.empty()) {
+                        task = std::move(tasks_.front());
+                        tasks_.pop();
+                        queue_size_.fetch_sub(1, std::memory_order_release);
+                        got_task = true;
+                    }
+                }
+                if (got_task) {
+                    task();
+                    bool should_notify = false;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        should_notify = (--pending_ == 0);
+                    }
+                    if (should_notify) {
+                        done_cv_.notify_all();
+                    }
+                    spin = 0;
+                    continue;
+                }
+                // Another worker stole it — fall through to spin/cv path.
+            }
+
+            // No work seen. Short spin before paying cv_wait syscall.
+            if (spin < kSpinBudget) {
+                cpu_relax();
+                ++spin;
+                continue;
+            }
+
+            // Spin budget exhausted — long idle, fall back to cv_wait.
+            std::function<void()> task;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 cv_.wait(lock, [this] { return stop_ || !tasks_.empty(); });
@@ -216,6 +277,7 @@ private:
 
                 task = std::move(tasks_.front());
                 tasks_.pop();
+                queue_size_.fetch_sub(1, std::memory_order_release);
             }
 
             task();
@@ -232,6 +294,7 @@ private:
             if (should_notify) {
                 done_cv_.notify_all();
             }
+            spin = 0;
         }
     }
 
@@ -246,6 +309,11 @@ private:
     // pending_ is always read/written under mutex_ — even pending_tasks() locks.
     // 不用 atomic 是为了让心智模型一致:所有同步状态都走 mutex_/cv,不混 atomic 语义。
     size_t pending_;
+
+    // P1.B-1c: atomic view of tasks_.size() — worker spin path reads without lock.
+    // Always updated together with tasks_ under mutex_; release/acquire seqs
+    // ensure spin-path readers see consistent task availability without lock.
+    std::atomic<size_t> queue_size_;
 };
 
 } // namespace gnfs::util
