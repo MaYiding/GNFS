@@ -871,18 +871,32 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
 
 **决策**：保留改动（正向、零回归），但 promote **ThreadPool atomic-spin worker** 到独立任务（BACKLOG.md `[OPT] ThreadPool atomic-spin worker`，~200 LOC，risk medium）。
 
-#### P1.B-1c: ThreadPool atomic-spin worker（仍排程）
+#### P1.B-1c: ThreadPool atomic-spin worker ✅ 已完成 (2026-05-14, commit `138d4d8`)
 
-P1.B-1b 已暴露 worker idle wait 是 __psynch_cvwait 主导。`std::condition_variable::wait` 每 col 唤醒 worker，每次 worker 完成又陷入 cv_wait。**这是 BackendStallRate 偏高的真正隐藏推手**。
+**修复**: `include/gnfs/util/thread_pool.hpp` — spin-then-cv worker_loop:
+- `std::atomic<size_t> queue_size_`：worker spin path 无锁 atomic load
+- `kSpinBudget = 2000` iterations × ARM `yield` ≈ M5 P-core ~2-4 μs
+- spin 期间任务到达直接 grab；budget 耗尽 fallthrough cv_wait（长闲置节能）
+- 接口 100% 兼容（submit / parallel_for / wait_all 全保留）
 
-修复方向（独立任务，未实施）：
-- atomic spin (M5 wfe/sev 节能指令) — 不进入内核等条件，spin on atomic flag
-- persistent task / fork-join — 把整个 Gaussian elim 当一个大任务塞进 ThreadPool，worker 内循环处理多 col
-- OpenMP `#pragma omp parallel` region (项目当前不依赖 OpenMP，引入需 build system 改动)
+**PMU 验证** (test_factor_with_kleinjung Release):
 
-成本：~200 LOC ThreadPool 重写 + 适配 SpMV/Gaussian 用例 + 测试。
+| 指标 | Baseline (9fecb96) | Fix | Δ |
+|---|---:|---:|---:|
+| Wall | 47.924 s | 47.330 s | **-1.24%** ✅ |
+| **sys time** | 4.126 s | 3.637 s | **-11.85%** 🎯 |
+| user time | 219.254 s | 224.613 s | +2.44% (spin 烤 CPU) |
+| Cycles | 95.85e9 | 94.38e9 | -1.54% |
+| IPC | 1.316 | 1.326 | +0.010 |
+| BackendStallRate | 73.91% | 74.35% | +0.44pp (PET 噪声) |
 
-启动条件：P1.B-1b post-fix PMU 显示 BackendStallRate 仍 >50%。
+**关键证据**: sys time -11.85%（489 ms syscall 节省）是 cv_wait 减少的直接测量。user time +2.44% 是 spin loop user-mode CPU 代价。Net wall -1.24% 表示 sys 节省（critical path 上）超过 user 上升（分散在 10 idle workers）。
+
+**教训**: sample 看不到 μs 级 spin（1ms 粒度），__psynch_cvwait 总数几乎不变（-0.17%）。但 PMU sys time 才是 syscall 累积成本的真实测量。**sample / PMU 是互补工具**。
+
+**报告**: [`bench/results/2026-05-14-threadpool-atomic-spin.md`](../../bench/results/2026-05-14-threadpool-atomic-spin.md)
+
+**未做**: spin budget 调优（静态 2000 → 测试 1000/5000）。暂搁置，等 wall time 长 workload 出现回归再启动。
 
 #### P1.B-2: `lattice_sieve` 对齐（仍排程，sample 命中 2k 样本）
 
