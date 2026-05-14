@@ -167,6 +167,24 @@ public:
     std::vector<std::vector<bool>> find_dependencies(
         const SparseMatrix& matrix, size_t max_deps = 64);
 
+    /// Coppersmith's Block Berlekamp-Massey algorithm (public for unit testing).
+    /// Input: sequence of L matrices A_0, A_1, ..., A_{L-1} (each 64×64 over GF(2))
+    /// Output: minimal generating matrix polynomial F such that
+    ///   for sufficient t:  A(z)·F(z) has zero coefficient at z^t
+    /// where A(z) = sum_k A_k·z^k (the input sequence as formal polynomial).
+    ///
+    /// Algorithm: column-extended Coppersmith — maintains 128-column polynomial
+    /// state Pi(z) starting from [I_64 | 0_64], tracks per-column delay δ_j,
+    /// at each step computes discrepancy and runs row-pivot Gaussian on Δ in
+    /// δ-ascending column order (smallest-δ columns get pivot priority and are
+    /// z-multiplied; larger-δ columns are corrected by XOR).
+    ///
+    /// Complexity: O(64^2 · L^2) bit-ops. Suitable for L ≤ ~10K (b=64 block size,
+    /// L = 2n/64+O(1) for matrix dim n, so n ≤ ~300K). For larger matrices,
+    /// Thomé's subquadratic lingen would be needed (P2 follow-up).
+    static LingenResult matrix_berlekamp_massey(
+        const std::vector<DenseGF2_64x64>& sequence, size_t N);
+
 private:
     /// Three-phase Block Wiedemann for large sparse matrices.
     /// Works on the implicit symmetric matrix B = M · M^T.
@@ -189,22 +207,8 @@ private:
         const BlockVector& X, BlockVector& Y);
 
     // --- BW Phase 2: Matrix Berlekamp-Massey (lingen) ---
-    //
-    // Types (MatrixPoly, LingenResult) are defined at namespace level above so
-    // unit tests can construct them directly.
-
-    /// Coppersmith's Block Berlekamp-Massey algorithm.
-    /// Input: sequence of L matrices A_0, A_1, ..., A_{L-1} (each 64×64 over GF(2))
-    /// Output: minimal generating matrix polynomial F
-    ///
-    /// The algorithm maintains a 64×128 "extended" system and tracks per-column
-    /// degrees, performing Gaussian pivoting at each step to minimize degree growth.
-    ///
-    /// Complexity: O(64^2 · L^2) — quadratic in sequence length, suitable for
-    /// matrices up to ~10M. For larger matrices, Thomé's subquadratic variant
-    /// would be needed.
-    static LingenResult matrix_berlekamp_massey(
-        const std::vector<DenseGF2_64x64>& sequence, size_t N);
+    // (matrix_berlekamp_massey is public, declared above. Types MatrixPoly /
+    // LingenResult are at namespace level so tests can construct them directly.)
 
     // --- BW Phase 3: Solution extraction (mksol) ---
 

@@ -1,10 +1,14 @@
 #include "gnfs/linalg/block_wiedemann.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
+#include <array>
 #include <cassert>
+#include <climits>
+#include <cstdint>
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <vector>
 
 namespace gnfs::linalg {
 
@@ -567,10 +571,181 @@ std::vector<DenseGF2_64x64> BlockWiedemann::compute_krylov_sequence(
                            "streaming BW uses find_dependencies directly");
 }
 
+// ============================================================================
+// Coppersmith Block Berlekamp-Massey (lingen base case)
+// ============================================================================
+// Algorithm: column-extended Coppersmith with quadratic basecase, following
+// CADO-NFS lingen_qcode_binary.cpp.
+//
+// Input: sequence A_0, ..., A_{L-1} ∈ GF(2)^{64×64}. L ≤ 64 in this initial
+// implementation (single uint64_t per polynomial entry — bit e = degree e
+// coefficient).
+//
+// Construct input matpoly E ∈ GF(2)[z]^{64×128}:
+//   E[i, j]  for j ∈ [0, 64): the (i,j) entry of the sequence A (bit e = A_e[i,j])
+//   E[i, j+64]: identity at z=0 (E[i, i+64] = 1 at z=0, all others zero)
+//
+// Initialize P ∈ GF(2)[z]^{128×128} = I_{128} at z=0 (diagonal ones).
+// Per-column delta[j] = 0 for all j.
+//
+// For each step e = 0..L-1:
+//   For each row i = 0..63:
+//     Find pivot j_p ∈ [0, 128) with min delta[j_p] such that bit e of E[i, j_p] = 1.
+//     For all other cols k where bit e of E[i, k] = 1:
+//       E[:, k] ^= E[:, j_p]   (column XOR over all 64 rows of E)
+//       P[:, k] ^= P[:, j_p]   (column XOR over all 128 rows of P)
+//     E[:, j_p] <<= 1   (shift pivot column up — "delay" / consume bit e)
+//     P[:, j_p] <<= 1
+//     delta[j_p]++
+//
+// Output: F ∈ GF(2)[z]^{64×64} extracted from top 64 rows of the 64 columns of
+// P with smallest delta (these are the "good" generator columns).
+//
+// Reference: CADO-NFS source linalg/bwc/lingen_qcode_binary.cpp,
+// function lingen_qcode_do_tmpl (read 2026-05-14).
 LingenResult BlockWiedemann::matrix_berlekamp_massey(
-    const std::vector<DenseGF2_64x64>&, size_t) {
-    throw std::logic_error("BlockWiedemann::matrix_berlekamp_massey: reserved for Coppersmith/Thomé "
-                           "lingen; not implemented (see BACKLOG.md P1-OPT)");
+    const std::vector<DenseGF2_64x64>& A, size_t /*N*/) {
+    constexpr int m = 64;
+    constexpr int n = 64;
+    constexpr int b = m + n;  // 128
+    const int L = static_cast<int>(A.size());
+
+    if (L == 0) return LingenResult{};
+    if (L > 64) {
+        // TODO: multi-word polynomials for L > 64 (see findings.md).
+        // For now, refuse rather than silently truncate.
+        throw std::logic_error(
+            "matrix_berlekamp_massey: L > 64 not yet supported (multi-word "
+            "polynomials needed; falls back to scalar BM via env var)");
+    }
+
+    // ── Build E ∈ GF(2)[z]^{m × b} ──
+    // E[i][j] is a uint64_t polynomial: bit e = coefficient at degree e.
+    // Storage: row-major flat array E[i*b + j]. (m=n=64, b=128 → 8192 uint64.)
+    std::vector<uint64_t> E(m * b, 0);
+    for (int e = 0; e < L; ++e) {
+        const DenseGF2_64x64& Ae = A[e];
+        for (int i = 0; i < m; ++i) {
+            const uint64_t row_bits = Ae.rows[i];  // bit j of row_bits = A_e[i,j]
+            // Distribute bit j of row_bits to E[i][j] bit e.
+            uint64_t bits = row_bits;
+            while (bits) {
+                int j = __builtin_ctzll(bits);
+                E[i * b + j] |= (1ULL << e);
+                bits &= bits - 1;
+            }
+        }
+    }
+    // Append identity-at-z=0 in cols [n, n+m): E[i][n+i] = 1 (bit 0 set).
+    for (int i = 0; i < m; ++i) {
+        E[i * b + (n + i)] |= 1ULL;
+    }
+
+    // ── Initialize P ∈ GF(2)[z]^{b × b} = I_{b} at z=0 ──
+    // P[i][j] is a uint64_t polynomial. Diagonal entries have bit 0 = 1.
+    std::vector<uint64_t> P(b * b, 0);
+    for (int i = 0; i < b; ++i) {
+        P[i * b + i] |= 1ULL;
+    }
+
+    // ── Per-column delta ──
+    std::array<int, b> delta{};
+    delta.fill(0);
+
+    // ── Main loop ──
+    for (int e = 0; e < L; ++e) {
+        for (int i = 0; i < m; ++i) {
+            // Find pivot: smallest-delta column j with bit e of E[i][j] = 1.
+            int pivot = -1;
+            int min_delta = INT_MAX;
+            for (int j = 0; j < b; ++j) {
+                if (((E[i * b + j] >> e) & 1ULL) && delta[j] < min_delta) {
+                    min_delta = delta[j];
+                    pivot = j;
+                }
+            }
+            if (pivot < 0) {
+                // No column has bit e set in row i. (Row i is "spontaneously
+                // zero" at step e — counts as a "lucky" condition for
+                // generator detection, but for our basic implementation we
+                // just skip.) Continue to next row.
+                continue;
+            }
+
+            // XOR pivot column into all other columns k where E[i][k] bit e = 1.
+            for (int k = 0; k < b; ++k) {
+                if (k == pivot) continue;
+                if (!((E[i * b + k] >> e) & 1ULL)) continue;
+                // E[:, k] ^= E[:, pivot] — XOR over all m rows.
+                for (int l = 0; l < m; ++l) {
+                    E[l * b + k] ^= E[l * b + pivot];
+                }
+                // P[:, k] ^= P[:, pivot] — XOR over all b rows.
+                for (int l = 0; l < b; ++l) {
+                    P[l * b + k] ^= P[l * b + pivot];
+                }
+            }
+
+            // Shift pivot column up by 1 (consume bit e, delay).
+            for (int l = 0; l < m; ++l) {
+                E[l * b + pivot] <<= 1;
+            }
+            for (int l = 0; l < b; ++l) {
+                P[l * b + pivot] <<= 1;
+            }
+            delta[pivot]++;
+        }
+    }
+
+    // ── Extract F: top n rows of the n cols of P with smallest delta ──
+    std::array<int, b> col_order;
+    for (int j = 0; j < b; ++j) col_order[j] = j;
+    std::sort(col_order.begin(), col_order.end(),
+              [&delta](int a, int c) { return delta[a] < delta[c]; });
+
+    // Compute max polynomial degree among the top n cols' top n rows.
+    int max_deg = 0;
+    for (int idx = 0; idx < n; ++idx) {
+        int c = col_order[idx];
+        for (int i = 0; i < n; ++i) {  // only top n rows of P (rows of F)
+            uint64_t poly = P[i * b + c];
+            if (poly != 0) {
+                int bit = 63 - __builtin_clzll(poly);
+                if (bit > max_deg) max_deg = bit;
+            }
+        }
+    }
+
+    LingenResult result;
+    result.poly.assign(max_deg + 1, DenseGF2_64x64{});
+    result.degrees.fill(0);
+    result.valid_mask = 0;
+
+    for (int j_out = 0; j_out < n; ++j_out) {
+        int c = col_order[j_out];
+        bool nontrivial = false;
+        int dj = 0;
+        // F[k][i, j_out] = bit k of P[i][c] for i = 0..n-1.
+        for (int i = 0; i < n; ++i) {
+            uint64_t poly = P[i * b + c];
+            if (poly == 0) continue;
+            nontrivial = true;
+            int bit = 63 - __builtin_clzll(poly);
+            if (bit > dj) dj = bit;
+            uint64_t bits = poly;
+            while (bits) {
+                int k = __builtin_ctzll(bits);
+                result.poly[k].rows[i] |= (1ULL << j_out);
+                bits &= bits - 1;
+            }
+        }
+        if (nontrivial) {
+            result.valid_mask |= (1ULL << j_out);
+            result.degrees[j_out] = dj;
+        }
+    }
+
+    return result;
 }
 
 std::vector<std::vector<bool>> BlockWiedemann::extract_solutions(

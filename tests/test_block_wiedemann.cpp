@@ -296,6 +296,123 @@ void test_dense_64x128_extract_halves() {
 }
 
 // ============================================================================
+// Test cases — Matrix BM (P2 Stage B)
+// ============================================================================
+
+// Helper: compute (A · F)_t [:, j] = sum_{k=0}^{dj} A_{t-k} · F_k[:, j]
+// where F_k[:, j] is the j-th column of F_k (64-bit value).
+static uint64_t compute_AF_col(const std::vector<gnfs::linalg::DenseGF2_64x64>& A,
+                                const gnfs::linalg::LingenResult& F,
+                                int j, size_t t, int dj) {
+    uint64_t acc = 0;
+    for (int k = 0; k <= dj; ++k) {
+        if (t < static_cast<size_t>(k)) break;
+        // F_k[:, j] as a 64-bit column: bit i = F.poly[k].rows[i] bit j
+        uint64_t Fk_col_j = 0;
+        if (static_cast<size_t>(k) < F.poly.size()) {
+            for (int i = 0; i < 64; ++i) {
+                if ((F.poly[k].rows[i] >> j) & 1ULL) Fk_col_j |= (1ULL << i);
+            }
+        }
+        if (Fk_col_j == 0) continue;
+        const gnfs::linalg::DenseGF2_64x64& Am = A[t - k];
+        uint64_t mv = 0;
+        for (int r = 0; r < 64; ++r) {
+            if (__builtin_parityll(Am.rows[r] & Fk_col_j)) mv |= (1ULL << r);
+        }
+        acc ^= mv;
+    }
+    return acc;
+}
+
+void test_matrix_bm_empty_sequence() {
+    std::vector<gnfs::linalg::DenseGF2_64x64> A;
+    auto F = gnfs::linalg::BlockWiedemann::matrix_berlekamp_massey(A, 64);
+    TEST_ASSERT(F.valid_mask == 0, "empty sequence → no valid cols");
+    TEST_ASSERT(F.poly.empty(), "empty sequence → empty poly");
+    TEST_PASS("matrix BM on empty sequence");
+}
+
+void test_matrix_bm_zero_sequence() {
+    // All-zero sequence: any F annihilates trivially. BM should not crash.
+    std::vector<gnfs::linalg::DenseGF2_64x64> A(20);
+    for (auto& m : A) m.clear();
+    auto F = gnfs::linalg::BlockWiedemann::matrix_berlekamp_massey(A, 64);
+    // Result may be empty or trivial; just check it doesn't crash.
+    TEST_PASS("matrix BM on all-zero sequence (no crash)");
+}
+
+void test_matrix_bm_powers_of_random_B() {
+    // Generate random B ∈ GF(2)^{64×64}. Sequence A_k = B^k for k=0..L-1.
+    // BM should find F such that (A·F)_t = 0 for t in [deg(F), L-1].
+    using gnfs::linalg::DenseGF2_64x64;
+    using gnfs::linalg::BlockWiedemann;
+
+    const size_t L = 64;  // single-word capacity; works for our PoC L≤64
+    DenseGF2_64x64 B;
+    std::mt19937_64 rng(0xBEEF1234);
+    for (int r = 0; r < 64; ++r) B.rows[r] = rng();
+
+    std::vector<DenseGF2_64x64> A(L);
+    A[0].set_identity();
+    for (size_t k = 1; k < L; ++k) A[k] = A[k-1].multiply(B);
+
+    auto F = BlockWiedemann::matrix_berlekamp_massey(A, 64);
+    TEST_ASSERT(F.valid_mask != 0, "BM should find at least one valid column");
+
+    int annihilating_cols = 0;
+    int checked_cols = 0;
+    for (int j = 0; j < 64; ++j) {
+        if (!((F.valid_mask >> j) & 1)) continue;
+        checked_cols++;
+        int dj = F.degrees[j];
+        bool annihilates = true;
+        // Verify (A·F)_t [:, j] = 0 for t in [dj, L-1]
+        for (size_t t = static_cast<size_t>(dj); t < L; ++t) {
+            if (compute_AF_col(A, F, j, t, dj) != 0) {
+                annihilates = false;
+                break;
+            }
+        }
+        if (annihilates) annihilating_cols++;
+    }
+
+    std::cout << "  (checked " << checked_cols << " valid cols, "
+              << annihilating_cols << " annihilate)" << std::endl;
+    TEST_ASSERT(annihilating_cols > 0,
+                "at least one column of F should annihilate A in tail");
+    TEST_PASS("matrix BM on A_k = B^k (annihilation verified)");
+}
+
+void test_matrix_bm_constant_sequence() {
+    // A_k = I for all k. minpoly is (z - 1) = z + 1 over GF(2).
+    // F should find a generator with this minpoly (or a multiple).
+    using gnfs::linalg::DenseGF2_64x64;
+    using gnfs::linalg::BlockWiedemann;
+
+    const size_t L = 20;
+    std::vector<DenseGF2_64x64> A(L);
+    for (auto& m : A) m.set_identity();
+
+    auto F = BlockWiedemann::matrix_berlekamp_massey(A, 64);
+    TEST_ASSERT(F.valid_mask != 0, "constant sequence should give valid F");
+
+    int annihilating = 0;
+    for (int j = 0; j < 64; ++j) {
+        if (!((F.valid_mask >> j) & 1)) continue;
+        int dj = F.degrees[j];
+        bool ok = true;
+        for (size_t t = static_cast<size_t>(dj); t < L && ok; ++t) {
+            if (compute_AF_col(A, F, j, t, dj) != 0) ok = false;
+        }
+        if (ok) annihilating++;
+    }
+    std::cout << "  (annihilating cols: " << annihilating << "/64)" << std::endl;
+    TEST_ASSERT(annihilating > 0, "constant sequence should yield annihilators");
+    TEST_PASS("matrix BM on A_k = I (constant sequence)");
+}
+
+// ============================================================================
 // Test cases — original Block Wiedemann tests
 // ============================================================================
 
@@ -511,6 +628,12 @@ int main() {
     test_mksol_accumulate_zero();
     test_mksol_accumulate_xor_accumulation();
     test_mksol_accumulate_against_naive();
+
+    // P2 Stage B — Coppersmith matrix BM
+    test_matrix_bm_empty_sequence();
+    test_matrix_bm_zero_sequence();
+    test_matrix_bm_constant_sequence();
+    test_matrix_bm_powers_of_random_B();
 
     // Original BW tests
     test_scalar_bm_basic();
