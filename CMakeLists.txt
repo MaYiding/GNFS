@@ -271,18 +271,21 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_small_vector PRIVATE gnfs_util)
     add_test(NAME SmallVector COMMAND test_small_vector)
+    set_tests_properties(SmallVector PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_integer
         tests/test_integer.cpp
     )
     target_link_libraries(test_integer PRIVATE gnfs_core)
     add_test(NAME Integer COMMAND test_integer)
+    set_tests_properties(Integer PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_thread_pool
         tests/test_thread_pool.cpp
     )
     target_link_libraries(test_thread_pool PRIVATE gnfs_util Threads::Threads)
     add_test(NAME ThreadPool COMMAND test_thread_pool)
+    set_tests_properties(ThreadPool PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_logger
         tests/test_logger.cpp
@@ -296,12 +299,14 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_factor_base PRIVATE gnfs_core Threads::Threads)
     add_test(NAME FactorBase COMMAND test_factor_base)
+    set_tests_properties(FactorBase PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_special_q
         tests/test_special_q.cpp
     )
     target_link_libraries(test_special_q PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SpecialQ COMMAND test_special_q)
+    set_tests_properties(SpecialQ PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_lattice_sieve
         tests/test_lattice_sieve.cpp
@@ -315,36 +320,42 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_relation_collector PRIVATE gnfs_core Threads::Threads)
     add_test(NAME RelationCollector COMMAND test_relation_collector)
+    set_tests_properties(RelationCollector PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_sieve_basic
         tests/test_sieve_basic.cpp
     )
     target_link_libraries(test_sieve_basic PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SieveIntegration COMMAND test_sieve_basic)
+    set_tests_properties(SieveIntegration PROPERTIES LABELS "fast" TIMEOUT 60)
 
     add_executable(test_cofactor
         tests/test_cofactor.cpp
     )
     target_link_libraries(test_cofactor PRIVATE gnfs_core Threads::Threads)
     add_test(NAME Cofactor COMMAND test_cofactor)
+    set_tests_properties(Cofactor PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_squfof
         tests/test_squfof.cpp
     )
     target_link_libraries(test_squfof PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SQUFOF COMMAND test_squfof)
+    set_tests_properties(SQUFOF PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_linalg
         tests/test_linalg.cpp
     )
     target_link_libraries(test_linalg PRIVATE gnfs_core Threads::Threads)
     add_test(NAME LinearAlgebra COMMAND test_linalg)
+    set_tests_properties(LinearAlgebra PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_sqrt
         tests/test_sqrt.cpp
     )
     target_link_libraries(test_sqrt PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SquareRoot COMMAND test_sqrt)
+    set_tests_properties(SquareRoot PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_gnfs_e2e
         tests/test_gnfs_e2e.cpp
@@ -359,6 +370,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_murphy PRIVATE gnfs_core Threads::Threads)
     add_test(NAME Murphy COMMAND test_murphy)
+    set_tests_properties(Murphy PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_kleinjung
         tests/test_kleinjung.cpp
@@ -387,6 +399,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_sqrt_debug PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SqrtDebug COMMAND test_sqrt_debug)
+    set_tests_properties(SqrtDebug PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # 渐进式测试 — 支持命令行参数选择级别
     add_executable(test_gnfs_progressive
@@ -395,8 +408,8 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_gnfs_progressive PRIVATE gnfs_core Threads::Threads)
     add_test(NAME GNFS_Progressive_L1 COMMAND test_gnfs_progressive 1 1)
     add_test(NAME GNFS_Progressive_L2 COMMAND test_gnfs_progressive 2 2)
-    set_tests_properties(GNFS_Progressive_L1 PROPERTIES TIMEOUT 60)
-    set_tests_properties(GNFS_Progressive_L2 PROPERTIES TIMEOUT 120)
+    set_tests_properties(GNFS_Progressive_L1 PROPERTIES LABELS "fast" TIMEOUT 60)
+    set_tests_properties(GNFS_Progressive_L2 PROPERTIES LABELS "fast" TIMEOUT 120)
     # Level 3+ 不加入 ctest — 手动运行: ./test_gnfs_progressive 3
 
     # 参数计算器测试
@@ -405,6 +418,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_params PRIVATE gnfs_core Threads::Threads)
     add_test(NAME Params COMMAND test_params)
+    set_tests_properties(Params PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # 整系数多项式测试
     add_executable(test_int_polynomial
@@ -412,6 +426,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_int_polynomial PRIVATE gnfs_core Threads::Threads)
     add_test(NAME IntPolynomial COMMAND test_int_polynomial)
+    set_tests_properties(IntPolynomial PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # 关系过滤器测试
     add_executable(test_filter
@@ -419,6 +434,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_filter PRIVATE gnfs_core Threads::Threads)
     add_test(NAME Filter COMMAND test_filter)
+    set_tests_properties(Filter PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # 回归测试
     add_executable(test_regressions
@@ -426,6 +442,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_regressions PRIVATE gnfs_core Threads::Threads)
     add_test(NAME Regressions COMMAND test_regressions)
+    set_tests_properties(Regressions PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # PolynomialContext 单元测试
     add_executable(test_polynomial_context
@@ -433,6 +450,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_polynomial_context PRIVATE gnfs_core Threads::Threads)
     add_test(NAME PolynomialContext COMMAND test_polynomial_context)
+    set_tests_properties(PolynomialContext PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # BaseMSelector 单元测试
     add_executable(test_base_m
@@ -440,6 +458,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_base_m PRIVATE gnfs_core Threads::Threads)
     add_test(NAME BaseM COMMAND test_base_m)
+    set_tests_properties(BaseM PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # PolynomialOptimizer 单元测试
     add_executable(test_polynomial_optimizer
@@ -447,6 +466,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_polynomial_optimizer PRIVATE gnfs_core Threads::Threads)
     add_test(NAME PolynomialOptimizer COMMAND test_polynomial_optimizer)
+    set_tests_properties(PolynomialOptimizer PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # ClassGroup 单元测试
     add_executable(test_class_group
@@ -454,6 +474,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_class_group PRIVATE gnfs_core Threads::Threads)
     add_test(NAME ClassGroup COMMAND test_class_group)
+    set_tests_properties(ClassGroup PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # 边界/极端情况测试
     add_executable(test_edge_cases
@@ -461,6 +482,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_edge_cases PRIVATE gnfs_core Threads::Threads)
     add_test(NAME EdgeCases COMMAND test_edge_cases)
+    set_tests_properties(EdgeCases PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # Schirokauer degree-4 diagnostic
     add_executable(test_schirokauer_deg4
@@ -468,6 +490,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_schirokauer_deg4 PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SchirokaureDeg4 COMMAND test_schirokauer_deg4)
+    set_tests_properties(SchirokaureDeg4 PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # Schirokauer strip-ℓ math regression (instant)
     add_executable(test_schirokauer_strip
@@ -475,6 +498,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_schirokauer_strip PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SchirokauerStrip COMMAND test_schirokauer_strip)
+    set_tests_properties(SchirokauerStrip PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # 跨模块集成测试
     add_executable(test_integration
@@ -482,6 +506,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_integration PRIVATE gnfs_core Threads::Threads)
     add_test(NAME Integration COMMAND test_integration)
+    set_tests_properties(Integration PROPERTIES LABELS "fast" TIMEOUT 30)
 
     # 25-digit 性能测试
     add_executable(test_25digit
@@ -498,6 +523,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_work_stealing PRIVATE gnfs_util Threads::Threads)
     add_test(NAME WorkStealing COMMAND test_work_stealing)
+    set_tests_properties(WorkStealing PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # Line sieve 单元测试
     add_executable(test_line_sieve
@@ -505,6 +531,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_line_sieve PRIVATE gnfs_core Threads::Threads)
     add_test(NAME LineSieve COMMAND test_line_sieve)
+    set_tests_properties(LineSieve PROPERTIES LABELS "fast" TIMEOUT 30)
 
     # Bucket sieve 单元测试
     add_executable(test_bucket_sieve
@@ -512,6 +539,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_bucket_sieve PRIVATE gnfs_core Threads::Threads)
     add_test(NAME BucketSieve COMMAND test_bucket_sieve)
+    set_tests_properties(BucketSieve PROPERTIES LABELS "fast" TIMEOUT 30)
 
     # Mmap CSR Matrix 单元测试
     add_executable(test_mmap_csr
@@ -519,6 +547,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_mmap_csr PRIVATE gnfs_core Threads::Threads)
     add_test(NAME MmapCSR COMMAND test_mmap_csr)
+    set_tests_properties(MmapCSR PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # Out-of-core Relations 单元测试
     add_executable(test_ooc_relations
@@ -526,6 +555,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_ooc_relations PRIVATE gnfs_core Threads::Threads)
     add_test(NAME OOCRelations COMMAND test_ooc_relations)
+    set_tests_properties(OOCRelations PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # Block Wiedemann 单元测试
     add_executable(test_block_wiedemann
@@ -533,6 +563,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_block_wiedemann PRIVATE gnfs_core Threads::Threads)
     add_test(NAME BlockWiedemann COMMAND test_block_wiedemann)
+    set_tests_properties(BlockWiedemann PROPERTIES LABELS "fast" TIMEOUT 30)
 
     # 回归门禁测试 (10/15/20/25-digit full pipeline)
     add_executable(test_regression_gate
@@ -548,6 +579,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_api PRIVATE gnfs_core Threads::Threads)
     add_test(NAME API COMMAND test_api)
+    set_tests_properties(API PROPERTIES LABELS "instant" TIMEOUT 60)
 
     # Method selection 测试
     add_executable(test_method_selection
@@ -555,6 +587,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_method_selection PRIVATE gnfs_core Threads::Threads)
     add_test(NAME MethodSelection COMMAND test_method_selection)
+    set_tests_properties(MethodSelection PROPERTIES LABELS "instant" TIMEOUT 60)
 
     # i18n 测试
     add_executable(test_i18n
@@ -562,6 +595,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_i18n PRIVATE gnfs_core Threads::Threads)
     add_test(NAME I18N COMMAND test_i18n)
+    set_tests_properties(I18N PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # SIQS (Self-Initializing Quadratic Sieve) 测试
     add_executable(test_siqs
@@ -569,6 +603,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_siqs PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SIQS COMMAND test_siqs)
+    set_tests_properties(SIQS PROPERTIES LABELS "fast" TIMEOUT 60)
 
     # GNFS 流水线基准测试 (20-35 digit)
     add_executable(test_gnfs_bench
