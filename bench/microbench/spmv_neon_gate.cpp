@@ -137,6 +137,124 @@ void spmv_transpose_64(const CSRMatrix& M, const uint64_t* x_data, uint64_t* y_d
     });
 }
 
+// ============================================================================
+// SpMV512 — 4× NEON unrolled, 模拟 SVL=512 streaming SVE2.
+// ============================================================================
+// macOS 26.5 user-space SME streaming mode 在 M5 上 SIGILL (xnu lazy-trap +
+// 缺少 SME entitlement 或 OS gate 未开). 4× NEON 128-bit ops 等价于 SVE2
+// streaming load/xor/store 8 uint64 (SVL=512), 作为 SME 功能 baseline.
+//
+// 每元素 BV512 = uint64_t[8] (64 bytes, page-line aligned per 4 row-elements).
+void spmv_forward_512_neon4(const CSRMatrix& M, const uint64_t* x_data, uint64_t* y_data,
+                             gnfs::util::ThreadPool& pool) {
+    pool.parallel_for_index(0, M.num_rows(), [&](size_t i) {
+        uint64x2_t a0 = vdupq_n_u64(0), a1 = vdupq_n_u64(0),
+                   a2 = vdupq_n_u64(0), a3 = vdupq_n_u64(0);
+        const uint32_t* p_end  = M.row_end(i);
+        const uint32_t* p_pref = (p_end - M.row_begin(i) > SPMV_PREFETCH_AHEAD)
+                                     ? p_end - SPMV_PREFETCH_AHEAD
+                                     : M.row_begin(i);
+        const uint32_t* p = M.row_begin(i);
+        for (; p < p_pref; ++p) {
+            __builtin_prefetch(&x_data[*(p + SPMV_PREFETCH_AHEAD) * 8], 0, 0);
+            const uint64_t* xp = &x_data[*p * 8];
+            a0 = veorq_u64(a0, vld1q_u64(xp));
+            a1 = veorq_u64(a1, vld1q_u64(xp + 2));
+            a2 = veorq_u64(a2, vld1q_u64(xp + 4));
+            a3 = veorq_u64(a3, vld1q_u64(xp + 6));
+        }
+        for (; p < p_end; ++p) {
+            const uint64_t* xp = &x_data[*p * 8];
+            a0 = veorq_u64(a0, vld1q_u64(xp));
+            a1 = veorq_u64(a1, vld1q_u64(xp + 2));
+            a2 = veorq_u64(a2, vld1q_u64(xp + 4));
+            a3 = veorq_u64(a3, vld1q_u64(xp + 6));
+        }
+        uint64_t* yp = &y_data[i * 8];
+        vst1q_u64(yp,     a0);
+        vst1q_u64(yp + 2, a1);
+        vst1q_u64(yp + 4, a2);
+        vst1q_u64(yp + 6, a3);
+    });
+}
+
+struct SpmvLocals512 {
+    std::vector<std::vector<uint64_t>> locals;  // 8*n per thread
+    void ensure(size_t T, size_t n) {
+        if (locals.size() < T) locals.resize(T);
+        for (size_t t = 0; t < T; ++t) {
+            if (locals[t].size() < 8*n) locals[t].resize(8*n);
+            std::fill(locals[t].begin(), locals[t].begin() + 8*n, 0);
+        }
+    }
+};
+
+void spmv_transpose_512_neon4(const CSRMatrix& M, const uint64_t* x_data, uint64_t* y_data,
+                               gnfs::util::ThreadPool& pool) {
+    const size_t m = M.num_rows();
+    const size_t n = M.num_cols();
+    const size_t T = pool.num_threads();
+    const size_t chunk = (m + T - 1) / T;
+    static SpmvLocals512 scratch;
+    scratch.ensure(T, n);
+    auto& locals = scratch.locals;
+    std::vector<std::future<void>> futures;
+    size_t T_used = 0;
+    for (size_t t = 0; t < T; ++t) {
+        size_t start = t * chunk;
+        size_t end_row = std::min(start + chunk, m);
+        if (start >= m) break;
+        T_used = t + 1;
+        futures.push_back(pool.submit([&M, x_data, &locals, t, start, end_row]() {
+            auto& local = locals[t];
+            for (size_t i = start; i < end_row; ++i) {
+                const uint64_t* xp = &x_data[i * 8];
+                uint64x2_t xi0 = vld1q_u64(xp),     xi1 = vld1q_u64(xp + 2);
+                uint64x2_t xi2 = vld1q_u64(xp + 4), xi3 = vld1q_u64(xp + 6);
+                uint64x2_t orall = vorrq_u64(vorrq_u64(xi0, xi1), vorrq_u64(xi2, xi3));
+                if (vgetq_lane_u64(orall, 0) == 0 && vgetq_lane_u64(orall, 1) == 0) continue;
+                const uint32_t* p_end  = M.row_end(i);
+                const uint32_t* p_pref = (p_end - M.row_begin(i) > SPMV_PREFETCH_AHEAD)
+                                             ? p_end - SPMV_PREFETCH_AHEAD
+                                             : M.row_begin(i);
+                const uint32_t* p = M.row_begin(i);
+                for (; p < p_pref; ++p) {
+                    __builtin_prefetch(&local[*(p + SPMV_PREFETCH_AHEAD) * 8], 0, 0);
+                    uint64_t* lp = &local[*p * 8];
+                    vst1q_u64(lp,     veorq_u64(vld1q_u64(lp),     xi0));
+                    vst1q_u64(lp + 2, veorq_u64(vld1q_u64(lp + 2), xi1));
+                    vst1q_u64(lp + 4, veorq_u64(vld1q_u64(lp + 4), xi2));
+                    vst1q_u64(lp + 6, veorq_u64(vld1q_u64(lp + 6), xi3));
+                }
+                for (; p < p_end; ++p) {
+                    uint64_t* lp = &local[*p * 8];
+                    vst1q_u64(lp,     veorq_u64(vld1q_u64(lp),     xi0));
+                    vst1q_u64(lp + 2, veorq_u64(vld1q_u64(lp + 2), xi1));
+                    vst1q_u64(lp + 4, veorq_u64(vld1q_u64(lp + 4), xi2));
+                    vst1q_u64(lp + 6, veorq_u64(vld1q_u64(lp + 6), xi3));
+                }
+            }
+        }));
+    }
+    for (auto& f : futures) f.get();
+    pool.parallel_for_index(0, n, [y_data, &locals, T_used](size_t j) {
+        uint64x2_t v0 = vdupq_n_u64(0), v1 = vdupq_n_u64(0),
+                   v2 = vdupq_n_u64(0), v3 = vdupq_n_u64(0);
+        for (size_t t = 0; t < T_used; ++t) {
+            const uint64_t* lp = &locals[t][j * 8];
+            v0 = veorq_u64(v0, vld1q_u64(lp));
+            v1 = veorq_u64(v1, vld1q_u64(lp + 2));
+            v2 = veorq_u64(v2, vld1q_u64(lp + 4));
+            v3 = veorq_u64(v3, vld1q_u64(lp + 6));
+        }
+        uint64_t* yp = &y_data[j * 8];
+        vst1q_u64(yp,     v0);
+        vst1q_u64(yp + 2, v1);
+        vst1q_u64(yp + 4, v2);
+        vst1q_u64(yp + 6, v3);
+    });
+}
+
 // NEON transpose (BV128).
 void spmv_transpose_128_neon(const CSRMatrix& M, const uint64_t* x_data, uint64_t* y_data,
                               gnfs::util::ThreadPool& pool) {
@@ -253,6 +371,28 @@ double bench_transpose_128(const CSRMatrix& M, std::vector<uint64_t>& x, std::ve
     return std::chrono::duration<double, std::milli>(t1 - t0).count();
 }
 
+double bench_forward_512(const CSRMatrix& M, std::vector<uint64_t>& x, std::vector<uint64_t>& y,
+                         gnfs::util::ThreadPool& pool, int reps) {
+    auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < reps; ++i) {
+        spmv_forward_512_neon4(M, x.data(), y.data(), pool);
+        std::swap(x, y);
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    return std::chrono::duration<double, std::milli>(t1 - t0).count();
+}
+
+double bench_transpose_512(const CSRMatrix& M, std::vector<uint64_t>& x, std::vector<uint64_t>& y,
+                            gnfs::util::ThreadPool& pool, int reps) {
+    auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < reps; ++i) {
+        spmv_transpose_512_neon4(M, x.data(), y.data(), pool);
+        std::swap(x, y);
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    return std::chrono::duration<double, std::milli>(t1 - t0).count();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -296,6 +436,14 @@ int main(int argc, char** argv) {
     {
         std::mt19937_64 rng(0xDEADBEEFull ^ seed ^ 0xFEEDFACEull);
         for (auto& v : x128) v = rng();
+    }
+
+    // BV512 buffers (8 uint64 per element, total = 8 * max(m, nc))
+    const size_t L512 = 8 * L64;
+    std::vector<uint64_t> x512(L512, 0), y512(L512, 0);
+    {
+        std::mt19937_64 rng(0xDEADBEEFull ^ seed ^ 0xABCD1234ull);
+        for (auto& v : x512) v = rng();
     }
 
     // Cross-validate: NEON128 应该等价于两次独立 scalar64.
@@ -343,13 +491,50 @@ int main(int argc, char** argv) {
         }
         std::cerr << (ok_trn ? "transpose cross-validate: PASS\n" : "transpose cross-validate: FAIL\n");
         if (!ok_trn) return 2;
+
+        // SpMV512 forward cross-validate: 4× independent inputs interleaved
+        std::vector<uint64_t> x4[4], y4[4];
+        for (int k = 0; k < 4; ++k) {
+            x4[k].assign(L64, 0);
+            y4[k].assign(L64, 0);
+            std::mt19937_64 r(0xC0DE1234ull + 0x10ull * k);
+            for (auto& v : x4[k]) v = r();
+            spmv_forward_64(csr, x4[k].data(), y4[k].data(), pool);
+        }
+        std::vector<uint64_t> xtest512(L512, 0), ytest512(L512, 0);
+        for (size_t i = 0; i < L64; ++i) {
+            xtest512[8*i + 0] = x4[0][i]; xtest512[8*i + 1] = 0;  // pair k=0: (x4[0], 0)
+            xtest512[8*i + 2] = x4[1][i]; xtest512[8*i + 3] = 0;  // pair k=1
+            xtest512[8*i + 4] = x4[2][i]; xtest512[8*i + 5] = 0;
+            xtest512[8*i + 6] = x4[3][i]; xtest512[8*i + 7] = 0;
+        }
+        spmv_forward_512_neon4(csr, xtest512.data(), ytest512.data(), pool);
+        bool ok512 = true;
+        for (size_t i = 0; i < m; ++i) {
+            uint64_t expect[4] = {y4[0][i], y4[1][i], y4[2][i], y4[3][i]};
+            uint64_t got[4]    = {ytest512[8*i + 0], ytest512[8*i + 2], ytest512[8*i + 4], ytest512[8*i + 6]};
+            uint64_t hi[4]     = {ytest512[8*i + 1], ytest512[8*i + 3], ytest512[8*i + 5], ytest512[8*i + 7]};
+            for (int k = 0; k < 4; ++k) {
+                if (got[k] != expect[k] || hi[k] != 0) {
+                    std::cerr << "FORWARD512 MISMATCH i=" << i << " k=" << k
+                              << " got=" << got[k] << " expect=" << expect[k]
+                              << " hi=" << hi[k] << "\n";
+                    ok512 = false; break;
+                }
+            }
+            if (!ok512) break;
+        }
+        std::cerr << (ok512 ? "forward512 cross-validate: PASS\n" : "forward512 cross-validate: FAIL\n");
+        if (!ok512) return 2;
     }
 
     // Warm up
     bench_forward_64(csr, x64, y64, pool, 3);
     bench_forward_128(csr, x128, y128, pool, 3);
+    bench_forward_512(csr, x512, y512, pool, 3);
     bench_transpose_64(csr, x64, y64, pool, 3);
     bench_transpose_128(csr, x128, y128, pool, 3);
+    bench_transpose_512(csr, x512, y512, pool, 3);
 
     auto run3 = [&](auto fn) {
         double best = 1e18;
@@ -365,28 +550,42 @@ int main(int argc, char** argv) {
     double fwd64 = run3([&] { return bench_forward_64(csr, x64, y64, pool, reps); });
     std::cerr << "\n=== forward: NEON SpMV128 ===\n";
     double fwd128 = run3([&] { return bench_forward_128(csr, x128, y128, pool, reps); });
+    std::cerr << "\n=== forward: 4xNEON SpMV512 (SME baseline) ===\n";
+    double fwd512 = run3([&] { return bench_forward_512(csr, x512, y512, pool, reps); });
 
     std::cerr << "\n=== transpose: scalar SpMV64 ===\n";
     double trn64 = run3([&] { return bench_transpose_64(csr, x64, y64, pool, reps); });
     std::cerr << "\n=== transpose: NEON SpMV128 ===\n";
     double trn128 = run3([&] { return bench_transpose_128(csr, x128, y128, pool, reps); });
+    std::cerr << "\n=== transpose: 4xNEON SpMV512 (SME baseline) ===\n";
+    double trn512 = run3([&] { return bench_transpose_512(csr, x512, y512, pool, reps); });
 
-    double fwd_perbit = 2.0 * fwd64 / fwd128;
-    double trn_perbit = 2.0 * trn64 / trn128;
-    // bw_spmv_B = transpose + forward
+    double fwd_perbit_128 = 2.0 * fwd64 / fwd128;
+    double trn_perbit_128 = 2.0 * trn64 / trn128;
+    double fwd_perbit_512 = 8.0 * fwd64 / fwd512;
+    double trn_perbit_512 = 8.0 * trn64 / trn512;
     double B64  = fwd64 + trn64;
     double B128 = fwd128 + trn128;
-    double B_perbit = 2.0 * B64 / B128;
+    double B512 = fwd512 + trn512;
+    double B_perbit_128 = 2.0 * B64 / B128;
+    double B_perbit_512 = 8.0 * B64 / B512;
 
-    uint64_t sink64 = 0, sink128 = 0;
-    for (auto v : y64) sink64 ^= v;
+    uint64_t sink64 = 0, sink128 = 0, sink512 = 0;
+    for (auto v : y64)  sink64 ^= v;
     for (auto v : y128) sink128 ^= v;
+    for (auto v : y512) sink512 ^= v;
 
     std::cout << "\n[SpMV Gate] m=" << m << " n=" << nc << " reps=" << reps
               << " threads=" << pool.num_threads() << "\n";
-    std::cout << "  forward   64=" << fwd64  << "ms  128=" << fwd128 << "ms  per-bit=" << fwd_perbit << "x\n";
-    std::cout << "  transpose 64=" << trn64  << "ms  128=" << trn128 << "ms  per-bit=" << trn_perbit << "x\n";
-    std::cout << "  bw_spmv_B 64=" << B64    << "ms  128=" << B128   << "ms  per-bit=" << B_perbit   << "x  (gate >= 1.33)\n";
-    std::cout << "  sinks: " << sink64 << " " << sink128 << "\n";
+    std::cout << "  forward   64=" << fwd64  << "  128=" << fwd128 << "  512=" << fwd512
+              << " ms (per-bit speedup: 128=" << fwd_perbit_128
+              << "x, 512=" << fwd_perbit_512 << "x)\n";
+    std::cout << "  transpose 64=" << trn64  << "  128=" << trn128 << "  512=" << trn512
+              << " ms (per-bit speedup: 128=" << trn_perbit_128
+              << "x, 512=" << trn_perbit_512 << "x)\n";
+    std::cout << "  bw_spmv_B 64=" << B64    << "  128=" << B128   << "  512=" << B512
+              << " ms (per-bit speedup: 128=" << B_perbit_128
+              << "x, 512=" << B_perbit_512 << "x)\n";
+    std::cout << "  sinks: " << sink64 << " " << sink128 << " " << sink512 << "\n";
     return 0;
 }
