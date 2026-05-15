@@ -961,7 +961,13 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
 
 ### P3 — 长期/低优先
 
-- E-core 后台分流（QoS Class 注入 ThreadPool）
+- ~~E-core 后台分流（QoS Class 注入 ThreadPool）~~ ✅ **已关闭 2026-05-15**
+  - **Stage B ThreadPool QoS 注入** (commit `849e453`): `QoSClass enum` + `set_current_thread_qos()` helper + `ThreadPool` ctor `qos` 参数 (默认 `UserInitiated`). `worker_loop` 入口 set QoS. macOS only, Linux no-op.
+  - **Stage C main + bench QoS** (commit `0f12535`): `src/cli/main.cpp` 入口 + 3 个 bench microbench 入口 set `UserInitiated`. doctrine §7.2 第 3 条 落地证据.
+  - **Stage D Microbench** (commit `34ea549`): `ecore_qos_gate.cpp` 4-trial 对照. 278K × 10K matrix, scalar 64-bit SpMV. **Key data**: `10-BG / 10-USER = 5.18×` (P-core hint 极限收益, worker 漂移 E-core 时基准失真 5×); `10-DEF ≈ 10-USER` (macOS 已隐式给前台 CLI USER QoS).
+  - **决策**: 实测 wall delta ≈ 0 (macOS default 已 OK), 但显式 set 主要价值是 (1) 跨平台显式化, (2) 防 nohup/daemon 退化 (后台 mode QoS 降到 UTILITY 会触发 5× 退化), (3) `QoSClass::Background` opt-in 给真后台任务用.
+  - 报告: [`bench/results/2026-05-15-ecore-qos.md`](../../bench/results/2026-05-15-ecore-qos.md)
+  - **教训**: doctrine 铁律 5 (measurement-first) 又一次救场 — 看到 `grep qos 0` 就判断"必改"过激, 实测 10-DEF ≈ 10-USER 表明改动是预防性. 极限对照 (10-BG) 比正常情况对照 (10-DEF) 更有信号 — 5× 极限 boundary 才暴露真实风险.
 - 内存使用减半（peak RAM 优化）
 - 跨平台 Linux 同等优化（CI runners）
 
