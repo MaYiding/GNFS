@@ -633,6 +633,25 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Stress COMMAND test_stress 1 1)
     set_tests_properties(Stress PROPERTIES DISABLED TRUE
         LABELS "stress" TIMEOUT 43200)
+
+    # ────────────────────────────────────────────────────────────
+    # Sanitizer-aware test timeout scaling — sanitizers (ASAN/UBSAN/TSAN/MSAN)
+    # 在运行时 instrument 每个内存访问/对齐检查, 通常使测试运行慢 5-10×.
+    # set_tests_properties TIMEOUT 是 hard limit (优先于 ctest --timeout), 因此
+    # sanitizer CI 下必须放大 TIMEOUT 否则 instant/fast 测试会被 spurious 超时.
+    # ────────────────────────────────────────────────────────────
+    if(CMAKE_CXX_FLAGS MATCHES "fsanitize=(address|thread|memory|undefined|leak)")
+        set(_GNFS_SAN_MULT 10)
+        message(STATUS "Sanitizer detected — multiplying test TIMEOUTs by ${_GNFS_SAN_MULT}")
+        get_property(_all_tests DIRECTORY PROPERTY TESTS)
+        foreach(_tn ${_all_tests})
+            get_test_property(${_tn} TIMEOUT _curr_to)
+            if(_curr_to AND NOT _curr_to STREQUAL "NOTFOUND")
+                math(EXPR _new_to "${_curr_to} * ${_GNFS_SAN_MULT}")
+                set_tests_properties(${_tn} PROPERTIES TIMEOUT ${_new_to})
+            endif()
+        endforeach()
+    endif()
 endif()
 
 # ============================================================
