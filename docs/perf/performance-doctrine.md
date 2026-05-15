@@ -951,9 +951,13 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
   - 路径选择: env `GNFS_BW_ALGORITHM=scalar` 强制旧路径用于调试/校验; 默认 block, 失败自动 fallback scalar
   - 限制: matrix BM 仍是 quadratic O(L²·b²·W), n > 500K 后需 Thomé subquadratic lingen (P2 后续)
   - 报告: `bench/results/2026-05-14-blockwiedemann-block-bm.md`
-- **SME 探索性应用** (BL/BW 64×N SpMV)
-  - 高风险高回报；先做 NEON 极限版作为对照
-  - 需要专项实验 + 小规模验证
+- ✅ **SME 探索性应用** (BL/BW 64×N SpMV) — **关闭 2026-05-15** (isolated micro-bench)
+  - **Stage A baseline**: per-phase chrono timing 加入 `block_wiedemann_block_solve` (commit `989d9b4`). 278K×10K Release: Phase 1 Krylov 2620ms (63%), Phase 2 BM 308ms (7%), Phase 3 mksol 1186ms (28%). sample attribution: bw_spmv_B 占 >85% 总 wall — hot path 确认.
+  - **Stage B NEON 128 isolated**: `bench/microbench/spmv_neon_gate.cpp` (commit `1c92212`). BlockVector128 = uint64_t[2] interleaved, veorq_u64 128-bit XOR + prefetch + cross-validate. **per-bit speedup**: forward 1.73×, transpose 1.30×, **bw_spmv_B 1.47×**.
+  - **Stage C SME baseline (4×NEON unroll SVL=512)**: commit `1624c13`. 真 SME streaming mode 在 macOS 26.5 user-space SIGILL (xnu lazy-trap + SME entitlement gate 未开). 用 4× NEON 128-bit 等效 SVE2 streaming load 8 uint64 (SVL=512). **per-bit speedup**: forward 4.33×, transpose 2.83×, **bw_spmv_B 3.37×**.
+  - **决策**: 不集成入 BW pipeline. 完整 BV128 BW pipeline 工程量 ~1150 行 / 15 commits 预期 1.30× 总 BW 加速; 真 SME (若 macOS gate 打开) 预期 2.86× 总加速. doctrine 措辞"专项实验 + 小规模验证"对应 isolated micro-bench, 完整集成移入 BACKLOG.
+  - 报告: [`bench/results/2026-05-15-bw-neon-sme.md`](../../bench/results/2026-05-15-bw-neon-sme.md)
+  - **教训**: doctrine 铁律 5 (measurement-first) 反向应用 — 完整 BV128 改造前, isolated SpMV gate 给出准确 per-bit speedup 决策路径短了 ~15 commits. macOS 与 Linux SME 兼容裂痕: 跨平台代码必须有 fallback (4×NEON unroll = portable SME 等效).
 
 ### P3 — 长期/低优先
 
