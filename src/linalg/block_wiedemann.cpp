@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <climits>
 #include <cstdint>
 #include <cstdlib>
@@ -614,6 +615,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
     }
 
     // ── Phase 1: Krylov sequence A_k = X^T · V_k ──
+    auto phase_start = std::chrono::steady_clock::now();
     std::cout << "  [BW-block] Phase 1: Krylov (L=" << L << ")..." << std::flush;
     std::vector<DenseGF2_64x64> A_seq(L);
 
@@ -627,14 +629,20 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
             std::swap(V.data, Vnext.data);
         }
     }
-    std::cout << " done" << std::endl;
+    double phase1_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - phase_start).count();
+    std::cout << " done (" << phase1_ms << " ms)" << std::endl;
 
     // ── Phase 2: Matrix Berlekamp-Massey ──
+    phase_start = std::chrono::steady_clock::now();
     std::cout << "  [BW-block] Phase 2: matrix BM..." << std::flush;
     auto F = matrix_berlekamp_massey(A_seq, n);
     const int valid_count = __builtin_popcountll(F.valid_mask);
     const int max_deg = static_cast<int>(F.poly.size()) - 1;
-    std::cout << " " << valid_count << " valid cols, max_deg=" << max_deg << std::endl;
+    double phase2_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - phase_start).count();
+    std::cout << " " << valid_count << " valid cols, max_deg=" << max_deg
+              << " (" << phase2_ms << " ms)" << std::endl;
 
     if (F.valid_mask == 0 || max_deg < 0) {
         std::cerr << "  [BW-block] No valid generator — falling through" << std::endl;
@@ -649,6 +657,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
     // Block analog: w_j = sum_k V_k · F_{D_j - k}[*, j], i.e., per column j,
     // use F's coefficient at degree (D_j - k) at Krylov step k. Combine all
     // columns into one m×64 accumulator block.
+    phase_start = std::chrono::steady_clock::now();
     std::cout << "  [BW-block] Phase 3: block mksol (max_deg=" << max_deg
               << ")..." << std::flush;
 
@@ -686,7 +695,9 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
             std::swap(V.data, Vnext.data);
         }
     }
-    std::cout << " done" << std::endl;
+    double phase3_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - phase_start).count();
+    std::cout << " done (" << phase3_ms << " ms)" << std::endl;
 
     // ── Verify each candidate column of accumulator ──
     std::vector<std::vector<bool>> deps;
