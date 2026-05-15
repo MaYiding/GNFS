@@ -968,7 +968,26 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
   - **决策**: 实测 wall delta ≈ 0 (macOS default 已 OK), 但显式 set 主要价值是 (1) 跨平台显式化, (2) 防 nohup/daemon 退化 (后台 mode QoS 降到 UTILITY 会触发 5× 退化), (3) `QoSClass::Background` opt-in 给真后台任务用.
   - 报告: [`bench/results/2026-05-15-ecore-qos.md`](../../bench/results/2026-05-15-ecore-qos.md)
   - **教训**: doctrine 铁律 5 (measurement-first) 又一次救场 — 看到 `grep qos 0` 就判断"必改"过激, 实测 10-DEF ≈ 10-USER 表明改动是预防性. 极限对照 (10-BG) 比正常情况对照 (10-DEF) 更有信号 — 5× 极限 boundary 才暴露真实风险.
-- 内存使用减半（peak RAM 优化） — *50-digit RAM baseline 进行中*
+- ~~内存使用减半（peak RAM 优化）~~ ✅ **已评估 2026-05-16 — deferred-by-data** (P3 第 2 条)
+  - **Baseline 测量** (`/usr/bin/time -l ./test_stress 1 1`, 50-digit 164-bit, M5 16 GB):
+    - max RSS: **2.08 GiB** (13.0% of 16 GB)
+    - peak memory footprint: 2.63 GiB (16.4%)
+    - 0 swaps, 93 page faults (well within RAM)
+    - real 7142s, user 30463s (4.27× parallelism)
+  - **Polling vs `time -l` 教训**: 手动 ps RSS polling (60s 间隔) 观察 peak 634 MB,
+    远低于 `time -l` 报告的 2.08 GiB. peak 在 phase transition (Phase 4 trim 或 Phase 5
+    matrix construct) sub-poll window 闪现. `time -l` 是权威, polling 仅看长稳态.
+  - **决策**: 50-digit 不是 RAM 瓶颈. 13% memory utilization 实施 "减半" 对 wall time
+    0 影响 (无 swap). P3-2 实施触发条件 = 60+digit baseline RSS > 8 GiB (50% memory).
+    当前 60-digit (`test_stress 1 2`) hours+ 未实测, 触发条件未达 → deferred.
+  - 候选 hot spots (deferred follow-up, 触发后启动):
+    1. CSR in-place transpose (BL/BW path) — 节省 ~30% linalg RAM
+    2. RelationCollector OOC 集成 (已有 OOCRelationStore 基础设施) — 节省 ~40% phase 4
+    3. BW Krylov sequence mmap (已有 MmapCSRMatrix 基础设施) — 节省 ~10% phase 5
+  - 报告: [`bench/results/2026-05-16-50digit-ram-baseline.md`](../../bench/results/2026-05-16-50digit-ram-baseline.md)
+  - **教训**: doctrine "减半" 的意义随 size 改变. 50-digit 减半 wall 0 影响; 60+digit
+    才是 trigger size. measurement-first 又一次救场 — P3 优先级标"低"但听起来应实施,
+    实测显示直接 defer 才对.
 - ~~跨平台 Linux 同等优化（CI runners）~~ ✅ **已关闭 2026-05-15** (P3 第 3 条)
   - **Audit**: 最近 15 次 main CI run 全 PASS (ubuntu-latest + macos-latest matrix). 3 workflow: CI (build + ctest, ~4min), Sanitizers ASAN+UBSAN+TSAN (~5min ubuntu), CodeQL (~7min ubuntu). 已有 `--label-exclude "slow|heavy|stress"` 排除长测试.
   - **发现 Parity Gap**: CMakeLists.txt 46 个 `add_test` 仅 9 个有 `LABELS`, 其他 37 个无 label → `ctest -L instant`/`ctest -L fast` tier-based selection 工具链不可用, 与 `scripts/test.sh` TEST_TIER 系统脱钩. CLAUDE.md doctrine 明确要求 "新增测试必须打 LABELS, tier 与 scripts/test.sh TEST_TIER 保持一致" — 这是 doctrine compliance gap 而非 CI runtime 问题 (无 label 默认会跑, 所以 CI 实际行为正确).
