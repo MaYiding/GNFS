@@ -14,6 +14,7 @@
 #include <gnfs/api/progress.hpp>
 #include <gnfs/api/result.hpp>
 #include <gnfs/core/integer.hpp>
+#include <gnfs/util/thread_pool.hpp>
 
 #include <algorithm>
 #include <cstdio>
@@ -548,6 +549,10 @@ static void run_repl() {
 // ============================================================
 
 int main(int argc, char* argv[]) {
+    // P3-1 / doctrine §7.2 第 3 条: main thread hint scheduler 优先 P-core.
+    // macOS only, Linux no-op. ThreadPool worker 也会自动 set 同样 QoS.
+    gnfs::util::set_current_thread_qos(gnfs::util::QoSClass::UserInitiated);
+
     // Cross-platform init
     g_color = i18n::is_tty();
     i18n::enable_ansi_on_windows();

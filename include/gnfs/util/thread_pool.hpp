@@ -12,15 +12,52 @@
 #include <type_traits>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <pthread.h>
+#include <sys/qos.h>
+#endif
+
 namespace gnfs::util {
+
+/// P3-1 / doctrine §7.2 第 3 条 — QoS class for thread scheduling.
+/// macOS: 调度 hint 到 P-core (UserInitiated) / E-core (Background).
+/// Linux: no-op (内核调度自由).
+enum class QoSClass {
+    UserInitiated,   ///< 性能优先, hint P-core. **基准/perf 默认**.
+    Utility,         ///< 中等优先, 允许 E-core (节能).
+    Background,      ///< 后台优先, 常驻 E-core.
+    Unspecified,     ///< 不设置, 系统默认 (legacy 行为).
+};
+
+/// 设置当前线程 QoS class (静态 helper, main thread + worker 都用).
+/// macOS: 调用 pthread_set_qos_class_self_np.
+/// Linux: no-op.
+inline void set_current_thread_qos(QoSClass qos) noexcept {
+#if defined(__APPLE__)
+    qos_class_t cls;
+    switch (qos) {
+        case QoSClass::UserInitiated: cls = QOS_CLASS_USER_INITIATED; break;
+        case QoSClass::Utility:       cls = QOS_CLASS_UTILITY;        break;
+        case QoSClass::Background:    cls = QOS_CLASS_BACKGROUND;     break;
+        case QoSClass::Unspecified:   return;
+    }
+    pthread_set_qos_class_self_np(cls, 0);
+#else
+    (void)qos;
+#endif
+}
 
 /// 高性能线程池
 class ThreadPool {
 public:
     /// 构造函数
     /// @param num_threads 线程数量，0 表示使用硬件并发数
-    explicit ThreadPool(uint32_t num_threads = 0)
-        : stop_(false), pending_(0), queue_size_(0) {
+    /// @param qos worker thread QoS class (macOS only, Linux no-op).
+    ///            默认 UserInitiated — hint scheduler 优先 P-core.
+    ///            doctrine §7.2 第 3 条: 基准用 P-core 强制.
+    explicit ThreadPool(uint32_t num_threads = 0,
+                        QoSClass qos = QoSClass::UserInitiated)
+        : qos_(qos), stop_(false), pending_(0), queue_size_(0) {
         if (num_threads == 0) {
             num_threads = std::thread::hardware_concurrency();
             if (num_threads == 0) {
@@ -223,6 +260,10 @@ private:
     }
 
     void worker_loop() {
+        // P3-1: 每个 worker thread 启动时 set QoS class. macOS hint scheduler
+        // 优先 P-core; Linux no-op. doctrine §7.2 第 3 条.
+        set_current_thread_qos(qos_);
+
         // P1.B-1c: spin-then-cv. Worker spins atomic-load on queue_size_ for a
         // short budget before falling back to cv_.wait. Covers Gaussian/SpMV
         // burst-submit (next wave arrives in μs of wait_all) without burning
@@ -297,6 +338,10 @@ private:
             spin = 0;
         }
     }
+
+    // P3-1: QoS class for worker threads (set in worker_loop entry).
+    // 放在最前 const-after-ctor, 但因构造函数 init list 顺序限制需在 stop_ 之前.
+    QoSClass qos_;
 
     std::vector<std::thread> workers_;
     std::queue<std::function<void()>> tasks_;

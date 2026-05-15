@@ -8,6 +8,7 @@
 
 #include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
+#include <gnfs/util/thread_pool.hpp>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -34,6 +35,9 @@ static SparseMatrix build_test_matrix(size_t base, size_t cols, size_t extra, ui
 }
 
 int main(int argc, char* argv[]) {
+    // P3-1 / doctrine §7.2 第 3 条: bench process P-core 强制.
+    gnfs::util::set_current_thread_qos(gnfs::util::QoSClass::UserInitiated);
+
     size_t m_base = 62000;
     size_t n = 10000;
     uint32_t seed = 0xCAFE;
