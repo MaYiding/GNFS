@@ -911,10 +911,26 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
 - **报告**: [`bench/results/2026-05-14-lattice-sieve-align-null.md`](../../bench/results/2026-05-14-lattice-sieve-align-null.md)
 - **教训扩展**: doctrine 铁律 5 在此场景的延伸 — **测量精度 < 改善幅度时，应放弃 micro-optimization**。`test_factor_with_kleinjung` wall 噪声 33% (50-67s)，远超 P1.B-2 即使 lucky 给的 1-2% 改善幅度，**不可分辨即不可优化**
 
-#### P1.B-3: TLBMissRate 60% 调查（仍排程，calibration 任务）
+#### P1.B-3: TLBMissRate 60% 调查 ✅ Calibration PASS, follow-up not actionable (2026-05-15)
 
-- 先在 `test_integer` 等纯计算 benchmark 校准 `L1D_TLB_MISS` 语义
-- 若真实 → `madvise(MADV_HUGEPAGE)` for relation buffer + 线性代数矩阵
+**Calibration micro-bench** (`bench/microbench/tlb_calibration.cpp`, commit `666c01b`) sweep `bytes` × `access pattern` confirmed `L1D_TLB_MISS` PMU event on M5 is **well-calibrated**:
+
+| Case | TLB_MISS/inst | 解释 |
+|---|---:|---|
+| small_seq (1 MB / 64 pages, in dTLB) | 0.47% | baseline 噪声 |
+| small_rand (1 MB / 64 pages, in dTLB) | 0.28% | random in dTLB 仍 0 |
+| large_seq (256 MB / 16384 pages, out) | **12.45%** | PTE prefetch 部分覆盖 |
+| large_rand (256 MB / 16384 pages, out) | **32.55%** | 几乎每访问必 miss |
+
+50-100× rate 跳变, random > seq 符合 ARMv9 TLB 行为。`TLB/mem = 246%` (large_rand) 反映 speculative path 多次 PTE fetch。完整报告: [`bench/results/2026-05-15-tlb-calibration.md`](../../bench/results/2026-05-15-tlb-calibration.md).
+
+**结论**:
+- ✅ P1.B-1b -8.93pp TLB rate 收益是真的, 不是 PMU 误标
+- ❌ **macOS arm64 user-space super-pages 无 API** (VM_FLAGS_SUPERPAGE_SIZE_ANY x86_64-only). 原计划 `madvise(MADV_HUGEPAGE)` 路线作废 (Linux-only)
+- 🔄 Follow-up directions (报告 §5):
+  - 方向 1: BW SpMV prefetch 在 P2 block path 后已激活 (大矩阵 ≥4GiB) — 不需新代码, doctrine 状态升级
+  - 方向 2: linalg pivot order TLB locality — 结构性改动, 潜在收益 < 2%, 风险高, **deferred 至下一轮 sample attribution**
+  - 方向 3: 已废
 
 **P1.B 不做的事**:
 - NEON 全面化 (SIMDDensity 5.85% 偏低，但 CoreBound **未触发** — 内存才是瓶颈，不是执行宽度)。NEON 推迟到 P1.C，仅当 MemBound 修复后重测仍有 backend stall > 30%
