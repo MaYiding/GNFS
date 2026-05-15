@@ -968,8 +968,15 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
   - **决策**: 实测 wall delta ≈ 0 (macOS default 已 OK), 但显式 set 主要价值是 (1) 跨平台显式化, (2) 防 nohup/daemon 退化 (后台 mode QoS 降到 UTILITY 会触发 5× 退化), (3) `QoSClass::Background` opt-in 给真后台任务用.
   - 报告: [`bench/results/2026-05-15-ecore-qos.md`](../../bench/results/2026-05-15-ecore-qos.md)
   - **教训**: doctrine 铁律 5 (measurement-first) 又一次救场 — 看到 `grep qos 0` 就判断"必改"过激, 实测 10-DEF ≈ 10-USER 表明改动是预防性. 极限对照 (10-BG) 比正常情况对照 (10-DEF) 更有信号 — 5× 极限 boundary 才暴露真实风险.
-- 内存使用减半（peak RAM 优化）
-- 跨平台 Linux 同等优化（CI runners）
+- 内存使用减半（peak RAM 优化） — *50-digit RAM baseline 进行中*
+- ~~跨平台 Linux 同等优化（CI runners）~~ ✅ **已关闭 2026-05-15** (P3 第 3 条)
+  - **Audit**: 最近 15 次 main CI run 全 PASS (ubuntu-latest + macos-latest matrix). 3 workflow: CI (build + ctest, ~4min), Sanitizers ASAN+UBSAN+TSAN (~5min ubuntu), CodeQL (~7min ubuntu). 已有 `--label-exclude "slow|heavy|stress"` 排除长测试.
+  - **发现 Parity Gap**: CMakeLists.txt 46 个 `add_test` 仅 9 个有 `LABELS`, 其他 37 个无 label → `ctest -L instant`/`ctest -L fast` tier-based selection 工具链不可用, 与 `scripts/test.sh` TEST_TIER 系统脱钩. CLAUDE.md doctrine 明确要求 "新增测试必须打 LABELS, tier 与 scripts/test.sh TEST_TIER 保持一致" — 这是 doctrine compliance gap 而非 CI runtime 问题 (无 label 默认会跑, 所以 CI 实际行为正确).
+  - **修复** (commit `7c7e5b4`): 给 37 个未带 LABEL 的 `add_test` 补齐 `set_tests_properties(... LABELS "<tier>" TIMEOUT <s>)`, tier 取自 `scripts/test.sh` 的 `TEST_TIER` 表. 最终分布: 30 instant + 8 fast + 4 slow + 2 heavy + 1 gate + 1 stress = 46.
+  - **Sanitizer Hotfix** (commit `7bd6e99`): 首次 push 后 Linux Sanitizer CI 失败 — FactorBase/BaseM (instant 10s) + SIQS (fast 60s) 在 ASAN+UBSAN 下被 set_tests_properties TIMEOUT 卡 (TIMEOUT 是 hard limit, 优先于 ctest --timeout). 加 sanitizer flag 自动检测: `CMAKE_CXX_FLAGS MATCHES "fsanitize=(address|thread|memory|undefined|leak)"` 时对所有测试 TIMEOUT × 10.
+  - **验证**: `ctest -LE "slow|heavy|stress"` (CI 等价) = 39 tests, Release 13.44s PASS; `ctest -LE "slow|heavy|stress|gate"` (Sanitizer 等价) = 38 tests; `ctest -L instant` = 30 tests PASS. Push 后 Linux CI 3/3 workflow PASS (CI + Sanitizers + CodeQL).
+  - **决策**: 不改 CI 实际跑的测试集合 (改动是 metadata), 但修复 tier-based selection 工具链. Linux/macOS CI parity 已经存在 (matrix `[ubuntu-latest, macos-latest]`), 仅是 tier metadata 缺失. 真正的 Linux-specific 优化 (sched_setattr / cgroups / NUMA tuning) 当前无触发条件 — 现有 GitHub runners (ubuntu-latest 2 vCPU, 无 P/E 异构) 不需要.
+  - **教训**: (1) "Linux CI parity" 听起来像缺 Linux 测试覆盖, 实际 audit 发现是 metadata gap (tier 标签不全). 启动审计前 grep `set_tests_properties` 5 秒就能定位真实问题, 比预设假设方向更准. (2) ctest `set_tests_properties TIMEOUT` 是 hard limit (优先于 `ctest --timeout` 全局), sanitizer build 下必须考虑 5-10× 慢. 改 TIMEOUT 前先想 sanitizer 是否会被卡 — 这次本地 macOS Release/Debug 都不会出现, 必须 push CI 才暴露.
 
 ---
 
