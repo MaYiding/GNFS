@@ -130,6 +130,45 @@ void test_3lp_filtered() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_single_partial() {
+    // Single 1LP relation — cannot form clique alone, early exit (pool.size() < 2)
+    std::cout << "Testing CliqueRelationMerger single partial..." << std::endl;
+    std::vector<Relation> rels;
+    rels.push_back(make_1rat(1, 1, 101));
+    CliqueStats stats;
+    auto out = CliqueRelationMerger::merge_cliques(std::move(rels), &stats);
+    assert(stats.input_relations == 1);
+    assert(stats.input_1lp == 1);
+    assert(stats.components_with_excess == 0);
+    assert(stats.full_produced == 0);
+    assert(out.empty());
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_all_3lp_filtered() {
+    // Edge case: all input rels are 3LP+ → all filtered, pool empty, early return
+    std::cout << "Testing CliqueRelationMerger all-3LP+ filter..." << std::endl;
+    std::vector<Relation> rels;
+    for (int i = 0; i < 3; ++i) {
+        Relation r(i + 1, 1);
+        r.rational_factors = {0};
+        r.algebraic_factors = {0};
+        r.rational_large_prime.push_back(PrimePower{101u + uint32_t(i), 0, 1});
+        r.algebraic_large_prime.push_back(PrimePower{201u + uint32_t(i), 1, 1});
+        r.algebraic_large_prime.push_back(PrimePower{202u + uint32_t(i), 2, 1});  // 3rd LP
+        rels.push_back(std::move(r));
+    }
+    CliqueStats stats;
+    auto out = CliqueRelationMerger::merge_cliques(std::move(rels), &stats);
+    assert(stats.input_relations == 3);
+    assert(stats.input_3lp_plus == 3);
+    assert(stats.input_1lp == 0);
+    assert(stats.input_2lp == 0);
+    assert(stats.components_with_excess == 0);
+    assert(out.empty());
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_stats_to_string() {
     std::cout << "Testing CliqueStats::to_string()..." << std::endl;
     CliqueStats s;
@@ -157,11 +196,13 @@ int main() {
     std::cout << "=== CliqueRelationMerger Unit Tests ===" << std::endl;
 
     test_empty();
+    test_single_partial();
     test_1lp_2clique();
     test_1lp_4clique();
     test_2lp_triangle();
     test_no_overlap();
     test_3lp_filtered();
+    test_all_3lp_filtered();
     test_stats_to_string();
 
     std::cout << "\nAll CliqueRelationMerger tests passed!" << std::endl;
