@@ -17,6 +17,7 @@
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/relation/collector.hpp>
 #include <gnfs/relation/filter.hpp>
+#include <gnfs/relation/clique_merger.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -368,6 +369,12 @@ FactResult factor_with_progress(const Integer& n, int level) {
         if (lp_enabled) {
             auto sep = separate_relations(std::move(relations));
 
+            // V3 cascade prep (ENV: GNFS_CASCADE_V3=1) — clone partials before V0 consumes
+            const char* v3_env = std::getenv("GNFS_CASCADE_V3");
+            const bool use_v3 = v3_env != nullptr && v3_env[0] != '\0' && v3_env[0] != '0';
+            std::vector<Relation> partial_copy_for_v3;
+            if (use_v3) partial_copy_for_v3 = sep.partial;
+
             PartialRelationMerger::MergeStats mstats;
             auto merged = PartialRelationMerger::merge_all(
                 std::move(sep.partial), 10, &mstats);
@@ -384,6 +391,33 @@ FactResult factor_with_progress(const Integer& n, int level) {
             relations.insert(relations.end(),
                 std::make_move_iterator(merged.begin()),
                 std::make_move_iterator(merged.end()));
+
+            // V3 cascade: BFS spanning tree merge on weight≥3 LP clique components
+            if (use_v3 && !partial_copy_for_v3.empty()) {
+                CliqueStats cstats;
+                auto v3_merged = CliqueRelationMerger::merge_cliques(
+                    std::move(partial_copy_for_v3), &cstats);
+                std::unordered_set<int64_t> existing_keys;
+                existing_keys.reserve(relations.size());
+                for (const auto& r : relations) {
+                    existing_keys.insert(static_cast<int64_t>(r.a) ^
+                                          (static_cast<int64_t>(r.b) << 32));
+                }
+                size_t v3_added = 0;
+                for (auto& r : v3_merged) {
+                    int64_t key = static_cast<int64_t>(r.a) ^
+                                  (static_cast<int64_t>(r.b) << 32);
+                    if (existing_keys.insert(key).second) {
+                        relations.push_back(std::move(r));
+                        ++v3_added;
+                    }
+                }
+                std::cout << "  [v3_cascade] in=" << cstats.input_relations
+                          << " full=" << cstats.full_produced
+                          << " residual=" << cstats.residual_emitted
+                          << " lp_rejects=" << cstats.lp_cancel_rejections
+                          << " added=" << v3_added << "\n" << std::flush;
+            }
         }
 
         // Accurate LP col count via count_unique_lp_keys (filter.hpp).

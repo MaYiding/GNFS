@@ -22,6 +22,7 @@
 #include <chrono>
 #include <optional>
 #include <random>
+#include <cstdio>   // fprintf for V3 cascade stderr signal
 #include <cstdlib>  // getenv for GNFS_CASCADE_V3 flag
 #include <string>
 #include <thread>
@@ -639,6 +640,10 @@ std::vector<Relation> Pipeline::sieve_and_collect(
                          "v3_cascade(sieve_loop): full=" + std::to_string(cstats.full_produced) +
                          " residual=" + std::to_string(cstats.residual_emitted) +
                          " added=" + std::to_string(v3_added));
+                // stderr fallback when log_cb_ not registered (for stress/progressive)
+                std::fprintf(stderr, "[v3_cascade.sieve] in=%zu full=%zu residual=%zu lp_rejects=%zu added=%zu\n",
+                             cstats.input_relations, cstats.full_produced,
+                             cstats.residual_emitted, cstats.lp_cancel_rejections, v3_added);
             }
         }
 
@@ -775,6 +780,10 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
                      " lp_rejects=" + std::to_string(cstats.lp_cancel_rejections) +
                      " added=" + std::to_string(v3_added) +
                      " dedup=" + std::to_string(v3_dedup_skipped));
+            std::fprintf(stderr, "[v3_cascade.filter] in=%zu full=%zu residual=%zu lp_rejects=%zu added=%zu dedup=%zu\n",
+                         cstats.input_relations, cstats.full_produced,
+                         cstats.residual_emitted, cstats.lp_cancel_rejections,
+                         v3_added, v3_dedup_skipped);
 
             stats_.merged_relations += v3_added;
         }
