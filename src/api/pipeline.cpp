@@ -637,6 +637,8 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             auto merged = relation::PartialRelationMerger::merge_all(
                 std::move(sep.partial), 10, &mstats);
             relations = std::move(sep.full);
+            // Reserve full + V0 merged + V3 estimate (~3× merged worst case).
+            relations.reserve(relations.size() + merged.size() * 4);
             relations.insert(relations.end(),
                 std::make_move_iterator(merged.begin()),
                 std::make_move_iterator(merged.end()));
