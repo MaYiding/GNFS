@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <iomanip>
 #include <iostream>
 #include <random>
 #include <vector>
@@ -16,7 +18,7 @@ using gnfs::core::Relation;
 using gnfs::core::PrimePower;
 
 // Generate synthetic partial relations matching 50d-like LP distribution:
-// - 1500 unique LP keys (mix of rat + alg)
+// - LP keys count scales with target_rels (avg 3 rels per key)
 // - Each key has weight 2..15 (geometric distribution favoring small weight)
 // - Each rel has 1-2 LP keys (1LP or 2LP)
 // - (a,b) values unique per rel
@@ -27,7 +29,8 @@ static std::vector<Relation> make_synthetic_50d_like(
     std::geometric_distribution<size_t> weight_dist(0.4);  // mean 2.5
 
     // Step 1: Generate LP keys and their assigned relation indices.
-    const size_t n_lp_keys = 1500;
+    // n_lp_keys scaled so that target_rels can be reached (~3 rels per key avg)
+    const size_t n_lp_keys = std::max<size_t>(1500, target_rels / 3);
     std::vector<std::vector<size_t>> lp_to_rels(n_lp_keys);
     std::vector<bool> lp_is_algebraic(n_lp_keys);
 
@@ -196,12 +199,41 @@ void test_v3_lp_cancel_safety() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_v3_scale_performance() {
+    // Verify V3 cascade scales — 50K input rels should complete in instant tier
+    // (post fast-path optimization, commit d2ef403).
+    std::cout << "Testing V3 cascade scale (50K input)..." << std::endl;
+
+    auto large_input = make_synthetic_50d_like(50000, /*seed=*/13);
+
+    auto start = std::chrono::high_resolution_clock::now();
+    CliqueStats stats;
+    auto out = CliqueRelationMerger::merge_cliques(std::move(large_input), &stats);
+    auto end = std::chrono::high_resolution_clock::now();
+    double elapsed_s = std::chrono::duration<double>(end - start).count();
+
+    std::cout << "  in=" << stats.input_relations
+              << " components=" << stats.components_with_excess
+              << " full=" << stats.full_produced
+              << " residual=" << stats.residual_emitted
+              << " lp_rejects=" << stats.lp_cancel_rejections
+              << " elapsed=" << std::fixed << std::setprecision(3) << elapsed_s << "s"
+              << std::endl;
+
+    // Post fast-path, 50K input should complete < 5s (was estimated minutes pre-opt)
+    assert(elapsed_s < 5.0);
+    assert(stats.input_relations == 50000);
+
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== V3 Synthetic 50d-like Test ===" << std::endl;
 
     test_v3_expands_v0_baseline();
     test_v0_v3_cascade_dedup();
     test_v3_lp_cancel_safety();
+    test_v3_scale_performance();
 
     std::cout << "\nAll V3 synthetic tests passed!" << std::endl;
     return 0;
