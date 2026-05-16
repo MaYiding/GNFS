@@ -168,8 +168,10 @@ private:
             Relation acc = pool[start];  // copy 作 accumulator
             used[start] = true;
             bool acc_full = PartialRelationMerger::is_effectively_full(acc);
-            // 缓存 acc 的 LP key count, 避免每个 neighbor 重算
-            size_t acc_lp_count = PartialRelationMerger::remaining_lp_keys(acc).size();
+            // 缓存 acc 的 LP key SET (用于 overlap fast-path 跳过 merge_two)
+            auto acc_keys = PartialRelationMerger::remaining_lp_keys(acc);
+            std::unordered_set<LargePrimeKey, LargePrimeKeyHash> acc_lp_set(
+                acc_keys.begin(), acc_keys.end());
 
             while (!bfs.empty()) {
                 size_t cur = bfs.front(); bfs.pop();
@@ -183,21 +185,33 @@ private:
                     for (size_t nbr : it->second) {
                         if (!in_component.count(nbr) || visited.count(nbr) || used[nbr]) continue;
 
-                        // LP cancel check: 仅 if merged 严格减少 LP 数
-                        // 优化: acc_lp_count 缓存, nbr keys 计算一次
-                        size_t nbr_lp_count = PartialRelationMerger::remaining_lp_keys(pool[nbr]).size();
-                        size_t before = acc_lp_count + nbr_lp_count;
-                        Relation candidate = PartialRelationMerger::merge_two(acc, pool[nbr]);
-                        size_t after = PartialRelationMerger::remaining_lp_keys(candidate).size();
-
-                        if (after >= before) {
+                        // Fast-path: 检查 nbr 与 acc 是否有 LP overlap.
+                        // 无 overlap → merge 不 cancel 任何 key → after == before → reject.
+                        // 等价于 LP cancel check, 但避免 heavy merge_two + count_keys.
+                        auto nbr_keys = PartialRelationMerger::remaining_lp_keys(pool[nbr]);
+                        bool has_overlap = false;
+                        for (const auto& k : nbr_keys) {
+                            if (acc_lp_set.count(k)) { has_overlap = true; break; }
+                        }
+                        if (!has_overlap) {
                             ++stats.lp_cancel_rejections;
-                            continue;  // reject, do not 用 nbr
+                            continue;  // 必 reject, skip merge_two
                         }
 
-                        // Accept: update accumulator (and cache)
+                        // Have overlap: do merge_two + verify strict reduction
+                        size_t before = acc_lp_set.size() + nbr_keys.size();
+                        Relation candidate = PartialRelationMerger::merge_two(acc, pool[nbr]);
+                        auto cand_keys = PartialRelationMerger::remaining_lp_keys(candidate);
+
+                        if (cand_keys.size() >= before) {
+                            ++stats.lp_cancel_rejections;
+                            continue;  // 罕见: 有 overlap 但 cancellation 没显著减
+                        }
+
+                        // Accept: update accumulator + LP set cache
                         acc = std::move(candidate);
-                        acc_lp_count = after;
+                        acc_lp_set.clear();
+                        acc_lp_set.insert(cand_keys.begin(), cand_keys.end());
                         visited.insert(nbr);
                         used[nbr] = true;
                         bfs.push(nbr);
