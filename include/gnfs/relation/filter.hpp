@@ -508,14 +508,20 @@ public:
             }
 
             // Singleton detection
+            // Reserve: typical ~30% LP keys are singletons in V0 Phase 2.
             std::unordered_set<LargePrimeKey, LargePrimeKeyHash> singleton_keys;
+            singleton_keys.reserve(lp_index.size() / 3);
             for (const auto& [key, indices] : lp_index) {
                 if (indices.size() == 1) singleton_keys.insert(key);
             }
 
             // Weight-2 merge（标准 2LP 处理）
+            // used: 2 idx per merge, typical 30% pool reaches merge. dead 上限 pool.size().
+            // new_merged: 30-50% merges produce non-full → residual. Conservative pool/4.
             std::unordered_set<size_t> used;
+            used.reserve(pool.size() / 2);
             std::vector<Relation> new_merged;
+            new_merged.reserve(pool.size() / 4);
 
             // NOTE: Only weight-2 LP keys are merged. Weight-3+ keys could
             // be chain-merged in principle, but this conservative strategy avoids
@@ -523,7 +529,9 @@ public:
             // by pairing the two cheapest relations per LP key.
 
             // Sort keys for deterministic merge order across runs
+            // Reserve: typical ~20-30% LP keys are weight=2 in 50d/lp_bits=23.
             std::vector<LargePrimeKey> sorted_2lp_keys;
+            sorted_2lp_keys.reserve(lp_index.size() / 4);
             for (const auto& [key, indices] : lp_index) {
                 if (indices.size() == 2) sorted_2lp_keys.push_back(key);
             }
@@ -548,7 +556,9 @@ public:
 
             // Singleton removal: 只移除所有剩余 LP 都是 singleton 的关系
             // 使用 pool_lp_keys_cache 避免 remaining_lp_keys 重复调用
+            // Reserve: typical 5-10% pool flagged dead per round.
             std::unordered_set<size_t> dead;
+            dead.reserve(pool.size() / 8);
             for (size_t i = 0; i < pool.size(); ++i) {
                 if (used.count(i)) continue;
                 const auto& keys = pool_lp_keys_cache[i];
