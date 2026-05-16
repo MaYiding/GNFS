@@ -46,6 +46,11 @@ public:
             return result;
         }
 
+        // Reserve: pivot+free cols partition num_cols exactly.
+        // Worst-case all-pivot (rank=num_cols) or all-free (rank=0); reserve full.
+        result.pivot_cols.reserve(std::min(num_rows, num_cols));
+        result.free_cols.reserve(num_cols);
+
         // 主消元循环
         // NOTE: history 矩阵已移除——build_null_space() 采用回代法
         // 直接从 reduced echelon form 推导零空间，不需要行变换记录
@@ -146,6 +151,7 @@ private:
 
         size_t num_cols = matrix.num_cols();
         size_t num_null = std::min(result.free_cols.size(), config_.max_null_vectors);
+        result.null_space.reserve(num_null);
 
         for (size_t i = 0; i < num_null; ++i) {
             size_t free_col = result.free_cols[i];
