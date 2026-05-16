@@ -621,6 +621,25 @@ void test_count_unique_lp_keys() {
         rels.push_back(std::move(r));
         assert(count_unique_lp_keys(rels) == 0);  // even-exp cancels
     }
+    // Regression test for V2 bug: 5% guess vs ~64% actual
+    // Simulates 50d distribution: many rels each with multiple distinct LP keys.
+    // Verifies count_unique_lp_keys returns accurate count (not 5% guess).
+    {
+        std::vector<Relation> rels;
+        for (uint64_t i = 1; i <= 100; ++i) {
+            Relation r(static_cast<int64_t>(i), 1);
+            r.rational_factors = {0};
+            r.algebraic_factors = {0};
+            // Each rel has 2 unique alg LP ideals, all different across rels
+            r.algebraic_large_prime.push_back(PrimePower{1000 + i, 1, 1});
+            r.algebraic_large_prime.push_back(PrimePower{2000 + i, 2, 1});
+            rels.push_back(std::move(r));
+        }
+        // 100 rels × 2 unique LP each = 200 distinct (p,r) keys
+        assert(count_unique_lp_keys(rels) == 200);
+        // 5% guess would say 5; bug-induced under-estimate of 40×.
+        assert(rels.size() / 20 == 5);  // confirm old buggy estimate
+    }
     std::cout << "  PASS" << std::endl;
 }
 
