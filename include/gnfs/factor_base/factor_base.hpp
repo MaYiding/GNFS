@@ -132,6 +132,9 @@ public:
     void build_index() {
         rat_index_.clear();
         alg_index_.clear();
+        // Reserve exact sizes to avoid rehashing during build.
+        rat_index_.reserve(rational_.size());
+        alg_index_.reserve(algebraic_.size());
 
         for (uint32_t i = 0; i < rational_.size(); ++i) {
             rat_index_[rational_[i].p] = i;
