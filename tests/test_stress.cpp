@@ -412,10 +412,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
                         ++v3_added;
                     }
                 }
-                std::cout << "  [v3_cascade] in=" << cstats.input_relations
-                          << " full=" << cstats.full_produced
-                          << " residual=" << cstats.residual_emitted
-                          << " lp_rejects=" << cstats.lp_cancel_rejections
+                std::cout << "  [v3_cascade] " << cstats.to_string()
                           << " added=" << v3_added << "\n" << std::flush;
             }
         }
