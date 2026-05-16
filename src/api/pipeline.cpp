@@ -990,6 +990,7 @@ FactorResult Pipeline::extract_factors(
     FactorResult result;
     result.n = n_.clone();
     result.stats = stats_;
+    result.factors.reserve(2);  // success path pushes 2 factors
 
     if (mr.dependencies.empty()) {
         emit_log(LogLevel::Error, Phase::SquareRoot, "No dependencies to try");
