@@ -1045,6 +1045,39 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
 - test_gnfs_e2e: 5/5 PASS
 - test_factor_with_kleinjung: PASS
 
+**V3 Clique Merge backup** (post-P4 fallback infrastructure):
+若 V0+fix 50d/60d 在 PASS formula `raw > 5.6M` 仍 NO_EXCESS, 启用 V3 cascade.
+
+- **算法** (`include/gnfs/relation/clique_merger.hpp`, 220 LOC):
+  - BFS spanning tree over LP-sharing bipartite graph
+  - LP cancel check: `merged.lp_count() < before.lp_count()` 才 accept
+  - 避免 V1/V2 chain-residue trap (V2 在 50d -69% Merged 教训)
+
+- **集成** (commits `babc322` + `975ac8b` + `7f9de82`):
+  - ENV-gated `GNFS_CASCADE_V3=1` (默认 OFF, V0 path 零开销)
+  - 3 入口: pipeline.cpp:605 (sieve_and_collect), pipeline.cpp:686 (Phase 4),
+    test_stress.cpp:393 (stress sieve loop)
+  - Dedup via (a, b) XOR hash 避免 V0 ∩ V3 重复
+
+- **测试** (commits `babc322` + `5cf9e41`):
+  - 6 基本 unit tests (test_clique_merger): empty, 1LP×N clique, 2LP triangle, no_overlap, 3LP+ filter
+  - 3 synthetic 50d-like tests (test_clique_merger_50d_synthetic):
+    - V0 alone: 885 merged
+    - V0 + V3 cascade + dedup: 1115 merged
+    - **V3 实测 +26% added beyond V0** (empirical evidence)
+
+- **可见性**: stderr fprintf alongside emit_log → `[v3_cascade.sieve] in=N full=N residual=N added=N`
+
+- **文档**: `docs/perf/v3-cascade-design.md` (设计 + ENV 用法 guide)
+
+- **触发条件**:
+  - V0+fix 50d Round 3+ 仍 NO_EXCESS
+  - V0+fix 60d > 24h 未 PASS
+  - 不在 V0 已 PASS 的 size 启用 (额外开销 0 收益)
+
+- **fallback launch**: `bash /tmp/start_50d_v3cascade.sh`
+  (复刻: `GNFS_CASCADE_V3=1 ./build-v3/test_stress 1 1`)
+
 ---
 
 ## §7  纪律与禁忌
