@@ -613,6 +613,7 @@ public:
             const std::vector<Relation>& partials) {
 
         std::vector<Relation> merged;
+        merged.reserve(partials.size() / 8);  // ~12% merge yield typical
 
         // Pre-filter: only index 1LP relations (those with exactly 1 large prime).
         std::vector<size_t> lp1_indices;
