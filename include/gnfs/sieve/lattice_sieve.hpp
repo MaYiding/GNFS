@@ -826,6 +826,7 @@ private:
             const std::vector<PrimeEntry>& primes, uint32_t bucket_threshold) const {
         PreSeparatedPrimes result;
         result.small.reserve(primes.size());
+        result.v.reserve(primes.size() / 8);  // flags==1 typically minor fraction
         for (const auto& pe : primes) {
             if (pe.flags == 1) {
                 result.v.push_back({pe.p, pe.log_p});
