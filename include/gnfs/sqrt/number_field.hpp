@@ -445,14 +445,14 @@ private:
 
             size_t shift = high_deg - degree_;
 
+            // Single resize to needed size, default-init Integers = 0.
+            if (coeffs.size() < shift + degree_) {
+                coeffs.resize(shift + degree_);
+            }
+
             for (uint32_t i = 0; i < degree_; ++i) {
                 Integer term = high_coeff.clone();
                 term *= f_coeffs_[i];
-
-                while (coeffs.size() <= shift + i) {
-                    coeffs.push_back(Integer(static_cast<int64_t>(0)));
-                }
-
                 coeffs[shift + i] -= term;
             }
         }
@@ -506,14 +506,15 @@ private:
 
             size_t shift = high_deg - degree_;
 
+            // Single resize to needed size, default-init Integers = 0.
+            if (coeffs.size() < shift + degree_) {
+                coeffs.resize(shift + degree_);
+            }
+
             for (uint32_t i = 0; i < degree_; ++i) {
                 Integer term = scaled.clone();
                 term *= f_coeffs_[i];
                 term %= modulus;
-
-                while (coeffs.size() <= shift + i) {
-                    coeffs.push_back(Integer(static_cast<int64_t>(0)));
-                }
 
                 coeffs[shift + i] -= term;
                 coeffs[shift + i] %= modulus;
