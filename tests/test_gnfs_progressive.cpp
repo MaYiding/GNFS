@@ -412,11 +412,16 @@ FactResult factor_with_progress(const Integer& n, int level) {
     // ── Phase 4: Relation Trimming ──
     // 防止过量关系导致矩阵过大 → BL 耗时爆炸
     // BL 时间 ∝ rows × cols² → 多余行直接削减
+    // CRITICAL: must include LP cols (lp_bits≥20 cases). FB-only trim过激削减.
+    // See test_stress.cpp:478 for the same fix.
     {
-        size_t max_rels = matrix_cols * 2;  // 2× matrix cols 足够 BL 找到依赖
+        size_t lp_cols_for_trim = lp_enabled ? count_unique_lp_keys(relations) : 0;
+        size_t effective_cols_for_trim = matrix_cols + lp_cols_for_trim;
+        size_t max_rels = effective_cols_for_trim + effective_cols_for_trim / 4;  // 25% safety
         if (relations.size() > max_rels) {
             std::cout << "  [Trim] " << relations.size() << " → " << max_rels
-                      << " relations (excess " << (relations.size() - max_rels) << " dropped)\n";
+                      << " relations (eff_cols=" << effective_cols_for_trim
+                      << ", excess " << (relations.size() - max_rels) << " dropped)\n";
             std::mt19937 rng(42);  // deterministic seed for reproducibility
             std::shuffle(relations.begin(), relations.end(), rng);
             relations.resize(max_rels);
