@@ -569,7 +569,10 @@ std::vector<Relation> Pipeline::sieve_and_collect(
                     batch_candidates[idx] = sieve_result.candidates.size();
 
                     // Cofactorize all candidates for this SQ
+                    // Reserve: ~10-25% candidates yield valid rel post-cofac (size band dep).
+                    // Conservative quarter avoids over-reserve.
                     auto& local_rels = batch_relations[idx];
+                    local_rels.reserve(sieve_result.candidates.size() / 4);
                     for (const auto& cand : sieve_result.candidates) {
                         auto rel = local_cofac.verify(cand, sq_batch[idx].q, sq_batch[idx].r);
                         if (rel) local_rels.push_back(std::move(*rel));
