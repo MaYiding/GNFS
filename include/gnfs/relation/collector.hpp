@@ -384,8 +384,8 @@ private:
     result.reserve(relations.size());
 
     for (auto& rel : relations) {
-        if (seen.count(rel.ab()) == 0) {
-            seen.insert(rel.ab());
+        // Single insert+check (saves 1 hash lookup vs count + insert pattern)
+        if (seen.insert(rel.ab()).second) {
             result.push_back(std::move(rel));
         }
     }
