@@ -1161,6 +1161,7 @@ FactorResult Pipeline::run() {
                     FactorResult r;
                     r.n = n_.clone();
                     r.success = true;
+                    r.factors.reserve(2);
                     r.factors.push_back(root.clone());
                     r.factors.push_back(n_.clone());
                     r.factors[1] /= root;
