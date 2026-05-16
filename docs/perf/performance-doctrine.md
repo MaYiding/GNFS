@@ -1065,9 +1065,12 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
     are no-LP-overlap cases — pre-check via cached `acc_lp_set` skips
     heavy merge_two() entirely. Test_api 19.93s → 4.31s.
 
-- **集成** (commits `babc322` + `975ac8b` + `7f9de82`):
-  - ENV-gated `GNFS_CASCADE_V3=1` (默认 OFF, V0 path 零开销)
-  - 3 入口: pipeline.cpp:605 (sieve_and_collect), pipeline.cpp:686 (Phase 4),
+- **集成** (commits `babc322` + `975ac8b` + `7f9de82` + `56e5b14`):
+  - ENV-gated `GNFS_CASCADE_V3` 三态 (默认 OFF, V0 path 零开销):
+    - unset / "0" → OFF (V0 only)
+    - "1" / "on" → ON (V3 every round)
+    - "auto" → AUTO (V3 only Round 2+ in sieve loop; Phase 4 always enable)
+  - 3 入口: pipeline.cpp:627 (sieve_and_collect, Auto-aware), pipeline.cpp:747 (Phase 4),
     test_stress.cpp:393 (stress sieve loop)
   - Dedup via (a, b) XOR hash 避免 V0 ∩ V3 重复
 
@@ -1100,6 +1103,7 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
 
 - **fallback launch**: `bash /tmp/start_50d_v3cascade.sh`
   (复刻: `GNFS_CASCADE_V3=1 ./build-v3/test_stress 1 1`)
+  (或 auto mode: `GNFS_CASCADE_V3=auto ./build-v3/test_stress 1 1` — Round 2+ 才 enable, 节省 Round 1 V3 overhead)
 
 ---
 
