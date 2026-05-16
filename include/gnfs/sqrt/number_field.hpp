@@ -95,7 +95,7 @@ public:
     void add(const NumberFieldElement& other) {
         size_t max_deg = std::max(coeffs_.size(), other.coeffs_.size());
         if (coeffs_.size() < max_deg) {
-            coeffs_.resize(max_deg, Integer(int64_t(0)));  // single alloc
+            coeffs_.resize(max_deg);  // default Integer ctor → 0, no fill ctor needed
         }
 
         for (size_t i = 0; i < other.coeffs_.size(); ++i) {
@@ -109,7 +109,7 @@ public:
     void subtract(const NumberFieldElement& other) {
         size_t max_deg = std::max(coeffs_.size(), other.coeffs_.size());
         if (coeffs_.size() < max_deg) {
-            coeffs_.resize(max_deg, Integer(int64_t(0)));  // single alloc
+            coeffs_.resize(max_deg);  // default Integer ctor → 0
         }
 
         for (size_t i = 0; i < other.coeffs_.size(); ++i) {
