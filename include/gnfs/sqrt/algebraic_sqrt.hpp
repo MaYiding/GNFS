@@ -107,7 +107,10 @@ public:
         NumberField nf(ctx);
 
         // 收集参与的 (a, b) 对（含合并关系的 extra pairs）
+        // Reserve: dependency popcount × avg 1.5 ab pairs per relation
+        // (merged relations have extra_ab_pairs).
         std::vector<std::pair<int64_t, uint64_t>> ab_pairs;
+        ab_pairs.reserve(dependency.popcount() * 2);
         for (size_t i = 0; i < relations.size(); ++i) {
             if (!dependency.test(i)) continue;
             const auto& rel = relations[i];
