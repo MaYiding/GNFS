@@ -390,6 +390,13 @@ FactResult factor_with_progress(const Integer& n, int level) {
         // 50d 实测: 38K usable → 24677 lp cols (64%) vs 旧 5% guess 339 (12× under).
         size_t lp_col_estimate = lp_enabled ? count_unique_lp_keys(relations) : 0;
         size_t effective_cols = matrix_cols + lp_col_estimate;
+        if (lp_enabled && !relations.empty()) {
+            double beta = 100.0 * lp_col_estimate / relations.size();
+            std::cout << "  [LP ratio] lp_cols=" << lp_col_estimate
+                      << "/" << relations.size() << " (β=" << std::fixed
+                      << std::setprecision(1) << beta << "%) eff_cols="
+                      << effective_cols << "\n" << std::flush;
+        }
 
         if (relations.size() > effective_cols) {
             std::cout << "  Sieving complete: " << collector.size() << " raw, "
