@@ -403,6 +403,7 @@ public:
         // f_0 = f, f_1 = f'
         // f_{k+1} = -prem(f_{k-1}, f_k), with sign correction for pseudo-remainder scaling
         std::vector<IntPoly> chain;
+        chain.reserve(f0.deg() + 2);  // chain length ≤ degree + 1
         chain.push_back(std::move(f0));
         chain.push_back(std::move(f1));
 
