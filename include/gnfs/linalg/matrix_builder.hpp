@@ -670,37 +670,65 @@ private:
             }
         }
 
-        // 有理大素数
+        // 有理大素数 (small-LP fast path: size<=8 用 stack arrays 避免 map alloc)
         {
-            std::unordered_map<uint64_t, uint8_t> exponents;
-            for (size_t j = 0; j < rel.rational_large_prime.size(); ++j) {
-                exponents[rel.rational_large_prime[j].p] += rel.rational_large_prime[j].e;
-            }
-
-            for (const auto& [p, exp] : exponents) {
-                if (exp % 2 == 1) {
-                    auto it = mapping.rat_lp_to_col.find(p);
-                    if (it != mapping.rat_lp_to_col.end()) {
-                        row.append_unchecked(it->second);
+            const auto& rat_lps = rel.rational_large_prime;
+            if (rat_lps.size() <= 8) {
+                uint64_t rkeys[8]; uint8_t rexps[8]; size_t ru = 0;
+                for (const auto& lp : rat_lps) {
+                    size_t j = 0;
+                    for (; j < ru; ++j) if (rkeys[j] == lp.p) break;
+                    if (j == ru) { rkeys[ru] = lp.p; rexps[ru] = lp.e; ++ru; }
+                    else rexps[j] += lp.e;
+                }
+                for (size_t i = 0; i < ru; ++i) {
+                    if (rexps[i] & 1u) {
+                        auto it = mapping.rat_lp_to_col.find(rkeys[i]);
+                        if (it != mapping.rat_lp_to_col.end()) row.append_unchecked(it->second);
+                    }
+                }
+            } else {
+                std::unordered_map<uint64_t, uint8_t> exponents;
+                for (const auto& lp : rat_lps) exponents[lp.p] += lp.e;
+                for (const auto& [p, exp] : exponents) {
+                    if (exp & 1u) {
+                        auto it = mapping.rat_lp_to_col.find(p);
+                        if (it != mapping.rat_lp_to_col.end()) row.append_unchecked(it->second);
                     }
                 }
             }
         }
 
-        // 代数大素数——按 (p, r) 素理想键累积指数
+        // 代数大素数——按 (p, r) 素理想键累积指数 (same small-LP fast path)
         {
-            std::unordered_map<PrimeIdealKey, uint8_t, PrimeIdealKeyHash> exponents;
-            for (size_t j = 0; j < rel.algebraic_large_prime.size(); ++j) {
-                PrimeIdealKey key{rel.algebraic_large_prime[j].p,
-                                  rel.algebraic_large_prime[j].r};
-                exponents[key] += rel.algebraic_large_prime[j].e;
-            }
+            const auto& alg_lps = rel.algebraic_large_prime;
+            if (alg_lps.size() <= 8) {
+                PrimeIdealKey akeys[8]; uint8_t aexps[8]; size_t au = 0;
+                for (const auto& lp : alg_lps) {
+                    PrimeIdealKey k{lp.p, lp.r};
+                    size_t j = 0;
+                    for (; j < au; ++j) if (akeys[j] == k) break;
+                    if (j == au) { akeys[au] = k; aexps[au] = lp.e; ++au; }
+                    else aexps[j] += lp.e;
+                }
+                for (size_t i = 0; i < au; ++i) {
+                    if (aexps[i] & 1u) {
+                        auto it = mapping.alg_lp_to_col.find(akeys[i]);
+                        if (it != mapping.alg_lp_to_col.end()) row.append_unchecked(it->second);
+                    }
+                }
+            } else {
+                std::unordered_map<PrimeIdealKey, uint8_t, PrimeIdealKeyHash> exponents;
+                for (const auto& lp : alg_lps) {
+                    exponents[{lp.p, lp.r}] += lp.e;
+                }
 
-            for (const auto& [key, exp] : exponents) {
-                if (exp % 2 == 1) {
-                    auto it = mapping.alg_lp_to_col.find(key);
-                    if (it != mapping.alg_lp_to_col.end()) {
-                        row.append_unchecked(it->second);
+                for (const auto& [key, exp] : exponents) {
+                    if (exp % 2 == 1) {
+                        auto it = mapping.alg_lp_to_col.find(key);
+                        if (it != mapping.alg_lp_to_col.end()) {
+                            row.append_unchecked(it->second);
+                        }
                     }
                 }
             }
