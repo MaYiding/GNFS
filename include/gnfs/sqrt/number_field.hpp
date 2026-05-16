@@ -243,11 +243,8 @@ public:
 
         // 多项式乘法
         size_t result_deg = x.degree() + y.degree();
-        std::vector<Integer> result;
-        result.reserve(result_deg + 1);
-        for (size_t i = 0; i <= result_deg; ++i) {
-            result.push_back(Integer(static_cast<int64_t>(0)));
-        }
+        // resize default-init Integer is 0 — single alloc, no push_back loop.
+        std::vector<Integer> result(result_deg + 1);
 
         for (size_t i = 0; i <= x.degree(); ++i) {
             for (size_t j = 0; j <= y.degree(); ++j) {
@@ -275,11 +272,8 @@ public:
 
         // 多项式乘法
         size_t result_deg = x.degree() + y.degree();
-        std::vector<Integer> result;
-        result.reserve(result_deg + 1);
-        for (size_t i = 0; i <= result_deg; ++i) {
-            result.push_back(Integer(static_cast<int64_t>(0)));
-        }
+        // resize default-init Integer is 0 — single alloc, no push_back loop.
+        std::vector<Integer> result(result_deg + 1);
 
         for (size_t i = 0; i <= x.degree(); ++i) {
             for (size_t j = 0; j <= y.degree(); ++j) {
