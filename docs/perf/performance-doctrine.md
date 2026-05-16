@@ -1048,10 +1048,13 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
 **V3 Clique Merge backup** (post-P4 fallback infrastructure):
 若 V0+fix 50d/60d 在 PASS formula `raw > 5.6M` 仍 NO_EXCESS, 启用 V3 cascade.
 
-- **算法** (`include/gnfs/relation/clique_merger.hpp`, 220 LOC):
+- **算法** (`include/gnfs/relation/clique_merger.hpp`, 220+ LOC):
   - BFS spanning tree over LP-sharing bipartite graph
   - LP cancel check: `merged.lp_count() < before.lp_count()` 才 accept
   - 避免 V1/V2 chain-residue trap (V2 在 50d -69% Merged 教训)
+  - **Overlap fast-path** (commit `d2ef403`, 4.6× speedup): 99.99% rejections
+    are no-LP-overlap cases — pre-check via cached `acc_lp_set` skips
+    heavy merge_two() entirely. Test_api 19.93s → 4.31s.
 
 - **集成** (commits `babc322` + `975ac8b` + `7f9de82`):
   - ENV-gated `GNFS_CASCADE_V3=1` (默认 OFF, V0 path 零开销)
