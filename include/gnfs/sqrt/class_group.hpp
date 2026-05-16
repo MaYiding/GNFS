@@ -572,6 +572,9 @@ private:
 
         // Search for principal ideals
         int search_bound = std::max(10, static_cast<int>(std::sqrt(minkowski_bound_)));
+        // Reserve: search loop iterates (2·sb+1) × sb pairs, with low hit rate.
+        // Conservative reserve: ~10% pairs yield principal ideal.
+        relations.reserve(static_cast<size_t>((2 * search_bound + 1) * search_bound / 10));
 
         for (int a = -search_bound; a <= search_bound; ++a) {
             for (int b = 1; b <= search_bound; ++b) {
