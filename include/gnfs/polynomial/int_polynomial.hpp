@@ -204,12 +204,9 @@ public:
 
         uint32_t d1 = degree();
         uint32_t d2 = other.degree();
+        // std::vector<Integer>(N) default-inits Integers to 0 (via Integer default ctor).
+        // No need to re-init in loop.
         std::vector<Integer> result_coeffs(d1 + d2 + 1);
-
-        // 初始化为零
-        for (auto& c : result_coeffs) {
-            c = Integer(static_cast<int64_t>(0));
-        }
 
         // 卷积
         for (uint32_t i = 0; i <= d1; ++i) {
