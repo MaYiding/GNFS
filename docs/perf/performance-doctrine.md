@@ -997,6 +997,54 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
   - **决策**: 不改 CI 实际跑的测试集合 (改动是 metadata), 但修复 tier-based selection 工具链. Linux/macOS CI parity 已经存在 (matrix `[ubuntu-latest, macos-latest]`), 仅是 tier metadata 缺失. 真正的 Linux-specific 优化 (sched_setattr / cgroups / NUMA tuning) 当前无触发条件 — 现有 GitHub runners (ubuntu-latest 2 vCPU, 无 P/E 异构) 不需要.
   - **教训**: (1) "Linux CI parity" 听起来像缺 Linux 测试覆盖, 实际 audit 发现是 metadata gap (tier 标签不全). 启动审计前 grep `set_tests_properties` 5 秒就能定位真实问题, 比预设假设方向更准. (2) ctest `set_tests_properties TIMEOUT` 是 hard limit (优先于 `ctest --timeout` 全局), sanitizer build 下必须考虑 5-10× 慢. 改 TIMEOUT 前先想 sanitizer 是否会被卡 — 这次本地 macOS Release/Debug 都不会出现, 必须 push CI 才暴露.
 
+### P4 — 破壁: lp_col_estimate 修复 (2026-05-16, 待 V0+fix 50d/60d PASS 确认)
+
+修复 test_stress + pipeline 长期潜在 bug: `lp_col_estimate = relations.size() / 20` (5% 经验值) 对 ≥50-digit 严重低估. 实测 50-digit usable/lp_cols 比例为 **64%** (24677/38464), 而非 5%. 后果: sieve loop 提前 break, matrix build 时实际 cols 超出 break 阈值 9000 行 → NO EXCESS.
+
+**Commits** (本会话):
+- `9e84a73` Revert V2 (commit 21dcbcd) — 误诊为 filter merge bug, 实际是 estimate bug
+- `c4cbe3a` fix(test_stress): accurate LP col estimate via count_unique_lp_keys
+- `7013dd8` fix(test_stress): raise sieve target cap 5× → 20× initial
+- `3a29e14` refactor: extract count_unique_lp_keys 到 filter.hpp library
+- `117133e` fix(api/pipeline): apply same fix to sieve loop
+- `dd8b5eb` test(filter): 6 unit tests for count_unique_lp_keys
+- `a37cfe5` feat(test_stress): log β (lp_cols/usable ratio) per round telemetry
+- `82d342e` fix(api/pipeline): post-sieve check also use effective_cols
+
+**V2 失败 lesson** (revert 教训):
+- V2 (commit 21dcbcd, 已 revert) 假设 bug 在 filter merge "weight-3+ LP keys 全弃". 改为 weight≥2 都 merge.
+- 25-digit (81-bit) V2 假阳 +27% Merged. 但 lp_bits=20, weight-3 keys 稀少, V2 marginal benefit.
+- 50-digit (164-bit) V2 真负 Merged 6786→**2088** (-69%), sngl 436→**21539** (×49). lp_bits=23 weight-3 keys 大量 → V2 "1 merge per key" 仍累 chain LP residue → sngl 飙升.
+- **doctrine 铁律 5 教训**: 81-bit reg-test 不能预测 164-bit 行为. 跨 bit-range size 验证必须. 没有 50d 实测 confirm 前不能 push merge logic 修改.
+
+**真 root cause** (after V2 revert):
+- 50d 65% LP cols ratio vs 5% 估计 (12.6× under-estimate)
+- 是 estimate bug not merge bug
+- fix: 实际 count unique LP keys (同 matrix_builder convention) + cap 20× 让 adaptive loop ramp
+
+**PASS formula** (V0 + accurate estimate):
+- `raw_needed > matrix_cols / (α × (1 - β))` where α=merge_rate (50d ~1.1%), β=lp_cols/usable (50d ~0.65)
+- 50d: 22156 / (0.011 × 0.35) = **5.75M raw** needed
+- 60d: ~24000 / (0.005 × 0.30) ≈ 16M raw (估)
+
+**实测确认** (50d V0+fix Round 1):
+- Merged=6786 与 V0 baseline 一致 ✓
+- lp_estimate=5412 (vs 旧 339, ×16 准确度)
+- effective_cols=27568 (vs 旧 23099)
+- Round 2 sieve target 2.76M (vs 旧 2.31M cap 卡死)
+- Round 5 估 PASS at ~5.6M raw, total wall ~5-6h
+
+**60d follow-up** (BACKLOG 已加):
+- [OPT] sieve 仅用 4 P-cores (M5 4P+6E), E-core 闲. 60d 27h 估可优化.
+- [OPT] lp_bits 25 vs 26 trade-off (smaller LP space → fewer LP cols, less raw needed).
+
+**测试覆盖**:
+- test_filter: +6 unit tests for count_unique_lp_keys (covers empty/odd-exp/duplicate/multi-root)
+- test_25digit 5-run: Merged=7536 deterministic (zero variance) confirms V0 stable
+- test_gnfs_progressive 1-5: 8/8 PASS
+- test_gnfs_e2e: 5/5 PASS
+- test_factor_with_kleinjung: PASS
+
 ---
 
 ## §7  纪律与禁忌
