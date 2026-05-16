@@ -178,8 +178,11 @@ private:
             CliqueStats& stats) {
 
         // 本 component 的 index 子集
-        std::unordered_set<size_t> in_component(members.begin(), members.end());
+        std::unordered_set<size_t> in_component;
+        in_component.reserve(members.size());
+        in_component.insert(members.begin(), members.end());
         std::unordered_set<size_t> visited;
+        visited.reserve(members.size());
 
         // 从第 1 个未用成员开始
         for (size_t start : members) {
