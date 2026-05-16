@@ -283,6 +283,10 @@ struct SeparatedRelations {
         std::vector<Relation>&& relations) {
 
     SeparatedRelations result;
+    // Reserve: in 50d/60d typically ~5-10% full + 90-95% partial. Reserve
+    // partial slightly under 1× input, full at 10%.
+    result.partial.reserve(relations.size() * 9 / 10);
+    result.full.reserve(relations.size() / 10);
 
     for (auto& rel : relations) {
         if (rel.is_full()) {
