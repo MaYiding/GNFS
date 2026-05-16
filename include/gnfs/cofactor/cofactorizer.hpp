@@ -119,6 +119,7 @@ public:
         }
 
         // 构建系数向量
+        coeffs_.reserve(ctx_.degree() + 1);
         for (uint32_t i = 0; i <= ctx_.degree(); ++i) {
             coeffs_.push_back(ctx_.coeff(i).clone());
         }
