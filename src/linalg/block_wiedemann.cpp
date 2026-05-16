@@ -82,6 +82,7 @@ void bw_spmv_transpose(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
     scratch.ensure(T, n);
     auto& locals = scratch.locals;
     std::vector<std::future<void>> futures;
+    futures.reserve(T);
     size_t T_used = 0;
 
     for (size_t t = 0; t < T; ++t) {
