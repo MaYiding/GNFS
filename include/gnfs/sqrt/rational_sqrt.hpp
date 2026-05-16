@@ -56,6 +56,8 @@ public:
         // 累积每个素数的指数
         std::unordered_map<uint32_t, uint64_t> fb_exponents;    // 因子基素数指数
         std::unordered_map<uint64_t, uint64_t> lp_exponents;    // 大素数指数
+        fb_exponents.reserve(relations.size());
+        lp_exponents.reserve(relations.size());
         bool has_negative = false;  // 是否有负数的 (a - b*m) 值
 
         for (size_t i = 0; i < relations.size(); ++i) {

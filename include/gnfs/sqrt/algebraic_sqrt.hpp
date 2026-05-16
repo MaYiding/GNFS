@@ -30,6 +30,7 @@ using linalg::BitVector;
 
     // Count algebraic FB factor multiplicities
     std::unordered_map<uint32_t, uint64_t> fb_exponents;
+    fb_exponents.reserve(relations.size());
     // Use (p, r) pair as key to distinguish prime ideals above the same rational prime
     std::map<std::pair<uint64_t, uint64_t>, uint64_t> lp_exponents;
 
