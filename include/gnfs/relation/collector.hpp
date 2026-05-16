@@ -104,13 +104,12 @@ public:
                 return false;
             }
 
-            // 检查重复
+            // 检查重复 — single insert+check (returns {iter, inserted}, saves a hash lookup)
             if (config_.check_duplicates) {
-                if (seen_.count(rel.ab()) > 0) {
+                if (!seen_.insert(rel.ab()).second) {
                     ++stats_.duplicates_rejected;
                     return false;
                 }
-                seen_.insert(rel.ab());
             }
 
             // 更新统计
@@ -280,13 +279,12 @@ public:
                 continue;
             }
 
-            // 检查重复
+            // 检查重复 — single insert+check (returns {iter, inserted}, saves a hash lookup)
             if (config_.check_duplicates) {
-                if (seen_.count(copy.ab()) > 0) {
+                if (!seen_.insert(copy.ab()).second) {
                     ++stats_.duplicates_rejected;
                     continue;
                 }
-                seen_.insert(copy.ab());
             }
 
             update_stats(copy);
