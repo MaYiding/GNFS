@@ -260,6 +260,7 @@ private:
         }
         // Fallback: unordered_map for large LP counts (rare)
         std::unordered_map<uint64_t, uint32_t> exp_map;
+        exp_map.reserve(n);
         for (const auto& lp : lps) exp_map[key_extract(lp)] += lp.e;
         for (const auto& [k, e] : exp_map) if (e & 1u) target_set.insert(k);
     };
