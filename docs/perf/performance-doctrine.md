@@ -1068,6 +1068,11 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
     `pool[i].lp_keys` once during lp_index build, BFS visits use cache instead
     of `remaining_lp_keys()` per call. 60d-scale 200K input: 116ms → 102ms
     avg (5 trials), 30K bench: 27ms → 23ms.
+  - **cand_keys reuse + merge_two reserve** (commits `09f6cd1` + `7ef236a`,
+    +7% on top): reuse already-computed `cand_keys` for `is_effectively_full`
+    check (DRY); pre-reserve all 5 vectors in `merge_two` before
+    double-insert (avoid copy-assign capacity reset). 60d-scale 200K: 102ms →
+    94ms. **Cumulative V3 perf: 116ms → 94ms (-19%) since session baseline.**
 
 - **集成** (commits `babc322` + `975ac8b` + `7f9de82` + `56e5b14`):
   - ENV-gated `GNFS_CASCADE_V3` 三态 (默认 OFF, V0 path 零开销):
