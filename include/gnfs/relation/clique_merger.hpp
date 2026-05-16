@@ -197,9 +197,11 @@ private:
             used[start] = true;
             bool acc_full = PartialRelationMerger::is_effectively_full(acc);
             // 缓存 acc 的 LP key SET (用于 overlap fast-path 跳过 merge_two)
+            // Reserve 16: typical merge累计 LP count ≤ 8-16 throughout BFS.
             auto acc_keys = PartialRelationMerger::remaining_lp_keys(acc);
-            std::unordered_set<LargePrimeKey, LargePrimeKeyHash> acc_lp_set(
-                acc_keys.begin(), acc_keys.end());
+            std::unordered_set<LargePrimeKey, LargePrimeKeyHash> acc_lp_set;
+            acc_lp_set.reserve(16);
+            acc_lp_set.insert(acc_keys.begin(), acc_keys.end());
 
             while (!bfs.empty()) {
                 size_t cur = bfs.front(); bfs.pop();
