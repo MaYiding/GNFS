@@ -224,17 +224,47 @@ private:
         const std::vector<Relation>& relations) {
     std::unordered_set<uint64_t> rat_lp_set;
     std::unordered_set<uint64_t> alg_lp_set;  // pack: (p << 32) | (r & 0xFFFFFFFF)
-    for (const auto& rel : relations) {
-        std::unordered_map<uint64_t, uint32_t> rat_exp;
-        for (const auto& lp : rel.rational_large_prime) rat_exp[lp.p] += lp.e;
-        for (const auto& [p, e] : rat_exp) if (e & 1u) rat_lp_set.insert(p);
 
-        std::unordered_map<uint64_t, uint32_t> alg_exp;
-        for (const auto& lp : rel.algebraic_large_prime) {
-            uint64_t key = (lp.p << 32) | (lp.r & 0xFFFFFFFFu);
-            alg_exp[key] += lp.e;
+    // Hot path: 50d/60d typical merged partial has 1-4 LPs total per rel.
+    // Avoid unordered_map alloc for these small cases — linear scan accumulator.
+    // Falls back to unordered_map for size > 8 (rare chains).
+    auto process_lps = [](const auto& lps, auto key_extract, auto& target_set) {
+        const size_t n = lps.size();
+        if (n == 0) return;
+        if (n == 1) {
+            if (lps[0].e & 1u) target_set.insert(key_extract(lps[0]));
+            return;
         }
-        for (const auto& [k, e] : alg_exp) if (e & 1u) alg_lp_set.insert(k);
+        // Linear scan + dedup for small N
+        if (n <= 8) {
+            uint64_t keys[8];
+            uint32_t exps[8];
+            size_t unique = 0;
+            for (size_t i = 0; i < n; ++i) {
+                uint64_t k = key_extract(lps[i]);
+                size_t j = 0;
+                for (; j < unique; ++j) if (keys[j] == k) break;
+                if (j == unique) { keys[unique] = k; exps[unique] = lps[i].e; ++unique; }
+                else exps[j] += lps[i].e;
+            }
+            for (size_t i = 0; i < unique; ++i) if (exps[i] & 1u) target_set.insert(keys[i]);
+            return;
+        }
+        // Fallback: unordered_map for large LP counts (rare)
+        std::unordered_map<uint64_t, uint32_t> exp_map;
+        for (const auto& lp : lps) exp_map[key_extract(lp)] += lp.e;
+        for (const auto& [k, e] : exp_map) if (e & 1u) target_set.insert(k);
+    };
+
+    for (const auto& rel : relations) {
+        process_lps(rel.rational_large_prime,
+                    [](const auto& lp) -> uint64_t { return lp.p; },
+                    rat_lp_set);
+        process_lps(rel.algebraic_large_prime,
+                    [](const auto& lp) -> uint64_t {
+                        return (uint64_t(lp.p) << 32) | (lp.r & 0xFFFFFFFFu);
+                    },
+                    alg_lp_set);
     }
     return rat_lp_set.size() + alg_lp_set.size();
 }
