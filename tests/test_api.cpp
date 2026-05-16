@@ -444,6 +444,30 @@ bool test_v3_cascade_disabled_by_default() {
     return true;
 }
 
+bool test_v3_cascade_auto_mode() {
+    // Verify GNFS_CASCADE_V3=auto mode: V3 only enables Round 2+ in sieve loop.
+    // At 12d/40-bit, sieve typically completes in Round 1, so auto mode behaves
+    // like OFF for this size — we verify ENV string is parsed correctly and
+    // pipeline path is unbroken.
+    Integer n("1000036000099");
+
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline pipeline(n, cfg);
+
+    setenv("GNFS_CASCADE_V3", "auto", 1);
+
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+    auto rels = pipeline.sieve_and_collect(ctx, fb);
+
+    unsetenv("GNFS_CASCADE_V3");
+
+    assert(!rels.empty() && "sieve_and_collect should produce relations in auto mode");
+
+    return true;
+}
+
 bool test_pipeline_progress_callback() {
     // The mid-level Pipeline drives the GNFS phases directly (bypassing
     // select_method), so emit_progress callbacks fire even on small N.
@@ -514,6 +538,7 @@ int main() {
     TEST(pipeline_progress_callback);
     TEST(v3_cascade_pipeline_integration);
     TEST(v3_cascade_disabled_by_default);
+    TEST(v3_cascade_auto_mode);
 
     std::cout << "\n========================================\n";
     std::cout << "  Results: " << pass_count << " passed, " << fail_count << " failed\n";

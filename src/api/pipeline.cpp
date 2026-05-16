@@ -36,9 +36,29 @@ namespace gnfs::api {
 
 namespace {
 
-inline bool cascade_v3_enabled() {
+// GNFS_CASCADE_V3 modes:
+//   unset / "0" / ""     → OFF (V0 only)
+//   "1" / "on" / "true"  → ON (V3 every round, original behavior)
+//   "auto" / "adaptive"  → AUTO (V3 only Round 2+; Round 1 too few LP overlaps for V3 ROI)
+enum class V3Mode { Off, On, Auto };
+
+inline V3Mode cascade_v3_mode() {
     const char* v = std::getenv("GNFS_CASCADE_V3");
-    return v != nullptr && v[0] != '\0' && v[0] != '0';
+    if (v == nullptr || v[0] == '\0' || v[0] == '0') return V3Mode::Off;
+    if (v[0] == 'a' || v[0] == 'A') return V3Mode::Auto;  // "auto" / "adaptive"
+    return V3Mode::On;
+}
+
+inline bool cascade_v3_enabled_for_round(int round_index) {
+    V3Mode m = cascade_v3_mode();
+    if (m == V3Mode::Off) return false;
+    if (m == V3Mode::On) return true;
+    // Auto: Round 2+ only (round_index >= 1)
+    return round_index >= 1;
+}
+
+inline bool cascade_v3_enabled() {
+    return cascade_v3_mode() != V3Mode::Off;
 }
 
 /// Trial division up to limit. Returns factor or 0.
@@ -607,7 +627,7 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             auto sep = relation::separate_relations(std::move(relations));
 
             std::vector<relation::Relation> partial_copy_for_v3;
-            const bool use_v3 = cascade_v3_enabled();
+            const bool use_v3 = cascade_v3_enabled_for_round(round);
             if (use_v3) partial_copy_for_v3 = sep.partial;
 
             relation::PartialRelationMerger::MergeStats mstats;
