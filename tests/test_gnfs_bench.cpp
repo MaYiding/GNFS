@@ -321,8 +321,11 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
 
         double merge_rate = (collector.size() > 0) ?
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
+        // Use effective_cols (FB + LP) for accurate needed_raw at lp_bits ≥ 20.
+        size_t lp_cols_for_target = lp_enabled ? count_unique_lp_keys(relations) : 0;
+        size_t effective_cols_for_target = matrix_cols + lp_cols_for_target;
         size_t needed_raw = static_cast<size_t>(
-            static_cast<double>(matrix_cols * 2) / std::max(merge_rate, 0.001));
+            static_cast<double>(effective_cols_for_target * 2) / std::max(merge_rate, 0.001));
         // Cap: initial_target × 100 — generous for low merge rates (~2-5%).
         // Session 78 bug: cap of 5× caused adaptive loop to stall at 39d
         // (227K raw > 225K cap, but needed 450K+ for enough usable).
