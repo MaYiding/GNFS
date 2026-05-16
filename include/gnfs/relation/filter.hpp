@@ -402,8 +402,11 @@ public:
         // 1LP+1LP 合并总是产生 full relation，对任何 weight 都值得做
         {
             // 识别 1LP 关系（remaining keys 恰好 1 个）
+            // Reserve avoids rehash for typical pool size (~30-50% partials are 1lp).
             std::unordered_set<size_t> is_1lp;
+            is_1lp.reserve(pool.size() / 2);
             std::unordered_map<LargePrimeKey, std::vector<size_t>, LargePrimeKeyHash> lp1_index;
+            lp1_index.reserve(pool.size() / 2);
             for (size_t i = 0; i < pool.size(); ++i) {
                 auto keys = remaining_lp_keys(pool[i]);
                 if (keys.size() == 1) {
