@@ -1299,10 +1299,17 @@ FactorResult Pipeline::run() {
 
     size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params_.target_excess;
 
-    if (relations.size() <= matrix_cols) {
+    // Effective cols includes LP columns matrix_builder will create.
+    bool lp_enabled_post = params_.large_prime_bound > params_.algebraic_bound;
+    size_t post_lp_cols = lp_enabled_post ? relation::count_unique_lp_keys(relations) : 0;
+    size_t effective_cols_post = matrix_cols + post_lp_cols;
+
+    if (relations.size() <= effective_cols_post) {
         emit_log(LogLevel::Error, Phase::Sieving,
                  "Not enough usable relations: " + std::to_string(relations.size()) +
-                 " <= " + std::to_string(matrix_cols) + " (need excess for BL)");
+                 " <= " + std::to_string(effective_cols_post) +
+                 " (matrix_cols=" + std::to_string(matrix_cols) +
+                 " + lp_cols=" + std::to_string(post_lp_cols) + ")");
         FactorResult r;
         r.n = n_.clone();
         r.stats = stats_;
