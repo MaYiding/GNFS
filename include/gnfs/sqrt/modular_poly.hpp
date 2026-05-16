@@ -47,8 +47,8 @@ public:
 
     /// Set coefficient
     void set_coeff(size_t i, uint64_t value) {
-        while (coeffs_.size() <= i) {
-            coeffs_.push_back(0);
+        if (coeffs_.size() <= i) {
+            coeffs_.resize(i + 1, 0);  // single resize replaces N push_back(0) loop
         }
         coeffs_[i] = value;
         normalize();
