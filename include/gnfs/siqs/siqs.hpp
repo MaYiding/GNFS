@@ -986,9 +986,12 @@ inline std::vector<SIQSRelation> merge_partials(
     std::vector<SIQSRelation>& relations, size_t fb_size, bool verbose = false)
 {
     std::vector<SIQSRelation> full;
+    // SIQS typical 10-30% relations are fully smooth (large_prime==0).
+    full.reserve(relations.size() / 4);
 
     // Pool of all LP relations (grows as merges create new ones)
     std::vector<SIQSRelation> pool;
+    pool.reserve(relations.size());
     size_t factored_2lp = 0, failed_2lp = 0, raw_1lp = 0, raw_2lp = 0;
 
     for (auto& rel : relations) {
