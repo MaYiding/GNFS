@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>  // getenv, atoi for GNFS_OVERRIDE_LP_BITS
 
 namespace gnfs::core {
 
@@ -168,6 +169,15 @@ struct GNFSParams {
             lp_bits = 30;
         }
         lp_bits = std::min(lp_bits, 30u);  // 安全上限: 2^30 = 1G fits uint32
+
+        // ENV override: GNFS_OVERRIDE_LP_BITS=N (1..30) — useful for experimentation
+        // (e.g., 60d lp_bits=25 vs 26 trade-off comparison in BACKLOG OPT).
+        if (const char* env_lp = std::getenv("GNFS_OVERRIDE_LP_BITS")) {
+            int v = std::atoi(env_lp);
+            if (v >= 1 && v <= 30) {
+                lp_bits = static_cast<uint32_t>(v);
+            }
+        }
 
         p.rational_bound = static_cast<uint32_t>(std::min(B_rat, static_cast<double>(UINT32_MAX)));
         p.algebraic_bound = static_cast<uint32_t>(std::min(B_alg, static_cast<double>(UINT32_MAX)));
