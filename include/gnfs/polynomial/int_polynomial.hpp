@@ -254,12 +254,8 @@ public:
         }
 
         uint32_t d = degree();
+        // std::vector<Integer>(d+1) default-inits Integer to 0 — no explicit zero loop needed.
         std::vector<Integer> new_coeffs(d + 1);
-
-        // 初始化为零
-        for (auto& c : new_coeffs) {
-            c = Integer(static_cast<int64_t>(0));
-        }
 
         // 预计算 t 的幂次
         std::vector<Integer> t_powers(d + 1);
