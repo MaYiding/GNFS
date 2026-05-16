@@ -65,7 +65,10 @@ public:
 
         CliqueStats stats;
         stats.input_relations = partials.size();
+        // V3 cascade typical yield: 5-15% full + residual produced.
+        // partials.size()/8 is conservative; over-reserve worst case OK.
         std::vector<Relation> results;
+        results.reserve(partials.size() / 8);
 
         // ── 预过滤: 仅 1LP + 2LP (3LP+ 弃) ──
         std::vector<Relation> pool;
