@@ -8,6 +8,7 @@
 #include <gnfs/cofactor/ecm.hpp>
 #include <gnfs/relation/collector.hpp>
 #include <gnfs/relation/filter.hpp>
+#include <gnfs/relation/clique_merger.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -21,8 +22,10 @@
 #include <chrono>
 #include <optional>
 #include <random>
+#include <cstdlib>  // getenv for GNFS_CASCADE_V3 flag
 #include <string>
 #include <thread>
+#include <unordered_set>  // V3 cascade dedup
 
 namespace gnfs::api {
 
@@ -31,6 +34,11 @@ namespace gnfs::api {
 // ============================================================
 
 namespace {
+
+inline bool cascade_v3_enabled() {
+    const char* v = std::getenv("GNFS_CASCADE_V3");
+    return v != nullptr && v[0] != '\0' && v[0] != '0';
+}
 
 /// Trial division up to limit. Returns factor or 0.
 uint64_t trial_divide(const Integer& n, uint64_t limit) {
@@ -596,6 +604,11 @@ std::vector<Relation> Pipeline::sieve_and_collect(
 
         if (lp_enabled) {
             auto sep = relation::separate_relations(std::move(relations));
+
+            std::vector<relation::Relation> partial_copy_for_v3;
+            const bool use_v3 = cascade_v3_enabled();
+            if (use_v3) partial_copy_for_v3 = sep.partial;
+
             relation::PartialRelationMerger::MergeStats mstats;
             auto merged = relation::PartialRelationMerger::merge_all(
                 std::move(sep.partial), 10, &mstats);
@@ -603,6 +616,30 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             relations.insert(relations.end(),
                 std::make_move_iterator(merged.begin()),
                 std::make_move_iterator(merged.end()));
+
+            // V3 cascade (GNFS_CASCADE_V3=1): runs after V0 on partial copy
+            if (use_v3 && !partial_copy_for_v3.empty()) {
+                relation::CliqueStats cstats;
+                auto v3_merged = relation::CliqueRelationMerger::merge_cliques(
+                    std::move(partial_copy_for_v3), &cstats);
+                std::unordered_set<int64_t> existing_keys;
+                existing_keys.reserve(relations.size());
+                for (const auto& r : relations) {
+                    existing_keys.insert(static_cast<int64_t>(r.a) ^ (static_cast<int64_t>(r.b) << 32));
+                }
+                size_t v3_added = 0;
+                for (auto& r : v3_merged) {
+                    int64_t key = static_cast<int64_t>(r.a) ^ (static_cast<int64_t>(r.b) << 32);
+                    if (existing_keys.insert(key).second) {
+                        relations.push_back(std::move(r));
+                        ++v3_added;
+                    }
+                }
+                emit_log(LogLevel::Info, Phase::Sieving,
+                         "v3_cascade(sieve_loop): full=" + std::to_string(cstats.full_produced) +
+                         " residual=" + std::to_string(cstats.residual_emitted) +
+                         " added=" + std::to_string(v3_added));
+            }
         }
 
         // Accurate effective_cols = matrix_cols + actual LP keys
@@ -682,6 +719,11 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
     if (params_.large_prime_bound > params_.algebraic_bound) {
         auto sep = relation::separate_relations(std::move(relations));
 
+        // ── V3 cascade prep: keep partial copy if cascade enabled ──
+        std::vector<relation::Relation> partial_copy_for_v3;
+        const bool use_v3 = cascade_v3_enabled();
+        if (use_v3) partial_copy_for_v3 = sep.partial;
+
         relation::PartialRelationMerger::MergeStats mstats;
         auto merged = relation::PartialRelationMerger::merge_all(
             std::move(sep.partial), 10, &mstats);
@@ -699,6 +741,43 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
         relations.insert(relations.end(),
             std::make_move_iterator(merged.begin()),
             std::make_move_iterator(merged.end()));
+
+        // ── V3 cascade (ENV: GNFS_CASCADE_V3=1) — runs AFTER V0 on partial copy ──
+        // V0 handles weight=2 LP keys; V3 spans weight≥3 keys via BFS spanning tree.
+        // Dedup: (a,b) tuple — V3 output that matches existing relations is dropped.
+        if (use_v3 && !partial_copy_for_v3.empty()) {
+            relation::CliqueStats cstats;
+            auto v3_merged = relation::CliqueRelationMerger::merge_cliques(
+                std::move(partial_copy_for_v3), &cstats);
+
+            // Dedup by (a,b) — V3 may produce relations already in V0 output.
+            std::unordered_set<int64_t> existing_keys;
+            existing_keys.reserve(relations.size());
+            for (const auto& r : relations) {
+                existing_keys.insert(static_cast<int64_t>(r.a) ^ (static_cast<int64_t>(r.b) << 32));
+            }
+
+            size_t v3_added = 0;
+            size_t v3_dedup_skipped = 0;
+            for (auto& r : v3_merged) {
+                int64_t key = static_cast<int64_t>(r.a) ^ (static_cast<int64_t>(r.b) << 32);
+                if (existing_keys.insert(key).second) {
+                    relations.push_back(std::move(r));
+                    ++v3_added;
+                } else {
+                    ++v3_dedup_skipped;
+                }
+            }
+
+            emit_log(LogLevel::Info, Phase::Filtering,
+                     "v3_cascade: full=" + std::to_string(cstats.full_produced) +
+                     " residual=" + std::to_string(cstats.residual_emitted) +
+                     " lp_rejects=" + std::to_string(cstats.lp_cancel_rejections) +
+                     " added=" + std::to_string(v3_added) +
+                     " dedup=" + std::to_string(v3_dedup_skipped));
+
+            stats_.merged_relations += v3_added;
+        }
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
