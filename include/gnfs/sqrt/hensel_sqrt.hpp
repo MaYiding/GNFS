@@ -1174,10 +1174,9 @@ private:
         // Pre-compute f_lead_inv once (avoid recomputing per-factor)
         auto fli = compute_f_lead_inv(f, d, modulus);
 
-        // Start with 1
+        // Start with 1 (other coeffs default to 0 via Integer ctor)
         std::vector<Integer> product(d);
         product[0] = Integer(int64_t(1));
-        for (uint32_t i = 1; i < d; ++i) product[i] = Integer(int64_t(0));
 
         for (const auto& [a, b] : ab_pairs) {
             // Factor = a - b·x
@@ -1194,7 +1193,7 @@ private:
                 if (neg_b.is_negative()) neg_b += modulus;
                 factor[1] = std::move(neg_b);
             }
-            for (uint32_t i = 2; i < d; ++i) factor[i] = Integer(int64_t(0));
+            // factor[i] for i>=2 already 0 from std::vector<Integer>(d) default ctor
 
             product = poly_mul_mod(product, factor, f, d, modulus, fli);
         }
@@ -1246,8 +1245,7 @@ private:
 
             threads.emplace_back([&partials, &ab_pairs, &f, &modulus, &fli, d, t, start, end]() {
                 std::vector<Integer> product(d);
-                product[0] = Integer(int64_t(1));
-                for (uint32_t i = 1; i < d; ++i) product[i] = Integer(int64_t(0));
+                product[0] = Integer(int64_t(1));  // other coeffs already 0 from ctor
 
                 for (size_t j = start; j < end; ++j) {
                     auto [a, b] = ab_pairs[j];
@@ -1264,7 +1262,8 @@ private:
                         if (neg_b.is_negative()) neg_b += modulus;
                         factor[1] = std::move(neg_b);
                     }
-                    for (uint32_t i = 2; i < d; ++i) factor[i] = Integer(int64_t(0));
+                    // factor[i] for i>=2 already 0 by std::vector<Integer>(d) default ctor
+                    // (Integer default-construction yields 0). No need to re-init in hot loop.
 
                     product = poly_mul_mod(product, factor, f, d, modulus, fli);
                 }
