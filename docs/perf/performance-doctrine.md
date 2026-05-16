@@ -1068,6 +1068,11 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
     - V0 alone: 885 merged
     - V0 + V3 cascade + dedup: 1115 merged
     - **V3 实测 +26% added beyond V0** (synthetic empirical evidence)
+  - **V0 vs V0+V3 head-to-head bench** (commit `8a15eaa`):
+    - 30K rel input (50d scale)
+    - V0 alone: 13380 merged in 9ms
+    - V0+V3 cascade: 13380 + 3240 = 16620 merged in 27ms
+    - **V3 adds 24.2% in only 18ms overhead** — clear positive ROI
   - 2 Pipeline e2e tests (test_api.cpp):
     - test_v3_cascade_pipeline_integration: forces 12d Pipeline GNFS path
       with GNFS_CASCADE_V3=1, captures log callback
