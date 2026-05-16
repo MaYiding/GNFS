@@ -455,12 +455,13 @@ public:
         for (size_t round = 0; round < max_rounds; ++round) {
             ++stats.rounds;
 
-            // 构建 LP 索引
+            // 构建 LP 索引 + 缓存 pool LP keys (避免下方 singleton check 重复调用)
             std::unordered_map<LargePrimeKey, std::vector<size_t>, LargePrimeKeyHash> lp_index;
             lp_index.reserve(pool.size() * 2);
+            std::vector<std::vector<LargePrimeKey>> pool_lp_keys_cache(pool.size());
             for (size_t i = 0; i < pool.size(); ++i) {
-                auto keys = remaining_lp_keys(pool[i]);
-                for (const auto& key : keys) {
+                pool_lp_keys_cache[i] = remaining_lp_keys(pool[i]);
+                for (const auto& key : pool_lp_keys_cache[i]) {
                     lp_index[key].push_back(i);
                 }
             }
@@ -505,10 +506,11 @@ public:
             }
 
             // Singleton removal: 只移除所有剩余 LP 都是 singleton 的关系
+            // 使用 pool_lp_keys_cache 避免 remaining_lp_keys 重复调用
             std::unordered_set<size_t> dead;
             for (size_t i = 0; i < pool.size(); ++i) {
                 if (used.count(i)) continue;
-                auto keys = remaining_lp_keys(pool[i]);
+                const auto& keys = pool_lp_keys_cache[i];
                 bool all_singleton = true;
                 for (const auto& k : keys) {
                     if (!singleton_keys.count(k)) { all_singleton = false; break; }
