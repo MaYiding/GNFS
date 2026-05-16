@@ -605,8 +605,16 @@ std::vector<Relation> Pipeline::sieve_and_collect(
                 std::make_move_iterator(merged.end()));
         }
 
+        // Accurate effective_cols = matrix_cols + actual LP keys
+        // (matrix builder will create one column per odd-exp unique LP key).
+        // 50d/60d 实测 lp_cols ratio = 64% of usable, far above 旧 5% guess.
+        bool lp_enabled_local = params_.large_prime_bound > params_.algebraic_bound;
+        size_t lp_cols = lp_enabled_local ?
+            relation::count_unique_lp_keys(relations) : 0;
+        size_t effective_cols = matrix_cols + lp_cols;
+
         // Check: enough usable relations?
-        if (relations.size() > matrix_cols) break;
+        if (relations.size() > effective_cols) break;
 
         // Not enough — increase target and continue if SQs available
         if (!sq_gen.has_next() || sq_count >= max_sq) break;
@@ -614,7 +622,7 @@ std::vector<Relation> Pipeline::sieve_and_collect(
         double merge_rate = (collector.size() > 0) ?
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
         size_t needed_raw = static_cast<size_t>(
-            static_cast<double>(matrix_cols * 2) / std::max(merge_rate, 0.001));
+            static_cast<double>(effective_cols * 11 / 10) / std::max(merge_rate, 0.001));
         // Raise cap: for low merge rates (~2%), need up to 100× initial target
         batch_target = std::min(
             std::max(batch_target * 2, needed_raw),
