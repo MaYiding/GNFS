@@ -119,7 +119,9 @@ public:
             // Use a worklist to handle cascading w1 columns.
             if (config.eliminate_weight1) {
                 // Seed worklist with all w1 columns
+                // Reserve: typical 10-20% cols are w1 in SGE preprocess phase.
                 std::vector<uint32_t> w1_work;
+                w1_work.reserve(n_cols / 8);
                 for (uint32_t c = 0; c < n_cols; ++c) {
                     if (col_alive[c] && col_to_rows[c].size() == 1)
                         w1_work.push_back(c);
