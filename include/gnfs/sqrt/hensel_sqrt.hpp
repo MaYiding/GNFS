@@ -1381,9 +1381,10 @@ private:
             const Integer& modulus) {
 
         size_t n = std::max(a.size(), b.size());
-        std::vector<Integer> result(n);
+        std::vector<Integer> result(n);  // default-init 0
         for (size_t i = 0; i < n; ++i) {
-            result[i] = (i < a.size()) ? a[i].clone() : Integer(int64_t(0));
+            // result[i] starts at 0 (default ctor); skip ternary's Integer(0) branch.
+            if (i < a.size()) result[i] = a[i].clone();
             if (i < b.size()) {
                 result[i] -= b[i];
                 result[i] %= modulus;
