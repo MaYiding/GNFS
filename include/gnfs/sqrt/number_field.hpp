@@ -94,8 +94,8 @@ public:
     /// 加法
     void add(const NumberFieldElement& other) {
         size_t max_deg = std::max(coeffs_.size(), other.coeffs_.size());
-        while (coeffs_.size() < max_deg) {
-            coeffs_.push_back(Integer(static_cast<int64_t>(0)));
+        if (coeffs_.size() < max_deg) {
+            coeffs_.resize(max_deg, Integer(int64_t(0)));  // single alloc
         }
 
         for (size_t i = 0; i < other.coeffs_.size(); ++i) {
@@ -108,8 +108,8 @@ public:
     /// 减法
     void subtract(const NumberFieldElement& other) {
         size_t max_deg = std::max(coeffs_.size(), other.coeffs_.size());
-        while (coeffs_.size() < max_deg) {
-            coeffs_.push_back(Integer(static_cast<int64_t>(0)));
+        if (coeffs_.size() < max_deg) {
+            coeffs_.resize(max_deg, Integer(int64_t(0)));  // single alloc
         }
 
         for (size_t i = 0; i < other.coeffs_.size(); ++i) {
