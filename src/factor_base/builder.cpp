@@ -403,6 +403,7 @@ std::vector<uint32_t> FactorBaseBuilder::find_roots_mod_p(const PolynomialContex
     // For very small primes, brute force is faster than the overhead of polynomial GCD
     if (p < 64) {
         std::vector<uint32_t> roots;
+        roots.reserve(static_cast<size_t>(ctx.degree()));  // max d roots in F_p
         for (uint32_t r = 0; r < p; ++r) {
             if (ctx.evaluate_mod(r, p) == 0) {
                 roots.push_back(r);
@@ -496,6 +497,7 @@ std::vector<uint32_t> FactorBaseBuilder::extract_roots_from_poly(
 
         // Get coefficients of current poly for reduction
         std::vector<uint64_t> poly_coeffs;
+        poly_coeffs.reserve(static_cast<size_t>(poly.degree() + 1));
         for (int i = 0; i <= poly.degree(); ++i) {
             poly_coeffs.push_back(poly.coeff(i));
         }
