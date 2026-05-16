@@ -273,6 +273,7 @@ public:
             size_t max_count = 10000) {
 
         std::vector<Integer> result;
+        result.reserve(max_count);  // exit cap
         result.push_back(Integer(static_cast<int64_t>(1)));
 
         for (uint32_t p : small_primes) {
