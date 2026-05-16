@@ -643,29 +643,57 @@ private:
         // build_with_qc() 会用 PolynomialContext 正确计算并设置符号列。
 
         // 有理因子基：计算每个素数的指数模 2
+        // FB factor counts: 50d ~10-15 per rel, 60d ~10-30. Use stack array
+        // for size<=32 (typical), fallback to unordered_map for larger.
         {
-            std::unordered_map<uint32_t, uint8_t> exponents;
-            for (size_t j = 0; j < rel.rational_factors.size(); ++j) {
-                exponents[rel.rational_factors[j]]++;
-            }
-
-            for (const auto& [idx, exp] : exponents) {
-                if (exp % 2 == 1 && idx < mapping.num_rational_fb) {
-                    row.append_unchecked(static_cast<uint32_t>(mapping.rat_fb_start() + idx));
+            const auto& rfacs = rel.rational_factors;
+            if (rfacs.size() <= 32) {
+                uint32_t rkeys[32]; uint8_t rexps[32]; size_t ru = 0;
+                for (uint32_t f : rfacs) {
+                    size_t j = 0;
+                    for (; j < ru; ++j) if (rkeys[j] == f) break;
+                    if (j == ru) { rkeys[ru] = f; rexps[ru] = 1; ++ru; }
+                    else ++rexps[j];
+                }
+                for (size_t i = 0; i < ru; ++i) {
+                    if ((rexps[i] & 1u) && rkeys[i] < mapping.num_rational_fb) {
+                        row.append_unchecked(static_cast<uint32_t>(mapping.rat_fb_start() + rkeys[i]));
+                    }
+                }
+            } else {
+                std::unordered_map<uint32_t, uint8_t> exponents;
+                for (uint32_t f : rfacs) exponents[f]++;
+                for (const auto& [idx, exp] : exponents) {
+                    if ((exp & 1u) && idx < mapping.num_rational_fb) {
+                        row.append_unchecked(static_cast<uint32_t>(mapping.rat_fb_start() + idx));
+                    }
                 }
             }
         }
 
         // 代数因子基：计算每个素理想的指数模 2
         {
-            std::unordered_map<uint32_t, uint8_t> exponents;
-            for (size_t j = 0; j < rel.algebraic_factors.size(); ++j) {
-                exponents[rel.algebraic_factors[j]]++;
-            }
-
-            for (const auto& [idx, exp] : exponents) {
-                if (exp % 2 == 1 && idx < mapping.num_algebraic_fb) {
-                    row.append_unchecked(static_cast<uint32_t>(mapping.alg_fb_start() + idx));
+            const auto& afacs = rel.algebraic_factors;
+            if (afacs.size() <= 32) {
+                uint32_t akeys[32]; uint8_t aexps[32]; size_t au = 0;
+                for (uint32_t f : afacs) {
+                    size_t j = 0;
+                    for (; j < au; ++j) if (akeys[j] == f) break;
+                    if (j == au) { akeys[au] = f; aexps[au] = 1; ++au; }
+                    else ++aexps[j];
+                }
+                for (size_t i = 0; i < au; ++i) {
+                    if ((aexps[i] & 1u) && akeys[i] < mapping.num_algebraic_fb) {
+                        row.append_unchecked(static_cast<uint32_t>(mapping.alg_fb_start() + akeys[i]));
+                    }
+                }
+            } else {
+                std::unordered_map<uint32_t, uint8_t> exponents;
+                for (uint32_t f : afacs) exponents[f]++;
+                for (const auto& [idx, exp] : exponents) {
+                    if ((exp & 1u) && idx < mapping.num_algebraic_fb) {
+                        row.append_unchecked(static_cast<uint32_t>(mapping.alg_fb_start() + idx));
+                    }
                 }
             }
         }
