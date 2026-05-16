@@ -159,6 +159,43 @@ void test_large_prime_bound() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_lp_bits_env_override() {
+    std::cout << "Testing GNFS_OVERRIDE_LP_BITS ENV override..." << std::endl;
+
+    // Default: 60d (197-bit) → lp_bits = 26
+    unsetenv("GNFS_OVERRIDE_LP_BITS");
+    auto default_60d = GNFSParams::compute(197);
+    assert(default_60d.large_prime_bits == 26);
+
+    // ENV=25 → lp_bits = 25
+    setenv("GNFS_OVERRIDE_LP_BITS", "25", 1);
+    auto override_25 = GNFSParams::compute(197);
+    assert(override_25.large_prime_bits == 25);
+    assert(override_25.large_prime_bound == (1ULL << 25));
+
+    // ENV=27 → lp_bits = 27 (any 1..30 in range)
+    setenv("GNFS_OVERRIDE_LP_BITS", "27", 1);
+    auto override_27 = GNFSParams::compute(197);
+    assert(override_27.large_prime_bits == 27);
+
+    // ENV=0 (out of range 1..30) → no override (back to default 26)
+    setenv("GNFS_OVERRIDE_LP_BITS", "0", 1);
+    auto invalid_0 = GNFSParams::compute(197);
+    assert(invalid_0.large_prime_bits == 26);
+
+    // ENV=99 (out of range) → no override
+    setenv("GNFS_OVERRIDE_LP_BITS", "99", 1);
+    auto invalid_99 = GNFSParams::compute(197);
+    assert(invalid_99.large_prime_bits == 26);
+
+    // Clean up
+    unsetenv("GNFS_OVERRIDE_LP_BITS");
+    auto cleanup = GNFSParams::compute(197);
+    assert(cleanup.large_prime_bits == 26);
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_threshold_values() {
     std::cout << "Testing threshold values..." << std::endl;
 
@@ -293,6 +330,7 @@ int main() {
     test_sieve_area_cap();
     test_sieve_region_geometry();
     test_large_prime_bound();
+    test_lp_bits_env_override();
     test_threshold_values();
     test_max_special_q();
     test_estimated_relations();
