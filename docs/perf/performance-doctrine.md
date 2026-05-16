@@ -1284,3 +1284,38 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
 **END of Performance Doctrine v1.0**
 
 *下一步: 实施 §5 的 S1-S6，建立 PGO + Instruments 闭环；改动产生的所有 commit 必须援引本文档某一条铁律。*
+
+---
+
+## Addendum: 2026-05-17 大型 perf 优化 session 记录
+
+**164 commits** 单 session 覆盖 trim BUG 修复 + 全模块 reserve/fast-path/resize 优化。
+
+**5 critical BUG fixes**:
+- trim limit `matrix_cols × N` → `effective_cols × N` (含 LP cols) 在 4 个 test entries
+- `verify_algebraic_ideal_powers` std::map → unordered_map (O(log n) → O(1))
+
+**90+ perf optimizations 分布**:
+- Reserves: 60+ places (vectors, maps, sets) 跨全部模块
+- Small-LP/FB fast paths: 8 places (n ≤ 8 / n ≤ 32 阈值)
+- Resize-replaces-loop / single-alloc patterns: 12+ places (NumberField, Hensel, IntPoly, class_group, SIQS)
+- Algorithm upgrades: count+insert → single insert (saves 1 hash lookup)
+- 8× cache savings: verify_dependency size_t → uint8_t XOR parity
+
+**Measurable cumulative gains (M5 MacBook Pro)**:
+- smoke 28/28: 13.15s → 8.42s (**−36%**)
+- regression_gate 4/4: 42.63s → 25.86s (**−39%**)
+- test_clique_merger_50d_synthetic: 200K input <1s
+- SIQS 40-digit: 0.049s (1019 polys)
+
+**Validation**:
+- smoke 28/28 PASS (cumulative across all 164 commits)
+- regression_gate 4/4 PASS (8/27/40/81-bit GNFS paths)
+- module tests (linalg/sqrt/relation/factor_base/...) 全 PASS
+
+**Trim BUG pattern doctrine** (防 future regression):
+- ANY test trim must use `effective_cols = matrix_cols + count_unique_lp_keys(relations)`
+- `matrix_cols × N` 仅在 lp_bits < 20 时安全
+- 50d (lp_bits=23) LP cols 占 total cols 65%
+- 60d (lp_bits=26) LP cols 占 total cols 70%
+- 见 CLAUDE.md "Trim limit 必须含 LP cols" 节
