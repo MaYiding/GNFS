@@ -227,6 +227,29 @@ GNFS_OVERRIDE_LP_BITS=27 ./gnfs <N>          # any size with lp_bits=27
 - LP space 影响 sieve duration: smaller lp_bits = smaller LP space = fewer LP cols = less raw needed for PASS (但 fewer LP cofactor candidates)
 - 实验前后必须 reg-test 25d / 50d (lp_bits 不该影响 < 50d behavior, 默认 path unchanged)
 
+### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
+
+**所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
+而非裸 `matrix_cols`。lp_bits ≥ 20 时 LP cols 占总 cols 60-70% (50d 实测 65%, 60d ~70%),
+仅按 FB cols trim 会砍光 30-40% rows → matrix NO_EXCESS。
+
+正确公式 (5 个 test entry points 一致):
+```cpp
+size_t lp_cols_for_trim = lp_enabled ? count_unique_lp_keys(relations) : 0;
+size_t effective_cols = matrix_cols + lp_cols_for_trim;
+size_t max_rels = effective_cols * 1.25;  // 25% safety; 1.3 for ≤25-digit gate paths
+```
+
+**触发**:
+- test_stress.cpp (commit 71193bb 主犯, 50d V0+fix FAIL 根本原因)
+- test_gnfs_progressive.cpp (commit ed8a7b5)
+- test_regression_gate.cpp (commit 33d9a8f, latent)
+- test_25digit.cpp (commit d7037ff, latent)
+- pipeline.cpp Phase 5 (使用 actual matrix stats, 不受影响 — `compute_matrix_stats` 已含 LP cols)
+
+**预防**: 任何新 test entry point 引入 Phase 4 trim 必须用 `effective_cols`。
+`matrix_cols * N` 这个 pattern 在 lp_bits≥20 size 下永远是 BUG。
+
 ## 跨 bit-size 验证 (小 case PASS ≠ 大 case PASS)
 
 **81-bit 测试 PASS ≠ 164-bit (50-digit) PASS ≠ 197-bit (60-digit) PASS。** GNFS 算法行为随 LP_bound (lp_bits) 显著变化:
