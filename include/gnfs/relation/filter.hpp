@@ -214,6 +214,31 @@ private:
     }
 };
 
+/// Count unique LP keys with odd combined exponent (matrix_builder convention).
+/// 这是 matrix 实际为 LP 创建的列数 — sieve loop adaptive target 必须用准确值
+/// 估算 effective_cols. 否则可能在 NO EXCESS gap 前提前 break sieve loop.
+///
+/// rat: 按 prime 聚合 (no root). alg: 按 (p, r) pair 聚合.
+/// 只 count 奇指数 keys (matrix_builder.hpp collect_large_primes 同 convention).
+[[nodiscard]] inline size_t count_unique_lp_keys(
+        const std::vector<Relation>& relations) {
+    std::unordered_set<uint64_t> rat_lp_set;
+    std::unordered_set<uint64_t> alg_lp_set;  // pack: (p << 32) | (r & 0xFFFFFFFF)
+    for (const auto& rel : relations) {
+        std::unordered_map<uint64_t, uint32_t> rat_exp;
+        for (const auto& lp : rel.rational_large_prime) rat_exp[lp.p] += lp.e;
+        for (const auto& [p, e] : rat_exp) if (e & 1u) rat_lp_set.insert(p);
+
+        std::unordered_map<uint64_t, uint32_t> alg_exp;
+        for (const auto& lp : rel.algebraic_large_prime) {
+            uint64_t key = (lp.p << 32) | (lp.r & 0xFFFFFFFFu);
+            alg_exp[key] += lp.e;
+        }
+        for (const auto& [k, e] : alg_exp) if (e & 1u) alg_lp_set.insert(k);
+    }
+    return rat_lp_set.size() + alg_lp_set.size();
+}
+
 /// 分离完全关系和部分关系
 struct SeparatedRelations {
     std::vector<Relation> full;      // 无大素数

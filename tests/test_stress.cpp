@@ -386,29 +386,9 @@ FactResult factor_with_progress(const Integer& n, int level) {
                 std::make_move_iterator(merged.end()));
         }
 
-        // Accurate LP col count (was: 5% guess). The matrix builder creates
-        // columns for LP primes surviving singleton filter with odd exponents.
-        // 50d 实测: 38K usable → 24165 alg_lp + 512 rat_lp = 24677 (64%, far > 5%).
-        // Reason: lp_bits=23 (50d) → 8M LP bound → unique (p,r) ideals dominate.
-        // 5% only holds for ≤30-digit where weight=2 keys dominate.
-        size_t lp_col_estimate = 0;
-        if (lp_enabled) {
-            std::unordered_set<uint64_t> rat_lp_set;
-            std::unordered_set<uint64_t> alg_lp_set;  // pack p (high 32) | r (low 32)
-            for (const auto& rel : relations) {
-                std::unordered_map<uint64_t, uint32_t> rat_exp;
-                for (const auto& lp : rel.rational_large_prime) rat_exp[lp.p] += lp.e;
-                for (const auto& [p, e] : rat_exp) if (e & 1u) rat_lp_set.insert(p);
-
-                std::unordered_map<uint64_t, uint32_t> alg_exp;
-                for (const auto& lp : rel.algebraic_large_prime) {
-                    uint64_t key = (lp.p << 32) | (lp.r & 0xFFFFFFFFu);
-                    alg_exp[key] += lp.e;
-                }
-                for (const auto& [k, e] : alg_exp) if (e & 1u) alg_lp_set.insert(k);
-            }
-            lp_col_estimate = rat_lp_set.size() + alg_lp_set.size();
-        }
+        // Accurate LP col count via count_unique_lp_keys (filter.hpp).
+        // 50d 实测: 38K usable → 24677 lp cols (64%) vs 旧 5% guess 339 (12× under).
+        size_t lp_col_estimate = lp_enabled ? count_unique_lp_keys(relations) : 0;
         size_t effective_cols = matrix_cols + lp_col_estimate;
 
         if (relations.size() > effective_cols) {
