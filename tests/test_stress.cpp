@@ -430,9 +430,12 @@ FactResult factor_with_progress(const Integer& n, int level) {
         size_t needed_usable = effective_cols + effective_cols / 10;  // +10% safety
         size_t needed_raw = static_cast<size_t>(
             static_cast<double>(needed_usable) / std::max(merge_rate, 0.001));
+        // Cap raised 5× → 20× initial. 50d needs ~7M raw (effective_cols 47K,
+        // merge_rate 1%) vs initial 618K → ratio 11×. Old 5× cap (3M) blocked
+        // adaptive loop from reaching required target.
         batch_target = std::min(
             std::max(batch_target + batch_target / 4, needed_raw),  // +25% growth
-            initial_target * 5);
+            initial_target * 20);
         std::cout << "  Need more — usable=" << relations.size() << "/" << effective_cols
                   << " merge_rate=" << std::setprecision(3) << (merge_rate * 100)
                   << "%, new target=" << batch_target << "\n" << std::flush;
