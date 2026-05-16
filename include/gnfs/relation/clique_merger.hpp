@@ -32,7 +32,9 @@ struct CliqueStats {
     size_t components_found = 0;        // 总连通分量数
     size_t components_with_excess = 0;  // 大小 >= 2 的分量
     size_t full_produced = 0;           // 产生的 full relations
-    size_t lp_cancel_rejections = 0;    // LP cancel check 拒绝次数
+    size_t lp_cancel_rejections = 0;    // 总 LP cancel rejections (fast-path + heavy)
+    size_t fast_path_rejects = 0;       // overlap fast-path 拒绝 (无 LP 重叠)
+    size_t heavy_path_rejects = 0;      // merge_two 后 cancel check 拒绝 (rare)
     size_t residual_emitted = 0;        // 残留 LP 的 merged rels 仍 emit
     size_t singletons_removed = 0;      // singleton 清理删除
 };
@@ -195,6 +197,7 @@ private:
                         }
                         if (!has_overlap) {
                             ++stats.lp_cancel_rejections;
+                            ++stats.fast_path_rejects;
                             continue;  // 必 reject, skip merge_two
                         }
 
@@ -205,6 +208,7 @@ private:
 
                         if (cand_keys.size() >= before) {
                             ++stats.lp_cancel_rejections;
+                            ++stats.heavy_path_rejects;
                             continue;  // 罕见: 有 overlap 但 cancellation 没显著减
                         }
 
