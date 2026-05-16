@@ -199,6 +199,63 @@ void test_v3_lp_cancel_safety() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_v0_v3_bench_large() {
+    // Head-to-head V0 vs V0+V3 cascade on 30K-rel input (50d-scale).
+    // Measures actual added value + timing for production decision-making.
+    std::cout << "Bench V0 vs V0+V3 cascade (30K input)..." << std::endl;
+
+    auto base_input = make_synthetic_50d_like(30000, /*seed=*/2026);
+
+    // V0 alone
+    auto v0_input = base_input;
+    auto t0_start = std::chrono::high_resolution_clock::now();
+    PartialRelationMerger::MergeStats v0_stats;
+    auto v0_merged = PartialRelationMerger::merge_all(std::move(v0_input), 10, &v0_stats);
+    auto t0_end = std::chrono::high_resolution_clock::now();
+    double v0_elapsed = std::chrono::duration<double>(t0_end - t0_start).count();
+
+    // V0 + V3 cascade
+    auto v0_input_copy = base_input;
+    auto v3_input_copy = base_input;
+    auto tv_start = std::chrono::high_resolution_clock::now();
+    PartialRelationMerger::MergeStats v0_stats_cascade;
+    auto v0_merged_cascade = PartialRelationMerger::merge_all(
+        std::move(v0_input_copy), 10, &v0_stats_cascade);
+    CliqueStats v3_stats;
+    auto v3_merged = CliqueRelationMerger::merge_cliques(std::move(v3_input_copy), &v3_stats);
+    // Dedup
+    std::unordered_set<int64_t> existing;
+    for (const auto& r : v0_merged_cascade) {
+        existing.insert(static_cast<int64_t>(r.a) ^ (static_cast<int64_t>(r.b) << 32));
+    }
+    size_t v3_added = 0;
+    for (const auto& r : v3_merged) {
+        int64_t k = static_cast<int64_t>(r.a) ^ (static_cast<int64_t>(r.b) << 32);
+        if (existing.insert(k).second) ++v3_added;
+    }
+    auto tv_end = std::chrono::high_resolution_clock::now();
+    double v3_elapsed = std::chrono::duration<double>(tv_end - tv_start).count();
+
+    std::cout << "  V0 alone:    merged=" << v0_merged.size()
+              << " elapsed=" << std::fixed << std::setprecision(3) << v0_elapsed << "s" << std::endl;
+    std::cout << "  V0+V3:       v0=" << v0_merged_cascade.size()
+              << " +v3_added=" << v3_added
+              << " total=" << (v0_merged_cascade.size() + v3_added)
+              << " elapsed=" << v3_elapsed << "s" << std::endl;
+    if (!v0_merged.empty()) {
+        double pct = 100.0 * v3_added / v0_merged.size();
+        std::cout << "  V3 adds " << std::setprecision(1) << pct
+                  << "% beyond V0 in " << std::setprecision(3)
+                  << (v3_elapsed - v0_elapsed) << "s extra" << std::endl;
+    }
+
+    // Sanity: V3 cascade should add positive relations + still complete fast
+    assert(v3_added > 0);
+    assert(v3_elapsed < 10.0);
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_v3_huge_clique() {
     // Adversarial: single large clique (5000 rels share same LP key).
     // V3 BFS must not blow up (stack overflow, quadratic in nbr eval, etc.)
@@ -267,6 +324,7 @@ int main() {
     test_v3_expands_v0_baseline();
     test_v0_v3_cascade_dedup();
     test_v3_lp_cancel_safety();
+    test_v0_v3_bench_large();
     test_v3_huge_clique();
     test_v3_scale_performance();
 
