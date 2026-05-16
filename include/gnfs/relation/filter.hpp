@@ -461,7 +461,10 @@ public:
             }
             std::sort(sorted_1lp_keys.begin(), sorted_1lp_keys.end());
 
+            // used_1lp: 2 idx per merge, mergeable keys size sorted_1lp_keys.
+            // Worst case used = 2 × sorted_1lp_keys.size() (paired up).
             std::unordered_set<size_t> used_1lp;
+            used_1lp.reserve(sorted_1lp_keys.size() * 2);
             for (const auto& key : sorted_1lp_keys) {
                 const auto& indices = lp1_index.at(key);
                 size_t first_unused = SIZE_MAX;
