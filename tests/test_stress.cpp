@@ -475,11 +475,18 @@ FactResult factor_with_progress(const Integer& n, int level) {
     }
 
     // ── Phase 4: Relation Trimming ──
+    // CRITICAL: must include LP cols in trim limit. Old `matrix_cols * 2`
+    // only counted FB cols, ignoring lp_cols (up to 65% of total in 50d/lp_bits=23).
+    // 50d Round 4 evidence: usable=74568, FB-only trim=45520, actual cols=64127 →
+    // matrix 45520×64127 NO EXCESS. Fix: trim = effective_cols × 1.25 (25% safety).
     {
-        size_t max_rels = matrix_cols * 2;
+        size_t lp_cols_for_trim = lp_enabled ? count_unique_lp_keys(relations) : 0;
+        size_t effective_cols_for_trim = matrix_cols + lp_cols_for_trim;
+        size_t max_rels = effective_cols_for_trim + effective_cols_for_trim / 4;
         if (relations.size() > max_rels) {
             std::cout << "  [Trim] " << relations.size() << " → " << max_rels
-                      << " relations\n";
+                      << " relations (eff_cols=" << effective_cols_for_trim
+                      << ", +25% safety)\n";
             std::mt19937 rng(42);
             std::shuffle(relations.begin(), relations.end(), rng);
             relations.resize(max_rels);
