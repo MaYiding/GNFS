@@ -971,6 +971,9 @@ private:
     /// 等价于旧减法筛中：residual <= threshold
     [[nodiscard]] std::vector<SieveCandidate> collect_candidates(const LatticeBasis& basis) const {
         std::vector<SieveCandidate> candidates;
+        // Heuristic: ~0.5-2% of sieve cells pass threshold typically.
+        // sieve_array_.size() / 100 is conservative; over-reserve worst case fine.
+        candidates.reserve(sieve_array_.size() / 100);
 
         uint16_t threshold = params_.combined_threshold();
         // effective_threshold = init_val - threshold (if init too low, no valid candidates)
