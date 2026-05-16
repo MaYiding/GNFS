@@ -99,9 +99,11 @@ public:
             return fp;
         };
 
-        // Collect suitable primes
+        // Collect suitable primes. Reserve config_.num_primes (the exit criterion).
         std::vector<uint64_t> primes;
+        primes.reserve(config_.num_primes);
         std::vector<std::vector<uint64_t>> sqrt_coeffs;  // sqrt coeffs mod each prime
+        sqrt_coeffs.reserve(config_.num_primes);
 
         // Debug counters
         size_t primes_checked = 0;
@@ -500,8 +502,11 @@ public:
         };
 
         // Collect suitable primes — store raw sqrt coefficients without sign normalization
+        // Reserve config_.num_primes (the loop exit criterion).
         std::vector<uint64_t> primes;
+        primes.reserve(config_.num_primes);
         std::vector<std::vector<uint64_t>> sqrt_coeffs;
+        sqrt_coeffs.reserve(config_.num_primes);
 
         uint64_t p = config_.prime_start;
         size_t primes_checked = 0;
