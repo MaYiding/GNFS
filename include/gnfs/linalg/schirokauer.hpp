@@ -157,6 +157,8 @@ struct GFPolyOps {
     /// Returns pairs (degree, product_of_factors_of_that_degree)
     static std::vector<std::pair<uint32_t, Poly>> ddf(Poly f, uint64_t p) {
         std::vector<std::pair<uint32_t, Poly>> result;
+        // f has at most deg/2 distinct degrees in DDF output.
+        result.reserve(f.size() / 2);
         f = trim(f);
         if (f.size() <= 1) return result;
         // Make monic
