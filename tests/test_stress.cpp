@@ -388,6 +388,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
                       << " rnd=" << mstats.rounds << ")\n" << std::flush;
 
             relations = std::move(sep.full);
+            // Reserve full + V0 merged + V3 estimate (~3× merged worst case).
+            relations.reserve(relations.size() + merged.size() * 4);
             relations.insert(relations.end(),
                 std::make_move_iterator(merged.begin()),
                 std::make_move_iterator(merged.end()));
