@@ -1319,3 +1319,20 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
 - 50d (lp_bits=23) LP cols 占 total cols 65%
 - 60d (lp_bits=26) LP cols 占 total cols 70%
 - 见 CLAUDE.md "Trim limit 必须含 LP cols" 节
+
+**V3 cascade 50d trajectory evidence (Round 1-3 实测)**:
+| Round | Raw target | Usable | LP cols | β | PASS ratio |
+|-------|-----------|--------|---------|---|------------|
+| 1 | 617K | 27K | 38K | 141% | 44% |
+| 2 | 1.53M | 82K | 113K | 138% | 60% |
+| 3 | 2.79M | 149K | 196K | 132% | 68% |
+| 4 (sieve) | 4.50M | (extrapolation) ~240K | ~245K | ~128% | ~74% |
+
+**关键观察**:
+- β > 130% throughout, LP cols dominate matrix
+- PASS ratio improves ~10% per round but slowing
+- merge_rate stable at 5.35% (V3 cascade efficient)
+- Round 4-5 estimated 3-4 hours total to reach PASS ratio ≥ 100%
+
+**结论**: lp_bits=23 (50d) needs Round 5+ to PASS with current strategy.
+**Alternative**: lp_bits=22 fallback (4× smaller LP space) — BACKLOG OPT。
