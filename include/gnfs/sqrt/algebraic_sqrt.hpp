@@ -31,8 +31,14 @@ using linalg::BitVector;
     // Count algebraic FB factor multiplicities
     std::unordered_map<uint32_t, uint64_t> fb_exponents;
     fb_exponents.reserve(relations.size());
-    // Use (p, r) pair as key to distinguish prime ideals above the same rational prime
-    std::map<std::pair<uint64_t, uint64_t>, uint64_t> lp_exponents;
+    // Use (p, r) pair as key to distinguish prime ideals above the same rational prime.
+    // Pack into uint64: p (high 32) | r (low 32) — primes fit in 32 bits for 50d/60d
+    // (LP bound 8M / 67M both < 2^32). Hash on uint64 is O(1) vs std::map O(log n).
+    auto pack_pr = [](uint64_t p, uint64_t r) -> uint64_t {
+        return (p << 32) | (r & 0xFFFFFFFFu);
+    };
+    std::unordered_map<uint64_t, uint64_t> lp_exponents;
+    lp_exponents.reserve(relations.size());
 
     for (size_t i = 0; i < relations.size(); ++i) {
         if (!dependency.test(i)) continue;
@@ -41,7 +47,7 @@ using linalg::BitVector;
             fb_exponents[idx]++;
         }
         for (const auto& lp : rel.algebraic_large_prime) {
-            lp_exponents[{lp.p, lp.r}] += lp.e;
+            lp_exponents[pack_pr(lp.p, lp.r)] += lp.e;
         }
     }
 
