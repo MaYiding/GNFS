@@ -391,10 +391,14 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
         double merge_rate = (collector.size() > 0) ?
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
-        // Birthday effect: merge_rate improves as ~sqrt(n), so conservative 2× scaling
-        // Cap at 5× initial target to prevent runaway collection (BL can't handle huge matrices)
+        // Birthday effect: merge_rate improves as ~sqrt(n), so conservative 2× scaling.
+        // Cap at 5× initial target to prevent runaway collection (BL can't handle huge matrices).
+        // CRITICAL: needed_raw must use effective_cols (FB + LP) for lp_bits ≥ 20.
+        // FB-only matrix_cols underestimates by 2-3× when LP cols dominate (50d/60d).
+        size_t lp_cols_for_target = lp_enabled ? count_unique_lp_keys(relations) : 0;
+        size_t effective_cols_for_target = matrix_cols + lp_cols_for_target;
         size_t needed_raw = static_cast<size_t>(
-            static_cast<double>(matrix_cols * 2) / std::max(merge_rate, 0.001));
+            static_cast<double>(effective_cols_for_target * 2) / std::max(merge_rate, 0.001));
         batch_target = std::min(
             std::max(batch_target * 2, needed_raw),
             initial_target * 5);
