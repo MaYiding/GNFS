@@ -193,6 +193,7 @@ public:
                     // Update composition: comp[r1] ^= comp[r2] (GF(2))
                     auto& comp1 = composition[r1];
                     auto& comp2 = composition[r2];
+                    comp1.reserve(comp1.size() + comp2.size());
                     comp1.insert(comp1.end(), comp2.begin(), comp2.end());
                     std::sort(comp1.begin(), comp1.end());
                     // Deduplicate with GF(2) semantics: even count → cancel
