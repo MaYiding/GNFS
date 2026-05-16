@@ -44,6 +44,9 @@ public:
         }
 
         TrialDivisionResult result;
+        // Reserve: typical relation has 8-15 distinct rat FB factors.
+        result.factor_indices.reserve(16);
+        result.exponents.reserve(16);
         if (value.is_negative()) value.negate();
 
         if (value.is_zero()) {
@@ -146,6 +149,9 @@ public:
             Integer norm, int64_t a, uint64_t b, size_t max_entries = 0) const {
 
         TrialDivisionResult result;
+        // Reserve: typical relation has 8-15 distinct alg FB factors.
+        result.factor_indices.reserve(16);
+        result.exponents.reserve(16);
 
         // 处理符号
         if (norm.is_negative()) {
@@ -359,6 +365,9 @@ private:
     /// 零 GMP 分配——整个流程在原生 uint64 算术内完成
     [[nodiscard]] TrialDivisionResult divide_rational_u64_from(uint64_t value, uint32_t start_idx) const {
         TrialDivisionResult result;
+        // Reserve: typical relation has 8-15 distinct rat FB factors.
+        result.factor_indices.reserve(16);
+        result.exponents.reserve(16);
 
         if (value == 0) {
             result.is_smooth = true;
