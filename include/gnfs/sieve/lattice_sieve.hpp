@@ -549,8 +549,10 @@ private:
 
         // Phase 2: apply bucket regions + tiny prime stride
 
-        // Build tiny prime list (reuse CompactSmallPrime)
+        // Build tiny prime list (reuse CompactSmallPrime).
+        // Reserve: tiny primes are p < 256 → bounded count ~54 (PrimePi(256)).
         std::vector<CompactSmallPrime> tiny_primes;
+        tiny_primes.reserve(64);
         for (const auto& pe : primes) {
             if (pe.flags == 0 && pe.p < TINY_THRESHOLD) {
                 tiny_primes.push_back({
@@ -562,8 +564,9 @@ private:
             }
         }
 
-        // v-primes
+        // v-primes (flags==1 subset of primes — typically minor fraction).
         std::vector<VPrimeEntry> v_primes;
+        v_primes.reserve(primes.size() / 8);
         for (const auto& pe : primes) {
             if (pe.flags == 1) v_primes.push_back({pe.p, pe.log_p});
         }
