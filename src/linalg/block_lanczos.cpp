@@ -106,6 +106,7 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
     const SparseMatrix& matrix, size_t max_deps) {
 
     std::vector<std::vector<bool>> dependencies;
+    dependencies.reserve(max_deps);  // exit cap
 
     size_t m = matrix.num_rows();
     size_t n = matrix.num_cols();
