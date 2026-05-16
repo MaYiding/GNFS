@@ -1032,6 +1032,15 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
 - lp_estimate=5412 (vs 旧 339, ×16 准确度)
 - effective_cols=27568 (vs 旧 23099)
 - Round 2 sieve target 2.76M (vs 旧 2.31M cap 卡死)
+
+**Round 2 完成数据** (2026-05-16, 2.54h elapsed):
+- Full=0 1LP=31969 2LP=349977 **Merged=46706** (6.9× Round 1 growth)
+- merge_rate **1.691%** (vs Round 1 1.098%, +54% improvement — birthday paradox kicks in at scale)
+- effective_cols=53113 (β=0.66 stable)
+- 仍 NO_EXCESS: usable 46706 < 53113 → Round 3 target 3.45M
+- 更新 PASS formula: raw_needed = 22156 / (0.01691 × 0.34) = **3.85M**
+- Round 4 (~3.94M) 预 PASS, total ETA ~5.7h sieve (Round 2 完成时已 2.54h, 还需 1.3h)
+- **教训**: α 随 N 增长显著 improvement (birthday效应), 不应假 constant α
 - Round 5 估 PASS at ~5.6M raw, total wall ~5-6h
 
 **60d follow-up** (BACKLOG 已加):
