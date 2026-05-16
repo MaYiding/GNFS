@@ -123,6 +123,7 @@ public:
 
         // ── Singleton cleanup: 剩余未用的 partial 检查 LP keys 是否全 singleton ──
         std::unordered_set<LargePrimeKey, LargePrimeKeyHash> singleton_keys;
+        singleton_keys.reserve(lp_index.size());  // upper bound
         for (const auto& [key, rels] : lp_index) {
             // After merging, recompute weights from unused rels
             size_t alive = 0;

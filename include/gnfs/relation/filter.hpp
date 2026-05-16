@@ -172,6 +172,7 @@ private:
 
         // 找出单例
         std::unordered_set<LargePrimeKey, LargePrimeKeyHash> singletons;
+        singletons.reserve(counts.size());
         for (const auto& [key, count] : counts) {
             if (count == 1) {
                 singletons.insert(key);
