@@ -518,12 +518,15 @@ std::vector<uint32_t> FactorBaseBuilder::extract_roots_from_poly(
         if (factor_deg > 0 && factor_deg < deg) {
             // Successfully split! Recurse on both factors
             auto roots1 = extract_roots_from_poly(factor, f_mod, p);
-            roots.insert(roots.end(), roots1.begin(), roots1.end());
 
             // Compute the other factor: poly / factor mod p
             // Simple polynomial division since factor divides poly exactly
             auto other = poly_div_mod(poly, factor, p);
             auto roots2 = extract_roots_from_poly(other, f_mod, p);
+
+            // Reserve total before merging to avoid 2-step realloc
+            roots.reserve(roots.size() + roots1.size() + roots2.size());
+            roots.insert(roots.end(), roots1.begin(), roots1.end());
             roots.insert(roots.end(), roots2.begin(), roots2.end());
             return roots;
         }
