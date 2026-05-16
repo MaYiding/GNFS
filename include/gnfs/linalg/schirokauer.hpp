@@ -276,6 +276,8 @@ struct GFPolyOps {
         auto ddf_result = ddf(f_sqfree, p);
 
         std::vector<Poly> factors;
+        // f has at most deg(f) irreducible factors over GF(p) — bound by degree.
+        factors.reserve(f_sqfree.size());
         for (auto& [d, h] : ddf_result) {
             auto parts = edf(h, d, p);
             for (auto& part : parts) {
