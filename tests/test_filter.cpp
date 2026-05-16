@@ -566,6 +566,64 @@ void test_merge_all_chain() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_count_unique_lp_keys() {
+    std::cout << "Testing count_unique_lp_keys..." << std::endl;
+    // Empty
+    {
+        std::vector<Relation> empty;
+        assert(count_unique_lp_keys(empty) == 0);
+    }
+    // 1 rel with 1 rat LP
+    {
+        std::vector<Relation> rels;
+        rels.push_back(make_1lp_relation(1, 1, 12345));
+        assert(count_unique_lp_keys(rels) == 1);  // 1 rat LP
+    }
+    // 2 rels share same rat LP (even exponent → cancels)
+    {
+        std::vector<Relation> rels;
+        rels.push_back(make_1lp_relation(1, 1, 99));
+        rels.push_back(make_1lp_relation(2, 1, 99));  // same LP
+        // 2 rels independently have lp=99 with e=1 each. NOT same relation.
+        // count_unique_lp_keys 在 per-rel 内累加 (per matrix_builder convention),
+        // 所以 rel1 has e=1 (奇), rel2 has e=1 (奇), 两个 unique key = same key = 1.
+        assert(count_unique_lp_keys(rels) == 1);
+    }
+    // 1 rel with even exponent LP (cancels)
+    {
+        Relation r(1, 1);
+        r.rational_factors = {0};
+        r.algebraic_factors = {0};
+        r.rational_large_prime.push_back(PrimePower{99, 0, 2});  // e=2 even
+        std::vector<Relation> rels;
+        rels.push_back(std::move(r));
+        assert(count_unique_lp_keys(rels) == 0);  // even-exp → not counted
+    }
+    // alg LP differs by (p, r) — same p, different r → 2 columns
+    {
+        Relation r1(1, 1), r2(2, 1);
+        r1.rational_factors = {0}; r1.algebraic_factors = {0};
+        r2.rational_factors = {0}; r2.algebraic_factors = {0};
+        r1.algebraic_large_prime.push_back(PrimePower{77, 3, 1});  // (p=77, r=3)
+        r2.algebraic_large_prime.push_back(PrimePower{77, 5, 1});  // (p=77, r=5)
+        std::vector<Relation> rels;
+        rels.push_back(std::move(r1));
+        rels.push_back(std::move(r2));
+        assert(count_unique_lp_keys(rels) == 2);  // 2 distinct ideals
+    }
+    // Same alg ideal twice in 1 rel (e=2 even → cancels)
+    {
+        Relation r(1, 1);
+        r.rational_factors = {0}; r.algebraic_factors = {0};
+        r.algebraic_large_prime.push_back(PrimePower{77, 3, 1});
+        r.algebraic_large_prime.push_back(PrimePower{77, 3, 1});  // duplicate
+        std::vector<Relation> rels;
+        rels.push_back(std::move(r));
+        assert(count_unique_lp_keys(rels) == 0);  // even-exp cancels
+    }
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== RelationFilter Unit Tests ===" << std::endl;
 
@@ -588,6 +646,7 @@ int main() {
     test_merge_all_mixed();
     test_merge_all_chain();
     test_reset_stats();
+    test_count_unique_lp_keys();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
