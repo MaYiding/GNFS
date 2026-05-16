@@ -396,14 +396,21 @@ private:
             }
 
             // 代数侧：按 (p,r) 素理想累计指数，只收集奇数指数的
-            std::unordered_map<PrimeIdealKey, uint32_t, PrimeIdealKeyHash> alg_exp;
-            for (const auto& lp : rel.algebraic_large_prime) {
-                alg_exp[{lp.p, lp.r}] += lp.e;
-            }
-            for (const auto& [key, exp] : alg_exp) {
-                if (exp % 2 == 1) {
-                    info.alg_primes.insert(key);
+            const auto& alg_lps = rel.algebraic_large_prime;
+            if (alg_lps.size() <= 8) {
+                PrimeIdealKey akeys[8]; uint32_t aexps[8]; size_t au = 0;
+                for (const auto& lp : alg_lps) {
+                    PrimeIdealKey k{lp.p, lp.r};
+                    size_t j = 0;
+                    for (; j < au; ++j) if (akeys[j] == k) break;
+                    if (j == au) { akeys[au] = k; aexps[au] = lp.e; ++au; }
+                    else aexps[j] += lp.e;
                 }
+                for (size_t i = 0; i < au; ++i) if (aexps[i] & 1u) info.alg_primes.insert(akeys[i]);
+            } else {
+                std::unordered_map<PrimeIdealKey, uint32_t, PrimeIdealKeyHash> alg_exp;
+                for (const auto& lp : alg_lps) alg_exp[{lp.p, lp.r}] += lp.e;
+                for (const auto& [key, exp] : alg_exp) if (exp & 1u) info.alg_primes.insert(key);
             }
         }
 
