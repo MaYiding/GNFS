@@ -444,6 +444,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME CliqueMerger COMMAND test_clique_merger)
     set_tests_properties(CliqueMerger PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # V3 50d-like synthetic LP distribution test
+    add_executable(test_clique_merger_50d_synthetic
+        tests/test_clique_merger_50d_synthetic.cpp
+    )
+    target_link_libraries(test_clique_merger_50d_synthetic PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME CliqueMerger50dSynthetic COMMAND test_clique_merger_50d_synthetic)
+    set_tests_properties(CliqueMerger50dSynthetic PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # 回归测试
     add_executable(test_regressions
         tests/test_regressions.cpp
