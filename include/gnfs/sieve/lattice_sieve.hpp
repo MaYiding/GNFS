@@ -142,7 +142,11 @@ public:
         uint32_t split_bound = static_cast<uint32_t>(region_.i_width());
 
         // 分离小/大素数
+        // Reserve: split typically ~70/30 small/large for medium FBs (50d/60d).
+        // Worst case both vectors sum to primes.size() → reserve full size on both.
         std::vector<PrimeEntry> small_primes, large_primes;
+        small_primes.reserve(primes.size() * 3 / 4);
+        large_primes.reserve(primes.size() / 4);
         for (const auto& pe : primes) {
             if (pe.flags == 2) {
                 // Global hits: apply directly
