@@ -226,8 +226,12 @@ private:
 /// 只 count 奇指数 keys (matrix_builder.hpp collect_large_primes 同 convention).
 [[nodiscard]] inline size_t count_unique_lp_keys(
         const std::vector<Relation>& relations) {
+    // Reserve: typical 50d β ≈ 65%, 60d β ≈ 70% (LP/relations).
+    // Reserve relations.size() per side to avoid mid-loop rehash.
     std::unordered_set<uint64_t> rat_lp_set;
+    rat_lp_set.reserve(relations.size() / 2);
     std::unordered_set<uint64_t> alg_lp_set;  // pack: (p << 32) | (r & 0xFFFFFFFF)
+    alg_lp_set.reserve(relations.size());
 
     // Hot path: 50d/60d typical merged partial has 1-4 LPs total per rel.
     // Avoid unordered_map alloc for these small cases — linear scan accumulator.
