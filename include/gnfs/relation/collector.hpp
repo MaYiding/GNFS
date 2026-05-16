@@ -381,6 +381,7 @@ private:
 /// 过滤重复关系
 [[nodiscard]] inline std::vector<Relation> filter_duplicates(std::vector<Relation>&& relations) {
     std::unordered_set<ABPair, ABPairHash> seen;
+    seen.reserve(relations.size());
     std::vector<Relation> result;
     result.reserve(relations.size());
 
