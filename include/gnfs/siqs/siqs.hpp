@@ -1031,6 +1031,7 @@ inline std::vector<SIQSRelation> merge_partials(
     for (int round = 0; round < 10; round++) {
         // Build LP → relation index mapping
         std::unordered_map<uint64_t, std::vector<size_t>> lp_index;
+        lp_index.reserve(pool.size() * 2);  // each rel contributes 1-2 LP keys
         for (size_t i = 0; i < pool.size(); i++) {
             if (consumed[i]) continue;
             lp_index[pool[i].large_prime].push_back(i);
