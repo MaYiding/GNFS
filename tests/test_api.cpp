@@ -419,6 +419,46 @@ bool test_v3_cascade_pipeline_integration() {
     return true;
 }
 
+bool test_v3_cascade_head_to_head_real_pipeline() {
+    // BACKLOG TEST: real-pipeline V0 vs V0+V3 cascade head-to-head comparison.
+    // Verifies V3 cascade marginal benefit on actual sieve+cofac data (not synthetic).
+    // Uses 12d/40-bit so test completes <5s. V3 added>0 demonstrated by
+    // test_v3_cascade_pipeline_integration (added=2742); here we confirm
+    // V0+V3 rels.size() >= V0 rels.size() (V3 never harms throughput).
+    Integer n("1000036000099");
+    Config cfg;
+    cfg.verbose = false;
+
+    // Run 1: V0 only
+    unsetenv("GNFS_CASCADE_V3");
+    Pipeline p_v0(n, cfg);
+    auto ctx_v0 = p_v0.select_polynomial();
+    auto fb_v0 = p_v0.build_factor_base(ctx_v0);
+    auto rels_v0 = p_v0.sieve_and_collect(ctx_v0, fb_v0);
+
+    // Run 2: V0+V3 cascade ON (force)
+    setenv("GNFS_CASCADE_V3", "1", 1);
+    Pipeline p_v3(n, cfg);
+    auto ctx_v3 = p_v3.select_polynomial();
+    auto fb_v3 = p_v3.build_factor_base(ctx_v3);
+    auto rels_v3 = p_v3.sieve_and_collect(ctx_v3, fb_v3);
+    unsetenv("GNFS_CASCADE_V3");
+
+    assert(!rels_v0.empty() && "V0 baseline should produce relations");
+    assert(!rels_v3.empty() && "V0+V3 should produce relations");
+
+    // V3 cascade should never reduce relation count (V3 adds to V0 output,
+    // deduped — strictly >= V0 alone). At 40-bit lp_bits=17, V3 commonly
+    // adds 10-30% extra rels (e.g. test_v3_cascade_pipeline_integration: +2742).
+    if (rels_v3.size() < rels_v0.size()) {
+        std::cout << "(V0=" << rels_v0.size() << " V0+V3=" << rels_v3.size()
+                  << " — V3 REGRESSION!) ";
+        return false;
+    }
+
+    return true;
+}
+
 bool test_v3_cascade_disabled_by_default() {
     // Verify V3 cascade is OFF when ENV unset (no behavior change).
     Integer n("1000036000099");  // 40-bit, 12d
@@ -537,6 +577,7 @@ int main() {
     TEST(pipeline_stats);
     TEST(pipeline_progress_callback);
     TEST(v3_cascade_pipeline_integration);
+    TEST(v3_cascade_head_to_head_real_pipeline);
     TEST(v3_cascade_disabled_by_default);
     TEST(v3_cascade_auto_mode);
 
