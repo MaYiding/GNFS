@@ -669,6 +669,7 @@ private:
                 }
             } else {
                 std::unordered_map<uint32_t, uint8_t> exponents;
+                exponents.reserve(rfacs.size());
                 for (uint32_t f : rfacs) exponents[f]++;
                 for (const auto& [idx, exp] : exponents) {
                     if ((exp & 1u) && idx < mapping.num_rational_fb) {
@@ -696,6 +697,7 @@ private:
                 }
             } else {
                 std::unordered_map<uint32_t, uint8_t> exponents;
+                exponents.reserve(afacs.size());
                 for (uint32_t f : afacs) exponents[f]++;
                 for (const auto& [idx, exp] : exponents) {
                     if ((exp & 1u) && idx < mapping.num_algebraic_fb) {
@@ -724,6 +726,7 @@ private:
                 }
             } else {
                 std::unordered_map<uint64_t, uint8_t> exponents;
+                exponents.reserve(rat_lps.size());
                 for (const auto& lp : rat_lps) exponents[lp.p] += lp.e;
                 for (const auto& [p, exp] : exponents) {
                     if (exp & 1u) {
@@ -754,6 +757,7 @@ private:
                 }
             } else {
                 std::unordered_map<PrimeIdealKey, uint8_t, PrimeIdealKeyHash> exponents;
+                exponents.reserve(alg_lps.size());
                 for (const auto& lp : alg_lps) {
                     exponents[{lp.p, lp.r}] += lp.e;
                 }
