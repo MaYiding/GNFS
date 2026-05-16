@@ -962,18 +962,19 @@ static linalg::BitVector to_bitvector(const std::vector<bool>& vec) {
 }
 
 // Helper: verify dependency (XOR of selected rows = zero)
+// Uses uint8_t per-column parity (XOR), 8× more cache-friendly than size_t counter.
 static bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& dep) {
     if (dep.size() != mat.num_rows()) return false;
-    std::vector<size_t> col_count(mat.num_cols(), 0);
+    std::vector<uint8_t> col_parity(mat.num_cols(), 0);
     for (size_t row = 0; row < mat.num_rows(); ++row) {
         if (row < dep.size() && dep[row]) {
             for (uint32_t col : mat.row(row).indices()) {
-                col_count[col]++;
+                col_parity[col] ^= 1;  // XOR in GF(2)
             }
         }
     }
-    for (size_t c = 0; c < col_count.size(); ++c) {
-        if (col_count[c] % 2 != 0) return false;
+    for (size_t c = 0; c < col_parity.size(); ++c) {
+        if (col_parity[c]) return false;
     }
     return true;
 }
