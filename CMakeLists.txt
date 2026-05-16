@@ -436,6 +436,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Filter COMMAND test_filter)
     set_tests_properties(Filter PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # V3 Clique Merge backup (header-only, in include/gnfs/relation/clique_merger.hpp)
+    add_executable(test_clique_merger
+        tests/test_clique_merger.cpp
+    )
+    target_link_libraries(test_clique_merger PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME CliqueMerger COMMAND test_clique_merger)
+    set_tests_properties(CliqueMerger PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # 回归测试
     add_executable(test_regressions
         tests/test_regressions.cpp
