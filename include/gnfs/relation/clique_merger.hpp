@@ -82,12 +82,13 @@ public:
             return results;
         }
 
-        // ── 构建 LP 索引 ──
+        // ── 构建 LP 索引 + pool LP keys cache (避免 BFS 重复 remaining_lp_keys 调用) ──
         std::unordered_map<LargePrimeKey, std::vector<size_t>, LargePrimeKeyHash> lp_index;
         lp_index.reserve(pool.size() * 2);
+        std::vector<std::vector<LargePrimeKey>> pool_lp_keys(pool.size());
         for (size_t i = 0; i < pool.size(); ++i) {
-            auto keys = PartialRelationMerger::remaining_lp_keys(pool[i]);
-            for (const auto& key : keys) {
+            pool_lp_keys[i] = PartialRelationMerger::remaining_lp_keys(pool[i]);
+            for (const auto& key : pool_lp_keys[i]) {
                 lp_index[key].push_back(i);
             }
         }
@@ -113,7 +114,7 @@ public:
         for (auto& [root, members] : components) {
             if (members.size() < 2) continue;
             ++stats.components_with_excess;
-            merge_component(pool, members, lp_index, used, results, stats);
+            merge_component(pool, pool_lp_keys, members, lp_index, used, results, stats);
         }
 
         // ── Singleton cleanup: 剩余未用的 partial 检查 LP keys 是否全 singleton ──
@@ -126,7 +127,7 @@ public:
         }
         for (size_t i = 0; i < pool.size(); ++i) {
             if (used[i]) continue;
-            auto keys = PartialRelationMerger::remaining_lp_keys(pool[i]);
+            const auto& keys = pool_lp_keys[i];  // use pre-computed cache
             bool all_singleton = !keys.empty();
             for (const auto& k : keys) {
                 if (!singleton_keys.count(k)) { all_singleton = false; break; }
@@ -165,6 +166,7 @@ private:
     /// BFS spanning tree merge within a component
     static void merge_component(
             std::vector<Relation>& pool,
+            const std::vector<std::vector<LargePrimeKey>>& pool_lp_keys,
             const std::vector<size_t>& members,
             const std::unordered_map<LargePrimeKey, std::vector<size_t>, LargePrimeKeyHash>& lp_index,
             std::vector<bool>& used,
@@ -196,7 +198,8 @@ private:
                 if (acc_full) break;  // accumulator 已满, 等下个 batch
 
                 // 找邻居: 与 cur 共享 LP key 的所有 rels (都在 lp_index)
-                auto cur_keys = PartialRelationMerger::remaining_lp_keys(pool[cur]);
+                // 用 cache pool_lp_keys[cur] (cur is original pool index)
+                const auto& cur_keys = pool_lp_keys[cur];
                 for (const auto& key : cur_keys) {
                     auto it = lp_index.find(key);
                     if (it == lp_index.end()) continue;
@@ -206,7 +209,7 @@ private:
                         // Fast-path: 检查 nbr 与 acc 是否有 LP overlap.
                         // 无 overlap → merge 不 cancel 任何 key → after == before → reject.
                         // 等价于 LP cancel check, 但避免 heavy merge_two + count_keys.
-                        auto nbr_keys = PartialRelationMerger::remaining_lp_keys(pool[nbr]);
+                        const auto& nbr_keys = pool_lp_keys[nbr];  // use cache
                         bool has_overlap = false;
                         for (const auto& k : nbr_keys) {
                             if (acc_lp_set.count(k)) { has_overlap = true; break; }
