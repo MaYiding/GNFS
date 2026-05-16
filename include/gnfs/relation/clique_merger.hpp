@@ -233,13 +233,15 @@ private:
 
                         // Accept: update accumulator + LP set cache
                         acc = std::move(candidate);
+                        const bool now_full = cand_keys.empty();  // reuse cand_keys
                         acc_lp_set.clear();
-                        acc_lp_set.insert(cand_keys.begin(), cand_keys.end());
+                        if (!now_full) acc_lp_set.insert(cand_keys.begin(), cand_keys.end());
                         visited.insert(nbr);
                         used[nbr] = true;
                         bfs.push(nbr);
 
-                        if (PartialRelationMerger::is_effectively_full(acc)) {
+                        if (now_full) {
+                            // is_effectively_full(acc) == cand_keys.empty() — saved a remaining_lp_keys call
                             acc_full = true;
                             break;
                         }
