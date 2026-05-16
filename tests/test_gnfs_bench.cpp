@@ -306,6 +306,7 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
                       << " Merged=" << merged.size() << "\n" << std::flush;
 
             relations = std::move(sep.full);
+            relations.reserve(relations.size() + merged.size());
             relations.insert(relations.end(),
                 std::make_move_iterator(merged.begin()),
                 std::make_move_iterator(merged.end()));

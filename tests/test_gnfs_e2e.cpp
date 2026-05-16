@@ -369,6 +369,7 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
         // Only keep full + merged — unmerged partials create singleton LP columns
         // in the matrix that waste space and cannot participate in any dependency
         relations = std::move(sep.full);
+        relations.reserve(relations.size() + merged.size());
         relations.insert(relations.end(),
             std::make_move_iterator(merged.begin()),
             std::make_move_iterator(merged.end()));
