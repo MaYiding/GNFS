@@ -372,17 +372,27 @@ private:
             const std::vector<Relation>& relations) const {
 
         LargePrimeInfo info;
+        // Reserve for typical LP density (60d-scale: ~M cols expected for M rels).
+        info.rat_primes.reserve(relations.size());
+        info.alg_primes.reserve(relations.size());
 
         for (const auto& rel : relations) {
             // 有理侧：按素数累计指数，只收集奇数指数的
-            std::unordered_map<uint64_t, uint32_t> rat_exp;
-            for (const auto& lp : rel.rational_large_prime) {
-                rat_exp[lp.p] += lp.e;
-            }
-            for (const auto& [p, exp] : rat_exp) {
-                if (exp % 2 == 1) {
-                    info.rat_primes.insert(p);
+            // 小 LP 计数 (典型 1-2) → 用 stack 数组避免 map alloc
+            const auto& rat_lps = rel.rational_large_prime;
+            if (rat_lps.size() <= 8) {
+                uint64_t rkeys[8]; uint32_t rexps[8]; size_t ru = 0;
+                for (const auto& lp : rat_lps) {
+                    size_t j = 0;
+                    for (; j < ru; ++j) if (rkeys[j] == lp.p) break;
+                    if (j == ru) { rkeys[ru] = lp.p; rexps[ru] = lp.e; ++ru; }
+                    else rexps[j] += lp.e;
                 }
+                for (size_t i = 0; i < ru; ++i) if (rexps[i] & 1u) info.rat_primes.insert(rkeys[i]);
+            } else {
+                std::unordered_map<uint64_t, uint32_t> rat_exp;
+                for (const auto& lp : rat_lps) rat_exp[lp.p] += lp.e;
+                for (const auto& [p, exp] : rat_exp) if (exp & 1u) info.rat_primes.insert(p);
             }
 
             // 代数侧：按 (p,r) 素理想累计指数，只收集奇数指数的
