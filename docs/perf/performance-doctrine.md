@@ -1074,7 +1074,12 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
     test_stress.cpp:393 (stress sieve loop)
   - Dedup via (a, b) XOR hash 避免 V0 ∩ V3 重复
 
-- **测试** (commits `babc322` + `5cf9e41` + `4d143d2`):
+- **测试** (commits `babc322` + `5cf9e41` + `4d143d2` + `4a2b10d`):
+  - **81-bit (25-digit) full GNFS path validation** (test_regression_gate Level 4):
+    全 PASS in 3 modes — V3 OFF: 10.13s, V3=auto: 8.20s, V3=1: 9.53s. 4/4 sizes
+    (17/27/40/81-bit) PASS in all modes. No regression observed.
+  - **40-bit head-to-head** (test_v3_cascade_head_to_head_real_pipeline):
+    V0 vs V0+V3 rels.size() comparison on real Pipeline, V0+V3 ≥ V0 asserted.
   - 6 基本 unit tests (test_clique_merger): empty, 1LP×N clique, 2LP triangle, no_overlap, 3LP+ filter
   - 3 synthetic 50d-like tests (test_clique_merger_50d_synthetic):
     - V0 alone: 885 merged
