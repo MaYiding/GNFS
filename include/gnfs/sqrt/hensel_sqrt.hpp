@@ -577,10 +577,9 @@ private:
             basis[i] %= M;
         }
 
-        // Initial CRT with all-positive signs
+        // Initial CRT with all-positive signs (crt_val[j] already 0 from default ctor)
         std::vector<Integer> crt_val(d);
         for (uint32_t j = 0; j < d; ++j) {
-            crt_val[j] = Integer(int64_t(0));
             for (size_t i = 0; i < K; ++i) {
                 Integer term = lifted[i].coeffs[j].clone();
                 term *= basis[i];
@@ -1326,9 +1325,8 @@ private:
             const Integer& modulus,
             const Integer& f_lead_inv) {
 
-        // Multiply: result has degree up to 2d-2
+        // Multiply: result has degree up to 2d-2 (Integers default-init to 0)
         std::vector<Integer> result(2 * d - 1);
-        for (size_t i = 0; i < result.size(); ++i) result[i] = Integer(int64_t(0));
 
         // 累加 d² 个 a[i]*b[j] 不做 mod(每个 < modulus²,d ≤ 8 时 result
         // 单系数 ≤ d·modulus²,GMP 自动扩存),最后对 2d-1 个系数一次性 mod。
