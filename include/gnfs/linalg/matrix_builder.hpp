@@ -575,12 +575,14 @@ private:
         mapping.num_qc_columns = 0;
 
         // 为有理大素数分配列索引
+        mapping.rat_lp_to_col.reserve(lp_info.rat_primes.size());
         uint32_t col = static_cast<uint32_t>(mapping.rat_lp_start());
         for (uint64_t p : lp_info.rat_primes) {
             mapping.rat_lp_to_col[p] = col++;
         }
 
         // 为代数大素数（素理想）分配列索引——按 (p, r) 键
+        mapping.alg_lp_to_col.reserve(lp_info.alg_primes.size());
         col = static_cast<uint32_t>(mapping.alg_lp_start());
         for (const auto& key : lp_info.alg_primes) {
             mapping.alg_lp_to_col[key] = col++;
@@ -616,12 +618,14 @@ private:
         mapping.qc_prime_roots = qc_prime_roots;
 
         // 为有理大素数分配列索引
+        mapping.rat_lp_to_col.reserve(lp_info.rat_primes.size());
         uint32_t col = static_cast<uint32_t>(mapping.rat_lp_start());
         for (uint64_t p : lp_info.rat_primes) {
             mapping.rat_lp_to_col[p] = col++;
         }
 
         // 为代数大素数（素理想）分配列索引
+        mapping.alg_lp_to_col.reserve(lp_info.alg_primes.size());
         col = static_cast<uint32_t>(mapping.alg_lp_start());
         for (const auto& key : lp_info.alg_primes) {
             mapping.alg_lp_to_col[key] = col++;
