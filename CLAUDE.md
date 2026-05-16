@@ -189,20 +189,24 @@ tests/                  # 41 测试文件 (.cpp)
 
 **V3** (备用, `CliqueRelationMerger::merge_cliques`): BFS spanning tree over LP-sharing graph + LP cancel check. 处理 weight≥3 LP keys (50d/60d 的 lp_bits 23/26 真实 corner case).
 
-**启用 V3 cascade**:
+**启用 V3 cascade** (三态 ENV, commit 56e5b14):
 ```bash
-GNFS_CASCADE_V3=1 ./test_stress 1 1   # 50d V0+V3 cascade
-GNFS_CASCADE_V3=1 ./gnfs <N>          # GNFS pipeline V0+V3 cascade
+GNFS_CASCADE_V3=1     ./test_stress 1 1   # ON: V3 every round
+GNFS_CASCADE_V3=auto  ./test_stress 1 1   # AUTO: V3 Round 2+ only (sieve), Phase 4 always
+GNFS_CASCADE_V3=1     ./gnfs <N>          # GNFS pipeline V0+V3
+unset GNFS_CASCADE_V3                     # OFF (default, V0 only)
 ```
 
 V3 cascade 默认 OFF (V0 path 零开销). 启用时:
 - V3 run on partial **copy** (V0 path 完整保留)
 - Dedup via (a,b) XOR hash 避免 V0 ∩ V3 重复
+- Auto 模式 Round 1 跳过 (LP overlaps 稀少, fast-path rejects 主导, ROI 低)
 - stderr 输出 `[v3_cascade.sieve] in=... full=... residual=... added=...`
 
-**集成点** (commit 7f9de82, 975ac8b):
-- `src/api/pipeline.cpp:605` — sieve_and_collect adaptive loop
-- `src/api/pipeline.cpp:752` — Phase 4 filter (currently dead path)
+**集成点** (commits 7f9de82, 975ac8b, 56e5b14):
+- `src/api/pipeline.cpp:39-58` — V3Mode enum + cascade_v3_enabled_for_round
+- `src/api/pipeline.cpp:627` — sieve_and_collect adaptive loop (Auto-aware)
+- `src/api/pipeline.cpp:747` — Phase 4 filter (always enable when not Off)
 - `tests/test_stress.cpp:393` — stress sieve loop
 
 **详细**: `docs/perf/v3-cascade-design.md`
