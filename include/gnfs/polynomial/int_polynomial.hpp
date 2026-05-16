@@ -477,6 +477,7 @@ private:
                 // poly / factor
                 auto [quotient, rem] = MP::divmod(poly, factor, p);
                 auto roots2 = cz_extract_roots(quotient, p);
+                roots1.reserve(roots1.size() + roots2.size());
                 roots1.insert(roots1.end(), roots2.begin(), roots2.end());
                 return roots1;
             }

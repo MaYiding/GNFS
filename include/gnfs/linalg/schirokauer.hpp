@@ -231,6 +231,7 @@ struct GFPolyOps {
                 auto left = edf(g, d, p);
                 auto right_poly = divmod(f, g, p).first;
                 auto right = edf(right_poly, d, p);
+                left.reserve(left.size() + right.size());
                 left.insert(left.end(), right.begin(), right.end());
                 return left;
             }
@@ -401,6 +402,7 @@ struct GFPolyOps {
         auto result_a = hensel_lift_all(lifted_a, group_a, ell, k);
         auto result_b = hensel_lift_all(lifted_b, group_b, ell, k);
 
+        result_a.reserve(result_a.size() + result_b.size());
         result_a.insert(result_a.end(), result_b.begin(), result_b.end());
         return result_a;
     }
