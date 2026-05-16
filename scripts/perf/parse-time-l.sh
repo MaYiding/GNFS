@@ -38,17 +38,19 @@ fi
 
 # Find the LAST `time -l` block. 锚: 含 'real' 'user' 'sys' 的单行,
 # 后面跟一系列 `<num>  <metric>` 行. 抽取 real 行 + 后续 20 行已足够.
-local -a block
-block=("${(@f)$(grep -nE '^[[:space:]]+[0-9]+\.[0-9]+[[:space:]]+real' "$LOG" | tail -1)}")
+# grep 无匹配返回 1, 用 || true 避免 set -e 提前 abort, 我们自己报错.
+local block_line
+block_line=$(grep -nE '^[[:space:]]+[0-9]+\.[0-9]+[[:space:]]+real' "$LOG" 2>/dev/null | tail -1) || true
 
-if [[ ${#block[@]} -eq 0 ]]; then
+if [[ -z "$block_line" ]]; then
     print -u2 "Error: no 'time -l' block found in $LOG"
-    print -u2 "       expected line matching: <real> real <user> user <sys> sys"
+    print -u2 "       expected line matching: '<real> real <user> user <sys> sys'"
+    print -u2 "       (macOS /usr/bin/time -l format. GNU 'time -v' 格式尚不支持.)"
     exit 1
 fi
 
-# block[1] = "linenum:content" — 拿 linenum 抽出 25 行 (cover 全 time -l 输出)
-local start_line=${block[1]%%:*}
+# block_line = "linenum:content" — 拿 linenum 抽出 25 行 (cover 全 time -l 输出)
+local start_line=${block_line%%:*}
 local -a body
 body=("${(@f)$(tail -n +"$start_line" "$LOG" | head -25)}")
 
