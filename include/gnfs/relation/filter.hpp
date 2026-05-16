@@ -336,28 +336,39 @@ public:
         m.a = r1.a;
         m.b = r1.b;
 
-        // 收集所有 (a,b) 对（含已有的 extra pairs）
-        m.extra_ab_pairs = r1.extra_ab_pairs;
+        // Pre-reserve + double-insert (instead of copy-assign + insert):
+        // copy-assignment may reset capacity (impl-defined), so reserve+insert
+        // is the only way to guarantee a single allocation per vector.
+        m.extra_ab_pairs.reserve(r1.extra_ab_pairs.size() + 1 + r2.extra_ab_pairs.size());
+        m.extra_ab_pairs.insert(m.extra_ab_pairs.end(),
+            r1.extra_ab_pairs.begin(), r1.extra_ab_pairs.end());
         m.extra_ab_pairs.emplace_back(r2.a, r2.b);
         m.extra_ab_pairs.insert(m.extra_ab_pairs.end(),
             r2.extra_ab_pairs.begin(), r2.extra_ab_pairs.end());
 
-        // 合并 factor base indices
-        m.rational_factors = r1.rational_factors;
+        m.rational_factors.reserve(r1.rational_factors.size() + r2.rational_factors.size());
+        m.rational_factors.insert(m.rational_factors.end(),
+            r1.rational_factors.begin(), r1.rational_factors.end());
         m.rational_factors.insert(m.rational_factors.end(),
             r2.rational_factors.begin(), r2.rational_factors.end());
 
-        m.algebraic_factors = r1.algebraic_factors;
+        m.algebraic_factors.reserve(r1.algebraic_factors.size() + r2.algebraic_factors.size());
+        m.algebraic_factors.insert(m.algebraic_factors.end(),
+            r1.algebraic_factors.begin(), r1.algebraic_factors.end());
         m.algebraic_factors.insert(m.algebraic_factors.end(),
             r2.algebraic_factors.begin(), r2.algebraic_factors.end());
 
         // LP 列表完整连接（不取消共享 LP）
         // rational_sqrt 和 matrix_builder 都需要完整列表来正确计算指数
-        m.rational_large_prime = r1.rational_large_prime;
+        m.rational_large_prime.reserve(r1.rational_large_prime.size() + r2.rational_large_prime.size());
+        m.rational_large_prime.insert(m.rational_large_prime.end(),
+            r1.rational_large_prime.begin(), r1.rational_large_prime.end());
         m.rational_large_prime.insert(m.rational_large_prime.end(),
             r2.rational_large_prime.begin(), r2.rational_large_prime.end());
 
-        m.algebraic_large_prime = r1.algebraic_large_prime;
+        m.algebraic_large_prime.reserve(r1.algebraic_large_prime.size() + r2.algebraic_large_prime.size());
+        m.algebraic_large_prime.insert(m.algebraic_large_prime.end(),
+            r1.algebraic_large_prime.begin(), r1.algebraic_large_prime.end());
         m.algebraic_large_prime.insert(m.algebraic_large_prime.end(),
             r2.algebraic_large_prime.begin(), r2.algebraic_large_prime.end());
 
