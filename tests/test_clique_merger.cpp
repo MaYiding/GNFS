@@ -130,6 +130,29 @@ void test_3lp_filtered() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_stats_to_string() {
+    std::cout << "Testing CliqueStats::to_string()..." << std::endl;
+    CliqueStats s;
+    s.input_relations = 100;
+    s.input_1lp = 60;
+    s.input_2lp = 40;
+    s.components_with_excess = 5;
+    s.components_found = 10;
+    s.full_produced = 15;
+    s.residual_emitted = 3;
+    s.lp_cancel_rejections = 200;
+    s.fast_path_rejects = 198;
+    s.heavy_path_rejects = 2;
+    auto str = s.to_string();
+    assert(str.find("in=100") != std::string::npos);
+    assert(str.find("1lp=60") != std::string::npos);
+    assert(str.find("full=15") != std::string::npos);
+    assert(str.find("fast=198") != std::string::npos);
+    assert(str.find("heavy=2") != std::string::npos);
+    std::cout << "  " << str << std::endl;
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== CliqueRelationMerger Unit Tests ===" << std::endl;
 
@@ -139,6 +162,7 @@ int main() {
     test_2lp_triangle();
     test_no_overlap();
     test_3lp_filtered();
+    test_stats_to_string();
 
     std::cout << "\nAll CliqueRelationMerger tests passed!" << std::endl;
     return 0;
