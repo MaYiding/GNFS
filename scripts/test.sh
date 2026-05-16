@@ -204,7 +204,7 @@ MODULE_TESTS=(
     factor_base    "test_factor_base"
     sieve          "test_special_q test_sieve_basic test_bucket_sieve test_line_sieve"
     cofactor       "test_cofactor test_squfof test_integration"
-    relation       "test_relation_collector test_filter test_ooc_relations test_integration"
+    relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_ooc_relations test_integration"
     linalg         "test_linalg test_block_wiedemann test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_class_group"
@@ -247,6 +247,8 @@ SMOKE_TESTS=(
     test_squfof
     test_i18n
     test_method_selection
+    test_clique_merger
+    test_clique_merger_50d_synthetic
 )
 
 # ── 每个测试的超时秒数 (基于实测) ──
@@ -299,6 +301,8 @@ TEST_TIMEOUT=(
     test_api                 60
     test_i18n                10
     test_method_selection    60
+    test_clique_merger       10
+    test_clique_merger_50d_synthetic 10
 )
 
 # 测试速度分级 (用于 list 显示)
