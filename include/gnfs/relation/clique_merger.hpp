@@ -168,6 +168,8 @@ private:
             Relation acc = pool[start];  // copy 作 accumulator
             used[start] = true;
             bool acc_full = PartialRelationMerger::is_effectively_full(acc);
+            // 缓存 acc 的 LP key count, 避免每个 neighbor 重算
+            size_t acc_lp_count = PartialRelationMerger::remaining_lp_keys(acc).size();
 
             while (!bfs.empty()) {
                 size_t cur = bfs.front(); bfs.pop();
@@ -182,8 +184,9 @@ private:
                         if (!in_component.count(nbr) || visited.count(nbr) || used[nbr]) continue;
 
                         // LP cancel check: 仅 if merged 严格减少 LP 数
-                        size_t before = PartialRelationMerger::remaining_lp_keys(acc).size()
-                                      + PartialRelationMerger::remaining_lp_keys(pool[nbr]).size();
+                        // 优化: acc_lp_count 缓存, nbr keys 计算一次
+                        size_t nbr_lp_count = PartialRelationMerger::remaining_lp_keys(pool[nbr]).size();
+                        size_t before = acc_lp_count + nbr_lp_count;
                         Relation candidate = PartialRelationMerger::merge_two(acc, pool[nbr]);
                         size_t after = PartialRelationMerger::remaining_lp_keys(candidate).size();
 
@@ -192,8 +195,9 @@ private:
                             continue;  // reject, do not 用 nbr
                         }
 
-                        // Accept: update accumulator
+                        // Accept: update accumulator (and cache)
                         acc = std::move(candidate);
+                        acc_lp_count = after;
                         visited.insert(nbr);
                         used[nbr] = true;
                         bfs.push(nbr);
