@@ -116,6 +116,8 @@ public:
     count_large_primes(const std::vector<Relation>& relations) {
 
         std::unordered_map<LargePrimeKey, size_t, LargePrimeKeyHash> counts;
+        // Reserve: avg ~1.5 LPs per partial → reserve N to avoid rehash mid-insertion.
+        counts.reserve(relations.size());
 
         for (const auto& rel : relations) {
             // 有理侧大素数 (root=0)
@@ -140,6 +142,7 @@ public:
     get_unique_large_primes(const std::vector<Relation>& relations) {
 
         std::unordered_set<LargePrimeKey, LargePrimeKeyHash> seen;
+        seen.reserve(relations.size());
 
         for (const auto& rel : relations) {
             for (size_t i = 0; i < rel.rational_large_prime.size(); ++i) {
