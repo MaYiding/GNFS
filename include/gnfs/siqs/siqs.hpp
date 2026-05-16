@@ -923,6 +923,7 @@ inline void sieve_polynomial(
             rel.large_prime2 = large_prime2;
             // Copy only touched exponents (sparse → dense)
             rel.exponents.assign(fb.size(), 0);
+            rel.fb_indices.reserve(touched_buf.size());
             for (uint32_t idx : touched_buf) {
                 rel.exponents[idx] = exp[idx];
                 rel.fb_indices.push_back(idx);
@@ -961,8 +962,10 @@ inline SIQSRelation merge_two(const SIQSRelation& a, const SIQSRelation& b,
     }
     // Copy existing merge_lps from both sides
     merged.merge_lps = a.merge_lps;
+    merged.merge_lps.reserve(a.merge_lps.size() + b.merge_lps.size());
     for (auto lp : b.merge_lps) merged.merge_lps.push_back(lp);
-    // Build fb_indices
+    // Build fb_indices — likely union of a.fb_indices and b.fb_indices.
+    merged.fb_indices.reserve(a.fb_indices.size() + b.fb_indices.size());
     for (size_t i = 0; i < fb_size; i++) {
         if (merged.exponents[i] > 0)
             merged.fb_indices.push_back(static_cast<uint32_t>(i));
