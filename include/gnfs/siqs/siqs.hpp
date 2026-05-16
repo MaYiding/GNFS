@@ -413,6 +413,7 @@ inline void choose_A(const Integer& N, uint32_t M,
 
     // Generate candidate indices in range
     std::vector<size_t> candidates;
+    candidates.reserve(range_end - range_start + 1);
     for (size_t i = range_start; i <= range_end; i++) {
         if (fb[i].p > 2) { // skip p=2 for A (simplifies self-init)
             candidates.push_back(i);
