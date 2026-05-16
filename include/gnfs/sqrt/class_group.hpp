@@ -212,12 +212,8 @@ private:
         // Build Sylvester matrix (n × n)
         // First deg_g rows: coefficients of x^{deg_g-1}·f, ..., f (shifted copies)
         // Last deg_f rows: coefficients of x^{deg_f-1}·g, ..., g (shifted copies)
+        // Integer default-inits to 0 — no explicit zero-fill needed.
         std::vector<std::vector<Integer>> M(n, std::vector<Integer>(n));
-        for (uint32_t i = 0; i < n; ++i) {
-            for (uint32_t j = 0; j < n; ++j) {
-                M[i][j] = Integer(int64_t(0));
-            }
-        }
 
         // First deg_g rows from f
         for (uint32_t row = 0; row < deg_g; ++row) {
@@ -313,9 +309,8 @@ public:
         struct IntPoly {
             std::vector<Integer> c;  // c[i] = coefficient of x^i
             IntPoly() = default;
-            explicit IntPoly(size_t n) : c(n) {
-                for (auto& x : c) x = Integer(int64_t(0));
-            }
+            // c(n) default-inits Integer to 0 — no explicit zero loop needed.
+            explicit IntPoly(size_t n) : c(n) {}
             [[nodiscard]] int deg() const {
                 for (int i = static_cast<int>(c.size()) - 1; i >= 0; --i)
                     if (!c[static_cast<size_t>(i)].is_zero()) return i;
