@@ -183,6 +183,23 @@ tests/                  # 41 测试文件 (.cpp)
 - 使用 `gnfs::core::Integer` 封装 GMP `mpz_class`
 - 所有大整数运算通过 `Integer` 类完成
 
+## 跨 bit-size 验证 (小 case PASS ≠ 大 case PASS)
+
+**81-bit 测试 PASS ≠ 164-bit (50-digit) PASS ≠ 197-bit (60-digit) PASS。** GNFS 算法行为随 LP_bound (lp_bits) 显著变化:
+
+- **lp_bits 20** (25-digit, ≤30-digit): weight=2 LP keys 主导 (BG birthday probability ~0.5+). weight≥3 keys 稀少 (~< 5%). 经验估计 `lp_cols / usable ≈ 5%` 有效.
+- **lp_bits 23** (50-digit): LP 空间 8M, weight-3+ LP keys 大量 (~30%). chain-merge 累 LP residue → singleton 飙升. 经验估计 `lp_cols / usable ≈ 64%`.
+- **lp_bits 26** (60-digit): LP 空间 67M, 大部分 LP key weight=1 (orphan). 经验估计 `lp_cols / usable ≈ 70%+`.
+
+**典型陷阱**:
+1. **算法修改在 25-digit PASS, 在 50-digit 失败** (本会话 V2 commit 21dcbcd 案例): V2 让 weight≥2 都 merge, 25d Merged +27% (好看), 50d Merged -69% + sngl ×49 (灾难). lp_bits=23 chain LP residue 累积 是真实 corner case.
+2. **经验比例失效**: `lp_col_estimate = relations.size() / 20` 来自 ≤30-digit, 50d 实际 64% (×12.6). sieve loop 提前 break, matrix build NO EXCESS.
+
+**铁律**:
+- 改 filter/merge/sieve 等 size-sensitive 代码后, 必须 reg-test 至少**3 个 size band**: 81-bit (25d), 164-bit (50d 至少 1 Round), 100-150 bit (e.g. test_kleinjung_large).
+- 经验估计 (`/ 20`, `× 1.5`, etc.) 都标 "size 边界" 注释, 触发 size 改变时重 audit.
+- 准确计算 > 经验估计. `count_unique_lp_keys` 在 filter.hpp 提供准确 LP cols 数, **deprecate 5% guess**.
+
 ## 跨平台编译注意事项 (macOS / Linux CI)
 
 **本地 macOS 编译通过 ≠ Linux CI 通过。** 常见差异:
