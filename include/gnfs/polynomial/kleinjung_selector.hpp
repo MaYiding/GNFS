@@ -258,7 +258,9 @@ private:
     /// 生成光滑的 a_d 和对应的初始 m 值
     [[nodiscard]] std::vector<std::pair<Integer, Integer>>
     stage1_leading_coeff_search(const Integer& n) {
+        // Reserve: loop caps at num_candidates * 2 (line 329), reserve up to that.
         std::vector<std::pair<Integer, Integer>> candidates;
+        candidates.reserve(params_.num_candidates * 2);
 
         uint32_t d = params_.degree;
 

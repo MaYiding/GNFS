@@ -138,6 +138,7 @@ PolynomialSelectionResult BaseMSelector::select(const Integer& n, uint32_t degre
         IntPolynomial f;
     };
     std::vector<Candidate> candidates;
+    candidates.reserve(static_cast<size_t>(2 * max_delta + 1));
 
     for (int delta = -max_delta; delta <= max_delta; ++delta) {
         Integer m = m_base + Integer(delta);
