@@ -638,6 +638,9 @@ private:
 
         // 清空行
         row.clear_all();
+        // Reserve upper bound: rat_fb + alg_fb + LP + QC + SM + sign columns
+        // typical 50d row weight = 30-50 nonzero. Use 64 generic upper bound.
+        row.reserve(64);
 
         // 符号列：此处不设置——符号应基于 (a - b*m) 的正负而非 a 的正负。
         // build_with_qc() 会用 PolynomialContext 正确计算并设置符号列。

@@ -47,6 +47,10 @@ public:
         sorted_ = false;
     }
 
+    /// Reserve capacity for upcoming append_unchecked/set calls.
+    /// Called by matrix_builder build_row with FB+LP+QC+SM count upper bound.
+    void reserve(size_t n) { indices_.reserve(n); }
+
     /// 清除位
     void clear(uint32_t col) {
         ensure_sorted();
