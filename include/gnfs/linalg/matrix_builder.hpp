@@ -391,6 +391,7 @@ private:
                 for (size_t i = 0; i < ru; ++i) if (rexps[i] & 1u) info.rat_primes.insert(rkeys[i]);
             } else {
                 std::unordered_map<uint64_t, uint32_t> rat_exp;
+                rat_exp.reserve(rat_lps.size());
                 for (const auto& lp : rat_lps) rat_exp[lp.p] += lp.e;
                 for (const auto& [p, exp] : rat_exp) if (exp & 1u) info.rat_primes.insert(p);
             }
@@ -409,6 +410,7 @@ private:
                 for (size_t i = 0; i < au; ++i) if (aexps[i] & 1u) info.alg_primes.insert(akeys[i]);
             } else {
                 std::unordered_map<PrimeIdealKey, uint32_t, PrimeIdealKeyHash> alg_exp;
+                alg_exp.reserve(alg_lps.size());
                 for (const auto& lp : alg_lps) alg_exp[{lp.p, lp.r}] += lp.e;
                 for (const auto& [key, exp] : alg_exp) if (exp & 1u) info.alg_primes.insert(key);
             }
