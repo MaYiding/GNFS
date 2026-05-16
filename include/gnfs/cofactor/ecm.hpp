@@ -272,6 +272,8 @@ private:
             }
         }
         std::vector<uint64_t> primes;
+        // π(bound) ≈ bound / ln(bound) — reserve to avoid log(n) reallocs.
+        primes.reserve(static_cast<size_t>(bound / std::max(std::log(static_cast<double>(bound)), 1.0)));
         for (uint64_t i = 2; i <= bound; ++i) {
             if (is_prime[i]) primes.push_back(i);
         }
