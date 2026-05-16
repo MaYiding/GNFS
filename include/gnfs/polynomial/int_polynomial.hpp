@@ -136,6 +136,7 @@ public:
     /// 使用暴力搜索（小 p）或 Cantor-Zassenhaus（大 p）
     [[nodiscard]] std::vector<uint32_t> roots_mod_p(uint32_t p) const {
         std::vector<uint32_t> roots;
+        roots.reserve(static_cast<size_t>(degree()));  // bounded by f degree
 
         if (p < 1000) {
             // 小 p：暴力搜索
@@ -449,6 +450,7 @@ private:
         seed ^= static_cast<uint64_t>(deg) + 0x9E3779B97F4A7C15ULL + (seed << 6) + (seed >> 2);
         std::mt19937_64 rng(seed);
         std::vector<uint64_t> poly_coeffs;
+        poly_coeffs.reserve(static_cast<size_t>(deg + 1));
         for (int i = 0; i <= deg; ++i) poly_coeffs.push_back(poly.coeff(i));
 
         for (int attempt = 0; attempt < 100; ++attempt) {
@@ -482,6 +484,7 @@ private:
 
         // 极少数情况回退暴力
         std::vector<uint32_t> roots;
+        roots.reserve(static_cast<size_t>(deg));  // bounded by f degree
         for (uint32_t r = 0; r < p && static_cast<int>(roots.size()) < deg; ++r) {
             uint64_t val = 0, rp = 1;
             for (int i = 0; i <= deg; ++i) {
