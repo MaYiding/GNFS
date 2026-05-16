@@ -103,7 +103,11 @@ public:
         }
 
         // ── 按 component 分组 ──
+        // Reserve assuming worst case (each rel its own component) — avoids
+        // mid-insertion rehashing. Real components_found is typically much
+        // smaller, but reserve is bounded by pool.size() so memory cost is OK.
         std::unordered_map<size_t, std::vector<size_t>> components;
+        components.reserve(pool.size());
         for (size_t i = 0; i < pool.size(); ++i) {
             components[uf.find(i)].push_back(i);
         }
