@@ -1064,6 +1064,10 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
   - **Overlap fast-path** (commit `d2ef403`, 4.6× speedup): 99.99% rejections
     are no-LP-overlap cases — pre-check via cached `acc_lp_set` skips
     heavy merge_two() entirely. Test_api 19.93s → 4.31s.
+  - **Pool LP keys cache** (commit `dac99c8`, +12% on top): pre-compute
+    `pool[i].lp_keys` once during lp_index build, BFS visits use cache instead
+    of `remaining_lp_keys()` per call. 60d-scale 200K input: 116ms → 102ms
+    avg (5 trials), 30K bench: 27ms → 23ms.
 
 - **集成** (commits `babc322` + `975ac8b` + `7f9de82` + `56e5b14`):
   - ENV-gated `GNFS_CASCADE_V3` 三态 (默认 OFF, V0 path 零开销):
