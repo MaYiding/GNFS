@@ -229,11 +229,15 @@ int main() {
                   << "%, new target=" << batch_target << "\n" << std::flush;
     }
 
-    // Relation trimming: cap at 1.3× matrix_cols for fast Gaussian
+    // Relation trimming: cap at 1.3× effective_cols (FB + LP) for fast Gaussian
+    // Same fix as test_stress 71193bb / test_progressive ed8a7b5 / test_regression_gate 33d9a8f.
     {
-        size_t max_rels = static_cast<size_t>(matrix_cols * 1.3);
+        size_t lp_cols_for_trim = lp_enabled ? count_unique_lp_keys(relations) : 0;
+        size_t effective_cols = matrix_cols + lp_cols_for_trim;
+        size_t max_rels = static_cast<size_t>(effective_cols * 1.3);
         if (relations.size() > max_rels) {
-            std::cout << "  [Trim] " << relations.size() << " → " << max_rels << " relations\n";
+            std::cout << "  [Trim] " << relations.size() << " → " << max_rels
+                      << " relations (eff_cols=" << effective_cols << ")\n";
             std::mt19937 rng(42);
             std::shuffle(relations.begin(), relations.end(), rng);
             relations.resize(max_rels);
