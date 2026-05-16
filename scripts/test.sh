@@ -1550,8 +1550,8 @@ while [[ $# -gt 0 ]]; do
         --deep)      MODE_ARGS+=(--deep); shift ;;
         --slow)      MODE_ARGS+=(--slow); shift ;;
         -h|--help)
-            # 显示帮助
-            sed -n '2,/^set -eo/{ /^#/s/^# \{0,1\}//p }' "$0"
+            # 显示帮助 — 用 awk 而非 sed (BSD sed 'bad flag in {...}' 不兼容)
+            awk '/^set -eo/{exit} /^#/{sub(/^# ?/, ""); print}' "$0"
             exit 0 ;;
         *)
             if [[ -z "$MODE" ]]; then
