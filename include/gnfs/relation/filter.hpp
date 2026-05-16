@@ -313,7 +313,41 @@ public:
     /// 提取关系的"有效" LP key（奇数次出现的 = 未取消的）
     /// 合并关系中，共享 LP 出现偶数次（已取消），只返回奇数次的
     [[nodiscard]] static std::vector<LargePrimeKey> remaining_lp_keys(const Relation& rel) {
+        const size_t n_rat = rel.rational_large_prime.size();
+        const size_t n_alg = rel.algebraic_large_prime.size();
+        const size_t total = n_rat + n_alg;
+
+        // Fast path: small total LP count (typical V0/V3 BFS case) - linear scan
+        // on stack arrays avoids unordered_map allocation. O(n²) on n ≤ 8 is OK.
+        if (total <= 8) {
+            LargePrimeKey keys[8];
+            uint8_t counts[8] = {0};
+            size_t n_unique = 0;
+            auto accumulate = [&](LargePrimeKey k) {
+                for (size_t i = 0; i < n_unique; ++i) {
+                    if (keys[i].prime == k.prime && keys[i].root == k.root &&
+                        keys[i].is_algebraic == k.is_algebraic) {
+                        ++counts[i];
+                        return;
+                    }
+                }
+                keys[n_unique] = k;
+                counts[n_unique] = 1;
+                ++n_unique;
+            };
+            for (const auto& lp : rel.rational_large_prime) accumulate({lp.p, 0, false});
+            for (const auto& lp : rel.algebraic_large_prime) accumulate({lp.p, lp.r, true});
+            std::vector<LargePrimeKey> out;
+            out.reserve(n_unique);
+            for (size_t i = 0; i < n_unique; ++i) {
+                if (counts[i] % 2 != 0) out.push_back(keys[i]);
+            }
+            return out;
+        }
+
+        // Fallback: unordered_map for large LP counts (rare V0/V3 chain residue)
         std::unordered_map<LargePrimeKey, size_t, LargePrimeKeyHash> counts;
+        counts.reserve(total);
         for (const auto& lp : rel.rational_large_prime) {
             ++counts[{lp.p, 0, false}];
         }
