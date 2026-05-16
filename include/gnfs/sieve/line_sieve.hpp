@@ -45,8 +45,9 @@ public:
     [[nodiscard]] SieveResult sieve(const Params& params) const {
         SieveResult result;
         result.special_q = SpecialQ{0, 0, 0};  // No special-Q
-
+        // Heuristic: ~1% of (a,b) cells pass smoothness threshold.
         const int64_t a_range = params.a_max - params.a_min + 1;
+        result.candidates.reserve(static_cast<size_t>(a_range * params.b_max) / 100);
         if (a_range <= 0 || params.b_max <= 0) return result;
 
         const size_t width = static_cast<size_t>(a_range);
