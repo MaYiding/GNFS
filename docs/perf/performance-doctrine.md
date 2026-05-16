@@ -970,14 +970,14 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
   - **教训**: doctrine 铁律 5 (measurement-first) 又一次救场 — 看到 `grep qos 0` 就判断"必改"过激, 实测 10-DEF ≈ 10-USER 表明改动是预防性. 极限对照 (10-BG) 比正常情况对照 (10-DEF) 更有信号 — 5× 极限 boundary 才暴露真实风险.
 - ~~内存使用减半（peak RAM 优化）~~ ✅ **已评估 2026-05-16 — deferred-by-data** (P3 第 2 条)
   - **Baseline 测量** (`/usr/bin/time -l ./test_stress 1 1`, 50-digit 164-bit, M5 16 GB):
-    - max RSS: **2.08 GiB** (13.0% of 16 GB)
+    - max RSS: **2.03 GiB** (12.7% of 16 GiB)
     - peak memory footprint: 2.63 GiB (16.4%)
     - 0 swaps, 93 page faults (well within RAM)
     - real 7142s, user 30463s (4.27× parallelism)
   - **Polling vs `time -l` 教训**: 手动 ps RSS polling (60s 间隔) 观察 peak 634 MB,
-    远低于 `time -l` 报告的 2.08 GiB. peak 在 phase transition (Phase 4 trim 或 Phase 5
+    远低于 `time -l` 报告的 2.03 GiB. peak 在 phase transition (Phase 4 trim 或 Phase 5
     matrix construct) sub-poll window 闪现. `time -l` 是权威, polling 仅看长稳态.
-  - **决策**: 50-digit 不是 RAM 瓶颈. 13% memory utilization 实施 "减半" 对 wall time
+  - **决策**: 50-digit 不是 RAM 瓶颈. 12.7% memory utilization 实施 "减半" 对 wall time
     0 影响 (无 swap). P3-2 实施触发条件 = 60+digit baseline RSS > 8 GiB (50% memory).
     当前 60-digit (`test_stress 1 2`) hours+ 未实测, 触发条件未达 → deferred.
   - 候选 hot spots (deferred follow-up, 触发后启动):

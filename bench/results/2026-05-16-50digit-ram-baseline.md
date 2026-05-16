@@ -36,7 +36,7 @@ exercise — 实际 GNFS 50-digit 全程跑通会 +0.5-1 GB linalg phase RAM.
 
 ```
 7142.76 real     30463.25 user        85.05 sys
-2183331840  maximum resident set size       (2.08 GiB)
+2183331840  maximum resident set size       (2.03 GiB)
 2826258856  peak memory footprint           (2.63 GiB)
 2871200  page reclaims
 93  page faults
@@ -50,7 +50,7 @@ exercise — 实际 GNFS 50-digit 全程跑通会 +0.5-1 GB linalg phase RAM.
 | Real time | 7142.76 s | ≈ 119 min |
 | User time | 30463.25 s | 4.27× parallelism (≈ 4 P-core saturated) |
 | System time | 85.05 s | 1.2% overhead — minimal kernel cost |
-| **Max RSS** | **2.08 GiB** | resident peak |
+| **Max RSS** | **2.03 GiB** | resident peak |
 | **Peak footprint** | **2.63 GiB** | macOS extended (含 dirty + reclaimable) |
 | Page reclaims | 2.87M | typical for malloc-heavy |
 | Swaps | 0 | well under 16 GB |
@@ -66,7 +66,7 @@ exercise — 实际 GNFS 50-digit 全程跑通会 +0.5-1 GB linalg phase RAM.
 | Phase 3 round 2 sieving (mid) | 280-573 MB | round 1 释放后稳态 |
 | Phase 4 trimming + Phase 5 attempt | 不充分 sample | < poll 间隔 |
 
-**注**: 手动 polling 漏了真 peak. `time -l` 报告 2.08 GiB max RSS 远超手动观察
+**注**: 手动 polling 漏了真 peak. `time -l` 报告 2.03 GiB max RSS 远超手动观察
 634 MB. peak 在 sub-poll window 闪现 — 推测 Phase 4 trim 或 Phase 5 matrix
 construction 临时阶段, 这些 phase 实际跑得快 (< 1 s) 但 RSS spike 大.
 
@@ -75,7 +75,7 @@ construction 临时阶段, 这些 phase 实际跑得快 (< 1 s) 但 RSS spike �
 ### 4.1 当前 size 是否瓶颈?
 
 50-digit on M5 16 GB:
-- max RSS 2.08 GiB = **13.0% memory**
+- max RSS 2.03 GiB = **12.7% memory**
 - peak footprint 2.63 GiB = **16.4% memory**
 - **0 swaps, 93 page faults** — well within RAM
 
@@ -111,7 +111,7 @@ test 普及到 stress regression 时再启动 baseline.
 
 ### 5.1 关闭 doctrine §6 P3 第 2 条 (deferred-by-data)
 
-**状态**: ✅ **已评估 2026-05-16** — measurement 显示 50-digit (2.08 GiB peak)
+**状态**: ✅ **已评估 2026-05-16** — measurement 显示 50-digit (2.03 GiB peak)
 不构成 RAM 瓶颈. P3-2 实施 (减半到 ~1 GiB) 边际收益小, 优先级 deferred.
 
 ### 5.2 BACKLOG follow-up (触发条件未满足时不启动)
@@ -129,7 +129,7 @@ memory). 或 70-digit 出现 swap.
 ## 6. 教训
 
 1. **`time -l` 是权威 — polling 漏 peak**. 手动 ps RSS 观察 634 MB, `time -l`
-   报告 2.08 GiB. 应优先用 `time -l` (max RSS) 而非 polling. polling 只能看
+   报告 2.03 GiB. 应优先用 `time -l` (max RSS) 而非 polling. polling 只能看
    到长稳态 RSS, peak 在 phase transition 临时分配时往往 < 1 s.
 2. **doctrine "减半" 的意义随 size 改变**. 50-digit 减半对 wall 0 影响
    (无 swap), 60+digit 才是 trigger size. 不能 generalize "减半总是好的".
