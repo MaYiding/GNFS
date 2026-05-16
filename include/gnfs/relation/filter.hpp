@@ -405,26 +405,38 @@ public:
                 if (indices.size() == 1) singleton_keys.insert(key);
             }
 
-            // Weight-2 merge（标准 2LP 处理）
+            // Weight-K merge (K >= 2): pair first 2 unused indices per LP key
             std::unordered_set<size_t> used;
             std::vector<Relation> new_merged;
 
-            // NOTE: Only weight-2 LP keys are merged. Weight-3+ keys could
-            // be chain-merged in principle, but this conservative strategy avoids
-            // creating overly dense matrix rows. Future: implement weight-3 merge
-            // by pairing the two cheapest relations per LP key.
+            // 旧代码: 仅 weight==2 keys, 每 key 1 merge.
+            // 新代码: weight>=2 keys, 每 key 仍只 1 merge (first 2 unused indices).
+            //   - weight=2: 行为同旧 (pair only 2 indices)
+            //   - weight=3+: 之前 SKIP, 现在 merge 前 2 unused, 其余视为该 key 的 "orphan"
+            //     留 pool, 下轮如 LP 变 singleton 被清, 否则再次 try pair-up
+            //
+            // Rationale: 50d/60d 高 LP bound 让 weight≥3 keys 大量, 旧弃 weight-3+ rels
+            // (merge_rate 1.098%). V1 (pair-all) 太 aggressive, 导致 chain-merged 中间
+            // rels 累 LP 残留, 反而少 merge. V2 conservative: 每 LP key 至多 1 merge,
+            // 但 enable weight-3+ keys → 应提 merge_rate 而不 over-dense.
 
             // Sort keys for deterministic merge order across runs
-            std::vector<LargePrimeKey> sorted_2lp_keys;
+            std::vector<LargePrimeKey> sorted_mergeable_keys;
             for (const auto& [key, indices] : lp_index) {
-                if (indices.size() == 2) sorted_2lp_keys.push_back(key);
+                if (indices.size() >= 2) sorted_mergeable_keys.push_back(key);
             }
-            std::sort(sorted_2lp_keys.begin(), sorted_2lp_keys.end());
+            std::sort(sorted_mergeable_keys.begin(), sorted_mergeable_keys.end());
 
-            for (const auto& key : sorted_2lp_keys) {
+            for (const auto& key : sorted_mergeable_keys) {
                 const auto& indices = lp_index.at(key);
-                size_t i = indices[0], j = indices[1];
-                if (used.count(i) || used.count(j)) continue;
+                // Find first 2 unused indices for this key.
+                size_t i = SIZE_MAX, j = SIZE_MAX;
+                for (size_t idx : indices) {
+                    if (used.count(idx)) continue;
+                    if (i == SIZE_MAX) { i = idx; }
+                    else { j = idx; break; }
+                }
+                if (j == SIZE_MAX) continue;  // < 2 unused, skip
 
                 auto m = merge_two(pool[i], pool[j]);
                 used.insert(i);
