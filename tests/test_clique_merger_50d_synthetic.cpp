@@ -199,6 +199,40 @@ void test_v3_lp_cancel_safety() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_v3_huge_clique() {
+    // Adversarial: single large clique (5000 rels share same LP key).
+    // V3 BFS must not blow up (stack overflow, quadratic in nbr eval, etc.)
+    std::cout << "Testing V3 cascade single large clique (5000 rels)..." << std::endl;
+    std::vector<Relation> rels;
+    rels.reserve(5000);
+    for (int64_t i = 0; i < 5000; ++i) {
+        Relation r(i + 1, 1);
+        r.rational_factors = {0};
+        r.algebraic_factors = {0};
+        r.rational_large_prime.push_back(PrimePower{101, 0, 1});  // all share LP=101
+        rels.push_back(std::move(r));
+    }
+
+    auto start = std::chrono::high_resolution_clock::now();
+    CliqueStats stats;
+    auto out = CliqueRelationMerger::merge_cliques(std::move(rels), &stats);
+    auto end = std::chrono::high_resolution_clock::now();
+    double elapsed = std::chrono::duration<double>(end - start).count();
+
+    std::cout << "  in=" << stats.input_relations
+              << " components=" << stats.components_with_excess
+              << " full=" << stats.full_produced
+              << " elapsed=" << std::fixed << std::setprecision(3) << elapsed << "s" << std::endl;
+
+    assert(stats.components_with_excess == 1);
+    // 5000 rels all sharing LP=101: BFS picks pairs → ~2500 full
+    assert(stats.full_produced > 0);
+    // Must complete in instant tier (< 5s, but expect << 1s)
+    assert(elapsed < 5.0);
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_v3_scale_performance() {
     // Verify V3 cascade scales — 50K input rels should complete in instant tier
     // (post fast-path optimization, commit d2ef403).
@@ -233,6 +267,7 @@ int main() {
     test_v3_expands_v0_baseline();
     test_v0_v3_cascade_dedup();
     test_v3_lp_cancel_safety();
+    test_v3_huge_clique();
     test_v3_scale_performance();
 
     std::cout << "\nAll V3 synthetic tests passed!" << std::endl;
