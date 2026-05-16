@@ -538,6 +538,7 @@ private:
     [[nodiscard]] std::vector<uint32_t> find_roots_mod_p(uint32_t p) const {
         std::vector<uint32_t> roots;
         uint32_t d = ctx_.degree();
+        roots.reserve(d);  // bounded by polynomial degree
 
         for (uint32_t x = 0; x < p; ++x) {
             uint64_t val = 0;
