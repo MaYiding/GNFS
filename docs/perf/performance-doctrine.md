@@ -1059,12 +1059,18 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
     test_stress.cpp:393 (stress sieve loop)
   - Dedup via (a, b) XOR hash 避免 V0 ∩ V3 重复
 
-- **测试** (commits `babc322` + `5cf9e41`):
+- **测试** (commits `babc322` + `5cf9e41` + `4d143d2`):
   - 6 基本 unit tests (test_clique_merger): empty, 1LP×N clique, 2LP triangle, no_overlap, 3LP+ filter
   - 3 synthetic 50d-like tests (test_clique_merger_50d_synthetic):
     - V0 alone: 885 merged
     - V0 + V3 cascade + dedup: 1115 merged
-    - **V3 实测 +26% added beyond V0** (empirical evidence)
+    - **V3 实测 +26% added beyond V0** (synthetic empirical evidence)
+  - 2 Pipeline e2e tests (test_api.cpp):
+    - test_v3_cascade_pipeline_integration: forces 12d Pipeline GNFS path
+      with GNFS_CASCADE_V3=1, captures log callback
+      - **40-bit real run: V3 added 2742 rels** (in=21096 full=3802 residual=1507)
+      - lp_rejects=28M (LP cancel check actively prevents chain residue)
+    - test_v3_cascade_disabled_by_default: ENV unset → V0-only unchanged
 
 - **可见性**: stderr fprintf alongside emit_log → `[v3_cascade.sieve] in=N full=N residual=N added=N`
 
