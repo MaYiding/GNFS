@@ -183,6 +183,32 @@ tests/                  # 41 测试文件 (.cpp)
 - 使用 `gnfs::core::Integer` 封装 GMP `mpz_class`
 - 所有大整数运算通过 `Integer` 类完成
 
+### Filter Merge — V0 + V3 Clique Cascade
+
+**V0** (默认, `PartialRelationMerger::merge_all`): 仅 weight=2 LP keys. 适合 lp_bits ≤ 22.
+
+**V3** (备用, `CliqueRelationMerger::merge_cliques`): BFS spanning tree over LP-sharing graph + LP cancel check. 处理 weight≥3 LP keys (50d/60d 的 lp_bits 23/26 真实 corner case).
+
+**启用 V3 cascade**:
+```bash
+GNFS_CASCADE_V3=1 ./test_stress 1 1   # 50d V0+V3 cascade
+GNFS_CASCADE_V3=1 ./gnfs <N>          # GNFS pipeline V0+V3 cascade
+```
+
+V3 cascade 默认 OFF (V0 path 零开销). 启用时:
+- V3 run on partial **copy** (V0 path 完整保留)
+- Dedup via (a,b) XOR hash 避免 V0 ∩ V3 重复
+- stderr 输出 `[v3_cascade.sieve] in=... full=... residual=... added=...`
+
+**集成点** (commit 7f9de82, 975ac8b):
+- `src/api/pipeline.cpp:605` — sieve_and_collect adaptive loop
+- `src/api/pipeline.cpp:752` — Phase 4 filter (currently dead path)
+- `tests/test_stress.cpp:393` — stress sieve loop
+
+**详细**: `docs/perf/v3-cascade-design.md`
+
+**禁用条件**: V0 已 PASS 时不需要 V3 (额外开销但 0 收益). V3 仅在 V0+fix 50d/60d NO_EXCESS 时启用.
+
 ## 跨 bit-size 验证 (小 case PASS ≠ 大 case PASS)
 
 **81-bit 测试 PASS ≠ 164-bit (50-digit) PASS ≠ 197-bit (60-digit) PASS。** GNFS 算法行为随 LP_bound (lp_bits) 显著变化:
