@@ -209,6 +209,20 @@ V3 cascade 默认 OFF (V0 path 零开销). 启用时:
 
 **禁用条件**: V0 已 PASS 时不需要 V3 (额外开销但 0 收益). V3 仅在 V0+fix 50d/60d NO_EXCESS 时启用.
 
+### lp_bits 实验 (GNFS_OVERRIDE_LP_BITS)
+
+**ENV `GNFS_OVERRIDE_LP_BITS=N`** (commit `dce0a5e`, `e271c5a`): runtime override `params.hpp` digit-based lp_bits default. 范围 1-30. 不在范围则忽略 (default).
+
+```bash
+GNFS_OVERRIDE_LP_BITS=25 ./test_stress 2 2   # 60d with lp_bits=25 (vs default 26)
+GNFS_OVERRIDE_LP_BITS=27 ./gnfs <N>          # any size with lp_bits=27
+```
+
+**用途**:
+- BACKLOG [OPT] 60d lp_bits 25 vs 26 trade-off 比较
+- LP space 影响 sieve duration: smaller lp_bits = smaller LP space = fewer LP cols = less raw needed for PASS (但 fewer LP cofactor candidates)
+- 实验前后必须 reg-test 25d / 50d (lp_bits 不该影响 < 50d behavior, 默认 path unchanged)
+
 ## 跨 bit-size 验证 (小 case PASS ≠ 大 case PASS)
 
 **81-bit 测试 PASS ≠ 164-bit (50-digit) PASS ≠ 197-bit (60-digit) PASS。** GNFS 算法行为随 LP_bound (lp_bits) 显著变化:
