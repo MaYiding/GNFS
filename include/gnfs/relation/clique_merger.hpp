@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <queue>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -37,6 +38,21 @@ struct CliqueStats {
     size_t heavy_path_rejects = 0;      // merge_two 后 cancel check 拒绝 (rare)
     size_t residual_emitted = 0;        // 残留 LP 的 merged rels 仍 emit
     size_t singletons_removed = 0;      // singleton 清理删除
+
+    /// 一行 summary, 便于 log 输出
+    [[nodiscard]] std::string to_string() const {
+        return "in=" + std::to_string(input_relations) +
+               " (1lp=" + std::to_string(input_1lp) +
+               " 2lp=" + std::to_string(input_2lp) +
+               " 3lp+=" + std::to_string(input_3lp_plus) + ")" +
+               " components=" + std::to_string(components_with_excess) +
+               "/" + std::to_string(components_found) +
+               " full=" + std::to_string(full_produced) +
+               " residual=" + std::to_string(residual_emitted) +
+               " rejects=" + std::to_string(lp_cancel_rejections) +
+               " (fast=" + std::to_string(fast_path_rejects) +
+               " heavy=" + std::to_string(heavy_path_rejects) + ")";
+    }
 };
 
 /// V3 Clique merge: BFS spanning tree with LP cancel check
