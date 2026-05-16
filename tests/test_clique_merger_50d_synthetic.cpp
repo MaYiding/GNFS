@@ -318,6 +318,34 @@ void test_v3_scale_performance() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_v3_60d_scale() {
+    // 60d Round 2-3 estimated 100-200K usable rels (lp_bits=26 LP space 67M).
+    // Verify V3 cascade not bottleneck at this scale.
+    std::cout << "Testing V3 cascade 60d scale (200K input)..." << std::endl;
+
+    auto huge_input = make_synthetic_50d_like(200000, /*seed=*/60);
+
+    auto start = std::chrono::high_resolution_clock::now();
+    CliqueStats stats;
+    auto out = CliqueRelationMerger::merge_cliques(std::move(huge_input), &stats);
+    auto end = std::chrono::high_resolution_clock::now();
+    double elapsed_s = std::chrono::duration<double>(end - start).count();
+
+    std::cout << "  in=" << stats.input_relations
+              << " components=" << stats.components_with_excess
+              << " full=" << stats.full_produced
+              << " residual=" << stats.residual_emitted
+              << " lp_rejects=" << stats.lp_cancel_rejections
+              << " elapsed=" << std::fixed << std::setprecision(3) << elapsed_s << "s"
+              << std::endl;
+
+    // Must complete in instant tier (10s)
+    assert(elapsed_s < 10.0);
+    assert(stats.input_relations == 200000);
+
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== V3 Synthetic 50d-like Test ===" << std::endl;
 
@@ -327,6 +355,7 @@ int main() {
     test_v0_v3_bench_large();
     test_v3_huge_clique();
     test_v3_scale_performance();
+    test_v3_60d_scale();
 
     std::cout << "\nAll V3 synthetic tests passed!" << std::endl;
     return 0;
