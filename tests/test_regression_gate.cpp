@@ -226,9 +226,14 @@ static bool factorize(const RegressionLevel& tc) {
         return false;
     }
 
-    // Trim
+    // Trim — must include LP cols (lp_bits≥20 cases have significant LP cols).
+    // For ≤30-bit (Level 1-3) lp_cols is small (~1K-3K), 1.3× FB is barely enough.
+    // For 25-digit (Level 4) trim is rarely triggered so safe in practice, but fix
+    // for consistency and future-proofing.
     {
-        size_t max_rels = static_cast<size_t>(matrix_cols * 1.3);
+        size_t lp_cols_for_trim = lp_enabled ? count_unique_lp_keys(relations) : 0;
+        size_t effective_cols = matrix_cols + lp_cols_for_trim;
+        size_t max_rels = static_cast<size_t>(effective_cols * 1.3);
         if (relations.size() > max_rels) {
             std::mt19937 rng(42);
             std::shuffle(relations.begin(), relations.end(), rng);
