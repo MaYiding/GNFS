@@ -203,6 +203,7 @@ static bool factorize(const RegressionLevel& tc) {
             auto merged = PartialRelationMerger::merge_all(
                 std::move(sep.partial), 10, &mstats);
             relations = std::move(sep.full);
+            relations.reserve(relations.size() + merged.size());
             relations.insert(relations.end(),
                 std::make_move_iterator(merged.begin()),
                 std::make_move_iterator(merged.end()));
