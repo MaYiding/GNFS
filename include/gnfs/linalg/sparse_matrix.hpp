@@ -395,6 +395,8 @@ public:
     /// 获取所有设置位的索引
     [[nodiscard]] std::vector<size_t> set_bits() const {
         std::vector<size_t> result;
+        // popcount preflight gives exact result count → no reallocation.
+        result.reserve(popcount());
         for (size_t i = 0; i < size_; ++i) {
             if (test(i)) {
                 result.push_back(i);
