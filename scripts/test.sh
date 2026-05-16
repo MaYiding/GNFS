@@ -54,6 +54,8 @@
 #   ./scripts/test.sh bench               # 基准测试: 全部级别 + 计时对比
 #   ./scripts/test.sh bench --save        # 保存基准结果到 benchmarks/
 #   ./scripts/test.sh bench --compare     # 与上次保存的基准对比
+#   ./scripts/test.sh bench-ram <level>   # 后台 RAM baseline: nohup + /usr/bin/time -l
+#                                         # level=1 (50d ≈2h) / 2 (60d hours+) / 3-5 (大)
 #
 # 监视模式:
 #   ./scripts/test.sh watch               # 文件变更时自动重新测试 (需 fswatch)
@@ -1748,6 +1750,65 @@ case "$MODE" in
         local stress_max=${3:-2}
         run_single_test test_stress "$stress_min" "$stress_max"
         show_summary
+        ;;
+
+    bench-ram)
+        # 后台启动 test_stress + /usr/bin/time -l, 收集 RAM peak baseline (P3-2 工作流).
+        # 用法: ./scripts/test.sh bench-ram <level>
+        # 例:   ./scripts/test.sh bench-ram 1   # 50-digit (≈ 2h)
+        #       ./scripts/test.sh bench-ram 2   # 60-digit (hours+)
+        if [[ ${#MODE_ARGS[@]} -eq 0 ]]; then
+            log_fail "用法: $0 bench-ram <level>"
+            log_info "level=1: 50-digit (164-bit, ≈ 2h)"
+            log_info "level=2: 60-digit (197-bit, hours+)"
+            log_info "level=3: 70-digit / level=4: 80-digit / level=5: 90-digit"
+            log_info "建议预先 build-release:"
+            log_info "  cmake -B build-release -DCMAKE_BUILD_TYPE=Release && make -C build-release test_stress"
+            exit 1
+        fi
+        local _level="${MODE_ARGS[1]}"
+        if [[ ! "$_level" =~ ^[1-5]$ ]]; then
+            log_fail "level 必须为 1-5 (传入: $_level)"
+            exit 1
+        fi
+        local _bin_dir
+        if [[ -x "${PROJECT_ROOT}/build-release/test_stress" ]]; then
+            _bin_dir="${PROJECT_ROOT}/build-release"
+        elif [[ -x "${BUILD_DIR}/test_stress" ]]; then
+            _bin_dir="${BUILD_DIR}"
+            log_warn "未找到 build-release/test_stress; 用 ${BUILD_DIR} (建议 Release 减少 wall time)"
+        else
+            log_fail "找不到 test_stress 二进制. 先 build:"
+            log_info "  cmake -B build-release -DCMAKE_BUILD_TYPE=Release"
+            log_info "  make -C build-release test_stress"
+            exit 1
+        fi
+        local _digit_name _short
+        case "$_level" in
+            1) _digit_name="50-digit (L1, 164-bit)"; _short="50d" ;;
+            2) _digit_name="60-digit (L2, 197-bit)"; _short="60d" ;;
+            3) _digit_name="70-digit (L3, 231-bit)"; _short="70d" ;;
+            4) _digit_name="80-digit (L4, 264-bit)"; _short="80d" ;;
+            5) _digit_name="90-digit (L5, 298-bit)"; _short="90d" ;;
+        esac
+        local _log="/tmp/p3_ram_profile_${_short}.log"
+        log_header "RAM Baseline 收集 ($_digit_name)"
+        log_info "二进制: ${_bin_dir}/test_stress 1 $_level"
+        log_info "日志: $_log"
+        log_warn "后台启动 (nohup + /usr/bin/time -l), 预计 hours+, 不阻塞此 shell"
+        nohup /usr/bin/time -l "${_bin_dir}/test_stress" 1 "$_level" > "$_log" 2>&1 &
+        local _pid=$!
+        echo "PID=$_pid LOG=$_log task=P3-2_RAM_baseline_${_short} start=$(date '+%Y-%m-%d_%H:%M:%S')" >> /tmp/bg_tasks.txt
+        sleep 1
+        log_info ""
+        log_info "PID=$_pid 已启动 (注: /usr/bin/time 是 wrapper, child test_stress 通过 pgrep -P 查)"
+        log_info ""
+        log_info "监控命令:"
+        log_info "  tail -f $_log"
+        log_info "  pgrep -P $_pid && ps -p \$(pgrep -P $_pid) -o pid,%cpu,rss,etime"
+        log_info ""
+        log_info "完成后解析:"
+        log_info "  ./scripts/perf/parse-time-l.sh $_log \"$_digit_name baseline\""
         ;;
 
     bench|benchmark)
