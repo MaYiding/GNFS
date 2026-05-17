@@ -467,7 +467,7 @@ public:
 
         // Initialize
         Integer exp_m = q.clone();
-        exp_m += Integer(static_cast<int64_t>(1));
+        exp_m += int64_t(1);  // mpz_add_ui direct
         mpz_tdiv_q_2exp(exp_m.get_mpz(), exp_m.get_mpz(), 1);  // (q+1)/2
 
         auto c = power(z, q, f, p);

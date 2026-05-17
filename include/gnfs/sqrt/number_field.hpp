@@ -403,7 +403,7 @@ public:
         // 计算 b^d, b^{d-1}, ..., b^0
         // v22: b_powers[i-1] 直接赋值 (mpz_set), 不需要 clone
         std::vector<Integer> b_powers(degree_ + 1);
-        b_powers[0] = Integer(static_cast<int64_t>(1));
+        b_powers[0] = int64_t(1);  // mpz_set_si direct
         for (uint32_t i = 1; i <= degree_; ++i) {
             b_powers[i] = b_powers[i-1];
             b_powers[i] *= static_cast<long long>(b);
