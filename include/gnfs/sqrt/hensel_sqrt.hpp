@@ -639,22 +639,26 @@ private:
         }
 
         // Verification lambda
+        // v22: val/c 复用 enclosing scope buffer (try_verify 在 Hensel 路径
+        // 调用 2^(K-1)=4 次, 但每次 d 个 inner iter, 节省 d allocs per call)
+        Integer val_buf;
+        Integer c_buf;
         auto try_verify = [&]() -> std::optional<Integer> {
-            Integer val(int64_t(0));
+            val_buf = Integer(int64_t(0));
             for (uint32_t j = 0; j < d; ++j) {
-                Integer c = crt_mod_N[j].clone();
-                if (crt_val[j].compare(Mhalf) > 0) c -= M_mod_N;
-                c %= n;
-                if (c.is_negative()) c += n;
-                c *= mpow[j];
-                val += c;
-                val %= n;  // intermediate reduction — avoid d·N² growth
+                c_buf = crt_mod_N[j];
+                if (crt_val[j].compare(Mhalf) > 0) c_buf -= M_mod_N;
+                c_buf %= n;
+                if (c_buf.is_negative()) c_buf += n;
+                c_buf *= mpow[j];
+                val_buf += c_buf;
+                val_buf %= n;  // intermediate reduction — avoid d·N² growth
             }
-            if (val.is_negative()) val += n;
-            val *= f_prime_m_inv;
-            val %= n;
-            if (val.is_negative()) val += n;
-            return verify_and_return(val, product_at_m, n);
+            if (val_buf.is_negative()) val_buf += n;
+            val_buf *= f_prime_m_inv;
+            val_buf %= n;
+            if (val_buf.is_negative()) val_buf += n;
+            return verify_and_return(val_buf, product_at_m, n);
         };
 
         // Try all-positive
