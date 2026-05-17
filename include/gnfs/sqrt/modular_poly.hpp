@@ -206,7 +206,7 @@ public:
 
         ModularPoly result(1);
         ModularPoly b = base;
-        Integer e = exp.clone();
+        Integer e = exp;  // copy ctor
 
         while (!e.is_zero()) {
             if (e.is_odd()) {
@@ -466,9 +466,9 @@ public:
             return ModularPoly();  // Should not happen for irreducible f
         }
 
-        // Initialize
-        Integer exp_m = q.clone();
-        exp_m += int64_t(1);  // mpz_add_ui direct
+        // Initialize: exp_m = (q+1)/2 — mpz_add_ui writes q+1 directly (skip clone)
+        Integer exp_m;
+        mpz_add_ui(exp_m.get_mpz(), q.get_mpz(), 1);
         mpz_tdiv_q_2exp(exp_m.get_mpz(), exp_m.get_mpz(), 1);  // (q+1)/2
 
         auto c = power(z, q, f, p);
