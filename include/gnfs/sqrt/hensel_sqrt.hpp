@@ -850,10 +850,10 @@ private:
                 (i <= static_cast<uint32_t>(sqrt_mod_p.degree())) ? sqrt_mod_p.coeff(i) : 0);
         }
 
-        // Get f polynomial as Integer vector
+        // Get f polynomial as Integer vector (mpz_set into resized slot)
         std::vector<Integer> f_int(d + 1);
         for (uint32_t i = 0; i <= d; ++i) {
-            f_int[i] = nf.coeff(i).clone();
+            f_int[i] = nf.coeff(i);
         }
 
         Integer modulus(static_cast<int64_t>(p));
