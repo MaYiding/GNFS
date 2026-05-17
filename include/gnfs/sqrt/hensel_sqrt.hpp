@@ -373,7 +373,8 @@ private:
 
             std::vector<Integer> P(d);
             for (uint32_t i = 0; i < d; ++i) {
-                P[i] = P_final[i].clone();
+                // v22: 直接 assign (mpz_set on default-init buffer) 替代 clone() (mpz_init_set)
+                P[i] = P_final[i];
                 P[i] %= new_modulus;
             }
 
@@ -390,7 +391,7 @@ private:
             // Update T
             std::vector<Integer> two_S_prime(d);
             for (uint32_t i = 0; i < d; ++i) {
-                two_S_prime[i] = S[i].clone();
+                two_S_prime[i] = S[i];
                 two_S_prime[i] *= Integer(int64_t(2));
                 two_S_prime[i] %= new_modulus;
             }
@@ -402,7 +403,7 @@ private:
             factor[0] %= new_modulus;
             if (factor[0].is_negative()) factor[0] += new_modulus;
             for (uint32_t i = 1; i < d; ++i) {
-                factor[i] = two_S_T[i].clone();
+                factor[i] = two_S_T[i];
                 factor[i].negate();
                 factor[i] %= new_modulus;
                 if (factor[i].is_negative()) factor[i] += new_modulus;
