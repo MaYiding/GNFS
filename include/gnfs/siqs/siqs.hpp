@@ -501,6 +501,16 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb,
         poly.coeffs[i] = mod_mul32(ti, mod_inv32(a_div_qi_mod_qi, qi), qi);
     }
 
+    // v22: hoist abs(B) out of FB loop — only depends on poly.B, not FB prime.
+    // Per A switch we recompute B once, not per FB prime.
+    const bool B_is_neg = poly.B.is_negative();
+    Integer abs_B_hoisted;
+    if (B_is_neg) {
+        abs_B_hoisted = poly.B.clone();
+        abs_B_hoisted.abs();
+    }
+    const mpz_srcptr B_for_mod = B_is_neg ? abs_B_hoisted.get_mpz() : poly.B.get_mpz();
+
     for (size_t j = 1; j < fb.size(); j++) {
         uint32_t p = fb[j].p;
 
@@ -545,14 +555,13 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb,
         // computable purely from B_raw mod p). This is O(FB_size) GMP calls
         // per init but only once per A (not per B update).
         uint32_t b_mod_p;
-        if (poly.B < Integer(0)) {
-            Integer abs_b = Integer(0) - poly.B;
+        if (B_is_neg) {
             uint32_t abs_b_mod = static_cast<uint32_t>(
-                mpz_fdiv_ui(abs_b.get_mpz(), p));
+                mpz_fdiv_ui(B_for_mod, p));
             b_mod_p = (p - abs_b_mod) % p;
         } else {
             b_mod_p = static_cast<uint32_t>(
-                mpz_fdiv_ui(poly.B.get_mpz(), p));
+                mpz_fdiv_ui(B_for_mod, p));
         }
 
         uint32_t ainv = poly.a_inv_mod_p[j];
