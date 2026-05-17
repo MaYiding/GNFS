@@ -213,7 +213,7 @@ uint64_t pollard_rho_mpn2(const Integer& n, size_t max_iters) {
 /// Pollard rho with Brent improvement. Works on GMP integers.
 /// Returns a non-trivial factor or Integer(0) if not found within max_iters.
 Integer pollard_rho_brent(const Integer& n, size_t max_iters = 1000000) {
-    if (n <= Integer(3)) return Integer(0);
+    if (mpz_cmp_si(n.get_mpz(), 3) <= 0) return Integer{};
 
     // Use GMP directly for speed
     mpz_t y, c, m, g, r, q, x, ys, tmp;
