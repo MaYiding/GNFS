@@ -627,18 +627,15 @@ private:
         std::vector<Integer> mpow(d);
         mpow[0] = int64_t(1);  // mpz_set_si on default-init slot
         for (uint32_t j = 1; j < d; ++j) {
-            mpow[j] = mpow[j-1];
-            mpow[j] *= nf.m();
+            mpz_mul(mpow[j].get_mpz(), mpow[j-1].get_mpz(), nf.m().get_mpz());
             mpow[j] %= n;
         }
 
-        // v22: Mhalf/M_mod_N 直接 assign
+        // Mhalf = M/2 via bit shift; M_mod_N = M mod n via direct mpz_mod
         Integer Mhalf;
-        Mhalf = M;
-        mpz_tdiv_q_2exp(Mhalf.get_mpz(), Mhalf.get_mpz(), 1);
+        mpz_tdiv_q_2exp(Mhalf.get_mpz(), M.get_mpz(), 1);
         Integer M_mod_N;
-        M_mod_N = M;
-        M_mod_N %= n;
+        mpz_mod(M_mod_N.get_mpz(), M.get_mpz(), n.get_mpz());
 
         // Incremental mod-N values for fast verification (v22: mpz_set)
         std::vector<Integer> crt_mod_N(d);
