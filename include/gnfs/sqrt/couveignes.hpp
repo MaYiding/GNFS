@@ -327,7 +327,7 @@ public:
             two_weights[j].resize(d);
             for (uint32_t i = 0; i < d; ++i) {
                 two_weights[j][i] = weights[j][i];
-                two_weights[j][i] *= Integer(static_cast<int64_t>(2));
+                two_weights[j][i] *= int64_t(2);  // mpz_mul_si direct
             }
         }
 
@@ -632,7 +632,7 @@ public:
             two_weights[j].resize(d);
             for (uint32_t i = 0; i < d; ++i) {
                 two_weights[j][i] = weights[j][i];
-                two_weights[j][i] *= Integer(static_cast<int64_t>(2));
+                two_weights[j][i] *= int64_t(2);  // mpz_mul_si direct
             }
         }
 
