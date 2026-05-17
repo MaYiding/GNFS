@@ -783,18 +783,10 @@ inline void sieve_polynomial(
         uint64_t large_prime2 = 0;
 
         if (Q.bit_length() <= 127) {
-            // Native 128-bit trial division (no GMP)
-            __uint128_t q128 = 0;
-            {
-                mpz_t tmp_lo;
-                mpz_init(tmp_lo);
-                mpz_tdiv_r_2exp(tmp_lo, Q.get_mpz(), 64);
-                uint64_t lo = mpz_get_ui(tmp_lo);
-                mpz_tdiv_q_2exp(tmp_lo, Q.get_mpz(), 64);
-                uint64_t hi = mpz_get_ui(tmp_lo);
-                mpz_clear(tmp_lo);
-                q128 = (static_cast<__uint128_t>(hi) << 64) | lo;
-            }
+            // Native 128-bit trial division (no GMP) — zero-alloc limb access
+            uint64_t lo = mpz_getlimbn(Q.get_mpz(), 0);
+            uint64_t hi = mpz_getlimbn(Q.get_mpz(), 1);
+            __uint128_t q128 = (static_cast<__uint128_t>(hi) << 64) | lo;
 
             // Divide out A primes first
             for (uint32_t ai : poly.a_indices) {
@@ -918,10 +910,10 @@ inline void sieve_polynomial(
                     large_prime2 = 1;
                     accept = true;
                 } else if (lp_bound_sq > 0 && cofac <= lp_bound_sq && cofac > lp_bound) {
-                    mpz_t tmp;
-                    mpz_init_set_ui(tmp, cofac);
-                    int is_prp = mpz_probab_prime_p(tmp, 2);
-                    mpz_clear(tmp);
+                    // thread_local Integer reuse (saves init/clear per check)
+                    thread_local Integer tmp_check;
+                    mpz_set_ui(tmp_check.get_mpz(), cofac);
+                    int is_prp = mpz_probab_prime_p(tmp_check.get_mpz(), 2);
                     if (is_prp == 0) {
                         large_prime = cofac;
                         large_prime2 = 1;
