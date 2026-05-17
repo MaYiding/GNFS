@@ -57,13 +57,9 @@ public:
 
         // uint128 快路径: |a - b*m| often fits 65-127 bits for 40-65 digit N
         if (value.bit_length() <= 127) {
-            mpz_t tmp;
-            mpz_init(tmp);
-            mpz_tdiv_r_2exp(tmp, value.get_mpz(), 64);
-            uint64_t lo = mpz_get_ui(tmp);
-            mpz_tdiv_q_2exp(tmp, value.get_mpz(), 64);
-            uint64_t hi = mpz_get_ui(tmp);
-            mpz_clear(tmp);
+            // Zero-alloc limb access (same pattern as divide_algebraic line 182)
+            uint64_t lo = mpz_getlimbn(value.get_mpz(), 0);
+            uint64_t hi = mpz_getlimbn(value.get_mpz(), 1);
             __uint128_t v128 = (static_cast<__uint128_t>(hi) << 64) | lo;
 
             const auto& rationals = fb_.rational();
@@ -82,17 +78,12 @@ public:
             } else if (v128 <= UINT64_MAX) {
                 result.cofactor = static_cast<uint64_t>(v128);
             } else {
-                // Convert uint128 back to Integer
+                // u128 → Integer: write hi limb, shift, add lo (zero tmp alloc)
                 uint64_t rhi = static_cast<uint64_t>(v128 >> 64);
                 uint64_t rlo = static_cast<uint64_t>(v128);
-                mpz_t rtmp;
-                mpz_init(rtmp);
-                mpz_set_ui(rtmp, rhi);
-                mpz_mul_2exp(rtmp, rtmp, 64);
-                mpz_add_ui(rtmp, rtmp, rlo);
-                // result.cofactor 默认 init = 0, 直接 mpz_set 复用 buffer
-                mpz_set(result.cofactor.get_mpz(), rtmp);
-                mpz_clear(rtmp);
+                mpz_set_ui(result.cofactor.get_mpz(), rhi);
+                mpz_mul_2exp(result.cofactor.get_mpz(), result.cofactor.get_mpz(), 64);
+                mpz_add_ui(result.cofactor.get_mpz(), result.cofactor.get_mpz(), rlo);
             }
             return result;
         }
