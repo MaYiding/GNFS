@@ -332,8 +332,8 @@ private:
         // 否则关系是退化的 (∏(a-bm) ≡ 0 mod N → X=0 → trivial gcd)。
         if (n_for_validation_ && m_for_validation_) {
             Integer val(rel.a);
-            Integer bm = m_for_validation_->clone();
-            bm *= static_cast<int64_t>(rel.b);  // 用 Integer*=int64_t 直接 mpz_mul_si
+            Integer bm;
+            mpz_mul_ui(bm.get_mpz(), m_for_validation_->get_mpz(), rel.b);  // bm = m * b
             val -= bm;
             Integer g = core::gcd(val, *n_for_validation_);
             if (!g.is_one()) return -2;
