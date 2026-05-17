@@ -194,12 +194,12 @@ private:
             const NumberField& nf) {
         const Integer& n = nf.n();
         Integer product(int64_t(1));
-        // v22: bm buffer 复用, 节省 ab_pairs.size() - 1 allocs/call
-        Integer bm;
+        // v22: bm + factor buffers 复用, 节省 2× ab_pairs.size() allocs/call
+        Integer bm, factor;
         for (const auto& [a, b] : ab_pairs) {
-            Integer factor(a);
+            factor = a;
             bm = nf.m();
-            bm *= Integer(b);
+            bm *= static_cast<long long>(b);  // mpz_mul_si direct
             factor -= bm;
             factor %= n;
             if (factor.is_negative()) factor += n;
