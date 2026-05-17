@@ -548,11 +548,12 @@ private:
         auto accumulate_step = [&](const Point& G) -> std::optional<Integer> {
             for (const auto& b : baby) {
                 // cross = G.x * b.z - b.x * G.z (mod n)
+                // c, t ∈ [0, n-1] 后 c -= t ∈ [-(n-1), n-1], 单次 if c<0: c+=n
+                // 即拉回 [0, n-1] — 后续 c %= n 是 no-op, 省 mpz_mod call.
                 c = G.x; c *= b.z; c %= n;
                 t = b.x; t *= G.z; t %= n;
                 c -= t;
                 if (c.is_negative()) c += n;
-                c %= n;
                 if (c.is_zero()) {
                     // c=0 means G and baby represent same point — factor may be in Z coordinate
                     Integer g = gcd(G.z, n);
@@ -635,8 +636,6 @@ private:
         std::vector<uint64_t> batch_primes;
         batch_primes.reserve(128);
 
-        // v22: gcd_arg buffer hoist (called every 100 primes in lambda)
-        Integer gcd_arg;
         for_each_prime_in_range(B1, B2, [&](uint64_t p) -> bool {
             Qcurr = mont_mul(Qcurr, p, a24, n);
             batch_primes.push_back(p);
@@ -646,8 +645,7 @@ private:
 
             ++check_interval;
             if (check_interval >= 100) {
-                gcd_arg = accum;
-                Integer g = core::gcd(gcd_arg, n);
+                Integer g = core::gcd(accum, n);
                 if (!g.is_one() && g.compare(n) != 0) {
                     found = std::move(g);
                     return false;
