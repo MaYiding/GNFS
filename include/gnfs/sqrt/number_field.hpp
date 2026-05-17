@@ -386,29 +386,37 @@ public:
     /// 展开形式: N = sum_{i=0}^{d} f_i * a^i * b^{d-i}
     /// NOTE: Returns |N|. For signed norm, use PolynomialContext::algebraic_norm().
     [[nodiscard]] Integer norm_linear(int64_t a, uint64_t b) const {
-        Integer result;  // default ctor = 0
-        Integer a_power(1);
+        // thread_local workspace: norm_linear called per (a,b) in sqrt verification.
+        static constexpr uint32_t MAX_DEG = 8;
+        thread_local Integer ws_a_power, ws_term;
+        thread_local std::array<Integer, MAX_DEG + 1> ws_b_powers;
+        thread_local std::vector<Integer> ws_b_powers_heap;
 
-        // 计算 b^d, b^{d-1}, ..., b^0 — mpz_mul_ui writes into default-init slot
-        std::vector<Integer> b_powers(degree_ + 1);
-        b_powers[0] = int64_t(1);  // mpz_set_si direct
+        Integer* b_powers;
+        if (degree_ <= MAX_DEG) {
+            b_powers = ws_b_powers.data();
+        } else {
+            ws_b_powers_heap.resize(degree_ + 1);
+            b_powers = ws_b_powers_heap.data();
+        }
+
+        Integer result;
+        ws_a_power = int64_t(1);
+        b_powers[0] = int64_t(1);
         for (uint32_t i = 1; i <= degree_; ++i) {
             mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i-1].get_mpz(), b);
         }
 
         // term = a^i * b^{d-i}, then result += f_i * term via mpz_addmul (fused FMA)
-        Integer term;
         for (uint32_t i = 0; i <= degree_; ++i) {
-            mpz_mul(term.get_mpz(), a_power.get_mpz(), b_powers[degree_ - i].get_mpz());
-            mpz_addmul(result.get_mpz(), f_coeffs_[i].get_mpz(), term.get_mpz());
+            mpz_mul(ws_term.get_mpz(), ws_a_power.get_mpz(), b_powers[degree_ - i].get_mpz());
+            mpz_addmul(result.get_mpz(), f_coeffs_[i].get_mpz(), ws_term.get_mpz());
 
-            // 更新 a^i
             if (i < degree_) {
-                a_power *= a;
+                ws_a_power *= a;
             }
         }
 
-        // 取绝对值
         if (result.is_negative()) {
             result.negate();
         }
