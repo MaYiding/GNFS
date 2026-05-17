@@ -362,10 +362,10 @@ private:
         Integer diff3;
         mpz_powm_ui(diff3.get_mpz(), diff.get_mpz(), 3, n.get_mpz());
 
-        // sum3u_v = 3u + v mod n
+        // sum3u_v = v + 3u via mpz_addmul_ui (fused FMA), then mod n
         Integer sum3u_v;
-        mpz_mul_ui(sum3u_v.get_mpz(), u.get_mpz(), 3);  // 3u (skip clone+mul)
-        sum3u_v += v;
+        sum3u_v = v;
+        mpz_addmul_ui(sum3u_v.get_mpz(), u.get_mpz(), 3);
         sum3u_v %= n;
 
         // numerator = diff3 * sum3u_v mod n
