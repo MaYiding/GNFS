@@ -498,11 +498,9 @@ private:
         double four_over_pi = 4.0 / M_PI;
         double four_pi_factor = std::pow(four_over_pi, static_cast<double>(r2));
 
-        // Get |discriminant| as double
-        Integer abs_disc = discriminant_.clone();
-        if (abs_disc.is_negative()) {
-            abs_disc.negate();
-        }
+        // Get |discriminant| as double — mpz_abs writes into default-init slot
+        Integer abs_disc;
+        mpz_abs(abs_disc.get_mpz(), discriminant_.get_mpz());
         double disc_sqrt = std::sqrt(abs_disc.to_double());
 
         minkowski_bound_ = (d_factorial / d_power_d) * four_pi_factor * disc_sqrt;
