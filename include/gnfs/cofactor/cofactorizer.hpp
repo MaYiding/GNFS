@@ -220,7 +220,7 @@ public:
             if (ok) {
                 if (norm_i128 < 0) norm_i128 = -norm_i128;
                 if (norm_i128 <= static_cast<__int128>(UINT64_MAX)) {
-                    alg_norm = Integer(static_cast<uint64_t>(norm_i128));
+                    alg_norm = static_cast<uint64_t>(norm_i128);  // mpz_set_ui
                 } else {
                     // Fits __int128 but not uint64 — construct via string or GMP
                     alg_norm = ctx_.algebraic_norm(a, b);
@@ -243,7 +243,7 @@ public:
                     nv /= sq_q;
                     ++sq_exp;
                 }
-                alg_norm = Integer(nv);
+                alg_norm = nv;  // 直接 mpz_set_ui, 省 tmp Integer + move
             } else {
                 while (mpz_divisible_ui_p(alg_norm.get_mpz(), sq_q) && sq_exp < 255) {
                     mpz_divexact_ui(alg_norm.get_mpz(), alg_norm.get_mpz(), sq_q);
