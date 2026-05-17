@@ -192,11 +192,9 @@ public:
                 return Integer(static_cast<int64_t>(result));
             }
         }
-        // mpz_mul_ui writes bm = m_ * b directly (no source copy)
+        // mpz_submul_ui: result -= m_ * b (fused FMS, drops bm temp)
         Integer result(a);
-        Integer bm;
-        mpz_mul_ui(bm.get_mpz(), m_.get_mpz(), b);
-        result -= bm;
+        mpz_submul_ui(result.get_mpz(), m_.get_mpz(), b);
         return result;
     }
 

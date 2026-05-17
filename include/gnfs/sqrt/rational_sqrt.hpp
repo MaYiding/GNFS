@@ -168,12 +168,12 @@ public:
             squared %= n;
 
             Integer product(1);
-            Integer val, bm_v;
+            Integer val;
             auto multiply_ab = [&](int64_t a_val, uint64_t b_val) {
                 val = a_val;  // mpz_set_si direct
-                bm_v = m;
-                bm_v *= static_cast<int64_t>(b_val);  // mpz_mul_si direct
-                val -= bm_v;
+                // val -= m * b_val (fused FMS, b_val is unsigned)
+                mpz_submul_ui(val.get_mpz(), m.get_mpz(),
+                              static_cast<unsigned long>(b_val));
                 val %= n;
                 if (val.is_negative()) val += n;
                 product *= val;
