@@ -403,8 +403,8 @@ private:
         denom *= Integer(int64_t(16));
         denom %= n;
 
-        // 计算逆元
-        Integer g = core::gcd(denom.clone(), n);
+        // 计算逆元 (v22: gcd 取 const& 无需 clone)
+        Integer g = core::gcd(denom, n);
         if (!g.is_one() && g.compare(n) != 0) {
             return g;  // 找到因子!
         }
@@ -443,9 +443,9 @@ private:
 
             Q = mont_mul(Q, pk, a24, n);
 
-            // 定期检查 gcd
+            // 定期检查 gcd (v22: gcd 无需 clone)
             if (p % 100 == 97) {  // 每 ~100 个素数检查一次
-                Integer g2 = core::gcd(Q.z.clone(), n);
+                Integer g2 = core::gcd(Q.z, n);
                 if (!g2.is_one() && g2.compare(n) != 0) {
                     return g2;
                 }
@@ -455,8 +455,8 @@ private:
             }
         }
 
-        // Stage 1 最终检查
-        Integer g_final = core::gcd(Q.z.clone(), n);
+        // Stage 1 最终检查 (v22: gcd 无需 clone)
+        Integer g_final = core::gcd(Q.z, n);
         if (!g_final.is_one() && g_final.compare(n) != 0) {
             return g_final;
         }
@@ -575,7 +575,7 @@ private:
                 steps_in_batch = 0;
                 return std::nullopt;
             }
-            Integer g = core::gcd(accum.clone(), n);
+            Integer g = core::gcd(accum, n);
             if (!g.is_one() && g.compare(n) != 0) return g;
             if (g.compare(n) == 0) {
                 // gcd == n: 回退到朴素实现
@@ -656,7 +656,7 @@ private:
                     Point Q_retry(checkpoint.x.clone(), checkpoint.z.clone());
                     for (uint64_t bp : batch_primes) {
                         Q_retry = mont_mul(Q_retry, bp, a24, n);
-                        Integer gi = core::gcd(Q_retry.z.clone(), n);
+                        Integer gi = core::gcd(Q_retry.z, n);  // v22: gcd 无需 clone
                         if (!gi.is_one() && gi.compare(n) != 0) {
                             found = std::move(gi);
                             return false;
@@ -673,13 +673,14 @@ private:
 
         if (found) return found;
 
-        Integer g = core::gcd(accum.clone(), n);
+        // v22: gcd 无需 clone
+        Integer g = core::gcd(accum, n);
         if (!g.is_one() && g.compare(n) != 0) return g;
         if (g.compare(n) == 0 && !batch_primes.empty()) {
             Point Q_retry(checkpoint.x.clone(), checkpoint.z.clone());
             for (uint64_t bp : batch_primes) {
                 Q_retry = mont_mul(Q_retry, bp, a24, n);
-                Integer gi = core::gcd(Q_retry.z.clone(), n);
+                Integer gi = core::gcd(Q_retry.z, n);  // v22
                 if (!gi.is_one() && gi.compare(n) != 0) return gi;
             }
         }

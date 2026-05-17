@@ -182,7 +182,8 @@ public:
                 Integer rat_value = ctx_.rational_value(a, b);
                 if (rat_value.is_negative()) rat_value.negate();
                 {
-                    Integer gcd_with_n = core::gcd(rat_value.clone(), ctx_.n());
+                    // v22: gcd 只读 rat_value, 无需 clone (节省 mpz_init_set/clear per candidate)
+                    Integer gcd_with_n = core::gcd(rat_value, ctx_.n());
                     if (!gcd_with_n.is_one()) {
                         if (gcd_with_n.compare(ctx_.n()) < 0) {
                             stats_.lucky_factor_hits.fetch_add(1, std::memory_order_relaxed);
