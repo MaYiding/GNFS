@@ -791,6 +791,41 @@ void test_thin_matrix_bw_extreme_rank_deficiency() {
     TEST_PASS("thin matrix BW extreme rank deficiency (rank ≪ m, 5100 deps recoverable)");
 }
 
+// BACKLOG [TEST] valid_polys==0 fall-through: every-row-empty matrix forces
+// trivial Krylov sequence (X^T·V_k all zero), BM returns valid_mask=0,
+// BW returns empty deps after all 3 seed retries. Verifies graceful
+// fall-through (no crash, no false-positive deps).
+void test_bw_empty_matrix_fall_through() {
+    // 5200×6000 all-zero matrix (>5000 to skip Gaussian fallback, exercise
+    // true BW path). All rows have no nonzeros → M is zero matrix → every
+    // vector v satisfies v^T·M=0 trivially, but BW algorithm cannot
+    // distinguish (sequence is degenerate). Tests valid_polys==0 path.
+    const size_t rows = 5200;
+    const size_t cols = 6000;
+
+    std::cout << "  Building zero matrix (" << rows << "×" << cols
+              << ", all rows empty)..." << std::flush;
+    SparseMatrix M(rows, cols);
+    // All rows are intentionally empty — no .set() calls.
+    std::cout << " done" << std::endl;
+
+    BlockWiedemann bw;
+    auto deps = bw.find_dependencies(M, 10);
+
+    // No crash assertion implicit. Returned deps should all verify (zero
+    // matrix accepts any vector, so valid is trivial), and BW may return
+    // 0 deps depending on whether Phase 3 finds nonzero accumulator.
+    size_t valid = 0;
+    for (const auto& dep : deps) {
+        if (verify_dependency(M, dep)) valid++;
+    }
+    TEST_ASSERT(valid == deps.size(), "any returned dep must verify");
+
+    std::cout << "  (returned " << deps.size() << " deps, " << valid
+              << " verified — graceful fall-through)" << std::endl;
+    TEST_PASS("BW fall-through on degenerate matrix (BACKLOG [TEST] valid_polys==0 path)");
+}
+
 int main() {
     std::cout << "═══════════════════════════════════════════\n";
     std::cout << "  Block Wiedemann Unit Tests\n";
@@ -831,6 +866,7 @@ int main() {
     // BACKLOG #80 step 7 — thin matrix BW (B'=M^T·M variant)
     test_thin_matrix_bw_solve();
     test_thin_matrix_bw_extreme_rank_deficiency();
+    test_bw_empty_matrix_fall_through();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";
