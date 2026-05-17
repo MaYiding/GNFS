@@ -641,24 +641,29 @@ public:
             mpow[j] %= n;
         }
 
+        // v22: Y / c / Y2 复用 enclosing scope buffer 减少 ~393K alloc/dep
+        // (see compute() 同等 path docs)
+        Integer Y_buf;
+        Integer c_buf;
+        Integer Y2_buf;
         auto verify_current = [&]() -> bool {
             // 不变量: current_coeffs[i] ∈ [0, M-1]
-            Integer Y(int64_t(0));
+            Y_buf = Integer(int64_t(0));
             for (uint32_t i = 0; i < d; ++i) {
-                Integer c = current_coeffs[i].clone();
-                if (c.compare(half_M) > 0) c -= M;
-                c %= n;
-                if (c.is_negative()) c += n;
-                c *= mpow[i];
-                Y += c;
-                Y %= n;
+                c_buf = current_coeffs[i];  // mpz_set 复用 buffer
+                if (c_buf.compare(half_M) > 0) c_buf -= M;
+                c_buf %= n;
+                if (c_buf.is_negative()) c_buf += n;
+                c_buf *= mpow[i];
+                Y_buf += c_buf;
+                Y_buf %= n;
             }
-            if (Y.is_negative()) Y += n;
+            if (Y_buf.is_negative()) Y_buf += n;
 
-            Integer Y2 = Y.clone();
-            Y2 *= Y;
-            Y2 %= n;
-            return Y2.compare(expected_X2) == 0;
+            Y2_buf = Y_buf;
+            Y2_buf *= Y_buf;
+            Y2_buf %= n;
+            return Y2_buf.compare(expected_X2) == 0;
         };
 
         auto extract_result = [&]() -> std::vector<Integer> {
