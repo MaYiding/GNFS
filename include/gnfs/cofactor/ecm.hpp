@@ -122,42 +122,48 @@ private:
 
     /// 蒙哥马利倍点: 2P
     /// 使用标准 XZ-only doubling 公式
+    /// v22: thread_local workspace 复用所有内部 Integer buffers (mpz_set 不 init)
+    /// Stage 1 调用 ~600K 次/曲线, 25 曲线 = 15M 调用/cofactor candidate
     static Point mont_double(const Point& P, const Integer& a24, const Integer& n) {
-        // u = (x + z)^2, v = (x - z)^2
-        Integer u = P.x.clone();
+        thread_local Integer u, u2, v, v2, w, t;
+        Integer x2, z2;  // 返回值 — Point ctor 通过 move 接收
+
+        // u = (x + z) mod n; u2 = u^2
+        u = P.x;
         u += P.z;
         u %= n;
-        Integer u2 = u.clone();
+        u2 = u;
         u2 *= u;
         u2 %= n;
 
-        Integer v = P.x.clone();
+        // v = (x - z) mod n; v2 = v^2
+        v = P.x;
         v -= P.z;
         if (v.is_negative()) v += n;
         v %= n;
-        Integer v2 = v.clone();
+        v2 = v;
         v2 *= v;
         v2 %= n;
 
-        // x2 = u * v
-        Integer x2 = u2.clone();
+        // x2 = u^2 * v^2
+        x2 = u2;
         x2 *= v2;
         x2 %= n;
 
-        // w = u - v
-        Integer w = u2.clone();
+        // w = u^2 - v^2
+        w = u2;
         w -= v2;
         if (w.is_negative()) w += n;
         w %= n;
 
-        // z2 = w * (v + a24 * w)
-        Integer t = a24.clone();
+        // z2 = w * (v^2 + a24 * w)
+        t = a24;
         t *= w;
         t %= n;
         t += v2;
         t %= n;
 
-        Integer z2 = w.clone();
+        z2 = w;
         z2 *= t;
         z2 %= n;
 
@@ -165,49 +171,53 @@ private:
     }
 
     /// 蒙哥马利差分加法: P + Q (已知 P - Q)
+    /// v22: thread_local workspace 复用
     static Point mont_add(const Point& P, const Point& Q, const Point& diff, const Integer& n) {
+        thread_local Integer u, v, t1, t2, sum, sum2, dif, dif2;
+        Integer xr, zr;  // 返回值
+
         // u = (Px - Pz) * (Qx + Qz)
-        Integer u = P.x.clone();
+        u = P.x;
         u -= P.z;
         if (u.is_negative()) u += n;
         u %= n;
-        Integer t1 = Q.x.clone();
+        t1 = Q.x;
         t1 += Q.z;
         t1 %= n;
         u *= t1;
         u %= n;
 
         // v = (Px + Pz) * (Qx - Qz)
-        Integer v = P.x.clone();
+        v = P.x;
         v += P.z;
         v %= n;
-        Integer t2 = Q.x.clone();
+        t2 = Q.x;
         t2 -= Q.z;
         if (t2.is_negative()) t2 += n;
         t2 %= n;
         v *= t2;
         v %= n;
 
-        // x = diff.z * (u + v)^2
-        Integer sum = u.clone();
+        // xr = diff.z * (u + v)^2
+        sum = u;
         sum += v;
         sum %= n;
-        Integer sum2 = sum.clone();
+        sum2 = sum;
         sum2 *= sum;
         sum2 %= n;
-        Integer xr = diff.z.clone();
+        xr = diff.z;
         xr *= sum2;
         xr %= n;
 
-        // z = diff.x * (u - v)^2
-        Integer dif = u.clone();
+        // zr = diff.x * (u - v)^2
+        dif = u;
         dif -= v;
         if (dif.is_negative()) dif += n;
         dif %= n;
-        Integer dif2 = dif.clone();
+        dif2 = dif;
         dif2 *= dif;
         dif2 %= n;
-        Integer zr = diff.x.clone();
+        zr = diff.x;
         zr *= dif2;
         zr %= n;
 
