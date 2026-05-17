@@ -396,21 +396,18 @@ public:
         Integer result;  // default ctor = 0
         Integer a_power(1);
 
-        // 计算 b^d, b^{d-1}, ..., b^0
-        // v22: b_powers[i-1] 直接赋值 (mpz_set), 不需要 clone
+        // 计算 b^d, b^{d-1}, ..., b^0 — mpz_mul_ui writes into default-init slot
         std::vector<Integer> b_powers(degree_ + 1);
         b_powers[0] = int64_t(1);  // mpz_set_si direct
         for (uint32_t i = 1; i <= degree_; ++i) {
-            b_powers[i] = b_powers[i-1];
-            b_powers[i] *= static_cast<long long>(b);
+            mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i-1].get_mpz(), b);
         }
 
-        // v22: 复用 term buffer (mpz_set 而非 mpz_init_set)
+        // mpz_mul writes f_coeffs[i]*a_power directly into term (skip set step)
         Integer term;
         for (uint32_t i = 0; i <= degree_; ++i) {
             // term = f_i * a^i * b^{d-i}
-            term = f_coeffs_[i];
-            term *= a_power;
+            mpz_mul(term.get_mpz(), f_coeffs_[i].get_mpz(), a_power.get_mpz());
             term *= b_powers[degree_ - i];
 
             result += term;
