@@ -403,13 +403,12 @@ private:
         denom *= int64_t(16);  // mpz_mul_si direct
         denom %= n;
 
-        // 计算逆元 (v22: gcd 取 const& 无需 clone)
+        // 计算逆元 (v22: gcd 取 const& 无需 clone; 单次 compare(n) 缓存)
         Integer g = core::gcd(denom, n);
-        if (!g.is_one() && g.compare(n) != 0) {
-            return g;  // 找到因子!
-        }
-        if (g.compare(n) == 0) {
-            return std::nullopt;  // 曲线退化
+        if (!g.is_one()) {
+            // g > 1 → g == n (退化) 或 1 < g < n (lucky factor)
+            if (g.compare(n) == 0) return std::nullopt;
+            return g;
         }
 
         Integer denom_inv = core::mod_inverse(denom, n);
@@ -443,25 +442,21 @@ private:
 
             Q = mont_mul(Q, pk, a24, n);
 
-            // 定期检查 gcd (v22: gcd 无需 clone)
+            // 定期检查 gcd (v22: gcd 无需 clone; 单次 compare(n))
             if (p % 100 == 97) {  // 每 ~100 个素数检查一次
                 Integer g2 = core::gcd(Q.z, n);
-                if (!g2.is_one() && g2.compare(n) != 0) {
+                if (!g2.is_one()) {
+                    if (g2.compare(n) == 0) return std::nullopt;  // 太多因子被消除
                     return g2;
-                }
-                if (g2.compare(n) == 0) {
-                    return std::nullopt;  // 太多因子被消除
                 }
             }
         }
 
-        // Stage 1 最终检查 (v22: gcd 无需 clone)
+        // Stage 1 最终检查 (v22: gcd 无需 clone; 单次 compare(n) 缓存)
         Integer g_final = core::gcd(Q.z, n);
-        if (!g_final.is_one() && g_final.compare(n) != 0) {
+        if (!g_final.is_one()) {
+            if (g_final.compare(n) == 0) return std::nullopt;
             return g_final;
-        }
-        if (g_final.compare(n) == 0) {
-            return std::nullopt;
         }
 
         // === Stage 2: 标准续步 ===
