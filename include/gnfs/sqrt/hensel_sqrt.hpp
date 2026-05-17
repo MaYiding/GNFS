@@ -322,8 +322,9 @@ private:
         }
 
         // Get f polynomial
+        // v22: 直接 assign (mpz_set on default-init buffer) 替代 clone() (mpz_init_set)
         std::vector<Integer> f_int(d + 1);
-        for (uint32_t i = 0; i <= d; ++i) f_int[i] = nf.coeff(i).clone();
+        for (uint32_t i = 0; i <= d; ++i) f_int[i] = nf.coeff(i);
 
         Integer modulus(static_cast<int64_t>(p));
 
