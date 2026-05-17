@@ -251,6 +251,22 @@ Realistic GNFS profile (rank ≈ m) 不受影响.
 10/10 valid deps verified. find_dependencies routes m<n → thin_solve,
 m≥n → block_solve (existing path).
 
+### V0 weight-3 merge (GNFS_V0_WEIGHT3)
+
+**ENV `GNFS_V0_WEIGHT3=1`** (commit `81d3331`, 2026-05-17):
+V0 Phase 2 也 merge weight=3 LP keys 的 first 2 partials (3rd 下轮变 singleton).
+BACKLOG #80 (1b) V0 partial weight≥3 handling — lightweight V3 cascade alternative
+不走 BFS spanning tree.
+
+```bash
+GNFS_V0_WEIGHT3=1 ./test_stress 1 1   # 50d 启用 V0 weight=3 merge
+GNFS_V0_WEIGHT3=1 ./gnfs <N>          # any GNFS run
+```
+
+**默认 OFF**: V0 仍只 merge weight=2 (保守 行为). 仅在用户 explicit opt-in 时启用.
+**V3 cascade 与之 orthogonal**: V0_WEIGHT3 加快 V0 convergence (单 pair per key),
+V3 cascade 走 full chain BFS. 二者可同时启用.
+
 ### Drop-residual + weight-cutoff (BACKLOG #80 algorithmic breakthrough)
 
 **ENV `GNFS_DROP_RESIDUAL=1`** (commits `da51e0b` + `b001606`, 2026-05-17):
