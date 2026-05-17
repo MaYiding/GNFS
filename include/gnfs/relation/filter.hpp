@@ -536,17 +536,26 @@ public:
             std::vector<Relation> new_merged;
             new_merged.reserve(pool.size() / 4);
 
-            // NOTE: Only weight-2 LP keys are merged. Weight-3+ keys could
-            // be chain-merged in principle, but this conservative strategy avoids
-            // creating overly dense matrix rows. Future: implement weight-3 merge
-            // by pairing the two cheapest relations per LP key.
+            // NOTE: Only weight-2 LP keys merged by default. ENV
+            // GNFS_V0_WEIGHT3=1 also explicitly merges first 2 partials of
+            // weight-3 keys (BACKLOG #80 partial V0 weight≥3 handling — V3
+            // cascade already handles full chain, this is a lighter
+            // V0-internal alternative without BFS overhead). Conservative
+            // since the 3rd partial becomes singleton next round.
+            static const bool merge_weight3 = []() {
+                const char* env = std::getenv("GNFS_V0_WEIGHT3");
+                return env && std::atoi(env) == 1;
+            }();
+            const size_t max_merge_weight = merge_weight3 ? 3 : 2;
 
-            // Sort keys for deterministic merge order across runs
+            // Sort keys for deterministic merge order across runs.
             // Reserve: typical ~20-30% LP keys are weight=2 in 50d/lp_bits=23.
             std::vector<LargePrimeKey> sorted_2lp_keys;
             sorted_2lp_keys.reserve(lp_index.size() / 4);
             for (const auto& [key, indices] : lp_index) {
-                if (indices.size() == 2) sorted_2lp_keys.push_back(key);
+                if (indices.size() >= 2 && indices.size() <= max_merge_weight) {
+                    sorted_2lp_keys.push_back(key);
+                }
             }
             std::sort(sorted_2lp_keys.begin(), sorted_2lp_keys.end());
 
