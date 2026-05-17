@@ -145,8 +145,9 @@ PolynomialSelectionResult BaseMSelector::select(const Integer& n, uint32_t degre
     candidates.reserve(static_cast<size_t>(2 * max_delta + 1));
 
     for (int delta = -max_delta; delta <= max_delta; ++delta) {
-        Integer m = m_base + Integer(delta);
-        if (m <= Integer(1)) continue;
+        Integer m = m_base;
+        m += static_cast<int64_t>(delta);
+        if (mpz_cmp_si(m.get_mpz(), 1) <= 0) continue;
 
         auto f = construct_base_m_poly(n, m, degree);
         if (f.degree() != degree) continue;
