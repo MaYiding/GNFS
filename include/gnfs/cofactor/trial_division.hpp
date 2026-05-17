@@ -349,7 +349,7 @@ private:
     static void divide_exact(Integer& value, uint32_t p) {
         if (value.fits_uint64()) {
             uint64_t v = value.to_uint64() / p;
-            value = Integer(v);
+            value = v;
         } else {
             // get_mpz() returns mpz_t& which decays to mpz_ptr
             mpz_divexact_ui(value.get_mpz(), value.get_mpz(), p);
@@ -402,7 +402,7 @@ private:
             }
         }
 
-        result.cofactor = Integer(value);
+        result.cofactor = value;
         if (value == 1) result.is_smooth = true;
         return result;
     }
