@@ -346,7 +346,7 @@ public:
 
     /// 计算元素在 x = m 处的值（映射到 Z）
     [[nodiscard]] Integer evaluate_at_m(const NumberFieldElement& elem) const {
-        Integer result(static_cast<int64_t>(0));
+        Integer result;  // default ctor = 0
         Integer m_power(1);
 
         // v22: 复用 term buffer
@@ -366,7 +366,7 @@ public:
 
     /// 计算元素在 x = m 处的值（模 n）
     [[nodiscard]] Integer evaluate_at_m_mod_n(const NumberFieldElement& elem) const {
-        Integer result(static_cast<int64_t>(0));
+        Integer result;  // default ctor = 0
         Integer m_power(1);
 
         // v22: 复用 term buffer
@@ -397,7 +397,7 @@ public:
     /// 展开形式: N = sum_{i=0}^{d} f_i * a^i * b^{d-i}
     /// NOTE: Returns |N|. For signed norm, use PolynomialContext::algebraic_norm().
     [[nodiscard]] Integer norm_linear(int64_t a, uint64_t b) const {
-        Integer result(static_cast<int64_t>(0));
+        Integer result;  // default ctor = 0
         Integer a_power(1);
 
         // 计算 b^d, b^{d-1}, ..., b^0

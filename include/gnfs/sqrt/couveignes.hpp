@@ -304,7 +304,7 @@ public:
         // --- Step 2: Compute base CRT (all signs = +) ---
         std::vector<Integer> base_coeffs(d);
         for (uint32_t i = 0; i < d; ++i) {
-            Integer coeff_i(static_cast<int64_t>(0));
+            Integer coeff_i;  // default ctor = 0
             for (size_t j = 0; j < primes.size(); ++j) {
                 coeff_i += weights[j][i];
             }
@@ -608,7 +608,7 @@ public:
         // Base CRT (all signs = +)
         std::vector<Integer> base_coeffs(d);
         for (uint32_t i = 0; i < d; ++i) {
-            Integer coeff_i(static_cast<int64_t>(0));
+            Integer coeff_i;  // default ctor = 0
             for (size_t j = 0; j < primes.size(); ++j) {
                 coeff_i += weights[j][i];
             }

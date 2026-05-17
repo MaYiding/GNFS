@@ -432,7 +432,7 @@ private:
         const std::vector<Integer>& coeffs,
         uint32_t degree) {
 
-    Integer result(static_cast<int64_t>(0));
+    Integer result;  // default ctor = 0
     Integer a_power(static_cast<int64_t>(1));  // a^i
 
     // 计算 b^d, b^{d-1}, ..., b^0

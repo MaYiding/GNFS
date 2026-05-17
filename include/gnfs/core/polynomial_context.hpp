@@ -148,7 +148,7 @@ public:
     /// N(a - b*α) = b^d * f(a/b)
     /// 展开形式: N = sum_{i=0}^{d} f_i * a^i * b^{d-i}
     [[nodiscard]] Integer algebraic_norm(int64_t a, uint64_t b) const {
-        Integer result(static_cast<int64_t>(0));
+        Integer result;  // default ctor = 0
         Integer a_power(static_cast<int64_t>(1));  // a^i
 
         // 计算 b^d, b^{d-1}, ..., b^0
