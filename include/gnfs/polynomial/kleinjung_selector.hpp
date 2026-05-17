@@ -329,7 +329,7 @@ private:
 
                 // Stage 2 旋转优化只改 a₀/a₁，a_{d-1} 须在合理范围
                 if (ad1_val <= m_val * 1.0) {
-                    candidates.emplace_back(ad.clone(), m.clone());
+                    candidates.emplace_back(ad, m);  // Integer copy ctors
 
                     // 限制候选数量
                     if (candidates.size() >= params_.num_candidates * 2) {
@@ -614,10 +614,10 @@ private:
         for (uint32_t p : small_primes) {
             size_t current_size = result.size();
             for (size_t i = 0; i < current_size; ++i) {
-                Integer val = result[i].clone();
+                Integer val = result[i];  // copy ctor
                 val *= p;
                 while (val.fits_uint64() && val.to_uint64() <= bound) {
-                    result.push_back(val.clone());
+                    result.emplace_back(val);  // Integer copy ctor
                     val *= p;
                 }
             }
@@ -643,10 +643,10 @@ private:
     std::vector<Integer> coeffs;
     coeffs.reserve(result.f.degree() + 1);
     for (uint32_t i = 0; i <= result.f.degree(); ++i) {
-        coeffs.push_back(result.f[i].clone());
+        coeffs.emplace_back(result.f[i]);  // Integer copy ctor
     }
     return PolynomialContext(
-        n.clone(),
+        n,  // copy ctor via op=
         std::move(coeffs),
         result.m.clone(),
         result.skewness
