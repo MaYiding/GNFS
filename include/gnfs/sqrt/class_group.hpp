@@ -277,7 +277,7 @@ private:
                     term1 /= prev_pivot; // exact division guaranteed by Bareiss
                     M[i][j] = std::move(term1);
                 }
-                M[i][k] = Integer(int64_t(0));
+                M[i][k] = int64_t(0);  // mpz_set_si direct
             }
 
             prev_pivot = std::move(cur_pivot);

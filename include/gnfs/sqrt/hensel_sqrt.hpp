@@ -1413,7 +1413,7 @@ private:
         Integer sub;
         for (int k = static_cast<int>(2 * d - 2); k >= static_cast<int>(d); --k) {
             Integer lead = std::move(result[k]);
-            result[k] = Integer(int64_t(0));
+            result[k] = int64_t(0);  // mpz_set_si direct
             if (lead.is_zero()) continue;
 
             // Scale by inverse of leading coefficient

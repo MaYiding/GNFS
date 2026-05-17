@@ -673,7 +673,7 @@ public:
         Integer Y2_buf;
         auto verify_current = [&]() -> bool {
             // 不变量: current_coeffs[i] ∈ [0, M-1]
-            Y_buf = Integer(int64_t(0));
+            Y_buf = int64_t(0);  // mpz_set_si direct
             for (uint32_t i = 0; i < d; ++i) {
                 c_buf = current_coeffs[i];  // mpz_set 复用 buffer
                 if (c_buf.compare(half_M) > 0) c_buf -= M;
