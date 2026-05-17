@@ -208,12 +208,11 @@ public:
         // No need to re-init in loop.
         std::vector<Integer> result_coeffs(d1 + d2 + 1);
 
-        // 卷积 — mpz_mul writes coeffs[i]*other[j] directly into term (skip set)
-        Integer term;
+        // 卷积 — mpz_addmul: result_coeffs[i+j] += coeffs[i] * other[j] (fused FMA)
         for (uint32_t i = 0; i <= d1; ++i) {
             for (uint32_t j = 0; j <= d2; ++j) {
-                mpz_mul(term.get_mpz(), coeffs_[i].get_mpz(), other.coeffs_[j].get_mpz());
-                result_coeffs[i + j] += term;
+                mpz_addmul(result_coeffs[i + j].get_mpz(),
+                           coeffs_[i].get_mpz(), other.coeffs_[j].get_mpz());
             }
         }
 
@@ -283,15 +282,14 @@ public:
 
         // 二项式展开: f(x+t) = sum_i f[i] * (x+t)^i
         // (x+t)^i = sum_j C(i,j) * x^j * t^{i-j}
-        // mpz_mul_si writes coeffs[i]*binom directly into term (skip set step)
+        // term = C(i,j) * t^{i-j}, then new_coeffs[j] += f[i] * term via addmul
         Integer term;
         for (uint32_t i = 0; i <= d; ++i) {
             for (uint32_t j = 0; j <= i; ++j) {
-                // 贡献: f[i] * C(i,j) * t^{i-j} 到 x^j
-                mpz_mul_si(term.get_mpz(), coeffs_[i].get_mpz(),
-                           static_cast<long>(binom[i][j]));
-                term *= t_powers[i - j];
-                new_coeffs[j] += term;
+                mpz_mul_ui(term.get_mpz(), t_powers[i - j].get_mpz(),
+                           static_cast<unsigned long>(binom[i][j]));
+                mpz_addmul(new_coeffs[j].get_mpz(),
+                           coeffs_[i].get_mpz(), term.get_mpz());
             }
         }
 
