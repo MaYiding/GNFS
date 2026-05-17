@@ -66,17 +66,12 @@ public:
         uint32_t d = nf.degree();
         const Integer& n = nf.n();
 
-        // Get polynomial coefficients mod p
+        // Get polynomial coefficients mod p — mpz_fdiv_ui returns
+        // floor-div remainder ∈ [0, p-1] (zero alloc per coefficient)
         auto get_f_mod_p = [&nf, d](uint64_t p) -> std::vector<uint64_t> {
             std::vector<uint64_t> f(d + 1);
-            const Integer p_int(p);  // hoist out of loop
             for (uint32_t i = 0; i <= d; ++i) {
-                Integer coeff = nf.coeff(i).clone();
-                coeff %= p_int;
-                if (coeff.is_negative()) {
-                    coeff += p_int;
-                }
-                f[i] = coeff.to_uint64();
+                f[i] = static_cast<uint64_t>(mpz_fdiv_ui(nf.coeff(i).get_mpz(), p));
             }
             return f;
         };
