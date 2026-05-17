@@ -416,11 +416,13 @@ std::vector<uint32_t> FactorBaseBuilder::find_roots_mod_p(const PolynomialContex
     // Step 1: Get f(x) mod p
     uint32_t d = ctx.degree();
     std::vector<uint64_t> f_mod(d + 1);
+    core::Integer p_int(static_cast<int64_t>(p));  // hoist out of d+1 loop
+    core::Integer c_buf;
     for (uint32_t i = 0; i <= d; ++i) {
-        core::Integer c = ctx.coeff(i).clone();
-        c %= core::Integer(static_cast<int64_t>(p));
-        if (c.is_negative()) c += core::Integer(static_cast<int64_t>(p));
-        f_mod[i] = c.to_uint64();
+        c_buf = ctx.coeff(i);  // mpz_set, reuse buffer
+        c_buf %= p_int;
+        if (c_buf.is_negative()) c_buf += p_int;
+        f_mod[i] = c_buf.to_uint64();
     }
 
     // Step 2: Compute g = gcd(x^p - x, f) mod p
@@ -428,8 +430,8 @@ std::vector<uint32_t> FactorBaseBuilder::find_roots_mod_p(const PolynomialContex
     sqrt::ModularPoly x_poly;
     x_poly.set_coeff(1, 1);  // x
 
-    // x^p mod f mod p
-    auto x_to_p = sqrt::ModularPoly::power(x_poly, core::Integer(static_cast<int64_t>(p)), f_mod, p);
+    // x^p mod f mod p (reuse p_int)
+    auto x_to_p = sqrt::ModularPoly::power(x_poly, p_int, f_mod, p);
 
     // x^p - x mod p
     auto x_p_minus_x = sqrt::ModularPoly::sub(x_to_p, x_poly, p);
