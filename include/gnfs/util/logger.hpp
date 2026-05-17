@@ -172,40 +172,4 @@ private:
     bool thread_id_;
 };
 
-/// 便捷日志函数
-inline void log_trace(std::string_view module, std::string_view msg) {
-    Logger::instance().log(LogLevel::Trace, module, msg);
-}
-
-inline void log_debug(std::string_view module, std::string_view msg) {
-    Logger::instance().log(LogLevel::Debug, module, msg);
-}
-
-inline void log_info(std::string_view module, std::string_view msg) {
-    Logger::instance().log(LogLevel::Info, module, msg);
-}
-
-inline void log_warn(std::string_view module, std::string_view msg) {
-    Logger::instance().log(LogLevel::Warn, module, msg);
-}
-
-inline void log_error(std::string_view module, std::string_view msg) {
-    Logger::instance().log(LogLevel::Error, module, msg);
-}
-
-inline void log_fatal(std::string_view module, std::string_view msg) {
-    Logger::instance().log(LogLevel::Fatal, module, msg);
-}
-
 } // namespace gnfs::util
-
-// 便捷宏
-#define GNFS_LOG(level, module, msg) \
-    gnfs::util::Logger::instance().log(level, module, msg)
-
-#define GNFS_TRACE(module, msg) GNFS_LOG(gnfs::util::LogLevel::Trace, module, msg)
-#define GNFS_DEBUG(module, msg) GNFS_LOG(gnfs::util::LogLevel::Debug, module, msg)
-#define GNFS_INFO(module, msg)  GNFS_LOG(gnfs::util::LogLevel::Info, module, msg)
-#define GNFS_WARN(module, msg)  GNFS_LOG(gnfs::util::LogLevel::Warn, module, msg)
-#define GNFS_ERROR(module, msg) GNFS_LOG(gnfs::util::LogLevel::Error, module, msg)
-#define GNFS_FATAL(module, msg) GNFS_LOG(gnfs::util::LogLevel::Fatal, module, msg)
