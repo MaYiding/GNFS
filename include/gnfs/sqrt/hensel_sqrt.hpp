@@ -1185,22 +1185,22 @@ private:
         std::vector<Integer> product(d);
         product[0] = Integer(int64_t(1));
 
+        // v22: factor 移到 loop 外, mpz_set 覆写 factor[0]/[1], factor[i>=2] 保持 0
+        std::vector<Integer> factor(d);
+
         for (const auto& [a, b] : ab_pairs) {
             // Factor = a - b·x
-            std::vector<Integer> factor(d);
-            Integer a_mod(a);
-            a_mod %= modulus;
-            if (a_mod.is_negative()) a_mod += modulus;
-            factor[0] = std::move(a_mod);
+            factor[0] = Integer(a);
+            factor[0] %= modulus;
+            if (factor[0].is_negative()) factor[0] += modulus;
 
             if (d > 1) {
-                Integer neg_b(static_cast<int64_t>(b));
-                neg_b.negate();
-                neg_b %= modulus;
-                if (neg_b.is_negative()) neg_b += modulus;
-                factor[1] = std::move(neg_b);
+                factor[1] = Integer(static_cast<int64_t>(b));
+                factor[1].negate();
+                factor[1] %= modulus;
+                if (factor[1].is_negative()) factor[1] += modulus;
             }
-            // factor[i] for i>=2 already 0 from std::vector<Integer>(d) default ctor
+            // factor[i] for i>=2 是 0 (init), poly_mul_mod 不改 input, 后续 iter 仍 0.
 
             product = poly_mul_mod(product, factor, f, d, modulus, fli);
         }
