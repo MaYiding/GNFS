@@ -1034,8 +1034,8 @@ private:
             auto S2_check = poly_mul_mod(S, S, f_int, d, modulus);
             bool lift_ok = true;
             for (uint32_t i = 0; i < d; ++i) {
-                Integer p_i = P_final[i].clone();
-                p_i %= modulus;
+                Integer p_i;
+                mpz_mod(p_i.get_mpz(), P_final[i].get_mpz(), modulus.get_mpz());  // skip clone+%=
                 if (S2_check[i].compare(p_i) != 0) {
                     lift_ok = false;
                     std::cerr << "[Hensel] INVARIANT VIOLATION: S^2[" << i
@@ -1050,11 +1050,9 @@ private:
             }
         }
 
-        // Center coefficients and reduce mod N
-        // v22: half_mod 直接 assign
+        // Center coefficients and reduce mod N — half_mod = modulus/2 via bit shift
         Integer half_mod;
-        half_mod = modulus;
-        mpz_tdiv_q_2exp(half_mod.get_mpz(), half_mod.get_mpz(), 1);
+        mpz_tdiv_q_2exp(half_mod.get_mpz(), modulus.get_mpz(), 1);
 
         // Diagnostic: print pre-centering and pre-mod-N coefficient sizes
         if (config_.verbose) {
