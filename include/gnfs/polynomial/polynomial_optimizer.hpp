@@ -163,10 +163,9 @@ public:
 
         IntPolynomial g = f.clone();
 
-        // g[0] -= k * m
-        // g[1] += k
-        Integer km = m.clone();
-        km *= k;
+        // g[0] -= k * m; g[1] += k — mpz_mul_si writes m*k directly into km
+        Integer km;
+        mpz_mul_si(km.get_mpz(), m.get_mpz(), k);
         g[0] -= km;
         g[1] += k;
 
