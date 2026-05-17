@@ -368,11 +368,10 @@ public:
                 for (size_t i = 0; i < R.c.size(); ++i) {
                     R.c[i] *= lc_b;
                 }
-                // v22: term 复用 (mpz_set) 节省 db allocs/iter
+                // mpz_mul writes lc_r * B.c[i] directly into term (skip set step)
                 Integer term;
                 for (int i = 0; i <= db; ++i) {
-                    term = lc_r;
-                    term *= B.c[static_cast<size_t>(i)];
+                    mpz_mul(term.get_mpz(), lc_r.get_mpz(), B.c[static_cast<size_t>(i)].get_mpz());
                     R.c[static_cast<size_t>(i + shift)] -= term;
                 }
                 ++iters;

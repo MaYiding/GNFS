@@ -278,8 +278,8 @@ private:
         Integer term;
         for (int i = static_cast<int>(d) - 1; i >= 1; --i) {
             result *= m;
-            term = nf.coeff(i);
-            term *= static_cast<int64_t>(i);  // mpz_mul_si direct
+            // mpz_mul_si writes nf.coeff(i)*i directly into term (skip set step)
+            mpz_mul_si(term.get_mpz(), nf.coeff(i).get_mpz(), i);
             result += term;
             result %= N;
         }

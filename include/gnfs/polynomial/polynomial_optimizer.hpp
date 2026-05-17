@@ -141,13 +141,11 @@ public:
 
         IntPolynomial g = f.clone();
 
-        // g = f + k * h
-        // v22: term 复用, 节省 max_deg allocs/call
+        // g = f + k * h — mpz_mul_si writes h[i] * k directly into term (skip set)
         uint32_t max_deg = std::max(f.degree(), h.degree());
         Integer term;
         for (uint32_t i = 0; i <= max_deg; ++i) {
-            term = h[i];
-            term *= k;
+            mpz_mul_si(term.get_mpz(), h[i].get_mpz(), k);
             g[i] += term;
         }
 
