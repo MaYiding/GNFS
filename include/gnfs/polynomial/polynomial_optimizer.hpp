@@ -280,10 +280,10 @@ public:
         for (uint32_t p : small_primes) {
             size_t current_size = result.size();
             for (size_t i = 0; i < current_size && result.size() < max_count; ++i) {
-                Integer val = result[i].clone();
+                Integer val = result[i];  // copy ctor
                 val *= p;
                 while (val.fits_uint64() && val.to_uint64() <= bound) {
-                    result.push_back(val.clone());
+                    result.emplace_back(val);  // Integer copy ctor
                     val *= p;
                 }
             }

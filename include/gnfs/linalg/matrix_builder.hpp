@@ -449,7 +449,7 @@ private:
         std::vector<Integer> f_coeffs;
         f_coeffs.reserve(d + 1);
         for (uint32_t i = 0; i <= d; ++i) {
-            f_coeffs.push_back(ctx.coeff(i).clone());
+            f_coeffs.emplace_back(ctx.coeff(i));  // Integer copy ctor
         }
         polynomial::IntPolynomial f_poly(std::move(f_coeffs));
 
