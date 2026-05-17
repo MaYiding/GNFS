@@ -275,12 +275,10 @@ private:
         result *= static_cast<int64_t>(d);  // mpz_mul_si direct
         result %= N;
 
-        Integer term;
         for (int i = static_cast<int>(d) - 1; i >= 1; --i) {
             result *= m;
-            // mpz_mul_si writes nf.coeff(i)*i directly into term (skip set step)
-            mpz_mul_si(term.get_mpz(), nf.coeff(i).get_mpz(), i);
-            result += term;
+            // mpz_addmul_ui: result += nf.coeff(i) * i (i ≥ 1, fused FMA)
+            mpz_addmul_ui(result.get_mpz(), nf.coeff(i).get_mpz(), static_cast<unsigned long>(i));
             result %= N;
         }
         if (result.is_negative()) result += N;

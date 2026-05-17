@@ -348,11 +348,9 @@ public:
         Integer result;  // default ctor = 0
         Integer m_power(1);
 
-        // mpz_mul writes elem.coeff(i)*m_power directly into term (skip set step)
-        Integer term;
+        // mpz_addmul: result += elem.coeff(i) * m_power (fused FMA, skip term temp)
         for (size_t i = 0; i <= elem.degree(); ++i) {
-            mpz_mul(term.get_mpz(), elem.coeff(i).get_mpz(), m_power.get_mpz());
-            result += term;
+            mpz_addmul(result.get_mpz(), elem.coeff(i).get_mpz(), m_power.get_mpz());
 
             if (i < elem.degree()) {
                 m_power *= m_;
@@ -404,14 +402,11 @@ public:
             mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i-1].get_mpz(), b);
         }
 
-        // mpz_mul writes f_coeffs[i]*a_power directly into term (skip set step)
+        // term = a^i * b^{d-i}, then result += f_i * term via mpz_addmul (fused FMA)
         Integer term;
         for (uint32_t i = 0; i <= degree_; ++i) {
-            // term = f_i * a^i * b^{d-i}
-            mpz_mul(term.get_mpz(), f_coeffs_[i].get_mpz(), a_power.get_mpz());
-            term *= b_powers[degree_ - i];
-
-            result += term;
+            mpz_mul(term.get_mpz(), a_power.get_mpz(), b_powers[degree_ - i].get_mpz());
+            mpz_addmul(result.get_mpz(), f_coeffs_[i].get_mpz(), term.get_mpz());
 
             // 更新 a^i
             if (i < degree_) {

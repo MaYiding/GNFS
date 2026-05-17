@@ -164,15 +164,12 @@ public:
             mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i-1].get_mpz(), b);
         }
 
-        // mpz_mul writes f_coeffs[i] * a_power into term directly (no init+set)
+        // term = a^i * b^{d-i}, then result += f_i * term via mpz_addmul (fused FMA)
+        // Note: No sign alternation for N(a - bα) = b^d * f(a/b)
         Integer term;
         for (uint32_t i = 0; i <= degree_; ++i) {
-            // term = f_i * a^i * b^{d-i}
-            // Note: No sign alternation for N(a - bα) = b^d * f(a/b)
-            mpz_mul(term.get_mpz(), f_coeffs_[i].get_mpz(), a_power.get_mpz());
-            term *= b_powers[degree_ - i];
-
-            result += term;
+            mpz_mul(term.get_mpz(), a_power.get_mpz(), b_powers[degree_ - i].get_mpz());
+            mpz_addmul(result.get_mpz(), f_coeffs_[i].get_mpz(), term.get_mpz());
 
             // 更新 a_power
             if (i < degree_) {
