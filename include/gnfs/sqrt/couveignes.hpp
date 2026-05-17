@@ -280,24 +280,24 @@ public:
         // When sign[j] is flipped, we subtract 2 * weight[j][i] from coeff[i]
         std::vector<std::vector<Integer>> weights(primes.size());
 
-        // v22: M_j / M_j_mod_pj 复用 across j iter
+        // v22: M_j / M_j_mod_pj 复用 across j iter + w hoist + int64_t direct
         Integer M_j, M_j_mod_pj;
+        Integer w;  // hoist per (j, i) iter
         for (size_t j = 0; j < primes.size(); ++j) {
             uint64_t p_j = primes[j];
             M_j = M;
-            M_j /= Integer(p_j);
+            M_j /= int64_t(p_j);
             M_j_mod_pj = M_j;
-            M_j_mod_pj %= Integer(p_j);
+            M_j_mod_pj %= int64_t(p_j);
             uint64_t M_j_inv = mod_inverse_u64(M_j_mod_pj.to_uint64(), p_j);
 
             weights[j].resize(d);
             for (uint32_t i = 0; i < d; ++i) {
-                uint64_t c_ij = sqrt_coeffs[j][i];
-                Integer w = Integer(c_ij);
+                w = uint64_t(sqrt_coeffs[j][i]);  // mpz_set_ui (no init)
                 w *= M_j;
-                w *= static_cast<int64_t>(M_j_inv);  // mpz_mul_si direct
+                w *= static_cast<int64_t>(M_j_inv);
                 w %= M;
-                weights[j][i] = std::move(w);
+                weights[j][i] = w.clone();
             }
         }
 
@@ -583,24 +583,25 @@ public:
         for (uint64_t prime : primes) M *= static_cast<int64_t>(prime);  // mpz_mul_si direct
 
         // Precompute CRT weights: weight[j][i] = c_ij * M_j * M_j_inv mod M
-        // v22: M_j / M_j_mod_pj 复用
+        // v22: M_j / M_j_mod_pj 复用 + p_j 用 int64_t 直接 (primes ≤ uint32 max)
         std::vector<std::vector<Integer>> weights(primes.size());
         Integer M_j_b, M_j_mod_pj_b;
+        Integer w;  // hoist — reused per (j, i) iter
         for (size_t j = 0; j < primes.size(); ++j) {
             uint64_t p_j = primes[j];
             M_j_b = M;
-            M_j_b /= Integer(p_j);
+            M_j_b /= int64_t(p_j);
             M_j_mod_pj_b = M_j_b;
-            M_j_mod_pj_b %= Integer(p_j);
+            M_j_mod_pj_b %= int64_t(p_j);
             uint64_t M_j_inv = mod_inverse_u64(M_j_mod_pj_b.to_uint64(), p_j);
 
             weights[j].resize(d);
             for (uint32_t i = 0; i < d; ++i) {
-                Integer w(sqrt_coeffs[j][i]);
+                w = uint64_t(sqrt_coeffs[j][i]);  // mpz_set_ui (no init)
                 w *= M_j_b;
-                w *= static_cast<int64_t>(M_j_inv);  // mpz_mul_si direct
+                w *= static_cast<int64_t>(M_j_inv);
                 w %= M;
-                weights[j][i] = std::move(w);
+                weights[j][i] = w.clone();
             }
         }
 
