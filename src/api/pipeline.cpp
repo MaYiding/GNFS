@@ -1306,7 +1306,7 @@ FactorResult Pipeline::run() {
         // GMP rho: only when user explicitly forced PollardRho method
         if (method == FactorizationMethod::PollardRho) {
             Integer rho_f = pollard_rho_brent(n_, 100000000);
-            if (rho_f > Integer(1) && rho_f.compare(n_) != 0) {
+            if (mpz_cmp_si(rho_f.get_mpz(), 1) > 0 && rho_f.compare(n_) != 0) {
                 emit_log(LogLevel::Info, Phase::PolynomialSelection,
                          "Pollard rho found factor: " + rho_f.to_string());
                 return make_fast_result(rho_f, FactorizationMethod::PollardRho,
@@ -1358,7 +1358,7 @@ FactorResult Pipeline::run() {
         auto ecm_t1 = std::chrono::high_resolution_clock::now();
         double ecm_ms = std::chrono::duration<double, std::milli>(ecm_t1 - ecm_t0).count();
 
-        if (ecm_f && *ecm_f > Integer(1) && ecm_f->compare(n_) != 0) {
+        if (ecm_f && mpz_cmp_si(ecm_f->get_mpz(), 1) > 0 && ecm_f->compare(n_) != 0) {
             emit_log(LogLevel::Info, Phase::PolynomialSelection,
                      "ECM found factor in " + std::to_string(ecm_ms) + "ms: " + ecm_f->to_string());
             return make_fast_result(*ecm_f, FactorizationMethod::SIQS,
