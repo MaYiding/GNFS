@@ -383,7 +383,7 @@ public:
 
         // m^j mod N 缓存,Gray code 内每次 verify 不再重算 (v22: mpz_set)
         std::vector<Integer> mpow(d);
-        mpow[0] = Integer(int64_t(1));
+        mpow[0] = int64_t(1);  // mpz_set_si direct
         for (uint32_t j = 1; j < d; ++j) {
             mpow[j] = mpow[j-1];
             mpow[j] *= nf.m();
@@ -402,7 +402,7 @@ public:
         auto verify_current = [&]() -> bool {
             // 不变量: current_coeffs[i] ∈ [0, M-1]。
             // 仅需 center 到 [-M/2, M/2] 再 mod N。
-            Y_buf = Integer(int64_t(0));  // mpz_set_si 复用 buffer
+            Y_buf = int64_t(0);  // mpz_set_si 复用 buffer
             for (uint32_t i = 0; i < d; ++i) {
                 c_buf = current_coeffs[i];  // mpz_set 复用 buffer
                 if (c_buf.compare(half_M) > 0) c_buf -= M;
@@ -659,7 +659,7 @@ public:
         // 内联 Horner + mpow 缓存,省 NumberFieldElement 构造,~5μs/iter。
         // v22: mpow[j] = mpow[j-1] (mpz_set)
         std::vector<Integer> mpow(d);
-        mpow[0] = Integer(int64_t(1));
+        mpow[0] = int64_t(1);  // mpz_set_si direct
         for (uint32_t j = 1; j < d; ++j) {
             mpow[j] = mpow[j-1];
             mpow[j] *= nf.m();

@@ -168,7 +168,7 @@ private:
     void compute_discriminant() {
         uint32_t d = ctx_.degree();
         if (d <= 1) {
-            discriminant_ = Integer(int64_t(1));
+            discriminant_ = int64_t(1);  // mpz_set_si direct
             return;
         }
 
