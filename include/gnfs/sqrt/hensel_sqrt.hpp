@@ -1332,11 +1332,13 @@ private:
         // 单系数 ≤ d·modulus²,GMP 自动扩存),最后对 2d-1 个系数一次性 mod。
         // 原代码每 inner iter 双 mod (term%=mod + result%=mod) = d²·2 = 50 次 mod
         // (d=5),新代码仅 2d-1 = 9 次 mod。Hensel lift 大循环 hot path。
+        // v22: term buffer 复用 (mpz_set) 替代 mpz_init_set, 节省 ~d² allocs/call
+        Integer term;
         for (uint32_t i = 0; i < d; ++i) {
             if (a[i].is_zero()) continue;
             for (uint32_t j = 0; j < d; ++j) {
                 if (b[j].is_zero()) continue;
-                Integer term = a[i].clone();
+                term = a[i];
                 term *= b[j];
                 result[i + j] += term;
             }
@@ -1346,13 +1348,16 @@ private:
         }
 
         // Reduce mod f using pre-computed f_lead_inv
+        // v22: lead_scaled / sub buffer 复用
+        Integer lead_scaled;
+        Integer sub;
         for (int k = static_cast<int>(2 * d - 2); k >= static_cast<int>(d); --k) {
             Integer lead = std::move(result[k]);
             result[k] = Integer(int64_t(0));
             if (lead.is_zero()) continue;
 
             // Scale by inverse of leading coefficient
-            Integer lead_scaled = lead.clone();
+            lead_scaled = lead;
             if (!f_lead_inv.is_one()) {
                 lead_scaled *= f_lead_inv;
                 lead_scaled %= modulus;
@@ -1360,7 +1365,7 @@ private:
 
             // Subtract lead_scaled * f[0..d-1] from result[k-d..k-1]
             for (uint32_t i = 0; i < d; ++i) {
-                Integer sub = lead_scaled.clone();
+                sub = lead_scaled;
                 sub *= f[i];
                 sub %= modulus;
                 result[k - d + i] -= sub;
