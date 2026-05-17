@@ -402,14 +402,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
 
     // Krylov sequence length for SCALAR Berlekamp-Massey:
     // Need seq_len ≥ 2 * deg(minpoly(B)) where minpoly degree ≤ rank(B) ≤ min(m,n).
-    // For scalar BM (not block BM), each projection needs the full length.
-    // Use min(m,n) + safety; for thin (m<n) this avoids unnecessary iterations.
-    //
-    // NOTE: BACKLOG #80 step 7 — pure L bound doesn't fix the underlying issue
-    // for thin matrices that null(M*M^T) ≠ null(M^T) over GF(2). The BW dep
-    // extraction relies on this implicit assumption which fails on rank-deficient
-    // thin matrices. See test_thin_matrix_bw_path. Reverting to n+safety for
-    // backward-compat until proper thin-handling lands.
+    // Scalar path is wide-only — thin matrices route to block_wiedemann_thin_solve.
     const size_t L = n + 50;
     const size_t seq_len = 2 * L + 10;
 
@@ -646,10 +639,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
 
     // Krylov sequence length for matrix BM: L = 2·⌈n/64⌉ + 32 (buffer).
     // Compared to scalar BM's 2n+110, this is ~64× fewer SpMV calls.
-    //
-    // NOTE: BACKLOG #80 step 7 — for thin matrices (m<n) min(m,n) bound is
-    // tempting but doesn't address underlying GF(2) null(M*M^T) ≠ null(M^T)
-    // issue. Reverted to n for backward-compat.
+    // Block path handles square/wide (m≥n); thin (m<n) routes elsewhere.
     const size_t L = 2 * ((n + 63) / 64) + 32;
 
     gnfs::util::ThreadPool pool(0);
@@ -914,24 +904,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_thin_solve(
 
     // ── Phase 4 (recovery): u_j = M·w_j ∈ R^m for each valid column ──
     // Then verify u_j ≠ 0 AND M^T·u_j = 0 (the latter holds by construction
-    // up to rounding-free GF(2), but we still check to guard against the
-    // degenerate w_j ∈ null(M) case which gives u_j = 0).
-
-    // Diagnostic: per-column accumulator (w) population before recovery
-    int acc_zero_cols = 0, acc_nonzero_cols = 0;
-    for (int j = 0; j < 64; ++j) {
-        if (!((F.valid_mask >> j) & 1ULL)) continue;
-        const uint64_t mask = 1ULL << j;
-        bool has_bit = false;
-        for (size_t i = 0; i < n; ++i) {
-            if (accumulator.data[i] & mask) { has_bit = true; break; }
-        }
-        if (has_bit) acc_nonzero_cols++; else acc_zero_cols++;
-    }
-    std::cout << "  [BW-thin] accumulator (w∈R^n): "
-              << acc_nonzero_cols << " nonzero cols, "
-              << acc_zero_cols << " zero cols" << std::endl;
-
+    // by associativity over GF(2); guard the degenerate w_j ∈ null(M) case).
     BlockVector U(m);
     bw_spmv_forward(csr, accumulator, U, pool);
 

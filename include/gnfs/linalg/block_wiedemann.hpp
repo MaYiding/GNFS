@@ -165,22 +165,18 @@ public:
     /// For small matrices (<5000), delegates to Gaussian elimination.
     /// For large matrices, runs the three-phase BW algorithm.
     ///
-    /// **Known limitation (BACKLOG #80, 2026-05-17)**: For thin matrices (m<n,
-    /// rows < cols), BW may return 0 dependencies even when left null space
-    /// exists. Root cause: over GF(2), null(M·M^T) ⊋ null(M^T) when
-    /// rank(M·M^T) < rank(M) (which can happen due to GF(2) bilinear form
-    /// quirk: v^T M M^T v = ‖M^T v‖² mod 2 = parity of M^T v, which can be 0
-    /// without M^T v = 0). Standard BW verification rejects all candidates.
+    /// **Thin matrix path (BACKLOG #80, 2026-05-17)**: When m < n (thin),
+    /// routes to `block_wiedemann_thin_solve`, which operates on
+    /// B' = M^T·M (n×n) instead of B = M·M^T. Phase 3 produces w ∈ R^n with
+    /// (M^T·M)·w = 0 strictly. Recovery: u = M·w ∈ R^m satisfies M^T·u = 0
+    /// by associativity, giving a valid left null space vector (when u ≠ 0).
     ///
-    /// Attempted fix: zero-row padding to square (n×n) — does NOT work because
-    /// padded matrix has same rank as original; the issue is rank deficiency
-    /// over GF(2), not shape.
-    ///
-    /// Proper fix would require either (a) BW with B=M^T·M (n×n) and recover
-    /// dep as u = M·v where v ∈ null(M^T·M), since M^T·u = M^T·M·v = 0 places
-    /// u in null(M^T); or (b) iterative refinement on M^T·w residuals.
-    /// Algorithmic work — not done in this session. GNFS_THIN_MATRIX_TRY=1
-    /// ENV in pipeline allows this code path but solution may be empty.
+    /// **Edge case** (mirror of standard path's GF(2) quirk): if matrix has
+    /// extreme rank deficiency (rank ≪ m), null(M^T·M) may coincide with
+    /// null(M) entirely, so every w found by BW lives in null(M) and u = M·w
+    /// is always 0 — fundamental algorithmic limit, no recovery possible by
+    /// this approach. Realistic GNFS matrices (rank ≈ m) are unaffected and
+    /// produce valid dependencies as verified by test_thin_matrix_bw_solve.
     std::vector<std::vector<bool>> find_dependencies(
         const SparseMatrix& matrix, size_t max_deps = 64);
 
