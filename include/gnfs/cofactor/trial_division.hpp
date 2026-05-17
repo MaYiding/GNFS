@@ -51,7 +51,7 @@ public:
 
         if (value.is_zero()) {
             result.is_smooth = true;
-            result.cofactor = Integer(static_cast<int64_t>(1));
+            result.cofactor = int64_t(1);  // mpz_set_si on default-init buffer
             return result;
         }
 
@@ -78,9 +78,9 @@ public:
 
             if (v128 == 1) {
                 result.is_smooth = true;
-                result.cofactor = Integer(static_cast<int64_t>(1));
+                result.cofactor = int64_t(1);  // mpz_set_si on default-init buffer
             } else if (v128 <= UINT64_MAX) {
-                result.cofactor = Integer(static_cast<uint64_t>(v128));
+                result.cofactor = static_cast<uint64_t>(v128);
             } else {
                 // Convert uint128 back to Integer
                 uint64_t rhi = static_cast<uint64_t>(v128 >> 64);
@@ -90,7 +90,7 @@ public:
                 mpz_set_ui(rtmp, rhi);
                 mpz_mul_2exp(rtmp, rtmp, 64);
                 mpz_add_ui(rtmp, rtmp, rlo);
-                result.cofactor = Integer(0);
+                // result.cofactor 默认 init = 0, 直接 mpz_set 复用 buffer
                 mpz_set(result.cofactor.get_mpz(), rtmp);
                 mpz_clear(rtmp);
             }
@@ -160,7 +160,7 @@ public:
 
         if (norm.is_zero()) {
             result.is_smooth = true;
-            result.cofactor = Integer(static_cast<int64_t>(1));
+            result.cofactor = int64_t(1);  // mpz_set_si on default-init buffer
             return result;
         }
 
@@ -286,7 +286,7 @@ public:
         } else if (use_u128) {
             // Convert uint128 back to Integer
             if (norm_u128 <= UINT64_MAX) {
-                result.cofactor = Integer(static_cast<uint64_t>(norm_u128));
+                result.cofactor = static_cast<uint64_t>(norm_u128);
             } else {
                 // Construct Integer from uint128
                 uint64_t hi = static_cast<uint64_t>(norm_u128 >> 64);
@@ -371,7 +371,7 @@ private:
 
         if (value == 0) {
             result.is_smooth = true;
-            result.cofactor = Integer(static_cast<int64_t>(1));
+            result.cofactor = int64_t(1);  // mpz_set_si on default-init buffer
             return result;
         }
 
