@@ -110,16 +110,9 @@ public:
     [[nodiscard]] uint64_t evaluate_mod(uint64_t x, uint64_t p) const {
         if (f_coeffs_.empty()) return 0;
 
-        // p_int hoist 出 lambda — degree+1 次调用避免重复 mpz_init+set+clear
-        Integer p_int(static_cast<unsigned long long>(p));
-        Integer tmp;
-        auto get_coeff_mod_p = [&](const Integer& coeff) -> uint64_t {
-            if (coeff.is_zero()) return 0;
-            Integer::mod(tmp, coeff, p_int);
-            if (tmp.is_negative()) {
-                tmp += p_int;
-            }
-            return tmp.to_uint64();
+        // mpz_fdiv_ui returns floor-div remainder ∈ [0, p-1] (zero alloc)
+        auto get_coeff_mod_p = [p](const Integer& coeff) -> uint64_t {
+            return static_cast<uint64_t>(mpz_fdiv_ui(coeff.get_mpz(), p));
         };
 
         uint64_t result = get_coeff_mod_p(f_coeffs_[degree_]);
