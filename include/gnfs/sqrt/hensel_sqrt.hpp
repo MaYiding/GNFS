@@ -824,8 +824,7 @@ private:
                 sqrt_mod_p, ab_pairs, nf, p, num_lifts, d);
             if (!result_elem) continue;
 
-            Integer Y_prime = nf.evaluate_at_m_mod_n(*result_elem);
-            Integer Y = Y_prime.clone();
+            Integer Y = nf.evaluate_at_m_mod_n(*result_elem);
             Y *= f_prime_m_inv;
             Y %= n;
             if (Y.is_negative()) Y += n;
@@ -930,12 +929,9 @@ private:
                 ModularPoly S_check = sqrt_mod_p;
                 auto S2_check_mp = ModularPoly::mul(S_check, S_check, f_mod_p_check, p);
                 bool product_consistent = true;
-                const Integer pp{int64_t(p)};  // hoist out of d-loop (brace init avoids vexing parse)
                 for (uint32_t i = 0; i < d; ++i) {
-                    Integer pfi = P_final[i].clone();
-                    Integer::mod(pfi, pfi, pp);
-                    if (pfi.is_negative()) pfi += pp;
-                    uint64_t pfi_u64 = pfi.to_uint64();
+                    // mpz_fdiv_ui: floor-div remainder ∈ [0, p-1] regardless of sign
+                    uint64_t pfi_u64 = static_cast<uint64_t>(mpz_fdiv_ui(P_final[i].get_mpz(), p));
                     uint64_t s2i = (i <= static_cast<uint32_t>(S2_check_mp.degree()))
                                    ? S2_check_mp.coeff(i) : 0;
                     if (pfi_u64 != s2i) {
