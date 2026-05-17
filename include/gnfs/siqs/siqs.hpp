@@ -388,9 +388,11 @@ inline void choose_A(const Integer& N, uint32_t M,
                      std::mt19937& rng,
                      std::vector<uint32_t>& a_indices, Integer& A) {
     // Target A value
-    Integer two_n = N * Integer(2);
-    Integer target_a = core::sqrt(two_n) / Integer(static_cast<uint64_t>(M));
-    if (target_a < Integer(1)) target_a = Integer(1);
+    Integer two_n = N.clone();
+    two_n *= int64_t(2);
+    Integer target_a = core::sqrt(two_n);
+    target_a /= int64_t(M);
+    if (target_a.is_zero() || target_a.is_negative()) target_a = int64_t(1);
 
     // Pick primes from middle of FB to form A close to target
     // Strategy: find the prime whose individual value would give
@@ -429,7 +431,7 @@ inline void choose_A(const Integer& N, uint32_t M,
     std::sort(a_indices.begin(), a_indices.end());
 
     // Compute A = product of chosen primes
-    A = Integer(1);
+    A = int64_t(1);
     for (uint32_t idx : a_indices) {
         A = A * Integer(static_cast<uint64_t>(fb[idx].p));
     }
