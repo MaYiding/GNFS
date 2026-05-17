@@ -277,11 +277,13 @@ public:
         // When sign[j] is flipped, we subtract 2 * weight[j][i] from coeff[i]
         std::vector<std::vector<Integer>> weights(primes.size());
 
+        // v22: M_j / M_j_mod_pj 复用 across j iter
+        Integer M_j, M_j_mod_pj;
         for (size_t j = 0; j < primes.size(); ++j) {
             uint64_t p_j = primes[j];
-            Integer M_j = M.clone();
+            M_j = M;
             M_j /= Integer(p_j);
-            Integer M_j_mod_pj = M_j.clone();
+            M_j_mod_pj = M_j;
             M_j_mod_pj %= Integer(p_j);
             uint64_t M_j_inv = mod_inverse_u64(M_j_mod_pj.to_uint64(), p_j);
 
@@ -307,19 +309,21 @@ public:
             base_coeffs[i] = std::move(coeff_i);
         }
 
-        // Center around 0
-        Integer half_M = M.clone();
+        // Center around 0 — v22: half_M 直接 assign
+        Integer half_M;
+        half_M = M;
         mpz_tdiv_q_2exp(half_M.get_mpz(), half_M.get_mpz(), 1);
         for (auto& c : base_coeffs) {
             if (c.compare(half_M) > 0) c -= M;
         }
 
         // Precompute 2 * weight[j][i] for incremental updates
+        // v22: two_weights[j][i] = weights[j][i] (mpz_set into default-init)
         std::vector<std::vector<Integer>> two_weights(primes.size());
         for (size_t j = 0; j < primes.size(); ++j) {
             two_weights[j].resize(d);
             for (uint32_t i = 0; i < d; ++i) {
-                two_weights[j][i] = weights[j][i].clone();
+                two_weights[j][i] = weights[j][i];
                 two_weights[j][i] *= Integer(static_cast<int64_t>(2));
             }
         }
@@ -327,9 +331,10 @@ public:
         // --- Step 3: Gray code enumeration ---
         // current_coeffs starts as base (all-positive)
         // Each Gray code step flips exactly one bit
+        // v22: current_coeffs[i] = base_coeffs[i] (mpz_set)
         std::vector<Integer> current_coeffs(d);
         for (uint32_t i = 0; i < d; ++i) {
-            current_coeffs[i] = base_coeffs[i].clone();
+            current_coeffs[i] = base_coeffs[i];
         }
 
         // Precompute expected_X2 = f'(m)² · ∏(a_i - b_i·m) mod N
@@ -340,42 +345,47 @@ public:
         // f'(m)² · expected_X2,否则全 search space 都对不上。
         //
         // 注意: 直接对 expected_X2 取 sqrt 等价于因子化 N,因此我们验证 Y² 而非 Y。
+        // v22: term/bm 复用 across ab_pairs (hot loop, 10K+ iters per dep)
         Integer expected_X2(int64_t(1));
+        Integer term_buf, bm;
         for (const auto& [a, b] : ab_pairs) {
-            Integer term(a);
-            Integer bm = nf.m().clone();
+            term_buf = Integer(a);
+            bm = nf.m();
             bm *= Integer(b);
-            term -= bm;
-            term %= n;
-            if (term.is_negative()) term += n;
-            expected_X2 *= term;
+            term_buf -= bm;
+            term_buf %= n;
+            if (term_buf.is_negative()) term_buf += n;
+            expected_X2 *= term_buf;
             expected_X2 %= n;
         }
         // 乘 f'(m)² mod N (仅 apply_f_prime_correction=true 时)
         if (apply_f_prime_correction) {
             // f'(m) = Σ_{i=1}^d i · f[i] · m^(i-1)
+            // v22: term/f_prime_m_sq 直接 assign
             const Integer& m_val = nf.m();
             Integer f_prime_m(int64_t(0));
+            Integer term_h;
             for (int i = static_cast<int>(d); i >= 1; --i) {
                 f_prime_m *= m_val;
-                Integer term = nf.coeff(static_cast<uint32_t>(i)).clone();
-                term *= Integer(static_cast<int64_t>(i));
-                f_prime_m += term;
+                term_h = nf.coeff(static_cast<uint32_t>(i));
+                term_h *= Integer(static_cast<int64_t>(i));
+                f_prime_m += term_h;
                 f_prime_m %= n;
             }
             if (f_prime_m.is_negative()) f_prime_m += n;
-            Integer f_prime_m_sq = f_prime_m.clone();
+            Integer f_prime_m_sq;
+            f_prime_m_sq = f_prime_m;
             f_prime_m_sq *= f_prime_m;
             f_prime_m_sq %= n;
             expected_X2 *= f_prime_m_sq;
             expected_X2 %= n;
         }
 
-        // m^j mod N 缓存,Gray code 内每次 verify 不再重算
+        // m^j mod N 缓存,Gray code 内每次 verify 不再重算 (v22: mpz_set)
         std::vector<Integer> mpow(d);
         mpow[0] = Integer(int64_t(1));
         for (uint32_t j = 1; j < d; ++j) {
-            mpow[j] = mpow[j-1].clone();
+            mpow[j] = mpow[j-1];
             mpow[j] *= nf.m();
             mpow[j] %= n;
         }
@@ -413,9 +423,10 @@ public:
 
         auto extract_result = [&]() -> std::vector<Integer> {
             // 同 verify, current_coeffs 已在 [0, M-1]
+            // v22: r[i] = current_coeffs[i] (mpz_set into default-init)
             std::vector<Integer> r(d);
             for (uint32_t i = 0; i < d; ++i) {
-                r[i] = current_coeffs[i].clone();
+                r[i] = current_coeffs[i];
                 if (r[i].compare(half_M) > 0) r[i] -= M;
                 r[i] %= n;
                 if (r[i].is_negative()) r[i] += n;
@@ -485,12 +496,15 @@ public:
         uint32_t d = nf.degree();
         const Integer& n = nf.n();
 
+        // v22: 内部 buffer 复用 (mpz_set 而非 mpz_init_set)
         auto get_f_mod_p = [&nf, d](uint64_t p) -> std::vector<uint64_t> {
             std::vector<uint64_t> f(d + 1);
+            Integer coeff;
+            const Integer p_int(p);
             for (uint32_t i = 0; i <= d; ++i) {
-                Integer coeff = nf.coeff(i).clone();
-                coeff %= Integer(p);
-                if (coeff.is_negative()) coeff += Integer(p);
+                coeff = nf.coeff(i);
+                coeff %= p_int;
+                if (coeff.is_negative()) coeff += p_int;
                 f[i] = coeff.to_uint64();
             }
             return f;
@@ -498,10 +512,12 @@ public:
 
         auto elem_to_mod_p = [&elem, d](uint64_t p) -> ModularPoly {
             std::vector<uint64_t> coeffs(d);
+            Integer c;
+            const Integer p_int(p);
             for (uint32_t i = 0; i < d && i <= elem.degree(); ++i) {
-                Integer c = elem.coeff(i).clone();
-                c %= Integer(p);
-                if (c.is_negative()) c += Integer(p);
+                c = elem.coeff(i);
+                c %= p_int;
+                if (c.is_negative()) c += p_int;
                 coeffs[i] = c.to_uint64();
             }
             return ModularPoly(std::move(coeffs));
@@ -520,7 +536,9 @@ public:
             p = next_prime(p);
             primes_checked++;
 
-            Integer n_mod_p = n.clone();
+            // v22: n_mod_p 直接 assign (mpz_set)
+            Integer n_mod_p;
+            n_mod_p = n;
             n_mod_p %= Integer(p);
             if (n_mod_p.is_zero()) continue;
 
@@ -562,19 +580,21 @@ public:
         for (uint64_t prime : primes) M *= Integer(prime);
 
         // Precompute CRT weights: weight[j][i] = c_ij * M_j * M_j_inv mod M
+        // v22: M_j / M_j_mod_pj 复用
         std::vector<std::vector<Integer>> weights(primes.size());
+        Integer M_j_b, M_j_mod_pj_b;
         for (size_t j = 0; j < primes.size(); ++j) {
             uint64_t p_j = primes[j];
-            Integer M_j = M.clone();
-            M_j /= Integer(p_j);
-            Integer M_j_mod_pj = M_j.clone();
-            M_j_mod_pj %= Integer(p_j);
-            uint64_t M_j_inv = mod_inverse_u64(M_j_mod_pj.to_uint64(), p_j);
+            M_j_b = M;
+            M_j_b /= Integer(p_j);
+            M_j_mod_pj_b = M_j_b;
+            M_j_mod_pj_b %= Integer(p_j);
+            uint64_t M_j_inv = mod_inverse_u64(M_j_mod_pj_b.to_uint64(), p_j);
 
             weights[j].resize(d);
             for (uint32_t i = 0; i < d; ++i) {
                 Integer w(sqrt_coeffs[j][i]);
-                w *= M_j;
+                w *= M_j_b;
                 w *= Integer(M_j_inv);
                 w %= M;
                 weights[j][i] = std::move(w);
@@ -592,7 +612,9 @@ public:
             base_coeffs[i] = std::move(coeff_i);
         }
 
-        Integer half_M = M.clone();
+        // v22: half_M 直接 assign
+        Integer half_M;
+        half_M = M;
         mpz_tdiv_q_2exp(half_M.get_mpz(), half_M.get_mpz(), 1);
 
         // Center around 0
@@ -601,11 +623,12 @@ public:
         }
 
         // Precompute 2 * weight for incremental Gray code updates
+        // v22: two_weights[j][i] = weights[j][i] (mpz_set)
         std::vector<std::vector<Integer>> two_weights(primes.size());
         for (size_t j = 0; j < primes.size(); ++j) {
             two_weights[j].resize(d);
             for (uint32_t i = 0; i < d; ++i) {
-                two_weights[j][i] = weights[j][i].clone();
+                two_weights[j][i] = weights[j][i];
                 two_weights[j][i] *= Integer(static_cast<int64_t>(2));
             }
         }
@@ -613,9 +636,10 @@ public:
         // Expected value: elem(m) mod N — candidate Y must satisfy Y² ≡ elem(m) mod N
         Integer expected_X2 = nf.evaluate_at_m_mod_n(elem);
 
+        // v22: current_coeffs[i] = base_coeffs[i] (mpz_set into default-init)
         std::vector<Integer> current_coeffs(d);
         for (uint32_t i = 0; i < d; ++i) {
-            current_coeffs[i] = base_coeffs[i].clone();
+            current_coeffs[i] = base_coeffs[i];
             // v21: 保 [0, M-1] 不变量(同 compute() 路径,见 v20 注释)
             if (current_coeffs[i].is_negative()) current_coeffs[i] += M;
         }
@@ -633,10 +657,11 @@ public:
         // 旧实现 evaluate_at_m_mod_n(NumberFieldElement(cand)) 每 iter 构造
         // NumberFieldElement (d 次 clone + 移动) 再 Horner,~50μs/iter 开销。
         // 内联 Horner + mpow 缓存,省 NumberFieldElement 构造,~5μs/iter。
+        // v22: mpow[j] = mpow[j-1] (mpz_set)
         std::vector<Integer> mpow(d);
         mpow[0] = Integer(int64_t(1));
         for (uint32_t j = 1; j < d; ++j) {
-            mpow[j] = mpow[j-1].clone();
+            mpow[j] = mpow[j-1];
             mpow[j] *= nf.m();
             mpow[j] %= n;
         }
@@ -667,9 +692,10 @@ public:
         };
 
         auto extract_result = [&]() -> std::vector<Integer> {
+            // v22: r[i] = current_coeffs[i] (mpz_set into default-init)
             std::vector<Integer> r(d);
             for (uint32_t i = 0; i < d; ++i) {
-                r[i] = current_coeffs[i].clone();
+                r[i] = current_coeffs[i];
                 if (r[i].compare(half_M) > 0) r[i] -= M;
                 r[i] %= n;
                 if (r[i].is_negative()) r[i] += n;
