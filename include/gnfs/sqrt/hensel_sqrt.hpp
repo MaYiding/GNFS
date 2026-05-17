@@ -854,10 +854,13 @@ private:
                 uint64_t si = S[i].to_uint64();
                 two_s_mod[i] = (2 * si) % p;
             }
+            // v22: c buffer 复用 (d+1 iters)
+            Integer c;
+            const Integer p_int(p);
             for (uint32_t i = 0; i <= d; ++i) {
-                Integer c = nf.coeff(i).clone();
-                c %= Integer(p);
-                if (c.is_negative()) c += Integer(p);
+                c = nf.coeff(i);
+                c %= p_int;
+                if (c.is_negative()) c += p_int;
                 f_mod_p_vec[i] = c.to_uint64();
             }
             // Compute p^d - 2 using mpz_ui_pow_ui (single GMP call)
