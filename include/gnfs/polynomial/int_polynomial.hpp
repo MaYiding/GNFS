@@ -409,7 +409,7 @@ private:
         x_poly.set_coeff(1, 1);
 
         // x^p mod f mod p (repeated squaring, O(d² log p))
-        const Integer p_int(static_cast<int64_t>(p));
+        const Integer p_int(p);
         auto x_to_p = MP::power(x_poly, p_int, f_mod, p);
         auto x_p_minus_x = MP::sub(x_to_p, x_poly, p);
         auto h = MP::gcd(x_p_minus_x, f_poly, p);
