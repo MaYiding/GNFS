@@ -1117,7 +1117,7 @@ FactorResult Pipeline::extract_factors(
                 if (!rat_result.success) continue;
 
                 auto alg_result = sqrt::compute_algebraic_sqrt(combined, mr.relations, ctx);
-                Integer alg_val = alg_result.success ? alg_result.value.clone() : Integer(1);
+                Integer alg_val = alg_result.success ? alg_result.value : Integer(1);  // copy ctor
 
                 if (try_factor(rat_result.value, alg_val)) break;
 
