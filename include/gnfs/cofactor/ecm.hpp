@@ -128,43 +128,35 @@ private:
         thread_local Integer u, u2, v, v2, w, t;
         Integer x2, z2;  // 返回值 — Point ctor 通过 move 接收
 
-        // u = (x + z) mod n; u2 = u^2
-        u = P.x;
-        u += P.z;
+        // u = (x + z) mod n; u2 = u^2 mod n — direct GMP ops (skip mpz_set steps)
+        mpz_add(u.get_mpz(), P.x.get_mpz(), P.z.get_mpz());
         u %= n;
-        u2 = u;
-        u2 *= u;
+        mpz_mul(u2.get_mpz(), u.get_mpz(), u.get_mpz());
         u2 %= n;
 
-        // v = (x - z) mod n; v2 = v^2
-        v = P.x;
-        v -= P.z;
+        // v = (x - z) mod n; v2 = v^2 mod n
+        mpz_sub(v.get_mpz(), P.x.get_mpz(), P.z.get_mpz());
         if (v.is_negative()) v += n;
         v %= n;
-        v2 = v;
-        v2 *= v;
+        mpz_mul(v2.get_mpz(), v.get_mpz(), v.get_mpz());
         v2 %= n;
 
-        // x2 = u^2 * v^2
-        x2 = u2;
-        x2 *= v2;
+        // x2 = u^2 * v^2 mod n
+        mpz_mul(x2.get_mpz(), u2.get_mpz(), v2.get_mpz());
         x2 %= n;
 
-        // w = u^2 - v^2
-        w = u2;
-        w -= v2;
+        // w = (u^2 - v^2) mod n
+        mpz_sub(w.get_mpz(), u2.get_mpz(), v2.get_mpz());
         if (w.is_negative()) w += n;
         w %= n;
 
-        // z2 = w * (v^2 + a24 * w)
-        t = a24;
-        t *= w;
+        // z2 = w * (v^2 + a24 * w) mod n
+        mpz_mul(t.get_mpz(), a24.get_mpz(), w.get_mpz());
         t %= n;
         t += v2;
         t %= n;
 
-        z2 = w;
-        z2 *= t;
+        mpz_mul(z2.get_mpz(), w.get_mpz(), t.get_mpz());
         z2 %= n;
 
         return Point(std::move(x2), std::move(z2));
@@ -176,49 +168,39 @@ private:
         thread_local Integer u, v, t1, t2, sum, sum2, dif, dif2;
         Integer xr, zr;  // 返回值
 
-        // u = (Px - Pz) * (Qx + Qz)
-        u = P.x;
-        u -= P.z;
+        // u = (Px - Pz) * (Qx + Qz) mod n — direct GMP ops
+        mpz_sub(u.get_mpz(), P.x.get_mpz(), P.z.get_mpz());
         if (u.is_negative()) u += n;
         u %= n;
-        t1 = Q.x;
-        t1 += Q.z;
+        mpz_add(t1.get_mpz(), Q.x.get_mpz(), Q.z.get_mpz());
         t1 %= n;
         u *= t1;
         u %= n;
 
-        // v = (Px + Pz) * (Qx - Qz)
-        v = P.x;
-        v += P.z;
+        // v = (Px + Pz) * (Qx - Qz) mod n
+        mpz_add(v.get_mpz(), P.x.get_mpz(), P.z.get_mpz());
         v %= n;
-        t2 = Q.x;
-        t2 -= Q.z;
+        mpz_sub(t2.get_mpz(), Q.x.get_mpz(), Q.z.get_mpz());
         if (t2.is_negative()) t2 += n;
         t2 %= n;
         v *= t2;
         v %= n;
 
-        // xr = diff.z * (u + v)^2
-        sum = u;
-        sum += v;
+        // xr = diff.z * (u + v)^2 mod n
+        mpz_add(sum.get_mpz(), u.get_mpz(), v.get_mpz());
         sum %= n;
-        sum2 = sum;
-        sum2 *= sum;
+        mpz_mul(sum2.get_mpz(), sum.get_mpz(), sum.get_mpz());
         sum2 %= n;
-        xr = diff.z;
-        xr *= sum2;
+        mpz_mul(xr.get_mpz(), diff.z.get_mpz(), sum2.get_mpz());
         xr %= n;
 
-        // zr = diff.x * (u - v)^2
-        dif = u;
-        dif -= v;
+        // zr = diff.x * (u - v)^2 mod n
+        mpz_sub(dif.get_mpz(), u.get_mpz(), v.get_mpz());
         if (dif.is_negative()) dif += n;
         dif %= n;
-        dif2 = dif;
-        dif2 *= dif;
+        mpz_mul(dif2.get_mpz(), dif.get_mpz(), dif.get_mpz());
         dif2 %= n;
-        zr = diff.x;
-        zr *= dif2;
+        mpz_mul(zr.get_mpz(), diff.x.get_mpz(), dif2.get_mpz());
         zr %= n;
 
         return Point(std::move(xr), std::move(zr));
