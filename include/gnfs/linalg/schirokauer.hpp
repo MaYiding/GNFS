@@ -868,12 +868,15 @@ private:
         info.ell_k_minus_1 = info.ell_k / ell;
 
         // Compute f(x) mod ℓ^k
+        // hoist ell_k_int + c_buf — d+1 次循环复用
         info.f_mod.fill(0);
+        const Integer ell_k_int(info.ell_k);
+        Integer c_buf;
         for (uint32_t i = 0; i <= degree_; ++i) {
-            Integer c = ctx_.coeff(i).clone();
-            c %= Integer(info.ell_k);
-            if (c.is_negative()) c += Integer(info.ell_k);
-            info.f_mod[i] = c.to_uint64();
+            c_buf = ctx_.coeff(i);  // mpz_set into reused buffer
+            c_buf %= ell_k_int;
+            if (c_buf.is_negative()) c_buf += ell_k_int;
+            info.f_mod[i] = c_buf.to_uint64();
         }
 
         // Full Rabin irreducibility test (not just "no roots")
