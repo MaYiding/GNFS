@@ -544,7 +544,6 @@ private:
         // v22: c, t buffer hoist 出 baby loop — 480 babies × ~B2/D giants
         // 在 50d 是 ~23M iterations/curve, 节省巨量 mpz_init/free
         Integer c, t;
-        Integer one_for_cmp(int64_t(1));
         auto accumulate_step = [&](const Point& G) -> std::optional<Integer> {
             for (const auto& b : baby) {
                 // cross = G.x * b.z - b.x * G.z (mod n)
@@ -557,7 +556,7 @@ private:
                 if (c.is_zero()) {
                     // c=0 means G and baby represent same point — factor may be in Z coordinate
                     Integer g = gcd(G.z, n);
-                    if (g.compare(one_for_cmp) != 0 && g.compare(n) != 0) {
+                    if (!g.is_one() && g.compare(n) != 0) {
                         return g;
                     }
                 } else {
