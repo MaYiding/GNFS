@@ -531,19 +531,22 @@ private:
         uint64_t steps_in_batch = 0;
         constexpr uint64_t BATCH_SIZE = 16;
 
-        // 累积一个 giant step 的所有 cross products
+        // v22: c, t buffer hoist 出 baby loop — 480 babies × ~B2/D giants
+        // 在 50d 是 ~23M iterations/curve, 节省巨量 mpz_init/free
+        Integer c, t;
+        Integer one_for_cmp(int64_t(1));
         auto accumulate_step = [&](const Point& G) -> std::optional<Integer> {
             for (const auto& b : baby) {
                 // cross = G.x * b.z - b.x * G.z (mod n)
-                Integer c = G.x.clone(); c *= b.z; c %= n;
-                Integer t = b.x.clone(); t *= G.z; t %= n;
+                c = G.x; c *= b.z; c %= n;
+                t = b.x; t *= G.z; t %= n;
                 c -= t;
                 if (c.is_negative()) c += n;
                 c %= n;
                 if (c.is_zero()) {
                     // c=0 means G and baby represent same point — factor may be in Z coordinate
                     Integer g = gcd(G.z, n);
-                    if (g.compare(Integer(int64_t(1))) != 0 && g.compare(n) != 0) {
+                    if (g.compare(one_for_cmp) != 0 && g.compare(n) != 0) {
                         return g;
                     }
                 } else {
@@ -622,6 +625,8 @@ private:
         std::vector<uint64_t> batch_primes;
         batch_primes.reserve(128);
 
+        // v22: gcd_arg buffer hoist (called every 100 primes in lambda)
+        Integer gcd_arg;
         for_each_prime_in_range(B1, B2, [&](uint64_t p) -> bool {
             Qcurr = mont_mul(Qcurr, p, a24, n);
             batch_primes.push_back(p);
@@ -631,7 +636,8 @@ private:
 
             ++check_interval;
             if (check_interval >= 100) {
-                Integer g = core::gcd(accum.clone(), n);
+                gcd_arg = accum;
+                Integer g = core::gcd(gcd_arg, n);
                 if (!g.is_one() && g.compare(n) != 0) {
                     found = std::move(g);
                     return false;
