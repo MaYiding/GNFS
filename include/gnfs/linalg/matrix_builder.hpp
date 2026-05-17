@@ -498,11 +498,14 @@ private:
         uint64_t p64 = p;
 
         // 计算 f mod p
+        // v22: c 复用 + Integer(p) extract
         std::vector<uint64_t> f(d + 1);
+        Integer c;
+        const Integer p_int(p64);
         for (uint32_t i = 0; i <= d; ++i) {
-            Integer c = ctx.coeff(i).clone();
-            c %= Integer(p64);
-            if (c.is_negative()) c += Integer(p64);
+            c = ctx.coeff(i);
+            c %= p_int;
+            if (c.is_negative()) c += p_int;
             f[i] = c.to_uint64();
         }
 
