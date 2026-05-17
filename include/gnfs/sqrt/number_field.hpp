@@ -33,7 +33,7 @@ public:
     }
 
     explicit NumberFieldElement(int64_t value) {
-        coeffs_.push_back(Integer(value));
+        coeffs_.emplace_back(value);
     }
 
     /// 移动构造
@@ -224,10 +224,10 @@ public:
     /// This matches the GNFS convention where N(a - bα) = (-b)^d * f(-a/b)
     [[nodiscard]] NumberFieldElement from_ab(int64_t a, uint64_t b) const {
         std::vector<Integer> coeffs;
-        coeffs.push_back(Integer(a));
+        coeffs.emplace_back(a);
         if (b != 0) {
             // Note: coefficient of α is -b (negative)
-            coeffs.push_back(Integer(-static_cast<long long>(b)));
+            coeffs.emplace_back(-static_cast<long long>(b));
         }
         return NumberFieldElement(std::move(coeffs));
     }
