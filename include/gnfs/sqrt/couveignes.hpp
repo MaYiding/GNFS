@@ -493,29 +493,19 @@ public:
         uint32_t d = nf.degree();
         const Integer& n = nf.n();
 
-        // v22: 内部 buffer 复用 (mpz_set 而非 mpz_init_set)
+        // mpz_fdiv_ui returns floor-div remainder ∈ [0, p-1] regardless of sign (zero alloc)
         auto get_f_mod_p = [&nf, d](uint64_t p) -> std::vector<uint64_t> {
             std::vector<uint64_t> f(d + 1);
-            Integer coeff;
-            const Integer p_int(p);
             for (uint32_t i = 0; i <= d; ++i) {
-                coeff = nf.coeff(i);
-                coeff %= p_int;
-                if (coeff.is_negative()) coeff += p_int;
-                f[i] = coeff.to_uint64();
+                f[i] = static_cast<uint64_t>(mpz_fdiv_ui(nf.coeff(i).get_mpz(), p));
             }
             return f;
         };
 
         auto elem_to_mod_p = [&elem, d](uint64_t p) -> ModularPoly {
             std::vector<uint64_t> coeffs(d);
-            Integer c;
-            const Integer p_int(p);
             for (uint32_t i = 0; i < d && i <= elem.degree(); ++i) {
-                c = elem.coeff(i);
-                c %= p_int;
-                if (c.is_negative()) c += p_int;
-                coeffs[i] = c.to_uint64();
+                coeffs[i] = static_cast<uint64_t>(mpz_fdiv_ui(elem.coeff(i).get_mpz(), p));
             }
             return ModularPoly(std::move(coeffs));
         };
