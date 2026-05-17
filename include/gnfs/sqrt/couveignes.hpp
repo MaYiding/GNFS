@@ -320,8 +320,8 @@ public:
         for (size_t j = 0; j < primes.size(); ++j) {
             two_weights[j].resize(d);
             for (uint32_t i = 0; i < d; ++i) {
-                two_weights[j][i] = weights[j][i];
-                two_weights[j][i] *= int64_t(2);  // mpz_mul_si direct
+                // mpz_mul_2exp = bit shift, fastest power-of-2 multiply
+                mpz_mul_2exp(two_weights[j][i].get_mpz(), weights[j][i].get_mpz(), 1);
             }
         }
 
@@ -616,8 +616,8 @@ public:
         for (size_t j = 0; j < primes.size(); ++j) {
             two_weights[j].resize(d);
             for (uint32_t i = 0; i < d; ++i) {
-                two_weights[j][i] = weights[j][i];
-                two_weights[j][i] *= int64_t(2);  // mpz_mul_si direct
+                // mpz_mul_2exp = bit shift, fastest power-of-2 multiply
+                mpz_mul_2exp(two_weights[j][i].get_mpz(), weights[j][i].get_mpz(), 1);
             }
         }
 

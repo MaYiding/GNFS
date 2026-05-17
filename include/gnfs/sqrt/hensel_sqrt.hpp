@@ -402,11 +402,10 @@ private:
                 if (S[i].is_negative()) S[i] += new_modulus;
             }
 
-            // Update T
+            // Update T — mpz_mul_2exp = bit shift, fastest power-of-2 multiply
             std::vector<Integer> two_S_prime(d);
             for (uint32_t i = 0; i < d; ++i) {
-                two_S_prime[i] = S[i];
-                two_S_prime[i] *= int64_t(2);
+                mpz_mul_2exp(two_S_prime[i].get_mpz(), S[i].get_mpz(), 1);
                 two_S_prime[i] %= new_modulus;
             }
             auto two_S_T = poly_mul_mod(two_S_prime, T, f_int, d, new_modulus, fli);
