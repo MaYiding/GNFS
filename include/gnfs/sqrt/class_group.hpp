@@ -207,7 +207,7 @@ private:
             const std::vector<Integer>& g, uint32_t deg_g) {
 
         uint32_t n = deg_f + deg_g;
-        if (n == 0) return Integer(int64_t(1));
+        if (n == 0) return Integer(1);
 
         // Build Sylvester matrix (n × n)
         // First deg_g rows: coefficients of x^{deg_g-1}·f, ..., f (shifted copies)
@@ -244,7 +244,7 @@ private:
     [[nodiscard]] static Integer bareiss_determinant(
             std::vector<std::vector<Integer>>& M, uint32_t n) {
         int sign = 1;
-        Integer prev_pivot(int64_t(1));
+        Integer prev_pivot(1);
 
         for (uint32_t k = 0; k < n; ++k) {
             // Find pivot in column k from rows k..n-1
@@ -253,7 +253,7 @@ private:
                 ++pivot_row;
             }
             if (pivot_row == n) {
-                return Integer(int64_t(0)); // singular
+                return Integer{}; // singular
             }
             if (pivot_row != k) {
                 std::swap(M[k], M[pivot_row]);

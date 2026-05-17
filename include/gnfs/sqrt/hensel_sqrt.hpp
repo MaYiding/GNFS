@@ -64,7 +64,7 @@ public:
             const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
             const NumberField& nf) const {
 
-        if (ab_pairs.empty()) return Integer(int64_t(1));
+        if (ab_pairs.empty()) return Integer(1);
         auto t0_compute = std::chrono::steady_clock::now();
 
         const Integer& n = nf.n();
@@ -1358,7 +1358,7 @@ private:
                 // f[d] not invertible mod modulus — can happen in verbose
                 // verification when modulus = p^k and p | f[d].
                 // Return 1 as fallback (caller should check).
-                return Integer(int64_t(1));
+                return Integer(1);
             }
         }
         return f_lead_inv;

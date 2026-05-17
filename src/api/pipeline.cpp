@@ -225,7 +225,7 @@ Integer pollard_rho_brent(const Integer& n, size_t max_iters = 1000000) {
     gmp_randseed_ui(state, 42);
 
     const mpz_t& n_mpz = *reinterpret_cast<const mpz_t*>(&n.get_mpz());
-    Integer result(0);
+    Integer result;
 
     for (int attempt = 0; attempt < 20 && result.is_zero(); ++attempt) {
         mpz_urandomm(y, state, n_mpz);

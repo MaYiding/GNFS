@@ -145,7 +145,7 @@ Integer sqrt(const Integer& n);
 inline Integer mod_inverse(const Integer& a, const Integer& m) {
     Integer result;
     int ok = mpz_invert(result.get_mpz(), a.get_mpz(), m.get_mpz());
-    if (!ok) return Integer(int64_t(0));
+    if (!ok) return Integer{};
     return result;
 }
 
