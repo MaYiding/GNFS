@@ -321,12 +321,12 @@ public:
 
         if (d == 2) {
             // ax^2 + bx + c 的判别式 = b^2 - 4ac
-            Integer b2 = coeffs_[1].clone();
-            b2 *= coeffs_[1];
+            Integer b2;
+            mpz_mul(b2.get_mpz(), coeffs_[1].get_mpz(), coeffs_[1].get_mpz());  // b² (skip clone)
 
-            Integer ac = coeffs_[0].clone();
-            ac *= coeffs_[2];
-            ac *= 4;
+            Integer ac;
+            mpz_mul(ac.get_mpz(), coeffs_[0].get_mpz(), coeffs_[2].get_mpz());   // ac (skip clone)
+            mpz_mul_2exp(ac.get_mpz(), ac.get_mpz(), 2);  // 4*ac (bit shift)
 
             b2 -= ac;
             return b2;
