@@ -176,13 +176,11 @@ public:
         __uint128_t norm_u128 = 0;
         if (!use_u64 && norm.bit_length() <= 127) {
             use_u128 = true;
-            mpz_t tmp;
-            mpz_init(tmp);
-            mpz_tdiv_r_2exp(tmp, norm.get_mpz(), 64);
-            uint64_t lo = mpz_get_ui(tmp);
-            mpz_tdiv_q_2exp(tmp, norm.get_mpz(), 64);
-            uint64_t hi = mpz_get_ui(tmp);
-            mpz_clear(tmp);
+            // mpz_getlimbn(_, 0/1) reads limbs directly (zero alloc on LP64
+            // where mp_limb_t == uint64_t). Non-negative norm guaranteed by
+            // compute_algebraic_norm.
+            uint64_t lo = mpz_getlimbn(norm.get_mpz(), 0);
+            uint64_t hi = mpz_getlimbn(norm.get_mpz(), 1);
             norm_u128 = (static_cast<__uint128_t>(hi) << 64) | lo;
         }
 
