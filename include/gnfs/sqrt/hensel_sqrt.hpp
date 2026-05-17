@@ -194,13 +194,12 @@ private:
             const NumberField& nf) {
         const Integer& n = nf.n();
         Integer product(1);
-        // v22: bm + factor buffers 复用, 节省 2× ab_pairs.size() allocs/call
-        Integer bm, factor;
+        // factor = a - m*b via mpz_submul_ui (fused FMS, drops bm temp)
+        Integer factor;
         for (const auto& [a, b] : ab_pairs) {
             factor = a;
-            bm = nf.m();
-            bm *= static_cast<long long>(b);  // mpz_mul_si direct
-            factor -= bm;
+            mpz_submul_ui(factor.get_mpz(), nf.m().get_mpz(),
+                          static_cast<unsigned long>(b));
             factor %= n;
             if (factor.is_negative()) factor += n;
             product *= factor;
@@ -212,11 +211,9 @@ private:
     /// Verify Y and return it or -Y if verification passes
     [[nodiscard]] static std::optional<Integer> verify_and_return(
             const Integer& Y, const Integer& product_at_m, const Integer& n) {
-        // v22: Y2/pm_pos 直接 assign
+        // Y² mod n via mpz_powm_ui (combines mul + mod in one op)
         Integer Y2;
-        Y2 = Y;
-        Y2 *= Y;
-        Y2 %= n;
+        mpz_powm_ui(Y2.get_mpz(), Y.get_mpz(), 2, n.get_mpz());
         if (Y2.is_negative()) Y2 += n;
 
         Integer pm_pos;
