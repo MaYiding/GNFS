@@ -54,9 +54,9 @@ public:
         std::vector<Integer> coeffs_copy;
         coeffs_copy.reserve(f_coeffs_.size());
         for (const auto& c : f_coeffs_) {
-            coeffs_copy.push_back(c.clone());
+            coeffs_copy.emplace_back(c);  // Integer copy ctor
         }
-        return PolynomialContext(n_.clone(), std::move(coeffs_copy), m_.clone(), skewness_);
+        return PolynomialContext(n_, std::move(coeffs_copy), m_, skewness_);
     }
 
     // ==================== 访问器 ====================

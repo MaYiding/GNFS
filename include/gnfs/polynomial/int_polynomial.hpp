@@ -51,7 +51,7 @@ public:
         std::vector<Integer> coeffs_copy;
         coeffs_copy.reserve(coeffs_.size());
         for (const auto& c : coeffs_) {
-            coeffs_copy.push_back(c.clone());
+            coeffs_copy.emplace_back(c);  // Integer copy ctor
         }
         return IntPolynomial(std::move(coeffs_copy));
     }
