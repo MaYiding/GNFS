@@ -99,7 +99,7 @@ public:
     [[nodiscard]] Integer evaluate(const Integer& x) const {
         if (coeffs_.empty()) return Integer{};
 
-        Integer result = coeffs_.back().clone();
+        Integer result = coeffs_.back();  // copy ctor (Integer)
         for (int i = static_cast<int>(coeffs_.size()) - 2; i >= 0; --i) {
             result *= x;
             result += coeffs_[i];
@@ -240,8 +240,8 @@ public:
         new_coeffs.reserve(d);
 
         for (uint32_t i = 1; i <= d; ++i) {
-            Integer c = coeffs_[i].clone();
-            c *= static_cast<int64_t>(i);
+            Integer c;
+            mpz_mul_ui(c.get_mpz(), coeffs_[i].get_mpz(), i);  // c = coeffs[i] * i
             new_coeffs.push_back(std::move(c));
         }
 
