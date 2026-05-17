@@ -1335,13 +1335,15 @@ inline std::optional<std::pair<Integer, Integer>> try_extract(
     Integer diff;
     mpz_sub(diff.get_mpz(), X.get_mpz(), Y.get_mpz());
     Integer g = core::gcd(diff, gcd_N);
-    if (g > Integer(1) && g < gcd_N) {
-        return std::make_pair(g.clone(), gcd_N / g);
+    if (mpz_cmp_si(g.get_mpz(), 1) > 0 && g < gcd_N) {
+        Integer other = gcd_N / g;
+        return std::make_pair(std::move(g), std::move(other));
     }
     mpz_add(diff.get_mpz(), X.get_mpz(), Y.get_mpz());
     g = core::gcd(diff, gcd_N);
-    if (g > Integer(1) && g < gcd_N) {
-        return std::make_pair(g.clone(), gcd_N / g);
+    if (mpz_cmp_si(g.get_mpz(), 1) > 0 && g < gcd_N) {
+        Integer other = gcd_N / g;
+        return std::make_pair(std::move(g), std::move(other));
     }
     return std::nullopt;
 }
