@@ -209,9 +209,11 @@ public:
         std::vector<Integer> result_coeffs(d1 + d2 + 1);
 
         // 卷积
+        // v22: term buffer 复用 (mpz_set 替代 mpz_init_set), 节省 d² - 1 allocs/multiply
+        Integer term;
         for (uint32_t i = 0; i <= d1; ++i) {
             for (uint32_t j = 0; j <= d2; ++j) {
-                Integer term = coeffs_[i].clone();
+                term = coeffs_[i];
                 term *= other.coeffs_[j];
                 result_coeffs[i + j] += term;
             }
