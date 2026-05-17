@@ -635,6 +635,7 @@ private:
 [[nodiscard]] inline PolynomialContext create_context_from_kleinjung(
         const Integer& n, const KleinjungResult& result) {
     std::vector<Integer> coeffs;
+    coeffs.reserve(result.f.degree() + 1);
     for (uint32_t i = 0; i <= result.f.degree(); ++i) {
         coeffs.push_back(result.f[i].clone());
     }
