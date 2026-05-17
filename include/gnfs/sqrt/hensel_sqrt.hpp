@@ -579,9 +579,11 @@ private:
 
         // Initial CRT with all-positive signs (crt_val[j] already 0 from default ctor)
         std::vector<Integer> crt_val(d);
+        // v22: term buffer 复用
+        Integer term;
         for (uint32_t j = 0; j < d; ++j) {
             for (size_t i = 0; i < K; ++i) {
-                Integer term = lifted[i].coeffs[j].clone();
+                term = lifted[i].coeffs[j];
                 term *= basis[i];
                 crt_val[j] += term;
             }
