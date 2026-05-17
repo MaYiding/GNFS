@@ -199,10 +199,10 @@ PolynomialSelectionResult BaseMSelector::select(const Integer& n, uint32_t degre
     for (size_t i = 0; i < candidates.size(); ++i) {
         // g(x) = x - m
         IntPolynomial g(0);
-        Integer neg_m = candidates[i].m.clone();
+        Integer neg_m = candidates[i].m;  // copy ctor (mpz_init_set)
         neg_m.negate();
         g[0] = std::move(neg_m);
-        g[1] = Integer(1);
+        g[1] = int64_t(1);  // mpz_set_si into existing slot (skip Integer tmp)
 
         double skewness = PolynomialOptimizer::estimate_skewness(candidates[i].f);
         auto score = evaluator.compute(candidates[i].f, g, n, skewness);
