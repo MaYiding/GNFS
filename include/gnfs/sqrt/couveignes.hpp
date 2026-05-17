@@ -69,11 +69,12 @@ public:
         // Get polynomial coefficients mod p
         auto get_f_mod_p = [&nf, d](uint64_t p) -> std::vector<uint64_t> {
             std::vector<uint64_t> f(d + 1);
+            const Integer p_int(p);  // hoist out of loop
             for (uint32_t i = 0; i <= d; ++i) {
                 Integer coeff = nf.coeff(i).clone();
-                coeff %= Integer(p);
+                coeff %= p_int;
                 if (coeff.is_negative()) {
-                    coeff += Integer(p);
+                    coeff += p_int;
                 }
                 f[i] = coeff.to_uint64();
             }
