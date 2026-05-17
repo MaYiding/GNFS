@@ -408,9 +408,11 @@ public:
             b_powers[i] *= static_cast<long long>(b);
         }
 
+        // v22: 复用 term buffer (mpz_set 而非 mpz_init_set)
+        Integer term;
         for (uint32_t i = 0; i <= degree_; ++i) {
             // term = f_i * a^i * b^{d-i}
-            Integer term = f_coeffs_[i].clone();
+            term = f_coeffs_[i];
             term *= a_power;
             term *= b_powers[degree_ - i];
 
