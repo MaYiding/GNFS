@@ -476,13 +476,13 @@ private:
         Point km2 = Q0;                                // (k-2)*Q, starts as 1*Q
         Point km1 = mont_double(Q0, a24, n);          // (k-1)*Q, starts as 2*Q
 
-        // d=1: gcd(1, 2310) = 1
-        baby.push_back({Q0.x.clone(), Q0.z.clone()});
+        // d=1: gcd(1, 2310) = 1 — BabyStep{Integer copy ctor}
+        baby.push_back({Q0.x, Q0.z});
 
         for (uint64_t k = 3; k <= D; ++k) {
             Point curr = mont_add(km1, Q_one, km2, n);
             if (gcd_u64(k, D) == 1) {
-                baby.push_back({curr.x.clone(), curr.z.clone()});
+                baby.push_back({curr.x, curr.z});
             }
             km2 = std::move(km1);
             km1 = std::move(curr);
@@ -646,7 +646,7 @@ private:
         Integer g = core::gcd(accum, n);
         if (!g.is_one() && g.compare(n) != 0) return g;
         if (g.compare(n) == 0 && !batch_primes.empty()) {
-            Point Q_retry(checkpoint.x.clone(), checkpoint.z.clone());
+            Point Q_retry = checkpoint;  // Point copy ctor (Integer x/z have copy ctor)
             for (uint64_t bp : batch_primes) {
                 Q_retry = mont_mul(Q_retry, bp, a24, n);
                 Integer gi = core::gcd(Q_retry.z, n);  // v22
