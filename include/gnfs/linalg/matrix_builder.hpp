@@ -874,16 +874,17 @@ private:
 
     /// 计算 Legendre 符号 (a / p) - optimized for small primes
     [[nodiscard]] static int legendre_symbol(const Integer& a, uint32_t p) {
-        // Get a mod p as uint64_t
+        // Get a mod p as uint64_t — hoist p_int, reused for %= and +=
         Integer a_mod = a.clone();
-        a_mod %= Integer(static_cast<uint64_t>(p));
+        Integer p_int(static_cast<uint64_t>(p));
+        a_mod %= p_int;
 
         if (a_mod.is_zero()) {
             return 0;
         }
 
         if (a_mod.is_negative()) {
-            a_mod += Integer(static_cast<uint64_t>(p));
+            a_mod += p_int;
         }
 
         uint64_t a_val = a_mod.to_uint64();
