@@ -347,8 +347,7 @@ public:
         Integer term_buf, bm;
         for (const auto& [a, b] : ab_pairs) {
             term_buf = a;  // mpz_set_si direct
-            bm = nf.m();
-            bm *= static_cast<int64_t>(b);  // mpz_mul_si direct (b ≤ sieve bound, fits)
+            mpz_mul_ui(bm.get_mpz(), nf.m().get_mpz(), b);  // bm = m * b (skip source copy)
             term_buf -= bm;
             term_buf %= n;
             if (term_buf.is_negative()) term_buf += n;
@@ -364,26 +363,25 @@ public:
             Integer term_h;
             for (int i = static_cast<int>(d); i >= 1; --i) {
                 f_prime_m *= m_val;
-                term_h = nf.coeff(static_cast<uint32_t>(i));
-                term_h *= static_cast<int64_t>(i);  // mpz_mul_si direct
+                // mpz_mul_si writes nf.coeff(i) * i directly into term_h
+                mpz_mul_si(term_h.get_mpz(), nf.coeff(static_cast<uint32_t>(i)).get_mpz(), i);
                 f_prime_m += term_h;
                 f_prime_m %= n;
             }
             if (f_prime_m.is_negative()) f_prime_m += n;
+            // f_prime_m_sq = f_prime_m^2 mod n via mpz_powm_ui
             Integer f_prime_m_sq;
-            f_prime_m_sq = f_prime_m;
-            f_prime_m_sq *= f_prime_m;
-            f_prime_m_sq %= n;
+            mpz_powm_ui(f_prime_m_sq.get_mpz(), f_prime_m.get_mpz(), 2, n.get_mpz());
             expected_X2 *= f_prime_m_sq;
             expected_X2 %= n;
         }
 
-        // m^j mod N 缓存,Gray code 内每次 verify 不再重算 (v22: mpz_set)
+        // m^j mod N 缓存,Gray code 内每次 verify 不再重算
+        // mpz_mul writes mpow[j-1]*m directly into mpow[j] (skip set)
         std::vector<Integer> mpow(d);
         mpow[0] = int64_t(1);  // mpz_set_si direct
         for (uint32_t j = 1; j < d; ++j) {
-            mpow[j] = mpow[j-1];
-            mpow[j] *= nf.m();
+            mpz_mul(mpow[j].get_mpz(), mpow[j-1].get_mpz(), nf.m().get_mpz());
             mpow[j] %= n;
         }
 
