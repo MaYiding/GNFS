@@ -595,13 +595,12 @@ private:
         }
 
         // Initial CRT with all-positive signs (crt_val[j] already 0 from default ctor)
+        // mpz_addmul: crt_val[j] += lifted[i].coeffs[j] * basis[i] (fused FMA)
         std::vector<Integer> crt_val(d);
-        // mpz_mul writes lifted[i].coeffs[j]*basis[i] directly into term (skip set step)
-        Integer term;
         for (uint32_t j = 0; j < d; ++j) {
             for (size_t i = 0; i < K; ++i) {
-                mpz_mul(term.get_mpz(), lifted[i].coeffs[j].get_mpz(), basis[i].get_mpz());
-                crt_val[j] += term;
+                mpz_addmul(crt_val[j].get_mpz(),
+                           lifted[i].coeffs[j].get_mpz(), basis[i].get_mpz());
             }
             crt_val[j] %= M;
         }
@@ -1374,14 +1373,12 @@ private:
         // 单系数 ≤ d·modulus²,GMP 自动扩存),最后对 2d-1 个系数一次性 mod。
         // 原代码每 inner iter 双 mod (term%=mod + result%=mod) = d²·2 = 50 次 mod
         // (d=5),新代码仅 2d-1 = 9 次 mod。Hensel lift 大循环 hot path。
-        // mpz_mul writes a[i]*b[j] directly into term (skip set step)
-        Integer term;
+        // mpz_addmul: result[i+j] += a[i] * b[j] (fused FMA, skip term temp)
         for (uint32_t i = 0; i < d; ++i) {
             if (a[i].is_zero()) continue;
             for (uint32_t j = 0; j < d; ++j) {
                 if (b[j].is_zero()) continue;
-                mpz_mul(term.get_mpz(), a[i].get_mpz(), b[j].get_mpz());
-                result[i + j] += term;
+                mpz_addmul(result[i + j].get_mpz(), a[i].get_mpz(), b[j].get_mpz());
             }
         }
         for (size_t i = 0; i < result.size(); ++i) {

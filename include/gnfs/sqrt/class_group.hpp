@@ -262,19 +262,15 @@ private:
             Integer cur_pivot = M[k][k].clone();
 
             // Eliminate below pivot
-            // v22: term1/term2 复用 buffer (n² 节省 2×(n-k-1)² allocs)
-            Integer term1;
-            Integer term2;
+            // M[i][j] = (cur_pivot * M[i][j] - M[i][k] * M[k][j]) / prev_pivot
+            // mpz_mul + mpz_submul fused: drops term2 entirely (1 fewer Integer)
+            Integer term;
             for (uint32_t i = k + 1; i < n; ++i) {
                 for (uint32_t j = k + 1; j < n; ++j) {
-                    // M[i][j] = (cur_pivot * M[i][j] - M[i][k] * M[k][j]) / prev_pivot
-                    term1 = cur_pivot;
-                    term1 *= M[i][j];
-                    term2 = M[i][k];
-                    term2 *= M[k][j];
-                    term1 -= term2;
-                    term1 /= prev_pivot; // exact division guaranteed by Bareiss
-                    M[i][j] = std::move(term1);
+                    mpz_mul(term.get_mpz(), cur_pivot.get_mpz(), M[i][j].get_mpz());
+                    mpz_submul(term.get_mpz(), M[i][k].get_mpz(), M[k][j].get_mpz());
+                    mpz_divexact(term.get_mpz(), term.get_mpz(), prev_pivot.get_mpz());
+                    M[i][j] = std::move(term);
                 }
                 M[i][k] = int64_t(0);  // mpz_set_si direct
             }
@@ -368,11 +364,10 @@ public:
                 for (size_t i = 0; i < R.c.size(); ++i) {
                     R.c[i] *= lc_b;
                 }
-                // mpz_mul writes lc_r * B.c[i] directly into term (skip set step)
-                Integer term;
+                // mpz_submul: R[i+shift] -= lc_r * B[i] (fused FMS, skip term temp)
                 for (int i = 0; i <= db; ++i) {
-                    mpz_mul(term.get_mpz(), lc_r.get_mpz(), B.c[static_cast<size_t>(i)].get_mpz());
-                    R.c[static_cast<size_t>(i + shift)] -= term;
+                    mpz_submul(R.c[static_cast<size_t>(i + shift)].get_mpz(),
+                               lc_r.get_mpz(), B.c[static_cast<size_t>(i)].get_mpz());
                 }
                 ++iters;
             }
