@@ -264,7 +264,8 @@ inline uint32_t select_multiplier(const Integer& N) {
     uint32_t best_k = 1;
 
     for (uint32_t k : candidates) {
-        Integer kN = N * Integer(static_cast<uint64_t>(k));
+        Integer kN = N.clone();
+        kN *= int64_t(k);
         double log_kN = mpz_sizeinbase(kN.get_mpz(), 2) * 0.6931; // log(2) * bits
         double score = -0.5 * log_kN;
 
@@ -433,7 +434,7 @@ inline void choose_A(const Integer& N, uint32_t M,
     // Compute A = product of chosen primes
     A = int64_t(1);
     for (uint32_t idx : a_indices) {
-        A = A * Integer(static_cast<uint64_t>(fb[idx].p));
+        A *= int64_t(fb[idx].p);
     }
 }
 
