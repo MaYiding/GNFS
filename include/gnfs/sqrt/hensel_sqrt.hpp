@@ -661,8 +661,8 @@ private:
                 if (crt_val[j].compare(Mhalf) > 0) c_buf -= M_mod_N;
                 c_buf %= n;
                 if (c_buf.is_negative()) c_buf += n;
-                c_buf *= mpow[j];
-                val_buf += c_buf;
+                // val_buf += c_buf * mpow[j] via fused FMA
+                mpz_addmul(val_buf.get_mpz(), c_buf.get_mpz(), mpow[j].get_mpz());
                 val_buf %= n;  // intermediate reduction — avoid d·N² growth
             }
             if (val_buf.is_negative()) val_buf += n;
