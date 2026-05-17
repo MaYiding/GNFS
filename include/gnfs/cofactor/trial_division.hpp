@@ -433,21 +433,19 @@ private:
     Integer result;  // default ctor = 0
     Integer a_power(static_cast<int64_t>(1));  // a^i
 
-    // 计算 b^d, b^{d-1}, ..., b^0
+    // 计算 b^d, b^{d-1}, ..., b^0 — mpz_mul_ui writes b * prev into default-init slot
     std::vector<Integer> b_powers(degree + 1);
     b_powers[0] = int64_t(1);  // mpz_set_si direct
     for (uint32_t i = 1; i <= degree; ++i) {
-        b_powers[i] = b_powers[i - 1];  // mpz_set into default-init slot
-        b_powers[i] *= static_cast<long long>(b);
+        mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i - 1].get_mpz(), b);
     }
 
-    // hoist term out of loop, mpz_set into reused buffer
+    // hoist term out of loop — mpz_mul writes directly into term (no init+set first)
     Integer term;
     for (uint32_t i = 0; i <= degree; ++i) {
         // term = f_i * a^i * b^{d-i}
         // Note: No sign alternation for N(a - bα) = b^d * f(a/b)
-        term = coeffs[i];
-        term *= a_power;
+        mpz_mul(term.get_mpz(), coeffs[i].get_mpz(), a_power.get_mpz());
         term *= b_powers[degree - i];
 
         result += term;
