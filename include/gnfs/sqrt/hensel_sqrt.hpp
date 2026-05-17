@@ -193,7 +193,7 @@ private:
             const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
             const NumberField& nf) {
         const Integer& n = nf.n();
-        Integer product(int64_t(1));
+        Integer product(1);
         // v22: bm + factor buffers 复用, 节省 2× ab_pairs.size() allocs/call
         Integer bm, factor;
         for (const auto& [a, b] : ab_pairs) {
@@ -580,7 +580,7 @@ private:
 
         // ---- Step 2: CRT combine + sign search ----
         // M = product of all per-prime moduli
-        Integer M(int64_t(1));
+        Integer M(1);
         for (size_t i = 0; i < K; ++i) M *= lifted[i].modulus;
 
         // CRT basis: e_i = (M/m_i) * (M/m_i)^{-1} mod m_i
@@ -612,7 +612,7 @@ private:
         // v22: ts 复用 (K×d 次循环, mpz_set 不 init); v 仍 clone+move 因为最终
         // 移入 vector — 若用复用 buffer 然后 clone push_back, 反而多一次 alloc.
         std::vector<std::vector<Integer>> delta(K);
-        const Integer two(int64_t(2));
+        const Integer two(2);
         Integer ts;
         for (size_t i = 0; i < K; ++i) {
             delta[i].reserve(d);
@@ -954,7 +954,7 @@ private:
 
         // Hensel lifting: maintain S and T = (2S)^{-1} in parallel
         // v22: 复用 new_modulus / P / two_S_prime / factor / p_i_buf 跨 lift 迭代
-        const Integer two_const(int64_t(2));
+        const Integer two_const(2);
         Integer new_modulus;
         std::vector<Integer> P(d);
         std::vector<Integer> two_S_prime(d);
@@ -1088,7 +1088,7 @@ private:
             // Evaluate S(m) mod N using Hensel coefficients (before centering)
             const Integer& nn = nf.n();
             const Integer& mm = nf.m();
-            Integer s_at_m(int64_t(0));
+            Integer s_at_m;  // default ctor = 0
             for (int i = static_cast<int>(d) - 1; i >= 0; --i) {
                 s_at_m *= mm;
                 s_at_m += S[i];
@@ -1101,7 +1101,7 @@ private:
             if (s2_at_m.is_negative()) s2_at_m += nn;
 
             // Evaluate P_final(m) mod N
-            Integer p_at_m(int64_t(0));
+            Integer p_at_m;  // default ctor = 0
             for (int i = static_cast<int>(d) - 1; i >= 0; --i) {
                 p_at_m *= mm;
                 p_at_m += P_final[i];
