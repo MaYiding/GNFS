@@ -521,11 +521,8 @@ public:
             p = next_prime(p);
             primes_checked++;
 
-            // v22: n_mod_p 直接 assign (mpz_set)
-            Integer n_mod_p;
-            n_mod_p = n;
-            n_mod_p %= Integer(p);
-            if (n_mod_p.is_zero()) continue;
+            // Skip primes that divide N — direct GMP divisibility (zero alloc)
+            if (mpz_divisible_ui_p(n.get_mpz(), p)) continue;
 
             auto f_mod_p = get_f_mod_p(p);
             if (f_mod_p.back() == 0) continue;
