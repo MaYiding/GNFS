@@ -558,8 +558,8 @@ private:
             remainder = std::move(quotient);
         }
 
-        // 最高次系数
-        coeffs[d] = ad.clone();
+        // 最高次系数 — Integer op= (mpz_set into existing slot)
+        coeffs[d] = ad;
 
         // Reject the (a_d, m) pair if expansion didn't terminate cleanly.
         // The historical fix silently merged remainder into coeffs[d-1] which
@@ -640,9 +640,9 @@ private:
         coeffs.emplace_back(result.f[i]);  // Integer copy ctor
     }
     return PolynomialContext(
-        n,  // copy ctor via op=
+        n,                  // Integer copy ctor
         std::move(coeffs),
-        result.m.clone(),
+        result.m,           // Integer copy ctor
         result.skewness
     );
 }
