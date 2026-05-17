@@ -1314,7 +1314,7 @@ private:
 
                     if (d > 1) {
                         // -b mod modulus (复用 factor[1] buffer)
-                        factor[1] = Integer(static_cast<int64_t>(b));
+                        factor[1] = static_cast<int64_t>(b);  // mpz_set_si direct
                         factor[1].negate();
                         factor[1] %= modulus;
                         if (factor[1].is_negative()) factor[1] += modulus;
