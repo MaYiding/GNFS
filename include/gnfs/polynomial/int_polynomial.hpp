@@ -21,21 +21,21 @@ class IntPolynomial {
 public:
     /// 默认构造（零多项式）
     IntPolynomial() {
-        coeffs_.push_back(Integer(static_cast<int64_t>(0)));
+        coeffs_.emplace_back(static_cast<int64_t>(0));
     }
 
     /// 从系数列表构造
     explicit IntPolynomial(std::vector<Integer> coeffs)
         : coeffs_(std::move(coeffs)) {
         if (coeffs_.empty()) {
-            coeffs_.push_back(Integer(static_cast<int64_t>(0)));
+            coeffs_.emplace_back(static_cast<int64_t>(0));
         }
         normalize();
     }
 
     /// 从单个常数构造
     explicit IntPolynomial(int c) {
-        coeffs_.push_back(Integer(c));
+        coeffs_.emplace_back(c);
     }
 
     /// 移动构造
