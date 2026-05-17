@@ -513,16 +513,17 @@ private:
         uint64_t steps_in_batch = 0;
         constexpr uint64_t BATCH_SIZE = 16;
 
-        // c buffer hoist out of baby loop — 480 babies × ~B2/D giants
-        // 50d ≈ 23M iter/curve; fused mul+submul saves t Integer + intermediate mod
-        Integer c;
+        // v22: c, t buffer hoist 出 baby loop — 480 babies × ~B2/D giants
+        // 在 50d 是 ~23M iterations/curve, 节省巨量 mpz_init/free
+        Integer c, t;
         auto accumulate_step = [&](const Point& G) -> std::optional<Integer> {
             for (const auto& b : baby) {
-                // cross = G.x * b.z - b.x * G.z (mod n) via mul + submul (fused FMS)
-                // Intermediate c can hit n² limbs but mpz_mod handles efficiently
-                mpz_mul(c.get_mpz(), G.x.get_mpz(), b.z.get_mpz());
-                mpz_submul(c.get_mpz(), b.x.get_mpz(), G.z.get_mpz());
-                c %= n;
+                // cross = G.x * b.z - b.x * G.z (mod n)
+                // c, t ∈ [0, n-1] 后 c -= t ∈ [-(n-1), n-1], 单次 if c<0: c+=n
+                // 即拉回 [0, n-1] — 后续 c %= n 是 no-op, 省 mpz_mod call.
+                c = G.x; c *= b.z; c %= n;
+                t = b.x; t *= G.z; t %= n;
+                c -= t;
                 if (c.is_negative()) c += n;
                 if (c.is_zero()) {
                     // c=0 means G and baby represent same point — factor may be in Z coordinate
