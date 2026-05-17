@@ -227,6 +227,32 @@ GNFS_OVERRIDE_LP_BITS=27 ./gnfs <N>          # any size with lp_bits=27
 - LP space 影响 sieve duration: smaller lp_bits = smaller LP space = fewer LP cols = less raw needed for PASS (但 fewer LP cofactor candidates)
 - 实验前后必须 reg-test 25d / 50d (lp_bits 不该影响 < 50d behavior, 默认 path unchanged)
 
+### Drop-residual + weight-cutoff (BACKLOG #80 algorithmic breakthrough)
+
+**ENV `GNFS_DROP_RESIDUAL=1`** (commits `da51e0b` + `b001606`, 2026-05-17):
+V0 + V3 cascade 都 drop "merged-with-residual" partials (含残留 LP 的合并关系).
+对 50d β plateau ~121% 的根因假设: residual partials 贡献 ~70% lp_cols.
+
+```bash
+GNFS_DROP_RESIDUAL=1 ./test_stress 1 1   # 50d 用 drop=1
+GNFS_DROP_RESIDUAL=1 ./gnfs <N>          # any GNFS run
+```
+
+**ENV `GNFS_WEIGHT_CUTOFF=N`** (commit `0c8b745`, 2026-05-17):
+Phase 2 dead 集合扩展, drop 任何 LP key weight > N 的关系. CADO-NFS purge.c 思路.
+N=2 时 = "weight≤2 keys 才保留" (V0 mergeable subset).
+
+```bash
+GNFS_WEIGHT_CUTOFF=2 ./test_stress 1 1   # weight-3+ key 的关系全 drop
+```
+
+**用途与实测**:
+- 单独 drop=1: gate (81-bit) 4/4 PASS 42s
+- 单独 cutoff=2: gate 4/4 PASS 60s (adaptive loop 多 round 补偿删除)
+- 50d 实测 background (PID 67047, log `/tmp/p10_drop_residual_50d.log`)
+- 二者组合预期: β < 100% 必要条件 (待实测).
+- 注意: drop 模式 V3 cascade 的 v3_added 可能 = 0 (V0 已覆盖 full, V3 残留全 drop), test_clique_merger_50d_synthetic 已 conditional skip assertion (line 253).
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
