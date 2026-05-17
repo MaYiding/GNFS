@@ -194,7 +194,7 @@ public:
             if (has_negative) {
                 product = n - product;
                 if (product.compare(n) == 0) {
-                    product = Integer(0);
+                    product = int64_t(0);
                 }
             }
 

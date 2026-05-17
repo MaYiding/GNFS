@@ -577,7 +577,8 @@ inline void next_poly_B(const std::vector<FBPrime>& fb,
                         SIQSPoly& poly,
                         size_t gray_bit, bool add) {
     // Update B: B_new = B_old ± 2 * B_parts[gray_bit]
-    Integer two_B = poly.B_parts[gray_bit] * Integer(2);
+    Integer two_B = poly.B_parts[gray_bit].clone();
+    two_B *= int64_t(2);
     if (add) {
         poly.B = poly.B + two_B;
     } else {
