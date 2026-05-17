@@ -71,13 +71,12 @@ public:
 
             // 检查符号：(a - b*m) 是否为负 (GNFS convention)
             // For merged relations, check all constituent (a,b) pairs
-            // v22: check_sign hot lambda - hoist a_minus_bm/bm buffers (mpz_set)
-            Integer a_minus_bm, bm;
+            // a_minus_bm = a - m*b via mpz_submul_ui (fused FMS, drops bm)
+            Integer a_minus_bm;
             auto check_sign = [&](int64_t a_val, uint64_t b_val) {
                 a_minus_bm = a_val;  // mpz_set_si direct
-                bm = m;
-                bm *= static_cast<int64_t>(b_val);  // mpz_mul_si direct (b ≤ sieve bound)
-                a_minus_bm -= bm;
+                mpz_submul_ui(a_minus_bm.get_mpz(), m.get_mpz(),
+                              static_cast<unsigned long>(b_val));
                 if (a_minus_bm.is_negative()) {
                     has_negative = !has_negative;
                 }
