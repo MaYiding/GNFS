@@ -85,14 +85,17 @@ public:
         // 用于 f'(α)² · S(α) 修正(见 compute_product_mod_p 注释)
         auto get_f_prime_mod_p = [&nf, d](uint64_t p) -> std::vector<uint64_t> {
             std::vector<uint64_t> fp(d > 0 ? d : 1, 0);
+            // hoist p_int + coeff_buf out of d iter loop
+            const Integer p_int(p);
+            Integer coeff_buf;
             for (uint32_t i = 1; i <= d; ++i) {
-                Integer coeff = nf.coeff(i).clone();
-                coeff *= Integer(static_cast<int64_t>(i));
-                coeff %= Integer(p);
-                if (coeff.is_negative()) {
-                    coeff += Integer(p);
+                coeff_buf = nf.coeff(i);  // mpz_set into reused buffer
+                coeff_buf *= static_cast<int64_t>(i);  // mpz_mul_si direct
+                coeff_buf %= p_int;
+                if (coeff_buf.is_negative()) {
+                    coeff_buf += p_int;
                 }
-                fp[i - 1] = coeff.to_uint64();
+                fp[i - 1] = coeff_buf.to_uint64();
             }
             // 去除前导 0
             while (fp.size() > 1 && fp.back() == 0) fp.pop_back();
