@@ -353,7 +353,7 @@ private:
             for (uint32_t i = 0; i < d; ++i) {
                 uint64_t cv = (i <= static_cast<uint32_t>(inv_mp.degree()))
                               ? inv_mp.coeff(i) : 0;
-                T[i] = Integer(cv);
+                T[i] = uint64_t(cv);  // operator=(uint64_t) direct
             }
         }
 
@@ -892,7 +892,7 @@ private:
             auto inv_mp = ModularPoly::power(ModularPoly(two_s_mod), q_minus_2, f_mod_p_vec, p);
             for (uint32_t i = 0; i < d; ++i) {
                 uint64_t coeff_val = (i <= static_cast<uint32_t>(inv_mp.degree())) ? inv_mp.coeff(i) : 0;
-                T[i] = Integer(coeff_val);
+                T[i] = uint64_t(coeff_val);  // operator=(uint64_t) direct
             }
         }
 
@@ -930,9 +930,9 @@ private:
                 ModularPoly S_check = sqrt_mod_p;
                 auto S2_check_mp = ModularPoly::mul(S_check, S_check, f_mod_p_check, p);
                 bool product_consistent = true;
+                const Integer pp{int64_t(p)};  // hoist out of d-loop (brace init avoids vexing parse)
                 for (uint32_t i = 0; i < d; ++i) {
                     Integer pfi = P_final[i].clone();
-                    Integer pp(static_cast<int64_t>(p));
                     Integer::mod(pfi, pfi, pp);
                     if (pfi.is_negative()) pfi += pp;
                     uint64_t pfi_u64 = pfi.to_uint64();
