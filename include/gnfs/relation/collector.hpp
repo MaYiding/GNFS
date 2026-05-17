@@ -330,12 +330,13 @@ private:
 
         // CLAUDE.md: gcd(a - bm, N) 必须 = 1。
         // 否则关系是退化的 (∏(a-bm) ≡ 0 mod N → X=0 → trivial gcd)。
+        // thread_local: 每秒 100K+ relations 走此 path; 复用 buffer 省 2 alloc/relation
         if (n_for_validation_ && m_for_validation_) {
-            // val = a - m*b via mpz_submul_ui (fused FMS, drops bm temp)
-            Integer val(rel.a);
+            thread_local Integer val, g;
+            val = rel.a;  // mpz_set_si direct
             mpz_submul_ui(val.get_mpz(), m_for_validation_->get_mpz(), rel.b);
-            Integer g = core::gcd(val, *n_for_validation_);
-            if (!g.is_one()) return -2;
+            mpz_gcd(g.get_mpz(), val.get_mpz(), n_for_validation_->get_mpz());
+            if (mpz_cmp_ui(g.get_mpz(), 1) > 0) return -2;
         }
 
         return 0;
