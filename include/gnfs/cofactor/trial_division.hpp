@@ -410,10 +410,9 @@ private:
 [[nodiscard]] inline Integer compute_rational_value(
         int64_t a, uint64_t b, const Integer& m) {
 
+    // result = a - m*b via mpz_submul_ui (fused FMS, drops bm temp)
     Integer result(a);
-    Integer bm;
-    mpz_mul_ui(bm.get_mpz(), m.get_mpz(), b);  // bm = m * b (no source copy)
-    result -= bm;
+    mpz_submul_ui(result.get_mpz(), m.get_mpz(), b);
 
     if (result.is_negative()) {
         result.negate();
