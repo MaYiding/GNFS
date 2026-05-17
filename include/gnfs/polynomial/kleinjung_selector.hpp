@@ -558,7 +558,7 @@ private:
             // Center: if coeff > m/2, subtract m and carry +1
             if (coeffs[i] > half_m) {
                 coeffs[i] -= m;
-                quotient += Integer(static_cast<int64_t>(1));
+                quotient += int64_t(1);  // mpz_add_ui direct
             }
 
             remainder = std::move(quotient);
