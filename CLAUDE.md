@@ -227,6 +227,24 @@ GNFS_OVERRIDE_LP_BITS=27 ./gnfs <N>          # any size with lp_bits=27
 - LP space 影响 sieve duration: smaller lp_bits = smaller LP space = fewer LP cols = less raw needed for PASS (但 fewer LP cofactor candidates)
 - 实验前后必须 reg-test 25d / 50d (lp_bits 不该影响 < 50d behavior, 默认 path unchanged)
 
+### Thin matrix BW solve (GNFS_THIN_MATRIX_TRY)
+
+**ENV `GNFS_THIN_MATRIX_TRY=1`** (BACKLOG #80 step 7, 2026-05-17):
+当 matrix rows ≤ cols (NO_EXCESS), 跳过 pipeline 默认放弃, 让 Block Wiedemann
+尝试 thin-matrix solve. BW 数学上能处理 m ≤ n case (找 left kernel of M via
+B=M*M^T (m×m), 当 rank(M)<m 时存在). BL 在 thin 时已知 fail, 自动 skip.
+
+```bash
+GNFS_THIN_MATRIX_TRY=1 ./test_stress 1 1   # 50d 试 thin solve
+GNFS_THIN_MATRIX_TRY=1 ./gnfs <N>          # any GNFS run
+```
+
+**默认 OFF**: 保持 prior "abort on no excess" behavior. 仅当用户 explicitly enable
+时尝试 thin solve. **实验性** — BW historically 假设 m > n, thin path 未广泛验证.
+
+**触发场景**: 50d β plateau (m=282K < n=365K). Pipeline 之前在 `has_excess()`
+返回 false 时直接 return MatrixResult without calling solvers. 启用后 BW 会尝试.
+
 ### Drop-residual + weight-cutoff (BACKLOG #80 algorithmic breakthrough)
 
 **ENV `GNFS_DROP_RESIDUAL=1`** (commits `da51e0b` + `b001606`, 2026-05-17):

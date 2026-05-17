@@ -859,11 +859,29 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
              " excess=" + std::to_string(matrix_stats.excess));
 
     if (!matrix_stats.has_excess()) {
-        emit_log(LogLevel::Error, Phase::LinearAlgebra, "No excess — not enough relations");
-        MatrixResult mr;
-        mr.matrix = std::move(build_result.matrix);
-        mr.relations = std::move(relations);
-        return mr;
+        // P10 step 7 (BACKLOG #80): Optionally allow BW to attempt thin matrix
+        // solve (m ≤ n). Mathematically valid: BW finds left kernel of M via
+        // B=M*M^T (m×m), which is non-empty whenever rank(M)<m. For GNFS the
+        // dependency matrix is always rank-deficient. Risk: BL/BW algorithms
+        // historically assume m>n; thin solve is experimental.
+        //
+        // ENV GNFS_THIN_MATRIX_TRY=1 → skip BL, try BW directly.
+        // Default OFF preserves prior "abort on no excess" behavior.
+        static const bool thin_try = []() {
+            const char* e = std::getenv("GNFS_THIN_MATRIX_TRY");
+            return e != nullptr && std::string(e) == "1";
+        }();
+
+        if (!thin_try) {
+            emit_log(LogLevel::Error, Phase::LinearAlgebra, "No excess — not enough relations");
+            MatrixResult mr;
+            mr.matrix = std::move(build_result.matrix);
+            mr.relations = std::move(relations);
+            return mr;
+        }
+
+        emit_log(LogLevel::Warn, Phase::LinearAlgebra,
+                 "No excess but GNFS_THIN_MATRIX_TRY=1 — attempting BW thin solve");
     }
 
     // Trim excess rows to improve BL convergence and SGE effectiveness.
@@ -911,19 +929,34 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
              std::to_string(sge_result.reduced_matrix.num_rows()) + "x" +
              std::to_string(sge_result.reduced_matrix.num_cols()));
 
-    // Block Lanczos (primary solver)
-    emit_progress(Phase::LinearAlgebra, "Block Lanczos");
-    linalg::BlockLanczos bl_solver;
-    auto dependencies = bl_solver.find_dependencies(sge_result.reduced_matrix);
+    // For thin matrices (rows ≤ cols, BACKLOG #80), BL is known to fail —
+    // skip directly to BW. BW finds left kernel via B=M*M^T which works
+    // for any m×n matrix when rank-deficient.
+    const auto& sge_red = sge_result.reduced_matrix;
+    const bool sge_thin = sge_red.num_rows() <= sge_red.num_cols();
+    std::vector<std::vector<bool>> dependencies;
 
-    // If BL/Gaussian didn't find deps, use streaming Block Wiedemann.
+    if (!sge_thin) {
+        // Block Lanczos (primary solver)
+        emit_progress(Phase::LinearAlgebra, "Block Lanczos");
+        linalg::BlockLanczos bl_solver;
+        dependencies = bl_solver.find_dependencies(sge_red);
+    } else {
+        emit_log(LogLevel::Warn, Phase::LinearAlgebra,
+                 "SGE-reduced matrix is thin (" + std::to_string(sge_red.num_rows()) +
+                 "<=" + std::to_string(sge_red.num_cols()) + ") — skip BL, try BW directly");
+    }
+
+    // If BL didn't find deps, or matrix is thin, use streaming Block Wiedemann.
     // BW works for any matrix size with O(m) memory.
     if (dependencies.empty()) {
-        emit_log(LogLevel::Warn, Phase::LinearAlgebra,
-                 "Block Lanczos returned 0 deps, trying Block Wiedemann");
-        emit_progress(Phase::LinearAlgebra, "Block Wiedemann (fallback)");
+        if (!sge_thin) {
+            emit_log(LogLevel::Warn, Phase::LinearAlgebra,
+                     "Block Lanczos returned 0 deps, trying Block Wiedemann");
+        }
+        emit_progress(Phase::LinearAlgebra, "Block Wiedemann");
         linalg::BlockWiedemann bw_solver;
-        dependencies = bw_solver.find_dependencies(sge_result.reduced_matrix);
+        dependencies = bw_solver.find_dependencies(sge_red);
     }
 
     // Expand dependencies back to original matrix
