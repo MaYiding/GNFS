@@ -261,9 +261,9 @@ public:
 
         // 预计算 t 的幂次
         std::vector<Integer> t_powers(d + 1);
-        t_powers[0] = Integer(static_cast<int64_t>(1));
+        t_powers[0] = int64_t(1);  // mpz_set_si on default-init slot
         for (uint32_t i = 1; i <= d; ++i) {
-            t_powers[i] = t_powers[i-1].clone();
+            t_powers[i] = t_powers[i-1];  // mpz_set into default-init buffer
             t_powers[i] *= t;
         }
 
