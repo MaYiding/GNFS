@@ -246,12 +246,11 @@ public:
         // resize default-init Integer is 0 — single alloc, no push_back loop.
         std::vector<Integer> result(result_deg + 1);
 
-        // v22: 复用 term buffer (mpz_set 而非 mpz_init_set), 省 d² - 1 allocs/multiply
+        // mpz_mul writes x.coeff[i]*y.coeff[j] directly into term (skip set step)
         Integer term;
         for (size_t i = 0; i <= x.degree(); ++i) {
             for (size_t j = 0; j <= y.degree(); ++j) {
-                term = x.coeff(i);
-                term *= y.coeff(j);
+                mpz_mul(term.get_mpz(), x.coeff(i).get_mpz(), y.coeff(j).get_mpz());
                 result[i + j] += term;
             }
         }
@@ -277,12 +276,11 @@ public:
         // resize default-init Integer is 0 — single alloc, no push_back loop.
         std::vector<Integer> result(result_deg + 1);
 
-        // v22: 复用 term buffer (mpz_set 而非 mpz_init_set), 省 d² - 1 allocs/multiply
+        // mpz_mul writes x.coeff[i]*y.coeff[j] directly into term (skip set step)
         Integer term;
         for (size_t i = 0; i <= x.degree(); ++i) {
             for (size_t j = 0; j <= y.degree(); ++j) {
-                term = x.coeff(i);
-                term *= y.coeff(j);
+                mpz_mul(term.get_mpz(), x.coeff(i).get_mpz(), y.coeff(j).get_mpz());
                 result[i + j] += term;
             }
         }
