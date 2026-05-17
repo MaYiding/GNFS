@@ -339,26 +339,11 @@ public:
 private:
     std::vector<Integer> coeffs_;
 
-    // 辅助函数：取系数 mod p
+    // 辅助函数：取系数 mod p — mpz_fdiv_ui returns floor-div remainder ∈ [0, p-1]
+    // regardless of c's sign (handles negative coeffs automatically, zero alloc)
     [[nodiscard]] uint64_t coeff_mod(size_t i, uint64_t p) const {
         if (i >= coeffs_.size()) return 0;
-        const Integer& c = coeffs_[i];
-
-        if (c.is_zero()) return 0;
-
-        if (c.is_negative()) {
-            // 处理负系数
-            Integer abs_c = c.clone();
-            abs_c.abs();
-            uint64_t val = abs_c.fits_uint64()
-                ? abs_c.to_uint64() % p
-                : mpz_fdiv_ui(abs_c.get_mpz(), p);
-            return val == 0 ? 0 : p - val;
-        }
-
-        return c.fits_uint64()
-            ? c.to_uint64() % p
-            : mpz_fdiv_ui(c.get_mpz(), p);
+        return static_cast<uint64_t>(mpz_fdiv_ui(coeffs_[i].get_mpz(), p));
     }
 
     // 模加法
