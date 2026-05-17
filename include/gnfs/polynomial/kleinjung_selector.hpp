@@ -401,11 +401,11 @@ private:
 
             if (t == 0) {
                 f_t = f_init->clone();
-                m_t = m_init.clone();
+                m_t = m_init;  // mpz_set into default-init buffer (no tmp alloc)
             } else {
                 // f(x+t) 满足 f(x+t)|_{x=m-t} = f(m) ≡ 0 (mod N)
                 f_t = PolynomialOptimizer::translate(*f_init, static_cast<int64_t>(t));
-                m_t = m_init.clone();
+                m_t = m_init;  // mpz_set, then mutate in place
                 m_t -= t;
                 if (m_t.is_zero() || m_t.is_negative()) continue;
             }
