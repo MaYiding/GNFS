@@ -1413,7 +1413,7 @@ inline std::optional<SIQSResult> factor(
 
     // Knuth-Schroeppel multiplier selection
     uint32_t multiplier = select_multiplier(N);
-    Integer kN = (multiplier > 1) ? N * Integer(static_cast<uint64_t>(multiplier)) : N.clone();
+    Integer kN = (multiplier > 1) ? N * Integer(multiplier) : N.clone();
 
     if (verbose) {
         fprintf(stderr, "[SIQS] N=%zu digits, k=%u, FB=%u, M=%u, A_factors=%u\n",
