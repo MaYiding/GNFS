@@ -29,7 +29,7 @@ public:
 
     /// 从单个整数构造（常数元素）
     explicit NumberFieldElement(const Integer& value) {
-        coeffs_.push_back(value.clone());
+        coeffs_.emplace_back(value);  // Integer copy ctor
     }
 
     explicit NumberFieldElement(int64_t value) {
@@ -49,7 +49,7 @@ public:
         std::vector<Integer> new_coeffs;
         new_coeffs.reserve(coeffs_.size());
         for (const auto& c : coeffs_) {
-            new_coeffs.push_back(c.clone());
+            new_coeffs.emplace_back(c);  // Integer copy ctor
         }
         return NumberFieldElement(std::move(new_coeffs));
     }
