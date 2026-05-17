@@ -333,10 +333,10 @@ private:
         if (n_for_validation_ && m_for_validation_) {
             Integer val(rel.a);
             Integer bm = m_for_validation_->clone();
-            bm *= Integer(static_cast<int64_t>(rel.b));
+            bm *= static_cast<int64_t>(rel.b);  // 用 Integer*=int64_t 直接 mpz_mul_si
             val -= bm;
             Integer g = core::gcd(val, *n_for_validation_);
-            if (g.compare(Integer(int64_t(1))) != 0) return -2;
+            if (!g.is_one()) return -2;
         }
 
         return 0;

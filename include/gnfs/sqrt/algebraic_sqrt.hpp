@@ -230,7 +230,7 @@ private:
             return result;
         }
 
-        bool apply_correction = (gcd_fpm.compare(Integer(int64_t(1))) == 0);
+        bool apply_correction = gcd_fpm.is_one();
 
         auto sqrt_opt = couveignes.compute(ab_pairs, nf, apply_correction);
         if (!sqrt_opt) {

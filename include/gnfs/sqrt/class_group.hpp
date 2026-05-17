@@ -397,7 +397,7 @@ public:
                     }
                 }
             }
-            if (!content.is_zero() && !(content == Integer(int64_t(1)))) {
+            if (!content.is_zero() && !content.is_one()) {
                 for (auto& x : P.c) {
                     x /= content;
                 }
