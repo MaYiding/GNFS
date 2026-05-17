@@ -204,11 +204,10 @@ public:
                 return Integer(static_cast<int64_t>(result));
             }
         }
-        // v22: bm 直接 assign (mpz_set)
+        // mpz_mul_ui writes bm = m_ * b directly (no source copy)
         Integer result(a);
         Integer bm;
-        bm = m_;
-        bm *= static_cast<long long>(b);
+        mpz_mul_ui(bm.get_mpz(), m_.get_mpz(), b);
         result -= bm;
         return result;
     }
