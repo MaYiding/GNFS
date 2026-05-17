@@ -287,11 +287,15 @@ private:
             mpz_root(m_est.get_mpz(), n_div_ad.get_mpz(), d);
 
             // 在 m_est 附近搜索
+            // v22: m/ad_md/remainder buffer 复用 across delta iterations
+            Integer m;
+            Integer ad_md;
+            Integer remainder;
             for (int32_t delta = -static_cast<int32_t>(params_.search_radius);
                  delta <= static_cast<int32_t>(params_.search_radius);
                  ++delta) {
 
-                Integer m = m_est.clone();
+                m = m_est;
                 if (delta >= 0) {
                     m += delta;
                 } else {
@@ -302,10 +306,10 @@ private:
 
                 // 计算 n - a_d * m^d
                 Integer m_pow_d = core::pow(m, d);
-                Integer ad_md = ad.clone();
+                ad_md = ad;
                 ad_md *= m_pow_d;
 
-                Integer remainder = n.clone();
+                remainder = n;
                 remainder -= ad_md;
 
                 // 检查 remainder 的符号和大小
