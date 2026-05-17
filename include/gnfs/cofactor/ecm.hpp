@@ -389,7 +389,7 @@ private:
         diff3 %= n;
 
         Integer sum3u_v = u.clone();
-        sum3u_v *= Integer(int64_t(3));
+        sum3u_v *= int64_t(3);  // mpz_mul_si direct
         sum3u_v += v;
         sum3u_v %= n;
 
@@ -400,7 +400,7 @@ private:
         Integer denom = x0.clone();
         denom *= v;
         denom %= n;
-        denom *= Integer(int64_t(16));
+        denom *= int64_t(16);  // mpz_mul_si direct
         denom %= n;
 
         // 计算逆元 (v22: gcd 取 const& 无需 clone)
