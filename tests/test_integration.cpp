@@ -826,7 +826,7 @@ void test_sieve_cofactor_joint() {
         if (rel.has_value()) {
             verified++;
             assert(rel->a == a);
-            assert(rel->b == static_cast<int64_t>(b));
+            assert(rel->b == b);  // both uint64_t
         }
     }
 

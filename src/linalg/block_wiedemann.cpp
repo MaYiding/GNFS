@@ -80,7 +80,6 @@ void bw_spmv_transpose(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
 
     static BwSpmvLocals scratch;
     scratch.ensure(T, n);
-    auto& locals = scratch.locals;
     std::vector<std::future<void>> futures;
     futures.reserve(T);
     size_t T_used = 0;
@@ -90,8 +89,8 @@ void bw_spmv_transpose(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
         size_t end_row = std::min(start + chunk, m);
         if (start >= m) break;
         T_used = t + 1;
-        futures.push_back(pool.submit([&M, &x, &locals, t, start, end_row]() {
-            auto& local = locals[t];
+        futures.push_back(pool.submit([&M, &x, t, start, end_row]() {
+            auto& local = scratch.locals[t];
             for (size_t i = start; i < end_row; ++i) {
                 uint64_t xi = x.data[i];
                 if (xi == 0) continue;
@@ -115,9 +114,9 @@ void bw_spmv_transpose(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
     }
     for (auto& f : futures) f.get();
 
-    pool.parallel_for_index(0, n, [&y, &locals, T_used](size_t j) {
+    pool.parallel_for_index(0, n, [&y, T_used](size_t j) {
         uint64_t val = 0;
-        for (size_t t = 0; t < T_used; ++t) val ^= locals[t][j];
+        for (size_t t = 0; t < T_used; ++t) val ^= scratch.locals[t][j];
         y.data[j] = val;
     });
 }
@@ -480,13 +479,13 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
     }
 
     // Diagnostic: check if sequences are trivial
-    size_t trivial_seqs = 0, nonzero_seqs = 0;
+    size_t trivial_seqs = 0;
     for (int j = 0; j < 64; ++j) {
         bool has_nonzero = false;
         for (size_t k = 0; k < seq_len; ++k) {
             if (sequences[j][k]) { has_nonzero = true; break; }
         }
-        if (has_nonzero) nonzero_seqs++; else trivial_seqs++;
+        if (!has_nonzero) trivial_seqs++;
     }
     if (trivial_seqs > 0) {
         std::cout << " [WARN: " << trivial_seqs << "/64 trivial sequences]";

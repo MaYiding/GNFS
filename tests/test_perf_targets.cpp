@@ -154,16 +154,12 @@ BenchResult benchmark_one(const Target& t, int runs = 1) {
 int main(int argc, char** argv) {
     int start_digits = 10, end_digits = 70;
     int runs = 1;
-    bool quick = false;
-    bool siqs_only = false;
 
     for (int i = 1; i < argc; i++) {
         std::string arg(argv[i]);
         if (arg == "--quick") {
-            quick = true;
             end_digits = 30;
         } else if (arg == "--siqs") {
-            siqs_only = true;
             start_digits = 35;
             end_digits = 65;
         } else if (arg == "--runs") {
