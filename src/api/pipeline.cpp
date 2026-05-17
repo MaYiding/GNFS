@@ -1169,7 +1169,7 @@ FactorResult Pipeline::run() {
         r.stats.timings.total_s = elapsed_s();
         return r;
     }
-    if (n_ <= Integer(1)) {
+    if (mpz_cmp_si(n_.get_mpz(), 1) <= 0) {
         FactorResult r;
         r.n = n_.clone();
         r.stats = stats_;

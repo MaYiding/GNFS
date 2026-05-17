@@ -512,7 +512,7 @@ static void run_repl() {
                 }
                 n = Integer(line);
             }
-            if (n <= Integer(1)) {
+            if (mpz_cmp_si(n.get_mpz(), 1) <= 0) {
                 std::cout << TR(S::REPL_N_TOO_SMALL) << "\n";
                 continue;
             }
@@ -647,7 +647,7 @@ int main(int argc, char* argv[]) {
         std::cerr << TR(S::ERR_INVALID_NUMBER) << " " << number_str << "\n";
         return 1;
     }
-    if (n <= Integer(1)) { std::cerr << TR(S::ERR_N_TOO_SMALL) << "\n"; return 1; }
+    if (mpz_cmp_si(n.get_mpz(), 1) <= 0) { std::cerr << TR(S::ERR_N_TOO_SMALL) << "\n"; return 1; }
 
     // Run
     if (!quiet) {
