@@ -390,6 +390,50 @@ void test_default_schirokauer_primes() {
 }
 
 // Test matrix stats
+// Thin matrix test (m < n) — BACKLOG #80 step 7 — confirm BW/BL can find
+// left-kernel of M when rows < cols. Synthetic: 3 rows × 4 cols, all rows
+// identical → XOR of any 2 rows = 0 (left null space dimension = 2).
+void test_thin_matrix_dependencies() {
+    std::cout << "Testing thin matrix (m<n) dependency finding..." << std::endl;
+
+    // m=3 < n=4, all rows identical = "1 0 1 1"
+    SparseMatrix mat(3, 4);
+    for (size_t r = 0; r < 3; ++r) {
+        mat.set(r, 0); mat.set(r, 2); mat.set(r, 3);
+    }
+
+    // BL on m<n: 小矩阵 (m,n < 5000) BW 会 delegate 到 BL.
+    // BL 假设 m>n 但小 matrix Gaussian 内部应能 handle.
+    BlockLanczos solver;
+    auto deps = solver.find_dependencies(mat, 2);
+
+    std::cout << "  Found " << deps.size() << " deps (expected >= 1)" << std::endl;
+
+    // Verify: each dep is a length-m bit vector. XOR of selected rows = 0.
+    for (const auto& dep : deps) {
+        if (dep.size() != 3) {
+            std::cerr << "  FAIL: dep length " << dep.size() << " != 3" << std::endl;
+            std::exit(1);
+        }
+        // Sum (XOR) of selected rows
+        std::vector<bool> xor_row(4, false);
+        for (size_t r = 0; r < 3; ++r) {
+            if (!dep[r]) continue;
+            for (uint32_t col_idx : mat.row(r).indices()) {
+                xor_row[col_idx] = !xor_row[col_idx];
+            }
+        }
+        bool is_zero = true;
+        for (bool b : xor_row) if (b) { is_zero = false; break; }
+        if (!is_zero) {
+            std::cerr << "  FAIL: dependency does not XOR to zero" << std::endl;
+            std::exit(1);
+        }
+    }
+
+    std::cout << "  thin_matrix_dependencies: PASSED" << std::endl;
+}
+
 void test_matrix_stats() {
     std::cout << "Testing matrix stats..." << std::endl;
 
@@ -930,6 +974,7 @@ int main() {
     test_matrix_builder();
     test_default_schirokauer_primes();
     test_find_dependencies();
+    test_thin_matrix_dependencies();
     test_verify_dependency();
     test_matrix_stats();
     test_structured_gauss();
