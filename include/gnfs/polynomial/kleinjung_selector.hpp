@@ -468,8 +468,8 @@ private:
         for (auto& cand : top_k) {
             if (!is_valid_polynomial(cand.f, n, cand.m)) continue;
 
-            // 构造 g(x) = x - m
-            Integer neg_m = cand.m.clone();
+            // 构造 g(x) = x - m (negate copy of m)
+            Integer neg_m = cand.m;
             neg_m.negate();
             std::vector<Integer> g_coeffs;
             g_coeffs.reserve(2);
@@ -481,8 +481,8 @@ private:
 
             if (score.log_e_score > best_log_e) {
                 best_log_e = score.log_e_score;
-                best_f = cand.f.clone();
-                best_m = cand.m.clone();
+                best_f = cand.f.clone();  // best_f keeps copy semantics for IntPolynomial
+                best_m = cand.m;          // mpz_set into existing best_m buffer
                 best_score = score;
             }
         }
