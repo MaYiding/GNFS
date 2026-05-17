@@ -1235,12 +1235,12 @@ private:
 
         for (const auto& [a, b] : ab_pairs) {
             // Factor = a - b·x
-            factor[0] = Integer(a);
+            factor[0] = a;  // mpz_set_si direct
             factor[0] %= modulus;
             if (factor[0].is_negative()) factor[0] += modulus;
 
             if (d > 1) {
-                factor[1] = static_cast<int64_t>(b);  // mpz_set_si direct
+                factor[1] = int64_t(b);  // mpz_set_si direct
                 factor[1].negate();
                 factor[1] %= modulus;
                 if (factor[1].is_negative()) factor[1] += modulus;
@@ -1307,14 +1307,14 @@ private:
                 for (size_t j = start; j < end; ++j) {
                     auto [a, b] = ab_pairs[j];
 
-                    // a mod modulus (复用 factor[0] buffer via assignment)
-                    factor[0] = Integer(a);
+                    // a mod modulus (复用 factor[0] buffer via operator=(int64_t))
+                    factor[0] = a;  // mpz_set_si direct
                     factor[0] %= modulus;
                     if (factor[0].is_negative()) factor[0] += modulus;
 
                     if (d > 1) {
                         // -b mod modulus (复用 factor[1] buffer)
-                        factor[1] = static_cast<int64_t>(b);  // mpz_set_si direct
+                        factor[1] = int64_t(b);  // mpz_set_si direct
                         factor[1].negate();
                         factor[1] %= modulus;
                         if (factor[1].is_negative()) factor[1] += modulus;
