@@ -110,15 +110,12 @@ public:
     [[nodiscard]] uint64_t evaluate_mod(uint64_t x, uint64_t p) const {
         if (f_coeffs_.empty()) return 0;
 
-        // Helper to get coefficient mod p (always non-negative)
-        auto get_coeff_mod_p = [p](const Integer& coeff) -> uint64_t {
+        // p_int hoist 出 lambda — degree+1 次调用避免重复 mpz_init+set+clear
+        Integer p_int(static_cast<unsigned long long>(p));
+        Integer tmp;
+        auto get_coeff_mod_p = [&](const Integer& coeff) -> uint64_t {
             if (coeff.is_zero()) return 0;
-
-            Integer tmp;
-            Integer p_int(static_cast<unsigned long long>(p));
             Integer::mod(tmp, coeff, p_int);
-
-            // Handle negative remainders: convert to [0, p)
             if (tmp.is_negative()) {
                 tmp += p_int;
             }
