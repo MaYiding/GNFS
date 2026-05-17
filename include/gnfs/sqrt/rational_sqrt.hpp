@@ -117,8 +117,9 @@ public:
         // sqrt = product of p^(exp/2) mod n
         Integer sqrt_value(1);
 
-        // hoist p_int + half_exp_int + contribution — 每个 dep 数千次迭代复用 buffer
-        Integer p_int, half_exp_int, contribution;
+        // hoist p_int + contribution — 每个 dep 数千次迭代复用 buffer
+        // mpz_powm_ui takes unsigned long exponent directly — no half_exp_int needed
+        Integer p_int, contribution;
 
         // 因子基素数贡献
         for (const auto& [idx, exp] : fb_exponents) {
@@ -127,10 +128,9 @@ public:
             uint32_t p = fb.rational()[idx].p;
             uint64_t half_exp = exp / 2;
 
-            // p^half_exp mod n — mpz_powm into hoisted buffer
+            // p^half_exp mod n — mpz_powm_ui (exp passed as unsigned long directly)
             p_int = uint64_t(p);
-            half_exp_int = uint64_t(half_exp);
-            mpz_powm(contribution.get_mpz(), p_int.get_mpz(), half_exp_int.get_mpz(), n.get_mpz());
+            mpz_powm_ui(contribution.get_mpz(), p_int.get_mpz(), half_exp, n.get_mpz());
 
             sqrt_value *= contribution;
             sqrt_value %= n;
@@ -143,8 +143,7 @@ public:
             uint64_t half_exp = exp / 2;
 
             p_int = uint64_t(p);
-            half_exp_int = uint64_t(half_exp);
-            mpz_powm(contribution.get_mpz(), p_int.get_mpz(), half_exp_int.get_mpz(), n.get_mpz());
+            mpz_powm_ui(contribution.get_mpz(), p_int.get_mpz(), half_exp, n.get_mpz());
 
             sqrt_value *= contribution;
             sqrt_value %= n;
