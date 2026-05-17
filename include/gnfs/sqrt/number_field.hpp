@@ -242,17 +242,14 @@ public:
             return zero();
         }
 
-        // 多项式乘法
+        // 多项式乘法 — mpz_addmul fused FMA in d² inner loop
         size_t result_deg = x.degree() + y.degree();
-        // resize default-init Integer is 0 — single alloc, no push_back loop.
         std::vector<Integer> result(result_deg + 1);
 
-        // mpz_mul writes x.coeff[i]*y.coeff[j] directly into term (skip set step)
-        Integer term;
         for (size_t i = 0; i <= x.degree(); ++i) {
             for (size_t j = 0; j <= y.degree(); ++j) {
-                mpz_mul(term.get_mpz(), x.coeff(i).get_mpz(), y.coeff(j).get_mpz());
-                result[i + j] += term;
+                mpz_addmul(result[i + j].get_mpz(),
+                           x.coeff(i).get_mpz(), y.coeff(j).get_mpz());
             }
         }
 
@@ -272,17 +269,14 @@ public:
             return zero();
         }
 
-        // 多项式乘法
+        // 多项式乘法 — mpz_addmul fused FMA in d² inner loop
         size_t result_deg = x.degree() + y.degree();
-        // resize default-init Integer is 0 — single alloc, no push_back loop.
         std::vector<Integer> result(result_deg + 1);
 
-        // mpz_mul writes x.coeff[i]*y.coeff[j] directly into term (skip set step)
-        Integer term;
         for (size_t i = 0; i <= x.degree(); ++i) {
             for (size_t j = 0; j <= y.degree(); ++j) {
-                mpz_mul(term.get_mpz(), x.coeff(i).get_mpz(), y.coeff(j).get_mpz());
-                result[i + j] += term;
+                mpz_addmul(result[i + j].get_mpz(),
+                           x.coeff(i).get_mpz(), y.coeff(j).get_mpz());
             }
         }
 
@@ -433,9 +427,7 @@ private:
     void reduce(std::vector<Integer>& coeffs) const {
         assert(f_coeffs_[degree_].is_one() &&
                "reduce() requires monic f; use reduce_mod() for non-monic");
-        // 从最高次项开始归约
-        // v22: 复用 term buffer per outer-loop iteration
-        Integer term;
+        // 从最高次项开始归约 — mpz_submul fused FMS
         while (coeffs.size() > degree_) {
             size_t high_deg = coeffs.size() - 1;
             Integer high_coeff = std::move(coeffs.back());
@@ -453,8 +445,8 @@ private:
             }
 
             for (uint32_t i = 0; i < degree_; ++i) {
-                mpz_mul(term.get_mpz(), high_coeff.get_mpz(), f_coeffs_[i].get_mpz());
-                coeffs[shift + i] -= term;
+                mpz_submul(coeffs[shift + i].get_mpz(),
+                           high_coeff.get_mpz(), f_coeffs_[i].get_mpz());
             }
         }
 
