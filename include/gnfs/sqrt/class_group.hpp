@@ -536,17 +536,24 @@ private:
         uint32_t d = ctx_.degree();
         roots.reserve(d);  // bounded by polynomial degree
 
+        // 预计算 c[i] mod p 一次 (从 ctx_.coeff() clone 在 (i,x) 内层是冷启动 BUG):
+        // p × (d+1) clones/mods 节省 → 典型 p=1000/d=5 时省 6000 clones per prime
+        const uint64_t p64 = static_cast<uint64_t>(p);
+        std::vector<uint64_t> c_mod_p(d + 1);
+        for (uint32_t i = 0; i <= d; ++i) {
+            Integer c = ctx_.coeff(i).clone();
+            c %= Integer(p64);
+            if (c.is_negative()) c += Integer(p64);
+            c_mod_p[i] = c.to_uint64();
+        }
+
         for (uint32_t x = 0; x < p; ++x) {
             uint64_t val = 0;
             uint64_t x_power = 1;
 
             for (uint32_t i = 0; i <= d; ++i) {
-                Integer c = ctx_.coeff(i).clone();
-                c %= Integer(static_cast<uint64_t>(p));
-                if (c.is_negative()) c += Integer(static_cast<uint64_t>(p));
-
-                val = (val + (c.to_uint64() * x_power) % p) % p;
-                x_power = (x_power * x) % p;
+                val = (val + c_mod_p[i] * x_power) % p64;
+                x_power = (x_power * x) % p64;
             }
 
             if (val == 0) {
