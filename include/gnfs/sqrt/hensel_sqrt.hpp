@@ -607,18 +607,15 @@ private:
         }
 
         // Pre-compute delta[i][j] = (m_i - 2*s_{i,j}) * basis_i mod M
-        // v22: ts 复用 (K×d 次循环, mpz_set 不 init); v 仍 clone+move 因为最终
-        // 移入 vector — 若用复用 buffer 然后 clone push_back, 反而多一次 alloc.
+        // Direct GMP: ts = 2 * coeffs[j] (bit shift); v = modulus - ts
         std::vector<std::vector<Integer>> delta(K);
-        const Integer two(2);
         Integer ts;
         for (size_t i = 0; i < K; ++i) {
             delta[i].reserve(d);
             for (uint32_t j = 0; j < d; ++j) {
-                Integer v = lifted[i].modulus.clone();
-                ts = lifted[i].coeffs[j];
-                ts *= two;
-                v -= ts;
+                mpz_mul_2exp(ts.get_mpz(), lifted[i].coeffs[j].get_mpz(), 1);  // ts = 2*coeffs[j]
+                Integer v;
+                mpz_sub(v.get_mpz(), lifted[i].modulus.get_mpz(), ts.get_mpz());  // v = m - ts
                 v *= basis[i];
                 v %= M;
                 if (v.is_negative()) v += M;
