@@ -77,9 +77,8 @@ public:
                 break;
             }
 
-            // 检查相对变化 (diff 复用 buffer)
-            diff = prev_m;
-            diff -= m;
+            // 检查相对变化 — mpz_sub writes prev_m - m directly into diff (skip set)
+            mpz_sub(diff.get_mpz(), prev_m.get_mpz(), m.get_mpz());
             diff.abs();
 
             // to_double() 对超过 ~2^1023 的 Integer 会返回 ±inf,rel_change=NaN<tol 永远 false,
