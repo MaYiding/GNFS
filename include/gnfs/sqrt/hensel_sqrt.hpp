@@ -319,13 +319,13 @@ private:
         // Convert to Integer polynomial S
         std::vector<Integer> S(d);
         for (uint32_t i = 0; i < d; ++i) {
-            S[i] = Integer(static_cast<int64_t>(
-                (i <= static_cast<uint32_t>(sqrt_mp.degree())) ? sqrt_mp.coeff(i) : 0));
+            S[i] = static_cast<uint64_t>(
+                (i <= static_cast<uint32_t>(sqrt_mp.degree())) ? sqrt_mp.coeff(i) : 0);
         }
 
         if (num_lifts == 0) {
             result.coeffs = std::move(S);
-            result.modulus = Integer(static_cast<int64_t>(p));
+            result.modulus = static_cast<int64_t>(p);  // mpz_set_si direct
             result.ok = true;
             return result;
         }
@@ -855,8 +855,8 @@ private:
         // Convert to Integer polynomial
         std::vector<Integer> S(d);
         for (uint32_t i = 0; i < d; ++i) {
-            S[i] = Integer(static_cast<int64_t>(
-                (i <= static_cast<uint32_t>(sqrt_mod_p.degree())) ? sqrt_mod_p.coeff(i) : 0));
+            S[i] = static_cast<uint64_t>(
+                (i <= static_cast<uint32_t>(sqrt_mod_p.degree())) ? sqrt_mod_p.coeff(i) : 0);
         }
 
         // Get f polynomial as Integer vector
@@ -1240,7 +1240,7 @@ private:
             if (factor[0].is_negative()) factor[0] += modulus;
 
             if (d > 1) {
-                factor[1] = Integer(static_cast<int64_t>(b));
+                factor[1] = static_cast<int64_t>(b);  // mpz_set_si direct
                 factor[1].negate();
                 factor[1] %= modulus;
                 if (factor[1].is_negative()) factor[1] += modulus;
