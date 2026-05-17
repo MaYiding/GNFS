@@ -791,14 +791,12 @@ private:
         // Sign column: product (a_0 - b_0*m)·...·(a_k - b_k*m) is negative
         // iff an odd number of factors are negative → XOR of individual sign bits
         if (mapping.has_sign_column) {
-            // v22: buffer v/bm 复用 across is_neg calls (lambda 捕获 by ref)
+            // v = ai - m*bi via mpz_submul_ui (fused FMS, drops bm temp)
             Integer v;
-            Integer bm;
             auto is_neg = [&](int64_t ai, uint64_t bi) {
                 v = ai;  // mpz_set_si direct
-                bm = ctx.m();
-                bm *= static_cast<int64_t>(bi);  // mpz_mul_si direct
-                v -= bm;
+                mpz_submul_ui(v.get_mpz(), ctx.m().get_mpz(),
+                              static_cast<unsigned long>(bi));
                 return v.is_negative();
             };
 

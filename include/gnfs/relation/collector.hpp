@@ -331,10 +331,9 @@ private:
         // CLAUDE.md: gcd(a - bm, N) 必须 = 1。
         // 否则关系是退化的 (∏(a-bm) ≡ 0 mod N → X=0 → trivial gcd)。
         if (n_for_validation_ && m_for_validation_) {
+            // val = a - m*b via mpz_submul_ui (fused FMS, drops bm temp)
             Integer val(rel.a);
-            Integer bm;
-            mpz_mul_ui(bm.get_mpz(), m_for_validation_->get_mpz(), rel.b);  // bm = m * b
-            val -= bm;
+            mpz_submul_ui(val.get_mpz(), m_for_validation_->get_mpz(), rel.b);
             Integer g = core::gcd(val, *n_for_validation_);
             if (!g.is_one()) return -2;
         }
