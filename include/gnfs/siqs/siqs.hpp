@@ -449,7 +449,8 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb,
         uint32_t ti = fb[poly.a_indices[i]].sqrt_n; // sqrt(N) mod qi
 
         // Compute A/qi
-        Integer A_div_qi = poly.A / Integer(static_cast<uint64_t>(qi));
+        Integer A_div_qi = poly.A.clone();
+        A_div_qi /= int64_t(qi);
 
         // (A/qi)^{-1} mod qi
         uint32_t a_div_qi_mod = static_cast<uint32_t>(
@@ -458,11 +459,12 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb,
 
         // B_i = ti * inv * (A/qi) — but as Integer
         uint32_t coeff = mod_mul32(ti, inv, qi);
-        poly.B_parts[i] = A_div_qi * Integer(static_cast<uint64_t>(coeff));
+        poly.B_parts[i] = A_div_qi.clone();
+        poly.B_parts[i] *= int64_t(coeff);
     }
 
     // B = sum(B_i) mod A, adjusted to |B| <= A/2
-    poly.B = Integer(0);
+    poly.B = int64_t(0);
     for (size_t i = 0; i < s; i++) {
         poly.B = poly.B + poly.B_parts[i];
     }
