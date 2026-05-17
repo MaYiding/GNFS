@@ -269,17 +269,17 @@ private:
         const Integer& m = nf.m();
         const Integer& N = nf.n();
 
-        // v22: result/term 直接 assign
+        // v22: result/term 直接 assign + int64_t direct mul
         Integer result;
         result = nf.coeff(d);
-        result *= Integer(static_cast<int64_t>(d));
+        result *= static_cast<int64_t>(d);  // mpz_mul_si direct
         result %= N;
 
         Integer term;
         for (int i = static_cast<int>(d) - 1; i >= 1; --i) {
             result *= m;
             term = nf.coeff(i);
-            term *= Integer(static_cast<int64_t>(i));
+            term *= static_cast<int64_t>(i);  // mpz_mul_si direct
             result += term;
             result %= N;
         }

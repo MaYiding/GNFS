@@ -334,8 +334,8 @@ public:
         // --- build f_1 = f' ---
         IntPoly f1(degree);
         for (uint32_t i = 1; i <= degree; ++i) {
-            f1.c[i - 1] = coeffs[i].clone();
-            f1.c[i - 1] *= Integer(static_cast<int64_t>(i));
+            f1.c[i - 1] = coeffs[i];  // mpz_set into default-init slot
+            f1.c[i - 1] *= static_cast<int64_t>(i);  // mpz_mul_si direct
         }
 
         // --- helper: compute pseudo-remainder prem(A, B) over Z ---

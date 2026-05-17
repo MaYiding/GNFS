@@ -74,9 +74,9 @@ public:
             // v22: check_sign hot lambda - hoist a_minus_bm/bm buffers (mpz_set)
             Integer a_minus_bm, bm;
             auto check_sign = [&](int64_t a_val, uint64_t b_val) {
-                a_minus_bm = Integer(a_val);
+                a_minus_bm = a_val;  // mpz_set_si direct
                 bm = m;
-                bm *= Integer(b_val);
+                bm *= static_cast<int64_t>(b_val);  // mpz_mul_si direct (b ≤ sieve bound)
                 a_minus_bm -= bm;
                 if (a_minus_bm.is_negative()) {
                     has_negative = !has_negative;
@@ -171,9 +171,9 @@ public:
             Integer product(1);
             Integer val, bm_v;
             auto multiply_ab = [&](int64_t a_val, uint64_t b_val) {
-                val = Integer(a_val);
+                val = a_val;  // mpz_set_si direct
                 bm_v = m;
-                bm_v *= Integer(b_val);
+                bm_v *= static_cast<int64_t>(b_val);  // mpz_mul_si direct
                 val -= bm_v;
                 val %= n;
                 if (val.is_negative()) val += n;
