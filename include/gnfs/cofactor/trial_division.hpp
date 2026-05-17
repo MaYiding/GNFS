@@ -281,7 +281,7 @@ public:
         }
 
         if (use_u64) {
-            result.cofactor = Integer(norm_u64);
+            result.cofactor = norm_u64;
             if (norm_u64 == 1) result.is_smooth = true;
         } else if (use_u128) {
             // Convert uint128 back to Integer

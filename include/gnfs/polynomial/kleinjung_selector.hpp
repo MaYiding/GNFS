@@ -549,7 +549,7 @@ private:
         // 标准展开产生 [0, m) 系数；平衡展开 centering 到 [-m/2, m/2]
         Integer remainder = std::move(n_prime);
         Integer half_m = m.clone();
-        half_m /= Integer(2);
+        half_m /= int64_t(2);
 
         for (uint32_t i = 0; i < d; ++i) {
             Integer quotient;
