@@ -660,8 +660,8 @@ public:
                 if (c_buf.compare(half_M) > 0) c_buf -= M;
                 c_buf %= n;
                 if (c_buf.is_negative()) c_buf += n;
-                c_buf *= mpow[i];
-                Y_buf += c_buf;
+                // Y_buf += c_buf * mpow[i] via fused FMA
+                mpz_addmul(Y_buf.get_mpz(), c_buf.get_mpz(), mpow[i].get_mpz());
                 Y_buf %= n;
             }
             if (Y_buf.is_negative()) Y_buf += n;
