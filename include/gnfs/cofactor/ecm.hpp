@@ -227,7 +227,7 @@ private:
     /// 蒙哥马利标量乘法: k * P
     /// 使用 double-and-add (Montgomery ladder)
     static Point mont_mul(const Point& P, uint64_t k, const Integer& a24, const Integer& n) {
-        if (k == 0) return Point(Integer(int64_t(0)), Integer(int64_t(1)));
+        if (k == 0) return Point();  // default ctor: (0, 1)
         if (k == 1) return Point(P.x.clone(), P.z.clone());
 
         Point R0(P.x.clone(), P.z.clone());
@@ -251,7 +251,7 @@ private:
     /// 蒙哥马利标量乘法: k * P (Integer 版本)
     static Point mont_mul_big(const Point& P, const Integer& k, const Integer& a24, const Integer& n) {
         size_t bits = k.bit_length();
-        if (bits == 0) return Point(Integer(int64_t(0)), Integer(int64_t(1)));
+        if (bits == 0) return Point();  // default ctor: (0, 1)
         if (bits == 1) return Point(P.x.clone(), P.z.clone());
 
         Point R0(P.x.clone(), P.z.clone());
