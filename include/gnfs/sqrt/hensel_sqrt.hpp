@@ -1137,7 +1137,7 @@ private:
         const Integer p_int(p);
         for (uint32_t i = 0; i < d; ++i) {
             c = nf.coeff(i + 1);
-            c *= Integer(static_cast<int64_t>(i + 1));
+            c *= static_cast<int64_t>(i + 1);  // mpz_mul_si direct
             c %= p_int;
             if (c.is_negative()) c += p_int;
             f_prime[i] = c.to_uint64();
@@ -1152,7 +1152,7 @@ private:
         std::vector<Integer> f_prime(d);
         for (uint32_t i = 0; i < d; ++i) {
             f_prime[i] = f[i + 1];
-            f_prime[i] *= Integer(static_cast<int64_t>(i + 1));
+            f_prime[i] *= static_cast<int64_t>(i + 1);  // mpz_mul_si direct
         }
         return f_prime;
     }
@@ -1167,14 +1167,14 @@ private:
         // v22: result/term 直接 assign, 复用
         Integer result;
         result = nf.coeff(d);
-        result *= Integer(static_cast<int64_t>(d));
+        result *= static_cast<int64_t>(d);  // mpz_mul_si direct
         result %= n;
 
         Integer term;
         for (int i = static_cast<int>(d) - 1; i >= 1; --i) {
             result *= m;
             term = nf.coeff(i);
-            term *= Integer(static_cast<int64_t>(i));
+            term *= static_cast<int64_t>(i);  // mpz_mul_si direct
             result += term;
             result %= n;
         }
