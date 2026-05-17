@@ -596,13 +596,17 @@ private:
         }
 
         // Pre-compute delta[i][j] = (m_i - 2*s_{i,j}) * basis_i mod M
+        // v22: ts 复用 (K×d 次循环, mpz_set 不 init); v 仍 clone+move 因为最终
+        // 移入 vector — 若用复用 buffer 然后 clone push_back, 反而多一次 alloc.
         std::vector<std::vector<Integer>> delta(K);
+        const Integer two(int64_t(2));
+        Integer ts;
         for (size_t i = 0; i < K; ++i) {
             delta[i].reserve(d);
             for (uint32_t j = 0; j < d; ++j) {
                 Integer v = lifted[i].modulus.clone();
-                Integer ts = lifted[i].coeffs[j].clone();
-                ts *= Integer(int64_t(2));
+                ts = lifted[i].coeffs[j];
+                ts *= two;
                 v -= ts;
                 v *= basis[i];
                 v %= M;
@@ -611,24 +615,27 @@ private:
             }
         }
 
-        // m^j mod N
+        // m^j mod N (v22: mpw[j] = mpow[j-1] mpz_set)
         std::vector<Integer> mpow(d);
         mpow[0] = Integer(int64_t(1));
         for (uint32_t j = 1; j < d; ++j) {
-            mpow[j] = mpow[j-1].clone();
+            mpow[j] = mpow[j-1];
             mpow[j] *= nf.m();
             mpow[j] %= n;
         }
 
-        Integer Mhalf = M.clone();
+        // v22: Mhalf/M_mod_N 直接 assign
+        Integer Mhalf;
+        Mhalf = M;
         mpz_tdiv_q_2exp(Mhalf.get_mpz(), Mhalf.get_mpz(), 1);
-        Integer M_mod_N = M.clone();
+        Integer M_mod_N;
+        M_mod_N = M;
         M_mod_N %= n;
 
-        // Incremental mod-N values for fast verification
+        // Incremental mod-N values for fast verification (v22: mpz_set)
         std::vector<Integer> crt_mod_N(d);
         for (uint32_t j = 0; j < d; ++j) {
-            crt_mod_N[j] = crt_val[j].clone();
+            crt_mod_N[j] = crt_val[j];
             crt_mod_N[j] %= n;
         }
 
@@ -636,7 +643,7 @@ private:
         for (size_t i = 0; i < K; ++i) {
             delta_mod_N[i].resize(d);
             for (uint32_t j = 0; j < d; ++j) {
-                delta_mod_N[i][j] = delta[i][j].clone();
+                delta_mod_N[i][j] = delta[i][j];
                 delta_mod_N[i][j] %= n;
             }
         }
