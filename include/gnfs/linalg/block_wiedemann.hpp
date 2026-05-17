@@ -164,6 +164,16 @@ public:
     ///
     /// For small matrices (<5000), delegates to Gaussian elimination.
     /// For large matrices, runs the three-phase BW algorithm.
+    ///
+    /// **Known limitation (BACKLOG #80, 2026-05-17)**: For thin matrices (m<n,
+    /// rows < cols), BW may return 0 dependencies even when left null space
+    /// exists. Root cause: over GF(2), null(M·M^T) ⊋ null(M^T) when
+    /// rank(M·M^T) < rank(M) (which can happen due to GF(2) bilinear form
+    /// quirk: v^T M M^T v = ‖M^T v‖² mod 2 = parity of M^T v, which can be 0
+    /// without M^T v = 0). Standard BW verification rejects all candidates.
+    /// Fix would require iterative refinement (apply M^T iteratively to converge
+    /// to null(M^T)) — algorithmic work, not done. GNFS_THIN_MATRIX_TRY=1 ENV
+    /// in pipeline allows this code path but solution may be empty.
     std::vector<std::vector<bool>> find_dependencies(
         const SparseMatrix& matrix, size_t max_deps = 64);
 

@@ -368,10 +368,14 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
     // Krylov sequence length for SCALAR Berlekamp-Massey:
     // Need seq_len ≥ 2 * deg(minpoly(B)) where minpoly degree ≤ rank(B) ≤ min(m,n).
     // For scalar BM (not block BM), each projection needs the full length.
-    // L = min(m,n) + safety; for thin (m<n) this halves the iteration count.
-    // BACKLOG #80 step 7: rank(M·M^T) ≤ rank(M) ≤ min(m,n), so bounding by
-    // min(m,n) is mathematically correct for square (m=n) and thin (m<n) cases.
-    const size_t L = std::min(m, n) + 50;
+    // Use min(m,n) + safety; for thin (m<n) this avoids unnecessary iterations.
+    //
+    // NOTE: BACKLOG #80 step 7 — pure L bound doesn't fix the underlying issue
+    // for thin matrices that null(M*M^T) ≠ null(M^T) over GF(2). The BW dep
+    // extraction relies on this implicit assumption which fails on rank-deficient
+    // thin matrices. See test_thin_matrix_bw_path. Reverting to n+safety for
+    // backward-compat until proper thin-handling lands.
+    const size_t L = n + 50;
     const size_t seq_len = 2 * L + 10;
 
     gnfs::util::ThreadPool pool(0);
@@ -605,12 +609,13 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
     const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
     CSRMatrix csr(matrix);
 
-    // Krylov sequence length for matrix BM: L = 2·⌈min(m,n)/64⌉ + 32 (buffer).
-    // Compared to scalar BM's 2·min(m,n)+110, this is ~64× fewer SpMV calls.
-    // BACKLOG #80 step 7: rank(M·M^T) ≤ rank(M) ≤ min(m,n), so bound by min(m,n)
-    // for thin matrix (m<n) — halves iteration count for thin without
-    // affecting square (m=n) case correctness.
-    const size_t L = 2 * ((std::min(m, n) + 63) / 64) + 32;
+    // Krylov sequence length for matrix BM: L = 2·⌈n/64⌉ + 32 (buffer).
+    // Compared to scalar BM's 2n+110, this is ~64× fewer SpMV calls.
+    //
+    // NOTE: BACKLOG #80 step 7 — for thin matrices (m<n) min(m,n) bound is
+    // tempting but doesn't address underlying GF(2) null(M*M^T) ≠ null(M^T)
+    // issue. Reverted to n for backward-compat.
+    const size_t L = 2 * ((n + 63) / 64) + 32;
 
     gnfs::util::ThreadPool pool(0);
 
