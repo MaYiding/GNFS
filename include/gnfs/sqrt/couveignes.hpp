@@ -383,26 +383,32 @@ public:
         // v20 优化: current_coeffs 在每次 Gray flip 后立即归约到 [0, M-1],
         // verify_current 内省去 %=M 步骤 (~10μs / 系数 / iter)。
         // 65536 iter × d=6 coeffs × 10μs = ~4 sec 节省 per dependency。
+        // v22 优化: Y / c / Y2 用 enclosing scope 复用 buffer (mpz_set 重用 mp_d
+        // 而非 mpz_init_set 重新 alloc). 65536 iter × d=6 × 1 alloc = ~393K
+        // allocs 节省 per dependency.
+        Integer Y_buf;
+        Integer c_buf;
+        Integer Y2_buf;
         auto verify_current = [&]() -> bool {
             // 不变量: current_coeffs[i] ∈ [0, M-1]。
             // 仅需 center 到 [-M/2, M/2] 再 mod N。
-            Integer Y(int64_t(0));
+            Y_buf = Integer(int64_t(0));  // mpz_set_si 复用 buffer
             for (uint32_t i = 0; i < d; ++i) {
-                Integer c = current_coeffs[i].clone();
-                if (c.compare(half_M) > 0) c -= M;
-                c %= n;
-                if (c.is_negative()) c += n;
-                c *= mpow[i];
-                Y += c;
-                Y %= n;
+                c_buf = current_coeffs[i];  // mpz_set 复用 buffer
+                if (c_buf.compare(half_M) > 0) c_buf -= M;
+                c_buf %= n;
+                if (c_buf.is_negative()) c_buf += n;
+                c_buf *= mpow[i];
+                Y_buf += c_buf;
+                Y_buf %= n;
             }
-            if (Y.is_negative()) Y += n;
+            if (Y_buf.is_negative()) Y_buf += n;
 
-            Integer Y2 = Y.clone();
-            Y2 *= Y;
-            Y2 %= n;
+            Y2_buf = Y_buf;  // mpz_set 复用 buffer
+            Y2_buf *= Y_buf;
+            Y2_buf %= n;
 
-            return Y2.compare(expected_X2) == 0;
+            return Y2_buf.compare(expected_X2) == 0;
         };
 
         auto extract_result = [&]() -> std::vector<Integer> {
