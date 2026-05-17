@@ -528,7 +528,7 @@ private:
         Point G_prev = mont_mul(Q0, j_lo * D, a24, n);
         Point G_curr = (j_lo < j_hi)
             ? mont_mul(Q0, (j_lo + 1) * D, a24, n)
-            : Point(Integer(int64_t(0)), Integer(int64_t(0)));
+            : Point();
 
         // 累积 cross products
         Integer accum(int64_t(1));
