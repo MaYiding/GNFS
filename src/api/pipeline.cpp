@@ -1089,9 +1089,9 @@ FactorResult Pipeline::extract_factors(
         // Try Y
         if (try_factor(rat_result.value, alg_value)) break;
 
-        // Try -Y
-        Integer alg_neg = n_.clone();
-        alg_neg -= alg_value;
+        // Try -Y — mpz_sub writes n_ - alg_value directly (skip clone+ -=)
+        Integer alg_neg;
+        mpz_sub(alg_neg.get_mpz(), n_.get_mpz(), alg_value.get_mpz());
         if (try_factor(rat_result.value, alg_neg)) break;
     }
 
@@ -1121,8 +1121,9 @@ FactorResult Pipeline::extract_factors(
 
                 if (try_factor(rat_result.value, alg_val)) break;
 
-                Integer neg = n_.clone();
-                neg -= alg_val;
+                // mpz_sub writes n_ - alg_val directly (skip clone+ -=)
+                Integer neg;
+                mpz_sub(neg.get_mpz(), n_.get_mpz(), alg_val.get_mpz());
                 if (try_factor(rat_result.value, neg)) break;
             }
         }
