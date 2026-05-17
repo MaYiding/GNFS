@@ -596,7 +596,7 @@ private:
             uint64_t B1, uint64_t B2) {
 
         Integer accum(1);
-        Point Qcurr(Q0.x.clone(), Q0.z.clone());
+        Point Qcurr = Q0;  // copy ctor (Integer fields auto-clone)
         uint64_t check_interval = 0;
         std::optional<Integer> found;
 
