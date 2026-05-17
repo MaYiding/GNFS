@@ -451,6 +451,9 @@ private:
         poly_coeffs.reserve(static_cast<size_t>(deg + 1));
         for (int i = 0; i <= deg; ++i) poly_coeffs.push_back(poly.coeff(i));
 
+        // (p-1)/2 depends only on p — hoist out of attempt loop
+        const Integer exp_val{int64_t((p - 1) / 2)};
+
         for (int attempt = 0; attempt < 100; ++attempt) {
             uint64_t a = rng() % p;
             MP x_plus_a;
@@ -458,7 +461,6 @@ private:
             x_plus_a.set_coeff(1, 1);
 
             // (x+a)^{(p-1)/2} mod poly mod p
-            Integer exp_val(static_cast<int64_t>((p - 1) / 2));
             auto power_result = MP::power(x_plus_a, exp_val, poly_coeffs, p);
 
             // subtract 1
