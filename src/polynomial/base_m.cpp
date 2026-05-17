@@ -47,25 +47,21 @@ bool eisenstein_check(const IntPolynomial& f) {
     if (a0.is_zero()) return false;
     if (a0.is_negative()) a0.negate();
 
-    // 试小素数 p 是否满足完整 Eisenstein
+    // 试小素数 p 是否满足完整 Eisenstein (mpz_divisible_ui_p zero-alloc)
     constexpr uint64_t small_primes[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31};
     for (uint64_t p : small_primes) {
-        Integer ip(static_cast<uint64_t>(p));
-
         // p ∤ a_d
-        if ((f[d] % ip).is_zero()) continue;
+        if (mpz_divisible_ui_p(f[d].get_mpz(), p)) continue;
 
         // p | a_i for 0 ≤ i < d
         bool all_div = true;
         for (uint32_t i = 0; i < d; ++i) {
-            if (!(f[i] % ip).is_zero()) { all_div = false; break; }
+            if (!mpz_divisible_ui_p(f[i].get_mpz(), p)) { all_div = false; break; }
         }
         if (!all_div) continue;
 
-        // p² ∤ a_0
-        Integer p_sq = ip.clone();
-        p_sq *= ip;
-        if ((f[0] % p_sq).is_zero()) continue;
+        // p² ∤ a_0 (p ≤ 31, p² ≤ 961 fits ulong easily)
+        if (mpz_divisible_ui_p(f[0].get_mpz(), p * p)) continue;
 
         return true;  // Eisenstein with this p → irreducible
     }
