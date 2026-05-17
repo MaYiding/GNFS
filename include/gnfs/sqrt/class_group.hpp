@@ -263,12 +263,15 @@ private:
             Integer cur_pivot = M[k][k].clone();
 
             // Eliminate below pivot
+            // v22: term1/term2 复用 buffer (n² 节省 2×(n-k-1)² allocs)
+            Integer term1;
+            Integer term2;
             for (uint32_t i = k + 1; i < n; ++i) {
                 for (uint32_t j = k + 1; j < n; ++j) {
                     // M[i][j] = (cur_pivot * M[i][j] - M[i][k] * M[k][j]) / prev_pivot
-                    Integer term1 = cur_pivot.clone();
+                    term1 = cur_pivot;
                     term1 *= M[i][j];
-                    Integer term2 = M[i][k].clone();
+                    term2 = M[i][k];
                     term2 *= M[k][j];
                     term1 -= term2;
                     term1 /= prev_pivot; // exact division guaranteed by Bareiss
