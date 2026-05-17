@@ -286,10 +286,12 @@ public:
 
         // 二项式展开: f(x+t) = sum_i f[i] * (x+t)^i
         // (x+t)^i = sum_j C(i,j) * x^j * t^{i-j}
+        // v22: term buffer 复用, 节省 ~d²/2 allocs/translate
+        Integer term;
         for (uint32_t i = 0; i <= d; ++i) {
             for (uint32_t j = 0; j <= i; ++j) {
                 // 贡献: f[i] * C(i,j) * t^{i-j} 到 x^j
-                Integer term = coeffs_[i].clone();
+                term = coeffs_[i];
                 term *= static_cast<int64_t>(binom[i][j]);
                 term *= t_powers[i - j];
                 new_coeffs[j] += term;
