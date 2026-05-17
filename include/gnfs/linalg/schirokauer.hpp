@@ -746,7 +746,7 @@ public:
                 uint64_t c0 = static_cast<uint64_t>(a_mod);
                 uint64_t c1 = neg_b;
                 if (c0 == 0 && c1 == 0) {
-                    for (uint32_t i = 0; i < fi.degree; ++i) result.push_back(0);
+                    result.resize(result.size() + fi.degree);  // zero-fill
                     continue;
                 }
                 // Strip ℓ-part: if both coefficients are divisible by ℓ, divide out
@@ -760,7 +760,7 @@ public:
                 // Need k-v ≥ 2 bits of ℓ-adic precision for (coeff-1)/ℓ mod ℓ.
                 // Below that threshold the extracted bits are below noise floor.
                 if (strip_v + 2 > config_.exponent_k) {
-                    for (uint32_t i = 0; i < fi.degree; ++i) result.push_back(0);
+                    result.resize(result.size() + fi.degree);  // zero-fill
                     continue;
                 }
                 // Ensure coefficients stay in [0, ell_k)
@@ -789,7 +789,7 @@ public:
                 uint64_t c0 = static_cast<uint64_t>(a_mod);
                 uint64_t c1 = neg_b;
                 if (c0 == 0 && c1 == 0) {
-                    for (uint32_t i = 0; i < fi.degree; ++i) result.push_back(0);
+                    result.resize(result.size() + fi.degree);  // zero-fill
                     continue;
                 }
                 // Strip ℓ-part: if both coefficients are divisible by ℓ, divide out
@@ -802,7 +802,7 @@ public:
                 }
                 // Need k-v ≥ 2 bits of ℓ-adic precision for (coeff-1)/ℓ mod ℓ.
                 if (strip_v + 2 > config_.exponent_k) {
-                    for (uint32_t i = 0; i < fi.degree; ++i) result.push_back(0);
+                    result.resize(result.size() + fi.degree);  // zero-fill
                     continue;
                 }
                 c0 %= info.ell_k;
@@ -820,7 +820,7 @@ public:
         }
 
         // Pad to degree_ if needed (shouldn't happen if factorization is correct)
-        while (result.size() < degree_) result.push_back(0);
+        if (result.size() < degree_) result.resize(degree_);
 
         return result;
     }
