@@ -413,17 +413,14 @@ std::vector<uint32_t> FactorBaseBuilder::find_roots_mod_p(const PolynomialContex
     }
 
     // Cantor-Zassenhaus algorithm: O(d^2 * log p) instead of O(p)
-    // Step 1: Get f(x) mod p
+    // Step 1: Get f(x) mod p — mpz_fdiv_ui returns [0, p-1] directly (zero alloc)
     uint32_t d = ctx.degree();
     std::vector<uint64_t> f_mod(d + 1);
-    core::Integer p_int(static_cast<int64_t>(p));  // hoist out of d+1 loop
-    core::Integer c_buf;
     for (uint32_t i = 0; i <= d; ++i) {
-        c_buf = ctx.coeff(i);  // mpz_set, reuse buffer
-        c_buf %= p_int;
-        if (c_buf.is_negative()) c_buf += p_int;
-        f_mod[i] = c_buf.to_uint64();
+        f_mod[i] = static_cast<uint64_t>(mpz_fdiv_ui(ctx.coeff(i).get_mpz(), p));
     }
+    // p_int still needed for ModularPoly::power below
+    core::Integer p_int(static_cast<int64_t>(p));
 
     // Step 2: Compute g = gcd(x^p - x, f) mod p
     // This gives the product of all distinct linear factors of f
