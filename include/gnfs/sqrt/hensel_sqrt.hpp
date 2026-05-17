@@ -630,7 +630,7 @@ private:
 
         // m^j mod N (v22: mpw[j] = mpow[j-1] mpz_set)
         std::vector<Integer> mpow(d);
-        mpow[0] = Integer(int64_t(1));
+        mpow[0] = int64_t(1);  // mpz_set_si on default-init slot
         for (uint32_t j = 1; j < d; ++j) {
             mpow[j] = mpow[j-1];
             mpow[j] *= nf.m();
@@ -900,9 +900,11 @@ private:
         std::vector<Integer> P_final;
         if (num_lifts > 0) {
             Integer final_mod(static_cast<int64_t>(p));
+            // hoist temp buffer — reused across num_lifts iter
+            Integer fm_temp;
             for (size_t i = 0; i < num_lifts; ++i) {
-                Integer temp = final_mod.clone();
-                final_mod *= temp;
+                fm_temp = final_mod;  // mpz_set into reused buffer
+                final_mod *= fm_temp;
             }
 
             if (config_.verbose) {
