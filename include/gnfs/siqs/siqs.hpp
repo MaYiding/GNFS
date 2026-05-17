@@ -469,7 +469,8 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb,
     // Reduce B mod A
     poly.B = poly.B % poly.A;
     // Center: if B > A/2, B = B - A
-    Integer half_A = poly.A / Integer(2);
+    Integer half_A = poly.A.clone();
+    half_A /= int64_t(2);
     if (poly.B > half_A) {
         poly.B = poly.B - poly.A;
     }
