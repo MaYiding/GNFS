@@ -1048,7 +1048,9 @@ private:
         }
 
         // Center coefficients and reduce mod N
-        Integer half_mod = modulus.clone();
+        // v22: half_mod 直接 assign
+        Integer half_mod;
+        half_mod = modulus;
         mpz_tdiv_q_2exp(half_mod.get_mpz(), half_mod.get_mpz(), 1);
 
         // Diagnostic: print pre-centering and pre-mod-N coefficient sizes
@@ -1096,9 +1098,10 @@ private:
                       << (s2_at_m.compare(p_at_m) == 0 ? "YES" : "NO") << "\n";
         }
 
+        // v22: result_coeffs[i] = S[i] (mpz_set into default-init slot)
         std::vector<Integer> result_coeffs(d);
         for (uint32_t i = 0; i < d; ++i) {
-            result_coeffs[i] = S[i].clone();
+            result_coeffs[i] = S[i];
             if (result_coeffs[i].compare(half_mod) > 0) {
                 result_coeffs[i] -= modulus;
             }
@@ -1114,11 +1117,14 @@ private:
             const NumberField& nf, uint64_t p) {
         uint32_t d = nf.degree();
         std::vector<uint64_t> f_prime(d);
+        // v22: c 复用 + p_int 提取
+        Integer c;
+        const Integer p_int(p);
         for (uint32_t i = 0; i < d; ++i) {
-            Integer c = nf.coeff(i + 1).clone();
+            c = nf.coeff(i + 1);
             c *= Integer(static_cast<int64_t>(i + 1));
-            c %= Integer(p);
-            if (c.is_negative()) c += Integer(p);
+            c %= p_int;
+            if (c.is_negative()) c += p_int;
             f_prime[i] = c.to_uint64();
         }
         return f_prime;
@@ -1127,9 +1133,10 @@ private:
     /// Compute f'(x) as Integer polynomial (d coefficients, degree d-1)
     [[nodiscard]] static std::vector<Integer> compute_f_derivative_int(
             const std::vector<Integer>& f, uint32_t d) {
+        // v22: f_prime[i] = f[i+1] (mpz_set into default-init)
         std::vector<Integer> f_prime(d);
         for (uint32_t i = 0; i < d; ++i) {
-            f_prime[i] = f[i + 1].clone();
+            f_prime[i] = f[i + 1];
             f_prime[i] *= Integer(static_cast<int64_t>(i + 1));
         }
         return f_prime;
@@ -1142,13 +1149,16 @@ private:
         const Integer& n = nf.n();
 
         // f'(x) = d·c_d·x^{d-1} + (d-1)·c_{d-1}·x^{d-2} + ... + c_1
-        Integer result = nf.coeff(d).clone();
+        // v22: result/term 直接 assign, 复用
+        Integer result;
+        result = nf.coeff(d);
         result *= Integer(static_cast<int64_t>(d));
         result %= n;
 
+        Integer term;
         for (int i = static_cast<int>(d) - 1; i >= 1; --i) {
             result *= m;
-            Integer term = nf.coeff(i).clone();
+            term = nf.coeff(i);
             term *= Integer(static_cast<int64_t>(i));
             result += term;
             result %= n;
@@ -1179,10 +1189,13 @@ private:
     [[nodiscard]] static std::vector<uint64_t> get_f_mod_p(const NumberField& nf, uint64_t p) {
         uint32_t d = nf.degree();
         std::vector<uint64_t> f(d + 1);
+        // v22: c 复用 + p_int 提取
+        Integer c;
+        const Integer p_int(p);
         for (uint32_t i = 0; i <= d; ++i) {
-            Integer c = nf.coeff(i).clone();
-            c %= Integer(p);
-            if (c.is_negative()) c += Integer(p);
+            c = nf.coeff(i);
+            c %= p_int;
+            if (c.is_negative()) c += p_int;
             f[i] = c.to_uint64();
         }
         return f;
