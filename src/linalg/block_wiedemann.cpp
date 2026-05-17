@@ -129,6 +129,17 @@ void bw_spmv_B(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
     bw_spmv_forward(M, tmp, y, pool);
 }
 
+// B' * V = M^T * (M * V) — mirror of bw_spmv_B for thin matrix BW variant.
+// Used when working in R^n (cols) instead of R^m (rows). x ∈ R^n (cols),
+// tmp ∈ R^m (rows), y ∈ R^n (cols). BACKLOG #80 step 7: fix BW thin matrix
+// (m<n) by switching operator domain. M^T·M·w = 0 over GF(2) is a strict
+// linear relation (not the quadratic-form quirk that breaks M·M^T path).
+void bw_spmv_B_prime(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
+                     BlockVector& tmp, gnfs::util::ThreadPool& pool) {
+    bw_spmv_forward(M, x, tmp, pool);   // tmp = M·x  (m-vec)
+    bw_spmv_transpose(M, tmp, y, pool); // y   = M^T·tmp (n-vec)
+}
+
 // ============================================================================
 // Scalar Berlekamp-Massey over GF(2)
 // ============================================================================
