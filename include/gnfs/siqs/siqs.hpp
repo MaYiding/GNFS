@@ -963,7 +963,7 @@ inline SIQSRelation merge_two(const SIQSRelation& a, const SIQSRelation& b,
     // Copy existing merge_lps from both sides
     merged.merge_lps = a.merge_lps;
     merged.merge_lps.reserve(a.merge_lps.size() + b.merge_lps.size());
-    for (auto lp : b.merge_lps) merged.merge_lps.push_back(lp);
+    merged.merge_lps.insert(merged.merge_lps.end(), b.merge_lps.begin(), b.merge_lps.end());
     // Build fb_indices — likely union of a.fb_indices and b.fb_indices.
     merged.fb_indices.reserve(a.fb_indices.size() + b.fb_indices.size());
     for (size_t i = 0; i < fb_size; i++) {
