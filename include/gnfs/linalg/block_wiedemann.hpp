@@ -171,12 +171,13 @@ public:
     /// (M^T·M)·w = 0 strictly. Recovery: u = M·w ∈ R^m satisfies M^T·u = 0
     /// by associativity, giving a valid left null space vector (when u ≠ 0).
     ///
-    /// **Edge case** (mirror of standard path's GF(2) quirk): if matrix has
-    /// extreme rank deficiency (rank ≪ m), null(M^T·M) may coincide with
-    /// null(M) entirely, so every w found by BW lives in null(M) and u = M·w
-    /// is always 0 — fundamental algorithmic limit, no recovery possible by
-    /// this approach. Realistic GNFS matrices (rank ≈ m) are unaffected and
-    /// produce valid dependencies as verified by test_thin_matrix_bw_solve.
+    /// **Robustness**: empirically verified across rank profiles —
+    /// rank ≈ m (test_thin_matrix_bw_solve, 5200×6000 with ≈100 deps)
+    /// AND rank ≪ m (test_thin_matrix_bw_extreme_rank_deficiency,
+    /// 5200×6000 with rank=100, 5100 deps available). Multi-seed retry
+    /// (3 seeds) handles Phase 1 Krylov projection edge cases. Result
+    /// quality enforced by Phase 4 verification (M^T·u=0) — never returns
+    /// invalid deps even on extreme rank deficiency.
     std::vector<std::vector<bool>> find_dependencies(
         const SparseMatrix& matrix, size_t max_deps = 64);
 

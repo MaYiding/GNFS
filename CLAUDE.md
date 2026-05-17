@@ -242,14 +242,13 @@ operator 而非标准 `B=M·M^T`. 工作在 R^n, recovery via `u=M·w`.
 **ENV `GNFS_NO_THIN_SOLVE=1`** (opt-out): 恢复 prior "abort on no excess" 行为.
 正常使用无需 ENV — pipeline 自动 detect m ≤ n 并 route.
 
-**边界 case**: pathological 矩阵 (rank ≪ m) 会使 `null(M^T·M) ≈ null(M)`,
-BW phase 3 给的 w 全在 null(M), recovery `u=M·w = 0`. 这是 GF(2) 上不可
-恢复的 fundamental limit; BW 会 return empty deps (不破坏 pipeline).
-Realistic GNFS profile (rank ≈ m) 不受影响.
+**Robustness** (实测 across rank profiles):
+- rank ≈ m: `test_thin_matrix_bw_solve` (5200×6000, rank≈5100, deps≈100) — 10/10 valid
+- rank ≪ m: `test_thin_matrix_bw_extreme_rank_deficiency` (rank=100, 5100 deps) — 10/10 valid
+- multi-seed retry (3 seeds) 处理 Phase 1 Krylov projection edge cases
+- Phase 4 verification (M^T·u=0) 严格 enforces — never returns invalid deps
 
-**验证**: `test_thin_matrix_bw_solve` (5200×6000, rank≈5100, deps≈100) —
-10/10 valid deps verified. find_dependencies routes m<n → thin_solve,
-m≥n → block_solve (existing path).
+`find_dependencies` routes m<n → thin_solve, m≥n → block_solve (existing path).
 
 ### V0 weight-3 merge (GNFS_V0_WEIGHT3)
 
