@@ -214,13 +214,13 @@ private:
         // Integer default-inits to 0 — no explicit zero-fill needed.
         std::vector<std::vector<Integer>> M(n, std::vector<Integer>(n));
 
-        // First deg_g rows from f
+        // First deg_g rows from f (mpz_set into existing Integer slot)
         for (uint32_t row = 0; row < deg_g; ++row) {
             for (uint32_t k = 0; k <= deg_f; ++k) {
                 // row-th shifted copy: f[k] at column row + k
                 uint32_t col = row + k;
                 if (col < n) {
-                    M[row][col] = f[deg_f - k].clone(); // coefficients in descending order
+                    M[row][col] = f[deg_f - k]; // coefficients in descending order
                 }
             }
         }
@@ -230,7 +230,7 @@ private:
             for (uint32_t k = 0; k <= deg_g; ++k) {
                 uint32_t col = row + k;
                 if (col < n) {
-                    M[deg_g + row][col] = g[deg_g - k].clone();
+                    M[deg_g + row][col] = g[deg_g - k];
                 }
             }
         }
@@ -328,7 +328,7 @@ public:
 
         // --- build f_0 = f ---
         IntPoly f0(static_cast<size_t>(degree) + 1);
-        for (uint32_t i = 0; i <= degree; ++i) f0.c[i] = coeffs[i].clone();
+        for (uint32_t i = 0; i <= degree; ++i) f0.c[i] = coeffs[i];  // mpz_set into resized slot
 
         // --- build f_1 = f' ---
         IntPoly f1(degree);
