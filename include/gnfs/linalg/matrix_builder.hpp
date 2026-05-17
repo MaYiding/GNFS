@@ -199,10 +199,13 @@ public:
             // Full irreducibility check mod 2 (not just "no roots")
             uint32_t d_check = ctx.degree();
             std::vector<uint64_t> f_mod2(d_check + 1);
+            // v22: c 复用 + Integer(2) 提到 loop 外
+            Integer c;
+            const Integer two(uint64_t(2));
             for (uint32_t i = 0; i <= d_check; ++i) {
-                Integer c = ctx.coeff(i).clone();
-                c %= Integer(uint64_t(2));
-                if (c.is_negative()) c += Integer(uint64_t(2));
+                c = ctx.coeff(i);
+                c %= two;
+                if (c.is_negative()) c += two;
                 f_mod2[i] = c.to_uint64();
             }
             bool f_irred_mod2 = sqrt::ModularPoly::is_irreducible(f_mod2, 2);
@@ -246,13 +249,16 @@ public:
             if (!config_.schirokauer_primes.empty()) {
                 // Validate user-specified primes: only keep inert ones
                 uint32_t d = ctx.degree();
+                // v22: c 复用 across primes × coeffs
+                Integer c;
                 for (uint32_t ell : config_.schirokauer_primes) {
                     // Full Rabin irreducibility test (not just "no roots")
                     std::vector<uint64_t> f_mod_ell(d + 1);
+                    const Integer ell_int(static_cast<uint64_t>(ell));
                     for (uint32_t i = 0; i <= d; ++i) {
-                        Integer c = ctx.coeff(i).clone();
-                        c %= Integer(static_cast<uint64_t>(ell));
-                        if (c.is_negative()) c += Integer(static_cast<uint64_t>(ell));
+                        c = ctx.coeff(i);
+                        c %= ell_int;
+                        if (c.is_negative()) c += ell_int;
                         f_mod_ell[i] = c.to_uint64();
                     }
                     if (sqrt::ModularPoly::is_irreducible(f_mod_ell, ell)) {
