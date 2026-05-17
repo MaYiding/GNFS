@@ -259,12 +259,11 @@ public:
         // std::vector<Integer>(d+1) default-inits Integer to 0 — no explicit zero loop needed.
         std::vector<Integer> new_coeffs(d + 1);
 
-        // 预计算 t 的幂次
+        // 预计算 t 的幂次 — mpz_mul_si into default-init slot (skips set step)
         std::vector<Integer> t_powers(d + 1);
         t_powers[0] = int64_t(1);  // mpz_set_si on default-init slot
         for (uint32_t i = 1; i <= d; ++i) {
-            t_powers[i] = t_powers[i-1];  // mpz_set into default-init buffer
-            t_powers[i] *= t;
+            mpz_mul_si(t_powers[i].get_mpz(), t_powers[i-1].get_mpz(), t);
         }
 
         // 二项式系数表(静态初始化,线程安全)。GNFS degree 上限 6,
@@ -286,13 +285,13 @@ public:
 
         // 二项式展开: f(x+t) = sum_i f[i] * (x+t)^i
         // (x+t)^i = sum_j C(i,j) * x^j * t^{i-j}
-        // v22: term buffer 复用, 节省 ~d²/2 allocs/translate
+        // mpz_mul_si writes coeffs[i]*binom directly into term (skip set step)
         Integer term;
         for (uint32_t i = 0; i <= d; ++i) {
             for (uint32_t j = 0; j <= i; ++j) {
                 // 贡献: f[i] * C(i,j) * t^{i-j} 到 x^j
-                term = coeffs_[i];
-                term *= static_cast<int64_t>(binom[i][j]);
+                mpz_mul_si(term.get_mpz(), coeffs_[i].get_mpz(),
+                           static_cast<long>(binom[i][j]));
                 term *= t_powers[i - j];
                 new_coeffs[j] += term;
             }
