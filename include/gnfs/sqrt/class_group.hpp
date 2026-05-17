@@ -384,7 +384,7 @@ public:
         // --- helper: divide out abs(content) to prevent coefficient blowup ---
         auto reduce_content = [](IntPoly& P) {
             // v22: ax 复用 (mpz_set)
-            Integer content(int64_t(0));
+            Integer content;  // default ctor = 0
             Integer ax;
             for (const auto& x : P.c) {
                 if (!x.is_zero()) {

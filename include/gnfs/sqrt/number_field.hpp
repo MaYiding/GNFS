@@ -481,7 +481,7 @@ private:
     void reduce_mod(std::vector<Integer>& coeffs, const Integer& modulus) const {
         // 计算 f_d 的模逆
         // v22: f_d 直接 assign (mpz_set 而非 mpz_init_set)
-        Integer f_d_inv(int64_t(1));
+        Integer f_d_inv(1);
         {
             Integer f_d;
             f_d = f_coeffs_[degree_];

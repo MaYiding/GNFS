@@ -81,7 +81,7 @@ private:
         Integer x;
         Integer z;
 
-        Point() : x(int64_t(0)), z(int64_t(1)) {}
+        Point() : x(), z(1) {}
         Point(Integer x_, Integer z_) : x(std::move(x_)), z(std::move(z_)) {}
     };
 
@@ -531,7 +531,7 @@ private:
             : Point();
 
         // 累积 cross products
-        Integer accum(int64_t(1));
+        Integer accum(1);
         uint64_t batch_start_j = j_lo;
         uint64_t steps_in_batch = 0;
         constexpr uint64_t BATCH_SIZE = 16;
@@ -621,7 +621,7 @@ private:
             const Point& Q0, const Integer& n, const Integer& a24,
             uint64_t B1, uint64_t B2) {
 
-        Integer accum(int64_t(1));
+        Integer accum(1);
         Point Qcurr(Q0.x.clone(), Q0.z.clone());
         uint64_t check_interval = 0;
         std::optional<Integer> found;

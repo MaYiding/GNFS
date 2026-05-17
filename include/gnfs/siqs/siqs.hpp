@@ -768,8 +768,8 @@ inline void sieve_polynomial(
         bool negative = (mpz_sgn(Q_mpz) < 0);
         if (negative) mpz_neg(Q_mpz, Q_mpz);
 
-        Integer value(int64_t(0)); mpz_set(value.get_mpz(), val_mpz);
-        Integer Q(int64_t(0)); mpz_set(Q.get_mpz(), Q_mpz);
+        Integer value; mpz_set(value.get_mpz(), val_mpz);
+        Integer Q; mpz_set(Q.get_mpz(), Q_mpz);
 
         // Trial divide Q by factor base primes using reusable exponent buffer
         // (avoids per-candidate heap allocation of fb.size() bytes)

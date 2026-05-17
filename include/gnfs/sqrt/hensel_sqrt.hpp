@@ -1346,7 +1346,7 @@ private:
             uint32_t d,
             const Integer& modulus) {
         // v22: f_d 直接 assign
-        Integer f_lead_inv(int64_t(1));
+        Integer f_lead_inv(1);
         Integer f_d;
         f_d = f[d];
         f_d %= modulus;
