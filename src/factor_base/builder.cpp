@@ -487,6 +487,14 @@ std::vector<uint32_t> FactorBaseBuilder::extract_roots_from_poly(
     std::mt19937_64 rng(p);  // deterministic seed per prime
     std::vector<uint32_t> roots;
 
+    // (p-1)/2 + poly_coeffs depend only on (p, poly), not attempt — hoist
+    const core::Integer exp_val{int64_t((p - 1) / 2)};
+    std::vector<uint64_t> poly_coeffs;
+    poly_coeffs.reserve(static_cast<size_t>(poly.degree() + 1));
+    for (int i = 0; i <= poly.degree(); ++i) {
+        poly_coeffs.push_back(poly.coeff(i));
+    }
+
     // Try random splits
     for (int attempt = 0; attempt < 100 && static_cast<int>(roots.size()) < deg; ++attempt) {
         uint64_t a = rng() % p;
@@ -497,15 +505,7 @@ std::vector<uint32_t> FactorBaseBuilder::extract_roots_from_poly(
         x_plus_a.set_coeff(0, a);
         x_plus_a.set_coeff(1, 1);
 
-        // Get coefficients of current poly for reduction
-        std::vector<uint64_t> poly_coeffs;
-        poly_coeffs.reserve(static_cast<size_t>(poly.degree() + 1));
-        for (int i = 0; i <= poly.degree(); ++i) {
-            poly_coeffs.push_back(poly.coeff(i));
-        }
-
         // (x+a)^{(p-1)/2} mod poly mod p
-        core::Integer exp_val(static_cast<int64_t>((p - 1) / 2));
         auto power_result = sqrt::ModularPoly::power(x_plus_a, exp_val, poly_coeffs, p);
 
         // Subtract 1
