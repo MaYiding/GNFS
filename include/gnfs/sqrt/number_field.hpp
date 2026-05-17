@@ -347,11 +347,10 @@ public:
         Integer result;  // default ctor = 0
         Integer m_power(1);
 
-        // v22: 复用 term buffer
+        // mpz_mul writes elem.coeff(i)*m_power directly into term (skip set step)
         Integer term;
         for (size_t i = 0; i <= elem.degree(); ++i) {
-            term = elem.coeff(i);
-            term *= m_power;
+            mpz_mul(term.get_mpz(), elem.coeff(i).get_mpz(), m_power.get_mpz());
             result += term;
 
             if (i < elem.degree()) {
@@ -367,11 +366,10 @@ public:
         Integer result;  // default ctor = 0
         Integer m_power(1);
 
-        // v22: 复用 term buffer
+        // mpz_mul writes elem.coeff(i)*m_power directly into term (skip set step)
         Integer term;
         for (size_t i = 0; i <= elem.degree(); ++i) {
-            term = elem.coeff(i);
-            term *= m_power;
+            mpz_mul(term.get_mpz(), elem.coeff(i).get_mpz(), m_power.get_mpz());
             term %= n_;
             result += term;
             result %= n_;
