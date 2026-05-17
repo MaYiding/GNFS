@@ -555,6 +555,7 @@ sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(
 
     // Copy a's coefficients
     std::vector<uint64_t> rem;
+    rem.reserve(static_cast<size_t>(a.degree() + 1));
     for (int i = 0; i <= a.degree(); ++i) {
         rem.push_back(a.coeff(i));
     }
@@ -608,6 +609,11 @@ void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const Polyno
     uint64_t fd_u64 = fd_fits ? ctx.leading_coeff().to_uint64() : 0;
 
     std::vector<uint32_t> primes;
+    // π(max_p)/π(min_p) approximation — reserve range/log avoids realloc.
+    if (max_p > min_p) {
+        primes.reserve(static_cast<size_t>(
+            (max_p - min_p) / std::max(std::log(static_cast<double>(max_p)), 1.0)));
+    }
     for (uint64_t p = min_p; p <= max_p; ++p) {
         if (!is_prime_sieve[static_cast<size_t>(p)]) continue;
         uint32_t p32 = static_cast<uint32_t>(p);
