@@ -16,7 +16,7 @@ namespace {
 /// Returns polynomial with degree <= `degree` (may be less if m is too large).
 IntPolynomial construct_base_m_poly(const Integer& n, const Integer& m, uint32_t degree) {
     IntPolynomial f(0);
-    Integer temp = n.clone();
+    Integer temp = n;   // Integer copy ctor
 
     // Extract d lower-order base-m digits
     for (uint32_t i = 0; i < degree; ++i) {
@@ -103,7 +103,7 @@ bool check_irreducible_over_Q(const IntPolynomial& f) {
 
 } // anonymous namespace
 
-BaseMSelector::BaseMSelector(const Integer& n) : n_(n.clone()) {}
+BaseMSelector::BaseMSelector(const Integer& n) : n_(n) {}  // Integer copy ctor
 
 PolynomialSelectionResult BaseMSelector::select(const Integer& n, uint32_t degree) {
     // Compute m_base ≈ n^(1/degree)
@@ -152,7 +152,7 @@ PolynomialSelectionResult BaseMSelector::select(const Integer& n, uint32_t degre
         // Fallback: use m_base (overwhelmingly likely irreducible)
         PolynomialSelectionResult result;
         result.degree = degree;
-        result.m = m_base.clone();
+        result.m = m_base;  // Integer op=
         result.f = construct_base_m_poly(n, m_base, degree);
         result.success = true;
         return result;
@@ -221,13 +221,13 @@ PolynomialContext BaseMSelector::create_context(const Integer& n, const Polynomi
     std::vector<Integer> f_coeffs;
     f_coeffs.reserve(result.f.degree() + 1);
     for (size_t i = 0; i <= result.f.degree(); ++i) {
-        f_coeffs.push_back(result.f[i].clone());
+        f_coeffs.emplace_back(result.f[i]);  // Integer copy ctor into vec slot
     }
 
     // Compute skewness from polynomial coefficients: s ≈ (c_0 / c_d)^{1/d}
     double skewness = PolynomialOptimizer::estimate_skewness(result.f);
 
-    return PolynomialContext(n.clone(), std::move(f_coeffs), result.m.clone(), skewness);
+    return PolynomialContext(n, std::move(f_coeffs), result.m, skewness);
 }
 
 PolynomialContext BaseMSelector::select_poly(uint32_t degree) {

@@ -43,7 +43,7 @@ public:
             Integer q_init, r_init;
             Integer::divmod(q_init, r_init, fm_init, n);
             if (r_init.is_zero()) {
-                return initial.clone();
+                return initial;  // Integer copy ctor (implicit conversion to optional)
             }
         }
 

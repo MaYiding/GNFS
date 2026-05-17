@@ -351,7 +351,7 @@ Pipeline::select_method(size_t n_bits, size_t n_digits,
 // ============================================================
 
 Pipeline::Pipeline(const Integer& n, const Config& config)
-    : n_(n.clone())
+    : n_(n)  // Integer copy ctor
     , config_(config)
     , params_(config.apply_to(n))
     , start_time_(std::chrono::high_resolution_clock::now())
@@ -1016,7 +1016,7 @@ FactorResult Pipeline::extract_factors(
     auto t0_sqrt = std::chrono::high_resolution_clock::now();
 
     FactorResult result;
-    result.n = n_.clone();
+    result.n = n_;  // Integer op=
     result.stats = stats_;
     result.factors.reserve(2);  // success path pushes 2 factors
 
@@ -1165,14 +1165,14 @@ FactorResult Pipeline::run() {
         emit_log(LogLevel::Error, Phase::PolynomialSelection,
                  "N is prime or probably prime");
         FactorResult r;
-        r.n = n_.clone();
+        r.n = n_;  // Integer op=
         r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
         return r;
     }
     if (mpz_cmp_si(n_.get_mpz(), 1) <= 0) {
         FactorResult r;
-        r.n = n_.clone();
+        r.n = n_;  // Integer op=
         r.stats = stats_;
         return r;
     }
@@ -1189,11 +1189,12 @@ FactorResult Pipeline::run() {
                 mpz_pow_ui(check.get_mpz(), root.get_mpz(), exp);
                 if (check.compare(n_) == 0) {
                     FactorResult r;
-                    r.n = n_.clone();
+                    r.n = n_;  // Integer op=
                     r.success = true;
                     r.factors.reserve(2);
-                    r.factors.push_back(root.clone());
-                    r.factors.push_back(n_.clone());
+                    r.factors.push_back(root);    // Integer copy ctor
+                    r.factors.push_back(n_);
+
                     r.factors[1] /= root;
                     r.stats = stats_;
                     r.stats.timings.total_s = elapsed_s();
@@ -1221,16 +1222,16 @@ FactorResult Pipeline::run() {
                                     FactorizationMethod m,
                                     const std::string& m_reason) -> FactorResult {
         FactorResult r;
-        r.n = n_.clone();
+        r.n = n_;  // Integer op=
         r.success = true;
-        Integer f2 = n_.clone();
+        Integer f2 = n_;  // Integer copy ctor
         f2 /= f1;
         if (f1.compare(f2) <= 0) {
-            r.factors.push_back(f1.clone());
+            r.factors.push_back(f1);  // Integer copy ctor
             r.factors.push_back(std::move(f2));
         } else {
-            r.factors.push_back(f2.clone());
-            r.factors.push_back(f1.clone());
+            r.factors.push_back(f2);
+            r.factors.push_back(f1);
         }
         r.stats = stats_;
         r.stats.method_used = m;
@@ -1258,7 +1259,7 @@ FactorResult Pipeline::run() {
     // If user forced trial-only, stop here
     if (method == FactorizationMethod::TrialDivision) {
         FactorResult r;
-        r.n = n_.clone();
+        r.n = n_;  // Integer op=
         r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
         return r;
@@ -1319,7 +1320,7 @@ FactorResult Pipeline::run() {
     // If user forced rho-only, stop here
     if (method == FactorizationMethod::PollardRho) {
         FactorResult r;
-        r.n = n_.clone();
+        r.n = n_;  // Integer op=
         r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
         return r;
@@ -1402,9 +1403,9 @@ FactorResult Pipeline::run() {
 
             FactorResult r;
             r.success = true;
-            r.n = n_.clone();
-            auto f1 = siqs_result->factor1.clone();
-            auto f2 = siqs_result->factor2.clone();
+            r.n = n_;  // Integer op=
+            Integer f1 = siqs_result->factor1;  // Integer copy ctor
+            Integer f2 = siqs_result->factor2;
             if (f1 > f2) std::swap(f1, f2);
             r.factors.push_back(std::move(f1));
             r.factors.push_back(std::move(f2));
@@ -1420,7 +1421,7 @@ FactorResult Pipeline::run() {
             emit_log(LogLevel::Warn, Phase::PolynomialSelection,
                      "SIQS failed (timeout=" + std::to_string(siqs_timeout) + "s)");
             FactorResult r;
-            r.n = n_.clone();
+            r.n = n_;  // Integer op=
             r.stats = stats_;
             r.stats.timings.total_s = elapsed_s();
             return r;
@@ -1452,7 +1453,7 @@ FactorResult Pipeline::run() {
                  " (matrix_cols=" + std::to_string(matrix_cols) +
                  " + lp_cols=" + std::to_string(post_lp_cols) + ")");
         FactorResult r;
-        r.n = n_.clone();
+        r.n = n_;  // Integer op=
         r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
         return r;
