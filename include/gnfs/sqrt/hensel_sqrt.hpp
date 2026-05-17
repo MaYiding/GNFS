@@ -212,20 +212,29 @@ private:
     /// Verify Y and return it or -Y if verification passes
     [[nodiscard]] static std::optional<Integer> verify_and_return(
             const Integer& Y, const Integer& product_at_m, const Integer& n) {
-        Integer Y2 = Y.clone();
+        // v22: Y2/pm_pos 直接 assign
+        Integer Y2;
+        Y2 = Y;
         Y2 *= Y;
         Y2 %= n;
         if (Y2.is_negative()) Y2 += n;
 
-        Integer pm_pos = product_at_m.clone();
+        Integer pm_pos;
+        pm_pos = product_at_m;
         if (pm_pos.is_negative()) pm_pos += n;
 
-        if (Y2.compare(pm_pos) == 0) return Y.clone();
+        if (Y2.compare(pm_pos) == 0) {
+            Integer ret;
+            ret = Y;
+            return ret;
+        }
 
         // Check -Y
-        Integer neg_Y = n.clone();
+        Integer neg_Y;
+        neg_Y = n;
         neg_Y -= Y;
-        Integer neg_Y2 = neg_Y.clone();
+        Integer neg_Y2;
+        neg_Y2 = neg_Y;
         neg_Y2 *= neg_Y;
         neg_Y2 %= n;
         if (neg_Y2.is_negative()) neg_Y2 += n;
@@ -349,10 +358,12 @@ private:
         }
 
         // Pre-compute product at final precision (once)
+        // v22: temp 复用 across num_lifts iter (mpz_set)
         Integer final_mod(static_cast<int64_t>(p));
+        Integer temp_buf;
         for (size_t i = 0; i < num_lifts; ++i) {
-            Integer temp = final_mod.clone();
-            final_mod *= temp;
+            temp_buf = final_mod;
+            final_mod *= temp_buf;
         }
 
         auto P_final = compute_product_mod_parallel(
@@ -366,8 +377,10 @@ private:
         P_final = poly_mul_mod(P_final, f_prime_sq, f_int, d, final_mod, fli_final);
 
         // Newton iteration: S_{k+1} = S_k + T_k · (P - S_k²), T_{k+1} = T_k · (2 - 2S_{k+1}·T_k)
+        // v22: new_modulus 复用 across lift iter
+        Integer new_modulus;
         for (size_t lift = 0; lift < num_lifts; ++lift) {
-            Integer new_modulus = modulus.clone();
+            new_modulus = modulus;
             new_modulus *= modulus;
 
             auto fli = compute_f_lead_inv(f_int, d, new_modulus);
@@ -1330,8 +1343,10 @@ private:
             const std::vector<Integer>& f,
             uint32_t d,
             const Integer& modulus) {
+        // v22: f_d 直接 assign
         Integer f_lead_inv(int64_t(1));
-        Integer f_d = f[d].clone();
+        Integer f_d;
+        f_d = f[d];
         f_d %= modulus;
         if (f_d.is_negative()) f_d += modulus;
         if (!f_d.is_one()) {
@@ -1431,8 +1446,8 @@ private:
         size_t n = std::max(a.size(), b.size());
         std::vector<Integer> result(n);  // default-init 0
         for (size_t i = 0; i < n; ++i) {
-            // result[i] starts at 0 (default ctor); skip ternary's Integer(0) branch.
-            if (i < a.size()) result[i] = a[i].clone();
+            // v22: result[i] = a[i] (mpz_set on default-init slot)
+            if (i < a.size()) result[i] = a[i];
             if (i < b.size()) {
                 result[i] -= b[i];
                 result[i] %= modulus;
