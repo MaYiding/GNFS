@@ -54,10 +54,14 @@ public:
 
         // 收集所有参与关系的有理因子
         // 累积每个素数的指数
+        // Reserve基于 dependency.popcount() * 平均 factors per row:
+        // FB ~10-15 / row, LP ~1-3 / row. popcount typical 64-256.
+        // 上界 fallback 为 relations.size() (但只是上界, 实际 popcount * factor 多数情况下少 1000×).
+        const size_t pop = dependency.popcount();
         std::unordered_map<uint32_t, uint64_t> fb_exponents;    // 因子基素数指数
         std::unordered_map<uint64_t, uint64_t> lp_exponents;    // 大素数指数
-        fb_exponents.reserve(relations.size());
-        lp_exponents.reserve(relations.size());
+        fb_exponents.reserve(std::min(pop * 15, relations.size()));
+        lp_exponents.reserve(std::min(pop * 3, relations.size()));
         bool has_negative = false;  // 是否有负数的 (a - b*m) 值
 
         for (size_t i = 0; i < relations.size(); ++i) {
