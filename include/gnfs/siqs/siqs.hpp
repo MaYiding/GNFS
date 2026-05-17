@@ -451,19 +451,18 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb,
         uint32_t qi = fb[poly.a_indices[i]].p;
         uint32_t ti = fb[poly.a_indices[i]].sqrt_n; // sqrt(N) mod qi
 
-        // Compute A/qi
-        Integer A_div_qi = poly.A.clone();
-        A_div_qi /= int64_t(qi);
+        // Compute A/qi via mpz_tdiv_q_ui (skip clone+ /=)
+        Integer A_div_qi;
+        mpz_tdiv_q_ui(A_div_qi.get_mpz(), poly.A.get_mpz(), qi);
 
         // (A/qi)^{-1} mod qi
         uint32_t a_div_qi_mod = static_cast<uint32_t>(
             mpz_fdiv_ui(A_div_qi.get_mpz(), qi));
         uint32_t inv = mod_inv32(a_div_qi_mod, qi);
 
-        // B_i = ti * inv * (A/qi) — but as Integer
+        // B_i = (A/qi) * coeff where coeff = ti * inv mod qi
         uint32_t coeff = mod_mul32(ti, inv, qi);
-        poly.B_parts[i] = A_div_qi.clone();
-        poly.B_parts[i] *= int64_t(coeff);
+        mpz_mul_ui(poly.B_parts[i].get_mpz(), A_div_qi.get_mpz(), coeff);
     }
 
     // B = sum(B_i) mod A, adjusted to |B| <= A/2
@@ -473,9 +472,9 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb,
     }
     // Reduce B mod A
     poly.B = poly.B % poly.A;
-    // Center: if B > A/2, B = B - A
-    Integer half_A = poly.A.clone();
-    half_A /= int64_t(2);
+    // Center: if B > A/2, B = B - A (mpz_tdiv_q_2exp = bit shift)
+    Integer half_A;
+    mpz_tdiv_q_2exp(half_A.get_mpz(), poly.A.get_mpz(), 1);
     if (poly.B > half_A) {
         poly.B = poly.B - poly.A;
     }
@@ -594,9 +593,9 @@ inline void next_poly_B(const std::vector<FBPrime>& fb,
                         uint32_t sieve_half,
                         SIQSPoly& poly,
                         size_t gray_bit, bool add) {
-    // Update B: B_new = B_old ± 2 * B_parts[gray_bit]
-    Integer two_B = poly.B_parts[gray_bit].clone();
-    two_B *= int64_t(2);
+    // Update B: B_new = B_old ± 2 * B_parts[gray_bit] (mpz_mul_2exp = bit shift)
+    Integer two_B;
+    mpz_mul_2exp(two_B.get_mpz(), poly.B_parts[gray_bit].get_mpz(), 1);
     if (add) {
         poly.B = poly.B + two_B;
     } else {
