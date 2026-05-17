@@ -421,7 +421,7 @@ public:
         for (int i = 0; i < d; ++i) {
             pd *= static_cast<int64_t>(p);
         }
-        Integer q = pd.clone();
+        Integer q = std::move(pd);  // pd no longer used; swap internals
         q -= int64_t(1);
 
         uint64_t s = 0;

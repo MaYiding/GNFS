@@ -453,21 +453,12 @@ private:
         }
         polynomial::IntPolynomial f_poly(std::move(f_coeffs));
 
-        // hoist buffers — reused across all p (省 alloc per iter)
-        Integer n_mod, lc, p_int;
         while (qc_pairs.size() < num_columns) {
             p = next_prime(p);
-            p_int = static_cast<uint64_t>(p);  // mpz_set_ui
 
-            // Skip primes that divide N
-            n_mod = n;  // mpz_set
-            n_mod %= p_int;
-            if (n_mod.is_zero()) continue;
-
-            // Skip if leading coefficient vanishes mod p
-            lc = ctx.coeff(d);  // mpz_set
-            lc %= p_int;
-            if (lc.is_zero()) continue;
+            // Skip primes that divide N or leading coeff — direct GMP (zero alloc)
+            if (mpz_divisible_ui_p(n.get_mpz(), p)) continue;
+            if (mpz_divisible_ui_p(ctx.coeff(d).get_mpz(), p)) continue;
 
             // Find roots using Cantor-Zassenhaus (O(d²·log p), fast for large p)
             auto roots = f_poly.roots_mod_p(p);

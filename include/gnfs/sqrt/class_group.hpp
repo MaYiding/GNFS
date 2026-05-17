@@ -191,9 +191,8 @@ private:
         if (sign_exp % 2 == 1) {
             res.negate();
         }
-        Integer a_d = ctx_.coeff(d).clone();
-        if (!a_d.is_zero()) {
-            res /= a_d;
+        if (!ctx_.coeff(d).is_zero()) {
+            res /= ctx_.coeff(d);  // no temp clone needed
         }
 
         discriminant_ = std::move(res);
