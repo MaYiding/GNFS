@@ -50,6 +50,8 @@ public:
         Integer m = initial.clone();
         Integer prev_m = m.clone();
 
+        // v22: diff buffer 复用 across Newton iterations
+        Integer diff;
         for (uint32_t iter = 0; iter < max_iterations; ++iter) {
             // 计算 f(m) 和 f'(m)
             Integer fm = f.evaluate(m);
@@ -67,7 +69,7 @@ public:
             Integer delta, rem;
             Integer::divmod(delta, rem, fm, dfm);
 
-            prev_m = m.clone();
+            prev_m = m;  // mpz_set (复用 prev_m buffer)
             m -= delta;
 
             // 检查收敛
@@ -75,8 +77,8 @@ public:
                 break;
             }
 
-            // 检查相对变化
-            Integer diff = prev_m.clone();
+            // 检查相对变化 (diff 复用 buffer)
+            diff = prev_m;
             diff -= m;
             diff.abs();
 
