@@ -307,15 +307,8 @@ private:
     /// 格点 (i,j) 满足 p | (a - b·m) iff i·u + j·v ≡ 0 (mod p)
     [[nodiscard]] std::pair<int64_t, int64_t> compute_rational_uv(
             const LatticeBasis& basis, uint32_t p) const {
-        uint64_t m_mod_p = 0;
-        if (ctx_.m().fits_uint64()) {
-            m_mod_p = ctx_.m().to_uint64() % p;
-        } else {
-            core::Integer p_int(static_cast<unsigned long long>(p));
-            core::Integer m_mod;
-            core::Integer::mod(m_mod, ctx_.m(), p_int);
-            m_mod_p = m_mod.to_uint64();
-        }
+        // mpz_fdiv_ui returns floor-div remainder ∈ [0, p-1] (zero alloc, unified path)
+        uint64_t m_mod_p = static_cast<uint64_t>(mpz_fdiv_ui(ctx_.m().get_mpz(), p));
 
         int64_t p64 = static_cast<int64_t>(p);
         auto mod_reduce = [p64](int64_t val) -> int64_t {
