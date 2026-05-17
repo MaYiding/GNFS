@@ -229,8 +229,8 @@ public:
             const Integer& n) {
 
         Integer result(1);
-        // hoist p, e, contribution buffers — reused across iterations
-        Integer p, e, contribution;
+        // hoist p + contribution; mpz_powm_ui accepts ul exp directly (no e Integer)
+        Integer p, contribution;
 
         for (size_t i = 0; i < exponents.size() && i < primes.size(); ++i) {
             if (exponents[i] == 0) continue;
@@ -239,8 +239,7 @@ public:
             uint64_t half_exp = exponents[i] / 2;
 
             p = uint64_t(primes[i]);
-            e = uint64_t(half_exp);
-            mpz_powm(contribution.get_mpz(), p.get_mpz(), e.get_mpz(), n.get_mpz());
+            mpz_powm_ui(contribution.get_mpz(), p.get_mpz(), half_exp, n.get_mpz());
 
             result *= contribution;
             result %= n;
