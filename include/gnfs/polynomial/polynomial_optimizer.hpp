@@ -47,8 +47,8 @@ public:
             }
         }
 
-        Integer m = initial.clone();
-        Integer prev_m = m.clone();
+        Integer m = initial;      // Integer copy ctor
+        Integer prev_m = m;       // copy ctor
 
         // v22: diff buffer 复用 across Newton iterations
         Integer diff;

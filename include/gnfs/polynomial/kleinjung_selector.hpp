@@ -490,7 +490,7 @@ private:
         if (best_log_e <= -1e299) return std::nullopt;
 
         // 构造最终 g(x) = x - m
-        Integer neg_m = best_m.clone();
+        Integer neg_m = best_m;   // Integer copy ctor
         neg_m.negate();
         std::vector<Integer> g_coeffs;
         g_coeffs.reserve(2);
@@ -538,17 +538,15 @@ private:
 
         std::vector<Integer> coeffs(d + 1);
 
-        // 计算 n' = n - a_d * m^d
+        // 计算 n' = n - a_d * m^d via mpz_submul (fused FMS, drops ad_md)
         Integer m_pow_d = core::pow(m, d);
-        Integer n_prime = n.clone();
-        Integer ad_md = ad.clone();
-        ad_md *= m_pow_d;
-        n_prime -= ad_md;
+        Integer n_prime = n;      // Integer copy ctor
+        mpz_submul(n_prime.get_mpz(), ad.get_mpz(), m_pow_d.get_mpz());
 
         // 对 n' 进行平衡 base-m 展开
         // 标准展开产生 [0, m) 系数；平衡展开 centering 到 [-m/2, m/2]
         Integer remainder = std::move(n_prime);
-        Integer half_m = m.clone();
+        Integer half_m = m;       // Integer copy ctor
         half_m /= int64_t(2);
 
         for (uint32_t i = 0; i < d; ++i) {

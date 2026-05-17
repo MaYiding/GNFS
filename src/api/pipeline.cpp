@@ -1036,10 +1036,10 @@ FactorResult Pipeline::extract_factors(
         auto factors = sqrt::extract_factors(rat_sqrt, alg_value, n_);
 
         if (is_nontrivial(factors.factor1)) {
-            Integer f1 = factors.factor1.clone();
-            Integer f2 = n_.clone();
+            Integer f1 = factors.factor1;   // copy ctor
+            Integer f2 = n_;
             f2 /= f1;
-            Integer check = f1.clone();
+            Integer check = f1;
             check *= f2;
             if (check.compare(n_) == 0 && is_nontrivial(f2)) {
                 result.factors.push_back(std::move(f1));
@@ -1049,10 +1049,10 @@ FactorResult Pipeline::extract_factors(
             }
         }
         if (is_nontrivial(factors.factor2)) {
-            Integer f1 = factors.factor2.clone();
-            Integer f2 = n_.clone();
+            Integer f1 = factors.factor2;   // copy ctor
+            Integer f2 = n_;
             f2 /= f1;
-            Integer check = f1.clone();
+            Integer check = f1;
             check *= f2;
             if (check.compare(n_) == 0 && is_nontrivial(f2)) {
                 result.factors.push_back(std::move(f1));
@@ -1084,7 +1084,7 @@ FactorResult Pipeline::extract_factors(
 
         // Algebraic sqrt
         auto alg_result = sqrt::compute_algebraic_sqrt(bv, mr.relations, ctx);
-        Integer alg_value = alg_result.success ? alg_result.value.clone() : Integer(1);
+        Integer alg_value = alg_result.success ? alg_result.value : Integer(1);  // copy ctor
 
         // Try Y
         if (try_factor(rat_result.value, alg_value)) break;

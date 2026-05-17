@@ -259,7 +259,7 @@ private:
                 sign = -sign;
             }
 
-            Integer cur_pivot = M[k][k].clone();
+            Integer cur_pivot = M[k][k];   // Integer copy ctor
 
             // Eliminate below pivot
             // M[i][j] = (cur_pivot * M[i][j] - M[i][k] * M[k][j]) / prev_pivot
@@ -279,7 +279,7 @@ private:
         }
 
         // Determinant = sign * M[n-1][n-1]
-        Integer result = M[n - 1][n - 1].clone();
+        Integer result = M[n - 1][n - 1];   // Integer copy ctor
         if (sign < 0) {
             result.negate();
         }
