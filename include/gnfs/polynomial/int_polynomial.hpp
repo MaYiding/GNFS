@@ -208,13 +208,11 @@ public:
         // No need to re-init in loop.
         std::vector<Integer> result_coeffs(d1 + d2 + 1);
 
-        // 卷积
-        // v22: term buffer 复用 (mpz_set 替代 mpz_init_set), 节省 d² - 1 allocs/multiply
+        // 卷积 — mpz_mul writes coeffs[i]*other[j] directly into term (skip set)
         Integer term;
         for (uint32_t i = 0; i <= d1; ++i) {
             for (uint32_t j = 0; j <= d2; ++j) {
-                term = coeffs_[i];
-                term *= other.coeffs_[j];
+                mpz_mul(term.get_mpz(), coeffs_[i].get_mpz(), other.coeffs_[j].get_mpz());
                 result_coeffs[i + j] += term;
             }
         }
