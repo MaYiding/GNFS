@@ -291,7 +291,7 @@ public:
                 w *= M_j;
                 w *= static_cast<int64_t>(M_j_inv);
                 w %= M;
-                weights[j][i] = w.clone();
+                weights[j][i] = w;  // mpz_set into resized slot (skip tmp clone)
             }
         }
 
@@ -585,7 +585,7 @@ public:
                 w *= M_j_b;
                 w *= static_cast<int64_t>(M_j_inv);
                 w %= M;
-                weights[j][i] = w.clone();
+                weights[j][i] = w;  // mpz_set into resized slot (skip tmp clone)
             }
         }
 
