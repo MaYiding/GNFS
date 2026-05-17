@@ -357,15 +357,14 @@ public:
         // 乘 f'(m)² mod N (仅 apply_f_prime_correction=true 时)
         if (apply_f_prime_correction) {
             // f'(m) = Σ_{i=1}^d i · f[i] · m^(i-1)
-            // v22: term/f_prime_m_sq 直接 assign
+            // mpz_addmul_ui: f_prime_m += nf.coeff(i)*i (fused FMA, i ≥ 1)
             const Integer& m_val = nf.m();
             Integer f_prime_m;  // default ctor = 0
-            Integer term_h;
             for (int i = static_cast<int>(d); i >= 1; --i) {
                 f_prime_m *= m_val;
-                // mpz_mul_si writes nf.coeff(i) * i directly into term_h
-                mpz_mul_si(term_h.get_mpz(), nf.coeff(static_cast<uint32_t>(i)).get_mpz(), i);
-                f_prime_m += term_h;
+                mpz_addmul_ui(f_prime_m.get_mpz(),
+                              nf.coeff(static_cast<uint32_t>(i)).get_mpz(),
+                              static_cast<unsigned long>(i));
                 f_prime_m %= n;
             }
             if (f_prime_m.is_negative()) f_prime_m += n;

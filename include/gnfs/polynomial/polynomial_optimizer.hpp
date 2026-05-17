@@ -140,12 +140,19 @@ public:
 
         IntPolynomial g = f.clone();
 
-        // g = f + k * h — mpz_mul_si writes h[i] * k directly into term (skip set)
+        // g = f + k * h — mpz_addmul_ui (k>0) / mpz_submul_ui (k<0) fused FMA/FMS
         uint32_t max_deg = std::max(f.degree(), h.degree());
-        Integer term;
-        for (uint32_t i = 0; i <= max_deg; ++i) {
-            mpz_mul_si(term.get_mpz(), h[i].get_mpz(), k);
-            g[i] += term;
+        if (k > 0) {
+            unsigned long uk = static_cast<unsigned long>(k);
+            for (uint32_t i = 0; i <= max_deg; ++i) {
+                mpz_addmul_ui(g[i].get_mpz(), h[i].get_mpz(), uk);
+            }
+        } else {
+            // k < 0: g += k*h ≡ g -= (-k)*h
+            unsigned long uk = static_cast<unsigned long>(-k);
+            for (uint32_t i = 0; i <= max_deg; ++i) {
+                mpz_submul_ui(g[i].get_mpz(), h[i].get_mpz(), uk);
+            }
         }
 
         g.normalize();
