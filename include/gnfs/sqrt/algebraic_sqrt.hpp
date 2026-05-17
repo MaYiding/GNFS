@@ -29,8 +29,12 @@ using linalg::BitVector;
         const std::vector<Relation>& relations) {
 
     // Count algebraic FB factor multiplicities
+    // Reserve dependency.popcount() * 30: avg ~20-30 FB factors per row, dependency
+    // typical 64-256 popcount → 2K-8K reserve (way less than relations.size() millions).
+    // Map upper bound is matrix_cols (FB part) which is 24K (50d) / 200K (60d).
+    const size_t pop = dependency.popcount();
     std::unordered_map<uint32_t, uint64_t> fb_exponents;
-    fb_exponents.reserve(relations.size());
+    fb_exponents.reserve(std::min(pop * 30, relations.size()));
     // Use (p, r) pair as key to distinguish prime ideals above the same rational prime.
     // Pack into uint64: p (high 32) | r (low 32) — primes fit in 32 bits for 50d/60d
     // (LP bound 8M / 67M both < 2^32). Hash on uint64 is O(1) vs std::map O(log n).
@@ -38,7 +42,7 @@ using linalg::BitVector;
         return (p << 32) | (r & 0xFFFFFFFFu);
     };
     std::unordered_map<uint64_t, uint64_t> lp_exponents;
-    lp_exponents.reserve(relations.size());
+    lp_exponents.reserve(std::min(pop * 4, relations.size()));  // avg 2-4 LP/row
 
     for (size_t i = 0; i < relations.size(); ++i) {
         if (!dependency.test(i)) continue;
