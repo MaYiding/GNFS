@@ -194,9 +194,11 @@ private:
             const NumberField& nf) {
         const Integer& n = nf.n();
         Integer product(int64_t(1));
+        // v22: bm buffer 复用, 节省 ab_pairs.size() - 1 allocs/call
+        Integer bm;
         for (const auto& [a, b] : ab_pairs) {
             Integer factor(a);
-            Integer bm = nf.m().clone();
+            bm = nf.m();
             bm *= Integer(b);
             factor -= bm;
             factor %= n;
