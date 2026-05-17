@@ -353,8 +353,8 @@ private:
         // a24 = (v - u)^3 * (3u + v) / (16 * u^3 * v) - 2
         // 简化: 直接计算 a24 = ((v-u)^3 * (3u+v)) * inverse(16*u^3*v) - 2
         // 如果逆元不存在，我们就找到了因子!
-        Integer diff = v.clone();
-        diff -= u;
+        Integer diff;
+        mpz_sub(diff.get_mpz(), v.get_mpz(), u.get_mpz());  // diff = v - u (skip clone+sub)
         if (diff.is_negative()) diff += n;
         diff %= n;
 
@@ -362,19 +362,22 @@ private:
         Integer diff3;
         mpz_powm_ui(diff3.get_mpz(), diff.get_mpz(), 3, n.get_mpz());
 
-        Integer sum3u_v = u.clone();
-        sum3u_v *= int64_t(3);  // mpz_mul_si direct
+        // sum3u_v = 3u + v mod n
+        Integer sum3u_v;
+        mpz_mul_ui(sum3u_v.get_mpz(), u.get_mpz(), 3);  // 3u (skip clone+mul)
         sum3u_v += v;
         sum3u_v %= n;
 
-        Integer numerator = diff3.clone();
-        numerator *= sum3u_v;
+        // numerator = diff3 * sum3u_v mod n
+        Integer numerator;
+        mpz_mul(numerator.get_mpz(), diff3.get_mpz(), sum3u_v.get_mpz());
         numerator %= n;
 
-        Integer denom = x0.clone();
-        denom *= v;
+        // denom = x0 * v * 16 mod n
+        Integer denom;
+        mpz_mul(denom.get_mpz(), x0.get_mpz(), v.get_mpz());
         denom %= n;
-        denom *= int64_t(16);  // mpz_mul_si direct
+        mpz_mul_2exp(denom.get_mpz(), denom.get_mpz(), 4);  // *=16 via bit shift
         denom %= n;
 
         // 计算逆元 (v22: gcd 取 const& 无需 clone; 单次 compare(n) 缓存)
@@ -390,8 +393,8 @@ private:
             return std::nullopt;
         }
 
-        Integer a24 = numerator.clone();
-        a24 *= denom_inv;
+        Integer a24;
+        mpz_mul(a24.get_mpz(), numerator.get_mpz(), denom_inv.get_mpz());  // a24 = num * inv (skip clone+mul)
         a24 %= n;
 
         // Suyama 参数化: A = (v-u)³(3u+v)/(4u³v) - 2, 其中 u=σ²-5, v=4σ。
