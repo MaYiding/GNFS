@@ -413,8 +413,8 @@ private:
         int64_t a, uint64_t b, const Integer& m) {
 
     Integer result(a);
-    Integer bm = m.clone();
-    bm *= static_cast<long long>(b);
+    Integer bm;
+    mpz_mul_ui(bm.get_mpz(), m.get_mpz(), b);  // bm = m * b (no source copy)
     result -= bm;
 
     if (result.is_negative()) {
