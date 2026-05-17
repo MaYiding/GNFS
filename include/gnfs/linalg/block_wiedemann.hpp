@@ -219,6 +219,15 @@ private:
     std::vector<std::vector<bool>> block_wiedemann_block_solve(
         const SparseMatrix& matrix, size_t max_deps, uint64_t seed = 42);
 
+    /// Thin matrix BW variant (BACKLOG #80 step 7): operates on
+    /// B'=M^T·M (n×n) instead of B=M·M^T (m×m). Works in R^n. Krylov,
+    /// BM, mksol same structure but vectors length n. Recovery: u = M·w
+    /// (1 SpMV) gives left null space vector u∈R^m since M^T·u =
+    /// (M^T·M)·w = 0 strict over GF(2). Used when m ≤ n (thin matrix).
+    /// L = 2·⌈m/64⌉ + 32 (rank ≤ m).
+    std::vector<std::vector<bool>> block_wiedemann_thin_solve(
+        const SparseMatrix& matrix, size_t max_deps, uint64_t seed = 42);
+
     // --- BW Phase 1: Krylov sequence generation ---
 
     /// Compute the Krylov sequence A_i = X^T · (M·M^T)^i · Y
