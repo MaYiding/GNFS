@@ -204,19 +204,19 @@ public:
 
     /// 创建零元素
     [[nodiscard]] NumberFieldElement zero() const {
-        return NumberFieldElement(Integer(static_cast<int64_t>(0)));
+        return NumberFieldElement(Integer{});
     }
 
     /// 创建单位元素
     [[nodiscard]] NumberFieldElement one() const {
-        return NumberFieldElement(Integer(static_cast<int64_t>(1)));
+        return NumberFieldElement(Integer(1));
     }
 
     /// 创建 α 元素
     [[nodiscard]] NumberFieldElement alpha() const {
         std::vector<Integer> coeffs;
-        coeffs.push_back(Integer(static_cast<int64_t>(0)));
-        coeffs.push_back(Integer(static_cast<int64_t>(1)));
+        coeffs.emplace_back();
+        coeffs.emplace_back(1);
         return NumberFieldElement(std::move(coeffs));
     }
 

@@ -97,7 +97,7 @@ public:
 
     /// 计算 f(x) 的值 (Horner 方法)
     [[nodiscard]] Integer evaluate(const Integer& x) const {
-        if (coeffs_.empty()) return Integer(static_cast<int64_t>(0));
+        if (coeffs_.empty()) return Integer{};
 
         Integer result = coeffs_.back().clone();
         for (int i = static_cast<int>(coeffs_.size()) - 2; i >= 0; --i) {
@@ -319,7 +319,7 @@ public:
 
         if (d == 1) {
             // 线性多项式的判别式为 1
-            return Integer(static_cast<int64_t>(1));
+            return Integer(1);
         }
 
         if (d == 2) {

@@ -278,7 +278,7 @@ public:
 
         std::vector<Integer> result;
         result.reserve(max_count);  // exit cap
-        result.push_back(Integer(static_cast<int64_t>(1)));
+        result.emplace_back(1);
 
         for (uint32_t p : small_primes) {
             size_t current_size = result.size();

@@ -609,7 +609,7 @@ private:
         std::vector<uint32_t> small_primes = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31};
 
         std::vector<Integer> result;
-        result.push_back(Integer(static_cast<int64_t>(1)));
+        result.emplace_back(1);
 
         for (uint32_t p : small_primes) {
             size_t current_size = result.size();

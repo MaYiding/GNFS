@@ -94,7 +94,7 @@ public:
 
     /// 计算 f(x) 的值 (Horner 方法)
     [[nodiscard]] Integer evaluate(const Integer& x) const {
-        if (f_coeffs_.empty()) return Integer(static_cast<int64_t>(0));
+        if (f_coeffs_.empty()) return Integer{};
 
         // Horner 方法 (v22: result 直接 assign)
         Integer result;
