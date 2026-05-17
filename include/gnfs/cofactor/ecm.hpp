@@ -600,7 +600,7 @@ private:
         uint64_t check_interval = 0;
         std::optional<Integer> found;
 
-        Point checkpoint(Q0.x.clone(), Q0.z.clone());
+        Point checkpoint = Q0;  // copy ctor
         std::vector<uint64_t> batch_primes;
         batch_primes.reserve(128);
 
@@ -619,7 +619,7 @@ private:
                     return false;
                 }
                 if (g.compare(n) == 0) {
-                    Point Q_retry(checkpoint.x.clone(), checkpoint.z.clone());
+                    Point Q_retry = checkpoint;  // copy ctor
                     for (uint64_t bp : batch_primes) {
                         Q_retry = mont_mul(Q_retry, bp, a24, n);
                         Integer gi = core::gcd(Q_retry.z, n);  // v22: gcd 无需 clone
@@ -630,7 +630,7 @@ private:
                     }
                 }
                 accum = int64_t(1);  // mpz_set_si direct
-                checkpoint = Point(Qcurr.x.clone(), Qcurr.z.clone());
+                checkpoint = Qcurr;  // copy assign
                 batch_primes.clear();
                 check_interval = 0;
             }
