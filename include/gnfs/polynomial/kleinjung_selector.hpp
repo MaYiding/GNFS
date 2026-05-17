@@ -468,8 +468,9 @@ private:
             Integer neg_m = cand.m.clone();
             neg_m.negate();
             std::vector<Integer> g_coeffs;
+            g_coeffs.reserve(2);
             g_coeffs.push_back(std::move(neg_m));
-            g_coeffs.push_back(Integer(static_cast<int64_t>(1)));
+            g_coeffs.emplace_back(static_cast<int64_t>(1));
             IntPolynomial g_cand(std::move(g_coeffs));
 
             MurphyScore score = evaluator.compute(cand.f, g_cand, n);
@@ -488,8 +489,9 @@ private:
         Integer neg_m = best_m.clone();
         neg_m.negate();
         std::vector<Integer> g_coeffs;
+        g_coeffs.reserve(2);
         g_coeffs.push_back(std::move(neg_m));
-        g_coeffs.push_back(Integer(static_cast<int64_t>(1)));
+        g_coeffs.emplace_back(static_cast<int64_t>(1));
         IntPolynomial g(std::move(g_coeffs));
 
         KleinjungResult result;
