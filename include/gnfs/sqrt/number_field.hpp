@@ -328,7 +328,7 @@ public:
         NumberFieldElement result = one();
         NumberFieldElement b = base.clone();
         b.mod(n_);
-        Integer e = exp.clone();
+        Integer e = exp;  // copy ctor
 
         while (!e.is_zero()) {
             if (e.is_odd()) {
