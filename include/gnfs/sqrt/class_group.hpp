@@ -172,14 +172,14 @@ private:
             return;
         }
 
-        // Build f and f' coefficient vectors
+        // Build f and f' coefficient vectors (vector default-init Integer; use mpz_set)
         std::vector<Integer> f(d + 1), f_prime(d);
         for (uint32_t i = 0; i <= d; ++i) {
-            f[i] = ctx_.coeff(i).clone();
+            f[i] = ctx_.coeff(i);  // mpz_set into default-init slot
         }
         for (uint32_t i = 0; i < d; ++i) {
-            f_prime[i] = f[i + 1].clone();
-            f_prime[i] *= Integer(static_cast<int64_t>(i + 1));
+            f_prime[i] = f[i + 1];  // mpz_set
+            f_prime[i] *= static_cast<int64_t>(i + 1);  // mpz_mul_si direct
         }
 
         // Compute Res(f, f') via Sylvester matrix determinant
@@ -480,7 +480,7 @@ private:
         // Determine signature (r1, r2) using Sturm's theorem
         std::vector<Integer> f(d + 1);
         for (uint32_t i = 0; i <= d; ++i) {
-            f[i] = ctx_.coeff(i).clone();
+            f[i] = ctx_.coeff(i);  // mpz_set into default-init slot
         }
         uint32_t r1 = count_real_roots(f, d);
         if (r1 > d || (d - r1) % 2 != 0) {
@@ -550,11 +550,14 @@ private:
         // p × (d+1) clones/mods 节省 → 典型 p=1000/d=5 时省 6000 clones per prime
         const uint64_t p64 = static_cast<uint64_t>(p);
         std::vector<uint64_t> c_mod_p(d + 1);
+        // hoist p_int + c_buf out of d+1 loop
+        const Integer p_int(p64);
+        Integer c_buf;
         for (uint32_t i = 0; i <= d; ++i) {
-            Integer c = ctx_.coeff(i).clone();
-            c %= Integer(p64);
-            if (c.is_negative()) c += Integer(p64);
-            c_mod_p[i] = c.to_uint64();
+            c_buf = ctx_.coeff(i);  // mpz_set into reused buffer
+            c_buf %= p_int;
+            if (c_buf.is_negative()) c_buf += p_int;
+            c_mod_p[i] = c_buf.to_uint64();
         }
 
         for (uint32_t x = 0; x < p; ++x) {
