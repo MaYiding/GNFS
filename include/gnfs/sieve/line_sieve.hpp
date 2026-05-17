@@ -88,19 +88,10 @@ public:
                 uint32_t p = rp.p;
                 uint16_t log_p = compute_log_p(p);
 
-                // Compute starting position: a ≡ b*m (mod p)
-                uint64_t bm_mod_p;
-                if (ctx_.m().fits_uint64()) {
-                    bm_mod_p = (static_cast<__uint128_t>(b % p) * (ctx_.m().to_uint64() % p)) % p;
-                } else {
-                    core::Integer bmod(static_cast<unsigned long long>(b % p));
-                    core::Integer p_int(static_cast<unsigned long long>(p));
-                    core::Integer mmod;
-                    core::Integer::mod(mmod, ctx_.m(), p_int);
-                    bmod *= mmod;
-                    bmod %= p_int;
-                    bm_mod_p = bmod.to_uint64();
-                }
+                // Compute starting position: a ≡ b*m (mod p) — unified path
+                // mpz_fdiv_ui handles both small (single-limb) and large (multi-limb) m
+                uint64_t m_mod_p = static_cast<uint64_t>(mpz_fdiv_ui(ctx_.m().get_mpz(), p));
+                uint64_t bm_mod_p = (static_cast<__uint128_t>(b % p) * m_mod_p) % p;
 
                 // Find first a >= a_min with a ≡ bm (mod p)
                 int64_t a_start = static_cast<int64_t>(bm_mod_p);
