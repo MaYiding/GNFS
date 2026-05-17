@@ -444,6 +444,8 @@ private:
         assert(f_coeffs_[degree_].is_one() &&
                "reduce() requires monic f; use reduce_mod() for non-monic");
         // 从最高次项开始归约
+        // v22: 复用 term buffer per outer-loop iteration
+        Integer term;
         while (coeffs.size() > degree_) {
             size_t high_deg = coeffs.size() - 1;
             Integer high_coeff = std::move(coeffs.back());
@@ -461,7 +463,7 @@ private:
             }
 
             for (uint32_t i = 0; i < degree_; ++i) {
-                Integer term = high_coeff.clone();
+                term = high_coeff;
                 term *= f_coeffs_[i];
                 coeffs[shift + i] -= term;
             }
