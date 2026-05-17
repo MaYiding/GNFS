@@ -1310,10 +1310,10 @@ inline std::optional<std::pair<Integer, Integer>> try_extract(
 
     // Compute Y = product of p_i^{exp/2} * LP_products mod mod_N
     Integer Y(1);
+    Integer pe;  // hoist — reused per FB prime
     for (size_t i = 1; i < fb.size(); i++) {
         uint32_t half_exp = total_exp[i] / 2;
         if (half_exp > 0) {
-            Integer pe;
             mpz_set_ui(pe.get_mpz(), fb[i].p);
             mpz_powm_ui(pe.get_mpz(), pe.get_mpz(), half_exp, mod_N.get_mpz());
             mpz_mul(Y.get_mpz(), Y.get_mpz(), pe.get_mpz());
@@ -1322,9 +1322,10 @@ inline std::optional<std::pair<Integer, Integer>> try_extract(
     }
 
     // Include LP factors from merged relations
+    Integer lp_int;  // hoist — reused per LP
     for (size_t idx : dep) {
         for (uint64_t lp : relations[idx].merge_lps) {
-            Integer lp_int(lp);
+            mpz_set_ui(lp_int.get_mpz(), lp);
             mpz_mul(Y.get_mpz(), Y.get_mpz(), lp_int.get_mpz());
             mpz_mod(Y.get_mpz(), Y.get_mpz(), mod_N.get_mpz());
         }
