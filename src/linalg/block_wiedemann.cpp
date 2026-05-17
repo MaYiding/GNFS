@@ -303,6 +303,16 @@ std::vector<std::vector<bool>> BlockWiedemann::find_dependencies(
     const size_t n = matrix.num_cols();
     if (m == 0 || n == 0) return {};
 
+    // BACKLOG #80 step 7: thin matrix (m<n) is fundamentally unsupported
+    // by BW over GF(2). Issue: BW finds null(M·M^T) and verifies M^T·w = 0,
+    // but over GF(2), null(M·M^T) ⊋ null(M^T) for rank-deficient matrices
+    // (the quadratic form v^T M M^T v = ‖M^T v‖² is parity, not L2 norm).
+    // Zero-padding to n×n doesn't help — same rank, same null space issue.
+    // Proper fix requires either (a) BW with B=M^T·M and recover via M·v
+    // (different setup), or (b) iterative refinement on M^T·w residuals.
+    // Pipeline GNFS_THIN_MATRIX_TRY=1 allows the code path; BW may return
+    // empty deps. User-responsibility ENV.
+
     // For small matrices, delegate to Gaussian (same threshold as BL)
     if (m < 5000 && n < 5000) {
         BlockLanczos bl;

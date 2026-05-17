@@ -171,9 +171,16 @@ public:
     /// rank(M·M^T) < rank(M) (which can happen due to GF(2) bilinear form
     /// quirk: v^T M M^T v = ‖M^T v‖² mod 2 = parity of M^T v, which can be 0
     /// without M^T v = 0). Standard BW verification rejects all candidates.
-    /// Fix would require iterative refinement (apply M^T iteratively to converge
-    /// to null(M^T)) — algorithmic work, not done. GNFS_THIN_MATRIX_TRY=1 ENV
-    /// in pipeline allows this code path but solution may be empty.
+    ///
+    /// Attempted fix: zero-row padding to square (n×n) — does NOT work because
+    /// padded matrix has same rank as original; the issue is rank deficiency
+    /// over GF(2), not shape.
+    ///
+    /// Proper fix would require either (a) BW with B=M^T·M (n×n) and recover
+    /// dep as u = M·v where v ∈ null(M^T·M), since M^T·u = M^T·M·v = 0 places
+    /// u in null(M^T); or (b) iterative refinement on M^T·w residuals.
+    /// Algorithmic work — not done in this session. GNFS_THIN_MATRIX_TRY=1
+    /// ENV in pipeline allows this code path but solution may be empty.
     std::vector<std::vector<bool>> find_dependencies(
         const SparseMatrix& matrix, size_t max_deps = 64);
 
