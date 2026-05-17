@@ -249,8 +249,14 @@ void test_v0_v3_bench_large() {
                   << (v3_elapsed - v0_elapsed) << "s extra" << std::endl;
     }
 
-    // Sanity: V3 cascade should add positive relations + still complete fast
-    assert(v3_added > 0);
+    // Sanity: V3 cascade should add positive relations + still complete fast.
+    // 例外: GNFS_DROP_RESIDUAL=1 时 V3 不再 emit residual partials,added 可能为 0
+    // (V0 已 merge full-yielding 部分, V3 只 produce residual 但被 drop).
+    const char* drop_env = std::getenv("GNFS_DROP_RESIDUAL");
+    bool drop_mode = drop_env && std::atoi(drop_env) == 1;
+    if (!drop_mode) {
+        assert(v3_added > 0);
+    }
     assert(v3_elapsed < 10.0);
 
     std::cout << "  PASS" << std::endl;

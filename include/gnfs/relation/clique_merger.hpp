@@ -37,6 +37,7 @@ struct CliqueStats {
     size_t fast_path_rejects = 0;       // overlap fast-path 拒绝 (无 LP 重叠)
     size_t heavy_path_rejects = 0;      // merge_two 后 cancel check 拒绝 (rare)
     size_t residual_emitted = 0;        // 残留 LP 的 merged rels 仍 emit
+    size_t residual_dropped = 0;        // 残留 LP 的 merged rels 丢弃 (GNFS_DROP_RESIDUAL=1)
     size_t singletons_removed = 0;      // singleton 清理删除
 
     /// 一行 summary, 便于 log 输出
@@ -49,6 +50,7 @@ struct CliqueStats {
                "/" + std::to_string(components_found) +
                " full=" + std::to_string(full_produced) +
                " residual=" + std::to_string(residual_emitted) +
+               " dropped=" + std::to_string(residual_dropped) +
                " rejects=" + std::to_string(lp_cancel_rejections) +
                " (fast=" + std::to_string(fast_path_rejects) +
                " heavy=" + std::to_string(heavy_path_rejects) + ")";
@@ -268,9 +270,26 @@ private:
                 ++stats.full_produced;
                 results.push_back(std::move(acc));
             } else if (!visited.empty() && visited.size() > 1) {
-                // Merged 但仍残留 LP → 仍 emit (V0 line 502 同 convention)
-                ++stats.residual_emitted;
-                results.push_back(std::move(acc));
+                // Merged 但仍残留 LP → emit 或 drop
+                //
+                // BACKLOG #80 算法突破 [drop-residual]: 含残留 LP 的 merged rels 是
+                // weight≥3 LP chain 留下的"碎片",在 matrix 里会增 LP cols 但不能
+                // cancel,实测 50d V3 cascade β=121.4-121.6% 主要由这些 residual
+                // 贡献 (推算 ~70%). 启用 GNFS_DROP_RESIDUAL=1 时 drop 这些 (CADO-NFS
+                // purge.c 思路: weight-cutoff 而非 merge).
+                //
+                // 注意: drop residual 会减 usable count (~30-50%),但同步减 lp_cols
+                // (~50-70%),净效应是 β 改善,需配合更大 sieve target 补偿 raw drop.
+                static const bool drop_residual = []() {
+                    const char* env = std::getenv("GNFS_DROP_RESIDUAL");
+                    return env && std::atoi(env) == 1;
+                }();
+                if (drop_residual) {
+                    ++stats.residual_dropped;
+                } else {
+                    ++stats.residual_emitted;
+                    results.push_back(std::move(acc));
+                }
             }
             // else: 单点 component (visited == {start}, no merge happened) → 弃
         }
