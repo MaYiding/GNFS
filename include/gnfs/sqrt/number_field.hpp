@@ -457,8 +457,7 @@ private:
             }
 
             for (uint32_t i = 0; i < degree_; ++i) {
-                term = high_coeff;
-                term *= f_coeffs_[i];
+                mpz_mul(term.get_mpz(), high_coeff.get_mpz(), f_coeffs_[i].get_mpz());
                 coeffs[shift + i] -= term;
             }
         }
@@ -523,8 +522,7 @@ private:
             }
 
             for (uint32_t i = 0; i < degree_; ++i) {
-                term = scaled;
-                term *= f_coeffs_[i];
+                mpz_mul(term.get_mpz(), scaled.get_mpz(), f_coeffs_[i].get_mpz());
                 term %= modulus;
 
                 coeffs[shift + i] -= term;
