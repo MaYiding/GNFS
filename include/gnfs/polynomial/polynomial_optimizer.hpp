@@ -170,10 +170,12 @@ public:
 
         IntPolynomial g = f.clone();
 
-        // g[0] -= k * m; g[1] += k — mpz_mul_si writes m*k directly into km
-        Integer km;
-        mpz_mul_si(km.get_mpz(), m.get_mpz(), k);
-        g[0] -= km;
+        // g[0] -= k*m via fused FMS (drops km temp); g[1] += k via direct add
+        if (k > 0) {
+            mpz_submul_ui(g[0].get_mpz(), m.get_mpz(), static_cast<unsigned long>(k));
+        } else {
+            mpz_addmul_ui(g[0].get_mpz(), m.get_mpz(), static_cast<unsigned long>(-k));
+        }
         g[1] += k;
 
         g.normalize();
