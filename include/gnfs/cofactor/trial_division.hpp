@@ -429,26 +429,36 @@ private:
         const std::vector<Integer>& coeffs,
         uint32_t degree) {
 
-    Integer result;  // default ctor = 0
-    Integer a_power(static_cast<int64_t>(1));  // a^i
+    // thread_local workspace: degrees ≤ 7 covers all practical GNFS (per CLAUDE.md
+    // GNFS_PARAMS table). Called per relation in sieve cofactor analysis (~100K/s).
+    // Reuse persistent buffers to avoid d+3 heap allocs per call.
+    static constexpr uint32_t MAX_DEG = 8;
+    thread_local Integer ws_a_power, ws_term;
+    thread_local std::array<Integer, MAX_DEG + 1> ws_b_powers;
+    thread_local std::vector<Integer> ws_b_powers_heap;  // fallback degree > MAX_DEG
 
-    // 计算 b^d, b^{d-1}, ..., b^0 — mpz_mul_ui writes b * prev into default-init slot
-    std::vector<Integer> b_powers(degree + 1);
-    b_powers[0] = int64_t(1);  // mpz_set_si direct
+    Integer* b_powers;
+    if (degree <= MAX_DEG) {
+        b_powers = ws_b_powers.data();
+    } else {
+        ws_b_powers_heap.resize(degree + 1);
+        b_powers = ws_b_powers_heap.data();
+    }
+
+    Integer result;  // return value — must be independent (thread_local can't escape)
+    ws_a_power = int64_t(1);
+    b_powers[0] = int64_t(1);
     for (uint32_t i = 1; i <= degree; ++i) {
         mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i - 1].get_mpz(), b);
     }
 
     // term = a^i * b^{d-i}, then result += f_i * term via mpz_addmul (fused FMA)
-    // Note: No sign alternation for N(a - bα) = b^d * f(a/b)
-    Integer term;
     for (uint32_t i = 0; i <= degree; ++i) {
-        mpz_mul(term.get_mpz(), a_power.get_mpz(), b_powers[degree - i].get_mpz());
-        mpz_addmul(result.get_mpz(), coeffs[i].get_mpz(), term.get_mpz());
+        mpz_mul(ws_term.get_mpz(), ws_a_power.get_mpz(), b_powers[degree - i].get_mpz());
+        mpz_addmul(result.get_mpz(), coeffs[i].get_mpz(), ws_term.get_mpz());
 
-        // 更新 a^i
         if (i < degree) {
-            a_power *= a;
+            ws_a_power *= a;
         }
     }
 
