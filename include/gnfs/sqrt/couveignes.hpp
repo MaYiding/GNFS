@@ -350,7 +350,7 @@ public:
         //
         // 注意: 直接对 expected_X2 取 sqrt 等价于因子化 N,因此我们验证 Y² 而非 Y。
         // v22: term/bm 复用 across ab_pairs (hot loop, 10K+ iters per dep)
-        Integer expected_X2(int64_t(1));
+        Integer expected_X2(1);
         Integer term_buf, bm;
         for (const auto& [a, b] : ab_pairs) {
             term_buf = a;  // mpz_set_si direct
@@ -367,7 +367,7 @@ public:
             // f'(m) = Σ_{i=1}^d i · f[i] · m^(i-1)
             // v22: term/f_prime_m_sq 直接 assign
             const Integer& m_val = nf.m();
-            Integer f_prime_m(int64_t(0));
+            Integer f_prime_m;  // default ctor = 0
             Integer term_h;
             for (int i = static_cast<int>(d); i >= 1; --i) {
                 f_prime_m *= m_val;
