@@ -287,9 +287,8 @@ private:
             mpz_root(m_est.get_mpz(), n_div_ad.get_mpz(), d);
 
             // 在 m_est 附近搜索
-            // v22: m/ad_md/remainder buffer 复用 across delta iterations
+            // m/remainder buffer 复用; ad_md dropped (submul fuses)
             Integer m;
-            Integer ad_md;
             Integer remainder;
             for (int32_t delta = -static_cast<int32_t>(params_.search_radius);
                  delta <= static_cast<int32_t>(params_.search_radius);
@@ -304,13 +303,10 @@ private:
 
                 if (m.is_zero() || m.is_negative()) continue;
 
-                // 计算 n - a_d * m^d
+                // remainder = n - a_d * m^d via mpz_submul (fused FMS, drops ad_md)
                 Integer m_pow_d = core::pow(m, d);
-                ad_md = ad;
-                ad_md *= m_pow_d;
-
                 remainder = n;
-                remainder -= ad_md;
+                mpz_submul(remainder.get_mpz(), ad.get_mpz(), m_pow_d.get_mpz());
 
                 // 检查 remainder 的符号和大小
                 // 如果 remainder 为负，说明 a_d * m^d > n，跳过
