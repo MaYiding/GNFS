@@ -938,17 +938,23 @@ private:
         }
 
         // Hensel lifting: maintain S and T = (2S)^{-1} in parallel
+        // v22: 复用 new_modulus / P / two_S_prime / factor / p_i_buf 跨 lift 迭代
+        const Integer two_const(int64_t(2));
+        Integer new_modulus;
+        std::vector<Integer> P(d);
+        std::vector<Integer> two_S_prime(d);
+        std::vector<Integer> factor_vec(d);
+        Integer p_i_buf;
         for (size_t lift = 0; lift < num_lifts; ++lift) {
-            Integer new_modulus = modulus.clone();
+            new_modulus = modulus;
             new_modulus *= modulus;  // modulus²
 
             // Pre-compute f_lead_inv for this round (all 5 poly_mul_mod share it)
             auto fli = compute_f_lead_inv(f_int, d, new_modulus);
 
             // Reduce pre-computed product to current precision
-            std::vector<Integer> P(d);
             for (uint32_t i = 0; i < d; ++i) {
-                P[i] = P_final[i].clone();
+                P[i] = P_final[i];
                 P[i] %= new_modulus;
             }
 
@@ -969,31 +975,29 @@ private:
             }
 
             // Update T: T' = T · (2 - 2S'·T) mod (f, new_modulus)
-            std::vector<Integer> two_S_prime(d);
             for (uint32_t i = 0; i < d; ++i) {
-                two_S_prime[i] = S[i].clone();
-                two_S_prime[i] *= Integer(int64_t(2));
+                two_S_prime[i] = S[i];
+                two_S_prime[i] *= two_const;
                 two_S_prime[i] %= new_modulus;
             }
             auto two_S_T = poly_mul_mod(two_S_prime, T, f_int, d, new_modulus, fli);
 
             // 2 - 2S'·T
-            std::vector<Integer> factor(d);
-            factor[0] = Integer(int64_t(2));
-            factor[0] -= two_S_T[0];
-            factor[0] %= new_modulus;
-            if (factor[0].is_negative()) factor[0] += new_modulus;
+            factor_vec[0] = two_const;
+            factor_vec[0] -= two_S_T[0];
+            factor_vec[0] %= new_modulus;
+            if (factor_vec[0].is_negative()) factor_vec[0] += new_modulus;
             for (uint32_t i = 1; i < d; ++i) {
-                factor[i] = two_S_T[i].clone();
-                factor[i].negate();
-                factor[i] %= new_modulus;
-                if (factor[i].is_negative()) factor[i] += new_modulus;
+                factor_vec[i] = two_S_T[i];
+                factor_vec[i].negate();
+                factor_vec[i] %= new_modulus;
+                if (factor_vec[i].is_negative()) factor_vec[i] += new_modulus;
             }
 
             // T' = T · factor
-            T = poly_mul_mod(T, factor, f_int, d, new_modulus, fli);
+            T = poly_mul_mod(T, factor_vec, f_int, d, new_modulus, fli);
 
-            modulus = std::move(new_modulus);
+            modulus = new_modulus;
 
             if (config_.verbose && (lift == 0 || lift == num_lifts - 1 ||
                                     (num_lifts > 10 && lift % (num_lifts / 4) == 0))) {
@@ -1006,9 +1010,9 @@ private:
                 auto S2_early = poly_mul_mod(S, S, f_int, d, modulus, fli);
                 bool early_ok = true;
                 for (uint32_t i = 0; i < d; ++i) {
-                    Integer p_i = P_final[i].clone();
-                    p_i %= modulus;
-                    if (S2_early[i].compare(p_i) != 0) {
+                    p_i_buf = P_final[i];
+                    p_i_buf %= modulus;
+                    if (S2_early[i].compare(p_i_buf) != 0) {
                         early_ok = false;
                         if (config_.verbose) {
                             std::cerr << "[Hensel] Early invariant FAIL at lift "
