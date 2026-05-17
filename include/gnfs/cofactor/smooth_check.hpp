@@ -524,18 +524,4 @@ struct CofactorClassification {
     return false;
 }
 
-/// 获取分类的字符串表示
-[[nodiscard]] inline const char* cofactor_class_str(CofactorClass cls) {
-    switch (cls) {
-        case CofactorClass::Smooth: return "Smooth";
-        case CofactorClass::Prime: return "Prime(1LP)";
-        case CofactorClass::PrimePower: return "PrimePower";
-        case CofactorClass::Semiprime: return "Semiprime(2LP)";
-        case CofactorClass::Composite: return "Composite";
-        case CofactorClass::TooLarge: return "TooLarge";
-        case CofactorClass::Unknown: return "Unknown";
-        default: return "???";
-    }
-}
-
 } // namespace gnfs::cofactor
