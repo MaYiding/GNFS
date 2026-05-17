@@ -122,10 +122,8 @@ public:
             p = next_prime(p);
             primes_checked++;
 
-            // Skip primes that divide N
-            Integer n_mod_p = n.clone();
-            n_mod_p %= Integer(p);
-            if (n_mod_p.is_zero()) {
+            // Skip primes that divide N — direct GMP divisibility (zero alloc)
+            if (mpz_divisible_ui_p(n.get_mpz(), p)) {
                 primes_dividing_n++;
                 continue;
             }
