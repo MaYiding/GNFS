@@ -570,16 +570,35 @@ public:
             // Singleton removal: 只移除所有剩余 LP 都是 singleton 的关系
             // 使用 pool_lp_keys_cache 避免 remaining_lp_keys 重复调用
             // Reserve: typical 5-10% pool flagged dead per round.
+            //
+            // BACKLOG #80 [weight-cutoff]: ENV GNFS_WEIGHT_CUTOFF=N (≥2) 时,
+            // 还把 "any LP key has weight > N" 的关系标 dead.
+            // CADO-NFS purge.c 思路: weight-3+ LP keys 形成 chain residue 污染 matrix,
+            // 直接 drop 比 try-merge 更净空 β. N=2 时只保留 weight≤2 keys (= V0 mergeable).
+            static const size_t weight_cutoff = []() {
+                const char* env = std::getenv("GNFS_WEIGHT_CUTOFF");
+                if (!env) return size_t(0);  // 0 = disabled (no cutoff)
+                int v = std::atoi(env);
+                return (v >= 2 && v <= 100) ? size_t(v) : size_t(0);
+            }();
             std::unordered_set<size_t> dead;
             dead.reserve(pool.size() / 8);
             for (size_t i = 0; i < pool.size(); ++i) {
                 if (used.count(i)) continue;
                 const auto& keys = pool_lp_keys_cache[i];
                 bool all_singleton = true;
+                bool over_cutoff = false;
                 for (const auto& k : keys) {
-                    if (!singleton_keys.count(k)) { all_singleton = false; break; }
+                    if (!singleton_keys.count(k)) { all_singleton = false; }
+                    if (weight_cutoff > 0) {
+                        auto it = lp_index.find(k);
+                        if (it != lp_index.end() && it->second.size() > weight_cutoff) {
+                            over_cutoff = true;
+                            break;
+                        }
+                    }
                 }
-                if (all_singleton && !keys.empty()) dead.insert(i);
+                if ((all_singleton && !keys.empty()) || over_cutoff) dead.insert(i);
             }
 
             if (used.empty() && dead.empty()) break;
