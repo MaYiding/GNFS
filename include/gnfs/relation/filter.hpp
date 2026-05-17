@@ -364,6 +364,7 @@ public:
             ++counts[{lp.p, lp.r, true}];
         }
         std::vector<LargePrimeKey> keys;
+        keys.reserve(counts.size());  // upper bound — actual is half-ish (odd counts)
         for (const auto& [key, count] : counts) {
             if (count % 2 != 0) keys.push_back(key);
         }
