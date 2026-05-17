@@ -288,17 +288,12 @@ public:
             if (norm_u128 <= UINT64_MAX) {
                 result.cofactor = static_cast<uint64_t>(norm_u128);
             } else {
-                // Construct Integer from uint128
                 uint64_t hi = static_cast<uint64_t>(norm_u128 >> 64);
                 uint64_t lo = static_cast<uint64_t>(norm_u128);
-                mpz_t tmp;
-                mpz_init(tmp);
-                mpz_set_ui(tmp, hi);
-                mpz_mul_2exp(tmp, tmp, 64);
-                mpz_add_ui(tmp, tmp, lo);
-                result.cofactor = Integer(0);
-                mpz_set(result.cofactor.get_mpz(), tmp);
-                mpz_clear(tmp);
+                mpz_ptr cof = result.cofactor.get_mpz();
+                mpz_set_ui(cof, hi);
+                mpz_mul_2exp(cof, cof, 64);
+                mpz_add_ui(cof, cof, lo);
             }
             if (norm_u128 == 1) result.is_smooth = true;
         } else {
