@@ -500,6 +500,9 @@ private:
 
         bool need_scale = !f_d_inv.is_one();
 
+        // v22: 复用 scaled / term buffers per outer iter
+        Integer scaled;
+        Integer term;
         while (coeffs.size() > degree_) {
             size_t high_deg = coeffs.size() - 1;
             Integer high_coeff = std::move(coeffs.back());
@@ -510,7 +513,7 @@ private:
             }
 
             // 除以 f_d
-            Integer scaled = high_coeff.clone();
+            scaled = high_coeff;
             if (need_scale) {
                 scaled *= f_d_inv;
                 scaled %= modulus;
@@ -524,7 +527,7 @@ private:
             }
 
             for (uint32_t i = 0; i < degree_; ++i) {
-                Integer term = scaled.clone();
+                term = scaled;
                 term *= f_coeffs_[i];
                 term %= modulus;
 
