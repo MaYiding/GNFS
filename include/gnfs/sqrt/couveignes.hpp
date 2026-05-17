@@ -409,9 +409,8 @@ public:
             }
             if (Y_buf.is_negative()) Y_buf += n;
 
-            Y2_buf = Y_buf;  // mpz_set 复用 buffer
-            Y2_buf *= Y_buf;
-            Y2_buf %= n;
+            // Y2_buf = Y_buf² mod n — mpz_powm_ui combines mul + mod in one op
+            mpz_powm_ui(Y2_buf.get_mpz(), Y_buf.get_mpz(), 2, n.get_mpz());
 
             return Y2_buf.compare(expected_X2) == 0;
         };
@@ -668,9 +667,8 @@ public:
             }
             if (Y_buf.is_negative()) Y_buf += n;
 
-            Y2_buf = Y_buf;
-            Y2_buf *= Y_buf;
-            Y2_buf %= n;
+            // Y2_buf = Y_buf² mod n — mpz_powm_ui combines mul + mod in one op
+            mpz_powm_ui(Y2_buf.get_mpz(), Y_buf.get_mpz(), 2, n.get_mpz());
             return Y2_buf.compare(expected_X2) == 0;
         };
 
