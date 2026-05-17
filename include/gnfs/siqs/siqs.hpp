@@ -493,11 +493,14 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb,
 
     // Store coefficients for bp_mod_p computation
     poly.coeffs.resize(s);
+    Integer A_div_qi_tmp;
     for (size_t i = 0; i < s; i++) {
         uint32_t qi = fb[poly.a_indices[i]].p;
         uint32_t ti = fb[poly.a_indices[i]].sqrt_n;
+        A_div_qi_tmp = poly.A;
+        A_div_qi_tmp /= int64_t(qi);
         uint32_t a_div_qi_mod_qi = static_cast<uint32_t>(
-            mpz_fdiv_ui((poly.A / Integer(static_cast<uint64_t>(qi))).get_mpz(), qi));
+            mpz_fdiv_ui(A_div_qi_tmp.get_mpz(), qi));
         poly.coeffs[i] = mod_mul32(ti, mod_inv32(a_div_qi_mod_qi, qi), qi);
     }
 
