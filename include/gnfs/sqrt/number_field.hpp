@@ -349,8 +349,10 @@ public:
         Integer result(static_cast<int64_t>(0));
         Integer m_power(1);
 
+        // v22: 复用 term buffer
+        Integer term;
         for (size_t i = 0; i <= elem.degree(); ++i) {
-            Integer term = elem.coeff(i).clone();
+            term = elem.coeff(i);
             term *= m_power;
             result += term;
 
@@ -367,8 +369,10 @@ public:
         Integer result(static_cast<int64_t>(0));
         Integer m_power(1);
 
+        // v22: 复用 term buffer
+        Integer term;
         for (size_t i = 0; i <= elem.degree(); ++i) {
-            Integer term = elem.coeff(i).clone();
+            term = elem.coeff(i);
             term *= m_power;
             term %= n_;
             result += term;
