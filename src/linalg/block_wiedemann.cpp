@@ -534,6 +534,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
 
     // ── Verify solutions ──
     std::vector<std::vector<bool>> deps;
+    deps.reserve(std::min(max_deps, static_cast<size_t>(64)));
     size_t verified = 0, failed = 0, zero_vecs = 0;
 
     for (int j = 0; j < 64 && deps.size() < max_deps; ++j) {
@@ -702,6 +703,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
 
     // ── Verify each candidate column of accumulator ──
     std::vector<std::vector<bool>> deps;
+    deps.reserve(std::min(max_deps, static_cast<size_t>(64)));
     size_t verified = 0, failed = 0, zero_vecs = 0;
 
     for (int j = 0; j < 64 && deps.size() < max_deps; ++j) {
