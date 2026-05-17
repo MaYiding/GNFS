@@ -597,12 +597,11 @@ private:
 
         // Initial CRT with all-positive signs (crt_val[j] already 0 from default ctor)
         std::vector<Integer> crt_val(d);
-        // v22: term buffer 复用
+        // mpz_mul writes lifted[i].coeffs[j]*basis[i] directly into term (skip set step)
         Integer term;
         for (uint32_t j = 0; j < d; ++j) {
             for (size_t i = 0; i < K; ++i) {
-                term = lifted[i].coeffs[j];
-                term *= basis[i];
+                mpz_mul(term.get_mpz(), lifted[i].coeffs[j].get_mpz(), basis[i].get_mpz());
                 crt_val[j] += term;
             }
             crt_val[j] %= M;
@@ -1167,8 +1166,8 @@ private:
         Integer term;
         for (int i = static_cast<int>(d) - 1; i >= 1; --i) {
             result *= m;
-            term = nf.coeff(i);
-            term *= static_cast<int64_t>(i);  // mpz_mul_si direct
+            // mpz_mul_si writes nf.coeff(i)*i directly into term (skip set step)
+            mpz_mul_si(term.get_mpz(), nf.coeff(i).get_mpz(), i);
             result += term;
             result %= n;
         }
@@ -1386,14 +1385,13 @@ private:
         // 单系数 ≤ d·modulus²,GMP 自动扩存),最后对 2d-1 个系数一次性 mod。
         // 原代码每 inner iter 双 mod (term%=mod + result%=mod) = d²·2 = 50 次 mod
         // (d=5),新代码仅 2d-1 = 9 次 mod。Hensel lift 大循环 hot path。
-        // v22: term buffer 复用 (mpz_set) 替代 mpz_init_set, 节省 ~d² allocs/call
+        // mpz_mul writes a[i]*b[j] directly into term (skip set step)
         Integer term;
         for (uint32_t i = 0; i < d; ++i) {
             if (a[i].is_zero()) continue;
             for (uint32_t j = 0; j < d; ++j) {
                 if (b[j].is_zero()) continue;
-                term = a[i];
-                term *= b[j];
+                mpz_mul(term.get_mpz(), a[i].get_mpz(), b[j].get_mpz());
                 result[i + j] += term;
             }
         }
