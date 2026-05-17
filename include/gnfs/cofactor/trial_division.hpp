@@ -241,13 +241,9 @@ public:
                     norm_u64 = norm.to_uint64();
                 } else if (norm.bit_length() <= 127) {
                     use_u128 = true;
-                    mpz_t tmp;
-                    mpz_init(tmp);
-                    mpz_tdiv_r_2exp(tmp, norm.get_mpz(), 64);
-                    uint64_t lo = mpz_get_ui(tmp);
-                    mpz_tdiv_q_2exp(tmp, norm.get_mpz(), 64);
-                    uint64_t hi = mpz_get_ui(tmp);
-                    mpz_clear(tmp);
+                    // Zero-alloc limb access (same pattern as line 182 init path)
+                    uint64_t lo = mpz_getlimbn(norm.get_mpz(), 0);
+                    uint64_t hi = mpz_getlimbn(norm.get_mpz(), 1);
                     norm_u128 = (static_cast<__uint128_t>(hi) << 64) | lo;
                 }
             }
