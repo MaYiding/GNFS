@@ -366,8 +366,10 @@ public:
                 for (size_t i = 0; i < R.c.size(); ++i) {
                     R.c[i] *= lc_b;
                 }
+                // v22: term 复用 (mpz_set) 节省 db allocs/iter
+                Integer term;
                 for (int i = 0; i <= db; ++i) {
-                    Integer term = lc_r.clone();
+                    term = lc_r;
                     term *= B.c[static_cast<size_t>(i)];
                     R.c[static_cast<size_t>(i + shift)] -= term;
                 }
