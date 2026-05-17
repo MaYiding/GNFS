@@ -605,8 +605,26 @@ public:
         // NOTE: Unmerged original 2LP relations are intentionally discarded.
         // Including them would add LP columns that may outnumber their
         // contribution to the matrix, causing column explosion.
+        //
+        // BACKLOG #80 [drop-residual]: GNFS_DROP_RESIDUAL=1 同 V3 path 一致, drop
+        // 这些 residual partial (含残留 LP 的 merged), 仅 emit 完全 cancel 的 full.
+        static const bool drop_residual = []() {
+            const char* env = std::getenv("GNFS_DROP_RESIDUAL");
+            return env && std::atoi(env) == 1;
+        }();
         for (auto& rel : pool) {
-            if (rel.is_merged()) full_results.push_back(std::move(rel));
+            if (rel.is_merged()) {
+                if (drop_residual) {
+                    // 检查是否有残留 LP — 若有, drop; 完全 cancel 的 emit
+                    auto keys = remaining_lp_keys(rel);
+                    if (keys.empty()) {
+                        full_results.push_back(std::move(rel));
+                    }
+                    // else: drop (含残留 LP)
+                } else {
+                    full_results.push_back(std::move(rel));
+                }
+            }
         }
 
         stats.full_produced = full_results.size();
