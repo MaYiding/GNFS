@@ -487,8 +487,8 @@ private:
             km2 = std::move(km1);
             km1 = std::move(curr);
         }
-        // 循环结束后 km1 = D*Q
-        Point Q_D(km1.x.clone(), km1.z.clone());
+        // 循环结束后 km1 = D*Q (km1 not used after — move avoids GMP copy)
+        Point Q_D = std::move(km1);
 
         // === Phase 2: Giant steps ===
         uint64_t j_lo = B1 / D;                  // 最小 j 使得 j*D ≥ B1 - D (covers B1-adjacent primes)
