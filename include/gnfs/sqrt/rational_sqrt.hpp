@@ -117,8 +117,8 @@ public:
         // sqrt = product of p^(exp/2) mod n
         Integer sqrt_value(1);
 
-        // hoist p_int + half_exp_int — 每个 dep 数千次迭代复用 buffer
-        Integer p_int, half_exp_int;
+        // hoist p_int + half_exp_int + contribution — 每个 dep 数千次迭代复用 buffer
+        Integer p_int, half_exp_int, contribution;
 
         // 因子基素数贡献
         for (const auto& [idx, exp] : fb_exponents) {
@@ -127,10 +127,10 @@ public:
             uint32_t p = fb.rational()[idx].p;
             uint64_t half_exp = exp / 2;
 
-            // p^half_exp mod n
-            p_int = static_cast<uint64_t>(p);
-            half_exp_int = static_cast<uint64_t>(half_exp);
-            Integer contribution = core::powmod(p_int, half_exp_int, n);
+            // p^half_exp mod n — mpz_powm into hoisted buffer
+            p_int = uint64_t(p);
+            half_exp_int = uint64_t(half_exp);
+            mpz_powm(contribution.get_mpz(), p_int.get_mpz(), half_exp_int.get_mpz(), n.get_mpz());
 
             sqrt_value *= contribution;
             sqrt_value %= n;
@@ -142,9 +142,9 @@ public:
 
             uint64_t half_exp = exp / 2;
 
-            p_int = static_cast<uint64_t>(p);
-            half_exp_int = static_cast<uint64_t>(half_exp);
-            Integer contribution = core::powmod(p_int, half_exp_int, n);
+            p_int = uint64_t(p);
+            half_exp_int = uint64_t(half_exp);
+            mpz_powm(contribution.get_mpz(), p_int.get_mpz(), half_exp_int.get_mpz(), n.get_mpz());
 
             sqrt_value *= contribution;
             sqrt_value %= n;
@@ -230,8 +230,8 @@ public:
             const Integer& n) {
 
         Integer result(1);
-        // hoist p, e buffers — reused across iterations
-        Integer p, e;
+        // hoist p, e, contribution buffers — reused across iterations
+        Integer p, e, contribution;
 
         for (size_t i = 0; i < exponents.size() && i < primes.size(); ++i) {
             if (exponents[i] == 0) continue;
@@ -239,9 +239,9 @@ public:
             // 指数应该是偶数
             uint64_t half_exp = exponents[i] / 2;
 
-            p = static_cast<uint64_t>(primes[i]);
-            e = static_cast<uint64_t>(half_exp);
-            Integer contribution = core::powmod(p, e, n);
+            p = uint64_t(primes[i]);
+            e = uint64_t(half_exp);
+            mpz_powm(contribution.get_mpz(), p.get_mpz(), e.get_mpz(), n.get_mpz());
 
             result *= contribution;
             result %= n;
