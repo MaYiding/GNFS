@@ -361,18 +361,12 @@ private:
         Integer v(static_cast<unsigned long long>(4 * sigma));
         v %= n;
 
-        // 起始点
-        Integer x0 = u.clone();
-        x0 *= u;
-        x0 %= n;
-        x0 *= u;
-        x0 %= n;  // u^3
+        // 起始点 u^3, v^3 — mpz_powm_ui combines mul + mod
+        Integer x0;
+        mpz_powm_ui(x0.get_mpz(), u.get_mpz(), 3, n.get_mpz());
 
-        Integer z0 = v.clone();
-        z0 *= v;
-        z0 %= n;
-        z0 *= v;
-        z0 %= n;  // v^3
+        Integer z0;
+        mpz_powm_ui(z0.get_mpz(), v.get_mpz(), 3, n.get_mpz());
 
         // a24 = (v - u)^3 * (3u + v) / (16 * u^3 * v) - 2
         // 简化: 直接计算 a24 = ((v-u)^3 * (3u+v)) * inverse(16*u^3*v) - 2
@@ -382,11 +376,9 @@ private:
         if (diff.is_negative()) diff += n;
         diff %= n;
 
-        Integer diff3 = diff.clone();
-        diff3 *= diff;
-        diff3 %= n;
-        diff3 *= diff;
-        diff3 %= n;
+        // diff^3 mod n via mpz_powm_ui (combines mul + mod)
+        Integer diff3;
+        mpz_powm_ui(diff3.get_mpz(), diff.get_mpz(), 3, n.get_mpz());
 
         Integer sum3u_v = u.clone();
         sum3u_v *= int64_t(3);  // mpz_mul_si direct
