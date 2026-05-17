@@ -1254,23 +1254,28 @@ private:
                 std::vector<Integer> product(d);
                 product[0] = Integer(int64_t(1));  // other coeffs already 0 from ctor
 
+                // v22: factor vector 移到 loop 外, 复用 d 个 Integer.
+                // factor[0], factor[1] 每 iter 用 mpz_set 覆写, factor[i>=2] 保持 0.
+                // 节省 ab_pairs.size() × d 次 mpz_init/clear 周期.
+                std::vector<Integer> factor(d);
+
                 for (size_t j = start; j < end; ++j) {
                     auto [a, b] = ab_pairs[j];
-                    std::vector<Integer> factor(d);
-                    Integer a_mod(a);
-                    a_mod %= modulus;
-                    if (a_mod.is_negative()) a_mod += modulus;
-                    factor[0] = std::move(a_mod);
+
+                    // a mod modulus (复用 factor[0] buffer via assignment)
+                    factor[0] = Integer(a);
+                    factor[0] %= modulus;
+                    if (factor[0].is_negative()) factor[0] += modulus;
 
                     if (d > 1) {
-                        Integer neg_b(static_cast<int64_t>(b));
-                        neg_b.negate();
-                        neg_b %= modulus;
-                        if (neg_b.is_negative()) neg_b += modulus;
-                        factor[1] = std::move(neg_b);
+                        // -b mod modulus (复用 factor[1] buffer)
+                        factor[1] = Integer(static_cast<int64_t>(b));
+                        factor[1].negate();
+                        factor[1] %= modulus;
+                        if (factor[1].is_negative()) factor[1] += modulus;
                     }
-                    // factor[i] for i>=2 already 0 by std::vector<Integer>(d) default ctor
-                    // (Integer default-construction yields 0). No need to re-init in hot loop.
+                    // factor[i] for i>=2 是 0 (初始化时), poly_mul_mod 不改 input,
+                    // 后续 iter 仍是 0, 无需重置.
 
                     product = poly_mul_mod(product, factor, f, d, modulus, fli);
                 }
