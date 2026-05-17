@@ -451,9 +451,10 @@ struct CofactorClassification {
         return result;
     }
 
-    // 检查是否在 B^2 范围内
-    Integer lp_sq(static_cast<unsigned long long>(large_prime_bound));
-    lp_sq *= static_cast<int64_t>(large_prime_bound);  // mpz_mul_si direct
+    // 检查是否在 B^2 范围内 — lp_sq = large_prime_bound² via direct mpz_set+mul
+    Integer lp_sq;
+    mpz_set_ui(lp_sq.get_mpz(), large_prime_bound);
+    mpz_mul_ui(lp_sq.get_mpz(), lp_sq.get_mpz(), large_prime_bound);
     if (cofactor.compare(lp_sq) > 0) {
         result.type = CofactorClass::TooLarge;
         return result;
