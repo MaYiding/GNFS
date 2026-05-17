@@ -667,7 +667,7 @@ private:
         Integer val_buf;
         Integer c_buf;
         auto try_verify = [&]() -> std::optional<Integer> {
-            val_buf = Integer(int64_t(0));
+            val_buf = int64_t(0);  // mpz_set_si direct
             for (uint32_t j = 0; j < d; ++j) {
                 c_buf = crt_mod_N[j];
                 if (crt_val[j].compare(Mhalf) > 0) c_buf -= M_mod_N;
@@ -1228,7 +1228,7 @@ private:
 
         // Start with 1 (other coeffs default to 0 via Integer ctor)
         std::vector<Integer> product(d);
-        product[0] = Integer(int64_t(1));
+        product[0] = int64_t(1);  // mpz_set_si direct
 
         // v22: factor 移到 loop 外, mpz_set 覆写 factor[0]/[1], factor[i>=2] 保持 0
         std::vector<Integer> factor(d);
@@ -1297,7 +1297,7 @@ private:
 
             threads.emplace_back([&partials, &ab_pairs, &f, &modulus, &fli, d, t, start, end]() {
                 std::vector<Integer> product(d);
-                product[0] = Integer(int64_t(1));  // other coeffs already 0 from ctor
+                product[0] = int64_t(1);  // other coeffs already 0 from ctor
 
                 // v22: factor vector 移到 loop 外, 复用 d 个 Integer.
                 // factor[0], factor[1] 每 iter 用 mpz_set 覆写, factor[i>=2] 保持 0.
