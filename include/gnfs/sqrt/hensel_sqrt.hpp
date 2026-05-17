@@ -1091,10 +1091,8 @@ private:
                 s_at_m %= nn;
             }
             if (s_at_m.is_negative()) s_at_m += nn;
-            Integer s2_at_m = s_at_m.clone();
-            s2_at_m *= s_at_m;
-            s2_at_m %= nn;
-            if (s2_at_m.is_negative()) s2_at_m += nn;
+            Integer s2_at_m;
+            mpz_powm_ui(s2_at_m.get_mpz(), s_at_m.get_mpz(), 2, nn.get_mpz());
 
             // Evaluate P_final(m) mod N
             Integer p_at_m;  // default ctor = 0
