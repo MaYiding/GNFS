@@ -344,6 +344,18 @@ struct GNFSParams {
     /// 不用 birthday 公式（对小 N 过高估计、对大 N 不够准确）
     /// 而是从 mc × 2.0 开始，让 adaptive loop 倍增直到够用
     [[nodiscard]] size_t raw_relation_target(size_t matrix_columns) const {
+        // BACKLOG #80 [sieve-target-mult]: ENV GNFS_SIEVE_TARGET_MULT=X
+        // multiplier 适用于最终 target 输出. 用于 50d/60d β plateau 突破:
+        // CADO-NFS 50d 标准 target 100M+ raw, 我们 5.9M 不足. X=10-20 可对齐.
+        // 默认 1.0 (无 multiplier, 原始策略 unchanged).
+        static const double target_mult = []() {
+            const char* env = std::getenv("GNFS_SIEVE_TARGET_MULT");
+            if (!env) return 1.0;
+            double v = std::atof(env);
+            return (v >= 0.1 && v <= 100.0) ? v : 1.0;
+        }();
+
+        size_t base_target;
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
             double mc = static_cast<double>(matrix_columns);
             // Birthday bound: need ~sqrt(2 × LP_space × needed_usable) raw relations
@@ -355,12 +367,14 @@ struct GNFSParams {
             double target = std::max(birthday, mc * 2.0);
             // Cap at mc × 50 to prevent runaway targets for huge LP spaces.
             target = std::min(target, mc * 50.0);
-            return static_cast<size_t>(target);
+            base_target = static_cast<size_t>(target);
+        } else {
+            // No LP: need R/B > 3 to survive singleton filter.
+            // Each FB prime p appears ~R/p times. For p near B, need R/B > 2-3.
+            // With ratio 4×, singleton survival ≈ 60-70%.
+            base_target = matrix_columns * 4;
         }
-        // No LP: need R/B > 3 to survive singleton filter.
-        // Each FB prime p appears ~R/p times. For p near B, need R/B > 2-3.
-        // With ratio 4×, singleton survival ≈ 60-70%.
-        return matrix_columns * 4;
+        return static_cast<size_t>(base_target * target_mult);
     }
 
     /// 估算筛区域大小 (位置数)
