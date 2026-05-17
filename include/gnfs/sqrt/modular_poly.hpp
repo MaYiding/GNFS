@@ -325,9 +325,9 @@ public:
         // Compute (p^d - 1) / 2
         Integer pd(1);
         for (int i = 0; i < d; ++i) {
-            pd *= Integer(p);
+            pd *= static_cast<int64_t>(p);  // mpz_mul_si direct, no tmp
         }
-        pd -= Integer(static_cast<int64_t>(1));
+        pd -= int64_t(1);  // mpz_sub_ui direct
         mpz_tdiv_q_2exp(pd.get_mpz(), pd.get_mpz(), 1);
 
         auto result = power(a, pd, f, p);
@@ -418,10 +418,10 @@ public:
         // Compute q and s where p^d - 1 = q * 2^s
         Integer pd(1);
         for (int i = 0; i < d; ++i) {
-            pd *= Integer(p);
+            pd *= static_cast<int64_t>(p);
         }
         Integer q = pd.clone();
-        q -= Integer(static_cast<int64_t>(1));
+        q -= int64_t(1);
 
         uint64_t s = 0;
         while (!q.is_odd()) {

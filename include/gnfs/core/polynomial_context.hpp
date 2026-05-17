@@ -165,7 +165,7 @@ public:
             b_powers_heap.resize(degree_ + 1);
             b_powers = b_powers_heap.data();
         }
-        b_powers[0] = Integer(int64_t(1));
+        b_powers[0] = int64_t(1);  // mpz_set_si into default-init slot
         // v22: b_powers[i] = b_powers[i-1] (mpz_set into default-init / stack slot)
         for (uint32_t i = 1; i <= degree_; ++i) {
             b_powers[i] = b_powers[i-1];
