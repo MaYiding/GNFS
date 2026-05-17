@@ -234,10 +234,10 @@ public:
         // Sign determination using subset enumeration
         // Enumerate all 2^k sign combinations for first k primes
 
-        // Compute CRT modulus for all primes
+        // Compute CRT modulus for all primes (Couveignes primes ≤ uint32 max)
         Integer M(1);
         for (uint64_t prime : primes) {
-            M *= Integer(prime);
+            M *= static_cast<int64_t>(prime);  // mpz_mul_si direct
         }
 
         // Suppress unused variable warnings
@@ -295,7 +295,7 @@ public:
                 uint64_t c_ij = sqrt_coeffs[j][i];
                 Integer w = Integer(c_ij);
                 w *= M_j;
-                w *= Integer(M_j_inv);
+                w *= static_cast<int64_t>(M_j_inv);  // mpz_mul_si direct
                 w %= M;
                 weights[j][i] = std::move(w);
             }
@@ -352,9 +352,9 @@ public:
         Integer expected_X2(int64_t(1));
         Integer term_buf, bm;
         for (const auto& [a, b] : ab_pairs) {
-            term_buf = Integer(a);
+            term_buf = a;  // mpz_set_si direct
             bm = nf.m();
-            bm *= Integer(b);
+            bm *= static_cast<int64_t>(b);  // mpz_mul_si direct (b ≤ sieve bound, fits)
             term_buf -= bm;
             term_buf %= n;
             if (term_buf.is_negative()) term_buf += n;
@@ -371,7 +371,7 @@ public:
             for (int i = static_cast<int>(d); i >= 1; --i) {
                 f_prime_m *= m_val;
                 term_h = nf.coeff(static_cast<uint32_t>(i));
-                term_h *= Integer(static_cast<int64_t>(i));
+                term_h *= static_cast<int64_t>(i);  // mpz_mul_si direct
                 f_prime_m += term_h;
                 f_prime_m %= n;
             }
@@ -578,9 +578,9 @@ public:
 
         if (primes.size() < 2) return std::nullopt;
 
-        // CRT modulus
+        // CRT modulus (Couveignes primes ≤ uint32 max)
         Integer M(1);
-        for (uint64_t prime : primes) M *= Integer(prime);
+        for (uint64_t prime : primes) M *= static_cast<int64_t>(prime);  // mpz_mul_si direct
 
         // Precompute CRT weights: weight[j][i] = c_ij * M_j * M_j_inv mod M
         // v22: M_j / M_j_mod_pj 复用
@@ -598,7 +598,7 @@ public:
             for (uint32_t i = 0; i < d; ++i) {
                 Integer w(sqrt_coeffs[j][i]);
                 w *= M_j_b;
-                w *= Integer(M_j_inv);
+                w *= static_cast<int64_t>(M_j_inv);  // mpz_mul_si direct
                 w %= M;
                 weights[j][i] = std::move(w);
             }
