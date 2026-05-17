@@ -483,9 +483,8 @@ private:
 
         bool need_scale = !f_d_inv.is_one();
 
-        // v22: 复用 scaled / term buffers per outer iter
+        // scaled reused per outer iter (term dropped — submul fuses mul+sub)
         Integer scaled;
-        Integer term;
         while (coeffs.size() > degree_) {
             size_t high_deg = coeffs.size() - 1;
             Integer high_coeff = std::move(coeffs.back());
@@ -510,10 +509,10 @@ private:
             }
 
             for (uint32_t i = 0; i < degree_; ++i) {
-                mpz_mul(term.get_mpz(), scaled.get_mpz(), f_coeffs_[i].get_mpz());
-                term %= modulus;
-
-                coeffs[shift + i] -= term;
+                // coeffs[shift+i] -= scaled * f_coeffs[i] via mpz_submul (fused FMS)
+                // Final mod handled in the per-coeff loop below; drops term temp + 1 mod op.
+                mpz_submul(coeffs[shift + i].get_mpz(),
+                           scaled.get_mpz(), f_coeffs_[i].get_mpz());
                 coeffs[shift + i] %= modulus;
                 if (coeffs[shift + i].is_negative()) {
                     coeffs[shift + i] += modulus;
