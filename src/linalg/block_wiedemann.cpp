@@ -314,15 +314,12 @@ std::vector<std::vector<bool>> BlockWiedemann::find_dependencies(
     const size_t n = matrix.num_cols();
     if (m == 0 || n == 0) return {};
 
-    // BACKLOG #80 step 7: thin matrix (m<n) is fundamentally unsupported
-    // by BW over GF(2). Issue: BW finds null(M·M^T) and verifies M^T·w = 0,
-    // but over GF(2), null(M·M^T) ⊋ null(M^T) for rank-deficient matrices
-    // (the quadratic form v^T M M^T v = ‖M^T v‖² is parity, not L2 norm).
-    // Zero-padding to n×n doesn't help — same rank, same null space issue.
-    // Proper fix requires either (a) BW with B=M^T·M and recover via M·v
-    // (different setup), or (b) iterative refinement on M^T·w residuals.
-    // Pipeline GNFS_THIN_MATRIX_TRY=1 allows the code path; BW may return
-    // empty deps. User-responsibility ENV.
+    // BACKLOG #80 step 7: thin matrix (m<n) over GF(2) requires a different
+    // operator (B' = M^T·M) than the standard B = M·M^T, because over GF(2)
+    // null(B) ⊋ null(M^T) when rank-deficient (quadratic-form quirk:
+    // v^T·M·M^T·v = parity(M^T·v), can be 0 without M^T·v = 0).
+    // block_wiedemann_thin_solve operates in R^n and recovers u = M·w which
+    // strictly satisfies M^T·u = (M^T·M)·w = 0 by associativity.
 
     // For small matrices, delegate to Gaussian (same threshold as BL)
     if (m < 5000 && n < 5000) {
@@ -337,22 +334,39 @@ std::vector<std::vector<bool>> BlockWiedemann::find_dependencies(
     const bool use_scalar = (algo_env != nullptr &&
                              std::string(algo_env) == "scalar");
 
+    // Thin matrix detection: prefer B'=M^T·M variant when m<n. For square or
+    // wide (m≥n) matrices, the standard path is correct and more efficient
+    // (B is m×m, smaller). For thin, only the new variant guarantees correctness
+    // over GF(2). Scalar BW path lacks a thin variant (legacy code, low ROI to
+    // re-implement). For users explicitly forcing scalar, document via stderr.
+    const bool is_thin = (m < n);
+    if (is_thin && use_scalar) {
+        std::cerr << "  [BW] WARN: GNFS_BW_ALGORITHM=scalar + thin matrix (m<n) "
+                     "is unsupported; falling back to block thin variant\n";
+    }
+
     // Retry up to 3 seeds — Phase 1's projections can occasionally be rank-
     // deficient, producing too few valid generators. Different seeds recover.
     static constexpr uint64_t seeds[] = { 42, 0xDEADBEEFCAFEBABEULL, 0x12345678ABCDEFULL };
     for (uint64_t seed : seeds) {
-        auto deps = use_scalar
-                  ? block_wiedemann_scalar_solve(matrix, max_deps, seed)
-                  : block_wiedemann_block_solve(matrix, max_deps, seed);
+        std::vector<std::vector<bool>> deps;
+        if (is_thin) {
+            deps = block_wiedemann_thin_solve(matrix, max_deps, seed);
+        } else if (use_scalar) {
+            deps = block_wiedemann_scalar_solve(matrix, max_deps, seed);
+        } else {
+            deps = block_wiedemann_block_solve(matrix, max_deps, seed);
+        }
         if (!deps.empty()) return deps;
         std::cerr << "  [BW] seed=" << seed
-                  << (use_scalar ? " (scalar)" : " (block)")
+                  << (is_thin ? " (thin)" : (use_scalar ? " (scalar)" : " (block)"))
                   << " produced no deps, retrying\n";
     }
 
     // If block-BM path failed for all seeds, fall back to scalar (in case
-    // the block-BM extraction has issues for this matrix).
-    if (!use_scalar) {
+    // the block-BM extraction has issues for this matrix). Thin path has no
+    // such fallback (no thin scalar variant); empty result returns to caller.
+    if (!use_scalar && !is_thin) {
         std::cerr << "  [BW] block path exhausted seeds, falling back to scalar\n";
         for (uint64_t seed : seeds) {
             auto deps = block_wiedemann_scalar_solve(matrix, max_deps, seed);
