@@ -349,17 +349,20 @@ public:
             assert(db >= 0);
 
             IntPoly R(A.c.size());
-            for (size_t i = 0; i < A.c.size(); ++i) R.c[i] = A.c[i].clone();
+            // v22: R.c[i] = A.c[i] (mpz_set 不 clone)
+            for (size_t i = 0; i < A.c.size(); ++i) R.c[i] = A.c[i];
 
             const Integer& lc_b = B.c[static_cast<size_t>(db)];
 
             int iters = 0;
             int max_iters = static_cast<int>(A.c.size()) + 10;
+            // v22: lc_r 复用 across iters (mpz_set)
+            Integer lc_r;
             for (int iter = 0; iter < max_iters; ++iter) {
                 int dr = R.deg();
                 if (dr < db) break;
 
-                Integer lc_r = R.c[static_cast<size_t>(dr)].clone();
+                lc_r = R.c[static_cast<size_t>(dr)];
                 int shift = dr - db;
 
                 // R = lc_b * R - lc_r * x^shift * B
@@ -380,13 +383,15 @@ public:
 
         // --- helper: divide out abs(content) to prevent coefficient blowup ---
         auto reduce_content = [](IntPoly& P) {
+            // v22: ax 复用 (mpz_set)
             Integer content(int64_t(0));
+            Integer ax;
             for (const auto& x : P.c) {
                 if (!x.is_zero()) {
-                    Integer ax = x.clone();
+                    ax = x;
                     if (ax.is_negative()) ax.negate();
                     if (content.is_zero()) {
-                        content = std::move(ax);
+                        content = ax;
                     } else {
                         content = core::gcd(content, ax);
                     }

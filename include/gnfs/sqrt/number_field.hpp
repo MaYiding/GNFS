@@ -401,10 +401,11 @@ public:
         Integer a_power(1);
 
         // 计算 b^d, b^{d-1}, ..., b^0
+        // v22: b_powers[i-1] 直接赋值 (mpz_set), 不需要 clone
         std::vector<Integer> b_powers(degree_ + 1);
         b_powers[0] = Integer(static_cast<int64_t>(1));
         for (uint32_t i = 1; i <= degree_; ++i) {
-            b_powers[i] = b_powers[i-1].clone();
+            b_powers[i] = b_powers[i-1];
             b_powers[i] *= static_cast<long long>(b);
         }
 
@@ -479,9 +480,11 @@ private:
     /// 通过 f_d 的模逆实现除法
     void reduce_mod(std::vector<Integer>& coeffs, const Integer& modulus) const {
         // 计算 f_d 的模逆
+        // v22: f_d 直接 assign (mpz_set 而非 mpz_init_set)
         Integer f_d_inv(int64_t(1));
         {
-            Integer f_d = f_coeffs_[degree_].clone();
+            Integer f_d;
+            f_d = f_coeffs_[degree_];
             f_d %= modulus;
             if (f_d.is_negative()) f_d += modulus;
             if (!f_d.is_one()) {
