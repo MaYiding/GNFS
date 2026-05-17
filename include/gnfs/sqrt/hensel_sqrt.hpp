@@ -347,7 +347,7 @@ private:
             }
             Integer q_minus_2;
             mpz_ui_pow_ui(q_minus_2.get_mpz(), p, d);
-            q_minus_2 -= Integer(int64_t(2));
+            q_minus_2 -= int64_t(2);
             auto inv_mp = ModularPoly::power(
                 ModularPoly(two_s_mod), q_minus_2, f_mod_p, p);
             for (uint32_t i = 0; i < d; ++i) {
@@ -406,13 +406,13 @@ private:
             std::vector<Integer> two_S_prime(d);
             for (uint32_t i = 0; i < d; ++i) {
                 two_S_prime[i] = S[i];
-                two_S_prime[i] *= Integer(int64_t(2));
+                two_S_prime[i] *= int64_t(2);
                 two_S_prime[i] %= new_modulus;
             }
             auto two_S_T = poly_mul_mod(two_S_prime, T, f_int, d, new_modulus, fli);
 
             std::vector<Integer> factor(d);
-            factor[0] = Integer(int64_t(2));
+            factor[0] = int64_t(2);
             factor[0] -= two_S_T[0];
             factor[0] %= new_modulus;
             if (factor[0].is_negative()) factor[0] += new_modulus;
@@ -888,7 +888,7 @@ private:
             // Compute p^d - 2 using mpz_ui_pow_ui (single GMP call)
             Integer q_minus_2;
             mpz_ui_pow_ui(q_minus_2.get_mpz(), p, d);
-            q_minus_2 -= Integer(int64_t(2));
+            q_minus_2 -= int64_t(2);
             auto inv_mp = ModularPoly::power(ModularPoly(two_s_mod), q_minus_2, f_mod_p_vec, p);
             for (uint32_t i = 0; i < d; ++i) {
                 uint64_t coeff_val = (i <= static_cast<uint32_t>(inv_mp.degree())) ? inv_mp.coeff(i) : 0;
