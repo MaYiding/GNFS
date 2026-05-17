@@ -570,7 +570,7 @@ private:
         // 检查 gcd + 回退处理
         auto check_batch = [&](uint64_t j_current) -> std::optional<Integer> {
             if (accum.is_one()) {
-                accum = Integer(int64_t(1));
+                accum = int64_t(1);  // mpz_set_si direct
                 batch_start_j = j_current + 1;
                 steps_in_batch = 0;
                 return std::nullopt;
@@ -585,7 +585,7 @@ private:
                 auto fb = stage2_naive(Q0, n, a24, lo, hi);
                 if (fb) return fb;
             }
-            accum = Integer(int64_t(1));
+            accum = int64_t(1);  // mpz_set_si direct
             batch_start_j = j_current + 1;
             steps_in_batch = 0;
             return std::nullopt;
@@ -660,7 +660,7 @@ private:
                         }
                     }
                 }
-                accum = Integer(int64_t(1));
+                accum = int64_t(1);  // mpz_set_si direct
                 checkpoint = Point(Qcurr.x.clone(), Qcurr.z.clone());
                 batch_primes.clear();
                 check_interval = 0;
