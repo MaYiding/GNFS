@@ -462,8 +462,8 @@ struct CofactorClassification {
     // 尝试 ECM 分解
     auto ecm_result = ECM::quick_factor(cofactor);
     if (ecm_result) {
-        Integer other = cofactor.clone();
-        other /= *ecm_result;
+        Integer other;
+        mpz_divexact(other.get_mpz(), cofactor.get_mpz(), ecm_result->get_mpz());
 
         // 检查两个因子是否都是素数且在界限内
         Integer lp_int(static_cast<unsigned long long>(large_prime_bound));
@@ -516,8 +516,8 @@ struct CofactorClassification {
     if (cofactor.compare(lp_int) <= 0) return true;  // 1LP
 
     if (allow_2lp) {
-        Integer lp_sq = lp_int.clone();
-        lp_sq *= lp_int;
+        Integer lp_sq;
+        mpz_mul(lp_sq.get_mpz(), lp_int.get_mpz(), lp_int.get_mpz());  // lp_sq = lp^2
         if (cofactor.compare(lp_sq) <= 0) return true;  // 2LP
     }
 
