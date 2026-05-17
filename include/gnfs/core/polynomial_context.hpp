@@ -166,19 +166,17 @@ public:
             b_powers = b_powers_heap.data();
         }
         b_powers[0] = int64_t(1);  // mpz_set_si into default-init slot
-        // v22: b_powers[i] = b_powers[i-1] (mpz_set into default-init / stack slot)
+        // mpz_mul_ui writes b * prev into default-init / stack slot directly
         for (uint32_t i = 1; i <= degree_; ++i) {
-            b_powers[i] = b_powers[i-1];
-            b_powers[i] *= static_cast<long long>(b);
+            mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i-1].get_mpz(), b);
         }
 
-        // v22: 复用 term buffer (mpz_set 而非 mpz_init_set)
+        // mpz_mul writes f_coeffs[i] * a_power into term directly (no init+set)
         Integer term;
         for (uint32_t i = 0; i <= degree_; ++i) {
             // term = f_i * a^i * b^{d-i}
             // Note: No sign alternation for N(a - bα) = b^d * f(a/b)
-            term = f_coeffs_[i];
-            term *= a_power;
+            mpz_mul(term.get_mpz(), f_coeffs_[i].get_mpz(), a_power.get_mpz());
             term *= b_powers[degree_ - i];
 
             result += term;
