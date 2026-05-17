@@ -117,6 +117,9 @@ public:
         // sqrt = product of p^(exp/2) mod n
         Integer sqrt_value(1);
 
+        // hoist p_int + half_exp_int — 每个 dep 数千次迭代复用 buffer
+        Integer p_int, half_exp_int;
+
         // 因子基素数贡献
         for (const auto& [idx, exp] : fb_exponents) {
             if (exp == 0) continue;
@@ -125,8 +128,8 @@ public:
             uint64_t half_exp = exp / 2;
 
             // p^half_exp mod n
-            Integer p_int(static_cast<unsigned long long>(p));
-            Integer half_exp_int(static_cast<unsigned long long>(half_exp));
+            p_int = static_cast<uint64_t>(p);
+            half_exp_int = static_cast<uint64_t>(half_exp);
             Integer contribution = core::powmod(p_int, half_exp_int, n);
 
             sqrt_value *= contribution;
@@ -139,8 +142,8 @@ public:
 
             uint64_t half_exp = exp / 2;
 
-            Integer p_int(static_cast<unsigned long long>(p));
-            Integer half_exp_int(static_cast<unsigned long long>(half_exp));
+            p_int = static_cast<uint64_t>(p);
+            half_exp_int = static_cast<uint64_t>(half_exp);
             Integer contribution = core::powmod(p_int, half_exp_int, n);
 
             sqrt_value *= contribution;
@@ -227,6 +230,8 @@ public:
             const Integer& n) {
 
         Integer result(1);
+        // hoist p, e buffers — reused across iterations
+        Integer p, e;
 
         for (size_t i = 0; i < exponents.size() && i < primes.size(); ++i) {
             if (exponents[i] == 0) continue;
@@ -234,8 +239,8 @@ public:
             // 指数应该是偶数
             uint64_t half_exp = exponents[i] / 2;
 
-            Integer p(static_cast<unsigned long long>(primes[i]));
-            Integer e(static_cast<unsigned long long>(half_exp));
+            p = static_cast<uint64_t>(primes[i]);
+            e = static_cast<uint64_t>(half_exp);
             Integer contribution = core::powmod(p, e, n);
 
             result *= contribution;
