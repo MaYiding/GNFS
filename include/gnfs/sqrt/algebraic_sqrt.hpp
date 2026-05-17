@@ -269,13 +269,16 @@ private:
         const Integer& m = nf.m();
         const Integer& N = nf.n();
 
-        Integer result = nf.coeff(d).clone();
+        // v22: result/term 直接 assign
+        Integer result;
+        result = nf.coeff(d);
         result *= Integer(static_cast<int64_t>(d));
         result %= N;
 
+        Integer term;
         for (int i = static_cast<int>(d) - 1; i >= 1; --i) {
             result *= m;
-            Integer term = nf.coeff(i).clone();
+            term = nf.coeff(i);
             term *= Integer(static_cast<int64_t>(i));
             result += term;
             result %= N;
@@ -312,8 +315,9 @@ struct FactorResult {
 
     FactorResult result;
 
-    // 计算 X - Y mod N
-    Integer diff = rational_sqrt.clone();
+    // 计算 X - Y mod N (v22: 直接 assign)
+    Integer diff;
+    diff = rational_sqrt;
     diff -= algebraic_sqrt;
     diff %= n;
     if (diff.is_negative()) {
@@ -321,7 +325,8 @@ struct FactorResult {
     }
 
     // 计算 X + Y mod N
-    Integer sum = rational_sqrt.clone();
+    Integer sum;
+    sum = rational_sqrt;
     sum += algebraic_sqrt;
     sum %= n;
 

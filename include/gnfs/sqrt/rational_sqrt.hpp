@@ -71,9 +71,11 @@ public:
 
             // 检查符号：(a - b*m) 是否为负 (GNFS convention)
             // For merged relations, check all constituent (a,b) pairs
+            // v22: check_sign hot lambda - hoist a_minus_bm/bm buffers (mpz_set)
+            Integer a_minus_bm, bm;
             auto check_sign = [&](int64_t a_val, uint64_t b_val) {
-                Integer a_minus_bm = Integer(a_val);
-                Integer bm = m.clone();
+                a_minus_bm = Integer(a_val);
+                bm = m;
                 bm *= Integer(b_val);
                 a_minus_bm -= bm;
                 if (a_minus_bm.is_negative()) {
@@ -157,16 +159,19 @@ public:
         // 当 k 为奇数时 product mod N = N - |product| mod N ≠ X²。
         // 因此比较时需要使用绝对值乘积，或者在 k 为奇数时翻转 product。
         if (config_.verify) {
-            Integer squared = sqrt_value.clone();
+            // v22: squared 直接 assign; verify_ab buffers hoisted
+            Integer squared;
+            squared = sqrt_value;
             squared *= sqrt_value;
             squared %= n;
 
             Integer product(1);
+            Integer val, bm_v;
             auto multiply_ab = [&](int64_t a_val, uint64_t b_val) {
-                Integer val = Integer(a_val);
-                Integer bm = m.clone();
-                bm *= Integer(b_val);
-                val -= bm;
+                val = Integer(a_val);
+                bm_v = m;
+                bm_v *= Integer(b_val);
+                val -= bm_v;
                 val %= n;
                 if (val.is_negative()) val += n;
                 product *= val;
