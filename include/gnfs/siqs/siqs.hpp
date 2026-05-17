@@ -264,8 +264,8 @@ inline uint32_t select_multiplier(const Integer& N) {
     uint32_t best_k = 1;
 
     for (uint32_t k : candidates) {
-        Integer kN = N.clone();
-        kN *= int64_t(k);
+        Integer kN;
+        mpz_mul_ui(kN.get_mpz(), N.get_mpz(), k);  // kN = N * k (skip source copy)
         double log_kN = mpz_sizeinbase(kN.get_mpz(), 2) * 0.6931; // log(2) * bits
         double score = -0.5 * log_kN;
 
@@ -388,9 +388,9 @@ inline void choose_A(const Integer& N, uint32_t M,
                      const std::vector<FBPrime>& fb,
                      std::mt19937& rng,
                      std::vector<uint32_t>& a_indices, Integer& A) {
-    // Target A value
-    Integer two_n = N.clone();
-    two_n *= int64_t(2);
+    // Target A value: target_a = sqrt(2N) / M
+    Integer two_n;
+    mpz_mul_2exp(two_n.get_mpz(), N.get_mpz(), 1);  // 2*N via bit shift
     Integer target_a = core::sqrt(two_n);
     target_a /= int64_t(M);
     if (target_a.is_zero() || target_a.is_negative()) target_a = int64_t(1);
@@ -1414,7 +1414,12 @@ inline std::optional<SIQSResult> factor(
 
     // Knuth-Schroeppel multiplier selection
     uint32_t multiplier = select_multiplier(N);
-    Integer kN = (multiplier > 1) ? N * Integer(multiplier) : N.clone();
+    Integer kN;
+    if (multiplier > 1) {
+        mpz_mul_ui(kN.get_mpz(), N.get_mpz(), multiplier);  // kN = N * k (skip source copy)
+    } else {
+        kN = N;  // copy ctor
+    }
 
     if (verbose) {
         fprintf(stderr, "[SIQS] N=%zu digits, k=%u, FB=%u, M=%u, A_factors=%u\n",
