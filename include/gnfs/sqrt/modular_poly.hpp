@@ -366,8 +366,9 @@ public:
 
         std::vector<ModularPoly> x_pow_pk(d + 1);
         x_pow_pk[0] = x_poly;  // x^{p^0} = x
+        const Integer p_int(p);
         for (int k = 1; k <= d; ++k) {
-            x_pow_pk[k] = power(x_pow_pk[k - 1], Integer(p), f, p);
+            x_pow_pk[k] = power(x_pow_pk[k - 1], p_int, f, p);
         }
 
         // Step 1: for each prime factor q of d, check gcd(x^{p^{d/q}} - x, f) = 1
