@@ -864,20 +864,11 @@ private:
 
     /// 计算 Legendre 符号 (a / p) - optimized for small primes
     [[nodiscard]] static int legendre_symbol(const Integer& a, uint32_t p) {
-        // Get a mod p as uint64_t — hoist p_int, reused for %= and +=
-        Integer a_mod = a.clone();
-        Integer p_int(static_cast<uint64_t>(p));
-        a_mod %= p_int;
-
-        if (a_mod.is_zero()) {
+        // mpz_fdiv_ui returns floor-div remainder ∈ [0, p-1] regardless of sign (zero alloc)
+        uint64_t a_val = static_cast<uint64_t>(mpz_fdiv_ui(a.get_mpz(), p));
+        if (a_val == 0) {
             return 0;
         }
-
-        if (a_mod.is_negative()) {
-            a_mod += p_int;
-        }
-
-        uint64_t a_val = a_mod.to_uint64();
 
         // (a / p) = a^((p-1)/2) mod p using fast native arithmetic
         uint64_t r = powmod_u64(a_val, (p - 1) / 2, p);
