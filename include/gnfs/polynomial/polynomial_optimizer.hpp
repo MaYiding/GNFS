@@ -140,9 +140,11 @@ public:
         IntPolynomial g = f.clone();
 
         // g = f + k * h
+        // v22: term 复用, 节省 max_deg allocs/call
         uint32_t max_deg = std::max(f.degree(), h.degree());
+        Integer term;
         for (uint32_t i = 0; i <= max_deg; ++i) {
-            Integer term = h[i].clone();
+            term = h[i];
             term *= k;
             g[i] += term;
         }
