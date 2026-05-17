@@ -414,8 +414,9 @@ private:
             if (lift <= 1) {
                 auto S2_early = poly_mul_mod(S, S, f_int, d, modulus, fli);
                 bool early_ok = true;
+                Integer p_i;  // 复用 buffer (d 次 iter 节省 d-1 allocs)
                 for (uint32_t i = 0; i < d; ++i) {
-                    Integer p_i = P_final[i].clone();
+                    p_i = P_final[i];
                     p_i %= modulus;
                     if (S2_early[i].compare(p_i) != 0) {
                         early_ok = false;
