@@ -509,8 +509,7 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb,
     const bool B_is_neg = poly.B.is_negative();
     Integer abs_B_hoisted;
     if (B_is_neg) {
-        abs_B_hoisted = poly.B.clone();
-        abs_B_hoisted.abs();
+        mpz_abs(abs_B_hoisted.get_mpz(), poly.B.get_mpz());  // abs of B (skip clone+abs)
     }
     const mpz_srcptr B_for_mod = B_is_neg ? abs_B_hoisted.get_mpz() : poly.B.get_mpz();
 
