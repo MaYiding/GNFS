@@ -916,6 +916,22 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_thin_solve(
     // Then verify u_j ≠ 0 AND M^T·u_j = 0 (the latter holds by construction
     // up to rounding-free GF(2), but we still check to guard against the
     // degenerate w_j ∈ null(M) case which gives u_j = 0).
+
+    // Diagnostic: per-column accumulator (w) population before recovery
+    int acc_zero_cols = 0, acc_nonzero_cols = 0;
+    for (int j = 0; j < 64; ++j) {
+        if (!((F.valid_mask >> j) & 1ULL)) continue;
+        const uint64_t mask = 1ULL << j;
+        bool has_bit = false;
+        for (size_t i = 0; i < n; ++i) {
+            if (accumulator.data[i] & mask) { has_bit = true; break; }
+        }
+        if (has_bit) acc_nonzero_cols++; else acc_zero_cols++;
+    }
+    std::cout << "  [BW-thin] accumulator (w∈R^n): "
+              << acc_nonzero_cols << " nonzero cols, "
+              << acc_zero_cols << " zero cols" << std::endl;
+
     BlockVector U(m);
     bw_spmv_forward(csr, accumulator, U, pool);
 

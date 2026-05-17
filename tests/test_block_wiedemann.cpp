@@ -683,6 +683,62 @@ void test_large_matrix_bw_path() {
     TEST_PASS("large matrix — true BW path (5400×200, rank≤200)");
 }
 
+// BACKLOG #80 step 7: BW thin matrix (m<n) via B'=M^T·M variant
+//
+// Construction targets *realistic* GNFS thin-matrix profile: high row rank
+// with a small number of dependencies. Pathological synthetic matrices
+// (rank << m) leave null(M^T·M) ≈ null(M), where BW phase 3's w lies entirely
+// in null(M) and u = M·w = 0 trivially — that case is fundamentally
+// unrecoverable by BW over GF(2) (mirror of standard path's quadratic-form
+// quirk). The "B'=M^T·M and recover via u=M·w" approach works when
+// rank(M^T·M) > 0 strictly along the "extra" dimensions where M·w ≠ 0.
+void test_thin_matrix_bw_solve() {
+    // Thin: m=5200 < n=6000. rank ≈ 5100 (most rows independent); only the
+    // last 100 are XOR combos → left null space dim ≈ 100. This is the
+    // realistic GNFS profile where left deps come from filtering merges.
+    const size_t base_rows = 5100;
+    const size_t extra     = 100;
+    const size_t rows      = base_rows + extra;  // 5200
+    const size_t cols      = 6000;
+
+    std::cout << "  Building thin matrix (" << rows << "×" << cols
+              << ", rank≈" << base_rows << ", deps≈" << extra
+              << ")..." << std::flush;
+    SparseMatrix M(rows, cols);
+    std::mt19937 rng(271828);
+
+    // Base rows: 5–14 nonzeros each (sparse, GNFS-like)
+    for (size_t i = 0; i < base_rows; ++i) {
+        size_t nnz = 5 + rng() % 10;
+        for (size_t k = 0; k < nnz; ++k) {
+            M.row(i).set(static_cast<uint32_t>(rng() % cols));
+        }
+    }
+
+    // Extra rows: XOR of 2–4 base rows → each yields a left null space vector
+    for (size_t i = 0; i < extra; ++i) {
+        size_t n_src = 2 + rng() % 3;
+        for (size_t s = 0; s < n_src; ++s) {
+            M.row(base_rows + i).xor_with(M.row(rng() % base_rows));
+        }
+    }
+    std::cout << " done" << std::endl;
+
+    BlockWiedemann bw;
+    auto deps = bw.find_dependencies(M, 10);
+
+    TEST_ASSERT(deps.size() > 0, "BW thin path should find deps (m<n)");
+
+    size_t valid = 0;
+    for (const auto& dep : deps) {
+        if (verify_dependency(M, dep)) valid++;
+    }
+    TEST_ASSERT(valid > 0, "BW thin path deps should verify M^T·u=0");
+
+    std::cout << "  (found " << deps.size() << " deps, " << valid << " verified)" << std::endl;
+    TEST_PASS("thin matrix BW solve (B'=M^T·M variant, 5200×6000, realistic rank)");
+}
+
 int main() {
     std::cout << "═══════════════════════════════════════════\n";
     std::cout << "  Block Wiedemann Unit Tests\n";
@@ -719,6 +775,9 @@ int main() {
     test_repeated_rows();
     test_large_matrix_bw_path();
     test_block_vs_scalar_cross_validate();
+
+    // BACKLOG #80 step 7 — thin matrix BW (B'=M^T·M variant)
+    test_thin_matrix_bw_solve();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";
