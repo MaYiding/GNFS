@@ -859,29 +859,24 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
              " excess=" + std::to_string(matrix_stats.excess));
 
     if (!matrix_stats.has_excess()) {
-        // P10 step 7 (BACKLOG #80): Optionally allow BW to attempt thin matrix
-        // solve (m ≤ n). Mathematically valid: BW finds left kernel of M via
-        // B=M*M^T (m×m), which is non-empty whenever rank(M)<m. For GNFS the
-        // dependency matrix is always rank-deficient. Risk: BL/BW algorithms
-        // historically assume m>n; thin solve is experimental.
-        //
-        // ENV GNFS_THIN_MATRIX_TRY=1 → skip BL, try BW directly.
-        // Default OFF preserves prior "abort on no excess" behavior.
-        static const bool thin_try = []() {
-            const char* e = std::getenv("GNFS_THIN_MATRIX_TRY");
-            return e != nullptr && std::string(e) == "1";
-        }();
+        // BACKLOG #80 step 7 (2026-05-17): thin matrix (m ≤ n) now solved by
+        // block_wiedemann_thin_solve, which uses B'=M^T·M and recovers via
+        // u=M·w (strict over GF(2) by associativity). Works on realistic
+        // GNFS profile (rank ≈ m), fails gracefully (returns empty) on
+        // pathological rank≪m case. Always attempt; no ENV gate needed.
+        emit_log(LogLevel::Warn, Phase::LinearAlgebra,
+                 "No excess (m ≤ n) — attempting BW thin solve (B'=M^T·M variant)");
 
-        if (!thin_try) {
-            emit_log(LogLevel::Error, Phase::LinearAlgebra, "No excess — not enough relations");
+        // Opt-out for users wanting prior "abort on no excess" behavior.
+        const char* e = std::getenv("GNFS_NO_THIN_SOLVE");
+        if (e != nullptr && std::string(e) == "1") {
+            emit_log(LogLevel::Error, Phase::LinearAlgebra,
+                     "GNFS_NO_THIN_SOLVE=1 — aborting on no excess");
             MatrixResult mr;
             mr.matrix = std::move(build_result.matrix);
             mr.relations = std::move(relations);
             return mr;
         }
-
-        emit_log(LogLevel::Warn, Phase::LinearAlgebra,
-                 "No excess but GNFS_THIN_MATRIX_TRY=1 — attempting BW thin solve");
     }
 
     // Trim excess rows to improve BL convergence and SGE effectiveness.

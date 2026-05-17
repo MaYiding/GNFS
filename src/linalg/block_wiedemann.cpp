@@ -129,6 +129,17 @@ void bw_spmv_B(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
     bw_spmv_forward(M, tmp, y, pool);
 }
 
+// B' * V = M^T * (M * V) — mirror of bw_spmv_B for thin matrix BW variant.
+// Used when working in R^n (cols) instead of R^m (rows). x ∈ R^n (cols),
+// tmp ∈ R^m (rows), y ∈ R^n (cols). BACKLOG #80 step 7: fix BW thin matrix
+// (m<n) by switching operator domain. M^T·M·w = 0 over GF(2) is a strict
+// linear relation (not the quadratic-form quirk that breaks M·M^T path).
+void bw_spmv_B_prime(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
+                     BlockVector& tmp, gnfs::util::ThreadPool& pool) {
+    bw_spmv_forward(M, x, tmp, pool);   // tmp = M·x  (m-vec)
+    bw_spmv_transpose(M, tmp, y, pool); // y   = M^T·tmp (n-vec)
+}
+
 // ============================================================================
 // Scalar Berlekamp-Massey over GF(2)
 // ============================================================================
@@ -303,15 +314,12 @@ std::vector<std::vector<bool>> BlockWiedemann::find_dependencies(
     const size_t n = matrix.num_cols();
     if (m == 0 || n == 0) return {};
 
-    // BACKLOG #80 step 7: thin matrix (m<n) is fundamentally unsupported
-    // by BW over GF(2). Issue: BW finds null(M·M^T) and verifies M^T·w = 0,
-    // but over GF(2), null(M·M^T) ⊋ null(M^T) for rank-deficient matrices
-    // (the quadratic form v^T M M^T v = ‖M^T v‖² is parity, not L2 norm).
-    // Zero-padding to n×n doesn't help — same rank, same null space issue.
-    // Proper fix requires either (a) BW with B=M^T·M and recover via M·v
-    // (different setup), or (b) iterative refinement on M^T·w residuals.
-    // Pipeline GNFS_THIN_MATRIX_TRY=1 allows the code path; BW may return
-    // empty deps. User-responsibility ENV.
+    // BACKLOG #80 step 7: thin matrix (m<n) over GF(2) requires a different
+    // operator (B' = M^T·M) than the standard B = M·M^T, because over GF(2)
+    // null(B) ⊋ null(M^T) when rank-deficient (quadratic-form quirk:
+    // v^T·M·M^T·v = parity(M^T·v), can be 0 without M^T·v = 0).
+    // block_wiedemann_thin_solve operates in R^n and recovers u = M·w which
+    // strictly satisfies M^T·u = (M^T·M)·w = 0 by associativity.
 
     // For small matrices, delegate to Gaussian (same threshold as BL)
     if (m < 5000 && n < 5000) {
@@ -326,22 +334,39 @@ std::vector<std::vector<bool>> BlockWiedemann::find_dependencies(
     const bool use_scalar = (algo_env != nullptr &&
                              std::string(algo_env) == "scalar");
 
+    // Thin matrix detection: prefer B'=M^T·M variant when m<n. For square or
+    // wide (m≥n) matrices, the standard path is correct and more efficient
+    // (B is m×m, smaller). For thin, only the new variant guarantees correctness
+    // over GF(2). Scalar BW path lacks a thin variant (legacy code, low ROI to
+    // re-implement). For users explicitly forcing scalar, document via stderr.
+    const bool is_thin = (m < n);
+    if (is_thin && use_scalar) {
+        std::cerr << "  [BW] WARN: GNFS_BW_ALGORITHM=scalar + thin matrix (m<n) "
+                     "is unsupported; falling back to block thin variant\n";
+    }
+
     // Retry up to 3 seeds — Phase 1's projections can occasionally be rank-
     // deficient, producing too few valid generators. Different seeds recover.
     static constexpr uint64_t seeds[] = { 42, 0xDEADBEEFCAFEBABEULL, 0x12345678ABCDEFULL };
     for (uint64_t seed : seeds) {
-        auto deps = use_scalar
-                  ? block_wiedemann_scalar_solve(matrix, max_deps, seed)
-                  : block_wiedemann_block_solve(matrix, max_deps, seed);
+        std::vector<std::vector<bool>> deps;
+        if (is_thin) {
+            deps = block_wiedemann_thin_solve(matrix, max_deps, seed);
+        } else if (use_scalar) {
+            deps = block_wiedemann_scalar_solve(matrix, max_deps, seed);
+        } else {
+            deps = block_wiedemann_block_solve(matrix, max_deps, seed);
+        }
         if (!deps.empty()) return deps;
         std::cerr << "  [BW] seed=" << seed
-                  << (use_scalar ? " (scalar)" : " (block)")
+                  << (is_thin ? " (thin)" : (use_scalar ? " (scalar)" : " (block)"))
                   << " produced no deps, retrying\n";
     }
 
     // If block-BM path failed for all seeds, fall back to scalar (in case
-    // the block-BM extraction has issues for this matrix).
-    if (!use_scalar) {
+    // the block-BM extraction has issues for this matrix). Thin path has no
+    // such fallback (no thin scalar variant); empty result returns to caller.
+    if (!use_scalar && !is_thin) {
         std::cerr << "  [BW] block path exhausted seeds, falling back to scalar\n";
         for (uint64_t seed : seeds) {
             auto deps = block_wiedemann_scalar_solve(matrix, max_deps, seed);
@@ -377,14 +402,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
 
     // Krylov sequence length for SCALAR Berlekamp-Massey:
     // Need seq_len ≥ 2 * deg(minpoly(B)) where minpoly degree ≤ rank(B) ≤ min(m,n).
-    // For scalar BM (not block BM), each projection needs the full length.
-    // Use min(m,n) + safety; for thin (m<n) this avoids unnecessary iterations.
-    //
-    // NOTE: BACKLOG #80 step 7 — pure L bound doesn't fix the underlying issue
-    // for thin matrices that null(M*M^T) ≠ null(M^T) over GF(2). The BW dep
-    // extraction relies on this implicit assumption which fails on rank-deficient
-    // thin matrices. See test_thin_matrix_bw_path. Reverting to n+safety for
-    // backward-compat until proper thin-handling lands.
+    // Scalar path is wide-only — thin matrices route to block_wiedemann_thin_solve.
     const size_t L = n + 50;
     const size_t seq_len = 2 * L + 10;
 
@@ -621,10 +639,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
 
     // Krylov sequence length for matrix BM: L = 2·⌈n/64⌉ + 32 (buffer).
     // Compared to scalar BM's 2n+110, this is ~64× fewer SpMV calls.
-    //
-    // NOTE: BACKLOG #80 step 7 — for thin matrices (m<n) min(m,n) bound is
-    // tempting but doesn't address underlying GF(2) null(M*M^T) ≠ null(M^T)
-    // issue. Reverted to n for backward-compat.
+    // Block path handles square/wide (m≥n); thin (m<n) routes elsewhere.
     const size_t L = 2 * ((n + 63) / 64) + 32;
 
     gnfs::util::ThreadPool pool(0);
@@ -762,6 +777,177 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
     }
 
     std::cout << "  [BW-block] Results: " << deps.size() << " valid deps"
+              << " (verified=" << verified << " failed=" << failed
+              << " zero=" << zero_vecs << ")" << std::endl;
+
+    return deps;
+}
+
+// ============================================================================
+// Block Wiedemann thin matrix variant — operator B' = M^T·M (BACKLOG #80)
+//
+// For thin matrices (m < n), the standard BW path with B = M·M^T fails over
+// GF(2): null(B) ⊋ null(M^T) due to the quadratic-form quirk
+// v^T·M·M^T·v = parity(M^T·v) (can be 0 without M^T·v = 0).
+//
+// Mirror image: work in R^n with B' = M^T·M. BW phase 3 gives w ∈ R^n
+// strictly satisfying B'·w = M^T·(M·w) = 0. Set u = M·w ∈ R^m; then
+// M^T·u = (M^T·M)·w = 0 by associativity, so u ∈ left null(M) (assuming
+// u ≠ 0; the only degenerate case is w ∈ null(M) → u = 0, which we discard).
+//
+// L = 2·⌈m/64⌉ + 32 since rank(B') ≤ rank(M) ≤ m, so minpoly degree ≤ m.
+// ============================================================================
+
+std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_thin_solve(
+    const SparseMatrix& matrix, size_t max_deps, uint64_t seed) {
+
+    const size_t m = matrix.num_rows();
+    const size_t n = matrix.num_cols();
+
+    std::cout << "  [BW-thin] Thin matrix BW (B'=M^T·M): " << m << "×" << n
+              << " (seed=" << seed << ")" << std::endl;
+
+    const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
+    CSRMatrix csr(matrix);
+
+    // For B' = M^T·M (n×n), rank ≤ m, so minpoly degree ≤ m.
+    // Block Krylov length: L = 2·⌈m/64⌉ + 32.
+    const size_t L = 2 * ((m + 63) / 64) + 32;
+
+    gnfs::util::ThreadPool pool(0);
+
+    // X, Y random vectors in R^n (length n, not m as in the standard path).
+    BlockVector X(n), Y(n);
+    {
+        std::mt19937_64 rng(seed);
+        for (size_t i = 0; i < n; ++i) X.data[i] = rng();
+        for (size_t i = 0; i < n; ++i) Y.data[i] = rng();
+    }
+
+    // ── Phase 1: Krylov sequence A_k = X^T · V_k where V_k = (B')^k · Y ──
+    auto phase_start = std::chrono::steady_clock::now();
+    std::cout << "  [BW-thin] Phase 1: Krylov (L=" << L << ")..." << std::flush;
+    std::vector<DenseGF2_64x64> A_seq(L);
+
+    // V, Vnext live in R^n; tmp lives in R^m for B'·V = M^T·(M·V) intermediate.
+    BlockVector V(n), Vnext(n), tmp(m);
+    for (size_t i = 0; i < n; ++i) V.data[i] = Y.data[i];
+
+    for (size_t k = 0; k < L; ++k) {
+        A_seq[k] = inner_product_64x64(X, V);
+        if (k + 1 < L) {
+            bw_spmv_B_prime(csr, V, Vnext, tmp, pool);
+            std::swap(V.data, Vnext.data);
+        }
+    }
+    double phase1_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - phase_start).count();
+    std::cout << " done (" << phase1_ms << " ms)" << std::endl;
+
+    // ── Phase 2: Matrix Berlekamp-Massey ──
+    // BM operates only on the sequence, not on the original matrix; reused as-is.
+    // Pass m as the "size" (rank bound) instead of n.
+    phase_start = std::chrono::steady_clock::now();
+    std::cout << "  [BW-thin] Phase 2: matrix BM..." << std::flush;
+    auto F = matrix_berlekamp_massey(A_seq, m);
+    const int valid_count = __builtin_popcountll(F.valid_mask);
+    const int max_deg = static_cast<int>(F.poly.size()) - 1;
+    double phase2_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - phase_start).count();
+    std::cout << " " << valid_count << " valid cols, max_deg=" << max_deg
+              << " (" << phase2_ms << " ms)" << std::endl;
+
+    if (F.valid_mask == 0 || max_deg < 0) {
+        std::cerr << "  [BW-thin] No valid generator — falling through" << std::endl;
+        return {};
+    }
+
+    // ── Phase 3: Block mksol — accumulator w_j = sum_k V_k · F_k[*,j] in R^n ──
+    phase_start = std::chrono::steady_clock::now();
+    std::cout << "  [BW-thin] Phase 3: block mksol (max_deg=" << max_deg
+              << ")..." << std::flush;
+
+    for (size_t i = 0; i < n; ++i) V.data[i] = Y.data[i];
+
+    BlockVector accumulator(n);
+    for (size_t i = 0; i < n; ++i) accumulator.data[i] = 0;
+
+    for (int k = 0; k <= max_deg; ++k) {
+        DenseGF2_64x64 F_step;
+        F_step.clear();
+        bool any_active = false;
+        for (int j = 0; j < 64; ++j) {
+            if (!((F.valid_mask >> j) & 1ULL)) continue;
+            const int D_j = F.degrees[j];
+            const int coef_idx = D_j - k;
+            if (coef_idx < 0) continue;
+            if (coef_idx >= static_cast<int>(F.poly.size())) continue;
+            const DenseGF2_64x64& src = F.poly[coef_idx];
+            for (int i = 0; i < 64; ++i) {
+                if ((src.rows[i] >> j) & 1ULL) {
+                    F_step.rows[i] |= (1ULL << j);
+                    any_active = true;
+                }
+            }
+        }
+        if (any_active) {
+            mksol_accumulate(V, F_step, accumulator);
+        }
+        if (k < max_deg) {
+            bw_spmv_B_prime(csr, V, Vnext, tmp, pool);
+            std::swap(V.data, Vnext.data);
+        }
+    }
+    double phase3_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - phase_start).count();
+    std::cout << " done (" << phase3_ms << " ms)" << std::endl;
+
+    // ── Phase 4 (recovery): u_j = M·w_j ∈ R^m for each valid column ──
+    // Then verify u_j ≠ 0 AND M^T·u_j = 0 (the latter holds by construction
+    // by associativity over GF(2); guard the degenerate w_j ∈ null(M) case).
+    BlockVector U(m);
+    bw_spmv_forward(csr, accumulator, U, pool);
+
+    std::vector<std::vector<bool>> deps;
+    deps.reserve(std::min(max_deps, static_cast<size_t>(64)));
+    size_t verified = 0, failed = 0, zero_vecs = 0;
+
+    for (int j = 0; j < 64 && deps.size() < max_deps; ++j) {
+        if (!((F.valid_mask >> j) & 1ULL)) continue;
+
+        const uint64_t mask = 1ULL << j;
+        std::vector<bool> sol(m, false);
+        bool nonzero = false;
+        for (size_t i = 0; i < m; ++i) {
+            if (U.data[i] & mask) {
+                sol[i] = true;
+                nonzero = true;
+            }
+        }
+        if (!nonzero) { zero_vecs++; continue; }
+
+        // Verify M^T·sol = 0
+        std::vector<uint8_t> check(n, 0);
+        for (size_t i = 0; i < m; ++i) {
+            if (!sol[i]) continue;
+            for (const uint32_t* p = csr.row_begin(i); p != csr.row_end(i); ++p)
+                check[*p] ^= 1;
+        }
+
+        bool valid = true;
+        for (size_t c = 0; c < n; ++c) {
+            if (check[c]) { valid = false; break; }
+        }
+
+        if (valid) {
+            deps.push_back(std::move(sol));
+            verified++;
+        } else {
+            failed++;
+        }
+    }
+
+    std::cout << "  [BW-thin] Results: " << deps.size() << " valid deps"
               << " (verified=" << verified << " failed=" << failed
               << " zero=" << zero_vecs << ")" << std::endl;
 

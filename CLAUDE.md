@@ -227,23 +227,29 @@ GNFS_OVERRIDE_LP_BITS=27 ./gnfs <N>          # any size with lp_bits=27
 - LP space 影响 sieve duration: smaller lp_bits = smaller LP space = fewer LP cols = less raw needed for PASS (但 fewer LP cofactor candidates)
 - 实验前后必须 reg-test 25d / 50d (lp_bits 不该影响 < 50d behavior, 默认 path unchanged)
 
-### Thin matrix BW solve (GNFS_THIN_MATRIX_TRY)
+### Thin matrix BW solve (B'=M^T·M variant, default ON)
 
-**ENV `GNFS_THIN_MATRIX_TRY=1`** (BACKLOG #80 step 7, 2026-05-17):
-当 matrix rows ≤ cols (NO_EXCESS), 跳过 pipeline 默认放弃, 让 Block Wiedemann
-尝试 thin-matrix solve. BW 数学上能处理 m ≤ n case (找 left kernel of M via
-B=M*M^T (m×m), 当 rank(M)<m 时存在). BL 在 thin 时已知 fail, 自动 skip.
+**BACKLOG #80 step 7 完成 (2026-05-17)**: 当 matrix rows ≤ cols (NO_EXCESS),
+`find_dependencies` 自动调用 `block_wiedemann_thin_solve`, 使用 `B'=M^T·M`
+operator 而非标准 `B=M·M^T`. 工作在 R^n, recovery via `u=M·w`.
 
-```bash
-GNFS_THIN_MATRIX_TRY=1 ./test_stress 1 1   # 50d 试 thin solve
-GNFS_THIN_MATRIX_TRY=1 ./gnfs <N>          # any GNFS run
-```
+**算法数学正确性**:
+- BW phase 3 给 w ∈ R^n 满足 `(M^T·M)·w = 0` 严格 over GF(2)
+- 由 associativity, `M^T·u = (M^T·M)·w = 0` 严格成立, u 是 left null space vector
+- 与标准 path 的 `v^T·M·M^T·v = parity(M^T·v)` GF(2) quadratic-form quirk 不同 —
+  这是 strict linear relation, 不依赖 quadratic form
 
-**默认 OFF**: 保持 prior "abort on no excess" behavior. 仅当用户 explicitly enable
-时尝试 thin solve. **实验性** — BW historically 假设 m > n, thin path 未广泛验证.
+**ENV `GNFS_NO_THIN_SOLVE=1`** (opt-out): 恢复 prior "abort on no excess" 行为.
+正常使用无需 ENV — pipeline 自动 detect m ≤ n 并 route.
 
-**触发场景**: 50d β plateau (m=282K < n=365K). Pipeline 之前在 `has_excess()`
-返回 false 时直接 return MatrixResult without calling solvers. 启用后 BW 会尝试.
+**边界 case**: pathological 矩阵 (rank ≪ m) 会使 `null(M^T·M) ≈ null(M)`,
+BW phase 3 给的 w 全在 null(M), recovery `u=M·w = 0`. 这是 GF(2) 上不可
+恢复的 fundamental limit; BW 会 return empty deps (不破坏 pipeline).
+Realistic GNFS profile (rank ≈ m) 不受影响.
+
+**验证**: `test_thin_matrix_bw_solve` (5200×6000, rank≈5100, deps≈100) —
+10/10 valid deps verified. find_dependencies routes m<n → thin_solve,
+m≥n → block_solve (existing path).
 
 ### Drop-residual + weight-cutoff (BACKLOG #80 algorithmic breakthrough)
 
