@@ -342,13 +342,13 @@ public:
         // f'(m)² · expected_X2,否则全 search space 都对不上。
         //
         // 注意: 直接对 expected_X2 取 sqrt 等价于因子化 N,因此我们验证 Y² 而非 Y。
-        // v22: term/bm 复用 across ab_pairs (hot loop, 10K+ iters per dep)
+        // hot loop (10K+ iters per dep): term_buf = a - m*b via mpz_submul_ui
         Integer expected_X2(1);
-        Integer term_buf, bm;
+        Integer term_buf;
         for (const auto& [a, b] : ab_pairs) {
             term_buf = a;  // mpz_set_si direct
-            mpz_mul_ui(bm.get_mpz(), nf.m().get_mpz(), b);  // bm = m * b (skip source copy)
-            term_buf -= bm;
+            mpz_submul_ui(term_buf.get_mpz(), nf.m().get_mpz(),
+                          static_cast<unsigned long>(b));
             term_buf %= n;
             if (term_buf.is_negative()) term_buf += n;
             expected_X2 *= term_buf;

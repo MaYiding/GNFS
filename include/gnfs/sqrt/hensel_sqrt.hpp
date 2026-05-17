@@ -1059,7 +1059,7 @@ private:
             bool any_centered = false;
             for (uint32_t i = 0; i < d; ++i) {
                 max_pre_center = std::max(max_pre_center, S[i].bit_length());
-                Integer centered = S[i].clone();
+                Integer centered = S[i];  // Integer copy ctor
                 if (centered.compare(half_mod) > 0) {
                     centered -= modulus;
                     any_centered = true;
