@@ -804,9 +804,9 @@ private:
             Integer v;
             Integer bm;
             auto is_neg = [&](int64_t ai, uint64_t bi) {
-                v = static_cast<int64_t>(ai);  // direct int64_t assign (mpz_set_si)
-                bm = ctx.m();                  // mpz_set
-                bm *= Integer(bi);
+                v = ai;  // mpz_set_si direct
+                bm = ctx.m();
+                bm *= static_cast<int64_t>(bi);  // mpz_mul_si direct
                 v -= bm;
                 return v.is_negative();
             };
