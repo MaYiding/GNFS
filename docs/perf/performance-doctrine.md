@@ -1320,19 +1320,55 @@ P1.A 锁定 MemBound 是宏观结论，但 doctrine 铁律 5（target validation
 - 60d (lp_bits=26) LP cols 占 total cols 70%
 - 见 CLAUDE.md "Trim limit 必须含 LP cols" 节
 
-**V3 cascade 50d trajectory evidence (Round 1-3 实测)**:
+**V3 cascade 50d trajectory evidence (完整 Round 1-5 实测)**:
 | Round | Raw target | Usable | LP cols | β | PASS ratio |
 |-------|-----------|--------|---------|---|------------|
 | 1 | 617K | 27K | 38K | 141% | 44% |
 | 2 | 1.53M | 82K | 113K | 138% | 60% |
 | 3 | 2.79M | 149K | 196K | 132% | 68% |
-| 4 (sieve) | 4.50M | (extrapolation) ~240K | ~245K | ~128% | ~74% |
+| 4 | 4.50M | 224K | 282K | 125% | 74% |
+| 5 | **5.93M** | **282027** | **342856** | **121.6%** | **77%** |
 
-**关键观察**:
-- β > 130% throughout, LP cols dominate matrix
-- PASS ratio improves ~10% per round but slowing
-- merge_rate stable at 5.35% (V3 cascade efficient)
-- Round 4-5 estimated 3-4 hours total to reach PASS ratio ≥ 100%
+**Matrix final**: 282027 × 365516 (excess=0) → NO EXCESS, FAIL
 
-**结论**: lp_bits=23 (50d) needs Round 5+ to PASS with current strategy.
-**Alternative**: lp_bits=22 fallback (4× smaller LP space) — BACKLOG OPT。
+**lp_bits=22 fallback trajectory (after V3 cascade FAIL)**:
+| Round | Raw target | Usable | LP cols | β |
+|-------|-----------|--------|---------|---|
+| 1 | 617K | 17K | 23K | 136.2% |
+| 2 | 1.53M | 72K | 99K | 137.4% |
+| 3 | 2.79M | 137K | 181K | 131.9% |
+| 4 | 4.50M | 211K | 266K | 126.2% |
+| 5 | 5.93M | 281072 | 341348 | **121.4%** |
+
+**Matrix final**: 281072 × 364008 (excess=0) → NO EXCESS, FAIL
+
+**关键发现** (2026-05-17): 50d β plateau ~121-122%
+- V3 cascade (lp_bits=23) Round 5: β=121.6%
+- lp_bits=22 fallback Round 5: β=121.4%
+- 差异 <1%! **lp_bits 微调对 50d 无收益**
+
+**结论修正** (vs 之前预测):
+- ❌ "Round 4-5 reaches PASS" — 实测 Round 5 仅 77% PASS ratio
+- ❌ "lp_bits=22 fallback succeeds" — 实测 β plateau 同样在 121%
+- ✅ **β convergence ~3%/round, fundamental graph-theoretic plateau**:
+  - 不依赖 lp_bits (8M vs 4M LP space 行为几乎相同)
+  - 不依赖 merge strategy (V0+V3 vs V0 alone β 一致)
+  - merge_rate ~5% (V0/V3 都如此), 需 ≥15% 才能 β<100%
+
+**架构突破方向** (BACKLOG #80):
+1. **Sieve target 大幅延长**: 5.9M → 20-100M raw (vs CADO-NFS 50d 标准)
+2. **更激进 LP elimination**: weight≥3 drop instead of V3 merge
+3. **FB bound 重新校准**: 我们 algebraic FB=14719 偏小, CADO-NFS 50d ~50K
+4. **purge algorithm 重写**: 当前 V0 双重 weight-2 + V3 BFS spanning 不足
+
+**CADO-NFS 50d 标准参数对比**:
+| 参数 | 我们 50d | CADO-NFS 50d |
+|------|---------|--------------|
+| lp_bits | 22-23 | 22-24 |
+| FB bound | ~50K | ~10M |
+| Sieve target | 5.9M | 100M+ |
+| Matrix dims | ~280K² | ~500K² |
+| Wall time | ~5-6h | ~30-60min |
+
+我们 sieve quality (~5% merge rate) 在 5.9M target 收敛过慢. CADO-NFS 用
+100M+ target 让 graph density 跳跃 saturate.
