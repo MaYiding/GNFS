@@ -165,14 +165,15 @@ public:
     explicit NumberField(const PolynomialContext& ctx)
         : degree_(ctx.degree()) {
 
-        // 复制多项式系数
+        // 复制多项式系数 (Integer copy ctor)
+        f_coeffs_.reserve(ctx.degree() + 1);
         for (uint32_t i = 0; i <= ctx.degree(); ++i) {
-            f_coeffs_.push_back(ctx.coeff(i).clone());
+            f_coeffs_.emplace_back(ctx.coeff(i));
         }
 
-        // 存储 N 和 m
-        n_ = ctx.n().clone();
-        m_ = ctx.m().clone();
+        // 存储 N 和 m (copy ctor via op=)
+        n_ = ctx.n();
+        m_ = ctx.m();
     }
 
     /// 获取多项式度数
