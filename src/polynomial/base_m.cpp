@@ -87,14 +87,9 @@ bool check_irreducible_over_Q(const IntPolynomial& f) {
 
     for (uint64_t p : test_primes) {
         std::vector<uint64_t> f_mod_p(d + 1);
-        // hoist p_int + c_buf out of d+1 loop
-        Integer p_int(p);
-        Integer c_buf;
+        // mpz_fdiv_ui returns floor-div remainder ∈ [0, p-1] (zero-alloc)
         for (uint32_t i = 0; i <= d; ++i) {
-            c_buf = f[i];  // mpz_set into reused buffer
-            c_buf %= p_int;
-            if (c_buf.is_negative()) c_buf += p_int;
-            f_mod_p[i] = c_buf.to_uint64();
+            f_mod_p[i] = static_cast<uint64_t>(mpz_fdiv_ui(f[i].get_mpz(), p));
         }
         // Skip if leading coefficient vanishes mod p (degree drops)
         if (f_mod_p[d] == 0) continue;
