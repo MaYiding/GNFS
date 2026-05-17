@@ -96,8 +96,9 @@ public:
     [[nodiscard]] Integer evaluate(const Integer& x) const {
         if (f_coeffs_.empty()) return Integer(static_cast<int64_t>(0));
 
-        // Horner 方法
-        Integer result = f_coeffs_[degree_].clone();
+        // Horner 方法 (v22: result 直接 assign)
+        Integer result;
+        result = f_coeffs_[degree_];
         for (int i = static_cast<int>(degree_) - 1; i >= 0; --i) {
             result *= x;
             result += f_coeffs_[i];
@@ -168,8 +169,9 @@ public:
             b_powers = b_powers_heap.data();
         }
         b_powers[0] = Integer(int64_t(1));
+        // v22: b_powers[i] = b_powers[i-1] (mpz_set into default-init / stack slot)
         for (uint32_t i = 1; i <= degree_; ++i) {
-            b_powers[i] = b_powers[i-1].clone();
+            b_powers[i] = b_powers[i-1];
             b_powers[i] *= static_cast<long long>(b);
         }
 
@@ -205,8 +207,10 @@ public:
                 return Integer(static_cast<int64_t>(result));
             }
         }
+        // v22: bm 直接 assign (mpz_set)
         Integer result(a);
-        Integer bm = m_.clone();
+        Integer bm;
+        bm = m_;
         bm *= static_cast<long long>(b);
         result -= bm;
         return result;
