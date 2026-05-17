@@ -228,9 +228,9 @@ private:
     /// 使用 double-and-add (Montgomery ladder)
     static Point mont_mul(const Point& P, uint64_t k, const Integer& a24, const Integer& n) {
         if (k == 0) return Point();  // default ctor: (0, 1)
-        if (k == 1) return Point(P.x.clone(), P.z.clone());
+        if (k == 1) return P;  // implicit copy ctor (Integer copy ctor)
 
-        Point R0(P.x.clone(), P.z.clone());
+        Point R0 = P;
         Point R1 = mont_double(P, a24, n);
 
         // 从最高有效位开始
@@ -252,9 +252,9 @@ private:
     static Point mont_mul_big(const Point& P, const Integer& k, const Integer& a24, const Integer& n) {
         size_t bits = k.bit_length();
         if (bits == 0) return Point();  // default ctor: (0, 1)
-        if (bits == 1) return Point(P.x.clone(), P.z.clone());
+        if (bits == 1) return P;  // implicit copy ctor
 
-        Point R0(P.x.clone(), P.z.clone());
+        Point R0 = P;
         Point R1 = mont_double(P, a24, n);
 
         for (int i = static_cast<int>(bits) - 2; i >= 0; --i) {
@@ -495,8 +495,8 @@ private:
         baby.reserve(480);
 
         // 增量链: (k+1)*Q = mont_add(k*Q, Q, (k-1)*Q)
-        Point Q_one(Q0.x.clone(), Q0.z.clone());     // Q (constant base)
-        Point km2(Q0.x.clone(), Q0.z.clone());        // (k-2)*Q, starts as 1*Q
+        Point Q_one = Q0;                             // Q (constant base) — copy ctor
+        Point km2 = Q0;                                // (k-2)*Q, starts as 1*Q
         Point km1 = mont_double(Q0, a24, n);          // (k-1)*Q, starts as 2*Q
 
         // d=1: gcd(1, 2310) = 1
