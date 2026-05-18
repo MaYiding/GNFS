@@ -401,6 +401,53 @@ GNFS_SIEVE_RESUME=/tmp/gnfs_50d_session ./gnfs <50d-N>
 对 25d/40-bit 短任务 overhead 不实用 (sieve <1 min). 不与 GNFS_OOC_RELATIONS
 共存 (SIEVE_RESUME 优先).
 
+### BW Krylov sequence mmap (GNFS_BW_KRYLOV_MMAP)
+
+**ENV `GNFS_BW_KRYLOV_MMAP=1`** (BACKLOG #11d, 2026-05-18):
+BW Phase 1 Krylov sequence 写到 `/tmp/gnfs_bw_krylov_*.kry` mmap-backed file
+而非 in-memory vector. Phase 2 BM 入口 copy mmap → vector 再 close.
+
+```bash
+GNFS_BW_KRYLOV_MMAP=1 ./gnfs <N>   # 50d+/60d 大矩阵 Phase 5 启用
+```
+
+**ROI**:
+- matrix BM `A_seq[L]` of DenseGF2_64x64 (512B): 16 MB @ n=1M
+- scalar BM `sequences[64][seq_len]` of uint8_t: 128 MB @ n=1M
+- 总 ~144 MB physical RAM 释放 给 V/Vnext block vectors + matrix + OS cache
+
+**集成点** (commits `21ac368` → `66ce50f`, 2026-05-18):
+- `include/gnfs/linalg/krylov_sequence_mmap.hpp` — 233 行 mmap RAII container
+- `src/linalg/block_wiedemann.cpp` — matrix BM `block_solve` + scalar BM `streaming_solve`
+- `tests/test_krylov_sequence_mmap.cpp` — 8 unit tests
+- `tests/test_bw_krylov_mmap_integration.cpp` — 3 integration tests (5550×5000)
+
+**Default OFF**: vector path 完整保留, 零回归风险. 仅 50d+ Phase 5 RAM pressure 时启用.
+
+### Murphy E alpha 并行 (GNFS_MURPHY_ALPHA_THREADS)
+
+**ENV `GNFS_MURPHY_ALPHA_THREADS=N`** (BACKLOG #2 lightweight path, 2026-05-18):
+MurphyEvaluator::compute_alpha 用 ThreadPool 并行扫 ~78k primes. 每 thread
+accumulates partial double, 序列 reduce.
+
+```bash
+GNFS_MURPHY_ALPHA_THREADS=0 ./gnfs <N>   # 序列 (debug / 单线程对照)
+GNFS_MURPHY_ALPHA_THREADS=8 ./gnfs <N>   # 显式 8-thread
+# 默认: hardware_concurrency
+```
+
+**ROI**: M5 10-core → 5-7x compute_alpha speedup (CZ求根 perfect embarrassingly
+parallel by prime). Kleinjung selector + 多 polynomial 评估时 sieve 主流程
+wall-time 显著缩短.
+
+**集成点** (commit `0dd1799`, 2026-05-18):
+- `include/gnfs/polynomial/murphy_evaluator.hpp:144-217` — parallel sweep +
+  `alpha_contribution(f, df, p)` thread-safe helper
+- Lazy `std::once_flag` + `unique_ptr<ThreadPool>` per evaluator instance
+
+**Rotation-incremental 算法重构**: BACKLOG #2 multi-day 工作仍 deferred.
+当前 parallelization 是 orthogonal lightweight 加速, 不替代真正 incremental.
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
@@ -769,8 +816,19 @@ tail -50 /tmp/xxx.log
 
 - 大类群 (>20 generators) 的 Couveignes 实现可能失败（Nguyen Hybrid 优先路径可回避）
 - Block Wiedemann 内存使用: Krylov 序列 O(n · L · 8 bytes)，4 GB guard 限制
-- OOC 基础设施已实现但未集成到主 pipeline（需手动调用）
-- NEON SIMD 尚未实现（P2-A，msieve/CADO-NFS 经验表明 sieve 内核收益有限）
+  + **缓解 (2026-05-18, BACKLOG #11d)**: ENV `GNFS_BW_KRYLOV_MMAP=1` mmap A_seq 到磁盘,
+    matrix BM 节省 ~16 MB, scalar BM 节省 ~128 MB (60d n=1M), 总 ~144 MB Phase 5 RAM
+- OOC 基础设施已部分集成到主 pipeline:
+  + RelationCollector OOC: ENV `GNFS_OOC_RELATIONS=1` / sieve checkpoint
+    `GNFS_SIEVE_RESUME=<base_path>` (2026-05-18, BACKLOG #11c/#11e)
+  + BW Krylov mmap: ENV `GNFS_BW_KRYLOV_MMAP=1` (2026-05-18, BACKLOG #11d)
+  + MmapCSRMatrix Phase 5 集成尚未实施 (需 SpMV API generic 化, multi-day surgery)
+- NEON SIMD sieve baseline 已实施 (2026-05-18, P2-A): `detail::apply_log_p_range`
+  helper 在 Phase 0 global + v-prime row 用 NEON 8-lane. bucket scatter + tiny stride
+  保持 scalar (doctrine "sieve 内核 NEON 收益有限" — gather/scatter 不适合 SIMD).
+- Murphy E `compute_alpha` 已 ThreadPool 并行化 (2026-05-18, BACKLOG #2):
+  ENV `GNFS_MURPHY_ALPHA_THREADS=N` opt-out (默认 hardware concurrency).
+  Rotation-incremental 算法重构 deferred (multi-day pure math).
 
 ## 工作流规范（强制执行）
 
