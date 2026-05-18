@@ -329,6 +329,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SieveIntegration COMMAND test_sieve_basic)
     set_tests_properties(SieveIntegration PROPERTIES LABELS "fast" TIMEOUT 60)
 
+    add_executable(test_sieve_checkpoint
+        tests/test_sieve_checkpoint.cpp
+    )
+    target_link_libraries(test_sieve_checkpoint PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SieveCheckpoint COMMAND test_sieve_checkpoint)
+    set_tests_properties(SieveCheckpoint PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_cofactor
         tests/test_cofactor.cpp
     )

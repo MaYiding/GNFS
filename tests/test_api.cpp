@@ -12,6 +12,8 @@
 #include <gnfs/api/progress.hpp>
 #include <gnfs/api/result.hpp>
 #include <gnfs/core/integer.hpp>
+#include <gnfs/relation/ooc_relation_store.hpp>
+#include <gnfs/sieve/sieve_checkpoint.hpp>
 
 #include <cassert>
 #include <cstdio>
@@ -508,6 +510,125 @@ bool test_v3_cascade_auto_mode() {
     return true;
 }
 
+// ============================================================
+// Sieve mid-flight checkpoint tests (BACKLOG #11e)
+// ============================================================
+
+bool test_sieve_resume_fresh_no_prior_ckpt() {
+    // GNFS_SIEVE_RESUME set, no prior ckpt → fresh start.
+    // Sieve completes normally, ckpt removed at end (因 normal exit).
+    std::string base = "/tmp/gnfs_test_sieve_resume_fresh_" +
+                       std::to_string(::getpid());
+    std::remove((base + ".sieve_ckpt").c_str());
+    std::remove((base + ".reldata").c_str());
+    std::remove((base + ".relidx").c_str());
+
+    setenv("GNFS_SIEVE_RESUME", base.c_str(), 1);
+
+    Integer n("1000036000099");  // 40-bit, drives sieve loop
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline pipeline(n, cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+    auto rels = pipeline.sieve_and_collect(ctx, fb);
+
+    unsetenv("GNFS_SIEVE_RESUME");
+
+    assert(!rels.empty() && "sieve should produce relations");
+
+    // Normal completion → ckpt file gone
+    std::ifstream check(base + ".sieve_ckpt");
+    bool ckpt_gone = !check.good();
+
+    std::remove((base + ".sieve_ckpt").c_str());
+    std::remove((base + ".reldata").c_str());
+    std::remove((base + ".relidx").c_str());
+
+    if (!ckpt_gone) {
+        std::cout << "(ckpt NOT removed at exit) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_sieve_resume_with_synthetic_ckpt() {
+    // 模拟 prior 半完成 session: 跑完整 sieve, 然后 flip OOC magic → INCOMPLETE,
+    // 手动 craft 一个 ckpt. Resume run 加载 ckpt + OOC, sieve 重 process 部分 SQ,
+    // dedup 拒绝 prior relations, 最终 produce 完整 factorization.
+    std::string base = "/tmp/gnfs_test_sieve_resume_synth_" +
+                       std::to_string(::getpid());
+    std::remove((base + ".sieve_ckpt").c_str());
+    std::remove((base + ".reldata").c_str());
+    std::remove((base + ".relidx").c_str());
+
+    Integer n("1000036000099");  // 40-bit
+    Config cfg;
+    cfg.verbose = false;
+
+    // Phase 1: fresh GNFS_SIEVE_RESUME run, completes normally
+    {
+        setenv("GNFS_SIEVE_RESUME", base.c_str(), 1);
+        Pipeline pipeline(n, cfg);
+        auto ctx = pipeline.select_polynomial();
+        auto fb = pipeline.build_factor_base(ctx);
+        auto rels = pipeline.sieve_and_collect(ctx, fb);
+        unsetenv("GNFS_SIEVE_RESUME");
+        assert(!rels.empty());
+    }
+    // After Phase 1: OOC has MAGIC, ckpt removed.
+
+    // 模拟 crash: flip OOC magic → INCOMPLETE, manually create ckpt with
+    // mid-flight state. Use sq_count=0 + current_index=0 to让 Phase 2 re-process
+    // ALL SQs (dedup 拒绝 prior relations, 全 noop) — 验证 resume infrastructure 工作.
+    {
+        std::fstream idx(base + ".relidx",
+                         std::ios::in | std::ios::out | std::ios::binary);
+        uint64_t incomplete = gnfs::relation::OOCRelationWriter::MAGIC_INCOMPLETE;
+        idx.write(reinterpret_cast<const char*>(&incomplete), 8);
+    }
+    gnfs::sieve::SieveCheckpoint ck;
+    ck.sq_count = 0;
+    ck.current_index = 0;
+    ck.round = 0;
+    ck.batch_target = 5000;  // arbitrary
+    ck.candidates_total = 0;
+    ck.ooc_base_path = base;
+    ck.save(base + ".sieve_ckpt");
+
+    // Phase 2: resume run — 加载 ckpt, OOC resume mode, 续 sieve
+    bool phase2_ok = false;
+    {
+        setenv("GNFS_SIEVE_RESUME", base.c_str(), 1);
+        Pipeline pipeline(n, cfg);
+        auto ctx = pipeline.select_polynomial();
+        auto fb = pipeline.build_factor_base(ctx);
+        auto rels = pipeline.sieve_and_collect(ctx, fb);
+        unsetenv("GNFS_SIEVE_RESUME");
+
+        // Phase 2 应能 produce relations (从 OOC reload + new sieve combined)
+        if (!rels.empty()) phase2_ok = true;
+    }
+
+    // 验证 ckpt 在 Phase 2 正常完成 removed
+    std::ifstream check(base + ".sieve_ckpt");
+    bool ckpt_gone = !check.good();
+
+    std::remove((base + ".sieve_ckpt").c_str());
+    std::remove((base + ".reldata").c_str());
+    std::remove((base + ".relidx").c_str());
+
+    if (!phase2_ok) {
+        std::cout << "(Phase 2 resume produced no relations) ";
+        return false;
+    }
+    if (!ckpt_gone) {
+        std::cout << "(Phase 2 ckpt not cleaned up) ";
+        return false;
+    }
+    return true;
+}
+
 bool test_pipeline_progress_callback() {
     // The mid-level Pipeline drives the GNFS phases directly (bypassing
     // select_method), so emit_progress callbacks fire even on small N.
@@ -580,6 +701,8 @@ int main() {
     TEST(v3_cascade_head_to_head_real_pipeline);
     TEST(v3_cascade_disabled_by_default);
     TEST(v3_cascade_auto_mode);
+    TEST(sieve_resume_fresh_no_prior_ckpt);
+    TEST(sieve_resume_with_synthetic_ckpt);
 
     std::cout << "\n========================================\n";
     std::cout << "  Results: " << pass_count << " passed, " << fail_count << " failed\n";
