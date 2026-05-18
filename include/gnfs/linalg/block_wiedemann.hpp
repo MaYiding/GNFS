@@ -111,6 +111,23 @@ struct LingenResult {
     uint64_t valid_mask = 0;
 };
 
+// BACKLOG #1 diagnostic: rank lower-bound estimate from sum of valid minpoly
+// degrees. For BW thin solve (B' = M^T·M), rank(B') = rank(M^T·M) = rank(M);
+// summing the degrees of the 64 random-projection directions gives an
+// empirical lower bound on rank(M):
+//   rank_est ≈ m → matrix has excess, BW should recover deps.
+//   rank_est ≪ m → matrix is pathologically rank-deficient (sieve gap).
+// Only valid columns (bit set in `valid_mask`) contribute.
+inline int compute_rank_est(const LingenResult& lingen) noexcept {
+    int rank_est = 0;
+    for (int j = 0; j < 64; ++j) {
+        if ((lingen.valid_mask >> j) & 1ULL) {
+            rank_est += lingen.degrees[j];
+        }
+    }
+    return rank_est;
+}
+
 // ============================================================================
 // Phase 3 (mksol) primitive: accumulator += V_k · F_k
 // ============================================================================
