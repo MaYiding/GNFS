@@ -308,6 +308,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME UtilTimer COMMAND test_timer)
     set_tests_properties(UtilTimer PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_mmap_file
+        tests/test_mmap_file.cpp
+    )
+    target_link_libraries(test_mmap_file PRIVATE gnfs_util)
+    add_test(NAME MmapFile COMMAND test_mmap_file)
+    set_tests_properties(MmapFile PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_factor_base
         tests/test_factor_base.cpp
     )
