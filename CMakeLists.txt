@@ -294,6 +294,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Logger COMMAND test_logger)
     set_tests_properties(Logger PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_primes
+        tests/test_primes.cpp
+    )
+    target_link_libraries(test_primes PRIVATE gnfs_util)
+    add_test(NAME Primes COMMAND test_primes)
+    set_tests_properties(Primes PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_factor_base
         tests/test_factor_base.cpp
     )
