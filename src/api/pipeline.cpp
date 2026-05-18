@@ -1200,6 +1200,26 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
     // skip directly to BW. BW finds left kernel via B=M*M^T which works
     // for any m×n matrix when rank-deficient.
     const auto& sge_red = sge_result.reduced_matrix;
+
+    // BACKLOG #1 (F.1 follow-up): emit post-SGE mat-diag. The reduced matrix
+    // is what BL/BW actually consumes; its col-weight distribution determines
+    // whether BL has any chance to converge. SGE peels off singleton/low-weight
+    // cols, so post-SGE singleton/low_weight counts should be ~0 in a healthy
+    // pipeline — if they stay > 0 SGE is being defeated by chain residue.
+    {
+        const auto diag_sge = linalg::compute_matrix_diagnostics(sge_red);
+        char buf[512];
+        std::snprintf(buf, sizeof(buf),
+            "[mat-diag post-sge] rows: empty=%zu singleton=%zu w_range=[%zu,%zu]"
+            " | cols: empty=%zu singleton=%zu low(2-4)=%zu max_w=%zu avg=%.2f",
+            diag_sge.empty_rows, diag_sge.singleton_rows,
+            diag_sge.min_row_weight, diag_sge.max_row_weight,
+            diag_sge.empty_cols, diag_sge.singleton_cols, diag_sge.low_weight_cols,
+            diag_sge.max_col_weight, diag_sge.avg_col_weight);
+        emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
+        std::fprintf(stderr, "%s\n", buf);
+    }
+
     const bool sge_thin = sge_red.num_rows() <= sge_red.num_cols();
     std::vector<std::vector<bool>> dependencies;
 
