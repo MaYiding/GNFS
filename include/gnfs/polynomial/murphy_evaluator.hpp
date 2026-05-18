@@ -1,12 +1,17 @@
 #pragma once
 
 #include "../core/integer.hpp"
+#include "../util/thread_pool.hpp"
 #include "int_polynomial.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
+#include <memory>
+#include <mutex>
 #include <vector>
 
 namespace gnfs::polynomial {
@@ -141,70 +146,114 @@ public:
     ///
     /// alpha = Σ_p [ (effective_r_p / p - 1/(p-1)) + double_root_bonus ] · log(p)
     /// 其中 double_root_bonus = 1/p² per double root（f'(r) ≡ 0 mod p）
+    ///
+    /// ENV `GNFS_MURPHY_ALPHA_THREADS=N`: ThreadPool size for parallel sweep
+    /// (default = hardware concurrency, 0 = sequential). Each thread accumulates
+    /// a partial sum over an index chunk of small_primes_; final reduction is
+    /// a serial sum of partials (avoids atomic double overhead).
     [[nodiscard]] double compute_alpha(const IntPolynomial& f, double prime_bound) const {
-        double alpha = 0.0;
+        // 找 prime_bound 对应的 small_primes_ 截止索引
+        size_t prime_end = small_primes_.size();
+        for (size_t i = 0; i < small_primes_.size(); ++i) {
+            if (small_primes_[i] > prime_bound) {
+                prime_end = i;
+                break;
+            }
+        }
+        if (prime_end == 0) return 0.0;
 
-        // 预计算 f' 用于双根检测
+        // 预计算 f' 用于双根检测 (read-only across threads)
         IntPolynomial df = f.derivative();
 
-        for (uint32_t p : small_primes_) {
-            if (p > prime_bound) break;
+        auto* pool = get_alpha_pool();
+        const size_t num_threads = pool ? pool->num_threads() : 1;
 
-            // 计算 f mod p 的根（不含重数）
-            auto roots = f.roots_mod_p(p);
-            uint32_t r = static_cast<uint32_t>(roots.size());
-
-            // 基础贡献:
-            // contribution = (r/p - 1/(p-1)) * log(p)
-            // r/p 是被 p 整除的概率
-            // 1/(p-1) 是随机数被 p 整除的期望
-            double log_p = std::log(static_cast<double>(p));
-            double contribution = (static_cast<double>(r) / p
-                                 - 1.0 / (p - 1)) * log_p;
-
-            // 双根额外贡献 (p | disc(f))
-            // 若 f(r) ≡ 0 且 f'(r) ≡ 0 mod p，则 r 是双根
-            // 双根使 p² | f(a - bα) 的概率增加 1/p²
-            for (uint32_t root : roots) {
-                if (df.evaluate_mod(root, p) == 0) {
-                    contribution += log_p / (static_cast<double>(p) * p);
-                }
+        if (num_threads <= 1 || prime_end < 256) {
+            // 序列路径: 小 prime_end 或 ENV=0 时跳过并行 overhead
+            double alpha = 0.0;
+            for (size_t i = 0; i < prime_end; ++i) {
+                alpha += alpha_contribution(f, df, small_primes_[i]);
             }
-
-            // 投影根的额外贡献
-            // 如果 p | leading_coeff(f)，则有投影根
-            //
-            // ─── 核对 (v18) ──────────────────────────────────────────────────
-            // 参考 Guillevic & Singh (2021), "On the Alpha Value of Polynomials
-            // in the Tower Number Field Sieve Algorithm", Math. Cryptol. 1(1).
-            // Eq 4.7 + Prop 1 + good-prime simplification:
-            //   ν_ℓ(f) = (n_aff + n_pro) · ℓ / ((ℓ-1)(ℓ+1))
-            //   α_ℓ_Murphy = log(ℓ) · (1/(ℓ-1) - ν_ℓ(f))
-            //
-            // 项目 alpha 约定与 Murphy 原文符号相反: 正 α' = 多根 = 易 smooth = 好。
-            // 数学等价: α' = -α_Murphy = log(ℓ) · (ν_ℓ(f) - 1/(ℓ-1)).
-            //
-            // 投影根(仅 ℓ | a_d 时存在,至多一个 (1:0) ∈ P^1):
-            //   严格贡献(良好素数): log(p) · p/((p-1)(p+1)) ≈ log(p)/p + O(1/p^3)
-            //   现实现: log(p)/p — 与严格公式相差 O(1/p²),不影响 polyselect 排序。
-            // 符号: 正贡献,与我们约定的"+α 表示更多根"一致 (Murphy 原文为负贡献)。
-            //
-            // 对**坏素数**(p | Disc(f),即有重根或更高次投影根),严格公式需 Prop 1
-            // case 2 的递归 lifting 分析(CADO-NFS alpha.c 实现)。当前简化版仅捕捉
-            // i=1 项,对 Murphy E 排序仍有效但绝对值偏离 ~1-2%。改动需配套
-            // 重算 test_murphy 黄金值,优先级低。
-            // ─────────────────────────────────────────────────────────────────
-            if (f.leading_coeff().fits_uint64()) {
-                if (f.leading_coeff().to_uint64() % p == 0) {
-                    contribution += log_p / p;
-                }
-            }
-
-            alpha += contribution;
+            return alpha;
         }
 
+        // 并行: chunk by index, per-thread accumulator
+        const size_t chunk_size = (prime_end + num_threads - 1) / num_threads;
+        std::vector<double> partials(num_threads, 0.0);
+
+        pool->parallel_for_index(0, num_threads, [&](size_t tid) {
+            size_t lo = tid * chunk_size;
+            size_t hi = std::min(lo + chunk_size, prime_end);
+            double acc = 0.0;
+            for (size_t i = lo; i < hi; ++i) {
+                acc += alpha_contribution(f, df, small_primes_[i]);
+            }
+            partials[tid] = acc;
+        });
+
+        double alpha = 0.0;
+        for (double p : partials) alpha += p;
         return alpha;
     }
+
+private:
+    /// Per-prime alpha contribution. Pure function of (f, df, p), thread-safe.
+    [[nodiscard]] double alpha_contribution(
+            const IntPolynomial& f,
+            const IntPolynomial& df,
+            uint32_t p) const {
+
+        // 计算 f mod p 的根（不含重数）
+        auto roots = f.roots_mod_p(p);
+        uint32_t r = static_cast<uint32_t>(roots.size());
+
+        double log_p = std::log(static_cast<double>(p));
+        double contribution = (static_cast<double>(r) / p
+                             - 1.0 / (p - 1)) * log_p;
+
+        // 双根额外贡献 (p | disc(f))
+        for (uint32_t root : roots) {
+            if (df.evaluate_mod(root, p) == 0) {
+                contribution += log_p / (static_cast<double>(p) * p);
+            }
+        }
+
+        // 投影根的额外贡献 (p | leading_coeff(f))
+        // 参考 Guillevic & Singh (2021), Eq 4.7 + Prop 1.
+        if (f.leading_coeff().fits_uint64()) {
+            if (f.leading_coeff().to_uint64() % p == 0) {
+                contribution += log_p / p;
+            }
+        }
+
+        return contribution;
+    }
+
+    /// Lazy ThreadPool init (per-evaluator instance, shared across compute_alpha calls).
+    /// ENV GNFS_MURPHY_ALPHA_THREADS overrides hardware concurrency default.
+    /// Returns nullptr if user set threads=0 (forces sequential).
+    [[nodiscard]] gnfs::util::ThreadPool* get_alpha_pool() const {
+        std::call_once(pool_init_, [this]() {
+            uint32_t requested = 0;
+            const char* env = std::getenv("GNFS_MURPHY_ALPHA_THREADS");
+            if (env && env[0] != '\0') {
+                int val = std::atoi(env);
+                if (val < 0) val = 0;
+                requested = static_cast<uint32_t>(val);
+            } else {
+                requested = std::thread::hardware_concurrency();
+                if (requested == 0) requested = 4;
+            }
+            if (requested == 0) {
+                alpha_pool_ = nullptr;
+            } else {
+                alpha_pool_ = std::make_unique<gnfs::util::ThreadPool>(requested);
+            }
+        });
+        return alpha_pool_.get();
+    }
+
+public:
 
     /// 优化 skewness
     /// 在给定范围内搜索最优 skewness
@@ -264,6 +313,11 @@ private:
     MurphyParams params_;
     std::vector<uint32_t> small_primes_;
     std::vector<double> dickman_table_;  // Dickman rho 查找表 (u=0,0.1,...,20.0)
+
+    // ThreadPool for parallel compute_alpha (BACKLOG #2 lightweight optimization).
+    // Mutable + once_flag for lazy init in const get_alpha_pool().
+    mutable std::once_flag pool_init_;
+    mutable std::unique_ptr<gnfs::util::ThreadPool> alpha_pool_;
 
     /// 初始化小素数列表
     void init_primes() {
