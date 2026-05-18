@@ -643,6 +643,134 @@ void test_count_unique_lp_keys() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_count_lp_key_weights() {
+    std::cout << "Testing count_lp_key_weights..." << std::endl;
+
+    // Empty input → all zero
+    {
+        std::vector<Relation> empty;
+        auto h = count_lp_key_weights(empty);
+        assert(h.unique_keys == 0);
+        assert(h.weight_1 == 0);
+        assert(h.weight_2 == 0);
+        assert(h.weight_3 == 0);
+        assert(h.weight_4plus == 0);
+    }
+
+    // Single rel with 1 rat LP → 1 key, weight=1
+    {
+        std::vector<Relation> rels;
+        rels.push_back(make_1lp_relation(1, 1, 100));
+        auto h = count_lp_key_weights(rels);
+        assert(h.unique_keys == 1);
+        assert(h.weight_1 == 1);
+        assert(h.weight_2 == 0);
+    }
+
+    // 2 rels share same rat LP → 1 key, weight=2 (V0 sweet spot)
+    {
+        std::vector<Relation> rels;
+        rels.push_back(make_1lp_relation(1, 1, 100));
+        rels.push_back(make_1lp_relation(2, 1, 100));
+        auto h = count_lp_key_weights(rels);
+        assert(h.unique_keys == 1);
+        assert(h.weight_1 == 0);
+        assert(h.weight_2 == 1);
+    }
+
+    // 3 rels share LP → weight=3 (chain territory)
+    {
+        std::vector<Relation> rels;
+        for (int64_t a = 1; a <= 3; ++a) {
+            rels.push_back(make_1lp_relation(a, 1, 100));
+        }
+        auto h = count_lp_key_weights(rels);
+        assert(h.unique_keys == 1);
+        assert(h.weight_3 == 1);
+    }
+
+    // 5 rels share LP → weight≥4 bucket
+    {
+        std::vector<Relation> rels;
+        for (int64_t a = 1; a <= 5; ++a) {
+            rels.push_back(make_1lp_relation(a, 1, 100));
+        }
+        auto h = count_lp_key_weights(rels);
+        assert(h.unique_keys == 1);
+        assert(h.weight_4plus == 1);
+    }
+
+    // Mixed: rat LP and alg LP are SEPARATE key spaces
+    // 1 rel with rat lp=100, 1 rel with alg lp=100 → 2 distinct keys both weight=1
+    {
+        std::vector<Relation> rels;
+        rels.push_back(make_1lp_relation(1, 1, 100));   // rat lp=100
+        rels.push_back(make_1alp_relation(2, 1, 100));  // alg (p=100, r=0)
+        auto h = count_lp_key_weights(rels);
+        assert(h.unique_keys == 2);
+        assert(h.weight_1 == 2);  // both singleton
+    }
+
+    // Algebraic LP distinguishes by (p, r) — same p different r → 2 keys
+    {
+        Relation r1(1, 1), r2(2, 1);
+        r1.rational_factors = {0}; r1.algebraic_factors = {0};
+        r2.rational_factors = {0}; r2.algebraic_factors = {0};
+        r1.algebraic_large_prime.push_back(PrimePower{77, 3, 1});  // (77, 3)
+        r2.algebraic_large_prime.push_back(PrimePower{77, 5, 1});  // (77, 5)
+        std::vector<Relation> rels;
+        rels.push_back(std::move(r1));
+        rels.push_back(std::move(r2));
+        auto h = count_lp_key_weights(rels);
+        assert(h.unique_keys == 2);
+        assert(h.weight_1 == 2);
+    }
+
+    // Within one rel, repeated LP key still counts as 1 occurrence for the
+    // histogram (de-dup within relation). So 1 rel with 3 copies of same LP
+    // still yields weight=1 (not weight=3 for the same key in the same rel).
+    {
+        Relation r(1, 1);
+        r.rational_factors = {0}; r.algebraic_factors = {0};
+        r.rational_large_prime.push_back(PrimePower{99, 0, 1});
+        r.rational_large_prime.push_back(PrimePower{99, 0, 1});
+        r.rational_large_prime.push_back(PrimePower{99, 0, 1});
+        std::vector<Relation> rels;
+        rels.push_back(std::move(r));
+        auto h = count_lp_key_weights(rels);
+        assert(h.unique_keys == 1);
+        assert(h.weight_1 == 1);  // de-dup within rel
+    }
+
+    // 50d-like scenario: many distinct LP keys, most weight=1, some weight=2
+    {
+        std::vector<Relation> rels;
+        // 100 rels each with a unique rat LP → 100 singletons (weight=1)
+        for (uint64_t i = 1; i <= 100; ++i) {
+            rels.push_back(make_1lp_relation(static_cast<int64_t>(i), 1, 1000 + i));
+        }
+        // 50 pairs sharing alg LP → 50 weight=2 keys
+        for (uint64_t i = 1; i <= 50; ++i) {
+            Relation a(static_cast<int64_t>(1000 + i), 1);
+            a.rational_factors = {0}; a.algebraic_factors = {0};
+            a.algebraic_large_prime.push_back(PrimePower{i + 10000, 0, 1});
+            Relation b(static_cast<int64_t>(2000 + i), 1);
+            b.rational_factors = {0}; b.algebraic_factors = {0};
+            b.algebraic_large_prime.push_back(PrimePower{i + 10000, 0, 1});
+            rels.push_back(std::move(a));
+            rels.push_back(std::move(b));
+        }
+        auto h = count_lp_key_weights(rels);
+        assert(h.unique_keys == 150);
+        assert(h.weight_1 == 100);
+        assert(h.weight_2 == 50);
+        assert(h.weight_3 == 0);
+        assert(h.weight_4plus == 0);
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== RelationFilter Unit Tests ===" << std::endl;
 
@@ -666,6 +794,7 @@ int main() {
     test_merge_all_chain();
     test_reset_stats();
     test_count_unique_lp_keys();
+    test_count_lp_key_weights();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
