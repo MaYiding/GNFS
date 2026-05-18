@@ -4,11 +4,14 @@
 #include "../core/relation.hpp"
 #include "../core/types.hpp"
 #include "../util/safe_math.hpp"
+#include "ooc_relation_store.hpp"
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <numeric>
 #include <optional>
@@ -41,6 +44,14 @@ struct CollectorConfig {
     size_t max_relations = 0;         // 最大关系数 (0 = 无限制)
     std::string output_file;          // 输出文件 (可选)
     bool flush_on_add = false;        // 每次添加后刷新
+
+    // ── OOC (Out-of-Core) 流式持久化 (BACKLOG #11c, 50d Round 2 OOM 防御) ──
+    // 启用后:
+    //   - add() 同时 streaming write 进 .reldata/.relidx (零 RAM 增长)
+    //   - 内存只保留 seen_ (a,b dedup) + stats; relations_ 不再 grow
+    //   - get_relations() 从盘 mmap 读全部 (Phase 4 入口才 spike RAM, sieve 期间 flat)
+    bool ooc_enabled = false;
+    std::string ooc_base_path;        // 文件 base path (无扩展; .reldata + .relidx 自动追加)
 };
 
 /// RelationCollector - 关系收集器
@@ -55,6 +66,14 @@ public:
         : config_(config) {
         if (!config_.output_file.empty()) {
             open_output_file();
+        }
+        // OOC mode: lazy-init writer (failure → exception propagates out of ctor)
+        if (config_.ooc_enabled) {
+            if (config_.ooc_base_path.empty()) {
+                throw std::runtime_error(
+                    "RelationCollector: ooc_enabled=true requires non-empty ooc_base_path");
+            }
+            ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path);
         }
     }
 
@@ -130,8 +149,12 @@ public:
                 fire_callback = true;
             }
 
-            // 存储关系
-            relations_.push_back(std::move(rel));
+            // 存储关系: OOC 模式流式写盘, 否则保留在内存 vector
+            if (ooc_writer_) {
+                ooc_writer_->write(rel);
+            } else {
+                relations_.push_back(std::move(rel));
+            }
         }
 
         // Invoke callback outside the lock — safe for callback to call
@@ -155,14 +178,17 @@ public:
     }
 
     /// 获取关系数量
+    /// OOC 模式下基于 OOCRelationWriter::count() — 反映实际写盘 relation 数。
     [[nodiscard]] size_t size() const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (ooc_writer_) return ooc_writer_->count();
         return relations_.size();
     }
 
     /// 是否为空
     [[nodiscard]] bool empty() const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (ooc_writer_) return ooc_writer_->count() == 0;
         return relations_.empty();
     }
 
@@ -173,8 +199,16 @@ public:
     }
 
     /// 获取所有关系（拷贝）
+    /// OOC 模式: finalize writer + 从盘 mmap 读全部 → vector (spike RAM at this point).
+    /// 调用后 add() 行为 undefined — 设计为 sieve 结束 → get_relations() → 释放 collector.
     [[nodiscard]] std::vector<Relation> get_relations() const {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (ooc_writer_) {
+            // close() 是 idempotent (closed_ flag); 完成 magic flip + flush
+            ooc_writer_->close();
+            OOCRelationReader reader(config_.ooc_base_path);
+            return reader.read_all();
+        }
         std::vector<Relation> result;
         result.reserve(relations_.size());
         for (const auto& rel : relations_) {
@@ -185,16 +219,27 @@ public:
 
     /// 获取关系的只读引用（NOT thread-safe — caller must ensure no concurrent add()）
     /// For thread-safe access, use get_relations() which copies under lock.
+    /// OOC 模式不可用 — relations_ vector 在 OOC 模式下不被维护。
     [[nodiscard]] const std::vector<Relation>& relations() const noexcept {
         return relations_;
     }
 
     /// 清空收集器
+    /// OOC 模式: close writer + 删 .reldata/.relidx 文件 + reopen (允许 reuse)。
     void clear() {
         std::lock_guard<std::mutex> lock(mutex_);
         { std::vector<Relation> tmp; relations_.swap(tmp); }
         { std::unordered_set<ABPair, ABPairHash> tmp; seen_.swap(tmp); }
         stats_ = CollectorStats{};
+        if (ooc_writer_) {
+            ooc_writer_->close();
+            ooc_writer_.reset();
+            // 删除磁盘 artifact (best-effort, 无视失败 — 文件可能已不存在)
+            std::remove((config_.ooc_base_path + ".reldata").c_str());
+            std::remove((config_.ooc_base_path + ".relidx").c_str());
+            // 重新构造 writer 供后续 add() 使用
+            ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path);
+        }
     }
 
     /// 刷新输出文件
@@ -205,9 +250,11 @@ public:
         }
     }
 
-    /// 保存到文件
+    /// 保存到文件 (legacy 序列化协议; 与 OOC store 协议独立)
+    /// OOC 模式不兼容 — 请用 ooc_base_path 直接访问 .reldata/.relidx
     bool save(const std::string& filename) const {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (ooc_writer_) return false;  // OOC mode: legacy save disabled
 
         std::ofstream ofs(filename, std::ios::binary);
         if (!ofs) return false;
@@ -224,9 +271,11 @@ public:
         return ofs.good();
     }
 
-    /// 从文件加载
+    /// 从文件加载 (legacy 序列化协议)
+    /// OOC 模式不兼容 — relation 已写盘, 重启时直接构造 OOCRelationReader 即可。
     bool load(const std::string& filename) {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (ooc_writer_) return false;  // OOC mode: legacy load disabled
 
         std::ifstream ifs(filename, std::ios::binary);
         if (!ifs) return false;
@@ -264,9 +313,13 @@ public:
     }
 
     /// 合并另一个收集器的关系
+    /// OOC 模式: this 是 OOC 时, write to disk; other 必须是非 OOC (从内存 vector 读)
+    /// 设计上 sieve worker 各自有 RelationCollector + merge 到 master, 这里 OOC 也 work
+    /// 但 OOC merge OOC 不支持 (会触发 read+rewrite, 不实用)。
     size_t merge(const RelationCollector& other) {
         if (this == &other) return 0;  // Self-merge: UB with std::mutex
         std::scoped_lock lock(mutex_, other.mutex_);
+        if (other.ooc_writer_) return 0;  // OOC source not supported (read overhead)
 
         size_t added = 0;
         for (const auto& rel : other.relations_) {
@@ -288,7 +341,11 @@ public:
             }
 
             update_stats(copy);
-            relations_.push_back(std::move(copy));
+            if (ooc_writer_) {
+                ooc_writer_->write(copy);
+            } else {
+                relations_.push_back(std::move(copy));
+            }
             ++added;
         }
 
@@ -304,7 +361,7 @@ public:
 
 private:
     CollectorConfig config_;
-    std::vector<Relation> relations_;
+    std::vector<Relation> relations_;          // OOC 禁用时持有; OOC 启用时为空
     std::unordered_set<ABPair, ABPairHash> seen_;
     CollectorStats stats_;
     mutable std::mutex mutex_;
@@ -316,6 +373,10 @@ private:
     // 通过 set_polynomial_context() 设置;未设置时退回旧行为。
     const Integer* n_for_validation_ = nullptr;
     const Integer* m_for_validation_ = nullptr;
+
+    // OOC 模式 (BACKLOG #11c): lazy-initialized OOCRelationWriter,first add() 时构造。
+    // unique_ptr 因为 OOCRelationWriter 不可移动(持有 ofstream + 内部 buffer)。
+    std::unique_ptr<OOCRelationWriter> ooc_writer_;
 
     /// 验证关系。mutex 内调用。
     /// 返回 0=通过,-1=无效(b/gcd),-2=N-divisible(CLAUDE.md 强制拒绝)

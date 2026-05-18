@@ -2,9 +2,11 @@
 #include "gnfs/util/safe_math.hpp"
 
 #include <cassert>
+#include <cstdio>
 #include <filesystem>
 #include <iostream>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 using namespace gnfs;
@@ -391,6 +393,285 @@ void test_n_divisibility_rejection() {
     std::cout << "  N-divisibility rejection: PASS" << std::endl;
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// OOC mode tests (BACKLOG #11c — 50d Round 2 OOM defense)
+// 验证 ooc_enabled 配置下 add/dedup/get/clear 行为, 以及 CLAUDE.md gcd(a-bm,N)
+// 强制约束在 OOC 模式仍生效。
+// ──────────────────────────────────────────────────────────────────────────
+
+/// 生成测试唯一 OOC base path (pid + counter, 避免并发 / 上次未清理)
+static std::string make_tmp_ooc_path(const std::string& label) {
+    static int seq = 0;
+    return "/tmp/gnfs_test_collector_ooc_" + std::to_string(::getpid()) +
+           "_" + std::to_string(++seq) + "_" + label;
+}
+
+/// RAII OOC artifact cleanup
+struct OOCArtifacts {
+    std::string base;
+    explicit OOCArtifacts(std::string b) : base(std::move(b)) {}
+    ~OOCArtifacts() {
+        std::remove((base + ".reldata").c_str());
+        std::remove((base + ".relidx").c_str());
+    }
+};
+
+void test_ooc_basic_add() {
+    std::cout << "Testing OOC basic add..." << std::endl;
+    auto path = make_tmp_ooc_path("basic_add");
+    OOCArtifacts cleanup(path);
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+
+    RelationCollector collector(config);
+    for (int i = 1; i <= 5; ++i) {
+        Relation rel(i * 10, static_cast<uint64_t>(i * 10 + 1));
+        rel.rational_factors.push_back(static_cast<uint32_t>(i));
+        bool added = collector.add(std::move(rel));
+        assert(added);
+    }
+
+    assert(collector.size() == 5);
+    auto stats = collector.stats();
+    assert(stats.total_relations == 5);
+    assert(stats.full_relations == 5);
+
+    // get_relations 从盘 read_all → vector
+    auto rels = collector.get_relations();
+    assert(rels.size() == 5);
+    for (size_t i = 0; i < rels.size(); ++i) {
+        assert(rels[i].a == static_cast<int64_t>((i + 1) * 10));
+        assert(rels[i].b == (i + 1) * 10 + 1);
+        assert(rels[i].rational_factors.size() == 1);
+        assert(rels[i].rational_factors[0] == i + 1);
+    }
+
+    std::cout << "  OOC basic add: PASS" << std::endl;
+}
+
+void test_ooc_duplicate_rejection() {
+    std::cout << "Testing OOC duplicate rejection..." << std::endl;
+    auto path = make_tmp_ooc_path("dup");
+    OOCArtifacts cleanup(path);
+
+    CollectorConfig config;
+    config.check_duplicates = true;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+
+    RelationCollector collector(config);
+
+    Relation rel1(100, 201);
+    assert(collector.add(std::move(rel1)));
+
+    Relation rel2(100, 201);  // 重复 (a,b)
+    assert(!collector.add(std::move(rel2)));
+
+    assert(collector.size() == 1);  // OOC writer count = 1, dedup 拒绝第二个
+    auto stats = collector.stats();
+    assert(stats.duplicates_rejected == 1);
+
+    auto rels = collector.get_relations();
+    assert(rels.size() == 1);
+
+    std::cout << "  OOC duplicate rejection: PASS" << std::endl;
+}
+
+void test_ooc_n_divisibility() {
+    std::cout << "Testing OOC N-divisibility rejection (CLAUDE.md mandate)..." << std::endl;
+    auto path = make_tmp_ooc_path("ndiv");
+    OOCArtifacts cleanup(path);
+
+    Integer n("143");
+    Integer m("12");
+
+    CollectorConfig config;
+    config.check_duplicates = false;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+
+    RelationCollector collector(config);
+    collector.set_polynomial_context(n, m);
+
+    // (12, 1): a - b*m = 0, gcd(0, 143) = 143 → reject
+    Relation bad(12, 1);
+    assert(!collector.add(std::move(bad)));
+    auto st = collector.stats();
+    assert(st.n_divisible_rejected == 1);
+
+    // (5, 1): 5 - 12 = -7, gcd(7, 143) = 1 → accept
+    Relation good(5, 1);
+    assert(collector.add(std::move(good)));
+    st = collector.stats();
+    assert(st.total_relations == 1);
+    assert(st.n_divisible_rejected == 1);
+
+    auto rels = collector.get_relations();
+    assert(rels.size() == 1);
+    assert(rels[0].a == 5);
+    assert(rels[0].b == 1);
+
+    std::cout << "  OOC N-divisibility rejection: PASS" << std::endl;
+}
+
+void test_ooc_partial_relations() {
+    std::cout << "Testing OOC partial relations (serialization round-trip)..." << std::endl;
+    auto path = make_tmp_ooc_path("partial");
+    OOCArtifacts cleanup(path);
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+
+    RelationCollector collector(config);
+
+    Relation full_rel(1, 2);
+    collector.add(std::move(full_rel));
+
+    Relation rel_1lp(3, 4);
+    rel_1lp.rational_large_prime.push_back(PrimePower{1000003, 0, 1});
+    collector.add(std::move(rel_1lp));
+
+    Relation rel_2lp(5, 6);
+    rel_2lp.rational_large_prime.push_back(PrimePower{1000003, 0, 1});
+    rel_2lp.algebraic_large_prime.push_back(PrimePower{1000033, 17, 1});
+    collector.add(std::move(rel_2lp));
+
+    assert(collector.size() == 3);
+    auto stats = collector.stats();
+    assert(stats.full_relations == 1);
+    assert(stats.partial_1lp == 1);
+    assert(stats.partial_2lp == 1);
+
+    auto rels = collector.get_relations();
+    assert(rels.size() == 3);
+    // 验证 LP 完整序列化往返
+    assert(rels[1].rational_large_prime.size() == 1);
+    assert(rels[1].rational_large_prime[0].p == 1000003);
+    assert(rels[2].rational_large_prime[0].p == 1000003);
+    assert(rels[2].algebraic_large_prime[0].p == 1000033);
+    assert(rels[2].algebraic_large_prime[0].r == 17);
+
+    std::cout << "  OOC partial relations: PASS" << std::endl;
+}
+
+void test_ooc_concurrent_add() {
+    std::cout << "Testing OOC concurrent add (mutex-protected writer)..." << std::endl;
+    auto path = make_tmp_ooc_path("concurrent");
+    OOCArtifacts cleanup(path);
+
+    CollectorConfig config;
+    config.check_duplicates = true;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+
+    RelationCollector collector(config);
+
+    const int num_threads = 4;
+    const int per_thread = 100;
+    std::vector<std::thread> threads;
+
+    for (int t = 0; t < num_threads; ++t) {
+        threads.emplace_back([&collector, t]() {
+            for (int i = 0; i < per_thread; ++i) {
+                int64_t a = t * per_thread + i;
+                uint64_t b = static_cast<uint64_t>(t * per_thread + i + 1);
+                while (std::gcd(util::safe_abs(a), b) != 1) {
+                    ++b;
+                }
+                Relation rel(a, b);
+                collector.add(std::move(rel));
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    // 全部 400 个 (a,b) 唯一, 都应被接受
+    assert(collector.size() == 400);
+
+    auto rels = collector.get_relations();
+    assert(rels.size() == 400);
+
+    std::cout << "  OOC concurrent add: PASS (" << collector.size()
+              << " relations on disk)" << std::endl;
+}
+
+void test_ooc_clear_recycle() {
+    std::cout << "Testing OOC clear() recycles writer + deletes files..." << std::endl;
+    auto path = make_tmp_ooc_path("clear");
+    OOCArtifacts cleanup(path);
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+
+    RelationCollector collector(config);
+    for (int i = 1; i <= 3; ++i) {
+        Relation rel(i, i + 1);
+        collector.add(std::move(rel));
+    }
+    assert(collector.size() == 3);
+
+    collector.clear();
+    assert(collector.size() == 0);  // OOC writer count reset to 0 after recycle
+    auto stats = collector.stats();
+    assert(stats.total_relations == 0);
+
+    // 重新可用: 加新 relations
+    for (int i = 100; i <= 102; ++i) {
+        Relation rel(i, i + 1);
+        collector.add(std::move(rel));
+    }
+    assert(collector.size() == 3);
+
+    auto rels = collector.get_relations();
+    assert(rels.size() == 3);
+    assert(rels[0].a == 100);
+
+    std::cout << "  OOC clear() recycle: PASS" << std::endl;
+}
+
+void test_ooc_empty_base_path_rejected() {
+    std::cout << "Testing OOC rejects empty base_path..." << std::endl;
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = "";  // empty → ctor 必须抛
+
+    bool threw = false;
+    try {
+        RelationCollector collector(config);
+        (void)collector;
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    assert(threw);
+
+    std::cout << "  OOC empty base_path rejected: PASS" << std::endl;
+}
+
+void test_ooc_legacy_save_load_disabled() {
+    std::cout << "Testing OOC save/load legacy methods disabled..." << std::endl;
+    auto path = make_tmp_ooc_path("legacy");
+    OOCArtifacts cleanup(path);
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+
+    RelationCollector collector(config);
+    Relation rel(1, 2);
+    collector.add(std::move(rel));
+
+    // legacy save / load 在 OOC 模式必须 return false
+    assert(!collector.save("/tmp/unused.bin"));
+    assert(!collector.load("/tmp/unused.bin"));
+
+    std::cout << "  OOC legacy save/load disabled: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== Relation Collector Tests ===" << std::endl;
 
@@ -407,6 +688,16 @@ int main() {
     test_callback();
     test_callback_no_deadlock();
     test_n_divisibility_rejection();
+
+    std::cout << "\n=== OOC mode tests (BACKLOG #11c) ===" << std::endl;
+    test_ooc_basic_add();
+    test_ooc_duplicate_rejection();
+    test_ooc_n_divisibility();
+    test_ooc_partial_relations();
+    test_ooc_concurrent_add();
+    test_ooc_clear_recycle();
+    test_ooc_empty_base_path_rejected();
+    test_ooc_legacy_save_load_disabled();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
