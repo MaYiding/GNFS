@@ -322,6 +322,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Resultant COMMAND test_resultant)
     set_tests_properties(Resultant PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_core_types
+        tests/test_core_types.cpp
+    )
+    target_link_libraries(test_core_types PRIVATE gnfs_core)
+    add_test(NAME CoreTypes COMMAND test_core_types)
+    set_tests_properties(CoreTypes PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_factor_base
         tests/test_factor_base.cpp
     )
