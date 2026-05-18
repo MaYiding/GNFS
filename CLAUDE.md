@@ -292,6 +292,31 @@ GNFS_WEIGHT_CUTOFF=2 ./test_stress 1 1   # weight-3+ key 的关系全 drop
 - 二者组合预期: β < 100% 必要条件 (待实测).
 - 注意: drop 模式 V3 cascade 的 v3_added 可能 = 0 (V0 已覆盖 full, V3 残留全 drop), test_clique_merger_50d_synthetic 已 conditional skip assertion (line 253).
 
+### V0 BFS chain merge (GNFS_V0_BFS)
+
+**ENV `GNFS_V0_BFS=1`** (BACKLOG #1 step b alt path, 2026-05-18):
+Pipeline filter() 中 V0 主路径用 CliqueRelationMerger BFS spanning tree 算法替代
+PartialRelationMerger::merge_all (standard Phase 1+2 weight=2 simple match).
+启用时 V3 cascade redundant (skip).
+
+**Size-aware gate** (实测 finding 2026-05-18):
+- lp_bits ≥ 22 (50d+): V0_BFS 启用. BFS 处理 weight≥3 LP chain
+- lp_bits ≤ 20 (25d/81-bit): ENV ignored, fallback to V0 standard
+  + stderr warning. **原因**: BFS chain merge 在 small LP space 产生 ~87%
+  residual partials, matrix LP cols 严重 dominate, BL 找不到 dependencies.
+  实测 test_regression_gate Level 4 (81-bit) V0_BFS=1 FAIL "no dependencies found"
+
+```bash
+GNFS_V0_BFS=1 ./gnfs <50d-or-larger>   # 50d+ V0 主路径 BFS
+GNFS_V0_BFS=1 ./gnfs <81-bit>          # 自动 fallback, stderr 警告
+```
+
+**用途**: BACKLOG #1 step b "weight≥3 LP keys 也可合并" 的 lightweight 实现.
+不重写 PartialRelationMerger, 仅 dispatch to CliqueRelationMerger (已实现 BFS).
+
+**集成点** (commits `086afb2` + `d50fd61`, 2026-05-18):
+- `src/api/pipeline.cpp:768-815` — Pipeline::filter() V0_BFS env-gate + size-aware fallback
+
 ### OOC Relation Store (GNFS_OOC_RELATIONS)
 
 **ENV `GNFS_OOC_RELATIONS=1`** (BACKLOG #11c, 2026-05-18):

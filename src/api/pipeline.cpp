@@ -768,6 +768,61 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
     if (params_.large_prime_bound > params_.algebraic_bound) {
         auto sep = relation::separate_relations(std::move(relations));
 
+        // ── V0 BFS chain merge (ENV: GNFS_V0_BFS=1, BACKLOG #1 step b alt path) ──
+        // V0 主路径用 BFS spanning tree (复用 CliqueRelationMerger 算法) 替代
+        // standard Phase 1 + 2 simple match. weight≥3 LP keys 也走 chain merge.
+        // 启用时 V3 cascade redundant (V0 already covers); skip V3 cascade.
+        //
+        // ⚠ Size sensitivity (2026-05-18 实测 finding):
+        // BFS chain merge 在 small LP space (lp_bits ≤ 20, 25d/81-bit) 产生过多 residual
+        // partials (~87% merged 是 residual). matrix LP cols 大幅增加 → BL 找不到 deps.
+        // 实测 test_regression_gate Level 4 (81-bit) V0_BFS=1 FAIL "no dependencies found".
+        // 故仅在 lp_bits ≥ 22 (50d+) 启用; ≤ 20 时 fallback to V0 standard.
+        static const bool v0_bfs_env = []() {
+            const char* env = std::getenv("GNFS_V0_BFS");
+            return env && std::atoi(env) == 1;
+        }();
+        // size-aware gate: lp_bits 通过 log2(large_prime_bound) 估算
+        size_t lp_bits_est = 0;
+        for (uint64_t b = params_.large_prime_bound; b > 1; b >>= 1) ++lp_bits_est;
+        const bool v0_bfs_mode = v0_bfs_env && lp_bits_est >= 22;
+        if (v0_bfs_env && !v0_bfs_mode) {
+            std::fprintf(stderr,
+                "[v0_bfs] env=1 but lp_bits=%zu < 22 — fallback to V0 standard (BFS unsuitable for small LP space)\n",
+                lp_bits_est);
+        }
+
+        if (v0_bfs_mode) {
+            relation::CliqueStats cstats;
+            auto merged = relation::CliqueRelationMerger::merge_cliques(
+                std::move(sep.partial), &cstats);
+
+            stats_.merged_relations = merged.size();
+
+            emit_log(LogLevel::Info, Phase::Filtering,
+                     "v0_bfs: full=" + std::to_string(sep.full.size()) +
+                     " " + cstats.to_string() +
+                     " merged=" + std::to_string(merged.size()));
+            std::fprintf(stderr, "[v0_bfs] %s merged=%zu (V3 cascade skipped)\n",
+                         cstats.to_string().c_str(), merged.size());
+
+            relations = std::move(sep.full);
+            relations.reserve(relations.size() + merged.size());
+            relations.insert(relations.end(),
+                std::make_move_iterator(merged.begin()),
+                std::make_move_iterator(merged.end()));
+
+            // V3 cascade skipped — V0 BFS already covered weight≥3 chains.
+            // Fall through to final stats/return.
+            auto t1_bfs = std::chrono::high_resolution_clock::now();
+            stats_.timings.filter_s = std::chrono::duration<double>(t1_bfs - t0).count();
+            stats_.relations_after_filter = relations.size();
+            emit_log(LogLevel::Info, Phase::Filtering,
+                     "after filter: " + std::to_string(relations.size()) + " relations");
+            emit_progress(Phase::Filtering, "Filtering complete", 1.0);
+            return relations;
+        }
+
         // ── V3 cascade prep: keep partial copy if cascade enabled ──
         std::vector<relation::Relation> partial_copy_for_v3;
         const bool use_v3 = cascade_v3_enabled();
