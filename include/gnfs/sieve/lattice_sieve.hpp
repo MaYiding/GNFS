@@ -24,6 +24,34 @@
 
 namespace gnfs::sieve {
 
+namespace detail {
+
+/// Apply constant log_p to a contiguous uint16_t range: arr[i] += lp for all i.
+/// Used by Phase 0 global hits + v-prime full-row sieve. NEON 8-lane on arm64,
+/// scalar elsewhere.
+///
+/// P2-A baseline (BACKLOG): explicit sieve-kernel NEON. doctrine 说 这些 patterns
+/// (constant broadcast across row/area) 是 sieve 内最 vectorize-friendly 的段;
+/// bucket-entry scatter + tiny stride 因 gather/strided 模式不适合 SIMD.
+inline void apply_log_p_range(uint16_t* arr, size_t len, uint16_t lp) {
+#ifdef __ARM_NEON
+    size_t i = 0;
+    const uint16x8_t lp_vec = vdupq_n_u16(lp);
+    const size_t vec_end = len & ~size_t(7);
+    for (; i < vec_end; i += 8) {
+        uint16x8_t v = vld1q_u16(arr + i);
+        v = vaddq_u16(v, lp_vec);
+        vst1q_u16(arr + i, v);
+    }
+    for (; i < len; ++i) arr[i] += lp;
+#else
+    for (size_t i = 0; i < len; ++i) arr[i] += lp;
+#endif
+}
+
+}  // namespace detail
+
+
 using core::ABPair;
 using core::PolynomialContext;
 using core::Relation;
@@ -456,12 +484,11 @@ private:
         // Number of bucket regions
         const size_t num_regions = (total_area + BUCKET_REGION_SIZE - 1) / BUCKET_REGION_SIZE;
 
-        // Phase 0: global hits (flags==2, extremely rare)
+        // Phase 0: global hits (flags==2, extremely rare).
+        // NEON 8-lane via detail::apply_log_p_range (P2-A baseline).
         for (const auto& pe : primes) {
             if (pe.flags == 2) {
-                uint16_t lp = pe.log_p;
-                for (size_t idx = 0; idx < total_area; ++idx)
-                    sieve_array_[idx] += lp;
+                detail::apply_log_p_range(sieve_array_.data(), total_area, pe.log_p);
             }
         }
 
@@ -605,11 +632,13 @@ private:
                 size_t eff_end = std::min(row_end, region_end);
                 if (eff_start >= eff_end) continue;
 
-                // v-primes: whole row
+                // v-primes: whole row. NEON 8-lane via detail::apply_log_p_range (P2-A baseline).
                 for (const auto& vp : v_primes) {
                     if ((j % static_cast<int32_t>(vp.p)) == 0) {
-                        for (size_t idx = eff_start; idx < eff_end; ++idx)
-                            sieve_array_[idx] += vp.log_p;
+                        detail::apply_log_p_range(
+                            sieve_array_.data() + eff_start,
+                            eff_end - eff_start,
+                            vp.log_p);
                     }
                 }
 
