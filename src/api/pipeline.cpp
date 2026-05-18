@@ -24,6 +24,7 @@
 #include <random>
 #include <cstdio>   // fprintf for V3 cascade stderr signal
 #include <cstdlib>  // getenv for GNFS_CASCADE_V3 flag
+#include <unistd.h> // getpid for OOC base path default
 #include <string>
 #include <thread>
 #include <unordered_set>  // V3 cascade dedup
@@ -498,6 +499,26 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     // Collector
     relation::CollectorConfig coll_config;
     coll_config.check_duplicates = true;
+    // ── OOC streaming (BACKLOG #11c, ENV GNFS_OOC_RELATIONS=1) ──
+    // 50d Round 2 909K relations 时 macOS OOM-killed (2026-05-17 实测).
+    // OOC 启用后 collector 流式写盘 /tmp/gnfs_relations_<pid>.{reldata,relidx},
+    // 内存只保留 (a,b) seen set, 显著减小 sieve 期间 RAM peak.
+    if (const char* env = std::getenv("GNFS_OOC_RELATIONS");
+        env != nullptr && std::atoi(env) == 1) {
+        coll_config.ooc_enabled = true;
+        // base_path: ENV GNFS_OOC_BASE_PATH overrides /tmp/gnfs_relations_<pid>
+        if (const char* path_env = std::getenv("GNFS_OOC_BASE_PATH");
+            path_env != nullptr && path_env[0] != '\0') {
+            coll_config.ooc_base_path = path_env;
+        } else {
+            coll_config.ooc_base_path =
+                "/tmp/gnfs_relations_" + std::to_string(::getpid());
+        }
+        emit_log(LogLevel::Info, Phase::Sieving,
+                 "OOC mode enabled: base=" + coll_config.ooc_base_path);
+        std::fprintf(stderr, "[ooc] streaming relations to %s.{reldata,relidx}\n",
+                     coll_config.ooc_base_path.c_str());
+    }
     relation::RelationCollector collector(coll_config);
     // CLAUDE.md 强制约定:拒绝 gcd(a-bm, N)>1 的关系
     collector.set_polynomial_context(ctx.n(), ctx.m());
