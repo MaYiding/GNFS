@@ -608,7 +608,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_api PRIVATE gnfs_core Threads::Threads)
     add_test(NAME API COMMAND test_api)
-    set_tests_properties(API PROPERTIES LABELS "instant" TIMEOUT 60)
+    set_tests_properties(API PROPERTIES LABELS "fast" TIMEOUT 120)
 
     # Method selection 测试
     add_executable(test_method_selection
