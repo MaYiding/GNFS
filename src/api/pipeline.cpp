@@ -1177,11 +1177,24 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
     sge_config.verbose = false;
     auto sge_result = linalg::SGE::preprocess(build_result.matrix, sge_config);
 
-    emit_log(LogLevel::Debug, Phase::LinearAlgebra,
-             "SGE: " + std::to_string(build_result.matrix.num_rows()) + "x" +
-             std::to_string(build_result.matrix.num_cols()) + " -> " +
-             std::to_string(sge_result.reduced_matrix.num_rows()) + "x" +
-             std::to_string(sge_result.reduced_matrix.num_cols()));
+    {
+        const size_t pre_rows = build_result.matrix.num_rows();
+        const size_t pre_cols = build_result.matrix.num_cols();
+        const size_t post_rows = sge_result.reduced_matrix.num_rows();
+        const size_t post_cols = sge_result.reduced_matrix.num_cols();
+        const double reduce_pct = (pre_rows == 0 || pre_cols == 0)
+            ? 0.0
+            : 100.0 * (1.0 - static_cast<double>(post_rows * post_cols) /
+                              static_cast<double>(pre_rows * pre_cols));
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+            "SGE: %zux%zu -> %zux%zu (reduce=%.1f%% area)",
+            pre_rows, pre_cols, post_rows, post_cols, reduce_pct);
+        // Promote to Info — SGE reduction is a key diagnostic for BACKLOG #1
+        // 50d empirical (CLAUDE.md cites 30-60% reduction expectation).
+        emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
+        std::fprintf(stderr, "[sge] %s\n", buf);
+    }
 
     // For thin matrices (rows ≤ cols, BACKLOG #80), BL is known to fail —
     // skip directly to BW. BW finds left kernel via B=M*M^T which works
