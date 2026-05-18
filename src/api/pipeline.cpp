@@ -768,6 +768,46 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
     if (params_.large_prime_bound > params_.algebraic_bound) {
         auto sep = relation::separate_relations(std::move(relations));
 
+        // ── V0 BFS chain merge (ENV: GNFS_V0_BFS=1, BACKLOG #1 step b alt path) ──
+        // V0 主路径用 BFS spanning tree (复用 CliqueRelationMerger 算法) 替代
+        // standard Phase 1 + 2 simple match. weight≥3 LP keys 也走 chain merge.
+        // 启用时 V3 cascade redundant (V0 already covers); skip V3 cascade.
+        static const bool v0_bfs_mode = []() {
+            const char* env = std::getenv("GNFS_V0_BFS");
+            return env && std::atoi(env) == 1;
+        }();
+
+        if (v0_bfs_mode) {
+            relation::CliqueStats cstats;
+            auto merged = relation::CliqueRelationMerger::merge_cliques(
+                std::move(sep.partial), &cstats);
+
+            stats_.merged_relations = merged.size();
+
+            emit_log(LogLevel::Info, Phase::Filtering,
+                     "v0_bfs: full=" + std::to_string(sep.full.size()) +
+                     " " + cstats.to_string() +
+                     " merged=" + std::to_string(merged.size()));
+            std::fprintf(stderr, "[v0_bfs] %s merged=%zu (V3 cascade skipped)\n",
+                         cstats.to_string().c_str(), merged.size());
+
+            relations = std::move(sep.full);
+            relations.reserve(relations.size() + merged.size());
+            relations.insert(relations.end(),
+                std::make_move_iterator(merged.begin()),
+                std::make_move_iterator(merged.end()));
+
+            // V3 cascade skipped — V0 BFS already covered weight≥3 chains.
+            // Fall through to final stats/return.
+            auto t1_bfs = std::chrono::high_resolution_clock::now();
+            stats_.timings.filter_s = std::chrono::duration<double>(t1_bfs - t0).count();
+            stats_.relations_after_filter = relations.size();
+            emit_log(LogLevel::Info, Phase::Filtering,
+                     "after filter: " + std::to_string(relations.size()) + " relations");
+            emit_progress(Phase::Filtering, "Filtering complete", 1.0);
+            return relations;
+        }
+
         // ── V3 cascade prep: keep partial copy if cascade enabled ──
         std::vector<relation::Relation> partial_copy_for_v3;
         const bool use_v3 = cascade_v3_enabled();
