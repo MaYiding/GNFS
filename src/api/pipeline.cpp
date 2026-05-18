@@ -3,6 +3,7 @@
 #include <gnfs/polynomial/selector_dispatch.hpp>
 #include <gnfs/factor_base/builder.hpp>
 #include <gnfs/sieve/special_q.hpp>
+#include <gnfs/sieve/sieve_checkpoint.hpp>
 #include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/cofactor/ecm.hpp>
@@ -499,12 +500,52 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     // Collector
     relation::CollectorConfig coll_config;
     coll_config.check_duplicates = true;
+
+    // ── Sieve mid-flight checkpoint resume (BACKLOG #11e, ENV GNFS_SIEVE_RESUME) ──
+    // GNFS_SIEVE_RESUME=<base_path>: 启用 OOC streaming + checkpoint, base_path
+    // 既作 OOC base 也作 checkpoint base. 若 <base_path>.sieve_ckpt 存在 → resume,
+    // 否则 fresh start.  Sieve 进程中每 CHECKPOINT_INTERVAL batches 更新 ckpt 文件.
+    // 正常完成 → 删除 ckpt + OOC writer finalize MAGIC (后续 read 通过 reader).
+    std::string sieve_resume_path;
+    std::optional<sieve::SieveCheckpoint> prior_ckpt;
+    if (const char* env = std::getenv("GNFS_SIEVE_RESUME");
+        env != nullptr && env[0] != '\0') {
+        sieve_resume_path = env;
+        const std::string ckpt_file = sieve_resume_path + ".sieve_ckpt";
+        if (sieve::SieveCheckpoint::exists_and_valid(ckpt_file)) {
+            try {
+                prior_ckpt = sieve::SieveCheckpoint::load(ckpt_file);
+                emit_log(LogLevel::Info, Phase::Sieving,
+                         "checkpoint loaded: sq_count=" +
+                         std::to_string(prior_ckpt->sq_count) +
+                         " idx=" + std::to_string(prior_ckpt->current_index) +
+                         " round=" + std::to_string(prior_ckpt->round));
+                std::fprintf(stderr,
+                    "[sieve-resume] ckpt=%s sq_count=%llu idx=%u round=%d\n",
+                    ckpt_file.c_str(),
+                    static_cast<unsigned long long>(prior_ckpt->sq_count),
+                    prior_ckpt->current_index, prior_ckpt->round);
+            } catch (const std::exception& e) {
+                emit_log(LogLevel::Warn, Phase::Sieving,
+                         std::string("checkpoint load failed (") + e.what() +
+                         ") — starting fresh");
+                prior_ckpt.reset();
+            }
+        }
+        coll_config.ooc_enabled = true;
+        coll_config.ooc_base_path = sieve_resume_path;
+        coll_config.ooc_resume = prior_ckpt.has_value();
+        emit_log(LogLevel::Info, Phase::Sieving,
+                 "GNFS_SIEVE_RESUME enabled: base=" + sieve_resume_path +
+                 " ckpt_resume=" + (prior_ckpt ? "yes" : "no"));
+    }
     // ── OOC streaming (BACKLOG #11c, ENV GNFS_OOC_RELATIONS=1) ──
     // 50d Round 2 909K relations 时 macOS OOM-killed (2026-05-17 实测).
     // OOC 启用后 collector 流式写盘 /tmp/gnfs_relations_<pid>.{reldata,relidx},
     // 内存只保留 (a,b) seen set, 显著减小 sieve 期间 RAM peak.
-    if (const char* env = std::getenv("GNFS_OOC_RELATIONS");
-        env != nullptr && std::atoi(env) == 1) {
+    // 不与 GNFS_SIEVE_RESUME 共存 (后者已隐含 OOC enable)
+    else if (const char* env = std::getenv("GNFS_OOC_RELATIONS");
+             env != nullptr && std::atoi(env) == 1) {
         coll_config.ooc_enabled = true;
         // base_path: ENV GNFS_OOC_BASE_PATH overrides /tmp/gnfs_relations_<pid>
         if (const char* path_env = std::getenv("GNFS_OOC_BASE_PATH");
@@ -542,18 +583,36 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     size_t sq_count = 0;
     size_t candidates_total = 0;
     size_t max_sq = params_.max_special_q;
+    int round_start = 0;
+
+    // Apply checkpoint state if resuming (BACKLOG #11e)
+    if (prior_ckpt) {
+        sq_count = prior_ckpt->sq_count;
+        candidates_total = prior_ckpt->candidates_total;
+        batch_target = prior_ckpt->batch_target;
+        round_start = prior_ckpt->round;
+        sq_gen.reset_to(prior_ckpt->current_index);
+        emit_log(LogLevel::Info, Phase::Sieving,
+                 "resuming sieve from checkpoint: skip " +
+                 std::to_string(sq_count) + " prior SQs");
+    }
 
     // Adaptive sieve-filter-merge loop:
     // Collect raw relations, filter+merge, check if enough usable.
     // If not, increase target and continue sieving.
     std::vector<Relation> relations;
     constexpr int MAX_ROUNDS = 10;
+    // BACKLOG #11e: checkpoint write 频率. Every N SQ batches (each batch
+    // 2-4 SQs) we persist state. N=25 → ~50-100 SQs/checkpoint.
+    // Trade-off: 频繁 → 多 disk IO; 稀疏 → resume 时丢更多 SQ.
+    constexpr size_t CHECKPOINT_BATCH_INTERVAL = 25;
+    size_t last_checkpoint_batch = 0;
 
     // Thread count for parallel cofactorization
     size_t n_cofac_threads = std::thread::hardware_concurrency();
     if (n_cofac_threads == 0) n_cofac_threads = 4;
 
-    for (int round = 0; round < MAX_ROUNDS; ++round) {
+    for (int round = round_start; round < MAX_ROUNDS; ++round) {
         // ── Batch SQ processing: sieve + cofac in parallel ──
         // Collect a batch of SQ primes, sieve them in parallel (each thread
         // owns its own LatticeSieve copy), then cofac results in parallel.
@@ -616,6 +675,31 @@ std::vector<Relation> Pipeline::sieve_and_collect(
                     collector.add(std::move(rel));
             }
             sq_count += sq_batch.size();
+
+            // ── Periodic checkpoint write (BACKLOG #11e) ──
+            // Persist sieve state every CHECKPOINT_BATCH_INTERVAL batches when
+            // GNFS_SIEVE_RESUME enabled. Crash mid-batch → next resume rewinds to
+            // last successful checkpoint, drops ≤25 batches of work (acceptable).
+            if (!sieve_resume_path.empty()) {
+                ++last_checkpoint_batch;
+                if (last_checkpoint_batch >= CHECKPOINT_BATCH_INTERVAL) {
+                    last_checkpoint_batch = 0;
+                    sieve::SieveCheckpoint ck;
+                    ck.sq_count = sq_count;
+                    ck.current_index = sq_gen.current_index();
+                    ck.round = round;
+                    ck.batch_target = batch_target;
+                    ck.candidates_total = candidates_total;
+                    ck.ooc_base_path = sieve_resume_path;
+                    try {
+                        ck.save(sieve_resume_path + ".sieve_ckpt");
+                    } catch (const std::exception& e) {
+                        emit_log(LogLevel::Warn, Phase::Sieving,
+                                 std::string("checkpoint save failed: ") +
+                                 e.what());
+                    }
+                }
+            }
 
             // Progress report
             if (sq_count % params_.progress_interval == 0 || sq_count <= 8) {
@@ -723,6 +807,14 @@ std::vector<Relation> Pipeline::sieve_and_collect(
 
     auto t1 = std::chrono::high_resolution_clock::now();
     stats_.timings.sieve_s = std::chrono::duration<double>(t1 - t0).count();
+
+    // Sieve normally complete → remove checkpoint (resume not needed).
+    // Crash before this line leaves ckpt + INCOMPLETE OOC files for next run.
+    if (!sieve_resume_path.empty()) {
+        sieve::SieveCheckpoint::remove(sieve_resume_path + ".sieve_ckpt");
+        emit_log(LogLevel::Info, Phase::Sieving,
+                 "sieve complete, checkpoint removed");
+    }
 
     // Collect final stats
     stats_.relations_found = collector.size();
