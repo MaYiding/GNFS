@@ -772,10 +772,25 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
         // V0 主路径用 BFS spanning tree (复用 CliqueRelationMerger 算法) 替代
         // standard Phase 1 + 2 simple match. weight≥3 LP keys 也走 chain merge.
         // 启用时 V3 cascade redundant (V0 already covers); skip V3 cascade.
-        static const bool v0_bfs_mode = []() {
+        //
+        // ⚠ Size sensitivity (2026-05-18 实测 finding):
+        // BFS chain merge 在 small LP space (lp_bits ≤ 20, 25d/81-bit) 产生过多 residual
+        // partials (~87% merged 是 residual). matrix LP cols 大幅增加 → BL 找不到 deps.
+        // 实测 test_regression_gate Level 4 (81-bit) V0_BFS=1 FAIL "no dependencies found".
+        // 故仅在 lp_bits ≥ 22 (50d+) 启用; ≤ 20 时 fallback to V0 standard.
+        static const bool v0_bfs_env = []() {
             const char* env = std::getenv("GNFS_V0_BFS");
             return env && std::atoi(env) == 1;
         }();
+        // size-aware gate: lp_bits 通过 log2(large_prime_bound) 估算
+        size_t lp_bits_est = 0;
+        for (uint64_t b = params_.large_prime_bound; b > 1; b >>= 1) ++lp_bits_est;
+        const bool v0_bfs_mode = v0_bfs_env && lp_bits_est >= 22;
+        if (v0_bfs_env && !v0_bfs_mode) {
+            std::fprintf(stderr,
+                "[v0_bfs] env=1 but lp_bits=%zu < 22 — fallback to V0 standard (BFS unsuitable for small LP space)\n",
+                lp_bits_est);
+        }
 
         if (v0_bfs_mode) {
             relation::CliqueStats cstats;
