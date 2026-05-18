@@ -2,6 +2,7 @@
 
 #include "../core/integer.hpp"
 #include "../core/polynomial_context.hpp"
+#include "../polynomial/resultant.hpp"
 #include "../util/primes.hpp"
 
 #include <vector>
@@ -168,122 +169,16 @@ private:
     void compute_discriminant() {
         uint32_t d = ctx_.degree();
         if (d <= 1) {
-            discriminant_ = int64_t(1);  // mpz_set_si direct
+            discriminant_ = int64_t(1);
             return;
         }
 
-        // Build f and f' coefficient vectors (vector default-init Integer; use mpz_set)
-        std::vector<Integer> f(d + 1), f_prime(d);
+        std::vector<Integer> f(d + 1);
         for (uint32_t i = 0; i <= d; ++i) {
-            f[i] = ctx_.coeff(i);  // mpz_set into default-init slot
-        }
-        for (uint32_t i = 0; i < d; ++i) {
-            f_prime[i] = f[i + 1];  // mpz_set
-            f_prime[i] *= static_cast<int64_t>(i + 1);  // mpz_mul_si direct
+            f[i] = ctx_.coeff(i);
         }
 
-        // Compute Res(f, f') via Sylvester matrix determinant
-        // Sylvester matrix size = d + (d-1) = 2d-1
-        Integer res = compute_resultant(f, d, f_prime, d - 1);
-
-        // Δ = (-1)^(d(d-1)/2) · Res(f, f') / a_d
-        uint32_t sign_exp = d * (d - 1) / 2;
-        if (sign_exp % 2 == 1) {
-            res.negate();
-        }
-        if (!ctx_.coeff(d).is_zero()) {
-            res /= ctx_.coeff(d);  // no temp clone needed
-        }
-
-        discriminant_ = std::move(res);
-    }
-
-    /// Compute resultant Res(f, g) via Sylvester matrix determinant
-    /// f has degree deg_f, g has degree deg_g
-    /// Matrix size = deg_f + deg_g
-    [[nodiscard]] static Integer compute_resultant(
-            const std::vector<Integer>& f, uint32_t deg_f,
-            const std::vector<Integer>& g, uint32_t deg_g) {
-
-        uint32_t n = deg_f + deg_g;
-        if (n == 0) return Integer(1);
-
-        // Build Sylvester matrix (n × n)
-        // First deg_g rows: coefficients of x^{deg_g-1}·f, ..., f (shifted copies)
-        // Last deg_f rows: coefficients of x^{deg_f-1}·g, ..., g (shifted copies)
-        // Integer default-inits to 0 — no explicit zero-fill needed.
-        std::vector<std::vector<Integer>> M(n, std::vector<Integer>(n));
-
-        // First deg_g rows from f (mpz_set into existing Integer slot)
-        for (uint32_t row = 0; row < deg_g; ++row) {
-            for (uint32_t k = 0; k <= deg_f; ++k) {
-                // row-th shifted copy: f[k] at column row + k
-                uint32_t col = row + k;
-                if (col < n) {
-                    M[row][col] = f[deg_f - k]; // coefficients in descending order
-                }
-            }
-        }
-
-        // Last deg_f rows from g
-        for (uint32_t row = 0; row < deg_f; ++row) {
-            for (uint32_t k = 0; k <= deg_g; ++k) {
-                uint32_t col = row + k;
-                if (col < n) {
-                    M[deg_g + row][col] = g[deg_g - k];
-                }
-            }
-        }
-
-        // Compute determinant using Bareiss algorithm (fraction-free)
-        return bareiss_determinant(M, n);
-    }
-
-    /// Bareiss algorithm: fraction-free Gaussian elimination for Integer matrix determinant
-    [[nodiscard]] static Integer bareiss_determinant(
-            std::vector<std::vector<Integer>>& M, uint32_t n) {
-        int sign = 1;
-        Integer prev_pivot(1);
-
-        for (uint32_t k = 0; k < n; ++k) {
-            // Find pivot in column k from rows k..n-1
-            uint32_t pivot_row = k;
-            while (pivot_row < n && M[pivot_row][k].is_zero()) {
-                ++pivot_row;
-            }
-            if (pivot_row == n) {
-                return Integer{}; // singular
-            }
-            if (pivot_row != k) {
-                std::swap(M[k], M[pivot_row]);
-                sign = -sign;
-            }
-
-            Integer cur_pivot = M[k][k];   // Integer copy ctor
-
-            // Eliminate below pivot
-            // M[i][j] = (cur_pivot * M[i][j] - M[i][k] * M[k][j]) / prev_pivot
-            // mpz_mul + mpz_submul fused: drops term2 entirely (1 fewer Integer)
-            Integer term;
-            for (uint32_t i = k + 1; i < n; ++i) {
-                for (uint32_t j = k + 1; j < n; ++j) {
-                    mpz_mul(term.get_mpz(), cur_pivot.get_mpz(), M[i][j].get_mpz());
-                    mpz_submul(term.get_mpz(), M[i][k].get_mpz(), M[k][j].get_mpz());
-                    mpz_divexact(term.get_mpz(), term.get_mpz(), prev_pivot.get_mpz());
-                    M[i][j] = std::move(term);
-                }
-                M[i][k] = int64_t(0);  // mpz_set_si direct
-            }
-
-            prev_pivot = std::move(cur_pivot);
-        }
-
-        // Determinant = sign * M[n-1][n-1]
-        Integer result = M[n - 1][n - 1];   // Integer copy ctor
-        if (sign < 0) {
-            result.negate();
-        }
-        return result;
+        discriminant_ = ::gnfs::polynomial::discriminant(f, d);
     }
 
 public:
