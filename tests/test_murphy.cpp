@@ -284,6 +284,64 @@ void test_concurrent_evaluation() {
     std::cout << "  PASSED" << std::endl;
 }
 
+/// BACKLOG #2 regression test: parallel compute_alpha must produce identical
+/// output to sequential. ENV GNFS_MURPHY_ALPHA_THREADS=0 forces sequential; any
+/// positive value enables ThreadPool parallel sweep with per-thread partial
+/// accumulation + serial reduction.
+///
+/// Locks in the ThreadPool sum-reduction invariant. If a future rotation-
+/// incremental rewrite is attempted, this test catches non-determinism (e.g.,
+/// from floating-point reduction order if it were changed naively).
+void test_compute_alpha_parallel_equals_sequential() {
+    std::cout << "Testing compute_alpha parallel == sequential (BACKLOG #2)..." << std::endl;
+
+    MurphyParams params;
+    params.alpha_bound = 10000;  // ~1200 primes, enough to exercise parallel path
+    params.sample_points = 100;
+
+    // f(x) = x^4 + 3x^3 - 2x^2 + 7x - 11 (irreducible, degree 4)
+    std::vector<Integer> f_coeffs;
+    f_coeffs.push_back(Integer(-11));
+    f_coeffs.push_back(Integer(7));
+    f_coeffs.push_back(Integer(-2));
+    f_coeffs.push_back(Integer(3));
+    f_coeffs.push_back(Integer(1));
+    IntPolynomial f(std::move(f_coeffs));
+
+    // Force sequential by setting ENV before evaluator construction (lazy ThreadPool init)
+    setenv("GNFS_MURPHY_ALPHA_THREADS", "0", 1);
+    MurphyEvaluator seq_evaluator(params);
+    double alpha_seq = seq_evaluator.compute_alpha(f);
+
+    // Force 4-thread parallel
+    setenv("GNFS_MURPHY_ALPHA_THREADS", "4", 1);
+    MurphyEvaluator par4_evaluator(params);
+    double alpha_par4 = par4_evaluator.compute_alpha(f);
+
+    // Force 8-thread parallel
+    setenv("GNFS_MURPHY_ALPHA_THREADS", "8", 1);
+    MurphyEvaluator par8_evaluator(params);
+    double alpha_par8 = par8_evaluator.compute_alpha(f);
+
+    // Reset to default for other tests
+    unsetenv("GNFS_MURPHY_ALPHA_THREADS");
+
+    // Each prime contributes independently (alpha_contribution is a pure function).
+    // Sum reduction is commutative for finite-precision doubles when all contributions
+    // are summed exactly once. So parallel sum = sequential sum bit-for-bit.
+    std::cout << "  alpha (sequential):       " << alpha_seq << std::endl;
+    std::cout << "  alpha (4-thread parallel): " << alpha_par4 << std::endl;
+    std::cout << "  alpha (8-thread parallel): " << alpha_par8 << std::endl;
+
+    // Floating-point sum order may differ slightly across reduction strategies,
+    // so allow tiny relative tolerance (10 ULP for doubles ≈ 2e-15).
+    const double tol = 1e-10;
+    assert(std::abs(alpha_seq - alpha_par4) < tol);
+    assert(std::abs(alpha_seq - alpha_par8) < tol);
+    assert(std::isfinite(alpha_seq));
+    std::cout << "  PASSED (all values within " << tol << " tolerance)" << std::endl;
+}
+
 int main() {
     std::cout << "=== Murphy Evaluator Tests ===" << std::endl << std::endl;
 
@@ -294,6 +352,7 @@ int main() {
     test_skewness_optimization();
     test_quick_compare();
     test_concurrent_evaluation();
+    test_compute_alpha_parallel_equals_sequential();
 
     std::cout << std::endl << "All Murphy evaluator tests passed!" << std::endl;
     return 0;

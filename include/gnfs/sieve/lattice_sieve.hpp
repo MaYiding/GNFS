@@ -5,6 +5,7 @@
 #include "../core/types.hpp"
 #include "../factor_base/factor_base.hpp"
 #include "../util/safe_math.hpp"
+#include "ecore_qos.hpp"
 #include "lattice_basis.hpp"
 #include "special_q.hpp"
 
@@ -224,9 +225,14 @@ public:
         std::vector<SieveResult> all_results(special_qs.size());
         std::atomic<size_t> next_sq{0};
 
+        // BACKLOG #4: optional E-core threads via GNFS_SIEVE_ECORE_THREADS=N.
+        // SQ-level work-stealing — each SQ ~independent, faster cores grab more.
+        const size_t ecore_count = resolve_ecore_thread_count(num_threads);
+
         // Worker function - each thread gets its own LatticeSieve copy
         // No mutex needed: each thread writes to a unique all_results[idx]
-        auto worker = [&]() {
+        auto worker = [&](gnfs::util::QoSClass qos) {
+            gnfs::util::set_current_thread_qos(qos);
             LatticeSieve local_sieve(ctx_, fb_, params_);
             local_sieve.set_region(region_);
 
@@ -241,7 +247,8 @@ public:
         // Launch threads
         std::vector<std::thread> threads;
         for (size_t t = 0; t < num_threads; ++t) {
-            threads.emplace_back(worker);
+            const auto qos = qos_for_sieve_thread(t, num_threads, ecore_count);
+            threads.emplace_back(worker, qos);
         }
         for (auto& t : threads) {
             t.join();
@@ -525,12 +532,22 @@ private:
             std::vector<std::thread> scatter_workers;
             scatter_workers.reserve(scatter_threads);
 
+            // BACKLOG #4: optional E-core threads via GNFS_SIEVE_ECORE_THREADS=N.
+            // Chunked scatter — fixed per-thread work, mixed P+E hurts under
+            // slowest-core barrier unless ENV opts in.
+            const size_t scatter_ecore_count = resolve_ecore_thread_count(scatter_threads);
+
             for (size_t t = 0; t < scatter_threads; ++t) {
                 size_t start = t * chunk;
                 size_t end_idx = std::min(start + chunk, medium_prime_indices.size());
                 if (start >= medium_prime_indices.size()) break;
 
-                auto scatter_fn = [&, t, start, end_idx]() {
+                const auto qos = qos_for_sieve_thread(t, scatter_threads, scatter_ecore_count);
+
+                auto scatter_fn = [&, t, start, end_idx, qos]() {
+                    if (scatter_threads > 1) {
+                        gnfs::util::set_current_thread_qos(qos);
+                    }
                     auto& local = thread_buckets[t].per_region;
                     for (size_t pi_idx = start; pi_idx < end_idx; ++pi_idx) {
                         const auto& pe = primes[medium_prime_indices[pi_idx]];
@@ -675,12 +692,19 @@ private:
         if (num_threads <= 1) {
             for (size_t r = 0; r < num_regions; ++r) apply_region(r);
         } else {
+            // BACKLOG #4: optional E-core threads via GNFS_SIEVE_ECORE_THREADS=N.
+            // Work-stealing (atomic fetch_add over region index) makes mixed P+E
+            // robust to slowest-core barrier — faster cores grab more regions.
+            const size_t ecore_count = resolve_ecore_thread_count(num_threads);
+
             std::vector<std::thread> threads;
             threads.reserve(num_threads);
             std::atomic<size_t> next_region{0};
 
             for (size_t t = 0; t < num_threads; ++t) {
-                threads.emplace_back([&]() {
+                const auto qos = qos_for_sieve_thread(t, num_threads, ecore_count);
+                threads.emplace_back([&, qos]() {
+                    gnfs::util::set_current_thread_qos(qos);
                     while (true) {
                         size_t r = next_region.fetch_add(1, std::memory_order_relaxed);
                         if (r >= num_regions) break;
@@ -802,17 +826,26 @@ private:
         auto chunk_imods = precompute_chunk_imods(
             pre, primes, bucket_threshold, chunk_starts, j_min);
 
+        // BACKLOG #4: optional E-core threads via GNFS_SIEVE_ECORE_THREADS=N.
+        // Static row-chunk dispatch — mixed P+E hurts unless ENV opts in (slowest
+        // chunk barrier). Convert method-pointer style to lambda to inject QoS.
+        const size_t row_ecore_count = resolve_ecore_thread_count(num_threads);
+
         for (size_t t = 0; t < num_threads; ++t) {
             int32_t chunk_start_t = chunk_starts[t];
             int32_t chunk_end_t = chunk_starts[t + 1] - 1;
             int32_t row_offset = chunk_start_t - j_min;
             const std::vector<int16_t>* imod_ptr = &chunk_imods[t];
+            const auto qos = qos_for_sieve_thread(t, num_threads, row_ecore_count);
 
-            threads.emplace_back(&LatticeSieve::sieve_row_chunk, this,
-                                 std::cref(pre), std::cref(primes),
-                                 std::cref(buckets), bucket_threshold,
-                                 chunk_start_t, chunk_end_t,
-                                 w, i_min, row_offset, imod_ptr);
+            threads.emplace_back([this, &pre, &primes, &buckets, bucket_threshold,
+                                   chunk_start_t, chunk_end_t, w, i_min, row_offset,
+                                   imod_ptr, qos]() {
+                gnfs::util::set_current_thread_qos(qos);
+                sieve_row_chunk(pre, primes, buckets, bucket_threshold,
+                                chunk_start_t, chunk_end_t,
+                                w, i_min, row_offset, imod_ptr);
+            });
         }
 
         for (auto& t : threads) {
