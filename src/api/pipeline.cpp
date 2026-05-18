@@ -544,21 +544,41 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     // OOC 启用后 collector 流式写盘 /tmp/gnfs_relations_<pid>.{reldata,relidx},
     // 内存只保留 (a,b) seen set, 显著减小 sieve 期间 RAM peak.
     // 不与 GNFS_SIEVE_RESUME 共存 (后者已隐含 OOC enable)
-    else if (const char* env = std::getenv("GNFS_OOC_RELATIONS");
-             env != nullptr && std::atoi(env) == 1) {
-        coll_config.ooc_enabled = true;
-        // base_path: ENV GNFS_OOC_BASE_PATH overrides /tmp/gnfs_relations_<pid>
-        if (const char* path_env = std::getenv("GNFS_OOC_BASE_PATH");
-            path_env != nullptr && path_env[0] != '\0') {
-            coll_config.ooc_base_path = path_env;
-        } else {
-            coll_config.ooc_base_path =
-                "/tmp/gnfs_relations_" + std::to_string(::getpid());
+    //
+    // Size-aware default (BACKLOG #1, 2026-05-18):
+    //   lp_bits ≥ 22 (50d+) 默认启用 OOC 防 Round 2+ OOM.
+    //   GNFS_OOC_RELATIONS=0 explicit opt-out (e.g. tests / CI).
+    //   GNFS_OOC_RELATIONS=1 explicit force-on (no size gate).
+    else {
+        const char* ooc_env = std::getenv("GNFS_OOC_RELATIONS");
+        const bool env_explicit_off = ooc_env != nullptr && std::atoi(ooc_env) == 0;
+        const bool env_explicit_on = ooc_env != nullptr && std::atoi(ooc_env) == 1;
+
+        // lp_bits estimate via log2(large_prime_bound).
+        size_t lp_bits_est = 0;
+        for (uint64_t b = params_.large_prime_bound; b > 1; b >>= 1) ++lp_bits_est;
+        const bool size_aware_default = !env_explicit_off && lp_bits_est >= 22;
+
+        if (env_explicit_on || size_aware_default) {
+            coll_config.ooc_enabled = true;
+            // base_path: ENV GNFS_OOC_BASE_PATH overrides /tmp/gnfs_relations_<pid>
+            if (const char* path_env = std::getenv("GNFS_OOC_BASE_PATH");
+                path_env != nullptr && path_env[0] != '\0') {
+                coll_config.ooc_base_path = path_env;
+            } else {
+                coll_config.ooc_base_path =
+                    "/tmp/gnfs_relations_" + std::to_string(::getpid());
+            }
+            const char* reason = env_explicit_on
+                ? "GNFS_OOC_RELATIONS=1"
+                : "size-aware default (lp_bits>=22)";
+            emit_log(LogLevel::Info, Phase::Sieving,
+                     std::string("OOC mode enabled (") + reason +
+                     "): base=" + coll_config.ooc_base_path);
+            std::fprintf(stderr,
+                "[ooc] streaming relations to %s.{reldata,relidx} (%s, lp_bits=%zu)\n",
+                coll_config.ooc_base_path.c_str(), reason, lp_bits_est);
         }
-        emit_log(LogLevel::Info, Phase::Sieving,
-                 "OOC mode enabled: base=" + coll_config.ooc_base_path);
-        std::fprintf(stderr, "[ooc] streaming relations to %s.{reldata,relidx}\n",
-                     coll_config.ooc_base_path.c_str());
     }
     relation::RelationCollector collector(coll_config);
     // CLAUDE.md 强制约定:拒绝 gcd(a-bm, N)>1 的关系
@@ -798,11 +818,25 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             std::max(batch_target * 2, needed_raw),
             initial_target * 100);  // generous cap for low merge rates
 
+        // β = lp_cols / usable (BACKLOG #1 diagnostic). β << 1 means matrix
+        // build has excess and BW can find dependencies; β >= 1 means LP cols
+        // dominate matrix and we're in the plateau regime.
+        double beta = (relations.size() > 0)
+            ? static_cast<double>(lp_cols) / static_cast<double>(relations.size())
+            : 0.0;
         emit_log(LogLevel::Info, Phase::Sieving,
                  "round " + std::to_string(round + 1) + ": usable=" +
                  std::to_string(relations.size()) + "/" + std::to_string(matrix_cols) +
+                 " lp_cols=" + std::to_string(lp_cols) +
+                 " eff_cols=" + std::to_string(effective_cols) +
                  " merge_rate=" + std::to_string(merge_rate) +
+                 " beta=" + std::to_string(beta) +
                  " new_target=" + std::to_string(batch_target));
+        // stderr fallback for stress/progressive runs (no log_cb_ registered)
+        std::fprintf(stderr,
+            "[round %d] usable=%zu/%zu lp_cols=%zu eff_cols=%zu merge_rate=%.4f beta=%.4f new_target=%zu\n",
+            round + 1, relations.size(), matrix_cols, lp_cols, effective_cols,
+            merge_rate, beta, batch_target);
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -858,6 +892,23 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
 
     // LP merge (only when LP is genuinely enabled)
     if (params_.large_prime_bound > params_.algebraic_bound) {
+        // BACKLOG #1 diagnostic: pre-merge LP-key weight histogram.
+        // Plateau analysis hinges on weight distribution:
+        //   weight=1 → singleton LP keys (will become LP cols, hurts β)
+        //   weight=2 → V0 mergeable (standard PartialRelationMerger handles)
+        //   weight≥3 → chain-merge territory (V0_BFS / V3 cascade only)
+        auto pre_hist = relation::count_lp_key_weights(relations);
+        emit_log(LogLevel::Info, Phase::Filtering,
+                 "lp_weights pre-merge: unique=" + std::to_string(pre_hist.unique_keys) +
+                 " w1=" + std::to_string(pre_hist.weight_1) +
+                 " w2=" + std::to_string(pre_hist.weight_2) +
+                 " w3=" + std::to_string(pre_hist.weight_3) +
+                 " w4+=" + std::to_string(pre_hist.weight_4plus));
+        std::fprintf(stderr,
+            "[lp_weights] pre-merge: unique=%zu w1=%zu w2=%zu w3=%zu w4+=%zu\n",
+            pre_hist.unique_keys, pre_hist.weight_1, pre_hist.weight_2,
+            pre_hist.weight_3, pre_hist.weight_4plus);
+
         auto sep = relation::separate_relations(std::move(relations));
 
         // ── V0 BFS chain merge (ENV: GNFS_V0_BFS=1, BACKLOG #1 step b alt path) ──
@@ -982,8 +1033,19 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
     stats_.timings.filter_s = std::chrono::duration<double>(t1 - t0).count();
     stats_.relations_after_filter = relations.size();
 
+    // BACKLOG #1 diagnostic: lp_cols breakdown at filter exit.
+    // Caller (Phase 5 matrix builder) creates one column per odd-exp unique
+    // LP key; emit count here so 50d/60d plateau analysis has empirical data.
+    size_t lp_cols_after_filter = (params_.large_prime_bound > params_.algebraic_bound)
+        ? relation::count_unique_lp_keys(relations)
+        : 0;
     emit_log(LogLevel::Info, Phase::Filtering,
-             "after filter: " + std::to_string(relations.size()) + " relations");
+             "after filter: " + std::to_string(relations.size()) + " relations" +
+             " (lp_cols=" + std::to_string(lp_cols_after_filter) + ")");
+    // stderr fallback for stress/progressive runs (no log_cb_ registered)
+    std::fprintf(stderr,
+        "[filter] after: rels=%zu lp_cols=%zu\n",
+        relations.size(), lp_cols_after_filter);
     emit_progress(Phase::Filtering, "Filtering complete", 1.0);
 
     return relations;

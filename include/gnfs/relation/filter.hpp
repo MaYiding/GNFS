@@ -278,6 +278,69 @@ private:
     return rat_lp_set.size() + alg_lp_set.size();
 }
 
+/// LP-key weight histogram across a relation set.
+///
+/// Counts how many unique LP keys appear in exactly k relations,
+/// for k ∈ {1, 2, 3, ≥4}. Diagnostic for BACKLOG #1 plateau analysis:
+/// - weight_1 = singletons (kill mergeability — produce LP cols)
+/// - weight_2 = V0 sweet spot (PartialRelationMerger handles directly)
+/// - weight_3plus = chain-merge territory (V0_BFS / V3 cascade only)
+///
+/// Counts each LP occurrence (not exponent parity) since weight is about
+/// LP-key reach across distinct relations, not eventual exponent cancel.
+struct LpKeyWeightHistogram {
+    size_t weight_1 = 0;
+    size_t weight_2 = 0;
+    size_t weight_3 = 0;
+    size_t weight_4plus = 0;
+    size_t unique_keys = 0;
+};
+
+[[nodiscard]] inline LpKeyWeightHistogram count_lp_key_weights(
+        const std::vector<Relation>& relations) {
+    // Two unordered_maps (rational by prime; algebraic by (p,r)).
+    // Each LP occurrence in a relation contributes +1 to the key's count.
+    std::unordered_map<uint64_t, uint32_t> rat_count;
+    std::unordered_map<uint64_t, uint32_t> alg_count;
+    rat_count.reserve(relations.size() / 2);
+    alg_count.reserve(relations.size());
+
+    for (const auto& rel : relations) {
+        // Each unique LP key in this relation counts +1 (de-dup within rel).
+        // 8-slot stack arrays handle typical 1-4 LP-per-relation fast.
+        uint64_t seen[8];
+        size_t n_seen = 0;
+        auto bump = [&](uint64_t k, auto& map) {
+            for (size_t i = 0; i < n_seen; ++i) if (seen[i] == k) return;
+            if (n_seen < 8) seen[n_seen++] = k;
+            ++map[k];
+        };
+
+        for (const auto& lp : rel.rational_large_prime) {
+            bump(lp.p, rat_count);
+        }
+        n_seen = 0;  // reset for algebraic side (different key space)
+        for (const auto& lp : rel.algebraic_large_prime) {
+            uint64_t k = (uint64_t(lp.p) << 32) | (lp.r & 0xFFFFFFFFu);
+            bump(k, alg_count);
+        }
+    }
+
+    LpKeyWeightHistogram h;
+    auto tally = [&](const std::unordered_map<uint64_t, uint32_t>& m) {
+        for (const auto& [_, w] : m) {
+            ++h.unique_keys;
+            if (w == 1) ++h.weight_1;
+            else if (w == 2) ++h.weight_2;
+            else if (w == 3) ++h.weight_3;
+            else ++h.weight_4plus;
+        }
+    };
+    tally(rat_count);
+    tally(alg_count);
+    return h;
+}
+
 /// 分离完全关系和部分关系
 struct SeparatedRelations {
     std::vector<Relation> full;      // 无大素数
