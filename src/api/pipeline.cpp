@@ -1152,6 +1152,23 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
                  "Trimmed matrix: " + std::to_string(ms2.num_rows) + "x" +
                  std::to_string(ms2.num_cols) +
                  " excess=" + std::to_string(ms2.excess));
+
+        // Re-emit mat-diag after trim — col-weight distribution changes
+        // because some cols lose all support when their rows were dropped.
+        {
+            const auto diag2 = linalg::compute_matrix_diagnostics(build_result.matrix);
+            char buf[512];
+            std::snprintf(buf, sizeof(buf),
+                "[mat-diag post-trim] rows: empty=%zu singleton=%zu w_range=[%zu,%zu] avg=%.2f"
+                " | cols: empty=%zu singleton=%zu low(2-4)=%zu max_w=%zu avg=%.2f",
+                diag2.empty_rows, diag2.singleton_rows,
+                diag2.min_row_weight, diag2.max_row_weight,
+                ms2.avg_row_weight,
+                diag2.empty_cols, diag2.singleton_cols, diag2.low_weight_cols,
+                diag2.max_col_weight, diag2.avg_col_weight);
+            emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
+            std::fprintf(stderr, "%s\n", buf);
+        }
     }
 
     // SGE preprocessing
