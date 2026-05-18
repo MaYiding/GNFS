@@ -160,6 +160,9 @@ ALL_TEST_BINARIES=(
     test_small_vector
     test_thread_pool
     test_logger
+    test_primes
+    test_timer
+    test_mmap_file
     test_factor_base
     test_special_q
     test_lattice_sieve
@@ -198,7 +201,7 @@ ALL_TEST_BINARIES=(
 typeset -A MODULE_TESTS
 MODULE_TESTS=(
     core           "test_integer test_params test_regressions test_edge_cases"
-    util           "test_small_vector test_thread_pool test_logger"
+    util           "test_small_vector test_thread_pool test_logger test_primes test_timer test_mmap_file"
     polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer"
     factor_base    "test_factor_base"
     sieve          "test_special_q test_sieve_basic test_bucket_sieve"
@@ -226,6 +229,9 @@ SMOKE_TESTS=(
     test_small_vector
     test_thread_pool
     test_logger
+    test_primes
+    test_timer
+    test_mmap_file
     test_factor_base
     test_special_q
     test_relation_collector
@@ -261,6 +267,9 @@ TEST_TIMEOUT=(
     test_small_vector        10
     test_thread_pool         10
     test_logger              10
+    test_primes              10
+    test_timer               10
+    test_mmap_file           10
     test_factor_base         10
     test_special_q           10
     test_relation_collector  10
@@ -309,6 +318,9 @@ TEST_TIER=(
     test_integer             "instant"
     test_small_vector        "instant"
     test_thread_pool         "instant"
+    test_primes              "instant"
+    test_timer               "instant"
+    test_mmap_file           "instant"
     test_factor_base         "instant"
     test_special_q           "instant"
     test_relation_collector  "instant"
