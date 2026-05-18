@@ -859,6 +859,22 @@ std::vector<Relation> Pipeline::sieve_and_collect(
              " (full=" + std::to_string(coll_stats.full_relations) +
              " 1lp=" + std::to_string(coll_stats.partial_1lp) +
              " 2lp=" + std::to_string(coll_stats.partial_2lp) + ")");
+
+    // BACKLOG #1: emit warning when sieve loop exits without sufficient usable
+    // relations. Two cases: (a) MAX_ROUNDS reached without break (β plateau
+    // signature), (b) SQs exhausted before target met (sieve depth too small).
+    // Phase 5 will then attempt BW thin solve on the under-built matrix.
+    if (relations.size() <= matrix_cols) {
+        const bool sqs_exhausted = !sq_gen.has_next() || sq_count >= max_sq;
+        std::fprintf(stderr,
+            "[sieve-warn] exit without excess: usable=%zu matrix_cols=%zu, "
+            "%s. Phase 5 will attempt BW thin solve.\n",
+            relations.size(), matrix_cols,
+            sqs_exhausted ? "SQs exhausted" : "MAX_ROUNDS reached");
+        emit_log(LogLevel::Warn, Phase::Sieving,
+                 std::string("sieve exit without excess: ") +
+                 (sqs_exhausted ? "SQs exhausted" : "MAX_ROUNDS reached"));
+    }
     emit_progress(Phase::Sieving, "Sieving complete", 1.0);
 
     return relations;
