@@ -301,6 +301,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Primes COMMAND test_primes)
     set_tests_properties(Primes PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_timer
+        tests/test_timer.cpp
+    )
+    target_link_libraries(test_timer PRIVATE gnfs_util)
+    add_test(NAME UtilTimer COMMAND test_timer)
+    set_tests_properties(UtilTimer PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_factor_base
         tests/test_factor_base.cpp
     )
