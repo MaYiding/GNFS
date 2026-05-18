@@ -299,31 +299,57 @@ struct LpKeyWeightHistogram {
 [[nodiscard]] inline LpKeyWeightHistogram count_lp_key_weights(
         const std::vector<Relation>& relations) {
     // Two unordered_maps (rational by prime; algebraic by (p,r)).
-    // Each LP occurrence in a relation contributes +1 to the key's count.
+    // Each unique LP key in a relation contributes +1 to the key's count.
     std::unordered_map<uint64_t, uint32_t> rat_count;
     std::unordered_map<uint64_t, uint32_t> alg_count;
     rat_count.reserve(relations.size() / 2);
     alg_count.reserve(relations.size());
 
-    for (const auto& rel : relations) {
-        // Each unique LP key in this relation counts +1 (de-dup within rel).
-        // 8-slot stack arrays handle typical 1-4 LP-per-relation fast.
-        uint64_t seen[8];
-        size_t n_seen = 0;
-        auto bump = [&](uint64_t k, auto& map) {
-            for (size_t i = 0; i < n_seen; ++i) if (seen[i] == k) return;
-            if (n_seen < 8) seen[n_seen++] = k;
-            ++map[k];
-        };
+    // Per-relation de-dup buffers. Fast path uses an 8-slot stack array for
+    // the typical 1-4 LP per relation; overflows fall back to an unordered_set
+    // so V3 chain-merged partials carrying many residual LPs still de-dup
+    // correctly. Buffers are reused across relations (clear() keeps capacity).
+    std::unordered_set<uint64_t> overflow_seen;
+    overflow_seen.reserve(16);
 
-        for (const auto& lp : rel.rational_large_prime) {
-            bump(lp.p, rat_count);
+    auto process_side = [&](const auto& lps, auto key_extract, auto& map) {
+        uint64_t stack_seen[8];
+        size_t n_stack = 0;
+        overflow_seen.clear();
+        for (const auto& lp : lps) {
+            const uint64_t k = key_extract(lp);
+            if (n_stack <= 8) {
+                bool found_in_stack = false;
+                for (size_t i = 0; i < n_stack; ++i) {
+                    if (stack_seen[i] == k) { found_in_stack = true; break; }
+                }
+                if (found_in_stack) continue;
+                if (n_stack < 8) {
+                    stack_seen[n_stack++] = k;
+                    ++map[k];
+                    continue;
+                }
+                // Stack full: migrate to overflow set + record current key.
+                for (size_t i = 0; i < 8; ++i) overflow_seen.insert(stack_seen[i]);
+                if (!overflow_seen.insert(k).second) continue;
+                ++map[k];
+                ++n_stack;  // crosses 8 — switches mode permanently for this rel
+            } else {
+                if (!overflow_seen.insert(k).second) continue;
+                ++map[k];
+            }
         }
-        n_seen = 0;  // reset for algebraic side (different key space)
-        for (const auto& lp : rel.algebraic_large_prime) {
-            uint64_t k = (uint64_t(lp.p) << 32) | (lp.r & 0xFFFFFFFFu);
-            bump(k, alg_count);
-        }
+    };
+
+    for (const auto& rel : relations) {
+        process_side(rel.rational_large_prime,
+                     [](const auto& lp) -> uint64_t { return lp.p; },
+                     rat_count);
+        process_side(rel.algebraic_large_prime,
+                     [](const auto& lp) -> uint64_t {
+                         return (uint64_t(lp.p) << 32) | (lp.r & 0xFFFFFFFFu);
+                     },
+                     alg_count);
     }
 
     LpKeyWeightHistogram h;

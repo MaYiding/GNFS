@@ -742,6 +742,36 @@ void test_count_lp_key_weights() {
         assert(h.weight_1 == 1);  // de-dup within rel
     }
 
+    // Regression: per-relation LP count > 8 must NOT inflate weight via
+    // duplicate-LP-in-same-rel. V3 chain-merged partials commonly carry
+    // many residual LPs from accumulated chain. The 8-slot stack de-dup
+    // overflow path must hand off to unordered_set (not silently miss).
+    {
+        Relation r(1, 1);
+        r.rational_factors = {0}; r.algebraic_factors = {0};
+        // 12 distinct rational LPs, plus one of them (say p=1005) repeated
+        // 4 more times. Without overflow handling, the duplicate occurrences
+        // would inflate the count from 1 to 5 for p=1005 (BUG: 5 in a single
+        // relation → weight=5 → weight_4plus, instead of weight=1).
+        for (uint64_t p = 1000; p < 1012; ++p) {
+            r.rational_large_prime.push_back(PrimePower{p, 0, 1});
+        }
+        // Repeat p=1005 four more times (now 13+4 = 17 LP entries, still
+        // only 12 distinct keys).
+        for (int i = 0; i < 4; ++i) {
+            r.rational_large_prime.push_back(PrimePower{1005, 0, 1});
+        }
+        std::vector<Relation> rels;
+        rels.push_back(std::move(r));
+        auto h = count_lp_key_weights(rels);
+        // 12 unique keys, ALL weight=1 (single-rel singletons).
+        assert(h.unique_keys == 12);
+        assert(h.weight_1 == 12);
+        assert(h.weight_2 == 0);
+        assert(h.weight_3 == 0);
+        assert(h.weight_4plus == 0);
+    }
+
     // 50d-like scenario: many distinct LP keys, most weight=1, some weight=2
     {
         std::vector<Relation> rels;
