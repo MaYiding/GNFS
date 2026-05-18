@@ -40,29 +40,85 @@ public:
     // 1 MB stream buffer per stream — 千万级关系下减少 syscall。
     static constexpr size_t BUFFER_BYTES = 1 << 20;
 
-    explicit OOCRelationWriter(const std::string& base_path)
+    /// Fresh create (default): truncates existing files, writes INCOMPLETE
+    /// header. Resume mode (resume=true): opens existing .reldata/.relidx
+    /// in r/w mode (no trunc), reads prior count, seeks streams past existing
+    /// content. Requires existing idx magic = MAGIC_INCOMPLETE (i.e., prior
+    /// session didn't finalize) — finalized files are immutable.
+    explicit OOCRelationWriter(const std::string& base_path, bool resume = false)
         : base_path_(base_path),
           data_buf_(BUFFER_BYTES),
           idx_buf_(BUFFER_BYTES / 4),  // 256 KB suffices for index
           uncaught_at_ctor_(std::uncaught_exceptions()) {
-        // pubsetbuf 必须在 open 之前调用,所以 ofstream 默认构造、
+        // pubsetbuf 必须在 open 之前调用,所以 fstream 默认构造、
         // 然后手动 attach buffer、最后 open。
         data_stream_.rdbuf()->pubsetbuf(data_buf_.data(),
                                         static_cast<std::streamsize>(data_buf_.size()));
         idx_stream_.rdbuf()->pubsetbuf(idx_buf_.data(),
                                        static_cast<std::streamsize>(idx_buf_.size()));
-        data_stream_.open(base_path + ".reldata", std::ios::binary);
-        idx_stream_.open(base_path + ".relidx", std::ios::binary);
-        if (!data_stream_ || !idx_stream_) {
-            throw std::runtime_error("OOCRelationWriter: cannot open files at " + base_path);
+
+        if (resume) {
+            // Pre-validate .relidx: existence + magic = INCOMPLETE + read count_.
+            {
+                std::ifstream check_idx(base_path + ".relidx", std::ios::binary);
+                if (!check_idx) {
+                    throw std::runtime_error(
+                        "OOCRelationWriter resume: idx file not found at " + base_path);
+                }
+                uint64_t existing_magic = 0;
+                check_idx.read(reinterpret_cast<char*>(&existing_magic), 8);
+                if (check_idx.gcount() != 8) {
+                    throw std::runtime_error(
+                        "OOCRelationWriter resume: idx file too small");
+                }
+                if (existing_magic == MAGIC) {
+                    throw std::runtime_error(
+                        "OOCRelationWriter resume: file already finalized (MAGIC)");
+                }
+                if (existing_magic != MAGIC_INCOMPLETE) {
+                    throw std::runtime_error(
+                        "OOCRelationWriter resume: invalid magic in idx (corrupt?)");
+                }
+                check_idx.read(reinterpret_cast<char*>(&count_), 8);
+                if (check_idx.gcount() != 8) {
+                    throw std::runtime_error(
+                        "OOCRelationWriter resume: count truncated");
+                }
+            }
+
+            // Reopen in r/w mode (no trunc), seek streams past existing content.
+            data_stream_.open(base_path + ".reldata",
+                              std::ios::in | std::ios::out | std::ios::binary);
+            idx_stream_.open(base_path + ".relidx",
+                             std::ios::in | std::ios::out | std::ios::binary);
+            if (!data_stream_ || !idx_stream_) {
+                throw std::runtime_error(
+                    "OOCRelationWriter resume: cannot reopen at " + base_path);
+            }
+            // data_stream_ → end of file (append point).
+            data_stream_.seekp(0, std::ios::end);
+            // idx_stream_ → past header (16) + existing offsets array (count_ × 8).
+            idx_stream_.seekp(static_cast<std::streamoff>(16 + count_ * 8));
+        } else {
+            // Fresh create: trunc + write INCOMPLETE header.
+            data_stream_.open(base_path + ".reldata",
+                              std::ios::in | std::ios::out |
+                              std::ios::trunc | std::ios::binary);
+            idx_stream_.open(base_path + ".relidx",
+                             std::ios::in | std::ios::out |
+                             std::ios::trunc | std::ios::binary);
+            if (!data_stream_ || !idx_stream_) {
+                throw std::runtime_error(
+                    "OOCRelationWriter: cannot open files at " + base_path);
+            }
+            // 先写 INCOMPLETE 标志。若 write 中途抛(磁盘满等),析构跳过
+            // finalize → reader 看到 INCOMPLETE 拒读,避免 idx/data 不一致。
+            // 成功 close 后再翻成 MAGIC。
+            uint64_t magic = MAGIC_INCOMPLETE;
+            uint64_t count = 0;
+            idx_stream_.write(reinterpret_cast<const char*>(&magic), 8);
+            idx_stream_.write(reinterpret_cast<const char*>(&count), 8);
         }
-        // 先写 INCOMPLETE 标志。若 write 中途抛(磁盘满等),析构跳过
-        // finalize → reader 看到 INCOMPLETE 拒读,避免 idx/data 不一致。
-        // 成功 close 后再翻成 MAGIC。
-        uint64_t magic = MAGIC_INCOMPLETE;
-        uint64_t count = 0;
-        idx_stream_.write(reinterpret_cast<const char*>(&magic), 8);
-        idx_stream_.write(reinterpret_cast<const char*>(&count), 8);
     }
 
     /// Append a single relation. Returns the index of the written relation.
@@ -159,8 +215,10 @@ private:
     std::string base_path_;
     std::vector<char> data_buf_;
     std::vector<char> idx_buf_;
-    std::ofstream data_stream_;
-    std::ofstream idx_stream_;
+    // fstream (not ofstream) to support resume mode: r/w open without trunc,
+    // seek to past existing offsets/data.
+    std::fstream data_stream_;
+    std::fstream idx_stream_;
     size_t count_ = 0;
     int uncaught_at_ctor_ = 0;
     bool closed_ = false;

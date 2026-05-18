@@ -672,6 +672,176 @@ void test_ooc_legacy_save_load_disabled() {
     std::cout << "  OOC legacy save/load disabled: PASS" << std::endl;
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// OOC Resume mode tests (BACKLOG #11e — sieve mid-flight checkpoint)
+// 验证 OOCRelationWriter(path, resume=true) 加载现有文件 + 末尾追加 + reader
+// 看到 N+M 个 relation. 仅当 prior session magic = INCOMPLETE 时允许 resume.
+// ──────────────────────────────────────────────────────────────────────────
+
+void test_ooc_writer_resume_append() {
+    std::cout << "Testing OOC writer resume append..." << std::endl;
+    auto path = make_tmp_ooc_path("resume_append");
+    OOCArtifacts cleanup(path);
+
+    // Phase 1: 写 3 个 rel, close (finalize MAGIC)
+    {
+        OOCRelationWriter writer(path);
+        for (int i = 1; i <= 3; ++i) {
+            Relation r(i * 10, static_cast<uint64_t>(i * 10 + 1));
+            r.rational_factors.push_back(static_cast<uint32_t>(i));
+            writer.write(r);
+        }
+        assert(writer.count() == 3);
+    }  // destructor → close() → flip MAGIC
+
+    // 手动 flip MAGIC → INCOMPLETE 模拟 prior session crash
+    {
+        std::fstream idx(path + ".relidx",
+                         std::ios::in | std::ios::out | std::ios::binary);
+        uint64_t incomplete = OOCRelationWriter::MAGIC_INCOMPLETE;
+        idx.write(reinterpret_cast<const char*>(&incomplete), 8);
+    }
+
+    // Phase 2: resume, 追加 2 个 rel, close
+    {
+        OOCRelationWriter writer(path, /*resume=*/true);
+        assert(writer.count() == 3);  // prior count 加载
+        for (int i = 4; i <= 5; ++i) {
+            Relation r(i * 10, static_cast<uint64_t>(i * 10 + 1));
+            r.rational_factors.push_back(static_cast<uint32_t>(i));
+            writer.write(r);
+        }
+        assert(writer.count() == 5);
+    }
+
+    // Reader 看到 5 个 rel, 顺序正确
+    OOCRelationReader reader(path);
+    assert(reader.count() == 5);
+    for (size_t i = 0; i < 5; ++i) {
+        auto rel = reader.read(i);
+        assert(rel.a == static_cast<int64_t>((i + 1) * 10));
+        assert(rel.b == (i + 1) * 10 + 1);
+        assert(rel.rational_factors.size() == 1);
+        assert(rel.rational_factors[0] == static_cast<uint32_t>(i + 1));
+    }
+
+    std::cout << "  OOC writer resume append: PASS (5 = 3 prior + 2 new)" << std::endl;
+}
+
+void test_ooc_writer_resume_finalized_rejected() {
+    std::cout << "Testing OOC writer resume rejects finalized files..." << std::endl;
+    auto path = make_tmp_ooc_path("resume_finalized");
+    OOCArtifacts cleanup(path);
+
+    // 写 1 个 rel, close → MAGIC finalized
+    {
+        OOCRelationWriter writer(path);
+        Relation r(1, 2);
+        writer.write(r);
+    }
+
+    // resume=true 对 MAGIC 文件必抛
+    bool threw = false;
+    try {
+        OOCRelationWriter resumed(path, /*resume=*/true);
+        (void)resumed;
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    assert(threw);
+
+    std::cout << "  OOC writer resume rejects finalized: PASS" << std::endl;
+}
+
+void test_ooc_writer_resume_nonexistent_rejected() {
+    std::cout << "Testing OOC writer resume rejects nonexistent..." << std::endl;
+    auto path = std::string("/tmp/gnfs_test_nonexistent_") +
+                std::to_string(::getpid()) + "_xyz_resume_check";
+
+    bool threw = false;
+    try {
+        OOCRelationWriter resumed(path, /*resume=*/true);
+        (void)resumed;
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    assert(threw);
+
+    std::cout << "  OOC writer resume rejects nonexistent: PASS" << std::endl;
+}
+
+void test_ooc_writer_resume_large_payload() {
+    std::cout << "Testing OOC writer resume with variable-size payloads..." << std::endl;
+    auto path = make_tmp_ooc_path("resume_large");
+    OOCArtifacts cleanup(path);
+
+    // Phase 1: 写 100 个 rel, 每个 varying weight (1-5 rational factors)
+    {
+        OOCRelationWriter writer(path);
+        for (int i = 1; i <= 100; ++i) {
+            Relation r(i, static_cast<uint64_t>(i + 1000));
+            size_t weight = (i % 5) + 1;
+            for (size_t j = 0; j < weight; ++j) {
+                r.rational_factors.push_back(static_cast<uint32_t>(i + j));
+            }
+            writer.write(r);
+        }
+        assert(writer.count() == 100);
+    }
+
+    // Flip to INCOMPLETE
+    {
+        std::fstream idx(path + ".relidx",
+                         std::ios::in | std::ios::out | std::ios::binary);
+        uint64_t incomplete = OOCRelationWriter::MAGIC_INCOMPLETE;
+        idx.write(reinterpret_cast<const char*>(&incomplete), 8);
+    }
+
+    // Phase 2: resume, 追加 50 个 rel (different weights)
+    {
+        OOCRelationWriter writer(path, /*resume=*/true);
+        assert(writer.count() == 100);
+        for (int i = 101; i <= 150; ++i) {
+            Relation r(i, static_cast<uint64_t>(i + 1000));
+            size_t weight = ((i - 100) % 3) + 2;
+            for (size_t j = 0; j < weight; ++j) {
+                r.rational_factors.push_back(static_cast<uint32_t>(i + j + 7));
+            }
+            writer.write(r);
+        }
+        assert(writer.count() == 150);
+    }
+
+    // Reader 验证 all 150 + payload integrity
+    OOCRelationReader reader(path);
+    assert(reader.count() == 150);
+    for (size_t i = 0; i < 100; ++i) {
+        auto rel = reader.read(i);
+        int idx = static_cast<int>(i) + 1;
+        assert(rel.a == idx);
+        assert(rel.b == static_cast<uint64_t>(idx + 1000));
+        size_t expected_weight = (idx % 5) + 1;
+        assert(rel.rational_factors.size() == expected_weight);
+        for (size_t j = 0; j < expected_weight; ++j) {
+            assert(rel.rational_factors[j] == static_cast<uint32_t>(idx + j));
+        }
+    }
+    for (size_t i = 100; i < 150; ++i) {
+        auto rel = reader.read(i);
+        int idx = static_cast<int>(i) + 1;
+        assert(rel.a == idx);
+        assert(rel.b == static_cast<uint64_t>(idx + 1000));
+        size_t expected_weight = ((idx - 100) % 3) + 2;
+        assert(rel.rational_factors.size() == expected_weight);
+        for (size_t j = 0; j < expected_weight; ++j) {
+            assert(rel.rational_factors[j] ==
+                   static_cast<uint32_t>(idx + j + 7));
+        }
+    }
+
+    std::cout << "  OOC writer resume large payload: PASS (150 rels, mixed weight)" << std::endl;
+}
+
 int main() {
     std::cout << "=== Relation Collector Tests ===" << std::endl;
 
@@ -698,6 +868,12 @@ int main() {
     test_ooc_clear_recycle();
     test_ooc_empty_base_path_rejected();
     test_ooc_legacy_save_load_disabled();
+
+    std::cout << "\n=== OOC resume mode tests (BACKLOG #11e) ===" << std::endl;
+    test_ooc_writer_resume_append();
+    test_ooc_writer_resume_finalized_rejected();
+    test_ooc_writer_resume_nonexistent_rejected();
+    test_ooc_writer_resume_large_payload();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
