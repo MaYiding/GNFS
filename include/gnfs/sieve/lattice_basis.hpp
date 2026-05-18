@@ -95,9 +95,16 @@ struct LatticeBasis {
     };
 
     // 高斯规约
+    // BACKLOG P2 known bug (test_edge_cases.cpp:2177): r=q-1 with dot/n1 = ±0.5
+    // exactly can oscillate (round-half-up ties cycle). max_iters guard 限制最大
+    // 迭代 64 次 — Gaussian reduction 数学上 O(log(max(q, r))) ≤ 64 for int64_t q,
+    // 任何 > 64 必然是 oscillation 或 overflow. Break + accept current basis.
+    constexpr int MAX_GAUSSIAN_ITERS = 64;
     bool changed = true;
-    while (changed) {
+    int iters = 0;
+    while (changed && iters < MAX_GAUSSIAN_ITERS) {
         changed = false;
+        ++iters;
 
         // 确保 v0 是较长的
         if (norm_sq(v0_a, v0_b) < norm_sq(v1_a, v1_b)) {
