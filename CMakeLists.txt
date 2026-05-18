@@ -336,6 +336,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SieveCheckpoint COMMAND test_sieve_checkpoint)
     set_tests_properties(SieveCheckpoint PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_krylov_sequence_mmap
+        tests/test_krylov_sequence_mmap.cpp
+    )
+    target_link_libraries(test_krylov_sequence_mmap PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME KrylovSequenceMmap COMMAND test_krylov_sequence_mmap)
+    set_tests_properties(KrylovSequenceMmap PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_cofactor
         tests/test_cofactor.cpp
     )
