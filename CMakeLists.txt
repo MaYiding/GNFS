@@ -329,6 +329,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME CoreTypes COMMAND test_core_types)
     set_tests_properties(CoreTypes PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_safe_math
+        tests/test_safe_math.cpp
+    )
+    target_link_libraries(test_safe_math PRIVATE gnfs_util)
+    add_test(NAME SafeMath COMMAND test_safe_math)
+    set_tests_properties(SafeMath PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_factor_base
         tests/test_factor_base.cpp
     )
