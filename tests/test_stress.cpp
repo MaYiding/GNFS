@@ -367,6 +367,20 @@ FactResult factor_with_progress(const Integer& n, int level) {
         relations = filter.filter(std::move(relations));
 
         if (lp_enabled) {
+            // BACKLOG #1 diagnostic: LP-key weight histogram pre-merge.
+            // 50d plateau analysis hinges on weight distribution:
+            //   w1 → singletons (kill mergeability, produce LP cols)
+            //   w2 → V0 mergeable sweet spot
+            //   w3+ → chain-merge territory (V0_BFS/V3 cascade only)
+            {
+                auto hist = count_lp_key_weights(relations);
+                std::cout << "  [lp_weights] unique=" << hist.unique_keys
+                          << " w1=" << hist.weight_1
+                          << " w2=" << hist.weight_2
+                          << " w3=" << hist.weight_3
+                          << " w4+=" << hist.weight_4plus << "\n" << std::flush;
+            }
+
             auto sep = separate_relations(std::move(relations));
 
             // V3 cascade prep (ENV: GNFS_CASCADE_V3=1) — clone partials before V0 consumes

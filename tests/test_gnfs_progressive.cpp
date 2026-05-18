@@ -354,6 +354,18 @@ FactResult factor_with_progress(const Integer& n, int level) {
         relations = filter.filter(std::move(relations));
 
         if (lp_enabled) {
+            // BACKLOG #1 diagnostic: LP-key weight histogram pre-merge.
+            // Tracks the same weight distribution as test_stress for cross-band
+            // comparison (40-bit / 81-bit / 100-bit / 150-bit).
+            {
+                auto hist = count_lp_key_weights(relations);
+                std::cout << "  [lp_weights] unique=" << hist.unique_keys
+                          << " w1=" << hist.weight_1
+                          << " w2=" << hist.weight_2
+                          << " w3=" << hist.weight_3
+                          << " w4+=" << hist.weight_4plus << "\n" << std::flush;
+            }
+
             auto sep = separate_relations(std::move(relations));
 
             // 2LP merge: handles both 1LP×1LP and 2LP via iterative weight-2 processing
