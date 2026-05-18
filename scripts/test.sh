@@ -166,6 +166,9 @@ ALL_TEST_BINARIES=(
     test_resultant
     test_core_types
     test_safe_math
+    test_ooc_policy
+    test_bw_rank_est
+    test_matrix_diagnostics
     test_factor_base
     test_special_q
     test_lattice_sieve
@@ -209,8 +212,8 @@ MODULE_TESTS=(
     factor_base    "test_factor_base"
     sieve          "test_special_q test_sieve_basic test_bucket_sieve"
     cofactor       "test_cofactor test_squfof test_integration"
-    relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_ooc_relations test_integration"
-    linalg         "test_linalg test_block_wiedemann test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration"
+    relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_ooc_relations test_ooc_policy test_integration"
+    linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_class_group"
     api            "test_api test_i18n test_method_selection"
@@ -238,6 +241,9 @@ SMOKE_TESTS=(
     test_resultant
     test_core_types
     test_safe_math
+    test_ooc_policy
+    test_bw_rank_est
+    test_matrix_diagnostics
     test_factor_base
     test_special_q
     test_relation_collector
@@ -279,6 +285,9 @@ TEST_TIMEOUT=(
     test_resultant           10
     test_core_types          10
     test_safe_math           10
+    test_ooc_policy          10
+    test_bw_rank_est         10
+    test_matrix_diagnostics  10
     test_factor_base         10
     test_special_q           10
     test_relation_collector  10
@@ -333,6 +342,9 @@ TEST_TIER=(
     test_resultant           "instant"
     test_core_types          "instant"
     test_safe_math           "instant"
+    test_ooc_policy          "instant"
+    test_bw_rank_est         "instant"
+    test_matrix_diagnostics  "instant"
     test_factor_base         "instant"
     test_special_q           "instant"
     test_relation_collector  "instant"

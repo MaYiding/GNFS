@@ -945,4 +945,69 @@ struct MatrixStats {
     return stats;
 }
 
+/// BACKLOG #1 diagnostic (F.1): extended matrix shape stats for Phase 5.
+/// Captures row/col weight distribution that MatrixStats hides — empty/singleton
+/// counts reveal sieve gap (empty cols) or SGE-eliminable garbage (singleton
+/// cols/rows). Walked once per Phase 5 matrix build (~10M nnz scan on 50d).
+struct MatrixDiagnostics {
+    // Row distribution
+    size_t empty_rows = 0;        // weight=0 (degenerate, would be dropped by SGE)
+    size_t singleton_rows = 0;    // weight=1 (forces a column to 0, often-useless)
+    size_t min_row_weight = 0;
+    size_t max_row_weight = 0;
+
+    // Col distribution
+    size_t empty_cols = 0;        // weight=0 (column never appears; sieve gap signal)
+    size_t singleton_cols = 0;    // weight=1 (SGE eliminable, free Gauss pivot)
+    size_t low_weight_cols = 0;   // weight ∈ [2, 4] (eligible for SGE w1/w2)
+    size_t max_col_weight = 0;
+    double avg_col_weight = 0.0;  // total_weight / num_cols (includes empty cols)
+};
+
+[[nodiscard]] inline MatrixDiagnostics compute_matrix_diagnostics(const SparseMatrix& matrix) {
+    MatrixDiagnostics d;
+    const size_t num_rows = matrix.num_rows();
+    const size_t num_cols = matrix.num_cols();
+
+    if (num_rows == 0 || num_cols == 0) {
+        d.empty_cols = num_cols;
+        return d;
+    }
+
+    // Pass 1: row stats + accumulate per-column tally
+    std::vector<size_t> col_weight(num_cols, 0);
+    bool first_row = true;
+    for (const auto& row : matrix.rows()) {
+        const auto& idx = row.indices();  // sorted + dedup'd
+        const size_t w = idx.size();
+        if (w == 0) ++d.empty_rows;
+        else if (w == 1) ++d.singleton_rows;
+        if (first_row) {
+            d.min_row_weight = w;
+            d.max_row_weight = w;
+            first_row = false;
+        } else {
+            if (w < d.min_row_weight) d.min_row_weight = w;
+            if (w > d.max_row_weight) d.max_row_weight = w;
+        }
+        for (uint32_t c : idx) {
+            if (c < num_cols) ++col_weight[c];
+        }
+    }
+
+    // Pass 2: col-weight bucketing
+    size_t col_total = 0;
+    for (size_t c = 0; c < num_cols; ++c) {
+        const size_t w = col_weight[c];
+        col_total += w;
+        if (w == 0) ++d.empty_cols;
+        else if (w == 1) ++d.singleton_cols;
+        else if (w <= 4) ++d.low_weight_cols;
+        if (w > d.max_col_weight) d.max_col_weight = w;
+    }
+    d.avg_col_weight = static_cast<double>(col_total) / static_cast<double>(num_cols);
+
+    return d;
+}
+
 } // namespace gnfs::linalg

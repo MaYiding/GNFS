@@ -925,15 +925,8 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_thin_solve(
     auto F = matrix_berlekamp_massey(A_seq, m);
     const int valid_count = __builtin_popcountll(F.valid_mask);
     const int max_deg = static_cast<int>(F.poly.size()) - 1;
-    // BACKLOG #1 diagnostic: rank lower-bound estimate from sum of valid
-    // minpoly degrees. rank(B')=rank(M^T·M)=rank(M); summing the degrees of
-    // the 64 random-projection directions gives an empirical lower bound.
-    // rank_est ≈ m → matrix has excess, BW should recover deps.
-    // rank_est ≪ m → matrix is pathologically rank-deficient (sieve gap).
-    int rank_est = 0;
-    for (int j = 0; j < 64; ++j) {
-        if ((F.valid_mask >> j) & 1ULL) rank_est += F.degrees[j];
-    }
+    // BACKLOG #1 rank lower-bound: see compute_rank_est doc in block_wiedemann.hpp.
+    const int rank_est = compute_rank_est(F);
     double phase2_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - phase_start).count();
     std::cout << " " << valid_count << " valid cols, max_deg=" << max_deg

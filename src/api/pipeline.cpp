@@ -10,6 +10,7 @@
 #include <gnfs/relation/collector.hpp>
 #include <gnfs/relation/filter.hpp>
 #include <gnfs/relation/clique_merger.hpp>
+#include <gnfs/relation/ooc_policy.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -551,15 +552,8 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     //   GNFS_OOC_RELATIONS=1 explicit force-on (no size gate).
     else {
         const char* ooc_env = std::getenv("GNFS_OOC_RELATIONS");
-        const bool env_explicit_off = ooc_env != nullptr && std::atoi(ooc_env) == 0;
-        const bool env_explicit_on = ooc_env != nullptr && std::atoi(ooc_env) == 1;
-
-        // lp_bits estimate via log2(large_prime_bound).
-        size_t lp_bits_est = 0;
-        for (uint64_t b = params_.large_prime_bound; b > 1; b >>= 1) ++lp_bits_est;
-        const bool size_aware_default = !env_explicit_off && lp_bits_est >= 22;
-
-        if (env_explicit_on || size_aware_default) {
+        const auto policy = relation::decide_ooc_policy(ooc_env, params_.large_prime_bound);
+        if (policy.enabled) {
             coll_config.ooc_enabled = true;
             // base_path: ENV GNFS_OOC_BASE_PATH overrides /tmp/gnfs_relations_<pid>
             if (const char* path_env = std::getenv("GNFS_OOC_BASE_PATH");
@@ -569,15 +563,14 @@ std::vector<Relation> Pipeline::sieve_and_collect(
                 coll_config.ooc_base_path =
                     "/tmp/gnfs_relations_" + std::to_string(::getpid());
             }
-            const char* reason = env_explicit_on
-                ? "GNFS_OOC_RELATIONS=1"
-                : "size-aware default (lp_bits>=22)";
+            const std::string reason_str(policy.reason);
+            const size_t lp_bits_est = relation::estimate_lp_bits(params_.large_prime_bound);
             emit_log(LogLevel::Info, Phase::Sieving,
-                     std::string("OOC mode enabled (") + reason +
+                     std::string("OOC mode enabled (") + reason_str +
                      "): base=" + coll_config.ooc_base_path);
             std::fprintf(stderr,
                 "[ooc] streaming relations to %s.{reldata,relidx} (%s, lp_bits=%zu)\n",
-                coll_config.ooc_base_path.c_str(), reason, lp_bits_est);
+                coll_config.ooc_base_path.c_str(), reason_str.c_str(), lp_bits_est);
         }
     }
     relation::RelationCollector collector(coll_config);
@@ -1088,6 +1081,25 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
              std::to_string(matrix_stats.num_cols) +
              " excess=" + std::to_string(matrix_stats.excess));
 
+    // BACKLOG #1 diagnostic (F.1): row/col weight distribution. Reveals
+    // sieve gap (empty cols) and SGE-eliminable garbage (singleton cols/rows)
+    // before BL/BW kicks in. Cost: one full nnz scan (~50ms at 50d, < 1% of
+    // Phase 5 wall-clock).
+    {
+        const auto diag = linalg::compute_matrix_diagnostics(build_result.matrix);
+        char buf[512];
+        std::snprintf(buf, sizeof(buf),
+            "[mat-diag] rows: empty=%zu singleton=%zu w_range=[%zu,%zu] avg=%.2f"
+            " | cols: empty=%zu singleton=%zu low(2-4)=%zu max_w=%zu avg=%.2f",
+            diag.empty_rows, diag.singleton_rows,
+            diag.min_row_weight, diag.max_row_weight,
+            matrix_stats.avg_row_weight,
+            diag.empty_cols, diag.singleton_cols, diag.low_weight_cols,
+            diag.max_col_weight, diag.avg_col_weight);
+        emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
+        std::fprintf(stderr, "%s\n", buf);
+    }
+
     if (!matrix_stats.has_excess()) {
         // BACKLOG #80 step 7 (2026-05-17): thin matrix (m ≤ n) now solved by
         // block_wiedemann_thin_solve, which uses B'=M^T·M and recovers via
@@ -1140,6 +1152,23 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
                  "Trimmed matrix: " + std::to_string(ms2.num_rows) + "x" +
                  std::to_string(ms2.num_cols) +
                  " excess=" + std::to_string(ms2.excess));
+
+        // Re-emit mat-diag after trim — col-weight distribution changes
+        // because some cols lose all support when their rows were dropped.
+        {
+            const auto diag2 = linalg::compute_matrix_diagnostics(build_result.matrix);
+            char buf[512];
+            std::snprintf(buf, sizeof(buf),
+                "[mat-diag post-trim] rows: empty=%zu singleton=%zu w_range=[%zu,%zu] avg=%.2f"
+                " | cols: empty=%zu singleton=%zu low(2-4)=%zu max_w=%zu avg=%.2f",
+                diag2.empty_rows, diag2.singleton_rows,
+                diag2.min_row_weight, diag2.max_row_weight,
+                ms2.avg_row_weight,
+                diag2.empty_cols, diag2.singleton_cols, diag2.low_weight_cols,
+                diag2.max_col_weight, diag2.avg_col_weight);
+            emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
+            std::fprintf(stderr, "%s\n", buf);
+        }
     }
 
     // SGE preprocessing
@@ -1148,11 +1177,24 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
     sge_config.verbose = false;
     auto sge_result = linalg::SGE::preprocess(build_result.matrix, sge_config);
 
-    emit_log(LogLevel::Debug, Phase::LinearAlgebra,
-             "SGE: " + std::to_string(build_result.matrix.num_rows()) + "x" +
-             std::to_string(build_result.matrix.num_cols()) + " -> " +
-             std::to_string(sge_result.reduced_matrix.num_rows()) + "x" +
-             std::to_string(sge_result.reduced_matrix.num_cols()));
+    {
+        const size_t pre_rows = build_result.matrix.num_rows();
+        const size_t pre_cols = build_result.matrix.num_cols();
+        const size_t post_rows = sge_result.reduced_matrix.num_rows();
+        const size_t post_cols = sge_result.reduced_matrix.num_cols();
+        const double reduce_pct = (pre_rows == 0 || pre_cols == 0)
+            ? 0.0
+            : 100.0 * (1.0 - static_cast<double>(post_rows * post_cols) /
+                              static_cast<double>(pre_rows * pre_cols));
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+            "SGE: %zux%zu -> %zux%zu (reduce=%.1f%% area)",
+            pre_rows, pre_cols, post_rows, post_cols, reduce_pct);
+        // Promote to Info — SGE reduction is a key diagnostic for BACKLOG #1
+        // 50d empirical (CLAUDE.md cites 30-60% reduction expectation).
+        emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
+        std::fprintf(stderr, "[sge] %s\n", buf);
+    }
 
     // For thin matrices (rows ≤ cols, BACKLOG #80), BL is known to fail —
     // skip directly to BW. BW finds left kernel via B=M*M^T which works
