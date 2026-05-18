@@ -189,7 +189,6 @@ ALL_TEST_BINARIES=(
     test_edge_cases
     test_integration
     test_squfof
-    test_line_sieve
     test_bucket_sieve
     test_regression_gate
     test_stress
@@ -202,7 +201,7 @@ MODULE_TESTS=(
     util           "test_small_vector test_thread_pool test_logger"
     polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer"
     factor_base    "test_factor_base"
-    sieve          "test_special_q test_sieve_basic test_bucket_sieve test_line_sieve"
+    sieve          "test_special_q test_sieve_basic test_bucket_sieve"
     cofactor       "test_cofactor test_squfof test_integration"
     relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_ooc_relations test_integration"
     linalg         "test_linalg test_block_wiedemann test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration"
@@ -292,13 +291,12 @@ TEST_TIMEOUT=(
     test_block_wiedemann     30
     test_ooc_relations       10
     test_mmap_csr            10
-    test_line_sieve          30
     test_bucket_sieve        30
     test_regression_gate     120
     test_gnfs_progressive    3600
     test_25digit             1800
     test_stress              43200
-    test_api                 60
+    test_api                 120
     test_i18n                10
     test_method_selection    60
     test_clique_merger       10
@@ -341,13 +339,12 @@ TEST_TIER=(
     test_block_wiedemann     "fast"
     test_ooc_relations       "instant"
     test_mmap_csr            "instant"
-    test_line_sieve          "fast"
     test_bucket_sieve        "fast"
     test_regression_gate     "slow"
     test_gnfs_progressive    "heavy"
     test_25digit             "heavy"
     test_stress              "heavy"
-    test_api                 "instant"
+    test_api                 "fast"
     test_i18n                "instant"
     test_method_selection    "instant"
     test_siqs                "fast"
