@@ -11,6 +11,7 @@
 #include <gnfs/relation/filter.hpp>
 #include <gnfs/relation/clique_merger.hpp>
 #include <gnfs/relation/ooc_policy.hpp>
+#include <gnfs/relation/v0_bfs_policy.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -920,29 +921,29 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
 
         auto sep = relation::separate_relations(std::move(relations));
 
-        // ── V0 BFS chain merge (ENV: GNFS_V0_BFS=1, BACKLOG #1 step b alt path) ──
+        // ── V0 BFS chain merge (BACKLOG #1 step 12: size-aware default-ON) ──
         // V0 主路径用 BFS spanning tree (复用 CliqueRelationMerger 算法) 替代
         // standard Phase 1 + 2 simple match. weight≥3 LP keys 也走 chain merge.
         // 启用时 V3 cascade redundant (V0 already covers); skip V3 cascade.
         //
-        // ⚠ Size sensitivity (2026-05-18 实测 finding):
-        // BFS chain merge 在 small LP space (lp_bits ≤ 20, 25d/81-bit) 产生过多 residual
-        // partials (~87% merged 是 residual). matrix LP cols 大幅增加 → BL 找不到 deps.
-        // 实测 test_regression_gate Level 4 (81-bit) V0_BFS=1 FAIL "no dependencies found".
-        // 故仅在 lp_bits ≥ 22 (50d+) 启用; ≤ 20 时 fallback to V0 standard.
-        static const bool v0_bfs_env = []() {
-            const char* env = std::getenv("GNFS_V0_BFS");
-            return env && std::atoi(env) == 1;
-        }();
-        // size-aware gate: lp_bits 通过 log2(large_prime_bound) 估算
-        size_t lp_bits_est = 0;
-        for (uint64_t b = params_.large_prime_bound; b > 1; b >>= 1) ++lp_bits_est;
-        const bool v0_bfs_mode = v0_bfs_env && lp_bits_est >= 22;
-        if (v0_bfs_env && !v0_bfs_mode) {
+        // BACKLOG #1 step 11 empirical (PID 69073, 2026-05-18):
+        //   50d Round 1 [lp_weights] w3+w4+ = 49% of LP keys. V0 standard misses
+        //   half the LP graph. V0_BFS handles weight≥3 chains correctly.
+        //
+        // Size-aware default (decide_v0_bfs_policy in v0_bfs_policy.hpp):
+        //   lp_bits ≥ 22 (50d+): default ON
+        //   lp_bits <  22 (25d/81-bit): default OFF (BFS breaks small LP space)
+        //   GNFS_V0_BFS=0 explicit opt-out (any size)
+        //   GNFS_V0_BFS=1 explicit force-on (still falls back if lp_bits<22)
+        const auto v0_bfs_policy = relation::decide_v0_bfs_policy(
+            std::getenv("GNFS_V0_BFS"), params_.large_prime_bound);
+        if (v0_bfs_policy.env_force_failed) {
             std::fprintf(stderr,
-                "[v0_bfs] env=1 but lp_bits=%zu < 22 — fallback to V0 standard (BFS unsuitable for small LP space)\n",
-                lp_bits_est);
+                "[v0_bfs] %.*s\n",
+                static_cast<int>(v0_bfs_policy.reason.size()),
+                v0_bfs_policy.reason.data());
         }
+        const bool v0_bfs_mode = v0_bfs_policy.enabled;
 
         if (v0_bfs_mode) {
             relation::CliqueStats cstats;
@@ -952,10 +953,13 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
             stats_.merged_relations = merged.size();
 
             emit_log(LogLevel::Info, Phase::Filtering,
-                     "v0_bfs: full=" + std::to_string(sep.full.size()) +
+                     "v0_bfs (" + std::string(v0_bfs_policy.reason) +
+                     "): full=" + std::to_string(sep.full.size()) +
                      " " + cstats.to_string() +
                      " merged=" + std::to_string(merged.size()));
-            std::fprintf(stderr, "[v0_bfs] %s merged=%zu (V3 cascade skipped)\n",
+            std::fprintf(stderr, "[v0_bfs] reason=%.*s %s merged=%zu (V3 cascade skipped)\n",
+                         static_cast<int>(v0_bfs_policy.reason.size()),
+                         v0_bfs_policy.reason.data(),
                          cstats.to_string().c_str(), merged.size());
 
             relations = std::move(sep.full);
