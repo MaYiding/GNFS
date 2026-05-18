@@ -336,6 +336,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SafeMath COMMAND test_safe_math)
     set_tests_properties(SafeMath PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_ooc_policy
+        tests/test_ooc_policy.cpp
+    )
+    target_link_libraries(test_ooc_policy PRIVATE gnfs_core)
+    add_test(NAME OocPolicy COMMAND test_ooc_policy)
+    set_tests_properties(OocPolicy PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_factor_base
         tests/test_factor_base.cpp
     )

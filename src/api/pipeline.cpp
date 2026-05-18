@@ -10,6 +10,7 @@
 #include <gnfs/relation/collector.hpp>
 #include <gnfs/relation/filter.hpp>
 #include <gnfs/relation/clique_merger.hpp>
+#include <gnfs/relation/ooc_policy.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -551,15 +552,8 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     //   GNFS_OOC_RELATIONS=1 explicit force-on (no size gate).
     else {
         const char* ooc_env = std::getenv("GNFS_OOC_RELATIONS");
-        const bool env_explicit_off = ooc_env != nullptr && std::atoi(ooc_env) == 0;
-        const bool env_explicit_on = ooc_env != nullptr && std::atoi(ooc_env) == 1;
-
-        // lp_bits estimate via log2(large_prime_bound).
-        size_t lp_bits_est = 0;
-        for (uint64_t b = params_.large_prime_bound; b > 1; b >>= 1) ++lp_bits_est;
-        const bool size_aware_default = !env_explicit_off && lp_bits_est >= 22;
-
-        if (env_explicit_on || size_aware_default) {
+        const auto policy = relation::decide_ooc_policy(ooc_env, params_.large_prime_bound);
+        if (policy.enabled) {
             coll_config.ooc_enabled = true;
             // base_path: ENV GNFS_OOC_BASE_PATH overrides /tmp/gnfs_relations_<pid>
             if (const char* path_env = std::getenv("GNFS_OOC_BASE_PATH");
@@ -569,15 +563,14 @@ std::vector<Relation> Pipeline::sieve_and_collect(
                 coll_config.ooc_base_path =
                     "/tmp/gnfs_relations_" + std::to_string(::getpid());
             }
-            const char* reason = env_explicit_on
-                ? "GNFS_OOC_RELATIONS=1"
-                : "size-aware default (lp_bits>=22)";
+            const std::string reason_str(policy.reason);
+            const size_t lp_bits_est = relation::estimate_lp_bits(params_.large_prime_bound);
             emit_log(LogLevel::Info, Phase::Sieving,
-                     std::string("OOC mode enabled (") + reason +
+                     std::string("OOC mode enabled (") + reason_str +
                      "): base=" + coll_config.ooc_base_path);
             std::fprintf(stderr,
                 "[ooc] streaming relations to %s.{reldata,relidx} (%s, lp_bits=%zu)\n",
-                coll_config.ooc_base_path.c_str(), reason, lp_bits_est);
+                coll_config.ooc_base_path.c_str(), reason_str.c_str(), lp_bits_est);
         }
     }
     relation::RelationCollector collector(coll_config);
