@@ -357,6 +357,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME MatrixDiagnostics COMMAND test_matrix_diagnostics)
     set_tests_properties(MatrixDiagnostics PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_v0_bfs_policy
+        tests/test_v0_bfs_policy.cpp
+    )
+    target_link_libraries(test_v0_bfs_policy PRIVATE gnfs_core)
+    add_test(NAME V0BfsPolicy COMMAND test_v0_bfs_policy)
+    set_tests_properties(V0BfsPolicy PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_factor_base
         tests/test_factor_base.cpp
     )
