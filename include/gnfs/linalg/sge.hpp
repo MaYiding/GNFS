@@ -24,6 +24,9 @@ struct SGEResult {
     size_t passes = 0;
     size_t weight1_eliminated = 0;
     size_t weight2_merged = 0;
+    /// weight-2 merges 因 composition cap 跳过的次数 (BACKLOG #6 safety).
+    /// >0 表示触发 cap, 防止 row_composition O(n) 膨胀 BUT 也限制 merge throughput.
+    size_t weight2_skipped_cap = 0;
 
     /// 将 BL 在降维矩阵上找到的依赖展开回原始行索引
     [[nodiscard]] std::vector<bool> expand_dependency(
@@ -48,6 +51,11 @@ struct SGEConfig {
     bool eliminate_weight1 = true;
     bool eliminate_weight2 = true;
     bool verbose = false;
+    /// row_composition[r1] size 上限 (BACKLOG #6 safety). 超过时 skip 这个
+    /// weight-2 merge, 防止 chain merge 累积 O(n) composition. 16K = ~128 KB
+    /// per row composition (heuristic; n_rows ~50K-300K matrix, 16K 即 5-30% n).
+    /// 0 = no cap.
+    size_t row_composition_cap = 16384;
 };
 
 /// Structured Gaussian Elimination 预处理
@@ -179,6 +187,20 @@ public:
                     if (working_rows[r1].weight() < working_rows[r2].weight())
                         std::swap(r1, r2);
 
+                    // BACKLOG #6 safety: skip merge if prospective composition[r1]
+                    // size after merge > cap. Prevents pathological chain accumulation
+                    // where r1 absorbs many r2's → composition O(n_rows).
+                    // Worst case post-merge: comp[r1].size + comp[r2].size (pre-dedup);
+                    // dedup may halve it but conservative check protects RAM.
+                    if (config.row_composition_cap > 0) {
+                        size_t prospective =
+                            composition[r1].size() + composition[r2].size();
+                        if (prospective > config.row_composition_cap) {
+                            ++result.weight2_skipped_cap;
+                            continue;  // skip this merge, leave r2 alive
+                        }
+                    }
+
                     // Snapshot old indices BEFORE xor — 用于 incremental col_to_rows
                     // 更新。observation: new_r1 = old_r1 ⊕ old_r2 (symmetric diff),
                     // 因此 r1 在 col c2 的隶属翻转 iff c2 ∈ old_r2:
@@ -267,6 +289,17 @@ public:
             }
 
             if (eliminated_this_pass == 0) break;
+        }
+
+        // BACKLOG #6: 若 composition cap 触发, stderr 警告 (一次, 非每 pass).
+        // 不论 verbose, 这是 algorithm correctness signal (cap 限制了 merge throughput).
+        if (result.weight2_skipped_cap > 0) {
+            std::cerr << "[sge] row_composition_cap "
+                      << config.row_composition_cap
+                      << " triggered, skipped "
+                      << result.weight2_skipped_cap
+                      << " weight-2 merges (potential RAM safety vs reduced merge "
+                      << "throughput; tune SGEConfig.row_composition_cap if needed)\n";
         }
 
         // ── Build reduced matrix ──

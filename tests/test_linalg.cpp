@@ -855,6 +855,98 @@ void test_sge_expand_dependency() {
     std::cout << "  PASSED" << std::endl;
 }
 
+// Test SGE: row_composition cap (BACKLOG #6 safety)
+// 构造 weight-2 链 r0-r1-r2-...-rN, 每两个相邻行共享一个 w2 column.
+// 链合并应让 composition[r0] 累积 r0,r1,r2,... 到 N 个 entries.
+// 设置低 cap (e.g., 4) 验证 merge throughput 受限 + weight2_skipped_cap > 0.
+void test_sge_row_composition_cap() {
+    std::cout << "Testing SGE row_composition cap (BACKLOG #6)..." << std::endl;
+
+    // 10 rows × 9 cols. Each col c has weight 2 (rows c, c+1).
+    // Row 0: {0}
+    // Row 1: {0, 1}
+    // Row 2: {1, 2}
+    // ...
+    // Row 9: {8}
+    // Phase 1 wo eliminates row 0 (col 0 has w1) and row 9 (col 8 has w1)...
+    // Actually each col c is in {c, c+1} (w2 if both rows alive).
+    // Col 0 has only Row 1 if Row 0 is empty? No — Row 0 = {0} → col 0 has R0, R1 (w2).
+
+    // Better construction: build a long weight-2 chain that forces growth.
+    // Rows 0..N: Row i = {i-1 if i>0, i if i<N}
+    //   Row 0: {0}
+    //   Row 1: {0, 1}
+    //   Row 2: {1, 2}
+    //   ...
+    //   Row 8: {7, 8}
+    //   Row 9: {8}
+    // All cols are w2.
+    constexpr size_t N = 10;
+    SparseMatrix mat(N, N - 1);
+    for (size_t r = 0; r < N; ++r) {
+        if (r > 0) mat.set(r, r - 1);
+        if (r < N - 1) mat.set(r, r);
+    }
+
+    // Run with low cap to force trigger
+    SGEConfig config;
+    config.eliminate_weight1 = false;  // Force weight-2 path
+    config.row_composition_cap = 4;    // Small cap
+    auto result_capped = SGE::preprocess(mat, config);
+
+    // Run again without cap to baseline
+    SGEConfig config_no_cap;
+    config_no_cap.eliminate_weight1 = false;
+    config_no_cap.row_composition_cap = 0;
+    auto result_baseline = SGE::preprocess(mat, config_no_cap);
+
+    std::cout << "  no_cap: w2_merged=" << result_baseline.weight2_merged
+              << " w2_skipped=" << result_baseline.weight2_skipped_cap << "\n";
+    std::cout << "  cap=4:  w2_merged=" << result_capped.weight2_merged
+              << " w2_skipped=" << result_capped.weight2_skipped_cap << "\n";
+
+    // Cap=4 should skip some merges (composition grows above 4 in chain)
+    assert(result_capped.weight2_skipped_cap > 0 &&
+           "row_composition_cap should trigger skips on chain matrix");
+    assert(result_capped.weight2_skipped_cap == 0 ||
+           result_capped.weight2_merged < result_baseline.weight2_merged ||
+           result_capped.weight2_merged == result_baseline.weight2_merged);
+
+    // No row_composition entry exceeds cap in capped result
+    for (const auto& comp : result_capped.row_composition) {
+        // After merge, composition may exceed cap due to pre-merge sum check
+        // (we check prospective = comp[r1]+comp[r2] > cap). Worst case comp[r1]
+        // is at cap before final merge that pushed over → could be cap + cap = 2*cap.
+        // Use generous 2*cap check.
+        assert(comp.size() <= 2 * config.row_composition_cap &&
+               "composition size should stay bounded by ~2*cap");
+    }
+
+    std::cout << "  PASSED" << std::endl;
+}
+
+// Test SGE: cap=0 (disabled) should behave identical to old (no cap) behavior
+void test_sge_row_composition_cap_disabled() {
+    std::cout << "Testing SGE row_composition cap disabled (cap=0)..." << std::endl;
+
+    SparseMatrix mat(5, 6);
+    mat.set(0, 0); mat.set(0, 1); mat.set(0, 2); mat.set(0, 3);
+    mat.set(1, 0); mat.set(1, 2); mat.set(1, 4);
+    mat.set(2, 1); mat.set(2, 3); mat.set(2, 4);
+    mat.set(3, 0); mat.set(3, 1); mat.set(3, 5);
+    mat.set(4, 2); mat.set(4, 3); mat.set(4, 5);
+
+    SGEConfig config;
+    config.eliminate_weight1 = false;
+    config.row_composition_cap = 0;  // disabled
+    auto result = SGE::preprocess(mat, config);
+
+    // Should never skip with cap=0
+    assert(result.weight2_skipped_cap == 0);
+
+    std::cout << "  PASSED" << std::endl;
+}
+
 // Test SGE: empty and trivial matrices
 // Test SGE: cascading chain — w1 elimination triggers more w1 columns.
 // Verifies worklist re-seeding in Phase 1 works correctly.
@@ -988,6 +1080,8 @@ int main() {
     test_sge_cascading_weight1();
     test_sge_alternating_cascade();
     test_sge_expand_dependency();
+    test_sge_row_composition_cap();
+    test_sge_row_composition_cap_disabled();
     test_sge_edge_cases();
 
     std::cout << std::endl;
