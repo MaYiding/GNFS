@@ -16,6 +16,7 @@
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/relation/collector.hpp>
 #include <gnfs/relation/filter.hpp>
+#include <gnfs/relation/ooc_policy.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -25,6 +26,8 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -32,6 +35,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 using namespace gnfs;
@@ -250,6 +254,32 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
     CollectorConfig coll_config;
     coll_config.check_duplicates = true;
+
+    // BACKLOG #1: size-aware OOC default mirrors Pipeline. Progressive Level
+    // 5+ may reach lp_bits = 22 and OOM without OOC streaming.
+    {
+        const char* ooc_env = std::getenv("GNFS_OOC_RELATIONS");
+        const auto policy = gnfs::relation::decide_ooc_policy(
+            ooc_env, params.large_prime_bound);
+        if (policy.enabled) {
+            coll_config.ooc_enabled = true;
+            if (const char* path_env = std::getenv("GNFS_OOC_BASE_PATH");
+                path_env != nullptr && path_env[0] != '\0') {
+                coll_config.ooc_base_path = path_env;
+            } else {
+                coll_config.ooc_base_path =
+                    "/tmp/gnfs_progressive_relations_" + std::to_string(::getpid());
+            }
+            const size_t lp_bits_est =
+                gnfs::relation::estimate_lp_bits(params.large_prime_bound);
+            std::fprintf(stderr,
+                "[ooc] test_gnfs_progressive streaming relations to %s.{reldata,relidx} "
+                "(%s, lp_bits=%zu)\n",
+                coll_config.ooc_base_path.c_str(),
+                std::string(policy.reason).c_str(), lp_bits_est);
+        }
+    }
+
     RelationCollector collector(coll_config);
 
     size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
