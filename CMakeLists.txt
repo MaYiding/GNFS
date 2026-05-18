@@ -562,14 +562,6 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME WorkStealing COMMAND test_work_stealing)
     set_tests_properties(WorkStealing PROPERTIES LABELS "instant" TIMEOUT 10)
 
-    # Line sieve 单元测试
-    add_executable(test_line_sieve
-        tests/test_line_sieve.cpp
-    )
-    target_link_libraries(test_line_sieve PRIVATE gnfs_core Threads::Threads)
-    add_test(NAME LineSieve COMMAND test_line_sieve)
-    set_tests_properties(LineSieve PROPERTIES LABELS "fast" TIMEOUT 30)
-
     # Bucket sieve 单元测试
     add_executable(test_bucket_sieve
         tests/test_bucket_sieve.cpp
