@@ -292,6 +292,42 @@ GNFS_WEIGHT_CUTOFF=2 ./test_stress 1 1   # weight-3+ key 的关系全 drop
 - 二者组合预期: β < 100% 必要条件 (待实测).
 - 注意: drop 模式 V3 cascade 的 v3_added 可能 = 0 (V0 已覆盖 full, V3 残留全 drop), test_clique_merger_50d_synthetic 已 conditional skip assertion (line 253).
 
+### OOC Relation Store (GNFS_OOC_RELATIONS)
+
+**ENV `GNFS_OOC_RELATIONS=1`** (BACKLOG #11c, 2026-05-18):
+启用 RelationCollector OOC 流式持久化, sieve 期间 relations 流式写盘
+`/tmp/gnfs_relations_<pid>.{reldata,relidx}` 而非 in-memory vector. 内存只保留
+(a,b) seen set + stats. Phase 4 filter 入口 OOCRelationReader 一次性 read_all
+→ vector. 默认 OFF (vector mode).
+
+```bash
+GNFS_OOC_RELATIONS=1 ./gnfs <N>                  # 启用 OOC streaming
+GNFS_OOC_RELATIONS=1 GNFS_OOC_BASE_PATH=/path ./gnfs <N>  # override 路径
+GNFS_OOC_RELATIONS=1 ./test_gnfs_e2e             # e2e stress test OOC path
+```
+
+**用途**:
+- BACKLOG #11c trigger 触发: 50d Round 2 909K relations 时 macOS OOM-killed
+  (2026-05-17 实测, RSS ~3.5GB, sieve buckets + collector.relations_ 联合 OOM).
+- OOC mode 减小 sieve 期间 RAM peak (relations_ vector 不再 grow, seen_ 占
+  ~16 B/relation, 1M relations 仅 16 MB; vs vector 1M × 500B = 500 MB).
+- fault tolerance: OOCWriter MAGIC_INCOMPLETE → MAGIC flip 设计保证 mid-write
+  crash 时 reader 严格拒绝, 不会 partial-load.
+
+**集成点** (commits `3b843fc` → `d39b637`, 2026-05-18):
+- `include/gnfs/relation/collector.hpp` — CollectorConfig + add/get/clear/merge OOC dual mode
+- `src/api/pipeline.cpp:498-520` — sieve_and_collect ENV-gate 解析 + base_path 配置
+- `tests/test_relation_collector.cpp` — 8 OOC unit tests (basic/dedup/N-divisibility/partial/concurrent/clear/empty-path/legacy)
+- `tests/test_gnfs_e2e.cpp` — OOC stress test in real GNFS pipeline (5/5 PASS)
+
+**API 兼容**:
+- `add()`: OOC 模式跳过 relations_.push_back, 走 OOCWriter::write
+- `get_relations()`: OOC 模式 close writer + open reader + read_all → vector (spike at Phase 4 entry)
+- `size()/empty()`: 基于 writer->count() (准确反映写盘 relation 数)
+- `clear()`: OOC 模式 close + delete files + recreate writer (允许 reuse)
+- `save/load`: legacy 序列化协议 OOC 模式 disabled (return false); 直接用 OOCRelationReader
+- `merge`: OOC source 不支持 (read overhead 不实用); OOC sink 工作
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
