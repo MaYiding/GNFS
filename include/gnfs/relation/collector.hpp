@@ -4,11 +4,14 @@
 #include "../core/relation.hpp"
 #include "../core/types.hpp"
 #include "../util/safe_math.hpp"
+#include "ooc_relation_store.hpp"
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <numeric>
 #include <optional>
@@ -41,6 +44,14 @@ struct CollectorConfig {
     size_t max_relations = 0;         // 最大关系数 (0 = 无限制)
     std::string output_file;          // 输出文件 (可选)
     bool flush_on_add = false;        // 每次添加后刷新
+
+    // ── OOC (Out-of-Core) 流式持久化 (BACKLOG #11c, 50d Round 2 OOM 防御) ──
+    // 启用后:
+    //   - add() 同时 streaming write 进 .reldata/.relidx (零 RAM 增长)
+    //   - 内存只保留 seen_ (a,b dedup) + stats; relations_ 不再 grow
+    //   - get_relations() 从盘 mmap 读全部 (Phase 4 入口才 spike RAM, sieve 期间 flat)
+    bool ooc_enabled = false;
+    std::string ooc_base_path;        // 文件 base path (无扩展; .reldata + .relidx 自动追加)
 };
 
 /// RelationCollector - 关系收集器
@@ -304,7 +315,7 @@ public:
 
 private:
     CollectorConfig config_;
-    std::vector<Relation> relations_;
+    std::vector<Relation> relations_;          // OOC 禁用时持有; OOC 启用时为空
     std::unordered_set<ABPair, ABPairHash> seen_;
     CollectorStats stats_;
     mutable std::mutex mutex_;
@@ -316,6 +327,10 @@ private:
     // 通过 set_polynomial_context() 设置;未设置时退回旧行为。
     const Integer* n_for_validation_ = nullptr;
     const Integer* m_for_validation_ = nullptr;
+
+    // OOC 模式 (BACKLOG #11c): lazy-initialized OOCRelationWriter,first add() 时构造。
+    // unique_ptr 因为 OOCRelationWriter 不可移动(持有 ofstream + 内部 buffer)。
+    std::unique_ptr<OOCRelationWriter> ooc_writer_;
 
     /// 验证关系。mutex 内调用。
     /// 返回 0=通过,-1=无效(b/gcd),-2=N-divisible(CLAUDE.md 强制拒绝)
