@@ -770,6 +770,123 @@ void test_ooc_writer_resume_nonexistent_rejected() {
     std::cout << "  OOC writer resume rejects nonexistent: PASS" << std::endl;
 }
 
+void test_ooc_collector_resume_loads_seen() {
+    std::cout << "Testing OOC collector resume loads (a,b) seen set..." << std::endl;
+    auto path = make_tmp_ooc_path("collector_resume");
+    OOCArtifacts cleanup(path);
+
+    // Phase 1: collector add 3 rels, scope exit closes writer (flip MAGIC)
+    {
+        CollectorConfig cfg;
+        cfg.check_duplicates = true;
+        cfg.ooc_enabled = true;
+        cfg.ooc_base_path = path;
+        RelationCollector collector(cfg);
+        for (int i = 1; i <= 3; ++i) {
+            Relation r(i * 10, static_cast<uint64_t>(i * 10 + 1));
+            r.rational_factors.push_back(static_cast<uint32_t>(i));
+            assert(collector.add(std::move(r)));
+        }
+        assert(collector.size() == 3);
+    }
+
+    // 手动 flip MAGIC → INCOMPLETE 模拟 prior session crash 前未 finalize
+    {
+        std::fstream idx(path + ".relidx",
+                         std::ios::in | std::ios::out | std::ios::binary);
+        uint64_t incomplete = OOCRelationWriter::MAGIC_INCOMPLETE;
+        idx.write(reinterpret_cast<const char*>(&incomplete), 8);
+    }
+
+    // Phase 2: collector + ooc_resume=true
+    {
+        CollectorConfig cfg;
+        cfg.check_duplicates = true;
+        cfg.ooc_enabled = true;
+        cfg.ooc_resume = true;
+        cfg.ooc_base_path = path;
+        RelationCollector collector(cfg);
+
+        // size() reflects prior writer count
+        assert(collector.size() == 3);
+        auto stats0 = collector.stats();
+        assert(stats0.total_relations == 3);
+
+        // 尝试重 add prior (a,b) — seen_ 拒绝 (dedup)
+        Relation dup1(10, 11);
+        dup1.rational_factors.push_back(1);
+        assert(!collector.add(std::move(dup1)));  // 重复
+        Relation dup2(20, 21);
+        dup2.rational_factors.push_back(2);
+        assert(!collector.add(std::move(dup2)));  // 重复
+        assert(collector.size() == 3);  // 不变
+
+        // Add 2 new (a,b) 通过
+        for (int i = 4; i <= 5; ++i) {
+            Relation r(i * 10, static_cast<uint64_t>(i * 10 + 1));
+            r.rational_factors.push_back(static_cast<uint32_t>(i));
+            assert(collector.add(std::move(r)));
+        }
+        assert(collector.size() == 5);
+    }  // 析构 close + finalize MAGIC
+
+    // Reader 验证 final state
+    OOCRelationReader reader(path);
+    assert(reader.count() == 5);
+    for (size_t i = 0; i < 5; ++i) {
+        auto rel = reader.read(i);
+        assert(rel.a == static_cast<int64_t>((i + 1) * 10));
+        assert(rel.b == (i + 1) * 10 + 1);
+    }
+
+    std::cout << "  OOC collector resume + seen restore: PASS" << std::endl;
+}
+
+void test_ooc_collector_resume_empty_files_graceful() {
+    std::cout << "Testing OOC collector resume with empty prior count..." << std::endl;
+    auto path = make_tmp_ooc_path("collector_resume_empty");
+    OOCArtifacts cleanup(path);
+
+    // Phase 1: collector open + immediate close (0 relations added)
+    {
+        CollectorConfig cfg;
+        cfg.ooc_enabled = true;
+        cfg.ooc_base_path = path;
+        RelationCollector collector(cfg);
+        assert(collector.size() == 0);
+    }
+
+    // Flip MAGIC → INCOMPLETE
+    {
+        std::fstream idx(path + ".relidx",
+                         std::ios::in | std::ios::out | std::ios::binary);
+        uint64_t incomplete = OOCRelationWriter::MAGIC_INCOMPLETE;
+        idx.write(reinterpret_cast<const char*>(&incomplete), 8);
+    }
+
+    // Phase 2: resume from 0-count session, add new rels
+    {
+        CollectorConfig cfg;
+        cfg.ooc_enabled = true;
+        cfg.ooc_resume = true;
+        cfg.ooc_base_path = path;
+        RelationCollector collector(cfg);
+        assert(collector.size() == 0);
+
+        // Coprime (a,b): (1,2), (3,4) — gcd 始终 1, 通过 collector validate
+        for (int i = 1; i <= 2; ++i) {
+            Relation r(2*i - 1, static_cast<uint64_t>(2*i));
+            assert(collector.add(std::move(r)));
+        }
+        assert(collector.size() == 2);
+    }
+
+    OOCRelationReader reader(path);
+    assert(reader.count() == 2);
+
+    std::cout << "  OOC collector resume from empty: PASS" << std::endl;
+}
+
 void test_ooc_writer_resume_large_payload() {
     std::cout << "Testing OOC writer resume with variable-size payloads..." << std::endl;
     auto path = make_tmp_ooc_path("resume_large");
@@ -874,6 +991,8 @@ int main() {
     test_ooc_writer_resume_finalized_rejected();
     test_ooc_writer_resume_nonexistent_rejected();
     test_ooc_writer_resume_large_payload();
+    test_ooc_collector_resume_loads_seen();
+    test_ooc_collector_resume_empty_files_graceful();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

@@ -52,6 +52,13 @@ struct CollectorConfig {
     //   - get_relations() 从盘 mmap 读全部 (Phase 4 入口才 spike RAM, sieve 期间 flat)
     bool ooc_enabled = false;
     std::string ooc_base_path;        // 文件 base path (无扩展; .reldata + .relidx 自动追加)
+
+    // ── Resume mode (BACKLOG #11e, sieve mid-flight checkpoint) ──
+    // 仅在 ooc_enabled=true 时有意义. 启用后 ctor 用 OOCRelationWriter(path, resume=true)
+    // 接 prior session 末尾追加. ctor 同时 reload (a,b) seen set 防 resume 后 duplicate.
+    // Note: stats.full_relations/partial_*/duplicates_rejected 不持久化 — 重置为 0,
+    // 仅 total_relations = prior writer count.
+    bool ooc_resume = false;
 };
 
 /// RelationCollector - 关系收集器
@@ -73,7 +80,15 @@ public:
                 throw std::runtime_error(
                     "RelationCollector: ooc_enabled=true requires non-empty ooc_base_path");
             }
-            ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path);
+            ooc_writer_ = std::make_unique<OOCRelationWriter>(
+                config_.ooc_base_path,
+                /*resume=*/config_.ooc_resume);
+            if (config_.ooc_resume) {
+                // Restore (a,b) seen set + total_relations stat from prior session.
+                // Other stats (full/partial breakdown, dup/invalid counts) reset to 0
+                // — info-only, not load-bearing for Phase 4 filter correctness.
+                restore_seen_from_ooc();
+            }
         }
     }
 
@@ -377,6 +392,43 @@ private:
     // OOC 模式 (BACKLOG #11c): lazy-initialized OOCRelationWriter,first add() 时构造。
     // unique_ptr 因为 OOCRelationWriter 不可移动(持有 ofstream + 内部 buffer)。
     std::unique_ptr<OOCRelationWriter> ooc_writer_;
+
+    /// Resume mode: 从现有 .reldata/.relidx 加载 (a,b) seen set + 设 total_relations.
+    /// 期望 OOCWriter 已经在 resume mode 重开 streams (idx_stream_ 指向 past offsets).
+    /// 直接 fstream parse, 不依赖 OOCRelationReader (后者 enforce MAGIC, INCOMPLETE 拒读).
+    /// ctor 内调用,在 mutex 锁外(对象未发布到其他线程)。
+    void restore_seen_from_ooc() {
+        std::ifstream idx(config_.ooc_base_path + ".relidx", std::ios::binary);
+        if (!idx) return;
+
+        uint64_t magic = 0, count = 0;
+        idx.read(reinterpret_cast<char*>(&magic), 8);
+        idx.read(reinterpret_cast<char*>(&count), 8);
+        if (idx.gcount() != 8 || count == 0) return;
+
+        std::vector<uint64_t> offsets(count);
+        idx.read(reinterpret_cast<char*>(offsets.data()),
+                 static_cast<std::streamsize>(count * 8));
+        if (static_cast<size_t>(idx.gcount()) != count * 8) return;
+        idx.close();
+
+        std::ifstream data(config_.ooc_base_path + ".reldata", std::ios::binary);
+        if (!data) return;
+
+        seen_.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            data.seekg(static_cast<std::streamoff>(offsets[i]));
+            int64_t a = 0;
+            uint64_t b = 0;
+            data.read(reinterpret_cast<char*>(&a), sizeof(a));
+            data.read(reinterpret_cast<char*>(&b), sizeof(b));
+            if (data.gcount() == sizeof(b)) {
+                seen_.insert(ABPair{a, b});
+            }
+        }
+
+        stats_.total_relations = count;
+    }
 
     /// 验证关系。mutex 内调用。
     /// 返回 0=通过,-1=无效(b/gcd),-2=N-divisible(CLAUDE.md 强制拒绝)
