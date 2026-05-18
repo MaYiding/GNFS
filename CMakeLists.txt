@@ -364,6 +364,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME V0BfsPolicy COMMAND test_v0_bfs_policy)
     set_tests_properties(V0BfsPolicy PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_sieve_ecore_qos
+        tests/test_sieve_ecore_qos.cpp
+    )
+    target_link_libraries(test_sieve_ecore_qos PRIVATE gnfs_core)
+    add_test(NAME SieveEcoreQoS COMMAND test_sieve_ecore_qos)
+    set_tests_properties(SieveEcoreQoS PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_factor_base
         tests/test_factor_base.cpp
     )
