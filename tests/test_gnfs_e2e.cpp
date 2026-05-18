@@ -25,9 +25,13 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstdio>      // remove() for OOC artifact cleanup
+#include <cstdlib>     // getenv for GNFS_OOC_RELATIONS
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <string>
+#include <unistd.h>    // getpid for OOC base path
 #include <vector>
 
 using namespace gnfs;
@@ -255,6 +259,28 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     // Relation collector
     CollectorConfig coll_config;
     coll_config.check_duplicates = true;
+    // OOC mode (ENV GNFS_OOC_RELATIONS=1) — stress test OOC path in e2e flow.
+    // RAII cleanup struct ensures .reldata/.relidx removed on any return path.
+    struct OOCCleanup {
+        std::string path;
+        ~OOCCleanup() {
+            if (!path.empty()) {
+                std::remove((path + ".reldata").c_str());
+                std::remove((path + ".relidx").c_str());
+            }
+        }
+    } ooc_cleanup;
+    if (const char* env = std::getenv("GNFS_OOC_RELATIONS");
+        env != nullptr && std::atoi(env) == 1) {
+        coll_config.ooc_enabled = true;
+        ooc_cleanup.path = "/tmp/gnfs_e2e_ooc_" + std::to_string(::getpid()) +
+                           "_" + std::to_string(reinterpret_cast<uintptr_t>(&coll_config));
+        coll_config.ooc_base_path = ooc_cleanup.path;
+        if (verbose) {
+            std::cout << "[OOC] streaming relations to " << ooc_cleanup.path
+                      << ".{reldata,relidx}\n";
+        }
+    }
     RelationCollector collector(coll_config);
 
     // Target: LP-aware — need enough raw relations to survive singleton filtering
