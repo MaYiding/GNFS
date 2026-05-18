@@ -167,6 +167,7 @@ ALL_TEST_BINARIES=(
     test_core_types
     test_safe_math
     test_ooc_policy
+    test_v0_bfs_policy
     test_bw_rank_est
     test_matrix_diagnostics
     test_factor_base
@@ -212,7 +213,7 @@ MODULE_TESTS=(
     factor_base    "test_factor_base"
     sieve          "test_special_q test_sieve_basic test_bucket_sieve"
     cofactor       "test_cofactor test_squfof test_integration"
-    relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_ooc_relations test_ooc_policy test_integration"
+    relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration"
     linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_class_group"
@@ -242,6 +243,7 @@ SMOKE_TESTS=(
     test_core_types
     test_safe_math
     test_ooc_policy
+    test_v0_bfs_policy
     test_bw_rank_est
     test_matrix_diagnostics
     test_factor_base
@@ -286,6 +288,7 @@ TEST_TIMEOUT=(
     test_core_types          10
     test_safe_math           10
     test_ooc_policy          10
+    test_v0_bfs_policy       10
     test_bw_rank_est         10
     test_matrix_diagnostics  10
     test_factor_base         10
@@ -343,6 +346,7 @@ TEST_TIER=(
     test_core_types          "instant"
     test_safe_math           "instant"
     test_ooc_policy          "instant"
+    test_v0_bfs_policy       "instant"
     test_bw_rank_est         "instant"
     test_matrix_diagnostics  "instant"
     test_factor_base         "instant"
