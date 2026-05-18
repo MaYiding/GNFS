@@ -1081,6 +1081,25 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
              std::to_string(matrix_stats.num_cols) +
              " excess=" + std::to_string(matrix_stats.excess));
 
+    // BACKLOG #1 diagnostic (F.1): row/col weight distribution. Reveals
+    // sieve gap (empty cols) and SGE-eliminable garbage (singleton cols/rows)
+    // before BL/BW kicks in. Cost: one full nnz scan (~50ms at 50d, < 1% of
+    // Phase 5 wall-clock).
+    {
+        const auto diag = linalg::compute_matrix_diagnostics(build_result.matrix);
+        char buf[512];
+        std::snprintf(buf, sizeof(buf),
+            "[mat-diag] rows: empty=%zu singleton=%zu w_range=[%zu,%zu] avg=%.2f"
+            " | cols: empty=%zu singleton=%zu low(2-4)=%zu max_w=%zu avg=%.2f",
+            diag.empty_rows, diag.singleton_rows,
+            diag.min_row_weight, diag.max_row_weight,
+            matrix_stats.avg_row_weight,
+            diag.empty_cols, diag.singleton_cols, diag.low_weight_cols,
+            diag.max_col_weight, diag.avg_col_weight);
+        emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
+        std::fprintf(stderr, "%s\n", buf);
+    }
+
     if (!matrix_stats.has_excess()) {
         // BACKLOG #80 step 7 (2026-05-17): thin matrix (m ≤ n) now solved by
         // block_wiedemann_thin_solve, which uses B'=M^T·M and recovers via
