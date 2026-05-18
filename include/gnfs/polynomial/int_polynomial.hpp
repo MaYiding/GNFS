@@ -2,6 +2,7 @@
 
 #include "../core/integer.hpp"
 #include "../sqrt/modular_poly.hpp"
+#include "resultant.hpp"
 
 #include <algorithm>
 #include <array>
@@ -305,34 +306,21 @@ public:
 
     // ==================== 判别式 ====================
 
-    /// 计算判别式（简化版，仅用于小度数多项式）
+    /// 计算判别式 Δ(f) = (-1)^(d(d-1)/2) · Res(f, f') / a_d
+    /// degree 1: 返回 1 (约定)
+    /// degree 2: b² - 4ac (经典公式)
+    /// degree ≥ 3: Resultant(f, f') via Sylvester matrix + Bareiss determinant
     [[nodiscard]] Integer discriminant() const {
-        // 对于一般多项式，判别式计算很复杂
-        // 这里只实现度数 <= 6 的常见情况
-
-        uint32_t d = degree();
-
-        if (d == 1) {
-            // 线性多项式的判别式为 1
-            return Integer(1);
-        }
-
-        if (d == 2) {
-            // ax^2 + bx + c 的判别式 = b^2 - 4ac
-            Integer b2;
-            mpz_mul(b2.get_mpz(), coeffs_[1].get_mpz(), coeffs_[1].get_mpz());  // b² (skip clone)
-
-            Integer ac;
-            mpz_mul(ac.get_mpz(), coeffs_[0].get_mpz(), coeffs_[2].get_mpz());   // ac (skip clone)
-            mpz_mul_2exp(ac.get_mpz(), ac.get_mpz(), 2);  // 4*ac (bit shift)
-
-            b2 -= ac;
-            return b2;
-        }
-
-        // 对于更高度数，需要计算 Resultant(f, f')
-        throw std::logic_error("discriminant() not implemented for degree > 2");
+        return discriminant_impl(coeffs_, degree());
     }
+
+private:
+    [[nodiscard]] static Integer discriminant_impl(
+            const std::vector<Integer>& coeffs, uint32_t d) {
+        return ::gnfs::polynomial::discriminant(coeffs, d);
+    }
+
+public:
 
 private:
     std::vector<Integer> coeffs_;
