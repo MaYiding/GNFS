@@ -353,6 +353,54 @@ GNFS_OOC_RELATIONS=1 ./test_gnfs_e2e             # e2e stress test OOC path
 - `save/load`: legacy 序列化协议 OOC 模式 disabled (return false); 直接用 OOCRelationReader
 - `merge`: OOC source 不支持 (read overhead 不实用); OOC sink 工作
 
+### Sieve mid-flight checkpoint (GNFS_SIEVE_RESUME)
+
+**ENV `GNFS_SIEVE_RESUME=<base_path>`** (BACKLOG #11e, 2026-05-18):
+启用 OOC streaming + sieve loop checkpoint, 长时间 50d+/60d sieve 中断后能 resume.
+ENV 隐含启用 OOC (base_path 作 OOC base 和 checkpoint base, 不需 单独 set
+GNFS_OOC_RELATIONS).
+
+```bash
+# 首次启动 / 续跑同 path
+GNFS_SIEVE_RESUME=/tmp/gnfs_50d_session ./gnfs <50d-N>
+# 进程崩溃后, 同 path 再跑 → resume from last checkpoint
+GNFS_SIEVE_RESUME=/tmp/gnfs_50d_session ./gnfs <50d-N>
+```
+
+**Resume 流程**:
+1. Pipeline::sieve_and_collect 检测 `<base_path>.sieve_ckpt` 存在 + magic 有效
+2. 加载 ckpt: sq_count, current_index (SpecialQGenerator 位置), round (adaptive
+   loop 进度), batch_target, candidates_total
+3. CollectorConfig.ooc_resume=true → OOCWriter 用 resume mode 续写
+   .reldata/.relidx (要求 magic=INCOMPLETE, finalized files 不允许 resume)
+4. RelationCollector ctor 从 .reldata 读 (a,b) 16 bytes/rel 重建 seen_ set
+   (防 resume 后 dedup 错过)
+5. SpecialQGenerator::reset_to(current_index) skip 已 done SQs
+6. Sieve loop 从 round_start 继续, 每 CHECKPOINT_BATCH_INTERVAL=25 batches
+   保存 ckpt (每 batch 2-4 SQ, ~50-100 SQs/checkpoint)
+7. Sieve 正常完成 → 删 ckpt + OOC finalize MAGIC (后续 read 通过 reader)
+8. 异常退出 (crash/kill) → ckpt + INCOMPLETE OOC 保留, 下次 resume
+
+**Crash safety** (MAGIC/INCOMPLETE flip 双重保护):
+- SieveCheckpoint: save() 先写 MAGIC_INCOMPLETE, flush, seek 头 flip MAGIC
+- OOCRelationWriter: ctor 写 INCOMPLETE, close() flip MAGIC; uncaught_exceptions
+  跟踪让析构异常路径 skip flip → 文件保留 INCOMPLETE → reader 拒读
+- 任一 stage crash 时下次 resume 仍 detect partial state (允许丢 ≤25 batches)
+
+**集成点** (commits `b4c6364` → `60a1282`, 2026-05-18):
+- `include/gnfs/sieve/sieve_checkpoint.hpp` — 153 lines, SieveCheckpoint binary format
+- `include/gnfs/relation/ooc_relation_store.hpp` — +73 lines OOCWriter resume ctor
+- `include/gnfs/relation/collector.hpp` — +50 lines CollectorConfig.ooc_resume +
+  restore_seen_from_ooc helper
+- `src/api/pipeline.cpp:498-573, 599-622, 654-679, 826-832` — Pipeline 集成
+- `tests/test_sieve_checkpoint.cpp` — 9 unit tests (roundtrip/corrupt/version/INCOMPLETE)
+- `tests/test_relation_collector.cpp` — 6 new tests (writer append + collector resume)
+- `tests/test_api.cpp` — 2 e2e tests (fresh + synthetic_ckpt resume)
+
+**触发条件**: 50d+ sieve 持续 hours+ 而 crash 风险 (OOM/电源/Ctrl-C) 存在.
+对 25d/40-bit 短任务 overhead 不实用 (sieve <1 min). 不与 GNFS_OOC_RELATIONS
+共存 (SIEVE_RESUME 优先).
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
