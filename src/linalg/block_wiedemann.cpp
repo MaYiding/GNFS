@@ -1,4 +1,5 @@
 #include "gnfs/linalg/block_wiedemann.hpp"
+#include "gnfs/linalg/krylov_sequence_mmap.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
 #include <array>
@@ -6,8 +7,10 @@
 #include <chrono>
 #include <climits>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -419,12 +422,31 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
     // For each j = 0..63: s_{j,k} = X_j^T * B^k * Y_j
     // where X_j = j-th packed column of X, Y_j = j-th packed column of Y.
     // A_k = X^T * V_k is a 64×64 matrix; diagonal entry A_k[j][j] = s_{j,k}.
+    //
+    // ENV GNFS_BW_KRYLOV_MMAP=1: store sequences in mmap-backed file (BACKLOG
+    // #11d). 64 × seq_len bytes is the dominant scalar-path RAM cost (~128 MB
+    // for n=1M). Layout: KrylovSequenceMmap with L=64 entries, entry_size=seq_len.
+
+    const char* mmap_env = std::getenv("GNFS_BW_KRYLOV_MMAP");
+    const bool use_mmap = (mmap_env != nullptr && mmap_env[0] == '1');
 
     std::cout << "  [BW] Phase 1: Krylov projection (L=" << L
-              << ", seq_len=" << seq_len << ")..." << std::flush;
+              << ", seq_len=" << seq_len << (use_mmap ? ", mmap" : "")
+              << ")..." << std::flush;
 
-    // Store 64 scalar sequences (each seq_len bits)
-    std::vector<std::vector<uint8_t>> sequences(64, std::vector<uint8_t>(seq_len, 0));
+    std::vector<std::vector<uint8_t>> sequences;
+    std::unique_ptr<KrylovSequenceMmap> seq_mmap;
+    if (use_mmap) {
+        char path_buf[128];
+        std::snprintf(path_buf, sizeof(path_buf),
+                      "/tmp/gnfs_bw_krylov_scalar_%d_%llu.kry",
+                      static_cast<int>(::getpid()),
+                      static_cast<unsigned long long>(seed));
+        seq_mmap = std::make_unique<KrylovSequenceMmap>(
+            path_buf, /*L=*/64, /*entry_size=*/seq_len);
+    } else {
+        sequences.assign(64, std::vector<uint8_t>(seq_len, 0));
+    }
 
     BlockVector V(m), Vnext(m), tmp(n);
     // V_0 = Y
@@ -442,7 +464,12 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
             uint64_t parity = 0;
             for (size_t i = 0; i < m; ++i)
                 parity ^= (X.data[i] & V.data[i] & mask);
-            sequences[j][k] = (parity >> j) & 1;
+            const uint8_t bit = static_cast<uint8_t>((parity >> j) & 1);
+            if (use_mmap) {
+                seq_mmap->raw_at(static_cast<uint64_t>(j))[k] = bit;
+            } else {
+                sequences[j][k] = bit;
+            }
         }
 
         // V_{k+1} = B * V_k = M * (M^T * V_k)
@@ -452,6 +479,18 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
         }
     }
     std::cout << " done" << std::endl;
+
+    if (use_mmap) {
+        seq_mmap->msync();
+        // Copy mmap → vector<vector> once at BM entry. BM signature takes
+        // const std::vector<uint8_t>&. After copy, mmap can be released.
+        sequences.assign(64, std::vector<uint8_t>(seq_len, 0));
+        for (uint64_t j = 0; j < 64; ++j) {
+            std::memcpy(sequences[j].data(), seq_mmap->raw_at(j), seq_len);
+        }
+        seq_mmap->remove_file();
+        seq_mmap.reset();
+    }
 
     // ── Phase 2: Scalar BM for each of 64 sequences ──
     std::cout << "  [BW] Phase 2: Berlekamp-Massey..." << std::flush;
@@ -651,15 +690,38 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
     }
 
     // ── Phase 1: Krylov sequence A_k = X^T · V_k ──
+    // ENV GNFS_BW_KRYLOV_MMAP=1 opt-in: store A_seq on disk via
+    // KrylovSequenceMmap (BACKLOG #11d, releases ~16 MB physical RAM for n=1M).
     auto phase_start = std::chrono::steady_clock::now();
-    std::cout << "  [BW-block] Phase 1: Krylov (L=" << L << ")..." << std::flush;
-    std::vector<DenseGF2_64x64> A_seq(L);
+    const char* mmap_env = std::getenv("GNFS_BW_KRYLOV_MMAP");
+    const bool use_mmap = (mmap_env != nullptr && mmap_env[0] == '1');
+    std::cout << "  [BW-block] Phase 1: Krylov (L=" << L
+              << (use_mmap ? ", mmap" : "") << ")..." << std::flush;
+
+    std::vector<DenseGF2_64x64> A_seq;
+    std::unique_ptr<KrylovSequenceMmap> A_mmap;
+    if (use_mmap) {
+        char path_buf[128];
+        std::snprintf(path_buf, sizeof(path_buf),
+                      "/tmp/gnfs_bw_krylov_%d_%llu.kry",
+                      static_cast<int>(::getpid()),
+                      static_cast<unsigned long long>(seed));
+        A_mmap = std::make_unique<KrylovSequenceMmap>(
+            path_buf, L, sizeof(DenseGF2_64x64));
+    } else {
+        A_seq.resize(L);
+    }
 
     BlockVector V(m), Vnext(m), tmp(n);
     for (size_t i = 0; i < m; ++i) V.data[i] = Y.data[i];
 
     for (size_t k = 0; k < L; ++k) {
-        A_seq[k] = inner_product_64x64(X, V);
+        DenseGF2_64x64 a = inner_product_64x64(X, V);
+        if (use_mmap) {
+            *A_mmap->at<DenseGF2_64x64>(k) = a;
+        } else {
+            A_seq[k] = a;
+        }
         if (k + 1 < L) {
             bw_spmv_B(csr, V, Vnext, tmp, pool);
             std::swap(V.data, Vnext.data);
@@ -668,6 +730,18 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
     double phase1_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - phase_start).count();
     std::cout << " done (" << phase1_ms << " ms)" << std::endl;
+
+    if (use_mmap) {
+        A_mmap->msync();
+        // Copy mmap → vector once at BM entry (BM signature requires contiguous
+        // vector). After copy, mmap can be released — Phase 3 doesn't need A_seq.
+        A_seq.resize(L);
+        for (size_t k = 0; k < L; ++k) {
+            A_seq[k] = *A_mmap->at<DenseGF2_64x64>(k);
+        }
+        A_mmap->remove_file();
+        A_mmap.reset();
+    }
 
     // ── Phase 2: Matrix Berlekamp-Massey ──
     phase_start = std::chrono::steady_clock::now();
