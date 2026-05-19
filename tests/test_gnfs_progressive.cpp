@@ -15,8 +15,10 @@
 #include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/relation/collector.hpp>
+#include <gnfs/relation/clique_merger.hpp>
 #include <gnfs/relation/filter.hpp>
 #include <gnfs/relation/ooc_policy.hpp>
+#include <gnfs/relation/v0_bfs_policy.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -398,24 +400,52 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
             auto sep = separate_relations(std::move(relations));
 
-            // 2LP merge: handles both 1LP×1LP and 2LP via iterative weight-2 processing
-            PartialRelationMerger::MergeStats mstats;
-            auto merged = PartialRelationMerger::merge_all(
-                std::move(sep.partial), 10, &mstats);
+            // BACKLOG #1 step 13 (2026-05-19): V0_BFS size-aware default mirror
+            // Pipeline::filter(). Progressive levels max 61-bit (lp_bits<22), so
+            // size gate normally enforces V0 standard. Future ≥100-bit levels
+            // would auto-enable V0_BFS.
+            const auto v0_bfs_policy = decide_v0_bfs_policy(
+                std::getenv("GNFS_V0_BFS"), params.large_prime_bound);
+            if (v0_bfs_policy.env_force_failed) {
+                std::cerr << "[v0_bfs] " << v0_bfs_policy.reason << "\n";
+            }
 
-            std::cout << "  [round " << (round+1) << "] Full=" << sep.full.size()
-                      << " 1LP=" << mstats.input_1lp
-                      << " 2LP=" << mstats.input_2lp
-                      << " Merged=" << merged.size()
-                      << " (w2=" << mstats.weight2_merges
-                      << " sngl=" << mstats.singletons_removed
-                      << " rnd=" << mstats.rounds << ")\n" << std::flush;
+            if (v0_bfs_policy.enabled) {
+                CliqueStats cstats;
+                auto merged = CliqueRelationMerger::merge_cliques(
+                    std::move(sep.partial), &cstats);
+                std::cerr << "[v0_bfs] reason=" << v0_bfs_policy.reason
+                          << " " << cstats.to_string()
+                          << " merged=" << merged.size() << "\n";
+                std::cout << "  [round " << (round+1) << "] Full=" << sep.full.size()
+                          << " Merged=" << merged.size() << " (V0_BFS)"
+                          << "\n" << std::flush;
 
-            relations = std::move(sep.full);
-            relations.reserve(relations.size() + merged.size());
-            relations.insert(relations.end(),
-                std::make_move_iterator(merged.begin()),
-                std::make_move_iterator(merged.end()));
+                relations = std::move(sep.full);
+                relations.reserve(relations.size() + merged.size());
+                relations.insert(relations.end(),
+                    std::make_move_iterator(merged.begin()),
+                    std::make_move_iterator(merged.end()));
+            } else {
+                // 2LP merge: handles both 1LP×1LP and 2LP via iterative weight-2 processing
+                PartialRelationMerger::MergeStats mstats;
+                auto merged = PartialRelationMerger::merge_all(
+                    std::move(sep.partial), 10, &mstats);
+
+                std::cout << "  [round " << (round+1) << "] Full=" << sep.full.size()
+                          << " 1LP=" << mstats.input_1lp
+                          << " 2LP=" << mstats.input_2lp
+                          << " Merged=" << merged.size()
+                          << " (w2=" << mstats.weight2_merges
+                          << " sngl=" << mstats.singletons_removed
+                          << " rnd=" << mstats.rounds << ")\n" << std::flush;
+
+                relations = std::move(sep.full);
+                relations.reserve(relations.size() + merged.size());
+                relations.insert(relations.end(),
+                    std::make_move_iterator(merged.begin()),
+                    std::make_move_iterator(merged.end()));
+            }
         }
 
         // Check: enough for matrix?
