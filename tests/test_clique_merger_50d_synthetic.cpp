@@ -17,6 +17,27 @@ using namespace gnfs::relation;
 using gnfs::core::Relation;
 using gnfs::core::PrimePower;
 
+// Timing assertions below assume an unoptimized-but-not-instrumented Debug
+// build. AddressSanitizer / ThreadSanitizer / UBSan slow execution 2-10x and
+// trip these thresholds in CI even when the algorithm itself is fine. Detect
+// instrumentation at compile time and relax the budget — the assertions still
+// guard against true regressions, just with more headroom under tooling.
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
+      __has_feature(memory_sanitizer)
+#    define GNFS_TEST_UNDER_SANITIZER 1
+#  endif
+#endif
+#if !defined(GNFS_TEST_UNDER_SANITIZER) && \
+    (defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__))
+#  define GNFS_TEST_UNDER_SANITIZER 1
+#endif
+#if defined(GNFS_TEST_UNDER_SANITIZER)
+static constexpr double kTimingBudgetMultiplier = 10.0;
+#else
+static constexpr double kTimingBudgetMultiplier = 1.0;
+#endif
+
 // Generate synthetic partial relations matching 50d-like LP distribution:
 // - LP keys count scales with target_rels (avg 3 rels per key)
 // - Each key has weight 2..15 (geometric distribution favoring small weight)
@@ -291,7 +312,7 @@ void test_v3_huge_clique() {
     // 5000 rels all sharing LP=101: BFS picks pairs → ~2500 full
     assert(stats.full_produced > 0);
     // Must complete in instant tier (< 5s, but expect << 1s)
-    assert(elapsed < 5.0);
+    assert(elapsed < 5.0 * kTimingBudgetMultiplier);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -318,7 +339,7 @@ void test_v3_scale_performance() {
               << std::endl;
 
     // Post fast-path, 50K input should complete < 5s (was estimated minutes pre-opt)
-    assert(elapsed_s < 5.0);
+    assert(elapsed_s < 5.0 * kTimingBudgetMultiplier);
     assert(stats.input_relations == 50000);
 
     std::cout << "  PASS" << std::endl;
@@ -346,7 +367,7 @@ void test_v3_60d_scale() {
               << std::endl;
 
     // Must complete in instant tier (10s)
-    assert(elapsed_s < 10.0);
+    assert(elapsed_s < 10.0 * kTimingBudgetMultiplier);
     assert(stats.input_relations == 200000);
 
     std::cout << "  PASS" << std::endl;
