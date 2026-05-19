@@ -22,6 +22,7 @@
   <a href="#performance">Performance</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#runtime-configuration">Runtime Config</a> ·
+  <a href="#testing-and-build">Testing & Build</a> ·
   <a href="#contributing">Contributing</a> ·
   <a href="README.md">简体中文</a>
 </p>
@@ -40,26 +41,7 @@ The General Number Field Sieve (GNFS) is the asymptotically fastest known classi
 | Memory scaling | mmap-backed CSR matrices, streaming relation store, Block Wiedemann Krylov mmap, sieve mid-flight checkpoint |
 | Platforms | Apple Silicon and x86\_64; macOS 13+ and Linux glibc 2.31+ |
 
-## Table of Contents
-
-- [Overview](#overview)
-- [Design Goals](#design-goals)
-- [Performance](#performance)
-- [Quick Start](#quick-start)
-- [CLI Usage](#cli-usage)
-- [C++ API](#c-api)
-- [Architecture](#architecture)
-- [Pipeline](#pipeline)
-- [Runtime Configuration](#runtime-configuration)
-- [Testing](#testing)
-- [Build Options](#build-options)
-- [Conventions](#conventions)
-- [Project Layout](#project-layout)
-- [Contributing](#contributing)
-- [References](#references)
-- [License](#license)
-
-## Design Goals
+### Design Goals
 
 This project is not an academic prototype. It targets reproducible execution, observability, and scalability at industrial sizes. Three principles run through every module:
 
@@ -96,7 +78,7 @@ The table below shows measured wall-clock latency in **Release mode** on Apple M
 
 > SIQS dominates GNFS between 25 and 100 digits. The asymptotic advantage of GNFS appears only above 100 digits. The project nevertheless lets you force the GNFS path via `--method gnfs` for algorithmic research and regression coverage.
 
-### Method Selection Logic
+The automatic selection logic:
 
 ```text
         ┌────────────────────────────────────────────┐
@@ -120,8 +102,6 @@ To override the default selection, use `./build/gnfs <N> --method <name>`, where
 - NTL (optional, adds extra number-theoretic routines)
 - Metal (optional on macOS, reserved for future GPU acceleration)
 
-### Install Dependencies
-
 ```bash
 # macOS
 brew install gmp cmake
@@ -136,7 +116,7 @@ sudo dnf install gmp-devel cmake gcc-c++
 sudo pacman -S gmp cmake
 ```
 
-### Build
+### Build and First Run
 
 ```bash
 git clone https://github.com/MaYiding/GNFS.git && cd GNFS
@@ -144,12 +124,8 @@ git clone https://github.com/MaYiding/GNFS.git && cd GNFS
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
-./scripts/test.sh             # smoke tests, 39 instant tests, about 5 seconds
-```
+./scripts/test.sh                                 # smoke tests, 39 instant tests, about 5 seconds
 
-### Factor a Number
-
-```bash
 ./build/gnfs 96091                                # automatic method selection
 ./build/gnfs 1000036000099 --method siqs          # force SIQS
 ./build/gnfs 1000036000099 --json                 # JSON output
@@ -157,7 +133,7 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 ./build/gnfs --interactive                        # REPL mode
 ```
 
-## CLI Usage
+### CLI Reference
 
 ```text
 Usage: gnfs <number> [options]
@@ -208,9 +184,9 @@ verbose           = true
 ```
 </details>
 
-## C++ API
+### C++ API
 
-### High-level one-liner
+One-liner:
 
 ```cpp
 #include <gnfs/api/factorizer.hpp>
@@ -229,7 +205,7 @@ auto r = gnfs::api::factorize(n, cfg);
 std::cout << gnfs::api::method_name(r.stats.method_used) << "\n";
 ```
 
-### Stage-by-stage pipeline control
+Stage-by-stage control:
 
 ```cpp
 #include <gnfs/api/pipeline.hpp>
@@ -248,7 +224,7 @@ const auto& stats = pipeline.stats();
 std::cout << "matrix: " << stats.matrix_rows << " x " << stats.matrix_cols << "\n";
 ```
 
-### Result structure
+Result structure:
 
 ```cpp
 struct FactorResult {
@@ -303,7 +279,7 @@ flowchart LR
 | `siqs/` | 1 | `SIQS` | Contini Self-Initializing Quadratic Sieve for the 25–100 digit band |
 | `util/` | 7 | `SmallVector`, `ThreadPool`, `MmapFile`, `SafeMath` | Shared infrastructure |
 
-## Pipeline
+### Pipeline Stages
 
 | Stage | Algorithm | Key optimizations |
 |:---:|---|---|
@@ -318,105 +294,19 @@ flowchart LR
 
 > Detailed algorithm notes and recent engineering trade-offs (V0 and V3 cascade, thin BW solve, Schirokauer maps) live in [CLAUDE.md](CLAUDE.md).
 
-## Runtime Configuration
-
-All experimental strategies hide behind environment variable switches. The default off state preserves the standard production path and guarantees zero regression risk.
-
-### Filter and merge strategy
-
-| Variable | Values | Effect |
-|---|---|---|
-| `GNFS_CASCADE_V3` | `1` / `auto` / unset | Activates the V3 BFS spanning-tree merge for LP keys of weight three or higher; `auto` enables it only from Round 2 onwards |
-| `GNFS_V0_BFS` | `1` | Replaces the V0 main path with BFS chain merge; automatically falls back when lp\_bits is at most 20 |
-| `GNFS_V0_WEIGHT3` | `1` | V0 Phase 2 merges the first two partials of weight-three LP keys |
-| `GNFS_DROP_RESIDUAL` | `1` | Drops relations that retain residual large primes after merging (the 50-digit beta plateau experiment) |
-| `GNFS_WEIGHT_CUTOFF` | `N` | Drops relations whose LP key weight exceeds N (the CADO-NFS purge.c approach) |
-
-### Large-scale memory and persistence
-
-| Variable | Values | Effect |
-|---|---|---|
-| `GNFS_OOC_RELATIONS` | `1` | Streams relations to `.reldata` and `.relidx` files, which mitigates the 50-digit Round 2 OOM |
-| `GNFS_OOC_BASE_PATH` | `<path>` | Overrides the OOC file prefix |
-| `GNFS_SIEVE_RESUME` | `<base_path>` | Saves mid-flight sieve checkpoints and resumes OOC append, supporting recovery from multi-hour sieve crashes |
-| `GNFS_BW_KRYLOV_MMAP` | `1` | mmaps the Block Wiedemann Phase 1 Krylov sequence to disk and saves about 144 MB at n=1M for the 60-digit case |
-| `GNFS_NO_THIN_SOLVE` | `1` | Disables thin matrix BW solve and restores the legacy NO_EXCESS abort behavior |
-
-### Performance and algorithm experiments
-
-| Variable | Values | Effect |
-|---|---|---|
-| `GNFS_MURPHY_ALPHA_THREADS` | `N` | Thread count for the Murphy E `compute_alpha` parallel sweep (defaults to hardware concurrency) |
-| `GNFS_OVERRIDE_LP_BITS` | `1–30` | Overrides the digit-based lp\_bits default for experiments |
-
-> Design rationale, empirical data, and trigger conditions for each switch appear in [CLAUDE.md](CLAUDE.md).
-
-## Testing
-
-The project uses `scripts/test.sh`, which wraps compilation, per-test timeout, tiering, and heartbeat monitoring. The script is pure zsh and does not depend on GNU coreutils.
-
-```bash
-./scripts/test.sh                       # smoke: 39 instant tests in about 5 seconds
-./scripts/test.sh module linalg         # module-level
-./scripts/test.sh changed               # auto-detect via git diff
-./scripts/test.sh gate                  # merge gate: smoke plus 17, 27, 40, and 81-bit regression
-./scripts/test.sh e2e                   # full GNFS pipeline, about 5 minutes
-./scripts/test.sh stress 1 1            # 50-digit stress test, about 2.6 hours
-./scripts/test.sh list                  # show all tests, tiers, and timeouts
-```
-
-### Test Tiers
-
-| Tier | Timeout | Count | Scope |
-|---|---|:---:|---|
-| `instant` | 10 s | 39 | Unit tests across `integer`, `linalg`, `sqrt`, `murphy`, `filter`, `collector`, OOC policy, and more |
-| `fast` | 60 s | 1 | `test_sieve_basic` |
-| `slow` | 120–300 s | 5 | Regression gate, Kleinjung, lattice sieve, end-to-end, `factor_with_kleinjung` |
-| `heavy` | 600–3600 s | 4 | Kleinjung large, 25-digit benchmark, progressive levels L3 to L5 |
-| `stress` | 43200 s | 1 | 50-digit (L1) and 60-digit (L2) |
-
-The full subcommand reference appears in [CLAUDE.md](CLAUDE.md#自动化测试工作流-scriptstestsh).
-
-## Build Options
-
-```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Debug              # assertions and debug symbols
-cmake -B build -DCMAKE_BUILD_TYPE=Release            # O3, LTO, and native CPU flags
-cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo     # Release with debug info
-```
-
-| CMake option | Default | Description |
-|---|:---:|---|
-| `GNFS_BUILD_TESTS` | `ON` | Build test executables |
-| `GNFS_ENABLE_ASAN` | `OFF` | AddressSanitizer |
-| `GNFS_ENABLE_TSAN` | `OFF` | ThreadSanitizer |
-| `GNFS_ENABLE_UBSAN` | `OFF` | UndefinedBehaviorSanitizer |
-
-The build system auto-detects GMP (required), NTL (optional), Metal (optional on macOS), native CPU flags (`-mcpu=native` on Apple Silicon and `-march=native` on x86), and either ThinLTO (Clang on macOS) or LTO (GCC) when targeting Release.
-
-## Conventions
+### Code Conventions
 
 **Element representation.** This codebase consistently writes algebraic elements as `a - b·α`, **not** `a + b·α`. Changing this convention breaks norm computation, Schirokauer maps, and square root extraction.
 
-**Integer types.**
+**Integer types.** `gnfs::core::Integer` wraps GMP `mpz_class` and carries all big-integer arithmetic. `uint64_t` covers factor base primes and sieve indices. `__uint128_t` holds intermediate products that may overflow `uint64_t`. `Integer` covers higher-precision scenarios such as Hensel lifting.
 
-- `gnfs::core::Integer` wraps GMP `mpz_class` and carries all big-integer arithmetic.
-- `uint64_t` covers factor base primes and sieve indices.
-- `__uint128_t` holds intermediate products that may overflow `uint64_t`.
-- `Integer` covers higher-precision scenarios such as Hensel lifting.
-
-**Thread safety.**
-
-- `RelationCollector` combines `std::atomic` counters with thread-local relation buffers.
-- `LatticeSieve::sieve_parallel()` distributes Special-Q primes across worker threads.
-- `BlockLanczos` and `BlockWiedemann` share a `ThreadPool` for parallel sparse matrix-vector multiplication.
-- `FactorBaseBuilder` parallelizes Cantor-Zassenhaus root finding.
+**Thread safety.** `RelationCollector` combines `std::atomic` counters with thread-local relation buffers. `LatticeSieve::sieve_parallel()` distributes Special-Q primes across worker threads. `BlockLanczos` and `BlockWiedemann` share a `ThreadPool` for parallel sparse matrix-vector multiplication. `FactorBaseBuilder` parallelizes Cantor-Zassenhaus root finding.
 
 **Naming.** Functions and variables use `snake_case`. Types and classes use `PascalCase`. Namespaces follow `gnfs::core`, `gnfs::linalg`, `gnfs::sieve`, and so on.
 
 **Error handling.** Internal logic errors trigger `assert()` or the `GNFS_ASSERT` macro. Recoverable errors return `std::optional` or an error code. Fatal errors throw `std::runtime_error("description")`. Empty `catch` blocks are forbidden.
 
-## Project Layout
+### Project Layout
 
 ```text
 GNFS/
@@ -445,14 +335,121 @@ GNFS/
 └── LICENSE                 # GPL-2.0
 ```
 
-### Code Size
-
 | Category | Files | Lines |
 |---|:---:|---:|
 | Headers | 61 | ~22,000 |
 | Source | 14 | ~6,400 |
 | Tests | 63 | ~27,900 |
 | **Total** | **138** | **~56,300** |
+
+### References
+
+<details>
+<summary><b>Foundational papers and reference implementations (click to expand)</b></summary>
+
+**GNFS foundations**
+
+- Lenstra, A. K., and Lenstra, H. W., editors. *The Development of the Number Field Sieve.* Lecture Notes in Mathematics 1554. Springer, 1993.
+- Buhler, J. P., Lenstra, H. W., and Pomerance, C. *Factoring integers with the number field sieve.* Journal of Cryptology 6(2):85–105, 1993.
+- Briggs, M. E. *An Introduction to the General Number Field Sieve.* Master's thesis, Virginia Tech, 1998.
+
+**Polynomial selection**
+
+- Kleinjung, T. *On polynomial selection for the general number field sieve.* Mathematics of Computation 75(256):2037–2047, 2006.
+- Murphy, B. A. *Polynomial Selection for the Number Field Sieve Integer Factorisation Algorithm.* PhD thesis, Australian National University, 1999.
+
+**Linear algebra**
+
+- Montgomery, P. L. *A block Lanczos algorithm for finding dependencies over GF(2).* Advances in Cryptology, EUROCRYPT '95, pages 106–120, 1995.
+- Coppersmith, D. *Solving homogeneous linear equations over GF(2) via block Wiedemann algorithm.* Mathematics of Computation 62(205):333–350, 1994.
+
+**Square root**
+
+- Couveignes, J.-M. *Computing a square root for the number field sieve.* In *The Development of the Number Field Sieve*, pages 95–107, 1993.
+- Nguyen, P. Q. *A Montgomery-like Square Root for the Number Field Sieve.* ANTS-III, pages 151–168, 1998.
+
+**Cofactor factorization**
+
+- Lenstra, H. W., Jr. *Factoring integers with elliptic curves.* Annals of Mathematics 126:649–673, 1987.
+- Shanks, D. *SQUFOF*, unpublished; see Gower, J. E. *Square form factorization*. PhD thesis, 2004.
+
+**Reference implementations**
+
+- [CADO-NFS](https://cado-nfs.gitlabpages.inria.fr/), the state-of-the-art GNFS implementation maintained by INRIA and LORIA.
+- [msieve](https://github.com/radii/msieve), Jason Papadopoulos's integer factorization library.
+</details>
+
+## Runtime Configuration
+
+All experimental strategies hide behind environment variable switches. The default off state preserves the standard production path and guarantees zero regression risk. Design rationale, empirical data, and trigger conditions for each switch appear in [CLAUDE.md](CLAUDE.md).
+
+**Filter and merge strategy**
+
+| Variable | Values | Effect |
+|---|---|---|
+| `GNFS_CASCADE_V3` | `1` / `auto` / unset | Activates the V3 BFS spanning-tree merge for LP keys of weight three or higher; `auto` enables it only from Round 2 onwards |
+| `GNFS_V0_BFS` | `1` | Replaces the V0 main path with BFS chain merge; automatically falls back when lp\_bits is at most 20 |
+| `GNFS_V0_WEIGHT3` | `1` | V0 Phase 2 merges the first two partials of weight-three LP keys |
+| `GNFS_DROP_RESIDUAL` | `1` | Drops relations that retain residual large primes after merging (the 50-digit beta plateau experiment) |
+| `GNFS_WEIGHT_CUTOFF` | `N` | Drops relations whose LP key weight exceeds N (the CADO-NFS purge.c approach) |
+
+**Large-scale memory and persistence**
+
+| Variable | Values | Effect |
+|---|---|---|
+| `GNFS_OOC_RELATIONS` | `1` | Streams relations to `.reldata` and `.relidx` files, which mitigates the 50-digit Round 2 OOM |
+| `GNFS_OOC_BASE_PATH` | `<path>` | Overrides the OOC file prefix |
+| `GNFS_SIEVE_RESUME` | `<base_path>` | Saves mid-flight sieve checkpoints and resumes OOC append, supporting recovery from multi-hour sieve crashes |
+| `GNFS_BW_KRYLOV_MMAP` | `1` | mmaps the Block Wiedemann Phase 1 Krylov sequence to disk and saves about 144 MB at n=1M for the 60-digit case |
+| `GNFS_NO_THIN_SOLVE` | `1` | Disables thin matrix BW solve and restores the legacy NO_EXCESS abort behavior |
+
+**Performance and algorithm experiments**
+
+| Variable | Values | Effect |
+|---|---|---|
+| `GNFS_MURPHY_ALPHA_THREADS` | `N` | Thread count for the Murphy E `compute_alpha` parallel sweep (defaults to hardware concurrency) |
+| `GNFS_OVERRIDE_LP_BITS` | `1–30` | Overrides the digit-based lp\_bits default for experiments |
+
+## Testing and Build
+
+The project uses `scripts/test.sh`, which wraps compilation, per-test timeout, tiering, and heartbeat monitoring. The script is pure zsh and does not depend on GNU coreutils.
+
+```bash
+./scripts/test.sh                       # smoke: 39 instant tests in about 5 seconds
+./scripts/test.sh module linalg         # module-level
+./scripts/test.sh changed               # auto-detect via git diff
+./scripts/test.sh gate                  # merge gate: smoke plus 17, 27, 40, and 81-bit regression
+./scripts/test.sh e2e                   # full GNFS pipeline, about 5 minutes
+./scripts/test.sh stress 1 1            # 50-digit stress test, about 2.6 hours
+./scripts/test.sh list                  # show all tests, tiers, and timeouts
+```
+
+| Tier | Timeout | Count | Scope |
+|---|---|:---:|---|
+| `instant` | 10 s | 39 | Unit tests across `integer`, `linalg`, `sqrt`, `murphy`, `filter`, `collector`, OOC policy, and more |
+| `fast` | 60 s | 1 | `test_sieve_basic` |
+| `slow` | 120–300 s | 5 | Regression gate, Kleinjung, lattice sieve, end-to-end, `factor_with_kleinjung` |
+| `heavy` | 600–3600 s | 4 | Kleinjung large, 25-digit benchmark, progressive levels L3 to L5 |
+| `stress` | 43200 s | 1 | 50-digit (L1) and 60-digit (L2) |
+
+The full subcommand reference appears in [CLAUDE.md](CLAUDE.md#自动化测试工作流-scriptstestsh).
+
+**Build types**
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Debug              # assertions and debug symbols
+cmake -B build -DCMAKE_BUILD_TYPE=Release            # O3, LTO, and native CPU flags
+cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo     # Release with debug info
+```
+
+| CMake option | Default | Description |
+|---|:---:|---|
+| `GNFS_BUILD_TESTS` | `ON` | Build test executables |
+| `GNFS_ENABLE_ASAN` | `OFF` | AddressSanitizer |
+| `GNFS_ENABLE_TSAN` | `OFF` | ThreadSanitizer |
+| `GNFS_ENABLE_UBSAN` | `OFF` | UndefinedBehaviorSanitizer |
+
+The build system auto-detects GMP (required), NTL (optional), Metal (optional on macOS), native CPU flags (`-mcpu=native` on Apple Silicon and `-march=native` on x86), and either ThinLTO (Clang on macOS) or LTO (GCC) when targeting Release.
 
 ## Contributing
 
@@ -463,8 +460,6 @@ Contributions are welcome. Please follow this workflow:
 3. Follow the project conventions: C++20 style, `snake_case` functions, and `PascalCase` types.
 4. Open a pull request with a clear description.
 
-### Commit Conventions
-
 The project follows [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```text
@@ -473,60 +468,10 @@ The project follows [Conventional Commits](https://www.conventionalcommits.org/)
 [optional body: explain why, not what]
 ```
 
-| Type | Purpose |
-|---|---|
-| `feat` | New feature |
-| `fix` | Bug fix |
-| `perf` | Performance optimization |
-| `refactor` | Refactoring without behavior change |
-| `test` | Test additions or changes |
-| `chore` | Build, tooling, or configuration |
-| `docs` | Documentation |
+Valid `<type>` values are `feat`, `fix`, `perf`, `refactor`, `test`, `chore`, and `docs`. Valid `<scope>` values are `core`, `polynomial`, `factor_base`, `sieve`, `cofactor`, `relation`, `linalg`, `sqrt`, `util`, `api`, `cli`, and `siqs`.
 
-Valid scopes are `core`, `polynomial`, `factor_base`, `sieve`, `cofactor`, `relation`, `linalg`, `sqrt`, `util`, `api`, `cli`, and `siqs`.
+Branch names follow `<type>/YYMMDD-description`, for example `feat/260519-bucket-sieve`, `fix/260519-hensel-overflow`, `perf/260519-lanczos-simd`, or `exp/260519-neon-sieve`.
 
-### Branch Naming
-
-| Type | Format | Example |
-|---|---|---|
-| Feature | `feat/YYMMDD-desc` | `feat/260519-bucket-sieve` |
-| Fix | `fix/YYMMDD-desc` | `fix/260519-hensel-overflow` |
-| Performance | `perf/YYMMDD-desc` | `perf/260519-lanczos-simd` |
-| Experiment | `exp/YYMMDD-desc` | `exp/260519-neon-sieve` |
-
-## References
-
-### GNFS Foundations
-
-- Lenstra, A. K., and Lenstra, H. W., editors. *The Development of the Number Field Sieve.* Lecture Notes in Mathematics 1554. Springer, 1993.
-- Buhler, J. P., Lenstra, H. W., and Pomerance, C. *Factoring integers with the number field sieve.* Journal of Cryptology 6(2):85–105, 1993.
-- Briggs, M. E. *An Introduction to the General Number Field Sieve.* Master's thesis, Virginia Tech, 1998.
-
-### Polynomial Selection
-
-- Kleinjung, T. *On polynomial selection for the general number field sieve.* Mathematics of Computation 75(256):2037–2047, 2006.
-- Murphy, B. A. *Polynomial Selection for the Number Field Sieve Integer Factorisation Algorithm.* PhD thesis, Australian National University, 1999.
-
-### Linear Algebra
-
-- Montgomery, P. L. *A block Lanczos algorithm for finding dependencies over GF(2).* Advances in Cryptology, EUROCRYPT '95, pages 106–120, 1995.
-- Coppersmith, D. *Solving homogeneous linear equations over GF(2) via block Wiedemann algorithm.* Mathematics of Computation 62(205):333–350, 1994.
-
-### Square Root
-
-- Couveignes, J.-M. *Computing a square root for the number field sieve.* In *The Development of the Number Field Sieve*, pages 95–107, 1993.
-- Nguyen, P. Q. *A Montgomery-like Square Root for the Number Field Sieve.* ANTS-III, pages 151–168, 1998.
-
-### Cofactor Factorization
-
-- Lenstra, H. W., Jr. *Factoring integers with elliptic curves.* Annals of Mathematics 126:649–673, 1987.
-- Shanks, D. *SQUFOF*, unpublished; see Gower, J. E. *Square form factorization*. PhD thesis, 2004.
-
-### Reference Implementations
-
-- [CADO-NFS](https://cado-nfs.gitlabpages.inria.fr/), the state-of-the-art GNFS implementation maintained by INRIA and LORIA.
-- [msieve](https://github.com/radii/msieve), Jason Papadopoulos's integer factorization library.
-
-## License
+---
 
 This project is released under the **GNU General Public License v2.0**. See [LICENSE](LICENSE) for details.

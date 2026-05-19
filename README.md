@@ -22,6 +22,7 @@
   <a href="#性能数据">性能数据</a> ·
   <a href="#架构">架构</a> ·
   <a href="#运行时配置">运行时配置</a> ·
+  <a href="#测试与构建">测试与构建</a> ·
   <a href="#贡献">贡献</a> ·
   <a href="README-EN.md">English</a>
 </p>
@@ -40,26 +41,7 @@ GNFS（General Number Field Sieve）是目前已知最强的经典大整数分�
 | 内存扩展 | mmap 后端的 CSR 矩阵、关系存储、BW Krylov 序列；筛中检查点 |
 | 平台 | Apple Silicon、x86\_64；macOS 13+ 与 Linux glibc 2.31+ |
 
-## 目录
-
-- [概览](#概览)
-- [设计目标](#设计目标)
-- [性能数据](#性能数据)
-- [快速开始](#快速开始)
-- [CLI 用法](#cli-用法)
-- [C++ API](#c-api)
-- [架构](#架构)
-- [流水线](#流水线)
-- [运行时配置](#运行时配置)
-- [测试](#测试)
-- [构建选项](#构建选项)
-- [设计约定](#设计约定)
-- [项目结构](#项目结构)
-- [贡献](#贡献)
-- [参考文献](#参考文献)
-- [许可证](#许可证)
-
-## 设计目标
+### 设计目标
 
 本项目并非 GNFS 学术原型，而是面向**可重复执行、可观测、可扩展**的工业级实现。三条核心准则贯穿全部模块：
 
@@ -96,7 +78,7 @@ GNFS（General Number Field Sieve）是目前已知最强的经典大整数分�
 
 > 在 25–100 位区间，SIQS 显著优于 GNFS。GNFS 的渐近优势从 100 位以上才开始显现。本项目允许通过 `--method gnfs` 强制走 GNFS 路径以进行算法研究和回归覆盖。
 
-### 方法选择逻辑
+自动选择逻辑：
 
 ```text
         ┌────────────────────────────────────────────┐
@@ -120,8 +102,6 @@ GNFS（General Number Field Sieve）是目前已知最强的经典大整数分�
 - NTL（可选，附加数论例程）
 - Metal（macOS 可选，预留 GPU 加速）
 
-### 安装
-
 ```bash
 # macOS
 brew install gmp cmake
@@ -136,7 +116,7 @@ sudo dnf install gmp-devel cmake gcc-c++
 sudo pacman -S gmp cmake
 ```
 
-### 构建
+### 构建与首次运行
 
 ```bash
 git clone https://github.com/MaYiding/GNFS.git && cd GNFS
@@ -144,12 +124,8 @@ git clone https://github.com/MaYiding/GNFS.git && cd GNFS
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
-./scripts/test.sh             # 冒烟测试，39 个即时测试，约 5 秒
-```
+./scripts/test.sh                                 # 冒烟测试，39 个即时测试，约 5 秒
 
-### 分解一个数
-
-```bash
 ./build/gnfs 96091                                # 自动方法选择
 ./build/gnfs 1000036000099 --method siqs          # 强制 SIQS
 ./build/gnfs 1000036000099 --json                 # JSON 输出
@@ -157,7 +133,7 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 ./build/gnfs --interactive                        # REPL 模式
 ```
 
-## CLI 用法
+### CLI 完整选项
 
 ```text
 用法: gnfs <数字> [选项]
@@ -208,9 +184,9 @@ verbose           = true
 ```
 </details>
 
-## C++ API
+### C++ API
 
-### 高层一行调用
+一行调用：
 
 ```cpp
 #include <gnfs/api/factorizer.hpp>
@@ -229,7 +205,7 @@ auto r = gnfs::api::factorize(n, cfg);
 std::cout << gnfs::api::method_name(r.stats.method_used) << "\n";
 ```
 
-### 中层逐阶段控制
+逐阶段控制：
 
 ```cpp
 #include <gnfs/api/pipeline.hpp>
@@ -248,7 +224,7 @@ const auto& stats = pipeline.stats();
 std::cout << "矩阵: " << stats.matrix_rows << " × " << stats.matrix_cols << "\n";
 ```
 
-### 结果结构
+结果结构：
 
 ```cpp
 struct FactorResult {
@@ -303,7 +279,7 @@ flowchart LR
 | `siqs/` | 1 | `SIQS` | Contini 自初始化二次筛，25–100 d 路径 |
 | `util/` | 7 | `SmallVector`, `ThreadPool`, `MmapFile`, `SafeMath` | 通用基础设施 |
 
-## 流水线
+### 流水线阶段
 
 | 阶段 | 算法 | 关键优化 |
 |:---:|---|---|
@@ -318,105 +294,19 @@ flowchart LR
 
 > 算法细节与最新工程权衡（V0/V3 cascade、thin BW 解、Schirokauer maps）记录于 [CLAUDE.md](CLAUDE.md)。
 
-## 运行时配置
-
-所有实验性策略以环境变量开关暴露，默认 OFF 即标准生产路径，确保零回归风险。
-
-### 过滤合并策略
-
-| 环境变量 | 取值 | 作用 |
-|---|---|---|
-| `GNFS_CASCADE_V3` | `1` / `auto` / unset | V3 BFS spanning tree 合并 weight ≥ 3 LP 键；`auto` 仅 Round 2+ 启用 |
-| `GNFS_V0_BFS` | `1` | V0 主路径替换为 BFS chain merge（自动 size-gated，lp\_bits ≤ 20 时 fallback） |
-| `GNFS_V0_WEIGHT3` | `1` | V0 Phase 2 合并 weight = 3 LP 键的前 2 partials |
-| `GNFS_DROP_RESIDUAL` | `1` | 丢弃合并后含残留 LP 的关系（50 d β plateau 实验） |
-| `GNFS_WEIGHT_CUTOFF` | `N` | 丢弃 LP 键 weight > N 的关系（CADO-NFS purge.c 思路） |
-
-### 大规模内存与持久化
-
-| 环境变量 | 取值 | 作用 |
-|---|---|---|
-| `GNFS_OOC_RELATIONS` | `1` | 关系流式写盘（`.reldata` / `.relidx`），50 d Round 2 OOM 缓解 |
-| `GNFS_OOC_BASE_PATH` | `<path>` | 覆盖 OOC 文件路径前缀 |
-| `GNFS_SIEVE_RESUME` | `<base_path>` | 筛 mid-flight 检查点 + OOC 续写，支持 hours 级 sieve 崩溃恢复 |
-| `GNFS_BW_KRYLOV_MMAP` | `1` | BW Phase 1 Krylov 序列 mmap，60 d n=1 M 节省 ~144 MB |
-| `GNFS_NO_THIN_SOLVE` | `1` | 关闭 thin matrix BW solve（恢复 NO_EXCESS abort 旧行为） |
-
-### 性能与算法实验
-
-| 环境变量 | 取值 | 作用 |
-|---|---|---|
-| `GNFS_MURPHY_ALPHA_THREADS` | `N` | Murphy E `compute_alpha` 并行线程数（默认 hardware concurrency） |
-| `GNFS_OVERRIDE_LP_BITS` | `1–30` | 覆盖 digit-based lp\_bits 默认值（实验用） |
-
-> 各开关的设计动机、实测数据与触发条件详见 [CLAUDE.md](CLAUDE.md) 对应章节。
-
-## 测试
-
-项目使用 `scripts/test.sh`，统一封装编译、超时、分级与心跳监控（zsh 原生实现，不依赖 GNU coreutils）。
-
-```bash
-./scripts/test.sh                       # 冒烟，39 个即时测试，~5 s
-./scripts/test.sh module linalg         # 模块级
-./scripts/test.sh changed               # 根据 git diff 自动选择
-./scripts/test.sh gate                  # 合并门禁：smoke + 17/27/40/81 bit 回归
-./scripts/test.sh e2e                   # 完整 GNFS 流水线，~5 min
-./scripts/test.sh stress 1 1            # 50 位压力测试，~2.6 h
-./scripts/test.sh list                  # 查看全部测试、分级、超时
-```
-
-### 测试分级
-
-| 分级 | 超时 | 数量 | 范围 |
-|---|---|:---:|---|
-| `instant` | 10 s | 39 | 单元测试，覆盖 integer / linalg / sqrt / murphy / filter / collector / OOC policy 等 |
-| `fast` | 60 s | 1 | `test_sieve_basic` |
-| `slow` | 120–300 s | 5 | 回归门禁、Kleinjung、格筛、E2E、`factor_with_kleinjung` |
-| `heavy` | 600–3600 s | 4 | Kleinjung large、25 位基准、渐进 L3–L5 |
-| `stress` | 43200 s | 1 | 50 位（L1） + 60 位（L2） |
-
-完整子命令参考见 [CLAUDE.md](CLAUDE.md#自动化测试工作流-scriptstestsh)。
-
-## 构建选项
-
-```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Debug              # 断言 + 调试符号
-cmake -B build -DCMAKE_BUILD_TYPE=Release            # O3 + LTO + 原生 CPU
-cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo     # Release + 调试信息
-```
-
-| CMake 选项 | 默认 | 说明 |
-|---|:---:|---|
-| `GNFS_BUILD_TESTS` | `ON` | 构建测试可执行文件 |
-| `GNFS_ENABLE_ASAN` | `OFF` | AddressSanitizer |
-| `GNFS_ENABLE_TSAN` | `OFF` | ThreadSanitizer |
-| `GNFS_ENABLE_UBSAN` | `OFF` | UndefinedBehaviorSanitizer |
-
-构建系统自动检测：GMP（必需）、NTL（可选）、Metal（macOS 可选）、原生 CPU 标志（Apple Silicon `-mcpu=native`，x86 `-march=native`）、ThinLTO（Clang/macOS）或 LTO（GCC）。
-
-## 设计约定
+### 代码约定
 
 **元素表示**：本代码库基本约定为 `a - b·α`（**非** `a + b·α`）。修改此约定将破坏范数计算、Schirokauer 映射与平方根提取。
 
-**整数类型**：
+**整数类型**：`gnfs::core::Integer` 封装 GMP `mpz_class` 用于所有大整数运算；`uint64_t` 用于因子基素数与筛索引；`__uint128_t` 用于可能溢出的中间乘积；`Integer` 用于 Hensel 提升等更高精度场景。
 
-- `gnfs::core::Integer` 封装 GMP `mpz_class`，用于所有大整数运算
-- `uint64_t` 用于因子基素数与筛索引
-- `__uint128_t` 用于可能溢出的中间乘积
-- `Integer` 用于 Hensel 提升等更高精度场景
+**线程安全**：`RelationCollector` 使用 `std::atomic` 计数器与线程局部缓冲；`LatticeSieve::sieve_parallel()` 在工作线程间分配 Special-Q 素数；`BlockLanczos` 与 `BlockWiedemann` 共享 `ThreadPool` 进行并行 SpMV；`FactorBaseBuilder` 并行化 Cantor-Zassenhaus 求根。
 
-**线程安全**：
-
-- `RelationCollector` 使用 `std::atomic` 计数器与线程局部缓冲
-- `LatticeSieve::sieve_parallel()` 在工作线程间分配 Special-Q 素数
-- `BlockLanczos` 与 `BlockWiedemann` 共享 `ThreadPool` 进行并行 SpMV
-- `FactorBaseBuilder` 并行化 Cantor-Zassenhaus 求根
-
-**命名约定**：函数与变量 `snake_case`，类型与类 `PascalCase`，命名空间 `gnfs::core` / `gnfs::linalg` / `gnfs::sieve` 等。
+**命名**：函数与变量 `snake_case`，类型与类 `PascalCase`，命名空间 `gnfs::core` / `gnfs::linalg` / `gnfs::sieve` 等。
 
 **错误处理**：内部逻辑错误用 `assert()` 或 `GNFS_ASSERT` 宏；可恢复错误返回 `std::optional` 或错误码；致命错误 `throw std::runtime_error("描述")`。禁止空 `catch` 块。
 
-## 项目结构
+### 项目布局
 
 ```text
 GNFS/
@@ -445,14 +335,121 @@ GNFS/
 └── LICENSE                 # GPL-2.0
 ```
 
-### 代码规模
-
 | 分类 | 文件 | 行数 |
 |---|:---:|---:|
 | 头文件 | 61 | ~22,000 |
 | 源文件 | 14 | ~6,400 |
 | 测试 | 63 | ~27,900 |
 | **合计** | **138** | **~56,300** |
+
+### 参考文献
+
+<details>
+<summary><b>GNFS 与核心算法（点击展开）</b></summary>
+
+**GNFS 核心**
+
+- Lenstra, A. K., Lenstra, H. W. (eds.). *The Development of the Number Field Sieve*. Lecture Notes in Mathematics 1554, Springer, 1993.
+- Buhler, J. P., Lenstra, H. W., Pomerance, C. *Factoring integers with the number field sieve*. Journal of Cryptology 6(2):85–105, 1993.
+- Briggs, M. E. *An Introduction to the General Number Field Sieve*. Master's thesis, Virginia Tech, 1998.
+
+**多项式选择**
+
+- Kleinjung, T. *On polynomial selection for the general number field sieve*. Mathematics of Computation 75(256):2037–2047, 2006.
+- Murphy, B. A. *Polynomial Selection for the Number Field Sieve Integer Factorisation Algorithm*. PhD thesis, Australian National University, 1999.
+
+**线性代数**
+
+- Montgomery, P. L. *A block Lanczos algorithm for finding dependencies over GF(2)*. Advances in Cryptology — EUROCRYPT '95, pp. 106–120, 1995.
+- Coppersmith, D. *Solving homogeneous linear equations over GF(2) via block Wiedemann algorithm*. Mathematics of Computation 62(205):333–350, 1994.
+
+**平方根**
+
+- Couveignes, J.-M. *Computing a square root for the number field sieve*. In *The Development of the Number Field Sieve*, pp. 95–107, 1993.
+- Nguyen, P. Q. *A Montgomery-like Square Root for the Number Field Sieve*. ANTS-III, pp. 151–168, 1998.
+
+**余因子分解**
+
+- Lenstra, H. W. Jr. *Factoring integers with elliptic curves*. Annals of Mathematics 126:649–673, 1987.
+- Shanks, D. *SQUFOF*, unpublished; 见 Gower, J. E. *Square form factorization*. PhD thesis, 2004.
+
+**参考实现**
+
+- [CADO-NFS](https://cado-nfs.gitlabpages.inria.fr/) — INRIA/LORIA 维护的最先进 GNFS 实现
+- [msieve](https://github.com/radii/msieve) — Jason Papadopoulos 的整数分解库
+</details>
+
+## 运行时配置
+
+所有实验性策略以环境变量开关暴露，默认 OFF 即标准生产路径，确保零回归风险。各开关的设计动机、实测数据与触发条件详见 [CLAUDE.md](CLAUDE.md) 对应章节。
+
+**过滤合并策略**
+
+| 环境变量 | 取值 | 作用 |
+|---|---|---|
+| `GNFS_CASCADE_V3` | `1` / `auto` / unset | V3 BFS spanning tree 合并 weight ≥ 3 LP 键；`auto` 仅 Round 2+ 启用 |
+| `GNFS_V0_BFS` | `1` | V0 主路径替换为 BFS chain merge（自动 size-gated，lp\_bits ≤ 20 时 fallback） |
+| `GNFS_V0_WEIGHT3` | `1` | V0 Phase 2 合并 weight = 3 LP 键的前 2 partials |
+| `GNFS_DROP_RESIDUAL` | `1` | 丢弃合并后含残留 LP 的关系（50 d β plateau 实验） |
+| `GNFS_WEIGHT_CUTOFF` | `N` | 丢弃 LP 键 weight > N 的关系（CADO-NFS purge.c 思路） |
+
+**大规模内存与持久化**
+
+| 环境变量 | 取值 | 作用 |
+|---|---|---|
+| `GNFS_OOC_RELATIONS` | `1` | 关系流式写盘（`.reldata` / `.relidx`），50 d Round 2 OOM 缓解 |
+| `GNFS_OOC_BASE_PATH` | `<path>` | 覆盖 OOC 文件路径前缀 |
+| `GNFS_SIEVE_RESUME` | `<base_path>` | 筛 mid-flight 检查点 + OOC 续写，支持 hours 级 sieve 崩溃恢复 |
+| `GNFS_BW_KRYLOV_MMAP` | `1` | BW Phase 1 Krylov 序列 mmap，60 d n=1 M 节省 ~144 MB |
+| `GNFS_NO_THIN_SOLVE` | `1` | 关闭 thin matrix BW solve（恢复 NO_EXCESS abort 旧行为） |
+
+**性能与算法实验**
+
+| 环境变量 | 取值 | 作用 |
+|---|---|---|
+| `GNFS_MURPHY_ALPHA_THREADS` | `N` | Murphy E `compute_alpha` 并行线程数（默认 hardware concurrency） |
+| `GNFS_OVERRIDE_LP_BITS` | `1–30` | 覆盖 digit-based lp\_bits 默认值（实验用） |
+
+## 测试与构建
+
+项目使用 `scripts/test.sh` 统一封装编译、超时、分级与心跳监控（zsh 原生实现，不依赖 GNU coreutils）。
+
+```bash
+./scripts/test.sh                       # 冒烟，39 个即时测试，~5 s
+./scripts/test.sh module linalg         # 模块级
+./scripts/test.sh changed               # 根据 git diff 自动选择
+./scripts/test.sh gate                  # 合并门禁：smoke + 17/27/40/81 bit 回归
+./scripts/test.sh e2e                   # 完整 GNFS 流水线，~5 min
+./scripts/test.sh stress 1 1            # 50 位压力测试，~2.6 h
+./scripts/test.sh list                  # 查看全部测试、分级、超时
+```
+
+| 分级 | 超时 | 数量 | 范围 |
+|---|---|:---:|---|
+| `instant` | 10 s | 39 | 单元测试，覆盖 integer / linalg / sqrt / murphy / filter / collector / OOC policy 等 |
+| `fast` | 60 s | 1 | `test_sieve_basic` |
+| `slow` | 120–300 s | 5 | 回归门禁、Kleinjung、格筛、E2E、`factor_with_kleinjung` |
+| `heavy` | 600–3600 s | 4 | Kleinjung large、25 位基准、渐进 L3–L5 |
+| `stress` | 43200 s | 1 | 50 位（L1） + 60 位（L2） |
+
+完整子命令参考见 [CLAUDE.md](CLAUDE.md#自动化测试工作流-scriptstestsh)。
+
+**构建类型**
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Debug              # 断言 + 调试符号
+cmake -B build -DCMAKE_BUILD_TYPE=Release            # O3 + LTO + 原生 CPU
+cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo     # Release + 调试信息
+```
+
+| CMake 选项 | 默认 | 说明 |
+|---|:---:|---|
+| `GNFS_BUILD_TESTS` | `ON` | 构建测试可执行文件 |
+| `GNFS_ENABLE_ASAN` | `OFF` | AddressSanitizer |
+| `GNFS_ENABLE_TSAN` | `OFF` | ThreadSanitizer |
+| `GNFS_ENABLE_UBSAN` | `OFF` | UndefinedBehaviorSanitizer |
+
+构建系统自动检测：GMP（必需）、NTL（可选）、Metal（macOS 可选）、原生 CPU 标志（Apple Silicon `-mcpu=native`，x86 `-march=native`）、ThinLTO（Clang/macOS）或 LTO（GCC）。
 
 ## 贡献
 
@@ -463,9 +460,7 @@ GNFS/
 3. 遵循约定：C++20 风格、`snake_case` 函数、`PascalCase` 类型
 4. 提交 PR 并附清晰描述
 
-### 提交规范
-
-本项目采用 [Conventional Commits](https://www.conventionalcommits.org/)：
+本项目采用 [Conventional Commits](https://www.conventionalcommits.org/) 提交规范：
 
 ```text
 <type>(<scope>): <简短描述>
@@ -473,60 +468,10 @@ GNFS/
 [可选正文：解释 why，而非 what]
 ```
 
-| 类型 | 用途 |
-|---|---|
-| `feat` | 新功能 |
-| `fix` | Bug 修复 |
-| `perf` | 性能优化 |
-| `refactor` | 重构（不改行为） |
-| `test` | 测试增删改 |
-| `chore` | 构建 / 工具 / 配置 |
-| `docs` | 文档 |
+`<type>` 取值为 `feat` / `fix` / `perf` / `refactor` / `test` / `chore` / `docs`；`<scope>` 取值为 `core` / `polynomial` / `factor_base` / `sieve` / `cofactor` / `relation` / `linalg` / `sqrt` / `util` / `api` / `cli` / `siqs`。
 
-scope 取值：`core`, `polynomial`, `factor_base`, `sieve`, `cofactor`, `relation`, `linalg`, `sqrt`, `util`, `api`, `cli`, `siqs`。
+分支命名遵循 `<type>/YYMMDD-描述`，例如 `feat/260519-bucket-sieve`、`fix/260519-hensel-overflow`、`perf/260519-lanczos-simd`、`exp/260519-neon-sieve`。
 
-### 分支命名
+---
 
-| 类型 | 格式 | 示例 |
-|---|---|---|
-| 功能 | `feat/YYMMDD-desc` | `feat/260519-bucket-sieve` |
-| 修复 | `fix/YYMMDD-desc` | `fix/260519-hensel-overflow` |
-| 性能 | `perf/YYMMDD-desc` | `perf/260519-lanczos-simd` |
-| 实验 | `exp/YYMMDD-desc` | `exp/260519-neon-sieve` |
-
-## 参考文献
-
-### GNFS 核心
-
-- Lenstra, A. K., Lenstra, H. W. (eds.). *The Development of the Number Field Sieve*. Lecture Notes in Mathematics 1554, Springer, 1993.
-- Buhler, J. P., Lenstra, H. W., Pomerance, C. *Factoring integers with the number field sieve*. Journal of Cryptology 6(2):85–105, 1993.
-- Briggs, M. E. *An Introduction to the General Number Field Sieve*. Master's thesis, Virginia Tech, 1998.
-
-### 多项式选择
-
-- Kleinjung, T. *On polynomial selection for the general number field sieve*. Mathematics of Computation 75(256):2037–2047, 2006.
-- Murphy, B. A. *Polynomial Selection for the Number Field Sieve Integer Factorisation Algorithm*. PhD thesis, Australian National University, 1999.
-
-### 线性代数
-
-- Montgomery, P. L. *A block Lanczos algorithm for finding dependencies over GF(2)*. Advances in Cryptology — EUROCRYPT '95, pp. 106–120, 1995.
-- Coppersmith, D. *Solving homogeneous linear equations over GF(2) via block Wiedemann algorithm*. Mathematics of Computation 62(205):333–350, 1994.
-
-### 平方根
-
-- Couveignes, J.-M. *Computing a square root for the number field sieve*. In *The Development of the Number Field Sieve*, pp. 95–107, 1993.
-- Nguyen, P. Q. *A Montgomery-like Square Root for the Number Field Sieve*. ANTS-III, pp. 151–168, 1998.
-
-### 余因子分解
-
-- Lenstra, H. W. Jr. *Factoring integers with elliptic curves*. Annals of Mathematics 126:649–673, 1987.
-- Shanks, D. *SQUFOF*, unpublished; 见 Gower, J. E. *Square form factorization*. PhD thesis, 2004.
-
-### 参考实现
-
-- [CADO-NFS](https://cado-nfs.gitlabpages.inria.fr/) — INRIA/LORIA 维护的最先进 GNFS 实现
-- [msieve](https://github.com/radii/msieve) — Jason Papadopoulos 的整数分解库
-
-## 许可证
-
-本项目采用 **GNU General Public License v2.0**。详见 [LICENSE](LICENSE)。
+本项目采用 **GNU General Public License v2.0** 许可。详见 [LICENSE](LICENSE)。
