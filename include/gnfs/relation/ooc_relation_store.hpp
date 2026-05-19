@@ -6,9 +6,11 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace gnfs::relation {
@@ -86,6 +88,23 @@ public:
                 }
             }
 
+            // Normalize idx size to header (16) + count_ offsets (count_ * 8),
+            // dropping any trailing bytes such as a stale end_offset sentinel.
+            // libstdc++ in r/w fstream mode misbehaves when seekp lands inside
+            // a pre-existing tail — interleaved put/get pointers can corrupt
+            // subsequent writes. After truncation, seekp(0, end) lands cleanly
+            // at the append point and stays consistent across platforms.
+            const std::uintmax_t expected_idx_size =
+                static_cast<std::uintmax_t>(16 + count_ * 8);
+            std::error_code ec;
+            std::filesystem::resize_file(base_path + ".relidx",
+                                         expected_idx_size, ec);
+            if (ec) {
+                throw std::runtime_error(
+                    "OOCRelationWriter resume: cannot resize idx (" +
+                    ec.message() + ")");
+            }
+
             // Reopen in r/w mode (no trunc), seek streams past existing content.
             data_stream_.open(base_path + ".reldata",
                               std::ios::in | std::ios::out | std::ios::binary);
@@ -95,10 +114,13 @@ public:
                 throw std::runtime_error(
                     "OOCRelationWriter resume: cannot reopen at " + base_path);
             }
-            // data_stream_ → end of file (append point).
+            // Sync both get and put pointers to EOF. Setting only seekp leaves
+            // the streambuf's internal read/write state inconsistent on
+            // libstdc++ and can corrupt the first append.
+            data_stream_.seekg(0, std::ios::end);
             data_stream_.seekp(0, std::ios::end);
-            // idx_stream_ → past header (16) + existing offsets array (count_ × 8).
-            idx_stream_.seekp(static_cast<std::streamoff>(16 + count_ * 8));
+            idx_stream_.seekg(0, std::ios::end);
+            idx_stream_.seekp(0, std::ios::end);
         } else {
             // Fresh create: trunc + write INCOMPLETE header.
             data_stream_.open(base_path + ".reldata",
