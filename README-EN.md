@@ -78,15 +78,17 @@ The table below shows measured wall-clock latency in **Release mode** on Apple M
 
 > SIQS dominates GNFS between 25 and 100 digits. The asymptotic advantage of GNFS appears only above 100 digits. The project nevertheless lets you force the GNFS path via `--method gnfs` for algorithmic research and regression coverage.
 
-The automatic selection logic:
+The automatic selection cascade (top-down first match):
 
-```text
-        ┌────────────────────────────────────────────┐
-   N    │  any factor ≤ 10⁶  ──→  trial (< 1 ms)     │
-   │    │  ≤ 24 d            ──→  Pollard rho        │
-   ├──→ │  25–100 d          ──→  SIQS               │
-        │  > 100 d           ──→  GNFS               │
-        └────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    N([Input N]) --> Q1{Any factor<br/>≤ 10⁶?}
+    Q1 -- yes --> T["Trial<br/>&lt; 1 ms"]
+    Q1 -- no --> Q2{N ≤ 24 d?}
+    Q2 -- yes --> R["Pollard rho<br/>1–14 ms"]
+    Q2 -- no --> Q3{N ≤ 100 d?}
+    Q3 -- yes --> S["SIQS<br/>0.17 s – minutes"]
+    Q3 -- no --> G["GNFS<br/>hours – days"]
 ```
 
 To override the default selection, use `./build/gnfs <N> --method <name>`, where the choices are `auto`, `trial`, `rho`, `siqs`, or `gnfs`.
