@@ -1,3 +1,12 @@
+// Force assert() to remain live even in Release builds. Several cases here
+// embed side-effecting calls inside assert (e.g. assert(collector.add(...)));
+// NDEBUG would otherwise strip both the check and the call, leaving phase-1
+// setup unexecuted and phase-3 reads scanning uninitialized index entries —
+// which surfaced on CI as "OOCRelationReader: corrupt record (truncated)".
+#ifdef NDEBUG
+#  undef NDEBUG
+#endif
+
 #include "gnfs/relation/collector.hpp"
 #include "gnfs/util/safe_math.hpp"
 
