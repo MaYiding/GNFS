@@ -33,7 +33,7 @@ cd build && ctest --output-on-failure
 
 ```bash
 # ── 日常开发 (最常用) ──
-./scripts/test.sh                      # 冒烟测试: 23 个 instant 测试, ~5s (Debug) / ~5s (Release)
+./scripts/test.sh                      # 冒烟测试: 39 个 instant 测试, ~5s (Debug) / ~5s (Release)
 ./scripts/test.sh smoke                # 同上
 ./scripts/test.sh changed              # 根据 git diff 自动选择受影响模块
 ./scripts/test.sh changed --deep       # 同上 + 级联依赖模块
@@ -83,7 +83,7 @@ cd build && ctest --output-on-failure
 
 | 分级 | 超时 | 测试 | 包含在 |
 |------|------|------|--------|
-| **instant** | 10s | test_integer, test_small_vector, test_thread_pool, test_factor_base, test_special_q, test_relation_collector, test_cofactor, test_linalg, test_sqrt, test_sqrt_debug, test_murphy | smoke, module, changed |
+| **instant** | 10s | 39 个纯单元测试 (test_integer / test_linalg / test_sqrt / test_murphy / test_filter / test_v0_bfs_policy / test_clique_merger / test_ooc_policy / test_sieve_ecore_qos 等) — 完整清单见 `scripts/test.sh` SMOKE_TESTS 数组 | smoke, module, changed |
 | **fast** | 60s | test_sieve_basic | module, changed |
 | **slow** | 120-300s | test_regression_gate, test_kleinjung, test_lattice_sieve, test_factor_with_kleinjung, test_gnfs_e2e | gate, module --slow, e2e, full |
 | **heavy** | 600-3600s | test_kleinjung_large, test_gnfs_progressive, test_25digit | progressive, nightly, bench |
@@ -131,17 +131,18 @@ cd build && ctest --output-on-failure
 ## Architecture
 
 ```
-include/gnfs/           # 53 头文件 (.hpp)
+include/gnfs/           # 61 头文件 (.hpp)
 ├── api/           (6)  # Config, Pipeline, Factorizer, i18n — 公开 API 层
 ├── core/          (6)  # Integer, Polynomial, Relation, Params, Types — 基础类型
-├── polynomial/    (6)  # Kleinjung 选择, Murphy E, base-m, IntPolynomial, Optimizer, Dispatch
+├── polynomial/    (7)  # Kleinjung 选择, Murphy E, base-m, IntPolynomial, Optimizer, Dispatch, Resultant
 ├── factor_base/   (2)  # 因子基构建 (Cantor-Zassenhaus 求根)
-├── sieve/         (4)  # Lattice sieve, Line sieve, Special-Q, Lattice basis
+├── sieve/         (5)  # Lattice sieve, Special-Q, Lattice basis, sieve_checkpoint, ecore_qos
 ├── cofactor/      (5)  # 余因子分解: 试除法, ECM, SQUFOF, 光滑性检查
-├── relation/      (3)  # 关系收集, 过滤/合并 (1LP+2LP), OOC 存储
-├── linalg/        (8)  # GF(2) 矩阵, Block Lanczos, Block Wiedemann, Gaussian, SGE, Schirokauer, Mmap CSR
+├── relation/      (6)  # collector, filter, clique_merger, v0_bfs_policy, ooc_policy, ooc_relation_store
+├── linalg/        (9)  # GF(2) 矩阵, Block Lanczos, Block Wiedemann, Gaussian, SGE, Schirokauer, Mmap CSR, Krylov mmap
 ├── sqrt/          (7)  # 代数平方根 (Nguyen Hybrid + Couveignes), 有理平方根, 类群, ModularPoly
-└── util/          (6)  # SmallVector, ThreadPool, Logger, Timer, MmapFile, SafeMath
+├── siqs/          (1)  # 备选 SIQS 路径 (小 N 兜底)
+└── util/          (7)  # SmallVector, ThreadPool, Logger, Timer, MmapFile, SafeMath, Primes
 
 src/                    # 14 源文件 (.cpp)，按模块组织
 ├── api/           (2)  # pipeline.cpp, factorizer.cpp
@@ -153,7 +154,7 @@ src/                    # 14 源文件 (.cpp)，按模块组织
 ├── sieve/         (1)  # lattice_sieve
 └── sqrt/          (2)  # algebraic_sqrt, rational_sqrt
 
-tests/                  # 41 测试文件 (.cpp)
+tests/                  # 63 测试文件 (.cpp)
 ```
 
 ## GNFS Pipeline
@@ -204,10 +205,10 @@ V3 cascade 默认 OFF (V0 path 零开销). 启用时:
 - stderr 输出 `[v3_cascade.sieve] in=... full=... residual=... added=...`
 
 **集成点** (commits 7f9de82, 975ac8b, 56e5b14):
-- `src/api/pipeline.cpp:39-58` — V3Mode enum + cascade_v3_enabled_for_round
-- `src/api/pipeline.cpp:627` — sieve_and_collect adaptive loop (Auto-aware)
-- `src/api/pipeline.cpp:747` — Phase 4 filter (always enable when not Off)
-- `tests/test_stress.cpp:393` — stress sieve loop
+- `src/api/pipeline.cpp` — `V3Mode` enum + `cascade_v3_mode()` + `cascade_v3_enabled_for_round(round)` (~line 47)
+- `src/api/pipeline.cpp` — `sieve_and_collect` adaptive loop (Auto-aware, 见 `cascade_v3_enabled_for_round` 调用点)
+- `src/api/pipeline.cpp` — `Pipeline::filter` Phase 4 (always enable when not Off)
+- `tests/test_stress.cpp` — stress sieve loop (V3 cascade prep + run, 见 `[v3_cascade]` 输出)
 
 **详细**: `docs/perf/v3-cascade-design.md`
 
@@ -229,7 +230,7 @@ GNFS_OVERRIDE_LP_BITS=27 ./gnfs <N>          # any size with lp_bits=27
 
 ### Thin matrix BW solve (B'=M^T·M variant, default ON)
 
-**BACKLOG #80 step 7 完成 (2026-05-17)**: 当 matrix rows ≤ cols (NO_EXCESS),
+**实施 2026-05-17**: 当 matrix rows ≤ cols (NO_EXCESS),
 `find_dependencies` 自动调用 `block_wiedemann_thin_solve`, 使用 `B'=M^T·M`
 operator 而非标准 `B=M·M^T`. 工作在 R^n, recovery via `u=M·w`.
 
@@ -254,7 +255,7 @@ operator 而非标准 `B=M·M^T`. 工作在 R^n, recovery via `u=M·w`.
 
 **ENV `GNFS_V0_WEIGHT3=1`** (commit `81d3331`, 2026-05-17):
 V0 Phase 2 也 merge weight=3 LP keys 的 first 2 partials (3rd 下轮变 singleton).
-BACKLOG #80 (1b) V0 partial weight≥3 handling — lightweight V3 cascade alternative
+V0 partial weight≥3 handling — lightweight V3 cascade alternative
 不走 BFS spanning tree.
 
 ```bash
@@ -266,7 +267,7 @@ GNFS_V0_WEIGHT3=1 ./gnfs <N>          # any GNFS run
 **V3 cascade 与之 orthogonal**: V0_WEIGHT3 加快 V0 convergence (单 pair per key),
 V3 cascade 走 full chain BFS. 二者可同时启用.
 
-### Drop-residual + weight-cutoff (BACKLOG #80 algorithmic breakthrough)
+### Drop-residual + weight-cutoff (50d β plateau 实验通道)
 
 **ENV `GNFS_DROP_RESIDUAL=1`** (commits `da51e0b` + `b001606`, 2026-05-17):
 V0 + V3 cascade 都 drop "merged-with-residual" partials (含残留 LP 的合并关系).
@@ -290,11 +291,11 @@ GNFS_WEIGHT_CUTOFF=2 ./test_stress 1 1   # weight-3+ key 的关系全 drop
 - 单独 cutoff=2: gate 4/4 PASS 60s (adaptive loop 多 round 补偿删除)
 - 50d 实测 background (PID 67047, log `/tmp/p10_drop_residual_50d.log`)
 - 二者组合预期: β < 100% 必要条件 (待实测).
-- 注意: drop 模式 V3 cascade 的 v3_added 可能 = 0 (V0 已覆盖 full, V3 残留全 drop), test_clique_merger_50d_synthetic 已 conditional skip assertion (line 253).
+- 注意: drop 模式 V3 cascade 的 v3_added 可能 = 0 (V0 已覆盖 full, V3 残留全 drop), `tests/test_clique_merger_50d_synthetic.cpp` 的 `v3_added > 0` 已 conditional skip (检测 `GNFS_DROP_RESIDUAL` ENV).
 
 ### V0 BFS chain merge (GNFS_V0_BFS)
 
-**ENV `GNFS_V0_BFS=1`** (BACKLOG #1 step b alt path, 2026-05-18):
+**ENV `GNFS_V0_BFS=1`** (2026-05-18 实施, test entry wiring 2026-05-19):
 Pipeline filter() 中 V0 主路径用 CliqueRelationMerger BFS spanning tree 算法替代
 PartialRelationMerger::merge_all (standard Phase 1+2 weight=2 simple match).
 启用时 V3 cascade redundant (skip).
@@ -311,15 +312,17 @@ GNFS_V0_BFS=1 ./gnfs <50d-or-larger>   # 50d+ V0 主路径 BFS
 GNFS_V0_BFS=1 ./gnfs <81-bit>          # 自动 fallback, stderr 警告
 ```
 
-**用途**: BACKLOG #1 step b "weight≥3 LP keys 也可合并" 的 lightweight 实现.
+**用途**: "weight≥3 LP keys 也可合并" 的 lightweight 实现.
 不重写 PartialRelationMerger, 仅 dispatch to CliqueRelationMerger (已实现 BFS).
 
-**集成点** (commits `086afb2` + `d50fd61`, 2026-05-18):
-- `src/api/pipeline.cpp:768-815` — Pipeline::filter() V0_BFS env-gate + size-aware fallback
+**集成点** (commits `086afb2` + `d50fd61`, 2026-05-18; test wiring `0f4e9c3` + `8d222f8`, 2026-05-19):
+- `include/gnfs/relation/v0_bfs_policy.hpp` — env-gate + size-aware dispatch decision
+- `src/api/pipeline.cpp` — `Pipeline::filter()` V0_BFS dispatch (检索 `GNFS_V0_BFS` getenv 点)
+- `tests/test_stress.cpp` / `tests/test_gnfs_progressive.cpp` — 同 policy wire-in (避免 test entry point bypass)
 
 ### OOC Relation Store (GNFS_OOC_RELATIONS)
 
-**ENV `GNFS_OOC_RELATIONS=1`** (BACKLOG #11c, 2026-05-18):
+**ENV `GNFS_OOC_RELATIONS=1`** (2026-05-18 实施):
 启用 RelationCollector OOC 流式持久化, sieve 期间 relations 流式写盘
 `/tmp/gnfs_relations_<pid>.{reldata,relidx}` 而非 in-memory vector. 内存只保留
 (a,b) seen set + stats. Phase 4 filter 入口 OOCRelationReader 一次性 read_all
@@ -332,7 +335,7 @@ GNFS_OOC_RELATIONS=1 ./test_gnfs_e2e             # e2e stress test OOC path
 ```
 
 **用途**:
-- BACKLOG #11c trigger 触发: 50d Round 2 909K relations 时 macOS OOM-killed
+- 触发场景: 50d Round 2 909K relations 时 macOS OOM-killed
   (2026-05-17 实测, RSS ~3.5GB, sieve buckets + collector.relations_ 联合 OOM).
 - OOC mode 减小 sieve 期间 RAM peak (relations_ vector 不再 grow, seen_ 占
   ~16 B/relation, 1M relations 仅 16 MB; vs vector 1M × 500B = 500 MB).
@@ -341,8 +344,11 @@ GNFS_OOC_RELATIONS=1 ./test_gnfs_e2e             # e2e stress test OOC path
 
 **集成点** (commits `3b843fc` → `d39b637`, 2026-05-18):
 - `include/gnfs/relation/collector.hpp` — CollectorConfig + add/get/clear/merge OOC dual mode
-- `src/api/pipeline.cpp:498-520` — sieve_and_collect ENV-gate 解析 + base_path 配置
+- `include/gnfs/relation/ooc_relation_store.hpp` — OOCRelationWriter/Reader, MAGIC/INCOMPLETE flip
+- `include/gnfs/relation/ooc_policy.hpp` — 三态 ENV 解析 (off / auto-by-size / on)
+- `src/api/pipeline.cpp` — `sieve_and_collect` ENV-gate + base_path (检索 `GNFS_OOC_RELATIONS` getenv 点)
 - `tests/test_relation_collector.cpp` — 8 OOC unit tests (basic/dedup/N-divisibility/partial/concurrent/clear/empty-path/legacy)
+- `tests/test_ooc_relations.cpp` / `tests/test_ooc_policy.cpp` — OOC store + policy
 - `tests/test_gnfs_e2e.cpp` — OOC stress test in real GNFS pipeline (5/5 PASS)
 
 **API 兼容**:
@@ -355,7 +361,7 @@ GNFS_OOC_RELATIONS=1 ./test_gnfs_e2e             # e2e stress test OOC path
 
 ### Sieve mid-flight checkpoint (GNFS_SIEVE_RESUME)
 
-**ENV `GNFS_SIEVE_RESUME=<base_path>`** (BACKLOG #11e, 2026-05-18):
+**ENV `GNFS_SIEVE_RESUME=<base_path>`** (2026-05-18 实施):
 启用 OOC streaming + sieve loop checkpoint, 长时间 50d+/60d sieve 中断后能 resume.
 ENV 隐含启用 OOC (base_path 作 OOC base 和 checkpoint base, 不需 单独 set
 GNFS_OOC_RELATIONS).
@@ -388,11 +394,10 @@ GNFS_SIEVE_RESUME=/tmp/gnfs_50d_session ./gnfs <50d-N>
 - 任一 stage crash 时下次 resume 仍 detect partial state (允许丢 ≤25 batches)
 
 **集成点** (commits `b4c6364` → `60a1282`, 2026-05-18):
-- `include/gnfs/sieve/sieve_checkpoint.hpp` — 153 lines, SieveCheckpoint binary format
-- `include/gnfs/relation/ooc_relation_store.hpp` — +73 lines OOCWriter resume ctor
-- `include/gnfs/relation/collector.hpp` — +50 lines CollectorConfig.ooc_resume +
-  restore_seen_from_ooc helper
-- `src/api/pipeline.cpp:498-573, 599-622, 654-679, 826-832` — Pipeline 集成
+- `include/gnfs/sieve/sieve_checkpoint.hpp` — SieveCheckpoint binary format (MAGIC/INCOMPLETE flip)
+- `include/gnfs/relation/ooc_relation_store.hpp` — OOCWriter resume ctor
+- `include/gnfs/relation/collector.hpp` — CollectorConfig.ooc_resume + `restore_seen_from_ooc` helper
+- `src/api/pipeline.cpp` — `sieve_and_collect` ENV-gate + ckpt save/load (检索 `GNFS_SIEVE_RESUME` getenv 点 + `SieveCheckpoint::save` 调用点)
 - `tests/test_sieve_checkpoint.cpp` — 9 unit tests (roundtrip/corrupt/version/INCOMPLETE)
 - `tests/test_relation_collector.cpp` — 6 new tests (writer append + collector resume)
 - `tests/test_api.cpp` — 2 e2e tests (fresh + synthetic_ckpt resume)
@@ -403,7 +408,7 @@ GNFS_SIEVE_RESUME=/tmp/gnfs_50d_session ./gnfs <50d-N>
 
 ### BW Krylov sequence mmap (GNFS_BW_KRYLOV_MMAP)
 
-**ENV `GNFS_BW_KRYLOV_MMAP=1`** (BACKLOG #11d, 2026-05-18):
+**ENV `GNFS_BW_KRYLOV_MMAP=1`** (2026-05-18 实施):
 BW Phase 1 Krylov sequence 写到 `/tmp/gnfs_bw_krylov_*.kry` mmap-backed file
 而非 in-memory vector. Phase 2 BM 入口 copy mmap → vector 再 close.
 
@@ -426,7 +431,7 @@ GNFS_BW_KRYLOV_MMAP=1 ./gnfs <N>   # 50d+/60d 大矩阵 Phase 5 启用
 
 ### Murphy E alpha 并行 (GNFS_MURPHY_ALPHA_THREADS)
 
-**ENV `GNFS_MURPHY_ALPHA_THREADS=N`** (BACKLOG #2 lightweight path, 2026-05-18):
+**ENV `GNFS_MURPHY_ALPHA_THREADS=N`** (2026-05-18 实施, lightweight optimization):
 MurphyEvaluator::compute_alpha 用 ThreadPool 并行扫 ~78k primes. 每 thread
 accumulates partial double, 序列 reduce.
 
@@ -441,11 +446,11 @@ parallel by prime). Kleinjung selector + 多 polynomial 评估时 sieve 主流�
 wall-time 显著缩短.
 
 **集成点** (commit `0dd1799`, 2026-05-18):
-- `include/gnfs/polynomial/murphy_evaluator.hpp:144-217` — parallel sweep +
-  `alpha_contribution(f, df, p)` thread-safe helper
+- `include/gnfs/polynomial/murphy_evaluator.hpp` — `compute_alpha(f, prime_bound)` parallel sweep + `alpha_contribution(f, df, p)` thread-safe helper
 - Lazy `std::once_flag` + `unique_ptr<ThreadPool>` per evaluator instance
+- 回归测试 `tests/test_murphy.cpp` parallel == sequential invariant (commit `2ef928a`)
 
-**Rotation-incremental 算法重构**: BACKLOG #2 multi-day 工作仍 deferred.
+**Rotation-incremental 算法重构**: multi-day pure-math 工作仍 deferred.
 当前 parallelization 是 orthogonal lightweight 加速, 不替代真正 incremental.
 
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
@@ -669,7 +674,15 @@ main (合并后仍然稳定)
 
 ### .gitignore
 
-已配置，排除：`build/`, `xcode-build/`, `.cache/`, `.DS_Store`, IDE 文件, 计划文件（`task_plan.md` 等会话级文件）
+已配置，排除：
+- 构建产物：`build/`, `build-*/`, `xcode-build/`, `cmake-build-*/`, `*.o`, `*.a`, `*.dylib`, `*.dSYM/`
+- IDE：`.vscode/`, `.idea/`, `*.xcodeproj/`, `.clangd/`, `compile_commands.json`
+- OS：`.DS_Store`, `Thumbs.db`
+- 会话级持久化文件（**不入 git**）：`task_plan.md`, `task_plan_*.md`, `findings.md`, `progress.md`, `BACKLOG.md`, `RESOLVED.md`
+- 根目录代码污染防护：`/*.cpp`, `/*.hpp`, `/*.sh`（代码必须放 `include/` `src/` `tests/`，脚本放 `scripts/`）
+- 遗留废弃文档：`/BUILD.md`, `/QUICKSTART.md`, `/PROGRESS_UPDATE.md` 等多个 root *.md
+- 性能采集：`bench/results/*.trace`, `bench/results/*.pmu.json`, `*.profraw`, `*.profdata`, `pgo-profiles/`
+- Claude 运行时：`.claude/scheduled_tasks.lock`
 
 ### BACKLOG 自动修复策略（已授权）
 
@@ -816,19 +829,21 @@ tail -50 /tmp/xxx.log
 
 - 大类群 (>20 generators) 的 Couveignes 实现可能失败（Nguyen Hybrid 优先路径可回避）
 - Block Wiedemann 内存使用: Krylov 序列 O(n · L · 8 bytes)，4 GB guard 限制
-  + **缓解 (2026-05-18, BACKLOG #11d)**: ENV `GNFS_BW_KRYLOV_MMAP=1` mmap A_seq 到磁盘,
+  + **缓解 (2026-05-18)**: ENV `GNFS_BW_KRYLOV_MMAP=1` mmap A_seq 到磁盘,
     matrix BM 节省 ~16 MB, scalar BM 节省 ~128 MB (60d n=1M), 总 ~144 MB Phase 5 RAM
 - OOC 基础设施已部分集成到主 pipeline:
   + RelationCollector OOC: ENV `GNFS_OOC_RELATIONS=1` / sieve checkpoint
-    `GNFS_SIEVE_RESUME=<base_path>` (2026-05-18, BACKLOG #11c/#11e)
-  + BW Krylov mmap: ENV `GNFS_BW_KRYLOV_MMAP=1` (2026-05-18, BACKLOG #11d)
+    `GNFS_SIEVE_RESUME=<base_path>` (2026-05-18)
+  + BW Krylov mmap: ENV `GNFS_BW_KRYLOV_MMAP=1` (2026-05-18)
   + MmapCSRMatrix Phase 5 集成尚未实施 (需 SpMV API generic 化, multi-day surgery)
-- NEON SIMD sieve baseline 已实施 (2026-05-18, P2-A): `detail::apply_log_p_range`
+- NEON SIMD sieve baseline 已实施 (2026-05-18): `detail::apply_log_p_range`
   helper 在 Phase 0 global + v-prime row 用 NEON 8-lane. bucket scatter + tiny stride
   保持 scalar (doctrine "sieve 内核 NEON 收益有限" — gather/scatter 不适合 SIMD).
-- Murphy E `compute_alpha` 已 ThreadPool 并行化 (2026-05-18, BACKLOG #2):
+- Murphy E `compute_alpha` 已 ThreadPool 并行化 (2026-05-18):
   ENV `GNFS_MURPHY_ALPHA_THREADS=N` opt-out (默认 hardware concurrency).
   Rotation-incremental 算法重构 deferred (multi-day pure math).
+- E-core QoS 分离 (2026-05-18, commits `e47ab08` + `a958fc9`): `include/gnfs/sieve/ecore_qos.hpp`
+  helper, 4 个 sieve thread spawn site 已 wire-in, M5 P/E-core 调度差异已 mitigate.
 
 ## 工作流规范（强制执行）
 
@@ -998,8 +1013,8 @@ TEST — 测试覆盖缺口
 
 1. **编译 + 测试验证**：确保当前状态编译通过、相关测试通过
 2. **更新持久化文件**：详细记录到 `progress.md`
-3. **按需压缩上下文**：`/compact` 压缩后直接开始下一大阶段
-4. **不等待、不暂停、不询问** — 直接开始下一大阶段
+3. **不等待、不暂停、不询问** — 直接开始下一大阶段
+4. **不要自己 `/compact`** — 系统会自动压缩上下文（详见 §8）
 
 ```
 大阶段 1 开始
@@ -1010,7 +1025,7 @@ TEST — 测试覆盖缺口
   ↓
 大阶段 1 完成：编译验证 + 更新 progress.md
   ↓
-/compact 压缩（按需）→ 直接开始大阶段 2
+直接开始大阶段 2（不等用户确认、不自己 /compact）
   ↓
 步骤 2.1：实施 → commit（自动）
 ...
@@ -1027,10 +1042,10 @@ TEST — 测试覆盖缺口
   ↓
 大阶段完成 → 编译+测试 → 更新 progress.md → 直接继续下一阶段
   ↓
-（按需 /compact 压缩，不暂停）
-  ↓
 全部完成 → 最终验证 + E2E 回归 → 总结报告
 ```
+
+**不要自己 `/compact`**：系统自动管理上下文压缩，主线程专注完成任务（详见 §8）。
 
 ### 8. 上下文窗口管理
 
