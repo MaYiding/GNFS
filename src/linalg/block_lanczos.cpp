@@ -1,5 +1,6 @@
 #include "gnfs/linalg/block_lanczos.hpp"
 #include "gnfs/linalg/block_wiedemann.hpp"
+#include "gnfs/linalg/bl_checkpoint.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
 #include <array>
@@ -7,6 +8,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <random>
 #include <cstring>
 #include <thread>
@@ -125,6 +127,48 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
     }
 
     size_t pivot_row = 0;
+    size_t scan_start_col = m;
+    uint64_t iter_counter = 0;
+
+    // ── Optional mid-flight checkpoint (ENV: GNFS_BL_CHECKPOINT=<base>) ─────
+    // When enabled, we (a) try to load a saved checkpoint and resume the scan
+    // at the saved (pivot_row, cur_col, aug payload), and (b) save the state
+    // every `bl_checkpoint_interval()` pivots so a crash loses at most that
+    // many pivots' worth of work.
+    //
+    // The checkpoint is bound to the matrix shape (rows, cols, wpr); a stale
+    // file from a different run with mismatched dimensions is rejected and
+    // we start fresh.
+    const std::string bl_ckpt_path = bl_checkpoint_full_path();
+    const bool bl_ckpt_enabled = !bl_ckpt_path.empty();
+    const uint64_t bl_ckpt_interval = bl_checkpoint_interval();
+
+    if (bl_ckpt_enabled && BlockLanczosCheckpoint::exists_and_valid(bl_ckpt_path)) {
+        auto loaded = BlockLanczosCheckpoint::load(bl_ckpt_path);
+        if (loaded.has_value()
+            && loaded->rows == m
+            && loaded->cols == n
+            && loaded->aug_words_per_row == aug.words_per_row_
+            && loaded->aug.size() == aug.data_.size()
+            && loaded->pivot_row <= m
+            && loaded->cur_col >= m && loaded->cur_col <= m + n) {
+            std::copy(loaded->aug.begin(), loaded->aug.end(), aug.data_.begin());
+            pivot_row = loaded->pivot_row;
+            scan_start_col = loaded->cur_col;
+            iter_counter = loaded->iteration;
+            std::cerr << "[bl_ckpt] resume from " << bl_ckpt_path
+                      << " iter=" << iter_counter
+                      << " pivot_row=" << pivot_row
+                      << " cur_col=" << scan_start_col
+                      << " (m=" << m << ", n=" << n << ")\n";
+        } else {
+            // Stale or shape-mismatched checkpoint: reject and start clean.
+            std::cerr << "[bl_ckpt] rejecting incompatible checkpoint "
+                      << bl_ckpt_path
+                      << " (shape or fields mismatched, starting fresh)\n";
+            BlockLanczosCheckpoint::remove(bl_ckpt_path);
+        }
+    }
 
     // Parallel Gaussian elimination:
     // The XOR elimination across rows is independent and dominates the cost.
@@ -153,7 +197,7 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
     size_t stat_sum_elim_rows = 0;
     size_t stat_max_elim_rows = 0;
 
-    for (size_t col = m; col < m + n && pivot_row < m; ++col) {
+    for (size_t col = scan_start_col; col < m + n && pivot_row < m; ++col) {
         size_t best_pivot = m;
         for (size_t row = pivot_row; row < m; ++row) {
             if (aug.test(row, col)) {
@@ -238,6 +282,37 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
         }
 
         ++pivot_row;
+        ++iter_counter;
+
+        // Periodic checkpoint: save state after `bl_ckpt_interval` pivots.
+        // `cur_col` should point at the next column to scan (col + 1).
+        if (bl_ckpt_enabled && (iter_counter % bl_ckpt_interval) == 0) {
+            BlockLanczosCheckpoint snap;
+            snap.rows = m;
+            snap.cols = n;
+            snap.aug_words_per_row = aug.words_per_row_;
+            snap.pivot_row = pivot_row;
+            snap.cur_col = col + 1;
+            snap.iteration = iter_counter;
+            snap.aug = aug.data_;
+            if (!snap.save(bl_ckpt_path)) {
+                std::cerr << "[bl_ckpt] WARNING: save failed at iter="
+                          << iter_counter << " col=" << (col + 1) << "\n";
+            } else {
+                const char* dbg = std::getenv("GNFS_DEBUG_BL_CKPT");
+                if (dbg && dbg[0] != '0' && dbg[0] != '\0') {
+                    std::cerr << "[bl_ckpt] save iter=" << iter_counter
+                              << " pivot_row=" << pivot_row
+                              << " col=" << (col + 1) << "\n";
+                }
+            }
+        }
+    }
+
+    // Successful loop completion: drop checkpoint so the next invocation
+    // (e.g. another factorization on the same base path) starts fresh.
+    if (bl_ckpt_enabled) {
+        BlockLanczosCheckpoint::remove(bl_ckpt_path);
     }
 
     for (size_t row = 0; row < m && dependencies.size() < max_deps; ++row) {

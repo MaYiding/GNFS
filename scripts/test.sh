@@ -220,6 +220,7 @@ ALL_TEST_BINARIES=(
     test_ecm_brent_suyama_bench
     test_poly_checkpoint
     test_fb_checkpoint
+    test_bl_checkpoint
 )
 
 # 模块 → 测试二进制映射 (仅 instant+fast 的测试)
@@ -232,7 +233,7 @@ MODULE_TESTS=(
     sieve          "test_special_q test_sieve_basic test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_sieve_tiny_simd"
     cofactor       "test_cofactor test_squfof test_batch_ecm test_3lp_cofactor test_trial_wheel test_integration test_ecm_brent_suyama"
     relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration"
-    linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv"
+    linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_bl_checkpoint test_bl_resume_integration"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_class_group test_couveignes_large_class_group"
     api            "test_api test_i18n test_method_selection"
@@ -307,6 +308,7 @@ SMOKE_TESTS=(
     test_ecm_brent_suyama
     test_poly_checkpoint
     test_fb_checkpoint
+    test_bl_checkpoint
 )
 
 # ── 每个测试的超时秒数 (基于实测) ──
@@ -391,6 +393,8 @@ TEST_TIMEOUT=(
     test_bai_brent_poly      60
     test_poly_checkpoint     10
     test_fb_checkpoint       10
+    test_bl_checkpoint       10
+    test_bl_resume_integration 60
     test_full_resume         120
     test_siqs_e2e            700
 )
@@ -473,6 +477,8 @@ TEST_TIER=(
     test_bai_brent_poly      "fast"
     test_poly_checkpoint     "instant"
     test_fb_checkpoint       "instant"
+    test_bl_checkpoint       "instant"
+    test_bl_resume_integration "fast"
     test_full_resume         "slow"
     test_siqs_e2e            "slow"
 )
