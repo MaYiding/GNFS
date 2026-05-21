@@ -72,13 +72,30 @@ public:
         std::vector<Relation> results;
         results.reserve(partials.size() / 8);
 
-        // ── 预过滤: 仅 1LP + 2LP (3LP+ 弃) ──
+        // ── 预过滤: 1LP + 2LP 总进 pool, 3LP+ 是否进取决于 ENV GNFS_3LP=1 ──
+        //
+        // V3 cascade BFS spanning tree 算法本身用 pool_lp_keys[i] 是 generic
+        // 任意 LP count, 只需放开 pool prefilter 即可让 3LP relations 参与
+        // chain merge. CADO-NFS purge.c 同样思路 (cliques over arbitrary degree).
+        //
+        // 默认 OFF (GNFS_3LP unset) 时 3LP+ 仍 drop, 零回归. 启用 OPT-IN 时:
+        //   - 3LP+ 进 pool, Union-Find 建 component, BFS 沿 LP-share 边 merge
+        //   - LP cancel check 仍保证 reject merge that doesn't strictly reduce LP count
+        //   - merge accumulator 路径上 LP count 单调 decrease (residual ≤ 0)
+        static const bool accept_3lp_pool = []() {
+            const char* env = std::getenv("GNFS_3LP");
+            return env && std::atoi(env) == 1;
+        }();
         std::vector<Relation> pool;
         pool.reserve(partials.size());
         for (auto& rel : partials) {
             size_t nlp = rel.num_large_primes();
             if (nlp == 1) { ++stats.input_1lp; pool.push_back(std::move(rel)); }
             else if (nlp == 2) { ++stats.input_2lp; pool.push_back(std::move(rel)); }
+            else if (accept_3lp_pool) {
+                ++stats.input_3lp_plus;
+                pool.push_back(std::move(rel));
+            }
             else { ++stats.input_3lp_plus; }
         }
 
