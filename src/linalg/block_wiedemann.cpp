@@ -12,12 +12,64 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace gnfs::linalg {
+
+// ============================================================================
+// Multi-stream Krylov parallelisation (GNFS_BW_KRYLOV_STREAMS)
+// ============================================================================
+// Default K=1 → existing serial multi-seed retry behaviour (no regression).
+// K>1 → run K independent (seed, stream) workers concurrently. Each worker is
+// an isolated block_solve_view_impl / thin_solve_view_impl instance with its
+// own internal ThreadPool sized at max(1, hardware_concurrency/K). The first
+// worker(s) to produce non-empty deps win; all results are merged and
+// deduplicated. Trades extra concurrency for shorter wall-time on small-to-
+// medium matrices where pool-barrier overhead dominates per-SpMV inner work.
+namespace {
+
+constexpr uint32_t kMaxBwStreams = 16;
+
+inline uint32_t bw_num_streams() noexcept {
+    const char* env = std::getenv("GNFS_BW_KRYLOV_STREAMS");
+    if (env == nullptr || env[0] == '\0') return 1;
+    char* end = nullptr;
+    long v = std::strtol(env, &end, 10);
+    if (end == env || v < 1) return 1;
+    if (v > static_cast<long>(kMaxBwStreams)) return kMaxBwStreams;
+    return static_cast<uint32_t>(v);
+}
+
+inline uint32_t bw_pool_size_per_stream(uint32_t num_streams) noexcept {
+    uint32_t hw = std::thread::hardware_concurrency();
+    if (hw == 0) hw = 4;
+    if (num_streams == 0) num_streams = 1;
+    uint32_t per = hw / num_streams;
+    if (per == 0) per = 1;
+    return per;
+}
+
+// Stream-aware random seeds. Use a fixed prime stride so reruns under the
+// same K are deterministic. Seeds list is independent of, but compatible with,
+// the existing 3-seed retry constants (so K=1 still hits seed=42 first).
+inline uint64_t bw_stream_seed(uint64_t base_seed, uint32_t stream_id) noexcept {
+    static constexpr uint64_t kStride = 0x9E3779B97F4A7C15ULL;  // golden-ratio prime
+    return base_seed + static_cast<uint64_t>(stream_id) * kStride;
+}
+
+}  // namespace
+
+// Forward declaration: defined below near the view-overload public API; the
+// SparseMatrix BlockWiedemann::find_dependencies() routes here when K>1.
+template <MatrixView MV>
+static std::vector<std::vector<bool>> find_dependencies_view_impl(
+    const MV& matrix, size_t max_deps);
 
 // ============================================================================
 // SpMV utilities — moved to gnfs/linalg/detail/spmv_kernels.hpp so that the
@@ -262,6 +314,32 @@ std::vector<std::vector<bool>> BlockWiedemann::find_dependencies(
 
     // Retry up to 3 seeds — Phase 1's projections can occasionally be rank-
     // deficient, producing too few valid generators. Different seeds recover.
+    //
+    // Multi-stream (GNFS_BW_KRYLOV_STREAMS=K>1): for block/thin paths route
+    // through find_dependencies_view_impl which runs K parallel streams per
+    // base seed. Scalar fallback path retains the legacy sequential loop
+    // (multi-stream not implemented for scalar; legacy code, low ROI).
+    const uint32_t num_streams = bw_num_streams();
+    if (num_streams > 1 && !use_scalar) {
+        const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
+        CSRMatrix csr(matrix);
+        auto deps = find_dependencies_view_impl(csr, max_deps);
+        if (!deps.empty()) return deps;
+        // Fall through to scalar fallback (block path only); thin path has no
+        // scalar variant so empty result returns to caller.
+        if (!is_thin) {
+            std::cerr << "  [BW] multi-stream block path empty, falling back to scalar\n";
+            static constexpr uint64_t fb_seeds[] = {
+                42, 0xDEADBEEFCAFEBABEULL, 0x12345678ABCDEFULL,
+            };
+            for (uint64_t seed : fb_seeds) {
+                auto fb_deps = block_wiedemann_scalar_solve(matrix, max_deps, seed);
+                if (!fb_deps.empty()) return fb_deps;
+            }
+        }
+        return {};
+    }
+
     static constexpr uint64_t seeds[] = { 42, 0xDEADBEEFCAFEBABEULL, 0x12345678ABCDEFULL };
     for (uint64_t seed : seeds) {
         std::vector<std::vector<bool>> deps;
@@ -579,14 +657,22 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
 // Templated body for the wide/square Block Wiedemann solver. Takes any
 // MatrixView (CSRMatrix for in-memory, MmapCSRMatrix for OOC). Caller is
 // responsible for ensuring rows are sorted and CSR-style layout exists.
+//
+// pool_threads=0 → ThreadPool default (hardware_concurrency). Multi-stream
+// dispatchers pass a small per-stream pool size so K concurrent streams share
+// the physical cores cleanly. stream_tag is appended to log lines + mmap path
+// to disambiguate concurrent stream output.
 template <MatrixView MV>
 static std::vector<std::vector<bool>> block_solve_view_impl(
-    const MV& csr, size_t max_deps, uint64_t seed) {
+    const MV& csr, size_t max_deps, uint64_t seed,
+    uint32_t pool_threads = 0, uint32_t stream_tag = 0) {
 
     const size_t m = csr.num_rows();
     const size_t n = csr.num_cols();
 
-    std::cout << "  [BW-block] Block Wiedemann (matrix BM): " << m << "×" << n
+    std::cout << "  [BW-block";
+    if (stream_tag) std::cout << " s" << stream_tag;
+    std::cout << "] Block Wiedemann (matrix BM): " << m << "×" << n
               << " (seed=" << seed << ")" << std::endl;
 
     // Krylov sequence length for matrix BM: L = 2·⌈n/64⌉ + 32 (buffer).
@@ -594,7 +680,7 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
     // Block path handles square/wide (m≥n); thin (m<n) routes elsewhere.
     const size_t L = 2 * ((n + 63) / 64) + 32;
 
-    gnfs::util::ThreadPool pool(0);
+    gnfs::util::ThreadPool pool(pool_threads);
 
     BlockVector X(m), Y(m);
     {
@@ -615,10 +701,11 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
     std::vector<DenseGF2_64x64> A_seq;
     std::unique_ptr<KrylovSequenceMmap> A_mmap;
     if (use_mmap) {
-        char path_buf[128];
+        char path_buf[160];
         std::snprintf(path_buf, sizeof(path_buf),
-                      "/tmp/gnfs_bw_krylov_%d_%llu.kry",
+                      "/tmp/gnfs_bw_krylov_%d_s%u_%llu.kry",
                       static_cast<int>(::getpid()),
+                      static_cast<unsigned>(stream_tag),
                       static_cast<unsigned long long>(seed));
         A_mmap = std::make_unique<KrylovSequenceMmap>(
             path_buf, L, sizeof(DenseGF2_64x64));
@@ -799,22 +886,26 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
 
 // Templated body for the thin (m < n) Block Wiedemann solver. Same MV
 // contract as block_solve_view_impl — caller must hand in a CSR-style
-// matrix view with sorted rows.
+// matrix view with sorted rows. pool_threads + stream_tag mirror the block
+// variant for multi-stream Krylov parallelisation.
 template <MatrixView MV>
 static std::vector<std::vector<bool>> thin_solve_view_impl(
-    const MV& csr, size_t max_deps, uint64_t seed) {
+    const MV& csr, size_t max_deps, uint64_t seed,
+    uint32_t pool_threads = 0, uint32_t stream_tag = 0) {
 
     const size_t m = csr.num_rows();
     const size_t n = csr.num_cols();
 
-    std::cout << "  [BW-thin] Thin matrix BW (B'=M^T·M): " << m << "×" << n
+    std::cout << "  [BW-thin";
+    if (stream_tag) std::cout << " s" << stream_tag;
+    std::cout << "] Thin matrix BW (B'=M^T·M): " << m << "×" << n
               << " (seed=" << seed << ")" << std::endl;
 
     // For B' = M^T·M (n×n), rank ≤ m, so minpoly degree ≤ m.
     // Block Krylov length: L = 2·⌈m/64⌉ + 32.
     const size_t L = 2 * ((m + 63) / 64) + 32;
 
-    gnfs::util::ThreadPool pool(0);
+    gnfs::util::ThreadPool pool(pool_threads);
 
     // X, Y random vectors in R^n (length n, not m as in the standard path).
     BlockVector X(n), Y(n);
@@ -981,6 +1072,12 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_thin_solve(
 // fallback is intentionally omitted: it is wide-only and the view path is
 // only reached from Pipeline::solve_matrix's Phase 5 (large matrices that
 // already chose block / thin BW).
+//
+// Multi-stream parallelism (GNFS_BW_KRYLOV_STREAMS=K, default 1): launches K
+// worker threads concurrently, each running one stream with a distinct seed
+// over a small dedicated ThreadPool (hw_concurrency / K each). The first
+// non-empty result determines success; all completed streams' deps are merged
+// and deduped (content-equal vectors removed) before trimming to max_deps.
 template <MatrixView MV>
 static std::vector<std::vector<bool>> find_dependencies_view_impl(
     const MV& matrix, size_t max_deps) {
@@ -990,21 +1087,76 @@ static std::vector<std::vector<bool>> find_dependencies_view_impl(
     if (m == 0 || n == 0) return {};
 
     const bool is_thin = (m < n);
+    const uint32_t num_streams = bw_num_streams();
+    const uint32_t pool_size = bw_pool_size_per_stream(num_streams);
 
-    static constexpr uint64_t seeds[] = {
+    static constexpr uint64_t base_seeds[] = {
         42, 0xDEADBEEFCAFEBABEULL, 0x12345678ABCDEFULL,
     };
-    for (uint64_t seed : seeds) {
-        std::vector<std::vector<bool>> deps;
-        if (is_thin) {
-            deps = thin_solve_view_impl(matrix, max_deps, seed);
-        } else {
-            deps = block_solve_view_impl(matrix, max_deps, seed);
+
+    // Single-stream fast path (default K=1): preserve original behaviour bit-
+    // for-bit including stderr retry diagnostics.
+    if (num_streams == 1) {
+        for (uint64_t seed : base_seeds) {
+            std::vector<std::vector<bool>> deps;
+            if (is_thin) {
+                deps = thin_solve_view_impl(matrix, max_deps, seed);
+            } else {
+                deps = block_solve_view_impl(matrix, max_deps, seed);
+            }
+            if (!deps.empty()) return deps;
+            std::cerr << "  [BW-view] seed=" << seed
+                      << (is_thin ? " (thin)" : " (block)")
+                      << " produced no deps, retrying\n";
         }
-        if (!deps.empty()) return deps;
-        std::cerr << "  [BW-view] seed=" << seed
-                  << (is_thin ? " (thin)" : " (block)")
-                  << " produced no deps, retrying\n";
+        return {};
+    }
+
+    // Multi-stream: each base_seed round dispatches num_streams workers in
+    // parallel. Return as soon as one round produces ≥1 dep, merging all
+    // successful streams' deps.
+    std::cerr << "  [BW-view] multi-stream K=" << num_streams
+              << " pool/stream=" << pool_size
+              << (is_thin ? " (thin)" : " (block)") << "\n";
+
+    for (uint64_t base_seed : base_seeds) {
+        std::vector<std::vector<std::vector<bool>>> per_stream(num_streams);
+        std::vector<std::thread> workers;
+        workers.reserve(num_streams);
+
+        for (uint32_t s = 0; s < num_streams; ++s) {
+            const uint64_t seed = bw_stream_seed(base_seed, s);
+            workers.emplace_back([&, s, seed]() {
+                if (is_thin) {
+                    per_stream[s] = thin_solve_view_impl(
+                        matrix, max_deps, seed, pool_size, s + 1);
+                } else {
+                    per_stream[s] = block_solve_view_impl(
+                        matrix, max_deps, seed, pool_size, s + 1);
+                }
+            });
+        }
+        for (auto& t : workers) t.join();
+
+        // Merge + dedupe across streams.
+        std::vector<std::vector<bool>> merged;
+        std::unordered_set<std::string> seen;
+        for (auto& sol_set : per_stream) {
+            for (auto& sol : sol_set) {
+                std::string key(sol.size(), '0');
+                for (size_t i = 0; i < sol.size(); ++i) key[i] = sol[i] ? '1' : '0';
+                if (seen.insert(std::move(key)).second) {
+                    merged.push_back(std::move(sol));
+                    if (merged.size() >= max_deps) break;
+                }
+            }
+            if (merged.size() >= max_deps) break;
+        }
+
+        if (!merged.empty()) return merged;
+        std::cerr << "  [BW-view] base_seed=" << base_seed
+                  << " all " << num_streams
+                  << " streams empty, retrying next base_seed\n";
     }
     return {};
 }
