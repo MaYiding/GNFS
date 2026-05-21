@@ -720,6 +720,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME BucketSieve COMMAND test_bucket_sieve)
     set_tests_properties(BucketSieve PROPERTIES LABELS "fast" TIMEOUT 30)
 
+    # Sieve tiny-prime SIMD / loop-fusion parity + micro-bench
+    add_executable(test_sieve_tiny_simd
+        tests/test_sieve_tiny_simd.cpp
+    )
+    target_link_libraries(test_sieve_tiny_simd PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SieveTinySIMD COMMAND test_sieve_tiny_simd)
+    set_tests_properties(SieveTinySIMD PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Mmap CSR Matrix 单元测试
     add_executable(test_mmap_csr
         tests/test_mmap_csr.cpp

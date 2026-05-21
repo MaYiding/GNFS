@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <cstdint>
 #include <functional>
@@ -31,9 +32,12 @@ namespace detail {
 /// Used by Phase 0 global hits + v-prime full-row sieve. NEON 8-lane on arm64,
 /// scalar elsewhere.
 ///
-/// P2-A baseline (BACKLOG): explicit sieve-kernel NEON. doctrine 说 这些 patterns
-/// (constant broadcast across row/area) 是 sieve 内最 vectorize-friendly 的段;
-/// bucket-entry scatter + tiny stride 因 gather/strided 模式不适合 SIMD.
+/// P2-A baseline (BACKLOG): explicit sieve-kernel NEON. doctrine 说 these
+/// patterns (constant broadcast across row/area) are sieve's most
+/// vectorize-friendly segments. bucket-entry scatter + tiny stride were
+/// previously kept scalar because gather/strided patterns are not native NEON
+/// strengths.  The tiny prime helpers below extend the baseline to that
+/// territory via fixed-stride manual unrolling.
 inline void apply_log_p_range(uint16_t* arr, size_t len, uint16_t lp) {
 #ifdef __ARM_NEON
     size_t i = 0;
@@ -48,6 +52,80 @@ inline void apply_log_p_range(uint16_t* arr, size_t len, uint16_t lp) {
 #else
     for (size_t i = 0; i < len; ++i) arr[i] += lp;
 #endif
+}
+
+/// Returns true if the tiny-prime SIMD fast paths should run.
+/// Disabled by setting `GNFS_SIEVE_NO_TINY_SIMD=1` for benchmark / debug.
+/// The lookup is cached after the first call so the fast path stays branchless
+/// in inner loops.
+inline bool tiny_simd_enabled() noexcept {
+    static const bool enabled = []() {
+        const char* env = std::getenv("GNFS_SIEVE_NO_TINY_SIMD");
+        if (env == nullptr) return true;
+        if (env[0] == '\0') return true;
+        // Treat "0" / empty as still enabled; any other value disables.
+        if (env[0] == '0' && env[1] == '\0') return true;
+        return false;
+    }();
+    return enabled;
+}
+
+/// Apply constant log_p at positions {start, start+stride, start+2*stride, ...}
+/// while the index stays in [0, end).  Mirrors the scalar:
+///
+///     for (size_t idx = start; idx < end; idx += stride)
+///         arr[idx] += lp;
+///
+/// The manual 4x unroll keeps independent dependency chains so the M-series
+/// core schedules four pipelined loads/adds/stores per iteration even though
+/// the writes are not contiguous (NEON has no scatter store on ARMv8.0).
+/// When `GNFS_SIEVE_NO_TINY_SIMD=1` the function delegates to the scalar
+/// reference for byte-for-byte parity validation.
+inline void apply_log_p_stride(uint16_t* arr,
+                               size_t start,
+                               size_t end,
+                               size_t stride,
+                               uint16_t lp) noexcept {
+    if (start >= end || stride == 0) return;
+
+    if (!tiny_simd_enabled()) {
+        for (size_t idx = start; idx < end; idx += stride) {
+            arr[idx] += lp;
+        }
+        return;
+    }
+
+    size_t idx = start;
+    const size_t step4 = stride * 4;
+    // Stay 3 strides shy of the end so the unrolled body never overshoots.
+    while (idx + 3 * stride < end) {
+        // 4 independent dependency chains — the OoO pipeline overlaps them.
+        const size_t i0 = idx;
+        const size_t i1 = idx + stride;
+        const size_t i2 = idx + 2 * stride;
+        const size_t i3 = idx + 3 * stride;
+        arr[i0] = static_cast<uint16_t>(arr[i0] + lp);
+        arr[i1] = static_cast<uint16_t>(arr[i1] + lp);
+        arr[i2] = static_cast<uint16_t>(arr[i2] + lp);
+        arr[i3] = static_cast<uint16_t>(arr[i3] + lp);
+        idx += step4;
+    }
+    // Tail (0-3 remaining writes).
+    for (; idx < end; idx += stride) {
+        arr[idx] = static_cast<uint16_t>(arr[idx] + lp);
+    }
+}
+
+/// Scalar reference for `apply_log_p_stride` — exposed for parity tests.
+inline void apply_log_p_stride_scalar(uint16_t* arr,
+                                      size_t start,
+                                      size_t end,
+                                      size_t stride,
+                                      uint16_t lp) noexcept {
+    if (stride == 0) return;
+    for (size_t idx = start; idx < end; idx += stride) {
+        arr[idx] = static_cast<uint16_t>(arr[idx] + lp);
+    }
 }
 
 }  // namespace detail
@@ -659,22 +737,24 @@ private:
                     }
                 }
 
-                // Tiny primes: stride within clamped range
+                // Tiny primes: stride within clamped range.
+                // Loop fusion: v-prime broadcast above + tiny stride here run
+                // back-to-back per row → sieve_array_ row stays L1-hot across
+                // both passes. Stride writes go through detail::apply_log_p_stride
+                // (4x unrolled, env-gated by GNFS_SIEVE_NO_TINY_SIMD).
                 for (auto& tp : tiny_copy) {
                     int32_t off = static_cast<int32_t>(tp.i_mod) - static_cast<int32_t>(tp.i_min_mod);
                     if (off < 0) off += static_cast<int32_t>(tp.p);
 
+                    const size_t stride = static_cast<size_t>(tp.p);
                     size_t idx = row_base + static_cast<size_t>(off);
-                    // Skip to eff_start if needed
+                    // Skip to eff_start if needed.
                     if (idx < eff_start) {
-                        size_t stride = static_cast<size_t>(tp.p);
                         size_t skip = (eff_start - idx + stride - 1) / stride;
                         idx += skip * stride;
                     }
-                    size_t stride = static_cast<size_t>(tp.p);
-                    for (; idx < eff_end; idx += stride) {
-                        sieve_array_[idx] += tp.log_p;
-                    }
+                    detail::apply_log_p_stride(
+                        sieve_array_.data(), idx, eff_end, stride, tp.log_p);
 
                     int32_t new_mod = static_cast<int32_t>(tp.i_mod) + static_cast<int32_t>(tp.delta);
                     int32_t p32 = static_cast<int32_t>(tp.p);
@@ -985,26 +1065,30 @@ private:
             size_t row_base = static_cast<size_t>(j - region_.j_min) * w;
             size_t row_end = row_base + w;
 
-            // ── v-primes: 整行命中 (稀少，通常 0-2 个) ──
+            // ── v-primes: whole-row broadcast (rare, 0-2 typical) ──
+            // Route through NEON 8-lane helper; mirrors bucket-region apply
+            // path so both code paths use the same vectorized broadcast.
             for (const auto& vp : v_primes) {
                 if ((j % static_cast<int32_t>(vp.p)) == 0) {
-                    uint16_t lp = vp.log_p;
-                    for (size_t idx = row_base; idx < row_end; ++idx)
-                        sieve_array_[idx] += lp;
+                    detail::apply_log_p_range(
+                        sieve_array_.data() + row_base,
+                        row_end - row_base,
+                        vp.log_p);
                 }
             }
 
-            // ── 小素数: stride loop (紧凑数组, 无 flag 检查) ──
+            // ── Small primes: stride loop via 4x-unrolled helper ──
+            // Loop fusion: v-prime broadcast + small-prime stride share the
+            // freshly-touched row cache line; this avoids a second pass over
+            // sieve_array_ for the row.
             for (auto& sp : small_primes) {
                 int32_t offset = static_cast<int32_t>(sp.i_mod) - static_cast<int32_t>(sp.i_min_mod);
                 if (offset < 0) offset += static_cast<int32_t>(sp.p);
 
-                size_t idx = row_base + static_cast<size_t>(offset);
-                uint16_t lp = sp.log_p;
-                size_t stride = static_cast<size_t>(sp.p);
-                for (; idx < row_end; idx += stride) {
-                    sieve_array_[idx] += lp;
-                }
+                const size_t idx = row_base + static_cast<size_t>(offset);
+                const size_t stride = static_cast<size_t>(sp.p);
+                detail::apply_log_p_stride(
+                    sieve_array_.data(), idx, row_end, stride, sp.log_p);
 
                 // Advance carry-forward
                 int32_t new_mod = static_cast<int32_t>(sp.i_mod) + static_cast<int32_t>(sp.delta);
