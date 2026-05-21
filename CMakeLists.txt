@@ -504,6 +504,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME FbCheckpoint COMMAND test_fb_checkpoint)
     set_tests_properties(FbCheckpoint PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_full_resume
+        tests/test_full_resume.cpp
+    )
+    target_link_libraries(test_full_resume PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME FullResume COMMAND test_full_resume)
+    set_tests_properties(FullResume PROPERTIES LABELS "slow" TIMEOUT 120)
+
     add_executable(test_krylov_sequence_mmap
         tests/test_krylov_sequence_mmap.cpp
     )
