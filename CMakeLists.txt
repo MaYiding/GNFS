@@ -835,6 +835,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Filter COMMAND test_filter)
     set_tests_properties(Filter PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Phase 0 radix-sort ENV gate + bit-for-bit parity with std::sort path
+    add_executable(test_filter_radix_sort
+        tests/test_filter_radix_sort.cpp
+    )
+    target_link_libraries(test_filter_radix_sort PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME FilterRadixSort COMMAND test_filter_radix_sort)
+    set_tests_properties(FilterRadixSort PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # V3 Clique Merge backup (header-only, in include/gnfs/relation/clique_merger.hpp)
     add_executable(test_clique_merger
         tests/test_clique_merger.cpp

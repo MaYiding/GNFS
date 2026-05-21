@@ -6,6 +6,7 @@
 #include "../util/memory_pool.hpp"
 #include "../util/safe_math.hpp"
 #include "ooc_relation_store.hpp"
+#include "radix_sort.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -614,7 +615,16 @@ private:
 }
 
 /// 按 (a, b) 排序关系
+///
+/// ENV `GNFS_FILTER_RADIX_SORT=1` 切到 LSD byte-radix path (radix_sort.hpp).
+/// 默认 0 走 std::sort, bit-for-bit identical output (stability preserves
+/// duplicate insertion order so downstream filter_duplicates picks the same
+/// representative either way).
 inline void sort_relations(std::vector<Relation>& relations) {
+    if (filter_radix_sort_enabled()) {
+        radix_sort_relations(relations);
+        return;
+    }
     std::sort(relations.begin(), relations.end(),
               [](const Relation& r1, const Relation& r2) {
                   if (r1.b != r2.b) return r1.b < r2.b;
