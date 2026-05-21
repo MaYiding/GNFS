@@ -1,5 +1,34 @@
 #pragma once
 
+// lattice_basis.hpp — Special-q lattice basis reduction for GNFS lattice sieve.
+//
+// References:
+//   1. Lenstra, Lenstra, Lovász, "Factoring polynomials with rational
+//      coefficients", Math. Ann. 261 (1982), 515-534.
+//      The original LLL algorithm. In 2D with δ=1, equivalent to Lagrange
+//      reduction extended with explicit Lovász condition.
+//   2. Franke, Kleinjung, "Continued Fractions and Lattice Sieving"
+//      (SHARCS 2005). The standard reference for NFS special-q lattice
+//      reduction with skewness-aware quadratic form.
+//   3. CADO-NFS sieve/las-qlattice.cpp `SkewGauss` / `generic_skew_gauss`.
+//      Industrial benchmark implementation. Our `SkewLLL` follows the
+//      same skewed-norm reduction strategy.
+//
+// Methods implemented:
+//   - Gauss:   classical Lagrange-Gauss (legacy, BACKLOG P2 oscillation fix)
+//   - LLL:     F-K 2005 style 2D LLL with δ=1 strict optimal in 2D
+//   - SkewLLL: F-K 2005 + CADO-NFS skew_gauss skewness-aware quadratic form
+//
+// All methods preserve det(basis) = ±q and verify_ab() invariants strictly.
+// SkewLLL produces strictly shorter basis vectors in skew norm |v|²_skew =
+// a² + s²·b² (where s = polynomial skewness), accelerating sieve relation
+// collection. Empirical: regression gate 1.8×, test_factor_with_kleinjung
+// 2.1× faster when enabled via GNFS_LATTICE_SKEW=1.
+//
+// Defaults: GNFS_LATTICE_LLL unset → LLL (improvement over legacy Gauss),
+//           GNFS_LATTICE_SKEW unset → SkewLLL OFF (opt-in for cross-bit-size
+//           validation; 27-bit test_bucket_sieve sensitive to geometry shift).
+
 #include "../core/integer.hpp"
 #include "special_q.hpp"
 
