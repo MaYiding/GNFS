@@ -910,6 +910,17 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME LinalgMmapPolicy COMMAND test_linalg_mmap_policy)
     set_tests_properties(LinalgMmapPolicy PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Metal SpMV (correctness) — runs on every platform. The test itself
+    # short-circuits the "Metal unavailable" path on non-Apple/Linux CI,
+    # so the binary stays green either way. Tagged "instant" so it joins
+    # the smoke set.
+    add_executable(test_metal_spmv
+        tests/test_metal_spmv.cpp
+    )
+    target_link_libraries(test_metal_spmv PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME MetalSpMV COMMAND test_metal_spmv)
+    set_tests_properties(MetalSpMV PROPERTIES LABELS "instant" TIMEOUT 30)
+
     # Out-of-core Relations 单元测试
     add_executable(test_ooc_relations
         tests/test_ooc_relations.cpp
