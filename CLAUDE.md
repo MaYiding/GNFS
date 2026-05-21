@@ -813,6 +813,72 @@ monic-normalized 结果完全一致. 单元测试 `test_half_gcd` 16 个测试�
 
 **Default OFF**: pipeline.cpp 与 `ModularPoly::gcd` 入口不动, opt-in 实验通道.
 
+### Cache-blocked GF(2) matrix transpose (GNFS_MATRIX_TRANSPOSE_BLOCKED)
+
+**ENV `GNFS_MATRIX_TRANSPOSE_BLOCKED=auto|0|1`** (2026-05-22 实施, default auto):
+密集 word-packed GF(2) 矩阵转置 helper, 64×64 tile 块化 + "Hacker's Delight"
+6 阶段 swap-reduction 在 register 内完成 tile 转置, 朴素 bit-by-bit 路径与
+块化路径 bit-for-bit 一致. 默认 auto 在任一维度 >= 128 时启用块化.
+
+```bash
+GNFS_MATRIX_TRANSPOSE_BLOCKED=auto ./gnfs <N>   # 默认: dim >= 128 启用 block
+GNFS_MATRIX_TRANSPOSE_BLOCKED=0    ./gnfs <N>   # 强制 naive (回归 bisect 用)
+GNFS_MATRIX_TRANSPOSE_BLOCKED=1    ./gnfs <N>   # 强制 block (不考虑 dim 阈值)
+unset GNFS_MATRIX_TRANSPOSE_BLOCKED             # 同 auto
+```
+
+**Helper API** (`include/gnfs/linalg/detail/transpose_blocked.hpp`):
+- `transpose_blocked_gf2(src, dst, rows, cols)` — 主入口, 内部根据 gate
+  路由到 `transpose_naive_gf2` 或 `transpose_blocked_gf2_impl`.
+- `transpose_naive_gf2(src, dst, rows, cols)` — 朴素 bit-by-bit reference
+  (O(rows · cols) ops), 作为单元测试 golden + 小矩阵 fallback.
+- `matrix_transpose_blocked_enabled(rows, cols)` — 三态 dispatcher.
+- `matrix_transpose_blocked_mode()` — 返回 cached `GateMode` (Auto / ForceOff /
+  ForceOn), 测试用.
+- `reload_matrix_transpose_blocked_for_testing()` — 重置 cached gate, 单元
+  测试切换 ENV 用.
+- `kTransposeTileBits = 64` — tile 边长 (与 64-bit word 对齐).
+- `kTransposeAutoThreshold = 128` — auto 阈值, 任一维度 >= 此值启用 block.
+
+**算法 (Hacker's Delight 6-stage swap reduction)**:
+- Tile 加载: 一次读 64 行的 1 个 word (64 列 = 1 word), zero-pad 边缘 tile.
+- 在 register 内 6 阶段 swap: 第 s 阶段把宽度 `2^s` 的 row band 与对应
+  band 沿对角线 swap, 用 mask `(0101..., 0011..., 00001111..., 8-bit,
+  16-bit, 32-bit)` 隔离每阶段 bit.
+- 总开销: 64 word load + 192 XOR (6 阶段 × 32 swap) + 64 word store.
+- 缓存友好性: tile 读写连续 64 word, 每个 cache line 64 B (8 word), 自然
+  对齐. Naive 路径每 bit 1 个 random row stride access, cache miss 严重.
+
+**Bit-for-bit guarantee**: GF(2) 加法 associative + commutative, swap
+reduction 是纯置换, blocked 与 naive 路径输出严格相同. 单元测试
+`test_transpose_blocked` 13 个测试强制覆盖 (空矩阵 / 1x1 / 7x3 / 63x127 /
+64x64 / 128x64 / 1000x1000 / 500x800 random / 双 transpose 回路 /
+ENV 解析 / threshold 路由 / dispatcher parity / 稀疏 pattern).
+
+**ROI 与定位**:
+- 主要 ROI: 大矩阵 (>= 128 维) 转置 wall-time 由 O(rows · cols) bit ops
+  降到 O((rows · cols) / 64²) tile ops + register-level swap. 50d+/60d
+  Phase 5 / 未来 dense Gaussian-Jordan 在 PackedGF2Matrix 实施
+  时可受益.
+- 当前主路径无 materialized dense 转置 hot site: SpMV-transpose
+  (`detail::spmv_transpose`) on-the-fly 工作在 CSR sparse layout, 不需要
+  bit-packed 转置; SparseMatrix::transpose() 工作在稀疏 row-of-indices
+  layout, 不是 word-packed; PackedGF2Matrix (block_lanczos.cpp 内部
+  file-local) 也没有 transpose method.
+- helper 作为 future-infrastructure 落地: 当 PackedGF2Matrix 暴露 +
+  Gauss-Jordan 路径需要 column-major access, 或 dense SpMV 实验 (e.g.
+  Block Lanczos rebirth) 引入 materialized 转置时, 直接调用即可.
+
+**集成点** (2026-05-22):
+- `include/gnfs/linalg/detail/transpose_blocked.hpp` — helper API + ENV
+  gate + 64×64 in-register transpose primitive + 朴素 reference.
+- `tests/test_transpose_blocked.cpp` — 13 correctness + ENV + threshold
+  tests, 全部 instant tier (binary 运行 < 50 ms).
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout.
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
+所以 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
