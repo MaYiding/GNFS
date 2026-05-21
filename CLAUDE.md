@@ -773,6 +773,52 @@ vs N=2 / N=4 bit-for-bit assert).
   small-ab_pairs fallback) + 2 env parsing + 1 perf info + 1 edge case
   (single-slot, empty-span)
 
+### Schirokauer map 每关系并行 (GNFS_SCHIROKAUER_THREADS)
+
+**ENV `GNFS_SCHIROKAUER_THREADS=N`** (2026-05-22 实施, default 1, range [1, hardware_concurrency * 2]):
+Schirokauer map computation 每关系独立 (`compute_flat(a, b)` 是 const pure 函数,
+仅读 immutable `prime_info_` + scalar 输入, 无 shared mutable state). N=1 (默认)
+走 sequential 路径, 不创建 ThreadPool, 零开销保留原行为. N>=2 时 batch helper
+`compute_schirokauer_flat_batch(map, ab_pairs)` 把 relations dispatch 到
+`min(N, ab_pairs.size())` 个 ThreadPool worker, 输出按 input index 完全一致.
+
+```bash
+GNFS_SCHIROKAUER_THREADS=1 ./gnfs <N>    # default sequential, zero overhead
+GNFS_SCHIROKAUER_THREADS=4 ./gnfs <N>    # 4 workers, dispatch via parallel_for_index
+GNFS_SCHIROKAUER_THREADS=8 ./gnfs <N>    # 8 workers
+unset GNFS_SCHIROKAUER_THREADS           # same as N=1
+```
+
+**并行模型**:
+- Batch entry = `compute_schirokauer_flat_batch(map, ab_pairs)` over n relations
+- Inner = `ThreadPool::parallel_for_index(0, n, lambda)` 直接调度 (chunk-based)
+- 每个 task 调 `map.compute_flat(a_i, b_i)` 写到 `out[i]` (disjoint per index)
+- 空 batch (n==0) 与 单 relation (n==1) 都走 sequential 短路, 不创建 pool
+
+**Bit-for-bit guarantee**: `compute_flat` 是 deterministic pure function over
+`(a, b) + prime_info_`, prime_info_ ctor 后 immutable. 同一组 ab_pairs 在 N=1
+与 N>=2 路径输出 `vector<vector<uint32_t>>` 按 index/column bit-for-bit 一致.
+由 `tests/test_schirokauer_parallel.cpp` 强制覆盖 (500 pair N=1 vs N=4 /
+N=hw_concurrency 严格 assert).
+
+**ROI 与定位**:
+- 主要 ROI: matrix_builder 主循环 1M+ relations × Schirokauer compute (FastPoly
+  power 4-byte ^ 256-byte exponent), 是 Phase 5 矩阵构建的热点之一. M5 10-core
+  实测 2000 pair batch 约 2.3x speedup (perf-info, 非 assert).
+- 默认 OFF (N=1): 保证 zero behavior change for legacy callers. matrix_builder
+  主循环本身已有 `ThreadPool::parallel_for_index` 在 row 级别 (见
+  `include/gnfs/linalg/matrix_builder.hpp:315`), 因此 ENV 默认不启用避免与
+  外层 pool 双重 oversubscription. 仅在显式 opt-in 实验场景启用.
+- Pool 与 OOC 等其他 ENV 无冲突 — 仅 schirokauer 自身的 helper API.
+
+**集成点** (2026-05-22):
+- `include/gnfs/linalg/schirokauer_parallel.hpp` — `schirokauer_threads()` env
+  reader with `std::once_flag` cache + `compute_schirokauer_flat_batch<ABPair>`
+  template dispatcher + `schirokauer_threads_reset_env_cache_for_testing()`
+- `include/gnfs/linalg/schirokauer.hpp` — 未改动 (核心算法保持 bit-identical)
+- `tests/test_schirokauer_parallel.cpp` — 7 个测试 (baseline + 2 parity +
+  env parsing + empty + single + perf info)
+
 ### Polynomial Half-GCD (GNFS_POLY_HGCD)
 
 **ENV `GNFS_POLY_HGCD=1`** (2026-05-21 实施, default OFF):

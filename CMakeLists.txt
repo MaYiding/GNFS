@@ -956,6 +956,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SchirokauerStrip COMMAND test_schirokauer_strip)
     set_tests_properties(SchirokauerStrip PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Schirokauer per-relation parallel dispatch (GNFS_SCHIROKAUER_THREADS)
+    add_executable(test_schirokauer_parallel
+        tests/test_schirokauer_parallel.cpp
+    )
+    target_link_libraries(test_schirokauer_parallel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SchirokauerParallel COMMAND test_schirokauer_parallel)
+    set_tests_properties(SchirokauerParallel PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # 跨模块集成测试
     add_executable(test_integration
         tests/test_integration.cpp

@@ -205,6 +205,7 @@ ALL_TEST_BINARIES=(
     test_class_group
     test_schirokauer_deg4
     test_schirokauer_strip
+    test_schirokauer_parallel
     test_edge_cases
     test_integration
     test_squfof
@@ -246,7 +247,7 @@ MODULE_TESTS=(
     sieve          "test_special_q test_sieve_basic test_distributed_sieve test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd test_bucket_prefetch"
     cofactor       "test_cofactor test_squfof test_brent_pollard_rho test_survival_predictor test_batch_ecm test_3lp_cofactor test_trial_wheel test_batch_trial test_ecm_curve_pool test_integration test_ecm_brent_suyama"
     relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration test_relation_pool_integration"
-    linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_spmv_simd test_krylov_compress test_krylov_compression test_bl_checkpoint test_bl_resume_integration"
+    linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_schirokauer_parallel test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_spmv_simd test_krylov_compress test_krylov_compression test_bl_checkpoint test_bl_resume_integration"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_class_group test_couveignes_large_class_group"
     api            "test_api test_i18n test_method_selection"
@@ -308,6 +309,7 @@ SMOKE_TESTS=(
     test_class_group
     test_schirokauer_deg4
     test_schirokauer_strip
+    test_schirokauer_parallel
     test_edge_cases
     test_squfof
     test_brent_pollard_rho
@@ -387,6 +389,7 @@ TEST_TIMEOUT=(
     test_class_group         10
     test_schirokauer_deg4    10
     test_schirokauer_strip   10
+    test_schirokauer_parallel 60
     test_edge_cases          10
     test_integration         30
     test_sieve_basic         60
@@ -485,6 +488,7 @@ TEST_TIER=(
     test_class_group         "instant"
     test_schirokauer_deg4    "instant"
     test_schirokauer_strip   "instant"
+    test_schirokauer_parallel "instant"
     test_edge_cases          "instant"
     test_integration         "fast"
     test_sieve_basic         "fast"
