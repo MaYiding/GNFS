@@ -505,6 +505,21 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RelationCollector COMMAND test_relation_collector)
     set_tests_properties(RelationCollector PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # ── W6 T4: relation collector memory pool ──
+    add_executable(test_memory_pool
+        tests/test_memory_pool.cpp
+    )
+    target_link_libraries(test_memory_pool PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME MemoryPool COMMAND test_memory_pool)
+    set_tests_properties(MemoryPool PROPERTIES LABELS "instant" TIMEOUT 30)
+
+    add_executable(test_relation_pool_integration
+        tests/test_relation_pool_integration.cpp
+    )
+    target_link_libraries(test_relation_pool_integration PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME RelationPoolIntegration COMMAND test_relation_pool_integration)
+    set_tests_properties(RelationPoolIntegration PROPERTIES LABELS "instant" TIMEOUT 60)
+
     add_executable(test_sieve_basic
         tests/test_sieve_basic.cpp
     )
