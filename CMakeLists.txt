@@ -553,6 +553,23 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME BatchECMBench COMMAND test_batch_ecm_bench 500)
     set_tests_properties(BatchECMBench PROPERTIES LABELS "bench" TIMEOUT 300)
 
+    # ECM Stage 3 (Brent-Suyama polynomial extension) -- unit tests
+    add_executable(test_ecm_brent_suyama
+        tests/test_ecm_brent_suyama.cpp
+    )
+    target_link_libraries(test_ecm_brent_suyama PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME EcmBrentSuyama COMMAND test_ecm_brent_suyama)
+    set_tests_properties(EcmBrentSuyama PROPERTIES LABELS "instant" TIMEOUT 30)
+
+    # ECM Stage 3 benchmark -- Brent-Suyama vs classical BSGS
+    # Slow tier (60s) -- not run by smoke; run via `./scripts/test.sh module cofactor --slow`
+    add_executable(test_ecm_brent_suyama_bench
+        tests/test_ecm_brent_suyama_bench.cpp
+    )
+    target_link_libraries(test_ecm_brent_suyama_bench PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME EcmBrentSuyamaBench COMMAND test_ecm_brent_suyama_bench 100)
+    set_tests_properties(EcmBrentSuyamaBench PROPERTIES LABELS "slow" TIMEOUT 120)
+
     add_executable(test_linalg
         tests/test_linalg.cpp
     )
