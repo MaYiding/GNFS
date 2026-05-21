@@ -677,6 +677,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Murphy COMMAND test_murphy)
     set_tests_properties(Murphy PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_root_property_cache
+        tests/test_root_property_cache.cpp
+    )
+    target_link_libraries(test_root_property_cache PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME RootPropertyCache COMMAND test_root_property_cache)
+    set_tests_properties(RootPropertyCache PROPERTIES LABELS "instant" TIMEOUT 60)
+
     add_executable(test_rotation_incremental
         tests/test_rotation_incremental.cpp
     )
