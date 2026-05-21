@@ -306,6 +306,7 @@ SMOKE_TESTS=(
     test_ecm_brent_suyama
     test_poly_checkpoint
     test_fb_checkpoint
+    test_bl_checkpoint
 )
 
 # ── 每个测试的超时秒数 (基于实测) ──
