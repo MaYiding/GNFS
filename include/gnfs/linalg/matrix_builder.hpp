@@ -2,6 +2,7 @@
 
 #include "sparse_matrix.hpp"
 #include "schirokauer.hpp"
+#include "relation_source.hpp"
 #include "../core/relation.hpp"
 #include "../core/integer.hpp"
 #include "../core/polynomial_context.hpp"
@@ -371,6 +372,50 @@ private:
         std::unordered_set<PrimeIdealKey, PrimeIdealKeyHash> alg_primes;  // 代数侧素理想 (p,r) 集合
     };
 
+    /// Accumulate a single relation's LP contributions into LargePrimeInfo.
+    /// Extracted from collect_large_primes so both vector and streaming paths
+    /// share identical insertion logic — guarantees the same unordered_set
+    /// iteration order (column layout) across paths on identical inputs.
+    static void accumulate_lp_one(LargePrimeInfo& info, const Relation& rel) {
+        // 有理侧：按素数累计指数，只收集奇数指数的
+        // 小 LP 计数 (典型 1-2) → 用 stack 数组避免 map alloc
+        const auto& rat_lps = rel.rational_large_prime;
+        if (rat_lps.size() <= 8) {
+            uint64_t rkeys[8]; uint32_t rexps[8]; size_t ru = 0;
+            for (const auto& lp : rat_lps) {
+                size_t j = 0;
+                for (; j < ru; ++j) if (rkeys[j] == lp.p) break;
+                if (j == ru) { rkeys[ru] = lp.p; rexps[ru] = lp.e; ++ru; }
+                else rexps[j] += lp.e;
+            }
+            for (size_t i = 0; i < ru; ++i) if (rexps[i] & 1u) info.rat_primes.insert(rkeys[i]);
+        } else {
+            std::unordered_map<uint64_t, uint32_t> rat_exp;
+            rat_exp.reserve(rat_lps.size());
+            for (const auto& lp : rat_lps) rat_exp[lp.p] += lp.e;
+            for (const auto& [p, exp] : rat_exp) if (exp & 1u) info.rat_primes.insert(p);
+        }
+
+        // 代数侧：按 (p,r) 素理想累计指数，只收集奇数指数的
+        const auto& alg_lps = rel.algebraic_large_prime;
+        if (alg_lps.size() <= 8) {
+            PrimeIdealKey akeys[8]; uint32_t aexps[8]; size_t au = 0;
+            for (const auto& lp : alg_lps) {
+                PrimeIdealKey k{lp.p, lp.r};
+                size_t j = 0;
+                for (; j < au; ++j) if (akeys[j] == k) break;
+                if (j == au) { akeys[au] = k; aexps[au] = lp.e; ++au; }
+                else aexps[j] += lp.e;
+            }
+            for (size_t i = 0; i < au; ++i) if (aexps[i] & 1u) info.alg_primes.insert(akeys[i]);
+        } else {
+            std::unordered_map<PrimeIdealKey, uint32_t, PrimeIdealKeyHash> alg_exp;
+            alg_exp.reserve(alg_lps.size());
+            for (const auto& lp : alg_lps) alg_exp[{lp.p, lp.r}] += lp.e;
+            for (const auto& [key, exp] : alg_exp) if (exp & 1u) info.alg_primes.insert(key);
+        }
+    }
+
     /// 收集所有大素数（仅包含有效贡献的 LP）
     /// 合并关系中，共享 LP 的指数为偶数（在 GF(2) 矩阵中贡献为 0），
     /// 不应为其创建列。只收集在至少一个关系中有奇数指数的 LP。
@@ -383,43 +428,29 @@ private:
         info.alg_primes.reserve(relations.size());
 
         for (const auto& rel : relations) {
-            // 有理侧：按素数累计指数，只收集奇数指数的
-            // 小 LP 计数 (典型 1-2) → 用 stack 数组避免 map alloc
-            const auto& rat_lps = rel.rational_large_prime;
-            if (rat_lps.size() <= 8) {
-                uint64_t rkeys[8]; uint32_t rexps[8]; size_t ru = 0;
-                for (const auto& lp : rat_lps) {
-                    size_t j = 0;
-                    for (; j < ru; ++j) if (rkeys[j] == lp.p) break;
-                    if (j == ru) { rkeys[ru] = lp.p; rexps[ru] = lp.e; ++ru; }
-                    else rexps[j] += lp.e;
-                }
-                for (size_t i = 0; i < ru; ++i) if (rexps[i] & 1u) info.rat_primes.insert(rkeys[i]);
-            } else {
-                std::unordered_map<uint64_t, uint32_t> rat_exp;
-                rat_exp.reserve(rat_lps.size());
-                for (const auto& lp : rat_lps) rat_exp[lp.p] += lp.e;
-                for (const auto& [p, exp] : rat_exp) if (exp & 1u) info.rat_primes.insert(p);
-            }
+            accumulate_lp_one(info, rel);
+        }
 
-            // 代数侧：按 (p,r) 素理想累计指数，只收集奇数指数的
-            const auto& alg_lps = rel.algebraic_large_prime;
-            if (alg_lps.size() <= 8) {
-                PrimeIdealKey akeys[8]; uint32_t aexps[8]; size_t au = 0;
-                for (const auto& lp : alg_lps) {
-                    PrimeIdealKey k{lp.p, lp.r};
-                    size_t j = 0;
-                    for (; j < au; ++j) if (akeys[j] == k) break;
-                    if (j == au) { akeys[au] = k; aexps[au] = lp.e; ++au; }
-                    else aexps[j] += lp.e;
-                }
-                for (size_t i = 0; i < au; ++i) if (aexps[i] & 1u) info.alg_primes.insert(akeys[i]);
-            } else {
-                std::unordered_map<PrimeIdealKey, uint32_t, PrimeIdealKeyHash> alg_exp;
-                alg_exp.reserve(alg_lps.size());
-                for (const auto& lp : alg_lps) alg_exp[{lp.p, lp.r}] += lp.e;
-                for (const auto& [key, exp] : alg_exp) if (exp & 1u) info.alg_primes.insert(key);
-            }
+        return info;
+    }
+
+    /// Streaming variant: collect LP info from a RelationSource.
+    /// SGE-OOC: mirrors collect_large_primes(vector) byte-for-byte but reads
+    /// from the source one relation at a time, so RAM usage stays O(unique LPs)
+    /// instead of O(relations) needed by the vector path.
+    template <RelationSource Source>
+    [[nodiscard]] LargePrimeInfo collect_large_primes_streaming(
+            const Source& source) const {
+
+        const std::size_t n = source.count();
+        LargePrimeInfo info;
+        info.rat_primes.reserve(n);
+        info.alg_primes.reserve(n);
+
+        for (std::size_t i = 0; i < n; ++i) {
+            Relation rel = source.read(i);
+            accumulate_lp_one(info, rel);
+            // rel goes out of scope here — no accumulation of relations in RAM.
         }
 
         return info;
