@@ -223,8 +223,10 @@ public:
 public:
     /// Read-only access to the underlying root-property cache (for tests
     /// and diagnostics; disabled mode returns a non-null cache with
-    /// capacity()==0).
+    /// capacity()==0). Returns a reference, so calling this on a moved-from
+    /// evaluator is UB — same contract as STL container accessors.
     [[nodiscard]] const RootPropertyCache& root_cache() const noexcept {
+        assert(root_cache_ && "root_cache_ is null (moved-from evaluator?)");
         return *root_cache_;
     }
 
