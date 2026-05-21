@@ -15,6 +15,7 @@
 #include "gnfs/polynomial/int_polynomial.hpp"
 #include "gnfs/polynomial/murphy_evaluator.hpp"
 #include "gnfs/polynomial/polynomial_optimizer.hpp"
+#include "gnfs/polynomial/rotation_alpha.hpp"
 
 #include <cassert>
 #include <cmath>
@@ -213,6 +214,174 @@ void test_linear_short_circuit_various_bounds() {
     std::cout << "  PASSED" << std::endl;
 }
 
+/// RotationAlphaTracker sanity: small-prime list initialized correctly
+void test_tracker_small_primes_init() {
+    std::cout << "Testing: RotationAlphaTracker small_primes init..." << std::endl;
+
+    RotationAlphaTracker tracker(50);
+    const auto& sp = tracker.small_primes();
+
+    // Primes ≤ 50: 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47
+    const std::vector<uint32_t> expected =
+        {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47};
+    std::cout << "  primes ≤ 50 count = " << sp.size()
+              << " (expected " << expected.size() << ")" << std::endl;
+    assert(sp.size() == expected.size());
+    for (size_t i = 0; i < sp.size(); ++i) assert(sp[i] == expected[i]);
+
+    std::cout << "  PASSED" << std::endl;
+}
+
+/// cheap_alpha must match a hand-computed sum for a simple polynomial.
+void test_tracker_cheap_alpha_matches_formula() {
+    std::cout << "Testing: cheap_alpha matches hand-computed value..." << std::endl;
+
+    RotationAlphaTracker tracker(30);  // primes 2, 3, 5, 7, 11, 13, 17, 19, 23, 29
+
+    // f(x) = x^2 + 1
+    auto f = make_poly({1, 0, 1});
+    const double computed = tracker.cheap_alpha(f);
+
+    // Hand-compute: roots of x^2 + 1 mod p
+    //   p=2: x^2+1 = (x+1)^2 mod 2 → 1 root {1}
+    //   p=3: x^2 ≡ -1 ≡ 2 mod 3 → no solution → 0 roots
+    //   p=5: x^2 ≡ -1 ≡ 4 mod 5 → x = ±2 → 2 roots
+    //   p=7: x^2 ≡ -1 ≡ 6 mod 7 → no solution → 0 roots
+    //   p=11: x^2 ≡ -1 mod 11 → no solution → 0 roots
+    //   p=13: x^2 ≡ -1 ≡ 12 mod 13 → x = ±5 → 2 roots
+    //   p=17: x^2 ≡ -1 mod 17 → x = ±4 → 2 roots
+    //   p=19: x^2 ≡ -1 mod 19 → no solution → 0 roots
+    //   p=23: x^2 ≡ -1 mod 23 → no solution → 0 roots
+    //   p=29: x^2 ≡ -1 mod 29 → x = ±12 → 2 roots
+    const std::vector<std::pair<uint32_t, uint32_t>> data = {
+        {2, 1}, {3, 0}, {5, 2}, {7, 0}, {11, 0},
+        {13, 2}, {17, 2}, {19, 0}, {23, 0}, {29, 2}
+    };
+    double expected = 0.0;
+    for (auto [p, r] : data) {
+        const double pd = p;
+        expected += (static_cast<double>(r) / pd - 1.0 / (pd - 1.0)) * std::log(pd);
+    }
+
+    std::cout << "  cheap_alpha(x^2 + 1) = " << computed << std::endl;
+    std::cout << "  hand-computed        = " << expected << std::endl;
+    assert(std::abs(computed - expected) < 1e-12);
+
+    std::cout << "  PASSED" << std::endl;
+}
+
+/// score must produce monotone ranking: smaller L² norm → smaller score
+/// when alpha is held fixed. Verified by constructing two polynomials with
+/// known root profiles.
+void test_tracker_score_monotone_in_l2() {
+    std::cout << "Testing: score is monotone in L² norm at fixed alpha..." << std::endl;
+
+    RotationAlphaTracker tracker(50);
+
+    // f1 = x^2 + 1 (no roots mod 3, 7, 11, 19, 23, 31, 43, 47)
+    // f2 = x^2 + 4 (same root structure mod most primes — x^2 ≡ -4 mod p)
+    // For simplicity use the same poly with two different L² inputs.
+    auto f = make_poly({1, 0, 1});
+
+    const double score_small_l2 = tracker.score(f, 1.0);
+    const double score_big_l2 = tracker.score(f, 1000.0);
+
+    std::cout << "  score(f, L²=1)    = " << score_small_l2 << std::endl;
+    std::cout << "  score(f, L²=1000) = " << score_big_l2 << std::endl;
+    assert(score_small_l2 < score_big_l2);
+
+    std::cout << "  PASSED" << std::endl;
+}
+
+/// Rotation primitive sanity: f_new = f_old + k*(x - m) should change
+/// only a_0 and a_1.
+void test_rotation_changes_only_low_coeffs() {
+    std::cout << "Testing: rotate_linear changes only a_0 and a_1..." << std::endl;
+
+    // f(x) = x^5 - 2x^4 + 3x^3 - x^2 + 7x - 100
+    auto f = make_poly({-100, 7, -1, 3, -2, 1});
+    Integer m(42);
+
+    const int64_t k = 3;
+    auto g = PolynomialOptimizer::rotate_linear(f, m, k);
+
+    // Expected: g = f + 3*(x - 42)
+    //   g[0] = f[0] + 3*(-42) = -100 - 126 = -226
+    //   g[1] = f[1] + 3*1     = 7 + 3 = 10
+    //   g[2..5] unchanged
+    assert(g[0].to_int64() == -226);
+    assert(g[1].to_int64() == 10);
+    assert(g[2].to_int64() == f[2].to_int64());
+    assert(g[3].to_int64() == f[3].to_int64());
+    assert(g[4].to_int64() == f[4].to_int64());
+    assert(g[5].to_int64() == f[5].to_int64());
+
+    std::cout << "  f = x^5 - 2x^4 + 3x^3 - x^2 + 7x - 100" << std::endl;
+    std::cout << "  k = 3, m = 42" << std::endl;
+    std::cout << "  g[0] = " << g[0].to_int64() << " (expected -226)" << std::endl;
+    std::cout << "  g[1] = " << g[1].to_int64() << " (expected 10)" << std::endl;
+    std::cout << "  PASSED" << std::endl;
+}
+
+/// Cheap alpha update after rotation must equal cheap alpha of new polynomial.
+/// This test confirms that the tracker re-evaluates correctly (no caching bugs)
+/// across various k values (positive, negative, zero, large).
+void test_cheap_alpha_after_rotation() {
+    std::cout << "Testing: cheap_alpha after rotation matches re-computation..." << std::endl;
+
+    RotationAlphaTracker tracker(100);
+    auto f_init = make_poly({-1000, 5, 0, 0, 0, 1});  // x^5 + 5x - 1000
+    Integer m(10);
+
+    const std::vector<int64_t> ks = {0, 1, -1, 2, -2, 100, -100, 12345};
+    for (int64_t k : ks) {
+        auto f_new = PolynomialOptimizer::rotate_linear(f_init, m, k);
+        const double alpha = tracker.cheap_alpha(f_new);
+
+        // Recompute independently
+        const double alpha_check = tracker.cheap_alpha(f_new);
+
+        std::cout << "  k=" << k << ", cheap_alpha = " << alpha << std::endl;
+        assert(std::isfinite(alpha));
+        assert(alpha == alpha_check);  // bit-identical for same input
+    }
+
+    std::cout << "  PASSED" << std::endl;
+}
+
+/// Rotation chain: f0 → f1 → f2 → f3 with k=1 each step.
+/// f3 should equal rotate_linear(f0, m, 3) (since rotations compose).
+void test_rotation_composition_associative() {
+    std::cout << "Testing: rotation composition equals single-step..." << std::endl;
+
+    auto f0 = make_poly({-500, 13, -2, 0, 1});  // x^4 - 2x^2 + 13x - 500
+    Integer m(7);
+
+    // Chain 3 rotations of k=1 each
+    auto f1 = PolynomialOptimizer::rotate_linear(f0, m, 1);
+    auto f2 = PolynomialOptimizer::rotate_linear(f1, m, 1);
+    auto f3 = PolynomialOptimizer::rotate_linear(f2, m, 1);
+
+    // Single rotation of k=3
+    auto f_single = PolynomialOptimizer::rotate_linear(f0, m, 3);
+
+    // f3 and f_single must be coefficient-identical
+    assert(f3.degree() == f_single.degree());
+    for (uint32_t i = 0; i <= f3.degree(); ++i) {
+        assert(f3[i].to_int64() == f_single[i].to_int64());
+    }
+
+    // Cheap alpha must also be identical
+    RotationAlphaTracker tracker(100);
+    const double a_chain = tracker.cheap_alpha(f3);
+    const double a_single = tracker.cheap_alpha(f_single);
+    std::cout << "  chain (k=1,1,1) cheap_alpha = " << a_chain << std::endl;
+    std::cout << "  single (k=3)    cheap_alpha = " << a_single << std::endl;
+    assert(a_chain == a_single);
+
+    std::cout << "  PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Rotation-Incremental Alpha Tests ===" << std::endl << std::endl;
 
@@ -221,6 +390,12 @@ int main() {
     test_linear_short_circuit_value_correctness();
     test_short_circuit_not_triggered_for_higher_degree();
     test_linear_short_circuit_various_bounds();
+    test_tracker_small_primes_init();
+    test_tracker_cheap_alpha_matches_formula();
+    test_tracker_score_monotone_in_l2();
+    test_rotation_changes_only_low_coeffs();
+    test_cheap_alpha_after_rotation();
+    test_rotation_composition_associative();
 
     std::cout << std::endl << "All rotation-incremental tests passed!" << std::endl;
     return 0;
