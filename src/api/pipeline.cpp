@@ -1,7 +1,9 @@
 #include <gnfs/api/pipeline.hpp>
 
 #include <gnfs/polynomial/selector_dispatch.hpp>
+#include <gnfs/polynomial/poly_checkpoint.hpp>
 #include <gnfs/factor_base/builder.hpp>
+#include <gnfs/factor_base/fb_checkpoint.hpp>
 #include <gnfs/sieve/special_q.hpp>
 #include <gnfs/sieve/sieve_checkpoint.hpp>
 #include <gnfs/sieve/lattice_sieve.hpp>
@@ -66,6 +68,25 @@ inline bool cascade_v3_enabled_for_round(int round_index) {
 
 inline bool cascade_v3_enabled() {
     return cascade_v3_mode() != V3Mode::Off;
+}
+
+// Pipeline resume base path (Phase 1+2+3 checkpoints).
+//
+// Precedence:
+//   1. GNFS_RESUME=<base>     — preferred name covering full pipeline
+//   2. GNFS_SIEVE_RESUME=<base> — legacy alias (Phase 3 sieve-only)
+//
+// Returns empty string when neither ENV is set / both empty.
+inline std::string pipeline_resume_base_path() {
+    if (const char* env = std::getenv("GNFS_RESUME");
+        env != nullptr && env[0] != '\0') {
+        return env;
+    }
+    if (const char* env = std::getenv("GNFS_SIEVE_RESUME");
+        env != nullptr && env[0] != '\0') {
+        return env;
+    }
+    return {};
 }
 
 /// Trial division up to limit. Returns factor or 0.
@@ -419,11 +440,61 @@ PolynomialContext Pipeline::select_polynomial() {
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
+    // ── Phase 1 checkpoint resume (GNFS_RESUME / GNFS_SIEVE_RESUME, 2026-05-21) ──
+    // Result-only checkpoint: if <base>.poly_ckpt exists with matching N, load
+    // and skip the (potentially hours-long) Kleinjung lattice search.  Selection
+    // is multi-threaded random search, so in-flight checkpointing is not viable;
+    // we only persist the final (f, g, m) and reuse it across restarts.
+    const std::string resume_base = pipeline_resume_base_path();
+    if (!resume_base.empty()) {
+        const std::string poly_ckpt = resume_base + ".poly_ckpt";
+        if (polynomial::PolyCheckpoint::exists_and_valid(poly_ckpt)) {
+            try {
+                auto ck = polynomial::PolyCheckpoint::load_for(poly_ckpt, n_);
+                auto ctx_resumed = ck.to_context();
+
+                auto t1 = std::chrono::high_resolution_clock::now();
+                stats_.timings.poly_s =
+                    std::chrono::duration<double>(t1 - t0).count();
+
+                emit_log(LogLevel::Info, Phase::PolynomialSelection,
+                         "checkpoint hit: m=" + ctx_resumed.m().to_string() +
+                         " degree=" + std::to_string(ctx_resumed.degree()) +
+                         " (skipped Kleinjung search)");
+                std::fprintf(stderr,
+                    "[poly-resume] ckpt=%s degree=%u skew=%g\n",
+                    poly_ckpt.c_str(), ctx_resumed.degree(),
+                    ctx_resumed.skewness());
+                emit_progress(Phase::PolynomialSelection,
+                              "Polynomial loaded from checkpoint", 1.0);
+                return ctx_resumed;
+            } catch (const std::exception& e) {
+                emit_log(LogLevel::Warn, Phase::PolynomialSelection,
+                         std::string("poly checkpoint load failed (") +
+                         e.what() + ") — falling through to fresh selection");
+            }
+        }
+    }
+
     bool verbose = config_.verbose.value_or(false);
     auto ctx = polynomial::SelectorDispatch::select(n_, params_.degree, verbose);
 
     auto t1 = std::chrono::high_resolution_clock::now();
     stats_.timings.poly_s = std::chrono::duration<double>(t1 - t0).count();
+
+    // Persist Phase 1 result so a follow-up run can skip it.
+    if (!resume_base.empty()) {
+        const std::string poly_ckpt = resume_base + ".poly_ckpt";
+        try {
+            auto ck = polynomial::PolyCheckpoint::from_context(ctx);
+            ck.save(poly_ckpt);
+            emit_log(LogLevel::Info, Phase::PolynomialSelection,
+                     "poly checkpoint saved: " + poly_ckpt);
+        } catch (const std::exception& e) {
+            emit_log(LogLevel::Warn, Phase::PolynomialSelection,
+                     std::string("poly checkpoint save failed: ") + e.what());
+        }
+    }
 
     emit_log(LogLevel::Info, Phase::PolynomialSelection,
              "m=" + ctx.m().to_string() + " time=" +
@@ -449,12 +520,85 @@ FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
     fb_opts.large_prime_bound = params_.large_prime_bound;
     fb_opts.parallel = true;
 
+    // ── Phase 2 checkpoint resume (GNFS_RESUME / GNFS_SIEVE_RESUME, 2026-05-21) ──
+    // Result-only checkpoint: if <base>.fb_ckpt exists and all build params +
+    // ctx fingerprint match, rehydrate the FactorBase and skip the parallel
+    // Cantor-Zassenhaus root-finding entirely.  Mismatch on any param forces a
+    // fresh rebuild and overwrites the stale checkpoint.
+    const std::string resume_base = pipeline_resume_base_path();
+    if (!resume_base.empty()) {
+        const std::string fb_ckpt = resume_base + ".fb_ckpt";
+        if (factor_base::FbCheckpoint::exists_and_valid(fb_ckpt)) {
+            try {
+                auto ck = factor_base::FbCheckpoint::load(fb_ckpt);
+                auto status = ck.matches(
+                    ctx,
+                    fb_opts.rational_bound, fb_opts.algebraic_bound,
+                    fb_opts.special_q_bound, fb_opts.large_prime_bound,
+                    fb_opts.log_scale);
+                if (status == factor_base::FbCheckpoint::MatchStatus::Ok) {
+                    auto fb_resumed = ck.to_factor_base();
+
+                    auto t1 = std::chrono::high_resolution_clock::now();
+                    stats_.timings.fb_s =
+                        std::chrono::duration<double>(t1 - t0).count();
+                    stats_.rational_primes = fb_resumed.rational_count();
+                    stats_.algebraic_primes = fb_resumed.algebraic_count();
+
+                    emit_log(LogLevel::Info, Phase::FactorBase,
+                             "checkpoint hit: rational=" +
+                             std::to_string(fb_resumed.rational_count()) +
+                             " algebraic=" +
+                             std::to_string(fb_resumed.algebraic_count()) +
+                             " (skipped Cantor-Zassenhaus)");
+                    std::fprintf(stderr,
+                        "[fb-resume] ckpt=%s rat=%zu alg=%zu sieve_alg=%zu\n",
+                        fb_ckpt.c_str(), fb_resumed.rational_count(),
+                        fb_resumed.algebraic_count(),
+                        fb_resumed.sieve_algebraic_count());
+                    emit_progress(Phase::FactorBase,
+                                  "Factor base loaded from checkpoint", 1.0);
+                    return fb_resumed;
+                } else {
+                    const char* reason =
+                        (status == factor_base::FbCheckpoint::MatchStatus::NMismatch)
+                            ? "N mismatch"
+                            : (status == factor_base::FbCheckpoint::MatchStatus::DegreeMismatch)
+                                ? "degree mismatch"
+                                : "params mismatch";
+                    emit_log(LogLevel::Warn, Phase::FactorBase,
+                             std::string("fb checkpoint stale (") + reason +
+                             ") — rebuilding");
+                }
+            } catch (const std::exception& e) {
+                emit_log(LogLevel::Warn, Phase::FactorBase,
+                         std::string("fb checkpoint load failed (") +
+                         e.what() + ") — rebuilding");
+            }
+        }
+    }
+
     auto fb = factor_base::FactorBaseBuilder::build(ctx, fb_opts);
 
     auto t1 = std::chrono::high_resolution_clock::now();
     stats_.timings.fb_s = std::chrono::duration<double>(t1 - t0).count();
     stats_.rational_primes = fb.rational_count();
     stats_.algebraic_primes = fb.algebraic_count();
+
+    // Persist Phase 2 result for follow-up runs.
+    if (!resume_base.empty()) {
+        const std::string fb_ckpt = resume_base + ".fb_ckpt";
+        try {
+            auto ck = factor_base::FbCheckpoint::from_factor_base(
+                fb, ctx, fb_opts.special_q_bound);
+            ck.save(fb_ckpt);
+            emit_log(LogLevel::Info, Phase::FactorBase,
+                     "fb checkpoint saved: " + fb_ckpt);
+        } catch (const std::exception& e) {
+            emit_log(LogLevel::Warn, Phase::FactorBase,
+                     std::string("fb checkpoint save failed: ") + e.what());
+        }
+    }
 
     emit_log(LogLevel::Info, Phase::FactorBase,
              "rational=" + std::to_string(fb.rational_count()) +
@@ -522,15 +666,14 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     coll_config.check_duplicates = true;
 
     // ── Sieve mid-flight checkpoint resume (BACKLOG #11e, ENV GNFS_SIEVE_RESUME) ──
-    // GNFS_SIEVE_RESUME=<base_path>: 启用 OOC streaming + checkpoint, base_path
-    // 既作 OOC base 也作 checkpoint base. 若 <base_path>.sieve_ckpt 存在 → resume,
-    // 否则 fresh start.  Sieve 进程中每 CHECKPOINT_INTERVAL batches 更新 ckpt 文件.
-    // 正常完成 → 删除 ckpt + OOC writer finalize MAGIC (后续 read 通过 reader).
-    std::string sieve_resume_path;
+    // GNFS_SIEVE_RESUME=<base_path> (or GNFS_RESUME, 2026-05-21 alias covering
+    // Phase 1+2+3): enables OOC streaming + sieve checkpoint, base_path acts as
+    // both OOC base and checkpoint base. If <base_path>.sieve_ckpt exists → resume,
+    // otherwise fresh start. Sieve loop persists state every CHECKPOINT_INTERVAL
+    // batches. Normal completion → remove ckpt + flip OOC writer to MAGIC.
+    std::string sieve_resume_path = pipeline_resume_base_path();
     std::optional<sieve::SieveCheckpoint> prior_ckpt;
-    if (const char* env = std::getenv("GNFS_SIEVE_RESUME");
-        env != nullptr && env[0] != '\0') {
-        sieve_resume_path = env;
+    if (!sieve_resume_path.empty()) {
         const std::string ckpt_file = sieve_resume_path + ".sieve_ckpt";
         if (sieve::SieveCheckpoint::exists_and_valid(ckpt_file)) {
             try {
@@ -556,20 +699,20 @@ std::vector<Relation> Pipeline::sieve_and_collect(
         coll_config.ooc_base_path = sieve_resume_path;
         coll_config.ooc_resume = prior_ckpt.has_value();
         emit_log(LogLevel::Info, Phase::Sieving,
-                 "GNFS_SIEVE_RESUME enabled: base=" + sieve_resume_path +
+                 "resume enabled: base=" + sieve_resume_path +
                  " ckpt_resume=" + (prior_ckpt ? "yes" : "no"));
     }
     // ── OOC streaming (BACKLOG #11c, ENV GNFS_OOC_RELATIONS=1) ──
     // 50d Round 2 909K relations 时 macOS OOM-killed (2026-05-17 实测).
     // OOC 启用后 collector 流式写盘 /tmp/gnfs_relations_<pid>.{reldata,relidx},
     // 内存只保留 (a,b) seen set, 显著减小 sieve 期间 RAM peak.
-    // 不与 GNFS_SIEVE_RESUME 共存 (后者已隐含 OOC enable)
+    // 不与 GNFS_SIEVE_RESUME / GNFS_RESUME 共存 (resume 已隐含 OOC enable)
     //
     // Size-aware default (BACKLOG #1, 2026-05-18):
     //   lp_bits ≥ 22 (50d+) 默认启用 OOC 防 Round 2+ OOM.
     //   GNFS_OOC_RELATIONS=0 explicit opt-out (e.g. tests / CI).
     //   GNFS_OOC_RELATIONS=1 explicit force-on (no size gate).
-    else {
+    if (sieve_resume_path.empty()) {
         const char* ooc_env = std::getenv("GNFS_OOC_RELATIONS");
         const auto policy = relation::decide_ooc_policy(ooc_env, params_.large_prime_bound);
         if (policy.enabled) {
@@ -1128,9 +1271,9 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
             use_streaming_mb = true;
         } else if (val == "auto") {
             const char* ooc = std::getenv("GNFS_OOC_RELATIONS");
-            const char* resume = std::getenv("GNFS_SIEVE_RESUME");
-            if ((ooc != nullptr && std::string(ooc) == "1") ||
-                (resume != nullptr && std::strlen(resume) > 0)) {
+            // GNFS_RESUME / GNFS_SIEVE_RESUME both imply OOC streaming.
+            const bool resume_active = !pipeline_resume_base_path().empty();
+            if ((ooc != nullptr && std::string(ooc) == "1") || resume_active) {
                 use_streaming_mb = true;
             }
         }
