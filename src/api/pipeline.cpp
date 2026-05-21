@@ -27,6 +27,7 @@
 #include <random>
 #include <cstdio>   // fprintf for V3 cascade stderr signal
 #include <cstdlib>  // getenv for GNFS_CASCADE_V3 flag
+#include <cstring>  // strlen for SGE-OOC ENV string checks
 #include <unistd.h> // getpid for OOC base path default
 #include <string>
 #include <thread>
@@ -1103,7 +1104,45 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
     mb_config.verbose = false;
 
     linalg::MatrixBuilder mb(mb_config);
-    auto build_result = mb.build_with_qc(relations, fb, ctx);
+
+    // SGE-OOC: streaming matrix build path (ENV GNFS_SGE_STREAMING).
+    //   off / unset (default): existing vector path (zero regression)
+    //   "1"  / "on"           : streaming MB over VectorRelationSource(relations)
+    //   "auto"                : enable iff GNFS_OOC_RELATIONS / GNFS_SIEVE_RESUME
+    //                           is set (these imply we already paid the OOC
+    //                           cost upstream, so we want the matching matrix-
+    //                           build RAM savings)
+    // The streaming path produces a bit-for-bit identical MatrixBuildResult
+    // (verified by tests/test_sge_streaming.cpp) — toggling it is safe.
+    // RAM savings: the streaming MB never materializes an intermediate
+    // vector copy of relations during the parallel row build (the input
+    // vector itself still exists at this scope, but the trim path resizes
+    // it in place which is the natural place to release memory).
+    auto stream_env = std::getenv("GNFS_SGE_STREAMING");
+    bool use_streaming_mb = false;
+    if (stream_env != nullptr) {
+        std::string val(stream_env);
+        if (val == "1" || val == "on" || val == "true") {
+            use_streaming_mb = true;
+        } else if (val == "auto") {
+            const char* ooc = std::getenv("GNFS_OOC_RELATIONS");
+            const char* resume = std::getenv("GNFS_SIEVE_RESUME");
+            if ((ooc != nullptr && std::string(ooc) == "1") ||
+                (resume != nullptr && std::strlen(resume) > 0)) {
+                use_streaming_mb = true;
+            }
+        }
+    }
+
+    linalg::MatrixBuildResult build_result;
+    if (use_streaming_mb) {
+        linalg::VectorRelationSource src(relations);
+        build_result = mb.build_with_qc_streaming(src, fb, ctx);
+        std::fprintf(stderr,
+            "[sge-ooc] matrix built via streaming path (GNFS_SGE_STREAMING)\n");
+    } else {
+        build_result = mb.build_with_qc(relations, fb, ctx);
+    }
 
     auto matrix_stats = linalg::compute_matrix_stats(build_result.matrix);
     stats_.matrix_rows = matrix_stats.num_rows;
@@ -1175,7 +1214,15 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
         std::shuffle(relations.begin(), relations.end(), rng);
         relations.resize(target_rows);
 
-        auto build2 = mb.build_with_qc(relations, fb, ctx);
+        // SGE-OOC: rebuild via streaming MB if enabled (same gate as initial
+        // build above so the trim path is consistent).
+        linalg::MatrixBuildResult build2;
+        if (use_streaming_mb) {
+            linalg::VectorRelationSource src(relations);
+            build2 = mb.build_with_qc_streaming(src, fb, ctx);
+        } else {
+            build2 = mb.build_with_qc(relations, fb, ctx);
+        }
         build_result.matrix = std::move(build2.matrix);
         auto ms2 = linalg::compute_matrix_stats(build_result.matrix);
         stats_.matrix_rows = ms2.num_rows;
