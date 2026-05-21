@@ -22,9 +22,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -42,13 +44,19 @@ std::string worker_ooc_base(const std::string& base, size_t chunk_id) {
     return base + ".worker_" + std::to_string(chunk_id);
 }
 
-/// Remove the .reldata and .relidx files for a worker (best-effort cleanup).
-void cleanup_worker_files(const std::string& base) noexcept {
-    const std::string data_path = base + ".reldata";
-    const std::string idx_path = base + ".relidx";
-    // Use unlink directly (no error reporting — best effort).
-    ::unlink(data_path.c_str());
-    ::unlink(idx_path.c_str());
+/// Remove the OOC store .reldata and .relidx files for a worker
+/// (best-effort cleanup). Does not touch the .attempts file used by the
+/// test crash-injection harness — that survives across worker retries.
+void cleanup_ooc_files(const std::string& base) noexcept {
+    ::unlink((base + ".reldata").c_str());
+    ::unlink((base + ".relidx").c_str());
+}
+
+/// Final cleanup after the worker has finished (success or fail, no more
+/// retries). Removes both OOC files and the .attempts counter.
+void cleanup_final(const std::string& base) noexcept {
+    cleanup_ooc_files(base);
+    ::unlink((base + ".attempts").c_str());
 }
 
 /// Body of the child worker process. Runs the sieve over the assigned SQ index
@@ -76,6 +84,36 @@ void cleanup_worker_files(const std::string& base) noexcept {
         const Integer& n,
         const Integer& m) {
     try {
+        // ── Test/debug crash injection ────────────────────────────────
+        // ENV `GNFS_DISTRIBUTED_SIEVE_FAIL_ATTEMPT_<chunk_id>=N` makes the
+        // worker exit(1) on attempt N (1-based). A second attempt with
+        // unmodified ENV will succeed. Used by test_distributed_sieve to
+        // exercise the master retry path without resorting to real signals.
+        // Tracked by a sticky file `<worker_base>.attempts` containing the
+        // attempt counter — survives across fork() retries.
+        if (const char* fail_env_unused = std::getenv(
+                ("GNFS_DISTRIBUTED_SIEVE_FAIL_ATTEMPT_" +
+                 std::to_string(chunk_id)).c_str())) {
+            const std::string ctr_path = worker_base + ".attempts";
+            int prior = 0;
+            {
+                std::ifstream ifs(ctr_path);
+                if (ifs) ifs >> prior;
+            }
+            const int now = prior + 1;
+            {
+                std::ofstream ofs(ctr_path, std::ios::trunc);
+                ofs << now;
+            }
+            const int fail_on = std::atoi(fail_env_unused);
+            if (fail_on > 0 && now == fail_on) {
+                std::fprintf(stderr,
+                    "[dist_sieve.worker] chunk=%zu INJECTED FAIL on attempt %d\n",
+                    chunk_id, now);
+                ::_exit(1);
+            }
+        }
+
         // Per-worker collector configured to stream to the worker OOC store.
         gnfs::relation::CollectorConfig coll_cfg;
         coll_cfg.check_duplicates = true;
@@ -154,8 +192,10 @@ pid_t spawn_worker(
         const gnfs::cofactor::CofactorizerConfig& cofac_config,
         const Integer& n,
         const Integer& m) {
-    // Clean any stale worker files from a prior aborted run.
-    cleanup_worker_files(worker_base);
+    // Clean any stale OOC store from a prior aborted run. Preserve the
+    // .attempts counter when present (used by test crash-injection harness
+    // to track which attempt we are on).
+    cleanup_ooc_files(worker_base);
 
     pid_t pid = ::fork();
     if (pid < 0) {
@@ -422,11 +462,19 @@ std::vector<Relation> run_distributed_sieve(
         }
     }
 
-    // Stage 4: merge worker OOC stores into a single vector.
+    // Stage 4: merge worker OOC stores into a single vector with cross-worker
+    // (a, b) dedup. Per-worker collectors dedup within their chunk, but the
+    // sieve can produce the same (a, b) from multiple Special-Q values (when
+    // the algebraic side factorization happens to land on both q's prime in
+    // FB), so adjacent chunks may emit overlapping relations. The in-process
+    // sieve dedups across all SQs through a single collector — to preserve
+    // that semantic we dedup on merge.
     std::vector<Relation> merged;
+    std::unordered_set<int64_t> seen_ab;
     if (out_worker_stats) out_worker_stats->clear();
     if (out_worker_stats) out_worker_stats->reserve(slots.size());
 
+    size_t dup_dropped = 0;
     for (const auto& slot : slots) {
         DistributedSieveWorkerResult res;
         res.pid = slot.pid;
@@ -441,20 +489,36 @@ std::vector<Relation> run_distributed_sieve(
                        : (slot.sq_end - slot.sq_begin);
 
         if (slot.success && slot.sq_begin < slot.sq_end) {
-            const size_t before = merged.size();
-            const size_t n_added = append_worker_relations(slot.worker_base, merged);
-            res.relations_count = n_added;
-            (void)before;
+            // Read into a per-worker buffer first so we can count duplicates
+            // accurately for the worker stats.
+            std::vector<Relation> wrels;
+            const size_t worker_n = append_worker_relations(slot.worker_base, wrels);
+            (void)worker_n;
+            size_t added = 0;
+            merged.reserve(merged.size() + wrels.size());
+            seen_ab.reserve(seen_ab.size() + wrels.size());
+            for (auto& r : wrels) {
+                int64_t k = static_cast<int64_t>(r.a) ^
+                            (static_cast<int64_t>(r.b) << 32);
+                if (seen_ab.insert(k).second) {
+                    merged.push_back(std::move(r));
+                    ++added;
+                } else {
+                    ++dup_dropped;
+                }
+            }
+            res.relations_count = added;
         }
-        // Always cleanup, success or fail.
-        cleanup_worker_files(slot.worker_base);
+        // Always cleanup (OOC + attempts counter), success or fail.
+        cleanup_final(slot.worker_base);
 
         if (out_worker_stats) out_worker_stats->push_back(std::move(res));
     }
 
     std::fprintf(stderr,
-        "[dist_sieve.master] complete: merged %zu relations from %zu workers\n",
-        merged.size(), slots.size());
+        "[dist_sieve.master] complete: merged %zu relations from %zu workers "
+        "(dup_dropped=%zu)\n",
+        merged.size(), slots.size(), dup_dropped);
 
     return merged;
 }
