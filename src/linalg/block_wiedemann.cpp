@@ -65,6 +65,12 @@ inline uint64_t bw_stream_seed(uint64_t base_seed, uint32_t stream_id) noexcept 
 
 }  // namespace
 
+// Forward declaration: defined below near the view-overload public API; the
+// SparseMatrix BlockWiedemann::find_dependencies() routes here when K>1.
+template <MatrixView MV>
+static std::vector<std::vector<bool>> find_dependencies_view_impl(
+    const MV& matrix, size_t max_deps);
+
 // ============================================================================
 // SpMV utilities — moved to gnfs/linalg/detail/spmv_kernels.hpp so that the
 // BW solvers can run over any MatrixView (CSRMatrix or MmapCSRMatrix), and
