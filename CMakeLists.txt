@@ -819,6 +819,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME IntPolynomial COMMAND test_int_polynomial)
     set_tests_properties(IntPolynomial PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Polynomial Half-GCD (Knuth-Schönhage HGCD over F_p[x])
+    add_executable(test_half_gcd
+        tests/test_half_gcd.cpp
+    )
+    target_link_libraries(test_half_gcd PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME HalfGCD COMMAND test_half_gcd)
+    set_tests_properties(HalfGCD PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # 关系过滤器测试
     add_executable(test_filter
         tests/test_filter.cpp

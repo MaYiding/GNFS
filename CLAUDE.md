@@ -720,6 +720,46 @@ vs N=2 / N=4 bit-for-bit assert).
   small-ab_pairs fallback) + 2 env parsing + 1 perf info + 1 edge case
   (single-slot, empty-span)
 
+### Polynomial Half-GCD (GNFS_POLY_HGCD)
+
+**ENV `GNFS_POLY_HGCD=1`** (2026-05-21 实施, default OFF):
+启用 Knuth-Schönhage Half-GCD (HGCD) 算法替代 Euclidean GCD 在 polynomial
+GCD over F_p[x]. 默认 OFF, Euclidean path 完整保留.
+
+```bash
+GNFS_POLY_HGCD=1 ./gnfs <N>   # 启用 HGCD path
+unset GNFS_POLY_HGCD          # default OFF (Euclidean)
+```
+
+**算法**: Recursive divide-and-conquer on polynomial pair (a, b) — 把
+deg(a)=n 切半, 递归求 transformation matrix M 使 M * (a, b) = (a', b')
+满足 deg(b') < n/2. 主 GCD 通过反复调用 HGCD + Euclidean tail 完成.
+
+**Threshold `kHGCDThreshold = 16`**: deg(a) 小于此值直接走 Euclidean (递归 +
+matrix-vector mult overhead 在小度数 dominate).
+
+**Bit-for-bit guarantee**: `gcd_via_hgcd(a, b, p)` 输出与 `ModularPoly::gcd(a, b, p)`
+monic-normalized 结果完全一致. 单元测试 `test_half_gcd` 16 个测试强制验证
+(包括 deg [10, 200] 随机 polynomial / large prime ~2^64 / edge cases).
+
+**ROI 定位**:
+- HGCD 真正加速依赖 sub-quadratic polynomial multiplication M(n)
+  (e.g., FFT 给 O(n log n)). 当前 `ModularPoly::mul_raw` 走 schoolbook
+  O(n²), 所以 HGCD wall-time 在 deg ≤ 500 略慢于 Euclidean
+  (实测 deg=100 0.37x, deg=500 0.46x).
+- GNFS 主路径 polynomial GCD 调用都在小 degree (CZ 求根 ≤ 6),
+  ROI 不适用. HGCD 主要为未来 FFT 乘法集成预留接口.
+- 不影响正确性, 实验 path 完整测试.
+
+**集成点** (2026-05-21):
+- `include/gnfs/polynomial/half_gcd.hpp` — `gcd_via_hgcd()` + `poly_hgcd_enabled()`
+  + `kHGCDThreshold` + `HGCDMatrix` 2x2 transformation matrix
+- `tests/test_half_gcd.cpp` — 16 个测试 (8 correctness across deg / 4 edge cases
+  / 2 ENV / 2 perf info)
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout
+
+**Default OFF**: pipeline.cpp 与 `ModularPoly::gcd` 入口不动, opt-in 实验通道.
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
