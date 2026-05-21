@@ -170,8 +170,14 @@ public:
         // Sum is independent of c0; precomputed lazily per evaluator.
         // Note: Kleinjung's g(x) = x - m always has lc=1, so this fast path
         // covers every Murphy E call where g is the rational-side polynomial.
+        //
+        // ENV `GNFS_NO_LINEAR_SHORTCUT=1` disables short-circuit for benchmark
+        // comparison (forces general path even for degree-1 monic).
         if (f.degree() == 1 && f.leading_coeff().is_one()) {
-            return linear_alpha_cached(prime_end);
+            const char* env = std::getenv("GNFS_NO_LINEAR_SHORTCUT");
+            if (!(env && env[0] == '1')) {
+                return linear_alpha_cached(prime_end);
+            }
         }
 
         // 预计算 f' 用于双根检测 (read-only across threads)
