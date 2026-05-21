@@ -179,6 +179,7 @@ ALL_TEST_BINARIES=(
     test_linalg
     test_sqrt
     test_sqrt_debug
+    test_couveignes_large_class_group
     test_murphy
     test_kleinjung
     test_kleinjung_large
@@ -216,7 +217,7 @@ MODULE_TESTS=(
     relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration"
     linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration"
     integration    "test_integration"
-    sqrt           "test_sqrt test_sqrt_debug test_class_group"
+    sqrt           "test_sqrt test_sqrt_debug test_class_group test_couveignes_large_class_group"
     api            "test_api test_i18n test_method_selection"
 )
 
@@ -255,6 +256,7 @@ SMOKE_TESTS=(
     test_linalg
     test_sqrt
     test_sqrt_debug
+    test_couveignes_large_class_group
     test_murphy
     test_regressions
     test_polynomial_context
@@ -300,6 +302,7 @@ TEST_TIMEOUT=(
     test_linalg              10
     test_sqrt                10
     test_sqrt_debug          10
+    test_couveignes_large_class_group 60
     test_murphy              10
     test_params              10
     test_int_polynomial      10
@@ -359,6 +362,7 @@ TEST_TIER=(
     test_linalg              "instant"
     test_sqrt                "instant"
     test_sqrt_debug          "instant"
+    test_couveignes_large_class_group "instant"
     test_murphy              "instant"
     test_params              "instant"
     test_int_polynomial      "instant"
