@@ -1,4 +1,5 @@
 #include "gnfs/linalg/block_wiedemann.hpp"
+#include "gnfs/linalg/detail/spmv_kernels.hpp"
 #include "gnfs/linalg/krylov_sequence_mmap.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
@@ -19,127 +20,35 @@
 namespace gnfs::linalg {
 
 // ============================================================================
-// SpMV utilities (shared with block_lanczos.cpp)
+// SpMV utilities — moved to gnfs/linalg/detail/spmv_kernels.hpp so that the
+// BW solvers can run over any MatrixView (CSRMatrix or MmapCSRMatrix), and
+// SGE/Phase 5 can flip between in-memory and out-of-core matrix storage
+// without losing the prefetch / persistent-scratch optimisations.
+// All call sites below use detail::spmv_forward / spmv_transpose / spmv_B /
+// spmv_B_prime instantiated with CSRMatrix (the standard in-memory path).
 // ============================================================================
 
 namespace {
 
-// P1.B-1: SpMV prefetch (MemBound treatment, doctrine §6)
-// Baseline 2026-05-13: BackendStallRate=74.79%, L1DMissRate=12.80% — split-loop
-// prefetch addresses the pointer-chase x.data[*p]. N_AHEAD=8 chosen from M5
-// L1D line=64B, load-to-use~4cy; locality hint=0 (streaming, no L2 retention).
-constexpr ptrdiff_t SPMV_PREFETCH_AHEAD = 8;
-
-void bw_spmv_forward(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
-                     gnfs::util::ThreadPool& pool) {
-    // CSRMatrix ctor validates col < num_cols. x.length == M.num_cols() by
-    // contract, so the per-element bounds check that used to be here is
-    // redundant — removed for SpMV hot-path speed.
-    assert(x.length == M.num_cols());
-    pool.parallel_for_index(0, M.num_rows(), [&](size_t i) {
-        uint64_t acc = 0;
-        const uint32_t* p_end  = M.row_end(i);
-        const uint32_t* p_pref = (p_end - M.row_begin(i) > SPMV_PREFETCH_AHEAD)
-                                     ? p_end - SPMV_PREFETCH_AHEAD
-                                     : M.row_begin(i);
-        const uint32_t* p = M.row_begin(i);
-        for (; p < p_pref; ++p) {
-            __builtin_prefetch(&x.data[*(p + SPMV_PREFETCH_AHEAD)], 0, 0);
-            acc ^= x.data[*p];
-        }
-        for (; p < p_end; ++p)
-            acc ^= x.data[*p];
-        y.data[i] = acc;
-    });
+// Thin in-file alias wrappers so the historical call sites below
+// (bw_spmv_forward / bw_spmv_B / ...) stay the same. The wrappers
+// instantiate the templated kernels on CSRMatrix, which is the only
+// matrix type the SparseMatrix entry points feed in.
+inline void bw_spmv_forward(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
+                            gnfs::util::ThreadPool& pool) {
+    detail::spmv_forward(M, x, y, pool);
 }
-
-// Persistent scratch buffers for bw_spmv_transpose — 避免每次 SpMV
-// 调用都 T×n×8 bytes malloc/free。Phase 1 调 ~2L 次,Phase 3 调 ~L 次,
-// 持久化后 alloc 次数从 O(L) 降为 O(1)(只在 n 变大或 T 变大时 grow)。
-// 使用 function-local static 而非 thread_local:因为缓冲区维度是 [T][n],
-// 跨主线程的多次调用复用同一份就足够。线程安全靠 ThreadPool 的同步保证
-// (每次 spmv 顶层 future.get() 后才允许下一次调用,无重入)。
-struct BwSpmvLocals {
-    std::vector<std::vector<uint64_t>> locals;
-    void ensure(size_t T, size_t n) {
-        if (locals.size() < T) locals.resize(T);
-        for (size_t t = 0; t < T; ++t) {
-            if (locals[t].size() < n) locals[t].resize(n);
-            // 每次 SpMV 开始时必须 zero,因为是 XOR 累加
-            std::fill(locals[t].begin(), locals[t].begin() + n, 0);
-        }
-    }
-};
-
-void bw_spmv_transpose(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
-                       gnfs::util::ThreadPool& pool) {
-    const size_t m = M.num_rows();
-    const size_t n = y.length;
-    // CSRMatrix ctor validates col < num_cols; n == num_cols by contract.
-    assert(n == M.num_cols());
-    assert(x.length == m);
-    const size_t T = pool.num_threads();
-    const size_t chunk = (m + T - 1) / T;
-
-    static BwSpmvLocals scratch;
-    scratch.ensure(T, n);
-    std::vector<std::future<void>> futures;
-    futures.reserve(T);
-    size_t T_used = 0;
-
-    for (size_t t = 0; t < T; ++t) {
-        size_t start = t * chunk;
-        size_t end_row = std::min(start + chunk, m);
-        if (start >= m) break;
-        T_used = t + 1;
-        futures.push_back(pool.submit([&M, &x, t, start, end_row]() {
-            auto& local = scratch.locals[t];
-            for (size_t i = start; i < end_row; ++i) {
-                uint64_t xi = x.data[i];
-                if (xi == 0) continue;
-                // P1.B-1: split-loop prefetch on local[*p] (write target).
-                // rw=0 still beneficial — ARM PRFM PLD primes the line into
-                // L1D for the impending RMW; PSTL would help store-buffer
-                // but is benched separately if PMU shows store-side stalls.
-                const uint32_t* p_end  = M.row_end(i);
-                const uint32_t* p_pref = (p_end - M.row_begin(i) > SPMV_PREFETCH_AHEAD)
-                                             ? p_end - SPMV_PREFETCH_AHEAD
-                                             : M.row_begin(i);
-                const uint32_t* p = M.row_begin(i);
-                for (; p < p_pref; ++p) {
-                    __builtin_prefetch(&local[*(p + SPMV_PREFETCH_AHEAD)], 0, 0);
-                    local[*p] ^= xi;
-                }
-                for (; p < p_end; ++p)
-                    local[*p] ^= xi;
-            }
-        }));
-    }
-    for (auto& f : futures) f.get();
-
-    pool.parallel_for_index(0, n, [&y, T_used](size_t j) {
-        uint64_t val = 0;
-        for (size_t t = 0; t < T_used; ++t) val ^= scratch.locals[t][j];
-        y.data[j] = val;
-    });
+inline void bw_spmv_transpose(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
+                              gnfs::util::ThreadPool& pool) {
+    detail::spmv_transpose(M, x, y, pool);
 }
-
-// B * V = M * (M^T * V) — symmetric product through CSR
-void bw_spmv_B(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
-               BlockVector& tmp, gnfs::util::ThreadPool& pool) {
-    bw_spmv_transpose(M, x, tmp, pool);
-    bw_spmv_forward(M, tmp, y, pool);
+inline void bw_spmv_B(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
+                      BlockVector& tmp, gnfs::util::ThreadPool& pool) {
+    detail::spmv_B(M, x, y, tmp, pool);
 }
-
-// B' * V = M^T * (M * V) — mirror of bw_spmv_B for thin matrix BW variant.
-// Used when working in R^n (cols) instead of R^m (rows). x ∈ R^n (cols),
-// tmp ∈ R^m (rows), y ∈ R^n (cols). BACKLOG #80 step 7: fix BW thin matrix
-// (m<n) by switching operator domain. M^T·M·w = 0 over GF(2) is a strict
-// linear relation (not the quadratic-form quirk that breaks M·M^T path).
-void bw_spmv_B_prime(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
-                     BlockVector& tmp, gnfs::util::ThreadPool& pool) {
-    bw_spmv_forward(M, x, tmp, pool);   // tmp = M·x  (m-vec)
-    bw_spmv_transpose(M, tmp, y, pool); // y   = M^T·tmp (n-vec)
+inline void bw_spmv_B_prime(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
+                            BlockVector& tmp, gnfs::util::ThreadPool& pool) {
+    detail::spmv_B_prime(M, x, y, tmp, pool);
 }
 
 // ============================================================================
