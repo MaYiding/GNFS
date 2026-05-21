@@ -30,6 +30,8 @@
 
 set -eo pipefail
 
+zmodload zsh/datetime 2>/dev/null || true
+
 PROJECT_ROOT="${0:A:h:h}"
 BUILD_DIR="${PROJECT_ROOT}/build"
 RESULTS_DIR="${PROJECT_ROOT}/bench/results"
@@ -174,11 +176,13 @@ run_with_timeout() {
     RUN_ELAPSED_MS=0
     RUN_STATUS="UNKNOWN"
 
-    local start_ns end_ns
-    if (( ${+commands[gdate]} )); then
-        start_ns=$(gdate +%s%N)
+    local start_s
+    if [[ -n "$EPOCHREALTIME" ]]; then
+        start_s="$EPOCHREALTIME"
+    elif (( ${+commands[gdate]} )); then
+        start_s=$(gdate +%s.%N)
     else
-        start_ns=$(($(date +%s) * 1000000000))
+        start_s=$(date +%s)
     fi
 
     local full_cmd
@@ -222,12 +226,16 @@ run_with_timeout() {
         fi
     fi
 
-    if (( ${+commands[gdate]} )); then
-        end_ns=$(gdate +%s%N)
+    local end_s
+    if [[ -n "$EPOCHREALTIME" ]]; then
+        end_s="$EPOCHREALTIME"
+    elif (( ${+commands[gdate]} )); then
+        end_s=$(gdate +%s.%N)
     else
-        end_ns=$(($(date +%s) * 1000000000))
+        end_s=$(date +%s)
     fi
-    RUN_ELAPSED_MS=$(( (end_ns - start_ns) / 1000000 ))
+    RUN_ELAPSED_MS=$(awk -v s="$start_s" -v e="$end_s" \
+        'BEGIN { printf "%d", (e - s) * 1000 }')
 
     local actual_exit=1
     if grep -q "^EXIT_CODE=" "$log_file" 2>/dev/null; then
