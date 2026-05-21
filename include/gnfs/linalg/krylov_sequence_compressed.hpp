@@ -255,6 +255,13 @@ public:
         if (k >= L_) {
             throw std::out_of_range("KrylovSequenceCompressed::write_at k >= L");
         }
+        // Flush BEFORE allocating a new slot when the previous slot completed
+        // a chunk. This deferred-flush rule means the slot pointer returned to
+        // the caller always points to a buffer that will not be reset before
+        // the caller fills it.
+        if (write_buffer_count_ == chunk_blocks_) {
+            flush_write_buffer();
+        }
         const uint64_t expected_k = current_chunk_ * chunk_blocks_ + write_buffer_count_;
         if (k != expected_k) {
             // Out-of-order writes break the streaming model. Document the rule.
@@ -264,9 +271,6 @@ public:
         }
         uint8_t* slot = write_buffer_.data() + write_buffer_count_ * entry_size_;
         ++write_buffer_count_;
-        if (write_buffer_count_ == chunk_blocks_) {
-            flush_write_buffer();
-        }
         return slot;
     }
 
