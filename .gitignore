@@ -30,6 +30,9 @@ CMakeUserPresets.json
 # ===== Cache =====
 .cache/
 
+# ===== Parallel Feature Worktrees =====
+.worktrees/
+
 # ===== Claude runtime artifacts =====
 .claude/scheduled_tasks.lock
 
