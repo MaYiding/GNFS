@@ -352,10 +352,24 @@ Pipeline::select_method(size_t n_bits, size_t n_digits,
     // For balanced k-digit semiprimes, p ≈ k/2 digits.
     // ECM beats SIQS up to ~55d (where factors are ~27d).
 
+    // ENV overrides (debugging/experimentation only)
+    //   GNFS_FORCE_SIQS=1   → force SIQS path regardless of size (except trial-only ≤6d)
+    //   GNFS_DISABLE_SIQS=1 → skip SIQS, fall through to GNFS for ≥25d
+    // Both ENVs ignored when user explicitly set Config::method (handled above).
+    const char* env_force   = std::getenv("GNFS_FORCE_SIQS");
+    const char* env_disable = std::getenv("GNFS_DISABLE_SIQS");
+    bool force_siqs   = (env_force   && env_force[0]   == '1');
+    bool disable_siqs = (env_disable && env_disable[0] == '1');
+
     if (n_digits <= 6 || n_bits <= 20) {
         return {FactorizationMethod::TrialDivision,
                 std::to_string(n_digits) + "d/" + std::to_string(n_bits) +
                 "bit: trial division sufficient"};
+    }
+
+    if (force_siqs) {
+        return {FactorizationMethod::SIQS,
+                std::to_string(n_digits) + "d: GNFS_FORCE_SIQS=1 override"};
     }
 
     if (n_digits <= 24 || n_bits <= 80) {
@@ -364,14 +378,15 @@ Pipeline::select_method(size_t n_bits, size_t n_digits,
                 "bit: Pollard rho O(p^{1/2}) efficient"};
     }
 
-    if (n_digits <= 100) {
+    if (n_digits <= 100 && !disable_siqs) {
         // 25-100d: rho quick probe → ECM → SIQS cascade
         return {FactorizationMethod::SIQS,
                 std::to_string(n_digits) + "d: rho+ECM+SIQS cascade"};
     }
 
     return {FactorizationMethod::GNFS,
-            std::to_string(n_digits) + "d: GNFS O(L_N(1/3,c)) required"};
+            std::to_string(n_digits) + "d: GNFS O(L_N(1/3,c))" +
+            (disable_siqs ? " (SIQS disabled via ENV)" : " required")};
 }
 
 // ============================================================
@@ -1939,8 +1954,14 @@ FactorResult Pipeline::run() {
     }
 
     // ── Phase 2: SIQS for medium N ──
-    if (method == FactorizationMethod::SIQS ||
-        (method == FactorizationMethod::GNFS && stats_.n_digits <= 100)) {
+    // GNFS_DISABLE_SIQS=1 also suppresses the SIQS probe inside GNFS path.
+    bool siqs_disabled = []() {
+        const char* e = std::getenv("GNFS_DISABLE_SIQS");
+        return e && e[0] == '1';
+    }();
+    if ((method == FactorizationMethod::SIQS ||
+         (method == FactorizationMethod::GNFS && stats_.n_digits <= 100)) &&
+        !siqs_disabled) {
         emit_log(LogLevel::Info, Phase::PolynomialSelection,
                  "Trying SIQS for " + std::to_string(stats_.n_digits) + "-digit N");
 

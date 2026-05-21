@@ -235,6 +235,7 @@ MODULE_TESTS=(
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_class_group test_couveignes_large_class_group"
     api            "test_api test_i18n test_method_selection"
+    siqs           "test_siqs"
 )
 
 # 模块 → 慢速测试映射 (slow+heavy, 可选运行)
@@ -244,6 +245,7 @@ MODULE_SLOW_TESTS=(
     sieve          "test_lattice_sieve"
     cofactor       "test_ecm_brent_suyama_bench"
     api            "test_full_resume"
+    siqs           "test_siqs_e2e"
 )
 
 # 冒烟测试子集 (仅 < 1s 的纯单元测试，绝不包含实际 GNFS 运算)
@@ -387,6 +389,7 @@ TEST_TIMEOUT=(
     test_poly_checkpoint     10
     test_fb_checkpoint       10
     test_full_resume         120
+    test_siqs_e2e            700
 )
 
 # 测试速度分级 (用于 list 显示)
@@ -467,6 +470,7 @@ TEST_TIER=(
     test_poly_checkpoint     "instant"
     test_fb_checkpoint       "instant"
     test_full_resume         "slow"
+    test_siqs_e2e            "slow"
 )
 
 # 模块依赖图 (改了 A 模块 → 需要额外测试的下游模块)
@@ -481,6 +485,7 @@ MODULE_DEPS=(
     relation       "linalg"
     linalg         "sqrt"
     sqrt           ""
+    siqs           ""
 )
 
 # 模块描述
@@ -496,6 +501,7 @@ MODULE_DESC=(
     linalg         "线性代数 (GF(2) 矩阵, Block Lanczos)"
     sqrt           "平方根 (Hensel, Couveignes, 代数平方根)"
     api            "公共 API (factorize, Pipeline, Config)"
+    siqs           "Self-Initializing Quadratic Sieve (25-100d)"
 )
 
 # 有序模块列表 (按流水线顺序)
