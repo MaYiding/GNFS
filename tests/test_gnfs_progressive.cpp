@@ -246,6 +246,13 @@ FactResult factor_with_progress(const Integer& n, int level) {
     cofac_config.large_prime_bound = fb.params().large_prime_bound;
     cofac_config.allow_1lp = true;
     cofac_config.allow_2lp = true;
+    // 3LP cofactor + filter merge (BACKLOG #1, 2026-05-21): opt-in via ENV
+    // GNFS_3LP=1. Progressive levels L3+ (>= 50d) benefit from the wider LP
+    // acceptance window. Default OFF for baseline preservation.
+    {
+        const char* env = std::getenv("GNFS_3LP");
+        cofac_config.allow_3lp = (env && std::atoi(env) == 1);
+    }
 
     Cofactorizer cofactorizer(ctx, fb, cofac_config);
 

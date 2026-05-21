@@ -241,6 +241,19 @@ FactResult factor_with_progress(const Integer& n, int level) {
     cofac_config.large_prime_bound = fb.params().large_prime_bound;
     cofac_config.allow_1lp = true;
     cofac_config.allow_2lp = true;
+    // 3LP cofactor + filter merge (BACKLOG #1, 2026-05-21): opt-in via ENV
+    // GNFS_3LP=1. Stress (50d/60d) is the primary target: lp_bits 23/26 makes
+    // weight≥3 LP keys dominate, and accepting 3LP cofactors widens the LP
+    // space so V0 / V3 cascade BFS find more chain merges. Default OFF for
+    // baseline preservation.
+    {
+        const char* env = std::getenv("GNFS_3LP");
+        cofac_config.allow_3lp = (env && std::atoi(env) == 1);
+        if (cofac_config.allow_3lp) {
+            std::cout << "[3lp] cofactorizer accepts 3LP relations (B^3 bound)\n"
+                      << std::flush;
+        }
+    }
 
     Cofactorizer cofactorizer(ctx, fb, cofac_config);
 

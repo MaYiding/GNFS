@@ -525,14 +525,33 @@ public:
         MergeStats stats;
         std::vector<Relation> full_results;
 
-        // 统计并丢弃 3LP+ 关系（基于原始 LP 数量）
+        // 分类并入池 LP 关系。3LP+ 是否进 pool 取决于 ENV GNFS_3LP=1.
+        //
+        // 旧行为 (default): 3LP+ 弃 (input_3lp_plus 仅统计).
+        // 新行为 (GNFS_3LP=1): 3LP+ 也进 pool, Phase 2 weight-2 merge 步骤会处理.
+        //   注: V0 standard merge 设计为 weight-2 LP keys 匹配, 3LP relations 提
+        //   供更多 weight-2 候选 (每个 3LP 提供 3 个 LP keys), 仍可被 V0 处理.
+        //   完整 3LP chain merge 需要 CliqueRelationMerger BFS spanning tree.
+        //
+        // ENV 每次调用重读 (非 static cache): 测试可在同一进程内切换模式,
+        // 也不会因第一次 Pipeline 调用就 "固化" 模式. 性能影响微小 (1 个 getenv
+        // per merge_all 调用, 而非 per relation).
+        const bool accept_3lp_pool = []() {
+            const char* env = std::getenv("GNFS_3LP");
+            return env && std::atoi(env) == 1;
+        }();
         std::vector<Relation> pool;
         pool.reserve(partials.size());
         for (auto& rel : partials) {
             size_t nlp = rel.num_large_primes();
             if (nlp == 1) { ++stats.input_1lp; pool.push_back(std::move(rel)); }
             else if (nlp == 2) { ++stats.input_2lp; pool.push_back(std::move(rel)); }
-            else { ++stats.input_3lp_plus; }  // 丢弃
+            else if (accept_3lp_pool) {
+                // 3LP+ 进 pool 但 input_3lp_plus 仍计数, 便于诊断
+                ++stats.input_3lp_plus;
+                pool.push_back(std::move(rel));
+            }
+            else { ++stats.input_3lp_plus; }  // 旧路径: 丢弃
         }
 
         // ═══ Phase 1: 1LP 贪婪匹配 (weight≥2, 与旧 merge() 行为一致) ═══

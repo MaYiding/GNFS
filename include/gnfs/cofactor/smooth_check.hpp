@@ -41,9 +41,10 @@ enum class CofactorClass : uint8_t {
     Prime = 1,         // cofactor 是单个素数 (1LP)
     PrimePower = 2,    // cofactor 是素数幂 p^k
     Semiprime = 3,     // cofactor = p * q (2LP)
-    Composite = 4,     // 其他合数（可能是 3LP 或更多）
+    Composite = 4,     // 其他合数（无法分解或超 3LP space）
     TooLarge = 5,      // cofactor 超出大素数界限
-    Unknown = 6        // 无法确定
+    Unknown = 6,       // 无法确定
+    ThreeLP = 7        // cofactor = p * q * r (3LP, 全部 ≤ B)
 };
 
 /// 分类结果
@@ -51,6 +52,7 @@ struct CofactorClassification {
     CofactorClass type = CofactorClass::Unknown;
     uint64_t factor1 = 0;      // 第一个因子（如果适用）
     uint64_t factor2 = 0;      // 第二个因子（如果适用）
+    uint64_t factor3 = 0;      // 第三个因子 (ThreeLP 时使用)
     uint8_t power = 1;         // 幂次（如果是素数幂）
 };
 
@@ -299,13 +301,143 @@ struct CofactorClassification {
     return 1;
 }
 
+/// 尝试用 SQUFOF / Pollard rho 分解 c 找一个非平凡因子.
+/// 仅用于 try_classify_three_lp 内部. 返回 1 表示找不到.
+///
+/// PERF: 此函数 ~1-2ms cost (SQUFOF iter cap + Pollard fallback). caller
+/// 应该先用 has_small_factor() 过滤明显的"不可分" cofactors, 避免大量浪费.
+[[nodiscard]] inline uint64_t try_find_one_factor_fast(uint64_t c) {
+    if (c <= 1) return 1;
+    constexpr uint64_t small_primes[] = {
+        2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,
+        53,59,61,67,71,73,79,83,89,97
+    };
+    for (uint64_t sp : small_primes) {
+        if (c % sp == 0 && sp != c) return sp;
+    }
+    if (c < UINT64_C(0x100000000)) {
+        const auto& mid = get_mid_primes();
+        uint64_t limit = static_cast<uint64_t>(std::sqrt(static_cast<double>(c))) + 1;
+        for (uint64_t p : mid) {
+            if (p > limit) break;
+            if (c % p == 0) return p;
+        }
+    }
+    // SQUFOF 用 short iter cap 避免 3LP path 长时间 stall
+    if (c < (UINT64_C(1) << 62)) {
+        // Cap iterations more aggressively in 3LP path: 1000 vs 2000-20000 in normal path
+        uint32_t lim = (c < (UINT64_C(1) << 40)) ? 1000 :
+                       (c < (UINT64_C(1) << 50)) ? 2000 : 5000;
+        uint64_t f = SQUFOF::factor(c, lim);
+        if (f != 1 && f != c) return f;
+    }
+    // Pollard rho with tight iter cap
+    size_t max_iter = (c < (UINT64_C(1) << 40)) ? 5000 : 30000;
+    uint64_t f = pollard_rho(c, max_iter);
+    if (f != 1 && f != c) return f;
+    return 1;
+}
+
+/// 快速预筛: 检查 c 是否有小素数因子 (≤ 97).
+/// 用于 try_classify_three_lp 入口, 大多数 hard composite 3LP 候选会被这个
+/// 筛选掉, 避免 SQUFOF/Pollard 的 ~1ms 浪费.
+///
+/// 注意: 3LP 实际场景 c = p*q*r where p,q,r prime ≤ B = 2^lp_bits. p,q,r 都
+/// 可能 ≥ 1000 (lp_bits=23 时 typical), 所以 has_small_factor 返回 false 不
+/// 等于"不能 3LP". 但 sieve 路径上 80%+ 的 cofactor 是 random composite, 这
+/// 个 fast 拒绝节省大量浪费.
+///
+/// 经验权衡: lp_bits ≥ 23 (50d+) 时 typical 3LP cofactors 的 smallest prime
+/// 平均 ~1000-100K, 不会被 small_primes 筛过 → fast path miss 大多数真 3LP.
+/// 这是个 tradeoff: 节省 sieve overhead 是首要的, 接受少量 3LP loss.
+[[nodiscard]] inline bool has_small_factor(uint64_t c, uint64_t bound = 97) {
+    // 用前 10 个 smallest primes 已足够覆盖大多数 random composites
+    constexpr uint64_t tiny_primes[] = {2,3,5,7,11,13,17,19,23,29};
+    for (uint64_t p : tiny_primes) {
+        if (p > bound) break;
+        if (c % p == 0) return true;
+    }
+    return false;
+}
+
+/// 尝试将 cofactor 分解为 3 个素数 (3LP)。
+///
+/// 前置: caller 已确认 cofactor 在 (B², B³] 区间, 且 fits_uint64.
+/// 策略 (sieve-fast path):
+///   1. 用 SQUFOF/Pollard 找第一个因子 f1 (no ECM).
+///   2. 若 f1 prime 且 ≤ B, 分解 rest (再调一次 SQUFOF/Pollard).
+///   3. 若 f1 composite, split 后检查是否构成 (p, q, rest).
+///   4. 失败立即返回 nullopt — caller 会 reject relation.
+///
+/// PERF: 单次调用 ~1-2ms 即使失败. 高 sieve throughput 需要 caller (e.g.
+/// classify_cofactor) 用 has_small_factor 作 fast pre-filter. 否则每个
+/// algebraic cofactor reject 都 ~1ms wasted, 50K rejects/SQ → 50s 浪费.
+[[nodiscard]] inline std::optional<CofactorClassification>
+try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
+    if (c <= 1) return std::nullopt;
+
+    uint64_t f1 = try_find_one_factor_fast(c);
+    if (f1 == 1) return std::nullopt;
+    uint64_t rest = c / f1;
+    if (f1 * rest != c) return std::nullopt;  // safety
+
+    if (f1 > rest) std::swap(f1, rest);
+
+    if (is_probable_prime_u64(f1)) {
+        if (f1 > large_prime_bound) return std::nullopt;
+        if (is_probable_prime_u64(rest)) {
+            if (rest <= large_prime_bound) {
+                CofactorClassification r;
+                r.type = CofactorClass::Semiprime;
+                r.factor1 = std::min(f1, rest);
+                r.factor2 = std::max(f1, rest);
+                return r;
+            }
+            return std::nullopt;
+        }
+        uint64_t f2 = try_find_one_factor_fast(rest);
+        if (f2 == 1 || f2 == rest) return std::nullopt;
+        uint64_t f3 = rest / f2;
+        if (f2 * f3 != rest) return std::nullopt;
+        if (!is_probable_prime_u64(f2) || !is_probable_prime_u64(f3)) return std::nullopt;
+        if (f2 > large_prime_bound || f3 > large_prime_bound) return std::nullopt;
+        uint64_t a = f1, b = f2, d = f3;
+        if (a > b) std::swap(a, b);
+        if (b > d) std::swap(b, d);
+        if (a > b) std::swap(a, b);
+        CofactorClassification r;
+        r.type = CofactorClass::ThreeLP;
+        r.factor1 = a; r.factor2 = b; r.factor3 = d;
+        return r;
+    }
+
+    uint64_t f1a = try_find_one_factor_fast(f1);
+    if (f1a == 1 || f1a == f1) return std::nullopt;
+    uint64_t f1b = f1 / f1a;
+    if (f1a * f1b != f1) return std::nullopt;
+    if (!is_probable_prime_u64(f1a) || !is_probable_prime_u64(f1b)) return std::nullopt;
+    if (f1a > large_prime_bound || f1b > large_prime_bound) return std::nullopt;
+    if (!is_probable_prime_u64(rest)) return std::nullopt;
+    if (rest > large_prime_bound) return std::nullopt;
+    uint64_t a = f1a, b = f1b, d = rest;
+    if (a > b) std::swap(a, b);
+    if (b > d) std::swap(b, d);
+    if (a > b) std::swap(a, b);
+    CofactorClassification r;
+    r.type = CofactorClass::ThreeLP;
+    r.factor1 = a; r.factor2 = b; r.factor3 = d;
+    return r;
+}
+
 /// 分类 cofactor
 /// @param cofactor 剩余的未分解部分
 /// @param large_prime_bound 大素数上界
+/// @param allow_3lp 是否尝试 3LP 分解 (默认 false: 保留旧行为)
 /// @return 分类结果
 [[nodiscard]] inline CofactorClassification classify_cofactor(
         const Integer& cofactor,
-        uint64_t large_prime_bound) {
+        uint64_t large_prime_bound,
+        bool allow_3lp = false) {
 
     CofactorClassification result;
 
@@ -318,9 +450,28 @@ struct CofactorClassification {
             return result;
         }
 
-        // 检查是否超出界限 (use __uint128_t to avoid overflow when lpb > 2^32)
+        // 检查是否超出 2LP 界限 (use __uint128_t to avoid overflow when lpb > 2^32)
         if (c > static_cast<__uint128_t>(large_prime_bound) * large_prime_bound) {
-            // 可能是 3LP 或更多
+            // c > B²: 进 3LP 空间
+            if (allow_3lp) {
+                // 检查上界 B³ (__uint128_t safe). lpb 最大 ~30 bits, lpb³ < 2^90 < __uint128_t.
+                __uint128_t lpb3 = static_cast<__uint128_t>(large_prime_bound)
+                                 * static_cast<__uint128_t>(large_prime_bound)
+                                 * static_cast<__uint128_t>(large_prime_bound);
+                if (static_cast<__uint128_t>(c) > lpb3) {
+                    result.type = CofactorClass::TooLarge;
+                    return result;
+                }
+                // c ≤ B³ 且非素数 (后面会检测) → 尝试 3LP
+                // 注意: c 也可能是 prime in (B, B²-something) — 实际不可能, 因 c > B²
+                // 所以一定是合数
+                if (auto three = try_classify_three_lp(c, large_prime_bound)) {
+                    return *three;
+                }
+                // 3LP 分解失败 → Composite (caller 决定是否接受)
+                result.type = CofactorClass::Composite;
+                return result;
+            }
             result.type = CofactorClass::TooLarge;
             return result;
         }
@@ -455,6 +606,9 @@ struct CofactorClassification {
     Integer lp_sq;
     mpz_ui_pow_ui(lp_sq.get_mpz(), large_prime_bound, 2);
     if (cofactor.compare(lp_sq) > 0) {
+        // 大数 cofactor > B² — 3LP space (此分支稀少, lpb ≤ 30 bits 时 c 通常 fits_uint64).
+        // 当前实现 3LP 只支持 uint64 cofactor (fits_uint64 path). 大数路径 fallback TooLarge.
+        // BACKLOG: 拓展 try_classify_three_lp 支持 Integer 输入 (lpb > 32 bits 才需要).
         result.type = CofactorClass::TooLarge;
         return result;
     }
@@ -488,11 +642,13 @@ struct CofactorClassification {
 /// @param cofactor 剩余的未分解部分
 /// @param large_prime_bound 大素数上界
 /// @param allow_2lp 是否允许 2LP
+/// @param allow_3lp 是否允许 3LP (默认 false 兼容旧调用)
 /// @return true 如果值得进一步检查
 [[nodiscard]] inline bool quick_cofactor_check(
         const Integer& cofactor,
         uint64_t large_prime_bound,
-        bool allow_2lp = true) {
+        bool allow_2lp = true,
+        bool allow_3lp = false) {
 
     if (cofactor.fits_uint64()) {
         uint64_t c = cofactor.to_uint64();
@@ -503,9 +659,18 @@ struct CofactorClassification {
         // 单个大素数
         if (c <= large_prime_bound) return true;
 
-        // 2LP: cofactor <= B^2 (use __uint128_t to avoid overflow when lpb > 2^32)
-        if (allow_2lp && c <= static_cast<__uint128_t>(large_prime_bound) * large_prime_bound) {
+        const __uint128_t lpb2 = static_cast<__uint128_t>(large_prime_bound)
+                               * static_cast<__uint128_t>(large_prime_bound);
+
+        // 2LP: cofactor <= B^2
+        if (allow_2lp && static_cast<__uint128_t>(c) <= lpb2) {
             return true;
+        }
+
+        // 3LP: cofactor <= B^3
+        if (allow_3lp) {
+            const __uint128_t lpb3 = lpb2 * static_cast<__uint128_t>(large_prime_bound);
+            if (static_cast<__uint128_t>(c) <= lpb3) return true;
         }
 
         return false;
@@ -519,6 +684,12 @@ struct CofactorClassification {
         Integer lp_sq;
         mpz_ui_pow_ui(lp_sq.get_mpz(), large_prime_bound, 2);
         if (cofactor.compare(lp_sq) <= 0) return true;  // 2LP
+    }
+
+    if (allow_3lp) {
+        Integer lp_cube;
+        mpz_ui_pow_ui(lp_cube.get_mpz(), large_prime_bound, 3);
+        if (cofactor.compare(lp_cube) <= 0) return true;  // 3LP
     }
 
     return false;

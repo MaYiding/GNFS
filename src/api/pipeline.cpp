@@ -490,6 +490,21 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     // 2LP requires SQUFOF which is expensive for large LP ranges.
     // Only enable for ≥50 digits where the LP key space is large enough to benefit.
     cofac_config.allow_2lp = (params_.digits >= 50);
+    // 3LP cofactor + filter/merge upgrade (BACKLOG #1 algo breakthrough route).
+    // Opt-in via ENV GNFS_3LP=1: 接受 (B², B³] cofactors 为 3LP relations,
+    // 拓宽 LP space. 50d β plateau ~121% 主因是 lp_bits=23 时 weight≥3 LP keys 占 30%,
+    // 接受 3LP 后 V3 cascade BFS spanning tree 处理 chain merge.
+    // 默认 OFF: 零回归. 启用 OPT-IN 时 cofactor + filter + clique_merger 三处同步.
+    {
+        const char* env = std::getenv("GNFS_3LP");
+        cofac_config.allow_3lp = (env && std::atoi(env) == 1);
+        if (cofac_config.allow_3lp) {
+            emit_log(LogLevel::Info, Phase::Sieving,
+                     "GNFS_3LP=1 enabled: cofactorizer accepts 3LP relations");
+            std::fprintf(stderr, "[3lp] cofactor + filter accept 3LP (lp_bits=%zu B^3 bound)\n",
+                static_cast<size_t>(__builtin_ctzll(params_.large_prime_bound | 1)));
+        }
+    }
 
     cofactor::Cofactorizer cofactorizer(ctx, fb, cofac_config);
 
