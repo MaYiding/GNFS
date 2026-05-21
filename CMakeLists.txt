@@ -494,6 +494,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SieveCheckpoint COMMAND test_sieve_checkpoint)
     set_tests_properties(SieveCheckpoint PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_distributed_sieve
+        tests/test_distributed_sieve.cpp
+    )
+    target_link_libraries(test_distributed_sieve PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME DistributedSieve COMMAND test_distributed_sieve)
+    set_tests_properties(DistributedSieve PROPERTIES LABELS "fast" TIMEOUT 60)
+
     add_executable(test_poly_checkpoint
         tests/test_poly_checkpoint.cpp
     )
