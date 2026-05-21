@@ -722,6 +722,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME MatrixViewConcept COMMAND test_matrix_view_concept)
     set_tests_properties(MatrixViewConcept PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # save_sparse_as_mmap helper (Phase 5 dual-path entrypoint).
+    # Verifies the helper is byte-identical to the explicit
+    # SparseMatrix → CSRMatrix → save → MmapCSRMatrix sequence.
+    add_executable(test_save_sparse_as_mmap
+        tests/test_save_sparse_as_mmap.cpp
+    )
+    target_link_libraries(test_save_sparse_as_mmap PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SaveSparseAsMmap COMMAND test_save_sparse_as_mmap)
+    set_tests_properties(SaveSparseAsMmap PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Out-of-core Relations 单元测试
     add_executable(test_ooc_relations
         tests/test_ooc_relations.cpp
