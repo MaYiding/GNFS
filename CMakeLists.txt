@@ -971,6 +971,19 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME MetalSpMV COMMAND test_metal_spmv)
     set_tests_properties(MetalSpMV PROPERTIES LABELS "instant" TIMEOUT 30)
 
+    # SIMD SpMV (correctness) — exercises the NEON / AVX2 inner kernels
+    # added in feat(linalg) SIMD SpMV dispatch. The test compares the
+    # SIMD helper output to the verbatim scalar kernel bit-for-bit on a
+    # battery of matrices and edge cases. On hosts without NEON or AVX2
+    # the SIMD helper transparently falls back to scalar, so the binary
+    # stays green either way. Tagged "instant" so it joins the smoke set.
+    add_executable(test_spmv_simd
+        tests/test_spmv_simd.cpp
+    )
+    target_link_libraries(test_spmv_simd PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME LinalgSpmvSimd COMMAND test_spmv_simd)
+    set_tests_properties(LinalgSpmvSimd PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Out-of-core Relations 单元测试
     add_executable(test_ooc_relations
         tests/test_ooc_relations.cpp
