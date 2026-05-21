@@ -773,6 +773,53 @@ vs N=2 / N=4 bit-for-bit assert).
   small-ab_pairs fallback) + 2 env parsing + 1 perf info + 1 edge case
   (single-slot, empty-span)
 
+### ECM Stage 2 多曲线并行 (GNFS_ECM_STAGE2_PARALLEL)
+
+**ENV `GNFS_ECM_STAGE2_PARALLEL=N`** (2026-05-22 实施, default 1, range [1, hardware_concurrency * 2]):
+ECM Stage 2 (Baby-Step Giant-Step) 在多条曲线之间相互独立 (embarrassingly
+parallel). N=1 (默认) 走 sequential per-curve 循环, 不创建 ThreadPool,
+零开销保留原行为. N>=2 时把 K 条曲线 dispatch 到大小为 min(N, K) 的
+ThreadPool, 曲线之间靠 future 同步收口.
+
+```bash
+GNFS_ECM_STAGE2_PARALLEL=1 ./gnfs <N>    # default sequential, zero overhead
+GNFS_ECM_STAGE2_PARALLEL=4 ./gnfs <N>    # 4 outer workers for Stage 2 BSGS
+GNFS_ECM_STAGE2_PARALLEL=8 ./gnfs <N>    # 8 outer workers
+unset GNFS_ECM_STAGE2_PARALLEL           # same as N=1
+```
+
+**并行模型**:
+- Outer = `parallel_stage2_curves<Result, Curve, Func>(curves, run_stage2)`
+  over K 条独立曲线 (每条已完成 Stage 1, post-Stage-1 Point + a24 准备好)
+- 内部 Stage 2 BSGS / Brent-Suyama 算法 bit-identical (helper 仅改变外层
+  dispatch, 不触碰 `ECM::stage2` / `ECM::stage2_brent_suyama` 内核)
+- 每条曲线 task 拥有独立 Integer buffer 与 Point 状态, GMP `mpz_*` 调用
+  操作数互不重叠, 满足 GMP per-call disjoint-operands thread-safety
+
+**Bit-for-bit guarantee**: 每条曲线 (sigma, n, B1, B2) 的 Stage 2 结果是
+该 sigma 的 pure function, 不依赖 dispatch 顺序. Sequential (N=1) 与
+parallel (N>=2) 路径产生的 per-index `std::optional<Integer>` 完全一致,
+factor 集合严格相同. 由 `tests/test_ecm_stage2_parallel.cpp` 强制覆盖
+(N=1 vs N=4 vs N=hw bit-identical per-index assert).
+
+**ROI 与定位**:
+- 主要 ROI: 50d+/60d 余因子 B2 较大时 (B2=1e8 ~ B2=5e9), Stage 2 wall-time
+  显著超过 Stage 1. Stage 1 已有 `EcmCurvePool` 多曲线 warm-pool, Stage 2
+  此前 sequential 是真实 gap.
+- Stage 1 行为完全不变 (`EcmCurvePool` / `try_curve_with_pk` 语义保持).
+- Helper 是 opt-in 工具, 不修改 `ECM::factor` / `ECM::quick_factor` /
+  `ECM::factor_with_batch` public path. 调用方在自身循环里 wire-in 即可.
+- Default OFF (N=1) 保证 zero behavior change for legacy callers, 仅当用户
+  明确 opt-in 时启用.
+
+**集成点** (commits `c663ed7` → `6caba7f`, 2026-05-22):
+- `include/gnfs/cofactor/ecm_stage2_parallel.hpp` — `ecm_stage2_parallel_threads()`
+  env reader with `std::once_flag` cache + `parallel_stage2_curves<>` template
+  dispatcher + `ecm_stage2_parallel_reset_env_cache_for_testing()` test hook
+- `tests/test_ecm_stage2_parallel.cpp` — 6 个测试 (N=1 baseline factor /
+  N=1 vs N=4 parity / N=1 vs N=hw parity / ENV parsing / empty span /
+  single-curve N=4 no-stall)
+
 ### Polynomial Half-GCD (GNFS_POLY_HGCD)
 
 **ENV `GNFS_POLY_HGCD=1`** (2026-05-21 实施, default OFF):
