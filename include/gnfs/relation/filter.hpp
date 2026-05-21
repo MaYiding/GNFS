@@ -532,7 +532,11 @@ public:
         //   注: V0 standard merge 设计为 weight-2 LP keys 匹配, 3LP relations 提
         //   供更多 weight-2 候选 (每个 3LP 提供 3 个 LP keys), 仍可被 V0 处理.
         //   完整 3LP chain merge 需要 CliqueRelationMerger BFS spanning tree.
-        static const bool accept_3lp_pool = []() {
+        //
+        // ENV 每次调用重读 (非 static cache): 测试可在同一进程内切换模式,
+        // 也不会因第一次 Pipeline 调用就 "固化" 模式. 性能影响微小 (1 个 getenv
+        // per merge_all 调用, 而非 per relation).
+        const bool accept_3lp_pool = []() {
             const char* env = std::getenv("GNFS_3LP");
             return env && std::atoi(env) == 1;
         }();

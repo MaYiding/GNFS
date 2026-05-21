@@ -82,7 +82,10 @@ public:
         //   - 3LP+ 进 pool, Union-Find 建 component, BFS 沿 LP-share 边 merge
         //   - LP cancel check 仍保证 reject merge that doesn't strictly reduce LP count
         //   - merge accumulator 路径上 LP count 单调 decrease (residual ≤ 0)
-        static const bool accept_3lp_pool = []() {
+        //
+        // ENV 每次调用重读 (非 static cache): 测试可在同一进程内切换模式,
+        // pipeline 长期运行也能 hot-reload (虽然实际不会做).
+        const bool accept_3lp_pool = []() {
             const char* env = std::getenv("GNFS_3LP");
             return env && std::atoi(env) == 1;
         }();
