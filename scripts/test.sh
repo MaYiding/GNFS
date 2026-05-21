@@ -166,6 +166,7 @@ ALL_TEST_BINARIES=(
     test_resultant
     test_core_types
     test_safe_math
+    test_bit_intrin
     test_ooc_policy
     test_v0_bfs_policy
     test_bw_rank_est
@@ -220,7 +221,7 @@ ALL_TEST_BINARIES=(
 typeset -A MODULE_TESTS
 MODULE_TESTS=(
     core           "test_integer test_params test_regressions test_edge_cases test_core_types"
-    util           "test_small_vector test_thread_pool test_logger test_primes test_timer test_mmap_file test_safe_math"
+    util           "test_small_vector test_thread_pool test_logger test_primes test_timer test_mmap_file test_safe_math test_bit_intrin"
     polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental"
     factor_base    "test_factor_base"
     sieve          "test_special_q test_sieve_basic test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_sieve_tiny_simd"
@@ -254,6 +255,7 @@ SMOKE_TESTS=(
     test_resultant
     test_core_types
     test_safe_math
+    test_bit_intrin
     test_ooc_policy
     test_v0_bfs_policy
     test_sieve_ecore_qos
@@ -311,6 +313,7 @@ TEST_TIMEOUT=(
     test_resultant           10
     test_core_types          10
     test_safe_math           10
+    test_bit_intrin          10
     test_ooc_policy          10
     test_v0_bfs_policy       10
     test_sieve_ecore_qos     10
@@ -382,6 +385,7 @@ TEST_TIER=(
     test_resultant           "instant"
     test_core_types          "instant"
     test_safe_math           "instant"
+    test_bit_intrin          "instant"
     test_ooc_policy          "instant"
     test_v0_bfs_policy       "instant"
     test_sieve_ecore_qos     "instant"

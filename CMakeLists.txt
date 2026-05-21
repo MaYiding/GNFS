@@ -17,11 +17,21 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # 编译警告
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     add_compile_options(-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
-    # 优化 — Apple Silicon 用 -mcpu=native（隐含 -march），x86 用 -march=native
-    if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+    # 优化:
+    #   - Apple Silicon: -mcpu=native (隐含 -march)
+    #   - Linux x86_64:  -march=native
+    #   - Linux ARM64:   -mcpu=native (preferred over -march=native on ARM)
+    #   - 其它:          omit (let toolchain default; avoid GitHub-hosted
+    #                    runner CPU surprises producing illegal-instruction
+    #                    binaries on differently-provisioned re-runs)
+    if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+        set(GNFS_NATIVE_FLAG -mcpu=native)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        set(GNFS_NATIVE_FLAG -march=native)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
         set(GNFS_NATIVE_FLAG -mcpu=native)
     else()
-        set(GNFS_NATIVE_FLAG -march=native)
+        set(GNFS_NATIVE_FLAG "")
     endif()
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
         add_compile_options(-O3 ${GNFS_NATIVE_FLAG})
@@ -36,7 +46,29 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         add_compile_options(-O2 -g ${GNFS_NATIVE_FLAG})
     endif()
 elseif(MSVC)
-    add_compile_options(/W4)
+    # /W4 = warning level 4 (project target); /permissive- = strict standards
+    # conformance; /Zc:__cplusplus reports correct __cplusplus macro value
+    # which C++20 feature-test macros depend on.
+    # NOMINMAX prevents <windows.h> defining min/max macros that conflict
+    # with std::min/std::max.
+    # WIN32_LEAN_AND_MEAN trims rarely-used windows.h surface.
+    # _CRT_SECURE_NO_WARNINGS silences C4996 deprecation for fopen/strcpy etc.
+    add_compile_options(/W4 /permissive- /Zc:__cplusplus /utf-8)
+    add_compile_definitions(
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+        _CRT_SECURE_NO_WARNINGS
+        _SILENCE_ALL_CXX23_DEPRECATION_WARNINGS
+    )
+    # MSVC does not implement -fsanitize=*; instrumentation is via /fsanitize=address
+    # but only with cl 16.9+. Out of scope for this CI matrix.
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        # /O2 is the MSVC default for Release-style configs; /GL = whole-program
+        # optimisation (corresponds to LTO). /Qpar = auto-parallelize trivial
+        # loops. Caller can override.
+        add_compile_options(/O2 /GL)
+        add_link_options(/LTCG)
+    endif()
 endif()
 
 # Sanitizer 选项
@@ -110,12 +142,34 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ============================================================
 
 # GMP - GNU Multiple Precision Arithmetic Library
-find_library(GMP_LIBRARY gmp REQUIRED)
-find_path(GMP_INCLUDE_DIR gmp.h REQUIRED)
+# On Windows GMP is typically installed via vcpkg as "gmp" or via MPIR.
+# When using vcpkg toolchain file, CONFIG-based find_package works for both.
+# Falls back to plain find_library on POSIX where Homebrew/apt installs
+# straight into prefix lib dirs.
+if(MSVC OR DEFINED ENV{VCPKG_ROOT} OR DEFINED CMAKE_TOOLCHAIN_FILE)
+    # Prefer vcpkg-style package first; many ports expose "GMP" or "gmp".
+    find_package(unofficial-gmp CONFIG QUIET)
+    if(TARGET unofficial::gmp::gmp)
+        set(GMP_LIBRARY unofficial::gmp::gmp)
+        get_target_property(GMP_INCLUDE_DIR unofficial::gmp::gmp
+            INTERFACE_INCLUDE_DIRECTORIES)
+        message(STATUS "Found GMP via vcpkg (unofficial-gmp)")
+    else()
+        find_library(GMP_LIBRARY NAMES gmp gmp-10 libgmp libgmp-10 REQUIRED)
+        find_path(GMP_INCLUDE_DIR gmp.h REQUIRED)
+    endif()
+else()
+    find_library(GMP_LIBRARY gmp REQUIRED)
+    find_path(GMP_INCLUDE_DIR gmp.h REQUIRED)
+endif()
 
 # NTL - Number Theory Library (可选)
-find_library(NTL_LIBRARY ntl)
-find_path(NTL_INCLUDE_DIR NTL/ZZ.h)
+# NTL is harder to obtain on Windows; vcpkg has a port but it's experimental.
+# Skip the heavy probing on MSVC unless explicitly requested.
+if(NOT MSVC)
+    find_library(NTL_LIBRARY ntl)
+    find_path(NTL_INCLUDE_DIR NTL/ZZ.h)
+endif()
 
 if(NTL_LIBRARY AND NTL_INCLUDE_DIR)
     set(HAVE_NTL ON)
@@ -335,6 +389,14 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_safe_math PRIVATE gnfs_util)
     add_test(NAME SafeMath COMMAND test_safe_math)
     set_tests_properties(SafeMath PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Cross-compiler bit intrinsic + CPU hint wrappers (MSVC compatibility)
+    add_executable(test_bit_intrin
+        tests/test_bit_intrin.cpp
+    )
+    target_link_libraries(test_bit_intrin PRIVATE gnfs_util)
+    add_test(NAME BitIntrin COMMAND test_bit_intrin)
+    set_tests_properties(BitIntrin PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_ooc_policy
         tests/test_ooc_policy.cpp

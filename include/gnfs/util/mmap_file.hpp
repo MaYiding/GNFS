@@ -9,8 +9,15 @@
 #include <string>
 #include <stdexcept>
 
+// Windows port status: native mmap is unavailable; the project would need
+// `CreateFileMapping` / `MapViewOfFile` from <windows.h>. To keep transitive
+// header dependencies compiling on MSVC (so that the rest of the codebase
+// builds), this header exposes the same MmapFile interface on Windows but
+// every operation throws std::runtime_error at runtime. Callers that touch
+// out-of-core (OOC) features will fail at run time with a clear message;
+// the in-memory code paths remain fully usable.
 #ifdef _WIN32
-#error "MmapFile: Windows not supported (use CreateFileMapping)"
+#define GNFS_MMAP_FILE_UNSUPPORTED 1
 #else
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -19,6 +26,43 @@
 #endif
 
 namespace gnfs::util {
+
+#ifdef GNFS_MMAP_FILE_UNSUPPORTED
+
+/// Stub MmapFile for Windows builds. Constructing with a real path throws
+/// at runtime; the empty-construction overload is allowed so types
+/// containing an MmapFile member can be default-constructed.
+class MmapFile {
+public:
+    MmapFile() = default;
+    explicit MmapFile(const std::string& /*path*/) {
+        throw std::runtime_error(
+            "MmapFile: memory-mapped files are not implemented on Windows. "
+            "Recompile without OOC features or run on a POSIX platform.");
+    }
+    ~MmapFile() = default;
+    MmapFile(MmapFile&&) noexcept = default;
+    MmapFile& operator=(MmapFile&&) noexcept = default;
+    MmapFile(const MmapFile&) = delete;
+    MmapFile& operator=(const MmapFile&) = delete;
+
+    void close() noexcept {}
+    [[nodiscard]] const uint8_t* data() const noexcept { return nullptr; }
+    [[nodiscard]] size_t size() const noexcept { return 0; }
+    [[nodiscard]] bool is_open() const noexcept { return false; }
+
+    template <typename T>
+    [[nodiscard]] T read_at(size_t /*offset*/) const {
+        throw std::runtime_error("MmapFile::read_at unavailable on Windows");
+    }
+    template <typename T>
+    [[nodiscard]] const T* ptr_at(size_t /*offset*/) const {
+        throw std::runtime_error("MmapFile::ptr_at unavailable on Windows");
+    }
+    void advise_random() const {}
+};
+
+#else  // POSIX implementation
 
 /// RAII wrapper for memory-mapped files (read-only).
 ///
@@ -147,5 +191,7 @@ private:
     size_t size_ = 0;
     int fd_ = -1;
 };
+
+#endif  // GNFS_MMAP_FILE_UNSUPPORTED
 
 } // namespace gnfs::util

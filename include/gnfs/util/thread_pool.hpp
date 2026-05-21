@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gnfs/util/cpu_intrin.hpp"
+
 #include <atomic>
 #include <condition_variable>
 #include <functional>
@@ -248,12 +250,18 @@ public:
 private:
     /// Hint to the CPU we are in a spin loop — on ARM `yield` lowers SMT priority
     /// (M5 P-core has no SMT but the instruction still puts the pipeline in a
-    /// low-power hint state). On x86 emit `pause`.
+    /// low-power hint state). On x86 emit `pause`. Delegates to the
+    /// cross-compiler wrapper in `gnfs/util/cpu_intrin.hpp` so MSVC builds
+    /// pick up the `_mm_pause`/`__yield` intrinsics path instead of GCC inline
+    /// assembly which MSVC does not accept. The non-arm/non-x86 fallback path
+    /// uses `std::this_thread::yield()` here (heavier than the no-op in
+    /// `cpu_pause`) because spin-then-cv worker loops benefit from the
+    /// scheduler hint when the underlying CPU has neither pause nor yield.
     static inline void cpu_relax() noexcept {
-#if defined(__aarch64__) || defined(__arm__)
-        asm volatile("yield" ::: "memory");
-#elif defined(__x86_64__) || defined(__i386__)
-        asm volatile("pause" ::: "memory");
+#if defined(__aarch64__) || defined(__arm__) || defined(__x86_64__) || \
+    defined(__i386__) || defined(_M_X64) || defined(_M_IX86) ||         \
+    defined(_M_ARM64) || defined(_M_ARM)
+        ::gnfs::util::cpu_pause();
 #else
         std::this_thread::yield();
 #endif
