@@ -478,6 +478,7 @@ MODULE_DESC=(
     linalg         "线性代数 (GF(2) 矩阵, Block Lanczos)"
     sqrt           "平方根 (Hensel, Couveignes, 代数平方根)"
     api            "公共 API (factorize, Pipeline, Config)"
+    siqs           "Self-Initializing Quadratic Sieve (25-100d)"
 )
 
 # 有序模块列表 (按流水线顺序)
