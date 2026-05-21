@@ -357,6 +357,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME MatrixDiagnostics COMMAND test_matrix_diagnostics)
     set_tests_properties(MatrixDiagnostics PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # SGE-OOC: streaming MatrixBuilder + SGE equivalence tests
+    add_executable(test_sge_streaming
+        tests/test_sge_streaming.cpp
+    )
+    target_link_libraries(test_sge_streaming PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SGEStreaming COMMAND test_sge_streaming)
+    set_tests_properties(SGEStreaming PROPERTIES LABELS "instant" TIMEOUT 30)
+
     add_executable(test_v0_bfs_policy
         tests/test_v0_bfs_policy.cpp
     )
