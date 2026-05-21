@@ -130,6 +130,29 @@ else
 fi
 
 echo
+echo "=== sweep_full.sh and sweep_combo.sh --help ==="
+HELP_FULL_OUT="$TMPDIR_BASE/help_full.out"
+"${PROJECT_ROOT}/scripts/sweep_full.sh" --help > /dev/null 2> "$HELP_FULL_OUT" || true
+if grep -q "GNFS Performance Sweep" "$HELP_FULL_OUT"; then
+    echo "  [PASS] sweep_full.sh --help renders banner"
+    PASS=$(( PASS + 1 ))
+else
+    echo "  [FAIL] sweep_full.sh --help missing banner (zsh \$0-in-func bug?)"
+    FAIL=$(( FAIL + 1 ))
+    FAILED_TESTS+=("sweep_full --help")
+fi
+HELP_COMBO_OUT="$TMPDIR_BASE/help_combo.out"
+"${PROJECT_ROOT}/scripts/sweep_combo.sh" --help > /dev/null 2> "$HELP_COMBO_OUT" || true
+if grep -q "pairwise ENV combo" "$HELP_COMBO_OUT"; then
+    echo "  [PASS] sweep_combo.sh --help renders banner"
+    PASS=$(( PASS + 1 ))
+else
+    echo "  [FAIL] sweep_combo.sh --help missing banner"
+    FAIL=$(( FAIL + 1 ))
+    FAILED_TESTS+=("sweep_combo --help")
+fi
+
+echo
 echo "=== sweep_analyze.py parsing smoke ==="
 if [[ -f "$SWEEP_OUT" ]]; then
     run_check "analyzer parses sweep markdown" \

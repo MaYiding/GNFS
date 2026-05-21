@@ -71,7 +71,8 @@ log_error()   {               echo "${RED}${CROSS}${RESET} $*" >&2; }
 log_success() { (( QUIET )) || echo "${GREEN}${CHECK}${RESET} $*"; }
 
 print_help() {
-    sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//' >&2
+    local script_path="${ZSH_SCRIPT:-${ZSH_ARGZERO:-$0}}"
+    sed -n '2,32p' "$script_path" | sed 's/^# \{0,1\}//' >&2
     exit 0
 }
 

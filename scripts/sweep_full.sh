@@ -83,7 +83,11 @@ log_success() { (( QUIET )) || echo "${GREEN}${CHECK}${RESET} $*"; }
 
 # ── CLI parsing ──
 print_help() {
-    sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//' >&2
+    # In zsh `$0` inside a function is the function name; use $ZSH_SCRIPT
+    # (or $ZSH_ARGZERO as a fallback for older zsh) to get the actual
+    # script path.
+    local script_path="${ZSH_SCRIPT:-${ZSH_ARGZERO:-$0}}"
+    sed -n '2,32p' "$script_path" | sed 's/^# \{0,1\}//' >&2
     exit 0
 }
 
