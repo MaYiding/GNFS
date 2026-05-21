@@ -1137,6 +1137,25 @@ std::vector<Relation> Pipeline::sieve_and_collect(
              " 1lp=" + std::to_string(coll_stats.partial_1lp) +
              " 2lp=" + std::to_string(coll_stats.partial_2lp) + ")");
 
+    // Emit BrentPollardRho stats when the ENV-gated path is enabled.
+    // `tried==0` if either ENV is unset or every candidate took the SQUFOF
+    // fast path; skip the line in those cases to avoid noise.
+    if (cofactor::brent_pollard_enabled()) {
+        const auto& bp_stats = cofactor::BrentPollardRho::global_stats();
+        uint64_t tried = bp_stats.tried.load(std::memory_order_relaxed);
+        if (tried > 0) {
+            uint64_t succ = bp_stats.succ.load(std::memory_order_relaxed);
+            uint64_t total_iter = bp_stats.total_iter.load(std::memory_order_relaxed);
+            double avg_iter = static_cast<double>(total_iter)
+                              / static_cast<double>(tried);
+            std::fprintf(stderr,
+                "[brent_rho] tried=%llu succ=%llu avg_iter=%.1f\n",
+                static_cast<unsigned long long>(tried),
+                static_cast<unsigned long long>(succ),
+                avg_iter);
+        }
+    }
+
     // BACKLOG #1: emit warning when sieve loop exits without sufficient usable
     // relations. Two cases: (a) MAX_ROUNDS reached without break (β plateau
     // signature), (b) SQs exhausted before target met (sieve depth too small).

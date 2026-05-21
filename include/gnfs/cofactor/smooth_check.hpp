@@ -1,15 +1,27 @@
 #pragma once
 
 #include "../core/integer.hpp"
+#include "brent_pollard_rho.hpp"
 #include "ecm.hpp"
 #include "squfof.hpp"
 
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 
 namespace gnfs::cofactor {
 
 using core::Integer;
+
+/// ENV-gate cache for `GNFS_COFACTOR_BRENT`. Parsed once (first call) and
+/// cached. Returns true iff env is set to "1" (any other value disables).
+[[nodiscard]] inline bool brent_pollard_enabled() {
+    static const bool enabled = []() {
+        const char* env = std::getenv("GNFS_COFACTOR_BRENT");
+        return env != nullptr && env[0] == '1' && env[1] == '\0';
+    }();
+    return enabled;
+}
 
 /// Precomputed primes in [101, 65521] for trial division Phase 2.
 /// ~6500 primes vs ~32K odd numbers — 4.7× fewer modular divisions.
@@ -538,6 +550,22 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
                 uint32_t squfof_limit = (c < (UINT64_C(1) << 40)) ? 2000 :
                                         (c < (UINT64_C(1) << 50)) ? 5000 : 20000;
                 factor = SQUFOF::factor(c, squfof_limit);
+            }
+
+            // Phase 3a-1: BrentPollardRho — opt-in via ENV GNFS_COFACTOR_BRENT=1.
+            // Inserted between SQUFOF and legacy Pollard rho. Brent variant
+            // typically beats both on hard 50-60-bit semiprimes that SQUFOF
+            // fails on. Default OFF (0 behavior change without ENV).
+            if (factor == 1 && brent_pollard_enabled()) {
+                uint64_t bp_max = (c < (UINT64_C(1) << 40)) ? 20000 : 200000;
+                Integer c_int(c);
+                auto sp = BrentPollardRho::split(c_int, bp_max, /*seed=*/1);
+                if (sp && sp->first.fits_uint64()) {
+                    uint64_t f = sp->first.to_uint64();
+                    if (f > 1 && f < c && c % f == 0) {
+                        factor = f;
+                    }
+                }
             }
 
             // Phase 3b: Pollard rho (Brent variant) — fallback if SQUFOF fails

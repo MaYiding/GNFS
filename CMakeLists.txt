@@ -605,6 +605,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SQUFOF COMMAND test_squfof)
     set_tests_properties(SQUFOF PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_brent_pollard_rho
+        tests/test_brent_pollard_rho.cpp
+    )
+    target_link_libraries(test_brent_pollard_rho PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BrentPollardRho COMMAND test_brent_pollard_rho)
+    set_tests_properties(BrentPollardRho PROPERTIES LABELS "instant" TIMEOUT 60)
+
     add_executable(test_batch_ecm
         tests/test_batch_ecm.cpp
     )
