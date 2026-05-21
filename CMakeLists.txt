@@ -441,6 +441,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Cofactor COMMAND test_cofactor)
     set_tests_properties(Cofactor PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_trial_wheel
+        tests/test_trial_wheel.cpp
+    )
+    target_link_libraries(test_trial_wheel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME TrialWheel COMMAND test_trial_wheel)
+    set_tests_properties(TrialWheel PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_squfof
         tests/test_squfof.cpp
     )
