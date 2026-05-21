@@ -165,6 +165,7 @@ public:
         size_t primes_reducible = 0;
         size_t primes_zero_product = 0;
         size_t primes_no_sqrt = 0;
+        size_t primes_ramified = 0;
 
         uint64_t p = config_.prime_start;
         while (primes.size() < config_.num_primes && primes_checked < config_.max_prime_checks) {
@@ -214,8 +215,11 @@ public:
                 auto f_prime_mod_p = get_f_prime_mod_p(p);
                 ModularPoly f_prime(f_prime_mod_p);
                 if (f_prime.is_zero()) {
-                    // f' ≡ 0 mod p — 极少见(p | gcd(所有 i·f[i])),跳过此素数
-                    primes_zero_product++;
+                    // f' ≡ 0 mod p — ramified prime (p divides every i·f[i],
+                    // implies p divides disc(f) modulo Wronskian). Cannot use
+                    // f'(α)² correction; counted separately for diagnostic
+                    // visibility into class-group-related failures.
+                    primes_ramified++;
                     continue;
                 }
                 ModularPoly f_prime_sq = ModularPoly::mul(f_prime, f_prime, f_mod_p, p);
@@ -298,6 +302,7 @@ public:
         metrics_.primes_skipped_reducible = primes_reducible;
         metrics_.primes_skipped_zero_product = primes_zero_product;
         metrics_.primes_skipped_no_sqrt = primes_no_sqrt;
+        metrics_.primes_skipped_ramified = primes_ramified;
 
         // Note: old compute_crt_with_signs lambda removed — replaced by
         // precomputed weights + Gray code incremental update below
