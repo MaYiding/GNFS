@@ -17,6 +17,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -416,6 +417,49 @@ bool test_reason_user_specified() {
 }
 
 // ============================================================
+// 8. ENV overrides (GNFS_FORCE_SIQS / GNFS_DISABLE_SIQS)
+// ============================================================
+
+bool test_env_force_siqs_promotes_rho_to_siqs() {
+    // 12-digit / 40-bit normally routes to PollardRho; ENV must promote SIQS.
+    setenv("GNFS_FORCE_SIQS", "1", 1);
+    auto [m, r] = Pipeline::select_method(40, 12);
+    unsetenv("GNFS_FORCE_SIQS");
+    assert(m == FactorizationMethod::SIQS);
+    assert(r.find("GNFS_FORCE_SIQS") != std::string::npos);
+    return true;
+}
+
+bool test_env_force_siqs_keeps_trial_for_tiny_n() {
+    // ≤6d/≤20bit must still pick TrialDivision (router short-circuits earlier).
+    setenv("GNFS_FORCE_SIQS", "1", 1);
+    auto [m, r] = Pipeline::select_method(17, 5);
+    unsetenv("GNFS_FORCE_SIQS");
+    assert(m == FactorizationMethod::TrialDivision);
+    return true;
+}
+
+bool test_env_disable_siqs_falls_through_to_gnfs() {
+    // 50 digits normally → SIQS. With DISABLE ENV, must select GNFS.
+    setenv("GNFS_DISABLE_SIQS", "1", 1);
+    auto [m, r] = Pipeline::select_method(166, 50);
+    unsetenv("GNFS_DISABLE_SIQS");
+    assert(m == FactorizationMethod::GNFS);
+    assert(r.find("SIQS disabled") != std::string::npos);
+    return true;
+}
+
+bool test_env_force_siqs_respects_user_override() {
+    // If user explicitly sets method=GNFS, ENV must not override.
+    setenv("GNFS_FORCE_SIQS", "1", 1);
+    auto [m, r] = Pipeline::select_method(166, 50, FactorizationMethod::GNFS);
+    unsetenv("GNFS_FORCE_SIQS");
+    assert(m == FactorizationMethod::GNFS);
+    assert(r == "user specified");
+    return true;
+}
+
+// ============================================================
 // Main
 // ============================================================
 
@@ -480,6 +524,13 @@ int main() {
     TEST(perfect_power_has_stats);
     TEST(forced_trial_failure);
     TEST(forced_rho_failure);
+
+    // 9. ENV overrides
+    std::cout << "[ENV Overrides]\n";
+    TEST(env_force_siqs_promotes_rho_to_siqs);
+    TEST(env_force_siqs_keeps_trial_for_tiny_n);
+    TEST(env_disable_siqs_falls_through_to_gnfs);
+    TEST(env_force_siqs_respects_user_override);
 
     std::cout << "\n=== Results: " << pass_count << " passed, "
               << fail_count << " failed ===\n";
