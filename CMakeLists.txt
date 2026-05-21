@@ -550,6 +550,22 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME CliqueMerger50dSynthetic COMMAND test_clique_merger_50d_synthetic)
     set_tests_properties(CliqueMerger50dSynthetic PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # 3LP cofactor classification + decomposition (GNFS_3LP opt-in path)
+    add_executable(test_3lp_cofactor
+        tests/test_3lp_cofactor.cpp
+    )
+    target_link_libraries(test_3lp_cofactor PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME ThreeLpCofactor COMMAND test_3lp_cofactor)
+    set_tests_properties(ThreeLpCofactor PROPERTIES LABELS "instant" TIMEOUT 30)
+
+    # 3LP merger admission (V0 + V3 cascade BFS handle 3LP relations)
+    add_executable(test_3lp_merge
+        tests/test_3lp_merge.cpp
+    )
+    target_link_libraries(test_3lp_merge PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME ThreeLpMerge COMMAND test_3lp_merge)
+    set_tests_properties(ThreeLpMerge PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # 回归测试
     add_executable(test_regressions
         tests/test_regressions.cpp

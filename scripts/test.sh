@@ -202,6 +202,8 @@ ALL_TEST_BINARIES=(
     test_bucket_sieve
     test_regression_gate
     test_stress
+    test_3lp_cofactor
+    test_3lp_merge
 )
 
 # 模块 → 测试二进制映射 (仅 instant+fast 的测试)
@@ -212,8 +214,8 @@ MODULE_TESTS=(
     polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant"
     factor_base    "test_factor_base"
     sieve          "test_special_q test_sieve_basic test_bucket_sieve test_sieve_ecore_qos"
-    cofactor       "test_cofactor test_squfof test_integration"
-    relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration"
+    cofactor       "test_cofactor test_squfof test_3lp_cofactor test_integration"
+    relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration"
     linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_class_group"
@@ -269,6 +271,8 @@ SMOKE_TESTS=(
     test_method_selection
     test_clique_merger
     test_clique_merger_50d_synthetic
+    test_3lp_cofactor
+    test_3lp_merge
 )
 
 # ── 每个测试的超时秒数 (基于实测) ──
@@ -333,6 +337,8 @@ TEST_TIMEOUT=(
     test_method_selection    60
     test_clique_merger       10
     test_clique_merger_50d_synthetic 10
+    test_3lp_cofactor        30
+    test_3lp_merge           10
 )
 
 # 测试速度分级 (用于 list 显示)
@@ -391,6 +397,10 @@ TEST_TIER=(
     test_i18n                "instant"
     test_method_selection    "instant"
     test_siqs                "fast"
+    test_clique_merger       "instant"
+    test_clique_merger_50d_synthetic "instant"
+    test_3lp_cofactor        "instant"
+    test_3lp_merge           "instant"
 )
 
 # 模块依赖图 (改了 A 模块 → 需要额外测试的下游模块)
