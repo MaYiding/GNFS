@@ -959,6 +959,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SieveTinySIMD COMMAND test_sieve_tiny_simd)
     set_tests_properties(SieveTinySIMD PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Bucket prefetch ENV gate + bit-for-bit parity tests
+    add_executable(test_bucket_prefetch
+        tests/test_bucket_prefetch.cpp
+    )
+    target_link_libraries(test_bucket_prefetch PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BucketPrefetch COMMAND test_bucket_prefetch)
+    set_tests_properties(BucketPrefetch PROPERTIES LABELS "instant" TIMEOUT 30)
+
     # Mmap CSR Matrix 单元测试
     add_executable(test_mmap_csr
         tests/test_mmap_csr.cpp
