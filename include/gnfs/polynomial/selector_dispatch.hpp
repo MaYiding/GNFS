@@ -1,10 +1,12 @@
 #pragma once
 
+#include "bai_brent_selector.hpp"
 #include "base_m.hpp"
 #include "kleinjung_selector.hpp"
 #include "../core/params.hpp"
 #include "../core/polynomial_context.hpp"
 
+#include <cstdlib>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
@@ -58,8 +60,31 @@ public:
         // Kleinjung 适用条件: degree >= 5
         // Kleinjung 通过 smooth 领导系数 + rotation 优化产生更优多项式。
         // 对 degree 3-4，BaseMSelector 的 Murphy E 已足够好。
+        //
+        // BaiBrent 扩展: ENV `GNFS_POLY_BAI_BRENT=1` 启用非首一选择 (Bai 2011)。
+        // 默认 OFF — Kleinjung path 完整保留, ENV opt-in 时优先 BaiBrent, 失败
+        // 回退到 Kleinjung, 仍失败则回退 BaseMSelector。
         if (degree >= 5) {
-            if (verbose) {
+            const bool use_bai_brent = []() {
+                const char* env = std::getenv("GNFS_POLY_BAI_BRENT");
+                return env && env[0] == '1';
+            }();
+
+            if (use_bai_brent) {
+                if (verbose) {
+                    std::cout << "  Selector: BaiBrent (degree=" << degree
+                              << ", bits=" << bits << ", GNFS_POLY_BAI_BRENT=1)\n";
+                }
+
+                auto ctx = try_bai_brent_from_params(n, params, verbose);
+                if (ctx.has_value()) {
+                    return std::move(*ctx);
+                }
+
+                if (verbose) {
+                    std::cout << "  BaiBrent failed, falling back to Kleinjung\n";
+                }
+            } else if (verbose) {
                 std::cout << "  Selector: Kleinjung (degree=" << degree
                           << ", bits=" << bits << ")\n";
             }
@@ -129,6 +154,32 @@ private:
         }
 
         return create_context_from_kleinjung(n, result);
+    }
+
+    /// 尝试 Bai-Brent 非首一选择 (从 GNFSParams 自动推导参数)
+    [[nodiscard]] static std::optional<PolynomialContext> try_bai_brent_from_params(
+            const Integer& n,
+            const GNFSParams& params,
+            bool verbose) {
+
+        auto bp = BaiBrentParams::from_gnfs_params(params);
+
+        BaiBrentSelector selector(bp);
+        auto result = selector.select(n);
+
+        if (!result.success) {
+            return std::nullopt;
+        }
+
+        if (verbose) {
+            std::cout << "  BaiBrent: Murphy E = " << result.score.log_e_score
+                      << ", skewness = " << result.skewness
+                      << ", candidates tested = " << result.candidates_tested
+                      << ", a_d = " << result.f.leading_coeff().to_string()
+                      << " (" << result.elapsed_seconds << "s)\n";
+        }
+
+        return create_context_from_bai_brent(n, result);
     }
 };
 
