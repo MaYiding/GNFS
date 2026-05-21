@@ -8,12 +8,34 @@ on:
 
 jobs:
   build-and-test:
+    name: ${{ matrix.platform_label }}
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        build_type: [Release]
+        include:
+          # ── Stable matrix (must pass) ──
+          - os: ubuntu-latest
+            platform_label: Linux x86_64 (gcc)
+            build_type: Release
+            experimental: false
+          - os: macos-latest
+            platform_label: macOS arm64 (clang)
+            build_type: Release
+            experimental: false
+          # ── Linux ARM64 native (free for public repos on github-hosted) ──
+          # See https://github.blog/changelog/2025-01-16-linux-arm64-hosted-runners-now-available-for-free-in-public-repositories/
+          # Marked experimental in case the runner is unavailable on private repos.
+          - os: ubuntu-24.04-arm
+            platform_label: Linux arm64 (gcc)
+            build_type: Release
+            experimental: true
+          # ── Windows MSVC (experimental; vcpkg-based GMP) ──
+          - os: windows-latest
+            platform_label: Windows x86_64 (msvc)
+            build_type: Release
+            experimental: true
 
     steps:
     - uses: actions/checkout@v4
@@ -22,9 +44,9 @@ jobs:
       uses: actions/cache@v4
       with:
         path: build
-        key: ${{ runner.os }}-cmake-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt', 'include/**', 'src/**') }}
+        key: ${{ runner.os }}-${{ runner.arch }}-cmake-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt', 'include/**', 'src/**') }}
         restore-keys: |
-          ${{ runner.os }}-cmake-${{ matrix.build_type }}-
+          ${{ runner.os }}-${{ runner.arch }}-cmake-${{ matrix.build_type }}-
 
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
@@ -37,20 +59,65 @@ jobs:
       run: |
         brew install gmp ntl
 
-    - name: Configure CMake
+    # ── Windows: vcpkg-based GMP install ──
+    # vcpkg is preinstalled on windows-latest runners at $env:VCPKG_INSTALLATION_ROOT
+    # (C:\vcpkg). Install the gmp port and let the vcpkg toolchain file feed
+    # find_package/find_library hints to CMake.
+    - name: Install dependencies (Windows / vcpkg)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+        & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install gmp:x64-windows
+
+    # ── Configure: POSIX vs Windows multi-config split ──
+    - name: Configure CMake (POSIX)
+      if: runner.os != 'Windows'
       run: cmake -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
 
-    - name: Build
+    - name: Configure CMake (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        cmake -B build `
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} `
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
+          -DVCPKG_TARGET_TRIPLET=x64-windows
+
+    - name: Build (POSIX)
+      if: runner.os != 'Windows'
       run: make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
-    - name: Run tests (excluding slow/heavy/stress)
+    - name: Build (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: cmake --build build --config ${{ matrix.build_type }} --parallel
+
+    - name: Run tests (POSIX, excluding slow/heavy/stress)
+      if: runner.os != 'Windows'
       working-directory: build
       # CI runners are 2-4 vCPU; full GNFS pipelines (slow/heavy/stress
       # labels) routinely take 5-60 min and time out. Skip them here —
       # they are exercised in nightly/manual runs via scripts/test.sh.
       # `gate` label tests still run (RegressionGate ~60s).
+      # ARM64 runners can be 2-3x slower than x86 on integer-heavy code;
+      # timeout bumped from 120s to 240s to absorb this without affecting
+      # x86 (which finishes inside the smaller window anyway).
       run: |
         ctest --output-on-failure \
           --label-exclude "slow|heavy|stress" \
           --parallel $(nproc 2>/dev/null || sysctl -n hw.ncpu) \
-          --timeout 120
+          --timeout 240
+
+    # Windows: multi-config generator places binaries under build/<Config>/,
+    # so we pass -C to ctest and use PowerShell parallel-count syntax.
+    - name: Run tests (Windows, excluding slow/heavy/stress)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      working-directory: build
+      run: |
+        ctest --output-on-failure `
+          --label-exclude "slow|heavy|stress" `
+          --parallel ([Environment]::ProcessorCount) `
+          --timeout 240 `
+          -C ${{ matrix.build_type }}
