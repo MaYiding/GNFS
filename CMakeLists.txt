@@ -336,6 +336,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SafeMath COMMAND test_safe_math)
     set_tests_properties(SafeMath PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Cross-compiler bit intrinsic + CPU hint wrappers (MSVC compatibility)
+    add_executable(test_bit_intrin
+        tests/test_bit_intrin.cpp
+    )
+    target_link_libraries(test_bit_intrin PRIVATE gnfs_util)
+    add_test(NAME BitIntrin COMMAND test_bit_intrin)
+    set_tests_properties(BitIntrin PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_ooc_policy
         tests/test_ooc_policy.cpp
     )
