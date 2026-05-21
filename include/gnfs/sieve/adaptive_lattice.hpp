@@ -17,12 +17,16 @@
 //      若 density 低于阈值 (默认 0.5 hits/cell), 调用 try_perturb_and_rereduce
 //      获得 perturbed basis 重 sieve. 最多 retry 2 次.
 //
-// 扰动策略 (rotation by skew angle k·π/8, k ∈ {1, 2, -1, -2}):
-//   对当前 basis (e0,f0), (e1,f1) 做小角度旋转, 然后 LLL 再 reduce. 旋转保持
-//   det(basis) (近似), LLL 一定收敛, 最终输出仍满足 verify_ab 不变量 (因为
-//   re-LLL 从 (q, 0), (r, 1) 重 seed 但 perturb 初始 v0, v1 angle).
-//   通过 retry_count 选 k: count=0 → k=1, count=1 → k=-1, count=2 → k=2,
-//   count=3 → k=-2.
+// 扰动策略 (integer skew transform, k ∈ {1, -1, 2, -2}):
+//   对当前 basis 应用 unimodular 变换 (v_long, v_short) → (v_long + k·v_short, v_short).
+//   det 严格保持 (det of [[1,k],[0,1]] = 1), 新 basis 仍是 L_q 的有效 basis
+//   (verify_ab 严格成立). 通过 retry_count 选 k: count=0 → k=1, count=1 → k=-1,
+//   count=2 → k=2, count=3 → k=-2.
+//
+//   关键: **不**重新 LLL-reduce, 直接返回 skewed basis. 因为 LLL 在 2D 中
+//   产生唯一的 canonical basis (up to sign/swap), 任何 unimodular 变体经
+//   re-LLL 都回到原始. 要真正改变 (i, j) → (a, b) 几何, 必须 step outside
+//   LLL canonical form.
 //
 // 数学不变量:
 //   - 任何 perturbed basis 仍是 L_q lattice 的有效 basis (det = ±q)
@@ -196,48 +200,70 @@ namespace detail {
     return K_TABLE[mix];
 }
 
-/// 把现有 basis 旋转 k·π/8 角后, 用 LLL 重 reduce.
-/// 旋转用 double 中间精度 (近似), 然后 round 到 int64_t — LLL 会修正小误差.
+/// Skew the basis by an integer transform (det-preserving) and return the
+/// non-LLL-canonical basis. This is the key to changing sieve geometry:
+/// LLL produces a UNIQUE canonical reduced basis in 2D (up to sign/swap),
+/// so re-LLL-reducing any unimodular variant yields the original basis.
+/// To actually alter the (i, j) → (a, b) mapping geometry we MUST step
+/// outside the canonical LLL representative.
 ///
-/// 关键 invariant: rotation 后 (a, b) 经 LLL 必然回到一个有效 L_q basis,
-/// 因为 LLL 从任意起始 basis 都能产生 size-reduced + Lovász basis. 唯一差别是
-/// 几何 — 我们的目标就是改变几何让 sieve 不再聚集.
+/// Strategy:
+///   - Apply integer skew transform: (v0, v1) → (v0 + k * v1, v1)
+///     where k ∈ {1, -1, 2, -2}. This is a unimodular change of basis
+///     (det of [[1,k],[0,1]] = 1), so the new basis still spans L_q with
+///     det = ±q.
+///   - **Do NOT re-LLL-reduce.** Return the skewed basis directly so that
+///     the (i, j) → (a, b) mapping is genuinely different.
+///   - Caller convention preserved: e0/f0 = (norm-)shorter of the two
+///     skewed vectors (often still v1, the un-touched short vector),
+///     e1/f1 = the longer (the skewed v0 variant).
 ///
-/// 但: rotation 不保证保持 L_q lattice (因为 rotation 矩阵的 entries 可能
-/// 不在 integer ring 中). 因此我们用 **integer skew transform** 替代 rotation:
-///   k=1:  (v0, v1) → (v0 + v1, v1)   determinant 不变
-///   k=-1: (v0, v1) → (v0 - v1, v1)   determinant 不变
-///   k=2:  (v0, v1) → (v0 + 2*v1, v1) determinant 不变
-///   k=-2: (v0, v1) → (v0 - 2*v1, v1) determinant 不变
+/// Mathematical correctness:
+///   - det(new_basis) = e0 * f1 - e1 * f0 still ±q (unimodular transform).
+///   - verify_ab(a, b) still strict because (a, b) ∈ L_q iff a - b*r ≡ 0
+///     mod q, and any integer linear combo of L_q vectors is in L_q.
+///   - LLL invariants (size-reduced, Lovász) are intentionally relaxed.
 ///
-/// 然后 LLL 重 reduce. 这保证 perturbed basis 仍是同一 L_q lattice 的 basis,
-/// det 仍 = ±q, verify_ab 仍严格成立.
-inline LatticeBasis rotate_and_rereduce_basis(const LatticeBasis& current,
-                                              int k) noexcept {
+/// Sieve impact:
+///   - Sieve region remains [i_min, i_max] × [j_min, j_max] in lattice
+///     coords, but the (a, b) image is now a different parallelogram
+///     in physical space. Hits that previously concentrated in one
+///     corner may now spread differently.
+///   - One-time cost per retry: ~constant (a few multiplications).
+///   - Sieve correctness unaffected — same lattice, same smooth (a, b)
+///     candidate set; only the order/distribution of visits changes.
+inline LatticeBasis skew_perturb_basis(const LatticeBasis& current,
+                                       int k) noexcept {
     LatticeBasis result;
     result.q = current.q;
     result.r = current.r;
 
-    // Integer skew transform (det-preserving):
-    int64_t v0_a = current.e0, v0_b = current.f0;
-    int64_t v1_a = current.e1, v1_b = current.f1;
+    // current.e0/f0 is canonical-shorter (post-LLL), current.e1/f1 is longer.
+    // Apply (v_long, v_short) → (v_long + k * v_short, v_short).
+    // Overflow safety: |v| ≤ q ≤ 2^32, k ≤ 2, |k*v| ≤ 2^33, sum ≤ 2^34
+    //   → int64_t (range ±2^63) safe.
+    int64_t v_short_a = current.e0;
+    int64_t v_short_b = current.f0;
+    int64_t v_long_a  = current.e1;
+    int64_t v_long_b  = current.f1;
 
-    // (v0, v1) → (v0 + k * v1, v1)
-    // 检查溢出 safety: |v0|, |v1| ≤ q ≤ 2^32. k * v1 ≤ 2 * 2^32 = 2^33.
-    // v0 + k * v1 ≤ 2^32 + 2^33 = 3 * 2^32 → int64_t 完全安全 (< 2^63).
-    int64_t pert_a = v0_a + static_cast<int64_t>(k) * v1_a;
-    int64_t pert_b = v0_b + static_cast<int64_t>(k) * v1_b;
+    int64_t skewed_a = v_long_a + static_cast<int64_t>(k) * v_short_a;
+    int64_t skewed_b = v_long_b + static_cast<int64_t>(k) * v_short_b;
 
-    // 现在用 LLL 重 reduce (v_pert, v1).
-    detail::lb_reduce_lll_fk2005(pert_a, pert_b, v1_a, v1_b);
-
-    // 保持 caller convention: e0/f0 = shorter, e1/f1 = longer.
-    // lb_reduce_lll_fk2005 后置 invariant: v1 = shorter, v0 = longer.
-    result.e0 = v1_a;  // shorter
-    result.f0 = v1_b;
-    result.e1 = pert_a;  // longer
-    result.f1 = pert_b;
-
+    // Convention: e0/f0 should be (norm-)shorter. Compare skewed vs v_short.
+    if (lb_norm_sq(v_short_a, v_short_b) <= lb_norm_sq(skewed_a, skewed_b)) {
+        result.e0 = v_short_a;
+        result.f0 = v_short_b;
+        result.e1 = skewed_a;
+        result.f1 = skewed_b;
+    } else {
+        // skewed turned out shorter (rare; only happens with degenerate
+        // already-skewed bases). Keep shorter-first convention.
+        result.e0 = skewed_a;
+        result.f0 = skewed_b;
+        result.e1 = v_short_a;
+        result.f1 = v_short_b;
+    }
     return result;
 }
 
@@ -309,7 +335,7 @@ public:
         int k = detail::rotation_k_for_retry(retry_count,
                                              config_.perturb_seed,
                                              current_basis.q);
-        return detail::rotate_and_rereduce_basis(current_basis, k);
+        return detail::skew_perturb_basis(current_basis, k);
     }
 
     /// 记录 hit telemetry (thread-safe, lock-free, hot-path safe).
