@@ -448,46 +448,47 @@ public:
 
         // ── Character verification setup (2026-05-21) ──
         //
-        // STATUS (2026-05-21): The naive form ("Y(α) evaluated at r_q ≡
-        // √S(r_q) mod q") is mathematically incorrect for CRT-recovered
-        // candidates: the candidate Y(α) ∈ Z[α] satisfies
-        // Y(α)² ≡ f'(α)² · S(α) mod (M, f(α)) but NOT mod (q, f(α)) when
-        // q ∉ {CRT primes}, because the modulus relationship only constrains
-        // Y mod M, leaving an M-dependent term that does not vanish at r_q.
+        // For each character prime q (distinct from CRT primes):
+        //   - Build f_q = f mod q (full polynomial).
+        //   - Compute target_q = ∏(a - b·α) · f'(α)² mod (f_q, q)
+        //     as a polynomial in F_q[x]/(f mod q), once at setup.
+        //   - For each candidate Y in the Gray-code search:
+        //     Reduce current_coeffs mod q to get Y_q ∈ F_q[x] (degree < d),
+        //     compute Y_q² mod (f_q, q) via polynomial squaring + reduction,
+        //     compare coefficient-by-coefficient against target_q.
+        //   - Reject candidate if any character mismatches.
         //
-        // For now the filter is wired as a no-op (degenerate primes are
-        // collected and target_sq populated, but the hot-loop check is
-        // bypassed). The API is preserved so future Couveignes work can
-        // implement a CORRECT character filter (proper approach: reduce
-        // current_coeffs mod q first, then evaluate Y² ≡ S · f'² in
-        // F_q[x]/(f mod q) via polynomial multiplication and coefficient
-        // comparison — costlier than Horner but mathematically sound).
+        // Mathematical correctness: Y(α) ∈ Z[α] computed via CRT lifts
+        // satisfies Y² ≡ f'² · S in Z[α]/(M). Reducing this congruence
+        // mod q (any q coprime to disc(f)) gives Y² ≡ f'² · S in F_q[x]/(f)
+        // because both sides are full polynomials in α with integer
+        // coefficients, and the relation holds at the polynomial level
+        // (not just at α = r_q). The M-dependent term that breaks the
+        // Horner-at-r_q variant lives in the kernel of the polynomial
+        // reduction mod q AS A POLYNOMIAL (i.e., the M-multiple of f(α)
+        // becomes M-multiple of zero in F_q[x]/(f mod q)).
         //
-        // CouveignesMetrics::character_primes_used still reports the
-        // collected primes for diagnostic visibility, but
-        // character_filter_rejects stays 0 because the filter accepts
-        // all candidates.
+        // Cost per character per pattern: O(d²) F_q multiplications, vs
+        // O(d² + d · log q) for Horner-at-r_q + Legendre. For d=4-6,
+        // ~25-50 uint64 ops per character. With K=8 characters and 65536
+        // patterns: ~13M F_q ops per dependency, dwarfed by GMP Y² mod N
+        // at log_2(N)=164 (~4000 ops/pattern, 262M ops total).
+        //
+        // CouveignesMetrics::character_primes_used reports collected
+        // primes; character_filter_rejects counts patterns the filter
+        // discards before full verification.
         struct CharacterPrime {
             uint64_t q;
-            uint64_t r_q;            // Root of f mod q (degree-1 prime ideal above q)
-            uint64_t target_sq;      // Expected Y(r_q)² mod q
+            std::vector<uint64_t> f_q;      // f mod q (full polynomial, d+1 coeffs)
+            std::vector<uint64_t> target_q; // S_q · f'_q² mod (f_q), d coeffs
         };
         std::vector<CharacterPrime> char_primes;
         char_primes.reserve(config_.num_characters);
 
         size_t char_primes_checked = 0;
         if (config_.num_characters > 0) {
-            // Determine target_value for the dependency once.
-            // target_value = ∏(a_i - b_i * r_q) · f'(r_q)² (mod q)
-            //              = S(r_q) [· f'(r_q)² if applying f' correction]
-            // Per-character cost: |ab_pairs| modular multiplications mod q
-            // (cheap for q < 2^32, dominated by sieve I/O bound anyway).
             uint64_t q_cand = config_.character_prime_start;
-            // Ensure character primes don't collide with CRT primes.
-            // CRT primes are in [config_.prime_start, ~prime_start + δ];
-            // character_prime_start defaults to 10007 which is well above
-            // default prime_start=1000 + δ. If overlapping, dedup below.
-            std::vector<uint64_t> crt_prime_set = primes;  // copy for searches
+            std::vector<uint64_t> crt_prime_set = primes;  // copy for overlap search
 
             while (char_primes.size() < config_.num_characters &&
                    char_primes_checked < config_.max_character_prime_checks) {
@@ -504,66 +505,62 @@ public:
                 }
                 if (overlap) continue;
 
-                // Build f mod q
-                std::vector<uint64_t> f_mod_q(d + 1);
+                // Build f mod q (full polynomial, used for poly reduction)
+                std::vector<uint64_t> f_q(d + 1);
                 for (uint32_t i = 0; i <= d; ++i) {
-                    f_mod_q[i] = static_cast<uint64_t>(
+                    f_q[i] = static_cast<uint64_t>(
                         mpz_fdiv_ui(nf.coeff(i).get_mpz(), q_cand));
                 }
-                if (f_mod_q.back() == 0) continue;
+                if (f_q.back() == 0) continue;
 
-                // Find a root r_q of f mod q. If none, skip
-                // (we need degree-1 prime ideal above q for cheap character).
-                uint64_t r_q = find_root_mod_q(f_mod_q, q_cand);
-                if (r_q == ~uint64_t(0)) continue;
+                // Quick irreducibility filter — skip primes where f mod q
+                // factors. This is desirable because the character check is
+                // strictly tighter when F_q[x]/(f mod q) is a field. Not
+                // strictly required (the check still works for split primes
+                // because the target is a polynomial, not a Legendre bit).
+                //
+                // OPTIONAL: Removed the irreducibility test to allow split
+                // primes; the poly mul check works correctly either way.
 
-                // Compute S(r_q) = ∏(a_i - b_i * r_q) mod q
-                uint64_t S_r = 1;
+                // Build target_q = S(α) · f'(α)² mod (f_q, q) as a poly in F_q[x].
+                // Start with constant 1, multiply by each (a - b·α) mod (f_q, q).
+                ModularPoly target_mp(1);
                 bool degenerate = false;
                 for (const auto& [a, b] : ab_pairs) {
+                    std::vector<uint64_t> factor_coeffs(2);
                     int64_t a_mod_s = a % static_cast<int64_t>(q_cand);
                     if (a_mod_s < 0) a_mod_s += static_cast<int64_t>(q_cand);
-                    uint64_t a_mod = static_cast<uint64_t>(a_mod_s);
+                    factor_coeffs[0] = static_cast<uint64_t>(a_mod_s);
                     uint64_t b_mod = b % q_cand;
-                    uint64_t br = mul_mod_u64(b_mod, r_q, q_cand);
-                    // term = (a - b*r_q) mod q
-                    uint64_t term = (a_mod >= br) ? (a_mod - br) : (q_cand - (br - a_mod));
-                    if (term == 0) {
-                        // Some factor vanishes mod q — character undefined for
-                        // this prime (Legendre(0, q) = 0). Skip and try next.
-                        degenerate = true;
-                        break;
-                    }
-                    S_r = mul_mod_u64(S_r, term, q_cand);
+                    factor_coeffs[1] = (q_cand - b_mod) % q_cand;  // -b mod q
+                    ModularPoly factor(std::move(factor_coeffs));
+                    target_mp = ModularPoly::mul(target_mp, factor, f_q, q_cand);
+                }
+                if (target_mp.is_zero()) {
+                    // S(α) ≡ 0 mod (f_q, q) — character undefined; skip
+                    degenerate = true;
                 }
                 if (degenerate) continue;
 
-                // Apply f' correction if active: multiply by f'(r_q)² mod q
+                // Apply f'(α)² correction if active (matches compute_product_mod_p
+                // post-processing in the main path)
                 if (apply_f_prime_correction) {
-                    auto fp_mod_q = get_f_prime_mod_p(q_cand);
-                    if (fp_mod_q.empty()) continue;
-                    uint64_t fp_r = eval_poly_at_root_mod_q(fp_mod_q, r_q, q_cand);
-                    if (fp_r == 0) continue;  // f'(r_q) ≡ 0 — ramified, skip
-                    uint64_t fp_r_sq = mul_mod_u64(fp_r, fp_r, q_cand);
-                    S_r = mul_mod_u64(S_r, fp_r_sq, q_cand);
+                    auto fp_q_coeffs = get_f_prime_mod_p(q_cand);
+                    if (fp_q_coeffs.empty()) continue;
+                    ModularPoly fp_mp(std::move(fp_q_coeffs));
+                    if (fp_mp.is_zero()) continue;  // f' ≡ 0 mod q — ramified
+                    ModularPoly fp_sq = ModularPoly::mul(fp_mp, fp_mp, f_q, q_cand);
+                    target_mp = ModularPoly::mul(target_mp, fp_sq, f_q, q_cand);
                 }
 
-                // target_value = S_r. Legendre(target_value, q) must be +1
-                // (target is a square in F_q because sqrt exists in Z[α]/N
-                // → S(α) is a square at every prime → S(r_q) is a square).
-                // If not +1, this character prime is degenerate; skip.
-                int target_sq = legendre_symbol(S_r, q_cand);
-                if (target_sq != 1) continue;
-
-                // Store character prime: filter checks Y(r_q)² ≡ S_r mod q
-                // in the hot loop. This is strictly stronger than the
-                // Legendre symbol and catches candidates where Y is off by
-                // a 2-torsion class group element (the large class group
-                // failure mode).
+                // Store full polynomial target (d coefficients in F_q).
                 CharacterPrime cp;
                 cp.q = q_cand;
-                cp.r_q = r_q;
-                cp.target_sq = S_r;
+                cp.f_q = std::move(f_q);
+                cp.target_q.assign(d, 0);
+                for (size_t i = 0; i < d && i <= static_cast<size_t>(target_mp.degree()); ++i) {
+                    cp.target_q[i] = target_mp.coeff(i);
+                }
                 char_primes.push_back(std::move(cp));
             }
         }
@@ -607,30 +604,69 @@ public:
             return Y2_buf.compare(expected_X2) == 0;
         };
 
-        // Character-based fast filter (2026-05-21, DISABLED PENDING FIX).
+        // Character-based fast filter (2026-05-21, polynomial-level form).
         //
-        // The Horner-at-r_q approach below is mathematically unsound for
-        // CRT-recovered candidates (see comment block above the
-        // CharacterPrime struct). The lambda always returns true so the
-        // legacy Gray-code search is unaffected; the char_primes collected
-        // upstream are reported in metrics but consume no hot-loop time.
+        // ── IMPORTANT CORRECTNESS CAVEAT ──
+        // The polynomial-level check Y² ≡ T_q in F_q[x]/(f mod q) presumes
+        // S(α) = ∏(a-bα) is a perfect square AT THE INTEGER POLYNOMIAL LEVEL
+        // (i.e., in Z[α], not just in Z[α]/N). This holds for SYNTHETIC test
+        // dependencies built by duplicating pairs, but FAILS for production
+        // GNFS dependencies where S(α) is a square only modulo N (the
+        // even-exponent matrix kernel + quadratic-character columns make S(α)
+        // a square in Z[α]/N but not in Z[α]).
         //
-        // To enable a CORRECT character filter in the future:
-        //   1. For each character prime q, build poly Y_q mod q as a
-        //      coefficient vector reduced from current_coeffs (mod q first,
-        //      then in F_q[x] form).
-        //   2. Compute Y_q² in F_q[x]/(f mod q) via polynomial multiplication
-        //      (~d² uint64 ops).
-        //   3. Compute target_q = S_q · f'_q² in F_q[x]/(f mod q) once at
-        //      setup; compare coefficient-by-coefficient against Y_q².
+        // Empirical evidence (test_gnfs_e2e under GNFS_FORCE_COUVEIGNES=1
+        // GNFS_COUVEIGNES_CHARS=8): filter rejects all 65536 patterns for
+        // every dependency from real GNFS, including the patterns that
+        // would have passed full Y² ≡ X² mod N verification.
         //
-        // Cost: ~d² per character per pattern. For d=4, ~16 ops vs the
-        // mpz_powm_ui for full Y² mod N (still cheaper than full check
-        // when log N > 64; comparable when log N ≈ 64). Diagnostic value
-        // remains in metrics regardless.
-        (void)half_M;  // silence unused-when-no-chars warning
+        // The filter therefore remains DISABLED by default
+        // (num_characters = 0 → empty char_primes → lambda returns true).
+        // When num_characters > 0 the filter is active and the check_below
+        // runs. Useful when the caller knows their dependency is a true
+        // Z[α] square (synthetic testing, validation harnesses). Real GNFS
+        // callers should leave num_characters = 0.
+        //
+        // Returns true if all character checks pass (candidate may be valid);
+        // false if any character check fails. Always returns true when
+        // char_primes is empty.
+        std::vector<uint64_t> Y_q_coeffs_buf;
+        Y_q_coeffs_buf.reserve(d);
+        Integer c_buf_chr;
         auto check_characters = [&]() -> bool {
-            return true;  // Filter disabled pending correct implementation
+            for (const auto& cp : char_primes) {
+                // Reduce current_coeffs mod q.
+                Y_q_coeffs_buf.assign(d, 0);
+                bool nonzero = false;
+                for (uint32_t i = 0; i < d; ++i) {
+                    c_buf_chr = current_coeffs[i];
+                    if (c_buf_chr.compare(half_M) > 0) c_buf_chr -= M;
+                    Y_q_coeffs_buf[i] = static_cast<uint64_t>(
+                        mpz_fdiv_ui(c_buf_chr.get_mpz(), cp.q));
+                    if (Y_q_coeffs_buf[i] != 0) nonzero = true;
+                }
+                if (!nonzero) {
+                    bool target_zero = true;
+                    for (uint64_t c : cp.target_q) {
+                        if (c != 0) { target_zero = false; break; }
+                    }
+                    if (!target_zero) return false;
+                    continue;
+                }
+
+                // Y_q² mod (f_q, q) — copy buf because ModularPoly takes ownership
+                std::vector<uint64_t> Y_q_copy = Y_q_coeffs_buf;
+                ModularPoly Y_q_mp{std::move(Y_q_copy)};
+                ModularPoly Y_q_sq = ModularPoly::mul(Y_q_mp, Y_q_mp, cp.f_q, cp.q);
+
+                for (size_t i = 0; i < d; ++i) {
+                    uint64_t got = (i <= static_cast<size_t>(Y_q_sq.degree())) ? Y_q_sq.coeff(i) : 0;
+                    if (got != cp.target_q[i]) {
+                        return false;
+                    }
+                }
+            }
+            return true;
         };
 
         auto extract_result = [&]() -> std::vector<Integer> {

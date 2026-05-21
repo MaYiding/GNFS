@@ -223,12 +223,13 @@ private:
         cfg.num_primes = config_.num_primes;
         cfg.prime_start = config_.prime_start;
 
-        // Note: CouveignesSqrtConfig::num_characters is currently a no-op
-        // (filter implementation pending correctness fix; see comment in
-        // couveignes.hpp at the character filter setup). We leave it at 0
-        // here. The diagnostic metrics (character_primes_used) still report
-        // collected primes when the API user explicitly sets num_characters
-        // > 0 for forward-compat testing.
+        // CouveignesSqrtConfig::num_characters NOT enabled here.
+        // The character filter only works correctly when the dependency S(α)
+        // is a true Z[α] square (synthetic test data), NOT when it is a
+        // square only mod N (real GNFS dependencies). Real GNFS callers must
+        // leave num_characters = 0 to avoid false rejection of valid sqrts.
+        // See "IMPORTANT CORRECTNESS CAVEAT" in couveignes.hpp character
+        // filter setup for details.
 
         CouveignesSqrt couveignes(cfg);
 
