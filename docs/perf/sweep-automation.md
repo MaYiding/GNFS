@@ -74,7 +74,14 @@ The default sweep matrix mirrors `CLAUDE.md`. To extend it, edit
 | `GNFS_CASCADE_V3` | `auto,1` | V3 cascade merger |
 | `GNFS_OVERRIDE_LP_BITS` | `20,22,24,26` | Override lp_bits default |
 | `GNFS_SIEVE_ECORE_THREADS` | `0,4` | E-core QoS thread split |
-| `GNFS_FORCE_SIQS` | `1` | Force SIQS path (sanity check) |
+
+The SIQS-routing ENVs (`GNFS_FORCE_SIQS`, `GNFS_DISABLE_SIQS`) are
+excluded from the default bit-size matrix because `sweep_full.sh` passes
+`--method gnfs` to the CLI, and an explicit `--method` overrides those
+two ENVs in `Pipeline::select_method`. Use them only on digit-size
+sweeps (`test_stress` does not pass `--method`) or temporarily inject
+them with `--env-set` after editing the bit-size dispatcher to drop the
+`--method` flag.
 
 ## Usage
 
@@ -148,11 +155,13 @@ contention.
   measurements pin the CPU governor and close other apps. The sweep is
   most useful for spotting order-of-magnitude differences, not
   millisecond precision.
-- Bit-size runs force `GNFS_DISABLE_SIQS=1`. Combining the sweep with
-  `GNFS_FORCE_SIQS=1` will simply lose because the two env vars conflict
-  and SIQS wins, producing a near-zero wall time. This is
-  expected behavior, and it serves as a sanity check that the SIQS
-  fast-path itself still works.
+- Bit-size runs pass `--method gnfs --quiet` plus `GNFS_DISABLE_SIQS=1`
+  so the pipeline always exercises the GNFS code path. `--method` takes
+  precedence over `GNFS_FORCE_SIQS` and `GNFS_DISABLE_SIQS`, so any
+  attempt to inject those two ENVs on a bit-size sweep is a no-op (they
+  produce identical wall time to baseline). For digit-size sweeps
+  (50d / 60d) the driver invokes `test_stress` directly, which does not
+  pass `--method`, so SIQS-routing ENVs do take effect there.
 - The 50d and 60d sweeps are hours long. Treat them as overnight
   experiments and always run with `nohup` plus `/tmp/bg_tasks.txt`
   tracking.

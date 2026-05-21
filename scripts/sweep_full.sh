@@ -132,6 +132,12 @@ SIZE_TIMEOUT_DEFAULT=(
 # ── ENV sweep matrix ──
 # Each entry: "<ENV_NAME>:<val1>,<val2>,..."
 # Baseline (no ENV set) is implicitly the first comparison point.
+#
+# NOTE: Bit-size runs use `--method gnfs`, which overrides the SIQS-routing
+# ENVs (`GNFS_FORCE_SIQS`, `GNFS_DISABLE_SIQS`). Those ENVs are therefore
+# excluded from the bit-size default matrix to keep the sweep meaningful.
+# Add them via `--env-set "GNFS_FORCE_SIQS …"` for a digit-size sweep
+# (digit_50 / digit_60 do not pass `--method`).
 typeset -a SWEEP_MATRIX
 SWEEP_MATRIX=(
     "GNFS_POLY_BAI_BRENT:1"
@@ -146,7 +152,6 @@ SWEEP_MATRIX=(
     "GNFS_CASCADE_V3:auto,1"
     "GNFS_OVERRIDE_LP_BITS:20,22,24,26"
     "GNFS_SIEVE_ECORE_THREADS:0,4"
-    "GNFS_FORCE_SIQS:1"
 )
 
 # ── ENV filter: keep only requested ENVs when --env-set is used ──
