@@ -446,6 +446,146 @@ public:
             mpow[j] %= n;
         }
 
+        // ── Character verification setup (2026-05-21) ──
+        // For each character prime q (distinct from CRT primes):
+        //   - r_q = root of f mod q
+        //   - target = Legendre(S(r_q) · f'(r_q)², q) when apply_f_prime_correction,
+        //              else Legendre(S(r_q), q)
+        //   - For each candidate Y, check Legendre(Y(r_q), q) consistent with target.
+        //
+        // True sqrt satisfies Y(r_q)² ≡ target_value mod q, hence
+        // Legendre(Y(r_q), q) ∈ {+1, -1} (well-defined when target_value ≠ 0).
+        // Note: any sqrt valid mod N must satisfy the same — but with sign ±1
+        // free. So characters DETECT square-vs-nonsquare, which is enough to
+        // reject candidates whose Y(r_q) is a non-square at q. False
+        // positive rate per character: ~0 when target_value is a square,
+        // because non-squares can never produce Y(r_q)² = target_value.
+        //
+        // The win: most random sign-pattern candidates have Y(r_q)
+        // computing to a non-square at q (probability ~50%), so each
+        // character rejects ~50% of false candidates at O(d) cost vs
+        // full O(d · log_2 N) Y² mod N verification.
+        struct CharacterPrime {
+            uint64_t q;
+            uint64_t r_q;            // Root of f mod q
+            int target_legendre;     // Expected Legendre(Y(r_q), q): +1 or -1
+            std::vector<uint64_t> mpow_mod_q;   // (m^j mod q)_{j<d} for Y(m)?
+            // NOTE: mpow_mod_q unused for character eval (we eval at r_q,
+            // not at m). Kept for potential future "Y(m) mod q" usage.
+        };
+        std::vector<CharacterPrime> char_primes;
+        char_primes.reserve(config_.num_characters);
+
+        size_t char_primes_checked = 0;
+        if (config_.num_characters > 0) {
+            // Determine target_value for the dependency once.
+            // target_value = ∏(a_i - b_i * r_q) · f'(r_q)² (mod q)
+            //              = S(r_q) [· f'(r_q)² if applying f' correction]
+            // Per-character cost: |ab_pairs| modular multiplications mod q
+            // (cheap for q < 2^32, dominated by sieve I/O bound anyway).
+            uint64_t q_cand = config_.character_prime_start;
+            // Ensure character primes don't collide with CRT primes.
+            // CRT primes are in [config_.prime_start, ~prime_start + δ];
+            // character_prime_start defaults to 10007 which is well above
+            // default prime_start=1000 + δ. If overlapping, dedup below.
+            std::vector<uint64_t> crt_prime_set = primes;  // copy for searches
+
+            while (char_primes.size() < config_.num_characters &&
+                   char_primes_checked < config_.max_character_prime_checks) {
+                q_cand = next_prime(q_cand);
+                ++char_primes_checked;
+
+                // Skip primes that divide N
+                if (mpz_divisible_ui_p(n.get_mpz(), q_cand)) continue;
+
+                // Skip primes already used in CRT (would correlate sign info)
+                bool overlap = false;
+                for (uint64_t p_crt : crt_prime_set) {
+                    if (p_crt == q_cand) { overlap = true; break; }
+                }
+                if (overlap) continue;
+
+                // Build f mod q
+                std::vector<uint64_t> f_mod_q(d + 1);
+                for (uint32_t i = 0; i <= d; ++i) {
+                    f_mod_q[i] = static_cast<uint64_t>(
+                        mpz_fdiv_ui(nf.coeff(i).get_mpz(), q_cand));
+                }
+                if (f_mod_q.back() == 0) continue;
+
+                // Find a root r_q of f mod q. If none, skip
+                // (we need degree-1 prime ideal above q for cheap character).
+                uint64_t r_q = find_root_mod_q(f_mod_q, q_cand);
+                if (r_q == ~uint64_t(0)) continue;
+
+                // Compute S(r_q) = ∏(a_i - b_i * r_q) mod q
+                uint64_t S_r = 1;
+                bool degenerate = false;
+                for (const auto& [a, b] : ab_pairs) {
+                    int64_t a_mod_s = a % static_cast<int64_t>(q_cand);
+                    if (a_mod_s < 0) a_mod_s += static_cast<int64_t>(q_cand);
+                    uint64_t a_mod = static_cast<uint64_t>(a_mod_s);
+                    uint64_t b_mod = b % q_cand;
+                    uint64_t br = mul_mod_u64(b_mod, r_q, q_cand);
+                    // term = (a - b*r_q) mod q
+                    uint64_t term = (a_mod >= br) ? (a_mod - br) : (q_cand - (br - a_mod));
+                    if (term == 0) {
+                        // Some factor vanishes mod q — character undefined for
+                        // this prime (Legendre(0, q) = 0). Skip and try next.
+                        degenerate = true;
+                        break;
+                    }
+                    S_r = mul_mod_u64(S_r, term, q_cand);
+                }
+                if (degenerate) continue;
+
+                // Apply f' correction if active: multiply by f'(r_q)² mod q
+                if (apply_f_prime_correction) {
+                    auto fp_mod_q = get_f_prime_mod_p(q_cand);
+                    if (fp_mod_q.empty()) continue;
+                    uint64_t fp_r = eval_poly_at_root_mod_q(fp_mod_q, r_q, q_cand);
+                    if (fp_r == 0) continue;  // f'(r_q) ≡ 0 — ramified, skip
+                    uint64_t fp_r_sq = mul_mod_u64(fp_r, fp_r, q_cand);
+                    S_r = mul_mod_u64(S_r, fp_r_sq, q_cand);
+                }
+
+                // target_value = S_r. Legendre(target_value, q) must be +1
+                // (target is a square in F_q because sqrt exists in Z[α]/N
+                // → S(α) is a square at every prime → S(r_q) is a square).
+                // If not +1, this character prime is degenerate; skip.
+                int target_sq = legendre_symbol(S_r, q_cand);
+                if (target_sq != 1) continue;
+
+                // Store character prime. target_legendre is +1: we expect
+                // Y(r_q) to be a square root of S_r mod q, hence
+                // Legendre(Y(r_q), q) is well-defined and equals
+                // Legendre(some-fixed-root, q) ∈ {±1}. The CRT-recovered Y
+                // can be either +sqrt or -sqrt. We accept either: the
+                // character check is "is Y(r_q) a nonzero square mod q?"
+                // which translates to: Y(r_q)² ≡ S_r mod q.
+                //
+                // Implementation: we store target_value (S_r) directly and
+                // check (Y(r_q))² ≡ S_r mod q in the hot loop. This is
+                // strictly stronger than Legendre and catches the case
+                // where Y(r_q) is the wrong square root entirely (e.g.,
+                // Y is off by a 2-torsion class element).
+                CharacterPrime cp;
+                cp.q = q_cand;
+                cp.r_q = r_q;
+                cp.target_legendre = static_cast<int>(S_r);  // store target VALUE here
+                char_primes.push_back(std::move(cp));
+            }
+        }
+        metrics_.character_primes_used = char_primes.size();
+        metrics_.character_primes_checked = char_primes_checked;
+
+        // Precompute (m_to_alpha_coeffs) per character prime — actually,
+        // we evaluate Y at r_q where Y is in Z[α]/N. So we need current_coeffs
+        // (which are CRT-recovered coeffs in [0, M-1]) center-reduced to
+        // [-M/2, M/2], then evaluated at r_q mod q. That's the same as
+        // current_coeffs % q evaluated at r_q, BUT signs matter (center
+        // around 0 before mod q). Implement in lambda below.
+
         // v20 优化: current_coeffs 在每次 Gray flip 后立即归约到 [0, M-1],
         // verify_current 内省去 %=M 步骤 (~10μs / 系数 / iter)。
         // 65536 iter × d=6 coeffs × 10μs = ~4 sec 节省 per dependency。
@@ -476,6 +616,48 @@ public:
             return Y2_buf.compare(expected_X2) == 0;
         };
 
+        // Character-based fast filter (2026-05-21).
+        // For each character prime q with root r_q of f mod q:
+        //   Evaluate Y(r_q) mod q from current_coeffs (center-reduced).
+        //   Check (Y(r_q))² ≡ target_value mod q.
+        // True sqrt passes ALL characters; false sign-patterns pass each
+        // character with probability ~50%, so K chars reject ~1 - 2^-K
+        // of false candidates at O(d) cost each vs O(d · log N) for the
+        // full Y² mod N check.
+        //
+        // Returns true if all character checks PASS (candidate may be valid),
+        // false if any character check fails (candidate is definitely wrong).
+        // Always returns true when char_primes is empty (legacy behavior).
+        //
+        // Hot-loop buffer reuse: same Integer reuse strategy as verify_current.
+        Integer c_buf_chr;
+        auto check_characters = [&]() -> bool {
+            if (char_primes.empty()) return true;
+            for (const auto& cp : char_primes) {
+                // Compute Y(r_q) mod q via Horner from highest-degree coeff.
+                // Each current_coeffs[i] is in [0, M-1]; center-reduce to
+                // [-M/2, M/2] then reduce mod q.
+                uint64_t Y_r = 0;
+                for (size_t i = d; i > 0; --i) {
+                    c_buf_chr = current_coeffs[i - 1];
+                    if (c_buf_chr.compare(half_M) > 0) c_buf_chr -= M;
+                    // Coeff in [-M/2, M/2]; reduce mod q. mpz_fdiv_ui returns
+                    // floor-div remainder ∈ [0, q-1] regardless of sign.
+                    uint64_t c_mod_q = static_cast<uint64_t>(
+                        mpz_fdiv_ui(c_buf_chr.get_mpz(), cp.q));
+                    // Y_r = Y_r * r_q + c_mod_q  (mod q)
+                    Y_r = mul_mod_u64(Y_r, cp.r_q, cp.q);
+                    Y_r = (Y_r + c_mod_q) % cp.q;
+                }
+                // Check (Y_r)² ≡ target_value mod q
+                uint64_t Y_r_sq = mul_mod_u64(Y_r, Y_r, cp.q);
+                if (Y_r_sq != static_cast<uint64_t>(cp.target_legendre)) {
+                    return false;  // Reject candidate
+                }
+            }
+            return true;
+        };
+
         auto extract_result = [&]() -> std::vector<Integer> {
             // 同 verify, current_coeffs 已在 [0, M-1]
             // v22: r[i] = current_coeffs[i] (mpz_set into default-init)
@@ -498,10 +680,14 @@ public:
 
         // Check pattern 0 (all positive)
         metrics_.sign_patterns_tried = 1;
-        metrics_.full_verifications = 1;
-        if (verify_current()) {
-            metrics_.found_sqrt = true;
-            return NumberFieldElement(extract_result());
+        if (check_characters()) {
+            ++metrics_.full_verifications;
+            if (verify_current()) {
+                metrics_.found_sqrt = true;
+                return NumberFieldElement(extract_result());
+            }
+        } else {
+            ++metrics_.character_filter_rejects;
         }
 
         // Gray code iteration: pattern g = i ^ (i >> 1)
@@ -535,6 +721,14 @@ public:
 
             prev_gray = gray;
             ++metrics_.sign_patterns_tried;
+
+            // Cheap character filter before expensive Y² ≡ X² mod N check.
+            // When num_characters = 0 (default), check_characters() returns
+            // true unconditionally and behavior is identical to legacy code.
+            if (!check_characters()) {
+                ++metrics_.character_filter_rejects;
+                continue;
+            }
             ++metrics_.full_verifications;
             if (verify_current()) {
                 metrics_.found_sqrt = true;
@@ -859,6 +1053,63 @@ private:
     }
     [[nodiscard]] static uint64_t mul_mod_u64(uint64_t a, uint64_t b, uint64_t mod) {
         return gnfs::util::mul_mod_u64(a, b, mod);
+    }
+
+    /// Legendre symbol (a / p) for odd prime p. Returns +1, -1, or 0.
+    /// Used by character verification. Cost: O(log(a) + log(p)) via Euler's
+    /// criterion when q is small enough for direct pow_mod. For p < 2^32,
+    /// pow_mod is two 64-bit multiplications per bit of (p-1)/2.
+    [[nodiscard]] static int legendre_symbol(uint64_t a, uint64_t p) {
+        if (p == 2) return (a & 1) ? 1 : 0;
+        uint64_t a_mod = a % p;
+        if (a_mod == 0) return 0;
+        // Euler's criterion: a^((p-1)/2) mod p
+        uint64_t r = pow_mod_u64(a_mod, (p - 1) / 2, p);
+        if (r == 1) return 1;
+        if (r == p - 1) return -1;
+        // Should not happen for prime p
+        return 0;
+    }
+
+    /// Evaluate a polynomial p(x) at integer x = r modulo q via Horner.
+    /// Used to compute Y(α) mod q where we choose r = root of f mod q,
+    /// reducing the character check to a single Legendre symbol of an integer.
+    /// coeffs are uint64 (already reduced mod q).
+    /// Cost: O(deg) modular multiplications.
+    [[nodiscard]] static uint64_t eval_poly_at_root_mod_q(
+            const std::vector<uint64_t>& coeffs,
+            uint64_t r,
+            uint64_t q) {
+        if (coeffs.empty()) return 0;
+        // Horner from highest-degree coefficient down
+        uint64_t acc = 0;
+        for (size_t i = coeffs.size(); i > 0; --i) {
+            // acc = acc * r + coeffs[i-1], all mod q
+            acc = mul_mod_u64(acc, r, q);
+            uint64_t c = coeffs[i - 1] % q;
+            acc = (acc + c) % q;
+        }
+        return acc;
+    }
+
+    /// Find the first root r of f mod q, or return uint64_t max if none.
+    /// Used to select character primes (we need at least one degree-1 prime
+    /// ideal above q for the character to be evaluable).
+    /// For small q (< 100k), brute-force search is faster than Cantor-Zassenhaus.
+    [[nodiscard]] static uint64_t find_root_mod_q(
+            const std::vector<uint64_t>& f_mod_q,
+            uint64_t q) {
+        // Build f mod q, evaluate at every x ∈ [0, q-1]
+        for (uint64_t x = 0; x < q; ++x) {
+            uint64_t val = 0;
+            uint64_t x_power = 1;
+            for (size_t i = 0; i < f_mod_q.size(); ++i) {
+                val = (val + mul_mod_u64(f_mod_q[i], x_power, q)) % q;
+                x_power = mul_mod_u64(x_power, x, q);
+            }
+            if (val == 0) return x;
+        }
+        return ~uint64_t(0);  // No root
     }
 
     /// Modular inverse
