@@ -973,6 +973,53 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_thin_solve(
 }
 
 // ============================================================================
+// View-based dispatch (Phase 5: in-memory CSR + out-of-core MmapCSR)
+// ============================================================================
+//
+// Routes the matrix view to block / thin BW based on m vs n, with the same
+// multi-seed retry policy as find_dependencies(SparseMatrix). Scalar BW
+// fallback is intentionally omitted: it is wide-only and the view path is
+// only reached from Pipeline::solve_matrix's Phase 5 (large matrices that
+// already chose block / thin BW).
+template <MatrixView MV>
+static std::vector<std::vector<bool>> find_dependencies_view_impl(
+    const MV& matrix, size_t max_deps) {
+
+    const size_t m = matrix.num_rows();
+    const size_t n = matrix.num_cols();
+    if (m == 0 || n == 0) return {};
+
+    const bool is_thin = (m < n);
+
+    static constexpr uint64_t seeds[] = {
+        42, 0xDEADBEEFCAFEBABEULL, 0x12345678ABCDEFULL,
+    };
+    for (uint64_t seed : seeds) {
+        std::vector<std::vector<bool>> deps;
+        if (is_thin) {
+            deps = thin_solve_view_impl(matrix, max_deps, seed);
+        } else {
+            deps = block_solve_view_impl(matrix, max_deps, seed);
+        }
+        if (!deps.empty()) return deps;
+        std::cerr << "  [BW-view] seed=" << seed
+                  << (is_thin ? " (thin)" : " (block)")
+                  << " produced no deps, retrying\n";
+    }
+    return {};
+}
+
+std::vector<std::vector<bool>> BlockWiedemann::find_dependencies_view(
+    const CSRMatrix& matrix, size_t max_deps) {
+    return find_dependencies_view_impl(matrix, max_deps);
+}
+
+std::vector<std::vector<bool>> BlockWiedemann::find_dependencies_view(
+    const MmapCSRMatrix& matrix, size_t max_deps) {
+    return find_dependencies_view_impl(matrix, max_deps);
+}
+
+// ============================================================================
 // Reserved stubs (old interface, unused in streaming BW)
 // ============================================================================
 

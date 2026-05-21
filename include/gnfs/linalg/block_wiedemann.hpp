@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gnfs/linalg/block_lanczos.hpp"  // BlockVector, DenseGF2_64x64, CSRMatrix, etc.
+#include "gnfs/linalg/mmap_csr_matrix.hpp"
 #include "gnfs/linalg/sparse_matrix.hpp"
 #include <array>
 #include <cassert>
@@ -197,6 +198,21 @@ public:
     /// invalid deps even on extreme rank deficiency.
     std::vector<std::vector<bool>> find_dependencies(
         const SparseMatrix& matrix, size_t max_deps = 64);
+
+    /// View-based dispatch (Phase 5 OOC plumbing). Accepts an already-built
+    /// CSR-style matrix view and routes to the block / thin solver based on
+    /// m vs n. Skips the Gaussian fast-path that the SparseMatrix overload
+    /// uses for small matrices — callers of the view overload are expected
+    /// to be Phase 5 with matrices large enough that BW is the right tool.
+    ///
+    /// The two overloads cover the only matrix types the pipeline produces:
+    /// in-memory CSRMatrix (default) and mmap-backed MmapCSRMatrix
+    /// (selected by ENV GNFS_LINALG_MMAP). Both delegate to the same
+    /// templated impl (in block_wiedemann.cpp) parameterised on MatrixView.
+    std::vector<std::vector<bool>> find_dependencies_view(
+        const CSRMatrix& matrix, size_t max_deps = 64);
+    std::vector<std::vector<bool>> find_dependencies_view(
+        const MmapCSRMatrix& matrix, size_t max_deps = 64);
 
     /// Coppersmith's Block Berlekamp-Massey algorithm (public for unit testing).
     /// Input: sequence of L matrices A_0, A_1, ..., A_{L-1} (each 64×64 over GF(2))
