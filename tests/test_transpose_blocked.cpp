@@ -77,13 +77,6 @@ static std::vector<std::uint64_t> make_random_matrix(std::size_t rows,
     return m;
 }
 
-// Reads bit (i, j) from a `rows x cols` matrix laid out as `wpr` words/row.
-static bool get_bit(const std::vector<std::uint64_t>& m,
-                    std::size_t i, std::size_t j, std::size_t cols) {
-    const std::size_t wpr = (cols + 63) / 64;
-    return (m[i * wpr + (j >> 6)] >> (j & 63)) & 1ULL;
-}
-
 // Compares two bit-packed matrices for equality. Returns the first mismatched
 // word index, or SIZE_MAX if equal. Both vectors must have the same length.
 static std::size_t first_mismatch(const std::vector<std::uint64_t>& a,
