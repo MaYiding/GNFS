@@ -377,20 +377,20 @@ private:
 
         // 保留 top-K (K=3) 候选,然后用 Murphy E 二级筛。
         //
-        // 排序键: lognorm + cheap_alpha (CADO-NFS exp_E 风格)
-        //   - L² norm 只反映系数大小,完全不考虑 root structure。
-        //   - cheap_alpha 用小素数子集 (默认 p ≤ 100, ~25 primes) 作 α 代理。
-        //   - 综合: log(L²) + α_proxy → 越小越好,与 Murphy E 单调反向。
+        // 默认排序键: 纯 L² norm (向后兼容)。
+        // ENV `GNFS_TOPK_ALPHA=1` 启用 lognorm + cheap_alpha 排序
+        // (CADO-NFS exp_E 风格), 用小素数子集 (p ≤ 100, ~25 primes) 作 α 代理。
         //
-        // 旧代码用纯 L² 排序,会漏掉 α 优的候选 (例如 α 极负但 L² 略大)。
-        // 此处 score 与 Murphy E 相关性提升明显,top-K 命中率改善。
+        // 注意:cheap_alpha 是 noisy proxy,小 N 下可能选出 Murphy E 较差的候选
+        // (实测 25d 上 alpha 排序导致 Murphy E 从 -1.20 退化到 -1.33)。
+        // 默认保持 L²-only,仅在 ENV 显式启用时试用 alpha 排序。
         //
-        // ENV `GNFS_LEGACY_TOPK_RANKING=1` 可回退到旧 L²-only 排序 (debug 用)。
+        // 真正的 rotation-incremental (CADO ropt 2D sieve) 仍 deferred。
         struct Candidate {
             IntPolynomial f;
             Integer m;
             double norm;       // L² norm (kept for diagnostics)
-            double rank_key;   // lognorm + cheap_alpha (smaller = better)
+            double rank_key;   // ranking key (norm or score)
         };
         constexpr size_t TOP_K = 3;
         std::vector<Candidate> top_k;
@@ -398,8 +398,8 @@ private:
 
         // Tracker reused across all (t, k) iterations within this candidate.
         const RotationAlphaTracker tracker;
-        const bool legacy_ranking = []() {
-            const char* env = std::getenv("GNFS_LEGACY_TOPK_RANKING");
+        const bool use_alpha_ranking = []() {
+            const char* env = std::getenv("GNFS_TOPK_ALPHA");
             return env && env[0] == '1';
         }();
 
@@ -452,15 +452,15 @@ private:
                 f_t = PolynomialOptimizer::rotate_linear(f_t, m_t, k);
             }
 
-            // L² norm + cheap-alpha 预筛 — 维护 top-K
+            // L² norm 预筛 — 维护 top-K
             double s = PolynomialOptimizer::estimate_skewness(f_t);
             double norm = PolynomialOptimizer::compute_size(f_t, s);
 
-            // rank_key: log(L²) + cheap_alpha (smaller = better).
-            // legacy_ranking=true 回退到 L²-only (debug path).
-            const double rank_key = legacy_ranking
-                ? norm
-                : tracker.score(f_t, norm);
+            // rank_key 默认 = norm (L²-only);ENV GNFS_TOPK_ALPHA=1 启用
+            // log(L²) + cheap_alpha 替代排序。
+            const double rank_key = use_alpha_ranking
+                ? tracker.score(f_t, norm)
+                : norm;
 
             // 插入并保持按 rank_key 升序的 top-K 列表
             if (top_k.size() < TOP_K ||
