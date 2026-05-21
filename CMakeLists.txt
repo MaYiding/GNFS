@@ -441,6 +441,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SQUFOF COMMAND test_squfof)
     set_tests_properties(SQUFOF PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_batch_ecm
+        tests/test_batch_ecm.cpp
+    )
+    target_link_libraries(test_batch_ecm PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BatchECM COMMAND test_batch_ecm)
+    # Debug build runs ECM Stage 1/Stage 2 inside test_batch_vs_factor_success_parity,
+    # which can take ~5-30s under sanitizers (mont_mul + mont_double inner loop slow).
+    # Marked as fast (60s budget) to accommodate Debug+sanitizers.
+    set_tests_properties(BatchECM PROPERTIES LABELS "fast" TIMEOUT 60)
+
     add_executable(test_linalg
         tests/test_linalg.cpp
     )
