@@ -767,6 +767,15 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME EcmCurvePool COMMAND test_ecm_curve_pool)
     set_tests_properties(EcmCurvePool PROPERTIES LABELS "instant" TIMEOUT 30)
 
+    # Cofactor batch micro-benchmark (T5 Stage 4) — invoke manually
+    # ./build/test_cofactor_batch_bench [count] [seed]
+    add_executable(test_cofactor_batch_bench
+        tests/test_cofactor_batch_bench.cpp
+    )
+    target_link_libraries(test_cofactor_batch_bench PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME CofactorBatchBench COMMAND test_cofactor_batch_bench 1000)
+    set_tests_properties(CofactorBatchBench PROPERTIES LABELS "bench" TIMEOUT 120)
+
     # 回归测试
     add_executable(test_regressions
         tests/test_regressions.cpp
