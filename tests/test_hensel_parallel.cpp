@@ -189,7 +189,10 @@ void test_env_parsing_unset() {
     unsetenv("GNFS_SQRT_HENSEL_THREADS");
     reset_sqrt_hensel_threads_cache();
     std::size_t n = sqrt_hensel_threads();
-    assert(n == 1);
+    if (n != 1) {
+        std::cerr << "  ERROR: unset env expected 1, got " << n << std::endl;
+        std::abort();
+    }
     std::cout << "  unset -> 1: PASSED" << std::endl;
 }
 
@@ -226,7 +229,10 @@ void test_env_parsing_values() {
     if (hw == 0) hw = 4;
     std::size_t cap = static_cast<std::size_t>(hw) * 2;
     std::size_t v = sqrt_hensel_threads();
-    assert(v == cap);
+    if (v != cap) {
+        std::cerr << "  ERROR: expected clamped value " << cap << ", got " << v << std::endl;
+        std::abort();
+    }
     std::cout << "  parsing 0/-3/1/4/999 (clamped to " << cap << "): PASSED" << std::endl;
 
     unsetenv("GNFS_SQRT_HENSEL_THREADS");
@@ -267,22 +273,27 @@ void test_edge_case_single_slot() {
     struct DummySlot { int x = 0; };
     DummySlot one[1] = {{42}};
     bool called = false;
+    std::size_t seen_index = static_cast<std::size_t>(-1);
     parallel_hensel_lift<DummySlot>(
         std::span<DummySlot>(one, 1),
-        [&called](DummySlot& s, std::size_t i) {
-            assert(i == 0);
+        [&called, &seen_index](DummySlot& s, std::size_t i) {
+            seen_index = i;
             s.x = 1234;
             called = true;
         });
-    assert(called);
-    assert(one[0].x == 1234);
+    if (!called || seen_index != 0 || one[0].x != 1234) {
+        std::cerr << "ERROR: single-slot dispatch failed: called=" << called
+                  << " index=" << seen_index << " x=" << one[0].x << std::endl;
+        std::abort();
+    }
 
     // Also verify zero-slot span is a no-op.
     DummySlot* empty = nullptr;
     parallel_hensel_lift<DummySlot>(
         std::span<DummySlot>(empty, 0),
         [](DummySlot&, std::size_t) {
-            assert(false && "empty span should not invoke lift_one");
+            std::cerr << "ERROR: empty span should not invoke lift_one" << std::endl;
+            std::abort();
         });
 
     unsetenv("GNFS_SQRT_HENSEL_THREADS");
