@@ -223,6 +223,13 @@ private:
         cfg.num_primes = config_.num_primes;
         cfg.prime_start = config_.prime_start;
 
+        // Note: CouveignesSqrtConfig::num_characters is currently a no-op
+        // (filter implementation pending correctness fix; see comment in
+        // couveignes.hpp at the character filter setup). We leave it at 0
+        // here. The diagnostic metrics (character_primes_used) still report
+        // collected primes when the API user explicitly sets num_characters
+        // > 0 for forward-compat testing.
+
         CouveignesSqrt couveignes(cfg);
 
         // ── v19: 预先判定 gcd(f'(m), N) 决定走哪条路径 ──

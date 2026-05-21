@@ -447,24 +447,26 @@ public:
         }
 
         // ── Character verification setup (2026-05-21) ──
-        // For each character prime q (distinct from CRT primes):
-        //   - r_q = root of f mod q
-        //   - target = Legendre(S(r_q) · f'(r_q)², q) when apply_f_prime_correction,
-        //              else Legendre(S(r_q), q)
-        //   - For each candidate Y, check Legendre(Y(r_q), q) consistent with target.
         //
-        // True sqrt satisfies Y(r_q)² ≡ target_value mod q, hence
-        // Legendre(Y(r_q), q) ∈ {+1, -1} (well-defined when target_value ≠ 0).
-        // Note: any sqrt valid mod N must satisfy the same — but with sign ±1
-        // free. So characters DETECT square-vs-nonsquare, which is enough to
-        // reject candidates whose Y(r_q) is a non-square at q. False
-        // positive rate per character: ~0 when target_value is a square,
-        // because non-squares can never produce Y(r_q)² = target_value.
+        // STATUS (2026-05-21): The naive form ("Y(α) evaluated at r_q ≡
+        // √S(r_q) mod q") is mathematically incorrect for CRT-recovered
+        // candidates: the candidate Y(α) ∈ Z[α] satisfies
+        // Y(α)² ≡ f'(α)² · S(α) mod (M, f(α)) but NOT mod (q, f(α)) when
+        // q ∉ {CRT primes}, because the modulus relationship only constrains
+        // Y mod M, leaving an M-dependent term that does not vanish at r_q.
         //
-        // The win: most random sign-pattern candidates have Y(r_q)
-        // computing to a non-square at q (probability ~50%), so each
-        // character rejects ~50% of false candidates at O(d) cost vs
-        // full O(d · log_2 N) Y² mod N verification.
+        // For now the filter is wired as a no-op (degenerate primes are
+        // collected and target_sq populated, but the hot-loop check is
+        // bypassed). The API is preserved so future Couveignes work can
+        // implement a CORRECT character filter (proper approach: reduce
+        // current_coeffs mod q first, then evaluate Y² ≡ S · f'² in
+        // F_q[x]/(f mod q) via polynomial multiplication and coefficient
+        // comparison — costlier than Horner but mathematically sound).
+        //
+        // CouveignesMetrics::character_primes_used still reports the
+        // collected primes for diagnostic visibility, but
+        // character_filter_rejects stays 0 because the filter accepts
+        // all candidates.
         struct CharacterPrime {
             uint64_t q;
             uint64_t r_q;            // Root of f mod q (degree-1 prime ideal above q)
@@ -605,46 +607,30 @@ public:
             return Y2_buf.compare(expected_X2) == 0;
         };
 
-        // Character-based fast filter (2026-05-21).
-        // For each character prime q with root r_q of f mod q:
-        //   Evaluate Y(r_q) mod q from current_coeffs (center-reduced).
-        //   Check (Y(r_q))² ≡ target_value mod q.
-        // True sqrt passes ALL characters; false sign-patterns pass each
-        // character with probability ~50%, so K chars reject ~1 - 2^-K
-        // of false candidates at O(d) cost each vs O(d · log N) for the
-        // full Y² mod N check.
+        // Character-based fast filter (2026-05-21, DISABLED PENDING FIX).
         //
-        // Returns true if all character checks PASS (candidate may be valid),
-        // false if any character check fails (candidate is definitely wrong).
-        // Always returns true when char_primes is empty (legacy behavior).
+        // The Horner-at-r_q approach below is mathematically unsound for
+        // CRT-recovered candidates (see comment block above the
+        // CharacterPrime struct). The lambda always returns true so the
+        // legacy Gray-code search is unaffected; the char_primes collected
+        // upstream are reported in metrics but consume no hot-loop time.
         //
-        // Hot-loop buffer reuse: same Integer reuse strategy as verify_current.
-        Integer c_buf_chr;
+        // To enable a CORRECT character filter in the future:
+        //   1. For each character prime q, build poly Y_q mod q as a
+        //      coefficient vector reduced from current_coeffs (mod q first,
+        //      then in F_q[x] form).
+        //   2. Compute Y_q² in F_q[x]/(f mod q) via polynomial multiplication
+        //      (~d² uint64 ops).
+        //   3. Compute target_q = S_q · f'_q² in F_q[x]/(f mod q) once at
+        //      setup; compare coefficient-by-coefficient against Y_q².
+        //
+        // Cost: ~d² per character per pattern. For d=4, ~16 ops vs the
+        // mpz_powm_ui for full Y² mod N (still cheaper than full check
+        // when log N > 64; comparable when log N ≈ 64). Diagnostic value
+        // remains in metrics regardless.
+        (void)half_M;  // silence unused-when-no-chars warning
         auto check_characters = [&]() -> bool {
-            if (char_primes.empty()) return true;
-            for (const auto& cp : char_primes) {
-                // Compute Y(r_q) mod q via Horner from highest-degree coeff.
-                // Each current_coeffs[i] is in [0, M-1]; center-reduce to
-                // [-M/2, M/2] then reduce mod q.
-                uint64_t Y_r = 0;
-                for (size_t i = d; i > 0; --i) {
-                    c_buf_chr = current_coeffs[i - 1];
-                    if (c_buf_chr.compare(half_M) > 0) c_buf_chr -= M;
-                    // Coeff in [-M/2, M/2]; reduce mod q. mpz_fdiv_ui returns
-                    // floor-div remainder ∈ [0, q-1] regardless of sign.
-                    uint64_t c_mod_q = static_cast<uint64_t>(
-                        mpz_fdiv_ui(c_buf_chr.get_mpz(), cp.q));
-                    // Y_r = Y_r * r_q + c_mod_q  (mod q)
-                    Y_r = mul_mod_u64(Y_r, cp.r_q, cp.q);
-                    Y_r = (Y_r + c_mod_q) % cp.q;
-                }
-                // Check (Y_r)² ≡ target_sq mod q
-                uint64_t Y_r_sq = mul_mod_u64(Y_r, Y_r, cp.q);
-                if (Y_r_sq != cp.target_sq) {
-                    return false;  // Reject candidate
-                }
-            }
-            return true;
+            return true;  // Filter disabled pending correct implementation
         };
 
         auto extract_result = [&]() -> std::vector<Integer> {
