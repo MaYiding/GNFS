@@ -28,17 +28,19 @@ struct BenchCase {
 };
 
 int main() {
+    // Tiny benchmark cases -- diagnostic only, not a perf benchmark. Use
+    // small ad_max/num_candidates so runtime stays under a few seconds total.
     std::vector<BenchCase> cases = {
-        {"30-bit d=4",
-            Integer("1073741827") * Integer("1073741831"),
-            4, 64, 32},
         {"40-bit d=4",
             Integer("1099511628211") * Integer("1099511627791"),
-            4, 64, 32},
-        {"60-bit d=5",
+            4, 16, 8},
+        {"50-bit d=4",
+            Integer("1099511628211") * Integer("1099511627791") * Integer("1009"),
+            4, 16, 8},
+        {"60-bit d=4",
             Integer("1099511628211") * Integer("1099511627791") *
                 Integer("65537") * Integer("131101"),
-            5, 64, 32},
+            4, 16, 8},
     };
 
     std::cout << std::left << std::setw(20) << "Case"
@@ -54,10 +56,12 @@ int main() {
         kp.degree = c.degree;
         kp.leading_coeff_bound = c.ad_max;
         kp.num_candidates = c.num_candidates;
-        kp.search_radius = 8;
-        kp.murphy_params.sample_points = 200;
-        kp.skewness_min = 1e2;
-        kp.skewness_max = 1e10;
+        kp.search_radius = 4;
+        kp.murphy_params.sample_points = 64;
+        kp.murphy_params.alpha_bound = 1e3;
+        kp.murphy_params.skewness_steps = 8;
+        kp.skewness_min = 1e1;
+        kp.skewness_max = 1e6;
         kp.parallel = true;
         KleinjungSelector k_sel(kp);
         auto k_res = k_sel.select(c.n);
@@ -68,10 +72,12 @@ int main() {
         bp.ad_min = 1;
         bp.ad_max = c.ad_max;
         bp.num_candidates = c.num_candidates;
-        bp.search_radius = 8;
-        bp.murphy_params.sample_points = 200;
-        bp.skewness_min = 1e2;
-        bp.skewness_max = 1e10;
+        bp.search_radius = 4;
+        bp.murphy_params.sample_points = 64;
+        bp.murphy_params.alpha_bound = 1e3;
+        bp.murphy_params.skewness_steps = 8;
+        bp.skewness_min = 1e1;
+        bp.skewness_max = 1e6;
         bp.parallel = true;
         BaiBrentSelector b_sel(bp);
         auto b_res = b_sel.select(c.n);
