@@ -239,6 +239,22 @@ public:
         return relations_;
     }
 
+    /// Finalize the OOC writer without consuming the collected relations.
+    /// Idempotent. After this call, `add()` behavior is undefined and the OOC
+    /// store is fully flushed (MAGIC flipped), so an external OOCRelationReader
+    /// can open the files. In vector mode this is a no-op.
+    ///
+    /// Used by distributed_sieve worker children, which need the master to read
+    /// the per-worker OOC store but should not pay the cost of `get_relations()`
+    /// (which copies all relations into memory and then immediately discards them
+    /// when the child exits).
+    void finalize_ooc() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (ooc_writer_) {
+            ooc_writer_->close();
+        }
+    }
+
     /// 清空收集器
     /// OOC 模式: close writer + 删 .reldata/.relidx 文件 + reopen (允许 reuse)。
     void clear() {

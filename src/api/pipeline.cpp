@@ -7,6 +7,7 @@
 #include <gnfs/sieve/special_q.hpp>
 #include <gnfs/sieve/sieve_checkpoint.hpp>
 #include <gnfs/sieve/lattice_sieve.hpp>
+#include <gnfs/sieve/distributed_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/cofactor/ecm.hpp>
 #include <gnfs/relation/collector.hpp>
@@ -785,6 +786,105 @@ std::vector<Relation> Pipeline::sieve_and_collect(
         emit_log(LogLevel::Info, Phase::Sieving,
                  "resuming sieve from checkpoint: skip " +
                  std::to_string(sq_count) + " prior SQs");
+    }
+
+    // ── Distributed sieve dispatch (ENV GNFS_DISTRIBUTED_SIEVE_WORKERS=N) ──
+    // When set, replace the in-process adaptive sieve loop with a single
+    // distributed run: master forks N child workers, each handles a chunk of
+    // the Special-Q index range, writes a per-worker OOC store. Master merges
+    // all worker stores into a single relation vector. Downstream filter+merge
+    // phases (Phase 4) then process those relations as usual.
+    //
+    // Limitations:
+    //   - One-shot only. The distributed wave processes up to max_special_q
+    //     SQs, evenly split across workers. The adaptive multi-round retry
+    //     loop is disabled — for under-sized SQ ranges the caller must rerun
+    //     with a wider sq_range / larger max_special_q.
+    //   - Incompatible with GNFS_SIEVE_RESUME / mid-flight checkpoints
+    //     (distributed workers do not write checkpoints — skipped when
+    //     sieve_resume_path is non-empty).
+    //   - Each worker maintains its own (a, b) seen set; the master dedups
+    //     cross-worker duplicates on merge.
+    {
+        const size_t n_workers = sieve::parse_distributed_sieve_workers_env();
+        // Size gate: distributed dispatch is only worthwhile for 30+ digit
+        // numbers where each worker chunk processes thousands of SQs. Below
+        // 30 digits the in-process adaptive loop converges in 10-100 SQs and
+        // distributed dispatch wastes work because workers cannot early-stop
+        // when the matrix target is already met.
+        // ENV GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL=1 overrides the gate (test
+        // harness only).
+        const bool size_gate_ok = params_.digits >= 30;
+        const char* force_env = std::getenv("GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL");
+        const bool force_small = (force_env != nullptr && force_env[0] == '1');
+        if (n_workers > 0 && !size_gate_ok && !force_small) {
+            std::fprintf(stderr,
+                "[dist_sieve] skip dispatch: digits=%zu < 30 "
+                "(set GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL=1 to override)\n",
+                params_.digits);
+        }
+        if (n_workers > 0 && sieve_resume_path.empty() && (size_gate_ok || force_small)) {
+            emit_log(LogLevel::Info, Phase::Sieving,
+                     "GNFS_DISTRIBUTED_SIEVE_WORKERS=" + std::to_string(n_workers) +
+                     " — dispatching distributed sieve");
+            std::fprintf(stderr,
+                "[dist_sieve] dispatch: workers=%zu sq_range=[%u,%u] max_sq=%zu\n",
+                n_workers, sq_range.min_q, sq_range.max_q, max_sq);
+
+            sieve::DistributedSieveConfig dist_cfg = sieve::parse_distributed_sieve_env();
+            dist_cfg.num_workers = n_workers;
+            // Cap each worker at ~max_special_q / num_workers SQs to avoid
+            // runaway sieve when the caller-specified sq_range covers vastly
+            // more primes than needed.
+            if (dist_cfg.sq_per_worker == 0 && max_sq > 0) {
+                dist_cfg.sq_per_worker =
+                    std::max<size_t>(1, max_sq / n_workers);
+            }
+
+            std::vector<sieve::DistributedSieveWorkerResult> wstats;
+            auto dist_rels = sieve::run_distributed_sieve(
+                dist_cfg, ctx, fb, sieve_params, sieve_region, cofac_config,
+                ctx.n(), ctx.m(), sq_range, &wstats);
+
+            // Sieve done — record stats.
+            for (const auto& w : wstats) sq_count += w.sq_count;
+            stats_.timings.sieve_s = std::chrono::duration<double>(
+                std::chrono::high_resolution_clock::now() - t0).count();
+            stats_.relations_found = dist_rels.size();
+            stats_.special_q_processed = sq_count;
+
+            // Run filter+merge once on collected relations (mirrors the
+            // adaptive-loop body but only one pass — no adaptive retry).
+            relation::FilterConfig filter_config;
+            filter_config.remove_singletons = true;
+            filter_config.max_passes = 10;
+            relation::RelationFilter rel_filter(filter_config);
+            std::vector<Relation> dist_filtered = rel_filter.filter(std::move(dist_rels));
+
+            if (lp_enabled) {
+                auto sep = relation::separate_relations(std::move(dist_filtered));
+                relation::PartialRelationMerger::MergeStats mstats;
+                auto merged = relation::PartialRelationMerger::merge_all(
+                    std::move(sep.partial), 10, &mstats);
+                dist_filtered = std::move(sep.full);
+                dist_filtered.reserve(dist_filtered.size() + merged.size());
+                dist_filtered.insert(dist_filtered.end(),
+                    std::make_move_iterator(merged.begin()),
+                    std::make_move_iterator(merged.end()));
+            }
+
+            emit_log(LogLevel::Info, Phase::Sieving,
+                     "distributed sieve done: raw=" +
+                     std::to_string(stats_.relations_found) +
+                     " usable=" + std::to_string(dist_filtered.size()) +
+                     " sq=" + std::to_string(sq_count));
+            std::fprintf(stderr,
+                "[dist_sieve] done: raw=%zu usable=%zu sq=%zu\n",
+                stats_.relations_found, dist_filtered.size(), sq_count);
+            emit_progress(Phase::Sieving, "Sieving complete (distributed)", 1.0);
+
+            return dist_filtered;
+        }
     }
 
     // Adaptive sieve-filter-merge loop:

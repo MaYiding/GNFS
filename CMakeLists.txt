@@ -236,6 +236,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/lattice_sieve.cpp")
     target_sources(gnfs_core PRIVATE src/sieve/lattice_sieve.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve.cpp")
+    target_sources(gnfs_core PRIVATE src/sieve/distributed_sieve.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cofactor/cofactorizer.cpp")
     target_sources(gnfs_core PRIVATE src/cofactor/cofactorizer.cpp)
 endif()
@@ -521,6 +525,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_bl_resume_integration PRIVATE gnfs_core Threads::Threads)
     add_test(NAME BlockLanczosResumeIntegration COMMAND test_bl_resume_integration)
     set_tests_properties(BlockLanczosResumeIntegration PROPERTIES LABELS "fast" TIMEOUT 60)
+
+    add_executable(test_distributed_sieve
+        tests/test_distributed_sieve.cpp
+    )
+    target_link_libraries(test_distributed_sieve PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME DistributedSieve COMMAND test_distributed_sieve)
+    set_tests_properties(DistributedSieve PROPERTIES LABELS "fast" TIMEOUT 60)
 
     add_executable(test_poly_checkpoint
         tests/test_poly_checkpoint.cpp

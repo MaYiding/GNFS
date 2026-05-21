@@ -1,0 +1,139 @@
+#pragma once
+
+// Multi-process distributed sieve worker pool.
+//
+// Design (POSIX fork/waitpid, no MPI, single-machine):
+//   Master splits the Special-Q index range into N contiguous chunks.
+//   For each chunk, master fork()s a worker child process. The child runs the
+//   sieve over its assigned [start, end) SQ-index range, writes resulting
+//   relations to an OOC store at `<base_path>.worker_<chunk_id>.{reldata,relidx}`
+//   and exits with status 0 (success) or 1 (failure).
+//
+//   Master waitpid()s for all workers. Any worker that exits non-zero or with a
+//   signal triggers a single retry: master re-forks a fresh worker on the same
+//   range (cleaning the prior partial OOC files first). After retry, an
+//   unrecoverable failure leaves the SQ range's relations missing from the
+//   merged output (warning logged, not fatal — the adaptive sieve loop above
+//   can compensate).
+//
+//   Once every worker has finished, master opens each worker OOC store with
+//   OOCRelationReader, concatenates their relations into a single vector,
+//   deletes the worker stores, and returns the merged vector.
+//
+// Default OFF: when `num_workers == 0` the caller falls back to the in-process
+// sieve path (this header provides no fallback — it is the caller's job to
+// route based on the configured worker count).
+//
+// Cross-platform: uses POSIX fork()/waitpid()/_exit(). Works on Linux + macOS.
+// Not Windows-portable (acceptable for GNFS which already requires POSIX).
+
+#include "gnfs/core/polynomial_context.hpp"
+#include "gnfs/core/relation.hpp"
+#include "gnfs/factor_base/factor_base.hpp"
+#include "gnfs/sieve/lattice_sieve.hpp"
+#include "gnfs/sieve/special_q.hpp"
+#include "gnfs/cofactor/cofactorizer.hpp"
+
+#include <sys/types.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <string>
+#include <vector>
+
+namespace gnfs::sieve {
+
+/// Runtime configuration for the distributed sieve worker pool.
+struct DistributedSieveConfig {
+    /// Number of worker processes. 0 disables the distributed path entirely
+    /// (caller must fall back to in-process sieve).
+    size_t num_workers = 0;
+
+    /// Filesystem base path for per-worker OOC stores. Each worker writes to
+    /// `<base_path>.worker_<chunk_id>.{reldata,relidx}` (chunk_id 0-indexed).
+    /// Must not be empty when num_workers > 0.
+    std::string base_path;
+
+    /// Maximum number of SQs each worker processes. Used as a per-worker cap;
+    /// the actual SQ count assigned to a worker is min(sq_per_worker, chunk_len).
+    /// 0 = no cap (worker drains its chunk).
+    size_t sq_per_worker = 0;
+
+    /// Soft per-worker collector size cap (relations). 0 = no cap. When set,
+    /// matches Pipeline::sieve_and_collect's batch_target so a worker can stop
+    /// early if a chunk produces an unexpectedly large number of relations.
+    size_t worker_collector_cap = 0;
+};
+
+/// Outcome metadata for a single worker process.
+struct DistributedSieveWorkerResult {
+    pid_t pid = -1;                  ///< Worker PID (after fork).
+    size_t chunk_id = 0;             ///< Zero-indexed chunk identifier.
+    uint32_t sq_index_begin = 0;     ///< First SQ index assigned to this worker.
+    uint32_t sq_index_end = 0;       ///< Past-the-last SQ index assigned to this worker.
+    size_t sq_count = 0;             ///< Number of SQs actually processed.
+    size_t relations_count = 0;      ///< Number of relations written to the worker OOC store.
+    bool success = false;            ///< true iff child exited with status 0 and OOC store finalized.
+    int exit_status = -1;            ///< Raw WEXITSTATUS / -1 if killed by signal.
+    int signal = 0;                  ///< If killed by signal, signal number; else 0.
+    std::string ooc_base_path;       ///< Per-worker OOC base path.
+};
+
+/// Run the sieve in num_workers child processes.
+/// Returns the merged relation vector (concatenation of all worker OOC stores).
+///
+/// Parameters:
+///   cfg            — distributed sieve configuration (num_workers > 0 required).
+///   ctx            — polynomial context (forked to child via copy-on-write).
+///   fb             — factor base (forked to child via copy-on-write).
+///   sieve_params   — lattice sieve parameters (shared).
+///   sieve_region   — sieve region (shared).
+///   cofac_config   — cofactorizer configuration (shared).
+///   n              — composite to factor (for the gcd(a-bm, N) guard in the collector).
+///   m              — polynomial root mod N (same as ctx.m(); for the collector guard).
+///   sq_range       — total Special-Q range; the master splits this into chunks.
+///
+/// Behavior:
+///   - num_workers == 0  → throws std::invalid_argument (caller must filter).
+///   - base_path empty   → throws std::invalid_argument.
+///   - Worker failure    → master retries once. Persistent failure → that chunk
+///     contributes zero relations; an informational stderr line is emitted.
+///
+/// On return, all per-worker OOC files are removed regardless of success.
+[[nodiscard]] std::vector<gnfs::core::Relation> run_distributed_sieve(
+    const DistributedSieveConfig& cfg,
+    const gnfs::core::PolynomialContext& ctx,
+    const gnfs::factor_base::FactorBase& fb,
+    const SieveParams& sieve_params,
+    const SieveRegion& sieve_region,
+    const gnfs::cofactor::CofactorizerConfig& cofac_config,
+    const gnfs::core::Integer& n,
+    const gnfs::core::Integer& m,
+    const SpecialQRange& sq_range,
+    std::vector<DistributedSieveWorkerResult>* out_worker_stats = nullptr);
+
+/// Parse `GNFS_DISTRIBUTED_SIEVE_WORKERS=N` (range [0, 64]).
+/// Out-of-range / non-numeric / unset → 0 (disabled).
+inline size_t parse_distributed_sieve_workers_env() noexcept {
+    const char* env = std::getenv("GNFS_DISTRIBUTED_SIEVE_WORKERS");
+    if (env == nullptr || env[0] == '\0') return 0;
+    char* end = nullptr;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || value <= 0 || value > 64) return 0;
+    return static_cast<size_t>(value);
+}
+
+/// Build a DistributedSieveConfig from environment variables.
+///   GNFS_DISTRIBUTED_SIEVE_WORKERS=N   (required, 0 = disabled)
+///   GNFS_DISTRIBUTED_SIEVE_BASE_PATH=  (optional, default /tmp/gnfs_distributed_<pid>)
+///   GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER=N  (optional, default 0 = no cap)
+DistributedSieveConfig parse_distributed_sieve_env() noexcept;
+
+/// Split [range_begin, range_end) into num_chunks contiguous chunks.
+/// Returns a vector of size num_chunks of [chunk_begin, chunk_end) pairs.
+/// Empty input returns empty vector. Zero chunks → empty vector.
+[[nodiscard]] std::vector<std::pair<uint32_t, uint32_t>>
+split_sq_range(uint32_t range_begin, uint32_t range_end, size_t num_chunks) noexcept;
+
+} // namespace gnfs::sieve
