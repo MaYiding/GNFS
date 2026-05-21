@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <cstdint>
 #include <functional>
@@ -31,9 +32,12 @@ namespace detail {
 /// Used by Phase 0 global hits + v-prime full-row sieve. NEON 8-lane on arm64,
 /// scalar elsewhere.
 ///
-/// P2-A baseline (BACKLOG): explicit sieve-kernel NEON. doctrine 说 这些 patterns
-/// (constant broadcast across row/area) 是 sieve 内最 vectorize-friendly 的段;
-/// bucket-entry scatter + tiny stride 因 gather/strided 模式不适合 SIMD.
+/// P2-A baseline (BACKLOG): explicit sieve-kernel NEON. doctrine 说 these
+/// patterns (constant broadcast across row/area) are sieve's most
+/// vectorize-friendly segments. bucket-entry scatter + tiny stride were
+/// previously kept scalar because gather/strided patterns are not native NEON
+/// strengths.  The tiny prime helpers below extend the baseline to that
+/// territory via fixed-stride manual unrolling.
 inline void apply_log_p_range(uint16_t* arr, size_t len, uint16_t lp) {
 #ifdef __ARM_NEON
     size_t i = 0;
@@ -48,6 +52,80 @@ inline void apply_log_p_range(uint16_t* arr, size_t len, uint16_t lp) {
 #else
     for (size_t i = 0; i < len; ++i) arr[i] += lp;
 #endif
+}
+
+/// Returns true if the tiny-prime SIMD fast paths should run.
+/// Disabled by setting `GNFS_SIEVE_NO_TINY_SIMD=1` for benchmark / debug.
+/// The lookup is cached after the first call so the fast path stays branchless
+/// in inner loops.
+inline bool tiny_simd_enabled() noexcept {
+    static const bool enabled = []() {
+        const char* env = std::getenv("GNFS_SIEVE_NO_TINY_SIMD");
+        if (env == nullptr) return true;
+        if (env[0] == '\0') return true;
+        // Treat "0" / empty as still enabled; any other value disables.
+        if (env[0] == '0' && env[1] == '\0') return true;
+        return false;
+    }();
+    return enabled;
+}
+
+/// Apply constant log_p at positions {start, start+stride, start+2*stride, ...}
+/// while the index stays in [0, end).  Mirrors the scalar:
+///
+///     for (size_t idx = start; idx < end; idx += stride)
+///         arr[idx] += lp;
+///
+/// The manual 4x unroll keeps independent dependency chains so the M-series
+/// core schedules four pipelined loads/adds/stores per iteration even though
+/// the writes are not contiguous (NEON has no scatter store on ARMv8.0).
+/// When `GNFS_SIEVE_NO_TINY_SIMD=1` the function delegates to the scalar
+/// reference for byte-for-byte parity validation.
+inline void apply_log_p_stride(uint16_t* arr,
+                               size_t start,
+                               size_t end,
+                               size_t stride,
+                               uint16_t lp) noexcept {
+    if (start >= end || stride == 0) return;
+
+    if (!tiny_simd_enabled()) {
+        for (size_t idx = start; idx < end; idx += stride) {
+            arr[idx] += lp;
+        }
+        return;
+    }
+
+    size_t idx = start;
+    const size_t step4 = stride * 4;
+    // Stay 3 strides shy of the end so the unrolled body never overshoots.
+    while (idx + 3 * stride < end) {
+        // 4 independent dependency chains — the OoO pipeline overlaps them.
+        const size_t i0 = idx;
+        const size_t i1 = idx + stride;
+        const size_t i2 = idx + 2 * stride;
+        const size_t i3 = idx + 3 * stride;
+        arr[i0] = static_cast<uint16_t>(arr[i0] + lp);
+        arr[i1] = static_cast<uint16_t>(arr[i1] + lp);
+        arr[i2] = static_cast<uint16_t>(arr[i2] + lp);
+        arr[i3] = static_cast<uint16_t>(arr[i3] + lp);
+        idx += step4;
+    }
+    // Tail (0-3 remaining writes).
+    for (; idx < end; idx += stride) {
+        arr[idx] = static_cast<uint16_t>(arr[idx] + lp);
+    }
+}
+
+/// Scalar reference for `apply_log_p_stride` — exposed for parity tests.
+inline void apply_log_p_stride_scalar(uint16_t* arr,
+                                      size_t start,
+                                      size_t end,
+                                      size_t stride,
+                                      uint16_t lp) noexcept {
+    if (stride == 0) return;
+    for (size_t idx = start; idx < end; idx += stride) {
+        arr[idx] = static_cast<uint16_t>(arr[idx] + lp);
+    }
 }
 
 }  // namespace detail
