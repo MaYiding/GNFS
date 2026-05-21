@@ -1,5 +1,6 @@
 #include "gnfs/linalg/block_wiedemann.hpp"
 #include "gnfs/linalg/detail/spmv_kernels.hpp"
+#include "gnfs/linalg/krylov_sequence_compressed.hpp"
 #include "gnfs/linalg/krylov_sequence_mmap.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
@@ -19,6 +20,8 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
+
+#include <unistd.h>
 
 namespace gnfs::linalg {
 
@@ -53,6 +56,16 @@ inline uint32_t bw_pool_size_per_stream(uint32_t num_streams) noexcept {
     uint32_t per = hw / num_streams;
     if (per == 0) per = 1;
     return per;
+}
+
+// ENV `GNFS_BW_KRYLOV_COMPRESS=1`: opt-in chunked compression of the Krylov
+// sequence file. Caller must also have GNFS_BW_KRYLOV_MMAP=1 (compression is
+// layered on the mmap path). When set, KrylovSequenceCompressed replaces
+// KrylovSequenceMmap; the disk file grows as XOR-delta + byte-RLE chunks
+// rather than a raw entry array. Default 0 (no compression, no regression).
+inline bool bw_use_compress() noexcept {
+    const char* env = std::getenv("GNFS_BW_KRYLOV_COMPRESS");
+    return env != nullptr && env[0] == '1';
 }
 
 // Stream-aware random seeds. Use a fixed prime stride so reruns under the
@@ -420,6 +433,17 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
 
     const char* mmap_env = std::getenv("GNFS_BW_KRYLOV_MMAP");
     const bool use_mmap = (mmap_env != nullptr && mmap_env[0] == '1');
+    // Scalar BM path has a transposed access pattern (write k×j → j-major
+    // streams). KrylovSequenceCompressed requires sequential write k=0..L-1
+    // per entry, so the scalar-BM hot loop cannot stream directly into a
+    // compressed file without materialising the full sequences[64][seq_len]
+    // in RAM (defeating the point). Future work: support patch-write in
+    // KrylovSequenceCompressed. For now, scalar path uses uncompressed mmap.
+    if (use_mmap && bw_use_compress()) {
+        std::fprintf(stderr,
+            "[bw_krylov_compress] WARN: scalar BM path does not support "
+            "compression yet; falling back to uncompressed mmap\n");
+    }
 
     std::cout << "  [BW] Phase 1: Krylov projection (L=" << L
               << ", seq_len=" << seq_len << (use_mmap ? ", mmap" : "")
@@ -695,12 +719,24 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
     auto phase_start = std::chrono::steady_clock::now();
     const char* mmap_env = std::getenv("GNFS_BW_KRYLOV_MMAP");
     const bool use_mmap = (mmap_env != nullptr && mmap_env[0] == '1');
+    const bool use_compress = use_mmap && bw_use_compress();
     std::cout << "  [BW-block] Phase 1: Krylov (L=" << L
-              << (use_mmap ? ", mmap" : "") << ")..." << std::flush;
+              << (use_mmap ? (use_compress ? ", mmap+zip" : ", mmap") : "")
+              << ")..." << std::flush;
 
     std::vector<DenseGF2_64x64> A_seq;
     std::unique_ptr<KrylovSequenceMmap> A_mmap;
-    if (use_mmap) {
+    std::unique_ptr<KrylovSequenceCompressed> A_kryz;
+    if (use_compress) {
+        char path_buf[160];
+        std::snprintf(path_buf, sizeof(path_buf),
+                      "/tmp/gnfs_bw_krylov_%d_s%u_%llu.kryz",
+                      static_cast<int>(::getpid()),
+                      static_cast<unsigned>(stream_tag),
+                      static_cast<unsigned long long>(seed));
+        A_kryz = std::make_unique<KrylovSequenceCompressed>(
+            path_buf, L, sizeof(DenseGF2_64x64));
+    } else if (use_mmap) {
         char path_buf[160];
         std::snprintf(path_buf, sizeof(path_buf),
                       "/tmp/gnfs_bw_krylov_%d_s%u_%llu.kry",
@@ -718,7 +754,9 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
 
     for (size_t k = 0; k < L; ++k) {
         DenseGF2_64x64 a = inner_product_64x64(X, V);
-        if (use_mmap) {
+        if (use_compress) {
+            *A_kryz->write_at_typed<DenseGF2_64x64>(k) = a;
+        } else if (use_mmap) {
             *A_mmap->at<DenseGF2_64x64>(k) = a;
         } else {
             A_seq[k] = a;
@@ -732,7 +770,30 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
         std::chrono::steady_clock::now() - phase_start).count();
     std::cout << " done (" << phase1_ms << " ms)" << std::endl;
 
-    if (use_mmap) {
+    if (use_compress) {
+        A_kryz->close();
+        // Status line: stderr ratio for OOC observability
+        const uint64_t orig = A_kryz->total_uncompressed_bytes();
+        const uint64_t comp = A_kryz->total_compressed_bytes();
+        const double ratio = (orig > 0) ?
+            static_cast<double>(comp) / static_cast<double>(orig) : 0.0;
+        std::fprintf(stderr,
+            "[bw_krylov_compress] orig=%.2f MB compressed=%.2f MB ratio=%.4f\n",
+            static_cast<double>(orig) / (1024.0 * 1024.0),
+            static_cast<double>(comp) / (1024.0 * 1024.0),
+            ratio);
+        // Reopen for read in Phase 2 BM copy step
+        const std::string path = A_kryz->path();
+        A_kryz.reset();
+        auto reader = KrylovSequenceCompressed::open_readonly(path);
+        A_seq.resize(L);
+        for (size_t k = 0; k < L; ++k) {
+            const auto* p = reader.read_at_typed<DenseGF2_64x64>(k);
+            A_seq[k] = *p;
+        }
+        reader.close();
+        ::unlink(path.c_str());
+    } else if (use_mmap) {
         A_mmap->msync();
         // Copy mmap → vector once at BM entry (BM signature requires contiguous
         // vector). After copy, mmap can be released — Phase 3 doesn't need A_seq.
