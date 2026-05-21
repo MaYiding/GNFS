@@ -771,6 +771,12 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     sieve::LatticeSieve sieve_obj(ctx, fb, sieve_params);
     sieve_obj.set_region(sieve_region);
 
+    // Shared AdaptiveBasisManager across all per-thread local_sieve instances
+    // so adaptive-lattice telemetry (special_qs, retries, rescues) aggregates
+    // across the entire sieve phase. When the manager is disabled (default),
+    // all worker calls are zero-overhead.
+    sieve::AdaptiveBasisManager adaptive_mgr{};
+
     size_t sq_count = 0;
     size_t candidates_total = 0;
     size_t max_sq = params_.max_special_q;
@@ -929,6 +935,7 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             auto sieve_worker = [&]() {
                 sieve::LatticeSieve local_sieve(ctx, fb, sieve_params);
                 local_sieve.set_region(sieve_region);
+                local_sieve.set_adaptive_manager(&adaptive_mgr);
                 cofactor::Cofactorizer local_cofac(ctx, fb, cofac_config);
 
                 while (true) {
@@ -1153,6 +1160,25 @@ std::vector<Relation> Pipeline::sieve_and_collect(
                  (sqs_exhausted ? "SQs exhausted" : "MAX_ROUNDS reached"));
     }
     emit_progress(Phase::Sieving, "Sieving complete", 1.0);
+
+    // Adaptive lattice telemetry (only print when manager was enabled this run).
+    if (adaptive_mgr.config().enabled) {
+        auto al = adaptive_mgr.stats().snapshot();
+        std::fprintf(stderr,
+            "[adaptive_lattice] special_qs=%llu retries=%llu rescues=%llu "
+            "low_density=%llu hits=%llu cells=%llu\n",
+            static_cast<unsigned long long>(al.special_qs_processed),
+            static_cast<unsigned long long>(al.retries_attempted),
+            static_cast<unsigned long long>(al.rescues_succeeded),
+            static_cast<unsigned long long>(al.low_density_skipped),
+            static_cast<unsigned long long>(al.total_hits),
+            static_cast<unsigned long long>(al.total_cells));
+        emit_log(LogLevel::Info, Phase::Sieving,
+                 "adaptive_lattice special_qs=" +
+                 std::to_string(al.special_qs_processed) +
+                 " retries=" + std::to_string(al.retries_attempted) +
+                 " rescues=" + std::to_string(al.rescues_succeeded));
+    }
 
     return relations;
 }
