@@ -603,6 +603,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME KleinjungLarge COMMAND test_kleinjung_large)
     set_tests_properties(KleinjungLarge PROPERTIES LABELS "heavy" TIMEOUT 1800)
 
+    add_executable(test_bai_brent_poly
+        tests/test_bai_brent_poly.cpp
+    )
+    target_link_libraries(test_bai_brent_poly PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BaiBrentPoly COMMAND test_bai_brent_poly)
+    set_tests_properties(BaiBrentPoly PROPERTIES LABELS "fast" TIMEOUT 60)
+
     add_executable(test_factor_with_kleinjung
         tests/test_factor_with_kleinjung.cpp
     )
