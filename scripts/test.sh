@@ -176,6 +176,7 @@ ALL_TEST_BINARIES=(
     test_sieve_basic
     test_relation_collector
     test_cofactor
+    test_batch_ecm
     test_linalg
     test_sqrt
     test_sqrt_debug
@@ -212,7 +213,7 @@ MODULE_TESTS=(
     polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant"
     factor_base    "test_factor_base"
     sieve          "test_special_q test_sieve_basic test_bucket_sieve test_sieve_ecore_qos"
-    cofactor       "test_cofactor test_squfof test_integration"
+    cofactor       "test_cofactor test_squfof test_batch_ecm test_integration"
     relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration"
     linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration"
     integration    "test_integration"
@@ -320,6 +321,7 @@ TEST_TIMEOUT=(
     test_lattice_sieve       180
     test_gnfs_e2e            300
     test_squfof              10
+    test_batch_ecm           60
     test_block_wiedemann     30
     test_ooc_relations       10
     test_mmap_csr            10
@@ -379,6 +381,7 @@ TEST_TIER=(
     test_lattice_sieve       "slow"
     test_gnfs_e2e            "slow"
     test_squfof              "instant"
+    test_batch_ecm           "fast"
     test_block_wiedemann     "fast"
     test_ooc_relations       "instant"
     test_mmap_csr            "instant"
