@@ -751,6 +751,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME ThreeLpMerge COMMAND test_3lp_merge)
     set_tests_properties(ThreeLpMerge PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Batch trial division (T5 Stage 1) — shared small-primes table sweep
+    add_executable(test_batch_trial
+        tests/test_batch_trial.cpp
+    )
+    target_link_libraries(test_batch_trial PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BatchTrial COMMAND test_batch_trial)
+    set_tests_properties(BatchTrial PROPERTIES LABELS "instant" TIMEOUT 20)
+
     # 回归测试
     add_executable(test_regressions
         tests/test_regressions.cpp
