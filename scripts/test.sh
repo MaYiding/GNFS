@@ -309,6 +309,8 @@ SMOKE_TESTS=(
     test_save_sparse_as_mmap
     test_linalg_mmap_policy
     test_metal_spmv
+    test_krylov_compress
+    test_krylov_compression
     test_ecm_brent_suyama
     test_poly_checkpoint
     test_fb_checkpoint
@@ -394,6 +396,8 @@ TEST_TIMEOUT=(
     test_save_sparse_as_mmap 10
     test_linalg_mmap_policy  10
     test_metal_spmv          30
+    test_krylov_compress     10
+    test_krylov_compression  10
     test_bw_krylov_parallel  120
     test_ecm_brent_suyama    30
     test_ecm_brent_suyama_bench 120
@@ -481,6 +485,8 @@ TEST_TIER=(
     test_save_sparse_as_mmap "instant"
     test_linalg_mmap_policy  "instant"
     test_metal_spmv          "instant"
+    test_krylov_compress     "instant"
+    test_krylov_compression  "instant"
     test_bw_krylov_parallel  "fast"
     test_ecm_brent_suyama    "instant"
     test_ecm_brent_suyama_bench "slow"
