@@ -31,22 +31,26 @@ namespace gnfs::linalg {
 namespace {
 
 // Thin in-file alias wrappers so the historical call sites below
-// (bw_spmv_forward / bw_spmv_B / ...) stay the same. The wrappers
-// instantiate the templated kernels on CSRMatrix, which is the only
-// matrix type the SparseMatrix entry points feed in.
-inline void bw_spmv_forward(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
+// (bw_spmv_forward / bw_spmv_B / ...) stay the same. Templated on the
+// matrix view so the same call sites work for CSRMatrix (in-memory,
+// default path) and MmapCSRMatrix (out-of-core, Pipeline auto-route).
+template <MatrixView MV>
+inline void bw_spmv_forward(const MV& M, const BlockVector& x, BlockVector& y,
                             gnfs::util::ThreadPool& pool) {
     detail::spmv_forward(M, x, y, pool);
 }
-inline void bw_spmv_transpose(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
+template <MatrixView MV>
+inline void bw_spmv_transpose(const MV& M, const BlockVector& x, BlockVector& y,
                               gnfs::util::ThreadPool& pool) {
     detail::spmv_transpose(M, x, y, pool);
 }
-inline void bw_spmv_B(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
+template <MatrixView MV>
+inline void bw_spmv_B(const MV& M, const BlockVector& x, BlockVector& y,
                       BlockVector& tmp, gnfs::util::ThreadPool& pool) {
     detail::spmv_B(M, x, y, tmp, pool);
 }
-inline void bw_spmv_B_prime(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
+template <MatrixView MV>
+inline void bw_spmv_B_prime(const MV& M, const BlockVector& x, BlockVector& y,
                             BlockVector& tmp, gnfs::util::ThreadPool& pool) {
     detail::spmv_B_prime(M, x, y, tmp, pool);
 }
@@ -572,17 +576,18 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
 //          null vector; verify M^T · w_j = 0.
 // ============================================================================
 
-std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
-    const SparseMatrix& matrix, size_t max_deps, uint64_t seed) {
+// Templated body for the wide/square Block Wiedemann solver. Takes any
+// MatrixView (CSRMatrix for in-memory, MmapCSRMatrix for OOC). Caller is
+// responsible for ensuring rows are sorted and CSR-style layout exists.
+template <MatrixView MV>
+static std::vector<std::vector<bool>> block_solve_view_impl(
+    const MV& csr, size_t max_deps, uint64_t seed) {
 
-    const size_t m = matrix.num_rows();
-    const size_t n = matrix.num_cols();
+    const size_t m = csr.num_rows();
+    const size_t n = csr.num_cols();
 
     std::cout << "  [BW-block] Block Wiedemann (matrix BM): " << m << "×" << n
               << " (seed=" << seed << ")" << std::endl;
-
-    const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
-    CSRMatrix csr(matrix);
 
     // Krylov sequence length for matrix BM: L = 2·⌈n/64⌉ + 32 (buffer).
     // Compared to scalar BM's 2n+110, this is ~64× fewer SpMV calls.
@@ -655,7 +660,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
     // ── Phase 2: Matrix Berlekamp-Massey ──
     phase_start = std::chrono::steady_clock::now();
     std::cout << "  [BW-block] Phase 2: matrix BM..." << std::flush;
-    auto F = matrix_berlekamp_massey(A_seq, n);
+    auto F = BlockWiedemann::matrix_berlekamp_massey(A_seq, n);
     const int valid_count = __builtin_popcountll(F.valid_mask);
     const int max_deg = static_cast<int>(F.poly.size()) - 1;
     double phase2_ms = std::chrono::duration<double, std::milli>(
@@ -765,6 +770,18 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
     return deps;
 }
 
+// ----------------------------------------------------------------------------
+// SparseMatrix entry point (today's in-memory default path). Sorts rows,
+// builds CSRMatrix, then calls the templated impl above. The MmapCSRMatrix
+// entry point lives in BlockWiedemann::find_dependencies_view (see header).
+// ----------------------------------------------------------------------------
+std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
+    const SparseMatrix& matrix, size_t max_deps, uint64_t seed) {
+    const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
+    CSRMatrix csr(matrix);
+    return block_solve_view_impl(csr, max_deps, seed);
+}
+
 // ============================================================================
 // Block Wiedemann thin matrix variant — operator B' = M^T·M (BACKLOG #80)
 //
@@ -780,17 +797,18 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
 // L = 2·⌈m/64⌉ + 32 since rank(B') ≤ rank(M) ≤ m, so minpoly degree ≤ m.
 // ============================================================================
 
-std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_thin_solve(
-    const SparseMatrix& matrix, size_t max_deps, uint64_t seed) {
+// Templated body for the thin (m < n) Block Wiedemann solver. Same MV
+// contract as block_solve_view_impl — caller must hand in a CSR-style
+// matrix view with sorted rows.
+template <MatrixView MV>
+static std::vector<std::vector<bool>> thin_solve_view_impl(
+    const MV& csr, size_t max_deps, uint64_t seed) {
 
-    const size_t m = matrix.num_rows();
-    const size_t n = matrix.num_cols();
+    const size_t m = csr.num_rows();
+    const size_t n = csr.num_cols();
 
     std::cout << "  [BW-thin] Thin matrix BW (B'=M^T·M): " << m << "×" << n
               << " (seed=" << seed << ")" << std::endl;
-
-    const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
-    CSRMatrix csr(matrix);
 
     // For B' = M^T·M (n×n), rank ≤ m, so minpoly degree ≤ m.
     // Block Krylov length: L = 2·⌈m/64⌉ + 32.
@@ -831,7 +849,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_thin_solve(
     // Pass m as the "size" (rank bound) instead of n.
     phase_start = std::chrono::steady_clock::now();
     std::cout << "  [BW-thin] Phase 2: matrix BM..." << std::flush;
-    auto F = matrix_berlekamp_massey(A_seq, m);
+    auto F = BlockWiedemann::matrix_berlekamp_massey(A_seq, m);
     const int valid_count = __builtin_popcountll(F.valid_mask);
     const int max_deg = static_cast<int>(F.poly.size()) - 1;
     // BACKLOG #1 rank lower-bound: see compute_rank_est doc in block_wiedemann.hpp.
@@ -941,6 +959,17 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_thin_solve(
               << " zero=" << zero_vecs << ")" << std::endl;
 
     return deps;
+}
+
+// ----------------------------------------------------------------------------
+// SparseMatrix entry point for the thin solver. Sorts rows, builds CSRMatrix,
+// then calls the templated impl above.
+// ----------------------------------------------------------------------------
+std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_thin_solve(
+    const SparseMatrix& matrix, size_t max_deps, uint64_t seed) {
+    const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
+    CSRMatrix csr(matrix);
+    return thin_solve_view_impl(csr, max_deps, seed);
 }
 
 // ============================================================================
