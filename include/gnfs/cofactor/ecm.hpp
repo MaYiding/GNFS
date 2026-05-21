@@ -1,10 +1,13 @@
 #pragma once
 
 #include "../core/integer.hpp"
+#include "ecm_brent_suyama.hpp"
 
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <random>
 #include <optional>
 #include <span>
@@ -26,7 +29,15 @@ public:
         uint64_t B2;
         bool auto_params;
 
-        Config() : num_curves(25), B1(10000), B2(1000000), auto_params(true) {}
+        /// Brent-Suyama polynomial degree for Stage 2 / "Stage 3" extension.
+        ///   0  = OFF (classical BSGS, default behavior)
+        ///   1  = identity F(x) = x (equivalent to classical BSGS; sanity)
+        ///   2, 6, 12, 30 = Brent 1984 / Suyama 1985 extension
+        /// May be overridden by ENV `GNFS_ECM_BRENT_SUYAMA` + `GNFS_ECM_BS_DEGREE`.
+        uint32_t brent_suyama_degree;
+
+        Config() : num_curves(25), B1(10000), B2(1000000), auto_params(true),
+                   brent_suyama_degree(0) {}
     };
 
     /// 尝试用 ECM 分解 n
@@ -44,6 +55,9 @@ public:
             auto_tune(bits, config);
         }
 
+        // ENV opt-in: Brent-Suyama (Stage 3) override
+        apply_brent_suyama_env(config);
+
         // Use n's low bits + random_device to avoid repeating the same curves
         std::random_device rd;
         uint64_t n_low = mpz_getlimbn(n.get_mpz(), 0);
@@ -57,6 +71,7 @@ public:
         BatchContext ctx;
         ctx.B1 = config.B1;
         ctx.B2 = config.B2;
+        ctx.brent_suyama_degree = config.brent_suyama_degree;
         ctx.primes_cache = sieve_primes(config.B1);
         ctx.prime_powers.reserve(ctx.primes_cache.size());
         for (uint64_t p : ctx.primes_cache) {
@@ -99,6 +114,11 @@ public:
             cfg.B1 = 2000;
             cfg.B2 = 50000;
             cfg.auto_params = false;
+            // Brent-Suyama ENV applies to quick_factor too. Reading the ENV
+            // inside the thread_local lambda means the value is captured once
+            // per thread on first call -- consistent with `factor()` which
+            // re-reads per call. Both behaviors are acceptable for opt-in.
+            apply_brent_suyama_env(cfg);
             return prepare_batch(cfg, /*sigma_seed=*/0);
         }();
 
@@ -138,6 +158,10 @@ public:
         std::vector<uint64_t> prime_powers;   // 与 primes_cache 等长: pk = max p^e ≤ B1
         std::vector<uint64_t> sigma_pool;     // 确定性 sigma 序列
 
+        /// Stage 3 Brent-Suyama polynomial degree (0 = OFF, classical BSGS).
+        /// Valid: 0, 1, 2, 6, 12, 30. See `brent_suyama::is_supported_degree`.
+        uint32_t brent_suyama_degree = 0;
+
         [[nodiscard]] bool empty() const noexcept { return primes_cache.empty(); }
         [[nodiscard]] size_t num_curves() const noexcept { return sigma_pool.size(); }
     };
@@ -150,6 +174,7 @@ public:
         BatchContext ctx;
         ctx.B1 = config.B1;
         ctx.B2 = config.B2;
+        ctx.brent_suyama_degree = config.brent_suyama_degree;
 
         // primes_cache: 一次 sieve 复用 (相比 factor() 内 per-call)
         ctx.primes_cache = sieve_primes(config.B1);
@@ -552,8 +577,16 @@ private:
         }
 
         // Stage 2: 复用现有 BSGS 实现 (Point 部分 N-dependent, 无法跨 N 共享)
+        // Stage 3 (Brent-Suyama) opt-in via ctx.brent_suyama_degree > 0
         if (ctx.B2 > ctx.B1) {
-            auto stage2_result = stage2(Q, n, a24, ctx.B1, ctx.B2);
+            std::optional<Integer> stage2_result;
+            if (ctx.brent_suyama_degree > 0 &&
+                brent_suyama::is_supported_degree(ctx.brent_suyama_degree)) {
+                stage2_result = stage2_brent_suyama(Q, n, a24, ctx.B1, ctx.B2,
+                                                    ctx.brent_suyama_degree);
+            } else {
+                stage2_result = stage2(Q, n, a24, ctx.B1, ctx.B2);
+            }
             if (stage2_result) {
                 return stage2_result;
             }
@@ -826,6 +859,172 @@ private:
 
         // 最终检查
         return check_batch(j_hi);
+    }
+
+    /// Stage 3 (Brent-Suyama): BSGS with polynomial extension F(x) = x^degree.
+    ///
+    /// Identical skeleton to `stage2()` but the baby/giant comparison goes
+    /// through `F(x) = x^degree` evaluated at the projective X-coordinates
+    /// (Z folded into the cross product). See
+    /// `include/gnfs/cofactor/ecm_brent_suyama.hpp` for the math.
+    ///
+    /// References:
+    ///   Brent, "Some integer factorization algorithms using elliptic curves"
+    ///   (1986), Australian Computer Science Communications, §4.2.
+    ///   Suyama, "Informal preliminary report (8)" (1985), unpublished
+    ///   manuscript on ECM Stage 2 polynomial extensions.
+    [[nodiscard]] static std::optional<Integer> stage2_brent_suyama(
+            const Point& Q0, const Integer& n, const Integer& a24,
+            uint64_t B1, uint64_t B2, uint32_t degree) {
+
+        assert(brent_suyama::is_supported_degree(degree)
+               && "stage2_brent_suyama: degree must be 1, 2, 6, 12, or 30");
+
+        constexpr uint64_t D = 2310;  // 2·3·5·7·11, φ(D)=480
+
+        // Small range -- BSGS overhead not worth it, fall back to naive.
+        // (Naive does not benefit from Brent-Suyama -- it does per-prime
+        // mont_mul and stage-1-style gcd, no baby-giant comparison.)
+        if (B2 - B1 < D * 3) {
+            return stage2_naive(Q0, n, a24, B1, B2);
+        }
+
+        // === Phase 1: Baby steps -- compute d*Q and F(d*Q) for d coprime to D ===
+        std::vector<brent_suyama::PolynomialPoint> baby;
+        baby.reserve(480);
+
+        Point Q_one = Q0;
+        Point km2 = Q0;
+        Point km1 = mont_double(Q0, a24, n);
+
+        // d=1: gcd(1, 2310) = 1; precompute (X^d mod n, Z^d mod n)
+        baby.emplace_back(Q0.x, Q0.z, degree, n);
+
+        for (uint64_t k = 3; k <= D; ++k) {
+            Point curr = mont_add(km1, Q_one, km2, n);
+            if (gcd_u64(k, D) == 1) {
+                baby.emplace_back(curr.x, curr.z, degree, n);
+            }
+            km2 = std::move(km1);
+            km1 = std::move(curr);
+        }
+        Point Q_D = std::move(km1);  // D*Q (used as the giant-step increment)
+
+        // === Phase 2: Giant steps ===
+        uint64_t j_lo = B1 / D;
+        if (j_lo == 0) j_lo = 1;  // Same fix as stage2(): avoid j_lo=0 garbage
+        uint64_t j_hi = (B2 + D - 1) / D;
+        if (j_lo > j_hi) return std::nullopt;
+
+        Point G_prev = mont_mul(Q0, j_lo * D, a24, n);
+        Point G_curr = (j_lo < j_hi)
+            ? mont_mul(Q0, (j_lo + 1) * D, a24, n)
+            : Point();
+
+        Integer accum(1);
+        uint64_t batch_start_j = j_lo;
+        uint64_t steps_in_batch = 0;
+        constexpr uint64_t BATCH_SIZE = 16;
+
+        // Hoisted scratch (matches stage2() v22 pattern). brent_suyama
+        // helper uses tmp1, tmp2 as cross product buffers; F_giant_x_pow,
+        // F_giant_z_pow are the per-giant polynomial point.
+        Integer tmp1, tmp2, F_giant_x_pow, F_giant_z_pow;
+
+        auto accumulate_step = [&](const Point& G) -> std::optional<Integer> {
+            // Compute F(G.x), F(G.z) once per giant (shared across all babies)
+            brent_suyama::evaluate_polynomial(F_giant_x_pow, G.x, degree, n);
+            brent_suyama::evaluate_polynomial(F_giant_z_pow, G.z, degree, n);
+
+            for (const auto& b : baby) {
+                bool coincide = brent_suyama::accumulate_cross_product(
+                        accum, b, F_giant_x_pow, F_giant_z_pow, n, tmp1, tmp2);
+                if (coincide) {
+                    // F(G) and F(b) coincide mod factor -- gcd(F_giant_z_pow, n)
+                    // or gcd(G.z, n) may extract it. F_giant_z_pow == G.z^degree
+                    // so gcd(F_giant_z_pow, n) = gcd(G.z, n)^? -- but in
+                    // practice we use gcd(G.z, n) directly (mirror stage2()).
+                    Integer g = gcd(G.z, n);
+                    if (!g.is_one() && g.compare(n) != 0) {
+                        return g;
+                    }
+                }
+            }
+            ++steps_in_batch;
+            return std::nullopt;
+        };
+
+        auto check_batch = [&](uint64_t j_current) -> std::optional<Integer> {
+            if (accum.is_one()) {
+                accum = int64_t(1);
+                batch_start_j = j_current + 1;
+                steps_in_batch = 0;
+                return std::nullopt;
+            }
+            Integer g = core::gcd(accum, n);
+            if (!g.is_one() && g.compare(n) != 0) return g;
+            if (g.compare(n) == 0) {
+                // gcd == n: fall back to naive on the suspect range
+                uint64_t lo = (batch_start_j > 0 ? batch_start_j - 1 : 0) * D;
+                if (lo < B1) lo = B1;
+                uint64_t hi = std::min((j_current + 1) * D, B2);
+                auto fb = stage2_naive(Q0, n, a24, lo, hi);
+                if (fb) return fb;
+            }
+            accum = int64_t(1);
+            batch_start_j = j_current + 1;
+            steps_in_batch = 0;
+            return std::nullopt;
+        };
+
+        if (auto f = accumulate_step(G_prev)) return f;
+
+        if (j_lo == j_hi) {
+            return check_batch(j_lo);
+        }
+
+        if (auto f = accumulate_step(G_curr)) return f;
+
+        for (uint64_t j = j_lo + 2; j <= j_hi; ++j) {
+            if (steps_in_batch >= BATCH_SIZE) {
+                auto r = check_batch(j - 1);
+                if (r) return r;
+            }
+
+            Point G_next = mont_add(G_curr, Q_D, G_prev, n);
+            G_prev = std::move(G_curr);
+            G_curr = std::move(G_next);
+
+            if (auto f = accumulate_step(G_curr)) return f;
+        }
+
+        return check_batch(j_hi);
+    }
+
+    /// Parse `GNFS_ECM_BRENT_SUYAMA` (1 = enable) and `GNFS_ECM_BS_DEGREE` ENVs.
+    ///
+    /// If `GNFS_ECM_BRENT_SUYAMA=1`, override `config.brent_suyama_degree`:
+    ///   - If `GNFS_ECM_BS_DEGREE` is set and in {1, 2, 6, 12, 30}, use that
+    ///   - Otherwise fall back to `brent_suyama::DEFAULT_DEGREE` (12)
+    ///
+    /// Any unset / invalid combination leaves `config.brent_suyama_degree`
+    /// untouched (caller-supplied or default 0 = OFF).
+    static void apply_brent_suyama_env(Config& config) {
+        const char* enable = std::getenv("GNFS_ECM_BRENT_SUYAMA");
+        if (enable == nullptr) return;
+        if (std::strcmp(enable, "1") != 0) return;
+
+        uint32_t deg = brent_suyama::DEFAULT_DEGREE;
+        const char* deg_env = std::getenv("GNFS_ECM_BS_DEGREE");
+        if (deg_env != nullptr) {
+            char* end = nullptr;
+            unsigned long parsed = std::strtoul(deg_env, &end, 10);
+            if (end != deg_env && parsed > 0 && parsed <= 30
+                && brent_suyama::is_supported_degree(static_cast<uint32_t>(parsed))) {
+                deg = static_cast<uint32_t>(parsed);
+            }
+        }
+        config.brent_suyama_degree = deg;
     }
 
     /// Stage 2 朴素实现: 逐素数 mont_mul (用于 BSGS 回退或小范围)
