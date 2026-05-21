@@ -9,6 +9,9 @@
 #include "../linalg/sparse_matrix.hpp"
 
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
 #include <map>
 #include <unordered_map>
 #include <vector>
@@ -135,10 +138,18 @@ public:
             return result;
         }
 
+        // ENV GNFS_FORCE_COUVEIGNES=1 — skip Hensel, exercise Couveignes-only
+        // path. Used by tests to validate Couveignes can carry the full
+        // algebraic-sqrt phase (covers the legacy "Hensel succeeds, Couveignes
+        // is dead code" gap). Production callers leave this unset.
+        const char* force_couveignes_env = std::getenv("GNFS_FORCE_COUVEIGNES");
+        const bool force_couveignes = (force_couveignes_env != nullptr) &&
+                                      (std::strcmp(force_couveignes_env, "1") == 0);
+
         // Try Hensel lifting first (most reliable for all sizes)
         // compute() returns the algebraic sqrt value mod N directly
         // (handles the O_K vs Z[α] index via the f'(α)² trick internally)
-        {
+        if (!force_couveignes) {
             HenselSqrt::Config hcfg;
             hcfg.verbose = (ab_pairs.size() >= 500);
             // Reuse cached inert prime across deps for the same polynomial
@@ -233,6 +244,27 @@ private:
         bool apply_correction = gcd_fpm.is_one();
 
         auto sqrt_opt = couveignes.compute(ab_pairs, nf, apply_correction);
+
+        // ENV GNFS_COUVEIGNES_VERBOSE=1 — emit one-line telemetry to stderr.
+        // No-op in production (env unset). Used by diagnostic test harness
+        // and developer triage of "Couveignes failed" cases.
+        const char* verbose_env = std::getenv("GNFS_COUVEIGNES_VERBOSE");
+        if (verbose_env != nullptr && std::strcmp(verbose_env, "1") == 0) {
+            const auto& m = couveignes.last_metrics();
+            std::cerr << "[Couveignes] primes_used=" << m.primes_used
+                      << " checked=" << m.primes_checked
+                      << " reducible=" << m.primes_skipped_reducible
+                      << " no_sqrt=" << m.primes_skipped_no_sqrt
+                      << " ramified=" << m.primes_skipped_ramified
+                      << " patterns=" << m.sign_patterns_tried
+                      << " char_rejects=" << m.character_filter_rejects
+                      << " full_verifies=" << m.full_verifications
+                      << " char_primes=" << m.character_primes_used
+                      << " found=" << (m.found_sqrt ? 1 : 0)
+                      << " apply_corr=" << (apply_correction ? 1 : 0)
+                      << "\n";
+        }
+
         if (!sqrt_opt) {
             result.error = "Couveignes algorithm failed";
             return result;
