@@ -228,7 +228,7 @@ MODULE_TESTS=(
     util           "test_small_vector test_thread_pool test_logger test_primes test_timer test_mmap_file test_safe_math test_bit_intrin"
     polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
     factor_base    "test_factor_base test_fb_checkpoint"
-    sieve          "test_special_q test_sieve_basic test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_sieve_tiny_simd"
+    sieve          "test_special_q test_sieve_basic test_distributed_sieve test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_sieve_tiny_simd"
     cofactor       "test_cofactor test_squfof test_batch_ecm test_3lp_cofactor test_trial_wheel test_integration test_ecm_brent_suyama"
     relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration"
     linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel"
@@ -355,6 +355,7 @@ TEST_TIMEOUT=(
     test_edge_cases          10
     test_integration         30
     test_sieve_basic         60
+    test_distributed_sieve   60
     test_kleinjung           180
     test_kleinjung_large     600
     test_factor_with_kleinjung 300
@@ -435,6 +436,7 @@ TEST_TIER=(
     test_edge_cases          "instant"
     test_integration         "fast"
     test_sieve_basic         "fast"
+    test_distributed_sieve   "fast"
     test_kleinjung           "slow"
     test_kleinjung_large     "heavy"
     test_factor_with_kleinjung "slow"
