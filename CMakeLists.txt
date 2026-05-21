@@ -754,6 +754,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SqrtDebug COMMAND test_sqrt_debug)
     set_tests_properties(SqrtDebug PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Nguyen hybrid Hensel lift parallel dispatch (GNFS_SQRT_HENSEL_THREADS)
+    add_executable(test_hensel_parallel
+        tests/test_hensel_parallel.cpp
+    )
+    target_link_libraries(test_hensel_parallel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME HenselParallel COMMAND test_hensel_parallel)
+    set_tests_properties(HenselParallel PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Improved Couveignes for large class groups (2026-05-21)
     add_executable(test_couveignes_large_class_group
         tests/test_couveignes_large_class_group.cpp
