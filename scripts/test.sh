@@ -208,6 +208,7 @@ ALL_TEST_BINARIES=(
     test_stress
     test_3lp_cofactor
     test_3lp_merge
+    test_matrix_view_concept
 )
 
 # 模块 → 测试二进制映射 (仅 instant+fast 的测试)
@@ -220,7 +221,7 @@ MODULE_TESTS=(
     sieve          "test_special_q test_sieve_basic test_bucket_sieve test_sieve_ecore_qos test_lll_lattice"
     cofactor       "test_cofactor test_squfof test_batch_ecm test_3lp_cofactor test_integration"
     relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration"
-    linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration"
+    linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration test_matrix_view_concept"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_class_group test_couveignes_large_class_group"
     api            "test_api test_i18n test_method_selection"
@@ -280,6 +281,7 @@ SMOKE_TESTS=(
     test_clique_merger_50d_synthetic
     test_3lp_cofactor
     test_3lp_merge
+    test_matrix_view_concept
 )
 
 # ── 每个测试的超时秒数 (基于实测) ──
@@ -350,6 +352,7 @@ TEST_TIMEOUT=(
     test_clique_merger_50d_synthetic 10
     test_3lp_cofactor        30
     test_3lp_merge           10
+    test_matrix_view_concept 10
 )
 
 # 测试速度分级 (用于 list 显示)
@@ -416,6 +419,7 @@ TEST_TIER=(
     test_clique_merger_50d_synthetic "instant"
     test_3lp_cofactor        "instant"
     test_3lp_merge           "instant"
+    test_matrix_view_concept "instant"
 )
 
 # 模块依赖图 (改了 A 模块 → 需要额外测试的下游模块)
