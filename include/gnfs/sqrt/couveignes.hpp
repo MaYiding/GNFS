@@ -467,11 +467,8 @@ public:
         // full O(d · log_2 N) Y² mod N verification.
         struct CharacterPrime {
             uint64_t q;
-            uint64_t r_q;            // Root of f mod q
-            int target_legendre;     // Expected Legendre(Y(r_q), q): +1 or -1
-            std::vector<uint64_t> mpow_mod_q;   // (m^j mod q)_{j<d} for Y(m)?
-            // NOTE: mpow_mod_q unused for character eval (we eval at r_q,
-            // not at m). Kept for potential future "Y(m) mod q" usage.
+            uint64_t r_q;            // Root of f mod q (degree-1 prime ideal above q)
+            uint64_t target_sq;      // Expected Y(r_q)² mod q
         };
         std::vector<CharacterPrime> char_primes;
         char_primes.reserve(config_.num_characters);
@@ -556,23 +553,15 @@ public:
                 int target_sq = legendre_symbol(S_r, q_cand);
                 if (target_sq != 1) continue;
 
-                // Store character prime. target_legendre is +1: we expect
-                // Y(r_q) to be a square root of S_r mod q, hence
-                // Legendre(Y(r_q), q) is well-defined and equals
-                // Legendre(some-fixed-root, q) ∈ {±1}. The CRT-recovered Y
-                // can be either +sqrt or -sqrt. We accept either: the
-                // character check is "is Y(r_q) a nonzero square mod q?"
-                // which translates to: Y(r_q)² ≡ S_r mod q.
-                //
-                // Implementation: we store target_value (S_r) directly and
-                // check (Y(r_q))² ≡ S_r mod q in the hot loop. This is
-                // strictly stronger than Legendre and catches the case
-                // where Y(r_q) is the wrong square root entirely (e.g.,
-                // Y is off by a 2-torsion class element).
+                // Store character prime: filter checks Y(r_q)² ≡ S_r mod q
+                // in the hot loop. This is strictly stronger than the
+                // Legendre symbol and catches candidates where Y is off by
+                // a 2-torsion class group element (the large class group
+                // failure mode).
                 CharacterPrime cp;
                 cp.q = q_cand;
                 cp.r_q = r_q;
-                cp.target_legendre = static_cast<int>(S_r);  // store target VALUE here
+                cp.target_sq = S_r;
                 char_primes.push_back(std::move(cp));
             }
         }
@@ -649,9 +638,9 @@ public:
                     Y_r = mul_mod_u64(Y_r, cp.r_q, cp.q);
                     Y_r = (Y_r + c_mod_q) % cp.q;
                 }
-                // Check (Y_r)² ≡ target_value mod q
+                // Check (Y_r)² ≡ target_sq mod q
                 uint64_t Y_r_sq = mul_mod_u64(Y_r, Y_r, cp.q);
-                if (Y_r_sq != static_cast<uint64_t>(cp.target_legendre)) {
+                if (Y_r_sq != cp.target_sq) {
                     return false;  // Reject candidate
                 }
             }
