@@ -468,6 +468,45 @@ unset GNFS_BW_KRYLOV_STREAMS          # 默认 K=1, 原行为
 scalar fallback path 仍在 K>1 时保持 (block 路径多 stream empty 后 fall back
 to scalar; thin path 无 fallback).
 
+### SIMD GF(2) SpMV inner kernels (GNFS_SPMV_SIMD)
+
+**ENV `GNFS_SPMV_SIMD=auto|0|1`** (2026-05-21 实施, default auto):
+Block Lanczos / Block Wiedemann SpMV 的 inner XOR-gather (forward) +
+XOR-scatter (transpose) tail 切到 NEON 2-lane (ARM64) 或 AVX2 4-lane
+(x86_64) wide XOR. GF(2) 加法 associative + commutative, SIMD 输出与
+scalar 路径 bit-for-bit 一致. 不依赖任何外部库, 纯 header.
+
+```bash
+GNFS_SPMV_SIMD=auto ./gnfs <N>    # 默认: NEON/AVX2 可用则启用, 否则 scalar
+GNFS_SPMV_SIMD=0    ./gnfs <N>    # 强制 scalar (回归 bisect 用)
+GNFS_SPMV_SIMD=1    ./gnfs <N>    # 强制 SIMD (无 SIMD 平台仍 fallback scalar)
+unset GNFS_SPMV_SIMD              # 同 auto
+```
+
+**ROI 与定位**:
+- 主要 ROI: 内核 retired uop 数 ÷2 (NEON) / ÷4 (AVX2) on tail iteration.
+  Prefetch phase (前 8 个 column) 保持 scalar — `__builtin_prefetch`
+  hint per-element 是 latency 隐藏的主要手段, SIMD 无关. Tail 部分越长
+  ROI 越显著, 50d/60d Phase 5 SpMV (row width >> 8) 受益最大.
+- 默认 auto 在 macOS arm64 / Linux x86_64 二者上都 enable; CI runner
+  也都覆盖 (Apple Silicon + GitHub-hosted x86_64 ubuntu-latest).
+- ENV=0 在 PMU sweep / sanitizer 调试时回到旧 baseline 用.
+
+**集成点** (commits `2fe4aee` → `b321e62`, 2026-05-21):
+- `include/gnfs/linalg/detail/spmv_simd.hpp` — `gather_xor_row` /
+  `scatter_xor_row` inner helpers + `is_simd_available` / `use_simd_runtime`
+  cached env reader + 独立测试 wrappers `spmv_forward_simd` /
+  `spmv_transpose_simd`
+- `include/gnfs/linalg/detail/spmv_kernels.hpp` — `spmv_forward` /
+  `spmv_transpose` tail 走 SIMD helper (prefetch phase 保持 scalar)
+- `tests/test_spmv_simd.cpp` — 13 个测试 (empty / 1x1 / random 100x100 /
+  random 10000x10000 / max density / single row 0..33 / single column /
+  transpose round-trip / env parsing / dispatcher integration /
+  repeated calls / batch boundaries / zero input). 三种 ENV 都验证
+
+**Default ON (auto)**: 对所有 SpMV 调用方透明启用. zero behavior change
+对 user (除内核 uop 数), bit-for-bit 输出一致.
+
 ### Murphy E alpha 并行 (GNFS_MURPHY_ALPHA_THREADS)
 
 **ENV `GNFS_MURPHY_ALPHA_THREADS=N`** (2026-05-18 实施, lightweight optimization):
@@ -1015,6 +1054,11 @@ tail -50 /tmp/xxx.log
 - NEON SIMD sieve baseline 已实施 (2026-05-18): `detail::apply_log_p_range`
   helper 在 Phase 0 global + v-prime row 用 NEON 8-lane. bucket scatter + tiny stride
   保持 scalar (doctrine "sieve 内核 NEON 收益有限" — gather/scatter 不适合 SIMD).
+- SIMD SpMV inner kernels 已实施 (2026-05-21, commits `2fe4aee` → `b321e62`):
+  ENV `GNFS_SPMV_SIMD=auto|0|1` (default auto). NEON 2-lane (ARM64) +
+  AVX2 4-lane (x86_64) 在 Block Lanczos / Block Wiedemann SpMV tail 走宽
+  XOR. Prefetch phase 保持 scalar (per-element prefetch hint 是 latency
+  隐藏主要手段). 输出 bit-for-bit 与 scalar 一致. 不依赖外部库, 纯 header.
 - Murphy E `compute_alpha` 已 ThreadPool 并行化 (2026-05-18):
   ENV `GNFS_MURPHY_ALPHA_THREADS=N` opt-out (默认 hardware concurrency).
   Rotation-incremental 算法重构 deferred (multi-day pure math).
