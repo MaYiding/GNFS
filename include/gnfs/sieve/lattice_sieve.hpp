@@ -5,6 +5,7 @@
 #include "../core/types.hpp"
 #include "../factor_base/factor_base.hpp"
 #include "../util/safe_math.hpp"
+#include "adaptive_lattice.hpp"
 #include "ecore_qos.hpp"
 #include "lattice_basis.hpp"
 #include "special_q.hpp"
@@ -217,10 +218,30 @@ public:
         progress_callback_ = std::move(callback);
     }
 
+    /// Inject an external AdaptiveBasisManager (defaults to a per-instance
+    /// internal one driven by ENV). Pass `nullptr` to fall back to the
+    /// instance default. Used by `sieve_parallel` so all worker copies share
+    /// telemetry through one manager.
+    void set_adaptive_manager(AdaptiveBasisManager* mgr) noexcept {
+        adaptive_external_ = mgr;
+    }
+
+    /// Read-only accessor to the manager that this sieve uses.
+    [[nodiscard]] const AdaptiveBasisManager& adaptive_manager() const noexcept {
+        return adaptive_external_ != nullptr ? *adaptive_external_
+                                             : adaptive_internal_;
+    }
+
     /// 对单个 special-q 进行筛法
     /// 使用 row-major bucket sieve：预计算所有 FB 素数的格参数，
     /// 然后逐行处理（每行在 L1 cache 中热驻留，所有素数贡献完成后才移到下一行）。
     /// 相比旧的 per-prime 遍历，L1 miss 从 O(FB_size × j_height) 降到 O(j_height)。
+    ///
+    /// Adaptive lattice (ENV `GNFS_ADAPTIVE_LATTICE=1`, default OFF):
+    /// after the first pass, if hit density (cells where accumulated log
+    /// exceeds threshold) is below the configured threshold and retry budget
+    /// remains, the basis is perturbed via a unimodular skew transform and
+    /// the region is re-sieved. Stats accumulate in adaptive_manager().
     [[nodiscard]] SieveResult sieve_special_q(const SpecialQ& sq) {
         SieveResult result;
         result.special_q = sq;
@@ -233,9 +254,79 @@ public:
             return result;  // empty candidates, special_q recorded
         }
 
-        // 1. 计算格基 (skewness-aware F-K 2005 风格 LLL when skewness != 1.0)
+        // 1. 计算初始格基 (skewness-aware F-K 2005 风格 LLL when skewness != 1.0)
         LatticeBasis basis = compute_lattice_basis_with_skewness(sq, ctx_.skewness());
 
+        // First pass: sieve with initial basis.
+        sieve_region_once_(basis, sq, result);
+
+        // Adaptive retry path: only entered when manager is enabled.
+        // When disabled, the next call returns nullopt instantly (single bool
+        // check) and the loop body is never executed.
+        AdaptiveBasisManager& mgr = (adaptive_external_ != nullptr)
+                                        ? *adaptive_external_
+                                        : adaptive_internal_;
+        if (mgr.config().enabled) {
+            mgr.mark_special_q_processed();
+            const uint64_t cells = static_cast<uint64_t>(region_.size());
+            uint64_t hits = static_cast<uint64_t>(result.candidates.size());
+            mgr.record_hit_stats(basis, hits, cells);
+
+            int retry = 0;
+            bool any_retry_adopted = false;
+            const double threshold = mgr.config().density_threshold;
+            while (true) {
+                auto opt = mgr.try_perturb_and_rereduce(basis, hits, cells, retry);
+                if (!opt.has_value()) break;
+
+                mgr.mark_retry_attempted();
+                basis = *opt;
+                SieveResult retry_result;
+                retry_result.special_q = sq;
+                sieve_region_once_(basis, sq, retry_result);
+
+                uint64_t new_hits = static_cast<uint64_t>(retry_result.candidates.size());
+                mgr.record_hit_stats(basis, new_hits, cells);
+
+                // No-regression guarantee: only adopt retry if it improves hits.
+                // "Rescue" = perturbation produced a strictly better basis.
+                if (new_hits > hits) {
+                    result = std::move(retry_result);
+                    hits = new_hits;
+                    any_retry_adopted = true;
+                }
+
+                if (static_cast<double>(hits) / static_cast<double>(cells) >= threshold) {
+                    break;
+                }
+                ++retry;
+            }
+            // Telemetry accounting:
+            //   rescue = retry result was adopted (hits strictly improved by
+            //            a perturbed basis).
+            //   skipped = density still below threshold even after retries.
+            // These are non-exclusive — a rescue can still leave density
+            // below threshold for hard SQs.
+            if (any_retry_adopted) {
+                mgr.mark_rescue_succeeded();
+            }
+            if (static_cast<double>(hits) / static_cast<double>(cells) < threshold) {
+                mgr.mark_low_density_skipped();
+            }
+        }
+
+        return result;
+    }
+
+private:
+    /// Internal helper: run a single sieve pass over `region_` with `basis`,
+    /// populate `result.candidates` and `result.sieved_positions`.
+    /// All five sieve sub-phases (init array, build primes, global hits,
+    /// row-major, bucket region, collect_candidates) live here.
+    /// Caller is responsible for adaptive bookkeeping and retry decisions.
+    void sieve_region_once_(const LatticeBasis& basis,
+                            const SpecialQ& sq,
+                            SieveResult& result) {
         // 2. 初始化筛数组（memset(0)，加法筛）
         init_sieve_array(basis);
 
@@ -283,9 +374,9 @@ public:
         // 5. 收集候选点
         result.candidates = collect_candidates(basis);
         result.sieved_positions = region_.size();
-
-        return result;
     }
+
+public:
 
     /// 并行处理多个 special-q
     /// @param special_qs 要处理的 special-q 列表
@@ -307,12 +398,20 @@ public:
         // SQ-level work-stealing — each SQ ~independent, faster cores grab more.
         const size_t ecore_count = resolve_ecore_thread_count(num_threads);
 
+        // Adaptive: share the host's manager across worker copies so telemetry
+        // aggregates. When the manager is OFF (default), worker copies see
+        // disabled state and skip all overhead.
+        AdaptiveBasisManager& shared_mgr = (adaptive_external_ != nullptr)
+                                               ? *adaptive_external_
+                                               : adaptive_internal_;
+
         // Worker function - each thread gets its own LatticeSieve copy
         // No mutex needed: each thread writes to a unique all_results[idx]
         auto worker = [&](gnfs::util::QoSClass qos) {
             gnfs::util::set_current_thread_qos(qos);
             LatticeSieve local_sieve(ctx_, fb_, params_);
             local_sieve.set_region(region_);
+            local_sieve.set_adaptive_manager(&shared_mgr);
 
             while (true) {
                 size_t idx = next_sq.fetch_add(1, std::memory_order_relaxed);
@@ -348,6 +447,13 @@ private:
 
     RelationCallback relation_callback_;
     ProgressCallback progress_callback_;
+
+    // Adaptive lattice manager. By default each instance gets its own internal
+    // manager driven by ENV at construction. `sieve_parallel` injects a shared
+    // external manager so all worker copies aggregate stats into one place.
+    // When manager.config().enabled is false (default), zero-overhead path.
+    AdaptiveBasisManager adaptive_internal_{};
+    AdaptiveBasisManager* adaptive_external_ = nullptr;
 
     /// 初始化筛数组（加法筛：零填充）
     /// 加法筛中数组从 0 开始，每个 FB 素数命中时 += log_p。
