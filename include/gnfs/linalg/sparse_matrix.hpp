@@ -477,9 +477,32 @@ public:
     [[nodiscard]] const std::vector<uint32_t>& col_indices() const noexcept { return col_indices_; }
     [[nodiscard]] const std::vector<size_t>& row_offsets() const noexcept { return row_offsets_; }
 
+    /// uint32 view of row_offsets, lazily materialised on first request.
+    /// Exists so the Metal SpMV layer can hand the CSR straight to the
+    /// GPU without an extra runtime conversion: Metal kernels work in
+    /// uint32 and `row_offsets_` is stored as size_t for legacy CPU
+    /// kernels. Throws on overflow; in practice GNFS-scale matrices keep
+    /// total nnz under 2^32 (60d ≈ 500M nnz at most). Returned pointer
+    /// stays valid for the lifetime of the CSRMatrix.
+    [[nodiscard]] const uint32_t* row_offsets_u32() const {
+        if (row_offsets_u32_.empty() && !row_offsets_.empty()) {
+            row_offsets_u32_.resize(row_offsets_.size());
+            for (size_t i = 0; i < row_offsets_.size(); ++i) {
+                if (row_offsets_[i] > UINT32_MAX) {
+                    row_offsets_u32_.clear();
+                    throw std::overflow_error(
+                        "CSRMatrix::row_offsets_u32: nnz exceeds 2^32");
+                }
+                row_offsets_u32_[i] = static_cast<uint32_t>(row_offsets_[i]);
+            }
+        }
+        return row_offsets_u32_.data();
+    }
+
 private:
     std::vector<uint32_t> col_indices_;   // All column indices, packed contiguously
     std::vector<size_t> row_offsets_;   // row_offsets_[i] = start of row i in col_indices_
+    mutable std::vector<uint32_t> row_offsets_u32_;  // Lazy uint32 view for Metal
     size_t num_rows_ = 0;
     size_t num_cols_ = 0;
 };

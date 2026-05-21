@@ -260,6 +260,24 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/linalg/block_wiedemann.cpp")
     target_sources(gnfs_core PRIVATE src/linalg/block_wiedemann.cpp)
 endif()
 
+# Metal SpMV (macOS only). On other platforms compile the stub which
+# returns false from is_available(), keeping the CPU fallback live.
+if(HAVE_METAL)
+    target_sources(gnfs_core PRIVATE src/linalg/metal_spmv.mm)
+    # ObjC++ source compiled with the same -fno-objc-arc default; we
+    # release-track manually inside the .mm to avoid imposing ARC on the
+    # whole static library.
+    set_source_files_properties(src/linalg/metal_spmv.mm
+        PROPERTIES COMPILE_FLAGS "-fno-objc-arc -Wno-unused-parameter")
+    target_link_libraries(gnfs_core PUBLIC
+        ${METAL_FRAMEWORK}
+        ${FOUNDATION_FRAMEWORK}
+    )
+    target_compile_definitions(gnfs_core PUBLIC GNFS_HAVE_METAL=1)
+else()
+    target_sources(gnfs_core PRIVATE src/linalg/metal_spmv_stub.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sqrt/rational_sqrt.cpp")
     target_sources(gnfs_core PRIVATE src/sqrt/rational_sqrt.cpp)
 endif()
@@ -891,6 +909,17 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_linalg_mmap_policy PRIVATE gnfs_core)
     add_test(NAME LinalgMmapPolicy COMMAND test_linalg_mmap_policy)
     set_tests_properties(LinalgMmapPolicy PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Metal SpMV (correctness) — runs on every platform. The test itself
+    # short-circuits the "Metal unavailable" path on non-Apple/Linux CI,
+    # so the binary stays green either way. Tagged "instant" so it joins
+    # the smoke set.
+    add_executable(test_metal_spmv
+        tests/test_metal_spmv.cpp
+    )
+    target_link_libraries(test_metal_spmv PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME MetalSpMV COMMAND test_metal_spmv)
+    set_tests_properties(MetalSpMV PROPERTIES LABELS "instant" TIMEOUT 30)
 
     # Out-of-core Relations 单元测试
     add_executable(test_ooc_relations

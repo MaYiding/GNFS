@@ -24,12 +24,14 @@
 
 #include "gnfs/linalg/matrix_view.hpp"
 #include "gnfs/linalg/block_lanczos.hpp"   // BlockVector
+#include "gnfs/linalg/metal_spmv.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <future>
+#include <type_traits>
 #include <vector>
 
 namespace gnfs::linalg::detail {
@@ -46,6 +48,22 @@ inline void spmv_forward(const M& matrix,
     // time, so the inner loop can skip per-element bounds checks.
     assert(x.length == matrix.num_cols());
     assert(y.length == matrix.num_rows());
+
+    // Metal SpMV opt-in branch (default off). Only enabled for in-memory
+    // CSRMatrix because (a) it is the common Phase 1 path and (b) the
+    // uint32 row_offsets view is exposed only on that type. Falls
+    // through to the CPU kernel on any failure so correctness never
+    // depends on the GPU path succeeding.
+    if constexpr (std::is_same_v<M, CSRMatrix>) {
+        if (metal::should_use(matrix.num_rows(), matrix.num_cols())) {
+            bool ok = metal::spmv_forward(
+                matrix.num_rows(), matrix.num_cols(),
+                matrix.row_offsets_u32(), matrix.col_indices().data(),
+                matrix.nnz(),
+                x.data.data(), y.data.data());
+            if (ok) return;
+        }
+    }
 
     pool.parallel_for_index(0, matrix.num_rows(), [&](std::size_t i) {
         std::uint64_t acc = 0;
@@ -90,6 +108,20 @@ inline void spmv_transpose(const M& matrix,
     const std::size_t n = y.length;
     assert(n == matrix.num_cols());
     assert(x.length == m);
+
+    // Metal SpMV opt-in branch (default off). Same guard rationale as
+    // spmv_forward: only CSRMatrix, only above threshold, only when
+    // GNFS_METAL_SPMV is set, transparent CPU fallback on failure.
+    if constexpr (std::is_same_v<M, CSRMatrix>) {
+        if (metal::should_use(matrix.num_rows(), matrix.num_cols())) {
+            bool ok = metal::spmv_transpose(
+                matrix.num_rows(), matrix.num_cols(),
+                matrix.row_offsets_u32(), matrix.col_indices().data(),
+                matrix.nnz(),
+                x.data.data(), y.data.data());
+            if (ok) return;
+        }
+    }
 
     const std::size_t T = pool.num_threads();
     const std::size_t chunk = (m + T - 1) / T;
