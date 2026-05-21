@@ -759,6 +759,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME BatchTrial COMMAND test_batch_trial)
     set_tests_properties(BatchTrial PROPERTIES LABELS "instant" TIMEOUT 20)
 
+    # ECM Montgomery curve warm-pool (T5 Stage 2) — pre-generated Suyama curves
+    add_executable(test_ecm_curve_pool
+        tests/test_ecm_curve_pool.cpp
+    )
+    target_link_libraries(test_ecm_curve_pool PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME EcmCurvePool COMMAND test_ecm_curve_pool)
+    set_tests_properties(EcmCurvePool PROPERTIES LABELS "instant" TIMEOUT 30)
+
     # 回归测试
     add_executable(test_regressions
         tests/test_regressions.cpp
