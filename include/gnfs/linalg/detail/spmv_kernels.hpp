@@ -25,6 +25,7 @@
 #include "gnfs/linalg/matrix_view.hpp"
 #include "gnfs/linalg/block_lanczos.hpp"   // BlockVector
 #include "gnfs/linalg/metal_spmv.hpp"
+#include "gnfs/linalg/detail/spmv_simd.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
 #include <cassert>
@@ -65,7 +66,11 @@ inline void spmv_forward(const M& matrix,
         }
     }
 
-    pool.parallel_for_index(0, matrix.num_rows(), [&](std::size_t i) {
+    // Cache the SIMD decision once per call (the helper itself caches the
+    // ENV read across calls, so this is a memory-load + branch only).
+    const bool simd_on = simd::use_simd_runtime();
+
+    pool.parallel_for_index(0, matrix.num_rows(), [&, simd_on](std::size_t i) {
         std::uint64_t acc = 0;
         const std::uint32_t* p_end  = matrix.row_end(i);
         const std::uint32_t* p_pref =
@@ -73,12 +78,23 @@ inline void spmv_forward(const M& matrix,
                 ? p_end - SPMV_PREFETCH_AHEAD
                 : matrix.row_begin(i);
         const std::uint32_t* p = matrix.row_begin(i);
+        // Prefetch phase stays scalar — the prefetch hint references one
+        // element ahead and the gather is naturally serialised by the
+        // hardware load queue. Mixing SIMD here would either drop the
+        // prefetch (correctness preserved, latency loss) or duplicate it.
         for (; p < p_pref; ++p) {
             __builtin_prefetch(&x.data[*(p + SPMV_PREFETCH_AHEAD)], 0, 0);
             acc ^= x.data[*p];
         }
-        for (; p < p_end; ++p)
-            acc ^= x.data[*p];
+        // Tail phase batches into the wide XOR helper when the SIMD path
+        // is enabled. The helper falls back to scalar on hosts without
+        // NEON or AVX2 so the dispatch decision degrades gracefully.
+        if (simd_on) {
+            acc ^= simd::gather_xor_row(p, p_end, x.data.data());
+        } else {
+            for (; p < p_end; ++p)
+                acc ^= x.data[*p];
+        }
         y.data[i] = acc;
     });
 }
@@ -141,12 +157,17 @@ inline void spmv_transpose(const M& matrix,
     futures.reserve(T);
     std::size_t T_used = 0;
 
+    // Read the SIMD decision once per call rather than per row — the helper
+    // already caches the env lookup, but the function-static load still
+    // costs a few cycles relative to a plain bool capture.
+    const bool simd_on = simd::use_simd_runtime();
+
     for (std::size_t t = 0; t < T; ++t) {
         const std::size_t start = t * chunk;
         const std::size_t end_row = std::min(start + chunk, m);
         if (start >= m) break;
         T_used = t + 1;
-        futures.push_back(pool.submit([&matrix, &x, scratch, t, start, end_row]() {
+        futures.push_back(pool.submit([&matrix, &x, scratch, t, start, end_row, simd_on]() {
             auto& local = scratch->locals[t];
             for (std::size_t i = start; i < end_row; ++i) {
                 const std::uint64_t xi = x.data[i];
@@ -157,12 +178,22 @@ inline void spmv_transpose(const M& matrix,
                         ? p_end - SPMV_PREFETCH_AHEAD
                         : matrix.row_begin(i);
                 const std::uint32_t* p = matrix.row_begin(i);
+                // Prefetch phase stays scalar so the L1 prefetcher
+                // continues to see one access at a time and the prefetch
+                // hint to `local[*(p+AHEAD)]` keeps its meaning.
                 for (; p < p_pref; ++p) {
                     __builtin_prefetch(&local[*(p + SPMV_PREFETCH_AHEAD)], 0, 0);
                     local[*p] ^= xi;
                 }
-                for (; p < p_end; ++p)
-                    local[*p] ^= xi;
+                // Batch the tail through the SIMD scatter helper when the
+                // SIMD path is enabled. The helper takes a raw pointer to
+                // the scratch buffer and unrolls the XOR-store sequence.
+                if (simd_on) {
+                    simd::scatter_xor_row(p, p_end, xi, local.data());
+                } else {
+                    for (; p < p_end; ++p)
+                        local[*p] ^= xi;
+                }
             }
         }));
     }
