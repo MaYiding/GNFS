@@ -891,6 +891,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME EcmCurvePool COMMAND test_ecm_curve_pool)
     set_tests_properties(EcmCurvePool PROPERTIES LABELS "instant" TIMEOUT 30)
 
+    # ECM Stage 2 multi-curve parallel dispatcher (GNFS_ECM_STAGE2_PARALLEL)
+    add_executable(test_ecm_stage2_parallel
+        tests/test_ecm_stage2_parallel.cpp
+    )
+    target_link_libraries(test_ecm_stage2_parallel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME EcmStage2Parallel COMMAND test_ecm_stage2_parallel)
+    set_tests_properties(EcmStage2Parallel PROPERTIES LABELS "fast" TIMEOUT 60)
+
     # Cofactor batch micro-benchmark (T5 Stage 4) — invoke manually
     # ./build/test_cofactor_batch_bench [count] [seed]
     add_executable(test_cofactor_batch_bench
