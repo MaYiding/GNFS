@@ -491,6 +491,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME LLLLattice COMMAND test_lll_lattice)
     set_tests_properties(LLLLattice PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_adaptive_lattice
+        tests/test_adaptive_lattice.cpp
+    )
+    target_link_libraries(test_adaptive_lattice PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME AdaptiveLattice COMMAND test_adaptive_lattice)
+    set_tests_properties(AdaptiveLattice PROPERTIES LABELS "instant" TIMEOUT 30)
+
     add_executable(test_relation_collector
         tests/test_relation_collector.cpp
     )

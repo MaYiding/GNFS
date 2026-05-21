@@ -176,6 +176,7 @@ ALL_TEST_BINARIES=(
     test_special_q
     test_lattice_sieve
     test_lll_lattice
+    test_adaptive_lattice
     test_sieve_basic
     test_relation_collector
     test_cofactor
@@ -232,7 +233,7 @@ MODULE_TESTS=(
     util           "test_small_vector test_thread_pool test_logger test_primes test_timer test_mmap_file test_safe_math test_bit_intrin"
     polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
     factor_base    "test_factor_base test_fb_checkpoint"
-    sieve          "test_special_q test_sieve_basic test_distributed_sieve test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_sieve_tiny_simd"
+    sieve          "test_special_q test_sieve_basic test_distributed_sieve test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd"
     cofactor       "test_cofactor test_squfof test_batch_ecm test_3lp_cofactor test_trial_wheel test_batch_trial test_ecm_curve_pool test_integration test_ecm_brent_suyama"
     relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration"
     linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_bl_checkpoint test_bl_resume_integration"
@@ -272,6 +273,7 @@ SMOKE_TESTS=(
     test_v0_bfs_policy
     test_sieve_ecore_qos
     test_lll_lattice
+    test_adaptive_lattice
     test_bw_rank_est
     test_matrix_diagnostics
     test_sge_streaming
@@ -337,6 +339,7 @@ TEST_TIMEOUT=(
     test_v0_bfs_policy       10
     test_sieve_ecore_qos     10
     test_lll_lattice         10
+    test_adaptive_lattice    30
     test_bw_rank_est         10
     test_matrix_diagnostics  10
     test_sge_streaming       30
@@ -423,6 +426,7 @@ TEST_TIER=(
     test_v0_bfs_policy       "instant"
     test_sieve_ecore_qos     "instant"
     test_lll_lattice         "instant"
+    test_adaptive_lattice    "instant"
     test_bw_rank_est         "instant"
     test_matrix_diagnostics  "instant"
     test_sge_streaming       "instant"
