@@ -1065,6 +1065,19 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME LinalgSpmvSimd COMMAND test_spmv_simd)
     set_tests_properties(LinalgSpmvSimd PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Cache-blocked GF(2) matrix transpose helper (correctness).
+    # Exercises the naive scalar reference path, the 64x64 tile-blocked
+    # path, and the ENV-gated dispatcher across a battery of edge sizes
+    # (empty, 1x1, 7x3, 63x127, 64x64, 128x64, 1000x1000, 500x800) plus
+    # double-transpose round-trip identity. Header-only helper, no extra
+    # link dependencies beyond the core library.
+    add_executable(test_transpose_blocked
+        tests/test_transpose_blocked.cpp
+    )
+    target_link_libraries(test_transpose_blocked PRIVATE gnfs_core)
+    add_test(NAME LinalgTransposeBlocked COMMAND test_transpose_blocked)
+    set_tests_properties(LinalgTransposeBlocked PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Out-of-core Relations 单元测试
     add_executable(test_ooc_relations
         tests/test_ooc_relations.cpp
