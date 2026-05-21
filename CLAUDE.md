@@ -429,6 +429,45 @@ GNFS_BW_KRYLOV_MMAP=1 ./gnfs <N>   # 50d+/60d 大矩阵 Phase 5 启用
 
 **Default OFF**: vector path 完整保留, 零回归风险. 仅 50d+ Phase 5 RAM pressure 时启用.
 
+### BW Krylov multi-stream parallel (GNFS_BW_KRYLOV_STREAMS)
+
+**ENV `GNFS_BW_KRYLOV_STREAMS=K`** (2026-05-21 实施, range [1, 16], default 1):
+BW Phase 1+2+3 跑 K 个独立 worker (各自独立 seed + 独立小 ThreadPool, 每个
+`hardware_concurrency/K` 线程). 默认 K=1 保持原 sequential 3-seed retry 行为
+bit-for-bit. K>1 时 base seed 每个 retry round 派 K 个 stream 并发, 结果
+按 content 去重合并到 max_deps.
+
+```bash
+GNFS_BW_KRYLOV_STREAMS=2 ./gnfs <N>   # 2 streams concurrent
+GNFS_BW_KRYLOV_STREAMS=4 ./gnfs <N>   # 4 streams concurrent
+unset GNFS_BW_KRYLOV_STREAMS          # 默认 K=1, 原行为
+```
+
+**ROI 与定位**:
+- 主要 ROI: retry latency 减少. K=1 单 seed 失败 → 串行 retry 第 2/3 seed
+  (1×T → 2-3×T). K=4 并发 → 4 个 seed 同时 → 1×T 即给 deps. 50d/60d 大矩阵 +
+  rank-deficient corner case 时显著.
+- 次要: wall-time. Phase 2 (BM) inherently 单线程, 占 BW 总时间 ~70%. 多 stream
+  不加速 single solve. K=2 ≈ K=1; K=4 ~10% 慢 (pool overhead). 实测 5550×5000:
+  K=1=613ms, K=2=629ms, K=4=688ms (single-seed succeeds case).
+- Mmap 路径文件名含 stream_tag (`gnfs_bw_krylov_<pid>_s<N>_<seed>.kry`) 避免
+  并发 stream 之间路径冲突.
+
+**集成点** (commits `0857b7d` → `c5416ce`, 2026-05-21):
+- `src/linalg/block_wiedemann.cpp` — `bw_num_streams()` ENV parser +
+  `find_dependencies_view_impl` multi-stream dispatcher
+- `src/linalg/block_wiedemann.cpp` — `block_solve_view_impl` / `thin_solve_view_impl`
+  添加 `pool_threads, stream_tag` 参数 (default 0, 0 = 兼容原行为)
+- `include/gnfs/linalg/detail/spmv_kernels.hpp` — `spmv_transpose` scratch
+  改 `thread_local` (race fix, commit `2d9d2f0`). 多 stream concurrent SpMV
+  原本 race static scratch → 产生 garbage Krylov → 0 valid deps.
+- `tests/test_bw_krylov_parallel.cpp` — 6 unit tests (K=1/2/4 + clamping +
+  speedup measurement informational)
+
+**Default OFF (K=1)**: 单 stream path 完整保留, 零回归. SparseMatrix 的
+scalar fallback path 仍在 K>1 时保持 (block 路径多 stream empty 后 fall back
+to scalar; thin path 无 fallback).
+
 ### Murphy E alpha 并行 (GNFS_MURPHY_ALPHA_THREADS)
 
 **ENV `GNFS_MURPHY_ALPHA_THREADS=N`** (2026-05-18 实施, lightweight optimization):
@@ -969,6 +1008,9 @@ tail -50 /tmp/xxx.log
   + RelationCollector OOC: ENV `GNFS_OOC_RELATIONS=1` / sieve checkpoint
     `GNFS_SIEVE_RESUME=<base_path>` (2026-05-18)
   + BW Krylov mmap: ENV `GNFS_BW_KRYLOV_MMAP=1` (2026-05-18)
+  + BW Krylov multi-stream: ENV `GNFS_BW_KRYLOV_STREAMS=K` (2026-05-21,
+    K range [1,16], default 1). 主 ROI 是 retry latency 减少, wall-time 因
+    Phase 2 BM 单线程 dominant 而 K>1 与 K=1 相当.
   + MmapCSRMatrix Phase 5 集成尚未实施 (需 SpMV API generic 化, multi-day surgery)
 - NEON SIMD sieve baseline 已实施 (2026-05-18): `detail::apply_log_p_range`
   helper 在 Phase 0 global + v-prime row 用 NEON 8-lane. bucket scatter + tiny stride
