@@ -168,9 +168,12 @@ public:
             return;
         }
 
-        // Insert new entry; FIFO-evict if over capacity.
+        // Insert new entry; FIFO-evict if over capacity. Copy the
+        // front key by value before erasing from the map and popping
+        // the deque, so even if a future libstdc++ implementation
+        // invalidates front() across pop, the lookup key remains valid.
         while (map_.size() >= capacity_ && !insertion_order_.empty()) {
-            const auto& oldest = insertion_order_.front();
+            const RootCacheKey oldest = insertion_order_.front();
             map_.erase(oldest);
             insertion_order_.pop_front();
         }
