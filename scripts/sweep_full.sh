@@ -228,7 +228,6 @@ run_with_timeout() {
     RUN_ELAPSED_MS=0
     RUN_STATUS="UNKNOWN"
 
-    # zsh-native timeout: launch as subshell with kill-after-timeout watchdog
     local start_ns end_ns
     if (( ${+commands[gdate]} )); then
         start_ns=$(gdate +%s%N)
@@ -236,7 +235,6 @@ run_with_timeout() {
         start_ns=$(($(date +%s) * 1000000000))
     fi
 
-    # Compose the full command line as a single string we can both echo and run.
     local full_cmd
     if [[ -n "$env_assignments" ]]; then
         full_cmd="env $env_assignments $cmd"
@@ -244,36 +242,45 @@ run_with_timeout() {
         full_cmd="$cmd"
     fi
 
-    # Spawn the run in the background and arm a watchdog that kills it.
-    {
+    # File-flag based timeout: spawn run in background subshell that writes
+    # EXIT_CODE and touches .done on completion. Poll the .done flag with a
+    # 1 s sleep loop; kill on timeout. set +e inside the subshell so a
+    # tested binary's non-zero exit does not kill the reaper before it
+    # records the exit code.
+    rm -f "${log_file}.done"
+    (
+        set +e
         eval "$full_cmd" > "$log_file" 2>&1
-        echo "EXIT_CODE=$?" >> "$log_file"
-    } &
+        local ec=$?
+        echo "EXIT_CODE=$ec" >> "$log_file"
+        touch "${log_file}.done"
+    ) &
     local run_pid=$!
 
-    # Watchdog
-    (
-        local elapsed=0
-        while (( elapsed < timeout_sec )); do
-            sleep 1
-            elapsed=$(( elapsed + 1 ))
-            if ! kill -0 "$run_pid" 2>/dev/null; then
-                exit 0
-            fi
-        done
-        # Hit timeout
-        kill -TERM "$run_pid" 2>/dev/null
-        sleep 2
-        kill -KILL "$run_pid" 2>/dev/null
-        echo "WATCHDOG_TIMEOUT=1" >> "$log_file"
-    ) &
-    local watchdog_pid=$!
+    local elapsed=0
+    while (( elapsed < timeout_sec )); do
+        if [[ -f "${log_file}.done" ]]; then
+            break
+        fi
+        sleep 1
+        elapsed=$(( elapsed + 1 ))
+    done
 
-    wait "$run_pid" 2>/dev/null
-    local actual_exit=$?
-    # Cancel watchdog if still alive
-    kill "$watchdog_pid" 2>/dev/null
-    wait "$watchdog_pid" 2>/dev/null
+    if [[ ! -f "${log_file}.done" ]]; then
+        kill -TERM "$run_pid" 2>/dev/null || true
+        # Grace period for cooperative exit.
+        local k=0
+        while (( k < 2 )); do
+            sleep 1
+            k=$(( k + 1 ))
+            [[ -f "${log_file}.done" ]] && break
+        done
+        if [[ ! -f "${log_file}.done" ]]; then
+            kill -KILL "$run_pid" 2>/dev/null || true
+            sleep 1
+            [[ ! -f "${log_file}.done" ]] && echo "WATCHDOG_TIMEOUT=1" >> "$log_file"
+        fi
+    fi
 
     if (( ${+commands[gdate]} )); then
         end_ns=$(gdate +%s%N)
@@ -282,9 +289,21 @@ run_with_timeout() {
     fi
     RUN_ELAPSED_MS=$(( (end_ns - start_ns) / 1000000 ))
 
-    if grep -q "WATCHDOG_TIMEOUT=1" "$log_file" 2>/dev/null; then
+    local actual_exit=1
+    if grep -q "^EXIT_CODE=" "$log_file" 2>/dev/null; then
+        local ec_line
+        ec_line=$(grep "^EXIT_CODE=" "$log_file" | tail -1)
+        actual_exit="${ec_line#EXIT_CODE=}"
+    fi
+
+    rm -f "${log_file}.done"
+    # Reap the background subshell to avoid zombie; ignore errors from
+    # already-dead pids.
+    wait "$run_pid" 2>/dev/null || true
+
+    if grep -q "^WATCHDOG_TIMEOUT=1" "$log_file" 2>/dev/null; then
         RUN_STATUS="TIMEOUT"
-    elif (( actual_exit == 0 )); then
+    elif [[ "$actual_exit" == "0" ]]; then
         RUN_STATUS="PASS"
     else
         RUN_STATUS="FAIL"
