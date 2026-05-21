@@ -737,22 +737,24 @@ private:
                     }
                 }
 
-                // Tiny primes: stride within clamped range
+                // Tiny primes: stride within clamped range.
+                // Loop fusion: v-prime broadcast above + tiny stride here run
+                // back-to-back per row → sieve_array_ row stays L1-hot across
+                // both passes. Stride writes go through detail::apply_log_p_stride
+                // (4x unrolled, env-gated by GNFS_SIEVE_NO_TINY_SIMD).
                 for (auto& tp : tiny_copy) {
                     int32_t off = static_cast<int32_t>(tp.i_mod) - static_cast<int32_t>(tp.i_min_mod);
                     if (off < 0) off += static_cast<int32_t>(tp.p);
 
+                    const size_t stride = static_cast<size_t>(tp.p);
                     size_t idx = row_base + static_cast<size_t>(off);
-                    // Skip to eff_start if needed
+                    // Skip to eff_start if needed.
                     if (idx < eff_start) {
-                        size_t stride = static_cast<size_t>(tp.p);
                         size_t skip = (eff_start - idx + stride - 1) / stride;
                         idx += skip * stride;
                     }
-                    size_t stride = static_cast<size_t>(tp.p);
-                    for (; idx < eff_end; idx += stride) {
-                        sieve_array_[idx] += tp.log_p;
-                    }
+                    detail::apply_log_p_stride(
+                        sieve_array_.data(), idx, eff_end, stride, tp.log_p);
 
                     int32_t new_mod = static_cast<int32_t>(tp.i_mod) + static_cast<int32_t>(tp.delta);
                     int32_t p32 = static_cast<int32_t>(tp.p);
@@ -1063,26 +1065,30 @@ private:
             size_t row_base = static_cast<size_t>(j - region_.j_min) * w;
             size_t row_end = row_base + w;
 
-            // ── v-primes: 整行命中 (稀少，通常 0-2 个) ──
+            // ── v-primes: whole-row broadcast (rare, 0-2 typical) ──
+            // Route through NEON 8-lane helper; mirrors bucket-region apply
+            // path so both code paths use the same vectorized broadcast.
             for (const auto& vp : v_primes) {
                 if ((j % static_cast<int32_t>(vp.p)) == 0) {
-                    uint16_t lp = vp.log_p;
-                    for (size_t idx = row_base; idx < row_end; ++idx)
-                        sieve_array_[idx] += lp;
+                    detail::apply_log_p_range(
+                        sieve_array_.data() + row_base,
+                        row_end - row_base,
+                        vp.log_p);
                 }
             }
 
-            // ── 小素数: stride loop (紧凑数组, 无 flag 检查) ──
+            // ── Small primes: stride loop via 4x-unrolled helper ──
+            // Loop fusion: v-prime broadcast + small-prime stride share the
+            // freshly-touched row cache line; this avoids a second pass over
+            // sieve_array_ for the row.
             for (auto& sp : small_primes) {
                 int32_t offset = static_cast<int32_t>(sp.i_mod) - static_cast<int32_t>(sp.i_min_mod);
                 if (offset < 0) offset += static_cast<int32_t>(sp.p);
 
-                size_t idx = row_base + static_cast<size_t>(offset);
-                uint16_t lp = sp.log_p;
-                size_t stride = static_cast<size_t>(sp.p);
-                for (; idx < row_end; idx += stride) {
-                    sieve_array_[idx] += lp;
-                }
+                const size_t idx = row_base + static_cast<size_t>(offset);
+                const size_t stride = static_cast<size_t>(sp.p);
+                detail::apply_log_p_stride(
+                    sieve_array_.data(), idx, row_end, stride, sp.log_p);
 
                 // Advance carry-forward
                 int32_t new_mod = static_cast<int32_t>(sp.i_mod) + static_cast<int32_t>(sp.delta);
