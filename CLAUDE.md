@@ -591,6 +591,59 @@ ECM Stage 1+2
 零开销, 零行为变化. classify_cofactor 现有调用者无需更新即保持原 behavior. 仅在
 Pipeline / sieve loop wire-in `smoothness_bound = params.smoothness_bound_B` 时启用.
 
+### Sieve bucket prefetch (GNFS_BUCKET_PREFETCH)
+
+**ENV `GNFS_BUCKET_PREFETCH=auto|0|1`** (2026-05-21 实施, default auto):
+Lattice sieve bucket scatter / gather 热路径插入 `__builtin_prefetch` hint,
+look-ahead 距离 `kBucketPrefetchDistance=8` iterations. Scatter phase
+write-intent prefetch 目标 region vector metadata; gather phase
+read-intent prefetch 目标 `sieve_array_` 累加位置. Prefetch 是 hint —
+sieve_array_ 内容和 candidate list 与 ENV 状态无关, bit-for-bit 一致.
+
+```bash
+GNFS_BUCKET_PREFETCH=auto ./gnfs <N>   # 默认: __builtin_prefetch 可用则启用
+GNFS_BUCKET_PREFETCH=0    ./gnfs <N>   # 强制 scalar (回归 bisect 用)
+GNFS_BUCKET_PREFETCH=1    ./gnfs <N>   # 强制 prefetch (无 builtin 平台 fallback)
+unset GNFS_BUCKET_PREFETCH             # 同 auto
+```
+
+**Helper API** (`include/gnfs/sieve/bucket_prefetch.hpp`):
+- `prefetch_bucket_write(ptr)` — `__builtin_prefetch(ptr, 1, 1)`, write hint
+  T1 locality, 用于 scatter phase 的 region vector metadata.
+- `prefetch_bucket_read(ptr)` — `__builtin_prefetch(ptr, 0, 1)`, read hint
+  T1 locality, 用于 gather phase 的 `sieve_array_` 累加位置.
+- `bucket_prefetch_enabled()` — cached `std::once_flag` + `std::atomic<bool>`,
+  内循环 branch on stack-local 副本避免每次重读 atomic.
+- `bucket_prefetch_supported()` — compile-time `__GNUC__/__clang__` 探测.
+- `reload_bucket_prefetch_gate()` — 测试专用 re-resolve ENV.
+- `kBucketPrefetchDistance = 8` — look-ahead 距离 (实测 M-series cores 优).
+
+**ROI 与定位**:
+- 主要 ROI: scatter / gather 的目标地址跨 bucket region 边界跳跃, hardware
+  prefetcher 无法预测 — software prefetch 把 L2/L3 miss 提前 8 个 iteration
+  发起, 让 fill 与当前 iteration 的 arithmetic 重叠.
+- 50d/60d Phase 3 sieve 受益最大: large factor base → bucket region 路径
+  主导, scatter pattern 跨多个 16K-region 跳跃 cache miss 严重.
+- 40-bit fixture 实测 single SQ wall-time: prefetch_off=1429ms, prefetch_on=
+  1415ms (~1% 改进, large-N 应更显著). 不是 SIMD-style 显著加速, 但 cache
+  miss reduction 对长时间 sieve 累积效应大.
+
+**集成点** (commits `a7f944c` → `c827cce`, 2026-05-21):
+- `include/gnfs/sieve/bucket_prefetch.hpp` — helper API + ENV gate.
+- `include/gnfs/sieve/lattice_sieve.hpp` — 三个 prefetch site:
+  `sieve_bucket_region` scatter (region vector write hint),
+  `sieve_bucket_region` apply (sieve_array_ read hint), 和
+  `sieve_row_chunk` 大素数 bucket apply (sieve_array_ read hint). 每个
+  site 把 `bucket_prefetch_enabled()` 提到 chunk/scatter 入口外部, 内循环
+  branch on stack-local boolean.
+- `tests/test_bucket_prefetch.cpp` — 7 个测试: 40-bit bucket region parity /
+  40-bit row-major parity / multi-SQ parity / 27-bit small N parity /
+  ENV `0` disable / ENV `1`/`auto`/unset enable / perf info (no assert).
+  parity 比较通过 sorted `(a, b, i, j, residual)` tuple 严格匹配.
+
+**Default ON (auto)**: 对所有 sieve 调用方透明启用 prefetch hint, 编译器
+不支持 `__builtin_prefetch` 时自动退到 no-op. sieve output 不变.
+
 ### Murphy E alpha 并行 (GNFS_MURPHY_ALPHA_THREADS)
 
 **ENV `GNFS_MURPHY_ALPHA_THREADS=N`** (2026-05-18 实施, lightweight optimization):
