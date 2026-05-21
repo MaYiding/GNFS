@@ -13,7 +13,9 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <functional>
+#include <iostream>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -233,6 +235,25 @@ public:
             result = std::move(best_result.value());
             result.candidates_tested = progress_count.load(std::memory_order_relaxed);
             result.elapsed_seconds = elapsed;
+        }
+
+        // Diagnostic: report root-property cache hit rate when active.
+        // The cache is opt-in via GNFS_POLY_ROOT_CACHE_SIZE; when disabled
+        // (capacity==0) the counters stay at zero and nothing is printed.
+        const auto& cache_ref = evaluator.root_cache();
+        if (cache_ref.enabled()) {
+            const size_t hits = cache_ref.hit_count();
+            const size_t misses = cache_ref.miss_count();
+            const size_t total = hits + misses;
+            const double rate_pct = (total > 0)
+                ? 100.0 * static_cast<double>(hits) / static_cast<double>(total)
+                : 0.0;
+            std::cerr << "[poly_root_cache] hits=" << hits
+                      << " misses=" << misses
+                      << " hit_rate=" << rate_pct << "%"
+                      << " size=" << cache_ref.size()
+                      << "/" << cache_ref.capacity()
+                      << std::endl;
         }
 
         return result;
