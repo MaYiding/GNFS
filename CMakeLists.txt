@@ -451,6 +451,15 @@ if(GNFS_BUILD_TESTS)
     # Marked as fast (60s budget) to accommodate Debug+sanitizers.
     set_tests_properties(BatchECM PROPERTIES LABELS "fast" TIMEOUT 60)
 
+    # Micro-benchmark: not run by default test suites (label "bench")
+    # Invoke manually:  ./build-release/test_batch_ecm_bench [count] [seed]
+    add_executable(test_batch_ecm_bench
+        tests/test_batch_ecm_bench.cpp
+    )
+    target_link_libraries(test_batch_ecm_bench PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BatchECMBench COMMAND test_batch_ecm_bench 500)
+    set_tests_properties(BatchECMBench PROPERTIES LABELS "bench" TIMEOUT 300)
+
     add_executable(test_linalg
         tests/test_linalg.cpp
     )
