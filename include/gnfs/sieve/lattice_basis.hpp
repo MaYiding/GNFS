@@ -17,9 +17,15 @@ using core::Integer;
 /// Gauss: 经典 Gaussian (Lagrange) reduction (legacy default).
 /// LLL: Franke-Kleinjung 2005 风格 2D LLL — 严格 size-reduced + Lovász δ=1
 ///      enforcement, 单遍 Lagrange-Gauss + 双向 reduce. 在 2D 中等价 LLL optimal.
+/// SkewLLL: F-K 2005 + skewness 加权 quadratic form (CADO-NFS skew_gauss style).
+///      用 |v|²_skew = a² + s²·b² (s = polynomial skewness) 做 reduce target,
+///      产出的 basis 在 (i, j) → (a, b) 映射后, sieve region 中 a/b 分布
+///      更均匀, 对 skewness ≠ 1 的 polynomial 显著改善 sieve quality.
+///      Skewness=1.0 时退化为 LLL.
 enum class LatticeReductionMethod {
     Gauss,
     LLL,
+    SkewLLL,
 };
 
 /// LatticeBasis - 格基
@@ -204,13 +210,104 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b,
     // 后置 invariant: v1 = shorter, v0 = longer (与 Gauss 路径一致).
 }
 
+/// Skew-aware quadratic form q(v) = a² + s²·b² where s = polynomial skewness.
+///
+/// 实现策略 (避免 __int128_t 溢出, 同时保持精度):
+/// 用 double 算 skew norm² + skew dot product, 用 std::round() 取整 mu.
+/// basis vectors 本身仍是 int64_t, 只有 reduction direction 由 skew quad form 决定.
+///
+/// 精度分析:
+///   a, b 范围 |a|, |b| ≤ q (initial), 经 LLL 后通常 |a|, |b| ≤ √(s·q) (典型).
+///   a² ≤ q² ~ 2^64, s²·b² 同 order. double mantissa 53 bits — 对 q ≤ 2^25
+///   (~3e7, 60d range) 精度严格. 对 q ~ 2^30 (上界), 累积误差 ≤ 几 ULP,
+///   不影响 round-half tie 决策 (LLL 容忍 small mu round error, only 影响
+///   convergence 速度, 不影响 final basis validity — 因 size-reduced + Lovász
+///   都用 double 比较自一致).
+///
+/// 后备: 若 s = 1.0, 直接 dispatch 到 unskewed lb_reduce_lll_fk2005 (bit-exact).
+
+/// double-precision skew norm² (overflow-safe for q ≤ 2^30 typical).
+[[nodiscard]] inline double lb_skew_norm_sq_d(int64_t a, int64_t b, double s2) noexcept {
+    double da = static_cast<double>(a);
+    double db = static_cast<double>(b);
+    return da * da + s2 * db * db;
+}
+
+/// double-precision skew dot product.
+[[nodiscard]] inline double lb_skew_dot_d(
+        int64_t a0, int64_t b0, int64_t a1, int64_t b1, double s2) noexcept {
+    double da0 = static_cast<double>(a0), db0 = static_cast<double>(b0);
+    double da1 = static_cast<double>(a1), db1 = static_cast<double>(b1);
+    return da0 * da1 + s2 * db0 * db1;
+}
+
+/// Skew-aware LLL (F-K 2005 + CADO-NFS skew_gauss style).
+/// 算法与 lb_reduce_lll_fk2005 相同, 但 norm² 和 dot 用 skew-quadratic form q(v) = a² + s²·b².
+///
+/// 关键 reduction: mu = round(<v0,v1>_skew / |v0|²_skew). 选 mu 后
+///   v1 ← v1 - mu·v0 (basis vector 仍是整数 update)
+///
+/// 数学不变量保持: det(basis) = ±q 严格 (因 basis update 是 integer 线性变换),
+/// verify_ab() 严格 (因 a-b·r ≡ 0 mod q 在 integer 线性变换下保持).
+/// "size-reduced" 和 "Lovász" 在 skew quad form 下成立 (double 误差不影响有效性).
+///
+/// Skewness=1.0 时输出可能与 unskewed LLL 不 bit-identical (因 double rounding),
+/// 但 caller 应直接 dispatch 到 unskewed path 在 s=1.0 case.
+inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b,
+                                 int64_t& v1_a, int64_t& v1_b,
+                                 double skewness) {
+    constexpr int MAX_LLL_ITERS = 128;
+    const double s2 = skewness * skewness;
+
+    // 保证初始 v0 = skew-shorter
+    if (lb_skew_norm_sq_d(v0_a, v0_b, s2) > lb_skew_norm_sq_d(v1_a, v1_b, s2)) {
+        std::swap(v0_a, v1_a);
+        std::swap(v0_b, v1_b);
+    }
+
+    int iters = 0;
+    while (iters < MAX_LLL_ITERS) {
+        ++iters;
+
+        double n0 = lb_skew_norm_sq_d(v0_a, v0_b, s2);
+        if (n0 == 0.0) break;  // degenerate
+
+        double dot = lb_skew_dot_d(v0_a, v0_b, v1_a, v1_b, s2);
+        double mu_d = std::round(dot / n0);
+        // mu 范围 saturation: |mu| ≤ max(|v0|, |v1|) ≤ 2^32. 64-bit int 安全.
+        // 极端 case (sieve 中实际见不到) 用 clamp 防 cast UB.
+        if (mu_d > 1e18) mu_d = 1e18;
+        if (mu_d < -1e18) mu_d = -1e18;
+        int64_t mu = static_cast<int64_t>(mu_d);
+        if (mu != 0) {
+            v1_a -= mu * v0_a;
+            v1_b -= mu * v0_b;
+        }
+
+        // Lovász (skew): |v1|²_skew ≥ |v0|²_skew?
+        double n1 = lb_skew_norm_sq_d(v1_a, v1_b, s2);
+        if (n1 >= n0) {
+            break;
+        }
+        std::swap(v0_a, v1_a);
+        std::swap(v0_b, v1_b);
+    }
+
+    // 后置 swap: v1 = skew-shorter (一致约定)
+    if (lb_skew_norm_sq_d(v0_a, v0_b, s2) < lb_skew_norm_sq_d(v1_a, v1_b, s2)) {
+        std::swap(v0_a, v1_a);
+        std::swap(v0_b, v1_b);
+    }
+}
+
 }  // namespace detail
 
 /// 计算格基 (显式 method overload, 测试 / bench 用).
 /// 给定 special-q = (q, r)，计算满足 a - b*r ≡ 0 (mod q) 的格基.
 /// 输出 e0/f0 = shorter, e1/f1 = longer.
 [[nodiscard]] inline LatticeBasis compute_lattice_basis(const SpecialQ& sq,
-                                                         LatticeReductionMethod method) {
+                                                         LatticeReductionMethod method,
+                                                         double skewness = 1.0) {
     LatticeBasis basis;
     basis.q = sq.q;
     basis.r = sq.r;
@@ -229,21 +326,45 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b,
         case LatticeReductionMethod::LLL:
             detail::lb_reduce_lll_fk2005(v0_a, v0_b, v1_a, v1_b);
             break;
+        case LatticeReductionMethod::SkewLLL: {
+            // Skewness=1.0 退化为 unskewed LLL (bit-exact path).
+            if (std::abs(skewness - 1.0) < 1e-9) {
+                detail::lb_reduce_lll_fk2005(v0_a, v0_b, v1_a, v1_b);
+            } else {
+                detail::lb_reduce_skew_lll(v0_a, v0_b, v1_a, v1_b, skewness);
+            }
+            break;
+        }
     }
 
     // Caller 约定: e0/f0 是较短的 (sieve i-axis primary).
-    basis.e0 = v1_a;  // shorter (post-condition of both helpers)
+    // Note for SkewLLL: shorter 按 skew-norm 比, 不是 Euclidean norm.
+    basis.e0 = v1_a;  // (skew-)shorter (post-condition of both helpers)
     basis.f0 = v1_b;
-    basis.e1 = v0_a;  // longer
+    basis.e1 = v0_a;  // (skew-)longer
     basis.f1 = v0_b;
 
     return basis;
 }
 
-/// 计算格基 (默认 dispatch).
+/// 计算格基 (默认 dispatch, unskewed).
 /// 读 ENV `GNFS_LATTICE_LLL` 决定方法 (default LLL = F-K 2005).
+/// 用 skewness=1.0 (即使 method=SkewLLL 也退化为 LLL).
 [[nodiscard]] inline LatticeBasis compute_lattice_basis(const SpecialQ& sq) {
-    return compute_lattice_basis(sq, detail::lattice_reduction_method_from_env());
+    return compute_lattice_basis(sq, detail::lattice_reduction_method_from_env(), 1.0);
+}
+
+/// 计算格基 (skew-aware overload).
+/// 当 skewness != 1.0 + ENV 启用 LLL/auto 时, 自动用 SkewLLL.
+/// ENV `GNFS_LATTICE_LLL=0` (Gauss) skewness 忽略 (legacy 行为).
+[[nodiscard]] inline LatticeBasis compute_lattice_basis_with_skewness(
+        const SpecialQ& sq, double skewness) {
+    auto method = detail::lattice_reduction_method_from_env();
+    // 若 method 是 LLL 且 skewness 显著 ≠ 1.0, 升级为 SkewLLL
+    if (method == LatticeReductionMethod::LLL && std::abs(skewness - 1.0) > 1e-6) {
+        method = LatticeReductionMethod::SkewLLL;
+    }
+    return compute_lattice_basis(sq, method, skewness);
 }
 
 /// SieveRegion - 筛区域

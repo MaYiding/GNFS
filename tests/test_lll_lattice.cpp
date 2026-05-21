@@ -464,6 +464,141 @@ void test_lll_norm_quality() {
     std::cout << "  PASS (quality ratio Gauss/LLL >= 1.0 for all q)" << std::endl;
 }
 
+// ─── Test 9: SkewLLL invariants ─────────────────────────────────────
+
+void test_skew_lll_invariants() {
+    std::cout << "Testing SkewLLL invariants (skewness sweep)..." << std::endl;
+
+    // Skewness range typical for GNFS polynomials: 1.0 to ~5000.
+    std::vector<double> skewnesses = {
+        1.0,    // unskewed (equivalent to LLL)
+        2.0,
+        5.0,
+        10.0,
+        100.0,
+        1000.0,
+        5000.0,
+    };
+
+    std::vector<std::pair<uint32_t, uint32_t>> cases = {
+        {1009, 500}, {99991, 12345}, {1'000'003u, 500'000u},
+        {10'000'019u, 5'000'000u},
+    };
+
+    int total = 0;
+    int skew_better = 0;
+    int equal_skew = 0;
+    int skew_worse = 0;
+
+    for (double s : skewnesses) {
+        for (auto [q, r] : cases) {
+            SpecialQ sq = make_sq(q, r);
+            auto basis = compute_lattice_basis(sq, LatticeReductionMethod::SkewLLL, s);
+            auto plain_lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
+
+            // Core invariants (must hold for any reduction):
+            assert(det_equals_q(basis));
+            assert(basis.verify_ab(basis.e0, basis.f0));
+            assert(basis.verify_ab(basis.e1, basis.f1));
+
+            // For s=1.0, SkewLLL should be bit-identical to LLL (dispatched).
+            if (s == 1.0) {
+                assert(basis.e0 == plain_lll.e0);
+                assert(basis.f0 == plain_lll.f0);
+                assert(basis.e1 == plain_lll.e1);
+                assert(basis.f1 == plain_lll.f1);
+            }
+
+            // Quality metric: skew norm² (a² + s²·b²)
+            // SkewLLL should produce smaller skew norms than plain LLL when s != 1.
+            auto skew_n = [s](int64_t a, int64_t b) {
+                double da = static_cast<double>(a), db = static_cast<double>(b);
+                return da * da + s * s * db * db;
+            };
+            double skew_total_skewlll = skew_n(basis.e0, basis.f0) + skew_n(basis.e1, basis.f1);
+            double skew_total_plain = skew_n(plain_lll.e0, plain_lll.f0)
+                                    + skew_n(plain_lll.e1, plain_lll.f1);
+
+            ++total;
+            if (skew_total_skewlll < skew_total_plain * 0.9999) ++skew_better;
+            else if (skew_total_skewlll > skew_total_plain * 1.0001) ++skew_worse;
+            else ++equal_skew;
+
+            // Hard invariant: SkewLLL never substantially worse in skew norm
+            // (allow small double error: ratio < 1.01)
+            assert(skew_total_skewlll <= skew_total_plain * 1.01);
+        }
+    }
+
+    std::cout << "  total=" << total
+              << " skew_better=" << skew_better
+              << " equal=" << equal_skew
+              << " skew_worse=" << skew_worse
+              << " (SkewLLL <= LLL in skew norm)" << std::endl;
+    std::cout << "  PASS" << std::endl;
+}
+
+// ─── Test 10: SkewLLL boundary cases ────────────────────────────────
+
+void test_skew_lll_boundary() {
+    std::cout << "Testing SkewLLL boundary cases (large skewness, r=0/q-1)..." << std::endl;
+
+    // Very large skewness (5000+, e.g., 50d high-skew polynomial)
+    std::vector<double> extreme_s = {0.5, 1.0, 1.1, 100.0, 5000.0, 50000.0};
+    std::vector<std::pair<uint32_t, uint32_t>> cases = {
+        {1009, 0}, {1009, 1}, {1009, 1008},
+        {99991, 0}, {99991, 1}, {99991, 99990},
+        {1'000'003u, 0}, {1'000'003u, 500'001u}, {1'000'003u, 1'000'002u},
+    };
+
+    for (double s : extreme_s) {
+        for (auto [q, r] : cases) {
+            SpecialQ sq = make_sq(q, r);
+            auto basis = compute_lattice_basis(sq, LatticeReductionMethod::SkewLLL, s);
+
+            assert(det_equals_q(basis));
+            assert(basis.verify_ab(basis.e0, basis.f0));
+            assert(basis.verify_ab(basis.e1, basis.f1));
+        }
+    }
+
+    std::cout << "  PASS (6 skewnesses x 9 cases, all invariants)" << std::endl;
+}
+
+// ─── Test 11: compute_lattice_basis_with_skewness dispatch ──────────
+
+void test_skew_lll_dispatch() {
+    std::cout << "Testing compute_lattice_basis_with_skewness ENV interaction..." << std::endl;
+
+    SpecialQ sq = make_sq(1'000'003u, 500'000u);
+
+    // ENV default + skewness=1.0 -> LLL (no skew upgrade)
+    unsetenv("GNFS_LATTICE_LLL");
+    {
+        auto basis = compute_lattice_basis_with_skewness(sq, 1.0);
+        auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
+        assert(basis.e0 == lll.e0 && basis.e1 == lll.e1);
+    }
+
+    // ENV default + skewness=10.0 -> auto-upgrade to SkewLLL
+    {
+        auto basis = compute_lattice_basis_with_skewness(sq, 10.0);
+        auto skew = compute_lattice_basis(sq, LatticeReductionMethod::SkewLLL, 10.0);
+        assert(basis.e0 == skew.e0 && basis.e1 == skew.e1);
+    }
+
+    // ENV=0 (Gauss) + skewness=10.0 -> Gauss (skewness ignored, legacy)
+    setenv("GNFS_LATTICE_LLL", "0", 1);
+    {
+        auto basis = compute_lattice_basis_with_skewness(sq, 10.0);
+        auto gauss = compute_lattice_basis(sq, LatticeReductionMethod::Gauss);
+        assert(basis.e0 == gauss.e0 && basis.e1 == gauss.e1);
+    }
+    unsetenv("GNFS_LATTICE_LLL");
+
+    std::cout << "  PASS (dispatch logic correct for default, skewness, ENV)" << std::endl;
+}
+
 int main() {
     std::cout << "===========================================" << std::endl;
     std::cout << "  F-K 2005 LLL Lattice Reduction Tests" << std::endl;
@@ -477,6 +612,9 @@ int main() {
     test_lll_env_gate();
     test_lll_random_sweep();
     test_lll_norm_quality();
+    test_skew_lll_invariants();
+    test_skew_lll_boundary();
+    test_skew_lll_dispatch();
 
     std::cout << "===========================================" << std::endl;
     std::cout << "  All LLL lattice tests passed!" << std::endl;
