@@ -36,56 +36,46 @@ namespace gnfs::cofactor {
 
 namespace detail {
 
-/// Dickman ρ(u) values for u ∈ {1.0, 1.1, ..., 10.0}.
+/// Dickman ρ(u) values for integer u ∈ {2, 3, ..., 10}.
+/// (For u ∈ [1, 2], the closed form ρ(u) = 1 - ln(u) is used directly.)
 ///
 /// Source: high-precision tabulation matching Bach & Peralta (1996) and
-/// van de Lune & Wattel (1969). The table uses 0.1-spaced grid points for
-/// u ∈ [1.0, 10.0]. For u < 1, ρ(u) = 1 exactly (every positive integer
-/// is trivially x-smooth when y >= x). For u > 10, asymptotic decay
+/// van de Lune & Wattel (1969). For u > 10, asymptotic decay
 /// ρ(u) ~ u^{-u} · (1 + o(1)) takes over; we evaluate via that closed form.
-inline const double* dickman_table() {
-    // 91 entries: u = 1.0, 1.1, ..., 10.0 (step 0.1)
-    static const double table[91] = {
-        // u = 1.0 .. 1.9
-        1.000000000000e+00, 9.535862950e-01, 9.083795045e-01, 8.643748474e-01,
-        8.215661408e-01, 7.799459033e-01, 7.395053650e-01, 7.002347847e-01,
-        6.621234666e-01, 6.251598730e-01,
-        // u = 2.0 .. 2.9
-        3.068528194e-01, 2.762048085e-01, 2.478752563e-01, 2.219285834e-01,
-        1.982866934e-01, 1.768362706e-01, 1.574316182e-01, 1.399050930e-01,
-        1.240789694e-01, 1.097764458e-01,
-        // u = 3.0 .. 3.9
-        4.860838829e-02, 4.247391374e-02, 3.704572564e-02, 3.224656824e-02,
-        2.800966574e-02, 2.427470632e-02, 2.098523432e-02, 1.808984933e-02,
-        1.554186089e-02, 1.330065598e-02,
-        // u = 4.0 .. 4.9
-        4.910925648e-03, 4.183868510e-03, 3.560260620e-03, 3.025522660e-03,
-        2.567019560e-03, 2.173997750e-03, 1.837287140e-03, 1.548837440e-03,
-        1.302064830e-03, 1.091508780e-03,
-        // u = 5.0 .. 5.9
-        3.547247885e-04, 2.957197590e-04, 2.461738250e-04, 2.045961170e-04,
-        1.697078160e-04, 1.404214650e-04, 1.158191420e-04, 9.514444600e-05,
-        7.792347000e-05, 6.366450200e-05,
-        // u = 6.0 .. 6.9
-        1.964939005e-05, 1.605145950e-05, 1.307875400e-05, 1.063225650e-05,
-        8.625710000e-06, 6.985225000e-06, 5.645640000e-06, 4.552080000e-06,
-        3.663160000e-06, 2.943200000e-06,
-        // u = 7.0 .. 7.9
-        8.745961700e-07, 7.000540000e-07, 5.594530000e-07, 4.464280000e-07,
-        3.557520000e-07, 2.831170000e-07, 2.249260000e-07, 1.784000000e-07,
-        1.412950000e-07, 1.117900000e-07,
-        // u = 8.0 .. 8.9
-        3.232169325e-08, 2.555820000e-08, 2.020080000e-08, 1.594850000e-08,
-        1.257770000e-08, 9.907800000e-09, 7.793500000e-09, 6.123100000e-09,
-        4.805000000e-09, 3.766000000e-09,
-        // u = 9.0 .. 9.9
-        1.016247775e-09, 7.961100000e-10, 6.234100000e-10, 4.879100000e-10,
-        3.817400000e-10, 2.984100000e-10, 2.331200000e-10, 1.819300000e-10,
-        1.418500000e-10, 1.105100000e-10,
-        // u = 10.0
-        2.770171395e-11
+///
+/// Indexing: table_integer[k] = ρ(2 + k), k ∈ {0, ..., 8}.
+inline const double* dickman_table_integer() {
+    static const double table[9] = {
+        3.068528194401e-01,  // ρ(2)
+        4.860838829061e-02,  // ρ(3)
+        4.910925648681e-03,  // ρ(4)
+        3.547247885221e-04,  // ρ(5)
+        1.964939005051e-05,  // ρ(6)
+        8.745961700586e-07,  // ρ(7)
+        3.232169325490e-08,  // ρ(8)
+        1.016247775265e-09,  // ρ(9)
+        2.770171395103e-11,  // ρ(10)
     };
     return table;
+}
+
+/// log of ρ at integer u, for log-linear interpolation between integers.
+/// This gives much better accuracy than linear interpolation on ρ directly
+/// because ρ decays super-exponentially.
+inline const double* dickman_log_table() {
+    // Pre-computed log of each table_integer entry to avoid per-call log().
+    static const double log_table[9] = {
+        -1.181584081421e+00,  // log ρ(2)
+        -3.024309366533e+00,  // log ρ(3)
+        -5.315111346263e+00,  // log ρ(4)
+        -7.945202132122e+00,  // log ρ(5)
+        -1.084319015935e+01,  // log ρ(6)
+        -1.395039300921e+01,  // log ρ(7)
+        -1.724518108538e+01,  // log ρ(8)
+        -2.070434311466e+01,  // log ρ(9)
+        -2.430583961547e+01,  // log ρ(10)
+    };
+    return log_table;
 }
 
 } // namespace detail
@@ -102,13 +92,19 @@ inline const double* dickman_table() {
 ///
 /// Implementation:
 ///   * u ≤ 1: returns 1.0 exactly
-///   * 1 < u ≤ 10: linear interpolation on tabulated grid (step 0.1)
+///   * 1 < u ≤ 2: closed form ρ(u) = 1 - ln(u) (exact)
+///   * 2 < u ≤ 10: log-linear interpolation on integer-anchored table
+///     (more accurate than linear-in-rho given super-exponential decay)
 ///   * u > 10: asymptotic ρ(u) ≈ u^{-u} (worst-case overestimate of
 ///     density, harmless: makes survival predictor more permissive)
 ///   * NaN / negative u: clamped to 1.0 (defensive default = no reject)
 [[nodiscard]] inline double dickman_rho(double u) {
     if (!(u > 0.0)) return 1.0;     // catches NaN, negative, zero
     if (u <= 1.0) return 1.0;
+    if (u <= 2.0) {
+        // Exact closed form on [1, 2]: ρ(u) = 1 - ln(u).
+        return 1.0 - std::log(u);
+    }
     if (u >= 10.0) {
         // Asymptotic decay; for u >> 10 ρ(u) is astronomically small.
         // u^{-u} = exp(-u * ln(u)). Guard against -inf.
@@ -117,17 +113,14 @@ inline const double* dickman_table() {
         if (exponent < -700.0) return 0.0;  // underflow region
         return std::exp(exponent);
     }
-    // Linear interpolation on [1.0, 10.0] with 0.1 step.
-    // u = 1.0 + 0.1 * idx where idx ∈ [0, 90].
-    const double idx_f = (u - 1.0) * 10.0;
-    int idx = static_cast<int>(idx_f);
-    if (idx < 0) idx = 0;
-    if (idx >= 90) idx = 89;
-    const double frac = idx_f - static_cast<double>(idx);
-    const double* table = detail::dickman_table();
-    const double v0 = table[idx];
-    const double v1 = table[idx + 1];
-    return v0 + frac * (v1 - v0);
+    // u ∈ (2, 10): log-linear interpolation between adjacent integer
+    // anchors. Indexing: idx = floor(u) - 2, frac = u - floor(u).
+    // log ρ(u) ≈ (1 - frac) * log ρ(idx + 2) + frac * log ρ(idx + 3).
+    const int idx = static_cast<int>(u) - 2;  // 0 .. 7
+    const double frac = u - static_cast<double>(static_cast<int>(u));
+    const double* log_table = detail::dickman_log_table();
+    const double log_v = (1.0 - frac) * log_table[idx] + frac * log_table[idx + 1];
+    return std::exp(log_v);
 }
 
 /// Estimate cofactor survival probability through the cofactor pipeline.
