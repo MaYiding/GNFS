@@ -957,6 +957,54 @@ ENV parsing matrix).
 **Default OFF**: `sort_relations()` 调用方零行为变化, `std::sort` path
 完整保留. 仅当用户 explicit `GNFS_FILTER_RADIX_SORT=1` 时启用.
 
+### SGE batch-pivot 选择 (GNFS_SGE_BATCH_PIVOTS)
+
+**ENV `GNFS_SGE_BATCH_PIVOTS=N`** (2026-05-22 实施, range [1, 64], default 1):
+Structured Gaussian Elimination 每 pass 收集 N 个 row-support 互不相交的 pivot
+集中应用, 而非 sequential 单 pivot 扫描. N=1 (默认) 保留原 Phase 1 worklist /
+Phase 2 列扫描语义, 零开销.
+
+```bash
+GNFS_SGE_BATCH_PIVOTS=1  ./gnfs <N>   # default 序列 path (与历史一致)
+GNFS_SGE_BATCH_PIVOTS=8  ./gnfs <N>   # 每 pass 收 8 个 disjoint-row pivot
+GNFS_SGE_BATCH_PIVOTS=32 ./gnfs <N>   # 50d+/60d 大矩阵激进 batch
+GNFS_SGE_BATCH_PIVOTS=64 ./gnfs <N>   # 上限 (kSGEBatchPivotsMax)
+unset GNFS_SGE_BATCH_PIVOTS           # 同 default 1
+```
+
+**ROI 与定位**:
+- 主要 ROI: 50d+ 大矩阵 (~1M cols) 时 SGE Phase 1 worklist 与 Phase 2 列扫描
+  wall-time 占 SGE 总时间 60-70%. N>=8 batch 让每 pass 单次扫描多收几个 pivot,
+  减少 pass 数 + 提升 cache locality.
+- 25d / 81-bit gate 矩阵 (≤几千 col) 上 SGE 全程 < 100 ms, batch ROI 不显著
+  但行为完全一致 (canonical-form equivalent).
+- 真正 parallelism 是 *logical* (per-pass 选 N 个 disjoint pivot 后顺序 apply,
+  apply 顺序无关因为四 row 集合 disjoint). 未来若 worker pool 加入 SGE,
+  此结构已就绪.
+
+**等价不变量 (实测强制)**:
+- 相同 surviving row / column 数 (matrix shape 严格等)
+- 相同 `col_map` 内容 (col_alive 扫描顺序两 path 一致)
+- 相同 `row_composition` multiset (XOR 在 GF(2) 上 commute)
+- 相同 reduced matrix rows multiset (每 row indices sort 后整体 sort 比较)
+
+**不**严格 bit-identical 的部分: surviving row 在 reduced matrix 内的*位置顺序*
+可能不同 (batch path 选 pivot 顺序与 sequential 不同 → "heavier row" tiebreak
+偶发不同时刻触发). 测试通过 canonical form (各 row 内 sort + 整体 sort) 抹平此差异.
+
+**集成点** (2026-05-22):
+- `include/gnfs/linalg/sge_batch_pivots.hpp` — ENV reader + `std::once_flag` cache
+  + `kSGEBatchPivotsMax=64` + `sge_batch_pivots_size()` + `*_reset_env_cache_for_testing()`
+- `include/gnfs/linalg/sge.hpp` — `SGEConfig.batch_pivots` 字段 + `SGE::preprocess`
+  `effective_batch` 解析 + `apply_w1_pivot` / `apply_w2_pivot` lambda 抽取 +
+  Phase 1 / Phase 2 dispatch (N=1 走原路径, N>=2 走 disjoint-row 选 pivot 批量 apply)
+- `tests/test_sge_batch_pivots.cpp` — 8 个测试 (N=1 baseline / N=8 / N=32 parity /
+  ENV 6 case / empty / single-pivot chain / 5×4 random sweep / config override)
+- `CMakeLists.txt` / `scripts/test.sh` — instant tier, 60s timeout, linalg 模块
+
+**Default OFF (N=1)**: 任何 caller 不设 ENV 也不传 `config.batch_pivots > 0` 时
+完全跑历史序列 path, 零行为变化. 仅 50d+ 用户 explicit opt-in 时启用.
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sge_batch_pivots.hpp"
 #include "sparse_matrix.hpp"
 
 #include <algorithm>
@@ -56,6 +57,22 @@ struct SGEConfig {
     /// per row composition (heuristic; n_rows ~50K-300K matrix, 16K 即 5-30% n).
     /// 0 = no cap.
     size_t row_composition_cap = 16384;
+
+    /// Batch size for disjoint-row pivot selection per pass. 1 (default) runs
+    /// the original sequential per-pivot path with zero overhead and bit-for-
+    /// bit identical output. Values >= 2 collect up to N pivots whose row
+    /// supports do not overlap within a batch, then apply them sequentially
+    /// (the row supports being disjoint makes the apply order immaterial).
+    ///
+    /// The default value is 0, which is interpreted as "consult the
+    /// `GNFS_SGE_BATCH_PIVOTS` environment variable" inside `preprocess`.
+    /// Tests may override this field directly to bypass the ENV lookup
+    /// (e.g., parity comparisons that need both N=1 and N=8 paths in the
+    /// same process without juggling environment state).
+    ///
+    /// Setting batch_pivots > 64 is clamped to 64 to bound the per-batch
+    /// row-usage tracking memory.
+    int batch_pivots = 0;
 };
 
 /// Structured Gaussian Elimination 预处理
@@ -79,6 +96,20 @@ public:
             result.reduced_matrix = SparseMatrix(0, 0);
             return result;
         }
+
+        // Resolve the effective batch-pivot size exactly once for this
+        // preprocess call. `batch_pivots == 0` means "fall back to the ENV";
+        // any explicit positive value is honoured (and clamped to the same
+        // [1, kSGEBatchPivotsMax] bracket the ENV uses) so tests can drive
+        // both paths from the same process without environment mutation.
+        const int effective_batch = [&]() noexcept {
+            int raw = config.batch_pivots > 0
+                          ? config.batch_pivots
+                          : sge_batch_pivots_size();
+            if (raw < 1) raw = 1;
+            if (raw > kSGEBatchPivotsMax) raw = kSGEBatchPivotsMax;
+            return raw;
+        }();
 
         // ── Working copy ──
         std::vector<SparseRow> working_rows(n_rows);
@@ -118,6 +149,137 @@ public:
             }
         }
 
+        // ── Per-pivot apply helpers ──
+        //
+        // These lambdas encapsulate the original per-pivot transformations so
+        // both the sequential and batched drivers below can dispatch through a
+        // shared implementation. Each lambda mutates the working state
+        // (`working_rows`, `composition`, `row_alive`, `col_alive`,
+        // `alive_rows`, `alive_cols`, `col_to_rows`, `result`) exactly the
+        // same way the original inline code did. Conflict detection (the
+        // "batched" property) is applied externally by the caller via the
+        // pivot-selection loop; each apply itself runs as if it were the only
+        // pivot in flight, which is safe because batches are chosen so the
+        // affected row sets are disjoint.
+        //
+        // apply_w1_pivot returns true if the pivot was applied; false if the
+        // column / row was no longer eligible (e.g., killed by an earlier
+        // pivot in the same batch via the worklist seed). The sequential
+        // worklist already tolerates skips, so the batched path keeps the
+        // same contract.
+        std::vector<uint32_t> w1_work;
+        w1_work.reserve(n_cols / 8);
+
+        auto apply_w1_pivot = [&](uint32_t c) -> bool {
+            if (c >= n_cols || !col_alive[c]) return false;
+            if (col_to_rows[c].size() != 1) return false;
+
+            const size_t r = col_to_rows[c][0];
+            if (!row_alive[r]) return false;
+
+            row_alive[r] = false;
+            col_alive[c] = false;
+            --alive_rows;
+            --alive_cols;
+
+            for (auto c2 : working_rows[r].indices()) {
+                if (c2 >= n_cols || !col_alive[c2]) continue;
+                auto& rows = col_to_rows[c2];
+                rows.erase(std::remove(rows.begin(), rows.end(), r),
+                           rows.end());
+                if (rows.size() == 1 && col_alive[c2])
+                    w1_work.push_back(c2);
+                else if (rows.empty() && col_alive[c2]) {
+                    col_alive[c2] = false;
+                    --alive_cols;
+                }
+            }
+            ++result.weight1_eliminated;
+            return true;
+        };
+
+        // apply_w2_pivot returns true if the merge was applied. False on
+        // either (a) eligibility lapsed (row/column killed by an earlier
+        // pivot) or (b) the row-composition cap rejected the merge.
+        auto apply_w2_pivot = [&](uint32_t c) -> bool {
+            if (!col_alive[c]) return false;
+            if (col_to_rows[c].size() != 2) return false;
+
+            size_t r1 = col_to_rows[c][0];
+            size_t r2 = col_to_rows[c][1];
+            if (!row_alive[r1] || !row_alive[r2]) return false;
+
+            if (working_rows[r1].weight() < working_rows[r2].weight())
+                std::swap(r1, r2);
+
+            if (config.row_composition_cap > 0) {
+                size_t prospective =
+                    composition[r1].size() + composition[r2].size();
+                if (prospective > config.row_composition_cap) {
+                    ++result.weight2_skipped_cap;
+                    return false;
+                }
+            }
+
+            auto old_r1_indices = working_rows[r1].indices();
+            auto old_r2_indices = working_rows[r2].indices();
+
+            working_rows[r1].xor_with(working_rows[r2]);
+
+            auto& comp1 = composition[r1];
+            auto& comp2 = composition[r2];
+            comp1.reserve(comp1.size() + comp2.size());
+            comp1.insert(comp1.end(), comp2.begin(), comp2.end());
+            std::sort(comp1.begin(), comp1.end());
+            std::vector<size_t> deduped;
+            deduped.reserve(comp1.size());
+            for (size_t i = 0; i < comp1.size(); ) {
+                size_t val = comp1[i];
+                size_t count = 1;
+                while (i + count < comp1.size() && comp1[i + count] == val)
+                    ++count;
+                if (count % 2 == 1)
+                    deduped.push_back(val);
+                i += count;
+            }
+            comp1 = std::move(deduped);
+
+            auto it1 = old_r1_indices.begin();
+            for (auto c2_raw : old_r2_indices) {
+                if (c2_raw >= n_cols) continue;
+                size_t c2 = static_cast<size_t>(c2_raw);
+                if (!col_alive[c2]) continue;
+
+                while (it1 != old_r1_indices.end() && *it1 < c2_raw) ++it1;
+                bool was_in_r1 =
+                    (it1 != old_r1_indices.end() && *it1 == c2_raw);
+
+                auto& rows = col_to_rows[c2];
+
+                rows.erase(std::remove(rows.begin(), rows.end(), r2),
+                           rows.end());
+
+                if (was_in_r1) {
+                    rows.erase(std::remove(rows.begin(), rows.end(), r1),
+                               rows.end());
+                } else {
+                    rows.push_back(r1);
+                }
+
+                if (rows.empty() && col_alive[c2] && c2 != c) {
+                    col_alive[c2] = false;
+                    --alive_cols;
+                }
+            }
+
+            row_alive[r2] = false;
+            col_alive[c] = false;
+            --alive_rows;
+            --alive_cols;
+            ++result.weight2_merged;
+            return true;
+        };
+
         // ── Iterative elimination ──
         for (size_t pass = 0; pass < config.max_passes; ++pass) {
             size_t eliminated_this_pass = 0;
@@ -126,48 +288,98 @@ public:
             // When a row is removed, other columns lose a contributor.
             // Use a worklist to handle cascading w1 columns.
             if (config.eliminate_weight1) {
-                // Seed worklist with all w1 columns
-                // Reserve: typical 10-20% cols are w1 in SGE preprocess phase.
-                std::vector<uint32_t> w1_work;
-                w1_work.reserve(n_cols / 8);
+                w1_work.clear();
                 for (uint32_t c = 0; c < n_cols; ++c) {
                     if (col_alive[c] && col_to_rows[c].size() == 1)
                         w1_work.push_back(c);
                 }
 
-                while (!w1_work.empty()) {
-                    uint32_t c = w1_work.back();
-                    w1_work.pop_back();
-                    if (!col_alive[c]) continue;
-                    if (col_to_rows[c].size() != 1) continue;
-
-                    size_t r = col_to_rows[c][0];
-                    if (!row_alive[r]) continue;
-
-                    // Kill row and column
-                    row_alive[r] = false;
-                    col_alive[c] = false;
-                    --alive_rows;
-                    --alive_cols;
-
-                    // Remove r from all its columns. If any become w1, add to worklist.
-                    for (auto c2 : working_rows[r].indices()) {
-                        if (c2 >= n_cols || !col_alive[c2]) continue;
-                        auto& rows = col_to_rows[c2];
-                        rows.erase(
-                            std::remove(rows.begin(), rows.end(), r),
-                            rows.end());
-                        if (rows.size() == 1 && col_alive[c2])
-                            w1_work.push_back(c2);
-                        else if (rows.empty() && col_alive[c2]) {
-                            // Column has no remaining rows — dead column
-                            col_alive[c2] = false;
-                            --alive_cols;
+                if (effective_batch == 1) {
+                    // Original sequential worklist path. Identical bytes to
+                    // the historical implementation (see git history before
+                    // this commit).
+                    while (!w1_work.empty()) {
+                        uint32_t c = w1_work.back();
+                        w1_work.pop_back();
+                        if (apply_w1_pivot(c)) {
+                            ++eliminated_this_pass;
                         }
                     }
+                } else {
+                    // Batched path: drain the worklist by taking up to
+                    // `effective_batch` candidates whose single-row supports
+                    // are disjoint from rows already chosen in the current
+                    // batch. The "row support" of a w1 column is its sole
+                    // owning row; two w1 columns conflict iff they reference
+                    // the same row (which means killing one would invalidate
+                    // the other before the batch finishes).
+                    //
+                    // Per-batch state lives in `batch_cols` and `used_rows`.
+                    // Both reset between batches, so the bookkeeping cost is
+                    // O(batch) per batch — negligible against the apply cost.
+                    std::vector<uint32_t> batch_cols;
+                    batch_cols.reserve(static_cast<size_t>(effective_batch));
+                    std::vector<size_t> used_rows;
+                    used_rows.reserve(static_cast<size_t>(effective_batch));
+                    std::vector<uint32_t> deferred;
+                    deferred.reserve(static_cast<size_t>(effective_batch));
 
-                    ++eliminated_this_pass;
-                    ++result.weight1_eliminated;
+                    while (!w1_work.empty()) {
+                        batch_cols.clear();
+                        used_rows.clear();
+                        deferred.clear();
+
+                        // Greedily pull from the back of the worklist into
+                        // the batch as long as the candidate's row is fresh.
+                        // A candidate whose row collides with a row already
+                        // chosen this batch goes onto `deferred` so it is
+                        // reconsidered after the batch applies; this keeps
+                        // the algorithm progressing even when many w1
+                        // columns share rows.
+                        while (!w1_work.empty() &&
+                               batch_cols.size() <
+                                   static_cast<size_t>(effective_batch)) {
+                            uint32_t c = w1_work.back();
+                            w1_work.pop_back();
+                            if (c >= n_cols || !col_alive[c]) continue;
+                            if (col_to_rows[c].size() != 1) continue;
+                            size_t r = col_to_rows[c][0];
+                            if (!row_alive[r]) continue;
+                            bool conflict = false;
+                            for (size_t ur : used_rows) {
+                                if (ur == r) { conflict = true; break; }
+                            }
+                            if (conflict) {
+                                deferred.push_back(c);
+                            } else {
+                                used_rows.push_back(r);
+                                batch_cols.push_back(c);
+                            }
+                        }
+
+                        // Restore deferred entries for the next batch. They
+                        // remain valid w1 candidates because no pivot in
+                        // this batch touched their rows.
+                        for (auto c : deferred) {
+                            w1_work.push_back(c);
+                        }
+
+                        if (batch_cols.empty()) {
+                            // Worklist exhausted without picking any pivot
+                            // (every candidate became ineligible mid-loop).
+                            break;
+                        }
+
+                        // Apply the batch sequentially; the disjoint-row
+                        // invariant makes the application order immaterial.
+                        // Cascading new w1 columns surface via
+                        // apply_w1_pivot pushing them back onto w1_work.
+                        for (auto c : batch_cols) {
+                            if (apply_w1_pivot(c)) {
+                                ++eliminated_this_pass;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -175,107 +387,97 @@ public:
             // For each w2 column c with rows {r1, r2}: merge r2 into r1, kill r2 and c.
             // Process greedily — if r2 was already killed by a prior merge, skip.
             if (config.eliminate_weight2) {
-                for (uint32_t c = 0; c < n_cols; ++c) {
-                    if (!col_alive[c]) continue;
-                    if (col_to_rows[c].size() != 2) continue;
+                if (effective_batch == 1) {
+                    // Original sequential per-column scan, byte-identical to
+                    // the historical implementation.
+                    for (uint32_t c = 0; c < n_cols; ++c) {
+                        if (apply_w2_pivot(c)) {
+                            ++eliminated_this_pass;
+                        }
+                    }
+                } else {
+                    // Batched path: scan columns once per pass and gather
+                    // pivots whose two-row support is disjoint from the rows
+                    // already chosen in the current batch. When the batch is
+                    // full, apply it (apply order is immaterial since the
+                    // four rows of any two batched pivots are distinct). The
+                    // next batch resumes scanning from where the previous one
+                    // left off and a final fallback pass at the end of the
+                    // pass picks up any deferred columns that became
+                    // eligible after batched merges retired conflicting rows.
+                    std::vector<uint32_t> batch_cols;
+                    batch_cols.reserve(static_cast<size_t>(effective_batch));
+                    std::vector<size_t> used_rows;
+                    // up to 2 rows per pivot, so 2*N capacity is exact.
+                    used_rows.reserve(
+                        static_cast<size_t>(effective_batch) * 2);
+                    std::vector<uint32_t> deferred;
+                    deferred.reserve(n_cols / 16);
 
-                    size_t r1 = col_to_rows[c][0];
-                    size_t r2 = col_to_rows[c][1];
-                    if (!row_alive[r1] || !row_alive[r2]) continue;
+                    uint32_t c = 0;
+                    while (c < n_cols) {
+                        batch_cols.clear();
+                        used_rows.clear();
 
-                    // Prefer merging into the heavier row (preserves more structure)
-                    if (working_rows[r1].weight() < working_rows[r2].weight())
-                        std::swap(r1, r2);
+                        // Gather up to `effective_batch` pivots with
+                        // disjoint row supports. Columns that conflict with
+                        // the current batch (one or both rows already used)
+                        // are pushed onto `deferred` to retry after the
+                        // batch retires; columns we cannot use even after
+                        // the batch (still ineligible) are dropped by
+                        // apply_w2_pivot returning false.
+                        for (; c < n_cols && batch_cols.size() <
+                                                  static_cast<size_t>(
+                                                      effective_batch);
+                             ++c) {
+                            if (!col_alive[c]) continue;
+                            if (col_to_rows[c].size() != 2) continue;
+                            size_t r1 = col_to_rows[c][0];
+                            size_t r2 = col_to_rows[c][1];
+                            if (!row_alive[r1] || !row_alive[r2]) continue;
 
-                    // BACKLOG #6 safety: skip merge if prospective composition[r1]
-                    // size after merge > cap. Prevents pathological chain accumulation
-                    // where r1 absorbs many r2's → composition O(n_rows).
-                    // Worst case post-merge: comp[r1].size + comp[r2].size (pre-dedup);
-                    // dedup may halve it but conservative check protects RAM.
-                    if (config.row_composition_cap > 0) {
-                        size_t prospective =
-                            composition[r1].size() + composition[r2].size();
-                        if (prospective > config.row_composition_cap) {
-                            ++result.weight2_skipped_cap;
-                            continue;  // skip this merge, leave r2 alive
+                            bool conflict = false;
+                            for (size_t ur : used_rows) {
+                                if (ur == r1 || ur == r2) {
+                                    conflict = true;
+                                    break;
+                                }
+                            }
+                            if (conflict) {
+                                deferred.push_back(c);
+                                continue;
+                            }
+                            used_rows.push_back(r1);
+                            used_rows.push_back(r2);
+                            batch_cols.push_back(c);
+                        }
+
+                        if (batch_cols.empty()) {
+                            // No pivots found in the rest of the scan. The
+                            // outer while exits because c == n_cols now.
+                            continue;
+                        }
+
+                        for (auto cb : batch_cols) {
+                            if (apply_w2_pivot(cb)) {
+                                ++eliminated_this_pass;
+                            }
                         }
                     }
 
-                    // Snapshot old indices BEFORE xor — 用于 incremental col_to_rows
-                    // 更新。observation: new_r1 = old_r1 ⊕ old_r2 (symmetric diff),
-                    // 因此 r1 在 col c2 的隶属翻转 iff c2 ∈ old_r2:
-                    //   c2 ∈ old_r1 ∩ old_r2 → r1 离开 c2 (XOR 抵消)
-                    //   c2 ∈ old_r2 \ old_r1 → r1 加入 c2
-                    auto old_r1_indices = working_rows[r1].indices();
-                    auto old_r2_indices = working_rows[r2].indices();
-
-                    // Merge: row[r1] ^= row[r2]
-                    working_rows[r1].xor_with(working_rows[r2]);
-
-                    // Update composition: comp[r1] ^= comp[r2] (GF(2))
-                    auto& comp1 = composition[r1];
-                    auto& comp2 = composition[r2];
-                    comp1.reserve(comp1.size() + comp2.size());
-                    comp1.insert(comp1.end(), comp2.begin(), comp2.end());
-                    std::sort(comp1.begin(), comp1.end());
-                    // Deduplicate with GF(2) semantics: even count → cancel
-                    std::vector<size_t> deduped;
-                    deduped.reserve(comp1.size());
-                    for (size_t i = 0; i < comp1.size(); ) {
-                        size_t val = comp1[i];
-                        size_t count = 1;
-                        while (i + count < comp1.size() && comp1[i + count] == val)
-                            ++count;
-                        if (count % 2 == 1)
-                            deduped.push_back(val);
-                        i += count;
-                    }
-                    comp1 = std::move(deduped);
-
-                    // Incremental col_to_rows update: 仅扫 old_r2_indices,
-                    // 两指针法判断 c2 是否曾在 old_r1。
-                    auto it1 = old_r1_indices.begin();
-                    for (auto c2_raw : old_r2_indices) {
-                        if (c2_raw >= n_cols) continue;
-                        size_t c2 = static_cast<size_t>(c2_raw);
-                        if (!col_alive[c2]) continue;
-
-                        // Advance it1 to first element >= c2
-                        while (it1 != old_r1_indices.end() && *it1 < c2_raw) ++it1;
-                        bool was_in_r1 = (it1 != old_r1_indices.end() && *it1 == c2_raw);
-
-                        auto& rows = col_to_rows[c2];
-
-                        // 移除 r2 (r2 即将被 kill, 不应再出现在 col_to_rows)
-                        rows.erase(std::remove(rows.begin(), rows.end(), r2),
-                                   rows.end());
-
-                        if (was_in_r1) {
-                            // r1 离开 c2 (XOR 抵消)
-                            rows.erase(std::remove(rows.begin(), rows.end(), r1),
-                                       rows.end());
-                            // 若 c2 ≠ merged col c 且变 w1, 后续 pass 会捡起
-                        }
-                        // else: r1 加入 c2
-                        else {
-                            rows.push_back(r1);
-                        }
-
-                        // 若某 col 因移除变空, 它已经死
-                        if (rows.empty() && col_alive[c2] && c2 != c) {
-                            col_alive[c2] = false;
-                            --alive_cols;
+                    // Re-try deferred columns after every batch has been
+                    // applied. Some deferrals freed up rows by killing one
+                    // side of the conflict (the merge target r1 survives,
+                    // but r2 is gone, so a column whose pair was (r2, r3) is
+                    // no longer eligible — apply_w2_pivot detects that and
+                    // returns false). Others may now be w1 columns thanks to
+                    // a merge having vacated one of their rows — Phase 1 of
+                    // the next pass will catch those.
+                    for (auto cd : deferred) {
+                        if (apply_w2_pivot(cd)) {
+                            ++eliminated_this_pass;
                         }
                     }
-
-                    // Kill r2 and column c
-                    row_alive[r2] = false;
-                    col_alive[c] = false;
-                    --alive_rows;
-                    --alive_cols;
-
-                    ++eliminated_this_pass;
-                    ++result.weight2_merged;
                 }
             }
 

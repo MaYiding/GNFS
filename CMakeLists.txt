@@ -698,6 +698,17 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME LinearAlgebra COMMAND test_linalg)
     set_tests_properties(LinearAlgebra PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # SGE batch-pivot ENV gate + canonical-form parity tests.
+    # Verifies GNFS_SGE_BATCH_PIVOTS=N produces equivalent SGE-reduced matrix
+    # for N in {1, 2, 4, 8, 16, 32, 64}. See
+    # include/gnfs/linalg/sge_batch_pivots.hpp for the equivalence invariant.
+    add_executable(test_sge_batch_pivots
+        tests/test_sge_batch_pivots.cpp
+    )
+    target_link_libraries(test_sge_batch_pivots PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SGEBatchPivots COMMAND test_sge_batch_pivots)
+    set_tests_properties(SGEBatchPivots PROPERTIES LABELS "instant" TIMEOUT 60)
+
     add_executable(test_sqrt
         tests/test_sqrt.cpp
     )
