@@ -103,6 +103,26 @@ namespace detail {
     return LatticeReductionMethod::LLL;
 }
 
+/// 读 ENV `GNFS_LATTICE_SKEW` (separate from `GNFS_LATTICE_LLL`).
+/// 决定是否启用 SkewLLL (skewness-aware reduction).
+/// "1" / "on" / "true" → enable SkewLLL upgrade when skewness != 1.0
+/// "0" / "off" / "false" / unset → keep LLL/Gauss, ignore skewness
+///
+/// **Default OFF**: SkewLLL 改变 (i, j) → (a, b) 映射的几何, 在小 N
+/// (27-bit / 40-bit) + 固定 sieve region 下可能 reduce sieve overlap with
+/// smooth (a, b) 区域. 25d / 50d / 60d 仍待验证 ROI. 仅在 explicit opt-in
+/// 时启用, 不破回归.
+[[nodiscard]] inline bool lattice_skew_enabled_from_env() {
+    const char* env = std::getenv("GNFS_LATTICE_SKEW");
+    if (!env || env[0] == '\0') return false;
+    if (std::strcmp(env, "1") == 0) return true;
+    if (std::strcmp(env, "on") == 0) return true;
+    if (std::strcmp(env, "ON") == 0) return true;
+    if (std::strcmp(env, "true") == 0) return true;
+    if (std::strcmp(env, "TRUE") == 0) return true;
+    return false;
+}
+
 /// Gauss / Lagrange reduction (legacy, BACKLOG P2 fix preserved).
 /// 输入 v0=(q,0), v1=(r,1), 输出 (shorter, longer) 经 size-reduced 的基.
 /// max_iters guard 防 oscillation (r=q-1 边界 case).
@@ -355,13 +375,20 @@ inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b,
 }
 
 /// 计算格基 (skew-aware overload).
-/// 当 skewness != 1.0 + ENV 启用 LLL/auto 时, 自动用 SkewLLL.
-/// ENV `GNFS_LATTICE_LLL=0` (Gauss) skewness 忽略 (legacy 行为).
+/// 当 `GNFS_LATTICE_SKEW=1` + skewness ≠ 1.0 + LLL method 时升级到 SkewLLL.
+/// 默认 ENV OFF → 行为同 unskewed `compute_lattice_basis(sq)` (LLL).
+///
+/// **设计原因**: SkewLLL 改变 (i, j) → (a, b) 映射的几何, 对小 N
+/// (27-bit / 40-bit) + 固定 sieve region 可能 reduce overlap with smooth
+/// region. 仅在显式 opt-in (ENV) 时启用, 大 N (50d+) explicit 验证后
+/// promote 为 default. 当前 default OFF 保证 zero-regression-risk.
 [[nodiscard]] inline LatticeBasis compute_lattice_basis_with_skewness(
         const SpecialQ& sq, double skewness) {
     auto method = detail::lattice_reduction_method_from_env();
-    // 若 method 是 LLL 且 skewness 显著 ≠ 1.0, 升级为 SkewLLL
-    if (method == LatticeReductionMethod::LLL && std::abs(skewness - 1.0) > 1e-6) {
+    // 仅当 ENV opt-in + method 是 LLL + skewness 显著 ≠ 1.0 时, 升级为 SkewLLL
+    if (method == LatticeReductionMethod::LLL
+            && detail::lattice_skew_enabled_from_env()
+            && std::abs(skewness - 1.0) > 1e-6) {
         method = LatticeReductionMethod::SkewLLL;
     }
     return compute_lattice_basis(sq, method, skewness);

@@ -572,22 +572,42 @@ void test_skew_lll_dispatch() {
 
     SpecialQ sq = make_sq(1'000'003u, 500'000u);
 
-    // ENV default + skewness=1.0 -> LLL (no skew upgrade)
+    // Clean ENV first
     unsetenv("GNFS_LATTICE_LLL");
+    unsetenv("GNFS_LATTICE_SKEW");
+
+    // ENV default (SKEW unset) + skewness=1.0 -> LLL (no skew upgrade)
     {
         auto basis = compute_lattice_basis_with_skewness(sq, 1.0);
         auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
         assert(basis.e0 == lll.e0 && basis.e1 == lll.e1);
     }
 
-    // ENV default + skewness=10.0 -> auto-upgrade to SkewLLL
+    // ENV default (SKEW unset) + skewness=10.0 -> still LLL (default OFF for skew)
+    {
+        auto basis = compute_lattice_basis_with_skewness(sq, 10.0);
+        auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
+        assert(basis.e0 == lll.e0 && basis.e1 == lll.e1);
+    }
+
+    // SKEW=1 + skewness=10.0 -> SkewLLL
+    setenv("GNFS_LATTICE_SKEW", "1", 1);
     {
         auto basis = compute_lattice_basis_with_skewness(sq, 10.0);
         auto skew = compute_lattice_basis(sq, LatticeReductionMethod::SkewLLL, 10.0);
         assert(basis.e0 == skew.e0 && basis.e1 == skew.e1);
     }
 
-    // ENV=0 (Gauss) + skewness=10.0 -> Gauss (skewness ignored, legacy)
+    // SKEW=1 + skewness=1.0 -> LLL (skew=1 degenerate)
+    {
+        auto basis = compute_lattice_basis_with_skewness(sq, 1.0);
+        auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
+        assert(basis.e0 == lll.e0 && basis.e1 == lll.e1);
+    }
+    unsetenv("GNFS_LATTICE_SKEW");
+
+    // SKEW=1 + LLL=0 (Gauss) + skewness=10.0 -> Gauss (LLL gate dominates, skew ignored)
+    setenv("GNFS_LATTICE_SKEW", "1", 1);
     setenv("GNFS_LATTICE_LLL", "0", 1);
     {
         auto basis = compute_lattice_basis_with_skewness(sq, 10.0);
@@ -595,8 +615,9 @@ void test_skew_lll_dispatch() {
         assert(basis.e0 == gauss.e0 && basis.e1 == gauss.e1);
     }
     unsetenv("GNFS_LATTICE_LLL");
+    unsetenv("GNFS_LATTICE_SKEW");
 
-    std::cout << "  PASS (dispatch logic correct for default, skewness, ENV)" << std::endl;
+    std::cout << "  PASS (dispatch: default off, ENV opt-in, LLL gate dominates)" << std::endl;
 }
 
 int main() {
