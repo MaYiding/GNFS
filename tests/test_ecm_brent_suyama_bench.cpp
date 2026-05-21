@@ -25,32 +25,60 @@ using namespace gnfs::cofactor;
 
 namespace {
 
-// Generate a random odd composite (semiprime-ish) of the requested bit length.
-// We use rejection sampling: pick two random ~bits/2 bit values, multiply,
-// re-pick if either factor turns out prime-ish (which would make the cofactor
-// itself prime and ECM trivially fail).
+// Generate a random odd semiprime of the requested bit length.
+// Both factors are forced to be probable primes via mpz_nextprime so that
+// neither is trivially smooth (which would let Stage 1 alone always win).
 Integer make_random_semiprime(std::mt19937_64& rng, size_t bits) {
     while (true) {
         size_t half = bits / 2;
-        if (half < 8) half = 8;
+        if (half < 16) half = 16;
 
-        uint64_t a_raw = rng() | (uint64_t(1) << (half - 1)) | 1u;
-        uint64_t b_raw = rng() | (uint64_t(1) << (half - 1)) | 1u;
+        // Generate random odd value of `half` bits and snap to next prime.
+        Integer a, b;
+        for (int attempt = 0; attempt < 10; ++attempt) {
+            uint64_t lo = rng();
+            uint64_t hi = rng();
+            // Set top bit so width matches.
+            if (half <= 64) {
+                lo &= (half == 64) ? ~uint64_t(0)
+                                   : ((uint64_t(1) << half) - 1);
+                lo |= uint64_t(1) << (half - 1);
+                lo |= 1u;
+                a = Integer(static_cast<unsigned long long>(lo));
+            } else {
+                // Compose 128-bit from two 64-bit words.
+                a = Integer(static_cast<unsigned long long>(hi));
+                Integer shifted;
+                mpz_mul_2exp(shifted.get_mpz(), a.get_mpz(), 64);
+                Integer add(static_cast<unsigned long long>(lo | 1u));
+                mpz_add(a.get_mpz(), shifted.get_mpz(), add.get_mpz());
+            }
+            mpz_nextprime(a.get_mpz(), a.get_mpz());
+            if (mpz_sgn(a.get_mpz()) > 0) break;
+        }
+        for (int attempt = 0; attempt < 10; ++attempt) {
+            uint64_t lo = rng();
+            uint64_t hi = rng();
+            if (half <= 64) {
+                lo &= (half == 64) ? ~uint64_t(0)
+                                   : ((uint64_t(1) << half) - 1);
+                lo |= uint64_t(1) << (half - 1);
+                lo |= 1u;
+                b = Integer(static_cast<unsigned long long>(lo));
+            } else {
+                b = Integer(static_cast<unsigned long long>(hi));
+                Integer shifted;
+                mpz_mul_2exp(shifted.get_mpz(), b.get_mpz(), 64);
+                Integer add(static_cast<unsigned long long>(lo | 1u));
+                mpz_add(b.get_mpz(), shifted.get_mpz(), add.get_mpz());
+            }
+            mpz_nextprime(b.get_mpz(), b.get_mpz());
+            if (mpz_sgn(b.get_mpz()) > 0) break;
+        }
+        if (a.compare(b) == 0) continue;
 
-        a_raw &= (uint64_t(1) << half) - 1;
-        b_raw &= (uint64_t(1) << half) - 1;
-        if (a_raw < 2) a_raw = 3;
-        if (b_raw < 2) b_raw = 3;
-
-        Integer a(static_cast<unsigned long long>(a_raw));
-        Integer b(static_cast<unsigned long long>(b_raw));
-
-        // accept if both look composite-or-prime small (we don't need strict
-        // semiprime structure for benchmark; ECM just needs a composite N)
         Integer n;
         mpz_mul(n.get_mpz(), a.get_mpz(), b.get_mpz());
-
-        if (n.is_probable_prime() > 0) continue;
         if (n.bit_length() < bits - 2 || n.bit_length() > bits + 2) continue;
         return n;
     }
@@ -79,11 +107,16 @@ int main(int argc, char* argv[]) {
     std::vector<Trial> trials;
     trials.reserve(count);
 
-    // Workload: 50-bit semiprimes. ECM B1=2000, B2=20000 (just above 3*D=6930
-    // BSGS threshold). 5 curves to keep per-trial under 1s.
-    const size_t bits = 50;
-    const uint64_t B1 = 2000;
-    const uint64_t B2 = 20000;
+    // Workload: 60-bit semiprimes. ECM B1=500 (small Stage 1), B2=10000
+    // (well above 3*D=6930 BSGS threshold). 5 curves per trial.
+    //
+    // Tuning rationale:
+    //   - small B1 -> Stage 1 likely fails -> Stage 2/3 carries the load
+    //   - B2=10000 -> matches task spec
+    //   - bits=60 -> non-trivial Stage 2 cost (factors typically > B1)
+    const size_t bits = 60;
+    const uint64_t B1 = 500;
+    const uint64_t B2 = 10000;
     const uint32_t num_curves = 5;
 
     for (size_t i = 0; i < count; ++i) {
