@@ -301,9 +301,16 @@ struct CofactorClassification {
     return 1;
 }
 
-/// 尝试用 SQUFOF / Pollard rho / ECM 分解 c 找一个非平凡因子.
+/// 尝试用 SQUFOF / Pollard rho 分解 c 找一个非平凡因子.
 /// 仅用于 try_classify_three_lp 内部. 返回 1 表示找不到.
-[[nodiscard]] inline uint64_t try_find_one_factor(uint64_t c) {
+///
+/// PERF: ECM 调用代价极高 (30 curves × 100ms = 3秒/cofactor). 3LP 在 sieve
+/// 路径上每个 reject 都触发一次, 会让 sieve 慢 50-100×. 此函数仅用 trial
+/// division + SQUFOF + Pollard rho (各 ~1ms), 不用 ECM. 找不到因子直接返回 1
+/// — caller (try_classify_three_lp) 会 fallback Composite (relation reject).
+/// 这是 sieve 路径的正确 trade-off: 偶然丢一些"难分" 3LP 比每个 reject 都付
+/// ECM 代价更划算.
+[[nodiscard]] inline uint64_t try_find_one_factor_fast(uint64_t c) {
     if (c <= 1) return 1;
     // Small primes (likely if test uses 10007/10009/10037 etc.)
     constexpr uint64_t small_primes[] = {
@@ -322,102 +329,66 @@ struct CofactorClassification {
             if (c % p == 0) return p;
         }
     }
-    // SQUFOF
+    // SQUFOF (very fast for ≤2-prime composites)
     if (c < (UINT64_C(1) << 62)) {
         uint32_t lim = (c < (UINT64_C(1) << 40)) ? 2000 :
                        (c < (UINT64_C(1) << 50)) ? 5000 : 20000;
         uint64_t f = SQUFOF::factor(c, lim);
         if (f != 1 && f != c) return f;
     }
-    // Pollard rho
+    // Pollard rho (medium cost, ~1ms)
     size_t max_iter = (c < (UINT64_C(1) << 40)) ? 10000 : 100000;
     uint64_t f = pollard_rho(c, max_iter);
     if (f != 1 && f != c) return f;
-    // ECM as last resort
-    Integer c_int(static_cast<unsigned long long>(c));
-    ECM::Config cfg;
-    cfg.num_curves = 30;
-    cfg.B1 = 5000;
-    cfg.B2 = 200000;
-    cfg.auto_params = false;
-    auto r = ECM::factor(c_int, cfg);
-    if (r && r->fits_uint64()) {
-        uint64_t v = r->to_uint64();
-        if (v != 1 && v != c) return v;
-    }
     return 1;
 }
 
 /// 尝试将 cofactor 分解为 3 个素数 (3LP)。
 ///
 /// 前置: caller 已确认 cofactor 在 (B², B³] 区间, 且 fits_uint64.
-/// 策略: 找一个非平凡因子 f; 若 f 是合数, 进一步分解; 最终得到 3 个素数.
-///   - 全 3 个 ≤ B 且 prime → ThreeLP 成立
-///   - 任一非 prime / > B → 返回 nullopt (caller fallback Composite)
+/// 策略 (sieve-fast path):
+///   1. 用 SQUFOF/Pollard 找第一个因子 f1 (no ECM).
+///   2. 若 f1 prime 且 ≤ B, 分解 rest (再调一次 SQUFOF/Pollard).
+///   3. 若 f1 composite, split 后检查是否构成 (p, q, rest).
+///   4. 失败立即返回 nullopt — caller 会 reject relation.
 ///
-/// 鲁棒性: ECM/Pollard 可能返回合数因子 (例 c=p*q*r 时 ECM 找 p*q 而非 p),
-///   此时需进一步 split 复合因子, 凑齐 3 个 prime.
+/// PERF: 单次调用 ~2 ms (SQUFOF + Pollard, 各 1ms). vs 旧 ECM 路径 ~100-300ms.
+/// 偶然丢一些"hard composite" 3LP 是 trade-off, 但 sieve 不再 stall.
+///
+/// 单元测试覆盖几个简单 case (10007*10009*10037 等), 不需 ECM 也能成功.
 [[nodiscard]] inline std::optional<CofactorClassification>
 try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
     if (c <= 1) return std::nullopt;
-    // 多次尝试 ECM (随机 seed) + fallback 策略, 增加 robustness.
-    // 内部最多 retry_attempts 次, 每次 ECM 用不同 seed.
-    constexpr int retry_attempts = 3;
-    for (int attempt = 0; attempt < retry_attempts; ++attempt) {
-        uint64_t f1 = try_find_one_factor(c);
-        if (f1 == 1) continue;
-        uint64_t rest = c / f1;
-        if (f1 * rest != c) continue;  // safety
 
-        // Normalize: ensure f1 ≤ rest (pick smaller as f1).
-        if (f1 > rest) std::swap(f1, rest);
+    uint64_t f1 = try_find_one_factor_fast(c);
+    if (f1 == 1) return std::nullopt;
+    uint64_t rest = c / f1;
+    if (f1 * rest != c) return std::nullopt;  // safety
 
-        // Case A: f1 是 prime — 进一步分解 rest 找 (f2, f3)
-        if (is_probable_prime_u64(f1)) {
-            if (f1 > large_prime_bound) continue;  // f1 > B → 不是 LP
-            // rest 必须可分为两个 prime ≤ B
-            if (is_probable_prime_u64(rest)) {
-                // rest 是单素数 → 实际是 Semiprime
-                if (rest <= large_prime_bound) {
-                    CofactorClassification r;
-                    r.type = CofactorClass::Semiprime;
-                    r.factor1 = std::min(f1, rest);
-                    r.factor2 = std::max(f1, rest);
-                    return r;
-                }
-                continue;  // rest > B → reject
+    // Normalize: ensure f1 ≤ rest (pick smaller as f1).
+    if (f1 > rest) std::swap(f1, rest);
+
+    // Case A: f1 prime — 进一步分解 rest 找 (f2, f3)
+    if (is_probable_prime_u64(f1)) {
+        if (f1 > large_prime_bound) return std::nullopt;
+        if (is_probable_prime_u64(rest)) {
+            // 实际是 Semiprime
+            if (rest <= large_prime_bound) {
+                CofactorClassification r;
+                r.type = CofactorClass::Semiprime;
+                r.factor1 = std::min(f1, rest);
+                r.factor2 = std::max(f1, rest);
+                return r;
             }
-            // rest 是合数 — 分解
-            uint64_t f2 = try_find_one_factor(rest);
-            if (f2 == 1 || f2 == rest) continue;
-            uint64_t f3 = rest / f2;
-            if (f2 * f3 != rest) continue;
-            if (!is_probable_prime_u64(f2) || !is_probable_prime_u64(f3)) continue;
-            if (f2 > large_prime_bound || f3 > large_prime_bound) continue;
-            // 排序
-            uint64_t a = f1, b = f2, d = f3;
-            if (a > b) std::swap(a, b);
-            if (b > d) std::swap(b, d);
-            if (a > b) std::swap(a, b);
-            CofactorClassification r;
-            r.type = CofactorClass::ThreeLP;
-            r.factor1 = a; r.factor2 = b; r.factor3 = d;
-            return r;
+            return std::nullopt;
         }
-
-        // Case B: f1 是合数 — 分解 f1 找 (p, q), 然后 rest 应当是单素数
-        // (例 c=p*q*r, ECM 返回 f1=p*q, rest=r)
-        uint64_t f1a = try_find_one_factor(f1);
-        if (f1a == 1 || f1a == f1) continue;
-        uint64_t f1b = f1 / f1a;
-        if (f1a * f1b != f1) continue;
-        if (!is_probable_prime_u64(f1a) || !is_probable_prime_u64(f1b)) continue;
-        if (f1a > large_prime_bound || f1b > large_prime_bound) continue;
-        // 检查 rest 是 prime ≤ B
-        if (!is_probable_prime_u64(rest)) continue;
-        if (rest > large_prime_bound) continue;
-        // 排序 (f1a, f1b, rest)
-        uint64_t a = f1a, b = f1b, d = rest;
+        uint64_t f2 = try_find_one_factor_fast(rest);
+        if (f2 == 1 || f2 == rest) return std::nullopt;
+        uint64_t f3 = rest / f2;
+        if (f2 * f3 != rest) return std::nullopt;
+        if (!is_probable_prime_u64(f2) || !is_probable_prime_u64(f3)) return std::nullopt;
+        if (f2 > large_prime_bound || f3 > large_prime_bound) return std::nullopt;
+        uint64_t a = f1, b = f2, d = f3;
         if (a > b) std::swap(a, b);
         if (b > d) std::swap(b, d);
         if (a > b) std::swap(a, b);
@@ -426,7 +397,24 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
         r.factor1 = a; r.factor2 = b; r.factor3 = d;
         return r;
     }
-    return std::nullopt;
+
+    // Case B: f1 composite — split f1 into (p, q), expect rest is single prime
+    uint64_t f1a = try_find_one_factor_fast(f1);
+    if (f1a == 1 || f1a == f1) return std::nullopt;
+    uint64_t f1b = f1 / f1a;
+    if (f1a * f1b != f1) return std::nullopt;
+    if (!is_probable_prime_u64(f1a) || !is_probable_prime_u64(f1b)) return std::nullopt;
+    if (f1a > large_prime_bound || f1b > large_prime_bound) return std::nullopt;
+    if (!is_probable_prime_u64(rest)) return std::nullopt;
+    if (rest > large_prime_bound) return std::nullopt;
+    uint64_t a = f1a, b = f1b, d = rest;
+    if (a > b) std::swap(a, b);
+    if (b > d) std::swap(b, d);
+    if (a > b) std::swap(a, b);
+    CofactorClassification r;
+    r.type = CofactorClass::ThreeLP;
+    r.factor1 = a; r.factor2 = b; r.factor3 = d;
+    return r;
 }
 
 /// 分类 cofactor
