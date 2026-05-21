@@ -3,6 +3,7 @@
 #include "../core/integer.hpp"
 #include "../core/relation.hpp"
 #include "../core/types.hpp"
+#include "../util/memory_pool.hpp"
 #include "../util/safe_math.hpp"
 #include "ooc_relation_store.hpp"
 
@@ -12,6 +13,7 @@
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <memory_resource>
 #include <mutex>
 #include <numeric>
 #include <optional>
@@ -59,6 +61,18 @@ struct CollectorConfig {
     // Note: stats.full_relations/partial_*/duplicates_rejected 不持久化 — 重置为 0,
     // 仅 total_relations = prior writer count.
     bool ooc_resume = false;
+
+    // ── Memory pool (W6 T4) ──
+    // ENV-gated: GNFS_RELATION_POOL_SIZE=N (positive int) switches the in-memory
+    // relations_ vector to std::pmr::vector<Relation> backed by
+    // RelationPoolResource (monotonic_buffer_resource, initial chunk = N bytes).
+    // Defaults pick up the ENV value at default-construction time so that
+    // `RelationCollector{}` honors the global policy without per-site code.
+    // Explicit override: set use_pool=false to force std::allocator path,
+    // or set use_pool=true + pool_initial_bytes to opt in regardless of ENV.
+    // Pool only affects vector-mode collectors (OOC mode bypasses relations_).
+    bool use_pool = util::relation_pool_enabled();
+    size_t pool_initial_bytes = util::relation_pool_size_bytes();
 };
 
 /// RelationCollector - 关系收集器
@@ -73,6 +87,17 @@ public:
         : config_(config) {
         if (!config_.output_file.empty()) {
             open_output_file();
+        }
+        // Memory pool init (W6 T4): only when explicitly opted in via ENV or
+        // direct config. OOC mode bypasses relations_ entirely so the pool
+        // would be wasted RAM in that case.
+        if (config_.use_pool && !config_.ooc_enabled) {
+            size_t chunk = config_.pool_initial_bytes > 0
+                               ? config_.pool_initial_bytes
+                               : util::RelationPoolResource::DEFAULT_INITIAL_CHUNK_BYTES;
+            pool_ = std::make_unique<util::RelationPoolResource>(chunk);
+            relations_pmr_ = std::make_unique<std::pmr::vector<Relation>>(
+                pool_->upstream());
         }
         // OOC mode: lazy-init writer (failure → exception propagates out of ctor)
         if (config_.ooc_enabled) {
@@ -164,9 +189,13 @@ public:
                 fire_callback = true;
             }
 
-            // 存储关系: OOC 模式流式写盘, 否则保留在内存 vector
+            // 存储关系: OOC 模式流式写盘, 否则保留在内存 vector.
+            // Pool mode (W6 T4): push 到 std::pmr::vector backed by RelationPoolResource;
+            // 默认走 std::vector (zero overhead path).
             if (ooc_writer_) {
                 ooc_writer_->write(rel);
+            } else if (relations_pmr_) {
+                relations_pmr_->push_back(std::move(rel));
             } else {
                 relations_.push_back(std::move(rel));
             }
@@ -194,9 +223,11 @@ public:
 
     /// 获取关系数量
     /// OOC 模式下基于 OOCRelationWriter::count() — 反映实际写盘 relation 数。
+    /// Pool 模式 (W6 T4) 读 pmr vector size。
     [[nodiscard]] size_t size() const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         if (ooc_writer_) return ooc_writer_->count();
+        if (relations_pmr_) return relations_pmr_->size();
         return relations_.size();
     }
 
@@ -204,6 +235,7 @@ public:
     [[nodiscard]] bool empty() const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         if (ooc_writer_) return ooc_writer_->count() == 0;
+        if (relations_pmr_) return relations_pmr_->empty();
         return relations_.empty();
     }
 
@@ -215,6 +247,7 @@ public:
 
     /// 获取所有关系（拷贝）
     /// OOC 模式: finalize writer + 从盘 mmap 读全部 → vector (spike RAM at this point).
+    /// Pool 模式 (W6 T4): copy pmr::vector → std::vector (caller 不感知 pool 类型).
     /// 调用后 add() 行为 undefined — 设计为 sieve 结束 → get_relations() → 释放 collector.
     [[nodiscard]] std::vector<Relation> get_relations() const {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -223,6 +256,14 @@ public:
             ooc_writer_->close();
             OOCRelationReader reader(config_.ooc_base_path);
             return reader.read_all();
+        }
+        if (relations_pmr_) {
+            std::vector<Relation> result;
+            result.reserve(relations_pmr_->size());
+            for (const auto& rel : *relations_pmr_) {
+                result.push_back(rel);
+            }
+            return result;
         }
         std::vector<Relation> result;
         result.reserve(relations_.size());
@@ -235,6 +276,7 @@ public:
     /// 获取关系的只读引用（NOT thread-safe — caller must ensure no concurrent add()）
     /// For thread-safe access, use get_relations() which copies under lock.
     /// OOC 模式不可用 — relations_ vector 在 OOC 模式下不被维护。
+    /// Pool 模式 (W6 T4) 同样不可用 — 内部容器是 std::pmr::vector，调用方需用 get_relations()。
     [[nodiscard]] const std::vector<Relation>& relations() const noexcept {
         return relations_;
     }
@@ -257,11 +299,19 @@ public:
 
     /// 清空收集器
     /// OOC 模式: close writer + 删 .reldata/.relidx 文件 + reopen (允许 reuse)。
+    /// Pool 模式 (W6 T4): 释放 pmr vector + reset RelationPoolResource (释放 chunks).
     void clear() {
         std::lock_guard<std::mutex> lock(mutex_);
         { std::vector<Relation> tmp; relations_.swap(tmp); }
         { std::unordered_set<ABPair, ABPairHash> tmp; seen_.swap(tmp); }
         stats_ = CollectorStats{};
+        if (relations_pmr_) {
+            // 先 destroy pmr::vector (析构 Relations); 再 reset pool (释放 chunks).
+            relations_pmr_.reset();
+            pool_->reset();
+            relations_pmr_ = std::make_unique<std::pmr::vector<Relation>>(
+                pool_->upstream());
+        }
         if (ooc_writer_) {
             ooc_writer_->close();
             ooc_writer_.reset();
@@ -283,6 +333,7 @@ public:
 
     /// 保存到文件 (legacy 序列化协议; 与 OOC store 协议独立)
     /// OOC 模式不兼容 — 请用 ooc_base_path 直接访问 .reldata/.relidx
+    /// Pool 模式 (W6 T4): 支持 — 走 pmr::vector 路径序列化。
     bool save(const std::string& filename) const {
         std::lock_guard<std::mutex> lock(mutex_);
         if (ooc_writer_) return false;  // OOC mode: legacy save disabled
@@ -290,13 +341,19 @@ public:
         std::ofstream ofs(filename, std::ios::binary);
         if (!ofs) return false;
 
-        // 写入头部
-        uint64_t count = relations_.size();
-        ofs.write(reinterpret_cast<const char*>(&count), sizeof(count));
-
-        // 写入关系
-        for (const auto& rel : relations_) {
-            rel.serialize(ofs);
+        // 写入头部 + 关系 — 区分 pool vs std::vector path
+        if (relations_pmr_) {
+            uint64_t count = relations_pmr_->size();
+            ofs.write(reinterpret_cast<const char*>(&count), sizeof(count));
+            for (const auto& rel : *relations_pmr_) {
+                rel.serialize(ofs);
+            }
+        } else {
+            uint64_t count = relations_.size();
+            ofs.write(reinterpret_cast<const char*>(&count), sizeof(count));
+            for (const auto& rel : relations_) {
+                rel.serialize(ofs);
+            }
         }
 
         return ofs.good();
@@ -304,6 +361,7 @@ public:
 
     /// 从文件加载 (legacy 序列化协议)
     /// OOC 模式不兼容 — relation 已写盘, 重启时直接构造 OOCRelationReader 即可。
+    /// Pool 模式 (W6 T4): 支持 — 加载到 pmr::vector path。
     bool load(const std::string& filename) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (ooc_writer_) return false;  // OOC mode: legacy load disabled
@@ -315,10 +373,15 @@ public:
         uint64_t count = 0;
         ifs.read(reinterpret_cast<char*>(&count), sizeof(count));
 
-        // 清空并预分配
-        relations_.clear();
+        // 清空并预分配 — pool vs std::vector path
+        if (relations_pmr_) {
+            relations_pmr_->clear();
+            relations_pmr_->reserve(count);
+        } else {
+            relations_.clear();
+            relations_.reserve(count);
+        }
         seen_.clear();
-        relations_.reserve(count);
 
         // 读取关系
         for (uint64_t i = 0; i < count; ++i) {
@@ -337,7 +400,11 @@ public:
             }
 
             update_stats(rel);
-            relations_.push_back(std::move(rel));
+            if (relations_pmr_) {
+                relations_pmr_->push_back(std::move(rel));
+            } else {
+                relations_.push_back(std::move(rel));
+            }
         }
 
         return true;
@@ -347,37 +414,53 @@ public:
     /// OOC 模式: this 是 OOC 时, write to disk; other 必须是非 OOC (从内存 vector 读)
     /// 设计上 sieve worker 各自有 RelationCollector + merge 到 master, 这里 OOC 也 work
     /// 但 OOC merge OOC 不支持 (会触发 read+rewrite, 不实用)。
+    /// Pool 模式 (W6 T4): this 和 other 都支持 — pool/std::vector source 都能读;
+    /// destination 写到 this 当前的容器 (pool or std::vector or OOC writer)。
     size_t merge(const RelationCollector& other) {
         if (this == &other) return 0;  // Self-merge: UB with std::mutex
         std::scoped_lock lock(mutex_, other.mutex_);
         if (other.ooc_writer_) return 0;  // OOC source not supported (read overhead)
 
-        size_t added = 0;
-        for (const auto& rel : other.relations_) {
-            Relation copy = rel;
+        // Source iteration: pmr vector 优先 (pool mode), 否则 std::vector.
+        // 通过 lambda 统一两个路径,避免代码重复.
+        auto merge_one = [&](const Relation& src_rel) -> bool {
+            Relation copy = src_rel;
 
             int kind = validate_with_kind(copy);
             if (kind != 0) {
                 if (kind == -2) ++stats_.n_divisible_rejected;
                 else ++stats_.invalid_rejected;
-                continue;
+                return false;
             }
 
             // 检查重复 — single insert+check (returns {iter, inserted}, saves a hash lookup)
             if (config_.check_duplicates) {
                 if (!seen_.insert(copy.ab()).second) {
                     ++stats_.duplicates_rejected;
-                    continue;
+                    return false;
                 }
             }
 
             update_stats(copy);
             if (ooc_writer_) {
                 ooc_writer_->write(copy);
+            } else if (relations_pmr_) {
+                relations_pmr_->push_back(std::move(copy));
             } else {
                 relations_.push_back(std::move(copy));
             }
-            ++added;
+            return true;
+        };
+
+        size_t added = 0;
+        if (other.relations_pmr_) {
+            for (const auto& rel : *other.relations_pmr_) {
+                if (merge_one(rel)) ++added;
+            }
+        } else {
+            for (const auto& rel : other.relations_) {
+                if (merge_one(rel)) ++added;
+            }
         }
 
         return added;
@@ -392,7 +475,7 @@ public:
 
 private:
     CollectorConfig config_;
-    std::vector<Relation> relations_;          // OOC 禁用时持有; OOC 启用时为空
+    std::vector<Relation> relations_;          // OOC/Pool 禁用时持有; 其他模式为空
     std::unordered_set<ABPair, ABPairHash> seen_;
     CollectorStats stats_;
     mutable std::mutex mutex_;
@@ -408,6 +491,14 @@ private:
     // OOC 模式 (BACKLOG #11c): lazy-initialized OOCRelationWriter,first add() 时构造。
     // unique_ptr 因为 OOCRelationWriter 不可移动(持有 ofstream + 内部 buffer)。
     std::unique_ptr<OOCRelationWriter> ooc_writer_;
+
+    // Pool 模式 (W6 T4): RelationPoolResource + std::pmr::vector<Relation>.
+    // 两个 fields 联动:启用时 use_pool=true → pool_ 非空 → relations_pmr_ 非空 → relations_ 不用.
+    // 析构顺序: relations_pmr_ 先析构 (释放 Relation 占用的 pool chunk 引用),
+    // pool_ 后析构 (释放底层 monotonic_buffer_resource chunks).
+    // 标记 declaration 顺序: pool_ 先, relations_pmr_ 后 → 析构序反 → relations_pmr_ 先析构. OK.
+    std::unique_ptr<util::RelationPoolResource> pool_;
+    std::unique_ptr<std::pmr::vector<Relation>> relations_pmr_;
 
     /// Resume mode: 从现有 .reldata/.relidx 加载 (a,b) seen set + 设 total_relations.
     /// 期望 OOCWriter 已经在 resume mode 重开 streams (idx_stream_ 指向 past offsets).

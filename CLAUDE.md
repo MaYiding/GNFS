@@ -615,6 +615,64 @@ wall-time 显著缩短.
 **Rotation-incremental 算法重构**: multi-day pure-math 工作仍 deferred.
 当前 parallelization 是 orthogonal lightweight 加速, 不替代真正 incremental.
 
+### Relation collector memory pool (GNFS_RELATION_POOL_SIZE)
+
+**ENV `GNFS_RELATION_POOL_SIZE=N`** (2026-05-21 实施, W6 T4):
+N 为初始 chunk 字节数, 启用 RelationCollector 内 `std::pmr::vector<Relation>`
+backed by `std::pmr::monotonic_buffer_resource`. 默认 0 (unset / "0" / 非数字)
+走原 `std::vector<Relation>` std::allocator 路径, 零开销.
+
+```bash
+GNFS_RELATION_POOL_SIZE=4194304 ./gnfs <N>        # 4 MiB initial chunk
+GNFS_RELATION_POOL_SIZE=16777216 ./test_stress 1 1 # 16 MiB initial chunk
+unset GNFS_RELATION_POOL_SIZE                      # 默认 OFF
+```
+
+**用途**: 50d/60d Round 2 sieve 期间 RelationCollector 频繁 `push_back` Relation
+到 in-memory `std::vector` 触发反复 `malloc` + heap fragmentation, M5 多核
+高并发 sieve worker 时尤其明显. Pool 一次性大 chunk 分配 (4-16 MiB),
+后续 push 直接 bump pointer; chunk 耗尽时 fallback `std::pmr::new_delete_resource`
+做几何 chunk growth. 减少 outer-vector reallocation 次数 + 减小 fragmentation
+pressure.
+
+**实现细节**:
+- `RelationPoolResource` (RAII wrapper) 持有 `std::pmr::monotonic_buffer_resource`.
+  Default initial chunk = 4 MiB. Upstream = `std::pmr::new_delete_resource`.
+  Non-copyable, movable. `reset()` 释放全部 chunks 并重 allocate.
+- `CollectorConfig::use_pool` / `pool_initial_bytes` 暴露 opt-in; defaults
+  pick up ENV at default-construction (`util::relation_pool_enabled()` /
+  `util::relation_pool_size_bytes()`). ENV 解析 cached via `std::call_once` +
+  `std::atomic<size_t>`, 每进程 1 次 getenv 命中.
+- Collector 内部双路径: `std::vector<Relation> relations_` (default) 与
+  `std::unique_ptr<std::pmr::vector<Relation>> relations_pmr_` (pool mode).
+  公开 API (`add()` / `get_relations()` / `size()` / `empty()` / `clear()` /
+  `save()` / `load()` / `merge`) 全部 transparent — `get_relations()` 在
+  pool mode copy pmr → `std::vector<Relation>` 返回, 调用方无感.
+- **Bit-for-bit guarantee**: 同 `(a,b)` 输入序列, pool ON vs OFF 产生完全相同
+  的 Relation 集合 (按 `(a,b)` sort 后逐字段相同). 单元测试强制 (`test_relation_pool_integration`).
+
+**与 OOC 兼容**:
+- OOC 模式 (`GNFS_OOC_RELATIONS=1`) 不维护 in-memory `relations_` (写盘),
+  pool 在 OOC 模式下不激活 (省 RAM). Ctor 内 `use_pool && !ooc_enabled` 检查保证.
+- Pool 与 OOC 互斥设计: 二者解决不同问题 — pool 减小 in-memory fragmentation,
+  OOC 减小 in-memory peak. 同时启用 pool 仅浪费 chunk 内存.
+
+**集成点** (W6 T4, 2026-05-21):
+- `include/gnfs/util/memory_pool.hpp` — `RelationPoolResource` RAII +
+  `relation_pool_size_bytes()` / `relation_pool_enabled()` ENV reader (cached) +
+  test-only `relation_pool_reset_env_cache_for_testing()`
+- `include/gnfs/relation/collector.hpp` — CollectorConfig fields + ctor 路由 +
+  `relations_pmr_` field + 全部公开 API dispatch
+- `tests/test_memory_pool.cpp` — 10 unit tests (RAII / reset / move /
+  pmr::vector<int> usage / chunk overflow / many small allocations /
+  ENV parsing 4 variants)
+- `tests/test_relation_pool_integration.cpp` — 4 correctness tests
+  (small / medium / stats parity / clear recycle) + 2 perf-info probes
+  (push_back 100k OFF vs ON, 10k 多 chunk size 对比)
+
+**Default OFF**: ENV unset → `use_pool = false` → `std::allocator` path 完整保留,
+零回归风险. 仅 50d+ sieve 期间高并发 push 时启用.
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
@@ -1148,6 +1206,13 @@ tail -50 /tmp/xxx.log
   Rotation-incremental 算法重构 deferred (multi-day pure math).
 - E-core QoS 分离 (2026-05-18, commits `e47ab08` + `a958fc9`): `include/gnfs/sieve/ecore_qos.hpp`
   helper, 4 个 sieve thread spawn site 已 wire-in, M5 P/E-core 调度差异已 mitigate.
+- Relation collector memory pool 已实施 (2026-05-21, W6 T4):
+  ENV `GNFS_RELATION_POOL_SIZE=N` opt-in (default 0 / OFF). Switches
+  RelationCollector in-memory `relations_` to `std::pmr::vector<Relation>`
+  backed by `RelationPoolResource` (monotonic_buffer_resource, initial chunk
+  N bytes). 减少 sieve 期间反复 malloc + fragmentation. Bit-for-bit identical
+  output guaranteed by `tests/test_relation_pool_integration.cpp`.
+  Mutually exclusive with OOC (pool disabled when `ooc_enabled=true`).
 
 ## 工作流规范（强制执行）
 
