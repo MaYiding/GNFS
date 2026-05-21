@@ -3,6 +3,7 @@
 #include "../core/integer.hpp"
 #include "../core/types.hpp"
 #include "../factor_base/factor_base.hpp"
+#include "wheel235.hpp"
 
 #include <cstdint>
 #include <vector>
@@ -63,7 +64,20 @@ public:
             __uint128_t v128 = (static_cast<__uint128_t>(hi) << 64) | lo;
 
             const auto& rationals = fb_.rational();
-            for (uint32_t idx = 0; idx < rationals.size() && v128 > 1; ++idx) {
+            // Wheel-2-3-5 fast prefix: strip 2/3/5 in O(1)+small-loop instead
+            // of the per-prime % cost. Only fires when FB starts at 2,3,5 in
+            // that order (the standard layout for any real factor base).
+            uint32_t start = 0;
+            if (rationals.size() >= 3 &&
+                rationals[0].p == 2 && rationals[1].p == 3 && rationals[2].p == 5) {
+                uint8_t e2 = 0, e3 = 0, e5 = 0;
+                v128 = wheel::strip_235(v128, e2, e3, e5);
+                if (e2 > 0) { result.factor_indices.push_back(0); result.exponents.push_back(e2); }
+                if (e3 > 0) { result.factor_indices.push_back(1); result.exponents.push_back(e3); }
+                if (e5 > 0) { result.factor_indices.push_back(2); result.exponents.push_back(e5); }
+                start = 3;
+            }
+            for (uint32_t idx = start; idx < rationals.size() && v128 > 1; ++idx) {
                 uint32_t p = rationals[idx].p;
                 if (v128 % p != 0) continue;
                 uint8_t exp = 0;
@@ -356,7 +370,41 @@ private:
         }
 
         const auto& rationals = fb_.rational();
-        for (uint32_t idx = start_idx; idx < rationals.size(); ++idx) {
+
+        // Wheel-2-3-5 fast prefix: only safe to apply when entering at index 0
+        // and the FB really begins with 2,3,5 in that order.
+        uint32_t idx_start = start_idx;
+        if (start_idx == 0 && rationals.size() >= 3 &&
+            rationals[0].p == 2 && rationals[1].p == 3 && rationals[2].p == 5) {
+            uint8_t e2 = 0, e3 = 0, e5 = 0;
+            value = wheel::strip_235(value, e2, e3, e5);
+            if (e2 > 0) { result.factor_indices.push_back(0); result.exponents.push_back(e2); }
+            if (e3 > 0) { result.factor_indices.push_back(1); result.exponents.push_back(e3); }
+            if (e5 > 0) { result.factor_indices.push_back(2); result.exponents.push_back(e5); }
+            idx_start = 3;
+
+            // Re-check early termination opportunities after wheel.
+            if (value == 1) {
+                result.is_smooth = true;
+                result.cofactor = uint64_t{1};
+                return result;
+            }
+            // Mirror the "cofactor < next_p" early exit for the wheel boundary.
+            // After consuming 2,3,5 the next FB prime is rationals[3].p (>= 7).
+            if (idx_start < rationals.size()) {
+                uint64_t next_p = rationals[idx_start].p;
+                if (value < next_p) {
+                    result.cofactor = value;
+                    return result;
+                }
+            } else {
+                // FB was exactly {2, 3, 5} (degenerate). The residual is the cofactor.
+                result.cofactor = value;
+                return result;
+            }
+        }
+
+        for (uint32_t idx = idx_start; idx < rationals.size(); ++idx) {
             uint32_t p = rationals[idx].p;
 
             uint8_t exp = 0;
