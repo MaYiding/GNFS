@@ -50,14 +50,26 @@ public:
         uint64_t seed = rd() ^ n_low;
         std::mt19937_64 rng(seed);
 
-        // Pre-compute primes once for all curves (was per-curve: 200×600KB)
-        auto cached_primes = sieve_primes(config.B1);
+        // Build BatchContext: pre-compute primes_cache + prime_powers once,
+        // then reuse across all curves via try_curve_with_pk. sigma_pool
+        // remains generated per-call with the n_low XOR rd seed (original
+        // randomization preserved).
+        BatchContext ctx;
+        ctx.B1 = config.B1;
+        ctx.B2 = config.B2;
+        ctx.primes_cache = sieve_primes(config.B1);
+        ctx.prime_powers.reserve(ctx.primes_cache.size());
+        for (uint64_t p : ctx.primes_cache) {
+            uint64_t pk = p;
+            while (pk <= config.B1 / p) pk *= p;
+            ctx.prime_powers.push_back(pk);
+        }
 
         for (uint32_t curve = 0; curve < config.num_curves; ++curve) {
             // 随机选择 sigma
             uint64_t sigma = (rng() % 1000000) + 6;
 
-            auto result = try_curve(n, sigma, config.B1, config.B2, cached_primes);
+            auto result = try_curve_with_pk(n, sigma, ctx);
             if (result) {
                 return result;
             }
