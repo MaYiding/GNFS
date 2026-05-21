@@ -231,6 +231,7 @@ MODULE_TESTS=(
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_class_group test_couveignes_large_class_group"
     api            "test_api test_i18n test_method_selection"
+    siqs           "test_siqs"
 )
 
 # 模块 → 慢速测试映射 (slow+heavy, 可选运行)
@@ -238,6 +239,7 @@ typeset -A MODULE_SLOW_TESTS
 MODULE_SLOW_TESTS=(
     polynomial     "test_kleinjung test_kleinjung_large test_factor_with_kleinjung"
     sieve          "test_lattice_sieve"
+    siqs           "test_siqs_e2e"
 )
 
 # 冒烟测试子集 (仅 < 1s 的纯单元测试，绝不包含实际 GNFS 运算)
@@ -371,6 +373,7 @@ TEST_TIMEOUT=(
     test_matrix_view_concept 10
     test_save_sparse_as_mmap 10
     test_linalg_mmap_policy  10
+    test_siqs_e2e            700
 )
 
 # 测试速度分级 (用于 list 显示)
@@ -444,6 +447,7 @@ TEST_TIER=(
     test_matrix_view_concept "instant"
     test_save_sparse_as_mmap "instant"
     test_linalg_mmap_policy  "instant"
+    test_siqs_e2e            "slow"
 )
 
 # 模块依赖图 (改了 A 模块 → 需要额外测试的下游模块)
@@ -458,6 +462,7 @@ MODULE_DEPS=(
     relation       "linalg"
     linalg         "sqrt"
     sqrt           ""
+    siqs           ""
 )
 
 # 模块描述
