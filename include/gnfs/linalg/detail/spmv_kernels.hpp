@@ -94,12 +94,16 @@ inline void spmv_transpose(const M& matrix,
     const std::size_t T = pool.num_threads();
     const std::size_t chunk = (m + T - 1) / T;
 
-    // Function-local static — shared across all matrix types because the
-    // buffer dimensions only depend on (T, n). Thread safety: ThreadPool
-    // returns futures, caller blocks on future.get() before the next call,
-    // so no concurrent access between SpMV invocations.
-    static SpmvLocals scratch;
-    scratch.ensure(T, n);
+    // Per-caller-thread scratch (thread_local). Multiple concurrent owner
+    // threads (e.g. GNFS_BW_KRYLOV_STREAMS=K workers each with their own
+    // ThreadPool) must not share scratch — they would race on the per-pool
+    // worker slots. C++ disallows capturing thread_local by reference in
+    // lambdas (static storage duration), so we bind a local pointer for
+    // capture; pool worker threads access through the captured pointer,
+    // not their own TLS.
+    thread_local SpmvLocals scratch_tls;
+    scratch_tls.ensure(T, n);
+    SpmvLocals* scratch = &scratch_tls;
 
     std::vector<std::future<void>> futures;
     futures.reserve(T);
@@ -110,8 +114,8 @@ inline void spmv_transpose(const M& matrix,
         const std::size_t end_row = std::min(start + chunk, m);
         if (start >= m) break;
         T_used = t + 1;
-        futures.push_back(pool.submit([&matrix, &x, t, start, end_row]() {
-            auto& local = scratch.locals[t];
+        futures.push_back(pool.submit([&matrix, &x, scratch, t, start, end_row]() {
+            auto& local = scratch->locals[t];
             for (std::size_t i = start; i < end_row; ++i) {
                 const std::uint64_t xi = x.data[i];
                 if (xi == 0) continue;
@@ -132,9 +136,9 @@ inline void spmv_transpose(const M& matrix,
     }
     for (auto& f : futures) f.get();
 
-    pool.parallel_for_index(0, n, [&y, T_used](std::size_t j) {
+    pool.parallel_for_index(0, n, [&y, scratch, T_used](std::size_t j) {
         std::uint64_t val = 0;
-        for (std::size_t t = 0; t < T_used; ++t) val ^= scratch.locals[t][j];
+        for (std::size_t t = 0; t < T_used; ++t) val ^= scratch->locals[t][j];
         y.data[j] = val;
     });
 }
