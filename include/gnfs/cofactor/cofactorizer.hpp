@@ -35,12 +35,14 @@ struct CofactorizerConfig {
     uint64_t large_prime_bound = 0;      // 大素数上界 (0 = 使用因子基设置)
     bool allow_1lp = true;               // 允许 1 个大素数
     bool allow_2lp = true;               // 允许 2 个大素数
-    // 3LP 未被 RelationFilter 支持(filter.hpp 显式丢弃 3LP+ 关系),且 cofactorize
-    // 后被 filter 丢的 cofactor 工作完全浪费。当前无 allow_3lp 字段;若将来实现
-    // chain-merge 把 3LP 链合并为 0LP 等价,需要同时:
-    //   (1) cofactorizer 接受 Composite 分类
-    //   (2) RelationFilter::merge_3lp 实现
-    // 两端同时上线才能恢复;只放开一端只会浪费 CPU。
+    // 3LP (3 个 large primes) opt-in via ENV GNFS_3LP=1 in Pipeline. 默认 false 保留
+    // 旧行为. 启用时:
+    //   (1) cofactorizer 接受 CofactorClass::ThreeLP 分类
+    //   (2) RelationFilter / CliqueRelationMerger 已能 BFS spanning tree 处理 3LP+
+    //   chain (clique_merger.hpp 算法本身 generic, 只需 pool prefilter 放开)
+    // CADO-NFS / Bai-Filbois 2015 路线: 50d β plateau ~121% 主因是 lp_bits=23 时
+    // weight≥3 LP key 占比 30%, 3LP 接受拓宽 LP 空间能有效改善.
+    bool allow_3lp = false;              // 允许 3 个大素数 (opt-in)
     size_t max_factorization_attempts = 10000;  // Pollard rho 最大尝试次数
 };
 
@@ -50,6 +52,7 @@ struct CofactorizerStats {
     std::atomic<size_t> full_relations{0};
     std::atomic<size_t> partial_1lp{0};
     std::atomic<size_t> partial_2lp{0};
+    std::atomic<size_t> partial_3lp{0};   // 3LP relations (allow_3lp=true 时使用)
     std::atomic<size_t> rational_rejects{0};
     std::atomic<size_t> algebraic_rejects{0};
     std::atomic<size_t> both_rejects{0};
@@ -66,6 +69,7 @@ struct CofactorizerStats {
         size_t full_relations;
         size_t partial_1lp;
         size_t partial_2lp;
+        size_t partial_3lp;
         size_t rational_rejects;
         size_t algebraic_rejects;
         size_t both_rejects;
@@ -77,6 +81,7 @@ struct CofactorizerStats {
                 full_relations.load(std::memory_order_relaxed),
                 partial_1lp.load(std::memory_order_relaxed),
                 partial_2lp.load(std::memory_order_relaxed),
+                partial_3lp.load(std::memory_order_relaxed),
                 rational_rejects.load(std::memory_order_relaxed),
                 algebraic_rejects.load(std::memory_order_relaxed),
                 both_rejects.load(std::memory_order_relaxed),
@@ -88,6 +93,7 @@ struct CofactorizerStats {
         full_relations.store(0, std::memory_order_relaxed);
         partial_1lp.store(0, std::memory_order_relaxed);
         partial_2lp.store(0, std::memory_order_relaxed);
+        partial_3lp.store(0, std::memory_order_relaxed);
         rational_rejects.store(0, std::memory_order_relaxed);
         algebraic_rejects.store(0, std::memory_order_relaxed);
         both_rejects.store(0, std::memory_order_relaxed);
@@ -194,17 +200,34 @@ public:
                 rat_result = divider_.divide_rational(std::move(rat_value));
             }
         }
-        // Fast reject: if 2LP disabled and cofactor > LP_bound, skip expensive classify
-        // (classify_cofactor calls SQUFOF which is very slow)
-        if (!config_.allow_2lp && rat_result.cofactor.fits_uint64()) {
+        // Fast reject: if 2LP disabled and cofactor > LP_bound, skip expensive classify.
+        // 当 allow_3lp=true 时 reject 阈值上升到 B² (3LP 接受 [B², B³] cofactors).
+        if (!config_.allow_2lp && !config_.allow_3lp && rat_result.cofactor.fits_uint64()) {
             uint64_t rc = rat_result.cofactor.to_uint64();
             if (rc > 1 && rc > large_prime_bound_) {
                 stats_.rational_rejects.fetch_add(1, std::memory_order_relaxed);
                 return std::nullopt;
             }
+        } else if (config_.allow_2lp && !config_.allow_3lp && rat_result.cofactor.fits_uint64()) {
+            uint64_t rc = rat_result.cofactor.to_uint64();
+            __uint128_t lpb2 = static_cast<__uint128_t>(large_prime_bound_)
+                             * static_cast<__uint128_t>(large_prime_bound_);
+            if (rc > 1 && static_cast<__uint128_t>(rc) > lpb2) {
+                stats_.rational_rejects.fetch_add(1, std::memory_order_relaxed);
+                return std::nullopt;
+            }
+        } else if (config_.allow_3lp && rat_result.cofactor.fits_uint64()) {
+            uint64_t rc = rat_result.cofactor.to_uint64();
+            __uint128_t lpb3 = static_cast<__uint128_t>(large_prime_bound_)
+                             * static_cast<__uint128_t>(large_prime_bound_)
+                             * static_cast<__uint128_t>(large_prime_bound_);
+            if (rc > 1 && static_cast<__uint128_t>(rc) > lpb3) {
+                stats_.rational_rejects.fetch_add(1, std::memory_order_relaxed);
+                return std::nullopt;
+            }
         }
         CofactorClassification rat_class = classify_cofactor(
-            rat_result.cofactor, large_prime_bound_);
+            rat_result.cofactor, large_prime_bound_, config_.allow_3lp);
 
         // Rational-first 短路: 有理侧不可接受 → 跳过代数试除
         if (!is_acceptable_cofactor(rat_class)) {
@@ -255,16 +278,34 @@ public:
         auto alg_result = divider_.divide_algebraic(
             std::move(alg_norm), a, b, fb_.sieve_algebraic_count());
 
-        // Fast reject: if 2LP disabled and cofactor > LP_bound, skip expensive classify
-        if (!config_.allow_2lp && alg_result.cofactor.fits_uint64()) {
+        // Fast reject: if 2LP disabled and cofactor > LP_bound, skip expensive classify.
+        // allow_3lp 时阈值升到 B³.
+        if (!config_.allow_2lp && !config_.allow_3lp && alg_result.cofactor.fits_uint64()) {
             uint64_t ac = alg_result.cofactor.to_uint64();
             if (ac > 1 && ac > large_prime_bound_) {
                 stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
                 return std::nullopt;
             }
+        } else if (config_.allow_2lp && !config_.allow_3lp && alg_result.cofactor.fits_uint64()) {
+            uint64_t ac = alg_result.cofactor.to_uint64();
+            __uint128_t lpb2 = static_cast<__uint128_t>(large_prime_bound_)
+                             * static_cast<__uint128_t>(large_prime_bound_);
+            if (ac > 1 && static_cast<__uint128_t>(ac) > lpb2) {
+                stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
+                return std::nullopt;
+            }
+        } else if (config_.allow_3lp && alg_result.cofactor.fits_uint64()) {
+            uint64_t ac = alg_result.cofactor.to_uint64();
+            __uint128_t lpb3 = static_cast<__uint128_t>(large_prime_bound_)
+                             * static_cast<__uint128_t>(large_prime_bound_)
+                             * static_cast<__uint128_t>(large_prime_bound_);
+            if (ac > 1 && static_cast<__uint128_t>(ac) > lpb3) {
+                stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
+                return std::nullopt;
+            }
         }
         CofactorClassification alg_class = classify_cofactor(
-            alg_result.cofactor, large_prime_bound_);
+            alg_result.cofactor, large_prime_bound_, config_.allow_3lp);
 
         if (!is_acceptable_cofactor(alg_class)) {
             stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
@@ -378,8 +419,12 @@ private:
             case CofactorClass::Semiprime:
                 return config_.allow_2lp;
 
+            case CofactorClass::ThreeLP:
+                return config_.allow_3lp;
+
             case CofactorClass::Composite:
-                return false;  // 3LP+ 未实现 chain-merge,拒绝以节省工作
+                // 3LP 分解尝试失败 (合数但 ECM 找不到 3 个 prime ≤ B) → 拒绝
+                return false;
 
             case CofactorClass::TooLarge:
             case CofactorClass::Unknown:
@@ -406,6 +451,12 @@ private:
             case CofactorClass::Semiprime:
                 list.push_back(PrimePower{cls.factor1, static_cast<uint8_t>(1)});
                 list.push_back(PrimePower{cls.factor2, static_cast<uint8_t>(1)});
+                break;
+
+            case CofactorClass::ThreeLP:
+                list.push_back(PrimePower{cls.factor1, static_cast<uint8_t>(1)});
+                list.push_back(PrimePower{cls.factor2, static_cast<uint8_t>(1)});
+                list.push_back(PrimePower{cls.factor3, static_cast<uint8_t>(1)});
                 break;
 
             default:
@@ -463,6 +514,15 @@ public:
                 list.push_back(PrimePower{cls.factor2, r2, static_cast<uint8_t>(1)});
                 break;
             }
+            case CofactorClass::ThreeLP: {
+                uint64_t r1 = compute_alg_lp_root(a, b, cls.factor1);
+                uint64_t r2 = compute_alg_lp_root(a, b, cls.factor2);
+                uint64_t r3 = compute_alg_lp_root(a, b, cls.factor3);
+                list.push_back(PrimePower{cls.factor1, r1, static_cast<uint8_t>(1)});
+                list.push_back(PrimePower{cls.factor2, r2, static_cast<uint8_t>(1)});
+                list.push_back(PrimePower{cls.factor3, r3, static_cast<uint8_t>(1)});
+                break;
+            }
             default:
                 break;
         }
@@ -476,8 +536,11 @@ public:
             stats_.full_relations.fetch_add(1, std::memory_order_relaxed);
         } else if (lp_count == 1) {
             stats_.partial_1lp.fetch_add(1, std::memory_order_relaxed);
-        } else {
+        } else if (lp_count == 2) {
             stats_.partial_2lp.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            // 3+ LPs (typically 3LP, may include rare 4LP if rat+alg both Semiprime)
+            stats_.partial_3lp.fetch_add(1, std::memory_order_relaxed);
         }
     }
 };
