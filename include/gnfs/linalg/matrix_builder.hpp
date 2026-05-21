@@ -363,6 +363,182 @@ public:
         return result;
     }
 
+    /// Streaming variant of build_with_qc: consumes any RelationSource
+    /// (vector adapter or OOC mmap reader) one relation at a time. Avoids
+    /// materializing the full vector<Relation> in RAM.
+    ///
+    /// Functionally identical to build_with_qc(vector, fb, ctx) when fed via
+    /// VectorRelationSource(vec): produces bit-for-bit identical
+    /// MatrixBuildResult. Verified by tests/test_sge_streaming.cpp.
+    ///
+    /// Memory cost: O(unique LPs + matrix nnz). The vector<Relation> never
+    /// exists. Each parallel thread fetches its relation on demand and lets
+    /// it drop after row build — RAM stays flat over the build.
+    ///
+    /// I/O cost: ~2 full scans of the source.
+    ///   Pass 1: collect_large_primes_streaming
+    ///   Pass 2: build_row_with_qc (parallel)
+    /// For OOCRelationSource these are mmap reads — page cache handles repeat
+    /// access. For VectorRelationSource the cost is negligible (vector copy).
+    template <RelationSource Source>
+    [[nodiscard]] MatrixBuildResult build_with_qc_streaming(
+            const Source& source,
+            const FactorBase& fb,
+            const PolynomialContext& ctx) const {
+
+        MatrixBuildResult result;
+
+        // 第一步：流式收集大素数
+        auto lp_info = collect_large_primes_streaming(source);
+
+        // 第二步：选择二次特征素数 (与 vector 版完全相同)
+        uint32_t effective_qc_count = config_.num_qc_primes;
+        bool can_use_schirokauer = config_.include_schirokauer &&
+                                   ctx.degree() <= FastPoly::MAX_DEGREE;
+        if (can_use_schirokauer) {
+            uint32_t d_check = ctx.degree();
+            std::vector<uint64_t> f_mod2(d_check + 1);
+            Integer c;
+            const Integer two(uint64_t(2));
+            for (uint32_t i = 0; i <= d_check; ++i) {
+                c = ctx.coeff(i);
+                c %= two;
+                if (c.is_negative()) c += two;
+                f_mod2[i] = c.to_uint64();
+            }
+            bool f_irred_mod2 = sqrt::ModularPoly::is_irreducible(f_mod2, 2);
+            if (!f_irred_mod2) {
+                effective_qc_count = std::max(effective_qc_count,
+                    static_cast<uint32_t>(config_.num_qc_primes + d_check * 8));
+            }
+        } else if (config_.include_schirokauer) {
+            effective_qc_count = std::max(effective_qc_count,
+                static_cast<uint32_t>(config_.num_qc_primes + ctx.degree() * 8));
+        }
+        std::vector<std::pair<uint32_t, uint32_t>> qc_prime_roots;
+        if (config_.include_qc_columns) {
+            uint32_t alg_bound = fb.params().algebraic_bound;
+            qc_prime_roots = select_qc_prime_roots(ctx, effective_qc_count, alg_bound + 1);
+        }
+
+        // 第三步：类群
+        std::unique_ptr<sqrt::ClassGroup> class_group;
+        if (config_.include_class_group) {
+            sqrt::ClassGroupConfig cg_config;
+            cg_config.verbose = config_.verbose;
+            class_group = std::make_unique<sqrt::ClassGroup>(ctx, cg_config);
+            if (config_.verbose) {
+                std::cerr << "[ClassGroup] Discriminant: "
+                          << class_group->discriminant().to_string() << "\n"
+                          << "[ClassGroup] Generators: "
+                          << class_group->num_generators() << "\n";
+            }
+        }
+
+        // 第四步：Schirokauer
+        std::unique_ptr<SchirokaurMap> schirokauer;
+        if (can_use_schirokauer) {
+            std::vector<uint32_t> sm_primes;
+            if (!config_.schirokauer_primes.empty()) {
+                uint32_t d = ctx.degree();
+                Integer c;
+                for (uint32_t ell : config_.schirokauer_primes) {
+                    std::vector<uint64_t> f_mod_ell(d + 1);
+                    const Integer ell_int(static_cast<uint64_t>(ell));
+                    for (uint32_t i = 0; i <= d; ++i) {
+                        c = ctx.coeff(i);
+                        c %= ell_int;
+                        if (c.is_negative()) c += ell_int;
+                        f_mod_ell[i] = c.to_uint64();
+                    }
+                    if (sqrt::ModularPoly::is_irreducible(f_mod_ell, ell)) {
+                        sm_primes.push_back(ell);
+                    }
+                }
+            }
+            if (sm_primes.empty()) {
+                sm_primes.push_back(2);
+            }
+            SchirokaurConfig sm_config;
+            sm_config.primes = sm_primes;
+            sm_config.verbose = config_.verbose;
+            schirokauer = std::make_unique<SchirokaurMap>(ctx, sm_config);
+            if (config_.verbose) {
+                std::cerr << "[Schirokauer] Total columns: "
+                          << schirokauer->num_columns() << "\n";
+            }
+        }
+
+        // 第五步：列映射
+        setup_column_mapping_with_qc(result.mapping, fb, lp_info, qc_prime_roots);
+
+        if (class_group) {
+            result.mapping.num_class_group_columns = class_group->num_generators();
+        }
+        if (schirokauer) {
+            result.mapping.num_schirokauer_columns = schirokauer->num_columns();
+            result.mapping.schirokauer_primes = schirokauer->primes();
+        }
+
+        // 第六步：流式矩阵构建
+        const std::size_t n = source.count();
+        if (config_.verbose) {
+            std::cerr << "[Matrix-streaming] Starting matrix build: " << n
+                      << " x " << result.mapping.total_columns() << "\n";
+        }
+        result.matrix = SparseMatrix(n, result.mapping.total_columns());
+        result.row_to_relation.resize(n);
+
+        // Parallel row build: each thread reads its own relation from the
+        // source via source.read(i). RelationSource concept requires read(i)
+        // to be thread-safe for distinct i — both OOCRelationReader (mmap +
+        // local deserialize) and VectorRelationSource (const access) satisfy
+        // this. The relation goes out of scope at the end of each lambda
+        // invocation — no accumulation in any shared structure.
+        gnfs::util::ThreadPool pool(0);
+        pool.parallel_for_index(0, n, [&](std::size_t i) {
+            Relation rel = source.read(i);
+            build_row_with_qc(result.matrix.row(i), rel, fb, ctx, result.mapping);
+
+            if (class_group && class_group->num_generators() > 0) {
+                auto cg_chars = class_group->compute_character(rel.a, rel.b);
+                for (const auto& [ea, eb] : rel.extra_ab_pairs) {
+                    auto extra_chars = class_group->compute_character(ea, eb);
+                    for (std::size_t j = 0; j < cg_chars.size(); ++j) {
+                        cg_chars[j] = cg_chars[j] ^ extra_chars[j];
+                    }
+                }
+                for (std::size_t j = 0; j < cg_chars.size(); ++j) {
+                    if (cg_chars[j]) {
+                        result.matrix.row(i).set(
+                            static_cast<uint32_t>(result.mapping.class_group_start() + j));
+                    }
+                }
+            }
+
+            if (schirokauer) {
+                auto sm_values = schirokauer->compute_flat(rel.a, rel.b);
+                for (const auto& [ea, eb] : rel.extra_ab_pairs) {
+                    auto extra_sm = schirokauer->compute_flat(ea, eb);
+                    for (std::size_t j = 0; j < sm_values.size(); ++j) {
+                        sm_values[j] += extra_sm[j];
+                    }
+                }
+                std::size_t sm_start = result.mapping.schirokauer_start();
+                for (std::size_t j = 0; j < sm_values.size(); ++j) {
+                    if (sm_values[j] % 2 == 1) {
+                        result.matrix.row(i).set(static_cast<uint32_t>(sm_start + j));
+                    }
+                }
+            }
+
+            result.row_to_relation[i] = i;
+            // rel destroyed here — RAM not accumulating.
+        });
+
+        return result;
+    }
+
 private:
     Config config_;
 
