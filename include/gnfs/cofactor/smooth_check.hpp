@@ -4,6 +4,7 @@
 #include "brent_pollard_rho.hpp"
 #include "ecm.hpp"
 #include "squfof.hpp"
+#include "survival_predictor.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -12,6 +13,17 @@
 namespace gnfs::cofactor {
 
 using core::Integer;
+
+namespace detail {
+
+/// Bit length of an unsigned uint64 value. Returns 0 for v == 0.
+[[nodiscard]] inline uint64_t bit_length_u64(uint64_t v) noexcept {
+    if (v == 0) return 0;
+    // 64 - clz gives the position of the highest set bit + 1.
+    return 64ULL - static_cast<uint64_t>(__builtin_clzll(v));
+}
+
+} // namespace detail
 
 /// ENV-gate cache for `GNFS_COFACTOR_BRENT`. Parsed once (first call) and
 /// cached. Returns true iff env is set to "1" (any other value disables).
@@ -445,13 +457,70 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
 /// @param cofactor 剩余的未分解部分
 /// @param large_prime_bound 大素数上界
 /// @param allow_3lp 是否尝试 3LP 分解 (默认 false: 保留旧行为)
+/// @param smoothness_bound 光滑界 B（用于 survival predictor，0 = 禁用 predictor）
 /// @return 分类结果
 [[nodiscard]] inline CofactorClassification classify_cofactor(
         const Integer& cofactor,
         uint64_t large_prime_bound,
-        bool allow_3lp = false) {
+        bool allow_3lp = false,
+        uint64_t smoothness_bound = 0) {
 
     CofactorClassification result;
+
+    // Survival predictor early reject (default OFF via ENV).
+    // Inserted BEFORE trial division / SQUFOF / ECM. Only takes effect when:
+    //   GNFS_SURVIVAL_FILTER=1 + GNFS_SURVIVAL_THRESHOLD > 0
+    //   + smoothness_bound > 0 (caller supplied real B).
+    // When all conditions hold and Dickman estimate < threshold, return
+    // TooLarge (treats cofactor as too large to be smooth).
+    //
+    // When predictor is enabled but does NOT reject, we record at the end
+    // whether the cofactor turned out smooth (pass_smooth) or not
+    // (pass_failed). The predictor_passed flag below propagates that
+    // intent.
+    const bool survival_predictor_active =
+        smoothness_bound > 0 && survival_filter_enabled() && survival_threshold() > 0.0;
+    if (survival_predictor_active) {
+        const uint64_t c_bits = cofactor.fits_uint64()
+            ? detail::bit_length_u64(cofactor.to_uint64())
+            : static_cast<uint64_t>(mpz_sizeinbase(cofactor.get_mpz(), 2));
+        const uint64_t B_bits = detail::bit_length_u64(smoothness_bound);
+        const uint64_t LP_bits = detail::bit_length_u64(large_prime_bound);
+        if (should_reject_cofactor(c_bits, B_bits, LP_bits)) {
+            survival_stats().record_reject();
+            result.type = CofactorClass::TooLarge;
+            return result;
+        }
+    }
+
+    // RAII-style stats updater: records pass_smooth or pass_failed when the
+    // predictor was active and we didn't reject. Triggered on every return
+    // path of classify_cofactor (including exceptions).
+    struct PassRecorder {
+        bool active;
+        const CofactorClassification* result_ref;
+        ~PassRecorder() {
+            if (!active) return;
+            // pass_smooth covers Smooth / Prime / PrimePower / Semiprime / ThreeLP
+            // pass_failed covers TooLarge / Composite / Unknown
+            switch (result_ref->type) {
+                case CofactorClass::Smooth:
+                case CofactorClass::Prime:
+                case CofactorClass::PrimePower:
+                case CofactorClass::Semiprime:
+                case CofactorClass::ThreeLP:
+                    survival_stats().record_pass_smooth();
+                    break;
+                case CofactorClass::TooLarge:
+                case CofactorClass::Composite:
+                case CofactorClass::Unknown:
+                default:
+                    survival_stats().record_pass_failed();
+                    break;
+            }
+        }
+    };
+    PassRecorder pass_recorder{survival_predictor_active, &result};
 
     // 检查是否为 1
     if (cofactor.fits_uint64()) {
