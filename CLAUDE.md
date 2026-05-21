@@ -813,6 +813,57 @@ monic-normalized 结果完全一致. 单元测试 `test_half_gcd` 16 个测试�
 
 **Default OFF**: pipeline.cpp 与 `ModularPoly::gcd` 入口不动, opt-in 实验通道.
 
+### Phase 0 radix-sort dedup-sort (GNFS_FILTER_RADIX_SORT)
+
+**ENV `GNFS_FILTER_RADIX_SORT={0,1}`** (2026-05-22 实施, default 0):
+`sort_relations` (Phase 0 dedup-sort 之前的 `(b, a)` lex 排序) 切到
+LSD 字节-radix 路径. 默认 0 走 `std::sort` 比较器路径, bit-for-bit
+identical 输出. 严格仅 "1" 启用, 其它值 (unset / "garbage" / "2" /
+"true" / "0" / 空串) 均视为 0.
+
+```bash
+GNFS_FILTER_RADIX_SORT=1 ./gnfs <N>          # 启用 LSD radix path
+GNFS_FILTER_RADIX_SORT=0 ./gnfs <N>          # 显式 disable (= default)
+unset GNFS_FILTER_RADIX_SORT                  # 默认 disable (std::sort)
+```
+
+**算法**: 稳定 LSD 字节-radix, 16 次 byte-pass (a 低位到高位 8 次,
+b 低位到高位 8 次). LSD 稳定性使 b 成为主键, a 次键, 与 `std::sort`
+比较器同序. signed `a` (int64) 经 `kSignBias = 0x8000_0000_0000_0000`
+XOR 后按 unsigned 字节排序仍得正确数值序 (negative 排在 non-negative
+之前). 单线程, O(n) wall, O(n) scratch (两份 uint64 keys + 两份
+uint32 indices + 最终一次 Relation move 重排).
+
+**Bit-for-bit guarantee**: 同 relation 列表, radix path 与 std::sort
+path sort 后 `filter_duplicates` 结果完全相同 (顺序相同, 字段相同).
+稳定排序使重复 `(a, b)` 对保留首次插入顺序, 故 dedup 选同一代表关系.
+单元测试 `tests/test_filter_radix_sort.cpp` 8 个测试强制覆盖 (empty /
+single / sorted / reverse / random 100/10000 / 5×duplicate stability /
+ENV parsing matrix).
+
+**ROI 与定位**:
+- 主要 ROI: 1M+ relations 时 `std::sort` 比较器每次 probe 触及 ≥ 500B
+  的 `Relation` struct, cache miss heavy. radix 仅扫一次 (建 keys) 再
+  扫一次 (final permute), 中间 16 pass 全部跑在 8B keys + 4B indices,
+  L1/L2 友好. 理论 wall O(n) vs `n log n`.
+- 50d+/60d Round 2 Phase 0 sort 可见时间被压缩 (具体 wall 视 n / Relation
+  size, smaller n 走 std::sort 更快).
+- ROI 主要在 50d+ stress 路径, 25d gate sort 时间 < 1ms 无差别. 因此
+  默认 OFF 保证零回归风险.
+
+**集成点** (2026-05-22):
+- `include/gnfs/relation/radix_sort.hpp` — 新增 helper header. 提供
+  `radix_sort_relations()` + `filter_radix_sort_enabled()` (cached) +
+  `filter_radix_sort_reset_env_cache_for_testing()` test hook +
+  `detail::kSignBias` / `detail::radix_byte_pass` 实现细节
+- `include/gnfs/relation/collector.hpp` — `sort_relations()` 入口处
+  ENV-gate 分发. 检索 `filter_radix_sort_enabled()` 调用点
+- `tests/test_filter_radix_sort.cpp` — 8 instant tier tests, TIMEOUT 60
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout
+
+**Default OFF**: `sort_relations()` 调用方零行为变化, `std::sort` path
+完整保留. 仅当用户 explicit `GNFS_FILTER_RADIX_SORT=1` 时启用.
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
