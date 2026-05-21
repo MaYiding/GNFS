@@ -582,6 +582,20 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME BWKrylovParallel COMMAND test_bw_krylov_parallel)
     set_tests_properties(BWKrylovParallel PROPERTIES LABELS "fast" TIMEOUT 120)
 
+    add_executable(test_krylov_compress
+        tests/test_krylov_compress.cpp
+    )
+    target_link_libraries(test_krylov_compress PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME KrylovCompress COMMAND test_krylov_compress)
+    set_tests_properties(KrylovCompress PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_krylov_compression
+        tests/test_krylov_compression.cpp
+    )
+    target_link_libraries(test_krylov_compression PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME KrylovCompression COMMAND test_krylov_compression)
+    set_tests_properties(KrylovCompression PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_cofactor
         tests/test_cofactor.cpp
     )
