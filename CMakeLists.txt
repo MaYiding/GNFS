@@ -712,6 +712,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME MmapCSR COMMAND test_mmap_csr)
     set_tests_properties(MmapCSR PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # MatrixView concept compile-time + run-time conformance tests.
+    # Locks in CSRMatrix / MmapCSRMatrix accessor parity so SpMV
+    # templated kernels can stay devirtualised.
+    add_executable(test_matrix_view_concept
+        tests/test_matrix_view_concept.cpp
+    )
+    target_link_libraries(test_matrix_view_concept PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME MatrixViewConcept COMMAND test_matrix_view_concept)
+    set_tests_properties(MatrixViewConcept PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Out-of-core Relations 单元测试
     add_executable(test_ooc_relations
         tests/test_ooc_relations.cpp
