@@ -2,9 +2,11 @@
 
 #include "number_field.hpp"
 #include "modular_poly.hpp"
+#include "hensel_parallel.hpp"
 #include "../core/integer.hpp"
 #include "../core/polynomial_context.hpp"
 
+#include <span>
 #include <vector>
 #include <optional>
 #include <iostream>
@@ -515,28 +517,33 @@ private:
             std::cerr << "] found in " << ms_find << "ms\n";
         }
 
-        // ---- Step 1: Parallel Hensel lift for each prime ----
-        // Limit inner threads to hw/K to prevent oversubscription
-        // (K outer threads × hw inner threads = K×hw >> hw cores)
+        // ---- Step 1: Hensel lift for each prime (env-gated parallelization) ----
+        //
+        // GNFS_SQRT_HENSEL_THREADS (default 1) controls outer-loop parallelism.
+        //   1: sequential per-slot loop, zero ThreadPool overhead (default)
+        //   N>=2: K slots dispatched to a pool of min(N, K) workers
+        //
+        // Inner-thread budget for hensel_lift_single_prime must avoid
+        // oversubscription: outer * inner <= hw_cores.  When outer==1 we hand
+        // the full hw budget to the inner (parallel product/poly_mul_mod);
+        // when outer>=K we cap inner to hw/K.
         unsigned hw = std::thread::hardware_concurrency();
-        size_t inner_threads = std::max(size_t(1), static_cast<size_t>(hw > 0 ? hw : 4) / K);
+        const size_t outer_threads = gnfs::sqrt::sqrt_hensel_threads();
+        const size_t outer_eff = (outer_threads < K) ? outer_threads : K;
+        const size_t hw_safe = static_cast<size_t>(hw > 0 ? hw : 4);
+        const size_t inner_threads = std::max(size_t(1), hw_safe / std::max(size_t(1), outer_eff));
 
         std::vector<LiftResult> lifted(K);
         size_t next_spare = K;  // index into all_inert for replacement primes
 
-        // Initial parallel lift
-        {
-            std::vector<std::thread> threads;
-            threads.reserve(K);
-            for (size_t i = 0; i < K; ++i) {
-                threads.emplace_back([&, i]() {
-                    lifted[i] = hensel_lift_single_prime(
-                        inert_primes[i], ab_pairs, nf, lifts_per_prime[i],
-                        inner_threads);
-                });
-            }
-            for (auto& th : threads) th.join();
-        }
+        // Initial lift dispatch — env-gated dispatcher (sequential when N==1).
+        gnfs::sqrt::parallel_hensel_lift<LiftResult>(
+            std::span<LiftResult>(lifted.data(), K),
+            [&](LiftResult& slot, std::size_t i) {
+                slot = hensel_lift_single_prime(
+                    inert_primes[i], ab_pairs, nf, lifts_per_prime[i],
+                    inner_threads);
+            });
 
         // Retry failed primes with replacements (sequential, one at a time)
         for (size_t i = 0; i < K; ++i) {

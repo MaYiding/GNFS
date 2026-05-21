@@ -673,6 +673,53 @@ pressure.
 **Default OFF**: ENV unset → `use_pool = false` → `std::allocator` path 完整保留,
 零回归风险. 仅 50d+ sieve 期间高并发 push 时启用.
 
+### Hensel lift K-prime slot 并行 (GNFS_SQRT_HENSEL_THREADS)
+
+**ENV `GNFS_SQRT_HENSEL_THREADS=N`** (2026-05-21 实施, default 1, range [1, hardware_concurrency * 2]):
+Nguyen Hybrid algebraic sqrt 的 K=3 inert-prime slot 各自做 Hensel lift,
+slot 之间相互独立 (embarrassingly parallel). N=1 (默认) 走 sequential per-slot
+循环, 不创建 ThreadPool, 零开销保留原行为. N>=2 时把 K 个 slot dispatch 到
+大小为 min(N, K) 的 ThreadPool, slot 之间靠 future 同步收口.
+
+```bash
+GNFS_SQRT_HENSEL_THREADS=1 ./gnfs <N>    # default sequential, zero overhead
+GNFS_SQRT_HENSEL_THREADS=2 ./gnfs <N>    # 2 outer workers, inner_threads = hw / 2
+GNFS_SQRT_HENSEL_THREADS=4 ./gnfs <N>    # 4 outer workers, inner_threads = hw / 3 (cap at K)
+unset GNFS_SQRT_HENSEL_THREADS           # same as N=1
+```
+
+**并行模型**:
+- Outer = `parallel_hensel_lift(slots, lift_one)` over K=3 inert-prime slots
+- Inner = `hensel_lift_single_prime` 自身的 ThreadPool (poly_mul_mod /
+  compute_product_mod_parallel), 受 `inner_threads = hw / min(outer, K)` 限制
+  保持 `outer * inner <= hw` 不超订
+- Slot state pure-function: 每个 slot 独占 LiftResult buffer; lift_one 仅读
+  shared ab_pairs / NumberField. CRT 在 outer 之后单线程 reduce.
+
+**Bit-for-bit guarantee**: K 个 LiftResult 仅依赖 per-slot index + read-only
+inputs, sequential 与 parallel 路径产物完全相同, downstream CRT/sign-search
+输出 sqrt(N) 严格一致. 由 `tests/test_hensel_parallel.cpp` 强制覆盖 (N=1
+vs N=2 / N=4 bit-for-bit assert).
+
+**ROI 与定位**:
+- 主要 ROI: 大 K 大 ab_pairs 时 Phase 7 wall-time 由 3 倍 single-prime
+  lift 时间 → 1 倍 + tasking overhead. M5 P-core 三 lift 并发 ≈ 单 lift 时间
+  (实测 small case 1ms 级别,大 case 待 stress 验证).
+- ROI 主要在 50d+ stress 路径, 25d gate 多数情况下走 single-prime fallback
+  (ab_pairs < 100 阈值), 不进入 Nguyen hybrid.
+- Default OFF (N=1) 保证 zero behavior change for legacy callers, 仅当用户
+  明确 opt-in 时启用.
+
+**集成点** (commits `8feb2de` → `1cc8704`, 2026-05-21):
+- `include/gnfs/sqrt/hensel_parallel.hpp` — `sqrt_hensel_threads()` env reader
+  with `std::once_flag` cache + `parallel_hensel_lift<Slot, Func>` dispatcher
+- `include/gnfs/sqrt/hensel_sqrt.hpp` — `compute_nguyen_hybrid` 初始 lift
+  dispatch 通过 helper (替代旧 raw `std::thread`), inner thread budget
+  recompute 基于 runtime outer count
+- `tests/test_hensel_parallel.cpp` — 4 correctness (N=1 vs N=2/N=4 +
+  small-ab_pairs fallback) + 2 env parsing + 1 perf info + 1 edge case
+  (single-slot, empty-span)
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
