@@ -7,6 +7,7 @@
 #include "int_polynomial.hpp"
 #include "murphy_evaluator.hpp"
 #include "polynomial_optimizer.hpp"
+#include "rotation_alpha.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -374,17 +375,33 @@ private:
         if (!f_init.has_value()) return std::nullopt;
         if (!is_valid_polynomial(*f_init, n, m_init)) return std::nullopt;
 
-        // 保留 top-K (K=3) L² 最小的候选,然后用 Murphy E 二级筛。
-        // 原代码只取 L² min — 但 L² 不含 α,L² 最小 不等于 Murphy 最佳。
-        // 例: α 极负但 L² 略大的多项式实际上更优 (CADO-NFS 经验)。
+        // 保留 top-K (K=3) 候选,然后用 Murphy E 二级筛。
+        //
+        // 排序键: lognorm + cheap_alpha (CADO-NFS exp_E 风格)
+        //   - L² norm 只反映系数大小,完全不考虑 root structure。
+        //   - cheap_alpha 用小素数子集 (默认 p ≤ 100, ~25 primes) 作 α 代理。
+        //   - 综合: log(L²) + α_proxy → 越小越好,与 Murphy E 单调反向。
+        //
+        // 旧代码用纯 L² 排序,会漏掉 α 优的候选 (例如 α 极负但 L² 略大)。
+        // 此处 score 与 Murphy E 相关性提升明显,top-K 命中率改善。
+        //
+        // ENV `GNFS_LEGACY_TOPK_RANKING=1` 可回退到旧 L²-only 排序 (debug 用)。
         struct Candidate {
             IntPolynomial f;
             Integer m;
-            double norm;
+            double norm;       // L² norm (kept for diagnostics)
+            double rank_key;   // lognorm + cheap_alpha (smaller = better)
         };
         constexpr size_t TOP_K = 3;
         std::vector<Candidate> top_k;
         top_k.reserve(TOP_K + 1);
+
+        // Tracker reused across all (t, k) iterations within this candidate.
+        const RotationAlphaTracker tracker;
+        const bool legacy_ranking = []() {
+            const char* env = std::getenv("GNFS_LEGACY_TOPK_RANKING");
+            return env && env[0] == '1';
+        }();
 
         // 平移 + 旋转网格搜索。t_range 之前硬编码 ±5(11 点),与 KleinjungParams
         // 的 search_radius 无关,大 N 下平移空间被严重压缩。改为按
@@ -435,17 +452,23 @@ private:
                 f_t = PolynomialOptimizer::rotate_linear(f_t, m_t, k);
             }
 
-            // L² norm 预筛 — 维护 top-K
+            // L² norm + cheap-alpha 预筛 — 维护 top-K
             double s = PolynomialOptimizer::estimate_skewness(f_t);
             double norm = PolynomialOptimizer::compute_size(f_t, s);
 
-            // 插入并保持按 norm 升序的 top-K 列表
+            // rank_key: log(L²) + cheap_alpha (smaller = better).
+            // legacy_ranking=true 回退到 L²-only (debug path).
+            const double rank_key = legacy_ranking
+                ? norm
+                : tracker.score(f_t, norm);
+
+            // 插入并保持按 rank_key 升序的 top-K 列表
             if (top_k.size() < TOP_K ||
-                norm < top_k.back().norm) {
-                top_k.push_back({std::move(f_t), std::move(m_t), norm});
+                rank_key < top_k.back().rank_key) {
+                top_k.push_back({std::move(f_t), std::move(m_t), norm, rank_key});
                 std::sort(top_k.begin(), top_k.end(),
                           [](const Candidate& a, const Candidate& b) {
-                              return a.norm < b.norm;
+                              return a.rank_key < b.rank_key;
                           });
                 if (top_k.size() > TOP_K) top_k.pop_back();
             }
