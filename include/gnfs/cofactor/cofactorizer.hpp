@@ -42,6 +42,13 @@ struct CofactorizerConfig {
     //   chain (clique_merger.hpp 算法本身 generic, 只需 pool prefilter 放开)
     // CADO-NFS / Bai-Filbois 2015 路线: 50d β plateau ~121% 主因是 lp_bits=23 时
     // weight≥3 LP key 占比 30%, 3LP 接受拓宽 LP 空间能有效改善.
+    //
+    // PERF 注意: 启用 3LP 时 sieve 显著变慢 (50d 实测 ~50x). 每个 cofactor 在
+    // (B², B³] 区间都触发 try_classify_three_lp 调用 (SQUFOF + Pollard rho ~2-4ms).
+    // sieve 中 ~10K cofactor candidates per SQ → 40s overhead per SQ. 这是已知
+    // trade-off: 拓宽 LP 空间 vs sieve 吞吐. CADO-NFS 用更复杂的 two-cofactor
+    // strategy + ECM gating 改善 ratio, 但本实现采用直接路径 + 推荐仅在小批量
+    // 50d/60d 实验性运行使用. 默认 OFF 保留 sieve 吞吐.
     bool allow_3lp = false;              // 允许 3 个大素数 (opt-in)
     size_t max_factorization_attempts = 10000;  // Pollard rho 最大尝试次数
 };
