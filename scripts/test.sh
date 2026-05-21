@@ -204,6 +204,7 @@ ALL_TEST_BINARIES=(
     test_integration
     test_squfof
     test_bucket_sieve
+    test_sieve_tiny_simd
     test_regression_gate
     test_stress
     test_3lp_cofactor
@@ -217,7 +218,7 @@ MODULE_TESTS=(
     util           "test_small_vector test_thread_pool test_logger test_primes test_timer test_mmap_file test_safe_math"
     polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental"
     factor_base    "test_factor_base"
-    sieve          "test_special_q test_sieve_basic test_bucket_sieve test_sieve_ecore_qos test_lll_lattice"
+    sieve          "test_special_q test_sieve_basic test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_sieve_tiny_simd"
     cofactor       "test_cofactor test_squfof test_batch_ecm test_3lp_cofactor test_integration"
     relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration"
     linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration"
@@ -280,6 +281,7 @@ SMOKE_TESTS=(
     test_clique_merger_50d_synthetic
     test_3lp_cofactor
     test_3lp_merge
+    test_sieve_tiny_simd
 )
 
 # ── 每个测试的超时秒数 (基于实测) ──
@@ -350,6 +352,7 @@ TEST_TIMEOUT=(
     test_clique_merger_50d_synthetic 10
     test_3lp_cofactor        30
     test_3lp_merge           10
+    test_sieve_tiny_simd     10
 )
 
 # 测试速度分级 (用于 list 显示)
@@ -416,6 +419,7 @@ TEST_TIER=(
     test_clique_merger_50d_synthetic "instant"
     test_3lp_cofactor        "instant"
     test_3lp_merge           "instant"
+    test_sieve_tiny_simd     "instant"
 )
 
 # 模块依赖图 (改了 A 模块 → 需要额外测试的下游模块)
