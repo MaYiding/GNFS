@@ -744,6 +744,34 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME MmapCSR COMMAND test_mmap_csr)
     set_tests_properties(MmapCSR PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # MatrixView concept compile-time + run-time conformance tests.
+    # Locks in CSRMatrix / MmapCSRMatrix accessor parity so SpMV
+    # templated kernels can stay devirtualised.
+    add_executable(test_matrix_view_concept
+        tests/test_matrix_view_concept.cpp
+    )
+    target_link_libraries(test_matrix_view_concept PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME MatrixViewConcept COMMAND test_matrix_view_concept)
+    set_tests_properties(MatrixViewConcept PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # save_sparse_as_mmap helper (Phase 5 dual-path entrypoint).
+    # Verifies the helper is byte-identical to the explicit
+    # SparseMatrix → CSRMatrix → save → MmapCSRMatrix sequence.
+    add_executable(test_save_sparse_as_mmap
+        tests/test_save_sparse_as_mmap.cpp
+    )
+    target_link_libraries(test_save_sparse_as_mmap PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SaveSparseAsMmap COMMAND test_save_sparse_as_mmap)
+    set_tests_properties(SaveSparseAsMmap PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # GNFS_LINALG_MMAP three-state policy parser.
+    add_executable(test_linalg_mmap_policy
+        tests/test_linalg_mmap_policy.cpp
+    )
+    target_link_libraries(test_linalg_mmap_policy PRIVATE gnfs_core)
+    add_test(NAME LinalgMmapPolicy COMMAND test_linalg_mmap_policy)
+    set_tests_properties(LinalgMmapPolicy PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Out-of-core Relations 单元测试
     add_executable(test_ooc_relations
         tests/test_ooc_relations.cpp

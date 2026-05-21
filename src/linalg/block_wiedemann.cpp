@@ -1,4 +1,5 @@
 #include "gnfs/linalg/block_wiedemann.hpp"
+#include "gnfs/linalg/detail/spmv_kernels.hpp"
 #include "gnfs/linalg/krylov_sequence_mmap.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
@@ -19,127 +20,39 @@
 namespace gnfs::linalg {
 
 // ============================================================================
-// SpMV utilities (shared with block_lanczos.cpp)
+// SpMV utilities — moved to gnfs/linalg/detail/spmv_kernels.hpp so that the
+// BW solvers can run over any MatrixView (CSRMatrix or MmapCSRMatrix), and
+// SGE/Phase 5 can flip between in-memory and out-of-core matrix storage
+// without losing the prefetch / persistent-scratch optimisations.
+// All call sites below use detail::spmv_forward / spmv_transpose / spmv_B /
+// spmv_B_prime instantiated with CSRMatrix (the standard in-memory path).
 // ============================================================================
 
 namespace {
 
-// P1.B-1: SpMV prefetch (MemBound treatment, doctrine §6)
-// Baseline 2026-05-13: BackendStallRate=74.79%, L1DMissRate=12.80% — split-loop
-// prefetch addresses the pointer-chase x.data[*p]. N_AHEAD=8 chosen from M5
-// L1D line=64B, load-to-use~4cy; locality hint=0 (streaming, no L2 retention).
-constexpr ptrdiff_t SPMV_PREFETCH_AHEAD = 8;
-
-void bw_spmv_forward(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
-                     gnfs::util::ThreadPool& pool) {
-    // CSRMatrix ctor validates col < num_cols. x.length == M.num_cols() by
-    // contract, so the per-element bounds check that used to be here is
-    // redundant — removed for SpMV hot-path speed.
-    assert(x.length == M.num_cols());
-    pool.parallel_for_index(0, M.num_rows(), [&](size_t i) {
-        uint64_t acc = 0;
-        const uint32_t* p_end  = M.row_end(i);
-        const uint32_t* p_pref = (p_end - M.row_begin(i) > SPMV_PREFETCH_AHEAD)
-                                     ? p_end - SPMV_PREFETCH_AHEAD
-                                     : M.row_begin(i);
-        const uint32_t* p = M.row_begin(i);
-        for (; p < p_pref; ++p) {
-            __builtin_prefetch(&x.data[*(p + SPMV_PREFETCH_AHEAD)], 0, 0);
-            acc ^= x.data[*p];
-        }
-        for (; p < p_end; ++p)
-            acc ^= x.data[*p];
-        y.data[i] = acc;
-    });
+// Thin in-file alias wrappers so the historical call sites below
+// (bw_spmv_forward / bw_spmv_B / ...) stay the same. Templated on the
+// matrix view so the same call sites work for CSRMatrix (in-memory,
+// default path) and MmapCSRMatrix (out-of-core, Pipeline auto-route).
+template <MatrixView MV>
+inline void bw_spmv_forward(const MV& M, const BlockVector& x, BlockVector& y,
+                            gnfs::util::ThreadPool& pool) {
+    detail::spmv_forward(M, x, y, pool);
 }
-
-// Persistent scratch buffers for bw_spmv_transpose — 避免每次 SpMV
-// 调用都 T×n×8 bytes malloc/free。Phase 1 调 ~2L 次,Phase 3 调 ~L 次,
-// 持久化后 alloc 次数从 O(L) 降为 O(1)(只在 n 变大或 T 变大时 grow)。
-// 使用 function-local static 而非 thread_local:因为缓冲区维度是 [T][n],
-// 跨主线程的多次调用复用同一份就足够。线程安全靠 ThreadPool 的同步保证
-// (每次 spmv 顶层 future.get() 后才允许下一次调用,无重入)。
-struct BwSpmvLocals {
-    std::vector<std::vector<uint64_t>> locals;
-    void ensure(size_t T, size_t n) {
-        if (locals.size() < T) locals.resize(T);
-        for (size_t t = 0; t < T; ++t) {
-            if (locals[t].size() < n) locals[t].resize(n);
-            // 每次 SpMV 开始时必须 zero,因为是 XOR 累加
-            std::fill(locals[t].begin(), locals[t].begin() + n, 0);
-        }
-    }
-};
-
-void bw_spmv_transpose(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
-                       gnfs::util::ThreadPool& pool) {
-    const size_t m = M.num_rows();
-    const size_t n = y.length;
-    // CSRMatrix ctor validates col < num_cols; n == num_cols by contract.
-    assert(n == M.num_cols());
-    assert(x.length == m);
-    const size_t T = pool.num_threads();
-    const size_t chunk = (m + T - 1) / T;
-
-    static BwSpmvLocals scratch;
-    scratch.ensure(T, n);
-    std::vector<std::future<void>> futures;
-    futures.reserve(T);
-    size_t T_used = 0;
-
-    for (size_t t = 0; t < T; ++t) {
-        size_t start = t * chunk;
-        size_t end_row = std::min(start + chunk, m);
-        if (start >= m) break;
-        T_used = t + 1;
-        futures.push_back(pool.submit([&M, &x, t, start, end_row]() {
-            auto& local = scratch.locals[t];
-            for (size_t i = start; i < end_row; ++i) {
-                uint64_t xi = x.data[i];
-                if (xi == 0) continue;
-                // P1.B-1: split-loop prefetch on local[*p] (write target).
-                // rw=0 still beneficial — ARM PRFM PLD primes the line into
-                // L1D for the impending RMW; PSTL would help store-buffer
-                // but is benched separately if PMU shows store-side stalls.
-                const uint32_t* p_end  = M.row_end(i);
-                const uint32_t* p_pref = (p_end - M.row_begin(i) > SPMV_PREFETCH_AHEAD)
-                                             ? p_end - SPMV_PREFETCH_AHEAD
-                                             : M.row_begin(i);
-                const uint32_t* p = M.row_begin(i);
-                for (; p < p_pref; ++p) {
-                    __builtin_prefetch(&local[*(p + SPMV_PREFETCH_AHEAD)], 0, 0);
-                    local[*p] ^= xi;
-                }
-                for (; p < p_end; ++p)
-                    local[*p] ^= xi;
-            }
-        }));
-    }
-    for (auto& f : futures) f.get();
-
-    pool.parallel_for_index(0, n, [&y, T_used](size_t j) {
-        uint64_t val = 0;
-        for (size_t t = 0; t < T_used; ++t) val ^= scratch.locals[t][j];
-        y.data[j] = val;
-    });
+template <MatrixView MV>
+inline void bw_spmv_transpose(const MV& M, const BlockVector& x, BlockVector& y,
+                              gnfs::util::ThreadPool& pool) {
+    detail::spmv_transpose(M, x, y, pool);
 }
-
-// B * V = M * (M^T * V) — symmetric product through CSR
-void bw_spmv_B(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
-               BlockVector& tmp, gnfs::util::ThreadPool& pool) {
-    bw_spmv_transpose(M, x, tmp, pool);
-    bw_spmv_forward(M, tmp, y, pool);
+template <MatrixView MV>
+inline void bw_spmv_B(const MV& M, const BlockVector& x, BlockVector& y,
+                      BlockVector& tmp, gnfs::util::ThreadPool& pool) {
+    detail::spmv_B(M, x, y, tmp, pool);
 }
-
-// B' * V = M^T * (M * V) — mirror of bw_spmv_B for thin matrix BW variant.
-// Used when working in R^n (cols) instead of R^m (rows). x ∈ R^n (cols),
-// tmp ∈ R^m (rows), y ∈ R^n (cols). BACKLOG #80 step 7: fix BW thin matrix
-// (m<n) by switching operator domain. M^T·M·w = 0 over GF(2) is a strict
-// linear relation (not the quadratic-form quirk that breaks M·M^T path).
-void bw_spmv_B_prime(const CSRMatrix& M, const BlockVector& x, BlockVector& y,
-                     BlockVector& tmp, gnfs::util::ThreadPool& pool) {
-    bw_spmv_forward(M, x, tmp, pool);   // tmp = M·x  (m-vec)
-    bw_spmv_transpose(M, tmp, y, pool); // y   = M^T·tmp (n-vec)
+template <MatrixView MV>
+inline void bw_spmv_B_prime(const MV& M, const BlockVector& x, BlockVector& y,
+                            BlockVector& tmp, gnfs::util::ThreadPool& pool) {
+    detail::spmv_B_prime(M, x, y, tmp, pool);
 }
 
 // ============================================================================
@@ -663,17 +576,18 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
 //          null vector; verify M^T · w_j = 0.
 // ============================================================================
 
-std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
-    const SparseMatrix& matrix, size_t max_deps, uint64_t seed) {
+// Templated body for the wide/square Block Wiedemann solver. Takes any
+// MatrixView (CSRMatrix for in-memory, MmapCSRMatrix for OOC). Caller is
+// responsible for ensuring rows are sorted and CSR-style layout exists.
+template <MatrixView MV>
+static std::vector<std::vector<bool>> block_solve_view_impl(
+    const MV& csr, size_t max_deps, uint64_t seed) {
 
-    const size_t m = matrix.num_rows();
-    const size_t n = matrix.num_cols();
+    const size_t m = csr.num_rows();
+    const size_t n = csr.num_cols();
 
     std::cout << "  [BW-block] Block Wiedemann (matrix BM): " << m << "×" << n
               << " (seed=" << seed << ")" << std::endl;
-
-    const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
-    CSRMatrix csr(matrix);
 
     // Krylov sequence length for matrix BM: L = 2·⌈n/64⌉ + 32 (buffer).
     // Compared to scalar BM's 2n+110, this is ~64× fewer SpMV calls.
@@ -746,7 +660,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
     // ── Phase 2: Matrix Berlekamp-Massey ──
     phase_start = std::chrono::steady_clock::now();
     std::cout << "  [BW-block] Phase 2: matrix BM..." << std::flush;
-    auto F = matrix_berlekamp_massey(A_seq, n);
+    auto F = BlockWiedemann::matrix_berlekamp_massey(A_seq, n);
     const int valid_count = __builtin_popcountll(F.valid_mask);
     const int max_deg = static_cast<int>(F.poly.size()) - 1;
     double phase2_ms = std::chrono::duration<double, std::milli>(
@@ -856,6 +770,18 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
     return deps;
 }
 
+// ----------------------------------------------------------------------------
+// SparseMatrix entry point (today's in-memory default path). Sorts rows,
+// builds CSRMatrix, then calls the templated impl above. The MmapCSRMatrix
+// entry point lives in BlockWiedemann::find_dependencies_view (see header).
+// ----------------------------------------------------------------------------
+std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
+    const SparseMatrix& matrix, size_t max_deps, uint64_t seed) {
+    const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
+    CSRMatrix csr(matrix);
+    return block_solve_view_impl(csr, max_deps, seed);
+}
+
 // ============================================================================
 // Block Wiedemann thin matrix variant — operator B' = M^T·M (BACKLOG #80)
 //
@@ -871,17 +797,18 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_block_solve(
 // L = 2·⌈m/64⌉ + 32 since rank(B') ≤ rank(M) ≤ m, so minpoly degree ≤ m.
 // ============================================================================
 
-std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_thin_solve(
-    const SparseMatrix& matrix, size_t max_deps, uint64_t seed) {
+// Templated body for the thin (m < n) Block Wiedemann solver. Same MV
+// contract as block_solve_view_impl — caller must hand in a CSR-style
+// matrix view with sorted rows.
+template <MatrixView MV>
+static std::vector<std::vector<bool>> thin_solve_view_impl(
+    const MV& csr, size_t max_deps, uint64_t seed) {
 
-    const size_t m = matrix.num_rows();
-    const size_t n = matrix.num_cols();
+    const size_t m = csr.num_rows();
+    const size_t n = csr.num_cols();
 
     std::cout << "  [BW-thin] Thin matrix BW (B'=M^T·M): " << m << "×" << n
               << " (seed=" << seed << ")" << std::endl;
-
-    const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
-    CSRMatrix csr(matrix);
 
     // For B' = M^T·M (n×n), rank ≤ m, so minpoly degree ≤ m.
     // Block Krylov length: L = 2·⌈m/64⌉ + 32.
@@ -922,7 +849,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_thin_solve(
     // Pass m as the "size" (rank bound) instead of n.
     phase_start = std::chrono::steady_clock::now();
     std::cout << "  [BW-thin] Phase 2: matrix BM..." << std::flush;
-    auto F = matrix_berlekamp_massey(A_seq, m);
+    auto F = BlockWiedemann::matrix_berlekamp_massey(A_seq, m);
     const int valid_count = __builtin_popcountll(F.valid_mask);
     const int max_deg = static_cast<int>(F.poly.size()) - 1;
     // BACKLOG #1 rank lower-bound: see compute_rank_est doc in block_wiedemann.hpp.
@@ -1032,6 +959,64 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_thin_solve(
               << " zero=" << zero_vecs << ")" << std::endl;
 
     return deps;
+}
+
+// ----------------------------------------------------------------------------
+// SparseMatrix entry point for the thin solver. Sorts rows, builds CSRMatrix,
+// then calls the templated impl above.
+// ----------------------------------------------------------------------------
+std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_thin_solve(
+    const SparseMatrix& matrix, size_t max_deps, uint64_t seed) {
+    const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
+    CSRMatrix csr(matrix);
+    return thin_solve_view_impl(csr, max_deps, seed);
+}
+
+// ============================================================================
+// View-based dispatch (Phase 5: in-memory CSR + out-of-core MmapCSR)
+// ============================================================================
+//
+// Routes the matrix view to block / thin BW based on m vs n, with the same
+// multi-seed retry policy as find_dependencies(SparseMatrix). Scalar BW
+// fallback is intentionally omitted: it is wide-only and the view path is
+// only reached from Pipeline::solve_matrix's Phase 5 (large matrices that
+// already chose block / thin BW).
+template <MatrixView MV>
+static std::vector<std::vector<bool>> find_dependencies_view_impl(
+    const MV& matrix, size_t max_deps) {
+
+    const size_t m = matrix.num_rows();
+    const size_t n = matrix.num_cols();
+    if (m == 0 || n == 0) return {};
+
+    const bool is_thin = (m < n);
+
+    static constexpr uint64_t seeds[] = {
+        42, 0xDEADBEEFCAFEBABEULL, 0x12345678ABCDEFULL,
+    };
+    for (uint64_t seed : seeds) {
+        std::vector<std::vector<bool>> deps;
+        if (is_thin) {
+            deps = thin_solve_view_impl(matrix, max_deps, seed);
+        } else {
+            deps = block_solve_view_impl(matrix, max_deps, seed);
+        }
+        if (!deps.empty()) return deps;
+        std::cerr << "  [BW-view] seed=" << seed
+                  << (is_thin ? " (thin)" : " (block)")
+                  << " produced no deps, retrying\n";
+    }
+    return {};
+}
+
+std::vector<std::vector<bool>> BlockWiedemann::find_dependencies_view(
+    const CSRMatrix& matrix, size_t max_deps) {
+    return find_dependencies_view_impl(matrix, max_deps);
+}
+
+std::vector<std::vector<bool>> BlockWiedemann::find_dependencies_view(
+    const MmapCSRMatrix& matrix, size_t max_deps) {
+    return find_dependencies_view_impl(matrix, max_deps);
 }
 
 // ============================================================================

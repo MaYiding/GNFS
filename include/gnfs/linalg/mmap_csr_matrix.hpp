@@ -127,4 +127,24 @@ private:
     const uint32_t* col_indices_ = nullptr;
 };
 
+/// Helper: persist a SparseMatrix to disk as MmapCSRMatrix in one shot.
+///
+/// Builds the in-memory CSRMatrix (which validates `col < num_cols`),
+/// writes it through `MmapCSRMatrix::save`, then opens the file back as
+/// an `MmapCSRMatrix`. Used by Phase 5 to flip the SGE-reduced matrix to
+/// out-of-core storage before feeding BW.
+///
+/// The in-memory CSRMatrix is destroyed before opening the mmap, so peak
+/// extra RAM during the round-trip is `nnz * 4 bytes` (the CSRMatrix
+/// staging copy) and only briefly. After return the only resident bytes
+/// are the kernel mmap pagecache, which the OS can evict.
+inline MmapCSRMatrix save_sparse_as_mmap(const SparseMatrix& mat,
+                                         const std::string& path) {
+    {
+        CSRMatrix csr(mat);
+        MmapCSRMatrix::save(csr, path);
+    }
+    return MmapCSRMatrix(path);
+}
+
 } // namespace gnfs::linalg
