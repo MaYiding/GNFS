@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <random>
 #include <optional>
+#include <span>
+#include <vector>
 
 namespace gnfs::cofactor {
 
@@ -73,6 +75,99 @@ public:
         config.B2 = 50000;
         config.auto_params = false;
         return factor(n, config);
+    }
+
+    /// 共享上下文 — 跨多个 cofactor 复用的 N-independent 数据
+    ///
+    /// 当对一批 cofactor 调用 ECM 时,以下数据与 N 无关,可预计算一次:
+    ///   - primes_cache: ≤ B1 的素数表 (Stage 1)
+    ///   - prime_powers: 每个 prime p 对应的 pk = max p^e ≤ B1 (Stage 1 标量)
+    ///   - sigma_pool: 确定性 sigma 序列 (size = num_curves)
+    ///
+    /// Stage 2 BSGS baby steps (Point 数据) 含 mod N 运算,无法跨 N 共享。
+    /// 真正大头的"GMP-ECM batch mode" (多 N 同时 mont_mul) 需要 SIMD 重构,
+    /// 当前实现仅共享 N-independent 数据,提供 API 基础设施 + 单元测试入口。
+    struct BatchContext {
+        uint64_t B1 = 0;
+        uint64_t B2 = 0;
+        std::vector<uint64_t> primes_cache;   // ≤ B1 的素数
+        std::vector<uint64_t> prime_powers;   // 与 primes_cache 等长: pk = max p^e ≤ B1
+        std::vector<uint64_t> sigma_pool;     // 确定性 sigma 序列
+
+        [[nodiscard]] bool empty() const noexcept { return primes_cache.empty(); }
+        [[nodiscard]] size_t num_curves() const noexcept { return sigma_pool.size(); }
+    };
+
+    /// 构造 BatchContext (N-independent 共享数据)
+    /// @param config B1/B2/num_curves 来源
+    /// @param sigma_seed 0 = 用 time-based seed; 非 0 = 确定性测试可重现
+    [[nodiscard]] static BatchContext prepare_batch(const Config& config,
+                                                     uint64_t sigma_seed = 0) {
+        BatchContext ctx;
+        ctx.B1 = config.B1;
+        ctx.B2 = config.B2;
+
+        // primes_cache: 一次 sieve 复用 (相比 factor() 内 per-call)
+        ctx.primes_cache = sieve_primes(config.B1);
+
+        // prime_powers: 与 primes_cache 同序, pk = max p^e ≤ B1
+        // 原 try_curve 是 inline 计算的 (`while pk ≤ B1/p`), 预计算让 N=B 个 cofactor
+        // 共享 pk 序列, 节省 num_curves × N × primes_cache.size() 次内联运算
+        ctx.prime_powers.reserve(ctx.primes_cache.size());
+        for (uint64_t p : ctx.primes_cache) {
+            uint64_t pk = p;
+            while (pk <= config.B1 / p) pk *= p;  // 避免溢出
+            ctx.prime_powers.push_back(pk);
+        }
+
+        // sigma_pool: 确定性序列 (sigma_seed != 0) 或 time-based (兼容现有行为)
+        // 测试用 deterministic seed 让多次调用 + sequential 等价
+        std::mt19937_64 rng;
+        if (sigma_seed != 0) {
+            rng.seed(sigma_seed);
+        } else {
+            std::random_device rd;
+            rng.seed(rd() ^ static_cast<uint64_t>(0x9E3779B97F4A7C15ULL));
+        }
+        ctx.sigma_pool.reserve(config.num_curves);
+        for (uint32_t i = 0; i < config.num_curves; ++i) {
+            ctx.sigma_pool.push_back((rng() % 1000000) + 6);
+        }
+
+        return ctx;
+    }
+
+    /// Batch ECM: 对一批 cofactor 应用 ECM, 共享 N-independent 数据
+    /// 返回 vector<optional<Integer>>, 与输入 ns 一一对应
+    /// 单 cofactor 行为等价于 factor_with_batch(n, ctx)
+    [[nodiscard]] static std::vector<std::optional<Integer>>
+    factor_batch(std::span<const Integer> ns, const BatchContext& ctx) {
+        std::vector<std::optional<Integer>> results;
+        results.reserve(ns.size());
+        for (const Integer& n : ns) {
+            results.push_back(factor_with_batch(n, ctx));
+        }
+        return results;
+    }
+
+    /// 单 cofactor 使用 BatchContext 共享数据
+    /// 等价于 ECM::factor() 但跳过 primes_cache + prime_powers 重建
+    [[nodiscard]] static std::optional<Integer> factor_with_batch(
+            const Integer& n, const BatchContext& ctx) {
+        if (n.is_one() || n.is_probable_prime() > 0) {
+            return std::nullopt;
+        }
+        if (ctx.empty()) {
+            return std::nullopt;  // 防御性: 空 context 不工作
+        }
+
+        for (uint64_t sigma : ctx.sigma_pool) {
+            auto result = try_curve_with_pk(n, sigma, ctx);
+            if (result) {
+                return result;
+            }
+        }
+        return std::nullopt;
     }
 
 private:
@@ -325,6 +420,102 @@ private:
     static constexpr uint64_t gcd_u64(uint64_t a, uint64_t b) {
         while (b) { uint64_t t = b; b = a % b; a = t; }
         return a;
+    }
+
+    /// 尝试一条曲线 — 使用 BatchContext 预计算的 prime_powers (Stage 1 标量)
+    /// 与 try_curve 等价但跳过 inline `while pk ≤ B1/p` 循环, 复用 ctx.prime_powers
+    [[nodiscard]] static std::optional<Integer> try_curve_with_pk(
+            const Integer& n, uint64_t sigma, const BatchContext& ctx) {
+        assert(sigma >= 6 && "ECM Suyama: sigma must be >= 6");
+        assert(!ctx.primes_cache.empty() && "BatchContext::primes_cache must be non-empty");
+        assert(ctx.prime_powers.size() == ctx.primes_cache.size()
+               && "BatchContext: primes_cache and prime_powers must be parallel");
+
+        // Suyama 参数 (与 try_curve 一致)
+        Integer u(static_cast<unsigned long long>(sigma * sigma - 5));
+        u %= n;
+
+        Integer v(static_cast<unsigned long long>(4 * sigma));
+        v %= n;
+
+        Integer x0;
+        mpz_powm_ui(x0.get_mpz(), u.get_mpz(), 3, n.get_mpz());
+
+        Integer z0;
+        mpz_powm_ui(z0.get_mpz(), v.get_mpz(), 3, n.get_mpz());
+
+        Integer diff;
+        mpz_sub(diff.get_mpz(), v.get_mpz(), u.get_mpz());
+        if (diff.is_negative()) diff += n;
+        diff %= n;
+
+        Integer diff3;
+        mpz_powm_ui(diff3.get_mpz(), diff.get_mpz(), 3, n.get_mpz());
+
+        Integer sum3u_v;
+        sum3u_v = v;
+        mpz_addmul_ui(sum3u_v.get_mpz(), u.get_mpz(), 3);
+        sum3u_v %= n;
+
+        Integer numerator;
+        mpz_mul(numerator.get_mpz(), diff3.get_mpz(), sum3u_v.get_mpz());
+        numerator %= n;
+
+        Integer denom;
+        mpz_mul(denom.get_mpz(), x0.get_mpz(), v.get_mpz());
+        denom %= n;
+        mpz_mul_2exp(denom.get_mpz(), denom.get_mpz(), 4);
+        denom %= n;
+
+        Integer g = core::gcd(denom, n);
+        if (!g.is_one()) {
+            if (g.compare(n) == 0) return std::nullopt;
+            return g;
+        }
+
+        Integer denom_inv = core::mod_inverse(denom, n);
+        if (denom_inv.is_zero()) {
+            return std::nullopt;
+        }
+
+        Integer a24;
+        mpz_mul(a24.get_mpz(), numerator.get_mpz(), denom_inv.get_mpz());
+        a24 %= n;
+
+        Point Q(std::move(x0), std::move(z0));
+
+        // Stage 1: 使用预计算的 prime_powers (与 primes_cache 同序)
+        const size_t np = ctx.primes_cache.size();
+        for (size_t i = 0; i < np; ++i) {
+            uint64_t p = ctx.primes_cache[i];
+            uint64_t pk = ctx.prime_powers[i];  // 预计算复用
+
+            Q = mont_mul(Q, pk, a24, n);
+
+            if (p % 100 == 97) {
+                Integer g2 = core::gcd(Q.z, n);
+                if (!g2.is_one()) {
+                    if (g2.compare(n) == 0) return std::nullopt;
+                    return g2;
+                }
+            }
+        }
+
+        Integer g_final = core::gcd(Q.z, n);
+        if (!g_final.is_one()) {
+            if (g_final.compare(n) == 0) return std::nullopt;
+            return g_final;
+        }
+
+        // Stage 2: 复用现有 BSGS 实现 (Point 部分 N-dependent, 无法跨 N 共享)
+        if (ctx.B2 > ctx.B1) {
+            auto stage2_result = stage2(Q, n, a24, ctx.B1, ctx.B2);
+            if (stage2_result) {
+                return stage2_result;
+            }
+        }
+
+        return std::nullopt;
     }
 
     /// 尝试一条曲线
