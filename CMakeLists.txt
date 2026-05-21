@@ -532,6 +532,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SqrtDebug COMMAND test_sqrt_debug)
     set_tests_properties(SqrtDebug PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Improved Couveignes for large class groups (2026-05-21)
+    add_executable(test_couveignes_large_class_group
+        tests/test_couveignes_large_class_group.cpp
+    )
+    target_link_libraries(test_couveignes_large_class_group PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME CouveignesLargeClassGroup COMMAND test_couveignes_large_class_group)
+    set_tests_properties(CouveignesLargeClassGroup PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # 渐进式测试 — 支持命令行参数选择级别
     add_executable(test_gnfs_progressive
         tests/test_gnfs_progressive.cpp

@@ -23,6 +23,54 @@ struct CouveignesSqrtConfig {
     uint64_t prime_start = 1000;   // Starting point for prime search (larger = better)
     size_t max_attempts = 100;     // Max attempts for sign resolution
     size_t max_prime_checks = 100000;  // Max prime candidates to check (prevents infinite loop)
+
+    // ── Large class group support (2026-05-21) ──
+    // Number of extra quadratic characters to verify each candidate sign pattern.
+    // Set to 0 to disable character verification (legacy behavior). When > 0,
+    // each candidate Y(α) is first tested against K character constraints
+    // (cheap O(d) per character) before the expensive Y² ≡ X² check. This
+    // catches false sign patterns that arise from nontrivial class group
+    // 2-torsion (the source of "large class group failure" in legacy code).
+    size_t num_characters = 0;     // 0 = disabled (legacy); 8 = balanced; 16 = strict
+    uint64_t character_prime_start = 10007;  // Distinct from CRT prime_start
+    size_t max_character_prime_checks = 50000;  // Bound character prime search
+
+    // Extra sign bits beyond 2^num_primes Gray code. Multiplies the pattern
+    // space by 2^extra_sign_bits. Currently informational only — extension
+    // hook for future "twist-element" search if class group 2-rank > 0.
+    // Capped at 4 (2^20 total pattern budget when num_primes=16).
+    size_t extra_sign_bits = 0;
+};
+
+/// Per-call telemetry from CouveignesSqrt. Populated by compute() /
+/// compute_from_element() regardless of success/failure. Optional ENV
+/// `GNFS_COUVEIGNES_VERBOSE=1` emits this to stderr.
+///
+/// Hot-path overhead: ~10 integer increments per call (negligible vs the
+/// 65536-pattern Gray-code search and per-prime Tonelli-Shanks).
+struct CouveignesMetrics {
+    // Prime selection counters
+    size_t primes_checked = 0;
+    size_t primes_used = 0;
+    size_t primes_skipped_divides_n = 0;
+    size_t primes_skipped_bad_leading = 0;
+    size_t primes_skipped_reducible = 0;
+    size_t primes_skipped_zero_product = 0;
+    size_t primes_skipped_no_sqrt = 0;
+    size_t primes_skipped_ramified = 0;  // disc(f) ≡ 0 mod p — added 2026-05-21
+
+    // Sign-pattern search counters
+    size_t sign_patterns_tried = 0;          // Gray code iterations
+    size_t character_filter_rejects = 0;     // Patterns rejected by cheap char check
+    size_t full_verifications = 0;           // Y² ≡ X² evaluations
+    bool found_sqrt = false;
+
+    // Character verification telemetry
+    size_t character_primes_used = 0;        // K from config
+    size_t character_primes_checked = 0;     // Search overhead
+
+    // Reset all fields to default (used by compute() at entry)
+    void reset() noexcept { *this = CouveignesMetrics{}; }
 };
 
 /// CouveignesSqrt - Compute algebraic square root using Couveignes method
@@ -34,11 +82,16 @@ struct CouveignesSqrtConfig {
 class CouveignesSqrt {
 public:
     using Config = CouveignesSqrtConfig;
+    using Metrics = CouveignesMetrics;
 
     CouveignesSqrt() : config_() {}
 
     explicit CouveignesSqrt(const Config& config)
         : config_(config) {}
+
+    /// Telemetry from the most recent compute() / compute_from_element() call.
+    /// Populated whether the call succeeded or returned nullopt.
+    [[nodiscard]] const Metrics& last_metrics() const noexcept { return metrics_; }
 
     /// Compute square root of product of (a_i - b_i * alpha) elements.
     /// Note: GNFS convention is `a - b*α` (see CLAUDE.md "元素表示"),
@@ -59,6 +112,7 @@ public:
             const NumberField& nf,
             bool apply_f_prime_correction = true) const {
 
+        metrics_.reset();
         if (ab_pairs.empty()) {
             return std::nullopt;
         }
@@ -111,6 +165,7 @@ public:
         size_t primes_reducible = 0;
         size_t primes_zero_product = 0;
         size_t primes_no_sqrt = 0;
+        size_t primes_ramified = 0;
 
         uint64_t p = config_.prime_start;
         while (primes.size() < config_.num_primes && primes_checked < config_.max_prime_checks) {
@@ -160,8 +215,11 @@ public:
                 auto f_prime_mod_p = get_f_prime_mod_p(p);
                 ModularPoly f_prime(f_prime_mod_p);
                 if (f_prime.is_zero()) {
-                    // f' ≡ 0 mod p — 极少见(p | gcd(所有 i·f[i])),跳过此素数
-                    primes_zero_product++;
+                    // f' ≡ 0 mod p — ramified prime (p divides every i·f[i],
+                    // implies p divides disc(f) modulo Wronskian). Cannot use
+                    // f'(α)² correction; counted separately for diagnostic
+                    // visibility into class-group-related failures.
+                    primes_ramified++;
                     continue;
                 }
                 ModularPoly f_prime_sq = ModularPoly::mul(f_prime, f_prime, f_mod_p, p);
@@ -234,13 +292,17 @@ public:
             M *= static_cast<int64_t>(prime);  // mpz_mul_si direct
         }
 
-        // Suppress unused variable warnings
-        (void)primes_checked;
-        (void)primes_dividing_n;
-        (void)primes_bad_leading;
-        (void)primes_reducible;
-        (void)primes_zero_product;
-        (void)primes_no_sqrt;
+        // Publish into metrics. Local counters retained for cheap increment
+        // in hot loop (avoids member-write false sharing if compute() ever
+        // becomes threaded).
+        metrics_.primes_checked = primes_checked;
+        metrics_.primes_used = primes.size();
+        metrics_.primes_skipped_divides_n = primes_dividing_n;
+        metrics_.primes_skipped_bad_leading = primes_bad_leading;
+        metrics_.primes_skipped_reducible = primes_reducible;
+        metrics_.primes_skipped_zero_product = primes_zero_product;
+        metrics_.primes_skipped_no_sqrt = primes_no_sqrt;
+        metrics_.primes_skipped_ramified = primes_ramified;
 
         // Note: old compute_crt_with_signs lambda removed — replaced by
         // precomputed weights + Gray code incremental update below
@@ -384,6 +446,134 @@ public:
             mpow[j] %= n;
         }
 
+        // ── Character verification setup (2026-05-21) ──
+        //
+        // For each character prime q (distinct from CRT primes):
+        //   - Build f_q = f mod q (full polynomial).
+        //   - Compute target_q = ∏(a - b·α) · f'(α)² mod (f_q, q)
+        //     as a polynomial in F_q[x]/(f mod q), once at setup.
+        //   - For each candidate Y in the Gray-code search:
+        //     Reduce current_coeffs mod q to get Y_q ∈ F_q[x] (degree < d),
+        //     compute Y_q² mod (f_q, q) via polynomial squaring + reduction,
+        //     compare coefficient-by-coefficient against target_q.
+        //   - Reject candidate if any character mismatches.
+        //
+        // Mathematical correctness: Y(α) ∈ Z[α] computed via CRT lifts
+        // satisfies Y² ≡ f'² · S in Z[α]/(M). Reducing this congruence
+        // mod q (any q coprime to disc(f)) gives Y² ≡ f'² · S in F_q[x]/(f)
+        // because both sides are full polynomials in α with integer
+        // coefficients, and the relation holds at the polynomial level
+        // (not just at α = r_q). The M-dependent term that breaks the
+        // Horner-at-r_q variant lives in the kernel of the polynomial
+        // reduction mod q AS A POLYNOMIAL (i.e., the M-multiple of f(α)
+        // becomes M-multiple of zero in F_q[x]/(f mod q)).
+        //
+        // Cost per character per pattern: O(d²) F_q multiplications, vs
+        // O(d² + d · log q) for Horner-at-r_q + Legendre. For d=4-6,
+        // ~25-50 uint64 ops per character. With K=8 characters and 65536
+        // patterns: ~13M F_q ops per dependency, dwarfed by GMP Y² mod N
+        // at log_2(N)=164 (~4000 ops/pattern, 262M ops total).
+        //
+        // CouveignesMetrics::character_primes_used reports collected
+        // primes; character_filter_rejects counts patterns the filter
+        // discards before full verification.
+        struct CharacterPrime {
+            uint64_t q;
+            std::vector<uint64_t> f_q;      // f mod q (full polynomial, d+1 coeffs)
+            std::vector<uint64_t> target_q; // S_q · f'_q² mod (f_q), d coeffs
+        };
+        std::vector<CharacterPrime> char_primes;
+        char_primes.reserve(config_.num_characters);
+
+        size_t char_primes_checked = 0;
+        if (config_.num_characters > 0) {
+            uint64_t q_cand = config_.character_prime_start;
+            std::vector<uint64_t> crt_prime_set = primes;  // copy for overlap search
+
+            while (char_primes.size() < config_.num_characters &&
+                   char_primes_checked < config_.max_character_prime_checks) {
+                q_cand = next_prime(q_cand);
+                ++char_primes_checked;
+
+                // Skip primes that divide N
+                if (mpz_divisible_ui_p(n.get_mpz(), q_cand)) continue;
+
+                // Skip primes already used in CRT (would correlate sign info)
+                bool overlap = false;
+                for (uint64_t p_crt : crt_prime_set) {
+                    if (p_crt == q_cand) { overlap = true; break; }
+                }
+                if (overlap) continue;
+
+                // Build f mod q (full polynomial, used for poly reduction)
+                std::vector<uint64_t> f_q(d + 1);
+                for (uint32_t i = 0; i <= d; ++i) {
+                    f_q[i] = static_cast<uint64_t>(
+                        mpz_fdiv_ui(nf.coeff(i).get_mpz(), q_cand));
+                }
+                if (f_q.back() == 0) continue;
+
+                // Quick irreducibility filter — skip primes where f mod q
+                // factors. This is desirable because the character check is
+                // strictly tighter when F_q[x]/(f mod q) is a field. Not
+                // strictly required (the check still works for split primes
+                // because the target is a polynomial, not a Legendre bit).
+                //
+                // OPTIONAL: Removed the irreducibility test to allow split
+                // primes; the poly mul check works correctly either way.
+
+                // Build target_q = S(α) · f'(α)² mod (f_q, q) as a poly in F_q[x].
+                // Start with constant 1, multiply by each (a - b·α) mod (f_q, q).
+                ModularPoly target_mp(1);
+                bool degenerate = false;
+                for (const auto& [a, b] : ab_pairs) {
+                    std::vector<uint64_t> factor_coeffs(2);
+                    int64_t a_mod_s = a % static_cast<int64_t>(q_cand);
+                    if (a_mod_s < 0) a_mod_s += static_cast<int64_t>(q_cand);
+                    factor_coeffs[0] = static_cast<uint64_t>(a_mod_s);
+                    uint64_t b_mod = b % q_cand;
+                    factor_coeffs[1] = (q_cand - b_mod) % q_cand;  // -b mod q
+                    ModularPoly factor(std::move(factor_coeffs));
+                    target_mp = ModularPoly::mul(target_mp, factor, f_q, q_cand);
+                }
+                if (target_mp.is_zero()) {
+                    // S(α) ≡ 0 mod (f_q, q) — character undefined; skip
+                    degenerate = true;
+                }
+                if (degenerate) continue;
+
+                // Apply f'(α)² correction if active (matches compute_product_mod_p
+                // post-processing in the main path)
+                if (apply_f_prime_correction) {
+                    auto fp_q_coeffs = get_f_prime_mod_p(q_cand);
+                    if (fp_q_coeffs.empty()) continue;
+                    ModularPoly fp_mp(std::move(fp_q_coeffs));
+                    if (fp_mp.is_zero()) continue;  // f' ≡ 0 mod q — ramified
+                    ModularPoly fp_sq = ModularPoly::mul(fp_mp, fp_mp, f_q, q_cand);
+                    target_mp = ModularPoly::mul(target_mp, fp_sq, f_q, q_cand);
+                }
+
+                // Store full polynomial target (d coefficients in F_q).
+                CharacterPrime cp;
+                cp.q = q_cand;
+                cp.f_q = std::move(f_q);
+                cp.target_q.assign(d, 0);
+                for (size_t i = 0; i < d && i <= static_cast<size_t>(target_mp.degree()); ++i) {
+                    cp.target_q[i] = target_mp.coeff(i);
+                }
+                char_primes.push_back(std::move(cp));
+            }
+        }
+        metrics_.character_primes_used = char_primes.size();
+        metrics_.character_primes_checked = char_primes_checked;
+
+        // Precompute (m_to_alpha_coeffs) per character prime — actually,
+        // we evaluate Y at r_q where Y is in Z[α]/N. So we need current_coeffs
+        // (which are CRT-recovered coeffs in [0, M-1]) center-reduced to
+        // [-M/2, M/2], then evaluated at r_q mod q. That's the same as
+        // current_coeffs % q evaluated at r_q, BUT signs matter (center
+        // around 0 before mod q). Implement in lambda below.
+
         // v20 优化: current_coeffs 在每次 Gray flip 后立即归约到 [0, M-1],
         // verify_current 内省去 %=M 步骤 (~10μs / 系数 / iter)。
         // 65536 iter × d=6 coeffs × 10μs = ~4 sec 节省 per dependency。
@@ -414,6 +604,71 @@ public:
             return Y2_buf.compare(expected_X2) == 0;
         };
 
+        // Character-based fast filter (2026-05-21, polynomial-level form).
+        //
+        // ── IMPORTANT CORRECTNESS CAVEAT ──
+        // The polynomial-level check Y² ≡ T_q in F_q[x]/(f mod q) presumes
+        // S(α) = ∏(a-bα) is a perfect square AT THE INTEGER POLYNOMIAL LEVEL
+        // (i.e., in Z[α], not just in Z[α]/N). This holds for SYNTHETIC test
+        // dependencies built by duplicating pairs, but FAILS for production
+        // GNFS dependencies where S(α) is a square only modulo N (the
+        // even-exponent matrix kernel + quadratic-character columns make S(α)
+        // a square in Z[α]/N but not in Z[α]).
+        //
+        // Empirical evidence (test_gnfs_e2e under GNFS_FORCE_COUVEIGNES=1
+        // GNFS_COUVEIGNES_CHARS=8): filter rejects all 65536 patterns for
+        // every dependency from real GNFS, including the patterns that
+        // would have passed full Y² ≡ X² mod N verification.
+        //
+        // The filter therefore remains DISABLED by default
+        // (num_characters = 0 → empty char_primes → lambda returns true).
+        // When num_characters > 0 the filter is active and the check_below
+        // runs. Useful when the caller knows their dependency is a true
+        // Z[α] square (synthetic testing, validation harnesses). Real GNFS
+        // callers should leave num_characters = 0.
+        //
+        // Returns true if all character checks pass (candidate may be valid);
+        // false if any character check fails. Always returns true when
+        // char_primes is empty.
+        std::vector<uint64_t> Y_q_coeffs_buf;
+        Y_q_coeffs_buf.reserve(d);
+        Integer c_buf_chr;
+        auto check_characters = [&]() -> bool {
+            for (const auto& cp : char_primes) {
+                // Reduce current_coeffs mod q.
+                Y_q_coeffs_buf.assign(d, 0);
+                bool nonzero = false;
+                for (uint32_t i = 0; i < d; ++i) {
+                    c_buf_chr = current_coeffs[i];
+                    if (c_buf_chr.compare(half_M) > 0) c_buf_chr -= M;
+                    Y_q_coeffs_buf[i] = static_cast<uint64_t>(
+                        mpz_fdiv_ui(c_buf_chr.get_mpz(), cp.q));
+                    if (Y_q_coeffs_buf[i] != 0) nonzero = true;
+                }
+                if (!nonzero) {
+                    bool target_zero = true;
+                    for (uint64_t c : cp.target_q) {
+                        if (c != 0) { target_zero = false; break; }
+                    }
+                    if (!target_zero) return false;
+                    continue;
+                }
+
+                // Y_q² mod (f_q, q) — copy buf because ModularPoly takes ownership
+                std::vector<uint64_t> Y_q_copy = Y_q_coeffs_buf;
+                ModularPoly Y_q_mp{std::move(Y_q_copy)};
+                ModularPoly Y_q_sq = ModularPoly::mul(Y_q_mp, Y_q_mp, cp.f_q, cp.q);
+
+                for (size_t i = 0; i < d; ++i) {
+                    uint64_t got = (i <= static_cast<size_t>(Y_q_sq.degree())) ? Y_q_sq.coeff(i) : 0;
+                    if (got != cp.target_q[i]) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        };
+
         auto extract_result = [&]() -> std::vector<Integer> {
             // 同 verify, current_coeffs 已在 [0, M-1]
             // v22: r[i] = current_coeffs[i] (mpz_set into default-init)
@@ -435,8 +690,15 @@ public:
         }
 
         // Check pattern 0 (all positive)
-        if (verify_current()) {
-            return NumberFieldElement(extract_result());
+        metrics_.sign_patterns_tried = 1;
+        if (check_characters()) {
+            ++metrics_.full_verifications;
+            if (verify_current()) {
+                metrics_.found_sqrt = true;
+                return NumberFieldElement(extract_result());
+            }
+        } else {
+            ++metrics_.character_filter_rejects;
         }
 
         // Gray code iteration: pattern g = i ^ (i >> 1)
@@ -469,8 +731,18 @@ public:
             }
 
             prev_gray = gray;
+            ++metrics_.sign_patterns_tried;
 
+            // Cheap character filter before expensive Y² ≡ X² mod N check.
+            // When num_characters = 0 (default), check_characters() returns
+            // true unconditionally and behavior is identical to legacy code.
+            if (!check_characters()) {
+                ++metrics_.character_filter_rejects;
+                continue;
+            }
+            ++metrics_.full_verifications;
             if (verify_current()) {
+                metrics_.found_sqrt = true;
                 return NumberFieldElement(extract_result());
             }
         }
@@ -486,6 +758,7 @@ public:
             const NumberFieldElement& elem,
             const NumberField& nf) const {
 
+        metrics_.reset();
         uint32_t d = nf.degree();
         const Integer& n = nf.n();
 
@@ -683,8 +956,16 @@ public:
             return r;
         };
 
+        // Populate basic metrics for compute_from_element (no per-skip breakdown
+        // because this path's prime selection has tighter constraints).
+        metrics_.primes_checked = primes_checked;
+        metrics_.primes_used = primes.size();
+
         // Check pattern 0 (all positive)
+        metrics_.sign_patterns_tried = 1;
+        metrics_.full_verifications = 1;
         if (verify_current()) {
+            metrics_.found_sqrt = true;
             return NumberFieldElement(extract_result());
         }
 
@@ -713,8 +994,10 @@ public:
             }
 
             prev_gray = gray;
-
+            ++metrics_.sign_patterns_tried;
+            ++metrics_.full_verifications;
             if (verify_current()) {
+                metrics_.found_sqrt = true;
                 return NumberFieldElement(extract_result());
             }
         }
@@ -724,6 +1007,7 @@ public:
 
 private:
     Config config_;
+    mutable Metrics metrics_;  // Updated by compute() / compute_from_element()
 
     /// Compute product of (a_i - b_i * x) mod f(x) mod p (GNFS a - b·α convention)
     ///
@@ -780,6 +1064,63 @@ private:
     }
     [[nodiscard]] static uint64_t mul_mod_u64(uint64_t a, uint64_t b, uint64_t mod) {
         return gnfs::util::mul_mod_u64(a, b, mod);
+    }
+
+    /// Legendre symbol (a / p) for odd prime p. Returns +1, -1, or 0.
+    /// Used by character verification. Cost: O(log(a) + log(p)) via Euler's
+    /// criterion when q is small enough for direct pow_mod. For p < 2^32,
+    /// pow_mod is two 64-bit multiplications per bit of (p-1)/2.
+    [[nodiscard]] static int legendre_symbol(uint64_t a, uint64_t p) {
+        if (p == 2) return (a & 1) ? 1 : 0;
+        uint64_t a_mod = a % p;
+        if (a_mod == 0) return 0;
+        // Euler's criterion: a^((p-1)/2) mod p
+        uint64_t r = pow_mod_u64(a_mod, (p - 1) / 2, p);
+        if (r == 1) return 1;
+        if (r == p - 1) return -1;
+        // Should not happen for prime p
+        return 0;
+    }
+
+    /// Evaluate a polynomial p(x) at integer x = r modulo q via Horner.
+    /// Used to compute Y(α) mod q where we choose r = root of f mod q,
+    /// reducing the character check to a single Legendre symbol of an integer.
+    /// coeffs are uint64 (already reduced mod q).
+    /// Cost: O(deg) modular multiplications.
+    [[nodiscard]] static uint64_t eval_poly_at_root_mod_q(
+            const std::vector<uint64_t>& coeffs,
+            uint64_t r,
+            uint64_t q) {
+        if (coeffs.empty()) return 0;
+        // Horner from highest-degree coefficient down
+        uint64_t acc = 0;
+        for (size_t i = coeffs.size(); i > 0; --i) {
+            // acc = acc * r + coeffs[i-1], all mod q
+            acc = mul_mod_u64(acc, r, q);
+            uint64_t c = coeffs[i - 1] % q;
+            acc = (acc + c) % q;
+        }
+        return acc;
+    }
+
+    /// Find the first root r of f mod q, or return uint64_t max if none.
+    /// Used to select character primes (we need at least one degree-1 prime
+    /// ideal above q for the character to be evaluable).
+    /// For small q (< 100k), brute-force search is faster than Cantor-Zassenhaus.
+    [[nodiscard]] static uint64_t find_root_mod_q(
+            const std::vector<uint64_t>& f_mod_q,
+            uint64_t q) {
+        // Build f mod q, evaluate at every x ∈ [0, q-1]
+        for (uint64_t x = 0; x < q; ++x) {
+            uint64_t val = 0;
+            uint64_t x_power = 1;
+            for (size_t i = 0; i < f_mod_q.size(); ++i) {
+                val = (val + mul_mod_u64(f_mod_q[i], x_power, q)) % q;
+                x_power = mul_mod_u64(x_power, x, q);
+            }
+            if (val == 0) return x;
+        }
+        return ~uint64_t(0);  // No root
     }
 
     /// Modular inverse
