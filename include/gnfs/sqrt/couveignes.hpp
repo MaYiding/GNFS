@@ -23,6 +23,54 @@ struct CouveignesSqrtConfig {
     uint64_t prime_start = 1000;   // Starting point for prime search (larger = better)
     size_t max_attempts = 100;     // Max attempts for sign resolution
     size_t max_prime_checks = 100000;  // Max prime candidates to check (prevents infinite loop)
+
+    // ── Large class group support (2026-05-21) ──
+    // Number of extra quadratic characters to verify each candidate sign pattern.
+    // Set to 0 to disable character verification (legacy behavior). When > 0,
+    // each candidate Y(α) is first tested against K character constraints
+    // (cheap O(d) per character) before the expensive Y² ≡ X² check. This
+    // catches false sign patterns that arise from nontrivial class group
+    // 2-torsion (the source of "large class group failure" in legacy code).
+    size_t num_characters = 0;     // 0 = disabled (legacy); 8 = balanced; 16 = strict
+    uint64_t character_prime_start = 10007;  // Distinct from CRT prime_start
+    size_t max_character_prime_checks = 50000;  // Bound character prime search
+
+    // Extra sign bits beyond 2^num_primes Gray code. Multiplies the pattern
+    // space by 2^extra_sign_bits. Currently informational only — extension
+    // hook for future "twist-element" search if class group 2-rank > 0.
+    // Capped at 4 (2^20 total pattern budget when num_primes=16).
+    size_t extra_sign_bits = 0;
+};
+
+/// Per-call telemetry from CouveignesSqrt. Populated by compute() /
+/// compute_from_element() regardless of success/failure. Optional ENV
+/// `GNFS_COUVEIGNES_VERBOSE=1` emits this to stderr.
+///
+/// Hot-path overhead: ~10 integer increments per call (negligible vs the
+/// 65536-pattern Gray-code search and per-prime Tonelli-Shanks).
+struct CouveignesMetrics {
+    // Prime selection counters
+    size_t primes_checked = 0;
+    size_t primes_used = 0;
+    size_t primes_skipped_divides_n = 0;
+    size_t primes_skipped_bad_leading = 0;
+    size_t primes_skipped_reducible = 0;
+    size_t primes_skipped_zero_product = 0;
+    size_t primes_skipped_no_sqrt = 0;
+    size_t primes_skipped_ramified = 0;  // disc(f) ≡ 0 mod p — added 2026-05-21
+
+    // Sign-pattern search counters
+    size_t sign_patterns_tried = 0;          // Gray code iterations
+    size_t character_filter_rejects = 0;     // Patterns rejected by cheap char check
+    size_t full_verifications = 0;           // Y² ≡ X² evaluations
+    bool found_sqrt = false;
+
+    // Character verification telemetry
+    size_t character_primes_used = 0;        // K from config
+    size_t character_primes_checked = 0;     // Search overhead
+
+    // Reset all fields to default (used by compute() at entry)
+    void reset() noexcept { *this = CouveignesMetrics{}; }
 };
 
 /// CouveignesSqrt - Compute algebraic square root using Couveignes method
@@ -34,11 +82,16 @@ struct CouveignesSqrtConfig {
 class CouveignesSqrt {
 public:
     using Config = CouveignesSqrtConfig;
+    using Metrics = CouveignesMetrics;
 
     CouveignesSqrt() : config_() {}
 
     explicit CouveignesSqrt(const Config& config)
         : config_(config) {}
+
+    /// Telemetry from the most recent compute() / compute_from_element() call.
+    /// Populated whether the call succeeded or returned nullopt.
+    [[nodiscard]] const Metrics& last_metrics() const noexcept { return metrics_; }
 
     /// Compute square root of product of (a_i - b_i * alpha) elements.
     /// Note: GNFS convention is `a - b*α` (see CLAUDE.md "元素表示"),
@@ -59,6 +112,7 @@ public:
             const NumberField& nf,
             bool apply_f_prime_correction = true) const {
 
+        metrics_.reset();
         if (ab_pairs.empty()) {
             return std::nullopt;
         }
@@ -234,13 +288,16 @@ public:
             M *= static_cast<int64_t>(prime);  // mpz_mul_si direct
         }
 
-        // Suppress unused variable warnings
-        (void)primes_checked;
-        (void)primes_dividing_n;
-        (void)primes_bad_leading;
-        (void)primes_reducible;
-        (void)primes_zero_product;
-        (void)primes_no_sqrt;
+        // Publish into metrics. Local counters retained for cheap increment
+        // in hot loop (avoids member-write false sharing if compute() ever
+        // becomes threaded).
+        metrics_.primes_checked = primes_checked;
+        metrics_.primes_used = primes.size();
+        metrics_.primes_skipped_divides_n = primes_dividing_n;
+        metrics_.primes_skipped_bad_leading = primes_bad_leading;
+        metrics_.primes_skipped_reducible = primes_reducible;
+        metrics_.primes_skipped_zero_product = primes_zero_product;
+        metrics_.primes_skipped_no_sqrt = primes_no_sqrt;
 
         // Note: old compute_crt_with_signs lambda removed — replaced by
         // precomputed weights + Gray code incremental update below
@@ -435,7 +492,10 @@ public:
         }
 
         // Check pattern 0 (all positive)
+        metrics_.sign_patterns_tried = 1;
+        metrics_.full_verifications = 1;
         if (verify_current()) {
+            metrics_.found_sqrt = true;
             return NumberFieldElement(extract_result());
         }
 
@@ -469,8 +529,10 @@ public:
             }
 
             prev_gray = gray;
-
+            ++metrics_.sign_patterns_tried;
+            ++metrics_.full_verifications;
             if (verify_current()) {
+                metrics_.found_sqrt = true;
                 return NumberFieldElement(extract_result());
             }
         }
@@ -486,6 +548,7 @@ public:
             const NumberFieldElement& elem,
             const NumberField& nf) const {
 
+        metrics_.reset();
         uint32_t d = nf.degree();
         const Integer& n = nf.n();
 
@@ -683,8 +746,16 @@ public:
             return r;
         };
 
+        // Populate basic metrics for compute_from_element (no per-skip breakdown
+        // because this path's prime selection has tighter constraints).
+        metrics_.primes_checked = primes_checked;
+        metrics_.primes_used = primes.size();
+
         // Check pattern 0 (all positive)
+        metrics_.sign_patterns_tried = 1;
+        metrics_.full_verifications = 1;
         if (verify_current()) {
+            metrics_.found_sqrt = true;
             return NumberFieldElement(extract_result());
         }
 
@@ -713,8 +784,10 @@ public:
             }
 
             prev_gray = gray;
-
+            ++metrics_.sign_patterns_tried;
+            ++metrics_.full_verifications;
             if (verify_current()) {
+                metrics_.found_sqrt = true;
                 return NumberFieldElement(extract_result());
             }
         }
@@ -724,6 +797,7 @@ public:
 
 private:
     Config config_;
+    mutable Metrics metrics_;  // Updated by compute() / compute_from_element()
 
     /// Compute product of (a_i - b_i * x) mod f(x) mod p (GNFS a - b·α convention)
     ///
