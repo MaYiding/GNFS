@@ -68,13 +68,45 @@ public:
 
     /// 快速 ECM 用于小因子 (适合筛法余因子)
     /// 使用较少的曲线和较小的界
+    ///
+    /// 实现细节: 该函数在 GNFS pipeline cofactorization Phase 4 是 hot path
+    /// (smooth_check.hpp::classify_cofactor), 每个 cofactor 都调用一次。
+    /// 用 thread_local cached BatchContext 跨调用复用 Stage 1 共享数据
+    /// (primes_cache + prime_powers), 避免每次 alloc B1=2000 → ~300 primes
+    /// + inline pk 计算。sigma 仍 per-call randomized (与 N 关联) 保留原行为。
     [[nodiscard]] static std::optional<Integer> quick_factor(const Integer& n) {
-        Config config;
-        config.num_curves = 10;
-        config.B1 = 2000;
-        config.B2 = 50000;
-        config.auto_params = false;
-        return factor(n, config);
+        if (n.is_one() || n.is_probable_prime() > 0) {
+            return std::nullopt;
+        }
+
+        // thread_local cache: B1=2000 primes_cache + prime_powers 一次构造
+        // sigma_pool 每次重新生成 (与 N 关联), 保留原 quick_factor 随机行为
+        thread_local BatchContext cached_ctx = [] {
+            Config cfg;
+            cfg.num_curves = 0;  // sigma_pool 单独 per-call 生成, 这里不用
+            cfg.B1 = 2000;
+            cfg.B2 = 50000;
+            cfg.auto_params = false;
+            return prepare_batch(cfg, /*sigma_seed=*/0);
+        }();
+
+        // 重建 sigma_pool: 每次 quick_factor 用 N+rd seed (与原 factor 行为一致)
+        std::random_device rd;
+        uint64_t n_low = mpz_getlimbn(n.get_mpz(), 0);
+        uint64_t seed = rd() ^ n_low;
+        std::mt19937_64 rng(seed);
+        cached_ctx.sigma_pool.clear();
+        cached_ctx.sigma_pool.reserve(10);
+        for (uint32_t i = 0; i < 10; ++i) {
+            cached_ctx.sigma_pool.push_back((rng() % 1000000) + 6);
+        }
+
+        // 走 batch path: 共享 primes_cache + prime_powers
+        for (uint64_t sigma : cached_ctx.sigma_pool) {
+            auto result = try_curve_with_pk(n, sigma, cached_ctx);
+            if (result) return result;
+        }
+        return std::nullopt;
     }
 
     /// 共享上下文 — 跨多个 cofactor 复用的 N-independent 数据
