@@ -490,6 +490,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SieveCheckpoint COMMAND test_sieve_checkpoint)
     set_tests_properties(SieveCheckpoint PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_bl_checkpoint
+        tests/test_bl_checkpoint.cpp
+    )
+    target_link_libraries(test_bl_checkpoint PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BlockLanczosCheckpoint COMMAND test_bl_checkpoint)
+    set_tests_properties(BlockLanczosCheckpoint PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_poly_checkpoint
         tests/test_poly_checkpoint.cpp
     )
