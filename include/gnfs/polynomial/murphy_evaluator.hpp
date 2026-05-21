@@ -162,6 +162,18 @@ public:
         }
         if (prime_end == 0) return 0.0;
 
+        // Linear-polynomial short-circuit (CADO-NFS get_alpha line:
+        //   if (f->deg == 1) return 0.569959993064325;).
+        // For monic-linear g(x) = x + c0: every prime p has exactly one affine
+        // root, no double root (g'=1), no projective root (lc=1).
+        // Per-prime contribution: (1/p - 1/(p-1)) * log(p).
+        // Sum is independent of c0; precomputed lazily per evaluator.
+        // Note: Kleinjung's g(x) = x - m always has lc=1, so this fast path
+        // covers every Murphy E call where g is the rational-side polynomial.
+        if (f.degree() == 1 && f.leading_coeff().is_one()) {
+            return linear_alpha_cached(prime_end);
+        }
+
         // 预计算 f' 用于双根检测 (read-only across threads)
         IntPolynomial df = f.derivative();
 
@@ -227,6 +239,30 @@ private:
         }
 
         return contribution;
+    }
+
+    /// Linear-poly cache: sum_{p ≤ small_primes_[prime_end-1]} (1/p - 1/(p-1)) · log(p).
+    /// Lazy-computed prefix-sum of per-prime contributions for monic-linear polys.
+    /// prefix_sum[i] = Σ_{j<i} contribution_at_prime(small_primes_[j]).
+    /// Returns prefix_sum[prime_end] for the requested cutoff index.
+    [[nodiscard]] double linear_alpha_cached(size_t prime_end) const {
+        std::call_once(linear_alpha_init_, [this]() {
+            linear_alpha_prefix_.resize(small_primes_.size() + 1, 0.0);
+            double acc = 0.0;
+            for (size_t i = 0; i < small_primes_.size(); ++i) {
+                const double p = static_cast<double>(small_primes_[i]);
+                const double log_p = std::log(p);
+                // Monic linear: exactly 1 affine root per prime, no double root
+                // (since g' = 1), no projective root (since lc = 1). Per-prime
+                // contribution matches alpha_contribution() for r=1, leading=1, df=1.
+                acc += (1.0 / p - 1.0 / (p - 1.0)) * log_p;
+                linear_alpha_prefix_[i + 1] = acc;
+            }
+        });
+        if (prime_end >= linear_alpha_prefix_.size()) {
+            prime_end = linear_alpha_prefix_.size() - 1;
+        }
+        return linear_alpha_prefix_[prime_end];
     }
 
     /// Lazy ThreadPool init (per-evaluator instance, shared across compute_alpha calls).
@@ -318,6 +354,13 @@ private:
     // Mutable + once_flag for lazy init in const get_alpha_pool().
     mutable std::once_flag pool_init_;
     mutable std::unique_ptr<gnfs::util::ThreadPool> alpha_pool_;
+
+    // Linear-polynomial alpha cache (CADO get_alpha deg==1 fast path).
+    // Precomputed prefix-sum across small_primes_ enables O(1) alpha lookup
+    // for any monic linear polynomial with any alpha_bound. Initialized lazily
+    // on first call. linear_alpha_prefix_[i] = Σ_{j<i} contribution_at(small_primes_[j]).
+    mutable std::once_flag linear_alpha_init_;
+    mutable std::vector<double> linear_alpha_prefix_;
 
     /// 初始化小素数列表
     void init_primes() {
