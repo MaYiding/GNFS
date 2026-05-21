@@ -470,6 +470,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Murphy COMMAND test_murphy)
     set_tests_properties(Murphy PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_rotation_incremental
+        tests/test_rotation_incremental.cpp
+    )
+    target_link_libraries(test_rotation_incremental PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME RotationIncremental COMMAND test_rotation_incremental)
+    set_tests_properties(RotationIncremental PROPERTIES LABELS "instant" TIMEOUT 30)
+
     add_executable(test_kleinjung
         tests/test_kleinjung.cpp
     )
