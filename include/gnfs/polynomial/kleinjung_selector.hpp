@@ -7,6 +7,7 @@
 #include "int_polynomial.hpp"
 #include "murphy_evaluator.hpp"
 #include "polynomial_optimizer.hpp"
+#include "rotation_alpha.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -374,17 +375,33 @@ private:
         if (!f_init.has_value()) return std::nullopt;
         if (!is_valid_polynomial(*f_init, n, m_init)) return std::nullopt;
 
-        // 保留 top-K (K=3) L² 最小的候选,然后用 Murphy E 二级筛。
-        // 原代码只取 L² min — 但 L² 不含 α,L² 最小 不等于 Murphy 最佳。
-        // 例: α 极负但 L² 略大的多项式实际上更优 (CADO-NFS 经验)。
+        // 保留 top-K (K=3) 候选,然后用 Murphy E 二级筛。
+        //
+        // 默认排序键: 纯 L² norm (向后兼容)。
+        // ENV `GNFS_TOPK_ALPHA=1` 启用 lognorm + cheap_alpha 排序
+        // (CADO-NFS exp_E 风格), 用小素数子集 (p ≤ 100, ~25 primes) 作 α 代理。
+        //
+        // 注意:cheap_alpha 是 noisy proxy,小 N 下可能选出 Murphy E 较差的候选
+        // (实测 25d 上 alpha 排序导致 Murphy E 从 -1.20 退化到 -1.33)。
+        // 默认保持 L²-only,仅在 ENV 显式启用时试用 alpha 排序。
+        //
+        // 真正的 rotation-incremental (CADO ropt 2D sieve) 仍 deferred。
         struct Candidate {
             IntPolynomial f;
             Integer m;
-            double norm;
+            double norm;       // L² norm (kept for diagnostics)
+            double rank_key;   // ranking key (norm or score)
         };
         constexpr size_t TOP_K = 3;
         std::vector<Candidate> top_k;
         top_k.reserve(TOP_K + 1);
+
+        // Tracker reused across all (t, k) iterations within this candidate.
+        const RotationAlphaTracker tracker;
+        const bool use_alpha_ranking = []() {
+            const char* env = std::getenv("GNFS_TOPK_ALPHA");
+            return env && env[0] == '1';
+        }();
 
         // 平移 + 旋转网格搜索。t_range 之前硬编码 ±5(11 点),与 KleinjungParams
         // 的 search_radius 无关,大 N 下平移空间被严重压缩。改为按
@@ -439,13 +456,19 @@ private:
             double s = PolynomialOptimizer::estimate_skewness(f_t);
             double norm = PolynomialOptimizer::compute_size(f_t, s);
 
-            // 插入并保持按 norm 升序的 top-K 列表
+            // rank_key 默认 = norm (L²-only);ENV GNFS_TOPK_ALPHA=1 启用
+            // log(L²) + cheap_alpha 替代排序。
+            const double rank_key = use_alpha_ranking
+                ? tracker.score(f_t, norm)
+                : norm;
+
+            // 插入并保持按 rank_key 升序的 top-K 列表
             if (top_k.size() < TOP_K ||
-                norm < top_k.back().norm) {
-                top_k.push_back({std::move(f_t), std::move(m_t), norm});
+                rank_key < top_k.back().rank_key) {
+                top_k.push_back({std::move(f_t), std::move(m_t), norm, rank_key});
                 std::sort(top_k.begin(), top_k.end(),
                           [](const Candidate& a, const Candidate& b) {
-                              return a.norm < b.norm;
+                              return a.rank_key < b.rank_key;
                           });
                 if (top_k.size() > TOP_K) top_k.pop_back();
             }

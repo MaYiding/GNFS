@@ -194,6 +194,7 @@ ALL_TEST_BINARIES=(
     test_polynomial_context
     test_base_m
     test_polynomial_optimizer
+    test_rotation_incremental
     test_class_group
     test_schirokauer_deg4
     test_schirokauer_strip
@@ -210,7 +211,7 @@ typeset -A MODULE_TESTS
 MODULE_TESTS=(
     core           "test_integer test_params test_regressions test_edge_cases test_core_types"
     util           "test_small_vector test_thread_pool test_logger test_primes test_timer test_mmap_file test_safe_math"
-    polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant"
+    polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental"
     factor_base    "test_factor_base"
     sieve          "test_special_q test_sieve_basic test_bucket_sieve test_sieve_ecore_qos"
     cofactor       "test_cofactor test_squfof test_batch_ecm test_integration"
@@ -261,6 +262,7 @@ SMOKE_TESTS=(
     test_polynomial_context
     test_base_m
     test_polynomial_optimizer
+    test_rotation_incremental
     test_class_group
     test_schirokauer_deg4
     test_schirokauer_strip
@@ -309,6 +311,7 @@ TEST_TIMEOUT=(
     test_polynomial_context  10
     test_base_m              10
     test_polynomial_optimizer 10
+    test_rotation_incremental 30
     test_class_group         10
     test_schirokauer_deg4    10
     test_schirokauer_strip   10
@@ -369,6 +372,7 @@ TEST_TIER=(
     test_polynomial_context  "instant"
     test_base_m              "instant"
     test_polynomial_optimizer "instant"
+    test_rotation_incremental "instant"
     test_class_group         "instant"
     test_schirokauer_deg4    "instant"
     test_schirokauer_strip   "instant"
