@@ -732,6 +732,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SaveSparseAsMmap COMMAND test_save_sparse_as_mmap)
     set_tests_properties(SaveSparseAsMmap PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # GNFS_LINALG_MMAP three-state policy parser.
+    add_executable(test_linalg_mmap_policy
+        tests/test_linalg_mmap_policy.cpp
+    )
+    target_link_libraries(test_linalg_mmap_policy PRIVATE gnfs_core)
+    add_test(NAME LinalgMmapPolicy COMMAND test_linalg_mmap_policy)
+    set_tests_properties(LinalgMmapPolicy PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Out-of-core Relations 单元测试
     add_executable(test_ooc_relations
         tests/test_ooc_relations.cpp
