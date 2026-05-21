@@ -633,6 +633,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME BrentPollardRho COMMAND test_brent_pollard_rho)
     set_tests_properties(BrentPollardRho PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    add_executable(test_survival_predictor
+        tests/test_survival_predictor.cpp
+    )
+    target_link_libraries(test_survival_predictor PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SurvivalPredictor COMMAND test_survival_predictor)
+    set_tests_properties(SurvivalPredictor PROPERTIES LABELS "instant" TIMEOUT 30)
+
     add_executable(test_batch_ecm
         tests/test_batch_ecm.cpp
     )

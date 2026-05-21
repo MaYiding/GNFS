@@ -507,6 +507,90 @@ unset GNFS_SPMV_SIMD              # 同 auto
 **Default ON (auto)**: 对所有 SpMV 调用方透明启用. zero behavior change
 对 user (除内核 uop 数), bit-for-bit 输出一致.
 
+### Cofactor survival rate predictor (GNFS_SURVIVAL_FILTER + GNFS_SURVIVAL_THRESHOLD)
+
+**ENV `GNFS_SURVIVAL_FILTER={0,1}`** + **`GNFS_SURVIVAL_THRESHOLD=<double>`** (2026-05-21 实施, default OFF):
+余因子分类入口 (`classify_cofactor`) 用 Dickman ρ 函数估算 cofactor 通过整条
+cofactor pipeline (trial division → SQUFOF → Brent-Pollard rho → legacy Pollard rho → ECM)
+的 survival 概率. 概率低于阈值时 zero-cost 早 reject (CofactorClass::TooLarge),
+跳过昂贵的分解尝试.
+
+```bash
+# 默认行为: filter OFF, 零开销, 永不 reject (W5 T5 default)
+unset GNFS_SURVIVAL_FILTER GNFS_SURVIVAL_THRESHOLD
+
+# 启用 filter 但 threshold=0 ⇒ 仍永不 reject (安全测试模式)
+GNFS_SURVIVAL_FILTER=1 ./gnfs <N>
+
+# 启用 filter + 保守 threshold (catastrophically unlikely 才 reject)
+GNFS_SURVIVAL_FILTER=1 GNFS_SURVIVAL_THRESHOLD=1e-12 ./gnfs <N>
+
+# 中度 threshold: reject if survival < 0.0001% (可能损失 1-2% smooth relations)
+GNFS_SURVIVAL_FILTER=1 GNFS_SURVIVAL_THRESHOLD=1e-6 ./gnfs <N>
+
+# 激进 threshold: reject if survival < 0.1% (可能损失 5-10% smooth relations)
+GNFS_SURVIVAL_FILTER=1 GNFS_SURVIVAL_THRESHOLD=1e-3 ./gnfs <N>
+```
+
+**算法 (Dickman ρ)**:
+- ρ(u) 函数估算密度: u = log(N) / log(y) 时, ρ(u) ≈ fraction of integers ≤ N 是 y-smooth
+- u_smooth = cofactor_bits / smoothness_bound_bits (全 B-smooth path)
+- u_lp = cofactor_bits / lp_bound_bits (允许 ≤ 1 prime in (B, LP] path)
+- 综合估算: max(ρ(u_smooth), ρ(u_lp)) — 取 max 保守 lower-bound (LP 路径更宽容)
+- 实现: u ∈ [1, 2] 用闭式 ρ(u) = 1 - ln(u); u ∈ (2, 10] 用整数 anchor + log-linear 插值;
+  u > 10 用 u^{-u} 渐进式
+- ρ(2) ≈ 0.30685, ρ(3) ≈ 0.04860, ρ(5) ≈ 3.5e-4 (van de Lune & Wattel 1969)
+
+**触发条件 (三态 AND)**: `GNFS_SURVIVAL_FILTER=1` AND `GNFS_SURVIVAL_THRESHOLD > 0`
+AND caller 传入 `smoothness_bound > 0` (sieve params 必须传递 B 给
+`classify_cofactor`). 任一条件失败则跳过 predictor (零开销).
+
+**与 W5 T4 Brent-Pollard rho 的相对位置**:
+```
+survival_predictor (W5 T5, BEFORE) -- 最前面的早 reject
+  ↓ (predictor passes)
+trial division (small primes)
+  ↓
+SQUFOF
+  ↓
+BrentPollardRho (W5 T4, GNFS_COFACTOR_BRENT=1)
+  ↓
+Pollard rho (legacy)
+  ↓
+ECM Stage 1+2
+```
+
+**Threshold 调优建议**:
+- 0.0 (default): 仅启用 telemetry 收集, 不实际 reject. 用于测量 predictor 假设
+- 1e-12: 极保守, 仅 reject 100% 确定无法 smooth 的 case (u > 8 等)
+- 1e-6 — 1e-9: 实用上限, 50d/60d 大 cofactor 大幅 prune. 实测前 reg-test 25d/50d
+- 1e-3 — 1e-2: 高侵略, 必然丢失部分真 smooth relations. 仅在用户接受 sieve loop 多 round 时合理
+
+**正确性保证**:
+- threshold == 0 path 等价于 filter OFF (严格 invariant). 测试 `test_env_threshold_zero_invariant`
+- Dickman ρ 是估算 (非精确), 启用后可能 false-negative (误 reject 真 smooth).
+  这是用户 ROI 选择, 默认 0.0 保守
+- predictor pass 仍走完整 cofactor pipeline, 不会因 predictor pass 跳过任何分解步骤
+
+**Telemetry (`SurvivalPredictorStats` atomic)**:
+- `predictor_rejects`: predictor 早 reject 的 cofactor 数
+- `predictor_passes_then_smooth`: predictor 通过 + cofactor 真 smooth (好 pass)
+- `predictor_passes_then_failed`: predictor 通过 + cofactor 不 smooth (浪费 cofactor cost,
+  但是必要的 — predictor 不会因此误 reject)
+- pipeline 结束可输出 `[survival_pred] rejected=X, smooth=Y, failed=Z` 行
+
+**集成点** (commits `2fc977a` → `b6850d7`, 2026-05-21):
+- `include/gnfs/cofactor/survival_predictor.hpp` — Dickman ρ + estimate_survival
+  + should_reject_cofactor + SurvivalPredictorStats
+- `include/gnfs/cofactor/smooth_check.hpp` — `classify_cofactor` 新 `smoothness_bound`
+  参数 (default 0 = disabled) + survival predictor 早 reject 分支 + RAII PassRecorder
+- `tests/test_survival_predictor.cpp` — 16 tests (4 dickman + 4 estimate + 2 env
+  + 4 integration + 2 perf info)
+
+**Default OFF**: 任何 caller 不传 `smoothness_bound` (或传 0) 时 predictor 完全跳过,
+零开销, 零行为变化. classify_cofactor 现有调用者无需更新即保持原 behavior. 仅在
+Pipeline / sieve loop wire-in `smoothness_bound = params.smoothness_bound_B` 时启用.
+
 ### Murphy E alpha 并行 (GNFS_MURPHY_ALPHA_THREADS)
 
 **ENV `GNFS_MURPHY_ALPHA_THREADS=N`** (2026-05-18 实施, lightweight optimization):
