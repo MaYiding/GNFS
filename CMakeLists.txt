@@ -504,6 +504,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME BWKrylovMmapIntegration COMMAND test_bw_krylov_mmap_integration)
     set_tests_properties(BWKrylovMmapIntegration PROPERTIES LABELS "fast" TIMEOUT 60)
 
+    add_executable(test_bw_krylov_parallel
+        tests/test_bw_krylov_parallel.cpp
+    )
+    target_link_libraries(test_bw_krylov_parallel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BWKrylovParallel COMMAND test_bw_krylov_parallel)
+    set_tests_properties(BWKrylovParallel PROPERTIES LABELS "fast" TIMEOUT 120)
+
     add_executable(test_cofactor
         tests/test_cofactor.cpp
     )
