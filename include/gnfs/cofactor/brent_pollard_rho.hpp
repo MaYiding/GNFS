@@ -116,12 +116,11 @@ public:
 
 #ifdef __SIZEOF_INT128__
         // Native fast path: n fits uint64. We need n² < 2^128 for the
-        // mod-mul step to stay in __uint128_t. uint64::max² = 2^128 - 2^65,
-        // which fits, so condition is simply `n.fits_uint64()`.
+        // mod-mul step to stay in __uint128_t. uint64::max² ≈ 2^128 - 2^65,
+        // which fits, so the condition is simply `n.fits_uint64()`.
         if (n.fits_uint64()) {
             uint64_t n_u = n.to_uint64();
-            uint64_t factor = 0;
-            result = split_u128(n_u, max_iter, seed, factor, iter_used);
+            result = split_u128(n_u, max_iter, seed, iter_used);
         } else {
             result = split_integer(n, max_iter, seed, iter_used);
         }
@@ -140,16 +139,19 @@ private:
     /// Fast path — native 128-bit modular arithmetic. `n` must be odd > 3,
     /// not a perfect power, and fit uint64.
     [[nodiscard]] static std::optional<std::pair<Integer, Integer>>
-    split_u128(uint64_t n, uint64_t max_iter, int seed,
-               uint64_t& out_factor, uint64_t& iter_used) {
-        // PRNG: linear congruential, deterministic from seed.
+    split_u128(uint64_t n, uint64_t max_iter, int seed, uint64_t& iter_used) {
+        // PRNG: deterministic from seed.
         std::mt19937_64 rng(static_cast<uint64_t>(seed));
         // Three c attempts. First always c=1 (Pollard's classic default,
         // best for small balanced semiprimes). Then two RNG-derived.
         uint64_t c_values[3];
         c_values[0] = 1;
-        c_values[1] = (rng() % (n - 2)) + 2;   // ∈ [2, n-1]
-        c_values[2] = (rng() % (n - 2)) + 2;
+        // Avoid division-by-zero edge: when n < 3, but split() filters n < 4
+        // and the even branch covers n = 4, 6, 8... Still guard for n == 2
+        // or 3 reaching here (shouldn't happen).
+        uint64_t mod = (n > 2) ? (n - 2) : 1;
+        c_values[1] = (rng() % mod) + 2;   // ∈ [2, n-1]
+        c_values[2] = (rng() % mod) + 2;
 
         // We split max_iter across the three retries: each gets up to
         // max_iter/3, but tracker `iter_used` accumulates across all.
@@ -167,14 +169,12 @@ private:
             if (factor > 1 && factor < n) {
                 uint64_t other = n / factor;
                 if (factor * other == n && other > 1 && other < n) {
-                    out_factor = factor;
                     uint64_t lo = factor < other ? factor : other;
                     uint64_t hi = factor < other ? other : factor;
                     return std::make_pair(Integer(lo), Integer(hi));
                 }
             }
         }
-        out_factor = 0;
         return std::nullopt;
     }
 
