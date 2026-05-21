@@ -217,6 +217,8 @@ ALL_TEST_BINARIES=(
     test_linalg_mmap_policy
     test_ecm_brent_suyama
     test_ecm_brent_suyama_bench
+    test_poly_checkpoint
+    test_fb_checkpoint
 )
 
 # 模块 → 测试二进制映射 (仅 instant+fast 的测试)
@@ -224,8 +226,8 @@ typeset -A MODULE_TESTS
 MODULE_TESTS=(
     core           "test_integer test_params test_regressions test_edge_cases test_core_types"
     util           "test_small_vector test_thread_pool test_logger test_primes test_timer test_mmap_file test_safe_math test_bit_intrin"
-    polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly"
-    factor_base    "test_factor_base"
+    polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
+    factor_base    "test_factor_base test_fb_checkpoint"
     sieve          "test_special_q test_sieve_basic test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_sieve_tiny_simd"
     cofactor       "test_cofactor test_squfof test_batch_ecm test_3lp_cofactor test_trial_wheel test_integration test_ecm_brent_suyama"
     relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration"
@@ -241,6 +243,7 @@ MODULE_SLOW_TESTS=(
     polynomial     "test_kleinjung test_kleinjung_large test_factor_with_kleinjung"
     sieve          "test_lattice_sieve"
     cofactor       "test_ecm_brent_suyama_bench"
+    api            "test_full_resume"
 )
 
 # 冒烟测试子集 (仅 < 1s 的纯单元测试，绝不包含实际 GNFS 运算)
@@ -298,6 +301,8 @@ SMOKE_TESTS=(
     test_save_sparse_as_mmap
     test_linalg_mmap_policy
     test_ecm_brent_suyama
+    test_poly_checkpoint
+    test_fb_checkpoint
 )
 
 # ── 每个测试的超时秒数 (基于实测) ──
@@ -379,6 +384,9 @@ TEST_TIMEOUT=(
     test_ecm_brent_suyama    30
     test_ecm_brent_suyama_bench 120
     test_bai_brent_poly      60
+    test_poly_checkpoint     10
+    test_fb_checkpoint       10
+    test_full_resume         120
 )
 
 # 测试速度分级 (用于 list 显示)
@@ -456,6 +464,9 @@ TEST_TIER=(
     test_ecm_brent_suyama    "instant"
     test_ecm_brent_suyama_bench "slow"
     test_bai_brent_poly      "fast"
+    test_poly_checkpoint     "instant"
+    test_fb_checkpoint       "instant"
+    test_full_resume         "slow"
 )
 
 # 模块依赖图 (改了 A 模块 → 需要额外测试的下游模块)
