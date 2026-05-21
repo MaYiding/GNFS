@@ -6,6 +6,7 @@
 #include "../factor_base/factor_base.hpp"
 #include "../util/safe_math.hpp"
 #include "adaptive_lattice.hpp"
+#include "bucket_prefetch.hpp"
 #include "ecore_qos.hpp"
 #include "lattice_basis.hpp"
 #include "special_q.hpp"
@@ -733,6 +734,13 @@ private:
                         gnfs::util::set_current_thread_qos(qos);
                     }
                     auto& local = thread_buckets[t].per_region;
+                    // Resolve the prefetch gate once outside the inner loops:
+                    // it never changes mid-scatter and we want the inner
+                    // bodies to branch on a stack-local boolean rather than
+                    // re-issuing an atomic load per iteration.
+                    const bool prefetch_on = bucket_prefetch_enabled();
+                    const size_t prefetch_step =
+                        kBucketPrefetchDistance;
                     for (size_t pi_idx = start; pi_idx < end_idx; ++pi_idx) {
                         const auto& pe = primes[medium_prime_indices[pi_idx]];
                         int32_t p32 = static_cast<int32_t>(pe.p);
@@ -742,10 +750,31 @@ private:
                             int32_t offset = i_mod - imin_mod;
                             if (offset < 0) offset += p32;
                             size_t row_base = static_cast<size_t>(j - j_min) * w;
+                            const size_t stride = static_cast<size_t>(pe.p);
+                            const size_t row_end = row_base + w;
                             for (size_t pos = row_base + static_cast<size_t>(offset);
-                                 pos < row_base + w;
-                                 pos += static_cast<size_t>(pe.p)) {
+                                 pos < row_end;
+                                 pos += stride) {
                                 size_t region_idx = pos >> LOG_BUCKET_REGION;
+                                // Speculatively touch the destination region
+                                // vector's metadata for an iteration far
+                                // enough ahead that the L1 fill should land
+                                // before we issue the next push_back. The
+                                // prefetch is a hint — the output is bit-for
+                                // -bit identical with or without it.
+                                if (prefetch_on) {
+                                    const size_t look_pos =
+                                        pos + prefetch_step * stride;
+                                    if (look_pos < row_end) {
+                                        const size_t look_region =
+                                            look_pos >> LOG_BUCKET_REGION;
+                                        if (look_region < num_regions) {
+                                            prefetch_bucket_write(
+                                                static_cast<const void*>(
+                                                    &local[look_region]));
+                                        }
+                                    }
+                                }
                                 if (region_idx < num_regions) {
                                     local[region_idx].push_back({
                                         static_cast<uint16_t>(pos & (BUCKET_REGION_SIZE - 1)),
@@ -798,9 +827,29 @@ private:
             size_t region_start = r * BUCKET_REGION_SIZE;
             size_t region_end = std::min(region_start + BUCKET_REGION_SIZE, total_area);
 
-            // Apply scattered bucket entries for this region (from all threads)
+            // Apply scattered bucket entries for this region (from all threads).
+            // Gather hot loop: speculative prefetch of the `sieve_array_[pos]`
+            // target `kBucketPrefetchDistance` entries ahead overlaps the
+            // pointer-chase latency with the current XOR-add. Prefetch is a
+            // hint only — bit-for-bit identical output regardless of state.
+            const bool prefetch_on = bucket_prefetch_enabled();
             for (size_t t = 0; t < scatter_threads; ++t) {
-                for (const auto& entry : thread_buckets[t].per_region[r]) {
+                const auto& vec = thread_buckets[t].per_region[r];
+                const size_t n_entries = vec.size();
+                for (size_t ei = 0; ei < n_entries; ++ei) {
+                    if (prefetch_on) {
+                        const size_t look = ei + kBucketPrefetchDistance;
+                        if (look < n_entries) {
+                            const size_t look_pos =
+                                region_start + vec[look].offset;
+                            if (look_pos < total_area) {
+                                prefetch_bucket_read(
+                                    static_cast<const void*>(
+                                        &sieve_array_[look_pos]));
+                            }
+                        }
+                    }
+                    const auto& entry = vec[ei];
                     size_t pos = region_start + entry.offset;
                     if (pos < total_area) {
                         sieve_array_[pos] += entry.log_p;
@@ -1167,6 +1216,11 @@ private:
             }
         }
 
+        // Resolve the prefetch gate once per chunk: bucket apply runs
+        // many times per row but the gate is process-global, so the
+        // atomic load is hoisted to the chunk entry.
+        const bool prefetch_on = bucket_prefetch_enabled();
+
         for (int32_t j = j_start; j <= j_end; ++j) {
             size_t row_base = static_cast<size_t>(j - region_.j_min) * w;
             size_t row_end = row_base + w;
@@ -1204,9 +1258,23 @@ private:
             }
 
             // ── 大素数: bucket apply (无分支，直接索引写入) ──
+            // Gather hot loop: speculatively prefetch the upcoming
+            // `sieve_array_` write target so the L1 fill lands before the
+            // accumulator load issues. Prefetch is a hint — output is
+            // bit-for-bit identical regardless of state.
             size_t row_idx = static_cast<size_t>(j - region_.j_min);
             const auto& bucket = buckets[row_idx];
-            for (const auto& entry : bucket) {
+            const size_t n_entries = bucket.size();
+            for (size_t ei = 0; ei < n_entries; ++ei) {
+                if (prefetch_on) {
+                    const size_t look = ei + kBucketPrefetchDistance;
+                    if (look < n_entries) {
+                        prefetch_bucket_read(
+                            static_cast<const void*>(
+                                &sieve_array_[row_base + bucket[look].offset]));
+                    }
+                }
+                const auto& entry = bucket[ei];
                 sieve_array_[row_base + entry.offset] += entry.log_p;
             }
         }
