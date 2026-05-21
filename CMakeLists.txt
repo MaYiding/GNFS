@@ -236,6 +236,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/lattice_sieve.cpp")
     target_sources(gnfs_core PRIVATE src/sieve/lattice_sieve.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve.cpp")
+    target_sources(gnfs_core PRIVATE src/sieve/distributed_sieve.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cofactor/cofactorizer.cpp")
     target_sources(gnfs_core PRIVATE src/cofactor/cofactorizer.cpp)
 endif()
