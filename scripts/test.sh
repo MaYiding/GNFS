@@ -212,6 +212,8 @@ ALL_TEST_BINARIES=(
     test_3lp_cofactor
     test_3lp_merge
     test_trial_wheel
+    test_batch_trial
+    test_ecm_curve_pool
     test_matrix_view_concept
     test_save_sparse_as_mmap
     test_linalg_mmap_policy
@@ -231,7 +233,7 @@ MODULE_TESTS=(
     polynomial     "test_murphy test_int_polynomial test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
     factor_base    "test_factor_base test_fb_checkpoint"
     sieve          "test_special_q test_sieve_basic test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_sieve_tiny_simd"
-    cofactor       "test_cofactor test_squfof test_batch_ecm test_3lp_cofactor test_trial_wheel test_integration test_ecm_brent_suyama"
+    cofactor       "test_cofactor test_squfof test_batch_ecm test_3lp_cofactor test_trial_wheel test_batch_trial test_ecm_curve_pool test_integration test_ecm_brent_suyama"
     relation       "test_relation_collector test_filter test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration"
     linalg         "test_linalg test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_bl_checkpoint test_bl_resume_integration"
     integration    "test_integration"
@@ -300,6 +302,8 @@ SMOKE_TESTS=(
     test_3lp_cofactor
     test_3lp_merge
     test_trial_wheel
+    test_batch_trial
+    test_ecm_curve_pool
     test_sieve_tiny_simd
     test_matrix_view_concept
     test_save_sparse_as_mmap
@@ -382,6 +386,8 @@ TEST_TIMEOUT=(
     test_3lp_cofactor        30
     test_3lp_merge           10
     test_trial_wheel         10
+    test_batch_trial         20
+    test_ecm_curve_pool      30
     test_sieve_tiny_simd     10
     test_matrix_view_concept 10
     test_save_sparse_as_mmap 10
@@ -466,6 +472,8 @@ TEST_TIER=(
     test_3lp_cofactor        "instant"
     test_3lp_merge           "instant"
     test_trial_wheel         "instant"
+    test_batch_trial         "instant"
+    test_ecm_curve_pool      "instant"
     test_sieve_tiny_simd     "instant"
     test_matrix_view_concept "instant"
     test_save_sparse_as_mmap "instant"
