@@ -155,8 +155,8 @@ public:
             return result;  // empty candidates, special_q recorded
         }
 
-        // 1. 计算格基
-        LatticeBasis basis = compute_lattice_basis(sq);
+        // 1. 计算格基 (skewness-aware F-K 2005 风格 LLL when skewness != 1.0)
+        LatticeBasis basis = compute_lattice_basis_with_skewness(sq, ctx_.skewness());
 
         // 2. 初始化筛数组（memset(0)，加法筛）
         init_sieve_array(basis);

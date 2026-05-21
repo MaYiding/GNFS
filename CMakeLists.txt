@@ -392,6 +392,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME LatticeSieve COMMAND test_lattice_sieve)
     set_tests_properties(LatticeSieve PROPERTIES LABELS "slow" TIMEOUT 300)
 
+    add_executable(test_lll_lattice
+        tests/test_lll_lattice.cpp
+    )
+    target_link_libraries(test_lll_lattice PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME LLLLattice COMMAND test_lll_lattice)
+    set_tests_properties(LLLLattice PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_relation_collector
         tests/test_relation_collector.cpp
     )
