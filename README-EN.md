@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://en.cppreference.com/w/cpp/20"><img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white"></a>
   <a href="LICENSE"><img alt="License: GPL-2.0" src="https://img.shields.io/badge/license-GPL%202.0-blue"></a>
-  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey">
   <img alt="Tests" src="https://img.shields.io/badge/tests-63%20files-brightgreen">
   <img alt="LoC" src="https://img.shields.io/badge/code-~56K%20lines-informational">
   <img alt="Build" src="https://img.shields.io/badge/build-CMake%203.20%2B-064F8C?logo=cmake&logoColor=white">
