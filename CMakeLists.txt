@@ -448,6 +448,15 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME TrialWheel COMMAND test_trial_wheel)
     set_tests_properties(TrialWheel PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Micro-benchmark: not run by default test suites (label "bench")
+    # Invoke manually:  ./build-release/test_trial_wheel_bench [count] [seed]
+    add_executable(test_trial_wheel_bench
+        tests/test_trial_wheel_bench.cpp
+    )
+    target_link_libraries(test_trial_wheel_bench PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME TrialWheelBench COMMAND test_trial_wheel_bench 100000)
+    set_tests_properties(TrialWheelBench PROPERTIES LABELS "bench" TIMEOUT 120)
+
     add_executable(test_squfof
         tests/test_squfof.cpp
     )
