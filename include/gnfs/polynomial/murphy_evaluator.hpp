@@ -3,15 +3,19 @@
 #include "../core/integer.hpp"
 #include "../util/thread_pool.hpp"
 #include "int_polynomial.hpp"
+#include "root_property_cache.hpp"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 namespace gnfs::polynomial {
@@ -62,7 +66,9 @@ class MurphyEvaluator {
 public:
     /// 构造评估器
     explicit MurphyEvaluator(const MurphyParams& params = MurphyParams{})
-        : params_(params) {
+        : params_(params),
+          root_cache_(std::make_unique<RootPropertyCache>(
+              RootPropertyCache::env_capacity())) {
         init_primes();
         init_dickman_table();
     }
@@ -214,9 +220,39 @@ public:
         return alpha;
     }
 
+public:
+    /// Read-only access to the underlying root-property cache (for tests
+    /// and diagnostics; disabled mode returns a non-null cache with
+    /// capacity()==0).
+    [[nodiscard]] const RootPropertyCache& root_cache() const noexcept {
+        return *root_cache_;
+    }
+
 private:
     /// Per-prime alpha contribution. Pure function of (f, df, p), thread-safe.
+    /// When the root-property cache is enabled (env GNFS_POLY_ROOT_CACHE_SIZE),
+    /// looks up (p, hash(f mod p)) before falling back to the uncached path.
+    /// On a miss, computes the value and inserts it.
     [[nodiscard]] double alpha_contribution(
+            const IntPolynomial& f,
+            const IntPolynomial& df,
+            uint32_t p) const {
+        if (root_cache_->enabled()) {
+            const uint64_t coeffs_hash = RootPropertyCache::hash_coeffs_mod_p(f, p);
+            if (auto cached = root_cache_->lookup(p, coeffs_hash); cached.has_value()) {
+                return cached.value();
+            }
+            const double value = alpha_contribution_uncached(f, df, p);
+            root_cache_->insert(p, coeffs_hash, value);
+            return value;
+        }
+        return alpha_contribution_uncached(f, df, p);
+    }
+
+    /// Cache-free per-prime alpha contribution. Pure function of (f, df, p).
+    /// Extracted from alpha_contribution() so the cache wrapper can call it
+    /// on a miss without recursion.
+    [[nodiscard]] double alpha_contribution_uncached(
             const IntPolynomial& f,
             const IntPolynomial& df,
             uint32_t p) const {
@@ -355,6 +391,11 @@ private:
     MurphyParams params_;
     std::vector<uint32_t> small_primes_;
     std::vector<double> dickman_table_;  // Dickman rho 查找表 (u=0,0.1,...,20.0)
+
+    // Root-property cache. Always non-null (unique_ptr); disabled iff
+    // capacity()==0 (ENV GNFS_POLY_ROOT_CACHE_SIZE unset or 0). Mutable so
+    // const compute_alpha can update hit/miss counters and insert misses.
+    mutable std::unique_ptr<RootPropertyCache> root_cache_;
 
     // ThreadPool for parallel compute_alpha (BACKLOG #2 lightweight optimization).
     // Mutable + once_flag for lazy init in const get_alpha_pool().
