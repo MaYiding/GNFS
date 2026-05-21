@@ -16,6 +16,8 @@
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/block_wiedemann.hpp>
+#include <gnfs/linalg/linalg_mmap_policy.hpp>
+#include <gnfs/linalg/mmap_csr_matrix.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 #include <gnfs/siqs/siqs.hpp>
@@ -1278,7 +1280,56 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
         }
         emit_progress(Phase::LinearAlgebra, "Block Wiedemann");
         linalg::BlockWiedemann bw_solver;
-        dependencies = bw_solver.find_dependencies(sge_red);
+
+        // BACKLOG: MmapCSRMatrix Phase 5 integration (CLAUDE.md
+        // "Known Limitations" lifted by this commit). Three-state ENV:
+        //   GNFS_LINALG_MMAP=off (default): in-memory CSR — today's path.
+        //   GNFS_LINALG_MMAP=on            : force MmapCSRMatrix route.
+        //   GNFS_LINALG_MMAP=auto          : flip when projected
+        //     col_indices bytes ≥ GNFS_LINALG_MMAP_THRESHOLD_BYTES
+        //     (default 2 GiB ≈ 500M nnz).
+        const linalg::MmapPolicy policy = linalg::linalg_mmap_policy_from_env();
+        const std::uint64_t sge_nnz = sge_red.total_weight();
+        const bool use_mmap = linalg::should_use_mmap(policy, sge_nnz);
+
+        if (use_mmap) {
+            // Disk-resident path. Persist SGE-reduced matrix as a
+            // .csrmat file (v2 layout, uint64_t row_offsets), open it
+            // as MmapCSRMatrix, and route through the view-based BW
+            // entry point that bypasses SparseMatrix internally.
+            char path_buf[256];
+            std::snprintf(path_buf, sizeof(path_buf),
+                          "/tmp/gnfs_linalg_%d.csrmat",
+                          static_cast<int>(::getpid()));
+            char log_buf[512];
+            std::snprintf(log_buf, sizeof(log_buf),
+                "[linalg-mmap] policy=%s nnz=%llu path=%s",
+                policy == linalg::MmapPolicy::On ? "on" : "auto",
+                static_cast<unsigned long long>(sge_nnz),
+                path_buf);
+            emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(log_buf));
+            std::fprintf(stderr, "%s\n", log_buf);
+
+            try {
+                linalg::MmapCSRMatrix mmap_csr =
+                    linalg::save_sparse_as_mmap(sge_red, path_buf);
+                dependencies = bw_solver.find_dependencies_view(mmap_csr);
+            } catch (const std::exception& ex) {
+                // mmap path failed (disk full / permission / corruption):
+                // fall back to in-memory BW so the pipeline still makes
+                // progress. Loud log so the operator can fix the disk.
+                emit_log(LogLevel::Warn, Phase::LinearAlgebra,
+                         std::string("[linalg-mmap] fallback to in-memory: ") + ex.what());
+                std::fprintf(stderr, "[linalg-mmap] fallback to in-memory: %s\n", ex.what());
+                dependencies = bw_solver.find_dependencies(sge_red);
+            }
+
+            // Best-effort cleanup; ok if already gone.
+            std::remove(path_buf);
+        } else {
+            // Default in-memory path — bit-identical to pre-Phase-5 behaviour.
+            dependencies = bw_solver.find_dependencies(sge_red);
+        }
     }
 
     // Expand dependencies back to original matrix
