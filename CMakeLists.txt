@@ -490,6 +490,20 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SieveCheckpoint COMMAND test_sieve_checkpoint)
     set_tests_properties(SieveCheckpoint PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_poly_checkpoint
+        tests/test_poly_checkpoint.cpp
+    )
+    target_link_libraries(test_poly_checkpoint PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME PolyCheckpoint COMMAND test_poly_checkpoint)
+    set_tests_properties(PolyCheckpoint PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_fb_checkpoint
+        tests/test_fb_checkpoint.cpp
+    )
+    target_link_libraries(test_fb_checkpoint PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME FbCheckpoint COMMAND test_fb_checkpoint)
+    set_tests_properties(FbCheckpoint PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_krylov_sequence_mmap
         tests/test_krylov_sequence_mmap.cpp
     )
