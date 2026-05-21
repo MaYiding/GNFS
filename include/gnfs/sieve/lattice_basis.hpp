@@ -6,10 +6,21 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 
 namespace gnfs::sieve {
 
 using core::Integer;
+
+/// LatticeReductionMethod - 格基规约方法
+/// Gauss: 经典 Gaussian (Lagrange) reduction (legacy default).
+/// LLL: Franke-Kleinjung 2005 风格 2D LLL — 严格 size-reduced + Lovász δ=1
+///      enforcement, 单遍 Lagrange-Gauss + 双向 reduce. 在 2D 中等价 LLL optimal.
+enum class LatticeReductionMethod {
+    Gauss,
+    LLL,
+};
 
 /// LatticeBasis - 格基
 /// 格 L_q = {(a, b) : a - b*r ≡ 0 (mod q)} (GNFS convention)
@@ -52,53 +63,45 @@ struct LatticeBasis {
     }
 };
 
-/// 计算格基
-/// 给定 special-q = (q, r)，计算满足 a - b*r ≡ 0 (mod q) 的格基 (GNFS convention)
-/// For prime ideal P = (q, α - r), P | (a - bα) iff a - b*r ≡ 0 (mod q)
-/// 使用扩展欧几里得算法
-[[nodiscard]] inline LatticeBasis compute_lattice_basis(const SpecialQ& sq) {
-    LatticeBasis basis;
-    basis.q = sq.q;
-    basis.r = sq.r;
+// ─── 内部 helpers (header-private) ─────────────────────────────────────
 
-    // 格 L = {(a, b) : a - b*r ≡ 0 (mod q)} (GNFS convention)
-    // 等价于 a ≡ b*r (mod q)
-    //
-    // 初始基向量:
-    //   (q, 0) - 因为 a = q, b = 0 满足 q - 0*r = q ≡ 0 (mod q)
-    //   (r, 1) - 因为 a = r, b = 1 满足 r - 1*r = 0 ≡ 0 (mod q)
-    //
-    // 使用 LLL 简化可以得到更短的基向量，但这里先用简单版本
+namespace detail {
 
-    int64_t q64 = static_cast<int64_t>(sq.q);
-    int64_t r64 = static_cast<int64_t>(sq.r);
+/// __int128_t norm² (避免 q² > 2^63 溢出 — q max 2^32 → q² max 2^64).
+[[nodiscard]] inline __int128_t lb_norm_sq(int64_t a, int64_t b) noexcept {
+    __int128_t a128 = a, b128 = b;
+    return a128 * a128 + b128 * b128;
+}
 
-    // 简单的高斯格基规约
-    // 初始: v0 = (q, 0), v1 = (r, 1)
-    int64_t v0_a = q64, v0_b = 0;
-    int64_t v1_a = r64, v1_b = 1;
+/// 精确整数 round-half-to-even-like: round(a/b) for b > 0.
+/// 用 (2a + b)/(2b) for a≥0, (2a - b)/(2b) for a<0 (round-half-away-from-zero).
+[[nodiscard]] inline int64_t lb_int_round_div(__int128_t a, __int128_t b) noexcept {
+    if (b <= 0) return 0;  // safety
+    if (a >= 0) {
+        return static_cast<int64_t>((2 * a + b) / (2 * b));
+    }
+    return static_cast<int64_t>((2 * a - b) / (2 * b));
+}
 
-    // 使用 __int128_t 精确计算 norm² 和点积
-    // double 在 q² > 2^53 时有精度损失，导致 round(dot/n1) 可能出错
-    auto norm_sq = [](int64_t a, int64_t b) -> __int128_t {
-        __int128_t a128 = a, b128 = b;
-        return a128 * a128 + b128 * b128;
-    };
+/// 读 ENV `GNFS_LATTICE_LLL` 解析 reduction method 默认值.
+/// "0" / "gauss" → Gauss (legacy)
+/// "1" / "lll" / "auto" / unset → LLL (new default, F-K 2005 style)
+[[nodiscard]] inline LatticeReductionMethod lattice_reduction_method_from_env() {
+    const char* env = std::getenv("GNFS_LATTICE_LLL");
+    if (!env) return LatticeReductionMethod::LLL;  // default LLL
+    if (env[0] == '\0') return LatticeReductionMethod::LLL;
+    if (std::strcmp(env, "0") == 0) return LatticeReductionMethod::Gauss;
+    if (std::strcmp(env, "gauss") == 0) return LatticeReductionMethod::Gauss;
+    if (std::strcmp(env, "Gauss") == 0) return LatticeReductionMethod::Gauss;
+    if (std::strcmp(env, "GAUSS") == 0) return LatticeReductionMethod::Gauss;
+    return LatticeReductionMethod::LLL;
+}
 
-    // 精确整数 round(a/b): (2a + b) / (2b) for a≥0, (2a - b) / (2b) for a<0
-    auto int_round_div = [](__int128_t a, __int128_t b) -> int64_t {
-        if (a >= 0) {
-            return static_cast<int64_t>((2 * a + b) / (2 * b));
-        } else {
-            return static_cast<int64_t>((2 * a - b) / (2 * b));
-        }
-    };
-
-    // 高斯规约
-    // BACKLOG P2 known bug (test_edge_cases.cpp:2177): r=q-1 with dot/n1 = ±0.5
-    // exactly can oscillate (round-half-up ties cycle). max_iters guard 限制最大
-    // 迭代 64 次 — Gaussian reduction 数学上 O(log(max(q, r))) ≤ 64 for int64_t q,
-    // 任何 > 64 必然是 oscillation 或 overflow. Break + accept current basis.
+/// Gauss / Lagrange reduction (legacy, BACKLOG P2 fix preserved).
+/// 输入 v0=(q,0), v1=(r,1), 输出 (shorter, longer) 经 size-reduced 的基.
+/// max_iters guard 防 oscillation (r=q-1 边界 case).
+inline void lb_reduce_gauss(int64_t& v0_a, int64_t& v0_b,
+                             int64_t& v1_a, int64_t& v1_b) {
     constexpr int MAX_GAUSSIAN_ITERS = 64;
     bool changed = true;
     int iters = 0;
@@ -107,7 +110,7 @@ struct LatticeBasis {
         ++iters;
 
         // 确保 v0 是较长的
-        if (norm_sq(v0_a, v0_b) < norm_sq(v1_a, v1_b)) {
+        if (lb_norm_sq(v0_a, v0_b) < lb_norm_sq(v1_a, v1_b)) {
             std::swap(v0_a, v1_a);
             std::swap(v0_b, v1_b);
         }
@@ -115,9 +118,9 @@ struct LatticeBasis {
         // v0 = v0 - round(v0·v1 / v1·v1) * v1
         __int128_t dot = static_cast<__int128_t>(v0_a) * v1_a +
                          static_cast<__int128_t>(v0_b) * v1_b;
-        __int128_t n1 = norm_sq(v1_a, v1_b);
+        __int128_t n1 = lb_norm_sq(v1_a, v1_b);
         if (n1 > 0) {
-            int64_t mu = int_round_div(dot, n1);
+            int64_t mu = lb_int_round_div(dot, n1);
             if (mu != 0) {
                 v0_a -= mu * v1_a;
                 v0_b -= mu * v1_b;
@@ -127,17 +130,120 @@ struct LatticeBasis {
     }
 
     // 最终确保 v1 是较短的（用作主要遍历方向）
-    if (norm_sq(v0_a, v0_b) < norm_sq(v1_a, v1_b)) {
+    if (lb_norm_sq(v0_a, v0_b) < lb_norm_sq(v1_a, v1_b)) {
+        std::swap(v0_a, v1_a);
+        std::swap(v0_b, v1_b);
+    }
+}
+
+/// LLL (Franke-Kleinjung 2005 风格) reduction for 2D lattice.
+/// 严格 size-reduced + Lovász δ=1 enforcement (2D 中 δ=1 严格 optimal).
+///
+/// 算法 (单遍 Lagrange-Gauss + 双向 reduce):
+///   repeat:
+///     1. 保证 |v0|² ≤ |v1|² (swap if needed)
+///     2. 计算 μ = round(v0·v1 / |v0|²) (用较短的 v0 reduce v1)
+///     3. v1 ← v1 - μ·v0
+///     4. 若 |v1|² < |v0|²: swap (Lovász 违反 — v1 现在更短)
+///     5. 否则: STOP — size-reduced + |v1| ≥ |v0| (Lovász 满足)
+///
+/// 与 Gauss 区别:
+///   - 双向 reduce: Gauss 只 reduce longer with shorter, LLL 维护 v0 = shorter
+///     不变量, 用 v0 reduce v1.
+///   - Lovász 显式检查 swap 后 |v1| < |v0|, 不止 iterate.
+///   - 2D 中数学上 LLL δ=1 = 真正 optimal (vs Gauss δ=3/4 弱).
+///
+/// 复杂度 O(log(max(q,r))) iterations, 每 iter O(1) integer ops.
+/// max_iters guard 防极端 oscillation (理论上 2D LLL 不会, 但安全网).
+inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b,
+                                   int64_t& v1_a, int64_t& v1_b) {
+    constexpr int MAX_LLL_ITERS = 128;  // 2× Gauss, double safety
+
+    // 保证初始 v0 = shorter (LLL 不变量)
+    if (lb_norm_sq(v0_a, v0_b) > lb_norm_sq(v1_a, v1_b)) {
         std::swap(v0_a, v1_a);
         std::swap(v0_b, v1_b);
     }
 
-    basis.e0 = v1_a;  // 较短的向量
+    int iters = 0;
+    while (iters < MAX_LLL_ITERS) {
+        ++iters;
+
+        // Size-reduction: v1 ← v1 - round(v0·v1 / |v0|²) · v0
+        __int128_t n0 = lb_norm_sq(v0_a, v0_b);
+        if (n0 == 0) break;  // degenerate: v0 = (0,0), 不动
+
+        __int128_t dot = static_cast<__int128_t>(v0_a) * v1_a +
+                         static_cast<__int128_t>(v0_b) * v1_b;
+        int64_t mu = lb_int_round_div(dot, n0);
+        if (mu != 0) {
+            v1_a -= mu * v0_a;
+            v1_b -= mu * v0_b;
+        }
+
+        // Lovász 检查: 现在 |v1| 应 ≥ |v0|, 否则 swap 继续
+        __int128_t n1 = lb_norm_sq(v1_a, v1_b);
+        if (n1 >= n0) {
+            // Lovász 满足 + size-reduced → 终止
+            break;
+        }
+        // |v1| < |v0|, swap 后继续 reduce
+        std::swap(v0_a, v1_a);
+        std::swap(v0_b, v1_b);
+    }
+
+    // 最终 swap: v0 应是 shorter (LLL 不变量保持). 此处 swap 与 Gauss 路径
+    // 一致 — Gauss 把 longer 放 v0, LLL 把 shorter 放 v0, callers 期待
+    // (e0, f0) = shorter (= LLL v0 = Gauss v1). 故 caller 端约定:
+    //   e0 = v1 (Gauss longer-then-swap), e0 = v0 (LLL).
+    // 为了 caller API 完全一致, 这里 swap 后让 v1 = shorter (= e0 source).
+    if (lb_norm_sq(v0_a, v0_b) < lb_norm_sq(v1_a, v1_b)) {
+        std::swap(v0_a, v1_a);
+        std::swap(v0_b, v1_b);
+    }
+    // 后置 invariant: v1 = shorter, v0 = longer (与 Gauss 路径一致).
+}
+
+}  // namespace detail
+
+/// 计算格基 (显式 method overload, 测试 / bench 用).
+/// 给定 special-q = (q, r)，计算满足 a - b*r ≡ 0 (mod q) 的格基.
+/// 输出 e0/f0 = shorter, e1/f1 = longer.
+[[nodiscard]] inline LatticeBasis compute_lattice_basis(const SpecialQ& sq,
+                                                         LatticeReductionMethod method) {
+    LatticeBasis basis;
+    basis.q = sq.q;
+    basis.r = sq.r;
+
+    int64_t q64 = static_cast<int64_t>(sq.q);
+    int64_t r64 = static_cast<int64_t>(sq.r);
+
+    // 初始基: v0 = (q, 0), v1 = (r, 1) 都满足 a ≡ b·r (mod q).
+    int64_t v0_a = q64, v0_b = 0;
+    int64_t v1_a = r64, v1_b = 1;
+
+    switch (method) {
+        case LatticeReductionMethod::Gauss:
+            detail::lb_reduce_gauss(v0_a, v0_b, v1_a, v1_b);
+            break;
+        case LatticeReductionMethod::LLL:
+            detail::lb_reduce_lll_fk2005(v0_a, v0_b, v1_a, v1_b);
+            break;
+    }
+
+    // Caller 约定: e0/f0 是较短的 (sieve i-axis primary).
+    basis.e0 = v1_a;  // shorter (post-condition of both helpers)
     basis.f0 = v1_b;
-    basis.e1 = v0_a;  // 较长的向量
+    basis.e1 = v0_a;  // longer
     basis.f1 = v0_b;
 
     return basis;
+}
+
+/// 计算格基 (默认 dispatch).
+/// 读 ENV `GNFS_LATTICE_LLL` 决定方法 (default LLL = F-K 2005).
+[[nodiscard]] inline LatticeBasis compute_lattice_basis(const SpecialQ& sq) {
+    return compute_lattice_basis(sq, detail::lattice_reduction_method_from_env());
 }
 
 /// SieveRegion - 筛区域
