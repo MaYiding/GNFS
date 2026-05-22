@@ -1051,6 +1051,17 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SieveApplyTileParallel COMMAND test_sieve_apply_tile_parallel)
     set_tests_properties(SieveApplyTileParallel PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Lattice coordinate SIMD batch helper (GNFS_LATTICE_COORDS_SIMD).
+    # NEON 2-lane / AVX2 4-lane batched (i, j) -> (a, b) projection for
+    # the lattice sieve. Helper-only future infrastructure; the bucket
+    # sieve main loop does not currently call into it.
+    add_executable(test_lattice_coords_simd
+        tests/test_lattice_coords_simd.cpp
+    )
+    target_link_libraries(test_lattice_coords_simd PRIVATE gnfs_core)
+    add_test(NAME LatticeCoordsSimd COMMAND test_lattice_coords_simd)
+    set_tests_properties(LatticeCoordsSimd PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Montgomery batch modular inversion helper (GNFS_ECM_BATCH_INV)
     add_executable(test_batch_inversion
         tests/test_batch_inversion.cpp
