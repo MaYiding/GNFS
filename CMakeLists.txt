@@ -536,6 +536,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME MpzPowmParallel COMMAND test_mpz_powm_parallel)
     set_tests_properties(MpzPowmParallel PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # ── W12 T3: GMP mpz_invert batch parallel dispatcher (GNFS_MPZ_INVERT_BATCH_THREADS) ──
+    add_executable(test_mpz_invert_parallel
+        tests/test_mpz_invert_parallel.cpp
+    )
+    target_link_libraries(test_mpz_invert_parallel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME MpzInvertParallel COMMAND test_mpz_invert_parallel)
+    set_tests_properties(MpzInvertParallel PROPERTIES LABELS "instant" TIMEOUT 60)
+
     add_executable(test_sieve_basic
         tests/test_sieve_basic.cpp
     )
