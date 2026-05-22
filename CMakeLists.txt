@@ -1029,6 +1029,18 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME LatticeBasisParallel COMMAND test_lattice_basis_parallel)
     set_tests_properties(LatticeBasisParallel PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Sieve apply-tile parallel dispatcher
+    # (GNFS_SIEVE_APPLY_TILE_THREADS). Orthogonal to W6
+    # GNFS_SIEVE_REGION_TILE_BITS: that gate handles sequential
+    # cache-blocking by tile size, this dispatcher handles parallel
+    # work distribution across whatever tiles the caller produces.
+    add_executable(test_sieve_apply_tile_parallel
+        tests/test_sieve_apply_tile_parallel.cpp
+    )
+    target_link_libraries(test_sieve_apply_tile_parallel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SieveApplyTileParallel COMMAND test_sieve_apply_tile_parallel)
+    set_tests_properties(SieveApplyTileParallel PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Montgomery batch modular inversion helper (GNFS_ECM_BATCH_INV)
     add_executable(test_batch_inversion
         tests/test_batch_inversion.cpp
