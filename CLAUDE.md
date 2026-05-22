@@ -507,6 +507,62 @@ unset GNFS_SPMV_SIMD              # 同 auto
 **Default ON (auto)**: 对所有 SpMV 调用方透明启用. zero behavior change
 对 user (除内核 uop 数), bit-for-bit 输出一致.
 
+### Trial division SIMD 8-prime batch (GNFS_TRIAL_DIV_SIMD)
+
+**ENV `GNFS_TRIAL_DIV_SIMD=auto|0|1`** (2026-05-22 实施, W9 T3, default auto):
+Cofactor pipeline 入口 (`include/gnfs/cofactor/`) 在 SQUFOF / ECM 之前
+先扫小素数池做 trial division. helper `batch_check_divisibility`
+把每 4 个 prime 批量 load 进一个 SIMD 寄存器 (NEON `uint32x4_t` 在
+ARM64; AVX2 / SSE2 4-lane 在 x86), per-lane 再走 scalar `cofactor % p`
+(NEON / AVX2 / SSE2 均不加速 uint32 除法), 输出 bit-for-bit 与 scalar
+reference 一致.
+
+```bash
+GNFS_TRIAL_DIV_SIMD=auto ./gnfs <N>   # 默认: NEON/AVX2/SSE2 可用则启用
+GNFS_TRIAL_DIV_SIMD=0    ./gnfs <N>   # 强制 scalar (回归 bisect 用)
+GNFS_TRIAL_DIV_SIMD=1    ./gnfs <N>   # 强制 SIMD (无 SIMD 平台 fallback)
+unset GNFS_TRIAL_DIV_SIMD             # 同 auto
+```
+
+**Helper API** (`include/gnfs/cofactor/trial_div_simd.hpp`):
+- `batch_check_divisibility(cofactor, primes, out_divisible_indices)` —
+  主入口, 内部三态 gate 路由到 SIMD 或 scalar 路径, 输出 indices 按
+  input 顺序 append (不清空 out).
+- `batch_check_divisibility_scalar(...)` — scalar reference, 测试 golden
+  也供希望显式禁 SIMD 的 caller 使用.
+- `trial_div_simd_mode()` / `trial_div_simd_enabled()` — cached
+  `std::once_flag` + `std::atomic<int>` ENV reader, 严格 "0"/"1" parsing,
+  其它值 (unset / "" / "auto" / "garbage" / "2" / "true") 均视为 Auto.
+- `trial_div_simd_supported()` — compile-time `__ARM_NEON` / `__AVX2__` /
+  `__SSE2__` 探测.
+- `trial_div_simd_reset_env_cache_for_testing()` — 测试专用 re-resolve ENV.
+
+**Bit-for-bit guarantee**: SIMD 仅 batch load + register allocation,
+inner `cofactor % p` 与 scalar 路径同函数. 单元测试
+`tests/test_trial_div_simd.cpp` 13 个测试强制覆盖 (5 ENV / empty /
+single / 8-prime mixed / 100 cofactor x 30 prime 大 sweep / 1000-prime
+batch / 0..8 boundary sweep / ForceOff 路径 / append 语义).
+
+**ROI 与定位**:
+- helper-only future-infrastructure. 当前主 pipeline cofactor 入口
+  (`trial_division.hpp` / `batch_trial.hpp`) 未 wire-in, 行为完全不变.
+- 当 caller 显式 wire-in 时 ROI 主要在 retired uop 数 (4 个 lane 的
+  prime load + index extract 由 SIMD register 批量完成, 避免 4 次独立
+  memory load 的 address-gen 串联). 实际 wall-time 提升依赖具体调用
+  pattern (50d+/60d cofactor 短池 trial < 1µs/cofactor, 几 % 改进).
+- 默认 auto 在 macOS arm64 / Linux x86_64 二者都 enable;
+  ENV=0 用于 PMU sweep / sanitizer 回归 bisect.
+
+**集成点** (2026-05-22):
+- `include/gnfs/cofactor/trial_div_simd.hpp` — helper API + 三态 ENV gate
+  + NEON / AVX2 / SSE2 inner kernel + scalar reference.
+- `tests/test_trial_div_simd.cpp` — 13 instant tier tests, TIMEOUT 60.
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  cofactor 模块.
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
+ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### Cofactor survival rate predictor (GNFS_SURVIVAL_FILTER + GNFS_SURVIVAL_THRESHOLD)
 
 **ENV `GNFS_SURVIVAL_FILTER={0,1}`** + **`GNFS_SURVIVAL_THRESHOLD=<double>`** (2026-05-21 实施, default OFF):
