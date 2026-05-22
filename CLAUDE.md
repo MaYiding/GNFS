@@ -1623,6 +1623,101 @@ bits ∈ {0, 10, 14, 18, 22} 严格相等.
 零行为变化. 仅当 caller wire-in helper 且用户 explicit
 `GNFS_FILTER_LP_BLOOM_BITS=N>=10` 时启用.
 
+### LP key splitmix64 hash mixing (GNFS_FILTER_LP_HASH_MIX)
+
+**ENV `GNFS_FILTER_LP_HASH_MIX=auto|0|1`** (2026-05-22 实施, W11 T5, default auto):
+LP key (large prime key) `std::unordered_set<uint64_t>` / `std::unordered_map`
+的 hash 混合 helper. libstdc++ / libc++ 默认 `std::hash<uint64_t>` 几乎是
+identity, 而 LP key 典型 packing `(prime_id << 1) | side` 在低位严重 cluster
+(小素数 ID 在低位密集, side bit 固定). 这导致 unordered_set 的 bucket 集中,
+chain 长, probe 数升高. helper 提供 splitmix64 (Stafford Mix 13) bit mixer
+打散 input bit pattern. `count_unique_lp_keys` (W9 T5 Bloom 兄弟 helper) 与
+`filter.hpp` / `clique_merger.hpp` 主路径 `std::unordered_set` 调用方 **未改动**,
+是 opt-in future wire-in.
+
+```bash
+GNFS_FILTER_LP_HASH_MIX=auto ./gnfs <N>   # 默认: mixing 启用
+GNFS_FILTER_LP_HASH_MIX=0    ./gnfs <N>   # 显式 disable mixing (回归 bisect 用)
+GNFS_FILTER_LP_HASH_MIX=off  ./gnfs <N>   # 同 0
+GNFS_FILTER_LP_HASH_MIX=1    ./gnfs <N>   # 显式 enable (与 auto 行为一致)
+GNFS_FILTER_LP_HASH_MIX=on   ./gnfs <N>   # 同 1
+unset GNFS_FILTER_LP_HASH_MIX             # 同 auto
+```
+
+**Helper API** (`include/gnfs/relation/lp_key_hash.hpp`):
+- `enum class LpHashMixMode { Auto, ForceOff, ForceOn }` — gate 三态.
+- `lp_hash_mix_mode()` — cached `std::call_once` + `std::atomic<int>` ENV reader.
+- `lp_hash_mix_enabled()` — `mode != ForceOff` 等价 predicate.
+- `lp_hash_mix_reset_env_cache_for_testing()` — 测试 re-resolve hook.
+- `constexpr uint64_t mix_lp_key(uint64_t)` — splitmix64 round, 永远启用
+  (不查 gate). 可在 compile time 求值.
+- `inline uint64_t maybe_mix_lp_key(uint64_t)` — gate-aware wrapper:
+  `enabled() ? mix_lp_key(k) : k`.
+- `struct LpKeyHash { size_t operator()(uint64_t) const noexcept; }` —
+  `std::hash`-兼容 functor, 内部调 `maybe_mix_lp_key`. 可作为
+  `std::unordered_set<uint64_t, LpKeyHash>` 的第二模板参数.
+
+**算法 (splitmix64 / Stafford Mix 13)**:
+```cpp
+uint64_t z = key + 0x9E3779B97F4A7C15ULL;  // golden ratio fract
+z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+z = z ^ (z >> 31);
+return z;
+```
+- 三个 magic 常量来自 Stafford 的 `Mix13` (基于 SplittableRandom 设计),
+  优化 avalanche (每个 output bit 依赖大约一半 input bit).
+- golden-ratio (`0x9E37...`) 加法防止 `key == 0` 落到 xorshift 的 zero
+  fixed-point.
+- 两个 64-bit mul + 3 个 xorshift, 一条 dependency chain, 无 branch,
+  noexcept, allocation-free.
+
+**Bit-for-bit guarantee**: `mix_lp_key` 是 deterministic pure function
+of input. 同一输入永远产生同一输出. constexpr-evaluable. 单元测试
+`tests/test_lp_key_hash.cpp` 强制 known vectors (4 个):
+- `mix_lp_key(0x0000000000000000) = 0xE220A8397B1DCDAF`
+- `mix_lp_key(0x0000000000000001) = 0x910A2DEC89025CC1`
+- `mix_lp_key(0x00000000DEADBEEF) = 0x4ADFB90F68C9EB9B`
+- `mix_lp_key(0xFFFFFFFFFFFFFFFF) = 0xE4D971771B652C20`
+
+**ENV parsing 严格 token 匹配**:
+- unset / "" / "auto" / 任何未识别 token (含 "2" / "true" / "ON" 大写) → Auto (mixing 启用)
+- "0" / "off" → ForceOff (mixing 禁用)
+- "1" / "on" → ForceOn (mixing 启用, 与 Auto 行为一致, 仅语义区分用户意图)
+
+**ROI 与定位**:
+- 主要 ROI: LP key 集合用 `std::unordered_set<uint64_t, LpKeyHash>` 后,
+  clustered LP key 散到全 bucket 范围, 减小 chain 长. 50d+/60d 大 LP key
+  集合 (1M+ unique) 上 hash-set lookup wall-time 实测可见. 默认 ON (Auto)
+  对未来 wire-in 调用方零额外配置.
+- 与 W9 T5 `GNFS_FILTER_LP_BLOOM_BITS` 互补: Bloom 是 pre-screen 减少
+  hash-set probe 数, 本 helper 是改善 hash-set 内部 bucket 分布. 可同时启用.
+- helper 当前 standalone (`filter.hpp::count_unique_lp_keys` 与
+  `clique_merger.hpp` 主路径 `std::unordered_set` 未 wire-in), 是
+  future-infrastructure. wire-in 时 caller 把
+  `std::unordered_set<uint64_t>` 改为 `std::unordered_set<uint64_t, LpKeyHash>`
+  即可生效, 不需修改 insert / find / count 等调用.
+- perf-info 实测 10k LP-shaped keys (`(pid << 1) | side` 序列):
+  identity hash max_bucket_load=1 (uniform-stride pattern 已被 identity 完美散开),
+  LpKeyHash max_bucket_load=6 (mixer 引入 Poisson-style 自然 collision).
+  此 informational probe 不 assert — 真实 ROI 在 clustered (非 uniform)
+  pattern 上体现.
+
+**集成点** (W11 T5, 2026-05-22):
+- `include/gnfs/relation/lp_key_hash.hpp` — helper API + 三态 ENV gate +
+  splitmix64 `mix_lp_key` (`constexpr noexcept`) + `LpKeyHash` 函子 +
+  `maybe_mix_lp_key` wrapper.
+- `tests/test_lp_key_hash.cpp` — 15 个测试 (4 ENV 解析 + splitmix64 known
+  vectors + 1 determinism + 1 avalanche + 3 gate semantics +
+  4 `LpKeyHash` functor + 1 reset cache hook).
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  relation 模块.
+- 主路径 `include/gnfs/relation/filter.hpp` / `include/gnfs/relation/clique_merger.hpp`
+  **未改动** (helper-only landing, future wire-in).
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
+ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### SGE batch-pivot 选择 (GNFS_SGE_BATCH_PIVOTS)
 
 **ENV `GNFS_SGE_BATCH_PIVOTS=N`** (2026-05-22 实施, range [1, 64], default 1):

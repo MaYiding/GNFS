@@ -914,6 +914,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME LPBloom COMMAND test_lp_bloom)
     set_tests_properties(LPBloom PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # LP key splitmix64 hash mixing helper (W11 T5)
+    add_executable(test_lp_key_hash
+        tests/test_lp_key_hash.cpp
+    )
+    target_link_libraries(test_lp_key_hash PRIVATE gnfs_core)
+    add_test(NAME LPKeyHash COMMAND test_lp_key_hash)
+    set_tests_properties(LPKeyHash PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Partial relation merger worker-pool dispatcher (GNFS_FILTER_MERGE_THREADS)
     add_executable(test_merger_parallel
         tests/test_merger_parallel.cpp
