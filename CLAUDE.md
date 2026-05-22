@@ -2453,6 +2453,90 @@ bit-identical assert + move-only `std::unique_ptr` Result 流转测试).
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   sieve 模块
 
+### Lattice coordinate SIMD batch (GNFS_LATTICE_COORDS_SIMD)
+
+**ENV `GNFS_LATTICE_COORDS_SIMD=auto|0|1`** (2026-05-22 实施, W13 T4, default auto):
+Lattice sieve `sieve_bucket_region` 把每个 sieve cell `(i, j)` 投影到 lattice
+坐标 `(a, b)` 时, 每 cell 计算 `a = b1x*i + b2x*j` 与 `b = b1y*i + b2y*j`
+(`b1`, `b2` 是 reduced basis vectors, int64). 当前 caller (norm 预计算 + candidate
+emission) per-cell 走 scalar 算这两个数, basis `(b1, b2)` 在整个 row tile 内
+被 broadcast 时 per-iteration address-gen pressure 高. helper 提供 batched
+kernel: NEON 2-lane (ARM64) / AVX2 4-lane (x86_64) 一次性 load K 个 cell 的
+`(i, j)`, 在 scalar GPR 上跑 `int64` mul-add (NEON 无 `vmulq_s64`, AVX2 无
+`_mm256_mullo_epi64` 除非 AVX-512 DQ), 再 SIMD store `(a, b)`. SIMD value 在
+consolidated load / store + 减小 address-gen pressure, 不在 vector mul.
+
+```bash
+GNFS_LATTICE_COORDS_SIMD=auto ./gnfs <N>   # 默认: NEON/AVX2 可用则启用
+GNFS_LATTICE_COORDS_SIMD=0    ./gnfs <N>   # 强制 scalar (回归 bisect 用)
+GNFS_LATTICE_COORDS_SIMD=off  ./gnfs <N>   # 同 0
+GNFS_LATTICE_COORDS_SIMD=1    ./gnfs <N>   # 强制 SIMD (无 SIMD 平台 fallback)
+GNFS_LATTICE_COORDS_SIMD=on   ./gnfs <N>   # 同 1
+unset GNFS_LATTICE_COORDS_SIMD             # 同 auto
+```
+
+**Helper API** (`include/gnfs/sieve/lattice_coords_simd.hpp`):
+- `struct LatticeBasis { int64_t b1x, b1y, b2x, b2y; }` — compact basis
+  descriptor 传值, 每 lane 在 inner loop 内复用 4 个 scalar.
+- `batch_lattice_coords(basis, i_coords, j_coords, a_out, b_out)` — 主入口,
+  per-cell `a_out[k] = b1x*i_coords[k] + b2x*j_coords[k]`, `b_out[k] =
+  b1y*i_coords[k] + b2y*j_coords[k]`. SIMD path 当
+  `lattice_coords_simd_enabled()` 为 true 时启用. defensive clamp 到
+  `min(i_coords.size(), j_coords.size(), a_out.size(), b_out.size())`.
+- `batch_lattice_coords_scalar(basis, i, j, a, b)` — scalar reference (test
+  golden + 无 SIMD fallback).
+- `lattice_coords_simd_mode()` — 返回 `LatticeCoordsSimdMode { Auto, ForceOff, ForceOn }`.
+- `lattice_coords_simd_enabled()` — 三态 dispatcher decision.
+- `lattice_coords_simd_supported()` — compile-time `__ARM_NEON / __AVX2__` 探测.
+- `lattice_coords_simd_reset_env_cache_for_testing()` — 测试专用 re-resolve ENV.
+
+**算法** (NEON 2-lane / AVX2 4-lane):
+- NEON: `vld1q_s64(2 cells)` 读 i + j 各 16 字节, 提取到 GPR scalar, 每 lane
+  跑 `int64 * int64 + int64 * int64` mul-add 在 register file, `vst1q_s64`
+  consolidated store 写 a + b. Tail scalar fallback 处理非 2 倍数 size.
+- AVX2: `_mm256_loadu_si256(4 cells)` 读 i + j 各 32 字节, 提取 4 lane scalar,
+  4 个 lane 的 mul-add 在 GPR 并发 (compiler 排度独立), `_mm256_storeu_si256`
+  store a + b. Tail scalar.
+
+**Bit-for-bit guarantee**: 每 cell `(a, b)` 是 `(i, j) + basis` 的 fixed
+linear combination, SIMD path 与 scalar 内核做相同的 `int64` mul / add, 仅
+batched 在 SIMD load/store. 无 int64 overflow 时 (caller responsibility,
+典型 sieve region 远低于 int64 上限), 输出严格 per-index 一致. signed wrap-
+around 在两条 path 一致 (`-fwrapv` 默认). Empty input 留 outputs 不变. 单元
+测试 `tests/test_lattice_coords_simd.cpp` 15 个测试强制覆盖 (4 ENV 解析 +
+empty / single cell / identity basis / realistic 5-cell hand check / random
+100 / random 1000 / ForceOff vs Auto parity / unaligned 33 tail / negative
+coords + basis / undersized a_out clamp / 1M cells perf info).
+
+**ROI 与定位**:
+- 主要 ROI: 当前主路径每 cell 计算两次 `b1*i + b2*j` 时 per-iteration
+  address-gen 紧, basis 4 个 scalar 在 inner loop 被反复 load. helper 把 K
+  cell 一次 SIMD load, basis 仅 4 个 GPR scalar 在 lane 间复用. M5 ARM64
+  实测 1M cell: scalar 3.9 ms, SIMD 7.0 ms (Apple Silicon 整数管线 4-way
+  superscalar 已对 scalar mul-add 高度优化, SIMD load/store 多走的几条 NEON
+  instruction 反而增加 latency). 真正 ROI 在 x86_64 AVX2 平台或当 caller 把
+  helper wire-in 到 norm 预计算 hot loop (那里 polynomial coefficient
+  pressure 已挤满 GPR, basis 复用让 SIMD 加载摊销显著).
+- helper 当前 standalone (主 pipeline `sieve_bucket_region` / candidate
+  emission 未 wire-in), 是 future-infrastructure. wire-in 时 caller 把
+  inner per-cell 计算切到 `batch_lattice_coords` + 在外层聚合 `(i, j)`
+  span.
+- 与 W7 `GNFS_BUCKET_PREFETCH` / W6 `GNFS_SIEVE_REGION_TILE_BITS` /
+  W6 `GNFS_SIEVE_NORM_TILE_BITS` / W11 `GNFS_LATTICE_BASIS_PARALLEL_THREADS` /
+  W12 T4 `GNFS_SIEVE_APPLY_TILE_THREADS` 完全 orthogonal: 各自解决不同
+  sieve hot site (prefetch / cache tile / norm tile / basis reduce dispatch /
+  apply-tile dispatch / coord projection). 可同时启用而不冲突.
+
+**集成点** (2026-05-22, W13 T4):
+- `include/gnfs/sieve/lattice_coords_simd.hpp` — helper API + 三态 ENV gate +
+  `LatticeBasis` struct + NEON / AVX2 inner kernels + scalar reference.
+- `tests/test_lattice_coords_simd.cpp` — 15 instant tier tests, TIMEOUT 60.
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  sieve 模块.
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点, ENV
+对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### Factor Base CZ roots 并行 (GNFS_FB_ROOTS_THREADS)
 
 **ENV `GNFS_FB_ROOTS_THREADS=N`** (2026-05-22 实施, default 0, range [0, hardware_concurrency * 2]):
