@@ -647,6 +647,88 @@ ECM Stage 1+2
 零开销, 零行为变化. classify_cofactor 现有调用者无需更新即保持原 behavior. 仅在
 Pipeline / sieve loop wire-in `smoothness_bound = params.smoothness_bound_B` 时启用.
 
+### Cofactor per-stage timing telemetry (GNFS_COFACTOR_TIMING_ENABLE)
+
+**ENV `GNFS_COFACTOR_TIMING_ENABLE={0,1}`** (2026-05-22 实施, W12 T5, default 0):
+余因子 pipeline 6 个 stage (TrialDivision, SQUFOF, BrentPollardRho, PollardRho,
+EcmStage1, EcmStage2) 的 wall-time 与 call-count 累积器. 每个 stage 一个
+`std::atomic<uint64_t>` 纳秒计数 + 一个 `std::atomic<uint64_t>` 调用计数,
+RAII `StageTimer` 在 scope 入口采 steady_clock, scope 退出累加 elapsed 到
+对应 stage. 关闭时 (默认) 完全零开销 — ctor 与 dtor 都不调 `steady_clock::now()`,
+不访问 atomic 计数. 仅当用户 `GNFS_COFACTOR_TIMING_ENABLE=1` 显式启用时才采集.
+
+```bash
+GNFS_COFACTOR_TIMING_ENABLE=1 ./gnfs <N>   # 启用 telemetry, scope 入退采样
+unset GNFS_COFACTOR_TIMING_ENABLE          # default OFF, 零开销
+GNFS_COFACTOR_TIMING_ENABLE=0 ./gnfs <N>   # 显式 disable (= default)
+```
+
+**Helper API** (`include/gnfs/cofactor/stage_timing.hpp`):
+- `enum class CofactorStage`: `TrialDivision` (0), `Squfof` (1),
+  `BrentPollardRho` (2), `PollardRho` (3), `EcmStage1` (4), `EcmStage2` (5),
+  `kNumStages` (6, sentinel).
+- `stage_name(stage)` — human-readable 名称 (`"trial"`, `"squfof"`,
+  `"brent_rho"`, `"pollard_rho"`, `"ecm_s1"`, `"ecm_s2"`).
+- `struct StageTimingStats` — 进程单例, 6 个 atomic ns 累加器 + 6 个 atomic
+  调用计数. `total_ns_for(stage)` / `call_count_for(stage)` / `reset()`.
+- `cofactor_timing_enabled()` — cached `std::call_once` + `std::atomic<bool>`
+  ENV reader. 严格仅 "1" 启用.
+- `cofactor_timing_stats()` — process-singleton 访问器 (function-local
+  static, 与 `survival_stats()` 同 idiom).
+- `cofactor_timing_reset_env_cache_for_testing()` — 测试专用 re-resolve ENV.
+- `class StageTimer` — RAII 测时. Ctor 在 enabled 时采 steady_clock, dtor
+  累加 elapsed_ns 与 +1 call_count. Non-copyable, movable. `moved_from_`
+  标志防 move 后双重计数.
+- `format_cofactor_timing_summary()` — 单行格式化:
+  `[cofactor_timing] trial=<ns>ns/<calls>calls squfof=... ...`. 关闭时返回
+  `"[cofactor_timing] disabled"`.
+- `print_cofactor_timing_summary()` — 写 stderr + `std::flush`.
+
+**Process-singleton storage 策略**:
+- `cofactor_timing_stats()` 用 function-local static `StageTimingStats stats`
+  (与 `survival_predictor.hpp::survival_stats()` 同 pattern). 优势: 保证
+  thread-safe C++11 一次性初始化, ODR-safe 跨 TU. 选 fn-local static 而非
+  `inline namespace var` 仅因为 cofactor 模块其他 telemetry 单例已经
+  约定如此, 保持一致.
+
+**Memory ordering**:
+- 所有原子操作用 `std::memory_order_relaxed`. Telemetry 不驱动 control
+  flow, 仅用于 format summary; 不同线程的累加最终一致即可, 不需要 release/acquire
+  fence 制造 happens-before 关系.
+
+**与 W5 T5 GNFS_SURVIVAL_FILTER 互补**:
+- W5 T5 survival predictor 估算 cofactor 是否值得跑全 pipeline (前置筛选).
+- W12 T5 telemetry 测量 cofactor pipeline 各 stage 真实耗时.
+- 二者组合让用户调 `GNFS_SURVIVAL_THRESHOLD` 时观察"提高 threshold 是否
+  真的把 ECM Stage 2 的累计 wall-time 砍掉 70%". 默认 OFF 时二者都零开销.
+
+**Bit-for-bit guarantee**: telemetry 不改变 cofactor pipeline 任何行为,
+仅累加测量数据. enabled / disabled 状态对 `classify_cofactor` 等 cofactor
+入口的输出 (CofactorClassification) 严格一致. helper 不修改任何 cofactor
+算法文件.
+
+**Nested timer 语义**: 嵌套 `StageTimer` (e.g. TrialDivision 内嵌 EcmStage1)
+各自独立累加. 外层 timer 包含内层时间 (调用方按需放置 timer 决定归属).
+
+**Concurrent timer**: 多 thread 各自构造 `StageTimer`, 相同 stage 的 atomic
+计数无锁累加. 4 thread × 100 timers 强制测试通过.
+
+**集成点** (W12 T5, 2026-05-22):
+- `include/gnfs/cofactor/stage_timing.hpp` — 240+ 行 header-only, 6-stage
+  enum + atomic stats + RAII timer + ENV gate + summary formatter
+- `tests/test_cofactor_stage_timing.cpp` — 16 tests (5 ENV / disabled 不动
+  计数 / enabled 累加正确 / 嵌套独立 / 4 thread × 100 并发 / format 关 vs
+  开 / reset zeros / move-construct 不重复 / move-assign 完成前次 / stage_name
+  lookup / perf info scope overhead)
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  cofactor 模块
+
+**Default OFF**: ENV unset → `cofactor_timing_enabled() == false` →
+`StageTimer` ctor 仅 1 atomic load 后立即返回 (不采 clock), dtor 同样
+no-op. 主路径 wall-time 与 legacy 等价, 零行为变化. 当前主 pipeline 无
+wire-in 调用, 是 future-infrastructure. 调用方在自身 cofactor stage scope
+入口 `StageTimer t(CofactorStage::EcmStage1);` 即可启用归属.
+
 ### Sieve bucket prefetch (GNFS_BUCKET_PREFETCH)
 
 **ENV `GNFS_BUCKET_PREFETCH=auto|0|1`** (2026-05-21 实施, default auto):
