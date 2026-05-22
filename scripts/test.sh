@@ -202,6 +202,7 @@ ALL_TEST_BINARIES=(
     test_poly_karatsuba
     test_horner_batch_simd
     test_divrem_subquadratic
+    test_poly_ntt
     test_filter
     test_regressions
     test_polynomial_context
@@ -261,7 +262,7 @@ typeset -A MODULE_TESTS
 MODULE_TESTS=(
     core           "test_integer test_params test_regressions test_edge_cases test_core_types"
     util           "test_small_vector test_thread_pool test_logger test_primes test_timer test_mmap_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel"
-    polynomial     "test_murphy test_root_property_cache test_int_polynomial test_half_gcd test_poly_karatsuba test_horner_batch_simd test_divrem_subquadratic test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
+    polynomial     "test_murphy test_root_property_cache test_int_polynomial test_half_gcd test_poly_karatsuba test_horner_batch_simd test_divrem_subquadratic test_poly_ntt test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
     factor_base    "test_factor_base test_fb_checkpoint test_fb_roots_parallel"
     sieve          "test_special_q test_sieve_basic test_distributed_sieve test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel"
     cofactor       "test_cofactor test_squfof test_brent_pollard_rho test_survival_predictor test_batch_ecm test_3lp_cofactor test_trial_wheel test_batch_trial test_ecm_curve_pool test_sigma_seed_pool test_ecm_stage2_parallel test_ecm_stage1_parallel test_batch_inversion test_trial_div_simd test_integration test_ecm_brent_suyama"
@@ -293,6 +294,7 @@ SMOKE_TESTS=(
     test_poly_karatsuba
     test_horner_batch_simd
     test_divrem_subquadratic
+    test_poly_ntt
     test_small_vector
     test_thread_pool
     test_logger
@@ -429,6 +431,7 @@ TEST_TIMEOUT=(
     test_poly_karatsuba      60
     test_horner_batch_simd   60
     test_divrem_subquadratic 60
+    test_poly_ntt            60
     test_filter              10
     test_filter_radix_sort   60
     test_lp_bloom            60
@@ -552,6 +555,7 @@ TEST_TIER=(
     test_poly_karatsuba      "instant"
     test_horner_batch_simd   "instant"
     test_divrem_subquadratic "instant"
+    test_poly_ntt            "instant"
     test_filter              "instant"
     test_filter_radix_sort   "instant"
     test_lp_bloom            "instant"
