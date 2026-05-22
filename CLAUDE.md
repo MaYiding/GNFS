@@ -1111,6 +1111,87 @@ monic-normalized 结果完全一致. 单元测试 `test_half_gcd` 16 个测试�
 
 **Default OFF**: pipeline.cpp 与 `ModularPoly::gcd` 入口不动, opt-in 实验通道.
 
+### Polynomial Karatsuba multiplication threshold (GNFS_POLY_KARATSUBA_THRESHOLD)
+
+**ENV `GNFS_POLY_KARATSUBA_THRESHOLD=N`** (2026-05-22 实施, range [4, 4096], default 32):
+Polynomial multiplication helper `karatsuba_mul_mod` 在 F_p[x] 上实现 3-split
+Karatsuba O(n^1.585), 基础情形 `max(deg a, deg b) < N` 回退 schoolbook. 与
+`schoolbook_mul_mod` 参考实现 bit-for-bit 一致. 默认 threshold N=32 是
+schoolbook-vs-Karatsuba 经验 sweet spot.
+
+```bash
+unset GNFS_POLY_KARATSUBA_THRESHOLD            # 默认 32
+GNFS_POLY_KARATSUBA_THRESHOLD=4    ./gnfs <N>  # 极小 threshold (recursion 走到最深)
+GNFS_POLY_KARATSUBA_THRESHOLD=64   ./gnfs <N>  # 较大 threshold (schoolbook 占主导)
+GNFS_POLY_KARATSUBA_THRESHOLD=4096 ./gnfs <N>  # 上限 (实测几乎 schoolbook every call)
+```
+
+**ENV 解析规则** (严格):
+- unset / "" / "0" / 负数 / 非数字 (`garbage` / `1.5` / `12abc` / bare `+` `-`)
+  / 含 leading 空白 (` 32`) → default 32
+- "10000" → clamp 到上限 4096
+- "2" → clamp 到下限 4 (低于 4 时 recursion 无意义, 退化为 split 2+1)
+
+**算法** (3-split Karatsuba):
+- 拆分: a = a_low + x^m · a_high, b = b_low + x^m · b_high, m = ceil(nmax / 2)
+- z0 = a_low * b_low                                   (递归)
+- z2 = a_high * b_high                                 (递归, 一侧空则跳过)
+- z1 = (a_low + a_high) * (b_low + b_high) - z0 - z2   (递归 + 减法)
+- 结果: out = z0 + x^m · z1 + x^{2m} · z2
+- 中间和 (a_low + a_high) mod p 防溢出; subtraction 用 `(a + p - b) mod p`
+  避免下溢
+
+**Threshold default 32 选择理由**:
+- Karatsuba 每层有显著 per-call overhead (3 个 sum vector + 3 个 sub-product
+  vector + 3 个递归 stack frame)
+- Schoolbook 内循环紧凑, tiny n 下 mul 数虽然 O(n²) 但常数极小
+- 经验 sweet spot 在 16-64 之间, 选 32 作 conservative middle
+- 低于 4 时 recursion 退化 (3 系数 polynomial 切 2+1, "高" side 只剩
+  degree 1, 无法 amortise)
+
+**Bit-for-bit guarantee**: 同 `(a, b, p)` 输入下 (p 素数, p < 2^32,
+coefficients < p), `karatsuba_mul_mod` 与 `schoolbook_mul_mod` 输出
+`out` vector 完全一致 (size + 每位 content). Threshold 值仅影响递归深度,
+不影响数学结果. Empty 输入双方都给 empty 输出. 单元测试
+`tests/test_poly_karatsuba.cpp` 通过 13 random shapes 与 threshold
+extremes (4 vs 999999) 严格强制覆盖.
+
+**修复历史** (commit `25169c4`):
+初版在 a/b 跨 split 边界时 z1 = sum_a * sum_b - z0 - z2 留有 trailing zero
+(Karatsuba 算法故意取消 leading coefficient), compose 时 grow `out` 超出
+`na + nb - 1` 上限. 修复: z0 / z1 / z2 / sum_a / sum_b 每次计算后
+`trim_trailing_zeros`, 且 `add_shifted_in_place` 不再 grow out (out-of-range
+src 必须为 0, 否则 assert).
+
+**Modulus precondition**: p < 2^32 (保证 uint64 * uint64 不溢出).
+caller 需要 p >= 2^32 时仍走 `ModularPoly::mul_raw` (内部 `__uint128_t`).
+
+**ROI 与定位**:
+- 主要 ROI: Karatsuba 是 sub-quadratic primitive M(n), 是 W7 HGCD
+  (`GNFS_POLY_HGCD`) 等待的 sub-quadratic 乘法. HGCD 真正 wall-time
+  加速依赖 M(n) 复杂度低于 schoolbook O(n²). 当前 `ModularPoly::mul_raw`
+  仍走 schoolbook, 所以 HGCD 在 deg ≤ 500 略慢 (W7 实测 deg=100 0.37x,
+  deg=500 0.46x).
+- 当前主路径 `ModularPoly::mul_raw` **未** wire-in Karatsuba — 是
+  future-infrastructure helper. 当未来 caller (例如 `ModularPoly::mul_raw`
+  内部, 或 HGCD recursion 内部) 决定切到 sub-quadratic primitive 时直接
+  调用 `karatsuba_mul_mod` 即可.
+- perf-info probe (size=500, p=2^31-1): schoolbook 3.73 ms/call vs
+  karatsuba 1.72 ms/call → 2.17x 加速. 真正 ROI 在 deg >> 100 时显著.
+
+**集成点** (2026-05-22, W9 T2):
+- `include/gnfs/polynomial/karatsuba_mul.hpp` — `karatsuba_mul_mod()` +
+  `schoolbook_mul_mod()` + `poly_karatsuba_threshold()` (cached env, strict
+  parsing) + `poly_karatsuba_threshold_reset_env_cache_for_testing()` test hook
+- `tests/test_poly_karatsuba.cpp` — 10 个测试 (5 env parsing / 2 edge cases /
+  2 correctness parity / 1 perf info)
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  polynomial 模块
+
+**Default 32 主路径无影响**: `ModularPoly::mul_raw` 入口未改, helper
+仅在显式 caller wire-in 时启用. 现有 schoolbook path 与 W7 HGCD path
+均保持原行为. ENV 仅对显式调用 `karatsuba_mul_mod` 的 caller 生效.
+
 ### Phase 0 radix-sort dedup-sort (GNFS_FILTER_RADIX_SORT)
 
 **ENV `GNFS_FILTER_RADIX_SORT={0,1}`** (2026-05-22 实施, default 0):
