@@ -866,6 +866,81 @@ factor 集合严格相同. 由 `tests/test_ecm_stage2_parallel.cpp` 强制覆盖
   N=1 vs N=4 parity / N=1 vs N=hw parity / ENV parsing / empty span /
   single-curve N=4 no-stall)
 
+### ECM Montgomery batch inversion (GNFS_ECM_BATCH_INV)
+
+**ENV `GNFS_ECM_BATCH_INV={0,1}`** (2026-05-22 实施, W8 T3, default 0):
+ECM point arithmetic 在 Stage 1 / Stage 2 hot loop 频繁对一批 mod-N 整数
+逐个求逆 (`mpz_invert`). 当 N 较大 (50d+/60d cofactor 100-300 bits) 时
+extended Euclidean inverse 显著贵于 `mpz_mul + mpz_mod`. Montgomery batch
+inversion trick 把 k 个逆操作 amortise 成 1 个 inverse + 3k 个 modular mul:
+
+```text
+forward: p_0 = v_0;   p_i = p_{i-1} * v_i mod n      (k-1 mults)
+central: q   = p_{k-1}^{-1} mod n                    (1 invert)
+reverse: inv_i = q * p_{i-1} mod n, q = q * v_i mod n (2*(k-1) mults)
+```
+
+```bash
+GNFS_ECM_BATCH_INV=1 ./gnfs <N>          # 启用 helper gate
+GNFS_ECM_BATCH_INV=0 ./gnfs <N>          # 显式 disable (= default)
+unset GNFS_ECM_BATCH_INV                 # 默认 disable
+```
+
+**Helper API** (`include/gnfs/cofactor/batch_inversion.hpp`):
+- `batch_mod_inverse(values, n)` — Montgomery 路径, 1 inverse + 3k mul,
+  返回 `BatchInvResult { inverses, found_factor }`. k=0 立即 return 空;
+  k=1 走 single `mpz_invert` 短路 (零 prefix overhead).
+- `naive_mod_inverse(values, n)` — k 个 per-element `mpz_invert` 参考实现.
+  单元测试 golden, 也供希望显式禁 batched trick 的 caller 使用.
+- `ecm_batch_inv_enabled()` — cached `std::once_flag` + `std::atomic<bool>`,
+  strict "1" parsing (= W6 `GNFS_FILTER_RADIX_SORT` / W6 `GNFS_V0_BFS`
+  pattern). 任何非 "1" 值 (unset / "" / "0" / "garbage" / "2" / "true" /
+  "10" / 含空格的 "1") 都返回 `false`.
+- `ecm_batch_inv_reset_env_cache_for_testing()` — 测试专用, 重置 cached
+  gate 让下次 `enabled()` 再读 env.
+
+**Failure semantics** (与现有 ECM lucky-factor idiom 对齐):
+- `mpz_invert(_, p_{k-1}, n) == 0` 时知道 gcd(p_{k-1}, n) > 1, 说明至少一个
+  v_i 与 n 有非平凡公因子. helper 顺序扫 input span 找到第一个非平凡
+  gcd(v_i, n), 放到 `BatchInvResult::found_factor` (与 ECM 现有 per-curve
+  "inverse failure exposes factor" 语义一致).
+- 若 v_i 全是 1 或 n 的倍数 (gcd 仅为 1 或 n), `found_factor` 仍是
+  `std::nullopt`. caller 必须按 "无法分解" 处理, 不能假设始终能 extract factor.
+- `naive_mod_inverse` 用同一 `find_first_nontrivial_gcd` 扫法保证 batch 与
+  naive 对同一 input 报告同一 culprit (per-index identical failure mode).
+
+**Bit-for-bit guarantee**: 当 gcd(v_i, n) == 1 for all i, Montgomery trick 与
+逐 `mpz_invert` mathematically equivalent (不是 approximation). 单元测试
+`tests/test_batch_inversion.cpp` 强制覆盖 k = 0, 1, 5 (n=101), 20 (n ~ 2^64
+prime), 100 (n ~ 200-bit prime) 各 size 严格 per-index bit-for-bit assert,
+另外测 unreduced v_i (>= n) 与 boundary v_i (= 1, = n-1).
+
+**ROI 与定位**:
+- 主要 ROI: 50d+/60d cofactor (200-330 bit N) ECM Stage 1+2 hot loop 当前
+  per-point 调 `mpz_invert`. 对 200-bit N, mpz_invert ≈ 10-20 倍 mpz_mul
+  cost; batch path k=8 时 amortised inverse cost ≈ 4 mul cost (4-5× 提速).
+  k 越大 ROI 越显著, 但需要 caller 能 batch up k >= 2 个独立 inversion site.
+- 当前主 pipeline 无 wire-in: ECM Stage 1 / Stage 2 / Brent-Suyama 都仍走
+  per-point `mpz_invert`. helper 作为 future-infrastructure 落地, 等具体
+  inversion hot site (e.g. Stage 2 BSGS giant-step accumulation, Brent-Suyama
+  polynomial 系数 batched eval) 显式 wire-in 时启用.
+- helper 与 W8 T1 `GNFS_ECM_STAGE2_PARALLEL` 完全 orthogonal — Stage 2 并行
+  跑 K 条独立曲线, batch_inversion 是 per-curve inner loop 的 inversion
+  amortisation. 二者可同时启用.
+
+**集成点** (2026-05-22, W8 T3):
+- `include/gnfs/cofactor/batch_inversion.hpp` — helper API + ENV gate +
+  `BatchInvResult` + `find_first_nontrivial_gcd` 内部 helper.
+- `tests/test_batch_inversion.cpp` — 12 tests (ENV unset / "1" / 8 non-"1"
+  rejects / reset cache / empty k=0 / single k=1 / parity k=5,20,100 /
+  found_factor / boundary v_i / unreduced v_i).
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout
+  (实测 wall ~125ms).
+
+**Default OFF**: ENV unset → `ecm_batch_inv_enabled() == false` → 任何 caller
+看到 gate 关闭则跑 per-element `mpz_invert` path 不变, 零行为变化. 仅当 caller
+主动 wire-in 且用户 explicit `GNFS_ECM_BATCH_INV=1` 时启用.
+
 ### Polynomial Half-GCD (GNFS_POLY_HGCD)
 
 **ENV `GNFS_POLY_HGCD=1`** (2026-05-21 实施, default OFF):
