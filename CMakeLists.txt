@@ -1343,6 +1343,27 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RowXorSIMD COMMAND test_xor_words_simd)
     set_tests_properties(RowXorSIMD PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # SIMD GF(2) batch word-AND helper (correctness, W13 T1).
+    # Fourth SIMD primitive in the popcount / and-popcount / xor-words
+    # family: exercises the scalar reference (`out[i] = a[i] & b[i]`),
+    # the NEON 2-lane (`vandq_u64`) / AVX2 4-lane (`_mm256_and_si256`)
+    # batch path, and the ENV-gated dispatcher across edge sizes
+    # (empty, single-word patterns, aligned/unaligned batches, length
+    # mismatch clamping, identity check via `a == b`, 1M perf probe).
+    # Three-argument variant: AND of two `const uint64_t` spans into a
+    # third mutable output span (cf. xor_words_simd.hpp's in-place
+    # XOR and and_popcnt_simd.hpp's fused AND-then-popcount reduction).
+    # Useful for Block Lanczos / Block Wiedemann mask applications,
+    # GF(2) row intersection caches, and structured Gaussian elimination
+    # active-column projections. Header-only helper, no extra link
+    # dependencies beyond the core library.
+    add_executable(test_and_words_simd
+        tests/test_and_words_simd.cpp
+    )
+    target_link_libraries(test_and_words_simd PRIVATE gnfs_core)
+    add_test(NAME AndWordsSIMD COMMAND test_and_words_simd)
+    set_tests_properties(AndWordsSIMD PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Linalg iteration progress telemetry helper (W12 T1).
     # ENV-gated, header-only logger that callers can opt-in wire into
     # Block Lanczos / Block Wiedemann SpMV loops to print iteration

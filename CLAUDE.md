@@ -2234,6 +2234,100 @@ src 长度 clamp / src < dst 长度 tail 保留 / 1M perf info).
 **Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
 所以 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
 
+### GF(2) word AND batch SIMD (GNFS_GF2_AND_WORDS_SIMD)
+
+**ENV `GNFS_GF2_AND_WORDS_SIMD=auto|0|1`** (2026-05-22 实施, W13 T1, default auto):
+GF(2) batch `out[i] = a[i] & b[i]` helper, 与 W9 `GNFS_GF2_POPCNT_SIMD` /
+W10 `GNFS_GF2_AND_POPCNT_SIMD` / W11 `GNFS_GF2_ROW_XOR_SIMD` 并列的第四
+个 SIMD primitive. 提供 NEON 2-lane (ARM64, `vandq_u64`) / AVX2 4-lane
+(x86_64, `_mm256_and_si256`) wide bitwise AND 替代逐 word `&`. 应用场景:
+Block Lanczos / Block Wiedemann mask 应用 (e.g. dependency mask `dep
+&= active_cols`), GF(2) 行交集 cache, 结构化高斯消元的活跃列投影,
+任何需要把两个 uint64 array 按位 AND 后保留 uint64 vector 形式 (不
+立即缩减为 popcount) 供下游消费的 hot path. Pure header, 不依赖外部库.
+
+```bash
+GNFS_GF2_AND_WORDS_SIMD=auto ./gnfs <N>   # 默认: NEON/AVX2 可用则启用
+GNFS_GF2_AND_WORDS_SIMD=0    ./gnfs <N>   # 强制 scalar (回归 bisect 用)
+GNFS_GF2_AND_WORDS_SIMD=1    ./gnfs <N>   # 强制 SIMD (无 SIMD 平台 fallback)
+unset GNFS_GF2_AND_WORDS_SIMD             # 同 auto
+```
+
+**Helper API** (`include/gnfs/linalg/detail/and_words_simd.hpp`):
+- `batch_and_words(a, b, out)` — 主入口, `out[i] = a[i] & b[i]` for
+  `i in [0, min(a.size(), b.size(), out.size()))`. SIMD path 当
+  `and_words_simd_enabled()` 为 true 时启用. Empty 输入 (任一输入 span
+  size 0) no-op, 不 touch out.
+- `batch_and_words_scalar(a, b, out)` — 朴素 `out[i] = a[i] & b[i]` loop
+  参考 (test golden + 无 SIMD fallback).
+- `and_words_simd_mode()` — 返回 `AndWordsSimdMode { Auto, ForceOff, ForceOn }`.
+- `and_words_simd_enabled()` — 三态 dispatcher decision (ForceOff → false,
+  ForceOn/Auto + supported → true, 否则 false).
+- `and_words_simd_supported()` — compile-time `__ARM_NEON / __AVX2__` 探测.
+- `and_words_simd_reset_env_cache_for_testing()` — 测试专用 re-resolve ENV.
+
+**与兄弟 helper 的区别 (helper family 第 4 名成员)**:
+- W9 `popcount_simd` (`batch_popcount_words(words, out_u32)`) — 单输入,
+  缩减为 uint32 per-word Hamming weight + uint64 total. 不输出 word vector.
+- W10 `and_popcnt_simd` (`batch_and_popcount_words(a, b, out_u32)`) —
+  双输入 fused AND-then-popcount, 缩减为 uint32 per-word 权重 + total.
+  数学上等于 `popcount(a & b)` 的 fused kernel, 节省一次中间 word vector
+  materialise.
+- W11 `xor_words_simd` (`batch_xor_words(dst, src)`) — 双输入, **in-place**
+  `dst[i] ^= src[i]`, 保留 dst 作为 accumulator. 双参数 (无独立 out).
+- **W13 `and_words_simd` (`batch_and_words(a, b, out)`) — 双输入, 三参,
+  保留 AND 后的 uint64 vector 供下游消费 (不 in-place, 不缩减为 popcount)**.
+  适用 mask 缓存场景, caller 需要后续对 AND 结果做多次访问 / 进一步
+  bitwise op / 持久化, 而不仅仅是统计 weight.
+
+**算法**:
+- NEON: `vld1q_u64(2 word)` × 2 inputs → `vandq_u64` (128-bit AND) →
+  `vst1q_u64(2 word)` per 2-word stride. Tail 走 scalar `&`.
+- AVX2: `_mm256_loadu_si256(4 word)` × 2 inputs → `_mm256_and_si256`
+  (256-bit AND) → `_mm256_storeu_si256(4 word)` per 4-word stride.
+  Tail 走 scalar `&`.
+- Defensive clamp: `min(a.size(), b.size(), out.size())` 决定 AND 字数,
+  避免 UB read past 任一输入或 UB write past out. Length mismatch 不
+  抛异常, 静默 clamp (符合 W9 / W10 / W11 兄弟 helper 的契约). out 在
+  clamp 窗口之外的 tail 保持原值不变.
+
+**Bit-for-bit guarantee**: AND 是 pure function of (a[i], b[i]), SIMD
+path 与 scalar `&` 输出严格 per-index 一致. 空输入返回不 touch out
+(size 不变, content 不变). AND with self (a == b content) 精确产出
+a 本身 (`a & a = a`, 与 XOR 的 `a ^ a = 0` 截然不同, 单元测试强制覆盖
+此区别防止误路由). 单元测试 `test_and_words_simd` 14 个测试强制覆盖
+(4 ENV / empty / 单 word 8 pattern 含不相交 nibble / aligned 32 /
+unaligned 33 / random 1000 / ForceOff vs Auto parity / self-AND identity
+/ undersized out clamp / a shorter than b tail 保留 / 1M perf info).
+
+**ROI 与定位**:
+- 主要 ROI: 当 caller 需要把 AND 结果保留为 uint64 vector 供下游使用
+  (mask 缓存 / 多次访问 / 进一步 bitwise op), W10 fused AND-popcount
+  路径不适用 (它丢弃 word vector, 只留 popcount). 此时 `batch_and_words`
+  是唯一既享受 SIMD 加速、又保留中间 AND 结果的 helper. 单 fused
+  load+AND+store kernel 节省 per-iter address-gen pressure.
+- helper 当前 standalone (主 pipeline 无 wire-in), 是 future-infra:
+  Block Lanczos / Block Wiedemann mask 应用, SGE 活跃列投影, GF(2) 行
+  交集 cache 等 explicit wire-in 后启用.
+- 默认 auto 在 macOS arm64 / Linux x86_64 都启用 SIMD path; ENV=0 在
+  PMU sweep / sanitizer 调试时回到 scalar baseline. perf-info 实测
+  1M word M-series ARM64: scalar ~2.0 ms, SIMD ~3.0 ms (scalar `&` 循环
+  在 Apple Silicon 上 autovectorise 已经非常优秀; SIMD path 主 ROI 在
+  x86_64 AVX2 平台或 wire-in 到 mask-application hot loop 后体现).
+
+**集成点** (2026-05-22, W13 T1):
+- `include/gnfs/linalg/detail/and_words_simd.hpp` — helper API + ENV gate +
+  NEON / AVX2 inner kernels + 朴素 reference.
+- `tests/test_and_words_simd.cpp` — 14 个测试 (4 ENV 解析 + empty + 单
+  word 8 pattern + aligned 32 + unaligned 33 + random 1000 + ForceOff
+  vs Auto parity + AND-with-self identity + undersized out clamp +
+  a shorter than b tail 保留 + 1M perf info).
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  linalg 模块.
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
+所以 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### Sieve region tile bits (GNFS_SIEVE_REGION_TILE_BITS)
 
 **ENV `GNFS_SIEVE_REGION_TILE_BITS=N`** (2026-05-22 实施, range [0, 8], default 0):
