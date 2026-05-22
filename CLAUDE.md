@@ -1413,6 +1413,74 @@ ENV 解析 / threshold 路由 / dispatcher parity / 稀疏 pattern).
 **Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
 所以 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
 
+### GF(2) word popcount SIMD batch (GNFS_GF2_POPCNT_SIMD)
+
+**ENV `GNFS_GF2_POPCNT_SIMD=auto|0|1`** (2026-05-22 实施, default auto):
+GF(2) word array 批量 popcount helper, 提供 NEON 2-lane (ARM64) /
+AVX2 4-lane (x86_64) wide popcount 替代逐 word `__builtin_popcountll`.
+应用场景: matrix column-weight tally, dependency Hamming distance,
+parity check 等需要 batch popcount uint64_t 数组的内核. Pure header,
+不依赖外部库.
+
+```bash
+GNFS_GF2_POPCNT_SIMD=auto ./gnfs <N>   # 默认: NEON/AVX2 可用则启用
+GNFS_GF2_POPCNT_SIMD=0    ./gnfs <N>   # 强制 scalar (回归 bisect 用)
+GNFS_GF2_POPCNT_SIMD=1    ./gnfs <N>   # 强制 SIMD (无 SIMD 平台 fallback)
+unset GNFS_GF2_POPCNT_SIMD             # 同 auto
+```
+
+**Helper API** (`include/gnfs/linalg/detail/popcount_simd.hpp`):
+- `batch_popcount_words(words, out)` — 主入口, `out[i] = popcount(words[i])`.
+  SIMD path 当 `popcount_simd_enabled()` 为 true 时启用. `out.size() ==
+  words.size()` 必须成立 (defensive clamp 防止 UB write past out).
+- `total_popcount_words(words)` — 累加 sum 入口, 返回 `uint64_t` 总和.
+- `batch_popcount_words_scalar(words, out)` — 朴素 `__builtin_popcountll`
+  参考 (test golden + 无 SIMD fallback).
+- `total_popcount_words_scalar(words)` — 朴素累加参考.
+- `popcount_simd_mode()` — 返回 `PopcountSimdMode { Auto, ForceOff, ForceOn }`.
+- `popcount_simd_enabled()` — 三态 dispatcher decision (ForceOff → false,
+  ForceOn/Auto + supported → true, 否则 false).
+- `popcount_simd_supported()` — compile-time `__ARM_NEON / __AVX2__` 探测.
+- `popcount_simd_reset_env_cache_for_testing()` — 测试专用 re-resolve ENV.
+
+**算法**:
+- NEON: `vld1q_u64(2 word)` → `vcntq_u8` (16-byte popcount) →
+  `vget_low_u8 + vaddv_u8` (per-word horizontal sum) per word.
+  Tail 走 scalar `__builtin_popcountll`.
+- AVX2: `_mm256_popcnt_epi64` 若 AVX-512 VPOPCNTDQ 可用, 否则 fallback
+  `_mm_popcnt_u64` 4-wide unroll (POPCNT 指令在 Nehalem+ x86_64 单条).
+- Reduction: `total_popcount_words` 用单条 `vaddvq_u8` (NEON) 或累加
+  4 个 popcount (AVX2) 减少 horizontal sum 次数.
+
+**Bit-for-bit guarantee**: popcount 是 pure function of input word, SIMD
+path 与 scalar `__builtin_popcountll` 输出严格 per-index 一致, reduction
+sum 同样 byte-identical. 空输入返回空 output / 零 total 而不 touch pointers.
+单元测试 `test_popcount_simd` 13 个测试强制覆盖 (4 ENV / empty / 单 word
+8 pattern / aligned 32 / unaligned 33 / random 1000 / total parity /
+ForceOff vs Auto parity / 1M perf info / undersized out clamping).
+
+**ROI 与定位**:
+- 主要 ROI: 大 batch (>1k word) popcount wall-time. M-series ARM64 上 `CNT`
+  指令 4-way pipelined, scalar `__builtin_popcountll` 在 Apple Silicon 已经
+  非常快, perf-info 1M word 实测 scalar 略快 (autovectorise 优秀). x86_64
+  上若有 AVX-512 VPOPCNTDQ 可见显著加速 (1 instruction per 4 word).
+- helper 当前 standalone (主 pipeline 无 wire-in), 是 future-infra:
+  Block Lanczos / Block Wiedemann 内部 distance metric, column weight
+  tally, parity check 等 batch popcount 调用点 explicit wire-in 后启用.
+- 默认 auto 在 macOS arm64 / Linux x86_64 都启用 SIMD path; ENV=0 在
+  PMU sweep / sanitizer 调试时回到 scalar baseline.
+
+**集成点** (2026-05-22):
+- `include/gnfs/linalg/detail/popcount_simd.hpp` — helper API + ENV gate +
+  NEON / AVX2 inner kernels + 朴素 reference.
+- `tests/test_popcount_simd.cpp` — 13 个测试 (4 ENV 解析 + 5 batch
+  correctness + 2 total reduction + 1 ForceOff vs Auto parity + 1 perf
+  info + 1 undersized out span clamping).
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout.
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
+所以 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### Sieve region tile bits (GNFS_SIEVE_REGION_TILE_BITS)
 
 **ENV `GNFS_SIEVE_REGION_TILE_BITS=N`** (2026-05-22 实施, range [0, 8], default 0):

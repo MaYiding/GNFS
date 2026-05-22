@@ -235,6 +235,7 @@ ALL_TEST_BINARIES=(
     test_metal_spmv
     test_spmv_simd
     test_transpose_blocked
+    test_popcount_simd
     test_krylov_compress
     test_krylov_compression
     test_ecm_brent_suyama
@@ -257,7 +258,7 @@ MODULE_TESTS=(
     sieve          "test_special_q test_sieve_basic test_distributed_sieve test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile"
     cofactor       "test_cofactor test_squfof test_brent_pollard_rho test_survival_predictor test_batch_ecm test_3lp_cofactor test_trial_wheel test_batch_trial test_ecm_curve_pool test_ecm_stage2_parallel test_ecm_stage1_parallel test_batch_inversion test_trial_div_simd test_integration test_ecm_brent_suyama"
     relation       "test_relation_collector test_filter test_filter_radix_sort test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration test_relation_pool_integration"
-    linalg         "test_linalg test_sge_batch_pivots test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_schirokauer_parallel test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_spmv_simd test_transpose_blocked test_krylov_compress test_krylov_compression test_bl_checkpoint test_bl_resume_integration"
+    linalg         "test_linalg test_sge_batch_pivots test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_schirokauer_parallel test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_spmv_simd test_transpose_blocked test_popcount_simd test_krylov_compress test_krylov_compression test_bl_checkpoint test_bl_resume_integration"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_class_group test_couveignes_large_class_group test_couveignes_parallel"
     api            "test_api test_i18n test_method_selection"
@@ -351,6 +352,7 @@ SMOKE_TESTS=(
     test_metal_spmv
     test_spmv_simd
     test_transpose_blocked
+    test_popcount_simd
     test_krylov_compress
     test_krylov_compression
     test_ecm_brent_suyama
@@ -461,6 +463,7 @@ TEST_TIMEOUT=(
     test_metal_spmv          30
     test_spmv_simd           10
     test_transpose_blocked   10
+    test_popcount_simd       60
     test_krylov_compress     10
     test_krylov_compression  10
     test_bw_krylov_parallel  120
@@ -573,6 +576,7 @@ TEST_TIER=(
     test_metal_spmv          "instant"
     test_spmv_simd           "instant"
     test_transpose_blocked   "instant"
+    test_popcount_simd       "instant"
     test_krylov_compress     "instant"
     test_krylov_compression  "instant"
     test_bw_krylov_parallel  "fast"
