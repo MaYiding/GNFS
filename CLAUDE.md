@@ -1331,6 +1331,99 @@ caller 需要 p >= 2^32 时仍走 `ModularPoly::mul_raw` (内部 `__uint128_t`).
 仅在显式 caller wire-in 时启用. 现有 schoolbook path 与 W7 HGCD path
 均保持原行为. ENV 仅对显式调用 `karatsuba_mul_mod` 的 caller 生效.
 
+### Polynomial subquadratic divrem (GNFS_POLY_DIVREM_SUBQUADRATIC)
+
+**ENV `GNFS_POLY_DIVREM_SUBQUADRATIC=auto|0|1`** (2026-05-22 实施, W11 T2, default auto):
+Polynomial Euclidean division helper `divrem_modp` 在 F_p[x] 上实现
+Newton-reciprocal subquadratic divrem, 通过 reversed-denominator 的
+power-series inverse 把 divrem 归约成两次 polynomial multiplication.
+基础情形 (`num.size() < kDivremSubquadraticThreshold = 32` 或 gate 非
+ForceOn) 回退 schoolbook. 与 `divrem_modp_schoolbook` 参考实现
+(matching `ModularPoly::divmod` 语义) bit-for-bit 一致.
+
+```bash
+unset GNFS_POLY_DIVREM_SUBQUADRATIC            # 默认 Auto (= schoolbook, 零行为变化)
+GNFS_POLY_DIVREM_SUBQUADRATIC=auto ./gnfs <N>  # 同 unset
+GNFS_POLY_DIVREM_SUBQUADRATIC=0    ./gnfs <N>  # 显式 ForceOff (schoolbook)
+GNFS_POLY_DIVREM_SUBQUADRATIC=off  ./gnfs <N>  # 同 "0"
+GNFS_POLY_DIVREM_SUBQUADRATIC=1    ./gnfs <N>  # ForceOn (Newton-reciprocal above threshold)
+GNFS_POLY_DIVREM_SUBQUADRATIC=on   ./gnfs <N>  # 同 "1"
+```
+
+**ENV 解析规则** (三态严格):
+- unset / "" / "auto" → Auto (default, 当前等价于 ForceOff, 保守路由)
+- "0" / "off" → ForceOff (强制 schoolbook)
+- "1" / "on" → ForceOn (启用 Newton-reciprocal above threshold)
+- 任何其他值 (`garbage`, `2`, `true`, `-1`, `yes`, 大小写 `ON/OFF/Auto`,
+  含 leading 空白 ` 1`) → Auto
+
+**算法** (Newton-reciprocal divrem):
+- 给定 `num, den ∈ F_p[x]`, 计算 `(quot, rem)` 满足
+  `num = quot · den + rem`, `deg(rem) < deg(den)`
+- 系数反转: `num_rev = reverse(num)`, `den_rev = reverse(den)`
+- Newton iteration 求 `den_rev^{-1} mod x^{q+1}` (q = deg(num) - deg(den)):
+  从 `r_0 = den_rev[0]^{-1} mod p` (precision 1) 出发, 每轮 `r_{k+1} =
+  r_k · (2 - den_rev · r_k) mod x^{2k}` 倍增 precision, O(log q) 轮收敛
+- 一次乘法恢复 quotient: `quot_rev = num_rev · den_rev^{-1} mod x^{q+1}`
+- `quot = reverse(quot_rev)`
+- 一次乘法 + 减法恢复 remainder: `rem = num - quot · den`
+- 内部 multiplication 都用 self-contained schoolbook (不依赖 W9 Karatsuba),
+  保持 helper 独立; 未来 caller wire-in 可以分别 dispatch 到 Karatsuba 或
+  其他 sub-quadratic primitive
+
+**Threshold default 32 选择理由**:
+- Newton-reciprocal 每轮有 per-call overhead (truncated 中间 series 分配,
+  反转 / 截断系数拷贝), 加上常数性 O(log q) iteration 数
+- Schoolbook 内循环紧凑, 小 deg(num) 时 quadratic walk 常数比 Newton 小
+- 经验 crossover 在 32-64 之间, 选 32 与 W9 Karatsuba threshold default
+  保持一致 (用户语义统一)
+- ForceOn 但 `num.size() < 32` 时仍 route schoolbook (`divrem_modp` 内
+  dispatch 检查), 单元测试 `test_threshold_below_routes_to_schoolbook`
+  强制覆盖
+
+**Modulus precondition**: p prime, p < 2^32 (保证 uint64 * uint64 fits
+into uint64 in the schoolbook inner products and Newton iteration).
+Caller 需保证 `num`, `den` 系数已 reduced mod p; `den` 非零多项式
+(zero denominator 抛 `std::runtime_error`).
+
+**Bit-for-bit guarantee**: 同 `(num, den, p)` 输入下 (p 素数, p < 2^32,
+coefficients < p, den != 0), `divrem_modp` 与 `divrem_modp_schoolbook`
+输出 `(quot, rem)` vector 完全一致 (size + 每位 content, 都是 trim 过
+trailing zeros 的 canonical form). Gate 值仅影响 dispatch kernel,
+不影响数学结果. 单元测试 `tests/test_divrem_subquadratic.cpp` 通过
+17 个 case 严格覆盖 (4 ENV / 5 schoolbook unit / 7 subquadratic parity
+deg 50/200/500 + 10-shape random sweep + exact-multiple + den constant +
+num zero / 1 perf info).
+
+**ROI 与定位**:
+- 主要 ROI: divrem 是 W7 HGCD recursion 内部 sub-routine. 当前 HGCD
+  recursion 调 `ModularPoly::divmod` (schoolbook), 整体 wall-time 在
+  deg ≤ 500 略慢 (W7 实测 0.37x - 0.46x). Newton-reciprocal divrem 提供
+  sub-quadratic primitive, 让 HGCD 真正 exhibit O(M(n) log n) 行为, 前提
+  是 M(n) 也是 sub-quadratic (即 W9 Karatsuba 已 wire-in)
+- helper 当前 standalone (主路径 `ModularPoly::divmod` 与 HGCD 未 wire-in),
+  是 future-infrastructure
+- perf-info probe (deg=500, p=2^31-1, 内部 schoolbook M(n)): schoolbook
+  0.44 ms/call vs subquadratic 3.34 ms/call → 0.13x (subquadratic 比
+  schoolbook 慢, 因为 internal mul 仍走 schoolbook, Newton 多了 O(log q)
+  rounds 的常数开销). 真正 ROI 需要 wire-in Karatsuba 后 deg >> 500 才显著
+
+**集成点** (2026-05-22, W11 T2):
+- `include/gnfs/polynomial/divrem_subquadratic.hpp` — `divrem_modp()` +
+  `divrem_modp_schoolbook()` + `divrem_subquadratic_mode()` (cached env
+  三态 parsing) + `divrem_subquadratic_enabled()` 等价 predicate +
+  `divrem_subquadratic_reset_env_cache_for_testing()` 测试 hook +
+  `kDivremSubquadraticThreshold = 32`
+- `tests/test_divrem_subquadratic.cpp` — 17 instant tier tests, TIMEOUT 60
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  polynomial 模块
+
+**Default Auto 主路径无影响**: `ModularPoly::divmod` 入口未改, helper
+仅在显式 caller wire-in 时启用. 现有 schoolbook path / W7 HGCD path /
+W9 Karatsuba helper 路径均保持原行为. Auto 与 ForceOff 当前等价 (保守
+路由 schoolbook), 仅 ForceOn 才启用 Newton-reciprocal. ENV 仅对显式
+调用 `divrem_modp` 的 caller 生效.
+
 ### Polynomial Horner batch evaluation SIMD (GNFS_POLY_HORNER_BATCH_SIMD)
 
 **ENV `GNFS_POLY_HORNER_BATCH_SIMD=auto|0|1`** (2026-05-22 实施, W10 T2, default auto):
