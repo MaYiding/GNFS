@@ -938,6 +938,64 @@ factor 集合严格相同. 由 `tests/test_ecm_stage2_parallel.cpp` 强制覆盖
   N=1 vs N=4 parity / N=1 vs N=hw parity / ENV parsing / empty span /
   single-curve N=4 no-stall)
 
+### ECM Stage 1 多曲线并行 (GNFS_ECM_STAGE1_PARALLEL_THREADS)
+
+**ENV `GNFS_ECM_STAGE1_PARALLEL_THREADS=N`** (2026-05-22 实施, W9 T1, default 1, range [1, hardware_concurrency * 2]):
+ECM Stage 1 (Lucas-chain Montgomery ladder, 即 `try_curve_with_pk` 内的
+scalar-multiplication `k * Q`) 在多条曲线之间相互独立 (embarrassingly
+parallel). N=1 (默认) 走 sequential per-curve 循环, 不创建 ThreadPool,
+零开销保留原行为. N>=2 时把 K 条曲线 dispatch 到大小为 min(N, K) 的
+ThreadPool, 曲线之间靠 future 同步收口.
+
+```bash
+GNFS_ECM_STAGE1_PARALLEL_THREADS=1 ./gnfs <N>    # default sequential, zero overhead
+GNFS_ECM_STAGE1_PARALLEL_THREADS=4 ./gnfs <N>    # 4 outer workers for Stage 1 Montgomery ladder
+GNFS_ECM_STAGE1_PARALLEL_THREADS=8 ./gnfs <N>    # 8 outer workers
+unset GNFS_ECM_STAGE1_PARALLEL_THREADS           # same as N=1
+```
+
+**并行模型**:
+- Outer = `parallel_stage1_curves<Result, Curve, Func>(curves, run_stage1)`
+  over K 条独立曲线 (每条由 caller 提供 (sigma, n, B1) setup tuple)
+- 内部 Stage 1 Lucas-chain / Montgomery ladder 算法 bit-identical (helper
+  仅改变外层 dispatch, 不触碰 `ECM::stage1` / `try_curve_with_pk` 内核)
+- 每条曲线 task 拥有独立 Integer buffer 与 Point 状态, GMP `mpz_*` 调用
+  操作数互不重叠, 满足 GMP per-call disjoint-operands thread-safety
+
+**Bit-for-bit guarantee**: 每条曲线 (sigma, n, B1) 的 Stage 1 结果是该
+sigma 的 pure function, 不依赖 dispatch 顺序. Sequential (N=1) 与
+parallel (N>=2) 路径产生的 per-index `Result` 完全一致 (caller 选 Result
+类型: 常见 `std::optional<Integer>` 表 "factor found / not found", 或
+post-Stage-1 Point + a24 state 供下游 Stage 2 dispatch 复用). 由
+`tests/test_ecm_stage1_parallel.cpp` 强制覆盖 (mock worker N=1 vs N=4 /
+N=hw bit-identical per-index assert + 真实 ECM Stage 1 via
+`factor_with_batch` N=1 vs N=4 per-curve `std::optional<Integer>` 严格一致).
+
+**ROI 与定位**:
+- 主要 ROI: 50d+/60d 余因子分解每条曲线的 Stage 1 Lucas chain (B1=10^6 ~
+  10^9 时 chain 长 ~10^5 ~ 10^8 ladder step) wall-time 可观, K 条曲线
+  并发后 outer wall ~ T_single + tasking overhead, 替代 K * T_single
+  sequential 累计.
+- 与 W8 T1 `GNFS_ECM_STAGE2_PARALLEL` 正交: Stage 1 + Stage 2 二者各自有
+  独立 ENV 控制, caller 可同时启用 (Stage 1 并发跑 K 条曲线, post-Stage-1
+  Point 数据收口后再 dispatch 到 Stage 2 helper, 或在同一 task 内串接).
+- 与 `EcmCurvePool` 不冲突: pool 是 Stage 1 warm-pool (预生成 sigma 池),
+  helper 是 outer dispatch (跑多条曲线). pool 解决 sigma 生成成本, helper
+  解决跨曲线 Stage 1 并发. 二者可同时启用.
+- Helper 是 opt-in 工具, 不修改 `ECM::factor` / `ECM::quick_factor` /
+  `ECM::factor_with_batch` public path. 调用方在自身循环里 wire-in 即可.
+- Default OFF (N=1) 保证 zero behavior change for legacy callers, 仅当用户
+  明确 opt-in 时启用.
+
+**集成点** (2026-05-22, W9 T1):
+- `include/gnfs/cofactor/ecm_stage1_parallel.hpp` — `ecm_stage1_parallel_threads()`
+  env reader with `std::once_flag` cache + `parallel_stage1_curves<>` template
+  dispatcher + `ecm_stage1_parallel_reset_env_cache_for_testing()` test hook
+- `tests/test_ecm_stage1_parallel.cpp` — 9 个测试 (3 ENV 解析 / N=1 baseline
+  mock worker / N=1 vs N=4 mock parity / empty span / single-curve N=4
+  no-stall / N=hw_concurrency mock parity / 真实 ECM Stage 1
+  via `factor_with_batch` N=1 vs N=4 per-curve `optional<Integer>` bit-identical)
+
 ### ECM Montgomery batch inversion (GNFS_ECM_BATCH_INV)
 
 **ENV `GNFS_ECM_BATCH_INV={0,1}`** (2026-05-22 实施, W8 T3, default 0):

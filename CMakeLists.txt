@@ -926,6 +926,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME EcmStage2Parallel COMMAND test_ecm_stage2_parallel)
     set_tests_properties(EcmStage2Parallel PROPERTIES LABELS "fast" TIMEOUT 60)
 
+    # ECM Stage 1 multi-curve parallel dispatcher (GNFS_ECM_STAGE1_PARALLEL_THREADS)
+    add_executable(test_ecm_stage1_parallel
+        tests/test_ecm_stage1_parallel.cpp
+    )
+    target_link_libraries(test_ecm_stage1_parallel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME EcmStage1Parallel COMMAND test_ecm_stage1_parallel)
+    set_tests_properties(EcmStage1Parallel PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Montgomery batch modular inversion helper (GNFS_ECM_BATCH_INV)
     add_executable(test_batch_inversion
         tests/test_batch_inversion.cpp
