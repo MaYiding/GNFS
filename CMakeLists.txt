@@ -887,6 +887,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME LPBloom COMMAND test_lp_bloom)
     set_tests_properties(LPBloom PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Partial relation merger worker-pool dispatcher (GNFS_FILTER_MERGE_THREADS)
+    add_executable(test_merger_parallel
+        tests/test_merger_parallel.cpp
+    )
+    target_link_libraries(test_merger_parallel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME MergerParallel COMMAND test_merger_parallel)
+    set_tests_properties(MergerParallel PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # V3 Clique Merge backup (header-only, in include/gnfs/relation/clique_merger.hpp)
     add_executable(test_clique_merger
         tests/test_clique_merger.cpp
