@@ -944,6 +944,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME EcmCurvePool COMMAND test_ecm_curve_pool)
     set_tests_properties(EcmCurvePool PROPERTIES LABELS "instant" TIMEOUT 30)
 
+    # ECM sigma seed warm pool (W10 T3, GNFS_ECM_SIGMA_POOL_SIZE)
+    add_executable(test_sigma_seed_pool
+        tests/test_sigma_seed_pool.cpp
+    )
+    target_link_libraries(test_sigma_seed_pool PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SigmaSeedPool COMMAND test_sigma_seed_pool)
+    set_tests_properties(SigmaSeedPool PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # ECM Stage 2 multi-curve parallel dispatcher (GNFS_ECM_STAGE2_PARALLEL)
     add_executable(test_ecm_stage2_parallel
         tests/test_ecm_stage2_parallel.cpp
