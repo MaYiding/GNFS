@@ -934,6 +934,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME BatchInversion COMMAND test_batch_inversion)
     set_tests_properties(BatchInversion PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Trial division SIMD batch helper (GNFS_TRIAL_DIV_SIMD)
+    add_executable(test_trial_div_simd
+        tests/test_trial_div_simd.cpp
+    )
+    target_link_libraries(test_trial_div_simd PRIVATE gnfs_core)
+    add_test(NAME TrialDivSimd COMMAND test_trial_div_simd)
+    set_tests_properties(TrialDivSimd PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Cofactor batch micro-benchmark (T5 Stage 4) — invoke manually
     # ./build/test_cofactor_batch_bench [count] [seed]
     add_executable(test_cofactor_batch_bench
