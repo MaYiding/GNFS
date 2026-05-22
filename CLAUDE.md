@@ -2186,6 +2186,92 @@ polynomial evaluation 结果. 每个 wire-in 的 callsite 必须在自身 fixtur
 untiled precompute path 不变. 仅当用户 explicit `GNFS_SIEVE_NORM_TILE_BITS=N>0`
 时 helper 报告 tile size; 实际启用还需 callsite 显式 dispatch helper 结果.
 
+### Sieve apply-tile 并行 (GNFS_SIEVE_APPLY_TILE_THREADS)
+
+**ENV `GNFS_SIEVE_APPLY_TILE_THREADS=N`** (2026-05-22 实施, W12 T4, default 1, range [1, hardware_concurrency * 2]):
+Lattice sieve `sieve_bucket_region` apply phase 把 `sieve_array_` 扫描产生
+candidate (a, b) pair. W6 `GNFS_SIEVE_REGION_TILE_BITS` 把 row range 切成
+`2^N` 行 tile 提高 L1/L2 命中, 但 tile 之间是 **sequential cache-blocking**
+(顺序扫). 本 helper 是与 W6 完全 orthogonal 的轴: **parallel work
+distribution** —— caller 决定好 tile 总数后 (典型 `ceil(rows /
+region_tile_size_rows())`), `parallel_apply_tiles` 把不同 tile 派到不同
+worker 并行执行. N=1 (默认) 走 sequential per-tile 循环, 不创建 ThreadPool,
+零开销保留原行为. N>=2 时把 K 个 tile dispatch 到大小为 min(N, K) 的
+ThreadPool, tile 之间靠 future 同步收口.
+
+```bash
+GNFS_SIEVE_APPLY_TILE_THREADS=1 ./gnfs <N>   # default sequential, zero overhead
+GNFS_SIEVE_APPLY_TILE_THREADS=4 ./gnfs <N>   # 4 outer workers for apply tiles
+GNFS_SIEVE_APPLY_TILE_THREADS=8 ./gnfs <N>   # 8 outer workers
+unset GNFS_SIEVE_APPLY_TILE_THREADS          # same as N=1
+
+# 与 W6 region_tile 同开 (二者完全独立: region_tile 控制 tile 大小,
+# apply_tile_parallel 控制 tile 之间的并发度)
+GNFS_SIEVE_REGION_TILE_BITS=6 GNFS_SIEVE_APPLY_TILE_THREADS=4 ./gnfs <N>
+```
+
+**并行模型**:
+- Outer = `parallel_apply_tiles<Result, TileFn>(tile_count, tile_fn)` over
+  K 个 tile (caller 决定 K, 典型来自 `region_tile_size_rows()` 切分)
+- 内部 per-tile work 算法 bit-identical (helper 仅改变外层 dispatch,
+  不触碰 `sieve_bucket_region` 内核, 也不修改
+  `src/sieve/lattice_sieve.cpp` 主 sieve loop)
+- 每个 tile task 拥有独立 Result buffer (caller 选择 Result 类型,
+  典型 candidate emit buffer / `std::vector<Candidate>` / 小 (idx,
+  count) record), 共享只读 state 通过 lambda capture 引用
+- 空 batch (n==0) / 单 tile (n==1) 都走 sequential 短路, 不创建 pool
+- Exception path: dispatcher drain 全部 future, 第一个 thrown exception
+  通过 `std::rethrow_exception` 传给 caller (不 swallow); pool 析构干净 join
+
+**Bit-for-bit guarantee**: 每 tile work 是 pure function of `tile_index`,
+不依赖 dispatch 顺序. Sequential (N=1) 与 parallel (N>=2) 路径产生的
+per-index `Result` 完全一致, downstream candidate list 严格相同. 由
+`tests/test_sieve_apply_tile_parallel.cpp` 强制覆盖 (100-tile mock_scan
++ HeavyTileResult heavy_scan N=1 vs N=4 vs N=hw_concurrency 严格 per-index
+bit-identical assert + move-only `std::unique_ptr` Result 流转测试).
+
+**与家族成员关系**: parallel-dispatcher 家族第六位:
+- W7 `GNFS_SQRT_HENSEL_THREADS` — Hensel lift K-prime slot
+- W8 T1 `GNFS_ECM_STAGE2_PARALLEL` — ECM Stage 2 BSGS 多曲线
+- W9 T1 `GNFS_ECM_STAGE1_PARALLEL_THREADS` — ECM Stage 1 Lucas-chain 多曲线
+- W10 T4 `GNFS_FILTER_MERGE_THREADS` — LP-key bucket merge
+- W11 T3 `GNFS_MPZ_POWM_BATCH_THREADS` — batched `mpz_powm`
+- W11 T4 `GNFS_LATTICE_BASIS_PARALLEL_THREADS` — basis reduction 多基
+- **W12 T4 `GNFS_SIEVE_APPLY_TILE_THREADS` — apply-tile 并行 (本 helper)**
+
+七者全部 default 1 (sequential), opt-in, 互不冲突. 可同时启用.
+
+**ROI 与定位**:
+- 主要 ROI: 50d+/60d sieve 主循环每 region 可能切几十到几百 row tile,
+  per-tile apply scan 内部 cache miss + candidate threshold check 比较密集.
+  K tile 并发后 outer wall ~ T_max_tile + tasking overhead, 替代 sum(K)
+  sequential 累计. 真实 wall ROI 在 50d+/60d 大 region 上体现.
+- W6 region_tile (sequential cache-blocking) 与本 helper (parallel work
+  distribution) 完全 orthogonal — region_tile 把 sieve_array_ 工作集控
+  在 L1/L2 内, apply_tile_parallel 把不同 tile 跨核并行. caller 可同时
+  启用; 二者结合典型: `region_tile_size_rows()` 算 tile size →
+  `(rows + size - 1) / size` 算 tile count → `parallel_apply_tiles`
+  dispatch.
+- helper 是 opt-in 工具, **不修改** `src/sieve/lattice_sieve.cpp` 主
+  sieve loop. 调用方需要在 apply phase 入口聚合 tiles 后传 tile_count +
+  tile_fn lambda 才生效, 是 future-infrastructure landing.
+- Default OFF (N=1) 保证 zero behavior change for legacy callers, 仅当
+  调用方 wire-in helper 且用户明确 `GNFS_SIEVE_APPLY_TILE_THREADS=N>=2`
+  时启用.
+
+**集成点** (2026-05-22, W12 T4):
+- `include/gnfs/sieve/apply_tile_parallel.hpp` — `sieve_apply_tile_threads()`
+  env reader with `std::once_flag` cache + `resolve_sieve_apply_tile_threads(tile_count)`
+  helper + `parallel_apply_tiles<Result, TileFn>` template dispatcher +
+  `sieve_apply_tile_threads_reset_env_cache_for_testing()` test hook
+- `tests/test_sieve_apply_tile_parallel.cpp` — 15 个测试 (5 env parsing /
+  empty tile_count / single tile N=1 / single tile N=4 no-stall / 100 tile
+  N=1 baseline / N=1 vs N=4 simple parity / N=1 vs N=hw HeavyTileResult
+  parity / move-only `unique_ptr<int>` Result / tile_fn exception propagation /
+  reset env cache hook / resolve helper edge cases)
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  sieve 模块
+
 ### Factor Base CZ roots 并行 (GNFS_FB_ROOTS_THREADS)
 
 **ENV `GNFS_FB_ROOTS_THREADS=N`** (2026-05-22 实施, default 0, range [0, hardware_concurrency * 2]):
