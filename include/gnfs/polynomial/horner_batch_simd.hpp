@@ -240,32 +240,35 @@ namespace horner_detail {
 
 #if defined(GNFS_HORNER_BATCH_SIMD_NEON)
 /// NEON 2-lane batched Horner: process two evaluation points per iteration.
-/// Apple Silicon NEON lacks a vector 64-bit signed multiply, so we extract
-/// each lane, do a scalar `int64_t` mul-add, and recombine. The SIMD value
-/// comes from the consolidated vector load (`vld1q_s64`) and broadcast
-/// (`vdupq_n_s64`), plus the compiler's freedom to schedule the two
-/// scalar mul-adds in parallel against independent integer pipes.
+/// Apple Silicon NEON lacks a vector 64-bit signed multiply, so the
+/// inner Horner recurrence runs as two independent scalar `int64_t`
+/// mul-adds in GPRs. SIMD value comes from the consolidated load
+/// (`vld1q_s64` extracted once at entry) and the consolidated store
+/// (`vld1q_s64` from a stack buffer at exit), which reduce address-gen
+/// pressure compared to four separate scalar loads/stores. Keeping the
+/// accumulators in GPRs throughout the inner loop avoids the round-trip
+/// to NEON registers that `vgetq_lane_s64` / `vsetq_lane_s64` would
+/// require each iteration on Apple Silicon, where lane swaps are slower
+/// than independent integer pipes.
 inline void horner_eval_pair_neon(std::span<const std::int64_t> coeffs,
                                   const std::int64_t* xs_ptr,
                                   std::int64_t* ys_ptr) noexcept {
     const std::size_t d = coeffs.size() - 1;
-    // Load two consecutive evaluation points into one Q register.
-    int64x2_t x_vec = vld1q_s64(xs_ptr);
-    // Initialise accumulator with the leading coefficient broadcast.
-    int64x2_t acc_vec = vdupq_n_s64(coeffs[d]);
-    // Horner step: extract lanes, do scalar mul-add, recombine.
+    // Consolidated 16-byte load via NEON; extract to GPR scalars once.
+    alignas(16) std::int64_t x_buf[2];
+    vst1q_s64(x_buf, vld1q_s64(xs_ptr));
+    const std::int64_t x0 = x_buf[0];
+    const std::int64_t x1 = x_buf[1];
+    std::int64_t a0 = coeffs[d];
+    std::int64_t a1 = coeffs[d];
     for (std::size_t k = d; k-- > 0;) {
         const std::int64_t c_k = coeffs[k];
-        const std::int64_t x0 = vgetq_lane_s64(x_vec, 0);
-        const std::int64_t x1 = vgetq_lane_s64(x_vec, 1);
-        const std::int64_t a0 = vgetq_lane_s64(acc_vec, 0);
-        const std::int64_t a1 = vgetq_lane_s64(acc_vec, 1);
-        const std::int64_t n0 = a0 * x0 + c_k;
-        const std::int64_t n1 = a1 * x1 + c_k;
-        acc_vec = vsetq_lane_s64(n0, acc_vec, 0);
-        acc_vec = vsetq_lane_s64(n1, acc_vec, 1);
+        a0 = a0 * x0 + c_k;
+        a1 = a1 * x1 + c_k;
     }
-    vst1q_s64(ys_ptr, acc_vec);
+    // Consolidated 16-byte store via NEON.
+    alignas(16) std::int64_t y_buf[2] = {a0, a1};
+    vst1q_s64(ys_ptr, vld1q_s64(y_buf));
 }
 #endif  // GNFS_HORNER_BATCH_SIMD_NEON
 

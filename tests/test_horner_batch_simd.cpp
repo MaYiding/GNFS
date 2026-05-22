@@ -336,8 +336,10 @@ static void test_perf_info_1M() {
     poly::batch_eval_poly_int64(coeffs, xs, ys_dispatch);
     auto t3 = std::chrono::steady_clock::now();
 
-    const auto scalar_ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0;
-    const auto dispatch_ms = std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count() / 1000.0;
+    const double scalar_ms = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count()) / 1000.0;
+    const double dispatch_ms = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count()) / 1000.0;
     std::printf("  perf_info_1M: scalar=%.2fms dispatch=%.2fms speedup=%.2fx\n",
                 scalar_ms, dispatch_ms,
                 dispatch_ms > 0 ? scalar_ms / dispatch_ms : 0.0);
