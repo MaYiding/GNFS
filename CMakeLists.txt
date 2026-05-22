@@ -890,6 +890,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME DivremSubquadratic COMMAND test_divrem_subquadratic)
     set_tests_properties(DivremSubquadratic PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Polynomial 3-prime NTT multiplication helper (O(n log n) primitive
+    # via Schönhage-friendly NTT primes + Garner CRT reconstruction;
+    # ENV-gated three-state dispatch, schoolbook parity invariant)
+    add_executable(test_poly_ntt
+        tests/test_poly_ntt.cpp
+    )
+    target_link_libraries(test_poly_ntt PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME PolyNTT COMMAND test_poly_ntt)
+    set_tests_properties(PolyNTT PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # 关系过滤器测试
     add_executable(test_filter
         tests/test_filter.cpp

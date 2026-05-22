@@ -1331,6 +1331,105 @@ caller 需要 p >= 2^32 时仍走 `ModularPoly::mul_raw` (内部 `__uint128_t`).
 仅在显式 caller wire-in 时启用. 现有 schoolbook path 与 W7 HGCD path
 均保持原行为. ENV 仅对显式调用 `karatsuba_mul_mod` 的 caller 生效.
 
+### Polynomial NTT multiplication (GNFS_POLY_NTT)
+
+**ENV `GNFS_POLY_NTT=auto|0|1`** (2026-05-22 实施, W12 T2, default auto):
+Polynomial multiplication helper `ntt_mul_mod` 在 F_p[x] 上 (p prime,
+p < 2^32) 实现 3-prime CRT NTT 路径, asymptotic O(n log n). 与
+`schoolbook_mul_mod` 参考实现 bit-for-bit 一致. 默认 auto 在
+`max(deg_a, deg_b) >= kNttAutoThreshold = 256` 时启用 NTT, 低于阈值
+回退 schoolbook.
+
+```bash
+unset GNFS_POLY_NTT             # 默认 Auto (>=256 走 NTT, 否则 schoolbook)
+GNFS_POLY_NTT=auto ./gnfs <N>   # 同 unset
+GNFS_POLY_NTT=0    ./gnfs <N>   # 显式 ForceOff (强制 schoolbook)
+GNFS_POLY_NTT=off  ./gnfs <N>   # 同 "0"
+GNFS_POLY_NTT=1    ./gnfs <N>   # ForceOn (NTT 适用任意 size >= 2)
+GNFS_POLY_NTT=on   ./gnfs <N>   # 同 "1"
+```
+
+**ENV 解析规则** (三态严格):
+- unset / "" / "auto" → Auto (default)
+- "0" / "off" → ForceOff (强制 schoolbook)
+- "1" / "on" → ForceOn (NTT 适用任意 size >= 2, size <= 1 仍 short-circuit)
+- 任何其他值 (`garbage`, `2`, `true`, `-1`, `yes`, `ON/OFF/Auto` 大写,
+  含 leading 空白 `  1`) → Auto
+
+**算法** (3-prime CRT NTT):
+- 选 3 个 "Schönhage NTT-friendly" 素数 q_i = c_i · 2^{k_i} + 1, 每个
+  < 2^30 (这点关键, 让 inner butterfly uint64 * uint64 不溢):
+    * q1 = 998244353  = 119 · 2^23 + 1, primitive root 3
+    * q2 = 985661441  = 235 · 2^22 + 1, primitive root 3
+    * q3 = 754974721  = 45  · 2^24 + 1, primitive root 11
+- 每个 q 上做 forward NTT (in-place iterative Cooley-Tukey + bit-reverse
+  permute) + 点积 + inverse NTT (omega^{-1} + 最后 n^{-1} mod q scale)
+- 输入 zero-pad 到 next_pow2(deg_a + deg_b + 1)
+- Garner 风格 CRT 重构每个 output 系数:
+    * u1 = r1
+    * u2 = ((r2 - r1) · inv(q1) mod q2) mod q2
+    * u3 = ((r3 - r1 - q1·u2) · inv(q1·q2) mod q3) mod q3
+    * x   = u1 + q1·u2 + q1·q2·u3
+- mod p 化简时不展开整个 x (90-bit 不入 uint64): 用预计算 `q1 mod p` 与
+  `q1·q2 mod p` (都 < p < 2^32), 配合 u2/u3 (< 2^30) 做 uint64 算术
+
+**为什么 3 个 prime (不是 1 个 64-bit prime)**:
+- 卷积 output 系数上界 = (p-1)^2 · n, 对 p < 2^32 与 n < 2^24 是 ~2^88,
+  超过任何单一 64-bit prime 容量
+- 单一 prime 必然走 `__uint128_t` inner-loop (×× 慢), 3 prime 让每次
+  butterfly mul 都 uint64 * uint64 → uint64 (积 < 2^60)
+- 3 prime 总 CRT 容量 = q1·q2·q3 ≈ 2^90, 远 > (p-1)^2 · n 上界
+
+**Threshold default 256 选择理由**:
+- NTT 有显著 per-call 常数: 3 个 forward + 3 个 inverse transform +
+  3 个 pointwise mul + Garner 重构 per coefficient + zero-pad 到下一个
+  2 的幂
+- 小输入下 schoolbook 内循环紧凑 (4 instruction multiply-add 链), tiny n
+  下 schoolbook 完胜
+- 经验 crossover 在 128 - 512 区间, 选 256 作 conservative midpoint
+- ForceOn 让 caller 在 size >= 2 时也走 NTT path (用于 test parity 覆盖)
+
+**Modulus precondition**: p prime, p < 2^32 (保证 CRT reduction 内
+uint64 * uint64 fits uint64 — 即 q1_mod_p · u2 < 2^62 in worst case).
+Caller 需保证 `a` / `b` 系数都已 reduced mod p; helper 不校验 p 素性,
+是 caller 责任.
+
+**Bit-for-bit guarantee**: 同 `(a, b, p)` 输入下 (p prime, p < 2^32,
+coefficients < p), `ntt_mul_mod` 与 `schoolbook_mul_mod` 输出 `out`
+vector 完全一致 (size + 每位 content, 都是 trim 过 trailing zeros 的
+canonical form). Gate 值仅影响 dispatch kernel, 不影响数学结果. 单元
+测试 `tests/test_poly_ntt.cpp` 通过 12 个 case 严格覆盖 (4 ENV / 2
+edge / 4 parity 多 prime 多 size / 1 ForceOff vs ForceOn / 1 threshold
+routing / 1 perf info).
+
+**ROI 与定位**:
+- 主要 ROI: NTT 在 deg >> threshold 时是 O(n log n) vs schoolbook 的
+  O(n^2). 实测 deg=2000, p=2^31-1: schoolbook 39.31 ms/call vs ntt
+  3.89 ms/call → 10.1x 加速. 真正 ROI 在 deg >= 500 后体现, deg ~ 5000
+  上数十倍加速
+- helper 当前 standalone (主路径 `ModularPoly::mul_raw` 未 wire-in),
+  是 future-infrastructure. caller 可主动调 `ntt_mul_mod` 替代
+  `mul_raw`, 适用于 Half-GCD (W7) 等下游需要大度数 polynomial mul 的
+  实验路径
+- 与 W9 `GNFS_POLY_KARATSUBA_THRESHOLD` 互补: Karatsuba 是 O(n^1.585)
+  中间级 primitive, NTT 是 O(n log n) 顶级 primitive. 三者覆盖小/中/大
+  size 不同范围
+
+**集成点** (2026-05-22, W12 T2):
+- `include/gnfs/polynomial/ntt_mul.hpp` — `ntt_mul_mod()` +
+  `schoolbook_mul_mod()` + `poly_ntt_mode()` 三态 + `poly_ntt_enabled_for_size()`
+  dispatcher + `poly_ntt_reset_env_cache_for_testing()` + `kNttAutoThreshold = 256` +
+  3 个 NTT prime constexpr + Garner CRT helper + iterative Cooley-Tukey NTT
+- `tests/test_poly_ntt.cpp` — 12 instant tier tests, TIMEOUT 60
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  polynomial 模块
+
+**Default Auto 主路径无影响**: `ModularPoly::mul_raw` 入口未改, helper
+仅在显式 caller wire-in 时启用. 现有 schoolbook path / W7 HGCD path /
+W9 Karatsuba helper / W11 divrem helper 路径均保持原行为. Auto 在
+size < threshold 时等价 schoolbook; size >= threshold 时走 NTT path
+(但同一 caller 必须直接调 `ntt_mul_mod`, 不是 `mul_raw`).
+
 ### Polynomial subquadratic divrem (GNFS_POLY_DIVREM_SUBQUADRATIC)
 
 **ENV `GNFS_POLY_DIVREM_SUBQUADRATIC=auto|0|1`** (2026-05-22 实施, W11 T2, default auto):
