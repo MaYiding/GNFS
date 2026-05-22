@@ -908,6 +908,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME PolyNTT COMMAND test_poly_ntt)
     set_tests_properties(PolyNTT PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Polynomial modular squaring helper (work-halved schoolbook square +
+    # Karatsuba squaring above threshold; bit-for-bit parity with W9
+    # karatsuba_mul_mod(a, a, p, out); ENV-gated three-state dispatch)
+    add_executable(test_poly_square
+        tests/test_poly_square.cpp
+    )
+    target_link_libraries(test_poly_square PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME PolySquare COMMAND test_poly_square)
+    set_tests_properties(PolySquare PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # 关系过滤器测试
     add_executable(test_filter
         tests/test_filter.cpp
