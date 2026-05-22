@@ -1248,6 +1248,79 @@ caller 需要 p >= 2^32 时仍走 `ModularPoly::mul_raw` (内部 `__uint128_t`).
 仅在显式 caller wire-in 时启用. 现有 schoolbook path 与 W7 HGCD path
 均保持原行为. ENV 仅对显式调用 `karatsuba_mul_mod` 的 caller 生效.
 
+### Polynomial Horner batch evaluation SIMD (GNFS_POLY_HORNER_BATCH_SIMD)
+
+**ENV `GNFS_POLY_HORNER_BATCH_SIMD=auto|0|1`** (2026-05-22 实施, W10 T2, default auto):
+多点 Horner 求值 batched helper, 把 dense polynomial `p(x) = c[0] + c[1]*x +
+... + c[d]*x^d` 在批量 `xs[0..n-1]` 上的 Horner 求值切到 NEON 2-lane
+(ARM64) / AVX2 4-lane (x86_64) wide load + scalar GPR inner mul-add 路径.
+应用场景: Murphy E rotation sweeps, polynomial verification during
+Cantor-Zassenhaus root finding, Kleinjung skewness search — 任何对小 dense
+polynomial 多点求值的 hot path. Pure header, 不依赖外部库.
+
+```bash
+GNFS_POLY_HORNER_BATCH_SIMD=auto ./gnfs <N>   # 默认: NEON/AVX2 可用则启用
+GNFS_POLY_HORNER_BATCH_SIMD=0    ./gnfs <N>   # 强制 scalar (回归 bisect 用)
+GNFS_POLY_HORNER_BATCH_SIMD=1    ./gnfs <N>   # 强制 SIMD (无 SIMD 平台 fallback)
+unset GNFS_POLY_HORNER_BATCH_SIMD             # 同 auto
+```
+
+**Helper API** (`include/gnfs/polynomial/horner_batch_simd.hpp`):
+- `batch_eval_poly_int64(coeffs, xs, ys)` — 主入口, `ys[i] = c[0] + c[1]*xs[i]
+  + ... + c[d]*xs[i]^d`. SIMD path 当 `horner_batch_simd_enabled()` 为 true
+  时启用. `ys.size() >= xs.size()` 必须成立 (defensive clamp).
+- `batch_eval_poly_int64_scalar(coeffs, xs, ys)` — scalar reference (test
+  golden + 无 SIMD fallback).
+- `horner_eval_one_scalar(coeffs, x)` — per-point Horner, return `int64_t`.
+  SIMD path 的 tail residual 直接调用.
+- `horner_batch_simd_mode()` — 返回 `HornerBatchSimdMode { Auto, ForceOff, ForceOn }`.
+- `horner_batch_simd_enabled()` — 三态 dispatcher decision (ForceOff → false,
+  ForceOn/Auto + supported → true, 否则 false).
+- `horner_batch_simd_supported()` — compile-time `__ARM_NEON / __AVX2__` 探测.
+- `horner_batch_simd_reset_env_cache_for_testing()` — 测试专用 re-resolve ENV.
+
+**算法 (Horner schema)**:
+- 每个 evaluation point: `acc = c[d]; for k in [d-1..0]: acc = acc * x + c[k]`
+- NEON / AVX2 path: SIMD load 把 2 (NEON) / 4 (AVX2) 个 `xs[i]` 一次性载入,
+  inner Horner 在 scalar GPR 上跑 (Apple Silicon NEON 缺 `vmulq_s64`, AVX2
+  缺 `_mm256_mullo_epi64` 除非 AVX-512 DQ), SIMD store 把结果写回. SIMD 价值
+  在 consolidated address-gen, 不在 vector mul.
+- Tail scalar fallback: 处理 `xs.size()` 非 SIMD 宽度倍数的尾部.
+
+**Bit-for-bit guarantee**: 同 `(coeffs, xs)` 输入下 (无 int64 溢出),
+SIMD path 与 scalar path 产出 `ys` 严格 per-index 一致. 单元测试
+`tests/test_horner_batch_simd.cpp` 16 个测试强制覆盖 (4 ENV 解析 + empty
+xs / empty coeffs + deg=0 / 1 / 5 random 100 / 10 random 1000 + ForceOff
+vs Auto parity + single-x tail + unaligned len sweep 1..33 + negative
+coeff / negative x + horner_eval_one_scalar sanity + 1M-eval perf info).
+
+**Modular overflow note**: helper 不做 overflow check. caller 负责保证
+`|acc|` 在 Horner 累乘期间不溢 int64. 典型 Murphy E sample grid 满足
+`|x[i]| <= skew` + `|c[k]| << 2^63 / skew^deg`, 无溢出风险. 任意精度需求
+应改用 `Integer`-based polynomial API.
+
+**ROI 与定位**:
+- 主要 ROI: 1M-eval perf-info 实测 M5 ARM64 deg=8: scalar 12.82ms,
+  dispatch (Auto) 10.73ms → 1.20x speedup. SIMD path 节省 per-iter
+  address-gen pressure, 内核 mul-add 仍走 GPR (Apple Silicon 整数管线
+  4-way superscalar, 两条 lane 并发 mul-add 自然 pipeline).
+- helper 当前 standalone (主 pipeline `MurphyEvaluator` / `KleinjungSelector`
+  / CZ root verify 未 wire-in), 是 future-infrastructure. wire-in 时
+  caller 切到 `batch_eval_poly_int64` + 提供连续 `xs` / `ys` span.
+- 初版 NEON path keep accumulator 在 `int64x2_t`, `vsetq_lane_s64`
+  per-iter round-trip 导致 0.13× 慢于 scalar; 修复为 inner loop 全 GPR,
+  仅 boundary load/store SIMD, 恢复 1.20× 加速.
+
+**集成点** (W10 T2, 2026-05-22):
+- `include/gnfs/polynomial/horner_batch_simd.hpp` — helper API + ENV gate +
+  NEON / AVX2 inner kernels + scalar reference.
+- `tests/test_horner_batch_simd.cpp` — 16 instant tier tests, TIMEOUT 60.
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  polynomial 模块.
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
+ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### Phase 0 radix-sort dedup-sort (GNFS_FILTER_RADIX_SORT)
 
 **ENV `GNFS_FILTER_RADIX_SORT={0,1}`** (2026-05-22 实施, default 0):

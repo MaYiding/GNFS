@@ -863,6 +863,15 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME PolyKaratsuba COMMAND test_poly_karatsuba)
     set_tests_properties(PolyKaratsuba PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Polynomial multi-point Horner batched evaluation SIMD helper
+    # (NEON 2-lane / AVX2 4-lane; ENV-gated; bit-for-bit parity vs scalar)
+    add_executable(test_horner_batch_simd
+        tests/test_horner_batch_simd.cpp
+    )
+    target_link_libraries(test_horner_batch_simd PRIVATE gnfs_core)
+    add_test(NAME HornerBatchSIMD COMMAND test_horner_batch_simd)
+    set_tests_properties(HornerBatchSIMD PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # 关系过滤器测试
     add_executable(test_filter
         tests/test_filter.cpp
