@@ -520,6 +520,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RelationPoolIntegration COMMAND test_relation_pool_integration)
     set_tests_properties(RelationPoolIntegration PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # ── W8 T5: Integer thread-local scratch pool ──
+    add_executable(test_integer_scratch_pool
+        tests/test_integer_scratch_pool.cpp
+    )
+    target_link_libraries(test_integer_scratch_pool PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME IntegerScratchPool COMMAND test_integer_scratch_pool)
+    set_tests_properties(IntegerScratchPool PROPERTIES LABELS "instant" TIMEOUT 60)
+
     add_executable(test_sieve_basic
         tests/test_sieve_basic.cpp
     )
