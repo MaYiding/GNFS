@@ -528,6 +528,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME IntegerScratchPool COMMAND test_integer_scratch_pool)
     set_tests_properties(IntegerScratchPool PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # ── W11 T3: GMP mpz_powm batch parallel dispatcher (GNFS_MPZ_POWM_BATCH_THREADS) ──
+    add_executable(test_mpz_powm_parallel
+        tests/test_mpz_powm_parallel.cpp
+    )
+    target_link_libraries(test_mpz_powm_parallel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME MpzPowmParallel COMMAND test_mpz_powm_parallel)
+    set_tests_properties(MpzPowmParallel PROPERTIES LABELS "instant" TIMEOUT 60)
+
     add_executable(test_sieve_basic
         tests/test_sieve_basic.cpp
     )
