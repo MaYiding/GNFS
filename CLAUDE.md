@@ -1615,6 +1615,80 @@ untiled baseline match (后续 wire-in 时由 callsite regression 测试保证).
 应用 untiled scan path 不变. 仅当用户 explicit `GNFS_SIEVE_REGION_TILE_BITS=N>0`
 时 helper 报告 tile size; 实际启用还需 callsite 显式 dispatch helper 结果.
 
+### Sieve norm tile bits (GNFS_SIEVE_NORM_TILE_BITS)
+
+**ENV `GNFS_SIEVE_NORM_TILE_BITS=N`** (2026-05-22 实施, range [0, 8], default 0):
+Lattice sieve 的 norm 预计算 (`Polynomial::evaluate(a, b)` 对每个 lattice
+cell 求 |F(a,b)| / |G(a,b)| seed `sieve_array_` 起始 log-residual) 可按
+row 将 region 划分成 `2^N` 行 tile, 每个 tile 完整预计算后再进下一 tile,
+让 polynomial coefficients 在每个 tile 期间留在 L1 hot. 默认 0
+(unset / "0" / 空 / 非数字) 走原 untiled row-major 预计算 path, 零开销
+保留原行为. N>=1 时 tile size = `2^N` rows, N>=9 clamp 到 8 (256-row tile
+上限, 超出后 L2 边界, ROI 反转).
+
+**与 W6 region_tile_bits 互补但 distinct**: 后者 (`GNFS_SIEVE_REGION_TILE_BITS`,
+`<gnfs/sieve/region_tile.hpp>`) tile 的是 *apply scan* 阶段 (第二 pass 扫
+`sieve_array_` 发候选), 这个 (`<gnfs/sieve/norm_tile.hpp>`) tile 的是 *norm
+预计算* 阶段 (seed `sieve_array_` 的第一 pass). 二者有完全独立的 cache /
+ENV / 调优, caller 视具体 fixture 哪个 phase dominate 决定单开或同开.
+设成同一值合理但非必须.
+
+```bash
+GNFS_SIEVE_NORM_TILE_BITS=0  ./gnfs <N>   # default, untiled precompute (零开销)
+GNFS_SIEVE_NORM_TILE_BITS=4  ./gnfs <N>   # 16-row tile
+GNFS_SIEVE_NORM_TILE_BITS=6  ./gnfs <N>   # 64-row tile
+GNFS_SIEVE_NORM_TILE_BITS=8  ./gnfs <N>   # 256-row tile (上限)
+GNFS_SIEVE_NORM_TILE_BITS=10 ./gnfs <N>   # 同 8 (clamp)
+unset GNFS_SIEVE_NORM_TILE_BITS           # 同 default 0
+
+# 与 region_tile 同开 (二者完全独立)
+GNFS_SIEVE_NORM_TILE_BITS=4 GNFS_SIEVE_REGION_TILE_BITS=6 ./gnfs <N>
+```
+
+**Helper API** (`include/gnfs/sieve/norm_tile.hpp`):
+- `norm_tile_bits()` — 返回 cached N, clamp 到 `[0, kNormTileMaxBits]`.
+- `norm_tile_enabled()` — `bits > 0` 的等价 predicate.
+- `norm_tile_size_rows()` — 返回 `1 << N` (启用) 或 0 (禁用).
+- `norm_tile_reset_env_cache_for_testing()` — 测试专用 re-resolve.
+- `kNormTileMaxBits = 8` — 256-row tile cap.
+
+**算法**: 启用时 caller 把 row range 划分成 `floor(rows / 2^N)` 个 tile,
+每个 tile `2^N` rows 完整预计算 (`Polynomial::evaluate(a, b)` over 2^N row
+× j_count cells) 后再进下一个 (rows 非 `2^N` 倍数时尾部 tile 是残余 rows).
+gather + apply pass 不变, 仅 norm 预计算的 iteration order 从 "整行 region
+顺序" 改为 "tile-by-tile 顺序". `Polynomial::evaluate(a, b)` 是 (a, b) 与
+polynomial coefficients 的 pure function, 每 cell 写入 disjoint scratch
+位置.
+
+**Bit-for-bit guarantee**: norm scratch buffer 内容 (与 seed 到 `sieve_array_`
+的 log-residual) 与 N=0 路径完全一致. tile 仅改变 row 扫描顺序, 不改变
+polynomial evaluation 结果. 每个 wire-in 的 callsite 必须在自身 fixture
+验证 seed residuals (与下游 candidate list) 与 untiled baseline match
+(后续 wire-in 时由 callsite regression 测试保证).
+
+**ROI 与定位**:
+- 主要 ROI: 50d+/60d sieve region (`(i_max - i_min) * j_count` 几万 cells)
+  时, norm 预计算与 gather pass 争抢 L1 (polynomial coefficients + scratch
+  buffer + bucket region vectors). tile 把每个 norm-precompute window 控制
+  在 L1/L2 内 (16-row tile, coefficient pressure 控制在 ~几 KiB), 让
+  polynomial coefficients 在 tile 期间不被 evict.
+- N 选择: 16-row (N=4) ~ 64-row (N=6) 是常见 sweet spot. 256-row (N=8) 在
+  极宽 j 时仍有 ROI, 但接近 L2 边界. 25d/40-bit small region 上 N>=1 的 ROI
+  可忽略, 但行为正确性不变.
+- helper 当前 standalone (norm-precompute wiring 留给后续 task), 所以 ENV
+  不影响主 pipeline 运行行为. 仅 helper 被 wire-in 后 ENV 才生效.
+
+**集成点** (2026-05-22):
+- `include/gnfs/sieve/norm_tile.hpp` — helper API + ENV gate + clamp.
+- `tests/test_sieve_norm_tile.cpp` — 8 个测试 (unset default / "0" explicit /
+  [1..8] sweep / >=9 clamp / non-numeric / size_rows = 2^N / reset hook re-read
+  / enabled predicate). 全部 instant tier.
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout.
+
+**Default OFF (N=0)**: 任何 caller 不设 ENV 时 helper 报告 disabled, 应用
+untiled precompute path 不变. 仅当用户 explicit `GNFS_SIEVE_NORM_TILE_BITS=N>0`
+时 helper 报告 tile size; 实际启用还需 callsite 显式 dispatch helper 结果.
+
 ### Factor Base CZ roots 并行 (GNFS_FB_ROOTS_THREADS)
 
 **ENV `GNFS_FB_ROOTS_THREADS=N`** (2026-05-22 实施, default 0, range [0, hardware_concurrency * 2]):
