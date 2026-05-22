@@ -1253,6 +1253,23 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME AndPopcntSIMD COMMAND test_and_popcnt_simd)
     set_tests_properties(AndPopcntSIMD PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # SIMD GF(2) batch row-word XOR helper (correctness).
+    # Third SIMD primitive in the popcount / and-popcount family:
+    # exercises the scalar reference (`dst[i] ^= src[i]` loop), the
+    # NEON 2-lane (`veorq_u64`) / AVX2 4-lane (`_mm256_xor_si256`)
+    # batch path, and the ENV-gated dispatcher across edge sizes
+    # (empty, single-word patterns, aligned/unaligned batches, length
+    # mismatch clamping, 1M perf probe). Useful for Block Lanczos /
+    # Block Wiedemann row-block updates, Krylov vector recurrences,
+    # and parity sweep hot sites. Header-only helper, no extra link
+    # dependencies beyond the core library.
+    add_executable(test_xor_words_simd
+        tests/test_xor_words_simd.cpp
+    )
+    target_link_libraries(test_xor_words_simd PRIVATE gnfs_core)
+    add_test(NAME RowXorSIMD COMMAND test_xor_words_simd)
+    set_tests_properties(RowXorSIMD PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Out-of-core Relations 单元测试
     add_executable(test_ooc_relations
         tests/test_ooc_relations.cpp
