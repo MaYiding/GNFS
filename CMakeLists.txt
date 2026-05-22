@@ -1115,6 +1115,18 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SieveRegionTile COMMAND test_sieve_region_tile)
     set_tests_properties(SieveRegionTile PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Sieve norm-precompute row-tile ENV gate (`GNFS_SIEVE_NORM_TILE_BITS`).
+    # Header-only helper complementary to the region_tile gate above; this
+    # one tiles the norm precomputation phase rather than the apply scan.
+    # No sieve fixture needed - the test exercises the cached env parser
+    # and clamp behaviour in isolation, matching the region_tile harness.
+    add_executable(test_sieve_norm_tile
+        tests/test_sieve_norm_tile.cpp
+    )
+    target_link_libraries(test_sieve_norm_tile PRIVATE gnfs_core)
+    add_test(NAME SieveNormTile COMMAND test_sieve_norm_tile)
+    set_tests_properties(SieveNormTile PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Mmap CSR Matrix 单元测试
     add_executable(test_mmap_csr
         tests/test_mmap_csr.cpp
