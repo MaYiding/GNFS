@@ -1027,6 +1027,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME TrialDivSimd COMMAND test_trial_div_simd)
     set_tests_properties(TrialDivSimd PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Cofactor per-stage timing telemetry helper (GNFS_COFACTOR_TIMING_ENABLE)
+    add_executable(test_cofactor_stage_timing
+        tests/test_cofactor_stage_timing.cpp
+    )
+    target_link_libraries(test_cofactor_stage_timing PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME CofactorStageTiming COMMAND test_cofactor_stage_timing)
+    set_tests_properties(CofactorStageTiming PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Cofactor batch micro-benchmark (T5 Stage 4) — invoke manually
     # ./build/test_cofactor_batch_bench [count] [seed]
     add_executable(test_cofactor_batch_bench
