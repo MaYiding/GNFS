@@ -1201,6 +1201,21 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME LinalgPopcountSimd COMMAND test_popcount_simd)
     set_tests_properties(LinalgPopcountSimd PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # SIMD GF(2) batch "popcount(a & b)" helper (correctness).
+    # AND-fused counterpart of test_popcount_simd: exercises the scalar
+    # reference, the NEON 2-lane / AVX2 4-lane batch path, and the
+    # ENV-gated dispatcher across a battery of edge sizes (empty,
+    # single-word bit patterns, aligned/unaligned batches, 1M perf
+    # probe). Useful for Block Lanczos / Block Wiedemann orthogonality
+    # checks and GF(2) inner-product reductions. Header-only helper,
+    # no extra link dependencies beyond the core library.
+    add_executable(test_and_popcnt_simd
+        tests/test_and_popcnt_simd.cpp
+    )
+    target_link_libraries(test_and_popcnt_simd PRIVATE gnfs_core)
+    add_test(NAME AndPopcntSIMD COMMAND test_and_popcnt_simd)
+    set_tests_properties(AndPopcntSIMD PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Out-of-core Relations 单元测试
     add_executable(test_ooc_relations
         tests/test_ooc_relations.cpp
