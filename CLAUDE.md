@@ -1982,6 +1982,69 @@ unset GNFS_COUVEIGNES_PARALLEL_THREADS          # same as N=1
 历史 sequential 路径, 零行为变化. 仅 Couveignes 主路径 wire-in helper +
 用户 explicit opt-in 时启用.
 
+### Partial relation merger 并行 (GNFS_FILTER_MERGE_THREADS)
+
+**ENV `GNFS_FILTER_MERGE_THREADS=N`** (2026-05-22 实施, W10 T4, default 1, range [1, hardware_concurrency * 2]):
+PartialRelationMerger (`include/gnfs/relation/filter.hpp`) 与 V3
+CliqueRelationMerger (`include/gnfs/relation/clique_merger.hpp`) 都按 LP key
+分桶后逐桶 merge partial relations 产 full relations. 同一 merge round 内
+不同 LP-key bucket 的工作互不依赖, 满足 embarrassingly parallel. N=1 (默认)
+走 sequential per-bucket 循环, 不创建 ThreadPool, 零开销保留原行为. N>=2 时
+把 K 个 bucket dispatch 到大小为 min(N, K) 的 ThreadPool, bucket 之间靠
+future 同步收口.
+
+```bash
+GNFS_FILTER_MERGE_THREADS=1 ./gnfs <N>    # default sequential, zero overhead
+GNFS_FILTER_MERGE_THREADS=4 ./gnfs <N>    # 4 workers per merge round
+GNFS_FILTER_MERGE_THREADS=8 ./gnfs <N>    # 8 workers
+unset GNFS_FILTER_MERGE_THREADS           # same as N=1
+```
+
+**并行模型**:
+- Outer = `parallel_merge_partials<Result, Bucket, MergeFn>(buckets, merge_fn)`
+  over K 个 LP-key bucket (caller 自定义 Bucket 类型, e.g. `std::span<const
+  Relation>` / `const std::vector<Relation>*` / 小描述符 struct)
+- 内部 per-bucket merge 算法 bit-identical (helper 仅改变外层 dispatch,
+  不触碰 `PartialRelationMerger::merge_all` / `CliqueRelationMerger::
+  merge_cliques` 内核)
+- 每个 bucket task 拥有独立 Integer / Relation buffer, GMP `mpz_*` 调用
+  操作数互不重叠, 满足 GMP per-call disjoint-operands thread-safety
+- 空 bucket span (n==0) / 单 bucket (n==1) 都走 sequential 短路, 不创建 pool
+- Exception path: dispatcher drain 全部 future, 第一个 thrown exception
+  通过 `std::rethrow_exception` 传给 caller (不 swallow); pool 析构干净 join
+
+**Bit-for-bit guarantee**: 每 bucket merge 是 pure function of bucket content,
+不依赖 dispatch 顺序. Sequential (N=1) 与 parallel (N>=2) 路径产生的
+per-index `Result` 完全一致, downstream relation pool 严格相同. 由
+`tests/test_merger_parallel.cpp` 强制覆盖 (N=1 vs N=4 vs N=hw 64+96
+mixed bucket 严格 per-index bit-identical assert).
+
+**ROI 与定位**:
+- 主要 ROI: 50d+/60d adaptive sieve loop 每 round Phase 4 filter 进 merge
+  阶段时, V0/V3 多个 LP-key bucket sequential 处理 wall-time 可见. K bucket
+  并发后 outer wall ~ T_max_bucket + tasking overhead, 替代 sum(K) sequential
+  累计.
+- helper 与 W6 T4 RelationPoolResource (`GNFS_RELATION_POOL_SIZE`) /
+  W6 `GNFS_FILTER_RADIX_SORT` Phase 0 dedup-sort / W9 T5 `GNFS_FILTER_LP_BLOOM_BITS`
+  正交: 各自解决不同 hot site (memory pool / dedup sort / LP key dedup /
+  merge dispatch). 可同时启用.
+- Helper 是 opt-in 工具, **不修改** `PartialRelationMerger::merge_all` /
+  `CliqueRelationMerger::merge_cliques` public path. 调用方需要自己 group
+  by LP key 后传 buckets + merge_fn lambda.
+- Default OFF (N=1) 保证 zero behavior change for legacy callers, 仅当用户
+  明确 opt-in 时启用.
+
+**集成点** (2026-05-22, W10 T4):
+- `include/gnfs/relation/merger_parallel.hpp` — `filter_merge_threads()` env
+  reader with `std::once_flag` cache + `parallel_merge_partials<Result,
+  Bucket, MergeFn>` template dispatcher + `filter_merge_threads_reset_env_cache_for_testing()`
+  test hook
+- `tests/test_merger_parallel.cpp` — 12 个测试 (5 env parsing / sequential
+  baseline / N=1 vs N=4 parity / N=1 vs N=hw parity / empty / single
+  no-stall / non-trivial Result move / exception propagation)
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  relation 模块
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
