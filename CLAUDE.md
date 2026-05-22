@@ -1299,6 +1299,81 @@ ENV parsing matrix).
 **Default OFF**: `sort_relations()` 调用方零行为变化, `std::sort` path
 完整保留. 仅当用户 explicit `GNFS_FILTER_RADIX_SORT=1` 时启用.
 
+### Filter Phase 0 LP key Bloom pre-screen (GNFS_FILTER_LP_BLOOM_BITS)
+
+**ENV `GNFS_FILTER_LP_BLOOM_BITS=N`** (2026-05-22 实施, W9 T5, range [10, 28], default 0):
+LP key (large prime key) 去重计数的可选 Bloom filter pre-screen helper.
+`filter.hpp::count_unique_lp_keys(relations)` 是 50d+/60d Round 2 adaptive
+sieve loop 的 hot path, 每次 Phase 4 entry 都扫全部 relations 把 LP key
+插入 `std::unordered_set<uint64_t>` 然后取 `.size()` 作为 effective_cols
+trim limit. 1M+ relations 时 hash-set bucket probe cache miss 显著.
+
+```bash
+GNFS_FILTER_LP_BLOOM_BITS=0  ./gnfs <N>   # default, pure hash-set baseline (零开销)
+GNFS_FILTER_LP_BLOOM_BITS=14 ./gnfs <N>   # 16 KiB filter (L1-friendly)
+GNFS_FILTER_LP_BLOOM_BITS=18 ./gnfs <N>   # 256 KiB filter (L2-friendly)
+GNFS_FILTER_LP_BLOOM_BITS=22 ./gnfs <N>   # 4 MiB filter (L3-friendly, 50d+)
+GNFS_FILTER_LP_BLOOM_BITS=24 ./gnfs <N>   # 16 MiB filter (60d 大数量 LP)
+GNFS_FILTER_LP_BLOOM_BITS=28 ./gnfs <N>   # 256 MiB filter (上限)
+unset GNFS_FILTER_LP_BLOOM_BITS           # 同 default 0
+```
+
+**算法** (k=4, m=2^bits):
+- 4 个 hash function 派自 splitmix64 variant (4 个不同 salt seed)
+- insert: 4 个 hash 位置全部 set
+- maybe_contains: 4 个 hash 位置全部 set 则返回 true
+- false negative rate = 0 (correctness invariant)
+- false positive rate ≈ (1 − exp(−4n / 2^bits))^4
+- 实测 bits=20 + 10k inserts: FP=0/10000 (theoretical 1.96e-6)
+
+**Helper API** (`include/gnfs/relation/lp_bloom.hpp`):
+- `BloomLPKeyFilter(bits)` — ctor, bits ∈ [10, 30], 否则 throw `invalid_argument`
+- `insert(key)` / `maybe_contains(key)` / `size_bytes()` / `bits()` /
+  `estimated_fp_rate(n)`
+- `filter_lp_bloom_bits()` — cached `std::once_flag` + `std::atomic<int>`
+- `filter_lp_bloom_enabled()` — `bits() > 0` predicate
+- `filter_lp_bloom_reset_env_cache_for_testing()` — 测试 re-resolve hook
+- `count_unique_with_bloom<KeyIt>(first, last, bits)` — 计数模板, `bits == 0`
+  走 pure hash-set baseline, `bits > 0` 走 Bloom pre-screen + hash-set 确认
+
+**Bit-for-bit guarantee**: `count_unique_with_bloom` 输出与 `bloom_bits == 0`
+baseline 完全相同, 不管 Bloom 是否启用. Bloom false positive 仍走 hash-set
+exact match 确认; Bloom "definitely not seen" 直接 hash-set insert (跳过
+probe 但产物一致). 单元测试 `test_lp_bloom` 强制 100k random keys 跨
+bits ∈ {0, 10, 14, 18, 22} 严格相等.
+
+**ENV parsing**:
+- unset / "0" / 负数 / 非数字 / 空字符串 → 0 (disabled)
+- "1".."9" → 0 (clamp 至 disabled, 低于 1 KiB floor)
+- "10".."28" → as-is
+- "29"+ → 28 (clamp)
+- 数字前缀 ("16abc"): 取首数字段; 非数字前缀 ("abc16"): 视为 0
+
+**ROI 与定位**:
+- 主要 ROI: 50d+/60d 大 relation 数 (1M+) 时 `count_unique_lp_keys` 内
+  hash-set bucket cache miss 显著. Bloom (m=2^22 = 4 MiB) 完全在 L3,
+  大部分 query 直接 4-hash mask + bit-test 在 L1/L2 完成, 跳过 hash-set
+  probe.
+- 25d/40-bit small N (< 50k relations) 无 ROI, Bloom 构造与 4-hash overhead
+  反而增加常数项. 默认 OFF 保证零回归.
+- helper 当前 standalone (`count_unique_lp_keys` 主路径未 wire-in), 是
+  future-infrastructure. wire-in 时调用方需切到 `count_unique_with_bloom`
+  并传入 `filter_lp_bloom_bits()`.
+
+**集成点** (W9 T5, 2026-05-22):
+- `include/gnfs/relation/lp_bloom.hpp` — helper API + ENV gate + k=4 Bloom
+  primitive + `count_unique_with_bloom<KeyIt>` template
+- `tests/test_lp_bloom.cpp` — 11 个测试 (4 ENV / 3 Bloom 行为 / 1 parity
+  100k keys / 3 edge cases). 全部 instant tier
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout
+- 主路径 `include/gnfs/relation/filter.hpp::count_unique_lp_keys` **未改动**
+  (helper-only landing, future wire-in)
+
+**Default OFF (bits=0)**: ENV unset → `filter_lp_bloom_bits() == 0` →
+`count_unique_with_bloom` 退化为 pure `std::unordered_set<uint64_t>` baseline,
+零行为变化. 仅当 caller wire-in helper 且用户 explicit
+`GNFS_FILTER_LP_BLOOM_BITS=N>=10` 时启用.
+
 ### SGE batch-pivot 选择 (GNFS_SGE_BATCH_PIVOTS)
 
 **ENV `GNFS_SGE_BATCH_PIVOTS=N`** (2026-05-22 实施, range [1, 64], default 1):
