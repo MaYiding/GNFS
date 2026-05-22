@@ -1789,6 +1789,82 @@ clamping / a==b 等同 plain popcount 防止 AND/OR/XOR 误用).
 **Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
 所以 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
 
+### GF(2) row word XOR SIMD batch (GNFS_GF2_ROW_XOR_SIMD)
+
+**ENV `GNFS_GF2_ROW_XOR_SIMD=auto|0|1`** (2026-05-22 实施, W11 T1, default auto):
+GF(2) batch in-place `dst[i] ^= src[i]` helper, 与 W9 `GNFS_GF2_POPCNT_SIMD`
+/ W10 `GNFS_GF2_AND_POPCNT_SIMD` 并列的第三个 SIMD primitive. 提供 NEON
+2-lane (ARM64, `veorq_u64`) / AVX2 4-lane (x86_64, `_mm256_xor_si256`)
+wide XOR 替代逐 word `^=`. 应用场景: Block Lanczos / Block Wiedemann
+row-block 更新 (`accumulator ^= rhs` over packed GF(2) word array),
+Krylov vector recurrence, parity accumulation, dependency XOR 等需要
+batch in-place XOR uint64_t 数组的内核. Pure header, 不依赖外部库.
+
+```bash
+GNFS_GF2_ROW_XOR_SIMD=auto ./gnfs <N>   # 默认: NEON/AVX2 可用则启用
+GNFS_GF2_ROW_XOR_SIMD=0    ./gnfs <N>   # 强制 scalar (回归 bisect 用)
+GNFS_GF2_ROW_XOR_SIMD=1    ./gnfs <N>   # 强制 SIMD (无 SIMD 平台 fallback)
+unset GNFS_GF2_ROW_XOR_SIMD             # 同 auto
+```
+
+**Helper API** (`include/gnfs/linalg/detail/xor_words_simd.hpp`):
+- `batch_xor_words(dst, src)` — 主入口, `dst[i] ^= src[i]` for
+  `i in [0, min(dst.size(), src.size()))`. SIMD path 当
+  `xor_words_simd_enabled()` 为 true 时启用. Empty 输入 (任一 span size 0)
+  no-op, 不 touch dst.
+- `batch_xor_words_scalar(dst, src)` — 朴素 `dst[i] ^= src[i]` loop
+  参考 (test golden + 无 SIMD fallback).
+- `xor_words_simd_mode()` — 返回 `XorWordsSimdMode { Auto, ForceOff, ForceOn }`.
+- `xor_words_simd_enabled()` — 三态 dispatcher decision (ForceOff → false,
+  ForceOn/Auto + supported → true, 否则 false).
+- `xor_words_simd_supported()` — compile-time `__ARM_NEON / __AVX2__` 探测.
+- `xor_words_simd_reset_env_cache_for_testing()` — 测试专用 re-resolve ENV.
+
+**算法**:
+- NEON: `vld1q_u64(2 word)` × dst+src → `veorq_u64` (128-bit XOR) →
+  `vst1q_u64(2 word)` per 2-word stride. Tail 走 scalar `^=`.
+- AVX2: `_mm256_loadu_si256(4 word)` × dst+src → `_mm256_xor_si256`
+  (256-bit XOR) → `_mm256_storeu_si256(4 word)` per 4-word stride.
+  Tail 走 scalar `^=`.
+- Defensive clamp: `min(dst.size(), src.size())` 决定 XOR 字数, 避免
+  UB write past dst 或 read past src. Length mismatch 不抛异常, 静默
+  clamp (符合 W9 / W10 兄弟 helper 的契约).
+
+**Bit-for-bit guarantee**: XOR 是 pure function of (dst[i], src[i]),
+SIMD path 与 scalar `^=` 输出严格 per-index 一致. 空输入返回不 touch
+dst (size 不变, content 不变). XOR with self (src == dst content)
+精确产出 all-zero. 单元测试 `test_xor_words_simd` 14 个测试强制覆盖
+(4 ENV / empty / 单 word 8 pattern / aligned 32 / unaligned 33 /
+random 1000 / ForceOff vs Auto parity / self-XOR identity / dst <
+src 长度 clamp / src < dst 长度 tail 保留 / 1M perf info).
+
+**ROI 与定位**:
+- 主要 ROI: Block Lanczos / Block Wiedemann inner kernel 频繁
+  `dst ^= src` row block updates, Krylov recurrence (`V_next ^=
+  M * V_prev` 累积), dependency XOR 等 batch in-place hot path. 单
+  fused load+XOR+store kernel 节省 per-iter address-gen pressure.
+- helper 当前 standalone (主 pipeline 无 wire-in), 是 future-infra:
+  Block Lanczos / Block Wiedemann row-block accumulation, Krylov
+  vector recurrence, parity sweep 等 explicit wire-in 后启用.
+- 默认 auto 在 macOS arm64 / Linux x86_64 都启用 SIMD path; ENV=0 在
+  PMU sweep / sanitizer 调试时回到 scalar baseline. perf-info 实测
+  1M word M-series ARM64: scalar ~2.4 ms, SIMD ~3.7 ms (scalar `^=`
+  loop 在 Apple Silicon 上 autovectorise 已经非常优秀; SIMD path 主
+  ROI 在 x86_64 AVX2 平台或 wire-in 到 row-block hot loop 后体现).
+
+**集成点** (2026-05-22, W11 T1):
+- `include/gnfs/linalg/detail/xor_words_simd.hpp` — helper API + ENV gate +
+  NEON / AVX2 inner kernels + 朴素 reference.
+- `tests/test_xor_words_simd.cpp` — 14 个测试 (4 ENV 解析 + empty + 单
+  word 8 pattern + aligned 32 + unaligned 33 + random 1000 + ForceOff
+  vs Auto parity + self-XOR identity + dst < src clamp + src < dst
+  tail 保留 + 1M perf info).
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  linalg 模块.
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
+所以 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### Sieve region tile bits (GNFS_SIEVE_REGION_TILE_BITS)
 
 **ENV `GNFS_SIEVE_REGION_TILE_BITS=N`** (2026-05-22 实施, range [0, 8], default 0):
