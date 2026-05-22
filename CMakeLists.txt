@@ -1305,6 +1305,24 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RowXorSIMD COMMAND test_xor_words_simd)
     set_tests_properties(RowXorSIMD PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Linalg iteration progress telemetry helper (W12 T1).
+    # ENV-gated, header-only logger that callers can opt-in wire into
+    # Block Lanczos / Block Wiedemann SpMV loops to print iteration
+    # progress (iter / total, elapsed wall, throughput rate, ETA) to
+    # stderr. Default-off (GNFS_LINALG_PROGRESS_INTERVAL=0 / unset)
+    # short-circuits all tick() / finish() calls to no-ops; no clock
+    # samples, no string formatting, no stderr writes. Validates ENV
+    # parsing matrix, disabled silence, enabled tick gating, finish()
+    # DONE summary, multi-logger coexistence, total/iter clamping, rate
+    # underflow handling, and move semantics. Header-only helper, no
+    # extra link dependencies beyond the core library.
+    add_executable(test_linalg_progress
+        tests/test_linalg_progress.cpp
+    )
+    target_link_libraries(test_linalg_progress PRIVATE gnfs_core)
+    add_test(NAME LinalgProgress COMMAND test_linalg_progress)
+    set_tests_properties(LinalgProgress PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Out-of-core Relations 单元测试
     add_executable(test_ooc_relations
         tests/test_ooc_relations.cpp
