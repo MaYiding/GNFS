@@ -803,6 +803,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME CouveignesLargeClassGroup COMMAND test_couveignes_large_class_group)
     set_tests_properties(CouveignesLargeClassGroup PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Couveignes sign-pattern parallel search (GNFS_COUVEIGNES_PARALLEL_THREADS)
+    add_executable(test_couveignes_parallel
+        tests/test_couveignes_parallel.cpp
+    )
+    target_link_libraries(test_couveignes_parallel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME CouveignesParallel COMMAND test_couveignes_parallel)
+    set_tests_properties(CouveignesParallel PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # 渐进式测试 — 支持命令行参数选择级别
     add_executable(test_gnfs_progressive
         tests/test_gnfs_progressive.cpp
