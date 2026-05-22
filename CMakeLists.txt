@@ -870,6 +870,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME FilterRadixSort COMMAND test_filter_radix_sort)
     set_tests_properties(FilterRadixSort PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # LP key Bloom pre-screen helper (W9 T5)
+    add_executable(test_lp_bloom
+        tests/test_lp_bloom.cpp
+    )
+    target_link_libraries(test_lp_bloom PRIVATE gnfs_core)
+    add_test(NAME LPBloom COMMAND test_lp_bloom)
+    set_tests_properties(LPBloom PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # V3 Clique Merge backup (header-only, in include/gnfs/relation/clique_merger.hpp)
     add_executable(test_clique_merger
         tests/test_clique_merger.cpp
