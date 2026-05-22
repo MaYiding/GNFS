@@ -413,7 +413,8 @@ private:
             // Pad fractional with leading zeros.
             std::string frac = std::to_string(fractional_part);
             if (static_cast<int>(frac.size()) < decimals) {
-                out.append(decimals - static_cast<int>(frac.size()), '0');
+                const int pad = decimals - static_cast<int>(frac.size());
+                out.append(static_cast<std::size_t>(pad), '0');
             }
             out += frac;
         }
