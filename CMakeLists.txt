@@ -991,6 +991,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SchirokauerParallel COMMAND test_schirokauer_parallel)
     set_tests_properties(SchirokauerParallel PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Factor base CZ root-finding per-prime parallel dispatcher (GNFS_FB_ROOTS_THREADS)
+    add_executable(test_fb_roots_parallel
+        tests/test_fb_roots_parallel.cpp
+    )
+    target_link_libraries(test_fb_roots_parallel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME FbRootsParallel COMMAND test_fb_roots_parallel)
+    set_tests_properties(FbRootsParallel PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # 跨模块集成测试
     add_executable(test_integration
         tests/test_integration.cpp
