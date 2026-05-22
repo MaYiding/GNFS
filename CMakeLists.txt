@@ -1040,6 +1040,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME BucketPrefetch COMMAND test_bucket_prefetch)
     set_tests_properties(BucketPrefetch PROPERTIES LABELS "instant" TIMEOUT 30)
 
+    # Sieve row-tile ENV gate (`GNFS_SIEVE_REGION_TILE_BITS`). Header-only
+    # helper, so the test exercises the cached env parser and clamp
+    # behaviour in isolation; no sieve fixture needed at this stage.
+    add_executable(test_sieve_region_tile
+        tests/test_sieve_region_tile.cpp
+    )
+    target_link_libraries(test_sieve_region_tile PRIVATE gnfs_core)
+    add_test(NAME SieveRegionTile COMMAND test_sieve_region_tile)
+    set_tests_properties(SieveRegionTile PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Mmap CSR Matrix 单元测试
     add_executable(test_mmap_csr
         tests/test_mmap_csr.cpp
