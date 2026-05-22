@@ -1065,6 +1065,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME CofactorStageTiming COMMAND test_cofactor_stage_timing)
     set_tests_properties(CofactorStageTiming PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # ECM B1 prime-power expansion cache (W13 T3, GNFS_ECM_B1_CACHE_SIZE)
+    add_executable(test_ecm_prime_cache
+        tests/test_ecm_prime_cache.cpp
+    )
+    target_link_libraries(test_ecm_prime_cache PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME EcmPrimeCache COMMAND test_ecm_prime_cache)
+    set_tests_properties(EcmPrimeCache PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Cofactor batch micro-benchmark (T5 Stage 4) — invoke manually
     # ./build/test_cofactor_batch_bench [count] [seed]
     add_executable(test_cofactor_batch_bench
