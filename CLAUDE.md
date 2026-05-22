@@ -2119,6 +2119,77 @@ mixed bucket 严格 per-index bit-identical assert).
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   relation 模块
 
+### GMP mpz_powm 批量并行 (GNFS_MPZ_POWM_BATCH_THREADS)
+
+**ENV `GNFS_MPZ_POWM_BATCH_THREADS=N`** (2026-05-22 实施, W11 T3, default 1, range [1, hardware_concurrency * 2]):
+GMP `mpz_powm`(modular exponentiation `base^exp mod modulus`) 在
+多个独立 base 之间相互独立 (embarrassingly parallel). 每次 `mpz_powm`
+调用是 `(base, exp, modulus)` 的 deterministic pure function, 满足
+GMP per-call disjoint-operands thread-safety 契约 (每个 worker 写自己
+disjoint 的 result slot, 共享 `exp` / `modulus` 仅 read). N=1 (默认)
+走 sequential per-base 循环, 不创建 ThreadPool, 零开销保留原行为.
+N>=2 时把 K 个 base dispatch 到大小为 min(N, K) 的 ThreadPool,
+base 之间靠 future 同步收口.
+
+```bash
+GNFS_MPZ_POWM_BATCH_THREADS=1 ./gnfs <N>    # default sequential, zero overhead
+GNFS_MPZ_POWM_BATCH_THREADS=4 ./gnfs <N>    # 4 workers for Schirokauer-style batch powm
+GNFS_MPZ_POWM_BATCH_THREADS=8 ./gnfs <N>    # 8 workers
+unset GNFS_MPZ_POWM_BATCH_THREADS           # same as N=1
+```
+
+**并行模型**:
+- Outer = `parallel_mpz_powm(bases, exp, modulus, results)` over n bases
+- Inner = `gnfs::util::ThreadPool` 大小为 min(N, bases.size()), 每 task 调
+  `mpz_powm(results[i], bases[i], exp, modulus)` 写到 disjoint `results[i]` slot
+- 内部 GMP modular exponentiation 算法 bit-identical (helper 仅改变外层
+  dispatch, 不触碰 `mpz_powm` 内核或 `gnfs::core::powmod` wrapper)
+- 共享 `exp` / `modulus` 仅由 worker read, 满足 "concurrent read 是安全的,
+  仅 concurrent write 通过 alias `mpz_t` 才需要 disjoint operands" 的 GMP
+  线程安全 invariant
+- 空 batch (n==0) / 单 base (n==1) 都走 sequential 短路, 不创建 pool
+- Exception path: dispatcher drain 全部 future, 第一个 thrown exception
+  通过 `std::rethrow_exception` 传给 caller (不 swallow); pool 析构干净 join
+
+**Bit-for-bit guarantee**: 每 base `mpz_powm` 是 pure function of `(base, exp,
+modulus)`, 不依赖 dispatch 顺序. Sequential (N=1) 与 parallel (N>=2) 路径
+产生的 per-index `Integer` 完全一致. 由
+`tests/test_mpz_powm_parallel.cpp` 强制覆盖 (100-base random
+N=1 vs N=4 vs N=hw 严格 per-index `mpz_cmp == 0` assert, plus 200-bit
+prime modulus + 100-bit exponent 多 limb 路径 parity).
+
+**ROI 与定位**:
+- 主要 ROI: Schirokauer maps computation (`include/gnfs/linalg/schirokauer.hpp`)
+  per-relation 调用 `mpz_powm` (modulus 100-300 bit, exponent 数十 bit) 上
+  O(thousands) 关系的 batch wall-time 可观. K base 并发后 outer wall ~
+  T_max_base + tasking overhead, 替代 sum(K) sequential 累计. 对 50d+/60d 大
+  modulus 收益更显著 (single-call cost 增加, pool overhead 占比下降).
+- 与 W7/W8/W9/W10 T4 parallel dispatcher family 互补:
+    * W7 `GNFS_SQRT_HENSEL_THREADS` — Hensel lift K-prime slot
+    * W8 T1 `GNFS_ECM_STAGE2_PARALLEL` — ECM Stage 2 BSGS 多曲线
+    * W9 T1 `GNFS_ECM_STAGE1_PARALLEL_THREADS` — ECM Stage 1 Lucas-chain 多曲线
+    * W10 T4 `GNFS_FILTER_MERGE_THREADS` — LP-key bucket merge
+    * W11 T3 `GNFS_MPZ_POWM_BATCH_THREADS` — batched `mpz_powm`
+  五者全部 default 1 (sequential), opt-in, 互不冲突. 可同时启用.
+- Helper 是 opt-in 工具, **不修改** `gnfs::core::powmod` /
+  Schirokauer maps / matrix-builder 主路径. 调用方需要自己 batch up 一组
+  base (典型 a vector of per-relation `Integer`) + 共享 `(exp, modulus)` 后
+  传入 `parallel_mpz_powm`. 当前主 pipeline 无 wire-in 调用, 是 future-infra.
+- Default OFF (N=1) 保证 zero behavior change for legacy callers, 仅当用户
+  明确 opt-in 时启用.
+
+**集成点** (2026-05-22, W11 T3):
+- `include/gnfs/util/mpz_powm_parallel.hpp` — `mpz_powm_batch_threads()` env
+  reader with `std::once_flag` cache + `parallel_mpz_powm(bases, exp,
+  modulus, results)` dispatcher + `mpz_powm_batch_threads_reset_env_cache_for_testing()`
+  test hook
+- `tests/test_mpz_powm_parallel.cpp` — 14 个测试 (5 env parsing / empty /
+  single base N=1 / single base N=4 no-stall / N=1 vs scalar mpz_powm
+  reference / N=1 vs N=4 parity / N=1 vs N=hw parity / 200-bit modulus
+  common-exponent semantics / cache reset hook / perf info)
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  util 模块
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
