@@ -1556,6 +1556,83 @@ ForceOff vs Auto parity / 1M perf info / undersized out clamping).
 **Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
 所以 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
 
+### GF(2) AND-popcount SIMD batch (GNFS_GF2_AND_POPCNT_SIMD)
+
+**ENV `GNFS_GF2_AND_POPCNT_SIMD=auto|0|1`** (2026-05-22 实施, default auto):
+GF(2) batch `popcount(a[i] & b[i])` helper, AND-fused 兄弟 helper of
+`GNFS_GF2_POPCNT_SIMD`. 提供 NEON 2-lane (ARM64) / AVX2 4-lane (x86_64)
+wide AND-then-popcount 替代逐 word `__builtin_popcountll(a[i] & b[i])`.
+应用场景: Block Lanczos / Block Wiedemann 正交性检查 (`v^T·w` GF(2)
+inner-product 是 `total_and_popcount_words(v, w)` 的 parity), parity
+dot-product reduction, GF(2) inner product 等需要 batch AND + popcount
+两个 uint64_t array 的内核. Pure header, 不依赖外部库.
+
+```bash
+GNFS_GF2_AND_POPCNT_SIMD=auto ./gnfs <N>   # 默认: NEON/AVX2 可用则启用
+GNFS_GF2_AND_POPCNT_SIMD=0    ./gnfs <N>   # 强制 scalar (回归 bisect 用)
+GNFS_GF2_AND_POPCNT_SIMD=1    ./gnfs <N>   # 强制 SIMD (无 SIMD 平台 fallback)
+unset GNFS_GF2_AND_POPCNT_SIMD             # 同 auto
+```
+
+**Helper API** (`include/gnfs/linalg/detail/and_popcnt_simd.hpp`):
+- `batch_and_popcount_words(a, b, out)` — 主入口, `out[i] = popcount(a[i] & b[i])`.
+  SIMD path 当 `and_popcnt_simd_enabled()` 为 true 时启用. `a.size() ==
+  b.size()` 必须成立 (debug build assert); `out.size() < a.size()` 时
+  defensive clamp 到 `out.size()` 防止 UB write past out.
+- `total_and_popcount_words(a, b)` — 累加 sum 入口, 返回 `uint64_t` 总和.
+- `batch_and_popcount_words_scalar(a, b, out)` — 朴素 `__builtin_popcountll(a & b)`
+  参考 (test golden + 无 SIMD fallback).
+- `total_and_popcount_words_scalar(a, b)` — 朴素累加参考.
+- `and_popcnt_simd_mode()` — 返回 `AndPopcntSimdMode { Auto, ForceOff, ForceOn }`.
+- `and_popcnt_simd_enabled()` — 三态 dispatcher decision (ForceOff → false,
+  ForceOn/Auto + supported → true, 否则 false).
+- `and_popcnt_simd_supported()` — compile-time `__ARM_NEON / __AVX2__` 探测.
+- `and_popcnt_simd_reset_env_cache_for_testing()` — 测试专用 re-resolve ENV.
+
+**算法**:
+- NEON: `vld1q_u64(2 word)` × 2 inputs → `vandq_u64` → `vcntq_u8`
+  (16-byte popcount) → `vget_low_u8 + vaddv_u8` (per-word horizontal sum)
+  per word. Tail 走 scalar `__builtin_popcountll(a & b)`.
+- AVX2: `_mm256_loadu_si256(4 word)` × 2 inputs → `_mm256_and_si256` →
+  `_mm256_popcnt_epi64` 若 AVX-512 VPOPCNTDQ 可用, 否则 fallback
+  `_mm_popcnt_u64` 4-wide unroll after 4-lane store (POPCNT 指令在
+  Nehalem+ x86_64 单条).
+- Reduction: `total_and_popcount_words` 用单条 `vaddvq_u8` (NEON) 或累加
+  4 个 popcount (AVX2) 减少 horizontal sum 次数.
+
+**Bit-for-bit guarantee**: `popcount(a & b)` 是 pure function of (a, b),
+SIMD path 与 scalar `__builtin_popcountll(a & b)` 输出严格 per-index 一致,
+reduction sum 同样 byte-identical. 空输入返回空 output / 零 total 而不
+touch pointers. 单元测试 `test_and_popcnt_simd` 14 个测试强制覆盖 (4 ENV /
+empty / 单 word 8 pattern / aligned 32 / unaligned 33 / random 1000 /
+total parity / ForceOff vs Auto parity / 1M perf info / undersized out
+clamping / a==b 等同 plain popcount 防止 AND/OR/XOR 误用).
+
+**ROI 与定位**:
+- 主要 ROI: GF(2) 向量 inner product 与 Block Lanczos / Block Wiedemann
+  正交性检查的 hot path. 单一 fused AND+popcount kernel 比独立 AND +
+  独立 popcount 少一次 memory traffic + 一次 register round-trip.
+- helper 当前 standalone (主 pipeline 无 wire-in), 是 future-infra:
+  Block Lanczos / Block Wiedemann 内部 dot-product / orthogonality
+  check 等 explicit wire-in 后启用.
+- 默认 auto 在 macOS arm64 / Linux x86_64 都启用 SIMD path; ENV=0 在
+  PMU sweep / sanitizer 调试时回到 scalar baseline. perf-info 实测
+  1M word M-series ARM64: scalar ~2.0 ms, SIMD ~5.7 ms (CNT autovectorise
+  在 Apple Silicon 上对单 array 已经非常优秀, 而 AND-fused 路径多了 2 倍
+  load + 1 个 AND op; ROI 在 x86_64 AVX-512 VPOPCNTDQ 平台或 wire-in
+  到 GF(2) inner product hot loop 后体现).
+
+**集成点** (2026-05-22, W10 T1):
+- `include/gnfs/linalg/detail/and_popcnt_simd.hpp` — helper API + ENV gate +
+  NEON / AVX2 inner kernels + 朴素 reference.
+- `tests/test_and_popcnt_simd.cpp` — 14 个测试 (4 ENV 解析 + 6 batch
+  correctness + 1 total reduction + 1 ForceOff vs Auto parity + 1 perf
+  info + 1 undersized out span clamping + 1 a==b 等同 plain popcount).
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout.
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
+所以 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### Sieve region tile bits (GNFS_SIEVE_REGION_TILE_BITS)
 
 **ENV `GNFS_SIEVE_REGION_TILE_BITS=N`** (2026-05-22 实施, range [0, 8], default 0):
