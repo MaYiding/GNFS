@@ -1512,6 +1512,109 @@ W9 Karatsuba helper / W11 divrem helper 路径均保持原行为. Auto 在
 size < threshold 时等价 schoolbook; size >= threshold 时走 NTT path
 (但同一 caller 必须直接调 `ntt_mul_mod`, 不是 `mul_raw`).
 
+### Polynomial modular squaring (GNFS_POLY_SQUARE_OPT)
+
+**ENV `GNFS_POLY_SQUARE_OPT=auto|0|1`** + **`GNFS_POLY_SQUARE_KARATSUBA_THRESHOLD=N`** (2026-05-22 实施, W13 T2, default auto + 32):
+Polynomial modular squaring helper. 利用 `(sum a_i x^i)^2` 的 (i, j) ↔
+(j, i) 对称性, schoolbook 路径相对 W9 `karatsuba_mul_mod(a, a, p, out)`
+full-mul 大致省一半工 (对角项 a[k]^2 + off-diagonal 2 * a[i] * a[j],
+i < j). Karatsuba squaring 沿用 W9 split-recurse 结构, 但三个 sub-mul
+换成三个 sub-square (`a_low^2`, `a_high^2`, `(a_low + a_high)^2`) 加
+一个 cross 减法 (`z1 = (a_low + a_high)^2 - z0 - z2`). 与 W9
+`karatsuba_mul_mod(a, a, p, out)` 输出 bit-for-bit identical (trim 过
+trailing zeros canonical form).
+
+```bash
+unset GNFS_POLY_SQUARE_OPT                      # 默认 Auto (squaring 启用)
+GNFS_POLY_SQUARE_OPT=auto ./gnfs <N>            # 同 unset
+GNFS_POLY_SQUARE_OPT=0    ./gnfs <N>            # ForceOff (退到 W9 full-mul)
+GNFS_POLY_SQUARE_OPT=off  ./gnfs <N>            # 同 "0"
+GNFS_POLY_SQUARE_OPT=1    ./gnfs <N>            # ForceOn (squaring 启用, 与 Auto 等价)
+GNFS_POLY_SQUARE_OPT=on   ./gnfs <N>            # 同 "1"
+
+unset GNFS_POLY_SQUARE_KARATSUBA_THRESHOLD               # 默认 32
+GNFS_POLY_SQUARE_KARATSUBA_THRESHOLD=4    ./gnfs <N>     # 极小 threshold (recursion 走到最深)
+GNFS_POLY_SQUARE_KARATSUBA_THRESHOLD=64   ./gnfs <N>     # 较大 threshold
+GNFS_POLY_SQUARE_KARATSUBA_THRESHOLD=4096 ./gnfs <N>     # 上限
+```
+
+**ENV 解析规则** (与 W12 NTT 三态 + W9 Karatsuba threshold 解析一致):
+- `GNFS_POLY_SQUARE_OPT`: unset / "" / "auto" / 任何未识别 token (含
+  "2" / "true" / "ON" / "Auto" 大写, 含 leading 空白) → Auto. "0" / "off"
+  → ForceOff. "1" / "on" → ForceOn.
+- `GNFS_POLY_SQUARE_KARATSUBA_THRESHOLD`: unset / "" / "0" / 负数 / 非数字
+  (`garbage` / `1.5` / `12abc` / bare `+` `-`) / 含 leading 空白 → default 32.
+  "1".."3" → clamp 到 4. "5000" → clamp 到 4096.
+
+**算法**:
+- Schoolbook squaring (`schoolbook_square_mod`): 对每个 `(i, j)` 索引对,
+  i == j 走 `out[2i] += a[i]^2 mod p` (n 次), i < j 走 `out[i+j] +=
+  (2 * a[i] * a[j]) mod p` (n(n-1)/2 次). doubled product 之前先 `mod p`
+  再 doubled, 然后 `mod p`. uint64 * uint64 不溢出依赖 p < 2^32 precondition.
+- Karatsuba squaring (`karatsuba_square_mod`): split a = a_low + x^m * a_high,
+  m = ceil(n/2). 递归三个 sub-square (z0 = a_low^2, z2 = a_high^2,
+  z1' = (a_low + a_high)^2). z1 = z1' - z0 - z2. out = z0 + x^m * z1 +
+  x^{2m} * z2. 与 W9 mul kernel 一致, z1 trailing-zero trim 后 compose
+  保证 `add_shifted_in_place` 不越界.
+- `square_mod` 主入口: empty → empty; size-1 → `out = { (a[0] * a[0]) mod p }`
+  (a[0] == 0 → empty); gate == ForceOff → 走 W9 `karatsuba_mul_mod(a, a, p, out)`;
+  gate == ForceOn / Auto + size < threshold → `schoolbook_square_mod`;
+  size >= threshold → `karatsuba_square_mod`.
+
+**Bit-for-bit guarantee**: 同 `(a, p)` 输入下 (p 素数, p < 2^32,
+coefficients < p), `square_mod`, `schoolbook_square_mod`, `karatsuba_square_mod`
+三个内核输出 vector 与 W9 `karatsuba_mul_mod(a, a, p, out)` (trim 后)
+完全 per-index 一致. ENV gate 值仅影响 dispatch kernel, 不影响数学结果.
+单元测试 `tests/test_poly_square.cpp` 16 个测试 (含 4 ENV 解析 + 2
+threshold 解析 + 3 edge cases + 4 parity sweep deg 10 / 50 / 200 / 500
+across 3 primes + 1 random 10-shape sweep 含 threshold 边界 31/32/33 +
+1 Mersenne p=2^31-1 边界 + 1 perf-info probe) 严格 enforce.
+
+**Threshold default 32 选择理由**:
+- Karatsuba squaring 每层 per-call overhead 与 W9 Karatsuba mul 同级
+  (3 个递归 sub-buffer 分配 + 3 个递归 stack frame). 小输入 schoolbook
+  内循环紧凑, 即使 N=32 阈值下 schoolbook 的对角对称性已经把工作量
+  砍半, ROI 非常稳健.
+- 默认 32 与 W9 `GNFS_POLY_KARATSUBA_THRESHOLD` 一致, 用户调一个 threshold
+  即可在 mul / square 两个 helper 上同步生效, 避免双调优面.
+
+**Modulus precondition**: p < 2^32 (保证 uint64 * uint64 不溢出 — schoolbook
+内层 `a[i] * a[j]` 与 Karatsuba sub-square 的 `mul_mod` 都依赖). caller
+需要 p >= 2^32 时仍走 `ModularPoly::mul_raw(a, a)` (内部 `__uint128_t`).
+
+**ROI 与定位**:
+- 主要 ROI: 与 W9 `karatsuba_mul_mod(a, a, ...)` 相比, squaring 节省的工作
+  来自对角对称性. 实测 deg=200 / p=2^31-1: square_mod (Auto/Karatsuba)
+  0.11 ms/call vs karatsuba_mul_mod(a, a) 0.20 ms/call → 1.75x 加速.
+  schoolbook_square_mod (ForceOn + threshold=4096) 0.16 ms/call → 1.23x
+  vs W9 mul. 真正 ROI 在 deg >> 100 时显著.
+- helper 当前 standalone (主路径 `ModularPoly::sqr` 与 `ModularPoly::mul_raw(a, a)`
+  未 wire-in), 是 future-infrastructure. caller 可主动调 `square_mod` 替代
+  `mul_raw(a, a)`, 适用于 CRT root-finding power chains, Karatsuba mul
+  内部 cross sub-square 优化, NTT self-convolution 短路等下游需要平方
+  hot path 的实验路径.
+- 与 W7 HGCD / W9 Karatsuba / W11 divrem / W12 NTT 互补: W9 mul / W12
+  NTT 是 (a, b) 通用 multiplication primitive, 本 helper 是
+  (a, a) 专用 squaring primitive. 二者覆盖不同 caller path, 同 caller
+  可以根据 self vs cross 自动选择.
+
+**集成点** (2026-05-22, W13 T2):
+- `include/gnfs/polynomial/poly_square.hpp` — `square_mod()` +
+  `schoolbook_square_mod()` + `karatsuba_square_mod()` +
+  `poly_square_mode()` (三态 cached env) + `poly_square_enabled()`
+  predicate + `poly_square_karatsuba_threshold()` (cached env, strict
+  parsing, clamp [4, 4096]) + `poly_square_reset_env_cache_for_testing()`
+  (重置两个 cache)
+- `tests/test_poly_square.cpp` — 16 instant tier tests, TIMEOUT 60
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  polynomial 模块
+
+**Default Auto 主路径无影响**: `ModularPoly::sqr` / `ModularPoly::mul_raw(a, a)`
+入口未改, helper 仅在显式 caller wire-in 时启用. 现有 schoolbook path /
+W7 HGCD path / W9 Karatsuba helper / W11 divrem helper / W12 NTT helper
+路径均保持原行为. Auto 与 ForceOn 行为一致 (squaring 启用); 仅 ForceOff
+退回 W9 full-mul.
+
 ### Polynomial subquadratic divrem (GNFS_POLY_DIVREM_SUBQUADRATIC)
 
 **ENV `GNFS_POLY_DIVREM_SUBQUADRATIC=auto|0|1`** (2026-05-22 实施, W11 T2, default auto):
