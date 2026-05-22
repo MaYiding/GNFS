@@ -910,6 +910,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME EcmStage2Parallel COMMAND test_ecm_stage2_parallel)
     set_tests_properties(EcmStage2Parallel PROPERTIES LABELS "fast" TIMEOUT 60)
 
+    # Montgomery batch modular inversion helper (GNFS_ECM_BATCH_INV)
+    add_executable(test_batch_inversion
+        tests/test_batch_inversion.cpp
+    )
+    target_link_libraries(test_batch_inversion PRIVATE gnfs_core)
+    add_test(NAME BatchInversion COMMAND test_batch_inversion)
+    set_tests_properties(BatchInversion PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Cofactor batch micro-benchmark (T5 Stage 4) — invoke manually
     # ./build/test_cofactor_batch_bench [count] [seed]
     add_executable(test_cofactor_batch_bench
