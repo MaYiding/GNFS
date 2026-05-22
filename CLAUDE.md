@@ -2521,6 +2521,100 @@ N=1 vs N=4 vs N=hw_concurrency 严格 per-index bit-identical assert).
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   sieve 模块
 
+### linalg 迭代进度遥测 (GNFS_LINALG_PROGRESS_INTERVAL)
+
+**ENV `GNFS_LINALG_PROGRESS_INTERVAL=N`** (2026-05-22 实施, W12 T1, default 0):
+Block Lanczos / Block Wiedemann 在 50d+/60d 大矩阵 Phase 5 SpMV loop 可能跑数
+小时, 此前无任何 runtime 可视化 — 用户不知道当前 iteration 序号, 不知道 wall
+elapsed, 不知道 throughput, 也无法估算 ETA. helper 提供一个 ENV-gated +
+opt-in 的迭代进度 logger, caller 在 SpMV loop 入口构造一个 `IterationProgressLogger`,
+内循环每次 `tick(current_iter)`. 默认 0 (unset / "0" / 负数 / 非数字 / 含
+leading 空白) 时 `tick()` / `finish()` 都是单分支 short-circuit no-op, 不取
+clock sample, 不做 string formatting, 不写 stderr, 与历史无 telemetry 路径
+bit-for-bit 一致. N >= 1 时每 N 次迭代打一行进度到 stderr (跟着 `std::flush`),
+`finish()` 多打一行 DONE summary.
+
+```bash
+unset GNFS_LINALG_PROGRESS_INTERVAL              # default 0, 零开销
+GNFS_LINALG_PROGRESS_INTERVAL=0    ./gnfs <N>    # 同 default
+GNFS_LINALG_PROGRESS_INTERVAL=100  ./gnfs <N>    # 每 100 次 iteration 打一行
+GNFS_LINALG_PROGRESS_INTERVAL=1    ./gnfs <N>    # 每次 iteration 都打 (debug)
+GNFS_LINALG_PROGRESS_INTERVAL=1000 ./gnfs <N>    # 长跑稀疏报告
+```
+
+**输出格式** (全部走 `std::cerr` + `std::flush`):
+```text
+[linalg_progress] phase=<label> iter=<I>/<T> elapsed=<E>s rate=<R>/s eta=<ETA>s
+[linalg_progress] phase=<label> DONE iter=<T>/<T> elapsed=<E>s avg_rate=<R>/s
+```
+其中 `elapsed` 取 `steady_clock`, 毫秒精度 (3 位小数); `rate` 是 iter / elapsed,
+1 位小数; `eta = (total - iter) / rate`, 1 位小数. `rate == 0` 或 `total == 0`
+或 `iter >= total` 时 `rate` / `eta` 渲染为 `?` 而非 NaN/inf, 保证 nohup 日志
+里不会出现 IEEE 754 异常 token.
+
+**Helper API** (`include/gnfs/linalg/progress_telemetry.hpp`):
+- `linalg_progress_interval()` — cached `std::once_flag` + `std::atomic<int>`
+  ENV reader, 返回 clamped non-negative int. 0 = disabled.
+- `linalg_progress_enabled()` — `interval > 0` 等价 predicate.
+- `linalg_progress_reset_env_cache_for_testing()` — 测试专用 re-resolve hook.
+- `IterationProgressLogger(phase_label, total_iters)` — RAII ctor, 立即 sample
+  start time (启用时). `total_iters < 0` clamp 到 0. `total_iters == 0` 时
+  eta 渲染为 `?`.
+- `tick(current_iter)` — 启用且 (first call OR delta >= interval) 时 emit
+  一行. `current_iter < 0` clamp 到 0; `current_iter > total` clamp 到 total.
+- `finish()` — emit DONE summary. Idempotent (后续 `tick` / `finish` 都 no-op).
+- 析构时若未显式 `finish()` 则自动调用; moved-from logger 标记为已完成, 不双 emit.
+- Move-constructible / move-assignable; **非** copyable.
+
+**ENV 解析规则** (严格):
+- unset / "" / "0" / 负数 / leading 非数字 (`garbage` / `abc123`) → 0 (disabled)
+- leading 空白 (`" 5"` / `"\t10"`) → 0 (disabled; 与 `std::strtol` 默认行为
+  不同, 主动 reject 以让 ENV parsing matrix 与文档一致)
+- 清洁数字 ("1", "100", "999999") → as-is
+- 数字前缀 (`"12abc"`) → 12 (`std::strtol` 接受前缀, 与 W11 T3
+  `GNFS_MPZ_POWM_BATCH_THREADS` 行为一致, 文档化但不依赖)
+- > INT_MAX → clamp 到 INT_MAX
+
+**Bit-for-bit guarantee (disabled path)**: 默认 OFF 时 `tick()` 内仅一次
+`interval_ <= 0` 分支检查 (单 int compare + branch), 不读 clock, 不做 string
+ops, 不接触 stderr 缓冲. 100k 次 `tick` 实测 0 ms (perf-info probe). 启用
+时输出仅影响 stderr; caller 状态 / 迭代变量 / 返回值零干扰.
+
+**ROI 与定位**:
+- 主要 ROI: 长跑可观察性, 不是 wall-time 加速. 50d+/60d Phase 5 BL/BW 跑
+  数小时时, 用户看不到进度等于盲跑; 启用 interval=100~1000 后 nohup 日志
+  里可定期看到 `iter=42000/100000 elapsed=1245.6s rate=33.7/s eta=1721.3s`,
+  能 ssh 进去 `tail -f log` 估算何时完成, 决定是否继续等待或提早 ctrl-C.
+- helper 当前 standalone (BL/BW SpMV loop 未 wire-in), 是 future-infrastructure.
+  caller wire-in 时在 SpMV loop 入口构造 logger, 内循环 `lg.tick(i)` 即可.
+  典型 wire-in 例子:
+  ```cpp
+  IterationProgressLogger lg("BW_Krylov", L);
+  for (int i = 0; i < L; ++i) {
+      run_one_krylov_step(i);
+      lg.tick(i);
+  }
+  ```
+- Default OFF (interval == 0) 保证 zero behavior change for legacy callers,
+  仅当用户 explicit `GNFS_LINALG_PROGRESS_INTERVAL=N>=1` + caller wire-in 时
+  生效.
+
+**集成点** (W12 T1, 2026-05-22):
+- `include/gnfs/linalg/progress_telemetry.hpp` — helper API + ENV gate +
+  `IterationProgressLogger` RAII 类 + `steady_clock` 采样 + 自包含的
+  `format_double` (避免 `<iomanip>` 全局 state 副作用)
+- `tests/test_linalg_progress.cpp` — 19 个测试 (6 ENV 解析 + 2 disabled
+  silence + 4 enabled tick gating / DONE / idempotent / multi-logger +
+  5 edge cases (total=0 / 负 total / iter > total / 负 iter / rate 下溢) +
+  2 move semantics + 1 perf info)
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  linalg 模块
+- BL / BW 主路径 `src/linalg/block_lanczos.cpp` / `src/linalg/block_wiedemann.cpp`
+  **未改动** (helper-only landing, future wire-in)
+
+**Default OFF (N=0)**: helper standalone, 当前主 pipeline 无调用点, ENV
+对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
