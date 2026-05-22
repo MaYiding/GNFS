@@ -408,7 +408,7 @@ void test_perf_info() {
     auto verify_heavy = [](uint64_t pattern) {
         // Simulate moderate verify cost with a tight integer-only loop.
         uint64_t acc = pattern;
-        for (int i = 0; i < 1000; ++i) {
+        for (uint64_t i = 0; i < 1000; ++i) {
             acc = acc * 2654435761ULL + i;
         }
         // Match at a single late position so both N=1 and N=4 do most of
