@@ -544,6 +544,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME MpzInvertParallel COMMAND test_mpz_invert_parallel)
     set_tests_properties(MpzInvertParallel PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # ── W13 T5: GMP mpz_mod batch parallel dispatcher (GNFS_MPZ_MOD_BATCH_THREADS) ──
+    add_executable(test_mpz_mod_parallel
+        tests/test_mpz_mod_parallel.cpp
+    )
+    target_link_libraries(test_mpz_mod_parallel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME MpzModParallel COMMAND test_mpz_mod_parallel)
+    set_tests_properties(MpzModParallel PROPERTIES LABELS "instant" TIMEOUT 60)
+
     add_executable(test_sieve_basic
         tests/test_sieve_basic.cpp
     )
