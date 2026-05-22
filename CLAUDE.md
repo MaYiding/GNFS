@@ -2359,6 +2359,73 @@ prime modulus + 100-bit exponent 多 limb 路径 parity).
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   util 模块
 
+### Lattice basis reduction 多基并行 (GNFS_LATTICE_BASIS_PARALLEL_THREADS)
+
+**ENV `GNFS_LATTICE_BASIS_PARALLEL_THREADS=N`** (2026-05-22 实施, W11 T4, default 1, range [1, hardware_concurrency * 2]):
+GNFS lattice sieve `include/gnfs/sieve/lattice_basis.hpp` 在 sieve 主循环
+开始前需要把每个 Special-Q 的 2 向量基 `(b1, b2)` 跑一遍 reduction (legacy
+Gauss / 2D LLL / skew-LLL). 每个 basis 的 reduction 是 `(q, root, skew,
+params)` 的 pure function, 不同 Special-Q 之间无 shared state, 满足
+embarrassingly parallel. N=1 (默认) 走 sequential per-basis 循环, 不创建
+ThreadPool, 零开销保留原行为. N>=2 时把 K 个 basis dispatch 到大小为
+min(N, K) 的 ThreadPool, basis 之间靠 future 同步收口.
+
+```bash
+GNFS_LATTICE_BASIS_PARALLEL_THREADS=1 ./gnfs <N>   # default sequential, zero overhead
+GNFS_LATTICE_BASIS_PARALLEL_THREADS=4 ./gnfs <N>   # 4 outer workers for basis reduction batch
+GNFS_LATTICE_BASIS_PARALLEL_THREADS=8 ./gnfs <N>   # 8 outer workers
+unset GNFS_LATTICE_BASIS_PARALLEL_THREADS          # same as N=1
+```
+
+**并行模型**:
+- Outer = `parallel_lattice_basis_reduce<Result, Basis, ReduceFn>(basis_inputs,
+  reduce_fn)` over K 个 Special-Q basis (caller 自定义 Basis 类型, e.g. 含
+  `(q, root)` 或 explicit `(b1, b2)` integer pair 的小 struct)
+- 内部 per-basis reduction 算法 bit-identical (helper 仅改变外层 dispatch,
+  不触碰 `LatticeBasis::Gauss` / `LatticeBasis::LLL` / `LatticeBasis::SkewLLL`
+  内核, 也不修改 `src/sieve/lattice_sieve.cpp` 主 sieve loop)
+- 每个 basis task 拥有独立 Integer / Result buffer, GMP `mpz_*` 调用操作数
+  互不重叠, 满足 GMP per-call disjoint-operands thread-safety
+- 空 basis span (n==0) / 单 basis (n==1) 都走 sequential 短路, 不创建 pool
+- Exception path: dispatcher drain 全部 future, 第一个 thrown exception
+  通过 `std::rethrow_exception` 传给 caller (不 swallow); pool 析构干净 join
+
+**Bit-for-bit guarantee**: 每 basis reduction 是 pure function of basis content,
+不依赖 dispatch 顺序. Sequential (N=1) 与 parallel (N>=2) 路径产生的
+per-index `Result` 完全一致, downstream sieve region 设置严格相同. 由
+`tests/test_lattice_basis_parallel.cpp` 强制覆盖 (100-basis mock_reduce
+N=1 vs N=4 vs N=hw_concurrency 严格 per-index bit-identical assert).
+
+**ROI 与定位**:
+- 主要 ROI: 50d+/60d sieve 主循环每 batch 可能有数百到上千 Special-Q,
+  per-basis reduction 内部 GMP 多精度算术 (skew-LLL 涉及 Lagrange-Gauss
+  iteration + 双向 reduce). K basis 并发后 outer wall ~ T_max_basis +
+  tasking overhead, 替代 sum(K) sequential 累计. 当 reduction 内部走
+  schoolbook GMP 大数时 ROI 显著.
+- helper 与 W7 (`hensel_parallel`) / W8 T1 (`ecm_stage2_parallel`) /
+  W9 T1 (`ecm_stage1_parallel`) / W10 T4 (`merger_parallel`) / W11 T3
+  (mpz_powm 并行) 共享同一 ENV-gate + ThreadPool dispatcher 设计模式,
+  是 parallel-dispatcher 家族的第五位成员. 各自独立 ENV 控制, 互相正交,
+  可同时启用而不冲突.
+- Helper 是 opt-in 工具, **不修改** `src/sieve/lattice_sieve.cpp` 主
+  sieve loop. 调用方需要在 Special-Q batch 入口聚合 basis 后传 inputs +
+  reduce_fn lambda 才生效, 是 future-infrastructure landing.
+- Default OFF (N=1) 保证 zero behavior change for legacy callers, 仅当
+  调用方 wire-in helper 且用户明确 `GNFS_LATTICE_BASIS_PARALLEL_THREADS=N>=2`
+  时启用.
+
+**集成点** (2026-05-22, W11 T4):
+- `include/gnfs/sieve/lattice_basis_parallel.hpp` — `lattice_basis_parallel_threads()`
+  env reader with `std::once_flag` cache + `parallel_lattice_basis_reduce<Result,
+  Basis, ReduceFn>` template dispatcher + `lattice_basis_parallel_threads_reset_env_cache_for_testing()`
+  test hook
+- `tests/test_lattice_basis_parallel.cpp` — 13 个测试 (4 env parsing /
+  empty input / single basis N=1 / single basis N=4 no-stall / 100 basis
+  N=1 baseline / N=1 vs N=4 parity / N=1 vs N=hw parity / non-trivial
+  Result move / exception propagation / reset env cache hook)
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  sieve 模块
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
