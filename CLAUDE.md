@@ -854,6 +854,89 @@ unset GNFS_INTEGER_SCRATCH_POOL          # 默认 OFF (零开销)
 borrow handle 退到 fresh Integer + skip pool push, `std::allocator` path
 完整保留, 零回归风险. 仅显式 `GNFS_INTEGER_SCRATCH_POOL=1` 时启用.
 
+### ECM sigma seed warm pool (GNFS_ECM_SIGMA_POOL_SIZE)
+
+**ENV `GNFS_ECM_SIGMA_POOL_SIZE=N`** (2026-05-22 实施, W10 T3, range [0, 1024], default 0):
+ECM Suyama curve setup 入口选 sigma (>=6) 时, 生产 caller 走 PRNG (典型
+`std::mt19937_64` seeded from `std::random_device ^ n_low`). 50d+/60d
+cofactor 紧凑 retry loop 中, PRNG state advance (mt19937_64 624-word ring)
+变成 inner loop 的 serial dependency, 限制跨 sigma attempt 的 ILP. helper
+提供 opt-in per-thread sigma seed warm pool, 让 caller 把 N 个 PRNG draw
+bulk refill 后 LIFO `pop_back` 一次性 amortise.
+
+```bash
+unset GNFS_ECM_SIGMA_POOL_SIZE              # default 0 (disabled, 零开销)
+GNFS_ECM_SIGMA_POOL_SIZE=0    ./gnfs <N>    # 同 default
+GNFS_ECM_SIGMA_POOL_SIZE=100  ./gnfs <N>    # per-thread 容量 100
+GNFS_ECM_SIGMA_POOL_SIZE=1025 ./gnfs <N>    # clamp 到 1024 上限
+```
+
+**Helper API** (`include/gnfs/cofactor/sigma_seed_pool.hpp`):
+- `sigma_seed_pool_size()` — cached ENV pool 容量, 0 表 disabled
+- `sigma_seed_pool_enabled()` — `pool_size() > 0` 等价 predicate
+- `refill_sigma_seed_pool(generator)` — 启用时 thread_local pool 用
+  `generator()` 填到 capacity (空, 已满, 或禁用时 no-op)
+- `get_next_sigma_seed(fresh)` — 启用且 pool 非空: `pop_back` LIFO; 禁用
+  或空: 返回 `fresh` 参数. 调用方负责生成 `fresh` 作为 fallback (无 PRNG
+  绑定耦合)
+- `sigma_seed_pool_remaining()` / `sigma_seed_pool_clear()` — 测试 / debug
+- `sigma_seed_pool_reset_env_cache_for_testing()` — 测试 re-resolve hook
+
+**ENV parsing** (`std::stoi`-based, cached `std::call_once`):
+- unset / "" / "0" / 负数 / leading 非数字 (`garbage`) → 0 (disabled)
+- 1..1024 → as-is
+- 1025+ → 1024 (clamp)
+- 数字前缀 ("12abc"): 取首数字段 → 12 (std::stoi 接受). 文档化, 但 caller
+  应传 clean 整数值, 不依赖 partial-parse 行为
+
+**实现细节**:
+- `inline thread_local std::vector<uint64_t> tls_sigma_pool` — per-thread
+  存储, C++17 `inline` 保证多 TU 单实例. 线程退出时 vector dtor 跑, uint64_t
+  无资源 ownership 故 teardown trivial, 不泄漏.
+- `refill`: pool 已满 → no-op (不二次调用 generator). 调用 generator
+  `(capacity - current_size)` 次 `push_back`. generator 抛异常 → propagate,
+  pool 保持 partial-fill consistent 状态.
+- `get_next`: 启用 + pool 非空 → `pop_back` LIFO. 禁用 / pool 空 → 返回 fresh.
+- Pool 是 per-thread, **无锁**. 不同 thread 的 pool 完全隔离.
+
+**Bit-for-bit guarantee (within deterministic generator)**:
+- helper 不保证与 OFF 路径 sigma 序列完全相同. PRNG generator 在 refill
+  时被 bulk-invoke, 与 OFF 路径 per-attempt invoke 调度不同.
+- 给定 deterministic generator (e.g. fixed-seed mt19937_64), refill 后
+  连续 `get_next` 返回的序列 bit-for-bit 等于
+  reversed([gen(), gen(), ..., gen()]) (LIFO 顺序). 由
+  `tests/test_sigma_seed_pool.cpp::test_mt19937_generator_consistent`
+  强制覆盖.
+- Caller 若需严格 deterministic sigma 序列, 应禁用 pool 或 refill from
+  deterministic generator 并把 pool 当作 source of truth.
+
+**ROI 与定位**:
+- 主要 ROI: 紧凑 ECM retry loop 中 PRNG state advance amortise. mt19937_64
+  per-call cost 几十 cycle, 在 small absolute 但 inner loop branch
+  prediction defeat + serial dependency.
+- helper 当前 standalone (主 pipeline `ECM::factor` / `EcmCurvePool::
+  prepare_batch` 未 wire-in), 是 future-infrastructure. caller wire-in
+  时把 inner loop `rng()` 替换为 `get_next_sigma_seed(rng())`, 并在外层
+  attempt round 入口 `refill_sigma_seed_pool([&rng]() { return rng(); })`.
+- Helper 与 W8 T1/W9 T1 `GNFS_ECM_STAGE{1,2}_PARALLEL` 完全 orthogonal —
+  并行 dispatcher 跑多条 curve, helper 是 per-thread sigma 池, 二者可
+  同时启用.
+
+**集成点** (W10 T3, 2026-05-22):
+- `include/gnfs/cofactor/sigma_seed_pool.hpp` — 260 行 header-only,
+  thread_local pool + ENV gate + LIFO `pop_back` 语义
+- `tests/test_sigma_seed_pool.cpp` — 15 个测试 (5 ENV + 6 行为 (OFF/empty/
+  LIFO/exhaust/clear/full no-op) + 1 multi-thread isolation + 1 generator
+  exception + 1 env cache reset + 1 mt19937 round-trip)
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  cofactor 模块
+
+**Default OFF (N=0)**: ENV unset → `sigma_seed_pool_size() == 0` →
+`get_next_sigma_seed(fresh)` 总是返回 fresh, `refill_sigma_seed_pool`
+no-op 不调 generator. caller 主路径行为完全等同 legacy, 零开销, 零行为
+变化. 仅 helper 被 wire-in + 用户 explicit `GNFS_ECM_SIGMA_POOL_SIZE=N>=1`
+时启用.
+
 ### Hensel lift K-prime slot 并行 (GNFS_SQRT_HENSEL_THREADS)
 
 **ENV `GNFS_SQRT_HENSEL_THREADS=N`** (2026-05-21 实施, default 1, range [1, hardware_concurrency * 2]):
