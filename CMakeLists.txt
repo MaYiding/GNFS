@@ -854,6 +854,15 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME HalfGCD COMMAND test_half_gcd)
     set_tests_properties(HalfGCD PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Polynomial Karatsuba multiplication helper (sub-quadratic primitive
+    # backing Half-GCD; ENV-gated threshold dispatch to schoolbook)
+    add_executable(test_poly_karatsuba
+        tests/test_poly_karatsuba.cpp
+    )
+    target_link_libraries(test_poly_karatsuba PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME PolyKaratsuba COMMAND test_poly_karatsuba)
+    set_tests_properties(PolyKaratsuba PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # 关系过滤器测试
     add_executable(test_filter
         tests/test_filter.cpp
