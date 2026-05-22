@@ -1071,6 +1071,65 @@ ENV 解析 / threshold 路由 / dispatcher parity / 稀疏 pattern).
 **Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
 所以 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
 
+### Sieve region tile bits (GNFS_SIEVE_REGION_TILE_BITS)
+
+**ENV `GNFS_SIEVE_REGION_TILE_BITS=N`** (2026-05-22 实施, range [0, 8], default 0):
+Lattice sieve `sieve_bucket_region` 的 apply scan 阶段可按 row 将
+`sieve_array_` 划分成 `2^N` 行 tile, 每个 tile 完整扫描后再进下一 tile,
+提升 L1/L2 cache locality. 默认 0 (unset / "0" / 空 / 非数字) 走原 untiled
+scan path, 零开销保留原行为. N>=1 时 tile size = `2^N` rows, N>=9 clamp
+到 8 (256-row tile 上限, 超出该值 tile 不再适合 L2 容量, 反而使 apply
+scan 付出 cache eviction 代价).
+
+```bash
+GNFS_SIEVE_REGION_TILE_BITS=0  ./gnfs <N>   # default, untiled scan (零开销)
+GNFS_SIEVE_REGION_TILE_BITS=4  ./gnfs <N>   # 16-row tile
+GNFS_SIEVE_REGION_TILE_BITS=6  ./gnfs <N>   # 64-row tile
+GNFS_SIEVE_REGION_TILE_BITS=8  ./gnfs <N>   # 256-row tile (上限)
+GNFS_SIEVE_REGION_TILE_BITS=10 ./gnfs <N>   # 同 8 (clamp)
+unset GNFS_SIEVE_REGION_TILE_BITS           # 同 default 0
+```
+
+**Helper API** (`include/gnfs/sieve/region_tile.hpp`):
+- `region_tile_bits()` — 返回 cached N, clamp 到 `[0, kRegionTileMaxBits]`.
+- `region_tile_enabled()` — `bits > 0` 的等价 predicate.
+- `region_tile_size_rows()` — 返回 `1 << N` (启用) 或 0 (禁用).
+- `region_tile_reset_env_cache_for_testing()` — 测试专用 re-resolve.
+- `kRegionTileMaxBits = 8` — 256-row tile cap.
+
+**算法**: 启用时 caller 把 row range 划分成 `floor(rows / 2^N)` 个 tile,
+每个 tile `2^N` rows 完整 scan 后再进下一个 (rows 非 `2^N` 倍数时尾部
+tile 是残余 rows). gather pass 不变, 仅 apply scan 的 iteration order
+从 "整行 region 顺序" 改为 "tile-by-tile 顺序". Candidate threshold check
+是 `(residual, threshold)` 的 pure function, 与 scan order 无关.
+
+**Bit-for-bit guarantee**: `sieve_array_` 内容 + candidate list 与 N=0
+路径完全一致. tile 仅改变扫描顺序, 不改变 candidate threshold check 结果.
+每个 wire-in 的 callsite 必须在自身 fixture 验证 candidate 输出与
+untiled baseline match (后续 wire-in 时由 callsite regression 测试保证).
+
+**ROI 与定位**:
+- 主要 ROI: 50d+/60d sieve region (`(i_max - i_min) * j_count` 几万 byte)
+  时, apply scan 与 gather pass 争抢 L1 working set, 第二 pass 起在 L1
+  cold. tile 把每个 scan window 控制在 L1/L2 内 (16-row tile = 1 KiB),
+  让 scan 完成前 cache miss 不发生.
+- N 选择: 16-row (N=4) ~ 64-row (N=6) 是常见 sweet spot. 256-row (N=8)
+  在极宽 j 时仍有 ROI, 但接近 L2 边界. 25d/40-bit small region 上 N>=1
+  的 ROI 可忽略, 但行为正确性不变.
+- helper 当前 standalone (apply-loop wiring 留给后续 task), 所以 ENV 不
+  影响主 pipeline 运行行为. 仅 helper 被 wire-in 后 ENV 才生效.
+
+**集成点** (2026-05-22):
+- `include/gnfs/sieve/region_tile.hpp` — helper API + ENV gate + clamp.
+- `tests/test_sieve_region_tile.cpp` — 8 个测试 (unset default / "0"
+  explicit / [1..8] sweep / >=9 clamp / non-numeric / size_rows = 2^N /
+  reset hook re-read / enabled predicate). 全部 instant tier.
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout.
+
+**Default OFF (N=0)**: 任何 caller 不设 ENV 时 helper 报告 disabled,
+应用 untiled scan path 不变. 仅当用户 explicit `GNFS_SIEVE_REGION_TILE_BITS=N>0`
+时 helper 报告 tile size; 实际启用还需 callsite 显式 dispatch helper 结果.
+
 ### Trim limit 必须含 LP cols (P1 BUG 模式, 防 50d/60d NO_EXCESS)
 
 **所有 Phase 4 relation trim 必须使用 `effective_cols = matrix_cols + count_unique_lp_keys(relations)`,**
