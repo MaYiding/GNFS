@@ -1155,6 +1155,19 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME LinalgTransposeBlocked COMMAND test_transpose_blocked)
     set_tests_properties(LinalgTransposeBlocked PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # SIMD GF(2) word popcount batch helper (correctness).
+    # Exercises the scalar reference, the NEON 2-lane / AVX2 4-lane batch
+    # path, and the ENV-gated dispatcher across a battery of edge sizes
+    # (empty, single word patterns, aligned/unaligned batches, 1M perf
+    # probe). Header-only helper, no extra link dependencies beyond the
+    # core library.
+    add_executable(test_popcount_simd
+        tests/test_popcount_simd.cpp
+    )
+    target_link_libraries(test_popcount_simd PRIVATE gnfs_core)
+    add_test(NAME LinalgPopcountSimd COMMAND test_popcount_simd)
+    set_tests_properties(LinalgPopcountSimd PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Out-of-core Relations 单元测试
     add_executable(test_ooc_relations
         tests/test_ooc_relations.cpp
