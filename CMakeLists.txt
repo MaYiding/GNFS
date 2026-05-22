@@ -872,6 +872,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME HornerBatchSIMD COMMAND test_horner_batch_simd)
     set_tests_properties(HornerBatchSIMD PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Polynomial Newton-reciprocal divrem helper (sub-quadratic primitive,
+    # bit-for-bit parity with schoolbook reference; ENV-gated three-state
+    # dispatch with default-OFF Auto routing)
+    add_executable(test_divrem_subquadratic
+        tests/test_divrem_subquadratic.cpp
+    )
+    target_link_libraries(test_divrem_subquadratic PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME DivremSubquadratic COMMAND test_divrem_subquadratic)
+    set_tests_properties(DivremSubquadratic PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # 关系过滤器测试
     add_executable(test_filter
         tests/test_filter.cpp
