@@ -232,6 +232,38 @@ void test_parallel_multiple_valid_returns_one() {
     set_env_and_reset(nullptr);
 }
 
+void test_parallel_multi_valid_distributed() {
+    // Verify that when matches are spread across different chunks (so the
+    // first match a worker sees in its own chunk is different per worker),
+    // the atomic-min reduction picks the smallest one across all chunks.
+    //
+    // Range 1024 with N=4 → chunk_size = 256:
+    //   chunk 0: [0, 256)    → match at 100
+    //   chunk 1: [256, 512)  → match at 300
+    //   chunk 2: [512, 768)  → match at 600
+    //   chunk 3: [768, 1024) → match at 900
+    // Atomic-min must converge to 100 (smallest across all chunks).
+    std::cout << "Testing parallel (N=4) distributed valid {100, 300, 600, 900} -> 100..."
+              << std::endl;
+    set_env_and_reset("4");
+
+    auto verify = [](uint64_t pattern) {
+        return pattern == 100 || pattern == 300 || pattern == 600 || pattern == 900;
+    };
+
+    auto result = parallel_pattern_search(0ULL, 1024ULL, verify);
+    assert(result.has_value());
+    uint64_t v = result.value();
+    // Atomic-min across all chunks must be 100.
+    if (v != 100) {
+        std::cerr << "  ERROR: expected atomic-min 100, got " << v << std::endl;
+        std::abort();
+    }
+    std::cout << "  N=4 distributed returned smallest 100: PASSED" << std::endl;
+
+    set_env_and_reset(nullptr);
+}
+
 void test_parallel_atomic_min_smallest() {
     // With 3 matches scattered, parallel workers each find one match per
     // chunk; the atomic_min reduction should converge on the smallest
@@ -458,6 +490,7 @@ int main() {
     test_sequential_single_valid();
     test_parallel_single_valid_parity();
     test_parallel_multiple_valid_returns_one();
+    test_parallel_multi_valid_distributed();
     test_parallel_atomic_min_smallest();
     test_parallel_dense_match_all_chunks();
     test_parallel_no_match_full_scan();
