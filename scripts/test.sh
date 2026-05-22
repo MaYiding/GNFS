@@ -173,6 +173,7 @@ ALL_TEST_BINARIES=(
     test_matrix_diagnostics
     test_sge_streaming
     test_factor_base
+    test_fb_roots_parallel
     test_special_q
     test_lattice_sieve
     test_lll_lattice
@@ -246,7 +247,7 @@ MODULE_TESTS=(
     core           "test_integer test_params test_regressions test_edge_cases test_core_types"
     util           "test_small_vector test_thread_pool test_logger test_primes test_timer test_mmap_file test_safe_math test_bit_intrin test_memory_pool"
     polynomial     "test_murphy test_root_property_cache test_int_polynomial test_half_gcd test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
-    factor_base    "test_factor_base test_fb_checkpoint"
+    factor_base    "test_factor_base test_fb_checkpoint test_fb_roots_parallel"
     sieve          "test_special_q test_sieve_basic test_distributed_sieve test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd test_bucket_prefetch"
     cofactor       "test_cofactor test_squfof test_brent_pollard_rho test_survival_predictor test_batch_ecm test_3lp_cofactor test_trial_wheel test_batch_trial test_ecm_curve_pool test_ecm_stage2_parallel test_integration test_ecm_brent_suyama"
     relation       "test_relation_collector test_filter test_filter_radix_sort test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration test_relation_pool_integration"
@@ -293,6 +294,7 @@ SMOKE_TESTS=(
     test_matrix_diagnostics
     test_sge_streaming
     test_factor_base
+    test_fb_roots_parallel
     test_special_q
     test_relation_collector
     test_filter
@@ -374,6 +376,7 @@ TEST_TIMEOUT=(
     test_matrix_diagnostics  10
     test_sge_streaming       30
     test_factor_base         10
+    test_fb_roots_parallel   60
     test_special_q           10
     test_relation_collector  10
     test_cofactor            10
@@ -477,6 +480,7 @@ TEST_TIER=(
     test_matrix_diagnostics  "instant"
     test_sge_streaming       "instant"
     test_factor_base         "instant"
+    test_fb_roots_parallel   "instant"
     test_special_q           "instant"
     test_relation_collector  "instant"
     test_cofactor            "instant"
