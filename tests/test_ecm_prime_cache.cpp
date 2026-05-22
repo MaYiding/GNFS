@@ -401,12 +401,12 @@ static void test_shared_singleton_thread_safe_first_call() {
     setenv("GNFS_ECM_B1_CACHE_SIZE", "4", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
 
-    constexpr int kThreads = 8;
+    constexpr std::size_t kThreads = 8;
     std::vector<std::thread> threads;
     threads.reserve(kThreads);
     std::vector<EcmB1PrimeCache*> ptrs(kThreads, nullptr);
 
-    for (int t = 0; t < kThreads; ++t) {
+    for (std::size_t t = 0; t < kThreads; ++t) {
         threads.emplace_back([&, t]() {
             ptrs[t] = &shared_ecm_b1_cache();
         });
@@ -414,7 +414,7 @@ static void test_shared_singleton_thread_safe_first_call() {
     for (auto& th : threads) th.join();
 
     // All threads must see the same singleton instance.
-    for (int t = 1; t < kThreads; ++t) {
+    for (std::size_t t = 1; t < kThreads; ++t) {
         assert(ptrs[t] == ptrs[0] &&
                "Singleton ref must be identical across threads");
     }
