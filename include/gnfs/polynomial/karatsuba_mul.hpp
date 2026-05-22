@@ -65,11 +65,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <new>
 #include <span>
 #include <string>
 #include <vector>
@@ -251,25 +253,52 @@ inline void sub_in_place(std::vector<uint64_t>& dst,
     }
 }
 
-/// In-place: dst[base + i] = (dst[base + i] + src[i]) mod p, extending
-/// dst with zeros if needed.
+/// In-place: dst[base + i] = (dst[base + i] + src[i]) mod p, *without*
+/// growing dst beyond its initial size. Any src[i] with base + i >=
+/// dst.size() must be zero — otherwise the Karatsuba recursion produced
+/// degree information inconsistent with the expected product size, which
+/// is a programming error. We assert this defensively so any future
+/// algorithmic regression surfaces immediately.
 inline void add_shifted_in_place(std::vector<uint64_t>& dst,
                                  std::span<const uint64_t> src,
                                  size_t base,
                                  uint64_t p) {
-    const size_t need = base + src.size();
-    if (dst.size() < need) {
-        dst.resize(need, 0);
-    }
     for (size_t i = 0; i < src.size(); ++i) {
-        uint64_t s = dst[base + i] + src[i];
-        if (s >= p) s -= p;
-        dst[base + i] = s;
+        const size_t pos = base + i;
+        if (pos < dst.size()) {
+            uint64_t s = dst[pos] + src[i];
+            if (s >= p) s -= p;
+            dst[pos] = s;
+        } else {
+            // Out-of-range write would imply src has non-zero coefficient
+            // contributing past the algebraic degree bound. With well-formed
+            // Karatsuba inputs this happens only for spurious trailing zeros,
+            // which we accept silently. Non-zero trailing data is a bug.
+            assert(src[i] == 0 && "Karatsuba sub-product exceeded expected degree");
+        }
+    }
+}
+
+/// Trim trailing zero coefficients from `v`. Karatsuba's z1 sub-product
+/// frequently has a trailing zero after the (z1 - z0 - z2) cancellation
+/// of leading coefficients; trimming keeps the recursion's size
+/// invariants aligned with the algebraic degree.
+inline void trim_trailing_zeros(std::vector<uint64_t>& v) {
+    while (!v.empty() && v.back() == 0) {
+        v.pop_back();
     }
 }
 
 /// Recursive Karatsuba kernel. Splits at the midpoint of the larger
 /// operand. Threshold dispatch happens here on `max(a.size(), b.size())`.
+///
+/// Sub-product (z0, z1, z2) sizes are trimmed of trailing zeros after
+/// each computation so that the recursive composition's `add_shifted_in_place`
+/// never tries to grow `out` beyond the algebraic degree bound. This is
+/// essential because `z1 = sum_a * sum_b - z0 - z2` regularly produces
+/// a trailing zero (the leading coefficients cancel by Karatsuba's
+/// design) and propagating that ghost coefficient upward would inflate
+/// the result size on each recursion level.
 inline void karatsuba_recursive(
         std::span<const uint64_t> a,
         std::span<const uint64_t> b,
@@ -313,29 +342,34 @@ inline void karatsuba_recursive(
 
     // z0 = a_low * b_low.
     karatsuba_recursive(a_low, b_low, p, threshold, z0);
+    trim_trailing_zeros(z0);
 
     // z2 = a_high * b_high (may be empty if both highs are empty).
     if (a_high.empty() || b_high.empty()) {
         z2.clear();
     } else {
         karatsuba_recursive(a_high, b_high, p, threshold, z2);
+        trim_trailing_zeros(z2);
     }
 
     // z1 = (a_low + a_high) * (b_low + b_high) - z0 - z2.
     add_mod(a_low, a_high, p, sum_a);
     add_mod(b_low, b_high, p, sum_b);
+    trim_trailing_zeros(sum_a);
+    trim_trailing_zeros(sum_b);
     karatsuba_recursive(sum_a, sum_b, p, threshold, z1);
 
-    // Subtract z0 and z2 from z1 in place (mod p).
+    // Subtract z0 and z2 from z1 in place (mod p), then trim the
+    // resulting trailing zeros (these arise from Karatsuba's intentional
+    // leading-coefficient cancellation).
     sub_in_place(z1, std::span<const uint64_t>(z0.data(), z0.size()), p);
     if (!z2.empty()) {
         sub_in_place(z1, std::span<const uint64_t>(z2.data(), z2.size()), p);
     }
+    trim_trailing_zeros(z1);
 
     // Compose result: out = z0 + x^m * z1 + x^{2m} * z2.
     out.assign(na + nb - 1, 0);
-    // Copy z0 into the low half (z0 size = a_low.size() + b_low.size() - 1
-    // when both nonempty, ≤ 2m - 1, comfortably within out).
     add_shifted_in_place(out, std::span<const uint64_t>(z0.data(), z0.size()),
                          0, p);
     add_shifted_in_place(out, std::span<const uint64_t>(z1.data(), z1.size()),
