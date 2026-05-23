@@ -3312,6 +3312,121 @@ success bit 提取 lucky factor — 这是 mpz_mod 与 mpz_invert / mpz_powm 三
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   util 模块
 
+### GMP mpz_gcd 批量并行 (GNFS_MPZ_GCD_BATCH_THREADS)
+
+**ENV `GNFS_MPZ_GCD_BATCH_THREADS=N`** (2026-05-23 实施, W14 T5, default 1, range [1, hardware_concurrency * 2]):
+W11 T3 `GNFS_MPZ_POWM_BATCH_THREADS`, W12 T3 `GNFS_MPZ_INVERT_BATCH_THREADS`
+与 W13 T5 `GNFS_MPZ_MOD_BATCH_THREADS` 的兄弟 helper, parallel-dispatcher
+家族第 10 名成员. GMP `mpz_gcd(result, a, b)` (greatest common divisor)
+在多个独立 `(a, b)` 对之间相互独立 (embarrassingly parallel). 每次
+`mpz_gcd` 调用是 `(a, b)` 的 deterministic pure function, 满足 GMP per-call
+disjoint-operands thread-safety 契约 (每个 worker 写自己 disjoint 的
+result slot, 读自己 disjoint 的两个 input slot). N=1 (默认) 走 sequential
+per-pair 循环, 不创建 ThreadPool, 零开销保留原行为. N>=2 时把 K 个 pair
+dispatch 到大小为 min(N, K) 的 ThreadPool, pair 之间靠 future 同步收口.
+
+```bash
+GNFS_MPZ_GCD_BATCH_THREADS=1 ./gnfs <N>    # default sequential, zero overhead
+GNFS_MPZ_GCD_BATCH_THREADS=4 ./gnfs <N>    # 4 workers for relation-filter gcd / lucky-factor scan / Bezout
+GNFS_MPZ_GCD_BATCH_THREADS=8 ./gnfs <N>    # 8 workers
+unset GNFS_MPZ_GCD_BATCH_THREADS           # same as N=1
+```
+
+**Helper API** (`include/gnfs/util/mpz_gcd_parallel.hpp`):
+- `mpz_gcd_batch_threads()` — cached `std::once_flag` + `std::atomic<int>`
+  ENV reader, default 1, clamp `[1, hw*2]`
+- `resolve_mpz_gcd_batch_threads(batch_size)` — 返回
+  `min(threads, batch_size)`, empty batch (size==0) 返回 0
+- `parallel_mpz_gcd(a_values, b_values, results)` — 主入口, void return
+  (无 failure mode)
+- `mpz_gcd_batch_threads_reset_env_cache_for_testing()` — 测试 re-resolve hook
+
+**并行模型**:
+- Outer = `parallel_mpz_gcd(a_values, b_values, results)` over n pairs
+- Inner = `gnfs::util::ThreadPool` 大小为 min(N, pair count), 每 task 调
+  `mpz_gcd(results[i], a_values[i], b_values[i])` 写到 disjoint
+  `results[i]` slot
+- 内部 GMP GCD 算法 bit-identical (helper 仅改变外层 dispatch, 不触碰
+  `mpz_gcd` 内核或任何 `gnfs::core::Integer` 算术 operator)
+- 输入两 array 仅由 worker read 自己 index 的 slot (没有共享 modulus
+  这样的 broadcast 输入), 满足 GMP per-call disjoint-operands thread-safety
+- 空 batch (n==0) / 单 pair (n==1) 都走 sequential 短路, 不创建 pool
+- Exception path: dispatcher drain 全部 future, 第一个 thrown exception
+  通过 `std::rethrow_exception` 传给 caller (不 swallow); pool 析构干净 join
+
+**Bit-for-bit guarantee**: 每 pair `mpz_gcd` 是 pure function of `(a, b)`,
+不依赖 dispatch 顺序. Sequential (N=1) 与 parallel (N>=2) 路径产生的
+per-index `Integer` 完全一致. 由 `tests/test_mpz_gcd_parallel.cpp` 强制
+覆盖 (100-pair random N=1 vs scalar reference / N=1 vs N=4 vs N=hw 严格
+per-index `mpz_cmp == 0` assert, plus gcd(P*Q, P*R) = P 5 个 100-bit prime
+pattern 多 limb 路径 parity).
+
+**Failure semantics — 与 W12 T3 mpz_invert 关键差异 (与 W13 T5 mpz_mod 一致)**:
+`mpz_gcd(out, a, b)` 是 *total* 函数 — 对全 domain `(a, b)` 都 well-defined.
+标准 GMP 约定:
+- `gcd(0, 0) = 0`
+- `gcd(a, 0) = |a|`, `gcd(0, b) = |b|`
+- 结果总是非负, 不受 `a` / `b` 符号影响 (`mpz_gcd` ignore signs)
+
+与 W12 T3 `mpz_invert` 在 `gcd(base, modulus) != 1` 时 fail 不同, `mpz_gcd`
+永远成功. 故本 helper 返回 `void`, 不需要 `std::vector<bool> success` 返回值
+(与 W13 T5 mpz_mod 同). 调用方不需要处理 per-slot failure case.
+
+**与 W13 T5 mpz_mod 的关键差异 — 输入形状**:
+- W13 T5 `parallel_mpz_mod` 消费 dividend vector + 共享 modulus. 一个输入
+  array 加一个 broadcast scalar.
+- W14 T5 `parallel_mpz_gcd` 消费两个 array (`a_values` + `b_values`), 两者
+  per-index 配对. 没有共享 broadcast 输入. precondition
+  `a_values.size() == b_values.size()`, 不等抛 `std::invalid_argument`.
+- 这是输入语义 surface 的真实差异 (单 array + scalar vs 两 parallel array).
+  Result 类型相同 (Integer), failure mode 相同 (无).
+
+**ROI 与定位**:
+- 主要 ROI: 50d+/60d relation filtering 中 `gcd(a - b*m, N) > 1` 拒绝路径
+  (百万条 relation 都要求 GCD), Schirokauer / lattice basis Bezout 系数
+  计算, ECM Montgomery batch inversion 失败时 lucky-factor 扫 `gcd(v_i, n)`,
+  Cantor-Zassenhaus root finding 跨系数 GCD. 这些场景都是大量独立 (a, b)
+  对求 GCD 的 hot path. K pair 并发后 outer wall ~ T_max_pair + tasking
+  overhead, 替代 sum(K) sequential 累计. 对大 operand (multi-limb GMP) 收益
+  更显著 (single-call cost 增加, pool overhead 占比下降, mpz_gcd 内部
+  binary GCD / Lehmer's 都是 GMP per-call 非平凡操作).
+- 与 W7/W8/W9/W10 T4/W11 T3/W11 T4/W12 T3/W12 T4/W13 T5 parallel
+  dispatcher family 互补, 本 helper 是第 10 名成员:
+    * W7 `GNFS_SQRT_HENSEL_THREADS` — Hensel lift K-prime slot
+    * W8 T1 `GNFS_ECM_STAGE2_PARALLEL` — ECM Stage 2 BSGS 多曲线
+    * W9 T1 `GNFS_ECM_STAGE1_PARALLEL_THREADS` — ECM Stage 1 Lucas-chain 多曲线
+    * W10 T4 `GNFS_FILTER_MERGE_THREADS` — LP-key bucket merge
+    * W11 T3 `GNFS_MPZ_POWM_BATCH_THREADS` — batched `mpz_powm`
+    * W11 T4 `GNFS_LATTICE_BASIS_PARALLEL_THREADS` — lattice basis reduction
+    * W12 T3 `GNFS_MPZ_INVERT_BATCH_THREADS` — batched `mpz_invert`
+    * W12 T4 `GNFS_SIEVE_APPLY_TILE_THREADS` — sieve apply tile
+    * W13 T5 `GNFS_MPZ_MOD_BATCH_THREADS` — batched `mpz_mod`
+    * W14 T5 `GNFS_MPZ_GCD_BATCH_THREADS` — batched `mpz_gcd` (本 helper)
+  十者全部 default 1 (sequential), opt-in, 互不冲突. 可同时启用.
+- Helper 是 opt-in 工具, **不修改** 任何 `gnfs::core::Integer` 算术 operator
+  / `gnfs::core::gcd` (existing free-function wrapper) / relation filter /
+  Bezout / CZ root finding / 任何 GCD call-site 主路径. 调用方需要自己
+  batch up `(a_i, b_i)` 对后传入 `parallel_mpz_gcd`. 当前主 pipeline 无
+  wire-in 调用, 是 future-infra.
+- Default OFF (N=1) 保证 zero behavior change for legacy callers, 仅当用户
+  明确 opt-in 时启用.
+
+**集成点** (2026-05-23, W14 T5):
+- `include/gnfs/util/mpz_gcd_parallel.hpp` — `mpz_gcd_batch_threads()` env
+  reader with `std::once_flag` cache + `parallel_mpz_gcd(a_values, b_values,
+  results)` dispatcher + `resolve_mpz_gcd_batch_threads(batch_size)` helper +
+  `mpz_gcd_batch_threads_reset_env_cache_for_testing()` test hook
+- `tests/test_mpz_gcd_parallel.cpp` — 16 个测试 (5 env parsing 含 leading
+  whitespace 与 "12abc" partial parse / empty / single pair N=1 / single
+  pair N=4 no-stall / N=1 vs scalar mpz_gcd 5 boundary
+  (gcd(0,0)=0 / gcd(a,0)=|a| / gcd(0,b)=|b| / gcd(12,18)=6 / negative
+  operand → non-negative result) / N=1 vs N=4 parity / N=1 vs N=hw parity /
+  gcd(P*Q, P*R)=P pattern 5 cases 100-bit primes 多 limb / mismatched span
+  size throws invalid_argument / results undersized defensive clamp /
+  reset env cache hook / perf info)
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  util 模块
+
 ### Lattice basis reduction 多基并行 (GNFS_LATTICE_BASIS_PARALLEL_THREADS)
 
 **ENV `GNFS_LATTICE_BASIS_PARALLEL_THREADS=N`** (2026-05-22 实施, W11 T4, default 1, range [1, hardware_concurrency * 2]):
