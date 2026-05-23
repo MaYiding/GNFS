@@ -469,15 +469,16 @@ void test_composite_prime_pattern() {
               << std::flush;
     apply_env("1");
 
-    // Five hand-picked 100-bit primes (verified via mpz_probab_prime_p).
-    // P, Q, R distinct so gcd(P*Q, P*R) = P (not P*gcd(Q,R) = P*1 = P
-    // since gcd(Q, R) = 1 for distinct primes).
+    // Five distinct ~100-104-bit primes found via `mpz_nextprime` from 2^k
+    // (verified via mpz_probab_prime_p with 25 Miller-Rabin rounds below).
+    // P, Q, R distinct so gcd(P*Q, P*R) = P (since gcd(Q, R) = 1 for
+    // distinct primes, then gcd(P*Q, P*R) = P * gcd(Q, R) = P).
     const char* prime_strs[] = {
-        "633825300114114700748351602707",  // ~2^100
-        "1267650600228229401496703205653", // ~2^101
-        "2535301200456458802993406411597", // ~2^102
-        "5070602400912917605986812823331", // ~2^103
-        "10141204801825835211973625647167" // ~2^104
+        "1267650600228229401496703205653",  // nextprime(2^100)
+        "2535301200456458802993406410833",  // nextprime(2^101)
+        "5070602400912917605986812821771",  // nextprime(2^102)
+        "10141204801825835211973625643089", // nextprime(2^103)
+        "20282409603651670423947251286127"  // nextprime(2^104)
     };
     std::vector<Integer> primes;
     for (const char* s : prime_strs) {
