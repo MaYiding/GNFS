@@ -1114,6 +1114,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME EcmPrimeCache COMMAND test_ecm_prime_cache)
     set_tests_properties(EcmPrimeCache PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Cofactor classification LRU result cache (W14 T3, GNFS_COFACTOR_RESULT_CACHE_SIZE)
+    add_executable(test_cofactor_result_cache
+        tests/test_cofactor_result_cache.cpp
+    )
+    target_link_libraries(test_cofactor_result_cache PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME CofactorResultCache COMMAND test_cofactor_result_cache)
+    set_tests_properties(CofactorResultCache PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Cofactor batch micro-benchmark (T5 Stage 4) — invoke manually
     # ./build/test_cofactor_batch_bench [count] [seed]
     add_executable(test_cofactor_batch_bench
