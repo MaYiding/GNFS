@@ -946,6 +946,20 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME PolyAddModSimd COMMAND test_poly_add_mod_simd)
     set_tests_properties(PolyAddModSimd PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # F_p[x] batched modular Horner evaluation SIMD helper (W15 T2):
+    # NEON 2-lane + AVX2 4-lane consolidated loads of evaluation points
+    # with inner uint64 mul-add-reduce per lane. Sibling of W10 T2 (int64
+    # Horner) and W14 T2 (F_p[x] add/sub). ENV-gated three-state dispatch
+    # (GNFS_POLY_HORNER_MOD_SIMD). SIMD-acceleration window p <= 2^31;
+    # falls back to scalar reference for larger p (scalar path supports
+    # the full p < 2^32 range via uint64 widening).
+    add_executable(test_poly_horner_mod_simd
+        tests/test_poly_horner_mod_simd.cpp
+    )
+    target_link_libraries(test_poly_horner_mod_simd PRIVATE gnfs_core)
+    add_test(NAME PolyHornerModSimd COMMAND test_poly_horner_mod_simd)
+    set_tests_properties(PolyHornerModSimd PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # 关系过滤器测试
     add_executable(test_filter
         tests/test_filter.cpp
