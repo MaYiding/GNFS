@@ -1103,6 +1103,20 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME ThresholdScanSimd COMMAND test_threshold_scan_simd)
     set_tests_properties(ThresholdScanSimd PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Sieve uint8_t saturated subtract SIMD helper
+    # (GNFS_SIEVE_SATURATED_SUB_SIMD). NEON 16-lane `vqsubq_u8` /
+    # AVX2 32-lane `_mm256_subs_epu8` in-place saturating subtract over
+    # a uint8 span — typical sieve uniform-bias adjustment primitive
+    # (`values[i] = max(0, int(values[i]) - bias)`). Helper-only
+    # future infrastructure; the bucket sieve main loop does not
+    # currently call into it.
+    add_executable(test_saturated_sub_simd
+        tests/test_saturated_sub_simd.cpp
+    )
+    target_link_libraries(test_saturated_sub_simd PRIVATE gnfs_core)
+    add_test(NAME SaturatedSubSimd COMMAND test_saturated_sub_simd)
+    set_tests_properties(SaturatedSubSimd PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Montgomery batch modular inversion helper (GNFS_ECM_BATCH_INV)
     add_executable(test_batch_inversion
         tests/test_batch_inversion.cpp
