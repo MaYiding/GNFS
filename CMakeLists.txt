@@ -1070,6 +1070,19 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME LatticeCoordsSimd COMMAND test_lattice_coords_simd)
     set_tests_properties(LatticeCoordsSimd PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Sieve uint8_t threshold count SIMD helper
+    # (GNFS_SIEVE_COUNT_ABOVE_THRESHOLD_SIMD). NEON 16-lane / AVX2 32-lane
+    # `count(values[i] >= threshold)` over a uint8 span — typical sieve
+    # apply-phase candidate count primitive. Helper-only future
+    # infrastructure; the bucket sieve main loop does not currently
+    # call into it.
+    add_executable(test_threshold_scan_simd
+        tests/test_threshold_scan_simd.cpp
+    )
+    target_link_libraries(test_threshold_scan_simd PRIVATE gnfs_core)
+    add_test(NAME ThresholdScanSimd COMMAND test_threshold_scan_simd)
+    set_tests_properties(ThresholdScanSimd PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Montgomery batch modular inversion helper (GNFS_ECM_BATCH_INV)
     add_executable(test_batch_inversion
         tests/test_batch_inversion.cpp
