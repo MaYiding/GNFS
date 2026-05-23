@@ -2845,6 +2845,87 @@ coords + basis / undersized a_out clamp / 1M cells perf info).
 **Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点, ENV
 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
 
+### Sieve threshold count SIMD (GNFS_SIEVE_COUNT_ABOVE_THRESHOLD_SIMD)
+
+**ENV `GNFS_SIEVE_COUNT_ABOVE_THRESHOLD_SIMD=auto|0|1`** (2026-05-23 实施, W14 T4, default auto):
+Lattice sieve `sieve_array_` (uint8_t log residuals) 批量 threshold 比较
+helper. 计算 `count_above_threshold_u8(values, threshold)` 即
+`count(i: values[i] >= threshold)`. 应用场景: lattice sieve apply phase
+估算 candidate 数 (workload telemetry), threshold pre-screen (在交付候选
+列表之前先 cheap-count 一次防止下游 cofactor cascade 被假阳性灌爆).
+helper-only future-infra, 主 sieve loop 未 wire-in.
+
+```bash
+GNFS_SIEVE_COUNT_ABOVE_THRESHOLD_SIMD=auto ./gnfs <N>   # 默认: NEON/AVX2 可用则启用
+GNFS_SIEVE_COUNT_ABOVE_THRESHOLD_SIMD=0    ./gnfs <N>   # 强制 scalar (回归 bisect 用)
+GNFS_SIEVE_COUNT_ABOVE_THRESHOLD_SIMD=off  ./gnfs <N>   # 同 0
+GNFS_SIEVE_COUNT_ABOVE_THRESHOLD_SIMD=1    ./gnfs <N>   # 强制 SIMD (无 SIMD 平台 fallback)
+GNFS_SIEVE_COUNT_ABOVE_THRESHOLD_SIMD=on   ./gnfs <N>   # 同 1
+unset GNFS_SIEVE_COUNT_ABOVE_THRESHOLD_SIMD             # 同 auto
+```
+
+**Helper API** (`include/gnfs/sieve/threshold_scan_simd.hpp`):
+- `count_above_threshold_u8(values, threshold)` — 主入口, 返回
+  `count(i: values[i] >= threshold)`. 空 span 直接 return 0.
+- `count_above_threshold_u8_scalar(values, threshold)` — scalar reference
+  (test golden + 无 SIMD fallback).
+- `threshold_scan_simd_mode()` — 返回 `ThresholdScanSimdMode { Auto,
+  ForceOff, ForceOn }`.
+- `threshold_scan_simd_enabled()` — 三态 dispatcher decision (ForceOff →
+  false, ForceOn/Auto + supported → true, 否则 false).
+- `threshold_scan_simd_supported()` — compile-time `__ARM_NEON / __AVX2__`
+  探测.
+- `threshold_scan_simd_reset_env_cache_for_testing()` — 测试专用
+  re-resolve ENV.
+
+**算法**:
+- NEON 16-lane: `vld1q_u8(16 bytes)` → `vcgeq_u8(v, broadcast(t))` →
+  `vandq_u8(pass_mask, 0x01)` → `vpaddlq_u8 → uint16x8_t` (pairwise
+  widening add, 单 chunk 总和最大 16, 安全 < 2^16) → `vaddvq_u16`
+  (horizontal sum) per chunk. Tail scalar `>=`.
+- AVX2 32-lane: `_mm256_cmpgt_epi8` 是 signed 比较, 必须经 sign-bias
+  XOR 0x80 把 unsigned 转 signed. 因为 NEON path 用 `vcgeq_u8` (>=)
+  语义, AVX2 这边用 `cmpgt(v, t-1)` 等价于 `v >= t`. 当 `threshold == 0`
+  时显式 short-circuit 32 避免 `t-1 = 0xFF` 的下溢. `_mm256_movemask_epi8`
+  → 32-bit bitmask → `__builtin_popcount` per chunk. Tail scalar `>=`.
+
+**Bit-for-bit guarantee**: `popcount({values[i] >= threshold})` 是
+deterministic 函数 of input bytes. SIMD path 与 scalar 路径返回值
+严格相等 (`size_t == size_t`, 不容忍单 byte 差异). 空 input 返回 0,
+threshold == 0 返回 size, threshold == 255 返回 0xFF byte 数. 单元
+测试 `tests/test_threshold_scan_simd.cpp` 14 个测试强制覆盖 (4 ENV /
+empty / single byte below/at/above / aligned 32/64 / unaligned 33/65 /
+random 1024 + threshold sweep / edge cases — all-equal/all-below/
+all-above/t=0/t=255 / ForceOff vs Auto parity / 1M-byte perf info).
+
+**ROI 与定位**:
+- 主要 ROI: 大 sieve region (50d+/60d 几万 byte sieve_array_) 上
+  apply-scan 的候选预估或 threshold pre-screen. M5 ARM64 实测 1M byte
+  scan: scalar 3.68 ms vs SIMD 2.14 ms → ~1.7x speedup (NEON 16-lane
+  + `CNT` 流水线效率较高, 与 W9 `popcount_simd` 在 uint64 输入路径上
+  Apple Silicon autovectorise 的"持平"行为不同; 这里 uint8 输入 +
+  比较语义让 compiler autovectorise 不发生, 故 SIMD 实际胜出更明显).
+  x86_64 AVX2 上 32-lane + movemask + popcount 单 chunk overhead 极低,
+  ROI 更显著.
+- helper 当前 standalone (主路径 `sieve_bucket_region` 的 apply scan 未
+  wire-in), 是 future-infrastructure. wire-in 时调用方在 apply scan 入口
+  或 telemetry probe 处直接调 `count_above_threshold_u8(span, threshold)`.
+- 与 W6 region_tile / W6 norm_tile / W7 bucket_prefetch / W11 lattice
+  basis parallel / W12 T4 apply_tile_parallel / W13 T4 lattice_coords_simd
+  完全 orthogonal: 各自解决不同 sieve hot site (cache tile / prefetch /
+  basis reduce / apply-tile dispatch / coord projection / 本 helper 是
+  threshold count primitive). 可同时启用而不冲突.
+
+**集成点** (2026-05-23, W14 T4):
+- `include/gnfs/sieve/threshold_scan_simd.hpp` — helper API + 三态 ENV
+  gate + NEON 16-lane / AVX2 32-lane inner kernels + scalar reference.
+- `tests/test_threshold_scan_simd.cpp` — 14 instant tier tests, TIMEOUT 60.
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  sieve 模块.
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点, ENV
+对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### Factor Base CZ roots 并行 (GNFS_FB_ROOTS_THREADS)
 
 **ENV `GNFS_FB_ROOTS_THREADS=N`** (2026-05-22 实施, default 0, range [0, hardware_concurrency * 2]):
