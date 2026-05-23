@@ -926,6 +926,18 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME PolySquare COMMAND test_poly_square)
     set_tests_properties(PolySquare PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # F_p[x] coefficient batch add / sub mod-p SIMD helper (W14 T2):
+    # NEON 4-lane + AVX2 8-lane wide add/sub with conditional reduce
+    # against p. ENV-gated three-state dispatch (GNFS_POLY_ADD_MOD_SIMD).
+    # SIMD-acceleration window p <= 2^31; falls back to scalar (uint64
+    # widening) for larger p.
+    add_executable(test_poly_add_mod_simd
+        tests/test_poly_add_mod_simd.cpp
+    )
+    target_link_libraries(test_poly_add_mod_simd PRIVATE gnfs_core)
+    add_test(NAME PolyAddModSimd COMMAND test_poly_add_mod_simd)
+    set_tests_properties(PolyAddModSimd PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # 关系过滤器测试
     add_executable(test_filter
         tests/test_filter.cpp
