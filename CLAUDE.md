@@ -3499,6 +3499,93 @@ all-above/t=0/t=255 / ForceOff vs Auto parity / 1M-byte perf info).
 **Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点, ENV
 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
 
+### Sieve uint8 saturated subtract SIMD (GNFS_SIEVE_SATURATED_SUB_SIMD)
+
+**ENV `GNFS_SIEVE_SATURATED_SUB_SIMD=auto|0|1`** (2026-05-23 实施, W15 T4, default auto):
+Lattice sieve `sieve_array_` (uint8_t log residuals) 批量 in-place 饱和减法
+helper. 计算 `values[i] = max(0, int(values[i]) - bias)` for all `i`. 应用
+场景: sieve apply phase 后对 `sieve_array_` 做 uniform bias 减法 + 零饱和,
+candidate filter pre-pass, threshold pre-screen 之前的 baseline 调整. NEON
+`vqsubq_u8` (ARM64) 与 AVX2 `_mm256_subs_epu8` (x86_64) 都是 single CPU
+instruction per lane, 无 compare-then-branch 尾部 — scalar 路径 per byte
+需要 `cmp + branch + sub`. helper-only future-infra, 主 sieve loop 未
+wire-in.
+
+```bash
+GNFS_SIEVE_SATURATED_SUB_SIMD=auto ./gnfs <N>   # 默认: NEON/AVX2 可用则启用
+GNFS_SIEVE_SATURATED_SUB_SIMD=0    ./gnfs <N>   # 强制 scalar (回归 bisect 用)
+GNFS_SIEVE_SATURATED_SUB_SIMD=off  ./gnfs <N>   # 同 0
+GNFS_SIEVE_SATURATED_SUB_SIMD=1    ./gnfs <N>   # 强制 SIMD (无 SIMD 平台 fallback)
+GNFS_SIEVE_SATURATED_SUB_SIMD=on   ./gnfs <N>   # 同 1
+unset GNFS_SIEVE_SATURATED_SUB_SIMD             # 同 auto
+```
+
+**Helper API** (`include/gnfs/sieve/saturated_sub_simd.hpp`):
+- `saturated_sub_u8_batch(values, bias)` — 主入口, `values[i] = max(0,
+  int(values[i]) - bias)` for all `i`. Empty span 直接 return (no-op),
+  `bias == 0` short-circuit (identity, 零写入).
+- `saturated_sub_u8_batch_scalar(values, bias)` — scalar reference (test
+  golden + 无 SIMD fallback).
+- `saturated_sub_simd_mode()` — 返回 `SaturatedSubSimdMode { Auto,
+  ForceOff, ForceOn }`.
+- `saturated_sub_simd_enabled()` — 三态 dispatcher decision (ForceOff →
+  false, ForceOn/Auto + supported → true, 否则 false).
+- `saturated_sub_simd_supported()` — compile-time `__ARM_NEON / __AVX2__`
+  探测.
+- `saturated_sub_simd_reset_env_cache_for_testing()` — 测试专用
+  re-resolve ENV.
+
+**算法**:
+- NEON 16-lane: `vld1q_u8(16 bytes)` → `vqsubq_u8(v, broadcast(bias))`
+  → `vst1q_u8(16 bytes)`. Tail scalar `v >= bias ? v - bias : 0`.
+- AVX2 32-lane: `_mm256_loadu_si256(32 bytes)` →
+  `_mm256_subs_epu8(v, broadcast(bias))` → `_mm256_storeu_si256(32
+  bytes)`. Tail scalar. `_mm256_subs_epu8` 是 native unsigned
+  saturating subtract, 无需 W14 T4 threshold scan 那种 sign-bias trick
+  (因为 NEON 与 AVX2 都直接提供 unsigned saturating subtract intrinsic).
+
+**Bit-for-bit guarantee**: `max(0, int(values[i]) - bias)` 是
+deterministic 函数 of input byte 与 bias. SIMD path 与 scalar 路径
+mutate 后的 span 字节严格相等 (`uint8_t == uint8_t`, 不容忍单 byte 差异).
+空 span 不写, bias=0 不写 (零 memory traffic), bias=255 把每个 byte
+collapse 到 0 (包括 `v == 255` 因为 `255 - 255 = 0`). 单元测试
+`tests/test_saturated_sub_simd.cpp` 14 个测试强制覆盖 (4 ENV / empty /
+single byte 3 values × 3 biases = 9 sub-cases / bias=0 zero-write
+contract / bias=255 collapse / aligned 32 / unaligned 33 / unaligned 65
+/ random 1000 + bias sweep / ForceOff vs Auto parity / 1M-byte perf
+info).
+
+**ROI 与定位**:
+- 主要 ROI: 大 sieve region (50d+/60d 几万 byte sieve_array_) 上 uniform
+  bias adjustment, scalar 路径 per byte 走 `cmp + branch + sub` 受
+  branch prediction 影响 (当 `v >= bias` 分布约 50% 时最严重). M5 ARM64
+  实测 1M byte: scalar 6.14 ms (6.14 ns/byte) vs SIMD 0.60 ms (0.60
+  ns/byte) → **10.21x speedup**. 这是 W14/W15 sieve SIMD helper family
+  中最显著的 — saturating subtract 是 SIMD 一条指令最经典场景 (intrinsic
+  直接提供 unsigned saturating semantics, 无 sign-bias trick 开销).
+  x86_64 AVX2 上 32-lane subs_epu8 应该有类似或更显著的加速.
+- helper 当前 standalone (主路径 `sieve_bucket_region` 与候选预筛选未
+  wire-in), 是 future-infrastructure. wire-in 时调用方在 sieve_array_
+  uniform bias 调整入口或 candidate pre-screen 处直接调
+  `saturated_sub_u8_batch(span, bias)`.
+- 与 W6 region_tile / W6 norm_tile / W7 bucket_prefetch / W11 lattice
+  basis parallel / W12 T4 apply_tile_parallel / W13 T4 lattice_coords_simd
+  / W14 T4 threshold_scan_simd 完全 orthogonal: 各自解决不同 sieve hot
+  site (cache tile / prefetch / basis reduce / apply-tile dispatch /
+  coord projection / threshold count / 本 helper 是 saturated subtract
+  primitive). 可同时启用而不冲突.
+
+**集成点** (2026-05-23, W15 T4):
+- `include/gnfs/sieve/saturated_sub_simd.hpp` — helper API + 三态 ENV
+  gate + NEON 16-lane `vqsubq_u8` / AVX2 32-lane `_mm256_subs_epu8` inner
+  kernels + scalar reference.
+- `tests/test_saturated_sub_simd.cpp` — 14 instant tier tests, TIMEOUT 60.
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  sieve 模块.
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点, ENV
+对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### Factor Base CZ roots 并行 (GNFS_FB_ROOTS_THREADS)
 
 **ENV `GNFS_FB_ROOTS_THREADS=N`** (2026-05-22 实施, default 0, range [0, hardware_concurrency * 2]):
