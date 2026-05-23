@@ -560,6 +560,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME MpzGcdParallel COMMAND test_mpz_gcd_parallel)
     set_tests_properties(MpzGcdParallel PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # ── W15 T5: GMP mpz_mul batch parallel dispatcher (GNFS_MPZ_MUL_BATCH_THREADS) ──
+    add_executable(test_mpz_mul_parallel
+        tests/test_mpz_mul_parallel.cpp
+    )
+    target_link_libraries(test_mpz_mul_parallel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME MpzMulParallel COMMAND test_mpz_mul_parallel)
+    set_tests_properties(MpzMulParallel PROPERTIES LABELS "instant" TIMEOUT 60)
+
     add_executable(test_sieve_basic
         tests/test_sieve_basic.cpp
     )
