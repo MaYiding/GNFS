@@ -1947,6 +1947,140 @@ out.size())`. spans 长度不同时只处理公共前缀, `out` tail 不动 (匹
 **Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点, ENV
 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
 
+### Polynomial modular Horner batch evaluation SIMD (GNFS_POLY_HORNER_MOD_SIMD)
+
+**ENV `GNFS_POLY_HORNER_MOD_SIMD=auto|0|1`** (2026-05-23 实施, W15 T2, default auto):
+F_p[x] 多点 Horner 求值 mod p (p prime, p < 2^32) 的 SIMD 助手, polynomial
+模块第二个 mod-p 算术 SIMD primitive (兄弟 helper: W10 T2 int64 Horner
+`horner_batch_simd.hpp` + W14 T2 add/sub `add_mod_simd.hpp`). 应用场景:
+Cantor-Zassenhaus polynomial root finding 候选 root 验证 (检验
+`f(x_i) == 0 mod p` over a batch of probe points), polynomial chain compute
+评估批量点, factor-base 构建 systematic small-prime probes. Pure header,
+不依赖外部库. 提供 batched 入口:
+
+```text
+batch_eval_poly_mod(coeffs, xs, p, ys):
+    ys[i] = (c[0] + c[1]*xs[i] + ... + c[d]*xs[i]^d) mod p
+```
+
+NEON 2-lane (ARM64) / AVX2 4-lane (x86_64) 一次性 load K 个 evaluation
+points 到 SIMD register, inner Horner mul-add-reduce
+`acc = (uint64(acc) * x + c[k]) % p` 在 scalar uint64 GPR per lane 跑
+(NEON 缺 `vmulq_u64`, AVX2 缺整数除法). SIMD 价值在 consolidated load /
+store 减小 address-gen pressure.
+
+```bash
+GNFS_POLY_HORNER_MOD_SIMD=auto ./gnfs <N>   # 默认: NEON/AVX2 可用且 p <= 2^31 则启用
+GNFS_POLY_HORNER_MOD_SIMD=0    ./gnfs <N>   # 强制 scalar (回归 bisect 用)
+GNFS_POLY_HORNER_MOD_SIMD=off  ./gnfs <N>   # 同 0
+GNFS_POLY_HORNER_MOD_SIMD=1    ./gnfs <N>   # 强制 SIMD (无 SIMD 平台 fallback)
+GNFS_POLY_HORNER_MOD_SIMD=on   ./gnfs <N>   # 同 1
+unset GNFS_POLY_HORNER_MOD_SIMD             # 同 auto
+```
+
+**Helper API** (`include/gnfs/polynomial/horner_mod_simd.hpp`):
+- `batch_eval_poly_mod(coeffs, xs, p, ys)` — 主入口, per-point
+  `ys[i] = (c[0] + c[1]*xs[i] + ... + c[d]*xs[i]^d) mod p`. SIMD path 当
+  `poly_horner_mod_simd_enabled() == true` 且 `p <= 2^31` 时启用.
+  Defensive clamp 到 `min(xs.size(), ys.size())`.
+- `batch_eval_poly_mod_scalar(coeffs, xs, p, ys)` — scalar reference
+  (test golden + 无 SIMD fallback). 用 `uint64` widening 处理
+  `acc * x + c[k]` 的 partial sum, 整个 `p < 2^32` 范围都正确.
+- `horner_eval_one_mod_scalar(coeffs, x, p)` — per-point Horner, return
+  `uint32_t`. SIMD path 的 tail residual 直接调用.
+- `poly_horner_mod_simd_mode()` — 返回 `PolyHornerModSimdMode { Auto,
+  ForceOff, ForceOn }`.
+- `poly_horner_mod_simd_enabled()` — 三态 dispatcher decision (ForceOff →
+  false, ForceOn/Auto + supported → true, 否则 false). 注意 `p` 是否在
+  SIMD 窗口内的检查在每次 `batch_eval_poly_mod` 调用内部完成 (不在这个
+  predicate 内).
+- `horner_mod_simd_supported()` — compile-time `__ARM_NEON / __AVX2__` 探测.
+- `poly_horner_mod_simd_reset_env_cache_for_testing()` — 测试专用
+  re-resolve ENV.
+
+**算法 (Horner schema mod p)**:
+- 每个 evaluation point:
+  `acc = c[d]; for k in [d-1..0]: acc = (uint64(acc) * x + c[k]) % p`.
+- NEON 2-lane: `vld1_u32(2 lanes)` 读 xs 8 字节, 提取到 GPR scalar, 每 lane
+  独立跑 `uint64` mul-add-mod, `vst1_u32` consolidated store 写 ys. Tail
+  走 scalar.
+- AVX2 4-lane: `_mm_loadu_si128(4 lanes)` 读 xs 16 字节 (SSE2 boundary load,
+  避免拉 AVX2 256-bit 仅为 4×uint32), 提取 4 lane scalar, 4 个 lane mul-add-mod
+  在 GPR 并发 (compiler 排度独立), `_mm_storeu_si128` store. Tail scalar.
+
+**Precondition (caller responsibility)**:
+- `p` 是素数 (helper 不校验 primality, 仅用 p 作 canonical reduction modulus).
+- 每个输入已 reduced: `coeffs[k] < p` and `xs[i] < p` for all 有效 index.
+  helper 不会 re-reduce 输入 (那会掩盖 caller reduction pipeline 的 bug).
+
+**SIMD 加速窗口**: `p <= 2^31`. SIMD path 与 scalar path 都用 uint64 widening,
+但 dispatcher 在 `p > 2^31` 时强制 fallback 到 scalar reference 以保持与
+W14 T2 兄弟 helper 的 boundary 文档一致. scalar 路径本身覆盖整个
+`p < 2^32` 范围 (产品 `acc * x` 上界 `(p-1)^2 < 2^64` 仍 fits uint64).
+单元测试覆盖 `p > 2^31` 的 fallback case (p = 2147483659, 紧邻 2^31 之上,
+第一个 prime > 2^31).
+
+**Bit-for-bit guarantee**: 对任意 (coeffs, xs, p) 满足 precondition (p prime,
+p < 2^32, coeffs[k] < p, xs[i] < p), SIMD path 与 scalar path 输出严格
+per-index 一致. ENV gate 值仅影响 dispatch 内核, 不影响数学结果. 输出
+系数永远满足 `ys[i] < p`. 单元测试 `tests/test_poly_horner_mod_simd.cpp`
+19 个测试强制覆盖 (4 ENV 解析 + empty xs / empty coeffs / single xs +
+deg=0 (constant) / deg=1 (linear) 手算 + random sweep deg=5 across
+3 primes (101, 65537, 2^31-1) + random 1000 deg=8 + ForceOff vs Auto
+parity 256 evals + unaligned size sweep 1..33 across NEON 2-lane 与
+AVX2 4-lane boundaries + SIMD window boundary (p = 2^31 in-window 与
+p = 2147483659 fallback) + Mersenne p = 2^31-1 + reset env cache hook +
+defensive clamping (xs > ys / ys > xs / coeffs >> xs) + xs all zeros →
+ys all equal coeffs[0] + 1M-eval perf info probe).
+
+**Defensive clamping**: helper clamp 迭代次数到 `min(xs.size(), ys.size())`.
+spans 长度不同时只处理公共前缀, `ys` tail 不动 (匹配 W10 T2
+`horner_batch_simd` / W14 T2 `add_mod_simd` 兄弟 helper 的契约). 测试强制
+覆盖. 空 xs short-circuit, 空 coeffs 写 0 到每个 ys[i] (degree-(-1)
+polynomial = zero polynomial).
+
+**与兄弟 helper 的区别 (polynomial mod-p SIMD family 第 2 名成员)**:
+- **W10 T2 `horner_batch_simd` (int64 Horner, `batch_eval_poly_int64`)**:
+  无模数, 累加器走 native int64 mul / add, 容许 signed wrap-around. 适用
+  Murphy E rotation sweep / Kleinjung skewness grid 等无 modulus 场景.
+- **W14 T2 `add_mod_simd` (mod-p add/sub, `add_mod_p_batch` / `sub_mod_p_batch`)**:
+  modulus 算术但只做 add/sub, 用 NEON `vaddq_u32` / `_mm256_add_epi32` +
+  conditional subtract reduce (branch-free).
+- **W15 T2 `horner_mod_simd` (mod-p Horner eval, `batch_eval_poly_mod`)**:
+  modulus 算术 + multiplication chain + per-step reduction. 三者覆盖不同
+  caller path: int64 vs mod-p, add/sub vs full polynomial eval. 可同时启用.
+
+**ROI 与定位**:
+- 主要 ROI: 多点 polynomial modular evaluation 是 CZ root finding inner
+  loop 的高频 op. perf-info 实测 1M 系数 deg=8 NEON ARM64 M5 Debug:
+  scalar 22.05ms (22.05ns/eval) vs SIMD 16.24ms (16.24ns/eval) → 1.36x
+  speedup; Release: scalar 9.07ms vs SIMD 7.43ms → 1.22x speedup. 加速
+  比 W14 T2 add/sub 稍弱, 原因: Horner inner mul-add-mod 是 scalar uint64
+  serial chain (NEON 缺 vmulq_u64, AVX2 缺整数除法), SIMD 加速主要来自
+  load/store 摊销; W14 T2 add/sub 整个 conditional reduce 都能 branch-free
+  vector. ROI 在 deg 更大 / 更紧凑 caller loop 时更显著.
+- helper 当前 standalone (主路径 CZ root finding / `ModularPoly::evaluate`
+  未 wire-in), 是 future-infrastructure. wire-in 时 caller 把 inner
+  per-point Horner 切到 batched `batch_eval_poly_mod`, 适用 CZ 求根 +
+  polynomial chain 的 hot loop.
+- 与 W11 `GNFS_GF2_ROW_XOR_SIMD` / W13 `GNFS_GF2_AND_WORDS_SIMD` / W14 T2
+  `GNFS_POLY_ADD_MOD_SIMD` / W10 T2 `GNFS_POLY_HORNER_BATCH_SIMD` 完全
+  orthogonal: GF(2) vs mod-p vs int64 不同 ALU 路径, add/sub vs mul-eval
+  不同算法 hot site. 二者可同时启用.
+- 默认 auto 在 macOS arm64 / Linux x86_64 都启用 SIMD path; ENV=0 在
+  PMU sweep / sanitizer 调试时回到 scalar baseline.
+
+**集成点** (2026-05-23, W15 T2):
+- `include/gnfs/polynomial/horner_mod_simd.hpp` — helper API + 三态 ENV gate +
+  NEON 2-lane / AVX2 4-lane inner kernels + scalar reference +
+  `modulus_in_simd_window(p)` predicate.
+- `tests/test_poly_horner_mod_simd.cpp` — 19 instant tier tests, TIMEOUT 60.
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  polynomial 模块.
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点, ENV
+对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### Polynomial subquadratic divrem (GNFS_POLY_DIVREM_SUBQUADRATIC)
 
 **ENV `GNFS_POLY_DIVREM_SUBQUADRATIC=auto|0|1`** (2026-05-22 实施, W11 T2, default auto):
