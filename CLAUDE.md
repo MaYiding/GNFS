@@ -2698,6 +2698,119 @@ clamping / a==b self-XOR 零距离 identity).
 **Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
 所以 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
 
+### GF(2) per-row popcount SIMD batch (GNFS_GF2_ROW_POPCOUNT_SIMD)
+
+**ENV `GNFS_GF2_ROW_POPCOUNT_SIMD=auto|0|1`** (2026-05-23 实施, W15 T1, default auto):
+GF(2) 行主序 packed 矩阵的 per-row Hamming weight helper. 给定
+`row_count * row_words` 个 uint64_t 连续摆放的 row-major matrix (行 r
+占 `matrix[r * row_words .. r * row_words + row_words)`), helper 把每
+行的 set-bit 总数写到 `out_row_weights[r]`. 应用场景: matrix
+column-weight tally, dependency 向量 parity 检查, sparsity profile
+统计, 或任何需要 per-row Hamming weight 作 primitive 的 caller.
+Pure header, 不依赖外部库.
+
+```bash
+GNFS_GF2_ROW_POPCOUNT_SIMD=auto ./gnfs <N>   # 默认: NEON/AVX2 可用则启用
+GNFS_GF2_ROW_POPCOUNT_SIMD=0    ./gnfs <N>   # 强制 scalar (回归 bisect 用)
+GNFS_GF2_ROW_POPCOUNT_SIMD=off  ./gnfs <N>   # 同 0
+GNFS_GF2_ROW_POPCOUNT_SIMD=1    ./gnfs <N>   # 强制 SIMD (无 SIMD 平台 fallback)
+GNFS_GF2_ROW_POPCOUNT_SIMD=on   ./gnfs <N>   # 同 1
+unset GNFS_GF2_ROW_POPCOUNT_SIMD             # 同 auto
+```
+
+**Helper API** (`include/gnfs/linalg/detail/row_popcount_simd.hpp`):
+- `per_row_popcount_words(matrix, row_words, out_row_weights)` — 主
+  入口, `out_row_weights[r] = popcount(matrix[r * row_words .. (r+1) *
+  row_words))`. SIMD path 当 `row_popcount_simd_enabled()` 为 true
+  时启用. Defensive clamp 到
+  `min(matrix.size() / row_words, out_row_weights.size())`.
+- `per_row_popcount_words_scalar(matrix, row_words, out)` — scalar
+  reference (test golden + 无 SIMD fallback).
+- `row_popcount_simd_mode()` — 返回 `RowPopcountSimdMode { Auto,
+  ForceOff, ForceOn }`.
+- `row_popcount_simd_enabled()` — 三态 dispatcher decision (ForceOff →
+  false, ForceOn/Auto + supported → true, 否则 false).
+- `row_popcount_simd_supported()` — compile-time `__ARM_NEON / __AVX2__`
+  探测.
+- `row_popcount_simd_reset_env_cache_for_testing()` — 测试专用
+  re-resolve ENV.
+
+**与兄弟 helper 的区别 (helper family 第 6 名成员)**:
+- W9 `popcount_simd` (`batch_popcount_words(words, out_u32)`) — 单输入,
+  flat 1-D batch popcount over 单 `uint64_t` span. 无 row 维度.
+- W10 `and_popcnt_simd` (`batch_and_popcount_words(a, b, out_u32)`) —
+  双输入 fused AND-then-popcount, flat 1-D.
+- W11 `xor_words_simd` (`batch_xor_words(dst, src)`) — 双输入,
+  in-place flat 1-D `dst[i] ^= src[i]`.
+- W13 T1 `and_words_simd` (`batch_and_words(a, b, out)`) — 双输入,
+  三参 flat 1-D `out[i] = a[i] & b[i]`.
+- W14 T1 `xor_popcnt_simd` (`batch_xor_popcount_words(a, b, out_u32)`)
+  — 双输入 fused XOR-then-popcount, flat 1-D.
+- **W15 T1 `row_popcount_simd` (`per_row_popcount_words(matrix,
+  row_words, out_u64)`) — 单矩阵输入加 explicit row width, 输出每
+  行一个 weight**. helper 家族第一个尊重 2-D 矩阵 layout 而非 flat span
+  的成员. W9 `total_popcount_words` 能对单行算出同样的 answer 但无法
+  mass-process N 行 (每行需要独立的 dispatcher gate read); 本 helper
+  读 SIMD gate 一次, 然后在 outer loop 折叠所有行.
+
+**算法**:
+- NEON: 每行内部 `vld1q_u64(2 word)` → `vcntq_u8` (16-byte popcount) →
+  `vaddvq_u8` (per-128-bit horizontal sum). 2-word stride. Tail scalar
+  `__builtin_popcountll`. Cross-row 由 outer for-loop 处理.
+- AVX2: 每行内部 `_mm256_loadu_si256(4 word)` → `_mm256_popcnt_epi64`
+  若 AVX-512 VPOPCNTDQ 可用, 否则 fallback `_mm_popcnt_u64` 4-wide unroll
+  after 4-lane store. 4-word stride. Tail scalar.
+- Cross-row 并行**不**由本 helper 提供 — caller 通过 W7 /
+  W8 / W10 T4 / W11 / W12 T4 / W13 T5 等 `parallel_*` 家族外层
+  dispatcher 自行决定串/并.
+
+**Bit-for-bit guarantee**: per-row Hamming weight 是 pure function of
+row words, SIMD path 与 scalar `__builtin_popcountll` 累加输出严格
+per-row 一致 (`uint64_t == uint64_t`, 不容忍单字差异). 每行独立计算,
+partial sum 不跨越 row 边界. 输出顺序严格保留
+(`out_row_weights[r]` 永远对应 matrix row `r`). 单元测试
+`test_row_popcount_simd` 14 个测试强制覆盖 (ENV unset auto / explicit
+auto / 0/off ForceOff / 1/on ForceOn + 8 unrecognised tokens fall to
+Auto / empty matrix / row_words=0 silent no-op / single row single
+word 8 hand-verified patterns / single row aligned 32 / multi-row
+unaligned 33 x 10 / 100x100 random / ForceOff vs Auto parity /
+undersized out_row_weights defensive clamp / reset env cache hook /
+1M-row x 4-word perf info).
+
+**Defensive contract**:
+- `row_words == 0`: 静默 no-op, 不 touch outputs.
+- `out_row_weights.size() < matrix.size() / row_words`: 只写前
+  `out_row_weights.size()` 行, 越界行静默跳过.
+- `matrix.size() % row_words != 0`: 只处理 integer-row 前缀, 末尾
+  partial row 丢弃 (它不是 row-major 约定下合法的行).
+
+**ROI 与定位**:
+- 主要 ROI: 当 caller 需要 per-row weight tally (column-weight 累计,
+  dependency parity, sparsity stats), 本 helper 把 gate 读取从 N 次降
+  到 1 次, 并把 SIMD load/popcount 集中在每行 inner kernel. 真正
+  ROI 在 x86_64 AVX-512 VPOPCNTDQ 平台 (4 word per instruction) 或
+  长行 (row_words >> 4) 时显著.
+- helper 当前 standalone (主 pipeline 无 wire-in), 是 future-infra:
+  matrix column-weight tally, Block Lanczos / Block Wiedemann 依赖
+  parity, SGE column profile 等 explicit wire-in 后启用.
+- 默认 auto 在 macOS arm64 / Linux x86_64 都启用 SIMD path; ENV=0 在
+  PMU sweep / sanitizer 调试时回到 scalar baseline. perf-info 实测
+  1M row x 4 word M-series ARM64: scalar 4.52 ns/row vs SIMD 21.29
+  ns/row — 极短行 (row_words=4) 上 Apple Silicon scalar 路径已经
+  autovectorise 到接近上限, SIMD 多 1 load + 1 horizontal-sum 是
+  负 ROI. 真正 ROI 在长行 (row_words >= 16) 或 x86_64 AVX2 平台.
+
+**集成点** (2026-05-23, W15 T1):
+- `include/gnfs/linalg/detail/row_popcount_simd.hpp` — helper API + 三
+  态 ENV gate + NEON 2-word stride / AVX2 4-word stride inner kernels +
+  scalar reference + defensive clamp.
+- `tests/test_row_popcount_simd.cpp` — 14 instant tier tests, TIMEOUT 60.
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  linalg 模块.
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
+所以 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### GF(2) row word XOR SIMD batch (GNFS_GF2_ROW_XOR_SIMD)
 
 **ENV `GNFS_GF2_ROW_XOR_SIMD=auto|0|1`** (2026-05-22 实施, W11 T1, default auto):
