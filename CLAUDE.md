@@ -2372,6 +2372,111 @@ clamping / a==b 等同 plain popcount 防止 AND/OR/XOR 误用).
 **Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
 所以 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
 
+### GF(2) XOR-popcount SIMD batch (GNFS_GF2_XOR_POPCNT_SIMD)
+
+**ENV `GNFS_GF2_XOR_POPCNT_SIMD=auto|0|1`** (2026-05-23 实施, W14 T1, default auto):
+GF(2) batch `popcount(a[i] ^ b[i])` (Hamming distance per word) helper,
+与 W9 `GNFS_GF2_POPCNT_SIMD` / W10 `GNFS_GF2_AND_POPCNT_SIMD` /
+W11 `GNFS_GF2_ROW_XOR_SIMD` / W13 T1 `GNFS_GF2_AND_WORDS_SIMD` 并列的
+第五个 SIMD primitive. 提供 NEON 2-lane (ARM64, `veorq_u64 + vcntq_u8 +
+vaddv_u8`) / AVX2 4-lane (x86_64, `_mm256_xor_si256 + _mm256_popcnt_epi64`
+if AVX-512 VPOPCNTDQ available, else fall back `_mm_popcnt_u64` 4-wide)
+wide XOR-then-popcount 替代逐 word `__builtin_popcountll(a[i] ^ b[i])`.
+应用场景: Block Lanczos / Block Wiedemann 依赖向量漂移度量, GF(2) 基向量
+Hamming distance 检查, 对称差累加, parity-difference 等需要 batch
+XOR + popcount 两个 uint64_t array 的内核. Pure header, 不依赖外部库.
+
+```bash
+GNFS_GF2_XOR_POPCNT_SIMD=auto ./gnfs <N>   # 默认: NEON/AVX2 可用则启用
+GNFS_GF2_XOR_POPCNT_SIMD=0    ./gnfs <N>   # 强制 scalar (回归 bisect 用)
+GNFS_GF2_XOR_POPCNT_SIMD=1    ./gnfs <N>   # 强制 SIMD (无 SIMD 平台 fallback)
+unset GNFS_GF2_XOR_POPCNT_SIMD             # 同 auto
+```
+
+**Helper API** (`include/gnfs/linalg/detail/xor_popcnt_simd.hpp`):
+- `batch_xor_popcount_words(a, b, out)` — 主入口, `out[i] = popcount(a[i] ^ b[i])`.
+  SIMD path 当 `xor_popcnt_simd_enabled()` 为 true 时启用. `a.size() ==
+  b.size()` 必须成立 (debug build assert); `out.size() < a.size()` 时
+  defensive clamp 到 `out.size()` 防止 UB write past out.
+- `total_xor_popcount_words(a, b)` — 累加 sum 入口, 返回 `uint64_t` 总
+  Hamming distance.
+- `batch_xor_popcount_words_scalar(a, b, out)` — 朴素 `__builtin_popcountll(a ^ b)`
+  参考 (test golden + 无 SIMD fallback).
+- `total_xor_popcount_words_scalar(a, b)` — 朴素累加参考.
+- `xor_popcnt_simd_mode()` — 返回 `XorPopcntSimdMode { Auto, ForceOff, ForceOn }`.
+- `xor_popcnt_simd_enabled()` — 三态 dispatcher decision (ForceOff → false,
+  ForceOn/Auto + supported → true, 否则 false).
+- `xor_popcnt_simd_supported()` — compile-time `__ARM_NEON / __AVX2__` 探测.
+- `xor_popcnt_simd_reset_env_cache_for_testing()` — 测试专用 re-resolve ENV.
+
+**与兄弟 helper 的区别 (helper family 第 5 名成员)**:
+- W9 `popcount_simd` (`batch_popcount_words(words, out_u32)`) — 单输入,
+  缩减为 uint32 per-word Hamming weight + uint64 total. 不输出 word vector.
+- W10 `and_popcnt_simd` (`batch_and_popcount_words(a, b, out_u32)`) —
+  双输入 fused AND-then-popcount, 缩减为 uint32 per-word 权重 + total.
+  数学上等于 `popcount(a & b)` (intersection cardinality).
+- W11 `xor_words_simd` (`batch_xor_words(dst, src)`) — 双输入, **in-place**
+  `dst[i] ^= src[i]`, 保留 dst 作为 accumulator. 双参数 (无独立 out),
+  不缩减为 popcount.
+- W13 T1 `and_words_simd` (`batch_and_words(a, b, out)`) — 双输入, 三参,
+  保留 AND 后的 uint64 vector 供下游消费 (不 in-place, 不缩减为 popcount).
+- **W14 T1 `xor_popcnt_simd` (`batch_xor_popcount_words(a, b, out_u32)`) —
+  双输入 fused XOR-then-popcount, 缩减为 uint32 per-word Hamming distance +
+  uint64 total. 数学上等于 `popcount(a ^ b)` (symmetric difference
+  cardinality)**. 与 W10 AND-popcount 是 dual primitive — AND 计交集 bit
+  数 (共有), XOR 计对称差 bit 数 (相异).
+
+**算法**:
+- NEON: `vld1q_u64(2 word)` × 2 inputs → `veorq_u64` → `vcntq_u8`
+  (16-byte popcount) → `vget_low_u8 + vaddv_u8` (per-word horizontal sum)
+  per word. Tail 走 scalar `__builtin_popcountll(a ^ b)`.
+- AVX2: `_mm256_loadu_si256(4 word)` × 2 inputs → `_mm256_xor_si256` →
+  `_mm256_popcnt_epi64` 若 AVX-512 VPOPCNTDQ 可用, 否则 fallback
+  `_mm_popcnt_u64` 4-wide unroll after 4-lane store (POPCNT 指令在
+  Nehalem+ x86_64 单条).
+- Reduction: `total_xor_popcount_words` 用单条 `vaddvq_u8` (NEON) 或累加
+  4 个 popcount (AVX2) 减少 horizontal sum 次数.
+
+**Bit-for-bit guarantee**: `popcount(a ^ b)` 是 pure function of (a, b),
+SIMD path 与 scalar `__builtin_popcountll(a ^ b)` 输出严格 per-index 一致,
+reduction sum 同样 byte-identical. 空输入返回空 output / 零 total 而不
+touch pointers. `a == b` content (Hamming distance 0) 严格产出全零
+output (与 W10 AND-popcount 的 `popcount(a & a) = popcount(a)` 截然不同,
+单元测试强制覆盖此区别防止误路由). 单元测试 `test_xor_popcnt_simd` 14
+个测试强制覆盖 (4 ENV / empty / 10 single-word Hamming distance patterns
+含互补 0xAA^0x55 全异 / aligned 32 / unaligned 33 / random 1000 /
+total parity / ForceOff vs Auto parity / 1M perf info / undersized out
+clamping / a==b self-XOR 零距离 identity).
+
+**ROI 与定位**:
+- 主要 ROI: GF(2) 向量间 Hamming distance 度量 (Block Lanczos / Block
+  Wiedemann 依赖向量漂移检查, 多基差异) 的 hot path. 单一 fused
+  XOR+popcount kernel 比独立 XOR + 独立 popcount 少一次 memory traffic +
+  一次 register round-trip. 与 W10 AND-popcount 对偶 (AND 计交集 size,
+  XOR 计对称差 size).
+- helper 当前 standalone (主 pipeline 无 wire-in), 是 future-infra:
+  Block Lanczos / Block Wiedemann 内部 distance metric / drift check /
+  parity-diff reduction 等 explicit wire-in 后启用.
+- 默认 auto 在 macOS arm64 / Linux x86_64 都启用 SIMD path; ENV=0 在
+  PMU sweep / sanitizer 调试时回到 scalar baseline. perf-info 实测
+  1M word M-series ARM64: scalar ~2.6 ms, SIMD ~6.7 ms (CNT autovectorise
+  在 Apple Silicon 上对 XOR-fused 单数组已经非常优秀, 而 SIMD 路径多了
+  2 倍 load + 1 个 XOR op; ROI 在 x86_64 AVX-512 VPOPCNTDQ 平台或 wire-in
+  到 Hamming distance hot loop 后体现).
+
+**集成点** (2026-05-23, W14 T1):
+- `include/gnfs/linalg/detail/xor_popcnt_simd.hpp` — helper API + ENV gate +
+  NEON / AVX2 inner kernels + 朴素 reference.
+- `tests/test_xor_popcnt_simd.cpp` — 14 个测试 (4 ENV 解析 + empty + 10
+  single-word patterns + aligned 32 + unaligned 33 + random 1000 +
+  total parity + ForceOff vs Auto parity + 1M perf info + undersized
+  out clamping + a==b self-XOR 零距离 identity).
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  linalg 模块.
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
+所以 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### GF(2) row word XOR SIMD batch (GNFS_GF2_ROW_XOR_SIMD)
 
 **ENV `GNFS_GF2_ROW_XOR_SIMD=auto|0|1`** (2026-05-22 实施, W11 T1, default auto):
