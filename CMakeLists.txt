@@ -1401,6 +1401,29 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME AndWordsSIMD COMMAND test_and_words_simd)
     set_tests_properties(AndWordsSIMD PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # SIMD GF(2) batch XOR-then-popcount helper (correctness, W14 T1).
+    # Fifth SIMD primitive in the popcount / and-popcount / xor-words /
+    # and-words family: exercises the scalar reference
+    # (`__builtin_popcountll(a ^ b)`), the NEON 2-lane (`veorq_u64 +
+    # vcntq_u8 + vaddv_u8`) / AVX2 4-lane (`_mm256_xor_si256 +
+    # _mm256_popcnt_epi64` or `_mm_popcnt_u64` fallback) batch path,
+    # and the ENV-gated dispatcher across edge sizes (empty,
+    # single-word Hamming distance patterns, aligned/unaligned batches,
+    # length mismatch clamping, a==b self-XOR zero identity, 1M perf
+    # probe). Two reduction entry points: per-word `uint32_t` weights
+    # and a `uint64_t` total Hamming distance. Counts differing bits
+    # between two packed GF(2) word arrays (sibling of AND-popcount,
+    # which counts shared bits). Useful for Block Lanczos / Block
+    # Wiedemann dependency drift metrics, GF(2) basis vector distance
+    # checks, and parity-difference reductions. Header-only helper, no
+    # extra link dependencies beyond the core library.
+    add_executable(test_xor_popcnt_simd
+        tests/test_xor_popcnt_simd.cpp
+    )
+    target_link_libraries(test_xor_popcnt_simd PRIVATE gnfs_core)
+    add_test(NAME XorPopcntSIMD COMMAND test_xor_popcnt_simd)
+    set_tests_properties(XorPopcntSIMD PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Linalg iteration progress telemetry helper (W12 T1).
     # ENV-gated, header-only logger that callers can opt-in wire into
     # Block Lanczos / Block Wiedemann SpMV loops to print iteration
