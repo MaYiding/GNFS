@@ -3834,6 +3834,132 @@ pattern 多 limb 路径 parity).
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   util 模块
 
+### Brent-Pollard rho 多配置并行 (GNFS_BRENT_POLLARD_RHO_THREADS)
+
+**ENV `GNFS_BRENT_POLLARD_RHO_THREADS=N`** (2026-05-23 实施, W15 T3, default 1, range [1, hardware_concurrency * 2]):
+W7 / W8 T1 / W9 T1 / W10 T4 / W11 T3 / W11 T4 / W12 T3 / W12 T4 / W13 T5 / W14 T5
+之后的 parallel-dispatcher 家族第 11 名成员. Brent's variant of Pollard rho
+(`include/gnfs/cofactor/brent_pollard_rho.hpp`) 是 cofactor pipeline 的一站,
+通过 `GNFS_COFACTOR_BRENT=1` 启用. 每次 rho run 由 `(c, x0)` 配置参数化
+(c 是 `f(x) = x^2 + c mod n` 的常数, x0 是起点), 不同 `(c, x0)` 的 rho run
+互相独立 — 共享 modulus `n`, 不共享 mutable state, 产 deterministic per-config
+output (`std::optional<...>` 携带 non-trivial factor 或 nullopt). 这让
+"try K different rho configurations" 成为 embarrassingly parallel batch.
+N=1 (默认) 走 sequential per-config 循环, 不创建 ThreadPool, 零开销保留
+原行为. N>=2 时把 K 个 config dispatch 到大小为 min(N, K) 的 ThreadPool,
+config 之间靠 future 同步收口.
+
+```bash
+GNFS_BRENT_POLLARD_RHO_THREADS=1 ./gnfs <N>    # default sequential, zero overhead
+GNFS_BRENT_POLLARD_RHO_THREADS=4 ./gnfs <N>    # 4 workers for parallel rho fan-out
+GNFS_BRENT_POLLARD_RHO_THREADS=8 ./gnfs <N>    # 8 workers
+unset GNFS_BRENT_POLLARD_RHO_THREADS           # same as N=1
+
+# 与 GNFS_COFACTOR_BRENT 正交 (二者完全独立)
+GNFS_COFACTOR_BRENT=1 GNFS_BRENT_POLLARD_RHO_THREADS=4 ./gnfs <N>
+```
+
+**与 GNFS_COFACTOR_BRENT 的关系 (正交两个 ENV)**:
+- `GNFS_COFACTOR_BRENT=1` 切换主 pipeline cofactor dispatch chain 在
+  SQUFOF 之后是否调用 Brent rho (vs 直接 fall through 到 legacy Pollard rho /
+  ECM). 单一布尔 gate, 与并发度无关.
+- `GNFS_BRENT_POLLARD_RHO_THREADS=N` 控制 batched 调用 `BrentPollardRho::split`
+  时的并发度. helper 是 opt-in 工具, 调用方需要自己构造 `(c, x0)` batch +
+  调 `parallel_brent_pollard_rho`. 默认 N=1 即 sequential, 与 legacy 行为
+  完全等价.
+- 二者可同时启用 (典型: `GNFS_COFACTOR_BRENT=1 GNFS_BRENT_POLLARD_RHO_THREADS=4`),
+  也可单独启用 / 单独关闭. 互不冲突.
+
+**Helper API** (`include/gnfs/cofactor/brent_pollard_rho_parallel.hpp`):
+- `brent_pollard_rho_threads()` — cached `std::once_flag` + `std::atomic<int>`
+  ENV reader, default 1, clamp `[1, hw*2]`
+- `resolve_brent_pollard_rho_threads(batch_size)` — 返回
+  `min(threads, batch_size)`, empty batch (size==0) 返回 0
+- `parallel_brent_pollard_rho<Result>(cs, x0s, worker_fn)` — 主入口, 返回
+  `std::vector<Result>` 按 input index 对齐
+- `brent_pollard_rho_threads_reset_env_cache_for_testing()` — 测试 re-resolve hook
+
+**并行模型**:
+- Outer = `parallel_brent_pollard_rho<Result, WorkerFn>(cs, x0s, worker_fn)`
+  over n configs
+- Inner = `gnfs::util::ThreadPool` 大小为 min(N, n), 每 task 调
+  `worker_fn(cs[i], x0s[i])` 写到 disjoint `results[i]` slot
+- 内部 Brent rho 算法 bit-identical (helper 仅改变外层 dispatch, 不触碰
+  `BrentPollardRho::split` 内核或 `cofactorizer.hpp` 主 dispatch chain)
+- 共享 read-only state (modulus `n`, per-cofactor metadata) 由 worker
+  通过 lambda capture 引用, 每个 task 拥有独立 Integer / GMP `mpz_*` buffer,
+  满足 GMP per-call disjoint-operands thread-safety
+- 空 batch (n==0) / 单 config (n==1) 都走 sequential 短路, 不创建 pool
+- Exception path: dispatcher drain 全部 future, 第一个 thrown exception
+  通过 `std::rethrow_exception` 传给 caller (不 swallow); pool 析构干净 join
+
+**Bit-for-bit guarantee**: 每 config rho run 是 `(c, x0)` + immutable
+shared state 的 pure function (caller responsibility). 不依赖 dispatch 顺序.
+Sequential (N=1) 与 parallel (N>=2) 路径产生的 per-index `Result` 完全一致.
+由 `tests/test_brent_pollard_rho_parallel.cpp` 强制覆盖 (100 / 1000 mock
+worker config N=1 vs N=4 / N=hw 严格 per-index assert, plus 50 个 deterministic
+semi-prime cofactor 通过真实 `BrentPollardRho::split` N=1 vs N=4 per-config
+`std::optional<Integer>` 完全一致).
+
+**输入语义 — Two-span shape (与 W14 T5 一致)**:
+- helper 消费两个 parallel input span `cs` + `x0s`, 长度必须相等
+- precondition: `cs.size() == x0s.size()`, 不等抛 `std::invalid_argument`
+- 与 W7 / W8 T1 / W9 T1 / W10 T4 / W11 T4 / W12 T4 的 single-span "curves"
+  形状不同; 与 W11 T3 / W12 T3 / W13 T5 / W14 T5 的 GMP-primitive 输入
+  shape 同属 multi-parameter family
+
+**Failure semantics — 无 failure mode**:
+- `worker_fn` 的返回类型由 caller 选 (典型 `std::optional<std::pair<Integer, Integer>>`
+  匹配 `BrentPollardRho::split` 的 shape, 或 `std::optional<Integer>` 表
+  "found / not found")
+- helper 本身不引入 failure mode, 不返回 `std::vector<bool> success`
+  (与 W12 T3 mpz_invert 不同 — invert 在 `gcd(base, modulus) != 1` 时 fail,
+  此处 worker 自己的 optional return 已覆盖 not-found 情况, helper
+  无需额外暴露 success vector)
+
+**ROI 与定位**:
+- 主要 ROI: 50d+/60d cofactor 阶段 Brent rho `BrentPollardRho::split` per-call
+  wall-time 显著 (典型 max_iter = 2^18 ~ 2^20). K config 并发后 outer wall
+  ~ T_max_config + tasking overhead, 替代 sum(K) sequential 累计. perf-info
+  实测 50-config M5 ARM64: N=1 10ms vs N=4 2ms → 5x speedup (10-core P/E
+  混合, 4 P-core 满负载, mock worker per-call ~0.2ms 体现了 tasking
+  overhead amortise 良好).
+- 与 W7/W8/W9/W10 T4/W11 T3/W11 T4/W12 T3/W12 T4/W13 T5/W14 T5 parallel
+  dispatcher family 互补, 本 helper 是第 11 名成员:
+    * W7 `GNFS_SQRT_HENSEL_THREADS` — Hensel lift K-prime slot
+    * W8 T1 `GNFS_ECM_STAGE2_PARALLEL` — ECM Stage 2 BSGS 多曲线
+    * W9 T1 `GNFS_ECM_STAGE1_PARALLEL_THREADS` — ECM Stage 1 Lucas-chain 多曲线
+    * W10 T4 `GNFS_FILTER_MERGE_THREADS` — LP-key bucket merge
+    * W11 T3 `GNFS_MPZ_POWM_BATCH_THREADS` — batched `mpz_powm`
+    * W11 T4 `GNFS_LATTICE_BASIS_PARALLEL_THREADS` — lattice basis reduction
+    * W12 T3 `GNFS_MPZ_INVERT_BATCH_THREADS` — batched `mpz_invert`
+    * W12 T4 `GNFS_SIEVE_APPLY_TILE_THREADS` — sieve apply tile
+    * W13 T5 `GNFS_MPZ_MOD_BATCH_THREADS` — batched `mpz_mod`
+    * W14 T5 `GNFS_MPZ_GCD_BATCH_THREADS` — batched `mpz_gcd`
+    * W15 T3 `GNFS_BRENT_POLLARD_RHO_THREADS` — batched Brent rho 配置 (本 helper)
+  十一者全部 default 1 (sequential), opt-in, 互不冲突. 可同时启用.
+- Helper 是 opt-in 工具, **不修改** `BrentPollardRho::split` 内核 /
+  `cofactorizer.hpp` 主 dispatch chain. 调用方需要自己 batch up `(c_i, x0_i)`
+  对 + 传入 worker_fn lambda. 当前主 pipeline 无 wire-in 调用, 是 future-infra.
+- Default OFF (N=1) 保证 zero behavior change for legacy callers, 仅当用户
+  明确 opt-in 时启用.
+
+**集成点** (2026-05-23, W15 T3):
+- `include/gnfs/cofactor/brent_pollard_rho_parallel.hpp` —
+  `brent_pollard_rho_threads()` env reader with `std::once_flag` cache +
+  `parallel_brent_pollard_rho<Result, WorkerFn>(cs, x0s, worker_fn)`
+  template dispatcher + `resolve_brent_pollard_rho_threads(batch_size)`
+  helper + `brent_pollard_rho_threads_reset_env_cache_for_testing()` test hook
+- `tests/test_brent_pollard_rho_parallel.cpp` — 17 个测试 (6 ENV 解析 含
+  "12abc" partial parse + leading whitespace + "10000" clamp / empty span /
+  single config N=1 / single config N=4 no-stall / N=1 baseline mock /
+  N=1 vs N=4 mock parity 100 configs / N=1 vs N=hw mock parity 1000 configs /
+  real Brent-Pollard rho 50 cofactor parity N=1 vs N=4 per-config
+  optional<Integer> identical / mismatched span throws invalid_argument /
+  reset env cache hook / resolve helper edges / perf info probe)
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  cofactor 模块
+
 ### Lattice basis reduction 多基并行 (GNFS_LATTICE_BASIS_PARALLEL_THREADS)
 
 **ENV `GNFS_LATTICE_BASIS_PARALLEL_THREADS=N`** (2026-05-22 实施, W11 T4, default 1, range [1, hardware_concurrency * 2]):
