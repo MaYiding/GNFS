@@ -1465,6 +1465,25 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME XorPopcntSIMD COMMAND test_xor_popcnt_simd)
     set_tests_properties(XorPopcntSIMD PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # GF(2) per-row popcount SIMD helper (W15 T1).
+    # Per-row Hamming weight over a row-major packed GF(2) matrix laid
+    # out as `row_count * row_words` contiguous uint64_t words. NEON
+    # 2-word stride (ARM64) or AVX2 4-word stride (x86_64) per row with
+    # scalar `__builtin_popcountll` tail. Sixth helper in the linalg
+    # SIMD primitive family (joins W9 popcount / W10 and_popcnt / W11
+    # xor_words / W13 T1 and_words / W14 T1 xor_popcnt). First family
+    # member that respects a 2-D matrix layout rather than a flat span.
+    # Useful for column-weight tallies, dependency vector parity,
+    # sparsity profiling, and any caller that needs per-row weights as
+    # a primitive. Header-only helper, no extra link dependencies
+    # beyond the core library.
+    add_executable(test_row_popcount_simd
+        tests/test_row_popcount_simd.cpp
+    )
+    target_link_libraries(test_row_popcount_simd PRIVATE gnfs_core)
+    add_test(NAME RowPopcountSIMD COMMAND test_row_popcount_simd)
+    set_tests_properties(RowPopcountSIMD PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Linalg iteration progress telemetry helper (W12 T1).
     # ENV-gated, header-only logger that callers can opt-in wire into
     # Block Lanczos / Block Wiedemann SpMV loops to print iteration
