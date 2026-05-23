@@ -1157,6 +1157,17 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME CofactorResultCache COMMAND test_cofactor_result_cache)
     set_tests_properties(CofactorResultCache PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Brent-Pollard rho multi-config parallel dispatcher
+    # (W15 T3, GNFS_BRENT_POLLARD_RHO_THREADS) — opt-in parallel fan-out
+    # across independent (c, x0) rho configurations. Helper-only future
+    # infrastructure; cofactorizer dispatch does not currently call into it.
+    add_executable(test_brent_pollard_rho_parallel
+        tests/test_brent_pollard_rho_parallel.cpp
+    )
+    target_link_libraries(test_brent_pollard_rho_parallel PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BrentPollardRhoParallel COMMAND test_brent_pollard_rho_parallel)
+    set_tests_properties(BrentPollardRhoParallel PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Cofactor batch micro-benchmark (T5 Stage 4) — invoke manually
     # ./build/test_cofactor_batch_bench [count] [seed]
     add_executable(test_cofactor_batch_bench
