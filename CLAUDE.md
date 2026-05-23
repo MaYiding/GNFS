@@ -1726,6 +1726,120 @@ W7 HGCD path / W9 Karatsuba helper / W11 divrem helper / W12 NTT helper
 路径均保持原行为. Auto 与 ForceOn 行为一致 (squaring 启用); 仅 ForceOff
 退回 W9 full-mul.
 
+### Polynomial mod-p add/sub batch SIMD (GNFS_POLY_ADD_MOD_SIMD)
+
+**ENV `GNFS_POLY_ADD_MOD_SIMD=auto|0|1`** (2026-05-23 实施, W14 T2, default auto):
+F_p[x] 系数批量加减 modulo p (p < 2^32) 的 SIMD 助手, 与 W11
+`GNFS_GF2_ROW_XOR_SIMD` / W13 `GNFS_GF2_AND_WORDS_SIMD` 并列, 是 polynomial
+模块第一个 mod-p 算术 SIMD primitive. 应用场景: Cantor-Zassenhaus polynomial
+root finding inner loop, polynomial chain compute, 系数批量加减场景的
+hot path. Pure header, 不依赖外部库. 提供两个入口:
+
+```text
+add_mod_p_batch(a, b, p, out): out[i] = (a[i] + b[i]) mod p
+sub_mod_p_batch(a, b, p, out): out[i] = (a[i] - b[i] + p) mod p
+```
+
+NEON 4-lane (ARM64, `vaddq_u32`/`vsubq_u32` + `vcgeq_u32`/`vcltq_u32`
+条件 reduce) / AVX2 8-lane (x86_64, `_mm256_add_epi32`/`_mm256_sub_epi32` +
+bias-then-`_mm256_cmpgt_epi32` 条件 reduce, 因为 AVX2 缺 unsigned compare)
+替代逐元素 scalar `add + cmp + branch`.
+
+```bash
+GNFS_POLY_ADD_MOD_SIMD=auto ./gnfs <N>   # 默认: NEON/AVX2 可用且 p <= 2^31 则启用
+GNFS_POLY_ADD_MOD_SIMD=0    ./gnfs <N>   # 强制 scalar (回归 bisect 用)
+GNFS_POLY_ADD_MOD_SIMD=off  ./gnfs <N>   # 同 0
+GNFS_POLY_ADD_MOD_SIMD=1    ./gnfs <N>   # 强制 SIMD (无 SIMD 平台 fallback)
+GNFS_POLY_ADD_MOD_SIMD=on   ./gnfs <N>   # 同 1
+unset GNFS_POLY_ADD_MOD_SIMD             # 同 auto
+```
+
+**Helper API** (`include/gnfs/polynomial/add_mod_simd.hpp`):
+- `add_mod_p_batch(a, b, p, out)` — 主入口 (add), `out[i] = (a[i] + b[i]) mod p`.
+  SIMD path 当 `poly_add_mod_simd_enabled() == true` 且 `p <= 2^31` 时启用.
+  Defensive clamp 到 `min(a.size(), b.size(), out.size())`.
+- `sub_mod_p_batch(a, b, p, out)` — 主入口 (sub), `out[i] = (a[i] - b[i] + p) mod p`.
+- `add_mod_p_batch_scalar(...)` / `sub_mod_p_batch_scalar(...)` — scalar reference
+  (test golden + 无 SIMD fallback). 用 `uint64_t` widening 处理 `a + b` 的
+  partial sum, 用 `int64_t` widening 处理 `a - b` 的 negative branch, 整个
+  `p < 2^32` 范围都正确.
+- `poly_add_mod_simd_mode()` — 返回 `PolyAddModSimdMode { Auto, ForceOff, ForceOn }`.
+- `poly_add_mod_simd_enabled()` — 三态 dispatcher decision (ForceOff → false,
+  ForceOn/Auto + supported → true, 否则 false). 注意 `p` 是否在 SIMD 窗口
+  内的检查在每次 `add_mod_p_batch` / `sub_mod_p_batch` 调用内部完成 (不在
+  这个 predicate 内).
+- `add_mod_simd_supported()` — compile-time `__ARM_NEON / __AVX2__` 探测.
+- `poly_add_mod_simd_reset_env_cache_for_testing()` — 测试专用 re-resolve ENV.
+
+**算法**:
+- NEON add: `vld1q_u32(4 lanes)` × 2 inputs → `vaddq_u32` → `vcgeq_u32(sum, p)`
+  mask → `vandq_u32(mask, p)` → `vsubq_u32(sum, mask_p)`. 条件 reduce 在
+  register 内 branch-free 完成.
+- NEON sub: `vld1q_u32(4 lanes)` × 2 inputs → `vsubq_u32(a, b)` (underflow
+  wraps to `a - b + 2^32`) → `vcltq_u32(a, b)` mask (检测 `a < b` 即下溢) →
+  `vandq_u32(mask, p)` → `vaddq_u32(d, mask_p)`. underflow lane 加回 `p`.
+- AVX2 add: `_mm256_loadu_si256(8 lanes)` × 2 inputs → `_mm256_add_epi32` →
+  bias 两侧 by `0x80000000` (XOR) → `_mm256_cmpgt_epi32(biased_p, biased_sum)`
+  → bitwise NOT (XOR with all-ones) → `_mm256_and_si256(mask, p)` → sub. AVX2
+  缺 native unsigned compare, 故走 bias-then-signed-compare trick.
+- AVX2 sub: `_mm256_sub_epi32(a, b)` → 类似 bias 后 `_mm256_cmpgt_epi32(biased_b,
+  biased_a)` 检测 `a < b` (unsigned 语义) → `_mm256_and_si256(mask, p)` → add.
+
+**Precondition (caller responsibility)**:
+- `p` 是素数 (helper 不校验 primality, 仅用 p 作 canonical reduction modulus)
+- 每个输入系数已 reduced: `a[i] < p` and `b[i] < p` for all `i`. helper 不会
+  re-reduce 输入 (那会掩盖 caller reduction pipeline 的 bug)
+
+**SIMD 加速窗口**: `p <= 2^31`. SIMD path 的 conditional reduce 要求
+`a + b < 2 * 2^31 = 2^32` 不溢 uint32 (才能在 register 内 branch-free
+完成 `vcgeq_u32` / `_mm256_cmpgt_epi32` 比较). `p > 2^31` 时 dispatcher 自动
+fallback 到 scalar reference (这是文档化行为, 不是 silent bug — scalar 路径
+本身用 uint64 widening 仍正确处理整个 `p < 2^32` 范围). 单元测试覆盖
+`p > 2^31` 的 fallback case (p = 2147483659, 紧邻 2^31 之上).
+
+**Bit-for-bit guarantee**: 对任意 (a, b, p) 满足 precondition (p prime, p < 2^32,
+a[i] < p, b[i] < p), SIMD path 与 scalar path 输出严格 per-index 一致. ENV
+gate 值仅影响 dispatch 内核, 不影响数学结果. 输出系数永远满足 `out[i] < p`.
+单元测试 `tests/test_poly_add_mod_simd.cpp` 19 个测试强制覆盖 (4 ENV 解析 +
+empty / single + aligned 32 / unaligned 33 + 11-size sweep + random 1000 跨
+3 primes (101, 65537, 2^31-1) + p > 2^31 fallback + sub mixed-sign explicit
+fixture + algebraic identities (a+0=a, a-a=0, (a+b)-b=a) + boundary p-1
+(同时验 p=2^16+1 与 p=2^31-1) + ForceOff vs Auto parity + clamp_to_min_size
++ 1M perf info probe (add + sub 都打印 wall) + reset env hook).
+
+**Defensive clamping**: helper clamp 迭代次数到 `min(a.size(), b.size(),
+out.size())`. spans 长度不同时只处理公共前缀, `out` tail 不动 (匹配 W11
+`xor_words_simd` / W13 `and_words_simd` 兄弟 helper 的契约). 测试强制覆盖.
+
+**ROI 与定位**:
+- 主要 ROI: 多项式系数链上的 add/sub mod p 是 CZ root finding inner loop
+  的高频 op. perf-info 实测 1M 系数 NEON ARM64 M5: add scalar 7.70ms vs SIMD
+  4.23ms → 1.82x speedup; sub scalar 8.06ms vs SIMD 3.38ms → 2.38x speedup.
+  Sub 加速更显著, 因为 sub 的 scalar 路径含 int64_t widening + 负数分支,
+  SIMD 用单条 `vsubq_u32` + mask add 完全 branch-free.
+- helper 当前 standalone (主路径 CZ root finding / `ModularPoly::add` /
+  `ModularPoly::sub` 未 wire-in), 是 future-infrastructure. wire-in 时 caller
+  把 inner per-coeff `c = (a + b) % p` 切到 batched `add_mod_p_batch`, sub
+  类似. 适用 CZ 求根 + Karatsuba 内部 sub 累加 + polynomial chain 的 hot
+  loop.
+- 与 W11 `GNFS_GF2_ROW_XOR_SIMD` / W13 `GNFS_GF2_AND_WORDS_SIMD` / W11 T1
+  W10 T1 等 GF(2) SIMD helper 完全 orthogonal: GF(2) word-level 操作 vs
+  mod-p word-level 操作, 不同模数空间 (GF(2) 是 `mod 2`, 本 helper 是
+  `mod p` for general p < 2^32). 二者可同时启用.
+- 默认 auto 在 macOS arm64 / Linux x86_64 都启用 SIMD path; ENV=0 在 PMU
+  sweep / sanitizer 调试时回到 scalar baseline.
+
+**集成点** (2026-05-23, W14 T2):
+- `include/gnfs/polynomial/add_mod_simd.hpp` — helper API + 三态 ENV gate +
+  NEON / AVX2 inner kernels + scalar reference + `modulus_in_simd_window(p)`
+  predicate.
+- `tests/test_poly_add_mod_simd.cpp` — 19 instant tier tests, TIMEOUT 60.
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  polynomial 模块.
+
+**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点, ENV
+对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
 ### Polynomial subquadratic divrem (GNFS_POLY_DIVREM_SUBQUADRATIC)
 
 **ENV `GNFS_POLY_DIVREM_SUBQUADRATIC=auto|0|1`** (2026-05-22 实施, W11 T2, default auto):
