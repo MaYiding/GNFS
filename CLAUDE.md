@@ -840,6 +840,113 @@ pure function of B1. 同一 B1 多次 call 输出 byte-identical. Cache hit 路�
 future-infra. 仅 caller 显式 wire-in + 用户 explicit
 `GNFS_ECM_B1_CACHE_SIZE=N>=1` 时启用.
 
+### Cofactor classification result cache (GNFS_COFACTOR_RESULT_CACHE_SIZE)
+
+**ENV `GNFS_COFACTOR_RESULT_CACHE_SIZE=N`** (2026-05-23 实施, W14 T3, range [0, 1048576], default 0):
+`classify_cofactor(cofactor, smoothness_bound, large_prime_bound)` 是
+deterministic pure function (固定 process 全局 state 时). 真实 GNFS sieve loop
+中相同 `(cofactor, B, lp_bound)` tuple 会被反复查询 —— adaptive sieve 多 round
+重复访问同一小余因子, bucket merge 再 flush 同一 residual cofactor.
+每次查询走完整 cofactor pipeline (trial → SQUFOF → Brent rho → Pollard rho
+→ ECM Stage 1+2) 是 µs 到 ms 量级. opt-in LRU cache 让重复查询 O(1) hash
+lookup 直接返回, 跳过整个 pipeline.
+
+```bash
+unset GNFS_COFACTOR_RESULT_CACHE_SIZE              # default 0 (disabled, 零开销)
+GNFS_COFACTOR_RESULT_CACHE_SIZE=0       ./gnfs <N> # 同 default
+GNFS_COFACTOR_RESULT_CACHE_SIZE=1024    ./gnfs <N> # 1K 容量 (典型小批量)
+GNFS_COFACTOR_RESULT_CACHE_SIZE=65536   ./gnfs <N> # 64K 容量 (50d/60d 大批量)
+GNFS_COFACTOR_RESULT_CACHE_SIZE=1048576 ./gnfs <N> # 1M 上限
+GNFS_COFACTOR_RESULT_CACHE_SIZE=9999999 ./gnfs <N> # clamp 到 1M
+```
+
+**Helper API** (`include/gnfs/cofactor/result_cache.hpp`):
+- `class CofactorResultCache(capacity)` — capacity == 0 表 disabled (允许
+  singleton 在未启用时仍可构造). capacity > 0 时是 textbook LRU.
+- `std::optional<CofactorClassification> get(cofactor, B, lp_bound)` —
+  命中: `splice` 到 list front (MRU promote), 返回 value-copy. 未命中:
+  `std::nullopt`. Disabled cache 总是返回 nullopt.
+- `void put(cofactor, B, lp_bound, result)` — 存在 key 时更新 value + 提升
+  MRU. 新 key + 未满: `push_front` + insert. 新 key + 已满: evict
+  `list.back()` (LRU), 然后 `push_front`. Disabled cache 是 no-op.
+- `size() / capacity() / clear()` — 测试 / debug helper.
+- `cofactor_result_cache_size()` — cached `std::once_flag` + `std::size_t`
+  ENV reader.
+- `cofactor_result_cache_enabled()` — `size() > 0` predicate.
+- `cofactor_result_cache_reset_env_cache_for_testing()` — 测试 re-resolve hook.
+- `shared_cofactor_result_cache()` — process-singleton 访问器 (function-local
+  static, 与 W5 T5 `survival_stats()` / W12 T5 `cofactor_timing_stats()` /
+  W13 T3 `shared_ecm_b1_cache()` 同 idiom). Capacity 在首次调用时由
+  `cofactor_result_cache_size()` 决定, 进程 lifetime 固定.
+
+**Key 设计** (3-tuple `{uint64 cofactor, uint32 B, uint32 lp}`):
+- `cofactor` (uint64): 真实超 uint64 的 `Integer` cofactor 已被主 pipeline
+  路由到 Composite / TooLarge 分支, 不进入 expensive subfactor 探测, 因此
+  cache 仅服务 uint64-fits cofactor 路径.
+- `B` (uint32): smoothness_bound. 两个相同 cofactor 在不同 B 下分类可能不
+  同 (survival predictor TooLarge 边界依赖 B).
+- `lp` (uint32): large_prime_bound. 同一 cofactor 在不同 lp 下分类可能不
+  同 (Prime vs TooLarge 边界依赖 lp).
+- Hash: 三字段折成单 uint64 (`cofactor ^ (B<<32) ^ (lp<<16)`) 后走 W11 T5
+  splitmix64 (Stafford Mix 13) — 与 lp_key_hash 同算法, 避免
+  `std::hash<uint64_t>` near-identity.
+
+**ENV parsing 规则** (与 W12 T5 / W13 T3 一致, 严格 std::stoi):
+- unset / "" / "0" / 负数 / 非数字 (`garbage`) / leading 空白 (`"  100"`) → 0 (disabled)
+- "1".."1048576" → as-is
+- "1048577"+ / "9999999" → 1048576 (clamp)
+- 数字前缀 ("12abc") → 12 (std::stoi 接受, 文档化但 caller 应传 clean 值)
+
+**Bit-for-bit guarantee**: `put(K, V)` 后 `get(K)` 返回 V 的 byte-identical
+copy (`type`, `factor1`, `factor2`, `factor3`, `power` 字段). 单元测试
+`test_cofactor_result_cache` 19 个测试强制覆盖.
+
+**ROI 与定位**:
+- 主要 ROI: cofactor pipeline 重复查询时跳过整个 trial/SQUFOF/Brent/Pollard/
+  ECM 链. 50d+/60d 大批量 sieve loop 中 (重复访问同 cofactor 是 norm)
+  显著 amortise.
+- helper 当前 standalone (主路径 `classify_cofactor` 未 wire-in), 是
+  future-infrastructure. wire-in 时调用方:
+  ```cpp
+  if (cofactor_result_cache_enabled()) {
+      if (auto cached = shared_cofactor_result_cache().get(c, B, lpb)) {
+          return *cached;
+      }
+  }
+  auto result = classify_cofactor(c_int, lpb, /*allow_3lp=*/false, B);
+  if (cofactor_result_cache_enabled()) {
+      shared_cofactor_result_cache().put(c, B, lpb, result);
+  }
+  return result;
+  ```
+- 与 W5 T5 survival predictor / W12 T5 timing telemetry / W13 T3 ECM B1
+  cache 完全 orthogonal —— 各自缓存 / 测量不同 cofactor 子阶段. 可同时启用.
+
+**Thread safety**:
+- `CofactorResultCache::get` / `put` / `size` / `clear` 用内部 `std::mutex`,
+  并发 lookup 序列化 in mutex (LRU 链表 / hash map 同步).
+- `get` 返回 `std::optional<CofactorClassification>` 值副本, lock 释放后仍
+  安全使用 (与同 key 后续 put / evict 无 aliasing 风险).
+- `shared_cofactor_result_cache()` function-local static 保证 C++11
+  thread-safe 一次性初始化, ODR-safe 跨 TU.
+- 4 thread × 100 mixed get/put 强制测试通过.
+
+**集成点** (W14 T3, 2026-05-23):
+- `include/gnfs/cofactor/result_cache.hpp` — 350+ 行 header-only, textbook
+  LRU + 三字段 key + splitmix64 hash + ENV gate + process singleton
+- `tests/test_cofactor_result_cache.cpp` — 19 个测试 (9 ENV 解析 + capacity=0
+  disabled / put-get 5 种 CofactorClass / LRU eviction / LRU promotion /
+  clear+reuse / 同 cofactor 不同 (B, lp) 独立 / 重复 put 更新+提升 /
+  accessor / shared singleton / 4 thread x 100 mixed / 16 key hash sweep)
+- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
+  cofactor 模块
+
+**Default OFF (N=0)**: ENV unset → `cofactor_result_cache_size() == 0` →
+`cofactor_result_cache_enabled() == false`. 调用方主路径完全不变, 主
+pipeline `classify_cofactor` 入口未改, helper-only future-infra. 仅
+caller 显式 wire-in + 用户 explicit `GNFS_COFACTOR_RESULT_CACHE_SIZE=N>=1`
+时启用.
+
 ### Sieve bucket prefetch (GNFS_BUCKET_PREFETCH)
 
 **ENV `GNFS_BUCKET_PREFETCH=auto|0|1`** (2026-05-21 实施, default auto):
