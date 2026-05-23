@@ -722,7 +722,9 @@ void test_perf_info_probe() {
         assert(seq[i] == par[i]);
     }
 
-    double speedup = (ms_n4 > 0) ? (static_cast<double>(ms_n1) / ms_n4) : 0.0;
+    double speedup = (ms_n4 > 0)
+        ? (static_cast<double>(ms_n1) / static_cast<double>(ms_n4))
+        : 0.0;
     std::cout << " PASS (N=1 " << ms_n1 << " ms, N=4 " << ms_n4
               << " ms, " << speedup << "x speedup)\n";
 }
