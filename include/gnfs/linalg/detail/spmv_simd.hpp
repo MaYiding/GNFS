@@ -227,8 +227,14 @@ inline void spmv_forward_simd(std::size_t num_rows,
                               const std::uint64_t* x,
                               std::uint64_t* y) noexcept {
     for (std::size_t i = 0; i < num_rows; ++i) {
-        const std::uint32_t* b = col_indices + row_offsets[i];
-        const std::uint32_t* e = col_indices + row_offsets[i + 1];
+        const std::size_t row_begin = row_offsets[i];
+        const std::size_t row_end = row_offsets[i + 1];
+        if (row_begin == row_end) {
+            y[i] = 0;
+            continue;
+        }
+        const std::uint32_t* b = col_indices + row_begin;
+        const std::uint32_t* e = col_indices + row_end;
         y[i] = gather_xor_row(b, e, x);
     }
 }
@@ -242,12 +248,18 @@ inline void spmv_transpose_simd(std::size_t num_rows,
     // Caller responsibility: `y` must be pre-zeroed. We do not call memset
     // here because the dispatcher version reuses a per-thread scratch
     // buffer that the SpmvLocals helper already zeroes.
+    if (num_cols == 0) {
+        return;
+    }
     std::memset(y, 0, num_cols * sizeof(std::uint64_t));
     for (std::size_t i = 0; i < num_rows; ++i) {
         std::uint64_t xi = x[i];
         if (xi == 0) continue;
-        const std::uint32_t* b = col_indices + row_offsets[i];
-        const std::uint32_t* e = col_indices + row_offsets[i + 1];
+        const std::size_t row_begin = row_offsets[i];
+        const std::size_t row_end = row_offsets[i + 1];
+        if (row_begin == row_end) continue;
+        const std::uint32_t* b = col_indices + row_begin;
+        const std::uint32_t* e = col_indices + row_end;
         scatter_xor_row(b, e, xi, y);
     }
 }
