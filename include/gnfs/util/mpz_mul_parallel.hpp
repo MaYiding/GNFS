@@ -136,8 +136,7 @@ namespace detail {
 /// `mpz_mul_batch_threads_reset_env_cache_for_testing()` so unit tests can
 /// toggle `GNFS_MPZ_MUL_BATCH_THREADS` between assertions.
 struct MpzMulBatchThreadsCache {
-    std::once_flag once;
-    int value = 1;
+    std::atomic<int> value{0};
 };
 
 inline MpzMulBatchThreadsCache& mpz_mul_batch_threads_cache() noexcept {
@@ -183,10 +182,17 @@ inline int parse_mpz_mul_batch_threads_env() noexcept {
 /// values clamp to the upper cap.
 [[nodiscard]] inline int mpz_mul_batch_threads() noexcept {
     auto& cache = detail::mpz_mul_batch_threads_cache();
-    std::call_once(cache.once, [&cache]() {
-        cache.value = detail::parse_mpz_mul_batch_threads_env();
-    });
-    return cache.value;
+    int cached = cache.value.load(std::memory_order_acquire);
+    if (cached != 0) return cached;
+
+    const int parsed = detail::parse_mpz_mul_batch_threads_env();
+    int expected = 0;
+    if (cache.value.compare_exchange_strong(expected, parsed,
+                                            std::memory_order_acq_rel,
+                                            std::memory_order_acquire)) {
+        return parsed;
+    }
+    return expected;
 }
 
 /// Resolve the effective thread count given a specific batch size.
@@ -212,8 +218,7 @@ inline int parse_mpz_mul_batch_threads_env() noexcept {
 /// `parallel_mpz_mul` invocation is in flight.
 inline void mpz_mul_batch_threads_reset_env_cache_for_testing() noexcept {
     auto& cache = detail::mpz_mul_batch_threads_cache();
-    cache.~MpzMulBatchThreadsCache();
-    new (&cache) detail::MpzMulBatchThreadsCache();
+    cache.value.store(0, std::memory_order_release);
 }
 
 /// Compute `results[i] = a_values[i] * b_values[i]` for every i.
