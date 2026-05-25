@@ -219,6 +219,10 @@ inline std::pair<uint64_t, uint64_t> split_cofactor_64(uint64_t n) {
         if (n % p == 0) return {p, n / p};
     }
 
+    if (gnfs::util::is_prime_u64(n)) {
+        return {0, 0};
+    }
+
     // Pollard rho for larger composites (~1-10μs per number for ≤48 bit)
     uint64_t f = pollard_rho_64(n);
     if (f > 1 && f < n) {
