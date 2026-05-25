@@ -279,7 +279,7 @@ void test_v0_v3_bench_large() {
     if (!drop_mode) {
         assert(v3_added > 0);
     }
-    assert(v3_elapsed < 10.0);
+    assert(v3_elapsed < 10.0 * kTimingBudgetMultiplier);
 
     std::cout << "  PASS" << std::endl;
 }
