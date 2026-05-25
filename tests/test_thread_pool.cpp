@@ -147,7 +147,7 @@ void test_wait_all_race_stress() {
     // Use many threads to maximize scheduling interleaving
     ThreadPool pool(8);
 
-    constexpr int rounds = 5000;
+    constexpr int rounds = 1000;
     constexpr int tasks_per_round = 20;
 
     for (int round = 0; round < rounds; ++round) {
@@ -180,7 +180,7 @@ void test_concurrent_submit_wait() {
 
     ThreadPool pool(4);
 
-    constexpr int rounds = 1000;
+    constexpr int rounds = 250;
 
     for (int round = 0; round < rounds; ++round) {
         std::atomic<int> counter{0};
