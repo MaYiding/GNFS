@@ -175,7 +175,8 @@ int main(int argc, char** argv) {
 
     std::cout << "╔══════════════════════════════════════════════════════════════╗\n";
     std::cout << "║          Performance Target Benchmark (" << start_digits << "d-" << end_digits << "d)"
-              << std::string(std::max(0, 18 - (start_digits >= 10 ? 2 : 1) - (end_digits >= 10 ? 2 : 1)), ' ')
+              << std::string(static_cast<size_t>(
+                     std::max(0, 18 - (start_digits >= 10 ? 2 : 1) - (end_digits >= 10 ? 2 : 1))), ' ')
               << "║\n";
     std::cout << "╠══════════════════════════════════════════════════════════════╣\n";
     std::cout << "║  Digit │  Target  │  Actual  │ Ratio  │ Method │ Status    ║\n";
@@ -213,8 +214,9 @@ int main(int argc, char** argv) {
     std::cout << "╠══════════════════════════════════════════════════════════════╣\n";
     std::cout << "║  TOTAL: " << passed << "/" << total << " passed";
     if (failed > 0) std::cout << ", " << failed << " over target";
-    std::cout << std::string(std::max(0, 47 - (int)std::to_string(passed).size() -
-                                          (int)std::to_string(total).size()), ' ')
+    std::cout << std::string(static_cast<size_t>(
+                     std::max(0, 47 - (int)std::to_string(passed).size() -
+                                   (int)std::to_string(total).size())), ' ')
               << "║\n";
     std::cout << "╚══════════════════════════════════════════════════════════════╝\n";
 

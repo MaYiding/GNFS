@@ -227,7 +227,7 @@ static uint8_t compute_discrepancy_packed(
             if (bi > 0 && wi + 1 < C.words.size())
                 c_word |= (C.words[wi + 1] << (64 - bi));
         }
-        parity ^= __builtin_popcountll(c_word & s_word);
+        parity ^= static_cast<uint64_t>(__builtin_popcountll(c_word & s_word));
     }
     d ^= (parity & 1);
     return d;
@@ -474,7 +474,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
     // matrix BM (Coppersmith / Thomé lingen). Retried with multiple seeds in
     // find_dependencies() if a given seed yields too many trivial sequences.
     for (size_t k = 0; k < seq_len; ++k) {
-        for (int j = 0; j < 64; ++j) {
+        for (size_t j = 0; j < 64; ++j) {
             uint64_t mask = 1ULL << j;
             uint64_t parity = 0;
             for (size_t i = 0; i < m; ++i)
@@ -514,7 +514,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
     size_t valid_polys = 0;
     size_t max_degree = 0;
 
-    for (int j = 0; j < 64; ++j) {
+    for (size_t j = 0; j < 64; ++j) {
         polys[j] = scalar_berlekamp_massey(sequences[j]);
         if (polys[j].degree > 0) {
             // The connection polynomial C(x) = 1 + c_1*x + ... + c_L*x^L
@@ -534,7 +534,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
 
     // Diagnostic: check if sequences are trivial
     size_t trivial_seqs = 0;
-    for (int j = 0; j < 64; ++j) {
+    for (size_t j = 0; j < 64; ++j) {
         bool has_nonzero = false;
         for (size_t k = 0; k < seq_len; ++k) {
             if (sequences[j][k]) { has_nonzero = true; break; }
@@ -547,7 +547,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
 
     // Also print BM degree distribution
     size_t div_by_t = 0, not_div = 0;
-    for (int j = 0; j < 64; ++j) {
+    for (size_t j = 0; j < 64; ++j) {
         if (polys[j].degree > 0) {
             size_t L = polys[j].degree;
             bool is_div = (L < polys[j].coeffs.size()) ?
@@ -590,7 +590,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
         // At Krylov step k: V_k = B^k * Y. We want coefficient of B^k in q(B).
         // q(t) = sum_{i=0}^{L-1} c_i * t^{L-1-i} where c_0 = 1 (from p(t)).
         // So the coefficient of t^k in q(t) is c_{L-1-k} from the connection polynomial.
-        for (int j = 0; j < 64; ++j) {
+        for (size_t j = 0; j < 64; ++j) {
             size_t Lj = polys[j].degree;
             if (Lj == 0) continue;
             bool is_div = (Lj < polys[j].coeffs.size()) ?
@@ -624,7 +624,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
     deps.reserve(std::min(max_deps, static_cast<size_t>(64)));
     size_t verified = 0, failed = 0, zero_vecs = 0;
 
-    for (int j = 0; j < 64 && deps.size() < max_deps; ++j) {
+    for (size_t j = 0; j < 64 && deps.size() < max_deps; ++j) {
         if (polys[j].degree == 0) continue;
         size_t Lj = polys[j].degree;
         bool is_div = (Lj < polys[j].coeffs.size()) ?
@@ -844,14 +844,14 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
         DenseGF2_64x64 F_step;
         F_step.clear();
         bool any_active = false;
-        for (int j = 0; j < 64; ++j) {
+        for (size_t j = 0; j < 64; ++j) {
             if (!((F.valid_mask >> j) & 1ULL)) continue;
             const int D_j = F.degrees[j];
             const int coef_idx = D_j - k;
             if (coef_idx < 0) continue;  // exhausted column j's polynomial
             if (coef_idx >= static_cast<int>(F.poly.size())) continue;
             // Extract column j of F.poly[coef_idx] into column j of F_step
-            const DenseGF2_64x64& src = F.poly[coef_idx];
+            const DenseGF2_64x64& src = F.poly[static_cast<size_t>(coef_idx)];
             for (int i = 0; i < 64; ++i) {
                 if ((src.rows[i] >> j) & 1ULL) {
                     F_step.rows[i] |= (1ULL << j);
@@ -1035,13 +1035,13 @@ static std::vector<std::vector<bool>> thin_solve_view_impl(
         DenseGF2_64x64 F_step;
         F_step.clear();
         bool any_active = false;
-        for (int j = 0; j < 64; ++j) {
+        for (size_t j = 0; j < 64; ++j) {
             if (!((F.valid_mask >> j) & 1ULL)) continue;
             const int D_j = F.degrees[j];
             const int coef_idx = D_j - k;
             if (coef_idx < 0) continue;
             if (coef_idx >= static_cast<int>(F.poly.size())) continue;
-            const DenseGF2_64x64& src = F.poly[coef_idx];
+            const DenseGF2_64x64& src = F.poly[static_cast<size_t>(coef_idx)];
             for (int i = 0; i < 64; ++i) {
                 if ((src.rows[i] >> j) & 1ULL) {
                     F_step.rows[i] |= (1ULL << j);
@@ -1293,19 +1293,21 @@ LingenResult BlockWiedemann::matrix_berlekamp_massey(
 
     // E ∈ GF(2)[z]^{m × b}: flat layout E[(i*b + j)*W + w].
     // P ∈ GF(2)[z]^{b × b}: flat layout P[(i*b + j)*W + w].
-    std::vector<uint64_t> E(static_cast<size_t>(m) * b * W, 0);
-    std::vector<uint64_t> P(static_cast<size_t>(b) * b * W, 0);
+    std::vector<uint64_t> E(static_cast<size_t>(m) * static_cast<size_t>(b) * static_cast<size_t>(W), 0);
+    std::vector<uint64_t> P(static_cast<size_t>(b) * static_cast<size_t>(b) * static_cast<size_t>(W), 0);
 
     auto E_at = [&E, W](int i, int j) -> uint64_t* {
-        return &E[(static_cast<size_t>(i) * b + j) * W];
+        return &E[(static_cast<size_t>(i) * static_cast<size_t>(b) +
+                   static_cast<size_t>(j)) * static_cast<size_t>(W)];
     };
     auto P_at = [&P, W](int i, int j) -> uint64_t* {
-        return &P[(static_cast<size_t>(i) * b + j) * W];
+        return &P[(static_cast<size_t>(i) * static_cast<size_t>(b) +
+                   static_cast<size_t>(j)) * static_cast<size_t>(W)];
     };
 
     // ── Build E: left 64 cols = A sequence, right 64 cols = I_{64} at z=0 ──
     for (int e = 0; e < L; ++e) {
-        const DenseGF2_64x64& Ae = A[e];
+        const DenseGF2_64x64& Ae = A[static_cast<size_t>(e)];
         const int e_w = e / 64, e_b = e % 64;
         const uint64_t e_mask = 1ULL << e_b;
         for (int i = 0; i < m; ++i) {
@@ -1351,8 +1353,9 @@ LingenResult BlockWiedemann::matrix_berlekamp_massey(
             int pivot = -1;
             int min_delta = INT_MAX;
             for (int j = 0; j < b; ++j) {
-                if (poly_get_bit(E_at(i, j), e) && delta[j] < min_delta) {
-                    min_delta = delta[j];
+                if (poly_get_bit(E_at(i, j), e) &&
+                    delta[static_cast<size_t>(j)] < min_delta) {
+                    min_delta = delta[static_cast<size_t>(j)];
                     pivot = j;
                 }
             }
@@ -1377,15 +1380,17 @@ LingenResult BlockWiedemann::matrix_berlekamp_massey(
             // Shift pivot col up by 1 (consume bit e).
             for (int l = 0; l < m; ++l) poly_lshift1(E_at(l, pivot));
             for (int l = 0; l < b; ++l) poly_lshift1(P_at(l, pivot));
-            delta[pivot]++;
+            delta[static_cast<size_t>(pivot)]++;
         }
     }
 
     // ── Extract F from top n rows of n smallest-delta cols of P ──
     std::array<int, b> col_order;
-    for (int j = 0; j < b; ++j) col_order[j] = j;
+    for (int j = 0; j < b; ++j) col_order[static_cast<size_t>(j)] = j;
     std::sort(col_order.begin(), col_order.end(),
-              [&delta](int a, int c) { return delta[a] < delta[c]; });
+              [&delta](int a, int c) {
+                  return delta[static_cast<size_t>(a)] < delta[static_cast<size_t>(c)];
+              });
 
     auto poly_max_degree = [W](const uint64_t* poly) -> int {
         for (int w = W - 1; w >= 0; --w) {
@@ -1396,7 +1401,7 @@ LingenResult BlockWiedemann::matrix_berlekamp_massey(
 
     int max_deg = 0;
     for (int idx = 0; idx < n; ++idx) {
-        int c = col_order[idx];
+        int c = col_order[static_cast<size_t>(idx)];
         for (int i = 0; i < n; ++i) {
             int deg = poly_max_degree(P_at(i, c));
             if (deg > max_deg) max_deg = deg;
@@ -1404,12 +1409,12 @@ LingenResult BlockWiedemann::matrix_berlekamp_massey(
     }
 
     LingenResult result;
-    result.poly.assign(max_deg + 1, DenseGF2_64x64{});
+    result.poly.assign(static_cast<size_t>(max_deg + 1), DenseGF2_64x64{});
     result.degrees.fill(0);
     result.valid_mask = 0;
 
     for (int j_out = 0; j_out < n; ++j_out) {
-        int c = col_order[j_out];
+        int c = col_order[static_cast<size_t>(j_out)];
         bool nontrivial = false;
         int dj = 0;
         for (int i = 0; i < n; ++i) {
@@ -1424,7 +1429,8 @@ LingenResult BlockWiedemann::matrix_berlekamp_massey(
                     int local_bit = __builtin_ctzll(bits);
                     int k = w * 64 + local_bit;
                     if (k <= max_deg) {
-                        result.poly[k].rows[i] |= (1ULL << j_out);
+                        result.poly[static_cast<size_t>(k)].rows[static_cast<size_t>(i)] |=
+                            (1ULL << j_out);
                     }
                     bits &= bits - 1;
                 }
@@ -1432,7 +1438,7 @@ LingenResult BlockWiedemann::matrix_berlekamp_massey(
         }
         if (nontrivial) {
             result.valid_mask |= (1ULL << j_out);
-            result.degrees[j_out] = dj;
+            result.degrees[static_cast<size_t>(j_out)] = dj;
         }
     }
 

@@ -103,7 +103,7 @@ public:
         Integer result = coeffs_.back();  // copy ctor (Integer)
         for (int i = static_cast<int>(coeffs_.size()) - 2; i >= 0; --i) {
             result *= x;
-            result += coeffs_[i];
+            result += coeffs_[static_cast<size_t>(i)];
         }
         return result;
     }
@@ -114,7 +114,7 @@ public:
 
         double result = coeffs_.back().to_double();
         for (int i = static_cast<int>(coeffs_.size()) - 2; i >= 0; --i) {
-            result = result * x + coeffs_[i].to_double();
+            result = result * x + coeffs_[static_cast<size_t>(i)].to_double();
         }
         return result;
     }
@@ -128,7 +128,7 @@ public:
         uint64_t result = coeff_mod(coeffs_.size() - 1, p);
         for (int i = static_cast<int>(coeffs_.size()) - 2; i >= 0; --i) {
             result = mul_mod(result, x, p);
-            result = add_mod(result, coeff_mod(i, p), p);
+            result = add_mod(result, coeff_mod(static_cast<size_t>(i), p), p);
         }
         return result;
     }
@@ -412,12 +412,12 @@ private:
         // share the same random sequence. p*31+17 fed mt19937_64 well enough, but two distinct
         // CZ calls with the same p (different polys) would attempt identical a values 1-by-1.
         uint64_t seed = static_cast<uint64_t>(p);
-        seed ^= poly.coeff(static_cast<int>(deg)) + 0x9E3779B97F4A7C15ULL + (seed << 6) + (seed >> 2);
+        seed ^= poly.coeff(static_cast<size_t>(deg)) + 0x9E3779B97F4A7C15ULL + (seed << 6) + (seed >> 2);
         seed ^= static_cast<uint64_t>(deg) + 0x9E3779B97F4A7C15ULL + (seed << 6) + (seed >> 2);
         std::mt19937_64 rng(seed);
         std::vector<uint64_t> poly_coeffs;
         poly_coeffs.reserve(static_cast<size_t>(deg + 1));
-        for (int i = 0; i <= deg; ++i) poly_coeffs.push_back(poly.coeff(i));
+        for (int i = 0; i <= deg; ++i) poly_coeffs.push_back(poly.coeff(static_cast<size_t>(i)));
 
         // (p-1)/2 depends only on p — hoist out of attempt loop
         const Integer exp_val{int64_t((p - 1) / 2)};
@@ -458,7 +458,7 @@ private:
             uint64_t val = 0, rp = 1;
             for (int i = 0; i <= deg; ++i) {
                 val = (val + static_cast<uint64_t>(
-                    (static_cast<__uint128_t>(poly.coeff(i)) * rp) % p)) % p;
+                    (static_cast<__uint128_t>(poly.coeff(static_cast<size_t>(i))) * rp) % p)) % p;
                 rp = static_cast<uint64_t>((static_cast<__uint128_t>(rp) * r) % p);
             }
             if (val == 0) roots.push_back(r);

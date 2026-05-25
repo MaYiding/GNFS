@@ -555,7 +555,8 @@ void test_characteristic_2_sqrt() {
     auto sq = MP::mul(sqrt_alpha, sqrt_alpha, f2, 2);
     assert(sq.degree() == alpha.degree());
     for (int i = 0; i <= std::max(sq.degree(), alpha.degree()); ++i) {
-        assert(sq.coeff(i) == alpha.coeff(i));
+        const size_t idx = static_cast<size_t>(i);
+        assert(sq.coeff(idx) == alpha.coeff(idx));
     }
     std::cout << "  sqrt F_4 (alpha): PASSED" << std::endl;
 
@@ -563,7 +564,8 @@ void test_characteristic_2_sqrt() {
     auto sqrt_ap1 = MP::sqrt_tonelli_shanks(alpha_plus_1, f2, 2);
     auto sq2 = MP::mul(sqrt_ap1, sqrt_ap1, f2, 2);
     for (int i = 0; i <= std::max(sq2.degree(), alpha_plus_1.degree()); ++i) {
-        assert(sq2.coeff(i) == alpha_plus_1.coeff(i));
+        const size_t idx = static_cast<size_t>(i);
+        assert(sq2.coeff(idx) == alpha_plus_1.coeff(idx));
     }
     std::cout << "  sqrt F_4 (alpha+1): PASSED" << std::endl;
 
@@ -577,7 +579,8 @@ void test_characteristic_2_sqrt() {
     auto sqrt_alpha_f8 = MP::sqrt_tonelli_shanks(alpha, f3, 2);
     auto sq3 = MP::mul(sqrt_alpha_f8, sqrt_alpha_f8, f3, 2);
     for (int i = 0; i <= std::max(sq3.degree(), alpha.degree()); ++i) {
-        assert(sq3.coeff(i) == alpha.coeff(i));
+        const size_t idx = static_cast<size_t>(i);
+        assert(sq3.coeff(idx) == alpha.coeff(idx));
     }
     std::cout << "  sqrt F_8 (alpha): PASSED" << std::endl;
 
@@ -763,7 +766,8 @@ void test_sqrt_even_degree_extension() {
         auto r_sq = MP::mul(r, r, f, p);
         // r^2 must equal (x+1)^2 = sq
         for (int i = 0; i <= std::max(r_sq.degree(), sq.degree()); ++i) {
-            assert(r_sq.coeff(i) == sq.coeff(i));
+            const size_t idx = static_cast<size_t>(i);
+            assert(r_sq.coeff(idx) == sq.coeff(idx));
         }
         std::cout << "  sqrt((x+1)^2) in F_{1013^4}: PASSED" << std::endl;
     }
@@ -777,7 +781,8 @@ void test_sqrt_even_degree_extension() {
         assert(!r.is_zero() && "sqrt of (3x^2+5x+7)^2 must succeed");
         auto r_sq = MP::mul(r, r, f, p);
         for (int i = 0; i <= std::max(r_sq.degree(), sq.degree()); ++i) {
-            assert(r_sq.coeff(i) == sq.coeff(i));
+            const size_t idx = static_cast<size_t>(i);
+            assert(r_sq.coeff(idx) == sq.coeff(idx));
         }
         std::cout << "  sqrt((3x^2+5x+7)^2) in F_{1013^4}: PASSED" << std::endl;
     }

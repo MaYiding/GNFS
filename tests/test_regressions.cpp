@@ -251,7 +251,7 @@ void test_rational_value_convention() {
 void test_special_q_range_regression() {
     std::cout << "Testing special-Q range regression..." << std::endl;
 
-    for (size_t bits : {20, 40, 60, 80, 100, 150, 200}) {
+    for (size_t bits : {size_t{20}, size_t{40}, size_t{60}, size_t{80}, size_t{100}, size_t{150}, size_t{200}}) {
         auto params = GNFSParams::compute(bits);
         assert(params.special_q_min > params.algebraic_bound);
         assert(params.special_q_max > params.special_q_min);
@@ -270,7 +270,7 @@ void test_sieve_area_cap_regression() {
     constexpr size_t MAX_AREA = 1024ULL * 1024 * 1024; // 1G positions max
 
     // Even for very large N, sieve area must be capped
-    for (size_t bits : {200, 300, 500}) {
+    for (size_t bits : {size_t{200}, size_t{300}, size_t{500}}) {
         auto params = GNFSParams::compute(bits);
         size_t area = params.sieve_region_size();
         assert(area <= MAX_AREA);

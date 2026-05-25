@@ -193,7 +193,7 @@ public:
 
         // 第二步：选择二次特征素数
         // If Schirokauer will be unavailable (f reducible mod 2), use extra QC primes
-        uint32_t effective_qc_count = config_.num_qc_primes;
+        size_t effective_qc_count = config_.num_qc_primes;
         bool can_use_schirokauer = config_.include_schirokauer &&
                                    ctx.degree() <= FastPoly::MAX_DEGREE;
         if (can_use_schirokauer) {
@@ -212,13 +212,16 @@ public:
             bool f_irred_mod2 = sqrt::ModularPoly::is_irreducible(f_mod2, 2);
             if (!f_irred_mod2) {
                 // Compensate: more QC primes to replace missing Schirokauer
-                effective_qc_count = std::max(effective_qc_count, static_cast<uint32_t>(config_.num_qc_primes + d_check * 8));
+                effective_qc_count = std::max(
+                    effective_qc_count,
+                    config_.num_qc_primes + static_cast<size_t>(d_check) * 8);
             }
         } else if (config_.include_schirokauer) {
             // Degree exceeds FastPoly::MAX_DEGREE — cannot use Schirokauer maps
             // Compensate with extra QC primes
-            effective_qc_count = std::max(effective_qc_count,
-                static_cast<uint32_t>(config_.num_qc_primes + ctx.degree() * 8));
+            effective_qc_count = std::max(
+                effective_qc_count,
+                config_.num_qc_primes + static_cast<size_t>(ctx.degree()) * 8);
         }
         std::vector<std::pair<uint32_t, uint32_t>> qc_prime_roots;
         if (config_.include_qc_columns) {
@@ -392,7 +395,7 @@ public:
         auto lp_info = collect_large_primes_streaming(source);
 
         // 第二步：选择二次特征素数 (与 vector 版完全相同)
-        uint32_t effective_qc_count = config_.num_qc_primes;
+        size_t effective_qc_count = config_.num_qc_primes;
         bool can_use_schirokauer = config_.include_schirokauer &&
                                    ctx.degree() <= FastPoly::MAX_DEGREE;
         if (can_use_schirokauer) {
@@ -408,12 +411,14 @@ public:
             }
             bool f_irred_mod2 = sqrt::ModularPoly::is_irreducible(f_mod2, 2);
             if (!f_irred_mod2) {
-                effective_qc_count = std::max(effective_qc_count,
-                    static_cast<uint32_t>(config_.num_qc_primes + d_check * 8));
+                effective_qc_count = std::max(
+                    effective_qc_count,
+                    config_.num_qc_primes + static_cast<size_t>(d_check) * 8);
             }
         } else if (config_.include_schirokauer) {
-            effective_qc_count = std::max(effective_qc_count,
-                static_cast<uint32_t>(config_.num_qc_primes + ctx.degree() * 8));
+            effective_qc_count = std::max(
+                effective_qc_count,
+                config_.num_qc_primes + static_cast<size_t>(ctx.degree()) * 8);
         }
         std::vector<std::pair<uint32_t, uint32_t>> qc_prime_roots;
         if (config_.include_qc_columns) {
@@ -720,7 +725,7 @@ private:
         // Find actual degrees
         auto deg = [](const std::vector<uint64_t>& poly) -> int {
             for (int i = static_cast<int>(poly.size()) - 1; i >= 0; --i) {
-                if (poly[i] != 0) return i;
+                if (poly[static_cast<size_t>(i)] != 0) return i;
             }
             return -1;  // zero polynomial
         };
@@ -745,12 +750,16 @@ private:
             if (da < db) { std::swap(a, b); continue; }
 
             // a = a - (lead_a / lead_b) * x^(da-db) * b
-            uint64_t inv_lb = mod_inv(b[db]);
-            uint64_t scale = static_cast<uint64_t>(static_cast<__uint128_t>(a[da]) * inv_lb % p64);
+            uint64_t inv_lb = mod_inv(b[static_cast<size_t>(db)]);
+            uint64_t scale = static_cast<uint64_t>(
+                static_cast<__uint128_t>(a[static_cast<size_t>(da)]) * inv_lb % p64);
             int shift = da - db;
             for (int i = 0; i <= db; ++i) {
-                uint64_t sub = static_cast<uint64_t>(static_cast<__uint128_t>(scale) * b[i] % p64);
-                a[i + shift] = (a[i + shift] + p64 - sub) % p64;
+                const size_t b_idx = static_cast<size_t>(i);
+                const size_t a_idx = static_cast<size_t>(i + shift);
+                uint64_t sub = static_cast<uint64_t>(
+                    static_cast<__uint128_t>(scale) * b[b_idx] % p64);
+                a[a_idx] = (a[a_idx] + p64 - sub) % p64;
             }
             // Trim leading zeros
             while (a.size() > 1 && a.back() == 0) a.pop_back();
@@ -1142,7 +1151,8 @@ struct MatrixStats {
 
     if (stats.num_rows > 0 && stats.num_cols > 0) {
         stats.density = static_cast<double>(stats.total_weight) /
-                        (stats.num_rows * stats.num_cols);
+                        (static_cast<double>(stats.num_rows) *
+                         static_cast<double>(stats.num_cols));
     }
 
     if (stats.num_rows > stats.num_cols) {

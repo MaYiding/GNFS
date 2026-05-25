@@ -860,7 +860,7 @@ public:
         double excess_factor = 1.05) {
 
     size_t columns = factor_base_size + unique_large_primes;
-    return static_cast<size_t>(columns * excess_factor) + 1;
+    return static_cast<size_t>(static_cast<double>(columns) * excess_factor) + 1;
 }
 
 /// 检查是否有足够的关系

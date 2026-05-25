@@ -378,13 +378,15 @@ FactResult factor_with_progress(const Integer& n, int level) {
                                  (sq_count % report_interval == 0) ||
                                  (collector.size() >= batch_target);
             if (should_report) {
-                double rate = collector.size() / (phase.sec() + 0.001);
+                double rate = static_cast<double>(collector.size()) / (phase.sec() + 0.001);
                 double full_pct = collector.size() > 0 ?
-                    100.0 * full_count / collector.size() : 0.0;
+                    100.0 * static_cast<double>(full_count) /
+                    static_cast<double>(collector.size()) : 0.0;
                 std::cout << "  SQ #" << sq_count
                           << ": rels=" << collector.size() << "/" << batch_target
                           << " (" << std::fixed << std::setprecision(1)
-                          << (100.0 * collector.size() / batch_target) << "%)"
+                          << (100.0 * static_cast<double>(collector.size()) /
+                              static_cast<double>(batch_target)) << "%)"
                           << " full=" << full_count << " (" << std::setprecision(0)
                           << full_pct << "%)"
                           << " rate=" << std::setprecision(1) << rate << "/s"
@@ -511,7 +513,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
         size_t lp_col_estimate = lp_enabled ? count_unique_lp_keys(relations) : 0;
         size_t effective_cols = matrix_cols + lp_col_estimate;
         if (lp_enabled && !relations.empty()) {
-            double beta = 100.0 * lp_col_estimate / relations.size();
+            double beta = 100.0 * static_cast<double>(lp_col_estimate) /
+                          static_cast<double>(relations.size());
             std::cout << "  [LP ratio] lp_cols=" << lp_col_estimate
                       << "/" << relations.size() << " (β=" << std::fixed
                       << std::setprecision(1) << beta << "%) eff_cols="

@@ -237,7 +237,7 @@ static bool factorize(const RegressionLevel& tc) {
     {
         size_t lp_cols_for_trim = lp_enabled ? count_unique_lp_keys(relations) : 0;
         size_t effective_cols = matrix_cols + lp_cols_for_trim;
-        size_t max_rels = static_cast<size_t>(effective_cols * 1.3);
+        size_t max_rels = static_cast<size_t>(static_cast<double>(effective_cols) * 1.3);
         if (relations.size() > max_rels) {
             std::mt19937 rng(42);
             std::shuffle(relations.begin(), relations.end(), rng);

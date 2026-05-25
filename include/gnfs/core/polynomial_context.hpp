@@ -101,7 +101,7 @@ public:
         result = f_coeffs_[degree_];
         for (int i = static_cast<int>(degree_) - 1; i >= 0; --i) {
             result *= x;
-            result += f_coeffs_[i];
+            result += f_coeffs_[static_cast<size_t>(i)];
         }
         return result;
     }
@@ -120,7 +120,7 @@ public:
         for (int i = static_cast<int>(degree_) - 1; i >= 0; --i) {
             result = static_cast<uint64_t>(
                 (static_cast<__uint128_t>(result) * x) % p);
-            uint64_t ci = get_coeff_mod_p(f_coeffs_[i]);
+            uint64_t ci = get_coeff_mod_p(f_coeffs_[static_cast<size_t>(i)]);
             result = (result + ci) % p;
         }
         return result;
@@ -132,7 +132,7 @@ public:
 
         double result = f_coeffs_[degree_].to_double();
         for (int i = static_cast<int>(degree_) - 1; i >= 0; --i) {
-            result = result * x + f_coeffs_[i].to_double();
+            result = result * x + f_coeffs_[static_cast<size_t>(i)].to_double();
         }
         return result;
     }

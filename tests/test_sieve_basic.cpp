@@ -44,7 +44,7 @@ void test_full_sieve_pipeline() {
     // 打印多项式
     std::cout << "    f(x) = ";
     for (int i = static_cast<int>(ctx.degree()); i >= 0; --i) {
-        const auto& coeff = ctx.coeff(i);
+        const auto& coeff = ctx.coeff(static_cast<uint32_t>(i));
         if (!coeff.is_zero() || i == 0) {
             if (i < static_cast<int>(ctx.degree())) {
                 std::cout << (coeff.is_negative() ? " - " : " + ");
@@ -140,7 +140,8 @@ void test_full_sieve_pipeline() {
     std::cout << "    Total candidates found: " << total_candidates << std::endl;
 
     if (total_positions > 0) {
-        double candidate_rate = static_cast<double>(total_candidates) / total_positions * 100;
+        double candidate_rate = static_cast<double>(total_candidates) /
+                                static_cast<double>(total_positions) * 100.0;
         std::cout << "    Candidate rate: " << std::fixed << std::setprecision(4)
                   << candidate_rate << "%" << std::endl;
     }
@@ -195,7 +196,7 @@ void test_full_sieve_pipeline() {
 
     // 模拟添加一些关系
     for (int i = 1; i <= 20; ++i) {
-        Relation rel(i, i + 1);
+        Relation rel(i, static_cast<uint64_t>(i + 1));
         if (i % 5 == 0) {
             rel.rational_large_prime.push_back(PrimePower{100003u, 1});
         }

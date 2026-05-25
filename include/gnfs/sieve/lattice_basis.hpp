@@ -449,7 +449,7 @@ struct SieveRegion {
 
     /// 从线性索引转换为 (i, j)
     [[nodiscard]] std::pair<int32_t, int32_t> index_to_ij(size_t idx) const noexcept {
-        int32_t w = i_width();
+        const size_t w = static_cast<size_t>(i_width());
         int32_t j = static_cast<int32_t>(idx / w) + j_min;
         int32_t i = static_cast<int32_t>(idx % w) + i_min;
         return {i, j};
@@ -457,7 +457,7 @@ struct SieveRegion {
 
     /// 从 (i, j) 转换为线性索引
     [[nodiscard]] size_t ij_to_index(int32_t i, int32_t j) const noexcept {
-        return static_cast<size_t>(j - j_min) * i_width() +
+        return static_cast<size_t>(j - j_min) * static_cast<size_t>(i_width()) +
                static_cast<size_t>(i - i_min);
     }
 };

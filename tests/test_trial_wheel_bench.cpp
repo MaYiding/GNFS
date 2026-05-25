@@ -105,7 +105,8 @@ uint64_t make_cofactor(std::mt19937_64& rng) {
         for (uint32_t k = 0; k < a; ++k) base <<= 1;
     }
     // Cap at 2^60 so the value comfortably fits uint64 even after multiplies
-    return base & ((1ULL << 60) - 1) ?: 1ULL;
+    const uint64_t capped = base & ((1ULL << 60) - 1);
+    return capped != 0 ? capped : 1ULL;
 }
 
 void run_bench(uint32_t fb_bound, size_t count, uint64_t seed) {
@@ -165,9 +166,9 @@ void run_bench(uint32_t fb_bound, size_t count, uint64_t seed) {
 
     std::printf("\nResults (per call):\n");
     std::printf("  Naive  : %8.3f µs/call  (total %8.3f ms)\n",
-                naive_us_per, naive_ns / 1.0e6);
+                naive_us_per, static_cast<double>(naive_ns) / 1.0e6);
     std::printf("  Wheel  : %8.3f µs/call  (total %8.3f ms)\n",
-                wheel_us_per, wheel_ns / 1.0e6);
+                wheel_us_per, static_cast<double>(wheel_ns) / 1.0e6);
     std::printf("  Speedup: %5.2fx\n", speedup);
     std::printf("  Smooth hits: naive=%zu wheel=%zu\n", naive_smooth, wheel_smooth);
 }

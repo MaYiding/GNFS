@@ -230,7 +230,8 @@ struct SpecialQRangeSelector {
         range.min_q = algebraic_bound;
 
         // 估计需要多少 special-q
-        size_t needed_sq = static_cast<size_t>(target_relations / relations_per_sq);
+        size_t needed_sq = static_cast<size_t>(
+            static_cast<double>(target_relations) / relations_per_sq);
         needed_sq = std::max(needed_sq, size_t(1000));
 
         // 估计 max_q
@@ -240,7 +241,7 @@ struct SpecialQRangeSelector {
         // 简化估计：max_q ≈ min_q + needed_sq * ln(min_q)
 
         double ln_min = std::log(static_cast<double>(range.min_q));
-        uint64_t delta = static_cast<uint64_t>(needed_sq * ln_min * 1.5);
+        uint64_t delta = static_cast<uint64_t>(static_cast<double>(needed_sq) * ln_min * 1.5);
 
         range.max_q = static_cast<uint32_t>(
             std::min(static_cast<uint64_t>(range.min_q) + delta,

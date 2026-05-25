@@ -305,8 +305,8 @@ endif()
 target_include_directories(gnfs_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
-    ${GMP_INCLUDE_DIR}
 )
+target_include_directories(gnfs_core SYSTEM PUBLIC ${GMP_INCLUDE_DIR})
 target_link_libraries(gnfs_core PUBLIC
     ${GMP_LIBRARY}
     gnfs_util
@@ -314,7 +314,7 @@ target_link_libraries(gnfs_core PUBLIC
 )
 
 if(HAVE_NTL)
-    target_include_directories(gnfs_core PUBLIC ${NTL_INCLUDE_DIR})
+    target_include_directories(gnfs_core SYSTEM PUBLIC ${NTL_INCLUDE_DIR})
     target_link_libraries(gnfs_core PUBLIC ${NTL_LIBRARY})
     target_compile_definitions(gnfs_core PUBLIC GNFS_HAVE_NTL=1)
 endif()

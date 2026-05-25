@@ -151,9 +151,9 @@ uint64_t pollard_rho_mpn2(const Integer& n, size_t max_iters) {
     // GCD with N: compute gcd(a, N), return as uint64 if small
     mpz_t g_mpz, a_mpz, n_mpz;
     mpz_init(g_mpz); mpz_init(a_mpz); mpz_init(n_mpz);
-    mpz_import(n_mpz, nn, -1, sizeof(mp_limb_t), 0, 0, N);
+    mpz_import(n_mpz, static_cast<size_t>(nn), -1, sizeof(mp_limb_t), 0, 0, N);
     auto gcd_with_n = [&](const mp_limb_t* a) -> uint64_t {
-        mpz_import(a_mpz, nn, -1, sizeof(mp_limb_t), 0, 0, a);
+        mpz_import(a_mpz, static_cast<size_t>(nn), -1, sizeof(mp_limb_t), 0, 0, a);
         mpz_gcd(g_mpz, a_mpz, n_mpz);
         if (mpz_cmp_ui(g_mpz, 1) > 0 && mpz_cmp(g_mpz, n_mpz) < 0) {
             return mpz_get_ui(g_mpz);
@@ -1003,7 +1003,7 @@ std::vector<Relation> Pipeline::sieve_and_collect(
                 auto now = std::chrono::high_resolution_clock::now();
                 double elapsed = std::chrono::duration<double>(now - t0).count();
                 size_t rels_per_sec = (elapsed > 0.01) ?
-                    static_cast<size_t>(collector.size() / elapsed) : 0;
+                    static_cast<size_t>(static_cast<double>(collector.size()) / elapsed) : 0;
                 double pct = static_cast<double>(collector.size()) /
                              static_cast<double>(batch_target);
                 emit_progress(Phase::Sieving,
@@ -1506,8 +1506,8 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
     // causes orthogonality breakdown); (2) SGE ineffectiveness (avg column weight
     // is too high for w1/w2 elimination).
     // Target: 1.1× cols for optimal SGE + BL. CADO-NFS typically uses 5-10% excess.
-    if (matrix_stats.num_rows > static_cast<size_t>(matrix_stats.num_cols * 1.3)) {
-        size_t target_rows = static_cast<size_t>(matrix_stats.num_cols * 1.1);
+    if (matrix_stats.num_rows > static_cast<size_t>(static_cast<double>(matrix_stats.num_cols) * 1.3)) {
+        size_t target_rows = static_cast<size_t>(static_cast<double>(matrix_stats.num_cols) * 1.1);
         emit_log(LogLevel::Info, Phase::LinearAlgebra,
                  "Trimming excess: " + std::to_string(matrix_stats.num_rows) +
                  " rows -> " + std::to_string(target_rows) +

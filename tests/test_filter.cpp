@@ -10,7 +10,7 @@ using gnfs::core::PrimePower;
 
 // Helper: create a full relation (no large primes)
 Relation make_full_relation(int64_t a, int64_t b) {
-    Relation r(a, b);
+    Relation r(a, static_cast<uint64_t>(b));
     r.rational_factors = {0, 1, 2};
     r.algebraic_factors = {0, 1};
     return r;
@@ -18,7 +18,7 @@ Relation make_full_relation(int64_t a, int64_t b) {
 
 // Helper: create a relation with one rational large prime
 Relation make_1lp_relation(int64_t a, int64_t b, uint64_t lp) {
-    Relation r(a, b);
+    Relation r(a, static_cast<uint64_t>(b));
     r.rational_factors = {0, 1};
     r.algebraic_factors = {0};
     r.rational_large_prime.push_back(PrimePower{lp, 0, 1});
@@ -27,7 +27,7 @@ Relation make_1lp_relation(int64_t a, int64_t b, uint64_t lp) {
 
 // Helper: create a relation with one algebraic large prime
 Relation make_1alp_relation(int64_t a, int64_t b, uint64_t lp) {
-    Relation r(a, b);
+    Relation r(a, static_cast<uint64_t>(b));
     r.rational_factors = {0, 1};
     r.algebraic_factors = {0};
     r.algebraic_large_prime.push_back(PrimePower{lp, 0, 1});
@@ -182,7 +182,7 @@ void test_max_passes_limit() {
     // Create a scenario where filtering could cascade many times
     std::vector<Relation> rels;
     for (int i = 0; i < 10; ++i) {
-        rels.push_back(make_1lp_relation(i, 1, 100 + i));  // all singletons
+        rels.push_back(make_1lp_relation(i, 1, static_cast<uint64_t>(100 + i)));  // all singletons
     }
 
     FilterConfig cfg;

@@ -471,11 +471,13 @@ private:
         // |a| ~ |i * e0 + j * e1|, |b| ~ |i * f0 + j * f1|
         // E[|i|] ≈ range/4 for symmetric distribution on [i_min, i_max]
         // E[j]   ≈ midpoint for [j_min, j_max] (j > 0)
-        double typical_i = std::max(1.0, (region_.i_max - region_.i_min) / 4.0);
-        double typical_j = std::max(1.0, (region_.j_max + region_.j_min) / 2.0);
+        double typical_i = std::max(1.0, static_cast<double>(region_.i_max - region_.i_min) / 4.0);
+        double typical_j = std::max(1.0, static_cast<double>(region_.j_max + region_.j_min) / 2.0);
 
-        double typical_a = std::abs(typical_i * basis.e0 + typical_j * basis.e1);
-        double typical_b = std::abs(typical_i * basis.f0 + typical_j * basis.f1);
+        double typical_a = std::abs(typical_i * static_cast<double>(basis.e0) +
+                                    typical_j * static_cast<double>(basis.e1));
+        double typical_b = std::abs(typical_i * static_cast<double>(basis.f0) +
+                                    typical_j * static_cast<double>(basis.f1));
 
         // 有理侧 (GNFS convention): |a - b*m|
         double m_val = ctx_.m().to_double();
@@ -965,7 +967,7 @@ private:
         const int32_t total_rows = j_max - j_min + 1;
         const auto w = static_cast<int32_t>(region_.i_width());
 
-        std::vector<std::vector<BucketEntry>> buckets(total_rows);
+        std::vector<std::vector<BucketEntry>> buckets(static_cast<size_t>(total_rows));
 
         // 预估每行平均条目数用于 reserve
         size_t large_count = 0;

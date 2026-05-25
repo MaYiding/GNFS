@@ -79,7 +79,7 @@ static std::vector<Relation> make_synthetic_50d_like(
     std::vector<Relation> rels;
     rels.reserve(total_rels);
     for (size_t i = 0; i < total_rels; ++i) {
-        Relation r(static_cast<int64_t>(i + 1), static_cast<int64_t>((i % 1000) + 1));
+        Relation r(static_cast<int64_t>(i + 1), static_cast<uint64_t>((i % 1000) + 1));
         r.rational_factors = {0, 1};
         r.algebraic_factors = {0};
         for (size_t k : rel_to_lps[i]) {
@@ -264,7 +264,8 @@ void test_v0_v3_bench_large() {
               << " total=" << (v0_merged_cascade.size() + v3_added)
               << " elapsed=" << v3_elapsed << "s" << std::endl;
     if (!v0_merged.empty()) {
-        double pct = 100.0 * v3_added / v0_merged.size();
+        double pct = 100.0 * static_cast<double>(v3_added) /
+                     static_cast<double>(v0_merged.size());
         std::cout << "  V3 adds " << std::setprecision(1) << pct
                   << "% beyond V0 in " << std::setprecision(3)
                   << (v3_elapsed - v0_elapsed) << "s extra" << std::endl;

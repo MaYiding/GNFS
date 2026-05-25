@@ -89,12 +89,14 @@ struct GFPolyOps {
         Poly q(a.size() - b.size() + 1, 0);
         for (int i = static_cast<int>(a.size()) - 1;
              i >= static_cast<int>(b.size()) - 1; --i) {
-            uint64_t c = static_cast<uint64_t>(static_cast<__uint128_t>(a[i]) * b_inv % p);
-            q[i - (static_cast<int>(b.size()) - 1)] = c;
+            const size_t i_idx = static_cast<size_t>(i);
+            const int shift = static_cast<int>(b.size()) - 1;
+            uint64_t c = static_cast<uint64_t>(static_cast<__uint128_t>(a[i_idx]) * b_inv % p);
+            q[static_cast<size_t>(i - shift)] = c;
             for (size_t j = 0; j < b.size(); ++j) {
                 uint64_t cb = static_cast<uint64_t>(static_cast<__uint128_t>(c) * b[j] % p);
-                a[i - (static_cast<int>(b.size()) - 1) + j] =
-                    (a[i - (static_cast<int>(b.size()) - 1) + j] + p - cb) % p;
+                const size_t a_idx = static_cast<size_t>(i - shift) + j;
+                a[a_idx] = (a[a_idx] + p - cb) % p;
             }
         }
         return {trim(q), trim(a)};
@@ -398,8 +400,9 @@ struct GFPolyOps {
         std::vector<uint64_t> lifted_b(product_b.begin(), product_b.end());
         hensel_lift_pair(f_pk, lifted_a, lifted_b, product_a, product_b, t, ell, k);
 
-        std::vector<Poly> group_a(factors.begin(), factors.begin() + mid);
-        std::vector<Poly> group_b(factors.begin() + mid, factors.end());
+        const auto mid_offset = static_cast<std::ptrdiff_t>(mid);
+        std::vector<Poly> group_a(factors.begin(), factors.begin() + mid_offset);
+        std::vector<Poly> group_b(factors.begin() + mid_offset, factors.end());
 
         auto result_a = hensel_lift_all(lifted_a, group_a, ell, k);
         auto result_b = hensel_lift_all(lifted_b, group_b, ell, k);

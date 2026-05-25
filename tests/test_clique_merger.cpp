@@ -10,7 +10,7 @@ using gnfs::core::PrimePower;
 
 // Helper: 1LP relation (rational)
 static Relation make_1rat(int64_t a, int64_t b, uint64_t lp) {
-    Relation r(a, b);
+    Relation r(a, static_cast<uint64_t>(b));
     r.rational_factors = {0, 1};
     r.algebraic_factors = {0};
     r.rational_large_prime.push_back(PrimePower{lp, 0, 1});
@@ -20,7 +20,7 @@ static Relation make_1rat(int64_t a, int64_t b, uint64_t lp) {
 // Helper: 2LP relation (one rat + one alg)
 static Relation make_2lp(int64_t a, int64_t b, uint64_t rat_lp,
                          uint64_t alg_p, uint64_t alg_r) {
-    Relation r(a, b);
+    Relation r(a, static_cast<uint64_t>(b));
     r.rational_factors = {0, 1};
     r.algebraic_factors = {0};
     r.rational_large_prime.push_back(PrimePower{rat_lp, 0, 1});

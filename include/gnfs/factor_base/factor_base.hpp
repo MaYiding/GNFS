@@ -194,8 +194,8 @@ private:
     // log_p = floor(log2(p) * scale)
     // 使用 clz (count leading zeros) 来快速计算 log2
     if (p <= 1) return 0;
-    uint32_t log2_p = 31 - __builtin_clz(p);
-    return log2_p * scale;
+    uint32_t log2_p = static_cast<uint32_t>(31 - __builtin_clz(p));
+    return log2_p * static_cast<uint32_t>(scale);
 }
 
 /// 计算对数值（更精确版本）

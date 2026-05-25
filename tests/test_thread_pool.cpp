@@ -37,7 +37,7 @@ void test_multiple_tasks() {
     }
 
     for (int i = 0; i < 100; ++i) {
-        assert(futures[i].get() == i * 2);
+        assert(futures[static_cast<size_t>(i)].get() == i * 2);
     }
 
     std::cout << "  Multiple tasks: PASS" << std::endl;
@@ -66,7 +66,7 @@ void test_parallel_for() {
 
     std::vector<int> data(100);
     for (int i = 0; i < 100; ++i) {
-        data[i] = i;
+        data[static_cast<size_t>(i)] = i;
     }
 
     std::atomic<int> sum{0};

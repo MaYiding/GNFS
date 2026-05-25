@@ -69,7 +69,7 @@ void test_factor_base_bounds() {
     assert(big.rational_bound > small.rational_bound);
 
     // algebraic_bound >= rational_bound (typically ~2×)
-    for (size_t bits : {20, 50, 80, 120, 200}) {
+    for (size_t bits : {size_t{20}, size_t{50}, size_t{80}, size_t{120}, size_t{200}}) {
         auto p = GNFSParams::compute(bits);
         assert(p.algebraic_bound >= p.rational_bound);
     }
@@ -109,7 +109,7 @@ void test_sieve_area_cap() {
     // For large N, sieve area should be capped at a reasonable limit
     constexpr size_t MAX_AREA = 1024ULL * 1024 * 1024; // 1G positions
 
-    for (size_t bits : {100, 200, 300, 500}) {
+    for (size_t bits : {size_t{100}, size_t{200}, size_t{300}, size_t{500}}) {
         auto p = GNFSParams::compute(bits);
         size_t area = p.sieve_region_size();
         assert(area <= MAX_AREA);
@@ -127,7 +127,7 @@ void test_sieve_area_cap() {
 void test_sieve_region_geometry() {
     std::cout << "Testing sieve region geometry..." << std::endl;
 
-    for (size_t bits : {20, 50, 80, 120}) {
+    for (size_t bits : {size_t{20}, size_t{50}, size_t{80}, size_t{120}}) {
         auto p = GNFSParams::compute(bits);
         // i range should be symmetric around 0
         assert(p.sieve_i_min < 0);
@@ -145,7 +145,7 @@ void test_sieve_region_geometry() {
 void test_large_prime_bound() {
     std::cout << "Testing large prime bound..." << std::endl;
 
-    for (size_t bits : {20, 50, 80, 120, 200}) {
+    for (size_t bits : {size_t{20}, size_t{50}, size_t{80}, size_t{120}, size_t{200}}) {
         auto p = GNFSParams::compute(bits);
         // LP bound should be >= FB bound
         assert(p.large_prime_bound >= p.rational_bound);
@@ -199,7 +199,7 @@ void test_lp_bits_env_override() {
 void test_threshold_values() {
     std::cout << "Testing threshold values..." << std::endl;
 
-    for (size_t bits : {20, 50, 80, 120, 200}) {
+    for (size_t bits : {size_t{20}, size_t{50}, size_t{80}, size_t{120}, size_t{200}}) {
         auto p = GNFSParams::compute(bits);
         // Thresholds must be non-zero (otherwise sieve accepts nothing)
         assert(p.rational_threshold > 0);
@@ -242,7 +242,7 @@ void test_max_special_q() {
 void test_estimated_relations() {
     std::cout << "Testing estimated_relations_needed..." << std::endl;
 
-    for (size_t bits : {30, 60, 100}) {
+    for (size_t bits : {size_t{30}, size_t{60}, size_t{100}}) {
         auto p = GNFSParams::compute(bits);
         size_t est = p.estimated_relations_needed();
         assert(est > 0);
@@ -256,7 +256,7 @@ void test_estimated_relations() {
 void test_sieve_memory() {
     std::cout << "Testing sieve_memory_bytes..." << std::endl;
 
-    for (size_t bits : {30, 80, 200}) {
+    for (size_t bits : {size_t{30}, size_t{80}, size_t{200}}) {
         auto p = GNFSParams::compute(bits);
         size_t mem = p.sieve_memory_bytes();
         // Memory = positions × sizeof(uint16_t) = positions × 2
@@ -271,7 +271,7 @@ void test_sieve_memory() {
 void test_polynomial_params() {
     std::cout << "Testing polynomial selection params..." << std::endl;
 
-    for (size_t bits : {30, 80, 200}) {
+    for (size_t bits : {size_t{30}, size_t{80}, size_t{200}}) {
         auto p = GNFSParams::compute(bits);
         assert(p.leading_coeff_bound > 0);
         assert(p.search_radius >= 100);
@@ -290,7 +290,7 @@ void test_polynomial_params() {
 void test_qc_and_excess() {
     std::cout << "Testing QC primes and target excess..." << std::endl;
 
-    for (size_t bits : {30, 80, 200}) {
+    for (size_t bits : {size_t{30}, size_t{80}, size_t{200}}) {
         auto p = GNFSParams::compute(bits);
         // ≤30 digit uses 20 QC primes (Session 51 optimization), larger uses 32-128
         assert(p.num_qc_primes >= 20);

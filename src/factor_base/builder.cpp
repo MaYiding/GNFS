@@ -489,7 +489,7 @@ std::vector<uint32_t> FactorBaseBuilder::extract_roots_from_poly(
     std::vector<uint64_t> poly_coeffs;
     poly_coeffs.reserve(static_cast<size_t>(poly.degree() + 1));
     for (int i = 0; i <= poly.degree(); ++i) {
-        poly_coeffs.push_back(poly.coeff(i));
+        poly_coeffs.push_back(poly.coeff(static_cast<size_t>(i)));
     }
 
     // Try random splits
@@ -533,12 +533,12 @@ std::vector<uint32_t> FactorBaseBuilder::extract_roots_from_poly(
 
     // Fallback: brute force for this specific polynomial (shouldn't happen often)
     for (uint32_t r = 0; r < p && static_cast<int>(roots.size()) < deg; ++r) {
-        uint64_t val = 0, rp = 1;
-        for (int i = 0; i <= poly.degree(); ++i) {
-            val = (val + static_cast<uint64_t>(
-                (static_cast<__uint128_t>(poly.coeff(i)) * rp) % p)) % p;
-            rp = static_cast<uint64_t>((static_cast<__uint128_t>(rp) * r) % p);
-        }
+            uint64_t val = 0, rp = 1;
+            for (int i = 0; i <= poly.degree(); ++i) {
+                val = (val + static_cast<uint64_t>(
+                    (static_cast<__uint128_t>(poly.coeff(static_cast<size_t>(i))) * rp) % p)) % p;
+                rp = static_cast<uint64_t>((static_cast<__uint128_t>(rp) * r) % p);
+            }
         if (val == 0) roots.push_back(r);
     }
     return roots;
@@ -556,7 +556,7 @@ sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(
     std::vector<uint64_t> rem;
     rem.reserve(static_cast<size_t>(a.degree() + 1));
     for (int i = 0; i <= a.degree(); ++i) {
-        rem.push_back(a.coeff(i));
+        rem.push_back(a.coeff(static_cast<size_t>(i)));
     }
 
     int a_deg = a.degree();
@@ -565,7 +565,7 @@ sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(
     if (q_deg < 0) return sqrt::ModularPoly();
 
     // Inverse of leading coefficient of b
-    uint64_t b_lead = b.coeff(b_deg);
+    uint64_t b_lead = b.coeff(static_cast<size_t>(b_deg));
     uint64_t b_lead_inv = 1;
     {
         uint64_t base = b_lead % p, exp = p - 2, result = 1;
@@ -579,17 +579,18 @@ sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(
         b_lead_inv = result;
     }
 
-    std::vector<uint64_t> quotient(q_deg + 1, 0);
+    std::vector<uint64_t> quotient(static_cast<size_t>(q_deg + 1), 0);
 
     for (int i = q_deg; i >= 0; --i) {
         uint64_t coeff = static_cast<uint64_t>(
-            (static_cast<__uint128_t>(rem[i + b_deg]) * b_lead_inv) % p);
-        quotient[i] = coeff;
+            (static_cast<__uint128_t>(rem[static_cast<size_t>(i + b_deg)]) * b_lead_inv) % p);
+        quotient[static_cast<size_t>(i)] = coeff;
 
         for (int j = 0; j <= b_deg; ++j) {
             uint64_t sub = static_cast<uint64_t>(
-                (static_cast<__uint128_t>(coeff) * b.coeff(j)) % p);
-            rem[i + j] = (rem[i + j] + p - sub) % p;
+                (static_cast<__uint128_t>(coeff) * b.coeff(static_cast<size_t>(j))) % p);
+            const size_t rem_idx = static_cast<size_t>(i + j);
+            rem[rem_idx] = (rem[rem_idx] + p - sub) % p;
         }
     }
 

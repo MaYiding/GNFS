@@ -106,7 +106,7 @@ void test_persistent_roundtrip() {
 
         DenseGF2_64x64_Mock loaded;
         for (uint64_t k = 0; k < L; ++k) {
-            ::lseek(fd, KrylovSequenceMmap::HEADER_SIZE + k * entry_size, SEEK_SET);
+            ::lseek(fd, static_cast<off_t>(KrylovSequenceMmap::HEADER_SIZE + k * entry_size), SEEK_SET);
             ssize_t r = ::read(fd, &loaded, sizeof(loaded));
             assert(r == sizeof(loaded));
             assert(loaded == golden[k]);
@@ -206,7 +206,7 @@ void test_large_sequence() {
         int fd = ::open(path.c_str(), O_RDONLY);
         DenseGF2_64x64_Mock loaded;
         for (uint64_t k : {uint64_t(0), uint64_t(1), uint64_t(L / 2), uint64_t(L - 1)}) {
-            ::lseek(fd, KrylovSequenceMmap::HEADER_SIZE + k * entry_size, SEEK_SET);
+            ::lseek(fd, static_cast<off_t>(KrylovSequenceMmap::HEADER_SIZE + k * entry_size), SEEK_SET);
             ::read(fd, &loaded, sizeof(loaded));
             assert(loaded.rows[0] == ((k << 32) | 0));
             assert(loaded.rows[63] == ((k << 32) | 63));

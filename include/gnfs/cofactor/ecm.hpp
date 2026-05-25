@@ -403,7 +403,7 @@ private:
         Point R0 = P;
         Point R1 = mont_double(P, a24, n);
 
-        for (int i = static_cast<int>(bits) - 2; i >= 0; --i) {
+        for (size_t i = bits - 1; i-- > 0;) {
             if (k.test_bit(i)) {
                 R0 = mont_add(R0, R1, P, n);
                 R1 = mont_double(R1, a24, n);
@@ -429,7 +429,8 @@ private:
         }
         std::vector<uint64_t> primes;
         // π(bound) ≈ bound / ln(bound) — reserve to avoid log(n) reallocs.
-        primes.reserve(static_cast<size_t>(bound / std::max(std::log(static_cast<double>(bound)), 1.0)));
+        primes.reserve(static_cast<size_t>(
+            static_cast<double>(bound) / std::max(std::log(static_cast<double>(bound)), 1.0)));
         for (uint64_t i = 2; i <= bound; ++i) {
             if (is_prime[i]) primes.push_back(i);
         }
