@@ -10,6 +10,7 @@
 #include "../sqrt/class_group.hpp"
 #include "../sqrt/modular_poly.hpp"
 #include "../polynomial/int_polynomial.hpp"
+#include "../util/primes.hpp"
 #include "../util/thread_pool.hpp"
 
 #include <cassert>
@@ -714,7 +715,7 @@ private:
         // 计算 f' mod p
         std::vector<uint64_t> fp(d);
         for (uint32_t i = 1; i <= d; ++i) {
-            fp[i - 1] = static_cast<uint64_t>(static_cast<__uint128_t>(f[i]) * i % p64);
+            fp[i - 1] = gnfs::util::mul_mod_u64(f[i], i, p64);
         }
 
         // gcd(f, f') via Euclidean algorithm over F_p[x]
@@ -751,14 +752,12 @@ private:
 
             // a = a - (lead_a / lead_b) * x^(da-db) * b
             uint64_t inv_lb = mod_inv(b[static_cast<size_t>(db)]);
-            uint64_t scale = static_cast<uint64_t>(
-                static_cast<__uint128_t>(a[static_cast<size_t>(da)]) * inv_lb % p64);
+            uint64_t scale = gnfs::util::mul_mod_u64(a[static_cast<size_t>(da)], inv_lb, p64);
             int shift = da - db;
             for (int i = 0; i <= db; ++i) {
                 const size_t b_idx = static_cast<size_t>(i);
                 const size_t a_idx = static_cast<size_t>(i + shift);
-                uint64_t sub = static_cast<uint64_t>(
-                    static_cast<__uint128_t>(scale) * b[b_idx] % p64);
+                uint64_t sub = gnfs::util::mul_mod_u64(scale, b[b_idx], p64);
                 a[a_idx] = (a[a_idx] + p64 - sub) % p64;
             }
             // Trim leading zeros
@@ -1066,11 +1065,9 @@ private:
         base %= mod;
         while (exp > 0) {
             if (exp & 1) {
-                result = static_cast<uint64_t>(
-                    (static_cast<__uint128_t>(result) * base) % mod);
+                result = gnfs::util::mul_mod_u64(result, base, mod);
             }
-            base = static_cast<uint64_t>(
-                (static_cast<__uint128_t>(base) * base) % mod);
+            base = gnfs::util::mul_mod_u64(base, base, mod);
             exp >>= 1;
         }
         return result;

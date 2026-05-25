@@ -4,6 +4,7 @@
 #include "../core/relation.hpp"
 #include "../core/types.hpp"
 #include "../factor_base/factor_base.hpp"
+#include "../util/primes.hpp"
 #include "../util/safe_math.hpp"
 #include "adaptive_lattice.hpp"
 #include "bucket_prefetch.hpp"
@@ -542,9 +543,12 @@ private:
         int64_t e1_mod = mod_reduce(basis.e1);
         int64_t f1_mod = mod_reduce(basis.f1);
         int64_t m64 = static_cast<int64_t>(m_mod_p);
-        // Use __int128_t for intermediate product to avoid overflow when p ~ 2^32
-        int64_t u = (e0_mod - static_cast<int64_t>(static_cast<__int128_t>(f0_mod) * m64 % p64) + p64) % p64;
-        int64_t v = (e1_mod - static_cast<int64_t>(static_cast<__int128_t>(f1_mod) * m64 % p64) + p64) % p64;
+        int64_t u = (e0_mod - static_cast<int64_t>(gnfs::util::mul_mod_u64(
+                         static_cast<uint64_t>(f0_mod), static_cast<uint64_t>(m64),
+                         static_cast<uint64_t>(p64))) + p64) % p64;
+        int64_t v = (e1_mod - static_cast<int64_t>(gnfs::util::mul_mod_u64(
+                         static_cast<uint64_t>(f1_mod), static_cast<uint64_t>(m64),
+                         static_cast<uint64_t>(p64))) + p64) % p64;
         return {u, v};
     }
 
@@ -563,9 +567,12 @@ private:
         int64_t e1_mod = mod_reduce(basis.e1);
         int64_t f1_mod = mod_reduce(basis.f1);
         int64_t r64 = static_cast<int64_t>(r);
-        // Use __int128_t for intermediate product to avoid overflow when p ~ 2^32
-        int64_t u = (e0_mod - static_cast<int64_t>(static_cast<__int128_t>(f0_mod) * r64 % p64) + p64) % p64;
-        int64_t v = (e1_mod - static_cast<int64_t>(static_cast<__int128_t>(f1_mod) * r64 % p64) + p64) % p64;
+        int64_t u = (e0_mod - static_cast<int64_t>(gnfs::util::mul_mod_u64(
+                         static_cast<uint64_t>(f0_mod), static_cast<uint64_t>(r64),
+                         static_cast<uint64_t>(p64))) + p64) % p64;
+        int64_t v = (e1_mod - static_cast<int64_t>(gnfs::util::mul_mod_u64(
+                         static_cast<uint64_t>(f1_mod), static_cast<uint64_t>(r64),
+                         static_cast<uint64_t>(p64))) + p64) % p64;
         return {u, v};
     }
 

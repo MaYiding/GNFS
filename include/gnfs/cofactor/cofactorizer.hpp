@@ -6,6 +6,7 @@
 #include "../core/relation.hpp"
 #include "../factor_base/factor_base.hpp"
 #include "../sieve/lattice_sieve.hpp"
+#include "../util/primes.hpp"
 #include "../util/safe_math.hpp"
 
 #include <atomic>
@@ -217,18 +218,13 @@ public:
             }
         } else if (config_.allow_2lp && !config_.allow_3lp && rat_result.cofactor.fits_uint64()) {
             uint64_t rc = rat_result.cofactor.to_uint64();
-            __uint128_t lpb2 = static_cast<__uint128_t>(large_prime_bound_)
-                             * static_cast<__uint128_t>(large_prime_bound_);
-            if (rc > 1 && static_cast<__uint128_t>(rc) > lpb2) {
+            if (rc > 1 && gnfs::util::u64_gt_square(rc, large_prime_bound_)) {
                 stats_.rational_rejects.fetch_add(1, std::memory_order_relaxed);
                 return std::nullopt;
             }
         } else if (config_.allow_3lp && rat_result.cofactor.fits_uint64()) {
             uint64_t rc = rat_result.cofactor.to_uint64();
-            __uint128_t lpb3 = static_cast<__uint128_t>(large_prime_bound_)
-                             * static_cast<__uint128_t>(large_prime_bound_)
-                             * static_cast<__uint128_t>(large_prime_bound_);
-            if (rc > 1 && static_cast<__uint128_t>(rc) > lpb3) {
+            if (rc > 1 && gnfs::util::u64_gt_cube(rc, large_prime_bound_)) {
                 stats_.rational_rejects.fetch_add(1, std::memory_order_relaxed);
                 return std::nullopt;
             }
@@ -246,6 +242,7 @@ public:
         // __int128 快路径: 避免 degree+1 次 GMP 堆分配（小系数 + 小 a,b 时）
         Integer alg_norm;
         {
+#if defined(__SIZEOF_INT128__)
             auto [norm_i128, ok] = ctx_.algebraic_norm_i128(a, b);
             if (ok) {
                 if (norm_i128 < 0) norm_i128 = -norm_i128;
@@ -260,6 +257,10 @@ public:
                 alg_norm = ctx_.algebraic_norm(a, b);
                 if (alg_norm.is_negative()) alg_norm.negate();
             }
+#else
+            alg_norm = ctx_.algebraic_norm(a, b);
+            if (alg_norm.is_negative()) alg_norm.negate();
+#endif
         }
 
         // Pre-divide by the Special-Q prime if provided.
@@ -295,18 +296,13 @@ public:
             }
         } else if (config_.allow_2lp && !config_.allow_3lp && alg_result.cofactor.fits_uint64()) {
             uint64_t ac = alg_result.cofactor.to_uint64();
-            __uint128_t lpb2 = static_cast<__uint128_t>(large_prime_bound_)
-                             * static_cast<__uint128_t>(large_prime_bound_);
-            if (ac > 1 && static_cast<__uint128_t>(ac) > lpb2) {
+            if (ac > 1 && gnfs::util::u64_gt_square(ac, large_prime_bound_)) {
                 stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
                 return std::nullopt;
             }
         } else if (config_.allow_3lp && alg_result.cofactor.fits_uint64()) {
             uint64_t ac = alg_result.cofactor.to_uint64();
-            __uint128_t lpb3 = static_cast<__uint128_t>(large_prime_bound_)
-                             * static_cast<__uint128_t>(large_prime_bound_)
-                             * static_cast<__uint128_t>(large_prime_bound_);
-            if (ac > 1 && static_cast<__uint128_t>(ac) > lpb3) {
+            if (ac > 1 && gnfs::util::u64_gt_cube(ac, large_prime_bound_)) {
                 stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
                 return std::nullopt;
             }
@@ -495,8 +491,7 @@ public:
         }
         uint64_t b_inv = static_cast<uint64_t>((t % static_cast<int64_t>(p) +
                                                   static_cast<int64_t>(p)) % static_cast<int64_t>(p));
-        return static_cast<uint64_t>(
-            (static_cast<__uint128_t>(a_mod) * b_inv) % p);
+        return gnfs::util::mul_mod_u64(a_mod, b_inv, p);
     }
 
     /// 添加代数侧大素数（带正确的素理想根 r）

@@ -24,21 +24,28 @@ using namespace gnfs::sieve;
 
 namespace {
 
-using i128 = __int128_t;
+#if defined(__SIZEOF_INT128__)
+using wide_int = __int128_t;
+#else
+using wide_int = long double;
+#endif
 
-[[nodiscard]] i128 norm_sq_i128(int64_t a, int64_t b) noexcept {
-    i128 a128 = a, b128 = b;
+[[nodiscard]] wide_int norm_sq_i128(int64_t a, int64_t b) noexcept {
+    wide_int a128 = static_cast<wide_int>(a);
+    wide_int b128 = static_cast<wide_int>(b);
     return a128 * a128 + b128 * b128;
 }
 
-[[nodiscard]] i128 dot_i128(int64_t a0, int64_t b0, int64_t a1, int64_t b1) noexcept {
-    return static_cast<i128>(a0) * a1 + static_cast<i128>(b0) * b1;
+[[nodiscard]] wide_int dot_i128(int64_t a0, int64_t b0, int64_t a1, int64_t b1) noexcept {
+    return static_cast<wide_int>(a0) * static_cast<wide_int>(a1) +
+           static_cast<wide_int>(b0) * static_cast<wide_int>(b1);
 }
 
-[[nodiscard]] i128 abs_i128(i128 x) noexcept { return x < 0 ? -x : x; }
+[[nodiscard]] wide_int abs_i128(wide_int x) noexcept { return x < 0 ? -x : x; }
 
 /// Print 128-bit integer to stderr (for assertion failure debugging).
-void print_i128(i128 x) {
+void print_i128(wide_int x) {
+#if defined(__SIZEOF_INT128__)
     if (x < 0) {
         std::cerr << "-";
         x = -x;
@@ -54,15 +61,18 @@ void print_i128(i128 x) {
         x /= 10;
     }
     while (pos > 0) std::cerr << buf[--pos];
+#else
+    std::cerr << x;
+#endif
 }
 
 /// Verify the size-reduction invariant: |2 * (v0.v1)| <= |v0|^2.
 /// Equivalent to |mu| = |v0.v1/|v0|^2| <= 1/2.
 [[nodiscard]] bool is_size_reduced(const LatticeBasis& basis) {
     // basis.e0/f0 is the shorter v0, basis.e1/f1 is the longer v1
-    i128 n0 = norm_sq_i128(basis.e0, basis.f0);
+    wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
     if (n0 == 0) return true;  // degenerate
-    i128 d = dot_i128(basis.e0, basis.f0, basis.e1, basis.f1);
+    wide_int d = dot_i128(basis.e0, basis.f0, basis.e1, basis.f1);
     // |2*d| <= n0
     return abs_i128(2 * d) <= n0;
 }
@@ -70,8 +80,8 @@ void print_i128(i128 x) {
 /// Verify Lovasz condition with delta = 1 (LLL strict optimal in 2D).
 /// |v1|^2 >= |v0|^2 (after size-reduction; v0 = shorter).
 [[nodiscard]] bool satisfies_lovasz(const LatticeBasis& basis) {
-    i128 n0 = norm_sq_i128(basis.e0, basis.f0);
-    i128 n1 = norm_sq_i128(basis.e1, basis.f1);
+    wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
+    wide_int n1 = norm_sq_i128(basis.e1, basis.f1);
     return n1 >= n0;
 }
 
@@ -155,8 +165,8 @@ void test_lll_large_q() {
         assert(satisfies_lovasz(basis));
 
         // |b0|^2 should be O(q), not O(q^2). For ideal LLL, |b0| ~ sqrt(q).
-        i128 n0 = norm_sq_i128(basis.e0, basis.f0);
-        i128 q128 = static_cast<i128>(q);
+        wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
+        wide_int q128 = static_cast<wide_int>(q);
         // |b0|^2 should be <= 2*q (loose upper bound, theory: <= 4/3 * q)
         if (n0 > 2 * q128) {
             std::cerr << "    [WARN] q=" << q << " r=" << r << " |b0|^2=";
@@ -196,8 +206,8 @@ void test_lll_asymmetric_r() {
             assert(det_equals_q(lll));
             assert(det_equals_q(gauss));
 
-            i128 lll_total = norm_sq_i128(lll.e0, lll.f0) + norm_sq_i128(lll.e1, lll.f1);
-            i128 gauss_total = norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
+            wide_int lll_total = norm_sq_i128(lll.e0, lll.f0) + norm_sq_i128(lll.e1, lll.f1);
+            wide_int gauss_total = norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
 
             if (lll_total < gauss_total) ++lll_beats_gauss;
             else if (lll_total > gauss_total) ++gauss_better;
@@ -244,7 +254,7 @@ void test_lll_boundary_cases() {
             assert(is_size_reduced(basis));
             assert(satisfies_lovasz(basis));
             // For r=0, optimal |b0|^2 = 1 (the (0, 1) vector).
-            i128 n0 = norm_sq_i128(basis.e0, basis.f0);
+            wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
             assert(n0 == 1);
         }
 
@@ -260,7 +270,7 @@ void test_lll_boundary_cases() {
             assert(is_size_reduced(basis));
             assert(satisfies_lovasz(basis));
             // For r=1, |b0|^2 should be very small (= 2 for (1,1) vector).
-            i128 n0 = norm_sq_i128(basis.e0, basis.f0);
+            wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
             assert(n0 <= 4);  // (1,1) → 2, or some near-equivalent
         }
 
@@ -316,8 +326,8 @@ void test_lll_dominates_gauss() {
             auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
             auto gauss = compute_lattice_basis(sq, LatticeReductionMethod::Gauss);
 
-            i128 lll_total = norm_sq_i128(lll.e0, lll.f0) + norm_sq_i128(lll.e1, lll.f1);
-            i128 gauss_total = norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
+            wide_int lll_total = norm_sq_i128(lll.e0, lll.f0) + norm_sq_i128(lll.e1, lll.f1);
+            wide_int gauss_total = norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
 
             ++total;
             if (lll_total < gauss_total) {
@@ -442,8 +452,8 @@ void test_lll_norm_quality() {
             auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
             auto gauss = compute_lattice_basis(sq, LatticeReductionMethod::Gauss);
 
-            i128 lll_total = norm_sq_i128(lll.e0, lll.f0) + norm_sq_i128(lll.e1, lll.f1);
-            i128 gauss_total = norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
+            wide_int lll_total = norm_sq_i128(lll.e0, lll.f0) + norm_sq_i128(lll.e1, lll.f1);
+            wide_int gauss_total = norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
 
             total_lll += static_cast<double>(static_cast<int64_t>(lll_total));
             total_gauss += static_cast<double>(static_cast<int64_t>(gauss_total));

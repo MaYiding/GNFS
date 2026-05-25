@@ -1,5 +1,6 @@
 #include "gnfs/factor_base/builder.hpp"
 #include "gnfs/sqrt/modular_poly.hpp"
+#include "gnfs/util/primes.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -467,16 +468,13 @@ std::vector<uint32_t> FactorBaseBuilder::extract_roots_from_poly(
             uint64_t base = a % p, exp = p - 2;
             uint64_t result = 1;
             while (exp > 0) {
-                if (exp & 1) result = static_cast<uint64_t>(
-                    (static_cast<__uint128_t>(result) * base) % p);
-                base = static_cast<uint64_t>(
-                    (static_cast<__uint128_t>(base) * base) % p);
+                if (exp & 1) result = gnfs::util::mul_mod_u64(result, base, p);
+                base = gnfs::util::mul_mod_u64(base, base, p);
                 exp >>= 1;
             }
             a_inv = result;
         }
-        uint64_t root = static_cast<uint64_t>(
-            (static_cast<__uint128_t>(p - b) * a_inv) % p);
+        uint64_t root = gnfs::util::mul_mod_u64(p - b, a_inv, p);
         return {static_cast<uint32_t>(root)};
     }
 
@@ -533,12 +531,12 @@ std::vector<uint32_t> FactorBaseBuilder::extract_roots_from_poly(
 
     // Fallback: brute force for this specific polynomial (shouldn't happen often)
     for (uint32_t r = 0; r < p && static_cast<int>(roots.size()) < deg; ++r) {
-            uint64_t val = 0, rp = 1;
-            for (int i = 0; i <= poly.degree(); ++i) {
-                val = (val + static_cast<uint64_t>(
-                    (static_cast<__uint128_t>(poly.coeff(static_cast<size_t>(i))) * rp) % p)) % p;
-                rp = static_cast<uint64_t>((static_cast<__uint128_t>(rp) * r) % p);
-            }
+        uint64_t val = 0, rp = 1;
+        for (int i = 0; i <= poly.degree(); ++i) {
+            val = (val + gnfs::util::mul_mod_u64(
+                poly.coeff(static_cast<size_t>(i)), rp, p)) % p;
+            rp = gnfs::util::mul_mod_u64(rp, r, p);
+        }
         if (val == 0) roots.push_back(r);
     }
     return roots;
@@ -570,10 +568,8 @@ sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(
     {
         uint64_t base = b_lead % p, exp = p - 2, result = 1;
         while (exp > 0) {
-            if (exp & 1) result = static_cast<uint64_t>(
-                (static_cast<__uint128_t>(result) * base) % p);
-            base = static_cast<uint64_t>(
-                (static_cast<__uint128_t>(base) * base) % p);
+            if (exp & 1) result = gnfs::util::mul_mod_u64(result, base, p);
+            base = gnfs::util::mul_mod_u64(base, base, p);
             exp >>= 1;
         }
         b_lead_inv = result;
@@ -582,13 +578,12 @@ sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(
     std::vector<uint64_t> quotient(static_cast<size_t>(q_deg + 1), 0);
 
     for (int i = q_deg; i >= 0; --i) {
-        uint64_t coeff = static_cast<uint64_t>(
-            (static_cast<__uint128_t>(rem[static_cast<size_t>(i + b_deg)]) * b_lead_inv) % p);
+        uint64_t coeff = gnfs::util::mul_mod_u64(
+            rem[static_cast<size_t>(i + b_deg)], b_lead_inv, p);
         quotient[static_cast<size_t>(i)] = coeff;
 
         for (int j = 0; j <= b_deg; ++j) {
-            uint64_t sub = static_cast<uint64_t>(
-                (static_cast<__uint128_t>(coeff) * b.coeff(static_cast<size_t>(j))) % p);
+            uint64_t sub = gnfs::util::mul_mod_u64(coeff, b.coeff(static_cast<size_t>(j)), p);
             const size_t rem_idx = static_cast<size_t>(i + j);
             rem[rem_idx] = (rem[rem_idx] + p - sub) % p;
         }

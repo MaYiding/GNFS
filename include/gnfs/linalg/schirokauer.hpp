@@ -3,6 +3,7 @@
 #include "../core/integer.hpp"
 #include "../core/polynomial_context.hpp"
 #include "../sqrt/modular_poly.hpp"
+#include "../util/primes.hpp"
 
 #include <vector>
 #include <cstdint>
@@ -72,9 +73,8 @@ struct GFPolyOps {
         for (size_t i = 0; i < a.size(); ++i) {
             if (a[i] == 0) continue;
             for (size_t j = 0; j < b.size(); ++j) {
-                // Use __uint128_t to avoid overflow when coefficients approach p-1
-                __uint128_t prod = static_cast<__uint128_t>(a[i]) * b[j];
-                r[i + j] = static_cast<uint64_t>((r[i + j] + prod % p) % p);
+                uint64_t prod = gnfs::util::mul_mod_u64(a[i], b[j], p);
+                r[i + j] = gnfs::util::add_mod_u64(r[i + j], prod, p);
             }
         }
         return trim(r);
@@ -91,10 +91,10 @@ struct GFPolyOps {
              i >= static_cast<int>(b.size()) - 1; --i) {
             const size_t i_idx = static_cast<size_t>(i);
             const int shift = static_cast<int>(b.size()) - 1;
-            uint64_t c = static_cast<uint64_t>(static_cast<__uint128_t>(a[i_idx]) * b_inv % p);
+            uint64_t c = gnfs::util::mul_mod_u64(a[i_idx], b_inv, p);
             q[static_cast<size_t>(i - shift)] = c;
             for (size_t j = 0; j < b.size(); ++j) {
-                uint64_t cb = static_cast<uint64_t>(static_cast<__uint128_t>(c) * b[j] % p);
+                uint64_t cb = gnfs::util::mul_mod_u64(c, b[j], p);
                 const size_t a_idx = static_cast<size_t>(i - shift) + j;
                 a[a_idx] = (a[a_idx] + p - cb) % p;
             }
@@ -319,7 +319,7 @@ struct GFPolyOps {
             for (size_t i = 0; i < g_sz; ++i) {
                 for (size_t j = 0; j < h_sz; ++j) {
                     int64_t p = static_cast<int64_t>(
-                        static_cast<__uint128_t>(g[i]) * h[j] % target);
+                        gnfs::util::mul_mod_u64(g[i], h[j], target));
                     prod[i + j] = (prod[i + j] + p) % static_cast<int64_t>(target);
                 }
             }
@@ -459,8 +459,8 @@ public:
             if (a.coeffs[i] == 0) continue;
             for (uint32_t j = 0; j <= b.deg; ++j) {
                 if (b.coeffs[j] == 0) continue;
-                __uint128_t prod = static_cast<__uint128_t>(a.coeffs[i]) * b.coeffs[j];
-                result.coeffs[i + j] = (result.coeffs[i + j] + static_cast<uint64_t>(prod % m)) % m;
+                uint64_t prod = gnfs::util::mul_mod_u64(a.coeffs[i], b.coeffs[j], m);
+                result.coeffs[i + j] = gnfs::util::add_mod_u64(result.coeffs[i + j], prod, m);
             }
         }
 
@@ -484,8 +484,7 @@ public:
 
             // Subtract lead * x^(deg-f_deg) * f
             for (uint32_t i = 0; i < f_deg; ++i) {
-                __uint128_t term = static_cast<__uint128_t>(lead) * f[i];
-                uint64_t t = static_cast<uint64_t>(term % m);
+                uint64_t t = gnfs::util::mul_mod_u64(lead, f[i], m);
                 uint32_t idx = a.deg - f_deg + i;
                 if (a.coeffs[idx] >= t) {
                     a.coeffs[idx] -= t;
@@ -691,7 +690,7 @@ public:
                 if (a_mod < 0) a_mod += static_cast<int64_t>(info.ell_k);
                 uint64_t b_mod = b % info.ell_k;
                 uint64_t gamma = (static_cast<uint64_t>(a_mod) + info.ell_k -
-                    ((__uint128_t)b_mod * r) % info.ell_k) % info.ell_k;
+                    gnfs::util::mul_mod_u64(b_mod, r, info.ell_k)) % info.ell_k;
 
                 // Strip ℓ-part: the ideal valuation v_P(γ) is already captured by
                 // the factor base column. The Schirokauer map should only capture
@@ -725,8 +724,8 @@ public:
                     uint64_t exp = fi.exponent;
                     g_pow = 1;
                     while (exp > 0) {
-                        if (exp & 1) g_pow = ((__uint128_t)g_pow * base) % info.ell_k;
-                        base = ((__uint128_t)base * base) % info.ell_k;
+                        if (exp & 1) g_pow = gnfs::util::mul_mod_u64(g_pow, base, info.ell_k);
+                        base = gnfs::util::mul_mod_u64(base, base, info.ell_k);
                         exp >>= 1;
                     }
                 } else {

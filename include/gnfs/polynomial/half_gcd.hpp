@@ -45,6 +45,7 @@
 //   The unit-test suite enforces this on random polynomials in deg range [10, 200].
 
 #include "../sqrt/modular_poly.hpp"
+#include "../util/primes.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -353,19 +354,7 @@ struct EuclideanStep {
     // Use ModularPoly's helpers via scalar_mul.
     // Compute mod_inverse inline to avoid private-member dependency.
     auto mod_inv = [](uint64_t a, uint64_t m) -> uint64_t {
-        __int128_t t = 0, new_t = 1;
-        __int128_t r = static_cast<__int128_t>(m), new_r = static_cast<__int128_t>(a);
-        while (new_r != 0) {
-            __int128_t quotient = r / new_r;
-            __int128_t temp_t = new_t;
-            new_t = t - quotient * new_t;
-            t = temp_t;
-            __int128_t temp_r = new_r;
-            new_r = r - quotient * new_r;
-            r = temp_r;
-        }
-        if (t < 0) t += static_cast<__int128_t>(m);
-        return static_cast<uint64_t>(t);
+        return gnfs::util::pow_mod_u64(a, m - 2, m);
     };
     uint64_t inv = mod_inv(lead, p);
     return ModularPoly::scalar_mul(poly, inv, p);

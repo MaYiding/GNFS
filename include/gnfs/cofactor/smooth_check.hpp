@@ -1,6 +1,8 @@
 #pragma once
 
 #include "../core/integer.hpp"
+#include "../util/bit_intrin.hpp"
+#include "../util/primes.hpp"
 #include "brent_pollard_rho.hpp"
 #include "ecm.hpp"
 #include "squfof.hpp"
@@ -20,7 +22,7 @@ namespace detail {
 [[nodiscard]] inline uint64_t bit_length_u64(uint64_t v) noexcept {
     if (v == 0) return 0;
     // 64 - clz gives the position of the highest set bit + 1.
-    return 64ULL - static_cast<uint64_t>(__builtin_clzll(v));
+    return 64ULL - static_cast<uint64_t>(gnfs::util::clz64(v));
 }
 
 } // namespace detail
@@ -96,17 +98,14 @@ struct CofactorClassification {
     int r = 0;
     while ((d & 1) == 0) { d >>= 1; ++r; }
 
-    // Modular exponentiation: base^exp mod mod, using __uint128_t
+    // Modular exponentiation: base^exp mod mod.
     auto mod_pow = [](uint64_t base, uint64_t exp, uint64_t mod) -> uint64_t {
         uint64_t result = 1;
         base %= mod;
         while (exp > 0) {
-            if (exp & 1)
-                result = static_cast<uint64_t>(
-                    (static_cast<__uint128_t>(result) * base) % mod);
+            if (exp & 1) result = gnfs::util::mul_mod_u64(result, base, mod);
             exp >>= 1;
-            base = static_cast<uint64_t>(
-                (static_cast<__uint128_t>(base) * base) % mod);
+            base = gnfs::util::mul_mod_u64(base, base, mod);
         }
         return result;
     };
@@ -117,8 +116,7 @@ struct CofactorClassification {
         uint64_t x = mod_pow(a, d, n);
         if (x == 1 || x == n - 1) return true;
         for (int i = 1; i < r; ++i) {
-            x = static_cast<uint64_t>(
-                (static_cast<__uint128_t>(x) * x) % n);
+            x = gnfs::util::mul_mod_u64(x, x, n);
             if (x == n - 1) return true;
         }
         return false;
@@ -267,8 +265,7 @@ struct CofactorClassification {
 
     for (uint64_t c = 1; c <= 19; c += 2) {
         auto f = [n, c](uint64_t x) -> uint64_t {
-            __uint128_t xx = static_cast<__uint128_t>(x) * x + c;
-            return static_cast<uint64_t>(xx % n);
+            return gnfs::util::add_mod_u64(gnfs::util::mul_mod_u64(x, x, n), c, n);
         };
 
         uint64_t x = 2, y = 2;
@@ -294,8 +291,7 @@ struct CofactorClassification {
                     y = f(y);
                     uint64_t diff = (x > y) ? x - y : y - x;
                     if (diff == 0) { d = n; break; } // cycle without factor
-                    __uint128_t qq = static_cast<__uint128_t>(q) * diff;
-                    q = static_cast<uint64_t>(qq % n);
+                    q = gnfs::util::mul_mod_u64(q, diff, n);
                 }
                 if (q == 0) { d = n; break; } // product ≡ 0 (mod n)
                 d = gcd(q, n);
@@ -531,15 +527,12 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
             return result;
         }
 
-        // 检查是否超出 2LP 界限 (use __uint128_t to avoid overflow when lpb > 2^32)
-        if (c > static_cast<__uint128_t>(large_prime_bound) * large_prime_bound) {
+        // 检查是否超出 2LP 界限 (overflow-safe for large B)
+        if (gnfs::util::u64_gt_square(c, large_prime_bound)) {
             // c > B²: 进 3LP 空间
             if (allow_3lp) {
-                // 检查上界 B³ (__uint128_t safe). lpb 最大 ~30 bits, lpb³ < 2^90 < __uint128_t.
-                __uint128_t lpb3 = static_cast<__uint128_t>(large_prime_bound)
-                                 * static_cast<__uint128_t>(large_prime_bound)
-                                 * static_cast<__uint128_t>(large_prime_bound);
-                if (static_cast<__uint128_t>(c) > lpb3) {
+                // 检查上界 B³.
+                if (gnfs::util::u64_gt_cube(c, large_prime_bound)) {
                     result.type = CofactorClass::TooLarge;
                     return result;
                 }
@@ -756,18 +749,14 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
         // 单个大素数
         if (c <= large_prime_bound) return true;
 
-        const __uint128_t lpb2 = static_cast<__uint128_t>(large_prime_bound)
-                               * static_cast<__uint128_t>(large_prime_bound);
-
         // 2LP: cofactor <= B^2
-        if (allow_2lp && static_cast<__uint128_t>(c) <= lpb2) {
+        if (allow_2lp && !gnfs::util::u64_gt_square(c, large_prime_bound)) {
             return true;
         }
 
         // 3LP: cofactor <= B^3
         if (allow_3lp) {
-            const __uint128_t lpb3 = lpb2 * static_cast<__uint128_t>(large_prime_bound);
-            if (static_cast<__uint128_t>(c) <= lpb3) return true;
+            if (!gnfs::util::u64_gt_cube(c, large_prime_bound)) return true;
         }
 
         return false;

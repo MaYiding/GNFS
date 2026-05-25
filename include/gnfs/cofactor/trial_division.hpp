@@ -57,6 +57,7 @@ public:
         }
 
         // uint128 快路径: |a - b*m| often fits 65-127 bits for 40-65 digit N
+#if defined(__SIZEOF_INT128__)
         if (value.bit_length() <= 127) {
             // Zero-alloc limb access (same pattern as divide_algebraic line 182)
             uint64_t lo = mpz_getlimbn(value.get_mpz(), 0);
@@ -101,6 +102,7 @@ public:
             }
             return result;
         }
+#endif
 
         // GMP fallback for very large rational values
         const auto& rationals = fb_.rational();
@@ -178,6 +180,7 @@ public:
         bool use_u64 = norm.fits_uint64();
         uint64_t norm_u64 = use_u64 ? norm.to_uint64() : 0;
         bool use_u128 = false;
+#if defined(__SIZEOF_INT128__)
         __uint128_t norm_u128 = 0;
         if (!use_u64 && norm.bit_length() <= 127) {
             use_u128 = true;
@@ -188,6 +191,7 @@ public:
             uint64_t hi = mpz_getlimbn(norm.get_mpz(), 1);
             norm_u128 = (static_cast<__uint128_t>(hi) << 64) | lo;
         }
+#endif
 
         for (uint32_t idx = 0; idx < alg_limit; ++idx) {
             uint32_t p = algebraics[idx].p;
@@ -197,8 +201,10 @@ public:
             // Three-tier: uint64 % p, uint128 % p, or GMP mpz_divisible_ui_p.
             if (use_u64) {
                 if (norm_u64 % p != 0) continue;
+#if defined(__SIZEOF_INT128__)
             } else if (use_u128) {
                 if (norm_u128 % p != 0) continue;
+#endif
             } else {
                 if (mpz_divisible_ui_p(norm.get_mpz(), p) == 0) continue;
             }
@@ -224,6 +230,7 @@ public:
                     norm_u64 /= p;
                     ++exp;
                 }
+#if defined(__SIZEOF_INT128__)
             } else if (use_u128) {
                 while (norm_u128 % p == 0 && exp < 255) {
                     norm_u128 /= p;
@@ -235,6 +242,7 @@ public:
                     use_u128 = false;
                     norm_u64 = static_cast<uint64_t>(norm_u128);
                 }
+#endif
             } else {
                 while (divisible_by(norm, p) && exp < 255) {
                     divide_exact(norm, p);
@@ -244,12 +252,14 @@ public:
                 if (norm.fits_uint64()) {
                     use_u64 = true;
                     norm_u64 = norm.to_uint64();
+#if defined(__SIZEOF_INT128__)
                 } else if (norm.bit_length() <= 127) {
                     use_u128 = true;
                     // Zero-alloc limb access (same pattern as line 182 init path)
                     uint64_t lo = mpz_getlimbn(norm.get_mpz(), 0);
                     uint64_t hi = mpz_getlimbn(norm.get_mpz(), 1);
                     norm_u128 = (static_cast<__uint128_t>(hi) << 64) | lo;
+#endif
                 }
             }
 
@@ -263,10 +273,12 @@ public:
                 result.is_smooth = true;
                 break;
             }
+#if defined(__SIZEOF_INT128__)
             if (use_u128 && norm_u128 == 1) {
                 result.is_smooth = true;
                 break;
             }
+#endif
             // 早期退出: cofactor < p → can't be divided by any remaining FB prime
             if (use_u64 && norm_u64 > 0 && norm_u64 < p) {
                 break;
@@ -282,6 +294,7 @@ public:
         if (use_u64) {
             result.cofactor = norm_u64;
             if (norm_u64 == 1) result.is_smooth = true;
+#if defined(__SIZEOF_INT128__)
         } else if (use_u128) {
             // Convert uint128 back to Integer
             if (norm_u128 <= UINT64_MAX) {
@@ -295,6 +308,7 @@ public:
                 mpz_add_ui(cof, cof, lo);
             }
             if (norm_u128 == 1) result.is_smooth = true;
+#endif
         } else {
             result.cofactor = std::move(norm);
             if (result.cofactor.fits_uint64() && result.cofactor.to_uint64() == 1) {
