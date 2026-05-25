@@ -26,6 +26,7 @@
 #include <gnfs/siqs/siqs.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <gnfs/util/process.hpp>
+#include <gnfs/util/temp_path.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -721,7 +722,7 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     }
     // ── OOC streaming (BACKLOG #11c, ENV GNFS_OOC_RELATIONS=1) ──
     // 50d Round 2 909K relations 时 macOS OOM-killed (2026-05-17 实测).
-    // OOC 启用后 collector 流式写盘 /tmp/gnfs_relations_<pid>.{reldata,relidx},
+    // OOC 启用后 collector 流式写盘到系统临时目录的 gnfs_relations_<pid>.{reldata,relidx},
     // 内存只保留 (a,b) seen set, 显著减小 sieve 期间 RAM peak.
     // 不与 GNFS_SIEVE_RESUME / GNFS_RESUME 共存 (resume 已隐含 OOC enable)
     //
@@ -734,13 +735,13 @@ std::vector<Relation> Pipeline::sieve_and_collect(
         const auto policy = relation::decide_ooc_policy(ooc_env, params_.large_prime_bound);
         if (policy.enabled) {
             coll_config.ooc_enabled = true;
-            // base_path: ENV GNFS_OOC_BASE_PATH overrides /tmp/gnfs_relations_<pid>
+            // base_path: ENV GNFS_OOC_BASE_PATH overrides the temp-dir default.
             if (const char* path_env = std::getenv("GNFS_OOC_BASE_PATH");
                 path_env != nullptr && path_env[0] != '\0') {
                 coll_config.ooc_base_path = path_env;
             } else {
-                coll_config.ooc_base_path =
-                    "/tmp/gnfs_relations_" + std::to_string(gnfs::util::process_id());
+                coll_config.ooc_base_path = gnfs::util::temp_path(
+                    "gnfs_relations_" + std::to_string(gnfs::util::process_id()));
             }
             const std::string reason_str(policy.reason);
             const size_t lp_bits_est = relation::estimate_lp_bits(params_.large_prime_bound);
@@ -1648,22 +1649,20 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
             // .csrmat file (v2 layout, uint64_t row_offsets), open it
             // as MmapCSRMatrix, and route through the view-based BW
             // entry point that bypasses SparseMatrix internally.
-            char path_buf[256];
-            std::snprintf(path_buf, sizeof(path_buf),
-                          "/tmp/gnfs_linalg_%d.csrmat",
-                          gnfs::util::process_id());
+            const std::string mmap_path = gnfs::util::temp_path(
+                "gnfs_linalg_" + std::to_string(gnfs::util::process_id()) + ".csrmat");
             char log_buf[512];
             std::snprintf(log_buf, sizeof(log_buf),
                 "[linalg-mmap] policy=%s nnz=%llu path=%s",
                 policy == linalg::MmapPolicy::On ? "on" : "auto",
                 static_cast<unsigned long long>(sge_nnz),
-                path_buf);
+                mmap_path.c_str());
             emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(log_buf));
             std::fprintf(stderr, "%s\n", log_buf);
 
             try {
                 linalg::MmapCSRMatrix mmap_csr =
-                    linalg::save_sparse_as_mmap(sge_red, path_buf);
+                    linalg::save_sparse_as_mmap(sge_red, mmap_path);
                 dependencies = bw_solver.find_dependencies_view(mmap_csr);
             } catch (const std::exception& ex) {
                 // mmap path failed (disk full / permission / corruption):
@@ -1676,7 +1675,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
             }
 
             // Best-effort cleanup; ok if already gone.
-            std::remove(path_buf);
+            std::remove(mmap_path.c_str());
         } else {
             // Default in-memory path — bit-identical to pre-Phase-5 behaviour.
             dependencies = bw_solver.find_dependencies(sge_red);

@@ -26,6 +26,7 @@
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 #include <gnfs/util/process.hpp>
+#include <gnfs/util/temp_path.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -279,7 +280,9 @@ FactResult factor_with_progress(const Integer& n, int level) {
                 coll_config.ooc_base_path = path_env;
             } else {
                 coll_config.ooc_base_path =
-                    "/tmp/gnfs_stress_relations_" + std::to_string(gnfs::util::process_id());
+                    gnfs::util::temp_path(
+                        "gnfs_stress_relations_" +
+                        std::to_string(gnfs::util::process_id()));
             }
             const size_t lp_bits_est =
                 gnfs::relation::estimate_lp_bits(params.large_prime_bound);

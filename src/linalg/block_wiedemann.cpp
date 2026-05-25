@@ -4,6 +4,7 @@
 #include "gnfs/linalg/krylov_sequence_mmap.hpp"
 #include "gnfs/util/bit_intrin.hpp"
 #include "gnfs/util/process.hpp"
+#include "gnfs/util/temp_path.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
 #include <array>
@@ -454,11 +455,12 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
     if (use_mmap) {
         char path_buf[128];
         std::snprintf(path_buf, sizeof(path_buf),
-                      "/tmp/gnfs_bw_krylov_scalar_%d_%llu.kry",
+                      "gnfs_bw_krylov_scalar_%d_%llu.kry",
                       gnfs::util::process_id(),
                       static_cast<unsigned long long>(seed));
+        const std::string path = gnfs::util::temp_path(path_buf);
         seq_mmap = std::make_unique<KrylovSequenceMmap>(
-            path_buf, /*L=*/64, /*entry_size=*/seq_len);
+            path, /*L=*/64, /*entry_size=*/seq_len);
     } else {
         sequences.assign(64, std::vector<uint8_t>(seq_len, 0));
     }
@@ -730,21 +732,23 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
     if (use_compress) {
         char path_buf[160];
         std::snprintf(path_buf, sizeof(path_buf),
-                      "/tmp/gnfs_bw_krylov_%d_s%u_%llu.kryz",
+                      "gnfs_bw_krylov_%d_s%u_%llu.kryz",
                       gnfs::util::process_id(),
                       static_cast<unsigned>(stream_tag),
                       static_cast<unsigned long long>(seed));
+        const std::string path = gnfs::util::temp_path(path_buf);
         A_kryz = std::make_unique<KrylovSequenceCompressed>(
-            path_buf, L, sizeof(DenseGF2_64x64));
+            path, L, sizeof(DenseGF2_64x64));
     } else if (use_mmap) {
         char path_buf[160];
         std::snprintf(path_buf, sizeof(path_buf),
-                      "/tmp/gnfs_bw_krylov_%d_s%u_%llu.kry",
+                      "gnfs_bw_krylov_%d_s%u_%llu.kry",
                       gnfs::util::process_id(),
                       static_cast<unsigned>(stream_tag),
                       static_cast<unsigned long long>(seed));
+        const std::string path = gnfs::util::temp_path(path_buf);
         A_mmap = std::make_unique<KrylovSequenceMmap>(
-            path_buf, L, sizeof(DenseGF2_64x64));
+            path, L, sizeof(DenseGF2_64x64));
     } else {
         A_seq.resize(L);
     }

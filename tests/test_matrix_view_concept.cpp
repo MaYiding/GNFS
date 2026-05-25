@@ -9,6 +9,7 @@
 #include <gnfs/linalg/matrix_view.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/linalg/mmap_csr_matrix.hpp>
+#include <gnfs/util/temp_path.hpp>
 #include <cstdio>
 #include <cstdlib>
 #include <random>
@@ -84,7 +85,7 @@ void test_templated_call_csr() {
 }
 
 void test_templated_call_mmap() {
-    TempFile tmp("/tmp/gnfs_test_matrix_view_concept.csrmat");
+    TempFile tmp(gnfs::util::temp_path("gnfs_test_matrix_view_concept.csrmat"));
     SparseMatrix sparse = make_random_matrix(80, 40, 4321);
     CSRMatrix csr(sparse);
     MmapCSRMatrix::save(csr, tmp.path);

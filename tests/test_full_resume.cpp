@@ -10,6 +10,7 @@
 #include <gnfs/polynomial/poly_checkpoint.hpp>
 #include <gnfs/factor_base/fb_checkpoint.hpp>
 #include <gnfs/util/process.hpp>
+#include <gnfs/util/temp_path.hpp>
 
 #include <cassert>
 #include <chrono>
@@ -39,9 +40,9 @@ static int fail_count = 0;
 
 static std::string mk_base(const char* tag) {
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "/tmp/gnfs_test_full_resume_%s_%d",
+    std::snprintf(buf, sizeof(buf), "gnfs_test_full_resume_%s_%d",
                   tag, gnfs::util::process_id());
-    return std::string(buf);
+    return gnfs::util::temp_path(buf);
 }
 
 static void cleanup_base(const std::string& base) {

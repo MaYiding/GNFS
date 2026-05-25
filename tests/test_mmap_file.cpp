@@ -7,6 +7,7 @@
 
 #include "gnfs/util/mmap_file.hpp"
 #include "gnfs/util/process.hpp"
+#include "gnfs/util/temp_path.hpp"
 
 #include <cassert>
 #include <cstdint>
@@ -26,9 +27,9 @@ namespace {
 std::string make_temp_path(const char* tag) {
     static int counter = 0;
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "/tmp/gnfs_test_mmap_%d_%d_%s.bin",
+    std::snprintf(buf, sizeof(buf), "gnfs_test_mmap_%d_%d_%s.bin",
                   gnfs::util::process_id(), counter++, tag);
-    return std::string(buf);
+    return gnfs::util::temp_path(buf);
 }
 
 void write_bytes(const std::string& path, const std::vector<uint8_t>& data) {
@@ -92,7 +93,8 @@ void test_empty_file() {
 void test_nonexistent_file_throws() {
     std::cout << "Testing MmapFile nonexistent file throws..." << std::endl;
 
-    std::string path = "/tmp/gnfs_test_mmap_nonexistent_XXXXX_definitely_not_there.bin";
+    std::string path =
+        gnfs::util::temp_path("gnfs_test_mmap_nonexistent_XXXXX_definitely_not_there.bin");
     // Make sure it doesn't exist
     std::remove(path.c_str());
 

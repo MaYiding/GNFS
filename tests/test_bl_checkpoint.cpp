@@ -1,5 +1,6 @@
 #include "gnfs/linalg/bl_checkpoint.hpp"
 #include "gnfs/util/process.hpp"
+#include "gnfs/util/temp_path.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -17,9 +18,9 @@ using gnfs::linalg::BlockLanczosCheckpoint;
 static std::string tmp_ckpt_path(const char* label) {
     static int seq = 0;
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "/tmp/gnfs_test_bl_ckpt_%d_%d_%s",
+    std::snprintf(buf, sizeof(buf), "gnfs_test_bl_ckpt_%d_%d_%s",
                   gnfs::util::process_id(), ++seq, label);
-    return std::string(buf);
+    return gnfs::util::temp_path(buf);
 }
 
 struct CkptCleanup {
@@ -258,11 +259,10 @@ void test_truncated_file_rejected() {
 
 void test_load_nonexistent() {
     std::cout << "Testing load nonexistent file..." << std::endl;
-    auto loaded =
-        BlockLanczosCheckpoint::load("/tmp/__nonexistent_bl_ckpt_xyz_12345");
+    const std::string path = gnfs::util::temp_path("__nonexistent_bl_ckpt_xyz_12345");
+    auto loaded = BlockLanczosCheckpoint::load(path);
     assert(!loaded.has_value());
-    assert(!BlockLanczosCheckpoint::exists_and_valid(
-        "/tmp/__nonexistent_bl_ckpt_xyz_12345"));
+    assert(!BlockLanczosCheckpoint::exists_and_valid(path));
     std::cout << "  nonexistent file: PASS" << std::endl;
 }
 

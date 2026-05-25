@@ -14,6 +14,7 @@
 #include <gnfs/api/progress.hpp>
 #include <gnfs/api/result.hpp>
 #include <gnfs/core/integer.hpp>
+#include <gnfs/util/temp_path.hpp>
 
 #include <cassert>
 #include <cstdio>
@@ -344,7 +345,7 @@ bool test_config_method_serialize() {
 
 bool test_config_from_file_method() {
     // Write a temp config file with method field
-    const char* path = "/tmp/test_gnfs_config_method.cfg";
+    const std::string path = gnfs::util::temp_path("test_gnfs_config_method.cfg");
     {
         std::ofstream ofs(path);
         ofs << "# test config\n";
@@ -356,7 +357,7 @@ bool test_config_from_file_method() {
     assert(*cfg.method == FactorizationMethod::SIQS);
     assert(cfg.verbose.has_value() && *cfg.verbose == true);
     // Clean up
-    std::remove(path);
+    std::remove(path.c_str());
     return true;
 }
 

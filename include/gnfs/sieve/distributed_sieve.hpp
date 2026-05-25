@@ -134,7 +134,7 @@ inline size_t parse_distributed_sieve_workers_env() noexcept {
 
 /// Build a DistributedSieveConfig from environment variables.
 ///   GNFS_DISTRIBUTED_SIEVE_WORKERS=N   (required, 0 = disabled)
-///   GNFS_DISTRIBUTED_SIEVE_BASE_PATH=  (optional, default /tmp/gnfs_distributed_<pid>)
+///   GNFS_DISTRIBUTED_SIEVE_BASE_PATH=  (optional, default temp-dir gnfs_distributed_<pid>)
 ///   GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER=N  (optional, default 0 = no cap)
 DistributedSieveConfig parse_distributed_sieve_env() noexcept;
 

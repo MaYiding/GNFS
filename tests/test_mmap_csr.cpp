@@ -6,6 +6,7 @@
 #include <gnfs/linalg/mmap_csr_matrix.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
+#include <gnfs/util/temp_path.hpp>
 #include <iostream>
 #include <random>
 #include <cstdio>
@@ -66,7 +67,7 @@ static void spmv_forward(const CSR& M, const BlockVector& x, BlockVector& y) {
 // ============================================================================
 
 void test_save_load_roundtrip() {
-    TempFile tmp("/tmp/gnfs_test_csr.csrmat");
+    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr.csrmat"));
 
     SparseMatrix sparse = make_random_matrix(100, 80, 12345);
     CSRMatrix csr(sparse);
@@ -94,7 +95,7 @@ void test_save_load_roundtrip() {
 }
 
 void test_spmv_identical() {
-    TempFile tmp("/tmp/gnfs_test_csr_spmv.csrmat");
+    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_spmv.csrmat"));
 
     SparseMatrix sparse = make_random_matrix(500, 300, 54321, 10);
     CSRMatrix csr(sparse);
@@ -122,7 +123,7 @@ void test_spmv_identical() {
 }
 
 void test_large_matrix() {
-    TempFile tmp("/tmp/gnfs_test_csr_large.csrmat");
+    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_large.csrmat"));
 
     SparseMatrix sparse = make_random_matrix(10000, 8000, 42, 15);
     CSRMatrix csr(sparse);
@@ -165,7 +166,7 @@ void test_large_matrix() {
 }
 
 void test_empty_matrix() {
-    TempFile tmp("/tmp/gnfs_test_csr_empty.csrmat");
+    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_empty.csrmat"));
 
     SparseMatrix sparse(0, 0);
     CSRMatrix csr(sparse);
@@ -181,7 +182,7 @@ void test_empty_matrix() {
 }
 
 void test_single_row() {
-    TempFile tmp("/tmp/gnfs_test_csr_1row.csrmat");
+    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_1row.csrmat"));
 
     SparseMatrix sparse(1, 10);
     sparse.row(0).set(3);

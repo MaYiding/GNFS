@@ -10,6 +10,7 @@
 #include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/sieve/special_q.hpp"
 #include "gnfs/util/process.hpp"
+#include "gnfs/util/temp_path.hpp"
 
 #ifndef _WIN32
 #include <sys/types.h>
@@ -65,7 +66,8 @@ DistributedSieveConfig parse_distributed_sieve_env() noexcept {
         env != nullptr && env[0] != '\0') {
         cfg.base_path = env;
     } else {
-        cfg.base_path = "/tmp/gnfs_distributed_" + std::to_string(gnfs::util::process_id());
+        cfg.base_path = gnfs::util::temp_path(
+            "gnfs_distributed_" + std::to_string(gnfs::util::process_id()));
     }
 
     if (const char* env = std::getenv("GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER");
@@ -357,7 +359,8 @@ DistributedSieveConfig parse_distributed_sieve_env() noexcept {
         env != nullptr && env[0] != '\0') {
         cfg.base_path = env;
     } else {
-        cfg.base_path = "/tmp/gnfs_distributed_" + std::to_string(gnfs::util::process_id());
+        cfg.base_path = gnfs::util::temp_path(
+            "gnfs_distributed_" + std::to_string(gnfs::util::process_id()));
     }
 
     if (const char* env = std::getenv("GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER");
