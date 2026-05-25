@@ -67,6 +67,7 @@
 // `add_mod_simd_supported()` returns false and the dispatcher silently
 // falls back to the scalar path.
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
