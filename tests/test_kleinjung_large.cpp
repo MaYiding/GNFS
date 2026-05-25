@@ -17,20 +17,21 @@ void print_polynomial(const IntPolynomial& f, const char* name) {
     std::cout << "  " << name << "(x) = ";
     bool first = true;
     for (int i = static_cast<int>(f.degree()); i >= 0; --i) {
-        if (f[i].is_zero() && i > 0) continue;
+        const size_t idx = static_cast<size_t>(i);
+        if (f[idx].is_zero() && i > 0) continue;
 
         if (!first) {
-            if (f[i].is_negative()) {
+            if (f[idx].is_negative()) {
                 std::cout << " - ";
             } else {
                 std::cout << " + ";
             }
-        } else if (f[i].is_negative()) {
+        } else if (f[idx].is_negative()) {
             std::cout << "-";
         }
         first = false;
 
-        Integer abs_c = f[i].clone();
+        Integer abs_c = f[idx].clone();
         abs_c.abs();
 
         if (i == 0) {

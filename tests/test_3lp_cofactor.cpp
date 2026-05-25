@@ -45,7 +45,7 @@ void test_3lp_accepted() {
     assert(is_probable_prime_u64(q));
     assert(is_probable_prime_u64(r));
     constexpr uint64_t c = p * q * r;   // ≈ 1.01e12, < 2^40
-    constexpr uint64_t B = 1u << 20;    // lp_bits=20, B = 2^20 ≈ 1.05e6
+    [[maybe_unused]] constexpr uint64_t B = 1u << 20;  // lp_bits=20, B = 2^20 ≈ 1.05e6
     // Sanity: c > B² (~1.1e12 > 1.1e12 — actually almost equal!). Let me pick smaller B.
     // Better: B = 2^14 = 16384 so c > B² = 2.7e8 and c < B³ = 4.4e12.
     constexpr uint64_t B2 = 1u << 14;

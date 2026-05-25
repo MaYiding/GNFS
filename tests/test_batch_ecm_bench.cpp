@@ -132,7 +132,8 @@ int main(int argc, char** argv) {
 
     // Warmup: prime thread_local cache + warm the CPU
     (void)bench_quick_factor(std::vector<Integer>(stream.begin(),
-                                                   stream.begin() + std::min<size_t>(50, count)));
+                                                   stream.begin() + static_cast<std::ptrdiff_t>(
+                                                       std::min<size_t>(50, count))));
 
     std::cout << "Running bench..." << std::endl;
     auto qf = bench_quick_factor(stream);
@@ -142,13 +143,13 @@ int main(int argc, char** argv) {
     std::cout << std::endl;
     std::cout << "Results:" << std::endl;
     std::cout << "  quick_factor      total=" << qf.total_ms << " ms"
-              << " per_call=" << (qf.total_ms / count) << " ms"
+              << " per_call=" << (qf.total_ms / static_cast<double>(count)) << " ms"
               << " found=" << qf.found << std::endl;
     std::cout << "  batch_api         total=" << bf.total_ms << " ms"
-              << " per_call=" << (bf.total_ms / count) << " ms"
+              << " per_call=" << (bf.total_ms / static_cast<double>(count)) << " ms"
               << " found=" << bf.found << std::endl;
     std::cout << "  factor (per-call) total=" << ff.total_ms << " ms"
-              << " per_call=" << (ff.total_ms / count) << " ms"
+              << " per_call=" << (ff.total_ms / static_cast<double>(count)) << " ms"
               << " found=" << ff.found << std::endl;
     std::cout << std::endl;
 

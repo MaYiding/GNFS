@@ -111,7 +111,7 @@ void bench_curve_pool(uint64_t seed) {
     };
 
     std::cout << std::fixed << std::setprecision(3);
-    for (size_t k : {0, 8, 32, 128}) {
+    for (size_t k : {size_t{0}, size_t{8}, size_t{32}, size_t{128}}) {
         auto [b, p] = time_pool(k, std::max<size_t>(k, 8));
         std::cout << "pool=" << k << " build=" << b << " ms  pop="
                   << p << " ms (pops=" << std::max<size_t>(k, 8) << ")\n";

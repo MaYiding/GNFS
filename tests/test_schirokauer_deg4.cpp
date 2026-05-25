@@ -202,9 +202,10 @@ int main() {
             auto extract = [&](const FastPoly& p) -> std::array<uint32_t, 4> {
                 std::array<uint32_t, 4> bits{};
                 for (int k = 0; k < 4; ++k) {
-                    uint64_t c = p.coeff(k);
+                    const size_t idx = static_cast<size_t>(k);
+                    uint64_t c = p.coeff(idx);
                     if (k == 0) c = (c >= 1) ? (c - 1) : (ell_k - 1);
-                    bits[k] = static_cast<uint32_t>((c / 2) % 2);
+                    bits[idx] = static_cast<uint32_t>((c / 2) % 2);
                 }
                 return bits;
             };
@@ -215,13 +216,14 @@ int main() {
 
             bool ok = true;
             for (int k = 0; k < 4; ++k) {
-                if ((b1_arr[k] + b2_arr[k]) % 2 != b12_arr[k]) {
+                const size_t idx = static_cast<size_t>(k);
+                if ((b1_arr[idx] + b2_arr[idx]) % 2 != b12_arr[idx]) {
                     ok = false;
                     std::cerr << "HOMOMORPHISM FAIL: a1=" << a1 << " b1=" << b1
                              << " a2=" << a2 << " b2=" << b2
                              << " col=" << k << ": "
-                             << b1_arr[k] << "+" << b2_arr[k]
-                             << " != " << b12_arr[k] << std::endl;
+                             << b1_arr[idx] << "+" << b2_arr[idx]
+                             << " != " << b12_arr[idx] << std::endl;
                 }
             }
             if (ok) pass6++;

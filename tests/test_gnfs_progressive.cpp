@@ -371,11 +371,12 @@ FactResult factor_with_progress(const Integer& n, int level) {
             ++sq_count;
 
             if (sq_count % std::max(size_t(1), static_cast<size_t>(params.progress_interval)) == 0 || collector.size() >= batch_target) {
-                double rate = collector.size() / (phase.sec() + 0.001);
+                double rate = static_cast<double>(collector.size()) / (phase.sec() + 0.001);
                 std::cout << "  SQ #" << sq_count
                           << ": rels=" << collector.size() << "/" << batch_target
                           << " (" << std::fixed << std::setprecision(1)
-                          << (100.0 * collector.size() / batch_target) << "%)"
+                          << (100.0 * static_cast<double>(collector.size()) /
+                              static_cast<double>(batch_target)) << "%)"
                           << " rate=" << std::setprecision(1) << rate << "/s"
                           << " elapsed=" << std::setprecision(1) << phase.sec() << "s"
                           << "\n" << std::flush;

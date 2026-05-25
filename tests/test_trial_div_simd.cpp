@@ -340,7 +340,7 @@ static void test_batch_boundary_sweep() {
     std::uint64_t cofactor = 2310ull;
     for (std::size_t n = 0; n <= 8; ++n) {
         std::vector<std::uint32_t> primes(small_primes.begin(),
-                                          small_primes.begin() + n);
+                                          small_primes.begin() + static_cast<std::ptrdiff_t>(n));
         std::span<const std::uint32_t> span(primes.data(), primes.size());
         std::vector<std::uint32_t> simd_out;
         cof::batch_check_divisibility(cofactor, span, simd_out);

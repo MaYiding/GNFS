@@ -270,7 +270,8 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
                 std::cout << "    SQ #" << result.sq_count
                           << ": rels=" << collector.size() << "/" << batch_target
                           << " (" << std::setprecision(1)
-                          << (100.0 * collector.size() / batch_target) << "%)"
+                          << (100.0 * static_cast<double>(collector.size()) /
+                              static_cast<double>(batch_target)) << "%)"
                           << " elapsed=" << std::setprecision(1) << phase.sec() << "s"
                           << " rate=" << std::setprecision(0) << rate << "/s"
                           << " eta=" << std::setprecision(0) << eta_s << "s"
@@ -292,7 +293,8 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
 
         std::cout << "    [filter] " << pre_filter << " -> " << relations.size()
                   << " (" << std::setprecision(1)
-                  << (100.0 * relations.size() / pre_filter) << "% survived)\n" << std::flush;
+                  << (100.0 * static_cast<double>(relations.size()) /
+                      static_cast<double>(pre_filter)) << "% survived)\n" << std::flush;
 
         if (lp_enabled) {
             auto sep = separate_relations(std::move(relations));

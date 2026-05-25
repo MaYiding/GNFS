@@ -438,7 +438,7 @@ static void test_repeated_calls() {
     }
     SparseMatrix sp = make_random(2048, 2048, 6, 0xa1a1);
     for (int k = 0; k < 8; ++k) {
-        BlockVector x = make_random_vector(2048, 0xb1b1 + k);
+        BlockVector x = make_random_vector(2048, 0xb1b1 + static_cast<uint64_t>(k));
         if (!compare_forward(sp, x, "repeated forward")) {
             TEST_ASSERT(false, "repeated forward iteration mismatch");
         }

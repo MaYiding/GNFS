@@ -169,7 +169,7 @@ int main() {
             }
             ++sq_count;
             if (sq_count % 5 == 0 || collector.size() >= batch_target) {
-                double rate = collector.size() / (phase.sec() + 0.001);
+                double rate = static_cast<double>(collector.size()) / (phase.sec() + 0.001);
                 std::cout << "  SQ#" << sq_count << " rels=" << collector.size()
                           << "/" << batch_target
                           << " rate=" << std::fixed << std::setprecision(0) << rate << "/s"
@@ -238,7 +238,7 @@ int main() {
     {
         size_t lp_cols_for_trim = lp_enabled ? count_unique_lp_keys(relations) : 0;
         size_t effective_cols = matrix_cols + lp_cols_for_trim;
-        size_t max_rels = static_cast<size_t>(effective_cols * 1.3);
+        size_t max_rels = static_cast<size_t>(static_cast<double>(effective_cols) * 1.3);
         if (relations.size() > max_rels) {
             std::cout << "  [Trim] " << relations.size() << " → " << max_rels
                       << " relations (eff_cols=" << effective_cols << ")\n";

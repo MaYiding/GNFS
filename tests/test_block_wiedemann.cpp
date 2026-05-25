@@ -311,11 +311,13 @@ static uint64_t compute_AF_col(const std::vector<gnfs::linalg::DenseGF2_64x64>& 
         uint64_t Fk_col_j = 0;
         if (static_cast<size_t>(k) < F.poly.size()) {
             for (int i = 0; i < 64; ++i) {
-                if ((F.poly[k].rows[i] >> j) & 1ULL) Fk_col_j |= (1ULL << i);
+                if ((F.poly[static_cast<size_t>(k)].rows[static_cast<size_t>(i)] >> j) & 1ULL) {
+                    Fk_col_j |= (1ULL << i);
+                }
             }
         }
         if (Fk_col_j == 0) continue;
-        const gnfs::linalg::DenseGF2_64x64& Am = A[t - k];
+        const gnfs::linalg::DenseGF2_64x64& Am = A[t - static_cast<size_t>(k)];
         uint64_t mv = 0;
         for (int r = 0; r < 64; ++r) {
             if (__builtin_parityll(Am.rows[r] & Fk_col_j)) mv |= (1ULL << r);
@@ -365,7 +367,7 @@ void test_matrix_bm_powers_of_random_B() {
     for (int j = 0; j < 64; ++j) {
         if (!((F.valid_mask >> j) & 1)) continue;
         checked_cols++;
-        int dj = F.degrees[j];
+        int dj = F.degrees[static_cast<size_t>(j)];
         bool annihilates = true;
         // Verify (A·F)_t [:, j] = 0 for t in [dj, L-1]
         for (size_t t = static_cast<size_t>(dj); t < L; ++t) {
@@ -404,7 +406,7 @@ void test_matrix_bm_multiword_L128() {
     int annihilating = 0;
     for (int j = 0; j < 64; ++j) {
         if (!((F.valid_mask >> j) & 1)) continue;
-        int dj = F.degrees[j];
+        int dj = F.degrees[static_cast<size_t>(j)];
         bool ok = true;
         for (size_t t = static_cast<size_t>(dj); t < L && ok; ++t) {
             if (compute_AF_col(A, F, j, t, dj) != 0) ok = false;
@@ -432,7 +434,7 @@ void test_matrix_bm_constant_sequence() {
     int annihilating = 0;
     for (int j = 0; j < 64; ++j) {
         if (!((F.valid_mask >> j) & 1)) continue;
-        int dj = F.degrees[j];
+        int dj = F.degrees[static_cast<size_t>(j)];
         bool ok = true;
         for (size_t t = static_cast<size_t>(dj); t < L && ok; ++t) {
             if (compute_AF_col(A, F, j, t, dj) != 0) ok = false;

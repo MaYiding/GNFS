@@ -36,7 +36,7 @@ static Relation make_3lp(int64_t a, int64_t b,
                           uint64_t rat_lp,
                           uint64_t alg_p1, uint64_t alg_r1,
                           uint64_t alg_p2, uint64_t alg_r2) {
-    Relation r(a, b);
+    Relation r(a, static_cast<uint64_t>(b));
     r.rational_factors = {0, 1};
     r.algebraic_factors = {0};
     r.rational_large_prime.push_back(PrimePower{rat_lp, 0, 1});
@@ -49,7 +49,7 @@ static Relation make_3lp(int64_t a, int64_t b,
 static Relation make_2lp(int64_t a, int64_t b,
                           uint64_t rat_lp,
                           uint64_t alg_p, uint64_t alg_r) {
-    Relation r(a, b);
+    Relation r(a, static_cast<uint64_t>(b));
     r.rational_factors = {0, 1};
     r.algebraic_factors = {0};
     r.rational_large_prime.push_back(PrimePower{rat_lp, 0, 1});

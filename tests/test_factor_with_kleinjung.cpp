@@ -92,14 +92,15 @@ void print_poly(const IntPolynomial& f, const char* name) {
     std::cout << name << "(x) = ";
     bool first = true;
     for (int i = static_cast<int>(f.degree()); i >= 0; --i) {
-        if (f[i].is_zero() && i > 0) continue;
+        const size_t idx = static_cast<size_t>(i);
+        if (f[idx].is_zero() && i > 0) continue;
         if (!first) {
-            std::cout << (f[i].is_negative() ? " - " : " + ");
-        } else if (f[i].is_negative()) {
+            std::cout << (f[idx].is_negative() ? " - " : " + ");
+        } else if (f[idx].is_negative()) {
             std::cout << "-";
         }
         first = false;
-        Integer abs_c = f[i].clone();
+        Integer abs_c = f[idx].clone();
         abs_c.abs();
         if (i == 0 || abs_c.to_string() != "1") {
             std::cout << abs_c.to_string();

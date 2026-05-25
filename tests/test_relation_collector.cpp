@@ -132,7 +132,7 @@ void test_batch_add() {
 
     std::vector<Relation> batch;
     for (int i = 1; i <= 10; ++i) {
-        Relation rel(i, i + 1);
+        Relation rel(i, static_cast<uint64_t>(i + 1));
         batch.push_back(std::move(rel));
     }
 
@@ -153,7 +153,7 @@ void test_save_load() {
         RelationCollector collector;
 
         for (int i = 1; i <= 5; ++i) {
-            Relation rel(i * 10, i * 10 + 1);
+            Relation rel(i * 10, static_cast<uint64_t>(i * 10 + 1));
             rel.rational_factors.push_back(static_cast<uint32_t>(i));
             collector.add(std::move(rel));
         }
@@ -228,13 +228,13 @@ void test_merge() {
 
     // 添加到第一个收集器
     for (int i = 1; i <= 5; ++i) {
-        Relation rel(i, i + 1);
+        Relation rel(i, static_cast<uint64_t>(i + 1));
         collector1.add(std::move(rel));
     }
 
     // 添加到第二个收集器（有重叠）
     for (int i = 3; i <= 8; ++i) {
-        Relation rel(i, i + 1);
+        Relation rel(i, static_cast<uint64_t>(i + 1));
         collector2.add(std::move(rel));
     }
 
@@ -254,7 +254,7 @@ void test_filter_duplicates() {
     std::vector<Relation> relations;
 
     for (int i = 0; i < 10; ++i) {
-        Relation rel(i % 5, (i % 5) + 1);  // 会有重复
+        Relation rel(i % 5, static_cast<uint64_t>((i % 5) + 1));  // 会有重复
         relations.push_back(std::move(rel));
     }
 
@@ -274,7 +274,7 @@ void test_sort_relations() {
         for (int a : {10, 5, 15}) {
             // 确保 gcd(a, b) = 1
             if (std::gcd(a, b) == 1) {
-                Relation rel(a, b);
+                Relation rel(a, static_cast<uint64_t>(b));
                 relations.push_back(std::move(rel));
             }
         }
@@ -305,7 +305,7 @@ void test_callback() {
     });
 
     for (int i = 1; i <= 5; ++i) {
-        Relation rel(i, i + 1);
+        Relation rel(i, static_cast<uint64_t>(i + 1));
         collector.add(std::move(rel));
     }
 
@@ -334,7 +334,7 @@ void test_callback_no_deadlock() {
     });
 
     for (int i = 1; i <= 5; ++i) {
-        Relation rel(i, i + 1);
+        Relation rel(i, static_cast<uint64_t>(i + 1));
         collector.add(std::move(rel));
     }
 
@@ -618,7 +618,7 @@ void test_ooc_clear_recycle() {
 
     RelationCollector collector(config);
     for (int i = 1; i <= 3; ++i) {
-        Relation rel(i, i + 1);
+        Relation rel(i, static_cast<uint64_t>(i + 1));
         collector.add(std::move(rel));
     }
     assert(collector.size() == 3);
@@ -630,7 +630,7 @@ void test_ooc_clear_recycle() {
 
     // 重新可用: 加新 relations
     for (int i = 100; i <= 102; ++i) {
-        Relation rel(i, i + 1);
+        Relation rel(i, static_cast<uint64_t>(i + 1));
         collector.add(std::move(rel));
     }
     assert(collector.size() == 3);
@@ -906,9 +906,9 @@ void test_ooc_writer_resume_large_payload() {
         OOCRelationWriter writer(path);
         for (int i = 1; i <= 100; ++i) {
             Relation r(i, static_cast<uint64_t>(i + 1000));
-            size_t weight = (i % 5) + 1;
+            size_t weight = static_cast<size_t>((i % 5) + 1);
             for (size_t j = 0; j < weight; ++j) {
-                r.rational_factors.push_back(static_cast<uint32_t>(i + j));
+                r.rational_factors.push_back(static_cast<uint32_t>(static_cast<size_t>(i) + j));
             }
             writer.write(r);
         }
@@ -929,9 +929,9 @@ void test_ooc_writer_resume_large_payload() {
         assert(writer.count() == 100);
         for (int i = 101; i <= 150; ++i) {
             Relation r(i, static_cast<uint64_t>(i + 1000));
-            size_t weight = ((i - 100) % 3) + 2;
+            size_t weight = static_cast<size_t>(((i - 100) % 3) + 2);
             for (size_t j = 0; j < weight; ++j) {
-                r.rational_factors.push_back(static_cast<uint32_t>(i + j + 7));
+                r.rational_factors.push_back(static_cast<uint32_t>(static_cast<size_t>(i) + j + 7));
             }
             writer.write(r);
         }
@@ -946,10 +946,10 @@ void test_ooc_writer_resume_large_payload() {
         int idx = static_cast<int>(i) + 1;
         assert(rel.a == idx);
         assert(rel.b == static_cast<uint64_t>(idx + 1000));
-        size_t expected_weight = (idx % 5) + 1;
+        size_t expected_weight = static_cast<size_t>((idx % 5) + 1);
         assert(rel.rational_factors.size() == expected_weight);
         for (size_t j = 0; j < expected_weight; ++j) {
-            assert(rel.rational_factors[j] == static_cast<uint32_t>(idx + j));
+            assert(rel.rational_factors[j] == static_cast<uint32_t>(static_cast<size_t>(idx) + j));
         }
     }
     for (size_t i = 100; i < 150; ++i) {
@@ -957,11 +957,11 @@ void test_ooc_writer_resume_large_payload() {
         int idx = static_cast<int>(i) + 1;
         assert(rel.a == idx);
         assert(rel.b == static_cast<uint64_t>(idx + 1000));
-        size_t expected_weight = ((idx - 100) % 3) + 2;
+        size_t expected_weight = static_cast<size_t>(((idx - 100) % 3) + 2);
         assert(rel.rational_factors.size() == expected_weight);
         for (size_t j = 0; j < expected_weight; ++j) {
             assert(rel.rational_factors[j] ==
-                   static_cast<uint32_t>(idx + j + 7));
+                   static_cast<uint32_t>(static_cast<size_t>(idx) + j + 7));
         }
     }
 
