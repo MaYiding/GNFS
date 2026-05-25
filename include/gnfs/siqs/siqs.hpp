@@ -875,8 +875,9 @@ inline void sieve_polynomial(
                     }
                 }
             }
-        } else {
+        } else
 #endif
+        {
             // GMP fallback for very large Q (>127 bits, rare for ≤65 digits)
             mpz_t q_mpz;
             mpz_init(q_mpz);

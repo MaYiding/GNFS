@@ -385,7 +385,8 @@ private:
         }
 
         double d_power_d = std::pow(static_cast<double>(d), static_cast<double>(d));
-        double four_over_pi = 4.0 / M_PI;
+        constexpr double kPi = 3.141592653589793238462643383279502884;
+        double four_over_pi = 4.0 / kPi;
         double four_pi_factor = std::pow(four_over_pi, static_cast<double>(r2));
 
         // Get |discriminant| as double — mpz_abs writes into default-init slot

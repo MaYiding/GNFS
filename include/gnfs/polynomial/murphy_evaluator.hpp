@@ -587,7 +587,8 @@ private:
 
         for (uint32_t i = 0; i < num_points; ++i) {
             // Midpoint rule: θ = π(i + 0.5) / N
-            double theta = M_PI * (i + 0.5) / num_points;
+            constexpr double kPi = 3.141592653589793238462643383279502884;
+            double theta = kPi * (i + 0.5) / num_points;
             double ct = std::cos(theta);
             double st = std::sin(theta);
 
