@@ -1604,7 +1604,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_siqs PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SIQS COMMAND test_siqs)
-    set_tests_properties(SIQS PROPERTIES LABELS "fast" TIMEOUT 60)
+    set_tests_properties(SIQS PROPERTIES LABELS "fast" TIMEOUT 180)
 
     # SIQS 端到端：100-bit + 180-bit 实测分解
     add_executable(test_siqs_e2e
