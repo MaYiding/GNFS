@@ -36,6 +36,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include "../util/cpu_intrin.hpp"
 
 namespace gnfs::sieve {
 
@@ -46,11 +47,11 @@ namespace gnfs::sieve {
 /// bandwidth, smaller ones still pay miss latency on cache-cold buckets.
 inline constexpr std::size_t kBucketPrefetchDistance = 8;
 
-/// Returns true when `__builtin_prefetch` is supported by the active
+/// Returns true when a prefetch intrinsic is supported by the active
 /// compiler. The runtime gate `bucket_prefetch_enabled()` falls back to
 /// this when ENV is unset or set to "auto".
 [[nodiscard]] inline constexpr bool bucket_prefetch_supported() noexcept {
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER)
     return true;
 #else
     return false;
@@ -61,9 +62,7 @@ inline constexpr std::size_t kBucketPrefetchDistance = 8;
 /// and temporal locality bias T1. Used at the scatter phase where the next
 /// few iterations will append a `BucketRegionEntry` into the same vector.
 inline void prefetch_bucket_write([[maybe_unused]] const void* ptr) noexcept {
-#if defined(__GNUC__) || defined(__clang__)
-    __builtin_prefetch(ptr, 1, 1);
-#endif
+    gnfs::util::prefetch_write<1>(ptr);
 }
 
 /// Hint the memory subsystem to fetch `ptr` into the L1 with read intent
@@ -71,9 +70,7 @@ inline void prefetch_bucket_write([[maybe_unused]] const void* ptr) noexcept {
 /// few iterations will read another `BucketRegionEntry` and update the
 /// matching `sieve_array_` slot.
 inline void prefetch_bucket_read([[maybe_unused]] const void* ptr) noexcept {
-#if defined(__GNUC__) || defined(__clang__)
-    __builtin_prefetch(ptr, 0, 1);
-#endif
+    gnfs::util::prefetch_read<1>(ptr);
 }
 
 namespace detail {

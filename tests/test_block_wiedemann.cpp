@@ -6,6 +6,7 @@
 #include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
+#include <gnfs/util/bit_intrin.hpp>
 #include <iostream>
 #include <random>
 
@@ -320,7 +321,7 @@ static uint64_t compute_AF_col(const std::vector<gnfs::linalg::DenseGF2_64x64>& 
         const gnfs::linalg::DenseGF2_64x64& Am = A[t - static_cast<size_t>(k)];
         uint64_t mv = 0;
         for (int r = 0; r < 64; ++r) {
-            if (__builtin_parityll(Am.rows[r] & Fk_col_j)) mv |= (1ULL << r);
+            if ((gnfs::util::popcount64(Am.rows[r] & Fk_col_j) & 1) != 0) mv |= (1ULL << r);
         }
         acc ^= mv;
     }

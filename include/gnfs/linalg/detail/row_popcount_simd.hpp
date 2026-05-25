@@ -78,6 +78,7 @@
 #include <cstring>
 #include <mutex>
 #include <span>
+#include "../../util/bit_intrin.hpp"
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
   #if __has_include(<arm_neon.h>)
@@ -208,7 +209,7 @@ inline void per_row_popcount_words_scalar(std::span<const std::uint64_t> matrix,
         const std::uint64_t* row_ptr = matrix.data() + r * row_words;
         std::uint64_t total = 0;
         for (std::size_t k = 0; k < row_words; ++k) {
-            total += static_cast<std::uint64_t>(__builtin_popcountll(row_ptr[k]));
+            total += static_cast<std::uint64_t>(gnfs::util::popcount64(row_ptr[k]));
         }
         out_row_weights[r] = total;
     }
@@ -237,7 +238,7 @@ namespace row_popcount_detail {
     }
     // Scalar tail for the odd word.
     for (; k < row_words; ++k) {
-        total += static_cast<std::uint64_t>(__builtin_popcountll(row_ptr[k]));
+        total += static_cast<std::uint64_t>(gnfs::util::popcount64(row_ptr[k]));
     }
     return total;
 }
@@ -271,7 +272,7 @@ namespace row_popcount_detail {
 #endif
     }
     for (; k < row_words; ++k) {
-        total += static_cast<std::uint64_t>(__builtin_popcountll(row_ptr[k]));
+        total += static_cast<std::uint64_t>(gnfs::util::popcount64(row_ptr[k]));
     }
     return total;
 }

@@ -26,6 +26,7 @@
 #include "gnfs/linalg/block_lanczos.hpp"   // BlockVector
 #include "gnfs/linalg/metal_spmv.hpp"
 #include "gnfs/linalg/detail/spmv_simd.hpp"
+#include "gnfs/util/cpu_intrin.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
 #include <cassert>
@@ -83,7 +84,7 @@ inline void spmv_forward(const M& matrix,
         // hardware load queue. Mixing SIMD here would either drop the
         // prefetch (correctness preserved, latency loss) or duplicate it.
         for (; p < p_pref; ++p) {
-            __builtin_prefetch(&x.data[*(p + SPMV_PREFETCH_AHEAD)], 0, 0);
+            gnfs::util::prefetch_read<0>(&x.data[*(p + SPMV_PREFETCH_AHEAD)]);
             acc ^= x.data[*p];
         }
         // Tail phase batches into the wide XOR helper when the SIMD path
@@ -182,7 +183,7 @@ inline void spmv_transpose(const M& matrix,
                 // continues to see one access at a time and the prefetch
                 // hint to `local[*(p+AHEAD)]` keeps its meaning.
                 for (; p < p_pref; ++p) {
-                    __builtin_prefetch(&local[*(p + SPMV_PREFETCH_AHEAD)], 0, 0);
+                    gnfs::util::prefetch_read<0>(&local[*(p + SPMV_PREFETCH_AHEAD)]);
                     local[*p] ^= xi;
                 }
                 // Batch the tail through the SIMD scatter helper when the

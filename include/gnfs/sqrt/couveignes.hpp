@@ -4,6 +4,7 @@
 #include "modular_poly.hpp"
 #include "../core/integer.hpp"
 #include "../core/polynomial_context.hpp"
+#include "../util/bit_intrin.hpp"
 #include "../util/primes.hpp"
 
 #include <vector>
@@ -707,7 +708,7 @@ public:
         for (uint64_t i = 1; i < max_patterns; ++i) {
             uint64_t gray = i ^ (i >> 1);
             uint64_t changed_bit = prev_gray ^ gray;
-            size_t bit_pos = static_cast<size_t>(__builtin_ctzll(changed_bit));
+            size_t bit_pos = static_cast<size_t>(gnfs::util::ctz64(changed_bit));
             bool new_sign = (gray >> bit_pos) & 1;  // 1 = negative
 
             // Incremental CRT update + 立即归约到 [0, M-1]
@@ -974,7 +975,7 @@ public:
         for (uint64_t i = 1; i < max_patterns; ++i) {
             uint64_t gray = i ^ (i >> 1);
             uint64_t changed_bit = prev_gray ^ gray;
-            size_t bit_pos = static_cast<size_t>(__builtin_ctzll(changed_bit));
+            size_t bit_pos = static_cast<size_t>(gnfs::util::ctz64(changed_bit));
             bool new_sign = (gray >> bit_pos) & 1;
 
             for (uint32_t ci = 0; ci < d; ++ci) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gnfs/linalg/matrix_builder.hpp"
+#include "gnfs/util/bit_intrin.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -80,7 +81,7 @@ struct DenseGF2_64x64 {
             uint64_t a = rows[i];
             uint64_t acc = 0;
             while (a) {
-                int j = __builtin_ctzll(a);
+                int j = gnfs::util::ctz64(a);
                 acc ^= B.rows[j];
                 a &= a - 1;
             }
@@ -157,7 +158,7 @@ inline DenseGF2_64x64 inner_product_64x64(const BlockVector& A, const BlockVecto
         uint64_t ai = A.data[i];
         uint64_t bi = B.data[i];
         while (ai) {
-            int j = __builtin_ctzll(ai);
+            int j = gnfs::util::ctz64(ai);
             C.rows[j] ^= bi;
             ai &= ai - 1;
         }

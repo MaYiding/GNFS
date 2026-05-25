@@ -5,6 +5,7 @@
 #include "hensel_parallel.hpp"
 #include "../core/integer.hpp"
 #include "../core/polynomial_context.hpp"
+#include "../util/bit_intrin.hpp"
 
 #include <span>
 #include <vector>
@@ -691,7 +692,7 @@ private:
         uint32_t total = 1u << (K - 1);
 
         for (uint32_t step = 1; step < total; ++step) {
-            uint32_t flip = static_cast<uint32_t>(__builtin_ctz(step)) + 1;
+            uint32_t flip = static_cast<uint32_t>(gnfs::util::ctz32(step)) + 1;
 
             if (sgn[flip]) {
                 for (uint32_t j = 0; j < d; ++j) {

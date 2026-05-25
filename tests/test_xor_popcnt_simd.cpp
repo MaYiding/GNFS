@@ -257,7 +257,7 @@ static void test_single_word_patterns() {
             return;
         }
         // Builtin cross-check.
-        std::uint32_t builtin = static_cast<std::uint32_t>(__builtin_popcountll(c.a ^ c.b));
+        std::uint32_t builtin = static_cast<std::uint32_t>(gnfs::util::popcount64(c.a ^ c.b));
         if (out[0] != builtin) {
             std::fprintf(stderr,
                 "  a=%016llx b=%016llx expected=%u dispatch=%u builtin=%u\n",

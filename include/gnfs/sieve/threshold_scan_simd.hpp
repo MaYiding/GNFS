@@ -76,6 +76,7 @@
 #include <cstring>
 #include <mutex>
 #include <span>
+#include "../util/bit_intrin.hpp"
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
   #if __has_include(<arm_neon.h>)
@@ -256,8 +257,8 @@ namespace threshold_scan_detail {
         sign_bias);
     const __m256i pass_mask = _mm256_cmpgt_epi8(v_signed, t_signed);
     const int mask = _mm256_movemask_epi8(pass_mask);
-    return static_cast<std::size_t>(__builtin_popcount(
-        static_cast<unsigned int>(mask)));
+    return static_cast<std::size_t>(gnfs::util::popcount32(
+        static_cast<std::uint32_t>(mask)));
 }
 #endif  // GNFS_THRESHOLD_SCAN_SIMD_AVX2
 
