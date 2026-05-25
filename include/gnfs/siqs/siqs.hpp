@@ -266,7 +266,7 @@ inline uint32_t select_multiplier(const Integer& N) {
     for (uint32_t k : candidates) {
         Integer kN;
         mpz_mul_ui(kN.get_mpz(), N.get_mpz(), k);  // kN = N * k (skip source copy)
-        double log_kN = mpz_sizeinbase(kN.get_mpz(), 2) * 0.6931; // log(2) * bits
+        double log_kN = static_cast<double>(mpz_sizeinbase(kN.get_mpz(), 2)) * 0.6931; // log(2) * bits
         double score = -0.5 * log_kN;
 
         // Special handling for p=2
@@ -398,7 +398,7 @@ inline void choose_A(const Integer& N, uint32_t M,
     // Pick primes from middle of FB to form A close to target
     // Strategy: find the prime whose individual value would give
     // target^(1/num_factors), then pick around that range
-    double log_target = mpz_sizeinbase(target_a.get_mpz(), 2);
+    double log_target = static_cast<double>(mpz_sizeinbase(target_a.get_mpz(), 2));
     double log_per_factor = log_target / num_factors;
     uint32_t ideal_p = static_cast<uint32_t>(std::pow(2.0, log_per_factor));
 

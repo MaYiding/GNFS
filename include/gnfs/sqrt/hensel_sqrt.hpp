@@ -778,11 +778,12 @@ private:
             auto check = ModularPoly::mul(sqrt_mod_p, sqrt_mod_p, f_mod_p, p);
             bool init_ok = true;
             for (int i = 0; i <= std::max(check.degree(), product_mod_p.degree()); ++i) {
-                if (check.coeff(i) != product_mod_p.coeff(i)) {
+                const size_t coeff_idx = static_cast<size_t>(i);
+                if (check.coeff(coeff_idx) != product_mod_p.coeff(coeff_idx)) {
                     init_ok = false;
                     std::cerr << "[Hensel] INITIAL sqrt verification FAILED at coeff "
-                              << i << ": got " << check.coeff(i) << " expected "
-                              << product_mod_p.coeff(i) << " (p=" << p << ")\n";
+                              << i << ": got " << check.coeff(coeff_idx) << " expected "
+                              << product_mod_p.coeff(coeff_idx) << " (p=" << p << ")\n";
                     break;
                 }
             }
@@ -1080,7 +1081,7 @@ private:
             Integer s_at_m;  // default ctor = 0
             for (int i = static_cast<int>(d) - 1; i >= 0; --i) {
                 s_at_m *= mm;
-                s_at_m += S[i];
+                s_at_m += S[static_cast<size_t>(i)];
                 s_at_m %= nn;
             }
             if (s_at_m.is_negative()) s_at_m += nn;
@@ -1091,7 +1092,7 @@ private:
             Integer p_at_m;  // default ctor = 0
             for (int i = static_cast<int>(d) - 1; i >= 0; --i) {
                 p_at_m *= mm;
-                p_at_m += P_final[i];
+                p_at_m += P_final[static_cast<size_t>(i)];
                 p_at_m %= nn;
             }
             if (p_at_m.is_negative()) p_at_m += nn;
@@ -1160,7 +1161,8 @@ private:
         for (int i = static_cast<int>(d) - 1; i >= 1; --i) {
             result *= m;
             // mpz_addmul_ui: result += nf.coeff(i) * i (i ≥ 1, fused FMA)
-            mpz_addmul_ui(result.get_mpz(), nf.coeff(i).get_mpz(), static_cast<unsigned long>(i));
+            mpz_addmul_ui(result.get_mpz(), nf.coeff(static_cast<uint32_t>(i)).get_mpz(),
+                          static_cast<unsigned long>(i));
             result %= n;
         }
         if (result.is_negative()) result += n;
@@ -1394,8 +1396,9 @@ private:
         Integer lead_scaled;
         Integer sub;
         for (int k = static_cast<int>(2 * d - 2); k >= static_cast<int>(d); --k) {
-            Integer lead = std::move(result[k]);
-            result[k] = int64_t(0);  // mpz_set_si direct
+            const size_t k_idx = static_cast<size_t>(k);
+            Integer lead = std::move(result[k_idx]);
+            result[k_idx] = int64_t(0);  // mpz_set_si direct
             if (lead.is_zero()) continue;
 
             // Scale by inverse of leading coefficient
@@ -1410,9 +1413,10 @@ private:
                 sub = lead_scaled;
                 sub *= f[i];
                 sub %= modulus;
-                result[k - d + i] -= sub;
-                result[k - d + i] %= modulus;
-                if (result[k - d + i].is_negative()) result[k - d + i] += modulus;
+                const size_t result_idx = static_cast<size_t>(k - static_cast<int>(d) + static_cast<int>(i));
+                result[result_idx] -= sub;
+                result[result_idx] %= modulus;
+                if (result[result_idx].is_negative()) result[result_idx] += modulus;
             }
         }
 

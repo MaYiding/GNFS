@@ -273,7 +273,7 @@ public:
     /// 计算平均行重量
     [[nodiscard]] double average_row_weight() const noexcept {
         if (rows_.empty()) return 0.0;
-        return static_cast<double>(total_weight()) / rows_.size();
+        return static_cast<double>(total_weight()) / static_cast<double>(rows_.size());
     }
 
     /// Ensure all rows are sorted and deduplicated.
@@ -377,7 +377,7 @@ public:
     [[nodiscard]] size_t popcount() const noexcept {
         size_t count = 0;
         for (uint64_t block : bits_) {
-            count += __builtin_popcountll(block);
+            count += static_cast<size_t>(__builtin_popcountll(block));
         }
         return count;
     }

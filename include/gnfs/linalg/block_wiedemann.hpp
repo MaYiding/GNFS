@@ -121,7 +121,7 @@ struct LingenResult {
 // Only valid columns (bit set in `valid_mask`) contribute.
 inline int compute_rank_est(const LingenResult& lingen) noexcept {
     int rank_est = 0;
-    for (int j = 0; j < 64; ++j) {
+    for (size_t j = 0; j < lingen.degrees.size(); ++j) {
         if ((lingen.valid_mask >> j) & 1ULL) {
             rank_est += lingen.degrees[j];
         }

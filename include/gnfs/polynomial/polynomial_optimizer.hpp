@@ -86,7 +86,10 @@ public:
             // 视为相对变化 ≤ 2^-k,默认 tolerance=1e-6 → 约 20 位。
             const size_t m_bits = m.bit_length();
             const size_t diff_bits = diff.bit_length();
-            const int tol_bits = static_cast<int>(std::ceil(-std::log2(tolerance)));
+            const double raw_tol_bits = std::ceil(-std::log2(tolerance));
+            const size_t tol_bits = raw_tol_bits > 0.0
+                ? static_cast<size_t>(raw_tol_bits)
+                : 0;
             if (diff.is_zero() ||
                 (m_bits > 0 && diff_bits + tol_bits <= m_bits)) {
                 break;

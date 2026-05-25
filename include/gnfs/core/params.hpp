@@ -65,10 +65,10 @@ struct GNFSParams {
         GNFSParams p;
         p.bits = n_bits;
         constexpr double LOG10_2 = 0.30103;  // log10(2)
-        p.digits = static_cast<size_t>(n_bits * LOG10_2 + 1);
+        p.digits = static_cast<size_t>(static_cast<double>(n_bits) * LOG10_2 + 1.0);
 
         // L_N 函数的核心值: (ln N)^{1/3} · (ln ln N)^{2/3}
-        double ln_n = n_bits * std::log(2.0);
+        double ln_n = static_cast<double>(n_bits) * std::log(2.0);
         double ln_ln_n = std::log(std::max(ln_n, 1.0));
         double l_val = std::pow(ln_n, 1.0/3.0) * std::pow(std::max(ln_ln_n, 1.0), 2.0/3.0);
 
@@ -374,7 +374,7 @@ struct GNFSParams {
             // With ratio 4×, singleton survival ≈ 60-70%.
             base_target = matrix_columns * 4;
         }
-        return static_cast<size_t>(base_target * target_mult);
+        return static_cast<size_t>(static_cast<double>(base_target) * target_mult);
     }
 
     /// 估算筛区域大小 (位置数)

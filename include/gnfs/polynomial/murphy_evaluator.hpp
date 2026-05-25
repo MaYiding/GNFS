@@ -16,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace gnfs::polynomial {
@@ -73,9 +74,15 @@ public:
         init_dickman_table();
     }
 
-    /// Move-only 语义
-    MurphyEvaluator(MurphyEvaluator&&) = default;
-    MurphyEvaluator& operator=(MurphyEvaluator&&) = default;
+    /// Move-only 语义. once_flag members are deliberately reinitialized.
+    MurphyEvaluator(MurphyEvaluator&& other) noexcept
+        : params_(std::move(other.params_)),
+          small_primes_(std::move(other.small_primes_)),
+          dickman_table_(std::move(other.dickman_table_)),
+          root_cache_(std::move(other.root_cache_)),
+          alpha_pool_(std::move(other.alpha_pool_)),
+          linear_alpha_prefix_(std::move(other.linear_alpha_prefix_)) {}
+    MurphyEvaluator& operator=(MurphyEvaluator&&) = delete;
     MurphyEvaluator(const MurphyEvaluator&) = delete;
     MurphyEvaluator& operator=(const MurphyEvaluator&) = delete;
 
@@ -433,7 +440,8 @@ private:
 
         small_primes_.clear();
         // π(bound) ≈ bound / ln(bound) — reserve to avoid log(n) reallocations.
-        small_primes_.reserve(static_cast<size_t>(bound / std::max(std::log(static_cast<double>(bound)), 1.0)));
+        small_primes_.reserve(static_cast<size_t>(
+            static_cast<double>(bound) / std::max(std::log(static_cast<double>(bound)), 1.0)));
         for (uint64_t i = 2; i <= bound; ++i) {
             if (is_prime[i]) {
                 small_primes_.push_back(static_cast<uint32_t>(i));
@@ -454,9 +462,9 @@ private:
         for (int i = 0; i < N_fine; ++i) {
             double u = i * h;
             if (u <= 1.0) {
-                rho[i] = 1.0;
+                rho[static_cast<size_t>(i)] = 1.0;
             } else if (u <= 2.0) {
-                rho[i] = 1.0 - std::log(u);
+                rho[static_cast<size_t>(i)] = 1.0 - std::log(u);
             } else {
                 break;
             }
@@ -469,13 +477,16 @@ private:
         // Initialize running interior sum: Σ_{j=start-lag+1}^{start-1} ρ[j]
         double interior_sum = 0.0;
         for (int j = start - lag + 1; j <= start - 1; ++j) {
-            interior_sum += rho[j];
+            interior_sum += rho[static_cast<size_t>(j)];
         }
 
         for (int k = start; k < N_fine; ++k) {
-            rho[k] = (rho[k - lag] * 0.5 + interior_sum) / (k - 0.5);
+            rho[static_cast<size_t>(k)] =
+                (rho[static_cast<size_t>(k - lag)] * 0.5 + interior_sum) /
+                (static_cast<double>(k) - 0.5);
             // Update running sum for next step
-            interior_sum = interior_sum - rho[k - lag + 1] + rho[k];
+            interior_sum = interior_sum - rho[static_cast<size_t>(k - lag + 1)] +
+                           rho[static_cast<size_t>(k)];
         }
 
         // Downsample to 0.1 resolution for lookup table
@@ -484,7 +495,7 @@ private:
         constexpr int ratio = 100;  // 0.1 / 0.001
         for (int i = 0; i <= 200; ++i) {
             int fine_idx = std::min(i * ratio, N_fine - 1);
-            dickman_table_.push_back(rho[fine_idx]);
+            dickman_table_.push_back(rho[static_cast<size_t>(fine_idx)]);
         }
     }
 

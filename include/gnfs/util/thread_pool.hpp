@@ -135,7 +135,8 @@ public:
         if (distance <= 0) return;
 
         size_t num_threads = workers_.size();
-        size_t chunk_size = (distance + num_threads - 1) / num_threads;
+        size_t total = static_cast<size_t>(distance);
+        size_t chunk_size = (total + num_threads - 1) / num_threads;
 
         std::vector<std::future<void>> futures;
         futures.reserve(num_threads);
@@ -143,7 +144,7 @@ public:
         Iter chunk_begin = begin;
         for (size_t i = 0; i < num_threads && chunk_begin != end; ++i) {
             Iter chunk_end = chunk_begin;
-            size_t remaining = std::distance(chunk_begin, end);
+            size_t remaining = static_cast<size_t>(std::distance(chunk_begin, end));
             std::advance(chunk_end, std::min(chunk_size, remaining));
 
             futures.push_back(submit([chunk_begin, chunk_end, &func]() {

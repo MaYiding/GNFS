@@ -157,10 +157,10 @@ public:
 
         // Inverse of leading coefficient: α^d = -(f[0]+...+f[d-1]α^{d-1}) / f[d]
         // f[f_deg] must be non-zero mod p (otherwise f degenerates)
-        if (f[f_deg] % p == 0) {
+        if (f[static_cast<size_t>(f_deg)] % p == 0) {
             throw std::runtime_error("ModularPoly::reduce: leading coefficient ≡ 0 (mod p)");
         }
-        uint64_t f_lead_inv = mod_inverse(f[f_deg], p);
+        uint64_t f_lead_inv = mod_inverse(f[static_cast<size_t>(f_deg)], p);
 
         // Reduce from highest degree down
         while (static_cast<int>(result.size()) > f_deg) {
@@ -173,13 +173,14 @@ public:
             uint64_t lead_scaled = mul_mod(lead, f_lead_inv, p);
 
             for (int i = 0; i < f_deg; ++i) {
-                uint64_t term = mul_mod(lead_scaled, f[i], p);
+                uint64_t term = mul_mod(lead_scaled, f[static_cast<size_t>(i)], p);
                 int idx = static_cast<int>(result.size()) - f_deg + i;
                 if (idx >= 0 && idx < static_cast<int>(result.size())) {
-                    if (result[idx] >= term) {
-                        result[idx] -= term;
+                    const size_t result_idx = static_cast<size_t>(idx);
+                    if (result[result_idx] >= term) {
+                        result[result_idx] -= term;
                     } else {
-                        result[idx] = p - (term - result[idx]);
+                        result[result_idx] = p - (term - result[result_idx]);
                     }
                 }
             }
@@ -258,22 +259,24 @@ public:
         }
 
         std::vector<uint64_t> rem = a.coeffs_;
-        std::vector<uint64_t> quot(a.degree() - b.degree() + 1, 0);
+        std::vector<uint64_t> quot(static_cast<size_t>(a.degree() - b.degree() + 1), 0);
 
         uint64_t b_lead_inv = mod_inverse(b.coeffs_.back(), p);
 
         for (int i = a.degree(); i >= b.degree(); --i) {
-            if (rem[i] == 0) continue;
+            const size_t i_idx = static_cast<size_t>(i);
+            if (rem[i_idx] == 0) continue;
 
-            uint64_t c = mul_mod(rem[i], b_lead_inv, p);
-            quot[i - b.degree()] = c;
+            uint64_t c = mul_mod(rem[i_idx], b_lead_inv, p);
+            quot[static_cast<size_t>(i - b.degree())] = c;
 
             for (int j = 0; j <= b.degree(); ++j) {
-                uint64_t term = mul_mod(c, b.coeffs_[j], p);
-                if (rem[i - b.degree() + j] >= term) {
-                    rem[i - b.degree() + j] -= term;
+                const size_t rem_idx = static_cast<size_t>(i - b.degree() + j);
+                uint64_t term = mul_mod(c, b.coeffs_[static_cast<size_t>(j)], p);
+                if (rem[rem_idx] >= term) {
+                    rem[rem_idx] -= term;
                 } else {
-                    rem[i - b.degree() + j] = p - (term - rem[i - b.degree() + j]);
+                    rem[rem_idx] = p - (term - rem[rem_idx]);
                 }
             }
         }
@@ -298,7 +301,7 @@ public:
 
         for (int i = 1; i <= a.degree(); ++i) {
             x_p_power = mul(x_p_power, x_to_p, f, p);
-            auto term = scalar_mul(x_p_power, a.coeff(i), p);
+            auto term = scalar_mul(x_p_power, a.coeff(static_cast<size_t>(i)), p);
             result = add(result, term, p);
         }
 
@@ -343,7 +346,7 @@ public:
         int d = static_cast<int>(f.size()) - 1;
         if (d <= 0) return false;
         // Leading coeff ≡ 0 (mod p) → f degenerates (ramified prime), not irreducible at this degree
-        if (f[d] % p == 0) return false;
+        if (f[static_cast<size_t>(d)] % p == 0) return false;
         if (d == 1) return true;  // linear polynomials are always irreducible
 
         // Find distinct prime factors of d
@@ -364,24 +367,25 @@ public:
         ModularPoly x_poly;
         x_poly.set_coeff(1, 1);  // x
 
-        std::vector<ModularPoly> x_pow_pk(d + 1);
+        std::vector<ModularPoly> x_pow_pk(static_cast<size_t>(d + 1));
         x_pow_pk[0] = x_poly;  // x^{p^0} = x
         const Integer p_int(p);
         for (int k = 1; k <= d; ++k) {
-            x_pow_pk[k] = power(x_pow_pk[k - 1], p_int, f, p);
+            x_pow_pk[static_cast<size_t>(k)] =
+                power(x_pow_pk[static_cast<size_t>(k - 1)], p_int, f, p);
         }
 
         // Step 1: for each prime factor q of d, check gcd(x^{p^{d/q}} - x, f) = 1
         ModularPoly f_poly(f);
         for (int q : prime_factors) {
             int exp = d / q;
-            auto diff = sub(x_pow_pk[exp], x_poly, p);
+            auto diff = sub(x_pow_pk[static_cast<size_t>(exp)], x_poly, p);
             auto g = gcd(diff, f_poly, p);
             if (g.degree() > 0) return false;
         }
 
         // Step 2: x^{p^d} ≡ x mod f
-        auto diff_final = sub(x_pow_pk[d], x_poly, p);
+        auto diff_final = sub(x_pow_pk[static_cast<size_t>(d)], x_poly, p);
         if (!diff_final.is_zero()) return false;
 
         return true;
@@ -504,7 +508,8 @@ public:
         // Self-verification: r^2 ≡ a mod (f, p)
         auto r_sq = mul(r, r, f, p);
         for (int i = 0; i < d; ++i) {
-            if (r_sq.coeff(i) % p != a.coeff(i) % p) {
+            const size_t idx = static_cast<size_t>(i);
+            if (r_sq.coeff(idx) % p != a.coeff(idx) % p) {
                 return ModularPoly();  // Verification failed
             }
         }
