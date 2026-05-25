@@ -1,3 +1,11 @@
+#ifdef _WIN32
+#include <iostream>
+int main() {
+    std::cout << "KrylovSequenceCompressed tests skipped on Windows (POSIX file APIs unavailable)\n";
+    return 0;
+}
+#else
+
 // Tests for KrylovSequenceCompressed (compressed mmap layer).
 //
 // Covers:
@@ -508,3 +516,5 @@ int main() {
     std::cout << "\n===== All KrylovSequenceCompressed tests PASSED =====" << std::endl;
     return 0;
 }
+
+#endif

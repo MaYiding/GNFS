@@ -1,3 +1,11 @@
+#ifdef _WIN32
+#include <iostream>
+int main() {
+    std::cout << "KrylovSequenceMmap tests skipped on Windows (POSIX mmap unavailable)\n";
+    return 0;
+}
+#else
+
 #include "gnfs/linalg/krylov_sequence_mmap.hpp"
 
 #include <cassert>
@@ -296,3 +304,5 @@ int main() {
     std::cout << "\n===== All KrylovSequenceMmap tests PASSED =====" << std::endl;
     return 0;
 }
+
+#endif

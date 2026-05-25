@@ -14,6 +14,7 @@
 #include <gnfs/core/integer.hpp>
 #include <gnfs/relation/ooc_relation_store.hpp>
 #include <gnfs/sieve/sieve_checkpoint.hpp>
+#include <gnfs/util/process.hpp>
 
 #include <cassert>
 #include <cstdio>
@@ -518,7 +519,7 @@ bool test_sieve_resume_fresh_no_prior_ckpt() {
     // GNFS_SIEVE_RESUME set, no prior ckpt → fresh start.
     // Sieve completes normally, ckpt removed at end (因 normal exit).
     std::string base = "/tmp/gnfs_test_sieve_resume_fresh_" +
-                       std::to_string(::getpid());
+                       std::to_string(gnfs::util::process_id());
     std::remove((base + ".sieve_ckpt").c_str());
     std::remove((base + ".reldata").c_str());
     std::remove((base + ".relidx").c_str());
@@ -557,7 +558,7 @@ bool test_sieve_resume_with_synthetic_ckpt() {
     // 手动 craft 一个 ckpt. Resume run 加载 ckpt + OOC, sieve 重 process 部分 SQ,
     // dedup 拒绝 prior relations, 最终 produce 完整 factorization.
     std::string base = "/tmp/gnfs_test_sieve_resume_synth_" +
-                       std::to_string(::getpid());
+                       std::to_string(gnfs::util::process_id());
     std::remove((base + ".sieve_ckpt").c_str());
     std::remove((base + ".reldata").c_str());
     std::remove((base + ".relidx").c_str());

@@ -9,6 +9,7 @@
 #include <gnfs/core/integer.hpp>
 #include <gnfs/polynomial/poly_checkpoint.hpp>
 #include <gnfs/factor_base/fb_checkpoint.hpp>
+#include <gnfs/util/process.hpp>
 
 #include <cassert>
 #include <chrono>
@@ -17,7 +18,6 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <unistd.h>
 
 using namespace gnfs::api;
 using gnfs::core::Integer;
@@ -40,7 +40,7 @@ static int fail_count = 0;
 static std::string mk_base(const char* tag) {
     char buf[256];
     std::snprintf(buf, sizeof(buf), "/tmp/gnfs_test_full_resume_%s_%d",
-                  tag, static_cast<int>(::getpid()));
+                  tag, gnfs::util::process_id());
     return std::string(buf);
 }
 

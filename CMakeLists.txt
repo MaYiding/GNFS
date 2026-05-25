@@ -60,6 +60,7 @@ elseif(MSVC)
         _CRT_SECURE_NO_WARNINGS
         _SILENCE_ALL_CXX23_DEPRECATION_WARNINGS
     )
+    add_compile_options(/FI${CMAKE_CURRENT_SOURCE_DIR}/include/gnfs/util/msvc_compat.hpp)
     # MSVC does not implement -fsanitize=*; instrumentation is via /fsanitize=address
     # but only with cl 16.9+. Out of scope for this CI matrix.
     if(CMAKE_BUILD_TYPE STREQUAL "Release")

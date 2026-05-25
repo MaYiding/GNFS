@@ -24,6 +24,8 @@
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 #include <gnfs/siqs/siqs.hpp>
+#include <gnfs/util/bit_intrin.hpp>
+#include <gnfs/util/process.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -33,7 +35,6 @@
 #include <cstdio>   // fprintf for V3 cascade stderr signal
 #include <cstdlib>  // getenv for GNFS_CASCADE_V3 flag
 #include <cstring>  // strlen for SGE-OOC ENV string checks
-#include <unistd.h> // getpid for OOC base path default
 #include <string>
 #include <thread>
 #include <unordered_set>  // V3 cascade dedup
@@ -665,7 +666,7 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             emit_log(LogLevel::Info, Phase::Sieving,
                      "GNFS_3LP=1 enabled: cofactorizer accepts 3LP relations");
             std::fprintf(stderr, "[3lp] cofactor + filter accept 3LP (lp_bits=%zu B^3 bound)\n",
-                static_cast<size_t>(__builtin_ctzll(params_.large_prime_bound | 1)));
+                static_cast<size_t>(gnfs::util::ctz64(params_.large_prime_bound | 1)));
         }
     }
 
@@ -739,7 +740,7 @@ std::vector<Relation> Pipeline::sieve_and_collect(
                 coll_config.ooc_base_path = path_env;
             } else {
                 coll_config.ooc_base_path =
-                    "/tmp/gnfs_relations_" + std::to_string(::getpid());
+                    "/tmp/gnfs_relations_" + std::to_string(gnfs::util::process_id());
             }
             const std::string reason_str(policy.reason);
             const size_t lp_bits_est = relation::estimate_lp_bits(params_.large_prime_bound);
@@ -1650,7 +1651,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
             char path_buf[256];
             std::snprintf(path_buf, sizeof(path_buf),
                           "/tmp/gnfs_linalg_%d.csrmat",
-                          static_cast<int>(::getpid()));
+                          gnfs::util::process_id());
             char log_buf[512];
             std::snprintf(log_buf, sizeof(log_buf),
                 "[linalg-mmap] policy=%s nnz=%llu path=%s",

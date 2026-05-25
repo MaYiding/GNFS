@@ -6,6 +6,7 @@
 // large multi-page mappings, and move semantics are now isolated.
 
 #include "gnfs/util/mmap_file.hpp"
+#include "gnfs/util/process.hpp"
 
 #include <cassert>
 #include <cstdint>
@@ -26,7 +27,7 @@ std::string make_temp_path(const char* tag) {
     static int counter = 0;
     char buf[256];
     std::snprintf(buf, sizeof(buf), "/tmp/gnfs_test_mmap_%d_%d_%s.bin",
-                  static_cast<int>(getpid()), counter++, tag);
+                  gnfs::util::process_id(), counter++, tag);
     return std::string(buf);
 }
 
@@ -322,6 +323,11 @@ void test_default_constructed_state() {
 int main() {
     std::cout << "=== util/mmap_file.hpp tests ===" << std::endl;
 
+#ifdef _WIN32
+    test_default_constructed_state();
+    std::cout << "MmapFile path-backed tests skipped on Windows (mmap unavailable)\n";
+    return 0;
+#else
     test_default_constructed_state();
     test_basic_open_and_read();
     test_empty_file();
@@ -335,4 +341,5 @@ int main() {
 
     std::cout << "\n=== All util/mmap_file.hpp tests PASSED ===" << std::endl;
     return 0;
+#endif
 }

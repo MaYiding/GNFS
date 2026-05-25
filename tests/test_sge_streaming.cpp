@@ -23,6 +23,7 @@
 #include <gnfs/linalg/sge_streaming.hpp>
 #include <gnfs/linalg/relation_source.hpp>
 #include <gnfs/relation/ooc_relation_store.hpp>
+#include <gnfs/util/process.hpp>
 
 #include <cassert>
 #include <cstdio>
@@ -266,7 +267,7 @@ void test_ooc_roundtrip_streaming() {
     // Write relations through OOCRelationWriter so we exercise the on-disk
     // serialize/deserialize path (mmap → Relation reconstruction).
     std::string base_path = "/tmp/gnfs_sge_streaming_test_" +
-                            std::to_string(::getpid());
+                            std::to_string(gnfs::util::process_id());
     {
         OOCRelationWriter writer(base_path);
         for (const auto& r : rels) {

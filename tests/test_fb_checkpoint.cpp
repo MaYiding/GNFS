@@ -1,12 +1,12 @@
 #include "gnfs/factor_base/fb_checkpoint.hpp"
 #include "gnfs/core/polynomial_context.hpp"
+#include "gnfs/util/process.hpp"
 
 #include <cassert>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <unistd.h>
 
 using namespace gnfs::factor_base;
 using gnfs::core::Integer;
@@ -18,7 +18,7 @@ static std::string tmp_ckpt_path(const char* label) {
     static int seq = 0;
     char buf[256];
     std::snprintf(buf, sizeof(buf), "/tmp/gnfs_test_fb_ckpt_%d_%d_%s",
-                  static_cast<int>(::getpid()), ++seq, label);
+                  gnfs::util::process_id(), ++seq, label);
     return std::string(buf);
 }
 

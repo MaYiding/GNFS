@@ -8,9 +8,10 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #ifdef _WIN32
-#error "KrylovSequenceMmap: Windows not supported"
+#define GNFS_KRYLOV_SEQUENCE_MMAP_UNSUPPORTED 1
 #else
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -19,6 +20,64 @@
 #endif
 
 namespace gnfs::linalg {
+
+#ifdef GNFS_KRYLOV_SEQUENCE_MMAP_UNSUPPORTED
+
+class KrylovSequenceMmap {
+public:
+    static constexpr uint64_t MAGIC = 0x4C59524B53464E47ULL;  // "GNFSKRYL"
+    static constexpr uint64_t VERSION = 1;
+    static constexpr size_t HEADER_SIZE = 32;
+
+    KrylovSequenceMmap() = default;
+    KrylovSequenceMmap(const std::string& path, uint64_t L, uint64_t entry_size)
+        : path_(path), L_(L), entry_size_(entry_size) {
+        if (L == 0 || entry_size == 0) {
+            throw std::invalid_argument("KrylovSequenceMmap: L and entry_size must be > 0");
+        }
+        throw std::runtime_error(
+            "KrylovSequenceMmap: memory-mapped Krylov storage is not implemented on Windows");
+    }
+
+    ~KrylovSequenceMmap() = default;
+    KrylovSequenceMmap(KrylovSequenceMmap&&) noexcept = default;
+    KrylovSequenceMmap& operator=(KrylovSequenceMmap&&) noexcept = default;
+    KrylovSequenceMmap(const KrylovSequenceMmap&) = delete;
+    KrylovSequenceMmap& operator=(const KrylovSequenceMmap&) = delete;
+
+    void close() noexcept {}
+    void remove_file() noexcept {
+        if (!path_.empty()) std::remove(path_.c_str());
+    }
+
+    [[nodiscard]] uint64_t length() const noexcept { return L_; }
+    [[nodiscard]] uint64_t entry_size() const noexcept { return entry_size_; }
+    [[nodiscard]] bool is_open() const noexcept { return false; }
+    [[nodiscard]] const std::string& path() const noexcept { return path_; }
+
+    template <typename T>
+    [[nodiscard]] T* at(uint64_t) noexcept { return nullptr; }
+    template <typename T>
+    [[nodiscard]] const T* at(uint64_t) const noexcept { return nullptr; }
+
+    [[nodiscard]] uint8_t* raw_at(uint64_t) noexcept { return nullptr; }
+    [[nodiscard]] const uint8_t* raw_at(uint64_t) const noexcept { return nullptr; }
+
+    void advise_random() const noexcept {}
+    void msync() const noexcept {}
+
+    static void validate_header(const std::string& path) {
+        throw std::runtime_error(
+            "KrylovSequenceMmap::validate_header unavailable on Windows: " + path);
+    }
+
+private:
+    std::string path_;
+    uint64_t L_ = 0;
+    uint64_t entry_size_ = 0;
+};
+
+#else
 
 /// Out-of-core storage for BW Krylov sequence A_0, A_1, ..., A_{L-1}.
 ///
@@ -229,5 +288,7 @@ private:
     uint64_t entry_size_ = 0;
     int fd_ = -1;
 };
+
+#endif
 
 }  // namespace gnfs::linalg

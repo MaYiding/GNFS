@@ -15,7 +15,7 @@
 #include <vector>
 
 #ifdef _WIN32
-#error "KrylovSequenceCompressed: Windows not supported"
+#define GNFS_KRYLOV_SEQUENCE_COMPRESSED_UNSUPPORTED 1
 #else
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -23,6 +23,87 @@
 #endif
 
 namespace gnfs::linalg {
+
+#ifdef GNFS_KRYLOV_SEQUENCE_COMPRESSED_UNSUPPORTED
+
+class KrylovSequenceCompressed {
+public:
+    static constexpr uint64_t MAGIC          = 0x5A594B52534647ULL;
+    static constexpr uint64_t MAGIC_UNIQUE   = 0x5A594B52535A4E47ULL;
+    static constexpr uint64_t VERSION        = 1;
+    static constexpr size_t   HEADER_SIZE    = 64;
+    static constexpr uint64_t DEFAULT_CHUNK_BLOCKS = 64;
+    static constexpr size_t   DEFAULT_CACHE_LIMIT_BYTES = 64ULL * 1024 * 1024;
+
+    KrylovSequenceCompressed() = default;
+    KrylovSequenceCompressed(const std::string& path,
+                             uint64_t L,
+                             uint64_t entry_size,
+                             uint64_t chunk_blocks = DEFAULT_CHUNK_BLOCKS,
+                             size_t cache_limit_bytes = DEFAULT_CACHE_LIMIT_BYTES)
+        : path_(path), L_(L), entry_size_(entry_size),
+          chunk_blocks_(chunk_blocks), cache_limit_bytes_(cache_limit_bytes) {
+        if (L == 0 || entry_size == 0 || chunk_blocks == 0) {
+            throw std::invalid_argument(
+                "KrylovSequenceCompressed: L/entry_size/chunk_blocks must be > 0");
+        }
+        throw std::runtime_error(
+            "KrylovSequenceCompressed: compressed Krylov storage is not implemented on Windows");
+    }
+
+    ~KrylovSequenceCompressed() = default;
+    KrylovSequenceCompressed(const KrylovSequenceCompressed&) = delete;
+    KrylovSequenceCompressed& operator=(const KrylovSequenceCompressed&) = delete;
+    KrylovSequenceCompressed(KrylovSequenceCompressed&&) noexcept = default;
+    KrylovSequenceCompressed& operator=(KrylovSequenceCompressed&&) = delete;
+
+    static KrylovSequenceCompressed open_readonly(const std::string& path) {
+        throw std::runtime_error(
+            "KrylovSequenceCompressed::open_readonly unavailable on Windows: " + path);
+    }
+
+    [[nodiscard]] uint8_t* write_at(uint64_t) {
+        throw std::runtime_error("KrylovSequenceCompressed::write_at unavailable on Windows");
+    }
+    template <typename T>
+    [[nodiscard]] T* write_at_typed(uint64_t) {
+        throw std::runtime_error("KrylovSequenceCompressed::write_at_typed unavailable on Windows");
+    }
+    [[nodiscard]] const uint8_t* read_at(uint64_t) {
+        throw std::runtime_error("KrylovSequenceCompressed::read_at unavailable on Windows");
+    }
+    template <typename T>
+    [[nodiscard]] const T* read_at_typed(uint64_t) {
+        throw std::runtime_error("KrylovSequenceCompressed::read_at_typed unavailable on Windows");
+    }
+
+    void close() {}
+    void remove_file() noexcept {
+        if (!path_.empty()) std::remove(path_.c_str());
+    }
+
+    [[nodiscard]] uint64_t length()         const noexcept { return L_; }
+    [[nodiscard]] uint64_t entry_size()     const noexcept { return entry_size_; }
+    [[nodiscard]] uint64_t chunk_blocks()   const noexcept { return chunk_blocks_; }
+    [[nodiscard]] uint64_t chunk_count()    const noexcept { return 0; }
+    [[nodiscard]] uint64_t total_compressed_bytes() const noexcept { return 0; }
+    [[nodiscard]] uint64_t total_uncompressed_bytes() const noexcept {
+        return L_ * entry_size_;
+    }
+    [[nodiscard]] bool is_open() const noexcept { return false; }
+    [[nodiscard]] const std::string& path() const noexcept { return path_; }
+    [[nodiscard]] uint64_t cache_hits() const noexcept { return 0; }
+    [[nodiscard]] uint64_t cache_misses() const noexcept { return 0; }
+
+private:
+    std::string path_;
+    uint64_t L_ = 0;
+    uint64_t entry_size_ = 0;
+    uint64_t chunk_blocks_ = 0;
+    size_t cache_limit_bytes_ = 0;
+};
+
+#else
 
 /// Out-of-core, chunked, optionally-compressed Krylov sequence storage.
 ///
@@ -508,5 +589,7 @@ private:
     uint64_t cache_hits_ = 0;
     uint64_t cache_misses_ = 0;
 };
+
+#endif
 
 }  // namespace gnfs::linalg

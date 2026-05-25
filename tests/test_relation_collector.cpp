@@ -8,6 +8,7 @@
 #endif
 
 #include "gnfs/relation/collector.hpp"
+#include "gnfs/util/process.hpp"
 #include "gnfs/util/safe_math.hpp"
 
 #include <cassert>
@@ -15,7 +16,6 @@
 #include <filesystem>
 #include <iostream>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 using namespace gnfs;
@@ -411,7 +411,7 @@ void test_n_divisibility_rejection() {
 /// 生成测试唯一 OOC base path (pid + counter, 避免并发 / 上次未清理)
 static std::string make_tmp_ooc_path(const std::string& label) {
     static int seq = 0;
-    return "/tmp/gnfs_test_collector_ooc_" + std::to_string(::getpid()) +
+    return "/tmp/gnfs_test_collector_ooc_" + std::to_string(gnfs::util::process_id()) +
            "_" + std::to_string(++seq) + "_" + label;
 }
 
@@ -765,7 +765,7 @@ void test_ooc_writer_resume_finalized_rejected() {
 void test_ooc_writer_resume_nonexistent_rejected() {
     std::cout << "Testing OOC writer resume rejects nonexistent..." << std::endl;
     auto path = std::string("/tmp/gnfs_test_nonexistent_") +
-                std::to_string(::getpid()) + "_xyz_resume_check";
+                std::to_string(gnfs::util::process_id()) + "_xyz_resume_check";
 
     bool threw = false;
     try {

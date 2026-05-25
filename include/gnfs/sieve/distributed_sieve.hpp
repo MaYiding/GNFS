@@ -34,7 +34,9 @@
 #include "gnfs/sieve/special_q.hpp"
 #include "gnfs/cofactor/cofactorizer.hpp"
 
+#ifndef _WIN32
 #include <sys/types.h>
+#endif
 
 #include <cstddef>
 #include <cstdint>
@@ -43,6 +45,12 @@
 #include <vector>
 
 namespace gnfs::sieve {
+
+#ifdef _WIN32
+using distributed_pid_t = int;
+#else
+using distributed_pid_t = pid_t;
+#endif
 
 /// Runtime configuration for the distributed sieve worker pool.
 struct DistributedSieveConfig {
@@ -68,7 +76,7 @@ struct DistributedSieveConfig {
 
 /// Outcome metadata for a single worker process.
 struct DistributedSieveWorkerResult {
-    pid_t pid = -1;                  ///< Worker PID (after fork).
+    distributed_pid_t pid = -1;      ///< Worker PID (after fork).
     size_t chunk_id = 0;             ///< Zero-indexed chunk identifier.
     uint32_t sq_index_begin = 0;     ///< First SQ index assigned to this worker.
     uint32_t sq_index_end = 0;       ///< Past-the-last SQ index assigned to this worker.

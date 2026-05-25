@@ -1,3 +1,11 @@
+#ifdef _WIN32
+#include <iostream>
+int main() {
+    std::cout << "Distributed sieve tests skipped on Windows (POSIX fork unavailable)\n";
+    return 0;
+}
+#else
+
 // Tests for the multi-process distributed sieve worker pool.
 //
 // Coverage:
@@ -556,3 +564,5 @@ int main() {
     std::cout << "=== All tests PASSED in " << s << "s ===\n";
     return 0;
 }
+
+#endif
