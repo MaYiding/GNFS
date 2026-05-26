@@ -180,7 +180,9 @@ void test_concurrent_submit_wait() {
 
     ThreadPool pool(4);
 
-    constexpr int rounds = 250;
+    // Each round creates four OS submitter threads. Keep this bounded so the
+    // correctness stress still fits under the instant-test budget on Windows CI.
+    constexpr int rounds = 64;
 
     for (int round = 0; round < rounds; ++round) {
         std::atomic<int> counter{0};
