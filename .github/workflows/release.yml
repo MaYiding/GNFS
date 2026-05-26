@@ -1,0 +1,181 @@
+name: Release Artifacts
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to package'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package ${{ matrix.asset_suffix }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            asset_suffix: linux-x86_64
+            experimental: false
+          - os: macos-14
+            asset_suffix: macos-arm64
+            experimental: false
+          - os: windows-2022
+            asset_suffix: windows-x86_64
+            experimental: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgmp-dev libntl-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install gmp ntl
+
+      - name: Install dependencies (Windows / MSYS2 UCRT64)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            zip
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-gmp
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-ntl
+
+      - name: Configure CMake (POSIX)
+        if: runner.os != 'Windows'
+        run: |
+          cmake -B build-release \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGNFS_BUILD_TESTS=OFF \
+            -DGNFS_ENABLE_NATIVE_ARCH=OFF
+
+      - name: Configure CMake (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          cmake -B build-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGNFS_BUILD_TESTS=OFF \
+            -DGNFS_ENABLE_NATIVE_ARCH=OFF
+
+      - name: Build (POSIX)
+        if: runner.os != 'Windows'
+        run: cmake --build build-release --config Release --parallel
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: cmake --build build-release --parallel
+
+      - name: Install and archive (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          package_name="gnfs-${tag}-${{ matrix.asset_suffix }}"
+          prefix="dist/${package_name}"
+          cmake --install build-release --prefix "${prefix}"
+          cat > "${prefix}/README-release.txt" <<EOF
+          GNFS ${tag}
+          Built from ${GITHUB_SHA}
+
+          This archive contains the gnfs CLI, headers, and static library.
+          Linux/macOS packages expect GMP and, when enabled by the build host, NTL at runtime.
+          EOF
+          mkdir -p packages
+          tar -C dist -czf "packages/${package_name}.tar.gz" "${package_name}"
+
+      - name: Install and archive (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          package_name="gnfs-${tag}-${{ matrix.asset_suffix }}"
+          prefix="dist/${package_name}"
+          cmake --install build-release --prefix "${prefix}"
+
+          ldd "${prefix}/bin/gnfs.exe" \
+            | awk '/\/ucrt64\// {print $3}' \
+            | sort -u \
+            | while read -r dll; do
+                cp -n "${dll}" "${prefix}/bin/" || true
+              done
+
+          cat > "${prefix}/README-release.txt" <<EOF
+          GNFS ${tag}
+          Built from ${GITHUB_SHA}
+
+          This archive contains the gnfs CLI, headers, static library, and MSYS2 UCRT64 runtime DLLs.
+          EOF
+          mkdir -p packages
+          (cd dist && zip -qr "../packages/${package_name}.zip" "${package_name}")
+
+      - name: Upload packaged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gnfs-${{ matrix.asset_suffix }}
+          path: packages/*
+          retention-days: 30
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-24.04
+    needs: package
+    timeout-minutes: 15
+    if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gnfs-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find release-assets -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "No release assets were produced."
+            exit 1
+          fi
+
+          if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release create "${RELEASE_TAG}" \
+              --title "${RELEASE_TAG}" \
+              --notes "Automated GNFS release artifacts."
+          fi
+          gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber

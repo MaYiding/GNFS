@@ -1,0 +1,80 @@
+name: Short Fuzz
+
+on:
+  push:
+    branches: [ main, dev ]
+    paths:
+      - '.github/workflows/fuzz.yml'
+      - 'CMakeLists.txt'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/fuzz/**'
+  pull_request:
+    branches: [ main, dev ]
+    paths:
+      - '.github/workflows/fuzz.yml'
+      - 'CMakeLists.txt'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/fuzz/**'
+  schedule:
+    - cron: '15 8 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: short-fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integer-fuzzer:
+    name: Integer libFuzzer smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libgmp-dev libntl-dev
+
+      - name: Configure fuzz build
+        run: |
+          cmake -B build-fuzz \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DGNFS_BUILD_TESTS=OFF \
+            -DGNFS_BUILD_FUZZERS=ON
+
+      - name: Build fuzz target
+        run: cmake --build build-fuzz --target fuzz_integer --parallel "$(nproc)"
+
+      - name: Run short fuzz
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          mkdir -p fuzz-corpus/integer fuzz-artifacts/integer
+          printf '1234567890' > fuzz-corpus/integer/seed-decimal
+          printf '0000000001' > fuzz-corpus/integer/seed-small
+          printf '\xff\x00\x10\x20\x30\x40\x50\x60' > fuzz-corpus/integer/seed-binary
+
+          ./build-fuzz/fuzz_integer fuzz-corpus/integer \
+            -max_total_time=45 \
+            -timeout=5 \
+            -rss_limit_mb=1536 \
+            -artifact_prefix=fuzz-artifacts/integer/
+
+      - name: Upload fuzz corpus and artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-integer
+          path: |
+            fuzz-corpus/
+            fuzz-artifacts/
+          retention-days: 14

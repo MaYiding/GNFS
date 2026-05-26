@@ -1,0 +1,84 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [ main, dev ]
+    paths:
+      - '.github/workflows/benchmark.yml'
+      - 'CMakeLists.txt'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
+  pull_request:
+    branches: [ main, dev ]
+    paths:
+      - '.github/workflows/benchmark.yml'
+      - 'CMakeLists.txt'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
+  schedule:
+    - cron: '45 8 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmarks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: Release benchmark record
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgmp-dev libntl-dev
+
+      - name: Configure Release build
+        run: cmake -B build-bench -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-bench --parallel "$(nproc)"
+
+      - name: Run benchmark subset
+        shell: bash
+        run: |
+          set +e
+          mkdir -p benchmark-results
+          ctest --test-dir build-bench \
+            --output-on-failure \
+            --label-regex bench \
+            --timeout 360 \
+            2>&1 | tee benchmark-results/ctest-bench.log
+          bench_status=${PIPESTATUS[0]}
+
+          ./build-bench/test_gnfs_progressive 1 1 \
+            2>&1 | tee benchmark-results/progressive-l1.log
+          progressive_status=${PIPESTATUS[0]}
+
+          {
+            echo "## Benchmark record"
+            echo
+            echo "- CTest bench status: ${bench_status}"
+            echo "- Progressive L1 status: ${progressive_status}"
+            echo
+            echo "Benchmarks are informational and do not fail PRs."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          exit 0
+
+      - name: Upload benchmark logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark-results/
+          retention-days: 30

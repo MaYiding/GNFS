@@ -1,0 +1,85 @@
+name: Format
+
+on:
+  push:
+    branches: [ main, dev ]
+    paths:
+      - '.clang-format'
+      - '.github/workflows/format.yml'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
+  pull_request:
+    branches: [ main, dev ]
+    paths:
+      - '.clang-format'
+      - '.github/workflows/format.yml'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
+  workflow_dispatch:
+    inputs:
+      full_scan:
+        description: 'Check every tracked C/C++ source file'
+        required: false
+        default: 'true'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: format-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clang-format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+      FULL_SCAN: ${{ github.event_name == 'workflow_dispatch' && inputs.full_scan == 'true' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+
+      - name: Select files
+        id: files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pathspec=( '*.c' '*.cc' '*.cpp' '*.cxx' '*.h' '*.hh' '*.hpp' '*.hxx' )
+          if [[ "${FULL_SCAN}" == "true" || -z "${BASE_SHA}" || "${BASE_SHA}" =~ ^0+$ ]]; then
+            git ls-files -- "${pathspec[@]}" > /tmp/clang-format-files
+          else
+            git diff --name-only --diff-filter=ACMR "${BASE_SHA}" "${GITHUB_SHA}" -- \
+              "${pathspec[@]}" > /tmp/clang-format-files
+          fi
+
+          sed -i '/^$/d' /tmp/clang-format-files
+          sort -u /tmp/clang-format-files -o /tmp/clang-format-files
+          {
+            echo 'files<<EOF'
+            cat /tmp/clang-format-files
+            echo 'EOF'
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ steps.files.outputs.files }}" ]]; then
+            echo "No C/C++ files changed."
+            exit 0
+          fi
+
+          mapfile -t files <<< "${{ steps.files.outputs.files }}"
+          clang-format --dry-run --Werror "${files[@]}"

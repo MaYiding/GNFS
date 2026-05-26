@@ -101,7 +101,7 @@ bench/results/*.trace/
 bench/results/*.xml
 bench/results/*.profraw
 bench/results/*.profdata
-# PMU 单次采集 JSON 较小但与机器/时刻绑定；报告 .md 才入 git
+# PMU 单次采集 JSON 较小但与机器/时刻绑定，报告 .md 才入 git
 bench/results/*.pmu.json
 # Sweep automation outputs (timestamp filenames are per-run, not curated
 # reports). Long-lived results should be renamed without the auto stamp.

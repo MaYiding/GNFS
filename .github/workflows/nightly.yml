@@ -1,0 +1,41 @@
+name: Nightly Deep Tests
+
+on:
+  schedule:
+    - cron: '0 17 * * 5'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-full:
+    name: Release full regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgmp-dev libntl-dev
+
+      - name: Run full test workflow
+        run: ./scripts/test.sh -t Release full
+
+      - name: Upload CTest logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-ctest-logs
+          path: |
+            build/Testing/Temporary/LastTest.log
+            build/test_report.json
+          if-no-files-found: ignore
+          retention-days: 14

@@ -17,6 +17,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # 编译警告
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     add_compile_options(-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+    option(GNFS_ENABLE_NATIVE_ARCH "Enable native CPU tuning flags in optimized builds" ON)
     # 优化:
     #   - Apple Silicon: -mcpu=native (隐含 -march)
     #   - Linux x86_64:  -march=native
@@ -24,7 +25,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     #   - 其它:          omit (let toolchain default; avoid GitHub-hosted
     #                    runner CPU surprises producing illegal-instruction
     #                    binaries on differently-provisioned re-runs)
-    if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+    if(NOT GNFS_ENABLE_NATIVE_ARCH)
+        set(GNFS_NATIVE_FLAG "")
+    elseif(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
         set(GNFS_NATIVE_FLAG -mcpu=native)
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
         set(GNFS_NATIVE_FLAG -march=native)
@@ -338,6 +341,7 @@ target_link_libraries(gnfs PRIVATE
 # ============================================================
 
 option(GNFS_BUILD_TESTS "Build tests" ON)
+option(GNFS_BUILD_FUZZERS "Build libFuzzer fuzz targets" OFF)
 
 if(GNFS_BUILD_TESTS)
     enable_testing()
@@ -1644,23 +1648,74 @@ if(GNFS_BUILD_TESTS)
         LABELS "stress" TIMEOUT 43200)
 
     # ────────────────────────────────────────────────────────────
-    # Sanitizer-aware test timeout scaling — sanitizers (ASAN/UBSAN/TSAN/MSAN)
-    # 在运行时 instrument 每个内存访问/对齐检查, 通常使测试运行慢 5-10×.
+    # Instrumentation / platform-aware test timeout scaling. Sanitizers and
+    # coverage builds instrument hot integer paths heavily, and hosted MSVC
+    # runners are slower on several polynomial-selection tests.
     # set_tests_properties TIMEOUT 是 hard limit (优先于 ctest --timeout), 因此
-    # sanitizer CI 下必须放大 TIMEOUT 否则 instant/fast 测试会被 spurious 超时.
+    # CI 下必须放大 TIMEOUT 否则 instant/fast 测试会被 spurious 超时.
     # ────────────────────────────────────────────────────────────
+    set(_GNFS_TEST_TIMEOUT_MULT 1)
     if(CMAKE_CXX_FLAGS MATCHES "fsanitize=(address|thread|memory|undefined|leak)")
-        set(_GNFS_SAN_MULT 10)
-        message(STATUS "Sanitizer detected — multiplying test TIMEOUTs by ${_GNFS_SAN_MULT}")
+        set(_GNFS_TEST_TIMEOUT_MULT 10)
+        message(STATUS "Sanitizer detected — multiplying test TIMEOUTs by ${_GNFS_TEST_TIMEOUT_MULT}")
+    elseif(CMAKE_CXX_FLAGS MATCHES "(^|[ ;])-(-coverage|fprofile-arcs|ftest-coverage)" OR
+           CMAKE_EXE_LINKER_FLAGS MATCHES "(^|[ ;])-(-coverage|fprofile-arcs|ftest-coverage)")
+        set(_GNFS_TEST_TIMEOUT_MULT 10)
+        message(STATUS "Coverage instrumentation detected — multiplying test TIMEOUTs by ${_GNFS_TEST_TIMEOUT_MULT}")
+    endif()
+    if(MSVC AND _GNFS_TEST_TIMEOUT_MULT LESS 3)
+        set(_GNFS_TEST_TIMEOUT_MULT 3)
+        message(STATUS "MSVC runner detected — multiplying test TIMEOUTs by ${_GNFS_TEST_TIMEOUT_MULT}")
+    endif()
+    if(_GNFS_TEST_TIMEOUT_MULT GREATER 1)
         get_property(_all_tests DIRECTORY PROPERTY TESTS)
         foreach(_tn ${_all_tests})
             get_test_property(${_tn} TIMEOUT _curr_to)
             if(_curr_to AND NOT _curr_to STREQUAL "NOTFOUND")
-                math(EXPR _new_to "${_curr_to} * ${_GNFS_SAN_MULT}")
+                math(EXPR _new_to "${_curr_to} * ${_GNFS_TEST_TIMEOUT_MULT}")
                 set_tests_properties(${_tn} PROPERTIES TIMEOUT ${_new_to})
             endif()
         endforeach()
     endif()
+endif()
+
+# ============================================================
+# Fuzz targets
+# ============================================================
+
+if(GNFS_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "GNFS fuzz targets require Clang/libFuzzer")
+    endif()
+    include(CheckCXXSourceCompiles)
+    set(_GNFS_SAVED_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -fsanitize=fuzzer,address,undefined")
+    # libFuzzer supplies main(); probe with the fuzzer entrypoint instead of
+    # check_cxx_compiler_flag(), whose generated main conflicts at link time.
+    check_cxx_source_compiles([=[
+        #include <stddef.h>
+        #include <stdint.h>
+        extern "C" int LLVMFuzzerTestOneInput(const uint8_t*, size_t) {
+            return 0;
+        }
+    ]=] GNFS_HAS_LIBFUZZER)
+    set(CMAKE_REQUIRED_FLAGS "${_GNFS_SAVED_REQUIRED_FLAGS}")
+    if(NOT GNFS_HAS_LIBFUZZER)
+        message(FATAL_ERROR "GNFS fuzz targets require a working libFuzzer runtime")
+    endif()
+
+    add_executable(fuzz_integer
+        tests/fuzz/fuzz_integer.cpp
+    )
+    target_link_libraries(fuzz_integer PRIVATE gnfs_core)
+    target_compile_options(fuzz_integer PRIVATE
+        -fsanitize=fuzzer,address,undefined
+        -fno-omit-frame-pointer
+        -g
+    )
+    target_link_options(fuzz_integer PRIVATE
+        -fsanitize=fuzzer,address,undefined
+    )
 endif()
 
 # ============================================================

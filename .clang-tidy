@@ -1,0 +1,19 @@
+Checks: >
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  portability-*,
+  modernize-use-nullptr,
+  modernize-use-override,
+  readability-container-size-empty,
+  readability-misleading-indentation,
+  readability-redundant-*
+WarningsAsErrors: ''
+HeaderFilterRegex: '^(include/gnfs|src|tests)/.*'
+FormatStyle: file
+CheckOptions:
+  - key: bugprone-easily-swappable-parameters.MinimumLength
+    value: '4'
+  - key: bugprone-argument-comment.StrictMode
+    value: '0'

@@ -1,0 +1,119 @@
+name: Static Analysis
+
+on:
+  push:
+    branches: [ main, dev ]
+    paths:
+      - '.clang-tidy'
+      - '.github/**'
+      - 'CMakeLists.txt'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
+  pull_request:
+    branches: [ main, dev ]
+    paths:
+      - '.clang-tidy'
+      - '.github/**'
+      - 'CMakeLists.txt'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
+  workflow_dispatch:
+    inputs:
+      full_scan:
+        description: 'Run clang-tidy on all src/*.cpp translation units'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: static-analysis-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clang-tidy:
+    name: clang-tidy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+      FULL_SCAN: ${{ github.event_name == 'workflow_dispatch' && inputs.full_scan == 'true' }}
+      TIDY_WARNINGS_AS_ERRORS: clang-analyzer-*
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang clang-tidy libgmp-dev libntl-dev
+
+      - name: Configure compile database
+        run: |
+          cmake -B build-tidy \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++
+
+      - name: Select translation units
+        id: files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          all_src_cpp="$(git ls-files -- 'src/*.cc' 'src/*.cpp' 'src/*.cxx')"
+
+          if [[ "${FULL_SCAN}" == "true" || -z "${BASE_SHA}" || "${BASE_SHA}" =~ ^0+$ ]]; then
+            printf '%s\n' "${all_src_cpp}" > /tmp/clang-tidy-files
+          else
+            git diff --name-only --diff-filter=ACMR "${BASE_SHA}" "${GITHUB_SHA}" > /tmp/changed
+
+            : > /tmp/clang-tidy-files
+            if grep -Eq '^(\.clang-tidy|CMakeLists\.txt|include/|src/.*\.(h|hh|hpp|hxx))$' /tmp/changed; then
+              printf '%s\n' "${all_src_cpp}" >> /tmp/clang-tidy-files
+            fi
+            grep -E '^src/.*\.(cc|cpp|cxx)$' /tmp/changed >> /tmp/clang-tidy-files || true
+          fi
+
+          sed -i '/^$/d' /tmp/clang-tidy-files
+          sort -u /tmp/clang-tidy-files -o /tmp/clang-tidy-files
+          {
+            echo 'files<<EOF'
+            cat /tmp/clang-tidy-files
+            echo 'EOF'
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Run clang-tidy
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ steps.files.outputs.files }}" ]]; then
+            echo "No C++ translation units selected."
+            exit 0
+          fi
+
+          mapfile -t files <<< "${{ steps.files.outputs.files }}"
+          clang-tidy -p build-tidy \
+            --warnings-as-errors="${TIDY_WARNINGS_AS_ERRORS}" \
+            "${files[@]}"
+
+  workflow-yaml:
+    name: workflow YAML lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yamllint
+        run: python3 -m pip install --user yamllint==1.35.1
+
+      - name: Lint GitHub YAML
+        run: |
+          python3 -m yamllint \
+            -d '{extends: default, rules: {brackets: disable, comments: disable, document-start: disable, indentation: disable, line-length: disable, truthy: disable}}' \
+            .github
