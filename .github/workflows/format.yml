@@ -41,7 +41,7 @@ jobs:
       FULL_SCAN: ${{ github.event_name == 'workflow_dispatch' && inputs.full_scan == 'true' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 

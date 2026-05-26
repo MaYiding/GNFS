@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Install dependencies
       run: |
@@ -32,7 +32,7 @@ jobs:
         sudo apt-get install -y libgmp-dev libntl-dev
 
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v3
+      uses: github/codeql-action/init@v4
       with:
         languages: cpp
 
@@ -42,4 +42,4 @@ jobs:
         make -C build -j$(nproc)
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v3
+      uses: github/codeql-action/analyze@v4
