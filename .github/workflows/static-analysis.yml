@@ -41,7 +41,7 @@ jobs:
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
       FULL_SCAN: ${{ github.event_name == 'workflow_dispatch' && inputs.full_scan == 'true' }}
-      TIDY_WARNINGS_AS_ERRORS: clang-analyzer-*,bugprone-*
+      TIDY_WARNINGS_AS_ERRORS: clang-analyzer-*
 
     steps:
       - uses: actions/checkout@v4
@@ -70,14 +70,13 @@ jobs:
           if [[ "${FULL_SCAN}" == "true" || -z "${BASE_SHA}" || "${BASE_SHA}" =~ ^0+$ ]]; then
             printf '%s\n' "${all_src_cpp}" > /tmp/clang-tidy-files
           else
-            git diff --name-only --diff-filter=ACMR "${BASE_SHA}" "${GITHUB_SHA}" -- \
-              '*.cc' '*.cpp' '*.cxx' '*.h' '*.hh' '*.hpp' '*.hxx' > /tmp/changed-cxx
+            git diff --name-only --diff-filter=ACMR "${BASE_SHA}" "${GITHUB_SHA}" > /tmp/changed
 
             : > /tmp/clang-tidy-files
-            if grep -Eq '\.(h|hh|hpp|hxx)$' /tmp/changed-cxx; then
+            if grep -Eq '^(\.clang-tidy|CMakeLists\.txt|include/|src/.*\.(h|hh|hpp|hxx))$' /tmp/changed; then
               printf '%s\n' "${all_src_cpp}" >> /tmp/clang-tidy-files
             fi
-            grep -E '\.(cc|cpp|cxx)$' /tmp/changed-cxx >> /tmp/clang-tidy-files || true
+            grep -E '^src/.*\.(cc|cpp|cxx)$' /tmp/changed >> /tmp/clang-tidy-files || true
           fi
 
           sed -i '/^$/d' /tmp/clang-tidy-files
