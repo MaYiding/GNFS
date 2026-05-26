@@ -1648,19 +1648,31 @@ if(GNFS_BUILD_TESTS)
         LABELS "stress" TIMEOUT 43200)
 
     # ────────────────────────────────────────────────────────────
-    # Sanitizer-aware test timeout scaling — sanitizers (ASAN/UBSAN/TSAN/MSAN)
-    # 在运行时 instrument 每个内存访问/对齐检查, 通常使测试运行慢 5-10×.
+    # Instrumentation / platform-aware test timeout scaling. Sanitizers and
+    # coverage builds instrument hot integer paths heavily, and hosted MSVC
+    # runners are slower on several polynomial-selection tests.
     # set_tests_properties TIMEOUT 是 hard limit (优先于 ctest --timeout), 因此
-    # sanitizer CI 下必须放大 TIMEOUT 否则 instant/fast 测试会被 spurious 超时.
+    # CI 下必须放大 TIMEOUT 否则 instant/fast 测试会被 spurious 超时.
     # ────────────────────────────────────────────────────────────
+    set(_GNFS_TEST_TIMEOUT_MULT 1)
     if(CMAKE_CXX_FLAGS MATCHES "fsanitize=(address|thread|memory|undefined|leak)")
-        set(_GNFS_SAN_MULT 10)
-        message(STATUS "Sanitizer detected — multiplying test TIMEOUTs by ${_GNFS_SAN_MULT}")
+        set(_GNFS_TEST_TIMEOUT_MULT 10)
+        message(STATUS "Sanitizer detected — multiplying test TIMEOUTs by ${_GNFS_TEST_TIMEOUT_MULT}")
+    elseif(CMAKE_CXX_FLAGS MATCHES "(^|[ ;])-(-coverage|fprofile-arcs|ftest-coverage)" OR
+           CMAKE_EXE_LINKER_FLAGS MATCHES "(^|[ ;])-(-coverage|fprofile-arcs|ftest-coverage)")
+        set(_GNFS_TEST_TIMEOUT_MULT 10)
+        message(STATUS "Coverage instrumentation detected — multiplying test TIMEOUTs by ${_GNFS_TEST_TIMEOUT_MULT}")
+    endif()
+    if(MSVC AND _GNFS_TEST_TIMEOUT_MULT LESS 3)
+        set(_GNFS_TEST_TIMEOUT_MULT 3)
+        message(STATUS "MSVC runner detected — multiplying test TIMEOUTs by ${_GNFS_TEST_TIMEOUT_MULT}")
+    endif()
+    if(_GNFS_TEST_TIMEOUT_MULT GREATER 1)
         get_property(_all_tests DIRECTORY PROPERTY TESTS)
         foreach(_tn ${_all_tests})
             get_test_property(${_tn} TIMEOUT _curr_to)
             if(_curr_to AND NOT _curr_to STREQUAL "NOTFOUND")
-                math(EXPR _new_to "${_curr_to} * ${_GNFS_SAN_MULT}")
+                math(EXPR _new_to "${_curr_to} * ${_GNFS_TEST_TIMEOUT_MULT}")
                 set_tests_properties(${_tn} PROPERTIES TIMEOUT ${_new_to})
             endif()
         endforeach()
