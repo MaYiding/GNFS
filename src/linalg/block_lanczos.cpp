@@ -1,12 +1,14 @@
 #include "gnfs/linalg/block_lanczos.hpp"
 #include "gnfs/linalg/block_wiedemann.hpp"
 #include "gnfs/linalg/bl_checkpoint.hpp"
+#include "gnfs/util/cpu_intrin.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <random>
@@ -254,7 +256,7 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
                         // rw=1 (write intent — xor_rows writes dst), locality=1 (may revisit).
                         for (size_t i = start; i < end; ++i) {
                             if (i + 1 < end) {
-                                __builtin_prefetch(&aug.data_[elim_rows[i + 1] * wpr], 1, 1);
+                                gnfs::util::prefetch_write<1>(&aug.data_[elim_rows[i + 1] * wpr]);
                             }
                             aug.xor_rows(elim_rows[i], pivot_row);
                         }
@@ -268,7 +270,7 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
                 const size_t er_n = elim_rows.size();
                 for (size_t k = 0; k < er_n; ++k) {
                     if (k + 1 < er_n) {
-                        __builtin_prefetch(&aug.data_[elim_rows[k + 1] * wpr], 1, 1);
+                        gnfs::util::prefetch_write<1>(&aug.data_[elim_rows[k + 1] * wpr]);
                     }
                     aug.xor_rows(elim_rows[k], pivot_row);
                 }
@@ -331,11 +333,12 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
     // Debug output (no runtime cost unless env var set)
     const char* gnfs_dbg = std::getenv("GNFS_DEBUG_GAUSSIAN");
     if (gnfs_dbg && gnfs_dbg[0] != '0' && gnfs_dbg[0] != '\0') {
-        __uint128_t aug_bytes_128 = (__uint128_t)m * (m + n) / 8;
+        long double aug_bytes_est =
+            (static_cast<long double>(m) * static_cast<long double>(m + n)) / 8.0L;
         size_t avg_elim = stat_pivots_in_parallel ? stat_sum_elim_rows / stat_pivots_in_parallel : 0;
         std::cerr << "[Gaussian] m=" << m
                   << " n=" << n
-                  << " aug_KB=" << (size_t)(aug_bytes_128 / 1024)
+                  << " aug_KB=" << static_cast<size_t>(aug_bytes_est / 1024.0L)
                   << " pivots=" << stat_pivots
                   << " in_parallel=" << stat_pivots_in_parallel
                   << " parallel_calls=" << stat_parallel_calls
@@ -391,9 +394,13 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies(
     constexpr size_t GAUSS_BYTE_LIMIT = 4ULL * 1024 * 1024 * 1024;  // 4 GiB
     size_t m_rows = matrix.num_rows();
     size_t n_cols = matrix.num_cols();
-    // m * (m+n) can overflow size_t for huge matrices; use __uint128_t.
-    __uint128_t aug_bytes = (__uint128_t)m_rows * (m_rows + n_cols) / 8;
-    if (aug_bytes <= GAUSS_BYTE_LIMIT) {
+    bool gaussian_aug_fits = false;
+    if (m_rows <= std::numeric_limits<size_t>::max() - n_cols) {
+        const size_t aug_cols = m_rows + n_cols;
+        constexpr size_t GAUSS_BIT_LIMIT = GAUSS_BYTE_LIMIT * 8ULL;
+        gaussian_aug_fits = (m_rows == 0) || (aug_cols <= GAUSS_BIT_LIMIT / m_rows);
+    }
+    if (gaussian_aug_fits) {
         return find_dependencies_sparse(matrix, effective_max);
     }
 

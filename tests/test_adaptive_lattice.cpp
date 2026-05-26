@@ -39,33 +39,39 @@
 #include <vector>
 
 using namespace gnfs::sieve;
-using i128 = __int128_t;
+#if defined(__SIZEOF_INT128__)
+using wide_int = __int128_t;
+#else
+using wide_int = long double;
+#endif
 
 namespace {
 
 // ── helpers (mirror of test_lll_lattice.cpp) ────────────────────────────
 
-[[nodiscard]] i128 norm_sq_i128(int64_t a, int64_t b) noexcept {
-    i128 a128 = a, b128 = b;
+[[nodiscard]] wide_int norm_sq_i128(int64_t a, int64_t b) noexcept {
+    wide_int a128 = static_cast<wide_int>(a);
+    wide_int b128 = static_cast<wide_int>(b);
     return a128 * a128 + b128 * b128;
 }
 
-[[nodiscard]] i128 dot_i128(int64_t a0, int64_t b0, int64_t a1, int64_t b1) noexcept {
-    return static_cast<i128>(a0) * a1 + static_cast<i128>(b0) * b1;
+[[nodiscard]] wide_int dot_i128(int64_t a0, int64_t b0, int64_t a1, int64_t b1) noexcept {
+    return static_cast<wide_int>(a0) * static_cast<wide_int>(a1) +
+           static_cast<wide_int>(b0) * static_cast<wide_int>(b1);
 }
 
-[[nodiscard]] i128 abs_i128(i128 x) noexcept { return x < 0 ? -x : x; }
+[[nodiscard]] wide_int abs_i128(wide_int x) noexcept { return x < 0 ? -x : x; }
 
 [[nodiscard]] bool is_size_reduced(const LatticeBasis& basis) {
-    i128 n0 = norm_sq_i128(basis.e0, basis.f0);
+    wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
     if (n0 == 0) return true;
-    i128 d = dot_i128(basis.e0, basis.f0, basis.e1, basis.f1);
+    wide_int d = dot_i128(basis.e0, basis.f0, basis.e1, basis.f1);
     return abs_i128(2 * d) <= n0;
 }
 
 [[nodiscard]] bool satisfies_lovasz(const LatticeBasis& basis) {
-    i128 n0 = norm_sq_i128(basis.e0, basis.f0);
-    i128 n1 = norm_sq_i128(basis.e1, basis.f1);
+    wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
+    wide_int n1 = norm_sq_i128(basis.e1, basis.f1);
     return n1 >= n0;
 }
 

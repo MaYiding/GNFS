@@ -17,6 +17,7 @@
 //   7. Edge cases: empty `unordered_set`, single-element set.
 
 #include "gnfs/relation/lp_key_hash.hpp"
+#include "gnfs/util/bit_intrin.hpp"
 
 #include <algorithm>
 #include <bitset>
@@ -183,7 +184,7 @@ void test_mix_lp_key_avalanche() {
     const std::uint64_t a = mix_lp_key(0);
     const std::uint64_t b = mix_lp_key(1);
     const std::uint64_t diff = a ^ b;
-    const int popcount = __builtin_popcountll(diff);
+    const int popcount = gnfs::util::popcount64(diff);
     std::cout << "    popcount(mix(0) ^ mix(1)) = " << popcount
               << " (target >= 20)" << std::endl;
     assert(popcount >= 20);
@@ -191,7 +192,7 @@ void test_mix_lp_key_avalanche() {
     // Same for a second neighbour pair (0xCAFE vs 0xCAFF).
     const std::uint64_t c = mix_lp_key(0xCAFEULL);
     const std::uint64_t d = mix_lp_key(0xCAFFULL);
-    const int p2 = __builtin_popcountll(c ^ d);
+    const int p2 = gnfs::util::popcount64(c ^ d);
     std::cout << "    popcount(mix(0xCAFE) ^ mix(0xCAFF)) = " << p2
               << std::endl;
     assert(p2 >= 20);

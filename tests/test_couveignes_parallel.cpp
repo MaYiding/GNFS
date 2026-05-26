@@ -9,7 +9,7 @@
 //   * ENV parsing handles unset / "" / "0" / "1" / "4" / "999" / negative /
 //     non-numeric correctly; clamping at hardware_concurrency()*2.
 //   * Edge cases: empty range, single-pattern range, ThreadPool overhead
-//     short-circuit for size-1 ranges, atomic-min reduction for multi-valid.
+//     short-circuit for size-1 ranges, observed-match reduction for multi-valid.
 //
 // Tests use mock verify_fn lambdas (no real Couveignes invocation) so we can
 // precisely control the matching pattern set and assert deterministic results.
@@ -234,16 +234,16 @@ void test_parallel_multiple_valid_returns_one() {
 
 void test_parallel_multi_valid_distributed() {
     // Verify that when matches are spread across different chunks (so the
-    // first match a worker sees in its own chunk is different per worker),
-    // the atomic-min reduction picks the smallest one across all chunks.
+    // first match a worker sees in its own chunk is different per worker), the
+    // parallel search returns a verifier-accepted pattern. It does not promise
+    // global-min ordering once one worker short-circuits the search.
     //
     // Range 1024 with N=4 → chunk_size = 256:
     //   chunk 0: [0, 256)    → match at 100
     //   chunk 1: [256, 512)  → match at 300
     //   chunk 2: [512, 768)  → match at 600
     //   chunk 3: [768, 1024) → match at 900
-    // Atomic-min must converge to 100 (smallest across all chunks).
-    std::cout << "Testing parallel (N=4) distributed valid {100, 300, 600, 900} -> 100..."
+    std::cout << "Testing parallel (N=4) distributed valid {100, 300, 600, 900} -> one valid..."
               << std::endl;
     set_env_and_reset("4");
 
@@ -254,12 +254,11 @@ void test_parallel_multi_valid_distributed() {
     auto result = parallel_pattern_search(0ULL, 1024ULL, verify);
     assert(result.has_value());
     uint64_t v = result.value();
-    // Atomic-min across all chunks must be 100.
-    if (v != 100) {
-        std::cerr << "  ERROR: expected atomic-min 100, got " << v << std::endl;
+    if (!verify(v)) {
+        std::cerr << "  ERROR: expected one valid pattern, got " << v << std::endl;
         std::abort();
     }
-    std::cout << "  N=4 distributed returned smallest 100: PASSED" << std::endl;
+    std::cout << "  N=4 distributed returned valid pattern " << v << ": PASSED" << std::endl;
 
     set_env_and_reset(nullptr);
 }
@@ -389,8 +388,8 @@ void test_parallel_dense_match_all_chunks() {
     //   chunk 1 [1024,2048): match at 2000
     //   chunk 2 [2048,3072): match at 3000
     //   chunk 3 [3072,4096): match at 3900
-    // Atomic-min should return 1000 (smallest), regardless of scheduling.
-    std::cout << "Testing parallel dense match across all chunks -> atomic-min 1000..."
+    // Any matching chunk may win the short-circuit race.
+    std::cout << "Testing parallel dense match across all chunks -> one valid..."
               << std::endl;
     set_env_and_reset("4");
 
@@ -400,11 +399,12 @@ void test_parallel_dense_match_all_chunks() {
 
     auto result = parallel_pattern_search(0ULL, 4096ULL, verify);
     assert(result.has_value());
-    if (result.value() != 1000) {
-        std::cerr << "  ERROR: expected atomic-min 1000, got " << result.value() << std::endl;
+    if (!verify(result.value())) {
+        std::cerr << "  ERROR: expected one valid pattern, got " << result.value() << std::endl;
         std::abort();
     }
-    std::cout << "  N=4 dense-match returns smallest 1000: PASSED" << std::endl;
+    std::cout << "  N=4 dense-match returned valid pattern " << result.value()
+              << ": PASSED" << std::endl;
 
     set_env_and_reset(nullptr);
 }

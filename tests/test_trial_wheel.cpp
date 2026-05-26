@@ -80,6 +80,7 @@ void test_strip_2_random() {
     std::cout << " PASS (10000 iters)\n";
 }
 
+#if defined(__SIZEOF_INT128__)
 void test_strip_2_u128() {
     std::cout << "  strip_2 uint128..." << std::flush;
     uint8_t exp;
@@ -113,6 +114,7 @@ void test_strip_2_u128() {
     assert(exp == 0);
     std::cout << " PASS\n";
 }
+#endif
 
 // ----- strip_3 / strip_5 tests -----
 
@@ -355,6 +357,7 @@ void test_divider_random_vs_reference() {
     std::cout << " PASS (5000 iters)\n";
 }
 
+#if defined(__SIZEOF_INT128__)
 void test_divider_u128_path() {
     std::cout << "  divide_rational uint128 equivalence..." << std::flush;
     std::vector<uint32_t> primes = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29,
@@ -417,6 +420,7 @@ void test_divider_u128_path() {
     }
     std::cout << " PASS (1000 iters)\n";
 }
+#endif
 
 void test_divider_without_235_in_fb() {
     std::cout << "  divide_rational fallback (no 2/3/5 in FB)..." << std::flush;
@@ -470,7 +474,9 @@ int main() {
     std::cout << "[helper]\n";
     test_strip_2_basic();
     test_strip_2_random();
+#if defined(__SIZEOF_INT128__)
     test_strip_2_u128();
+#endif
     test_strip_3();
     test_strip_5();
     test_strip_235();
@@ -478,7 +484,9 @@ int main() {
     std::cout << "[divider equivalence]\n";
     test_divider_smoke();
     test_divider_random_vs_reference();
+#if defined(__SIZEOF_INT128__)
     test_divider_u128_path();
+#endif
     test_divider_without_235_in_fb();
     test_divider_exponent_saturation();
 

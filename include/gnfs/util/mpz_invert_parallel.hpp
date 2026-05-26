@@ -112,8 +112,7 @@ namespace detail {
 /// via `mpz_invert_batch_threads_reset_env_cache_for_testing()` so unit tests
 /// can toggle `GNFS_MPZ_INVERT_BATCH_THREADS` between assertions.
 struct MpzInvertBatchThreadsCache {
-    std::once_flag once;
-    int value = 1;
+    std::atomic<int> value{0};
 };
 
 inline MpzInvertBatchThreadsCache& mpz_invert_batch_threads_cache() noexcept {
@@ -158,10 +157,17 @@ inline int parse_mpz_invert_batch_threads_env() noexcept {
 /// values clamp to the upper cap.
 [[nodiscard]] inline int mpz_invert_batch_threads() noexcept {
     auto& cache = detail::mpz_invert_batch_threads_cache();
-    std::call_once(cache.once, [&cache]() {
-        cache.value = detail::parse_mpz_invert_batch_threads_env();
-    });
-    return cache.value;
+    int cached = cache.value.load(std::memory_order_acquire);
+    if (cached != 0) return cached;
+
+    const int parsed = detail::parse_mpz_invert_batch_threads_env();
+    int expected = 0;
+    if (cache.value.compare_exchange_strong(expected, parsed,
+                                            std::memory_order_acq_rel,
+                                            std::memory_order_acquire)) {
+        return parsed;
+    }
+    return expected;
 }
 
 /// Resolve the effective thread count given a specific batch size.
@@ -186,8 +192,7 @@ inline int parse_mpz_invert_batch_threads_env() noexcept {
 /// `parallel_mpz_invert` invocation is in flight.
 inline void mpz_invert_batch_threads_reset_env_cache_for_testing() noexcept {
     auto& cache = detail::mpz_invert_batch_threads_cache();
-    cache.~MpzInvertBatchThreadsCache();
-    new (&cache) detail::MpzInvertBatchThreadsCache();
+    cache.value.store(0, std::memory_order_release);
 }
 
 /// Compute `results[i] = bases[i]^{-1} mod modulus` for every i and report

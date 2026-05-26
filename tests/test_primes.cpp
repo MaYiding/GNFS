@@ -32,6 +32,21 @@ std::vector<uint64_t> small_primes_up_to(uint64_t N) {
     return p;
 }
 
+uint64_t reference_mul_mod_u64(uint64_t a, uint64_t b, uint64_t mod) {
+    uint64_t result = 0;
+    a %= mod;
+    while (b != 0) {
+        if (b & 1U) {
+            result = (result >= mod - a) ? (result - (mod - a)) : (result + a);
+        }
+        b >>= 1U;
+        if (b != 0) {
+            a = (a >= mod - a) ? (a - (mod - a)) : (a + a);
+        }
+    }
+    return result;
+}
+
 } // namespace
 
 void test_mul_mod_u64() {
@@ -48,8 +63,8 @@ void test_mul_mod_u64() {
     const uint64_t a = (uint64_t{1} << 63) - 1;
     const uint64_t b = (uint64_t{1} << 63) - 1;
     const uint64_t m = (uint64_t{1} << 62) + 1;
-    __uint128_t expected = static_cast<__uint128_t>(a) * b % m;
-    assert(mul_mod_u64(a, b, m) == static_cast<uint64_t>(expected));
+    uint64_t expected = reference_mul_mod_u64(a, b, m);
+    assert(mul_mod_u64(a, b, m) == expected);
 
     // Modulus very close to UINT64_MAX
     const uint64_t big_mod = U64_MAX - 58;  // a prime near 2^64

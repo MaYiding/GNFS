@@ -1,11 +1,15 @@
 #pragma once
 
 #include "integer.hpp"
+#include "../util/primes.hpp"
 
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace gnfs::core {
@@ -118,8 +122,7 @@ public:
         uint64_t result = get_coeff_mod_p(f_coeffs_[degree_]);
 
         for (int i = static_cast<int>(degree_) - 1; i >= 0; --i) {
-            result = static_cast<uint64_t>(
-                (static_cast<__uint128_t>(result) * x) % p);
+            result = gnfs::util::mul_mod_u64(result, x, p);
             uint64_t ci = get_coeff_mod_p(f_coeffs_[static_cast<size_t>(i)]);
             result = (result + ci) % p;
         }
@@ -180,6 +183,7 @@ public:
     /// 计算有理侧的值 (GNFS convention)
     /// R(a, b) = a - b*m
     [[nodiscard]] Integer rational_value(int64_t a, uint64_t b) const {
+#if defined(__SIZEOF_INT128__)
         // uint64 快路径: 当 m fits uint64 且结果 fits int64 时避免 GMP
         if (m_.fits_uint64()) {
             __int128 result = static_cast<__int128>(a) -
@@ -189,6 +193,7 @@ public:
                 return Integer(static_cast<int64_t>(result));
             }
         }
+#endif
         // mpz_submul_ui: result -= m_ * b (fused FMS, drops bm temp)
         Integer result(a);
         mpz_submul_ui(result.get_mpz(), m_.get_mpz(), b);
@@ -198,6 +203,7 @@ public:
     /// 计算有理侧值的绝对值 (int64 快路径)
     /// 如果值 fits int64，返回 {abs_value, true}；否则返回 {0, false}
     [[nodiscard]] std::pair<uint64_t, bool> rational_value_abs_u64(int64_t a, uint64_t b) const {
+#if defined(__SIZEOF_INT128__)
         if (m_.fits_uint64()) {
             __int128 val = static_cast<__int128>(a) -
                            static_cast<__int128>(b) * static_cast<__int128>(m_.to_uint64());
@@ -206,9 +212,17 @@ public:
                 return {static_cast<uint64_t>(val), true};
             }
         }
+#else
+        Integer val = rational_value(a, b);
+        val.abs();
+        if (val.fits_uint64()) {
+            return {val.to_uint64(), true};
+        }
+#endif
         return {0, false};
     }
 
+#if defined(__SIZEOF_INT128__)
     /// 计算代数范数 (__int128 快路径)
     /// 当所有系数 fits int64 且中间乘积 fits __int128 时使用纯原生算术
     [[nodiscard]] std::pair<__int128, bool> algebraic_norm_i128(int64_t a, uint64_t b) const {
@@ -260,6 +274,7 @@ public:
         }
         return {result, true};
     }
+#endif
 
     // ==================== 验证 ====================
 

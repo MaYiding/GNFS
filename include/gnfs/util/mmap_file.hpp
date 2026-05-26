@@ -8,16 +8,16 @@
 #include <cstring>
 #include <string>
 #include <stdexcept>
+#include <utility>
 
-// Windows port status: native mmap is unavailable; the project would need
-// `CreateFileMapping` / `MapViewOfFile` from <windows.h>. To keep transitive
-// header dependencies compiling on MSVC (so that the rest of the codebase
-// builds), this header exposes the same MmapFile interface on Windows but
-// every operation throws std::runtime_error at runtime. Callers that touch
-// out-of-core (OOC) features will fail at run time with a clear message;
-// the in-memory code paths remain fully usable.
 #ifdef _WIN32
-#define GNFS_MMAP_FILE_UNSUPPORTED 1
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #else
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -27,39 +27,155 @@
 
 namespace gnfs::util {
 
-#ifdef GNFS_MMAP_FILE_UNSUPPORTED
+#ifdef _WIN32
 
-/// Stub MmapFile for Windows builds. Constructing with a real path throws
-/// at runtime; the empty-construction overload is allowed so types
-/// containing an MmapFile member can be default-constructed.
+/// RAII wrapper for read-only Windows file mappings.
 class MmapFile {
 public:
     MmapFile() = default;
-    explicit MmapFile(const std::string& /*path*/) {
-        throw std::runtime_error(
-            "MmapFile: memory-mapped files are not implemented on Windows. "
-            "Recompile without OOC features or run on a POSIX platform.");
+
+    explicit MmapFile(const std::string& path) {
+        file_ = ::CreateFileA(path.c_str(), GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                              nullptr);
+        if (file_ == INVALID_HANDLE_VALUE) {
+            throw std::runtime_error("MmapFile: cannot open '" + path + "': " +
+                                     last_error_message());
+        }
+
+        LARGE_INTEGER file_size{};
+        if (!::GetFileSizeEx(file_, &file_size)) {
+            close();
+            throw std::runtime_error("MmapFile: GetFileSizeEx failed for '" + path + "': " +
+                                     last_error_message());
+        }
+        if (file_size.QuadPart < 0 ||
+            static_cast<unsigned long long>(file_size.QuadPart) >
+                static_cast<unsigned long long>(SIZE_MAX)) {
+            close();
+            throw std::runtime_error("MmapFile: file too large for size_t: " + path);
+        }
+        size_ = static_cast<size_t>(file_size.QuadPart);
+
+        if (size_ == 0) {
+            return;
+        }
+
+        mapping_ = ::CreateFileMappingA(file_, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        if (mapping_ == nullptr) {
+            close();
+            throw std::runtime_error("MmapFile: CreateFileMapping failed for '" + path + "': " +
+                                     last_error_message());
+        }
+
+        data_ = static_cast<const uint8_t*>(
+            ::MapViewOfFile(mapping_, FILE_MAP_READ, 0, 0, 0));
+        if (data_ == nullptr) {
+            close();
+            throw std::runtime_error("MmapFile: MapViewOfFile failed for '" + path + "': " +
+                                     last_error_message());
+        }
     }
-    ~MmapFile() = default;
-    MmapFile(MmapFile&&) noexcept = default;
-    MmapFile& operator=(MmapFile&&) noexcept = default;
+
+    ~MmapFile() { close(); }
+
+    MmapFile(MmapFile&& other) noexcept
+        : data_(std::exchange(other.data_, nullptr)),
+          size_(std::exchange(other.size_, 0)),
+          mapping_(std::exchange(other.mapping_, nullptr)),
+          file_(std::exchange(other.file_, INVALID_HANDLE_VALUE)) {}
+
+    MmapFile& operator=(MmapFile&& other) noexcept {
+        if (this != &other) {
+            close();
+            data_ = std::exchange(other.data_, nullptr);
+            size_ = std::exchange(other.size_, 0);
+            mapping_ = std::exchange(other.mapping_, nullptr);
+            file_ = std::exchange(other.file_, INVALID_HANDLE_VALUE);
+        }
+        return *this;
+    }
+
     MmapFile(const MmapFile&) = delete;
     MmapFile& operator=(const MmapFile&) = delete;
 
-    void close() noexcept {}
-    [[nodiscard]] const uint8_t* data() const noexcept { return nullptr; }
-    [[nodiscard]] size_t size() const noexcept { return 0; }
-    [[nodiscard]] bool is_open() const noexcept { return false; }
+    void close() noexcept {
+        if (data_ != nullptr) {
+            if (!::UnmapViewOfFile(data_)) {
+                std::fprintf(stderr, "[mmap_file] UnmapViewOfFile failed: error=%lu\n",
+                             static_cast<unsigned long>(::GetLastError()));
+            }
+        }
+        if (mapping_ != nullptr) {
+            if (!::CloseHandle(mapping_)) {
+                std::fprintf(stderr, "[mmap_file] CloseHandle(mapping) failed: error=%lu\n",
+                             static_cast<unsigned long>(::GetLastError()));
+            }
+        }
+        if (file_ != INVALID_HANDLE_VALUE) {
+            if (!::CloseHandle(file_)) {
+                std::fprintf(stderr, "[mmap_file] CloseHandle(file) failed: error=%lu\n",
+                             static_cast<unsigned long>(::GetLastError()));
+            }
+        }
+        data_ = nullptr;
+        size_ = 0;
+        mapping_ = nullptr;
+        file_ = INVALID_HANDLE_VALUE;
+    }
+
+    [[nodiscard]] const uint8_t* data() const noexcept { return data_; }
+    [[nodiscard]] size_t size() const noexcept { return size_; }
+    [[nodiscard]] bool is_open() const noexcept {
+        return file_ != INVALID_HANDLE_VALUE;
+    }
 
     template <typename T>
-    [[nodiscard]] T read_at(size_t /*offset*/) const {
-        throw std::runtime_error("MmapFile::read_at unavailable on Windows");
+    [[nodiscard]] T read_at(size_t offset) const {
+        assert(offset + sizeof(T) <= size_);
+        T val;
+        std::memcpy(&val, data_ + offset, sizeof(T));
+        return val;
     }
+
     template <typename T>
-    [[nodiscard]] const T* ptr_at(size_t /*offset*/) const {
-        throw std::runtime_error("MmapFile::ptr_at unavailable on Windows");
+    [[nodiscard]] const T* ptr_at(size_t offset) const {
+        assert(offset <= size_);
+        return reinterpret_cast<const T*>(data_ + offset);
     }
+
     void advise_random() const {}
+
+private:
+    static std::string last_error_message() {
+        DWORD error = ::GetLastError();
+        if (error == 0) return "no error";
+
+        char* buffer = nullptr;
+        DWORD len = ::FormatMessageA(
+            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                FORMAT_MESSAGE_IGNORE_INSERTS,
+            nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+            reinterpret_cast<char*>(&buffer), 0, nullptr);
+        if (len == 0 || buffer == nullptr) {
+            return "Windows error " + std::to_string(error);
+        }
+
+        std::string message(buffer, len);
+        ::LocalFree(buffer);
+        while (!message.empty() &&
+               (message.back() == '\r' || message.back() == '\n' || message.back() == ' ')) {
+            message.pop_back();
+        }
+        return message + " (" + std::to_string(error) + ")";
+    }
+
+    const uint8_t* data_ = nullptr;
+    size_t size_ = 0;
+    HANDLE mapping_ = nullptr;
+    HANDLE file_ = INVALID_HANDLE_VALUE;
 };
 
 #else  // POSIX implementation
@@ -192,6 +308,6 @@ private:
     int fd_ = -1;
 };
 
-#endif  // GNFS_MMAP_FILE_UNSUPPORTED
+#endif  // _WIN32
 
 } // namespace gnfs::util

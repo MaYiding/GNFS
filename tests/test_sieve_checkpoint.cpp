@@ -1,4 +1,6 @@
 #include "gnfs/sieve/sieve_checkpoint.hpp"
+#include "gnfs/util/process.hpp"
+#include "gnfs/util/temp_path.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -6,7 +8,6 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <unistd.h>
 
 using namespace gnfs::sieve;
 
@@ -14,9 +15,9 @@ using namespace gnfs::sieve;
 static std::string tmp_ckpt_path(const char* label) {
     static int seq = 0;
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "/tmp/gnfs_test_sieve_ckpt_%d_%d_%s",
-                  static_cast<int>(::getpid()), ++seq, label);
-    return std::string(buf);
+    std::snprintf(buf, sizeof(buf), "gnfs_test_sieve_ckpt_%d_%d_%s",
+                  gnfs::util::process_id(), ++seq, label);
+    return gnfs::util::temp_path(buf);
 }
 
 struct CkptCleanup {
@@ -226,14 +227,16 @@ void test_load_nonexistent() {
 
     bool threw = false;
     try {
-        (void) SieveCheckpoint::load("/tmp/nonexistent_gnfs_ckpt_xyz_12345");
+        (void) SieveCheckpoint::load(
+            gnfs::util::temp_path("nonexistent_gnfs_ckpt_xyz_12345"));
     } catch (const std::runtime_error&) {
         threw = true;
     }
     assert(threw);
 
     // exists_and_valid returns false (does not throw)
-    assert(!SieveCheckpoint::exists_and_valid("/tmp/nonexistent_gnfs_ckpt_xyz_12345"));
+    assert(!SieveCheckpoint::exists_and_valid(
+        gnfs::util::temp_path("nonexistent_gnfs_ckpt_xyz_12345")));
 
     std::cout << "  Nonexistent file: PASS" << std::endl;
 }

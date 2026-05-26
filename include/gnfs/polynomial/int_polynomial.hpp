@@ -2,6 +2,7 @@
 
 #include "../core/integer.hpp"
 #include "../sqrt/modular_poly.hpp"
+#include "../util/primes.hpp"
 #include "resultant.hpp"
 
 #include <algorithm>
@@ -339,7 +340,7 @@ private:
 
     // 模乘法
     [[nodiscard]] static uint64_t mul_mod(uint64_t a, uint64_t b, uint64_t p) {
-        return (static_cast<__uint128_t>(a) * b) % p;
+        return gnfs::util::mul_mod_u64(a, b, p);
     }
 
     // 模幂
@@ -401,8 +402,7 @@ private:
             // ax + b = 0 → x = -b · a^{-1} mod p
             uint64_t a = poly.coeff(1), b = poly.coeff(0);
             uint64_t a_inv = pow_mod(a, p - 2, p);
-            uint64_t root = static_cast<uint64_t>(
-                (static_cast<__uint128_t>(p - b) * a_inv) % p);
+            uint64_t root = gnfs::util::mul_mod_u64(p - b, a_inv, p);
             return {static_cast<uint32_t>(root)};
         }
 
@@ -457,9 +457,9 @@ private:
         for (uint32_t r = 0; r < p && static_cast<int>(roots.size()) < deg; ++r) {
             uint64_t val = 0, rp = 1;
             for (int i = 0; i <= deg; ++i) {
-                val = (val + static_cast<uint64_t>(
-                    (static_cast<__uint128_t>(poly.coeff(static_cast<size_t>(i))) * rp) % p)) % p;
-                rp = static_cast<uint64_t>((static_cast<__uint128_t>(rp) * r) % p);
+                val = (val + gnfs::util::mul_mod_u64(
+                    poly.coeff(static_cast<size_t>(i)), rp, p)) % p;
+                rp = gnfs::util::mul_mod_u64(rp, r, p);
             }
             if (val == 0) roots.push_back(r);
         }

@@ -22,6 +22,8 @@
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/util/process.hpp>
+#include <gnfs/util/temp_path.hpp>
 
 #include <cassert>
 #include <chrono>
@@ -31,7 +33,6 @@
 #include <iostream>
 #include <optional>
 #include <string>
-#include <unistd.h>    // getpid for OOC base path
 #include <vector>
 
 using namespace gnfs;
@@ -273,8 +274,9 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     if (const char* env = std::getenv("GNFS_OOC_RELATIONS");
         env != nullptr && std::atoi(env) == 1) {
         coll_config.ooc_enabled = true;
-        ooc_cleanup.path = "/tmp/gnfs_e2e_ooc_" + std::to_string(::getpid()) +
-                           "_" + std::to_string(reinterpret_cast<uintptr_t>(&coll_config));
+        ooc_cleanup.path = gnfs::util::temp_path(
+            "gnfs_e2e_ooc_" + std::to_string(gnfs::util::process_id()) +
+            "_" + std::to_string(reinterpret_cast<uintptr_t>(&coll_config)));
         coll_config.ooc_base_path = ooc_cleanup.path;
         if (verbose) {
             std::cout << "[OOC] streaming relations to " << ooc_cleanup.path

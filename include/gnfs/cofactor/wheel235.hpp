@@ -22,6 +22,8 @@
 //   - __uint128_t: already used elsewhere in cofactor/, so no portability
 //     concern beyond the existing project baseline.
 
+#include "../util/bit_intrin.hpp"
+
 #include <cstdint>
 
 namespace gnfs::cofactor::wheel {
@@ -33,7 +35,7 @@ namespace gnfs::cofactor::wheel {
     exp = 0;
     if (v == 0) return v;
     // ctz returns the count of trailing zero bits — exactly the 2-adic valuation.
-    unsigned cnt = static_cast<unsigned>(__builtin_ctzll(v));
+    unsigned cnt = static_cast<unsigned>(gnfs::util::ctz64(v));
     if (cnt > 255u) cnt = 255u;
     v >>= cnt;
     exp = static_cast<uint8_t>(cnt);
@@ -63,6 +65,7 @@ namespace gnfs::cofactor::wheel {
 }
 
 // ----- __uint128_t variants -----
+#if defined(__SIZEOF_INT128__)
 
 /// Strip all factors of 2 from a 128-bit value.
 [[nodiscard]] inline __uint128_t strip_2(__uint128_t v, uint8_t& exp) noexcept {
@@ -72,11 +75,11 @@ namespace gnfs::cofactor::wheel {
     uint64_t lo = static_cast<uint64_t>(v);
     unsigned cnt = 0;
     if (lo != 0) {
-        cnt = static_cast<unsigned>(__builtin_ctzll(lo));
+        cnt = static_cast<unsigned>(gnfs::util::ctz64(lo));
     } else {
         uint64_t hi = static_cast<uint64_t>(v >> 64);
         // hi cannot be zero because v != 0 and lo == 0
-        cnt = 64u + static_cast<unsigned>(__builtin_ctzll(hi));
+        cnt = 64u + static_cast<unsigned>(gnfs::util::ctz64(hi));
     }
     if (cnt > 255u) cnt = 255u;
     v >>= cnt;
@@ -103,6 +106,7 @@ namespace gnfs::cofactor::wheel {
     }
     return v;
 }
+#endif
 
 // ----- Combined helper -----
 

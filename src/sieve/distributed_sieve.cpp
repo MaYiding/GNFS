@@ -9,10 +9,14 @@
 #include "gnfs/relation/ooc_relation_store.hpp"
 #include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/sieve/special_q.hpp"
+#include "gnfs/util/process.hpp"
+#include "gnfs/util/temp_path.hpp"
 
+#ifndef _WIN32
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -29,6 +33,76 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#ifdef _WIN32
+
+namespace gnfs::sieve {
+
+std::vector<std::pair<uint32_t, uint32_t>>
+split_sq_range(uint32_t range_begin, uint32_t range_end, size_t num_chunks) noexcept {
+    std::vector<std::pair<uint32_t, uint32_t>> chunks;
+    if (range_end <= range_begin || num_chunks == 0) return chunks;
+
+    const uint32_t total = range_end - range_begin;
+    const uint32_t base_size = total / static_cast<uint32_t>(num_chunks);
+    const uint32_t remainder = total % static_cast<uint32_t>(num_chunks);
+    chunks.reserve(num_chunks);
+
+    uint32_t cursor = range_begin;
+    for (size_t i = 0; i < num_chunks; ++i) {
+        const uint32_t chunk_len = base_size + (i < remainder ? 1U : 0U);
+        const uint32_t chunk_end = cursor + chunk_len;
+        chunks.emplace_back(cursor, chunk_end);
+        cursor = chunk_end;
+    }
+    return chunks;
+}
+
+DistributedSieveConfig parse_distributed_sieve_env() noexcept {
+    DistributedSieveConfig cfg;
+    cfg.num_workers = parse_distributed_sieve_workers_env();
+
+    if (const char* env = std::getenv("GNFS_DISTRIBUTED_SIEVE_BASE_PATH");
+        env != nullptr && env[0] != '\0') {
+        cfg.base_path = env;
+    } else {
+        cfg.base_path = gnfs::util::temp_path(
+            "gnfs_distributed_" + std::to_string(gnfs::util::process_id()));
+    }
+
+    if (const char* env = std::getenv("GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER");
+        env != nullptr && env[0] != '\0') {
+        char* end = nullptr;
+        long v = std::strtol(env, &end, 10);
+        if (end != env && v >= 0) {
+            cfg.sq_per_worker = static_cast<size_t>(v);
+        }
+    }
+
+    return cfg;
+}
+
+std::vector<gnfs::core::Relation> run_distributed_sieve(
+        const DistributedSieveConfig& cfg,
+        const gnfs::core::PolynomialContext&,
+        const gnfs::factor_base::FactorBase&,
+        const SieveParams&,
+        const SieveRegion&,
+        const gnfs::cofactor::CofactorizerConfig&,
+        const gnfs::core::Integer&,
+        const gnfs::core::Integer&,
+        const SpecialQRange&,
+        std::vector<DistributedSieveWorkerResult>*) {
+    if (cfg.num_workers == 0) {
+        throw std::invalid_argument(
+            "run_distributed_sieve: num_workers must be > 0");
+    }
+    throw std::runtime_error("run_distributed_sieve: POSIX fork workers are not available on Windows");
+}
+
+} // namespace gnfs::sieve
+
+#else
 
 namespace gnfs::sieve {
 
@@ -158,7 +232,7 @@ void cleanup_final(const std::string& base) noexcept {
         // Stderr trace for master diagnostics (chunk_id, sq_count, rel_count).
         std::fprintf(stderr,
             "[dist_sieve.worker] chunk=%zu pid=%d sq_range=[%u,%u) sq_done=%zu rels=%zu\n",
-            chunk_id, static_cast<int>(::getpid()), sq_begin, sq_end,
+            chunk_id, gnfs::util::process_id(), sq_begin, sq_end,
             sq_count, collector.size());
 
         // Success: _exit(0) skips parent destructors.
@@ -285,7 +359,8 @@ DistributedSieveConfig parse_distributed_sieve_env() noexcept {
         env != nullptr && env[0] != '\0') {
         cfg.base_path = env;
     } else {
-        cfg.base_path = "/tmp/gnfs_distributed_" + std::to_string(::getpid());
+        cfg.base_path = gnfs::util::temp_path(
+            "gnfs_distributed_" + std::to_string(gnfs::util::process_id()));
     }
 
     if (const char* env = std::getenv("GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER");
@@ -362,7 +437,7 @@ std::vector<Relation> run_distributed_sieve(
 
     std::fprintf(stderr,
         "[dist_sieve.master] pid=%d workers=%zu sq_range=[%u,%u) base=%s\n",
-        static_cast<int>(::getpid()), cfg.num_workers,
+        gnfs::util::process_id(), cfg.num_workers,
         range_begin, range_end, cfg.base_path.c_str());
 
     // Stage 1: spawn all workers in parallel.
@@ -524,3 +599,5 @@ std::vector<Relation> run_distributed_sieve(
 }
 
 } // namespace gnfs::sieve
+
+#endif

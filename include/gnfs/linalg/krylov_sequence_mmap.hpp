@@ -8,9 +8,17 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 #ifdef _WIN32
-#error "KrylovSequenceMmap: Windows not supported"
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #else
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -19,6 +27,253 @@
 #endif
 
 namespace gnfs::linalg {
+
+#ifdef _WIN32
+
+class KrylovSequenceMmap {
+public:
+    static constexpr uint64_t MAGIC = 0x4C59524B53464E47ULL;  // "GNFSKRYL"
+    static constexpr uint64_t VERSION = 1;
+    static constexpr size_t HEADER_SIZE = 32;
+
+    KrylovSequenceMmap() = default;
+
+    KrylovSequenceMmap(const std::string& path, uint64_t L, uint64_t entry_size)
+        : path_(path), L_(L), entry_size_(entry_size) {
+        if (L == 0 || entry_size == 0) {
+            throw std::invalid_argument("KrylovSequenceMmap: L and entry_size must be > 0");
+        }
+
+        if (L > (UINT64_MAX - HEADER_SIZE) / entry_size) {
+            throw std::overflow_error("KrylovSequenceMmap: file size overflow");
+        }
+        const uint64_t total_size64 = HEADER_SIZE + L * entry_size;
+        if (total_size64 > static_cast<uint64_t>(SIZE_MAX)) {
+            throw std::overflow_error("KrylovSequenceMmap: file too large for size_t");
+        }
+        size_ = static_cast<size_t>(total_size64);
+
+        file_ = ::CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                              nullptr);
+        if (file_ == INVALID_HANDLE_VALUE) {
+            throw std::runtime_error("KrylovSequenceMmap: cannot create '" + path + "': " +
+                                     last_error_message());
+        }
+
+        LARGE_INTEGER end_pos{};
+        end_pos.QuadPart = static_cast<LONGLONG>(total_size64);
+        if (!::SetFilePointerEx(file_, end_pos, nullptr, FILE_BEGIN) ||
+            !::SetEndOfFile(file_)) {
+            close();
+            throw std::runtime_error("KrylovSequenceMmap: resize failed for '" + path + "': " +
+                                     last_error_message());
+        }
+
+        mapping_ = ::CreateFileMappingA(file_, nullptr, PAGE_READWRITE, 0, 0, nullptr);
+        if (mapping_ == nullptr) {
+            close();
+            throw std::runtime_error("KrylovSequenceMmap: CreateFileMapping failed for '" +
+                                     path + "': " + last_error_message());
+        }
+
+        data_ = static_cast<uint8_t*>(
+            ::MapViewOfFile(mapping_, FILE_MAP_ALL_ACCESS, 0, 0, 0));
+        if (data_ == nullptr) {
+            close();
+            throw std::runtime_error("KrylovSequenceMmap: MapViewOfFile failed for '" +
+                                     path + "': " + last_error_message());
+        }
+
+        std::memcpy(data_, &MAGIC, 8);
+        std::memcpy(data_ + 8, &VERSION, 8);
+        std::memcpy(data_ + 16, &L_, 8);
+        std::memcpy(data_ + 24, &entry_size_, 8);
+
+        body_ = data_ + HEADER_SIZE;
+    }
+
+    ~KrylovSequenceMmap() { close(); }
+
+    KrylovSequenceMmap(KrylovSequenceMmap&& other) noexcept
+        : path_(std::move(other.path_)),
+          data_(std::exchange(other.data_, nullptr)),
+          body_(std::exchange(other.body_, nullptr)),
+          size_(std::exchange(other.size_, 0)),
+          L_(std::exchange(other.L_, 0)),
+          entry_size_(std::exchange(other.entry_size_, 0)),
+          mapping_(std::exchange(other.mapping_, nullptr)),
+          file_(std::exchange(other.file_, INVALID_HANDLE_VALUE)) {}
+
+    KrylovSequenceMmap& operator=(KrylovSequenceMmap&& other) noexcept {
+        if (this != &other) {
+            close();
+            path_ = std::move(other.path_);
+            data_ = std::exchange(other.data_, nullptr);
+            body_ = std::exchange(other.body_, nullptr);
+            size_ = std::exchange(other.size_, 0);
+            L_ = std::exchange(other.L_, 0);
+            entry_size_ = std::exchange(other.entry_size_, 0);
+            mapping_ = std::exchange(other.mapping_, nullptr);
+            file_ = std::exchange(other.file_, INVALID_HANDLE_VALUE);
+        }
+        return *this;
+    }
+
+    KrylovSequenceMmap(const KrylovSequenceMmap&) = delete;
+    KrylovSequenceMmap& operator=(const KrylovSequenceMmap&) = delete;
+
+    void close() noexcept {
+        if (data_ != nullptr) {
+            if (!::UnmapViewOfFile(data_)) {
+                std::fprintf(stderr,
+                             "[krylov_mmap] UnmapViewOfFile failed: error=%lu\n",
+                             static_cast<unsigned long>(::GetLastError()));
+            }
+        }
+        if (mapping_ != nullptr) {
+            if (!::CloseHandle(mapping_)) {
+                std::fprintf(stderr,
+                             "[krylov_mmap] CloseHandle(mapping) failed: error=%lu\n",
+                             static_cast<unsigned long>(::GetLastError()));
+            }
+        }
+        if (file_ != INVALID_HANDLE_VALUE) {
+            if (!::CloseHandle(file_)) {
+                std::fprintf(stderr,
+                             "[krylov_mmap] CloseHandle(file) failed: error=%lu\n",
+                             static_cast<unsigned long>(::GetLastError()));
+            }
+        }
+        data_ = nullptr;
+        body_ = nullptr;
+        size_ = 0;
+        L_ = 0;
+        entry_size_ = 0;
+        mapping_ = nullptr;
+        file_ = INVALID_HANDLE_VALUE;
+    }
+
+    void remove_file() noexcept {
+        const std::string path = path_;
+        close();
+        if (!path.empty() && !::DeleteFileA(path.c_str())) {
+            const DWORD err = ::GetLastError();
+            if (err != ERROR_FILE_NOT_FOUND && err != ERROR_PATH_NOT_FOUND) {
+                std::fprintf(stderr,
+                             "[krylov_mmap] DeleteFile failed: error=%lu path=%s\n",
+                             static_cast<unsigned long>(err), path.c_str());
+            }
+        }
+    }
+
+    [[nodiscard]] uint64_t length() const noexcept { return L_; }
+    [[nodiscard]] uint64_t entry_size() const noexcept { return entry_size_; }
+    [[nodiscard]] bool is_open() const noexcept { return data_ != nullptr; }
+    [[nodiscard]] const std::string& path() const noexcept { return path_; }
+
+    template <typename T>
+    [[nodiscard]] T* at(uint64_t k) noexcept {
+        assert(k < L_);
+        assert(sizeof(T) == entry_size_);
+        return reinterpret_cast<T*>(body_ + k * entry_size_);
+    }
+
+    template <typename T>
+    [[nodiscard]] const T* at(uint64_t k) const noexcept {
+        assert(k < L_);
+        assert(sizeof(T) == entry_size_);
+        return reinterpret_cast<const T*>(body_ + k * entry_size_);
+    }
+
+    [[nodiscard]] uint8_t* raw_at(uint64_t k) noexcept {
+        assert(k < L_);
+        return body_ + k * entry_size_;
+    }
+
+    [[nodiscard]] const uint8_t* raw_at(uint64_t k) const noexcept {
+        assert(k < L_);
+        return body_ + k * entry_size_;
+    }
+
+    void advise_random() const noexcept {}
+
+    void msync() const noexcept {
+        if (data_ != nullptr && size_ > 0) {
+            if (!::FlushViewOfFile(data_, size_)) {
+                std::fprintf(stderr,
+                             "[krylov_mmap] FlushViewOfFile failed: error=%lu\n",
+                             static_cast<unsigned long>(::GetLastError()));
+            }
+        }
+        if (file_ != INVALID_HANDLE_VALUE) {
+            ::FlushFileBuffers(file_);
+        }
+    }
+
+    static void validate_header(const std::string& path) {
+        HANDLE file = ::CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) {
+            throw std::runtime_error(
+                "KrylovSequenceMmap::validate_header: cannot open " + path);
+        }
+
+        uint64_t hdr[4]{};
+        DWORD got = 0;
+        const BOOL ok = ::ReadFile(file, hdr, static_cast<DWORD>(sizeof(hdr)), &got, nullptr);
+        ::CloseHandle(file);
+        if (!ok || got != sizeof(hdr)) {
+            throw std::runtime_error(
+                "KrylovSequenceMmap::validate_header: short read " + path);
+        }
+        if (hdr[0] != MAGIC) {
+            throw std::runtime_error(
+                "KrylovSequenceMmap::validate_header: bad magic in " + path);
+        }
+        if (hdr[1] != VERSION) {
+            throw std::runtime_error(
+                "KrylovSequenceMmap::validate_header: version mismatch in " + path);
+        }
+    }
+
+private:
+    static std::string last_error_message() {
+        DWORD error = ::GetLastError();
+        if (error == 0) return "no error";
+
+        char* buffer = nullptr;
+        DWORD len = ::FormatMessageA(
+            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                FORMAT_MESSAGE_IGNORE_INSERTS,
+            nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+            reinterpret_cast<char*>(&buffer), 0, nullptr);
+        if (len == 0 || buffer == nullptr) {
+            return "Windows error " + std::to_string(error);
+        }
+
+        std::string message(buffer, len);
+        ::LocalFree(buffer);
+        while (!message.empty() &&
+               (message.back() == '\r' || message.back() == '\n' || message.back() == ' ')) {
+            message.pop_back();
+        }
+        return message + " (" + std::to_string(error) + ")";
+    }
+
+    std::string path_;
+    uint8_t* data_ = nullptr;
+    uint8_t* body_ = nullptr;
+    size_t size_ = 0;
+    uint64_t L_ = 0;
+    uint64_t entry_size_ = 0;
+    HANDLE mapping_ = nullptr;
+    HANDLE file_ = INVALID_HANDLE_VALUE;
+};
+
+#else
 
 /// Out-of-core storage for BW Krylov sequence A_0, A_1, ..., A_{L-1}.
 ///
@@ -229,5 +484,7 @@ private:
     uint64_t entry_size_ = 0;
     int fd_ = -1;
 };
+
+#endif
 
 }  // namespace gnfs::linalg

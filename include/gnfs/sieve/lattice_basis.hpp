@@ -102,20 +102,31 @@ struct LatticeBasis {
 
 namespace detail {
 
-/// __int128_t norm² (避免 q² > 2^63 溢出 — q max 2^32 → q² max 2^64).
-[[nodiscard]] inline __int128_t lb_norm_sq(int64_t a, int64_t b) noexcept {
-    __int128_t a128 = a, b128 = b;
+/// Wide norm² (native int128 where available, long double fallback on MSVC).
+#if defined(__SIZEOF_INT128__)
+using lb_wide_int = __int128_t;
+#else
+using lb_wide_int = long double;
+#endif
+
+[[nodiscard]] inline lb_wide_int lb_norm_sq(int64_t a, int64_t b) noexcept {
+    lb_wide_int a128 = static_cast<lb_wide_int>(a);
+    lb_wide_int b128 = static_cast<lb_wide_int>(b);
     return a128 * a128 + b128 * b128;
 }
 
 /// 精确整数 round-half-to-even-like: round(a/b) for b > 0.
 /// 用 (2a + b)/(2b) for a≥0, (2a - b)/(2b) for a<0 (round-half-away-from-zero).
-[[nodiscard]] inline int64_t lb_int_round_div(__int128_t a, __int128_t b) noexcept {
+[[nodiscard]] inline int64_t lb_int_round_div(lb_wide_int a, lb_wide_int b) noexcept {
     if (b <= 0) return 0;  // safety
+#if defined(__SIZEOF_INT128__)
     if (a >= 0) {
         return static_cast<int64_t>((2 * a + b) / (2 * b));
     }
     return static_cast<int64_t>((2 * a - b) / (2 * b));
+#else
+    return static_cast<int64_t>(std::round(a / b));
+#endif
 }
 
 /// 读 ENV `GNFS_LATTICE_LLL` 解析 reduction method 默认值.
@@ -171,9 +182,9 @@ inline void lb_reduce_gauss(int64_t& v0_a, int64_t& v0_b,
         }
 
         // v0 = v0 - round(v0·v1 / v1·v1) * v1
-        __int128_t dot = static_cast<__int128_t>(v0_a) * v1_a +
-                         static_cast<__int128_t>(v0_b) * v1_b;
-        __int128_t n1 = lb_norm_sq(v1_a, v1_b);
+        lb_wide_int dot = static_cast<lb_wide_int>(v0_a) * v1_a +
+                          static_cast<lb_wide_int>(v0_b) * v1_b;
+        lb_wide_int n1 = lb_norm_sq(v1_a, v1_b);
         if (n1 > 0) {
             int64_t mu = lb_int_round_div(dot, n1);
             if (mu != 0) {
@@ -225,11 +236,11 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b,
         ++iters;
 
         // Size-reduction: v1 ← v1 - round(v0·v1 / |v0|²) · v0
-        __int128_t n0 = lb_norm_sq(v0_a, v0_b);
+        lb_wide_int n0 = lb_norm_sq(v0_a, v0_b);
         if (n0 == 0) break;  // degenerate: v0 = (0,0), 不动
 
-        __int128_t dot = static_cast<__int128_t>(v0_a) * v1_a +
-                         static_cast<__int128_t>(v0_b) * v1_b;
+        lb_wide_int dot = static_cast<lb_wide_int>(v0_a) * v1_a +
+                          static_cast<lb_wide_int>(v0_b) * v1_b;
         int64_t mu = lb_int_round_div(dot, n0);
         if (mu != 0) {
             v1_a -= mu * v0_a;
@@ -237,7 +248,7 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b,
         }
 
         // Lovász 检查: 现在 |v1| 应 ≥ |v0|, 否则 swap 继续
-        __int128_t n1 = lb_norm_sq(v1_a, v1_b);
+        lb_wide_int n1 = lb_norm_sq(v1_a, v1_b);
         if (n1 >= n0) {
             // Lovász 满足 + size-reduced → 终止
             break;

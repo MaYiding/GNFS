@@ -7,6 +7,7 @@
 #include <gnfs/linalg/mmap_csr_matrix.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
+#include <gnfs/util/temp_path.hpp>
 #include <cstdio>
 #include <cstdlib>
 #include <random>
@@ -53,8 +54,8 @@ static SparseMatrix make_random_matrix(std::size_t rows, std::size_t cols,
 }
 
 void test_helper_bitwise_identical_to_explicit_path() {
-    TempFile a("/tmp/gnfs_test_save_sparse_helper_a.csrmat");
-    TempFile b("/tmp/gnfs_test_save_sparse_helper_b.csrmat");
+    TempFile a(gnfs::util::temp_path("gnfs_test_save_sparse_helper_a.csrmat"));
+    TempFile b(gnfs::util::temp_path("gnfs_test_save_sparse_helper_b.csrmat"));
 
     SparseMatrix sparse = make_random_matrix(2000, 1500, 9999, 8);
 
@@ -97,7 +98,7 @@ static void spmv_forward_simple(const M& mat, const BlockVector& x, BlockVector&
 }
 
 void test_helper_spmv_matches_in_memory() {
-    TempFile tmp("/tmp/gnfs_test_save_sparse_helper_spmv.csrmat");
+    TempFile tmp(gnfs::util::temp_path("gnfs_test_save_sparse_helper_spmv.csrmat"));
 
     SparseMatrix sparse = make_random_matrix(3000, 2000, 11111, 10);
     CSRMatrix csr(sparse);
@@ -121,7 +122,7 @@ void test_helper_spmv_matches_in_memory() {
 }
 
 void test_helper_empty_matrix() {
-    TempFile tmp("/tmp/gnfs_test_save_sparse_helper_empty.csrmat");
+    TempFile tmp(gnfs::util::temp_path("gnfs_test_save_sparse_helper_empty.csrmat"));
     SparseMatrix empty(0, 0);
     MmapCSRMatrix m = save_sparse_as_mmap(empty, tmp.path);
     TEST_ASSERT(m.num_rows() == 0, "empty rows");

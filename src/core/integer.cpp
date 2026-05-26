@@ -4,12 +4,34 @@
 #include <cstring>
 #include <gmp.h>
 #include <iostream>
+#include <limits>
 #include <new>
 #include <stdexcept>
 
 namespace gnfs::core {
 
 namespace {
+
+void set_mpz_from_uint64(mpz_t dest, uint64_t value) {
+    mpz_import(dest, 1, 1, sizeof(value), 0, 0, &value);
+}
+
+void set_mpz_from_int64(mpz_t dest, int64_t value) {
+    if (value >= 0) {
+        set_mpz_from_uint64(dest, static_cast<uint64_t>(value));
+        return;
+    }
+    uint64_t magnitude = static_cast<uint64_t>(-(value + 1)) + 1ULL;
+    set_mpz_from_uint64(dest, magnitude);
+    mpz_neg(dest, dest);
+}
+
+uint64_t abs_mpz_to_uint64(const mpz_t value) {
+    uint64_t out = 0;
+    size_t count = 0;
+    mpz_export(&out, &count, 1, sizeof(out), 0, 0, value);
+    return out;
+}
 
 // ── BACKLOG P3 DEBT: GMP OOM 默认 abort() — 改用抛 std::bad_alloc ──
 //
@@ -69,7 +91,8 @@ Integer::Integer(int value) {
 }
 
 Integer::Integer(int64_t value) {
-    mpz_init_set_si(value_, value);
+    mpz_init(value_);
+    set_mpz_from_int64(value_, value);
 }
 
 Integer::Integer(unsigned int value) {
@@ -77,9 +100,8 @@ Integer::Integer(unsigned int value) {
 }
 
 Integer::Integer(uint64_t value) {
-    static_assert(sizeof(unsigned long) >= sizeof(uint64_t),
-                  "mpz_set_ui requires unsigned long to hold uint64_t");
-    mpz_init_set_ui(value_, value);
+    mpz_init(value_);
+    set_mpz_from_uint64(value_, value);
 }
 
 Integer::Integer(const char* str, int base) {
@@ -124,14 +146,12 @@ Integer& Integer::operator=(Integer&& other) noexcept {
 }
 
 Integer& Integer::operator=(int64_t value) {
-    mpz_set_si(value_, value);
+    set_mpz_from_int64(value_, value);
     return *this;
 }
 
 Integer& Integer::operator=(uint64_t value) {
-    static_assert(sizeof(unsigned long) >= sizeof(uint64_t),
-                  "mpz_set_ui requires unsigned long to hold uint64_t");
-    mpz_set_ui(value_, value);
+    set_mpz_from_uint64(value_, value);
     return *this;
 }
 
@@ -148,10 +168,18 @@ Integer Integer::clone() const {
 // ============================================================
 
 int64_t Integer::to_int64() const {
-    if (!mpz_fits_slong_p(value_)) {
+    if (!fits_int64()) {
         throw std::overflow_error("Integer does not fit in int64_t");
     }
-    return mpz_get_si(value_);
+    if (mpz_sgn(value_) >= 0) {
+        return static_cast<int64_t>(abs_mpz_to_uint64(value_));
+    }
+    uint64_t magnitude = abs_mpz_to_uint64(value_);
+    constexpr uint64_t int64_min_abs = uint64_t{1} << 63;
+    if (magnitude == int64_min_abs) {
+        return std::numeric_limits<int64_t>::min();
+    }
+    return -static_cast<int64_t>(magnitude);
 }
 
 std::string Integer::to_string(int base) const {
@@ -251,7 +279,8 @@ bool Integer::operator==(const Integer& other) const {
 }
 
 bool Integer::operator==(int64_t rhs) const {
-    return mpz_cmp_si(value_, rhs) == 0;
+    Integer rhs_int(rhs);
+    return mpz_cmp(value_, rhs_int.value_) == 0;
 }
 
 bool Integer::operator!=(const Integer& other) const {
@@ -411,10 +440,10 @@ std::ostream& operator<<(std::ostream& os, const Integer& n) {
 
 
 uint64_t Integer::to_uint64() const {
-    if (!mpz_fits_ulong_p(value_)) {
+    if (!fits_uint64()) {
         throw std::overflow_error("Integer does not fit in uint64_t");
     }
-    return mpz_get_ui(value_);
+    return abs_mpz_to_uint64(value_);
 }
 
 double Integer::to_double() const {
@@ -426,11 +455,26 @@ size_t Integer::num_digits(int base) const {
 }
 
 bool Integer::fits_uint64() const {
-    return mpz_fits_ulong_p(value_) != 0;
+    if (mpz_sgn(value_) < 0) return false;
+    mpz_t max;
+    mpz_init(max);
+    set_mpz_from_uint64(max, std::numeric_limits<uint64_t>::max());
+    const bool fits = mpz_cmp(value_, max) <= 0;
+    mpz_clear(max);
+    return fits;
 }
 
 bool Integer::fits_int64() const {
-    return mpz_fits_slong_p(value_) != 0;
+    mpz_t min_value;
+    mpz_t max_value;
+    mpz_init(min_value);
+    mpz_init(max_value);
+    set_mpz_from_int64(min_value, std::numeric_limits<int64_t>::min());
+    set_mpz_from_int64(max_value, std::numeric_limits<int64_t>::max());
+    const bool fits = mpz_cmp(value_, min_value) >= 0 && mpz_cmp(value_, max_value) <= 0;
+    mpz_clear(min_value);
+    mpz_clear(max_value);
+    return fits;
 }
 
 bool Integer::is_odd() const {
@@ -442,41 +486,29 @@ bool Integer::is_even() const {
 }
 
 Integer& Integer::operator*=(int64_t value) {
-    mpz_mul_si(value_, value_, value);
+    Integer rhs(value);
+    mpz_mul(value_, value_, rhs.value_);
     return *this;
 }
 
 Integer& Integer::operator+=(int64_t value) {
-    if (value >= 0) {
-        mpz_add_ui(value_, value_, static_cast<unsigned long>(value));
-    } else {
-        // Avoid UB: -INT64_MIN overflows int64_t
-        auto abs_val = static_cast<unsigned long>(-(value + 1)) + 1UL;
-        mpz_sub_ui(value_, value_, abs_val);
-    }
+    Integer rhs(value);
+    mpz_add(value_, value_, rhs.value_);
     return *this;
 }
 
 Integer& Integer::operator-=(int64_t value) {
-    if (value >= 0) {
-        mpz_sub_ui(value_, value_, static_cast<unsigned long>(value));
-    } else {
-        auto abs_val = static_cast<unsigned long>(-(value + 1)) + 1UL;
-        mpz_add_ui(value_, value_, abs_val);
-    }
+    Integer rhs(value);
+    mpz_sub(value_, value_, rhs.value_);
     return *this;
 }
 
 Integer& Integer::operator/=(int64_t value) {
-    if (value > 0) {
-        mpz_tdiv_q_ui(value_, value_, static_cast<unsigned long>(value));
-    } else if (value < 0) {
-        auto abs_val = static_cast<unsigned long>(-(value + 1)) + 1UL;
-        mpz_tdiv_q_ui(value_, value_, abs_val);
-        mpz_neg(value_, value_);
-    } else {
+    if (value == 0) {
         throw std::domain_error("Division by zero");
     }
+    Integer rhs(value);
+    mpz_tdiv_q(value_, value_, rhs.value_);
     return *this;
 }
 
@@ -484,11 +516,8 @@ Integer& Integer::operator%=(int64_t value) {
     if (value == 0) {
         throw std::domain_error("Integer modulo by zero");
     }
-    // Safe absolute value: avoid -INT64_MIN which is UB
-    unsigned long abs_val = (value >= 0)
-        ? static_cast<unsigned long>(value)
-        : static_cast<unsigned long>(-(value + 1)) + 1UL;
-    mpz_tdiv_r_ui(value_, value_, abs_val);
+    Integer rhs(value);
+    mpz_tdiv_r(value_, value_, rhs.value_);
     return *this;
 }
 

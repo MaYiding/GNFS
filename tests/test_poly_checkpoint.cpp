@@ -1,4 +1,6 @@
 #include "gnfs/polynomial/poly_checkpoint.hpp"
+#include "gnfs/util/process.hpp"
+#include "gnfs/util/temp_path.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -6,7 +8,6 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <unistd.h>
 
 using namespace gnfs::polynomial;
 using gnfs::core::Integer;
@@ -15,9 +16,9 @@ using gnfs::core::PolynomialContext;
 static std::string tmp_ckpt_path(const char* label) {
     static int seq = 0;
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "/tmp/gnfs_test_poly_ckpt_%d_%d_%s",
-                  static_cast<int>(::getpid()), ++seq, label);
-    return std::string(buf);
+    std::snprintf(buf, sizeof(buf), "gnfs_test_poly_ckpt_%d_%d_%s",
+                  gnfs::util::process_id(), ++seq, label);
+    return gnfs::util::temp_path(buf);
 }
 
 struct CkptCleanup {
@@ -289,12 +290,14 @@ void test_load_nonexistent() {
     std::cout << "Testing load nonexistent..." << std::endl;
     bool threw = false;
     try {
-        (void) PolyCheckpoint::load("/tmp/nonexistent_xyz_gnfs_poly_xx_99999");
+        (void) PolyCheckpoint::load(
+            gnfs::util::temp_path("nonexistent_xyz_gnfs_poly_xx_99999"));
     } catch (const std::runtime_error&) {
         threw = true;
     }
     assert(threw);
-    assert(!PolyCheckpoint::exists_and_valid("/tmp/nonexistent_xyz_gnfs_poly_xx_99999"));
+    assert(!PolyCheckpoint::exists_and_valid(
+        gnfs::util::temp_path("nonexistent_xyz_gnfs_poly_xx_99999")));
     std::cout << "  Nonexistent: PASS" << std::endl;
 }
 

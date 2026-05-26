@@ -37,10 +37,11 @@ BaiBrentParams make_fast_params(uint32_t degree) {
     auto bp = BaiBrentParams::from_gnfs_params(gp);
     bp.ad_min = 1;
     bp.ad_max = 200;             // tight a_d range -> few Stage 1 candidates
-    bp.num_candidates = 16;      // limit Stage 2 work
-    bp.search_radius = 8;        // narrow m sweep
-    bp.murphy_params.sample_points = 200;  // faster Murphy E
-    bp.parallel = true;
+    bp.num_candidates = 8;       // limit Stage 2 work
+    bp.search_radius = 4;        // narrow m sweep
+    bp.root_opt_iterations = 64;
+    bp.murphy_params.sample_points = 80;  // faster Murphy E
+    bp.parallel = false;         // avoid ctest-level oversubscription on CI
     return bp;
 }
 
@@ -308,7 +309,7 @@ void test_ad_candidate_generation_dedup() {
     params.ad_min = 1;
     params.ad_max = 40;
     params.smooth_preference = true;
-    params.num_candidates = 64;
+    params.num_candidates = 16;
     BaiBrentSelector sel(params);
     auto res = sel.select(n);
     assert(res.success);

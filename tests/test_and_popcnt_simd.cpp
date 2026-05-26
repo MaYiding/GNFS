@@ -248,7 +248,7 @@ static void test_single_word_patterns() {
             return;
         }
         // Builtin cross-check.
-        std::uint32_t builtin = static_cast<std::uint32_t>(__builtin_popcountll(c.a & c.b));
+        std::uint32_t builtin = static_cast<std::uint32_t>(gnfs::util::popcount64(c.a & c.b));
         if (out[0] != builtin) {
             std::fprintf(stderr,
                 "  a=%016llx b=%016llx expected=%u dispatch=%u builtin=%u\n",
@@ -437,7 +437,7 @@ static void test_same_input_equivalence_to_popcount() {
     std::vector<std::uint32_t> dispatch_out(128, 0);
     detail::batch_and_popcount_words(a, b, dispatch_out);
     for (std::size_t i = 0; i < a.size(); ++i) {
-        std::uint32_t expected = static_cast<std::uint32_t>(__builtin_popcountll(a[i]));
+        std::uint32_t expected = static_cast<std::uint32_t>(gnfs::util::popcount64(a[i]));
         if (dispatch_out[i] != expected) {
             std::fprintf(stderr,
                 "  a=b=%016llx expected_popcount=%u got=%u\n",
@@ -449,7 +449,7 @@ static void test_same_input_equivalence_to_popcount() {
     }
     std::uint64_t total = detail::total_and_popcount_words(a, b);
     std::uint64_t expected_total = 0;
-    for (auto w : a) expected_total += static_cast<std::uint64_t>(__builtin_popcountll(w));
+    for (auto w : a) expected_total += static_cast<std::uint64_t>(gnfs::util::popcount64(w));
     TEST_ASSERT(total == expected_total,
                 "total_and_popcount(a, a) must equal sum of popcount(a[i])");
     TEST_PASS("a==b equivalence to plain popcount");

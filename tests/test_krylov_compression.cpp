@@ -1,3 +1,11 @@
+#ifdef _WIN32
+#include <iostream>
+int main() {
+    std::cout << "KrylovSequenceCompressed tests skipped on Windows (POSIX file APIs unavailable)\n";
+    return 0;
+}
+#else
+
 // Tests for KrylovSequenceCompressed (compressed mmap layer).
 //
 // Covers:
@@ -11,6 +19,7 @@
 // - Compression ratio sanity (sparse Krylov synthetic ≥ 1.3× ratio = ≤ 76% size)
 
 #include "gnfs/linalg/krylov_sequence_compressed.hpp"
+#include "gnfs/util/temp_path.hpp"
 
 #include <cassert>
 #include <cstdint>
@@ -29,9 +38,9 @@ namespace {
 std::string tmp_path(const char* label) {
     static int seq = 0;
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "/tmp/gnfs_test_kryz_%d_%d_%s",
+    std::snprintf(buf, sizeof(buf), "gnfs_test_kryz_%d_%d_%s",
                   static_cast<int>(::getpid()), ++seq, label);
-    return std::string(buf);
+    return gnfs::util::temp_path(buf);
 }
 
 struct PathCleanup {
@@ -508,3 +517,5 @@ int main() {
     std::cout << "\n===== All KrylovSequenceCompressed tests PASSED =====" << std::endl;
     return 0;
 }
+
+#endif

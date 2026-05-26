@@ -14,6 +14,8 @@
 #include <gnfs/core/integer.hpp>
 #include <gnfs/relation/ooc_relation_store.hpp>
 #include <gnfs/sieve/sieve_checkpoint.hpp>
+#include <gnfs/util/process.hpp>
+#include <gnfs/util/temp_path.hpp>
 
 #include <cassert>
 #include <cstdio>
@@ -93,7 +95,7 @@ bool test_config_apply_to() {
 
 bool test_config_from_file() {
     // Write a temp config file
-    std::string path = "/tmp/gnfs_test_config.cfg";
+    std::string path = gnfs::util::temp_path("gnfs_test_config.cfg");
     {
         std::ofstream ofs(path);
         ofs << "# Test config\n";
@@ -120,7 +122,7 @@ bool test_config_from_file() {
 //   4. 整数非法字符 (std::stoul throws invalid_argument)
 bool test_config_from_file_invalid() {
     auto write_and_expect_throw = [](const std::string& content, const std::string& label) {
-        std::string path = "/tmp/gnfs_test_config_invalid.cfg";
+        std::string path = gnfs::util::temp_path("gnfs_test_config_invalid.cfg");
         {
             std::ofstream ofs(path);
             ofs << content;
@@ -146,7 +148,7 @@ bool test_config_from_file_invalid() {
 
     // Valid: empty + comment + blank lines should not throw
     {
-        std::string path = "/tmp/gnfs_test_config_valid.cfg";
+        std::string path = gnfs::util::temp_path("gnfs_test_config_valid.cfg");
         {
             std::ofstream ofs(path);
             ofs << "# Comment\n\n  # indented comment\n   \n";
@@ -517,8 +519,9 @@ bool test_v3_cascade_auto_mode() {
 bool test_sieve_resume_fresh_no_prior_ckpt() {
     // GNFS_SIEVE_RESUME set, no prior ckpt → fresh start.
     // Sieve completes normally, ckpt removed at end (因 normal exit).
-    std::string base = "/tmp/gnfs_test_sieve_resume_fresh_" +
-                       std::to_string(::getpid());
+    std::string base = gnfs::util::temp_path(
+        "gnfs_test_sieve_resume_fresh_" +
+        std::to_string(gnfs::util::process_id()));
     std::remove((base + ".sieve_ckpt").c_str());
     std::remove((base + ".reldata").c_str());
     std::remove((base + ".relidx").c_str());
@@ -556,8 +559,9 @@ bool test_sieve_resume_with_synthetic_ckpt() {
     // 模拟 prior 半完成 session: 跑完整 sieve, 然后 flip OOC magic → INCOMPLETE,
     // 手动 craft 一个 ckpt. Resume run 加载 ckpt + OOC, sieve 重 process 部分 SQ,
     // dedup 拒绝 prior relations, 最终 produce 完整 factorization.
-    std::string base = "/tmp/gnfs_test_sieve_resume_synth_" +
-                       std::to_string(::getpid());
+    std::string base = gnfs::util::temp_path(
+        "gnfs_test_sieve_resume_synth_" +
+        std::to_string(gnfs::util::process_id()));
     std::remove((base + ".sieve_ckpt").c_str());
     std::remove((base + ".reldata").c_str());
     std::remove((base + ".relidx").c_str());

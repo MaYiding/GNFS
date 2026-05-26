@@ -42,6 +42,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <mutex>
 #include <optional>
 #include <span>

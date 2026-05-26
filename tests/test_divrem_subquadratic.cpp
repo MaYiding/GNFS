@@ -19,6 +19,7 @@
 //   to permit multi-value sweeps within a single test binary.
 
 #include "gnfs/polynomial/divrem_subquadratic.hpp"
+#include "gnfs/util/primes.hpp"
 
 #include <cassert>
 #include <chrono>
@@ -435,12 +436,8 @@ void test_num_exact_multiple_subq() {
     std::vector<uint64_t> num(den.size() + quot_truth.size() - 1, 0);
     for (size_t i = 0; i < den.size(); ++i) {
         for (size_t j = 0; j < quot_truth.size(); ++j) {
-            __uint128_t prod =
-                static_cast<__uint128_t>(den[i]) * quot_truth[j];
-            uint64_t pp = static_cast<uint64_t>(prod % kPrime);
-            uint64_t sum = num[i + j] + pp;
-            if (sum >= kPrime) sum -= kPrime;
-            num[i + j] = sum;
+            uint64_t pp = gnfs::util::mul_mod_u64(den[i], quot_truth[j], kPrime);
+            num[i + j] = gnfs::util::add_mod_u64(num[i + j], pp, kPrime);
         }
     }
     std::vector<uint64_t> q, r;

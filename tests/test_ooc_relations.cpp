@@ -5,6 +5,7 @@
 
 #include <gnfs/relation/ooc_relation_store.hpp>
 #include <gnfs/core/relation.hpp>
+#include <gnfs/util/temp_path.hpp>
 #include <iostream>
 #include <random>
 #include <cstdio>
@@ -82,7 +83,7 @@ struct TempFiles {
 // ============================================================================
 
 void test_write_read_single() {
-    TempFiles tmp("/tmp/gnfs_test_ooc_single");
+    TempFiles tmp(gnfs::util::temp_path("gnfs_test_ooc_single"));
 
     Relation orig = make_relation(42, 7, 5, 3, 1, 2);
     orig.extra_ab_pairs.push_back({10, 20});
@@ -103,7 +104,7 @@ void test_write_read_single() {
 }
 
 void test_write_read_batch() {
-    TempFiles tmp("/tmp/gnfs_test_ooc_batch");
+    TempFiles tmp(gnfs::util::temp_path("gnfs_test_ooc_batch"));
 
     std::vector<Relation> originals;
     {
@@ -137,7 +138,7 @@ void test_write_read_batch() {
 }
 
 void test_random_access() {
-    TempFiles tmp("/tmp/gnfs_test_ooc_random");
+    TempFiles tmp(gnfs::util::temp_path("gnfs_test_ooc_random"));
 
     std::vector<Relation> originals;
     {
@@ -165,7 +166,7 @@ void test_random_access() {
 }
 
 void test_read_all() {
-    TempFiles tmp("/tmp/gnfs_test_ooc_readall");
+    TempFiles tmp(gnfs::util::temp_path("gnfs_test_ooc_readall"));
 
     std::vector<Relation> originals;
     {
@@ -191,7 +192,7 @@ void test_read_all() {
 }
 
 void test_read_range() {
-    TempFiles tmp("/tmp/gnfs_test_ooc_range");
+    TempFiles tmp(gnfs::util::temp_path("gnfs_test_ooc_range"));
 
     {
         OOCRelationWriter writer(tmp.base);
@@ -211,7 +212,7 @@ void test_read_range() {
 }
 
 void test_empty_relations() {
-    TempFiles tmp("/tmp/gnfs_test_ooc_empty");
+    TempFiles tmp(gnfs::util::temp_path("gnfs_test_ooc_empty"));
 
     // Relation with no factors, no LPs, no extras
     Relation empty_rel;
@@ -237,7 +238,7 @@ void test_empty_relations() {
 }
 
 void test_merged_relation_with_extras() {
-    TempFiles tmp("/tmp/gnfs_test_ooc_merged");
+    TempFiles tmp(gnfs::util::temp_path("gnfs_test_ooc_merged"));
 
     Relation merged = make_relation(100, 200, 10, 8, 2, 3);
     merged.extra_ab_pairs = {{1,2}, {3,4}, {5,6}, {7,8}};
@@ -261,7 +262,7 @@ void test_merged_relation_with_extras() {
 // Writer 析构时若有 in-flight exception,只写入 MAGIC_INCOMPLETE,
 // reader 必须拒绝读(避免 idx/data 不一致)。
 void test_writer_exception_path() {
-    TempFiles tmp("/tmp/gnfs_test_ooc_exc");
+    TempFiles tmp(gnfs::util::temp_path("gnfs_test_ooc_exc"));
 
     bool reader_threw = false;
     try {

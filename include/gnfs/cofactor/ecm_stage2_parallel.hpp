@@ -52,6 +52,7 @@
 #include <future>
 #include <new>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <thread>
 #include <vector>

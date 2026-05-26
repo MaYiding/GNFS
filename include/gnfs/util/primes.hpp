@@ -1,13 +1,52 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace gnfs::util {
 
-/// Modular multiplication with __uint128_t to avoid overflow
+[[nodiscard]] inline uint64_t add_mod_u64(uint64_t a, uint64_t b, uint64_t mod) {
+    if (mod == 0) return 0;
+    a %= mod;
+    b %= mod;
+    return (a >= mod - b) ? (a - (mod - b)) : (a + b);
+}
+
+/// Modular multiplication with a native 128-bit fast path where available.
 [[nodiscard]] inline uint64_t mul_mod_u64(uint64_t a, uint64_t b, uint64_t mod) {
+    if (mod == 0) return 0;
+#if defined(__SIZEOF_INT128__)
     __uint128_t prod = static_cast<__uint128_t>(a) * b;
     return static_cast<uint64_t>(prod % mod);
+#else
+    uint64_t result = 0;
+    a %= mod;
+    while (b != 0) {
+        if (b & 1U) result = add_mod_u64(result, a, mod);
+        b >>= 1U;
+        if (b != 0) a = add_mod_u64(a, a, mod);
+    }
+    return result;
+#endif
+}
+
+[[nodiscard]] inline bool u64_gt_square(uint64_t value, uint64_t bound) noexcept {
+    if (bound != 0 && bound > std::numeric_limits<uint64_t>::max() / bound) {
+        return false;
+    }
+    return value > bound * bound;
+}
+
+[[nodiscard]] inline bool u64_gt_cube(uint64_t value, uint64_t bound) noexcept {
+    if (bound != 0 && bound > std::numeric_limits<uint64_t>::max() / bound) {
+        return false;
+    }
+    uint64_t square = bound * bound;
+    if (bound != 0 && square > std::numeric_limits<uint64_t>::max() / bound) {
+        return false;
+    }
+    return value > square * bound;
 }
 
 /// Modular exponentiation
@@ -58,7 +97,7 @@ namespace gnfs::util {
 /// Integer sqrt for uint32_t — robust at boundary (avoids std::sqrt double rounding).
 [[nodiscard]] inline uint32_t isqrt_u32(uint32_t n) {
     if (n < 2) return n;
-    uint32_t x = static_cast<uint32_t>(__builtin_sqrt(static_cast<double>(n)));
+    uint32_t x = static_cast<uint32_t>(std::sqrt(static_cast<double>(n)));
     // Correct double rounding at boundary
     while (static_cast<uint64_t>(x + 1) * (x + 1) <= n) ++x;
     while (static_cast<uint64_t>(x) * x > n) --x;

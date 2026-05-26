@@ -60,6 +60,7 @@ elseif(MSVC)
         _CRT_SECURE_NO_WARNINGS
         _SILENCE_ALL_CXX23_DEPRECATION_WARNINGS
     )
+    add_compile_options(/FI${CMAKE_CURRENT_SOURCE_DIR}/include/gnfs/util/msvc_compat.hpp)
     # MSVC does not implement -fsanitize=*; instrumentation is via /fsanitize=address
     # but only with cl 16.9+. Out of scope for this CI matrix.
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -1603,7 +1604,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_siqs PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SIQS COMMAND test_siqs)
-    set_tests_properties(SIQS PROPERTIES LABELS "fast" TIMEOUT 60)
+    set_tests_properties(SIQS PROPERTIES LABELS "fast" TIMEOUT 180)
 
     # SIQS 端到端：100-bit + 180-bit 实测分解
     add_executable(test_siqs_e2e

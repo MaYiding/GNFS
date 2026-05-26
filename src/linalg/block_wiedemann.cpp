@@ -2,6 +2,9 @@
 #include "gnfs/linalg/detail/spmv_kernels.hpp"
 #include "gnfs/linalg/krylov_sequence_compressed.hpp"
 #include "gnfs/linalg/krylov_sequence_mmap.hpp"
+#include "gnfs/util/bit_intrin.hpp"
+#include "gnfs/util/process.hpp"
+#include "gnfs/util/temp_path.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
 #include <array>
@@ -20,8 +23,6 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
-
-#include <unistd.h>
 
 namespace gnfs::linalg {
 
@@ -227,7 +228,7 @@ static uint8_t compute_discrepancy_packed(
             if (bi > 0 && wi + 1 < C.words.size())
                 c_word |= (C.words[wi + 1] << (64 - bi));
         }
-        parity ^= static_cast<uint64_t>(__builtin_popcountll(c_word & s_word));
+        parity ^= static_cast<uint64_t>(gnfs::util::popcount64(c_word & s_word));
     }
     d ^= (parity & 1);
     return d;
@@ -454,11 +455,12 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
     if (use_mmap) {
         char path_buf[128];
         std::snprintf(path_buf, sizeof(path_buf),
-                      "/tmp/gnfs_bw_krylov_scalar_%d_%llu.kry",
-                      static_cast<int>(::getpid()),
+                      "gnfs_bw_krylov_scalar_%d_%llu.kry",
+                      gnfs::util::process_id(),
                       static_cast<unsigned long long>(seed));
+        const std::string path = gnfs::util::temp_path(path_buf);
         seq_mmap = std::make_unique<KrylovSequenceMmap>(
-            path_buf, /*L=*/64, /*entry_size=*/seq_len);
+            path, /*L=*/64, /*entry_size=*/seq_len);
     } else {
         sequences.assign(64, std::vector<uint8_t>(seq_len, 0));
     }
@@ -730,21 +732,23 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
     if (use_compress) {
         char path_buf[160];
         std::snprintf(path_buf, sizeof(path_buf),
-                      "/tmp/gnfs_bw_krylov_%d_s%u_%llu.kryz",
-                      static_cast<int>(::getpid()),
+                      "gnfs_bw_krylov_%d_s%u_%llu.kryz",
+                      gnfs::util::process_id(),
                       static_cast<unsigned>(stream_tag),
                       static_cast<unsigned long long>(seed));
+        const std::string path = gnfs::util::temp_path(path_buf);
         A_kryz = std::make_unique<KrylovSequenceCompressed>(
-            path_buf, L, sizeof(DenseGF2_64x64));
+            path, L, sizeof(DenseGF2_64x64));
     } else if (use_mmap) {
         char path_buf[160];
         std::snprintf(path_buf, sizeof(path_buf),
-                      "/tmp/gnfs_bw_krylov_%d_s%u_%llu.kry",
-                      static_cast<int>(::getpid()),
+                      "gnfs_bw_krylov_%d_s%u_%llu.kry",
+                      gnfs::util::process_id(),
                       static_cast<unsigned>(stream_tag),
                       static_cast<unsigned long long>(seed));
+        const std::string path = gnfs::util::temp_path(path_buf);
         A_mmap = std::make_unique<KrylovSequenceMmap>(
-            path_buf, L, sizeof(DenseGF2_64x64));
+            path, L, sizeof(DenseGF2_64x64));
     } else {
         A_seq.resize(L);
     }
@@ -809,7 +813,7 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
     phase_start = std::chrono::steady_clock::now();
     std::cout << "  [BW-block] Phase 2: matrix BM..." << std::flush;
     auto F = BlockWiedemann::matrix_berlekamp_massey(A_seq, n);
-    const int valid_count = __builtin_popcountll(F.valid_mask);
+    const int valid_count = gnfs::util::popcount64(F.valid_mask);
     const int max_deg = static_cast<int>(F.poly.size()) - 1;
     double phase2_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - phase_start).count();
@@ -1002,7 +1006,7 @@ static std::vector<std::vector<bool>> thin_solve_view_impl(
     phase_start = std::chrono::steady_clock::now();
     std::cout << "  [BW-thin] Phase 2: matrix BM..." << std::flush;
     auto F = BlockWiedemann::matrix_berlekamp_massey(A_seq, m);
-    const int valid_count = __builtin_popcountll(F.valid_mask);
+    const int valid_count = gnfs::util::popcount64(F.valid_mask);
     const int max_deg = static_cast<int>(F.poly.size()) - 1;
     // BACKLOG #1 rank lower-bound: see compute_rank_est doc in block_wiedemann.hpp.
     const int rank_est = compute_rank_est(F);
@@ -1313,7 +1317,7 @@ LingenResult BlockWiedemann::matrix_berlekamp_massey(
         for (int i = 0; i < m; ++i) {
             uint64_t row_bits = Ae.rows[i];
             while (row_bits) {
-                int j = __builtin_ctzll(row_bits);
+                int j = gnfs::util::ctz64(row_bits);
                 E_at(i, j)[e_w] |= e_mask;
                 row_bits &= row_bits - 1;
             }
@@ -1394,7 +1398,7 @@ LingenResult BlockWiedemann::matrix_berlekamp_massey(
 
     auto poly_max_degree = [W](const uint64_t* poly) -> int {
         for (int w = W - 1; w >= 0; --w) {
-            if (poly[w]) return w * 64 + (63 - __builtin_clzll(poly[w]));
+            if (poly[w]) return w * 64 + (63 - gnfs::util::clz64(poly[w]));
         }
         return -1;
     };
@@ -1426,7 +1430,7 @@ LingenResult BlockWiedemann::matrix_berlekamp_massey(
             for (int w = 0; w < W; ++w) {
                 uint64_t bits = poly[w];
                 while (bits) {
-                    int local_bit = __builtin_ctzll(bits);
+                    int local_bit = gnfs::util::ctz64(bits);
                     int k = w * 64 + local_bit;
                     if (k <= max_deg) {
                         result.poly[static_cast<size_t>(k)].rows[static_cast<size_t>(i)] |=

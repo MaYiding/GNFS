@@ -651,7 +651,12 @@ void test_reset_env_cache_hook() {
     std::cout << "Test 15: reset env cache re-reads ENV..." << std::flush;
 
     apply_env("1");
-    assert(mpz_gcd_batch_threads() == 1);
+    int initial = mpz_gcd_batch_threads();
+    if (initial != 1) {
+        std::cerr << "\n  ERROR: pre-reset value " << initial
+                  << " (expected 1)" << std::endl;
+        std::abort();
+    }
 
     // Without reset, a fresh setenv would NOT be picked up (call_once seals
     // the cache). The reset hook is the only way to re-resolve mid-test.

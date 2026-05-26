@@ -72,6 +72,7 @@
 #include <cstring>
 #include <mutex>
 #include <span>
+#include "../../util/bit_intrin.hpp"
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
   #if __has_include(<arm_neon.h>)
@@ -195,7 +196,7 @@ inline void batch_xor_popcount_words_scalar(std::span<const std::uint64_t> a,
     const std::size_t n_ab = (a.size() < b.size()) ? a.size() : b.size();
     const std::size_t bound = (out.size() < n_ab) ? out.size() : n_ab;
     for (std::size_t i = 0; i < bound; ++i) {
-        out[i] = static_cast<std::uint32_t>(__builtin_popcountll(a[i] ^ b[i]));
+        out[i] = static_cast<std::uint32_t>(gnfs::util::popcount64(a[i] ^ b[i]));
     }
 }
 
@@ -211,7 +212,7 @@ total_xor_popcount_words_scalar(std::span<const std::uint64_t> a,
     const std::size_t n = (a.size() < b.size()) ? a.size() : b.size();
     std::uint64_t total = 0;
     for (std::size_t i = 0; i < n; ++i) {
-        total += static_cast<std::uint64_t>(__builtin_popcountll(a[i] ^ b[i]));
+        total += static_cast<std::uint64_t>(gnfs::util::popcount64(a[i] ^ b[i]));
     }
     return total;
 }
@@ -260,7 +261,7 @@ inline void xor_popcount_pair_neon(const std::uint64_t* a_in,
         total += static_cast<std::uint64_t>(vaddvq_u8(counts));
     }
     for (; i < n; ++i) {
-        total += static_cast<std::uint64_t>(__builtin_popcountll(pa[i] ^ pb[i]));
+        total += static_cast<std::uint64_t>(gnfs::util::popcount64(pa[i] ^ pb[i]));
     }
     return total;
 }
@@ -326,7 +327,7 @@ inline void xor_popcount_quad_avx2(const std::uint64_t* a_in,
 #endif
     }
     for (; i < n; ++i) {
-        total += static_cast<std::uint64_t>(__builtin_popcountll(pa[i] ^ pb[i]));
+        total += static_cast<std::uint64_t>(gnfs::util::popcount64(pa[i] ^ pb[i]));
     }
     return total;
 }
@@ -377,7 +378,7 @@ inline void batch_xor_popcount_words(std::span<const std::uint64_t> a,
         xor_popcnt_detail::xor_popcount_pair_neon(pa + i, pb + i, o + i);
     }
     for (; i < bound; ++i) {
-        o[i] = static_cast<std::uint32_t>(__builtin_popcountll(pa[i] ^ pb[i]));
+        o[i] = static_cast<std::uint32_t>(gnfs::util::popcount64(pa[i] ^ pb[i]));
     }
 #elif defined(GNFS_XOR_POPCNT_SIMD_AVX2)
     const std::uint64_t* pa = a.data();
@@ -388,7 +389,7 @@ inline void batch_xor_popcount_words(std::span<const std::uint64_t> a,
         xor_popcnt_detail::xor_popcount_quad_avx2(pa + i, pb + i, o + i);
     }
     for (; i < bound; ++i) {
-        o[i] = static_cast<std::uint32_t>(__builtin_popcountll(pa[i] ^ pb[i]));
+        o[i] = static_cast<std::uint32_t>(gnfs::util::popcount64(pa[i] ^ pb[i]));
     }
 #else
     batch_xor_popcount_words_scalar(a.first(bound),

@@ -1,4 +1,6 @@
 #include "gnfs/linalg/bl_checkpoint.hpp"
+#include "gnfs/util/process.hpp"
+#include "gnfs/util/temp_path.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -8,7 +10,7 @@
 #include <iostream>
 #include <random>
 #include <string>
-#include <unistd.h>
+#include <vector>
 
 using gnfs::linalg::BlockLanczosCheckpoint;
 
@@ -16,9 +18,9 @@ using gnfs::linalg::BlockLanczosCheckpoint;
 static std::string tmp_ckpt_path(const char* label) {
     static int seq = 0;
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "/tmp/gnfs_test_bl_ckpt_%d_%d_%s",
-                  static_cast<int>(::getpid()), ++seq, label);
-    return std::string(buf);
+    std::snprintf(buf, sizeof(buf), "gnfs_test_bl_ckpt_%d_%d_%s",
+                  gnfs::util::process_id(), ++seq, label);
+    return gnfs::util::temp_path(buf);
 }
 
 struct CkptCleanup {
@@ -27,6 +29,15 @@ struct CkptCleanup {
         if (!path.empty()) std::remove(path.c_str());
     }
 };
+
+static void require_save(const BlockLanczosCheckpoint& ck,
+                         const std::string& path) {
+    if (!ck.save(path)) {
+        std::cerr << "ERROR: failed to save checkpoint to " << path
+                  << std::endl;
+        std::abort();
+    }
+}
 
 // Helper: rebuild a small deterministic aug payload for round-trip checks.
 static BlockLanczosCheckpoint make_small_state() {
@@ -50,7 +61,7 @@ void test_roundtrip_small() {
     CkptCleanup cleanup{path};
 
     auto orig = make_small_state();
-    assert(orig.save(path));
+    require_save(orig, path);
     assert(BlockLanczosCheckpoint::exists_and_valid(path));
 
     auto loaded_opt = BlockLanczosCheckpoint::load(path);
@@ -85,7 +96,7 @@ void test_roundtrip_large() {
     std::mt19937_64 rng(42);
     for (auto& w : orig.aug) w = rng();
 
-    assert(orig.save(path));
+    require_save(orig, path);
     auto loaded_opt = BlockLanczosCheckpoint::load(path);
     assert(loaded_opt.has_value());
     auto& loaded = *loaded_opt;
@@ -101,7 +112,7 @@ void test_empty_matrix() {
     CkptCleanup cleanup{path};
 
     BlockLanczosCheckpoint orig;  // all zero
-    assert(orig.save(path));
+    require_save(orig, path);
     auto loaded_opt = BlockLanczosCheckpoint::load(path);
     assert(loaded_opt.has_value());
     assert(loaded_opt->rows == 0);
@@ -141,7 +152,7 @@ void test_corrupt_header_checksum_rejected() {
     CkptCleanup cleanup{path};
 
     auto orig = make_small_state();
-    assert(orig.save(path));
+    require_save(orig, path);
 
     // Flip one byte inside the header (e.g. byte 24 = start of `rows` field).
     {
@@ -167,7 +178,7 @@ void test_corrupt_body_checksum_rejected() {
     CkptCleanup cleanup{path};
 
     auto orig = make_small_state();
-    assert(orig.save(path));
+    require_save(orig, path);
 
     // Flip the very last byte (which is part of body_csum).
     {
@@ -214,12 +225,23 @@ void test_truncated_file_rejected() {
     CkptCleanup cleanup{path};
 
     auto orig = make_small_state();
-    assert(orig.save(path));
+    require_save(orig, path);
 
     // Truncate file to half its size.
     {
         std::ifstream src(path, std::ios::binary | std::ios::ate);
-        auto sz = static_cast<size_t>(src.tellg());
+        if (!src) {
+            std::cerr << "ERROR: failed to open checkpoint for truncation"
+                      << std::endl;
+            std::abort();
+        }
+        auto pos = src.tellg();
+        if (pos == std::ifstream::pos_type(-1)) {
+            std::cerr << "ERROR: failed to determine checkpoint size"
+                      << std::endl;
+            std::abort();
+        }
+        auto sz = static_cast<size_t>(pos);
         src.close();
         std::ifstream rin(path, std::ios::binary);
         std::vector<char> buf(sz / 2);
@@ -237,11 +259,10 @@ void test_truncated_file_rejected() {
 
 void test_load_nonexistent() {
     std::cout << "Testing load nonexistent file..." << std::endl;
-    auto loaded =
-        BlockLanczosCheckpoint::load("/tmp/__nonexistent_bl_ckpt_xyz_12345");
+    const std::string path = gnfs::util::temp_path("__nonexistent_bl_ckpt_xyz_12345");
+    auto loaded = BlockLanczosCheckpoint::load(path);
     assert(!loaded.has_value());
-    assert(!BlockLanczosCheckpoint::exists_and_valid(
-        "/tmp/__nonexistent_bl_ckpt_xyz_12345"));
+    assert(!BlockLanczosCheckpoint::exists_and_valid(path));
     std::cout << "  nonexistent file: PASS" << std::endl;
 }
 
@@ -252,7 +273,7 @@ void test_exists_and_valid_semantics() {
 
     assert(!BlockLanczosCheckpoint::exists_and_valid(path));  // doesn't exist
     auto orig = make_small_state();
-    assert(orig.save(path));
+    require_save(orig, path);
     assert(BlockLanczosCheckpoint::exists_and_valid(path));
 
     std::cout << "  exists_and_valid semantics: PASS" << std::endl;
@@ -263,7 +284,7 @@ void test_remove() {
     auto path = tmp_ckpt_path("remove");
 
     auto orig = make_small_state();
-    assert(orig.save(path));
+    require_save(orig, path);
     assert(BlockLanczosCheckpoint::exists_and_valid(path));
 
     BlockLanczosCheckpoint::remove(path);
@@ -319,13 +340,13 @@ void test_overwrite_existing() {
     CkptCleanup cleanup{path};
 
     auto first = make_small_state();
-    assert(first.save(path));
+    require_save(first, path);
 
     BlockLanczosCheckpoint second = first;
     second.iteration = 999;
     second.pivot_row = 7;
     second.aug[0] = 0x1234'5678'9ABC'DEF0ULL;
-    assert(second.save(path));
+    require_save(second, path);
 
     auto loaded = BlockLanczosCheckpoint::load(path);
     assert(loaded.has_value());

@@ -68,6 +68,7 @@
 // falls back to the scalar path.
 
 #include <atomic>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>

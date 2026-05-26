@@ -1,4 +1,13 @@
+#ifdef _WIN32
+#include <iostream>
+int main() {
+    std::cout << "KrylovSequenceMmap tests skipped on Windows (POSIX mmap unavailable)\n";
+    return 0;
+}
+#else
+
 #include "gnfs/linalg/krylov_sequence_mmap.hpp"
+#include "gnfs/util/temp_path.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -13,9 +22,9 @@ using namespace gnfs::linalg;
 static std::string tmp_path(const char* label) {
     static int seq = 0;
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "/tmp/gnfs_test_krylov_%d_%d_%s",
+    std::snprintf(buf, sizeof(buf), "gnfs_test_krylov_%d_%d_%s",
                   static_cast<int>(::getpid()), ++seq, label);
-    return std::string(buf);
+    return gnfs::util::temp_path(buf);
 }
 
 struct PathCleanup {
@@ -222,7 +231,7 @@ void test_invalid_args() {
 
     bool threw_zero_L = false;
     try {
-        KrylovSequenceMmap seq("/tmp/gnfs_invalid_test", 0, 64);
+        KrylovSequenceMmap seq(gnfs::util::temp_path("gnfs_invalid_test"), 0, 64);
     } catch (const std::invalid_argument&) {
         threw_zero_L = true;
     }
@@ -230,7 +239,7 @@ void test_invalid_args() {
 
     bool threw_zero_entry = false;
     try {
-        KrylovSequenceMmap seq("/tmp/gnfs_invalid_test", 10, 0);
+        KrylovSequenceMmap seq(gnfs::util::temp_path("gnfs_invalid_test"), 10, 0);
     } catch (const std::invalid_argument&) {
         threw_zero_entry = true;
     }
@@ -296,3 +305,5 @@ int main() {
     std::cout << "\n===== All KrylovSequenceMmap tests PASSED =====" << std::endl;
     return 0;
 }
+
+#endif

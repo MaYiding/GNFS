@@ -385,7 +385,8 @@ private:
         }
 
         double d_power_d = std::pow(static_cast<double>(d), static_cast<double>(d));
-        double four_over_pi = 4.0 / M_PI;
+        constexpr double kPi = 3.141592653589793238462643383279502884;
+        double four_over_pi = 4.0 / kPi;
         double four_pi_factor = std::pow(four_over_pi, static_cast<double>(r2));
 
         // Get |discriminant| as double — mpz_abs writes into default-init slot
@@ -545,24 +546,23 @@ private:
 
             // Check if this prime ideal divides (a - b*alpha)
             // P = (p, alpha - r) divides (a - b*alpha) iff a - b*r ≡ 0 (mod p)
-            // Use __int128_t to avoid overflow when b*r approaches INT64_MAX
-            __int128_t val128 = static_cast<__int128_t>(a)
-                              - static_cast<__int128_t>(b) * static_cast<__int128_t>(pi.r);
+            Integer val(a);
+            val -= Integer(b) * Integer(pi.r);
 
             int exp = 0;
-            if (val128 == 0) {
+            if (val.is_zero()) {
                 // a = b*r exactly: (a - bα) = -b(α - r)
                 // v_P = v_p(b) + 1 for unramified degree-1 prime ideal
                 exp = 1;
                 uint64_t b_tmp = b;
-                while (b_tmp % pi.p == 0) {
+                while (b_tmp != 0 && b_tmp % pi.p == 0) {
                     ++exp;
                     b_tmp /= pi.p;
                 }
             } else {
-                while (val128 % static_cast<__int128_t>(pi.p) == 0) {
+                while (mpz_divisible_ui_p(val.get_mpz(), pi.p)) {
                     ++exp;
-                    val128 /= static_cast<__int128_t>(pi.p);
+                    mpz_divexact_ui(val.get_mpz(), val.get_mpz(), pi.p);
                 }
             }
 
@@ -593,24 +593,23 @@ private:
             if (gen.degree != 1) continue;
 
             // Check divisibility: P = (p, α - r) divides (a - bα) iff a - b*r ≡ 0 (mod p)
-            // Use __int128_t to avoid overflow when b*r approaches INT64_MAX
-            __int128_t val128 = static_cast<__int128_t>(a)
-                              - static_cast<__int128_t>(b) * static_cast<__int128_t>(gen.r);
+            Integer val(a);
+            val -= Integer(b) * Integer(gen.r);
 
             int exp = 0;
-            if (val128 == 0) {
+            if (val.is_zero()) {
                 // a = b*r exactly: (a - bα) = -b(α - r)
                 // v_P = v_p(b) + 1 for unramified degree-1 prime ideal
                 exp = 1;
                 uint64_t b_tmp = b;
-                while (b_tmp % gen.p == 0) {
+                while (b_tmp != 0 && b_tmp % gen.p == 0) {
                     ++exp;
                     b_tmp /= gen.p;
                 }
             } else {
-                while (val128 % static_cast<__int128_t>(gen.p) == 0) {
+                while (mpz_divisible_ui_p(val.get_mpz(), gen.p)) {
                     ++exp;
-                    val128 /= static_cast<__int128_t>(gen.p);
+                    mpz_divexact_ui(val.get_mpz(), val.get_mpz(), gen.p);
                 }
             }
 

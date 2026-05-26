@@ -5,6 +5,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include "../util/bit_intrin.hpp"
+
 namespace gnfs::linalg {
 
 /// 稀疏行 - 存储非零列索引（用于 GF(2) 矩阵）
@@ -377,7 +379,7 @@ public:
     [[nodiscard]] size_t popcount() const noexcept {
         size_t count = 0;
         for (uint64_t block : bits_) {
-            count += static_cast<size_t>(__builtin_popcountll(block));
+            count += static_cast<size_t>(gnfs::util::popcount64(block));
         }
         return count;
     }

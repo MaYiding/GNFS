@@ -231,7 +231,7 @@ static void test_single_word_patterns() {
         }
         // Builtin cross-check (gives us a second oracle, in case the
         // hand-counted "expected" value is wrong).
-        std::uint32_t builtin = static_cast<std::uint32_t>(__builtin_popcountll(c.word));
+        std::uint32_t builtin = static_cast<std::uint32_t>(gnfs::util::popcount64(c.word));
         if (out[0] != builtin) {
             std::fprintf(stderr,
                 "  word=%016llx expected=%u dispatch=%u builtin=%u\n",

@@ -8,14 +8,15 @@
 #endif
 
 #include "gnfs/relation/collector.hpp"
+#include "gnfs/util/process.hpp"
 #include "gnfs/util/safe_math.hpp"
+#include "gnfs/util/temp_path.hpp"
 
 #include <cassert>
 #include <cstdio>
 #include <filesystem>
 #include <iostream>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 using namespace gnfs;
@@ -411,8 +412,9 @@ void test_n_divisibility_rejection() {
 /// 生成测试唯一 OOC base path (pid + counter, 避免并发 / 上次未清理)
 static std::string make_tmp_ooc_path(const std::string& label) {
     static int seq = 0;
-    return "/tmp/gnfs_test_collector_ooc_" + std::to_string(::getpid()) +
-           "_" + std::to_string(++seq) + "_" + label;
+    return gnfs::util::temp_path(
+        "gnfs_test_collector_ooc_" + std::to_string(gnfs::util::process_id()) +
+        "_" + std::to_string(++seq) + "_" + label);
 }
 
 /// RAII OOC artifact cleanup
@@ -675,8 +677,8 @@ void test_ooc_legacy_save_load_disabled() {
     collector.add(std::move(rel));
 
     // legacy save / load 在 OOC 模式必须 return false
-    assert(!collector.save("/tmp/unused.bin"));
-    assert(!collector.load("/tmp/unused.bin"));
+    assert(!collector.save(gnfs::util::temp_path("unused.bin")));
+    assert(!collector.load(gnfs::util::temp_path("unused.bin")));
 
     std::cout << "  OOC legacy save/load disabled: PASS" << std::endl;
 }
@@ -764,8 +766,9 @@ void test_ooc_writer_resume_finalized_rejected() {
 
 void test_ooc_writer_resume_nonexistent_rejected() {
     std::cout << "Testing OOC writer resume rejects nonexistent..." << std::endl;
-    auto path = std::string("/tmp/gnfs_test_nonexistent_") +
-                std::to_string(::getpid()) + "_xyz_resume_check";
+    auto path = gnfs::util::temp_path(
+        "gnfs_test_nonexistent_" + std::to_string(gnfs::util::process_id()) +
+        "_xyz_resume_check");
 
     bool threw = false;
     try {

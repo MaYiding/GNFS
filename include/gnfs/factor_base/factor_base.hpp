@@ -2,6 +2,7 @@
 
 #include "../core/types.hpp"
 #include "../core/polynomial_context.hpp"
+#include "../util/bit_intrin.hpp"
 
 #include <cmath>
 #include <iosfwd>
@@ -194,7 +195,7 @@ private:
     // log_p = floor(log2(p) * scale)
     // 使用 clz (count leading zeros) 来快速计算 log2
     if (p <= 1) return 0;
-    uint32_t log2_p = static_cast<uint32_t>(31 - __builtin_clz(p));
+    uint32_t log2_p = static_cast<uint32_t>(31 - gnfs::util::clz32(p));
     return log2_p * static_cast<uint32_t>(scale);
 }
 

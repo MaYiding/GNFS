@@ -377,7 +377,7 @@ static void test_undersized_out_row_weights() {
     for (std::size_t r = 0; r < kSmallRowCount; ++r) {
         for (std::size_t k = 0; k < kRowWords; ++k) {
             expected[r] += static_cast<std::uint64_t>(
-                __builtin_popcountll(matrix[r * kRowWords + k]));
+                gnfs::util::popcount64(matrix[r * kRowWords + k]));
         }
     }
     // Sentinel slot beyond the small span; sentinel must survive both

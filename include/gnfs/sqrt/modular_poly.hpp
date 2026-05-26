@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../core/integer.hpp"
+#include "../util/primes.hpp"
 #include <cassert>
 #include <cstdint>
 #include <stdexcept>
@@ -527,33 +528,12 @@ private:
 
     /// Modular multiplication (handles overflow)
     [[nodiscard]] static uint64_t mul_mod(uint64_t a, uint64_t b, uint64_t p) {
-        __uint128_t prod = static_cast<__uint128_t>(a) * b;
-        return static_cast<uint64_t>(prod % p);
+        return gnfs::util::mul_mod_u64(a, b, p);
     }
 
     /// Modular inverse using extended Euclidean algorithm
     [[nodiscard]] static uint64_t mod_inverse(uint64_t a, uint64_t p) {
-        // Use __int128_t to avoid overflow for p > INT64_MAX
-        __int128_t t = 0, new_t = 1;
-        __int128_t r = static_cast<__int128_t>(p), new_r = static_cast<__int128_t>(a);
-
-        while (new_r != 0) {
-            __int128_t quotient = r / new_r;
-
-            __int128_t temp_t = new_t;
-            new_t = t - quotient * new_t;
-            t = temp_t;
-
-            __int128_t temp_r = new_r;
-            new_r = r - quotient * new_r;
-            r = temp_r;
-        }
-
-        if (t < 0) {
-            t += static_cast<__int128_t>(p);
-        }
-
-        return static_cast<uint64_t>(t);
+        return gnfs::util::pow_mod_u64(a, p - 2, p);
     }
 };
 

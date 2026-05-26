@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../core/integer.hpp"
+#include "../util/bit_intrin.hpp"
 #include "ecm_brent_suyama.hpp"
 
 #include <cassert>
@@ -380,7 +381,7 @@ private:
         Point R1 = mont_double(P, a24, n);
 
         // 从最高有效位开始
-        int bits = 63 - __builtin_clzll(k);
+        int bits = 63 - gnfs::util::clz64(k);
         for (int i = bits - 1; i >= 0; --i) {
             if ((k >> i) & 1) {
                 R0 = mont_add(R0, R1, P, n);

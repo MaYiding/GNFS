@@ -3,6 +3,7 @@
 #include "gnfs/linalg/block_lanczos.hpp"  // BlockVector, DenseGF2_64x64, CSRMatrix, etc.
 #include "gnfs/linalg/mmap_csr_matrix.hpp"
 #include "gnfs/linalg/sparse_matrix.hpp"
+#include "gnfs/util/bit_intrin.hpp"
 #include <array>
 #include <cassert>
 #include <cstdint>
@@ -151,7 +152,7 @@ inline void mksol_accumulate(const BlockVector& V_k,
         uint64_t v = V_k.data[r];
         uint64_t acc = 0;
         while (v) {
-            int i = __builtin_ctzll(v);
+            int i = gnfs::util::ctz64(v);
             acc ^= F_k.rows[i];
             v &= v - 1;
         }

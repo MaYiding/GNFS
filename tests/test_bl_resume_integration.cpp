@@ -12,6 +12,8 @@
 #include "gnfs/linalg/bl_checkpoint.hpp"
 #include "gnfs/linalg/block_lanczos.hpp"
 #include "gnfs/linalg/sparse_matrix.hpp"
+#include "gnfs/util/process.hpp"
+#include "gnfs/util/temp_path.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -21,7 +23,6 @@
 #include <iostream>
 #include <random>
 #include <string>
-#include <unistd.h>
 #include <vector>
 
 using namespace gnfs::linalg;
@@ -31,9 +32,9 @@ using namespace gnfs::linalg;
 static std::string tmp_base_path(const char* label) {
     static int seq = 0;
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "/tmp/gnfs_test_bl_resume_%d_%d_%s",
-                  static_cast<int>(::getpid()), ++seq, label);
-    return std::string(buf);
+    std::snprintf(buf, sizeof(buf), "gnfs_test_bl_resume_%d_%d_%s",
+                  gnfs::util::process_id(), ++seq, label);
+    return gnfs::util::temp_path(buf);
 }
 
 struct CkptCleanup {

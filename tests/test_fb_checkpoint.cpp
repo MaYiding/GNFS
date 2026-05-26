@@ -1,12 +1,13 @@
 #include "gnfs/factor_base/fb_checkpoint.hpp"
 #include "gnfs/core/polynomial_context.hpp"
+#include "gnfs/util/process.hpp"
+#include "gnfs/util/temp_path.hpp"
 
 #include <cassert>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <unistd.h>
 
 using namespace gnfs::factor_base;
 using gnfs::core::Integer;
@@ -17,9 +18,9 @@ using gnfs::core::AlgebraicPrime;
 static std::string tmp_ckpt_path(const char* label) {
     static int seq = 0;
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "/tmp/gnfs_test_fb_ckpt_%d_%d_%s",
-                  static_cast<int>(::getpid()), ++seq, label);
-    return std::string(buf);
+    std::snprintf(buf, sizeof(buf), "gnfs_test_fb_ckpt_%d_%d_%s",
+                  gnfs::util::process_id(), ++seq, label);
+    return gnfs::util::temp_path(buf);
 }
 
 struct CkptCleanup {
@@ -294,7 +295,7 @@ void test_remove_and_nonexistent() {
     assert(!FbCheckpoint::exists_and_valid(path));
 
     bool threw = false;
-    try { (void) FbCheckpoint::load("/tmp/nonexistent_fbck_xx_99999"); }
+    try { (void) FbCheckpoint::load(gnfs::util::temp_path("nonexistent_fbck_xx_99999")); }
     catch (const std::runtime_error&) { threw = true; }
     assert(threw);
     std::cout << "  Remove + nonexistent: PASS" << std::endl;

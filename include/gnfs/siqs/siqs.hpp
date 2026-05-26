@@ -13,6 +13,8 @@
 #include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/linalg/gauss.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
+#include <gnfs/util/bit_intrin.hpp>
+#include <gnfs/util/primes.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -143,7 +145,7 @@ inline uint32_t tonelli_shanks(uint64_t n_u64, uint32_t p) {
 // ================================================================
 
 /// Pollard rho with Brent's cycle detection for 64-bit composites.
-/// Uses __uint128_t for modular multiplication. Very fast for N ≤ 2^48.
+/// Uses portable modular multiplication. Very fast for N ≤ 2^48.
 /// Expected O(N^{1/4}) iterations ≈ ~4K for 48-bit numbers.
 inline uint64_t pollard_rho_64(uint64_t n) {
     if (n % 2 == 0) return 2;
@@ -151,10 +153,10 @@ inline uint64_t pollard_rho_64(uint64_t n) {
     if (n % 5 == 0) return 5;
 
     auto mul_mod = [n](uint64_t a, uint64_t b) -> uint64_t {
-        return static_cast<uint64_t>(static_cast<__uint128_t>(a) * b % n);
+        return gnfs::util::mul_mod_u64(a, b, n);
     };
     auto f = [&](uint64_t x, uint64_t c) -> uint64_t {
-        return (mul_mod(x, x) + c) % n;
+        return gnfs::util::add_mod_u64(mul_mod(x, x), c, n);
     };
 
     for (uint64_t c = 1; c < 256; c++) {
@@ -177,7 +179,7 @@ inline uint64_t pollard_rho_64(uint64_t n) {
                     uint64_t diff = (x > y) ? x - y : y - x;
                     if (diff > 0) q = mul_mod(q, diff);
                 }
-                d = std::__gcd(q, n);
+                d = std::gcd(q, n);
                 k += batch;
             }
             range *= 2;
@@ -190,7 +192,7 @@ inline uint64_t pollard_rho_64(uint64_t n) {
             while (d == 1) {
                 ys = f(ys, c);
                 uint64_t diff = (x > ys) ? x - ys : ys - x;
-                d = std::__gcd(diff, n);
+                d = std::gcd(diff, n);
             }
         }
         if (d > 1 && d < n) return d;
@@ -215,6 +217,10 @@ inline std::pair<uint64_t, uint64_t> split_cofactor_64(uint64_t n) {
     for (uint64_t p = 101; p < 1000; p += 2) {
         if (p * p > n) break;
         if (n % p == 0) return {p, n / p};
+    }
+
+    if (gnfs::util::is_prime_u64(n)) {
+        return {0, 0};
     }
 
     // Pollard rho for larger composites (~1-10μs per number for ≤48 bit)
@@ -782,6 +788,7 @@ inline void sieve_polynomial(
         uint64_t large_prime = 0;
         uint64_t large_prime2 = 0;
 
+#if defined(__SIZEOF_INT128__)
         if (Q.bit_length() <= 127) {
             // Native 128-bit trial division (no GMP) — zero-alloc limb access
             uint64_t lo = mpz_getlimbn(Q.get_mpz(), 0);
@@ -872,7 +879,9 @@ inline void sieve_polynomial(
                     }
                 }
             }
-        } else {
+        } else
+#endif
+        {
             // GMP fallback for very large Q (>127 bits, rare for ≤65 digits)
             mpz_t q_mpz;
             mpz_init(q_mpz);
@@ -1159,7 +1168,7 @@ inline std::vector<std::vector<size_t>> dense_gauss_left_nullspace(
         size_t pc = SIZE_MAX;
         for (size_t w = 0; w < words_per_row; w++) {
             if (M[row][w]) {
-                pc = w * 64 + static_cast<size_t>(__builtin_ctzll(M[row][w]));
+                pc = w * 64 + static_cast<size_t>(gnfs::util::ctz64(M[row][w]));
                 break;
             }
         }

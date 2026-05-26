@@ -1,3 +1,11 @@
+#ifdef _WIN32
+#include <iostream>
+int main() {
+    std::cout << "Distributed sieve tests skipped on Windows (POSIX fork unavailable)\n";
+    return 0;
+}
+#else
+
 // Tests for the multi-process distributed sieve worker pool.
 //
 // Coverage:
@@ -17,6 +25,7 @@
 #include "gnfs/sieve/distributed_sieve.hpp"
 #include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/sieve/special_q.hpp"
+#include "gnfs/util/temp_path.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -116,11 +125,11 @@ struct Fixture {
     }
 };
 
-// Resolve absolute path under /tmp that distinguishes per test run / PID, so
+// Resolve an absolute temp path that distinguishes per test run / PID, so
 // concurrent ctest invocations cannot collide on stale files.
 std::string make_tmp_base(const std::string& tag) {
-    return std::string("/tmp/gnfs_test_distsieve_") +
-           std::to_string(::getpid()) + "_" + tag;
+    return gnfs::util::temp_path(
+        "gnfs_test_distsieve_" + std::to_string(::getpid()) + "_" + tag);
 }
 
 // Singleton fixture: building the factor base costs ~1s, so we share one
@@ -275,7 +284,7 @@ void test_invalid_config() {
 
     bool threw_nw = false;
     try {
-        run(0, "/tmp/xyz");
+        run(0, gnfs::util::temp_path("xyz"));
     } catch (const std::invalid_argument&) {
         threw_nw = true;
     }
@@ -556,3 +565,5 @@ int main() {
     std::cout << "=== All tests PASSED in " << s << "s ===\n";
     return 0;
 }
+
+#endif

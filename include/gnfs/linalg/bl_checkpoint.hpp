@@ -119,33 +119,40 @@ struct BlockLanczosCheckpoint {
         std::ifstream in(path, std::ios::binary);
         if (!in) return std::nullopt;
 
+        in.seekg(0, std::ios::end);
+        const auto end_pos = in.tellg();
+        if (end_pos == std::ifstream::pos_type(-1)) return std::nullopt;
+        const uint64_t file_size = static_cast<uint64_t>(end_pos);
+        in.seekg(0, std::ios::beg);
+        if (!in) return std::nullopt;
+
+        auto read_u64 = [&in](uint64_t& value) noexcept {
+            in.read(reinterpret_cast<char*>(&value), 8);
+            return in.gcount() == 8;
+        };
+
         uint64_t magic = 0, version = 0;
-        in.read(reinterpret_cast<char*>(&magic), 8);
-        in.read(reinterpret_cast<char*>(&version), 8);
-        if (in.gcount() != 8) return std::nullopt;
+        if (!read_u64(magic) || !read_u64(version)) return std::nullopt;
         if (magic != MAGIC) return std::nullopt;
         if (version != VERSION) return std::nullopt;
 
         BlockLanczosCheckpoint ck;
-        in.read(reinterpret_cast<char*>(&ck.rows), 8);
-        in.read(reinterpret_cast<char*>(&ck.cols), 8);
-        in.read(reinterpret_cast<char*>(&ck.aug_words_per_row), 8);
-        in.read(reinterpret_cast<char*>(&ck.pivot_row), 8);
-        in.read(reinterpret_cast<char*>(&ck.cur_col), 8);
-        in.read(reinterpret_cast<char*>(&ck.iteration), 8);
-        if (in.gcount() != 8) return std::nullopt;
+        if (!read_u64(ck.rows) || !read_u64(ck.cols)
+            || !read_u64(ck.aug_words_per_row)
+            || !read_u64(ck.pivot_row) || !read_u64(ck.cur_col)
+            || !read_u64(ck.iteration)) {
+            return std::nullopt;
+        }
 
         uint64_t header_csum = 0;
-        in.read(reinterpret_cast<char*>(&header_csum), 8);
-        if (in.gcount() != 8) return std::nullopt;
+        if (!read_u64(header_csum)) return std::nullopt;
         const uint64_t expected_hcsum = version ^ ck.rows ^ ck.cols
                                        ^ ck.aug_words_per_row ^ ck.pivot_row
                                        ^ ck.cur_col ^ ck.iteration;
         if (header_csum != expected_hcsum) return std::nullopt;
 
         uint64_t aug_word_count = 0;
-        in.read(reinterpret_cast<char*>(&aug_word_count), 8);
-        if (in.gcount() != 8) return std::nullopt;
+        if (!read_u64(aug_word_count)) return std::nullopt;
 
         // Sanity: aug_word_count must equal rows * wpr (overflow-safe check).
         if (ck.rows != 0 && ck.aug_words_per_row != 0) {
@@ -165,6 +172,13 @@ struct BlockLanczosCheckpoint {
         constexpr uint64_t MAX_AUG_WORDS = (64ULL * 1024 * 1024 * 1024) / 8;
         if (aug_word_count > MAX_AUG_WORDS) return std::nullopt;
 
+        constexpr uint64_t FIXED_FILE_BYTES = 11ULL * 8ULL;
+        if (aug_word_count > (UINT64_MAX - FIXED_FILE_BYTES) / 8ULL) {
+            return std::nullopt;
+        }
+        const uint64_t expected_file_size = FIXED_FILE_BYTES + aug_word_count * 8ULL;
+        if (file_size != expected_file_size) return std::nullopt;
+
         ck.aug.resize(aug_word_count);
         if (aug_word_count > 0) {
             in.read(reinterpret_cast<char*>(ck.aug.data()),
@@ -175,8 +189,7 @@ struct BlockLanczosCheckpoint {
         }
 
         uint64_t body_csum = 0;
-        in.read(reinterpret_cast<char*>(&body_csum), 8);
-        if (in.gcount() != 8) return std::nullopt;
+        if (!read_u64(body_csum)) return std::nullopt;
         uint64_t expected_bcsum = 0;
         for (uint64_t w : ck.aug) expected_bcsum ^= w;
         if (body_csum != expected_bcsum) return std::nullopt;
