@@ -1690,6 +1690,8 @@ if(GNFS_BUILD_FUZZERS)
     include(CheckCXXSourceCompiles)
     set(_GNFS_SAVED_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
     set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -fsanitize=fuzzer,address,undefined")
+    # libFuzzer supplies main(); probe with the fuzzer entrypoint instead of
+    # check_cxx_compiler_flag(), whose generated main conflicts at link time.
     check_cxx_source_compiles([=[
         #include <stddef.h>
         #include <stdint.h>
