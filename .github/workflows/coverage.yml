@@ -1,0 +1,88 @@
+name: Coverage
+
+on:
+  push:
+    branches: [ main, dev ]
+    paths:
+      - '.github/workflows/coverage.yml'
+      - 'CMakeLists.txt'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
+  pull_request:
+    branches: [ main, dev ]
+    paths:
+      - '.github/workflows/coverage.yml'
+      - 'CMakeLists.txt'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
+  schedule:
+    - cron: '30 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gcovr:
+    name: gcovr line coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcovr libgmp-dev libntl-dev
+
+      - name: Configure coverage build
+        run: |
+          cmake -B build-coverage \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="--coverage -O0 -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+
+      - name: Build
+        run: cmake --build build-coverage --parallel "$(nproc)"
+
+      - name: Run coverage test subset
+        working-directory: build-coverage
+        run: |
+          ctest --output-on-failure \
+            --label-exclude "slow|heavy|stress|gate" \
+            --parallel "$(nproc)" \
+            --timeout 300
+
+      - name: Generate coverage report
+        run: |
+          mkdir -p coverage
+          gcovr -r . \
+            --object-directory build-coverage \
+            --filter 'src/.*' \
+            --filter 'include/gnfs/.*' \
+            --exclude 'tests/.*' \
+            --txt coverage/summary.txt \
+            --xml coverage/coverage.xml \
+            --html-details coverage/index.html
+          cat coverage/summary.txt
+          {
+            echo '## Coverage'
+            echo
+            echo '```text'
+            cat coverage/summary.txt
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14

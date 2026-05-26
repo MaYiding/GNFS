@@ -6,11 +6,19 @@ on:
   pull_request:
     branches: [ main, dev ]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     name: ${{ matrix.platform_label }}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

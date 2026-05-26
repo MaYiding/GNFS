@@ -17,6 +17,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # 编译警告
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     add_compile_options(-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+    option(GNFS_ENABLE_NATIVE_ARCH "Enable native CPU tuning flags in optimized builds" ON)
     # 优化:
     #   - Apple Silicon: -mcpu=native (隐含 -march)
     #   - Linux x86_64:  -march=native
@@ -24,7 +25,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     #   - 其它:          omit (let toolchain default; avoid GitHub-hosted
     #                    runner CPU surprises producing illegal-instruction
     #                    binaries on differently-provisioned re-runs)
-    if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+    if(NOT GNFS_ENABLE_NATIVE_ARCH)
+        set(GNFS_NATIVE_FLAG "")
+    elseif(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
         set(GNFS_NATIVE_FLAG -mcpu=native)
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
         set(GNFS_NATIVE_FLAG -march=native)
@@ -338,6 +341,7 @@ target_link_libraries(gnfs PRIVATE
 # ============================================================
 
 option(GNFS_BUILD_TESTS "Build tests" ON)
+option(GNFS_BUILD_FUZZERS "Build libFuzzer fuzz targets" OFF)
 
 if(GNFS_BUILD_TESTS)
     enable_testing()
@@ -1661,6 +1665,37 @@ if(GNFS_BUILD_TESTS)
             endif()
         endforeach()
     endif()
+endif()
+
+# ============================================================
+# Fuzz targets
+# ============================================================
+
+if(GNFS_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "GNFS fuzz targets require Clang/libFuzzer")
+    endif()
+    include(CheckCXXCompilerFlag)
+    set(_GNFS_SAVED_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -fsanitize=fuzzer,address,undefined")
+    check_cxx_compiler_flag("-fsanitize=fuzzer,address,undefined" GNFS_HAS_LIBFUZZER)
+    set(CMAKE_REQUIRED_FLAGS "${_GNFS_SAVED_REQUIRED_FLAGS}")
+    if(NOT GNFS_HAS_LIBFUZZER)
+        message(FATAL_ERROR "GNFS fuzz targets require a working libFuzzer runtime")
+    endif()
+
+    add_executable(fuzz_integer
+        tests/fuzz/fuzz_integer.cpp
+    )
+    target_link_libraries(fuzz_integer PRIVATE gnfs_core)
+    target_compile_options(fuzz_integer PRIVATE
+        -fsanitize=fuzzer,address,undefined
+        -fno-omit-frame-pointer
+        -g
+    )
+    target_link_options(fuzz_integer PRIVATE
+        -fsanitize=fuzzer,address,undefined
+    )
 endif()
 
 # ============================================================
