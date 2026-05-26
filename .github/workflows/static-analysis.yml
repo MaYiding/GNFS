@@ -44,7 +44,7 @@ jobs:
       TIDY_WARNINGS_AS_ERRORS: clang-analyzer-*
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -107,7 +107,7 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install yamllint
         run: python3 -m pip install --user yamllint==1.35.1
