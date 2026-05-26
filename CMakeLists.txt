@@ -1687,10 +1687,16 @@ if(GNFS_BUILD_FUZZERS)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         message(FATAL_ERROR "GNFS fuzz targets require Clang/libFuzzer")
     endif()
-    include(CheckCXXCompilerFlag)
+    include(CheckCXXSourceCompiles)
     set(_GNFS_SAVED_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
     set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -fsanitize=fuzzer,address,undefined")
-    check_cxx_compiler_flag("-fsanitize=fuzzer,address,undefined" GNFS_HAS_LIBFUZZER)
+    check_cxx_source_compiles([=[
+        #include <stddef.h>
+        #include <stdint.h>
+        extern "C" int LLVMFuzzerTestOneInput(const uint8_t*, size_t) {
+            return 0;
+        }
+    ]=] GNFS_HAS_LIBFUZZER)
     set(CMAKE_REQUIRED_FLAGS "${_GNFS_SAVED_REQUIRED_FLAGS}")
     if(NOT GNFS_HAS_LIBFUZZER)
         message(FATAL_ERROR "GNFS fuzz targets require a working libFuzzer runtime")
