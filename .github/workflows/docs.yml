@@ -1,0 +1,35 @@
+name: Docs Integrity
+
+on:
+  push:
+    branches: [ main, dev ]
+    paths:
+      - '.github/workflows/docs.yml'
+      - 'scripts/ci/check_markdown_links.py'
+      - '**/*.md'
+  pull_request:
+    branches: [ main, dev ]
+    paths:
+      - '.github/workflows/docs.yml'
+      - 'scripts/ci/check_markdown_links.py'
+      - '**/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  markdown-links:
+    name: Local Markdown links
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check local links
+        run: python3 scripts/ci/check_markdown_links.py

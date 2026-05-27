@@ -38,7 +38,7 @@ jobs:
           -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
 
     - name: Build
-      run: make -C build -j$(nproc)
+      run: make -C build -j"$(nproc)"
 
     - name: Run tests under sanitizers (excluding slow/heavy/stress)
       working-directory: build
@@ -49,7 +49,7 @@ jobs:
       run: |
         ctest --output-on-failure \
           --label-exclude "slow|heavy|stress|gate" \
-          --parallel $(nproc) \
+          --parallel "$(nproc)" \
           --timeout 300
 
   tsan:
@@ -75,7 +75,7 @@ jobs:
           -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
 
     - name: Build
-      run: make -C build -j$(nproc)
+      run: make -C build -j"$(nproc)"
 
     - name: Run tests under ThreadSanitizer (excluding slow/heavy/stress)
       working-directory: build
@@ -84,5 +84,5 @@ jobs:
       run: |
         ctest --output-on-failure \
           --label-exclude "slow|heavy|stress|gate" \
-          --parallel $(nproc) \
+          --parallel "$(nproc)" \
           --timeout 300

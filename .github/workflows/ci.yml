@@ -25,25 +25,39 @@ jobs:
       matrix:
         include:
           # ── Stable matrix (must pass) ──
-          - os: ubuntu-latest
-            platform_label: Linux x86_64 (gcc)
+          - os: ubuntu-24.04
+            platform_label: Linux x86_64 (gcc, Release)
             build_type: Release
+            cxx_compiler: g++
             experimental: false
-          - os: macos-latest
-            platform_label: macOS arm64 (clang)
+          - os: ubuntu-24.04
+            platform_label: Linux x86_64 (clang, Debug)
+            build_type: Debug
+            cxx_compiler: clang++
+            experimental: false
+          - os: ubuntu-22.04
+            platform_label: Linux x86_64 (gcc, Ubuntu 22.04)
             build_type: Release
+            cxx_compiler: g++
+            experimental: false
+          - os: macos-14
+            platform_label: macOS arm64 (clang, Release)
+            build_type: Release
+            cxx_compiler: clang++
             experimental: false
           # ── Linux ARM64 native (free for public repos on github-hosted) ──
           # See https://github.blog/changelog/2025-01-16-linux-arm64-hosted-runners-now-available-for-free-in-public-repositories/
           # Marked experimental in case the runner is unavailable on private repos.
           - os: ubuntu-24.04-arm
-            platform_label: Linux arm64 (gcc)
+            platform_label: Linux arm64 (gcc, Release)
             build_type: Release
+            cxx_compiler: g++
             experimental: true
           # ── Windows MSVC (experimental; vcpkg-based GMP) ──
           - os: windows-latest
-            platform_label: Windows x86_64 (msvc)
+            platform_label: Windows x86_64 (msvc, Release)
             build_type: Release
+            cxx_compiler: ''
             experimental: true
 
     steps:
@@ -53,15 +67,15 @@ jobs:
       uses: actions/cache@v5
       with:
         path: build
-        key: ${{ runner.os }}-${{ runner.arch }}-cmake-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt', 'include/**', 'src/**') }}
+        key: ${{ runner.os }}-${{ runner.arch }}-${{ matrix.cxx_compiler }}-cmake-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt', 'include/**', 'src/**') }}
         restore-keys: |
-          ${{ runner.os }}-${{ runner.arch }}-cmake-${{ matrix.build_type }}-
+          ${{ runner.os }}-${{ runner.arch }}-${{ matrix.cxx_compiler }}-cmake-${{ matrix.build_type }}-
 
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y libgmp-dev libntl-dev
+        sudo apt-get install -y clang libgmp-dev libntl-dev
 
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
@@ -82,7 +96,13 @@ jobs:
     # ── Configure: POSIX vs Windows multi-config split ──
     - name: Configure CMake (POSIX)
       if: runner.os != 'Windows'
-      run: cmake -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+      env:
+        CXX_COMPILER: ${{ matrix.cxx_compiler }}
+      run: |
+        cmake -B build \
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+          -DCMAKE_CXX_COMPILER="${CXX_COMPILER}" \
+          -DGNFS_ENABLE_NATIVE_ARCH=OFF
 
     - name: Configure CMake (Windows)
       if: runner.os == 'Windows'
@@ -90,12 +110,13 @@ jobs:
       run: |
         cmake -B build `
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} `
+          -DGNFS_ENABLE_NATIVE_ARCH=OFF `
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
           -DVCPKG_TARGET_TRIPLET=x64-windows
 
     - name: Build (POSIX)
       if: runner.os != 'Windows'
-      run: make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+      run: cmake --build build --parallel "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 
     - name: Build (Windows)
       if: runner.os == 'Windows'
@@ -106,17 +127,18 @@ jobs:
       if: runner.os != 'Windows'
       working-directory: build
       # CI runners are 2-4 vCPU; full GNFS pipelines (slow/heavy/stress
-      # labels) routinely take 5-60 min and time out. Skip them here —
-      # they are exercised in nightly/manual runs via scripts/test.sh.
+      # labels) routinely take 5-60 min and time out. Benchmarks are kept
+      # out of the PR gate and exercised by benchmark.yml.
       # `gate` label tests still run (RegressionGate ~60s).
       # ARM64 runners can be 2-3x slower than x86 on integer-heavy code;
       # timeout bumped from 120s to 240s to absorb this without affecting
       # x86 (which finishes inside the smaller window anyway).
       run: |
         ctest --output-on-failure \
-          --label-exclude "slow|heavy|stress" \
-          --parallel $(nproc 2>/dev/null || sysctl -n hw.ncpu) \
-          --timeout 240
+          --label-exclude "slow|heavy|stress|bench" \
+          --parallel "$(nproc 2>/dev/null || sysctl -n hw.ncpu)" \
+          --timeout 240 \
+          --no-tests=error
 
     # Windows: multi-config generator places binaries under build/<Config>/,
     # so we pass -C to ctest and use PowerShell parallel-count syntax.
@@ -126,7 +148,25 @@ jobs:
       working-directory: build
       run: |
         ctest --output-on-failure `
-          --label-exclude "slow|heavy|stress" `
+          --label-exclude "slow|heavy|stress|bench" `
           --parallel ([Environment]::ProcessorCount) `
           --timeout 240 `
+          --no-tests=error `
           -C ${{ matrix.build_type }}
+
+  required:
+    name: CI required
+    runs-on: ubuntu-24.04
+    needs: build-and-test
+    if: always()
+    timeout-minutes: 5
+
+    steps:
+    - name: Verify required matrix
+      shell: bash
+      run: |
+        if [[ "${{ needs.build-and-test.result }}" != "success" ]]; then
+          echo "Required CI matrix result: ${{ needs.build-and-test.result }}"
+          exit 1
+        fi
+        echo "Required CI matrix passed."

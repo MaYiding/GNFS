@@ -3,8 +3,9 @@
 //
 // Coverage
 // --------
-// * Availability probe: confirms is_available reports true on macOS
-//   builds with Metal compiled in, false otherwise.
+// * Availability probe: confirms is_available gives a stable answer. A
+//   macOS build can have the Metal framework compiled in while the runner
+//   exposes no usable runtime Metal device, so false is a valid result.
 // * Bit-for-bit equivalence: compares Metal output to the CPU kernels
 //   on a battery of random matrices of varying size and density. This
 //   is the primary correctness invariant — GF(2) XOR is exact, so any
@@ -17,10 +18,10 @@
 // non-Metal builds (or when MTLCreateSystemDefaultDevice returns nil)
 // it confirms the path returns false and the CPU result is taken.
 
-#include <gnfs/linalg/metal_spmv.hpp>
-#include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/detail/spmv_kernels.hpp>
+#include <gnfs/linalg/metal_spmv.hpp>
+#include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/util/thread_pool.hpp>
 
 #include <cstdio>
@@ -30,32 +31,35 @@
 #include <string>
 #include <vector>
 
+using gnfs::linalg::BlockVector;
 using gnfs::linalg::CSRMatrix;
 using gnfs::linalg::SparseMatrix;
 using gnfs::linalg::SparseRow;
-using gnfs::linalg::BlockVector;
 
 static int tests_passed = 0;
 static int tests_failed = 0;
 static int tests_skipped = 0;
 
-#define TEST_ASSERT(cond, msg) do { \
-    if (!(cond)) { \
-        std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, msg); \
-        tests_failed++; \
-        return; \
-    } \
-} while (0)
+#define TEST_ASSERT(cond, msg)                                                                     \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, msg);                             \
+            tests_failed++;                                                                        \
+            return;                                                                                \
+        }                                                                                          \
+    } while (0)
 
-#define TEST_PASS(name) do { \
-    std::printf("  PASS: %s\n", name); \
-    tests_passed++; \
-} while (0)
+#define TEST_PASS(name)                                                                            \
+    do {                                                                                           \
+        std::printf("  PASS: %s\n", name);                                                         \
+        tests_passed++;                                                                            \
+    } while (0)
 
-#define TEST_SKIP(name, reason) do { \
-    std::printf("  SKIP: %s -- %s\n", name, reason); \
-    tests_skipped++; \
-} while (0)
+#define TEST_SKIP(name, reason)                                                                    \
+    do {                                                                                           \
+        std::printf("  SKIP: %s -- %s\n", name, reason);                                           \
+        tests_skipped++;                                                                           \
+    } while (0)
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -64,8 +68,8 @@ static int tests_skipped = 0;
 // Build a random SparseMatrix with `rows` x `cols` and an average of
 // `avg_nnz_per_row` non-zeros per row. The RNG is seeded deterministically
 // so failures are reproducible.
-static SparseMatrix make_random(std::size_t rows, std::size_t cols,
-                                 std::size_t avg_nnz_per_row, uint64_t seed) {
+static SparseMatrix make_random(std::size_t rows, std::size_t cols, std::size_t avg_nnz_per_row,
+                                uint64_t seed) {
     SparseMatrix mat(rows, cols);
     std::mt19937_64 rng(seed);
     std::uniform_int_distribution<uint32_t> col_dist(0, cols ? static_cast<uint32_t>(cols - 1) : 0);
@@ -73,7 +77,8 @@ static SparseMatrix make_random(std::size_t rows, std::size_t cols,
         static_cast<int>(avg_nnz_per_row > 1 ? avg_nnz_per_row - 1 : 0),
         static_cast<int>(avg_nnz_per_row + 1));
     for (std::size_t r = 0; r < rows; ++r) {
-        if (cols == 0) continue;
+        if (cols == 0)
+            continue;
         int n = nnz_dist(rng);
         for (int k = 0; k < n; ++k) {
             mat.set(r, col_dist(rng));
@@ -95,65 +100,63 @@ static BlockVector make_random_vector(std::size_t length, uint64_t seed) {
 // CPU reference: same kernel used by the detail/ template, but inlined
 // here without templating so this test stays decoupled from the
 // dispatcher. Output sizes must match.
-static BlockVector cpu_spmv_forward(const CSRMatrix& m,
-                                     const BlockVector& x) {
+static BlockVector cpu_spmv_forward(const CSRMatrix& m, const BlockVector& x) {
     BlockVector y(m.num_rows());
     for (std::size_t i = 0; i < m.num_rows(); ++i) {
         uint64_t acc = 0;
         const uint32_t* p = m.row_begin(i);
         const uint32_t* e = m.row_end(i);
-        for (; p < e; ++p) acc ^= x.data[*p];
+        for (; p < e; ++p)
+            acc ^= x.data[*p];
         y.data[i] = acc;
     }
     return y;
 }
 
-static BlockVector cpu_spmv_transpose(const CSRMatrix& m,
-                                       const BlockVector& x) {
+static BlockVector cpu_spmv_transpose(const CSRMatrix& m, const BlockVector& x) {
     BlockVector y(m.num_cols());
     for (std::size_t i = 0; i < m.num_rows(); ++i) {
         uint64_t xi = x.data[i];
-        if (xi == 0) continue;
+        if (xi == 0)
+            continue;
         const uint32_t* p = m.row_begin(i);
         const uint32_t* e = m.row_end(i);
-        for (; p < e; ++p) y.data[*p] ^= xi;
+        for (; p < e; ++p)
+            y.data[*p] ^= xi;
     }
     return y;
 }
 
 static bool vectors_equal(const BlockVector& a, const BlockVector& b) {
-    if (a.length != b.length) return false;
+    if (a.length != b.length)
+        return false;
     for (std::size_t i = 0; i < a.length; ++i) {
-        if (a.data[i] != b.data[i]) return false;
+        if (a.data[i] != b.data[i])
+            return false;
     }
     return true;
 }
 
 // Run both the CPU reference and the Metal kernel; assert they agree.
-static bool compare_forward(const SparseMatrix& sp, const BlockVector& x,
-                            const char* label) {
+static bool compare_forward(const SparseMatrix& sp, const BlockVector& x, const char* label) {
     CSRMatrix csr(sp);
     BlockVector cpu_y = cpu_spmv_forward(csr, x);
     BlockVector gpu_y(csr.num_rows());
-    bool ok = gnfs::linalg::metal::spmv_forward(
-        csr.num_rows(), csr.num_cols(),
-        csr.row_offsets_u32(), csr.col_indices().data(),
-        csr.nnz(),
-        x.data.data(), gpu_y.data.data());
+    bool ok = gnfs::linalg::metal::spmv_forward(csr.num_rows(), csr.num_cols(),
+                                                csr.row_offsets_u32(), csr.col_indices().data(),
+                                                csr.nnz(), x.data.data(), gpu_y.data.data());
     if (!ok) {
         std::fprintf(stderr, "    [%s] Metal returned false\n", label);
         return false;
     }
     if (!vectors_equal(cpu_y, gpu_y)) {
-        std::fprintf(stderr, "    [%s] forward mismatch (rows=%zu cols=%zu)\n",
-                     label, sp.num_rows(), sp.num_cols());
+        std::fprintf(stderr, "    [%s] forward mismatch (rows=%zu cols=%zu)\n", label,
+                     sp.num_rows(), sp.num_cols());
         // Print first divergence for debugging
         for (std::size_t i = 0; i < cpu_y.length; ++i) {
             if (cpu_y.data[i] != gpu_y.data[i]) {
-                std::fprintf(stderr, "      row %zu: cpu=%016llx gpu=%016llx\n",
-                             i,
-                             (unsigned long long)cpu_y.data[i],
-                             (unsigned long long)gpu_y.data[i]);
+                std::fprintf(stderr, "      row %zu: cpu=%016llx gpu=%016llx\n", i,
+                             (unsigned long long)cpu_y.data[i], (unsigned long long)gpu_y.data[i]);
                 break;
             }
         }
@@ -162,29 +165,24 @@ static bool compare_forward(const SparseMatrix& sp, const BlockVector& x,
     return true;
 }
 
-static bool compare_transpose(const SparseMatrix& sp, const BlockVector& x,
-                              const char* label) {
+static bool compare_transpose(const SparseMatrix& sp, const BlockVector& x, const char* label) {
     CSRMatrix csr(sp);
     BlockVector cpu_y = cpu_spmv_transpose(csr, x);
     BlockVector gpu_y(csr.num_cols());
-    bool ok = gnfs::linalg::metal::spmv_transpose(
-        csr.num_rows(), csr.num_cols(),
-        csr.row_offsets_u32(), csr.col_indices().data(),
-        csr.nnz(),
-        x.data.data(), gpu_y.data.data());
+    bool ok = gnfs::linalg::metal::spmv_transpose(csr.num_rows(), csr.num_cols(),
+                                                  csr.row_offsets_u32(), csr.col_indices().data(),
+                                                  csr.nnz(), x.data.data(), gpu_y.data.data());
     if (!ok) {
         std::fprintf(stderr, "    [%s] Metal returned false\n", label);
         return false;
     }
     if (!vectors_equal(cpu_y, gpu_y)) {
-        std::fprintf(stderr, "    [%s] transpose mismatch (rows=%zu cols=%zu)\n",
-                     label, sp.num_rows(), sp.num_cols());
+        std::fprintf(stderr, "    [%s] transpose mismatch (rows=%zu cols=%zu)\n", label,
+                     sp.num_rows(), sp.num_cols());
         for (std::size_t i = 0; i < cpu_y.length; ++i) {
             if (cpu_y.data[i] != gpu_y.data[i]) {
-                std::fprintf(stderr, "      col %zu: cpu=%016llx gpu=%016llx\n",
-                             i,
-                             (unsigned long long)cpu_y.data[i],
-                             (unsigned long long)gpu_y.data[i]);
+                std::fprintf(stderr, "      col %zu: cpu=%016llx gpu=%016llx\n", i,
+                             (unsigned long long)cpu_y.data[i], (unsigned long long)gpu_y.data[i]);
                 break;
             }
         }
@@ -203,9 +201,6 @@ static void test_availability() {
     std::printf("[1] availability probe\n");
     bool avail = gnfs::linalg::metal::is_available();
     std::printf("    is_available() = %s\n", avail ? "true" : "false");
-#if defined(__APPLE__) && defined(GNFS_HAVE_METAL)
-    TEST_ASSERT(avail, "Metal should be available on macOS with HAVE_METAL");
-#endif
     // env_opt_in is set by main() at startup, so its value is independent
     // of the probe — exercise it just to make sure the function exists.
     bool env = gnfs::linalg::metal::env_opt_in();
@@ -237,8 +232,7 @@ static void test_forward_small_random() {
     }
     SparseMatrix sp = make_random(100, 100, 5, 0x1234);
     BlockVector x = make_random_vector(100, 0x5678);
-    TEST_ASSERT(compare_forward(sp, x, "100x100"),
-                "100x100 forward mismatch");
+    TEST_ASSERT(compare_forward(sp, x, "100x100"), "100x100 forward mismatch");
     TEST_PASS("forward parity 100x100");
 }
 
@@ -251,8 +245,7 @@ static void test_transpose_small_random() {
     }
     SparseMatrix sp = make_random(100, 100, 5, 0x1234);
     BlockVector x = make_random_vector(100, 0x9abc);
-    TEST_ASSERT(compare_transpose(sp, x, "100x100"),
-                "100x100 transpose mismatch");
+    TEST_ASSERT(compare_transpose(sp, x, "100x100"), "100x100 transpose mismatch");
     TEST_PASS("transpose parity 100x100");
 }
 
@@ -266,8 +259,7 @@ static void test_forward_large_random() {
     }
     SparseMatrix sp = make_random(10000, 10000, 10, 0xdead);
     BlockVector x = make_random_vector(10000, 0xbeef);
-    TEST_ASSERT(compare_forward(sp, x, "10K x 10K"),
-                "10K x 10K forward mismatch");
+    TEST_ASSERT(compare_forward(sp, x, "10K x 10K"), "10K x 10K forward mismatch");
     TEST_PASS("forward parity 10K x 10K");
 }
 
@@ -279,8 +271,7 @@ static void test_transpose_large_random() {
     }
     SparseMatrix sp = make_random(10000, 10000, 10, 0xdead);
     BlockVector x = make_random_vector(10000, 0xcafe);
-    TEST_ASSERT(compare_transpose(sp, x, "10K x 10K"),
-                "10K x 10K transpose mismatch");
+    TEST_ASSERT(compare_transpose(sp, x, "10K x 10K"), "10K x 10K transpose mismatch");
     TEST_PASS("transpose parity 10K x 10K");
 }
 
@@ -294,8 +285,7 @@ static void test_forward_xlarge_random() {
     }
     SparseMatrix sp = make_random(100000, 100000, 15, 0xfaceu);
     BlockVector x = make_random_vector(100000, 0x4242);
-    TEST_ASSERT(compare_forward(sp, x, "100K x 100K"),
-                "100K x 100K forward mismatch");
+    TEST_ASSERT(compare_forward(sp, x, "100K x 100K"), "100K x 100K forward mismatch");
     TEST_PASS("forward parity 100K x 100K");
 }
 
@@ -307,8 +297,7 @@ static void test_transpose_xlarge_random() {
     }
     SparseMatrix sp = make_random(100000, 100000, 15, 0xfaceu);
     BlockVector x = make_random_vector(100000, 0x1357);
-    TEST_ASSERT(compare_transpose(sp, x, "100K x 100K"),
-                "100K x 100K transpose mismatch");
+    TEST_ASSERT(compare_transpose(sp, x, "100K x 100K"), "100K x 100K transpose mismatch");
     TEST_PASS("transpose parity 100K x 100K");
 }
 
@@ -322,12 +311,11 @@ static void test_diagonal() {
     }
     const std::size_t N = 512;
     SparseMatrix sp(N, N);
-    for (std::size_t i = 0; i < N; ++i) sp.set(i, i);
+    for (std::size_t i = 0; i < N; ++i)
+        sp.set(i, i);
     BlockVector x = make_random_vector(N, 0xaa55);
-    TEST_ASSERT(compare_forward(sp, x, "diag forward"),
-                "diagonal forward mismatch");
-    TEST_ASSERT(compare_transpose(sp, x, "diag transpose"),
-                "diagonal transpose mismatch");
+    TEST_ASSERT(compare_forward(sp, x, "diag forward"), "diagonal forward mismatch");
+    TEST_ASSERT(compare_transpose(sp, x, "diag transpose"), "diagonal transpose mismatch");
     TEST_PASS("diagonal");
 }
 
@@ -340,13 +328,12 @@ static void test_single_row() {
         return;
     }
     SparseMatrix sp(1, 1024);
-    for (std::size_t c = 0; c < 1024; c += 7) sp.set(0, c);
+    for (std::size_t c = 0; c < 1024; c += 7)
+        sp.set(0, c);
     BlockVector x = make_random_vector(1024, 0xbabe);
-    TEST_ASSERT(compare_forward(sp, x, "single-row forward"),
-                "single-row forward mismatch");
+    TEST_ASSERT(compare_forward(sp, x, "single-row forward"), "single-row forward mismatch");
     BlockVector xt = make_random_vector(1, 0x7777);
-    TEST_ASSERT(compare_transpose(sp, xt, "single-row transpose"),
-                "single-row transpose mismatch");
+    TEST_ASSERT(compare_transpose(sp, xt, "single-row transpose"), "single-row transpose mismatch");
     TEST_PASS("single-row");
 }
 
@@ -362,13 +349,11 @@ static void test_empty_matrix() {
     CSRMatrix csr(sp);
     BlockVector y(0);
     bool ok = gnfs::linalg::metal::spmv_forward(
-        0, 100, csr.row_offsets_u32(), csr.col_indices().data(),
-        0, x.data.data(), y.data.data());
+        0, 100, csr.row_offsets_u32(), csr.col_indices().data(), 0, x.data.data(), y.data.data());
     TEST_ASSERT(ok, "empty forward should return true");
     BlockVector yt(100);
     ok = gnfs::linalg::metal::spmv_transpose(
-        0, 100, csr.row_offsets_u32(), csr.col_indices().data(),
-        0, x.data.data(), yt.data.data());
+        0, 100, csr.row_offsets_u32(), csr.col_indices().data(), 0, x.data.data(), yt.data.data());
     TEST_ASSERT(ok, "empty transpose should return true");
     for (std::size_t i = 0; i < 100; ++i) {
         TEST_ASSERT(yt.data[i] == 0, "empty transpose should zero output");
@@ -385,11 +370,9 @@ static void test_zero_vector_input() {
         return;
     }
     SparseMatrix sp = make_random(2048, 2048, 4, 0x4abc);
-    BlockVector x(2048);  // all zero
-    TEST_ASSERT(compare_forward(sp, x, "zero input forward"),
-                "zero input forward mismatch");
-    TEST_ASSERT(compare_transpose(sp, x, "zero input transpose"),
-                "zero input transpose mismatch");
+    BlockVector x(2048); // all zero
+    TEST_ASSERT(compare_forward(sp, x, "zero input forward"), "zero input forward mismatch");
+    TEST_ASSERT(compare_transpose(sp, x, "zero input transpose"), "zero input transpose mismatch");
     TEST_PASS("zero vector input");
 }
 
@@ -403,11 +386,9 @@ static void test_non_square_wide() {
     }
     SparseMatrix sp = make_random(5000, 4500, 8, 0x9999);
     BlockVector x = make_random_vector(4500, 0x1212);
-    TEST_ASSERT(compare_forward(sp, x, "wide forward"),
-                "wide forward mismatch");
+    TEST_ASSERT(compare_forward(sp, x, "wide forward"), "wide forward mismatch");
     BlockVector xt = make_random_vector(5000, 0x3434);
-    TEST_ASSERT(compare_transpose(sp, xt, "wide transpose"),
-                "wide transpose mismatch");
+    TEST_ASSERT(compare_transpose(sp, xt, "wide transpose"), "wide transpose mismatch");
     TEST_PASS("non-square wide");
 }
 
@@ -420,11 +401,9 @@ static void test_non_square_thin() {
     }
     SparseMatrix sp = make_random(4500, 5000, 8, 0x5555);
     BlockVector x = make_random_vector(5000, 0x6767);
-    TEST_ASSERT(compare_forward(sp, x, "thin forward"),
-                "thin forward mismatch");
+    TEST_ASSERT(compare_forward(sp, x, "thin forward"), "thin forward mismatch");
     BlockVector xt = make_random_vector(4500, 0x8989);
-    TEST_ASSERT(compare_transpose(sp, xt, "thin transpose"),
-                "thin transpose mismatch");
+    TEST_ASSERT(compare_transpose(sp, xt, "thin transpose"), "thin transpose mismatch");
     TEST_PASS("non-square thin");
 }
 
@@ -468,14 +447,12 @@ static void test_dispatcher_integration() {
     gnfs::util::ThreadPool pool(4);
     BlockVector dispatched_y(20000);
     gnfs::linalg::detail::spmv_forward(csr, x, dispatched_y, pool);
-    TEST_ASSERT(vectors_equal(cpu_y_ref, dispatched_y),
-                "dispatcher forward != CPU reference");
+    TEST_ASSERT(vectors_equal(cpu_y_ref, dispatched_y), "dispatcher forward != CPU reference");
 
     BlockVector cpu_yt_ref = cpu_spmv_transpose(csr, x);
     BlockVector dispatched_yt(20000);
     gnfs::linalg::detail::spmv_transpose(csr, x, dispatched_yt, pool);
-    TEST_ASSERT(vectors_equal(cpu_yt_ref, dispatched_yt),
-                "dispatcher transpose != CPU reference");
+    TEST_ASSERT(vectors_equal(cpu_yt_ref, dispatched_yt), "dispatcher transpose != CPU reference");
     TEST_PASS("dispatcher integration");
 }
 

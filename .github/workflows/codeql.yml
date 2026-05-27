@@ -39,7 +39,7 @@ jobs:
     - name: Build
       run: |
         cmake -B build -DCMAKE_BUILD_TYPE=Release
-        make -C build -j$(nproc)
+        make -C build -j"$(nproc)"
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4

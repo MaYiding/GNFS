@@ -1,0 +1,114 @@
+name: CMake Install Smoke
+
+on:
+  push:
+    branches: [ main, dev ]
+    paths:
+      - '.github/workflows/cmake-install.yml'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'include/**'
+      - 'src/**'
+  pull_request:
+    branches: [ main, dev ]
+    paths:
+      - '.github/workflows/cmake-install.yml'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'include/**'
+      - 'src/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cmake-install-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install-smoke:
+    name: ${{ matrix.platform_label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform_label: Linux install smoke
+          - os: macos-14
+            platform_label: macOS install smoke
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgmp-dev libntl-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install gmp ntl
+
+      - name: Configure package build
+        run: |
+          cmake -B build-install \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGNFS_BUILD_TESTS=OFF \
+            -DGNFS_ENABLE_NATIVE_ARCH=OFF
+
+      - name: Build and install
+        run: |
+          jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+          cmake --build build-install --parallel "${jobs}"
+          cmake --install build-install --prefix "${PWD}/install-root"
+
+      - name: Run installed CLI
+        run: ./install-root/bin/gnfs --version
+
+      - name: Compile downstream consumer against install tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/gnfs_consumer.cpp <<'CPP'
+          #include <gnfs/api/factorizer.hpp>
+
+          #include <iostream>
+          #include <string>
+
+          int main() {
+              auto result = gnfs::api::factorize(std::string("91"));
+              if (!result.success || result.factors.size() < 2) {
+                  std::cerr << result.to_text();
+                  return 1;
+              }
+              std::cout << result.to_text();
+              return 0;
+          }
+          CPP
+
+          prefix="${PWD}/install-root"
+          compile_flags=(-std=c++20 -I"${prefix}/include")
+          link_flags=("${prefix}/lib/libgnfs_core.a" -lntl -lgmp -pthread)
+
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+              gmp_prefix="$(brew --prefix gmp)"
+              ntl_prefix="$(brew --prefix ntl)"
+              compile_flags+=(-I"${gmp_prefix}/include" -I"${ntl_prefix}/include")
+              link_flags=(
+                -L"${ntl_prefix}/lib"
+                -L"${gmp_prefix}/lib"
+                "${link_flags[@]}"
+                -framework Metal
+                -framework Foundation
+              )
+          fi
+
+          c++ "${compile_flags[@]}" /tmp/gnfs_consumer.cpp \
+            "${link_flags[@]}" \
+            -o /tmp/gnfs_consumer
+          /tmp/gnfs_consumer
