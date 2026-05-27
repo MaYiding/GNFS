@@ -1,0 +1,52 @@
+name: Script Checks
+
+on:
+  push:
+    branches: [ main, dev ]
+    paths:
+      - '.github/workflows/scripts.yml'
+      - 'scripts/**'
+      - 'tests/*.sh'
+  pull_request:
+    branches: [ main, dev ]
+    paths:
+      - '.github/workflows/scripts.yml'
+      - 'scripts/**'
+      - 'tests/*.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scripts-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  syntax:
+    name: zsh/bash syntax
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install shells
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh
+
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r file; do
+            zsh -n "${file}"
+          done < <(git ls-files 'scripts/*.sh' 'scripts/perf/*.sh' 'tests/*.sh' \
+            | xargs grep -l '^#!/usr/bin/env zsh')
+
+          bash -n scripts/v3_roi_estimator.sh
+
+      - name: Check test catalog
+        run: zsh ./scripts/test.sh list >/tmp/gnfs-test-list.txt
