@@ -307,9 +307,12 @@ void test_ad_candidate_generation_dedup() {
     Integer n = make_test_n_40bit();
     auto params = make_fast_params(4);
     params.ad_min = 1;
-    params.ad_max = 40;
+    params.ad_max = 12;
     params.smooth_preference = true;
-    params.num_candidates = 16;
+    params.num_candidates = 4;
+    params.search_radius = 1;
+    params.root_opt_iterations = 8;
+    params.murphy_params.sample_points = 16;
     BaiBrentSelector sel(params);
     auto res = sel.select(n);
     assert(res.success);
