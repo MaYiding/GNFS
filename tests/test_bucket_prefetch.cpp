@@ -361,9 +361,9 @@ void test_perf_info_40bit() {
     auto off = timed("0");
     auto on = timed("1");
 
-    std::cout << "  perf info (40-bit, single SQ): "
-              << "prefetch_off=" << off.first << "ms (" << off.second
-              << " cands), prefetch_on=" << on.first << "ms (" << on.second << " cands)\n";
+    std::cout << "  perf info (40-bit, single SQ): ";
+    std::cout << "prefetch_off=" << off.first << "ms (" << off.second << " cands), ";
+    std::cout << "prefetch_on=" << on.first << "ms (" << on.second << " cands)\n";
     // No assertion — prefetch is an optimisation hint, not a guarantee.
     TEST_PASS("perf info (no assert)");
 }

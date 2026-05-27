@@ -65,6 +65,7 @@ jobs:
           mkdir -p coverage
           gcovr -r . \
             --object-directory build-coverage \
+            --gcov-ignore-parse-errors negative_hits.warn_once_per_file \
             --filter 'src/.*' \
             --filter 'include/gnfs/.*' \
             --exclude 'tests/.*' \

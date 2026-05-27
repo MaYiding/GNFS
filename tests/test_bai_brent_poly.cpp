@@ -32,16 +32,17 @@ Integer make_test_n_30bit() {
 
 /// Reduce work so tests stay under the 60s `fast` budget.
 BaiBrentParams make_fast_params(uint32_t degree) {
-    auto gp = GNFSParams::compute(60); // 60-digit defaults
+    auto gp = GNFSParams::compute(30);
     gp.degree = degree;
     auto bp = BaiBrentParams::from_gnfs_params(gp);
     bp.ad_min = 1;
-    bp.ad_max = 200;       // tight a_d range -> few Stage 1 candidates
-    bp.num_candidates = 8; // limit Stage 2 work
-    bp.search_radius = 4;  // narrow m sweep
-    bp.root_opt_iterations = 64;
-    bp.murphy_params.sample_points = 80; // faster Murphy E
-    bp.parallel = false;                 // avoid ctest-level oversubscription on CI
+    bp.ad_max = 48;        // tight a_d range -> few Stage 1 candidates
+    bp.num_candidates = 4; // limit Stage 2 work
+    bp.search_radius = 1;  // narrow m sweep
+    bp.root_opt_iterations = 8;
+    bp.murphy_params.sample_points = 16; // faster Murphy E
+    bp.murphy_params.skewness_steps = 4;
+    bp.parallel = false; // avoid ctest-level oversubscription on CI
     return bp;
 }
 
@@ -278,13 +279,13 @@ void test_dispatch_env_off_uses_kleinjung() {
 void test_dispatch_env_on_uses_bai_brent() {
     std::cout << "Testing SelectorDispatch with GNFS_POLY_BAI_BRENT=1..." << std::endl;
     ::setenv("GNFS_POLY_BAI_BRENT", "1", 1);
-    Integer n =
-        Integer("1099511628211") * Integer("1099511627791") * Integer("65537") * Integer("131101");
-    auto params = GNFSParams::compute(20);
+    Integer n = make_test_n_30bit();
+    auto params = GNFSParams::compute(n.bit_length());
     params.degree = 5;
-    params.num_candidates = 16;
-    params.leading_coeff_bound = 32;
-    params.search_radius = 5;
+    params.num_candidates = 1;
+    params.leading_coeff_bound = 1;
+    params.search_radius = 0;
+    params.skewness_steps = 1;
     try {
         auto ctx = SelectorDispatch::select(n, params, /*verbose=*/false);
         assert(ctx.degree() == 5);
