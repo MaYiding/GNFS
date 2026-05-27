@@ -1,11 +1,11 @@
 /// test_bai_brent_poly.cpp - BaiBrentSelector (non-monic polynomial selection) tests
 
-#include "gnfs/polynomial/bai_brent_selector.hpp"
-#include "gnfs/polynomial/kleinjung_selector.hpp"
-#include "gnfs/polynomial/selector_dispatch.hpp"
-#include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/core/integer.hpp"
 #include "gnfs/core/params.hpp"
+#include "gnfs/polynomial/bai_brent_selector.hpp"
+#include "gnfs/polynomial/base_m.hpp"
+#include "gnfs/polynomial/kleinjung_selector.hpp"
+#include "gnfs/polynomial/selector_dispatch.hpp"
 
 #include <cassert>
 #include <cstdlib>
@@ -32,20 +32,20 @@ Integer make_test_n_30bit() {
 
 /// Reduce work so tests stay under the 60s `fast` budget.
 BaiBrentParams make_fast_params(uint32_t degree) {
-    auto gp = GNFSParams::compute(60);  // 60-digit defaults
+    auto gp = GNFSParams::compute(60); // 60-digit defaults
     gp.degree = degree;
     auto bp = BaiBrentParams::from_gnfs_params(gp);
     bp.ad_min = 1;
-    bp.ad_max = 200;             // tight a_d range -> few Stage 1 candidates
-    bp.num_candidates = 8;       // limit Stage 2 work
-    bp.search_radius = 4;        // narrow m sweep
+    bp.ad_max = 200;       // tight a_d range -> few Stage 1 candidates
+    bp.num_candidates = 8; // limit Stage 2 work
+    bp.search_radius = 4;  // narrow m sweep
     bp.root_opt_iterations = 64;
-    bp.murphy_params.sample_points = 80;  // faster Murphy E
-    bp.parallel = false;         // avoid ctest-level oversubscription on CI
+    bp.murphy_params.sample_points = 80; // faster Murphy E
+    bp.parallel = false;                 // avoid ctest-level oversubscription on CI
     return bp;
 }
 
-}  // namespace
+} // namespace
 
 void test_smoke_select_succeeds() {
     std::cout << "Testing BaiBrent select() succeeds on 40-bit N..." << std::endl;
@@ -60,8 +60,7 @@ void test_smoke_select_succeeds() {
     assert(res.g.degree() == 1);
     assert(!res.m.is_zero());
     std::cout << "  Murphy log_E = " << res.score.log_e_score
-              << ", a_d = " << res.f.leading_coeff().to_string()
-              << ", m=" << res.m.to_string()
+              << ", a_d = " << res.f.leading_coeff().to_string() << ", m=" << res.m.to_string()
               << ", cands_tested=" << res.candidates_tested << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
@@ -101,8 +100,8 @@ void test_gcd_ad_m_is_one() {
                   << ", m=" << res.m.to_string() << ") = " << g.to_string() << std::endl;
     }
     assert(g == one);
-    std::cout << "  gcd(" << res.f.leading_coeff().to_string()
-              << ", " << res.m.to_string() << ") = 1" << std::endl;
+    std::cout << "  gcd(" << res.f.leading_coeff().to_string() << ", " << res.m.to_string()
+              << ") = 1" << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -138,8 +137,8 @@ void test_degree_5() {
     std::cout << "Testing degree 5..." << std::endl;
     // For degree 5 with small N, the base-m expansion has very small m, so we
     // need a larger N for valid Stage 1 candidates. Use a larger composite.
-    Integer n = Integer("1099511628211") * Integer("1099511627791")
-             * Integer("65537") * Integer("131101");
+    Integer n =
+        Integer("1099511628211") * Integer("1099511627791") * Integer("65537") * Integer("131101");
     auto params = make_fast_params(5);
     params.ad_max = 100;
     params.num_candidates = 10;
@@ -189,8 +188,8 @@ void test_murphy_score_finite() {
     assert(res.score.log_e_score > -1e99);
     assert(res.score.log_e_score < 1e99);
     assert(res.score.skewness > 0.0);
-    std::cout << "  log_E=" << res.score.log_e_score
-              << ", skewness=" << res.score.skewness << std::endl;
+    std::cout << "  log_E=" << res.score.log_e_score << ", skewness=" << res.score.skewness
+              << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -252,15 +251,14 @@ void test_baseline_comparison_vs_basem() {
     std::cout << "  BaiBrent log_E = " << bb_res.score.log_e_score
               << ", BaseM degree = " << base_res.degree << std::endl;
     std::cout << "  PASSED (BaiBrent produced valid score; direct vs BaseM "
-              << "Murphy comparison not applicable -- BaseM has no E score)"
-              << std::endl;
+              << "Murphy comparison not applicable -- BaseM has no E score)" << std::endl;
 }
 
 void test_dispatch_env_off_uses_kleinjung() {
     std::cout << "Testing SelectorDispatch with GNFS_POLY_BAI_BRENT unset..." << std::endl;
     ::unsetenv("GNFS_POLY_BAI_BRENT");
-    Integer n = Integer("1099511628211") * Integer("1099511627791")
-             * Integer("65537") * Integer("131101");
+    Integer n =
+        Integer("1099511628211") * Integer("1099511627791") * Integer("65537") * Integer("131101");
     auto params = GNFSParams::compute(20);
     params.degree = 5;
     params.num_candidates = 16;
@@ -280,8 +278,8 @@ void test_dispatch_env_off_uses_kleinjung() {
 void test_dispatch_env_on_uses_bai_brent() {
     std::cout << "Testing SelectorDispatch with GNFS_POLY_BAI_BRENT=1..." << std::endl;
     ::setenv("GNFS_POLY_BAI_BRENT", "1", 1);
-    Integer n = Integer("1099511628211") * Integer("1099511627791")
-             * Integer("65537") * Integer("131101");
+    Integer n =
+        Integer("1099511628211") * Integer("1099511627791") * Integer("65537") * Integer("131101");
     auto params = GNFSParams::compute(20);
     params.degree = 5;
     params.num_candidates = 16;

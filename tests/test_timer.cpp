@@ -22,7 +22,7 @@ void busy_for(std::chrono::nanoseconds dur) {
     }
 }
 
-}  // namespace
+} // namespace
 
 void test_default_state() {
     std::cout << "Testing Timer default state..." << std::endl;
@@ -169,7 +169,7 @@ void test_running_query_while_active() {
     int64_t snapshot2 = t.elapsed_ns();
 
     assert(snapshot1 > 0);
-    assert(snapshot2 > snapshot1);  // Time advances
+    assert(snapshot2 > snapshot1); // Time advances
 
     t.stop();
 
@@ -215,7 +215,7 @@ void test_scoped_timer() {
         Timer::ScopedTimer guard(t);
         assert(t.is_running());
         busy_for(1ms);
-    }  // guard destructor stops timer
+    } // guard destructor stops timer
 
     assert(!t.is_running());
     assert(t.elapsed_ns() > 0);
@@ -248,11 +248,11 @@ void test_scoped_timer_move() {
 
         // Move outer into inner; outer becomes inactive
         Timer::ScopedTimer inner(std::move(outer));
-        assert(t.is_running());  // Inner now owns; timer still running
+        assert(t.is_running()); // Inner now owns; timer still running
 
         busy_for(500us);
-    }  // Inner destroyed first (last-declared, first-destroyed), stops timer.
-       // Outer destroyed after; its active_=false so no-op.
+    } // Inner destroyed first (last-declared, first-destroyed), stops timer.
+      // Outer destroyed after; its active_=false so no-op.
 
     assert(!t.is_running());
     assert(t.elapsed_ns() > 0);
@@ -270,7 +270,7 @@ void test_stopwatch_basic() {
     double elapsed_ms = sw.elapsed_ms();
 
     assert(elapsed_s > 0);
-    assert(elapsed_ms > 0);  // Don't pin magnitude; busy spin can be CPU-starved
+    assert(elapsed_ms > 0); // Don't pin magnitude; busy spin can be CPU-starved
     assert(std::abs(elapsed_s * 1000.0 - elapsed_ms) < 1e-3);
 
     std::cout << "  Stopwatch basic: PASS" << std::endl;
@@ -282,7 +282,7 @@ void test_stopwatch_restart() {
     Stopwatch sw;
     busy_for(2ms);
     double before = sw.elapsed_ms();
-    assert(before > 0);  // Busy-spin advances clock at least minimally
+    assert(before > 0); // Busy-spin advances clock at least minimally
 
     sw.restart();
     double after_restart = sw.elapsed_ms();
