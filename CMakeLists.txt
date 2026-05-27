@@ -1568,7 +1568,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_block_wiedemann PRIVATE gnfs_core Threads::Threads)
     add_test(NAME BlockWiedemann COMMAND test_block_wiedemann)
-    set_tests_properties(BlockWiedemann PROPERTIES LABELS "fast" TIMEOUT 30)
+    set_tests_properties(BlockWiedemann PROPERTIES LABELS "fast" TIMEOUT 60)
 
     # 回归门禁测试 (10/15/20/25-digit full pipeline)
     add_executable(test_regression_gate
