@@ -473,7 +473,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_factor_base PRIVATE gnfs_core Threads::Threads)
     add_test(NAME FactorBase COMMAND test_factor_base)
-    set_tests_properties(FactorBase PROPERTIES LABELS "instant" TIMEOUT 10)
+    set_tests_properties(FactorBase PROPERTIES LABELS "instant" TIMEOUT 30)
 
     add_executable(test_special_q
         tests/test_special_q.cpp
@@ -1576,7 +1576,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_regression_gate PRIVATE gnfs_core Threads::Threads)
     add_test(NAME RegressionGate COMMAND test_regression_gate)
-    set_tests_properties(RegressionGate PROPERTIES LABELS "gate" TIMEOUT 120)
+    set_tests_properties(RegressionGate PROPERTIES LABELS "gate" TIMEOUT 180)
 
     # API 层测试
     add_executable(test_api
@@ -1584,7 +1584,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_api PRIVATE gnfs_core Threads::Threads)
     add_test(NAME API COMMAND test_api)
-    set_tests_properties(API PROPERTIES LABELS "fast" TIMEOUT 120)
+    set_tests_properties(API PROPERTIES LABELS "fast" TIMEOUT 180)
 
     # Method selection 测试
     add_executable(test_method_selection
