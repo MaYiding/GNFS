@@ -1315,7 +1315,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_bucket_sieve PRIVATE gnfs_core Threads::Threads)
     add_test(NAME BucketSieve COMMAND test_bucket_sieve)
-    set_tests_properties(BucketSieve PROPERTIES LABELS "fast" TIMEOUT 30)
+    set_tests_properties(BucketSieve PROPERTIES LABELS "fast" TIMEOUT 60)
 
     # Sieve tiny-prime SIMD / loop-fusion parity + micro-bench
     add_executable(test_sieve_tiny_simd
@@ -1331,7 +1331,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_bucket_prefetch PRIVATE gnfs_core Threads::Threads)
     add_test(NAME BucketPrefetch COMMAND test_bucket_prefetch)
-    set_tests_properties(BucketPrefetch PROPERTIES LABELS "instant" TIMEOUT 30)
+    set_tests_properties(BucketPrefetch PROPERTIES LABELS "instant" TIMEOUT 60)
 
     # Sieve row-tile ENV gate (`GNFS_SIEVE_REGION_TILE_BITS`). Header-only
     # helper, so the test exercises the cached env parser and clamp

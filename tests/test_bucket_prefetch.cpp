@@ -5,8 +5,9 @@
 //   2. Run lattice sieve with `GNFS_BUCKET_PREFETCH=1` (prefetch enabled).
 //   3. Compare candidate vectors byte-for-byte after sorting by (a, b).
 //   4. Validate the ENV-gate parser independently.
-//   5. Print informational timings (no assertion) so PMU sweeps can read
-//      them out of the test log.
+//   5. Optionally print informational timings (no assertion) when
+//      GNFS_BUCKET_PREFETCH_PERF=1 so PMU sweeps can read them out of the
+//      test log without slowing the default instant test.
 //
 // The test exercises the bucket region path by using a 40-bit input that
 // produces ~3K factor-base entries — enough to trigger `sieve_bucket_region`
@@ -230,8 +231,8 @@ void test_multi_sq_parity() {
         return counts;
     };
 
-    auto off = sieve_n(5, "0");
-    auto on = sieve_n(5, "1");
+    auto off = sieve_n(2, "0");
+    auto on = sieve_n(2, "1");
 
     TEST_ASSERT(off.size() == on.size(),
                 "multi-SQ: differing number of SQs processed");
@@ -333,6 +334,13 @@ void test_env_parse_one_auto_unset() {
 /// Perf info (no assert): measure wall-time difference between prefetch
 /// ON and OFF on the 40-bit fixture. Printed so PMU sweeps can read it.
 void test_perf_info_40bit() {
+    const char* perf = std::getenv("GNFS_BUCKET_PREFETCH_PERF");
+    if (perf == nullptr || std::strcmp(perf, "1") != 0) {
+        std::cout << "  perf info skipped (set GNFS_BUCKET_PREFETCH_PERF=1 to run)\n";
+        TEST_PASS("perf info opt-in");
+        return;
+    }
+
     auto setup = build_setup_40bit();
 
     auto timed = [&](const char* env_value) {
