@@ -116,7 +116,7 @@ jobs:
 
     - name: Build (POSIX)
       if: runner.os != 'Windows'
-      run: cmake --build build --parallel $(nproc 2>/dev/null || sysctl -n hw.ncpu)
+      run: cmake --build build --parallel "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 
     - name: Build (Windows)
       if: runner.os == 'Windows'
@@ -136,7 +136,7 @@ jobs:
       run: |
         ctest --output-on-failure \
           --label-exclude "slow|heavy|stress|bench" \
-          --parallel $(nproc 2>/dev/null || sysctl -n hw.ncpu) \
+          --parallel "$(nproc 2>/dev/null || sysctl -n hw.ncpu)" \
           --timeout 240 \
           --no-tests=error
 

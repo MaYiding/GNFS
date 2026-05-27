@@ -36,7 +36,8 @@ jobs:
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
       - name: Check workflow syntax and expressions
-        run: "${HOME}/go/bin/actionlint -color"
+        run: |
+          "${HOME}/go/bin/actionlint" -color
 
   zizmor:
     name: zizmor CI/CD security scan
@@ -59,4 +60,4 @@ jobs:
           persona: regular
           min-severity: medium
           min-confidence: medium
-          version: v1.7.12
+          version: v1.25.2
