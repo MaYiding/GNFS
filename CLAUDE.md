@@ -550,7 +550,8 @@ main (合并后仍然稳定)
 - 构建产物：`build/`, `build-*/`, `xcode-build/`, `cmake-build-*/`, `*.o`, `*.a`, `*.dylib`, `*.dSYM/`
 - IDE：`.vscode/`, `.idea/`, `*.xcodeproj/`, `.clangd/`, `compile_commands.json`
 - OS：`.DS_Store`, `Thumbs.db`
-- 会话级持久化文件（**不入 git**）：`task_plan.md`, `task_plan_*.md`, `findings.md`, `progress.md`, `BACKLOG.md`, `RESOLVED.md`
+- 会话级持久化文件（**不入 git**）：`task_plan.md`, `task_plan_*.md`, `findings.md`, `progress.md`, `BACKLOG.md`, `RESOLVED.md`, `TODO.md`
+- 用户待办模板：`TODO.md.example` 入 Git；复制为根目录 `TODO.md` 后可用 `stop_hook_prevent_infinite_loop: true|false` 配置 Stop Hook 防循环策略
 - 根目录代码污染防护：`/*.cpp`, `/*.hpp`, `/*.sh`（代码必须放 `include/` `src/` `tests/`，脚本放 `scripts/`）
 - 遗留废弃文档：`/BUILD.md`, `/QUICKSTART.md`, `/PROGRESS_UPDATE.md` 等多个 root *.md
 - 性能采集：`bench/results/*.trace`, `bench/results/*.pmu.json`, `*.profraw`, `*.profdata`, `pgo-profiles/`

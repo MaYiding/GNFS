@@ -1,0 +1,22 @@
+# TODO.md — 用户待办清单示例
+
+> 复制为根目录 `TODO.md` 后使用。`TODO.md` 不入 Git；本示例入 Git，作用类似 `.env.example`。
+> Stop Hook 只检查 `TODO.md`，不检查 `BACKLOG.md` 或 `task_plan.md`。
+
+---
+
+# Hook 配置
+
+# true：默认模式。Hook 第一次发现未完成项时阻止结束；第二次 Stop 尝试会放行，防止无限循环。
+# false：严格模式。即使 `stop_hook_active=true`，也继续阻止结束，直到所有待办标记为 [x]。
+stop_hook_prevent_infinite_loop: true
+
+---
+
+# 用户待办
+
+<!-- 在下方书写你的待办事项。完成一项后将 [ ] 改成 [x]。 -->
+
+- [ ] 示例：修复一个用户明确指定的问题
+- [ ] 示例：运行相关验证命令
+- [x] 示例：已完成的任务
