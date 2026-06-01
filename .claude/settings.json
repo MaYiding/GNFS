@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/mayiding/Desktop/GitMy/GNFS/.claude/hooks/stop-todo-check.sh",
+            "timeout": 10,
+            "statusMessage": "Checking TODO.md..."
+          }
+        ]
+      }
+    ]
+  }
+}

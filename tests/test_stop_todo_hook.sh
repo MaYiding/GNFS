@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 HOOK="${PROJECT_ROOT}/.claude/hooks/stop-todo-check.sh"
+PROJECT_SETTINGS="${PROJECT_ROOT}/.claude/settings.json"
 
 TMPDIR=$(mktemp -d)
 cleanup() {
@@ -111,5 +112,30 @@ STOP_HOOK_PREVENT_INFINITE_LOOP=false
 * [ ] support env-style config aliases
 EOF
 assert_block "uppercase env-style config disables guard" "${TMPDIR}/alias" true 1
+
+python3 - "${PROJECT_SETTINGS}" "${HOOK}" <<'PY'
+import json
+import pathlib
+import sys
+
+settings_path = pathlib.Path(sys.argv[1])
+hook_path = pathlib.Path(sys.argv[2])
+
+if not settings_path.is_file():
+    raise SystemExit(".claude/settings.json is missing; Claude Code does not read .claude/hooks.json as project settings")
+
+settings = json.loads(settings_path.read_text())
+stop_groups = settings.get("hooks", {}).get("Stop", [])
+commands = [
+    handler.get("command")
+    for group in stop_groups
+    for handler in group.get("hooks", [])
+    if handler.get("type") == "command"
+]
+
+if str(hook_path) not in commands:
+    raise SystemExit("Stop hook command is not registered in .claude/settings.json")
+PY
+pass "Claude project settings register Stop hook"
 
 echo "Stop TODO hook tests passed."
