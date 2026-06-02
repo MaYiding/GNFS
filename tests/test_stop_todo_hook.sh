@@ -132,9 +132,18 @@ commands = [
     for handler in group.get("hooks", [])
     if handler.get("type") == "command"
 ]
+portable_command = "${CLAUDE_PROJECT_DIR}/.claude/hooks/stop-todo-check.sh"
 
-if str(hook_path) not in commands:
-    raise SystemExit("Stop hook command is not registered in .claude/settings.json")
+if portable_command not in commands:
+    raise SystemExit("Stop hook command is not registered portably in .claude/settings.json")
+
+resolved = [
+    command.replace("${CLAUDE_PROJECT_DIR}", str(hook_path.parents[2]))
+    for command in commands
+    if isinstance(command, str)
+]
+if str(hook_path) not in resolved:
+    raise SystemExit("Stop hook command does not resolve to the project hook script")
 PY
 pass "Claude project settings register Stop hook"
 
