@@ -25,7 +25,14 @@ run_hook() {
     local cwd="$1"
     local active="$2"
     local out_file="$3"
-    printf '{"cwd": "%s", "stop_hook_active": %s}' "${cwd}" "${active}" | "${HOOK}" > "${out_file}"
+    python3 - "${cwd}" "${active}" <<'PY' | "${HOOK}" > "${out_file}"
+import json
+import sys
+
+cwd = sys.argv[1]
+active = sys.argv[2].lower() == "true"
+print(json.dumps({"cwd": cwd, "stop_hook_active": active}))
+PY
 }
 
 assert_allow() {
