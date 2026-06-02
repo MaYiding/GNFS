@@ -33,7 +33,7 @@ cd build && ctest --output-on-failure
 
 ```bash
 # ── 日常开发 (最常用) ──
-./scripts/test.sh                      # 冒烟测试: 39 个 instant 测试, ~5s (Debug) / ~5s (Release)
+./scripts/test.sh                      # 冒烟测试: instant 层核心测试
 ./scripts/test.sh smoke                # 同上
 ./scripts/test.sh changed              # 根据 git diff 自动选择受影响模块
 ./scripts/test.sh changed --deep       # 同上 + 级联依赖模块
@@ -49,11 +49,11 @@ cd build && ctest --output-on-failure
 ./scripts/test.sh run sqrt             # 自动补 test_ 前缀
 
 # ── 合并门禁 ──
-./scripts/test.sh gate                 # 二级门禁: smoke + 回归 (17/27/40/81-bit) ~18s Debug / ~9s Release
-./scripts/test.sh gate --quick         # 快速门禁: 仅 smoke ~5s
+./scripts/test.sh gate                 # 二级门禁: smoke + 回归 (17/27/40/81-bit)
+./scripts/test.sh gate --quick         # 快速门禁: 仅 smoke
 
 # ── E2E & 渐进 ──
-./scripts/test.sh e2e                  # 完整 GNFS 流水线 (slow, ~5min)
+./scripts/test.sh e2e                  # 完整 GNFS 流水线 (slow)
 ./scripts/test.sh L1                   # 渐进式 Level 1 only
 ./scripts/test.sh progressive 1 3      # L1 到 L3
 
@@ -83,21 +83,25 @@ cd build && ctest --output-on-failure
 
 | 分级 | 超时 | 测试 | 包含在 |
 |------|------|------|--------|
-| **instant** | 10s | 39 个纯单元测试 (test_integer / test_linalg / test_sqrt / test_murphy / test_filter / test_v0_bfs_policy / test_clique_merger / test_ooc_policy / test_sieve_ecore_qos 等) — 完整清单见 `scripts/test.sh` SMOKE_TESTS 数组 | smoke, module, changed |
-| **fast** | 60s | test_sieve_basic | module, changed |
-| **slow** | 120-300s | test_regression_gate, test_kleinjung, test_lattice_sieve, test_factor_with_kleinjung, test_gnfs_e2e | gate, module --slow, e2e, full |
-| **heavy** | 600-3600s | test_kleinjung_large, test_gnfs_progressive, test_25digit | progressive, nightly, bench |
-| **stress** | 43200s | test_stress (L1=50-digit, L2=60-digit) | stress, nightly (L1 only) |
+| **instant** | 10-60s | 纯单元 / helper correctness；当前 118 个 CTest 标签 | smoke, module, changed, PR cross-platform, sanitizer, coverage |
+| **fast** | 60-180s | 中速集成 / 资源敏感 helper；当前 16 个 CTest 标签 | module, changed, Release PR quick matrix |
+| **gate** | 240s | test_regression_gate (17/27/40/81-bit) | gate, Linux Release deep gate |
+| **slow** | 120-900s | 真实 GNFS / API pipeline (test_api, test_kleinjung, test_factor_with_kleinjung, test_gnfs_e2e 等) | module --slow, e2e, full, Linux Release deep gate, nightly |
+| **heavy** | 600-3600s | test_kleinjung_large, test_25digit；progressive L3-L5 属手动 heavy 路径 | progressive, nightly, bench |
+| **bench** | 120-300s | micro-benchmark，不作为正确性门禁 | benchmark workflow only |
+| **stress** | 43200s | test_stress (L1=50-digit, L2=60-digit) | manual / dedicated long-run workflow |
+
+详细实测依据、CI 选择规则和新增测试检查清单见 [`docs/testing-ci-policy.md`](docs/testing-ci-policy.md)。
 
 ### 使用场景对照
 
 | 场景 | 推荐命令 | 预计时间 |
 |------|----------|----------|
-| 改了一个函数，快速验证 | `./scripts/test.sh` | ~5s |
-| 改了 linalg 模块 | `./scripts/test.sh module linalg` | ~1s |
-| 改了核心流程，要 E2E | `./scripts/test.sh e2e` | ~5min |
+| 改了一个函数，快速验证 | `./scripts/test.sh` | instant 层，按当前硬件实测 |
+| 改了 linalg 模块 | `./scripts/test.sh module linalg` | instant+fast 子集 |
+| 改了核心流程，要 E2E | `./scripts/test.sh e2e` | Debug 可到分钟级 |
 | 不确定改了什么 | `./scripts/test.sh changed` | 自动判断 |
-| 特性分支合并前验证 | `./scripts/test.sh gate` | ~9s (Release) |
+| 特性分支合并前验证 | `./scripts/test.sh gate` | Debug 可到 2-5min，Release 通常更快 |
 | 大改动，全面回归 | `./scripts/test.sh full` | ~10min |
 | PR 前最终验证 | `./scripts/test.sh thorough` | ~30min |
 | 跑完整性能基准 | `./scripts/test.sh bench --save` | ~1hr |
@@ -106,7 +110,7 @@ cd build && ctest --output-on-failure
 
 ### 超时机制
 
-- 每个测试有**分级默认超时** (instant=10s, fast=60s, slow=180-300s, heavy=600-3600s)
+- 每个测试有**分级默认超时** (instant=10-60s, fast=60-180s, gate=240s, slow=120-900s, heavy=600-3600s)
 - `--timeout N` 可全局覆盖所有测试的超时秒数
 - 超时后自动杀进程，显示 "TIMEOUT" + 最后 10 行输出
 - 慢测试运行时每 10 秒打一次心跳 `[10s][20s]...` 表明进程还活着
@@ -433,19 +437,20 @@ local pad=$(( 48 - ${#msg} ))
 
 **优先使用 `scripts/test.sh`**（见上方「自动化测试工作流」），它封装了编译、超时、报告的全部逻辑。
 
-- **日常开发**: `./scripts/test.sh` (冒烟, ~5s) 或 `./scripts/test.sh changed` (自动检测)
+- **日常开发**: `./scripts/test.sh` (instant 冒烟) 或 `./scripts/test.sh changed` (自动检测)
 - **模块改动**: `./scripts/test.sh module <模块名>` (如 linalg, sqrt, sieve)
 - **核心改动**: `./scripts/test.sh e2e` (完整 GNFS 流水线)
 - **PR 前**: `./scripts/test.sh full` 或 `./scripts/test.sh thorough`
-- **注意超时**: slow 测试 (kleinjung, lattice_sieve, gnfs_e2e) 可能需要数分钟，脚本自带超时保护
+- **注意超时**: gate/slow 测试 (regression_gate, kleinjung, factor_with_kleinjung, gnfs_e2e, api) 在 Debug 下可能需要数分钟，脚本自带超时保护
 - 测试框架：自定义 assert 宏（非 GoogleTest/Catch2）
 - 查看全部测试列表: `./scripts/test.sh list`
 
 ### CI 上跑的测试子集
-- GitHub runners (2-4 vCPU) 跑不动 slow/heavy/stress 测试,会超时
-- `.github/workflows/ci.yml` 用 `ctest --label-exclude "slow|heavy|stress" --parallel N`
-- 新增测试在 CMakeLists.txt 必须打 LABELS:`set_tests_properties(<Name> PROPERTIES LABELS "<tier>" TIMEOUT <s>)`,tier 与 `scripts/test.sh` 的 TEST_TIER 保持一致
-- Sanitizers 还排除 `gate` label 和 `^(Integration|API)$`(后者是 Debug 下 pre-existing assert,见 BACKLOG.md)
+- Cross-platform PR quick matrix: Linux Release 跑 `instant|fast`; Linux Debug 跑 `instant`; macOS Release 跑 `instant|fast`; Windows Release 跑 `instant`; Linux arm64 跑 experimental `instant`
+- Linux Release deep gate: 跑 `gate|slow`,排除 `heavy|stress|bench`,并用 `--parallel 1` 避免真实 pipeline 竞争导致假超时
+- Sanitizers / coverage: 只跑 `instant`,排除 `bench|slow|heavy|stress|gate`
+- 新增测试在 `CMakeLists.txt` 必须打 `LABELS` 和 `TIMEOUT`: `set_tests_properties(<Name> PROPERTIES LABELS "<tier>" TIMEOUT <s>)`;tier 与 `scripts/test.sh` 的 `TEST_TIER` 保持一致
+- 新增二进制必须同步加入 `scripts/test.sh` 的 `ALL_TEST_BINARIES`, `TEST_TIMEOUT`, `TEST_TIER`;若不是纯 instant,不要加入 `SMOKE_TESTS`
 
 ## CI 调试常用命令
 

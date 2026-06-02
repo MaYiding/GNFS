@@ -587,7 +587,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_sieve_basic PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SieveIntegration COMMAND test_sieve_basic)
-    set_tests_properties(SieveIntegration PROPERTIES LABELS "fast" TIMEOUT 60)
+    set_tests_properties(SieveIntegration PROPERTIES LABELS "fast" TIMEOUT 120)
 
     add_executable(test_sieve_checkpoint
         tests/test_sieve_checkpoint.cpp
@@ -615,7 +615,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_distributed_sieve PRIVATE gnfs_core Threads::Threads)
     add_test(NAME DistributedSieve COMMAND test_distributed_sieve)
-    set_tests_properties(DistributedSieve PROPERTIES LABELS "fast" TIMEOUT 60)
+    set_tests_properties(DistributedSieve PROPERTIES LABELS "fast" TIMEOUT 180)
 
     add_executable(test_poly_checkpoint
         tests/test_poly_checkpoint.cpp
@@ -1299,7 +1299,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_integration PRIVATE gnfs_core Threads::Threads)
     add_test(NAME Integration COMMAND test_integration)
-    set_tests_properties(Integration PROPERTIES LABELS "fast" TIMEOUT 30)
+    set_tests_properties(Integration PROPERTIES LABELS "fast" TIMEOUT 120)
 
     # 25-digit 性能测试
     add_executable(test_25digit
@@ -1324,7 +1324,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_bucket_sieve PRIVATE gnfs_core Threads::Threads)
     add_test(NAME BucketSieve COMMAND test_bucket_sieve)
-    set_tests_properties(BucketSieve PROPERTIES LABELS "fast" TIMEOUT 60)
+    set_tests_properties(BucketSieve PROPERTIES LABELS "fast" TIMEOUT 120)
 
     # Sieve tiny-prime SIMD / loop-fusion parity + micro-bench
     add_executable(test_sieve_tiny_simd
@@ -1340,7 +1340,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_bucket_prefetch PRIVATE gnfs_core Threads::Threads)
     add_test(NAME BucketPrefetch COMMAND test_bucket_prefetch)
-    set_tests_properties(BucketPrefetch PROPERTIES LABELS "instant" TIMEOUT 60)
+    set_tests_properties(BucketPrefetch PROPERTIES LABELS "fast" TIMEOUT 120)
 
     # Sieve row-tile ENV gate (`GNFS_SIEVE_REGION_TILE_BITS`). Header-only
     # helper, so the test exercises the cached env parser and clamp
@@ -1585,7 +1585,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_regression_gate PRIVATE gnfs_core Threads::Threads)
     add_test(NAME RegressionGate COMMAND test_regression_gate)
-    set_tests_properties(RegressionGate PROPERTIES LABELS "gate" TIMEOUT 180)
+    set_tests_properties(RegressionGate PROPERTIES LABELS "gate" TIMEOUT 240)
 
     # API 层测试
     add_executable(test_api
@@ -1593,7 +1593,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_api PRIVATE gnfs_core Threads::Threads)
     add_test(NAME API COMMAND test_api)
-    set_tests_properties(API PROPERTIES LABELS "fast" TIMEOUT 180)
+    set_tests_properties(API PROPERTIES LABELS "slow" TIMEOUT 300)
 
     # Method selection 测试
     add_executable(test_method_selection

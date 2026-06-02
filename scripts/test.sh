@@ -8,7 +8,7 @@
 #
 # 基础模式:
 #   ./scripts/test.sh                     # 默认: 编译 + 冒烟测试 (最快)
-#   ./scripts/test.sh smoke               # 冒烟测试: 仅最快的核心测试 (~5s)
+#   ./scripts/test.sh smoke               # 冒烟测试: instant 层核心测试
 #   ./scripts/test.sh unit                # 全部 ctest 单元测试
 #   ./scripts/test.sh build               # 仅编译，不跑测试
 #
@@ -274,6 +274,35 @@ ALL_TEST_BINARIES=(
     test_mpz_mod_parallel
     test_mpz_gcd_parallel
     test_mpz_mul_parallel
+    test_api
+    test_bai_brent_poly
+    test_batch_ecm_bench
+    test_bl_resume_integration
+    test_block_wiedemann
+    test_bw_krylov_mmap_integration
+    test_bw_krylov_parallel
+    test_clique_merger
+    test_clique_merger_50d_synthetic
+    test_cofactor_batch_bench
+    test_distributed_sieve
+    test_filter_radix_sort
+    test_full_resume
+    test_i18n
+    test_krylov_sequence_mmap
+    test_lp_bloom
+    test_lp_key_hash
+    test_merger_parallel
+    test_method_selection
+    test_mmap_csr
+    test_ooc_relations
+    test_root_property_cache
+    test_sieve_checkpoint
+    test_sieve_ecore_qos
+    test_siqs
+    test_siqs_e2e
+    test_trial_div_simd
+    test_trial_wheel_bench
+    test_work_stealing
 )
 
 # 模块 → 测试二进制映射 (仅 instant+fast 的测试)
@@ -289,7 +318,7 @@ MODULE_TESTS=(
     linalg         "test_linalg test_sge_batch_pivots test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_schirokauer_parallel test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_spmv_simd test_transpose_blocked test_popcount_simd test_and_popcnt_simd test_xor_words_simd test_and_words_simd test_xor_popcnt_simd test_row_popcount_simd test_krylov_compress test_krylov_compression test_bl_checkpoint test_bl_resume_integration test_linalg_progress"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_class_group test_couveignes_large_class_group test_couveignes_parallel"
-    api            "test_api test_i18n test_method_selection"
+    api            "test_i18n test_method_selection"
     siqs           "test_siqs"
 )
 
@@ -299,11 +328,11 @@ MODULE_SLOW_TESTS=(
     polynomial     "test_kleinjung test_kleinjung_large test_factor_with_kleinjung"
     sieve          "test_lattice_sieve"
     cofactor       "test_ecm_brent_suyama_bench"
-    api            "test_full_resume"
+    api            "test_api test_full_resume"
     siqs           "test_siqs_e2e"
 )
 
-# 冒烟测试子集 (仅 < 1s 的纯单元测试，绝不包含实际 GNFS 运算)
+# 冒烟测试子集: instant 层核心测试，绝不包含真实 GNFS pipeline / bench / stress
 typeset -a SMOKE_TESTS
 SMOKE_TESTS=(
     test_integer
@@ -376,7 +405,6 @@ SMOKE_TESTS=(
     test_batch_trial
     test_ecm_curve_pool
     test_sigma_seed_pool
-    test_ecm_stage2_parallel
     test_ecm_stage1_parallel
     test_batch_inversion
     test_trial_div_simd
@@ -385,7 +413,6 @@ SMOKE_TESTS=(
     test_cofactor_result_cache
     test_brent_pollard_rho_parallel
     test_sieve_tiny_simd
-    test_bucket_prefetch
     test_sieve_region_tile
     test_sieve_norm_tile
     test_lattice_basis_parallel
@@ -422,11 +449,12 @@ SMOKE_TESTS=(
     test_mpz_mul_parallel
 )
 
-# ── 每个测试的超时秒数 (基于实测) ──
-# instant (<1s): 大部分单元测试
-# fast (1-30s): sieve_basic
-# slow (30s-5min): kleinjung, lattice_sieve, gnfs_e2e, factor_with_kleinjung
-# heavy (5min+): gnfs_progressive, 25digit, kleinjung_large
+# ── 每个测试的超时秒数 (基于 2026-06-02 macOS Debug/Release 实测) ──
+# instant: 纯单元 / helper correctness，单跑通常 <5s
+# fast: 中等集成 / 资源敏感 helper，Debug 单跑通常 <30s
+# gate: 多规模正确性门禁，Release PR 跑，Debug 可到 2min
+# slow: 真实 GNFS / API pipeline，Debug 可到 5min
+# heavy/stress/bench: 手动、nightly 或 informational
 typeset -A TEST_TIMEOUT
 TEST_TIMEOUT=(
     test_integer             10
@@ -488,26 +516,30 @@ TEST_TIMEOUT=(
     test_schirokauer_parallel 60
     test_edge_cases          10
     test_integration         30
-    test_sieve_basic         60
-    test_distributed_sieve   60
-    test_kleinjung           180
+    test_sieve_basic         120
+    test_sieve_checkpoint    10
+    test_distributed_sieve   180
+    test_kleinjung           360
     test_kleinjung_large     600
-    test_factor_with_kleinjung 300
+    test_factor_with_kleinjung 900
     test_lattice_sieve       180
     test_gnfs_e2e            300
     test_squfof              10
     test_brent_pollard_rho   60
     test_survival_predictor  30
     test_batch_ecm           60
+    test_batch_ecm_bench     300
     test_block_wiedemann     30
+    test_bw_krylov_mmap_integration 60
+    test_krylov_sequence_mmap 10
     test_ooc_relations       10
     test_mmap_csr            10
-    test_bucket_sieve        30
-    test_regression_gate     120
+    test_bucket_sieve        120
+    test_regression_gate     240
     test_gnfs_progressive    3600
     test_25digit             1800
     test_stress              43200
-    test_api                 120
+    test_api                 300
     test_i18n                10
     test_method_selection    60
     test_clique_merger       10
@@ -527,7 +559,7 @@ TEST_TIMEOUT=(
     test_cofactor_result_cache 60
     test_brent_pollard_rho_parallel 60
     test_sieve_tiny_simd     10
-    test_bucket_prefetch     30
+    test_bucket_prefetch     120
     test_sieve_region_tile   60
     test_sieve_norm_tile     60
     test_lattice_basis_parallel 60
@@ -553,6 +585,8 @@ TEST_TIMEOUT=(
     test_ecm_brent_suyama    30
     test_ecm_brent_suyama_bench 120
     test_bai_brent_poly      60
+    test_trial_wheel_bench   120
+    test_cofactor_batch_bench 120
     test_poly_checkpoint     10
     test_fb_checkpoint       10
     test_bl_checkpoint       10
@@ -568,6 +602,8 @@ TEST_TIMEOUT=(
     test_mpz_mod_parallel    60
     test_mpz_gcd_parallel    60
     test_mpz_mul_parallel    60
+    test_work_stealing       10
+    test_siqs                180
 )
 
 # 测试速度分级 (用于 list 显示)
@@ -576,6 +612,7 @@ TEST_TIER=(
     test_integer             "instant"
     test_small_vector        "instant"
     test_thread_pool         "instant"
+    test_logger              "instant"
     test_primes              "instant"
     test_timer               "instant"
     test_mmap_file           "instant"
@@ -632,6 +669,7 @@ TEST_TIER=(
     test_edge_cases          "instant"
     test_integration         "fast"
     test_sieve_basic         "fast"
+    test_sieve_checkpoint    "instant"
     test_distributed_sieve   "fast"
     test_kleinjung           "slow"
     test_kleinjung_large     "heavy"
@@ -642,15 +680,18 @@ TEST_TIER=(
     test_brent_pollard_rho   "instant"
     test_survival_predictor  "instant"
     test_batch_ecm           "fast"
+    test_batch_ecm_bench     "bench"
     test_block_wiedemann     "fast"
+    test_bw_krylov_mmap_integration "fast"
+    test_krylov_sequence_mmap "instant"
     test_ooc_relations       "instant"
     test_mmap_csr            "instant"
     test_bucket_sieve        "fast"
-    test_regression_gate     "slow"
+    test_regression_gate     "gate"
     test_gnfs_progressive    "heavy"
     test_25digit             "heavy"
-    test_stress              "heavy"
-    test_api                 "fast"
+    test_stress              "stress"
+    test_api                 "slow"
     test_i18n                "instant"
     test_method_selection    "instant"
     test_siqs                "fast"
@@ -671,7 +712,7 @@ TEST_TIER=(
     test_cofactor_result_cache "instant"
     test_brent_pollard_rho_parallel "instant"
     test_sieve_tiny_simd     "instant"
-    test_bucket_prefetch     "instant"
+    test_bucket_prefetch     "fast"
     test_sieve_region_tile   "instant"
     test_sieve_norm_tile     "instant"
     test_lattice_basis_parallel "instant"
@@ -697,6 +738,8 @@ TEST_TIER=(
     test_ecm_brent_suyama    "instant"
     test_ecm_brent_suyama_bench "slow"
     test_bai_brent_poly      "fast"
+    test_trial_wheel_bench   "bench"
+    test_cofactor_batch_bench "bench"
     test_poly_checkpoint     "instant"
     test_fb_checkpoint       "instant"
     test_bl_checkpoint       "instant"
@@ -712,6 +755,7 @@ TEST_TIER=(
     test_mpz_mod_parallel    "instant"
     test_mpz_gcd_parallel    "instant"
     test_mpz_mul_parallel    "instant"
+    test_work_stealing       "instant"
 )
 
 # 模块依赖图 (改了 A 模块 → 需要额外测试的下游模块)
@@ -992,7 +1036,7 @@ run_single_test() {
     local tier="${TEST_TIER[$name]:-unknown}"
 
     # 显示开始运行 (非安静模式下，对慢测试提前告知)
-    if (( !QUIET )) && [[ "$tier" == "slow" || "$tier" == "heavy" ]]; then
+    if (( !QUIET )) && [[ "$tier" == "gate" || "$tier" == "slow" || "$tier" == "heavy" || "$tier" == "stress" ]]; then
         printf "  ${DIM}%s (timeout=%ss, tier=%s)${RESET} " "$name" "$test_timeout" "$tier" >&2
     fi
 
@@ -1009,7 +1053,7 @@ run_single_test() {
     TOTAL_TIME_MS=$((TOTAL_TIME_MS + elapsed))
 
     # 清除心跳点的行
-    if (( !QUIET )) && [[ "$tier" == "slow" || "$tier" == "heavy" ]]; then
+    if (( !QUIET )) && [[ "$tier" == "gate" || "$tier" == "slow" || "$tier" == "heavy" || "$tier" == "stress" ]]; then
         printf "\r\033[K" >&2
     fi
 
@@ -1169,7 +1213,7 @@ show_summary() {
 
 do_smoke() {
     log_header "冒烟测试 (Smoke)"
-    log_info "运行最关键的 ${#SMOKE_TESTS[@]} 个测试 (目标 <10s)"
+    log_info "运行 ${#SMOKE_TESTS[@]} 个 instant 层核心测试"
     echo ""
 
     for test in "${SMOKE_TESTS[@]}"; do
@@ -1555,9 +1599,8 @@ do_nightly() {
 # 模式: 合并门禁 (Merge Gate)
 # ============================================================
 # 三级递进式验证，任一级失败立即退出:
-#   Level 1: Smoke tests (22 个 instant 测试, ~2s)
-#   Level 2: Progressive L1-L3 (8-40 bit 全流水线, ~10min)
-#   Level 3: 25-digit 全流水线回归 (~1s)
+#   Level 1: Smoke tests (instant 核心测试)
+#   Level 2: RegressionGate (17/27/40/81-bit 全流水线)
 #
 # 用法:
 #   ./scripts/test.sh gate            # 运行完整门禁
@@ -1843,8 +1886,11 @@ do_list() {
         case "$_tier" in
             instant) _tc="${GREEN}" ;;
             fast)    _tc="${CYAN}" ;;
+            gate)    _tc="${MAGENTA}" ;;
             slow)    _tc="${YELLOW}" ;;
             heavy)   _tc="${RED}" ;;
+            stress)  _tc="${RED}" ;;
+            bench)   _tc="${MAGENTA}" ;;
             *)       _tc="${DIM}" ;;
         esac
         echo "  ${_em} $(printf '%-32s' "$t") ${_tc}$(printf '%-10s' "$_tier")${RESET} ${_tout}s"
@@ -1855,15 +1901,17 @@ do_list() {
     echo ""
     echo "           ${DIM}▲ 耗时${RESET}"
     echo "           │"
-    echo "           │   ${RED}stress${RESET}         50/60-digit 压力测试
-           │   ${MAGENTA}nightly${RESET}        thorough + L4 + L5 + stress L1"
+    echo "           │   ${RED}stress${RESET}         50/60-digit 压力测试"
+    echo "           │   ${MAGENTA}bench${RESET}          informational micro-bench"
+    echo "           │   ${MAGENTA}nightly${RESET}        thorough + L4 + L5 + stress L1"
     echo "           │   ${MAGENTA}thorough${RESET}       全模块 + 集成 + L1-L3"
     echo "           │   ${YELLOW}full${RESET}           ctest + E2E + L1-L2"
+    echo "           │   ${MAGENTA}gate${RESET}           smoke + 17/27/40/81-bit 回归"
     echo "           │   ${CYAN}integration${RESET}    跨模块交互"
     echo "           │   ${CYAN}pipeline${RESET}       流水线阶段逐验证"
     echo "           │   ${GREEN}unit${RESET}           ctest 单元测试"
     echo "           │   ${GREEN}module <m>${RESET}     指定模块"
-    echo "           │   ${GREEN}smoke${RESET}          最快核心子集"
+    echo "           │   ${GREEN}smoke${RESET}          instant 核心子集"
     echo "           └────────────────────────── ${DIM}覆盖范围 ▶${RESET}"
 }
 
