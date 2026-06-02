@@ -312,14 +312,14 @@ void test_v3_huge_clique() {
     assert(stats.components_with_excess == 1);
     // 5000 rels all sharing LP=101: BFS picks pairs → ~2500 full
     assert(stats.full_produced > 0);
-    // Must complete in instant tier (< 5s, but expect << 1s)
+    // Must complete quickly (< 5s, but expect << 1s)
     assert(elapsed < 5.0 * kTimingBudgetMultiplier);
 
     std::cout << "  PASS" << std::endl;
 }
 
 void test_v3_scale_performance() {
-    // Verify V3 cascade scales — 50K input rels should complete in instant tier
+    // Verify V3 cascade scales — 50K input rels should complete quickly
     // (post fast-path optimization, commit d2ef403).
     std::cout << "Testing V3 cascade scale (50K input)..." << std::endl;
 
@@ -367,7 +367,7 @@ void test_v3_60d_scale() {
               << " elapsed=" << std::fixed << std::setprecision(3) << elapsed_s << "s"
               << std::endl;
 
-    // Must complete in instant tier (10s)
+    // Must complete within the fast-tier per-case budget (10s)
     assert(elapsed_s < 10.0 * kTimingBudgetMultiplier);
     assert(stats.input_relations == 200000);
 

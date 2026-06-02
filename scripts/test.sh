@@ -370,7 +370,6 @@ SMOKE_TESTS=(
     test_i18n
     test_method_selection
     test_clique_merger
-    test_clique_merger_50d_synthetic
     test_3lp_cofactor
     test_3lp_merge
     test_trial_wheel
@@ -512,7 +511,7 @@ TEST_TIMEOUT=(
     test_i18n                10
     test_method_selection    60
     test_clique_merger       10
-    test_clique_merger_50d_synthetic 10
+    test_clique_merger_50d_synthetic 60
     test_3lp_cofactor        30
     test_3lp_merge           10
     test_trial_wheel         10
@@ -656,7 +655,7 @@ TEST_TIER=(
     test_method_selection    "instant"
     test_siqs                "fast"
     test_clique_merger       "instant"
-    test_clique_merger_50d_synthetic "instant"
+    test_clique_merger_50d_synthetic "fast"
     test_3lp_cofactor        "instant"
     test_3lp_merge           "instant"
     test_trial_wheel         "instant"

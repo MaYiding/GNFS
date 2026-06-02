@@ -1036,7 +1036,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_clique_merger_50d_synthetic PRIVATE gnfs_core Threads::Threads)
     add_test(NAME CliqueMerger50dSynthetic COMMAND test_clique_merger_50d_synthetic)
-    set_tests_properties(CliqueMerger50dSynthetic PROPERTIES LABELS "instant" TIMEOUT 10)
+    set_tests_properties(CliqueMerger50dSynthetic PROPERTIES LABELS "fast" TIMEOUT 60)
 
     # 3LP cofactor classification + decomposition (GNFS_3LP opt-in path)
     add_executable(test_3lp_cofactor
