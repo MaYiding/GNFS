@@ -165,12 +165,17 @@ commands = [
 if portable_command not in commands:
     raise SystemExit("Stop hook command is not registered portably in .claude/settings.json")
 
+def normalized_path(value: str) -> str:
+    return value.replace("\\", "/").rstrip("/")
+
+expected_hook = normalized_path(str(hook_path))
+project_root = normalized_path(str(hook_path.parents[2]))
 resolved = [
-    command.replace("${CLAUDE_PROJECT_DIR}", str(hook_path.parents[2]))
+    normalized_path(command.replace("${CLAUDE_PROJECT_DIR}", project_root))
     for command in commands
     if isinstance(command, str)
 ]
-if str(hook_path) not in resolved:
+if expected_hook not in resolved:
     raise SystemExit("Stop hook command does not resolve to the project hook script")
 
 if hooks_path.is_file():
