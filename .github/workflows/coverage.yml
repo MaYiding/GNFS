@@ -56,8 +56,9 @@ jobs:
         working-directory: build-coverage
         run: |
           ctest --output-on-failure \
-            --label-exclude "slow|heavy|stress|gate" \
-            --parallel "$(nproc)" \
+            --label-regex "instant" \
+            --label-exclude "bench|slow|heavy|stress|gate" \
+            --parallel 2 \
             --timeout 300
 
       - name: Generate coverage report

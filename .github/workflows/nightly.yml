@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release-full:
-    name: Release full regression
+  release-thorough:
+    name: Release thorough regression
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
@@ -26,8 +26,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zsh libgmp-dev libntl-dev
 
-      - name: Run full test workflow
-        run: ./scripts/test.sh -t Release full
+      - name: Run thorough test workflow
+        run: ./scripts/test.sh -t Release thorough
 
       - name: Upload CTest logs
         if: always()

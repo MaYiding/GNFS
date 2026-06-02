@@ -126,7 +126,7 @@ git clone https://github.com/MaYiding/GNFS.git && cd GNFS
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
-./scripts/test.sh                                 # 冒烟测试，39 个即时测试，约 5 秒
+./scripts/test.sh                                 # 冒烟测试，运行 instant 层核心测试
 
 ./build/gnfs 96091                                # 自动方法选择
 ./build/gnfs 1000036000099 --method siqs          # 强制 SIQS
@@ -417,24 +417,26 @@ GNFS/
 项目使用 `scripts/test.sh` 统一封装编译、超时、分级与心跳监控（zsh 原生实现，不依赖 GNU coreutils）。
 
 ```bash
-./scripts/test.sh                       # 冒烟，39 个即时测试，~5 s
+./scripts/test.sh                       # 冒烟：instant 层核心测试
 ./scripts/test.sh module linalg         # 模块级
 ./scripts/test.sh changed               # 根据 git diff 自动选择
 ./scripts/test.sh gate                  # 合并门禁：smoke + 17/27/40/81 bit 回归
-./scripts/test.sh e2e                   # 完整 GNFS 流水线，~5 min
+./scripts/test.sh e2e                   # 完整 GNFS 流水线
 ./scripts/test.sh stress 1 1            # 50 位压力测试，~2.6 h
 ./scripts/test.sh list                  # 查看全部测试、分级、超时
 ```
 
 | 分级 | 超时 | 数量 | 范围 |
 |---|---|:---:|---|
-| `instant` | 10 s | 39 | 单元测试，覆盖 integer / linalg / sqrt / murphy / filter / collector / OOC policy 等 |
-| `fast` | 60 s | 1 | `test_sieve_basic` |
-| `slow` | 120–300 s | 5 | 回归门禁、Kleinjung、格筛、E2E、`factor_with_kleinjung` |
-| `heavy` | 600–3600 s | 4 | Kleinjung large、25 位基准、渐进 L3–L5 |
+| `instant` | 10–60 s | 118 | 纯单元 / helper correctness，进入跨平台 PR、sanitizer、coverage |
+| `fast` | 60–180 s | 16 | 中速集成 / 资源敏感 helper，进入 Release PR 快矩阵 |
+| `gate` | 240 s | 1 | 17/27/40/81 bit 回归门禁，进入 Linux Release 深门禁 |
+| `slow` | 120–900 s | 8 | 真实 GNFS / API pipeline，进入 Linux Release 深门禁和 nightly |
+| `heavy` | 600–3600 s | 2 | Kleinjung large、25 位基准；渐进 L3–L5 属手动 heavy 路径 |
+| `bench` | 120–300 s | 3 | informational micro-benchmark，不阻塞 PR |
 | `stress` | 43200 s | 1 | 50 位（L1） + 60 位（L2） |
 
-完整子命令参考见 [CLAUDE.md](CLAUDE.md#自动化测试工作流-scriptstestsh)。
+完整测试与 CI 分层规范见 [docs/testing-ci-policy.md](docs/testing-ci-policy.md)。
 
 **构建类型**
 

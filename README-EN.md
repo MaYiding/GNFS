@@ -126,7 +126,7 @@ git clone https://github.com/MaYiding/GNFS.git && cd GNFS
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
-./scripts/test.sh                                 # smoke tests, 39 instant tests, about 5 seconds
+./scripts/test.sh                                 # smoke tests for the core instant tier
 
 ./build/gnfs 96091                                # automatic method selection
 ./build/gnfs 1000036000099 --method siqs          # force SIQS
@@ -417,24 +417,26 @@ All experimental strategies hide behind environment variable switches. The defau
 The project uses `scripts/test.sh`, which wraps compilation, per-test timeout, tiering, and heartbeat monitoring. The script is pure zsh and does not depend on GNU coreutils.
 
 ```bash
-./scripts/test.sh                       # smoke: 39 instant tests in about 5 seconds
+./scripts/test.sh                       # smoke: core instant-tier tests
 ./scripts/test.sh module linalg         # module-level
 ./scripts/test.sh changed               # auto-detect via git diff
 ./scripts/test.sh gate                  # merge gate: smoke plus 17, 27, 40, and 81-bit regression
-./scripts/test.sh e2e                   # full GNFS pipeline, about 5 minutes
+./scripts/test.sh e2e                   # full GNFS pipeline
 ./scripts/test.sh stress 1 1            # 50-digit stress test, about 2.6 hours
 ./scripts/test.sh list                  # show all tests, tiers, and timeouts
 ```
 
 | Tier | Timeout | Count | Scope |
 |---|---|:---:|---|
-| `instant` | 10 s | 39 | Unit tests across `integer`, `linalg`, `sqrt`, `murphy`, `filter`, `collector`, OOC policy, and more |
-| `fast` | 60 s | 1 | `test_sieve_basic` |
-| `slow` | 120–300 s | 5 | Regression gate, Kleinjung, lattice sieve, end-to-end, `factor_with_kleinjung` |
-| `heavy` | 600–3600 s | 4 | Kleinjung large, 25-digit benchmark, progressive levels L3 to L5 |
+| `instant` | 10–60 s | 118 | Unit and helper correctness tests for cross-platform PR, sanitizer, and coverage jobs |
+| `fast` | 60–180 s | 16 | Medium integration and resource-sensitive helper tests for the Release PR matrix |
+| `gate` | 240 s | 1 | 17, 27, 40, and 81-bit regression gate for the Linux Release deep gate |
+| `slow` | 120–900 s | 8 | Real GNFS and API pipeline tests for the Linux Release deep gate and nightly workflow |
+| `heavy` | 600–3600 s | 2 | Kleinjung large and 25-digit benchmark; progressive L3 to L5 is a manual heavy path |
+| `bench` | 120–300 s | 3 | Informational micro-benchmarks that do not block PRs |
 | `stress` | 43200 s | 1 | 50-digit (L1) and 60-digit (L2) |
 
-The full subcommand reference appears in [CLAUDE.md](CLAUDE.md#自动化测试工作流-scriptstestsh).
+The full test and CI tiering policy appears in [docs/testing-ci-policy.md](docs/testing-ci-policy.md).
 
 **Build types**
 
