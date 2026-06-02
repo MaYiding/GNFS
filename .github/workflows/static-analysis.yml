@@ -44,9 +44,10 @@ jobs:
       TIDY_WARNINGS_AS_ERRORS: clang-analyzer-*
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install dependencies
         run: |
@@ -91,15 +92,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${{ steps.files.outputs.files }}" ]]; then
+          if [[ -z "${STEPS_FILES_OUTPUTS_FILES}" ]]; then
             echo "No C++ translation units selected."
             exit 0
           fi
 
-          mapfile -t files <<< "${{ steps.files.outputs.files }}"
+          mapfile -t files <<< "${STEPS_FILES_OUTPUTS_FILES}"
           clang-tidy -p build-tidy \
             --warnings-as-errors="${TIDY_WARNINGS_AS_ERRORS}" \
             "${files[@]}"
+        env:
+          STEPS_FILES_OUTPUTS_FILES: ${{ steps.files.outputs.files }}
 
   workflow-yaml:
     name: workflow YAML lint
@@ -107,7 +110,9 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - name: Install yamllint
         run: python3 -m pip install --user yamllint==1.35.1

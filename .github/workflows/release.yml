@@ -11,7 +11,7 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -23,6 +23,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     continue-on-error: ${{ matrix.experimental }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -38,9 +40,10 @@ jobs:
             experimental: false
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
       - name: Install dependencies (Ubuntu)
         if: runner.os == 'Linux'
@@ -54,7 +57,7 @@ jobs:
 
       - name: Install dependencies (Windows / MSYS2 UCRT64)
         if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c # v2
         with:
           msystem: UCRT64
           update: true
@@ -95,11 +98,14 @@ jobs:
 
       - name: Install and archive (POSIX)
         if: runner.os != 'Windows'
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
         shell: bash
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag || github.ref_name }}"
-          package_name="gnfs-${tag}-${{ matrix.asset_suffix }}"
+          tag="${RELEASE_TAG}"
+          package_name="gnfs-${tag}-${ASSET_SUFFIX}"
           prefix="dist/${package_name}"
           cmake --install build-release --prefix "${prefix}"
           cat > "${prefix}/README-release.txt" <<EOF
@@ -114,11 +120,14 @@ jobs:
 
       - name: Install and archive (Windows)
         if: runner.os == 'Windows'
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag || github.ref_name }}"
-          package_name="gnfs-${tag}-${{ matrix.asset_suffix }}"
+          tag="${RELEASE_TAG}"
+          package_name="gnfs-${tag}-${ASSET_SUFFIX}"
           prefix="dist/${package_name}"
           cmake --install build-release --prefix "${prefix}"
 
@@ -139,7 +148,7 @@ jobs:
           (cd dist && zip -qr "../packages/${package_name}.zip" "${package_name}")
 
       - name: Upload packaged artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: gnfs-${{ matrix.asset_suffix }}
           path: packages/*
@@ -151,10 +160,12 @@ jobs:
     needs: package
     timeout-minutes: 15
     if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: write
 
     steps:
       - name: Download packaged artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: gnfs-*
           path: release-assets
