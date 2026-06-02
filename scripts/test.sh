@@ -875,12 +875,19 @@ do_build() {
     # 统计 warnings
     if (( ! VERBOSE )); then
         local warn_count=0
-        warn_count=$(echo "$build_output" | grep -c "warning:" 2>/dev/null || true)
+        local -a build_lines warning_lines
+        build_lines=("${(@f)build_output}")
+        warning_lines=("${(@M)build_lines:#*warning:*}")
+        warn_count=${#warning_lines}
 
         if (( warn_count > 0 )); then
             log_warn "编译成功 ($(format_duration $elapsed)) — ${warn_count} warnings"
             if (( ! QUIET )); then
-                echo "$build_output" | grep "warning:" | head -5
+                local preview_count=$(( warn_count < 5 ? warn_count : 5 ))
+                local i
+                for (( i = 1; i <= preview_count; i++ )); do
+                    echo "$warning_lines[$i]"
+                done
                 if (( warn_count > 5 )); then
                     echo "  ${DIM}... 还有 $((warn_count - 5)) 个 warning${RESET}"
                 fi
