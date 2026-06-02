@@ -346,6 +346,15 @@ option(GNFS_BUILD_FUZZERS "Build libFuzzer fuzz targets" OFF)
 if(GNFS_BUILD_TESTS)
     enable_testing()
 
+    find_program(BASH_EXECUTABLE bash)
+    if(BASH_EXECUTABLE)
+        add_test(NAME StopTodoHook
+            COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_stop_todo_hook.sh)
+        set_tests_properties(StopTodoHook PROPERTIES
+            LABELS "instant" TIMEOUT 10
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
+
     # 简单测试程序
     add_executable(test_small_vector
         tests/test_small_vector.cpp

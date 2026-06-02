@@ -11,7 +11,7 @@ description: 构建 GNFS 项目并运行测试。可选参数：test name 或 "a
 
 1. **编译项目**:
 ```bash
-make -C /Users/admin/Desktop/Documents/GNFS/build -j$(sysctl -n hw.ncpu) 2>&1
+cmake --build build -j$(sysctl -n hw.ncpu) 2>&1
 ```
 
 2. **运行测试**:
@@ -21,7 +21,7 @@ make -C /Users/admin/Desktop/Documents/GNFS/build -j$(sysctl -n hw.ncpu) 2>&1
 
 ```bash
 # 全部测试
-cd /Users/admin/Desktop/Documents/GNFS/build && ctest --output-on-failure
+ctest --test-dir build --output-on-failure
 
 # 单个测试
 ./build/test_gnfs_e2e

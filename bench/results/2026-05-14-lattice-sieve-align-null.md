@@ -134,10 +134,10 @@ P1.B-2 即使 lucky 给 1-2% wall 改善，也无法可靠测出。doctrine 铁�
 - sieve_row_chunk: 2103 samples（含 +1116=1228, +1124=508, +1140=170）
 
 ### 反汇编 hot section
-- 二进制 `/Users/mayiding/Desktop/GitMy/GNFS/build-release/test_factor_with_kleinjung`
+- 二进制 `<repo-root>/build-release/test_factor_with_kleinjung`
 - 符号基址 `0x100011e08`（`__ZN4gnfs5sieve12LatticeSieve15sieve_row_chunk`）
 - inner loop `0x100012264 — 0x100012278`（6 指令）
 
 ### Build dirs（临时，gitignored）
-- `/Users/mayiding/Desktop/GitMy/GNFS/build-release/`
+- `<repo-root>/build-release/`
 - `/tmp/p1b2_microbench/`

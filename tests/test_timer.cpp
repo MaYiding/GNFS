@@ -266,12 +266,15 @@ void test_stopwatch_basic() {
     Stopwatch sw;
     busy_for(1ms);
 
-    double elapsed_s = sw.elapsed_seconds();
+    double before_s = sw.elapsed_seconds();
     double elapsed_ms = sw.elapsed_ms();
+    double after_s = sw.elapsed_seconds();
 
-    assert(elapsed_s > 0);
+    assert(before_s > 0);
+    assert(after_s > 0);
     assert(elapsed_ms > 0); // Don't pin magnitude; busy spin can be CPU-starved
-    assert(std::abs(elapsed_s * 1000.0 - elapsed_ms) < 1e-3);
+    assert(elapsed_ms >= before_s * 1000.0);
+    assert(elapsed_ms <= after_s * 1000.0);
 
     std::cout << "  Stopwatch basic: PASS" << std::endl;
 }

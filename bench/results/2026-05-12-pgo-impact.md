@@ -85,7 +85,7 @@ Total training profile: `merged.profdata` 108K.
 
 ```bash
 # Build baseline (Release, no PGO)
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 cmake -B build-baseline-release -DCMAKE_BUILD_TYPE=Release
 cmake --build build-baseline-release -j$(sysctl -n hw.ncpu) --target test_factor_with_kleinjung
 

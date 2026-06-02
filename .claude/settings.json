@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/stop-todo-check.sh",
+            "args": [],
+            "timeout": 10,
+            "statusMessage": "Checking TODO.md..."
+          }
+        ]
+      }
+    ]
+  }
+}
