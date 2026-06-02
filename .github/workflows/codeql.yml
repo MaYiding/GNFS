@@ -9,6 +9,9 @@ on:
   schedule:
     - cron: '0 6 * * 1'  # Weekly Monday 6AM UTC
 
+permissions:
+  contents: read
+
 concurrency:
   group: codeql-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -24,7 +27,9 @@ jobs:
     timeout-minutes: 45
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      with:
+        persist-credentials: false
 
     - name: Install dependencies
       run: |
@@ -32,7 +37,7 @@ jobs:
         sudo apt-get install -y libgmp-dev libntl-dev
 
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v4
+      uses: github/codeql-action/init@87557b9c84dde89fdd9b10e88954ac2f4248e463 # v4
       with:
         languages: cpp
 
@@ -42,4 +47,4 @@ jobs:
         make -C build -j"$(nproc)"
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v4
+      uses: github/codeql-action/analyze@87557b9c84dde89fdd9b10e88954ac2f4248e463 # v4
