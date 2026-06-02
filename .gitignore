@@ -12,6 +12,7 @@ cmake-build-*/
 # ===== IDE & Editor =====
 .vscode/
 .idea/
+.codeflicker/
 *.xcodeproj/
 *.xcworkspace/
 *.swp
