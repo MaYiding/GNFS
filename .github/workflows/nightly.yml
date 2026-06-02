@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgmp-dev libntl-dev
+          sudo apt-get install -y zsh libgmp-dev libntl-dev
 
       - name: Run full test workflow
         run: ./scripts/test.sh -t Release full
