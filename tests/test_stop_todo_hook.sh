@@ -149,7 +149,7 @@ local_path_pattern = re.compile(
 if not settings_path.is_file():
     raise SystemExit(".claude/settings.json is missing; Claude Code does not read .claude/hooks.json as project settings")
 
-settings_raw = settings_path.read_text()
+settings_raw = settings_path.read_text(encoding="utf-8")
 if local_path_pattern.search(settings_raw):
     raise SystemExit(".claude/settings.json contains a local machine path")
 
@@ -179,7 +179,7 @@ if expected_hook not in resolved:
     raise SystemExit("Stop hook command does not resolve to the project hook script")
 
 if hooks_path.is_file():
-    hooks_raw = hooks_path.read_text()
+    hooks_raw = hooks_path.read_text(encoding="utf-8")
     if local_path_pattern.search(hooks_raw):
         raise SystemExit(".claude/hooks.json contains a local machine path")
     hooks_config = json.loads(hooks_raw)
