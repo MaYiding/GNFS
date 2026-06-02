@@ -14,8 +14,8 @@
 #include <vector>
 
 using namespace gnfs::relation;
-using gnfs::core::Relation;
 using gnfs::core::PrimePower;
+using gnfs::core::Relation;
 
 // Timing assertions below assume an unoptimized-but-not-instrumented Debug
 // build. AddressSanitizer / ThreadSanitizer / UBSan slow execution 2-10x and
@@ -23,14 +23,14 @@ using gnfs::core::PrimePower;
 // instrumentation at compile time and relax the budget — the assertions still
 // guard against true regressions, just with more headroom under tooling.
 #if defined(__has_feature)
-#  if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
-      __has_feature(memory_sanitizer)
-#    define GNFS_TEST_UNDER_SANITIZER 1
-#  endif
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) ||                         \
+    __has_feature(memory_sanitizer)
+#define GNFS_TEST_UNDER_SANITIZER 1
 #endif
-#if !defined(GNFS_TEST_UNDER_SANITIZER) && \
+#endif
+#if !defined(GNFS_TEST_UNDER_SANITIZER) &&                                                         \
     (defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__))
-#  define GNFS_TEST_UNDER_SANITIZER 1
+#define GNFS_TEST_UNDER_SANITIZER 1
 #endif
 #if defined(GNFS_TEST_UNDER_SANITIZER)
 static constexpr double kTimingBudgetMultiplier = 10.0;
@@ -43,11 +43,10 @@ static constexpr double kTimingBudgetMultiplier = 1.0;
 // - Each key has weight 2..15 (geometric distribution favoring small weight)
 // - Each rel has 1-2 LP keys (1LP or 2LP)
 // - (a,b) values unique per rel
-static std::vector<Relation> make_synthetic_50d_like(
-        size_t target_rels, uint64_t seed = 42) {
+static std::vector<Relation> make_synthetic_50d_like(size_t target_rels, uint64_t seed = 42) {
     std::mt19937_64 rng(seed);
     // Weight distribution: 2 most common, geometric tail
-    std::geometric_distribution<size_t> weight_dist(0.4);  // mean 2.5
+    std::geometric_distribution<size_t> weight_dist(0.4); // mean 2.5
 
     // Step 1: Generate LP keys and their assigned relation indices.
     // n_lp_keys scaled so that target_rels can be reached (~3 rels per key avg)
@@ -61,9 +60,11 @@ static std::vector<Relation> make_synthetic_50d_like(
         lp_is_algebraic[k] = (k % 2 == 0);
         for (size_t i = 0; i < w; ++i) {
             lp_to_rels[k].push_back(rel_counter++);
-            if (rel_counter >= target_rels) break;
+            if (rel_counter >= target_rels)
+                break;
         }
-        if (rel_counter >= target_rels) break;
+        if (rel_counter >= target_rels)
+            break;
     }
 
     // Step 2: Build inverse — for each rel, which LP keys does it carry?
@@ -83,11 +84,13 @@ static std::vector<Relation> make_synthetic_50d_like(
         r.rational_factors = {0, 1};
         r.algebraic_factors = {0};
         for (size_t k : rel_to_lps[i]) {
-            uint64_t lp_p = 100000 + k * 7;  // synthetic primes
+            uint64_t lp_p = 100000 + k * 7; // synthetic primes
             uint64_t lp_r = (k * 13) % 65536;
             PrimePower pp{lp_p, lp_is_algebraic[k] ? lp_r : 0, 1};
-            if (lp_is_algebraic[k]) r.algebraic_large_prime.push_back(pp);
-            else r.rational_large_prime.push_back(pp);
+            if (lp_is_algebraic[k])
+                r.algebraic_large_prime.push_back(pp);
+            else
+                r.rational_large_prime.push_back(pp);
         }
         rels.push_back(std::move(r));
     }
@@ -97,25 +100,21 @@ static std::vector<Relation> make_synthetic_50d_like(
 void test_v3_expands_v0_baseline() {
     std::cout << "Testing V3 expands V0 on synthetic 50d-like (5000 partials)..." << std::endl;
     auto v0_input = make_synthetic_50d_like(5000);
-    auto v3_input = v0_input;  // copy for V3
+    auto v3_input = v0_input; // copy for V3
 
     // Run V0
     PartialRelationMerger::MergeStats v0_stats;
     auto v0_merged = PartialRelationMerger::merge_all(std::move(v0_input), 10, &v0_stats);
-    std::cout << "  V0: input_1lp=" << v0_stats.input_1lp
-              << " input_2lp=" << v0_stats.input_2lp
-              << " merged=" << v0_merged.size()
-              << " w2_merges=" << v0_stats.weight2_merges
+    std::cout << "  V0: input_1lp=" << v0_stats.input_1lp << " input_2lp=" << v0_stats.input_2lp
+              << " merged=" << v0_merged.size() << " w2_merges=" << v0_stats.weight2_merges
               << " sngl_removed=" << v0_stats.singletons_removed << std::endl;
 
     // Run V3
     CliqueStats v3_stats;
     auto v3_merged = CliqueRelationMerger::merge_cliques(std::move(v3_input), &v3_stats);
-    std::cout << "  V3: input_1lp=" << v3_stats.input_1lp
-              << " input_2lp=" << v3_stats.input_2lp
+    std::cout << "  V3: input_1lp=" << v3_stats.input_1lp << " input_2lp=" << v3_stats.input_2lp
               << " components_with_excess=" << v3_stats.components_with_excess
-              << " full=" << v3_stats.full_produced
-              << " residual=" << v3_stats.residual_emitted
+              << " full=" << v3_stats.full_produced << " residual=" << v3_stats.residual_emitted
               << " lp_rejects=" << v3_stats.lp_cancel_rejections << std::endl;
 
     // Sanity: V3 should at least produce 1 full (any 2-clique trivially does).
@@ -124,7 +123,7 @@ void test_v3_expands_v0_baseline() {
     // V3 should not catastrophically regress: lp_rejects shouldn't 100% dominate.
     // (LP cancel check should reject some merges, but not all.)
     size_t v3_accepts = v3_stats.full_produced + v3_stats.residual_emitted;
-    assert(v3_accepts >= v3_stats.lp_cancel_rejections / 10);  // accept ≥ 10% rate
+    assert(v3_accepts >= v3_stats.lp_cancel_rejections / 10); // accept ≥ 10% rate
 
     std::cout << "  PASS" << std::endl;
 }
@@ -151,11 +150,11 @@ void test_v0_v3_cascade_dedup() {
     size_t v3_added_after_dedup = 0;
     for (const auto& r : v3_merged) {
         int64_t k = static_cast<int64_t>(r.a) ^ (static_cast<int64_t>(r.b) << 32);
-        if (seen.insert(k).second) ++v3_added_after_dedup;
+        if (seen.insert(k).second)
+            ++v3_added_after_dedup;
     }
 
-    std::cout << "  V0 merged=" << v0_merged.size()
-              << " V3 merged=" << v3_merged.size()
+    std::cout << "  V0 merged=" << v0_merged.size() << " V3 merged=" << v3_merged.size()
               << " V3 added after dedup=" << v3_added_after_dedup << std::endl;
 
     // V3 cascade should add SOME relations beyond V0 (unless all components are 1LP×2 cliques).
@@ -208,8 +207,7 @@ void test_v3_lp_cancel_safety() {
     //   merged would have (201,1)+103 (cancelled 202,2). Before=4 LPs, after=2 LPs → accept.
     //   Final: residual emit (still has 2 LPs).
     // 或 acc stays at (201,1)+(202,2) residual, no R3 accept if LP doesn't cancel cleanly.
-    std::cout << "  in=" << stats.input_relations
-              << " full=" << stats.full_produced
+    std::cout << "  in=" << stats.input_relations << " full=" << stats.full_produced
               << " residual=" << stats.residual_emitted
               << " lp_rejects=" << stats.lp_cancel_rejections << std::endl;
 
@@ -240,8 +238,8 @@ void test_v0_v3_bench_large() {
     auto v3_input_copy = base_input;
     auto tv_start = std::chrono::high_resolution_clock::now();
     PartialRelationMerger::MergeStats v0_stats_cascade;
-    auto v0_merged_cascade = PartialRelationMerger::merge_all(
-        std::move(v0_input_copy), 10, &v0_stats_cascade);
+    auto v0_merged_cascade =
+        PartialRelationMerger::merge_all(std::move(v0_input_copy), 10, &v0_stats_cascade);
     CliqueStats v3_stats;
     auto v3_merged = CliqueRelationMerger::merge_cliques(std::move(v3_input_copy), &v3_stats);
     // Dedup
@@ -252,23 +250,21 @@ void test_v0_v3_bench_large() {
     size_t v3_added = 0;
     for (const auto& r : v3_merged) {
         int64_t k = static_cast<int64_t>(r.a) ^ (static_cast<int64_t>(r.b) << 32);
-        if (existing.insert(k).second) ++v3_added;
+        if (existing.insert(k).second)
+            ++v3_added;
     }
     auto tv_end = std::chrono::high_resolution_clock::now();
     double v3_elapsed = std::chrono::duration<double>(tv_end - tv_start).count();
 
-    std::cout << "  V0 alone:    merged=" << v0_merged.size()
-              << " elapsed=" << std::fixed << std::setprecision(3) << v0_elapsed << "s" << std::endl;
-    std::cout << "  V0+V3:       v0=" << v0_merged_cascade.size()
-              << " +v3_added=" << v3_added
-              << " total=" << (v0_merged_cascade.size() + v3_added)
-              << " elapsed=" << v3_elapsed << "s" << std::endl;
+    std::cout << "  V0 alone:    merged=" << v0_merged.size() << " elapsed=" << std::fixed
+              << std::setprecision(3) << v0_elapsed << "s" << std::endl;
+    std::cout << "  V0+V3:       v0=" << v0_merged_cascade.size() << " +v3_added=" << v3_added
+              << " total=" << (v0_merged_cascade.size() + v3_added) << " elapsed=" << v3_elapsed
+              << "s" << std::endl;
     if (!v0_merged.empty()) {
-        double pct = 100.0 * static_cast<double>(v3_added) /
-                     static_cast<double>(v0_merged.size());
-        std::cout << "  V3 adds " << std::setprecision(1) << pct
-                  << "% beyond V0 in " << std::setprecision(3)
-                  << (v3_elapsed - v0_elapsed) << "s extra" << std::endl;
+        double pct = 100.0 * static_cast<double>(v3_added) / static_cast<double>(v0_merged.size());
+        std::cout << "  V3 adds " << std::setprecision(1) << pct << "% beyond V0 in "
+                  << std::setprecision(3) << (v3_elapsed - v0_elapsed) << "s extra" << std::endl;
     }
 
     // Sanity: V3 cascade should add positive relations + still complete fast.
@@ -294,7 +290,7 @@ void test_v3_huge_clique() {
         Relation r(i + 1, 1);
         r.rational_factors = {0};
         r.algebraic_factors = {0};
-        r.rational_large_prime.push_back(PrimePower{101, 0, 1});  // all share LP=101
+        r.rational_large_prime.push_back(PrimePower{101, 0, 1}); // all share LP=101
         rels.push_back(std::move(r));
     }
 
@@ -304,22 +300,21 @@ void test_v3_huge_clique() {
     auto end = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration<double>(end - start).count();
 
-    std::cout << "  in=" << stats.input_relations
-              << " components=" << stats.components_with_excess
-              << " full=" << stats.full_produced
-              << " elapsed=" << std::fixed << std::setprecision(3) << elapsed << "s" << std::endl;
+    std::cout << "  in=" << stats.input_relations << " components=" << stats.components_with_excess
+              << " full=" << stats.full_produced << " elapsed=" << std::fixed
+              << std::setprecision(3) << elapsed << "s" << std::endl;
 
     assert(stats.components_with_excess == 1);
     // 5000 rels all sharing LP=101: BFS picks pairs → ~2500 full
     assert(stats.full_produced > 0);
-    // Must complete in instant tier (< 5s, but expect << 1s)
+    // Must complete quickly (< 5s, but expect << 1s)
     assert(elapsed < 5.0 * kTimingBudgetMultiplier);
 
     std::cout << "  PASS" << std::endl;
 }
 
 void test_v3_scale_performance() {
-    // Verify V3 cascade scales — 50K input rels should complete in instant tier
+    // Verify V3 cascade scales — 50K input rels should complete quickly
     // (post fast-path optimization, commit d2ef403).
     std::cout << "Testing V3 cascade scale (50K input)..." << std::endl;
 
@@ -331,13 +326,10 @@ void test_v3_scale_performance() {
     auto end = std::chrono::high_resolution_clock::now();
     double elapsed_s = std::chrono::duration<double>(end - start).count();
 
-    std::cout << "  in=" << stats.input_relations
-              << " components=" << stats.components_with_excess
-              << " full=" << stats.full_produced
-              << " residual=" << stats.residual_emitted
-              << " lp_rejects=" << stats.lp_cancel_rejections
-              << " elapsed=" << std::fixed << std::setprecision(3) << elapsed_s << "s"
-              << std::endl;
+    std::cout << "  in=" << stats.input_relations << " components=" << stats.components_with_excess
+              << " full=" << stats.full_produced << " residual=" << stats.residual_emitted
+              << " lp_rejects=" << stats.lp_cancel_rejections << " elapsed=" << std::fixed
+              << std::setprecision(3) << elapsed_s << "s" << std::endl;
 
     // Post fast-path, 50K input should complete < 5s (was estimated minutes pre-opt)
     assert(elapsed_s < 5.0 * kTimingBudgetMultiplier);
@@ -359,15 +351,12 @@ void test_v3_60d_scale() {
     auto end = std::chrono::high_resolution_clock::now();
     double elapsed_s = std::chrono::duration<double>(end - start).count();
 
-    std::cout << "  in=" << stats.input_relations
-              << " components=" << stats.components_with_excess
-              << " full=" << stats.full_produced
-              << " residual=" << stats.residual_emitted
-              << " lp_rejects=" << stats.lp_cancel_rejections
-              << " elapsed=" << std::fixed << std::setprecision(3) << elapsed_s << "s"
-              << std::endl;
+    std::cout << "  in=" << stats.input_relations << " components=" << stats.components_with_excess
+              << " full=" << stats.full_produced << " residual=" << stats.residual_emitted
+              << " lp_rejects=" << stats.lp_cancel_rejections << " elapsed=" << std::fixed
+              << std::setprecision(3) << elapsed_s << "s" << std::endl;
 
-    // Must complete in instant tier (10s)
+    // Must complete within the fast-tier per-case budget (10s)
     assert(elapsed_s < 10.0 * kTimingBudgetMultiplier);
     assert(stats.input_relations == 200000);
 

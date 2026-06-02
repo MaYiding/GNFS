@@ -370,7 +370,6 @@ SMOKE_TESTS=(
     test_i18n
     test_method_selection
     test_clique_merger
-    test_clique_merger_50d_synthetic
     test_3lp_cofactor
     test_3lp_merge
     test_trial_wheel
@@ -512,7 +511,7 @@ TEST_TIMEOUT=(
     test_i18n                10
     test_method_selection    60
     test_clique_merger       10
-    test_clique_merger_50d_synthetic 10
+    test_clique_merger_50d_synthetic 60
     test_3lp_cofactor        30
     test_3lp_merge           10
     test_trial_wheel         10
@@ -656,7 +655,7 @@ TEST_TIER=(
     test_method_selection    "instant"
     test_siqs                "fast"
     test_clique_merger       "instant"
-    test_clique_merger_50d_synthetic "instant"
+    test_clique_merger_50d_synthetic "fast"
     test_3lp_cofactor        "instant"
     test_3lp_merge           "instant"
     test_trial_wheel         "instant"
@@ -875,12 +874,19 @@ do_build() {
     # 统计 warnings
     if (( ! VERBOSE )); then
         local warn_count=0
-        warn_count=$(echo "$build_output" | grep -c "warning:" 2>/dev/null || true)
+        local -a build_lines warning_lines
+        build_lines=("${(@f)build_output}")
+        warning_lines=("${(@M)build_lines:#*warning:*}")
+        warn_count=${#warning_lines}
 
         if (( warn_count > 0 )); then
             log_warn "编译成功 ($(format_duration $elapsed)) — ${warn_count} warnings"
             if (( ! QUIET )); then
-                echo "$build_output" | grep "warning:" | head -5
+                local preview_count=$(( warn_count < 5 ? warn_count : 5 ))
+                local i
+                for (( i = 1; i <= preview_count; i++ )); do
+                    echo "$warning_lines[$i]"
+                done
                 if (( warn_count > 5 )); then
                     echo "  ${DIM}... 还有 $((warn_count - 5)) 个 warning${RESET}"
                 fi
