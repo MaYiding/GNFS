@@ -130,7 +130,7 @@ Total: 27/27 PASS (29.17s)
 
 **Build**:
 - Baseline: `/tmp/gnfs-baseline-9fecb96/build-release/test_factor_with_kleinjung` (main `9fecb96`)
-- Fix: `/Users/mayiding/Desktop/GitMy/GNFS/build-p1b1c-release/test_factor_with_kleinjung` (feat with spin-then-cv)
+- Fix: `<repo-root>/build-p1b1c-release/test_factor_with_kleinjung` (feat with spin-then-cv)
 
 **JSON**:
 - `bench/results/2026-05-14-201315-test_factor_with_kleinjung-p1b1c_baseline.pmu.json`
@@ -229,4 +229,4 @@ BackendStallRate +0.44pp / TLBMissRate +1.18pp 都在 PET (Profile Every Thread)
 
 ### Build dirs (临时, gitignored)
 - `/tmp/gnfs-baseline-9fecb96/build-release/` (baseline)
-- `/Users/mayiding/Desktop/GitMy/GNFS/build-p1b1c-release/` (fix)
+- `<repo-root>/build-p1b1c-release/` (fix)

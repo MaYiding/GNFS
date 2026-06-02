@@ -52,13 +52,13 @@ Files to create or modify, with the single responsibility of each:
 
 Run:
 ```bash
-tail -15 /Users/mayiding/Desktop/GitMy/GNFS/.gitignore
+tail -15 <repo-root>/.gitignore
 ```
 Expected: Output ending with the "Obsolete root documentation" block. Confirm `build-*/` is already there (line 3 — it already covers `build-pgo-gen/` and `build-pgo-use/`).
 
 - [ ] **Step 1.2: Add bench/results/ exclusions to .gitignore**
 
-Append this block to `/Users/mayiding/Desktop/GitMy/GNFS/.gitignore`:
+Append this block to `<repo-root>/.gitignore`:
 
 ```gitignore
 
@@ -82,8 +82,8 @@ Use the Edit tool with `old_string` matching the final `Testing/` line (last lin
 
 Run:
 ```bash
-mkdir -p /Users/mayiding/Desktop/GitMy/GNFS/bench/results
-touch /Users/mayiding/Desktop/GitMy/GNFS/bench/results/.gitkeep
+mkdir -p <repo-root>/bench/results
+touch <repo-root>/bench/results/.gitkeep
 ```
 Expected: No output, both `bench/` and `bench/results/` directories exist.
 
@@ -91,7 +91,7 @@ Expected: No output, both `bench/` and `bench/results/` directories exist.
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 touch bench/results/test.trace
 git check-ignore -v bench/results/test.trace bench/results/.gitkeep
 rm bench/results/test.trace
@@ -102,7 +102,7 @@ Expected: `bench/results/test.trace` is matched by `bench/results/*.trace`, `ben
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 git add .gitignore bench/results/.gitkeep
 git status
 git commit -m "$(cat <<'EOF'
@@ -130,7 +130,7 @@ Expected: Commit succeeds with hash printed.
 
 Run:
 ```bash
-grep -n "GNFS_ENABLE_UBSAN\|CMAKE_EXPORT_COMPILE_COMMANDS" /Users/mayiding/Desktop/GitMy/GNFS/CMakeLists.txt
+grep -n "GNFS_ENABLE_UBSAN\|CMAKE_EXPORT_COMPILE_COMMANDS" <repo-root>/CMakeLists.txt
 ```
 Expected: `GNFS_ENABLE_UBSAN` near line 56, `CMAKE_EXPORT_COMPILE_COMMANDS` near line 61. The PGO block goes between them (after line 58 ends the UBSAN if-block).
 
@@ -207,7 +207,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 rm -rf build-pgo-test
 cmake -B build-pgo-test -DCMAKE_BUILD_TYPE=Release 2>&1 | tail -20
 ```
@@ -217,7 +217,7 @@ Expected: Normal CMake configure output, no FATAL_ERROR, no mention of PGO (beca
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 rm -rf build-pgo-test
 cmake -B build-pgo-test -DCMAKE_BUILD_TYPE=Release -DGNFS_ENABLE_PGO_GEN=ON -DGNFS_ENABLE_PGO_USE=ON 2>&1 | tail -5
 ```
@@ -227,7 +227,7 @@ Expected: `CMake Error at CMakeLists.txt:...:` containing `cannot enable both GN
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 rm -rf build-pgo-test
 cmake -B build-pgo-test -DCMAKE_BUILD_TYPE=Release -DGNFS_ENABLE_PGO_GEN=ON 2>&1 | tail -10
 ```
@@ -237,7 +237,7 @@ Expected: `-- GNFS PGO: instrumentation enabled, profiles -> .../build-pgo-test/
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 rm -rf build-pgo-test
 cmake -B build-pgo-test -DCMAKE_BUILD_TYPE=Release -DGNFS_ENABLE_PGO_USE=ON 2>&1 | tail -5
 ```
@@ -247,7 +247,7 @@ Expected: `CMake Error` containing `profile not found at .../merged.profdata`. E
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 rm -rf build-pgo-test
 git status
 git add CMakeLists.txt
@@ -294,7 +294,7 @@ Expected: All commands return paths. `llvm-profdata` shows usage. `clang` path i
 
 - [ ] **Step 3.2: Write scripts/pgo-train.sh**
 
-Create `/Users/mayiding/Desktop/GitMy/GNFS/scripts/pgo-train.sh` with the following exact content:
+Create `<repo-root>/scripts/pgo-train.sh` with the following exact content:
 
 ```bash
 #!/usr/bin/env zsh
@@ -465,14 +465,14 @@ echo "  python3 scripts/perf/parse-trace.py <baseline.xml> <pgo.xml>"
 
 Run:
 ```bash
-chmod +x /Users/mayiding/Desktop/GitMy/GNFS/scripts/pgo-train.sh
+chmod +x <repo-root>/scripts/pgo-train.sh
 ```
 
 - [ ] **Step 3.4: Smoke-test help output**
 
 Run:
 ```bash
-/Users/mayiding/Desktop/GitMy/GNFS/scripts/pgo-train.sh --help
+<repo-root>/scripts/pgo-train.sh --help
 ```
 Expected: A descriptive comment block printed (lines starting with `# scripts/pgo-train.sh` through the usage description).
 
@@ -482,7 +482,7 @@ This actually runs PGO end-to-end. It takes 5-15 min depending on M5 thermal sta
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 ./scripts/pgo-train.sh 2>&1 | tee /tmp/pgo-train-first.log
 ```
 Expected output milestones:
@@ -498,7 +498,7 @@ If any phase fails, the script prints the log path and last 20-30 lines; debug f
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 /usr/bin/time -p ./build-pgo-use/test_factor_with_kleinjung 2>&1 | tail -10
 ```
 Expected: Test PASS, `real` time printed (in seconds). Should be in the same ballpark as the baseline (within ±20%).
@@ -507,7 +507,7 @@ Expected: Test PASS, `real` time printed (in seconds). Should be in the same bal
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 git add scripts/pgo-train.sh
 git commit -m "$(cat <<'EOF'
 feat(perf): add scripts/pgo-train.sh — four-phase Clang PGO workflow
@@ -561,12 +561,12 @@ mdfind -name "CPU Counters.tracetemplate" 2>/dev/null
 
 Run:
 ```bash
-mkdir -p /Users/mayiding/Desktop/GitMy/GNFS/scripts/perf
+mkdir -p <repo-root>/scripts/perf
 ```
 
 - [ ] **Step 4.3: Write scripts/perf/profile-cpu.sh**
 
-Create `/Users/mayiding/Desktop/GitMy/GNFS/scripts/perf/profile-cpu.sh` with this content:
+Create `<repo-root>/scripts/perf/profile-cpu.sh` with this content:
 
 ```bash
 #!/usr/bin/env zsh
@@ -654,7 +654,7 @@ echo "Parse with: python3 ${ROOT}/scripts/perf/parse-trace.py ${XML_OUT}"
 
 Run:
 ```bash
-chmod +x /Users/mayiding/Desktop/GitMy/GNFS/scripts/perf/profile-cpu.sh
+chmod +x <repo-root>/scripts/perf/profile-cpu.sh
 ```
 
 - [ ] **Step 4.5: Smoke-test against a small baseline binary**
@@ -663,7 +663,7 @@ chmod +x /Users/mayiding/Desktop/GitMy/GNFS/scripts/perf/profile-cpu.sh
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 ./scripts/test.sh build 2>&1 | tail -3   # ensure ./build/test_integer exists
 ./scripts/perf/profile-cpu.sh ./build/test_integer 2>&1 | tee /tmp/profile-smoke.log
 ```
@@ -677,14 +677,14 @@ Expected:
 
 Run:
 ```bash
-ls -lh /Users/mayiding/Desktop/GitMy/GNFS/bench/results/*-test_integer.trace.xml
-head -100 /Users/mayiding/Desktop/GitMy/GNFS/bench/results/*-test_integer.trace.xml | head -80
+ls -lh <repo-root>/bench/results/*-test_integer.trace.xml
+head -100 <repo-root>/bench/results/*-test_integer.trace.xml | head -80
 ```
 Expected: XML output. Note the actual element names — the doctrine §5.5 placeholder parser uses `row/event/value` but the real xctrace output may use different tags. **The parser in Task 5 must match whatever xctrace actually emits here.** Save a copy of the head of this file to inform parser implementation:
 
 Run:
 ```bash
-head -200 /Users/mayiding/Desktop/GitMy/GNFS/bench/results/*-test_integer.trace.xml > /tmp/xctrace-xml-schema.txt
+head -200 <repo-root>/bench/results/*-test_integer.trace.xml > /tmp/xctrace-xml-schema.txt
 cat /tmp/xctrace-xml-schema.txt
 ```
 Note the actual schema (likely `<row><sample><...></row>` with attributes like `event-name="..."` and child `<value>...</value>` or `count="..."`).
@@ -693,7 +693,7 @@ Note the actual schema (likely `<row><sample><...></row>` with attributes like `
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 git add scripts/perf/profile-cpu.sh
 git commit -m "$(cat <<'EOF'
 feat(perf): add scripts/perf/profile-cpu.sh — xctrace CPU PMU recorder
@@ -750,7 +750,7 @@ If the schema doesn't match the doctrine placeholder, adapt the parser code in S
 
 - [ ] **Step 5.2: Write scripts/perf/parse-trace.py**
 
-Create `/Users/mayiding/Desktop/GitMy/GNFS/scripts/perf/parse-trace.py` with this content:
+Create `<repo-root>/scripts/perf/parse-trace.py` with this content:
 
 ```python
 #!/usr/bin/env python3
@@ -943,14 +943,14 @@ if __name__ == "__main__":
 
 Run:
 ```bash
-chmod +x /Users/mayiding/Desktop/GitMy/GNFS/scripts/perf/parse-trace.py
+chmod +x <repo-root>/scripts/perf/parse-trace.py
 ```
 
 - [ ] **Step 5.4: Smoke-test single-trace mode against the test_integer XML from Task 4.5**
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 ls -1 bench/results/*-test_integer.trace.xml
 # pick the first one
 XML_FILE=$(ls -1 bench/results/*-test_integer.trace.xml | head -1)
@@ -973,7 +973,7 @@ This is the most likely point where the doctrine's placeholder code needs adjust
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 ./scripts/perf/profile-cpu.sh ./build/test_integer
 # pick two most recent
 XML_A=$(ls -1t bench/results/*-test_integer.trace.xml | sed -n 1p)
@@ -986,7 +986,7 @@ Expected: `# PGO impact` header, `| Metric | Baseline | After | Δ% |` table wit
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 git add scripts/perf/parse-trace.py
 git commit -m "$(cat <<'EOF'
 feat(perf): add scripts/perf/parse-trace.py — xctrace XML -> markdown
@@ -1019,7 +1019,7 @@ Expected: Commit succeeds.
 
 Run:
 ```bash
-sed -n '1,90p' /Users/mayiding/Desktop/GitMy/GNFS/scripts/test.sh | head -90
+sed -n '1,90p' <repo-root>/scripts/test.sh | head -90
 ```
 Identify the comment block listing all modes (lines starting with `# `). Find the section where modes are documented; insert the new ones there.
 
@@ -1027,7 +1027,7 @@ Identify the comment block listing all modes (lines starting with `# `). Find th
 
 Run:
 ```bash
-sed -n '1670,1735p' /Users/mayiding/Desktop/GitMy/GNFS/scripts/test.sh
+sed -n '1670,1735p' <repo-root>/scripts/test.sh
 ```
 Confirm: `gate)` block ends near line 1671, `perf)` around 1673, then `stress)`, `watch)`, `report)`, `matrix)`. Insert `pgo-train)` and `profile)` between `perf)` and `stress)`, since they're perf-related.
 
@@ -1098,7 +1098,7 @@ Find the help block (around lines 2-80; the regex `sed -n '2,/^set -eo/{ /^#/s/^
 
 Run:
 ```bash
-grep -n "perf\|bench" /Users/mayiding/Desktop/GitMy/GNFS/scripts/test.sh | head -20
+grep -n "perf\|bench" <repo-root>/scripts/test.sh | head -20
 ```
 
 Find a line near the top documenting `perf`. Edit `old_string` to that block and `new_string` to add lines like:
@@ -1113,21 +1113,21 @@ If you can't find a clean insertion point in the header, just add a `## ` sectio
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 ./scripts/test.sh profile 2>&1 | tail -5     # no arg -> usage error
 ```
 Expected: `用法: ... profile <test_name>` error message, exit code 1.
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 ./scripts/test.sh profile nonexistent 2>&1 | tail -5
 ```
 Expected: `测试二进制不存在: .../test_nonexistent` error.
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 ./scripts/test.sh profile integer 2>&1 | head -20
 ```
 Expected: dispatches to `profile-cpu.sh ./build/test_integer`, starts recording. Let it complete (~5 s).
@@ -1136,7 +1136,7 @@ Expected: dispatches to `profile-cpu.sh ./build/test_integer`, starts recording.
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 git add scripts/test.sh
 git commit -m "$(cat <<'EOF'
 feat(perf): wire pgo-train + profile subcommands into scripts/test.sh
@@ -1168,7 +1168,7 @@ Target binary: `test_factor_with_kleinjung` (slow tier, ~30 bit, full GNFS pipel
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 ./scripts/test.sh build -t Release 2>&1 | tail -5
 ls -la build/test_factor_with_kleinjung
 ```
@@ -1178,7 +1178,7 @@ Expected: Binary exists, recently built. If `build/` was Debug, rebuild as Relea
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 for i in 1 2 3; do
     /usr/bin/time -p ./build/test_factor_with_kleinjung 2>&1 | tail -3 | tee -a /tmp/baseline-times.log
     echo "---" | tee -a /tmp/baseline-times.log
@@ -1191,7 +1191,7 @@ Expected: 3 `real X.XX` lines. Note the median (call this `T_base`).
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 ./scripts/test.sh profile factor_with_kleinjung 2>&1 | tail -10
 ls -1t bench/results/*-test_factor_with_kleinjung.trace.xml | head -1
 ```
@@ -1201,7 +1201,7 @@ Expected: Trace recorded; XML file path printed. Note the path (call it `XML_BAS
 
 If not already done in Task 3.5:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 ./scripts/test.sh pgo-train --clean 2>&1 | tee /tmp/pgo-train-final.log
 ```
 Expected: Same milestone output as Task 3.5; produces `build-pgo-use/test_*` binaries.
@@ -1212,7 +1212,7 @@ If PGO was already trained, you can skip this step.
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 for i in 1 2 3; do
     /usr/bin/time -p ./build-pgo-use/test_factor_with_kleinjung 2>&1 | tail -3 | tee -a /tmp/pgo-times.log
     echo "---" | tee -a /tmp/pgo-times.log
@@ -1227,7 +1227,7 @@ Compute speedup: `(T_base - T_pgo) / T_base * 100`. Expected: +5% to +20% improv
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 ./scripts/perf/profile-cpu.sh ./build-pgo-use/test_factor_with_kleinjung 2>&1 | tail -10
 ls -1t bench/results/*-test_factor_with_kleinjung.trace.xml | head -1
 ```
@@ -1237,7 +1237,7 @@ Expected: Trace recorded; XML file path printed. Note the path (call it `XML_PGO
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 # Substitute actual paths from steps 7.3 and 7.6
 XML_BASELINE=$(ls -1t bench/results/*-test_factor_with_kleinjung.trace.xml | sed -n 2p)
 XML_PGO=$(ls -1t bench/results/*-test_factor_with_kleinjung.trace.xml | sed -n 1p)
@@ -1250,7 +1250,7 @@ Expected: A markdown table with `| Metric | Baseline | After | Δ% |` rows.
 
 - [ ] **Step 7.8: Compose the full impact report**
 
-Create `/Users/mayiding/Desktop/GitMy/GNFS/bench/results/2026-05-12-pgo-impact.md` with this template (fill in actual numbers from steps 7.2, 7.5, 7.7):
+Create `<repo-root>/bench/results/2026-05-12-pgo-impact.md` with this template (fill in actual numbers from steps 7.2, 7.5, 7.7):
 
 ```markdown
 # PGO Impact Report — test_factor_with_kleinjung
@@ -1306,7 +1306,7 @@ Use the Write tool to create this file. Fill in the TBD values with the actual n
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 git add bench/results/2026-05-12-pgo-impact.md
 git status
 git commit -m "$(cat <<'EOF'
@@ -1331,7 +1331,7 @@ Open `docs/perf/performance-doctrine.md` and update the `§6 路线图` P0 entry
 
 Run:
 ```bash
-grep -n "P0\|首战" /Users/mayiding/Desktop/GitMy/GNFS/docs/perf/performance-doctrine.md | head -10
+grep -n "P0\|首战" <repo-root>/docs/perf/performance-doctrine.md | head -10
 ```
 
 Adjust the P0 status line accordingly.
@@ -1340,7 +1340,7 @@ Adjust the P0 status line accordingly.
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 git add docs/perf/performance-doctrine.md
 git commit -m "docs(perf): mark P0 (Instruments + PGO loop) complete in doctrine roadmap
 
@@ -1353,7 +1353,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 Run:
 ```bash
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 git status
 git log --oneline -10
 git push origin main
@@ -1369,7 +1369,7 @@ After completing Tasks 1-7, run a sanity sweep:
 - [ ] **Spec coverage:** Every section of doctrine §5 (S1-S6) maps to one or more tasks above. ✓ S1 → Task 2, S2 → Task 3, S3 → Task 4, S4 → Task 5, S5 → Task 6, S6 → Task 7.
 - [ ] **No placeholders:** Search the plan for `TODO`, `TBD`, `XXX`, `fixme`. The only `TBD` left is in the impact report template (Task 7.8) where actual measurements are filled in — that's intentional, not a plan defect.
 - [ ] **Type/signature consistency:** Script paths used in Task 6 (`pgo-train.sh`, `perf/profile-cpu.sh`) match what's created in Tasks 3 and 4. ✓
-- [ ] **Commands runnable:** Every `Run:` block uses absolute paths or anchors via `cd /Users/mayiding/Desktop/GitMy/GNFS`. No relative-path ambiguity. ✓
+- [ ] **Commands runnable:** Every `Run:` block uses absolute paths or anchors via `cd <repo-root>`. No relative-path ambiguity. ✓
 - [ ] **Commit messages:** All commit messages follow Conventional Commits (`feat(perf):`, `chore(perf):`, `docs(perf):`) per CLAUDE.md. ✓
 - [ ] **Cleanup:** Task 2.7 removes the throwaway `build-pgo-test/` dir. No leftover test artifacts. ✓
 

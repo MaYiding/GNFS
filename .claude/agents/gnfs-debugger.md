@@ -33,7 +33,7 @@ You debug issues in number-theoretic factorization code. Common failure modes:
 
 ```bash
 # Quick rebuild single test
-make -C /Users/admin/Desktop/Documents/GNFS/build test_gnfs_e2e -j8
+cmake --build build --target test_gnfs_e2e -j8
 
 # Run with output
 ./build/test_gnfs_e2e 2>&1

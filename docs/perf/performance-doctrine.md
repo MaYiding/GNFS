@@ -742,7 +742,7 @@ esac
 执行顺序:
 ```bash
 # 1. baseline (无 PGO)
-cd /Users/mayiding/Desktop/GitMy/GNFS
+cd <repo-root>
 ./scripts/test.sh build  # 现有 Release build
 time ./build/test_factor_with_kleinjung   # 记录 wall time
 ./scripts/test.sh profile factor_with_kleinjung  # 抓 trace

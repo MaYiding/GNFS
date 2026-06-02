@@ -233,6 +233,16 @@ size_t max_rels = effective_cols * 1.25;  // 25% safety; 1.3 for ≤25-digit gat
 3. **Release 优化掉 UB**:`double → uint64_t` 当 double 超出 `[0, 2^64)` 是 UB。Release CI 不触发,但 Sanitizers (Debug+UBSan) 会抓。任何 cast 前先 `std::min(double_val, 1e18)` clamp。
 4. **测试期望被 NDEBUG 静默优化**:Release `assert()` 失效,所以期望本身错的测试看似通过,Debug + sanitizers 才暴露。最常见的模式是测试假设小 N 走完整 GNFS 流水线,但 `select_method` 把 ≤20-bit N 路由到 TrialDivision 快速路径(不调 progress callback,不累加 relations_found)。写测试断言时验证"路径选择"(`method_used == TrialDivision`) 比验证"流水线产生了副作用"(`relations_found > 0`) 更稳定。本地用 `cmake -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined"` 复现 CI 失败。
 
+## 禁止本机硬编码与个人信息
+
+任何提交到 Git 的配置、脚本、文档、测试、示例文件都不得包含只在某台电脑可用的硬编码路径或个人信息。
+
+- 禁止写入 `/Users/<name>/...`、`C:\Users\<name>\...`、`/home/<name>/...`、`D:\...` 等本机绝对路径，尤其是桌面目录、私有工作区、runner 临时目录。
+- 禁止把个人用户名、私有机器名、不可公开展示的账号、token、邮箱、密钥、临时下载地址写进仓库文本。
+- 需要引用项目根目录时，脚本优先用相对路径、`$PWD`、`$(git rev-parse --show-toplevel)`；Claude 配置优先用 `${CLAUDE_PROJECT_DIR}`；CMake 代码用 `${CMAKE_SOURCE_DIR}` / `${PROJECT_SOURCE_DIR}`。
+- 文档和历史记录若必须表达“仓库根目录”，用 `<repo-root>` 或 `GNFS_ROOT=/path/to/GNFS` 这样的占位，不写真实个人路径。
+- 提交前至少用 `rg -n --hidden '(<local-user-path>|<private-workspace>|<personal-identifier>)'` 复查；命中的公共 URL、第三方文档原文、系统路径必须能解释为什么适合入库。
+
 
 ## ENV 调优开关总览
 
