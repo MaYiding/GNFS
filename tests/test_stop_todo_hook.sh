@@ -63,7 +63,8 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 expected_count = sys.argv[2]
-payload = json.loads(path.read_text())
+raw = path.read_text(encoding="ascii")
+payload = json.loads(raw)
 if payload.get("decision") != "block":
     raise SystemExit(f"expected block decision, got {payload!r}")
 reason = payload.get("reason", "")

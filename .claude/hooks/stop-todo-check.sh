@@ -118,5 +118,5 @@ reason = (
     "请继续处理 TODO.md 中的未完成项目。完成一项后将对应条目标记为 [x]，全部完成后再结束。"
 )
 
-print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+print(json.dumps({"decision": "block", "reason": reason}))
 PY
