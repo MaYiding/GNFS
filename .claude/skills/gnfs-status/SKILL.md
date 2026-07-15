@@ -2,7 +2,6 @@
 name: gnfs-status
 description: Show a concise GNFS repository health snapshot. Use only when the user explicitly invokes this skill or asks for project status.
 argument-hint: "[quick|verify]"
-disable-model-invocation: true
 ---
 
 # GNFS Project Status
