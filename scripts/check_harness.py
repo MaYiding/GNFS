@@ -112,6 +112,9 @@ class Checks:
         )
 
     def check_components(self) -> None:
+        if not (self.root / "docs" / "harness-engineering.md").is_file():
+            self.fail("docs/harness-engineering.md: missing Harness ownership and contract documentation")
+
         hook = self.root / ".claude" / "hooks" / "project-guard.py"
         if not hook.is_file():
             self.fail(".claude/hooks/project-guard.py: missing")
