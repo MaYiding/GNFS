@@ -1,8 +1,8 @@
 # ===== Build Artifacts =====
-build/
-build-*/
-xcode-build/
-cmake-build-*/
+/build/
+/build-*/
+/xcode-build/
+/cmake-build-*/
 *.o
 *.a
 *.so
@@ -37,6 +37,8 @@ CMakeUserPresets.json
 
 # ===== Claude runtime artifacts =====
 .claude/scheduled_tasks.lock
+.claude/settings.local.json
+CLAUDE.local.md
 
 # ===== Planning & Tracking Files (Session-Specific) =====
 task_plan.md
