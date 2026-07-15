@@ -30,6 +30,8 @@ CMakeUserPresets.json
 
 # ===== Cache =====
 .cache/
+__pycache__/
+*.py[cod]
 
 # ===== Parallel Feature Worktrees =====
 .worktrees/
