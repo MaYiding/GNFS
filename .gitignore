@@ -1,8 +1,8 @@
 # ===== Build Artifacts =====
-build/
-build-*/
-xcode-build/
-cmake-build-*/
+/build/
+/build-*/
+/xcode-build/
+/cmake-build-*/
 *.o
 *.a
 *.so
@@ -30,6 +30,8 @@ CMakeUserPresets.json
 
 # ===== Cache =====
 .cache/
+__pycache__/
+*.py[cod]
 
 # ===== Parallel Feature Worktrees =====
 .worktrees/
@@ -37,65 +39,22 @@ CMakeUserPresets.json
 
 # ===== Claude runtime artifacts =====
 .claude/scheduled_tasks.lock
+.claude/settings.local.json
+CLAUDE.local.md
 
 # ===== Planning & Tracking Files (Session-Specific) =====
-task_plan.md
-task_plan_*.md
-findings.md
-progress.md
-BACKLOG.md
-RESOLVED.md
+/task_plan.md
+/task_plan_*.md
+/findings.md
+/progress.md
+/BACKLOG.md
+/RESOLVED.md
 /TODO.md
 
 # ===== Backup Files =====
 *.bak
 *.orig
 *.backup
-
-# ===== Legacy Root Files (cleaned up, prevent iCloud re-sync) =====
-# All source code lives in include/, src/, tests/ — never in root
-/*.cpp
-/*.hpp
-
-# All scripts live in scripts/ — never in root
-/*.sh
-
-# Flat-named files from early dev (path separators lost)
-/includegnfs*
-/srccofactor*
-/srccore*
-/srcfactor*
-/srclinalg*
-/srcpolynomial*
-/srcrelation*
-/srcsieve*
-/srcsqrt*
-/srcutil*
-
-# Obsolete root documentation
-/BUILD.md
-/COMPILATION_FIX_GUIDE.md
-/COMPILE_DIAGNOSIS.md
-/COMPILE_STATUS.md
-/COMPLETION_REPORT.md
-/CREATE_THREAD_POOL.md
-/CURRENT_STATUS_AND_RECOMMENDATION.md
-/DEBUGGING_SUMMARY.md
-/FILE_DEPLOYMENT_GUIDE.md
-/FINAL_STATUS_REPORT.md
-/FIX_POLYNOMIAL.md
-/GMP_FIX_GUIDE.md
-/PROGRESS_UPDATE.md
-/PROJECT_SUMMARY.md
-/QUICK_FIX.md
-/QUICKSTART.md
-/README_NEW.md
-/READY_TO_COMPILE.md
-/START_HERE.md
-/SUCCESS_REPORT.md
-/TEST_STATUS.md
-/TESTING_GUIDE.md
-Testing/
 
 # ===== Performance Profiling Artifacts =====
 # Trace binaries are large and machine-specific; reports (.md) ARE tracked.

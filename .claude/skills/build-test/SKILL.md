@@ -1,46 +1,27 @@
 ---
 name: build-test
-description: 构建 GNFS 项目并运行测试。可选参数：test name 或 "all"
+description: Build GNFS or run a requested test mode through the project test runner. Use when the user asks to compile, test, run smoke/gate/E2E, or verify a code change.
+argument-hint: "[smoke|changed|changed --deep|module <name>|run <test>|gate|e2e|build]"
 ---
 
-# GNFS Build & Test
+# GNFS Build and Test
 
-快速构建并测试 GNFS 项目。
+Use `scripts/test.sh` as the only normal entry point. It owns CMake configuration, build parallelism, per-test timeouts, and test reporting.
 
-## Workflow
+## Select the mode
 
-1. **编译项目**:
-```bash
-cmake --build build -j$(sysctl -n hw.ncpu) 2>&1
-```
+- No argument: run `./scripts/test.sh smoke`.
+- A supported mode in `$ARGUMENTS`: pass that mode and its arguments to `./scripts/test.sh`.
+- A bare test name: run `./scripts/test.sh run <test_name>`.
+- An unknown or ambiguous request: run `./scripts/test.sh list` and select the narrowest matching mode.
 
-2. **运行测试**:
-   - 如果用户指定了测试名称，只运行该测试
-   - 如果参数是 "all" 或无参数，运行全部测试
-   - **E2E 测试始终最后运行**（最重要的验证）
+Do not silently upgrade a request to `full`, `thorough`, `nightly`, benchmark, progressive, or stress testing. Those modes are expensive and require an explicit request or clear risk justification.
 
-```bash
-# 全部测试
-ctest --test-dir build --output-on-failure
+## Run and report
 
-# 单个测试
-./build/test_gnfs_e2e
-```
+1. Run `git status --short --branch` so pre-existing changes are visible.
+2. Execute the selected `scripts/test.sh` command from the repository root.
+3. If it fails, preserve the first useful error and the runner's timeout context. Diagnose or fix only to the extent authorized by the user's request.
+4. Report the exact command, build type, passed/failed result, and any skipped or unrun coverage.
 
-3. **结果报告**: 汇总通过/失败的测试，标注失败原因
-
-## Test Names
-- `test_small_vector`, `test_integer`, `test_thread_pool`
-- `test_factor_base`, `test_special_q`
-- `test_lattice_sieve`, `test_relation_collector`, `test_sieve_basic`
-- `test_cofactor`, `test_linalg`, `test_sqrt`, `test_sqrt_debug`
-- `test_murphy`, `test_kleinjung`, `test_kleinjung_large`
-- `test_factor_with_kleinjung`
-- `test_gnfs_e2e` ← **最重要**
-
-## 编译失败处理
-如果编译失败：
-1. 检查错误消息中的文件和行号
-2. 读取相关代码
-3. 修复编译错误
-4. 重新编译
+Use direct `cmake`, `ctest`, or test binaries only to diagnose the unified runner or to reproduce a case the runner cannot express. Explain that exception in the result.
