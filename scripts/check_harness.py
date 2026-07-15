@@ -205,11 +205,11 @@ class Checks:
     def check_portability(self) -> None:
         tracked_result = self.git("ls-files")
         tracked = tracked_result.stdout.splitlines() if tracked_result.returncode == 0 else []
+        text_suffixes = {".cmake", ".cpp", ".hpp", ".json", ".md", ".py", ".sh", ".txt", ".yaml", ".yml"}
         candidates = [
             path
             for path in tracked
-            if path in {"AGENTS.md", "CLAUDE.md", ".gitignore"}
-            or path.startswith((".claude/", ".agents/"))
+            if path in {"CMakeLists.txt", ".gitignore"} or Path(path).suffix in text_suffixes
         ]
         candidates.extend(["scripts/check_harness.py", ".claude/hooks/project-guard.py"])
 
@@ -223,9 +223,10 @@ class Checks:
                 if pattern.search(text):
                     self.fail(f"{relative}: contains a machine-specific absolute path")
                     break
-            for marker in STALE_MARKERS:
-                if marker in text:
-                    self.fail(f"{relative}: contains stale Harness marker {marker!r}")
+            if relative in {"AGENTS.md", "CLAUDE.md"} or relative.startswith((".claude/", ".agents/")):
+                for marker in STALE_MARKERS:
+                    if marker in text:
+                        self.fail(f"{relative}: contains stale Harness marker {marker!r}")
 
     def run(self) -> list[str]:
         self.check_instructions()
