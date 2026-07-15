@@ -131,6 +131,11 @@ class Checks:
                 self.fail(f"{canonical_rel}: missing YAML frontmatter")
             if expected_reference not in adapter:
                 self.fail(f"{adapter_rel}: must reference the canonical Claude skill")
+            canonical_header = self.frontmatter(canonical)
+            adapter_header = self.frontmatter(adapter)
+            for key in ("name", "description"):
+                if canonical_header.get(key) != adapter_header.get(key):
+                    self.fail(f"{adapter_rel}: {key} must match the canonical skill")
 
         for name in SPECIALIST_AGENTS:
             relative = f".claude/agents/{name}.md"
@@ -142,6 +147,22 @@ class Checks:
             tools = {tool.strip() for tool in header.get("tools", "").split(",")}
             if {"Edit", "Write"} & tools:
                 self.fail(f"{relative}: specialist agents must remain read-only")
+
+        hook_test = self.root / "tests" / "test_harness_hooks.sh"
+        if not hook_test.is_file():
+            self.fail("tests/test_harness_hooks.sh: missing Hook regression test")
+        elif hook_test.stat().st_mode & 0o111 == 0:
+            self.fail("tests/test_harness_hooks.sh: must be executable")
+
+    def check_integration(self) -> None:
+        cmake = self.read("CMakeLists.txt")
+        if "add_test(NAME HarnessHooks" not in cmake or "tests/test_harness_hooks.sh" not in cmake:
+            self.fail("CMakeLists.txt: register the HarnessHooks CTest")
+
+        workflow = self.read(".github/workflows/scripts.yml")
+        for command in ("python3 scripts/check_harness.py", "bash tests/test_harness_hooks.sh"):
+            if command not in workflow:
+                self.fail(f".github/workflows/scripts.yml: missing CI command {command!r}")
 
     @staticmethod
     def frontmatter(text: str) -> dict[str, str]:
@@ -210,6 +231,7 @@ class Checks:
         self.check_instructions()
         self.check_settings()
         self.check_components()
+        self.check_integration()
         self.check_git_contracts()
         self.check_portability()
         return self.errors

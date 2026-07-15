@@ -4,6 +4,8 @@ This document defines the repository's agent Harness: shared instructions, Claud
 
 The Harness exists to prevent repeatable mechanical mistakes and to expose live project workflows. It does not replace engineering judgment, code review, or risk-based testing.
 
+The project Harness requires Python 3. The GNFS C++ library and CLI do not acquire a Python runtime dependency.
+
 ## Design Principles
 
 1. **One shared instruction source.** `AGENTS.md` contains cross-tool project facts and invariants. `CLAUDE.md` imports it instead of maintaining a second copy.
