@@ -347,10 +347,13 @@ if(GNFS_BUILD_TESTS)
     enable_testing()
 
     find_program(BASH_EXECUTABLE bash)
-    if(BASH_EXECUTABLE)
-        add_test(NAME StopTodoHook
-            COMMAND ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_stop_todo_hook.sh)
-        set_tests_properties(StopTodoHook PROPERTIES
+    find_program(PYTHON_EXECUTABLE NAMES python3 python)
+    if(BASH_EXECUTABLE AND PYTHON_EXECUTABLE)
+        add_test(NAME HarnessHooks
+            COMMAND ${CMAKE_COMMAND} -E env
+                PYTHON=${PYTHON_EXECUTABLE}
+                ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_harness_hooks.sh)
+        set_tests_properties(HarnessHooks PROPERTIES
             LABELS "instant" TIMEOUT 10
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()

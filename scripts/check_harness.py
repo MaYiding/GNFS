@@ -22,6 +22,12 @@ LOCAL_PATH_PATTERNS = (
     re.compile(r"[A-Za-z]:\\Users\\[^<\s]+"),
 )
 STALE_MARKERS = (".Co" + "dex/", "make -C " + MAC_HOME, "noreply@" + "anthropic.com")
+OBSOLETE_HARNESS_FILES = (
+    ".claude/hooks.json",
+    ".claude/hooks/stop-todo-check.sh",
+    "tests/test_stop_todo_hook.sh",
+    "TODO.md.example",
+)
 
 
 class Checks:
@@ -88,9 +94,9 @@ class Checks:
         if not any(isinstance(group, dict) and self.group_uses_guard(group, 10) for group in stop_groups):
             self.fail(".claude/settings.json: Stop must run project-guard.py")
 
-        legacy = self.root / ".claude" / "hooks.json"
-        if legacy.exists():
-            self.fail(".claude/hooks.json: remove the unused legacy hook configuration")
+        for relative in OBSOLETE_HARNESS_FILES:
+            if (self.root / relative).exists():
+                self.fail(f"{relative}: remove obsolete Harness artifact")
 
     @staticmethod
     def group_uses_guard(group: dict, max_timeout: int) -> bool:
@@ -154,6 +160,10 @@ class Checks:
             self.fail(f"git ls-files failed: {tracked_result.stderr.strip()}")
             return
         tracked = set(tracked_result.stdout.split("\0"))
+
+        for relative in OBSOLETE_HARNESS_FILES:
+            if relative in tracked and (self.root / relative).exists():
+                self.fail(f"{relative}: obsolete Harness artifact must not be tracked")
 
         for local_file in (".claude/settings.local.json", "CLAUDE.local.md"):
             if local_file in tracked:

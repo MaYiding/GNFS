@@ -4,13 +4,25 @@ on:
   push:
     branches: [ main, dev ]
     paths:
+      - '.agents/**'
+      - '.claude/**'
       - '.github/workflows/scripts.yml'
+      - '.gitignore'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'docs/harness-engineering.md'
       - 'scripts/**'
       - 'tests/*.sh'
   pull_request:
     branches: [ main, dev ]
     paths:
+      - '.agents/**'
+      - '.claude/**'
       - '.github/workflows/scripts.yml'
+      - '.gitignore'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'docs/harness-engineering.md'
       - 'scripts/**'
       - 'tests/*.sh'
   workflow_dispatch:
@@ -38,7 +50,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zsh
 
-      - name: Check shell syntax
+      - name: Check script syntax
         shell: bash
         run: |
           set -euo pipefail
@@ -48,7 +60,17 @@ jobs:
           done < <(git ls-files 'scripts/*.sh' 'scripts/perf/*.sh' 'tests/*.sh' \
             | xargs grep -l '^#!/usr/bin/env zsh')
 
-          bash -n scripts/v3_roi_estimator.sh
+          while IFS= read -r file; do
+            bash -n "${file}"
+          done < <(git ls-files '.claude/hooks/*.sh' 'scripts/*.sh' 'scripts/perf/*.sh' 'tests/*.sh' \
+            | xargs grep -l '^#!/usr/bin/env bash')
+
+          python3 -m py_compile .claude/hooks/project-guard.py scripts/check_harness.py
 
       - name: Check test catalog
         run: zsh ./scripts/test.sh list >/tmp/gnfs-test-list.txt
+
+      - name: Check agent Harness
+        run: |
+          python3 scripts/check_harness.py
+          bash tests/test_harness_hooks.sh
