@@ -1,39 +1,35 @@
 ---
 name: gnfs-status
-description: 显示 GNFS 项目当前状态：构建状态、测试结果、最近修改
+description: Show a concise GNFS repository health snapshot. Use only when the user explicitly invokes this skill or asks for project status.
+argument-hint: "[quick|verify]"
 disable-model-invocation: true
 ---
 
 # GNFS Project Status
 
-快速检查项目健康状态。
+Report current facts without presenting cached results as fresh verification.
 
-## Steps
+## Quick mode
 
-1. **构建状态** — 尝试编译，报告是否成功
-```bash
-cmake --build build -j$(sysctl -n hw.ncpu) 2>&1 | tail -5
-```
+Use quick mode when `$ARGUMENTS` is empty or contains `quick`:
 
-2. **测试状态** — 运行全部测试并汇总
-```bash
-ctest --test-dir build --output-on-failure 2>&1 | tail -20
-```
+1. Run `git status --short --branch`.
+2. Run `git log -1 --oneline --decorate`.
+3. Check whether `build/CMakeCache.txt` exists. If it does, report the configured `CMAKE_BUILD_TYPE`; otherwise report that the build is not configured.
+4. If `build/Testing/Temporary/LastTest.log` or `build/test_report.json` exists, report its modification time as historical evidence. Do not call it a current pass.
 
-3. **最近修改** — 列出最近修改的源文件
-```bash
-find include src tests -name "*.hpp" -o -name "*.cpp" | xargs ls -lt | head -10
-```
+## Verify mode
 
-4. **代码统计** — 报告文件数和行数
-```bash
-find include src -name "*.hpp" -o -name "*.cpp" | xargs wc -l | tail -1
-```
+When `$ARGUMENTS` contains `verify`, run `./scripts/test.sh smoke` after the Git snapshot. This performs a current build and instant-tier verification.
 
-## Output Format
+## Output
 
-汇总为简洁的状态报告：
-- 🔨 Build: ✅ Success / ❌ Failed (error summary)
-- 🧪 Tests: X/Y passed
-- 📝 Recent changes: top 5 modified files
-- 📊 Codebase: N files, M lines
+Summarize:
+
+- branch and working-tree state;
+- build configuration;
+- current verification result, or an explicit "not verified in this run";
+- most recent commit;
+- the next smallest useful command if health is uncertain.
+
+Do not calculate file or line counts; they are not a health signal and become stale immediately.
