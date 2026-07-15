@@ -138,6 +138,8 @@ For a new `GNFS_*` flag, document its behavior, parsing, default, bit-for-bit co
 - Use relative paths, `${CLAUDE_PROJECT_DIR}`, `${CMAKE_SOURCE_DIR}`, `${PROJECT_SOURCE_DIR}`, or documented placeholders.
 - Keep commits focused and independently understandable. Separate unrelated bug fixes.
 - Do not rewrite history, force-push, merge, or push unless the user explicitly requests it.
+- When a merge is authorized, always commit the intended changes, push the feature branch, open a pull request, and merge through that pull request. Do not merge locally and push the result directly to the default branch.
+- Do not wait for CI before merging unless the user explicitly asks for CI results. If repository protection permits it, merge the pull request immediately after creation.
 - Do not discard or overwrite changes you did not create.
 
 Before delivery, run the relevant secret/path scan or `python3 scripts/check_harness.py` for Harness changes, inspect `git diff --check`, and review the final status.
