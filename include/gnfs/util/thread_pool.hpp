@@ -68,8 +68,26 @@ public:
         }
 
         workers_.reserve(num_threads);
-        for (uint32_t i = 0; i < num_threads; ++i) {
-            workers_.emplace_back([this] { worker_loop(); });
+        try {
+            for (uint32_t i = 0; i < num_threads; ++i) {
+                workers_.emplace_back([this] { worker_loop(); });
+            }
+        } catch (...) {
+            // A partially constructed vector of joinable std::threads would
+            // call std::terminate while unwinding this constructor. Stop and
+            // join every worker that was created before propagating the
+            // resource failure.
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                stop_ = true;
+            }
+            cv_.notify_all();
+            for (auto& worker : workers_) {
+                if (worker.joinable()) {
+                    worker.join();
+                }
+            }
+            throw;
         }
     }
 

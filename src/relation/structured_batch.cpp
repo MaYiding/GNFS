@@ -313,6 +313,35 @@ bool duplicate_payload_equal(const StructuredBatchCandidate& lhs,
 
 } // namespace
 
+StructuredPreparedBatch::StructuredPreparedBatch(
+    StructuredIncidenceSnapshotId snapshot,
+    std::vector<StructuredBatchPrepareOutcome> outcomes) noexcept
+    : snapshot_(snapshot), outcomes_(std::move(outcomes)) {
+    for (const auto& outcome : outcomes_) {
+        if (std::holds_alternative<StructuredBatchPersistenceLimit>(outcome)) {
+            ++persistence_limited_candidate_count_;
+        } else {
+            ++prepared_candidate_count_;
+        }
+    }
+}
+
+StructuredIncidenceSnapshotId StructuredPreparedBatch::snapshot() const noexcept {
+    return snapshot_;
+}
+
+std::span<const StructuredBatchPrepareOutcome> StructuredPreparedBatch::outcomes() const& noexcept {
+    return outcomes_;
+}
+
+size_t StructuredPreparedBatch::prepared_candidate_count() const noexcept {
+    return prepared_candidate_count_;
+}
+
+size_t StructuredPreparedBatch::persistence_limited_candidate_count() const noexcept {
+    return persistence_limited_candidate_count_;
+}
+
 StructuredConflictFreeBatchPlan
 select_conflict_free_batch(StructuredIncidenceSnapshotId snapshot, size_t total_row_count,
                            std::vector<StructuredBatchCandidate> candidates,

@@ -1,4 +1,6 @@
 #include "gnfs/relation/structured_reduction.hpp"
+#include "gnfs/relation/structured_batch.hpp"
+#include "gnfs/util/ordered_parallel_map.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -970,8 +972,8 @@ struct SequentialStructuredReducer::Impl final {
         }
     }
 
-    [[nodiscard]] TreeBasisMergePlan validate_tree_plan(const TreeBasisMergePlan& plan) const {
-        validate_state();
+    [[nodiscard]] TreeBasisMergePlan
+    validate_tree_plan_after_state_validation(const TreeBasisMergePlan& plan) const {
         if (plan.generation == 0 || plan.generation != corpus.generation()) {
             fail(StructuredReductionErrorCode::InvalidPlan,
                  "tree-basis plan belongs to a different generation");
@@ -1026,8 +1028,13 @@ struct SequentialStructuredReducer::Impl final {
         return expected;
     }
 
-    [[nodiscard]] TwoWayMergePlan validate_plan(const TwoWayMergePlan& plan) const {
+    [[nodiscard]] TreeBasisMergePlan validate_tree_plan(const TreeBasisMergePlan& plan) const {
         validate_state();
+        return validate_tree_plan_after_state_validation(plan);
+    }
+
+    [[nodiscard]] TwoWayMergePlan
+    validate_plan_after_state_validation(const TwoWayMergePlan& plan) const {
         if (plan.generation == 0 || plan.generation != corpus.generation()) {
             fail(StructuredReductionErrorCode::InvalidPlan,
                  "merge plan belongs to a different generation");
@@ -1096,13 +1103,23 @@ struct SequentialStructuredReducer::Impl final {
         return plan;
     }
 
-    [[nodiscard]] PreparedData prepare(const TwoWayMergePlan& plan) const {
-        TwoWayMergePlan validated = validate_plan(plan);
+    [[nodiscard]] TwoWayMergePlan validate_plan(const TwoWayMergePlan& plan) const {
+        validate_state();
+        return validate_plan_after_state_validation(plan);
+    }
+
+    [[nodiscard]] Relation materialize_validated_plan(const TwoWayMergePlan& validated) const {
         Relation materialized = corpus.materialize(validated.expected_sources);
         if (odd_large_prime_keys(materialized) != validated.expected_lp_keys) {
             fail(StructuredReductionErrorCode::InvariantViolation,
                  "materialized LP support differs from logical LP support");
         }
+        return materialized;
+    }
+
+    [[nodiscard]] PreparedData prepare(const TwoWayMergePlan& plan) const {
+        TwoWayMergePlan validated = validate_plan(plan);
+        Relation materialized = materialize_validated_plan(validated);
         return PreparedData{std::move(validated), std::move(materialized)};
     }
 
@@ -1220,8 +1237,8 @@ struct SequentialStructuredReducer::Impl final {
         return plans;
     }
 
-    [[nodiscard]] PreparedTreeData prepare_tree(const TreeBasisMergePlan& plan) const {
-        TreeBasisMergePlan validated = validate_tree_plan(plan);
+    [[nodiscard]] std::vector<Relation>
+    materialize_validated_tree_plan(const TreeBasisMergePlan& validated) const {
         std::vector<Relation> materialized;
         materialized.reserve(validated.edges.size());
         for (const auto& edge : validated.edges) {
@@ -1236,6 +1253,12 @@ struct SequentialStructuredReducer::Impl final {
             }
             materialized.push_back(std::move(relation));
         }
+        return materialized;
+    }
+
+    [[nodiscard]] PreparedTreeData prepare_tree(const TreeBasisMergePlan& plan) const {
+        TreeBasisMergePlan validated = validate_tree_plan(plan);
+        auto materialized = materialize_validated_tree_plan(validated);
         return PreparedTreeData{std::move(validated), std::move(materialized)};
     }
 
@@ -1588,6 +1611,97 @@ PreparedTreeBasisMerge SequentialStructuredReducer::prepare(const TreeBasisMerge
 std::vector<StructuredRowId>
 SequentialStructuredReducer::commit(PreparedTreeBasisMerge&& prepared) {
     return impl_->commit_tree(std::move(prepared.plan_), std::move(prepared.materialized_));
+}
+
+StructuredPreparedBatch prepare_conflict_free_batch(const SequentialStructuredReducer& reducer,
+                                                    const StructuredConflictFreeBatchPlan& batch,
+                                                    uint32_t worker_count) {
+    if (worker_count == 0) {
+        fail(StructuredReductionErrorCode::InvalidInput,
+             "structured batch preparation requires at least one worker");
+    }
+
+    const auto& impl = *reducer.impl_;
+    impl.validate_state();
+    if (batch.snapshot.generation == 0 || batch.snapshot.incidence_epoch == 0) {
+        fail(StructuredReductionErrorCode::InvalidGeneration,
+             "structured batch snapshot identity contains zero");
+    }
+    if (batch.snapshot.generation != impl.corpus.generation()) {
+        fail(StructuredReductionErrorCode::InvalidPlan,
+             "structured batch belongs to a different source generation");
+    }
+    if (batch.snapshot.incidence_epoch != impl.incidence_epoch) {
+        fail(StructuredReductionErrorCode::StalePlan,
+             "structured batch belongs to a stale incidence epoch");
+    }
+
+    size_t accounted_candidates = batch.candidates.size();
+    accounted_candidates =
+        checked_resource_add(accounted_candidates, batch.duplicate_candidate_count,
+                             "structured batch accounting overflows");
+    accounted_candidates = checked_resource_add(accounted_candidates, batch.conflict_deferred_count,
+                                                "structured batch accounting overflows");
+    accounted_candidates = checked_resource_add(accounted_candidates, batch.capacity_deferred_count,
+                                                "structured batch accounting overflows");
+    if (accounted_candidates != batch.raw_candidate_count) {
+        fail(StructuredReductionErrorCode::InvalidPlan,
+             "structured batch candidate accounting is inconsistent");
+    }
+
+    // StructuredConflictFreeBatchPlan is publicly constructible. Re-run the
+    // pure selector over the selected subset to prove canonical global order,
+    // duplicate freedom, and member disjointness before exact state checks.
+    auto canonical = select_conflict_free_batch(batch.snapshot, reducer.total_row_count(),
+                                                batch.candidates, batch.candidates.size());
+    if (canonical.duplicate_candidate_count != 0 || canonical.conflict_deferred_count != 0 ||
+        canonical.capacity_deferred_count != 0 || canonical.candidates != batch.candidates) {
+        fail(StructuredReductionErrorCode::InvalidPlan,
+             "structured batch candidates are not a canonical conflict-free selection");
+    }
+
+    // Seal the immutable reducer state once, then validate every exact plan in
+    // candidate order without repeating the whole-state rank/integrity pass.
+    std::vector<StructuredBatchCandidate> validated;
+    validated.reserve(batch.candidates.size());
+    for (const auto& candidate : batch.candidates) {
+        validated.push_back(std::visit(
+            [&](const auto& plan) -> StructuredBatchCandidate {
+                using Plan = std::remove_cvref_t<decltype(plan)>;
+                if constexpr (std::is_same_v<Plan, TwoWayMergePlan>) {
+                    return impl.validate_plan_after_state_validation(plan);
+                } else {
+                    return impl.validate_tree_plan_after_state_validation(plan);
+                }
+            },
+            candidate));
+    }
+
+    auto outcomes = gnfs::util::ordered_parallel_map<StructuredBatchPrepareOutcome>(
+        validated.size(), worker_count, [&](size_t index) -> StructuredBatchPrepareOutcome {
+            auto& candidate = validated[index];
+            try {
+                return std::visit(
+                    [&](auto& plan) -> StructuredBatchPrepareOutcome {
+                        using Plan = std::remove_cvref_t<decltype(plan)>;
+                        if constexpr (std::is_same_v<Plan, TwoWayMergePlan>) {
+                            Relation materialized = impl.materialize_validated_plan(plan);
+                            return PreparedTwoWayMerge(std::move(plan), std::move(materialized));
+                        } else {
+                            auto materialized = impl.materialize_validated_tree_plan(plan);
+                            return PreparedTreeBasisMerge(std::move(plan), std::move(materialized));
+                        }
+                    },
+                    candidate);
+            } catch (const StructuredReductionError& error) {
+                if (error.code() != StructuredReductionErrorCode::PersistenceLimit) {
+                    throw;
+                }
+                return StructuredBatchPersistenceLimit{std::move(candidate)};
+            }
+        });
+
+    return StructuredPreparedBatch(batch.snapshot, std::move(outcomes));
 }
 
 StructuredReductionRunResult

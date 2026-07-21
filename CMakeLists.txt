@@ -388,6 +388,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME ThreadPool COMMAND test_thread_pool)
     set_tests_properties(ThreadPool PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_ordered_parallel_map
+        tests/test_ordered_parallel_map.cpp
+    )
+    target_link_libraries(test_ordered_parallel_map PRIVATE gnfs_util Threads::Threads)
+    add_test(NAME OrderedParallelMap COMMAND test_ordered_parallel_map)
+    set_tests_properties(OrderedParallelMap PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_logger
         tests/test_logger.cpp
     )
@@ -1071,6 +1078,14 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_structured_conflict_batch PRIVATE gnfs_core Threads::Threads)
     add_test(NAME StructuredConflictBatch COMMAND test_structured_conflict_batch)
     set_tests_properties(StructuredConflictBatch PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Drain-all parallel materialization over one immutable conflict-free batch.
+    add_executable(test_structured_parallel_prepare
+        tests/test_structured_parallel_prepare.cpp
+    )
+    target_link_libraries(test_structured_parallel_prepare PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredParallelPrepare COMMAND test_structured_parallel_prepare)
+    set_tests_properties(StructuredParallelPrepare PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # Structured source-XOR materialization and persistence contracts.
     add_executable(test_structured_materialization

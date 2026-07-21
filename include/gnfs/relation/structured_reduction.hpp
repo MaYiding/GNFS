@@ -14,6 +14,14 @@
 
 namespace gnfs::relation {
 
+class SequentialStructuredReducer;
+struct StructuredConflictFreeBatchPlan;
+class StructuredPreparedBatch;
+
+[[nodiscard]] StructuredPreparedBatch
+prepare_conflict_free_batch(const SequentialStructuredReducer& reducer,
+                            const StructuredConflictFreeBatchPlan& batch, uint32_t worker_count);
+
 enum class StructuredReductionErrorCode {
     InvalidGeneration,
     InvalidSourceCombination,
@@ -140,6 +148,10 @@ public:
 
 private:
     friend class SequentialStructuredReducer;
+    friend StructuredPreparedBatch
+    prepare_conflict_free_batch(const SequentialStructuredReducer& reducer,
+                                const StructuredConflictFreeBatchPlan& batch,
+                                uint32_t worker_count);
 
     PreparedTwoWayMerge(TwoWayMergePlan plan, core::Relation materialized) noexcept;
 
@@ -186,6 +198,10 @@ public:
 
 private:
     friend class SequentialStructuredReducer;
+    friend StructuredPreparedBatch
+    prepare_conflict_free_batch(const SequentialStructuredReducer& reducer,
+                                const StructuredConflictFreeBatchPlan& batch,
+                                uint32_t worker_count);
 
     PreparedTreeBasisMerge(TreeBasisMergePlan plan,
                            std::vector<core::Relation> materialized) noexcept;
@@ -361,6 +377,11 @@ public:
     [[nodiscard]] const StructuredReductionStats& stats() const noexcept;
 
 private:
+    friend StructuredPreparedBatch
+    prepare_conflict_free_batch(const SequentialStructuredReducer& reducer,
+                                const StructuredConflictFreeBatchPlan& batch,
+                                uint32_t worker_count);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

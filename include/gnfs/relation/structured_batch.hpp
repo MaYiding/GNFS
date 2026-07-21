@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <variant>
 #include <vector>
 
@@ -35,10 +36,56 @@ struct StructuredConflictFreeBatchPlan final {
     std::vector<StructuredBatchCandidate> candidates;
     size_t raw_candidate_count = 0;
     size_t duplicate_candidate_count = 0;
+    /// Conflicts encountered while scanning before the width cap is reached.
     size_t conflict_deferred_count = 0;
+    /// Every unique candidate left unexamined after the width cap is reached.
     size_t capacity_deferred_count = 0;
 
     [[nodiscard]] bool operator==(const StructuredConflictFreeBatchPlan&) const noexcept = default;
+};
+
+/// One candidate whose exact plan was valid but whose materialized payload
+/// exceeded the shared persistence format boundary. The candidate is retained
+/// so the later scheduler can fold cache/statistics updates in slot order.
+struct StructuredBatchPersistenceLimit final {
+    StructuredBatchCandidate candidate;
+};
+
+using StructuredBatchPrepareOutcome =
+    std::variant<PreparedTwoWayMerge, PreparedTreeBasisMerge, StructuredBatchPersistenceLimit>;
+
+/// Opaque output of the M3a.2 prepare barrier.
+///
+/// Outcomes are in the exact selected-candidate order. The object deliberately
+/// exposes only a const view: publishing one prepared slot through the legacy
+/// single-candidate commit API would stale every remaining slot. M3b will add
+/// the sole atomic batch consumer.
+class StructuredPreparedBatch final {
+public:
+    StructuredPreparedBatch(const StructuredPreparedBatch&) = delete;
+    StructuredPreparedBatch& operator=(const StructuredPreparedBatch&) = delete;
+    StructuredPreparedBatch(StructuredPreparedBatch&&) noexcept = default;
+    StructuredPreparedBatch& operator=(StructuredPreparedBatch&&) noexcept = default;
+
+    [[nodiscard]] StructuredIncidenceSnapshotId snapshot() const noexcept;
+    [[nodiscard]] std::span<const StructuredBatchPrepareOutcome> outcomes() const& noexcept;
+    [[nodiscard]] std::span<const StructuredBatchPrepareOutcome> outcomes() const&& = delete;
+    [[nodiscard]] size_t prepared_candidate_count() const noexcept;
+    [[nodiscard]] size_t persistence_limited_candidate_count() const noexcept;
+
+private:
+    friend StructuredPreparedBatch
+    prepare_conflict_free_batch(const SequentialStructuredReducer& reducer,
+                                const StructuredConflictFreeBatchPlan& batch,
+                                uint32_t worker_count);
+
+    StructuredPreparedBatch(StructuredIncidenceSnapshotId snapshot,
+                            std::vector<StructuredBatchPrepareOutcome> outcomes) noexcept;
+
+    StructuredIncidenceSnapshotId snapshot_;
+    std::vector<StructuredBatchPrepareOutcome> outcomes_;
+    size_t prepared_candidate_count_ = 0;
+    size_t persistence_limited_candidate_count_ = 0;
 };
 
 /// Validate snapshot-bound scheduling metadata, canonicalize, de-duplicate,
@@ -56,5 +103,19 @@ select_conflict_free_batch(StructuredIncidenceSnapshotId snapshot, size_t total_
 [[nodiscard]] StructuredConflictFreeBatchPlan
 plan_conflict_free_batch(const SequentialStructuredReducer& reducer, size_t max_batch_candidates,
                          TreeBasisPlanner planner = TreeBasisPlanner::DeterministicMst);
+
+/// Validate one selected conflict-free batch against the current immutable
+/// reducer snapshot, then materialize its candidates through a drain-all
+/// parallel barrier. `worker_count` must be nonzero; the effective pool size is
+/// bounded by the number of candidates and an empty batch creates no pool.
+///
+/// PersistenceLimit is retained as an ordered per-slot outcome. Every other
+/// exception is rethrown only after all successfully submitted work completes;
+/// if multiple indexed candidates fail, the lowest candidate index wins. This
+/// function never commits, peels, updates statistics, or mutates the reducer.
+/// The caller must exclude concurrent reducer mutation for the entire call.
+[[nodiscard]] StructuredPreparedBatch
+prepare_conflict_free_batch(const SequentialStructuredReducer& reducer,
+                            const StructuredConflictFreeBatchPlan& batch, uint32_t worker_count);
 
 } // namespace gnfs::relation

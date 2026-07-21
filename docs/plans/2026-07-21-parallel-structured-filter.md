@@ -6,7 +6,8 @@
 - Branch: `codex/parallel-structured-filter`
 - State: M1 contracts and routing complete; M2a 2-way, M2b weight-[3,8]
   tree-basis, M2c budgeted sequential orchestration, and M3a.1 immutable
-  conflict planning complete; the parallel prepare barrier is next
+  conflict planning complete; M3a.2 parallel preparation is complete, and
+  atomic batch publication is next
 - Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
 
 ## Outcome
@@ -306,6 +307,13 @@ planner canonicalizes scorer output, removes equivalent same-member plans,
 then builds a greedy maximal member-disjoint set. This is not the future full
 `MatrixBuilder` score and is not a maximum-cardinality set-packing solver.
 
+M3a.2 seals and validates the reducer once on the coordinator thread, validates
+exact plans in candidate order, and dispatches only pure corpus materialization.
+The barrier retains `PersistenceLimit` as a per-slot outcome. It drains every
+submitted future before rethrowing any other error, and the lowest candidate
+index determines which error escapes. The `threads=1` path follows the same
+attempt-all and ordered-error contract without creating a thread pool.
+
 Batch execution will transform every selected member set against one frozen
 snapshot, publish the batch atomically with one epoch advance, and peel
 singletons after the whole batch. `threads=1` defines the batch-scheduler
@@ -486,10 +494,19 @@ Exit gate: every hand-built and randomized case passes the exact dependency-spac
   plans before applying batch width. It does not prepare, execute, budget, or
   commit a batch, and it does not claim bounded planning memory or parallel
   speedup.
-- M3a.2, next: add a parallel prepare barrier with per-slot outcomes, drain all
-  futures before rethrow, and fold persistence results in candidate order.
-- Then add atomic batch commit, budget aggregation, parallel shard construction,
-  and the complete scheduler loop.
+- M3a.2, complete: add an opaque, move-only prepared batch; retain ordered
+  success and persistence-limit slots; run exact validation once per selected
+  candidate after one whole-state seal; and materialize candidates through a
+  drain-all ordered parallel map. Controlled future gates freeze lowest-index
+  error precedence and prove that the barrier does not return before tail work
+  finishes.
+- M3a.2 does not commit, peel, update statistics or persistence caches, apply a
+  reduction budget, or permit concurrent reducer mutation. Tree edges inside
+  one candidate remain sequential to avoid nested pools.
+- M3b, next: add atomic batch commit, aggregate budgets and statistics, assign
+  output IDs in sorted prefix order, advance the epoch once, and peel once
+  after publication. Parallel shard construction and the complete scheduler
+  loop follow that atomic boundary.
 - Compare `threads=1,2,4,hardware_concurrency`.
 - Run the narrow relation suite under ThreadSanitizer where supported.
 
