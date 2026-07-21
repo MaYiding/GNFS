@@ -11,12 +11,15 @@
 #include <gnfs/linalg/linalg_mmap_policy.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/mmap_csr_matrix.hpp>
+#include <gnfs/linalg/relation_source.hpp>
 #include <gnfs/linalg/sge.hpp>
+#include <gnfs/linalg/sge_streaming.hpp>
 #include <gnfs/polynomial/poly_checkpoint.hpp>
 #include <gnfs/polynomial/selector_dispatch.hpp>
 #include <gnfs/relation/collector.hpp>
 #include <gnfs/relation/ooc_policy.hpp>
 #include <gnfs/relation/reduction_engine.hpp>
+#include <gnfs/relation/relation_corpus.hpp>
 #include <gnfs/relation/structured_filter_profile.hpp>
 #include <gnfs/relation/v0_bfs_policy.hpp>
 #include <gnfs/sieve/distributed_sieve.hpp>
@@ -38,20 +41,168 @@
 #include <cstdlib> // getenv for GNFS_CASCADE_V3 flag
 #include <cstring> // strlen for SGE-OOC ENV string checks
 #include <exception>
+#include <limits>
 #include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 
 namespace gnfs::api {
+
+struct Pipeline::MatrixResult::StructuredRelations final {
+    StructuredRelations(relation::RelationCorpus source_corpus,
+                        std::vector<size_t> source_row_to_relation)
+        : corpus(std::move(source_corpus)), row_to_relation(std::move(source_row_to_relation)) {}
+
+    relation::RelationCorpus corpus;
+    std::vector<size_t> row_to_relation;
+};
+
+Pipeline::MatrixResult::MatrixResult() = default;
+Pipeline::MatrixResult::MatrixResult(MatrixResult&&) noexcept = default;
+Pipeline::MatrixResult& Pipeline::MatrixResult::operator=(MatrixResult&& other) noexcept {
+    static_assert(std::is_nothrow_move_assignable_v<decltype(matrix)>);
+    static_assert(std::is_nothrow_move_assignable_v<decltype(dependencies)>);
+    static_assert(std::is_nothrow_move_assignable_v<decltype(relations)>);
+    static_assert(std::is_nothrow_move_assignable_v<decltype(structured_relations_)>);
+
+    if (this == &other) {
+        return *this;
+    }
+
+    // Keep the target's old structured corpus alive while replacing every
+    // public payload that may still refer to it. Replacing the owner last also
+    // makes structured-to-legacy assignment release the old corpus safely.
+    matrix = std::move(other.matrix);
+    dependencies = std::move(other.dependencies);
+    relations = std::move(other.relations);
+    structured_relations_ = std::move(other.structured_relations_);
+    return *this;
+}
+Pipeline::MatrixResult::~MatrixResult() = default;
+
+size_t Pipeline::MatrixResult::relation_count() const {
+    return structured_relations_ != nullptr ? structured_relations_->row_to_relation.size()
+                                            : relations.size();
+}
+
+bool Pipeline::MatrixResult::owns_relation_corpus() const noexcept {
+    return structured_relations_ != nullptr;
+}
+
+std::span<const size_t> Pipeline::MatrixResult::structured_row_to_relation() const noexcept {
+    if (structured_relations_ == nullptr) {
+        return {};
+    }
+    return structured_relations_->row_to_relation;
+}
+
+void Pipeline::MatrixResult::retain_structured_relations(relation::RelationCorpus corpus,
+                                                         std::vector<size_t> row_to_relation) {
+    if (structured_relations_ != nullptr || !relations.empty()) {
+        throw std::logic_error(
+            "MatrixResult: structured corpus and legacy relations are mutually exclusive");
+    }
+    if (!corpus.valid()) {
+        throw std::invalid_argument("MatrixResult: cannot retain a moved-from relation corpus");
+    }
+    if (row_to_relation.size() != matrix.num_rows()) {
+        throw std::invalid_argument(
+            "MatrixResult: structured row mapping does not match matrix row count");
+    }
+    const size_t corpus_count = corpus.count();
+    for (size_t ordinal : row_to_relation) {
+        if (ordinal >= corpus_count) {
+            throw std::out_of_range(
+                "MatrixResult: structured row mapping contains an invalid corpus ordinal");
+        }
+    }
+    structured_relations_ =
+        std::make_unique<StructuredRelations>(std::move(corpus), std::move(row_to_relation));
+}
+
+const relation::RelationCorpus& Pipeline::MatrixResult::structured_corpus() const {
+    if (structured_relations_ == nullptr) {
+        throw std::logic_error("MatrixResult: no structured relation corpus");
+    }
+    if (!relations.empty() || structured_relations_->row_to_relation.size() != matrix.num_rows()) {
+        throw std::logic_error("MatrixResult: structured relation ownership invariant violated");
+    }
+    return structured_relations_->corpus;
+}
+
+std::vector<std::vector<bool>> detail::expand_solver_dependencies_checked(
+    const linalg::SGEResult& sge_result, const std::vector<std::vector<bool>>& reduced_dependencies,
+    size_t expected_matrix_rows) {
+    for (const auto& reduced_dependency : reduced_dependencies) {
+        if (reduced_dependency.size() != sge_result.reduced_matrix.num_rows()) {
+            throw std::invalid_argument(
+                "Pipeline::solve_matrix: solver dependency length does not match reduced matrix");
+        }
+    }
+    if (sge_result.original_rows != expected_matrix_rows) {
+        throw std::runtime_error(
+            "Pipeline::solve_matrix: expanded dependency length does not match full matrix");
+    }
+
+    auto expanded = sge_result.expand_dependencies(reduced_dependencies);
+    for (const auto& dependency : expanded) {
+        if (dependency.size() != expected_matrix_rows) {
+            throw std::runtime_error(
+                "Pipeline::solve_matrix: expanded dependency length does not match full matrix");
+        }
+    }
+    return expanded;
+}
+
+std::optional<std::vector<bool>> detail::xor_dependency_pair_checked(const std::vector<bool>& lhs,
+                                                                     const std::vector<bool>& rhs,
+                                                                     size_t expected_matrix_rows) {
+    if (lhs.size() != expected_matrix_rows || rhs.size() != expected_matrix_rows) {
+        throw std::invalid_argument(
+            "Pipeline::extract_factors: XOR dependency length does not match matrix rows");
+    }
+
+    std::vector<bool> combined(expected_matrix_rows, false);
+    size_t combined_weight = 0;
+    for (size_t row = 0; row < expected_matrix_rows; ++row) {
+        combined[row] = lhs[row] != rhs[row];
+        combined_weight += combined[row] ? 1U : 0U;
+    }
+    if (combined_weight < 2) {
+        return std::nullopt;
+    }
+    return combined;
+}
 
 // ============================================================
 // Fast path: trial division + Pollard rho for small N
 // ============================================================
 
 namespace {
+
+/// Return floor(value * tenths / 10), saturating instead of overflowing.
+/// The pipeline uses this for stable 1.3x and 1.1x matrix-row policies.
+size_t scale_by_tenths_floor(size_t value, size_t tenths) noexcept {
+    constexpr size_t denominator = 10;
+    const size_t max = std::numeric_limits<size_t>::max();
+    if (tenths == 0) {
+        return 0;
+    }
+    if (tenths > max / (denominator - 1)) {
+        return max;
+    }
+
+    const size_t whole = value / denominator;
+    const size_t fractional = ((value % denominator) * tenths) / denominator;
+    if (whole > (max - fractional) / tenths) {
+        return max;
+    }
+    return whole * tenths + fractional;
+}
 
 // GNFS_CASCADE_V3 modes:
 //   unset / "0" / ""     → OFF (V0 only)
@@ -1599,7 +1750,16 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
     emit_progress(Phase::LinearAlgebra, "Building matrix");
 
     auto t0 = std::chrono::high_resolution_clock::now();
-    auto relations = std::move(reduction.relations);
+    const bool structured_route =
+        reduction.stats.strategy == relation::ReductionStrategy::Structured;
+    std::vector<Relation> relations;
+    std::optional<relation::RelationCorpus> structured_corpus;
+    if (structured_route) {
+        structured_corpus.emplace(relation::RelationCorpus::from_in_memory(
+            reduction.generation, std::move(reduction.relations)));
+    } else {
+        relations = std::move(reduction.relations);
+    }
 
     // Matrix builder config
     linalg::MatrixBuilderConfig mb_config;
@@ -1644,7 +1804,9 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
     }
 
     linalg::MatrixBuildResult build_result;
-    if (use_streaming_mb) {
+    if (structured_route) {
+        build_result = mb.build_with_qc_streaming(*structured_corpus, fb, ctx);
+    } else if (use_streaming_mb) {
         linalg::VectorRelationSource src(relations);
         build_result = mb.build_with_qc_streaming(src, fb, ctx);
         std::fprintf(stderr, "[matrix-streaming] matrix built from vector source "
@@ -1652,6 +1814,20 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
     } else {
         build_result = mb.build_with_qc(relations, fb, ctx);
     }
+
+    const auto finish_matrix_result =
+        [&](std::vector<std::vector<bool>> dependencies) -> MatrixResult {
+        MatrixResult result;
+        result.matrix = std::move(build_result.matrix);
+        result.dependencies = std::move(dependencies);
+        if (structured_route) {
+            result.retain_structured_relations(std::move(*structured_corpus),
+                                               std::move(build_result.row_to_relation));
+        } else {
+            result.relations = std::move(relations);
+        }
+        return result;
+    };
 
     auto matrix_stats = linalg::compute_matrix_stats(build_result.matrix);
     stats_.matrix_rows = matrix_stats.num_rows;
@@ -1711,10 +1887,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
             emit_log(LogLevel::Error, Phase::LinearAlgebra,
                      "GNFS_NO_THIN_SOLVE=1 — aborting on no excess");
             emit_structured_matrix_record(matrix_stats);
-            MatrixResult mr;
-            mr.matrix = std::move(build_result.matrix);
-            mr.relations = std::move(relations);
-            return mr;
+            return finish_matrix_result({});
         }
     }
 
@@ -1724,29 +1897,35 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
     // causes orthogonality breakdown); (2) SGE ineffectiveness (avg column weight
     // is too high for w1/w2 elimination).
     // Target: 1.1× cols for optimal SGE + BL. CADO-NFS typically uses 5-10% excess.
-    if (matrix_stats.num_rows >
-        static_cast<size_t>(static_cast<double>(matrix_stats.num_cols) * 1.3)) {
-        size_t target_rows = static_cast<size_t>(static_cast<double>(matrix_stats.num_cols) * 1.1);
+    if (matrix_stats.num_rows > scale_by_tenths_floor(matrix_stats.num_cols, 13)) {
+        const size_t target_rows = scale_by_tenths_floor(matrix_stats.num_cols, 11);
         emit_log(LogLevel::Info, Phase::LinearAlgebra,
                  "Trimming excess: " + std::to_string(matrix_stats.num_rows) + " rows -> " +
                      std::to_string(target_rows) + " (keep " + std::to_string(target_rows) + "/" +
                      std::to_string(matrix_stats.num_rows) + ")");
 
-        // Shuffle and trim relations, then rebuild matrix
-        std::mt19937 rng(42);
-        std::shuffle(relations.begin(), relations.end(), rng);
-        relations.resize(target_rows);
-
-        // SGE-OOC: rebuild via streaming MB if enabled (same gate as initial
-        // build above so the trim path is consistent).
         linalg::MatrixBuildResult build2;
-        if (use_streaming_mb) {
-            linalg::VectorRelationSource src(relations);
-            build2 = mb.build_with_qc_streaming(src, fb, ctx);
+        if (structured_route) {
+            const auto selection = relation::RelationSelection::deterministic_sample(
+                *structured_corpus, target_rows, uint64_t{42});
+            const linalg::RelationSelectionSource source(*structured_corpus, selection);
+            build2 = mb.build_with_qc_streaming(source, fb, ctx);
         } else {
-            build2 = mb.build_with_qc(relations, fb, ctx);
+            // Preserve the legacy vector route and its established shuffle.
+            std::mt19937 rng(42);
+            std::shuffle(relations.begin(), relations.end(), rng);
+            relations.resize(target_rows);
+
+            // SGE-OOC: rebuild via streaming MB if enabled (same gate as
+            // initial build above so the trim path is consistent).
+            if (use_streaming_mb) {
+                linalg::VectorRelationSource src(relations);
+                build2 = mb.build_with_qc_streaming(src, fb, ctx);
+            } else {
+                build2 = mb.build_with_qc(relations, fb, ctx);
+            }
         }
-        build_result.matrix = std::move(build2.matrix);
+        build_result = std::move(build2);
         matrix_stats = linalg::compute_matrix_stats(build_result.matrix);
         stats_.matrix_rows = matrix_stats.num_rows;
         stats_.matrix_cols = matrix_stats.num_cols;
@@ -1898,10 +2077,10 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
         }
     }
 
-    // Expand dependencies back to original matrix
-    for (auto& dep : dependencies) {
-        dep = sge_result.expand_dependency(dep);
-    }
+    // Expand all dependencies back to original matrix after validating the
+    // complete SGE provenance transform exactly once for this solver batch.
+    dependencies = detail::expand_solver_dependencies_checked(sge_result, dependencies,
+                                                              build_result.matrix.num_rows());
 
     stats_.dependencies_found = dependencies.size();
 
@@ -1913,11 +2092,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
                  " time=" + std::to_string(stats_.timings.linalg_s) + "s");
     emit_progress(Phase::LinearAlgebra, "Linear algebra complete", 1.0);
 
-    MatrixResult mr;
-    mr.matrix = std::move(build_result.matrix);
-    mr.dependencies = std::move(dependencies);
-    mr.relations = std::move(relations);
-    return mr;
+    return finish_matrix_result(std::move(dependencies));
 }
 
 // ============================================================
@@ -2011,6 +2186,68 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
         return false;
     };
 
+    const relation::RelationCorpus* structured_corpus = nullptr;
+    std::span<const size_t> structured_row_to_relation;
+    if (mr.owns_relation_corpus()) {
+        structured_corpus = &mr.structured_corpus();
+        structured_row_to_relation = mr.structured_row_to_relation();
+    }
+
+    // A malformed dependency length is a provenance error, not a failed
+    // mathematical dependency. Reject it before any row access or square-root
+    // materialization, including the XOR-pair path below.
+    for (const auto& dependency : mr.dependencies) {
+        if (dependency.size() != mr.matrix.num_rows()) {
+            throw std::invalid_argument(
+                "Pipeline::extract_factors: dependency length does not match matrix rows");
+        }
+    }
+
+    const auto try_relation_dependency =
+        [&](const linalg::BitVector& dependency,
+            const std::vector<Relation>& dependency_relations) -> bool {
+        auto rat_result =
+            sqrt::compute_rational_sqrt(dependency, dependency_relations, fb, n_, ctx.m());
+        if (!rat_result.success) {
+            return false;
+        }
+
+        auto alg_result = sqrt::compute_algebraic_sqrt(dependency, dependency_relations, ctx);
+        Integer alg_value = alg_result.success ? alg_result.value : Integer(1); // copy ctor
+
+        if (try_factor(rat_result.value, alg_value)) {
+            return true;
+        }
+
+        // Try -Y — mpz_sub writes n_ - alg_value directly (skip clone+ -=).
+        Integer alg_neg;
+        mpz_sub(alg_neg.get_mpz(), n_.get_mpz(), alg_value.get_mpz());
+        return try_factor(rat_result.value, alg_neg);
+    };
+
+    const auto try_matrix_dependency = [&](const std::vector<bool>& dependency) -> bool {
+        // Always validate in matrix coordinates before mapping or materializing.
+        if (!verify_dependency(mr.matrix, dependency)) {
+            return false;
+        }
+
+        if (structured_corpus == nullptr) {
+            return try_relation_dependency(to_bitvector(dependency), mr.relations);
+        }
+
+        const auto selection = linalg::dependency_to_relation_selection(
+            *structured_corpus, structured_row_to_relation, dependency);
+        auto selected_relations = relation::materialize_selected(*structured_corpus, selection);
+
+        // The selected vector contains exactly this dependency, so the local
+        // square-root coordinate system selects every materialized relation.
+        linalg::BitVector local_dependency(selected_relations.size());
+        for (size_t index = 0; index < selected_relations.size(); ++index) {
+            local_dependency.set(index);
+        }
+        return try_relation_dependency(local_dependency, selected_relations);
+    };
+
     // Try each dependency
     for (size_t dep_idx = 0; dep_idx < mr.dependencies.size() && !result.success; ++dep_idx) {
         const auto& dep = mr.dependencies[dep_idx];
@@ -2021,29 +2258,9 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
                           std::to_string(mr.dependencies.size()),
                       static_cast<double>(dep_idx) / static_cast<double>(mr.dependencies.size()));
 
-        if (!verify_dependency(mr.matrix, dep))
-            continue;
-
-        auto bv = to_bitvector(dep);
-
-        // Rational sqrt
-        auto rat_result = sqrt::compute_rational_sqrt(bv, mr.relations, fb, n_, ctx.m());
-        if (!rat_result.success)
-            continue;
-
-        // Algebraic sqrt
-        auto alg_result = sqrt::compute_algebraic_sqrt(bv, mr.relations, ctx);
-        Integer alg_value = alg_result.success ? alg_result.value : Integer(1); // copy ctor
-
-        // Try Y
-        if (try_factor(rat_result.value, alg_value))
+        if (try_matrix_dependency(dep)) {
             break;
-
-        // Try -Y — mpz_sub writes n_ - alg_value directly (skip clone+ -=)
-        Integer alg_neg;
-        mpz_sub(alg_neg.get_mpz(), n_.get_mpz(), alg_value.get_mpz());
-        if (try_factor(rat_result.value, alg_neg))
-            break;
+        }
     }
 
     // If no single dep worked, try XOR pairs
@@ -2053,36 +2270,17 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
         size_t limit = std::min(mr.dependencies.size(), size_t(20));
         for (size_t i = 0; i < limit && !result.success; ++i) {
             for (size_t j = i + 1; j < limit && !result.success; ++j) {
-                linalg::BitVector combined = to_bitvector(mr.dependencies[i]);
-                combined.xor_with(to_bitvector(mr.dependencies[j]));
-                if (combined.popcount() < 2)
+                auto combined = detail::xor_dependency_pair_checked(
+                    mr.dependencies[i], mr.dependencies[j], mr.matrix.num_rows());
+                if (!combined) {
                     continue;
-
-                // Convert back to vector<bool> for verify
-                std::vector<bool> combined_vec(mr.matrix.num_rows(), false);
-                for (size_t k = 0; k < mr.matrix.num_rows(); ++k) {
-                    if (combined.test(k))
-                        combined_vec[k] = true;
                 }
-                if (!verify_dependency(mr.matrix, combined_vec))
-                    continue;
 
-                auto rat_result =
-                    sqrt::compute_rational_sqrt(combined, mr.relations, fb, n_, ctx.m());
-                if (!rat_result.success)
-                    continue;
-
-                auto alg_result = sqrt::compute_algebraic_sqrt(combined, mr.relations, ctx);
-                Integer alg_val = alg_result.success ? alg_result.value : Integer(1); // copy ctor
-
-                if (try_factor(rat_result.value, alg_val))
+                // XOR is formed and verified in matrix coordinates; the
+                // structured route maps and materializes the result once.
+                if (try_matrix_dependency(*combined)) {
                     break;
-
-                // mpz_sub writes n_ - alg_val directly (skip clone+ -=)
-                Integer neg;
-                mpz_sub(neg.get_mpz(), n_.get_mpz(), alg_val.get_mpz());
-                if (try_factor(rat_result.value, neg))
-                    break;
+                }
             }
         }
     }

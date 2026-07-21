@@ -11,10 +11,24 @@
 
 #include <cassert>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace gnfs;
 using namespace gnfs::linalg;
+
+template <typename Exception, typename Callable>
+void require_throws(Callable&& callable, const char* context) {
+    try {
+        callable();
+    } catch (const Exception&) {
+        return;
+    } catch (...) {
+        throw std::runtime_error(std::string(context) + ": wrong exception type");
+    }
+    throw std::runtime_error(std::string(context) + ": expected exception was not thrown");
+}
 
 // Test SparseRow operations
 void test_sparse_row() {
@@ -855,6 +869,98 @@ void test_sge_expand_dependency() {
     std::cout << "  PASSED" << std::endl;
 }
 
+// Release-active contract tests for dependency expansion. These fixtures do
+// not rely on assert(), so malformed solver output and corrupt provenance stay
+// fail-closed when NDEBUG is enabled.
+void test_sge_expand_dependency_contract() {
+    std::cout << "Testing SGE dependency expansion contract..." << std::endl;
+
+    SGEResult valid;
+    valid.original_rows = 3;
+    valid.reduced_matrix = SparseMatrix(2, 1);
+    valid.row_composition = {{0, 2}, {1, 2}};
+
+    const auto expanded = valid.expand_dependency({true, true});
+    const std::vector<bool> expected{true, true, false};
+    if (expanded != expected) {
+        throw std::runtime_error("valid SGE dependency did not expand with GF(2) parity");
+    }
+
+    require_throws<std::invalid_argument>([&] { (void)valid.expand_dependency({true}); },
+                                          "short reduced dependency");
+    require_throws<std::invalid_argument>(
+        [&] { (void)valid.expand_dependency({true, false, true}); }, "long reduced dependency");
+
+    SGEResult inconsistent_shape;
+    inconsistent_shape.original_rows = 3;
+    inconsistent_shape.reduced_matrix = SparseMatrix(1, 1);
+    inconsistent_shape.row_composition = {{0}, {1}};
+    require_throws<std::logic_error>(
+        [&] { (void)inconsistent_shape.expand_dependency({false, false}); },
+        "row composition and reduced matrix mismatch");
+
+    SGEResult invalid_composition;
+    invalid_composition.original_rows = 3;
+    invalid_composition.reduced_matrix = SparseMatrix(2, 1);
+    invalid_composition.row_composition = {{0, 3}, {1, 2}};
+    require_throws<std::out_of_range>(
+        [&] { (void)invalid_composition.expand_dependency({false, false}); },
+        "out-of-range original row in unselected composition");
+
+    std::cout << "  PASSED" << std::endl;
+}
+
+void test_sge_expand_dependencies_contract() {
+    std::cout << "Testing SGE batch dependency expansion contract..." << std::endl;
+
+    SGEResult valid;
+    valid.original_rows = 4;
+    valid.reduced_matrix = SparseMatrix(3, 1);
+    valid.row_composition = {{0, 3}, {1, 3}, {2}};
+
+    const std::vector<std::vector<bool>> reduced_dependencies{
+        {true, false, false},
+        {false, true, true},
+        {true, true, false},
+    };
+    const auto expanded = valid.expand_dependencies(reduced_dependencies);
+    if (expanded.size() != reduced_dependencies.size()) {
+        throw std::runtime_error("batch SGE expansion returned the wrong result count");
+    }
+    for (size_t i = 0; i < reduced_dependencies.size(); ++i) {
+        if (expanded[i] != valid.expand_dependency(reduced_dependencies[i])) {
+            throw std::runtime_error("batch SGE expansion differs from strict single expansion");
+        }
+    }
+
+    const std::vector<std::vector<bool>> empty_dependencies;
+    if (!valid.expand_dependencies(empty_dependencies).empty()) {
+        throw std::runtime_error("empty SGE dependency batch did not remain empty");
+    }
+
+    const std::vector<std::vector<bool>> malformed_batch{
+        {true, false, false},
+        {true, false},
+        {false, true, true},
+    };
+    require_throws<std::invalid_argument>([&] { (void)valid.expand_dependencies(malformed_batch); },
+                                          "malformed dependency inside batch");
+
+    SGEResult invalid_composition;
+    invalid_composition.original_rows = 4;
+    invalid_composition.reduced_matrix = SparseMatrix(3, 1);
+    invalid_composition.row_composition = {{0}, {1, 4}, {2, 3}};
+    const std::vector<std::vector<bool>> never_selects_invalid_row{
+        {true, false, false},
+        {false, false, true},
+    };
+    require_throws<std::out_of_range>(
+        [&] { (void)invalid_composition.expand_dependencies(never_selects_invalid_row); },
+        "out-of-range original row in batch-unselected composition");
+
+    std::cout << "  PASSED" << std::endl;
+}
+
 // Test SGE: row_composition cap (BACKLOG #6 safety)
 // 构造 weight-2 链 r0-r1-r2-...-rN, 每两个相邻行共享一个 w2 column.
 // 链合并应让 composition[r0] 累积 r0,r1,r2,... 到 N 个 entries.
@@ -1080,6 +1186,8 @@ int main() {
     test_sge_cascading_weight1();
     test_sge_alternating_cascade();
     test_sge_expand_dependency();
+    test_sge_expand_dependency_contract();
+    test_sge_expand_dependencies_contract();
     test_sge_row_composition_cap();
     test_sge_row_composition_cap_disabled();
     test_sge_edge_cases();

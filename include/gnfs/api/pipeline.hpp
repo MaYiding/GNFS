@@ -15,11 +15,39 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
+namespace gnfs::relation {
+class RelationCorpus;
+}
+
+namespace gnfs::linalg {
+struct SGEResult;
+}
+
 namespace gnfs::api {
+
+namespace detail {
+
+/// Strict boundary between BL/BW solver coordinates and the original matrix.
+/// All reduced shapes are checked before SGE validates and expands the
+/// transform once for the complete solver batch.
+[[nodiscard]] std::vector<std::vector<bool>>
+expand_solver_dependencies_checked(const linalg::SGEResult& sge_result,
+                                   const std::vector<std::vector<bool>>& reduced_dependencies,
+                                   size_t expected_matrix_rows);
+
+/// Form one square-root fallback candidate in full matrix coordinates.
+/// Dependencies with fewer than two selected rows are intentionally skipped.
+[[nodiscard]] std::optional<std::vector<bool>>
+xor_dependency_pair_checked(const std::vector<bool>& lhs, const std::vector<bool>& rhs,
+                            size_t expected_matrix_rows);
+
+} // namespace detail
 
 using core::GNFSParams;
 using core::Integer;
@@ -50,9 +78,41 @@ public:
     relation::RelationReductionResult filter(std::vector<Relation> relations);
 
     struct MatrixResult {
+    private:
+        struct StructuredRelations;
+        // Declared before the public payload so reverse destruction keeps the
+        // structured corpus alive until matrix/dependency state is gone.
+        std::unique_ptr<StructuredRelations> structured_relations_;
+
+    public:
+        MatrixResult();
+        MatrixResult(const MatrixResult&) = delete;
+        MatrixResult& operator=(const MatrixResult&) = delete;
+        MatrixResult(MatrixResult&&) noexcept;
+        MatrixResult& operator=(MatrixResult&&) noexcept;
+        ~MatrixResult();
+
         SparseMatrix matrix;
         std::vector<std::vector<bool>> dependencies;
-        std::vector<Relation> relations; // relations used (order matches matrix rows)
+        // Legacy vector route only. Structured results retain their immutable
+        // source corpus plus the final matrix-row mapping instead.
+        std::vector<Relation> relations;
+
+        /// Number of relations used by the final matrix.
+        [[nodiscard]] size_t relation_count() const;
+
+        [[nodiscard]] bool owns_relation_corpus() const noexcept;
+
+        /// Final matrix row -> source corpus ordinal mapping. Empty for the
+        /// legacy vector route.
+        [[nodiscard]] std::span<const size_t> structured_row_to_relation() const noexcept;
+
+    private:
+        void retain_structured_relations(relation::RelationCorpus corpus,
+                                         std::vector<size_t> row_to_relation);
+        [[nodiscard]] const relation::RelationCorpus& structured_corpus() const;
+
+        friend class Pipeline;
     };
     MatrixResult solve_matrix(relation::RelationReductionResult reduction, const FactorBase& fb,
                               const PolynomialContext& ctx);

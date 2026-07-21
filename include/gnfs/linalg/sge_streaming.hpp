@@ -5,9 +5,16 @@
 // from RelationSource → SGEResult without ever materializing
 // vector<Relation> in RAM.
 
+#include "../relation/relation_corpus.hpp"
 #include "matrix_builder.hpp"
 #include "relation_source.hpp"
 #include "sge.hpp"
+
+#include <cstddef>
+#include <span>
+#include <stdexcept>
+#include <utility>
+#include <vector>
 
 namespace gnfs::linalg {
 
@@ -17,6 +24,35 @@ struct StreamingSGEResult {
     MatrixBuildResult build_result;
     SGEResult sge_result;
 };
+
+/// Convert an SGE dependency over matrix rows into a corpus-bound relation
+/// selection. The row mapping and expanded dependency must describe the same
+/// matrix, and every mapped ordinal must belong to the supplied corpus.
+/// Duplicate ordinals are folded with GF(2) parity by RelationSelection.
+[[nodiscard]] inline relation::RelationSelection
+dependency_to_relation_selection(const relation::RelationCorpus& corpus,
+                                 std::span<const std::size_t> row_to_relation,
+                                 const std::vector<bool>& expanded_dependency) {
+    if (row_to_relation.size() != expanded_dependency.size()) {
+        throw std::invalid_argument(
+            "dependency_to_relation_selection: row mapping and dependency length mismatch");
+    }
+
+    const std::size_t corpus_count = corpus.count();
+    std::vector<std::size_t> ordinals;
+    for (std::size_t row = 0; row < row_to_relation.size(); ++row) {
+        const std::size_t ordinal = row_to_relation[row];
+        if (ordinal >= corpus_count) {
+            throw std::out_of_range(
+                "dependency_to_relation_selection: relation ordinal out of range");
+        }
+        if (expanded_dependency[row]) {
+            ordinals.push_back(ordinal);
+        }
+    }
+
+    return relation::RelationSelection::from_xor_ordinals(corpus, std::move(ordinals));
+}
 
 /// Streaming-source variant of MatrixBuilder + SGE preprocessing.
 ///
@@ -35,7 +71,8 @@ struct StreamingSGEResult {
 ///
 /// Returns both the build result (mapping, row_to_relation) and the
 /// SGE result. The caller uses sge_result.expand_dependency to map BL
-/// dependencies back to original relation indices via build_result.row_to_relation.
+/// dependencies back to original relation or corpus ordinals via
+/// build_result.row_to_relation.
 template <RelationSource Source>
 [[nodiscard]] inline StreamingSGEResult preprocess_streaming(
         const Source& source,

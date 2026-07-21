@@ -325,6 +325,75 @@ void test_selection_stable_dedup_order_and_identity() {
     CHECK(materialize_selected(moved, empty_selection).empty());
 }
 
+void test_selection_xor_parity_canonical_order_and_identity() {
+    const auto expected = make_relations(8);
+    auto corpus = RelationCorpus::from_in_memory(551, expected);
+
+    const auto selection =
+        RelationSelection::from_xor_ordinals(corpus, {7, 3, 5, 1, 7, 3, 5, 5, 1, 1});
+    const std::vector<size_t> expected_ordinals{1, 5};
+    CHECK(selection.ordinals() == expected_ordinals);
+
+    const auto all_cancelled = RelationSelection::from_xor_ordinals(corpus, {6, 2, 6, 0, 2, 0});
+    CHECK(all_cancelled.empty());
+    CHECK(RelationSelection::from_xor_ordinals(corpus, {}).empty());
+    expect_throws<std::out_of_range>(
+        [&] { (void)RelationSelection::from_xor_ordinals(corpus, {0, expected.size()}); });
+
+    // Selections stay bound to the corpus state across a handle move.
+    auto moved = std::move(corpus);
+    const auto materialized = materialize_selected(moved, selection);
+    CHECK(materialized.size() == expected_ordinals.size());
+    for (size_t i = 0; i < expected_ordinals.size(); ++i) {
+        CHECK(relations_equal(materialized[i], expected[expected_ordinals[i]]));
+    }
+
+    auto foreign = RelationCorpus::from_in_memory(551, expected);
+    expect_throws<std::invalid_argument>([&] { (void)materialize_selected(foreign, selection); });
+    expect_throws<std::logic_error>(
+        [&] { (void)RelationSelection::from_xor_ordinals(corpus, {0}); });
+}
+
+void test_deterministic_sample_boundaries_fixture_and_identity() {
+    const auto expected = make_relations(10);
+    auto corpus = RelationCorpus::from_in_memory(552, expected);
+
+    const auto empty = RelationSelection::deterministic_sample(corpus, 0, 42);
+    CHECK(empty.empty());
+
+    const auto full = RelationSelection::deterministic_sample(corpus, expected.size(), 42);
+    const std::vector<size_t> all_ordinals{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    CHECK(full.ordinals() == all_ordinals);
+
+    // Exact fixture for the repository-owned SplitMix64 + unbiased reservoir
+    // algorithm. This must not change with the host standard library.
+    const auto sample = RelationSelection::deterministic_sample(corpus, 4, 42);
+    const std::vector<size_t> expected_sample{4, 5, 6, 9};
+    CHECK(sample.ordinals() == expected_sample);
+
+    const auto repeated = RelationSelection::deterministic_sample(corpus, 4, 42);
+    CHECK(repeated.ordinals() == sample.ordinals());
+    CHECK(sample.count() == 4);
+    for (size_t i = 1; i < sample.count(); ++i) {
+        CHECK(sample.source_ordinal(i - 1) < sample.source_ordinal(i));
+    }
+
+    expect_throws<std::invalid_argument>(
+        [&] { (void)RelationSelection::deterministic_sample(corpus, expected.size() + 1, 42); });
+
+    auto moved = std::move(corpus);
+    const auto materialized = materialize_selected(moved, sample);
+    CHECK(materialized.size() == expected_sample.size());
+    for (size_t i = 0; i < expected_sample.size(); ++i) {
+        CHECK(relations_equal(materialized[i], expected[expected_sample[i]]));
+    }
+
+    auto foreign = RelationCorpus::from_in_memory(552, expected);
+    expect_throws<std::invalid_argument>([&] { (void)materialize_selected(foreign, sample); });
+    expect_throws<std::logic_error>(
+        [&] { (void)RelationSelection::deterministic_sample(corpus, 1, 42); });
+}
+
 void test_selection_rejects_distinct_vector_and_ooc_instances() {
     TestArtifactCleanup first_artifacts(unique_base("selection_identity_ooc_first"));
     TestArtifactCleanup second_artifacts(unique_base("selection_identity_ooc_second"));
@@ -439,6 +508,8 @@ int main() {
         test_finalized_ooc_cleanup_and_move_assignment();
         test_ooc_adoption_fails_closed();
         test_selection_stable_dedup_order_and_identity();
+        test_selection_xor_parity_canonical_order_and_identity();
+        test_deterministic_sample_boundaries_fixture_and_identity();
         test_selection_rejects_distinct_vector_and_ooc_instances();
         test_collector_handoff_and_independent_cleanup();
         std::cout << "All relation corpus tests passed\n";

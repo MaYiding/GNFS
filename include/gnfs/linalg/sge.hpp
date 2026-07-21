@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
+#include <stdexcept>
 #include <vector>
 
 namespace gnfs::linalg {
@@ -32,16 +33,69 @@ struct SGEResult {
     /// 将 BL 在降维矩阵上找到的依赖展开回原始行索引
     [[nodiscard]] std::vector<bool> expand_dependency(
             const std::vector<bool>& reduced_dep) const {
-        std::vector<bool> original(original_rows, false);
+        validate_transform_shape();
+        validate_dependency_shape(reduced_dep);
+        validate_transform_entries();
+        return expand_dependency_unchecked(reduced_dep);
+    }
 
-        for (size_t i = 0; i < reduced_dep.size() && i < row_composition.size(); ++i) {
+    /// 批量展开依赖。完整 transform 只校验一次，并在产生任何输出前
+    /// 预检全部 dependency 形状，避免批内后续 malformed 输入留下部分结果。
+    [[nodiscard]] std::vector<std::vector<bool>>
+    expand_dependencies(const std::vector<std::vector<bool>>& reduced_dependencies) const {
+        validate_transform_shape();
+        for (const auto& reduced_dep : reduced_dependencies) {
+            validate_dependency_shape(reduced_dep);
+        }
+        validate_transform_entries();
+
+        std::vector<std::vector<bool>> expanded;
+        expanded.reserve(reduced_dependencies.size());
+        for (const auto& reduced_dep : reduced_dependencies) {
+            expanded.push_back(expand_dependency_unchecked(reduced_dep));
+        }
+        return expanded;
+    }
+
+private:
+    void validate_transform_shape() const {
+        if (row_composition.size() != reduced_matrix.num_rows()) {
+            throw std::logic_error(
+                "SGEResult::expand_dependency: row composition does not match reduced matrix");
+        }
+    }
+
+    void validate_dependency_shape(const std::vector<bool>& reduced_dep) const {
+        if (reduced_dep.size() != row_composition.size()) {
+            throw std::invalid_argument(
+                "SGEResult::expand_dependency: dependency length does not match reduced rows");
+        }
+    }
+
+    void validate_transform_entries() const {
+        // Validate the complete transform before producing any output. A
+        // corrupt composition must fail closed even when its reduced row is
+        // not selected by any dependency.
+        for (const auto& composition : row_composition) {
+            for (size_t orig_row : composition) {
+                if (orig_row >= original_rows) {
+                    throw std::out_of_range(
+                        "SGEResult::expand_dependency: original row is out of range");
+                }
+            }
+        }
+    }
+
+    [[nodiscard]] std::vector<bool>
+    expand_dependency_unchecked(const std::vector<bool>& reduced_dep) const {
+        std::vector<bool> original(original_rows, false);
+        for (size_t i = 0; i < reduced_dep.size(); ++i) {
             if (!reduced_dep[i]) continue;
 
             for (size_t orig_row : row_composition[i]) {
                 original[orig_row] = !original[orig_row]; // XOR
             }
         }
-
         return original;
     }
 };

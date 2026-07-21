@@ -13,12 +13,16 @@
 #include <gnfs/api/result.hpp>
 #include <gnfs/core/integer.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
+#include <gnfs/linalg/sge.hpp>
+#include <gnfs/linalg/sge_streaming.hpp>
 #include <gnfs/relation/ooc_relation_store.hpp>
+#include <gnfs/relation/relation_corpus.hpp>
 #include <gnfs/sieve/sieve_checkpoint.hpp>
 #include <gnfs/sieve/sieve_run_identity.hpp>
 #include <gnfs/util/process.hpp>
 #include <gnfs/util/temp_path.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -62,6 +66,11 @@ static_assert(std::is_invocable_r_v<Pipeline::MatrixResult, PipelineSolveMethod,
 static_assert(!std::is_invocable_v<PipelineSolveMethod, Pipeline&, RelationVector&&,
                                    const gnfs::factor_base::FactorBase&,
                                    const gnfs::core::PolynomialContext&>);
+static_assert(!std::is_copy_constructible_v<Pipeline::MatrixResult>);
+static_assert(!std::is_copy_assignable_v<Pipeline::MatrixResult>);
+static_assert(std::is_move_constructible_v<Pipeline::MatrixResult>);
+static_assert(std::is_move_assignable_v<Pipeline::MatrixResult>);
+static_assert(std::is_nothrow_move_assignable_v<Pipeline::MatrixResult>);
 
 static int pass_count = 0;
 static int fail_count = 0;
@@ -367,6 +376,124 @@ bool test_factorize_prime_input() {
 // Pipeline mid-level tests
 // ============================================================
 
+bool test_solver_dependency_shape_guard() {
+    gnfs::linalg::SGEResult sge_result;
+    sge_result.reduced_matrix = gnfs::linalg::SparseMatrix(2, 1);
+    sge_result.original_rows = 3;
+    sge_result.row_composition = {{0}, {1}};
+
+    bool reduced_shape_rejected = false;
+    try {
+        const std::vector<std::vector<bool>> malformed{{false}};
+        (void)gnfs::api::detail::expand_solver_dependencies_checked(sge_result, malformed, 3);
+    } catch (const std::invalid_argument&) {
+        reduced_shape_rejected = true;
+    } catch (...) {
+        std::cout << "(malformed reduced solver dependency raised the wrong exception) ";
+        return false;
+    }
+
+    bool expanded_shape_rejected = false;
+    try {
+        const std::vector<std::vector<bool>> valid{{false, false}};
+        (void)gnfs::api::detail::expand_solver_dependencies_checked(sge_result, valid, 4);
+    } catch (const std::runtime_error&) {
+        expanded_shape_rejected = true;
+    } catch (...) {
+        std::cout << "(malformed expanded solver dependency raised the wrong exception) ";
+        return false;
+    }
+
+    if (!reduced_shape_rejected || !expanded_shape_rejected) {
+        std::cout << "(solver dependency shape guard accepted a malformed dependency) ";
+        return false;
+    }
+
+    const std::vector<std::vector<bool>> reduced_batch{
+        {true, false},
+        {false, true},
+    };
+    const auto expanded_batch =
+        gnfs::api::detail::expand_solver_dependencies_checked(sge_result, reduced_batch, 3);
+    const std::vector<std::vector<bool>> expected_batch{
+        {true, false, false},
+        {false, true, false},
+    };
+    if (expanded_batch != expected_batch) {
+        std::cout << "(batch solver dependency expansion changed coordinates) ";
+        return false;
+    }
+
+    bool malformed_batch_rejected = false;
+    try {
+        const std::vector<std::vector<bool>> malformed_batch{
+            {true, false},
+            {true},
+            {false, true},
+        };
+        (void)gnfs::api::detail::expand_solver_dependencies_checked(sge_result, malformed_batch, 3);
+    } catch (const std::invalid_argument&) {
+        malformed_batch_rejected = true;
+    } catch (...) {
+        std::cout << "(malformed solver dependency batch raised the wrong exception) ";
+        return false;
+    }
+    if (!malformed_batch_rejected) {
+        std::cout << "(malformed solver dependency batch was accepted) ";
+        return false;
+    }
+
+    bool empty_batch_shape_rejected = false;
+    try {
+        const std::vector<std::vector<bool>> empty_batch;
+        (void)gnfs::api::detail::expand_solver_dependencies_checked(sge_result, empty_batch, 4);
+    } catch (const std::runtime_error&) {
+        empty_batch_shape_rejected = true;
+    } catch (...) {
+        std::cout << "(empty solver batch shape mismatch raised the wrong exception) ";
+        return false;
+    }
+    if (!empty_batch_shape_rejected) {
+        std::cout << "(empty solver batch bypassed the full-matrix shape guard) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_dependency_xor_pair_guard() {
+    const std::vector<bool> lhs{true, true, false, false};
+    const std::vector<bool> rhs{true, false, true, false};
+    const auto combined = gnfs::api::detail::xor_dependency_pair_checked(lhs, rhs, lhs.size());
+    const std::vector<bool> expected{false, true, true, false};
+    if (!combined || *combined != expected) {
+        std::cout << "(XOR dependency pair did not preserve matrix coordinates) ";
+        return false;
+    }
+
+    const auto too_light = gnfs::api::detail::xor_dependency_pair_checked(
+        std::vector<bool>{true, false}, std::vector<bool>{false, false}, 2);
+    if (too_light) {
+        std::cout << "(one-row XOR dependency candidate was not skipped) ";
+        return false;
+    }
+
+    bool malformed_rejected = false;
+    try {
+        (void)gnfs::api::detail::xor_dependency_pair_checked(std::vector<bool>{true, false},
+                                                             std::vector<bool>{false}, 2);
+    } catch (const std::invalid_argument&) {
+        malformed_rejected = true;
+    } catch (...) {
+        std::cout << "(malformed XOR dependency pair raised the wrong exception) ";
+        return false;
+    }
+    if (!malformed_rejected) {
+        std::cout << "(malformed XOR dependency pair was accepted) ";
+        return false;
+    }
+    return true;
+}
+
 bool test_pipeline_step_by_step() {
     Integer n(143);
     Config cfg;
@@ -392,8 +519,18 @@ bool test_pipeline_step_by_step() {
     assert(pipeline.stats().relations_found > 0 &&
            "Pipeline::stats().relations_found should be set after sieving");
 
+    // Force only the structured corpus handoff over a real sieve reduction;
+    // relation contents remain untouched so this is an end-to-end oracle for
+    // dependency-only materialization and corpus lifetime through sqrt.
+    reduction.stats.strategy = gnfs::relation::ReductionStrategy::Structured;
     auto mr = pipeline.solve_matrix(std::move(reduction), fb, ctx);
     assert(!mr.dependencies.empty());
+    if (!mr.owns_relation_corpus() || !mr.relations.empty() ||
+        mr.structured_row_to_relation().size() != mr.matrix.num_rows() ||
+        mr.relation_count() != mr.matrix.num_rows()) {
+        std::cout << "(real structured solve did not retain corpus ownership) ";
+        return false;
+    }
     // solve_matrix updates stats_.dependencies_found and matrix dimensions.
     assert(pipeline.stats().dependencies_found > 0 &&
            "Pipeline::stats().dependencies_found should be set after solve");
@@ -401,11 +538,104 @@ bool test_pipeline_step_by_step() {
            "Pipeline::stats() matrix dimensions should be recorded");
 
     auto result = pipeline.extract_factors(mr, fb, ctx);
-    assert(result.success);
+    if (!result.success || result.factors.size() != 2) {
+        std::cout << "(structured dependency materialization did not factor 143) ";
+        return false;
+    }
 
     Integer product = result.factors[0].clone();
     product *= result.factors[1];
-    assert(product.compare(Integer(143)) == 0);
+    if (product.compare(Integer(143)) != 0) {
+        std::cout << "(structured sqrt factors did not multiply to 143) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_structured_xor_pair_fallback() {
+    Integer n(143);
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline pipeline(n, cfg);
+
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+    auto reduction = pipeline.sieve_and_collect(ctx, fb);
+    reduction.stats.strategy = gnfs::relation::ReductionStrategy::Structured;
+    auto matrix_result = pipeline.solve_matrix(std::move(reduction), fb, ctx);
+
+    const auto basis = matrix_result.dependencies;
+    const size_t basis_count = std::min<size_t>(basis.size(), 8);
+    if (!matrix_result.owns_relation_corpus() || basis_count < 2) {
+        std::cout << "(structured XOR fixture did not produce enough dependencies) ";
+        return false;
+    }
+
+    // Enumerate a small deterministic subspace of real solver dependencies.
+    // Each nonzero mask remains a valid full-matrix dependency. Recording the
+    // single-dependency outcome lets us choose A and B that both fail while
+    // A XOR B succeeds, without hard-coding solver row ordinals.
+    const size_t candidate_count = size_t{1} << basis_count;
+    std::vector<std::vector<bool>> candidates(
+        candidate_count, std::vector<bool>(matrix_result.matrix.num_rows(), false));
+    std::vector<bool> succeeds(candidate_count, false);
+    for (size_t mask = 1; mask < candidate_count; ++mask) {
+        for (size_t basis_index = 0; basis_index < basis_count; ++basis_index) {
+            if ((mask & (size_t{1} << basis_index)) == 0) {
+                continue;
+            }
+            for (size_t row = 0; row < candidates[mask].size(); ++row) {
+                candidates[mask][row] = candidates[mask][row] != basis[basis_index][row];
+            }
+        }
+        matrix_result.dependencies = {candidates[mask]};
+        succeeds[mask] = pipeline.extract_factors(matrix_result, fb, ctx).success;
+    }
+
+    size_t lhs_mask = 0;
+    size_t rhs_mask = 0;
+    for (size_t lhs = 1; lhs < candidate_count && lhs_mask == 0; ++lhs) {
+        if (succeeds[lhs]) {
+            continue;
+        }
+        for (size_t rhs = lhs + 1; rhs < candidate_count; ++rhs) {
+            const size_t combined_mask = lhs ^ rhs;
+            if (succeeds[rhs] || combined_mask == 0 || !succeeds[combined_mask]) {
+                continue;
+            }
+            const size_t combined_weight = static_cast<size_t>(std::count(
+                candidates[combined_mask].begin(), candidates[combined_mask].end(), true));
+            if (combined_weight >= 2) {
+                lhs_mask = lhs;
+                rhs_mask = rhs;
+                break;
+            }
+        }
+    }
+    if (lhs_mask == 0) {
+        std::cout << "(real structured dependency subspace had no XOR fallback witness) ";
+        return false;
+    }
+
+    size_t xor_progress_events = 0;
+    pipeline.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.phase == Phase::FactorExtraction && info.message == "Trying XOR combinations") {
+            ++xor_progress_events;
+        }
+    });
+    matrix_result.dependencies = {candidates[lhs_mask], candidates[rhs_mask]};
+    const auto result = pipeline.extract_factors(matrix_result, fb, ctx);
+    if (!result.success || result.factors.size() != 2 || xor_progress_events != 1) {
+        std::cout << "(structured extract_factors did not succeed through XOR fallback) ";
+        return false;
+    }
+
+    Integer product = result.factors[0].clone();
+    product *= result.factors[1];
+    if (product.compare(n) != 0) {
+        std::cout << "(structured XOR fallback factors did not multiply to 143) ";
+        return false;
+    }
     return true;
 }
 
@@ -1293,18 +1523,21 @@ bool test_structured_filter_matrix_record_matches_final_handoff() {
     auto fb = pipeline.build_factor_base(ctx);
 
     constexpr size_t input_rows = 256;
-    std::vector<gnfs::core::Relation> relations;
-    relations.reserve(input_rows);
-    for (size_t index = 0; index < input_rows; ++index) {
-        gnfs::core::Relation relation(static_cast<int64_t>(1'000 + index), 1);
-        relation.rational_factors.push_back(2);
-        relations.push_back(std::move(relation));
-    }
+    const auto make_relations = [] {
+        std::vector<gnfs::core::Relation> relations;
+        relations.reserve(input_rows);
+        for (size_t index = 0; index < input_rows; ++index) {
+            gnfs::core::Relation relation(static_cast<int64_t>(1'000 + index), 1);
+            relation.rational_factors.push_back(2);
+            relations.push_back(std::move(relation));
+        }
+        return relations;
+    };
 
     gnfs::relation::RelationReductionStats reduction_stats;
     reduction_stats.strategy = gnfs::relation::ReductionStrategy::Structured;
     constexpr uint64_t generation = 777;
-    gnfs::relation::RelationReductionResult reduction(generation, std::move(relations),
+    gnfs::relation::RelationReductionResult reduction(generation, make_relations(),
                                                       std::move(reduction_stats));
 
     bool trimmed = false;
@@ -1325,9 +1558,57 @@ bool test_structured_filter_matrix_record_matches_final_handoff() {
         " excess=" + std::to_string(final_stats.excess) +
         " nonzeros=" + std::to_string(final_stats.total_weight);
 
+    const auto row_to_relation = matrix_result.structured_row_to_relation();
+    bool row_mapping_valid = row_to_relation.size() == final_stats.num_rows;
+    std::vector<bool> seen_source_ordinals(input_rows, false);
+    for (size_t row = 0; row < row_to_relation.size() && row_mapping_valid; ++row) {
+        const size_t source_ordinal = row_to_relation[row];
+        if (source_ordinal >= input_rows || seen_source_ordinals[source_ordinal]) {
+            row_mapping_valid = false;
+            break;
+        }
+        seen_source_ordinals[source_ordinal] = true;
+    }
+
+    // Observable dependency-materialization oracle: use the retained final row
+    // map against an equivalent corpus and verify that only selected corpus
+    // ordinals are materialized, in canonical ordinal order.
+    auto oracle_corpus =
+        gnfs::relation::RelationCorpus::from_in_memory(generation, make_relations());
+    bool row_mapping_matches_sample = false;
+    bool materialization_matches = false;
+    if (row_mapping_valid && final_stats.num_rows <= input_rows) {
+        const auto expected_trim_selection =
+            gnfs::relation::RelationSelection::deterministic_sample(
+                oracle_corpus, final_stats.num_rows, uint64_t{42});
+        row_mapping_matches_sample = std::equal(row_to_relation.begin(), row_to_relation.end(),
+                                                expected_trim_selection.ordinals().begin(),
+                                                expected_trim_selection.ordinals().end());
+
+        std::vector<bool> oracle_dependency(final_stats.num_rows, false);
+        std::vector<size_t> expected_materialized_ordinals;
+        for (size_t row = 0; row < oracle_dependency.size(); row += 3) {
+            oracle_dependency[row] = true;
+            expected_materialized_ordinals.push_back(row_to_relation[row]);
+        }
+        std::sort(expected_materialized_ordinals.begin(), expected_materialized_ordinals.end());
+        const auto oracle_selection = gnfs::linalg::dependency_to_relation_selection(
+            oracle_corpus, row_to_relation, oracle_dependency);
+        const auto materialized =
+            gnfs::relation::materialize_selected(oracle_corpus, oracle_selection);
+        materialization_matches = materialized.size() == expected_materialized_ordinals.size();
+        for (size_t index = 0; index < materialized.size() && materialization_matches; ++index) {
+            materialization_matches =
+                materialized[index].a ==
+                static_cast<int64_t>(1'000 + expected_materialized_ordinals[index]);
+        }
+    }
+
     if (!trimmed || matrix_records.size() != 1 || matrix_records.front() != expected_record ||
-        matrix_result.relations.size() != final_stats.num_rows ||
-        matrix_result.relations.size() >= input_rows ||
+        !matrix_result.owns_relation_corpus() || !matrix_result.relations.empty() ||
+        matrix_result.relation_count() != final_stats.num_rows ||
+        matrix_result.relation_count() >= input_rows || !row_mapping_valid ||
+        !row_mapping_matches_sample || !materialization_matches ||
         pipeline.stats().matrix_rows != final_stats.num_rows ||
         pipeline.stats().matrix_cols != final_stats.num_cols ||
         pipeline.stats().matrix_weight != final_stats.total_weight ||
@@ -1335,6 +1616,215 @@ bool test_structured_filter_matrix_record_matches_final_handoff() {
         std::cout << "(structured matrix record did not match final handoff) ";
         return false;
     }
+    return true;
+}
+
+bool test_legacy_matrix_result_retains_vector() {
+    ScopedEnvironmentVariable streaming("GNFS_SGE_STREAMING", "off");
+    ScopedEnvironmentVariable mmap("GNFS_LINALG_MMAP", "off");
+    ScopedEnvironmentVariable thin_abort("GNFS_NO_THIN_SOLVE", "1");
+
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+
+    std::vector<gnfs::core::Relation> relations;
+    relations.emplace_back(1'000, 1);
+    gnfs::relation::RelationReductionStats reduction_stats;
+    reduction_stats.strategy = gnfs::relation::ReductionStrategy::StandardV0;
+    gnfs::relation::RelationReductionResult reduction(779, std::move(relations),
+                                                      std::move(reduction_stats));
+
+    auto matrix_result = pipeline.solve_matrix(std::move(reduction), fb, ctx);
+    if (matrix_result.owns_relation_corpus() ||
+        !matrix_result.structured_row_to_relation().empty() ||
+        matrix_result.relations.size() != 1 || matrix_result.relation_count() != 1 ||
+        matrix_result.matrix.num_rows() != 1 || !matrix_result.dependencies.empty()) {
+        std::cout << "(legacy matrix result did not retain vector ownership) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_structured_matrix_thin_early_return_and_malformed_dependency() {
+    ScopedEnvironmentVariable streaming("GNFS_SGE_STREAMING", "off");
+    ScopedEnvironmentVariable mmap("GNFS_LINALG_MMAP", "off");
+    ScopedEnvironmentVariable thin_abort("GNFS_NO_THIN_SOLVE", "1");
+
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+
+    std::vector<gnfs::core::Relation> relations;
+    relations.emplace_back(1'000, 1);
+    gnfs::relation::RelationReductionStats reduction_stats;
+    reduction_stats.strategy = gnfs::relation::ReductionStrategy::Structured;
+    gnfs::relation::RelationReductionResult reduction(778, std::move(relations),
+                                                      std::move(reduction_stats));
+
+    auto matrix_result = pipeline.solve_matrix(std::move(reduction), fb, ctx);
+    const auto row_to_relation = matrix_result.structured_row_to_relation();
+    if (!matrix_result.owns_relation_corpus() || !matrix_result.relations.empty() ||
+        !matrix_result.dependencies.empty() || matrix_result.matrix.num_rows() != 1 ||
+        matrix_result.relation_count() != 1 || row_to_relation.size() != 1 ||
+        row_to_relation.front() != 0) {
+        std::cout << "(structured thin early return lost corpus ownership or row mapping) ";
+        return false;
+    }
+
+    matrix_result.dependencies.emplace_back(matrix_result.matrix.num_rows() + 1, false);
+    bool malformed_dependency_rejected = false;
+    try {
+        (void)pipeline.extract_factors(matrix_result, fb, ctx);
+    } catch (const std::invalid_argument&) {
+        malformed_dependency_rejected = true;
+    } catch (...) {
+        std::cout << "(malformed dependency raised the wrong exception) ";
+        return false;
+    }
+    if (!malformed_dependency_rejected) {
+        std::cout << "(malformed dependency length was not rejected) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_matrix_result_move_assignment() {
+    ScopedEnvironmentVariable streaming("GNFS_SGE_STREAMING", "off");
+    ScopedEnvironmentVariable mmap("GNFS_LINALG_MMAP", "off");
+    ScopedEnvironmentVariable thin_abort("GNFS_NO_THIN_SOLVE", "1");
+
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+
+    const auto solve_rows = [&](gnfs::relation::ReductionStrategy strategy, uint64_t generation,
+                                size_t row_count, int64_t first_a) {
+        std::vector<gnfs::core::Relation> relations;
+        relations.reserve(row_count);
+        for (size_t row = 0; row < row_count; ++row) {
+            relations.emplace_back(first_a + static_cast<int64_t>(row), 1);
+        }
+        gnfs::relation::RelationReductionStats reduction_stats;
+        reduction_stats.strategy = strategy;
+        gnfs::relation::RelationReductionResult reduction(generation, std::move(relations),
+                                                          std::move(reduction_stats));
+        return pipeline.solve_matrix(std::move(reduction), fb, ctx);
+    };
+
+    auto legacy_construct_source =
+        solve_rows(gnfs::relation::ReductionStrategy::StandardV0, 783, 1, 5'000);
+    legacy_construct_source.dependencies.emplace_back(legacy_construct_source.matrix.num_rows(),
+                                                      true);
+    Pipeline::MatrixResult legacy_constructed(std::move(legacy_construct_source));
+    if (legacy_constructed.owns_relation_corpus() ||
+        !legacy_constructed.structured_row_to_relation().empty() ||
+        legacy_constructed.matrix.num_rows() != 1 || legacy_constructed.relation_count() != 1 ||
+        legacy_constructed.relations.size() != 1 ||
+        legacy_constructed.relations.front().a != 5'000 ||
+        legacy_constructed.dependencies.size() != 1 ||
+        legacy_constructed.dependencies.front().size() != 1 ||
+        !legacy_constructed.dependencies.front().front()) {
+        std::cout << "(legacy MatrixResult move-construction lost payload) ";
+        return false;
+    }
+
+    auto structured_construct_source =
+        solve_rows(gnfs::relation::ReductionStrategy::Structured, 784, 1, 6'000);
+    structured_construct_source.dependencies.emplace_back(
+        structured_construct_source.matrix.num_rows(), true);
+    Pipeline::MatrixResult structured_constructed(std::move(structured_construct_source));
+    if (!structured_constructed.owns_relation_corpus() ||
+        !structured_constructed.relations.empty() ||
+        structured_constructed.matrix.num_rows() != 1 ||
+        structured_constructed.relation_count() != 1 ||
+        structured_constructed.structured_row_to_relation().size() != 1 ||
+        structured_constructed.structured_row_to_relation().front() != 0 ||
+        structured_constructed.dependencies.size() != 1 ||
+        structured_constructed.dependencies.front().size() != 1 ||
+        !structured_constructed.dependencies.front().front()) {
+        std::cout << "(structured MatrixResult move-construction lost owner or payload) ";
+        return false;
+    }
+
+    Pipeline::MatrixResult target;
+    auto legacy_source = solve_rows(gnfs::relation::ReductionStrategy::StandardV0, 780, 1, 2'000);
+    legacy_source.dependencies.emplace_back(legacy_source.matrix.num_rows(), true);
+    target = std::move(legacy_source);
+    if (target.owns_relation_corpus() || !target.structured_row_to_relation().empty() ||
+        target.matrix.num_rows() != 1 || target.relation_count() != 1 ||
+        target.relations.size() != 1 || target.relations.front().a != 2'000 ||
+        target.dependencies.size() != 1 || target.dependencies.front().size() != 1 ||
+        !target.dependencies.front().front()) {
+        std::cout << "(legacy MatrixResult move-assignment lost payload) ";
+        return false;
+    }
+
+    auto* legacy_alias = &target;
+    target = std::move(*legacy_alias);
+    if (target.owns_relation_corpus() || target.relation_count() != 1 ||
+        target.relations.size() != 1 || target.relations.front().a != 2'000 ||
+        target.dependencies.size() != 1 || !target.dependencies.front().front()) {
+        std::cout << "(legacy MatrixResult self-move changed the result) ";
+        return false;
+    }
+
+    auto structured_source =
+        solve_rows(gnfs::relation::ReductionStrategy::Structured, 781, 1, 3'000);
+    structured_source.dependencies.emplace_back(structured_source.matrix.num_rows(), true);
+    target = std::move(structured_source);
+    const auto structured_mapping = target.structured_row_to_relation();
+    if (!target.owns_relation_corpus() || !target.relations.empty() ||
+        target.matrix.num_rows() != 1 || target.relation_count() != 1 ||
+        structured_mapping.size() != 1 || structured_mapping.front() != 0 ||
+        target.dependencies.size() != 1 || target.dependencies.front().size() != 1 ||
+        !target.dependencies.front().front()) {
+        std::cout << "(structured MatrixResult move-assignment lost owner or payload) ";
+        return false;
+    }
+
+    auto* structured_alias = &target;
+    target = std::move(*structured_alias);
+    if (!target.owns_relation_corpus() || target.relation_count() != 1 ||
+        target.structured_row_to_relation().size() != 1 ||
+        target.structured_row_to_relation().front() != 0 || !target.relations.empty() ||
+        target.dependencies.size() != 1 || !target.dependencies.front().front()) {
+        std::cout << "(structured MatrixResult self-move changed the result) ";
+        return false;
+    }
+
+    // This assignment replaces an existing structured target. The old owner
+    // must remain alive until matrix/dependencies/relations have been replaced.
+    auto legacy_replacement =
+        solve_rows(gnfs::relation::ReductionStrategy::StandardV0, 782, 2, 4'000);
+    legacy_replacement.dependencies.emplace_back(legacy_replacement.matrix.num_rows(), false);
+    legacy_replacement.dependencies.front().back() = true;
+    target = std::move(legacy_replacement);
+    if (target.owns_relation_corpus() || !target.structured_row_to_relation().empty() ||
+        target.matrix.num_rows() != 2 || target.relation_count() != 2 ||
+        target.relations.size() != 2 || target.relations.front().a != 4'000 ||
+        target.relations.back().a != 4'001 || target.dependencies.size() != 1 ||
+        target.dependencies.front().size() != 2 || target.dependencies.front().front() ||
+        !target.dependencies.front().back()) {
+        std::cout << "(move-assignment did not safely replace structured target) ";
+        return false;
+    }
+
     return true;
 }
 
@@ -1602,7 +2092,10 @@ int main() {
     TEST(factorize_prime_input);
 
     std::cout << "\nPipeline tests:\n";
+    TEST(solver_dependency_shape_guard);
+    TEST(dependency_xor_pair_guard);
     TEST(pipeline_step_by_step);
+    TEST(structured_xor_pair_fallback);
     TEST(pipeline_stats);
     TEST(pipeline_relation_generations);
     TEST(pipeline_progress_callback);
@@ -1617,6 +2110,9 @@ int main() {
     TEST(structured_filter_size_aware_ooc_run_preflight);
     TEST(structured_filter_distributed_precedes_worker_side_effects);
     TEST(structured_filter_matrix_record_matches_final_handoff);
+    TEST(legacy_matrix_result_retains_vector);
+    TEST(structured_matrix_thin_early_return_and_malformed_dependency);
+    TEST(matrix_result_move_assignment);
     TEST(v3_cascade_pipeline_integration);
     TEST(v3_cascade_head_to_head_real_pipeline);
     TEST(v3_cascade_disabled_by_default);

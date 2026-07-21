@@ -375,6 +375,8 @@ public:
     /// Functionally identical to build_with_qc(vector, fb, ctx) when fed via
     /// VectorRelationSource(vec): produces bit-for-bit identical
     /// MatrixBuildResult. Verified by tests/test_sge_streaming.cpp.
+    /// OrdinalRelationSource implementations additionally preserve their
+    /// owning-corpus ordinals in MatrixBuildResult::row_to_relation.
     ///
     /// Memory cost: O(unique LPs + matrix nnz). The vector<Relation> never
     /// exists. Each parallel thread fetches its relation on demand and lets
@@ -539,7 +541,11 @@ public:
                 }
             }
 
-            result.row_to_relation[i] = i;
+            if constexpr (OrdinalRelationSource<Source>) {
+                result.row_to_relation[i] = static_cast<std::size_t>(source.source_ordinal(i));
+            } else {
+                result.row_to_relation[i] = i;
+            }
             // rel destroyed here — RAM not accumulating.
         });
 

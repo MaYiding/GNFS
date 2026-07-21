@@ -4,12 +4,13 @@
 
 - Date: 2026-07-21
 - Branch: `codex/parallel-structured-filter`
-- State: M1 is complete; the vector-backed M2/M3 implementations are complete,
-  while the full M2 MatrixBuilder/OOC exit evidence remains open. M4 has a
-  default-off production vector route, one frozen per-run route snapshot, an
-  owning vector/finalized-OOC corpus, and descriptor-bound selection identity.
-  Direct bounded-memory reduction, MatrixBuilder handoff, deterministic corpus
-  trimming, and selected dependency retrieval remain before OOC promotion.
+- State: M1 is complete; the vector-backed M2/M3 implementations are complete.
+  M4 has a default-off production vector route, one frozen per-run route
+  snapshot, an owning vector/finalized-OOC corpus, descriptor-bound selection
+  identity, direct selected-corpus matrix input, deterministic ordinal trimming,
+  and dependency-only square-root materialization. Direct bounded-memory
+  reduction, a relation sink, paired OOC data identity, and scale evidence
+  remain before OOC promotion.
 - Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
 
 ## Outcome
@@ -606,9 +607,27 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
   against the reader's actual mapped handles. V2 does not persist generation or
   store identity in `.reldata`, so same-sized foreign payload detection requires
   a later paired-data format and remains an OOC promotion blocker.
-- Complete the bounded `RelationSource`/`RelationSink` reducer, direct selected
-  corpus MatrixBuilder input, deterministic corpus trimming, and
-  selected-dependency retrieval.
+- [x] Route the supported structured vector result through `RelationCorpus`
+  directly into the streaming `MatrixBuilder`. A refined selection source
+  preserves corpus ordinals, trim uses a repository-owned deterministic
+  reservoir sampler, and the complete build result is replaced after trim so
+  no stale column mapping or row provenance survives. Full sign, factor-base,
+  large-prime, QC, and Schirokauer payload equivalence is covered for in-memory
+  and finalized-OOC selected sources; both backends explicitly assert that each
+  enabled payload family contributes a nonzero column set.
+- [x] Retain the structured corpus and final row-to-corpus mapping through the
+  square-root phase. Solver dependency batches are shape-checked before and
+  after SGE while the full provenance transform is validated once per batch;
+  mapped dependencies use GF(2) duplicate parity and materialize only their
+  selected relations. XOR pairs are combined once in matrix coordinates before
+  mapping, with a real structured `N=143` fallback oracle. `MatrixResult`
+  preserves legacy move-construction and move-assignment compatibility while
+  releasing any replaced corpus owner after its public payload. The legacy
+  vector path and its trim order remain unchanged.
+- Complete the bounded `RelationSource`/`RelationSink` reducer. The next OOC
+  format milestone adds a fixed `.reldata` header carrying the same immutable
+  store identity as `.relidx`; V1/V2 finalized readers remain compatibility
+  inputs, while new stores and promoted ownership require paired V3 identity.
 - Adaptive and public vector routes are covered. OOC/resume/distributed are
   explicitly rejected before callback/checkpoint/store/snapshot side effects in
   forced mode; full `Pipeline::run()` freezes one route snapshot across phase
@@ -1329,9 +1348,11 @@ SCALE AND RELEASE
 ```
 
 This diagram records the coverage plan at review time. M1, the vector-backed
-M2/M3 implementation, and the explicit M4 vector route now have tests. Remaining
-gaps are the full MatrixBuilder/OOC payload oracle, direct corpus handoff,
-selected dependency lifetime, paired-data identity, and scale evidence.
+M2/M3 implementation, and the explicit M4 vector route now have tests. The full
+selected-source MatrixBuilder payload oracle, direct vector-corpus handoff, and
+selected dependency lifetime are closed. Remaining gaps are direct source/sink
+reduction, paired-data identity, native structured OOC routing, and scale
+evidence.
 
 ### Performance Review
 

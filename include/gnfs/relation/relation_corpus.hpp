@@ -3,6 +3,7 @@
 #include "gnfs/core/relation.hpp"
 #include "gnfs/relation/ooc_relation_store.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -65,6 +66,43 @@ inline uint64_t read_u64(std::ifstream& stream, const char* field) {
     }
     return value;
 }
+
+/// Repository-owned deterministic generator for selection policies.
+///
+/// Keeping both the generator and bounded-draw algorithm here avoids the
+/// implementation-defined output of standard-library distributions and
+/// shuffling algorithms. The constants and transitions are the SplitMix64
+/// reference sequence; bounded() uses rejection sampling to remove modulo
+/// bias.
+class DeterministicSplitMix64 final {
+public:
+    explicit DeterministicSplitMix64(uint64_t seed) noexcept : state_(seed) {}
+
+    [[nodiscard]] uint64_t next() noexcept {
+        uint64_t value = (state_ += 0x9E3779B97F4A7C15ULL);
+        value = (value ^ (value >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+        value = (value ^ (value >> 27U)) * 0x94D049BB133111EBULL;
+        return value ^ (value >> 31U);
+    }
+
+    [[nodiscard]] uint64_t bounded(uint64_t exclusive_upper_bound) {
+        if (exclusive_upper_bound == 0) {
+            throw std::invalid_argument("DeterministicSplitMix64: upper bound must be nonzero");
+        }
+
+        const uint64_t rejection_threshold =
+            (uint64_t{0} - exclusive_upper_bound) % exclusive_upper_bound;
+        for (;;) {
+            const uint64_t value = next();
+            if (value >= rejection_threshold) {
+                return value % exclusive_upper_bound;
+            }
+        }
+    }
+
+private:
+    uint64_t state_;
+};
 
 /// Best-effort deletion guard for an owned finalized V2 store.
 ///
@@ -378,6 +416,77 @@ public:
 
         return RelationSelection(corpus.identity_token(), corpus.logical_generation(), source_count,
                                  std::move(unique));
+    }
+
+    /// Construct a canonical GF(2) selection from source ordinals.
+    ///
+    /// Unlike from_ordinals(), duplicate occurrences are coefficients in
+    /// GF(2): an ordinal occurring an even number of times is removed and an
+    /// ordinal occurring an odd number of times survives once. The result is
+    /// sorted by source ordinal so equivalent XOR inputs have identical
+    /// representations on every supported platform.
+    [[nodiscard]] static RelationSelection from_xor_ordinals(const RelationCorpus& corpus,
+                                                             std::vector<size_t> ordinals) {
+        const size_t source_count = corpus.count();
+        for (size_t ordinal : ordinals) {
+            if (ordinal >= source_count) {
+                throw std::out_of_range("RelationSelection: source ordinal out of range");
+            }
+        }
+
+        std::sort(ordinals.begin(), ordinals.end());
+
+        std::vector<size_t> canonical;
+        canonical.reserve(ordinals.size());
+        size_t run_begin = 0;
+        while (run_begin < ordinals.size()) {
+            size_t run_end = run_begin + 1;
+            while (run_end < ordinals.size() && ordinals[run_end] == ordinals[run_begin]) {
+                ++run_end;
+            }
+            if ((run_end - run_begin) % 2U != 0U) {
+                canonical.push_back(ordinals[run_begin]);
+            }
+            run_begin = run_end;
+        }
+
+        return RelationSelection(corpus.identity_token(), corpus.logical_generation(), source_count,
+                                 std::move(canonical));
+    }
+
+    /// Select a uniformly distributed subset without materializing relations.
+    ///
+    /// Reservoir sampling visits corpus ordinals in ascending order, stores at
+    /// most keep_count ordinals, and uses the repository-owned SplitMix64
+    /// bounded draw above. Sorting the final reservoir gives a canonical row
+    /// order independent of STL implementation details.
+    [[nodiscard]] static RelationSelection deterministic_sample(const RelationCorpus& corpus,
+                                                                size_t keep_count, uint64_t seed) {
+        const size_t source_count = corpus.count();
+        if (keep_count > source_count) {
+            throw std::invalid_argument("RelationSelection: sample size exceeds source count");
+        }
+
+        std::vector<size_t> reservoir;
+        reservoir.reserve(keep_count);
+        for (size_t ordinal = 0; ordinal < keep_count; ++ordinal) {
+            reservoir.push_back(ordinal);
+        }
+
+        if (keep_count != 0) {
+            relation_corpus_detail::DeterministicSplitMix64 generator(seed);
+            for (size_t ordinal = keep_count; ordinal < source_count; ++ordinal) {
+                const uint64_t upper_bound = static_cast<uint64_t>(ordinal) + 1U;
+                const size_t replacement = static_cast<size_t>(generator.bounded(upper_bound));
+                if (replacement < keep_count) {
+                    reservoir[replacement] = ordinal;
+                }
+            }
+        }
+
+        std::sort(reservoir.begin(), reservoir.end());
+        return RelationSelection(corpus.identity_token(), corpus.logical_generation(), source_count,
+                                 std::move(reservoir));
     }
 
     [[nodiscard]] uint64_t logical_generation() const noexcept {
