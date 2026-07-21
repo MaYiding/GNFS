@@ -579,8 +579,8 @@ Exit gate: every hand-built and randomized case passes the exact dependency-spac
   synthetic first scale band with 48-bit LP keys.
 - The supported ThreadSanitizer lane is available through
   `./scripts/test.sh tsan-relation`. It builds only the ordered parallel-map,
-  parallel-prepare, batch-commit, parallel-driver, controlled-failure, and
-  bounded-incidence tests, runs them serially with a 120-second per-test
+  shared-engine dispatch, parallel-prepare, batch-commit, parallel-driver,
+  controlled-failure, and bounded-incidence tests, runs them serially with a 120-second per-test
   default, and has a 20-minute Linux CI bound. macOS is supported when its
   Clang runtime links TSan; other hosts report an explicit skip, while
   unsupported Linux/macOS toolchains fail configuration.
@@ -591,10 +591,17 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
 
 ### M4: Opt-In Integration
 
-- Add `GNFS_STRUCTURED_FILTER` parsing and exact strategy selection.
-- Register tests and document the flag and fallback contract.
+- [x] Add strict `GNFS_STRUCTURED_FILTER` parsing, exact strategy selection,
+  vector-route support checks, and one shared-engine structured dispatch.
+- [x] Register tests and document OFF/forced/auto/fail-closed behavior. The
+  forced-on experimental profile has fixed work-budget caps, remains
+  vector-backed, defaults OFF, and `auto` remains ineligible pending M5 evidence.
 - Complete the `RelationSource`/`RelationSink` reducer, direct corpus MatrixBuilder input, deterministic corpus trimming, and selected-dependency retrieval.
-- Validate adaptive, distributed, public, stress, progressive, and final routes against the same engine.
+- Adaptive and public vector routes are covered. OOC/resume/distributed are
+  explicitly rejected before callback/checkpoint/store/snapshot side effects in
+  forced mode; full `Pipeline::run()` freezes one route snapshot across phase
+  callbacks. Unsupported auto routes retain named legacy strategies; direct
+  bounded-memory integration, stress/progressive wiring, and final route evidence remain.
 
 Exit gate: structured mode runs exactly once, OFF mode is unchanged, every route reports the same metrics for the same snapshot, and OOC memory stays bounded.
 

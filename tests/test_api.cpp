@@ -12,6 +12,7 @@
 #include <gnfs/api/progress.hpp>
 #include <gnfs/api/result.hpp>
 #include <gnfs/core/integer.hpp>
+#include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/relation/ooc_relation_store.hpp>
 #include <gnfs/sieve/sieve_checkpoint.hpp>
 #include <gnfs/sieve/sieve_run_identity.hpp>
@@ -19,15 +20,21 @@
 #include <gnfs/util/temp_path.hpp>
 
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib> // setenv/unsetenv for V3 cascade test
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -582,6 +589,17 @@ struct SieveResumeArtifacts {
     std::string base;
 };
 
+struct ScopedTestFiles {
+    ~ScopedTestFiles() {
+        for (const auto& path : paths) {
+            std::error_code error;
+            (void)std::filesystem::remove(path, error);
+        }
+    }
+
+    std::vector<std::string> paths;
+};
+
 class ScopedEnvironmentVariable {
 public:
     ScopedEnvironmentVariable(std::string name, const std::string& value) : name_(std::move(name)) {
@@ -590,6 +608,15 @@ public:
         }
         if (setenv(name_.c_str(), value.c_str(), 1) != 0) {
             throw std::runtime_error("failed to set test environment variable " + name_);
+        }
+    }
+
+    ScopedEnvironmentVariable(std::string name, std::nullopt_t) : name_(std::move(name)) {
+        if (const char* previous = std::getenv(name_.c_str()); previous != nullptr) {
+            previous_ = previous;
+        }
+        if (unsetenv(name_.c_str()) != 0) {
+            throw std::runtime_error("failed to unset test environment variable " + name_);
         }
     }
 
@@ -616,7 +643,700 @@ void bind_checkpoint_to_run(gnfs::sieve::SieveCheckpoint& checkpoint,
     checkpoint.run_fingerprint_hi = identity.fingerprint_hi;
 }
 
+void write_test_file(const std::string& path, std::string_view contents) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw std::runtime_error("failed to create test sentinel " + path);
+    }
+    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    if (!output) {
+        throw std::runtime_error("failed to write test sentinel " + path);
+    }
+}
+
+[[nodiscard]] std::string read_test_file(const std::string& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("failed to read test sentinel " + path);
+    }
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
 } // namespace
+
+std::vector<gnfs::core::Relation> make_structured_route_corpus() {
+    auto partial = [](int64_t a, std::initializer_list<uint64_t> primes) {
+        gnfs::core::Relation relation(a, 1);
+        relation.rational_factors.push_back(static_cast<uint32_t>(a));
+        for (uint64_t prime : primes) {
+            relation.rational_large_prime.emplace_back(prime, uint8_t{1});
+        }
+        return relation;
+    };
+    return {
+        partial(51, {101}),
+        partial(53, {101, 103}),
+        partial(59, {103}),
+    };
+}
+
+bool test_structured_filter_public_route() {
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+    ScopedEnvironmentVariable v0_bfs("GNFS_V0_BFS", "1");
+    ScopedEnvironmentVariable cascade("GNFS_CASCADE_V3", "1");
+
+    Integer n("1000036000099");
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline pipeline(n, cfg);
+    if (pipeline.params().large_prime_bound <= pipeline.params().algebraic_bound) {
+        std::cout << "(fixture did not enable large primes) ";
+        return false;
+    }
+
+    size_t structured_records = 0;
+    size_t legacy_records = 0;
+    pipeline.set_log_callback([&](const LogEntry& entry) {
+        if (entry.message.starts_with("structured_filter "))
+            ++structured_records;
+        if (entry.message.starts_with("v0_bfs") || entry.message.starts_with("v3_cascade"))
+            ++legacy_records;
+    });
+    auto reduction = pipeline.filter(make_structured_route_corpus());
+    const auto& stats = reduction.stats;
+    if (stats.strategy != gnfs::relation::ReductionStrategy::Structured ||
+        stats.structured.budgeted_runs != 1 ||
+        stats.structured_run.stop_reason !=
+            gnfs::relation::StructuredReductionStopReason::NoCandidates ||
+        stats.structured_run.emitted_rows != 2 || stats.merged_relations != 1 ||
+        reduction.size() != 1 || structured_records != 1 || legacy_records != 0 ||
+        pipeline.stats().singletons_removed != stats.singleton_rows_removed ||
+        pipeline.stats().merged_relations != stats.merged_relations) {
+        std::cout << "(public filter did not execute one structured strategy) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_structured_filter_public_off_equivalence() {
+    ScopedEnvironmentVariable v0_bfs("GNFS_V0_BFS", "0");
+    ScopedEnvironmentVariable cascade("GNFS_CASCADE_V3", "0");
+    Integer n("1000036000099");
+    Config cfg;
+    cfg.verbose = false;
+
+    std::optional<gnfs::relation::RelationReductionResult> baseline;
+    {
+        ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", std::nullopt);
+        Pipeline pipeline(n, cfg);
+        baseline.emplace(pipeline.filter(make_structured_route_corpus()));
+    }
+
+    std::optional<gnfs::relation::RelationReductionResult> explicit_off;
+    {
+        ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "0");
+        Pipeline pipeline(n, cfg);
+        explicit_off.emplace(pipeline.filter(make_structured_route_corpus()));
+    }
+
+    std::optional<gnfs::relation::RelationReductionResult> explicit_auto;
+    {
+        ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "auto");
+        Pipeline pipeline(n, cfg);
+        explicit_auto.emplace(pipeline.filter(make_structured_route_corpus()));
+    }
+
+    const auto& lhs = baseline->stats;
+    const auto& rhs = explicit_off->stats;
+    const auto& auto_stats = explicit_auto->stats;
+    if (lhs.strategy != gnfs::relation::ReductionStrategy::StandardV0 ||
+        rhs.strategy != lhs.strategy || lhs.raw_input_digest != rhs.raw_input_digest ||
+        lhs.output_digest != rhs.output_digest || baseline->size() != explicit_off->size() ||
+        auto_stats.strategy != lhs.strategy ||
+        auto_stats.raw_input_digest != lhs.raw_input_digest ||
+        auto_stats.output_digest != lhs.output_digest ||
+        explicit_auto->size() != baseline->size() ||
+        lhs.raw_duplicates_removed != rhs.raw_duplicates_removed ||
+        lhs.filter.input_relations != rhs.filter.input_relations ||
+        lhs.filter.output_relations != rhs.filter.output_relations ||
+        lhs.filter.singletons_removed != rhs.filter.singletons_removed ||
+        lhs.standard_v0.input_1lp != rhs.standard_v0.input_1lp ||
+        lhs.standard_v0.input_2lp != rhs.standard_v0.input_2lp ||
+        lhs.standard_v0.output_relations != rhs.standard_v0.output_relations ||
+        lhs.output_relations != rhs.output_relations ||
+        lhs.output_lp_columns != rhs.output_lp_columns) {
+        std::cout << "(unset and explicit OFF diverged) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_structured_filter_invalid_env_precedes_generation() {
+    Integer n("1000036000099");
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline pipeline(n, cfg);
+    size_t progress_callbacks = 0;
+    pipeline.set_progress_callback([&](const ProgressInfo&) { ++progress_callbacks; });
+
+    bool rejected = false;
+    {
+        ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "");
+        try {
+            (void)pipeline.filter({});
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+    }
+    if (!rejected || progress_callbacks != 0) {
+        std::cout << "(invalid structured flag was accepted or emitted progress) ";
+        return false;
+    }
+
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", std::nullopt);
+    auto reduction = pipeline.filter({});
+    if (reduction.generation != 1) {
+        std::cout << "(invalid flag consumed a relation generation) ";
+        return false;
+    }
+
+    Pipeline no_lp_pipeline(Integer(143), cfg);
+    bool unsupported_rejected = false;
+    {
+        ScopedEnvironmentVariable forced("GNFS_STRUCTURED_FILTER", "1");
+        try {
+            (void)no_lp_pipeline.filter({});
+        } catch (const std::invalid_argument&) {
+            unsupported_rejected = true;
+        }
+    }
+    if (!unsupported_rejected) {
+        std::cout << "(forced structured mode accepted a no-LP route) ";
+        return false;
+    }
+
+    size_t run_callbacks = 0;
+    no_lp_pipeline.set_progress_callback([&](const ProgressInfo&) { ++run_callbacks; });
+    no_lp_pipeline.set_log_callback([&](const LogEntry&) { ++run_callbacks; });
+    bool invalid_run_rejected = false;
+    {
+        ScopedEnvironmentVariable invalid("GNFS_STRUCTURED_FILTER", "invalid");
+        try {
+            (void)no_lp_pipeline.run();
+        } catch (const std::invalid_argument&) {
+            invalid_run_rejected = true;
+        }
+    }
+    bool no_lp_run_rejected = false;
+    {
+        ScopedEnvironmentVariable forced("GNFS_STRUCTURED_FILTER", "1");
+        try {
+            (void)no_lp_pipeline.run();
+        } catch (const std::invalid_argument&) {
+            no_lp_run_rejected = true;
+        }
+    }
+    if (!invalid_run_rejected || !no_lp_run_rejected || run_callbacks != 0) {
+        std::cout << "(invalid/no-LP run preflight emitted a callback) ";
+        return false;
+    }
+
+    Config sieve_cfg;
+    sieve_cfg.rational_bound = 5;
+    sieve_cfg.algebraic_bound = 5;
+    sieve_cfg.large_prime_bound = 101;
+    sieve_cfg.verbose = false;
+    Pipeline sieve_pipeline(Integer(143), sieve_cfg);
+    auto ctx = sieve_pipeline.select_polynomial();
+    auto fb = sieve_pipeline.build_factor_base(ctx);
+    size_t sieve_progress_callbacks = 0;
+    sieve_pipeline.set_progress_callback([&](const ProgressInfo&) { ++sieve_progress_callbacks; });
+    bool sieve_rejected = false;
+    {
+        ScopedEnvironmentVariable invalid("GNFS_STRUCTURED_FILTER", "invalid");
+        try {
+            (void)sieve_pipeline.sieve_and_collect(ctx, fb);
+        } catch (const std::invalid_argument&) {
+            sieve_rejected = true;
+        }
+    }
+    if (!sieve_rejected || sieve_progress_callbacks != 0) {
+        std::cout << "(invalid sieve flag emitted progress before rejection) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_structured_filter_adaptive_route() {
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+    ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "0");
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+    ScopedEnvironmentVariable resume("GNFS_SIEVE_RESUME", std::nullopt);
+    ScopedEnvironmentVariable full_resume("GNFS_RESUME", std::nullopt);
+    ScopedEnvironmentVariable v0_bfs("GNFS_V0_BFS", "0");
+    ScopedEnvironmentVariable cascade("GNFS_CASCADE_V3", "0");
+
+    Integer n("1000036000099");
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline pipeline(n, cfg);
+    std::unordered_map<uint64_t, size_t> records_by_generation;
+    pipeline.set_log_callback([&](const LogEntry& entry) {
+        if (!entry.message.starts_with("structured_filter "))
+            return;
+        constexpr std::string_view key = "generation=";
+        const size_t begin = entry.message.find(key);
+        if (begin == std::string::npos)
+            return;
+        const size_t value_begin = begin + key.size();
+        const size_t value_end = entry.message.find(' ', value_begin);
+        const uint64_t generation = std::stoull(entry.message.substr(
+            value_begin,
+            value_end == std::string::npos ? std::string::npos : value_end - value_begin));
+        ++records_by_generation[generation];
+    });
+
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+    auto reduction = pipeline.sieve_and_collect(ctx, fb);
+    if (reduction.empty() ||
+        reduction.stats.strategy != gnfs::relation::ReductionStrategy::Structured ||
+        reduction.stats.structured.budgeted_runs != 1 ||
+        records_by_generation.size() != reduction.generation) {
+        std::cout << "(adaptive route did not publish a structured reduction) ";
+        return false;
+    }
+    for (uint64_t generation = 1; generation <= reduction.generation; ++generation) {
+        if (records_by_generation[generation] != 1) {
+            std::cout << "(adaptive generation did not publish exactly once) ";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool test_structured_filter_ooc_rejected_before_store_creation() {
+    const std::string base = gnfs::util::temp_path("gnfs_test_structured_ooc_boundary_" +
+                                                   std::to_string(gnfs::util::process_id()));
+    SieveResumeArtifacts artifacts(base);
+    constexpr std::string_view data_sentinel = "structured-ooc-data-sentinel";
+    constexpr std::string_view index_sentinel = "structured-ooc-index-sentinel";
+    write_test_file(base + ".reldata", data_sentinel);
+    write_test_file(base + ".relidx", index_sentinel);
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+    ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "1");
+    ScopedEnvironmentVariable ooc_path("GNFS_OOC_BASE_PATH", base);
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+    ScopedEnvironmentVariable resume("GNFS_SIEVE_RESUME", std::nullopt);
+    ScopedEnvironmentVariable full_resume("GNFS_RESUME", std::nullopt);
+
+    Integer n("1000036000099");
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline pipeline(n, cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+
+    size_t callbacks = 0;
+    pipeline.set_progress_callback([&](const ProgressInfo&) { ++callbacks; });
+    pipeline.set_log_callback([&](const LogEntry&) { ++callbacks; });
+
+    bool rejected = false;
+    try {
+        (void)pipeline.sieve_and_collect(ctx, fb);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    if (!rejected || callbacks != 0 || read_test_file(base + ".reldata") != data_sentinel ||
+        read_test_file(base + ".relidx") != index_sentinel) {
+        std::cout << "(forced structured OOC route mutated a store or did not reject) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_structured_filter_run_preflight_preserves_resume_artifacts() {
+    const std::string base = gnfs::util::temp_path("gnfs_test_structured_run_preflight_" +
+                                                   std::to_string(gnfs::util::process_id()));
+    SieveResumeArtifacts artifacts(base);
+    const std::vector<std::pair<std::string, std::string>> sentinels{
+        {base + ".poly_ckpt", "poly-sentinel"},
+        {base + ".fb_ckpt", "factor-base-sentinel"},
+        {base + ".sieve_ckpt", "sieve-sentinel"},
+        {base + ".reldata", "relation-data-sentinel"},
+        {base + ".relidx", "relation-index-sentinel"},
+    };
+    for (const auto& [path, contents] : sentinels) {
+        write_test_file(path, contents);
+    }
+
+    Config cfg;
+    cfg.method = FactorizationMethod::GNFS;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    size_t progress_callbacks = 0;
+    size_t log_callbacks = 0;
+    pipeline.set_progress_callback([&](const ProgressInfo&) { ++progress_callbacks; });
+    pipeline.set_log_callback([&](const LogEntry&) { ++log_callbacks; });
+
+    bool rejected = false;
+    {
+        ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+        ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "0");
+        ScopedEnvironmentVariable resume("GNFS_RESUME", base);
+        ScopedEnvironmentVariable legacy_resume("GNFS_SIEVE_RESUME", std::nullopt);
+        ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+        try {
+            (void)pipeline.run();
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+    }
+    if (std::filesystem::exists(base + ".sieve_ckpt.tmp")) {
+        std::cout << "(run preflight created a temporary checkpoint) ";
+        return false;
+    }
+
+    if (!rejected || progress_callbacks != 0 || log_callbacks != 0) {
+        std::cout << "(run preflight did not reject before callbacks) ";
+        return false;
+    }
+    for (const auto& [path, contents] : sentinels) {
+        if (read_test_file(path) != contents) {
+            std::cout << "(run preflight mutated a resume artifact) ";
+            return false;
+        }
+    }
+
+    {
+        ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", std::nullopt);
+        auto reduction = pipeline.filter({});
+        if (reduction.generation != 1) {
+            std::cout << "(run preflight consumed a relation generation) ";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool test_structured_filter_run_freezes_route_before_callbacks() {
+    const std::string base = gnfs::util::temp_path("gnfs_test_structured_frozen_route_" +
+                                                   std::to_string(gnfs::util::process_id()));
+    SieveResumeArtifacts artifacts(base);
+    const std::vector<std::pair<std::string, std::string>> sentinels{
+        {base + ".poly_ckpt", "frozen-poly-sentinel"},
+        {base + ".fb_ckpt", "frozen-factor-base-sentinel"},
+        {base + ".sieve_ckpt", "frozen-sieve-sentinel"},
+        {base + ".reldata", "frozen-relation-data-sentinel"},
+        {base + ".relidx", "frozen-relation-index-sentinel"},
+    };
+    for (const auto& [path, contents] : sentinels) {
+        write_test_file(path, contents);
+    }
+
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+    ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "0");
+    ScopedEnvironmentVariable ooc_path("GNFS_OOC_BASE_PATH", base);
+    ScopedEnvironmentVariable resume("GNFS_RESUME", std::nullopt);
+    ScopedEnvironmentVariable legacy_resume("GNFS_SIEVE_RESUME", std::nullopt);
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+    ScopedEnvironmentVariable distributed_base("GNFS_DISTRIBUTED_SIEVE_BASE_PATH", base);
+    ScopedEnvironmentVariable force_small("GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL", std::nullopt);
+    ScopedEnvironmentVariable disable_siqs("GNFS_DISABLE_SIQS", "1");
+
+    Config cfg;
+    cfg.method = FactorizationMethod::GNFS;
+    cfg.degree = 3;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer("1219326311370217953830056380270522784921"), cfg);
+
+    bool injected = false;
+    bool stopped_after_polynomial = false;
+    pipeline.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.phase == Phase::PolynomialSelection && !injected) {
+            if (setenv("GNFS_RESUME", base.c_str(), 1) != 0 ||
+                setenv("GNFS_OOC_RELATIONS", "1", 1) != 0 ||
+                setenv("GNFS_DISTRIBUTED_SIEVE_WORKERS", "2", 1) != 0 ||
+                setenv("GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL", "1", 1) != 0) {
+                throw std::runtime_error("failed to inject route drift");
+            }
+            injected = true;
+            return;
+        }
+        if (info.phase == Phase::FactorBase) {
+            throw std::runtime_error("stop-after-frozen-polynomial");
+        }
+    });
+
+    try {
+        (void)pipeline.run();
+    } catch (const std::runtime_error& error) {
+        stopped_after_polynomial = std::string_view(error.what()) == "stop-after-frozen-polynomial";
+    }
+
+    if (!injected || !stopped_after_polynomial) {
+        std::cout << "(route-drift fixture did not reach the frozen phase boundary) ";
+        return false;
+    }
+    for (const auto& [path, contents] : sentinels) {
+        if (read_test_file(path) != contents) {
+            std::cout << "(callback ENV drift changed a frozen run artifact) ";
+            return false;
+        }
+    }
+    if (std::filesystem::exists(base + ".sieve_ckpt.tmp")) {
+        std::cout << "(callback ENV drift created a temporary checkpoint) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_structured_filter_sieve_freezes_route_before_callbacks() {
+    const std::string base = gnfs::util::temp_path("gnfs_test_structured_frozen_sieve_" +
+                                                   std::to_string(gnfs::util::process_id()));
+    SieveResumeArtifacts artifacts(base);
+    const std::vector<std::pair<std::string, std::string>> sentinels{
+        {base + ".sieve_ckpt", "frozen-direct-sieve-sentinel"},
+        {base + ".reldata", "frozen-direct-data-sentinel"},
+        {base + ".relidx", "frozen-direct-index-sentinel"},
+    };
+    for (const auto& [path, contents] : sentinels) {
+        write_test_file(path, contents);
+    }
+
+    ScopedTestFiles worker_cleanup;
+    for (size_t worker = 0; worker < 2; ++worker) {
+        const std::string worker_base = base + ".worker_" + std::to_string(worker);
+        worker_cleanup.paths.push_back(worker_base + ".reldata");
+        worker_cleanup.paths.push_back(worker_base + ".relidx");
+        worker_cleanup.paths.push_back(worker_base + ".attempts");
+    }
+    for (size_t index = 0; index < worker_cleanup.paths.size(); ++index) {
+        write_test_file(worker_cleanup.paths[index],
+                        "frozen-worker-sentinel-" + std::to_string(index));
+    }
+
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+    ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "0");
+    ScopedEnvironmentVariable ooc_path("GNFS_OOC_BASE_PATH", base);
+    ScopedEnvironmentVariable resume("GNFS_RESUME", std::nullopt);
+    ScopedEnvironmentVariable legacy_resume("GNFS_SIEVE_RESUME", std::nullopt);
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+    ScopedEnvironmentVariable distributed_base("GNFS_DISTRIBUTED_SIEVE_BASE_PATH", base);
+    ScopedEnvironmentVariable force_small("GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL", std::nullopt);
+
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+
+    bool injected = false;
+    pipeline.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.phase != Phase::Sieving || injected)
+            return;
+        if (setenv("GNFS_RESUME", base.c_str(), 1) != 0 ||
+            setenv("GNFS_OOC_RELATIONS", "1", 1) != 0 ||
+            setenv("GNFS_DISTRIBUTED_SIEVE_WORKERS", "2", 1) != 0 ||
+            setenv("GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL", "1", 1) != 0) {
+            throw std::runtime_error("failed to inject sieve route drift");
+        }
+        injected = true;
+    });
+
+    auto reduction = pipeline.sieve_and_collect(ctx, fb);
+    if (!injected || reduction.generation == 0 ||
+        reduction.stats.strategy != gnfs::relation::ReductionStrategy::Structured) {
+        std::cout << "(direct sieve did not retain its entry route snapshot) ";
+        return false;
+    }
+    for (const auto& [path, contents] : sentinels) {
+        if (read_test_file(path) != contents) {
+            std::cout << "(sieve callback ENV drift changed a frozen artifact) ";
+            return false;
+        }
+    }
+    for (size_t index = 0; index < worker_cleanup.paths.size(); ++index) {
+        if (read_test_file(worker_cleanup.paths[index]) !=
+            "frozen-worker-sentinel-" + std::to_string(index)) {
+            std::cout << "(sieve callback ENV drift changed a worker artifact) ";
+            return false;
+        }
+    }
+    if (std::filesystem::exists(base + ".sieve_ckpt.tmp")) {
+        std::cout << "(sieve callback ENV drift created a temporary checkpoint) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_structured_filter_size_aware_ooc_run_preflight() {
+    const std::string base = gnfs::util::temp_path("gnfs_test_structured_auto_ooc_preflight_" +
+                                                   std::to_string(gnfs::util::process_id()));
+    SieveResumeArtifacts artifacts(base);
+    constexpr std::string_view data_sentinel = "size-aware-ooc-data-sentinel";
+    constexpr std::string_view index_sentinel = "size-aware-ooc-index-sentinel";
+    write_test_file(base + ".reldata", data_sentinel);
+    write_test_file(base + ".relidx", index_sentinel);
+
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+    ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", std::nullopt);
+    ScopedEnvironmentVariable ooc_path("GNFS_OOC_BASE_PATH", base);
+    ScopedEnvironmentVariable resume("GNFS_RESUME", std::nullopt);
+    ScopedEnvironmentVariable legacy_resume("GNFS_SIEVE_RESUME", std::nullopt);
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+
+    Config cfg;
+    cfg.method = FactorizationMethod::GNFS;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = UINT64_C(1) << 22U;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    size_t progress_callbacks = 0;
+    size_t log_callbacks = 0;
+    pipeline.set_progress_callback([&](const ProgressInfo&) { ++progress_callbacks; });
+    pipeline.set_log_callback([&](const LogEntry&) { ++log_callbacks; });
+
+    bool rejected = false;
+    try {
+        (void)pipeline.run();
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    if (!rejected || progress_callbacks != 0 || log_callbacks != 0 ||
+        read_test_file(base + ".reldata") != data_sentinel ||
+        read_test_file(base + ".relidx") != index_sentinel) {
+        std::cout << "(size-aware OOC preflight was not side-effect free) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_structured_filter_distributed_precedes_worker_side_effects() {
+    const std::string base = gnfs::util::temp_path("gnfs_test_structured_distributed_boundary_" +
+                                                   std::to_string(gnfs::util::process_id()));
+    ScopedTestFiles cleanup;
+    for (size_t worker = 0; worker < 2; ++worker) {
+        const std::string worker_base = base + ".worker_" + std::to_string(worker);
+        cleanup.paths.push_back(worker_base + ".reldata");
+        cleanup.paths.push_back(worker_base + ".relidx");
+        cleanup.paths.push_back(worker_base + ".attempts");
+    }
+    for (size_t index = 0; index < cleanup.paths.size(); ++index) {
+        write_test_file(cleanup.paths[index], "worker-sentinel-" + std::to_string(index));
+    }
+
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+
+    size_t progress_callbacks = 0;
+    size_t log_callbacks = 0;
+    pipeline.set_progress_callback([&](const ProgressInfo&) { ++progress_callbacks; });
+    pipeline.set_log_callback([&](const LogEntry&) { ++log_callbacks; });
+    bool rejected = false;
+    {
+        ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+        ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "0");
+        ScopedEnvironmentVariable resume("GNFS_RESUME", std::nullopt);
+        ScopedEnvironmentVariable legacy_resume("GNFS_SIEVE_RESUME", std::nullopt);
+        ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "2");
+        ScopedEnvironmentVariable force_small("GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL", "1");
+        ScopedEnvironmentVariable distributed_base("GNFS_DISTRIBUTED_SIEVE_BASE_PATH", base);
+        try {
+            (void)pipeline.sieve_and_collect(ctx, fb);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+    }
+
+    if (!rejected || progress_callbacks != 0 || log_callbacks != 0) {
+        std::cout << "(distributed route did not reject before callbacks) ";
+        return false;
+    }
+    for (size_t index = 0; index < cleanup.paths.size(); ++index) {
+        if (read_test_file(cleanup.paths[index]) != "worker-sentinel-" + std::to_string(index)) {
+            std::cout << "(distributed preflight mutated a worker artifact) ";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool test_structured_filter_matrix_record_matches_final_handoff() {
+    ScopedEnvironmentVariable streaming("GNFS_SGE_STREAMING", "off");
+    ScopedEnvironmentVariable mmap("GNFS_LINALG_MMAP", "off");
+    ScopedEnvironmentVariable thin_abort("GNFS_NO_THIN_SOLVE", std::nullopt);
+
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+
+    constexpr size_t input_rows = 256;
+    std::vector<gnfs::core::Relation> relations;
+    relations.reserve(input_rows);
+    for (size_t index = 0; index < input_rows; ++index) {
+        gnfs::core::Relation relation(static_cast<int64_t>(1'000 + index), 1);
+        relation.rational_factors.push_back(2);
+        relations.push_back(std::move(relation));
+    }
+
+    gnfs::relation::RelationReductionStats reduction_stats;
+    reduction_stats.strategy = gnfs::relation::ReductionStrategy::Structured;
+    constexpr uint64_t generation = 777;
+    gnfs::relation::RelationReductionResult reduction(generation, std::move(relations),
+                                                      std::move(reduction_stats));
+
+    bool trimmed = false;
+    std::vector<std::string> matrix_records;
+    pipeline.set_log_callback([&](const LogEntry& entry) {
+        if (entry.message.starts_with("Trimming excess:"))
+            trimmed = true;
+        if (entry.message.starts_with("structured_filter_matrix "))
+            matrix_records.push_back(entry.message);
+    });
+
+    auto matrix_result = pipeline.solve_matrix(std::move(reduction), fb, ctx);
+    const auto final_stats = gnfs::linalg::compute_matrix_stats(matrix_result.matrix);
+    const std::string expected_record =
+        "structured_filter_matrix generation=" + std::to_string(generation) +
+        " rows=" + std::to_string(final_stats.num_rows) +
+        " cols=" + std::to_string(final_stats.num_cols) +
+        " excess=" + std::to_string(final_stats.excess) +
+        " nonzeros=" + std::to_string(final_stats.total_weight);
+
+    if (!trimmed || matrix_records.size() != 1 || matrix_records.front() != expected_record ||
+        matrix_result.relations.size() != final_stats.num_rows ||
+        matrix_result.relations.size() >= input_rows ||
+        pipeline.stats().matrix_rows != final_stats.num_rows ||
+        pipeline.stats().matrix_cols != final_stats.num_cols ||
+        pipeline.stats().matrix_weight != final_stats.total_weight ||
+        pipeline.stats().matrix_excess != static_cast<int64_t>(final_stats.excess)) {
+        std::cout << "(structured matrix record did not match final handoff) ";
+        return false;
+    }
+    return true;
+}
 
 bool test_sieve_resume_fresh_no_prior_ckpt() {
     // GNFS_SIEVE_RESUME set, no prior ckpt → fresh start.
@@ -886,6 +1606,17 @@ int main() {
     TEST(pipeline_stats);
     TEST(pipeline_relation_generations);
     TEST(pipeline_progress_callback);
+    TEST(structured_filter_public_route);
+    TEST(structured_filter_public_off_equivalence);
+    TEST(structured_filter_invalid_env_precedes_generation);
+    TEST(structured_filter_adaptive_route);
+    TEST(structured_filter_ooc_rejected_before_store_creation);
+    TEST(structured_filter_run_preflight_preserves_resume_artifacts);
+    TEST(structured_filter_run_freezes_route_before_callbacks);
+    TEST(structured_filter_sieve_freezes_route_before_callbacks);
+    TEST(structured_filter_size_aware_ooc_run_preflight);
+    TEST(structured_filter_distributed_precedes_worker_side_effects);
+    TEST(structured_filter_matrix_record_matches_final_handoff);
     TEST(v3_cascade_pipeline_integration);
     TEST(v3_cascade_head_to_head_real_pipeline);
     TEST(v3_cascade_disabled_by_default);

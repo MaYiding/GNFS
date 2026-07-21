@@ -42,9 +42,23 @@ V3 cascade 默认 OFF (V0 path 零开销). 启用时:
 
 `GNFS_STRUCTURED_FILTER` 是结构化关系消元的 opt-in 策略开关。M4a 提供
 严格解析、预消费策略决策和共享 `RelationReductionEngine` 的单次 structured
-dispatch；生产 pipeline 尚未读取该 ENV。当前生产调用方必须传入
-`auto_eligible=false`；在获得独立尺寸实证并完成后续 M4 集成前，
+dispatch，并已接入 adaptive sieve、distributed 前置决策和公开 `Pipeline::filter()`
+入口。当前生产调用方固定传入 `auto_eligible=false`；在获得独立尺寸实证前，
 不得复用 V0 BFS 或 OOC 的 `lp_bits` 阈值冒充结构化策略的 auto 证据。
+
+首版支持边界是「LP 已启用的纯 vector route」。OOC collector、resume corpus 和
+distributed worker stores 尚未接入 owning `RelationCorpus`/`RelationSink`，因此
+`GNFS_STRUCTURED_FILTER=1` 在这些路径上会在 materialize reduction snapshot 前
+显式失败；`auto` 使用具名 legacy 策略。若要在当前 50-digit vector 实验中强制
+structured，必须同时显式设置 `GNFS_OOC_RELATIONS=0`。
+
+完整 `Pipeline::run()` 在任何 progress/log callback、试探算法、checkpoint
+读写和 relation generation 分配前捕获无 I/O route snapshot，并把同一个不可变
+snapshot 传给 polynomial、factor-base 与 sieve 三阶段；callback 后续修改 ENV
+不会改变本次运行的 resume/OOC/distributed 路由。直接
+`sieve_and_collect()` 与 `filter()` 也在各自首个 phase callback 前执行同一类
+严格判定。forced unsupported 不会打开、截断或删除已有 resume/OOC/distributed
+store；测试用逐字节 sentinel 固定这一契约。
 
 | ENV 值 | 受支持 | `auto_eligible` | 决策 |
 |---|---:|---:|---|
@@ -59,8 +73,8 @@ dispatch；生产 pipeline 尚未读取该 ENV。当前生产调用方必须传�
 解析严格且区分 unset 与显式空串。仅 `nullptr`、`0`、`1`、`auto` 合法；
 空串、大小写变体、`on` / `off`、`true` / `false`、前后空白和其它数字均为
 配置错误。策略 helper 接收调用方传入的 ENV 原始值，不调用 `getenv`，也不使用
-`std::once_flag` 或其它进程级静态缓存。生产集成应在移动 raw snapshot 前解析
-一次，再把不可变决策传给 reducer；测试无需 reset cache。
+`std::once_flag` 或其它进程级静态缓存。生产入口在移动 raw snapshot 前解析一次，
+再把不可变决策传给 reducer；测试无需 reset cache。
 
 **Fallback contract**：fallback 只允许发生在 structured 启动前。`auto` 对不受
 支持或未 eligible 的输入返回 legacy 选择与稳定原因；具体 V0/V3 策略仍由调用方
@@ -72,6 +86,25 @@ dispatch；生产 pipeline 尚未读取该 ENV。当前生产调用方必须传�
 因此后续 legacy 输出必须与引入该策略层前逐位一致。structured 与 legacy 之间
 只要求依赖空间等价，不承诺关系行逐位相同。
 
+**M4 experimental caps**：forced ON 使用固定、保守的研究 profile，不接受额外
+ENV 数字，也不使用伪无限上限。一次 snapshot 的 candidate examinations/pass 与
+累计 emitted rows 均不超过 4096，commits 不超过 1024，正 LP fill growth 为 0，
+单次 accepted payload 不超过 8192 entries，单输出 source/materialized pairs 不超过
+64，单侧 factors 不超过 4096，batch width 不超过 4，incidence shard 不超过
+4096 rows，worker 数为 `min(hardware_concurrency, 4)`（零报告回退 1）。小 corpus
+的 row-dependent cap 进一步收紧到实际行数。达到 cap 返回显式 `BudgetLimit` 和
+完整 active basis，不 fallback legacy。该 profile 仍是 vector-backed；它不构成
+OOC 内存界或 auto promotion 证据。profile factory 同时拒绝 worker=0 或 worker>4，
+因此 4-worker ceiling 是 API invariant，不只是 production caller 的约定。
+
+每次 structured snapshot 发出一条稳定的 relation-graph `structured_filter` 记录，包含 policy
+reason、generation、输入/输出 rows 与 LP columns、commits、emitted rows、LP fill、
+planning/candidate/rejection counters、所有主 cap、batch、workers、output digest 和
+stop reason。进入 `solve_matrix()` 后另发 `structured_filter_matrix`，记录实际 full
+matrix rows、columns、excess 与 nonzeros；该记录在 deterministic trim 完成后、
+SGE 前恰好发出一次，并与最终 `MatrixResult.matrix` handoff 对齐。归约阶段不会
+伪造尚未构建的矩阵指标。
+
 **集成点**：
 
 - `include/gnfs/relation/structured_filter_policy.hpp`：严格 parser 与独立
@@ -79,13 +112,20 @@ dispatch；生产 pipeline 尚未读取该 ENV。当前生产调用方必须传�
 - `include/gnfs/relation/reduction_engine.hpp`：在 raw 校验和完整 `ABPair`
   去重后、legacy singleton filter 前选择一次 structured reducer；结构化执行不再
   运行 V0/V3，错误也不 fallback。
+- `include/gnfs/relation/structured_filter_profile.hpp`：M4 forced-on profile 与
+  production worker 选择。
+- `src/api/pipeline.cpp`：adaptive/final probe 与公开 filter 的统一 overlay；
+  `run()`、OOC/resume/distributed 在 callback、checkpoint 和 snapshot side effect 前
+  判定 unsupported。
 - `tests/test_structured_filter_policy.cpp`：合法与非法 token、OFF、forced ON、
   unsupported 和显式 auto eligibility 的表驱动边界。
 - `tests/test_relation_reduction_engine.cpp`：structured config 预检、NoCandidates、
   singleton 所有权、去重顺序、1/2/4 线程等价和 invariant fail-closed。
 - `CMakeLists.txt` / `scripts/test.sh`：注册 relation 模块的 instant 测试。
-- 生产 pipeline 的 ENV 读取与 concrete legacy strategy overlay 属于后续 M4
-  切片，当前 CLI 运行尚未启用该开关。
+- `tests/test_api.cpp`：公开 route 的 forced ON、unset/0/auto legacy 等价、非法值
+  callback/generation 边界、无 LP fail-closed、resume/OOC/distributed sentinel、
+  callback ENV 漂移、每代 exact-once、最终 matrix record 对齐，以及真实 adaptive
+  sieve structured 路径。
 
 ---
 

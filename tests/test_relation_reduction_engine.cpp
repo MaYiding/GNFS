@@ -1,5 +1,6 @@
 #include "gnfs/api/detail/solver_handoff.hpp"
 #include "gnfs/relation/reduction_engine.hpp"
+#include "gnfs/relation/structured_filter_profile.hpp"
 
 #include <array>
 #include <cstdint>
@@ -134,6 +135,16 @@ RelationReductionConfig structured_config(uint32_t workers = 1, size_t batch_wid
         gnfs::relation::TreeBasisPlanner::DeterministicMst,
     };
     config.structured = std::move(structured);
+    return config;
+}
+
+RelationReductionConfig experimental_profile_config(size_t input_rows, uint32_t workers) {
+    RelationReductionConfig config;
+    config.large_primes_enabled = true;
+    config.merge_rounds = 0;
+    config.strategy = ReductionStrategy::Structured;
+    config.structured =
+        gnfs::relation::make_structured_filter_experimental_config(input_rows, workers);
     return config;
 }
 
@@ -672,6 +683,27 @@ void test_structured_thread_equivalence() {
     }
 }
 
+void test_structured_experimental_profile_thread_equivalence() {
+    std::optional<RelationReductionResult> baseline;
+    for (uint32_t workers : {1U, 2U, 4U}) {
+        auto corpus = make_shared_primary_corpus();
+        const size_t input_rows = corpus.size();
+        auto result =
+            RelationReductionEngine::reduce(RawRelationSnapshot(708, std::move(corpus)),
+                                            experimental_profile_config(input_rows, workers));
+        CHECK(result.stats.structured.budgeted_runs == 1);
+        CHECK(result.stats.structured_incidence.requested_worker_count == workers);
+        if (!baseline) {
+            baseline.emplace(std::move(result));
+            continue;
+        }
+        CHECK(equal_corpus(result.relations, baseline->relations));
+        CHECK(result.stats.output_digest == baseline->stats.output_digest);
+        CHECK(result.stats.structured_run == baseline->stats.structured_run);
+        CHECK(result.stats.merged_relations == baseline->stats.merged_relations);
+    }
+}
+
 void test_structured_invariant_error_never_falls_back() {
     Relation invalid(41, 0);
     invalid.rational_large_prime.emplace_back(101, uint8_t{1});
@@ -763,6 +795,7 @@ int main() {
     test_structured_deduplicates_before_source_ids();
     test_structured_final_merge_count_excludes_consumed_intermediates();
     test_structured_thread_equivalence();
+    test_structured_experimental_profile_thread_equivalence();
     test_structured_invariant_error_never_falls_back();
     test_solver_handoff_exactly_once();
 

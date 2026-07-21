@@ -13,14 +13,16 @@
 #include "../relation/reduction_engine.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace gnfs::api {
 
-using core::Integer;
 using core::GNFSParams;
+using core::Integer;
 using core::PolynomialContext;
 using core::Relation;
 using factor_base::FactorBase;
@@ -50,13 +52,12 @@ public:
     struct MatrixResult {
         SparseMatrix matrix;
         std::vector<std::vector<bool>> dependencies;
-        std::vector<Relation> relations;  // relations used (order matches matrix rows)
+        std::vector<Relation> relations; // relations used (order matches matrix rows)
     };
     MatrixResult solve_matrix(relation::RelationReductionResult reduction, const FactorBase& fb,
                               const PolynomialContext& ctx);
 
-    FactorResult extract_factors(const MatrixResult& mr,
-                                 const FactorBase& fb,
+    FactorResult extract_factors(const MatrixResult& mr, const FactorBase& fb,
                                  const PolynomialContext& ctx);
 
     /// Run complete pipeline end-to-end
@@ -69,13 +70,34 @@ public:
                   std::optional<FactorizationMethod> override = std::nullopt);
 
     // Configuration
-    void set_progress_callback(ProgressCallback cb) { progress_cb_ = std::move(cb); }
-    void set_log_callback(LogCallback cb) { log_cb_ = std::move(cb); }
+    void set_progress_callback(ProgressCallback cb) {
+        progress_cb_ = std::move(cb);
+    }
+    void set_log_callback(LogCallback cb) {
+        log_cb_ = std::move(cb);
+    }
 
-    const GNFSParams& params() const { return params_; }
-    const FactorStats& stats() const { return stats_; }
+    const GNFSParams& params() const {
+        return params_;
+    }
+    const FactorStats& stats() const {
+        return stats_;
+    }
 
 private:
+    struct StructuredRouteSnapshot final {
+        relation::StructuredFilterMode mode = relation::StructuredFilterMode::Off;
+        relation::StructuredFilterPolicyDecision policy{};
+        std::string resume_base_path;
+        std::string ooc_reason;
+        bool large_primes_enabled = false;
+        bool ooc_enabled = false;
+        size_t distributed_workers = 0;
+        bool distributed_size_gate_ok = false;
+        bool distributed_force_small = false;
+        bool distributed_route_selected = false;
+    };
+
     Integer n_;
     Config config_;
     GNFSParams params_;
@@ -88,8 +110,13 @@ private:
 
     // Helpers
     uint64_t allocate_relation_generation();
-    void emit_progress(Phase phase, const std::string& msg,
-                       double phase_progress = -1.0);
+    [[nodiscard]] StructuredRouteSnapshot capture_structured_route_snapshot() const;
+    PolynomialContext select_polynomial_impl(const std::string& resume_base);
+    FactorBase build_factor_base_impl(const PolynomialContext& ctx, const std::string& resume_base);
+    relation::RelationReductionResult
+    sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase& fb,
+                           const StructuredRouteSnapshot& structured_route);
+    void emit_progress(Phase phase, const std::string& msg, double phase_progress = -1.0);
     void emit_log(LogLevel level, Phase phase, const std::string& msg);
     double elapsed_s() const;
 

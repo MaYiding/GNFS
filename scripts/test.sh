@@ -487,11 +487,12 @@ SMOKE_TESTS=(
 )
 
 # ThreadSanitizer 窄通道: 只覆盖 structured relation 的有界分片构建、
-# 并发调度、准备、批提交、driver 和故障边界。保持此列表小而明确，
+# 共享 engine dispatch、并发调度、准备、批提交、driver 和故障边界。保持此列表小而明确，
 # 避免把完整 instant 层复制到高成本的 sanitizer 构建。
 typeset -a TSAN_RELATION_TESTS
 TSAN_RELATION_TESTS=(
     test_ordered_parallel_map
+    test_relation_reduction_engine
     test_structured_parallel_prepare
     test_structured_batch_commit
     test_structured_parallel_driver

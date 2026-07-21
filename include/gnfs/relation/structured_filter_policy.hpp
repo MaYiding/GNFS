@@ -26,6 +26,22 @@ struct StructuredFilterPolicyDecision final {
     [[nodiscard]] bool operator==(const StructuredFilterPolicyDecision&) const noexcept = default;
 };
 
+/// Storage/route facts that delimit the first vector-backed integration.
+struct StructuredFilterRouteContext final {
+    bool large_primes_enabled = false;
+    bool ooc_enabled = false;
+    bool resume_enabled = false;
+    bool distributed_route = false;
+
+    [[nodiscard]] bool operator==(const StructuredFilterRouteContext&) const noexcept = default;
+};
+
+[[nodiscard]] inline bool
+structured_filter_route_supported(const StructuredFilterRouteContext& context) noexcept {
+    return context.large_primes_enabled && !context.ooc_enabled && !context.resume_enabled &&
+           !context.distributed_route;
+}
+
 /// Parse the exact public ENV contract.
 ///
 /// Unset means Off. Only the case-sensitive tokens "0", "1", and "auto"

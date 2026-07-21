@@ -17,6 +17,7 @@
 #include <gnfs/relation/collector.hpp>
 #include <gnfs/relation/ooc_policy.hpp>
 #include <gnfs/relation/reduction_engine.hpp>
+#include <gnfs/relation/structured_filter_profile.hpp>
 #include <gnfs/relation/v0_bfs_policy.hpp>
 #include <gnfs/sieve/distributed_sieve.hpp>
 #include <gnfs/sieve/lattice_sieve.hpp>
@@ -41,6 +42,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 
 namespace gnfs::api {
@@ -78,6 +80,62 @@ inline bool cascade_v3_enabled_for_round(int round_index) {
 
 inline bool cascade_v3_enabled() {
     return cascade_v3_mode() != V3Mode::Off;
+}
+
+std::string_view structured_stop_reason_name(relation::StructuredReductionStopReason reason) {
+    switch (reason) {
+    case relation::StructuredReductionStopReason::NotStarted:
+        return "not_started";
+    case relation::StructuredReductionStopReason::NoCandidates:
+        return "no_candidates";
+    case relation::StructuredReductionStopReason::BudgetLimit:
+        return "budget_limit";
+    case relation::StructuredReductionStopReason::PersistenceLimit:
+        return "persistence_limit";
+    }
+    return "unknown";
+}
+
+std::string structured_filter_record(
+    const relation::StructuredFilterPolicyDecision& policy,
+    const relation::RelationReductionResult& reduction,
+    const relation::RelationReductionConfig::StructuredExecutionConfig& execution) {
+    const auto& stats = reduction.stats;
+    const auto& run = stats.structured_run;
+    const auto& budget = execution.budget;
+    return "structured_filter reason=\"" + std::string(policy.reason) +
+           "\" generation=" + std::to_string(reduction.generation) +
+           " input_rows=" + std::to_string(stats.input_relations) +
+           " input_lp_cols=" + std::to_string(stats.deduplicated_input_lp_histogram.unique_keys) +
+           " output_rows=" + std::to_string(stats.output_relations) +
+           " output_lp_cols=" + std::to_string(stats.output_lp_columns) +
+           " commits=" + std::to_string(run.commits) +
+           " emitted_rows=" + std::to_string(run.emitted_rows) +
+           " lp_fill_growth=" + std::to_string(run.lp_fill_growth) +
+           " planning_passes=" + std::to_string(stats.structured.planning_passes) +
+           " candidates=" + std::to_string(stats.structured.candidate_plans_considered) +
+           " candidate_cap=" + std::to_string(budget.max_candidate_examinations_per_pass) +
+           " emitted_cap=" + std::to_string(budget.max_emitted_rows) +
+           " commit_cap=" + std::to_string(budget.max_commits) +
+           " fill_cap=" + std::to_string(budget.max_total_lp_fill_growth) + " payload_cap=" +
+           std::to_string(budget.max_accepted_materialized_payload_entries_per_commit) +
+           " source_cap=" + std::to_string(budget.max_source_atoms_per_output) +
+           " factor_side_cap=" + std::to_string(budget.max_factor_entries_per_side) +
+           " batch_cap=" + std::to_string(execution.parallel.max_batch_candidates) +
+           " incidence_shard_cap=" + std::to_string(execution.incidence.max_rows_per_shard) +
+           " workers=" + std::to_string(execution.parallel.worker_count) + " reject_pivot=" +
+           std::to_string(stats.structured.budget_rejections.pivot_weight_limit) +
+           " reject_source=" + std::to_string(stats.structured.budget_rejections.source_limit) +
+           " reject_output_lp=" +
+           std::to_string(stats.structured.budget_rejections.output_lp_limit) +
+           " reject_fill=" + std::to_string(stats.structured.budget_rejections.fill_limit) +
+           " reject_emitted=" +
+           std::to_string(stats.structured.budget_rejections.emitted_row_limit) +
+           " reject_materialization=" +
+           std::to_string(stats.structured.budget_rejections.materialization_limit) +
+           " digest_low=" + std::to_string(stats.output_digest.low) +
+           " digest_high=" + std::to_string(stats.output_digest.high) +
+           " stop=" + std::string(structured_stop_reason_name(run.stop_reason));
 }
 
 // Pipeline resume base path (Phase 1+2+3 checkpoints).
@@ -451,6 +509,43 @@ Pipeline::Pipeline(const Integer& n, const Config& config)
     stats_.large_prime_bound = params_.large_prime_bound;
 }
 
+Pipeline::StructuredRouteSnapshot Pipeline::capture_structured_route_snapshot() const {
+    const auto mode = relation::parse_structured_filter_mode(std::getenv("GNFS_STRUCTURED_FILTER"));
+    std::string resume_base_path = pipeline_resume_base_path();
+    const bool resume_enabled = !resume_base_path.empty();
+    const auto ooc_policy =
+        relation::decide_ooc_policy(std::getenv("GNFS_OOC_RELATIONS"), params_.large_prime_bound);
+    const bool ooc_enabled = resume_enabled || ooc_policy.enabled;
+    const bool large_primes_enabled = params_.large_prime_bound > params_.algebraic_bound;
+    const size_t distributed_workers = sieve::parse_distributed_sieve_workers_env();
+    const bool distributed_size_gate_ok = params_.digits >= 30;
+    const char* distributed_force_env = std::getenv("GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL");
+    const bool distributed_force_small =
+        distributed_force_env != nullptr && distributed_force_env[0] == '1';
+    const bool distributed_route_selected = distributed_workers > 0 && !resume_enabled &&
+                                            (distributed_size_gate_ok || distributed_force_small);
+    const bool supported = relation::structured_filter_route_supported({
+        .large_primes_enabled = large_primes_enabled,
+        .ooc_enabled = ooc_enabled,
+        .resume_enabled = resume_enabled,
+        .distributed_route = distributed_route_selected,
+    });
+    const auto policy = relation::decide_structured_filter_policy(mode, supported, false);
+
+    return {
+        mode,
+        policy,
+        std::move(resume_base_path),
+        std::string(ooc_policy.reason),
+        large_primes_enabled,
+        ooc_enabled,
+        distributed_workers,
+        distributed_size_gate_ok,
+        distributed_force_small,
+        distributed_route_selected,
+    };
+}
+
 // ============================================================
 // Progress / Log helpers
 // ============================================================
@@ -501,6 +596,10 @@ void Pipeline::emit_log(LogLevel level, Phase phase, const std::string& msg) {
 // ============================================================
 
 PolynomialContext Pipeline::select_polynomial() {
+    return select_polynomial_impl(pipeline_resume_base_path());
+}
+
+PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_base) {
     emit_progress(Phase::PolynomialSelection, "Starting polynomial selection");
     emit_log(LogLevel::Info, Phase::PolynomialSelection,
              "N=" + n_.to_string() + " bits=" + std::to_string(stats_.n_bits) +
@@ -513,7 +612,6 @@ PolynomialContext Pipeline::select_polynomial() {
     // and skip the (potentially hours-long) Kleinjung lattice search.  Selection
     // is multi-threaded random search, so in-flight checkpointing is not viable;
     // we only persist the final (f, g, m) and reuse it across restarts.
-    const std::string resume_base = pipeline_resume_base_path();
     if (!resume_base.empty()) {
         const std::string poly_ckpt = resume_base + ".poly_ckpt";
         if (polynomial::PolyCheckpoint::exists_and_valid(poly_ckpt)) {
@@ -571,6 +669,11 @@ PolynomialContext Pipeline::select_polynomial() {
 // ============================================================
 
 FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
+    return build_factor_base_impl(ctx, pipeline_resume_base_path());
+}
+
+FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
+                                            const std::string& resume_base) {
     emit_progress(Phase::FactorBase, "Building factor base");
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -587,7 +690,6 @@ FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
     // ctx fingerprint match, rehydrate the FactorBase and skip the parallel
     // Cantor-Zassenhaus root-finding entirely.  Mismatch on any param forces a
     // fresh rebuild and overwrites the stale checkpoint.
-    const std::string resume_base = pipeline_resume_base_path();
     if (!resume_base.empty()) {
         const std::string fb_ckpt = resume_base + ".fb_ckpt";
         if (factor_base::FbCheckpoint::exists_and_valid(fb_ckpt)) {
@@ -665,6 +767,13 @@ FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
 
 relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialContext& ctx,
                                                               const FactorBase& fb) {
+    const auto structured_route = capture_structured_route_snapshot();
+    return sieve_and_collect_impl(ctx, fb, structured_route);
+}
+
+relation::RelationReductionResult
+Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase& fb,
+                                 const StructuredRouteSnapshot& structured_preflight) {
     emit_progress(Phase::Sieving, "Starting sieve");
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -726,7 +835,7 @@ relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialCo
     // both OOC base and checkpoint base. If <base_path>.sieve_ckpt exists → resume,
     // otherwise fresh start. Sieve loop persists state every CHECKPOINT_INTERVAL
     // batches. Normal completion → remove ckpt + flip OOC writer to MAGIC.
-    std::string sieve_resume_path = pipeline_resume_base_path();
+    std::string sieve_resume_path = structured_preflight.resume_base_path;
     std::optional<sieve::SieveCheckpoint> prior_ckpt;
     if (!sieve_resume_path.empty()) {
         const std::string ckpt_file = sieve_resume_path + ".sieve_ckpt";
@@ -783,9 +892,7 @@ relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialCo
     //   GNFS_OOC_RELATIONS=0 explicit opt-out (e.g. tests / CI).
     //   GNFS_OOC_RELATIONS=1 explicit force-on (no size gate).
     if (sieve_resume_path.empty()) {
-        const char* ooc_env = std::getenv("GNFS_OOC_RELATIONS");
-        const auto policy = relation::decide_ooc_policy(ooc_env, params_.large_prime_bound);
-        if (policy.enabled) {
+        if (structured_preflight.ooc_enabled) {
             coll_config.ooc_enabled = true;
             // base_path: ENV GNFS_OOC_BASE_PATH overrides the temp-dir default.
             if (const char* path_env = std::getenv("GNFS_OOC_BASE_PATH");
@@ -795,16 +902,28 @@ relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialCo
                 coll_config.ooc_base_path = gnfs::util::temp_path(
                     "gnfs_relations_" + std::to_string(gnfs::util::process_id()));
             }
-            const std::string reason_str(policy.reason);
-            const size_t lp_bits_est = relation::estimate_lp_bits(params_.large_prime_bound);
-            emit_log(LogLevel::Info, Phase::Sieving,
-                     std::string("OOC mode enabled (") + reason_str +
-                         "): base=" + coll_config.ooc_base_path);
-            std::fprintf(stderr,
-                         "[ooc] streaming relations to %s.{reldata,relidx} (%s, lp_bits=%zu)\n",
-                         coll_config.ooc_base_path.c_str(), reason_str.c_str(), lp_bits_est);
+            // Forced structured mode rejects this unsupported route below,
+            // before collector construction. Do not announce a store that will
+            // never be opened.
+            if (structured_preflight.mode != relation::StructuredFilterMode::On) {
+                const std::string& reason_str = structured_preflight.ooc_reason;
+                const size_t lp_bits_est = relation::estimate_lp_bits(params_.large_prime_bound);
+                emit_log(LogLevel::Info, Phase::Sieving,
+                         std::string("OOC mode enabled (") + reason_str +
+                             "): base=" + coll_config.ooc_base_path);
+                std::fprintf(stderr,
+                             "[ooc] streaming relations to %s.{reldata,relidx} (%s, lp_bits=%zu)\n",
+                             coll_config.ooc_base_path.c_str(), reason_str.c_str(), lp_bits_est);
+            }
         }
     }
+    const bool lp_enabled = structured_preflight.large_primes_enabled;
+    const size_t distributed_workers = structured_preflight.distributed_workers;
+    const bool distributed_size_gate_ok = structured_preflight.distributed_size_gate_ok;
+    const bool distributed_force_small = structured_preflight.distributed_force_small;
+    const bool distributed_route_selected = structured_preflight.distributed_route_selected;
+    const auto& structured_policy = structured_preflight.policy;
+
     relation::RelationCollector collector(coll_config);
     const bool recovered_finalized_ooc =
         collector.ooc_recovery_outcome() == relation::OOCRecoveryOutcome::FinalizedCorpus;
@@ -819,20 +938,31 @@ relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialCo
     size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params_.target_excess;
     size_t initial_target = params_.raw_relation_target(matrix_cols);
     size_t batch_target = initial_target;
-    bool lp_enabled = params_.large_prime_bound > params_.algebraic_bound;
 
     auto reduce_relations = [&](std::vector<Relation> raw_relations,
-                                relation::ReductionStrategy strategy) {
+                                relation::ReductionStrategy legacy_strategy) {
         relation::RelationReductionConfig reduction_config;
         reduction_config.filter.remove_singletons = true;
         reduction_config.filter.max_passes = 10;
         reduction_config.large_primes_enabled = lp_enabled;
         reduction_config.merge_rounds = 10;
-        reduction_config.strategy = strategy;
+        reduction_config.strategy =
+            relation::select_reduction_strategy(structured_policy, legacy_strategy);
+        if (reduction_config.strategy == relation::ReductionStrategy::Structured) {
+            reduction_config.structured = relation::make_structured_filter_experimental_config(
+                raw_relations.size(), relation::structured_filter_hardware_workers());
+        }
 
         const uint64_t generation = allocate_relation_generation();
-        return relation::RelationReductionEngine::reduce(
+        auto reduction = relation::RelationReductionEngine::reduce(
             relation::RawRelationSnapshot(generation, std::move(raw_relations)), reduction_config);
+        if (reduction_config.strategy == relation::ReductionStrategy::Structured) {
+            const std::string record = structured_filter_record(structured_policy, reduction,
+                                                                *reduction_config.structured);
+            emit_log(LogLevel::Info, Phase::Sieving, record);
+            std::fprintf(stderr, "[%s]\n", record.c_str());
+        }
+        return reduction;
     };
 
     emit_log(LogLevel::Info, Phase::Sieving,
@@ -884,7 +1014,6 @@ relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialCo
     //   - Each worker maintains its own (a, b) seen set; the master dedups
     //     cross-worker duplicates on merge.
     {
-        const size_t n_workers = sieve::parse_distributed_sieve_workers_env();
         // Size gate: distributed dispatch is only worthwhile for 30+ digit
         // numbers where each worker chunk processes thousands of SQs. Below
         // 30 digits the in-process adaptive loop converges in 10-100 SQs and
@@ -892,29 +1021,26 @@ relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialCo
         // when the matrix target is already met.
         // ENV GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL=1 overrides the gate (test
         // harness only).
-        const bool size_gate_ok = params_.digits >= 30;
-        const char* force_env = std::getenv("GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL");
-        const bool force_small = (force_env != nullptr && force_env[0] == '1');
-        if (n_workers > 0 && !size_gate_ok && !force_small) {
+        if (distributed_workers > 0 && !distributed_size_gate_ok && !distributed_force_small) {
             std::fprintf(stderr,
                          "[dist_sieve] skip dispatch: digits=%zu < 30 "
                          "(set GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL=1 to override)\n",
                          params_.digits);
         }
-        if (n_workers > 0 && sieve_resume_path.empty() && (size_gate_ok || force_small)) {
+        if (distributed_route_selected) {
             emit_log(LogLevel::Info, Phase::Sieving,
-                     "GNFS_DISTRIBUTED_SIEVE_WORKERS=" + std::to_string(n_workers) +
+                     "GNFS_DISTRIBUTED_SIEVE_WORKERS=" + std::to_string(distributed_workers) +
                          " — dispatching distributed sieve");
             std::fprintf(stderr, "[dist_sieve] dispatch: workers=%zu sq_range=[%u,%u] max_sq=%zu\n",
-                         n_workers, sq_range.min_q, sq_range.max_q, max_sq);
+                         distributed_workers, sq_range.min_q, sq_range.max_q, max_sq);
 
             sieve::DistributedSieveConfig dist_cfg = sieve::parse_distributed_sieve_env();
-            dist_cfg.num_workers = n_workers;
+            dist_cfg.num_workers = distributed_workers;
             // Cap each worker at ~max_special_q / num_workers SQs to avoid
             // runaway sieve when the caller-specified sq_range covers vastly
             // more primes than needed.
             if (dist_cfg.sq_per_worker == 0 && max_sq > 0) {
-                dist_cfg.sq_per_worker = std::max<size_t>(1, max_sq / n_workers);
+                dist_cfg.sq_per_worker = std::max<size_t>(1, max_sq / distributed_workers);
             }
 
             std::vector<sieve::DistributedSieveWorkerResult> wstats;
@@ -1317,11 +1443,17 @@ relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialCo
 // ============================================================
 
 relation::RelationReductionResult Pipeline::filter(std::vector<Relation> relations) {
+    const auto structured_mode =
+        relation::parse_structured_filter_mode(std::getenv("GNFS_STRUCTURED_FILTER"));
+    const bool lp_enabled = params_.large_prime_bound > params_.algebraic_bound;
+    const auto structured_policy = relation::decide_structured_filter_policy(
+        structured_mode,
+        relation::structured_filter_route_supported({.large_primes_enabled = lp_enabled}), false);
+
     emit_progress(Phase::Filtering, "Filtering relations");
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    const bool lp_enabled = params_.large_prime_bound > params_.algebraic_bound;
     std::optional<relation::V0BfsPolicy> v0_bfs_policy;
     if (lp_enabled) {
         v0_bfs_policy =
@@ -1330,28 +1462,38 @@ relation::RelationReductionResult Pipeline::filter(std::vector<Relation> relatio
 
     const bool v0_bfs_mode = v0_bfs_policy.has_value() && v0_bfs_policy->enabled;
     const bool use_v3 = lp_enabled && !v0_bfs_mode && cascade_v3_enabled();
-
+    const auto legacy_strategy =
+        !lp_enabled ? relation::ReductionStrategy::NoLargePrimes
+                    : (v0_bfs_mode ? relation::ReductionStrategy::CliqueV0
+                                   : (use_v3 ? relation::ReductionStrategy::StandardV0WithV3
+                                             : relation::ReductionStrategy::StandardV0));
     relation::RelationReductionConfig reduction_config;
     reduction_config.filter.remove_singletons = true;
     reduction_config.filter.max_passes = 10;
     reduction_config.large_primes_enabled = lp_enabled;
     reduction_config.merge_rounds = 10;
     reduction_config.strategy =
-        !lp_enabled ? relation::ReductionStrategy::NoLargePrimes
-                    : (v0_bfs_mode ? relation::ReductionStrategy::CliqueV0
-                                   : (use_v3 ? relation::ReductionStrategy::StandardV0WithV3
-                                             : relation::ReductionStrategy::StandardV0));
+        relation::select_reduction_strategy(structured_policy, legacy_strategy);
+    if (reduction_config.strategy == relation::ReductionStrategy::Structured) {
+        reduction_config.structured = relation::make_structured_filter_experimental_config(
+            relations.size(), relation::structured_filter_hardware_workers());
+    }
 
     auto reduction = relation::RelationReductionEngine::reduce(
         relation::RawRelationSnapshot(allocate_relation_generation(), std::move(relations)),
         reduction_config);
     const auto& reduction_stats = reduction.stats;
 
-    stats_.singletons_removed = reduction_stats.filter.singletons_removed;
+    stats_.singletons_removed = reduction_stats.singleton_rows_removed;
     stats_.merged_relations = reduction_stats.merged_relations;
 
-    // LP merge (only when LP is genuinely enabled)
-    if (lp_enabled) {
+    if (reduction_config.strategy == relation::ReductionStrategy::Structured) {
+        const std::string record =
+            structured_filter_record(structured_policy, reduction, *reduction_config.structured);
+        emit_log(LogLevel::Info, Phase::Filtering, record);
+        std::fprintf(stderr, "[%s]\n", record.c_str());
+    } else if (lp_enabled) {
+        // LP merge (only when LP is genuinely enabled on a legacy strategy)
         // BACKLOG #1 diagnostic: pre-merge LP-key weight histogram.
         // Plateau analysis hinges on weight distribution:
         //   weight=1 → singleton LP keys (will become LP cols, hurts β)
@@ -1472,7 +1614,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
 
     linalg::MatrixBuilder mb(mb_config);
 
-    // SGE-OOC: streaming matrix build path (ENV GNFS_SGE_STREAMING).
+    // Streaming matrix build path (ENV GNFS_SGE_STREAMING).
     //   off / unset (default): existing vector path (zero regression)
     //   "1"  / "on"           : streaming MB over VectorRelationSource(relations)
     //   "auto"                : enable iff GNFS_OOC_RELATIONS / GNFS_SIEVE_RESUME
@@ -1505,7 +1647,8 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
     if (use_streaming_mb) {
         linalg::VectorRelationSource src(relations);
         build_result = mb.build_with_qc_streaming(src, fb, ctx);
-        std::fprintf(stderr, "[sge-ooc] matrix built via streaming path (GNFS_SGE_STREAMING)\n");
+        std::fprintf(stderr, "[matrix-streaming] matrix built from vector source "
+                             "(GNFS_SGE_STREAMING)\n");
     } else {
         build_result = mb.build_with_qc(relations, fb, ctx);
     }
@@ -1515,6 +1658,20 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
     stats_.matrix_cols = matrix_stats.num_cols;
     stats_.matrix_weight = matrix_stats.total_weight;
     stats_.matrix_excess = static_cast<int64_t>(matrix_stats.excess);
+
+    const auto emit_structured_matrix_record = [&](const linalg::MatrixStats& final_stats) {
+        if (reduction.stats.strategy != relation::ReductionStrategy::Structured) {
+            return;
+        }
+        const std::string record =
+            "structured_filter_matrix generation=" + std::to_string(reduction.generation) +
+            " rows=" + std::to_string(final_stats.num_rows) +
+            " cols=" + std::to_string(final_stats.num_cols) +
+            " excess=" + std::to_string(final_stats.excess) +
+            " nonzeros=" + std::to_string(final_stats.total_weight);
+        emit_log(LogLevel::Info, Phase::LinearAlgebra, record);
+        std::fprintf(stderr, "[%s]\n", record.c_str());
+    };
 
     emit_log(LogLevel::Info, Phase::LinearAlgebra,
              "matrix: " + std::to_string(matrix_stats.num_rows) + "x" +
@@ -1553,6 +1710,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
         if (e != nullptr && std::string(e) == "1") {
             emit_log(LogLevel::Error, Phase::LinearAlgebra,
                      "GNFS_NO_THIN_SOLVE=1 — aborting on no excess");
+            emit_structured_matrix_record(matrix_stats);
             MatrixResult mr;
             mr.matrix = std::move(build_result.matrix);
             mr.relations = std::move(relations);
@@ -1589,15 +1747,16 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
             build2 = mb.build_with_qc(relations, fb, ctx);
         }
         build_result.matrix = std::move(build2.matrix);
-        auto ms2 = linalg::compute_matrix_stats(build_result.matrix);
-        stats_.matrix_rows = ms2.num_rows;
-        stats_.matrix_cols = ms2.num_cols;
-        stats_.matrix_weight = ms2.total_weight;
-        stats_.matrix_excess = static_cast<int64_t>(ms2.excess);
+        matrix_stats = linalg::compute_matrix_stats(build_result.matrix);
+        stats_.matrix_rows = matrix_stats.num_rows;
+        stats_.matrix_cols = matrix_stats.num_cols;
+        stats_.matrix_weight = matrix_stats.total_weight;
+        stats_.matrix_excess = static_cast<int64_t>(matrix_stats.excess);
 
         emit_log(LogLevel::Info, Phase::LinearAlgebra,
-                 "Trimmed matrix: " + std::to_string(ms2.num_rows) + "x" +
-                     std::to_string(ms2.num_cols) + " excess=" + std::to_string(ms2.excess));
+                 "Trimmed matrix: " + std::to_string(matrix_stats.num_rows) + "x" +
+                     std::to_string(matrix_stats.num_cols) +
+                     " excess=" + std::to_string(matrix_stats.excess));
 
         // Re-emit mat-diag after trim — col-weight distribution changes
         // because some cols lose all support when their rows were dropped.
@@ -1609,12 +1768,17 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
                 "[mat-diag post-trim] rows: empty=%zu singleton=%zu w_range=[%zu,%zu] avg=%.2f"
                 " | cols: empty=%zu singleton=%zu low(2-4)=%zu max_w=%zu avg=%.2f",
                 diag2.empty_rows, diag2.singleton_rows, diag2.min_row_weight, diag2.max_row_weight,
-                ms2.avg_row_weight, diag2.empty_cols, diag2.singleton_cols, diag2.low_weight_cols,
-                diag2.max_col_weight, diag2.avg_col_weight);
+                matrix_stats.avg_row_weight, diag2.empty_cols, diag2.singleton_cols,
+                diag2.low_weight_cols, diag2.max_col_weight, diag2.avg_col_weight);
             emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
             std::fprintf(stderr, "%s\n", buf);
         }
     }
+
+    // This is the final full matrix handed to SGE and retained in
+    // MatrixResult. Emit after deterministic trimming so the stable record is
+    // never a stale pre-trim snapshot.
+    emit_structured_matrix_record(matrix_stats);
 
     // SGE preprocessing
     emit_progress(Phase::LinearAlgebra, "SGE preprocessing");
@@ -1951,6 +2115,12 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
 // ============================================================
 
 FactorResult Pipeline::run() {
+    // Validate the relation-filter route before any progress/log callback,
+    // checkpoint read/write, fast-method probe, or generation allocation. The
+    // strict flag is a process configuration error even when a fast factor
+    // would otherwise let this invocation avoid the GNFS phases.
+    const auto structured_route = capture_structured_route_snapshot();
+
     // Input validation.
     // Adaptive Miller-Rabin reps: 5 for small N (fast on trial-division path),
     // 15 for large N (target 2^-30 error rate for crypto-grade composites).
@@ -2254,9 +2424,9 @@ FactorResult Pipeline::run() {
     stats_.method_used = FactorizationMethod::GNFS;
     stats_.method_reason = std::to_string(stats_.n_digits) + "d GNFS";
 
-    auto ctx = select_polynomial();
-    auto fb = build_factor_base(ctx);
-    auto reduction = sieve_and_collect(ctx, fb);
+    auto ctx = select_polynomial_impl(structured_route.resume_base_path);
+    auto fb = build_factor_base_impl(ctx, structured_route.resume_base_path);
+    auto reduction = sieve_and_collect_impl(ctx, fb, structured_route);
 
     size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params_.target_excess;
 
