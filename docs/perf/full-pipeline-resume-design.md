@@ -39,10 +39,39 @@ phase. There is no attempt to capture in-loop state for Phase 1 / Phase 2.
 
 ## File Format
 
-All three checkpoint files share the same crash-safety primitive: write
-`MAGIC_INCOMPLETE` first, fully serialise the body, then seek back to offset 0
-and flip the four-byte magic to the finalised value. A reader that observes
-`MAGIC_INCOMPLETE` refuses to load (treats the file as if it were absent).
+Polynomial and factor-base checkpoints use an incomplete-to-final magic
+transition. The sieve checkpoint uses the stronger V2 paired transaction
+described below: it publishes a checksummed temporary file by atomic replace
+only after the OOC relation prefix is durable.
+
+### `<base>.sieve_ckpt` V2
+
+The sieve checkpoint records the Special-Q cursor and adaptive-round state, an
+exact decimal N, a portable 128-bit run fingerprint, and the OOC relation
+descriptor: format version, durable store ID, generation, relation count, and
+data end. The fingerprint covers the selected polynomial, ordered factor-base
+contents, and the sieve parameters that affect relation generation or stopping.
+
+Recovery first rejects a run-identity mismatch without opening the relation
+store. It then validates the exact relation prefix and truncates later
+uncommitted tail bytes before applying the Special-Q cursor. V1 sieve
+checkpoints cannot prove this pairing and are rejected for automatic resume.
+
+The V2 OOC index keeps identity immutable across finalize:
+
+```text
+u64 MAGIC_INCOMPLETE_V2 / MAGIC_FINAL_V2
+u64 FORMAT_VERSION
+u64 store_id
+u64 count
+u64 offsets[count + 1]
+```
+
+Finalization persists count and the terminal offset while magic remains
+incomplete, then publishes final magic last. A paired checkpoint can therefore
+roll back safely after a crash between those stages. The ordinary reader keeps
+read-only compatibility with legacy finalized V1 stores, but paired recovery
+rejects them because they do not contain a durable store identity.
 
 ### `<base>.poly_ckpt`
 
@@ -160,8 +189,11 @@ There is no measurable runtime overhead on the fresh-write path.
 
 - Default behaviour (no ENV) is unchanged. Pipeline never touches the
   checkpoint files, never opens them, never writes them.
-- The existing `<base>.sieve_ckpt` format from Wave -1 is unchanged, so
-  Phase 3 resume continues to work alongside the new Phase 1+2 logic.
+- `<base>.sieve_ckpt` is V2. The older V1 format is intentionally not
+  auto-resumed because it does not bind a Special-Q cursor to a durable OOC
+  relation prefix.
+- Reusing a base path with a different N, selected polynomial, factor base, or
+  sieve parameter set fails closed before any OOC mutation.
 - The `GNFS_SIEVE_RESUME` ENV remains valid as an alias.
 
 ## Limitations
@@ -174,3 +206,5 @@ There is no measurable runtime overhead on the fresh-write path.
   fingerprint, including `GNFS_OVERRIDE_LP_BITS`. This is correct (parameter
   drift would produce a wrong FB) but may surprise users who change ENV
   flags between resume attempts.
+- A resume base path currently supports one active process. Cross-process
+  writer leasing is not part of this checkpoint version.

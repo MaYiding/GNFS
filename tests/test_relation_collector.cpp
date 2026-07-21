@@ -1117,7 +1117,8 @@ void test_ooc_reader_rejects_trailing_bytes() {
         std::fstream index(path + ".relidx", std::ios::in | std::ios::out | std::ios::binary);
         CHECK(static_cast<bool>(index));
         const uint64_t corrupt_end = descriptor.data_end + 1;
-        index.seekp(24); // header + offset_0; overwrite the final sentinel
+        index.seekp(
+            static_cast<std::streamoff>(OOCRelationWriter::INDEX_HEADER_BYTES + sizeof(uint64_t)));
         index.write(reinterpret_cast<const char*>(&corrupt_end), sizeof(corrupt_end));
         index.flush();
         CHECK(static_cast<bool>(index));
@@ -1231,11 +1232,13 @@ void test_ooc_prefix_reader_rejects_bad_descriptor_and_offsets() {
     {
         std::fstream index(path + ".relidx", std::ios::in | std::ios::out | std::ios::binary);
         CHECK(static_cast<bool>(index));
-        index.seekg(24);
+        const auto second_offset_position =
+            static_cast<std::streamoff>(OOCRelationWriter::INDEX_HEADER_BYTES + sizeof(uint64_t));
+        index.seekg(second_offset_position);
         index.read(reinterpret_cast<char*>(&original_second_offset), 8);
         CHECK(static_cast<bool>(index));
         const uint64_t corrupt_offset = 0;
-        index.seekp(24);
+        index.seekp(second_offset_position);
         index.write(reinterpret_cast<const char*>(&corrupt_offset), 8);
         index.flush();
         CHECK(static_cast<bool>(index));
@@ -1253,7 +1256,8 @@ void test_ooc_prefix_reader_rejects_bad_descriptor_and_offsets() {
     {
         std::fstream index(path + ".relidx", std::ios::in | std::ios::out | std::ios::binary);
         CHECK(static_cast<bool>(index));
-        index.seekp(24);
+        index.seekp(
+            static_cast<std::streamoff>(OOCRelationWriter::INDEX_HEADER_BYTES + sizeof(uint64_t)));
         index.write(reinterpret_cast<const char*>(&original_second_offset), 8);
         index.flush();
         CHECK(static_cast<bool>(index));
@@ -1277,83 +1281,93 @@ void test_ooc_prefix_reader_rejects_bad_descriptor_and_offsets() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// OOC Resume mode tests (BACKLOG #11e — sieve mid-flight checkpoint)
-// 验证 OOCRelationWriter(path, resume=true) 加载现有文件 + 末尾追加 + reader
-// 看到 N+M 个 relation. 仅当 prior session magic = INCOMPLETE 时允许 resume.
+// Paired OOC resume tests (SieveCheckpoint V2 crash recovery).
 // ──────────────────────────────────────────────────────────────────────────
 
+void test_ooc_collector_rejects_legacy_resume_flag() {
+    auto path = make_tmp_ooc_path("legacy_resume_flag");
+    OOCArtifacts cleanup(path);
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+    config.ooc_resume = true;
+
+    bool rejected = false;
+    try {
+        RelationCollector collector(config);
+        (void)collector;
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    CHECK(rejected);
+    CHECK(!std::filesystem::exists(path + ".relidx"));
+    CHECK(!std::filesystem::exists(path + ".reldata"));
+}
+
 void test_ooc_writer_resume_append() {
-    std::cout << "Testing OOC writer resume append..." << std::endl;
+    std::cout << "Testing paired OOC writer recovery and append..." << std::endl;
     auto path = make_tmp_ooc_path("resume_append");
     OOCArtifacts cleanup(path);
 
-    // Phase 1: 写 3 个 rel, close (finalize MAGIC)
+    OOCSnapshotDescriptor descriptor;
     {
         OOCRelationWriter writer(path);
         for (int i = 1; i <= 3; ++i) {
             Relation r(i * 10, static_cast<uint64_t>(i * 10 + 1));
             r.rational_factors.push_back(static_cast<uint32_t>(i));
-            writer.write(r);
+            CHECK(writer.write(r) == static_cast<size_t>(i - 1));
         }
-        assert(writer.count() == 3);
-    } // destructor → close() → flip MAGIC
-
-    // 手动 flip MAGIC → INCOMPLETE 模拟 prior session crash
-    {
-        std::fstream idx(path + ".relidx", std::ios::in | std::ios::out | std::ios::binary);
-        uint64_t incomplete = OOCRelationWriter::MAGIC_INCOMPLETE;
-        idx.write(reinterpret_cast<const char*>(&incomplete), 8);
+        descriptor = writer.checkpoint_prefix();
+        writer.fail_suspended_snapshot();
     }
 
-    // Phase 2: resume, 追加 2 个 rel, close
     {
-        OOCRelationWriter writer(path, /*resume=*/true);
-        assert(writer.count() == 3); // prior count 加载
+        OOCRelationWriter writer(path, descriptor);
+        CHECK(writer.recovery_outcome() == OOCRecoveryOutcome::AppendablePrefix);
+        CHECK(writer.count() == 3);
         for (int i = 4; i <= 5; ++i) {
             Relation r(i * 10, static_cast<uint64_t>(i * 10 + 1));
             r.rational_factors.push_back(static_cast<uint32_t>(i));
-            writer.write(r);
+            CHECK(writer.write(r) == static_cast<size_t>(i - 1));
         }
-        assert(writer.count() == 5);
+        CHECK(writer.finalize().count == 5);
     }
 
     // Reader 看到 5 个 rel, 顺序正确
     OOCRelationReader reader(path);
-    assert(reader.count() == 5);
+    CHECK(reader.count() == 5);
     for (size_t i = 0; i < 5; ++i) {
         auto rel = reader.read(i);
-        assert(rel.a == static_cast<int64_t>((i + 1) * 10));
-        assert(rel.b == (i + 1) * 10 + 1);
-        assert(rel.rational_factors.size() == 1);
-        assert(rel.rational_factors[0] == static_cast<uint32_t>(i + 1));
+        CHECK(rel.a == static_cast<int64_t>((i + 1) * 10));
+        CHECK(rel.b == (i + 1) * 10 + 1);
+        CHECK(rel.rational_factors.size() == 1);
+        CHECK(rel.rational_factors[0] == static_cast<uint32_t>(i + 1));
     }
 
     std::cout << "  OOC writer resume append: PASS (5 = 3 prior + 2 new)" << std::endl;
 }
 
-void test_ooc_writer_resume_finalized_rejected() {
-    std::cout << "Testing OOC writer resume rejects finalized files..." << std::endl;
+void test_ooc_writer_finalized_recovery() {
+    std::cout << "Testing OOC finalized-corpus recovery..." << std::endl;
     auto path = make_tmp_ooc_path("resume_finalized");
     OOCArtifacts cleanup(path);
 
-    // 写 1 个 rel, close → MAGIC finalized
+    OOCSnapshotDescriptor descriptor;
     {
         OOCRelationWriter writer(path);
         Relation r(1, 2);
-        writer.write(r);
+        CHECK(writer.write(r) == 0);
+        descriptor = writer.checkpoint_prefix();
+        writer.resume_append(descriptor);
+        CHECK(writer.finalize().count == 1);
     }
 
-    // resume=true 对 MAGIC 文件必抛
-    bool threw = false;
-    try {
-        OOCRelationWriter resumed(path, /*resume=*/true);
-        (void)resumed;
-    } catch (const std::runtime_error&) {
-        threw = true;
-    }
-    assert(threw);
+    OOCRelationWriter recovered(path, descriptor);
+    CHECK(recovered.recovery_outcome() == OOCRecoveryOutcome::FinalizedCorpus);
+    CHECK(recovered.state() == OOCWriterState::Finalized);
+    CHECK(recovered.count() == 1);
 
-    std::cout << "  OOC writer resume rejects finalized: PASS" << std::endl;
+    std::cout << "  OOC finalized-corpus recovery: PASS" << std::endl;
 }
 
 void test_ooc_writer_resume_nonexistent_rejected() {
@@ -1361,30 +1375,30 @@ void test_ooc_writer_resume_nonexistent_rejected() {
     auto path = gnfs::util::temp_path(
         "gnfs_test_nonexistent_" + std::to_string(gnfs::util::process_id()) + "_xyz_resume_check");
 
+    OOCSnapshotDescriptor descriptor;
+    descriptor.format_version = OOCRelationWriter::FORMAT_VERSION;
+    descriptor.store_id = 123;
+    descriptor.generation = 1;
     bool threw = false;
     try {
-        OOCRelationWriter resumed(path, /*resume=*/true);
+        OOCRelationWriter resumed(path, descriptor);
         (void)resumed;
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    assert(threw);
+    CHECK(threw);
 
     std::cout << "  OOC writer resume rejects nonexistent: PASS" << std::endl;
 }
 
 void test_ooc_collector_resume_loads_seen() {
-    std::cout << "Testing OOC collector resume loads (a,b) seen set..." << std::endl;
+    std::cout << "Testing paired OOC collector recovery restores seen set..." << std::endl;
     auto path = make_tmp_ooc_path("collector_resume");
     OOCArtifacts cleanup(path);
 
-    // Phase 1: collector add 3 rels, scope exit closes writer (flip MAGIC)
+    OOCSnapshotDescriptor descriptor;
     {
-        CollectorConfig cfg;
-        cfg.check_duplicates = true;
-        cfg.ooc_enabled = true;
-        cfg.ooc_base_path = path;
-        RelationCollector collector(cfg);
+        OOCRelationWriter writer(path);
         for (int i = 1; i <= 3; ++i) {
             Relation r(i * 10, static_cast<uint64_t>(i * 10 + 1));
             r.rational_factors.push_back(static_cast<uint32_t>(i));
@@ -1394,112 +1408,135 @@ void test_ooc_collector_resume_loads_seen() {
             if (i == 3) {
                 r.algebraic_large_prime.push_back(PrimePower{2003, 17, 1});
             }
-            assert(collector.add(std::move(r)));
+            CHECK(writer.write(r) == static_cast<size_t>(i - 1));
         }
-        assert(collector.size() == 3);
+        descriptor = writer.checkpoint_prefix();
+        writer.fail_suspended_snapshot();
     }
 
-    // 手动 flip MAGIC → INCOMPLETE 模拟 prior session crash 前未 finalize
-    {
-        std::fstream idx(path + ".relidx", std::ios::in | std::ios::out | std::ios::binary);
-        uint64_t incomplete = OOCRelationWriter::MAGIC_INCOMPLETE;
-        idx.write(reinterpret_cast<const char*>(&incomplete), 8);
-    }
-
-    // Phase 2: collector + ooc_resume=true
     {
         CollectorConfig cfg;
         cfg.check_duplicates = true;
         cfg.ooc_enabled = true;
-        cfg.ooc_resume = true;
+        cfg.ooc_resume_snapshot = descriptor;
         cfg.ooc_base_path = path;
         RelationCollector collector(cfg);
+        CHECK(collector.ooc_recovery_outcome() == OOCRecoveryOutcome::AppendablePrefix);
 
-        // size() reflects prior writer count
-        assert(collector.size() == 3);
+        CHECK(collector.size() == 3);
         auto stats0 = collector.stats();
-        assert(stats0.total_relations == 3);
-        assert(stats0.full_relations == 1);
-        assert(stats0.partial_1lp == 1);
-        assert(stats0.partial_2lp == 1);
+        CHECK(stats0.total_relations == 3);
+        CHECK(stats0.full_relations == 1);
+        CHECK(stats0.partial_1lp == 1);
+        CHECK(stats0.partial_2lp == 1);
 
         // 尝试重 add prior (a,b) — seen_ 拒绝 (dedup)
         Relation dup1(10, 11);
         dup1.rational_factors.push_back(1);
-        assert(!collector.add(std::move(dup1))); // 重复
+        CHECK(!collector.add(std::move(dup1)));
         Relation dup2(20, 21);
         dup2.rational_factors.push_back(2);
-        assert(!collector.add(std::move(dup2))); // 重复
-        assert(collector.size() == 3);           // 不变
+        CHECK(!collector.add(std::move(dup2)));
+        CHECK(collector.size() == 3);
 
         // Add 2 new (a,b) 通过
         for (int i = 4; i <= 5; ++i) {
             Relation r(i * 10, static_cast<uint64_t>(i * 10 + 1));
             r.rational_factors.push_back(static_cast<uint32_t>(i));
-            assert(collector.add(std::move(r)));
+            CHECK(collector.add(std::move(r)));
         }
-        assert(collector.size() == 5);
+        CHECK(collector.size() == 5);
         const auto stats1 = collector.stats();
-        assert(stats1.total_relations == 5);
-        assert(stats1.full_relations == 3);
-        assert(stats1.partial_1lp == 1);
-        assert(stats1.partial_2lp == 1);
-    } // 析构 close + finalize MAGIC
+        CHECK(stats1.total_relations == 5);
+        CHECK(stats1.full_relations == 3);
+        CHECK(stats1.partial_1lp == 1);
+        CHECK(stats1.partial_2lp == 1);
+        collector.finalize_ooc();
+    }
 
     // Reader 验证 final state
     OOCRelationReader reader(path);
-    assert(reader.count() == 5);
+    CHECK(reader.count() == 5);
     for (size_t i = 0; i < 5; ++i) {
         auto rel = reader.read(i);
-        assert(rel.a == static_cast<int64_t>((i + 1) * 10));
-        assert(rel.b == (i + 1) * 10 + 1);
+        CHECK(rel.a == static_cast<int64_t>((i + 1) * 10));
+        CHECK(rel.b == (i + 1) * 10 + 1);
     }
 
     std::cout << "  OOC collector resume + seen restore: PASS" << std::endl;
 }
 
 void test_ooc_collector_resume_empty_files_graceful() {
-    std::cout << "Testing OOC collector resume with empty prior count..." << std::endl;
+    std::cout << "Testing paired OOC collector recovery from empty prefix..." << std::endl;
     auto path = make_tmp_ooc_path("collector_resume_empty");
     OOCArtifacts cleanup(path);
 
-    // Phase 1: collector open + immediate close (0 relations added)
+    OOCSnapshotDescriptor descriptor;
+    {
+        OOCRelationWriter writer(path);
+        descriptor = writer.checkpoint_prefix();
+        CHECK(descriptor.count == 0);
+        writer.fail_suspended_snapshot();
+    }
+
     {
         CollectorConfig cfg;
         cfg.ooc_enabled = true;
+        cfg.ooc_resume_snapshot = descriptor;
         cfg.ooc_base_path = path;
         RelationCollector collector(cfg);
-        assert(collector.size() == 0);
-    }
-
-    // Flip MAGIC → INCOMPLETE
-    {
-        std::fstream idx(path + ".relidx", std::ios::in | std::ios::out | std::ios::binary);
-        uint64_t incomplete = OOCRelationWriter::MAGIC_INCOMPLETE;
-        idx.write(reinterpret_cast<const char*>(&incomplete), 8);
-    }
-
-    // Phase 2: resume from 0-count session, add new rels
-    {
-        CollectorConfig cfg;
-        cfg.ooc_enabled = true;
-        cfg.ooc_resume = true;
-        cfg.ooc_base_path = path;
-        RelationCollector collector(cfg);
-        assert(collector.size() == 0);
+        CHECK(collector.ooc_recovery_outcome() == OOCRecoveryOutcome::AppendablePrefix);
+        CHECK(collector.size() == 0);
 
         // Coprime (a,b): (1,2), (3,4) — gcd 始终 1, 通过 collector validate
         for (int i = 1; i <= 2; ++i) {
             Relation r(2 * i - 1, static_cast<uint64_t>(2 * i));
-            assert(collector.add(std::move(r)));
+            CHECK(collector.add(std::move(r)));
         }
-        assert(collector.size() == 2);
+        CHECK(collector.size() == 2);
+        collector.finalize_ooc();
     }
 
     OOCRelationReader reader(path);
-    assert(reader.count() == 2);
+    CHECK(reader.count() == 2);
 
     std::cout << "  OOC collector resume from empty: PASS" << std::endl;
+}
+
+void test_ooc_collector_recovers_finalized_corpus() {
+    std::cout << "Testing collector detects finalized crash window..." << std::endl;
+    auto path = make_tmp_ooc_path("collector_finalized_recovery");
+    OOCArtifacts cleanup(path);
+
+    OOCSnapshotDescriptor descriptor;
+    {
+        OOCRelationWriter writer(path);
+        CHECK(writer.write(make_snapshot_relation(0)) == 0);
+        descriptor = writer.checkpoint_prefix();
+        writer.resume_append(descriptor);
+        CHECK(writer.write(make_snapshot_relation(1)) == 1);
+        CHECK(writer.finalize().count == 2);
+    }
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+    config.ooc_resume_snapshot = descriptor;
+    RelationCollector collector(config);
+    CHECK(collector.ooc_recovery_outcome() == OOCRecoveryOutcome::FinalizedCorpus);
+    CHECK(collector.size() == 2);
+    CHECK(collector.stats().total_relations == 2);
+
+    bool append_rejected = false;
+    try {
+        (void)collector.add(make_snapshot_relation(2));
+    } catch (const std::logic_error&) {
+        append_rejected = true;
+    }
+    CHECK(append_rejected);
+    CHECK(collector.finalize_relations().size() == 2);
+
+    std::cout << "  Collector finalized crash-window recovery: PASS" << std::endl;
 }
 
 void test_ooc_writer_resume_large_payload() {
@@ -1507,7 +1544,7 @@ void test_ooc_writer_resume_large_payload() {
     auto path = make_tmp_ooc_path("resume_large");
     OOCArtifacts cleanup(path);
 
-    // Phase 1: 写 100 个 rel, 每个 varying weight (1-5 rational factors)
+    OOCSnapshotDescriptor descriptor;
     {
         OOCRelationWriter writer(path);
         for (int i = 1; i <= 100; ++i) {
@@ -1516,57 +1553,50 @@ void test_ooc_writer_resume_large_payload() {
             for (size_t j = 0; j < weight; ++j) {
                 r.rational_factors.push_back(static_cast<uint32_t>(static_cast<size_t>(i) + j));
             }
-            writer.write(r);
+            CHECK(writer.write(r) == static_cast<size_t>(i - 1));
         }
-        assert(writer.count() == 100);
+        descriptor = writer.checkpoint_prefix();
+        writer.fail_suspended_snapshot();
     }
 
-    // Flip to INCOMPLETE
     {
-        std::fstream idx(path + ".relidx", std::ios::in | std::ios::out | std::ios::binary);
-        uint64_t incomplete = OOCRelationWriter::MAGIC_INCOMPLETE;
-        idx.write(reinterpret_cast<const char*>(&incomplete), 8);
-    }
-
-    // Phase 2: resume, 追加 50 个 rel (different weights)
-    {
-        OOCRelationWriter writer(path, /*resume=*/true);
-        assert(writer.count() == 100);
+        OOCRelationWriter writer(path, descriptor);
+        CHECK(writer.count() == 100);
         for (int i = 101; i <= 150; ++i) {
             Relation r(i, static_cast<uint64_t>(i + 1000));
             size_t weight = static_cast<size_t>(((i - 100) % 3) + 2);
             for (size_t j = 0; j < weight; ++j) {
                 r.rational_factors.push_back(static_cast<uint32_t>(static_cast<size_t>(i) + j + 7));
             }
-            writer.write(r);
+            CHECK(writer.write(r) == static_cast<size_t>(i - 1));
         }
-        assert(writer.count() == 150);
+        CHECK(writer.finalize().count == 150);
     }
 
     // Reader 验证 all 150 + payload integrity
     OOCRelationReader reader(path);
-    assert(reader.count() == 150);
+    CHECK(reader.count() == 150);
     for (size_t i = 0; i < 100; ++i) {
         auto rel = reader.read(i);
         int idx = static_cast<int>(i) + 1;
-        assert(rel.a == idx);
-        assert(rel.b == static_cast<uint64_t>(idx + 1000));
+        CHECK(rel.a == idx);
+        CHECK(rel.b == static_cast<uint64_t>(idx + 1000));
         size_t expected_weight = static_cast<size_t>((idx % 5) + 1);
-        assert(rel.rational_factors.size() == expected_weight);
+        CHECK(rel.rational_factors.size() == expected_weight);
         for (size_t j = 0; j < expected_weight; ++j) {
-            assert(rel.rational_factors[j] == static_cast<uint32_t>(static_cast<size_t>(idx) + j));
+            CHECK(rel.rational_factors[j] == static_cast<uint32_t>(static_cast<size_t>(idx) + j));
         }
     }
     for (size_t i = 100; i < 150; ++i) {
         auto rel = reader.read(i);
         int idx = static_cast<int>(i) + 1;
-        assert(rel.a == idx);
-        assert(rel.b == static_cast<uint64_t>(idx + 1000));
+        CHECK(rel.a == idx);
+        CHECK(rel.b == static_cast<uint64_t>(idx + 1000));
         size_t expected_weight = static_cast<size_t>(((idx - 100) % 3) + 2);
-        assert(rel.rational_factors.size() == expected_weight);
+        CHECK(rel.rational_factors.size() == expected_weight);
         for (size_t j = 0; j < expected_weight; ++j) {
-            assert(rel.rational_factors[j] ==
-                   static_cast<uint32_t>(static_cast<size_t>(idx) + j + 7));
+            CHECK(rel.rational_factors[j] ==
+                  static_cast<uint32_t>(static_cast<size_t>(idx) + j + 7));
         }
     }
 
@@ -1611,12 +1641,14 @@ int main() {
     test_ooc_prefix_reader_rejects_bad_descriptor_and_offsets();
 
     std::cout << "\n=== OOC resume mode tests (BACKLOG #11e) ===" << std::endl;
+    test_ooc_collector_rejects_legacy_resume_flag();
     test_ooc_writer_resume_append();
-    test_ooc_writer_resume_finalized_rejected();
+    test_ooc_writer_finalized_recovery();
     test_ooc_writer_resume_nonexistent_rejected();
     test_ooc_writer_resume_large_payload();
     test_ooc_collector_resume_loads_seen();
     test_ooc_collector_resume_empty_files_graceful();
+    test_ooc_collector_recovers_finalized_corpus();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

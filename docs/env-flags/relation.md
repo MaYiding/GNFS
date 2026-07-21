@@ -148,8 +148,14 @@ GNFS_OOC_RELATIONS=1 ./test_gnfs_e2e             # e2e stress test OOC path
   (2026-05-17 实测, RSS ~3.5GB, sieve buckets + collector.relations_ 联合 OOM).
 - OOC mode 减小 sieve 期间 RAM peak (relations_ vector 不再 grow, seen_ 占
   ~16 B/relation, 1M relations 仅 16 MB; vs vector 1M × 500B = 500 MB).
-- fault tolerance: OOCWriter MAGIC_INCOMPLETE → MAGIC flip 设计保证 mid-write
-  crash 时 reader 严格拒绝, 不会 partial-load.
+- fault tolerance: fresh writer 使用带 durable store ID 的 V2 incomplete header；
+  普通 reader 严格拒绝 incomplete store。只有与 `SieveCheckpoint` V2 配对的
+  descriptor 可以验证并恢复 committed prefix，同时截断 crash 后未提交 tail。
+- V2 index 使用固定布局 `[magic][format_version][store_id][count][offsets...]`；
+  offset 从 byte 32 开始，finalize 只在最后切换 magic，不会覆盖 store ID。
+  历史 V1 finalized corpus 可由普通 reader 只读，但不能参与配对恢复。
+- `checkpoint_prefix()` 与 finalize 会同步 data/index；POSIX 还同步父目录。
+  finalize metadata 已落盘但 final magic 未切换时，paired descriptor 仍可恢复。
 
 **集成点** (commits `3b843fc` → `d39b637`, 2026-05-18):
 - `include/gnfs/relation/collector.hpp` — CollectorConfig + add/get/clear/merge OOC dual mode
@@ -160,9 +166,12 @@ GNFS_OOC_RELATIONS=1 ./test_gnfs_e2e             # e2e stress test OOC path
 - `tests/test_ooc_relations.cpp` / `tests/test_ooc_policy.cpp` — OOC store + policy
 - `tests/test_gnfs_e2e.cpp` — OOC stress test in real GNFS pipeline (5/5 PASS)
 
-**API 兼容**:
+**API 语义**:
 - `add()`: OOC 模式跳过 relations_.push_back, 走 OOCWriter::write
-- `get_relations()`: OOC 模式 close writer + open reader + read_all → vector (spike at Phase 4 entry)
+- `snapshot_relations()`: 暂停 writer、读取受信 prefix、解除映射并重新打开 append；
+  后续 `add()` 仍有效
+- `finalize_relations()` / `get_relations()`: finalize 后 read_all；此后禁止 append
+- `checkpoint_ooc()` / `resume_ooc()`: 为 sieve transaction 暴露 descriptor 配对边界
 - `size()/empty()`: 基于 writer->count() (准确反映写盘 relation 数)
 - `clear()`: OOC 模式 close + delete files + recreate writer (允许 reuse)
 - `save/load`: legacy 序列化协议 OOC 模式 disabled (return false); 直接用 OOCRelationReader

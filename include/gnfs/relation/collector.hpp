@@ -21,6 +21,7 @@
 #include <new>
 #include <numeric>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -59,10 +60,15 @@ struct CollectorConfig {
     bool ooc_enabled = false;
     std::string ooc_base_path; // 文件 base path (无扩展; .reldata + .relidx 自动追加)
 
-    // ── Resume mode (BACKLOG #11e, sieve mid-flight checkpoint) ──
-    // 仅在 ooc_enabled=true 时有意义. 启用后 ctor 用 OOCRelationWriter(path, resume=true)
-    // 接 prior session 末尾追加. ctor 在严格验证全部 compact records 时同时恢复
-    // (a,b) seen set 与 full/1LP/2+LP 分类统计；拒绝计数从 0 重新开始。
+    // ── Paired resume mode (sieve mid-flight checkpoint) ──
+    // Recovery is permitted only with a descriptor loaded from the paired
+    // SieveCheckpoint V2. The writer validates the descriptor, verifies the
+    // durable store identity and prefix, restores generation, then rolls back
+    // uncommitted tails and restores seen_ plus relation statistics.
+    std::optional<OOCSnapshotDescriptor> ooc_resume_snapshot;
+
+    // Source-compatibility guard for old call sites. `true` is rejected before
+    // opening the store; production recovery must use ooc_resume_snapshot.
     bool ooc_resume = false;
 
     // ── Memory pool (W6 T4) ──
@@ -101,14 +107,23 @@ public:
             relations_pmr_ = std::make_unique<std::pmr::vector<Relation>>(pool_->upstream());
         }
         // OOC mode: lazy-init writer (failure → exception propagates out of ctor)
+        if (config_.ooc_resume) {
+            throw std::invalid_argument(
+                "RelationCollector: legacy ooc_resume flag is unsupported; use "
+                "ooc_resume_snapshot");
+        }
+        if (config_.ooc_resume_snapshot && !config_.ooc_enabled) {
+            throw std::invalid_argument(
+                "RelationCollector: ooc_resume_snapshot requires ooc_enabled=true");
+        }
         if (config_.ooc_enabled) {
             if (config_.ooc_base_path.empty()) {
                 throw std::runtime_error(
                     "RelationCollector: ooc_enabled=true requires non-empty ooc_base_path");
             }
             ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path,
-                                                              /*resume=*/config_.ooc_resume);
-            if (config_.ooc_resume) {
+                                                              config_.ooc_resume_snapshot);
+            if (config_.ooc_resume_snapshot) {
                 auto prefix = ooc_writer_->take_validated_resume_prefix();
                 if (!prefix || prefix->count != static_cast<uint64_t>(ooc_writer_->count()) ||
                     prefix->full_relations > prefix->count ||
@@ -409,6 +424,14 @@ public:
             throw std::logic_error("RelationCollector::resume_ooc: collector is not in OOC mode");
         }
         ooc_writer_->resume_append(descriptor);
+    }
+
+    /// Report how paired OOC recovery resolved. FinalizedCorpus means a crash
+    /// occurred after the immutable relation corpus was committed but before
+    /// its sieve checkpoint was deleted; callers must skip further collection.
+    [[nodiscard]] OOCRecoveryOutcome ooc_recovery_outcome() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return ooc_writer_ ? ooc_writer_->recovery_outcome() : OOCRecoveryOutcome::None;
     }
 
     /// 获取关系的只读引用（NOT thread-safe — caller must ensure no concurrent add()）

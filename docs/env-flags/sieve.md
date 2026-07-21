@@ -6,52 +6,62 @@
 
 ---
 
-## Sieve mid-flight checkpoint (GNFS_SIEVE_RESUME)
+## Sieve mid-flight checkpoint (GNFS_RESUME / GNFS_SIEVE_RESUME)
 
-**ENV `GNFS_SIEVE_RESUME=<base_path>`** (2026-05-18 实施):
-启用 OOC streaming + sieve loop checkpoint, 长时间 50d+/60d sieve 中断后能 resume.
-ENV 隐含启用 OOC (base_path 作 OOC base 和 checkpoint base, 不需 单独 set
-GNFS_OOC_RELATIONS).
+**ENV `GNFS_RESUME=<base_path>`** 启用全流水线恢复；历史名称
+`GNFS_SIEVE_RESUME=<base_path>` 仍作为别名。进入 sieve 阶段后，该路径同时
+作为 OOC relation store 与 sieve checkpoint 的 base path，不需要再设置
+`GNFS_OOC_RELATIONS`。
 
 ```bash
-# 首次启动 / 续跑同 path
-GNFS_SIEVE_RESUME=/tmp/gnfs_50d_session ./gnfs <50d-N>
-# 进程崩溃后, 同 path 再跑 → resume from last checkpoint
-GNFS_SIEVE_RESUME=/tmp/gnfs_50d_session ./gnfs <50d-N>
+# 首次启动 / 续跑同一 path
+GNFS_RESUME=/var/tmp/gnfs-session ./gnfs <N>
+# 进程崩溃后使用同一路径重启
+GNFS_RESUME=/var/tmp/gnfs-session ./gnfs <N>
 ```
 
-**Resume 流程**:
-1. Pipeline::sieve_and_collect 检测 `<base_path>.sieve_ckpt` 存在 + magic 有效
-2. 加载 ckpt: sq_count, current_index (SpecialQGenerator 位置), round (adaptive
-   loop 进度), batch_target, candidates_total
-3. CollectorConfig.ooc_resume=true → OOCWriter 用 resume mode 续写
-   .reldata/.relidx (要求 magic=INCOMPLETE, finalized files 不允许 resume)
-4. RelationCollector ctor 从 .reldata 读 (a,b) 16 bytes/rel 重建 seen_ set
-   (防 resume 后 dedup 错过)
-5. SpecialQGenerator::reset_to(current_index) skip 已 done SQs
-6. Sieve loop 从 round_start 继续, 每 CHECKPOINT_BATCH_INTERVAL=25 batches
-   保存 ckpt (每 batch 2-4 SQ, ~50-100 SQs/checkpoint)
-7. Sieve 正常完成 → 删 ckpt + OOC finalize MAGIC (后续 read 通过 reader)
-8. 异常退出 (crash/kill) → ckpt + INCOMPLETE OOC 保留, 下次 resume
+**V2 配对恢复流程**:
 
-**Crash safety** (MAGIC/INCOMPLETE flip 双重保护):
-- SieveCheckpoint: save() 先写 MAGIC_INCOMPLETE, flush, seek 头 flip MAGIC
-- OOCRelationWriter: ctor 写 INCOMPLETE, close() flip MAGIC; uncaught_exceptions
-  跟踪让析构异常路径 skip flip → 文件保留 INCOMPLETE → reader 拒读
-- 任一 stage crash 时下次 resume 仍 detect partial state (允许丢 ≤25 batches)
+1. `RelationCollector::checkpoint_ooc()` flush 两个 OOC stream，写入 prefix
+   sentinel，并返回 `format_version/store_id/generation/count/data_end`。
+2. `SieveCheckpoint` 把该 descriptor、`sq_count/current_index/round` 和本次
+   run identity 写入同目录临时文件；写入 checksum、完整 flush 后以原子替换发布。
+3. checkpoint 发布成功后，collector 才以同一个 descriptor 重新打开 append。
+4. 重启先严格加载 V2 checkpoint，再比对 N、多项式、因子基和 sieve 参数的
+   128-bit run fingerprint；不一致时在打开 OOC store 前 fail closed。
+5. identity 匹配后，再校验 OOC durable store ID 与 committed prefix；允许并
+   截断 checkpoint 之后的未提交 index/data tail。
+6. OOC prefix 恢复成功后，才应用 Special-Q 游标。V1、checksum 错误、路径或
+   store identity 不匹配都 fail closed，不会回退到 fresh 并截断证据。
+7. 若进程在 OOC finalize 与 checkpoint 删除之间退出，重启会验证 finalized
+   corpus 的 checkpoint prefix 连续性，以只读方式继续，禁止重新 append。
 
-**集成点** (commits `b4c6364` → `60a1282`, 2026-05-18):
-- `include/gnfs/sieve/sieve_checkpoint.hpp` — SieveCheckpoint binary format (MAGIC/INCOMPLETE flip)
-- `include/gnfs/relation/ooc_relation_store.hpp` — OOCWriter resume ctor
-- `include/gnfs/relation/collector.hpp` — CollectorConfig.ooc_resume + `restore_seen_from_ooc` helper
-- `src/api/pipeline.cpp` — `sieve_and_collect` ENV-gate + ckpt save/load (检索 `GNFS_SIEVE_RESUME` getenv 点 + `SieveCheckpoint::save` 调用点)
-- `tests/test_sieve_checkpoint.cpp` — 9 unit tests (roundtrip/corrupt/version/INCOMPLETE)
-- `tests/test_relation_collector.cpp` — 6 new tests (writer append + collector resume)
-- `tests/test_api.cpp` — 2 e2e tests (fresh + synthetic_ckpt resume)
+**Crash-safety 边界**:
 
-**触发条件**: 50d+ sieve 持续 hours+ 而 crash 风险 (OOM/电源/Ctrl-C) 存在.
-对 25d/40-bit 短任务 overhead 不实用 (sieve <1 min). 不与 GNFS_OOC_RELATIONS
-共存 (SIEVE_RESUME 优先).
+- 普通 `OOCRelationReader` 始终拒绝 incomplete store；只有带 V2 descriptor 的
+  recovery path 能读取并回滚到已提交前缀。
+- checkpoint 发布使用同目录临时文件和替换操作。发布前失败时重新打开已持久化
+  OOC prefix 并重试；若替换后目录同步报错，Pipeline 会严格加载正式文件并与
+  本次目标逐字段比较，只有目标版本已可见时才按“已发布、耐久性告警”继续。
+- OOC prefix checkpoint 和 finalize 会同步 data/index 文件，并在 POSIX 上同步
+  父目录。进程崩溃矩阵覆盖 prefix、checkpoint 临时态/发布态、append tail、
+  finalize metadata 与 final magic；文件系统和硬件仍决定断电耐久性的最终边界。
+- 测试用 self-exec 子进程在 typed save stage 调用 `std::_Exit()`，避免析构自动
+  finalize 造成“伪崩溃”。这些测试证明进程退出一致性；不把它表述为完整断电证明。
+
+**集成点**:
+
+- `include/gnfs/sieve/sieve_checkpoint.hpp` — V2 wire format、checksum、原子发布
+- `include/gnfs/sieve/sieve_run_identity.hpp` — portable run identity
+- `include/gnfs/relation/ooc_relation_store.hpp` — durable store ID、prefix rollback
+- `include/gnfs/relation/collector.hpp` — paired resume descriptor 与 recovery outcome
+- `src/api/pipeline.cpp` — fail-closed load 与 prefix/checkpoint/reopen 顺序
+- `tests/test_sieve_checkpoint.cpp` — 格式、原子发布与真实子进程 crash 边界
+- `tests/test_ooc_store_integrity.cpp` — prefix、tail、identity、finalized-corpus 校验
+
+**触发条件**: 50d+ sieve 持续 hours+ 且存在 OOM、进程退出或重启风险。对短任务
+通常不值得启用。该模式与 `GNFS_OOC_RELATIONS` 不叠加，resume path 优先。
+同一 base path 目前只支持单个活跃进程；并发 writer 的进程级 lease 尚未实现。
 
 ---
 

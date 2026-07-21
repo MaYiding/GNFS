@@ -1,30 +1,31 @@
 #include <gnfs/api/pipeline.hpp>
 
-#include <gnfs/polynomial/selector_dispatch.hpp>
-#include <gnfs/polynomial/poly_checkpoint.hpp>
-#include <gnfs/factor_base/builder.hpp>
-#include <gnfs/factor_base/fb_checkpoint.hpp>
-#include <gnfs/sieve/special_q.hpp>
-#include <gnfs/sieve/sieve_checkpoint.hpp>
-#include <gnfs/sieve/lattice_sieve.hpp>
-#include <gnfs/sieve/distributed_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/cofactor/ecm.hpp>
-#include <gnfs/relation/collector.hpp>
-#include <gnfs/relation/filter.hpp>
-#include <gnfs/relation/clique_merger.hpp>
-#include <gnfs/relation/relation_identity.hpp>
-#include <gnfs/relation/ooc_policy.hpp>
-#include <gnfs/relation/v0_bfs_policy.hpp>
-#include <gnfs/linalg/matrix_builder.hpp>
-#include <gnfs/linalg/sge.hpp>
+#include <gnfs/factor_base/builder.hpp>
+#include <gnfs/factor_base/fb_checkpoint.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/linalg/linalg_mmap_policy.hpp>
+#include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/mmap_csr_matrix.hpp>
-#include <gnfs/sqrt/rational_sqrt.hpp>
-#include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/linalg/sge.hpp>
+#include <gnfs/polynomial/poly_checkpoint.hpp>
+#include <gnfs/polynomial/selector_dispatch.hpp>
+#include <gnfs/relation/clique_merger.hpp>
+#include <gnfs/relation/collector.hpp>
+#include <gnfs/relation/filter.hpp>
+#include <gnfs/relation/ooc_policy.hpp>
+#include <gnfs/relation/relation_identity.hpp>
+#include <gnfs/relation/v0_bfs_policy.hpp>
+#include <gnfs/sieve/distributed_sieve.hpp>
+#include <gnfs/sieve/lattice_sieve.hpp>
+#include <gnfs/sieve/sieve_checkpoint.hpp>
+#include <gnfs/sieve/sieve_run_identity.hpp>
+#include <gnfs/sieve/special_q.hpp>
 #include <gnfs/siqs/siqs.hpp>
+#include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <gnfs/util/process.hpp>
 #include <gnfs/util/temp_path.hpp>
@@ -32,14 +33,16 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>  // fprintf for V3 cascade stderr signal
+#include <cstdlib> // getenv for GNFS_CASCADE_V3 flag
+#include <cstring> // strlen for SGE-OOC ENV string checks
+#include <exception>
 #include <optional>
 #include <random>
-#include <cstdio>   // fprintf for V3 cascade stderr signal
-#include <cstdlib>  // getenv for GNFS_CASCADE_V3 flag
-#include <cstring>  // strlen for SGE-OOC ENV string checks
+#include <stdexcept>
 #include <string>
 #include <thread>
-#include <unordered_set>  // V3 cascade dedup
+#include <unordered_set> // V3 cascade dedup
 
 namespace gnfs::api {
 
@@ -57,15 +60,19 @@ enum class V3Mode { Off, On, Auto };
 
 inline V3Mode cascade_v3_mode() {
     const char* v = std::getenv("GNFS_CASCADE_V3");
-    if (v == nullptr || v[0] == '\0' || v[0] == '0') return V3Mode::Off;
-    if (v[0] == 'a' || v[0] == 'A') return V3Mode::Auto;  // "auto" / "adaptive"
+    if (v == nullptr || v[0] == '\0' || v[0] == '0')
+        return V3Mode::Off;
+    if (v[0] == 'a' || v[0] == 'A')
+        return V3Mode::Auto; // "auto" / "adaptive"
     return V3Mode::On;
 }
 
 inline bool cascade_v3_enabled_for_round(int round_index) {
     V3Mode m = cascade_v3_mode();
-    if (m == V3Mode::Off) return false;
-    if (m == V3Mode::On) return true;
+    if (m == V3Mode::Off)
+        return false;
+    if (m == V3Mode::On)
+        return true;
     // Auto: Round 2+ only (round_index >= 1)
     return round_index >= 1;
 }
@@ -82,12 +89,10 @@ inline bool cascade_v3_enabled() {
 //
 // Returns empty string when neither ENV is set / both empty.
 inline std::string pipeline_resume_base_path() {
-    if (const char* env = std::getenv("GNFS_RESUME");
-        env != nullptr && env[0] != '\0') {
+    if (const char* env = std::getenv("GNFS_RESUME"); env != nullptr && env[0] != '\0') {
         return env;
     }
-    if (const char* env = std::getenv("GNFS_SIEVE_RESUME");
-        env != nullptr && env[0] != '\0') {
+    if (const char* env = std::getenv("GNFS_SIEVE_RESUME"); env != nullptr && env[0] != '\0') {
         return env;
     }
     return {};
@@ -96,12 +101,16 @@ inline std::string pipeline_resume_base_path() {
 /// Trial division up to limit. Returns factor or 0.
 uint64_t trial_divide(const Integer& n, uint64_t limit) {
     // Small primes
-    if (mpz_divisible_ui_p(n.get_mpz(), 2)) return 2;
-    if (mpz_divisible_ui_p(n.get_mpz(), 3)) return 3;
+    if (mpz_divisible_ui_p(n.get_mpz(), 2))
+        return 2;
+    if (mpz_divisible_ui_p(n.get_mpz(), 3))
+        return 3;
     // 6k±1 wheel
     for (uint64_t i = 5; i <= limit; i += 6) {
-        if (mpz_divisible_ui_p(n.get_mpz(), i)) return i;
-        if (mpz_divisible_ui_p(n.get_mpz(), i + 2)) return i + 2;
+        if (mpz_divisible_ui_p(n.get_mpz(), i))
+            return i;
+        if (mpz_divisible_ui_p(n.get_mpz(), i + 2))
+            return i + 2;
     }
     return 0;
 }
@@ -113,10 +122,10 @@ uint64_t trial_divide(const Integer& n, uint64_t limit) {
 /// 2-limb Pollard rho. Returns factor as uint64, or 0 if not found.
 uint64_t pollard_rho_mpn2(const Integer& n, size_t max_iters) {
     size_t n_size = mpz_size(n.get_mpz());
-    if (n_size > 2 || n_size == 0) return 0;
+    if (n_size > 2 || n_size == 0)
+        return 0;
 
-    mp_limb_t N[2] = {mpz_getlimbn(n.get_mpz(), 0),
-                       n_size > 1 ? mpz_getlimbn(n.get_mpz(), 1) : 0};
+    mp_limb_t N[2] = {mpz_getlimbn(n.get_mpz(), 0), n_size > 1 ? mpz_getlimbn(n.get_mpz(), 1) : 0};
 
     // n_actual_size: 1 or 2 limbs
     mp_size_t nn = (N[1] != 0) ? 2 : 1;
@@ -153,7 +162,9 @@ uint64_t pollard_rho_mpn2(const Integer& n, size_t max_iters) {
 
     // GCD with N: compute gcd(a, N), return as uint64 if small
     mpz_t g_mpz, a_mpz, n_mpz;
-    mpz_init(g_mpz); mpz_init(a_mpz); mpz_init(n_mpz);
+    mpz_init(g_mpz);
+    mpz_init(a_mpz);
+    mpz_init(n_mpz);
     mpz_import(n_mpz, static_cast<size_t>(nn), -1, sizeof(mp_limb_t), 0, 0, N);
     auto gcd_with_n = [&](const mp_limb_t* a) -> uint64_t {
         mpz_import(a_mpz, static_cast<size_t>(nn), -1, sizeof(mp_limb_t), 0, 0, a);
@@ -169,31 +180,40 @@ uint64_t pollard_rho_mpn2(const Integer& n, size_t max_iters) {
     // RNG
     uint64_t seed = 42;
     auto rng_next = [](uint64_t& s) -> uint64_t {
-        s ^= s << 13; s ^= s >> 7; s ^= s << 17; return s;
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        return s;
     };
 
     mp_limb_t y[2], c[2], x[2], ys[2], q_acc[2], diff[2];
-    size_t total_iters = 0;  // Track total iterations across all attempts
+    size_t total_iters = 0; // Track total iterations across all attempts
 
     for (int attempt = 0; attempt < 20 && total_iters < max_iters; attempt++) {
-        y[0] = rng_next(seed); y[1] = 0;
-        c[0] = rng_next(seed); c[1] = 0;
-        if (c[0] == 0) c[0] = 1;
+        y[0] = rng_next(seed);
+        y[1] = 0;
+        c[0] = rng_next(seed);
+        c[1] = 0;
+        if (c[0] == 0)
+            c[0] = 1;
         // Reduce y, c mod N
         if (nn == 2) {
             mp_limb_t tmpq[2];
             mpn_tdiv_qr(tmpq, y, 0, y, nn, N, nn);
             mpn_tdiv_qr(tmpq, c, 0, c, nn, N, nn);
         } else {
-            y[0] %= N[0]; c[0] %= N[0];
+            y[0] %= N[0];
+            c[0] %= N[0];
         }
 
-        q_acc[0] = 1; q_acc[1] = 0;
+        q_acc[0] = 1;
+        q_acc[1] = 0;
         size_t r_val = 1;
         bool found = false;
 
         while (!found && total_iters < max_iters) {
-            x[0] = y[0]; x[1] = y[1];
+            x[0] = y[0];
+            x[1] = y[1];
 
             // Phase 1: advance y by r steps
             for (size_t i = 0; i < r_val; i++) {
@@ -204,13 +224,15 @@ uint64_t pollard_rho_mpn2(const Integer& n, size_t max_iters) {
             // Phase 2: accumulate product in batches
             size_t k = 0;
             while (k < r_val && !found) {
-                ys[0] = y[0]; ys[1] = y[1];
+                ys[0] = y[0];
+                ys[1] = y[1];
                 size_t batch = std::min(size_t(128), r_val - k);
                 for (size_t i = 0; i < batch; i++) {
                     sqrmod(y, y);
                     addmod(y, y, c);
                     sub_abs(diff, x, y);
-                    if (diff[0] == 0 && (nn < 2 || diff[1] == 0)) continue;
+                    if (diff[0] == 0 && (nn < 2 || diff[1] == 0))
+                        continue;
                     mulmod(q_acc, q_acc, diff);
                 }
                 // Check GCD
@@ -223,12 +245,15 @@ uint64_t pollard_rho_mpn2(const Integer& n, size_t max_iters) {
                         sub_abs(diff, x, ys);
                         g = gcd_with_n(diff);
                         if (g > 1) {
-                            mpz_clear(g_mpz); mpz_clear(a_mpz); mpz_clear(n_mpz);
+                            mpz_clear(g_mpz);
+                            mpz_clear(a_mpz);
+                            mpz_clear(n_mpz);
                             return g;
                         }
                     }
                     // g == n case: reset and retry
-                    q_acc[0] = 1; q_acc[1] = 0;
+                    q_acc[0] = 1;
+                    q_acc[1] = 0;
                     break;
                 }
                 k += batch;
@@ -238,19 +263,29 @@ uint64_t pollard_rho_mpn2(const Integer& n, size_t max_iters) {
         }
     }
 
-    mpz_clear(g_mpz); mpz_clear(a_mpz); mpz_clear(n_mpz);
+    mpz_clear(g_mpz);
+    mpz_clear(a_mpz);
+    mpz_clear(n_mpz);
     return 0;
 }
 
 /// Pollard rho with Brent improvement. Works on GMP integers.
 /// Returns a non-trivial factor or Integer(0) if not found within max_iters.
 Integer pollard_rho_brent(const Integer& n, size_t max_iters = 1000000) {
-    if (mpz_cmp_si(n.get_mpz(), 3) <= 0) return Integer{};
+    if (mpz_cmp_si(n.get_mpz(), 3) <= 0)
+        return Integer{};
 
     // Use GMP directly for speed
     mpz_t y, c, m, g, r, q, x, ys, tmp;
-    mpz_init(y); mpz_init(c); mpz_init(m); mpz_init(g);
-    mpz_init(r); mpz_init(q); mpz_init(x); mpz_init(ys); mpz_init(tmp);
+    mpz_init(y);
+    mpz_init(c);
+    mpz_init(m);
+    mpz_init(g);
+    mpz_init(r);
+    mpz_init(q);
+    mpz_init(x);
+    mpz_init(ys);
+    mpz_init(tmp);
 
     gmp_randstate_t state;
     gmp_randinit_mt(state);
@@ -262,7 +297,8 @@ Integer pollard_rho_brent(const Integer& n, size_t max_iters = 1000000) {
     for (int attempt = 0; attempt < 20 && result.is_zero(); ++attempt) {
         mpz_urandomm(y, state, n_mpz);
         mpz_urandomm(c, state, n_mpz);
-        if (mpz_sgn(c) == 0) mpz_set_ui(c, 1);
+        if (mpz_sgn(c) == 0)
+            mpz_set_ui(c, 1);
         mpz_set_ui(m, 128);
         mpz_set_ui(g, 1);
         mpz_set_ui(q, 1);
@@ -314,7 +350,8 @@ Integer pollard_rho_brent(const Integer& n, size_t max_iters = 1000000) {
                 mpz_sub(tmp, x, ys);
                 mpz_abs(tmp, tmp);
                 mpz_gcd(g, tmp, n_mpz);
-                if (mpz_cmp_ui(g, 1) > 0) break;
+                if (mpz_cmp_ui(g, 1) > 0)
+                    break;
             }
         }
 
@@ -323,8 +360,15 @@ Integer pollard_rho_brent(const Integer& n, size_t max_iters = 1000000) {
         }
     }
 
-    mpz_clear(y); mpz_clear(c); mpz_clear(m); mpz_clear(g);
-    mpz_clear(r); mpz_clear(q); mpz_clear(x); mpz_clear(ys); mpz_clear(tmp);
+    mpz_clear(y);
+    mpz_clear(c);
+    mpz_clear(m);
+    mpz_clear(g);
+    mpz_clear(r);
+    mpz_clear(q);
+    mpz_clear(x);
+    mpz_clear(ys);
+    mpz_clear(tmp);
     gmp_randclear(state);
 
     return result;
@@ -360,15 +404,15 @@ Pipeline::select_method(size_t n_bits, size_t n_digits,
     //   GNFS_FORCE_SIQS=1   → force SIQS path regardless of size (except trial-only ≤6d)
     //   GNFS_DISABLE_SIQS=1 → skip SIQS, fall through to GNFS for ≥25d
     // Both ENVs ignored when user explicitly set Config::method (handled above).
-    const char* env_force   = std::getenv("GNFS_FORCE_SIQS");
+    const char* env_force = std::getenv("GNFS_FORCE_SIQS");
     const char* env_disable = std::getenv("GNFS_DISABLE_SIQS");
-    bool force_siqs   = (env_force   && env_force[0]   == '1');
+    bool force_siqs = (env_force && env_force[0] == '1');
     bool disable_siqs = (env_disable && env_disable[0] == '1');
 
     if (n_digits <= 6 || n_bits <= 20) {
-        return {FactorizationMethod::TrialDivision,
-                std::to_string(n_digits) + "d/" + std::to_string(n_bits) +
-                "bit: trial division sufficient"};
+        return {FactorizationMethod::TrialDivision, std::to_string(n_digits) + "d/" +
+                                                        std::to_string(n_bits) +
+                                                        "bit: trial division sufficient"};
     }
 
     if (force_siqs) {
@@ -377,32 +421,29 @@ Pipeline::select_method(size_t n_bits, size_t n_digits,
     }
 
     if (n_digits <= 24 || n_bits <= 80) {
-        return {FactorizationMethod::PollardRho,
-                std::to_string(n_digits) + "d/" + std::to_string(n_bits) +
-                "bit: Pollard rho O(p^{1/2}) efficient"};
+        return {FactorizationMethod::PollardRho, std::to_string(n_digits) + "d/" +
+                                                     std::to_string(n_bits) +
+                                                     "bit: Pollard rho O(p^{1/2}) efficient"};
     }
 
     if (n_digits <= 100 && !disable_siqs) {
         // 25-100d: rho quick probe → ECM → SIQS cascade
-        return {FactorizationMethod::SIQS,
-                std::to_string(n_digits) + "d: rho+ECM+SIQS cascade"};
+        return {FactorizationMethod::SIQS, std::to_string(n_digits) + "d: rho+ECM+SIQS cascade"};
     }
 
     return {FactorizationMethod::GNFS,
             std::to_string(n_digits) + "d: GNFS O(L_N(1/3,c))" +
-            (disable_siqs ? " (SIQS disabled via ENV)" : " required")};
+                (disable_siqs ? " (SIQS disabled via ENV)" : " required")};
 }
 
 // ============================================================
 // Construction
 // ============================================================
 
+// Keep an owned Integer copy because callers may release their input after construction.
 Pipeline::Pipeline(const Integer& n, const Config& config)
-    : n_(n)  // Integer copy ctor
-    , config_(config)
-    , params_(config.apply_to(n))
-    , start_time_(std::chrono::high_resolution_clock::now())
-{
+    : n_(n), config_(config), params_(config.apply_to(n)),
+      start_time_(std::chrono::high_resolution_clock::now()) {
     stats_.n_bits = n.bit_length();
     stats_.n_digits = params_.digits;
     stats_.degree = params_.degree;
@@ -421,7 +462,8 @@ double Pipeline::elapsed_s() const {
 }
 
 void Pipeline::emit_progress(Phase phase, const std::string& msg, double phase_progress) {
-    if (!progress_cb_) return;
+    if (!progress_cb_)
+        return;
     ProgressInfo info;
     info.phase = phase;
     info.phase_progress = phase_progress;
@@ -438,7 +480,8 @@ void Pipeline::emit_progress(Phase phase, const std::string& msg, double phase_p
 }
 
 void Pipeline::emit_log(LogLevel level, Phase phase, const std::string& msg) {
-    if (!log_cb_) return;
+    if (!log_cb_)
+        return;
     LogEntry entry;
     entry.level = level;
     entry.phase = phase;
@@ -455,7 +498,7 @@ PolynomialContext Pipeline::select_polynomial() {
     emit_progress(Phase::PolynomialSelection, "Starting polynomial selection");
     emit_log(LogLevel::Info, Phase::PolynomialSelection,
              "N=" + n_.to_string() + " bits=" + std::to_string(stats_.n_bits) +
-             " degree=" + std::to_string(params_.degree));
+                 " degree=" + std::to_string(params_.degree));
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
@@ -473,24 +516,19 @@ PolynomialContext Pipeline::select_polynomial() {
                 auto ctx_resumed = ck.to_context();
 
                 auto t1 = std::chrono::high_resolution_clock::now();
-                stats_.timings.poly_s =
-                    std::chrono::duration<double>(t1 - t0).count();
+                stats_.timings.poly_s = std::chrono::duration<double>(t1 - t0).count();
 
                 emit_log(LogLevel::Info, Phase::PolynomialSelection,
-                         "checkpoint hit: m=" + ctx_resumed.m().to_string() +
-                         " degree=" + std::to_string(ctx_resumed.degree()) +
-                         " (skipped Kleinjung search)");
-                std::fprintf(stderr,
-                    "[poly-resume] ckpt=%s degree=%u skew=%g\n",
-                    poly_ckpt.c_str(), ctx_resumed.degree(),
-                    ctx_resumed.skewness());
-                emit_progress(Phase::PolynomialSelection,
-                              "Polynomial loaded from checkpoint", 1.0);
+                         "checkpoint hit: m=" + ctx_resumed.m().to_string() + " degree=" +
+                             std::to_string(ctx_resumed.degree()) + " (skipped Kleinjung search)");
+                std::fprintf(stderr, "[poly-resume] ckpt=%s degree=%u skew=%g\n", poly_ckpt.c_str(),
+                             ctx_resumed.degree(), ctx_resumed.skewness());
+                emit_progress(Phase::PolynomialSelection, "Polynomial loaded from checkpoint", 1.0);
                 return ctx_resumed;
             } catch (const std::exception& e) {
                 emit_log(LogLevel::Warn, Phase::PolynomialSelection,
-                         std::string("poly checkpoint load failed (") +
-                         e.what() + ") — falling through to fresh selection");
+                         std::string("poly checkpoint load failed (") + e.what() +
+                             ") — falling through to fresh selection");
             }
         }
     }
@@ -516,8 +554,7 @@ PolynomialContext Pipeline::select_polynomial() {
     }
 
     emit_log(LogLevel::Info, Phase::PolynomialSelection,
-             "m=" + ctx.m().to_string() + " time=" +
-             std::to_string(stats_.timings.poly_s) + "s");
+             "m=" + ctx.m().to_string() + " time=" + std::to_string(stats_.timings.poly_s) + "s");
     emit_progress(Phase::PolynomialSelection, "Polynomial selected", 1.0);
 
     return ctx;
@@ -550,49 +587,39 @@ FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
         if (factor_base::FbCheckpoint::exists_and_valid(fb_ckpt)) {
             try {
                 auto ck = factor_base::FbCheckpoint::load(fb_ckpt);
-                auto status = ck.matches(
-                    ctx,
-                    fb_opts.rational_bound, fb_opts.algebraic_bound,
-                    fb_opts.special_q_bound, fb_opts.large_prime_bound,
-                    fb_opts.log_scale);
+                auto status = ck.matches(ctx, fb_opts.rational_bound, fb_opts.algebraic_bound,
+                                         fb_opts.special_q_bound, fb_opts.large_prime_bound,
+                                         fb_opts.log_scale);
                 if (status == factor_base::FbCheckpoint::MatchStatus::Ok) {
                     auto fb_resumed = ck.to_factor_base();
 
                     auto t1 = std::chrono::high_resolution_clock::now();
-                    stats_.timings.fb_s =
-                        std::chrono::duration<double>(t1 - t0).count();
+                    stats_.timings.fb_s = std::chrono::duration<double>(t1 - t0).count();
                     stats_.rational_primes = fb_resumed.rational_count();
                     stats_.algebraic_primes = fb_resumed.algebraic_count();
 
-                    emit_log(LogLevel::Info, Phase::FactorBase,
-                             "checkpoint hit: rational=" +
-                             std::to_string(fb_resumed.rational_count()) +
-                             " algebraic=" +
-                             std::to_string(fb_resumed.algebraic_count()) +
-                             " (skipped Cantor-Zassenhaus)");
-                    std::fprintf(stderr,
-                        "[fb-resume] ckpt=%s rat=%zu alg=%zu sieve_alg=%zu\n",
-                        fb_ckpt.c_str(), fb_resumed.rational_count(),
-                        fb_resumed.algebraic_count(),
-                        fb_resumed.sieve_algebraic_count());
-                    emit_progress(Phase::FactorBase,
-                                  "Factor base loaded from checkpoint", 1.0);
+                    emit_log(
+                        LogLevel::Info, Phase::FactorBase,
+                        "checkpoint hit: rational=" + std::to_string(fb_resumed.rational_count()) +
+                            " algebraic=" + std::to_string(fb_resumed.algebraic_count()) +
+                            " (skipped Cantor-Zassenhaus)");
+                    std::fprintf(stderr, "[fb-resume] ckpt=%s rat=%zu alg=%zu sieve_alg=%zu\n",
+                                 fb_ckpt.c_str(), fb_resumed.rational_count(),
+                                 fb_resumed.algebraic_count(), fb_resumed.sieve_algebraic_count());
+                    emit_progress(Phase::FactorBase, "Factor base loaded from checkpoint", 1.0);
                     return fb_resumed;
                 } else {
                     const char* reason =
-                        (status == factor_base::FbCheckpoint::MatchStatus::NMismatch)
-                            ? "N mismatch"
-                            : (status == factor_base::FbCheckpoint::MatchStatus::DegreeMismatch)
-                                ? "degree mismatch"
-                                : "params mismatch";
+                        (status == factor_base::FbCheckpoint::MatchStatus::NMismatch) ? "N mismatch"
+                        : (status == factor_base::FbCheckpoint::MatchStatus::DegreeMismatch)
+                            ? "degree mismatch"
+                            : "params mismatch";
                     emit_log(LogLevel::Warn, Phase::FactorBase,
-                             std::string("fb checkpoint stale (") + reason +
-                             ") — rebuilding");
+                             std::string("fb checkpoint stale (") + reason + ") — rebuilding");
                 }
             } catch (const std::exception& e) {
                 emit_log(LogLevel::Warn, Phase::FactorBase,
-                         std::string("fb checkpoint load failed (") +
-                         e.what() + ") — rebuilding");
+                         std::string("fb checkpoint load failed (") + e.what() + ") — rebuilding");
             }
         }
     }
@@ -608,11 +635,9 @@ FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
     if (!resume_base.empty()) {
         const std::string fb_ckpt = resume_base + ".fb_ckpt";
         try {
-            auto ck = factor_base::FbCheckpoint::from_factor_base(
-                fb, ctx, fb_opts.special_q_bound);
+            auto ck = factor_base::FbCheckpoint::from_factor_base(fb, ctx, fb_opts.special_q_bound);
             ck.save(fb_ckpt);
-            emit_log(LogLevel::Info, Phase::FactorBase,
-                     "fb checkpoint saved: " + fb_ckpt);
+            emit_log(LogLevel::Info, Phase::FactorBase, "fb checkpoint saved: " + fb_ckpt);
         } catch (const std::exception& e) {
             emit_log(LogLevel::Warn, Phase::FactorBase,
                      std::string("fb checkpoint save failed: ") + e.what());
@@ -621,8 +646,8 @@ FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
 
     emit_log(LogLevel::Info, Phase::FactorBase,
              "rational=" + std::to_string(fb.rational_count()) +
-             " algebraic=" + std::to_string(fb.algebraic_count()) +
-             " (sieve=" + std::to_string(fb.sieve_algebraic_count()) + ")");
+                 " algebraic=" + std::to_string(fb.algebraic_count()) +
+                 " (sieve=" + std::to_string(fb.sieve_algebraic_count()) + ")");
     emit_progress(Phase::FactorBase, "Factor base built", 1.0);
 
     return fb;
@@ -632,8 +657,8 @@ FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
 // Phase 3: Sieving and Relation Collection
 // ============================================================
 
-std::vector<Relation> Pipeline::sieve_and_collect(
-        const PolynomialContext& ctx, const FactorBase& fb) {
+std::vector<Relation> Pipeline::sieve_and_collect(const PolynomialContext& ctx,
+                                                  const FactorBase& fb) {
     emit_progress(Phase::Sieving, "Starting sieve");
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -668,7 +693,7 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             emit_log(LogLevel::Info, Phase::Sieving,
                      "GNFS_3LP=1 enabled: cofactorizer accepts 3LP relations");
             std::fprintf(stderr, "[3lp] cofactor + filter accept 3LP (lp_bits=%zu B^3 bound)\n",
-                static_cast<size_t>(gnfs::util::ctz64(params_.large_prime_bound | 1)));
+                         static_cast<size_t>(gnfs::util::ctz64(params_.large_prime_bound | 1)));
         }
     }
 
@@ -684,6 +709,11 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     relation::CollectorConfig coll_config;
     coll_config.check_duplicates = true;
 
+    // Bind every persisted Special-Q cursor to the exact mathematical inputs
+    // that produced its relation prefix. This is computed once per sieve run
+    // after polynomial and factor-base construction.
+    const auto run_identity = sieve::make_sieve_run_identity(ctx, fb, params_);
+
     // ── Sieve mid-flight checkpoint resume (BACKLOG #11e, ENV GNFS_SIEVE_RESUME) ──
     // GNFS_SIEVE_RESUME=<base_path> (or GNFS_RESUME, 2026-05-21 alias covering
     // Phase 1+2+3): enables OOC streaming + sieve checkpoint, base_path acts as
@@ -694,32 +724,47 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     std::optional<sieve::SieveCheckpoint> prior_ckpt;
     if (!sieve_resume_path.empty()) {
         const std::string ckpt_file = sieve_resume_path + ".sieve_ckpt";
-        if (sieve::SieveCheckpoint::exists_and_valid(ckpt_file)) {
-            try {
-                prior_ckpt = sieve::SieveCheckpoint::load(ckpt_file);
-                emit_log(LogLevel::Info, Phase::Sieving,
-                         "checkpoint loaded: sq_count=" +
-                         std::to_string(prior_ckpt->sq_count) +
-                         " idx=" + std::to_string(prior_ckpt->current_index) +
-                         " round=" + std::to_string(prior_ckpt->round));
-                std::fprintf(stderr,
-                    "[sieve-resume] ckpt=%s sq_count=%llu idx=%u round=%d\n",
-                    ckpt_file.c_str(),
-                    static_cast<unsigned long long>(prior_ckpt->sq_count),
-                    prior_ckpt->current_index, prior_ckpt->round);
-            } catch (const std::exception& e) {
-                emit_log(LogLevel::Warn, Phase::Sieving,
-                         std::string("checkpoint load failed (") + e.what() +
-                         ") — starting fresh");
-                prior_ckpt.reset();
+        if (sieve::SieveCheckpoint::exists(ckpt_file)) {
+            // A present but invalid checkpoint is not equivalent to no
+            // checkpoint: starting fresh would truncate the relation store and
+            // silently discard the last provable paired prefix. Fail closed.
+            prior_ckpt = sieve::SieveCheckpoint::load(ckpt_file);
+            if (!prior_ckpt->matches_run_identity(run_identity)) {
+                throw std::runtime_error(
+                    "sieve checkpoint run identity does not match N, polynomial, "
+                    "factor base, or sieve parameters");
             }
+            if (prior_ckpt->ooc_base_path != sieve_resume_path) {
+                throw std::runtime_error(
+                    "sieve checkpoint OOC path does not match the configured resume path");
+            }
+            if (prior_ckpt->ooc_format_version != relation::OOCRelationWriter::FORMAT_VERSION) {
+                throw std::runtime_error("sieve checkpoint OOC format version mismatch");
+            }
+
+            coll_config.ooc_resume_snapshot = relation::OOCSnapshotDescriptor{
+                .format_version = prior_ckpt->ooc_format_version,
+                .store_id = prior_ckpt->ooc_store_id,
+                .generation = prior_ckpt->ooc_generation,
+                .count = prior_ckpt->ooc_relation_count,
+                .data_end = prior_ckpt->ooc_data_end,
+            };
+            emit_log(LogLevel::Info, Phase::Sieving,
+                     "checkpoint loaded: sq_count=" + std::to_string(prior_ckpt->sq_count) +
+                         " idx=" + std::to_string(prior_ckpt->current_index) +
+                         " round=" + std::to_string(prior_ckpt->round) +
+                         " generation=" + std::to_string(prior_ckpt->ooc_generation));
+            std::fprintf(stderr,
+                         "[sieve-resume] ckpt=%s sq_count=%llu idx=%u round=%d generation=%llu\n",
+                         ckpt_file.c_str(), static_cast<unsigned long long>(prior_ckpt->sq_count),
+                         prior_ckpt->current_index, prior_ckpt->round,
+                         static_cast<unsigned long long>(prior_ckpt->ooc_generation));
         }
         coll_config.ooc_enabled = true;
         coll_config.ooc_base_path = sieve_resume_path;
-        coll_config.ooc_resume = prior_ckpt.has_value();
         emit_log(LogLevel::Info, Phase::Sieving,
                  "resume enabled: base=" + sieve_resume_path +
-                 " ckpt_resume=" + (prior_ckpt ? "yes" : "no"));
+                     " ckpt_resume=" + (prior_ckpt ? "yes" : "no"));
     }
     // ── OOC streaming (BACKLOG #11c, ENV GNFS_OOC_RELATIONS=1) ──
     // 50d Round 2 909K relations 时 macOS OOM-killed (2026-05-17 实测).
@@ -748,13 +793,19 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             const size_t lp_bits_est = relation::estimate_lp_bits(params_.large_prime_bound);
             emit_log(LogLevel::Info, Phase::Sieving,
                      std::string("OOC mode enabled (") + reason_str +
-                     "): base=" + coll_config.ooc_base_path);
+                         "): base=" + coll_config.ooc_base_path);
             std::fprintf(stderr,
-                "[ooc] streaming relations to %s.{reldata,relidx} (%s, lp_bits=%zu)\n",
-                coll_config.ooc_base_path.c_str(), reason_str.c_str(), lp_bits_est);
+                         "[ooc] streaming relations to %s.{reldata,relidx} (%s, lp_bits=%zu)\n",
+                         coll_config.ooc_base_path.c_str(), reason_str.c_str(), lp_bits_est);
         }
     }
     relation::RelationCollector collector(coll_config);
+    const bool recovered_finalized_ooc =
+        collector.ooc_recovery_outcome() == relation::OOCRecoveryOutcome::FinalizedCorpus;
+    if (recovered_finalized_ooc) {
+        emit_log(LogLevel::Info, Phase::Sieving,
+                 "recovered a finalized OOC corpus; skipping further sieve appends");
+    }
     // CLAUDE.md 强制约定:拒绝 gcd(a-bm, N)>1 的关系
     collector.set_polynomial_context(ctx.n(), ctx.m());
 
@@ -766,9 +817,8 @@ std::vector<Relation> Pipeline::sieve_and_collect(
 
     emit_log(LogLevel::Info, Phase::Sieving,
              "target=" + std::to_string(initial_target) +
-             " matrix_cols=" + std::to_string(matrix_cols) +
-             " sq_range=[" + std::to_string(sq_range.min_q) +
-             "," + std::to_string(sq_range.max_q) + "]");
+                 " matrix_cols=" + std::to_string(matrix_cols) + " sq_range=[" +
+                 std::to_string(sq_range.min_q) + "," + std::to_string(sq_range.max_q) + "]");
 
     // Create sieve
     sieve::LatticeSieve sieve_obj(ctx, fb, sieve_params);
@@ -793,8 +843,7 @@ std::vector<Relation> Pipeline::sieve_and_collect(
         round_start = prior_ckpt->round;
         sq_gen.reset_to(prior_ckpt->current_index);
         emit_log(LogLevel::Info, Phase::Sieving,
-                 "resuming sieve from checkpoint: skip " +
-                 std::to_string(sq_count) + " prior SQs");
+                 "resuming sieve from checkpoint: skip " + std::to_string(sq_count) + " prior SQs");
     }
 
     // ── Distributed sieve dispatch (ENV GNFS_DISTRIBUTED_SIEVE_WORKERS=N) ──
@@ -828,17 +877,16 @@ std::vector<Relation> Pipeline::sieve_and_collect(
         const bool force_small = (force_env != nullptr && force_env[0] == '1');
         if (n_workers > 0 && !size_gate_ok && !force_small) {
             std::fprintf(stderr,
-                "[dist_sieve] skip dispatch: digits=%zu < 30 "
-                "(set GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL=1 to override)\n",
-                params_.digits);
+                         "[dist_sieve] skip dispatch: digits=%zu < 30 "
+                         "(set GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL=1 to override)\n",
+                         params_.digits);
         }
         if (n_workers > 0 && sieve_resume_path.empty() && (size_gate_ok || force_small)) {
             emit_log(LogLevel::Info, Phase::Sieving,
                      "GNFS_DISTRIBUTED_SIEVE_WORKERS=" + std::to_string(n_workers) +
-                     " — dispatching distributed sieve");
-            std::fprintf(stderr,
-                "[dist_sieve] dispatch: workers=%zu sq_range=[%u,%u] max_sq=%zu\n",
-                n_workers, sq_range.min_q, sq_range.max_q, max_sq);
+                         " — dispatching distributed sieve");
+            std::fprintf(stderr, "[dist_sieve] dispatch: workers=%zu sq_range=[%u,%u] max_sq=%zu\n",
+                         n_workers, sq_range.min_q, sq_range.max_q, max_sq);
 
             sieve::DistributedSieveConfig dist_cfg = sieve::parse_distributed_sieve_env();
             dist_cfg.num_workers = n_workers;
@@ -846,19 +894,20 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             // runaway sieve when the caller-specified sq_range covers vastly
             // more primes than needed.
             if (dist_cfg.sq_per_worker == 0 && max_sq > 0) {
-                dist_cfg.sq_per_worker =
-                    std::max<size_t>(1, max_sq / n_workers);
+                dist_cfg.sq_per_worker = std::max<size_t>(1, max_sq / n_workers);
             }
 
             std::vector<sieve::DistributedSieveWorkerResult> wstats;
-            auto dist_rels = sieve::run_distributed_sieve(
-                dist_cfg, ctx, fb, sieve_params, sieve_region, cofac_config,
-                ctx.n(), ctx.m(), sq_range, &wstats);
+            auto dist_rels =
+                sieve::run_distributed_sieve(dist_cfg, ctx, fb, sieve_params, sieve_region,
+                                             cofac_config, ctx.n(), ctx.m(), sq_range, &wstats);
 
             // Sieve done — record stats.
-            for (const auto& w : wstats) sq_count += w.sq_count;
-            stats_.timings.sieve_s = std::chrono::duration<double>(
-                std::chrono::high_resolution_clock::now() - t0).count();
+            for (const auto& w : wstats)
+                sq_count += w.sq_count;
+            stats_.timings.sieve_s =
+                std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - t0)
+                    .count();
             stats_.relations_found = dist_rels.size();
             stats_.special_q_processed = sq_count;
 
@@ -873,23 +922,20 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             if (lp_enabled) {
                 auto sep = relation::separate_relations(std::move(dist_filtered));
                 relation::PartialRelationMerger::MergeStats mstats;
-                auto merged = relation::PartialRelationMerger::merge_all(
-                    std::move(sep.partial), 10, &mstats);
+                auto merged =
+                    relation::PartialRelationMerger::merge_all(std::move(sep.partial), 10, &mstats);
                 dist_filtered = std::move(sep.full);
                 dist_filtered.reserve(dist_filtered.size() + merged.size());
-                dist_filtered.insert(dist_filtered.end(),
-                    std::make_move_iterator(merged.begin()),
-                    std::make_move_iterator(merged.end()));
+                dist_filtered.insert(dist_filtered.end(), std::make_move_iterator(merged.begin()),
+                                     std::make_move_iterator(merged.end()));
             }
 
             emit_log(LogLevel::Info, Phase::Sieving,
-                     "distributed sieve done: raw=" +
-                     std::to_string(stats_.relations_found) +
-                     " usable=" + std::to_string(dist_filtered.size()) +
-                     " sq=" + std::to_string(sq_count));
-            std::fprintf(stderr,
-                "[dist_sieve] done: raw=%zu usable=%zu sq=%zu\n",
-                stats_.relations_found, dist_filtered.size(), sq_count);
+                     "distributed sieve done: raw=" + std::to_string(stats_.relations_found) +
+                         " usable=" + std::to_string(dist_filtered.size()) +
+                         " sq=" + std::to_string(sq_count));
+            std::fprintf(stderr, "[dist_sieve] done: raw=%zu usable=%zu sq=%zu\n",
+                         stats_.relations_found, dist_filtered.size(), sq_count);
             emit_progress(Phase::Sieving, "Sieving complete (distributed)", 1.0);
 
             return dist_filtered;
@@ -909,13 +955,15 @@ std::vector<Relation> Pipeline::sieve_and_collect(
 
     // Thread count for parallel cofactorization
     size_t n_cofac_threads = std::thread::hardware_concurrency();
-    if (n_cofac_threads == 0) n_cofac_threads = 4;
+    if (n_cofac_threads == 0)
+        n_cofac_threads = 4;
 
     for (int round = round_start; round < MAX_ROUNDS; ++round) {
         // ── Batch SQ processing: sieve + cofac in parallel ──
         // Collect a batch of SQ primes, sieve them in parallel (each thread
         // owns its own LatticeSieve copy), then cofac results in parallel.
-        while (sq_gen.has_next() && collector.size() < batch_target && sq_count < max_sq) {
+        while (!recovered_finalized_ooc && sq_gen.has_next() && collector.size() < batch_target &&
+               sq_count < max_sq) {
             // Collect a batch of SQs for parallel processing
             // Batch size: balance parallelism vs memory (each thread allocates sieve array)
             // For ≤50 digit: 4 parallel SQs (moderate FB, ~200MB total)
@@ -925,10 +973,12 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             sq_batch.reserve(SQ_BATCH_SIZE);
             while (sq_batch.size() < SQ_BATCH_SIZE && sq_gen.has_next() && sq_count < max_sq) {
                 auto sq = sq_gen.next();
-                if (!sq) break;
+                if (!sq)
+                    break;
                 sq_batch.push_back(*sq);
             }
-            if (sq_batch.empty()) break;
+            if (sq_batch.empty())
+                break;
 
             // Parallel sieve: each thread gets its own LatticeSieve + Cofactorizer
             std::vector<std::vector<Relation>> batch_relations(sq_batch.size());
@@ -943,7 +993,8 @@ std::vector<Relation> Pipeline::sieve_and_collect(
 
                 while (true) {
                     size_t idx = next_sq_idx.fetch_add(1, std::memory_order_relaxed);
-                    if (idx >= sq_batch.size()) break;
+                    if (idx >= sq_batch.size())
+                        break;
 
                     auto sieve_result = local_sieve.sieve_special_q(sq_batch[idx]);
                     batch_candidates[idx] = sieve_result.candidates.size();
@@ -955,7 +1006,8 @@ std::vector<Relation> Pipeline::sieve_and_collect(
                     local_rels.reserve(sieve_result.candidates.size() / 4);
                     for (const auto& cand : sieve_result.candidates) {
                         auto rel = local_cofac.verify(cand, sq_batch[idx].q, sq_batch[idx].r);
-                        if (rel) local_rels.push_back(std::move(*rel));
+                        if (rel)
+                            local_rels.push_back(std::move(*rel));
                     }
                 }
             };
@@ -966,7 +1018,8 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             threads.reserve(n_workers);
             for (size_t t = 0; t < n_workers; ++t)
                 threads.emplace_back(sieve_worker);
-            for (auto& t : threads) t.join();
+            for (auto& t : threads)
+                t.join();
 
             // Collect results
             for (size_t i = 0; i < sq_batch.size(); ++i) {
@@ -983,20 +1036,80 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             if (!sieve_resume_path.empty()) {
                 ++last_checkpoint_batch;
                 if (last_checkpoint_batch >= CHECKPOINT_BATCH_INTERVAL) {
-                    last_checkpoint_batch = 0;
+                    const auto descriptor = collector.checkpoint_ooc();
                     sieve::SieveCheckpoint ck;
                     ck.sq_count = sq_count;
                     ck.current_index = sq_gen.current_index();
                     ck.round = round;
                     ck.batch_target = batch_target;
                     ck.candidates_total = candidates_total;
+                    ck.run_n = run_identity.run_n;
+                    ck.run_fingerprint_lo = run_identity.fingerprint_lo;
+                    ck.run_fingerprint_hi = run_identity.fingerprint_hi;
                     ck.ooc_base_path = sieve_resume_path;
+                    ck.ooc_format_version = descriptor.format_version;
+                    ck.ooc_store_id = descriptor.store_id;
+                    ck.ooc_generation = descriptor.generation;
+                    ck.ooc_relation_count = descriptor.count;
+                    ck.ooc_data_end = descriptor.data_end;
+
+                    bool checkpoint_published = false;
+                    bool recovered_postpublication_error = false;
+                    std::string checkpoint_error;
                     try {
                         ck.save(sieve_resume_path + ".sieve_ckpt");
+                        checkpoint_published = true;
                     } catch (const std::exception& e) {
+                        checkpoint_error = e.what();
+                    } catch (...) {
+                        checkpoint_error = "unknown error";
+                    }
+
+                    if (!checkpoint_published) {
+                        // POSIX rename precedes the parent-directory fsync. If
+                        // that durability step reports an error, the intended
+                        // checkpoint may already be the visible official file.
+                        // Resolve the state by strict load + exact comparison
+                        // before deciding whether to retry the old generation.
+                        try {
+                            const auto visible =
+                                sieve::SieveCheckpoint::load(sieve_resume_path + ".sieve_ckpt");
+                            if (visible == ck) {
+                                checkpoint_published = true;
+                                recovered_postpublication_error = true;
+                            }
+                        } catch (...) {
+                            // The intended checkpoint is not provably visible;
+                            // reopen the durable OOC prefix and retry later.
+                        }
+                    }
+
+                    if (!checkpoint_published) {
+                        // Reopen this durable prefix and retry on the next batch
+                        // rather than leaving the active process suspended.
+                        try {
+                            collector.resume_ooc(descriptor);
+                        } catch (const std::exception& resume_error) {
+                            throw std::runtime_error("checkpoint save failed (" + checkpoint_error +
+                                                     ") and OOC append recovery also failed (" +
+                                                     resume_error.what() + ")");
+                        }
                         emit_log(LogLevel::Warn, Phase::Sieving,
-                                 std::string("checkpoint save failed: ") +
-                                 e.what());
+                                 "checkpoint publication failed before the intended "
+                                 "checkpoint became visible; OOC prefix reopened for retry: " +
+                                     checkpoint_error);
+                    } else {
+                        // A published checkpoint and its suspended prefix form
+                        // the durable pair. Reopen failure must abort so a
+                        // restart can recover that exact pair.
+                        collector.resume_ooc(descriptor);
+                        last_checkpoint_batch = 0;
+                        if (recovered_postpublication_error) {
+                            emit_log(LogLevel::Warn, Phase::Sieving,
+                                     "checkpoint save reported a post-publication durability "
+                                     "error, but the intended checkpoint is visible and valid: " +
+                                         checkpoint_error);
+                        }
                     }
                 }
             }
@@ -1005,22 +1118,25 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             if (sq_count % params_.progress_interval == 0 || sq_count <= 8) {
                 auto now = std::chrono::high_resolution_clock::now();
                 double elapsed = std::chrono::duration<double>(now - t0).count();
-                size_t rels_per_sec = (elapsed > 0.01) ?
-                    static_cast<size_t>(static_cast<double>(collector.size()) / elapsed) : 0;
-                double pct = static_cast<double>(collector.size()) /
-                             static_cast<double>(batch_target);
+                size_t rels_per_sec =
+                    (elapsed > 0.01)
+                        ? static_cast<size_t>(static_cast<double>(collector.size()) / elapsed)
+                        : 0;
+                double pct =
+                    static_cast<double>(collector.size()) / static_cast<double>(batch_target);
                 emit_progress(Phase::Sieving,
-                    "SQ=" + std::to_string(sq_count) + " rels=" +
-                    std::to_string(collector.size()) +
-                    " " + std::to_string(rels_per_sec) + "/s",
-                    std::min(pct, 1.0));
+                              "SQ=" + std::to_string(sq_count) +
+                                  " rels=" + std::to_string(collector.size()) + " " +
+                                  std::to_string(rels_per_sec) + "/s",
+                              std::min(pct, 1.0));
 
                 stats_.relations_found = collector.size();
                 stats_.special_q_processed = sq_count;
             }
         }
 
-        if (collector.size() < 10) break;
+        if (collector.size() < 10 && !recovered_finalized_ooc)
+            break;
 
         // Filter + merge a stable snapshot to check usable relation count. OOC
         // collection must remain appendable when another adaptive round is needed.
@@ -1037,17 +1153,17 @@ std::vector<Relation> Pipeline::sieve_and_collect(
 
             std::vector<relation::Relation> partial_copy_for_v3;
             const bool use_v3 = cascade_v3_enabled_for_round(round);
-            if (use_v3) partial_copy_for_v3 = sep.partial;
+            if (use_v3)
+                partial_copy_for_v3 = sep.partial;
 
             relation::PartialRelationMerger::MergeStats mstats;
-            auto merged = relation::PartialRelationMerger::merge_all(
-                std::move(sep.partial), 10, &mstats);
+            auto merged =
+                relation::PartialRelationMerger::merge_all(std::move(sep.partial), 10, &mstats);
             relations = std::move(sep.full);
             // Reserve full + V0 merged + V3 estimate (~3× merged worst case).
             relations.reserve(relations.size() + merged.size() * 4);
-            relations.insert(relations.end(),
-                std::make_move_iterator(merged.begin()),
-                std::make_move_iterator(merged.end()));
+            relations.insert(relations.end(), std::make_move_iterator(merged.begin()),
+                             std::make_move_iterator(merged.end()));
 
             // V3 cascade (GNFS_CASCADE_V3=1): runs after V0 on partial copy
             if (use_v3 && !partial_copy_for_v3.empty()) {
@@ -1058,28 +1174,26 @@ std::vector<Relation> Pipeline::sieve_and_collect(
                 // combination. Distinct merged rows may share their materialized
                 // primary (a,b), while the same source set may be materialized in
                 // a different order by the two strategies.
-                std::unordered_set<
-                    relation::RelationSourceCombination,
-                    relation::RelationSourceCombinationHash> existing_keys;
+                std::unordered_set<relation::RelationSourceCombination,
+                                   relation::RelationSourceCombinationHash>
+                    existing_keys;
                 existing_keys.reserve(relations.size());
                 for (const auto& r : relations) {
                     if (r.is_merged()) {
-                        existing_keys.insert(
-                            relation::relation_source_combination(r));
+                        existing_keys.insert(relation::relation_source_combination(r));
                     }
                 }
                 size_t v3_added = 0;
                 for (auto& r : v3_merged) {
                     if (!r.is_merged() ||
-                        existing_keys.insert(
-                            relation::relation_source_combination(r)).second) {
+                        existing_keys.insert(relation::relation_source_combination(r)).second) {
                         relations.push_back(std::move(r));
                         ++v3_added;
                     }
                 }
                 emit_log(LogLevel::Info, Phase::Sieving,
                          "v3_cascade(sieve_loop): " + cstats.to_string() +
-                         " added=" + std::to_string(v3_added));
+                             " added=" + std::to_string(v3_added));
                 // stderr fallback when log_cb_ not registered (for stress/progressive)
                 std::fprintf(stderr, "[v3_cascade.sieve] %s added=%zu\n",
                              cstats.to_string().c_str(), v3_added);
@@ -1090,44 +1204,45 @@ std::vector<Relation> Pipeline::sieve_and_collect(
         // (matrix builder will create one column per odd-exp unique LP key).
         // 50d/60d 实测 lp_cols ratio = 64% of usable, far above 旧 5% guess.
         bool lp_enabled_local = params_.large_prime_bound > params_.algebraic_bound;
-        size_t lp_cols = lp_enabled_local ?
-            relation::count_unique_lp_keys(relations) : 0;
+        size_t lp_cols = lp_enabled_local ? relation::count_unique_lp_keys(relations) : 0;
         size_t effective_cols = matrix_cols + lp_cols;
 
         // Check: enough usable relations?
-        if (relations.size() > effective_cols) break;
+        if (relations.size() > effective_cols || recovered_finalized_ooc)
+            break;
 
         // Not enough — increase target and continue if SQs available
-        if (!sq_gen.has_next() || sq_count >= max_sq) break;
+        if (!sq_gen.has_next() || sq_count >= max_sq)
+            break;
 
-        double merge_rate = (collector.size() > 0) ?
-            static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
-        size_t needed_raw = static_cast<size_t>(
-            static_cast<double>(effective_cols * 11 / 10) / std::max(merge_rate, 0.001));
+        double merge_rate = (collector.size() > 0) ? static_cast<double>(relations.size()) /
+                                                         static_cast<double>(collector.size())
+                                                   : 0.01;
+        size_t needed_raw = static_cast<size_t>(static_cast<double>(effective_cols * 11 / 10) /
+                                                std::max(merge_rate, 0.001));
         // Raise cap: for low merge rates (~2%), need up to 100× initial target
-        batch_target = std::min(
-            std::max(batch_target * 2, needed_raw),
-            initial_target * 100);  // generous cap for low merge rates
+        batch_target = std::min(std::max(batch_target * 2, needed_raw),
+                                initial_target * 100); // generous cap for low merge rates
 
         // β = lp_cols / usable (BACKLOG #1 diagnostic). β << 1 means matrix
         // build has excess and BW can find dependencies; β >= 1 means LP cols
         // dominate matrix and we're in the plateau regime.
         double beta = (relations.size() > 0)
-            ? static_cast<double>(lp_cols) / static_cast<double>(relations.size())
-            : 0.0;
+                          ? static_cast<double>(lp_cols) / static_cast<double>(relations.size())
+                          : 0.0;
         emit_log(LogLevel::Info, Phase::Sieving,
-                 "round " + std::to_string(round + 1) + ": usable=" +
-                 std::to_string(relations.size()) + "/" + std::to_string(matrix_cols) +
-                 " lp_cols=" + std::to_string(lp_cols) +
-                 " eff_cols=" + std::to_string(effective_cols) +
-                 " merge_rate=" + std::to_string(merge_rate) +
-                 " beta=" + std::to_string(beta) +
-                 " new_target=" + std::to_string(batch_target));
+                 "round " + std::to_string(round + 1) +
+                     ": usable=" + std::to_string(relations.size()) + "/" +
+                     std::to_string(matrix_cols) + " lp_cols=" + std::to_string(lp_cols) +
+                     " eff_cols=" + std::to_string(effective_cols) +
+                     " merge_rate=" + std::to_string(merge_rate) + " beta=" + std::to_string(beta) +
+                     " new_target=" + std::to_string(batch_target));
         // stderr fallback for stress/progressive runs (no log_cb_ registered)
         std::fprintf(stderr,
-            "[round %d] usable=%zu/%zu lp_cols=%zu eff_cols=%zu merge_rate=%.4f beta=%.4f new_target=%zu\n",
-            round + 1, relations.size(), matrix_cols, lp_cols, effective_cols,
-            merge_rate, beta, batch_target);
+                     "[round %d] usable=%zu/%zu lp_cols=%zu eff_cols=%zu merge_rate=%.4f beta=%.4f "
+                     "new_target=%zu\n",
+                     round + 1, relations.size(), matrix_cols, lp_cols, effective_cols, merge_rate,
+                     beta, batch_target);
     }
 
     // The adaptive loop is the last append boundary. Finalize OOC storage only
@@ -1141,8 +1256,7 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     // Crash before this line leaves ckpt + INCOMPLETE OOC files for next run.
     if (!sieve_resume_path.empty()) {
         sieve::SieveCheckpoint::remove(sieve_resume_path + ".sieve_ckpt");
-        emit_log(LogLevel::Info, Phase::Sieving,
-                 "sieve complete, checkpoint removed");
+        emit_log(LogLevel::Info, Phase::Sieving, "sieve complete, checkpoint removed");
     }
 
     // Collect final stats
@@ -1155,12 +1269,11 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     stats_.candidates_total = candidates_total;
 
     emit_log(LogLevel::Info, Phase::Sieving,
-             "done: sq=" + std::to_string(sq_count) +
-             " raw=" + std::to_string(collector.size()) +
-             " usable=" + std::to_string(relations.size()) +
-             " (full=" + std::to_string(coll_stats.full_relations) +
-             " 1lp=" + std::to_string(coll_stats.partial_1lp) +
-             " 2lp=" + std::to_string(coll_stats.partial_2lp) + ")");
+             "done: sq=" + std::to_string(sq_count) + " raw=" + std::to_string(collector.size()) +
+                 " usable=" + std::to_string(relations.size()) +
+                 " (full=" + std::to_string(coll_stats.full_relations) +
+                 " 1lp=" + std::to_string(coll_stats.partial_1lp) +
+                 " 2lp=" + std::to_string(coll_stats.partial_2lp) + ")");
 
     // Emit BrentPollardRho stats when the ENV-gated path is enabled.
     // `tried==0` if either ENV is unset or every candidate took the SQUFOF
@@ -1171,13 +1284,10 @@ std::vector<Relation> Pipeline::sieve_and_collect(
         if (tried > 0) {
             uint64_t succ = bp_stats.succ.load(std::memory_order_relaxed);
             uint64_t total_iter = bp_stats.total_iter.load(std::memory_order_relaxed);
-            double avg_iter = static_cast<double>(total_iter)
-                              / static_cast<double>(tried);
-            std::fprintf(stderr,
-                "[brent_rho] tried=%llu succ=%llu avg_iter=%.1f\n",
-                static_cast<unsigned long long>(tried),
-                static_cast<unsigned long long>(succ),
-                avg_iter);
+            double avg_iter = static_cast<double>(total_iter) / static_cast<double>(tried);
+            std::fprintf(stderr, "[brent_rho] tried=%llu succ=%llu avg_iter=%.1f\n",
+                         static_cast<unsigned long long>(tried),
+                         static_cast<unsigned long long>(succ), avg_iter);
         }
     }
 
@@ -1188,13 +1298,13 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     if (relations.size() <= matrix_cols) {
         const bool sqs_exhausted = !sq_gen.has_next() || sq_count >= max_sq;
         std::fprintf(stderr,
-            "[sieve-warn] exit without excess: usable=%zu matrix_cols=%zu, "
-            "%s. Phase 5 will attempt BW thin solve.\n",
-            relations.size(), matrix_cols,
-            sqs_exhausted ? "SQs exhausted" : "MAX_ROUNDS reached");
+                     "[sieve-warn] exit without excess: usable=%zu matrix_cols=%zu, "
+                     "%s. Phase 5 will attempt BW thin solve.\n",
+                     relations.size(), matrix_cols,
+                     sqs_exhausted ? "SQs exhausted" : "MAX_ROUNDS reached");
         emit_log(LogLevel::Warn, Phase::Sieving,
                  std::string("sieve exit without excess: ") +
-                 (sqs_exhausted ? "SQs exhausted" : "MAX_ROUNDS reached"));
+                     (sqs_exhausted ? "SQs exhausted" : "MAX_ROUNDS reached"));
     }
     emit_progress(Phase::Sieving, "Sieving complete", 1.0);
 
@@ -1202,19 +1312,18 @@ std::vector<Relation> Pipeline::sieve_and_collect(
     if (adaptive_mgr.config().enabled) {
         auto al = adaptive_mgr.stats().snapshot();
         std::fprintf(stderr,
-            "[adaptive_lattice] special_qs=%llu retries=%llu rescues=%llu "
-            "low_density=%llu hits=%llu cells=%llu\n",
-            static_cast<unsigned long long>(al.special_qs_processed),
-            static_cast<unsigned long long>(al.retries_attempted),
-            static_cast<unsigned long long>(al.rescues_succeeded),
-            static_cast<unsigned long long>(al.low_density_skipped),
-            static_cast<unsigned long long>(al.total_hits),
-            static_cast<unsigned long long>(al.total_cells));
+                     "[adaptive_lattice] special_qs=%llu retries=%llu rescues=%llu "
+                     "low_density=%llu hits=%llu cells=%llu\n",
+                     static_cast<unsigned long long>(al.special_qs_processed),
+                     static_cast<unsigned long long>(al.retries_attempted),
+                     static_cast<unsigned long long>(al.rescues_succeeded),
+                     static_cast<unsigned long long>(al.low_density_skipped),
+                     static_cast<unsigned long long>(al.total_hits),
+                     static_cast<unsigned long long>(al.total_cells));
         emit_log(LogLevel::Info, Phase::Sieving,
-                 "adaptive_lattice special_qs=" +
-                 std::to_string(al.special_qs_processed) +
-                 " retries=" + std::to_string(al.retries_attempted) +
-                 " rescues=" + std::to_string(al.rescues_succeeded));
+                 "adaptive_lattice special_qs=" + std::to_string(al.special_qs_processed) +
+                     " retries=" + std::to_string(al.retries_attempted) +
+                     " rescues=" + std::to_string(al.rescues_succeeded));
     }
 
     return relations;
@@ -1249,14 +1358,13 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
         auto pre_hist = relation::count_lp_key_weights(relations);
         emit_log(LogLevel::Info, Phase::Filtering,
                  "lp_weights pre-merge: unique=" + std::to_string(pre_hist.unique_keys) +
-                 " w1=" + std::to_string(pre_hist.weight_1) +
-                 " w2=" + std::to_string(pre_hist.weight_2) +
-                 " w3=" + std::to_string(pre_hist.weight_3) +
-                 " w4+=" + std::to_string(pre_hist.weight_4plus));
-        std::fprintf(stderr,
-            "[lp_weights] pre-merge: unique=%zu w1=%zu w2=%zu w3=%zu w4+=%zu\n",
-            pre_hist.unique_keys, pre_hist.weight_1, pre_hist.weight_2,
-            pre_hist.weight_3, pre_hist.weight_4plus);
+                     " w1=" + std::to_string(pre_hist.weight_1) +
+                     " w2=" + std::to_string(pre_hist.weight_2) +
+                     " w3=" + std::to_string(pre_hist.weight_3) +
+                     " w4+=" + std::to_string(pre_hist.weight_4plus));
+        std::fprintf(stderr, "[lp_weights] pre-merge: unique=%zu w1=%zu w2=%zu w3=%zu w4+=%zu\n",
+                     pre_hist.unique_keys, pre_hist.weight_1, pre_hist.weight_2, pre_hist.weight_3,
+                     pre_hist.weight_4plus);
 
         auto sep = relation::separate_relations(std::move(relations));
 
@@ -1274,38 +1382,33 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
         //   lp_bits <  22 (25d/81-bit): default OFF (BFS breaks small LP space)
         //   GNFS_V0_BFS=0 explicit opt-out (any size)
         //   GNFS_V0_BFS=1 explicit force-on (still falls back if lp_bits<22)
-        const auto v0_bfs_policy = relation::decide_v0_bfs_policy(
-            std::getenv("GNFS_V0_BFS"), params_.large_prime_bound);
+        const auto v0_bfs_policy =
+            relation::decide_v0_bfs_policy(std::getenv("GNFS_V0_BFS"), params_.large_prime_bound);
         if (v0_bfs_policy.env_force_failed) {
-            std::fprintf(stderr,
-                "[v0_bfs] %.*s\n",
-                static_cast<int>(v0_bfs_policy.reason.size()),
-                v0_bfs_policy.reason.data());
+            std::fprintf(stderr, "[v0_bfs] %.*s\n", static_cast<int>(v0_bfs_policy.reason.size()),
+                         v0_bfs_policy.reason.data());
         }
         const bool v0_bfs_mode = v0_bfs_policy.enabled;
 
         if (v0_bfs_mode) {
             relation::CliqueStats cstats;
-            auto merged = relation::CliqueRelationMerger::merge_cliques(
-                std::move(sep.partial), &cstats);
+            auto merged =
+                relation::CliqueRelationMerger::merge_cliques(std::move(sep.partial), &cstats);
 
             stats_.merged_relations = merged.size();
 
             emit_log(LogLevel::Info, Phase::Filtering,
                      "v0_bfs (" + std::string(v0_bfs_policy.reason) +
-                     "): full=" + std::to_string(sep.full.size()) +
-                     " " + cstats.to_string() +
-                     " merged=" + std::to_string(merged.size()));
+                         "): full=" + std::to_string(sep.full.size()) + " " + cstats.to_string() +
+                         " merged=" + std::to_string(merged.size()));
             std::fprintf(stderr, "[v0_bfs] reason=%.*s %s merged=%zu (V3 cascade skipped)\n",
-                         static_cast<int>(v0_bfs_policy.reason.size()),
-                         v0_bfs_policy.reason.data(),
+                         static_cast<int>(v0_bfs_policy.reason.size()), v0_bfs_policy.reason.data(),
                          cstats.to_string().c_str(), merged.size());
 
             relations = std::move(sep.full);
             relations.reserve(relations.size() + merged.size());
-            relations.insert(relations.end(),
-                std::make_move_iterator(merged.begin()),
-                std::make_move_iterator(merged.end()));
+            relations.insert(relations.end(), std::make_move_iterator(merged.begin()),
+                             std::make_move_iterator(merged.end()));
 
             // V3 cascade skipped — V0 BFS already covered weight≥3 chains.
             // Fall through to final stats/return.
@@ -1321,27 +1424,26 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
         // ── V3 cascade prep: keep partial copy if cascade enabled ──
         std::vector<relation::Relation> partial_copy_for_v3;
         const bool use_v3 = cascade_v3_enabled();
-        if (use_v3) partial_copy_for_v3 = sep.partial;
+        if (use_v3)
+            partial_copy_for_v3 = sep.partial;
 
         relation::PartialRelationMerger::MergeStats mstats;
-        auto merged = relation::PartialRelationMerger::merge_all(
-            std::move(sep.partial), 10, &mstats);
+        auto merged =
+            relation::PartialRelationMerger::merge_all(std::move(sep.partial), 10, &mstats);
 
         stats_.merged_relations = merged.size();
 
         emit_log(LogLevel::Info, Phase::Filtering,
-                 "merge: full=" + std::to_string(sep.full.size()) +
-                 " 1lp=" + std::to_string(mstats.input_1lp) +
-                 " 2lp=" + std::to_string(mstats.input_2lp) +
-                 " merged=" + std::to_string(merged.size()));
+                 "merge: full=" + std::to_string(sep.full.size()) + " 1lp=" +
+                     std::to_string(mstats.input_1lp) + " 2lp=" + std::to_string(mstats.input_2lp) +
+                     " merged=" + std::to_string(merged.size()));
 
         // Only keep full + merged — unmerged partials create singleton LP columns
         relations = std::move(sep.full);
         // Reserve full + V0 merged + V3 estimate (~3× merged worst case).
         relations.reserve(relations.size() + merged.size() * 4);
-        relations.insert(relations.end(),
-            std::make_move_iterator(merged.begin()),
-            std::make_move_iterator(merged.end()));
+        relations.insert(relations.end(), std::make_move_iterator(merged.begin()),
+                         std::make_move_iterator(merged.end()));
 
         // ── V3 cascade (ENV: GNFS_CASCADE_V3=1) — runs AFTER V0 on partial copy ──
         // V0 handles weight=2 LP keys; V3 spans weight≥3 keys via BFS spanning tree.
@@ -1355,14 +1457,13 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
             // combination. Distinct merged rows may share their materialized
             // primary (a,b), while the same source set may be materialized in
             // a different order by the two strategies.
-            std::unordered_set<
-                relation::RelationSourceCombination,
-                relation::RelationSourceCombinationHash> existing_keys;
+            std::unordered_set<relation::RelationSourceCombination,
+                               relation::RelationSourceCombinationHash>
+                existing_keys;
             existing_keys.reserve(relations.size());
             for (const auto& r : relations) {
                 if (r.is_merged()) {
-                    existing_keys.insert(
-                        relation::relation_source_combination(r));
+                    existing_keys.insert(relation::relation_source_combination(r));
                 }
             }
 
@@ -1370,8 +1471,7 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
             size_t v3_dedup_skipped = 0;
             for (auto& r : v3_merged) {
                 if (!r.is_merged() ||
-                    existing_keys.insert(
-                        relation::relation_source_combination(r)).second) {
+                    existing_keys.insert(relation::relation_source_combination(r)).second) {
                     relations.push_back(std::move(r));
                     ++v3_added;
                 } else {
@@ -1380,9 +1480,8 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
             }
 
             emit_log(LogLevel::Info, Phase::Filtering,
-                     "v3_cascade: " + cstats.to_string() +
-                     " added=" + std::to_string(v3_added) +
-                     " dedup=" + std::to_string(v3_dedup_skipped));
+                     "v3_cascade: " + cstats.to_string() + " added=" + std::to_string(v3_added) +
+                         " dedup=" + std::to_string(v3_dedup_skipped));
             std::fprintf(stderr, "[v3_cascade.filter] %s added=%zu dedup=%zu\n",
                          cstats.to_string().c_str(), v3_added, v3_dedup_skipped);
 
@@ -1398,15 +1497,14 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
     // Caller (Phase 5 matrix builder) creates one column per odd-exp unique
     // LP key; emit count here so 50d/60d plateau analysis has empirical data.
     size_t lp_cols_after_filter = (params_.large_prime_bound > params_.algebraic_bound)
-        ? relation::count_unique_lp_keys(relations)
-        : 0;
+                                      ? relation::count_unique_lp_keys(relations)
+                                      : 0;
     emit_log(LogLevel::Info, Phase::Filtering,
              "after filter: " + std::to_string(relations.size()) + " relations" +
-             " (lp_cols=" + std::to_string(lp_cols_after_filter) + ")");
+                 " (lp_cols=" + std::to_string(lp_cols_after_filter) + ")");
     // stderr fallback for stress/progressive runs (no log_cb_ registered)
-    std::fprintf(stderr,
-        "[filter] after: rels=%zu lp_cols=%zu\n",
-        relations.size(), lp_cols_after_filter);
+    std::fprintf(stderr, "[filter] after: rels=%zu lp_cols=%zu\n", relations.size(),
+                 lp_cols_after_filter);
     emit_progress(Phase::Filtering, "Filtering complete", 1.0);
 
     return relations;
@@ -1416,10 +1514,8 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
 // Phase 5: Linear Algebra
 // ============================================================
 
-Pipeline::MatrixResult Pipeline::solve_matrix(
-        std::vector<Relation> relations,
-        const FactorBase& fb,
-        const PolynomialContext& ctx) {
+Pipeline::MatrixResult Pipeline::solve_matrix(std::vector<Relation> relations, const FactorBase& fb,
+                                              const PolynomialContext& ctx) {
     emit_progress(Phase::LinearAlgebra, "Building matrix");
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -1432,7 +1528,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
     mb_config.include_schirokauer = true;
     mb_config.num_qc_primes = params_.num_qc_primes;
     mb_config.qc_prime_start = 100;
-    mb_config.schirokauer_primes = {2};  // Only ℓ=2 for GF(2) matrix
+    mb_config.schirokauer_primes = {2}; // Only ℓ=2 for GF(2) matrix
     mb_config.verbose = false;
 
     linalg::MatrixBuilder mb(mb_config);
@@ -1470,8 +1566,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
     if (use_streaming_mb) {
         linalg::VectorRelationSource src(relations);
         build_result = mb.build_with_qc_streaming(src, fb, ctx);
-        std::fprintf(stderr,
-            "[sge-ooc] matrix built via streaming path (GNFS_SGE_STREAMING)\n");
+        std::fprintf(stderr, "[sge-ooc] matrix built via streaming path (GNFS_SGE_STREAMING)\n");
     } else {
         build_result = mb.build_with_qc(relations, fb, ctx);
     }
@@ -1484,8 +1579,8 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
 
     emit_log(LogLevel::Info, Phase::LinearAlgebra,
              "matrix: " + std::to_string(matrix_stats.num_rows) + "x" +
-             std::to_string(matrix_stats.num_cols) +
-             " excess=" + std::to_string(matrix_stats.excess));
+                 std::to_string(matrix_stats.num_cols) +
+                 " excess=" + std::to_string(matrix_stats.excess));
 
     // BACKLOG #1 diagnostic (F.1): row/col weight distribution. Reveals
     // sieve gap (empty cols) and SGE-eliminable garbage (singleton cols/rows)
@@ -1495,13 +1590,12 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
         const auto diag = linalg::compute_matrix_diagnostics(build_result.matrix);
         char buf[512];
         std::snprintf(buf, sizeof(buf),
-            "[mat-diag] rows: empty=%zu singleton=%zu w_range=[%zu,%zu] avg=%.2f"
-            " | cols: empty=%zu singleton=%zu low(2-4)=%zu max_w=%zu avg=%.2f",
-            diag.empty_rows, diag.singleton_rows,
-            diag.min_row_weight, diag.max_row_weight,
-            matrix_stats.avg_row_weight,
-            diag.empty_cols, diag.singleton_cols, diag.low_weight_cols,
-            diag.max_col_weight, diag.avg_col_weight);
+                      "[mat-diag] rows: empty=%zu singleton=%zu w_range=[%zu,%zu] avg=%.2f"
+                      " | cols: empty=%zu singleton=%zu low(2-4)=%zu max_w=%zu avg=%.2f",
+                      diag.empty_rows, diag.singleton_rows, diag.min_row_weight,
+                      diag.max_row_weight, matrix_stats.avg_row_weight, diag.empty_cols,
+                      diag.singleton_cols, diag.low_weight_cols, diag.max_col_weight,
+                      diag.avg_col_weight);
         emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
         std::fprintf(stderr, "%s\n", buf);
     }
@@ -1533,13 +1627,13 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
     // causes orthogonality breakdown); (2) SGE ineffectiveness (avg column weight
     // is too high for w1/w2 elimination).
     // Target: 1.1× cols for optimal SGE + BL. CADO-NFS typically uses 5-10% excess.
-    if (matrix_stats.num_rows > static_cast<size_t>(static_cast<double>(matrix_stats.num_cols) * 1.3)) {
+    if (matrix_stats.num_rows >
+        static_cast<size_t>(static_cast<double>(matrix_stats.num_cols) * 1.3)) {
         size_t target_rows = static_cast<size_t>(static_cast<double>(matrix_stats.num_cols) * 1.1);
         emit_log(LogLevel::Info, Phase::LinearAlgebra,
-                 "Trimming excess: " + std::to_string(matrix_stats.num_rows) +
-                 " rows -> " + std::to_string(target_rows) +
-                 " (keep " + std::to_string(target_rows) + "/" +
-                 std::to_string(matrix_stats.num_rows) + ")");
+                 "Trimming excess: " + std::to_string(matrix_stats.num_rows) + " rows -> " +
+                     std::to_string(target_rows) + " (keep " + std::to_string(target_rows) + "/" +
+                     std::to_string(matrix_stats.num_rows) + ")");
 
         // Shuffle and trim relations, then rebuild matrix
         std::mt19937 rng(42);
@@ -1564,21 +1658,19 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
 
         emit_log(LogLevel::Info, Phase::LinearAlgebra,
                  "Trimmed matrix: " + std::to_string(ms2.num_rows) + "x" +
-                 std::to_string(ms2.num_cols) +
-                 " excess=" + std::to_string(ms2.excess));
+                     std::to_string(ms2.num_cols) + " excess=" + std::to_string(ms2.excess));
 
         // Re-emit mat-diag after trim — col-weight distribution changes
         // because some cols lose all support when their rows were dropped.
         {
             const auto diag2 = linalg::compute_matrix_diagnostics(build_result.matrix);
             char buf[512];
-            std::snprintf(buf, sizeof(buf),
+            std::snprintf(
+                buf, sizeof(buf),
                 "[mat-diag post-trim] rows: empty=%zu singleton=%zu w_range=[%zu,%zu] avg=%.2f"
                 " | cols: empty=%zu singleton=%zu low(2-4)=%zu max_w=%zu avg=%.2f",
-                diag2.empty_rows, diag2.singleton_rows,
-                diag2.min_row_weight, diag2.max_row_weight,
-                ms2.avg_row_weight,
-                diag2.empty_cols, diag2.singleton_cols, diag2.low_weight_cols,
+                diag2.empty_rows, diag2.singleton_rows, diag2.min_row_weight, diag2.max_row_weight,
+                ms2.avg_row_weight, diag2.empty_cols, diag2.singleton_cols, diag2.low_weight_cols,
                 diag2.max_col_weight, diag2.avg_col_weight);
             emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
             std::fprintf(stderr, "%s\n", buf);
@@ -1596,14 +1688,14 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
         const size_t pre_cols = build_result.matrix.num_cols();
         const size_t post_rows = sge_result.reduced_matrix.num_rows();
         const size_t post_cols = sge_result.reduced_matrix.num_cols();
-        const double reduce_pct = (pre_rows == 0 || pre_cols == 0)
-            ? 0.0
-            : 100.0 * (1.0 - static_cast<double>(post_rows * post_cols) /
-                              static_cast<double>(pre_rows * pre_cols));
+        const double reduce_pct =
+            (pre_rows == 0 || pre_cols == 0)
+                ? 0.0
+                : 100.0 * (1.0 - static_cast<double>(post_rows * post_cols) /
+                                     static_cast<double>(pre_rows * pre_cols));
         char buf[256];
-        std::snprintf(buf, sizeof(buf),
-            "SGE: %zux%zu -> %zux%zu (reduce=%.1f%% area)",
-            pre_rows, pre_cols, post_rows, post_cols, reduce_pct);
+        std::snprintf(buf, sizeof(buf), "SGE: %zux%zu -> %zux%zu (reduce=%.1f%% area)", pre_rows,
+                      pre_cols, post_rows, post_cols, reduce_pct);
         // Promote to Info — SGE reduction is a key diagnostic for BACKLOG #1
         // 50d empirical (CLAUDE.md cites 30-60% reduction expectation).
         emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
@@ -1624,12 +1716,11 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
         const auto diag_sge = linalg::compute_matrix_diagnostics(sge_red);
         char buf[512];
         std::snprintf(buf, sizeof(buf),
-            "[mat-diag post-sge] rows: empty=%zu singleton=%zu w_range=[%zu,%zu]"
-            " | cols: empty=%zu singleton=%zu low(2-4)=%zu max_w=%zu avg=%.2f",
-            diag_sge.empty_rows, diag_sge.singleton_rows,
-            diag_sge.min_row_weight, diag_sge.max_row_weight,
-            diag_sge.empty_cols, diag_sge.singleton_cols, diag_sge.low_weight_cols,
-            diag_sge.max_col_weight, diag_sge.avg_col_weight);
+                      "[mat-diag post-sge] rows: empty=%zu singleton=%zu w_range=[%zu,%zu]"
+                      " | cols: empty=%zu singleton=%zu low(2-4)=%zu max_w=%zu avg=%.2f",
+                      diag_sge.empty_rows, diag_sge.singleton_rows, diag_sge.min_row_weight,
+                      diag_sge.max_row_weight, diag_sge.empty_cols, diag_sge.singleton_cols,
+                      diag_sge.low_weight_cols, diag_sge.max_col_weight, diag_sge.avg_col_weight);
         emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
         std::fprintf(stderr, "%s\n", buf);
     }
@@ -1645,7 +1736,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
     } else {
         emit_log(LogLevel::Warn, Phase::LinearAlgebra,
                  "SGE-reduced matrix is thin (" + std::to_string(sge_red.num_rows()) +
-                 "<=" + std::to_string(sge_red.num_cols()) + ") — skip BL, try BW directly");
+                     "<=" + std::to_string(sge_red.num_cols()) + ") — skip BL, try BW directly");
     }
 
     // If BL didn't find deps, or matrix is thin, use streaming Block Wiedemann.
@@ -1677,17 +1768,14 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
             const std::string mmap_path = gnfs::util::temp_path(
                 "gnfs_linalg_" + std::to_string(gnfs::util::process_id()) + ".csrmat");
             char log_buf[512];
-            std::snprintf(log_buf, sizeof(log_buf),
-                "[linalg-mmap] policy=%s nnz=%llu path=%s",
-                policy == linalg::MmapPolicy::On ? "on" : "auto",
-                static_cast<unsigned long long>(sge_nnz),
-                mmap_path.c_str());
+            std::snprintf(log_buf, sizeof(log_buf), "[linalg-mmap] policy=%s nnz=%llu path=%s",
+                          policy == linalg::MmapPolicy::On ? "on" : "auto",
+                          static_cast<unsigned long long>(sge_nnz), mmap_path.c_str());
             emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(log_buf));
             std::fprintf(stderr, "%s\n", log_buf);
 
             try {
-                linalg::MmapCSRMatrix mmap_csr =
-                    linalg::save_sparse_as_mmap(sge_red, mmap_path);
+                linalg::MmapCSRMatrix mmap_csr = linalg::save_sparse_as_mmap(sge_red, mmap_path);
                 dependencies = bw_solver.find_dependencies_view(mmap_csr);
             } catch (const std::exception& ex) {
                 // mmap path failed (disk full / permission / corruption):
@@ -1719,7 +1807,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
 
     emit_log(LogLevel::Info, Phase::LinearAlgebra,
              "deps=" + std::to_string(dependencies.size()) +
-             " time=" + std::to_string(stats_.timings.linalg_s) + "s");
+                 " time=" + std::to_string(stats_.timings.linalg_s) + "s");
     emit_progress(Phase::LinearAlgebra, "Linear algebra complete", 1.0);
 
     MatrixResult mr;
@@ -1737,7 +1825,8 @@ Pipeline::MatrixResult Pipeline::solve_matrix(
 static linalg::BitVector to_bitvector(const std::vector<bool>& vec) {
     linalg::BitVector bv(vec.size());
     for (size_t i = 0; i < vec.size(); ++i) {
-        if (vec[i]) bv.set(i);
+        if (vec[i])
+            bv.set(i);
     }
     return bv;
 }
@@ -1745,33 +1834,33 @@ static linalg::BitVector to_bitvector(const std::vector<bool>& vec) {
 // Helper: verify dependency (XOR of selected rows = zero)
 // Uses uint8_t per-column parity (XOR), 8× more cache-friendly than size_t counter.
 static bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& dep) {
-    if (dep.size() != mat.num_rows()) return false;
+    if (dep.size() != mat.num_rows())
+        return false;
     std::vector<uint8_t> col_parity(mat.num_cols(), 0);
     for (size_t row = 0; row < mat.num_rows(); ++row) {
         if (row < dep.size() && dep[row]) {
             for (uint32_t col : mat.row(row).indices()) {
-                col_parity[col] ^= 1;  // XOR in GF(2)
+                col_parity[col] ^= 1; // XOR in GF(2)
             }
         }
     }
     for (size_t c = 0; c < col_parity.size(); ++c) {
-        if (col_parity[c]) return false;
+        if (col_parity[c])
+            return false;
     }
     return true;
 }
 
-FactorResult Pipeline::extract_factors(
-        const MatrixResult& mr,
-        const FactorBase& fb,
-        const PolynomialContext& ctx) {
+FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase& fb,
+                                       const PolynomialContext& ctx) {
     emit_progress(Phase::SquareRoot, "Starting factor extraction");
 
     auto t0_sqrt = std::chrono::high_resolution_clock::now();
 
     FactorResult result;
-    result.n = n_;  // Integer op=
+    result.n = n_; // Integer op=
     result.stats = stats_;
-    result.factors.reserve(2);  // success path pushes 2 factors
+    result.factors.reserve(2); // success path pushes 2 factors
 
     if (mr.dependencies.empty()) {
         emit_log(LogLevel::Error, Phase::SquareRoot, "No dependencies to try");
@@ -1780,8 +1869,10 @@ FactorResult Pipeline::extract_factors(
     }
 
     auto is_nontrivial = [this](const Integer& f) -> bool {
-        if (f.fits_uint64() && f.to_uint64() == 1) return false;
-        if (f.compare(n_) == 0) return false;
+        if (f.fits_uint64() && f.to_uint64() == 1)
+            return false;
+        if (f.compare(n_) == 0)
+            return false;
         return true;
     };
 
@@ -1789,7 +1880,7 @@ FactorResult Pipeline::extract_factors(
         auto factors = sqrt::extract_factors(rat_sqrt, alg_value, n_);
 
         if (is_nontrivial(factors.factor1)) {
-            Integer f1 = factors.factor1;   // copy ctor
+            Integer f1 = factors.factor1; // copy ctor
             Integer f2 = n_;
             f2 /= f1;
             Integer check = f1;
@@ -1802,7 +1893,7 @@ FactorResult Pipeline::extract_factors(
             }
         }
         if (is_nontrivial(factors.factor2)) {
-            Integer f1 = factors.factor2;   // copy ctor
+            Integer f1 = factors.factor2; // copy ctor
             Integer f2 = n_;
             f2 /= f1;
             Integer check = f1;
@@ -1823,29 +1914,33 @@ FactorResult Pipeline::extract_factors(
         stats_.dependencies_tried = static_cast<int>(dep_idx + 1);
 
         emit_progress(Phase::SquareRoot,
-            "Trying dependency " + std::to_string(dep_idx + 1) + "/" +
-            std::to_string(mr.dependencies.size()),
-            static_cast<double>(dep_idx) / static_cast<double>(mr.dependencies.size()));
+                      "Trying dependency " + std::to_string(dep_idx + 1) + "/" +
+                          std::to_string(mr.dependencies.size()),
+                      static_cast<double>(dep_idx) / static_cast<double>(mr.dependencies.size()));
 
-        if (!verify_dependency(mr.matrix, dep)) continue;
+        if (!verify_dependency(mr.matrix, dep))
+            continue;
 
         auto bv = to_bitvector(dep);
 
         // Rational sqrt
         auto rat_result = sqrt::compute_rational_sqrt(bv, mr.relations, fb, n_, ctx.m());
-        if (!rat_result.success) continue;
+        if (!rat_result.success)
+            continue;
 
         // Algebraic sqrt
         auto alg_result = sqrt::compute_algebraic_sqrt(bv, mr.relations, ctx);
-        Integer alg_value = alg_result.success ? alg_result.value : Integer(1);  // copy ctor
+        Integer alg_value = alg_result.success ? alg_result.value : Integer(1); // copy ctor
 
         // Try Y
-        if (try_factor(rat_result.value, alg_value)) break;
+        if (try_factor(rat_result.value, alg_value))
+            break;
 
         // Try -Y — mpz_sub writes n_ - alg_value directly (skip clone+ -=)
         Integer alg_neg;
         mpz_sub(alg_neg.get_mpz(), n_.get_mpz(), alg_value.get_mpz());
-        if (try_factor(rat_result.value, alg_neg)) break;
+        if (try_factor(rat_result.value, alg_neg))
+            break;
     }
 
     // If no single dep worked, try XOR pairs
@@ -1857,27 +1952,34 @@ FactorResult Pipeline::extract_factors(
             for (size_t j = i + 1; j < limit && !result.success; ++j) {
                 linalg::BitVector combined = to_bitvector(mr.dependencies[i]);
                 combined.xor_with(to_bitvector(mr.dependencies[j]));
-                if (combined.popcount() < 2) continue;
+                if (combined.popcount() < 2)
+                    continue;
 
                 // Convert back to vector<bool> for verify
                 std::vector<bool> combined_vec(mr.matrix.num_rows(), false);
                 for (size_t k = 0; k < mr.matrix.num_rows(); ++k) {
-                    if (combined.test(k)) combined_vec[k] = true;
+                    if (combined.test(k))
+                        combined_vec[k] = true;
                 }
-                if (!verify_dependency(mr.matrix, combined_vec)) continue;
+                if (!verify_dependency(mr.matrix, combined_vec))
+                    continue;
 
-                auto rat_result = sqrt::compute_rational_sqrt(combined, mr.relations, fb, n_, ctx.m());
-                if (!rat_result.success) continue;
+                auto rat_result =
+                    sqrt::compute_rational_sqrt(combined, mr.relations, fb, n_, ctx.m());
+                if (!rat_result.success)
+                    continue;
 
                 auto alg_result = sqrt::compute_algebraic_sqrt(combined, mr.relations, ctx);
-                Integer alg_val = alg_result.success ? alg_result.value : Integer(1);  // copy ctor
+                Integer alg_val = alg_result.success ? alg_result.value : Integer(1); // copy ctor
 
-                if (try_factor(rat_result.value, alg_val)) break;
+                if (try_factor(rat_result.value, alg_val))
+                    break;
 
                 // mpz_sub writes n_ - alg_val directly (skip clone+ -=)
                 Integer neg;
                 mpz_sub(neg.get_mpz(), n_.get_mpz(), alg_val.get_mpz());
-                if (try_factor(rat_result.value, neg)) break;
+                if (try_factor(rat_result.value, neg))
+                    break;
             }
         }
     }
@@ -1896,7 +1998,7 @@ FactorResult Pipeline::extract_factors(
     if (result.success) {
         emit_log(LogLevel::Info, Phase::FactorExtraction,
                  "SUCCESS: " + result.factors[0].to_string() + " * " +
-                 result.factors[1].to_string());
+                     result.factors[1].to_string());
     } else {
         emit_log(LogLevel::Warn, Phase::FactorExtraction, "No non-trivial factor found");
     }
@@ -1915,17 +2017,16 @@ FactorResult Pipeline::run() {
     // 15 for large N (target 2^-30 error rate for crypto-grade composites).
     const int prime_reps = (stats_.n_bits <= 64) ? 5 : 15;
     if (mpz_probab_prime_p(n_.get_mpz(), prime_reps) > 0) {
-        emit_log(LogLevel::Error, Phase::PolynomialSelection,
-                 "N is prime or probably prime");
+        emit_log(LogLevel::Error, Phase::PolynomialSelection, "N is prime or probably prime");
         FactorResult r;
-        r.n = n_;  // Integer op=
+        r.n = n_; // Integer op=
         r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
         return r;
     }
     if (mpz_cmp_si(n_.get_mpz(), 1) <= 0) {
         FactorResult r;
-        r.n = n_;  // Integer op=
+        r.n = n_; // Integer op=
         r.stats = stats_;
         return r;
     }
@@ -1942,10 +2043,10 @@ FactorResult Pipeline::run() {
                 mpz_pow_ui(check.get_mpz(), root.get_mpz(), exp);
                 if (check.compare(n_) == 0) {
                     FactorResult r;
-                    r.n = n_;  // Integer op=
+                    r.n = n_; // Integer op=
                     r.success = true;
                     r.factors.reserve(2);
-                    r.factors.push_back(root);    // Integer copy ctor
+                    r.factors.push_back(root); // Integer copy ctor
                     r.factors.push_back(n_);
 
                     r.factors[1] /= root;
@@ -1955,7 +2056,7 @@ FactorResult Pipeline::run() {
                     r.stats.method_reason = "perfect power";
                     emit_log(LogLevel::Info, Phase::PolynomialSelection,
                              "Perfect power detected: " + root.to_string() + "^" +
-                             std::to_string(exp));
+                                 std::to_string(exp));
                     return r;
                 }
             }
@@ -1963,24 +2064,22 @@ FactorResult Pipeline::run() {
     }
 
     // ── Method selection ──
-    auto [method, reason] = select_method(
-        stats_.n_bits, stats_.n_digits, config_.method);
+    auto [method, reason] = select_method(stats_.n_bits, stats_.n_digits, config_.method);
     stats_.method_used = method;
     stats_.method_reason = reason;
     emit_log(LogLevel::Info, Phase::PolynomialSelection,
              "Method: " + std::string(method_name(method)) + " (" + reason + ")");
 
     // Helper: build result from a found factor
-    auto make_fast_result = [this](const Integer& f1,
-                                    FactorizationMethod m,
-                                    const std::string& m_reason) -> FactorResult {
+    auto make_fast_result = [this](const Integer& f1, FactorizationMethod m,
+                                   const std::string& m_reason) -> FactorResult {
         FactorResult r;
-        r.n = n_;  // Integer op=
+        r.n = n_; // Integer op=
         r.success = true;
-        Integer f2 = n_;  // Integer copy ctor
+        Integer f2 = n_; // Integer copy ctor
         f2 /= f1;
         if (f1.compare(f2) <= 0) {
-            r.factors.push_back(f1);  // Integer copy ctor
+            r.factors.push_back(f1); // Integer copy ctor
             r.factors.push_back(std::move(f2));
         } else {
             r.factors.push_back(f2);
@@ -2004,15 +2103,14 @@ FactorResult Pipeline::run() {
             Integer f1(small_f);
             emit_log(LogLevel::Info, Phase::PolynomialSelection,
                      "Trial division found factor: " + std::to_string(small_f));
-            return make_fast_result(f1, FactorizationMethod::TrialDivision,
-                                   "factor ≤ 10^6");
+            return make_fast_result(f1, FactorizationMethod::TrialDivision, "factor ≤ 10^6");
         }
     }
 
     // If user forced trial-only, stop here
     if (method == FactorizationMethod::TrialDivision) {
         FactorResult r;
-        r.n = n_;  // Integer op=
+        r.n = n_; // Integer op=
         r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
         return r;
@@ -2038,13 +2136,18 @@ FactorResult Pipeline::run() {
             // For balanced semiprimes ≥25d, rho needs O(10^{d/4}) iters — too slow.
             // Keep budget small to catch unbalanced cases only.
             size_t rho_limit;
-            bool siqs_target = (method == FactorizationMethod::SIQS ||
-                                method == FactorizationMethod::GNFS);
-            if (stats_.n_bits <= 40)        rho_limit = 100000;     // ~1ms
-            else if (stats_.n_bits <= 50)   rho_limit = siqs_target ? 100000 : 200000;
-            else if (stats_.n_bits <= 64)   rho_limit = siqs_target ? 200000 : 500000;
-            else if (stats_.n_bits <= 80)   rho_limit = siqs_target ? 100000 : 1000000;
-            else                            rho_limit = siqs_target ? 50000  : 1000000;
+            bool siqs_target =
+                (method == FactorizationMethod::SIQS || method == FactorizationMethod::GNFS);
+            if (stats_.n_bits <= 40)
+                rho_limit = 100000; // ~1ms
+            else if (stats_.n_bits <= 50)
+                rho_limit = siqs_target ? 100000 : 200000;
+            else if (stats_.n_bits <= 64)
+                rho_limit = siqs_target ? 200000 : 500000;
+            else if (stats_.n_bits <= 80)
+                rho_limit = siqs_target ? 100000 : 1000000;
+            else
+                rho_limit = siqs_target ? 50000 : 1000000;
 
             uint64_t f128 = pollard_rho_mpn2(n_, rho_limit);
             if (f128 > 1) {
@@ -2053,7 +2156,7 @@ FactorResult Pipeline::run() {
                     emit_log(LogLevel::Info, Phase::PolynomialSelection,
                              "mpn2 rho found factor: " + std::to_string(f128));
                     return make_fast_result(f1, FactorizationMethod::PollardRho,
-                                           "mpn2 rho (≤128bit)");
+                                            "mpn2 rho (≤128bit)");
                 }
             }
         }
@@ -2064,8 +2167,7 @@ FactorResult Pipeline::run() {
             if (mpz_cmp_si(rho_f.get_mpz(), 1) > 0 && rho_f.compare(n_) != 0) {
                 emit_log(LogLevel::Info, Phase::PolynomialSelection,
                          "Pollard rho found factor: " + rho_f.to_string());
-                return make_fast_result(rho_f, FactorizationMethod::PollardRho,
-                                       "GMP rho fallback");
+                return make_fast_result(rho_f, FactorizationMethod::PollardRho, "GMP rho fallback");
             }
         }
     }
@@ -2073,7 +2175,7 @@ FactorResult Pipeline::run() {
     // If user forced rho-only, stop here
     if (method == FactorizationMethod::PollardRho) {
         FactorResult r;
-        r.n = n_;  // Integer op=
+        r.n = n_; // Integer op=
         r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
         return r;
@@ -2095,31 +2197,39 @@ FactorResult Pipeline::run() {
         cofactor::ECM::Config ecm_config;
         ecm_config.auto_params = false;
         if (expected_factor_bits <= 50) {
-            ecm_config.B1 = 2000; ecm_config.B2 = 50000; ecm_config.num_curves = 3;
+            ecm_config.B1 = 2000;
+            ecm_config.B2 = 50000;
+            ecm_config.num_curves = 3;
         } else {
-            ecm_config.B1 = 0; ecm_config.num_curves = 0;
+            ecm_config.B1 = 0;
+            ecm_config.num_curves = 0;
         }
 
         // Skip ECM if configured with 0 curves
         if (ecm_config.num_curves > 0) {
-        emit_log(LogLevel::Info, Phase::PolynomialSelection,
-                 "ECM probe: " + std::to_string(stats_.n_digits) + "d N, "
-                 "expected factor ~" + std::to_string(expected_factor_bits) + " bits, "
-                 "B1=" + std::to_string(ecm_config.B1) +
-                 " curves=" + std::to_string(ecm_config.num_curves));
-
-        auto ecm_t0 = std::chrono::high_resolution_clock::now();
-        auto ecm_f = cofactor::ECM::factor(n_, ecm_config);
-        auto ecm_t1 = std::chrono::high_resolution_clock::now();
-        double ecm_ms = std::chrono::duration<double, std::milli>(ecm_t1 - ecm_t0).count();
-
-        if (ecm_f && mpz_cmp_si(ecm_f->get_mpz(), 1) > 0 && ecm_f->compare(n_) != 0) {
             emit_log(LogLevel::Info, Phase::PolynomialSelection,
-                     "ECM found factor in " + std::to_string(ecm_ms) + "ms: " + ecm_f->to_string());
-            return make_fast_result(*ecm_f, FactorizationMethod::SIQS,
-                                   "ECM found factor (B1=" + std::to_string(ecm_config.B1) +
-                                   ", " + std::to_string(ecm_ms) + "ms)");
-        }
+                     "ECM probe: " + std::to_string(stats_.n_digits) +
+                         "d N, "
+                         "expected factor ~" +
+                         std::to_string(expected_factor_bits) +
+                         " bits, "
+                         "B1=" +
+                         std::to_string(ecm_config.B1) +
+                         " curves=" + std::to_string(ecm_config.num_curves));
+
+            auto ecm_t0 = std::chrono::high_resolution_clock::now();
+            auto ecm_f = cofactor::ECM::factor(n_, ecm_config);
+            auto ecm_t1 = std::chrono::high_resolution_clock::now();
+            double ecm_ms = std::chrono::duration<double, std::milli>(ecm_t1 - ecm_t0).count();
+
+            if (ecm_f && mpz_cmp_si(ecm_f->get_mpz(), 1) > 0 && ecm_f->compare(n_) != 0) {
+                emit_log(LogLevel::Info, Phase::PolynomialSelection,
+                         "ECM found factor in " + std::to_string(ecm_ms) +
+                             "ms: " + ecm_f->to_string());
+                return make_fast_result(*ecm_f, FactorizationMethod::SIQS,
+                                        "ECM found factor (B1=" + std::to_string(ecm_config.B1) +
+                                            ", " + std::to_string(ecm_ms) + "ms)");
+            }
         } // if (ecm_config.num_curves > 0)
     }
 
@@ -2139,33 +2249,45 @@ FactorResult Pipeline::run() {
         size_t siqs_timeout;
         if (method == FactorizationMethod::SIQS) {
             // User selected SIQS: give it plenty of time
-            if (stats_.n_digits <= 50)      siqs_timeout = 60;
-            else if (stats_.n_digits <= 60) siqs_timeout = 300;
-            else if (stats_.n_digits <= 70) siqs_timeout = 900;
-            else if (stats_.n_digits <= 80) siqs_timeout = 1800;
-            else if (stats_.n_digits <= 90) siqs_timeout = 3600;
-            else                            siqs_timeout = 7200;
+            if (stats_.n_digits <= 50)
+                siqs_timeout = 60;
+            else if (stats_.n_digits <= 60)
+                siqs_timeout = 300;
+            else if (stats_.n_digits <= 70)
+                siqs_timeout = 900;
+            else if (stats_.n_digits <= 80)
+                siqs_timeout = 1800;
+            else if (stats_.n_digits <= 90)
+                siqs_timeout = 3600;
+            else
+                siqs_timeout = 7200;
         } else {
             // Auto/GNFS: SIQS as quick probe before GNFS
-            if (stats_.n_digits <= 50)      siqs_timeout = 30;
-            else if (stats_.n_digits <= 60) siqs_timeout = 120;
-            else if (stats_.n_digits <= 70) siqs_timeout = 300;
-            else if (stats_.n_digits <= 80) siqs_timeout = 900;
-            else                            siqs_timeout = 3600;
+            if (stats_.n_digits <= 50)
+                siqs_timeout = 30;
+            else if (stats_.n_digits <= 60)
+                siqs_timeout = 120;
+            else if (stats_.n_digits <= 70)
+                siqs_timeout = 300;
+            else if (stats_.n_digits <= 80)
+                siqs_timeout = 900;
+            else
+                siqs_timeout = 3600;
         }
 
         auto siqs_result = siqs::factor(n_, siqs_timeout, true);
         if (siqs_result) {
             emit_log(LogLevel::Info, Phase::PolynomialSelection,
-                     "SIQS found factor: " + siqs_result->factor1.to_string() +
-                     " * " + siqs_result->factor2.to_string());
+                     "SIQS found factor: " + siqs_result->factor1.to_string() + " * " +
+                         siqs_result->factor2.to_string());
 
             FactorResult r;
             r.success = true;
-            r.n = n_;  // Integer op=
-            Integer f1 = siqs_result->factor1;  // Integer copy ctor
+            r.n = n_;                          // Integer op=
+            Integer f1 = siqs_result->factor1; // Integer copy ctor
             Integer f2 = siqs_result->factor2;
-            if (f1 > f2) std::swap(f1, f2);
+            if (f1 > f2)
+                std::swap(f1, f2);
             r.factors.push_back(std::move(f1));
             r.factors.push_back(std::move(f2));
             r.stats = stats_;
@@ -2180,14 +2302,13 @@ FactorResult Pipeline::run() {
             emit_log(LogLevel::Warn, Phase::PolynomialSelection,
                      "SIQS failed (timeout=" + std::to_string(siqs_timeout) + "s)");
             FactorResult r;
-            r.n = n_;  // Integer op=
+            r.n = n_; // Integer op=
             r.stats = stats_;
             r.stats.timings.total_s = elapsed_s();
             return r;
         }
 
-        emit_log(LogLevel::Info, Phase::PolynomialSelection,
-                 "SIQS failed, falling back to GNFS");
+        emit_log(LogLevel::Info, Phase::PolynomialSelection, "SIQS failed, falling back to GNFS");
     }
 
     // ── Phase 3: Full GNFS pipeline ──
@@ -2208,11 +2329,11 @@ FactorResult Pipeline::run() {
     if (relations.size() <= effective_cols_post) {
         emit_log(LogLevel::Error, Phase::Sieving,
                  "Not enough usable relations: " + std::to_string(relations.size()) +
-                 " <= " + std::to_string(effective_cols_post) +
-                 " (matrix_cols=" + std::to_string(matrix_cols) +
-                 " + lp_cols=" + std::to_string(post_lp_cols) + ")");
+                     " <= " + std::to_string(effective_cols_post) +
+                     " (matrix_cols=" + std::to_string(matrix_cols) +
+                     " + lp_cols=" + std::to_string(post_lp_cols) + ")");
         FactorResult r;
-        r.n = n_;  // Integer op=
+        r.n = n_; // Integer op=
         r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
         return r;
