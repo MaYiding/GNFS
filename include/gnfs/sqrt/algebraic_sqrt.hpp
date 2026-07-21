@@ -7,6 +7,7 @@
 #include "../core/relation.hpp"
 #include "../core/polynomial_context.hpp"
 #include "../linalg/sparse_matrix.hpp"
+#include "../relation/large_prime_key.hpp"
 
 #include <atomic>
 #include <cstdlib>
@@ -14,6 +15,7 @@
 #include <iostream>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace gnfs::sqrt {
@@ -38,14 +40,11 @@ using linalg::BitVector;
     const size_t pop = dependency.popcount();
     std::unordered_map<uint32_t, uint64_t> fb_exponents;
     fb_exponents.reserve(std::min(pop * 30, relations.size()));
-    // Use (p, r) pair as key to distinguish prime ideals above the same rational prime.
-    // Pack into uint64: p (high 32) | r (low 32) — primes fit in 32 bits for 50d/60d
-    // (LP bound 8M / 67M both < 2^32). Hash on uint64 is O(1) vs std::map O(log n).
-    auto pack_pr = [](uint64_t p, uint64_t r) -> uint64_t {
-        return (p << 32) | (r & 0xFFFFFFFFu);
-    };
-    std::unordered_map<uint64_t, uint64_t> lp_exponents;
-    lp_exponents.reserve(std::min(pop * 4, relations.size()));  // avg 2-4 LP/row
+    // Track the exact symmetric difference of algebraic LP ideals. PrimePower
+    // uses uint64_t p/r, so a 32+32 packed key is not lossless.
+    std::unordered_set<relation::LargePrimeKey, relation::LargePrimeKeyHash>
+        odd_lp_ideals;
+    odd_lp_ideals.reserve(std::min(pop * 4, relations.size()));
 
     for (size_t i = 0; i < relations.size(); ++i) {
         if (!dependency.test(i)) continue;
@@ -53,18 +52,18 @@ using linalg::BitVector;
         for (uint32_t idx : rel.algebraic_factors) {
             fb_exponents[idx]++;
         }
-        for (const auto& lp : rel.algebraic_large_prime) {
-            lp_exponents[pack_pr(lp.p, lp.r)] += lp.e;
-        }
+        relation::for_each_odd_large_prime_key(
+            rel, [&](const relation::LargePrimeKey& key) {
+                if (!key.is_algebraic) return;
+                auto [it, inserted] = odd_lp_ideals.insert(key);
+                if (!inserted) odd_lp_ideals.erase(it);
+            });
     }
 
     for (const auto& [idx, exp] : fb_exponents) {
         if (exp % 2 != 0) return false;
     }
-    for (const auto& [key, exp] : lp_exponents) {
-        if (exp % 2 != 0) return false;
-    }
-    return true;
+    return odd_lp_ideals.empty();
 }
 
 /// 代数平方根计算结果

@@ -7,12 +7,14 @@
 #include "../core/integer.hpp"
 #include "../core/polynomial_context.hpp"
 #include "../factor_base/factor_base.hpp"
+#include "../relation/large_prime_key.hpp"
 #include "../sqrt/class_group.hpp"
 #include "../sqrt/modular_poly.hpp"
 #include "../polynomial/int_polynomial.hpp"
 #include "../util/primes.hpp"
 #include "../util/thread_pool.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,7 +28,6 @@ namespace gnfs::linalg {
 
 using core::Integer;
 using core::Relation;
-using core::PrimePower;
 using core::PolynomialContext;
 using factor_base::FactorBase;
 
@@ -556,46 +557,17 @@ private:
 
     /// Accumulate a single relation's LP contributions into LargePrimeInfo.
     /// Extracted from collect_large_primes so both vector and streaming paths
-    /// share identical insertion logic — guarantees the same unordered_set
-    /// iteration order (column layout) across paths on identical inputs.
+    /// share identical parity semantics. Column assignment sorts the collected
+    /// keys later, so hash iteration order cannot affect the layout.
     static void accumulate_lp_one(LargePrimeInfo& info, const Relation& rel) {
-        // 有理侧：按素数累计指数，只收集奇数指数的
-        // 小 LP 计数 (典型 1-2) → 用 stack 数组避免 map alloc
-        const auto& rat_lps = rel.rational_large_prime;
-        if (rat_lps.size() <= 8) {
-            uint64_t rkeys[8]; uint32_t rexps[8]; size_t ru = 0;
-            for (const auto& lp : rat_lps) {
-                size_t j = 0;
-                for (; j < ru; ++j) if (rkeys[j] == lp.p) break;
-                if (j == ru) { rkeys[ru] = lp.p; rexps[ru] = lp.e; ++ru; }
-                else rexps[j] += lp.e;
-            }
-            for (size_t i = 0; i < ru; ++i) if (rexps[i] & 1u) info.rat_primes.insert(rkeys[i]);
-        } else {
-            std::unordered_map<uint64_t, uint32_t> rat_exp;
-            rat_exp.reserve(rat_lps.size());
-            for (const auto& lp : rat_lps) rat_exp[lp.p] += lp.e;
-            for (const auto& [p, exp] : rat_exp) if (exp & 1u) info.rat_primes.insert(p);
-        }
-
-        // 代数侧：按 (p,r) 素理想累计指数，只收集奇数指数的
-        const auto& alg_lps = rel.algebraic_large_prime;
-        if (alg_lps.size() <= 8) {
-            PrimeIdealKey akeys[8]; uint32_t aexps[8]; size_t au = 0;
-            for (const auto& lp : alg_lps) {
-                PrimeIdealKey k{lp.p, lp.r};
-                size_t j = 0;
-                for (; j < au; ++j) if (akeys[j] == k) break;
-                if (j == au) { akeys[au] = k; aexps[au] = lp.e; ++au; }
-                else aexps[j] += lp.e;
-            }
-            for (size_t i = 0; i < au; ++i) if (aexps[i] & 1u) info.alg_primes.insert(akeys[i]);
-        } else {
-            std::unordered_map<PrimeIdealKey, uint32_t, PrimeIdealKeyHash> alg_exp;
-            alg_exp.reserve(alg_lps.size());
-            for (const auto& lp : alg_lps) alg_exp[{lp.p, lp.r}] += lp.e;
-            for (const auto& [key, exp] : alg_exp) if (exp & 1u) info.alg_primes.insert(key);
-        }
+        gnfs::relation::for_each_odd_large_prime_key(
+            rel, [&](const gnfs::relation::LargePrimeKey& key) {
+                if (key.is_algebraic) {
+                    info.alg_primes.insert(PrimeIdealKey{key.prime, key.root});
+                } else {
+                    info.rat_primes.insert(key.prime);
+                }
+            });
     }
 
     /// 收集所有大素数（仅包含有效贡献的 LP）
@@ -769,6 +741,43 @@ private:
         return deg(a) >= 1;
     }
 
+    /// Assign deterministic LP columns after factor-base/sign offsets are set.
+    /// unordered_set iteration order is not portable across standard-library
+    /// implementations, so both vector and streaming builds sort the structural
+    /// keys before assigning column numbers.
+    static void setup_large_prime_mapping(
+            ColumnMapping& mapping,
+            const LargePrimeInfo& lp_info) {
+        mapping.num_large_primes_rat = lp_info.rat_primes.size();
+        mapping.num_large_primes_alg = lp_info.alg_primes.size();
+
+        std::vector<uint64_t> rational_primes(
+            lp_info.rat_primes.begin(), lp_info.rat_primes.end());
+        std::sort(rational_primes.begin(), rational_primes.end());
+
+        std::vector<PrimeIdealKey> algebraic_primes(
+            lp_info.alg_primes.begin(), lp_info.alg_primes.end());
+        std::sort(algebraic_primes.begin(), algebraic_primes.end(),
+                  [](const PrimeIdealKey& lhs, const PrimeIdealKey& rhs) {
+                      if (lhs.p != rhs.p) return lhs.p < rhs.p;
+                      return lhs.r < rhs.r;
+                  });
+
+        mapping.rat_lp_to_col.clear();
+        mapping.rat_lp_to_col.reserve(rational_primes.size());
+        uint32_t col = static_cast<uint32_t>(mapping.rat_lp_start());
+        for (uint64_t p : rational_primes) {
+            mapping.rat_lp_to_col.emplace(p, col++);
+        }
+
+        mapping.alg_lp_to_col.clear();
+        mapping.alg_lp_to_col.reserve(algebraic_primes.size());
+        col = static_cast<uint32_t>(mapping.alg_lp_start());
+        for (const auto& key : algebraic_primes) {
+            mapping.alg_lp_to_col.emplace(key, col++);
+        }
+    }
+
     /// 设置列映射（无 QC 版本 — build_row 不设 sign 列，强制禁用）
     void setup_column_mapping(ColumnMapping& mapping,
                               const FactorBase& fb,
@@ -783,26 +792,10 @@ private:
         mapping.num_rational_fb = fb.rational_count();
         mapping.num_algebraic_fb = fb.sieve_algebraic_count();
 
-        // 大素数列
-        mapping.num_large_primes_rat = lp_info.rat_primes.size();
-        mapping.num_large_primes_alg = lp_info.alg_primes.size();
-
         // 无二次特征列
         mapping.num_qc_columns = 0;
 
-        // 为有理大素数分配列索引
-        mapping.rat_lp_to_col.reserve(lp_info.rat_primes.size());
-        uint32_t col = static_cast<uint32_t>(mapping.rat_lp_start());
-        for (uint64_t p : lp_info.rat_primes) {
-            mapping.rat_lp_to_col[p] = col++;
-        }
-
-        // 为代数大素数（素理想）分配列索引——按 (p, r) 键
-        mapping.alg_lp_to_col.reserve(lp_info.alg_primes.size());
-        col = static_cast<uint32_t>(mapping.alg_lp_start());
-        for (const auto& key : lp_info.alg_primes) {
-            mapping.alg_lp_to_col[key] = col++;
-        }
+        setup_large_prime_mapping(mapping, lp_info);
     }
 
     /// 设置带二次特征的列映射（per-root QC）
@@ -825,27 +818,11 @@ private:
         mapping.num_rational_fb = fb.rational_count();
         mapping.num_algebraic_fb = fb.sieve_algebraic_count();
 
-        // 大素数列
-        mapping.num_large_primes_rat = lp_info.rat_primes.size();
-        mapping.num_large_primes_alg = lp_info.alg_primes.size();
-
         // 二次特征列
         mapping.num_qc_columns = qc_prime_roots.size();
         mapping.qc_prime_roots = qc_prime_roots;
 
-        // 为有理大素数分配列索引
-        mapping.rat_lp_to_col.reserve(lp_info.rat_primes.size());
-        uint32_t col = static_cast<uint32_t>(mapping.rat_lp_start());
-        for (uint64_t p : lp_info.rat_primes) {
-            mapping.rat_lp_to_col[p] = col++;
-        }
-
-        // 为代数大素数（素理想）分配列索引
-        mapping.alg_lp_to_col.reserve(lp_info.alg_primes.size());
-        col = static_cast<uint32_t>(mapping.alg_lp_start());
-        for (const auto& key : lp_info.alg_primes) {
-            mapping.alg_lp_to_col[key] = col++;
-        }
+        setup_large_prime_mapping(mapping, lp_info);
     }
 
     /// 构建单行
@@ -923,71 +900,23 @@ private:
             }
         }
 
-        // 有理大素数 (small-LP fast path: size<=8 用 stack arrays 避免 map alloc)
-        {
-            const auto& rat_lps = rel.rational_large_prime;
-            if (rat_lps.size() <= 8) {
-                uint64_t rkeys[8]; uint8_t rexps[8]; size_t ru = 0;
-                for (const auto& lp : rat_lps) {
-                    size_t j = 0;
-                    for (; j < ru; ++j) if (rkeys[j] == lp.p) break;
-                    if (j == ru) { rkeys[ru] = lp.p; rexps[ru] = lp.e; ++ru; }
-                    else rexps[j] += lp.e;
-                }
-                for (size_t i = 0; i < ru; ++i) {
-                    if (rexps[i] & 1u) {
-                        auto it = mapping.rat_lp_to_col.find(rkeys[i]);
-                        if (it != mapping.rat_lp_to_col.end()) row.append_unchecked(it->second);
+        // Large-prime columns use the same canonical per-relation parity view
+        // as filtering and adaptive relation metrics.
+        gnfs::relation::for_each_odd_large_prime_key(
+            rel, [&](const gnfs::relation::LargePrimeKey& key) {
+                if (key.is_algebraic) {
+                    auto it = mapping.alg_lp_to_col.find(
+                        PrimeIdealKey{key.prime, key.root});
+                    if (it != mapping.alg_lp_to_col.end()) {
+                        row.append_unchecked(it->second);
+                    }
+                } else {
+                    auto it = mapping.rat_lp_to_col.find(key.prime);
+                    if (it != mapping.rat_lp_to_col.end()) {
+                        row.append_unchecked(it->second);
                     }
                 }
-            } else {
-                std::unordered_map<uint64_t, uint8_t> exponents;
-                exponents.reserve(rat_lps.size());
-                for (const auto& lp : rat_lps) exponents[lp.p] += lp.e;
-                for (const auto& [p, exp] : exponents) {
-                    if (exp & 1u) {
-                        auto it = mapping.rat_lp_to_col.find(p);
-                        if (it != mapping.rat_lp_to_col.end()) row.append_unchecked(it->second);
-                    }
-                }
-            }
-        }
-
-        // 代数大素数——按 (p, r) 素理想键累积指数 (same small-LP fast path)
-        {
-            const auto& alg_lps = rel.algebraic_large_prime;
-            if (alg_lps.size() <= 8) {
-                PrimeIdealKey akeys[8]; uint8_t aexps[8]; size_t au = 0;
-                for (const auto& lp : alg_lps) {
-                    PrimeIdealKey k{lp.p, lp.r};
-                    size_t j = 0;
-                    for (; j < au; ++j) if (akeys[j] == k) break;
-                    if (j == au) { akeys[au] = k; aexps[au] = lp.e; ++au; }
-                    else aexps[j] += lp.e;
-                }
-                for (size_t i = 0; i < au; ++i) {
-                    if (aexps[i] & 1u) {
-                        auto it = mapping.alg_lp_to_col.find(akeys[i]);
-                        if (it != mapping.alg_lp_to_col.end()) row.append_unchecked(it->second);
-                    }
-                }
-            } else {
-                std::unordered_map<PrimeIdealKey, uint8_t, PrimeIdealKeyHash> exponents;
-                exponents.reserve(alg_lps.size());
-                for (const auto& lp : alg_lps) {
-                    exponents[{lp.p, lp.r}] += lp.e;
-                }
-
-                for (const auto& [key, exp] : exponents) {
-                    if (exp % 2 == 1) {
-                        auto it = mapping.alg_lp_to_col.find(key);
-                        if (it != mapping.alg_lp_to_col.end()) {
-                            row.append_unchecked(it->second);
-                        }
-                    }
-                }
-            }
-        }
+            });
 
         // build_with_qc 后续会 test() sign 列;ensure_sorted 让 test 走 O(log n) 二分。
         row.ensure_sorted();

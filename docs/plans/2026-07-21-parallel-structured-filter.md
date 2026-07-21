@@ -4,7 +4,7 @@
 
 - Date: 2026-07-21
 - Branch: `codex/parallel-structured-filter`
-- State: CEO and adversarial engineering review complete; implementation contract freeze in progress
+- State: M1a canonical identity and M1b appendable-snapshot foundation complete; paired SieveCheckpoint V2 is next
 - Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
 
 ## Outcome

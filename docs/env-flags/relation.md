@@ -286,20 +286,26 @@ ENV parsing matrix).
 ## Filter Phase 0 LP key Bloom pre-screen (GNFS_FILTER_LP_BLOOM_BITS)
 
 **ENV `GNFS_FILTER_LP_BLOOM_BITS=N`** (2026-05-22 实施, W9 T5, range [10, 28], default 0):
-LP key (large prime key) 去重计数的可选 Bloom filter pre-screen helper.
-`filter.hpp::count_unique_lp_keys(relations)` 是 50d+/60d Round 2 adaptive
-sieve loop 的 hot path, 每次 Phase 4 entry 都扫全部 relations 把 LP key
-插入 `std::unordered_set<uint64_t>` 然后取 `.size()` 作为 effective_cols
-trim limit. 1M+ relations 时 hash-set bucket probe cache miss 显著.
+为 `uint64_t` key 流提供去重计数的可选 Bloom filter pre-screen helper。
+该 helper 最初面向 50d+/60d Round 2 adaptive sieve loop 中的
+`filter.hpp::count_unique_lp_keys(relations)` hot path。
+
+**当前状态**：生产主路径已改用 full-width structural
+`LargePrimeKey{prime, root, is_algebraic}`，并以
+`std::unordered_set<LargePrimeKey, LargePrimeKeyHash>` 精确计数。当前
+`count_unique_lp_keys` 不调用这个仅接收 `uint64_t` 的 standalone helper，
+因此 `GNFS_FILTER_LP_BLOOM_BITS` 对生产主路径无效。不得把结构键有损压缩为
+单个 `uint64_t` 来接线；未来集成需要让 Bloom 层直接支持完整结构键，同时
+保留结构键集合的精确相等性确认。
 
 ```bash
-GNFS_FILTER_LP_BLOOM_BITS=0  ./gnfs <N>   # default, pure hash-set baseline (零开销)
-GNFS_FILTER_LP_BLOOM_BITS=14 ./gnfs <N>   # 16 KiB filter (L1-friendly)
-GNFS_FILTER_LP_BLOOM_BITS=18 ./gnfs <N>   # 256 KiB filter (L2-friendly)
-GNFS_FILTER_LP_BLOOM_BITS=22 ./gnfs <N>   # 4 MiB filter (L3-friendly, 50d+)
-GNFS_FILTER_LP_BLOOM_BITS=24 ./gnfs <N>   # 16 MiB filter (60d 大数量 LP)
-GNFS_FILTER_LP_BLOOM_BITS=28 ./gnfs <N>   # 256 MiB filter (上限)
-unset GNFS_FILTER_LP_BLOOM_BITS           # 同 default 0
+GNFS_FILTER_LP_BLOOM_BITS=0  ./gnfs <N>   # helper default；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=14 ./gnfs <N>   # helper 配置 16 KiB；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=18 ./gnfs <N>   # helper 配置 256 KiB；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=22 ./gnfs <N>   # helper 配置 4 MiB；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=24 ./gnfs <N>   # helper 配置 16 MiB；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=28 ./gnfs <N>   # helper 配置 256 MiB；当前主路径无变化
+unset GNFS_FILTER_LP_BLOOM_BITS           # helper 解析为 default 0
 ```
 
 **算法** (k=4, m=2^bits):
@@ -334,15 +340,14 @@ bits ∈ {0, 10, 14, 18, 22} 严格相等.
 - 数字前缀 ("16abc"): 取首数字段; 非数字前缀 ("abc16"): 视为 0
 
 **ROI 与定位**:
-- 主要 ROI: 50d+/60d 大 relation 数 (1M+) 时 `count_unique_lp_keys` 内
-  hash-set bucket cache miss 显著. Bloom (m=2^22 = 4 MiB) 完全在 L3,
-  大部分 query 直接 4-hash mask + bit-test 在 L1/L2 完成, 跳过 hash-set
-  probe.
+- 历史目标是减少 50d+/60d 大 relation 数 (1M+) 时的 hash-set bucket
+  probe。Bloom (m=2^22 = 4 MiB) 可容纳在 L3，大部分 query 先执行
+  4-hash mask + bit-test。
 - 25d/40-bit small N (< 50k relations) 无 ROI, Bloom 构造与 4-hash overhead
   反而增加常数项. 默认 OFF 保证零回归.
-- helper 当前 standalone (`count_unique_lp_keys` 主路径未 wire-in), 是
-  future-infrastructure. wire-in 时调用方需切到 `count_unique_with_bloom`
-  并传入 `filter_lp_bloom_bits()`.
+- helper 当前 standalone，生产主路径没有调用点，所以上述 ROI 尚未在主路径
+  兑现。未来接线必须扩展 helper 以接收完整 `LargePrimeKey`；不能先把
+  `prime`、`root` 与 side 有损压成 `uint64_t`。
 
 **集成点** (W9 T5, 2026-05-22):
 - `include/gnfs/relation/lp_bloom.hpp` — helper API + ENV gate + k=4 Bloom
@@ -350,35 +355,39 @@ bits ∈ {0, 10, 14, 18, 22} 严格相等.
 - `tests/test_lp_bloom.cpp` — 11 个测试 (4 ENV / 3 Bloom 行为 / 1 parity
   100k keys / 3 edge cases). 全部 instant tier
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout
-- 主路径 `include/gnfs/relation/filter.hpp::count_unique_lp_keys` **未改动**
-  (helper-only landing, future wire-in)
+- `include/gnfs/relation/filter.hpp::count_unique_lp_keys` 当前使用 full-width
+  structural `LargePrimeKey`，未调用这个 `uint64_t` helper
 
-**Default OFF (bits=0)**: ENV unset → `filter_lp_bloom_bits() == 0` →
-`count_unique_with_bloom` 退化为 pure `std::unordered_set<uint64_t>` baseline,
-零行为变化. 仅当 caller wire-in helper 且用户 explicit
-`GNFS_FILTER_LP_BLOOM_BITS=N>=10` 时启用.
+**Helper default OFF (bits=0)**: ENV unset 时，若 standalone helper 被直接调用，
+`filter_lp_bloom_bits() == 0`，`count_unique_with_bloom` 退化为 pure
+`std::unordered_set<uint64_t>` baseline。当前生产主路径不调用 helper，故无论
+ENV 取值为何，均不会改变 relation filtering 行为。
 
 ---
 
 ## LP key splitmix64 hash mixing (GNFS_FILTER_LP_HASH_MIX)
 
 **ENV `GNFS_FILTER_LP_HASH_MIX=auto|0|1`** (2026-05-22 实施, W11 T5, default auto):
-LP key (large prime key) `std::unordered_set<uint64_t>` / `std::unordered_map`
-的 hash 混合 helper. libstdc++ / libc++ 默认 `std::hash<uint64_t>` 几乎是
-identity, 而 LP key 典型 packing `(prime_id << 1) | side` 在低位严重 cluster
-(小素数 ID 在低位密集, side bit 固定). 这导致 unordered_set 的 bucket 集中,
-chain 长, probe 数升高. helper 提供 splitmix64 (Stafford Mix 13) bit mixer
-打散 input bit pattern. `count_unique_lp_keys` (W9 T5 Bloom 兄弟 helper) 与
-`filter.hpp` / `clique_merger.hpp` 主路径 `std::unordered_set` 调用方 **未改动**,
-是 opt-in future wire-in.
+为 `std::unordered_set<uint64_t>` / `std::unordered_map<uint64_t, ...>` 提供
+splitmix64 (Stafford Mix 13) hash 混合。该 standalone helper 最初面向
+`(prime_id << 1) | side` 一类 64 位 LP key packing，以改善 clustered input
+的 bucket 分布。
+
+**当前状态**：生产主路径已使用 full-width structural
+`LargePrimeKey{prime, root, is_algebraic}` 与 `LargePrimeKeyHash`，不再使用
+64 位 packed LP identity。`filter.hpp`、`clique_merger.hpp` 与
+`count_unique_lp_keys` 均不调用 `LpKeyHash`，因此
+`GNFS_FILTER_LP_HASH_MIX` 对生产主路径无效。不得通过截断 `prime` 或 `root`
+来把结构键塞入该 helper；如需采用新的混合策略，应直接修改或替换
+`LargePrimeKeyHash`，并继续对完整结构键执行相等性比较。
 
 ```bash
-GNFS_FILTER_LP_HASH_MIX=auto ./gnfs <N>   # 默认: mixing 启用
-GNFS_FILTER_LP_HASH_MIX=0    ./gnfs <N>   # 显式 disable mixing (回归 bisect 用)
-GNFS_FILTER_LP_HASH_MIX=off  ./gnfs <N>   # 同 0
-GNFS_FILTER_LP_HASH_MIX=1    ./gnfs <N>   # 显式 enable (与 auto 行为一致)
-GNFS_FILTER_LP_HASH_MIX=on   ./gnfs <N>   # 同 1
-unset GNFS_FILTER_LP_HASH_MIX             # 同 auto
+GNFS_FILTER_LP_HASH_MIX=auto ./gnfs <N>   # helper 默认启用；当前主路径无变化
+GNFS_FILTER_LP_HASH_MIX=0    ./gnfs <N>   # helper 禁用；当前主路径无变化
+GNFS_FILTER_LP_HASH_MIX=off  ./gnfs <N>   # helper 语义同 0
+GNFS_FILTER_LP_HASH_MIX=1    ./gnfs <N>   # helper 启用；当前主路径无变化
+GNFS_FILTER_LP_HASH_MIX=on   ./gnfs <N>   # helper 语义同 1
+unset GNFS_FILTER_LP_HASH_MIX             # helper 解析为 auto
 ```
 
 **Helper API** (`include/gnfs/relation/lp_key_hash.hpp`):
@@ -423,17 +432,14 @@ of input. 同一输入永远产生同一输出. constexpr-evaluable. 单元测�
 - "1" / "on" → ForceOn (mixing 启用, 与 Auto 行为一致, 仅语义区分用户意图)
 
 **ROI 与定位**:
-- 主要 ROI: LP key 集合用 `std::unordered_set<uint64_t, LpKeyHash>` 后,
-  clustered LP key 散到全 bucket 范围, 减小 chain 长. 50d+/60d 大 LP key
-  集合 (1M+ unique) 上 hash-set lookup wall-time 实测可见. 默认 ON (Auto)
-  对未来 wire-in 调用方零额外配置.
-- 与 W9 T5 `GNFS_FILTER_LP_BLOOM_BITS` 互补: Bloom 是 pre-screen 减少
-  hash-set probe 数, 本 helper 是改善 hash-set 内部 bucket 分布. 可同时启用.
-- helper 当前 standalone (`filter.hpp::count_unique_lp_keys` 与
-  `clique_merger.hpp` 主路径 `std::unordered_set` 未 wire-in), 是
-  future-infrastructure. wire-in 时 caller 把
-  `std::unordered_set<uint64_t>` 改为 `std::unordered_set<uint64_t, LpKeyHash>`
-  即可生效, 不需修改 insert / find / count 等调用.
+- 历史目标是让 `std::unordered_set<uint64_t, LpKeyHash>` 中的 clustered
+  64 位 key 分散到更多 bucket，减小 chain 长。该结论只描述 standalone
+  helper，不是当前生产 LP 集合的性能结论。
+- 与 W9 T5 `GNFS_FILTER_LP_BLOOM_BITS` 的历史设计互补：Bloom 减少 probe，
+  mixer 改善 bucket 分布。两个 helper 目前都没有生产调用点。
+- 当前不能把 `std::unordered_set<LargePrimeKey, LargePrimeKeyHash>` 直接替换为
+  `std::unordered_set<uint64_t, LpKeyHash>`。这种替换要求有损压缩完整结构键，
+  会破坏 LP identity 正确性。
 - perf-info 实测 10k LP-shaped keys (`(pid << 1) | side` 序列):
   identity hash max_bucket_load=1 (uniform-stride pattern 已被 identity 完美散开),
   LpKeyHash max_bucket_load=6 (mixer 引入 Poisson-style 自然 collision).
@@ -450,10 +456,12 @@ of input. 同一输入永远产生同一输出. constexpr-evaluable. 单元测�
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   relation 模块.
 - 主路径 `include/gnfs/relation/filter.hpp` / `include/gnfs/relation/clique_merger.hpp`
-  **未改动** (helper-only landing, future wire-in).
+  当前使用 full-width structural `LargePrimeKey` 与 `LargePrimeKeyHash`，未调用
+  该 `uint64_t` helper。
 
-**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
-ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+**Helper default ON (auto)**: `auto` 只控制 standalone `uint64_t` helper。
+当前主 pipeline 无调用点，因此 ENV 对运行行为无影响。未来若扩展 hash
+策略，应以完整 `LargePrimeKey` 为输入，不能复用有损 packed identity。
 
 ---
 

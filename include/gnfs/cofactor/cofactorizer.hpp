@@ -5,6 +5,7 @@
 #include "../core/polynomial_context.hpp"
 #include "../core/relation.hpp"
 #include "../factor_base/factor_base.hpp"
+#include "../relation/large_prime_key.hpp"
 #include "../sieve/lattice_sieve.hpp"
 #include "../util/primes.hpp"
 #include "../util/safe_math.hpp"
@@ -532,7 +533,9 @@ public:
 
     /// 更新统计
     void update_stats(const Relation& rel) {
-        size_t lp_count = rel.rational_large_prime.size() + rel.algebraic_large_prime.size();
+        // Statistics follow the effective GF(2) LP support: even exponents and
+        // repeated identical keys cancel instead of inflating the LP bucket.
+        const size_t lp_count = relation::count_odd_large_prime_keys(rel);
 
         if (lp_count == 0) {
             stats_.full_relations.fetch_add(1, std::memory_order_relaxed);

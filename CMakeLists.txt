@@ -522,6 +522,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RelationCollector COMMAND test_relation_collector)
     set_tests_properties(RelationCollector PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_ooc_store_integrity
+        tests/test_ooc_store_integrity.cpp
+    )
+    target_link_libraries(test_ooc_store_integrity PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME OOCStoreIntegrity COMMAND test_ooc_store_integrity)
+    set_tests_properties(OOCStoreIntegrity PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # ── W6 T4: relation collector memory pool ──
     add_executable(test_memory_pool
         tests/test_memory_pool.cpp
@@ -992,6 +999,22 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_filter PRIVATE gnfs_core Threads::Threads)
     add_test(NAME Filter COMMAND test_filter)
     set_tests_properties(Filter PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Canonical full-width odd-large-prime contract and consumer agreement.
+    add_executable(test_lp_key_contract
+        tests/test_lp_key_contract.cpp
+    )
+    target_link_libraries(test_lp_key_contract PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME LPKeyContract COMMAND test_lp_key_contract)
+    set_tests_properties(LPKeyContract PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Exact raw (a,b) and merged-source identity regressions.
+    add_executable(test_relation_identity
+        tests/test_relation_identity.cpp
+    )
+    target_link_libraries(test_relation_identity PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME RelationIdentity COMMAND test_relation_identity)
+    set_tests_properties(RelationIdentity PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # Phase 0 radix-sort ENV gate + bit-for-bit parity with std::sort path
     add_executable(test_filter_radix_sort

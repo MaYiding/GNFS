@@ -14,6 +14,7 @@
 #include "../core/relation.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -91,13 +92,31 @@ public:
         }();
         std::vector<Relation> pool;
         pool.reserve(partials.size());
+        std::vector<std::vector<LargePrimeKey>> pool_lp_keys;
+        pool_lp_keys.reserve(partials.size());
         for (auto& rel : partials) {
-            size_t nlp = rel.num_large_primes();
-            if (nlp == 1) { ++stats.input_1lp; pool.push_back(std::move(rel)); }
-            else if (nlp == 2) { ++stats.input_2lp; pool.push_back(std::move(rel)); }
+            auto keys = odd_large_prime_keys(rel);
+            const size_t nlp = keys.size();
+            if (nlp == 0) {
+                // Relation::num_large_primes() is a raw storage count. Even LP
+                // exponents are matrix-full and must survive this fallback path.
+                ++stats.full_produced;
+                results.push_back(std::move(rel));
+            }
+            else if (nlp == 1) {
+                ++stats.input_1lp;
+                pool.push_back(std::move(rel));
+                pool_lp_keys.push_back(std::move(keys));
+            }
+            else if (nlp == 2) {
+                ++stats.input_2lp;
+                pool.push_back(std::move(rel));
+                pool_lp_keys.push_back(std::move(keys));
+            }
             else if (accept_3lp_pool) {
                 ++stats.input_3lp_plus;
                 pool.push_back(std::move(rel));
+                pool_lp_keys.push_back(std::move(keys));
             }
             else { ++stats.input_3lp_plus; }
         }
@@ -110,9 +129,7 @@ public:
         // ── 构建 LP 索引 + pool LP keys cache (避免 BFS 重复 remaining_lp_keys 调用) ──
         std::unordered_map<LargePrimeKey, std::vector<size_t>, LargePrimeKeyHash> lp_index;
         lp_index.reserve(pool.size() * 2);
-        std::vector<std::vector<LargePrimeKey>> pool_lp_keys(pool.size());
         for (size_t i = 0; i < pool.size(); ++i) {
-            pool_lp_keys[i] = PartialRelationMerger::remaining_lp_keys(pool[i]);
             for (const auto& key : pool_lp_keys[i]) {
                 lp_index[key].push_back(i);
             }
@@ -220,6 +237,7 @@ private:
             visited.insert(start);
             Relation acc = pool[start];  // copy 作 accumulator
             used[start] = true;
+            size_t accepted_source_count = 1;
             bool acc_full = PartialRelationMerger::is_effectively_full(acc);
             // 缓存 acc 的 LP key SET (用于 overlap fast-path 跳过 merge_two)
             // Reserve 16: typical merge累计 LP count ≤ 8-16 throughout BFS.
@@ -273,6 +291,7 @@ private:
                         if (!now_full) acc_lp_set.insert(cand_keys.begin(), cand_keys.end());
                         visited.insert(nbr);
                         used[nbr] = true;
+                        ++accepted_source_count;
                         bfs.push(nbr);
 
                         if (now_full) {
@@ -289,7 +308,7 @@ private:
             if (acc_full) {
                 ++stats.full_produced;
                 results.push_back(std::move(acc));
-            } else if (!visited.empty() && visited.size() > 1) {
+            } else if (accepted_source_count > 1) {
                 // Merged 但仍残留 LP → emit 或 drop
                 //
                 // BACKLOG #80 算法突破 [drop-residual]: 含残留 LP 的 merged rels 是
@@ -310,8 +329,14 @@ private:
                     ++stats.residual_emitted;
                     results.push_back(std::move(acc));
                 }
+            } else {
+                // This source was tentatively marked used when its local BFS
+                // started, but no neighbour was accepted into its accumulator.
+                // Keep it unavailable to this component traversal via
+                // `visited`, while returning it to the unused population so
+                // singleton cleanup can account for it.
+                used[start] = false;
             }
-            // else: 单点 component (visited == {start}, no merge happened) → 弃
         }
     }
 };

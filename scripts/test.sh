@@ -90,6 +90,8 @@
 #
 
 set -eo pipefail
+# Under errexit, `(( counter++ ))` returns status 1 when counter was zero and
+# can silently terminate a mode before its first test. Use `+= 1` mutations.
 
 # ============================================================
 # 全局配置
@@ -180,6 +182,7 @@ ALL_TEST_BINARIES=(
     test_adaptive_lattice
     test_sieve_basic
     test_relation_collector
+    test_ooc_store_integrity
     test_cofactor
     test_batch_ecm
     test_linalg
@@ -207,6 +210,8 @@ ALL_TEST_BINARIES=(
     test_poly_add_mod_simd
     test_poly_horner_mod_simd
     test_filter
+    test_lp_key_contract
+    test_relation_identity
     test_regressions
     test_polynomial_context
     test_base_m
@@ -314,7 +319,7 @@ MODULE_TESTS=(
     factor_base    "test_factor_base test_fb_checkpoint test_fb_roots_parallel"
     sieve          "test_special_q test_sieve_basic test_distributed_sieve test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel test_sieve_apply_tile_parallel test_lattice_coords_simd test_threshold_scan_simd test_saturated_sub_simd"
     cofactor       "test_cofactor test_squfof test_brent_pollard_rho test_brent_pollard_rho_parallel test_survival_predictor test_batch_ecm test_3lp_cofactor test_trial_wheel test_batch_trial test_ecm_curve_pool test_sigma_seed_pool test_ecm_stage2_parallel test_ecm_stage1_parallel test_batch_inversion test_trial_div_simd test_cofactor_stage_timing test_ecm_prime_cache test_cofactor_result_cache test_integration test_ecm_brent_suyama"
-    relation       "test_relation_collector test_filter test_filter_radix_sort test_lp_bloom test_lp_key_hash test_merger_parallel test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration test_relation_pool_integration"
+    relation       "test_relation_collector test_ooc_store_integrity test_filter test_lp_key_contract test_relation_identity test_filter_radix_sort test_lp_bloom test_lp_key_hash test_merger_parallel test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration test_relation_pool_integration"
     linalg         "test_linalg test_sge_batch_pivots test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_schirokauer_parallel test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_spmv_simd test_transpose_blocked test_popcount_simd test_and_popcnt_simd test_xor_words_simd test_and_words_simd test_xor_popcnt_simd test_row_popcount_simd test_krylov_compress test_krylov_compression test_bl_checkpoint test_bl_resume_integration test_linalg_progress"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_class_group test_couveignes_large_class_group test_couveignes_parallel"
@@ -369,6 +374,8 @@ SMOKE_TESTS=(
     test_special_q
     test_relation_collector
     test_filter
+    test_lp_key_contract
+    test_relation_identity
     test_filter_radix_sort
     test_lp_bloom
     test_lp_key_hash
@@ -480,6 +487,7 @@ TEST_TIMEOUT=(
     test_fb_roots_parallel   60
     test_special_q           10
     test_relation_collector  10
+    test_ooc_store_integrity 10
     test_cofactor            10
     test_linalg              10
     test_sge_batch_pivots    60
@@ -501,6 +509,8 @@ TEST_TIMEOUT=(
     test_poly_add_mod_simd   60
     test_poly_horner_mod_simd 60
     test_filter              10
+    test_lp_key_contract     10
+    test_relation_identity   10
     test_filter_radix_sort   60
     test_lp_bloom            60
     test_lp_key_hash         60
@@ -632,6 +642,7 @@ TEST_TIER=(
     test_fb_roots_parallel   "instant"
     test_special_q           "instant"
     test_relation_collector  "instant"
+    test_ooc_store_integrity "instant"
     test_cofactor            "instant"
     test_linalg              "instant"
     test_sge_batch_pivots    "instant"
@@ -653,6 +664,8 @@ TEST_TIER=(
     test_poly_add_mod_simd   "instant"
     test_poly_horner_mod_simd "instant"
     test_filter              "instant"
+    test_lp_key_contract     "instant"
+    test_relation_identity   "instant"
     test_filter_radix_sort   "instant"
     test_lp_bloom            "instant"
     test_lp_key_hash         "instant"
@@ -967,7 +980,7 @@ run_with_timeout() {
     local polls=0
     while (( polls < 20 )); do
         sleep 0.1
-        (( polls++ ))
+        (( polls += 1 ))
         if ! kill -0 $pid 2>/dev/null; then
             wait $pid 2>/dev/null
             local exit_code=$?
@@ -981,7 +994,7 @@ run_with_timeout() {
     local elapsed_secs=2
     while (( elapsed_secs < timeout_secs )); do
         sleep 1
-        (( elapsed_secs++ ))
+        (( elapsed_secs += 1 ))
 
         if ! kill -0 $pid 2>/dev/null; then
             wait $pid 2>/dev/null
@@ -1020,11 +1033,11 @@ run_single_test() {
 
     if [[ ! -x "$binary" ]]; then
         log_skip "${name}: 二进制不存在"
-        (( SKIPPED_TESTS++ ))
+        (( SKIPPED_TESTS += 1 ))
         return 2
     fi
 
-    (( TOTAL_TESTS++ ))
+    (( TOTAL_TESTS += 1 ))
 
     # 确定超时: 优先用 --timeout 全局覆盖，否则用每测试分级超时
     local test_timeout=${TIMEOUT}
@@ -1064,7 +1077,7 @@ run_single_test() {
             echo "${DIM}最后输出:${RESET}"
             echo "$output" | tail -10
         fi
-        (( FAILED_TESTS++ ))
+        (( FAILED_TESTS += 1 ))
         REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"timeout\",\"elapsed_ms\":${elapsed},\"detail\":\"timeout=${test_timeout}s\"}")
         if (( FAIL_FAST )); then
             log_fail "首次失败即停 (--fail-fast)"
@@ -1090,7 +1103,7 @@ run_single_test() {
     fi
 
     if (( exit_code == 0 )); then
-        (( PASSED_TESTS++ ))
+        (( PASSED_TESTS += 1 ))
         if (( QUIET )); then
             : # 安静模式不输出通过的测试
         elif (( VERBOSE )); then
@@ -1102,7 +1115,7 @@ run_single_test() {
         REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"pass\",\"elapsed_ms\":${elapsed},\"detail\":\"\"}")
         return 0
     else
-        (( FAILED_TESTS++ ))
+        (( FAILED_TESTS += 1 ))
         log_fail "${name} ${DIM}($(format_duration $elapsed), exit=${exit_code})${RESET}"
         local tail_lines=20
         if (( VERBOSE )); then tail_lines=100; fi
@@ -1289,9 +1302,9 @@ do_module() {
 
         local mod_total=0 mod_pass=0
         for test in ${(s: :)tests}; do
-            (( mod_total++ ))
+            (( mod_total += 1 ))
             if run_single_test "$test"; then
-                (( mod_pass++ ))
+                (( mod_pass += 1 ))
             fi
         done
 
@@ -1301,19 +1314,19 @@ do_module() {
             if [[ -n "$slow_tests" ]]; then
                 log_info "  ${DIM}(包含慢速测试)${RESET}"
                 for test in ${(s: :)slow_tests}; do
-                    (( mod_total++ ))
+                    (( mod_total += 1 ))
                     if run_single_test "$test"; then
-                        (( mod_pass++ ))
+                        (( mod_pass += 1 ))
                     fi
                 done
             fi
         fi
 
         if (( mod_pass == mod_total )); then
-            (( module_pass++ ))
+            (( module_pass += 1 ))
             log_info "${BOLD}${mod}${RESET}: ${mod_pass}/${mod_total} 全部通过"
         else
-            (( module_fail++ ))
+            (( module_fail += 1 ))
             log_fail "${BOLD}${mod}${RESET}: $((mod_total - mod_pass))/${mod_total} 失败"
         fi
     done
@@ -1390,7 +1403,7 @@ do_pipeline() {
 
     local stage_num=0
     for mod in "${MODULE_ORDER[@]}"; do
-        (( stage_num++ ))
+        (( stage_num += 1 ))
 
         local tests="${MODULE_TESTS[$mod]:-}"
         if [[ -z "$tests" ]]; then continue; fi

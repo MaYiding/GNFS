@@ -18,6 +18,7 @@
 #include <gnfs/relation/collector.hpp>
 #include <gnfs/relation/filter.hpp>
 #include <gnfs/relation/clique_merger.hpp>
+#include <gnfs/relation/relation_identity.hpp>
 #include <gnfs/relation/ooc_policy.hpp>
 #include <gnfs/relation/v0_bfs_policy.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
@@ -490,17 +491,21 @@ FactResult factor_with_progress(const Integer& n, int level) {
                     CliqueStats cstats;
                     auto v3_merged = CliqueRelationMerger::merge_cliques(
                         std::move(partial_copy_for_v3), &cstats);
-                    std::unordered_set<int64_t> existing_keys;
+                    std::unordered_set<
+                        RelationSourceCombination,
+                        RelationSourceCombinationHash> existing_keys;
                     existing_keys.reserve(relations.size());
                     for (const auto& r : relations) {
-                        existing_keys.insert(static_cast<int64_t>(r.a) ^
-                                              (static_cast<int64_t>(r.b) << 32));
+                        if (r.is_merged()) {
+                            existing_keys.insert(
+                                relation_source_combination(r));
+                        }
                     }
                     size_t v3_added = 0;
                     for (auto& r : v3_merged) {
-                        int64_t key = static_cast<int64_t>(r.a) ^
-                                      (static_cast<int64_t>(r.b) << 32);
-                        if (existing_keys.insert(key).second) {
+                        if (!r.is_merged() ||
+                            existing_keys.insert(
+                                relation_source_combination(r)).second) {
                             relations.push_back(std::move(r));
                             ++v3_added;
                         }

@@ -1,18 +1,18 @@
 #pragma once
 
 #include "../core/relation.hpp"
-#include "../core/types.hpp"
+#include "large_prime_key.hpp"
 
 #include <algorithm>
 #include <cstdint>
-#include <functional>
+#include <cstdlib>
+#include <iterator>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace gnfs::relation {
 
-using core::PrimePower;
 using core::Relation;
 
 /// 过滤统计
@@ -22,37 +22,6 @@ struct FilterStats {
     size_t singletons_removed = 0;
     size_t duplicates_removed = 0;
     size_t passes = 0;
-};
-
-/// 大素数键（用于哈希）
-/// degree≥3 多项式下同一素数 p 可能有多个代数根 r₁,r₂,...，
-/// 对应不同素理想 (p, α-rᵢ)。键必须包含 root 以区分。
-struct LargePrimeKey {
-    uint64_t prime;
-    uint64_t root;         // 代数侧的根 r（有理侧为 0）
-    bool is_algebraic;     // true = 代数侧, false = 有理侧
-
-    bool operator==(const LargePrimeKey& other) const noexcept {
-        return prime == other.prime && root == other.root &&
-               is_algebraic == other.is_algebraic;
-    }
-
-    /// Deterministic ordering for reproducible merge results
-    bool operator<(const LargePrimeKey& other) const noexcept {
-        if (prime != other.prime) return prime < other.prime;
-        if (root != other.root) return root < other.root;
-        return is_algebraic < other.is_algebraic;
-    }
-};
-
-/// LargePrimeKey 哈希
-struct LargePrimeKeyHash {
-    size_t operator()(const LargePrimeKey& k) const noexcept {
-        size_t h = std::hash<uint64_t>{}(k.prime);
-        h ^= std::hash<uint64_t>{}(k.root) * 2654435761ULL;
-        h ^= std::hash<bool>{}(k.is_algebraic) << 1;
-        return h;
-    }
 };
 
 /// 过滤配置
@@ -111,7 +80,10 @@ public:
         stats_ = FilterStats{};
     }
 
-    /// 统计大素数出现频率
+    /// Count effective LP incidence by relation row.
+    ///
+    /// A key contributes at most once per relation and only when its combined
+    /// exponent is odd. Raw PrimePower entry counts are intentionally not used.
     [[nodiscard]] static std::unordered_map<LargePrimeKey, size_t, LargePrimeKeyHash>
     count_large_primes(const std::vector<Relation>& relations) {
 
@@ -120,18 +92,9 @@ public:
         counts.reserve(relations.size());
 
         for (const auto& rel : relations) {
-            // 有理侧大素数 (root=0)
-            for (size_t i = 0; i < rel.rational_large_prime.size(); ++i) {
-                LargePrimeKey key{rel.rational_large_prime[i].p, 0, false};
+            for_each_odd_large_prime_key(rel, [&](const LargePrimeKey& key) {
                 ++counts[key];
-            }
-
-            // 代数侧大素数 (root=r，区分同一 p 的不同素理想)
-            for (size_t i = 0; i < rel.algebraic_large_prime.size(); ++i) {
-                const auto& lp = rel.algebraic_large_prime[i];
-                LargePrimeKey key{lp.p, lp.r, true};
-                ++counts[key];
-            }
+            });
         }
 
         return counts;
@@ -145,16 +108,14 @@ public:
         seen.reserve(relations.size());
 
         for (const auto& rel : relations) {
-            for (size_t i = 0; i < rel.rational_large_prime.size(); ++i) {
-                seen.insert(LargePrimeKey{rel.rational_large_prime[i].p, 0, false});
-            }
-            for (size_t i = 0; i < rel.algebraic_large_prime.size(); ++i) {
-                const auto& lp = rel.algebraic_large_prime[i];
-                seen.insert(LargePrimeKey{lp.p, lp.r, true});
-            }
+            for_each_odd_large_prime_key(rel, [&](const LargePrimeKey& key) {
+                seen.insert(key);
+            });
         }
 
-        return std::vector<LargePrimeKey>(seen.begin(), seen.end());
+        std::vector<LargePrimeKey> unique(seen.begin(), seen.end());
+        std::sort(unique.begin(), unique.end());
+        return unique;
     }
 
 private:
@@ -189,23 +150,11 @@ private:
 
         for (auto& rel : relations) {
             bool has_singleton = false;
-
-            // 检查有理侧
-            for (size_t i = 0; i < rel.rational_large_prime.size() && !has_singleton; ++i) {
-                LargePrimeKey key{rel.rational_large_prime[i].p, 0, false};
+            for_each_odd_large_prime_key(rel, [&](const LargePrimeKey& key) {
                 if (singletons.count(key) > 0) {
                     has_singleton = true;
                 }
-            }
-
-            // 检查代数侧
-            for (size_t i = 0; i < rel.algebraic_large_prime.size() && !has_singleton; ++i) {
-                const auto& lp = rel.algebraic_large_prime[i];
-                LargePrimeKey key{lp.p, lp.r, true};
-                if (singletons.count(key) > 0) {
-                    has_singleton = true;
-                }
-            }
+            });
 
             if (has_singleton) {
                 ++stats_.singletons_removed;
@@ -226,56 +175,17 @@ private:
 /// 只 count 奇指数 keys (matrix_builder.hpp collect_large_primes 同 convention).
 [[nodiscard]] inline size_t count_unique_lp_keys(
         const std::vector<Relation>& relations) {
-    // Reserve: typical 50d β ≈ 65%, 60d β ≈ 70% (LP/relations).
-    // Reserve relations.size() per side to avoid mid-loop rehash.
-    std::unordered_set<uint64_t> rat_lp_set;
-    rat_lp_set.reserve(relations.size() / 2);
-    std::unordered_set<uint64_t> alg_lp_set;  // pack: (p << 32) | (r & 0xFFFFFFFF)
-    alg_lp_set.reserve(relations.size());
-
-    // Hot path: 50d/60d typical merged partial has 1-4 LPs total per rel.
-    // Avoid unordered_map alloc for these small cases — linear scan accumulator.
-    // Falls back to unordered_map for size > 8 (rare chains).
-    auto process_lps = [](const auto& lps, auto key_extract, auto& target_set) {
-        const size_t n = lps.size();
-        if (n == 0) return;
-        if (n == 1) {
-            if (lps[0].e & 1u) target_set.insert(key_extract(lps[0]));
-            return;
-        }
-        // Linear scan + dedup for small N
-        if (n <= 8) {
-            uint64_t keys[8];
-            uint32_t exps[8];
-            size_t unique = 0;
-            for (size_t i = 0; i < n; ++i) {
-                uint64_t k = key_extract(lps[i]);
-                size_t j = 0;
-                for (; j < unique; ++j) if (keys[j] == k) break;
-                if (j == unique) { keys[unique] = k; exps[unique] = lps[i].e; ++unique; }
-                else exps[j] += lps[i].e;
-            }
-            for (size_t i = 0; i < unique; ++i) if (exps[i] & 1u) target_set.insert(keys[i]);
-            return;
-        }
-        // Fallback: unordered_map for large LP counts (rare)
-        std::unordered_map<uint64_t, uint32_t> exp_map;
-        exp_map.reserve(n);
-        for (const auto& lp : lps) exp_map[key_extract(lp)] += lp.e;
-        for (const auto& [k, e] : exp_map) if (e & 1u) target_set.insert(k);
-    };
+    // A structural key is required here: p and r are both uint64_t and cannot
+    // be packed losslessly into one uint64_t value.
+    std::unordered_set<LargePrimeKey, LargePrimeKeyHash> unique_keys;
+    unique_keys.reserve(relations.size());
 
     for (const auto& rel : relations) {
-        process_lps(rel.rational_large_prime,
-                    [](const auto& lp) -> uint64_t { return lp.p; },
-                    rat_lp_set);
-        process_lps(rel.algebraic_large_prime,
-                    [](const auto& lp) -> uint64_t {
-                        return (uint64_t(lp.p) << 32) | (lp.r & 0xFFFFFFFFu);
-                    },
-                    alg_lp_set);
+        for_each_odd_large_prime_key(rel, [&](const LargePrimeKey& key) {
+            unique_keys.insert(key);
+        });
     }
-    return rat_lp_set.size() + alg_lp_set.size();
+    return unique_keys.size();
 }
 
 /// LP-key weight histogram across a relation set.
@@ -286,8 +196,8 @@ private:
 /// - weight_2 = V0 sweet spot (PartialRelationMerger handles directly)
 /// - weight_3plus = chain-merge territory (V0_BFS / V3 cascade only)
 ///
-/// Counts each LP occurrence (not exponent parity) since weight is about
-/// LP-key reach across distinct relations, not eventual exponent cancel.
+/// Weight is relation-row incidence in the actual GF(2) matrix: a key counts
+/// once in a row only when its combined exponent in that relation is odd.
 struct LpKeyWeightHistogram {
     size_t weight_1 = 0;
     size_t weight_2 = 0;
@@ -298,72 +208,23 @@ struct LpKeyWeightHistogram {
 
 [[nodiscard]] inline LpKeyWeightHistogram count_lp_key_weights(
         const std::vector<Relation>& relations) {
-    // Two unordered_maps (rational by prime; algebraic by (p,r)).
-    // Each unique LP key in a relation contributes +1 to the key's count.
-    std::unordered_map<uint64_t, uint32_t> rat_count;
-    std::unordered_map<uint64_t, uint32_t> alg_count;
-    rat_count.reserve(relations.size() / 2);
-    alg_count.reserve(relations.size());
-
-    // Per-relation de-dup buffers. Fast path uses an 8-slot stack array for
-    // the typical 1-4 LP per relation; overflows fall back to an unordered_set
-    // so V3 chain-merged partials carrying many residual LPs still de-dup
-    // correctly. Buffers are reused across relations (clear() keeps capacity).
-    std::unordered_set<uint64_t> overflow_seen;
-    overflow_seen.reserve(16);
-
-    auto process_side = [&](const auto& lps, auto key_extract, auto& map) {
-        uint64_t stack_seen[8];
-        size_t n_stack = 0;
-        overflow_seen.clear();
-        for (const auto& lp : lps) {
-            const uint64_t k = key_extract(lp);
-            if (n_stack <= 8) {
-                bool found_in_stack = false;
-                for (size_t i = 0; i < n_stack; ++i) {
-                    if (stack_seen[i] == k) { found_in_stack = true; break; }
-                }
-                if (found_in_stack) continue;
-                if (n_stack < 8) {
-                    stack_seen[n_stack++] = k;
-                    ++map[k];
-                    continue;
-                }
-                // Stack full: migrate to overflow set + record current key.
-                for (size_t i = 0; i < 8; ++i) overflow_seen.insert(stack_seen[i]);
-                if (!overflow_seen.insert(k).second) continue;
-                ++map[k];
-                ++n_stack;  // crosses 8 — switches mode permanently for this rel
-            } else {
-                if (!overflow_seen.insert(k).second) continue;
-                ++map[k];
-            }
-        }
-    };
+    std::unordered_map<LargePrimeKey, size_t, LargePrimeKeyHash> weights;
+    weights.reserve(relations.size());
 
     for (const auto& rel : relations) {
-        process_side(rel.rational_large_prime,
-                     [](const auto& lp) -> uint64_t { return lp.p; },
-                     rat_count);
-        process_side(rel.algebraic_large_prime,
-                     [](const auto& lp) -> uint64_t {
-                         return (uint64_t(lp.p) << 32) | (lp.r & 0xFFFFFFFFu);
-                     },
-                     alg_count);
+        for_each_odd_large_prime_key(rel, [&](const LargePrimeKey& key) {
+            ++weights[key];
+        });
     }
 
     LpKeyWeightHistogram h;
-    auto tally = [&](const std::unordered_map<uint64_t, uint32_t>& m) {
-        for (const auto& [_, w] : m) {
-            ++h.unique_keys;
-            if (w == 1) ++h.weight_1;
-            else if (w == 2) ++h.weight_2;
-            else if (w == 3) ++h.weight_3;
-            else ++h.weight_4plus;
-        }
-    };
-    tally(rat_count);
-    tally(alg_count);
+    for (const auto& [_, weight] : weights) {
+        ++h.unique_keys;
+        if (weight == 1) ++h.weight_1;
+        else if (weight == 2) ++h.weight_2;
+        else if (weight == 3) ++h.weight_3;
+        else ++h.weight_4plus;
+    }
     return h;
 }
 
@@ -383,7 +244,10 @@ struct SeparatedRelations {
     result.full.reserve(relations.size() / 10);
 
     for (auto& rel : relations) {
-        if (rel.is_full()) {
+        // Relation::is_full() describes raw storage only. A relation carrying
+        // even LP exponents is already full in the GF(2) matrix and must not be
+        // sent to a partial merger where it could be discarded.
+        if (odd_large_prime_keys_empty(rel)) {
             result.full.push_back(std::move(rel));
         } else {
             result.partial.push_back(std::move(rel));
@@ -399,70 +263,30 @@ class PartialRelationMerger {
 public:
     /// 合并结果统计
     struct MergeStats {
-        size_t full_produced = 0;       // 产出的完全关系数
+        size_t full_produced = 0;       // 返回的 effective-full 关系数
         size_t rounds = 0;              // 迭代轮数
         size_t weight2_merges = 0;      // weight-2 合并次数
         size_t singletons_removed = 0;  // 移除的 singleton 关系数
         size_t input_1lp = 0;           // 输入 1LP 关系数
         size_t input_2lp = 0;           // 输入 2LP 关系数
         size_t input_3lp_plus = 0;      // 输入 3LP+ 关系数（已丢弃）
+        size_t residual_emitted = 0;    // 返回的 merged residual 关系数
+        size_t residual_dropped = 0;    // 由 residual-drop policy 丢弃的关系数
+        size_t output_relations = 0;    // 总返回数 = full + emitted residual
     };
 
     /// 提取关系的"有效" LP key（奇数次出现的 = 未取消的）
-    /// 合并关系中，共享 LP 出现偶数次（已取消），只返回奇数次的
+    ///
+    /// Compatibility wrapper around the canonical GF(2) LP view. Raw
+    /// Relation::is_full()/num_large_primes() intentionally keep their storage
+    /// semantics; filtering and merging must use this helper instead.
     [[nodiscard]] static std::vector<LargePrimeKey> remaining_lp_keys(const Relation& rel) {
-        const size_t n_rat = rel.rational_large_prime.size();
-        const size_t n_alg = rel.algebraic_large_prime.size();
-        const size_t total = n_rat + n_alg;
-
-        // Fast path: small total LP count (typical V0/V3 BFS case) - linear scan
-        // on stack arrays avoids unordered_map allocation. O(n²) on n ≤ 8 is OK.
-        if (total <= 8) {
-            LargePrimeKey keys[8];
-            uint8_t counts[8] = {0};
-            size_t n_unique = 0;
-            auto accumulate = [&](LargePrimeKey k) {
-                for (size_t i = 0; i < n_unique; ++i) {
-                    if (keys[i].prime == k.prime && keys[i].root == k.root &&
-                        keys[i].is_algebraic == k.is_algebraic) {
-                        ++counts[i];
-                        return;
-                    }
-                }
-                keys[n_unique] = k;
-                counts[n_unique] = 1;
-                ++n_unique;
-            };
-            for (const auto& lp : rel.rational_large_prime) accumulate({lp.p, 0, false});
-            for (const auto& lp : rel.algebraic_large_prime) accumulate({lp.p, lp.r, true});
-            std::vector<LargePrimeKey> out;
-            out.reserve(n_unique);
-            for (size_t i = 0; i < n_unique; ++i) {
-                if (counts[i] % 2 != 0) out.push_back(keys[i]);
-            }
-            return out;
-        }
-
-        // Fallback: unordered_map for large LP counts (rare V0/V3 chain residue)
-        std::unordered_map<LargePrimeKey, size_t, LargePrimeKeyHash> counts;
-        counts.reserve(total);
-        for (const auto& lp : rel.rational_large_prime) {
-            ++counts[{lp.p, 0, false}];
-        }
-        for (const auto& lp : rel.algebraic_large_prime) {
-            ++counts[{lp.p, lp.r, true}];
-        }
-        std::vector<LargePrimeKey> keys;
-        keys.reserve(counts.size());  // upper bound — actual is half-ish (odd counts)
-        for (const auto& [key, count] : counts) {
-            if (count % 2 != 0) keys.push_back(key);
-        }
-        return keys;
+        return odd_large_prime_keys(rel);
     }
 
     /// 检查关系是否"有效完全"（所有 LP 都已取消）
     [[nodiscard]] static bool is_effectively_full(const Relation& rel) {
-        return remaining_lp_keys(rel).empty();
+        return odd_large_prime_keys_empty(rel);
     }
 
     /// 合并两个关系
@@ -543,8 +367,14 @@ public:
         std::vector<Relation> pool;
         pool.reserve(partials.size());
         for (auto& rel : partials) {
-            size_t nlp = rel.num_large_primes();
-            if (nlp == 1) { ++stats.input_1lp; pool.push_back(std::move(rel)); }
+            const size_t nlp = count_odd_large_prime_keys(rel);
+            if (nlp == 0) {
+                // Robustness: callers normally separate these first, but an
+                // even-exponent LP relation is already matrix-full and must
+                // never disappear merely because it retains raw LP entries.
+                full_results.push_back(std::move(rel));
+            }
+            else if (nlp == 1) { ++stats.input_1lp; pool.push_back(std::move(rel)); }
             else if (nlp == 2) { ++stats.input_2lp; pool.push_back(std::move(rel)); }
             else if (accept_3lp_pool) {
                 // 3LP+ 进 pool 但 input_3lp_plus 仍计数, 便于诊断
@@ -755,15 +585,26 @@ public:
                     auto keys = remaining_lp_keys(rel);
                     if (keys.empty()) {
                         full_results.push_back(std::move(rel));
+                    } else {
+                        ++stats.residual_dropped;
                     }
-                    // else: drop (含残留 LP)
                 } else {
                     full_results.push_back(std::move(rel));
                 }
             }
         }
 
-        stats.full_produced = full_results.size();
+        // Keep output accounting explicit: residual relations are useful V0
+        // outputs, but they are not full matrix rows and must not inflate the
+        // full-production metric.
+        for (const auto& rel : full_results) {
+            if (is_effectively_full(rel)) {
+                ++stats.full_produced;
+            } else {
+                ++stats.residual_emitted;
+            }
+        }
+        stats.output_relations = full_results.size();
         if (stats_out) *stats_out = stats;
         return full_results;
     }
@@ -775,32 +616,17 @@ public:
         std::vector<Relation> merged;
         merged.reserve(partials.size() / 8);  // ~12% merge yield typical
 
-        // Pre-filter: only index 1LP relations (those with exactly 1 large prime).
+        // Pre-filter: only index relations with exactly one effective LP key.
         std::vector<size_t> lp1_indices;
         lp1_indices.reserve(partials.size() / 4);
-        for (size_t i = 0; i < partials.size(); ++i) {
-            if (partials[i].num_large_primes() == 1) {
-                lp1_indices.push_back(i);
-            }
-        }
-
-        // 按大素数建立索引 (only 1LP relations)
         std::unordered_map<LargePrimeKey, std::vector<size_t>, LargePrimeKeyHash>
             prime_to_relations;
-        prime_to_relations.reserve(lp1_indices.size());
-
-        for (size_t idx : lp1_indices) {
-            const auto& rel = partials[idx];
-
-            for (size_t j = 0; j < rel.rational_large_prime.size(); ++j) {
-                LargePrimeKey key{rel.rational_large_prime[j].p, 0, false};
-                prime_to_relations[key].push_back(idx);
-            }
-
-            for (size_t j = 0; j < rel.algebraic_large_prime.size(); ++j) {
-                const auto& lp = rel.algebraic_large_prime[j];
-                LargePrimeKey key{lp.p, lp.r, true};
-                prime_to_relations[key].push_back(idx);
+        prime_to_relations.reserve(partials.size() / 4);
+        for (size_t i = 0; i < partials.size(); ++i) {
+            auto keys = odd_large_prime_keys(partials[i]);
+            if (keys.size() == 1) {
+                lp1_indices.push_back(i);
+                prime_to_relations[keys.front()].push_back(i);
             }
         }
 

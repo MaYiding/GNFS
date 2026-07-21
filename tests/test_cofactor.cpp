@@ -8,13 +8,26 @@
 #include <gnfs/core/polynomial_context.hpp>
 
 #include <cassert>
+#include <cmath>
 #include <iostream>
 #include <sstream>
-#include <cmath>
+#include <stdexcept>
+#include <string>
 
 using namespace gnfs;
 using namespace gnfs::cofactor;
 using namespace gnfs::relation;
+
+[[noreturn]] static void check_failed(const char* expression, int line) {
+    throw std::runtime_error(
+        std::string("CHECK failed at line ") + std::to_string(line) +
+        ": " + expression);
+}
+
+#define CHECK(condition) \
+    do { \
+        if (!(condition)) check_failed(#condition, __LINE__); \
+    } while (false)
 
 // Test primality checking
 void test_primality() {
@@ -329,6 +342,46 @@ void test_large_prime_counting() {
     assert(unique.size() == 4);  // 101, 103, 107, 109
 
     std::cout << "  Large prime counting: PASSED" << std::endl;
+}
+
+// Cofactorizer statistics must classify the effective GF(2) LP support, not
+// the number of raw PrimePower entries. CHECK remains active under NDEBUG.
+void test_effective_large_prime_stats() {
+    std::cout << "Testing effective large prime statistics..." << std::endl;
+
+    std::vector<core::Integer> coeffs;
+    coeffs.emplace_back(static_cast<int64_t>(-1));
+    coeffs.emplace_back(static_cast<int64_t>(1));
+    core::PolynomialContext ctx(
+        core::Integer(15), std::move(coeffs), core::Integer(1));
+
+    core::FactorBaseParams params;
+    params.large_prime_bound = 1000;
+    factor_base::FactorBase fb(params);
+    Cofactorizer cofactorizer(ctx, fb);
+
+    core::Relation even_exponent(7, 8);
+    even_exponent.rational_large_prime.push_back(core::PrimePower{101, 0, 2});
+    cofactorizer.update_stats(even_exponent);
+
+    core::Relation repeated_key(9, 10);
+    repeated_key.algebraic_large_prime.push_back(core::PrimePower{103, 7, 1});
+    repeated_key.algebraic_large_prime.push_back(core::PrimePower{103, 7, 1});
+    cofactorizer.update_stats(repeated_key);
+
+    core::Relation three_lp(11, 12);
+    three_lp.rational_large_prime.push_back(core::PrimePower{107, 0, 1});
+    three_lp.rational_large_prime.push_back(core::PrimePower{109, 0, 1});
+    three_lp.algebraic_large_prime.push_back(core::PrimePower{113, 5, 1});
+    cofactorizer.update_stats(three_lp);
+
+    const auto stats = cofactorizer.stats();
+    CHECK(stats.full_relations == 2);
+    CHECK(stats.partial_1lp == 0);
+    CHECK(stats.partial_2lp == 0);
+    CHECK(stats.partial_3lp == 1);
+
+    std::cout << "  Effective large prime statistics: PASSED" << std::endl;
 }
 
 // Test relation requirement calculation
@@ -686,6 +739,7 @@ int main() {
     test_trial_division();
     test_relation_filter();
     test_large_prime_counting();
+    test_effective_large_prime_stats();
     test_relation_requirements();
     test_separate_relations();
     test_quick_cofactor_check();

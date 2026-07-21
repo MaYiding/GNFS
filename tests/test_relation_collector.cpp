@@ -4,7 +4,7 @@
 // setup unexecuted and phase-3 reads scanning uninitialized index entries —
 // which surfaced on CI as "OOCRelationReader: corrupt record (truncated)".
 #ifdef NDEBUG
-#  undef NDEBUG
+#undef NDEBUG
 #endif
 
 #include "gnfs/relation/collector.hpp"
@@ -12,16 +12,41 @@
 #include "gnfs/util/safe_math.hpp"
 #include "gnfs/util/temp_path.hpp"
 
+#include <array>
 #include <cassert>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
 using namespace gnfs;
 using namespace gnfs::relation;
 using namespace gnfs::core;
+
+[[noreturn]] static void check_failed(const char* expression, int line) {
+    throw std::runtime_error(std::string("CHECK failed at line ") + std::to_string(line) + ": " +
+                             expression);
+}
+
+#define CHECK(condition)                                                                           \
+    do {                                                                                           \
+        if (!(condition))                                                                          \
+            check_failed(#condition, __LINE__);                                                    \
+    } while (false)
+
+static void check_stats_equal(const CollectorStats& actual, const CollectorStats& expected) {
+    CHECK(actual.total_relations == expected.total_relations);
+    CHECK(actual.full_relations == expected.full_relations);
+    CHECK(actual.partial_1lp == expected.partial_1lp);
+    CHECK(actual.partial_2lp == expected.partial_2lp);
+    CHECK(actual.duplicates_rejected == expected.duplicates_rejected);
+    CHECK(actual.invalid_rejected == expected.invalid_rejected);
+    CHECK(actual.n_divisible_rejected == expected.n_divisible_rejected);
+}
 
 void test_basic_add() {
     std::cout << "Testing basic add..." << std::endl;
@@ -53,7 +78,7 @@ void test_duplicate_rejection() {
     RelationCollector collector(config);
 
     // 添加第一个关系
-    Relation rel1(100, 201);  // gcd(100, 201) = 1
+    Relation rel1(100, 201); // gcd(100, 201) = 1
 
     bool added1 = collector.add(std::move(rel1));
     assert(added1);
@@ -62,7 +87,7 @@ void test_duplicate_rejection() {
     Relation rel2(100, 201);
 
     bool added2 = collector.add(std::move(rel2));
-    assert(!added2);  // 应该被拒绝
+    assert(!added2); // 应该被拒绝
 
     assert(collector.size() == 1);
 
@@ -84,7 +109,7 @@ void test_invalid_rejection() {
     assert(!added1);
 
     // gcd(a, b) != 1 是无效的
-    Relation rel2(100, 50);  // gcd(100, 50) = 50 != 1
+    Relation rel2(100, 50); // gcd(100, 50) = 50 != 1
 
     bool added2 = collector.add(std::move(rel2));
     assert(!added2);
@@ -124,6 +149,35 @@ void test_partial_relations() {
     assert(stats.partial_2lp == 1);
 
     std::cout << "  Partial relations: PASS" << std::endl;
+}
+
+void test_effective_large_prime_stats() {
+    std::cout << "Testing effective large prime statistics..." << std::endl;
+
+    RelationCollector collector;
+
+    Relation even_exponent(7, 8);
+    even_exponent.rational_large_prime.push_back(PrimePower{101, 0, 2});
+    CHECK(collector.add(std::move(even_exponent)));
+
+    Relation repeated_key(9, 10);
+    repeated_key.algebraic_large_prime.push_back(PrimePower{103, 7, 1});
+    repeated_key.algebraic_large_prime.push_back(PrimePower{103, 7, 1});
+    CHECK(collector.add(std::move(repeated_key)));
+
+    Relation three_lp(11, 12);
+    three_lp.rational_large_prime.push_back(PrimePower{107, 0, 1});
+    three_lp.rational_large_prime.push_back(PrimePower{109, 0, 1});
+    three_lp.algebraic_large_prime.push_back(PrimePower{113, 5, 1});
+    CHECK(collector.add(std::move(three_lp)));
+
+    const auto stats = collector.stats();
+    CHECK(stats.total_relations == 3);
+    CHECK(stats.full_relations == 2);
+    CHECK(stats.partial_1lp == 0);
+    CHECK(stats.partial_2lp == 1);
+
+    std::cout << "  Effective large prime statistics: PASS" << std::endl;
 }
 
 void test_batch_add() {
@@ -255,7 +309,7 @@ void test_filter_duplicates() {
     std::vector<Relation> relations;
 
     for (int i = 0; i < 10; ++i) {
-        Relation rel(i % 5, static_cast<uint64_t>((i % 5) + 1));  // 会有重复
+        Relation rel(i % 5, static_cast<uint64_t>((i % 5) + 1)); // 会有重复
         relations.push_back(std::move(rel));
     }
 
@@ -289,7 +343,8 @@ void test_sort_relations() {
         const auto& curr = relations[i];
 
         // 先按 b 排序，再按 a 排序
-        assert(prev.ab().b < curr.ab().b || (prev.ab().b == curr.ab().b && prev.ab().a <= curr.ab().a));
+        assert(prev.ab().b < curr.ab().b ||
+               (prev.ab().b == curr.ab().b && prev.ab().a <= curr.ab().a));
     }
 
     std::cout << "  Sort relations: PASS (" << relations.size() << " relations)" << std::endl;
@@ -301,9 +356,7 @@ void test_callback() {
     RelationCollector collector;
 
     int callback_count = 0;
-    collector.set_callback([&callback_count](const Relation&) {
-        ++callback_count;
-    });
+    collector.set_callback([&callback_count](const Relation&) { ++callback_count; });
 
     for (int i = 1; i <= 5; ++i) {
         Relation rel(i, static_cast<uint64_t>(i + 1));
@@ -316,7 +369,8 @@ void test_callback() {
 }
 
 void test_callback_no_deadlock() {
-    std::cout << "Testing callback does not deadlock when calling collector methods..." << std::endl;
+    std::cout << "Testing callback does not deadlock when calling collector methods..."
+              << std::endl;
 
     RelationCollector collector;
 
@@ -412,9 +466,9 @@ void test_n_divisibility_rejection() {
 /// 生成测试唯一 OOC base path (pid + counter, 避免并发 / 上次未清理)
 static std::string make_tmp_ooc_path(const std::string& label) {
     static int seq = 0;
-    return gnfs::util::temp_path(
-        "gnfs_test_collector_ooc_" + std::to_string(gnfs::util::process_id()) +
-        "_" + std::to_string(++seq) + "_" + label);
+    return gnfs::util::temp_path("gnfs_test_collector_ooc_" +
+                                 std::to_string(gnfs::util::process_id()) + "_" +
+                                 std::to_string(++seq) + "_" + label);
 }
 
 /// RAII OOC artifact cleanup
@@ -477,10 +531,10 @@ void test_ooc_duplicate_rejection() {
     Relation rel1(100, 201);
     assert(collector.add(std::move(rel1)));
 
-    Relation rel2(100, 201);  // 重复 (a,b)
+    Relation rel2(100, 201); // 重复 (a,b)
     assert(!collector.add(std::move(rel2)));
 
-    assert(collector.size() == 1);  // OOC writer count = 1, dedup 拒绝第二个
+    assert(collector.size() == 1); // OOC writer count = 1, dedup 拒绝第二个
     auto stats = collector.stats();
     assert(stats.duplicates_rejected == 1);
 
@@ -597,7 +651,8 @@ void test_ooc_concurrent_add() {
             }
         });
     }
-    for (auto& th : threads) th.join();
+    for (auto& th : threads)
+        th.join();
 
     // 全部 400 个 (a,b) 唯一, 都应被接受
     assert(collector.size() == 400);
@@ -605,8 +660,8 @@ void test_ooc_concurrent_add() {
     auto rels = collector.get_relations();
     assert(rels.size() == 400);
 
-    std::cout << "  OOC concurrent add: PASS (" << collector.size()
-              << " relations on disk)" << std::endl;
+    std::cout << "  OOC concurrent add: PASS (" << collector.size() << " relations on disk)"
+              << std::endl;
 }
 
 void test_ooc_clear_recycle() {
@@ -626,7 +681,7 @@ void test_ooc_clear_recycle() {
     assert(collector.size() == 3);
 
     collector.clear();
-    assert(collector.size() == 0);  // OOC writer count reset to 0 after recycle
+    assert(collector.size() == 0); // OOC writer count reset to 0 after recycle
     auto stats = collector.stats();
     assert(stats.total_relations == 0);
 
@@ -649,7 +704,7 @@ void test_ooc_empty_base_path_rejected() {
 
     CollectorConfig config;
     config.ooc_enabled = true;
-    config.ooc_base_path = "";  // empty → ctor 必须抛
+    config.ooc_base_path = ""; // empty → ctor 必须抛
 
     bool threw = false;
     try {
@@ -683,6 +738,544 @@ void test_ooc_legacy_save_load_disabled() {
     std::cout << "  OOC legacy save/load disabled: PASS" << std::endl;
 }
 
+static Relation make_snapshot_relation(int index) {
+    const int64_t a = static_cast<int64_t>(2 * index + 1);
+    const uint64_t b = static_cast<uint64_t>(2 * index + 2);
+    Relation relation(a, b);
+    relation.rational_factors.push_back(static_cast<uint32_t>(100 + index));
+    return relation;
+}
+
+void test_ooc_snapshot_append_snapshot_finalize() {
+    std::cout << "Testing OOC snapshot -> append -> snapshot -> finalize..." << std::endl;
+    auto path = make_tmp_ooc_path("snapshot_append");
+    OOCArtifacts cleanup(path);
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+    RelationCollector collector(config);
+
+    for (int i = 0; i < 3; ++i) {
+        CHECK(collector.add(make_snapshot_relation(i)));
+    }
+    const auto first = collector.snapshot_relations();
+    CHECK(first.size() == 3);
+    CHECK(first[0].a == 1);
+    CHECK(first[2].a == 5);
+
+    for (int i = 3; i < 5; ++i) {
+        CHECK(collector.add(make_snapshot_relation(i)));
+    }
+    const auto second = collector.snapshot_relations();
+    CHECK(second.size() == 5);
+    CHECK(second[3].a == 7);
+    CHECK(second[4].a == 9);
+    CHECK(first.size() == 3); // prior materialized prefix remains stable
+
+    const auto finalized = collector.finalize_relations();
+    CHECK(finalized.size() == 5);
+    for (size_t i = 0; i < finalized.size(); ++i) {
+        CHECK(finalized[i].a == static_cast<int64_t>(2 * i + 1));
+        CHECK(finalized[i].rational_factors.size() == 1);
+    }
+
+    const auto stats_before_rejection = collector.stats();
+    Relation pending_add = make_snapshot_relation(10);
+    bool write_after_finalize_threw = false;
+    try {
+        (void)collector.add(std::move(pending_add));
+    } catch (const std::logic_error&) {
+        write_after_finalize_threw = true;
+    }
+    CHECK(write_after_finalize_threw);
+
+    RelationCollector merge_source;
+    CHECK(merge_source.add(make_snapshot_relation(11)));
+    bool merge_after_finalize_threw = false;
+    try {
+        (void)collector.merge(merge_source);
+    } catch (const std::logic_error&) {
+        merge_after_finalize_threw = true;
+    }
+    CHECK(merge_after_finalize_threw);
+    CHECK(collector.size() == 5);
+    check_stats_equal(collector.stats(), stats_before_rejection);
+
+    std::cout << "  OOC appendable snapshots: PASS" << std::endl;
+}
+
+void test_ooc_checkpoint_requires_explicit_resume() {
+    std::cout << "Testing OOC checkpoint mutation rejection and resume..." << std::endl;
+    auto path = make_tmp_ooc_path("checkpoint_resume");
+    OOCArtifacts cleanup(path);
+    auto foreign_path = make_tmp_ooc_path("checkpoint_foreign");
+    OOCArtifacts foreign_cleanup(foreign_path);
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+    RelationCollector collector(config);
+    CHECK(collector.add(make_snapshot_relation(0)));
+
+    CollectorConfig foreign_config;
+    foreign_config.ooc_enabled = true;
+    foreign_config.ooc_base_path = foreign_path;
+    RelationCollector foreign(foreign_config);
+    CHECK(foreign.add(make_snapshot_relation(20)));
+
+    RelationCollector merge_source;
+    CHECK(merge_source.add(make_snapshot_relation(2)));
+    Relation pending_add = make_snapshot_relation(1);
+
+    const auto stats_before_rejection = collector.stats();
+    const auto descriptor = collector.checkpoint_ooc();
+    const auto foreign_descriptor = foreign.checkpoint_ooc();
+
+    auto stale_descriptor = descriptor;
+    ++stale_descriptor.generation;
+    bool stale_rejected = false;
+    try {
+        collector.resume_ooc(stale_descriptor);
+    } catch (const std::invalid_argument&) {
+        stale_rejected = true;
+    }
+    CHECK(stale_rejected);
+
+    bool foreign_rejected = false;
+    try {
+        collector.resume_ooc(foreign_descriptor);
+    } catch (const std::invalid_argument&) {
+        foreign_rejected = true;
+    }
+    CHECK(foreign_rejected);
+
+    bool add_while_suspended_threw = false;
+    try {
+        (void)collector.add(std::move(pending_add));
+    } catch (const std::logic_error&) {
+        add_while_suspended_threw = true;
+    }
+    CHECK(add_while_suspended_threw);
+
+    bool merge_while_suspended_threw = false;
+    try {
+        (void)collector.merge(merge_source);
+    } catch (const std::logic_error&) {
+        merge_while_suspended_threw = true;
+    }
+    CHECK(merge_while_suspended_threw);
+    CHECK(collector.size() == 1);
+    check_stats_equal(collector.stats(), stats_before_rejection);
+
+    // The rejected operations must not poison seen_: both exact keys remain
+    // acceptable after the matching descriptor resumes the writer.
+    collector.resume_ooc(descriptor);
+    CHECK(collector.add(std::move(pending_add)));
+    CHECK(collector.merge(merge_source) == 1);
+    CHECK(collector.snapshot_relations().size() == 3);
+    collector.finalize_ooc();
+
+    // A suspended writer can be finalized directly and repeatedly.
+    foreign.finalize_ooc();
+    foreign.finalize_ooc();
+    OOCRelationReader foreign_reader(foreign_path);
+    CHECK(foreign_reader.count() == 1);
+
+    std::cout << "  OOC explicit checkpoint lifecycle: PASS" << std::endl;
+}
+
+void test_ooc_failed_state_rejects_mutation() {
+    std::cout << "Testing OOC failed-state mutation rejection..." << std::endl;
+    auto path = make_tmp_ooc_path("failed_state");
+    OOCArtifacts cleanup(path);
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+    RelationCollector collector(config);
+    CHECK(collector.add(make_snapshot_relation(0)));
+
+    RelationCollector merge_source;
+    CHECK(merge_source.add(make_snapshot_relation(2)));
+    const auto stats_before_failure = collector.stats();
+    const auto descriptor = collector.checkpoint_ooc();
+
+    // checkpoint_ooc closed both handles, so removing this temp artifact is a
+    // deterministic and isolated way to make resume fail and enter Failed.
+    CHECK(std::filesystem::remove(path + ".reldata"));
+    bool resume_failed = false;
+    try {
+        collector.resume_ooc(descriptor);
+    } catch (const std::runtime_error&) {
+        resume_failed = true;
+    }
+    CHECK(resume_failed);
+
+    Relation pending_add = make_snapshot_relation(1);
+    bool add_failed = false;
+    try {
+        (void)collector.add(std::move(pending_add));
+    } catch (const std::logic_error&) {
+        add_failed = true;
+    }
+    CHECK(add_failed);
+
+    bool merge_failed = false;
+    try {
+        (void)collector.merge(merge_source);
+    } catch (const std::logic_error&) {
+        merge_failed = true;
+    }
+    CHECK(merge_failed);
+    CHECK(collector.size() == 1);
+    check_stats_equal(collector.stats(), stats_before_failure);
+
+    std::cout << "  OOC failed-state mutation rejection: PASS" << std::endl;
+}
+
+void test_ooc_snapshot_integrity_failure_fails_closed() {
+    std::cout << "Testing OOC snapshot integrity failure fails closed..." << std::endl;
+    auto path = make_tmp_ooc_path("snapshot_integrity_failure");
+    OOCArtifacts cleanup(path);
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+    RelationCollector collector(config);
+    CHECK(collector.add(make_snapshot_relation(0)));
+
+    RelationCollector merge_source;
+    CHECK(merge_source.add(make_snapshot_relation(2)));
+    const auto stats_before_failure = collector.stats();
+    const auto descriptor = collector.checkpoint_ooc();
+
+    // Compact records start with a/b, followed by rational_factors count.
+    // Corrupt that count while checkpoint_ooc has both handles closed, then
+    // resume so snapshot_relations itself detects the untrusted prefix.
+    {
+        std::fstream data(path + ".reldata", std::ios::in | std::ios::out | std::ios::binary);
+        CHECK(static_cast<bool>(data));
+        const uint32_t corrupt_count = std::numeric_limits<uint32_t>::max();
+        data.seekp(16);
+        data.write(reinterpret_cast<const char*>(&corrupt_count), sizeof(corrupt_count));
+        data.flush();
+        CHECK(static_cast<bool>(data));
+    }
+    collector.resume_ooc(descriptor);
+
+    bool snapshot_failed = false;
+    try {
+        (void)collector.snapshot_relations();
+    } catch (const std::runtime_error&) {
+        snapshot_failed = true;
+    }
+    CHECK(snapshot_failed);
+
+    Relation pending_add = make_snapshot_relation(1);
+    bool add_failed = false;
+    try {
+        (void)collector.add(std::move(pending_add));
+    } catch (const std::logic_error&) {
+        add_failed = true;
+    }
+    CHECK(add_failed);
+
+    bool merge_failed = false;
+    try {
+        (void)collector.merge(merge_source);
+    } catch (const std::logic_error&) {
+        merge_failed = true;
+    }
+    CHECK(merge_failed);
+    CHECK(collector.size() == 1);
+    check_stats_equal(collector.stats(), stats_before_failure);
+
+    std::cout << "  OOC snapshot integrity fail-closed: PASS" << std::endl;
+}
+
+void test_ooc_empty_and_repeated_snapshot() {
+    std::cout << "Testing OOC empty and repeated snapshots..." << std::endl;
+    auto path = make_tmp_ooc_path("snapshot_repeat");
+    OOCArtifacts cleanup(path);
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+    RelationCollector collector(config);
+
+    CHECK(collector.snapshot_relations().empty());
+    CHECK(collector.snapshot_relations().empty());
+
+    CHECK(collector.add(make_snapshot_relation(0)));
+    const auto first = collector.snapshot_relations();
+    const auto repeated = collector.snapshot_relations();
+    CHECK(first.size() == 1);
+    CHECK(repeated.size() == 1);
+    CHECK(first[0].a == repeated[0].a);
+    CHECK(first[0].b == repeated[0].b);
+
+    CHECK(collector.add(make_snapshot_relation(1)));
+    const auto finalized = collector.get_relations();
+    CHECK(finalized.size() == 2);
+
+    std::cout << "  OOC empty/repeated snapshots: PASS" << std::endl;
+}
+
+void test_ooc_writer_finalize_state() {
+    std::cout << "Testing OOC writer explicit finalize state..." << std::endl;
+    auto path = make_tmp_ooc_path("writer_finalize_state");
+    OOCArtifacts cleanup(path);
+
+    OOCRelationWriter writer(path);
+    CHECK(writer.state() == OOCWriterState::Open);
+    CHECK(writer.write(make_snapshot_relation(0)) == 0);
+
+    const auto first = writer.finalize();
+    const auto repeated = writer.finalize();
+    CHECK(first == repeated);
+    CHECK(first.count == 1);
+    CHECK(writer.state() == OOCWriterState::Finalized);
+
+    bool threw = false;
+    try {
+        (void)writer.write(make_snapshot_relation(1));
+    } catch (const std::logic_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(writer.count() == 1);
+
+    OOCRelationReader reader(path);
+    CHECK(reader.count() == 1);
+    CHECK(reader.read(0).a == 1);
+
+    std::cout << "  OOC explicit finalize state: PASS" << std::endl;
+}
+
+void test_ooc_reader_rejects_corrupt_variable_lengths() {
+    std::cout << "Testing OOC reader corrupt variable lengths..." << std::endl;
+    auto path = make_tmp_ooc_path("corrupt_variable_lengths");
+    OOCArtifacts cleanup(path);
+
+    OOCRelationWriter writer(path);
+    CHECK(writer.write(Relation(1, 2)) == 0);
+    CHECK(writer.finalize().count == 1);
+
+    // A relation with empty vectors is laid out as a/b followed by the five
+    // uint32_t count fields. Exercise the shared checked-count path for every
+    // variable-length field, restoring each field before corrupting the next.
+    constexpr std::array<std::streamoff, 5> count_offsets = {16, 20, 24, 28, 32};
+    const auto overwrite_count = [&](std::streamoff offset, uint32_t value) {
+        std::fstream data(path + ".reldata", std::ios::in | std::ios::out | std::ios::binary);
+        CHECK(static_cast<bool>(data));
+        data.seekp(offset);
+        data.write(reinterpret_cast<const char*>(&value), sizeof(value));
+        data.flush();
+        CHECK(static_cast<bool>(data));
+    };
+
+    for (const std::streamoff offset : count_offsets) {
+        overwrite_count(offset, std::numeric_limits<uint32_t>::max());
+
+        bool rejected = false;
+        try {
+            OOCRelationReader reader(path);
+            (void)reader.read(0);
+        } catch (const std::runtime_error& error) {
+            rejected = std::string(error.what()).find("count exceeds limit") != std::string::npos;
+        }
+        CHECK(rejected);
+
+        overwrite_count(offset, 0);
+    }
+
+    OOCRelationReader reader(path);
+    CHECK(reader.read(0).a == 1);
+
+    std::cout << "  OOC corrupt variable lengths: PASS" << std::endl;
+}
+
+void test_ooc_reader_rejects_trailing_bytes() {
+    std::cout << "Testing OOC reader trailing bytes..." << std::endl;
+    auto path = make_tmp_ooc_path("trailing_bytes");
+    OOCArtifacts cleanup(path);
+
+    OOCRelationWriter writer(path);
+    CHECK(writer.write(Relation(1, 2)) == 0);
+    const auto descriptor = writer.finalize();
+
+    {
+        std::ofstream data(path + ".reldata", std::ios::app | std::ios::binary);
+        CHECK(static_cast<bool>(data));
+        const uint8_t trailing = 0xA5;
+        data.write(reinterpret_cast<const char*>(&trailing), sizeof(trailing));
+        data.flush();
+        CHECK(static_cast<bool>(data));
+    }
+    {
+        std::fstream index(path + ".relidx", std::ios::in | std::ios::out | std::ios::binary);
+        CHECK(static_cast<bool>(index));
+        const uint64_t corrupt_end = descriptor.data_end + 1;
+        index.seekp(24); // header + offset_0; overwrite the final sentinel
+        index.write(reinterpret_cast<const char*>(&corrupt_end), sizeof(corrupt_end));
+        index.flush();
+        CHECK(static_cast<bool>(index));
+    }
+
+    bool rejected = false;
+    try {
+        OOCRelationReader reader(path);
+        (void)reader.read(0);
+    } catch (const std::runtime_error& error) {
+        rejected = std::string(error.what()).find("trailing bytes") != std::string::npos;
+    }
+    CHECK(rejected);
+
+    std::cout << "  OOC trailing bytes: PASS" << std::endl;
+}
+
+void test_ooc_prefix_reader_rejects_bad_descriptor_and_offsets() {
+    std::cout << "Testing OOC prefix reader validation..." << std::endl;
+    auto path = make_tmp_ooc_path("prefix_validation");
+    OOCArtifacts cleanup(path);
+
+    OOCRelationWriter writer(path);
+    CHECK(writer.write(make_snapshot_relation(0)) == 0);
+    CHECK(writer.write(make_snapshot_relation(1)) == 1);
+    const auto descriptor = writer.checkpoint_prefix();
+    CHECK(writer.state() == OOCWriterState::Suspended);
+
+    bool ordinary_reader_threw = false;
+    try {
+        OOCRelationReader reader(path);
+        (void)reader;
+    } catch (const std::runtime_error&) {
+        ordinary_reader_threw = true;
+    }
+    CHECK(ordinary_reader_threw);
+
+    auto bad_end = descriptor;
+    ++bad_end.data_end;
+    bool bad_end_threw = false;
+    try {
+        OOCRelationPrefixReader reader(path, bad_end, writer);
+        (void)reader;
+    } catch (const std::invalid_argument&) {
+        bad_end_threw = true;
+    }
+    CHECK(bad_end_threw);
+
+    auto bad_count = descriptor;
+    ++bad_count.count;
+    bool bad_count_threw = false;
+    try {
+        OOCRelationPrefixReader reader(path, bad_count, writer);
+        (void)reader;
+    } catch (const std::invalid_argument&) {
+        bad_count_threw = true;
+    }
+    CHECK(bad_count_threw);
+
+    auto stale = descriptor;
+    ++stale.generation;
+    bool stale_threw = false;
+    try {
+        writer.resume_append(stale);
+    } catch (const std::invalid_argument&) {
+        stale_threw = true;
+    }
+    CHECK(stale_threw);
+    CHECK(writer.state() == OOCWriterState::Suspended);
+
+    bool stale_reader_threw = false;
+    try {
+        OOCRelationPrefixReader reader(path, stale, writer);
+        (void)reader;
+    } catch (const std::invalid_argument&) {
+        stale_reader_threw = true;
+    }
+    CHECK(stale_reader_threw);
+
+    auto foreign_path = make_tmp_ooc_path("foreign_descriptor");
+    OOCArtifacts foreign_cleanup(foreign_path);
+    OOCRelationWriter foreign_writer(foreign_path);
+    CHECK(foreign_writer.write(make_snapshot_relation(0)) == 0);
+    CHECK(foreign_writer.write(make_snapshot_relation(1)) == 1);
+    const auto foreign_descriptor = foreign_writer.checkpoint_prefix();
+    CHECK(foreign_descriptor.count == descriptor.count);
+    CHECK(foreign_descriptor.store_id != descriptor.store_id);
+
+    bool foreign_threw = false;
+    try {
+        OOCRelationPrefixReader reader(path, foreign_descriptor, writer);
+        (void)reader;
+    } catch (const std::invalid_argument&) {
+        foreign_threw = true;
+    }
+    CHECK(foreign_threw);
+
+    bool foreign_resume_threw = false;
+    try {
+        writer.resume_append(foreign_descriptor);
+    } catch (const std::invalid_argument&) {
+        foreign_resume_threw = true;
+    }
+    CHECK(foreign_resume_threw);
+    CHECK(writer.state() == OOCWriterState::Suspended);
+
+    foreign_writer.resume_append(foreign_descriptor);
+    (void)foreign_writer.finalize();
+
+    uint64_t original_second_offset = 0;
+    {
+        std::fstream index(path + ".relidx", std::ios::in | std::ios::out | std::ios::binary);
+        CHECK(static_cast<bool>(index));
+        index.seekg(24);
+        index.read(reinterpret_cast<char*>(&original_second_offset), 8);
+        CHECK(static_cast<bool>(index));
+        const uint64_t corrupt_offset = 0;
+        index.seekp(24);
+        index.write(reinterpret_cast<const char*>(&corrupt_offset), 8);
+        index.flush();
+        CHECK(static_cast<bool>(index));
+    }
+
+    bool corrupt_offset_threw = false;
+    try {
+        OOCRelationPrefixReader reader(path, descriptor, writer);
+        (void)reader;
+    } catch (const std::runtime_error&) {
+        corrupt_offset_threw = true;
+    }
+    CHECK(corrupt_offset_threw);
+
+    {
+        std::fstream index(path + ".relidx", std::ios::in | std::ios::out | std::ios::binary);
+        CHECK(static_cast<bool>(index));
+        index.seekp(24);
+        index.write(reinterpret_cast<const char*>(&original_second_offset), 8);
+        index.flush();
+        CHECK(static_cast<bool>(index));
+    }
+
+    {
+        OOCRelationPrefixReader reader(path, descriptor, writer);
+        CHECK(reader.count() == 2);
+        CHECK(reader.read(0).a == 1);
+        CHECK(reader.read(1).a == 3);
+    }
+    writer.resume_append(descriptor);
+    CHECK(writer.state() == OOCWriterState::Open);
+    CHECK(writer.write(make_snapshot_relation(2)) == 2);
+    CHECK(writer.finalize().count == 3);
+
+    OOCRelationReader final_reader(path);
+    CHECK(final_reader.count() == 3);
+
+    std::cout << "  OOC prefix validation: PASS" << std::endl;
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // OOC Resume mode tests (BACKLOG #11e — sieve mid-flight checkpoint)
 // 验证 OOCRelationWriter(path, resume=true) 加载现有文件 + 末尾追加 + reader
@@ -703,12 +1296,11 @@ void test_ooc_writer_resume_append() {
             writer.write(r);
         }
         assert(writer.count() == 3);
-    }  // destructor → close() → flip MAGIC
+    } // destructor → close() → flip MAGIC
 
     // 手动 flip MAGIC → INCOMPLETE 模拟 prior session crash
     {
-        std::fstream idx(path + ".relidx",
-                         std::ios::in | std::ios::out | std::ios::binary);
+        std::fstream idx(path + ".relidx", std::ios::in | std::ios::out | std::ios::binary);
         uint64_t incomplete = OOCRelationWriter::MAGIC_INCOMPLETE;
         idx.write(reinterpret_cast<const char*>(&incomplete), 8);
     }
@@ -716,7 +1308,7 @@ void test_ooc_writer_resume_append() {
     // Phase 2: resume, 追加 2 个 rel, close
     {
         OOCRelationWriter writer(path, /*resume=*/true);
-        assert(writer.count() == 3);  // prior count 加载
+        assert(writer.count() == 3); // prior count 加载
         for (int i = 4; i <= 5; ++i) {
             Relation r(i * 10, static_cast<uint64_t>(i * 10 + 1));
             r.rational_factors.push_back(static_cast<uint32_t>(i));
@@ -767,8 +1359,7 @@ void test_ooc_writer_resume_finalized_rejected() {
 void test_ooc_writer_resume_nonexistent_rejected() {
     std::cout << "Testing OOC writer resume rejects nonexistent..." << std::endl;
     auto path = gnfs::util::temp_path(
-        "gnfs_test_nonexistent_" + std::to_string(gnfs::util::process_id()) +
-        "_xyz_resume_check");
+        "gnfs_test_nonexistent_" + std::to_string(gnfs::util::process_id()) + "_xyz_resume_check");
 
     bool threw = false;
     try {
@@ -797,6 +1388,12 @@ void test_ooc_collector_resume_loads_seen() {
         for (int i = 1; i <= 3; ++i) {
             Relation r(i * 10, static_cast<uint64_t>(i * 10 + 1));
             r.rational_factors.push_back(static_cast<uint32_t>(i));
+            if (i >= 2) {
+                r.rational_large_prime.push_back(PrimePower{1009 + static_cast<uint64_t>(i), 0, 1});
+            }
+            if (i == 3) {
+                r.algebraic_large_prime.push_back(PrimePower{2003, 17, 1});
+            }
             assert(collector.add(std::move(r)));
         }
         assert(collector.size() == 3);
@@ -804,8 +1401,7 @@ void test_ooc_collector_resume_loads_seen() {
 
     // 手动 flip MAGIC → INCOMPLETE 模拟 prior session crash 前未 finalize
     {
-        std::fstream idx(path + ".relidx",
-                         std::ios::in | std::ios::out | std::ios::binary);
+        std::fstream idx(path + ".relidx", std::ios::in | std::ios::out | std::ios::binary);
         uint64_t incomplete = OOCRelationWriter::MAGIC_INCOMPLETE;
         idx.write(reinterpret_cast<const char*>(&incomplete), 8);
     }
@@ -823,15 +1419,18 @@ void test_ooc_collector_resume_loads_seen() {
         assert(collector.size() == 3);
         auto stats0 = collector.stats();
         assert(stats0.total_relations == 3);
+        assert(stats0.full_relations == 1);
+        assert(stats0.partial_1lp == 1);
+        assert(stats0.partial_2lp == 1);
 
         // 尝试重 add prior (a,b) — seen_ 拒绝 (dedup)
         Relation dup1(10, 11);
         dup1.rational_factors.push_back(1);
-        assert(!collector.add(std::move(dup1)));  // 重复
+        assert(!collector.add(std::move(dup1))); // 重复
         Relation dup2(20, 21);
         dup2.rational_factors.push_back(2);
-        assert(!collector.add(std::move(dup2)));  // 重复
-        assert(collector.size() == 3);  // 不变
+        assert(!collector.add(std::move(dup2))); // 重复
+        assert(collector.size() == 3);           // 不变
 
         // Add 2 new (a,b) 通过
         for (int i = 4; i <= 5; ++i) {
@@ -840,7 +1439,12 @@ void test_ooc_collector_resume_loads_seen() {
             assert(collector.add(std::move(r)));
         }
         assert(collector.size() == 5);
-    }  // 析构 close + finalize MAGIC
+        const auto stats1 = collector.stats();
+        assert(stats1.total_relations == 5);
+        assert(stats1.full_relations == 3);
+        assert(stats1.partial_1lp == 1);
+        assert(stats1.partial_2lp == 1);
+    } // 析构 close + finalize MAGIC
 
     // Reader 验证 final state
     OOCRelationReader reader(path);
@@ -870,8 +1474,7 @@ void test_ooc_collector_resume_empty_files_graceful() {
 
     // Flip MAGIC → INCOMPLETE
     {
-        std::fstream idx(path + ".relidx",
-                         std::ios::in | std::ios::out | std::ios::binary);
+        std::fstream idx(path + ".relidx", std::ios::in | std::ios::out | std::ios::binary);
         uint64_t incomplete = OOCRelationWriter::MAGIC_INCOMPLETE;
         idx.write(reinterpret_cast<const char*>(&incomplete), 8);
     }
@@ -887,7 +1490,7 @@ void test_ooc_collector_resume_empty_files_graceful() {
 
         // Coprime (a,b): (1,2), (3,4) — gcd 始终 1, 通过 collector validate
         for (int i = 1; i <= 2; ++i) {
-            Relation r(2*i - 1, static_cast<uint64_t>(2*i));
+            Relation r(2 * i - 1, static_cast<uint64_t>(2 * i));
             assert(collector.add(std::move(r)));
         }
         assert(collector.size() == 2);
@@ -920,8 +1523,7 @@ void test_ooc_writer_resume_large_payload() {
 
     // Flip to INCOMPLETE
     {
-        std::fstream idx(path + ".relidx",
-                         std::ios::in | std::ios::out | std::ios::binary);
+        std::fstream idx(path + ".relidx", std::ios::in | std::ios::out | std::ios::binary);
         uint64_t incomplete = OOCRelationWriter::MAGIC_INCOMPLETE;
         idx.write(reinterpret_cast<const char*>(&incomplete), 8);
     }
@@ -978,6 +1580,7 @@ int main() {
     test_duplicate_rejection();
     test_invalid_rejection();
     test_partial_relations();
+    test_effective_large_prime_stats();
     test_batch_add();
     test_save_load();
     test_concurrent_add();
@@ -997,6 +1600,15 @@ int main() {
     test_ooc_clear_recycle();
     test_ooc_empty_base_path_rejected();
     test_ooc_legacy_save_load_disabled();
+    test_ooc_snapshot_append_snapshot_finalize();
+    test_ooc_checkpoint_requires_explicit_resume();
+    test_ooc_failed_state_rejects_mutation();
+    test_ooc_snapshot_integrity_failure_fails_closed();
+    test_ooc_empty_and_repeated_snapshot();
+    test_ooc_writer_finalize_state();
+    test_ooc_reader_rejects_corrupt_variable_lengths();
+    test_ooc_reader_rejects_trailing_bytes();
+    test_ooc_prefix_reader_rejects_bad_descriptor_and_offsets();
 
     std::cout << "\n=== OOC resume mode tests (BACKLOG #11e) ===" << std::endl;
     test_ooc_writer_resume_append();

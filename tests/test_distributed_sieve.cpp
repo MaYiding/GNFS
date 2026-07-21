@@ -37,6 +37,7 @@ int main() {
 #include <unistd.h>
 #include <vector>
 
+using gnfs::core::ABPair;
 using gnfs::core::Integer;
 using gnfs::core::PolynomialContext;
 using gnfs::core::Relation;
@@ -167,10 +168,10 @@ size_t run_in_process_sieve(const Fixture& f, const SpecialQRange& range,
     return out.size();
 }
 
-// Stable hashed key for relation dedup comparison. Uses (a, b) — sieve outputs
-// distinct (a, b) per relation, so this is sufficient for set membership.
-int64_t rel_key(const Relation& r) {
-    return static_cast<int64_t>(r.a) ^ (static_cast<int64_t>(r.b) << 32);
+// Exact raw-relation identity for set comparison. Structured rows must instead
+// use their complete source-ID combinations.
+ABPair rel_key(const Relation& r) {
+    return r.ab();
 }
 
 // ── Test 1: split_sq_range edge cases ──────────────────────────────────
@@ -327,7 +328,7 @@ void test_single_worker_matches_in_process() {
     assert(rels.size() == baseline_count);
 
     // Set membership match
-    std::set<int64_t> base_keys, dist_keys;
+    std::set<ABPair> base_keys, dist_keys;
     for (const auto& r : baseline) base_keys.insert(rel_key(r));
     for (const auto& r : rels)     dist_keys.insert(rel_key(r));
     assert(base_keys == dist_keys);
@@ -344,7 +345,7 @@ void test_multi_worker_same_set() {
 
     std::vector<Relation> baseline;
     const size_t baseline_count = run_in_process_sieve(f, range, baseline);
-    std::set<int64_t> base_keys;
+    std::set<ABPair> base_keys;
     for (const auto& r : baseline) base_keys.insert(rel_key(r));
 
     for (size_t nw : {2U, 4U}) {
@@ -375,7 +376,7 @@ void test_multi_worker_same_set() {
         assert(sum_worker == rels.size());
 
         // Relation set must equal the baseline set (sieve is deterministic).
-        std::set<int64_t> dist_keys;
+        std::set<ABPair> dist_keys;
         for (const auto& r : rels) dist_keys.insert(rel_key(r));
         assert(dist_keys == base_keys);
         assert(rels.size() == baseline_count);
@@ -509,7 +510,7 @@ void test_worker_crash_with_retry() {
     }
 
     // Final merged set must match baseline (the crash + retry was transparent).
-    std::set<int64_t> base_keys, dist_keys;
+    std::set<ABPair> base_keys, dist_keys;
     for (const auto& r : baseline) base_keys.insert(rel_key(r));
     for (const auto& r : rels)     dist_keys.insert(rel_key(r));
     assert(base_keys == dist_keys);

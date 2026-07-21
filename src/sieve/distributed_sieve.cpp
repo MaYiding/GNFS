@@ -545,7 +545,10 @@ std::vector<Relation> run_distributed_sieve(
     // sieve dedups across all SQs through a single collector — to preserve
     // that semantic we dedup on merge.
     std::vector<Relation> merged;
-    std::unordered_set<int64_t> seen_ab;
+    // These are raw sieve rows: exact ABPair identity is assigned before any
+    // source IDs or structured relation combinations exist. Inserting while
+    // visiting workers preserves the first occurrence and its stable order.
+    std::unordered_set<gnfs::core::ABPair, gnfs::core::ABPairHash> seen_ab;
     if (out_worker_stats) out_worker_stats->clear();
     if (out_worker_stats) out_worker_stats->reserve(slots.size());
 
@@ -573,9 +576,7 @@ std::vector<Relation> run_distributed_sieve(
             merged.reserve(merged.size() + wrels.size());
             seen_ab.reserve(seen_ab.size() + wrels.size());
             for (auto& r : wrels) {
-                int64_t k = static_cast<int64_t>(r.a) ^
-                            (static_cast<int64_t>(r.b) << 32);
-                if (seen_ab.insert(k).second) {
+                if (seen_ab.insert(r.ab()).second) {
                     merged.push_back(std::move(r));
                     ++added;
                 } else {

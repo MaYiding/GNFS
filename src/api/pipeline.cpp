@@ -13,6 +13,7 @@
 #include <gnfs/relation/collector.hpp>
 #include <gnfs/relation/filter.hpp>
 #include <gnfs/relation/clique_merger.hpp>
+#include <gnfs/relation/relation_identity.hpp>
 #include <gnfs/relation/ooc_policy.hpp>
 #include <gnfs/relation/v0_bfs_policy.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
@@ -1021,8 +1022,9 @@ std::vector<Relation> Pipeline::sieve_and_collect(
 
         if (collector.size() < 10) break;
 
-        // Filter + merge to check usable relation count
-        relations = collector.get_relations();
+        // Filter + merge a stable snapshot to check usable relation count. OOC
+        // collection must remain appendable when another adaptive round is needed.
+        relations = collector.snapshot_relations();
 
         relation::FilterConfig filter_config;
         filter_config.remove_singletons = true;
@@ -1052,15 +1054,25 @@ std::vector<Relation> Pipeline::sieve_and_collect(
                 relation::CliqueStats cstats;
                 auto v3_merged = relation::CliqueRelationMerger::merge_cliques(
                     std::move(partial_copy_for_v3), &cstats);
-                std::unordered_set<int64_t> existing_keys;
+                // Legacy V0/V3 compatibility dedup uses the complete source
+                // combination. Distinct merged rows may share their materialized
+                // primary (a,b), while the same source set may be materialized in
+                // a different order by the two strategies.
+                std::unordered_set<
+                    relation::RelationSourceCombination,
+                    relation::RelationSourceCombinationHash> existing_keys;
                 existing_keys.reserve(relations.size());
                 for (const auto& r : relations) {
-                    existing_keys.insert(static_cast<int64_t>(r.a) ^ (static_cast<int64_t>(r.b) << 32));
+                    if (r.is_merged()) {
+                        existing_keys.insert(
+                            relation::relation_source_combination(r));
+                    }
                 }
                 size_t v3_added = 0;
                 for (auto& r : v3_merged) {
-                    int64_t key = static_cast<int64_t>(r.a) ^ (static_cast<int64_t>(r.b) << 32);
-                    if (existing_keys.insert(key).second) {
+                    if (!r.is_merged() ||
+                        existing_keys.insert(
+                            relation::relation_source_combination(r)).second) {
                         relations.push_back(std::move(r));
                         ++v3_added;
                     }
@@ -1117,6 +1129,10 @@ std::vector<Relation> Pipeline::sieve_and_collect(
             round + 1, relations.size(), matrix_cols, lp_cols, effective_cols,
             merge_rate, beta, batch_target);
     }
+
+    // The adaptive loop is the last append boundary. Finalize OOC storage only
+    // after every possible continuation has been decided.
+    collector.finalize_ooc();
 
     auto t1 = std::chrono::high_resolution_clock::now();
     stats_.timings.sieve_s = std::chrono::duration<double>(t1 - t0).count();
@@ -1329,24 +1345,33 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
 
         // ── V3 cascade (ENV: GNFS_CASCADE_V3=1) — runs AFTER V0 on partial copy ──
         // V0 handles weight=2 LP keys; V3 spans weight≥3 keys via BFS spanning tree.
-        // Dedup: (a,b) tuple — V3 output that matches existing relations is dropped.
+        // Dedup: exact source combination — an equivalent V3 materialization is dropped.
         if (use_v3 && !partial_copy_for_v3.empty()) {
             relation::CliqueStats cstats;
             auto v3_merged = relation::CliqueRelationMerger::merge_cliques(
                 std::move(partial_copy_for_v3), &cstats);
 
-            // Dedup by (a,b) — V3 may produce relations already in V0 output.
-            std::unordered_set<int64_t> existing_keys;
+            // Legacy V0/V3 compatibility dedup uses the complete source
+            // combination. Distinct merged rows may share their materialized
+            // primary (a,b), while the same source set may be materialized in
+            // a different order by the two strategies.
+            std::unordered_set<
+                relation::RelationSourceCombination,
+                relation::RelationSourceCombinationHash> existing_keys;
             existing_keys.reserve(relations.size());
             for (const auto& r : relations) {
-                existing_keys.insert(static_cast<int64_t>(r.a) ^ (static_cast<int64_t>(r.b) << 32));
+                if (r.is_merged()) {
+                    existing_keys.insert(
+                        relation::relation_source_combination(r));
+                }
             }
 
             size_t v3_added = 0;
             size_t v3_dedup_skipped = 0;
             for (auto& r : v3_merged) {
-                int64_t key = static_cast<int64_t>(r.a) ^ (static_cast<int64_t>(r.b) << 32);
-                if (existing_keys.insert(key).second) {
+                if (!r.is_merged() ||
+                    existing_keys.insert(
+                        relation::relation_source_combination(r)).second) {
                     relations.push_back(std::move(r));
                     ++v3_added;
                 } else {
