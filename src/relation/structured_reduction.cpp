@@ -563,7 +563,6 @@ struct SequentialStructuredReducer::Impl final {
 
     void validate_state() const {
         size_t counted_active = 0;
-        std::vector<SourceId> active_sources;
         for (size_t row_index = 0; row_index < rows.size(); ++row_index) {
             const auto& row = rows[row_index];
             validate_source_combination(row.sources, false);
@@ -588,8 +587,6 @@ struct SequentialStructuredReducer::Impl final {
             }
             if (row.active) {
                 ++counted_active;
-                active_sources.insert(active_sources.end(), row.sources.sources().begin(),
-                                      row.sources.sources().end());
             }
         }
         if (counted_active != active_rows) {
@@ -597,11 +594,44 @@ struct SequentialStructuredReducer::Impl final {
                  "active row count is inconsistent");
         }
 
-        std::sort(active_sources.begin(), active_sources.end());
-        if (std::adjacent_find(active_sources.begin(), active_sources.end()) !=
-            active_sources.end()) {
+        // Deterministic sparse GF(2) elimination over immutable source IDs.
+        // Active source supports may overlap, but their transform rows must be
+        // independent. RowId order and the greatest ordinal pivot make the
+        // reference audit reproducible.
+        constexpr size_t no_basis_row = std::numeric_limits<size_t>::max();
+        std::vector<size_t> pivot_to_basis(corpus.size(), no_basis_row);
+        std::vector<SourceCombination> source_basis;
+        source_basis.reserve(counted_active);
+        for (const auto& row : rows) {
+            if (!row.active)
+                continue;
+
+            SourceCombination candidate = row.sources;
+            bool inserted_basis_row = false;
+            while (!candidate.empty()) {
+                const SourceId pivot = candidate.sources().back();
+                if (pivot.ordinal >= pivot_to_basis.size()) {
+                    fail(StructuredReductionErrorCode::InvariantViolation,
+                         "active source transform has an invalid pivot");
+                }
+                const size_t basis_index = pivot_to_basis[static_cast<size_t>(pivot.ordinal)];
+                if (basis_index == no_basis_row) {
+                    pivot_to_basis[static_cast<size_t>(pivot.ordinal)] = source_basis.size();
+                    source_basis.push_back(std::move(candidate));
+                    inserted_basis_row = true;
+                    break;
+                }
+                candidate =
+                    SourceCombination::symmetric_difference(candidate, source_basis[basis_index]);
+            }
+            if (!inserted_basis_row) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "active source transforms are linearly dependent");
+            }
+        }
+        if (source_basis.size() != counted_active) {
             fail(StructuredReductionErrorCode::InvariantViolation,
-                 "active source combinations overlap");
+                 "active source transform rank is inconsistent");
         }
 
         for (size_t bucket_index = 0; bucket_index < buckets.size(); ++bucket_index) {
@@ -706,10 +736,9 @@ struct SequentialStructuredReducer::Impl final {
 
         const auto expected_sources =
             SourceCombination::symmetric_difference(lhs.sources, rhs.sources);
-        if (expected_sources.empty() ||
-            expected_sources.size() != lhs.sources.size() + rhs.sources.size()) {
+        if (expected_sources.empty()) {
             fail(StructuredReductionErrorCode::InvariantViolation,
-                 "active merge members have overlapping sources");
+                 "active merge members have identical source transforms");
         }
         try {
             validate_source_combination(plan.expected_sources, false);
@@ -945,9 +974,9 @@ std::vector<TwoWayMergePlan> SequentialStructuredReducer::plan_two_way_merges() 
         const auto& lhs = impl_->row_at(members[0]);
         const auto& rhs = impl_->row_at(members[1]);
         auto sources = SourceCombination::symmetric_difference(lhs.sources, rhs.sources);
-        if (sources.empty() || sources.size() != lhs.sources.size() + rhs.sources.size()) {
+        if (sources.empty()) {
             fail(StructuredReductionErrorCode::InvariantViolation,
-                 "active degree-two rows have overlapping sources");
+                 "active degree-two rows have identical source transforms");
         }
         auto keys = symmetric_difference_lp_keys(lhs.lp_keys, rhs.lp_keys);
         plans.push_back(TwoWayMergePlan{impl_->corpus.generation(), impl_->incidence_epoch, members,

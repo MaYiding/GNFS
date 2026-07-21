@@ -166,8 +166,11 @@ struct StructuredReductionStats final {
 /// Logical rows retain only exact source and LP symmetric differences. Plans
 /// are read-only, preparation validates and materializes without mutation, and
 /// commit publishes only after every potentially throwing allocation succeeds.
+/// Active SourceCombination rows are GF(2) transform vectors over the immutable
+/// corpus and must have full row rank. Source IDs may overlap between active
+/// rows; overlap alone is not an invariant violation.
 /// Higher-weight tree bases, parallel batches, and OOC persistence are later
-/// milestones with different source-overlap and storage requirements.
+/// milestones with additional planning and storage requirements.
 class SequentialStructuredReducer final {
 public:
     explicit SequentialStructuredReducer(SourceCorpus corpus);

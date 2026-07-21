@@ -323,19 +323,14 @@ void check_exact_dependency_oracle(const SequentialStructuredReducer& reducer) {
         transform_rows.push_back(source_mask(reducer.sources(row), corpus));
     }
 
-    Mask active_sources = 0;
-    for (const Mask transform : transform_rows) {
-        oracle_require((active_sources & transform) == 0, "active source combinations overlap");
-        active_sources |= transform;
-    }
-
     CHECK(reduced_rows.size() == transform_rows.size());
     for (size_t index = 0; index < reduced_rows.size(); ++index) {
         CHECK(reduced_rows[index] == xor_selected(transform_rows[index], original_rows));
     }
 
     const auto transform_span = exact_span(transform_rows);
-    CHECK(transform_span.size() == subset_count(transform_rows.size()));
+    oracle_require(transform_span.size() == subset_count(transform_rows.size()),
+                   "active source transforms are not full row rank");
 
     const auto original_kernel = exact_left_kernel(original_rows);
     const auto reduced_kernel = exact_left_kernel(reduced_rows);
