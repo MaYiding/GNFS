@@ -1052,6 +1052,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME StructuredTreeBasisProperty COMMAND test_structured_tree_basis_property)
     set_tests_properties(StructuredTreeBasisProperty PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Budgeted vector-backed structured driver limits and stop semantics.
+    add_executable(test_structured_budgeted_driver
+        tests/test_structured_budgeted_driver.cpp
+    )
+    target_link_libraries(test_structured_budgeted_driver PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredBudgetedDriver COMMAND test_structured_budgeted_driver)
+    set_tests_properties(StructuredBudgetedDriver PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Structured source-XOR materialization and persistence contracts.
     add_executable(test_structured_materialization
         tests/test_structured_materialization.cpp

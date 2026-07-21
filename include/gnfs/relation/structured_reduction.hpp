@@ -194,10 +194,54 @@ private:
     std::vector<core::Relation> materialized_;
 };
 
+/// Per-invocation policy limits for the vector-backed sequential reference.
+///
+/// The constructor requires the limits that have no evidence-based project
+/// default. Other fields default to the current relation-format boundary or
+/// the exact weight-eight structural maximum and may be tightened by callers.
+struct StructuredReductionBudget final {
+    StructuredReductionBudget(size_t max_candidate_examinations_per_pass, size_t max_emitted_rows,
+                              size_t max_total_lp_fill_growth,
+                              size_t max_accepted_materialized_payload_entries_per_commit) noexcept;
+
+    size_t max_candidate_examinations_per_pass;
+    size_t max_emitted_rows;
+    size_t max_total_lp_fill_growth;
+    /// Post-prepare policy acceptance bound over the five persisted payload
+    /// categories, counting the primary AB pair. This is not an allocation,
+    /// resident-memory, or peak-RSS bound.
+    size_t max_accepted_materialized_payload_entries_per_commit;
+    /// Defaults to max_emitted_rows because every commit emits at least one
+    /// row. Callers may tighten it independently.
+    size_t max_commits;
+
+    size_t max_pivot_weight = 8;
+    size_t max_source_atoms_per_output =
+        static_cast<size_t>(core::Relation::MAX_SERIALIZED_EXTRA_AB_PAIRS) + 1;
+    size_t max_odd_lp_keys_per_output =
+        static_cast<size_t>(core::Relation::MAX_SERIALIZED_LARGE_PRIMES) * 2;
+    size_t max_output_lp_nnz_per_commit =
+        7 * static_cast<size_t>(core::Relation::MAX_SERIALIZED_LARGE_PRIMES) * 2;
+    size_t max_materialized_pairs_per_output =
+        static_cast<size_t>(core::Relation::MAX_SERIALIZED_EXTRA_AB_PAIRS) + 1;
+    size_t max_factor_entries_per_side = core::Relation::MAX_SERIALIZED_FACTORS;
+    size_t max_persisted_lp_entries_per_side = core::Relation::MAX_SERIALIZED_LARGE_PRIMES;
+};
+
 enum class StructuredReductionStopReason {
     NotStarted,
     NoCandidates,
+    BudgetLimit,
     PersistenceLimit,
+};
+
+struct StructuredReductionRejectionStats final {
+    size_t pivot_weight_limit = 0;
+    size_t source_limit = 0;
+    size_t output_lp_limit = 0;
+    size_t fill_limit = 0;
+    size_t emitted_row_limit = 0;
+    size_t materialization_limit = 0;
 };
 
 struct StructuredReductionStats final {
@@ -208,8 +252,29 @@ struct StructuredReductionStats final {
     size_t tree_basis_rows_consumed = 0;
     size_t tree_basis_rows_emitted = 0;
     size_t persistence_limited_plans = 0;
+    size_t persistence_cache_hits = 0;
+    size_t budgeted_runs = 0;
+    size_t planning_passes = 0;
+    size_t candidate_plans_considered = 0;
+    size_t budget_limited_plans = 0;
+    size_t candidate_limit_stops = 0;
+    size_t commit_limit_stops = 0;
+    size_t budget_limit_stops = 0;
+    size_t peak_prepared_payload_entries = 0;
+    size_t accepted_lp_fill_growth = 0;
+    StructuredReductionRejectionStats budget_rejections;
     size_t output_rows = 0;
     StructuredReductionStopReason stop_reason = StructuredReductionStopReason::NotStarted;
+};
+
+struct StructuredReductionRunResult final {
+    size_t singleton_rows_removed = 0;
+    size_t commits = 0;
+    size_t emitted_rows = 0;
+    size_t lp_fill_growth = 0;
+    StructuredReductionStopReason stop_reason = StructuredReductionStopReason::NotStarted;
+
+    [[nodiscard]] bool operator==(const StructuredReductionRunResult&) const noexcept = default;
 };
 
 /// Deterministic vector-backed sequential reference over the LP incidence matrix.
@@ -252,6 +317,38 @@ public:
     plan_tree_basis_merges(TreeBasisPlanner planner = TreeBasisPlanner::DeterministicMst) const;
     [[nodiscard]] PreparedTreeBasisMerge prepare(const TreeBasisMergePlan& plan) const;
     [[nodiscard]] std::vector<StructuredRowId> commit(PreparedTreeBasisMerge&& prepared);
+
+    /// Run deterministic singleton, 2-way, and tree-basis reduction under
+    /// explicit examination, output, fill, and materialization limits.
+    ///
+    /// This method bounds candidate examinations and newly prepared/committed
+    /// output for one invocation. The current reference still constructs every
+    /// candidate plan for an epoch and retains the corpus, tombstones, and
+    /// incidence history in memory. It is not a bounded-memory, streaming, OOC,
+    /// or parallel reducer.
+    ///
+    /// Metadata policy rejection order is pivot weight, source atoms per
+    /// output, odd LP keys per output, output LP NNZ per commit, cumulative LP
+    /// fill growth, then cumulative emitted rows. Policy-admissible persistence
+    /// cache hits do not consume the candidate-examination limit. Preparation
+    /// then checks each materialized output's AB-pair, factor-side, and
+    /// persisted-LP-side limits before applying the accepted whole-commit
+    /// payload bound.
+    ///
+    /// A pass with no raw candidates stops with NoCandidates. With raw
+    /// candidates remaining, a reached commit or candidate-examination limit
+    /// takes precedence and stops with BudgetLimit. Otherwise an intrinsic
+    /// PersistenceLimit from any policy-admissible plan takes precedence over
+    /// policy rejections; a pass containing only policy rejections stops with
+    /// BudgetLimit.
+    ///
+    /// The invocation is commit-granular, not transactional as a whole:
+    /// singleton peels and completed commits remain published if a later pass
+    /// stops or throws. Each individual prepared commit retains its existing
+    /// all-or-nothing mutation contract.
+    [[nodiscard]] StructuredReductionRunResult
+    reduce_budgeted(const StructuredReductionBudget& budget,
+                    TreeBasisPlanner planner = TreeBasisPlanner::DeterministicMst);
 
     [[nodiscard]] core::Relation materialize(StructuredRowId row) const;
     /// Materialize active rows in the exact order returned by active_row_ids().

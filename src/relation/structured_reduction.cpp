@@ -217,6 +217,53 @@ uint64_t persisted_chunk_count(uint64_t exponent) noexcept {
     return exponent / chunk_max + (exponent % chunk_max != 0);
 }
 
+using PersistenceFailureKey = std::vector<std::vector<uint64_t>>;
+
+PersistenceFailureKey
+make_persistence_failure_key(std::span<const SourceCombination* const> combinations) {
+    PersistenceFailureKey key;
+    key.reserve(combinations.size());
+    for (const SourceCombination* combination : combinations) {
+        if (combination == nullptr) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "persistence cache received a null source combination");
+        }
+        validate_source_combination(*combination, false);
+        std::vector<uint64_t> ordinals;
+        ordinals.reserve(combination->size());
+        for (const SourceId source : combination->sources())
+            ordinals.push_back(source.ordinal);
+        key.push_back(std::move(ordinals));
+    }
+    return key;
+}
+
+void validate_budget(const StructuredReductionBudget& budget) {
+    constexpr size_t max_pairs = static_cast<size_t>(Relation::MAX_SERIALIZED_EXTRA_AB_PAIRS) + 1;
+    constexpr size_t max_lp_keys = static_cast<size_t>(Relation::MAX_SERIALIZED_LARGE_PRIMES) * 2;
+    constexpr size_t max_tree_output_lp_nnz = 7 * max_lp_keys;
+
+    if (budget.max_pivot_weight > 8) {
+        fail(StructuredReductionErrorCode::InvalidInput,
+             "structured reduction pivot budget exceeds the weight-eight reference");
+    }
+    if (budget.max_source_atoms_per_output > max_pairs) {
+        fail(StructuredReductionErrorCode::InvalidInput,
+             "structured reduction source budget exceeds the relation format boundary");
+    }
+    if (budget.max_odd_lp_keys_per_output > max_lp_keys ||
+        budget.max_output_lp_nnz_per_commit > max_tree_output_lp_nnz) {
+        fail(StructuredReductionErrorCode::InvalidInput,
+             "structured reduction LP budget exceeds the relation format boundary");
+    }
+    if (budget.max_materialized_pairs_per_output > max_pairs ||
+        budget.max_factor_entries_per_side > Relation::MAX_SERIALIZED_FACTORS ||
+        budget.max_persisted_lp_entries_per_side > Relation::MAX_SERIALIZED_LARGE_PRIMES) {
+        fail(StructuredReductionErrorCode::InvalidInput,
+             "structured reduction materialization budget exceeds the relation format boundary");
+    }
+}
+
 } // namespace
 
 StructuredReductionError::StructuredReductionError(StructuredReductionErrorCode code,
@@ -515,6 +562,15 @@ const TreeBasisMergePlan& PreparedTreeBasisMerge::plan() const noexcept {
 std::span<const Relation> PreparedTreeBasisMerge::materialized_relations() const noexcept {
     return materialized_;
 }
+
+StructuredReductionBudget::StructuredReductionBudget(
+    size_t candidate_examinations_per_pass, size_t emitted_rows, size_t total_lp_fill_growth,
+    size_t accepted_materialized_payload_entries_per_commit) noexcept
+    : max_candidate_examinations_per_pass(candidate_examinations_per_pass),
+      max_emitted_rows(emitted_rows), max_total_lp_fill_growth(total_lp_fill_growth),
+      max_accepted_materialized_payload_entries_per_commit(
+          accepted_materialized_payload_entries_per_commit),
+      max_commits(emitted_rows) {}
 
 struct SequentialStructuredReducer::Impl final {
     struct Row final {
@@ -1065,6 +1121,8 @@ struct SequentialStructuredReducer::Impl final {
             fail(StructuredReductionErrorCode::InvariantViolation,
                  "incidence epoch would overflow during commit");
         }
+        const size_t next_two_way_merges =
+            checked_resource_add(statistics.two_way_merges, 1, "two-way merge statistics overflow");
 
         std::vector<size_t> output_bucket_ids;
         output_bucket_ids.reserve(validated.expected_lp_keys.size());
@@ -1111,7 +1169,7 @@ struct SequentialStructuredReducer::Impl final {
         }
 
         --active_rows;
-        ++statistics.two_way_merges;
+        statistics.two_way_merges = next_two_way_merges;
         statistics.output_rows = active_rows;
         ++incidence_epoch;
         return output_id;
@@ -1296,7 +1354,7 @@ struct SequentialStructuredReducer::Impl final {
     size_t active_rows = 0;
     uint64_t incidence_epoch = 1;
     StructuredReductionStats statistics;
-    std::set<std::pair<uint64_t, uint64_t>> persistence_limited_pairs;
+    std::set<PersistenceFailureKey> persistence_limited_plans;
 };
 
 SequentialStructuredReducer::SequentialStructuredReducer(SourceCorpus corpus)
@@ -1360,9 +1418,13 @@ size_t SequentialStructuredReducer::peel_singletons() {
             pending.push(bucket_id);
         }
     }
-    if (!pending.empty() && impl_->incidence_epoch == std::numeric_limits<uint64_t>::max()) {
-        fail(StructuredReductionErrorCode::InvariantViolation,
-             "incidence epoch would overflow during singleton peeling");
+    if (!pending.empty()) {
+        if (impl_->incidence_epoch == std::numeric_limits<uint64_t>::max()) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "incidence epoch would overflow during singleton peeling");
+        }
+        (void)checked_resource_add(impl_->statistics.singleton_rows_removed, impl_->active_rows,
+                                   "singleton-removal statistics overflow");
     }
 
     size_t removed = 0;
@@ -1406,7 +1468,8 @@ size_t SequentialStructuredReducer::peel_singletons() {
         }
     }
 
-    impl_->statistics.singleton_rows_removed += removed;
+    impl_->statistics.singleton_rows_removed = checked_resource_add(
+        impl_->statistics.singleton_rows_removed, removed, "singleton-removal statistics overflow");
     impl_->statistics.output_rows = impl_->active_rows;
     if (removed != 0)
         ++impl_->incidence_epoch;
@@ -1473,9 +1536,14 @@ void SequentialStructuredReducer::reduce_two_way() {
         }
         bool committed = false;
         for (const auto& plan : plans) {
-            const auto pair = std::pair{plan.members[0].value, plan.members[1].value};
-            if (impl_->persistence_limited_pairs.contains(pair))
+            const std::array<const SourceCombination*, 1> outputs{&plan.expected_sources};
+            const PersistenceFailureKey persistence_key = make_persistence_failure_key(outputs);
+            if (impl_->persistence_limited_plans.contains(persistence_key)) {
+                impl_->statistics.persistence_cache_hits =
+                    checked_resource_add(impl_->statistics.persistence_cache_hits, 1,
+                                         "persistence-cache hit statistics overflow");
                 continue;
+            }
 
             try {
                 auto prepared = prepare(plan);
@@ -1486,8 +1554,11 @@ void SequentialStructuredReducer::reduce_two_way() {
                 if (error.code() != StructuredReductionErrorCode::PersistenceLimit) {
                     throw;
                 }
-                if (impl_->persistence_limited_pairs.insert(pair).second) {
-                    ++impl_->statistics.persistence_limited_plans;
+                const size_t next_persistence_limited =
+                    checked_resource_add(impl_->statistics.persistence_limited_plans, 1,
+                                         "persistence-limited plan statistics overflow");
+                if (impl_->persistence_limited_plans.insert(persistence_key).second) {
+                    impl_->statistics.persistence_limited_plans = next_persistence_limited;
                 }
             }
         }
@@ -1513,6 +1584,369 @@ PreparedTreeBasisMerge SequentialStructuredReducer::prepare(const TreeBasisMerge
 std::vector<StructuredRowId>
 SequentialStructuredReducer::commit(PreparedTreeBasisMerge&& prepared) {
     return impl_->commit_tree(std::move(prepared.plan_), std::move(prepared.materialized_));
+}
+
+StructuredReductionRunResult
+SequentialStructuredReducer::reduce_budgeted(const StructuredReductionBudget& budget,
+                                             TreeBasisPlanner planner) {
+    validate_budget(budget);
+    if (planner != TreeBasisPlanner::ReferenceStar &&
+        planner != TreeBasisPlanner::DeterministicMst) {
+        fail(StructuredReductionErrorCode::InvalidPlan,
+             "unknown budgeted structured-reduction planner");
+    }
+
+    enum class BudgetRejection {
+        None,
+        PivotWeight,
+        Source,
+        OutputLp,
+        Fill,
+        EmittedRows,
+        Materialization,
+    };
+
+    struct CandidateMetadata final {
+        size_t pivot_weight = 0;
+        size_t emitted_rows = 0;
+        size_t output_lp_nnz = 0;
+        size_t lp_fill_growth = 0;
+        std::vector<const SourceCombination*> outputs;
+        std::vector<size_t> output_lp_nnz_by_row;
+    };
+
+    auto candidate_metadata = [&](const auto& plan) {
+        using Plan = std::remove_cvref_t<decltype(plan)>;
+        CandidateMetadata metadata;
+        if constexpr (std::is_same_v<Plan, TwoWayMergePlan>) {
+            metadata.pivot_weight = plan.members.size();
+            metadata.emitted_rows = 1;
+            metadata.output_lp_nnz = plan.expected_lp_keys.size();
+            metadata.outputs.push_back(&plan.expected_sources);
+            metadata.output_lp_nnz_by_row.push_back(plan.expected_lp_keys.size());
+
+            size_t input_nonpivot_lp_nnz = 0;
+            for (const StructuredRowId member : plan.members) {
+                const auto& input = impl_->row_at(member);
+                if (input.lp_keys.empty() || !contains_lp_key(input.lp_keys, plan.witness)) {
+                    fail(StructuredReductionErrorCode::InvariantViolation,
+                         "two-way budget metadata does not contain its pivot");
+                }
+                input_nonpivot_lp_nnz =
+                    checked_resource_add(input_nonpivot_lp_nnz, input.lp_keys.size() - 1,
+                                         "two-way input LP budget metric overflows");
+            }
+            if (metadata.output_lp_nnz > input_nonpivot_lp_nnz)
+                metadata.lp_fill_growth = metadata.output_lp_nnz - input_nonpivot_lp_nnz;
+        } else {
+            static_assert(std::is_same_v<Plan, TreeBasisMergePlan>);
+            metadata.pivot_weight = plan.members.size();
+            metadata.emitted_rows = plan.edges.size();
+            metadata.outputs.reserve(plan.edges.size());
+            metadata.output_lp_nnz_by_row.reserve(plan.edges.size());
+            for (const auto& edge : plan.edges) {
+                metadata.outputs.push_back(&edge.expected_sources);
+                metadata.output_lp_nnz_by_row.push_back(edge.expected_lp_keys.size());
+                metadata.output_lp_nnz =
+                    checked_resource_add(metadata.output_lp_nnz, edge.expected_lp_keys.size(),
+                                         "tree-basis output LP budget metric overflows");
+            }
+            if (metadata.output_lp_nnz != plan.output_lp_nnz) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "tree-basis output LP budget metric is inconsistent");
+            }
+            const size_t expected_growth = metadata.output_lp_nnz > plan.input_nonpivot_lp_nnz
+                                               ? metadata.output_lp_nnz - plan.input_nonpivot_lp_nnz
+                                               : 0;
+            if (expected_growth != plan.lp_fill_growth) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "tree-basis fill budget metric is inconsistent");
+            }
+            metadata.lp_fill_growth = expected_growth;
+        }
+        return metadata;
+    };
+
+    StructuredReductionRunResult result;
+    const size_t next_budgeted_runs = checked_resource_add(impl_->statistics.budgeted_runs, 1,
+                                                           "budgeted-run statistics overflow");
+    impl_->statistics.stop_reason = StructuredReductionStopReason::NotStarted;
+    impl_->statistics.budgeted_runs = next_budgeted_runs;
+
+    auto add_run_singletons = [&](size_t removed) {
+        result.singleton_rows_removed =
+            checked_resource_add(result.singleton_rows_removed, removed,
+                                 "budgeted-run singleton-removal count overflows");
+    };
+
+    auto record_candidate = [&] {
+        impl_->statistics.candidate_plans_considered =
+            checked_resource_add(impl_->statistics.candidate_plans_considered, 1,
+                                 "considered-candidate statistics overflow");
+    };
+
+    auto record_budget_rejection = [&](BudgetRejection rejection) {
+        if (rejection == BudgetRejection::None) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "attempted to record an empty budget rejection");
+        }
+        const size_t next_limited = checked_resource_add(impl_->statistics.budget_limited_plans, 1,
+                                                         "budget-limited plan statistics overflow");
+
+        size_t* counter = nullptr;
+        switch (rejection) {
+        case BudgetRejection::PivotWeight:
+            counter = &impl_->statistics.budget_rejections.pivot_weight_limit;
+            break;
+        case BudgetRejection::Source:
+            counter = &impl_->statistics.budget_rejections.source_limit;
+            break;
+        case BudgetRejection::OutputLp:
+            counter = &impl_->statistics.budget_rejections.output_lp_limit;
+            break;
+        case BudgetRejection::Fill:
+            counter = &impl_->statistics.budget_rejections.fill_limit;
+            break;
+        case BudgetRejection::EmittedRows:
+            counter = &impl_->statistics.budget_rejections.emitted_row_limit;
+            break;
+        case BudgetRejection::Materialization:
+            counter = &impl_->statistics.budget_rejections.materialization_limit;
+            break;
+        case BudgetRejection::None:
+            break;
+        }
+        if (counter == nullptr) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "unknown structured-reduction budget rejection");
+        }
+        const size_t next_counter =
+            checked_resource_add(*counter, 1, "budget-rejection statistics overflow");
+        impl_->statistics.budget_limited_plans = next_limited;
+        *counter = next_counter;
+    };
+
+    auto metadata_rejection = [&](const CandidateMetadata& metadata) {
+        if (metadata.pivot_weight > budget.max_pivot_weight)
+            return BudgetRejection::PivotWeight;
+        for (const SourceCombination* output : metadata.outputs) {
+            if (output == nullptr) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "budget metadata contains a null source output");
+            }
+            if (output->size() > budget.max_source_atoms_per_output)
+                return BudgetRejection::Source;
+        }
+        for (const size_t output_lp_nnz : metadata.output_lp_nnz_by_row) {
+            if (output_lp_nnz > budget.max_odd_lp_keys_per_output)
+                return BudgetRejection::OutputLp;
+        }
+        if (metadata.output_lp_nnz > budget.max_output_lp_nnz_per_commit)
+            return BudgetRejection::OutputLp;
+        const size_t next_fill =
+            checked_resource_add(result.lp_fill_growth, metadata.lp_fill_growth,
+                                 "budgeted-run LP fill growth overflows");
+        if (next_fill > budget.max_total_lp_fill_growth)
+            return BudgetRejection::Fill;
+        const size_t next_emitted = checked_resource_add(
+            result.emitted_rows, metadata.emitted_rows, "budgeted-run emitted-row count overflows");
+        if (next_emitted > budget.max_emitted_rows)
+            return BudgetRejection::EmittedRows;
+        return BudgetRejection::None;
+    };
+
+    struct PreparedPayload final {
+        size_t entries = 0;
+        bool limited = false;
+    };
+    auto inspect_prepared_payload = [&](std::span<const Relation> relations) {
+        PreparedPayload payload;
+        for (const Relation& relation : relations) {
+            const size_t pairs = checked_resource_add(relation.extra_ab_pairs.size(), 1,
+                                                      "prepared materialized pair count overflows");
+            if (pairs > budget.max_materialized_pairs_per_output ||
+                relation.rational_factors.size() > budget.max_factor_entries_per_side ||
+                relation.algebraic_factors.size() > budget.max_factor_entries_per_side ||
+                relation.rational_large_prime.size() > budget.max_persisted_lp_entries_per_side ||
+                relation.algebraic_large_prime.size() > budget.max_persisted_lp_entries_per_side) {
+                payload.limited = true;
+            }
+            payload.entries = checked_resource_add(payload.entries, pairs,
+                                                   "prepared payload entry count overflows");
+            payload.entries =
+                checked_resource_add(payload.entries, relation.rational_factors.size(),
+                                     "prepared payload entry count overflows");
+            payload.entries =
+                checked_resource_add(payload.entries, relation.algebraic_factors.size(),
+                                     "prepared payload entry count overflows");
+            payload.entries =
+                checked_resource_add(payload.entries, relation.rational_large_prime.size(),
+                                     "prepared payload entry count overflows");
+            payload.entries =
+                checked_resource_add(payload.entries, relation.algebraic_large_prime.size(),
+                                     "prepared payload entry count overflows");
+        }
+        if (payload.entries > budget.max_accepted_materialized_payload_entries_per_commit) {
+            payload.limited = true;
+        }
+        return payload;
+    };
+
+    auto finish = [&](StructuredReductionStopReason reason, bool candidate_limit_stop,
+                      bool commit_limit_stop) {
+        size_t next_candidate_stops = impl_->statistics.candidate_limit_stops;
+        size_t next_commit_stops = impl_->statistics.commit_limit_stops;
+        size_t next_budget_stops = impl_->statistics.budget_limit_stops;
+        if (candidate_limit_stop) {
+            next_candidate_stops = checked_resource_add(next_candidate_stops, 1,
+                                                        "candidate-limit stop statistics overflow");
+        }
+        if (commit_limit_stop) {
+            next_commit_stops =
+                checked_resource_add(next_commit_stops, 1, "commit-limit stop statistics overflow");
+        }
+        if (reason == StructuredReductionStopReason::BudgetLimit) {
+            next_budget_stops =
+                checked_resource_add(next_budget_stops, 1, "budget-limit stop statistics overflow");
+        }
+        impl_->statistics.candidate_limit_stops = next_candidate_stops;
+        impl_->statistics.commit_limit_stops = next_commit_stops;
+        impl_->statistics.budget_limit_stops = next_budget_stops;
+        impl_->statistics.output_rows = impl_->active_rows;
+        impl_->statistics.stop_reason = reason;
+        result.stop_reason = reason;
+        return result;
+    };
+
+    add_run_singletons(peel_singletons());
+    while (true) {
+        impl_->statistics.planning_passes =
+            checked_resource_add(impl_->statistics.planning_passes, 1,
+                                 "structured-reduction planning-pass statistics overflow");
+        const auto two_way_plans = plan_two_way_merges();
+        const auto tree_plans = plan_tree_basis_merges(planner);
+        const size_t raw_candidate_count =
+            checked_resource_add(two_way_plans.size(), tree_plans.size(),
+                                 "structured-reduction candidate count overflows");
+        if (raw_candidate_count == 0)
+            return finish(StructuredReductionStopReason::NoCandidates, false, false);
+        if (result.commits >= budget.max_commits)
+            return finish(StructuredReductionStopReason::BudgetLimit, false, true);
+
+        size_t candidate_examinations_this_pass = 0;
+        bool committed = false;
+        bool candidate_limit_stop = false;
+        bool saw_persistence_limit = false;
+
+        auto consider = [&](const auto& plan) {
+            const CandidateMetadata metadata = candidate_metadata(plan);
+            const BudgetRejection metadata_limit = metadata_rejection(metadata);
+            if (metadata_limit != BudgetRejection::None) {
+                if (candidate_examinations_this_pass >=
+                    budget.max_candidate_examinations_per_pass) {
+                    candidate_limit_stop = true;
+                    return;
+                }
+                ++candidate_examinations_this_pass;
+                record_candidate();
+                record_budget_rejection(metadata_limit);
+                return;
+            }
+
+            const auto output_span = std::span<const SourceCombination* const>(
+                metadata.outputs.data(), metadata.outputs.size());
+            const PersistenceFailureKey persistence_key = make_persistence_failure_key(output_span);
+            if (impl_->persistence_limited_plans.contains(persistence_key)) {
+                impl_->statistics.persistence_cache_hits =
+                    checked_resource_add(impl_->statistics.persistence_cache_hits, 1,
+                                         "persistence-cache hit statistics overflow");
+                saw_persistence_limit = true;
+                return;
+            }
+            if (candidate_examinations_this_pass >= budget.max_candidate_examinations_per_pass) {
+                candidate_limit_stop = true;
+                return;
+            }
+            ++candidate_examinations_this_pass;
+            record_candidate();
+
+            try {
+                auto prepared = prepare(plan);
+                std::span<const Relation> materialized;
+                using Plan = std::remove_cvref_t<decltype(plan)>;
+                if constexpr (std::is_same_v<Plan, TwoWayMergePlan>) {
+                    materialized = std::span<const Relation>(&prepared.materialized_relation(), 1);
+                } else {
+                    static_assert(std::is_same_v<Plan, TreeBasisMergePlan>);
+                    materialized = prepared.materialized_relations();
+                }
+                if (materialized.size() != metadata.emitted_rows) {
+                    fail(StructuredReductionErrorCode::InvariantViolation,
+                         "prepared output count differs from budget metadata");
+                }
+
+                const PreparedPayload payload = inspect_prepared_payload(materialized);
+                impl_->statistics.peak_prepared_payload_entries =
+                    std::max(impl_->statistics.peak_prepared_payload_entries, payload.entries);
+                if (payload.limited) {
+                    record_budget_rejection(BudgetRejection::Materialization);
+                    return;
+                }
+
+                const size_t next_commits =
+                    checked_resource_add(result.commits, 1, "budgeted-run commit count overflows");
+                const size_t next_emitted =
+                    checked_resource_add(result.emitted_rows, metadata.emitted_rows,
+                                         "budgeted-run emitted-row count overflows");
+                const size_t next_fill =
+                    checked_resource_add(result.lp_fill_growth, metadata.lp_fill_growth,
+                                         "budgeted-run LP fill growth overflows");
+                const size_t next_accepted_fill = checked_resource_add(
+                    impl_->statistics.accepted_lp_fill_growth, metadata.lp_fill_growth,
+                    "accepted LP fill-growth statistics overflow");
+
+                (void)commit(std::move(prepared));
+                result.commits = next_commits;
+                result.emitted_rows = next_emitted;
+                result.lp_fill_growth = next_fill;
+                impl_->statistics.accepted_lp_fill_growth = next_accepted_fill;
+                committed = true;
+            } catch (const StructuredReductionError& error) {
+                if (error.code() != StructuredReductionErrorCode::PersistenceLimit)
+                    throw;
+                saw_persistence_limit = true;
+                const size_t next_persistence_limited =
+                    checked_resource_add(impl_->statistics.persistence_limited_plans, 1,
+                                         "persistence-limited plan statistics overflow");
+                if (impl_->persistence_limited_plans.insert(persistence_key).second) {
+                    impl_->statistics.persistence_limited_plans = next_persistence_limited;
+                }
+            }
+        };
+
+        for (const auto& plan : two_way_plans) {
+            consider(plan);
+            if (committed || candidate_limit_stop)
+                break;
+        }
+        if (!committed && !candidate_limit_stop) {
+            for (const auto& plan : tree_plans) {
+                consider(plan);
+                if (committed || candidate_limit_stop)
+                    break;
+            }
+        }
+
+        if (committed) {
+            add_run_singletons(peel_singletons());
+            continue;
+        }
+        if (candidate_limit_stop)
+            return finish(StructuredReductionStopReason::BudgetLimit, true, false);
+        if (saw_persistence_limit)
+            return finish(StructuredReductionStopReason::PersistenceLimit, false, false);
+        return finish(StructuredReductionStopReason::BudgetLimit, false, false);
+    }
 }
 
 Relation SequentialStructuredReducer::materialize(StructuredRowId row) const {

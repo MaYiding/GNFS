@@ -4,7 +4,9 @@
 
 - Date: 2026-07-21
 - Branch: `codex/parallel-structured-filter`
-- State: M1 contracts and routing complete; M2a 2-way and M2b weight-[3,8] tree-basis sequential references complete; bounded orchestration is next
+- State: M1 contracts and routing complete; M2a 2-way, M2b weight-[3,8]
+  tree-basis, and M2c budgeted sequential orchestration complete; full payload
+  and persistence validation remain before the M2 exit gate
 - Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
 
 ## Outcome
@@ -445,12 +447,17 @@ Exit gate: a bounded thin result reaches the existing thin solver exactly once a
   overlap in source IDs. Fixed fixtures and randomized cases check the exact
   even-parity tree span, dependency-kernel mapping, deterministic tie-breaks,
   stale and forged plans, and persistence-failure atomicity.
-- M2c, next: add configurable source, pivot-weight, fill, output, and
-  persistence budgets, then add the sequential driver that repeatedly chooses,
-  prepares, commits, and peels. The current M2b API is an explicit
-  plan/prepare/commit reference; it does not claim automatic orchestration,
-  parallel batches, bounded-memory OOC execution, or full MatrixBuilder payload
-  equivalence.
+- M2c, complete: add per-invocation candidate-examination, commit, emitted-row,
+  LP-fill, source, pivot-weight, output, and post-prepare materialization caps.
+  The deterministic driver repeatedly plans 2-way and tree-basis candidates,
+  skips cached persistence failures, commits the first admissible candidate,
+  and peels singleton rows. Exact boundary tests freeze rejection precedence,
+  stop reasons, commit-granular atomicity, cache fairness, deterministic output,
+  full source rank, and dependency-kernel mapping.
+- M2c remains a vector-backed sequential reference. It constructs every plan
+  for an epoch, and its accepted-payload cap is not an allocation or peak-RSS
+  bound. Parallel batches, bounded-memory OOC execution, and full
+  `MatrixBuilder` payload equivalence remain later gates.
 - Complete randomized cases and full sign, quadratic-character, Schirokauer,
   stream, and OOC round-trip validation before claiming the M2 exit gate.
 
@@ -1014,7 +1021,10 @@ The plan touches lifecycle diagrams embedded as comments in `collector.hpp` and 
 - [x] **T2 (P1, human: ~1d / agent: ~2h)** — OOC lifecycle — implement snapshot/finalize states with append and corruption tests.
 - [x] **T3 (P1, human: ~1d / agent: ~2h)** — routing — centralize reduction and prove OFF-mode route equivalence.
 - [x] **T4 (P1, human: ~2h / agent: ~30m)** — solver handoff — make thin solving reachable and add a regression.
-- [ ] **T5 (P1, human: ~3d / agent: ~6h)** — structured core — M2a 2-way purge and M2b weight-[3,8] star/MST plan/prepare/commit are complete with exact projection oracles; configurable caps, automatic orchestration, and the full MatrixBuilder payload oracle remain.
+- [ ] **T5 (P1, human: ~3d / agent: ~6h)** — structured core — M2a
+  2-way purge, M2b weight-[3,8] star/MST plan/prepare/commit, and M2c budgeted
+  sequential orchestration are complete with exact projection and
+  dependency-kernel oracles; the full `MatrixBuilder` payload oracle remains.
 - [ ] **T6 (P1, human: ~2d / agent: ~4h)** — persistence — normalize materialization and prove stream/OOC/MatrixBuilder round trips.
 - [ ] **T7 (P2, human: ~2d / agent: ~4h)** — parallel scheduler — add conflict batches, ordered commit, thread equivalence, and TSAN.
 - [ ] **T8 (P2, human: ~2d / agent: ~4h)** — integration evidence — policy, documentation, realistic scale corpora, and cross-size validation.
