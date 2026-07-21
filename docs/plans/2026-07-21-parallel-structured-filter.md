@@ -4,7 +4,7 @@
 
 - Date: 2026-07-21
 - Branch: `codex/parallel-structured-filter`
-- State: M1a canonical identity and M1b paired OOC/checkpoint transaction complete; M1c shared reduction route is next
+- State: M1 contracts and routing complete; M2a vector-backed 2-way sequential reference complete; M2b higher-weight planning is next
 - Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
 
 ## Outcome
@@ -431,9 +431,18 @@ Exit gate: a bounded thin result reaches the existing thin solver exactly once a
 
 ### M2: Sequential Structured Reference
 
-- Implement incidence construction and singleton fixed point.
-- Implement 2-way elimination, reference pivot planning, and 3-way through 8-way MST planning.
-- Add caps, nested source-XOR materialization, corpus sinks, round-trip validation, stats, fill budgets, and fail-closed checks.
+- M2a, complete: build deterministic incidence, singleton fixed point, degree-2
+  planning, immutable source XOR, nested materialization, persistence preflight,
+  incidence epochs, transactional commit, and explicit stop accounting.
+- M2a is intentionally vector-backed and keeps append-only tombstone history. Its
+  exhaustive oracle covers factor, AB-provenance, and LP projections, including
+  nested residual merges. It is not the complete `MatrixBuilder` or OOC oracle.
+- M2b, next: add configurable source, odd-weight, fill, and persistence budgets;
+  implement the independent reference pivot planner and deterministic 3-way
+  through 8-way MST basis. Higher-weight tree outputs may overlap in source IDs,
+  so they require a rank invariant rather than M2a's disjoint active-source rule.
+- Complete randomized cases and full sign, quadratic-character, Schirokauer,
+  stream, and OOC round-trip validation before claiming the M2 exit gate.
 
 Exit gate: every hand-built and randomized case passes the exact dependency-space and provenance oracle in one thread.
 
@@ -991,11 +1000,11 @@ The plan touches lifecycle diagrams embedded as comments in `collector.hpp` and 
 
 ### CEO Implementation Tasks
 
-- [ ] **T1 (P1, human: ~4h / agent: ~45m)** — LP contract — implement the full-width exponent-parity helper and MatrixBuilder agreement tests.
-- [ ] **T2 (P1, human: ~1d / agent: ~2h)** — OOC lifecycle — implement snapshot/finalize states with append and corruption tests.
-- [ ] **T3 (P1, human: ~1d / agent: ~2h)** — routing — centralize reduction and prove OFF-mode route equivalence.
-- [ ] **T4 (P1, human: ~2h / agent: ~30m)** — solver handoff — make thin solving reachable and add a regression.
-- [ ] **T5 (P1, human: ~3d / agent: ~6h)** — structured core — build sequential purge, pivot/MST planning, source XOR, caps, and oracle tests.
+- [x] **T1 (P1, human: ~4h / agent: ~45m)** — LP contract — implement the full-width exponent-parity helper and MatrixBuilder agreement tests.
+- [x] **T2 (P1, human: ~1d / agent: ~2h)** — OOC lifecycle — implement snapshot/finalize states with append and corruption tests.
+- [x] **T3 (P1, human: ~1d / agent: ~2h)** — routing — centralize reduction and prove OFF-mode route equivalence.
+- [x] **T4 (P1, human: ~2h / agent: ~30m)** — solver handoff — make thin solving reachable and add a regression.
+- [ ] **T5 (P1, human: ~3d / agent: ~6h)** — structured core — M2a 2-way purge, source XOR, persistence preflight, and projection oracle are complete; higher-weight pivot/MST planning, configurable caps, and the full oracle remain.
 - [ ] **T6 (P1, human: ~2d / agent: ~4h)** — persistence — normalize materialization and prove stream/OOC/MatrixBuilder round trips.
 - [ ] **T7 (P2, human: ~2d / agent: ~4h)** — parallel scheduler — add conflict batches, ordered commit, thread equivalence, and TSAN.
 - [ ] **T8 (P2, human: ~2d / agent: ~4h)** — integration evidence — policy, documentation, realistic scale corpora, and cross-size validation.
