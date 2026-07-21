@@ -15,8 +15,7 @@
 #include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/relation/collector.hpp>
-#include <gnfs/relation/clique_merger.hpp>
-#include <gnfs/relation/filter.hpp>
+#include <gnfs/relation/reduction_engine.hpp>
 #include <gnfs/relation/ooc_policy.hpp>
 #include <gnfs/relation/v0_bfs_policy.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
@@ -30,6 +29,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <iomanip>
@@ -307,6 +307,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
     // Like CADO-NFS: sieve a batch → filter + merge → check excess → repeat if needed
     std::vector<Relation> relations;
     bool lp_enabled = params.large_prime_bound > params.algebraic_bound;
+    uint64_t next_reduction_generation = 1;
+    size_t reduced_lp_columns = 0;
     constexpr int MAX_ROUNDS = 10;
 
     for (int round = 0; round < MAX_ROUNDS; ++round) {
@@ -390,73 +392,70 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
         // Reduce a stable prefix while keeping the collector appendable when a
         // later adaptive round needs more raw relations.
-        relations = collector.snapshot_relations();
-        FilterConfig filt_config;
-        filt_config.remove_singletons = true;
-        filt_config.max_passes = 10;
-        RelationFilter filter(filt_config);
-        relations = filter.filter(std::move(relations));
+        V0BfsPolicy v0_bfs_policy{false, false, "large primes disabled"};
+        if (lp_enabled) {
+            // BACKLOG #1 step 13 (2026-05-19): V0_BFS size-aware default mirror
+            // Pipeline::filter(). Progressive levels max 61-bit (lp_bits<22), so
+            // size gate normally enforces V0 standard. Future ≥100-bit levels
+            // would auto-enable V0_BFS.
+            v0_bfs_policy =
+                decide_v0_bfs_policy(std::getenv("GNFS_V0_BFS"), params.large_prime_bound);
+        }
+
+        RelationReductionConfig reduction_config;
+        reduction_config.filter.remove_singletons = true;
+        reduction_config.filter.max_passes = 10;
+        reduction_config.large_primes_enabled = lp_enabled;
+        reduction_config.merge_rounds = 10;
+        reduction_config.strategy = !lp_enabled
+                                        ? ReductionStrategy::NoLargePrimes
+                                        : (v0_bfs_policy.enabled ? ReductionStrategy::CliqueV0
+                                                                 : ReductionStrategy::StandardV0);
+
+        const uint64_t generation = next_reduction_generation++;
+        auto reduction = RelationReductionEngine::reduce(
+            RawRelationSnapshot(generation, collector.snapshot_relations()), reduction_config);
+        const auto& reduction_stats = reduction.stats;
+        relations = std::move(reduction.relations);
+        reduced_lp_columns = lp_enabled ? reduction_stats.output_lp_columns : 0;
 
         if (lp_enabled) {
             // BACKLOG #1 diagnostic: LP-key weight histogram pre-merge.
             // Tracks the same weight distribution as test_stress for cross-band
             // comparison (40-bit / 81-bit / 100-bit / 150-bit).
             {
-                auto hist = count_lp_key_weights(relations);
-                std::cout << "  [lp_weights] unique=" << hist.unique_keys
-                          << " w1=" << hist.weight_1
-                          << " w2=" << hist.weight_2
-                          << " w3=" << hist.weight_3
-                          << " w4+=" << hist.weight_4plus << "\n" << std::flush;
+                const auto& hist = reduction_stats.pre_merge_lp_histogram;
+                std::cout << "  [lp_weights] unique=" << hist.unique_keys << " w1=" << hist.weight_1
+                          << " w2=" << hist.weight_2 << " w3=" << hist.weight_3
+                          << " w4+=" << hist.weight_4plus << "\n"
+                          << std::flush;
             }
 
-            auto sep = separate_relations(std::move(relations));
-
-            // BACKLOG #1 step 13 (2026-05-19): V0_BFS size-aware default mirror
-            // Pipeline::filter(). Progressive levels max 61-bit (lp_bits<22), so
-            // size gate normally enforces V0 standard. Future ≥100-bit levels
-            // would auto-enable V0_BFS.
-            const auto v0_bfs_policy = decide_v0_bfs_policy(
-                std::getenv("GNFS_V0_BFS"), params.large_prime_bound);
             if (v0_bfs_policy.env_force_failed) {
                 std::cerr << "[v0_bfs] " << v0_bfs_policy.reason << "\n";
             }
 
             if (v0_bfs_policy.enabled) {
-                CliqueStats cstats;
-                auto merged = CliqueRelationMerger::merge_cliques(
-                    std::move(sep.partial), &cstats);
-                std::cerr << "[v0_bfs] reason=" << v0_bfs_policy.reason
-                          << " " << cstats.to_string()
-                          << " merged=" << merged.size() << "\n";
-                std::cout << "  [round " << (round+1) << "] Full=" << sep.full.size()
-                          << " Merged=" << merged.size() << " (V0_BFS)"
-                          << "\n" << std::flush;
-
-                relations = std::move(sep.full);
-                relations.reserve(relations.size() + merged.size());
-                relations.insert(relations.end(),
-                    std::make_move_iterator(merged.begin()),
-                    std::make_move_iterator(merged.end()));
+                const auto& cstats = reduction_stats.clique_v0;
+                std::cerr << "[v0_bfs] reason=" << v0_bfs_policy.reason << " " << cstats.to_string()
+                          << " merged=" << reduction_stats.merged_relations << "\n";
+                std::cout << "  [round " << (round + 1)
+                          << "] Full=" << reduction_stats.separated_full_relations
+                          << " Merged=" << reduction_stats.merged_relations << " (V0_BFS)"
+                          << "\n"
+                          << std::flush;
             } else {
                 // 2LP merge: handles both 1LP×1LP and 2LP via iterative weight-2 processing
-                PartialRelationMerger::MergeStats mstats;
-                auto merged = PartialRelationMerger::merge_all(
-                    std::move(sep.partial), 10, &mstats);
+                const auto& mstats = reduction_stats.standard_v0;
 
-                std::cout << "  [round " << (round+1) << "] Full=" << sep.full.size()
-                          << " 1LP=" << mstats.input_1lp
-                          << " 2LP=" << mstats.input_2lp
-                          << " Merged=" << merged.size()
+                std::cout << "  [round " << (round + 1)
+                          << "] Full=" << reduction_stats.separated_full_relations
+                          << " 1LP=" << mstats.input_1lp << " 2LP=" << mstats.input_2lp
+                          << " Merged=" << mstats.output_relations
                           << " (w2=" << mstats.weight2_merges
-                          << " sngl=" << mstats.singletons_removed
-                          << " rnd=" << mstats.rounds << ")\n" << std::flush;
-
-                relations = std::move(sep.full);
-                relations.reserve(relations.size() + merged.size());
-                relations.insert(relations.end(),
-                    std::make_move_iterator(merged.begin()),
-                    std::make_move_iterator(merged.end()));
+                          << " sngl=" << mstats.singletons_removed << " rnd=" << mstats.rounds
+                          << ")\n"
+                          << std::flush;
             }
         }
 
@@ -479,7 +478,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
         // Cap at 5× initial target to prevent runaway collection (BL can't handle huge matrices).
         // CRITICAL: needed_raw must use effective_cols (FB + LP) for lp_bits ≥ 20.
         // FB-only matrix_cols underestimates by 2-3× when LP cols dominate (50d/60d).
-        size_t lp_cols_for_target = lp_enabled ? count_unique_lp_keys(relations) : 0;
+        size_t lp_cols_for_target = reduced_lp_columns;
         size_t effective_cols_for_target = matrix_cols + lp_cols_for_target;
         size_t needed_raw = static_cast<size_t>(
             static_cast<double>(effective_cols_for_target * 2) / std::max(merge_rate, 0.001));
@@ -504,7 +503,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
     // CRITICAL: must include LP cols (lp_bits≥20 cases). FB-only trim过激削减.
     // See test_stress.cpp:478 for the same fix.
     {
-        size_t lp_cols_for_trim = lp_enabled ? count_unique_lp_keys(relations) : 0;
+        size_t lp_cols_for_trim = reduced_lp_columns;
         size_t effective_cols_for_trim = matrix_cols + lp_cols_for_trim;
         size_t max_rels = effective_cols_for_trim + effective_cols_for_trim / 4;  // 25% safety
         if (relations.size() > max_rels) {
