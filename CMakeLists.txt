@@ -80,12 +80,42 @@ option(GNFS_ENABLE_ASAN  "Enable AddressSanitizer"        OFF)
 option(GNFS_ENABLE_TSAN  "Enable ThreadSanitizer"         OFF)
 option(GNFS_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 
+if(GNFS_ENABLE_ASAN AND GNFS_ENABLE_TSAN)
+    message(FATAL_ERROR
+        "GNFS sanitizers: AddressSanitizer and ThreadSanitizer cannot be enabled together")
+endif()
+
 if(GNFS_ENABLE_ASAN)
     add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
     add_link_options(-fsanitize=address)
 endif()
 if(GNFS_ENABLE_TSAN)
-    add_compile_options(-fsanitize=thread)
+    if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
+        message(FATAL_ERROR
+            "GNFS ThreadSanitizer supports Linux and macOS only "
+            "(got ${CMAKE_SYSTEM_NAME})")
+    endif()
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        message(FATAL_ERROR
+            "GNFS ThreadSanitizer requires Clang or GNU C++ "
+            "(got ${CMAKE_CXX_COMPILER_ID})")
+    endif()
+
+    include(CheckCXXSourceCompiles)
+    include(CMakePushCheckState)
+    cmake_push_check_state(RESET)
+    set(CMAKE_REQUIRED_FLAGS "-fsanitize=thread -fno-omit-frame-pointer")
+    set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=thread")
+    check_cxx_source_compiles("int main() { return 0; }"
+        GNFS_TSAN_TOOLCHAIN_SUPPORTED)
+    cmake_pop_check_state()
+    if(NOT GNFS_TSAN_TOOLCHAIN_SUPPORTED)
+        message(FATAL_ERROR
+            "GNFS ThreadSanitizer was requested, but ${CMAKE_CXX_COMPILER} "
+            "cannot compile and link the ThreadSanitizer runtime")
+    endif()
+
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
     add_link_options(-fsanitize=thread)
 endif()
 if(GNFS_ENABLE_UBSAN)
@@ -1785,7 +1815,8 @@ if(GNFS_BUILD_TESTS)
     # CI 下必须放大 TIMEOUT 否则 instant/fast 测试会被 spurious 超时.
     # ────────────────────────────────────────────────────────────
     set(_GNFS_TEST_TIMEOUT_MULT 1)
-    if(CMAKE_CXX_FLAGS MATCHES "fsanitize=(address|thread|memory|undefined|leak)")
+    if(GNFS_ENABLE_ASAN OR GNFS_ENABLE_TSAN OR GNFS_ENABLE_UBSAN OR
+       CMAKE_CXX_FLAGS MATCHES "fsanitize=(address|thread|memory|undefined|leak)")
         set(_GNFS_TEST_TIMEOUT_MULT 10)
         message(STATUS "Sanitizer detected — multiplying test TIMEOUTs by ${_GNFS_TEST_TIMEOUT_MULT}")
     elseif(CMAKE_CXX_FLAGS MATCHES "(^|[ ;])-(-coverage|fprofile-arcs|ftest-coverage)" OR
@@ -1875,5 +1906,6 @@ message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  GMP: ${GMP_LIBRARY}")
 message(STATUS "  NTL: ${HAVE_NTL}")
 message(STATUS "  Metal: ${HAVE_METAL}")
+message(STATUS "  ThreadSanitizer: ${GNFS_ENABLE_TSAN}")
 message(STATUS "  Tests: ${GNFS_BUILD_TESTS}")
 message(STATUS "")

@@ -39,6 +39,7 @@
 # 合并门禁:
 #   ./scripts/test.sh gate                # 二级门禁: smoke + 回归 (17/27/40/81-bit)
 #   ./scripts/test.sh gate --quick        # 快速门禁: 仅 smoke
+#   ./scripts/test.sh tsan-relation       # 窄 ThreadSanitizer relation 并发门禁
 #
 # 智能模式:
 #   ./scripts/test.sh changed             # 根据 git diff 自动选择受影响模块
@@ -111,6 +112,7 @@ SKIP_BUILD=0
 USE_COLOR=1
 FAIL_FAST=0
 TIMEOUT=300
+TIMEOUT_EXPLICIT=0
 RETRY_COUNT=0
 
 # 统计变量
@@ -476,6 +478,17 @@ SMOKE_TESTS=(
     test_mpz_mod_parallel
     test_mpz_gcd_parallel
     test_mpz_mul_parallel
+)
+
+# ThreadSanitizer 窄通道: 只覆盖 structured relation 的并发调度、准备、
+# 批提交和 driver 边界。保持此列表小而明确，避免把完整 instant 层复制到
+# 高成本的 sanitizer 构建。
+typeset -a TSAN_RELATION_TESTS
+TSAN_RELATION_TESTS=(
+    test_ordered_parallel_map
+    test_structured_parallel_prepare
+    test_structured_batch_commit
+    test_structured_parallel_driver
 )
 
 # ── 每个测试的超时秒数 (基于 2026-06-02 macOS Debug/Release 实测) ──
@@ -1085,7 +1098,7 @@ run_single_test() {
 
     # 确定超时: 优先用 --timeout 全局覆盖，否则用每测试分级超时
     local test_timeout=${TIMEOUT}
-    if (( TIMEOUT == 300 )); then
+    if (( ! TIMEOUT_EXPLICIT )); then
         # 用户未指定 --timeout，使用分级默认值
         test_timeout=${TEST_TIMEOUT[$name]:-$TIMEOUT}
     fi
@@ -1886,6 +1899,75 @@ do_watch() {
 }
 
 # ============================================================
+# 模式: ThreadSanitizer relation 窄通道
+# ============================================================
+
+do_tsan_relation() {
+    local host_os
+    host_os=$(uname -s)
+    case "$host_os" in
+        Linux|Darwin) ;;
+        *)
+            log_skip "tsan-relation 不支持 ${host_os}; 支持的平台为 Linux 和 macOS"
+            (( SKIPPED_TESTS += ${#TSAN_RELATION_TESTS[@]} ))
+            return 0
+            ;;
+    esac
+
+    BUILD_DIR="${GNFS_TSAN_BUILD_DIR:-${PROJECT_ROOT}/build-tsan-relation}"
+    REPORT_FILE="${BUILD_DIR}/test_report.json"
+    BUILD_TYPE="Debug"
+
+    log_header "ThreadSanitizer relation 窄通道"
+    log_info "平台: ${host_os}; 构建目录: ${BUILD_DIR}"
+    log_info "串行运行 ${#TSAN_RELATION_TESTS[@]} 个并发边界测试"
+
+    if (( SKIP_BUILD )); then
+        if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
+            log_fail "--no-build 需要已配置的 TSan 构建目录: ${BUILD_DIR}"
+            return 1
+        fi
+        if ! grep -q '^GNFS_ENABLE_TSAN:BOOL=ON$' "${BUILD_DIR}/CMakeCache.txt"; then
+            log_fail "拒绝运行未启用 GNFS_ENABLE_TSAN 的缓存: ${BUILD_DIR}/CMakeCache.txt"
+            return 1
+        fi
+        log_info "跳过配置和编译 (--no-build); 已确认 GNFS_ENABLE_TSAN=ON"
+    else
+        cmake -S "$PROJECT_ROOT" -B "$BUILD_DIR" \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DGNFS_BUILD_TESTS=ON \
+            -DGNFS_ENABLE_NATIVE_ARCH=OFF \
+            -DGNFS_ENABLE_ASAN=OFF \
+            -DGNFS_ENABLE_TSAN=ON \
+            -DGNFS_ENABLE_UBSAN=OFF
+        cmake --build "$BUILD_DIR" \
+            --parallel "$PARALLEL_JOBS" \
+            --target "${TSAN_RELATION_TESTS[@]}"
+    fi
+
+    local test
+    for test in "${TSAN_RELATION_TESTS[@]}"; do
+        if [[ ! -x "${BUILD_DIR}/${test}" ]]; then
+            log_fail "TSan 测试二进制不存在: ${BUILD_DIR}/${test}"
+            return 1
+        fi
+    done
+
+    # Sanitizer instrumentation can be substantially slower than Debug. Respect
+    # an explicit --timeout override; otherwise cap every binary at 120 seconds.
+    if (( ! TIMEOUT_EXPLICIT )); then
+        TIMEOUT=120
+    fi
+    export TSAN_OPTIONS="${TSAN_OPTIONS:-halt_on_error=1:second_deadlock_stack=1}"
+    log_info "每测试 timeout=${TIMEOUT}s; TSAN_OPTIONS=${TSAN_OPTIONS}"
+    echo ""
+
+    for test in "${TSAN_RELATION_TESTS[@]}"; do
+        run_single_test "$test" || true
+    done
+}
+
+# ============================================================
 # 模式: 列表
 # ============================================================
 
@@ -1924,6 +2006,13 @@ do_list() {
     echo "  ${BULLET} ${CYAN}test_gnfs_progressive${RESET}  — 渐进式 L1-L5 (8-61 bit)"
     echo "  ${BULLET} ${CYAN}test_25digit${RESET}           — 25-digit 性能基准 (81 bit)"
     echo "  ${BULLET} ${CYAN}test_stress${RESET}            — 压力测试: 50/60-digit (164-197 bit)"
+
+    echo ""
+    echo "${BOLD}Sanitizer 窄通道:${RESET}"
+    echo "  ${BULLET} ${CYAN}tsan-relation${RESET} — ${#TSAN_RELATION_TESTS[@]} 个 structured relation 并发边界测试"
+    for test in "${TSAN_RELATION_TESTS[@]}"; do
+        echo "      ${DIM}${test}${RESET}"
+    done
 
     echo ""
     echo "${BOLD}所有测试二进制 (${#ALL_TEST_BINARIES[@]}):${RESET}"
@@ -2024,7 +2113,7 @@ while [[ $# -gt 0 ]]; do
         --no-build)  SKIP_BUILD=1; shift ;;
         --no-color)  USE_COLOR=0; setup_colors; shift ;;
         --fail-fast) FAIL_FAST=1; shift ;;
-        --timeout)   TIMEOUT="$2"; shift 2 ;;
+        --timeout)   TIMEOUT="$2"; TIMEOUT_EXPLICIT=1; shift 2 ;;
         --retry)     RETRY_COUNT="$2"; shift 2 ;;
         --save)      BENCH_EXTRA_ARGS+=(--save); shift ;;
         --compare)   BENCH_EXTRA_ARGS+=(--compare); shift ;;
@@ -2148,6 +2237,11 @@ case "$MODE" in
     gate)
         do_build
         do_gate "${MODE_ARGS[@]}"
+        show_summary
+        ;;
+
+    tsan-relation)
+        do_tsan_relation
         show_summary
         ;;
 
@@ -2320,7 +2414,7 @@ case "$MODE" in
         log_fail "未知模式: ${MODE}"
         echo "运行 '$0 --help' 查看完整用法"
         echo ""
-        echo "常用模式: smoke | unit | module | e2e | gate | changed | full | list"
+        echo "常用模式: smoke | unit | module | e2e | gate | tsan-relation | changed | full | list"
         exit 1
         ;;
 esac

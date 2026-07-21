@@ -555,9 +555,15 @@ Exit gate: every hand-built and randomized case passes the exact dependency-spac
 - M3c.1 remains vector-backed and does not provide bounded-memory
   or out-of-core execution. It adds no batch-specific statistics and does not
   reinterpret existing candidate-level counters.
-- M3c.2, next: add randomized width and worker equivalence, controlled fatal
-  barrier and prepublication failpoints, the supported ThreadSanitizer lane,
-  and bounded shard construction before claiming the complete M3 exit gate.
+- M3c.2, in progress: the supported ThreadSanitizer lane is available through
+  `./scripts/test.sh tsan-relation`. It builds only the ordered parallel-map,
+  parallel-prepare, batch-commit, and parallel-driver tests, runs them serially
+  with a 120-second per-test default, and has a 20-minute Linux CI bound. macOS
+  is supported when its Clang runtime links TSan; other hosts report an explicit
+  skip, while unsupported Linux/macOS toolchains fail configuration.
+- M3c.2 still needs randomized width and worker equivalence, controlled fatal
+  barrier and prepublication failpoints, and bounded shard construction before
+  claiming the complete M3 exit gate.
 - Compare `threads=1,2,4,hardware_concurrency`.
 - Run the narrow relation suite under ThreadSanitizer where supported.
 
