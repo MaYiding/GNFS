@@ -5,6 +5,7 @@
 #include "relation_corpus.hpp"
 #include "relation_identity.hpp"
 #include "relation_sink.hpp"
+#include "relation_source.hpp"
 #include "structured_filter_policy.hpp"
 #include "structured_incidence_builder.hpp"
 #include "structured_reduction.hpp"
@@ -416,6 +417,62 @@ class RelationReductionEngine final {
     };
 
 public:
+    /// Owning boundary between a synchronously drained borrowed source and the
+    /// later parallel structured reduction.
+    ///
+    /// Construction is engine-only. Dropping an unconsumed token removes its
+    /// private working corpus, while moving or successfully reducing it leaves
+    /// the source token invalid and fail-closed against reuse.
+    class PreparedBorrowedStructuredInput final {
+    public:
+        PreparedBorrowedStructuredInput(const PreparedBorrowedStructuredInput&) = delete;
+        PreparedBorrowedStructuredInput& operator=(const PreparedBorrowedStructuredInput&) = delete;
+
+        PreparedBorrowedStructuredInput(PreparedBorrowedStructuredInput&& other) noexcept
+            : generation_(std::exchange(other.generation_, uint64_t{0})),
+              corpus_(std::move(other.corpus_)), stats_(std::move(other.stats_)),
+              structured_(std::move(other.structured_)) {}
+
+        PreparedBorrowedStructuredInput&
+        operator=(PreparedBorrowedStructuredInput&& other) noexcept {
+            if (this != &other) {
+                generation_ = std::exchange(other.generation_, uint64_t{0});
+                corpus_ = std::move(other.corpus_);
+                stats_ = std::move(other.stats_);
+                structured_ = std::move(other.structured_);
+            }
+            return *this;
+        }
+
+        ~PreparedBorrowedStructuredInput() = default;
+
+        [[nodiscard]] bool valid() const noexcept {
+            return generation_ != 0 && corpus_.valid();
+        }
+
+        [[nodiscard]] uint64_t generation() const noexcept {
+            return generation_;
+        }
+
+        [[nodiscard]] size_t input_relations() const noexcept {
+            return stats_.input_relations;
+        }
+
+    private:
+        PreparedBorrowedStructuredInput(
+            uint64_t generation, RelationCorpus corpus, RelationReductionStats stats,
+            RelationReductionConfig::StructuredExecutionConfig structured)
+            : generation_(generation), corpus_(std::move(corpus)), stats_(std::move(stats)),
+              structured_(std::move(structured)) {}
+
+        uint64_t generation_;
+        RelationCorpus corpus_;
+        RelationReductionStats stats_;
+        RelationReductionConfig::StructuredExecutionConfig structured_;
+
+        friend class RelationReductionEngine;
+    };
+
     [[nodiscard]] static RelationReductionResult reduce(RawRelationSnapshot&& snapshot,
                                                         const RelationReductionConfig& config) {
         validate_config(config);
@@ -435,9 +492,9 @@ public:
         std::optional<RelationSink> structured_sink;
         if (config.strategy == ReductionStrategy::Structured &&
             !config.structured->output_ooc_base_path.empty()) {
-            structured_sink.emplace(RelationSink::out_of_core(
-                generation, config.structured->output_ooc_base_path,
-                config.structured->output_ooc_cleanup));
+            structured_sink.emplace(
+                RelationSink::out_of_core(generation, config.structured->output_ooc_base_path,
+                                          config.structured->output_ooc_cleanup));
         }
 
         RelationReductionStats stats;
@@ -554,6 +611,79 @@ public:
         return RelationReductionResult(generation, std::move(relations), std::move(stats));
     }
 
+    /// Synchronously prepare a borrowed indexed source for structured OOC
+    /// reduction.
+    ///
+    /// The source remains authoritative and is never retained, moved, or
+    /// deleted. Raw validation, digesting, and stable ABPair de-duplication are
+    /// streamed into the private working corpus before this function returns.
+    /// This entry intentionally rejects legacy strategies and in-memory output
+    /// so an ordinary OOC collector prefix cannot silently fall back to a
+    /// vector-backed route.
+    template <RelationSource Source>
+    [[nodiscard]] static PreparedBorrowedStructuredInput
+    prepare_borrowed_structured(uint64_t generation, const Source& source,
+                                const RelationReductionConfig& config) {
+        validate_config(config);
+        if (generation == 0) {
+            throw std::invalid_argument("borrowed relation source generation must be nonzero");
+        }
+        if (config.strategy != ReductionStrategy::Structured) {
+            throw std::invalid_argument(
+                "borrowed relation source requires the structured reduction strategy");
+        }
+        validate_structured_path_pair(*config.structured, true, true);
+        auto structured = freeze_borrowed_structured_config(*config.structured);
+        validate_structured_path_pair(structured, true, true);
+
+        const size_t input_relations = static_cast<size_t>(source.count());
+        PreparedStructuredOOCInput prepared = prepare_structured_indexed_input(
+            generation, source, input_relations, structured.deduplicated_ooc_base_path);
+
+        RelationReductionStats stats;
+        stats.strategy = ReductionStrategy::Structured;
+        stats.input_relations = input_relations;
+        stats.raw_input_digest = prepared.raw_digest;
+        stats.raw_duplicates_removed = prepared.duplicates_removed;
+        stats.deduplicated_input_lp_histogram = prepared.lp_histogram;
+        return PreparedBorrowedStructuredInput(generation, std::move(prepared.corpus),
+                                               std::move(stats), std::move(structured));
+    }
+
+    /// Complete a prepared borrowed source after its reader/checkpoint lease has
+    /// been released. No borrowed source is retained in or read by this phase.
+    [[nodiscard]] static RelationReductionResult
+    reduce_prepared_structured(PreparedBorrowedStructuredInput&& prepared) {
+        if (!prepared.valid()) {
+            throw std::logic_error("prepared borrowed structured input is not valid");
+        }
+        if (prepared.corpus_.logical_generation() != prepared.generation_) {
+            throw std::logic_error(
+                "prepared borrowed structured input generation does not match its corpus");
+        }
+
+        std::optional<RelationSink> structured_sink;
+        structured_sink.emplace(RelationSink::out_of_core(prepared.generation_,
+                                                          prepared.structured_.output_ooc_base_path,
+                                                          prepared.structured_.output_ooc_cleanup));
+
+        RelationReductionResult result = reduce_structured_corpus(
+            prepared.generation_, std::move(prepared.corpus_), std::move(prepared.stats_),
+            prepared.structured_, std::move(structured_sink));
+        prepared.generation_ = 0;
+        return result;
+    }
+
+    /// Convenience composition for callers that do not need to release a
+    /// collector checkpoint between source preparation and parallel reduction.
+    template <RelationSource Source>
+    [[nodiscard]] static RelationReductionResult
+    reduce_borrowed_structured(uint64_t generation, const Source& source,
+                               const RelationReductionConfig& config) {
+        auto prepared = prepare_borrowed_structured(generation, source, config);
+        return reduce_prepared_structured(std::move(prepared));
+    }
+
 private:
     [[nodiscard]] static RelationReductionResult
     reduce_structured_corpus(uint64_t generation, RelationCorpus deduplicated,
@@ -605,16 +735,25 @@ private:
     [[nodiscard]] static PreparedStructuredOOCInput
     prepare_structured_ooc_input(const RawRelationSnapshot& snapshot,
                                  const std::string& deduplicated_base_path) {
-        RelationSink sink = RelationSink::out_of_core(snapshot.generation, deduplicated_base_path,
+        return prepare_structured_indexed_input(snapshot.generation, snapshot.corpus,
+                                                snapshot.size(), deduplicated_base_path);
+    }
+
+    template <RelationSource Source>
+    [[nodiscard]] static PreparedStructuredOOCInput
+    prepare_structured_indexed_input(uint64_t generation, const Source& source,
+                                     size_t input_relations,
+                                     const std::string& deduplicated_base_path) {
+        RelationSink sink = RelationSink::out_of_core(generation, deduplicated_base_path,
                                                       OOCCleanupPolicy::RemoveArtifacts);
-        CorpusDigestAccumulator raw_digest(snapshot.size());
-        LpKeyWeightAccumulator lp_histogram(snapshot.size());
+        CorpusDigestAccumulator raw_digest(input_relations);
+        LpKeyWeightAccumulator lp_histogram(input_relations);
         std::unordered_set<core::ABPair, core::ABPairHash> seen;
-        seen.reserve(snapshot.size());
+        seen.reserve(input_relations);
 
         size_t duplicates_removed = 0;
-        for (size_t ordinal = 0; ordinal < snapshot.size(); ++ordinal) {
-            core::Relation relation = snapshot.read(ordinal);
+        for (size_t ordinal = 0; ordinal < input_relations; ++ordinal) {
+            core::Relation relation = source.read(ordinal);
             validate_raw_relation(relation);
             raw_digest.append(relation);
             if (!seen.insert(relation.ab()).second) {
@@ -632,6 +771,17 @@ private:
     [[nodiscard]] static std::filesystem::path
     structured_sink_lease_root(const std::string& requested_base) {
         return RelationSink::lease_root_for(requested_base);
+    }
+
+    [[nodiscard]] static RelationReductionConfig::StructuredExecutionConfig
+    freeze_borrowed_structured_config(
+        const RelationReductionConfig::StructuredExecutionConfig& requested) {
+        auto frozen = requested;
+        frozen.deduplicated_ooc_base_path =
+            relation_corpus_detail::freeze_ooc_path(requested.deduplicated_ooc_base_path);
+        frozen.output_ooc_base_path =
+            relation_corpus_detail::freeze_ooc_path(requested.output_ooc_base_path);
+        return frozen;
     }
 
     [[nodiscard]] static bool path_contains(const std::filesystem::path& parent,
@@ -670,15 +820,13 @@ private:
             return;
         }
 
+        validate_structured_path_pair(structured, true, false);
         const auto working = structured_sink_lease_root(structured.deduplicated_ooc_base_path);
-        std::optional<std::filesystem::path> output;
-        if (!structured.output_ooc_base_path.empty()) {
-            output = structured_sink_lease_root(structured.output_ooc_base_path);
-            if (paths_overlap(working, *output)) {
-                throw std::invalid_argument(
-                    "structured OOC working and output lease roots must not overlap");
-            }
-        }
+        const std::optional<std::filesystem::path> output =
+            structured.output_ooc_base_path.empty()
+                ? std::nullopt
+                : std::optional<std::filesystem::path>(
+                      structured_sink_lease_root(structured.output_ooc_base_path));
 
         const auto input_scope = input.ooc_artifact_scope();
         if (!input_scope || input_scope->cleanup_directory.empty()) {
@@ -692,6 +840,31 @@ private:
         if (output && paths_overlap(input_cleanup, *output)) {
             throw std::invalid_argument(
                 "structured OOC output lease must not overlap the input cleanup scope");
+        }
+    }
+
+    static void validate_structured_path_pair(
+        const RelationReductionConfig::StructuredExecutionConfig& structured, bool require_working,
+        bool require_output) {
+        if (require_working && structured.deduplicated_ooc_base_path.empty()) {
+            throw std::invalid_argument(
+                "structured OOC input requires a deduplicated working base path");
+        }
+        if (require_output && structured.output_ooc_base_path.empty()) {
+            throw std::invalid_argument(
+                "borrowed structured input requires an OOC output base path");
+        }
+        if (structured.deduplicated_ooc_base_path.empty()) {
+            return;
+        }
+
+        const auto working = structured_sink_lease_root(structured.deduplicated_ooc_base_path);
+        if (!structured.output_ooc_base_path.empty()) {
+            const auto output = structured_sink_lease_root(structured.output_ooc_base_path);
+            if (paths_overlap(working, output)) {
+                throw std::invalid_argument(
+                    "structured OOC working and output lease roots must not overlap");
+            }
         }
     }
 

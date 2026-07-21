@@ -36,7 +36,6 @@ namespace detail {
 /// Role-separated requested bases reserved for one logical relation generation.
 /// RelationSink adds its private lease suffix to each requested base.
 struct StructuredOOCGenerationPaths final {
-    std::string snapshot_requested_base;
     std::string working_requested_base;
     std::string output_requested_base;
 

@@ -946,12 +946,10 @@ bool test_structured_ooc_path_namespace_contract() {
     }
 
     const std::array requested_bases{
-        std::filesystem::path(generation.snapshot_requested_base),
         std::filesystem::path(generation.working_requested_base),
         std::filesystem::path(generation.output_requested_base),
     };
     const std::array lease_roots{
-        gnfs::relation::RelationSink::lease_root_for(generation.snapshot_requested_base),
         gnfs::relation::RelationSink::lease_root_for(generation.working_requested_base),
         gnfs::relation::RelationSink::lease_root_for(generation.output_requested_base),
     };

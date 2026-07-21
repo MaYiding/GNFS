@@ -11,6 +11,7 @@
 #include "relation_sink.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -26,6 +27,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -97,6 +99,88 @@ struct CollectorConfig {
 struct CollectorOOCCorpusSnapshot final {
     RelationCorpus corpus;
     OOCSnapshotDescriptor source_descriptor;
+};
+
+/// Callback-scoped, read-only access to one committed OOC collector prefix.
+///
+/// Instances cannot be copied, moved, or retained beyond the callback passed
+/// to RelationCollector::with_ooc_prefix(). Concurrent read() calls are safe;
+/// every worker using the source must be drained/joined before the callback
+/// returns. The first storage/integrity/I/O exception is retained so the
+/// collector can fail closed even when a callback catches that exception.
+class CollectorOOCPrefixSource final {
+public:
+    CollectorOOCPrefixSource(const CollectorOOCPrefixSource&) = delete;
+    CollectorOOCPrefixSource& operator=(const CollectorOOCPrefixSource&) = delete;
+    CollectorOOCPrefixSource(CollectorOOCPrefixSource&&) = delete;
+    CollectorOOCPrefixSource& operator=(CollectorOOCPrefixSource&&) = delete;
+
+    [[nodiscard]] size_t count() const noexcept {
+        return reader_->count();
+    }
+
+    /// Authoritative physical identity of this raw committed prefix. Returned
+    /// by value so callers may pair it with callback output without retaining
+    /// a view into the callback-scoped source. generation is the writer's
+    /// checkpoint generation, not a logical relation generation.
+    [[nodiscard]] OOCSnapshotDescriptor descriptor() const noexcept {
+        return descriptor_;
+    }
+
+    [[nodiscard]] Relation read(size_t ordinal) const {
+        try {
+            return reader_->read(ordinal);
+        } catch (const std::bad_alloc&) {
+            // Allocation pressure does not make the committed source bytes
+            // untrustworthy. The collector resumes before propagating it.
+            throw;
+        } catch (const std::out_of_range&) {
+            // An invalid callback ordinal is a caller error, not corruption.
+            throw;
+        } catch (...) {
+            record_source_failure(std::current_exception());
+            throw;
+        }
+    }
+
+private:
+    CollectorOOCPrefixSource(const OOCRelationPrefixReader& reader,
+                             const OOCSnapshotDescriptor& descriptor) noexcept
+        : reader_(&reader), descriptor_(descriptor) {}
+
+    void record_source_failure(std::exception_ptr failure) const noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(failure_mutex_);
+            if (!source_failure_) {
+                source_failure_ = std::move(failure);
+            }
+        } catch (...) {
+            // Preserve the fail-closed classification even if the original
+            // exception cannot be retained.
+        }
+        source_failed_.store(true, std::memory_order_release);
+    }
+
+    [[nodiscard]] bool source_failed() const noexcept {
+        return source_failed_.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] std::exception_ptr source_failure() const noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(failure_mutex_);
+            return source_failure_;
+        } catch (...) {
+            return nullptr;
+        }
+    }
+
+    const OOCRelationPrefixReader* reader_ = nullptr;
+    OOCSnapshotDescriptor descriptor_;
+    mutable std::mutex failure_mutex_;
+    mutable std::exception_ptr source_failure_;
+    mutable std::atomic<bool> source_failed_{false};
+
+    friend class RelationCollector;
 };
 
 /// RelationCollector - 关系收集器
@@ -428,6 +512,140 @@ public:
             return result;
         }
         return relations_;
+    }
+
+    /// Invoke a callback against one immutable, committed prefix of an
+    /// appendable OOC collector without copying relation payloads.
+    ///
+    /// The writer is checkpointed while holding the collector mutex, then an
+    /// active-borrow guard lets the callback run without that mutex. Observer
+    /// methods remain usable; owner and mutation methods reject while the
+    /// borrow is active instead of deadlocking or touching the suspended
+    /// writer. The callback may parallelize source reads, but it must drain/join
+    /// every worker before returning. The source, its address, and any
+    /// source-derived view must not escape in the callback result. The prefix
+    /// reader is destroyed before the exact checkpoint descriptor resumes the
+    /// writer.
+    ///
+    /// Source integrity/I/O failures fail the writer closed, including when
+    /// the callback catches the read exception. Callback/output failures,
+    /// invalid ordinals, and std::bad_alloc resume the writer before being
+    /// propagated. A resume failure always takes precedence over the callback
+    /// failure. Callback results are returned by value and may be move-only.
+    /// The source reference must not escape the callback.
+    template <typename Callback>
+    auto with_ooc_prefix(Callback&& callback)
+        -> std::invoke_result_t<Callback, const CollectorOOCPrefixSource&> {
+        using Result = std::invoke_result_t<Callback, const CollectorOOCPrefixSource&>;
+        static_assert(std::is_void_v<Result> ||
+                          (!std::is_reference_v<Result> && !std::is_pointer_v<Result> &&
+                           std::is_move_constructible_v<Result>),
+                      "with_ooc_prefix callbacks must return void or a movable value");
+
+        std::unique_lock<std::mutex> lock(mutex_);
+        require_ooc_mode("with_ooc_prefix");
+        require_available_ooc_owner("with_ooc_prefix");
+        if (ooc_writer_->state() != OOCWriterState::Open) {
+            throw std::logic_error(
+                "RelationCollector::with_ooc_prefix: OOC writer is not appendable");
+        }
+
+        const OOCSnapshotDescriptor descriptor = ooc_writer_->checkpoint_prefix();
+        try {
+            validate_descriptor_matches_collector(descriptor, "with_ooc_prefix");
+        } catch (...) {
+            if (ooc_writer_->state() == OOCWriterState::Suspended) {
+                ooc_writer_->fail_suspended_snapshot();
+            }
+            throw;
+        }
+
+        std::unique_ptr<OOCRelationPrefixReader> reader;
+        try {
+            reader = std::make_unique<OOCRelationPrefixReader>(config_.ooc_base_path, descriptor,
+                                                               *ooc_writer_);
+        } catch (const std::bad_alloc&) {
+            // Construction released any partial reader lease. Exact resume is
+            // mandatory and its stronger failure must not be hidden.
+            const auto allocation_failure = std::current_exception();
+            ooc_writer_->resume_append(descriptor);
+            std::rethrow_exception(allocation_failure);
+        } catch (...) {
+            if (ooc_writer_->state() == OOCWriterState::Suspended) {
+                ooc_writer_->fail_suspended_snapshot();
+            }
+            throw;
+        }
+
+        CollectorOOCPrefixSource source(*reader, descriptor);
+        ooc_prefix_borrow_active_ = true;
+        lock.unlock();
+
+        auto finish_lease = [&](std::exception_ptr callback_failure) {
+            lock.lock();
+            const bool source_failed = source.source_failed();
+            const std::exception_ptr source_failure = source.source_failure();
+            reader.reset(); // Unmap/close before fail or exact resume on Windows.
+
+            if (source_failed) {
+                ooc_prefix_borrow_active_ = false;
+                try {
+                    if (ooc_writer_->state() == OOCWriterState::Suspended) {
+                        ooc_writer_->fail_suspended_snapshot();
+                    }
+                } catch (...) {
+                    const auto transition_failure = std::current_exception();
+                    lock.unlock();
+                    std::rethrow_exception(transition_failure);
+                }
+                if (source_failure) {
+                    lock.unlock();
+                    std::rethrow_exception(source_failure);
+                }
+                lock.unlock();
+                throw std::runtime_error("RelationCollector::with_ooc_prefix: source read failed");
+            }
+
+            try {
+                ooc_writer_->resume_append(descriptor);
+            } catch (...) {
+                const auto resume_failure = std::current_exception();
+                ooc_prefix_borrow_active_ = false;
+                lock.unlock();
+                std::rethrow_exception(resume_failure);
+            }
+            ooc_prefix_borrow_active_ = false;
+
+            if (callback_failure) {
+                lock.unlock();
+                std::rethrow_exception(callback_failure);
+            }
+        };
+
+        if constexpr (std::is_void_v<Result>) {
+            std::exception_ptr callback_failure;
+            try {
+                std::invoke(std::forward<Callback>(callback),
+                            static_cast<const CollectorOOCPrefixSource&>(source));
+            } catch (...) {
+                callback_failure = std::current_exception();
+            }
+            finish_lease(std::move(callback_failure));
+            lock.unlock();
+        } else {
+            std::optional<Result> callback_result;
+            std::exception_ptr callback_failure;
+            try {
+                callback_result.emplace(
+                    std::invoke(std::forward<Callback>(callback),
+                                static_cast<const CollectorOOCPrefixSource&>(source)));
+            } catch (...) {
+                callback_failure = std::current_exception();
+            }
+            finish_lease(std::move(callback_failure));
+            lock.unlock();
+            return std::move(*callback_result);
+        }
     }
 
     /// Copy the current appendable OOC prefix into an independent finalized
@@ -863,6 +1081,7 @@ private:
     // unique_ptr 因为 OOCRelationWriter 不可移动(持有 fstream + 内部 buffer)。
     std::unique_ptr<OOCRelationWriter> ooc_writer_;
     bool ooc_corpus_handed_off_ = false;
+    bool ooc_prefix_borrow_active_ = false;
 
     // Pool 模式 (W6 T4): RelationPoolResource + std::pmr::vector<Relation>.
     // 两个 fields 联动:启用时 use_pool=true → pool_ 非空 → relations_pmr_ 非空 → relations_ 不用.
@@ -905,6 +1124,10 @@ private:
     }
 
     void require_not_handed_off(const char* operation) const {
+        if (ooc_prefix_borrow_active_) {
+            throw std::logic_error(std::string("RelationCollector::") + operation +
+                                   ": borrowed OOC prefix callback is active");
+        }
         if (ooc_corpus_handed_off_) {
             throw std::logic_error(std::string("RelationCollector::") + operation +
                                    ": OOC corpus ownership was handed off");

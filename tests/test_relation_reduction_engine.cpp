@@ -39,6 +39,8 @@ using gnfs::relation::StructuredReductionError;
 using gnfs::relation::StructuredReductionErrorCode;
 using gnfs::relation::StructuredReductionStopReason;
 
+using PreparedBorrowedStructuredInput = RelationReductionEngine::PreparedBorrowedStructuredInput;
+
 static_assert(!std::is_copy_constructible_v<RawRelationSnapshot>);
 static_assert(!std::is_copy_assignable_v<RawRelationSnapshot>);
 static_assert(std::is_nothrow_move_constructible_v<RawRelationSnapshot>);
@@ -46,6 +48,9 @@ static_assert(!std::is_copy_constructible_v<RelationReductionResult>);
 static_assert(!std::is_copy_assignable_v<RelationReductionResult>);
 static_assert(std::is_nothrow_move_constructible_v<RelationReductionResult>);
 static_assert(!std::is_same_v<RawRelationSnapshot, RelationReductionResult>);
+static_assert(!std::is_copy_constructible_v<PreparedBorrowedStructuredInput>);
+static_assert(!std::is_copy_assignable_v<PreparedBorrowedStructuredInput>);
+static_assert(std::is_nothrow_move_constructible_v<PreparedBorrowedStructuredInput>);
 
 namespace {
 
@@ -65,6 +70,48 @@ struct OOCArtifacts final {
 
     std::string base;
 };
+
+class BorrowedVectorRelationSource final {
+public:
+    explicit BorrowedVectorRelationSource(const std::vector<Relation>& relations,
+                                          std::optional<size_t> failing_ordinal = std::nullopt)
+        : relations_(&relations), failing_ordinal_(failing_ordinal) {}
+
+    BorrowedVectorRelationSource(const BorrowedVectorRelationSource&) = delete;
+    BorrowedVectorRelationSource& operator=(const BorrowedVectorRelationSource&) = delete;
+    BorrowedVectorRelationSource(BorrowedVectorRelationSource&&) = delete;
+    BorrowedVectorRelationSource& operator=(BorrowedVectorRelationSource&&) = delete;
+
+    [[nodiscard]] size_t count() const noexcept {
+        ++count_calls_;
+        return relations_->size();
+    }
+
+    [[nodiscard]] Relation read(size_t ordinal) const {
+        ++read_calls_;
+        if (failing_ordinal_ == ordinal) {
+            throw std::runtime_error("injected borrowed relation source read failure");
+        }
+        return relations_->at(ordinal);
+    }
+
+    [[nodiscard]] size_t count_calls() const noexcept {
+        return count_calls_;
+    }
+
+    [[nodiscard]] size_t read_calls() const noexcept {
+        return read_calls_;
+    }
+
+private:
+    const std::vector<Relation>* relations_;
+    std::optional<size_t> failing_ordinal_;
+    mutable size_t count_calls_ = 0;
+    mutable size_t read_calls_ = 0;
+};
+
+static_assert(gnfs::relation::RelationSource<BorrowedVectorRelationSource>);
+static_assert(!std::is_copy_constructible_v<BorrowedVectorRelationSource>);
 
 [[nodiscard]] std::string unique_ooc_base(const char* label) {
     static uint64_t sequence = 0;
@@ -243,6 +290,17 @@ template <typename Fn> bool throws_logic_error(Fn&& fn) {
     try {
         std::forward<Fn>(fn)();
     } catch (const std::logic_error&) {
+        return true;
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
+template <typename Fn> bool throws_runtime_error(Fn&& fn) {
+    try {
+        std::forward<Fn>(fn)();
+    } catch (const std::runtime_error&) {
         return true;
     } catch (...) {
         return false;
@@ -981,6 +1039,211 @@ void test_structured_ooc_rejects_overlapping_artifact_scopes() {
     CHECK(private_sink_absent(working_artifacts.base));
 }
 
+void test_structured_borrowed_source_matches_owning_routes() {
+    constexpr uint64_t generation = 714;
+    auto input = make_shared_primary_corpus();
+    input.push_back(input[1]);
+    const auto original_input = input;
+
+    auto memory_result = RelationReductionEngine::reduce(RawRelationSnapshot(generation, input),
+                                                         structured_config(4, 3));
+    const auto expected_rows = memory_result.materialize_relations();
+    CHECK(memory_result.stats.raw_duplicates_removed == 1);
+
+    OOCArtifacts owning_input(unique_ooc_base("borrowed_equivalence_owning_input"));
+    OOCArtifacts owning_work(unique_ooc_base("borrowed_equivalence_owning_work"));
+    OOCArtifacts owning_output(unique_ooc_base("borrowed_equivalence_owning_output"));
+    auto owning_config = structured_config(4, 3);
+    owning_config.structured->deduplicated_ooc_base_path = owning_work.base;
+    owning_config.structured->output_ooc_base_path = owning_output.base;
+    RawRelationSnapshot owning_snapshot(
+        make_owned_ooc_corpus(generation, owning_input.base, input));
+
+    {
+        auto owning_result =
+            RelationReductionEngine::reduce(std::move(owning_snapshot), owning_config);
+        CHECK(owning_result.storage_kind() == gnfs::relation::RelationStorageKind::FinalizedOOC);
+        CHECK(owning_result.stats == memory_result.stats);
+        CHECK(owning_result.stats.raw_input_digest == memory_result.stats.raw_input_digest);
+        CHECK(owning_result.stats.output_digest == memory_result.stats.output_digest);
+        CHECK(equal_corpus(owning_result.materialize_relations(), expected_rows));
+        CHECK(private_sink_absent(owning_work.base));
+
+        OOCArtifacts borrowed_work(unique_ooc_base("borrowed_equivalence_work"));
+        OOCArtifacts borrowed_output(unique_ooc_base("borrowed_equivalence_output"));
+        auto borrowed_config = structured_config(4, 3);
+        borrowed_config.structured->deduplicated_ooc_base_path = borrowed_work.base;
+        borrowed_config.structured->output_ooc_base_path = borrowed_output.base;
+
+        {
+            auto prepared = [&] {
+                BorrowedVectorRelationSource callback_scoped_source(input);
+                auto token = RelationReductionEngine::prepare_borrowed_structured(
+                    generation, callback_scoped_source, borrowed_config);
+                CHECK(token.valid());
+                CHECK(token.generation() == generation);
+                CHECK(token.input_relations() == input.size());
+                CHECK(callback_scoped_source.count_calls() == 1);
+                CHECK(callback_scoped_source.read_calls() == input.size());
+                CHECK(private_sink_exists(borrowed_work.base));
+                return token;
+            }();
+
+            // The callback-scoped source above is already destroyed. This
+            // phase can only use the owning working corpus sealed in the token.
+            borrowed_config.structured->output_ooc_base_path = borrowed_work.base;
+            borrowed_config.structured->parallel.worker_count = 1;
+            auto borrowed_result =
+                RelationReductionEngine::reduce_prepared_structured(std::move(prepared));
+            CHECK(borrowed_result.storage_kind() ==
+                  gnfs::relation::RelationStorageKind::FinalizedOOC);
+            CHECK(borrowed_result.generation == generation);
+            CHECK(borrowed_result.stats == memory_result.stats);
+            CHECK(borrowed_result.stats == owning_result.stats);
+            CHECK(borrowed_result.stats.raw_input_digest == memory_result.stats.raw_input_digest);
+            CHECK(borrowed_result.stats.output_digest == memory_result.stats.output_digest);
+            CHECK(equal_corpus(borrowed_result.materialize_relations(), expected_rows));
+            CHECK(private_sink_absent(borrowed_work.base));
+            CHECK(private_sink_exists(borrowed_output.base));
+            CHECK(!prepared.valid());
+            CHECK(throws_logic_error([&] {
+                (void)RelationReductionEngine::reduce_prepared_structured(std::move(prepared));
+            }));
+            CHECK(equal_corpus(input, original_input));
+        }
+        CHECK(private_sink_absent(borrowed_output.base));
+    }
+    CHECK(private_sink_absent(owning_output.base));
+}
+
+void test_structured_borrowed_source_contract_rejects_invalid_routes() {
+    const auto input = make_shared_primary_corpus();
+    BorrowedVectorRelationSource source(input);
+    OOCArtifacts working(unique_ooc_base("borrowed_contract_work"));
+    OOCArtifacts output(unique_ooc_base("borrowed_contract_output"));
+
+    auto valid = structured_config(2, 3);
+    valid.structured->deduplicated_ooc_base_path = working.base;
+    valid.structured->output_ooc_base_path = output.base;
+    CHECK(throws_invalid_argument(
+        [&] { (void)RelationReductionEngine::reduce_borrowed_structured(0, source, valid); }));
+
+    CHECK(throws_invalid_argument([&] {
+        (void)RelationReductionEngine::reduce_borrowed_structured(715, source,
+                                                                  RelationReductionConfig{});
+    }));
+
+    auto missing_execution = valid;
+    missing_execution.structured.reset();
+    CHECK(throws_invalid_argument([&] {
+        (void)RelationReductionEngine::reduce_borrowed_structured(715, source, missing_execution);
+    }));
+
+    auto missing_working = structured_config(2, 3);
+    missing_working.structured->output_ooc_base_path = output.base;
+    CHECK(throws_invalid_argument([&] {
+        (void)RelationReductionEngine::reduce_borrowed_structured(715, source, missing_working);
+    }));
+
+    auto missing_output = structured_config(2, 3);
+    missing_output.structured->deduplicated_ooc_base_path = working.base;
+    CHECK(throws_invalid_argument([&] {
+        (void)RelationReductionEngine::reduce_borrowed_structured(715, source, missing_output);
+    }));
+
+    auto overlapping = structured_config(2, 3);
+    overlapping.structured->deduplicated_ooc_base_path = working.base;
+    overlapping.structured->output_ooc_base_path = working.base;
+    CHECK(throws_invalid_argument([&] {
+        (void)RelationReductionEngine::reduce_borrowed_structured(715, source, overlapping);
+    }));
+
+    CHECK(source.count_calls() == 0);
+    CHECK(source.read_calls() == 0);
+    CHECK(private_sink_absent(working.base));
+    CHECK(private_sink_absent(output.base));
+}
+
+void test_structured_borrowed_prepared_token_drop_cleans_working_corpus() {
+    constexpr uint64_t generation = 718;
+    const auto input = make_shared_primary_corpus();
+    BorrowedVectorRelationSource source(input);
+    OOCArtifacts working(unique_ooc_base("borrowed_drop_work"));
+    OOCArtifacts output(unique_ooc_base("borrowed_drop_output"));
+    auto config = structured_config(2, 3);
+    config.structured->deduplicated_ooc_base_path = working.base;
+    config.structured->output_ooc_base_path = output.base;
+
+    {
+        auto prepared =
+            RelationReductionEngine::prepare_borrowed_structured(generation, source, config);
+        CHECK(prepared.valid());
+        CHECK(private_sink_exists(working.base));
+        CHECK(private_sink_absent(output.base));
+    }
+
+    CHECK(source.count_calls() == 1);
+    CHECK(source.read_calls() == input.size());
+    CHECK(private_sink_absent(working.base));
+    CHECK(private_sink_absent(output.base));
+}
+
+void test_structured_borrowed_source_read_failure_rolls_back() {
+    constexpr uint64_t generation = 716;
+    const auto input = make_shared_primary_corpus();
+    const auto original_input = input;
+    BorrowedVectorRelationSource source(input, 2);
+    OOCArtifacts working(unique_ooc_base("borrowed_read_failure_work"));
+    OOCArtifacts output(unique_ooc_base("borrowed_read_failure_output"));
+    auto config = structured_config(2, 3);
+    config.structured->deduplicated_ooc_base_path = working.base;
+    config.structured->output_ooc_base_path = output.base;
+
+    CHECK(throws_runtime_error([&] {
+        (void)RelationReductionEngine::reduce_borrowed_structured(generation, source, config);
+    }));
+    CHECK(source.count_calls() == 1);
+    CHECK(source.read_calls() == 3);
+    CHECK(equal_corpus(input, original_input));
+    CHECK(private_sink_absent(working.base));
+    CHECK(private_sink_absent(output.base));
+}
+
+void test_structured_borrowed_output_failure_rolls_back_working_corpus() {
+    constexpr uint64_t generation = 717;
+    const auto input = make_shared_primary_corpus();
+    const auto original_input = input;
+    BorrowedVectorRelationSource source(input);
+    OOCArtifacts working(unique_ooc_base("borrowed_output_failure_work"));
+    OOCArtifacts output(unique_ooc_base("borrowed_output_failure_output"));
+    auto config = structured_config(2, 3);
+    config.structured->deduplicated_ooc_base_path = working.base;
+    config.structured->output_ooc_base_path = output.base;
+
+    std::error_code error;
+    CHECK(std::filesystem::create_directory(output.base + ".gnfs-sink-lease", error));
+    CHECK(!error);
+    {
+        auto prepared =
+            RelationReductionEngine::prepare_borrowed_structured(generation, source, config);
+        CHECK(private_sink_exists(working.base));
+        CHECK(throws_runtime_error([&] {
+            (void)RelationReductionEngine::reduce_prepared_structured(std::move(prepared));
+        }));
+        // Output reservation happens before the token is consumed, so this
+        // failure remains retryable. Dropping the token rolls working storage
+        // back without touching the pre-existing output lease.
+        CHECK(prepared.valid());
+    }
+    CHECK(source.count_calls() == 1);
+    CHECK(source.read_calls() == input.size());
+    CHECK(equal_corpus(input, original_input));
+    CHECK(private_sink_absent(working.base));
+    CHECK(std::filesystem::is_directory(output.base + ".gnfs-sink-lease"));
+    CHECK(!std::filesystem::exists(private_sink_base(output.base) + ".relidx"));
+    CHECK(!std::filesystem::exists(private_sink_base(output.base) + ".reldata"));
+}
+
 void test_structured_invariant_error_never_falls_back() {
     Relation invalid(41, 0);
     invalid.rational_large_prime.emplace_back(101, uint8_t{1});
@@ -1114,6 +1377,11 @@ int main() {
     test_structured_ooc_failure_preserves_authoritative_input();
     test_structured_ooc_post_prepare_failure_preserves_authoritative_input();
     test_structured_ooc_rejects_overlapping_artifact_scopes();
+    test_structured_borrowed_source_matches_owning_routes();
+    test_structured_borrowed_source_contract_rejects_invalid_routes();
+    test_structured_borrowed_prepared_token_drop_cleans_working_corpus();
+    test_structured_borrowed_source_read_failure_rolls_back();
+    test_structured_borrowed_output_failure_rolls_back_working_corpus();
     test_structured_invariant_error_never_falls_back();
     test_structured_sink_preflight_and_observer_failure();
     test_solver_handoff_exactly_once();

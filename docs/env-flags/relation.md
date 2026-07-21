@@ -53,20 +53,23 @@ route。后者要求同时设置 `GNFS_STRUCTURED_FILTER=1` 和按现有 `atoi` 
 继续使用调用方具名的 legacy 策略。resume corpus 和 distributed worker stores 仍未
 接入 structured reducer。
 
-普通 OOC adaptive route 的每一代使用三个同目录、互不重叠的私有 lease。collector
-把已提交 raw prefix 逐行复制到 finalized snapshot，销毁 reader 后用精确 descriptor
-恢复 append；engine 再把校验、digest 和稳定 `ABPair` 去重后的行流式写入 working
-corpus，并把 active output 逐行发布到独立 finalized V3 corpus。任一 probe 失败只会
-清理该代私有 lease，原 raw store 保持可追加或 fail closed。最终 probe 必须与
-terminal raw 的 format、store identity、count 和 physical extent 一致，Pipeline 才会
-在所有用户 callback 成功后转交并删除 raw owner。
+普通 OOC adaptive route 的每一代使用两个同目录、互不重叠的私有 lease。collector
+暂停 append，并把已提交 raw prefix 暴露为 callback-scoped、只读的 indexed source；
+engine 在借读期完成校验、digest 和稳定 `ABPair` 去重，把保留行流式写入自有 working
+corpus。prepared token 返回后，collector 先销毁 reader、解除 mmap，再用精确 descriptor
+恢复 append；此后才构建 incidence、执行并行归约并把 active output 发布到独立 finalized
+V3 corpus。borrowed source 不进入 corpus、reducer 或异步任务。source integrity/I/O
+失败会使 raw fail closed；callback、working、配置或 `std::bad_alloc` 失败会先恢复 raw
+再传播，resume 失败优先。output 与并行归约只在 raw 已恢复后运行。
+最终成功 probe 必须与 terminal raw 的 format、store identity、count 和 physical extent
+一致，Pipeline 才会在所有用户 callback 成功后转交并删除 raw owner。
 
 这条路径限制 relation payload 的常驻内存，但不是 native incremental reduction：第
-`r` 轮仍复制截至该轮的完整 raw prefix，因此累计 I/O 为 `O(rounds * relations)`，峰值
-磁盘可同时包含 raw、snapshot、working 和 output 四份 payload。`ABPair` set、LP
-histogram、incidence、logical rows 与 history 仍是 corpus-scale metadata。尚无跨尺寸
-RSS 和 bounded 50-digit 实测，所以该能力仍是 forced experimental route，不构成
-auto 或默认启用证据。
+`r` 轮仍完整读取截至该轮的 raw prefix，并重新生成 working corpus，因此累计 I/O 为
+`O(rounds * relations)`；峰值磁盘可同时包含 raw、working 和 output 三份 payload。
+`ABPair` set、LP histogram、incidence、logical rows 与 history 仍是 corpus-scale
+metadata。尚无跨尺寸 RSS 和 bounded 50-digit 实测，所以该能力仍是 forced
+experimental route，不构成 auto 或默认启用证据。
 
 完整 `Pipeline::run()` 在任何 progress/log callback、试探算法、checkpoint 读写和
 relation generation 分配前捕获不创建 artifact 的 route snapshot；callback 后续修改
@@ -141,16 +144,17 @@ SGE 前恰好发出一次，并与最终 `MatrixResult.matrix` handoff 对齐。
   相等或形成祖先关系，也不得与 raw corpus 的独占 cleanup root 重叠。sink/corpus
   构造时会冻结规范化绝对路径，避免后续工作目录变化重定向清理。该 API 字段不是
   ENV；Pipeline 从一次冻结的 run namespace 为每个 logical generation 派生
-  snapshot/working/output sibling base。
-- `include/gnfs/relation/collector.hpp`：appendable OOC prefix 的逐行 corpus snapshot、
-  authoritative source descriptor 和 terminal one-shot handoff。fresh raw pair 使用
-  exclusive create，不覆盖既有 artifact。
+  working/output sibling base。
+- `include/gnfs/relation/collector.hpp`：appendable OOC prefix 的 callback-scoped borrowed
+  source、authoritative source descriptor、兼容性 corpus snapshot 和 terminal one-shot
+  handoff。fresh raw pair 使用 exclusive create，不覆盖既有 artifact。
 - `src/api/pipeline.cpp`：adaptive/final probe 与公开 filter 的统一 overlay；仅显式普通
   OOC 接入 structured，size-aware OOC、resume 和 distributed 保持 legacy/unsupported。
 - `tests/test_structured_filter_policy.cpp`：合法与非法 token、OFF、forced ON、
   unsupported 和显式 auto eligibility 的表驱动边界。
 - `tests/test_relation_reduction_engine.cpp`：structured config 预检、NoCandidates、
-  singleton 所有权、去重顺序、1/2/4 线程等价和 invariant fail-closed。
+  singleton 所有权、borrowed prepare/finish 边界、去重顺序、1/2/4 线程等价和
+  invariant fail-closed。
 - `CMakeLists.txt` / `scripts/test.sh`：注册 relation 模块的 instant 测试。
 - `tests/test_api.cpp`：公开 route 的 forced ON、unset/0/auto legacy 等价、非法值
   callback/generation 边界、无 LP fail-closed、resume/distributed sentinel、显式 OOC
@@ -256,7 +260,7 @@ GNFS_V0_BFS=1 ./gnfs <81-bit>          # 自动 fallback, stderr 警告
 启用 RelationCollector OOC 流式持久化, sieve 期间 relations 流式写盘
 `<system-temp>/gnfs_relations_<run-id>.{reldata,relidx}` 而非 in-memory vector。内存只保留
 `(a,b)` seen set + stats。legacy filter 在 probe 边界 materialize vector；同时显式
-强制 structured 时走上一节描述的 streaming snapshot/working/output route。ENV unset
+强制 structured 时走上一节描述的 borrowed-prefix/working/output route。ENV unset
 时 `lp_bits >= 22` 使用 size-aware default，显式 `0` 始终关闭，显式 `1` 绕过尺寸门槛。
 
 ```bash
@@ -305,8 +309,12 @@ GNFS_OOC_RELATIONS=1 ./test_gnfs_e2e             # e2e stress test OOC path
 - `add()`: OOC 模式跳过 relations_.push_back, 走 OOCWriter::write
 - `snapshot_relations()`: 暂停 writer、读取受信 prefix、解除映射并重新打开 append；
   后续 `add()` 仍有效
+- `with_ooc_prefix()`: 在线性化 callback 内借读 committed prefix；observer 可重入，
+  owner/mutation API 在借读期确定性拒绝。callback 不得让 source/view/worker 逃逸；
+  reader 解除映射并精确 resume 后才返回 move-only 结果
 - `snapshot_ooc_corpus()`: 不构建全量 relation vector，逐行复制 committed prefix 到独立
-  finalized corpus，同时返回 authoritative raw source descriptor
+  finalized corpus，同时返回 authoritative raw source descriptor；保留为显式复制 API，
+  structured adaptive 生产路径不再使用它
 - `handoff_ooc_corpus()`: terminal one-shot ownership transfer；成功后 mutation/materialize/
   repeated finalize 均拒绝，`size()` / `stats()` 仍可读
 - `finalize_relations()` / `get_relations()`: finalize 后 read_all；此后禁止 append
