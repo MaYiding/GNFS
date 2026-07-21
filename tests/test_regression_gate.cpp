@@ -17,7 +17,7 @@
 #include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/relation/collector.hpp>
-#include <gnfs/relation/filter.hpp>
+#include <gnfs/relation/reduction_engine.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <iomanip>
 #include <iostream>
 #include <random>
@@ -134,6 +135,8 @@ static bool factorize(const RegressionLevel& tc) {
     // Adaptive sieve-filter-merge loop
     std::vector<Relation> relations;
     bool lp_enabled = params.large_prime_bound > params.algebraic_bound;
+    uint64_t next_reduction_generation = 1;
+    size_t reduced_lp_columns = 0;
     constexpr int MAX_ROUNDS = 10;
 
     for (int round = 0; round < MAX_ROUNDS; ++round) {
@@ -193,23 +196,18 @@ static bool factorize(const RegressionLevel& tc) {
 
         // Reduce a stable prefix while keeping the collector appendable when a
         // later adaptive round needs more raw relations.
-        relations = collector.snapshot_relations();
-        FilterConfig fc;
-        fc.remove_singletons = true; fc.max_passes = 10;
-        RelationFilter filter(fc);
-        relations = filter.filter(std::move(relations));
-
-        if (lp_enabled) {
-            auto sep = separate_relations(std::move(relations));
-            PartialRelationMerger::MergeStats mstats;
-            auto merged = PartialRelationMerger::merge_all(
-                std::move(sep.partial), 10, &mstats);
-            relations = std::move(sep.full);
-            relations.reserve(relations.size() + merged.size());
-            relations.insert(relations.end(),
-                std::make_move_iterator(merged.begin()),
-                std::make_move_iterator(merged.end()));
-        }
+        RelationReductionConfig reduction_config;
+        reduction_config.filter.remove_singletons = true;
+        reduction_config.filter.max_passes = 10;
+        reduction_config.large_primes_enabled = lp_enabled;
+        reduction_config.merge_rounds = 10;
+        reduction_config.strategy =
+            lp_enabled ? ReductionStrategy::StandardV0 : ReductionStrategy::NoLargePrimes;
+        auto reduction = RelationReductionEngine::reduce(
+            RawRelationSnapshot(next_reduction_generation++, collector.snapshot_relations()),
+            reduction_config);
+        reduced_lp_columns = reduction.stats.output_lp_columns;
+        relations = std::move(reduction.relations);
 
         if (relations.size() > matrix_cols) break;
 
@@ -218,7 +216,7 @@ static bool factorize(const RegressionLevel& tc) {
         double merge_rate = (collector.size() > 0) ?
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
         // Use effective_cols (FB + LP) for accurate needed_raw at lp_bits ≥ 20.
-        size_t lp_cols_for_target = lp_enabled ? count_unique_lp_keys(relations) : 0;
+        size_t lp_cols_for_target = lp_enabled ? reduced_lp_columns : 0;
         size_t effective_cols_for_target = matrix_cols + lp_cols_for_target;
         size_t needed_raw = static_cast<size_t>(
             static_cast<double>(effective_cols_for_target * 2) / std::max(merge_rate, 0.001));
@@ -237,7 +235,7 @@ static bool factorize(const RegressionLevel& tc) {
     // For 25-digit (Level 4) trim is rarely triggered so safe in practice, but fix
     // for consistency and future-proofing.
     {
-        size_t lp_cols_for_trim = lp_enabled ? count_unique_lp_keys(relations) : 0;
+        size_t lp_cols_for_trim = lp_enabled ? reduced_lp_columns : 0;
         size_t effective_cols = matrix_cols + lp_cols_for_trim;
         size_t max_rels = static_cast<size_t>(static_cast<double>(effective_cols) * 1.3);
         if (relations.size() > max_rels) {

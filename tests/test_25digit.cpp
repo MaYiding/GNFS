@@ -6,7 +6,7 @@
 #include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/relation/collector.hpp>
-#include <gnfs/relation/filter.hpp>
+#include <gnfs/relation/reduction_engine.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <iostream>
 #include <iomanip>
 #include <random>
@@ -111,6 +112,8 @@ int main() {
     // Adaptive sieve-filter-merge loop
     std::vector<Relation> relations;
     bool lp_enabled = params.large_prime_bound > params.algebraic_bound;
+    uint64_t next_reduction_generation = 1;
+    size_t reduced_lp_columns = 0;
     constexpr int MAX_ROUNDS = 10;
 
     for (int round = 0; round < MAX_ROUNDS; ++round) {
@@ -181,32 +184,28 @@ int main() {
 
         // Reduce a stable prefix while keeping the collector appendable when a
         // later adaptive round needs more raw relations.
-        relations = collector.snapshot_relations();
-        FilterConfig fc;
-        fc.remove_singletons = true; fc.max_passes = 10;
-        RelationFilter filter(fc);
-        relations = filter.filter(std::move(relations));
+        RelationReductionConfig reduction_config;
+        reduction_config.filter.remove_singletons = true;
+        reduction_config.filter.max_passes = 10;
+        reduction_config.large_primes_enabled = lp_enabled;
+        reduction_config.merge_rounds = 10;
+        reduction_config.strategy =
+            lp_enabled ? ReductionStrategy::StandardV0 : ReductionStrategy::NoLargePrimes;
+        auto reduction = RelationReductionEngine::reduce(
+            RawRelationSnapshot(next_reduction_generation++, collector.snapshot_relations()),
+            reduction_config);
+        const auto& reduction_stats = reduction.stats;
+        reduced_lp_columns = reduction_stats.output_lp_columns;
+        relations = std::move(reduction.relations);
 
         if (lp_enabled) {
-            auto sep = separate_relations(std::move(relations));
-
-            PartialRelationMerger::MergeStats mstats;
-            auto merged = PartialRelationMerger::merge_all(
-                std::move(sep.partial), 10, &mstats);
-
-            std::cout << "\n  [round " << (round+1) << "] Full=" << sep.full.size()
-                      << " 1LP=" << mstats.input_1lp
-                      << " 2LP=" << mstats.input_2lp
-                      << " Merged=" << merged.size()
-                      << " (w2=" << mstats.weight2_merges
-                      << " sngl=" << mstats.singletons_removed
-                      << " rnd=" << mstats.rounds << ")\n" << std::flush;
-
-            relations = std::move(sep.full);
-            relations.reserve(relations.size() + merged.size());
-            relations.insert(relations.end(),
-                std::make_move_iterator(merged.begin()),
-                std::make_move_iterator(merged.end()));
+            const auto& mstats = reduction_stats.standard_v0;
+            std::cout << "\n  [round " << (round + 1)
+                      << "] Full=" << reduction_stats.separated_full_relations
+                      << " 1LP=" << mstats.input_1lp << " 2LP=" << mstats.input_2lp
+                      << " Merged=" << mstats.output_relations << " (w2=" << mstats.weight2_merges
+                      << " sngl=" << mstats.singletons_removed << " rnd=" << mstats.rounds << ")\n"
+                      << std::flush;
         }
 
         if (relations.size() > matrix_cols) {
@@ -224,7 +223,7 @@ int main() {
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
         // Conservative 2× scaling, 5× cap (prevent BL-killing oversized matrices).
         // Use effective_cols (FB + LP) for accurate needed_raw at lp_bits ≥ 20.
-        size_t lp_cols_for_target = lp_enabled ? count_unique_lp_keys(relations) : 0;
+        size_t lp_cols_for_target = lp_enabled ? reduced_lp_columns : 0;
         size_t effective_cols_for_target = matrix_cols + lp_cols_for_target;
         size_t needed_raw = static_cast<size_t>(
             static_cast<double>(effective_cols_for_target * 2) / std::max(merge_rate, 0.001));
@@ -238,7 +237,7 @@ int main() {
     // Relation trimming: cap at 1.3× effective_cols (FB + LP) for fast Gaussian
     // Same fix as test_stress 71193bb / test_progressive ed8a7b5 / test_regression_gate 33d9a8f.
     {
-        size_t lp_cols_for_trim = lp_enabled ? count_unique_lp_keys(relations) : 0;
+        size_t lp_cols_for_trim = lp_enabled ? reduced_lp_columns : 0;
         size_t effective_cols = matrix_cols + lp_cols_for_trim;
         size_t max_rels = static_cast<size_t>(static_cast<double>(effective_cols) * 1.3);
         if (relations.size() > max_rels) {

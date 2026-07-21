@@ -16,7 +16,7 @@
 #include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/relation/collector.hpp>
-#include <gnfs/relation/filter.hpp>
+#include <gnfs/relation/reduction_engine.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -360,16 +360,22 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     // Get relations and filter singletons
     auto relations = collector.get_relations();
 
-    FilterConfig filter_config;
-    filter_config.remove_singletons = true;
-    filter_config.max_passes = 10;
-
-    RelationFilter filter(filter_config);
-    relations = filter.filter(std::move(relations));
+    const bool lp_enabled = params.large_prime_bound > params.algebraic_bound;
+    RelationReductionConfig reduction_config;
+    reduction_config.filter.remove_singletons = true;
+    reduction_config.filter.max_passes = 10;
+    reduction_config.large_primes_enabled = lp_enabled;
+    reduction_config.merge_rounds = 10;
+    reduction_config.strategy =
+        lp_enabled ? ReductionStrategy::StandardV0 : ReductionStrategy::NoLargePrimes;
+    auto reduction = RelationReductionEngine::reduce(RawRelationSnapshot(1, std::move(relations)),
+                                                     reduction_config);
+    const auto& reduction_stats = reduction.stats;
+    relations = std::move(reduction.relations);
 
     if (verbose) {
-        auto& fstats = filter.stats();
-        std::cout << "After filtering: " << relations.size() << " relations\n";
+        const auto& fstats = reduction_stats.filter;
+        std::cout << "After filtering: " << fstats.output_relations << " relations\n";
         std::cout << "Singletons removed: " << fstats.singletons_removed << "\n";
         std::cout << "Passes: " << fstats.passes << "\n";
     }
@@ -377,30 +383,14 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     // Merge partial 1LP relations sharing a large prime
     // Only when LP is genuinely enabled (LP > algebraic_bound)
     // For small N where LP ≈ FB, "partials" are just inert-prime artifacts
-    if (params.large_prime_bound > params.algebraic_bound) {
-        auto sep = separate_relations(std::move(relations));
-
-        PartialRelationMerger::MergeStats mstats;
-        auto merged = PartialRelationMerger::merge_all(
-            std::move(sep.partial), 10, &mstats);
-
+    if (lp_enabled) {
         if (verbose) {
-            std::cout << "Full: " << sep.full.size()
-                      << ", 1LP: " << mstats.input_1lp
-                      << ", 2LP: " << mstats.input_2lp
-                      << ", Merged: " << merged.size()
-                      << " (w2=" << mstats.weight2_merges
-                      << " sngl=" << mstats.singletons_removed
-                      << " rnd=" << mstats.rounds << ")\n";
+            const auto& mstats = reduction_stats.standard_v0;
+            std::cout << "Full: " << reduction_stats.separated_full_relations
+                      << ", 1LP: " << mstats.input_1lp << ", 2LP: " << mstats.input_2lp
+                      << ", Merged: " << mstats.output_relations << " (w2=" << mstats.weight2_merges
+                      << " sngl=" << mstats.singletons_removed << " rnd=" << mstats.rounds << ")\n";
         }
-
-        // Only keep full + merged — unmerged partials create singleton LP columns
-        // in the matrix that waste space and cannot participate in any dependency
-        relations = std::move(sep.full);
-        relations.reserve(relations.size() + merged.size());
-        relations.insert(relations.end(),
-            std::make_move_iterator(merged.begin()),
-            std::make_move_iterator(merged.end()));
     }
 
     if (verbose) {

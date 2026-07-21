@@ -13,7 +13,7 @@
 #include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/relation/collector.hpp>
-#include <gnfs/relation/filter.hpp>
+#include <gnfs/relation/reduction_engine.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <unordered_set>
 #include <iomanip>
 #include <iostream>
@@ -205,6 +206,8 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
 
     std::vector<Relation> relations;
     bool lp_enabled = params.large_prime_bound > params.algebraic_bound;
+    uint64_t next_reduction_generation = 1;
+    size_t reduced_lp_columns = 0;
     constexpr int MAX_ROUNDS = 10;
 
     size_t n_threads = std::thread::hardware_concurrency();
@@ -283,37 +286,38 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
 
         // Reduce a stable prefix while keeping the collector appendable when a
         // later adaptive round needs more raw relations.
-        relations = collector.snapshot_relations();
-        size_t pre_filter = relations.size();
+        auto raw_relations = collector.snapshot_relations();
+        size_t pre_filter = raw_relations.size();
 
         // Light filtering: 1 pass to remove obvious singletons without cascade
-        FilterConfig filt_config;
-        filt_config.remove_singletons = true;
-        filt_config.max_passes = lp_enabled ? 5 : 1;  // No-LP: 1 pass to avoid cascade
-        RelationFilter filter(filt_config);
-        relations = filter.filter(std::move(relations));
+        RelationReductionConfig reduction_config;
+        reduction_config.filter.remove_singletons = true;
+        reduction_config.filter.max_passes = lp_enabled ? 5 : 1; // No-LP: 1 pass to avoid cascade
+        reduction_config.large_primes_enabled = lp_enabled;
+        reduction_config.merge_rounds = 10;
+        reduction_config.strategy =
+            lp_enabled ? ReductionStrategy::StandardV0 : ReductionStrategy::NoLargePrimes;
+        auto reduction = RelationReductionEngine::reduce(
+            RawRelationSnapshot(next_reduction_generation++, std::move(raw_relations)),
+            reduction_config);
+        const auto& reduction_stats = reduction.stats;
+        reduced_lp_columns = reduction_stats.output_lp_columns;
+        relations = std::move(reduction.relations);
 
-        std::cout << "    [filter] " << pre_filter << " -> " << relations.size()
-                  << " (" << std::setprecision(1)
-                  << (100.0 * static_cast<double>(relations.size()) /
-                      static_cast<double>(pre_filter)) << "% survived)\n" << std::flush;
+        std::cout << "    [filter] " << pre_filter << " -> "
+                  << reduction_stats.filter.output_relations << " (" << std::setprecision(1)
+                  << (100.0 * static_cast<double>(reduction_stats.filter.output_relations) /
+                      static_cast<double>(pre_filter))
+                  << "% survived)\n"
+                  << std::flush;
 
         if (lp_enabled) {
-            auto sep = separate_relations(std::move(relations));
-            PartialRelationMerger::MergeStats mstats;
-            auto merged = PartialRelationMerger::merge_all(
-                std::move(sep.partial), 10, &mstats);
-
-            std::cout << "    [round " << (round+1) << "] Full=" << sep.full.size()
-                      << " 1LP=" << mstats.input_1lp
-                      << " 2LP=" << mstats.input_2lp
-                      << " Merged=" << merged.size() << "\n" << std::flush;
-
-            relations = std::move(sep.full);
-            relations.reserve(relations.size() + merged.size());
-            relations.insert(relations.end(),
-                std::make_move_iterator(merged.begin()),
-                std::make_move_iterator(merged.end()));
+            std::cout << "    [round " << (round + 1)
+                      << "] Full=" << reduction_stats.separated_full_relations
+                      << " 1LP=" << reduction_stats.standard_v0.input_1lp
+                      << " 2LP=" << reduction_stats.standard_v0.input_2lp
+                      << " Merged=" << reduction_stats.standard_v0.output_relations << "\n"
+                      << std::flush;
         }
 
         if (relations.size() > matrix_cols) break;
@@ -326,7 +330,7 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
         double merge_rate = (collector.size() > 0) ?
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
         // Use effective_cols (FB + LP) for accurate needed_raw at lp_bits ≥ 20.
-        size_t lp_cols_for_target = lp_enabled ? count_unique_lp_keys(relations) : 0;
+        size_t lp_cols_for_target = lp_enabled ? reduced_lp_columns : 0;
         size_t effective_cols_for_target = matrix_cols + lp_cols_for_target;
         size_t needed_raw = static_cast<size_t>(
             static_cast<double>(effective_cols_for_target * 2) / std::max(merge_rate, 0.001));
