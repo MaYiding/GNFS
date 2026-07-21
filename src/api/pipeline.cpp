@@ -1,5 +1,7 @@
 #include <gnfs/api/pipeline.hpp>
 
+#include <gnfs/api/detail/solver_handoff.hpp>
+
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/cofactor/ecm.hpp>
 #include <gnfs/factor_base/builder.hpp>
@@ -2263,21 +2265,21 @@ FactorResult Pipeline::run() {
     size_t post_lp_cols = lp_enabled_post ? reduction.stats.output_lp_columns : 0;
     size_t effective_cols_post = matrix_cols + post_lp_cols;
 
-    if (reduction.size() <= effective_cols_post) {
-        emit_log(LogLevel::Error, Phase::Sieving,
-                 "Not enough usable relations: " + std::to_string(reduction.size()) +
-                     " <= " + std::to_string(effective_cols_post) +
-                     " (matrix_cols=" + std::to_string(matrix_cols) +
-                     " + lp_cols=" + std::to_string(post_lp_cols) + ")");
-        FactorResult r;
-        r.n = n_; // Integer op=
-        r.stats = stats_;
-        r.stats.timings.total_s = elapsed_s();
-        return r;
-    }
-
-    auto mr = solve_matrix(std::move(reduction), fb, ctx);
-    return extract_factors(mr, fb, ctx);
+    return detail::handoff_after_collection(
+        std::move(reduction), effective_cols_post,
+        [this, matrix_cols, post_lp_cols](const detail::SolverHandoffInfo& info) {
+            emit_log(LogLevel::Warn, Phase::Sieving,
+                     "Underbuilt relation reduction: rows=" + std::to_string(info.relation_rows) +
+                         " <= estimated_effective_cols=" +
+                         std::to_string(info.estimated_effective_columns) +
+                         " (matrix_cols=" + std::to_string(matrix_cols) +
+                         " + lp_cols=" + std::to_string(post_lp_cols) +
+                         "); forwarding to solve_matrix for the actual matrix decision");
+        },
+        [this, &fb, &ctx](relation::RelationReductionResult handed_off) {
+            auto mr = solve_matrix(std::move(handed_off), fb, ctx);
+            return extract_factors(mr, fb, ctx);
+        });
 }
 
 } // namespace gnfs::api

@@ -1,3 +1,4 @@
+#include "gnfs/api/detail/solver_handoff.hpp"
 #include "gnfs/relation/reduction_engine.hpp"
 
 #include <cstdint>
@@ -10,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+using gnfs::api::detail::handoff_after_collection;
+using gnfs::api::detail::SolverHandoffInfo;
 using gnfs::core::Relation;
 using gnfs::relation::corpus_digest;
 using gnfs::relation::CorpusDigest;
@@ -18,6 +21,7 @@ using gnfs::relation::ReductionStrategy;
 using gnfs::relation::RelationReductionConfig;
 using gnfs::relation::RelationReductionEngine;
 using gnfs::relation::RelationReductionResult;
+using gnfs::relation::RelationReductionStats;
 using gnfs::relation::RelationSourceCombination;
 using gnfs::relation::RelationSourceCombinationHash;
 
@@ -438,6 +442,58 @@ void test_clique_v0() {
     check_common_stats(result);
 }
 
+void test_solver_handoff_exactly_once() {
+    {
+        std::vector<Relation> relations{make_full(71), make_full(73)};
+        RelationReductionStats stats;
+        stats.output_relations = relations.size();
+        RelationReductionResult reduction(601, std::move(relations), std::move(stats));
+
+        size_t diagnostic_calls = 0;
+        size_t solver_calls = 0;
+        const uint64_t generation = handoff_after_collection(
+            std::move(reduction), 2,
+            [&](const SolverHandoffInfo& info) {
+                ++diagnostic_calls;
+                CHECK(info.relation_rows == 2);
+                CHECK(info.estimated_effective_columns == 2);
+                CHECK(info.estimated_underbuilt);
+            },
+            [&](RelationReductionResult handed_off) {
+                ++solver_calls;
+                CHECK(handed_off.generation == 601);
+                CHECK(handed_off.size() == 2);
+                return handed_off.generation;
+            });
+
+        CHECK(generation == 601);
+        CHECK(diagnostic_calls == 1);
+        CHECK(solver_calls == 1);
+    }
+
+    {
+        std::vector<Relation> relations{make_full(79), make_full(83)};
+        RelationReductionStats stats;
+        stats.output_relations = relations.size();
+        RelationReductionResult reduction(602, std::move(relations), std::move(stats));
+
+        size_t diagnostic_calls = 0;
+        size_t solver_calls = 0;
+        const uint64_t generation = handoff_after_collection(
+            std::move(reduction), 1, [&](const SolverHandoffInfo&) { ++diagnostic_calls; },
+            [&](RelationReductionResult handed_off) {
+                ++solver_calls;
+                CHECK(handed_off.generation == 602);
+                CHECK(handed_off.size() == 2);
+                return handed_off.generation;
+            });
+
+        CHECK(generation == 602);
+        CHECK(diagnostic_calls == 0);
+        CHECK(solver_calls == 1);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -459,6 +515,7 @@ int main() {
     test_standard_v0_and_explicit_off_unset_equivalence();
     test_standard_v0_with_v3_exact_dedup();
     test_clique_v0();
+    test_solver_handoff_exactly_once();
 
     if (failures != 0) {
         std::cerr << failures << " relation reduction engine checks failed\n";
