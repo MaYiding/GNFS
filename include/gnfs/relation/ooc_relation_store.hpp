@@ -307,6 +307,7 @@ public:
                 final_descriptor.data_end = validated_resume_prefix_->data_end;
                 finalized_descriptor_ = final_descriptor;
                 state_ = OOCWriterState::Finalized;
+                finalized_durable_ = true;
                 recovery_outcome_ = OOCRecoveryOutcome::FinalizedCorpus;
                 return;
             }
@@ -509,6 +510,10 @@ public:
     /// Idempotent: repeated calls return the same final descriptor.
     [[nodiscard]] OOCSnapshotDescriptor finalize(FinalizeStageHook hook = nullptr) {
         if (state_ == OOCWriterState::Finalized) {
+            if (!finalized_durable_) {
+                sync_store_files_and_directory();
+                finalized_durable_ = true;
+            }
             return *finalized_descriptor_;
         }
         if (state_ == OOCWriterState::Failed) {
@@ -601,17 +606,25 @@ public:
             idx_stream_.flush();
             ensure_open_streams_good("finalize magic flush");
             close_open_streams_checked("finalize close");
+
+            // Once final magic has been flushed and both handles have closed,
+            // the pair is visibly committed. Record that outcome before the
+            // final durability barrier or observer hook: either can throw, but
+            // must never relabel a readable finalized pair as a failed writer.
+            suspended_descriptor_.reset();
+            finalized_descriptor_ = descriptor;
+            state_ = OOCWriterState::Finalized;
             sync_store_files_and_directory();
+            finalized_durable_ = true;
             if (hook != nullptr) {
                 hook(FinalizeStage::FinalMagicDurable);
             }
 
-            suspended_descriptor_.reset();
-            finalized_descriptor_ = descriptor;
-            state_ = OOCWriterState::Finalized;
             return descriptor;
         } catch (...) {
-            fail_and_close_noexcept();
+            if (state_ != OOCWriterState::Finalized) {
+                fail_and_close_noexcept();
+            }
             throw;
         }
     }
@@ -619,6 +632,22 @@ public:
     /// Compatibility alias for existing callers.
     void close() {
         (void)finalize();
+    }
+
+    /// Abandon an appendable store without publishing final MAGIC.
+    ///
+    /// This transition is deliberately idempotent and noexcept so higher-level
+    /// transactional owners can call it from failure paths and destructors.
+    /// Finalized stores are immutable and remain finalized; Open or Suspended
+    /// stores become Failed and all writer handles are closed.
+    void abort() noexcept {
+        if (state_ == OOCWriterState::Finalized) {
+            return;
+        }
+        if (state_ != OOCWriterState::Failed) {
+            state_ = OOCWriterState::Failed;
+        }
+        abort_close_noexcept();
     }
 
     ~OOCRelationWriter() {
@@ -1352,6 +1381,7 @@ private:
     OOCWriterState state_ = OOCWriterState::Open;
     std::optional<OOCSnapshotDescriptor> suspended_descriptor_;
     std::optional<OOCSnapshotDescriptor> finalized_descriptor_;
+    bool finalized_durable_ = false;
     std::optional<OOCValidatedResumePrefix> validated_resume_prefix_;
     OOCRecoveryOutcome recovery_outcome_ = OOCRecoveryOutcome::None;
     size_t active_prefix_readers_ = 0;

@@ -45,7 +45,13 @@ struct WorkerIncidenceShard final {
     result.row_lp_keys.reserve(row_count);
     for (size_t local_offset = 0; local_offset < row_count; ++local_offset) {
         const size_t ordinal = shard_begin + local_begin + local_offset;
-        auto keys = odd_large_prime_keys(corpus.at(corpus.source_id(ordinal)));
+        const SourceId source = corpus.source_id(ordinal);
+        std::vector<LargePrimeKey> keys;
+        if (const core::Relation* relation = corpus.try_borrow(source)) {
+            keys = odd_large_prime_keys(*relation);
+        } else {
+            keys = odd_large_prime_keys(corpus.at(source));
+        }
         const StructuredRowId row{static_cast<uint64_t>(ordinal)};
         for (const LargePrimeKey& key : keys)
             result.incidences.push_back(Incidence{key, row});

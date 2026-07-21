@@ -3,8 +3,8 @@
 #include "../core/relation.hpp"
 #include "../relation/ooc_relation_store.hpp"
 #include "../relation/relation_corpus.hpp"
+#include "../relation/relation_source.hpp"
 
-#include <concepts>
 #include <cstddef>
 #include <vector>
 
@@ -25,11 +25,7 @@ namespace gnfs::linalg {
 /// each thread fetches its own relation. OOCRelationReader satisfies this
 /// (read-only mmap + per-call local deserialize buffer) and so does
 /// VectorRelationSource (const vector access).
-template <typename Source>
-concept RelationSource = requires(const Source& s, std::size_t i) {
-    { s.count() } -> std::convertible_to<std::size_t>;
-    { s.read(i) } -> std::same_as<core::Relation>;
-};
+using gnfs::relation::RelationSource;
 
 /// Refined RelationSource concept for sources whose local row indices map to
 /// stable ordinals in a larger corpus. MatrixBuilder uses this optional

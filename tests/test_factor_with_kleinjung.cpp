@@ -252,7 +252,7 @@ GNFSFactorResult factor_with_context(
     auto reduction = RelationReductionEngine::reduce(RawRelationSnapshot(1, std::move(relations)),
                                                      reduction_config);
     const auto& reduction_stats = reduction.stats;
-    relations = std::move(reduction.relations);
+    relations = std::move(reduction).take_relations();
 
     if (verbose) {
         std::cout << "  After filtering: " << reduction_stats.filter.output_relations

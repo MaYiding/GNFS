@@ -585,6 +585,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RelationCorpus COMMAND test_relation_corpus)
     set_tests_properties(RelationCorpus PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_relation_sink
+        tests/test_relation_sink.cpp
+    )
+    target_link_libraries(test_relation_sink PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME RelationSink COMMAND test_relation_sink)
+    set_tests_properties(RelationSink PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_ooc_store_integrity
         tests/test_ooc_store_integrity.cpp
     )
@@ -1079,7 +1086,7 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RelationIdentity COMMAND test_relation_identity)
     set_tests_properties(RelationIdentity PROPERTIES LABELS "instant" TIMEOUT 10)
 
-    # Shared pure-memory legacy reduction engine and explicit strategy contract.
+    # Shared relation-reduction engine, storage boundaries, and strategy contract.
     add_executable(test_relation_reduction_engine
         tests/test_relation_reduction_engine.cpp
     )

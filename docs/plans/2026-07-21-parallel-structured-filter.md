@@ -632,7 +632,18 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
   an empty store ends at byte 24. Same-sized foreign data files fail closed
   before recovery mutation. Ordinary finalized readers retain V1/V2
   compatibility, while append recovery and ownership promotion reject them.
-- Complete the bounded `RelationSource`/`RelationSink` reducer.
+- [x] Add a neutral indexed `RelationSource` contract and a move-only,
+  transactional `RelationSink`. Structured active rows now materialize directly
+  into either an in-memory corpus or a paired V3 store inside an atomically
+  reserved private directory. Explicit `finalize()` is the only publication
+  boundary; append, observer, and materialization failures abort partial output.
+  Output digest and LP metrics finish before publication, and the result retains
+  the owning corpus through matrix and square-root consumers.
+- [ ] Remove the remaining structured input materialization. The shared engine
+  still converts a finalized OOC raw snapshot to a vector for stable `ABPair`
+  deduplication before constructing `SourceCorpus`. Direct OOC source reduction,
+  an intermediate deduplicated corpus, and bounded-memory evidence remain M4
+  exit gates. Incidence, logical rows, and history are also still corpus-scale.
 - Adaptive and public vector routes are covered. OOC/resume/distributed are
   explicitly rejected before callback/checkpoint/store/snapshot side effects in
   forced mode; full `Pipeline::run()` freezes one route snapshot across phase

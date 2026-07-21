@@ -196,7 +196,7 @@ int main() {
             reduction_config);
         const auto& reduction_stats = reduction.stats;
         reduced_lp_columns = reduction_stats.output_lp_columns;
-        relations = std::move(reduction.relations);
+        relations = std::move(reduction).take_relations();
 
         if (lp_enabled) {
             const auto& mstats = reduction_stats.standard_v0;

@@ -81,6 +81,8 @@ make_structured_filter_experimental_config(size_t input_rows, uint32_t worker_co
              std::min(bounded_rows, StructuredFilterExperimentalCaps::max_rows_per_incidence_shard),
          .worker_count = worker_count},
         TreeBasisPlanner::DeterministicMst,
+        {},
+        OOCCleanupPolicy::RemoveArtifacts,
     };
 }
 

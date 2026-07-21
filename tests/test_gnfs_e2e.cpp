@@ -371,7 +371,7 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     auto reduction = RelationReductionEngine::reduce(RawRelationSnapshot(1, std::move(relations)),
                                                      reduction_config);
     const auto& reduction_stats = reduction.stats;
-    relations = std::move(reduction.relations);
+    relations = std::move(reduction).take_relations();
 
     if (verbose) {
         const auto& fstats = reduction_stats.filter;

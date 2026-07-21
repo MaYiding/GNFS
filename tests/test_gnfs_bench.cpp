@@ -302,7 +302,7 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
             reduction_config);
         const auto& reduction_stats = reduction.stats;
         reduced_lp_columns = reduction_stats.output_lp_columns;
-        relations = std::move(reduction.relations);
+        relations = std::move(reduction).take_relations();
 
         std::cout << "    [filter] " << pre_filter << " -> "
                   << reduction_stats.filter.output_relations << " (" << std::setprecision(1)

@@ -46,10 +46,13 @@ dispatch，并已接入 adaptive sieve、distributed 前置决策和公开 `Pipe
 入口。当前生产调用方固定传入 `auto_eligible=false`；在获得独立尺寸实证前，
 不得复用 V0 BFS 或 OOC 的 `lp_bits` 阈值冒充结构化策略的 auto 证据。
 
-首版支持边界是「LP 已启用的纯 vector route」。OOC collector、resume corpus 和
-distributed worker stores 尚未接入 owning `RelationCorpus`/`RelationSink`，因此
-`GNFS_STRUCTURED_FILTER=1` 在这些路径上会在 materialize reduction snapshot 前
-显式失败；`auto` 使用具名 legacy 策略。若要在当前 50-digit vector 实验中强制
+首版生产支持边界仍是「LP 已启用的纯 vector route」。底层 shared engine 已有
+owning `RelationCorpus`、neutral `RelationSource` 和 transactional `RelationSink`，
+并能把结构化输出逐行写入内存或私有目录中的 finalized V3 pair。不过，OOC raw
+snapshot 的稳定 `ABPair` 去重仍会整库 materialize 到 vector；这不是 bounded-memory
+route。OOC collector、resume corpus 和 distributed worker stores 因此继续在生产
+入口被拒绝。`GNFS_STRUCTURED_FILTER=1` 会在 materialize reduction snapshot 前显式
+失败；`auto` 使用具名 legacy 策略。若要在当前 50-digit vector 实验中强制
 structured，必须同时显式设置 `GNFS_OOC_RELATIONS=0`。
 
 完整 `Pipeline::run()` 在任何 progress/log callback、试探算法、checkpoint
@@ -114,6 +117,10 @@ SGE 前恰好发出一次，并与最终 `MatrixResult.matrix` handoff 对齐。
   运行 V0/V3，错误也不 fallback。
 - `include/gnfs/relation/structured_filter_profile.hpp`：M4 forced-on profile 与
   production worker 选择。
+- `include/gnfs/relation/relation_source.hpp` / `relation_sink.hpp`：共享 indexed
+  source 契约与显式 finalize/abort output transaction。OOC sink pair 位于
+  `<base>.gnfs-sink-lease/corpus.{relidx,reldata}`；`RemoveArtifacts` 把 pair 与
+  私有目录的清理责任一并交给最终 corpus owner，`Preserve` 保留两者。
 - `src/api/pipeline.cpp`：adaptive/final probe 与公开 filter 的统一 overlay；
   `run()`、OOC/resume/distributed 在 callback、checkpoint 和 snapshot side effect 前
   判定 unsupported。
@@ -252,6 +259,9 @@ GNFS_OOC_RELATIONS=1 ./test_gnfs_e2e             # e2e stress test OOC path
   或 `RelationCorpus` ownership promotion。
 - `checkpoint_prefix()` 与 finalize 会同步 data/index；POSIX 还同步父目录。
   finalize metadata 已落盘但 final magic 未切换时，paired descriptor 仍可恢复。
+- final magic 已 flush 且文件句柄已关闭后，writer 状态固定为 `Finalized`。
+  后续目录同步或 observer hook 抛错不会把可读 pair 重新标成 `Failed`；若最终
+  durability barrier 尚未完成，重复 finalize 会重试同步。
 
 **集成点** (commits `3b843fc` → `d39b637`, 2026-05-18):
 - `include/gnfs/relation/collector.hpp` — CollectorConfig + add/get/clear/merge OOC dual mode

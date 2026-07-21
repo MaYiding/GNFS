@@ -2,10 +2,12 @@
 
 #include "../core/relation.hpp"
 #include "large_prime_key.hpp"
+#include "relation_corpus.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -15,6 +17,7 @@
 namespace gnfs::relation {
 
 class SequentialStructuredReducer;
+class RelationSink;
 struct StructuredIncidenceBuildOptions;
 struct StructuredIncidenceBuildStats;
 struct StructuredConflictFreeBatchPlan;
@@ -88,19 +91,21 @@ private:
     std::vector<SourceId> sources_;
 };
 
-/// Immutable, vector-backed source corpus for the M2 sequential reference.
+/// Immutable owning source corpus for structured reduction.
 ///
 /// Each corpus row is one provenance atom and receives exactly one SourceId.
 /// A row may already contain extra_ab_pairs; materialization expands its primary
 /// pair followed by those extras, but the extras do not receive new source IDs.
 /// Equal AB pairs from different source payloads remain separate contributions.
 ///
-/// This type is deliberately not an OOC abstraction. Source IDs are assigned
-/// from stable vector order. Raw callers de-duplicate before construction;
-/// SourceCorpus itself never de-duplicates because merged atoms may share a
-/// primary pair while carrying different provenance and payload.
+/// The underlying RelationCorpus may own either a vector or a finalized OOC
+/// store. Source IDs are assigned from its stable ordinal order. Raw callers
+/// de-duplicate before construction; SourceCorpus itself never de-duplicates
+/// because merged atoms may share a primary pair while carrying different
+/// provenance and payload.
 class SourceCorpus final {
 public:
+    explicit SourceCorpus(RelationCorpus corpus);
     SourceCorpus(uint64_t generation, std::vector<core::Relation> relations);
 
     SourceCorpus(const SourceCorpus&) = delete;
@@ -109,14 +114,17 @@ public:
     SourceCorpus& operator=(SourceCorpus&&) noexcept = default;
 
     [[nodiscard]] uint64_t generation() const noexcept;
-    [[nodiscard]] size_t size() const noexcept;
+    [[nodiscard]] size_t size() const;
     [[nodiscard]] SourceId source_id(size_t ordinal) const;
-    [[nodiscard]] const core::Relation& at(SourceId source) const;
+    /// Borrow an in-memory atom, or return nullptr for an OOC corpus.
+    /// The pointer is tied to this SourceCorpus lifetime.
+    [[nodiscard]] const core::Relation* try_borrow(SourceId source) const;
+    [[nodiscard]] core::Relation at(SourceId source) const;
     [[nodiscard]] core::Relation materialize(const SourceCombination& combination) const;
 
 private:
     uint64_t generation_ = 0;
-    std::vector<core::Relation> relations_;
+    RelationCorpus corpus_;
 };
 
 struct StructuredRowId final {
@@ -347,6 +355,9 @@ public:
     [[nodiscard]] uint64_t incidence_epoch() const noexcept;
     [[nodiscard]] size_t total_row_count() const noexcept;
     [[nodiscard]] size_t active_row_count() const noexcept;
+    /// Number of distinct odd large-prime columns referenced by active rows.
+    /// This scans existing bucket metadata without building a duplicate set.
+    [[nodiscard]] size_t active_lp_column_count() const noexcept;
     [[nodiscard]] bool is_active(StructuredRowId row) const;
     /// Borrowed views remain valid only until the next mutating reducer call.
     [[nodiscard]] const SourceCombination& sources(StructuredRowId row) const;
@@ -416,9 +427,17 @@ public:
 
     [[nodiscard]] core::Relation materialize(StructuredRowId row) const;
     /// Materialize active rows in the exact order returned by active_row_ids().
-    /// The vector-only M2 reference does not persist SourceCombination metadata;
-    /// OOC provenance and recovery remain a later promotion gate.
+    /// This compatibility API collects every result in memory; use
+    /// materialize_active_to() for bounded-memory output publication.
     [[nodiscard]] std::vector<core::Relation> materialize_active() const;
+    /// Materialize and append active rows one at a time in the same deterministic
+    /// order as materialize_active(), without constructing an active-row vector.
+    /// The optional observer runs before each append, allowing validation and
+    /// metrics to finish before the sink is finalized. Any materialization,
+    /// observer, or append failure aborts the sink transaction.
+    [[nodiscard]] size_t
+    materialize_active_to(RelationSink& sink,
+                          const std::function<void(const core::Relation&)>& observer = {}) const;
     [[nodiscard]] const StructuredReductionStats& stats() const noexcept;
     /// Resource evidence snapshot for immutable initial-incidence construction.
     [[nodiscard]] StructuredIncidenceBuildStats incidence_build_stats() const noexcept;

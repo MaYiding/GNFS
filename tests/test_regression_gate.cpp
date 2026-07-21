@@ -207,7 +207,7 @@ static bool factorize(const RegressionLevel& tc) {
             RawRelationSnapshot(next_reduction_generation++, collector.snapshot_relations()),
             reduction_config);
         reduced_lp_columns = reduction.stats.output_lp_columns;
-        relations = std::move(reduction.relations);
+        relations = std::move(reduction).take_relations();
 
         if (relations.size() > matrix_cols) break;
 

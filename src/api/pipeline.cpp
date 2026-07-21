@@ -1435,7 +1435,6 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         last_reduction.reset();
         last_reduction.emplace(reduce_relations(collector.snapshot_relations(), strategy));
         const auto& reduction_stats = last_reduction->stats;
-        const auto& relations = last_reduction->relations;
 
         // V3 cascade (GNFS_CASCADE_V3=1): engine runs it after V0 on a
         // partial-relation copy; preserve the existing progress diagnostics.
@@ -1457,14 +1456,14 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         size_t effective_cols = matrix_cols + lp_cols;
 
         // Check: enough usable relations?
-        if (relations.size() > effective_cols || recovered_finalized_ooc)
+        if (last_reduction->size() > effective_cols || recovered_finalized_ooc)
             break;
 
         // Not enough — increase target and continue if SQs available
         if (!sq_gen.has_next() || sq_count >= max_sq)
             break;
 
-        double merge_rate = (collector.size() > 0) ? static_cast<double>(relations.size()) /
+        double merge_rate = (collector.size() > 0) ? static_cast<double>(last_reduction->size()) /
                                                          static_cast<double>(collector.size())
                                                    : 0.01;
         size_t needed_raw = static_cast<size_t>(static_cast<double>(effective_cols * 11 / 10) /
@@ -1476,12 +1475,12 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         // β = lp_cols / usable (BACKLOG #1 diagnostic). β << 1 means matrix
         // build has excess and BW can find dependencies; β >= 1 means LP cols
         // dominate matrix and we're in the plateau regime.
-        double beta = (relations.size() > 0)
-                          ? static_cast<double>(lp_cols) / static_cast<double>(relations.size())
-                          : 0.0;
+        double beta = (last_reduction->size() > 0) ? static_cast<double>(lp_cols) /
+                                                         static_cast<double>(last_reduction->size())
+                                                   : 0.0;
         emit_log(LogLevel::Info, Phase::Sieving,
                  "round " + std::to_string(round + 1) +
-                     ": usable=" + std::to_string(relations.size()) + "/" +
+                     ": usable=" + std::to_string(last_reduction->size()) + "/" +
                      std::to_string(matrix_cols) + " lp_cols=" + std::to_string(lp_cols) +
                      " eff_cols=" + std::to_string(effective_cols) +
                      " merge_rate=" + std::to_string(merge_rate) + " beta=" + std::to_string(beta) +
@@ -1490,8 +1489,8 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         std::fprintf(stderr,
                      "[round %d] usable=%zu/%zu lp_cols=%zu eff_cols=%zu merge_rate=%.4f beta=%.4f "
                      "new_target=%zu\n",
-                     round + 1, relations.size(), matrix_cols, lp_cols, effective_cols, merge_rate,
-                     beta, batch_target);
+                     round + 1, last_reduction->size(), matrix_cols, lp_cols, effective_cols,
+                     merge_rate, beta, batch_target);
     }
 
     // A tiny or already-exhausted corpus may leave the adaptive loop without
@@ -1504,8 +1503,6 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                                                     : relation::ReductionStrategy::StandardV0);
         last_reduction.emplace(reduce_relations(collector.snapshot_relations(), strategy));
     }
-    const auto& relations = last_reduction->relations;
-
     // The adaptive loop is the last append boundary. Finalize OOC storage only
     // after every possible continuation has been decided.
     collector.finalize_ooc();
@@ -1531,7 +1528,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
 
     emit_log(LogLevel::Info, Phase::Sieving,
              "done: sq=" + std::to_string(sq_count) + " raw=" + std::to_string(collector.size()) +
-                 " usable=" + std::to_string(relations.size()) +
+                 " usable=" + std::to_string(last_reduction->size()) +
                  " (full=" + std::to_string(coll_stats.full_relations) +
                  " 1lp=" + std::to_string(coll_stats.partial_1lp) +
                  " 2lp=" + std::to_string(coll_stats.partial_2lp) + ")");
@@ -1556,12 +1553,12 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     // relations. Two cases: (a) MAX_ROUNDS reached without break (β plateau
     // signature), (b) SQs exhausted before target met (sieve depth too small).
     // Phase 5 will then attempt BW thin solve on the under-built matrix.
-    if (relations.size() <= matrix_cols) {
+    if (last_reduction->size() <= matrix_cols) {
         const bool sqs_exhausted = !sq_gen.has_next() || sq_count >= max_sq;
         std::fprintf(stderr,
                      "[sieve-warn] exit without excess: usable=%zu matrix_cols=%zu, "
                      "%s. Phase 5 will attempt BW thin solve.\n",
-                     relations.size(), matrix_cols,
+                     last_reduction->size(), matrix_cols,
                      sqs_exhausted ? "SQs exhausted" : "MAX_ROUNDS reached");
         emit_log(LogLevel::Warn, Phase::Sieving,
                  std::string("sieve exit without excess: ") +
@@ -1756,10 +1753,9 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
     std::vector<Relation> relations;
     std::optional<relation::RelationCorpus> structured_corpus;
     if (structured_route) {
-        structured_corpus.emplace(relation::RelationCorpus::from_in_memory(
-            reduction.generation, std::move(reduction.relations)));
+        structured_corpus.emplace(std::move(reduction).take_corpus());
     } else {
-        relations = std::move(reduction.relations);
+        relations = std::move(reduction).take_relations();
     }
 
     // Matrix builder config

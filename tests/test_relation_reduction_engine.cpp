@@ -1,14 +1,19 @@
 #include "gnfs/api/detail/solver_handoff.hpp"
 #include "gnfs/relation/reduction_engine.hpp"
 #include "gnfs/relation/structured_filter_profile.hpp"
+#include "gnfs/util/process.hpp"
+#include "gnfs/util/temp_path.hpp"
 
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <initializer_list>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
+#include <string>
+#include <system_error>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -45,6 +50,28 @@ static_assert(!std::is_same_v<RawRelationSnapshot, RelationReductionResult>);
 namespace {
 
 int failures = 0;
+
+struct OOCArtifacts final {
+    explicit OOCArtifacts(std::string artifact_base) : base(std::move(artifact_base)) {}
+
+    ~OOCArtifacts() {
+        std::error_code ignored;
+        std::filesystem::remove(base + ".relidx", ignored);
+        ignored.clear();
+        std::filesystem::remove(base + ".reldata", ignored);
+        ignored.clear();
+        std::filesystem::remove_all(base + ".gnfs-sink-lease", ignored);
+    }
+
+    std::string base;
+};
+
+[[nodiscard]] std::string unique_ooc_base(const char* label) {
+    static uint64_t sequence = 0;
+    return gnfs::util::temp_path("gnfs_reduction_" + std::string(label) + "_" +
+                                 std::to_string(gnfs::util::process_id()) + "_" +
+                                 std::to_string(sequence++));
+}
 
 #define CHECK(condition)                                                                           \
     do {                                                                                           \
@@ -133,6 +160,8 @@ RelationReductionConfig structured_config(uint32_t workers = 1, size_t batch_wid
         {.max_batch_candidates = batch_width, .worker_count = workers},
         {.max_rows_per_shard = 3, .worker_count = workers},
         gnfs::relation::TreeBasisPlanner::DeterministicMst,
+        {},
+        gnfs::relation::OOCCleanupPolicy::RemoveArtifacts,
     };
     config.structured = std::move(structured);
     return config;
@@ -166,6 +195,21 @@ bool equal_corpus(const std::vector<Relation>& lhs, const std::vector<Relation>&
         }
     }
     return true;
+}
+
+[[nodiscard]] gnfs::relation::RelationCorpus
+make_owned_ooc_corpus(uint64_t generation, const std::string& base,
+                      const std::vector<Relation>& relations) {
+    gnfs::relation::OOCSnapshotDescriptor descriptor;
+    {
+        gnfs::relation::OOCRelationWriter writer(base);
+        for (const auto& relation : relations) {
+            (void)writer.write(relation);
+        }
+        descriptor = writer.finalize();
+    }
+    return gnfs::relation::RelationCorpus::from_finalized_ooc(
+        generation, base, descriptor, gnfs::relation::OOCCleanupPolicy::RemoveArtifacts);
 }
 
 template <typename Fn> bool throws_invalid_argument(Fn&& fn) {
@@ -204,9 +248,10 @@ void check_common_stats(const RelationReductionResult& result) {
     CHECK(result.stats.pre_merge_lp_histogram.weight_4plus == 0);
     CHECK(result.stats.separated_full_relations == 0);
     CHECK(result.stats.separated_partial_relations == 6);
-    CHECK(result.stats.output_relations == result.relations.size());
-    CHECK(result.stats.output_lp_columns == gnfs::relation::count_unique_lp_keys(result.relations));
-    CHECK(result.stats.output_digest == corpus_digest(result.relations));
+    CHECK(result.stats.output_relations == result.size());
+    CHECK(result.stats.output_lp_columns ==
+          gnfs::relation::count_unique_lp_keys(result.materialize_relations()));
+    CHECK(result.stats.output_digest == corpus_digest(result.relation_corpus()));
 }
 
 void test_generation_and_no_large_primes() {
@@ -215,7 +260,7 @@ void test_generation_and_no_large_primes() {
                                                   RelationReductionConfig{});
 
     CHECK(result.generation == 47);
-    CHECK(result.relations.size() == 2);
+    CHECK(result.size() == 2);
     CHECK(result.stats.strategy == ReductionStrategy::NoLargePrimes);
     CHECK(result.stats.input_relations == 2);
     CHECK(result.stats.raw_duplicates_removed == 0);
@@ -224,7 +269,7 @@ void test_generation_and_no_large_primes() {
     CHECK(result.stats.output_relations == 2);
     CHECK(result.stats.output_lp_columns == 0);
     CHECK(result.stats.merged_relations == 0);
-    CHECK(result.stats.output_digest == corpus_digest(result.relations));
+    CHECK(result.stats.output_digest == corpus_digest(result.relation_corpus()));
 }
 
 void test_structured_policy_maps_to_named_legacy_strategy() {
@@ -292,6 +337,13 @@ void test_illegal_combinations_fail_closed() {
                                               RelationReductionConfig{});
     }));
 
+    RawRelationSnapshot mismatched_generation(8, {});
+    mismatched_generation.generation = 9;
+    CHECK(throws_invalid_argument([&] {
+        (void)RelationReductionEngine::reduce(std::move(mismatched_generation),
+                                              RelationReductionConfig{});
+    }));
+
     auto missing_structured_config = lp_config(ReductionStrategy::Structured);
     missing_structured_config.merge_rounds = 0;
     CHECK(throws_invalid_argument([&] {
@@ -330,8 +382,8 @@ void test_illegal_combinations_fail_closed() {
     CHECK(throws_structured_error(StructuredReductionErrorCode::InvalidInput, [&] {
         (void)RelationReductionEngine::reduce(std::move(preserved_snapshot), invalid_budget);
     }));
-    CHECK(preserved_snapshot.relations.size() == 1);
-    CHECK(preserved_snapshot.relations[0].a == 1);
+    CHECK(preserved_snapshot.size() == 1);
+    CHECK(preserved_snapshot.read(0).a == 1);
 }
 
 void test_exact_abpair_dedup_preserves_old_collision() {
@@ -348,9 +400,9 @@ void test_exact_abpair_dedup_preserves_old_collision() {
     CHECK(result.stats.input_relations == 2);
     CHECK(result.stats.raw_duplicates_removed == 0);
     CHECK(result.stats.raw_input_digest == raw_digest);
-    CHECK(result.relations.size() == 2);
-    CHECK(result.relations[0].ab() == first.ab());
-    CHECK(result.relations[1].ab() == second.ab());
+    CHECK(result.size() == 2);
+    CHECK(result.read(0).ab() == first.ab());
+    CHECK(result.read(1).ab() == second.ab());
 }
 
 void test_exact_abpair_dedup_keeps_first_occurrence() {
@@ -370,10 +422,10 @@ void test_exact_abpair_dedup_keeps_first_occurrence() {
     CHECK(result.stats.raw_duplicates_removed == 1);
     CHECK(result.stats.raw_input_digest == raw_digest);
     CHECK(result.stats.filter.input_relations == 2);
-    CHECK(result.relations.size() == 2);
-    CHECK(result.relations[0].ab() == first.ab());
-    CHECK(result.relations[0].rational_factors == first.rational_factors);
-    CHECK(result.relations[1].ab() == tail.ab());
+    CHECK(result.size() == 2);
+    CHECK(result.read(0).ab() == first.ab());
+    CHECK(result.read(0).rational_factors == first.rational_factors);
+    CHECK(result.read(1).ab() == tail.ab());
 }
 
 void test_merged_input_fails_before_dedup() {
@@ -451,11 +503,11 @@ void test_filter_only_preserves_filtered_partials() {
     CHECK(result.stats.clique_v0.input_relations == 0);
     CHECK(result.stats.output_relations == 2);
     CHECK(result.stats.output_lp_columns == 1);
-    CHECK(result.relations.size() == 2);
-    CHECK(!result.relations[0].is_full());
-    CHECK(!result.relations[1].is_full());
-    CHECK(result.relations[0].a == 1);
-    CHECK(result.relations[1].a == 2);
+    CHECK(result.size() == 2);
+    CHECK(!result.read(0).is_full());
+    CHECK(!result.read(1).is_full());
+    CHECK(result.read(0).a == 1);
+    CHECK(result.read(1).a == 2);
 }
 
 void test_fixed_digest_golden() {
@@ -495,7 +547,7 @@ void test_singleton_purge_precedes_merge() {
     CHECK(result.stats.standard_v0.full_produced == 1);
     CHECK(result.stats.merged_relations == 1);
     CHECK(result.stats.output_relations == 1);
-    CHECK(result.relations.size() == 1);
+    CHECK(result.size() == 1);
     CHECK(result.stats.output_lp_columns == 0);
 }
 
@@ -514,7 +566,7 @@ void test_standard_v0_and_explicit_off_unset_equivalence() {
     unsetenv("GNFS_V0_BFS");
     unsetenv("GNFS_CASCADE_V3");
 
-    CHECK(equal_corpus(unset_result.relations, off_result.relations));
+    CHECK(equal_corpus(unset_result.materialize_relations(), off_result.materialize_relations()));
     CHECK(unset_result.generation == 101);
     CHECK(unset_result.stats.strategy == ReductionStrategy::StandardV0);
     CHECK(unset_result.stats.standard_v0.output_relations == unset_result.stats.merged_relations);
@@ -539,7 +591,7 @@ void test_standard_v0_with_v3_exact_dedup() {
 
     std::unordered_set<RelationSourceCombination, RelationSourceCombinationHash>
         primary_a_combinations;
-    for (const auto& relation : result.relations) {
+    for (const auto& relation : result.materialize_relations()) {
         if (relation.a == 10 && relation.is_merged()) {
             primary_a_combinations.insert(gnfs::relation::relation_source_combination(relation));
         }
@@ -557,7 +609,7 @@ void test_clique_v0() {
     CHECK(result.stats.clique_v0.input_relations == 6);
     CHECK(result.stats.standard_v0.output_relations == 0);
     CHECK(result.stats.v3.input_relations == 0);
-    CHECK(result.stats.merged_relations == result.relations.size());
+    CHECK(result.stats.merged_relations == result.size());
     check_common_stats(result);
 }
 
@@ -591,10 +643,10 @@ void test_structured_strategy_runs_exactly_once() {
     CHECK(result.stats.pre_merge_lp_histogram.unique_keys == 0);
     CHECK(result.stats.output_relations == 2);
     CHECK(result.stats.output_lp_columns == 0);
-    CHECK(result.stats.output_digest == corpus_digest(result.relations));
-    CHECK(result.relations.size() == 2);
-    CHECK(result.relations[0].a == 3);
-    CHECK(result.relations[1].is_merged());
+    CHECK(result.stats.output_digest == corpus_digest(result.relation_corpus()));
+    CHECK(result.size() == 2);
+    CHECK(result.read(0).a == 3);
+    CHECK(result.read(1).is_merged());
 }
 
 void test_structured_no_candidates_is_success() {
@@ -607,7 +659,7 @@ void test_structured_no_candidates_is_success() {
     CHECK(result.stats.structured_run.stop_reason == StructuredReductionStopReason::NoCandidates);
     CHECK(result.stats.merged_relations == 0);
     CHECK(result.stats.output_relations == input.size());
-    CHECK(equal_corpus(result.relations, input));
+    CHECK(equal_corpus(result.materialize_relations(), input));
 }
 
 void test_structured_owns_singleton_policy() {
@@ -623,7 +675,7 @@ void test_structured_owns_singleton_policy() {
     CHECK(result.stats.structured_run.singleton_rows_removed == 1);
     CHECK(result.stats.singleton_rows_removed == 1);
     CHECK(result.stats.output_relations == 1);
-    CHECK(result.relations[0].a == 23);
+    CHECK(result.read(0).a == 23);
 }
 
 void test_structured_deduplicates_before_source_ids() {
@@ -638,7 +690,7 @@ void test_structured_deduplicates_before_source_ids() {
     CHECK(result.stats.raw_duplicates_removed == 1);
     CHECK(result.stats.structured.input_rows == 2);
     CHECK(result.stats.output_relations == 1);
-    CHECK(result.relations[0].rational_factors.front() == first.rational_factors.front());
+    CHECK(result.read(0).rational_factors.front() == first.rational_factors.front());
 }
 
 void test_structured_final_merge_count_excludes_consumed_intermediates() {
@@ -653,7 +705,7 @@ void test_structured_final_merge_count_excludes_consumed_intermediates() {
     CHECK(result.stats.structured_run.emitted_rows == 2);
     CHECK(result.stats.merged_relations == 1);
     CHECK(result.stats.output_relations == 1);
-    CHECK(result.relations[0].is_merged());
+    CHECK(result.read(0).is_merged());
 }
 
 void test_structured_thread_equivalence() {
@@ -663,12 +715,12 @@ void test_structured_thread_equivalence() {
             RawRelationSnapshot(705, make_shared_primary_corpus()), structured_config(workers, 3));
         CHECK(result.stats.structured.budgeted_runs == 1);
         CHECK(result.stats.structured_incidence.requested_worker_count == workers);
-        CHECK(result.stats.output_digest == corpus_digest(result.relations));
+        CHECK(result.stats.output_digest == corpus_digest(result.relation_corpus()));
         if (!baseline.has_value()) {
             baseline.emplace(std::move(result));
             continue;
         }
-        CHECK(equal_corpus(result.relations, baseline->relations));
+        CHECK(equal_corpus(result.materialize_relations(), baseline->materialize_relations()));
         CHECK(result.stats.output_digest == baseline->stats.output_digest);
         CHECK(result.stats.output_relations == baseline->stats.output_relations);
         CHECK(result.stats.output_lp_columns == baseline->stats.output_lp_columns);
@@ -697,11 +749,48 @@ void test_structured_experimental_profile_thread_equivalence() {
             baseline.emplace(std::move(result));
             continue;
         }
-        CHECK(equal_corpus(result.relations, baseline->relations));
+        CHECK(equal_corpus(result.materialize_relations(), baseline->materialize_relations()));
         CHECK(result.stats.output_digest == baseline->stats.output_digest);
         CHECK(result.stats.structured_run == baseline->stats.structured_run);
         CHECK(result.stats.merged_relations == baseline->stats.merged_relations);
     }
+}
+
+void test_structured_ooc_source_and_sink_match_memory() {
+    constexpr uint64_t generation = 709;
+    const auto input = make_shared_primary_corpus();
+    auto memory_result = RelationReductionEngine::reduce(RawRelationSnapshot(generation, input),
+                                                         structured_config(2, 3));
+    const auto expected = memory_result.materialize_relations();
+
+    OOCArtifacts input_artifacts(unique_ooc_base("source"));
+    OOCArtifacts output_artifacts(unique_ooc_base("sink"));
+    auto source = make_owned_ooc_corpus(generation, input_artifacts.base, input);
+    auto config = structured_config(2, 3);
+    config.structured->output_ooc_base_path = output_artifacts.base;
+
+    {
+        auto ooc_result =
+            RelationReductionEngine::reduce(RawRelationSnapshot(std::move(source)), config);
+        CHECK(ooc_result.storage_kind() == gnfs::relation::RelationStorageKind::FinalizedOOC);
+        CHECK(ooc_result.generation == generation);
+        CHECK(ooc_result.stats.output_digest == memory_result.stats.output_digest);
+        CHECK(ooc_result.stats.output_relations == memory_result.stats.output_relations);
+        CHECK(ooc_result.stats.output_lp_columns == memory_result.stats.output_lp_columns);
+        CHECK(ooc_result.stats.structured_run == memory_result.stats.structured_run);
+        CHECK(equal_corpus(ooc_result.materialize_relations(), expected));
+        const auto private_base =
+            std::filesystem::path(output_artifacts.base + ".gnfs-sink-lease") / "corpus";
+        CHECK(std::filesystem::exists(private_base.string() + ".relidx"));
+        CHECK(std::filesystem::exists(private_base.string() + ".reldata"));
+        CHECK(std::filesystem::is_directory(output_artifacts.base + ".gnfs-sink-lease"));
+    }
+
+    CHECK(!std::filesystem::exists(input_artifacts.base + ".relidx"));
+    CHECK(!std::filesystem::exists(input_artifacts.base + ".reldata"));
+    CHECK(!std::filesystem::exists(output_artifacts.base + ".relidx"));
+    CHECK(!std::filesystem::exists(output_artifacts.base + ".reldata"));
+    CHECK(!std::filesystem::exists(output_artifacts.base + ".gnfs-sink-lease"));
 }
 
 void test_structured_invariant_error_never_falls_back() {
@@ -713,6 +802,43 @@ void test_structured_invariant_error_never_falls_back() {
         (void)RelationReductionEngine::reduce(RawRelationSnapshot(706, std::move(input)),
                                               structured_config(2, 2));
     }));
+}
+
+void test_structured_sink_preflight_and_observer_failure() {
+    constexpr uint64_t generation = 710;
+    gnfs::relation::SequentialStructuredReducer reducer(generation, make_shared_primary_corpus());
+
+    {
+        auto sink = gnfs::relation::RelationSink::in_memory(generation + 1);
+        CHECK(throws_structured_error(StructuredReductionErrorCode::InvalidGeneration,
+                                      [&] { (void)reducer.materialize_active_to(sink); }));
+        CHECK(sink.state() == gnfs::relation::RelationSinkState::Open);
+        CHECK(sink.count() == 0);
+    }
+
+    {
+        auto sink = gnfs::relation::RelationSink::in_memory(generation);
+        (void)sink.append(make_full(91));
+        CHECK(throws_structured_error(StructuredReductionErrorCode::InvariantViolation,
+                                      [&] { (void)reducer.materialize_active_to(sink); }));
+        CHECK(sink.state() == gnfs::relation::RelationSinkState::Open);
+        CHECK(sink.count() == 1);
+    }
+
+    {
+        auto sink = gnfs::relation::RelationSink::in_memory(generation);
+        bool observer_failed = false;
+        try {
+            (void)reducer.materialize_active_to(sink, [](const Relation&) {
+                throw std::runtime_error("injected structured output observer failure");
+            });
+        } catch (const std::runtime_error&) {
+            observer_failed = true;
+        }
+        CHECK(observer_failed);
+        CHECK(sink.state() == gnfs::relation::RelationSinkState::Aborted);
+        CHECK(sink.count() == 0);
+    }
 }
 
 void test_solver_handoff_exactly_once() {
@@ -796,7 +922,9 @@ int main() {
     test_structured_final_merge_count_excludes_consumed_intermediates();
     test_structured_thread_equivalence();
     test_structured_experimental_profile_thread_equivalence();
+    test_structured_ooc_source_and_sink_match_memory();
     test_structured_invariant_error_never_falls_back();
+    test_structured_sink_preflight_and_observer_failure();
     test_solver_handoff_exactly_once();
 
     if (failures != 0) {

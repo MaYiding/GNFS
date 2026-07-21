@@ -2,7 +2,9 @@
 
 #include "clique_merger.hpp"
 #include "filter.hpp"
+#include "relation_corpus.hpp"
 #include "relation_identity.hpp"
+#include "relation_sink.hpp"
 #include "structured_filter_policy.hpp"
 #include "structured_incidence_builder.hpp"
 #include "structured_reduction.hpp"
@@ -13,6 +15,7 @@
 #include <iterator>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -52,20 +55,47 @@ select_reduction_strategy(const StructuredFilterPolicyDecision& decision,
 /// and the generation is carried into the distinct result type.
 struct RawRelationSnapshot final {
     uint64_t generation;
-    std::vector<core::Relation> relations;
+    RelationCorpus corpus;
 
     explicit RawRelationSnapshot(uint64_t snapshot_generation,
                                  std::vector<core::Relation> snapshot_relations)
-        : generation(snapshot_generation), relations(std::move(snapshot_relations)) {
+        : generation(snapshot_generation),
+          corpus(
+              RelationCorpus::from_in_memory(snapshot_generation, std::move(snapshot_relations))) {
         if (generation == 0) {
             throw std::invalid_argument("relation snapshot generation must be nonzero");
         }
     }
 
+    explicit RawRelationSnapshot(RelationCorpus snapshot_corpus)
+        : generation(snapshot_corpus.logical_generation()), corpus(std::move(snapshot_corpus)) {}
+
     RawRelationSnapshot(const RawRelationSnapshot&) = delete;
     RawRelationSnapshot& operator=(const RawRelationSnapshot&) = delete;
     RawRelationSnapshot(RawRelationSnapshot&&) noexcept = default;
     RawRelationSnapshot& operator=(RawRelationSnapshot&&) noexcept = default;
+
+    [[nodiscard]] size_t size() const {
+        return corpus.count();
+    }
+
+    [[nodiscard]] core::Relation read(size_t ordinal) const {
+        return corpus.read(ordinal);
+    }
+
+    [[nodiscard]] std::vector<core::Relation> take_relations() && {
+        if (corpus.storage_kind() == RelationStorageKind::InMemory) {
+            return std::move(corpus).take_in_memory();
+        }
+        auto relations = corpus.materialize_all();
+        RelationCorpus consumed = std::move(corpus);
+        (void)consumed;
+        return relations;
+    }
+
+    [[nodiscard]] RelationCorpus take_corpus() && {
+        return std::move(corpus);
+    }
 };
 
 struct RelationReductionConfig {
@@ -74,6 +104,10 @@ struct RelationReductionConfig {
         StructuredParallelReductionOptions parallel{};
         StructuredIncidenceBuildOptions incidence{};
         TreeBasisPlanner planner = TreeBasisPlanner::DeterministicMst;
+        /// Final structured payload backend. In-memory is the compatibility
+        /// default; OOC requires an explicit exclusive staging base path.
+        std::string output_ooc_base_path;
+        OOCCleanupPolicy output_ooc_cleanup = OOCCleanupPolicy::RemoveArtifacts;
     };
 
     FilterConfig filter{};
@@ -153,28 +187,29 @@ private:
 
 } // namespace detail
 
-/// Compute the fixed V1 corpus digest.
+/// Incremental fixed-V1 corpus digest.
 ///
-/// Encoding contract:
-///   - fixed domain bytes `GNFS-RDG` followed by version byte 1;
-///   - one-byte field tags from CorpusDigestTag;
-///   - every corpus/vector length and element index as little-endian uint64_t;
-///   - signed a values converted modulo 2^64, then encoded little-endian;
-///   - uint32_t factors as little-endian uint32_t;
-///   - PrimePower fields as little-endian p/r uint64_t followed by e uint8_t.
-[[nodiscard]] inline CorpusDigest
-corpus_digest(const std::vector<core::Relation>& relations) noexcept {
-    detail::CorpusDigestBuilder builder;
-    constexpr uint8_t domain[] = {'G', 'N', 'F', 'S', '-', 'R', 'D', 'G', 1};
-    for (uint8_t byte : domain) {
-        builder.append_byte(byte);
+/// The total row count is encoded before row payloads, so callers freeze it at
+/// construction and append exactly that many relations in ordinal order. This
+/// permits OOC and sink-backed paths to prove byte-identical output without a
+/// full vector materialization.
+class CorpusDigestAccumulator final {
+public:
+    explicit CorpusDigestAccumulator(size_t relation_count) : expected_relations_(relation_count) {
+        constexpr uint8_t domain[] = {'G', 'N', 'F', 'S', '-', 'R', 'D', 'G', 1};
+        for (uint8_t byte : domain) {
+            builder_.append_byte(byte);
+        }
+        builder_.append_tag(detail::CorpusDigestTag::CorpusBegin);
+        builder_.append_u64_le(static_cast<uint64_t>(relation_count));
     }
 
-    builder.append_tag(detail::CorpusDigestTag::CorpusBegin);
-    builder.append_u64_le(static_cast<uint64_t>(relations.size()));
-
-    for (size_t relation_index = 0; relation_index < relations.size(); ++relation_index) {
-        const auto& relation = relations[relation_index];
+    void append(const core::Relation& relation) {
+        if (appended_relations_ >= expected_relations_) {
+            throw std::logic_error("corpus digest received more relations than declared");
+        }
+        const size_t relation_index = appended_relations_;
+        auto& builder = builder_;
         builder.append_tag(detail::CorpusDigestTag::RelationBegin);
         builder.append_u64_le(static_cast<uint64_t>(relation_index));
 
@@ -223,10 +258,48 @@ corpus_digest(const std::vector<core::Relation>& relations) noexcept {
             builder.append_u64_le(b);
         }
         builder.append_tag(detail::CorpusDigestTag::RelationEnd);
+        ++appended_relations_;
     }
 
-    builder.append_tag(detail::CorpusDigestTag::CorpusEnd);
-    return builder.finish();
+    [[nodiscard]] CorpusDigest finish() {
+        if (appended_relations_ != expected_relations_) {
+            throw std::logic_error("corpus digest received fewer relations than declared");
+        }
+        if (!finished_) {
+            builder_.append_tag(detail::CorpusDigestTag::CorpusEnd);
+            finished_ = true;
+        }
+        return builder_.finish();
+    }
+
+private:
+    detail::CorpusDigestBuilder builder_;
+    size_t expected_relations_ = 0;
+    size_t appended_relations_ = 0;
+    bool finished_ = false;
+};
+
+/// Compute the fixed V1 corpus digest.
+///
+/// Encoding contract:
+///   - fixed domain bytes `GNFS-RDG` followed by version byte 1;
+///   - one-byte field tags from CorpusDigestTag;
+///   - every corpus/vector length and element index as little-endian uint64_t;
+///   - signed a values converted modulo 2^64, then encoded little-endian;
+///   - uint32_t factors as little-endian uint32_t;
+///   - PrimePower fields as little-endian p/r uint64_t followed by e uint8_t.
+[[nodiscard]] inline CorpusDigest corpus_digest(const std::vector<core::Relation>& relations) {
+    CorpusDigestAccumulator accumulator(relations.size());
+    for (const auto& relation : relations) {
+        accumulator.append(relation);
+    }
+    return accumulator.finish();
+}
+
+[[nodiscard]] inline CorpusDigest corpus_digest(const RelationCorpus& corpus) {
+    CorpusDigestAccumulator accumulator(corpus.count());
+    corpus.for_each([&](const core::Relation& relation, size_t) { accumulator.append(relation); });
+    return accumulator.finish();
 }
 
 /// Complete reduction statistics excluding wall-clock timing.
@@ -263,34 +336,71 @@ struct RelationReductionStats {
 /// A reduced corpus tied to the generation of its consumed raw snapshot.
 struct RelationReductionResult final {
     uint64_t generation;
-    std::vector<core::Relation> relations;
+    RelationCorpus corpus;
     RelationReductionStats stats;
 
     RelationReductionResult(uint64_t result_generation,
                             std::vector<core::Relation> result_relations,
                             RelationReductionStats result_stats)
-        : generation(result_generation), relations(std::move(result_relations)),
+        : generation(result_generation),
+          corpus(RelationCorpus::from_in_memory(result_generation, std::move(result_relations))),
           stats(std::move(result_stats)) {
         if (generation == 0) {
             throw std::invalid_argument("relation reduction generation must be nonzero");
         }
     }
 
+    RelationReductionResult(RelationCorpus result_corpus, RelationReductionStats result_stats)
+        : generation(result_corpus.logical_generation()), corpus(std::move(result_corpus)),
+          stats(std::move(result_stats)) {}
+
     RelationReductionResult(const RelationReductionResult&) = delete;
     RelationReductionResult& operator=(const RelationReductionResult&) = delete;
     RelationReductionResult(RelationReductionResult&&) noexcept = default;
     RelationReductionResult& operator=(RelationReductionResult&&) noexcept = default;
 
-    [[nodiscard]] size_t size() const noexcept {
-        return relations.size();
+    [[nodiscard]] size_t size() const {
+        return corpus.count();
     }
-    [[nodiscard]] bool empty() const noexcept {
-        return relations.empty();
+    [[nodiscard]] bool empty() const {
+        return corpus.empty();
+    }
+    [[nodiscard]] core::Relation read(size_t ordinal) const {
+        return corpus.read(ordinal);
+    }
+    [[nodiscard]] RelationStorageKind storage_kind() const {
+        return corpus.storage_kind();
+    }
+    [[nodiscard]] const RelationCorpus& relation_corpus() const noexcept {
+        return corpus;
+    }
+    [[nodiscard]] std::vector<core::Relation> materialize_relations() const {
+        return corpus.materialize_all();
+    }
+    [[nodiscard]] std::vector<core::Relation> take_relations() && {
+        if (corpus.storage_kind() == RelationStorageKind::InMemory) {
+            return std::move(corpus).take_in_memory();
+        }
+        auto relations = corpus.materialize_all();
+        RelationCorpus consumed = std::move(corpus);
+        (void)consumed;
+        return relations;
+    }
+    [[nodiscard]] RelationCorpus take_corpus() && {
+        return std::move(corpus);
     }
 };
 
-/// Pure in-memory implementation of the legacy relation reduction paths.
+/// Shared reduction engine. Legacy strategies remain vector-backed; structured
+/// execution has explicit corpus source/sink boundaries while its direct OOC
+/// source path is enabled in a later milestone.
 class RelationReductionEngine final {
+    struct CorpusMetrics final {
+        size_t merged_relations = 0;
+        size_t unique_lp_columns = 0;
+        CorpusDigest digest{};
+    };
+
 public:
     [[nodiscard]] static RelationReductionResult reduce(RawRelationSnapshot&& snapshot,
                                                         const RelationReductionConfig& config) {
@@ -298,19 +408,32 @@ public:
         if (snapshot.generation == 0) {
             throw std::invalid_argument("relation snapshot generation must be nonzero");
         }
+        if (snapshot.corpus.logical_generation() != snapshot.generation) {
+            throw std::invalid_argument(
+                "relation snapshot generation does not match its owning corpus");
+        }
+        const uint64_t generation = snapshot.generation;
+
+        std::optional<RelationSink> structured_sink;
+        if (config.strategy == ReductionStrategy::Structured &&
+            !config.structured->output_ooc_base_path.empty()) {
+            structured_sink.emplace(RelationSink::out_of_core(
+                generation, config.structured->output_ooc_base_path,
+                config.structured->output_ooc_cleanup));
+        }
 
         RelationReductionStats stats;
         stats.strategy = config.strategy;
-        stats.input_relations = snapshot.relations.size();
-        validate_raw_relations(snapshot.relations);
-        stats.raw_input_digest = corpus_digest(snapshot.relations);
+        stats.input_relations = snapshot.size();
+        validate_raw_relations(snapshot.corpus);
+        stats.raw_input_digest = corpus_digest(snapshot.corpus);
 
-        auto raw_relations =
-            deduplicate_raw_relations(std::move(snapshot.relations), stats.raw_duplicates_removed);
+        auto raw_relations = deduplicate_raw_relations(std::move(snapshot).take_relations(),
+                                                       stats.raw_duplicates_removed);
         stats.deduplicated_input_lp_histogram = count_lp_key_weights(raw_relations);
 
         if (config.strategy == ReductionStrategy::Structured) {
-            SequentialStructuredReducer reducer(snapshot.generation, std::move(raw_relations),
+            SequentialStructuredReducer reducer(generation, std::move(raw_relations),
                                                 config.structured->incidence);
             stats.structured_run = reducer.reduce_budgeted_parallel(
                 config.structured->budget, config.structured->parallel, config.structured->planner);
@@ -318,15 +441,38 @@ public:
             stats.structured_incidence = reducer.incidence_build_stats();
             stats.singleton_rows_removed = stats.structured_run.singleton_rows_removed;
 
-            auto relations = reducer.materialize_active();
-            stats.merged_relations = static_cast<size_t>(
-                std::count_if(relations.begin(), relations.end(),
-                              [](const core::Relation& relation) { return relation.is_merged(); }));
-            stats.output_relations = relations.size();
-            stats.output_lp_columns = count_unique_lp_keys(relations);
-            stats.output_digest = corpus_digest(relations);
-            return RelationReductionResult(snapshot.generation, std::move(relations),
-                                           std::move(stats));
+            if (!structured_sink) {
+                structured_sink.emplace(
+                    RelationSink::in_memory(generation, reducer.active_row_count()));
+            }
+
+            CorpusMetrics metrics;
+            metrics.unique_lp_columns = reducer.active_lp_column_count();
+            CorpusDigestAccumulator output_digest(reducer.active_row_count());
+            const size_t materialized_rows = reducer.materialize_active_to(
+                *structured_sink, [&](const core::Relation& relation) {
+                    output_digest.append(relation);
+                    if (relation.is_merged()) {
+                        ++metrics.merged_relations;
+                    }
+                });
+            if (materialized_rows != reducer.active_row_count()) {
+                throw StructuredReductionError(
+                    StructuredReductionErrorCode::InvariantViolation,
+                    "structured sink materialization did not cover every active row");
+            }
+            if (structured_sink->count() != materialized_rows) {
+                throw StructuredReductionError(
+                    StructuredReductionErrorCode::InvariantViolation,
+                    "structured sink count differs from materialized active rows");
+            }
+            metrics.digest = output_digest.finish();
+            RelationCorpus output = structured_sink->finalize();
+            stats.merged_relations = metrics.merged_relations;
+            stats.output_relations = output.count();
+            stats.output_lp_columns = metrics.unique_lp_columns;
+            stats.output_digest = metrics.digest;
+            return RelationReductionResult(std::move(output), std::move(stats));
         }
 
         RelationFilter filter(config.filter);
@@ -338,8 +484,7 @@ public:
             stats.output_relations = filtered.size();
             stats.output_lp_columns = count_unique_lp_keys(filtered);
             stats.output_digest = corpus_digest(filtered);
-            return RelationReductionResult(snapshot.generation, std::move(filtered),
-                                           std::move(stats));
+            return RelationReductionResult(generation, std::move(filtered), std::move(stats));
         }
 
         stats.pre_merge_lp_histogram = count_lp_key_weights(filtered);
@@ -347,8 +492,7 @@ public:
             stats.output_relations = filtered.size();
             stats.output_lp_columns = count_unique_lp_keys(filtered);
             stats.output_digest = corpus_digest(filtered);
-            return RelationReductionResult(snapshot.generation, std::move(filtered),
-                                           std::move(stats));
+            return RelationReductionResult(generation, std::move(filtered), std::move(stats));
         }
 
         auto separated = separate_relations(std::move(filtered));
@@ -405,17 +549,17 @@ public:
         stats.output_relations = relations.size();
         stats.output_lp_columns = count_unique_lp_keys(relations);
         stats.output_digest = corpus_digest(relations);
-        return RelationReductionResult(snapshot.generation, std::move(relations), std::move(stats));
+        return RelationReductionResult(generation, std::move(relations), std::move(stats));
     }
 
 private:
-    static void validate_raw_relations(const std::vector<core::Relation>& relations) {
-        for (const auto& relation : relations) {
+    static void validate_raw_relations(const RelationCorpus& corpus) {
+        corpus.for_each([](const core::Relation& relation, size_t) {
             if (relation.is_merged()) {
                 throw std::invalid_argument(
                     "relation reduction snapshot contains a merged relation");
             }
-        }
+        });
     }
 
     [[nodiscard]] static std::vector<core::Relation>
@@ -484,6 +628,13 @@ private:
         if (structured.planner != TreeBasisPlanner::ReferenceStar &&
             structured.planner != TreeBasisPlanner::DeterministicMst) {
             throw std::invalid_argument("unknown structured relation planner");
+        }
+        if (structured.output_ooc_base_path.find('\0') != std::string::npos) {
+            throw std::invalid_argument("structured OOC output base path contains NUL");
+        }
+        if (structured.output_ooc_cleanup != OOCCleanupPolicy::Preserve &&
+            structured.output_ooc_cleanup != OOCCleanupPolicy::RemoveArtifacts) {
+            throw std::invalid_argument("unknown structured OOC output cleanup policy");
         }
     }
 };

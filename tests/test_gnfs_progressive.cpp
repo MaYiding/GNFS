@@ -416,7 +416,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
         auto reduction = RelationReductionEngine::reduce(
             RawRelationSnapshot(generation, collector.snapshot_relations()), reduction_config);
         const auto& reduction_stats = reduction.stats;
-        relations = std::move(reduction.relations);
+        relations = std::move(reduction).take_relations();
         reduced_lp_columns = lp_enabled ? reduction_stats.output_lp_columns : 0;
 
         if (lp_enabled) {

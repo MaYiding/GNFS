@@ -1,4 +1,5 @@
 #include "gnfs/relation/structured_reduction.hpp"
+#include "gnfs/relation/relation_sink.hpp"
 #include "gnfs/relation/structured_batch.hpp"
 #include "gnfs/relation/structured_incidence_builder.hpp"
 #include "gnfs/util/ordered_parallel_map.hpp"
@@ -227,6 +228,14 @@ void validate_input_relation(const Relation& relation) {
     }
 }
 
+RelationCorpus make_in_memory_source_corpus(uint64_t generation, std::vector<Relation> relations) {
+    if (generation == 0) {
+        fail(StructuredReductionErrorCode::InvalidGeneration,
+             "source corpus generation must be nonzero");
+    }
+    return RelationCorpus::from_in_memory(generation, std::move(relations));
+}
+
 size_t checked_persisted_count(size_t current, size_t increment, size_t limit,
                                const char* message) {
     if (increment > limit || current > limit - increment) {
@@ -391,43 +400,46 @@ std::span<const SourceId> SourceCombination::sources() const noexcept {
     return sources_;
 }
 
-SourceCorpus::SourceCorpus(uint64_t generation, std::vector<Relation> relations)
-    : generation_(generation), relations_(std::move(relations)) {
-    if (generation_ == 0) {
-        fail(StructuredReductionErrorCode::InvalidGeneration,
-             "source corpus generation must be nonzero");
-    }
-
-    for (const auto& relation : relations_) {
-        validate_input_relation(relation);
-    }
+SourceCorpus::SourceCorpus(RelationCorpus corpus)
+    : generation_(corpus.logical_generation()), corpus_(std::move(corpus)) {
+    corpus_.for_each([](const Relation& relation, size_t) { validate_input_relation(relation); });
 }
+
+SourceCorpus::SourceCorpus(uint64_t generation, std::vector<Relation> relations)
+    : SourceCorpus(make_in_memory_source_corpus(generation, std::move(relations))) {}
 
 uint64_t SourceCorpus::generation() const noexcept {
     return generation_;
 }
 
-size_t SourceCorpus::size() const noexcept {
-    return relations_.size();
+size_t SourceCorpus::size() const {
+    return corpus_.count();
 }
 
 SourceId SourceCorpus::source_id(size_t ordinal) const {
-    if (ordinal >= relations_.size()) {
+    if (ordinal >= corpus_.count()) {
         fail(StructuredReductionErrorCode::InvalidInput, "source ordinal is out of range");
     }
     return SourceId{generation_, static_cast<uint64_t>(ordinal)};
 }
 
-const Relation& SourceCorpus::at(SourceId source) const {
+const Relation* SourceCorpus::try_borrow(SourceId source) const {
     if (source.generation != generation_) {
         fail(StructuredReductionErrorCode::InvalidSourceCombination,
              "source ID belongs to a different corpus generation");
     }
-    if (source.ordinal >= relations_.size()) {
+    if (source.ordinal >= corpus_.count()) {
         fail(StructuredReductionErrorCode::InvalidSourceCombination,
              "source ID ordinal is out of range");
     }
-    return relations_[static_cast<size_t>(source.ordinal)];
+    return corpus_.try_borrow_in_memory(static_cast<size_t>(source.ordinal));
+}
+
+Relation SourceCorpus::at(SourceId source) const {
+    if (const Relation* relation = try_borrow(source)) {
+        return *relation;
+    }
+    return corpus_.read(static_cast<size_t>(source.ordinal));
 }
 
 Relation SourceCorpus::materialize(const SourceCombination& combination) const {
@@ -437,12 +449,27 @@ Relation SourceCorpus::materialize(const SourceCombination& combination) const {
              "source combination belongs to a different corpus generation");
     }
 
+    // OOC atoms are deserialized exactly once for this materialization. All
+    // sizing, aggregation, and output passes below reuse these local values.
+    std::vector<Relation> owned_atoms;
+    std::vector<const Relation*> atoms;
+    owned_atoms.reserve(combination.size());
+    atoms.reserve(combination.size());
+    for (const SourceId source : combination.sources()) {
+        if (const Relation* borrowed = try_borrow(source)) {
+            atoms.push_back(borrowed);
+            continue;
+        }
+        owned_atoms.push_back(corpus_.read(static_cast<size_t>(source.ordinal)));
+        atoms.push_back(&owned_atoms.back());
+    }
+
     size_t rational_factor_count = 0;
     size_t algebraic_factor_count = 0;
     size_t persisted_pair_count = 0;
     size_t raw_lp_count = 0;
-    for (const auto source : combination.sources()) {
-        const auto& relation = at(source);
+    for (const Relation* relation_ptr : atoms) {
+        const Relation& relation = *relation_ptr;
         rational_factor_count =
             checked_persisted_count(rational_factor_count, relation.rational_factors.size(),
                                     Relation::MAX_SERIALIZED_FACTORS,
@@ -471,8 +498,8 @@ Relation SourceCorpus::materialize(const SourceCombination& combination) const {
 
     std::vector<LargePrimeTerm> terms;
     terms.reserve(raw_lp_count);
-    for (const auto source : combination.sources()) {
-        const auto& relation = at(source);
+    for (const Relation* relation_ptr : atoms) {
+        const Relation& relation = *relation_ptr;
         for (const auto& lp : relation.rational_large_prime) {
             terms.push_back(LargePrimeTerm{rational_large_prime_key(lp), lp.e});
         }
@@ -529,8 +556,8 @@ Relation SourceCorpus::materialize(const SourceCombination& combination) const {
     materialized.extra_ab_pairs.reserve(persisted_pair_count - 1);
 
     bool have_primary = false;
-    for (const auto source : combination.sources()) {
-        const auto& relation = at(source);
+    for (const Relation* relation_ptr : atoms) {
+        const Relation& relation = *relation_ptr;
         if (!have_primary) {
             materialized.a = relation.a;
             materialized.b = relation.b;
@@ -702,8 +729,11 @@ struct SequentialStructuredReducer::Impl final {
                 fail(StructuredReductionErrorCode::InvariantViolation,
                      "logical row belongs to a different generation");
             }
-            for (const auto source : row.sources.sources()) {
-                (void)corpus.at(source);
+            for (const SourceId source : row.sources.sources()) {
+                if (source.ordinal >= corpus.size()) {
+                    fail(StructuredReductionErrorCode::InvariantViolation,
+                         "logical row references an out-of-range source ordinal");
+                }
             }
             validate_canonical_lp_keys(row.lp_keys);
             if (row.bucket_ids.size() != row.lp_keys.size()) {
@@ -1808,6 +1838,12 @@ size_t SequentialStructuredReducer::total_row_count() const noexcept {
 
 size_t SequentialStructuredReducer::active_row_count() const noexcept {
     return impl_->active_rows;
+}
+
+size_t SequentialStructuredReducer::active_lp_column_count() const noexcept {
+    return static_cast<size_t>(std::count_if(
+        impl_->buckets.begin(), impl_->buckets.end(),
+        [](const auto& bucket) { return bucket.active_degree != 0; }));
 }
 
 bool SequentialStructuredReducer::is_active(StructuredRowId row) const {
@@ -3089,6 +3125,48 @@ std::vector<Relation> SequentialStructuredReducer::materialize_active() const {
         result.push_back(impl_->corpus.materialize(impl_->rows[i].sources));
     }
     return result;
+}
+
+size_t SequentialStructuredReducer::materialize_active_to(
+    RelationSink& sink, const std::function<void(const Relation&)>& observer) const {
+    if (sink.state() != RelationSinkState::Open) {
+        fail(StructuredReductionErrorCode::InvariantViolation,
+             "structured output sink is not open");
+    }
+    if (sink.logical_generation() != impl_->corpus.generation()) {
+        fail(StructuredReductionErrorCode::InvalidGeneration,
+             "structured output sink belongs to a different generation");
+    }
+    if (sink.count() != 0) {
+        fail(StructuredReductionErrorCode::InvariantViolation,
+             "structured output sink must be empty before materialization");
+    }
+
+    size_t appended = 0;
+    try {
+        for (const auto& row : impl_->rows) {
+            if (!row.active)
+                continue;
+            if (sink.count() != appended) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "relation sink count changed during materialization");
+            }
+            Relation relation = impl_->corpus.materialize(row.sources);
+            if (observer) {
+                observer(relation);
+            }
+            const size_t ordinal = sink.append(std::move(relation));
+            if (ordinal != appended) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "relation sink returned a noncontiguous output ordinal");
+            }
+            ++appended;
+        }
+    } catch (...) {
+        sink.abort();
+        throw;
+    }
+    return appended;
 }
 
 const StructuredReductionStats& SequentialStructuredReducer::stats() const noexcept {

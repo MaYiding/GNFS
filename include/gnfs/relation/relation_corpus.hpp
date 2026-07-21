@@ -139,14 +139,17 @@ inline void validate_finalized_ooc_cleanup_target(const std::string& base_path,
 /// same-sized data file from another store.
 class FinalizedOOCArtifactCleanup final {
 public:
-    FinalizedOOCArtifactCleanup(std::string base_path, OOCSnapshotDescriptor descriptor)
-        : base_path_(std::move(base_path)), descriptor_(descriptor) {}
+    FinalizedOOCArtifactCleanup(std::string base_path, OOCSnapshotDescriptor descriptor,
+                                std::string cleanup_directory = {})
+        : base_path_(std::move(base_path)), descriptor_(descriptor),
+          cleanup_directory_(std::move(cleanup_directory)) {}
 
     FinalizedOOCArtifactCleanup(const FinalizedOOCArtifactCleanup&) = delete;
     FinalizedOOCArtifactCleanup& operator=(const FinalizedOOCArtifactCleanup&) = delete;
 
     FinalizedOOCArtifactCleanup(FinalizedOOCArtifactCleanup&& other) noexcept
         : base_path_(std::move(other.base_path_)), descriptor_(other.descriptor_),
+          cleanup_directory_(std::move(other.cleanup_directory_)),
           armed_(std::exchange(other.armed_, false)) {}
 
     FinalizedOOCArtifactCleanup& operator=(FinalizedOOCArtifactCleanup&&) = delete;
@@ -185,6 +188,17 @@ private:
                 std::fprintf(stderr,
                              "[relation_corpus] finalized OOC index was removed but data cleanup "
                              "failed\n");
+                return;
+            }
+
+            if (!cleanup_directory_.empty()) {
+                ec.clear();
+                const bool directory_removed = std::filesystem::remove(cleanup_directory_, ec);
+                if (ec || !directory_removed) {
+                    std::fprintf(stderr,
+                                 "[relation_corpus] finalized OOC artifacts were removed but "
+                                 "their private directory cleanup failed\n");
+                }
             }
         } catch (const std::exception& error) {
             std::fprintf(stderr,
@@ -199,6 +213,7 @@ private:
 
     std::string base_path_;
     OOCSnapshotDescriptor descriptor_;
+    std::string cleanup_directory_;
     bool armed_ = false;
 };
 
@@ -225,10 +240,29 @@ public:
     [[nodiscard]] static RelationCorpus
     from_finalized_ooc(uint64_t logical_generation, std::string base_path,
                        const OOCSnapshotDescriptor& descriptor,
-                       OOCCleanupPolicy cleanup_policy = OOCCleanupPolicy::Preserve) {
+                       OOCCleanupPolicy cleanup_policy = OOCCleanupPolicy::Preserve,
+                       std::string cleanup_directory = {}) {
         relation_corpus_detail::validate_logical_generation(logical_generation);
         relation_corpus_detail::validate_ooc_base_path(base_path);
         relation_corpus_detail::validate_finalized_ooc_ownership_descriptor(descriptor);
+        if (!cleanup_directory.empty()) {
+            if (cleanup_policy != OOCCleanupPolicy::RemoveArtifacts) {
+                throw std::invalid_argument(
+                    "RelationCorpus: cleanup directory requires artifact ownership");
+            }
+            if (cleanup_directory.find('\0') != std::string::npos) {
+                throw std::invalid_argument(
+                    "RelationCorpus: cleanup directory must contain no NUL");
+            }
+            const auto expected_parent =
+                std::filesystem::path(base_path).parent_path().lexically_normal();
+            const auto requested_directory =
+                std::filesystem::path(cleanup_directory).lexically_normal();
+            if (expected_parent.empty() || requested_directory != expected_parent) {
+                throw std::invalid_argument(
+                    "RelationCorpus: cleanup directory must be the OOC store parent");
+            }
+        }
 
         // Expected-descriptor construction binds the corpus to one mapped V3
         // index/data pair and validates both headers, identity, count, exact
@@ -237,9 +271,10 @@ public:
         // untouched.
         OOCRelationReader reader(base_path, descriptor);
 
-        auto state = std::make_unique<State>(
-            logical_generation,
-            FinalizedOOCStorage{std::move(base_path), descriptor, std::move(reader)});
+        auto state = std::make_unique<State>(logical_generation,
+                                             FinalizedOOCStorage{std::move(base_path), descriptor,
+                                                                 std::move(reader),
+                                                                 std::move(cleanup_directory)});
         if (cleanup_policy == OOCCleanupPolicy::RemoveArtifacts) {
             std::get<FinalizedOOCStorage>(state->storage).arm_cleanup();
         }
@@ -280,6 +315,69 @@ public:
                           require_state().storage);
     }
 
+    /// Borrow an in-memory row without copying, or return nullptr for OOC.
+    /// The pointer remains valid only while this corpus is alive and unmoved.
+    /// OOC ordinals are still range-checked before nullptr is returned.
+    [[nodiscard]] const core::Relation* try_borrow_in_memory(size_t ordinal) const {
+        const State& state = require_state();
+        if (const auto* storage = std::get_if<InMemoryStorage>(&state.storage)) {
+            return &storage->relations.at(ordinal);
+        }
+        if (ordinal >= std::get<FinalizedOOCStorage>(state.storage).count()) {
+            throw std::out_of_range("RelationCorpus: source ordinal out of range");
+        }
+        return nullptr;
+    }
+
+    /// Visit every relation in stable ordinal order without copying the
+    /// in-memory backend. OOC rows are decoded one at a time and the borrowed
+    /// reference is valid only for the duration of the callback.
+    template <typename Visitor> void for_each(Visitor&& visitor) const {
+        const State& state = require_state();
+        if (const auto* storage = std::get_if<InMemoryStorage>(&state.storage)) {
+            for (size_t ordinal = 0; ordinal < storage->relations.size(); ++ordinal) {
+                visitor(storage->relations[ordinal], ordinal);
+            }
+            return;
+        }
+
+        const auto& storage = std::get<FinalizedOOCStorage>(state.storage);
+        for (size_t ordinal = 0; ordinal < storage.count(); ++ordinal) {
+            const core::Relation relation = storage.read(ordinal);
+            visitor(relation, ordinal);
+        }
+    }
+
+    /// Materialize the complete corpus in stable ordinal order.
+    ///
+    /// This is an explicit compatibility escape hatch for legacy algorithms
+    /// that still require a vector. Structured source/sink paths must prefer
+    /// count()/read() so an OOC corpus is never duplicated accidentally.
+    [[nodiscard]] std::vector<core::Relation> materialize_all() const {
+        std::vector<core::Relation> relations;
+        relations.reserve(count());
+        for_each([&](const core::Relation& relation, size_t) { relations.push_back(relation); });
+        return relations;
+    }
+
+    /// Consume an in-memory corpus without copying its relation payload.
+    ///
+    /// OOC callers must choose materialize_all() explicitly. On success this
+    /// corpus becomes moved-from, matching the ordinary move-only ownership
+    /// contract and preventing two live owners of the same mutable vector.
+    [[nodiscard]] std::vector<core::Relation> take_in_memory() && {
+        State& state = require_state();
+        auto* storage = std::get_if<InMemoryStorage>(&state.storage);
+        if (storage == nullptr) {
+            throw std::logic_error(
+                "RelationCorpus: cannot take OOC storage as an in-memory vector");
+        }
+
+        auto relations = std::move(storage->relations);
+        state_.reset();
+        return relations;
+    }
+
 private:
     using IdentityToken = relation_corpus_detail::RelationCorpusIdentityToken;
 
@@ -297,8 +395,9 @@ private:
 
     struct FinalizedOOCStorage final {
         FinalizedOOCStorage(std::string base_path, OOCSnapshotDescriptor descriptor,
-                            OOCRelationReader reader)
-            : cleanup(std::move(base_path), descriptor), reader(std::move(reader)) {}
+                            OOCRelationReader reader, std::string cleanup_directory)
+            : cleanup(std::move(base_path), descriptor, std::move(cleanup_directory)),
+              reader(std::move(reader)) {}
 
         FinalizedOOCStorage(const FinalizedOOCStorage&) = delete;
         FinalizedOOCStorage& operator=(const FinalizedOOCStorage&) = delete;
@@ -340,6 +439,13 @@ private:
     };
 
     explicit RelationCorpus(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+
+    [[nodiscard]] State& require_state() {
+        if (!state_) {
+            throw std::logic_error("RelationCorpus: use of moved-from corpus");
+        }
+        return *state_;
+    }
 
     [[nodiscard]] const State& require_state() const {
         if (!state_) {
