@@ -260,6 +260,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/structured_reduction.cpp")
     target_sources(gnfs_core PRIVATE src/relation/structured_reduction.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/structured_batch.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/structured_batch.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/linalg/matrix_builder.cpp")
     target_sources(gnfs_core PRIVATE src/linalg/matrix_builder.cpp)
 endif()
@@ -1059,6 +1063,14 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_structured_budgeted_driver PRIVATE gnfs_core Threads::Threads)
     add_test(NAME StructuredBudgetedDriver COMMAND test_structured_budgeted_driver)
     set_tests_properties(StructuredBudgetedDriver PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Immutable-snapshot candidate ordering and conflict-free batch selection.
+    add_executable(test_structured_conflict_batch
+        tests/test_structured_conflict_batch.cpp
+    )
+    target_link_libraries(test_structured_conflict_batch PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredConflictBatch COMMAND test_structured_conflict_batch)
+    set_tests_properties(StructuredConflictBatch PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # Structured source-XOR materialization and persistence contracts.
     add_executable(test_structured_materialization

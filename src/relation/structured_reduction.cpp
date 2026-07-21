@@ -1376,6 +1376,10 @@ const SourceCorpus& SequentialStructuredReducer::corpus() const noexcept {
     return impl_->corpus;
 }
 
+uint64_t SequentialStructuredReducer::incidence_epoch() const noexcept {
+    return impl_->incidence_epoch;
+}
+
 size_t SequentialStructuredReducer::total_row_count() const noexcept {
     return impl_->rows.size();
 }

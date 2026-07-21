@@ -5,8 +5,8 @@
 - Date: 2026-07-21
 - Branch: `codex/parallel-structured-filter`
 - State: M1 contracts and routing complete; M2a 2-way, M2b weight-[3,8]
-  tree-basis, and M2c budgeted sequential orchestration complete; full payload
-  and persistence validation remain before the M2 exit gate
+  tree-basis, M2c budgeted sequential orchestration, and M3a.1 immutable
+  conflict planning complete; the parallel prepare barrier is next
 - Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
 
 ## Outcome
@@ -296,9 +296,21 @@ Introduce parallelism in four bounded layers:
 1. Build per-worker incidence shards and merge them in sorted LP-key order.
 2. Score candidate columns in parallel against an immutable generation snapshot.
 3. Build a batch greedily in globally sorted candidate order. A batch contains only candidates whose input rows are disjoint.
-4. Materialize candidates in parallel, then commit them in original sorted order.
+4. Materialize candidates in parallel, then publish one batch in original sorted order.
 
 The first release does not update shared incidence maps concurrently. This keeps the commit sequence deterministic while parallelizing parity extraction, candidate cost calculation, and relation materialization.
+
+M3a preserves the sequential reference order: all 2-way candidates precede
+tree-basis candidates, and each kind retains its existing total order. The
+planner canonicalizes scorer output, removes equivalent same-member plans,
+then builds a greedy maximal member-disjoint set. This is not the future full
+`MatrixBuilder` score and is not a maximum-cardinality set-packing solver.
+
+Batch execution will transform every selected member set against one frozen
+snapshot, publish the batch atomically with one epoch advance, and peel
+singletons after the whole batch. `threads=1` defines the batch-scheduler
+reference. M3 does not claim byte-for-byte row equivalence with the M2 loop,
+which peels after every individual commit.
 
 `parallel_merge_partials()` cannot be the main scheduler because relations appear in multiple LP buckets. Buckets are not independent; explicit row-conflict detection is mandatory.
 
@@ -465,7 +477,19 @@ Exit gate: every hand-built and randomized case passes the exact dependency-spac
 
 ### M3: Deterministic Parallel Scheduler
 
-- Add parallel shard construction, snapshot scoring, conflict batching, materialization, and ordered commit.
+- M3a.1, complete: expose immutable snapshot identity; canonicalize shuffled
+  candidate vectors; verify same-member duplicate payloads; and select a
+  deterministic greedy maximal batch using active member-row conflicts only.
+  Exact fixtures freeze candidate order, duplicate representatives, width
+  accounting, stale epochs, and maximal-not-maximum behavior.
+- M3a.1 is planning-only and vector-backed. It constructs all 2-way and tree
+  plans before applying batch width. It does not prepare, execute, budget, or
+  commit a batch, and it does not claim bounded planning memory or parallel
+  speedup.
+- M3a.2, next: add a parallel prepare barrier with per-slot outcomes, drain all
+  futures before rethrow, and fold persistence results in candidate order.
+- Then add atomic batch commit, budget aggregation, parallel shard construction,
+  and the complete scheduler loop.
 - Compare `threads=1,2,4,hardware_concurrency`.
 - Run the narrow relation suite under ThreadSanitizer where supported.
 

@@ -299,6 +299,9 @@ public:
     SequentialStructuredReducer& operator=(SequentialStructuredReducer&&) noexcept;
 
     [[nodiscard]] const SourceCorpus& corpus() const noexcept;
+    /// Read-only identity of the current incidence snapshot. Any logical
+    /// incidence mutation advances this epoch and invalidates older plans.
+    [[nodiscard]] uint64_t incidence_epoch() const noexcept;
     [[nodiscard]] size_t total_row_count() const noexcept;
     [[nodiscard]] size_t active_row_count() const noexcept;
     [[nodiscard]] bool is_active(StructuredRowId row) const;
