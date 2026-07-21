@@ -1,5 +1,6 @@
 #include "gnfs/relation/reduction_engine.hpp"
 
+#include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
 #include <iostream>
@@ -10,6 +11,8 @@
 #include <vector>
 
 using gnfs::core::Relation;
+using gnfs::relation::corpus_digest;
+using gnfs::relation::CorpusDigest;
 using gnfs::relation::RawRelationSnapshot;
 using gnfs::relation::ReductionStrategy;
 using gnfs::relation::RelationReductionConfig;
@@ -68,6 +71,29 @@ std::vector<Relation> make_shared_primary_corpus() {
     };
 }
 
+std::vector<Relation> make_rich_digest_corpus() {
+    Relation first(-17, 19);
+    first.rational_factors = {2, 3};
+    first.algebraic_factors = {5, 7};
+    first.rational_large_prime = {
+        gnfs::core::PrimePower(101, 11, uint8_t{1}),
+        gnfs::core::PrimePower(103, 13, uint8_t{2}),
+    };
+    first.algebraic_large_prime = {
+        gnfs::core::PrimePower(107, 17, uint8_t{3}),
+        gnfs::core::PrimePower(109, 19, uint8_t{4}),
+    };
+    first.extra_ab_pairs = {{-23, 29}, {31, 37}};
+
+    Relation second(41, 43);
+    second.rational_factors = {11, 13};
+    second.algebraic_factors = {17, 19};
+    second.rational_large_prime = {gnfs::core::PrimePower(127, 23, uint8_t{5})};
+    second.algebraic_large_prime = {gnfs::core::PrimePower(131, 29, uint8_t{6})};
+    second.extra_ab_pairs = {{47, 53}};
+    return {std::move(first), std::move(second)};
+}
+
 RelationReductionConfig lp_config(ReductionStrategy strategy) {
     RelationReductionConfig config;
     config.large_primes_enabled = true;
@@ -109,6 +135,7 @@ template <typename Fn> bool throws_invalid_argument(Fn&& fn) {
 
 void check_common_stats(const RelationReductionResult& result) {
     CHECK(result.stats.input_relations == 6);
+    CHECK(result.stats.raw_duplicates_removed == 0);
     CHECK(result.stats.filter.input_relations == 6);
     CHECK(result.stats.filter.output_relations == 6);
     CHECK(result.stats.filter.singletons_removed == 0);
@@ -121,6 +148,7 @@ void check_common_stats(const RelationReductionResult& result) {
     CHECK(result.stats.separated_partial_relations == 6);
     CHECK(result.stats.output_relations == result.relations.size());
     CHECK(result.stats.output_lp_columns == gnfs::relation::count_unique_lp_keys(result.relations));
+    CHECK(result.stats.output_digest == corpus_digest(result.relations));
 }
 
 void test_generation_and_no_large_primes() {
@@ -132,11 +160,13 @@ void test_generation_and_no_large_primes() {
     CHECK(result.relations.size() == 2);
     CHECK(result.stats.strategy == ReductionStrategy::NoLargePrimes);
     CHECK(result.stats.input_relations == 2);
+    CHECK(result.stats.raw_duplicates_removed == 0);
     CHECK(result.stats.filter.input_relations == 2);
     CHECK(result.stats.filter.output_relations == 2);
     CHECK(result.stats.output_relations == 2);
     CHECK(result.stats.output_lp_columns == 0);
     CHECK(result.stats.merged_relations == 0);
+    CHECK(result.stats.output_digest == corpus_digest(result.relations));
 }
 
 void test_illegal_combinations_fail_closed() {
@@ -149,6 +179,12 @@ void test_illegal_combinations_fail_closed() {
     no_lp_with_standard.large_primes_enabled = false;
     CHECK(throws_invalid_argument([&] {
         (void)RelationReductionEngine::reduce(RawRelationSnapshot(1, {}), no_lp_with_standard);
+    }));
+
+    auto no_lp_with_filter_only = lp_config(ReductionStrategy::FilterOnly);
+    no_lp_with_filter_only.large_primes_enabled = false;
+    CHECK(throws_invalid_argument([&] {
+        (void)RelationReductionEngine::reduce(RawRelationSnapshot(1, {}), no_lp_with_filter_only);
     }));
 
     RelationReductionConfig lp_with_no_strategy;
@@ -173,6 +209,145 @@ void test_illegal_combinations_fail_closed() {
         (void)RelationReductionEngine::reduce(std::move(mutated_generation),
                                               RelationReductionConfig{});
     }));
+}
+
+void test_exact_abpair_dedup_preserves_old_collision() {
+    Relation first(0, 1);
+    first.rational_factors = {101};
+    Relation second(static_cast<int64_t>(UINT64_C(3) << 32U), 2);
+    second.rational_factors = {103};
+
+    std::vector<Relation> input{first, second};
+    const CorpusDigest raw_digest = corpus_digest(input);
+    auto result = RelationReductionEngine::reduce(RawRelationSnapshot(501, std::move(input)),
+                                                  RelationReductionConfig{});
+
+    CHECK(result.stats.input_relations == 2);
+    CHECK(result.stats.raw_duplicates_removed == 0);
+    CHECK(result.stats.raw_input_digest == raw_digest);
+    CHECK(result.relations.size() == 2);
+    CHECK(result.relations[0].ab() == first.ab());
+    CHECK(result.relations[1].ab() == second.ab());
+}
+
+void test_exact_abpair_dedup_keeps_first_occurrence() {
+    Relation first(17, 19);
+    first.rational_factors = {101};
+    Relation duplicate(17, 19);
+    duplicate.rational_factors = {103};
+    Relation tail(23, 29);
+    tail.rational_factors = {107};
+
+    std::vector<Relation> input{first, duplicate, tail};
+    const CorpusDigest raw_digest = corpus_digest(input);
+    auto result = RelationReductionEngine::reduce(RawRelationSnapshot(502, std::move(input)),
+                                                  RelationReductionConfig{});
+
+    CHECK(result.stats.input_relations == 3);
+    CHECK(result.stats.raw_duplicates_removed == 1);
+    CHECK(result.stats.raw_input_digest == raw_digest);
+    CHECK(result.stats.filter.input_relations == 2);
+    CHECK(result.relations.size() == 2);
+    CHECK(result.relations[0].ab() == first.ab());
+    CHECK(result.relations[0].rational_factors == first.rational_factors);
+    CHECK(result.relations[1].ab() == tail.ab());
+}
+
+void test_merged_input_fails_before_dedup() {
+    Relation raw(31, 37);
+    Relation merged_duplicate(31, 37);
+    merged_duplicate.extra_ab_pairs.emplace_back(41, 43);
+
+    std::vector<Relation> input{raw, merged_duplicate};
+    CHECK(throws_invalid_argument([&] {
+        (void)RelationReductionEngine::reduce(RawRelationSnapshot(503, std::move(input)),
+                                              RelationReductionConfig{});
+    }));
+}
+
+void test_digest_covers_every_field_and_order() {
+    const auto baseline = make_rich_digest_corpus();
+    const CorpusDigest expected = corpus_digest(baseline);
+
+    auto expect_change = [&](auto mutate) {
+        auto changed = baseline;
+        mutate(changed);
+        CHECK(!(corpus_digest(changed) == expected));
+    };
+
+    expect_change([](auto& corpus) { ++corpus[0].a; });
+    expect_change([](auto& corpus) { ++corpus[0].b; });
+    expect_change([](auto& corpus) { ++corpus[0].rational_factors[0]; });
+    expect_change([](auto& corpus) {
+        std::swap(corpus[0].rational_factors[0], corpus[0].rational_factors[1]);
+    });
+    expect_change([](auto& corpus) { ++corpus[0].algebraic_factors[0]; });
+    expect_change([](auto& corpus) {
+        std::swap(corpus[0].algebraic_factors[0], corpus[0].algebraic_factors[1]);
+    });
+    expect_change([](auto& corpus) { ++corpus[0].rational_large_prime[0].p; });
+    expect_change([](auto& corpus) { ++corpus[0].rational_large_prime[0].r; });
+    expect_change([](auto& corpus) { ++corpus[0].rational_large_prime[0].e; });
+    expect_change([](auto& corpus) {
+        std::swap(corpus[0].rational_large_prime[0], corpus[0].rational_large_prime[1]);
+    });
+    expect_change([](auto& corpus) { ++corpus[0].algebraic_large_prime[0].p; });
+    expect_change([](auto& corpus) { ++corpus[0].algebraic_large_prime[0].r; });
+    expect_change([](auto& corpus) { ++corpus[0].algebraic_large_prime[0].e; });
+    expect_change([](auto& corpus) {
+        std::swap(corpus[0].algebraic_large_prime[0], corpus[0].algebraic_large_prime[1]);
+    });
+    expect_change([](auto& corpus) { ++corpus[0].extra_ab_pairs[0].first; });
+    expect_change([](auto& corpus) { ++corpus[0].extra_ab_pairs[0].second; });
+    expect_change(
+        [](auto& corpus) { std::swap(corpus[0].extra_ab_pairs[0], corpus[0].extra_ab_pairs[1]); });
+    expect_change([](auto& corpus) { corpus[0].rational_factors.push_back(23); });
+    expect_change([](auto& corpus) { std::swap(corpus[0], corpus[1]); });
+}
+
+void test_filter_only_preserves_filtered_partials() {
+    std::vector<Relation> input{
+        make_partial(1, {101}),
+        make_partial(2, {101}),
+        make_partial(3, {103}),
+    };
+    auto config = lp_config(ReductionStrategy::FilterOnly);
+    config.merge_rounds = 0;
+    auto result =
+        RelationReductionEngine::reduce(RawRelationSnapshot(504, std::move(input)), config);
+
+    CHECK(result.stats.strategy == ReductionStrategy::FilterOnly);
+    CHECK(result.stats.filter.input_relations == 3);
+    CHECK(result.stats.filter.singletons_removed == 1);
+    CHECK(result.stats.pre_merge_lp_histogram.unique_keys == 1);
+    CHECK(result.stats.pre_merge_lp_histogram.weight_2 == 1);
+    CHECK(result.stats.separated_full_relations == 0);
+    CHECK(result.stats.separated_partial_relations == 0);
+    CHECK(result.stats.merged_relations == 0);
+    CHECK(result.stats.standard_v0.output_relations == 0);
+    CHECK(result.stats.clique_v0.input_relations == 0);
+    CHECK(result.stats.output_relations == 2);
+    CHECK(result.stats.output_lp_columns == 1);
+    CHECK(result.relations.size() == 2);
+    CHECK(!result.relations[0].is_full());
+    CHECK(!result.relations[1].is_full());
+    CHECK(result.relations[0].a == 1);
+    CHECK(result.relations[1].a == 2);
+}
+
+void test_fixed_digest_golden() {
+    std::vector<Relation> input{
+        make_partial(1, {101}),
+        make_partial(2, {101}),
+        make_full(3),
+    };
+    auto result = RelationReductionEngine::reduce(RawRelationSnapshot(505, std::move(input)),
+                                                  lp_config(ReductionStrategy::StandardV0));
+
+    constexpr CorpusDigest expected_raw{0xc164e37a1f9065fdULL, 0x50d03aafd1a8c057ULL};
+    constexpr CorpusDigest expected_output{0x1b01daeb3e04f2dbULL, 0x704af9c872e1e7e7ULL};
+    CHECK(result.stats.raw_input_digest == expected_raw);
+    CHECK(result.stats.output_digest == expected_output);
 }
 
 void test_singleton_purge_precedes_merge() {
@@ -274,6 +449,12 @@ int main() {
 
     test_generation_and_no_large_primes();
     test_illegal_combinations_fail_closed();
+    test_exact_abpair_dedup_preserves_old_collision();
+    test_exact_abpair_dedup_keeps_first_occurrence();
+    test_merged_input_fails_before_dedup();
+    test_digest_covers_every_field_and_order();
+    test_filter_only_preserves_filtered_partials();
+    test_fixed_digest_golden();
     test_singleton_purge_precedes_merge();
     test_standard_v0_and_explicit_off_unset_equivalence();
     test_standard_v0_with_v3_exact_dedup();
