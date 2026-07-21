@@ -1,5 +1,3 @@
-<!-- /autoplan restore point: /Users/mayiding/.gstack/projects/MaYiding-GNFS/codex-parallel-structured-filter-autoplan-restore-20260721-154130.md -->
-
 # Deterministic Parallel Structured Relation Reduction
 
 ## Status
@@ -1148,7 +1146,7 @@ SCALE AND RELEASE
     +-- [EXISTING GATE] 17/27/40/81-bit OFF-mode factorization
 ```
 
-All new paths currently require tests because implementation has not begun. The gaps are accepted into M1-M5, not deferred. The QA artifact is `/Users/mayiding/.gstack/projects/MaYiding-GNFS/mayiding-codex-parallel-structured-filter-eng-review-test-plan-20260721-161955.md`.
+All new paths currently require tests because implementation has not begun. The gaps are accepted into M1-M5, not deferred. An external gstack QA artifact records the branch-specific test plan.
 
 ### Performance Review
 
@@ -1236,7 +1234,7 @@ CEO review                 CLEAN — selective expansion, 0 unresolved decisions
 Design review              SKIPPED — no UI scope
 Engineering review         CLEAN — 10 consolidated findings folded into plan
 Independent outside voice  DONE_WITH_CONCERNS -> all concerns resolved in plan
-Test plan artifact         mayiding-codex-parallel-structured-filter-eng-review-test-plan-20260721-161955.md
+Test plan artifact         recorded in the external gstack project directory
 Deferred-work artifact     TODOS.md
 Critical gaps              0 after required M1-M5 coverage and handling
 Implementation gate        M0 contract/baseline freeze, then M1a-M1d
