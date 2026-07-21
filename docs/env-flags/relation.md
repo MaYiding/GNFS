@@ -38,6 +38,57 @@ V3 cascade 默认 OFF (V0 path 零开销). 启用时:
 
 ---
 
+## Structured relation filter policy (GNFS_STRUCTURED_FILTER)
+
+`GNFS_STRUCTURED_FILTER` 是结构化关系消元的 opt-in 策略开关。M4a 提供
+严格解析、预消费策略决策和共享 `RelationReductionEngine` 的单次 structured
+dispatch；生产 pipeline 尚未读取该 ENV。当前生产调用方必须传入
+`auto_eligible=false`；在获得独立尺寸实证并完成后续 M4 集成前，
+不得复用 V0 BFS 或 OOC 的 `lp_bits` 阈值冒充结构化策略的 auto 证据。
+
+| ENV 值 | 受支持 | `auto_eligible` | 决策 |
+|---|---:|---:|---|
+| unset / `0` | 任意 | 任意 | 使用调用方具名 legacy 策略 |
+| `1` | 是 | 任意 | 强制选择 structured |
+| `1` | 否 | 任意 | 消费 raw snapshot 前抛出 `std::invalid_argument` |
+| `auto` | 是 | 是 | 选择 structured |
+| `auto` | 否 | 任意 | 使用调用方具名 legacy 策略并记录 unsupported 原因 |
+| `auto` | 是 | 否 | 使用调用方具名 legacy 策略并记录 ineligible 原因 |
+| 其他值 | 任意 | 任意 | 消费 raw snapshot 前抛出 `std::invalid_argument` |
+
+解析严格且区分 unset 与显式空串。仅 `nullptr`、`0`、`1`、`auto` 合法；
+空串、大小写变体、`on` / `off`、`true` / `false`、前后空白和其它数字均为
+配置错误。策略 helper 接收调用方传入的 ENV 原始值，不调用 `getenv`，也不使用
+`std::once_flag` 或其它进程级静态缓存。生产集成应在移动 raw snapshot 前解析
+一次，再把不可变决策传给 reducer；测试无需 reset cache。
+
+**Fallback contract**：fallback 只允许发生在 structured 启动前。`auto` 对不受
+支持或未 eligible 的输入返回 legacy 选择与稳定原因；具体 V0/V3 策略仍由调用方
+命名。`GNFS_STRUCTURED_FILTER=1` 不允许静默 fallback。structured 一旦启动，
+内部 invariant 错误必须向上传播；`NoCandidates` 是成功的未变 structured 结果，
+不是 fallback。
+
+**Bit-for-bit contract**：unset / `0` 仅返回 legacy 选择，不消费或修改 corpus，
+因此后续 legacy 输出必须与引入该策略层前逐位一致。structured 与 legacy 之间
+只要求依赖空间等价，不承诺关系行逐位相同。
+
+**集成点**：
+
+- `include/gnfs/relation/structured_filter_policy.hpp`：严格 parser 与独立
+  `selection` / `reason` 决策，不依赖 `ReductionStrategy`。
+- `include/gnfs/relation/reduction_engine.hpp`：在 raw 校验和完整 `ABPair`
+  去重后、legacy singleton filter 前选择一次 structured reducer；结构化执行不再
+  运行 V0/V3，错误也不 fallback。
+- `tests/test_structured_filter_policy.cpp`：合法与非法 token、OFF、forced ON、
+  unsupported 和显式 auto eligibility 的表驱动边界。
+- `tests/test_relation_reduction_engine.cpp`：structured config 预检、NoCandidates、
+  singleton 所有权、去重顺序、1/2/4 线程等价和 invariant fail-closed。
+- `CMakeLists.txt` / `scripts/test.sh`：注册 relation 模块的 instant 测试。
+- 生产 pipeline 的 ENV 读取与 concrete legacy strategy overlay 属于后续 M4
+  切片，当前 CLI 运行尚未启用该开关。
+
+---
+
 ## lp_bits 实验 (GNFS_OVERRIDE_LP_BITS)
 
 **ENV `GNFS_OVERRIDE_LP_BITS=N`** (commit `dce0a5e`, `e271c5a`): runtime override `params.hpp` digit-based lp_bits default. 范围 1-30. 不在范围则忽略 (default).

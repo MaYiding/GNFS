@@ -247,6 +247,13 @@ struct StructuredReductionBudget final {
     size_t max_persisted_lp_entries_per_side = core::Relation::MAX_SERIALIZED_LARGE_PRIMES;
 };
 
+/// Validate every format-bound field of a structured reduction budget.
+///
+/// Callers that own a move-only source snapshot use this preflight before
+/// transferring the corpus into a reducer. The reducer repeats the same check
+/// defensively at execution time.
+void validate_structured_reduction_budget(const StructuredReductionBudget& budget);
+
 enum class StructuredReductionStopReason {
     NotStarted,
     NoCandidates,

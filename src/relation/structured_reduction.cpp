@@ -605,6 +605,10 @@ StructuredReductionBudget::StructuredReductionBudget(
           accepted_materialized_payload_entries_per_commit),
       max_commits(emitted_rows) {}
 
+void validate_structured_reduction_budget(const StructuredReductionBudget& budget) {
+    validate_budget(budget);
+}
+
 struct SequentialStructuredReducer::Impl final {
     struct Row final {
         SourceCombination sources;

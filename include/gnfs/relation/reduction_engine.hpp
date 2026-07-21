@@ -3,10 +3,15 @@
 #include "clique_merger.hpp"
 #include "filter.hpp"
 #include "relation_identity.hpp"
+#include "structured_filter_policy.hpp"
+#include "structured_incidence_builder.hpp"
+#include "structured_reduction.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -20,7 +25,26 @@ enum class ReductionStrategy {
     StandardV0,
     StandardV0WithV3,
     CliqueV0,
+    Structured,
 };
+
+/// Overlay a pre-snapshot structured-filter decision on the caller's named
+/// legacy strategy. Keeping this mapping pure lets every production and test
+/// route preserve its existing OFF behavior without copying switch logic.
+[[nodiscard]] inline ReductionStrategy
+select_reduction_strategy(const StructuredFilterPolicyDecision& decision,
+                          ReductionStrategy legacy_strategy) {
+    if (legacy_strategy == ReductionStrategy::Structured) {
+        throw std::invalid_argument("structured strategy cannot be its own legacy fallback");
+    }
+    switch (decision.selection) {
+    case StructuredFilterSelection::Legacy:
+        return legacy_strategy;
+    case StructuredFilterSelection::Structured:
+        return ReductionStrategy::Structured;
+    }
+    throw std::invalid_argument("unknown structured-filter strategy selection");
+}
 
 /// Generation identity plus the raw corpus owned by one reduction.
 ///
@@ -45,10 +69,20 @@ struct RawRelationSnapshot final {
 };
 
 struct RelationReductionConfig {
+    struct StructuredExecutionConfig final {
+        StructuredReductionBudget budget;
+        StructuredParallelReductionOptions parallel{};
+        StructuredIncidenceBuildOptions incidence{};
+        TreeBasisPlanner planner = TreeBasisPlanner::DeterministicMst;
+    };
+
     FilterConfig filter{};
     bool large_primes_enabled = false;
     size_t merge_rounds = 10;
     ReductionStrategy strategy = ReductionStrategy::NoLargePrimes;
+    /// Required only for Structured. Legacy strategies reject a populated
+    /// value so research limits can never be accepted and then ignored.
+    std::optional<StructuredExecutionConfig> structured;
 };
 
 /// Cross-platform, order-sensitive digest of a relation corpus.
@@ -203,6 +237,13 @@ struct RelationReductionStats {
     CorpusDigest raw_input_digest{};
     CorpusDigest output_digest{};
     FilterStats filter{};
+    /// Strategy-neutral singleton count. Legacy paths mirror
+    /// `filter.singletons_removed`; structured paths report reducer peeling.
+    size_t singleton_rows_removed = 0;
+    /// LP weights after exact raw ABPair de-duplication and before any
+    /// strategy-specific singleton policy.
+    LpKeyWeightHistogram deduplicated_input_lp_histogram{};
+    /// Legacy-only LP weights after RelationFilter and before V0/V3 merging.
     LpKeyWeightHistogram pre_merge_lp_histogram{};
     size_t separated_full_relations = 0;
     size_t separated_partial_relations = 0;
@@ -214,6 +255,9 @@ struct RelationReductionStats {
     size_t merged_relations = 0;
     size_t output_relations = 0;
     size_t output_lp_columns = 0;
+    StructuredReductionRunResult structured_run{};
+    StructuredReductionStats structured{};
+    StructuredIncidenceBuildStats structured_incidence{};
 };
 
 /// A reduced corpus tied to the generation of its consumed raw snapshot.
@@ -263,10 +307,32 @@ public:
 
         auto raw_relations =
             deduplicate_raw_relations(std::move(snapshot.relations), stats.raw_duplicates_removed);
+        stats.deduplicated_input_lp_histogram = count_lp_key_weights(raw_relations);
+
+        if (config.strategy == ReductionStrategy::Structured) {
+            SequentialStructuredReducer reducer(snapshot.generation, std::move(raw_relations),
+                                                config.structured->incidence);
+            stats.structured_run = reducer.reduce_budgeted_parallel(
+                config.structured->budget, config.structured->parallel, config.structured->planner);
+            stats.structured = reducer.stats();
+            stats.structured_incidence = reducer.incidence_build_stats();
+            stats.singleton_rows_removed = stats.structured_run.singleton_rows_removed;
+
+            auto relations = reducer.materialize_active();
+            stats.merged_relations = static_cast<size_t>(
+                std::count_if(relations.begin(), relations.end(),
+                              [](const core::Relation& relation) { return relation.is_merged(); }));
+            stats.output_relations = relations.size();
+            stats.output_lp_columns = count_unique_lp_keys(relations);
+            stats.output_digest = corpus_digest(relations);
+            return RelationReductionResult(snapshot.generation, std::move(relations),
+                                           std::move(stats));
+        }
 
         RelationFilter filter(config.filter);
         auto filtered = filter.filter(std::move(raw_relations));
         stats.filter = filter.stats();
+        stats.singleton_rows_removed = stats.filter.singletons_removed;
 
         if (!config.large_primes_enabled) {
             stats.output_relations = filtered.size();
@@ -376,6 +442,7 @@ private:
         case ReductionStrategy::StandardV0:
         case ReductionStrategy::StandardV0WithV3:
         case ReductionStrategy::CliqueV0:
+        case ReductionStrategy::Structured:
             break;
         default:
             throw std::invalid_argument("unknown relation reduction strategy");
@@ -386,10 +453,37 @@ private:
             throw std::invalid_argument(
                 "large-prime mode and relation reduction strategy are inconsistent");
         }
-        const bool merges_large_primes = config.strategy != ReductionStrategy::NoLargePrimes &&
-                                         config.strategy != ReductionStrategy::FilterOnly;
-        if (merges_large_primes && config.merge_rounds == 0) {
+        const bool legacy_merges_large_primes =
+            config.strategy == ReductionStrategy::StandardV0 ||
+            config.strategy == ReductionStrategy::StandardV0WithV3 ||
+            config.strategy == ReductionStrategy::CliqueV0;
+        if (legacy_merges_large_primes && config.merge_rounds == 0) {
             throw std::invalid_argument("large-prime merge rounds must be nonzero");
+        }
+
+        const bool structured_strategy = config.strategy == ReductionStrategy::Structured;
+        if (structured_strategy != config.structured.has_value()) {
+            throw std::invalid_argument(
+                "structured relation strategy and execution config are inconsistent");
+        }
+        if (!structured_strategy)
+            return;
+
+        const auto& structured = *config.structured;
+        validate_structured_reduction_budget(structured.budget);
+        if (structured.parallel.max_batch_candidates == 0 ||
+            structured.parallel.worker_count == 0) {
+            throw std::invalid_argument(
+                "structured parallel execution requires nonzero batch width and workers");
+        }
+        if (structured.incidence.max_rows_per_shard == 0 ||
+            structured.incidence.worker_count == 0) {
+            throw std::invalid_argument(
+                "structured incidence execution requires nonzero shard rows and workers");
+        }
+        if (structured.planner != TreeBasisPlanner::ReferenceStar &&
+            structured.planner != TreeBasisPlanner::DeterministicMst) {
+            throw std::invalid_argument("unknown structured relation planner");
         }
     }
 };

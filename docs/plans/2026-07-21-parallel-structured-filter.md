@@ -1144,8 +1144,8 @@ The plan touches lifecycle diagrams embedded as comments in `collector.hpp` and 
   sequential orchestration are complete with exact projection and
   dependency-kernel oracles; the full `MatrixBuilder` payload oracle remains.
 - [ ] **T6 (P1, human: ~2d / agent: ~4h)** — persistence — normalize materialization and prove stream/OOC/MatrixBuilder round trips.
-- [ ] **T7 (P2, human: ~2d / agent: ~4h)** — parallel scheduler — add conflict batches, ordered commit, thread equivalence, and TSAN.
-- [ ] **T8 (P2, human: ~2d / agent: ~4h)** — integration evidence — policy, documentation, realistic scale corpora, and cross-size validation.
+- [x] **T7 (P2, human: ~2d / agent: ~4h)** — parallel scheduler — add conflict batches, ordered commit, thread equivalence, and TSAN.
+- [ ] **T8 (P2, human: ~2d / agent: ~4h)** — integration evidence — strict policy parsing and the shared engine's single structured dispatch are complete; production route overlay, realistic scale corpora, and cross-size validation remain.
 
 ### CEO Review Completion Summary
 

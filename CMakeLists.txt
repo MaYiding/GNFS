@@ -1088,6 +1088,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME StructuredFilter COMMAND test_structured_filter)
     set_tests_properties(StructuredFilter PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Strict opt-in policy parsing and pre-snapshot strategy-family selection.
+    add_executable(test_structured_filter_policy
+        tests/test_structured_filter_policy.cpp
+    )
+    target_link_libraries(test_structured_filter_policy PRIVATE gnfs_core)
+    add_test(NAME StructuredFilterPolicy COMMAND test_structured_filter_policy)
+    set_tests_properties(StructuredFilterPolicy PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Deterministic weight-[3,8] tree bases and exact dependency-space oracle.
     add_executable(test_structured_tree_basis
         tests/test_structured_tree_basis.cpp

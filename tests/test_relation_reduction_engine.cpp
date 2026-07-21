@@ -1,10 +1,12 @@
 #include "gnfs/api/detail/solver_handoff.hpp"
 #include "gnfs/relation/reduction_engine.hpp"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
 #include <unordered_set>
@@ -24,6 +26,12 @@ using gnfs::relation::RelationReductionResult;
 using gnfs::relation::RelationReductionStats;
 using gnfs::relation::RelationSourceCombination;
 using gnfs::relation::RelationSourceCombinationHash;
+using gnfs::relation::select_reduction_strategy;
+using gnfs::relation::StructuredFilterSelection;
+using gnfs::relation::StructuredReductionBudget;
+using gnfs::relation::StructuredReductionError;
+using gnfs::relation::StructuredReductionErrorCode;
+using gnfs::relation::StructuredReductionStopReason;
 
 static_assert(!std::is_copy_constructible_v<RawRelationSnapshot>);
 static_assert(!std::is_copy_assignable_v<RawRelationSnapshot>);
@@ -106,6 +114,29 @@ RelationReductionConfig lp_config(ReductionStrategy strategy) {
     return config;
 }
 
+RelationReductionConfig structured_config(uint32_t workers = 1, size_t batch_width = 4) {
+    RelationReductionConfig config;
+    config.large_primes_enabled = true;
+    config.merge_rounds = 0;
+    config.strategy = ReductionStrategy::Structured;
+
+    StructuredReductionBudget budget(128, 128, 0, 2048);
+    budget.max_commits = 128;
+    budget.max_source_atoms_per_output = 64;
+    budget.max_odd_lp_keys_per_output =
+        static_cast<size_t>(Relation::MAX_SERIALIZED_LARGE_PRIMES) * 2;
+    budget.max_materialized_pairs_per_output = 64;
+
+    RelationReductionConfig::StructuredExecutionConfig structured{
+        std::move(budget),
+        {.max_batch_candidates = batch_width, .worker_count = workers},
+        {.max_rows_per_shard = 3, .worker_count = workers},
+        gnfs::relation::TreeBasisPlanner::DeterministicMst,
+    };
+    config.structured = std::move(structured);
+    return config;
+}
+
 bool equal_relation(const Relation& lhs, const Relation& rhs) {
     return lhs.a == rhs.a && lhs.b == rhs.b && lhs.rational_factors == rhs.rational_factors &&
            lhs.algebraic_factors == rhs.algebraic_factors &&
@@ -131,6 +162,18 @@ template <typename Fn> bool throws_invalid_argument(Fn&& fn) {
         std::forward<Fn>(fn)();
     } catch (const std::invalid_argument&) {
         return true;
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
+template <typename Fn>
+bool throws_structured_error(StructuredReductionErrorCode expected, Fn&& fn) {
+    try {
+        std::forward<Fn>(fn)();
+    } catch (const StructuredReductionError& error) {
+        return error.code() == expected;
     } catch (...) {
         return false;
     }
@@ -173,6 +216,30 @@ void test_generation_and_no_large_primes() {
     CHECK(result.stats.output_digest == corpus_digest(result.relations));
 }
 
+void test_structured_policy_maps_to_named_legacy_strategy() {
+    constexpr std::array legacy_strategies{
+        ReductionStrategy::NoLargePrimes, ReductionStrategy::FilterOnly,
+        ReductionStrategy::StandardV0,    ReductionStrategy::StandardV0WithV3,
+        ReductionStrategy::CliqueV0,
+    };
+    const auto unset = gnfs::relation::decide_structured_filter_policy(
+        gnfs::relation::parse_structured_filter_mode(nullptr), true, false);
+    const auto explicit_off = gnfs::relation::decide_structured_filter_policy(
+        gnfs::relation::parse_structured_filter_mode("0"), true, false);
+    for (const ReductionStrategy legacy : legacy_strategies) {
+        CHECK(select_reduction_strategy(unset, legacy) == legacy);
+        CHECK(select_reduction_strategy(explicit_off, legacy) == legacy);
+    }
+
+    const auto forced_on = gnfs::relation::decide_structured_filter_policy(
+        gnfs::relation::parse_structured_filter_mode("1"), true, false);
+    CHECK(forced_on.selection == StructuredFilterSelection::Structured);
+    CHECK(select_reduction_strategy(forced_on, ReductionStrategy::StandardV0) ==
+          ReductionStrategy::Structured);
+    CHECK(throws_invalid_argument(
+        [&] { (void)select_reduction_strategy(forced_on, ReductionStrategy::Structured); }));
+}
+
 void test_illegal_combinations_fail_closed() {
     CHECK(throws_invalid_argument([] {
         RawRelationSnapshot invalid(0, {});
@@ -213,6 +280,47 @@ void test_illegal_combinations_fail_closed() {
         (void)RelationReductionEngine::reduce(std::move(mutated_generation),
                                               RelationReductionConfig{});
     }));
+
+    auto missing_structured_config = lp_config(ReductionStrategy::Structured);
+    missing_structured_config.merge_rounds = 0;
+    CHECK(throws_invalid_argument([&] {
+        (void)RelationReductionEngine::reduce(RawRelationSnapshot(2, {}),
+                                              missing_structured_config);
+    }));
+
+    auto structured_without_lp = structured_config();
+    structured_without_lp.large_primes_enabled = false;
+    CHECK(throws_invalid_argument([&] {
+        (void)RelationReductionEngine::reduce(RawRelationSnapshot(3, {}), structured_without_lp);
+    }));
+
+    auto legacy_with_structured_config = structured_config();
+    legacy_with_structured_config.strategy = ReductionStrategy::StandardV0;
+    CHECK(throws_invalid_argument([&] {
+        (void)RelationReductionEngine::reduce(RawRelationSnapshot(4, {}),
+                                              legacy_with_structured_config);
+    }));
+
+    auto invalid_parallel = structured_config();
+    invalid_parallel.structured->parallel.worker_count = 0;
+    CHECK(throws_invalid_argument([&] {
+        (void)RelationReductionEngine::reduce(RawRelationSnapshot(5, {}), invalid_parallel);
+    }));
+
+    auto invalid_incidence = structured_config();
+    invalid_incidence.structured->incidence.max_rows_per_shard = 0;
+    CHECK(throws_invalid_argument([&] {
+        (void)RelationReductionEngine::reduce(RawRelationSnapshot(6, {}), invalid_incidence);
+    }));
+
+    auto invalid_budget = structured_config();
+    invalid_budget.structured->budget.max_pivot_weight = 9;
+    RawRelationSnapshot preserved_snapshot(7, {make_partial(1, {101})});
+    CHECK(throws_structured_error(StructuredReductionErrorCode::InvalidInput, [&] {
+        (void)RelationReductionEngine::reduce(std::move(preserved_snapshot), invalid_budget);
+    }));
+    CHECK(preserved_snapshot.relations.size() == 1);
+    CHECK(preserved_snapshot.relations[0].a == 1);
 }
 
 void test_exact_abpair_dedup_preserves_old_collision() {
@@ -442,6 +550,139 @@ void test_clique_v0() {
     check_common_stats(result);
 }
 
+void test_structured_strategy_runs_exactly_once() {
+    std::vector<Relation> input{
+        make_partial(1, {101}),
+        make_partial(2, {101}),
+        make_full(3),
+    };
+    auto result = RelationReductionEngine::reduce(RawRelationSnapshot(701, std::move(input)),
+                                                  structured_config(2, 4));
+
+    CHECK(result.generation == 701);
+    CHECK(result.stats.strategy == ReductionStrategy::Structured);
+    CHECK(result.stats.input_relations == 3);
+    CHECK(result.stats.raw_duplicates_removed == 0);
+    CHECK(result.stats.filter.input_relations == 0);
+    CHECK(result.stats.filter.output_relations == 0);
+    CHECK(result.stats.standard_v0.input_1lp == 0);
+    CHECK(result.stats.standard_v0.input_2lp == 0);
+    CHECK(result.stats.clique_v0.input_relations == 0);
+    CHECK(result.stats.v3.input_relations == 0);
+    CHECK(result.stats.structured.budgeted_runs == 1);
+    CHECK(result.stats.structured.input_rows == 3);
+    CHECK(result.stats.structured_run.commits == 1);
+    CHECK(result.stats.structured_run.emitted_rows == 1);
+    CHECK(result.stats.structured_run.stop_reason == StructuredReductionStopReason::NoCandidates);
+    CHECK(result.stats.singleton_rows_removed == 0);
+    CHECK(result.stats.merged_relations == 1);
+    CHECK(result.stats.deduplicated_input_lp_histogram.unique_keys == 1);
+    CHECK(result.stats.pre_merge_lp_histogram.unique_keys == 0);
+    CHECK(result.stats.output_relations == 2);
+    CHECK(result.stats.output_lp_columns == 0);
+    CHECK(result.stats.output_digest == corpus_digest(result.relations));
+    CHECK(result.relations.size() == 2);
+    CHECK(result.relations[0].a == 3);
+    CHECK(result.relations[1].is_merged());
+}
+
+void test_structured_no_candidates_is_success() {
+    const std::vector<Relation> input{make_full(11), make_full(13)};
+    auto result =
+        RelationReductionEngine::reduce(RawRelationSnapshot(702, input), structured_config(1, 1));
+
+    CHECK(result.stats.structured.budgeted_runs == 1);
+    CHECK(result.stats.structured_run.commits == 0);
+    CHECK(result.stats.structured_run.stop_reason == StructuredReductionStopReason::NoCandidates);
+    CHECK(result.stats.merged_relations == 0);
+    CHECK(result.stats.output_relations == input.size());
+    CHECK(equal_corpus(result.relations, input));
+}
+
+void test_structured_owns_singleton_policy() {
+    std::vector<Relation> input{
+        make_partial(21, {101}),
+        make_full(23),
+    };
+    auto result = RelationReductionEngine::reduce(RawRelationSnapshot(703, std::move(input)),
+                                                  structured_config(1, 2));
+
+    CHECK(result.stats.filter.input_relations == 0);
+    CHECK(result.stats.filter.singletons_removed == 0);
+    CHECK(result.stats.structured_run.singleton_rows_removed == 1);
+    CHECK(result.stats.singleton_rows_removed == 1);
+    CHECK(result.stats.output_relations == 1);
+    CHECK(result.relations[0].a == 23);
+}
+
+void test_structured_deduplicates_before_source_ids() {
+    Relation first = make_partial(31, {101});
+    Relation duplicate = first;
+    duplicate.rational_factors = {999};
+    std::vector<Relation> input{first, duplicate, make_partial(37, {101})};
+
+    auto result = RelationReductionEngine::reduce(RawRelationSnapshot(704, std::move(input)),
+                                                  structured_config(2, 2));
+    CHECK(result.stats.input_relations == 3);
+    CHECK(result.stats.raw_duplicates_removed == 1);
+    CHECK(result.stats.structured.input_rows == 2);
+    CHECK(result.stats.output_relations == 1);
+    CHECK(result.relations[0].rational_factors.front() == first.rational_factors.front());
+}
+
+void test_structured_final_merge_count_excludes_consumed_intermediates() {
+    std::vector<Relation> input{
+        make_partial(51, {101}),
+        make_partial(53, {101, 103}),
+        make_partial(59, {103}),
+    };
+    auto result = RelationReductionEngine::reduce(RawRelationSnapshot(707, std::move(input)),
+                                                  structured_config(2, 2));
+
+    CHECK(result.stats.structured_run.emitted_rows == 2);
+    CHECK(result.stats.merged_relations == 1);
+    CHECK(result.stats.output_relations == 1);
+    CHECK(result.relations[0].is_merged());
+}
+
+void test_structured_thread_equivalence() {
+    std::optional<RelationReductionResult> baseline;
+    for (uint32_t workers : {1U, 2U, 4U}) {
+        auto result = RelationReductionEngine::reduce(
+            RawRelationSnapshot(705, make_shared_primary_corpus()), structured_config(workers, 3));
+        CHECK(result.stats.structured.budgeted_runs == 1);
+        CHECK(result.stats.structured_incidence.requested_worker_count == workers);
+        CHECK(result.stats.output_digest == corpus_digest(result.relations));
+        if (!baseline.has_value()) {
+            baseline.emplace(std::move(result));
+            continue;
+        }
+        CHECK(equal_corpus(result.relations, baseline->relations));
+        CHECK(result.stats.output_digest == baseline->stats.output_digest);
+        CHECK(result.stats.output_relations == baseline->stats.output_relations);
+        CHECK(result.stats.output_lp_columns == baseline->stats.output_lp_columns);
+        CHECK(result.stats.singleton_rows_removed == baseline->stats.singleton_rows_removed);
+        CHECK(result.stats.merged_relations == baseline->stats.merged_relations);
+        CHECK(result.stats.structured_run == baseline->stats.structured_run);
+        CHECK(result.stats.structured.two_way_merges == baseline->stats.structured.two_way_merges);
+        CHECK(result.stats.structured.tree_basis_batches ==
+              baseline->stats.structured.tree_basis_batches);
+        CHECK(result.stats.structured.output_rows == baseline->stats.structured.output_rows);
+        CHECK(result.stats.structured.stop_reason == baseline->stats.structured.stop_reason);
+    }
+}
+
+void test_structured_invariant_error_never_falls_back() {
+    Relation invalid(41, 0);
+    invalid.rational_large_prime.emplace_back(101, uint8_t{1});
+    std::vector<Relation> input{invalid, make_partial(43, {101})};
+
+    CHECK(throws_structured_error(StructuredReductionErrorCode::InvalidInput, [&] {
+        (void)RelationReductionEngine::reduce(RawRelationSnapshot(706, std::move(input)),
+                                              structured_config(2, 2));
+    }));
+}
+
 void test_solver_handoff_exactly_once() {
     {
         std::vector<Relation> relations{make_full(71), make_full(73)};
@@ -504,6 +745,7 @@ int main() {
     unsetenv("GNFS_DROP_RESIDUAL");
 
     test_generation_and_no_large_primes();
+    test_structured_policy_maps_to_named_legacy_strategy();
     test_illegal_combinations_fail_closed();
     test_exact_abpair_dedup_preserves_old_collision();
     test_exact_abpair_dedup_keeps_first_occurrence();
@@ -515,6 +757,13 @@ int main() {
     test_standard_v0_and_explicit_off_unset_equivalence();
     test_standard_v0_with_v3_exact_dedup();
     test_clique_v0();
+    test_structured_strategy_runs_exactly_once();
+    test_structured_no_candidates_is_success();
+    test_structured_owns_singleton_policy();
+    test_structured_deduplicates_before_source_ids();
+    test_structured_final_merge_count_excludes_consumed_intermediates();
+    test_structured_thread_equivalence();
+    test_structured_invariant_error_never_falls_back();
     test_solver_handoff_exactly_once();
 
     if (failures != 0) {
