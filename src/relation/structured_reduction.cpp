@@ -19,6 +19,13 @@ using core::Relation;
     throw StructuredReductionError(code, message);
 }
 
+size_t checked_resource_add(size_t lhs, size_t rhs, const char* message) {
+    if (rhs > std::numeric_limits<size_t>::max() - lhs) {
+        fail(StructuredReductionErrorCode::ResourceLimit, message);
+    }
+    return lhs + rhs;
+}
+
 void validate_source_combination(const SourceCombination& combination, bool allow_empty) {
     if (combination.generation() == 0) {
         fail(StructuredReductionErrorCode::InvalidSourceCombination,
@@ -94,6 +101,47 @@ std::vector<LargePrimeKey> symmetric_difference_lp_keys(std::span<const LargePri
     result.insert(result.end(), lhs.begin() + static_cast<std::ptrdiff_t>(left), lhs.end());
     result.insert(result.end(), rhs.begin() + static_cast<std::ptrdiff_t>(right), rhs.end());
     return result;
+}
+
+void validate_full_source_rank(size_t corpus_size,
+                               std::span<const SourceCombination* const> transforms) {
+    constexpr size_t no_basis_row = std::numeric_limits<size_t>::max();
+    std::vector<size_t> pivot_to_basis(corpus_size, no_basis_row);
+    std::vector<SourceCombination> basis;
+    basis.reserve(transforms.size());
+
+    for (const SourceCombination* transform : transforms) {
+        if (transform == nullptr) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "source transform pointer is null");
+        }
+        validate_source_combination(*transform, false);
+        SourceCombination candidate = *transform;
+        bool inserted = false;
+        while (!candidate.empty()) {
+            const SourceId pivot = candidate.sources().back();
+            if (pivot.ordinal >= pivot_to_basis.size()) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "source transform has an invalid pivot");
+            }
+            const size_t basis_index = pivot_to_basis[static_cast<size_t>(pivot.ordinal)];
+            if (basis_index == no_basis_row) {
+                pivot_to_basis[static_cast<size_t>(pivot.ordinal)] = basis.size();
+                basis.push_back(std::move(candidate));
+                inserted = true;
+                break;
+            }
+            candidate = SourceCombination::symmetric_difference(candidate, basis[basis_index]);
+        }
+        if (!inserted) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "source transforms are linearly dependent");
+        }
+    }
+    if (basis.size() != transforms.size()) {
+        fail(StructuredReductionErrorCode::InvariantViolation,
+             "source transform rank is inconsistent");
+    }
 }
 
 bool contains_lp_key(std::span<const LargePrimeKey> keys, const LargePrimeKey& key) {
@@ -456,6 +504,18 @@ const Relation& PreparedTwoWayMerge::materialized_relation() const noexcept {
     return materialized_;
 }
 
+PreparedTreeBasisMerge::PreparedTreeBasisMerge(TreeBasisMergePlan plan,
+                                               std::vector<Relation> materialized) noexcept
+    : plan_(std::move(plan)), materialized_(std::move(materialized)) {}
+
+const TreeBasisMergePlan& PreparedTreeBasisMerge::plan() const noexcept {
+    return plan_;
+}
+
+std::span<const Relation> PreparedTreeBasisMerge::materialized_relations() const noexcept {
+    return materialized_;
+}
+
 struct SequentialStructuredReducer::Impl final {
     struct Row final {
         SourceCombination sources;
@@ -478,6 +538,11 @@ struct SequentialStructuredReducer::Impl final {
     struct PreparedData final {
         TwoWayMergePlan plan;
         Relation materialized;
+    };
+
+    struct PreparedTreeData final {
+        TreeBasisMergePlan plan;
+        std::vector<Relation> materialized;
     };
 
     explicit Impl(SourceCorpus source_corpus) : corpus(std::move(source_corpus)) {
@@ -563,6 +628,8 @@ struct SequentialStructuredReducer::Impl final {
 
     void validate_state() const {
         size_t counted_active = 0;
+        std::vector<const SourceCombination*> active_transforms;
+        active_transforms.reserve(active_rows);
         for (size_t row_index = 0; row_index < rows.size(); ++row_index) {
             const auto& row = rows[row_index];
             validate_source_combination(row.sources, false);
@@ -587,6 +654,7 @@ struct SequentialStructuredReducer::Impl final {
             }
             if (row.active) {
                 ++counted_active;
+                active_transforms.push_back(&row.sources);
             }
         }
         if (counted_active != active_rows) {
@@ -594,45 +662,7 @@ struct SequentialStructuredReducer::Impl final {
                  "active row count is inconsistent");
         }
 
-        // Deterministic sparse GF(2) elimination over immutable source IDs.
-        // Active source supports may overlap, but their transform rows must be
-        // independent. RowId order and the greatest ordinal pivot make the
-        // reference audit reproducible.
-        constexpr size_t no_basis_row = std::numeric_limits<size_t>::max();
-        std::vector<size_t> pivot_to_basis(corpus.size(), no_basis_row);
-        std::vector<SourceCombination> source_basis;
-        source_basis.reserve(counted_active);
-        for (const auto& row : rows) {
-            if (!row.active)
-                continue;
-
-            SourceCombination candidate = row.sources;
-            bool inserted_basis_row = false;
-            while (!candidate.empty()) {
-                const SourceId pivot = candidate.sources().back();
-                if (pivot.ordinal >= pivot_to_basis.size()) {
-                    fail(StructuredReductionErrorCode::InvariantViolation,
-                         "active source transform has an invalid pivot");
-                }
-                const size_t basis_index = pivot_to_basis[static_cast<size_t>(pivot.ordinal)];
-                if (basis_index == no_basis_row) {
-                    pivot_to_basis[static_cast<size_t>(pivot.ordinal)] = source_basis.size();
-                    source_basis.push_back(std::move(candidate));
-                    inserted_basis_row = true;
-                    break;
-                }
-                candidate =
-                    SourceCombination::symmetric_difference(candidate, source_basis[basis_index]);
-            }
-            if (!inserted_basis_row) {
-                fail(StructuredReductionErrorCode::InvariantViolation,
-                     "active source transforms are linearly dependent");
-            }
-        }
-        if (source_basis.size() != counted_active) {
-            fail(StructuredReductionErrorCode::InvariantViolation,
-                 "active source transform rank is inconsistent");
-        }
+        validate_full_source_rank(corpus.size(), active_transforms);
 
         for (size_t bucket_index = 0; bucket_index < buckets.size(); ++bucket_index) {
             const auto& bucket = buckets[bucket_index];
@@ -692,6 +722,252 @@ struct SequentialStructuredReducer::Impl final {
         if (pair[1] < pair[0])
             std::swap(pair[0], pair[1]);
         return pair;
+    }
+
+    [[nodiscard]] std::vector<StructuredRowId> active_members(const Bucket& bucket) const {
+        std::vector<StructuredRowId> members;
+        members.reserve(bucket.active_degree);
+        for (const auto row_id : bucket.adjacency) {
+            if (rows[static_cast<size_t>(row_id.value)].active)
+                members.push_back(row_id);
+        }
+        if (members.size() != bucket.active_degree) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "LP bucket active member count is inconsistent");
+        }
+        return members;
+    }
+
+    [[nodiscard]] TreeBasisEdgePlan make_tree_edge(StructuredRowId lhs, StructuredRowId rhs,
+                                                   const LargePrimeKey& pivot) const {
+        if (rhs < lhs)
+            std::swap(lhs, rhs);
+        const auto& left = row_at(lhs);
+        const auto& right = row_at(rhs);
+        auto sources = SourceCombination::symmetric_difference(left.sources, right.sources);
+        if (sources.empty()) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "tree edge has identical source transforms");
+        }
+        auto lp_keys = symmetric_difference_lp_keys(left.lp_keys, right.lp_keys);
+        if (contains_lp_key(lp_keys, pivot)) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "tree edge failed to eliminate its pivot");
+        }
+        return TreeBasisEdgePlan{{lhs, rhs}, std::move(sources), std::move(lp_keys)};
+    }
+
+    [[nodiscard]] TreeBasisMergePlan build_tree_plan(const Bucket& bucket,
+                                                     TreeBasisPlanner planner) const {
+        if (bucket.active_degree < 3 || bucket.active_degree > 8) {
+            fail(StructuredReductionErrorCode::InvalidPlan,
+                 "tree-basis pivot weight is outside [3,8]");
+        }
+        if (planner != TreeBasisPlanner::ReferenceStar &&
+            planner != TreeBasisPlanner::DeterministicMst) {
+            fail(StructuredReductionErrorCode::InvalidPlan, "unknown tree-basis planner");
+        }
+
+        TreeBasisMergePlan plan;
+        plan.generation = corpus.generation();
+        plan.incidence_epoch = incidence_epoch;
+        plan.planner = planner;
+        plan.pivot = bucket.key;
+        plan.members = active_members(bucket);
+
+        for (const auto member : plan.members) {
+            const auto& keys = row_at(member).lp_keys;
+            if (!contains_lp_key(keys, plan.pivot) || keys.empty()) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "tree-basis member does not contain its pivot");
+            }
+            plan.input_nonpivot_lp_nnz =
+                checked_resource_add(plan.input_nonpivot_lp_nnz, keys.size() - 1,
+                                     "tree-basis input LP metric overflows");
+        }
+
+        if (planner == TreeBasisPlanner::ReferenceStar) {
+            plan.edges.reserve(plan.members.size() - 1);
+            const StructuredRowId root = plan.members.front();
+            for (size_t i = 1; i < plan.members.size(); ++i) {
+                plan.edges.push_back(make_tree_edge(root, plan.members[i], plan.pivot));
+            }
+        } else {
+            struct Candidate final {
+                size_t lhs_index = 0;
+                size_t rhs_index = 0;
+                TreeBasisEdgePlan edge;
+            };
+
+            std::vector<Candidate> candidates;
+            const size_t member_count = plan.members.size();
+            candidates.reserve(member_count * (member_count - 1) / 2);
+            for (size_t lhs = 0; lhs < member_count; ++lhs) {
+                for (size_t rhs = lhs + 1; rhs < member_count; ++rhs) {
+                    candidates.push_back(Candidate{
+                        lhs, rhs,
+                        make_tree_edge(plan.members[lhs], plan.members[rhs], plan.pivot)});
+                }
+            }
+            std::sort(
+                candidates.begin(), candidates.end(),
+                [](const Candidate& lhs, const Candidate& rhs) {
+                    if (lhs.edge.expected_lp_keys.size() != rhs.edge.expected_lp_keys.size()) {
+                        return lhs.edge.expected_lp_keys.size() < rhs.edge.expected_lp_keys.size();
+                    }
+                    if (lhs.edge.expected_sources.size() != rhs.edge.expected_sources.size()) {
+                        return lhs.edge.expected_sources.size() < rhs.edge.expected_sources.size();
+                    }
+                    if (lhs.edge.endpoints[0] != rhs.edge.endpoints[0])
+                        return lhs.edge.endpoints[0] < rhs.edge.endpoints[0];
+                    return lhs.edge.endpoints[1] < rhs.edge.endpoints[1];
+                });
+
+            std::array<size_t, 8> parent{};
+            for (size_t i = 0; i < member_count; ++i)
+                parent[i] = i;
+            auto find_root = [&](size_t node) {
+                while (parent[node] != node) {
+                    parent[node] = parent[parent[node]];
+                    node = parent[node];
+                }
+                return node;
+            };
+
+            plan.edges.reserve(member_count - 1);
+            for (auto& candidate : candidates) {
+                size_t lhs_root = find_root(candidate.lhs_index);
+                size_t rhs_root = find_root(candidate.rhs_index);
+                if (lhs_root == rhs_root)
+                    continue;
+                if (rhs_root < lhs_root)
+                    std::swap(lhs_root, rhs_root);
+                parent[rhs_root] = lhs_root;
+                plan.edges.push_back(std::move(candidate.edge));
+                if (plan.edges.size() == member_count - 1)
+                    break;
+            }
+            if (plan.edges.size() != member_count - 1) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "deterministic MST did not span all pivot members");
+            }
+        }
+
+        for (const auto& edge : plan.edges) {
+            plan.output_lp_nnz =
+                checked_resource_add(plan.output_lp_nnz, edge.expected_lp_keys.size(),
+                                     "tree-basis output LP metric overflows");
+        }
+        if (plan.output_lp_nnz > plan.input_nonpivot_lp_nnz) {
+            plan.lp_fill_growth = plan.output_lp_nnz - plan.input_nonpivot_lp_nnz;
+        }
+        return plan;
+    }
+
+    void validate_tree_shape(const TreeBasisMergePlan& plan) const {
+        const size_t member_count = plan.members.size();
+        if (member_count < 3 || member_count > 8 || plan.edges.size() != member_count - 1) {
+            fail(StructuredReductionErrorCode::InvalidPlan,
+                 "tree-basis plan has invalid dimensions");
+        }
+
+        std::array<size_t, 8> parent{};
+        for (size_t i = 0; i < member_count; ++i)
+            parent[i] = i;
+        auto find_root = [&](size_t node) {
+            while (parent[node] != node) {
+                parent[node] = parent[parent[node]];
+                node = parent[node];
+            }
+            return node;
+        };
+
+        for (const auto& edge : plan.edges) {
+            if (!(edge.endpoints[0] < edge.endpoints[1])) {
+                fail(StructuredReductionErrorCode::InvalidPlan,
+                     "tree-basis edge endpoints are not ordered");
+            }
+            const auto lhs =
+                std::lower_bound(plan.members.begin(), plan.members.end(), edge.endpoints[0]);
+            const auto rhs =
+                std::lower_bound(plan.members.begin(), plan.members.end(), edge.endpoints[1]);
+            if (lhs == plan.members.end() || *lhs != edge.endpoints[0] ||
+                rhs == plan.members.end() || *rhs != edge.endpoints[1]) {
+                fail(StructuredReductionErrorCode::InvalidPlan,
+                     "tree-basis edge endpoint is not a member");
+            }
+            size_t lhs_root = find_root(static_cast<size_t>(lhs - plan.members.begin()));
+            size_t rhs_root = find_root(static_cast<size_t>(rhs - plan.members.begin()));
+            if (lhs_root == rhs_root) {
+                fail(StructuredReductionErrorCode::InvalidPlan, "tree-basis edges contain a cycle");
+            }
+            if (rhs_root < lhs_root)
+                std::swap(lhs_root, rhs_root);
+            parent[rhs_root] = lhs_root;
+        }
+        const size_t root = find_root(0);
+        for (size_t i = 1; i < member_count; ++i) {
+            if (find_root(i) != root) {
+                fail(StructuredReductionErrorCode::InvalidPlan,
+                     "tree-basis edges are disconnected");
+            }
+        }
+    }
+
+    [[nodiscard]] TreeBasisMergePlan validate_tree_plan(const TreeBasisMergePlan& plan) const {
+        validate_state();
+        if (plan.generation == 0 || plan.generation != corpus.generation()) {
+            fail(StructuredReductionErrorCode::InvalidPlan,
+                 "tree-basis plan belongs to a different generation");
+        }
+        if (plan.incidence_epoch != incidence_epoch) {
+            fail(StructuredReductionErrorCode::StalePlan,
+                 "tree-basis plan belongs to a stale incidence epoch");
+        }
+        if (plan.planner != TreeBasisPlanner::ReferenceStar &&
+            plan.planner != TreeBasisPlanner::DeterministicMst) {
+            fail(StructuredReductionErrorCode::InvalidPlan, "unknown tree-basis planner");
+        }
+        try {
+            validate_lp_key(plan.pivot);
+        } catch (const StructuredReductionError&) {
+            fail(StructuredReductionErrorCode::InvalidPlan, "tree-basis pivot is invalid");
+        }
+        const auto bucket_it = std::lower_bound(
+            buckets.begin(), buckets.end(), plan.pivot,
+            [](const Bucket& bucket, const LargePrimeKey& key) { return bucket.key < key; });
+        if (bucket_it == buckets.end() || !(bucket_it->key == plan.pivot) ||
+            bucket_it->active_degree < 3 || bucket_it->active_degree > 8) {
+            fail(StructuredReductionErrorCode::InvalidPlan,
+                 "tree-basis pivot is not an active weight-[3,8] bucket");
+        }
+
+        TreeBasisMergePlan expected = build_tree_plan(*bucket_it, plan.planner);
+        if (!(plan == expected)) {
+            fail(StructuredReductionErrorCode::InvalidPlan,
+                 "tree-basis plan is not the exact current deterministic plan");
+        }
+        validate_tree_shape(expected);
+
+        std::vector<const SourceCombination*> prospective;
+        prospective.reserve(active_rows - 1);
+        for (size_t row_index = 0; row_index < rows.size(); ++row_index) {
+            const StructuredRowId row_id{static_cast<uint64_t>(row_index)};
+            const auto& row = rows[row_index];
+            if (!row.active ||
+                std::binary_search(expected.members.begin(), expected.members.end(), row_id)) {
+                continue;
+            }
+            prospective.push_back(&row.sources);
+        }
+        for (const auto& edge : expected.edges)
+            prospective.push_back(&edge.expected_sources);
+        if (prospective.size() != active_rows - 1) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "prospective tree-basis row count is inconsistent");
+        }
+        validate_full_source_rank(corpus.size(), prospective);
+        return expected;
     }
 
     [[nodiscard]] TwoWayMergePlan validate_plan(const TwoWayMergePlan& plan) const {
@@ -797,7 +1073,7 @@ struct SequentialStructuredReducer::Impl final {
         }
 
         if (rows.size() >= rows.max_size() || rows.size() == std::numeric_limits<uint64_t>::max()) {
-            fail(StructuredReductionErrorCode::PersistenceLimit,
+            fail(StructuredReductionErrorCode::ResourceLimit,
                  "structured row ID space is exhausted");
         }
         const StructuredRowId output_id{static_cast<uint64_t>(rows.size())};
@@ -808,7 +1084,7 @@ struct SequentialStructuredReducer::Impl final {
         for (const size_t bucket_id : output_bucket_ids) {
             auto& adjacency = buckets[bucket_id].adjacency;
             if (adjacency.size() >= adjacency.max_size()) {
-                fail(StructuredReductionErrorCode::PersistenceLimit,
+                fail(StructuredReductionErrorCode::ResourceLimit,
                      "LP bucket adjacency exceeds vector limits");
             }
             adjacency.reserve(adjacency.size() + 1);
@@ -839,6 +1115,179 @@ struct SequentialStructuredReducer::Impl final {
         statistics.output_rows = active_rows;
         ++incidence_epoch;
         return output_id;
+    }
+
+    [[nodiscard]] std::vector<TreeBasisMergePlan>
+    plan_tree_basis_merges(TreeBasisPlanner planner) const {
+        validate_state();
+        if (planner != TreeBasisPlanner::ReferenceStar &&
+            planner != TreeBasisPlanner::DeterministicMst) {
+            fail(StructuredReductionErrorCode::InvalidPlan, "unknown tree-basis planner");
+        }
+        struct ScoredPlan final {
+            TreeBasisMergePlan plan;
+            size_t source_nnz = 0;
+        };
+
+        std::vector<ScoredPlan> scored;
+        for (const auto& bucket : buckets) {
+            if (bucket.active_degree < 3 || bucket.active_degree > 8)
+                continue;
+            TreeBasisMergePlan plan = build_tree_plan(bucket, planner);
+            size_t source_nnz = 0;
+            for (const auto& edge : plan.edges) {
+                source_nnz = checked_resource_add(source_nnz, edge.expected_sources.size(),
+                                                  "tree-basis source metric overflows");
+            }
+            scored.push_back(ScoredPlan{std::move(plan), source_nnz});
+        }
+
+        std::sort(scored.begin(), scored.end(), [](const ScoredPlan& lhs, const ScoredPlan& rhs) {
+            if (lhs.plan.output_lp_nnz != rhs.plan.output_lp_nnz)
+                return lhs.plan.output_lp_nnz < rhs.plan.output_lp_nnz;
+            if (lhs.source_nnz != rhs.source_nnz)
+                return lhs.source_nnz < rhs.source_nnz;
+            if (lhs.plan.pivot < rhs.plan.pivot)
+                return true;
+            if (rhs.plan.pivot < lhs.plan.pivot)
+                return false;
+            return std::lexicographical_compare(lhs.plan.members.begin(), lhs.plan.members.end(),
+                                                rhs.plan.members.begin(), rhs.plan.members.end());
+        });
+
+        std::vector<TreeBasisMergePlan> plans;
+        plans.reserve(scored.size());
+        for (auto& candidate : scored)
+            plans.push_back(std::move(candidate.plan));
+        return plans;
+    }
+
+    [[nodiscard]] PreparedTreeData prepare_tree(const TreeBasisMergePlan& plan) const {
+        TreeBasisMergePlan validated = validate_tree_plan(plan);
+        std::vector<Relation> materialized;
+        materialized.reserve(validated.edges.size());
+        for (const auto& edge : validated.edges) {
+            Relation relation = corpus.materialize(edge.expected_sources);
+            if (odd_large_prime_keys(relation) != edge.expected_lp_keys) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "tree-basis materialized LP support is inconsistent");
+            }
+            if (contains_lp_key(edge.expected_lp_keys, validated.pivot)) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "tree-basis materialization retained its pivot");
+            }
+            materialized.push_back(std::move(relation));
+        }
+        return PreparedTreeData{std::move(validated), std::move(materialized)};
+    }
+
+    [[nodiscard]] std::vector<StructuredRowId> commit_tree(TreeBasisMergePlan plan,
+                                                           std::vector<Relation> materialized) {
+        TreeBasisMergePlan validated = validate_tree_plan(plan);
+        if (materialized.size() != validated.edges.size()) {
+            fail(StructuredReductionErrorCode::InvalidPlan,
+                 "prepared tree-basis relation count is inconsistent");
+        }
+        for (size_t i = 0; i < validated.edges.size(); ++i) {
+            Relation expected = corpus.materialize(validated.edges[i].expected_sources);
+            if (!relations_equal(expected, materialized[i])) {
+                fail(StructuredReductionErrorCode::InvalidPlan,
+                     "prepared tree-basis materialization does not match corpus");
+            }
+            if (odd_large_prime_keys(materialized[i]) != validated.edges[i].expected_lp_keys) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "prepared tree-basis LP support is inconsistent");
+            }
+        }
+        if (incidence_epoch == std::numeric_limits<uint64_t>::max()) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "incidence epoch would overflow during tree-basis commit");
+        }
+
+        const size_t input_count = validated.members.size();
+        const size_t output_count = validated.edges.size();
+        if (active_rows < input_count || output_count + 1 != input_count) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "tree-basis active row accounting is inconsistent");
+        }
+        if (output_count > rows.max_size() - rows.size() ||
+            rows.size() > std::numeric_limits<uint64_t>::max() - output_count) {
+            fail(StructuredReductionErrorCode::ResourceLimit,
+                 "structured row ID capacity is exhausted");
+        }
+
+        const size_t next_batches = checked_resource_add(statistics.tree_basis_batches, 1,
+                                                         "tree-basis batch statistics overflow");
+        const size_t next_consumed =
+            checked_resource_add(statistics.tree_basis_rows_consumed, input_count,
+                                 "tree-basis consumed-row statistics overflow");
+        const size_t next_emitted =
+            checked_resource_add(statistics.tree_basis_rows_emitted, output_count,
+                                 "tree-basis emitted-row statistics overflow");
+
+        std::vector<Row> staged_rows;
+        staged_rows.reserve(output_count);
+        std::vector<size_t> append_counts(buckets.size(), 0);
+        for (const auto& edge : validated.edges) {
+            std::vector<size_t> bucket_ids;
+            bucket_ids.reserve(edge.expected_lp_keys.size());
+            for (const auto& key : edge.expected_lp_keys) {
+                const size_t bucket_id = find_bucket(key);
+                bucket_ids.push_back(bucket_id);
+                append_counts[bucket_id] = checked_resource_add(
+                    append_counts[bucket_id], 1, "tree-basis bucket append count overflows");
+            }
+            staged_rows.push_back(
+                Row{edge.expected_sources, edge.expected_lp_keys, std::move(bucket_ids), true});
+        }
+
+        std::vector<StructuredRowId> output_ids;
+        output_ids.reserve(output_count);
+        const uint64_t first_output = static_cast<uint64_t>(rows.size());
+        for (size_t i = 0; i < output_count; ++i) {
+            output_ids.push_back(StructuredRowId{first_output + static_cast<uint64_t>(i)});
+        }
+
+        // Every allocation precedes the first logical mutation. Output LP
+        // support is a symmetric-difference subset of existing buckets.
+        rows.reserve(rows.size() + output_count);
+        for (size_t bucket_id = 0; bucket_id < buckets.size(); ++bucket_id) {
+            const size_t append_count = append_counts[bucket_id];
+            if (append_count == 0)
+                continue;
+            auto& adjacency = buckets[bucket_id].adjacency;
+            if (append_count > adjacency.max_size() - adjacency.size()) {
+                fail(StructuredReductionErrorCode::ResourceLimit,
+                     "LP bucket adjacency capacity is exhausted");
+            }
+            adjacency.reserve(adjacency.size() + append_count);
+        }
+
+        static_assert(std::is_nothrow_move_constructible_v<Row>);
+        for (auto& staged : staged_rows)
+            rows.push_back(std::move(staged));
+        for (const auto member : validated.members) {
+            auto& input = rows[static_cast<size_t>(member.value)];
+            input.active = false;
+            for (const size_t bucket_id : input.bucket_ids)
+                --buckets[bucket_id].active_degree;
+        }
+        for (size_t i = 0; i < output_count; ++i) {
+            const auto output_id = output_ids[i];
+            const auto& output = rows[static_cast<size_t>(first_output) + i];
+            for (const size_t bucket_id : output.bucket_ids) {
+                buckets[bucket_id].adjacency.push_back(output_id);
+                ++buckets[bucket_id].active_degree;
+            }
+        }
+
+        --active_rows;
+        statistics.tree_basis_batches = next_batches;
+        statistics.tree_basis_rows_consumed = next_consumed;
+        statistics.tree_basis_rows_emitted = next_emitted;
+        statistics.output_rows = active_rows;
+        ++incidence_epoch;
+        return output_ids;
     }
 
     SourceCorpus corpus;
@@ -1049,6 +1498,21 @@ void SequentialStructuredReducer::reduce_two_way() {
         peel_singletons();
     }
     impl_->statistics.output_rows = impl_->active_rows;
+}
+
+std::vector<TreeBasisMergePlan>
+SequentialStructuredReducer::plan_tree_basis_merges(TreeBasisPlanner planner) const {
+    return impl_->plan_tree_basis_merges(planner);
+}
+
+PreparedTreeBasisMerge SequentialStructuredReducer::prepare(const TreeBasisMergePlan& plan) const {
+    auto prepared = impl_->prepare_tree(plan);
+    return PreparedTreeBasisMerge(std::move(prepared.plan), std::move(prepared.materialized));
+}
+
+std::vector<StructuredRowId>
+SequentialStructuredReducer::commit(PreparedTreeBasisMerge&& prepared) {
+    return impl_->commit_tree(std::move(prepared.plan_), std::move(prepared.materialized_));
 }
 
 Relation SequentialStructuredReducer::materialize(StructuredRowId row) const {

@@ -20,6 +20,7 @@ enum class StructuredReductionErrorCode {
     InvalidInput,
     ExponentOverflow,
     PersistenceLimit,
+    ResourceLimit,
     InvalidPlan,
     StalePlan,
     InvariantViolation,
@@ -146,6 +147,53 @@ private:
     core::Relation materialized_;
 };
 
+enum class TreeBasisPlanner {
+    ReferenceStar,
+    DeterministicMst,
+};
+
+struct TreeBasisEdgePlan final {
+    std::array<StructuredRowId, 2> endpoints{};
+    SourceCombination expected_sources{};
+    std::vector<LargePrimeKey> expected_lp_keys;
+
+    [[nodiscard]] bool operator==(const TreeBasisEdgePlan&) const noexcept = default;
+};
+
+struct TreeBasisMergePlan final {
+    uint64_t generation = 0;
+    uint64_t incidence_epoch = 0;
+    TreeBasisPlanner planner = TreeBasisPlanner::DeterministicMst;
+    LargePrimeKey pivot{};
+    std::vector<StructuredRowId> members;
+    std::vector<TreeBasisEdgePlan> edges;
+    size_t input_nonpivot_lp_nnz = 0;
+    size_t output_lp_nnz = 0;
+    size_t lp_fill_growth = 0;
+
+    [[nodiscard]] bool operator==(const TreeBasisMergePlan&) const noexcept = default;
+};
+
+class PreparedTreeBasisMerge final {
+public:
+    PreparedTreeBasisMerge(const PreparedTreeBasisMerge&) = delete;
+    PreparedTreeBasisMerge& operator=(const PreparedTreeBasisMerge&) = delete;
+    PreparedTreeBasisMerge(PreparedTreeBasisMerge&&) noexcept = default;
+    PreparedTreeBasisMerge& operator=(PreparedTreeBasisMerge&&) noexcept = default;
+
+    [[nodiscard]] const TreeBasisMergePlan& plan() const noexcept;
+    [[nodiscard]] std::span<const core::Relation> materialized_relations() const noexcept;
+
+private:
+    friend class SequentialStructuredReducer;
+
+    PreparedTreeBasisMerge(TreeBasisMergePlan plan,
+                           std::vector<core::Relation> materialized) noexcept;
+
+    TreeBasisMergePlan plan_;
+    std::vector<core::Relation> materialized_;
+};
+
 enum class StructuredReductionStopReason {
     NotStarted,
     NoCandidates,
@@ -156,12 +204,15 @@ struct StructuredReductionStats final {
     size_t input_rows = 0;
     size_t singleton_rows_removed = 0;
     size_t two_way_merges = 0;
+    size_t tree_basis_batches = 0;
+    size_t tree_basis_rows_consumed = 0;
+    size_t tree_basis_rows_emitted = 0;
     size_t persistence_limited_plans = 0;
     size_t output_rows = 0;
     StructuredReductionStopReason stop_reason = StructuredReductionStopReason::NotStarted;
 };
 
-/// Deterministic vector-backed M2a two-way reference over the LP incidence matrix.
+/// Deterministic vector-backed sequential reference over the LP incidence matrix.
 ///
 /// Logical rows retain only exact source and LP symmetric differences. Plans
 /// are read-only, preparation validates and materializes without mutation, and
@@ -169,8 +220,8 @@ struct StructuredReductionStats final {
 /// Active SourceCombination rows are GF(2) transform vectors over the immutable
 /// corpus and must have full row rank. Source IDs may overlap between active
 /// rows; overlap alone is not an invariant violation.
-/// Higher-weight tree bases, parallel batches, and OOC persistence are later
-/// milestones with additional planning and storage requirements.
+/// Parallel batches and OOC persistence are later milestones with additional
+/// planning and storage requirements.
 class SequentialStructuredReducer final {
 public:
     explicit SequentialStructuredReducer(SourceCorpus corpus);
@@ -196,6 +247,11 @@ public:
     [[nodiscard]] PreparedTwoWayMerge prepare(const TwoWayMergePlan& plan) const;
     [[nodiscard]] StructuredRowId commit(PreparedTwoWayMerge&& prepared);
     void reduce_two_way();
+
+    [[nodiscard]] std::vector<TreeBasisMergePlan>
+    plan_tree_basis_merges(TreeBasisPlanner planner = TreeBasisPlanner::DeterministicMst) const;
+    [[nodiscard]] PreparedTreeBasisMerge prepare(const TreeBasisMergePlan& plan) const;
+    [[nodiscard]] std::vector<StructuredRowId> commit(PreparedTreeBasisMerge&& prepared);
 
     [[nodiscard]] core::Relation materialize(StructuredRowId row) const;
     /// Materialize active rows in the exact order returned by active_row_ids().

@@ -1036,6 +1036,22 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME StructuredFilter COMMAND test_structured_filter)
     set_tests_properties(StructuredFilter PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Deterministic weight-[3,8] tree bases and exact dependency-space oracle.
+    add_executable(test_structured_tree_basis
+        tests/test_structured_tree_basis.cpp
+    )
+    target_link_libraries(test_structured_tree_basis PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredTreeBasis COMMAND test_structured_tree_basis)
+    set_tests_properties(StructuredTreeBasis PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Exhaustive/property coverage for structured tree-basis planning.
+    add_executable(test_structured_tree_basis_property
+        tests/test_structured_tree_basis_property.cpp
+    )
+    target_link_libraries(test_structured_tree_basis_property PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredTreeBasisProperty COMMAND test_structured_tree_basis_property)
+    set_tests_properties(StructuredTreeBasisProperty PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Structured source-XOR materialization and persistence contracts.
     add_executable(test_structured_materialization
         tests/test_structured_materialization.cpp
