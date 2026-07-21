@@ -256,6 +256,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/filter.cpp")
     target_sources(gnfs_core PRIVATE src/relation/filter.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/structured_reduction.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/structured_reduction.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/linalg/matrix_builder.cpp")
     target_sources(gnfs_core PRIVATE src/linalg/matrix_builder.cpp)
 endif()
@@ -1023,6 +1027,22 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_relation_reduction_engine PRIVATE gnfs_core Threads::Threads)
     add_test(NAME RelationReductionEngine COMMAND test_relation_reduction_engine)
     set_tests_properties(RelationReductionEngine PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Sequential structured relation reduction and exact GF(2) oracle.
+    add_executable(test_structured_filter
+        tests/test_structured_filter.cpp
+    )
+    target_link_libraries(test_structured_filter PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredFilter COMMAND test_structured_filter)
+    set_tests_properties(StructuredFilter PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Structured source-XOR materialization and persistence contracts.
+    add_executable(test_structured_materialization
+        tests/test_structured_materialization.cpp
+    )
+    target_link_libraries(test_structured_materialization PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredMaterialization COMMAND test_structured_materialization)
+    set_tests_properties(StructuredMaterialization PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # Phase 0 radix-sort ENV gate + bit-for-bit parity with std::sort path
     add_executable(test_filter_radix_sort
