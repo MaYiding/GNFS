@@ -112,6 +112,19 @@ void test_source_combination_canonical_and_xor() {
 }
 
 void test_source_corpus_rejects_invalid_input() {
+    {
+        SourceCorpus corpus(7, {make_relation(1, 1), make_relation(2, 1)});
+        const SourceId source = corpus.source_id(1);
+        const Relation* borrowed = corpus.try_borrow(source);
+        CHECK(borrowed != nullptr);
+        CHECK(borrowed->a == 2);
+        CHECK(corpus.at(source).a == 2);
+        expect_structured_error(StructuredReductionErrorCode::InvalidSourceCombination,
+                                [&] { (void)corpus.try_borrow(SourceId{8, 1}); });
+        expect_structured_error(StructuredReductionErrorCode::InvalidSourceCombination,
+                                [&] { (void)corpus.try_borrow(SourceId{7, 2}); });
+    }
+
     expect_structured_error(StructuredReductionErrorCode::InvalidGeneration, [] {
         SourceCorpus corpus(0, {make_relation(1, 1)});
         (void)corpus;

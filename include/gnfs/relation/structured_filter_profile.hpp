@@ -83,6 +83,7 @@ make_structured_filter_experimental_config(size_t input_rows, uint32_t worker_co
         TreeBasisPlanner::DeterministicMst,
         {},
         OOCCleanupPolicy::RemoveArtifacts,
+        {},
     };
 }
 

@@ -172,8 +172,13 @@ void test_in_memory_move_generation_and_bounds() {
     CHECK(corpus.storage_kind() == RelationStorageKind::InMemory);
     CHECK(corpus.count() == expected.size());
     CHECK(!corpus.empty());
+    CHECK(!corpus.ooc_artifact_scope().has_value());
     CHECK(relations_equal(corpus.read(1), expected[1]));
+    const Relation* borrowed = corpus.try_borrow_in_memory(1);
+    CHECK(borrowed != nullptr);
+    CHECK(relations_equal(*borrowed, expected[1]));
     expect_throws<std::out_of_range>([&] { (void)corpus.read(expected.size()); });
+    expect_throws<std::out_of_range>([&] { (void)corpus.try_borrow_in_memory(expected.size()); });
 
     auto moved = std::move(corpus);
     CHECK(!corpus.valid());
@@ -202,10 +207,18 @@ void test_finalized_ooc_roundtrip_and_preserve_lifetime() {
         CHECK(corpus.logical_generation() == 9'001);
         CHECK(corpus.logical_generation() != descriptor.generation);
         CHECK(corpus.count() == expected.size());
+        const auto scope = corpus.ooc_artifact_scope();
+        CHECK(scope.has_value());
+        CHECK(scope->base_path == std::filesystem::weakly_canonical(artifacts.base).string());
+        CHECK(scope->descriptor == descriptor);
+        CHECK(scope->cleanup_directory.empty());
+        CHECK(corpus.try_borrow_in_memory(0) == nullptr);
         for (size_t i = 0; i < expected.size(); ++i) {
             CHECK(relations_equal(corpus.read(i), expected[i]));
         }
         expect_throws<std::out_of_range>([&] { (void)corpus.read(expected.size()); });
+        expect_throws<std::out_of_range>(
+            [&] { (void)corpus.try_borrow_in_memory(expected.size()); });
 
         auto moved = std::move(corpus);
         CHECK(!corpus.valid());

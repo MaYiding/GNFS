@@ -276,6 +276,9 @@ struct StructuredReductionRejectionStats final {
     size_t fill_limit = 0;
     size_t emitted_row_limit = 0;
     size_t materialization_limit = 0;
+
+    [[nodiscard]] bool
+    operator==(const StructuredReductionRejectionStats&) const noexcept = default;
 };
 
 struct StructuredReductionStats final {
@@ -299,6 +302,8 @@ struct StructuredReductionStats final {
     StructuredReductionRejectionStats budget_rejections;
     size_t output_rows = 0;
     StructuredReductionStopReason stop_reason = StructuredReductionStopReason::NotStarted;
+
+    [[nodiscard]] bool operator==(const StructuredReductionStats&) const noexcept = default;
 };
 
 struct StructuredReductionRunResult final {
@@ -311,7 +316,7 @@ struct StructuredReductionRunResult final {
     [[nodiscard]] bool operator==(const StructuredReductionRunResult&) const noexcept = default;
 };
 
-/// Execution shape for the vector-backed deterministic parallel scheduler.
+/// Execution shape for the deterministic parallel scheduler.
 /// Both fields must be nonzero. Batch width bounds selected candidates, while
 /// worker count bounds concurrent candidate materialization.
 struct StructuredParallelReductionOptions final {
@@ -322,7 +327,7 @@ struct StructuredParallelReductionOptions final {
     operator==(const StructuredParallelReductionOptions&) const noexcept = default;
 };
 
-/// Deterministic vector-backed sequential reference over the LP incidence matrix.
+/// Deterministic sequential reference over the LP incidence matrix.
 ///
 /// Logical rows retain only exact source and LP symmetric differences. Plans
 /// are read-only, preparation validates and materializes without mutation, and
@@ -330,10 +335,10 @@ struct StructuredParallelReductionOptions final {
 /// Active SourceCombination rows are GF(2) transform vectors over the immutable
 /// corpus and must have full row rank. Source IDs may overlap between active
 /// rows; overlap alone is not an invariant violation.
-/// Initial incidence construction uses bounded transient row shards. Parallel
-/// batches still retain the vector-backed corpus, logical rows, final bucket
-/// adjacency, and append-only incidence history. Bounded-memory OOC execution
-/// remains a later milestone.
+/// Initial incidence construction uses bounded transient row shards. Source
+/// payload may reside in memory or in a finalized OOC corpus, while logical
+/// rows, final bucket adjacency, and append-only incidence history remain
+/// vector-backed corpus-scale metadata.
 class SequentialStructuredReducer final {
 public:
     explicit SequentialStructuredReducer(SourceCorpus corpus);
@@ -389,8 +394,8 @@ public:
     /// This method bounds candidate examinations and newly prepared/committed
     /// output for one invocation. The current reference still constructs every
     /// candidate plan for an epoch and retains the corpus, tombstones, and
-    /// incidence history in memory. It is not a bounded-memory, streaming, OOC,
-    /// or parallel reducer.
+    /// incidence history in memory. It is not a fully bounded-memory or
+    /// metadata-streaming reducer, and this method itself is not parallel.
     ///
     /// Metadata policy rejection order is pivot weight, source atoms per
     /// output, odd LP keys per output, output LP NNZ per commit, cumulative LP
@@ -419,7 +424,7 @@ public:
     /// batches and a drain-all parallel preparation barrier. Scheduler and
     /// persistence accounting are folded in slot order only after an atomic
     /// batch publication succeeds. The sequential driver remains the reference
-    /// oracle; this first parallel scheduler is still vector-backed.
+    /// oracle; scheduler metadata remains vector-backed.
     [[nodiscard]] StructuredReductionRunResult
     reduce_budgeted_parallel(const StructuredReductionBudget& budget,
                              const StructuredParallelReductionOptions& options,

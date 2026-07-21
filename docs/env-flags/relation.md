@@ -47,13 +47,18 @@ dispatch，并已接入 adaptive sieve、distributed 前置决策和公开 `Pipe
 不得复用 V0 BFS 或 OOC 的 `lp_bits` 阈值冒充结构化策略的 auto 证据。
 
 首版生产支持边界仍是「LP 已启用的纯 vector route」。底层 shared engine 已有
-owning `RelationCorpus`、neutral `RelationSource` 和 transactional `RelationSink`，
-并能把结构化输出逐行写入内存或私有目录中的 finalized V3 pair。不过，OOC raw
-snapshot 的稳定 `ABPair` 去重仍会整库 materialize 到 vector；这不是 bounded-memory
-route。OOC collector、resume corpus 和 distributed worker stores 因此继续在生产
-入口被拒绝。`GNFS_STRUCTURED_FILTER=1` 会在 materialize reduction snapshot 前显式
-失败；`auto` 使用具名 legacy 策略。若要在当前 50-digit vector 实验中强制
-structured，必须同时显式设置 `GNFS_OOC_RELATIONS=0`。
+owning `RelationCorpus`、neutral `RelationSource` 和 transactional `RelationSink`。
+finalized V3 raw snapshot 可单遍完成校验、digest 与稳定 `ABPair` 去重；唯一行写入
+显式 working OOC corpus，reducer 随后直接并发读取，不创建 relation payload
+vector。输出也可逐行写入内存或私有目录中的 finalized V3 pair。失败不会消费 raw
+snapshot，成功发布后才转移并释放其所有权。选择内存 output 时仍会持有完整 active
+output；只有显式 OOC output 才提供端到端 payload 常驻内存边界。
+
+生产 Pipeline 尚未为 adaptive OOC collector 派生 working/output path，也没有完成
+跨尺寸 RSS gate；resume corpus 和 distributed worker stores 同样未接通。因此这些
+路径继续在生产入口被拒绝。`GNFS_STRUCTURED_FILTER=1` 会在 materialize reduction
+snapshot 前显式失败；`auto` 使用具名 legacy 策略。若要在当前 50-digit vector
+实验中强制 structured，必须同时显式设置 `GNFS_OOC_RELATIONS=0`。
 
 完整 `Pipeline::run()` 在任何 progress/log callback、试探算法、checkpoint
 读写和 relation generation 分配前捕获无 I/O route snapshot，并把同一个不可变
@@ -121,6 +126,12 @@ SGE 前恰好发出一次，并与最终 `MatrixResult.matrix` handoff 对齐。
   source 契约与显式 finalize/abort output transaction。OOC sink pair 位于
   `<base>.gnfs-sink-lease/corpus.{relidx,reldata}`；`RemoveArtifacts` 把 pair 与
   私有目录的清理责任一并交给最终 corpus owner，`Preserve` 保留两者。
+- `RelationReductionConfig::StructuredExecutionConfig::deduplicated_ooc_base_path`：
+  finalized OOC raw 输入的必填 working base。它必须与 output base 不同；engine
+  始终用 `RemoveArtifacts` 管理 working corpus。working/output lease root 互不允许
+  相等或形成祖先关系，也不得与 raw corpus 的独占 cleanup root 重叠。sink/corpus
+  构造时会冻结规范化绝对路径，避免后续工作目录变化重定向清理。该 API 字段不是
+  ENV，production route 在完成路径派生与 scale gate 前不会设置它。
 - `src/api/pipeline.cpp`：adaptive/final probe 与公开 filter 的统一 overlay；
   `run()`、OOC/resume/distributed 在 callback、checkpoint 和 snapshot side effect 前
   判定 unsupported。

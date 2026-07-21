@@ -35,6 +35,12 @@ enum class RelationSinkState {
 /// finalize() may publish an immutable corpus.
 class RelationSink final {
 public:
+    [[nodiscard]] static std::filesystem::path lease_root_for(const std::string& base_path) {
+        validate_base_path(base_path);
+        return std::filesystem::path(relation_corpus_detail::freeze_ooc_path(base_path) +
+                                     lease_suffix());
+    }
+
     [[nodiscard]] static RelationSink in_memory(uint64_t logical_generation,
                                                 size_t expected_count = 0) {
         validate_logical_generation(logical_generation);
@@ -49,6 +55,7 @@ public:
         validate_logical_generation(logical_generation);
         validate_base_path(base_path);
         validate_cleanup_policy(cleanup_policy);
+        base_path = relation_corpus_detail::freeze_ooc_path(base_path);
 
         const std::string lease_path = base_path + lease_suffix();
         reject_existing_artifacts(base_path);

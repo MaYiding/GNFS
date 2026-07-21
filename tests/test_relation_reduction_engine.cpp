@@ -73,6 +73,21 @@ struct OOCArtifacts final {
                                  std::to_string(sequence++));
 }
 
+[[nodiscard]] std::string private_sink_base(const std::string& requested_base) {
+    return (std::filesystem::path(requested_base + ".gnfs-sink-lease") / "corpus").string();
+}
+
+[[nodiscard]] bool private_sink_exists(const std::string& requested_base) {
+    const std::string base = private_sink_base(requested_base);
+    return std::filesystem::exists(base + ".relidx") &&
+           std::filesystem::exists(base + ".reldata") &&
+           std::filesystem::is_directory(requested_base + ".gnfs-sink-lease");
+}
+
+[[nodiscard]] bool private_sink_absent(const std::string& requested_base) {
+    return !std::filesystem::exists(requested_base + ".gnfs-sink-lease");
+}
+
 #define CHECK(condition)                                                                           \
     do {                                                                                           \
         if (!(condition)) {                                                                        \
@@ -162,6 +177,7 @@ RelationReductionConfig structured_config(uint32_t workers = 1, size_t batch_wid
         gnfs::relation::TreeBasisPlanner::DeterministicMst,
         {},
         gnfs::relation::OOCCleanupPolicy::RemoveArtifacts,
+        {},
     };
     config.structured = std::move(structured);
     return config;
@@ -216,6 +232,17 @@ template <typename Fn> bool throws_invalid_argument(Fn&& fn) {
     try {
         std::forward<Fn>(fn)();
     } catch (const std::invalid_argument&) {
+        return true;
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
+template <typename Fn> bool throws_logic_error(Fn&& fn) {
+    try {
+        std::forward<Fn>(fn)();
+    } catch (const std::logic_error&) {
         return true;
     } catch (...) {
         return false;
@@ -443,6 +470,18 @@ void test_merged_input_fails_before_dedup() {
 void test_digest_covers_every_field_and_order() {
     const auto baseline = make_rich_digest_corpus();
     const CorpusDigest expected = corpus_digest(baseline);
+
+    gnfs::relation::CorpusDigestAccumulator streamed(baseline.size());
+    for (const auto& relation : baseline) {
+        streamed.append(relation);
+    }
+    CHECK(streamed.finish() == expected);
+    CHECK(streamed.finish() == expected);
+    CHECK(throws_logic_error([&] { streamed.append(baseline.front()); }));
+
+    gnfs::relation::CorpusDigestAccumulator short_stream(baseline.size());
+    short_stream.append(baseline.front());
+    CHECK(throws_logic_error([&] { (void)short_stream.finish(); }));
 
     auto expect_change = [&](auto mutate) {
         auto changed = baseline;
@@ -758,39 +797,188 @@ void test_structured_experimental_profile_thread_equivalence() {
 
 void test_structured_ooc_source_and_sink_match_memory() {
     constexpr uint64_t generation = 709;
-    const auto input = make_shared_primary_corpus();
+    auto input = make_shared_primary_corpus();
+    input.push_back(input[1]);
     auto memory_result = RelationReductionEngine::reduce(RawRelationSnapshot(generation, input),
                                                          structured_config(2, 3));
     const auto expected = memory_result.materialize_relations();
-
-    OOCArtifacts input_artifacts(unique_ooc_base("source"));
-    OOCArtifacts output_artifacts(unique_ooc_base("sink"));
-    auto source = make_owned_ooc_corpus(generation, input_artifacts.base, input);
-    auto config = structured_config(2, 3);
-    config.structured->output_ooc_base_path = output_artifacts.base;
+    CHECK(memory_result.stats.raw_duplicates_removed == 1);
 
     {
-        auto ooc_result =
-            RelationReductionEngine::reduce(RawRelationSnapshot(std::move(source)), config);
-        CHECK(ooc_result.storage_kind() == gnfs::relation::RelationStorageKind::FinalizedOOC);
-        CHECK(ooc_result.generation == generation);
-        CHECK(ooc_result.stats.output_digest == memory_result.stats.output_digest);
-        CHECK(ooc_result.stats.output_relations == memory_result.stats.output_relations);
-        CHECK(ooc_result.stats.output_lp_columns == memory_result.stats.output_lp_columns);
-        CHECK(ooc_result.stats.structured_run == memory_result.stats.structured_run);
-        CHECK(equal_corpus(ooc_result.materialize_relations(), expected));
-        const auto private_base =
-            std::filesystem::path(output_artifacts.base + ".gnfs-sink-lease") / "corpus";
-        CHECK(std::filesystem::exists(private_base.string() + ".relidx"));
-        CHECK(std::filesystem::exists(private_base.string() + ".reldata"));
-        CHECK(std::filesystem::is_directory(output_artifacts.base + ".gnfs-sink-lease"));
+        OOCArtifacts output_artifacts(unique_ooc_base("memory_source_ooc_sink"));
+        auto config = structured_config(2, 3);
+        config.structured->output_ooc_base_path = output_artifacts.base;
+        {
+            auto result =
+                RelationReductionEngine::reduce(RawRelationSnapshot(generation, input), config);
+            CHECK(result.storage_kind() == gnfs::relation::RelationStorageKind::FinalizedOOC);
+            CHECK(result.stats == memory_result.stats);
+            CHECK(equal_corpus(result.materialize_relations(), expected));
+            CHECK(private_sink_exists(output_artifacts.base));
+        }
+        CHECK(private_sink_absent(output_artifacts.base));
+    }
+
+    {
+        OOCArtifacts input_artifacts(unique_ooc_base("ooc_source_memory_sink"));
+        OOCArtifacts working_artifacts(unique_ooc_base("ooc_source_memory_work"));
+        RawRelationSnapshot snapshot(
+            make_owned_ooc_corpus(generation, input_artifacts.base, input));
+        auto missing_work = structured_config(2, 3);
+        CHECK(throws_invalid_argument(
+            [&] { (void)RelationReductionEngine::reduce(std::move(snapshot), missing_work); }));
+        CHECK(snapshot.corpus.valid());
+
+        auto aliased_paths = structured_config(2, 3);
+        aliased_paths.structured->deduplicated_ooc_base_path = working_artifacts.base;
+        aliased_paths.structured->output_ooc_base_path = working_artifacts.base;
+        CHECK(throws_invalid_argument(
+            [&] { (void)RelationReductionEngine::reduce(std::move(snapshot), aliased_paths); }));
+        CHECK(snapshot.corpus.valid());
+
+        auto config = structured_config(2, 3);
+        config.structured->deduplicated_ooc_base_path = working_artifacts.base;
+
+        auto result = RelationReductionEngine::reduce(std::move(snapshot), config);
+        CHECK(result.storage_kind() == gnfs::relation::RelationStorageKind::InMemory);
+        CHECK(result.stats == memory_result.stats);
+        CHECK(equal_corpus(result.materialize_relations(), expected));
+        CHECK(!snapshot.corpus.valid());
+        CHECK(!std::filesystem::exists(input_artifacts.base + ".relidx"));
+        CHECK(!std::filesystem::exists(input_artifacts.base + ".reldata"));
+        CHECK(private_sink_absent(working_artifacts.base));
+    }
+
+    {
+        OOCArtifacts input_artifacts(unique_ooc_base("ooc_source_ooc_sink"));
+        OOCArtifacts working_artifacts(unique_ooc_base("ooc_source_ooc_work"));
+        OOCArtifacts output_artifacts(unique_ooc_base("ooc_source_ooc_output"));
+        RawRelationSnapshot snapshot(
+            make_owned_ooc_corpus(generation, input_artifacts.base, input));
+        auto config = structured_config(2, 3);
+        config.structured->deduplicated_ooc_base_path = working_artifacts.base;
+        config.structured->output_ooc_base_path = output_artifacts.base;
+
+        {
+            auto result = RelationReductionEngine::reduce(std::move(snapshot), config);
+            CHECK(result.storage_kind() == gnfs::relation::RelationStorageKind::FinalizedOOC);
+            CHECK(result.generation == generation);
+            CHECK(result.stats == memory_result.stats);
+            CHECK(equal_corpus(result.materialize_relations(), expected));
+            CHECK(private_sink_exists(output_artifacts.base));
+            CHECK(!snapshot.corpus.valid());
+            CHECK(!std::filesystem::exists(input_artifacts.base + ".relidx"));
+            CHECK(!std::filesystem::exists(input_artifacts.base + ".reldata"));
+            CHECK(private_sink_absent(working_artifacts.base));
+        }
+        CHECK(private_sink_absent(output_artifacts.base));
+    }
+}
+
+void test_structured_ooc_failure_preserves_authoritative_input() {
+    constexpr uint64_t generation = 711;
+    auto input = make_shared_primary_corpus();
+    input[2].extra_ab_pairs = {{999, 1}};
+
+    OOCArtifacts input_artifacts(unique_ooc_base("failure_source"));
+    OOCArtifacts working_artifacts(unique_ooc_base("failure_work"));
+    OOCArtifacts output_artifacts(unique_ooc_base("failure_output"));
+    {
+        RawRelationSnapshot snapshot(
+            make_owned_ooc_corpus(generation, input_artifacts.base, input));
+        auto config = structured_config(2, 3);
+        config.structured->deduplicated_ooc_base_path = working_artifacts.base;
+        config.structured->output_ooc_base_path = output_artifacts.base;
+
+        CHECK(throws_invalid_argument(
+            [&] { (void)RelationReductionEngine::reduce(std::move(snapshot), config); }));
+        CHECK(snapshot.corpus.valid());
+        CHECK(snapshot.size() == input.size());
+        CHECK(equal_relation(snapshot.read(2), input[2]));
+        CHECK(std::filesystem::exists(input_artifacts.base + ".relidx"));
+        CHECK(std::filesystem::exists(input_artifacts.base + ".reldata"));
+        CHECK(private_sink_absent(working_artifacts.base));
+        CHECK(private_sink_absent(output_artifacts.base));
     }
 
     CHECK(!std::filesystem::exists(input_artifacts.base + ".relidx"));
     CHECK(!std::filesystem::exists(input_artifacts.base + ".reldata"));
-    CHECK(!std::filesystem::exists(output_artifacts.base + ".relidx"));
-    CHECK(!std::filesystem::exists(output_artifacts.base + ".reldata"));
-    CHECK(!std::filesystem::exists(output_artifacts.base + ".gnfs-sink-lease"));
+}
+
+void test_structured_ooc_post_prepare_failure_preserves_authoritative_input() {
+    constexpr uint64_t generation = 712;
+    auto input = make_shared_primary_corpus();
+    input[2].b = 0;
+
+    OOCArtifacts input_artifacts(unique_ooc_base("post_prepare_failure_source"));
+    OOCArtifacts working_artifacts(unique_ooc_base("post_prepare_failure_work"));
+    OOCArtifacts output_artifacts(unique_ooc_base("post_prepare_failure_output"));
+    {
+        RawRelationSnapshot snapshot(
+            make_owned_ooc_corpus(generation, input_artifacts.base, input));
+        auto config = structured_config(2, 3);
+        config.structured->deduplicated_ooc_base_path = working_artifacts.base;
+        config.structured->output_ooc_base_path = output_artifacts.base;
+
+        CHECK(throws_structured_error(StructuredReductionErrorCode::InvalidInput, [&] {
+            (void)RelationReductionEngine::reduce(std::move(snapshot), config);
+        }));
+        CHECK(snapshot.corpus.valid());
+        CHECK(snapshot.size() == input.size());
+        CHECK(equal_relation(snapshot.read(2), input[2]));
+        CHECK(std::filesystem::exists(input_artifacts.base + ".relidx"));
+        CHECK(std::filesystem::exists(input_artifacts.base + ".reldata"));
+        CHECK(private_sink_absent(working_artifacts.base));
+        CHECK(private_sink_absent(output_artifacts.base));
+    }
+
+    CHECK(!std::filesystem::exists(input_artifacts.base + ".relidx"));
+    CHECK(!std::filesystem::exists(input_artifacts.base + ".reldata"));
+}
+
+void test_structured_ooc_rejects_overlapping_artifact_scopes() {
+    constexpr uint64_t generation = 713;
+    const auto input = make_shared_primary_corpus();
+    OOCArtifacts raw_artifacts(unique_ooc_base("scoped_raw"));
+    OOCArtifacts working_artifacts(unique_ooc_base("scoped_work"));
+
+    {
+        auto raw_sink = gnfs::relation::RelationSink::out_of_core(
+            generation, raw_artifacts.base, gnfs::relation::OOCCleanupPolicy::RemoveArtifacts);
+        for (const auto& relation : input) {
+            (void)raw_sink.append(relation);
+        }
+        auto raw_corpus = raw_sink.finalize();
+        const auto raw_scope = raw_corpus.ooc_artifact_scope();
+        CHECK(raw_scope.has_value());
+        CHECK(!raw_scope->cleanup_directory.empty());
+        CHECK(std::filesystem::equivalent(raw_scope->cleanup_directory,
+                                          raw_artifacts.base + ".gnfs-sink-lease"));
+
+        RawRelationSnapshot snapshot(std::move(raw_corpus));
+        auto config = structured_config(2, 3);
+        config.structured->deduplicated_ooc_base_path = working_artifacts.base;
+        config.structured->output_ooc_base_path =
+            (std::filesystem::path(raw_scope->cleanup_directory) / "nested-output").string();
+
+        CHECK(throws_invalid_argument(
+            [&] { (void)RelationReductionEngine::reduce(std::move(snapshot), config); }));
+        CHECK(snapshot.corpus.valid());
+        CHECK(snapshot.size() == input.size());
+        CHECK(private_sink_absent(working_artifacts.base));
+        CHECK(
+            !std::filesystem::exists(config.structured->output_ooc_base_path + ".gnfs-sink-lease"));
+
+        config.structured->output_ooc_base_path.clear();
+        config.structured->deduplicated_ooc_base_path =
+            (std::filesystem::path(raw_scope->cleanup_directory) / "nested-work").string();
+        CHECK(throws_invalid_argument(
+            [&] { (void)RelationReductionEngine::reduce(std::move(snapshot), config); }));
+        CHECK(snapshot.corpus.valid());
+    }
+
+    CHECK(private_sink_absent(raw_artifacts.base));
+    CHECK(private_sink_absent(working_artifacts.base));
 }
 
 void test_structured_invariant_error_never_falls_back() {
@@ -923,6 +1111,9 @@ int main() {
     test_structured_thread_equivalence();
     test_structured_experimental_profile_thread_equivalence();
     test_structured_ooc_source_and_sink_match_memory();
+    test_structured_ooc_failure_preserves_authoritative_input();
+    test_structured_ooc_post_prepare_failure_preserves_authoritative_input();
+    test_structured_ooc_rejects_overlapping_artifact_scopes();
     test_structured_invariant_error_never_falls_back();
     test_structured_sink_preflight_and_observer_failure();
     test_solver_handoff_exactly_once();

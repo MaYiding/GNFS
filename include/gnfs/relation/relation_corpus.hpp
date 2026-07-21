@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -55,6 +56,13 @@ inline void validate_ooc_base_path(const std::string& base_path) {
         throw std::invalid_argument(
             "RelationCorpus: OOC base path must be nonempty and contain no NUL");
     }
+}
+
+/// Freeze an OOC path against later process working-directory changes and
+/// resolve every currently existing parent/symlink component. The leaf itself
+/// need not exist because relation stores use a base path plus two suffixes.
+[[nodiscard]] inline std::string freeze_ooc_path(const std::string& path) {
+    return std::filesystem::weakly_canonical(std::filesystem::absolute(path)).string();
 }
 
 /// Repository-owned deterministic generator for selection policies.
@@ -162,6 +170,18 @@ public:
         armed_ = true;
     }
 
+    [[nodiscard]] const std::string& base_path() const noexcept {
+        return base_path_;
+    }
+
+    [[nodiscard]] const OOCSnapshotDescriptor& descriptor() const noexcept {
+        return descriptor_;
+    }
+
+    [[nodiscard]] const std::string& cleanup_directory() const noexcept {
+        return cleanup_directory_;
+    }
+
 private:
     void cleanup_noexcept() noexcept {
         if (!armed_) {
@@ -219,6 +239,18 @@ private:
 
 } // namespace relation_corpus_detail
 
+/// Read-only path and identity scope of one finalized OOC corpus.
+///
+/// `cleanup_directory` is populated only when the corpus exclusively owns that
+/// directory and will attempt to remove it after removing the paired store.
+/// Callers creating adjacent transactional stores can use this scope to reject
+/// overlapping lease roots before mutating the filesystem.
+struct OOCCorpusArtifactScope final {
+    std::string base_path;
+    OOCSnapshotDescriptor descriptor{};
+    std::string cleanup_directory;
+};
+
 class RelationSelection;
 
 /// Move-only owner of an immutable relation corpus.
@@ -245,6 +277,7 @@ public:
         relation_corpus_detail::validate_logical_generation(logical_generation);
         relation_corpus_detail::validate_ooc_base_path(base_path);
         relation_corpus_detail::validate_finalized_ooc_ownership_descriptor(descriptor);
+        base_path = relation_corpus_detail::freeze_ooc_path(base_path);
         if (!cleanup_directory.empty()) {
             if (cleanup_policy != OOCCleanupPolicy::RemoveArtifacts) {
                 throw std::invalid_argument(
@@ -254,6 +287,7 @@ public:
                 throw std::invalid_argument(
                     "RelationCorpus: cleanup directory must contain no NUL");
             }
+            cleanup_directory = relation_corpus_detail::freeze_ooc_path(cleanup_directory);
             const auto expected_parent =
                 std::filesystem::path(base_path).parent_path().lexically_normal();
             const auto requested_directory =
@@ -299,6 +333,15 @@ public:
         const auto& storage = require_state().storage;
         return std::holds_alternative<InMemoryStorage>(storage) ? RelationStorageKind::InMemory
                                                                 : RelationStorageKind::FinalizedOOC;
+    }
+
+    [[nodiscard]] std::optional<OOCCorpusArtifactScope> ooc_artifact_scope() const {
+        const auto& storage = require_state().storage;
+        const auto* ooc = std::get_if<FinalizedOOCStorage>(&storage);
+        if (ooc == nullptr) {
+            return std::nullopt;
+        }
+        return ooc->artifact_scope();
     }
 
     [[nodiscard]] size_t count() const {
@@ -414,6 +457,10 @@ private:
 
         void arm_cleanup() noexcept {
             cleanup.arm();
+        }
+
+        [[nodiscard]] OOCCorpusArtifactScope artifact_scope() const {
+            return {cleanup.base_path(), cleanup.descriptor(), cleanup.cleanup_directory()};
         }
 
         // Reverse destruction is intentional and part of the Windows contract:

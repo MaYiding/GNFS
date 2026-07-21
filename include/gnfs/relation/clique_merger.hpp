@@ -41,6 +41,8 @@ struct CliqueStats {
     size_t residual_dropped = 0;        // 残留 LP 的 merged rels 丢弃 (GNFS_DROP_RESIDUAL=1)
     size_t singletons_removed = 0;      // singleton 清理删除
 
+    [[nodiscard]] bool operator==(const CliqueStats&) const noexcept = default;
+
     /// 一行 summary, 便于 log 输出
     [[nodiscard]] std::string to_string() const {
         return "in=" + std::to_string(input_relations) +

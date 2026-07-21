@@ -1094,6 +1094,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RelationReductionEngine COMMAND test_relation_reduction_engine)
     set_tests_properties(RelationReductionEngine PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Multi-size finalized-OOC structured source and cross-worker determinism gate.
+    add_executable(test_structured_ooc_scale
+        tests/test_structured_ooc_scale.cpp
+    )
+    target_link_libraries(test_structured_ooc_scale PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredOOCScale COMMAND test_structured_ooc_scale)
+    set_tests_properties(StructuredOOCScale PROPERTIES LABELS "gate" TIMEOUT 180)
+
     # Sequential structured relation reduction and exact GF(2) oracle.
     add_executable(test_structured_filter
         tests/test_structured_filter.cpp

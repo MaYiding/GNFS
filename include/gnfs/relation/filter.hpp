@@ -22,6 +22,8 @@ struct FilterStats {
     size_t singletons_removed = 0;
     size_t duplicates_removed = 0;
     size_t passes = 0;
+
+    [[nodiscard]] bool operator==(const FilterStats&) const noexcept = default;
 };
 
 /// 过滤配置
@@ -204,28 +206,49 @@ struct LpKeyWeightHistogram {
     size_t weight_3 = 0;
     size_t weight_4plus = 0;
     size_t unique_keys = 0;
+
+    [[nodiscard]] bool operator==(const LpKeyWeightHistogram&) const noexcept = default;
 };
 
-[[nodiscard]] inline LpKeyWeightHistogram count_lp_key_weights(
-        const std::vector<Relation>& relations) {
-    std::unordered_map<LargePrimeKey, size_t, LargePrimeKeyHash> weights;
-    weights.reserve(relations.size());
+/// Incremental LP-key row-incidence histogram for streamed corpora.
+class LpKeyWeightAccumulator final {
+public:
+    explicit LpKeyWeightAccumulator(size_t expected_rows = 0) {
+        weights_.reserve(expected_rows);
+    }
 
+    void append(const Relation& relation) {
+        for_each_odd_large_prime_key(relation, [&](const LargePrimeKey& key) { ++weights_[key]; });
+    }
+
+    [[nodiscard]] LpKeyWeightHistogram finish() const noexcept {
+        LpKeyWeightHistogram histogram;
+        for (const auto& [_, weight] : weights_) {
+            ++histogram.unique_keys;
+            if (weight == 1) {
+                ++histogram.weight_1;
+            } else if (weight == 2) {
+                ++histogram.weight_2;
+            } else if (weight == 3) {
+                ++histogram.weight_3;
+            } else {
+                ++histogram.weight_4plus;
+            }
+        }
+        return histogram;
+    }
+
+private:
+    std::unordered_map<LargePrimeKey, size_t, LargePrimeKeyHash> weights_;
+};
+
+[[nodiscard]] inline LpKeyWeightHistogram
+count_lp_key_weights(const std::vector<Relation>& relations) {
+    LpKeyWeightAccumulator accumulator(relations.size());
     for (const auto& rel : relations) {
-        for_each_odd_large_prime_key(rel, [&](const LargePrimeKey& key) {
-            ++weights[key];
-        });
+        accumulator.append(rel);
     }
-
-    LpKeyWeightHistogram h;
-    for (const auto& [_, weight] : weights) {
-        ++h.unique_keys;
-        if (weight == 1) ++h.weight_1;
-        else if (weight == 2) ++h.weight_2;
-        else if (weight == 3) ++h.weight_3;
-        else ++h.weight_4plus;
-    }
-    return h;
+    return accumulator.finish();
 }
 
 /// 分离完全关系和部分关系
@@ -273,6 +296,8 @@ public:
         size_t residual_emitted = 0;    // 返回的 merged residual 关系数
         size_t residual_dropped = 0;    // 由 residual-drop policy 丢弃的关系数
         size_t output_relations = 0;    // 总返回数 = full + emitted residual
+
+        [[nodiscard]] bool operator==(const MergeStats&) const noexcept = default;
     };
 
     /// 提取关系的"有效" LP key（奇数次出现的 = 未取消的）

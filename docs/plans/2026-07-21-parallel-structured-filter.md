@@ -639,18 +639,31 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
   boundary; append, observer, and materialization failures abort partial output.
   Output digest and LP metrics finish before publication, and the result retains
   the owning corpus through matrix and square-root consumers.
-- [ ] Remove the remaining structured input materialization. The shared engine
-  still converts a finalized OOC raw snapshot to a vector for stable `ABPair`
-  deduplication before constructing `SourceCorpus`. Direct OOC source reduction,
-  an intermediate deduplicated corpus, and bounded-memory evidence remain M4
-  exit gates. Incidence, logical rows, and history are also still corpus-scale.
+- [x] Remove structured OOC relation-payload materialization. A finalized V3 raw
+  snapshot now streams validation, the raw digest, and stable `ABPair`
+  de-duplication in one pass. Accepted rows enter a private working OOC corpus,
+  and the reducer reads that corpus directly with worker counts 1, 2, and 4.
+  The raw snapshot remains authoritative after any failure and is consumed only
+  after output publication succeeds. The four source/sink backend combinations
+  produce identical rows, order, digest, and complete reduction statistics.
+  Explicit OOC output bounds duplicate and active-output relation payloads;
+  memory output intentionally retains every active row. Lease roots are frozen
+  absolute paths and cannot overlap each other or an input-owned cleanup scope.
+  The `ABPair` set, LP histogram, incidence, logical rows, and history remain
+  corpus-scale metadata. A gate-tier 5K/50K/200K finalized-OOC corpus with
+  isolated weight-2 and weight-3 LP components proves nonzero planning,
+  parallel materialization, commits, stable rows/order, full stats, and digest
+  equivalence for worker counts 1, 2, and 4 in Release.
 - Adaptive and public vector routes are covered. OOC/resume/distributed are
   explicitly rejected before callback/checkpoint/store/snapshot side effects in
   forced mode; full `Pipeline::run()` freezes one route snapshot across phase
   callbacks. Unsupported auto routes retain named legacy strategies; direct
-  bounded-memory integration, stress/progressive wiring, and final route evidence remain.
+  native route wiring, measured RSS evidence, stress/progressive wiring, and
+  final route evidence remain.
 
-Exit gate: structured mode runs exactly once, OFF mode is unchanged, every route reports the same metrics for the same snapshot, and OOC memory stays bounded.
+Exit gate: structured mode runs exactly once, OFF mode is unchanged, every route
+reports the same metrics for the same snapshot, and the explicit OOC-output route
+keeps relation payload memory bounded.
 
 ### M5: Scale Validation
 

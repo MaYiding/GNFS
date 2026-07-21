@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <iterator>
 #include <optional>
 #include <stdexcept>
@@ -108,6 +109,10 @@ struct RelationReductionConfig {
         /// default; OOC requires an explicit exclusive staging base path.
         std::string output_ooc_base_path;
         OOCCleanupPolicy output_ooc_cleanup = OOCCleanupPolicy::RemoveArtifacts;
+        /// Required working store for a finalized-OOC raw snapshot. Stable
+        /// ABPair de-duplication streams accepted rows here without retaining a
+        /// second relation vector. The engine always removes this private store.
+        std::string deduplicated_ooc_base_path;
     };
 
     FilterConfig filter{};
@@ -331,6 +336,8 @@ struct RelationReductionStats {
     StructuredReductionRunResult structured_run{};
     StructuredReductionStats structured{};
     StructuredIncidenceBuildStats structured_incidence{};
+
+    [[nodiscard]] bool operator==(const RelationReductionStats&) const noexcept = default;
 };
 
 /// A reduced corpus tied to the generation of its consumed raw snapshot.
@@ -392,13 +399,20 @@ struct RelationReductionResult final {
 };
 
 /// Shared reduction engine. Legacy strategies remain vector-backed; structured
-/// execution has explicit corpus source/sink boundaries while its direct OOC
-/// source path is enabled in a later milestone.
+/// execution accepts in-memory or finalized-OOC corpora through explicit
+/// source, working-corpus, and transactional output boundaries.
 class RelationReductionEngine final {
     struct CorpusMetrics final {
         size_t merged_relations = 0;
         size_t unique_lp_columns = 0;
         CorpusDigest digest{};
+    };
+
+    struct PreparedStructuredOOCInput final {
+        RelationCorpus corpus;
+        CorpusDigest raw_digest{};
+        size_t duplicates_removed = 0;
+        LpKeyWeightHistogram lp_histogram{};
     };
 
 public:
@@ -413,6 +427,10 @@ public:
                 "relation snapshot generation does not match its owning corpus");
         }
         const uint64_t generation = snapshot.generation;
+        const bool structured_ooc_input =
+            config.strategy == ReductionStrategy::Structured &&
+            snapshot.corpus.storage_kind() == RelationStorageKind::FinalizedOOC;
+        validate_structured_input_storage(config, snapshot.corpus, structured_ooc_input);
 
         std::optional<RelationSink> structured_sink;
         if (config.strategy == ReductionStrategy::Structured &&
@@ -425,6 +443,26 @@ public:
         RelationReductionStats stats;
         stats.strategy = config.strategy;
         stats.input_relations = snapshot.size();
+
+        if (structured_ooc_input) {
+            PreparedStructuredOOCInput prepared = prepare_structured_ooc_input(
+                snapshot, config.structured->deduplicated_ooc_base_path);
+            stats.raw_input_digest = prepared.raw_digest;
+            stats.raw_duplicates_removed = prepared.duplicates_removed;
+            stats.deduplicated_input_lp_histogram = prepared.lp_histogram;
+
+            RelationReductionResult result =
+                reduce_structured_corpus(generation, std::move(prepared.corpus), std::move(stats),
+                                         *config.structured, std::move(structured_sink));
+
+            // Only a fully published result consumes the authoritative raw
+            // snapshot. Any earlier exception leaves the caller-owned OOC
+            // corpus and its cleanup ownership intact for inspection or retry.
+            RelationCorpus consumed_input = std::move(snapshot).take_corpus();
+            (void)consumed_input;
+            return result;
+        }
+
         validate_raw_relations(snapshot.corpus);
         stats.raw_input_digest = corpus_digest(snapshot.corpus);
 
@@ -433,46 +471,10 @@ public:
         stats.deduplicated_input_lp_histogram = count_lp_key_weights(raw_relations);
 
         if (config.strategy == ReductionStrategy::Structured) {
-            SequentialStructuredReducer reducer(generation, std::move(raw_relations),
-                                                config.structured->incidence);
-            stats.structured_run = reducer.reduce_budgeted_parallel(
-                config.structured->budget, config.structured->parallel, config.structured->planner);
-            stats.structured = reducer.stats();
-            stats.structured_incidence = reducer.incidence_build_stats();
-            stats.singleton_rows_removed = stats.structured_run.singleton_rows_removed;
-
-            if (!structured_sink) {
-                structured_sink.emplace(
-                    RelationSink::in_memory(generation, reducer.active_row_count()));
-            }
-
-            CorpusMetrics metrics;
-            metrics.unique_lp_columns = reducer.active_lp_column_count();
-            CorpusDigestAccumulator output_digest(reducer.active_row_count());
-            const size_t materialized_rows = reducer.materialize_active_to(
-                *structured_sink, [&](const core::Relation& relation) {
-                    output_digest.append(relation);
-                    if (relation.is_merged()) {
-                        ++metrics.merged_relations;
-                    }
-                });
-            if (materialized_rows != reducer.active_row_count()) {
-                throw StructuredReductionError(
-                    StructuredReductionErrorCode::InvariantViolation,
-                    "structured sink materialization did not cover every active row");
-            }
-            if (structured_sink->count() != materialized_rows) {
-                throw StructuredReductionError(
-                    StructuredReductionErrorCode::InvariantViolation,
-                    "structured sink count differs from materialized active rows");
-            }
-            metrics.digest = output_digest.finish();
-            RelationCorpus output = structured_sink->finalize();
-            stats.merged_relations = metrics.merged_relations;
-            stats.output_relations = output.count();
-            stats.output_lp_columns = metrics.unique_lp_columns;
-            stats.output_digest = metrics.digest;
-            return RelationReductionResult(std::move(output), std::move(stats));
+            RelationCorpus deduplicated =
+                RelationCorpus::from_in_memory(generation, std::move(raw_relations));
+            return reduce_structured_corpus(generation, std::move(deduplicated), std::move(stats),
+                                            *config.structured, std::move(structured_sink));
         }
 
         RelationFilter filter(config.filter);
@@ -553,13 +555,155 @@ public:
     }
 
 private:
-    static void validate_raw_relations(const RelationCorpus& corpus) {
-        corpus.for_each([](const core::Relation& relation, size_t) {
-            if (relation.is_merged()) {
-                throw std::invalid_argument(
-                    "relation reduction snapshot contains a merged relation");
+    [[nodiscard]] static RelationReductionResult
+    reduce_structured_corpus(uint64_t generation, RelationCorpus deduplicated,
+                             RelationReductionStats stats,
+                             const RelationReductionConfig::StructuredExecutionConfig& structured,
+                             std::optional<RelationSink> structured_sink) {
+        SourceCorpus source(std::move(deduplicated));
+        SequentialStructuredReducer reducer(std::move(source), structured.incidence);
+        stats.structured_run = reducer.reduce_budgeted_parallel(
+            structured.budget, structured.parallel, structured.planner);
+        stats.structured = reducer.stats();
+        stats.structured_incidence = reducer.incidence_build_stats();
+        stats.singleton_rows_removed = stats.structured_run.singleton_rows_removed;
+
+        if (!structured_sink) {
+            structured_sink.emplace(
+                RelationSink::in_memory(generation, reducer.active_row_count()));
+        }
+
+        CorpusMetrics metrics;
+        metrics.unique_lp_columns = reducer.active_lp_column_count();
+        CorpusDigestAccumulator output_digest(reducer.active_row_count());
+        const size_t materialized_rows =
+            reducer.materialize_active_to(*structured_sink, [&](const core::Relation& relation) {
+                output_digest.append(relation);
+                if (relation.is_merged()) {
+                    ++metrics.merged_relations;
+                }
+            });
+        if (materialized_rows != reducer.active_row_count()) {
+            throw StructuredReductionError(
+                StructuredReductionErrorCode::InvariantViolation,
+                "structured sink materialization did not cover every active row");
+        }
+        if (structured_sink->count() != materialized_rows) {
+            throw StructuredReductionError(
+                StructuredReductionErrorCode::InvariantViolation,
+                "structured sink count differs from materialized active rows");
+        }
+        metrics.digest = output_digest.finish();
+        RelationCorpus output = structured_sink->finalize();
+        stats.merged_relations = metrics.merged_relations;
+        stats.output_relations = output.count();
+        stats.output_lp_columns = metrics.unique_lp_columns;
+        stats.output_digest = metrics.digest;
+        return RelationReductionResult(std::move(output), std::move(stats));
+    }
+
+    [[nodiscard]] static PreparedStructuredOOCInput
+    prepare_structured_ooc_input(const RawRelationSnapshot& snapshot,
+                                 const std::string& deduplicated_base_path) {
+        RelationSink sink = RelationSink::out_of_core(snapshot.generation, deduplicated_base_path,
+                                                      OOCCleanupPolicy::RemoveArtifacts);
+        CorpusDigestAccumulator raw_digest(snapshot.size());
+        LpKeyWeightAccumulator lp_histogram(snapshot.size());
+        std::unordered_set<core::ABPair, core::ABPairHash> seen;
+        seen.reserve(snapshot.size());
+
+        size_t duplicates_removed = 0;
+        for (size_t ordinal = 0; ordinal < snapshot.size(); ++ordinal) {
+            core::Relation relation = snapshot.read(ordinal);
+            validate_raw_relation(relation);
+            raw_digest.append(relation);
+            if (!seen.insert(relation.ab()).second) {
+                ++duplicates_removed;
+                continue;
             }
-        });
+            lp_histogram.append(relation);
+            (void)sink.append(std::move(relation));
+        }
+
+        RelationCorpus corpus = sink.finalize();
+        return {std::move(corpus), raw_digest.finish(), duplicates_removed, lp_histogram.finish()};
+    }
+
+    [[nodiscard]] static std::filesystem::path
+    structured_sink_lease_root(const std::string& requested_base) {
+        return RelationSink::lease_root_for(requested_base);
+    }
+
+    [[nodiscard]] static bool path_contains(const std::filesystem::path& parent,
+                                            const std::filesystem::path& child) {
+        auto parent_it = parent.begin();
+        auto child_it = child.begin();
+        for (; parent_it != parent.end() && child_it != child.end(); ++parent_it, ++child_it) {
+            if (*parent_it != *child_it) {
+                return false;
+            }
+        }
+        return parent_it == parent.end();
+    }
+
+    [[nodiscard]] static bool paths_overlap(const std::filesystem::path& lhs,
+                                            const std::filesystem::path& rhs) {
+        return path_contains(lhs, rhs) || path_contains(rhs, lhs);
+    }
+
+    static void validate_structured_input_storage(const RelationReductionConfig& config,
+                                                  const RelationCorpus& input,
+                                                  bool structured_ooc_input) {
+        if (config.strategy != ReductionStrategy::Structured) {
+            return;
+        }
+        const auto& structured = *config.structured;
+        if (structured_ooc_input && structured.deduplicated_ooc_base_path.empty()) {
+            throw std::invalid_argument(
+                "structured OOC input requires a deduplicated working base path");
+        }
+        if (!structured_ooc_input && !structured.deduplicated_ooc_base_path.empty()) {
+            throw std::invalid_argument(
+                "structured deduplicated OOC base path requires finalized OOC input");
+        }
+        if (!structured_ooc_input) {
+            return;
+        }
+
+        const auto working = structured_sink_lease_root(structured.deduplicated_ooc_base_path);
+        std::optional<std::filesystem::path> output;
+        if (!structured.output_ooc_base_path.empty()) {
+            output = structured_sink_lease_root(structured.output_ooc_base_path);
+            if (paths_overlap(working, *output)) {
+                throw std::invalid_argument(
+                    "structured OOC working and output lease roots must not overlap");
+            }
+        }
+
+        const auto input_scope = input.ooc_artifact_scope();
+        if (!input_scope || input_scope->cleanup_directory.empty()) {
+            return;
+        }
+        const auto input_cleanup = std::filesystem::path(input_scope->cleanup_directory);
+        if (paths_overlap(input_cleanup, working)) {
+            throw std::invalid_argument(
+                "structured OOC working lease must not overlap the input cleanup scope");
+        }
+        if (output && paths_overlap(input_cleanup, *output)) {
+            throw std::invalid_argument(
+                "structured OOC output lease must not overlap the input cleanup scope");
+        }
+    }
+
+    static void validate_raw_relation(const core::Relation& relation) {
+        if (relation.is_merged()) {
+            throw std::invalid_argument("relation reduction snapshot contains a merged relation");
+        }
+    }
+
+    static void validate_raw_relations(const RelationCorpus& corpus) {
+        corpus.for_each(
+            [](const core::Relation& relation, size_t) { validate_raw_relation(relation); });
     }
 
     [[nodiscard]] static std::vector<core::Relation>
@@ -631,6 +775,9 @@ private:
         }
         if (structured.output_ooc_base_path.find('\0') != std::string::npos) {
             throw std::invalid_argument("structured OOC output base path contains NUL");
+        }
+        if (structured.deduplicated_ooc_base_path.find('\0') != std::string::npos) {
+            throw std::invalid_argument("structured OOC working base path contains NUL");
         }
         if (structured.output_ooc_cleanup != OOCCleanupPolicy::Preserve &&
             structured.output_ooc_cleanup != OOCCleanupPolicy::RemoveArtifacts) {

@@ -218,6 +218,7 @@ ALL_TEST_BINARIES=(
     test_lp_key_contract
     test_relation_identity
     test_relation_reduction_engine
+    test_structured_ooc_scale
     test_structured_filter
     test_structured_filter_policy
     test_structured_tree_basis
@@ -351,6 +352,7 @@ MODULE_SLOW_TESTS=(
     polynomial     "test_kleinjung test_kleinjung_large test_factor_with_kleinjung"
     sieve          "test_lattice_sieve"
     cofactor       "test_ecm_brent_suyama_bench"
+    relation       "test_structured_ooc_scale"
     api            "test_api test_full_resume"
     siqs           "test_siqs_e2e"
 )
@@ -563,6 +565,7 @@ TEST_TIMEOUT=(
     test_lp_key_contract     10
     test_relation_identity   10
     test_relation_reduction_engine 10
+    test_structured_ooc_scale 180
     test_structured_filter   10
     test_structured_filter_policy 10
     test_structured_tree_basis 10
@@ -734,6 +737,7 @@ TEST_TIER=(
     test_lp_key_contract     "instant"
     test_relation_identity   "instant"
     test_relation_reduction_engine "instant"
+    test_structured_ooc_scale "gate"
     test_structured_filter   "instant"
     test_structured_filter_policy "instant"
     test_structured_tree_basis "instant"
