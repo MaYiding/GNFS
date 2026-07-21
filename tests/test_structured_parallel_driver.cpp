@@ -1,11 +1,13 @@
 #include "gnfs/relation/structured_reduction.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <initializer_list>
 #include <iostream>
+#include <random>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -270,6 +272,189 @@ void expect_error(StructuredReductionErrorCode expected, Action&& action) {
         CHECK(error.code() == expected);
     }
     CHECK(caught);
+}
+
+enum class RandomBudgetProfile : uint8_t {
+    Normal,
+    Commit,
+    Candidate,
+    Emitted,
+    Fill,
+    Materialization,
+    Persistence,
+};
+
+constexpr std::array<RandomBudgetProfile, 7> random_budget_profiles{
+    RandomBudgetProfile::Normal,      RandomBudgetProfile::Commit,
+    RandomBudgetProfile::Candidate,   RandomBudgetProfile::Emitted,
+    RandomBudgetProfile::Fill,        RandomBudgetProfile::Materialization,
+    RandomBudgetProfile::Persistence,
+};
+constexpr std::array<uint64_t, 3> random_property_seeds{
+    0x0000'0000'00c0'ffeeULL,
+    0x0000'0000'4d33'6332ULL,
+    0x9e37'79b9'7f4a'7c15ULL,
+};
+constexpr std::array<size_t, 2> random_property_widths{1, 3};
+
+template <typename T> void deterministic_shuffle(std::vector<T>& values, std::mt19937_64& rng) {
+    for (size_t upper = values.size(); upper > 1; --upper) {
+        const size_t selected = static_cast<size_t>(rng() % upper);
+        std::swap(values[upper - 1], values[selected]);
+    }
+}
+
+[[nodiscard]] Relation make_relation_from_support(int64_t a, std::span<const LargePrimeKey> lp_keys,
+                                                  std::span<const size_t> support) {
+    Relation relation(a, 1);
+    for (const size_t index : support)
+        relation.rational_large_prime.emplace_back(lp_keys[index].prime, uint8_t{1});
+    return relation;
+}
+
+[[nodiscard]] std::vector<Relation> randomized_overlapping_fixture(uint64_t seed,
+                                                                   RandomBudgetProfile profile) {
+    std::mt19937_64 rng(seed);
+    std::vector<LargePrimeKey> keys{
+        rational_key(101), rational_key(103), rational_key(107), rational_key(109),
+        rational_key(113), rational_key(127), rational_key(131), rational_key(137),
+    };
+    deterministic_shuffle(keys, rng);
+
+    // A weight-three fan overlaps a cycle through three bridges. Every key has
+    // degree at least two, so construction does not erase the randomized graph
+    // through singleton peeling before the scheduler sees it.
+    std::vector<std::vector<size_t>> supports{
+        {0, 1}, {0, 2}, {0, 3}, {1, 2, 3}, {1, 2, 3}, {4, 5},
+        {5, 6}, {6, 7}, {7, 4}, {1, 4},    {2, 5},    {3, 6},
+    };
+    for (size_t extra = 0; extra < 4; ++extra) {
+        auto& support = supports[static_cast<size_t>(rng() % supports.size())];
+        const size_t key = static_cast<size_t>(rng() % keys.size());
+        if (std::find(support.begin(), support.end(), key) == support.end())
+            support.push_back(key);
+    }
+    for (auto& support : supports)
+        std::sort(support.begin(), support.end());
+    deterministic_shuffle(supports, rng);
+
+    std::vector<Relation> relations;
+    relations.reserve(supports.size() + (profile == RandomBudgetProfile::Persistence ? 2U : 0U));
+    for (size_t index = 0; index < supports.size(); ++index) {
+        Relation relation =
+            make_relation_from_support(1'000 + static_cast<int64_t>(index), keys, supports[index]);
+        if (profile == RandomBudgetProfile::Materialization)
+            relation.rational_factors.push_back(0);
+        relations.push_back(std::move(relation));
+    }
+
+    if (profile == RandomBudgetProfile::Persistence) {
+        const auto persistence_pivot = rational_key(83);
+        Relation lhs = persistence_heavy_relation(2'000, persistence_pivot);
+        lhs.rational_large_prime.emplace_back(keys[1].prime, uint8_t{1});
+        Relation rhs = persistence_heavy_relation(2'001, persistence_pivot);
+        rhs.rational_large_prime.emplace_back(keys[5].prime, uint8_t{1});
+        relations.push_back(std::move(lhs));
+        relations.push_back(std::move(rhs));
+    }
+    return relations;
+}
+
+[[nodiscard]] StructuredReductionBudget random_budget(RandomBudgetProfile profile) {
+    auto budget = generous_budget();
+    switch (profile) {
+    case RandomBudgetProfile::Normal:
+    case RandomBudgetProfile::Persistence:
+        break;
+    case RandomBudgetProfile::Commit:
+        budget.max_commits = 1;
+        break;
+    case RandomBudgetProfile::Candidate:
+        budget.max_candidate_examinations_per_pass = 1;
+        budget.max_source_atoms_per_output = 1;
+        break;
+    case RandomBudgetProfile::Emitted:
+        budget.max_emitted_rows = 1;
+        break;
+    case RandomBudgetProfile::Fill:
+        budget.max_total_lp_fill_growth = 0;
+        break;
+    case RandomBudgetProfile::Materialization:
+        budget.max_factor_entries_per_side = 0;
+        break;
+    }
+    return budget;
+}
+
+[[nodiscard]] bool random_profile_exercised(RandomBudgetProfile profile,
+                                            const StructuredReductionRunResult& run,
+                                            const StatsSnapshot& stats) {
+    switch (profile) {
+    case RandomBudgetProfile::Normal:
+        return run.commits > 0;
+    case RandomBudgetProfile::Commit:
+        return stats.commit_limit_stops > 0;
+    case RandomBudgetProfile::Candidate:
+        return stats.candidate_limit_stops > 0 && stats.budget_rejections.source_limit > 0;
+    case RandomBudgetProfile::Emitted:
+        return stats.budget_rejections.emitted_row_limit > 0;
+    case RandomBudgetProfile::Fill:
+        return stats.budget_rejections.fill_limit > 0;
+    case RandomBudgetProfile::Materialization:
+        return stats.budget_rejections.materialization_limit > 0;
+    case RandomBudgetProfile::Persistence:
+        return stats.persistence_limited_plans > 0;
+    }
+    return false;
+}
+
+void test_randomized_worker_and_sequential_oracles() {
+    for (const RandomBudgetProfile profile : random_budget_profiles) {
+        bool exercised = false;
+        for (size_t seed_index = 0; seed_index < random_property_seeds.size(); ++seed_index) {
+            const uint64_t seed = random_property_seeds[seed_index];
+            const auto relations = randomized_overlapping_fixture(seed, profile);
+            const auto budget = random_budget(profile);
+
+            for (const size_t width : random_property_widths) {
+                const uint64_t generation = 60'000 + static_cast<uint64_t>(profile) * 1'000 +
+                                            static_cast<uint64_t>(seed_index) * 10 +
+                                            static_cast<uint64_t>(width);
+                StructuredReductionRunResult baseline_run;
+                ReducerSnapshot baseline_state;
+                bool have_baseline = false;
+
+                for (const uint32_t workers : worker_counts) {
+                    SequentialStructuredReducer reducer(generation, relations);
+                    const auto run =
+                        reducer.reduce_budgeted_parallel(budget, parallel_options(width, workers));
+                    const auto state = capture_state(reducer);
+                    CHECK(run.stop_reason == state.stats.stop_reason);
+                    if (!have_baseline) {
+                        baseline_run = run;
+                        baseline_state = state;
+                        have_baseline = true;
+                    } else {
+                        CHECK(run == baseline_run);
+                        CHECK(state_equal(state, baseline_state));
+                    }
+                }
+
+                exercised = exercised ||
+                            random_profile_exercised(profile, baseline_run, baseline_state.stats);
+
+                if (width == 1) {
+                    SequentialStructuredReducer sequential(generation, relations);
+                    const auto sequential_run = sequential.reduce_budgeted(budget);
+                    const auto sequential_state = capture_state(sequential);
+                    CHECK(sequential_run.stop_reason == sequential_state.stats.stop_reason);
+                    CHECK(sequential_run == baseline_run);
+                    CHECK(state_equal(sequential_state, baseline_state));
+                }
+            }
+        }
+        CHECK(exercised);
+    }
 }
 
 [[nodiscard]] std::vector<Relation> mixed_fixture() {
@@ -767,6 +952,8 @@ template <typename Action> void run_test(std::string_view name, Action&& action)
 } // namespace
 
 int main() {
+    run_test("randomized worker and sequential oracles",
+             test_randomized_worker_and_sequential_oracles);
     run_test("mixed width and worker determinism", test_mixed_width_and_worker_determinism);
     run_test("exact and one-over budget boundaries", test_exact_and_one_over_budget_boundaries);
     run_test("interleaved persistence publish and cache",
