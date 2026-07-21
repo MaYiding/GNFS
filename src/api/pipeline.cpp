@@ -12,11 +12,9 @@
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/polynomial/poly_checkpoint.hpp>
 #include <gnfs/polynomial/selector_dispatch.hpp>
-#include <gnfs/relation/clique_merger.hpp>
 #include <gnfs/relation/collector.hpp>
-#include <gnfs/relation/filter.hpp>
 #include <gnfs/relation/ooc_policy.hpp>
-#include <gnfs/relation/relation_identity.hpp>
+#include <gnfs/relation/reduction_engine.hpp>
 #include <gnfs/relation/v0_bfs_policy.hpp>
 #include <gnfs/sieve/distributed_sieve.hpp>
 #include <gnfs/sieve/lattice_sieve.hpp>
@@ -42,7 +40,6 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
-#include <unordered_set> // V3 cascade dedup
 
 namespace gnfs::api {
 
@@ -814,6 +811,21 @@ std::vector<Relation> Pipeline::sieve_and_collect(const PolynomialContext& ctx,
     size_t initial_target = params_.raw_relation_target(matrix_cols);
     size_t batch_target = initial_target;
     bool lp_enabled = params_.large_prime_bound > params_.algebraic_bound;
+    uint64_t next_reduction_generation = 1;
+
+    auto reduce_relations = [&](std::vector<Relation> raw_relations,
+                                relation::ReductionStrategy strategy) {
+        relation::RelationReductionConfig reduction_config;
+        reduction_config.filter.remove_singletons = true;
+        reduction_config.filter.max_passes = 10;
+        reduction_config.large_primes_enabled = lp_enabled;
+        reduction_config.merge_rounds = 10;
+        reduction_config.strategy = strategy;
+
+        const uint64_t generation = next_reduction_generation++;
+        return relation::RelationReductionEngine::reduce(
+            relation::RawRelationSnapshot(generation, std::move(raw_relations)), reduction_config);
+    };
 
     emit_log(LogLevel::Info, Phase::Sieving,
              "target=" + std::to_string(initial_target) +
@@ -913,22 +925,10 @@ std::vector<Relation> Pipeline::sieve_and_collect(const PolynomialContext& ctx,
 
             // Run filter+merge once on collected relations (mirrors the
             // adaptive-loop body but only one pass — no adaptive retry).
-            relation::FilterConfig filter_config;
-            filter_config.remove_singletons = true;
-            filter_config.max_passes = 10;
-            relation::RelationFilter rel_filter(filter_config);
-            std::vector<Relation> dist_filtered = rel_filter.filter(std::move(dist_rels));
-
-            if (lp_enabled) {
-                auto sep = relation::separate_relations(std::move(dist_filtered));
-                relation::PartialRelationMerger::MergeStats mstats;
-                auto merged =
-                    relation::PartialRelationMerger::merge_all(std::move(sep.partial), 10, &mstats);
-                dist_filtered = std::move(sep.full);
-                dist_filtered.reserve(dist_filtered.size() + merged.size());
-                dist_filtered.insert(dist_filtered.end(), std::make_move_iterator(merged.begin()),
-                                     std::make_move_iterator(merged.end()));
-            }
+            auto dist_reduction = reduce_relations(
+                std::move(dist_rels), lp_enabled ? relation::ReductionStrategy::StandardV0
+                                                 : relation::ReductionStrategy::NoLargePrimes);
+            std::vector<Relation> dist_filtered = std::move(dist_reduction.relations);
 
             emit_log(LogLevel::Info, Phase::Sieving,
                      "distributed sieve done: raw=" + std::to_string(stats_.relations_found) +
@@ -1140,71 +1140,31 @@ std::vector<Relation> Pipeline::sieve_and_collect(const PolynomialContext& ctx,
 
         // Filter + merge a stable snapshot to check usable relation count. OOC
         // collection must remain appendable when another adaptive round is needed.
-        relations = collector.snapshot_relations();
+        const bool use_v3 = lp_enabled && cascade_v3_enabled_for_round(round);
+        const auto strategy = !lp_enabled ? relation::ReductionStrategy::NoLargePrimes
+                                          : (use_v3 ? relation::ReductionStrategy::StandardV0WithV3
+                                                    : relation::ReductionStrategy::StandardV0);
+        auto reduction = reduce_relations(collector.snapshot_relations(), strategy);
+        const auto& reduction_stats = reduction.stats;
+        relations = std::move(reduction.relations);
 
-        relation::FilterConfig filter_config;
-        filter_config.remove_singletons = true;
-        filter_config.max_passes = 10;
-        relation::RelationFilter rel_filter(filter_config);
-        relations = rel_filter.filter(std::move(relations));
-
-        if (lp_enabled) {
-            auto sep = relation::separate_relations(std::move(relations));
-
-            std::vector<relation::Relation> partial_copy_for_v3;
-            const bool use_v3 = cascade_v3_enabled_for_round(round);
-            if (use_v3)
-                partial_copy_for_v3 = sep.partial;
-
-            relation::PartialRelationMerger::MergeStats mstats;
-            auto merged =
-                relation::PartialRelationMerger::merge_all(std::move(sep.partial), 10, &mstats);
-            relations = std::move(sep.full);
-            // Reserve full + V0 merged + V3 estimate (~3× merged worst case).
-            relations.reserve(relations.size() + merged.size() * 4);
-            relations.insert(relations.end(), std::make_move_iterator(merged.begin()),
-                             std::make_move_iterator(merged.end()));
-
-            // V3 cascade (GNFS_CASCADE_V3=1): runs after V0 on partial copy
-            if (use_v3 && !partial_copy_for_v3.empty()) {
-                relation::CliqueStats cstats;
-                auto v3_merged = relation::CliqueRelationMerger::merge_cliques(
-                    std::move(partial_copy_for_v3), &cstats);
-                // Legacy V0/V3 compatibility dedup uses the complete source
-                // combination. Distinct merged rows may share their materialized
-                // primary (a,b), while the same source set may be materialized in
-                // a different order by the two strategies.
-                std::unordered_set<relation::RelationSourceCombination,
-                                   relation::RelationSourceCombinationHash>
-                    existing_keys;
-                existing_keys.reserve(relations.size());
-                for (const auto& r : relations) {
-                    if (r.is_merged()) {
-                        existing_keys.insert(relation::relation_source_combination(r));
-                    }
-                }
-                size_t v3_added = 0;
-                for (auto& r : v3_merged) {
-                    if (!r.is_merged() ||
-                        existing_keys.insert(relation::relation_source_combination(r)).second) {
-                        relations.push_back(std::move(r));
-                        ++v3_added;
-                    }
-                }
-                emit_log(LogLevel::Info, Phase::Sieving,
-                         "v3_cascade(sieve_loop): " + cstats.to_string() +
-                             " added=" + std::to_string(v3_added));
-                // stderr fallback when log_cb_ not registered (for stress/progressive)
-                std::fprintf(stderr, "[v3_cascade.sieve] %s added=%zu\n",
-                             cstats.to_string().c_str(), v3_added);
-            }
+        // V3 cascade (GNFS_CASCADE_V3=1): engine runs it after V0 on a
+        // partial-relation copy; preserve the existing progress diagnostics.
+        if (use_v3 && reduction_stats.separated_partial_relations > 0) {
+            emit_log(LogLevel::Info, Phase::Sieving,
+                     "v3_cascade(sieve_loop): " + reduction_stats.v3.to_string() +
+                         " added=" + std::to_string(reduction_stats.v3_relations_added));
+            // stderr fallback when log_cb_ not registered (for stress/progressive)
+            std::fprintf(stderr, "[v3_cascade.sieve] %s added=%zu\n",
+                         reduction_stats.v3.to_string().c_str(),
+                         reduction_stats.v3_relations_added);
         }
 
         // Accurate effective_cols = matrix_cols + actual LP keys
         // (matrix builder will create one column per odd-exp unique LP key).
         // 50d/60d 实测 lp_cols ratio = 64% of usable, far above 旧 5% guess.
         bool lp_enabled_local = params_.large_prime_bound > params_.algebraic_bound;
-        size_t lp_cols = lp_enabled_local ? relation::count_unique_lp_keys(relations) : 0;
+        size_t lp_cols = lp_enabled_local ? reduction_stats.output_lp_columns : 0;
         size_t effective_cols = matrix_cols + lp_cols;
 
         // Check: enough usable relations?
@@ -1338,24 +1298,42 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    // Singleton filtering
-    relation::FilterConfig filter_config;
-    filter_config.remove_singletons = true;
-    filter_config.max_passes = 10;
+    const bool lp_enabled = params_.large_prime_bound > params_.algebraic_bound;
+    std::optional<relation::V0BfsPolicy> v0_bfs_policy;
+    if (lp_enabled) {
+        v0_bfs_policy =
+            relation::decide_v0_bfs_policy(std::getenv("GNFS_V0_BFS"), params_.large_prime_bound);
+    }
 
-    relation::RelationFilter rel_filter(filter_config);
-    relations = rel_filter.filter(std::move(relations));
+    const bool v0_bfs_mode = v0_bfs_policy.has_value() && v0_bfs_policy->enabled;
+    const bool use_v3 = lp_enabled && !v0_bfs_mode && cascade_v3_enabled();
 
-    stats_.singletons_removed = rel_filter.stats().singletons_removed;
+    relation::RelationReductionConfig reduction_config;
+    reduction_config.filter.remove_singletons = true;
+    reduction_config.filter.max_passes = 10;
+    reduction_config.large_primes_enabled = lp_enabled;
+    reduction_config.merge_rounds = 10;
+    reduction_config.strategy =
+        !lp_enabled ? relation::ReductionStrategy::NoLargePrimes
+                    : (v0_bfs_mode ? relation::ReductionStrategy::CliqueV0
+                                   : (use_v3 ? relation::ReductionStrategy::StandardV0WithV3
+                                             : relation::ReductionStrategy::StandardV0));
+
+    auto reduction = relation::RelationReductionEngine::reduce(
+        relation::RawRelationSnapshot(1, std::move(relations)), reduction_config);
+    const auto& reduction_stats = reduction.stats;
+
+    stats_.singletons_removed = reduction_stats.filter.singletons_removed;
+    stats_.merged_relations = reduction_stats.merged_relations;
 
     // LP merge (only when LP is genuinely enabled)
-    if (params_.large_prime_bound > params_.algebraic_bound) {
+    if (lp_enabled) {
         // BACKLOG #1 diagnostic: pre-merge LP-key weight histogram.
         // Plateau analysis hinges on weight distribution:
         //   weight=1 → singleton LP keys (will become LP cols, hurts β)
         //   weight=2 → V0 mergeable (standard PartialRelationMerger handles)
         //   weight≥3 → chain-merge territory (V0_BFS / V3 cascade only)
-        auto pre_hist = relation::count_lp_key_weights(relations);
+        const auto& pre_hist = reduction_stats.pre_merge_lp_histogram;
         emit_log(LogLevel::Info, Phase::Filtering,
                  "lp_weights pre-merge: unique=" + std::to_string(pre_hist.unique_keys) +
                      " w1=" + std::to_string(pre_hist.weight_1) +
@@ -1365,8 +1343,6 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
         std::fprintf(stderr, "[lp_weights] pre-merge: unique=%zu w1=%zu w2=%zu w3=%zu w4+=%zu\n",
                      pre_hist.unique_keys, pre_hist.weight_1, pre_hist.weight_2, pre_hist.weight_3,
                      pre_hist.weight_4plus);
-
-        auto sep = relation::separate_relations(std::move(relations));
 
         // ── V0 BFS chain merge (BACKLOG #1 step 12: size-aware default-ON) ──
         // V0 主路径用 BFS spanning tree (复用 CliqueRelationMerger 算法) 替代
@@ -1382,123 +1358,65 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
         //   lp_bits <  22 (25d/81-bit): default OFF (BFS breaks small LP space)
         //   GNFS_V0_BFS=0 explicit opt-out (any size)
         //   GNFS_V0_BFS=1 explicit force-on (still falls back if lp_bits<22)
-        const auto v0_bfs_policy =
-            relation::decide_v0_bfs_policy(std::getenv("GNFS_V0_BFS"), params_.large_prime_bound);
-        if (v0_bfs_policy.env_force_failed) {
-            std::fprintf(stderr, "[v0_bfs] %.*s\n", static_cast<int>(v0_bfs_policy.reason.size()),
-                         v0_bfs_policy.reason.data());
+        if (v0_bfs_policy->env_force_failed) {
+            std::fprintf(stderr, "[v0_bfs] %.*s\n", static_cast<int>(v0_bfs_policy->reason.size()),
+                         v0_bfs_policy->reason.data());
         }
-        const bool v0_bfs_mode = v0_bfs_policy.enabled;
 
         if (v0_bfs_mode) {
-            relation::CliqueStats cstats;
-            auto merged =
-                relation::CliqueRelationMerger::merge_cliques(std::move(sep.partial), &cstats);
-
-            stats_.merged_relations = merged.size();
-
             emit_log(LogLevel::Info, Phase::Filtering,
-                     "v0_bfs (" + std::string(v0_bfs_policy.reason) +
-                         "): full=" + std::to_string(sep.full.size()) + " " + cstats.to_string() +
-                         " merged=" + std::to_string(merged.size()));
-            std::fprintf(stderr, "[v0_bfs] reason=%.*s %s merged=%zu (V3 cascade skipped)\n",
-                         static_cast<int>(v0_bfs_policy.reason.size()), v0_bfs_policy.reason.data(),
-                         cstats.to_string().c_str(), merged.size());
+                     "v0_bfs (" + std::string(v0_bfs_policy->reason) +
+                         "): full=" + std::to_string(reduction_stats.separated_full_relations) +
+                         " " + reduction_stats.clique_v0.to_string() +
+                         " merged=" + std::to_string(reduction_stats.merged_relations));
+            std::fprintf(
+                stderr, "[v0_bfs] reason=%.*s %s merged=%zu (V3 cascade skipped)\n",
+                static_cast<int>(v0_bfs_policy->reason.size()), v0_bfs_policy->reason.data(),
+                reduction_stats.clique_v0.to_string().c_str(), reduction_stats.merged_relations);
 
-            relations = std::move(sep.full);
-            relations.reserve(relations.size() + merged.size());
-            relations.insert(relations.end(), std::make_move_iterator(merged.begin()),
-                             std::make_move_iterator(merged.end()));
+            relations = std::move(reduction.relations);
 
             // V3 cascade skipped — V0 BFS already covered weight≥3 chains.
             // Fall through to final stats/return.
             auto t1_bfs = std::chrono::high_resolution_clock::now();
             stats_.timings.filter_s = std::chrono::duration<double>(t1_bfs - t0).count();
-            stats_.relations_after_filter = relations.size();
+            stats_.relations_after_filter = reduction_stats.output_relations;
             emit_log(LogLevel::Info, Phase::Filtering,
                      "after filter: " + std::to_string(relations.size()) + " relations");
             emit_progress(Phase::Filtering, "Filtering complete", 1.0);
             return relations;
         }
 
-        // ── V3 cascade prep: keep partial copy if cascade enabled ──
-        std::vector<relation::Relation> partial_copy_for_v3;
-        const bool use_v3 = cascade_v3_enabled();
-        if (use_v3)
-            partial_copy_for_v3 = sep.partial;
-
-        relation::PartialRelationMerger::MergeStats mstats;
-        auto merged =
-            relation::PartialRelationMerger::merge_all(std::move(sep.partial), 10, &mstats);
-
-        stats_.merged_relations = merged.size();
-
         emit_log(LogLevel::Info, Phase::Filtering,
-                 "merge: full=" + std::to_string(sep.full.size()) + " 1lp=" +
-                     std::to_string(mstats.input_1lp) + " 2lp=" + std::to_string(mstats.input_2lp) +
-                     " merged=" + std::to_string(merged.size()));
-
-        // Only keep full + merged — unmerged partials create singleton LP columns
-        relations = std::move(sep.full);
-        // Reserve full + V0 merged + V3 estimate (~3× merged worst case).
-        relations.reserve(relations.size() + merged.size() * 4);
-        relations.insert(relations.end(), std::make_move_iterator(merged.begin()),
-                         std::make_move_iterator(merged.end()));
+                 "merge: full=" + std::to_string(reduction_stats.separated_full_relations) +
+                     " 1lp=" + std::to_string(reduction_stats.standard_v0.input_1lp) +
+                     " 2lp=" + std::to_string(reduction_stats.standard_v0.input_2lp) +
+                     " merged=" + std::to_string(reduction_stats.standard_v0.output_relations));
 
         // ── V3 cascade (ENV: GNFS_CASCADE_V3=1) — runs AFTER V0 on partial copy ──
         // V0 handles weight=2 LP keys; V3 spans weight≥3 keys via BFS spanning tree.
         // Dedup: exact source combination — an equivalent V3 materialization is dropped.
-        if (use_v3 && !partial_copy_for_v3.empty()) {
-            relation::CliqueStats cstats;
-            auto v3_merged = relation::CliqueRelationMerger::merge_cliques(
-                std::move(partial_copy_for_v3), &cstats);
-
-            // Legacy V0/V3 compatibility dedup uses the complete source
-            // combination. Distinct merged rows may share their materialized
-            // primary (a,b), while the same source set may be materialized in
-            // a different order by the two strategies.
-            std::unordered_set<relation::RelationSourceCombination,
-                               relation::RelationSourceCombinationHash>
-                existing_keys;
-            existing_keys.reserve(relations.size());
-            for (const auto& r : relations) {
-                if (r.is_merged()) {
-                    existing_keys.insert(relation::relation_source_combination(r));
-                }
-            }
-
-            size_t v3_added = 0;
-            size_t v3_dedup_skipped = 0;
-            for (auto& r : v3_merged) {
-                if (!r.is_merged() ||
-                    existing_keys.insert(relation::relation_source_combination(r)).second) {
-                    relations.push_back(std::move(r));
-                    ++v3_added;
-                } else {
-                    ++v3_dedup_skipped;
-                }
-            }
-
+        if (use_v3 && reduction_stats.separated_partial_relations > 0) {
             emit_log(LogLevel::Info, Phase::Filtering,
-                     "v3_cascade: " + cstats.to_string() + " added=" + std::to_string(v3_added) +
-                         " dedup=" + std::to_string(v3_dedup_skipped));
+                     "v3_cascade: " + reduction_stats.v3.to_string() +
+                         " added=" + std::to_string(reduction_stats.v3_relations_added) +
+                         " dedup=" + std::to_string(reduction_stats.v3_duplicates_skipped));
             std::fprintf(stderr, "[v3_cascade.filter] %s added=%zu dedup=%zu\n",
-                         cstats.to_string().c_str(), v3_added, v3_dedup_skipped);
-
-            stats_.merged_relations += v3_added;
+                         reduction_stats.v3.to_string().c_str(), reduction_stats.v3_relations_added,
+                         reduction_stats.v3_duplicates_skipped);
         }
     }
 
+    relations = std::move(reduction.relations);
+
     auto t1 = std::chrono::high_resolution_clock::now();
     stats_.timings.filter_s = std::chrono::duration<double>(t1 - t0).count();
-    stats_.relations_after_filter = relations.size();
+    stats_.relations_after_filter = reduction_stats.output_relations;
 
     // BACKLOG #1 diagnostic: lp_cols breakdown at filter exit.
     // Caller (Phase 5 matrix builder) creates one column per odd-exp unique
     // LP key; emit count here so 50d/60d plateau analysis has empirical data.
-    size_t lp_cols_after_filter = (params_.large_prime_bound > params_.algebraic_bound)
-                                      ? relation::count_unique_lp_keys(relations)
-                                      : 0;
+    size_t lp_cols_after_filter = lp_enabled ? reduction_stats.output_lp_columns : 0;
     emit_log(LogLevel::Info, Phase::Filtering,
              "after filter: " + std::to_string(relations.size()) + " relations" +
                  " (lp_cols=" + std::to_string(lp_cols_after_filter) + ")");
