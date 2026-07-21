@@ -578,6 +578,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RelationCollector COMMAND test_relation_collector)
     set_tests_properties(RelationCollector PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_relation_corpus
+        tests/test_relation_corpus.cpp
+    )
+    target_link_libraries(test_relation_corpus PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME RelationCorpus COMMAND test_relation_corpus)
+    set_tests_properties(RelationCorpus PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_ooc_store_integrity
         tests/test_ooc_store_integrity.cpp
     )

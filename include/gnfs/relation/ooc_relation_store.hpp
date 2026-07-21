@@ -1121,68 +1121,22 @@ public:
 
     explicit OOCRelationReader(const std::string& base_path)
         : idx_file_(base_path + ".relidx"), data_file_(base_path + ".reldata") {
+        initialize(nullptr);
+    }
 
-        // Validate either the expanded V2 finalized header or the historical
-        // finalized V1 header. Incomplete files are rejected in both formats.
-        if (idx_file_.size() < 16) {
-            throw std::runtime_error("OOCRelationReader: index file too small");
-        }
-        const uint64_t magic = idx_file_.read_at<uint64_t>(0);
-        uint64_t stored_count = 0;
-        size_t index_header_bytes = 0;
-        if (magic == OOCRelationWriter::MAGIC_V2_FINAL) {
-            if (idx_file_.size() < OOCRelationWriter::INDEX_HEADER_BYTES) {
-                throw std::runtime_error("OOCRelationReader: V2 index header truncated");
-            }
-            if (idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET) !=
-                OOCRelationWriter::FORMAT_VERSION) {
-                throw std::runtime_error("OOCRelationReader: V2 format version mismatch");
-            }
-            if (idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_STORE_ID_OFFSET) == 0) {
-                throw std::runtime_error("OOCRelationReader: V2 store identity is zero");
-            }
-            stored_count = idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_COUNT_OFFSET);
-            index_header_bytes = static_cast<size_t>(OOCRelationWriter::INDEX_HEADER_BYTES);
-        } else if (magic == OOCRelationWriter::MAGIC_V1_FINAL) {
-            stored_count = idx_file_.read_at<uint64_t>(8);
-            index_header_bytes = 16;
-        } else {
-            throw std::runtime_error("OOCRelationReader: invalid magic in index");
-        }
-        if (stored_count > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
-            throw std::overflow_error("OOCRelationReader: relation count exceeds size_t");
-        }
-        count_ = static_cast<size_t>(stored_count);
-
-        // Index should have: header + (count+1) × 8-byte offsets.
-        if (count_ > (std::numeric_limits<size_t>::max() - index_header_bytes -
-                      static_cast<size_t>(OOCRelationWriter::INDEX_SENTINEL_BYTES)) /
-                         sizeof(uint64_t)) {
-            throw std::overflow_error("OOCRelationReader: index size overflow");
-        }
-        const size_t expected_idx = index_header_bytes +
-                                    static_cast<size_t>(OOCRelationWriter::INDEX_SENTINEL_BYTES) +
-                                    count_ * sizeof(uint64_t);
-        if (idx_file_.size() != expected_idx) {
-            throw std::runtime_error("OOCRelationReader: index size does not match relation count");
-        }
-
-        offsets_ = idx_file_.ptr_at<uint64_t>(index_header_bytes);
-        if (offsets_[0] != 0) {
-            throw std::runtime_error("OOCRelationReader: first offset is not zero");
-        }
-        if (offsets_[count_] != static_cast<uint64_t>(data_file_.size())) {
-            throw std::runtime_error("OOCRelationReader: final sentinel does not match data size");
-        }
-        for (size_t i = 0; i < count_; ++i) {
-            if (offsets_[i] >= offsets_[i + 1] ||
-                offsets_[i + 1] > static_cast<uint64_t>(data_file_.size())) {
-                throw std::runtime_error("OOCRelationReader: non-monotonic or out-of-range offset");
-            }
-        }
-
-        // Switch to random access pattern for data
-        data_file_.advise_random();
+    /// Open a descriptor-bound finalized V2 corpus.
+    ///
+    /// Unlike a path-level preflight followed by an ordinary reader open, this
+    /// overload validates the persisted index identity and both file extents
+    /// against the same mapped handles that serve subsequent reads. Finalized
+    /// V2 does not persist checkpoint generation or a store identity in the
+    /// data file: generation is only required to be nonzero, and a same-sized
+    /// foreign `.reldata` file cannot be distinguished. Callers transferring
+    /// cleanup ownership must therefore retain exclusive control of the pair.
+    OOCRelationReader(const std::string& base_path, const OOCSnapshotDescriptor& expected)
+        : idx_file_(base_path + ".relidx"), data_file_(base_path + ".reldata") {
+        validate_expected_descriptor(expected);
+        initialize(&expected);
     }
 
     /// Number of stored relations.
@@ -1230,6 +1184,123 @@ public:
     }
 
 private:
+    static void validate_expected_descriptor(const OOCSnapshotDescriptor& expected) {
+        if (expected.format_version != OOCRelationWriter::FORMAT_VERSION) {
+            throw std::invalid_argument(
+                "OOCRelationReader: expected descriptor format version mismatch");
+        }
+        if (expected.store_id == 0) {
+            throw std::invalid_argument("OOCRelationReader: expected store identity is zero");
+        }
+        if (expected.generation == 0) {
+            throw std::invalid_argument("OOCRelationReader: expected generation is zero");
+        }
+        (void)OOCRelationWriter::index_size_for_count(expected.count);
+    }
+
+    void initialize(const OOCSnapshotDescriptor* expected) {
+        // Validate either the expanded V2 finalized header or the historical
+        // finalized V1 header. Descriptor-bound opens accept only finalized V2.
+        // Incomplete files are rejected in both modes.
+        if (idx_file_.size() < 16) {
+            throw std::runtime_error("OOCRelationReader: index file too small");
+        }
+        const uint64_t magic = idx_file_.read_at<uint64_t>(0);
+        uint64_t stored_count = 0;
+        size_t index_header_bytes = 0;
+        if (magic == OOCRelationWriter::MAGIC_V2_FINAL) {
+            if (idx_file_.size() < OOCRelationWriter::INDEX_HEADER_BYTES) {
+                throw std::runtime_error("OOCRelationReader: V2 index header truncated");
+            }
+            const uint64_t stored_version =
+                idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET);
+            if (stored_version != OOCRelationWriter::FORMAT_VERSION) {
+                throw std::runtime_error("OOCRelationReader: V2 format version mismatch");
+            }
+            const uint64_t stored_store_id =
+                idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_STORE_ID_OFFSET);
+            if (stored_store_id == 0) {
+                throw std::runtime_error("OOCRelationReader: V2 store identity is zero");
+            }
+            stored_count = idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_COUNT_OFFSET);
+            index_header_bytes = static_cast<size_t>(OOCRelationWriter::INDEX_HEADER_BYTES);
+
+            if (expected != nullptr) {
+                if (stored_version != expected->format_version) {
+                    throw std::runtime_error(
+                        "OOCRelationReader: finalized format does not match descriptor");
+                }
+                if (stored_store_id != expected->store_id) {
+                    throw std::runtime_error(
+                        "OOCRelationReader: finalized store identity does not match descriptor");
+                }
+                if (stored_count != expected->count) {
+                    throw std::runtime_error(
+                        "OOCRelationReader: finalized relation count does not match descriptor");
+                }
+            }
+        } else if (magic == OOCRelationWriter::MAGIC_V1_FINAL) {
+            if (expected != nullptr) {
+                throw std::runtime_error(
+                    "OOCRelationReader: expected descriptor requires finalized V2 store");
+            }
+            stored_count = idx_file_.read_at<uint64_t>(8);
+            index_header_bytes = 16;
+        } else {
+            throw std::runtime_error("OOCRelationReader: invalid magic in index");
+        }
+        if (stored_count > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+            throw std::overflow_error("OOCRelationReader: relation count exceeds size_t");
+        }
+        count_ = static_cast<size_t>(stored_count);
+
+        // Index should have: header + (count+1) × 8-byte offsets.
+        if (count_ > (std::numeric_limits<size_t>::max() - index_header_bytes -
+                      static_cast<size_t>(OOCRelationWriter::INDEX_SENTINEL_BYTES)) /
+                         sizeof(uint64_t)) {
+            throw std::overflow_error("OOCRelationReader: index size overflow");
+        }
+        if (expected != nullptr) {
+            if (static_cast<uint64_t>(idx_file_.size()) !=
+                OOCRelationWriter::index_size_for_count(expected->count)) {
+                throw std::runtime_error(
+                    "OOCRelationReader: finalized index extent does not match descriptor");
+            }
+        } else {
+            const size_t expected_idx =
+                index_header_bytes + static_cast<size_t>(OOCRelationWriter::INDEX_SENTINEL_BYTES) +
+                count_ * sizeof(uint64_t);
+            if (idx_file_.size() != expected_idx) {
+                throw std::runtime_error(
+                    "OOCRelationReader: index size does not match relation count");
+            }
+        }
+        if (expected != nullptr && static_cast<uint64_t>(data_file_.size()) != expected->data_end) {
+            throw std::runtime_error(
+                "OOCRelationReader: finalized data extent does not match descriptor");
+        }
+
+        offsets_ = idx_file_.ptr_at<uint64_t>(index_header_bytes);
+        if (offsets_[0] != 0) {
+            throw std::runtime_error("OOCRelationReader: first offset is not zero");
+        }
+        if (expected != nullptr && offsets_[count_] != expected->data_end) {
+            throw std::runtime_error("OOCRelationReader: final sentinel does not match descriptor");
+        }
+        if (offsets_[count_] != static_cast<uint64_t>(data_file_.size())) {
+            throw std::runtime_error("OOCRelationReader: final sentinel does not match data size");
+        }
+        for (size_t i = 0; i < count_; ++i) {
+            if (offsets_[i] >= offsets_[i + 1] ||
+                offsets_[i + 1] > static_cast<uint64_t>(data_file_.size())) {
+                throw std::runtime_error("OOCRelationReader: non-monotonic or out-of-range offset");
+            }
+        }
+
+        // Switch to random access pattern for data
+        data_file_.advise_random();
+    }
+
     gnfs::util::MmapFile idx_file_;
     gnfs::util::MmapFile data_file_;
     size_t count_ = 0;

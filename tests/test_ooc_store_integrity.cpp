@@ -96,13 +96,13 @@ uint64_t read_u64_at(const std::string& path, std::streamoff offset) {
     return value;
 }
 
-void create_finalized_store(const std::string& base_path) {
-    {
-        OOCRelationWriter writer(base_path);
-        CHECK(writer.write(make_relation(1, 2)) == 0);
-        CHECK(writer.write(make_relation(3, 4)) == 1);
-        CHECK(writer.finalize().count == 2);
-    }
+OOCSnapshotDescriptor create_finalized_store(const std::string& base_path) {
+    OOCRelationWriter writer(base_path);
+    CHECK(writer.write(make_relation(1, 2)) == 0);
+    CHECK(writer.write(make_relation(3, 4)) == 1);
+    const auto descriptor = writer.finalize();
+    CHECK(descriptor.count == 2);
+    return descriptor;
 }
 
 OOCSnapshotDescriptor create_recovery_store(const std::string& base_path, size_t count = 2) {
@@ -169,6 +169,18 @@ void expect_finalized_reader_rejected(const std::string& base_path) {
     bool rejected = false;
     try {
         OOCRelationReader reader(base_path);
+        (void)reader;
+    } catch (const std::exception&) {
+        rejected = true;
+    }
+    CHECK(rejected);
+}
+
+void expect_descriptor_reader_rejected(const std::string& base_path,
+                                       const OOCSnapshotDescriptor& descriptor) {
+    bool rejected = false;
+    try {
+        OOCRelationReader reader(base_path, descriptor);
         (void)reader;
     } catch (const std::exception&) {
         rejected = true;
@@ -545,23 +557,116 @@ void test_finalized_reader_rejects_unreferenced_tail() {
     }
 }
 
+void test_finalized_reader_expected_descriptor_binding() {
+    const std::string path = make_path("finalized_expected_descriptor");
+    OOCArtifacts cleanup(path);
+    const auto descriptor = create_finalized_store(path);
+
+    OOCRelationReader exact(path, descriptor);
+    CHECK(exact.count() == descriptor.count);
+    CHECK(exact.read(0).a == 1);
+    CHECK(exact.read(1).a == 3);
+
+    auto foreign_store = descriptor;
+    ++foreign_store.store_id;
+    expect_descriptor_reader_rejected(path, foreign_store);
+
+    auto zero_store_id = descriptor;
+    zero_store_id.store_id = 0;
+    expect_descriptor_reader_rejected(path, zero_store_id);
+
+    auto wrong_count = descriptor;
+    ++wrong_count.count;
+    expect_descriptor_reader_rejected(path, wrong_count);
+
+    auto wrong_data_end = descriptor;
+    ++wrong_data_end.data_end;
+    expect_descriptor_reader_rejected(path, wrong_data_end);
+
+    auto wrong_format = descriptor;
+    ++wrong_format.format_version;
+    expect_descriptor_reader_rejected(path, wrong_format);
+
+    auto zero_generation = descriptor;
+    zero_generation.generation = 0;
+    expect_descriptor_reader_rejected(path, zero_generation);
+}
+
+void test_finalized_reader_expected_descriptor_empty_store() {
+    const std::string path = make_path("finalized_expected_empty");
+    OOCArtifacts cleanup(path);
+    OOCRelationWriter writer(path);
+    const auto descriptor = writer.finalize();
+    CHECK(descriptor.count == 0);
+    CHECK(descriptor.data_end == 0);
+
+    OOCRelationReader reader(path, descriptor);
+    CHECK(reader.count() == 0);
+    CHECK(reader.read_all().empty());
+}
+
+void test_finalized_reader_expected_descriptor_rejects_corruption() {
+    {
+        const std::string path = make_path("expected_trailing_index");
+        OOCArtifacts cleanup(path);
+        const auto descriptor = create_finalized_store(path);
+        append_u64(path + ".relidx", 0xBAD0FF5EULL);
+        expect_descriptor_reader_rejected(path, descriptor);
+    }
+    {
+        const std::string path = make_path("expected_trailing_data");
+        OOCArtifacts cleanup(path);
+        const auto descriptor = create_finalized_store(path);
+        append_byte(path + ".reldata", 0xA5);
+        expect_descriptor_reader_rejected(path, descriptor);
+    }
+    {
+        const std::string path = make_path("expected_bad_sentinel");
+        OOCArtifacts cleanup(path);
+        const auto descriptor = create_finalized_store(path);
+        const std::streamoff sentinel_offset = static_cast<std::streamoff>(
+            OOCRelationWriter::INDEX_HEADER_BYTES + descriptor.count * sizeof(uint64_t));
+        overwrite_u64(path + ".relidx", sentinel_offset, descriptor.data_end - 1);
+        expect_descriptor_reader_rejected(path, descriptor);
+    }
+    {
+        const std::string path = make_path("expected_non_monotonic_offset");
+        OOCArtifacts cleanup(path);
+        const auto descriptor = create_finalized_store(path);
+        const std::streamoff second_offset =
+            static_cast<std::streamoff>(OOCRelationWriter::INDEX_HEADER_BYTES + sizeof(uint64_t));
+        overwrite_u64(path + ".relidx", second_offset, 0);
+        expect_descriptor_reader_rejected(path, descriptor);
+    }
+    {
+        const std::string path = make_path("expected_incomplete_magic");
+        OOCArtifacts cleanup(path);
+        const auto descriptor = create_finalized_store(path);
+        overwrite_u64(path + ".relidx", 0, OOCRelationWriter::MAGIC_INCOMPLETE);
+        expect_descriptor_reader_rejected(path, descriptor);
+    }
+    {
+        const std::string path = make_path("expected_bad_version");
+        OOCArtifacts cleanup(path);
+        const auto descriptor = create_finalized_store(path);
+        overwrite_u64(path + ".relidx", OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET,
+                      descriptor.format_version + 1);
+        expect_descriptor_reader_rejected(path, descriptor);
+    }
+}
+
 void test_legacy_finalized_reader_compatibility_and_paired_rejection() {
     const std::string path = make_path("legacy_finalized_reader");
     OOCArtifacts cleanup(path);
-    create_finalized_store(path);
+    const auto descriptor = create_finalized_store(path);
     convert_finalized_v2_index_to_legacy_v1(path);
 
     OOCRelationReader reader(path);
     CHECK(reader.count() == 2);
     CHECK(reader.read(0).a == 1);
     CHECK(reader.read(1).a == 3);
+    expect_descriptor_reader_rejected(path, descriptor);
 
-    OOCSnapshotDescriptor descriptor;
-    descriptor.format_version = OOCRelationWriter::FORMAT_VERSION;
-    descriptor.store_id = 123;
-    descriptor.generation = 1;
-    descriptor.count = 2;
-    descriptor.data_end = std::filesystem::file_size(path + ".reldata");
     expect_resume_rejected_without_mutation(path, descriptor);
 }
 
@@ -697,6 +802,9 @@ int main() {
     test_finalized_corpus_recovery_is_read_only();
     test_interrupted_finalize_preserves_paired_recovery();
     test_finalized_reader_rejects_unreferenced_tail();
+    test_finalized_reader_expected_descriptor_binding();
+    test_finalized_reader_expected_descriptor_empty_store();
+    test_finalized_reader_expected_descriptor_rejects_corruption();
     test_legacy_finalized_reader_compatibility_and_paired_rejection();
     test_prefix_reader_exact_extent_and_lease();
     test_failed_snapshot_transition();

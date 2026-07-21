@@ -4,10 +4,12 @@
 
 - Date: 2026-07-21
 - Branch: `codex/parallel-structured-filter`
-- State: M1 contracts and routing complete; M2a 2-way, M2b weight-[3,8]
-  tree-basis, M2c budgeted sequential orchestration, and M3a.1 immutable
-  conflict planning complete; M3a.2 parallel preparation, M3b atomic batch
-  publication, and the M3c.1 vector-backed parallel scheduler are complete
+- State: M1 is complete; the vector-backed M2/M3 implementations are complete,
+  while the full M2 MatrixBuilder/OOC exit evidence remains open. M4 has a
+  default-off production vector route, one frozen per-run route snapshot, an
+  owning vector/finalized-OOC corpus, and descriptor-bound selection identity.
+  Direct bounded-memory reduction, MatrixBuilder handoff, deterministic corpus
+  trimming, and selected dependency retrieval remain before OOC promotion.
 - Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
 
 ## Outcome
@@ -596,7 +598,17 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
 - [x] Register tests and document OFF/forced/auto/fail-closed behavior. The
   forced-on experimental profile has fixed work-budget caps, remains
   vector-backed, defaults OFF, and `auto` remains ineligible pending M5 evidence.
-- Complete the `RelationSource`/`RelationSink` reducer, direct corpus MatrixBuilder input, deterministic corpus trimming, and selected-dependency retrieval.
+- [x] Add a move-only `RelationCorpus` for owned vectors and descriptor-bound
+  finalized V2 OOC artifacts. Selection identity is bound to one corpus
+  instance, survives handle moves, and rejects same-generation/same-count
+  foreign or reopened corpora. Collector finalization hands off its descriptor;
+  adoption validates persisted index identity, count, offsets, and both extents
+  against the reader's actual mapped handles. V2 does not persist generation or
+  store identity in `.reldata`, so same-sized foreign payload detection requires
+  a later paired-data format and remains an OOC promotion blocker.
+- Complete the bounded `RelationSource`/`RelationSink` reducer, direct selected
+  corpus MatrixBuilder input, deterministic corpus trimming, and
+  selected-dependency retrieval.
 - Adaptive and public vector routes are covered. OOC/resume/distributed are
   explicitly rejected before callback/checkpoint/store/snapshot side effects in
   forced mode; full `Pipeline::run()` freezes one route snapshot across phase
@@ -1150,9 +1162,16 @@ The plan touches lifecycle diagrams embedded as comments in `collector.hpp` and 
   2-way purge, M2b weight-[3,8] star/MST plan/prepare/commit, and M2c budgeted
   sequential orchestration are complete with exact projection and
   dependency-kernel oracles; the full `MatrixBuilder` payload oracle remains.
-- [ ] **T6 (P1, human: ~2d / agent: ~4h)** — persistence — normalize materialization and prove stream/OOC/MatrixBuilder round trips.
+- [ ] **T6 (P1, human: ~2d / agent: ~4h)** — persistence — finalized writer
+  descriptor handoff, owning vector/OOC corpus lifetime, and selection instance
+  identity are complete; normalize reducer sinks and prove direct
+  stream/OOC/MatrixBuilder/dependency round trips.
 - [x] **T7 (P2, human: ~2d / agent: ~4h)** — parallel scheduler — add conflict batches, ordered commit, thread equivalence, and TSAN.
-- [ ] **T8 (P2, human: ~2d / agent: ~4h)** — integration evidence — strict policy parsing and the shared engine's single structured dispatch are complete; production route overlay, realistic scale corpora, and cross-size validation remain.
+- [ ] **T8 (P2, human: ~2d / agent: ~4h)** — integration evidence — strict policy
+  parsing, the shared engine's single structured dispatch, the default-off
+  production vector overlay, frozen callback snapshot, and unsupported-route
+  side-effect boundaries are complete; realistic scale corpora, bounded OOC
+  integration, and cross-size validation remain.
 
 ### CEO Review Completion Summary
 
@@ -1250,7 +1269,16 @@ special-Q/distributed producers
                          +----------> solver ----------+--> sqrt
 ```
 
-Coupling is contained by the neutral key helper and corpus source/sink interface. Scaling pressure appears first in source-set/incidence memory, so output-vector materialization cannot be the promoted design. The only security-sensitive boundary is untrusted/corrupt persisted lengths and offsets; readers use checked arithmetic and fail closed. Inline state diagrams should be added to `ooc_relation_store.hpp`, `collector.hpp`, and the new reduction engine because their transitions are non-obvious.
+Coupling is contained by the neutral key helper and corpus source/sink interface.
+Scaling pressure appears first in source-set/incidence memory, so output-vector
+materialization cannot be the promoted design. The security-sensitive boundaries
+are untrusted persisted lengths/offsets and paired-file identity. Readers use
+checked arithmetic and fail closed on format or extent corruption. Finalized V2
+stores identity only in `.relidx`, so a same-sized foreign `.reldata` payload
+cannot be authenticated; exclusive pair ownership is required now, and a
+paired-data identity is required before OOC promotion. Inline state diagrams
+should be added to `ooc_relation_store.hpp`, `collector.hpp`, and the new
+reduction engine because their transitions are non-obvious.
 
 ### Code Quality Review
 
@@ -1300,7 +1328,10 @@ SCALE AND RELEASE
     +-- [EXISTING GATE] 17/27/40/81-bit OFF-mode factorization
 ```
 
-All new paths currently require tests because implementation has not begun. The gaps are accepted into M1-M5, not deferred. An external gstack QA artifact records the branch-specific test plan.
+This diagram records the coverage plan at review time. M1, the vector-backed
+M2/M3 implementation, and the explicit M4 vector route now have tests. Remaining
+gaps are the full MatrixBuilder/OOC payload oracle, direct corpus handoff,
+selected dependency lifetime, paired-data identity, and scale evidence.
 
 ### Performance Review
 
@@ -1318,13 +1349,17 @@ All new paths currently require tests because implementation has not begun. The 
 | materializer | nested pair or factor provenance lost | Yes | Immutable-source reconstruction and exact checks | No |
 | writer/checkpoint | SQ progress outruns committed relation prefix | Yes | Paired versioned descriptor; fail closed | No |
 | prefix reader | corrupt size/offset causes OOB/allocation | Yes | Checked arithmetic and runtime validation | No |
+| paired OOC files | same-sized foreign data payload passes V2 extent checks | Yes | Exclusive ownership now; paired-data identity before OOC promotion | No after promotion blocker lands |
 | corpus owner | files/vectors die before matrix/sqrt use | Yes | Owning result lifetime | No |
 | engine route | generation reduced zero or twice | Yes | Move-only input and route digest | No |
 | structured pivot | dependency nullity changes | Yes | Exact oracle and pre-publish validation | No |
 | worker batch | exception or overlap partially commits | Yes | Join/discard batch; ordered commit | No |
 | scale policy | nominal excess hides matrix regression | Yes | Frozen materiality and full-NNZ budgets | No |
 
-Critical gaps after plan revision: 0. Before the listed tests and handlers land, structured mode remains unavailable and legacy default behavior remains unchanged.
+The explicit structured vector route is available but default-off. Automatic and
+OOC structured routes remain unavailable until the bounded corpus handoff,
+paired-data identity, full payload oracle, and scale gates land. Legacy default
+behavior remains unchanged.
 
 ### NOT in Scope After Engineering Review
 

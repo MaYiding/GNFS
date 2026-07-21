@@ -311,8 +311,8 @@ public:
     [[nodiscard]] std::vector<Relation> finalize_relations() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (ooc_writer_) {
-            (void)ooc_writer_->finalize();
-            OOCRelationReader reader(config_.ooc_base_path);
+            const auto descriptor = ooc_writer_->finalize();
+            OOCRelationReader reader(config_.ooc_base_path, descriptor);
             return reader.read_all();
         }
         if (relations_pmr_) {
@@ -347,7 +347,8 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (ooc_writer_) {
             if (ooc_writer_->state() == OOCWriterState::Finalized) {
-                OOCRelationReader reader(config_.ooc_base_path);
+                const auto descriptor = ooc_writer_->finalize();
+                OOCRelationReader reader(config_.ooc_base_path, descriptor);
                 return reader.read_all();
             }
             if (ooc_writer_->state() == OOCWriterState::Failed) {
@@ -444,19 +445,20 @@ public:
     }
 
     /// Finalize the OOC writer without materializing collected relations.
-    /// Idempotent. Afterwards add() deterministically throws std::logic_error,
-    /// and an external OOCRelationReader can open the finalized files. In
-    /// vector mode this is a no-op and the collector remains appendable.
+    /// OOC mode returns the exact finalized descriptor, and repeated calls
+    /// return the same descriptor. Afterwards add() deterministically throws
+    /// std::logic_error. Vector mode returns std::nullopt and remains appendable.
     ///
     /// Used by distributed_sieve worker children, which need the master to read
     /// the per-worker OOC store but should not pay the cost of `get_relations()`
     /// (which copies all relations into memory and then immediately discards them
     /// when the child exits).
-    void finalize_ooc() {
+    std::optional<OOCSnapshotDescriptor> finalize_ooc() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (ooc_writer_) {
-            (void)ooc_writer_->finalize();
+            return ooc_writer_->finalize();
         }
+        return std::nullopt;
     }
 
     /// 清空收集器

@@ -746,6 +746,27 @@ static Relation make_snapshot_relation(int index) {
     return relation;
 }
 
+void test_finalize_ooc_vector_mode_remains_appendable() {
+    std::cout << "Testing finalize_ooc vector-mode no-op..." << std::endl;
+
+    RelationCollector collector;
+    CHECK(collector.add(make_snapshot_relation(0)));
+    CHECK(!collector.finalize_ooc().has_value());
+    CHECK(collector.add(make_snapshot_relation(1)));
+    CHECK(!collector.finalize_ooc().has_value());
+
+    const auto relations = collector.finalize_relations();
+    CHECK(relations.size() == 2);
+    CHECK(relations[0].a == 1);
+    CHECK(relations[1].a == 3);
+
+    // Vector finalize_relations() is also non-consuming for compatibility.
+    CHECK(collector.add(make_snapshot_relation(2)));
+    CHECK(collector.size() == 3);
+
+    std::cout << "  finalize_ooc vector-mode no-op: PASS" << std::endl;
+}
+
 void test_ooc_snapshot_append_snapshot_finalize() {
     std::cout << "Testing OOC snapshot -> append -> snapshot -> finalize..." << std::endl;
     auto path = make_tmp_ooc_path("snapshot_append");
@@ -772,6 +793,21 @@ void test_ooc_snapshot_append_snapshot_finalize() {
     CHECK(second[3].a == 7);
     CHECK(second[4].a == 9);
     CHECK(first.size() == 3); // prior materialized prefix remains stable
+
+    const auto descriptor = collector.finalize_ooc();
+    const auto repeated_descriptor = collector.finalize_ooc();
+    CHECK(descriptor.has_value());
+    CHECK(repeated_descriptor == descriptor);
+    CHECK(descriptor->format_version == OOCRelationWriter::FORMAT_VERSION);
+    CHECK(descriptor->store_id != 0);
+    CHECK(descriptor->generation != 0);
+    CHECK(descriptor->count == 5);
+    CHECK(std::filesystem::file_size(path + ".reldata") == descriptor->data_end);
+    CHECK(std::filesystem::file_size(path + ".relidx") ==
+          OOCRelationWriter::index_size_for_count(descriptor->count));
+
+    OOCRelationReader expected_reader(path, *descriptor);
+    CHECK(expected_reader.count() == 5);
 
     const auto finalized = collector.finalize_relations();
     CHECK(finalized.size() == 5);
@@ -1534,7 +1570,29 @@ void test_ooc_collector_recovers_finalized_corpus() {
         append_rejected = true;
     }
     CHECK(append_rejected);
-    CHECK(collector.finalize_relations().size() == 2);
+
+    const auto recovered_descriptor = collector.finalize_ooc();
+    const auto repeated_descriptor = collector.finalize_ooc();
+    CHECK(recovered_descriptor.has_value());
+    CHECK(repeated_descriptor == recovered_descriptor);
+    CHECK(recovered_descriptor->format_version == OOCRelationWriter::FORMAT_VERSION);
+    CHECK(recovered_descriptor->store_id == descriptor.store_id);
+    CHECK(recovered_descriptor->generation == descriptor.generation);
+    CHECK(recovered_descriptor->count == 2);
+    CHECK(recovered_descriptor->data_end > descriptor.data_end);
+
+    const auto snapshot = collector.snapshot_relations();
+    CHECK(snapshot.size() == 2);
+    CHECK(snapshot[0].a == 1);
+    CHECK(snapshot[1].a == 3);
+
+    const auto finalized = collector.finalize_relations();
+    CHECK(finalized.size() == 2);
+    CHECK(finalized[0].a == 1);
+    CHECK(finalized[1].a == 3);
+
+    OOCRelationReader expected_reader(path, *recovered_descriptor);
+    CHECK(expected_reader.count() == 2);
 
     std::cout << "  Collector finalized crash-window recovery: PASS" << std::endl;
 }
@@ -1630,6 +1688,7 @@ int main() {
     test_ooc_clear_recycle();
     test_ooc_empty_base_path_rejected();
     test_ooc_legacy_save_load_disabled();
+    test_finalize_ooc_vector_mode_remains_appendable();
     test_ooc_snapshot_append_snapshot_finalize();
     test_ooc_checkpoint_requires_explicit_resume();
     test_ooc_failed_state_rejects_mutation();
