@@ -179,7 +179,9 @@ int main() {
 
         if (collector.size() < 10) break;
 
-        relations = collector.get_relations();
+        // Reduce a stable prefix while keeping the collector appendable when a
+        // later adaptive round needs more raw relations.
+        relations = collector.snapshot_relations();
         FilterConfig fc;
         fc.remove_singletons = true; fc.max_passes = 10;
         RelationFilter filter(fc);

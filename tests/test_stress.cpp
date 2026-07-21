@@ -409,8 +409,9 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
         if (collector.size() < 10) break;
 
-        // Filter + merge
-        relations = collector.get_relations();
+        // Reduce a stable prefix while keeping the collector appendable when a
+        // later adaptive round needs more raw relations.
+        relations = collector.snapshot_relations();
         FilterConfig filt_config;
         filt_config.remove_singletons = true;
         filt_config.max_passes = 10;

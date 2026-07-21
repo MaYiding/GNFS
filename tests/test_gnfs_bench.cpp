@@ -281,7 +281,9 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
 
         if (collector.size() < 10) break;
 
-        relations = collector.get_relations();
+        // Reduce a stable prefix while keeping the collector appendable when a
+        // later adaptive round needs more raw relations.
+        relations = collector.snapshot_relations();
         size_t pre_filter = relations.size();
 
         // Light filtering: 1 pass to remove obvious singletons without cascade
