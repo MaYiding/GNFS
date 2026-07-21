@@ -29,4 +29,3 @@ These items were considered during the structured relation-reduction review and 
 - **Why:** LP distributions change sharply across size bands.
 - **Deferred because:** A policy cannot be calibrated before fixed 120-bit and 50-digit corpora establish stable measurements.
 - **Depends on:** Reproducible M5 reports across several size bands.
-
