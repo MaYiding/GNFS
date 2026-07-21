@@ -6,8 +6,8 @@
 - Branch: `codex/parallel-structured-filter`
 - State: M1 contracts and routing complete; M2a 2-way, M2b weight-[3,8]
   tree-basis, M2c budgeted sequential orchestration, and M3a.1 immutable
-  conflict planning complete; M3a.2 parallel preparation is complete, and
-  atomic batch publication is next
+  conflict planning complete; M3a.2 parallel preparation, M3b atomic batch
+  publication, and the M3c.1 vector-backed parallel scheduler are complete
 - Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
 
 ## Outcome
@@ -521,10 +521,43 @@ Exit gate: every hand-built and randomized case passes the exact dependency-spac
   edge count, and a persistence-limit slot contributes zero. The final offset
   equals the output-row ID count, so callers can recover each slot's exact
   output range without compacting away rejected slots.
-- M3c, next: follow the atomic publication boundary with the budgeted parallel
-  scheduler. It performs ordered budget admission, persistence-cache folding,
-  singleton peeling after publication, parallel shard construction, and the
-  complete scheduler loop.
+- M3c.1, complete: retain `reduce_budgeted()` unchanged as the M2c sequential policy
+  oracle. Add a separate parallel scheduler with
+  `StructuredParallelReductionOptions`. Its `max_batch_candidates` and
+  `worker_count` fields must both be nonzero. `worker_count=1` defines the
+  parallel scheduler's thread-equivalence baseline.
+- Each scheduler pass follows one frozen coordinator order: build the canonical
+  conflict-free plan; apply metadata policy, persistence-cache lookup, and the
+  candidate-examination gate in candidate order; run drain-all parallel
+  preparation; apply post-prepare admission in slot order; publish the accepted
+  slots through one masked atomic batch commit; and, only when that commit
+  publishes at least one candidate, peel singletons exactly once.
+- Pre-prepare cache hits do not consume the candidate-examination budget.
+  Once a wave has a dispatchable prefix, the coordinator reserves cumulative
+  emitted-row and LP-fill budgets as if every earlier slot succeeds. A later
+  metadata rejection, cache hit, or examination boundary ends that prefix and
+  defers the candidate until the next deterministic replan. This conservative
+  rule preserves metadata-before-cache precedence without speculatively
+  polluting persistence state.
+- Post-prepare admission checks cumulative emitted-row and LP-fill budgets before
+  interpreting persistence outcomes or ready payloads. It then stages
+  persistence-cache entries, scheduler statistics, materialization rejections,
+  and the publication mask in slot order without mutating reducer policy state.
+- A fatal preparation barrier or publication failure discards every staged
+  scheduler statistic and persistence-cache change from the current pass.
+  Previously completed commits and peels remain published. Speculative
+  preparation fails closed: a fatal error aborts the pass even if later ordered
+  admission would have rejected that candidate.
+- An empty plan, a fully rejected plan, or a batch with no accepted publication
+  is a nonpublishing pass. It does not advance the incidence epoch and does not
+  peel singletons. Nonfatal ordered policy and cache outcomes may still be
+  folded before the scheduler chooses the existing stop reason.
+- M3c.1 remains vector-backed and does not provide bounded-memory
+  or out-of-core execution. It adds no batch-specific statistics and does not
+  reinterpret existing candidate-level counters.
+- M3c.2, next: add randomized width and worker equivalence, controlled fatal
+  barrier and prepublication failpoints, the supported ThreadSanitizer lane,
+  and bounded shard construction before claiming the complete M3 exit gate.
 - Compare `threads=1,2,4,hardware_concurrency`.
 - Run the narrow relation suite under ThreadSanitizer where supported.
 

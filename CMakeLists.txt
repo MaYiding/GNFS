@@ -1095,6 +1095,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME StructuredBatchCommit COMMAND test_structured_batch_commit)
     set_tests_properties(StructuredBatchCommit PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Budgeted deterministic parallel structured-reduction driver.
+    add_executable(test_structured_parallel_driver
+        tests/test_structured_parallel_driver.cpp
+    )
+    target_link_libraries(test_structured_parallel_driver PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredParallelDriver COMMAND test_structured_parallel_driver)
+    set_tests_properties(StructuredParallelDriver PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Structured source-XOR materialization and persistence contracts.
     add_executable(test_structured_materialization
         tests/test_structured_materialization.cpp

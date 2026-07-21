@@ -294,6 +294,17 @@ struct StructuredReductionRunResult final {
     [[nodiscard]] bool operator==(const StructuredReductionRunResult&) const noexcept = default;
 };
 
+/// Execution shape for the vector-backed deterministic parallel scheduler.
+/// Both fields must be nonzero. Batch width bounds selected candidates, while
+/// worker count bounds concurrent candidate materialization.
+struct StructuredParallelReductionOptions final {
+    size_t max_batch_candidates = 1;
+    uint32_t worker_count = 1;
+
+    [[nodiscard]] bool
+    operator==(const StructuredParallelReductionOptions&) const noexcept = default;
+};
+
 /// Deterministic vector-backed sequential reference over the LP incidence matrix.
 ///
 /// Logical rows retain only exact source and LP symmetric differences. Plans
@@ -302,8 +313,8 @@ struct StructuredReductionRunResult final {
 /// Active SourceCombination rows are GF(2) transform vectors over the immutable
 /// corpus and must have full row rank. Source IDs may overlap between active
 /// rows; overlap alone is not an invariant violation.
-/// Parallel batches and OOC persistence are later milestones with additional
-/// planning and storage requirements.
+/// Parallel batches retain the same vector-backed corpus and append-only
+/// incidence history. Bounded-memory OOC execution remains a later milestone.
 class SequentialStructuredReducer final {
 public:
     explicit SequentialStructuredReducer(SourceCorpus corpus);
@@ -377,6 +388,16 @@ public:
     [[nodiscard]] StructuredReductionRunResult
     reduce_budgeted(const StructuredReductionBudget& budget,
                     TreeBasisPlanner planner = TreeBasisPlanner::DeterministicMst);
+
+    /// Run the same reduction policy through deterministic conflict-free
+    /// batches and a drain-all parallel preparation barrier. Scheduler and
+    /// persistence accounting are folded in slot order only after an atomic
+    /// batch publication succeeds. The sequential driver remains the reference
+    /// oracle; this first parallel scheduler is still vector-backed.
+    [[nodiscard]] StructuredReductionRunResult
+    reduce_budgeted_parallel(const StructuredReductionBudget& budget,
+                             const StructuredParallelReductionOptions& options,
+                             TreeBasisPlanner planner = TreeBasisPlanner::DeterministicMst);
 
     [[nodiscard]] core::Relation materialize(StructuredRowId row) const;
     /// Materialize active rows in the exact order returned by active_row_ids().

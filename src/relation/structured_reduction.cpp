@@ -1374,6 +1374,7 @@ struct SequentialStructuredReducer::Impl final {
     [[nodiscard]] StructuredBatchCommitResult
     commit_prepared_batch(StructuredIncidenceSnapshotId snapshot,
                           std::span<const StructuredBatchPrepareOutcome> outcomes,
+                          std::span<const uint8_t> publish_mask,
                           size_t expected_prepared_candidates,
                           size_t expected_persistence_limited_candidates) {
         validate_state();
@@ -1400,18 +1401,35 @@ struct SequentialStructuredReducer::Impl final {
             fail(StructuredReductionErrorCode::InvalidPlan,
                  "prepared batch is moved-from or has inconsistent outcome counts");
         }
+        if (publish_mask.size() != outcomes.size()) {
+            fail(StructuredReductionErrorCode::InvalidPlan,
+                 "prepared batch publication mask has the wrong size");
+        }
 
         size_t actual_prepared_candidates = 0;
         size_t actual_persistence_limited_candidates = 0;
-        for (const auto& outcome : outcomes) {
+        size_t published_prepared_candidates = 0;
+        for (size_t outcome_index = 0; outcome_index < outcomes.size(); ++outcome_index) {
+            const auto& outcome = outcomes[outcome_index];
             if (outcome.valueless_by_exception()) {
                 fail(StructuredReductionErrorCode::InvalidPlan,
                      "prepared batch contains a valueless outcome");
             }
-            if (std::holds_alternative<StructuredBatchPersistenceLimit>(outcome))
+            if (publish_mask[outcome_index] > 1) {
+                fail(StructuredReductionErrorCode::InvalidPlan,
+                     "prepared batch publication mask is not boolean");
+            }
+            if (std::holds_alternative<StructuredBatchPersistenceLimit>(outcome)) {
+                if (publish_mask[outcome_index] != 0) {
+                    fail(StructuredReductionErrorCode::InvalidPlan,
+                         "prepared batch persistence marker cannot be published");
+                }
                 ++actual_persistence_limited_candidates;
-            else
+            } else {
                 ++actual_prepared_candidates;
+                if (publish_mask[outcome_index] != 0)
+                    ++published_prepared_candidates;
+            }
         }
         if (actual_prepared_candidates != expected_prepared_candidates ||
             actual_persistence_limited_candidates != expected_persistence_limited_candidates) {
@@ -1488,7 +1506,9 @@ struct SequentialStructuredReducer::Impl final {
                                       std::move(bucket_ids), true});
         };
 
-        for (const auto& outcome : outcomes) {
+        for (size_t outcome_index = 0; outcome_index < outcomes.size(); ++outcome_index) {
+            const auto& outcome = outcomes[outcome_index];
+            const bool publish = publish_mask[outcome_index] != 0;
             if (const auto* two_way = std::get_if<PreparedTwoWayMerge>(&outcome)) {
                 TwoWayMergePlan validated = validate_plan_after_state_validation(two_way->plan());
                 Relation expected = materialize_validated_plan(validated);
@@ -1502,26 +1522,28 @@ struct SequentialStructuredReducer::Impl final {
                          "prepared batch materialization has the wrong LP support");
                 }
 
-                register_candidate_members(validated.members, true);
-                ++two_way_candidates;
-                size_t input_nonpivot_lp_nnz = 0;
-                for (const auto member : validated.members) {
-                    const auto& input = rows[static_cast<size_t>(member.value)];
-                    if (input.lp_keys.empty()) {
-                        fail(StructuredReductionErrorCode::InvariantViolation,
-                             "prepared batch member has empty pivot support");
+                register_candidate_members(validated.members, publish);
+                if (publish) {
+                    ++two_way_candidates;
+                    size_t input_nonpivot_lp_nnz = 0;
+                    for (const auto member : validated.members) {
+                        const auto& input = rows[static_cast<size_t>(member.value)];
+                        if (input.lp_keys.empty()) {
+                            fail(StructuredReductionErrorCode::InvariantViolation,
+                                 "prepared batch member has empty pivot support");
+                        }
+                        input_nonpivot_lp_nnz =
+                            checked_resource_add(input_nonpivot_lp_nnz, input.lp_keys.size() - 1,
+                                                 "prepared batch input LP metric overflows");
                     }
-                    input_nonpivot_lp_nnz =
-                        checked_resource_add(input_nonpivot_lp_nnz, input.lp_keys.size() - 1,
-                                             "prepared batch input LP metric overflows");
+                    if (validated.expected_lp_keys.size() > input_nonpivot_lp_nnz) {
+                        result.lp_fill_growth = checked_resource_add(
+                            result.lp_fill_growth,
+                            validated.expected_lp_keys.size() - input_nonpivot_lp_nnz,
+                            "prepared batch LP fill growth overflows");
+                    }
+                    stage_output(validated.expected_sources, validated.expected_lp_keys);
                 }
-                if (validated.expected_lp_keys.size() > input_nonpivot_lp_nnz) {
-                    result.lp_fill_growth = checked_resource_add(
-                        result.lp_fill_growth,
-                        validated.expected_lp_keys.size() - input_nonpivot_lp_nnz,
-                        "prepared batch LP fill growth overflows");
-                }
-                stage_output(validated.expected_sources, validated.expected_lp_keys);
             } else if (const auto* tree = std::get_if<PreparedTreeBasisMerge>(&outcome)) {
                 TreeBasisMergePlan validated =
                     validate_tree_plan_after_state_validation(tree->plan());
@@ -1543,19 +1565,21 @@ struct SequentialStructuredReducer::Impl final {
                     }
                 }
 
-                register_candidate_members(validated.members, true);
-                ++tree_candidates;
-                tree_rows_consumed =
-                    checked_resource_add(tree_rows_consumed, validated.members.size(),
-                                         "prepared batch tree consumed-row count overflows");
-                tree_rows_emitted =
-                    checked_resource_add(tree_rows_emitted, validated.edges.size(),
-                                         "prepared batch tree emitted-row count overflows");
-                result.lp_fill_growth =
-                    checked_resource_add(result.lp_fill_growth, validated.lp_fill_growth,
-                                         "prepared batch LP fill growth overflows");
-                for (const auto& edge : validated.edges)
-                    stage_output(edge.expected_sources, edge.expected_lp_keys);
+                register_candidate_members(validated.members, publish);
+                if (publish) {
+                    ++tree_candidates;
+                    tree_rows_consumed =
+                        checked_resource_add(tree_rows_consumed, validated.members.size(),
+                                             "prepared batch tree consumed-row count overflows");
+                    tree_rows_emitted =
+                        checked_resource_add(tree_rows_emitted, validated.edges.size(),
+                                             "prepared batch tree emitted-row count overflows");
+                    result.lp_fill_growth =
+                        checked_resource_add(result.lp_fill_growth, validated.lp_fill_growth,
+                                             "prepared batch LP fill growth overflows");
+                    for (const auto& edge : validated.edges)
+                        stage_output(edge.expected_sources, edge.expected_lp_keys);
+                }
             } else {
                 const auto& limited = std::get<StructuredBatchPersistenceLimit>(outcome);
                 if (limited.candidate.valueless_by_exception()) {
@@ -1597,9 +1621,9 @@ struct SequentialStructuredReducer::Impl final {
                                  "prepared batch committed-candidate count overflows");
         result.persistence_limited_candidates = actual_persistence_limited_candidates;
         result.emitted_rows = staged_rows.size();
-        if (result.committed_candidates != actual_prepared_candidates) {
+        if (result.committed_candidates != published_prepared_candidates) {
             fail(StructuredReductionErrorCode::InvalidPlan,
-                 "prepared batch success outcome count is inconsistent");
+                 "prepared batch published success count is inconsistent");
         }
         if (total_consumed < result.emitted_rows ||
             total_consumed - result.emitted_rows != result.committed_candidates) {
@@ -1970,7 +1994,13 @@ StructuredBatchCommitResult SequentialStructuredReducer::commit(StructuredPrepar
         fail(StructuredReductionErrorCode::InvalidPlan,
              "prepared batch handle is moved-from or already consumed");
     }
-    return impl_->commit_prepared_batch(prepared.snapshot_, prepared.outcomes_,
+    std::vector<uint8_t> publish_mask;
+    publish_mask.reserve(prepared.outcomes_.size());
+    for (const auto& outcome : prepared.outcomes_) {
+        publish_mask.push_back(
+            std::holds_alternative<StructuredBatchPersistenceLimit>(outcome) ? 0 : 1);
+    }
+    return impl_->commit_prepared_batch(prepared.snapshot_, prepared.outcomes_, publish_mask,
                                         prepared.prepared_candidate_count_,
                                         prepared.persistence_limited_candidate_count_);
 }
@@ -2426,6 +2456,558 @@ SequentialStructuredReducer::reduce_budgeted(const StructuredReductionBudget& bu
         if (saw_persistence_limit)
             return finish(StructuredReductionStopReason::PersistenceLimit, false, false);
         return finish(StructuredReductionStopReason::BudgetLimit, false, false);
+    }
+}
+
+StructuredReductionRunResult SequentialStructuredReducer::reduce_budgeted_parallel(
+    const StructuredReductionBudget& budget, const StructuredParallelReductionOptions& options,
+    TreeBasisPlanner planner) {
+    validate_budget(budget);
+    if (options.max_batch_candidates == 0 || options.worker_count == 0) {
+        fail(StructuredReductionErrorCode::InvalidInput,
+             "parallel structured reduction requires nonzero batch width and worker count");
+    }
+    if (planner != TreeBasisPlanner::ReferenceStar &&
+        planner != TreeBasisPlanner::DeterministicMst) {
+        fail(StructuredReductionErrorCode::InvalidPlan,
+             "unknown parallel structured-reduction planner");
+    }
+
+    enum class BudgetRejection {
+        None,
+        PivotWeight,
+        Source,
+        OutputLp,
+        Fill,
+        EmittedRows,
+        Materialization,
+    };
+
+    struct CandidateMetadata final {
+        size_t pivot_weight = 0;
+        size_t emitted_rows = 0;
+        size_t output_lp_nnz = 0;
+        size_t lp_fill_growth = 0;
+        std::vector<const SourceCombination*> outputs;
+        std::vector<size_t> output_lp_nnz_by_row;
+    };
+
+    auto candidate_metadata = [&](const auto& plan) {
+        using Plan = std::remove_cvref_t<decltype(plan)>;
+        CandidateMetadata metadata;
+        if constexpr (std::is_same_v<Plan, TwoWayMergePlan>) {
+            metadata.pivot_weight = plan.members.size();
+            metadata.emitted_rows = 1;
+            metadata.output_lp_nnz = plan.expected_lp_keys.size();
+            metadata.outputs.push_back(&plan.expected_sources);
+            metadata.output_lp_nnz_by_row.push_back(plan.expected_lp_keys.size());
+
+            size_t input_nonpivot_lp_nnz = 0;
+            for (const StructuredRowId member : plan.members) {
+                const auto& input = impl_->row_at(member);
+                if (input.lp_keys.empty() || !contains_lp_key(input.lp_keys, plan.witness)) {
+                    fail(StructuredReductionErrorCode::InvariantViolation,
+                         "parallel two-way budget metadata does not contain its pivot");
+                }
+                input_nonpivot_lp_nnz =
+                    checked_resource_add(input_nonpivot_lp_nnz, input.lp_keys.size() - 1,
+                                         "parallel two-way input LP budget metric overflows");
+            }
+            if (metadata.output_lp_nnz > input_nonpivot_lp_nnz)
+                metadata.lp_fill_growth = metadata.output_lp_nnz - input_nonpivot_lp_nnz;
+        } else {
+            static_assert(std::is_same_v<Plan, TreeBasisMergePlan>);
+            metadata.pivot_weight = plan.members.size();
+            metadata.emitted_rows = plan.edges.size();
+            metadata.outputs.reserve(plan.edges.size());
+            metadata.output_lp_nnz_by_row.reserve(plan.edges.size());
+            for (const auto& edge : plan.edges) {
+                metadata.outputs.push_back(&edge.expected_sources);
+                metadata.output_lp_nnz_by_row.push_back(edge.expected_lp_keys.size());
+                metadata.output_lp_nnz =
+                    checked_resource_add(metadata.output_lp_nnz, edge.expected_lp_keys.size(),
+                                         "parallel tree-basis output LP budget metric overflows");
+            }
+            if (metadata.output_lp_nnz != plan.output_lp_nnz) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "parallel tree-basis output LP budget metric is inconsistent");
+            }
+            const size_t expected_growth = metadata.output_lp_nnz > plan.input_nonpivot_lp_nnz
+                                               ? metadata.output_lp_nnz - plan.input_nonpivot_lp_nnz
+                                               : 0;
+            if (expected_growth != plan.lp_fill_growth) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "parallel tree-basis fill budget metric is inconsistent");
+            }
+            metadata.lp_fill_growth = expected_growth;
+        }
+        return metadata;
+    };
+
+    auto metadata_for_candidate = [&](const StructuredBatchCandidate& candidate) {
+        if (candidate.valueless_by_exception()) {
+            fail(StructuredReductionErrorCode::InvalidPlan,
+                 "parallel scheduler received a valueless candidate");
+        }
+        return std::visit([&](const auto& plan) { return candidate_metadata(plan); }, candidate);
+    };
+
+    auto metadata_rejection = [&](const CandidateMetadata& metadata, size_t current_fill,
+                                  size_t current_emitted) {
+        if (metadata.pivot_weight > budget.max_pivot_weight)
+            return BudgetRejection::PivotWeight;
+        for (const SourceCombination* output : metadata.outputs) {
+            if (output == nullptr) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "parallel budget metadata contains a null source output");
+            }
+            if (output->size() > budget.max_source_atoms_per_output)
+                return BudgetRejection::Source;
+        }
+        for (const size_t output_lp_nnz : metadata.output_lp_nnz_by_row) {
+            if (output_lp_nnz > budget.max_odd_lp_keys_per_output)
+                return BudgetRejection::OutputLp;
+        }
+        if (metadata.output_lp_nnz > budget.max_output_lp_nnz_per_commit)
+            return BudgetRejection::OutputLp;
+        const size_t next_fill =
+            checked_resource_add(current_fill, metadata.lp_fill_growth,
+                                 "parallel budgeted-run LP fill growth overflows");
+        if (next_fill > budget.max_total_lp_fill_growth)
+            return BudgetRejection::Fill;
+        const size_t next_emitted =
+            checked_resource_add(current_emitted, metadata.emitted_rows,
+                                 "parallel budgeted-run emitted-row count overflows");
+        if (next_emitted > budget.max_emitted_rows)
+            return BudgetRejection::EmittedRows;
+        return BudgetRejection::None;
+    };
+
+    struct PreparedPayload final {
+        size_t entries = 0;
+        bool limited = false;
+    };
+    auto inspect_prepared_payload = [&](std::span<const Relation> relations) {
+        PreparedPayload payload;
+        for (const Relation& relation : relations) {
+            const size_t pairs =
+                checked_resource_add(relation.extra_ab_pairs.size(), 1,
+                                     "parallel prepared materialized pair count overflows");
+            if (pairs > budget.max_materialized_pairs_per_output ||
+                relation.rational_factors.size() > budget.max_factor_entries_per_side ||
+                relation.algebraic_factors.size() > budget.max_factor_entries_per_side ||
+                relation.rational_large_prime.size() > budget.max_persisted_lp_entries_per_side ||
+                relation.algebraic_large_prime.size() > budget.max_persisted_lp_entries_per_side) {
+                payload.limited = true;
+            }
+            payload.entries = checked_resource_add(
+                payload.entries, pairs, "parallel prepared payload entry count overflows");
+            payload.entries =
+                checked_resource_add(payload.entries, relation.rational_factors.size(),
+                                     "parallel prepared payload entry count overflows");
+            payload.entries =
+                checked_resource_add(payload.entries, relation.algebraic_factors.size(),
+                                     "parallel prepared payload entry count overflows");
+            payload.entries =
+                checked_resource_add(payload.entries, relation.rational_large_prime.size(),
+                                     "parallel prepared payload entry count overflows");
+            payload.entries =
+                checked_resource_add(payload.entries, relation.algebraic_large_prime.size(),
+                                     "parallel prepared payload entry count overflows");
+        }
+        if (payload.entries > budget.max_accepted_materialized_payload_entries_per_commit)
+            payload.limited = true;
+        return payload;
+    };
+
+    struct RoundAccounting final {
+        size_t candidate_plans_considered = 0;
+        size_t budget_limited_plans = 0;
+        size_t persistence_cache_hits = 0;
+        size_t persistence_limited_plans = 0;
+        size_t peak_prepared_payload_entries = 0;
+        StructuredReductionRejectionStats budget_rejections;
+    };
+
+    auto record_budget_rejection = [&](RoundAccounting& accounting, BudgetRejection rejection) {
+        if (rejection == BudgetRejection::None) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "attempted to record an empty parallel budget rejection");
+        }
+        accounting.budget_limited_plans = checked_resource_add(
+            accounting.budget_limited_plans, 1, "parallel budget-limited plan count overflows");
+        size_t* counter = nullptr;
+        switch (rejection) {
+        case BudgetRejection::PivotWeight:
+            counter = &accounting.budget_rejections.pivot_weight_limit;
+            break;
+        case BudgetRejection::Source:
+            counter = &accounting.budget_rejections.source_limit;
+            break;
+        case BudgetRejection::OutputLp:
+            counter = &accounting.budget_rejections.output_lp_limit;
+            break;
+        case BudgetRejection::Fill:
+            counter = &accounting.budget_rejections.fill_limit;
+            break;
+        case BudgetRejection::EmittedRows:
+            counter = &accounting.budget_rejections.emitted_row_limit;
+            break;
+        case BudgetRejection::Materialization:
+            counter = &accounting.budget_rejections.materialization_limit;
+            break;
+        case BudgetRejection::None:
+            break;
+        }
+        if (counter == nullptr) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "unknown parallel structured-reduction budget rejection");
+        }
+        *counter = checked_resource_add(*counter, 1, "parallel budget-rejection counter overflows");
+    };
+
+    struct NextSchedulerStats final {
+        size_t planning_passes = 0;
+        size_t candidate_plans_considered = 0;
+        size_t budget_limited_plans = 0;
+        size_t persistence_cache_hits = 0;
+        size_t persistence_limited_plans = 0;
+        size_t peak_prepared_payload_entries = 0;
+        size_t accepted_lp_fill_growth = 0;
+        StructuredReductionRejectionStats budget_rejections;
+    };
+
+    auto next_scheduler_stats = [&](const RoundAccounting& accounting,
+                                    size_t accepted_fill_growth) {
+        NextSchedulerStats next;
+        next.planning_passes = checked_resource_add(impl_->statistics.planning_passes, 1,
+                                                    "parallel planning-pass statistics overflow");
+        next.candidate_plans_considered = checked_resource_add(
+            impl_->statistics.candidate_plans_considered, accounting.candidate_plans_considered,
+            "parallel considered-candidate statistics overflow");
+        next.budget_limited_plans = checked_resource_add(
+            impl_->statistics.budget_limited_plans, accounting.budget_limited_plans,
+            "parallel budget-limited plan statistics overflow");
+        next.persistence_cache_hits = checked_resource_add(
+            impl_->statistics.persistence_cache_hits, accounting.persistence_cache_hits,
+            "parallel persistence-cache hit statistics overflow");
+        next.persistence_limited_plans = checked_resource_add(
+            impl_->statistics.persistence_limited_plans, accounting.persistence_limited_plans,
+            "parallel persistence-limited plan statistics overflow");
+        next.peak_prepared_payload_entries =
+            std::max(impl_->statistics.peak_prepared_payload_entries,
+                     accounting.peak_prepared_payload_entries);
+        next.accepted_lp_fill_growth =
+            checked_resource_add(impl_->statistics.accepted_lp_fill_growth, accepted_fill_growth,
+                                 "parallel accepted LP fill-growth statistics overflow");
+
+        const auto& current = impl_->statistics.budget_rejections;
+        const auto& delta = accounting.budget_rejections;
+        next.budget_rejections.pivot_weight_limit =
+            checked_resource_add(current.pivot_weight_limit, delta.pivot_weight_limit,
+                                 "parallel pivot-weight rejection statistics overflow");
+        next.budget_rejections.source_limit =
+            checked_resource_add(current.source_limit, delta.source_limit,
+                                 "parallel source rejection statistics overflow");
+        next.budget_rejections.output_lp_limit =
+            checked_resource_add(current.output_lp_limit, delta.output_lp_limit,
+                                 "parallel output-LP rejection statistics overflow");
+        next.budget_rejections.fill_limit = checked_resource_add(
+            current.fill_limit, delta.fill_limit, "parallel fill rejection statistics overflow");
+        next.budget_rejections.emitted_row_limit =
+            checked_resource_add(current.emitted_row_limit, delta.emitted_row_limit,
+                                 "parallel emitted-row rejection statistics overflow");
+        next.budget_rejections.materialization_limit =
+            checked_resource_add(current.materialization_limit, delta.materialization_limit,
+                                 "parallel materialization rejection statistics overflow");
+        return next;
+    };
+
+    auto apply_scheduler_stats = [&](const NextSchedulerStats& next) noexcept {
+        impl_->statistics.planning_passes = next.planning_passes;
+        impl_->statistics.candidate_plans_considered = next.candidate_plans_considered;
+        impl_->statistics.budget_limited_plans = next.budget_limited_plans;
+        impl_->statistics.persistence_cache_hits = next.persistence_cache_hits;
+        impl_->statistics.persistence_limited_plans = next.persistence_limited_plans;
+        impl_->statistics.peak_prepared_payload_entries = next.peak_prepared_payload_entries;
+        impl_->statistics.accepted_lp_fill_growth = next.accepted_lp_fill_growth;
+        impl_->statistics.budget_rejections = next.budget_rejections;
+    };
+
+    StructuredReductionRunResult result;
+    const size_t next_budgeted_runs = checked_resource_add(
+        impl_->statistics.budgeted_runs, 1, "parallel budgeted-run statistics overflow");
+    impl_->statistics.stop_reason = StructuredReductionStopReason::NotStarted;
+    impl_->statistics.budgeted_runs = next_budgeted_runs;
+
+    auto add_run_singletons = [&](size_t removed) {
+        result.singleton_rows_removed =
+            checked_resource_add(result.singleton_rows_removed, removed,
+                                 "parallel budgeted-run singleton-removal count overflows");
+    };
+
+    auto finish = [&](StructuredReductionStopReason reason, bool candidate_limit_stop,
+                      bool commit_limit_stop, const RoundAccounting& accounting,
+                      std::set<PersistenceFailureKey>* staged_persistence_cache) {
+        NextSchedulerStats next = next_scheduler_stats(accounting, 0);
+        size_t next_candidate_stops = impl_->statistics.candidate_limit_stops;
+        size_t next_commit_stops = impl_->statistics.commit_limit_stops;
+        size_t next_budget_stops = impl_->statistics.budget_limit_stops;
+        if (candidate_limit_stop) {
+            next_candidate_stops = checked_resource_add(
+                next_candidate_stops, 1, "parallel candidate-limit stop statistics overflow");
+        }
+        if (commit_limit_stop) {
+            next_commit_stops = checked_resource_add(
+                next_commit_stops, 1, "parallel commit-limit stop statistics overflow");
+        }
+        if (reason == StructuredReductionStopReason::BudgetLimit) {
+            next_budget_stops = checked_resource_add(
+                next_budget_stops, 1, "parallel budget-limit stop statistics overflow");
+        }
+
+        if (staged_persistence_cache != nullptr) {
+            static_assert(noexcept(std::declval<std::set<PersistenceFailureKey>&>().swap(
+                std::declval<std::set<PersistenceFailureKey>&>())));
+            impl_->persistence_limited_plans.swap(*staged_persistence_cache);
+        }
+        apply_scheduler_stats(next);
+        impl_->statistics.candidate_limit_stops = next_candidate_stops;
+        impl_->statistics.commit_limit_stops = next_commit_stops;
+        impl_->statistics.budget_limit_stops = next_budget_stops;
+        impl_->statistics.output_rows = impl_->active_rows;
+        impl_->statistics.stop_reason = reason;
+        result.stop_reason = reason;
+        return result;
+    };
+
+    add_run_singletons(peel_singletons());
+    while (true) {
+        RoundAccounting accounting;
+        const auto two_way_plans = plan_two_way_merges();
+        const auto tree_plans = plan_tree_basis_merges(planner);
+        const size_t raw_candidate_count =
+            checked_resource_add(two_way_plans.size(), tree_plans.size(),
+                                 "parallel structured-reduction candidate count overflows");
+        if (raw_candidate_count == 0)
+            return finish(StructuredReductionStopReason::NoCandidates, false, false, accounting,
+                          nullptr);
+        if (result.commits >= budget.max_commits)
+            return finish(StructuredReductionStopReason::BudgetLimit, false, true, accounting,
+                          nullptr);
+
+        std::vector<StructuredBatchCandidate> remaining_candidates;
+        remaining_candidates.reserve(raw_candidate_count);
+        for (const auto& plan : two_way_plans)
+            remaining_candidates.emplace_back(plan);
+        for (const auto& plan : tree_plans)
+            remaining_candidates.emplace_back(plan);
+
+        std::set<PersistenceFailureKey> staged_persistence_cache = impl_->persistence_limited_plans;
+        bool candidate_limit_stop = false;
+        bool saw_persistence_limit = false;
+        bool committed = false;
+
+        const size_t remaining_commit_slots = budget.max_commits - result.commits;
+        const size_t batch_width = std::min(options.max_batch_candidates, remaining_commit_slots);
+        if (batch_width == 0) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "parallel scheduler has no commit capacity after preflight");
+        }
+
+        while (!remaining_candidates.empty()) {
+            const StructuredIncidenceSnapshotId snapshot{impl_->corpus.generation(),
+                                                         impl_->incidence_epoch};
+            auto selected = select_conflict_free_batch(snapshot, total_row_count(),
+                                                       remaining_candidates, batch_width);
+            if (selected.candidates.empty()) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "parallel scheduler failed to select a nonempty wave");
+            }
+
+            std::vector<StructuredBatchCandidate> dispatch_candidates;
+            dispatch_candidates.reserve(selected.candidates.size());
+            size_t processed_candidate_count = 0;
+            size_t tentative_fill = result.lp_fill_growth;
+            size_t tentative_emitted = result.emitted_rows;
+            for (const auto& candidate : selected.candidates) {
+                const CandidateMetadata metadata = metadata_for_candidate(candidate);
+                const BudgetRejection rejection =
+                    metadata_rejection(metadata, tentative_fill, tentative_emitted);
+                if (rejection != BudgetRejection::None) {
+                    // A prepared prefix may publish. Leave later deterministic
+                    // outcomes for the next epoch instead of accounting for
+                    // work that the sequential policy would not yet observe.
+                    if (!dispatch_candidates.empty())
+                        break;
+                    if (accounting.candidate_plans_considered >=
+                        budget.max_candidate_examinations_per_pass) {
+                        candidate_limit_stop = true;
+                        break;
+                    }
+                    accounting.candidate_plans_considered =
+                        checked_resource_add(accounting.candidate_plans_considered, 1,
+                                             "parallel candidate-examination count overflows");
+                    record_budget_rejection(accounting, rejection);
+                    ++processed_candidate_count;
+                    continue;
+                }
+
+                const auto output_span = std::span<const SourceCombination* const>(
+                    metadata.outputs.data(), metadata.outputs.size());
+                const PersistenceFailureKey persistence_key =
+                    make_persistence_failure_key(output_span);
+                if (staged_persistence_cache.contains(persistence_key)) {
+                    // Preserve metadata-before-cache precedence after any
+                    // successful publication changes cumulative run budgets.
+                    if (!dispatch_candidates.empty())
+                        break;
+                    accounting.persistence_cache_hits =
+                        checked_resource_add(accounting.persistence_cache_hits, 1,
+                                             "parallel persistence-cache hit count overflows");
+                    saw_persistence_limit = true;
+                    ++processed_candidate_count;
+                    continue;
+                }
+                if (accounting.candidate_plans_considered >=
+                    budget.max_candidate_examinations_per_pass) {
+                    candidate_limit_stop = true;
+                    break;
+                }
+                accounting.candidate_plans_considered =
+                    checked_resource_add(accounting.candidate_plans_considered, 1,
+                                         "parallel candidate-examination count overflows");
+                dispatch_candidates.push_back(candidate);
+                ++processed_candidate_count;
+                tentative_fill =
+                    checked_resource_add(tentative_fill, metadata.lp_fill_growth,
+                                         "parallel tentative LP fill-growth reservation overflows");
+                tentative_emitted =
+                    checked_resource_add(tentative_emitted, metadata.emitted_rows,
+                                         "parallel tentative emitted-row reservation overflows");
+            }
+
+            if (dispatch_candidates.empty()) {
+                if (candidate_limit_stop)
+                    break;
+                for (size_t index = 0; index < processed_candidate_count; ++index)
+                    std::erase(remaining_candidates, selected.candidates[index]);
+                continue;
+            }
+
+            auto dispatch = select_conflict_free_batch(snapshot, total_row_count(),
+                                                       std::move(dispatch_candidates),
+                                                       selected.candidates.size());
+            auto prepared = prepare_conflict_free_batch(*this, dispatch, options.worker_count);
+            std::vector<uint8_t> publish_mask(prepared.outcomes_.size(), 0);
+            size_t next_commits = result.commits;
+            size_t next_emitted_rows = result.emitted_rows;
+            size_t next_lp_fill_growth = result.lp_fill_growth;
+
+            for (size_t slot = 0; slot < prepared.outcomes_.size(); ++slot) {
+                const auto& outcome = prepared.outcomes_[slot];
+                const auto& candidate = dispatch.candidates[slot];
+                const CandidateMetadata metadata = metadata_for_candidate(candidate);
+
+                const size_t candidate_fill =
+                    checked_resource_add(next_lp_fill_growth, metadata.lp_fill_growth,
+                                         "parallel admitted LP fill growth overflows");
+                if (candidate_fill > budget.max_total_lp_fill_growth) {
+                    record_budget_rejection(accounting, BudgetRejection::Fill);
+                    continue;
+                }
+                const size_t candidate_emitted =
+                    checked_resource_add(next_emitted_rows, metadata.emitted_rows,
+                                         "parallel admitted emitted-row count overflows");
+                if (candidate_emitted > budget.max_emitted_rows) {
+                    record_budget_rejection(accounting, BudgetRejection::EmittedRows);
+                    continue;
+                }
+
+                if (std::holds_alternative<StructuredBatchPersistenceLimit>(outcome)) {
+                    const auto output_span = std::span<const SourceCombination* const>(
+                        metadata.outputs.data(), metadata.outputs.size());
+                    PersistenceFailureKey key = make_persistence_failure_key(output_span);
+                    if (staged_persistence_cache.insert(std::move(key)).second) {
+                        accounting.persistence_limited_plans = checked_resource_add(
+                            accounting.persistence_limited_plans, 1,
+                            "parallel persistence-limited plan count overflows");
+                    }
+                    saw_persistence_limit = true;
+                    continue;
+                }
+
+                std::span<const Relation> materialized;
+                if (const auto* two_way = std::get_if<PreparedTwoWayMerge>(&outcome)) {
+                    materialized = std::span<const Relation>(&two_way->materialized_relation(), 1);
+                } else {
+                    materialized =
+                        std::get<PreparedTreeBasisMerge>(outcome).materialized_relations();
+                }
+                if (materialized.size() != metadata.emitted_rows) {
+                    fail(StructuredReductionErrorCode::InvariantViolation,
+                         "parallel prepared output count differs from budget metadata");
+                }
+                const PreparedPayload payload = inspect_prepared_payload(materialized);
+                accounting.peak_prepared_payload_entries =
+                    std::max(accounting.peak_prepared_payload_entries, payload.entries);
+
+                if (payload.limited) {
+                    record_budget_rejection(accounting, BudgetRejection::Materialization);
+                    continue;
+                }
+
+                const size_t candidate_commits = checked_resource_add(
+                    next_commits, 1, "parallel admitted commit count overflows");
+                if (candidate_commits > budget.max_commits) {
+                    fail(StructuredReductionErrorCode::InvariantViolation,
+                         "parallel batch exceeded its preflight commit capacity");
+                }
+                publish_mask[slot] = 1;
+                next_commits = candidate_commits;
+                next_emitted_rows = candidate_emitted;
+                next_lp_fill_growth = candidate_fill;
+            }
+
+            const bool publishes_any = std::find(publish_mask.begin(), publish_mask.end(),
+                                                 uint8_t{1}) != publish_mask.end();
+            if (publishes_any) {
+                const size_t accepted_fill_growth = next_lp_fill_growth - result.lp_fill_growth;
+                const NextSchedulerStats next_stats =
+                    next_scheduler_stats(accounting, accepted_fill_growth);
+
+                (void)impl_->commit_prepared_batch(prepared.snapshot_, prepared.outcomes_,
+                                                   publish_mask, prepared.prepared_candidate_count_,
+                                                   prepared.persistence_limited_candidate_count_);
+
+                impl_->persistence_limited_plans.swap(staged_persistence_cache);
+                apply_scheduler_stats(next_stats);
+                result.commits = next_commits;
+                result.emitted_rows = next_emitted_rows;
+                result.lp_fill_growth = next_lp_fill_growth;
+                add_run_singletons(peel_singletons());
+                committed = true;
+                break;
+            }
+
+            for (size_t index = 0; index < processed_candidate_count; ++index)
+                std::erase(remaining_candidates, selected.candidates[index]);
+            if (candidate_limit_stop)
+                break;
+        }
+
+        if (committed)
+            continue;
+        if (candidate_limit_stop) {
+            return finish(StructuredReductionStopReason::BudgetLimit, true, false, accounting,
+                          &staged_persistence_cache);
+        }
+        if (saw_persistence_limit) {
+            return finish(StructuredReductionStopReason::PersistenceLimit, false, false, accounting,
+                          &staged_persistence_cache);
+        }
+        return finish(StructuredReductionStopReason::BudgetLimit, false, false, accounting,
+                      &staged_persistence_cache);
     }
 }
 
