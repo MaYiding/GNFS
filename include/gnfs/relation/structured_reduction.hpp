@@ -15,6 +15,8 @@
 namespace gnfs::relation {
 
 class SequentialStructuredReducer;
+struct StructuredIncidenceBuildOptions;
+struct StructuredIncidenceBuildStats;
 struct StructuredConflictFreeBatchPlan;
 class StructuredPreparedBatch;
 struct StructuredBatchCommitResult;
@@ -313,12 +315,18 @@ struct StructuredParallelReductionOptions final {
 /// Active SourceCombination rows are GF(2) transform vectors over the immutable
 /// corpus and must have full row rank. Source IDs may overlap between active
 /// rows; overlap alone is not an invariant violation.
-/// Parallel batches retain the same vector-backed corpus and append-only
-/// incidence history. Bounded-memory OOC execution remains a later milestone.
+/// Initial incidence construction uses bounded transient row shards. Parallel
+/// batches still retain the vector-backed corpus, logical rows, final bucket
+/// adjacency, and append-only incidence history. Bounded-memory OOC execution
+/// remains a later milestone.
 class SequentialStructuredReducer final {
 public:
     explicit SequentialStructuredReducer(SourceCorpus corpus);
+    SequentialStructuredReducer(SourceCorpus corpus,
+                                const StructuredIncidenceBuildOptions& build_options);
     SequentialStructuredReducer(uint64_t generation, std::vector<core::Relation> relations);
+    SequentialStructuredReducer(uint64_t generation, std::vector<core::Relation> relations,
+                                const StructuredIncidenceBuildOptions& build_options);
     ~SequentialStructuredReducer();
 
     SequentialStructuredReducer(const SequentialStructuredReducer&) = delete;
@@ -405,6 +413,8 @@ public:
     /// OOC provenance and recovery remain a later promotion gate.
     [[nodiscard]] std::vector<core::Relation> materialize_active() const;
     [[nodiscard]] const StructuredReductionStats& stats() const noexcept;
+    /// Resource evidence snapshot for immutable initial-incidence construction.
+    [[nodiscard]] StructuredIncidenceBuildStats incidence_build_stats() const noexcept;
 
 private:
     friend StructuredPreparedBatch
@@ -415,5 +425,41 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+#if defined(GNFS_STRUCTURED_REDUCTION_TEST_HOOKS)
+/// Test-only deterministic events for exercising parallel publication boundaries.
+///
+/// This API and every corresponding call site are compiled out unless the
+/// dedicated test macro is enabled. Prepare-slot callbacks may run concurrently
+/// and therefore must synchronize any shared observation state themselves.
+namespace structured_reduction_testing {
+
+enum class Event : uint8_t {
+    ParallelPrepareSlotStarted,
+    ParallelPrepareSlotCompleted,
+    MaskedBatchCommitBeforePublish,
+    ParallelDriverBeforePostCommitPeel,
+};
+
+inline constexpr size_t no_slot = static_cast<size_t>(-1);
+
+using HookCallback = void (*)(Event event, size_t slot, void* context);
+
+struct Hook final {
+    HookCallback callback = nullptr;
+    void* context = nullptr;
+};
+
+[[nodiscard]] StructuredReductionRunResult reduce_budgeted_parallel_with_hook(
+    SequentialStructuredReducer& reducer, const StructuredReductionBudget& budget,
+    const StructuredParallelReductionOptions& options, const Hook& hook,
+    TreeBasisPlanner planner = TreeBasisPlanner::DeterministicMst);
+
+[[nodiscard]] StructuredBatchCommitResult
+commit_prepared_batch_with_hook(SequentialStructuredReducer& reducer,
+                                StructuredPreparedBatch prepared, const Hook& hook);
+
+} // namespace structured_reduction_testing
+#endif
 
 } // namespace gnfs::relation

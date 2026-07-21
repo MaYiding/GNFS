@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -50,7 +51,16 @@ std::string_view current_test;
             check_failed(#condition, __LINE__);                                                    \
     } while (false)
 
-constexpr std::array<uint32_t, 3> worker_counts{1, 2, 4};
+const std::vector<uint32_t> worker_counts = [] {
+    std::vector<uint32_t> counts{1, 2, 4};
+    const unsigned hardware = std::thread::hardware_concurrency();
+    if (hardware != 0) {
+        const auto value = static_cast<uint32_t>(hardware);
+        if (std::find(counts.begin(), counts.end(), value) == counts.end())
+            counts.push_back(value);
+    }
+    return counts;
+}();
 constexpr std::array<size_t, 3> batch_widths{1, 2, 3};
 
 [[nodiscard]] constexpr LargePrimeKey rational_key(uint64_t prime) noexcept {

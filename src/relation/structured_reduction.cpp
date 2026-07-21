@@ -1,5 +1,6 @@
 #include "gnfs/relation/structured_reduction.hpp"
 #include "gnfs/relation/structured_batch.hpp"
+#include "gnfs/relation/structured_incidence_builder.hpp"
 #include "gnfs/util/ordered_parallel_map.hpp"
 
 #include <algorithm>
@@ -16,6 +17,36 @@ namespace {
 
 using core::PrimePower;
 using core::Relation;
+
+#if defined(GNFS_STRUCTURED_REDUCTION_TEST_HOOKS)
+using StructuredReductionTestEvent = structured_reduction_testing::Event;
+using StructuredReductionTestHook = structured_reduction_testing::Hook;
+
+thread_local const StructuredReductionTestHook* active_structured_reduction_test_hook = nullptr;
+
+class ScopedStructuredReductionTestHook final {
+public:
+    explicit ScopedStructuredReductionTestHook(const StructuredReductionTestHook& hook) noexcept
+        : previous_(std::exchange(active_structured_reduction_test_hook, &hook)) {}
+
+    ~ScopedStructuredReductionTestHook() {
+        active_structured_reduction_test_hook = previous_;
+    }
+
+    ScopedStructuredReductionTestHook(const ScopedStructuredReductionTestHook&) = delete;
+    ScopedStructuredReductionTestHook& operator=(const ScopedStructuredReductionTestHook&) = delete;
+
+private:
+    const StructuredReductionTestHook* previous_ = nullptr;
+};
+
+void invoke_structured_reduction_test_hook(const StructuredReductionTestHook* hook,
+                                           StructuredReductionTestEvent event,
+                                           size_t slot = structured_reduction_testing::no_slot) {
+    if (hook != nullptr && hook->callback != nullptr)
+        hook->callback(event, slot, hook->context);
+}
+#endif
 
 [[noreturn]] void fail(StructuredReductionErrorCode code, const char* message) {
     throw StructuredReductionError(code, message);
@@ -588,11 +619,6 @@ struct SequentialStructuredReducer::Impl final {
         size_t active_degree = 0;
     };
 
-    struct Incidence final {
-        LargePrimeKey key;
-        StructuredRowId row;
-    };
-
     struct PreparedData final {
         TwoWayMergePlan plan;
         Relation materialized;
@@ -603,53 +629,30 @@ struct SequentialStructuredReducer::Impl final {
         std::vector<Relation> materialized;
     };
 
-    explicit Impl(SourceCorpus source_corpus) : corpus(std::move(source_corpus)) {
+    explicit Impl(SourceCorpus source_corpus, const StructuredIncidenceBuildOptions& build_options)
+        : corpus(std::move(source_corpus)) {
+        auto incidence = build_structured_incidence_shards(corpus, build_options);
+        incidence_build_statistics = incidence.stats;
+
         rows.reserve(corpus.size());
-        size_t incidence_count = 0;
         for (size_t ordinal = 0; ordinal < corpus.size(); ++ordinal) {
             const SourceId source = corpus.source_id(ordinal);
-            auto keys = odd_large_prime_keys(corpus.at(source));
+            auto keys = std::move(incidence.row_lp_keys[ordinal]);
             validate_canonical_lp_keys(keys);
-            if (keys.size() > std::numeric_limits<size_t>::max() - incidence_count) {
-                fail(StructuredReductionErrorCode::InvalidInput,
-                     "source incidence count is too large");
-            }
-            incidence_count += keys.size();
             rows.push_back(Row{SourceCombination::singleton(source), std::move(keys), {}, true});
         }
 
-        std::vector<Incidence> incidences;
-        incidences.reserve(incidence_count);
-        for (size_t row_index = 0; row_index < rows.size(); ++row_index) {
-            for (const auto& key : rows[row_index].lp_keys) {
-                incidences.push_back(Incidence{key, StructuredRowId{row_index}});
-            }
-        }
-        std::sort(incidences.begin(), incidences.end(),
-                  [](const Incidence& lhs, const Incidence& rhs) {
-                      if (lhs.key < rhs.key)
-                          return true;
-                      if (rhs.key < lhs.key)
-                          return false;
-                      return lhs.row < rhs.row;
-                  });
-
-        for (size_t begin = 0; begin < incidences.size();) {
-            size_t end = begin + 1;
-            while (end < incidences.size() && incidences[end].key == incidences[begin].key) {
-                ++end;
-            }
+        buckets.reserve(incidence.buckets.size());
+        for (auto& built_bucket : incidence.buckets) {
             const size_t bucket_id = buckets.size();
             Bucket bucket;
-            bucket.key = incidences[begin].key;
-            bucket.adjacency.reserve(end - begin);
-            bucket.active_degree = end - begin;
-            for (size_t i = begin; i < end; ++i) {
-                bucket.adjacency.push_back(incidences[i].row);
-                rows[static_cast<size_t>(incidences[i].row.value)].bucket_ids.push_back(bucket_id);
+            bucket.key = built_bucket.key;
+            bucket.adjacency = std::move(built_bucket.adjacency);
+            bucket.active_degree = bucket.adjacency.size();
+            for (const StructuredRowId row : bucket.adjacency) {
+                rows[static_cast<size_t>(row.value)].bucket_ids.push_back(bucket_id);
             }
             buckets.push_back(std::move(bucket));
-            begin = end;
         }
 
         active_rows = rows.size();
@@ -1724,6 +1727,12 @@ struct SequentialStructuredReducer::Impl final {
         static_assert(std::is_nothrow_move_constructible_v<StructuredRowId>);
         static_assert(std::is_nothrow_move_constructible_v<StructuredBatchCommitResult>);
 
+#if defined(GNFS_STRUCTURED_REDUCTION_TEST_HOOKS)
+        invoke_structured_reduction_test_hook(
+            active_structured_reduction_test_hook,
+            StructuredReductionTestEvent::MaskedBatchCommitBeforePublish);
+#endif
+
         for (auto& staged : staged_rows)
             rows.push_back(std::move(staged));
         for (const auto member : claimed_members)
@@ -1753,15 +1762,25 @@ struct SequentialStructuredReducer::Impl final {
     size_t active_rows = 0;
     uint64_t incidence_epoch = 1;
     StructuredReductionStats statistics;
+    StructuredIncidenceBuildStats incidence_build_statistics;
     std::set<PersistenceFailureKey> persistence_limited_plans;
 };
 
 SequentialStructuredReducer::SequentialStructuredReducer(SourceCorpus corpus)
-    : impl_(std::make_unique<Impl>(std::move(corpus))) {}
+    : SequentialStructuredReducer(std::move(corpus), StructuredIncidenceBuildOptions{}) {}
+
+SequentialStructuredReducer::SequentialStructuredReducer(
+    SourceCorpus corpus, const StructuredIncidenceBuildOptions& build_options)
+    : impl_(std::make_unique<Impl>(std::move(corpus), build_options)) {}
 
 SequentialStructuredReducer::SequentialStructuredReducer(uint64_t generation,
                                                          std::vector<Relation> relations)
     : SequentialStructuredReducer(SourceCorpus(generation, std::move(relations))) {}
+
+SequentialStructuredReducer::SequentialStructuredReducer(
+    uint64_t generation, std::vector<Relation> relations,
+    const StructuredIncidenceBuildOptions& build_options)
+    : SequentialStructuredReducer(SourceCorpus(generation, std::move(relations)), build_options) {}
 
 SequentialStructuredReducer::~SequentialStructuredReducer() = default;
 
@@ -2069,28 +2088,45 @@ StructuredPreparedBatch prepare_conflict_free_batch(const SequentialStructuredRe
             candidate));
     }
 
+#if defined(GNFS_STRUCTURED_REDUCTION_TEST_HOOKS)
+    const StructuredReductionTestHook* const test_hook = active_structured_reduction_test_hook;
+#endif
+
     auto outcomes = gnfs::util::ordered_parallel_map<StructuredBatchPrepareOutcome>(
         validated.size(), worker_count, [&](size_t index) -> StructuredBatchPrepareOutcome {
+#if defined(GNFS_STRUCTURED_REDUCTION_TEST_HOOKS)
+            invoke_structured_reduction_test_hook(
+                test_hook, StructuredReductionTestEvent::ParallelPrepareSlotStarted, index);
+#endif
             auto& candidate = validated[index];
-            try {
-                return std::visit(
-                    [&](auto& plan) -> StructuredBatchPrepareOutcome {
-                        using Plan = std::remove_cvref_t<decltype(plan)>;
-                        if constexpr (std::is_same_v<Plan, TwoWayMergePlan>) {
-                            Relation materialized = impl.materialize_validated_plan(plan);
-                            return PreparedTwoWayMerge(std::move(plan), std::move(materialized));
-                        } else {
-                            auto materialized = impl.materialize_validated_tree_plan(plan);
-                            return PreparedTreeBasisMerge(std::move(plan), std::move(materialized));
-                        }
-                    },
-                    candidate);
-            } catch (const StructuredReductionError& error) {
-                if (error.code() != StructuredReductionErrorCode::PersistenceLimit) {
-                    throw;
+            auto outcome = [&]() -> StructuredBatchPrepareOutcome {
+                try {
+                    return std::visit(
+                        [&](auto& plan) -> StructuredBatchPrepareOutcome {
+                            using Plan = std::remove_cvref_t<decltype(plan)>;
+                            if constexpr (std::is_same_v<Plan, TwoWayMergePlan>) {
+                                Relation materialized = impl.materialize_validated_plan(plan);
+                                return PreparedTwoWayMerge(std::move(plan),
+                                                           std::move(materialized));
+                            } else {
+                                auto materialized = impl.materialize_validated_tree_plan(plan);
+                                return PreparedTreeBasisMerge(std::move(plan),
+                                                              std::move(materialized));
+                            }
+                        },
+                        candidate);
+                } catch (const StructuredReductionError& error) {
+                    if (error.code() != StructuredReductionErrorCode::PersistenceLimit) {
+                        throw;
+                    }
+                    return StructuredBatchPersistenceLimit{std::move(candidate)};
                 }
-                return StructuredBatchPersistenceLimit{std::move(candidate)};
-            }
+            }();
+#if defined(GNFS_STRUCTURED_REDUCTION_TEST_HOOKS)
+            invoke_structured_reduction_test_hook(
+                test_hook, StructuredReductionTestEvent::ParallelPrepareSlotCompleted, index);
+#endif
+            return outcome;
         });
 
     return StructuredPreparedBatch(batch.snapshot, std::move(outcomes));
@@ -2985,6 +3021,11 @@ StructuredReductionRunResult SequentialStructuredReducer::reduce_budgeted_parall
                 result.commits = next_commits;
                 result.emitted_rows = next_emitted_rows;
                 result.lp_fill_growth = next_lp_fill_growth;
+#if defined(GNFS_STRUCTURED_REDUCTION_TEST_HOOKS)
+                invoke_structured_reduction_test_hook(
+                    active_structured_reduction_test_hook,
+                    StructuredReductionTestEvent::ParallelDriverBeforePostCommitPeel);
+#endif
                 add_run_singletons(peel_singletons());
                 committed = true;
                 break;
@@ -3011,6 +3052,26 @@ StructuredReductionRunResult SequentialStructuredReducer::reduce_budgeted_parall
     }
 }
 
+#if defined(GNFS_STRUCTURED_REDUCTION_TEST_HOOKS)
+namespace structured_reduction_testing {
+
+StructuredReductionRunResult reduce_budgeted_parallel_with_hook(
+    SequentialStructuredReducer& reducer, const StructuredReductionBudget& budget,
+    const StructuredParallelReductionOptions& options, const Hook& hook, TreeBasisPlanner planner) {
+    const ScopedStructuredReductionTestHook scope(hook);
+    return reducer.reduce_budgeted_parallel(budget, options, planner);
+}
+
+StructuredBatchCommitResult commit_prepared_batch_with_hook(SequentialStructuredReducer& reducer,
+                                                            StructuredPreparedBatch prepared,
+                                                            const Hook& hook) {
+    const ScopedStructuredReductionTestHook scope(hook);
+    return reducer.commit(std::move(prepared));
+}
+
+} // namespace structured_reduction_testing
+#endif
+
 Relation SequentialStructuredReducer::materialize(StructuredRowId row) const {
     return impl_->corpus.materialize(impl_->row_at(row).sources);
 }
@@ -3028,6 +3089,10 @@ std::vector<Relation> SequentialStructuredReducer::materialize_active() const {
 
 const StructuredReductionStats& SequentialStructuredReducer::stats() const noexcept {
     return impl_->statistics;
+}
+
+StructuredIncidenceBuildStats SequentialStructuredReducer::incidence_build_stats() const noexcept {
+    return impl_->incidence_build_statistics;
 }
 
 } // namespace gnfs::relation

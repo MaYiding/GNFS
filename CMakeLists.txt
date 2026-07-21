@@ -288,6 +288,17 @@ endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/structured_reduction.cpp")
     target_sources(gnfs_core PRIVATE src/relation/structured_reduction.cpp)
+    # The macro-gated failure test compiles a separately instrumented variant
+    # and relies on the production object remaining an independently extractable
+    # archive member. Unity inclusion would merge unrelated dependencies into
+    # that member and produce duplicate symbols when the test links gnfs_core.
+    set_source_files_properties(src/relation/structured_reduction.cpp
+        PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON
+    )
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/structured_incidence_builder.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/structured_incidence_builder.cpp)
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/structured_batch.cpp")
@@ -1132,6 +1143,27 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_structured_parallel_driver PRIVATE gnfs_core Threads::Threads)
     add_test(NAME StructuredParallelDriver COMMAND test_structured_parallel_driver)
     set_tests_properties(StructuredParallelDriver PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Macro-gated fatal-barrier and publication-boundary fault injection. The
+    # implementation is compiled directly so production gnfs_core stays clean.
+    add_executable(test_structured_parallel_failures
+        tests/test_structured_parallel_failures.cpp
+        src/relation/structured_reduction.cpp
+    )
+    target_compile_definitions(test_structured_parallel_failures
+        PRIVATE GNFS_STRUCTURED_REDUCTION_TEST_HOOKS=1
+    )
+    target_link_libraries(test_structured_parallel_failures PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredParallelFailures COMMAND test_structured_parallel_failures)
+    set_tests_properties(StructuredParallelFailures PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Deterministic bounded-shard construction of structured LP incidence.
+    add_executable(test_structured_incidence_builder
+        tests/test_structured_incidence_builder.cpp
+    )
+    target_link_libraries(test_structured_incidence_builder PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredIncidenceBuilder COMMAND test_structured_incidence_builder)
+    set_tests_properties(StructuredIncidenceBuilder PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # Structured source-XOR materialization and persistence contracts.
     add_executable(test_structured_materialization

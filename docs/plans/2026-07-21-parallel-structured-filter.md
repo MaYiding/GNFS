@@ -555,15 +555,35 @@ Exit gate: every hand-built and randomized case passes the exact dependency-spac
 - M3c.1 remains vector-backed and does not provide bounded-memory
   or out-of-core execution. It adds no batch-specific statistics and does not
   reinterpret existing candidate-level counters.
-- M3c.2, in progress: the supported ThreadSanitizer lane is available through
+- M3c.2 implementation complete: deterministic property tests cover three
+  fixed seeds, seven budget profiles, batch widths 1 and 3, and worker counts
+  1, 2, and 4. Fixed-width runs compare the complete state, scheduler
+  statistics, run result, and stop reason; width 1 also compares with the
+  sequential oracle. The host's `hardware_concurrency` count is included when
+  it is reported and is deduplicated from 1, 2, and 4.
+- Macro-gated test hooks cover concurrent preparation start and completion,
+  masked commit prepublication, and the postcommit/pre-peel boundary. Tests
+  prove lowest-slot fatal precedence with tail draining, rollback of staged
+  round state and persistence cache, complete prepublication rollback, and
+  commit-granular state after publication.
+- Initial LP incidence now builds through deterministic bounded row shards.
+  Shard width and worker count are explicit, output order is canonical, and
+  construction statistics report shard count, peak shard rows, peak temporary
+  incidence entries, total incidence entries, requested workers, and peak
+  worker slots. Each row shard is partitioned into deterministic contiguous
+  worker shards; their locally sorted incidences are merged in canonical key
+  and row order before coordinator-only accumulation. This bounds only the
+  per-shard row-support work set. The accumulating distinct-key index is still
+  corpus-scale, while `SourceCorpus`, logical rows, final buckets, and incidence
+  history remain vector-backed. The construction test includes a 5,000-row
+  synthetic first scale band with 48-bit LP keys.
+- The supported ThreadSanitizer lane is available through
   `./scripts/test.sh tsan-relation`. It builds only the ordered parallel-map,
-  parallel-prepare, batch-commit, and parallel-driver tests, runs them serially
-  with a 120-second per-test default, and has a 20-minute Linux CI bound. macOS
-  is supported when its Clang runtime links TSan; other hosts report an explicit
-  skip, while unsupported Linux/macOS toolchains fail configuration.
-- M3c.2 still needs randomized width and worker equivalence, controlled fatal
-  barrier and prepublication failpoints, and bounded shard construction before
-  claiming the complete M3 exit gate.
+  parallel-prepare, batch-commit, parallel-driver, controlled-failure, and
+  bounded-incidence tests, runs them serially with a 120-second per-test
+  default, and has a 20-minute Linux CI bound. macOS is supported when its
+  Clang runtime links TSan; other hosts report an explicit skip, while
+  unsupported Linux/macOS toolchains fail configuration.
 - Compare `threads=1,2,4,hardware_concurrency`.
 - Run the narrow relation suite under ThreadSanitizer where supported.
 
