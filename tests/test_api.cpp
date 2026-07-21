@@ -27,11 +27,34 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 using namespace gnfs::api;
 using gnfs::core::Integer;
+
+using RelationReductionResult = gnfs::relation::RelationReductionResult;
+using RelationVector = std::vector<gnfs::core::Relation>;
+using PipelineSieveMethod = decltype(&Pipeline::sieve_and_collect);
+using PipelineFilterMethod = decltype(&Pipeline::filter);
+using PipelineSolveMethod = decltype(&Pipeline::solve_matrix);
+
+static_assert(!std::is_copy_constructible_v<RelationReductionResult>);
+static_assert(!std::is_copy_assignable_v<RelationReductionResult>);
+static_assert(!std::is_convertible_v<RelationReductionResult, RelationVector>);
+static_assert(std::is_invocable_r_v<RelationReductionResult, PipelineSieveMethod, Pipeline&,
+                                    const gnfs::core::PolynomialContext&,
+                                    const gnfs::factor_base::FactorBase&>);
+static_assert(std::is_invocable_r_v<RelationReductionResult, PipelineFilterMethod, Pipeline&,
+                                    RelationVector>);
+static_assert(!std::is_invocable_v<PipelineFilterMethod, Pipeline&, RelationReductionResult&&>);
+static_assert(std::is_invocable_r_v<Pipeline::MatrixResult, PipelineSolveMethod, Pipeline&,
+                                    RelationReductionResult&&, const gnfs::factor_base::FactorBase&,
+                                    const gnfs::core::PolynomialContext&>);
+static_assert(!std::is_invocable_v<PipelineSolveMethod, Pipeline&, RelationVector&&,
+                                   const gnfs::factor_base::FactorBase&,
+                                   const gnfs::core::PolynomialContext&>);
 
 static int pass_count = 0;
 static int fail_count = 0;
@@ -351,17 +374,18 @@ bool test_pipeline_step_by_step() {
     assert(fb.rational_count() > 0);
     assert(fb.algebraic_count() > 0);
 
-    auto relations = pipeline.sieve_and_collect(ctx, fb);
-    assert(!relations.empty());
+    auto reduction = pipeline.sieve_and_collect(ctx, fb);
+    assert(!reduction.empty());
+    if (reduction.generation == 0) {
+        std::cout << "(sieve reduction generation was zero) ";
+        return false;
+    }
     // sieve_and_collect updates stats_.relations_found; this is the only
     // instant-tier assertion that exercises the GNFS-side counters.
     assert(pipeline.stats().relations_found > 0 &&
            "Pipeline::stats().relations_found should be set after sieving");
 
-    auto filtered = pipeline.filter(std::move(relations));
-    assert(!filtered.empty());
-
-    auto mr = pipeline.solve_matrix(std::move(filtered), fb, ctx);
+    auto mr = pipeline.solve_matrix(std::move(reduction), fb, ctx);
     assert(!mr.dependencies.empty());
     // solve_matrix updates stats_.dependencies_found and matrix dimensions.
     assert(pipeline.stats().dependencies_found > 0 &&
@@ -394,6 +418,21 @@ bool test_pipeline_stats() {
     // selection instead.
     assert(result.stats.method_used == FactorizationMethod::TrialDivision);
     return true;
+}
+
+bool test_pipeline_relation_generations() {
+    Integer n(143);
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline pipeline(n, cfg);
+
+    auto first = pipeline.filter({});
+    auto second = pipeline.filter({});
+    if (first.generation == 0 || second.generation <= first.generation) {
+        std::cout << "(relation generations were not monotonic and nonzero) ";
+        return false;
+    }
+    return first.empty() && second.empty();
 }
 
 bool test_v3_cascade_pipeline_integration() {
@@ -795,11 +834,14 @@ bool test_pipeline_progress_callback() {
 
     auto ctx = pipeline.select_polynomial();
     auto fb = pipeline.build_factor_base(ctx);
-    auto rels = pipeline.sieve_and_collect(ctx, fb);
-    auto filtered = pipeline.filter(std::move(rels));
+    auto reduction = pipeline.sieve_and_collect(ctx, fb);
+    if (reduction.generation == 0) {
+        std::cout << "(progress-path reduction generation was zero) ";
+        return false;
+    }
 
-    // After driving four GNFS phases, the callback should have observed
-    // at least PolynomialSelection, FactorBase, Sieving, Filtering.
+    // After driving three GNFS phases, the callback should have observed
+    // at least PolynomialSelection, FactorBase, and Sieving.
     assert(phases_seen.size() >= 3 &&
            "Pipeline progress callback should fire on each phase transition");
     return true;
@@ -842,6 +884,7 @@ int main() {
     std::cout << "\nPipeline tests:\n";
     TEST(pipeline_step_by_step);
     TEST(pipeline_stats);
+    TEST(pipeline_relation_generations);
     TEST(pipeline_progress_callback);
     TEST(v3_cascade_pipeline_integration);
     TEST(v3_cascade_head_to_head_real_pipeline);

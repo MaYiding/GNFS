@@ -78,12 +78,23 @@ struct RelationReductionResult final {
                             std::vector<core::Relation> result_relations,
                             RelationReductionStats result_stats)
         : generation(result_generation), relations(std::move(result_relations)),
-          stats(std::move(result_stats)) {}
+          stats(std::move(result_stats)) {
+        if (generation == 0) {
+            throw std::invalid_argument("relation reduction generation must be nonzero");
+        }
+    }
 
     RelationReductionResult(const RelationReductionResult&) = delete;
     RelationReductionResult& operator=(const RelationReductionResult&) = delete;
     RelationReductionResult(RelationReductionResult&&) noexcept = default;
     RelationReductionResult& operator=(RelationReductionResult&&) noexcept = default;
+
+    [[nodiscard]] size_t size() const noexcept {
+        return relations.size();
+    }
+    [[nodiscard]] bool empty() const noexcept {
+        return relations.empty();
+    }
 };
 
 /// Pure in-memory implementation of the legacy relation reduction paths.

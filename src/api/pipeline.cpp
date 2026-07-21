@@ -458,6 +458,13 @@ double Pipeline::elapsed_s() const {
     return std::chrono::duration<double>(now - start_time_).count();
 }
 
+uint64_t Pipeline::allocate_relation_generation() {
+    if (next_relation_generation_ == 0) {
+        throw std::overflow_error("relation generation counter exhausted");
+    }
+    return next_relation_generation_++;
+}
+
 void Pipeline::emit_progress(Phase phase, const std::string& msg, double phase_progress) {
     if (!progress_cb_)
         return;
@@ -654,8 +661,8 @@ FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
 // Phase 3: Sieving and Relation Collection
 // ============================================================
 
-std::vector<Relation> Pipeline::sieve_and_collect(const PolynomialContext& ctx,
-                                                  const FactorBase& fb) {
+relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialContext& ctx,
+                                                              const FactorBase& fb) {
     emit_progress(Phase::Sieving, "Starting sieve");
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -811,7 +818,6 @@ std::vector<Relation> Pipeline::sieve_and_collect(const PolynomialContext& ctx,
     size_t initial_target = params_.raw_relation_target(matrix_cols);
     size_t batch_target = initial_target;
     bool lp_enabled = params_.large_prime_bound > params_.algebraic_bound;
-    uint64_t next_reduction_generation = 1;
 
     auto reduce_relations = [&](std::vector<Relation> raw_relations,
                                 relation::ReductionStrategy strategy) {
@@ -822,7 +828,7 @@ std::vector<Relation> Pipeline::sieve_and_collect(const PolynomialContext& ctx,
         reduction_config.merge_rounds = 10;
         reduction_config.strategy = strategy;
 
-        const uint64_t generation = next_reduction_generation++;
+        const uint64_t generation = allocate_relation_generation();
         return relation::RelationReductionEngine::reduce(
             relation::RawRelationSnapshot(generation, std::move(raw_relations)), reduction_config);
     };
@@ -928,24 +934,23 @@ std::vector<Relation> Pipeline::sieve_and_collect(const PolynomialContext& ctx,
             auto dist_reduction = reduce_relations(
                 std::move(dist_rels), lp_enabled ? relation::ReductionStrategy::StandardV0
                                                  : relation::ReductionStrategy::NoLargePrimes);
-            std::vector<Relation> dist_filtered = std::move(dist_reduction.relations);
 
             emit_log(LogLevel::Info, Phase::Sieving,
                      "distributed sieve done: raw=" + std::to_string(stats_.relations_found) +
-                         " usable=" + std::to_string(dist_filtered.size()) +
+                         " usable=" + std::to_string(dist_reduction.size()) +
                          " sq=" + std::to_string(sq_count));
             std::fprintf(stderr, "[dist_sieve] done: raw=%zu usable=%zu sq=%zu\n",
-                         stats_.relations_found, dist_filtered.size(), sq_count);
+                         stats_.relations_found, dist_reduction.size(), sq_count);
             emit_progress(Phase::Sieving, "Sieving complete (distributed)", 1.0);
 
-            return dist_filtered;
+            return dist_reduction;
         }
     }
 
     // Adaptive sieve-filter-merge loop:
     // Collect raw relations, filter+merge, check if enough usable.
     // If not, increase target and continue sieving.
-    std::vector<Relation> relations;
+    std::optional<relation::RelationReductionResult> last_reduction;
     constexpr int MAX_ROUNDS = 10;
     // BACKLOG #11e: checkpoint write 频率. Every N SQ batches (each batch
     // 2-4 SQs) we persist state. N=25 → ~50-100 SQs/checkpoint.
@@ -958,7 +963,9 @@ std::vector<Relation> Pipeline::sieve_and_collect(const PolynomialContext& ctx,
     if (n_cofac_threads == 0)
         n_cofac_threads = 4;
 
+    int last_reduction_round = round_start;
     for (int round = round_start; round < MAX_ROUNDS; ++round) {
+        last_reduction_round = round;
         // ── Batch SQ processing: sieve + cofac in parallel ──
         // Collect a batch of SQ primes, sieve them in parallel (each thread
         // owns its own LatticeSieve copy), then cofac results in parallel.
@@ -1144,9 +1151,11 @@ std::vector<Relation> Pipeline::sieve_and_collect(const PolynomialContext& ctx,
         const auto strategy = !lp_enabled ? relation::ReductionStrategy::NoLargePrimes
                                           : (use_v3 ? relation::ReductionStrategy::StandardV0WithV3
                                                     : relation::ReductionStrategy::StandardV0);
-        auto reduction = reduce_relations(collector.snapshot_relations(), strategy);
-        const auto& reduction_stats = reduction.stats;
-        relations = std::move(reduction.relations);
+        // Avoid retaining the previous reduced corpus while materializing the next probe.
+        last_reduction.reset();
+        last_reduction.emplace(reduce_relations(collector.snapshot_relations(), strategy));
+        const auto& reduction_stats = last_reduction->stats;
+        const auto& relations = last_reduction->relations;
 
         // V3 cascade (GNFS_CASCADE_V3=1): engine runs it after V0 on a
         // partial-relation copy; preserve the existing progress diagnostics.
@@ -1204,6 +1213,18 @@ std::vector<Relation> Pipeline::sieve_and_collect(const PolynomialContext& ctx,
                      round + 1, relations.size(), matrix_cols, lp_cols, effective_cols, merge_rate,
                      beta, batch_target);
     }
+
+    // A tiny or already-exhausted corpus may leave the adaptive loop without
+    // probing. Still publish one reduced generation for the current stable
+    // raw prefix instead of exposing raw relations through the step API.
+    if (!last_reduction) {
+        const bool use_v3 = lp_enabled && cascade_v3_enabled_for_round(last_reduction_round);
+        const auto strategy = !lp_enabled ? relation::ReductionStrategy::NoLargePrimes
+                                          : (use_v3 ? relation::ReductionStrategy::StandardV0WithV3
+                                                    : relation::ReductionStrategy::StandardV0);
+        last_reduction.emplace(reduce_relations(collector.snapshot_relations(), strategy));
+    }
+    const auto& relations = last_reduction->relations;
 
     // The adaptive loop is the last append boundary. Finalize OOC storage only
     // after every possible continuation has been decided.
@@ -1286,14 +1307,14 @@ std::vector<Relation> Pipeline::sieve_and_collect(const PolynomialContext& ctx,
                      " rescues=" + std::to_string(al.rescues_succeeded));
     }
 
-    return relations;
+    return std::move(*last_reduction);
 }
 
 // ============================================================
 // Phase 4: Filtering
 // ============================================================
 
-std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
+relation::RelationReductionResult Pipeline::filter(std::vector<Relation> relations) {
     emit_progress(Phase::Filtering, "Filtering relations");
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -1320,7 +1341,8 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
                                              : relation::ReductionStrategy::StandardV0));
 
     auto reduction = relation::RelationReductionEngine::reduce(
-        relation::RawRelationSnapshot(1, std::move(relations)), reduction_config);
+        relation::RawRelationSnapshot(allocate_relation_generation(), std::move(relations)),
+        reduction_config);
     const auto& reduction_stats = reduction.stats;
 
     stats_.singletons_removed = reduction_stats.filter.singletons_removed;
@@ -1374,17 +1396,15 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
                 static_cast<int>(v0_bfs_policy->reason.size()), v0_bfs_policy->reason.data(),
                 reduction_stats.clique_v0.to_string().c_str(), reduction_stats.merged_relations);
 
-            relations = std::move(reduction.relations);
-
             // V3 cascade skipped — V0 BFS already covered weight≥3 chains.
             // Fall through to final stats/return.
             auto t1_bfs = std::chrono::high_resolution_clock::now();
             stats_.timings.filter_s = std::chrono::duration<double>(t1_bfs - t0).count();
             stats_.relations_after_filter = reduction_stats.output_relations;
             emit_log(LogLevel::Info, Phase::Filtering,
-                     "after filter: " + std::to_string(relations.size()) + " relations");
+                     "after filter: " + std::to_string(reduction.size()) + " relations");
             emit_progress(Phase::Filtering, "Filtering complete", 1.0);
-            return relations;
+            return reduction;
         }
 
         emit_log(LogLevel::Info, Phase::Filtering,
@@ -1407,8 +1427,6 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
         }
     }
 
-    relations = std::move(reduction.relations);
-
     auto t1 = std::chrono::high_resolution_clock::now();
     stats_.timings.filter_s = std::chrono::duration<double>(t1 - t0).count();
     stats_.relations_after_filter = reduction_stats.output_relations;
@@ -1418,25 +1436,26 @@ std::vector<Relation> Pipeline::filter(std::vector<Relation> relations) {
     // LP key; emit count here so 50d/60d plateau analysis has empirical data.
     size_t lp_cols_after_filter = lp_enabled ? reduction_stats.output_lp_columns : 0;
     emit_log(LogLevel::Info, Phase::Filtering,
-             "after filter: " + std::to_string(relations.size()) + " relations" +
+             "after filter: " + std::to_string(reduction.size()) + " relations" +
                  " (lp_cols=" + std::to_string(lp_cols_after_filter) + ")");
     // stderr fallback for stress/progressive runs (no log_cb_ registered)
-    std::fprintf(stderr, "[filter] after: rels=%zu lp_cols=%zu\n", relations.size(),
+    std::fprintf(stderr, "[filter] after: rels=%zu lp_cols=%zu\n", reduction.size(),
                  lp_cols_after_filter);
     emit_progress(Phase::Filtering, "Filtering complete", 1.0);
 
-    return relations;
+    return reduction;
 }
 
 // ============================================================
 // Phase 5: Linear Algebra
 // ============================================================
 
-Pipeline::MatrixResult Pipeline::solve_matrix(std::vector<Relation> relations, const FactorBase& fb,
-                                              const PolynomialContext& ctx) {
+Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult reduction,
+                                              const FactorBase& fb, const PolynomialContext& ctx) {
     emit_progress(Phase::LinearAlgebra, "Building matrix");
 
     auto t0 = std::chrono::high_resolution_clock::now();
+    auto relations = std::move(reduction.relations);
 
     // Matrix builder config
     linalg::MatrixBuilderConfig mb_config;
@@ -2235,18 +2254,18 @@ FactorResult Pipeline::run() {
 
     auto ctx = select_polynomial();
     auto fb = build_factor_base(ctx);
-    auto relations = sieve_and_collect(ctx, fb);
+    auto reduction = sieve_and_collect(ctx, fb);
 
     size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params_.target_excess;
 
     // Effective cols includes LP columns matrix_builder will create.
     bool lp_enabled_post = params_.large_prime_bound > params_.algebraic_bound;
-    size_t post_lp_cols = lp_enabled_post ? relation::count_unique_lp_keys(relations) : 0;
+    size_t post_lp_cols = lp_enabled_post ? reduction.stats.output_lp_columns : 0;
     size_t effective_cols_post = matrix_cols + post_lp_cols;
 
-    if (relations.size() <= effective_cols_post) {
+    if (reduction.size() <= effective_cols_post) {
         emit_log(LogLevel::Error, Phase::Sieving,
-                 "Not enough usable relations: " + std::to_string(relations.size()) +
+                 "Not enough usable relations: " + std::to_string(reduction.size()) +
                      " <= " + std::to_string(effective_cols_post) +
                      " (matrix_cols=" + std::to_string(matrix_cols) +
                      " + lp_cols=" + std::to_string(post_lp_cols) + ")");
@@ -2257,7 +2276,7 @@ FactorResult Pipeline::run() {
         return r;
     }
 
-    auto mr = solve_matrix(std::move(relations), fb, ctx);
+    auto mr = solve_matrix(std::move(reduction), fb, ctx);
     return extract_factors(mr, fb, ctx);
 }
 

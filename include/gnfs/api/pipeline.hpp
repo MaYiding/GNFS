@@ -10,8 +10,10 @@
 #include "../core/relation.hpp"
 #include "../factor_base/builder.hpp"
 #include "../linalg/sparse_matrix.hpp"
+#include "../relation/reduction_engine.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -31,10 +33,9 @@ using linalg::SparseMatrix;
 ///   pipeline.set_progress_callback(my_callback);
 ///   auto ctx = pipeline.select_polynomial();
 ///   auto fb = pipeline.build_factor_base(ctx);
-///   auto rels = pipeline.sieve_and_collect(ctx, fb);
-///   auto filtered = pipeline.filter(std::move(rels));
-///   auto [matrix, deps] = pipeline.solve_matrix(filtered, fb, ctx);
-///   auto result = pipeline.extract_factors(deps, filtered, fb, ctx);
+///   auto reduced = pipeline.sieve_and_collect(ctx, fb);
+///   auto matrix_result = pipeline.solve_matrix(std::move(reduced), fb, ctx);
+///   auto result = pipeline.extract_factors(matrix_result, fb, ctx);
 class Pipeline {
 public:
     Pipeline(const Integer& n, const Config& config = {});
@@ -42,16 +43,16 @@ public:
     // Phase access
     PolynomialContext select_polynomial();
     FactorBase build_factor_base(const PolynomialContext& ctx);
-    std::vector<Relation> sieve_and_collect(const PolynomialContext& ctx, const FactorBase& fb);
-    std::vector<Relation> filter(std::vector<Relation> relations);
+    relation::RelationReductionResult sieve_and_collect(const PolynomialContext& ctx,
+                                                        const FactorBase& fb);
+    relation::RelationReductionResult filter(std::vector<Relation> relations);
 
     struct MatrixResult {
         SparseMatrix matrix;
         std::vector<std::vector<bool>> dependencies;
         std::vector<Relation> relations;  // relations used (order matches matrix rows)
     };
-    MatrixResult solve_matrix(std::vector<Relation> relations,
-                              const FactorBase& fb,
+    MatrixResult solve_matrix(relation::RelationReductionResult reduction, const FactorBase& fb,
                               const PolynomialContext& ctx);
 
     FactorResult extract_factors(const MatrixResult& mr,
@@ -86,10 +87,13 @@ private:
     std::chrono::high_resolution_clock::time_point start_time_;
 
     // Helpers
+    uint64_t allocate_relation_generation();
     void emit_progress(Phase phase, const std::string& msg,
                        double phase_progress = -1.0);
     void emit_log(LogLevel level, Phase phase, const std::string& msg);
     double elapsed_s() const;
+
+    uint64_t next_relation_generation_ = 1;
 };
 
 } // namespace gnfs::api
