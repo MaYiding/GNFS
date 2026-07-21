@@ -1016,6 +1016,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RelationIdentity COMMAND test_relation_identity)
     set_tests_properties(RelationIdentity PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Shared pure-memory legacy reduction engine and explicit strategy contract.
+    add_executable(test_relation_reduction_engine
+        tests/test_relation_reduction_engine.cpp
+    )
+    target_link_libraries(test_relation_reduction_engine PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME RelationReductionEngine COMMAND test_relation_reduction_engine)
+    set_tests_properties(RelationReductionEngine PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Phase 0 radix-sort ENV gate + bit-for-bit parity with std::sort path
     add_executable(test_filter_radix_sort
         tests/test_filter_radix_sort.cpp
