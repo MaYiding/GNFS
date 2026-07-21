@@ -20,32 +20,40 @@ GNFS_RESUME=/var/tmp/gnfs-session ./gnfs <N>
 GNFS_RESUME=/var/tmp/gnfs-session ./gnfs <N>
 ```
 
-**V2 配对恢复流程**:
+**SieveCheckpoint V2 + OOC V3 配对恢复流程**:
 
-1. `RelationCollector::checkpoint_ooc()` flush 两个 OOC stream，写入 prefix
-   sentinel，并返回 `format_version/store_id/generation/count/data_end`。
+1. 新 OOC store 在 `.relidx` 与 `.reldata` 的 V3 header 中持久化同一个不可变
+   `store_id`。`RelationCollector::checkpoint_ooc()` flush 两个 stream，写入 prefix
+   sentinel，并返回 `format_version/store_id/generation/count/data_end`；offset 与
+   `data_end` 都是包含 24-byte data header 的物理文件偏移。
 2. `SieveCheckpoint` 把该 descriptor、`sq_count/current_index/round` 和本次
    run identity 写入同目录临时文件；写入 checksum、完整 flush 后以原子替换发布。
 3. checkpoint 发布成功后，collector 才以同一个 descriptor 重新打开 append。
 4. 重启先严格加载 V2 checkpoint，再比对 N、多项式、因子基和 sieve 参数的
    128-bit run fingerprint；不一致时在打开 OOC store 前 fail closed。
-5. identity 匹配后，再校验 OOC durable store ID 与 committed prefix；允许并
-   截断 checkpoint 之后的未提交 index/data tail。
-6. OOC prefix 恢复成功后，才应用 Special-Q 游标。V1、checksum 错误、路径或
-   store identity 不匹配都 fail closed，不会回退到 fresh 并截断证据。
+5. identity 匹配后，再从同一次只读打开校验 OOC V3 index/data header、配对
+   `store_id` 与 committed prefix；所有检查通过后才允许截断 checkpoint 之后的
+   未提交 index/data tail。同尺寸异源 `.reldata` 也会 fail closed。
+6. OOC prefix 恢复成功后，才应用 Special-Q 游标。V1/V2 OOC descriptor、checksum
+   错误、路径或 store identity 不匹配都 fail closed，不会回退到 fresh 并截断证据。
+   Finalized V1/V2 只保留普通 reader 的只读兼容，不允许 append recovery 或 corpus
+   ownership promotion。
 7. 若进程在 OOC finalize 与 checkpoint 删除之间退出，重启会验证 finalized
    corpus 的 checkpoint prefix 连续性，以只读方式继续，禁止重新 append。
 
 **Crash-safety 边界**:
 
-- 普通 `OOCRelationReader` 始终拒绝 incomplete store；只有带 V2 descriptor 的
-  recovery path 能读取并回滚到已提交前缀。
+- 普通 `OOCRelationReader` 始终拒绝 incomplete store；只有带配对 V3 descriptor
+  的 recovery path 能读取并回滚到已提交前缀。
 - checkpoint 发布使用同目录临时文件和替换操作。发布前失败时重新打开已持久化
   OOC prefix 并重试；若替换后目录同步报错，Pipeline 会严格加载正式文件并与
   本次目标逐字段比较，只有目标版本已可见时才按“已发布、耐久性告警”继续。
 - OOC prefix checkpoint 和 finalize 会同步 data/index 文件，并在 POSIX 上同步
   父目录。进程崩溃矩阵覆盖 prefix、checkpoint 临时态/发布态、append tail、
   finalize metadata 与 final magic；文件系统和硬件仍决定断电耐久性的最终边界。
+- 同进程 checkpoint/resume 只重验 paired header、精确 extent、首 offset 与
+  sentinel，保持 O(1) checkpoint 边界；final precommit 与进程重启恢复才完整扫描
+  offset/record，避免固定 checkpoint 周期对增长中 relation index 造成二次复杂度。
 - 测试用 self-exec 子进程在 typed save stage 调用 `std::_Exit()`，避免析构自动
   finalize 造成“伪崩溃”。这些测试证明进程退出一致性；不把它表述为完整断电证明。
 
@@ -53,7 +61,8 @@ GNFS_RESUME=/var/tmp/gnfs-session ./gnfs <N>
 
 - `include/gnfs/sieve/sieve_checkpoint.hpp` — V2 wire format、checksum、原子发布
 - `include/gnfs/sieve/sieve_run_identity.hpp` — portable run identity
-- `include/gnfs/relation/ooc_relation_store.hpp` — durable store ID、prefix rollback
+- `include/gnfs/relation/ooc_relation_format.hpp` — 轻量 V3 format contract
+- `include/gnfs/relation/ooc_relation_store.hpp` — paired V3 identity、prefix rollback
 - `include/gnfs/relation/collector.hpp` — paired resume descriptor 与 recovery outcome
 - `src/api/pipeline.cpp` — fail-closed load 与 prefix/checkpoint/reopen 顺序
 - `tests/test_sieve_checkpoint.cpp` — 格式、原子发布与真实子进程 crash 边界

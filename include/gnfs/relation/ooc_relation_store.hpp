@@ -2,6 +2,7 @@
 
 #include "gnfs/core/relation.hpp"
 #include "gnfs/relation/large_prime_key.hpp"
+#include "gnfs/relation/ooc_relation_format.hpp"
 #include "gnfs/util/mmap_file.hpp"
 #include "gnfs/util/process.hpp"
 #include <atomic>
@@ -47,10 +48,11 @@ enum class OOCRecoveryOutcome {
 
 /// Stable description of a flushed relation prefix.
 ///
-/// `store_id` is persisted in an incomplete V2 index header, so a checkpoint
-/// can reject a different store across process restarts. `generation` rejects
-/// stale in-process handoffs and is restored from the paired sieve checkpoint;
-/// `count`/`data_end` describe the committed on-disk prefix.
+/// `store_id` is persisted in both V3 file headers, so a checkpoint can reject
+/// either half of a different store across process restarts. `generation`
+/// rejects stale in-process handoffs and is restored from the paired sieve
+/// checkpoint; `count`/`data_end` describe the committed physical on-disk
+/// prefix, including the immutable data header.
 struct OOCSnapshotDescriptor {
     uint64_t format_version = 0;
     uint64_t store_id = 0;
@@ -76,6 +78,17 @@ struct OOCValidatedResumePrefix {
 class OOCRelationPrefixReader;
 
 namespace detail {
+
+inline constexpr uint64_t MAX_COMPACT_RELATION_BYTES =
+    sizeof(int64_t) + sizeof(uint64_t) +
+    2 * (sizeof(uint32_t) +
+         static_cast<uint64_t>(gnfs::core::Relation::MAX_SERIALIZED_FACTORS) * sizeof(uint32_t)) +
+    2 * (sizeof(uint32_t) +
+         static_cast<uint64_t>(gnfs::core::Relation::MAX_SERIALIZED_LARGE_PRIMES) *
+             (2 * sizeof(uint64_t) + sizeof(uint8_t))) +
+    sizeof(uint32_t) +
+    static_cast<uint64_t>(gnfs::core::Relation::MAX_SERIALIZED_EXTRA_AB_PAIRS) *
+        (sizeof(int64_t) + sizeof(uint64_t));
 
 /// Decode one compact OOC record with the same persistence limits used by
 /// core::Relation::serialize(). Keeping this as the single compact decoder lets
@@ -194,33 +207,34 @@ inline gnfs::core::Relation deserialize_compact_relation(const uint8_t* ptr, siz
 /// For 50+ digit (~10M relations, ~2-5GB): essential to avoid OOM.
 class OOCRelationWriter {
 public:
-    // New writes still use V2. V3 constants are exposed reader-first so the
-    // reader can land before the writer switches formats in a later change.
-    static constexpr uint64_t MAGIC_V1_FINAL = 0x474E46535245494CULL; // 'GNFSREIL'
-    static constexpr uint64_t MAGIC_INCOMPLETE_V1 = 0x474E46535245494EULL;
-    static constexpr uint64_t MAGIC_V2_FINAL = 0x474E46535232464CULL;      // 'GNFSR2FL'
-    static constexpr uint64_t MAGIC_V2_INCOMPLETE = 0x474E46535232494EULL; // 'GNFSR2IN'
-    static constexpr uint64_t MAGIC_V3_FINAL = 0x474E46535233464CULL;      // 'GNFSR3FL'
-    static constexpr uint64_t MAGIC_V3_INCOMPLETE = 0x474E46535233494EULL; // 'GNFSR3IN'
-    static constexpr uint64_t MAGIC_V3_DATA = 0x474E465352334441ULL;       // 'GNFSR3DA'
+    static constexpr uint64_t MAGIC_V1_FINAL = OOCRelationStoreFormat::MAGIC_V1_FINAL;
+    static constexpr uint64_t MAGIC_INCOMPLETE_V1 = OOCRelationStoreFormat::MAGIC_INCOMPLETE_V1;
+    static constexpr uint64_t MAGIC_V2_FINAL = OOCRelationStoreFormat::MAGIC_V2_FINAL;
+    static constexpr uint64_t MAGIC_V2_INCOMPLETE = OOCRelationStoreFormat::MAGIC_V2_INCOMPLETE;
+    static constexpr uint64_t MAGIC_V3_FINAL = OOCRelationStoreFormat::MAGIC_V3_FINAL;
+    static constexpr uint64_t MAGIC_V3_INCOMPLETE = OOCRelationStoreFormat::MAGIC_V3_INCOMPLETE;
+    static constexpr uint64_t MAGIC_V3_DATA = OOCRelationStoreFormat::MAGIC_V3_DATA;
 
-    static constexpr uint64_t FORMAT_VERSION_V2 = 2;
-    static constexpr uint64_t FORMAT_VERSION_V3 = 3;
+    static constexpr uint64_t FORMAT_VERSION_V2 = OOCRelationStoreFormat::FORMAT_VERSION_V2;
+    static constexpr uint64_t FORMAT_VERSION_V3 = OOCRelationStoreFormat::FORMAT_VERSION_V3;
 
-    // Compatibility aliases keep the current writer on V2.
-    static constexpr uint64_t MAGIC = MAGIC_V2_FINAL;
-    static constexpr uint64_t MAGIC_INCOMPLETE = MAGIC_V2_INCOMPLETE;
-    static constexpr uint64_t FORMAT_VERSION = FORMAT_VERSION_V2;
+    // New writes and all paired recovery use V3. Explicit V1/V2 constants are
+    // retained solely for ordinary finalized-reader compatibility.
+    static constexpr uint64_t MAGIC = MAGIC_V3_FINAL;
+    static constexpr uint64_t MAGIC_INCOMPLETE = MAGIC_V3_INCOMPLETE;
+    static constexpr uint64_t FORMAT_VERSION = FORMAT_VERSION_V3;
 
-    static constexpr uint64_t INDEX_FORMAT_VERSION_OFFSET = 8;
-    static constexpr uint64_t INDEX_STORE_ID_OFFSET = 16;
-    static constexpr uint64_t INDEX_COUNT_OFFSET = 24;
-    static constexpr uint64_t INDEX_HEADER_BYTES = 32;
-    static constexpr uint64_t INDEX_SENTINEL_BYTES = 8;
+    static constexpr uint64_t INDEX_FORMAT_VERSION_OFFSET =
+        OOCRelationStoreFormat::INDEX_FORMAT_VERSION_OFFSET;
+    static constexpr uint64_t INDEX_STORE_ID_OFFSET = OOCRelationStoreFormat::INDEX_STORE_ID_OFFSET;
+    static constexpr uint64_t INDEX_COUNT_OFFSET = OOCRelationStoreFormat::INDEX_COUNT_OFFSET;
+    static constexpr uint64_t INDEX_HEADER_BYTES = OOCRelationStoreFormat::INDEX_HEADER_BYTES;
+    static constexpr uint64_t INDEX_SENTINEL_BYTES = OOCRelationStoreFormat::INDEX_SENTINEL_BYTES;
 
-    static constexpr uint64_t DATA_FORMAT_VERSION_OFFSET = 8;
-    static constexpr uint64_t DATA_STORE_ID_OFFSET = 16;
-    static constexpr uint64_t DATA_HEADER_BYTES = 24;
+    static constexpr uint64_t DATA_FORMAT_VERSION_OFFSET =
+        OOCRelationStoreFormat::DATA_FORMAT_VERSION_OFFSET;
+    static constexpr uint64_t DATA_STORE_ID_OFFSET = OOCRelationStoreFormat::DATA_STORE_ID_OFFSET;
+    static constexpr uint64_t DATA_HEADER_BYTES = OOCRelationStoreFormat::DATA_HEADER_BYTES;
 
     enum class FinalizeStage {
         MetadataDurable,
@@ -247,10 +261,9 @@ public:
     // 1 MB stream buffer per stream — 千万级关系下减少 syscall。
     static constexpr size_t BUFFER_BYTES = 1 << 20;
 
-    /// Fresh create (default) writes an incomplete V2 header with a durable
-    /// store identity. Paired recovery requires an explicit descriptor from a
-    /// validated SieveCheckpoint V2; no bare "resume whatever is present" path
-    /// is accepted.
+    /// Fresh create (default) writes paired incomplete V3 headers with one
+    /// durable store identity. Paired recovery requires an explicit V3
+    /// descriptor; no bare "resume whatever is present" path is accepted.
     explicit OOCRelationWriter(
         const std::string& base_path,
         std::optional<OOCSnapshotDescriptor> recovery_descriptor = std::nullopt)
@@ -272,11 +285,17 @@ public:
                     "OOCRelationWriter recovery: legacy finalized V1 store cannot verify identity");
             }
             if (existing_magic == MAGIC_V2_FINAL) {
+                throw std::runtime_error("OOCRelationWriter recovery: finalized V2 store is "
+                                         "read-only compatibility data");
+            }
+            if (existing_magic == MAGIC_V2_INCOMPLETE) {
+                throw std::runtime_error("OOCRelationWriter recovery: incomplete V2 store cannot "
+                                         "verify paired identity");
+            }
+            if (existing_magic == MAGIC_V3_FINAL) {
                 // A clean pipeline end finalizes the corpus before deleting the
                 // paired sieve checkpoint. A crash in that window must never
-                // turn the immutable corpus back into an appendable one. The
-                // finalized V2 header retains store_id, and validation also
-                // proves that the paired count/data boundary is an exact prefix.
+                // turn the immutable corpus back into an appendable one.
                 validated_resume_prefix_ =
                     validate_finalized_prefix(base_path, *recovery_descriptor);
                 store_id_ = recovery_descriptor->store_id;
@@ -305,7 +324,8 @@ public:
             generation_ = recovery_descriptor->generation;
             count_ = static_cast<size_t>(validated_resume_prefix_->count);
 
-            // Reopen in r/w mode (no trunc), seek streams past existing content.
+            // Reopen in r/w mode (no trunc). Revalidate both exact handles
+            // before the first seek or metadata mutation.
             data_stream_.open(base_path + ".reldata",
                               std::ios::in | std::ios::out | std::ios::binary);
             idx_stream_.open(base_path + ".relidx",
@@ -313,6 +333,7 @@ public:
             if (!data_stream_ || !idx_stream_) {
                 throw std::runtime_error("OOCRelationWriter resume: cannot reopen at " + base_path);
             }
+            validate_open_v3_pair_headers("resume constructor header validation", std::nullopt);
             // The first append overwrites the committed sentinel slot.
             data_stream_.seekp(static_cast<std::streamoff>(validated_resume_prefix_->data_end));
             // A crash during finalize may have persisted a nonzero count under
@@ -330,7 +351,7 @@ public:
             ensure_streams_good("resume constructor seek");
             recovery_outcome_ = OOCRecoveryOutcome::AppendablePrefix;
         } else {
-            // Fresh create: trunc + write V2 INCOMPLETE header.
+            // Fresh create: trunc + write paired V3 INCOMPLETE headers.
             data_stream_.open(base_path + ".reldata",
                               std::ios::in | std::ios::out | std::ios::trunc | std::ios::binary);
             idx_stream_.open(base_path + ".relidx",
@@ -349,7 +370,12 @@ public:
             idx_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
             idx_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
             idx_stream_.write(reinterpret_cast<const char*>(&incomplete_count), 8);
+            const uint64_t data_magic = MAGIC_V3_DATA;
+            data_stream_.write(reinterpret_cast<const char*>(&data_magic), 8);
+            data_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
+            data_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
             ensure_streams_good("constructor header write");
+            validate_open_v3_pair_headers("constructor header validation", incomplete_count);
         }
     }
 
@@ -393,8 +419,7 @@ public:
     [[nodiscard]] OOCSnapshotDescriptor checkpoint_prefix() {
         require_state(OOCWriterState::Open, "checkpoint_prefix");
         try {
-            data_stream_.flush();
-            ensure_streams_good("checkpoint_prefix data flush");
+            validate_open_v3_pair_headers("checkpoint_prefix header validation", uint64_t{0});
 
             const auto pos = data_stream_.tellp();
             if (pos == std::streampos(-1)) {
@@ -418,6 +443,8 @@ public:
             descriptor.generation = ++generation_;
             descriptor.count = static_cast<uint64_t>(count_);
             descriptor.data_end = end_offset;
+            validate_exact_v3_pair(base_path_, descriptor, MAGIC_V3_INCOMPLETE, uint64_t{0},
+                                   OffsetValidation::BoundaryOnly, "checkpoint_prefix");
             suspended_descriptor_ = descriptor;
             state_ = OOCWriterState::Suspended;
             return descriptor;
@@ -441,6 +468,8 @@ public:
         }
 
         try {
+            validate_exact_v3_pair(base_path_, descriptor, MAGIC_V3_INCOMPLETE, uint64_t{0},
+                                   OffsetValidation::BoundaryOnly, "resume_append");
             data_stream_.clear();
             idx_stream_.clear();
             data_stream_.open(base_path_ + ".reldata",
@@ -451,6 +480,7 @@ public:
                 throw std::runtime_error("OOCRelationWriter::resume_append: cannot reopen at " +
                                          base_path_);
             }
+            validate_open_v3_pair_headers("resume_append reopened header validation", uint64_t{0});
 
             if (descriptor.data_end >
                 static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
@@ -490,9 +520,9 @@ public:
 
         try {
             OOCSnapshotDescriptor descriptor;
+            bool offsets_validated_before_metadata = false;
             if (state_ == OOCWriterState::Open) {
-                data_stream_.flush();
-                ensure_streams_good("finalize data flush");
+                validate_open_v3_pair_headers("finalize header validation", uint64_t{0});
 
                 const auto pos = data_stream_.tellp();
                 if (pos == std::streampos(-1)) {
@@ -510,13 +540,20 @@ public:
             } else {
                 // Suspended already has a flushed sentinel and closed handles.
                 descriptor = *suspended_descriptor_;
+                validate_exact_v3_pair(base_path_, descriptor, MAGIC_V3_INCOMPLETE, uint64_t{0},
+                                       OffsetValidation::FullTable, "finalize suspended prefix");
+                offsets_validated_before_metadata = true;
+                data_stream_.clear();
                 idx_stream_.clear();
+                data_stream_.open(base_path_ + ".reldata",
+                                  std::ios::in | std::ios::out | std::ios::binary);
                 idx_stream_.open(base_path_ + ".relidx",
                                  std::ios::in | std::ios::out | std::ios::binary);
-                if (!idx_stream_) {
+                if (!data_stream_ || !idx_stream_) {
                     throw std::runtime_error(
-                        "OOCRelationWriter::finalize: cannot reopen index at " + base_path_);
+                        "OOCRelationWriter::finalize: cannot reopen store at " + base_path_);
                 }
+                validate_open_v3_pair_headers("finalize reopened header validation", uint64_t{0});
             }
 
             // Commit payload metadata first while the file remains INCOMPLETE.
@@ -540,16 +577,26 @@ public:
                 hook(FinalizeStage::MetadataDurable);
             }
 
+            validate_exact_v3_pair(base_path_, descriptor, MAGIC_V3_INCOMPLETE, descriptor.count,
+                                   offsets_validated_before_metadata
+                                       ? OffsetValidation::BoundaryOnly
+                                       : OffsetValidation::FullTable,
+                                   "finalize precommit");
+            data_stream_.clear();
             idx_stream_.clear();
+            data_stream_.open(base_path_ + ".reldata",
+                              std::ios::in | std::ios::out | std::ios::binary);
             idx_stream_.open(base_path_ + ".relidx",
                              std::ios::in | std::ios::out | std::ios::binary);
-            if (!idx_stream_) {
+            if (!data_stream_ || !idx_stream_) {
                 throw std::runtime_error(
-                    "OOCRelationWriter::finalize: cannot reopen index for final magic at " +
+                    "OOCRelationWriter::finalize: cannot reopen store for final magic at " +
                     base_path_);
             }
+            validate_open_v3_pair_headers("finalize precommit reopened validation",
+                                          descriptor.count);
             idx_stream_.seekp(0);
-            const uint64_t final_magic = MAGIC_V2_FINAL;
+            const uint64_t final_magic = MAGIC_V3_FINAL;
             idx_stream_.write(reinterpret_cast<const char*>(&final_magic), 8);
             idx_stream_.flush();
             ensure_open_streams_good("finalize magic flush");
@@ -626,10 +673,15 @@ public:
     }
 
 private:
+    enum class OffsetValidation {
+        BoundaryOnly,
+        FullTable,
+    };
+
     static std::optional<OOCSnapshotDescriptor> reject_legacy_resume(bool legacy_resume) {
         if (legacy_resume) {
             throw std::invalid_argument("OOCRelationWriter: bare resume is unsupported; a paired "
-                                        "V2 descriptor is required");
+                                        "V3 descriptor is required");
         }
         return std::nullopt;
     }
@@ -646,9 +698,147 @@ private:
             throw std::invalid_argument("OOCRelationWriter recovery: zero generation");
         }
         (void)index_size_for_count(descriptor.count);
+        if (descriptor.data_end < DATA_HEADER_BYTES) {
+            throw std::invalid_argument(
+                "OOCRelationWriter recovery: data extent predates V3 header");
+        }
+        if ((descriptor.count == 0 && descriptor.data_end != DATA_HEADER_BYTES) ||
+            (descriptor.count != 0 && descriptor.data_end == DATA_HEADER_BYTES)) {
+            throw std::invalid_argument(
+                "OOCRelationWriter recovery: relation count/data extent mismatch");
+        }
         if (descriptor.data_end >
             static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
             throw std::overflow_error("OOCRelationWriter recovery: data position overflow");
+        }
+    }
+
+    static uint64_t read_u64_checked(std::istream& stream, const char* operation,
+                                     const char* field) {
+        uint64_t value = 0;
+        stream.read(reinterpret_cast<char*>(&value), sizeof(value));
+        if (stream.gcount() != static_cast<std::streamsize>(sizeof(value))) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": truncated " + field);
+        }
+        return value;
+    }
+
+    static uint64_t stream_size_checked(std::ifstream& stream, const char* operation,
+                                        const char* field) {
+        stream.clear();
+        stream.seekg(0, std::ios::end);
+        const auto position = stream.tellg();
+        if (position == std::streampos(-1)) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": cannot size " + field);
+        }
+        const auto offset = static_cast<std::streamoff>(position);
+        if (offset < 0) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": negative " + field + " size");
+        }
+        stream.clear();
+        stream.seekg(0);
+        return static_cast<uint64_t>(offset);
+    }
+
+    /// Validate a closed, exact V3 snapshot through the same two read handles.
+    /// Same-process checkpoint/resume uses the constant-time boundary mode to
+    /// avoid rescanning a growing index every interval. Final commit and crash
+    /// recovery validate the complete offset table.
+    static void validate_exact_v3_pair(const std::string& base_path,
+                                       const OOCSnapshotDescriptor& descriptor,
+                                       uint64_t expected_magic,
+                                       std::optional<uint64_t> expected_persisted_count,
+                                       OffsetValidation offset_validation, const char* operation) {
+        if (descriptor.format_version != FORMAT_VERSION_V3 || descriptor.store_id == 0) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": invalid V3 descriptor identity");
+        }
+        (void)index_size_for_count(descriptor.count);
+        if (descriptor.data_end < DATA_HEADER_BYTES ||
+            descriptor.data_end >
+                static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": invalid V3 data extent");
+        }
+
+        std::ifstream index(base_path + ".relidx", std::ios::binary);
+        std::ifstream data(base_path + ".reldata", std::ios::binary);
+        if (!index || !data) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": paired store is incomplete");
+        }
+
+        const uint64_t index_magic = read_u64_checked(index, operation, "index magic");
+        const uint64_t index_version = read_u64_checked(index, operation, "index version");
+        const uint64_t index_store_id = read_u64_checked(index, operation, "index store identity");
+        const uint64_t persisted_count = read_u64_checked(index, operation, "index count");
+        const uint64_t data_magic = read_u64_checked(data, operation, "data magic");
+        const uint64_t data_version = read_u64_checked(data, operation, "data version");
+        const uint64_t data_store_id = read_u64_checked(data, operation, "data store identity");
+
+        if (index_magic != expected_magic || index_version != FORMAT_VERSION_V3 ||
+            data_magic != MAGIC_V3_DATA || data_version != FORMAT_VERSION_V3 ||
+            index_store_id == 0 || index_store_id != descriptor.store_id ||
+            data_store_id != index_store_id) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": V3 index/data header mismatch");
+        }
+        if (expected_persisted_count && persisted_count != *expected_persisted_count) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": persisted count mismatch");
+        }
+
+        const uint64_t index_size = stream_size_checked(index, operation, "index");
+        const uint64_t data_size = stream_size_checked(data, operation, "data");
+        if (index_size != index_size_for_count(descriptor.count) ||
+            data_size != descriptor.data_end) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": snapshot extent mismatch");
+        }
+
+        index.clear();
+        index.seekg(static_cast<std::streamoff>(INDEX_HEADER_BYTES));
+        if (!index) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": cannot seek offset table");
+        }
+        const uint64_t first_offset = read_u64_checked(index, operation, "first offset");
+        if (first_offset != DATA_HEADER_BYTES ||
+            (descriptor.count == 0 && descriptor.data_end != DATA_HEADER_BYTES) ||
+            (descriptor.count != 0 && descriptor.data_end <= DATA_HEADER_BYTES)) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": invalid physical offset boundary");
+        }
+
+        uint64_t terminal_offset = first_offset;
+        if (offset_validation == OffsetValidation::FullTable) {
+            uint64_t previous = first_offset;
+            for (uint64_t ordinal = 0; ordinal < descriptor.count; ++ordinal) {
+                const uint64_t current = read_u64_checked(index, operation, "offset");
+                if (previous >= current || current > descriptor.data_end) {
+                    throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                             ": non-monotonic or out-of-range offset");
+                }
+                previous = current;
+            }
+            terminal_offset = previous;
+        } else {
+            const uint64_t sentinel_position =
+                INDEX_HEADER_BYTES + descriptor.count * sizeof(uint64_t);
+            index.clear();
+            index.seekg(static_cast<std::streamoff>(sentinel_position));
+            if (!index) {
+                throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                         ": cannot seek final sentinel");
+            }
+            terminal_offset = read_u64_checked(index, operation, "final sentinel");
+        }
+        if (terminal_offset != descriptor.data_end) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": final sentinel mismatch");
         }
     }
 
@@ -677,6 +867,10 @@ private:
         std::vector<uint8_t> record;
         for (size_t i = 0; i < static_cast<size_t>(count); ++i) {
             const uint64_t record_size_u64 = offsets[i + 1] - offsets[i];
+            if (record_size_u64 > detail::MAX_COMPACT_RELATION_BYTES) {
+                throw std::runtime_error(
+                    "OOCRelationWriter resume: record size exceeds persistence limit");
+            }
             if (record_size_u64 > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
                 throw std::overflow_error("OOCRelationWriter resume: record size exceeds size_t");
             }
@@ -721,42 +915,36 @@ private:
             throw std::runtime_error("OOCRelationWriter recovery: finalized store is incomplete");
         }
 
-        const auto file_size = [](std::ifstream& stream, const char* field) -> uint64_t {
-            stream.seekg(0, std::ios::end);
-            const auto position = stream.tellg();
-            if (position == std::streampos(-1)) {
-                throw std::runtime_error(std::string("OOCRelationWriter recovery: cannot size ") +
-                                         field);
-            }
-            stream.clear();
-            stream.seekg(0);
-            return static_cast<uint64_t>(static_cast<std::streamoff>(position));
-        };
-        const auto read_u64 = [](std::ifstream& stream, const char* field) -> uint64_t {
-            uint64_t value = 0;
-            stream.read(reinterpret_cast<char*>(&value), sizeof(value));
-            if (stream.gcount() != static_cast<std::streamsize>(sizeof(value))) {
-                throw std::runtime_error(std::string("OOCRelationWriter recovery: truncated ") +
-                                         field);
-            }
-            return value;
-        };
+        constexpr const char* operation = "finalized recovery validation";
+        const uint64_t index_size = stream_size_checked(index, operation, "index");
+        const uint64_t data_size = stream_size_checked(data, operation, "data");
+        if (index_size < INDEX_HEADER_BYTES || data_size < DATA_HEADER_BYTES) {
+            throw std::runtime_error("OOCRelationWriter recovery: finalized V3 header truncated");
+        }
 
-        const uint64_t index_size = file_size(index, "finalized index");
-        const uint64_t data_size = file_size(data, "finalized data");
-        if (read_u64(index, "finalized magic") != MAGIC_V2_FINAL) {
+        if (read_u64_checked(index, operation, "index magic") != MAGIC_V3_FINAL) {
             throw std::runtime_error("OOCRelationWriter recovery: finalized magic changed");
         }
-        if (read_u64(index, "finalized format version") != FORMAT_VERSION) {
+        if (read_u64_checked(index, operation, "index format version") != FORMAT_VERSION_V3) {
             throw std::runtime_error(
                 "OOCRelationWriter recovery: finalized format version mismatch");
         }
-        const uint64_t finalized_store_id = read_u64(index, "finalized store identity");
+        const uint64_t finalized_store_id =
+            read_u64_checked(index, operation, "index store identity");
         if (finalized_store_id == 0 || finalized_store_id != descriptor.store_id) {
             throw std::runtime_error(
                 "OOCRelationWriter recovery: finalized store identity mismatch");
         }
-        const uint64_t final_count = read_u64(index, "finalized count");
+        const uint64_t final_count = read_u64_checked(index, operation, "index count");
+
+        const uint64_t data_magic = read_u64_checked(data, operation, "data magic");
+        const uint64_t data_version = read_u64_checked(data, operation, "data version");
+        const uint64_t data_store_id = read_u64_checked(data, operation, "data store identity");
+        if (data_magic != MAGIC_V3_DATA || data_version != FORMAT_VERSION_V3 ||
+            data_store_id != finalized_store_id) {
+            throw std::runtime_error(
+                "OOCRelationWriter recovery: finalized V3 index/data header mismatch");
+        }
         if (final_count < descriptor.count) {
             throw std::runtime_error(
                 "OOCRelationWriter recovery: finalized corpus predates checkpoint prefix");
@@ -768,9 +956,9 @@ private:
         std::vector<uint64_t> offsets;
         offsets.reserve(static_cast<size_t>(final_count) + 1);
         for (uint64_t i = 0; i <= final_count; ++i) {
-            offsets.push_back(read_u64(index, "finalized offset"));
+            offsets.push_back(read_u64_checked(index, operation, "offset"));
         }
-        if (offsets.front() != 0 || offsets.back() != data_size) {
+        if (offsets.front() != DATA_HEADER_BYTES || offsets.back() != data_size) {
             throw std::runtime_error("OOCRelationWriter recovery: finalized extent mismatch");
         }
         for (size_t i = 0; i < static_cast<size_t>(final_count); ++i) {
@@ -799,67 +987,55 @@ private:
                                      base_path);
         }
 
-        const auto file_size = [](std::ifstream& stream, const char* field) -> uint64_t {
-            stream.seekg(0, std::ios::end);
-            const auto position = stream.tellg();
-            if (position == std::streampos(-1)) {
-                throw std::runtime_error(std::string("OOCRelationWriter resume: cannot size ") +
-                                         field);
-            }
-            const auto offset = static_cast<std::streamoff>(position);
-            if (offset < 0) {
-                throw std::runtime_error(std::string("OOCRelationWriter resume: negative ") +
-                                         field + " size");
-            }
-            stream.clear();
-            stream.seekg(0);
-            return static_cast<uint64_t>(offset);
-        };
-
-        const uint64_t index_size = file_size(index, "index");
-        const uint64_t data_size = file_size(data, "data");
-        if (index_size < INDEX_HEADER_BYTES) {
-            throw std::runtime_error("OOCRelationWriter resume: idx file too small");
+        constexpr const char* operation = "resume validation";
+        const uint64_t index_size = stream_size_checked(index, operation, "index");
+        const uint64_t data_size = stream_size_checked(data, operation, "data");
+        if (index_size < INDEX_HEADER_BYTES || data_size < DATA_HEADER_BYTES) {
+            throw std::runtime_error("OOCRelationWriter resume: V3 file header truncated");
         }
 
-        const auto read_u64 = [](std::ifstream& stream, const char* field) -> uint64_t {
-            uint64_t value = 0;
-            stream.read(reinterpret_cast<char*>(&value), sizeof(value));
-            if (stream.gcount() != static_cast<std::streamsize>(sizeof(value))) {
-                throw std::runtime_error(std::string("OOCRelationWriter resume: truncated ") +
-                                         field);
-            }
-            return value;
-        };
-
-        const uint64_t magic = read_u64(index, "magic");
+        const uint64_t magic = read_u64_checked(index, operation, "index magic");
         if (magic == MAGIC_V1_FINAL) {
             throw std::runtime_error(
                 "OOCRelationWriter resume: legacy finalized V1 store is unsupported");
         }
         if (magic == MAGIC_V2_FINAL) {
-            throw std::runtime_error("OOCRelationWriter resume: file already finalized (V2)");
-        }
-        if (magic == MAGIC_INCOMPLETE_V1) {
             throw std::runtime_error(
-                "OOCRelationWriter resume: legacy incomplete V1 store is unsupported");
+                "OOCRelationWriter resume: finalized V2 store is read-only compatibility data");
         }
-        if (magic != MAGIC_INCOMPLETE) {
+        if (magic == MAGIC_INCOMPLETE_V1 || magic == MAGIC_V2_INCOMPLETE) {
+            throw std::runtime_error(
+                "OOCRelationWriter resume: legacy incomplete store is unsupported");
+        }
+        if (magic == MAGIC_V3_FINAL) {
+            throw std::runtime_error("OOCRelationWriter resume: file already finalized (V3)");
+        }
+        if (magic != MAGIC_V3_INCOMPLETE) {
             throw std::runtime_error("OOCRelationWriter resume: invalid magic in idx (corrupt?)");
         }
 
-        const uint64_t persisted_format_version = read_u64(index, "format version");
-        if (persisted_format_version != FORMAT_VERSION) {
+        const uint64_t persisted_format_version =
+            read_u64_checked(index, operation, "index format version");
+        if (persisted_format_version != FORMAT_VERSION_V3) {
             throw std::runtime_error("OOCRelationWriter resume: format version mismatch");
         }
-        const uint64_t persisted_store_id = read_u64(index, "store identity");
+        const uint64_t persisted_store_id =
+            read_u64_checked(index, operation, "index store identity");
         if (persisted_store_id == 0 || persisted_store_id != descriptor.store_id) {
             throw std::runtime_error("OOCRelationWriter resume: store identity mismatch");
         }
         // Count is advisory until final magic commits it. It can be nonzero if
         // the previous process died after the finalize metadata flush; recovery
         // trusts only the paired descriptor and resets this field to zero.
-        (void)read_u64(index, "incomplete count");
+        (void)read_u64_checked(index, operation, "incomplete count");
+
+        const uint64_t data_magic = read_u64_checked(data, operation, "data magic");
+        const uint64_t data_version = read_u64_checked(data, operation, "data version");
+        const uint64_t data_store_id = read_u64_checked(data, operation, "data store identity");
+        if (data_magic != MAGIC_V3_DATA || data_version != FORMAT_VERSION_V3 ||
+            data_store_id != persisted_store_id) {
+            throw std::runtime_error("OOCRelationWriter resume: V3 index/data header mismatch");
+        }
 
         const uint64_t count = descriptor.count;
         const uint64_t expected_index_size = index_size_for_count(count);
@@ -873,10 +1049,11 @@ private:
         std::vector<uint64_t> offsets;
         offsets.reserve(static_cast<size_t>(count) + 1);
         for (uint64_t i = 0; i <= count; ++i) {
-            offsets.push_back(read_u64(index, "offset"));
+            offsets.push_back(read_u64_checked(index, operation, "offset"));
         }
-        if (offsets.front() != 0) {
-            throw std::runtime_error("OOCRelationWriter resume: first offset is not zero");
+        if (offsets.front() != DATA_HEADER_BYTES) {
+            throw std::runtime_error(
+                "OOCRelationWriter resume: first offset does not follow V3 data header");
         }
         if (offsets.back() != descriptor.data_end) {
             throw std::runtime_error(
@@ -944,6 +1121,62 @@ private:
             write_val(pp.r);
             write_val(pp.e);
         }
+    }
+
+    /// Validate the exact r/w handles that will serve the next writer
+    /// transition. The get positions are temporary; both put positions are
+    /// restored before returning.
+    void validate_open_v3_pair_headers(const char* operation,
+                                       std::optional<uint64_t> expected_persisted_count) {
+        if (!data_stream_.is_open() || !idx_stream_.is_open()) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": store handles are not open");
+        }
+        const auto data_position = data_stream_.tellp();
+        const auto index_position = idx_stream_.tellp();
+        if (data_position == std::streampos(-1) || index_position == std::streampos(-1)) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": cannot preserve stream positions");
+        }
+
+        data_stream_.flush();
+        idx_stream_.flush();
+        ensure_streams_good(operation);
+        data_stream_.clear();
+        idx_stream_.clear();
+        data_stream_.seekg(0);
+        idx_stream_.seekg(0);
+        if (!data_stream_ || !idx_stream_) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": cannot seek V3 headers");
+        }
+
+        const uint64_t index_magic = read_u64_checked(idx_stream_, operation, "index magic");
+        const uint64_t index_version = read_u64_checked(idx_stream_, operation, "index version");
+        const uint64_t index_store_id =
+            read_u64_checked(idx_stream_, operation, "index store identity");
+        const uint64_t persisted_count = read_u64_checked(idx_stream_, operation, "index count");
+        const uint64_t data_magic = read_u64_checked(data_stream_, operation, "data magic");
+        const uint64_t data_version = read_u64_checked(data_stream_, operation, "data version");
+        const uint64_t data_store_id =
+            read_u64_checked(data_stream_, operation, "data store identity");
+
+        if (index_magic != MAGIC_V3_INCOMPLETE || index_version != FORMAT_VERSION_V3 ||
+            data_magic != MAGIC_V3_DATA || data_version != FORMAT_VERSION_V3 ||
+            index_store_id == 0 || index_store_id != store_id_ || data_store_id != index_store_id) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": V3 index/data header mismatch");
+        }
+        if (expected_persisted_count && persisted_count != *expected_persisted_count) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": persisted count mismatch");
+        }
+
+        data_stream_.clear();
+        idx_stream_.clear();
+        data_stream_.seekp(data_position);
+        idx_stream_.seekp(index_position);
+        ensure_streams_good(operation);
     }
 
     void require_state(OOCWriterState expected, const char* operation) const {
@@ -1168,6 +1401,9 @@ public:
         if (start >= end || end > data_file_.size()) {
             throw std::runtime_error("OOCRelationReader::read: corrupt offsets");
         }
+        if (end - start > detail::MAX_COMPACT_RELATION_BYTES) {
+            throw std::runtime_error("OOCRelationReader::read: record exceeds persistence limit");
+        }
 
         const uint8_t* ptr = data_file_.data() + start;
         size_t avail = static_cast<size_t>(end - start);
@@ -1372,17 +1608,26 @@ public:
             if (idx_file_.size() < OOCRelationWriter::INDEX_HEADER_BYTES) {
                 throw std::runtime_error("OOCRelationPrefixReader: index file too small");
             }
+            if (data_file_.size() < OOCRelationWriter::DATA_HEADER_BYTES) {
+                throw std::runtime_error("OOCRelationPrefixReader: V3 data header truncated");
+            }
             const uint64_t magic = idx_file_.read_at<uint64_t>(0);
-            if (magic != OOCRelationWriter::MAGIC_INCOMPLETE) {
+            if (magic != OOCRelationWriter::MAGIC_V3_INCOMPLETE) {
                 throw std::runtime_error("OOCRelationPrefixReader: store is not incomplete");
             }
-            if (descriptor_.format_version != OOCRelationWriter::FORMAT_VERSION ||
+            const uint64_t index_store_id =
+                idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_STORE_ID_OFFSET);
+            if (descriptor_.format_version != OOCRelationWriter::FORMAT_VERSION_V3 ||
                 idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET) !=
-                    OOCRelationWriter::FORMAT_VERSION ||
-                idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_STORE_ID_OFFSET) !=
-                    descriptor_.store_id) {
+                    OOCRelationWriter::FORMAT_VERSION_V3 ||
+                index_store_id == 0 || index_store_id != descriptor_.store_id ||
+                data_file_.read_at<uint64_t>(0) != OOCRelationWriter::MAGIC_V3_DATA ||
+                data_file_.read_at<uint64_t>(OOCRelationWriter::DATA_FORMAT_VERSION_OFFSET) !=
+                    OOCRelationWriter::FORMAT_VERSION_V3 ||
+                data_file_.read_at<uint64_t>(OOCRelationWriter::DATA_STORE_ID_OFFSET) !=
+                    index_store_id) {
                 throw std::runtime_error(
-                    "OOCRelationPrefixReader: store identity or format mismatch");
+                    "OOCRelationPrefixReader: V3 index/data identity or format mismatch");
             }
             if (idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_COUNT_OFFSET) != 0) {
                 throw std::runtime_error("OOCRelationPrefixReader: incomplete count is not zero");
@@ -1407,14 +1652,16 @@ public:
                 throw std::runtime_error(
                     "OOCRelationPrefixReader: descriptor end does not match sentinel");
             }
+            if (offsets_[0] != OOCRelationWriter::DATA_HEADER_BYTES) {
+                throw std::runtime_error(
+                    "OOCRelationPrefixReader: first offset does not follow V3 data header");
+            }
             if (count_ == 0) {
-                if (descriptor.data_end != 0) {
-                    throw std::runtime_error("OOCRelationPrefixReader: non-zero empty prefix");
+                if (descriptor.data_end != OOCRelationWriter::DATA_HEADER_BYTES) {
+                    throw std::runtime_error(
+                        "OOCRelationPrefixReader: empty prefix extent is not the V3 header size");
                 }
             } else {
-                if (offsets_[0] != 0) {
-                    throw std::runtime_error("OOCRelationPrefixReader: first offset is not zero");
-                }
                 for (size_t i = 0; i < count_; ++i) {
                     const uint64_t start = offsets_[i];
                     const uint64_t end = offsets_[i + 1];
@@ -1467,6 +1714,10 @@ public:
         if (start >= end || end > descriptor_.data_end ||
             end > static_cast<uint64_t>(data_file_.size())) {
             throw std::runtime_error("OOCRelationPrefixReader::read: corrupt offsets");
+        }
+        if (end - start > detail::MAX_COMPACT_RELATION_BYTES) {
+            throw std::runtime_error(
+                "OOCRelationPrefixReader::read: record exceeds persistence limit");
         }
         return detail::deserialize_compact_relation(data_file_.data() + start,
                                                     static_cast<size_t>(end - start));

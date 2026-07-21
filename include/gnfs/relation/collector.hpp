@@ -62,7 +62,7 @@ struct CollectorConfig {
 
     // ── Paired resume mode (sieve mid-flight checkpoint) ──
     // Recovery is permitted only with a descriptor loaded from the paired
-    // SieveCheckpoint V2. The writer validates the descriptor, verifies the
+    // SieveCheckpoint V2. The V3 writer validates the descriptor, verifies the
     // durable store identity and prefix, restores generation, then rolls back
     // uncommitted tails and restores seen_ plus relation statistics.
     std::optional<OOCSnapshotDescriptor> ooc_resume_snapshot;

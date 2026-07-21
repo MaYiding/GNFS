@@ -1921,11 +1921,11 @@ bool test_sieve_resume_with_paired_checkpoint() {
     bool ckpt_gone = !check.good();
 
     if (!resumed) {
-        std::cout << "(paired V2 resume produced no relations) ";
+        std::cout << "(paired OOC V3 resume produced no relations) ";
         return false;
     }
     if (!ckpt_gone) {
-        std::cout << "(paired V2 checkpoint not cleaned up) ";
+        std::cout << "(paired OOC V3 checkpoint not cleaned up) ";
         return false;
     }
     return true;

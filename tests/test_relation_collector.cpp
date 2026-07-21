@@ -993,7 +993,7 @@ void test_ooc_snapshot_integrity_failure_fails_closed() {
         std::fstream data(path + ".reldata", std::ios::in | std::ios::out | std::ios::binary);
         CHECK(static_cast<bool>(data));
         const uint32_t corrupt_count = std::numeric_limits<uint32_t>::max();
-        data.seekp(16);
+        data.seekp(static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES + 16));
         data.write(reinterpret_cast<const char*>(&corrupt_count), sizeof(corrupt_count));
         data.flush();
         CHECK(static_cast<bool>(data));
@@ -1101,7 +1101,13 @@ void test_ooc_reader_rejects_corrupt_variable_lengths() {
     // A relation with empty vectors is laid out as a/b followed by the five
     // uint32_t count fields. Exercise the shared checked-count path for every
     // variable-length field, restoring each field before corrupting the next.
-    constexpr std::array<std::streamoff, 5> count_offsets = {16, 20, 24, 28, 32};
+    constexpr std::array<std::streamoff, 5> count_offsets = {
+        static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES + 16),
+        static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES + 20),
+        static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES + 24),
+        static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES + 28),
+        static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES + 32),
+    };
     const auto overwrite_count = [&](std::streamoff offset, uint32_t value) {
         std::fstream data(path + ".reldata", std::ios::in | std::ios::out | std::ios::binary);
         CHECK(static_cast<bool>(data));
@@ -1317,7 +1323,7 @@ void test_ooc_prefix_reader_rejects_bad_descriptor_and_offsets() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Paired OOC resume tests (SieveCheckpoint V2 crash recovery).
+// Paired OOC V3 resume tests (persisted by SieveCheckpoint V2).
 // ──────────────────────────────────────────────────────────────────────────
 
 void test_ooc_collector_rejects_legacy_resume_flag() {
@@ -1415,6 +1421,7 @@ void test_ooc_writer_resume_nonexistent_rejected() {
     descriptor.format_version = OOCRelationWriter::FORMAT_VERSION;
     descriptor.store_id = 123;
     descriptor.generation = 1;
+    descriptor.data_end = OOCRelationWriter::DATA_HEADER_BYTES;
     bool threw = false;
     try {
         OOCRelationWriter resumed(path, descriptor);

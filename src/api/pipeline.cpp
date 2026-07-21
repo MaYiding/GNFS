@@ -1004,8 +1004,9 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                 throw std::runtime_error(
                     "sieve checkpoint OOC path does not match the configured resume path");
             }
-            if (prior_ckpt->ooc_format_version != relation::OOCRelationWriter::FORMAT_VERSION) {
-                throw std::runtime_error("sieve checkpoint OOC format version mismatch");
+            if (prior_ckpt->ooc_format_version != relation::OOCRelationWriter::FORMAT_VERSION_V3) {
+                throw std::runtime_error(
+                    "sieve checkpoint requires paired OOC V3; legacy V2 recovery is unsafe");
             }
 
             coll_config.ooc_resume_snapshot = relation::OOCSnapshotDescriptor{

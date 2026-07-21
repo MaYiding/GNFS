@@ -8,9 +8,10 @@
   M4 has a default-off production vector route, one frozen per-run route
   snapshot, an owning vector/finalized-OOC corpus, descriptor-bound selection
   identity, direct selected-corpus matrix input, deterministic ordinal trimming,
-  dependency-only square-root materialization, and a reader-first V3 paired-data
-  identity substrate. Direct bounded-memory reduction, a relation sink, the V3
-  writer/recovery cutover, and scale evidence remain before OOC promotion.
+  dependency-only square-root materialization, and paired V3 OOC identity across
+  readers, writers, recovery, checkpoints, and corpus ownership. Direct
+  bounded-memory reduction, a relation sink, and scale evidence remain before
+  OOC promotion.
 - Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
 
 ## Outcome
@@ -600,13 +601,13 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
   forced-on experimental profile has fixed work-budget caps, remains
   vector-backed, defaults OFF, and `auto` remains ineligible pending M5 evidence.
 - [x] Add a move-only `RelationCorpus` for owned vectors and descriptor-bound
-  finalized V2 OOC artifacts. Selection identity is bound to one corpus
+  finalized V3 OOC artifacts. Selection identity is bound to one corpus
   instance, survives handle moves, and rejects same-generation/same-count
   foreign or reopened corpora. Collector finalization hands off its descriptor;
-  adoption validates persisted index identity, count, offsets, and both extents
-  against the reader's actual mapped handles. V2 does not persist generation or
-  store identity in `.reldata`, so same-sized foreign payload detection requires
-  a later paired-data format and remains an OOC promotion blocker.
+  adoption validates both persistent identities, count, offsets, sentinel, and
+  physical extents against the reader's actual mapped handles. Cleanup repeats
+  the paired validation after closing the corpus mappings and preserves both
+  artifacts on any identity failure.
 - [x] Route the supported structured vector result through `RelationCorpus`
   directly into the streaming `MatrixBuilder`. A refined selection source
   preserves corpus ordinals, trim uses a repository-owned deterministic
@@ -624,14 +625,14 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
   preserves legacy move-construction and move-assignment compatibility while
   releasing any replaced corpus owner after its public payload. The legacy
   vector path and its trim order remain unchanged.
-- [x] Add reader-first V3 support for a fixed `.reldata` header carrying the
-  same immutable store identity as `.relidx`. Both ordinary and
-  descriptor-bound readers validate the V3 pair from the same mapped handles,
-  including physical extents and absolute offsets; same-sized foreign data
-  files fail closed. Finalized V1/V2 readers remain compatibility inputs.
-- Complete the bounded `RelationSource`/`RelationSink` reducer and switch new
-  writes, checkpoint recovery, prefix readers, and promoted corpus ownership to
-  paired V3 identity. V1/V2 remain finalized read-only compatibility formats.
+- [x] Use paired V3 identity for new writes, prefix snapshots, checkpoint
+  recovery, finalized recovery, prefix readers, and promoted corpus ownership.
+  `.reldata` carries an immutable header with the same store identity as
+  `.relidx`; offsets and descriptor `data_end` are physical file positions, so
+  an empty store ends at byte 24. Same-sized foreign data files fail closed
+  before recovery mutation. Ordinary finalized readers retain V1/V2
+  compatibility, while append recovery and ownership promotion reject them.
+- Complete the bounded `RelationSource`/`RelationSink` reducer.
 - Adaptive and public vector routes are covered. OOC/resume/distributed are
   explicitly rejected before callback/checkpoint/store/snapshot side effects in
   forced mode; full `Pipeline::run()` freezes one route snapshot across phase
@@ -1374,7 +1375,7 @@ evidence.
 | materializer | nested pair or factor provenance lost | Yes | Immutable-source reconstruction and exact checks | No |
 | writer/checkpoint | SQ progress outruns committed relation prefix | Yes | Paired versioned descriptor; fail closed | No |
 | prefix reader | corrupt size/offset causes OOB/allocation | Yes | Checked arithmetic and runtime validation | No |
-| paired OOC files | same-sized foreign data payload passes V2 extent checks | Yes | Exclusive ownership now; paired-data identity before OOC promotion | No after promotion blocker lands |
+| paired OOC files | same-sized foreign data payload is adopted or resumed | Yes | V3 identity in both headers; validate the pair before reads, mutation, promotion, and cleanup | No |
 | corpus owner | files/vectors die before matrix/sqrt use | Yes | Owning result lifetime | No |
 | engine route | generation reduced zero or twice | Yes | Move-only input and route digest | No |
 | structured pivot | dependency nullity changes | Yes | Exact oracle and pre-publish validation | No |
@@ -1383,8 +1384,8 @@ evidence.
 
 The explicit structured vector route is available but default-off. Automatic and
 OOC structured routes remain unavailable until the bounded corpus handoff,
-paired-data identity, full payload oracle, and scale gates land. Legacy default
-behavior remains unchanged.
+direct source/sink reduction, and scale gates land. Legacy default behavior
+remains unchanged.
 
 ### NOT in Scope After Engineering Review
 

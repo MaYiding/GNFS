@@ -9,17 +9,20 @@
 #include "gnfs/util/temp_path.hpp"
 #include "support/child_process.hpp"
 
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+using gnfs::relation::OOCRelationWriter;
 using gnfs::sieve::SieveCheckpoint;
 using gnfs::sieve::SieveRunIdentity;
 
@@ -86,7 +89,7 @@ SieveCheckpoint make_checkpoint(uint64_t generation = 7) {
     checkpoint.run_n = "1000036000099";
     checkpoint.run_fingerprint_lo = 0x44e2'83f1'9a57'c60bULL;
     checkpoint.run_fingerprint_hi = 0xc317'ba25'008d'71e4ULL;
-    checkpoint.ooc_format_version = 2;
+    checkpoint.ooc_format_version = OOCRelationWriter::FORMAT_VERSION_V3;
     checkpoint.ooc_store_id = 0x1234'5678'9abc'def0ULL;
     checkpoint.ooc_generation = generation;
     checkpoint.ooc_relation_count = 41;
@@ -340,7 +343,7 @@ void test_empty_committed_prefix_round_trip() {
 
     auto original = make_checkpoint();
     original.ooc_relation_count = 0;
-    original.ooc_data_end = 0;
+    original.ooc_data_end = OOCRelationWriter::DATA_HEADER_BYTES;
     original.save(path);
 
     check_equal(SieveCheckpoint::load(path), original);
@@ -380,10 +383,23 @@ void test_invalid_state_rejected_before_write() {
         checkpoint.run_n.assign(static_cast<size_t>(SieveCheckpoint::MAX_RUN_N_LENGTH) + 1, '7');
     });
     expect_invalid([](auto& checkpoint) { checkpoint.ooc_format_version = 0; });
+    expect_invalid([](auto& checkpoint) {
+        checkpoint.ooc_format_version = OOCRelationWriter::FORMAT_VERSION_V2;
+    });
     expect_invalid([](auto& checkpoint) { checkpoint.ooc_store_id = 0; });
     expect_invalid([](auto& checkpoint) { checkpoint.ooc_generation = 0; });
+    expect_invalid([](auto& checkpoint) {
+        checkpoint.ooc_relation_count = static_cast<uint64_t>(std::numeric_limits<size_t>::max());
+    });
+    expect_invalid([](auto& checkpoint) {
+        checkpoint.ooc_relation_count = std::numeric_limits<uint64_t>::max();
+    });
     expect_invalid([](auto& checkpoint) { checkpoint.ooc_relation_count = 0; });
     expect_invalid([](auto& checkpoint) { checkpoint.ooc_data_end = 0; });
+    expect_invalid(
+        [](auto& checkpoint) { checkpoint.ooc_data_end = std::numeric_limits<uint64_t>::max(); });
+    expect_invalid(
+        [](auto& checkpoint) { checkpoint.ooc_data_end = OOCRelationWriter::DATA_HEADER_BYTES; });
     expect_invalid([](auto& checkpoint) { checkpoint.ooc_base_path.clear(); });
     expect_invalid([](auto& checkpoint) {
         checkpoint.ooc_base_path.assign(static_cast<size_t>(SieveCheckpoint::MAX_PATH_LENGTH) + 1,
@@ -414,6 +430,21 @@ void test_v1_rejected_even_with_valid_checksum() {
 
     auto bytes = read_bytes(path);
     write_u64(bytes, 8, 1);
+    refresh_checksum(bytes);
+    write_bytes(path, bytes);
+
+    check_throws([&] { (void)SieveCheckpoint::load(path); });
+    CHECK(!SieveCheckpoint::exists_and_valid(path));
+}
+
+void test_legacy_v2_ooc_rejected_even_with_valid_checksum() {
+    const auto path = checkpoint_path("legacy_ooc_v2");
+    CheckpointCleanup cleanup{path};
+    make_checkpoint().save(path);
+
+    auto bytes = read_bytes(path);
+    write_u64(bytes, SieveCheckpoint::WIRE_OOC_FORMAT_VERSION_OFFSET,
+              OOCRelationWriter::FORMAT_VERSION_V2);
     refresh_checksum(bytes);
     write_bytes(path, bytes);
 
@@ -809,6 +840,7 @@ int main(int argc, char** argv) {
             {"invalid states", test_invalid_state_rejected_before_write},
             {"incomplete magic", test_incomplete_magic_rejected},
             {"V1 rejection", test_v1_rejected_even_with_valid_checksum},
+            {"legacy OOC V2 rejection", test_legacy_v2_ooc_rejected_even_with_valid_checksum},
             {"checksum corruption", test_checksum_corruption_rejected},
             {"truncation", test_truncation_rejected},
             {"exact trailing bytes", test_checksummed_trailing_byte_rejected},

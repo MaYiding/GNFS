@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gnfs/relation/ooc_relation_format.hpp"
 #include "sieve_run_identity.hpp"
 
 #include <bit>
@@ -172,10 +173,10 @@ inline uint64_t checksum(const uint8_t* data, size_t size) noexcept {
 
 /// Paired sieve/OOC checkpoint for long-running 50d+/60d factorizations.
 ///
-/// V2 binds the Special-Q cursor to one exact run identity and one exact,
-/// durable relation-store prefix. The official checkpoint is replaced only
-/// after a complete temporary file has been flushed, protected by its
-/// checksum, and marked complete.
+/// Wire V2 binds the Special-Q cursor to one exact run identity and one exact,
+/// durable V3 relation-store prefix. The official checkpoint is replaced only
+/// after a complete temporary file has been flushed, protected by its checksum,
+/// and marked complete.
 struct SieveCheckpoint {
     // MAGIC = 'GNFSSCKP'; MAGIC_INCOMPLETE is used only in the temporary file.
     static constexpr uint64_t MAGIC = 0x474E465353434B50ULL;
@@ -189,7 +190,11 @@ struct SieveCheckpoint {
     static constexpr size_t WIRE_VERSION_OFFSET = 8;
     static constexpr size_t WIRE_RUN_FINGERPRINT_LO_OFFSET = 48;
     static constexpr size_t WIRE_RUN_FINGERPRINT_HI_OFFSET = 56;
+    static constexpr size_t WIRE_OOC_FORMAT_VERSION_OFFSET = 64;
+    static constexpr size_t WIRE_OOC_STORE_ID_OFFSET = 72;
     static constexpr size_t WIRE_OOC_GENERATION_OFFSET = 80;
+    static constexpr size_t WIRE_OOC_RELATION_COUNT_OFFSET = 88;
+    static constexpr size_t WIRE_OOC_DATA_END_OFFSET = 96;
     static constexpr size_t WIRE_RUN_N_LENGTH_OFFSET = 104;
     static constexpr size_t WIRE_OOC_PATH_LENGTH_OFFSET = 108;
     static constexpr size_t WIRE_STRINGS_OFFSET = 112;
@@ -477,8 +482,8 @@ private:
         if (run_fingerprint_lo == 0 || run_fingerprint_hi == 0) {
             throw std::runtime_error(prefix + "run fingerprints must both be nonzero");
         }
-        if (ooc_format_version == 0) {
-            throw std::runtime_error(prefix + "ooc_format_version must be positive");
+        if (ooc_format_version != relation::OOCRelationStoreFormat::FORMAT_VERSION_V3) {
+            throw std::runtime_error(prefix + "only paired OOC V3 checkpoints are recoverable");
         }
         if (ooc_store_id == 0) {
             throw std::runtime_error(prefix + "ooc_store_id must be nonzero");
@@ -486,8 +491,27 @@ private:
         if (ooc_generation == 0) {
             throw std::runtime_error(prefix + "ooc_generation must be nonzero");
         }
-        if ((ooc_relation_count == 0) != (ooc_data_end == 0)) {
-            throw std::runtime_error(prefix + "empty relation prefix must have data_end zero");
+        // count+1 offsets must remain representable in every downstream reader.
+        if (ooc_relation_count >= static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+            ooc_relation_count > (std::numeric_limits<uint64_t>::max() -
+                                  relation::OOCRelationStoreFormat::INDEX_HEADER_BYTES -
+                                  relation::OOCRelationStoreFormat::INDEX_SENTINEL_BYTES) /
+                                     sizeof(uint64_t)) {
+            throw std::runtime_error(prefix + "OOC relation count exceeds index limits");
+        }
+        const uint64_t ooc_index_size = relation::OOCRelationStoreFormat::INDEX_HEADER_BYTES +
+                                        relation::OOCRelationStoreFormat::INDEX_SENTINEL_BYTES +
+                                        ooc_relation_count * sizeof(uint64_t);
+        const uint64_t max_stream_offset =
+            static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max());
+        if (ooc_index_size > max_stream_offset || ooc_data_end > max_stream_offset) {
+            throw std::runtime_error(prefix + "OOC extent exceeds stream position limits");
+        }
+        if (ooc_data_end < relation::OOCRelationStoreFormat::DATA_HEADER_BYTES ||
+            ((ooc_relation_count == 0) !=
+             (ooc_data_end == relation::OOCRelationStoreFormat::DATA_HEADER_BYTES))) {
+            throw std::runtime_error(
+                prefix + "OOC V3 empty prefix must end at the physical data header boundary");
         }
         if (ooc_base_path.empty()) {
             throw std::runtime_error(prefix + "ooc_base_path must not be empty");

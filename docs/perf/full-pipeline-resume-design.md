@@ -57,21 +57,37 @@ store. It then validates the exact relation prefix and truncates later
 uncommitted tail bytes before applying the Special-Q cursor. V1 sieve
 checkpoints cannot prove this pairing and are rejected for automatic resume.
 
-The V2 OOC index keeps identity immutable across finalize:
+The paired V3 OOC files keep identity immutable across finalize:
 
 ```text
-u64 MAGIC_INCOMPLETE_V2 / MAGIC_FINAL_V2
+<base>.relidx:
+u64 MAGIC_INCOMPLETE_V3 / MAGIC_FINAL_V3
 u64 FORMAT_VERSION
 u64 store_id
 u64 count
 u64 offsets[count + 1]
+
+<base>.reldata:
+u64 DATA_MAGIC_V3
+u64 FORMAT_VERSION
+u64 store_id
+bytes relation_records[]
 ```
 
-Finalization persists count and the terminal offset while magic remains
-incomplete, then publishes final magic last. A paired checkpoint can therefore
-roll back safely after a crash between those stages. The ordinary reader keeps
-read-only compatibility with legacy finalized V1 stores, but paired recovery
-rejects them because they do not contain a durable store identity.
+Offsets and descriptor `data_end` are physical file positions, including the
+24-byte data header; an empty V3 store therefore has first offset and EOF at
+byte 24. Finalization persists count and the terminal offset while index magic
+remains incomplete, then publishes final index magic last. A paired checkpoint
+can therefore roll back safely after a crash between those stages, and a
+same-sized foreign data file is rejected by its mismatched header identity. The
+ordinary reader keeps read-only compatibility with finalized V1/V2 stores, but
+paired recovery and corpus ownership promotion reject them.
+
+The active single-writer checkpoint/reopen path validates paired headers,
+physical extents, first offset, and sentinel in constant time. Final precommit
+and process-restart recovery perform the complete offset scan; recovery also
+decodes every committed record. This keeps corruption fail-closed without
+rescanning the full growing index at every checkpoint interval.
 
 ### `<base>.poly_ckpt`
 

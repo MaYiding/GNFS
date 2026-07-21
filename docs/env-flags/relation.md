@@ -239,17 +239,23 @@ GNFS_OOC_RELATIONS=1 ./test_gnfs_e2e             # e2e stress test OOC path
   (2026-05-17 实测, RSS ~3.5GB, sieve buckets + collector.relations_ 联合 OOM).
 - OOC mode 减小 sieve 期间 RAM peak (relations_ vector 不再 grow, seen_ 占
   ~16 B/relation, 1M relations 仅 16 MB; vs vector 1M × 500B = 500 MB).
-- fault tolerance: fresh writer 使用带 durable store ID 的 V2 incomplete header；
-  普通 reader 严格拒绝 incomplete store。只有与 `SieveCheckpoint` V2 配对的
-  descriptor 可以验证并恢复 committed prefix，同时截断 crash 后未提交 tail。
-- V2 index 使用固定布局 `[magic][format_version][store_id][count][offsets...]`；
-  offset 从 byte 32 开始，finalize 只在最后切换 magic，不会覆盖 store ID。
-  历史 V1 finalized corpus 可由普通 reader 只读，但不能参与配对恢复。
+- fault tolerance: fresh writer 在 V3 index/data header 中写入同一个 durable
+  store ID；普通 reader 严格拒绝 incomplete store。只有与 `SieveCheckpoint` V2
+  wire format 配对的 OOC V3 descriptor 可以验证并恢复 committed prefix，同时
+  截断 crash 后未提交 tail。
+- V3 index 使用固定布局
+  `[magic][format_version][store_id][count][offsets...]`，data 使用
+  `[data_magic][format_version][store_id][records...]`。offset 与 descriptor
+  `data_end` 都是物理文件偏移；首 offset 及空库 EOF 均为 byte 24。finalize
+  只在最后切换 index magic，不会覆盖任一 store ID。
+- 普通 reader 保留 finalized V1/V2 只读兼容；V1/V2 不能参与 append recovery
+  或 `RelationCorpus` ownership promotion。
 - `checkpoint_prefix()` 与 finalize 会同步 data/index；POSIX 还同步父目录。
   finalize metadata 已落盘但 final magic 未切换时，paired descriptor 仍可恢复。
 
 **集成点** (commits `3b843fc` → `d39b637`, 2026-05-18):
 - `include/gnfs/relation/collector.hpp` — CollectorConfig + add/get/clear/merge OOC dual mode
+- `include/gnfs/relation/ooc_relation_format.hpp` — V1/V2/V3 稳定布局常量
 - `include/gnfs/relation/ooc_relation_store.hpp` — OOCRelationWriter/Reader, MAGIC/INCOMPLETE flip
 - `include/gnfs/relation/ooc_policy.hpp` — 三态 ENV 解析 (off / auto-by-size / on)
 - `src/api/pipeline.cpp` — `sieve_and_collect` ENV-gate + base_path (检索 `GNFS_OOC_RELATIONS` getenv 点)

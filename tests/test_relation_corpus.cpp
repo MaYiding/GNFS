@@ -114,6 +114,17 @@ struct TestArtifactCleanup final {
     std::string base;
 };
 
+struct TestFileCleanup final {
+    explicit TestFileCleanup(std::string file_path) : path(std::move(file_path)) {}
+
+    ~TestFileCleanup() {
+        std::error_code ignored;
+        std::filesystem::remove(path, ignored);
+    }
+
+    std::string path;
+};
+
 bool artifacts_exist(const std::string& base_path) {
     return std::filesystem::exists(base_path + ".relidx") &&
            std::filesystem::exists(base_path + ".reldata");
@@ -125,7 +136,10 @@ OOCSnapshotDescriptor write_finalized_store(const std::string& base_path,
     for (const auto& relation : relations) {
         (void)writer.write(relation);
     }
-    return writer.finalize();
+    const auto descriptor = writer.finalize();
+    CHECK(descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+    CHECK(descriptor.data_end >= OOCRelationWriter::DATA_HEADER_BYTES);
+    return descriptor;
 }
 
 OOCSnapshotDescriptor collect_finalized_store(const std::string& base_path,
@@ -143,6 +157,7 @@ OOCSnapshotDescriptor collect_finalized_store(const std::string& base_path,
         }
         descriptor = collector.finalize_ooc();
         CHECK(descriptor.has_value());
+        CHECK(descriptor->format_version == OOCRelationWriter::FORMAT_VERSION_V3);
         CHECK(descriptor->count == relations.size());
     }
     return *descriptor;
@@ -267,6 +282,14 @@ void test_ooc_adoption_fails_closed() {
     });
     CHECK(artifacts_exist(artifacts.base));
 
+    auto legacy_v2 = descriptor;
+    legacy_v2.format_version = OOCRelationWriter::FORMAT_VERSION_V2;
+    expect_throws<std::invalid_argument>([&] {
+        (void)RelationCorpus::from_finalized_ooc(401, artifacts.base, legacy_v2,
+                                                 OOCCleanupPolicy::RemoveArtifacts);
+    });
+    CHECK(artifacts_exist(artifacts.base));
+
     auto foreign_store = descriptor;
     ++foreign_store.store_id;
     expect_throws<std::runtime_error>([&] {
@@ -282,6 +305,44 @@ void test_ooc_adoption_fails_closed() {
                                                  OOCCleanupPolicy::RemoveArtifacts);
     });
     CHECK(artifacts_exist(artifacts.base));
+}
+
+void test_cleanup_preserves_foreign_same_size_data_pair() {
+    TestArtifactCleanup owned_artifacts(unique_base("cleanup_pair_owned"));
+    TestArtifactCleanup foreign_artifacts(unique_base("cleanup_pair_foreign"));
+
+    const auto expected = make_relations(2);
+    auto foreign_relations = expected;
+    foreign_relations[0].a += 1'000;
+
+    const auto owned_descriptor = write_finalized_store(owned_artifacts.base, expected);
+    const auto foreign_descriptor =
+        write_finalized_store(foreign_artifacts.base, foreign_relations);
+    CHECK(owned_descriptor.store_id != foreign_descriptor.store_id);
+    CHECK(owned_descriptor.data_end == foreign_descriptor.data_end);
+
+    const std::string displaced_data = owned_artifacts.base + ".reldata.displaced";
+    TestFileCleanup displaced_cleanup(displaced_data);
+    {
+        // Exercise the cleanup guard without an active mmap so the same test
+        // can replace paths on Windows as well as POSIX.
+        gnfs::relation::relation_corpus_detail::FinalizedOOCArtifactCleanup cleanup_guard(
+            owned_artifacts.base, owned_descriptor);
+        cleanup_guard.arm();
+
+        std::error_code ec;
+        std::filesystem::rename(owned_artifacts.base + ".reldata", displaced_data, ec);
+        CHECK(!ec);
+        ec.clear();
+        std::filesystem::rename(foreign_artifacts.base + ".reldata",
+                                owned_artifacts.base + ".reldata", ec);
+        CHECK(!ec);
+    }
+
+    // Cleanup revalidation must reject the mixed pair before deleting either
+    // path artifact.
+    CHECK(artifacts_exist(owned_artifacts.base));
+    CHECK(std::filesystem::exists(foreign_artifacts.base + ".relidx"));
 }
 
 void test_selection_stable_dedup_order_and_identity() {
@@ -507,6 +568,7 @@ int main() {
         test_finalized_ooc_roundtrip_and_preserve_lifetime();
         test_finalized_ooc_cleanup_and_move_assignment();
         test_ooc_adoption_fails_closed();
+        test_cleanup_preserves_foreign_same_size_data_pair();
         test_selection_stable_dedup_order_and_identity();
         test_selection_xor_parity_canonical_order_and_identity();
         test_deterministic_sample_boundaries_fixture_and_identity();

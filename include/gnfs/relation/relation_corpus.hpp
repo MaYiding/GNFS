@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -29,8 +28,8 @@ enum class RelationStorageKind {
 /// artifacts when the final corpus owner is destroyed. RemoveArtifacts is an
 /// explicit transfer of exclusive artifact ownership: callers must not retain
 /// independent readers, replace either artifact, or reuse the same base path
-/// while the corpus is alive. Finalized V2 does not authenticate the data file
-/// independently from the index, so this exclusivity is part of the contract.
+/// while the corpus is alive. Ownership promotion accepts only finalized V3,
+/// whose index and data headers carry the same persistent store identity.
 enum class OOCCleanupPolicy {
     Preserve,
     RemoveArtifacts,
@@ -56,15 +55,6 @@ inline void validate_ooc_base_path(const std::string& base_path) {
         throw std::invalid_argument(
             "RelationCorpus: OOC base path must be nonempty and contain no NUL");
     }
-}
-
-inline uint64_t read_u64(std::ifstream& stream, const char* field) {
-    uint64_t value = 0;
-    stream.read(reinterpret_cast<char*>(&value), sizeof(value));
-    if (stream.gcount() != static_cast<std::streamsize>(sizeof(value))) {
-        throw std::runtime_error(std::string("RelationCorpus: truncated OOC ") + field);
-    }
-    return value;
 }
 
 /// Repository-owned deterministic generator for selection policies.
@@ -104,17 +94,10 @@ private:
     uint64_t state_;
 };
 
-/// Best-effort deletion guard for an owned finalized V2 store.
-///
-/// Adoption identity is validated by OOCRelationReader against its mapped
-/// handles. This bounded path-level check runs only after those handles close,
-/// immediately before cleanup, so a replaced or damaged index or extent is
-/// preserved. V2 cannot distinguish a same-sized foreign data payload.
-inline void validate_finalized_ooc_cleanup_target(const std::string& base_path,
-                                                  const OOCSnapshotDescriptor& descriptor) {
-    validate_ooc_base_path(base_path);
-    if (descriptor.format_version != OOCRelationWriter::FORMAT_VERSION) {
-        throw std::invalid_argument("RelationCorpus: unsupported OOC descriptor format version");
+inline void validate_finalized_ooc_ownership_descriptor(const OOCSnapshotDescriptor& descriptor) {
+    if (descriptor.format_version != OOCRelationWriter::FORMAT_VERSION_V3) {
+        throw std::invalid_argument(
+            "RelationCorpus: ownership promotion requires finalized OOC V3");
     }
     if (descriptor.store_id == 0) {
         throw std::invalid_argument("RelationCorpus: OOC descriptor store identity is zero");
@@ -122,53 +105,38 @@ inline void validate_finalized_ooc_cleanup_target(const std::string& base_path,
     if (descriptor.generation == 0) {
         throw std::invalid_argument("RelationCorpus: OOC descriptor generation is zero");
     }
+    if (descriptor.data_end < OOCRelationWriter::DATA_HEADER_BYTES ||
+        ((descriptor.count == 0) !=
+         (descriptor.data_end == OOCRelationWriter::DATA_HEADER_BYTES))) {
+        throw std::invalid_argument(
+            "RelationCorpus: OOC V3 descriptor has invalid physical data extent");
+    }
+    (void)OOCRelationWriter::index_size_for_count(descriptor.count);
+}
 
-    const uint64_t expected_index_size = OOCRelationWriter::index_size_for_count(descriptor.count);
-    const std::filesystem::path index_path(base_path + ".relidx");
-    const std::filesystem::path data_path(base_path + ".reldata");
+/// Best-effort deletion guard for an owned finalized V3 store.
+///
+/// This reopens both artifacts through the descriptor-bound mmap reader after
+/// the corpus reader has closed. The same handles verify both V3 headers,
+/// paired store identity, exact extents, sentinel, and offsets immediately
+/// before cleanup. Any replacement or damage therefore preserves both paths.
+inline void validate_finalized_ooc_cleanup_target(const std::string& base_path,
+                                                  const OOCSnapshotDescriptor& descriptor) {
+    validate_ooc_base_path(base_path);
+    validate_finalized_ooc_ownership_descriptor(descriptor);
 
-    std::error_code ec;
-    const auto actual_index_size = std::filesystem::file_size(index_path, ec);
-    if (ec) {
-        throw std::runtime_error("RelationCorpus: cannot size finalized OOC index: " +
-                                 ec.message());
-    }
-    if (actual_index_size != expected_index_size) {
-        throw std::runtime_error("RelationCorpus: finalized OOC index extent mismatch");
-    }
-
-    const auto actual_data_size = std::filesystem::file_size(data_path, ec);
-    if (ec) {
-        throw std::runtime_error("RelationCorpus: cannot size finalized OOC data: " + ec.message());
-    }
-    if (actual_data_size != descriptor.data_end) {
-        throw std::runtime_error("RelationCorpus: finalized OOC data extent mismatch");
-    }
-
-    std::ifstream index(index_path, std::ios::binary);
-    if (!index) {
-        throw std::runtime_error("RelationCorpus: cannot open finalized OOC index");
-    }
-    if (read_u64(index, "magic") != OOCRelationWriter::MAGIC_V2_FINAL) {
-        throw std::runtime_error("RelationCorpus: OOC store is not finalized V2");
-    }
-    if (read_u64(index, "format version") != descriptor.format_version) {
-        throw std::runtime_error("RelationCorpus: OOC format version does not match descriptor");
-    }
-    if (read_u64(index, "store identity") != descriptor.store_id) {
-        throw std::runtime_error("RelationCorpus: OOC store identity does not match descriptor");
-    }
-    if (read_u64(index, "relation count") != descriptor.count) {
-        throw std::runtime_error("RelationCorpus: OOC relation count does not match descriptor");
-    }
+    // The local reader is destroyed before this function returns, which keeps
+    // Windows mappings and file handles closed before remove() is attempted.
+    OOCRelationReader validated_pair(base_path, descriptor);
+    (void)validated_pair;
 }
 
 /// Optional artifact cleanup. The enclosing storage declares this member
 /// before its reader, so C++ reverse member destruction closes every mmap/file
 /// handle before this destructor runs. Before removing anything, revalidate the
 /// durable index identity and exact extents; a replaced or damaged path is
-/// preserved rather than deleting it. The caller's exclusive-ownership
-/// contract covers same-sized data-file replacement, which V2 cannot detect.
+/// preserved rather than deleting it. V3 paired identity also rejects a
+/// same-sized data file from another store.
 class FinalizedOOCArtifactCleanup final {
 public:
     FinalizedOOCArtifactCleanup(std::string base_path, OOCSnapshotDescriptor descriptor)
@@ -242,7 +210,7 @@ class RelationSelection;
 ///
 /// In-memory storage owns its vector. Finalized OOC storage owns an mmap reader
 /// plus, when explicitly requested, cleanup responsibility for the
-/// descriptor-bound V2 artifact pair. The logical generation belongs to the
+/// descriptor-bound V3 artifact pair. The logical generation belongs to the
 /// reduction snapshot and is intentionally distinct from the OOC descriptor's
 /// checkpoint generation.
 class RelationCorpus final {
@@ -260,12 +228,13 @@ public:
                        OOCCleanupPolicy cleanup_policy = OOCCleanupPolicy::Preserve) {
         relation_corpus_detail::validate_logical_generation(logical_generation);
         relation_corpus_detail::validate_ooc_base_path(base_path);
+        relation_corpus_detail::validate_finalized_ooc_ownership_descriptor(descriptor);
 
-        // Expected-descriptor construction validates the mapped V2 index
-        // identity, count, both extents, sentinel, and every offset. V2 has no
-        // independent data-file identity; RemoveArtifacts therefore requires
-        // exclusive ownership of the pair. The reader is created before cleanup
-        // is armed, so validation/allocation failures leave artifacts untouched.
+        // Expected-descriptor construction binds the corpus to one mapped V3
+        // index/data pair and validates both headers, identity, count, exact
+        // extents, sentinel, and every offset. The reader is created before
+        // cleanup is armed, so validation/allocation failures leave artifacts
+        // untouched.
         OOCRelationReader reader(base_path, descriptor);
 
         auto state = std::make_unique<State>(
