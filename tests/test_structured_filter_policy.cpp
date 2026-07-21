@@ -105,19 +105,24 @@ void test_unknown_enum_fails_closed() {
     }));
 }
 
-void test_vector_route_support_matrix() {
+void test_route_support_matrix() {
     for (bool large_primes : {false, true}) {
         for (bool ooc : {false, true}) {
-            for (bool resume : {false, true}) {
-                for (bool distributed : {false, true}) {
-                    const StructuredFilterRouteContext context{
-                        .large_primes_enabled = large_primes,
-                        .ooc_enabled = ooc,
-                        .resume_enabled = resume,
-                        .distributed_route = distributed,
-                    };
-                    const bool expected = large_primes && !ooc && !resume && !distributed;
-                    CHECK(gnfs::relation::structured_filter_route_supported(context) == expected);
+            for (bool explicit_ooc : {false, true}) {
+                for (bool resume : {false, true}) {
+                    for (bool distributed : {false, true}) {
+                        const StructuredFilterRouteContext context{
+                            .large_primes_enabled = large_primes,
+                            .ooc_enabled = ooc,
+                            .ooc_explicitly_enabled = explicit_ooc,
+                            .resume_enabled = resume,
+                            .distributed_route = distributed,
+                        };
+                        const bool expected =
+                            large_primes && (!ooc || explicit_ooc) && !resume && !distributed;
+                        CHECK(gnfs::relation::structured_filter_route_supported(context) ==
+                              expected);
+                    }
                 }
             }
         }
@@ -186,7 +191,7 @@ int main() {
     test_forced_on_is_fail_closed();
     test_auto_requires_explicit_support_and_eligibility();
     test_unknown_enum_fails_closed();
-    test_vector_route_support_matrix();
+    test_route_support_matrix();
     test_experimental_profile_is_explicit_and_bounded();
 
     if (failures != 0) {

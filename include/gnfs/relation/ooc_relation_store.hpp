@@ -19,6 +19,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -26,8 +27,10 @@
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
+#include <sys/stat.h>
 #else
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -352,31 +355,55 @@ public:
             ensure_streams_good("resume constructor seek");
             recovery_outcome_ = OOCRecoveryOutcome::AppendablePrefix;
         } else {
-            // Fresh create: trunc + write paired V3 INCOMPLETE headers.
-            data_stream_.open(base_path + ".reldata",
-                              std::ios::in | std::ios::out | std::ios::trunc | std::ios::binary);
-            idx_stream_.open(base_path + ".relidx",
-                             std::ios::in | std::ios::out | std::ios::trunc | std::ios::binary);
-            if (!data_stream_ || !idx_stream_) {
-                throw std::runtime_error("OOCRelationWriter: cannot open files at " + base_path);
+            // Reserve both fresh names with O_EXCL before opening either
+            // stream. A second writer can therefore never pass an exists check
+            // and then truncate this store. Resume remains the only path that
+            // may open an existing pair.
+            const std::string index_path = base_path + ".relidx";
+            const std::string data_path = base_path + ".reldata";
+            bool index_reserved = false;
+            bool data_reserved = false;
+            try {
+                create_empty_file_exclusive(index_path);
+                index_reserved = true;
+                create_empty_file_exclusive(data_path);
+                data_reserved = true;
+
+                data_stream_.open(data_path, std::ios::in | std::ios::out | std::ios::binary);
+                idx_stream_.open(index_path, std::ios::in | std::ios::out | std::ios::binary);
+                if (!data_stream_ || !idx_stream_) {
+                    throw std::runtime_error("OOCRelationWriter: cannot open files at " +
+                                             base_path);
+                }
+                // 先写 INCOMPLETE 标志。若 write 中途抛(磁盘满等),析构跳过
+                // finalize → reader 看到 INCOMPLETE 拒读,避免 idx/data 不一致。
+                // 成功 close 后再翻成 MAGIC。
+                const uint64_t magic = MAGIC_INCOMPLETE;
+                const uint64_t format_version = FORMAT_VERSION;
+                const uint64_t durable_store_id = store_id_;
+                const uint64_t incomplete_count = 0;
+                idx_stream_.write(reinterpret_cast<const char*>(&magic), 8);
+                idx_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
+                idx_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
+                idx_stream_.write(reinterpret_cast<const char*>(&incomplete_count), 8);
+                const uint64_t data_magic = MAGIC_V3_DATA;
+                data_stream_.write(reinterpret_cast<const char*>(&data_magic), 8);
+                data_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
+                data_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
+                ensure_streams_good("constructor header write");
+                validate_open_v3_pair_headers("constructor header validation", incomplete_count);
+            } catch (...) {
+                abort_close_noexcept();
+                std::error_code ignored;
+                if (data_reserved) {
+                    (void)std::filesystem::remove(data_path, ignored);
+                }
+                ignored.clear();
+                if (index_reserved) {
+                    (void)std::filesystem::remove(index_path, ignored);
+                }
+                throw;
             }
-            // 先写 INCOMPLETE 标志。若 write 中途抛(磁盘满等),析构跳过
-            // finalize → reader 看到 INCOMPLETE 拒读,避免 idx/data 不一致。
-            // 成功 close 后再翻成 MAGIC。
-            const uint64_t magic = MAGIC_INCOMPLETE;
-            const uint64_t format_version = FORMAT_VERSION;
-            const uint64_t durable_store_id = store_id_;
-            const uint64_t incomplete_count = 0;
-            idx_stream_.write(reinterpret_cast<const char*>(&magic), 8);
-            idx_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
-            idx_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
-            idx_stream_.write(reinterpret_cast<const char*>(&incomplete_count), 8);
-            const uint64_t data_magic = MAGIC_V3_DATA;
-            data_stream_.write(reinterpret_cast<const char*>(&data_magic), 8);
-            data_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
-            data_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
-            ensure_streams_good("constructor header write");
-            validate_open_v3_pair_headers("constructor header validation", incomplete_count);
         }
     }
 
@@ -706,6 +733,34 @@ private:
         BoundaryOnly,
         FullTable,
     };
+
+    static void create_empty_file_exclusive(const std::string& path) {
+#ifdef _WIN32
+        const std::filesystem::path filesystem_path(path);
+        const int descriptor =
+            ::_wopen(filesystem_path.c_str(), _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY,
+                     _S_IREAD | _S_IWRITE);
+#else
+        const int descriptor = ::open(path.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+#endif
+        if (descriptor < 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    "OOCRelationWriter: cannot reserve fresh artifact " + path);
+        }
+
+#ifdef _WIN32
+        const int close_result = ::_close(descriptor);
+#else
+        const int close_result = ::close(descriptor);
+#endif
+        if (close_result != 0) {
+            const int saved_errno = errno;
+            std::error_code ignored;
+            (void)std::filesystem::remove(path, ignored);
+            throw std::system_error(saved_errno, std::generic_category(),
+                                    "OOCRelationWriter: cannot close fresh artifact " + path);
+        }
+    }
 
     static std::optional<OOCSnapshotDescriptor> reject_legacy_resume(bool legacy_resume) {
         if (legacy_resume) {

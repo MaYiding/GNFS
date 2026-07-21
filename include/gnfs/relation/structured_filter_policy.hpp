@@ -26,10 +26,14 @@ struct StructuredFilterPolicyDecision final {
     [[nodiscard]] bool operator==(const StructuredFilterPolicyDecision&) const noexcept = default;
 };
 
-/// Storage/route facts that delimit the first vector-backed integration.
+/// Storage/route facts that delimit the supported experimental integration.
+/// Ordinary OOC is admitted only when it was explicitly forced; size-aware
+/// automatic OOC, resume, and distributed collection retain their established
+/// legacy route.
 struct StructuredFilterRouteContext final {
     bool large_primes_enabled = false;
     bool ooc_enabled = false;
+    bool ooc_explicitly_enabled = false;
     bool resume_enabled = false;
     bool distributed_route = false;
 
@@ -38,7 +42,8 @@ struct StructuredFilterRouteContext final {
 
 [[nodiscard]] inline bool
 structured_filter_route_supported(const StructuredFilterRouteContext& context) noexcept {
-    return context.large_primes_enabled && !context.ooc_enabled && !context.resume_enabled &&
+    const bool supported_storage = !context.ooc_enabled || context.ooc_explicitly_enabled;
+    return context.large_primes_enabled && supported_storage && !context.resume_enabled &&
            !context.distributed_route;
 }
 

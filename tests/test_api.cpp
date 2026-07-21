@@ -17,12 +17,14 @@
 #include <gnfs/linalg/sge_streaming.hpp>
 #include <gnfs/relation/ooc_relation_store.hpp>
 #include <gnfs/relation/relation_corpus.hpp>
+#include <gnfs/relation/relation_sink.hpp>
 #include <gnfs/sieve/sieve_checkpoint.hpp>
 #include <gnfs/sieve/sieve_run_identity.hpp>
 #include <gnfs/util/process.hpp>
 #include <gnfs/util/temp_path.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -805,6 +807,8 @@ void remove_sieve_resume_artifacts(const std::string& base) noexcept {
     std::remove((base + ".relidx").c_str());
     std::remove((base + ".poly_ckpt").c_str());
     std::remove((base + ".fb_ckpt").c_str());
+    std::error_code ignored;
+    (void)std::filesystem::remove(base + ".gnfs-collector-lease", ignored);
 }
 
 struct SieveResumeArtifacts {
@@ -908,6 +912,84 @@ std::vector<gnfs::core::Relation> make_structured_route_corpus() {
         partial(53, {101, 103}),
         partial(59, {103}),
     };
+}
+
+bool test_structured_ooc_path_namespace_contract() {
+    const std::filesystem::path relative_base =
+        std::filesystem::path("structured-ooc-path-fixture") / "parent" / ".." / "raw";
+    const std::string expected_raw =
+        gnfs::relation::relation_corpus_detail::freeze_ooc_path(relative_base.string());
+    const auto run_paths =
+        gnfs::api::detail::make_structured_ooc_run_paths(relative_base.string(), "fixture_r7");
+    const auto repeated =
+        gnfs::api::detail::make_structured_ooc_run_paths(relative_base.string(), "fixture_r7");
+    const auto default_paths =
+        gnfs::api::detail::make_structured_ooc_run_paths(std::nullopt, "default_r1");
+    const std::string expected_default = gnfs::relation::relation_corpus_detail::freeze_ooc_path(
+        gnfs::util::temp_path("gnfs_relations_default_r1"));
+    if (run_paths != repeated || run_paths.raw_base_path != expected_raw ||
+        run_paths.run_identity != "fixture_r7" ||
+        run_paths.run_namespace != expected_raw + ".gnfs-structured-run-fixture_r7" ||
+        !std::filesystem::path(run_paths.raw_base_path).is_absolute() ||
+        default_paths.raw_base_path != expected_default ||
+        !std::filesystem::path(default_paths.raw_base_path).is_absolute()) {
+        std::cout << "(OOC run path namespace was not stable and canonical) ";
+        return false;
+    }
+
+    const auto generation = run_paths.generation_paths(19);
+    const auto generation_repeat = run_paths.generation_paths(19);
+    const auto next_generation = run_paths.generation_paths(20);
+    if (generation != generation_repeat || generation == next_generation) {
+        std::cout << "(OOC generation path derivation was not stable or generation-scoped) ";
+        return false;
+    }
+
+    const std::array requested_bases{
+        std::filesystem::path(generation.snapshot_requested_base),
+        std::filesystem::path(generation.working_requested_base),
+        std::filesystem::path(generation.output_requested_base),
+    };
+    const std::array lease_roots{
+        gnfs::relation::RelationSink::lease_root_for(generation.snapshot_requested_base),
+        gnfs::relation::RelationSink::lease_root_for(generation.working_requested_base),
+        gnfs::relation::RelationSink::lease_root_for(generation.output_requested_base),
+    };
+    const auto path_contains = [](const std::filesystem::path& parent,
+                                  const std::filesystem::path& child) {
+        auto parent_it = parent.begin();
+        auto child_it = child.begin();
+        while (parent_it != parent.end() && child_it != child.end() && *parent_it == *child_it) {
+            ++parent_it;
+            ++child_it;
+        }
+        return parent_it == parent.end();
+    };
+    for (size_t lhs = 0; lhs < lease_roots.size(); ++lhs) {
+        if (requested_bases[lhs].parent_path() != requested_bases.front().parent_path()) {
+            std::cout << "(OOC generation requested bases were not siblings) ";
+            return false;
+        }
+        for (size_t rhs = lhs + 1; rhs < lease_roots.size(); ++rhs) {
+            if (path_contains(lease_roots[lhs], lease_roots[rhs]) ||
+                path_contains(lease_roots[rhs], lease_roots[lhs])) {
+                std::cout << "(OOC generation lease roots overlap) ";
+                return false;
+            }
+        }
+    }
+
+    bool zero_rejected = false;
+    try {
+        (void)run_paths.generation_paths(0);
+    } catch (const std::invalid_argument&) {
+        zero_rejected = true;
+    }
+    if (!zero_rejected) {
+        std::cout << "(zero logical generation produced OOC paths) ";
+        return false;
+    }
+    return true;
 }
 
 bool test_structured_filter_public_route() {
@@ -1145,7 +1227,7 @@ bool test_structured_filter_adaptive_route() {
     return true;
 }
 
-bool test_structured_filter_ooc_rejected_before_store_creation() {
+bool test_structured_filter_ooc_collision_rejected_without_clobber() {
     const std::string base = gnfs::util::temp_path("gnfs_test_structured_ooc_boundary_" +
                                                    std::to_string(gnfs::util::process_id()));
     SieveResumeArtifacts artifacts(base);
@@ -1174,13 +1256,168 @@ bool test_structured_filter_ooc_rejected_before_store_creation() {
     bool rejected = false;
     try {
         (void)pipeline.sieve_and_collect(ctx, fb);
-    } catch (const std::invalid_argument&) {
+    } catch (const std::runtime_error&) {
         rejected = true;
     }
     if (!rejected || callbacks != 0 || read_test_file(base + ".reldata") != data_sentinel ||
         read_test_file(base + ".relidx") != index_sentinel) {
-        std::cout << "(forced structured OOC route mutated a store or did not reject) ";
+        std::cout << "(structured OOC collision mutated a store or emitted a callback) ";
         return false;
+    }
+    return true;
+}
+
+bool test_ooc_base_snapshot_ignores_callback_env_drift() {
+    const std::string configured_base = gnfs::util::temp_path(
+        "gnfs_test_ooc_frozen_base_" + std::to_string(gnfs::util::process_id()));
+    const std::string drift_base = gnfs::util::temp_path("gnfs_test_ooc_callback_drift_" +
+                                                         std::to_string(gnfs::util::process_id()));
+    const std::string frozen_base =
+        gnfs::relation::relation_corpus_detail::freeze_ooc_path(configured_base);
+    SieveResumeArtifacts configured_artifacts(configured_base);
+    SieveResumeArtifacts drift_artifacts(drift_base);
+    constexpr std::string_view data_sentinel = "callback-drift-data-sentinel";
+    constexpr std::string_view index_sentinel = "callback-drift-index-sentinel";
+    write_test_file(drift_base + ".reldata", data_sentinel);
+    write_test_file(drift_base + ".relidx", index_sentinel);
+
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+    ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "1");
+    ScopedEnvironmentVariable ooc_path("GNFS_OOC_BASE_PATH", configured_base);
+    ScopedEnvironmentVariable resume("GNFS_SIEVE_RESUME", std::nullopt);
+    ScopedEnvironmentVariable full_resume("GNFS_RESUME", std::nullopt);
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+    ScopedEnvironmentVariable v0_bfs("GNFS_V0_BFS", "0");
+    ScopedEnvironmentVariable cascade("GNFS_CASCADE_V3", "0");
+
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+
+    bool injected = false;
+    size_t structured_records = 0;
+    std::string logged_ooc_base;
+    pipeline.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.phase == Phase::Sieving && !injected) {
+            if (setenv("GNFS_OOC_BASE_PATH", drift_base.c_str(), 1) != 0) {
+                throw std::runtime_error("failed to inject OOC base-path drift");
+            }
+            injected = true;
+        }
+    });
+    pipeline.set_log_callback([&](const LogEntry& entry) {
+        if (entry.message.starts_with("structured_filter ")) {
+            ++structured_records;
+        }
+        if (!entry.message.starts_with("OOC mode enabled")) {
+            return;
+        }
+        constexpr std::string_view marker = "base=";
+        const size_t begin = entry.message.find(marker);
+        if (begin != std::string::npos) {
+            logged_ooc_base = entry.message.substr(begin + marker.size());
+        }
+    });
+
+    std::optional<gnfs::relation::RelationReductionResult> reduction;
+    try {
+        reduction.emplace(pipeline.sieve_and_collect(ctx, fb));
+    } catch (const std::exception& error) {
+        std::cout << "(frozen OOC route failed: " << error.what() << ") ";
+        return false;
+    }
+
+    const auto output_scope = reduction->relation_corpus().ooc_artifact_scope();
+    const std::string generation_marker =
+        ".g" + std::to_string(reduction->generation) + ".output.gnfs-sink-lease";
+    if (!injected || reduction->generation == 0 || structured_records != 1 ||
+        reduction->stats.strategy != gnfs::relation::ReductionStrategy::Structured ||
+        reduction->storage_kind() != gnfs::relation::RelationStorageKind::FinalizedOOC ||
+        reduction->stats.output_relations != reduction->size() || !output_scope.has_value() ||
+        output_scope->base_path.find(frozen_base + ".gnfs-structured-run-") != 0 ||
+        output_scope->base_path.find(generation_marker) == std::string::npos ||
+        output_scope->cleanup_directory.empty() ||
+        !std::filesystem::exists(output_scope->cleanup_directory) ||
+        logged_ooc_base != frozen_base || std::filesystem::exists(frozen_base + ".reldata") ||
+        std::filesystem::exists(frozen_base + ".relidx") ||
+        read_test_file(drift_base + ".reldata") != data_sentinel ||
+        read_test_file(drift_base + ".relidx") != index_sentinel) {
+        std::cout << "(structured OOC bridge did not preserve its frozen ownership contract) ";
+        return false;
+    }
+    const std::string output_cleanup = output_scope->cleanup_directory;
+    reduction.reset();
+    if (std::filesystem::exists(output_cleanup)) {
+        std::cout << "(structured OOC result did not clean its output lease) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_structured_ooc_callback_failure_preserves_finalized_raw() {
+    const std::string configured_base = gnfs::util::temp_path(
+        "gnfs_test_structured_ooc_callback_failure_" + std::to_string(gnfs::util::process_id()));
+    const std::string frozen_base =
+        gnfs::relation::relation_corpus_detail::freeze_ooc_path(configured_base);
+    SieveResumeArtifacts artifacts(configured_base);
+
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+    ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "1");
+    ScopedEnvironmentVariable ooc_path("GNFS_OOC_BASE_PATH", configured_base);
+    ScopedEnvironmentVariable resume("GNFS_SIEVE_RESUME", std::nullopt);
+    ScopedEnvironmentVariable full_resume("GNFS_RESUME", std::nullopt);
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+    ScopedEnvironmentVariable v0_bfs("GNFS_V0_BFS", "0");
+    ScopedEnvironmentVariable cascade("GNFS_CASCADE_V3", "0");
+    ScopedEnvironmentVariable three_lp("GNFS_3LP", "0");
+
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+
+    size_t structured_records = 0;
+    pipeline.set_log_callback([&](const LogEntry& entry) {
+        if (entry.message.starts_with("structured_filter ")) {
+            ++structured_records;
+        }
+        if (entry.message.starts_with("done:")) {
+            throw std::runtime_error("injected structured OOC terminal callback failure");
+        }
+    });
+
+    bool injected_failure = false;
+    try {
+        (void)pipeline.sieve_and_collect(ctx, fb);
+    } catch (const std::runtime_error& error) {
+        injected_failure =
+            std::string_view(error.what()) == "injected structured OOC terminal callback failure";
+    }
+    if (!injected_failure || structured_records != 1 ||
+        !std::filesystem::exists(frozen_base + ".relidx") ||
+        !std::filesystem::exists(frozen_base + ".reldata")) {
+        std::cout << "(terminal callback failure did not retain finalized structured OOC raw) ";
+        return false;
+    }
+
+    gnfs::relation::OOCRelationReader finalized_raw(frozen_base);
+    (void)finalized_raw.count();
+    const std::filesystem::path raw_path(frozen_base);
+    const std::string private_prefix = raw_path.filename().string() + ".gnfs-structured-run-";
+    for (const auto& entry : std::filesystem::directory_iterator(raw_path.parent_path())) {
+        if (entry.path().filename().string().starts_with(private_prefix)) {
+            std::cout << "(terminal callback failure leaked a private structured OOC lease) ";
+            return false;
+        }
     }
     return true;
 }
@@ -2099,11 +2336,14 @@ int main() {
     TEST(pipeline_stats);
     TEST(pipeline_relation_generations);
     TEST(pipeline_progress_callback);
+    TEST(structured_ooc_path_namespace_contract);
     TEST(structured_filter_public_route);
     TEST(structured_filter_public_off_equivalence);
     TEST(structured_filter_invalid_env_precedes_generation);
     TEST(structured_filter_adaptive_route);
-    TEST(structured_filter_ooc_rejected_before_store_creation);
+    TEST(structured_filter_ooc_collision_rejected_without_clobber);
+    TEST(ooc_base_snapshot_ignores_callback_env_drift);
+    TEST(structured_ooc_callback_failure_preserves_finalized_raw);
     TEST(structured_filter_run_preflight_preserves_resume_artifacts);
     TEST(structured_filter_run_freezes_route_before_callbacks);
     TEST(structured_filter_sieve_freezes_route_before_callbacks);

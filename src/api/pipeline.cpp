@@ -41,6 +41,7 @@
 #include <cstdlib> // getenv for GNFS_CASCADE_V3 flag
 #include <cstring> // strlen for SGE-OOC ENV string checks
 #include <exception>
+#include <filesystem>
 #include <limits>
 #include <optional>
 #include <random>
@@ -178,6 +179,61 @@ std::optional<std::vector<bool>> detail::xor_dependency_pair_checked(const std::
     return combined;
 }
 
+detail::StructuredOOCGenerationPaths
+detail::StructuredOOCRunPaths::generation_paths(uint64_t logical_generation) const {
+    if (logical_generation == 0) {
+        throw std::invalid_argument(
+            "structured OOC generation paths require a nonzero logical generation");
+    }
+    if (run_namespace.empty() || run_namespace.find('\0') != std::string::npos ||
+        !std::filesystem::path(run_namespace).is_absolute()) {
+        throw std::logic_error("structured OOC run namespace is not a frozen absolute path");
+    }
+
+    const std::string generation_namespace =
+        run_namespace + ".g" + std::to_string(logical_generation);
+    return {
+        generation_namespace + ".snapshot",
+        generation_namespace + ".working",
+        generation_namespace + ".output",
+    };
+}
+
+detail::StructuredOOCRunPaths
+detail::make_structured_ooc_run_paths(std::optional<std::string> configured_raw_base_path,
+                                      std::string run_identity) {
+    if (run_identity.empty() || run_identity.find('\0') != std::string::npos) {
+        throw std::invalid_argument("structured OOC run identity must be nonempty");
+    }
+    for (const char byte : run_identity) {
+        const bool path_safe = (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+                               (byte >= '0' && byte <= '9') || byte == '-' || byte == '_';
+        if (!path_safe) {
+            throw std::invalid_argument(
+                "structured OOC run identity must contain only ASCII letters, digits, '-' or '_'");
+        }
+    }
+
+    std::string raw_base_path;
+    if (configured_raw_base_path.has_value()) {
+        if (configured_raw_base_path->empty() ||
+            configured_raw_base_path->find('\0') != std::string::npos) {
+            throw std::invalid_argument("structured OOC raw base path must be nonempty");
+        }
+        raw_base_path = std::move(*configured_raw_base_path);
+    } else {
+        raw_base_path = gnfs::util::temp_path("gnfs_relations_" + run_identity);
+    }
+    raw_base_path = relation::relation_corpus_detail::freeze_ooc_path(raw_base_path);
+    std::string run_namespace = raw_base_path + ".gnfs-structured-run-" + run_identity;
+
+    return {
+        raw_base_path,
+        std::move(run_identity),
+        std::move(run_namespace),
+    };
+}
+
 // ============================================================
 // Fast path: trial division + Pollard rho for small N
 // ============================================================
@@ -304,6 +360,23 @@ inline std::string pipeline_resume_base_path() {
         return env;
     }
     return {};
+}
+
+std::string allocate_structured_ooc_run_identity() {
+    static std::atomic<uint64_t> next_run_ordinal{1};
+    uint64_t run_ordinal = next_run_ordinal.load(std::memory_order_relaxed);
+    for (;;) {
+        if (run_ordinal == 0) {
+            throw std::overflow_error("structured OOC run identity counter exhausted");
+        }
+        const uint64_t successor =
+            run_ordinal == std::numeric_limits<uint64_t>::max() ? 0 : run_ordinal + 1;
+        if (next_run_ordinal.compare_exchange_weak(run_ordinal, successor,
+                                                   std::memory_order_relaxed)) {
+            break;
+        }
+    }
+    return "p" + std::to_string(gnfs::util::process_id()) + "-r" + std::to_string(run_ordinal);
 }
 
 /// Trial division up to limit. Returns factor or 0.
@@ -667,6 +740,11 @@ Pipeline::StructuredRouteSnapshot Pipeline::capture_structured_route_snapshot() 
     const auto ooc_policy =
         relation::decide_ooc_policy(std::getenv("GNFS_OOC_RELATIONS"), params_.large_prime_bound);
     const bool ooc_enabled = resume_enabled || ooc_policy.enabled;
+    std::optional<std::string> configured_ooc_base_path;
+    if (const char* path_env = std::getenv("GNFS_OOC_BASE_PATH");
+        path_env != nullptr && path_env[0] != '\0') {
+        configured_ooc_base_path.emplace(path_env);
+    }
     const bool large_primes_enabled = params_.large_prime_bound > params_.algebraic_bound;
     const size_t distributed_workers = sieve::parse_distributed_sieve_workers_env();
     const bool distributed_size_gate_ok = params_.digits >= 30;
@@ -678,15 +756,25 @@ Pipeline::StructuredRouteSnapshot Pipeline::capture_structured_route_snapshot() 
     const bool supported = relation::structured_filter_route_supported({
         .large_primes_enabled = large_primes_enabled,
         .ooc_enabled = ooc_enabled,
+        .ooc_explicitly_enabled = ooc_policy.explicitly_enabled,
         .resume_enabled = resume_enabled,
         .distributed_route = distributed_route_selected,
     });
     const auto policy = relation::decide_structured_filter_policy(mode, supported, false);
 
+    std::optional<detail::StructuredOOCRunPaths> ooc_paths;
+    if (ooc_enabled) {
+        if (resume_enabled) {
+            configured_ooc_base_path = resume_base_path;
+        }
+        ooc_paths.emplace(detail::make_structured_ooc_run_paths(
+            std::move(configured_ooc_base_path), allocate_structured_ooc_run_identity()));
+    }
+
     return {
-        mode,
         policy,
         std::move(resume_base_path),
+        std::move(ooc_paths),
         std::string(ooc_policy.reason),
         large_primes_enabled,
         ooc_enabled,
@@ -925,8 +1013,6 @@ relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialCo
 relation::RelationReductionResult
 Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase& fb,
                                  const StructuredRouteSnapshot& structured_preflight) {
-    emit_progress(Phase::Sieving, "Starting sieve");
-
     auto t0 = std::chrono::high_resolution_clock::now();
 
     // Sieve params
@@ -955,12 +1041,6 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     {
         const char* env = std::getenv("GNFS_3LP");
         cofac_config.allow_3lp = (env && std::atoi(env) == 1);
-        if (cofac_config.allow_3lp) {
-            emit_log(LogLevel::Info, Phase::Sieving,
-                     "GNFS_3LP=1 enabled: cofactorizer accepts 3LP relations");
-            std::fprintf(stderr, "[3lp] cofactor + filter accept 3LP (lp_bits=%zu B^3 bound)\n",
-                         static_cast<size_t>(gnfs::util::ctz64(params_.large_prime_bound | 1)));
-        }
     }
 
     cofactor::Cofactorizer cofactorizer(ctx, fb, cofac_config);
@@ -1035,7 +1115,8 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     }
     // ── OOC streaming (BACKLOG #11c, ENV GNFS_OOC_RELATIONS=1) ──
     // 50d Round 2 909K relations 时 macOS OOM-killed (2026-05-17 实测).
-    // OOC 启用后 collector 流式写盘到系统临时目录的 gnfs_relations_<pid>.{reldata,relidx},
+    // OOC 启用后 collector 流式写盘到系统临时目录的
+    // gnfs_relations_<run-id>.{reldata,relidx},
     // 内存只保留 (a,b) seen set, 显著减小 sieve 期间 RAM peak.
     // 不与 GNFS_SIEVE_RESUME / GNFS_RESUME 共存 (resume 已隐含 OOC enable)
     //
@@ -1046,27 +1127,10 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     if (sieve_resume_path.empty()) {
         if (structured_preflight.ooc_enabled) {
             coll_config.ooc_enabled = true;
-            // base_path: ENV GNFS_OOC_BASE_PATH overrides the temp-dir default.
-            if (const char* path_env = std::getenv("GNFS_OOC_BASE_PATH");
-                path_env != nullptr && path_env[0] != '\0') {
-                coll_config.ooc_base_path = path_env;
-            } else {
-                coll_config.ooc_base_path = gnfs::util::temp_path(
-                    "gnfs_relations_" + std::to_string(gnfs::util::process_id()));
+            if (!structured_preflight.ooc_paths.has_value()) {
+                throw std::logic_error("OOC route snapshot is missing its frozen path namespace");
             }
-            // Forced structured mode rejects this unsupported route below,
-            // before collector construction. Do not announce a store that will
-            // never be opened.
-            if (structured_preflight.mode != relation::StructuredFilterMode::On) {
-                const std::string& reason_str = structured_preflight.ooc_reason;
-                const size_t lp_bits_est = relation::estimate_lp_bits(params_.large_prime_bound);
-                emit_log(LogLevel::Info, Phase::Sieving,
-                         std::string("OOC mode enabled (") + reason_str +
-                             "): base=" + coll_config.ooc_base_path);
-                std::fprintf(stderr,
-                             "[ooc] streaming relations to %s.{reldata,relidx} (%s, lp_bits=%zu)\n",
-                             coll_config.ooc_base_path.c_str(), reason_str.c_str(), lp_bits_est);
-            }
+            coll_config.ooc_base_path = structured_preflight.ooc_paths->raw_base_path;
         }
     }
     const bool lp_enabled = structured_preflight.large_primes_enabled;
@@ -1079,6 +1143,25 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     relation::RelationCollector collector(coll_config);
     const bool recovered_finalized_ooc =
         collector.ooc_recovery_outcome() == relation::OOCRecoveryOutcome::FinalizedCorpus;
+    // Reserve/validate the exact OOC pair before the first sieve-stage callback.
+    // A direct sieve invocation with a colliding raw base therefore fails with
+    // no callback, relation generation, or artifact mutation.
+    emit_progress(Phase::Sieving, "Starting sieve");
+    if (cofac_config.allow_3lp) {
+        emit_log(LogLevel::Info, Phase::Sieving,
+                 "GNFS_3LP=1 enabled: cofactorizer accepts 3LP relations");
+        std::fprintf(stderr, "[3lp] cofactor + filter accept 3LP (lp_bits=%zu B^3 bound)\n",
+                     static_cast<size_t>(gnfs::util::ctz64(params_.large_prime_bound | 1)));
+    }
+    if (coll_config.ooc_enabled && sieve_resume_path.empty()) {
+        const std::string& reason_str = structured_preflight.ooc_reason;
+        const size_t lp_bits_est = relation::estimate_lp_bits(params_.large_prime_bound);
+        emit_log(LogLevel::Info, Phase::Sieving,
+                 std::string("OOC mode enabled (") + reason_str +
+                     "): base=" + coll_config.ooc_base_path);
+        std::fprintf(stderr, "[ooc] streaming relations to %s.{reldata,relidx} (%s, lp_bits=%zu)\n",
+                     coll_config.ooc_base_path.c_str(), reason_str.c_str(), lp_bits_est);
+    }
     if (recovered_finalized_ooc) {
         emit_log(LogLevel::Info, Phase::Sieving,
                  "recovered a finalized OOC corpus; skipping further sieve appends");
@@ -1091,8 +1174,9 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     size_t initial_target = params_.raw_relation_target(matrix_cols);
     size_t batch_target = initial_target;
 
-    auto reduce_relations = [&](std::vector<Relation> raw_relations,
-                                relation::ReductionStrategy legacy_strategy) {
+    auto reduce_snapshot = [&](relation::RawRelationSnapshot raw_snapshot,
+                               relation::ReductionStrategy legacy_strategy,
+                               const detail::StructuredOOCGenerationPaths* ooc_generation_paths) {
         relation::RelationReductionConfig reduction_config;
         reduction_config.filter.remove_singletons = true;
         reduction_config.filter.max_passes = 10;
@@ -1102,18 +1186,67 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
             relation::select_reduction_strategy(structured_policy, legacy_strategy);
         if (reduction_config.strategy == relation::ReductionStrategy::Structured) {
             reduction_config.structured = relation::make_structured_filter_experimental_config(
-                raw_relations.size(), relation::structured_filter_hardware_workers());
+                raw_snapshot.size(), relation::structured_filter_hardware_workers());
+            if (raw_snapshot.corpus.storage_kind() == relation::RelationStorageKind::FinalizedOOC) {
+                if (ooc_generation_paths == nullptr) {
+                    throw std::logic_error(
+                        "structured OOC reduction is missing generation-specific paths");
+                }
+                reduction_config.structured->deduplicated_ooc_base_path =
+                    ooc_generation_paths->working_requested_base;
+                reduction_config.structured->output_ooc_base_path =
+                    ooc_generation_paths->output_requested_base;
+                reduction_config.structured->output_ooc_cleanup =
+                    relation::OOCCleanupPolicy::RemoveArtifacts;
+            } else if (ooc_generation_paths != nullptr) {
+                throw std::logic_error(
+                    "structured OOC generation paths require a finalized OOC snapshot");
+            }
         }
 
-        const uint64_t generation = allocate_relation_generation();
-        auto reduction = relation::RelationReductionEngine::reduce(
-            relation::RawRelationSnapshot(generation, std::move(raw_relations)), reduction_config);
+        auto reduction =
+            relation::RelationReductionEngine::reduce(std::move(raw_snapshot), reduction_config);
         if (reduction_config.strategy == relation::ReductionStrategy::Structured) {
             const std::string record = structured_filter_record(structured_policy, reduction,
                                                                 *reduction_config.structured);
             emit_log(LogLevel::Info, Phase::Sieving, record);
             std::fprintf(stderr, "[%s]\n", record.c_str());
         }
+        return reduction;
+    };
+
+    auto reduce_vector = [&](std::vector<Relation> raw_relations,
+                             relation::ReductionStrategy legacy_strategy) {
+        const uint64_t generation = allocate_relation_generation();
+        return reduce_snapshot(relation::RawRelationSnapshot(generation, std::move(raw_relations)),
+                               legacy_strategy, nullptr);
+    };
+
+    const bool structured_ooc_route =
+        coll_config.ooc_enabled &&
+        structured_policy.selection == relation::StructuredFilterSelection::Structured;
+    std::optional<relation::OOCSnapshotDescriptor> last_structured_ooc_source;
+    auto reduce_collector_snapshot = [&](relation::ReductionStrategy legacy_strategy) {
+        if (!structured_ooc_route) {
+            return reduce_vector(collector.snapshot_relations(), legacy_strategy);
+        }
+        if (!structured_preflight.ooc_paths.has_value()) {
+            throw std::logic_error("structured OOC reduction is missing its frozen run paths");
+        }
+
+        const uint64_t generation = allocate_relation_generation();
+        const auto generation_paths = structured_preflight.ooc_paths->generation_paths(generation);
+        relation::CollectorOOCCorpusSnapshot probe =
+            collector.snapshot_ooc_corpus(generation, generation_paths.snapshot_requested_base,
+                                          relation::OOCCleanupPolicy::RemoveArtifacts);
+        const relation::OOCSnapshotDescriptor source_descriptor = probe.source_descriptor;
+        auto reduction = reduce_snapshot(relation::RawRelationSnapshot(std::move(probe.corpus)),
+                                         legacy_strategy, &generation_paths);
+        if (reduction.stats.input_relations != source_descriptor.count) {
+            throw std::logic_error(
+                "structured OOC reduction input count differs from its raw prefix");
+        }
+        last_structured_ooc_source = source_descriptor;
         return reduction;
     };
 
@@ -1211,7 +1344,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
 
             // Run filter+merge once on collected relations (mirrors the
             // adaptive-loop body but only one pass — no adaptive retry).
-            auto dist_reduction = reduce_relations(
+            auto dist_reduction = reduce_vector(
                 std::move(dist_rels), lp_enabled ? relation::ReductionStrategy::StandardV0
                                                  : relation::ReductionStrategy::NoLargePrimes);
 
@@ -1433,7 +1566,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                                                     : relation::ReductionStrategy::StandardV0);
         // Avoid retaining the previous reduced corpus while materializing the next probe.
         last_reduction.reset();
-        last_reduction.emplace(reduce_relations(collector.snapshot_relations(), strategy));
+        last_reduction.emplace(reduce_collector_snapshot(strategy));
         const auto& reduction_stats = last_reduction->stats;
 
         // V3 cascade (GNFS_CASCADE_V3=1): engine runs it after V0 on a
@@ -1501,11 +1634,35 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         const auto strategy = !lp_enabled ? relation::ReductionStrategy::NoLargePrimes
                                           : (use_v3 ? relation::ReductionStrategy::StandardV0WithV3
                                                     : relation::ReductionStrategy::StandardV0);
-        last_reduction.emplace(reduce_relations(collector.snapshot_relations(), strategy));
+        last_reduction.emplace(reduce_collector_snapshot(strategy));
     }
     // The adaptive loop is the last append boundary. Finalize OOC storage only
-    // after every possible continuation has been decided.
-    collector.finalize_ooc();
+    // after every possible continuation has been decided. A structured OOC
+    // result is authoritative only when its last probe describes the exact
+    // terminal raw prefix. Prove that while the collector still owns the raw
+    // pair; only then transfer and remove those no-longer-needed artifacts.
+    if (structured_ooc_route) {
+        if (!last_structured_ooc_source.has_value()) {
+            throw std::logic_error("structured OOC route has no successful raw-prefix probe");
+        }
+        const auto final_descriptor = collector.finalize_ooc();
+        if (!final_descriptor.has_value()) {
+            throw std::logic_error("structured OOC route did not finalize an OOC store");
+        }
+        const auto& probed = *last_structured_ooc_source;
+        const bool same_terminal_prefix =
+            final_descriptor->format_version == probed.format_version &&
+            final_descriptor->store_id == probed.store_id &&
+            final_descriptor->count == probed.count &&
+            final_descriptor->data_end == probed.data_end;
+        if (!same_terminal_prefix ||
+            last_reduction->stats.input_relations != final_descriptor->count) {
+            throw std::logic_error(
+                "structured OOC final reduction does not match the terminal raw prefix");
+        }
+    } else {
+        (void)collector.finalize_ooc();
+    }
 
     auto t1 = std::chrono::high_resolution_clock::now();
     stats_.timings.sieve_s = std::chrono::duration<double>(t1 - t0).count();
@@ -1584,6 +1741,16 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                      " rescues=" + std::to_string(al.rescues_succeeded));
     }
 
+    if (structured_ooc_route) {
+        // Keep the validated, finalized raw pair owned by the collector across
+        // every user callback above. If a callback throws, unwinding removes
+        // the provisional reduced output but leaves the authoritative raw
+        // corpus for diagnosis or retry. Adoption happens only at this final
+        // no-callback boundary; failure retains the collector's raw owner.
+        relation::RelationCorpus terminal_raw = collector.handoff_ooc_corpus(
+            last_reduction->generation, relation::OOCCleanupPolicy::RemoveArtifacts);
+        (void)terminal_raw;
+    }
     return std::move(*last_reduction);
 }
 

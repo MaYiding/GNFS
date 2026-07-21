@@ -59,10 +59,13 @@ inline void validate_ooc_base_path(const std::string& base_path) {
 }
 
 /// Freeze an OOC path against later process working-directory changes and
-/// resolve every currently existing parent/symlink component. The leaf itself
-/// need not exist because relation stores use a base path plus two suffixes.
+/// resolve existing parent/symlink components without following the base leaf.
+/// The leaf is a namespace prefix, not an artifact: stores append two suffixes,
+/// so a same-named symlink must never redirect those sibling artifact paths.
 [[nodiscard]] inline std::string freeze_ooc_path(const std::string& path) {
-    return std::filesystem::weakly_canonical(std::filesystem::absolute(path)).string();
+    const auto absolute = std::filesystem::absolute(path).lexically_normal();
+    const auto parent = std::filesystem::weakly_canonical(absolute.parent_path());
+    return (parent / absolute.filename()).lexically_normal().string();
 }
 
 /// Repository-owned deterministic generator for selection policies.

@@ -18,8 +18,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -37,6 +39,16 @@ using namespace gnfs::core;
         if (!(condition))                                                                          \
             check_failed(#condition, __LINE__);                                                    \
     } while (false)
+
+template <typename Operation> static void check_logic_error(Operation&& operation) {
+    bool threw = false;
+    try {
+        operation();
+    } catch (const std::logic_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
 
 static void check_stats_equal(const CollectorStats& actual, const CollectorStats& expected) {
     CHECK(actual.total_relations == expected.total_relations);
@@ -481,6 +493,23 @@ struct OOCArtifacts {
     }
 };
 
+/// Best-effort cleanup for the private directory reserved by RelationSink.
+struct OOCSinkLeaseArtifacts {
+    std::filesystem::path lease_root;
+    explicit OOCSinkLeaseArtifacts(const std::string& base)
+        : lease_root(RelationSink::lease_root_for(base)) {}
+    ~OOCSinkLeaseArtifacts() {
+        std::error_code ec;
+        (void)std::filesystem::remove_all(lease_root, ec);
+    }
+};
+
+static std::vector<char> read_file_bytes(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    CHECK(static_cast<bool>(input));
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
 void test_ooc_basic_add() {
     std::cout << "Testing OOC basic add..." << std::endl;
     auto path = make_tmp_ooc_path("basic_add");
@@ -718,6 +747,69 @@ void test_ooc_empty_base_path_rejected() {
     std::cout << "  OOC empty base_path rejected: PASS" << std::endl;
 }
 
+void test_ooc_fresh_store_refuses_existing_artifacts() {
+    std::cout << "Testing fresh OOC collector refuses existing artifacts..." << std::endl;
+
+    for (const char* occupied_suffix : {".relidx", ".reldata"}) {
+        const auto path = make_tmp_ooc_path(std::string("fresh_collision") + occupied_suffix);
+        OOCArtifacts cleanup(path);
+        const std::filesystem::path occupied(path + occupied_suffix);
+        const std::vector<char> sentinel{'G', 'N', 'F', 'S', '-', 's', 'e',
+                                         'n', 't', 'i', 'n', 'e', 'l'};
+        {
+            std::ofstream output(occupied, std::ios::binary);
+            CHECK(static_cast<bool>(output));
+            output.write(sentinel.data(), static_cast<std::streamsize>(sentinel.size()));
+            CHECK(static_cast<bool>(output));
+        }
+
+        CollectorConfig config;
+        config.ooc_enabled = true;
+        config.ooc_base_path = path;
+        bool rejected = false;
+        try {
+            RelationCollector collector(config);
+            (void)collector;
+        } catch (const std::runtime_error&) {
+            rejected = true;
+        }
+        CHECK(rejected);
+        CHECK(read_file_bytes(occupied) == sentinel);
+        const std::string other_suffix =
+            std::string(occupied_suffix) == ".relidx" ? ".reldata" : ".relidx";
+        CHECK(!std::filesystem::exists(path + other_suffix));
+    }
+
+    // A dangling symlink is still an occupied filesystem entry. Some Windows
+    // environments disallow unprivileged symlink creation, so only that setup
+    // limitation skips this platform-specific sentinel case.
+    {
+        const auto path = make_tmp_ooc_path("fresh_dangling_symlink");
+        OOCArtifacts cleanup(path);
+        const std::filesystem::path link(path + ".relidx");
+        std::error_code ec;
+        std::filesystem::create_symlink("missing-gnfs-ooc-target", link, ec);
+        if (!ec) {
+            CollectorConfig config;
+            config.ooc_enabled = true;
+            config.ooc_base_path = path;
+            bool rejected = false;
+            try {
+                RelationCollector collector(config);
+                (void)collector;
+            } catch (const std::runtime_error&) {
+                rejected = true;
+            }
+            CHECK(rejected);
+            CHECK(std::filesystem::symlink_status(link).type() ==
+                  std::filesystem::file_type::symlink);
+            CHECK(!std::filesystem::exists(path + ".reldata"));
+        }
+    }
+
+    std::cout << "  Fresh OOC collision guard: PASS" << std::endl;
+}
+
 void test_ooc_legacy_save_load_disabled() {
     std::cout << "Testing OOC save/load legacy methods disabled..." << std::endl;
     auto path = make_tmp_ooc_path("legacy");
@@ -839,6 +931,223 @@ void test_ooc_snapshot_append_snapshot_finalize() {
     check_stats_equal(collector.stats(), stats_before_rejection);
 
     std::cout << "  OOC appendable snapshots: PASS" << std::endl;
+}
+
+void test_ooc_corpus_snapshot_append_snapshot_handoff() {
+    std::cout << "Testing streaming OOC corpus snapshots and terminal handoff..." << std::endl;
+    const auto raw_path = make_tmp_ooc_path("corpus_bridge_raw");
+    const auto first_path = make_tmp_ooc_path("corpus_bridge_first");
+    const auto second_path = make_tmp_ooc_path("corpus_bridge_second");
+    OOCArtifacts raw_cleanup(raw_path);
+    OOCSinkLeaseArtifacts first_cleanup(first_path);
+    OOCSinkLeaseArtifacts second_cleanup(second_path);
+
+    {
+        RelationCorpus handed_off = [&]() {
+            CollectorConfig config;
+            config.ooc_enabled = true;
+            config.ooc_base_path = raw_path;
+            RelationCollector collector(config);
+
+            for (int i = 0; i < 3; ++i) {
+                CHECK(collector.add(make_snapshot_relation(i)));
+            }
+
+            CollectorOOCCorpusSnapshot first_snapshot =
+                collector.snapshot_ooc_corpus(101, first_path);
+            RelationCorpus& first = first_snapshot.corpus;
+            CHECK(first.storage_kind() == RelationStorageKind::FinalizedOOC);
+            CHECK(first.logical_generation() == 101);
+            CHECK(first.count() == 3);
+            CHECK(first.read(0).a == 1);
+            CHECK(first.read(2).a == 5);
+            CHECK(first_snapshot.source_descriptor.count == 3);
+            CHECK(first_snapshot.source_descriptor.store_id != 0);
+
+            for (int i = 3; i < 5; ++i) {
+                CHECK(collector.add(make_snapshot_relation(i)));
+            }
+
+            CollectorOOCCorpusSnapshot second_snapshot =
+                collector.snapshot_ooc_corpus(102, second_path);
+            RelationCorpus& second = second_snapshot.corpus;
+            CHECK(second.storage_kind() == RelationStorageKind::FinalizedOOC);
+            CHECK(second.logical_generation() == 102);
+            CHECK(second.count() == 5);
+            CHECK(second.read(4).a == 9);
+            CHECK(first.count() == 3);
+            CHECK(first.read(2).a == 5);
+            CHECK(second_snapshot.source_descriptor.store_id ==
+                  first_snapshot.source_descriptor.store_id);
+            CHECK(second_snapshot.source_descriptor.count == 5);
+            CHECK(second_snapshot.source_descriptor.data_end >
+                  first_snapshot.source_descriptor.data_end);
+
+            const auto first_scope = first.ooc_artifact_scope();
+            const auto second_scope = second.ooc_artifact_scope();
+            CHECK(first_scope.has_value());
+            CHECK(second_scope.has_value());
+            CHECK(first_scope->descriptor.store_id != second_scope->descriptor.store_id);
+
+            RelationCorpus original = collector.handoff_ooc_corpus(103);
+            CHECK(original.storage_kind() == RelationStorageKind::FinalizedOOC);
+            CHECK(original.logical_generation() == 103);
+            CHECK(original.count() == 5);
+            CHECK(original.read(4).a == 9);
+            const auto original_scope = original.ooc_artifact_scope();
+            CHECK(original_scope.has_value());
+            CHECK(original_scope->base_path == relation_corpus_detail::freeze_ooc_path(raw_path));
+            CHECK(original_scope->descriptor.store_id != first_scope->descriptor.store_id);
+            CHECK(original_scope->descriptor.store_id != second_scope->descriptor.store_id);
+            CHECK(original_scope->descriptor.store_id ==
+                  second_snapshot.source_descriptor.store_id);
+            CHECK(original_scope->descriptor.count == second_snapshot.source_descriptor.count);
+            CHECK(original_scope->descriptor.data_end ==
+                  second_snapshot.source_descriptor.data_end);
+
+            const auto terminal_stats = collector.stats();
+            CHECK(collector.size() == 5);
+            CHECK(!collector.empty());
+            check_logic_error([&]() { (void)collector.add(make_snapshot_relation(20)); });
+            check_logic_error([&]() { collector.clear(); });
+            check_logic_error([&]() { (void)collector.snapshot_relations(); });
+            check_logic_error([&]() { (void)collector.finalize_relations(); });
+            check_logic_error([&]() { (void)collector.finalize_ooc(); });
+            check_logic_error([&]() { (void)collector.checkpoint_ooc(); });
+            check_logic_error([&]() { collector.resume_ooc(second_snapshot.source_descriptor); });
+            RelationCollector merge_source;
+            CHECK(merge_source.add(make_snapshot_relation(21)));
+            check_logic_error([&]() { (void)collector.merge(merge_source); });
+            RelationCollector merge_destination;
+            check_logic_error([&]() { (void)merge_destination.merge(collector); });
+            check_logic_error([&]() {
+                (void)collector.snapshot_ooc_corpus(104,
+                                                    make_tmp_ooc_path("after_handoff_snapshot"));
+            });
+            check_logic_error([&]() { (void)collector.handoff_ooc_corpus(104); });
+            check_stats_equal(collector.stats(), terminal_stats);
+            return original;
+        }();
+
+        // The moved corpus owns the exact original V3 pair after the collector
+        // is gone and remains readable for its full independent lifetime.
+        CHECK(std::filesystem::exists(raw_path + ".relidx"));
+        CHECK(std::filesystem::exists(raw_path + ".reldata"));
+        CHECK(handed_off.count() == 5);
+        CHECK(handed_off.read(0).a == 1);
+    }
+    CHECK(!std::filesystem::exists(raw_path + ".relidx"));
+    CHECK(!std::filesystem::exists(raw_path + ".reldata"));
+
+    std::cout << "  Streaming OOC corpus snapshots/handoff: PASS" << std::endl;
+}
+
+void test_ooc_corpus_snapshot_collision_is_retryable() {
+    std::cout << "Testing OOC corpus destination collision retry..." << std::endl;
+    const auto raw_path = make_tmp_ooc_path("corpus_collision_raw");
+    const auto destination_path = make_tmp_ooc_path("corpus_collision_destination");
+    OOCArtifacts raw_cleanup(raw_path);
+    OOCSinkLeaseArtifacts destination_cleanup(destination_path);
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = raw_path;
+    RelationCollector collector(config);
+    CHECK(collector.add(make_snapshot_relation(0)));
+
+    const auto lease_root = RelationSink::lease_root_for(destination_path);
+    CHECK(std::filesystem::create_directory(lease_root));
+    bool collision_rejected = false;
+    try {
+        (void)collector.snapshot_ooc_corpus(201, destination_path);
+    } catch (const std::runtime_error&) {
+        collision_rejected = true;
+    }
+    CHECK(collision_rejected);
+
+    // Reservation failed before checkpointing, so the source remains Open.
+    CHECK(collector.add(make_snapshot_relation(1)));
+    CHECK(std::filesystem::remove(lease_root));
+
+    CollectorOOCCorpusSnapshot retry = collector.snapshot_ooc_corpus(202, destination_path);
+    CHECK(retry.source_descriptor.count == 2);
+    CHECK(retry.corpus.count() == 2);
+    CHECK(retry.corpus.read(0).a == 1);
+    CHECK(retry.corpus.read(1).a == 3);
+
+    // Successful copy also resumes the exact prefix before returning.
+    CHECK(collector.add(make_snapshot_relation(2)));
+    RelationCorpus original = collector.handoff_ooc_corpus(203);
+    CHECK(original.count() == 3);
+
+    std::cout << "  OOC corpus collision retry: PASS" << std::endl;
+}
+
+void test_ooc_corpus_handoff_adoption_retry_and_identity() {
+    std::cout << "Testing OOC corpus handoff adoption retry and identity..." << std::endl;
+    const auto raw_path = make_tmp_ooc_path("corpus_handoff_retry");
+    const auto configured_raw_path = (std::filesystem::path(raw_path).parent_path() / "." /
+                                      std::filesystem::path(raw_path).filename())
+                                         .string();
+    OOCArtifacts raw_cleanup(raw_path);
+
+    {
+        CollectorConfig config;
+        config.ooc_enabled = true;
+        config.ooc_base_path = configured_raw_path;
+        RelationCollector collector(config);
+        CHECK(collector.add(make_snapshot_relation(0)));
+        CHECK(collector.add(make_snapshot_relation(1)));
+
+        const auto finalized = collector.finalize_ooc();
+        CHECK(finalized.has_value());
+
+        bool adoption_rejected = false;
+        try {
+            (void)collector.handoff_ooc_corpus(0);
+        } catch (const std::invalid_argument&) {
+            adoption_rejected = true;
+        }
+        CHECK(adoption_rejected);
+
+        // Failed corpus construction retains the idempotent Finalized writer
+        // and descriptor, including physical store identity, for retry.
+        const auto retained = collector.finalize_ooc();
+        CHECK(retained == finalized);
+        CHECK(collector.snapshot_relations().size() == 2);
+
+        RelationCorpus corpus = collector.handoff_ooc_corpus(301);
+        const auto scope = corpus.ooc_artifact_scope();
+        CHECK(scope.has_value());
+        CHECK(scope->base_path == relation_corpus_detail::freeze_ooc_path(raw_path));
+        CHECK(scope->descriptor == *finalized);
+        CHECK(corpus.count() == 2);
+        CHECK(corpus.read(1).a == 3);
+        check_logic_error([&]() { (void)collector.handoff_ooc_corpus(302); });
+        check_logic_error([&]() { (void)collector.finalize_ooc(); });
+    }
+    CHECK(!std::filesystem::exists(raw_path + ".relidx"));
+    CHECK(!std::filesystem::exists(raw_path + ".reldata"));
+
+    std::cout << "  OOC corpus handoff retry/identity: PASS" << std::endl;
+}
+
+void test_ooc_corpus_bridge_rejects_vector_mode() {
+    std::cout << "Testing OOC corpus bridge rejects vector mode..." << std::endl;
+    const auto destination_path = make_tmp_ooc_path("vector_bridge_rejection");
+    OOCSinkLeaseArtifacts destination_cleanup(destination_path);
+
+    RelationCollector collector;
+    CHECK(collector.add(make_snapshot_relation(0)));
+    check_logic_error([&]() { (void)collector.snapshot_ooc_corpus(401, destination_path); });
+    check_logic_error([&]() { (void)collector.handoff_ooc_corpus(401); });
+    CHECK(!std::filesystem::exists(RelationSink::lease_root_for(destination_path)));
+
+    // Existing in-memory compatibility remains intentionally appendable.
+    CHECK(collector.add(make_snapshot_relation(1)));
+    CHECK(collector.snapshot_relations().size() == 2);
+
+    std::cout << "  Vector-mode OOC bridge rejection: PASS" << std::endl;
 }
 
 void test_ooc_checkpoint_requires_explicit_resume() {
@@ -964,6 +1273,8 @@ void test_ooc_failed_state_rejects_mutation() {
         merge_failed = true;
     }
     CHECK(merge_failed);
+    check_logic_error([&]() { collector.clear(); });
+    CHECK(std::filesystem::exists(path + ".relidx"));
     CHECK(collector.size() == 1);
     check_stats_equal(collector.stats(), stats_before_failure);
 
@@ -1694,9 +2005,14 @@ int main() {
     test_ooc_concurrent_add();
     test_ooc_clear_recycle();
     test_ooc_empty_base_path_rejected();
+    test_ooc_fresh_store_refuses_existing_artifacts();
     test_ooc_legacy_save_load_disabled();
     test_finalize_ooc_vector_mode_remains_appendable();
     test_ooc_snapshot_append_snapshot_finalize();
+    test_ooc_corpus_snapshot_append_snapshot_handoff();
+    test_ooc_corpus_snapshot_collision_is_retryable();
+    test_ooc_corpus_handoff_adoption_retry_and_identity();
+    test_ooc_corpus_bridge_rejects_vector_mode();
     test_ooc_checkpoint_requires_explicit_resume();
     test_ooc_failed_state_rejects_mutation();
     test_ooc_snapshot_integrity_failure_fails_closed();

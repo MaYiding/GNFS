@@ -3,14 +3,18 @@
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/temp_path.hpp"
 
+#include <atomic>
+#include <barrier>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 using gnfs::core::ABPair;
@@ -1390,6 +1394,92 @@ void test_failed_snapshot_transition() {
     }
 }
 
+void test_fresh_writer_reserves_pair_without_clobbering() {
+    {
+        const std::string path = make_path("fresh_existing_index");
+        OOCArtifacts cleanup(path);
+        const std::string sentinel = "existing-index-sentinel";
+        {
+            std::ofstream index(path + ".relidx", std::ios::binary);
+            CHECK(static_cast<bool>(index));
+            index.write(sentinel.data(), static_cast<std::streamsize>(sentinel.size()));
+        }
+
+        bool rejected = false;
+        try {
+            OOCRelationWriter writer(path);
+        } catch (const std::system_error&) {
+            rejected = true;
+        }
+        CHECK(rejected);
+        CHECK(!std::filesystem::exists(path + ".reldata"));
+        std::ifstream index(path + ".relidx", std::ios::binary);
+        const std::string persisted((std::istreambuf_iterator<char>(index)),
+                                    std::istreambuf_iterator<char>());
+        CHECK(persisted == sentinel);
+    }
+    {
+        const std::string path = make_path("fresh_existing_data");
+        OOCArtifacts cleanup(path);
+        const std::string sentinel = "existing-data-sentinel";
+        {
+            std::ofstream data(path + ".reldata", std::ios::binary);
+            CHECK(static_cast<bool>(data));
+            data.write(sentinel.data(), static_cast<std::streamsize>(sentinel.size()));
+        }
+
+        bool rejected = false;
+        try {
+            OOCRelationWriter writer(path);
+        } catch (const std::system_error&) {
+            rejected = true;
+        }
+        CHECK(rejected);
+        CHECK(!std::filesystem::exists(path + ".relidx"));
+        std::ifstream data(path + ".reldata", std::ios::binary);
+        const std::string persisted((std::istreambuf_iterator<char>(data)),
+                                    std::istreambuf_iterator<char>());
+        CHECK(persisted == sentinel);
+    }
+}
+
+void test_concurrent_fresh_writers_have_one_durable_winner() {
+    const std::string path = make_path("concurrent_fresh");
+    OOCArtifacts cleanup(path);
+    std::barrier start(3);
+    std::atomic<int> successes{0};
+    std::atomic<int> collisions{0};
+    std::atomic<int> unexpected_failures{0};
+
+    auto attempt = [&](int64_t a) {
+        start.arrive_and_wait();
+        try {
+            OOCRelationWriter writer(path);
+            CHECK(writer.write(make_relation(a, static_cast<uint64_t>(a + 1))) == 0);
+            CHECK(writer.finalize().count == 1);
+            successes.fetch_add(1, std::memory_order_relaxed);
+        } catch (const std::system_error&) {
+            collisions.fetch_add(1, std::memory_order_relaxed);
+        } catch (...) {
+            unexpected_failures.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+
+    std::thread first(attempt, 11);
+    std::thread second(attempt, 13);
+    start.arrive_and_wait();
+    first.join();
+    second.join();
+
+    CHECK(successes.load(std::memory_order_relaxed) == 1);
+    CHECK(collisions.load(std::memory_order_relaxed) == 1);
+    CHECK(unexpected_failures.load(std::memory_order_relaxed) == 0);
+    OOCRelationReader reader(path);
+    CHECK(reader.count() == 1);
+    const auto relation = reader.read(0);
+    CHECK(relation.a == 11 || relation.a == 13);
+}
+
 } // namespace
 
 int main() {
@@ -1421,6 +1511,8 @@ int main() {
     test_finalized_reader_rejects_oversized_record_before_decode();
     test_prefix_reader_exact_extent_and_lease();
     test_failed_snapshot_transition();
+    test_fresh_writer_reserves_pair_without_clobbering();
+    test_concurrent_fresh_writers_have_one_durable_winner();
     std::cout << "All OOC store integrity tests passed!\n";
     return 0;
 }

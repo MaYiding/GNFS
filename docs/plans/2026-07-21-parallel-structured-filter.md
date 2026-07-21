@@ -5,13 +5,14 @@
 - Date: 2026-07-21
 - Branch: `codex/parallel-structured-filter`
 - State: M1 is complete; the vector-backed M2/M3 implementations are complete.
-  M4 has a default-off production vector route, one frozen per-run route
-  snapshot, an owning vector/finalized-OOC corpus, descriptor-bound selection
-  identity, direct selected-corpus matrix input, deterministic ordinal trimming,
-  dependency-only square-root materialization, and paired V3 OOC identity across
-  readers, writers, recovery, checkpoints, and corpus ownership. Direct
-  bounded-memory reduction, a relation sink, and scale evidence remain before
-  OOC promotion.
+  M4 has default-off vector and explicitly forced ordinary-OOC production
+  routes, one frozen per-run path namespace, an owning vector/finalized-OOC
+  corpus, descriptor-bound selection identity, direct selected-corpus matrix
+  input, deterministic ordinal trimming, dependency-only square-root
+  materialization, transactional source/sink reduction, and paired V3 OOC
+  identity across readers, writers, recovery, checkpoints, and ownership.
+  Native incremental OOC reduction, measured RSS, and cross-size route evidence
+  remain before promotion.
 - Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
 
 ## Outcome
@@ -596,10 +597,12 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
 ### M4: Opt-In Integration
 
 - [x] Add strict `GNFS_STRUCTURED_FILTER` parsing, exact strategy selection,
-  vector-route support checks, and one shared-engine structured dispatch.
+  vector/explicit-ordinary-OOC support checks, and one shared-engine structured
+  dispatch.
 - [x] Register tests and document OFF/forced/auto/fail-closed behavior. The
-  forced-on experimental profile has fixed work-budget caps, remains
-  vector-backed, defaults OFF, and `auto` remains ineligible pending M5 evidence.
+  forced-on experimental profile has fixed work-budget caps, accepts vector or
+  finalized-OOC corpus input, defaults OFF, and `auto` remains ineligible pending
+  M5 evidence.
 - [x] Add a move-only `RelationCorpus` for owned vectors and descriptor-bound
   finalized V3 OOC artifacts. Selection identity is bound to one corpus
   instance, survives handle moves, and rejects same-generation/same-count
@@ -654,12 +657,16 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
   isolated weight-2 and weight-3 LP components proves nonzero planning,
   parallel materialization, commits, stable rows/order, full stats, and digest
   equivalence for worker counts 1, 2, and 4 in Release.
-- Adaptive and public vector routes are covered. OOC/resume/distributed are
-  explicitly rejected before callback/checkpoint/store/snapshot side effects in
-  forced mode; full `Pipeline::run()` freezes one route snapshot across phase
-  callbacks. Unsupported auto routes retain named legacy strategies; direct
-  native route wiring, measured RSS evidence, stress/progressive wiring, and
-  final route evidence remain.
+- [x] Wire the adaptive ordinary-OOC collector into the structured engine when
+  both OOC and structured modes are explicitly forced. Each logical generation
+  receives sibling snapshot/working/output leases under a frozen run namespace.
+  Prefix copy resumes the raw writer before reduction; terminal descriptor and
+  input-count equality are proved before handoff, while the raw owner survives
+  all user callbacks. Size-aware automatic OOC, resume, and distributed routes
+  retain legacy/unsupported behavior. Repeated prefixes cost
+  `O(rounds * relations)` I/O and can occupy raw+snapshot+working+output payloads;
+  native incremental wiring, measured RSS, stress/progressive wiring, and final
+  cross-size route evidence remain.
 
 Exit gate: structured mode runs exactly once, OFF mode is unchanged, every route
 reports the same metrics for the same snapshot, and the explicit OOC-output route
@@ -1377,16 +1384,16 @@ SCALE AND RELEASE
 ```
 
 This diagram records the coverage plan at review time. M1, the vector-backed
-M2/M3 implementation, and the explicit M4 vector route now have tests. The full
-selected-source MatrixBuilder payload oracle, direct vector-corpus handoff, and
-selected dependency lifetime are closed. Remaining gaps are direct source/sink
-reduction, paired-data identity, native structured OOC routing, and scale
-evidence.
+M2/M3 implementation, and the explicit M4 vector/ordinary-OOC routes now have
+tests. The full selected-source MatrixBuilder payload oracle, direct corpus
+handoff, selected dependency lifetime, source/sink reduction, paired-data
+identity, and adaptive structured OOC bridge are closed. Remaining gaps are a
+native incremental OOC route, measured RSS, and cross-size scale evidence.
 
 ### Performance Review
 
 1. Scoring every pair by fully materializing relations would multiply allocations and integer copies. Score canonical key/source/factor metadata and materialize only selected MST edges.
-2. Repeated full accumulated OOC snapshots are O(rounds × relations) I/O and memory. The appendable snapshot fixes lifecycle correctness; promoted scale requires direct source/sink reduction rather than repeated vectors.
+2. Repeated full accumulated OOC snapshots are O(rounds × relations) I/O and can temporarily require raw, snapshot, working, and output disk payloads. Streaming source/sink reduction removes relation-payload vectors, but promoted scale still requires an incremental source boundary and measured RSS.
 3. Ordered commit can dominate at scale. Measure batch occupancy and commit share before considering concurrent incidence mutation; redesign batch size if commit exceeds the frozen budget.
 4. Full-matrix fill, not LP weight alone, controls solver cost. Record both projected and realized matrix nonzeros and reject pivots under a global budget.
 
@@ -1406,10 +1413,10 @@ evidence.
 | worker batch | exception or overlap partially commits | Yes | Join/discard batch; ordered commit | No |
 | scale policy | nominal excess hides matrix regression | Yes | Frozen materiality and full-NNZ budgets | No |
 
-The explicit structured vector route is available but default-off. Automatic and
-OOC structured routes remain unavailable until the bounded corpus handoff,
-direct source/sink reduction, and scale gates land. Legacy default behavior
-remains unchanged.
+The explicit structured vector route and explicitly forced ordinary-OOC route
+are available but default-off. Automatic structured selection, size-aware OOC,
+resume, and distributed structured routes remain unavailable until incremental
+OOC and scale gates land. Legacy default behavior remains unchanged.
 
 ### NOT in Scope After Engineering Review
 

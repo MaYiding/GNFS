@@ -125,6 +125,17 @@ struct TestFileCleanup final {
     std::string path;
 };
 
+struct TestPathCleanup final {
+    explicit TestPathCleanup(std::filesystem::path entry_path) : path(std::move(entry_path)) {}
+
+    ~TestPathCleanup() {
+        std::error_code ignored;
+        std::filesystem::remove_all(path, ignored);
+    }
+
+    std::filesystem::path path;
+};
+
 bool artifacts_exist(const std::string& base_path) {
     return std::filesystem::exists(base_path + ".relidx") &&
            std::filesystem::exists(base_path + ".reldata");
@@ -193,6 +204,31 @@ void test_in_memory_move_generation_and_bounds() {
     CHECK(assigned.count() == expected.size());
 
     expect_throws<std::invalid_argument>([] { (void)RelationCorpus::from_in_memory(0, {}); });
+}
+
+void test_freeze_ooc_path_does_not_follow_namespace_leaf() {
+    const std::filesystem::path namespace_leaf(unique_base("freeze_leaf"));
+    const std::filesystem::path symlink_target(unique_base("freeze_target"));
+    TestPathCleanup namespace_cleanup(namespace_leaf);
+    TestPathCleanup target_cleanup(symlink_target);
+    CHECK(std::filesystem::create_directory(symlink_target));
+
+    std::error_code symlink_error;
+    std::filesystem::create_directory_symlink(symlink_target, namespace_leaf, symlink_error);
+    if (symlink_error) {
+        // Unprivileged Windows environments may not permit symlink creation.
+        return;
+    }
+
+    const auto absolute_leaf = std::filesystem::absolute(namespace_leaf).lexically_normal();
+    const std::string expected =
+        (std::filesystem::weakly_canonical(absolute_leaf.parent_path()) / absolute_leaf.filename())
+            .lexically_normal()
+            .string();
+    const std::string frozen =
+        gnfs::relation::relation_corpus_detail::freeze_ooc_path(namespace_leaf.string());
+    CHECK(frozen == expected);
+    CHECK(frozen != std::filesystem::weakly_canonical(namespace_leaf).string());
 }
 
 void test_finalized_ooc_roundtrip_and_preserve_lifetime() {
@@ -578,6 +614,7 @@ void test_collector_handoff_and_independent_cleanup() {
 int main() {
     try {
         test_in_memory_move_generation_and_bounds();
+        test_freeze_ooc_path_does_not_follow_namespace_leaf();
         test_finalized_ooc_roundtrip_and_preserve_lifetime();
         test_finalized_ooc_cleanup_and_move_assignment();
         test_ooc_adoption_fails_closed();

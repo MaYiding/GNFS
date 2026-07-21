@@ -33,6 +33,34 @@ namespace gnfs::api {
 
 namespace detail {
 
+/// Role-separated requested bases reserved for one logical relation generation.
+/// RelationSink adds its private lease suffix to each requested base.
+struct StructuredOOCGenerationPaths final {
+    std::string snapshot_requested_base;
+    std::string working_requested_base;
+    std::string output_requested_base;
+
+    [[nodiscard]] bool operator==(const StructuredOOCGenerationPaths&) const noexcept = default;
+};
+
+/// Immutable path namespace captured once for one sieve invocation.
+/// No directory or relation artifact is created by this value object.
+struct StructuredOOCRunPaths final {
+    std::string raw_base_path;
+    std::string run_identity;
+    std::string run_namespace;
+
+    [[nodiscard]] StructuredOOCGenerationPaths generation_paths(uint64_t logical_generation) const;
+
+    [[nodiscard]] bool operator==(const StructuredOOCRunPaths&) const noexcept = default;
+};
+
+/// Freeze the configured raw base (or the process-local temp default) and bind
+/// it to a stable, path-safe identity for later generation-specific derivation.
+[[nodiscard]] StructuredOOCRunPaths
+make_structured_ooc_run_paths(std::optional<std::string> configured_raw_base_path,
+                              std::string run_identity);
+
 /// Strict boundary between BL/BW solver coordinates and the original matrix.
 /// All reduced shapes are checked before SGE validates and expands the
 /// transform once for the complete solver batch.
@@ -146,9 +174,9 @@ public:
 
 private:
     struct StructuredRouteSnapshot final {
-        relation::StructuredFilterMode mode = relation::StructuredFilterMode::Off;
         relation::StructuredFilterPolicyDecision policy{};
         std::string resume_base_path;
+        std::optional<detail::StructuredOOCRunPaths> ooc_paths;
         std::string ooc_reason;
         bool large_primes_enabled = false;
         bool ooc_enabled = false;

@@ -8,11 +8,13 @@
 #include "large_prime_key.hpp"
 #include "ooc_relation_store.hpp"
 #include "radix_sort.hpp"
+#include "relation_sink.hpp"
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -23,7 +25,9 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace gnfs::relation {
@@ -58,7 +62,9 @@ struct CollectorConfig {
     //   - 内存只保留 seen_ (a,b dedup) + stats; relations_ 不再 grow
     //   - get_relations() 从盘 mmap 读全部 (Phase 4 入口才 spike RAM, sieve 期间 flat)
     bool ooc_enabled = false;
-    std::string ooc_base_path; // 文件 base path (无扩展; .reldata + .relidx 自动追加)
+    // 文件 base path (无扩展; .reldata + .relidx 自动追加)。Collector 构造时冻结为
+    // canonical absolute path。Fresh 模式拒绝覆盖任一既有 artifact。
+    std::string ooc_base_path;
 
     // ── Paired resume mode (sieve mid-flight checkpoint) ──
     // Recovery is permitted only with a descriptor loaded from the paired
@@ -84,6 +90,15 @@ struct CollectorConfig {
     size_t pool_initial_bytes = util::relation_pool_size_bytes();
 };
 
+/// One immutable copy of an appendable collector prefix plus the authoritative
+/// descriptor of the raw prefix from which it was copied. The destination
+/// corpus has its own physical V3 identity; callers comparing a later terminal
+/// handoff with this probe must use source_descriptor.
+struct CollectorOOCCorpusSnapshot final {
+    RelationCorpus corpus;
+    OOCSnapshotDescriptor source_descriptor;
+};
+
 /// RelationCollector - 关系收集器
 /// 线程安全的关系收集器
 class RelationCollector {
@@ -93,20 +108,6 @@ public:
 
     /// 带配置构造
     explicit RelationCollector(const CollectorConfig& config) : config_(config) {
-        if (!config_.output_file.empty()) {
-            open_output_file();
-        }
-        // Memory pool init (W6 T4): only when explicitly opted in via ENV or
-        // direct config. OOC mode bypasses relations_ entirely so the pool
-        // would be wasted RAM in that case.
-        if (config_.use_pool && !config_.ooc_enabled) {
-            size_t chunk = config_.pool_initial_bytes > 0
-                               ? config_.pool_initial_bytes
-                               : util::RelationPoolResource::DEFAULT_INITIAL_CHUNK_BYTES;
-            pool_ = std::make_unique<util::RelationPoolResource>(chunk);
-            relations_pmr_ = std::make_unique<std::pmr::vector<Relation>>(pool_->upstream());
-        }
-        // OOC mode: lazy-init writer (failure → exception propagates out of ctor)
         if (config_.ooc_resume) {
             throw std::invalid_argument(
                 "RelationCollector: legacy ooc_resume flag is unsupported; use "
@@ -121,6 +122,28 @@ public:
                 throw std::runtime_error(
                     "RelationCollector: ooc_enabled=true requires non-empty ooc_base_path");
             }
+            config_.ooc_base_path = relation_corpus_detail::freeze_ooc_path(config_.ooc_base_path);
+            if (!config_.ooc_resume_snapshot) {
+                reject_existing_fresh_ooc_artifacts(config_.ooc_base_path);
+            }
+        }
+
+        if (!config_.output_file.empty()) {
+            open_output_file();
+        }
+        // Memory pool init (W6 T4): only when explicitly opted in via ENV or
+        // direct config. OOC mode bypasses relations_ entirely so the pool
+        // would be wasted RAM in that case.
+        if (config_.use_pool && !config_.ooc_enabled) {
+            size_t chunk = config_.pool_initial_bytes > 0
+                               ? config_.pool_initial_bytes
+                               : util::RelationPoolResource::DEFAULT_INITIAL_CHUNK_BYTES;
+            pool_ = std::make_unique<util::RelationPoolResource>(chunk);
+            relations_pmr_ = std::make_unique<std::pmr::vector<Relation>>(pool_->upstream());
+        }
+        // OOC mode: initialize only after fresh-path collision checks or paired
+        // recovery validation selected the exact existing store.
+        if (config_.ooc_enabled) {
             ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path,
                                                               config_.ooc_resume_snapshot);
             if (config_.ooc_resume_snapshot) {
@@ -151,6 +174,7 @@ public:
     /// 设置后 add()/load()/merge() 都会拒绝 N|rat_value 的退化关系。
     void set_polynomial_context(const Integer& n, const Integer& m) {
         std::lock_guard<std::mutex> lock(mutex_);
+        require_not_handed_off("set_polynomial_context");
         n_for_validation_ = &n;
         m_for_validation_ = &m;
     }
@@ -179,6 +203,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
 
+            require_appendable_ooc_owner("add");
             if (ooc_writer_ && ooc_writer_->state() != OOCWriterState::Open) {
                 throw std::logic_error("RelationCollector::add: OOC writer is not appendable");
             }
@@ -282,6 +307,8 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (ooc_writer_)
             return ooc_writer_->count();
+        if (config_.ooc_enabled)
+            return stats_.total_relations;
         if (relations_pmr_)
             return relations_pmr_->size();
         return relations_.size();
@@ -292,6 +319,8 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (ooc_writer_)
             return ooc_writer_->count() == 0;
+        if (config_.ooc_enabled)
+            return stats_.total_relations == 0;
         if (relations_pmr_)
             return relations_pmr_->empty();
         return relations_.empty();
@@ -310,6 +339,7 @@ public:
     /// simply returns a copy and remains appendable for compatibility.
     [[nodiscard]] std::vector<Relation> finalize_relations() {
         std::lock_guard<std::mutex> lock(mutex_);
+        require_available_ooc_owner("finalize_relations");
         if (ooc_writer_) {
             const auto descriptor = ooc_writer_->finalize();
             OOCRelationReader reader(config_.ooc_base_path, descriptor);
@@ -345,6 +375,7 @@ public:
     /// this operation linearizable with concurrent add() calls.
     [[nodiscard]] std::vector<Relation> snapshot_relations() {
         std::lock_guard<std::mutex> lock(mutex_);
+        require_available_ooc_owner("snapshot_relations");
         if (ooc_writer_) {
             if (ooc_writer_->state() == OOCWriterState::Finalized) {
                 const auto descriptor = ooc_writer_->finalize();
@@ -399,12 +430,129 @@ public:
         return relations_;
     }
 
+    /// Copy the current appendable OOC prefix into an independent finalized
+    /// V3 corpus without constructing a relation vector.
+    ///
+    /// The destination lease is reserved before the source writer is
+    /// checkpointed. Rows are then decoded and appended one at a time. The
+    /// prefix reader is destroyed before the exact descriptor resumes the raw
+    /// writer, and only then is the destination committed. Destination
+    /// allocation/write/finalize failures therefore leave the raw collector
+    /// appendable. A source prefix integrity or I/O failure instead marks the
+    /// raw writer Failed because its bytes are no longer trustworthy.
+    ///
+    /// Vector/pool collectors reject this API explicitly; their compatibility
+    /// snapshot_relations() behavior is unchanged.
+    [[nodiscard]] CollectorOOCCorpusSnapshot
+    snapshot_ooc_corpus(uint64_t logical_generation, std::string destination_base_path,
+                        OOCCleanupPolicy cleanup_policy = OOCCleanupPolicy::RemoveArtifacts) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        require_ooc_mode("snapshot_ooc_corpus");
+        require_available_ooc_owner("snapshot_ooc_corpus");
+        if (ooc_writer_->state() != OOCWriterState::Open) {
+            throw std::logic_error(
+                "RelationCollector::snapshot_ooc_corpus: OOC writer is not appendable");
+        }
+
+        // Reservation and all allocations it performs happen while the source
+        // remains Open. A collision must not transiently suspend collection.
+        RelationSink destination = RelationSink::out_of_core(
+            logical_generation, std::move(destination_base_path), cleanup_policy);
+        const OOCSnapshotDescriptor descriptor = ooc_writer_->checkpoint_prefix();
+        try {
+            validate_descriptor_matches_collector(descriptor, "snapshot_ooc_corpus");
+        } catch (...) {
+            // A self-inconsistent checkpoint cannot be reopened for appends.
+            if (ooc_writer_->state() == OOCWriterState::Suspended) {
+                ooc_writer_->fail_suspended_snapshot();
+            }
+            throw;
+        }
+
+        std::exception_ptr recoverable_destination_failure;
+        std::exception_ptr untrusted_prefix_failure;
+        try {
+            OOCRelationPrefixReader reader(config_.ooc_base_path, descriptor, *ooc_writer_);
+            for (size_t ordinal = 0; ordinal < reader.count(); ++ordinal) {
+                Relation relation;
+                try {
+                    relation = reader.read(ordinal);
+                } catch (const std::bad_alloc&) {
+                    // Deserialization allocation pressure says nothing about
+                    // the validity of the already-flushed source prefix.
+                    recoverable_destination_failure = std::current_exception();
+                    break;
+                } catch (...) {
+                    untrusted_prefix_failure = std::current_exception();
+                    break;
+                }
+
+                try {
+                    (void)destination.append(std::move(relation));
+                } catch (...) {
+                    recoverable_destination_failure = std::current_exception();
+                    break;
+                }
+            }
+        } catch (const std::bad_alloc&) {
+            recoverable_destination_failure = std::current_exception();
+        } catch (...) {
+            untrusted_prefix_failure = std::current_exception();
+        } // Prefix reader mappings and handles are closed before either transition.
+
+        if (untrusted_prefix_failure) {
+            if (ooc_writer_->state() == OOCWriterState::Suspended) {
+                ooc_writer_->fail_suspended_snapshot();
+            }
+            std::rethrow_exception(untrusted_prefix_failure);
+        }
+
+        // Exact resume can itself detect external source damage. Do not mask
+        // that stronger failure with a destination exception.
+        ooc_writer_->resume_append(descriptor);
+        if (recoverable_destination_failure) {
+            std::rethrow_exception(recoverable_destination_failure);
+        }
+
+        RelationCorpus corpus = destination.finalize();
+        return {std::move(corpus), descriptor};
+    }
+
+    /// Finalize and transfer the collector's original OOC V3 store into a
+    /// move-only corpus. This is a one-shot terminal handoff.
+    ///
+    /// Corpus adoption occurs before the writer/descriptor is released. If
+    /// validation or allocation throws, the collector retains its Finalized
+    /// writer and the idempotent descriptor so the same handoff can be retried.
+    /// After success, collection, clearing, snapshots, materialization, and
+    /// repeated finalization/handoff are rejected deterministically.
+    [[nodiscard]] RelationCorpus
+    handoff_ooc_corpus(uint64_t logical_generation,
+                       OOCCleanupPolicy cleanup_policy = OOCCleanupPolicy::RemoveArtifacts) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        require_ooc_mode("handoff_ooc_corpus");
+        require_available_ooc_owner("handoff_ooc_corpus");
+
+        const OOCSnapshotDescriptor descriptor = ooc_writer_->finalize();
+        validate_descriptor_matches_collector(descriptor, "handoff_ooc_corpus");
+        RelationCorpus corpus = RelationCorpus::from_finalized_ooc(
+            logical_generation, config_.ooc_base_path, descriptor, cleanup_policy);
+
+        // Both fstreams are already closed in Finalized. Destroying the writer
+        // after the corpus reader has adopted the descriptor cannot invalidate
+        // the immutable mappings or throw.
+        ooc_writer_.reset();
+        ooc_corpus_handed_off_ = true;
+        return corpus;
+    }
+
     /// Flush a stable OOC prefix and suspend appends without materializing it.
     /// The returned descriptor remains valid until resume_ooc() or finalize_ooc().
     /// While suspended, add()/merge() fail before mutating seen_ or stats. In
     /// vector mode, the descriptor records only the current relation count.
     [[nodiscard]] OOCSnapshotDescriptor checkpoint_ooc() {
         std::lock_guard<std::mutex> lock(mutex_);
+        require_available_ooc_owner("checkpoint_ooc");
         if (!ooc_writer_) {
             OOCSnapshotDescriptor descriptor;
             descriptor.count =
@@ -421,6 +569,7 @@ public:
     /// descriptors are rejected by the writer and leave it suspended.
     void resume_ooc(const OOCSnapshotDescriptor& descriptor) {
         std::lock_guard<std::mutex> lock(mutex_);
+        require_not_handed_off("resume_ooc");
         if (!ooc_writer_) {
             throw std::logic_error("RelationCollector::resume_ooc: collector is not in OOC mode");
         }
@@ -455,6 +604,7 @@ public:
     /// when the child exits).
     std::optional<OOCSnapshotDescriptor> finalize_ooc() {
         std::lock_guard<std::mutex> lock(mutex_);
+        require_available_ooc_owner("finalize_ooc");
         if (ooc_writer_) {
             return ooc_writer_->finalize();
         }
@@ -462,10 +612,37 @@ public:
     }
 
     /// 清空收集器
-    /// OOC 模式: close writer + 删 .reldata/.relidx 文件 + reopen (允许 reuse)。
+    /// OOC 模式: finalize + descriptor-bound 删除 .reldata/.relidx + reopen。
+    /// Failed/handoff 状态拒绝 clear，避免按不再可信或已转移的路径删除文件。
     /// Pool 模式 (W6 T4): 释放 pmr vector + reset RelationPoolResource (释放 chunks).
     void clear() {
         std::lock_guard<std::mutex> lock(mutex_);
+        require_not_handed_off("clear");
+
+        // OOC clear is an explicit destructive recycle of the exact store this
+        // collector owns. Complete it before erasing in-memory bookkeeping so
+        // a finalize/delete/reopen failure remains fail-closed and diagnosable.
+        if (config_.ooc_enabled) {
+            if (!ooc_writer_) {
+                throw std::logic_error(
+                    "RelationCollector::clear: OOC writer ownership is unavailable");
+            }
+            if (ooc_writer_->state() == OOCWriterState::Failed) {
+                throw std::logic_error(
+                    "RelationCollector::clear: failed OOC store identity is untrusted");
+            }
+
+            const OOCSnapshotDescriptor descriptor = ooc_writer_->finalize();
+            validate_descriptor_matches_collector(descriptor, "clear");
+            {
+                RelationCorpus cleanup = RelationCorpus::from_finalized_ooc(
+                    descriptor.generation, config_.ooc_base_path, descriptor,
+                    OOCCleanupPolicy::RemoveArtifacts);
+                ooc_writer_.reset();
+            } // Descriptor-bound identity validation precedes exact pair deletion.
+            ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path);
+        }
+
         {
             std::vector<Relation> tmp;
             relations_.swap(tmp);
@@ -480,17 +657,6 @@ public:
             relations_pmr_.reset();
             pool_->reset();
             relations_pmr_ = std::make_unique<std::pmr::vector<Relation>>(pool_->upstream());
-        }
-        if (ooc_writer_) {
-            if (ooc_writer_->state() != OOCWriterState::Failed) {
-                (void)ooc_writer_->finalize();
-            }
-            ooc_writer_.reset();
-            // 删除磁盘 artifact (best-effort, 无视失败 — 文件可能已不存在)
-            std::remove((config_.ooc_base_path + ".reldata").c_str());
-            std::remove((config_.ooc_base_path + ".relidx").c_str());
-            // 重新构造 writer 供后续 add() 使用
-            ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path);
         }
     }
 
@@ -507,7 +673,7 @@ public:
     /// Pool 模式 (W6 T4): 支持 — 走 pmr::vector 路径序列化。
     bool save(const std::string& filename) const {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (ooc_writer_)
+        if (config_.ooc_enabled)
             return false; // OOC mode: legacy save disabled
 
         std::ofstream ofs(filename, std::ios::binary);
@@ -537,7 +703,7 @@ public:
     /// Pool 模式 (W6 T4): 支持 — 加载到 pmr::vector path。
     bool load(const std::string& filename) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (ooc_writer_)
+        if (config_.ooc_enabled)
             return false; // OOC mode: legacy load disabled
 
         std::ifstream ifs(filename, std::ios::binary);
@@ -591,18 +757,21 @@ public:
     /// 合并另一个收集器的关系
     /// OOC 模式: this 是 OOC 时, write to disk; other 必须是非 OOC (从内存 vector 读)
     /// 设计上 sieve worker 各自有 RelationCollector + merge 到 master, 这里 OOC 也 work
-    /// 但 OOC merge OOC 不支持 (会触发 read+rewrite, 不实用)。
+    /// 但 OOC source（含已 handoff 的终态 collector）会显式拒绝，避免将空的兼容
+    /// relations_ 误判成一次成功但零行的 merge。
     /// Pool 模式 (W6 T4): this 和 other 都支持 — pool/std::vector source 都能读;
     /// destination 写到 this 当前的容器 (pool or std::vector or OOC writer)。
     size_t merge(const RelationCollector& other) {
         if (this == &other)
             return 0; // Self-merge: UB with std::mutex
         std::scoped_lock lock(mutex_, other.mutex_);
+        require_appendable_ooc_owner("merge");
         if (ooc_writer_ && ooc_writer_->state() != OOCWriterState::Open) {
             throw std::logic_error("RelationCollector::merge: OOC writer is not appendable");
         }
-        if (other.ooc_writer_)
-            return 0; // OOC source not supported (read overhead)
+        if (other.config_.ooc_enabled) {
+            throw std::logic_error("RelationCollector::merge: OOC source is unsupported");
+        }
 
         // Source iteration: pmr vector 优先 (pool mode), 否则 std::vector.
         // 通过 lambda 统一两个路径,避免代码重复.
@@ -671,6 +840,7 @@ public:
     using NewRelationCallback = std::function<void(const Relation&)>;
     void set_callback(NewRelationCallback callback) {
         std::lock_guard<std::mutex> lock(mutex_);
+        require_not_handed_off("set_callback");
         callback_ = std::move(callback);
     }
 
@@ -689,9 +859,10 @@ private:
     const Integer* n_for_validation_ = nullptr;
     const Integer* m_for_validation_ = nullptr;
 
-    // OOC 模式 (BACKLOG #11c): lazy-initialized OOCRelationWriter,first add() 时构造。
-    // unique_ptr 因为 OOCRelationWriter 不可移动(持有 ofstream + 内部 buffer)。
+    // OOC 模式 (BACKLOG #11c): 构造 collector 时 eager exclusive-create writer。
+    // unique_ptr 因为 OOCRelationWriter 不可移动(持有 fstream + 内部 buffer)。
     std::unique_ptr<OOCRelationWriter> ooc_writer_;
+    bool ooc_corpus_handed_off_ = false;
 
     // Pool 模式 (W6 T4): RelationPoolResource + std::pmr::vector<Relation>.
     // 两个 fields 联动:启用时 use_pool=true → pool_ 非空 → relations_pmr_ 非空 → relations_ 不用.
@@ -700,6 +871,68 @@ private:
     // 标记 declaration 顺序: pool_ 先, relations_pmr_ 后 → 析构序反 → relations_pmr_ 先析构. OK.
     std::unique_ptr<util::RelationPoolResource> pool_;
     std::unique_ptr<std::pmr::vector<Relation>> relations_pmr_;
+
+    [[nodiscard]] static bool path_entry_exists_checked(const std::filesystem::path& path) {
+        std::error_code ec;
+        const auto status = std::filesystem::symlink_status(path, ec);
+        if (ec) {
+            if (ec == std::errc::no_such_file_or_directory) {
+                return false;
+            }
+            throw std::filesystem::filesystem_error(
+                "RelationCollector: cannot inspect OOC artifact", path, ec);
+        }
+        // symlink_status treats dangling symlinks as occupied paths. Fresh
+        // collection must never follow one into an unintended truncation.
+        return status.type() != std::filesystem::file_type::not_found;
+    }
+
+    static void reject_existing_fresh_ooc_artifacts(const std::string& base_path) {
+        const std::filesystem::path index_path(base_path + ".relidx");
+        const std::filesystem::path data_path(base_path + ".reldata");
+        if (path_entry_exists_checked(index_path) || path_entry_exists_checked(data_path)) {
+            throw std::runtime_error(
+                "RelationCollector: refusing to replace existing fresh OOC artifacts at " +
+                base_path);
+        }
+    }
+
+    void require_ooc_mode(const char* operation) const {
+        if (!config_.ooc_enabled) {
+            throw std::logic_error(std::string("RelationCollector::") + operation +
+                                   ": collector is not in OOC mode");
+        }
+    }
+
+    void require_not_handed_off(const char* operation) const {
+        if (ooc_corpus_handed_off_) {
+            throw std::logic_error(std::string("RelationCollector::") + operation +
+                                   ": OOC corpus ownership was handed off");
+        }
+    }
+
+    void require_available_ooc_owner(const char* operation) const {
+        require_not_handed_off(operation);
+        if (config_.ooc_enabled && !ooc_writer_) {
+            throw std::logic_error(std::string("RelationCollector::") + operation +
+                                   ": OOC writer is unavailable");
+        }
+    }
+
+    void require_appendable_ooc_owner(const char* operation) const {
+        require_available_ooc_owner(operation);
+    }
+
+    void validate_descriptor_matches_collector(const OOCSnapshotDescriptor& descriptor,
+                                               const char* operation) const {
+        if (!ooc_writer_ || descriptor.format_version != OOCRelationWriter::FORMAT_VERSION_V3 ||
+            descriptor.store_id == 0 || descriptor.store_id != ooc_writer_->store_id() ||
+            descriptor.count != static_cast<uint64_t>(ooc_writer_->count()) ||
+            descriptor.count != static_cast<uint64_t>(stats_.total_relations)) {
+            throw std::logic_error(std::string("RelationCollector::") + operation +
+                                   ": OOC descriptor does not match collector state");
+        }
+    }
 
     /// 验证关系。mutex 内调用。
     /// 返回 0=通过,-1=无效(b/gcd),-2=N-divisible(CLAUDE.md 强制拒绝)

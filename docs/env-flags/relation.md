@@ -40,33 +40,41 @@ V3 cascade 默认 OFF (V0 path 零开销). 启用时:
 
 ## Structured relation filter policy (GNFS_STRUCTURED_FILTER)
 
-`GNFS_STRUCTURED_FILTER` 是结构化关系消元的 opt-in 策略开关。M4a 提供
-严格解析、预消费策略决策和共享 `RelationReductionEngine` 的单次 structured
-dispatch，并已接入 adaptive sieve、distributed 前置决策和公开 `Pipeline::filter()`
-入口。当前生产调用方固定传入 `auto_eligible=false`；在获得独立尺寸实证前，
-不得复用 V0 BFS 或 OOC 的 `lp_bits` 阈值冒充结构化策略的 auto 证据。
+`GNFS_STRUCTURED_FILTER` 是结构化关系消元的 opt-in 策略开关。M4 提供严格解析、
+预消费策略决策和共享 `RelationReductionEngine` 的单次 structured dispatch，并已
+接入 adaptive sieve、distributed 前置决策和公开 `Pipeline::filter()` 入口。当前
+调用方固定传入 `auto_eligible=false`；在获得独立尺寸实证前，不得复用 V0 BFS 或
+OOC 的 `lp_bits` 阈值冒充结构化策略的 auto 证据。
 
-首版生产支持边界仍是「LP 已启用的纯 vector route」。底层 shared engine 已有
-owning `RelationCorpus`、neutral `RelationSource` 和 transactional `RelationSink`。
-finalized V3 raw snapshot 可单遍完成校验、digest 与稳定 `ABPair` 去重；唯一行写入
-显式 working OOC corpus，reducer 随后直接并发读取，不创建 relation payload
-vector。输出也可逐行写入内存或私有目录中的 finalized V3 pair。失败不会消费 raw
-snapshot，成功发布后才转移并释放其所有权。选择内存 output 时仍会持有完整 active
-output；只有显式 OOC output 才提供端到端 payload 常驻内存边界。
+受支持的实验边界包括两类启用 LP 的输入：内存 vector route，以及显式普通 OOC
+route。后者要求同时设置 `GNFS_STRUCTURED_FILTER=1` 和按现有 `atoi` 兼容语义解析为
+1 的 `GNFS_OOC_RELATIONS`，且不能启用 sieve resume 或 distributed route。尺寸阈值
+自动打开的 OOC 不算显式授权；forced structured 会在运行前置判定中拒绝，`auto`
+继续使用调用方具名的 legacy 策略。resume corpus 和 distributed worker stores 仍未
+接入 structured reducer。
 
-生产 Pipeline 尚未为 adaptive OOC collector 派生 working/output path，也没有完成
-跨尺寸 RSS gate；resume corpus 和 distributed worker stores 同样未接通。因此这些
-路径继续在生产入口被拒绝。`GNFS_STRUCTURED_FILTER=1` 会在 materialize reduction
-snapshot 前显式失败；`auto` 使用具名 legacy 策略。若要在当前 50-digit vector
-实验中强制 structured，必须同时显式设置 `GNFS_OOC_RELATIONS=0`。
+普通 OOC adaptive route 的每一代使用三个同目录、互不重叠的私有 lease。collector
+把已提交 raw prefix 逐行复制到 finalized snapshot，销毁 reader 后用精确 descriptor
+恢复 append；engine 再把校验、digest 和稳定 `ABPair` 去重后的行流式写入 working
+corpus，并把 active output 逐行发布到独立 finalized V3 corpus。任一 probe 失败只会
+清理该代私有 lease，原 raw store 保持可追加或 fail closed。最终 probe 必须与
+terminal raw 的 format、store identity、count 和 physical extent 一致，Pipeline 才会
+在所有用户 callback 成功后转交并删除 raw owner。
 
-完整 `Pipeline::run()` 在任何 progress/log callback、试探算法、checkpoint
-读写和 relation generation 分配前捕获无 I/O route snapshot，并把同一个不可变
-snapshot 传给 polynomial、factor-base 与 sieve 三阶段；callback 后续修改 ENV
-不会改变本次运行的 resume/OOC/distributed 路由。直接
-`sieve_and_collect()` 与 `filter()` 也在各自首个 phase callback 前执行同一类
-严格判定。forced unsupported 不会打开、截断或删除已有 resume/OOC/distributed
-store；测试用逐字节 sentinel 固定这一契约。
+这条路径限制 relation payload 的常驻内存，但不是 native incremental reduction：第
+`r` 轮仍复制截至该轮的完整 raw prefix，因此累计 I/O 为 `O(rounds * relations)`，峰值
+磁盘可同时包含 raw、snapshot、working 和 output 四份 payload。`ABPair` set、LP
+histogram、incidence、logical rows 与 history 仍是 corpus-scale metadata。尚无跨尺寸
+RSS 和 bounded 50-digit 实测，所以该能力仍是 forced experimental route，不构成
+auto 或默认启用证据。
+
+完整 `Pipeline::run()` 在任何 progress/log callback、试探算法、checkpoint 读写和
+relation generation 分配前捕获不创建 artifact 的 route snapshot；callback 后续修改
+ENV 不会改变本次运行的 resume/OOC/distributed 路由。直接 `sieve_and_collect()` 还会
+在 fresh raw pair 原子占有成功后才发出首个 sieve callback，所以同路径冲突不截断
+sentinel，也不消费 relation generation。完整 `run()` 的显式 raw 路径冲突在进入
+sieve 时 fail closed；此前已完成的 polynomial/factor-base callback 不属于该
+fresh-pair 边界。
 
 | ENV 值 | 受支持 | `auto_eligible` | 决策 |
 |---|---:|---:|---|
@@ -101,9 +109,10 @@ ENV 数字，也不使用伪无限上限。一次 snapshot 的 candidate examina
 64，单侧 factors 不超过 4096，batch width 不超过 4，incidence shard 不超过
 4096 rows，worker 数为 `min(hardware_concurrency, 4)`（零报告回退 1）。小 corpus
 的 row-dependent cap 进一步收紧到实际行数。达到 cap 返回显式 `BudgetLimit` 和
-完整 active basis，不 fallback legacy。该 profile 仍是 vector-backed；它不构成
-OOC 内存界或 auto promotion 证据。profile factory 同时拒绝 worker=0 或 worker>4，
-因此 4-worker ceiling 是 API invariant，不只是 production caller 的约定。
+完整 active basis，不 fallback legacy。相同 profile 可消费 vector 或 finalized OOC
+corpus；上述重复快照 I/O、corpus-scale metadata 和未测 RSS 仍阻止 auto promotion。
+profile factory 同时拒绝 worker=0 或 worker>4，因此 4-worker ceiling 是 API
+invariant，不只是 production caller 的约定。
 
 每次 structured snapshot 发出一条稳定的 relation-graph `structured_filter` 记录，包含 policy
 reason、generation、输入/输出 rows 与 LP columns、commits、emitted rows、LP fill、
@@ -131,19 +140,22 @@ SGE 前恰好发出一次，并与最终 `MatrixResult.matrix` handoff 对齐。
   始终用 `RemoveArtifacts` 管理 working corpus。working/output lease root 互不允许
   相等或形成祖先关系，也不得与 raw corpus 的独占 cleanup root 重叠。sink/corpus
   构造时会冻结规范化绝对路径，避免后续工作目录变化重定向清理。该 API 字段不是
-  ENV，production route 在完成路径派生与 scale gate 前不会设置它。
-- `src/api/pipeline.cpp`：adaptive/final probe 与公开 filter 的统一 overlay；
-  `run()`、OOC/resume/distributed 在 callback、checkpoint 和 snapshot side effect 前
-  判定 unsupported。
+  ENV；Pipeline 从一次冻结的 run namespace 为每个 logical generation 派生
+  snapshot/working/output sibling base。
+- `include/gnfs/relation/collector.hpp`：appendable OOC prefix 的逐行 corpus snapshot、
+  authoritative source descriptor 和 terminal one-shot handoff。fresh raw pair 使用
+  exclusive create，不覆盖既有 artifact。
+- `src/api/pipeline.cpp`：adaptive/final probe 与公开 filter 的统一 overlay；仅显式普通
+  OOC 接入 structured，size-aware OOC、resume 和 distributed 保持 legacy/unsupported。
 - `tests/test_structured_filter_policy.cpp`：合法与非法 token、OFF、forced ON、
   unsupported 和显式 auto eligibility 的表驱动边界。
 - `tests/test_relation_reduction_engine.cpp`：structured config 预检、NoCandidates、
   singleton 所有权、去重顺序、1/2/4 线程等价和 invariant fail-closed。
 - `CMakeLists.txt` / `scripts/test.sh`：注册 relation 模块的 instant 测试。
 - `tests/test_api.cpp`：公开 route 的 forced ON、unset/0/auto legacy 等价、非法值
-  callback/generation 边界、无 LP fail-closed、resume/OOC/distributed sentinel、
-  callback ENV 漂移、每代 exact-once、最终 matrix record 对齐，以及真实 adaptive
-  sieve structured 路径。
+  callback/generation 边界、无 LP fail-closed、resume/distributed sentinel、显式 OOC
+  path drift/collision、finalized output 生命周期、terminal callback 失败保留 raw、每代
+  exact-once、最终 matrix record 对齐，以及真实 adaptive sieve structured 路径。
 
 ---
 
@@ -242,9 +254,10 @@ GNFS_V0_BFS=1 ./gnfs <81-bit>          # 自动 fallback, stderr 警告
 
 **ENV `GNFS_OOC_RELATIONS=1`** (2026-05-18 实施):
 启用 RelationCollector OOC 流式持久化, sieve 期间 relations 流式写盘
-`/tmp/gnfs_relations_<pid>.{reldata,relidx}` 而非 in-memory vector. 内存只保留
-(a,b) seen set + stats. Phase 4 filter 入口 OOCRelationReader 一次性 read_all
-→ vector. 默认 OFF (vector mode).
+`<system-temp>/gnfs_relations_<run-id>.{reldata,relidx}` 而非 in-memory vector。内存只保留
+`(a,b)` seen set + stats。legacy filter 在 probe 边界 materialize vector；同时显式
+强制 structured 时走上一节描述的 streaming snapshot/working/output route。ENV unset
+时 `lp_bits >= 22` 使用 size-aware default，显式 `0` 始终关闭，显式 `1` 绕过尺寸门槛。
 
 ```bash
 GNFS_OOC_RELATIONS=1 ./gnfs <N>                  # 启用 OOC streaming
@@ -261,6 +274,8 @@ GNFS_OOC_RELATIONS=1 ./test_gnfs_e2e             # e2e stress test OOC path
   store ID；普通 reader 严格拒绝 incomplete store。只有与 `SieveCheckpoint` V2
   wire format 配对的 OOC V3 descriptor 可以验证并恢复 committed prefix，同时
   截断 crash 后未提交 tail。
+- fresh writer 用 exclusive create 原子占有 `.relidx` 和 `.reldata`；任一既有 regular
+  file、directory 或 dangling symlink 都会 fail closed，不允许 fresh route 截断旧 pair。
 - V3 index 使用固定布局
   `[magic][format_version][store_id][count][offsets...]`，data 使用
   `[data_magic][format_version][store_id][records...]`。offset 与 descriptor
@@ -279,21 +294,28 @@ GNFS_OOC_RELATIONS=1 ./test_gnfs_e2e             # e2e stress test OOC path
 - `include/gnfs/relation/ooc_relation_format.hpp` — V1/V2/V3 稳定布局常量
 - `include/gnfs/relation/ooc_relation_store.hpp` — OOCRelationWriter/Reader, MAGIC/INCOMPLETE flip
 - `include/gnfs/relation/ooc_policy.hpp` — 三态 ENV 解析 (off / auto-by-size / on)
-- `src/api/pipeline.cpp` — `sieve_and_collect` ENV-gate + base_path (检索 `GNFS_OOC_RELATIONS` getenv 点)
-- `tests/test_relation_collector.cpp` — 8 OOC unit tests (basic/dedup/N-divisibility/partial/concurrent/clear/empty-path/legacy)
+- `src/api/pipeline.cpp` — `sieve_and_collect` ENV-gate、per-run path namespace 和 structured
+  ordinary-OOC bridge
+- `tests/test_relation_collector.cpp` — OOC lifecycle、snapshot/handoff、collision、recovery 与
+  terminal-state tests
 - `tests/test_ooc_relations.cpp` / `tests/test_ooc_policy.cpp` — OOC store + policy
-- `tests/test_gnfs_e2e.cpp` — OOC stress test in real GNFS pipeline (5/5 PASS)
+- `tests/test_gnfs_e2e.cpp` — real GNFS pipeline OOC stress path
 
 **API 语义**:
 - `add()`: OOC 模式跳过 relations_.push_back, 走 OOCWriter::write
 - `snapshot_relations()`: 暂停 writer、读取受信 prefix、解除映射并重新打开 append；
   后续 `add()` 仍有效
+- `snapshot_ooc_corpus()`: 不构建全量 relation vector，逐行复制 committed prefix 到独立
+  finalized corpus，同时返回 authoritative raw source descriptor
+- `handoff_ooc_corpus()`: terminal one-shot ownership transfer；成功后 mutation/materialize/
+  repeated finalize 均拒绝，`size()` / `stats()` 仍可读
 - `finalize_relations()` / `get_relations()`: finalize 后 read_all；此后禁止 append
 - `checkpoint_ooc()` / `resume_ooc()`: 为 sieve transaction 暴露 descriptor 配对边界
 - `size()/empty()`: 基于 writer->count() (准确反映写盘 relation 数)
-- `clear()`: OOC 模式 close + delete files + recreate writer (允许 reuse)
+- `clear()`: finalize 并 descriptor-bound 验证 exact pair 后删除，再 exclusive-create 新 writer；
+  Failed 或 handed-off collector 拒绝 destructive recycle
 - `save/load`: legacy 序列化协议 OOC 模式 disabled (return false); 直接用 OOCRelationReader
-- `merge`: OOC source 不支持 (read overhead 不实用); OOC sink 工作
+- `merge`: OOC source 显式抛错 (read overhead 不实用); OOC sink 工作
 
 ---
 
