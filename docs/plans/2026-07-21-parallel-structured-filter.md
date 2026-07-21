@@ -8,9 +8,9 @@
   M4 has a default-off production vector route, one frozen per-run route
   snapshot, an owning vector/finalized-OOC corpus, descriptor-bound selection
   identity, direct selected-corpus matrix input, deterministic ordinal trimming,
-  and dependency-only square-root materialization. Direct bounded-memory
-  reduction, a relation sink, paired OOC data identity, and scale evidence
-  remain before OOC promotion.
+  dependency-only square-root materialization, and a reader-first V3 paired-data
+  identity substrate. Direct bounded-memory reduction, a relation sink, the V3
+  writer/recovery cutover, and scale evidence remain before OOC promotion.
 - Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
 
 ## Outcome
@@ -624,10 +624,14 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
   preserves legacy move-construction and move-assignment compatibility while
   releasing any replaced corpus owner after its public payload. The legacy
   vector path and its trim order remain unchanged.
-- Complete the bounded `RelationSource`/`RelationSink` reducer. The next OOC
-  format milestone adds a fixed `.reldata` header carrying the same immutable
-  store identity as `.relidx`; V1/V2 finalized readers remain compatibility
-  inputs, while new stores and promoted ownership require paired V3 identity.
+- [x] Add reader-first V3 support for a fixed `.reldata` header carrying the
+  same immutable store identity as `.relidx`. Both ordinary and
+  descriptor-bound readers validate the V3 pair from the same mapped handles,
+  including physical extents and absolute offsets; same-sized foreign data
+  files fail closed. Finalized V1/V2 readers remain compatibility inputs.
+- Complete the bounded `RelationSource`/`RelationSink` reducer and switch new
+  writes, checkpoint recovery, prefix readers, and promoted corpus ownership to
+  paired V3 identity. V1/V2 remain finalized read-only compatibility formats.
 - Adaptive and public vector routes are covered. OOC/resume/distributed are
   explicitly rejected before callback/checkpoint/store/snapshot side effects in
   forced mode; full `Pipeline::run()` freezes one route snapshot across phase

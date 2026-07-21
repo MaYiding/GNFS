@@ -181,9 +181,11 @@ inline gnfs::core::Relation deserialize_compact_relation(const uint8_t* ptr, siz
 ///   - Read phase: mmap both files for O(1) random access to any relation
 ///
 /// File format:
+///   V3 .relidx: [magic][version][store_id][count][offset_0][offset_1]...
+///   V3 .reldata: [data_magic][version][store_id][serialized_relation_0]...
 ///   V2 .relidx: [magic][version][store_id][count][offset_0][offset_1]...
 ///   legacy finalized V1: [legacy magic][count][offset_0][offset_1]...
-///   .reldata: [serialized_relation_0][serialized_relation_1]...
+///   V1/V2 .reldata: [serialized_relation_0][serialized_relation_1]...
 ///
 /// Each serialized relation uses a compact binary format (not the v2 checksum format,
 /// which has overhead). Fields are written in order with explicit length prefixes.
@@ -192,20 +194,33 @@ inline gnfs::core::Relation deserialize_compact_relation(const uint8_t* ptr, siz
 /// For 50+ digit (~10M relations, ~2-5GB): essential to avoid OOM.
 class OOCRelationWriter {
 public:
-    // New writes use an expanded V2 header that never overwrites store_id.
-    // Readers retain compatibility with the historical finalized V1 layout.
+    // New writes still use V2. V3 constants are exposed reader-first so the
+    // reader can land before the writer switches formats in a later change.
     static constexpr uint64_t MAGIC_V1_FINAL = 0x474E46535245494CULL; // 'GNFSREIL'
     static constexpr uint64_t MAGIC_INCOMPLETE_V1 = 0x474E46535245494EULL;
-    static constexpr uint64_t MAGIC_V2_FINAL = 0x474E46535232464CULL;   // 'GNFSR2FL'
-    static constexpr uint64_t MAGIC_INCOMPLETE = 0x474E46535232494EULL; // 'GNFSR2IN'
+    static constexpr uint64_t MAGIC_V2_FINAL = 0x474E46535232464CULL;      // 'GNFSR2FL'
+    static constexpr uint64_t MAGIC_V2_INCOMPLETE = 0x474E46535232494EULL; // 'GNFSR2IN'
+    static constexpr uint64_t MAGIC_V3_FINAL = 0x474E46535233464CULL;      // 'GNFSR3FL'
+    static constexpr uint64_t MAGIC_V3_INCOMPLETE = 0x474E46535233494EULL; // 'GNFSR3IN'
+    static constexpr uint64_t MAGIC_V3_DATA = 0x474E465352334441ULL;       // 'GNFSR3DA'
+
+    static constexpr uint64_t FORMAT_VERSION_V2 = 2;
+    static constexpr uint64_t FORMAT_VERSION_V3 = 3;
+
+    // Compatibility aliases keep the current writer on V2.
     static constexpr uint64_t MAGIC = MAGIC_V2_FINAL;
-    static constexpr uint64_t FORMAT_VERSION = 2;
+    static constexpr uint64_t MAGIC_INCOMPLETE = MAGIC_V2_INCOMPLETE;
+    static constexpr uint64_t FORMAT_VERSION = FORMAT_VERSION_V2;
 
     static constexpr uint64_t INDEX_FORMAT_VERSION_OFFSET = 8;
     static constexpr uint64_t INDEX_STORE_ID_OFFSET = 16;
     static constexpr uint64_t INDEX_COUNT_OFFSET = 24;
     static constexpr uint64_t INDEX_HEADER_BYTES = 32;
     static constexpr uint64_t INDEX_SENTINEL_BYTES = 8;
+
+    static constexpr uint64_t DATA_FORMAT_VERSION_OFFSET = 8;
+    static constexpr uint64_t DATA_STORE_ID_OFFSET = 16;
+    static constexpr uint64_t DATA_HEADER_BYTES = 24;
 
     enum class FinalizeStage {
         MetadataDurable,
@@ -1124,15 +1139,14 @@ public:
         initialize(nullptr);
     }
 
-    /// Open a descriptor-bound finalized V2 corpus.
+    /// Open a descriptor-bound finalized V2 or V3 corpus.
     ///
     /// Unlike a path-level preflight followed by an ordinary reader open, this
-    /// overload validates the persisted index identity and both file extents
-    /// against the same mapped handles that serve subsequent reads. Finalized
-    /// V2 does not persist checkpoint generation or a store identity in the
-    /// data file: generation is only required to be nonzero, and a same-sized
-    /// foreign `.reldata` file cannot be distinguished. Callers transferring
-    /// cleanup ownership must therefore retain exclusive control of the pair.
+    /// overload validates the persisted identity and both file extents against
+    /// the same mapped handles that serve subsequent reads. V3 additionally
+    /// requires matching store identities in the index and data headers. V2
+    /// has no data-file identity, so callers opening V2 retain the historical
+    /// exclusive-ownership requirement.
     OOCRelationReader(const std::string& base_path, const OOCSnapshotDescriptor& expected)
         : idx_file_(base_path + ".relidx"), data_file_(base_path + ".reldata") {
         validate_expected_descriptor(expected);
@@ -1185,7 +1199,8 @@ public:
 
 private:
     static void validate_expected_descriptor(const OOCSnapshotDescriptor& expected) {
-        if (expected.format_version != OOCRelationWriter::FORMAT_VERSION) {
+        if (expected.format_version != OOCRelationWriter::FORMAT_VERSION_V2 &&
+            expected.format_version != OOCRelationWriter::FORMAT_VERSION_V3) {
             throw std::invalid_argument(
                 "OOCRelationReader: expected descriptor format version mismatch");
         }
@@ -1199,31 +1214,58 @@ private:
     }
 
     void initialize(const OOCSnapshotDescriptor* expected) {
-        // Validate either the expanded V2 finalized header or the historical
-        // finalized V1 header. Descriptor-bound opens accept only finalized V2.
+        // Validate finalized V1, V2, or V3 from the exact mappings used for
+        // subsequent reads. Descriptor-bound opens accept V2 and V3.
         // Incomplete files are rejected in both modes.
         if (idx_file_.size() < 16) {
             throw std::runtime_error("OOCRelationReader: index file too small");
         }
         const uint64_t magic = idx_file_.read_at<uint64_t>(0);
         uint64_t stored_count = 0;
+        uint64_t stored_version = 0;
+        uint64_t stored_store_id = 0;
         size_t index_header_bytes = 0;
-        if (magic == OOCRelationWriter::MAGIC_V2_FINAL) {
+        uint64_t expected_first_offset = 0;
+        if (magic == OOCRelationWriter::MAGIC_V2_FINAL ||
+            magic == OOCRelationWriter::MAGIC_V3_FINAL) {
             if (idx_file_.size() < OOCRelationWriter::INDEX_HEADER_BYTES) {
-                throw std::runtime_error("OOCRelationReader: V2 index header truncated");
+                throw std::runtime_error("OOCRelationReader: index header truncated");
             }
-            const uint64_t stored_version =
+            stored_version =
                 idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET);
-            if (stored_version != OOCRelationWriter::FORMAT_VERSION) {
-                throw std::runtime_error("OOCRelationReader: V2 format version mismatch");
+            const uint64_t required_version = magic == OOCRelationWriter::MAGIC_V3_FINAL
+                                                  ? OOCRelationWriter::FORMAT_VERSION_V3
+                                                  : OOCRelationWriter::FORMAT_VERSION_V2;
+            if (stored_version != required_version) {
+                throw std::runtime_error("OOCRelationReader: format version mismatch");
             }
-            const uint64_t stored_store_id =
-                idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_STORE_ID_OFFSET);
+            stored_store_id = idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_STORE_ID_OFFSET);
             if (stored_store_id == 0) {
-                throw std::runtime_error("OOCRelationReader: V2 store identity is zero");
+                throw std::runtime_error("OOCRelationReader: store identity is zero");
             }
             stored_count = idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_COUNT_OFFSET);
             index_header_bytes = static_cast<size_t>(OOCRelationWriter::INDEX_HEADER_BYTES);
+
+            if (magic == OOCRelationWriter::MAGIC_V3_FINAL) {
+                if (data_file_.size() < OOCRelationWriter::DATA_HEADER_BYTES) {
+                    throw std::runtime_error("OOCRelationReader: V3 data header truncated");
+                }
+                if (data_file_.read_at<uint64_t>(0) != OOCRelationWriter::MAGIC_V3_DATA) {
+                    throw std::runtime_error("OOCRelationReader: invalid V3 data magic");
+                }
+                const uint64_t data_version =
+                    data_file_.read_at<uint64_t>(OOCRelationWriter::DATA_FORMAT_VERSION_OFFSET);
+                if (data_version != OOCRelationWriter::FORMAT_VERSION_V3) {
+                    throw std::runtime_error("OOCRelationReader: V3 data version mismatch");
+                }
+                const uint64_t data_store_id =
+                    data_file_.read_at<uint64_t>(OOCRelationWriter::DATA_STORE_ID_OFFSET);
+                if (data_store_id != stored_store_id) {
+                    throw std::runtime_error(
+                        "OOCRelationReader: V3 index/data store identity mismatch");
+                }
+                expected_first_offset = OOCRelationWriter::DATA_HEADER_BYTES;
+            }
 
             if (expected != nullptr) {
                 if (stored_version != expected->format_version) {
@@ -1242,7 +1284,7 @@ private:
         } else if (magic == OOCRelationWriter::MAGIC_V1_FINAL) {
             if (expected != nullptr) {
                 throw std::runtime_error(
-                    "OOCRelationReader: expected descriptor requires finalized V2 store");
+                    "OOCRelationReader: expected descriptor requires finalized V2 or V3 store");
             }
             stored_count = idx_file_.read_at<uint64_t>(8);
             index_header_bytes = 16;
@@ -1281,8 +1323,8 @@ private:
         }
 
         offsets_ = idx_file_.ptr_at<uint64_t>(index_header_bytes);
-        if (offsets_[0] != 0) {
-            throw std::runtime_error("OOCRelationReader: first offset is not zero");
+        if (offsets_[0] != expected_first_offset) {
+            throw std::runtime_error("OOCRelationReader: invalid first offset");
         }
         if (expected != nullptr && offsets_[count_] != expected->data_end) {
             throw std::runtime_error("OOCRelationReader: final sentinel does not match descriptor");
@@ -1385,6 +1427,11 @@ public:
 
             data_file_.advise_random();
         } catch (...) {
+            // Close both mappings before the writer lease becomes observable as
+            // released. This ordering is required on Windows and also prevents
+            // a concurrent resume from racing constructor unwinding.
+            data_file_.close();
+            idx_file_.close();
             owner.release_prefix_reader();
             owner_ = nullptr;
             throw;
@@ -1392,8 +1439,14 @@ public:
     }
 
     ~OOCRelationPrefixReader() {
-        if (owner_ != nullptr)
+        // The owner may reopen append handles as soon as the lease is released,
+        // so mappings must be closed first on every platform.
+        data_file_.close();
+        idx_file_.close();
+        if (owner_ != nullptr) {
             owner_->release_prefix_reader();
+            owner_ = nullptr;
+        }
     }
 
     OOCRelationPrefixReader(const OOCRelationPrefixReader&) = delete;

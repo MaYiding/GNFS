@@ -11,6 +11,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using gnfs::core::ABPair;
 using gnfs::core::PrimePower;
@@ -118,6 +119,69 @@ OOCSnapshotDescriptor create_recovery_store(const std::string& base_path, size_t
     return descriptor;
 }
 
+std::vector<char> read_file_bytes(const std::string& path) {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    CHECK(static_cast<bool>(input));
+    const auto end = input.tellg();
+    CHECK(end >= 0);
+
+    std::vector<char> bytes(static_cast<size_t>(end));
+    input.seekg(0);
+    if (!bytes.empty()) {
+        input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        CHECK(static_cast<bool>(input));
+    }
+    return bytes;
+}
+
+OOCSnapshotDescriptor upgrade_finalized_v2_pair_to_v3(const std::string& base_path,
+                                                      const OOCSnapshotDescriptor& v2_descriptor) {
+    const std::string data_path = base_path + ".reldata";
+    const std::string index_path = base_path + ".relidx";
+
+    CHECK(v2_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V2);
+    CHECK(read_u64_at(index_path, 0) == OOCRelationWriter::MAGIC_V2_FINAL);
+    CHECK(read_u64_at(index_path, OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET) ==
+          OOCRelationWriter::FORMAT_VERSION_V2);
+    CHECK(read_u64_at(index_path, OOCRelationWriter::INDEX_STORE_ID_OFFSET) ==
+          v2_descriptor.store_id);
+    CHECK(read_u64_at(index_path, OOCRelationWriter::INDEX_COUNT_OFFSET) == v2_descriptor.count);
+    CHECK(std::filesystem::file_size(data_path) == v2_descriptor.data_end);
+
+    const auto v2_data = read_file_bytes(data_path);
+    {
+        std::ofstream output(data_path, std::ios::binary | std::ios::trunc);
+        CHECK(static_cast<bool>(output));
+        const uint64_t data_magic = OOCRelationWriter::MAGIC_V3_DATA;
+        const uint64_t format_version = OOCRelationWriter::FORMAT_VERSION_V3;
+        output.write(reinterpret_cast<const char*>(&data_magic), sizeof(data_magic));
+        output.write(reinterpret_cast<const char*>(&format_version), sizeof(format_version));
+        output.write(reinterpret_cast<const char*>(&v2_descriptor.store_id),
+                     sizeof(v2_descriptor.store_id));
+        if (!v2_data.empty()) {
+            output.write(v2_data.data(), static_cast<std::streamsize>(v2_data.size()));
+        }
+        output.close();
+        CHECK(static_cast<bool>(output));
+    }
+
+    for (uint64_t ordinal = 0; ordinal <= v2_descriptor.count; ++ordinal) {
+        const auto offset_position = static_cast<std::streamoff>(
+            OOCRelationWriter::INDEX_HEADER_BYTES + ordinal * sizeof(uint64_t));
+        const uint64_t v2_offset = read_u64_at(index_path, offset_position);
+        overwrite_u64(index_path, offset_position,
+                      v2_offset + OOCRelationWriter::DATA_HEADER_BYTES);
+    }
+    overwrite_u64(index_path, 0, OOCRelationWriter::MAGIC_V3_FINAL);
+    overwrite_u64(index_path, OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET,
+                  OOCRelationWriter::FORMAT_VERSION_V3);
+
+    auto v3_descriptor = v2_descriptor;
+    v3_descriptor.format_version = OOCRelationWriter::FORMAT_VERSION_V3;
+    v3_descriptor.data_end += OOCRelationWriter::DATA_HEADER_BYTES;
+    return v3_descriptor;
+}
+
 void append_u64(const std::string& path, uint64_t value) {
     std::ofstream stream(path, std::ios::app | std::ios::binary);
     CHECK(static_cast<bool>(stream));
@@ -186,6 +250,12 @@ void expect_descriptor_reader_rejected(const std::string& base_path,
         rejected = true;
     }
     CHECK(rejected);
+}
+
+void expect_both_finalized_readers_rejected(const std::string& base_path,
+                                            const OOCSnapshotDescriptor& descriptor) {
+    expect_finalized_reader_rejected(base_path);
+    expect_descriptor_reader_rejected(base_path, descriptor);
 }
 
 void expect_resume_rejected_without_mutation(const std::string& base_path,
@@ -655,6 +725,137 @@ void test_finalized_reader_expected_descriptor_rejects_corruption() {
     }
 }
 
+void test_v3_finalized_reader_roundtrip_and_physical_extents() {
+    {
+        const std::string path = make_path("v3_finalized_nonempty");
+        OOCArtifacts cleanup(path);
+        const auto v2_descriptor = create_finalized_store(path);
+        const auto descriptor = upgrade_finalized_v2_pair_to_v3(path, v2_descriptor);
+
+        CHECK(descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(descriptor.data_end == v2_descriptor.data_end + OOCRelationWriter::DATA_HEADER_BYTES);
+        CHECK(read_u64_at(path + ".relidx", 0) == OOCRelationWriter::MAGIC_V3_FINAL);
+        CHECK(read_u64_at(path + ".relidx", OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET) ==
+              OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(read_u64_at(path + ".relidx", OOCRelationWriter::INDEX_STORE_ID_OFFSET) ==
+              descriptor.store_id);
+        CHECK(read_u64_at(path + ".reldata", 0) == OOCRelationWriter::MAGIC_V3_DATA);
+        CHECK(read_u64_at(path + ".reldata", OOCRelationWriter::DATA_FORMAT_VERSION_OFFSET) ==
+              OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(read_u64_at(path + ".reldata", OOCRelationWriter::DATA_STORE_ID_OFFSET) ==
+              descriptor.store_id);
+
+        const auto first_offset = read_u64_at(
+            path + ".relidx", static_cast<std::streamoff>(OOCRelationWriter::INDEX_HEADER_BYTES));
+        const auto sentinel_offset = static_cast<std::streamoff>(
+            OOCRelationWriter::INDEX_HEADER_BYTES + descriptor.count * sizeof(uint64_t));
+        CHECK(first_offset == OOCRelationWriter::DATA_HEADER_BYTES);
+        CHECK(read_u64_at(path + ".relidx", sentinel_offset) == descriptor.data_end);
+        CHECK(std::filesystem::file_size(path + ".reldata") == descriptor.data_end);
+
+        OOCRelationReader ordinary(path);
+        CHECK(ordinary.count() == 2);
+        CHECK(ordinary.read(0).a == 1);
+        CHECK(ordinary.read(1).a == 3);
+
+        OOCRelationReader bound(path, descriptor);
+        CHECK(bound.count() == 2);
+        CHECK(bound.read(0).a == 1);
+        CHECK(bound.read(1).a == 3);
+    }
+    {
+        const std::string path = make_path("v3_finalized_empty");
+        OOCArtifacts cleanup(path);
+        OOCSnapshotDescriptor v2_descriptor;
+        {
+            OOCRelationWriter writer(path);
+            v2_descriptor = writer.finalize();
+        }
+        CHECK(v2_descriptor.count == 0);
+        CHECK(v2_descriptor.data_end == 0);
+        const auto descriptor = upgrade_finalized_v2_pair_to_v3(path, v2_descriptor);
+
+        CHECK(descriptor.count == 0);
+        CHECK(descriptor.data_end == OOCRelationWriter::DATA_HEADER_BYTES);
+        CHECK(std::filesystem::file_size(path + ".reldata") ==
+              OOCRelationWriter::DATA_HEADER_BYTES);
+        CHECK(read_u64_at(path + ".relidx",
+                          static_cast<std::streamoff>(OOCRelationWriter::INDEX_HEADER_BYTES)) ==
+              descriptor.data_end);
+
+        OOCRelationReader ordinary(path);
+        CHECK(ordinary.count() == 0);
+        CHECK(ordinary.read_all().empty());
+        OOCRelationReader bound(path, descriptor);
+        CHECK(bound.count() == 0);
+        CHECK(bound.read_all().empty());
+    }
+}
+
+void test_v3_finalized_reader_rejects_same_size_foreign_data_swap() {
+    const std::string first_path = make_path("v3_foreign_data_first");
+    const std::string second_path = make_path("v3_foreign_data_second");
+    OOCArtifacts first_cleanup(first_path);
+    OOCArtifacts second_cleanup(second_path);
+
+    const auto first_descriptor =
+        upgrade_finalized_v2_pair_to_v3(first_path, create_finalized_store(first_path));
+    const auto second_descriptor =
+        upgrade_finalized_v2_pair_to_v3(second_path, create_finalized_store(second_path));
+    CHECK(first_descriptor.store_id != second_descriptor.store_id);
+    CHECK(first_descriptor.count == second_descriptor.count);
+    CHECK(std::filesystem::file_size(first_path + ".reldata") ==
+          std::filesystem::file_size(second_path + ".reldata"));
+
+    CHECK(std::filesystem::copy_file(second_path + ".reldata", first_path + ".reldata",
+                                     std::filesystem::copy_options::overwrite_existing));
+    CHECK(std::filesystem::file_size(first_path + ".reldata") == first_descriptor.data_end);
+    CHECK(read_u64_at(first_path + ".reldata", OOCRelationWriter::DATA_STORE_ID_OFFSET) ==
+          second_descriptor.store_id);
+    expect_both_finalized_readers_rejected(first_path, first_descriptor);
+
+    OOCRelationReader source_reader(second_path, second_descriptor);
+    CHECK(source_reader.count() == second_descriptor.count);
+}
+
+void test_v3_finalized_reader_rejects_data_header_corruption() {
+    {
+        const std::string path = make_path("v3_bad_data_magic");
+        OOCArtifacts cleanup(path);
+        const auto descriptor = upgrade_finalized_v2_pair_to_v3(path, create_finalized_store(path));
+        overwrite_u64(path + ".reldata", 0, OOCRelationWriter::MAGIC_V3_DATA ^ uint64_t{1});
+        expect_both_finalized_readers_rejected(path, descriptor);
+    }
+    {
+        const std::string path = make_path("v3_bad_data_version");
+        OOCArtifacts cleanup(path);
+        const auto descriptor = upgrade_finalized_v2_pair_to_v3(path, create_finalized_store(path));
+        overwrite_u64(path + ".reldata", OOCRelationWriter::DATA_FORMAT_VERSION_OFFSET,
+                      OOCRelationWriter::FORMAT_VERSION_V2);
+        expect_both_finalized_readers_rejected(path, descriptor);
+    }
+    {
+        const std::string path = make_path("v3_bad_data_store_id");
+        OOCArtifacts cleanup(path);
+        const auto descriptor = upgrade_finalized_v2_pair_to_v3(path, create_finalized_store(path));
+        overwrite_u64(path + ".reldata", OOCRelationWriter::DATA_STORE_ID_OFFSET,
+                      descriptor.store_id ^ uint64_t{1});
+        expect_both_finalized_readers_rejected(path, descriptor);
+    }
+    {
+        const std::string path = make_path("v3_short_data_header");
+        OOCArtifacts cleanup(path);
+        OOCSnapshotDescriptor v2_descriptor;
+        {
+            OOCRelationWriter writer(path);
+            v2_descriptor = writer.finalize();
+        }
+        const auto descriptor = upgrade_finalized_v2_pair_to_v3(path, v2_descriptor);
+        std::filesystem::resize_file(path + ".reldata", OOCRelationWriter::DATA_HEADER_BYTES - 1);
+        expect_both_finalized_readers_rejected(path, descriptor);
+    }
+}
+
 void test_legacy_finalized_reader_compatibility_and_paired_rejection() {
     const std::string path = make_path("legacy_finalized_reader");
     OOCArtifacts cleanup(path);
@@ -805,6 +1006,9 @@ int main() {
     test_finalized_reader_expected_descriptor_binding();
     test_finalized_reader_expected_descriptor_empty_store();
     test_finalized_reader_expected_descriptor_rejects_corruption();
+    test_v3_finalized_reader_roundtrip_and_physical_extents();
+    test_v3_finalized_reader_rejects_same_size_foreign_data_swap();
+    test_v3_finalized_reader_rejects_data_header_corruption();
     test_legacy_finalized_reader_compatibility_and_paired_rejection();
     test_prefix_reader_exact_extent_and_lease();
     test_failed_snapshot_transition();
