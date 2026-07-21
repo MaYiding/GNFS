@@ -9,7 +9,7 @@
 #include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/relation/collector.hpp>
-#include <gnfs/relation/filter.hpp>
+#include <gnfs/relation/reduction_engine.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
@@ -242,15 +242,21 @@ GNFSFactorResult factor_with_context(
     // ============ 过滤 ============
     auto relations = collector.get_relations();
 
-    FilterConfig filter_config;
-    filter_config.remove_singletons = true;
-    filter_config.max_passes = 10;
-
-    RelationFilter filter(filter_config);
-    relations = filter.filter(std::move(relations));
+    const bool lp_enabled = cofac_config.large_prime_bound > fb_bound;
+    RelationReductionConfig reduction_config;
+    reduction_config.filter.remove_singletons = true;
+    reduction_config.filter.max_passes = 10;
+    reduction_config.large_primes_enabled = lp_enabled;
+    reduction_config.strategy =
+        lp_enabled ? ReductionStrategy::FilterOnly : ReductionStrategy::NoLargePrimes;
+    auto reduction = RelationReductionEngine::reduce(RawRelationSnapshot(1, std::move(relations)),
+                                                     reduction_config);
+    const auto& reduction_stats = reduction.stats;
+    relations = std::move(reduction.relations);
 
     if (verbose) {
-        std::cout << "  After filtering: " << relations.size() << " relations\n";
+        std::cout << "  After filtering: " << reduction_stats.filter.output_relations
+                  << " relations\n";
     }
 
     if (relations.size() < 5) {
