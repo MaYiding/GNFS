@@ -54,18 +54,18 @@ struct StructuredBatchPersistenceLimit final {
 using StructuredBatchPrepareOutcome =
     std::variant<PreparedTwoWayMerge, PreparedTreeBasisMerge, StructuredBatchPersistenceLimit>;
 
-/// Opaque output of the M3a.2 prepare barrier.
+/// Opaque output of the parallel prepare barrier.
 ///
 /// Outcomes are in the exact selected-candidate order. The object deliberately
 /// exposes only a const view: publishing one prepared slot through the legacy
-/// single-candidate commit API would stale every remaining slot. M3b will add
-/// the sole atomic batch consumer.
+/// single-candidate commit API would stale every remaining slot. The reducer's
+/// by-value batch commit is the sole consumer and rejects moved-from handles.
 class StructuredPreparedBatch final {
 public:
     StructuredPreparedBatch(const StructuredPreparedBatch&) = delete;
     StructuredPreparedBatch& operator=(const StructuredPreparedBatch&) = delete;
-    StructuredPreparedBatch(StructuredPreparedBatch&&) noexcept = default;
-    StructuredPreparedBatch& operator=(StructuredPreparedBatch&&) noexcept = default;
+    StructuredPreparedBatch(StructuredPreparedBatch&& other) noexcept;
+    StructuredPreparedBatch& operator=(StructuredPreparedBatch&& other) noexcept;
 
     [[nodiscard]] StructuredIncidenceSnapshotId snapshot() const noexcept;
     [[nodiscard]] std::span<const StructuredBatchPrepareOutcome> outcomes() const& noexcept;
@@ -74,6 +74,7 @@ public:
     [[nodiscard]] size_t persistence_limited_candidate_count() const noexcept;
 
 private:
+    friend class SequentialStructuredReducer;
     friend StructuredPreparedBatch
     prepare_conflict_free_batch(const SequentialStructuredReducer& reducer,
                                 const StructuredConflictFreeBatchPlan& batch,
@@ -86,6 +87,24 @@ private:
     std::vector<StructuredBatchPrepareOutcome> outcomes_;
     size_t prepared_candidate_count_ = 0;
     size_t persistence_limited_candidate_count_ = 0;
+    bool valid_ = true;
+};
+
+/// Result of one atomic prepared-batch publication.
+///
+/// `output_offsets` has one more entry than the prepared slot count. Slot `i`
+/// owns `output_rows[output_offsets[i]..output_offsets[i + 1])`. A
+/// persistence-limit slot has an empty range. Successful 2-way slots contain
+/// one row, while tree slots retain their edge order.
+struct StructuredBatchCommitResult final {
+    std::vector<StructuredRowId> output_rows;
+    std::vector<size_t> output_offsets;
+    size_t committed_candidates = 0;
+    size_t persistence_limited_candidates = 0;
+    size_t emitted_rows = 0;
+    size_t lp_fill_growth = 0;
+
+    [[nodiscard]] bool operator==(const StructuredBatchCommitResult&) const noexcept = default;
 };
 
 /// Validate snapshot-bound scheduling metadata, canonicalize, de-duplicate,

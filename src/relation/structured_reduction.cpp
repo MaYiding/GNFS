@@ -1371,6 +1371,358 @@ struct SequentialStructuredReducer::Impl final {
         return output_ids;
     }
 
+    [[nodiscard]] StructuredBatchCommitResult
+    commit_prepared_batch(StructuredIncidenceSnapshotId snapshot,
+                          std::span<const StructuredBatchPrepareOutcome> outcomes,
+                          size_t expected_prepared_candidates,
+                          size_t expected_persistence_limited_candidates) {
+        validate_state();
+        if (snapshot.generation == 0 || snapshot.incidence_epoch == 0) {
+            fail(StructuredReductionErrorCode::InvalidGeneration,
+                 "prepared batch snapshot identity contains zero");
+        }
+        if (snapshot.generation != corpus.generation()) {
+            fail(StructuredReductionErrorCode::InvalidPlan,
+                 "prepared batch belongs to a different source generation");
+        }
+        if (snapshot.incidence_epoch != incidence_epoch) {
+            fail(StructuredReductionErrorCode::StalePlan,
+                 "prepared batch belongs to a stale incidence epoch");
+        }
+        if (expected_prepared_candidates > outcomes.size() ||
+            expected_persistence_limited_candidates >
+                outcomes.size() - expected_prepared_candidates) {
+            fail(StructuredReductionErrorCode::InvalidPlan,
+                 "prepared batch cached outcome counts are inconsistent");
+        }
+        if (expected_prepared_candidates + expected_persistence_limited_candidates !=
+            outcomes.size()) {
+            fail(StructuredReductionErrorCode::InvalidPlan,
+                 "prepared batch is moved-from or has inconsistent outcome counts");
+        }
+
+        size_t actual_prepared_candidates = 0;
+        size_t actual_persistence_limited_candidates = 0;
+        for (const auto& outcome : outcomes) {
+            if (outcome.valueless_by_exception()) {
+                fail(StructuredReductionErrorCode::InvalidPlan,
+                     "prepared batch contains a valueless outcome");
+            }
+            if (std::holds_alternative<StructuredBatchPersistenceLimit>(outcome))
+                ++actual_persistence_limited_candidates;
+            else
+                ++actual_prepared_candidates;
+        }
+        if (actual_prepared_candidates != expected_prepared_candidates ||
+            actual_persistence_limited_candidates != expected_persistence_limited_candidates) {
+            fail(StructuredReductionErrorCode::InvalidPlan,
+                 "prepared batch cached outcome kinds are inconsistent");
+        }
+
+        StructuredBatchCommitResult result;
+        if (outcomes.size() >= result.output_offsets.max_size()) {
+            fail(StructuredReductionErrorCode::ResourceLimit,
+                 "prepared batch slot count exceeds vector limits");
+        }
+        result.output_offsets.reserve(outcomes.size() + 1);
+        result.output_offsets.push_back(0);
+
+        std::vector<uint8_t> selected(rows.size(), 0);
+        std::vector<uint8_t> claimed(rows.size(), 0);
+        std::vector<StructuredRowId> claimed_members;
+        std::vector<Row> staged_rows;
+        std::vector<size_t> remove_counts(buckets.size(), 0);
+        std::vector<size_t> append_counts(buckets.size(), 0);
+
+        size_t total_consumed = 0;
+        size_t two_way_candidates = 0;
+        size_t tree_candidates = 0;
+        size_t tree_rows_consumed = 0;
+        size_t tree_rows_emitted = 0;
+
+        auto register_candidate_members = [&](std::span<const StructuredRowId> members,
+                                              bool publish) {
+            if (publish) {
+                total_consumed = checked_resource_add(
+                    total_consumed, members.size(), "prepared batch consumed-row count overflows");
+            }
+            for (const auto member : members) {
+                if (member.value >= rows.size()) {
+                    fail(StructuredReductionErrorCode::InvalidPlan,
+                         "prepared batch member is outside the current row set");
+                }
+                const size_t member_index = static_cast<size_t>(member.value);
+                if (!rows[member_index].active) {
+                    fail(StructuredReductionErrorCode::StalePlan,
+                         "prepared batch member is no longer active");
+                }
+                if (selected[member_index] != 0) {
+                    fail(StructuredReductionErrorCode::InvalidPlan,
+                         "prepared batch candidates are not member-disjoint");
+                }
+                selected[member_index] = 1;
+                if (!publish)
+                    continue;
+                claimed[member_index] = 1;
+                claimed_members.push_back(member);
+                for (const size_t bucket_id : rows[member_index].bucket_ids) {
+                    remove_counts[bucket_id] =
+                        checked_resource_add(remove_counts[bucket_id], 1,
+                                             "prepared batch bucket removal count overflows");
+                }
+            }
+        };
+
+        auto stage_output = [&](const SourceCombination& sources,
+                                std::span<const LargePrimeKey> lp_keys) {
+            std::vector<size_t> bucket_ids;
+            bucket_ids.reserve(lp_keys.size());
+            for (const auto& key : lp_keys) {
+                const size_t bucket_id = find_bucket(key);
+                bucket_ids.push_back(bucket_id);
+                append_counts[bucket_id] = checked_resource_add(
+                    append_counts[bucket_id], 1, "prepared batch bucket append count overflows");
+            }
+            staged_rows.push_back(Row{sources,
+                                      std::vector<LargePrimeKey>(lp_keys.begin(), lp_keys.end()),
+                                      std::move(bucket_ids), true});
+        };
+
+        for (const auto& outcome : outcomes) {
+            if (const auto* two_way = std::get_if<PreparedTwoWayMerge>(&outcome)) {
+                TwoWayMergePlan validated = validate_plan_after_state_validation(two_way->plan());
+                Relation expected = materialize_validated_plan(validated);
+                if (!relations_equal(expected, two_way->materialized_relation())) {
+                    fail(StructuredReductionErrorCode::InvalidPlan,
+                         "prepared batch materialization does not match this corpus");
+                }
+                if (odd_large_prime_keys(two_way->materialized_relation()) !=
+                    validated.expected_lp_keys) {
+                    fail(StructuredReductionErrorCode::InvariantViolation,
+                         "prepared batch materialization has the wrong LP support");
+                }
+
+                register_candidate_members(validated.members, true);
+                ++two_way_candidates;
+                size_t input_nonpivot_lp_nnz = 0;
+                for (const auto member : validated.members) {
+                    const auto& input = rows[static_cast<size_t>(member.value)];
+                    if (input.lp_keys.empty()) {
+                        fail(StructuredReductionErrorCode::InvariantViolation,
+                             "prepared batch member has empty pivot support");
+                    }
+                    input_nonpivot_lp_nnz =
+                        checked_resource_add(input_nonpivot_lp_nnz, input.lp_keys.size() - 1,
+                                             "prepared batch input LP metric overflows");
+                }
+                if (validated.expected_lp_keys.size() > input_nonpivot_lp_nnz) {
+                    result.lp_fill_growth = checked_resource_add(
+                        result.lp_fill_growth,
+                        validated.expected_lp_keys.size() - input_nonpivot_lp_nnz,
+                        "prepared batch LP fill growth overflows");
+                }
+                stage_output(validated.expected_sources, validated.expected_lp_keys);
+            } else if (const auto* tree = std::get_if<PreparedTreeBasisMerge>(&outcome)) {
+                TreeBasisMergePlan validated =
+                    validate_tree_plan_after_state_validation(tree->plan());
+                auto expected = materialize_validated_tree_plan(validated);
+                const auto materialized = tree->materialized_relations();
+                if (expected.size() != materialized.size()) {
+                    fail(StructuredReductionErrorCode::InvalidPlan,
+                         "prepared batch tree relation count is inconsistent");
+                }
+                for (size_t i = 0; i < expected.size(); ++i) {
+                    if (!relations_equal(expected[i], materialized[i])) {
+                        fail(StructuredReductionErrorCode::InvalidPlan,
+                             "prepared batch tree materialization does not match this corpus");
+                    }
+                    if (odd_large_prime_keys(materialized[i]) !=
+                        validated.edges[i].expected_lp_keys) {
+                        fail(StructuredReductionErrorCode::InvariantViolation,
+                             "prepared batch tree materialization has the wrong LP support");
+                    }
+                }
+
+                register_candidate_members(validated.members, true);
+                ++tree_candidates;
+                tree_rows_consumed =
+                    checked_resource_add(tree_rows_consumed, validated.members.size(),
+                                         "prepared batch tree consumed-row count overflows");
+                tree_rows_emitted =
+                    checked_resource_add(tree_rows_emitted, validated.edges.size(),
+                                         "prepared batch tree emitted-row count overflows");
+                result.lp_fill_growth =
+                    checked_resource_add(result.lp_fill_growth, validated.lp_fill_growth,
+                                         "prepared batch LP fill growth overflows");
+                for (const auto& edge : validated.edges)
+                    stage_output(edge.expected_sources, edge.expected_lp_keys);
+            } else {
+                const auto& limited = std::get<StructuredBatchPersistenceLimit>(outcome);
+                if (limited.candidate.valueless_by_exception()) {
+                    fail(StructuredReductionErrorCode::InvalidPlan,
+                         "prepared batch persistence marker is valueless");
+                }
+                bool reproduced_persistence_limit = false;
+                try {
+                    std::visit(
+                        [&](const auto& plan) {
+                            using Plan = std::remove_cvref_t<decltype(plan)>;
+                            if constexpr (std::is_same_v<Plan, TwoWayMergePlan>) {
+                                const auto validated = validate_plan_after_state_validation(plan);
+                                register_candidate_members(validated.members, false);
+                                (void)materialize_validated_plan(validated);
+                            } else {
+                                const auto validated =
+                                    validate_tree_plan_after_state_validation(plan);
+                                register_candidate_members(validated.members, false);
+                                (void)materialize_validated_tree_plan(validated);
+                            }
+                        },
+                        limited.candidate);
+                } catch (const StructuredReductionError& error) {
+                    if (error.code() != StructuredReductionErrorCode::PersistenceLimit)
+                        throw;
+                    reproduced_persistence_limit = true;
+                }
+                if (!reproduced_persistence_limit) {
+                    fail(StructuredReductionErrorCode::InvalidPlan,
+                         "prepared batch persistence marker does not match this corpus");
+                }
+            }
+            result.output_offsets.push_back(staged_rows.size());
+        }
+
+        result.committed_candidates =
+            checked_resource_add(two_way_candidates, tree_candidates,
+                                 "prepared batch committed-candidate count overflows");
+        result.persistence_limited_candidates = actual_persistence_limited_candidates;
+        result.emitted_rows = staged_rows.size();
+        if (result.committed_candidates != actual_prepared_candidates) {
+            fail(StructuredReductionErrorCode::InvalidPlan,
+                 "prepared batch success outcome count is inconsistent");
+        }
+        if (total_consumed < result.emitted_rows ||
+            total_consumed - result.emitted_rows != result.committed_candidates) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "prepared batch active-row delta is inconsistent");
+        }
+        if (active_rows < total_consumed) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "prepared batch consumes more active rows than exist");
+        }
+        const size_t active_after_consumption = active_rows - total_consumed;
+        const size_t next_active_rows =
+            checked_resource_add(active_after_consumption, result.emitted_rows,
+                                 "prepared batch active-row count overflows");
+        if (active_rows < result.committed_candidates ||
+            next_active_rows != active_rows - result.committed_candidates) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "prepared batch net active-row count is inconsistent");
+        }
+
+        if (result.committed_candidates == 0) {
+            static_assert(std::is_nothrow_move_constructible_v<StructuredBatchCommitResult>);
+            return result;
+        }
+        if (incidence_epoch == std::numeric_limits<uint64_t>::max()) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "incidence epoch would overflow during prepared batch commit");
+        }
+
+        std::vector<const SourceCombination*> prospective;
+        prospective.reserve(next_active_rows);
+        for (size_t row_index = 0; row_index < rows.size(); ++row_index) {
+            if (rows[row_index].active && claimed[row_index] == 0)
+                prospective.push_back(&rows[row_index].sources);
+        }
+        for (const auto& staged : staged_rows)
+            prospective.push_back(&staged.sources);
+        if (prospective.size() != next_active_rows) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "prepared batch prospective row count is inconsistent");
+        }
+        validate_full_source_rank(corpus.size(), prospective);
+
+        const size_t next_two_way_merges =
+            checked_resource_add(statistics.two_way_merges, two_way_candidates,
+                                 "prepared batch two-way merge statistics overflow");
+        const size_t next_tree_batches =
+            checked_resource_add(statistics.tree_basis_batches, tree_candidates,
+                                 "prepared batch tree statistics overflow");
+        const size_t next_tree_consumed =
+            checked_resource_add(statistics.tree_basis_rows_consumed, tree_rows_consumed,
+                                 "prepared batch tree consumed-row statistics overflow");
+        const size_t next_tree_emitted =
+            checked_resource_add(statistics.tree_basis_rows_emitted, tree_rows_emitted,
+                                 "prepared batch tree emitted-row statistics overflow");
+
+        std::vector<size_t> next_active_degrees;
+        next_active_degrees.reserve(buckets.size());
+        for (size_t bucket_id = 0; bucket_id < buckets.size(); ++bucket_id) {
+            const auto& bucket = buckets[bucket_id];
+            if (remove_counts[bucket_id] > bucket.active_degree) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "prepared batch bucket removal exceeds active degree");
+            }
+            const size_t residual_degree = bucket.active_degree - remove_counts[bucket_id];
+            next_active_degrees.push_back(
+                checked_resource_add(residual_degree, append_counts[bucket_id],
+                                     "prepared batch bucket degree overflows"));
+        }
+
+        if (result.emitted_rows > rows.max_size() - rows.size() ||
+            rows.size() > std::numeric_limits<uint64_t>::max() - result.emitted_rows) {
+            fail(StructuredReductionErrorCode::ResourceLimit,
+                 "prepared batch structured row capacity is exhausted");
+        }
+        result.output_rows.reserve(result.emitted_rows);
+        const uint64_t first_output = static_cast<uint64_t>(rows.size());
+        for (size_t i = 0; i < result.emitted_rows; ++i) {
+            result.output_rows.push_back(StructuredRowId{first_output + static_cast<uint64_t>(i)});
+        }
+
+        // Every potentially throwing operation precedes the logical publish.
+        // Existing inactive adjacency entries remain as append-only history.
+        rows.reserve(rows.size() + result.emitted_rows);
+        for (size_t bucket_id = 0; bucket_id < buckets.size(); ++bucket_id) {
+            const size_t append_count = append_counts[bucket_id];
+            if (append_count == 0)
+                continue;
+            auto& adjacency = buckets[bucket_id].adjacency;
+            if (append_count > adjacency.max_size() - adjacency.size()) {
+                fail(StructuredReductionErrorCode::ResourceLimit,
+                     "prepared batch bucket adjacency capacity is exhausted");
+            }
+            adjacency.reserve(adjacency.size() + append_count);
+        }
+
+        static_assert(std::is_nothrow_move_constructible_v<Row>);
+        static_assert(std::is_nothrow_move_constructible_v<StructuredRowId>);
+        static_assert(std::is_nothrow_move_constructible_v<StructuredBatchCommitResult>);
+
+        for (auto& staged : staged_rows)
+            rows.push_back(std::move(staged));
+        for (const auto member : claimed_members)
+            rows[static_cast<size_t>(member.value)].active = false;
+        for (size_t i = 0; i < result.output_rows.size(); ++i) {
+            const auto output_id = result.output_rows[i];
+            const auto& output = rows[static_cast<size_t>(output_id.value)];
+            for (const size_t bucket_id : output.bucket_ids)
+                buckets[bucket_id].adjacency.push_back(output_id);
+        }
+        for (size_t bucket_id = 0; bucket_id < buckets.size(); ++bucket_id)
+            buckets[bucket_id].active_degree = next_active_degrees[bucket_id];
+
+        active_rows = next_active_rows;
+        statistics.two_way_merges = next_two_way_merges;
+        statistics.tree_basis_batches = next_tree_batches;
+        statistics.tree_basis_rows_consumed = next_tree_consumed;
+        statistics.tree_basis_rows_emitted = next_tree_emitted;
+        statistics.output_rows = next_active_rows;
+        ++incidence_epoch;
+        return result;
+    }
+
     SourceCorpus corpus;
     std::vector<Row> rows;
     std::vector<Bucket> buckets;
@@ -1611,6 +1963,16 @@ PreparedTreeBasisMerge SequentialStructuredReducer::prepare(const TreeBasisMerge
 std::vector<StructuredRowId>
 SequentialStructuredReducer::commit(PreparedTreeBasisMerge&& prepared) {
     return impl_->commit_tree(std::move(prepared.plan_), std::move(prepared.materialized_));
+}
+
+StructuredBatchCommitResult SequentialStructuredReducer::commit(StructuredPreparedBatch prepared) {
+    if (!prepared.valid_) {
+        fail(StructuredReductionErrorCode::InvalidPlan,
+             "prepared batch handle is moved-from or already consumed");
+    }
+    return impl_->commit_prepared_batch(prepared.snapshot_, prepared.outcomes_,
+                                        prepared.prepared_candidate_count_,
+                                        prepared.persistence_limited_candidate_count_);
 }
 
 StructuredPreparedBatch prepare_conflict_free_batch(const SequentialStructuredReducer& reducer,

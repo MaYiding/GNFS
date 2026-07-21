@@ -503,10 +503,28 @@ Exit gate: every hand-built and randomized case passes the exact dependency-spac
 - M3a.2 does not commit, peel, update statistics or persistence caches, apply a
   reduction budget, or permit concurrent reducer mutation. Tree edges inside
   one candidate remain sequential to avoid nested pools.
-- M3b, next: add atomic batch commit, aggregate budgets and statistics, assign
-  output IDs in sorted prefix order, advance the epoch once, and peel once
-  after publication. Parallel shard construction and the complete scheduler
-  loop follow that atomic boundary.
+- M3b, complete: consume the opaque prepared-batch handle by value. Validate the
+  complete batch, compute every structural-statistics delta and output ID, and
+  reserve all row and incidence capacity before the first mutation. After the
+  final potentially throwing operation, publish all successful slots together
+  through one `noexcept` mutation phase.
+- One publication containing at least one successful slot advances the
+  incidence epoch exactly once. An empty batch or a batch containing only
+  persistence-limit slots is a successful no-op and does not advance the
+  epoch. M3b does not peel singletons.
+- M3b updates only structural commit statistics. It does not apply a reduction
+  budget, update persistence caches or persistence statistics, or change
+  budget, run, or stop-reason statistics. The later scheduler owns those
+  ordered policy transitions.
+- The commit result retains one prefix offset per input slot plus the terminal
+  offset. A 2-way slot contributes one output row, a tree slot contributes its
+  edge count, and a persistence-limit slot contributes zero. The final offset
+  equals the output-row ID count, so callers can recover each slot's exact
+  output range without compacting away rejected slots.
+- M3c, next: follow the atomic publication boundary with the budgeted parallel
+  scheduler. It performs ordered budget admission, persistence-cache folding,
+  singleton peeling after publication, parallel shard construction, and the
+  complete scheduler loop.
 - Compare `threads=1,2,4,hardware_concurrency`.
 - Run the narrow relation suite under ThreadSanitizer where supported.
 

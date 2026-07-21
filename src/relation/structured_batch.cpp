@@ -326,6 +326,26 @@ StructuredPreparedBatch::StructuredPreparedBatch(
     }
 }
 
+StructuredPreparedBatch::StructuredPreparedBatch(StructuredPreparedBatch&& other) noexcept
+    : snapshot_(std::exchange(other.snapshot_, {})), outcomes_(std::move(other.outcomes_)),
+      prepared_candidate_count_(std::exchange(other.prepared_candidate_count_, 0)),
+      persistence_limited_candidate_count_(
+          std::exchange(other.persistence_limited_candidate_count_, 0)),
+      valid_(std::exchange(other.valid_, false)) {}
+
+StructuredPreparedBatch&
+StructuredPreparedBatch::operator=(StructuredPreparedBatch&& other) noexcept {
+    if (this == &other)
+        return *this;
+    snapshot_ = std::exchange(other.snapshot_, {});
+    outcomes_ = std::move(other.outcomes_);
+    prepared_candidate_count_ = std::exchange(other.prepared_candidate_count_, 0);
+    persistence_limited_candidate_count_ =
+        std::exchange(other.persistence_limited_candidate_count_, 0);
+    valid_ = std::exchange(other.valid_, false);
+    return *this;
+}
+
 StructuredIncidenceSnapshotId StructuredPreparedBatch::snapshot() const noexcept {
     return snapshot_;
 }

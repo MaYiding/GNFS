@@ -1087,6 +1087,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME StructuredParallelPrepare COMMAND test_structured_parallel_prepare)
     set_tests_properties(StructuredParallelPrepare PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Atomic publication of prepared structured batches.
+    add_executable(test_structured_batch_commit
+        tests/test_structured_batch_commit.cpp
+    )
+    target_link_libraries(test_structured_batch_commit PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredBatchCommit COMMAND test_structured_batch_commit)
+    set_tests_properties(StructuredBatchCommit PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Structured source-XOR materialization and persistence contracts.
     add_executable(test_structured_materialization
         tests/test_structured_materialization.cpp

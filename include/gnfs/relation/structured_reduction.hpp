@@ -17,6 +17,7 @@ namespace gnfs::relation {
 class SequentialStructuredReducer;
 struct StructuredConflictFreeBatchPlan;
 class StructuredPreparedBatch;
+struct StructuredBatchCommitResult;
 
 [[nodiscard]] StructuredPreparedBatch
 prepare_conflict_free_batch(const SequentialStructuredReducer& reducer,
@@ -336,6 +337,14 @@ public:
     plan_tree_basis_merges(TreeBasisPlanner planner = TreeBasisPlanner::DeterministicMst) const;
     [[nodiscard]] PreparedTreeBasisMerge prepare(const TreeBasisMergePlan& plan) const;
     [[nodiscard]] std::vector<StructuredRowId> commit(PreparedTreeBasisMerge&& prepared);
+
+    /// Atomically publish every prepared success slot in candidate order.
+    /// Persistence-limit slots remain unpublished. The batch advances the
+    /// incidence epoch exactly once when at least one candidate is committed
+    /// and never performs singleton peeling or scheduler-level accounting.
+    /// The handle is consumed by value. Any failure before the no-throw publish
+    /// boundary leaves the reducer's logical state unchanged.
+    [[nodiscard]] StructuredBatchCommitResult commit(StructuredPreparedBatch prepared);
 
     /// Run deterministic singleton, 2-way, and tree-basis reduction under
     /// explicit examination, output, fill, and materialization limits.
