@@ -84,6 +84,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `include/gnfs/api/i18n.hpp` | Localised method labels (`siqs` tag, CLI `--method siqs`) |
 | `tests/test_siqs.cpp` | Unit tests: tonelli, FB, split_cofactor edges, 14d/19d/31d/39d |
 | `tests/test_siqs_e2e.cpp` | 100-bit (31d) and 180-bit (55d) wall-clock proofs, ENV check |
+| `tests/test_siqs_shadow_cross_size.cpp` | Constructed arithmetic-valid 50/70/90-digit shadow-chain corpus across 1/2/4 workers |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 
 ## Parameter Calibration
@@ -105,10 +106,13 @@ setting `lp_bound_sq = 0`. Exact split normalization, deterministic cycle
 selection, wide checked cycle materialization, a stable raw-partial adapter,
 canonical sparse post-merge rows, deterministic parallel shadow assembly, and
 an exact wide-row matrix, dependency, and extraction chain are available as
-isolated, tested boundaries. The final square gate also protects the current
-extraction path, but staged 2LP rows are not yet connected to the production
-collector or `factor()` path. Re-enabling still requires fixed-corpus evidence
-across the 50-90 digit band.
+isolated, tested boundaries. A fixed constructed corpus now exercises the full
+chain at the live 50-, 70-, and 90-digit factor-base column counts with stable
+fingerprints and dependencies across one, two, and four workers. The corpus is
+arithmetic-valid but does not model live sieve yield. The final square gate
+also protects the current extraction path, but staged 2LP rows are not yet
+connected to the production collector or `factor()` path. Re-enabling still
+requires a bounded live-sieve capture across the same size bands.
 
 ## Two-Large-Prime Re-enablement Plan
 
@@ -149,7 +153,8 @@ The safe migration order is:
    congruence proof.
 8. Keep production 2LP off until fixed 50-90 digit corpora show valid
    congruences, useful cycles, stable fingerprints and dependencies across
-   worker counts, and no regression in the default 1LP path.
+   worker counts, then confirm those contracts on bounded live-sieve captures
+   without regressing the default 1LP path.
 
 The arithmetic oracle must include a single-edge `p^2` cycle, three or more
 parallel edges, a vertex of degree four, and a cycle whose factor-base exponent
@@ -174,9 +179,9 @@ SIQS's `L_N(1/2, 1)`.
 - **2LP cofactor handling is gated off** (`lp_bound_sq = 0`); normalization,
   stable shadow-corpus preparation, cycle selection, materialization, and
   sparse-wide row conversion, deterministic parallel assembly, packed shadow
-  solving, and proof-gated factor extraction are staged, while runtime
-  collection, production integration, and cross-size evidence remain
-  prerequisites
+  solving, proof-gated factor extraction, and constructed 50/70/90-digit
+  cross-size evidence are staged, while bounded live-sieve evidence, runtime
+  collection, and production integration remain prerequisites
 - **Materialization rejection is not yet typed**; the shadow assembly counts a
   `nullopt` cycle as rejected after validating adapter and graph invariants, but
   production integration should distinguish arithmetic exhaustion from an
