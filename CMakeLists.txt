@@ -2015,6 +2015,19 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SiqsShadowCrossSize COMMAND test_siqs_shadow_cross_size)
     set_tests_properties(SiqsShadowCrossSize PROPERTIES LABELS "fast" TIMEOUT 60)
 
+    # Fixed synthetic shadow-matrix corpus. Timings are manual comparison
+    # evidence, so this Release-only target stays out of routine CTest lanes.
+    add_executable(test_siqs_shadow_matrix_bench
+        tests/test_siqs_shadow_matrix_bench.cpp
+    )
+    target_compile_definitions(test_siqs_shadow_matrix_bench PRIVATE
+        GNFS_SIQS_SHADOW_BENCH_BUILD_TYPE="$<CONFIG>")
+    target_link_libraries(test_siqs_shadow_matrix_bench PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowMatrixBench
+        COMMAND test_siqs_shadow_matrix_bench solve --workers 1 --warmups 0 --reps 1)
+    set_tests_properties(SiqsShadowMatrixBench PROPERTIES DISABLED TRUE
+        LABELS "bench" TIMEOUT 600)
+
     # SIQS 端到端：100-bit + 180-bit 实测分解
     add_executable(test_siqs_e2e
         tests/test_siqs_e2e.cpp
