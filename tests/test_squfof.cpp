@@ -345,7 +345,7 @@ void test_prime_corpus() {
 }
 
 void test_perfect_squares_and_powers() {
-    constexpr std::array<uint64_t, 7> odd_roots{{
+    constexpr std::array<uint64_t, 8> odd_roots{{
         3,
         5,
         7,
@@ -353,6 +353,7 @@ void test_perfect_squares_and_powers() {
         65537,
         1000003,
         2147483647,
+        UINT64_C(4294967295),
     }};
 
     for (uint64_t root : odd_roots) {

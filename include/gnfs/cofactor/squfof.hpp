@@ -109,11 +109,12 @@ private:
             }
             return 2;
         }
-        if (is_square(n)) {
+        const uint64_t square_root = isqrt(n);
+        if (square_root * square_root == n) {
             if constexpr (CollectDiagnostics) {
                 ++diagnostics->square_fast_path_hits;
             }
-            return isqrt(n);
+            return square_root;
         }
 
         // Try multipliers to avoid short-period cases. Keep k=1 first for the
@@ -177,11 +178,6 @@ private:
         while (x > 0 && x * x > n) --x;
         while (x < UINT32_MAX && (x + 1) * (x + 1) <= n) ++x;
         return x;
-    }
-
-    static bool is_square(uint64_t n) {
-        uint64_t s = isqrt(n);
-        return s * s == n;
     }
 
     /// Core SQUFOF: factor D using continued fraction of √D.
