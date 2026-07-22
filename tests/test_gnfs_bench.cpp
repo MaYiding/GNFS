@@ -320,7 +320,8 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
                       << std::flush;
         }
 
-        if (relations.size() > matrix_cols) break;
+        if (has_effective_column_excess(
+                relations.size(), matrix_cols, reduced_lp_columns)) break;
 
         if (!sq_gen.has_next() || result.sq_count >= params.max_special_q) {
             std::cout << "    SQ exhausted\n";
@@ -330,8 +331,9 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
         double merge_rate = (collector.size() > 0) ?
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
         // Use effective_cols (FB + LP) for accurate needed_raw at lp_bits ≥ 20.
-        size_t lp_cols_for_target = lp_enabled ? reduced_lp_columns : 0;
-        size_t effective_cols_for_target = matrix_cols + lp_cols_for_target;
+        size_t lp_cols_for_target = reduced_lp_columns;
+        size_t effective_cols_for_target =
+            effective_column_count(matrix_cols, lp_cols_for_target);
         size_t needed_raw = static_cast<size_t>(
             static_cast<double>(effective_cols_for_target * 2) / std::max(merge_rate, 0.001));
         // Cap: initial_target × 100 — generous for low merge rates (~2-5%).

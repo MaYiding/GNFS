@@ -264,6 +264,24 @@ size_t scale_by_tenths_floor(size_t value, size_t tenths) noexcept {
     return whole * tenths + fractional;
 }
 
+size_t saturating_size_product(size_t value, size_t multiplier) noexcept {
+    if (value != 0 && multiplier > std::numeric_limits<size_t>::max() / value) {
+        return std::numeric_limits<size_t>::max();
+    }
+    return value * multiplier;
+}
+
+size_t size_from_positive_double_floor(double value) noexcept {
+    if (!(value > 0.0)) {
+        return 0;
+    }
+    const double max_size = static_cast<double>(std::numeric_limits<size_t>::max());
+    if (!(value < max_size)) {
+        return std::numeric_limits<size_t>::max();
+    }
+    return static_cast<size_t>(value);
+}
+
 [[nodiscard]] uint64_t elapsed_microseconds(std::chrono::steady_clock::time_point start,
                                             std::chrono::steady_clock::time_point finish) noexcept {
     const auto elapsed =
@@ -1847,12 +1865,14 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         // Accurate effective_cols = matrix_cols + actual LP keys
         // (matrix builder will create one column per odd-exp unique LP key).
         // 50d/60d 实测 lp_cols ratio = 64% of usable, far above 旧 5% guess.
-        bool lp_enabled_local = params_.large_prime_bound > params_.algebraic_bound;
-        size_t lp_cols = lp_enabled_local ? reduction_stats.output_lp_columns : 0;
-        size_t effective_cols = matrix_cols + lp_cols;
+        const size_t lp_cols = reduction_stats.output_lp_columns;
+        const size_t effective_cols =
+            relation::effective_column_count(matrix_cols, lp_cols);
 
         // Check: enough usable relations?
-        if (last_reduction->size() > effective_cols || recovered_finalized_ooc)
+        if (relation::has_effective_column_excess(
+                last_reduction->size(), matrix_cols, lp_cols) ||
+            recovered_finalized_ooc)
             break;
 
         // Not enough — increase target and continue if SQs available
@@ -1862,11 +1882,13 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         double merge_rate = (collector.size() > 0) ? static_cast<double>(last_reduction->size()) /
                                                          static_cast<double>(collector.size())
                                                    : 0.01;
-        size_t needed_raw = static_cast<size_t>(static_cast<double>(effective_cols * 11 / 10) /
-                                                std::max(merge_rate, 0.001));
+        const size_t target_usable = scale_by_tenths_floor(effective_cols, 11);
+        const size_t needed_raw = size_from_positive_double_floor(
+            static_cast<double>(target_usable) / std::max(merge_rate, 0.001));
         // Raise cap: for low merge rates (~2%), need up to 100× initial target
-        batch_target = std::min(std::max(batch_target * 2, needed_raw),
-                                initial_target * 100); // generous cap for low merge rates
+        batch_target = std::min(
+            std::max(saturating_size_product(batch_target, 2), needed_raw),
+            saturating_size_product(initial_target, 100)); // generous cap for low merge rates
 
         // β = lp_cols / usable (BACKLOG #1 diagnostic). β << 1 means matrix
         // build has excess and BW can find dependencies; β >= 1 means LP cols
@@ -1973,12 +1995,14 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     // relations. Two cases: (a) MAX_ROUNDS reached without break (β plateau
     // signature), (b) SQs exhausted before target met (sieve depth too small).
     // Phase 5 will then attempt BW thin solve on the under-built matrix.
-    if (last_reduction->size() <= matrix_cols) {
+    const size_t terminal_lp_cols = last_reduction->stats.output_lp_columns;
+    if (!relation::has_effective_column_excess(
+            last_reduction->size(), matrix_cols, terminal_lp_cols)) {
         const bool sqs_exhausted = !sq_gen.has_next() || sq_count >= max_sq;
         std::fprintf(stderr,
-                     "[sieve-warn] exit without excess: usable=%zu matrix_cols=%zu, "
+                     "[sieve-warn] exit without excess: usable=%zu base_cols=%zu lp_cols=%zu, "
                      "%s. Phase 5 will attempt BW thin solve.\n",
-                     last_reduction->size(), matrix_cols,
+                     last_reduction->size(), matrix_cols, terminal_lp_cols,
                      sqs_exhausted ? "SQs exhausted" : "MAX_ROUNDS reached");
         emit_log(LogLevel::Warn, Phase::Sieving,
                  std::string("sieve exit without excess: ") +
@@ -3079,9 +3103,9 @@ FactorResult Pipeline::run() {
     size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params_.target_excess;
 
     // Effective cols includes LP columns matrix_builder will create.
-    bool lp_enabled_post = params_.large_prime_bound > params_.algebraic_bound;
-    size_t post_lp_cols = lp_enabled_post ? reduction.stats.output_lp_columns : 0;
-    size_t effective_cols_post = matrix_cols + post_lp_cols;
+    const size_t post_lp_cols = reduction.stats.output_lp_columns;
+    const size_t effective_cols_post =
+        relation::effective_column_count(matrix_cols, post_lp_cols);
 
     return detail::handoff_after_collection(
         std::move(reduction), effective_cols_post,

@@ -405,21 +405,44 @@ void check_common_stats(const RelationReductionResult& result) {
 }
 
 void test_generation_and_no_large_primes() {
-    std::vector<Relation> input{make_full(1), make_full(2)};
-    auto result = RelationReductionEngine::reduce(RawRelationSnapshot(47, std::move(input)),
-                                                  RelationReductionConfig{});
+    {
+        std::vector<Relation> input{make_full(1), make_full(2)};
+        auto result = RelationReductionEngine::reduce(RawRelationSnapshot(47, std::move(input)),
+                                                      RelationReductionConfig{});
 
-    CHECK(result.generation == 47);
-    CHECK(result.size() == 2);
-    CHECK(result.stats.strategy == ReductionStrategy::NoLargePrimes);
-    CHECK(result.stats.input_relations == 2);
-    CHECK(result.stats.raw_duplicates_removed == 0);
-    CHECK(result.stats.filter.input_relations == 2);
-    CHECK(result.stats.filter.output_relations == 2);
-    CHECK(result.stats.output_relations == 2);
-    CHECK(result.stats.output_lp_columns == 0);
-    CHECK(result.stats.merged_relations == 0);
-    CHECK(result.stats.output_digest == corpus_digest(result.relation_corpus()));
+        CHECK(result.generation == 47);
+        CHECK(result.size() == 2);
+        CHECK(result.stats.strategy == ReductionStrategy::NoLargePrimes);
+        CHECK(result.stats.input_relations == 2);
+        CHECK(result.stats.raw_duplicates_removed == 0);
+        CHECK(result.stats.filter.input_relations == 2);
+        CHECK(result.stats.filter.output_relations == 2);
+        CHECK(result.stats.output_relations == 2);
+        CHECK(result.stats.output_lp_columns == 0);
+        CHECK(result.stats.merged_relations == 0);
+        CHECK(result.stats.output_digest == corpus_digest(result.relation_corpus()));
+    }
+
+    // Disabling ordinary LP admission does not erase Special-Q ideal columns
+    // already present in relations. A shared key survives singleton filtering
+    // and must remain part of every effective matrix-column estimate.
+    {
+        std::vector<Relation> input{
+            make_partial(3, {101}),
+            make_partial(5, {101}),
+        };
+        auto result = RelationReductionEngine::reduce(RawRelationSnapshot(48, std::move(input)),
+                                                      RelationReductionConfig{});
+
+        CHECK(result.generation == 48);
+        CHECK(result.size() == 2);
+        CHECK(result.stats.strategy == ReductionStrategy::NoLargePrimes);
+        CHECK(result.stats.output_lp_columns == 1);
+        CHECK(!gnfs::relation::has_effective_column_excess(3, 2,
+                                                            result.stats.output_lp_columns));
+        CHECK(gnfs::relation::has_effective_column_excess(4, 2,
+                                                           result.stats.output_lp_columns));
+    }
 }
 
 void test_structured_policy_maps_to_named_legacy_strategy() {

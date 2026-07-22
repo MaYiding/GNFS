@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iterator>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -49,6 +50,10 @@ public:
     /// @param relations 输入关系
     /// @return 过滤后的关系
     [[nodiscard]] std::vector<Relation> filter(std::vector<Relation>&& relations) {
+        // Statistics and the pass budget are per invocation. A filter object
+        // may be reused across adaptive reduction rounds, so carrying passes
+        // forward would make later calls silently skip filtering.
+        stats_ = FilterStats{};
         stats_.input_relations = relations.size();
 
         // 多轮过滤，直到没有更多单例
@@ -188,6 +193,24 @@ private:
         });
     }
     return unique_keys.size();
+}
+
+/// Saturating estimate of all matrix columns, including large-prime columns.
+/// Saturation keeps downstream target and handoff arithmetic fail-closed.
+[[nodiscard]] constexpr size_t effective_column_count(
+        size_t matrix_columns, size_t large_prime_columns) noexcept {
+    return large_prime_columns > std::numeric_limits<size_t>::max() - matrix_columns
+               ? std::numeric_limits<size_t>::max()
+               : matrix_columns + large_prime_columns;
+}
+
+/// Whether relation rows strictly exceed all estimated matrix columns.
+/// Keep this comparison centralized so LP-aware adaptive drivers cannot
+/// accidentally stop at the bare factor-base estimate.
+[[nodiscard]] constexpr bool has_effective_column_excess(
+        size_t relation_rows, size_t matrix_columns,
+        size_t large_prime_columns) noexcept {
+    return relation_rows > effective_column_count(matrix_columns, large_prime_columns);
 }
 
 /// LP-key weight histogram across a relation set.

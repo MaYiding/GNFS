@@ -2,11 +2,21 @@
 #include "gnfs/relation/filter.hpp"
 
 #include <cassert>
+#include <cstdlib>
 #include <iostream>
+#include <limits>
+#include <string_view>
 
 using namespace gnfs::relation;
 using gnfs::core::Relation;
 using gnfs::core::PrimePower;
+
+void require_test(bool condition, std::string_view message) {
+    if (!condition) {
+        std::cerr << "  FAIL: " << message << '\n';
+        std::exit(EXIT_FAILURE);
+    }
+}
 
 // Helper: create a full relation (no large primes)
 Relation make_full_relation(int64_t a, int64_t b) {
@@ -198,6 +208,46 @@ void test_max_passes_limit() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_reuse_max_passes_is_per_call() {
+    std::cout << "Testing max_passes on reused filter..." << std::endl;
+
+    FilterConfig cfg;
+    cfg.remove_singletons = true;
+    cfg.max_passes = 1;
+    RelationFilter filter(cfg);
+
+    std::vector<Relation> first_input;
+    first_input.push_back(make_1lp_relation(1, 1, 101));
+    auto first_result = filter.filter(std::move(first_input));
+    require_test(first_result.empty(), "first call must remove its singleton");
+    require_test(filter.stats() ==
+                     FilterStats{
+                         .input_relations = 1,
+                         .output_relations = 0,
+                         .singletons_removed = 1,
+                         .duplicates_removed = 0,
+                         .passes = 1,
+                     },
+                 "first call must report one-pass local statistics");
+
+    std::vector<Relation> second_input;
+    second_input.push_back(make_1lp_relation(2, 1, 103));
+    auto second_result = filter.filter(std::move(second_input));
+    require_test(second_result.empty(),
+                 "second call must receive its own max_passes budget");
+    require_test(filter.stats() ==
+                     FilterStats{
+                         .input_relations = 1,
+                         .output_relations = 0,
+                         .singletons_removed = 1,
+                         .duplicates_removed = 0,
+                         .passes = 1,
+                     },
+                 "second call statistics must replace the first call statistics");
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_count_large_primes() {
     std::cout << "Testing count_large_primes..." << std::endl;
 
@@ -262,6 +312,33 @@ void test_required_relations() {
     // has_enough_relations
     assert(has_enough_relations(1576, 1000, 500, 1.05));
     assert(!has_enough_relations(1575, 1000, 500, 1.05));
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_effective_column_excess_boundaries() {
+    std::cout << "Testing effective-column excess boundaries..." << std::endl;
+
+    require_test(!has_effective_column_excess(0, 0, 0),
+                 "zero rows must not exceed zero columns");
+    require_test(!has_effective_column_excess(10, 6, 4),
+                 "rows equal to effective columns are not excess");
+    require_test(has_effective_column_excess(11, 6, 4),
+                 "one row beyond effective columns must be excess");
+
+    constexpr size_t MAX_SIZE = std::numeric_limits<size_t>::max();
+    require_test(effective_column_count(6, 4) == 10,
+                 "effective columns must include the LP columns");
+    require_test(effective_column_count(MAX_SIZE - 1, 2) == MAX_SIZE,
+                 "overflowing effective columns must saturate");
+    require_test(has_effective_column_excess(MAX_SIZE, MAX_SIZE - 2, 1),
+                 "representable near-limit sum must preserve strict excess");
+    require_test(!has_effective_column_excess(MAX_SIZE, MAX_SIZE - 1, 1),
+                 "rows equal to a near-limit sum are not excess");
+    require_test(!has_effective_column_excess(MAX_SIZE, MAX_SIZE - 1, 2),
+                 "overflowing effective-column sum cannot have representable excess rows");
+    require_test(!has_effective_column_excess(MAX_SIZE, MAX_SIZE, 1),
+                 "maximal base columns plus LP columns must fail closed");
 
     std::cout << "  PASS" << std::endl;
 }
@@ -811,10 +888,12 @@ int main() {
     test_cascading_singletons();
     test_disable_singleton_removal();
     test_max_passes_limit();
+    test_reuse_max_passes_is_per_call();
     test_count_large_primes();
     test_get_unique_large_primes();
     test_separate_relations();
     test_required_relations();
+    test_effective_column_excess_boundaries();
     test_merger_count();
     test_merger_merge();
     test_merger_algebraic_lp();

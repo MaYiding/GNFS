@@ -460,7 +460,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
         }
 
         // Check: enough for matrix?
-        if (relations.size() > matrix_cols) {
+        if (has_effective_column_excess(
+                relations.size(), matrix_cols, reduced_lp_columns)) {
             std::cout << "  Sieving complete: " << collector.size() << " raw relations, "
                       << relations.size() << " usable, in " << phase.sec() << " sec\n" << std::flush;
             break;
@@ -479,7 +480,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
         // CRITICAL: needed_raw must use effective_cols (FB + LP) for lp_bits ≥ 20.
         // FB-only matrix_cols underestimates by 2-3× when LP cols dominate (50d/60d).
         size_t lp_cols_for_target = reduced_lp_columns;
-        size_t effective_cols_for_target = matrix_cols + lp_cols_for_target;
+        size_t effective_cols_for_target =
+            effective_column_count(matrix_cols, lp_cols_for_target);
         size_t needed_raw = static_cast<size_t>(
             static_cast<double>(effective_cols_for_target * 2) / std::max(merge_rate, 0.001));
         batch_target = std::min(
@@ -504,7 +506,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
     // See test_stress.cpp:478 for the same fix.
     {
         size_t lp_cols_for_trim = reduced_lp_columns;
-        size_t effective_cols_for_trim = matrix_cols + lp_cols_for_trim;
+        size_t effective_cols_for_trim =
+            effective_column_count(matrix_cols, lp_cols_for_trim);
         size_t max_rels = effective_cols_for_trim + effective_cols_for_trim / 4;  // 25% safety
         if (relations.size() > max_rels) {
             std::cout << "  [Trim] " << relations.size() << " → " << max_rels

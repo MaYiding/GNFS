@@ -497,7 +497,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
         // Accurate LP col count reported by the shared reduction engine.
         // 50d 实测: 38K usable → 24677 lp cols (64%) vs 旧 5% guess 339 (12× under).
         size_t lp_col_estimate = reduced_lp_columns;
-        size_t effective_cols = matrix_cols + lp_col_estimate;
+        size_t effective_cols = effective_column_count(matrix_cols, lp_col_estimate);
         if (lp_enabled && !relations.empty()) {
             double beta = 100.0 * static_cast<double>(lp_col_estimate) /
                           static_cast<double>(relations.size());
@@ -507,7 +507,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
                       << effective_cols << "\n" << std::flush;
         }
 
-        if (relations.size() > effective_cols) {
+        if (has_effective_column_excess(
+                relations.size(), matrix_cols, lp_col_estimate)) {
             std::cout << "  Sieving complete: " << collector.size() << " raw, "
                       << relations.size() << " usable (need >" << effective_cols
                       << ", lp_cols=" << lp_col_estimate << "), in "
@@ -523,7 +524,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
         double merge_rate = (collector.size() > 0) ?
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
         // Need enough usable > effective_cols (includes LP columns)
-        size_t needed_usable = effective_cols + effective_cols / 10;  // +10% safety
+        size_t needed_usable = effective_column_count(
+            effective_cols, effective_cols / 10);  // +10% safety
         size_t needed_raw = static_cast<size_t>(
             static_cast<double>(needed_usable) / std::max(merge_rate, 0.001));
         // Cap raised 5× → 20× initial. 50d needs ~7M raw (effective_cols 47K,
@@ -559,8 +561,10 @@ FactResult factor_with_progress(const Integer& n, int level) {
     // matrix 45520×64127 NO EXCESS. Fix: trim = effective_cols × 1.25 (25% safety).
     {
         size_t lp_cols_for_trim = reduced_lp_columns;
-        size_t effective_cols_for_trim = matrix_cols + lp_cols_for_trim;
-        size_t max_rels = effective_cols_for_trim + effective_cols_for_trim / 4;
+        size_t effective_cols_for_trim =
+            effective_column_count(matrix_cols, lp_cols_for_trim);
+        size_t max_rels = effective_column_count(
+            effective_cols_for_trim, effective_cols_for_trim / 4);
         if (relations.size() > max_rels) {
             std::cout << "  [Trim] " << relations.size() << " → " << max_rels
                       << " relations (eff_cols=" << effective_cols_for_trim

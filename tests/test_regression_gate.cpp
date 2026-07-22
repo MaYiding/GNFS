@@ -209,15 +209,17 @@ static bool factorize(const RegressionLevel& tc) {
         reduced_lp_columns = reduction.stats.output_lp_columns;
         relations = std::move(reduction).take_relations();
 
-        if (relations.size() > matrix_cols) break;
+        if (has_effective_column_excess(
+                relations.size(), matrix_cols, reduced_lp_columns)) break;
 
         if (!sqg.has_next() || sq_count >= params.max_special_q) break;
 
         double merge_rate = (collector.size() > 0) ?
             static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
         // Use effective_cols (FB + LP) for accurate needed_raw at lp_bits ≥ 20.
-        size_t lp_cols_for_target = lp_enabled ? reduced_lp_columns : 0;
-        size_t effective_cols_for_target = matrix_cols + lp_cols_for_target;
+        size_t lp_cols_for_target = reduced_lp_columns;
+        size_t effective_cols_for_target =
+            effective_column_count(matrix_cols, lp_cols_for_target);
         size_t needed_raw = static_cast<size_t>(
             static_cast<double>(effective_cols_for_target * 2) / std::max(merge_rate, 0.001));
         batch_target = std::min(
@@ -225,8 +227,12 @@ static bool factorize(const RegressionLevel& tc) {
             initial_target * 5);
     }
 
-    if (relations.size() <= matrix_cols) {
-        std::cerr << "  insufficient relations: " << relations.size() << "/" << matrix_cols << "\n";
+    const size_t final_lp_columns = reduced_lp_columns;
+    if (!has_effective_column_excess(
+            relations.size(), matrix_cols, final_lp_columns)) {
+        std::cerr << "  insufficient relations: rows=" << relations.size()
+                  << " base_cols=" << matrix_cols
+                  << " lp_cols=" << final_lp_columns << "\n";
         return false;
     }
 
@@ -235,8 +241,8 @@ static bool factorize(const RegressionLevel& tc) {
     // For 25-digit (Level 4) trim is rarely triggered so safe in practice, but fix
     // for consistency and future-proofing.
     {
-        size_t lp_cols_for_trim = lp_enabled ? reduced_lp_columns : 0;
-        size_t effective_cols = matrix_cols + lp_cols_for_trim;
+        size_t lp_cols_for_trim = reduced_lp_columns;
+        size_t effective_cols = effective_column_count(matrix_cols, lp_cols_for_trim);
         size_t max_rels = static_cast<size_t>(static_cast<double>(effective_cols) * 1.3);
         if (relations.size() > max_rels) {
             std::mt19937 rng(42);
