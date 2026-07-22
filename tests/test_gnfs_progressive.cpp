@@ -24,6 +24,7 @@
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 #include <gnfs/util/process.hpp>
+#include <gnfs/util/safe_math.hpp>
 #include <gnfs/util/temp_path.hpp>
 
 #include <algorithm>
@@ -294,7 +295,9 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
     RelationCollector collector(coll_config);
 
-    size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
+    size_t matrix_cols = util::saturating_size_add(
+        util::saturating_size_add(fb.rational_count(), fb.sieve_algebraic_count()),
+        params.target_excess);
     // Initial target: small batch to test merge rate, then adaptive
     size_t initial_target = params.raw_relation_target(matrix_cols);
     size_t batch_target = initial_target;
@@ -417,7 +420,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
             RawRelationSnapshot(generation, collector.snapshot_relations()), reduction_config);
         const auto& reduction_stats = reduction.stats;
         relations = std::move(reduction).take_relations();
-        reduced_lp_columns = lp_enabled ? reduction_stats.output_lp_columns : 0;
+        reduced_lp_columns = reduction_stats.output_lp_columns;
 
         if (lp_enabled) {
             // BACKLOG #1 diagnostic: LP-key weight histogram pre-merge.
@@ -482,11 +485,12 @@ FactResult factor_with_progress(const Integer& n, int level) {
         size_t lp_cols_for_target = reduced_lp_columns;
         size_t effective_cols_for_target =
             effective_column_count(matrix_cols, lp_cols_for_target);
-        size_t needed_raw = static_cast<size_t>(
-            static_cast<double>(effective_cols_for_target * 2) / std::max(merge_rate, 0.001));
+        size_t needed_raw = util::size_from_nonnegative_double_floor(
+            static_cast<double>(util::saturating_size_product(effective_cols_for_target, 2)) /
+            std::max(merge_rate, 0.001));
         batch_target = std::min(
-            std::max(batch_target * 2, needed_raw),
-            initial_target * 5);
+            std::max(util::saturating_size_product(batch_target, 2), needed_raw),
+            util::saturating_size_product(initial_target, 5));
         std::cout << "  Need more — merge_rate=" << std::setprecision(3) << (merge_rate * 100)
                   << "%, new target=" << batch_target << "\n" << std::flush;
     }
@@ -508,7 +512,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
         size_t lp_cols_for_trim = reduced_lp_columns;
         size_t effective_cols_for_trim =
             effective_column_count(matrix_cols, lp_cols_for_trim);
-        size_t max_rels = effective_cols_for_trim + effective_cols_for_trim / 4;  // 25% safety
+        size_t max_rels = util::saturating_size_add(
+            effective_cols_for_trim, effective_cols_for_trim / 4);  // 25% safety
         if (relations.size() > max_rels) {
             std::cout << "  [Trim] " << relations.size() << " → " << max_rels
                       << " relations (eff_cols=" << effective_cols_for_trim

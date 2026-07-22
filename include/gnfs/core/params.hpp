@@ -1,6 +1,7 @@
 #pragma once
 
 #include "types.hpp"
+#include "../util/safe_math.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -333,9 +334,10 @@ struct GNFSParams {
         double matrix_cols = pi_r + pi_a + target_excess;
 
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
-            return raw_relation_target(static_cast<size_t>(matrix_cols));
+            return raw_relation_target(
+                util::size_from_nonnegative_double_floor(matrix_cols));
         }
-        return static_cast<size_t>(matrix_cols);
+        return util::size_from_nonnegative_double_floor(matrix_cols);
     }
 
     /// 计算初始原始关系目标
@@ -369,14 +371,15 @@ struct GNFSParams {
             double target = std::max(birthday, mc * 2.0);
             // Cap at mc × 50 to prevent runaway targets for huge LP spaces.
             target = std::min(target, mc * 50.0);
-            base_target = static_cast<size_t>(target);
+            base_target = util::size_from_nonnegative_double_floor(target);
         } else {
             // No LP: need R/B > 3 to survive singleton filter.
             // Each FB prime p appears ~R/p times. For p near B, need R/B > 2-3.
             // With ratio 4×, singleton survival ≈ 60-70%.
-            base_target = matrix_columns * 4;
+            base_target = util::saturating_size_product(matrix_columns, 4);
         }
-        return static_cast<size_t>(static_cast<double>(base_target) * target_mult);
+        return util::size_from_nonnegative_double_floor(
+            static_cast<double>(base_target) * target_mult);
     }
 
     /// 估算筛区域大小 (位置数)

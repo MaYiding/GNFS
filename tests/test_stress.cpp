@@ -25,6 +25,7 @@
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 #include <gnfs/util/process.hpp>
+#include <gnfs/util/safe_math.hpp>
 #include <gnfs/util/temp_path.hpp>
 
 #include <algorithm>
@@ -295,7 +296,9 @@ FactResult factor_with_progress(const Integer& n, int level) {
 
     RelationCollector collector(coll_config);
 
-    size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
+    size_t matrix_cols = util::saturating_size_add(
+        util::saturating_size_add(fb.rational_count(), fb.sieve_algebraic_count()),
+        params.target_excess);
     size_t initial_target = params.raw_relation_target(matrix_cols);
 
     // Use birthday formula target directly. For 50-digit degree 4, full_count=0
@@ -444,7 +447,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
             RawRelationSnapshot(generation, collector.snapshot_relations()), reduction_config);
         const auto& reduction_stats = reduction.stats;
         relations = std::move(reduction).take_relations();
-        reduced_lp_columns = lp_enabled ? reduction_stats.output_lp_columns : 0;
+        reduced_lp_columns = reduction_stats.output_lp_columns;
 
         if (lp_enabled) {
             // BACKLOG #1 diagnostic: LP-key weight histogram pre-merge.
@@ -526,14 +529,15 @@ FactResult factor_with_progress(const Integer& n, int level) {
         // Need enough usable > effective_cols (includes LP columns)
         size_t needed_usable = effective_column_count(
             effective_cols, effective_cols / 10);  // +10% safety
-        size_t needed_raw = static_cast<size_t>(
+        size_t needed_raw = util::size_from_nonnegative_double_floor(
             static_cast<double>(needed_usable) / std::max(merge_rate, 0.001));
         // Cap raised 5× → 20× initial. 50d needs ~7M raw (effective_cols 47K,
         // merge_rate 1%) vs initial 618K → ratio 11×. Old 5× cap (3M) blocked
         // adaptive loop from reaching required target.
         batch_target = std::min(
-            std::max(batch_target + batch_target / 4, needed_raw),  // +25% growth
-            initial_target * 20);
+            std::max(util::saturating_size_add(batch_target, batch_target / 4),
+                     needed_raw),  // +25% growth
+            util::saturating_size_product(initial_target, 20));
         std::cout << "  Need more — usable=" << relations.size() << "/" << effective_cols
                   << " merge_rate=" << std::setprecision(3) << (merge_rate * 100)
                   << "%, new target=" << batch_target << "\n" << std::flush;

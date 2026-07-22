@@ -36,6 +36,7 @@
 #include <gnfs/util/ordered_parallel_map.hpp>
 #include <gnfs/util/process.hpp>
 #include <gnfs/util/process_memory.hpp>
+#include <gnfs/util/safe_math.hpp>
 #include <gnfs/util/temp_path.hpp>
 
 #include <algorithm>
@@ -262,24 +263,6 @@ size_t scale_by_tenths_floor(size_t value, size_t tenths) noexcept {
         return max;
     }
     return whole * tenths + fractional;
-}
-
-size_t saturating_size_product(size_t value, size_t multiplier) noexcept {
-    if (value != 0 && multiplier > std::numeric_limits<size_t>::max() / value) {
-        return std::numeric_limits<size_t>::max();
-    }
-    return value * multiplier;
-}
-
-size_t size_from_positive_double_floor(double value) noexcept {
-    if (!(value > 0.0)) {
-        return 0;
-    }
-    const double max_size = static_cast<double>(std::numeric_limits<size_t>::max());
-    if (!(value < max_size)) {
-        return std::numeric_limits<size_t>::max();
-    }
-    return static_cast<size_t>(value);
 }
 
 [[nodiscard]] uint64_t elapsed_microseconds(std::chrono::steady_clock::time_point start,
@@ -1316,7 +1299,10 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     collector.set_polynomial_context(ctx.n(), ctx.m());
 
     // Target
-    size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params_.target_excess;
+    const size_t factor_base_cols = gnfs::util::saturating_size_add(
+        fb.rational_count(), fb.sieve_algebraic_count());
+    size_t matrix_cols =
+        gnfs::util::saturating_size_add(factor_base_cols, params_.target_excess);
     size_t initial_target = params_.raw_relation_target(matrix_cols);
     size_t batch_target = initial_target;
 
@@ -1883,12 +1869,12 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                                                          static_cast<double>(collector.size())
                                                    : 0.01;
         const size_t target_usable = scale_by_tenths_floor(effective_cols, 11);
-        const size_t needed_raw = size_from_positive_double_floor(
+        const size_t needed_raw = gnfs::util::size_from_nonnegative_double_floor(
             static_cast<double>(target_usable) / std::max(merge_rate, 0.001));
         // Raise cap: for low merge rates (~2%), need up to 100× initial target
         batch_target = std::min(
-            std::max(saturating_size_product(batch_target, 2), needed_raw),
-            saturating_size_product(initial_target, 100)); // generous cap for low merge rates
+            std::max(gnfs::util::saturating_size_product(batch_target, 2), needed_raw),
+            gnfs::util::saturating_size_product(initial_target, 100)); // generous cap for low merge rates
 
         // β = lp_cols / usable (BACKLOG #1 diagnostic). β << 1 means matrix
         // build has excess and BW can find dependencies; β >= 1 means LP cols
@@ -2195,7 +2181,7 @@ relation::RelationReductionResult Pipeline::filter(std::vector<Relation> relatio
     // BACKLOG #1 diagnostic: lp_cols breakdown at filter exit.
     // Caller (Phase 5 matrix builder) creates one column per odd-exp unique
     // LP key; emit count here so 50d/60d plateau analysis has empirical data.
-    size_t lp_cols_after_filter = lp_enabled ? reduction_stats.output_lp_columns : 0;
+    size_t lp_cols_after_filter = reduction_stats.output_lp_columns;
     emit_log(LogLevel::Info, Phase::Filtering,
              "after filter: " + std::to_string(reduction.size()) + " relations" +
                  " (lp_cols=" + std::to_string(lp_cols_after_filter) + ")");
@@ -3100,7 +3086,10 @@ FactorResult Pipeline::run() {
     auto fb = build_factor_base_impl(ctx, structured_route.resume_base_path);
     auto reduction = sieve_and_collect_impl(ctx, fb, structured_route);
 
-    size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params_.target_excess;
+    const size_t factor_base_cols = gnfs::util::saturating_size_add(
+        fb.rational_count(), fb.sieve_algebraic_count());
+    size_t matrix_cols =
+        gnfs::util::saturating_size_add(factor_base_cols, params_.target_excess);
 
     // Effective cols includes LP columns matrix_builder will create.
     const size_t post_lp_cols = reduction.stats.output_lp_columns;

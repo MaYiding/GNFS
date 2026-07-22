@@ -1,13 +1,13 @@
 #pragma once
 
 #include "../core/relation.hpp"
+#include "../util/safe_math.hpp"
 #include "large_prime_key.hpp"
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <iterator>
-#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -199,9 +199,7 @@ private:
 /// Saturation keeps downstream target and handoff arithmetic fail-closed.
 [[nodiscard]] constexpr size_t effective_column_count(
         size_t matrix_columns, size_t large_prime_columns) noexcept {
-    return large_prime_columns > std::numeric_limits<size_t>::max() - matrix_columns
-               ? std::numeric_limits<size_t>::max()
-               : matrix_columns + large_prime_columns;
+    return util::saturating_size_add(matrix_columns, large_prime_columns);
 }
 
 /// Whether relation rows strictly exceed all estimated matrix columns.

@@ -14,6 +14,9 @@
 #include <type_traits>
 
 using gnfs::util::safe_abs;
+using gnfs::util::saturating_size_add;
+using gnfs::util::saturating_size_product;
+using gnfs::util::size_from_nonnegative_double_floor;
 
 void test_zero() {
     std::cout << "Testing safe_abs(0)..." << std::endl;
@@ -125,6 +128,24 @@ void test_sign_symmetry_in_range() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_size_arithmetic_contracts() {
+    std::cout << "Testing saturating size arithmetic..." << std::endl;
+
+    constexpr size_t MAX_SIZE = std::numeric_limits<size_t>::max();
+    static_assert(saturating_size_add(6, 4) == 10);
+    static_assert(saturating_size_add(MAX_SIZE - 1, 2) == MAX_SIZE);
+    static_assert(saturating_size_product(7, 6) == 42);
+    static_assert(saturating_size_product(MAX_SIZE, 2) == MAX_SIZE);
+    static_assert(size_from_nonnegative_double_floor(-1.0) == 0);
+    static_assert(size_from_nonnegative_double_floor(42.75) == 42);
+    static_assert(size_from_nonnegative_double_floor(
+                      std::numeric_limits<double>::infinity()) == MAX_SIZE);
+    static_assert(size_from_nonnegative_double_floor(
+                      std::numeric_limits<double>::quiet_NaN()) == 0);
+
+    std::cout << "  PASS (compile-time boundaries)" << std::endl;
+}
+
 int main() {
     std::cout << "=== util/safe_math.hpp tests ===" << std::endl;
 
@@ -137,6 +158,7 @@ int main() {
     test_noexcept_contract();
     test_return_type();
     test_sign_symmetry_in_range();
+    test_size_arithmetic_contracts();
 
     std::cout << "\n=== All util/safe_math.hpp tests PASSED ===" << std::endl;
     return 0;

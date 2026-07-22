@@ -19,6 +19,7 @@
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/util/safe_math.hpp>
 
 #include <algorithm>
 #include <cassert>
@@ -198,7 +199,9 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
     coll_config.check_duplicates = true;
     RelationCollector collector(coll_config);
 
-    size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
+    size_t matrix_cols = util::saturating_size_add(
+        util::saturating_size_add(fb.rational_count(), fb.sieve_algebraic_count()),
+        params.target_excess);
     size_t batch_target = params.raw_relation_target(matrix_cols);
 
     LatticeSieve sieve(ctx, fb, sieve_params);
@@ -334,14 +337,15 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
         size_t lp_cols_for_target = reduced_lp_columns;
         size_t effective_cols_for_target =
             effective_column_count(matrix_cols, lp_cols_for_target);
-        size_t needed_raw = static_cast<size_t>(
-            static_cast<double>(effective_cols_for_target * 2) / std::max(merge_rate, 0.001));
+        size_t needed_raw = util::size_from_nonnegative_double_floor(
+            static_cast<double>(util::saturating_size_product(effective_cols_for_target, 2)) /
+            std::max(merge_rate, 0.001));
         // Cap: initial_target × 100 — generous for low merge rates (~2-5%).
         // Session 78 bug: cap of 5× caused adaptive loop to stall at 39d
         // (227K raw > 225K cap, but needed 450K+ for enough usable).
         batch_target = std::min(
-            std::max(batch_target * 2, needed_raw),
-            params.raw_relation_target(matrix_cols) * 100);
+            std::max(util::saturating_size_product(batch_target, 2), needed_raw),
+            util::saturating_size_product(params.raw_relation_target(matrix_cols), 100));
     }
 
     result.raw_relations = collector.size();

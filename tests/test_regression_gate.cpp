@@ -23,6 +23,7 @@
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/util/safe_math.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -125,7 +126,9 @@ static bool factorize(const RegressionLevel& tc) {
     colc.check_duplicates = true;
     RelationCollector collector(colc);
 
-    size_t matrix_cols = fb.rational_count() + fb.sieve_algebraic_count() + params.target_excess;
+    size_t matrix_cols = util::saturating_size_add(
+        util::saturating_size_add(fb.rational_count(), fb.sieve_algebraic_count()),
+        params.target_excess);
     size_t initial_target = params.raw_relation_target(matrix_cols);
     size_t batch_target = initial_target;
     size_t sq_count = 0;
@@ -220,11 +223,12 @@ static bool factorize(const RegressionLevel& tc) {
         size_t lp_cols_for_target = reduced_lp_columns;
         size_t effective_cols_for_target =
             effective_column_count(matrix_cols, lp_cols_for_target);
-        size_t needed_raw = static_cast<size_t>(
-            static_cast<double>(effective_cols_for_target * 2) / std::max(merge_rate, 0.001));
+        size_t needed_raw = util::size_from_nonnegative_double_floor(
+            static_cast<double>(util::saturating_size_product(effective_cols_for_target, 2)) /
+            std::max(merge_rate, 0.001));
         batch_target = std::min(
-            std::max(batch_target * 2, needed_raw),
-            initial_target * 5);
+            std::max(util::saturating_size_product(batch_target, 2), needed_raw),
+            util::saturating_size_product(initial_target, 5));
     }
 
     const size_t final_lp_columns = reduced_lp_columns;
@@ -243,7 +247,8 @@ static bool factorize(const RegressionLevel& tc) {
     {
         size_t lp_cols_for_trim = reduced_lp_columns;
         size_t effective_cols = effective_column_count(matrix_cols, lp_cols_for_trim);
-        size_t max_rels = static_cast<size_t>(static_cast<double>(effective_cols) * 1.3);
+        size_t max_rels = util::size_from_nonnegative_double_floor(
+            static_cast<double>(effective_cols) * 1.3);
         if (relations.size() > max_rels) {
             std::mt19937 rng(42);
             std::shuffle(relations.begin(), relations.end(), rng);
