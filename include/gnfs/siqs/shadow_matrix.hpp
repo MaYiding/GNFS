@@ -21,10 +21,18 @@ namespace gnfs::siqs {
 
 using std::size_t;
 
+inline constexpr size_t SIQS_SHADOW_DEFAULT_MAX_DENSE_MATRIX_BYTES =
+    size_t{256} * size_t{1024} * size_t{1024};
+inline constexpr size_t SIQS_SHADOW_DEFAULT_MAX_DENSE_VARIABLE_COUNT = 100'000;
+
 struct SIQSShadowMatrixOptions {
     size_t max_dependencies = 64;
     uint32_t elimination_workers = 1;
     size_t parallel_column_threshold = 20'000;
+    /// Budget for the packed M^T payload, excluding input rows and metadata.
+    size_t max_dense_matrix_bytes = SIQS_SHADOW_DEFAULT_MAX_DENSE_MATRIX_BYTES;
+    /// Maximum shadow-row variables admitted by the deterministic dense backend.
+    size_t max_dense_variable_count = SIQS_SHADOW_DEFAULT_MAX_DENSE_VARIABLE_COUNT;
 
     [[nodiscard]] friend constexpr bool operator==(const SIQSShadowMatrixOptions&,
                                                    const SIQSShadowMatrixOptions&) = default;
@@ -49,7 +57,29 @@ enum class SIQSShadowMatrixStatus : uint8_t {
     row_identity_mismatch,
     worker_failure,
     internal_invariant_failure,
+    resource_limit,
+    unsupported_backend,
 };
+
+/// Return the exact packed M^T allocation size for the dense shadow backend.
+/// @param variable_count Number of shadow rows.
+/// @param equation_count Factor-base columns, including the sign sentinel.
+[[nodiscard]] inline constexpr std::optional<size_t>
+checked_siqs_shadow_dense_matrix_bytes(size_t variable_count, size_t equation_count) noexcept {
+    size_t words_per_equation = variable_count / size_t{64};
+    if ((variable_count % size_t{64}) != 0) {
+        ++words_per_equation;
+    }
+    if (equation_count != 0 &&
+        words_per_equation > std::numeric_limits<size_t>::max() / equation_count) {
+        return std::nullopt;
+    }
+    const size_t matrix_word_count = equation_count * words_per_equation;
+    if (matrix_word_count > std::numeric_limits<size_t>::max() / sizeof(uint64_t)) {
+        return std::nullopt;
+    }
+    return matrix_word_count * sizeof(uint64_t);
+}
 
 /// Invariant-safe result: a solution is present exactly when status() is valid.
 class SIQSShadowMatrixResult {
@@ -117,25 +147,6 @@ private:
 };
 
 namespace shadow_matrix_detail {
-
-[[nodiscard]] inline bool checked_multiply_size(size_t lhs, size_t rhs, size_t& result) noexcept {
-    if (lhs != 0 && rhs > std::numeric_limits<size_t>::max() / lhs) {
-        return false;
-    }
-    result = lhs * rhs;
-    return true;
-}
-
-[[nodiscard]] inline bool packed_word_count(size_t bit_count, size_t& result) noexcept {
-    result = bit_count / size_t{64};
-    if ((bit_count % size_t{64}) != 0) {
-        if (result == std::numeric_limits<size_t>::max()) {
-            return false;
-        }
-        ++result;
-    }
-    return true;
-}
 
 [[nodiscard]] inline bool has_known_origin(SIQSShadowRowOrigin origin) noexcept {
     return origin == SIQSShadowRowOrigin::raw_full ||
@@ -292,24 +303,34 @@ solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
 
     const size_t variable_count = rows.size();
     const size_t equation_count = factor_base_primes.size();
+    const auto dense_matrix_bytes =
+        checked_siqs_shadow_dense_matrix_bytes(variable_count, equation_count);
+    if (!dense_matrix_bytes) {
+        return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::size_overflow);
+    }
+    if (variable_count == 0) {
+        return SIQSShadowMatrixResult::success(SIQSShadowMatrixSolution{0, equation_count, {}});
+    }
+    if (variable_count > options.max_dense_variable_count) {
+        return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::unsupported_backend);
+    }
+    if (*dense_matrix_bytes > options.max_dense_matrix_bytes) {
+        return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::resource_limit);
+    }
+
     const size_t dependency_limit = std::min(variable_count, options.max_dependencies);
     const size_t dependency_reserve =
         equation_count < variable_count ? equation_count + size_t{1} : variable_count;
-    size_t words_per_row = 0;
-    size_t matrix_word_count = 0;
-    if (!packed_word_count(variable_count, words_per_row) ||
-        !checked_multiply_size(equation_count, words_per_row, matrix_word_count) ||
-        matrix_word_count > std::vector<uint64_t>{}.max_size() ||
+    const size_t words_per_row =
+        variable_count / size_t{64} + ((variable_count % size_t{64}) != 0 ? size_t{1} : size_t{0});
+    const size_t matrix_word_count = *dense_matrix_bytes / sizeof(uint64_t);
+    if (matrix_word_count > std::vector<uint64_t>{}.max_size() ||
         equation_count > std::vector<size_t>{}.max_size() ||
         variable_count > std::vector<uint8_t>{}.max_size() ||
         words_per_row > std::vector<uint64_t>{}.max_size() ||
         dependency_limit > std::vector<std::vector<size_t>>{}.max_size() ||
         dependency_reserve > std::vector<size_t>{}.max_size()) {
         return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::size_overflow);
-    }
-
-    if (variable_count == 0) {
-        return SIQSShadowMatrixResult::success(SIQSShadowMatrixSolution{0, equation_count, {}});
     }
 
     std::vector<uint64_t> matrix(matrix_word_count, uint64_t{0});

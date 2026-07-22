@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <span>
 #include <utility>
 #include <vector>
@@ -20,7 +21,10 @@ using std::uint64_t;
 using std::uint8_t;
 
 using gnfs::core::Integer;
+using gnfs::siqs::checked_siqs_shadow_dense_matrix_bytes;
 using gnfs::siqs::extract_siqs_post_merge_factor;
+using gnfs::siqs::SIQS_SHADOW_DEFAULT_MAX_DENSE_MATRIX_BYTES;
+using gnfs::siqs::SIQS_SHADOW_DEFAULT_MAX_DENSE_VARIABLE_COUNT;
 using gnfs::siqs::SIQSFactorPower;
 using gnfs::siqs::SIQSPostMergeDependencyResult;
 using gnfs::siqs::SIQSPostMergeDependencyStatus;
@@ -470,6 +474,139 @@ void test_matrix_fail_closed_and_move_contracts() {
     check_matrix_result(moved, SIQSShadowMatrixStatus::internal_invariant_failure);
 }
 
+void test_dense_matrix_resource_estimator() {
+    static_assert(noexcept(checked_siqs_shadow_dense_matrix_bytes(0, 0)));
+    static_assert(SIQS_SHADOW_DEFAULT_MAX_DENSE_MATRIX_BYTES == size_t{256} * 1024 * 1024);
+    static_assert(SIQS_SHADOW_DEFAULT_MAX_DENSE_VARIABLE_COUNT == 100'000);
+    static_assert(static_cast<uint8_t>(SIQSShadowMatrixStatus::internal_invariant_failure) == 8);
+    static_assert(static_cast<uint8_t>(SIQSShadowMatrixStatus::resource_limit) == 9);
+    static_assert(static_cast<uint8_t>(SIQSShadowMatrixStatus::unsupported_backend) == 10);
+
+    CHECK(checked_siqs_shadow_dense_matrix_bytes(0, 7) == size_t{0});
+    CHECK(checked_siqs_shadow_dense_matrix_bytes(63, 7) == size_t{56});
+    CHECK(checked_siqs_shadow_dense_matrix_bytes(64, 7) == size_t{56});
+    CHECK(checked_siqs_shadow_dense_matrix_bytes(65, 7) == size_t{112});
+
+    // Live factor-base spans include the sign sentinel at index zero. The
+    // production trim target adds 100 rows to that complete span. The
+    // exploratory benchmark used rounded total counts that omitted this extra
+    // column.
+    struct LiveShape {
+        size_t primary_factor_base_size;
+        size_t expected_bytes;
+    };
+    constexpr LiveShape live_shapes[] = {
+        {1'600, 345'816},         // 50d
+        {15'000, 28'321'888},     // 70d
+        {30'000, 113'043'768},    // 84d
+        {80'000, 801'290'016},    // 89d
+        {130'000, 2'114'336'264}, // 90d
+    };
+    for (const LiveShape& shape : live_shapes) {
+        const size_t equation_count = shape.primary_factor_base_size + size_t{1};
+        const size_t variable_count = equation_count + size_t{100};
+        CHECK(checked_siqs_shadow_dense_matrix_bytes(variable_count, equation_count) ==
+              shape.expected_bytes);
+    }
+    CHECK(live_shapes[2].primary_factor_base_size + size_t{101} <=
+          SIQS_SHADOW_DEFAULT_MAX_DENSE_VARIABLE_COUNT);
+    CHECK(live_shapes[2].expected_bytes <= SIQS_SHADOW_DEFAULT_MAX_DENSE_MATRIX_BYTES);
+    CHECK(live_shapes[3].primary_factor_base_size + size_t{101} <=
+          SIQS_SHADOW_DEFAULT_MAX_DENSE_VARIABLE_COUNT);
+    CHECK(live_shapes[3].expected_bytes > SIQS_SHADOW_DEFAULT_MAX_DENSE_MATRIX_BYTES);
+    CHECK(live_shapes[4].primary_factor_base_size + size_t{101} >
+          SIQS_SHADOW_DEFAULT_MAX_DENSE_VARIABLE_COUNT);
+    CHECK(live_shapes[4].expected_bytes > SIQS_SHADOW_DEFAULT_MAX_DENSE_MATRIX_BYTES);
+
+    constexpr size_t max_size = std::numeric_limits<size_t>::max();
+    CHECK(!checked_siqs_shadow_dense_matrix_bytes(max_size, max_size).has_value());
+    CHECK(
+        !checked_siqs_shadow_dense_matrix_bytes(64, max_size / size_t{8} + size_t{1}).has_value());
+    CHECK(checked_siqs_shadow_dense_matrix_bytes(max_size, 0) == size_t{0});
+
+    constexpr SIQSShadowMatrixOptions legacy_three_field_options{64, 4, 0};
+    static_assert(legacy_three_field_options.max_dense_matrix_bytes ==
+                  SIQS_SHADOW_DEFAULT_MAX_DENSE_MATRIX_BYTES);
+    static_assert(legacy_three_field_options.max_dense_variable_count ==
+                  SIQS_SHADOW_DEFAULT_MAX_DENSE_VARIABLE_COUNT);
+}
+
+void test_dense_matrix_resource_gate_precedence() {
+    const auto rows = make_oracle_rows();
+    const auto row_span = std::span<const SIQSShadowRow>(rows.data(), rows.size());
+    const auto factor_base_span =
+        std::span<const uint32_t>(oracle_factor_base.data(), oracle_factor_base.size());
+    const auto required_bytes =
+        checked_siqs_shadow_dense_matrix_bytes(rows.size(), oracle_factor_base.size());
+    CHECK(required_bytes == size_t{32});
+    if (!required_bytes) {
+        return;
+    }
+
+    const SIQSShadowMatrixOptions exact_limits{64, 1, 0, *required_bytes, rows.size()};
+    check_matrix_result(
+        solve_siqs_shadow_matrix(row_span, factor_base_span, oracle_modulus, exact_limits),
+        SIQSShadowMatrixStatus::valid);
+
+    const SIQSShadowMatrixOptions byte_short{64, 1, 0, *required_bytes - size_t{1}, rows.size()};
+    auto resource_limited =
+        solve_siqs_shadow_matrix(row_span, factor_base_span, oracle_modulus, byte_short);
+    check_matrix_result(resource_limited, SIQSShadowMatrixStatus::resource_limit);
+
+    const SIQSShadowMatrixOptions variable_short{64, 1, 0, *required_bytes, rows.size() - 1};
+    auto unsupported =
+        solve_siqs_shadow_matrix(row_span, factor_base_span, oracle_modulus, variable_short);
+    check_matrix_result(unsupported, SIQSShadowMatrixStatus::unsupported_backend);
+
+    const SIQSShadowMatrixOptions both_short{64, 1, 0, *required_bytes - size_t{1},
+                                             rows.size() - 1};
+    check_matrix_result(
+        solve_siqs_shadow_matrix(row_span, factor_base_span, oracle_modulus, both_short),
+        SIQSShadowMatrixStatus::unsupported_backend);
+
+    auto malformed = rows;
+    malformed.front().row.source_ids.clear();
+    check_matrix_result(
+        solve_siqs_shadow_matrix(std::span<const SIQSShadowRow>(malformed.data(), malformed.size()),
+                                 factor_base_span, oracle_modulus,
+                                 SIQSShadowMatrixOptions{64, 1, 0, 0, 0}),
+        SIQSShadowMatrixStatus::invalid_row);
+
+    auto mismatched = rows;
+    mismatched.front().row.x_modulus = Integer(2);
+    check_matrix_result(solve_siqs_shadow_matrix(
+                            std::span<const SIQSShadowRow>(mismatched.data(), mismatched.size()),
+                            factor_base_span, oracle_modulus,
+                            SIQSShadowMatrixOptions{64, 1, 0, 0, 0}),
+                        SIQSShadowMatrixStatus::row_identity_mismatch);
+
+    SIQSShadowMatrixResult copied_resource(resource_limited);
+    check_matrix_result(copied_resource, SIQSShadowMatrixStatus::resource_limit);
+    SIQSShadowMatrixResult copied_unsupported(unsupported);
+    check_matrix_result(copied_unsupported, SIQSShadowMatrixStatus::unsupported_backend);
+    self_copy_assign(copied_resource);
+    check_matrix_result(copied_resource, SIQSShadowMatrixStatus::resource_limit);
+    self_copy_assign(copied_unsupported);
+    check_matrix_result(copied_unsupported, SIQSShadowMatrixStatus::unsupported_backend);
+
+    copied_resource = unsupported;
+    check_matrix_result(copied_resource, SIQSShadowMatrixStatus::unsupported_backend);
+    copied_unsupported = resource_limited;
+    check_matrix_result(copied_unsupported, SIQSShadowMatrixStatus::resource_limit);
+
+    SIQSShadowMatrixResult moved_resource(std::move(resource_limited));
+    check_matrix_result(moved_resource, SIQSShadowMatrixStatus::resource_limit);
+    check_matrix_result(resource_limited, SIQSShadowMatrixStatus::internal_invariant_failure);
+
+    SIQSShadowMatrixResult moved_unsupported(std::move(unsupported));
+    check_matrix_result(moved_unsupported, SIQSShadowMatrixStatus::unsupported_backend);
+    check_matrix_result(unsupported, SIQSShadowMatrixStatus::internal_invariant_failure);
+
+    moved_resource = std::move(moved_unsupported);
+    check_matrix_result(moved_resource, SIQSShadowMatrixStatus::unsupported_backend);
+    check_matrix_result(moved_unsupported, SIQSShadowMatrixStatus::internal_invariant_failure);
+}
+
 struct BruteForceDimensions {
     size_t rank;
     size_t nullity;
@@ -690,6 +827,17 @@ void test_empty_matrix_is_valid() {
         CHECK(result.solution()->column_count == factor_base.size());
         CHECK(result.solution()->dependencies.empty());
     }
+
+    const auto zero_resource_limits =
+        solve_siqs_shadow_matrix(std::span<const SIQSShadowRow>(rows.data(), rows.size()),
+                                 std::span<const uint32_t>(factor_base.data(), factor_base.size()),
+                                 modulus, SIQSShadowMatrixOptions{64, 4, 0, 0, 0});
+    check_matrix_result(zero_resource_limits, SIQSShadowMatrixStatus::valid);
+    if (zero_resource_limits.solution()) {
+        CHECK(zero_resource_limits.solution()->row_count == 0);
+        CHECK(zero_resource_limits.solution()->column_count == factor_base.size());
+        CHECK(zero_resource_limits.solution()->dependencies.empty());
+    }
 }
 
 } // namespace
@@ -700,6 +848,8 @@ int main() {
     test_dependency_and_factor_fail_closed_contracts();
     test_factor_choice_is_globally_canonical();
     test_matrix_fail_closed_and_move_contracts();
+    test_dense_matrix_resource_estimator();
+    test_dense_matrix_resource_gate_precedence();
     test_fixed_matrix_against_brute_force();
     test_packed_word_boundary_dependencies();
     test_empty_matrix_is_valid();
