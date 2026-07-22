@@ -67,6 +67,10 @@
 #                                         # 固定 50 位 SQUFOF multiplier/吞吐基准
 #   ./scripts/test.sh bench-siqs-shadow <mode> [options]
 #                                         # Release-only SIQS shadow matrix 可复现基准
+#   ./scripts/test.sh probe-siqs-live-sieve <50|70|90> <1|2|4>
+#                                         # Release-only 有界 SIQS live-sieve 单进程探针
+#   ./scripts/test.sh compare-siqs-live-sieve <50|70|90>
+#                                         # 新构建后 1/2/4 三个独立进程身份对照
 #   ./scripts/test.sh bench-ram <level>   # 后台 RAM baseline: nohup + /usr/bin/time -l
 #                                         # level=1 (50d ≈2h) / 2 (60d hours+) / 3-5 (大)
 #
@@ -127,6 +131,7 @@ FAIL_FAST=0
 TIMEOUT=300
 TIMEOUT_EXPLICIT=0
 RETRY_COUNT=0
+RETRY_EXPLICIT=0
 
 # 统计变量
 TOTAL_TESTS=0
@@ -1357,6 +1362,220 @@ measurement_record_field() {
     '
 }
 
+# The live-sieve probe has one stdout record and a separate diagnostic stderr
+# stream. These globals carry the validated record and its normalized identity
+# between fresh-process runs without writing a comparison artifact.
+SIQS_LIVE_CAPTURE_RECORD=""
+SIQS_LIVE_CAPTURE_IDENTITY=""
+SIQS_LIVE_CAPTURE_STDERR=""
+
+siqs_live_probe_timeout() {
+    case "$1" in
+        50) echo 900 ;;
+        70) echo 1800 ;;
+        90) echo 3600 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Validate the narrow key=value line protocol. Worker execution fields are
+# checked against the requested process and then omitted from the deterministic
+# corpus identity. Wall time and peak RSS are informational by contract.
+validate_siqs_live_capture_record() {
+    local line="$1"
+    local expected_band="$2"
+    local expected_workers="$3"
+    local -a tokens
+    tokens=(${=line})
+
+    SIQS_LIVE_CAPTURE_RECORD=""
+    SIQS_LIVE_CAPTURE_IDENTITY=""
+    if (( ${#tokens[@]} < 8 )) ||
+       [[ "${tokens[1]:-}" != "GNFS_SIQS_LIVE_CAPTURE_V1" ]]; then
+        return 1
+    fi
+
+    local token key value
+    typeset -A fields
+    for token in "${tokens[@]:1}"; do
+        key="${token%%=*}"
+        value="${token#*=}"
+        if [[ "$key" == "$token" || -z "$value" ||
+              ! "$key" =~ '^[A-Za-z][A-Za-z0-9_]*$' ||
+              -n "${fields[$key]+present}" ]]; then
+            return 1
+        fi
+        fields[$key]="$value"
+    done
+
+    # Freeze the complete V1 evidence schema. Duplicate keys were rejected
+    # above; exact cardinality plus membership rejects both omissions and
+    # forward-added/unknown fields until this parser is deliberately revised.
+    local required
+    local -a schema_fields=(
+        schema_version status build_type ndebug scope band digits n p q seed a_planner
+        multiplier sieved_n sieved_bits param_fb_size factor_base_columns
+        factor_base_last_prime param_sieve_half param_lp_multiplier param_a_factors
+        param_sieve_error param_small_prime_cutoff large_prime_bound two_large_prime_bound
+        threshold available_b_slots fixture_b_slots polynomial_a
+        polynomial_family_digest_low polynomial_family_digest_high
+        plan_digest_low plan_digest_high relation_limit_per_slot payload_limit_bytes_per_slot
+        planned_slots completed_slots workers resolved_workers peak_workers schedule logical_merge
+        worker_independence_premises capture_threshold_candidates
+        capture_unrepresentable_residuals capture_rejected_residuals capture_observed_full
+        capture_observed_one_lp capture_observed_two_lp capture_relations capture_payload_bytes
+        capture_stop_none capture_stop_invalid_limits capture_stop_invalid_relation_kind
+        capture_stop_invalid_state capture_stop_relation_limit capture_stop_payload_limit
+        capture_stop_size_overflow raw_full raw_one_lp raw_two_lp_candidates adapter_input
+        adapter_full adapter_accepted_one_lp adapter_accepted_two_lp adapter_rejected
+        adapter_malformed_source_shape adapter_unsupported_encoding
+        adapter_invalid_one_large_prime adapter_invalid_two_large_prime_split
+        adapter_exact_duplicate graph_vertices graph_edges graph_components graph_cycles
+        graph_cycle_rank_identity assembly_status assembly_input_relations assembly_encoded_full
+        assembly_valid_full assembly_rejected_full assembly_full_sources
+        assembly_duplicate_full_sources assembly_adapter_input assembly_adapter_full
+        assembly_adapter_accepted_one_lp assembly_adapter_accepted_two_lp
+        assembly_adapter_rejected assembly_adapter_malformed_source_shape
+        assembly_adapter_unsupported_encoding assembly_adapter_invalid_one_large_prime
+        assembly_adapter_invalid_two_large_prime_split assembly_adapter_exact_duplicate
+        assembly_partial_sources assembly_graph_edges assembly_graph_cycles
+        assembly_valid_cycle_rows assembly_rejected_cycle_rows assembly_rows_before_dedup
+        assembly_arithmetic_duplicates_removed assembly_pretrim_rows assembly_selected_rows
+        assembly_selected_full_rows assembly_selected_cycle_rows assembly_trimmed_rows
+        source_fingerprint_low source_fingerprint_high pretrim_fingerprint_low
+        pretrim_fingerprint_high selected_fingerprint_low selected_fingerprint_high
+        logical_raw_digest_low logical_raw_digest_high canonical_raw_digest_low
+        canonical_raw_digest_high slot_state_digest_low slot_state_digest_high matrix_rows
+        matrix_columns matrix_projected_dense_bytes matrix_default_max_dense_bytes
+        matrix_default_max_variables matrix_status_scope matrix_admission_status
+        solver_attempted rss_scope rss_backend peak_rss_bytes wall_ns
+    )
+    (( ${#fields} == ${#schema_fields} )) || return 1
+    for required in "${schema_fields[@]}"; do
+        [[ -n "${fields[$required]+present}" ]] || return 1
+    done
+
+    if [[ "${fields[schema_version]:-}" != "1" ||
+          "${fields[status]:-}" != "valid" ||
+          "${fields[build_type]:-}" != "Release" ||
+          "${fields[ndebug]:-}" != "true" ||
+          "${fields[scope]:-}" != "fixed_one_a_family_prefix" ||
+          "${fields[a_planner]:-}" != "stable_mpz_root_mt19937_fisher_yates_v1" ||
+          "${fields[band]:-}" != "$expected_band" ||
+          "${fields[digits]:-}" != "$expected_band" ||
+          "${fields[workers]:-}" != "$expected_workers" ||
+          "${fields[schedule]:-}" != "static_contiguous" ||
+          "${fields[logical_merge]:-}" != "slot_order" ||
+          "${fields[worker_independence_premises]:-}" != "pass" ||
+          "${fields[graph_cycle_rank_identity]:-}" != "pass" ||
+          "${fields[assembly_status]:-}" != "valid" ||
+          "${fields[matrix_status_scope]:-}" != "projected_not_run" ||
+          "${fields[solver_attempted]:-}" != "false" ]]; then
+        return 1
+    fi
+    case "${fields[matrix_admission_status]}" in
+        valid|size_overflow|resource_limit|unsupported_backend) ;;
+        *) return 1 ;;
+    esac
+    if [[ ! "${fields[resolved_workers]:-}" =~ '^[1-9][0-9]*$' ||
+          ! "${fields[peak_workers]:-}" =~ '^[1-9][0-9]*$' ]] ||
+       (( fields[resolved_workers] != expected_workers ||
+          fields[peak_workers] != expected_workers )); then
+        return 1
+    fi
+    if [[ ! "${fields[wall_ns]:-}" =~ '^[1-9][0-9]*$' ||
+          ! "${fields[peak_rss_bytes]:-}" =~ '^(na|[1-9][0-9]*)$' ]]; then
+        return 1
+    fi
+    local numeric_field
+    local -a required_uint_fields=(
+        plan_digest_low plan_digest_high planned_slots completed_slots
+        slot_state_digest_low slot_state_digest_high
+        capture_relations adapter_input adapter_rejected
+        adapter_malformed_source_shape adapter_unsupported_encoding
+        adapter_invalid_one_large_prime adapter_invalid_two_large_prime_split
+        adapter_exact_duplicate
+        source_fingerprint_low source_fingerprint_high
+        pretrim_fingerprint_low pretrim_fingerprint_high
+        selected_fingerprint_low selected_fingerprint_high
+        logical_raw_digest_low logical_raw_digest_high
+        canonical_raw_digest_low canonical_raw_digest_high
+        matrix_rows matrix_columns
+    )
+    for numeric_field in "${required_uint_fields[@]}"; do
+        [[ "${fields[$numeric_field]}" =~ '^[0-9]+$' ]] || return 1
+    done
+    [[ "${fields[planned_slots]}" == "${fields[completed_slots]}" ]] || return 1
+
+    local normalized=""
+    for key in ${(ok)fields}; do
+        case "$key" in
+            workers|resolved_workers|peak_workers|wall_ns|peak_rss_bytes) continue ;;
+        esac
+        normalized+="${key}=${fields[$key]}"$'\n'
+    done
+    [[ -n "$normalized" ]] || return 1
+
+    SIQS_LIVE_CAPTURE_RECORD="$line"
+    SIQS_LIVE_CAPTURE_IDENTITY="$normalized"
+}
+
+# Run exactly one fresh probe process. stdout must contain exactly one non-empty
+# protocol line. stderr is retained only in memory for a concise failure report.
+run_siqs_live_probe_process() {
+    local band="$1"
+    local workers="$2"
+    local timeout_seconds="$3"
+    local binary="${BUILD_DIR}/test_siqs_live_sieve_probe"
+    local stderr_file
+    stderr_file=$(mktemp "${TMPDIR:-/tmp}/gnfs_siqs_live_probe_stderr.XXXXXX")
+
+    local start_ms exit_code=0
+    start_ms=$(timer_start_ms)
+    run_with_timeout "$timeout_seconds" /bin/sh -c \
+        'stderr_path=$1; shift; exec "$@" 2>"$stderr_path"' \
+        sh "$stderr_file" "$binary" --band "$band" --workers "$workers" ||
+        exit_code=$?
+    local end_ms
+    end_ms=$(timer_start_ms)
+    local elapsed=$((end_ms - start_ms))
+    TOTAL_TIME_MS=$((TOTAL_TIME_MS + elapsed))
+    (( TOTAL_TESTS += 1 ))
+
+    local stdout="$RUN_OUTPUT"
+    SIQS_LIVE_CAPTURE_STDERR=$(<"$stderr_file")
+    rm -f "$stderr_file"
+
+    if (( exit_code == 124 )); then
+        log_fail "SIQS live-sieve band=${band} workers=${workers} TIMEOUT after ${timeout_seconds}s"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    if (( exit_code != 0 )); then
+        log_fail "SIQS live-sieve band=${band} workers=${workers} 退出码 ${exit_code}"
+        [[ -n "$SIQS_LIVE_CAPTURE_STDERR" ]] &&
+            printf '%s\n' "$SIQS_LIVE_CAPTURE_STDERR" | tail -10
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    if [[ -n "$SIQS_LIVE_CAPTURE_STDERR" ]]; then
+        log_fail "SIQS live-sieve 成功进程不得写入 stderr"
+        printf '%s\n' "$SIQS_LIVE_CAPTURE_STDERR" | tail -10
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    if [[ -z "$stdout" || "$stdout" == *$'\n'* ]] ||
+       ! validate_siqs_live_capture_record "$stdout" "$band" "$workers"; then
+        log_fail "SIQS live-sieve stdout 必须是唯一且合法的 GNFS_SIQS_LIVE_CAPTURE_V1 记录"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+
+    (( PASSED_TESTS += 1 ))
+    REPORT_ENTRIES+=("{\"name\":\"test_siqs_live_sieve_probe_${band}_w${workers}\",\"status\":\"pass\",\"elapsed_ms\":${elapsed}}")
+    return 0
+}
+
 # Validate the complete V1 contract emitted by the Release-only SQUFOF strategy
 # benchmark. SUMMARY owns the dynamic multiplier count; CASE and MULTIPLIER
 # records must agree with its corpus and deterministic identity fields.
@@ -2506,6 +2725,8 @@ do_list() {
     echo "  ${BULLET} ${CYAN}test_candidate_batch_50d_sweep${RESET} — 固定 50 位 4-SQ candidate 调度扫测"
     echo "  ${BULLET} ${CYAN}test_squfof_bench${RESET}     — 固定 50 位 SQUFOF multiplier/吞吐基准"
     echo "  ${BULLET} ${CYAN}test_siqs_shadow_matrix_bench${RESET} — 固定 SIQS shadow matrix 求解/内核/准备基准"
+    echo "  ${BULLET} ${CYAN}probe-siqs-live-sieve <band> <workers>${RESET} — Release-only 50/70/90 位有界现场探针"
+    echo "  ${BULLET} ${CYAN}compare-siqs-live-sieve <band>${RESET} — 同一新构建的 1/2/4 独立进程身份对照"
 
     echo ""
     echo "${BOLD}Sanitizer 窄通道:${RESET}"
@@ -2614,7 +2835,7 @@ while [[ $# -gt 0 ]]; do
         --no-color)  USE_COLOR=0; setup_colors; shift ;;
         --fail-fast) FAIL_FAST=1; shift ;;
         --timeout)   TIMEOUT="$2"; TIMEOUT_EXPLICIT=1; shift 2 ;;
-        --retry)     RETRY_COUNT="$2"; shift 2 ;;
+        --retry)     RETRY_COUNT="$2"; RETRY_EXPLICIT=1; shift 2 ;;
         --save)      BENCH_EXTRA_ARGS+=(--save); shift ;;
         --compare)   BENCH_EXTRA_ARGS+=(--compare); shift ;;
         --deep)      MODE_ARGS+=(--deep); shift ;;
@@ -3265,6 +3486,116 @@ case "$MODE" in
             else
                 log_fail "SQUFOF benchmark CASE/MULTIPLIER/SUMMARY schema 或身份字段无效"
                 (( FAILED_TESTS += 1 ))
+            fi
+        fi
+        show_summary
+        ;;
+
+    probe-siqs-live-sieve)
+        if [[ ${#MODE_ARGS[@]} -ne 2 ]]; then
+            log_fail "用法: $0 probe-siqs-live-sieve <50|70|90> <1|2|4>"
+            exit 1
+        fi
+        local _live_band="${MODE_ARGS[1]}"
+        local _live_workers="${MODE_ARGS[2]}"
+        case "$_live_band" in
+            50|70|90) ;;
+            *) log_fail "band 必须是 50、70 或 90"; exit 1 ;;
+        esac
+        case "$_live_workers" in
+            1|2|4) ;;
+            *) log_fail "workers 必须是 1、2 或 4"; exit 1 ;;
+        esac
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "probe-siqs-live-sieve 只接受 Release 构建 (传入: ${BUILD_TYPE})"
+            exit 1
+        fi
+        BUILD_TYPE="Release"
+        if (( SKIP_BUILD )); then
+            log_fail "probe-siqs-live-sieve 不接受 --no-build；证据必须来自本次请求的新构建"
+            exit 1
+        fi
+        if (( RETRY_EXPLICIT )); then
+            log_fail "probe-siqs-live-sieve 不接受 --retry；自动重试会破坏独立进程证据"
+            exit 1
+        fi
+
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_siqs_live_sieve_probe" ]]; then
+            log_fail "SIQS live-sieve probe 二进制不存在: ${BUILD_DIR}/test_siqs_live_sieve_probe"
+            exit 1
+        fi
+        local _live_timeout
+        _live_timeout=$(siqs_live_probe_timeout "$_live_band")
+        (( TIMEOUT_EXPLICIT )) && _live_timeout="$TIMEOUT"
+        log_header "SIQS live-sieve ${_live_band} 位有界探针"
+        log_info "Release/NDEBUG；fresh process；workers=${_live_workers}；timeout=${_live_timeout}s"
+        if run_siqs_live_probe_process "$_live_band" "$_live_workers" "$_live_timeout"; then
+            printf '%s\n' "$SIQS_LIVE_CAPTURE_RECORD"
+            log_success "唯一 V1 记录、Release 构建合同和 band/worker 字段均有效"
+        fi
+        show_summary
+        ;;
+
+    compare-siqs-live-sieve)
+        if [[ ${#MODE_ARGS[@]} -ne 1 ]]; then
+            log_fail "用法: $0 compare-siqs-live-sieve <50|70|90>"
+            exit 1
+        fi
+        local _compare_band="${MODE_ARGS[1]}"
+        case "$_compare_band" in
+            50|70|90) ;;
+            *) log_fail "band 必须是 50、70 或 90"; exit 1 ;;
+        esac
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "compare-siqs-live-sieve 只接受 Release 构建 (传入: ${BUILD_TYPE})"
+            exit 1
+        fi
+        BUILD_TYPE="Release"
+        if (( SKIP_BUILD )); then
+            log_fail "compare-siqs-live-sieve 不接受 --no-build；三组证据必须共享本次新构建"
+            exit 1
+        fi
+        if (( RETRY_EXPLICIT )); then
+            log_fail "compare-siqs-live-sieve 不接受 --retry；自动重试会破坏独立进程证据"
+            exit 1
+        fi
+
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_siqs_live_sieve_probe" ]]; then
+            log_fail "SIQS live-sieve probe 二进制不存在: ${BUILD_DIR}/test_siqs_live_sieve_probe"
+            exit 1
+        fi
+        local _compare_timeout
+        _compare_timeout=$(siqs_live_probe_timeout "$_compare_band")
+        (( TIMEOUT_EXPLICIT )) && _compare_timeout="$TIMEOUT"
+        log_header "SIQS live-sieve ${_compare_band} 位 1/2/4 worker 对照"
+        log_info "单次 Release 构建；3 个 fresh processes；每进程 timeout=${_compare_timeout}s"
+
+        local _compare_ok=1
+        local _compare_worker
+        typeset -A _compare_identities
+        for _compare_worker in 1 2 4; do
+            if run_siqs_live_probe_process \
+                "$_compare_band" "$_compare_worker" "$_compare_timeout"; then
+                _compare_identities[$_compare_worker]="$SIQS_LIVE_CAPTURE_IDENTITY"
+                printf '%s\n' "$SIQS_LIVE_CAPTURE_RECORD"
+            else
+                _compare_ok=0
+                (( FAIL_FAST )) && break
+            fi
+        done
+
+        if (( _compare_ok )); then
+            (( TOTAL_TESTS += 1 ))
+            if [[ "${_compare_identities[1]}" == "${_compare_identities[2]}" &&
+                  "${_compare_identities[1]}" == "${_compare_identities[4]}" ]]; then
+                (( PASSED_TESTS += 1 ))
+                REPORT_ENTRIES+=("{\"name\":\"compare_siqs_live_sieve_${_compare_band}\",\"status\":\"pass\",\"elapsed_ms\":0}")
+                log_success "除已验证的 worker 执行字段、wall_ns 和 peak_rss_bytes 外，全部字段一致"
+            else
+                (( FAILED_TESTS += 1 ))
+                log_fail "1/2/4 worker 的确定性身份字段不一致"
             fi
         fi
         show_summary

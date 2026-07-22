@@ -1966,6 +1966,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SiqsLiveSieveCapture COMMAND test_siqs_live_sieve_capture)
     set_tests_properties(SiqsLiveSieveCapture PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Bounded live-sieve evidence probe. This Release-only bench/stress target
+    # stays out of CTest and every routine test catalog. The executable checks
+    # this configure-time contract together with NDEBUG at runtime.
+    add_executable(test_siqs_live_sieve_probe
+        tests/test_siqs_live_sieve_probe.cpp
+    )
+    target_compile_definitions(test_siqs_live_sieve_probe PRIVATE
+        GNFS_SIQS_LIVE_SIEVE_PROBE_BUILD_TYPE="$<CONFIG>")
+    target_link_libraries(test_siqs_live_sieve_probe PRIVATE gnfs_core Threads::Threads)
+
     add_executable(test_siqs_2lp_graph
         tests/test_siqs_2lp_graph.cpp
     )

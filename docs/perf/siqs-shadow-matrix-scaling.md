@@ -248,6 +248,9 @@ Before promotion it must provide:
 - [ ] Direct sparse backend with typed failure and verified dependencies.
 - [x] Transactional per-polynomial relation/payload capture limit before dense
   relation allocation, with typed stop reasons and default-path parity tests.
-- [ ] Fixed-plan live-sieve capture across the 50-, 70-, and 90-digit bands.
+- [x] Fixed-plan live-sieve capture across the 50-, 70-, and 90-digit bands,
+  with a stable A planner, per-slot state digests, and actual one-, two-, and
+  four-worker fresh-process identity checks. The first corpus has zero graph
+  cycles and therefore does not freeze the parallel threshold.
 - [ ] Controlled collector and `factor()` integration with the default 1LP path
   unchanged.

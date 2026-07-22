@@ -117,7 +117,11 @@ fingerprints and dependencies across one, two, and four workers. The corpus is
 arithmetic-valid but does not model live sieve yield. The final square gate
 also protects the current extraction path, but staged 2LP rows are not yet
 connected to the production collector or `factor()` path. Re-enabling still
-requires a bounded live-sieve capture across the same size bands.
+requires useful live cycles and proof-gated extraction evidence. The bounded
+fixed-plan probe now covers the live 50-, 70-, and 90-digit parameter bands
+with actual one-, two-, and four-worker runs, frozen plan and per-slot digests,
+and typed conservation checks. Its first corpus produced no large-prime graph
+cycles, so it is distribution evidence rather than a promotion result.
 
 ## Two-Large-Prime Re-enablement Plan
 
@@ -189,10 +193,11 @@ SIQS's `L_N(1/2, 1)`.
   stable shadow-corpus preparation, cycle selection, materialization, and
   sparse-wide row conversion, deterministic parallel assembly, packed shadow
   solving, proof-gated factor extraction, and constructed 50-, 70-, and 90-digit
-  cross-size evidence are staged. A transactional bounded capture primitive is
-  present, while the fixed-plan live runner, replayable artifacts, runtime
-  collection, and production integration remain prerequisites. See
-  [SIQS Live-Sieve Capture Contract](../perf/siqs-live-sieve-capture.md)
+  cross-size evidence are staged. A transactional bounded capture primitive and
+  Release-only fixed-plan live runner are present. The current live sample has
+  zero graph cycles; replayable persistent artifacts, useful live-cycle
+  evidence, runtime collection, and production integration remain prerequisites.
+  See [SIQS Live-Sieve Capture Contract](../perf/siqs-live-sieve-capture.md)
 - **The wide sparse shadow backend is not implemented**; the dense solver
   admits at most 100000 row variables and 256MiB of packed matrix payload,
   then returns a typed `unsupported_backend` or `resource_limit` result instead

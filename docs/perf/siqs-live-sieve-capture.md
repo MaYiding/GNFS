@@ -2,10 +2,12 @@
 
 ## Status and Scope
 
-This document defines an implementation target for bounded live-sieve evidence
-for the Self-Initializing Quadratic Sieve (SIQS) two-large-prime (2LP) shadow
-path. It does not report measurements, describe an existing command, or
-authorize production 2LP collection.
+This document defines the contract for bounded live-sieve evidence for the
+Self-Initializing Quadratic Sieve (SIQS) two-large-prime (2LP) shadow path. A
+Release-only version 1 probe now implements the fixed-plan, in-memory portion
+of the contract and reports one validated `GNFS_SIQS_LIVE_CAPTURE_V1` record.
+It does not authorize production 2LP collection. Persistent JSON and raw-corpus
+artifacts remain a later slice.
 
 The first implementation must answer three questions:
 
@@ -47,6 +49,10 @@ construction performs these steps in order:
 2. Select the Knuth-Schroeppel multiplier and construct `kN`.
 3. Build the factor base for `kN`.
 4. Generate each A definition from the fixed seed in ascending `a_ordinal`.
+   The implemented probe uses an exact GMP integer root to locate the candidate
+   window and an explicit Fisher-Yates permutation driven by raw `mt19937`
+   words and rejection sampling. It does not depend on the implementation-
+   defined mapping used by `std::shuffle`.
 5. Enumerate the requested Gray-code B ordinals in ascending order.
 6. Hash the input, parameters, factor base, A definitions, B identifiers, and
    capture limits into `plan_fingerprint`.
@@ -58,9 +64,11 @@ owns its output and applies the same local limits. The runner joins all slots in
 logical B order before canonicalization.
 
 Runs with one, two, and four workers must therefore consume the same planned
-corpus. A worker-count comparison is invalid unless all three artifacts have
-the same `plan_fingerprint`, planned B count, completed B set, truncation set,
-and canonical source fingerprint.
+corpus. A worker-count comparison is invalid unless all three records have the
+same plan digest, planned B count, completed B set, per-slot state digest, raw
+corpus digests, and canonical assembly fingerprints. Every requested worker
+count must also be physically resolved and reach the launch gate; a four-worker
+request that runs fewer than four workers is not four-worker evidence.
 
 Each worker-count run must execute in a fresh process. The comparison driver
 must not change worker counts inside one process because allocator state,
@@ -75,11 +83,11 @@ fixture for each band. Each fixture must freeze the decimal input, its known
 prime factors, and an input fingerprint. Constructed shadow-corpus fixtures are
 not live-sieve inputs and must not be reused as if they were.
 
-| Band | Primary FB Size | FB Columns With Sign | Worker Counts | Required Outcome |
-|---:|---:|---:|:---:|---|
-| 50 digits | 1600 | 1601 | 1, 2, 4 | Complete bounded capture and conservation audit |
-| 70 digits | 15000 | 15001 | 1, 2, 4 | Complete bounded capture and conservation audit |
-| 90 digits | 130000 | 130001 | 1, 2, 4 | Complete bounded capture and sparse-backend boundary audit |
+| Band | Primary FB Size | FB Columns With Sign | Fixed B Slots | Worker Counts | Required Outcome |
+|---:|---:|---:|---:|:---:|---|
+| 50 digits | 1600 | 1601 | 8 | 1, 2, 4 | Complete bounded capture and conservation audit |
+| 70 digits | 15000 | 15001 | 4 | 1, 2, 4 | Complete bounded capture and conservation audit |
+| 90 digits | 130000 | 130001 | 4 | 1, 2, 4 | Complete bounded capture and matrix-admission projection |
 
 The runner must assert the selected band and factor-base column count. A table
 change must fail closed instead of silently changing the corpus.
@@ -174,8 +182,11 @@ large_prime  = unresolved composite cofactor
 large_prime2 = 1
 ```
 
-The capture runner must not call the legacy `merge_partials()` path. It must
-pass the bounded raw corpus through these boundaries:
+The capture runner must not call the legacy `merge_partials()` path. The
+implemented version 1 probe passes the bounded raw corpus through adapter,
+graph, and assembly, then projects the existing matrix admission gates without
+running the solver. A later persistent-artifact runner must cover the complete
+sequence:
 
 ```text
 prepare_two_large_prime_corpus
@@ -192,10 +203,32 @@ unresolved candidate split. A failed split, a non-prime endpoint, an endpoint
 above the large-prime bound, or an inexact product contributes to adapter
 rejection statistics and never enters the graph.
 
-## Artifact Schema
+## Implemented Evidence-Line Schema
 
-Each fresh process writes one versioned JSON summary. An optional bounded raw
-corpus file may accompany it. The summary schema is exact for version 1:
+Each successful process writes exactly one whitespace-separated record to
+standard output and writes nothing to standard error:
+
+```text
+GNFS_SIQS_LIVE_CAPTURE_V1 schema_version=1 status=valid ...
+```
+
+The runner rejects missing, empty, or duplicate keys. It requires the Release
+and `NDEBUG` build contract, frozen plan and per-slot state digests, typed
+adapter rejection counters, graph and assembly conservation markers, three
+assembly fingerprints, logical and canonical raw-corpus digests, and an
+explicit `matrix_status_scope=projected_not_run solver_attempted=false` pair.
+The plan fixture freezes the selected A and the complete plan digest before any
+capture worker starts.
+
+The one-, two-, and four-worker comparison sorts all key/value fields and
+requires byte-for-byte identity after removing only `workers`,
+`resolved_workers`, `peak_workers`, `wall_ns`, and `peak_rss_bytes`. The worker
+fields are validated independently and must all equal the requested count.
+
+## Persistent Artifact Schema Target
+
+The next artifact slice will write one versioned JSON summary. An optional
+bounded raw corpus file may accompany it. The target summary schema is:
 
 ```text
 schema_version: uint32, exactly 1
@@ -377,9 +410,9 @@ including virtual vertex `0` when at least one 1LP edge uses it. The empty graph
 uses zero vertices, zero edges, zero components, and zero cycles.
 
 Across one, two, and four workers, all non-informational configuration, count,
-stop-reason, graph, assembly, and fingerprint fields must match. Only
-`plan.workers`, `informational.wall_nanoseconds`, and
-`informational.peak_rss_bytes` may differ.
+stop-reason, graph, assembly, and fingerprint fields must match. Only the
+requested, resolved, and observed worker counts plus wall time and peak RSS may
+differ; all five are separately validated.
 
 ## Zero-Cycle and Promotion Rules
 
@@ -406,26 +439,50 @@ allocate a larger dense matrix, substitute the legacy matrix path, or count the
 capture as sparse-backend evidence. Production 90-digit promotion requires a
 direct sparse backend with typed failure and verified dependencies.
 
-## Runner Interface Target
+The current fixed 90-digit capture produces one full row. Its projected dense
+shape is admitted, so it does not exercise either sparse-backend gate. This is
+valid live-distribution evidence, not evidence that the 90-digit sparse boundary
+has been implemented or tested.
 
-The following commands are implementation targets. They do not exist at the
-time this contract is written.
+## Implemented Runner Interface
+
+The single-process command performs one Release-only capture. The comparison
+command builds once and launches three fresh probe processes:
 
 ```bash
-# Implementation target only.
-./scripts/test.sh bench-siqs-live-capture --band 50 --workers 1 --output-dir build-release/artifacts/siqs-live-sieve-capture/run-50-w1
-./scripts/test.sh bench-siqs-live-capture --band 50 --workers 2 --output-dir build-release/artifacts/siqs-live-sieve-capture/run-50-w2
-./scripts/test.sh bench-siqs-live-capture --band 50 --workers 4 --output-dir build-release/artifacts/siqs-live-sieve-capture/run-50-w4
-
-# Implementation target only. Repeat the same fresh-process matrix for bands 70 and 90.
-./scripts/test.sh compare-siqs-live-capture --input-dir build-release/artifacts/siqs-live-sieve-capture
+./scripts/test.sh probe-siqs-live-sieve 50 1
+./scripts/test.sh compare-siqs-live-sieve 50
+./scripts/test.sh compare-siqs-live-sieve 70
+./scripts/test.sh compare-siqs-live-sieve 90
 ```
 
-The implementation must expose all logical limits as explicit command
-arguments or a checked, versioned fixture. The JSON artifact remains the source
-of truth for the effective values.
+Both commands reject `--no-build`, explicit `--retry`, and non-Release build
+types. The probe executable also checks its configured build type and `NDEBUG`
+before reading the fixture.
 
-## Artifact Lifecycle
+## Current Fixed-Plan Evidence
+
+The following evidence was reproduced on 2026-07-23 with one, two, and four
+actual capture workers. All three worker records in each band had identical
+plan, slot-state, raw-corpus, source, pre-trim, and selected-row digests. Every
+slot completed without hitting its relation or payload cap.
+
+| Band | Plan Digest Low:High | Raw Full / 1LP / 2LP | Accepted 2LP / Rejected | Graph Cycles | Selected Rows |
+|---:|---:|---:|---:|---:|---:|
+| 50 | `11016941208907243574:11284256310490571374` | 2 / 16 / 6 | 3 / 3 | 0 | 2 |
+| 70 | `3984091375373043499:5485512563116088663` | 0 / 3 / 0 | 0 / 0 | 0 | 0 |
+| 90 | `11074722052958763298:5003813898734258881` | 1 / 0 / 0 | 0 / 0 | 0 | 1 |
+
+All three rejected 50-digit candidates were typed
+`invalid_two_large_prime_split`. No band produced a large-prime graph cycle.
+The records therefore validate bounded collection, typed normalization,
+conservation, and worker-count independence, but they do not satisfy the 2LP
+promotion gate or freeze an assembly/elimination parallel threshold.
+
+Logical limits are frozen in the versioned fixture and emitted in every line.
+A future JSON artifact will become the source of truth for persisted runs.
+
+## Persistent Artifact Lifecycle Target
 
 Artifacts live only under an ignored build directory. The runner must reject a
 non-empty output directory, write each file to a sibling temporary path, flush
