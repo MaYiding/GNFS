@@ -240,6 +240,37 @@ relations。relation digest、matrix identity 和生命周期字段一致。自�
 case 出现退化。该结果未达到 3% 推广门槛，因此原型不合入。后续 SQUFOF 优化必须
 减少实际循环、除法或失败 multiplier 工作量，不能只在平方检测前增加过滤分支。
 
+### SQUFOF Quotient Fast Path and Half-Step Unroll No-Go
+
+[Gower–Wagstaff 第 3.3 节](https://homes.cerias.purdue.edu/~ssw/squfof.pdf#page=11)
+规定递推后只检查 `Q_2, Q_4, ...`。msieve 的
+[官方实现](https://github.com/radii/msieve/blob/c8727d91305bdbe0972d160ef0ce61dd02ce9193/common/smallfact/squfof.c#L72-L172)
+还为商等于 1 增加无除法快路，并把奇偶半步展开。两项原型均保持 multiplier、迭代
+预算、无符号运算顺序和 inverse-walk 边界不变。
+
+无除法快路使用独立 Release 二进制做单轮成对比较。基线二进制 SHA-256 为
+`4c523a3cd84d44ea9fece0594e73285de9edf58b7ef69b8d45da2bc401993c90`，快路二进制为
+`9be6af65f751d57f261ca6127f184abc0f2a758a3ffe183cf8b9eb4cb2338ee3`。在 Apple M5 上，
+30-case wall sum 从 17.397s 增至 21.485s，增幅为 23.5%；process user time 从
+44.68s 增至 54.86s。该分支优化针对的旧架构除法代价不适用于当前目标机，原型撤回。
+
+双步展开不含上述快路。展开版二进制 SHA-256 为
+`41091ddebd33bf38f6d5f8ab64c90b1e282d480428471ed871ad069ffc71e6f7`。按
+baseline、unroll、unroll、baseline 顺序各运行两次完整 sweep：
+
+| Metric | Baseline mean | Unroll mean | Delta |
+|---|---:|---:|---:|
+| Process wall | 19.435s | 19.470s | +0.18% |
+| Process user CPU | 44.525s | 44.460s | -0.15% |
+| Summed case wall | 17.390s | 17.403s | +0.08% |
+| Worker 1, chunk 256 | 1.284s | 1.276s | -0.67% |
+| Worker 10, chunk 256 | 299.895ms | 295.614ms | -1.43% |
+
+两项原型的 2,284 个 candidates、188 条 relations 和 candidate/relation digest 均与
+基线一致。展开版的差异小于轮间波动，也远低于 3% 推广门槛，因此生产循环保持原状。
+下一轮若改变 multiplier 集合、顺序、竞速方式、queue 或总预算，必须作为成功率与失败
+集合可能变化的独立策略实验，不能归类为等价微优化。
+
 ## Production Telemetry
 
 生产 Pipeline 的 `structured_filter schema=1` 记录覆盖每个 logical generation。它
