@@ -75,6 +75,12 @@ Pipeline 按两个不重叠的阶段执行本地批次：
 阶段的内层并行。candidate 阶段最多启动 $\min(B, K)$ 个 workers，其中 $K$ 是当前
 批次的非空 candidate chunks 数。两个阶段顺序复用预算 $B$，不会叠加并行度。
 
+当前 production candidate worker 在 `Cofactorizer` 内串行执行。ECM Stage 1、
+ECM Stage 2、Brent-Pollard rho 和 ECM curve pool 的并行 helper 均未接入该路径。
+未来接入任一 helper 时，Pipeline 必须显式分配每个 candidate worker 的内层预算。
+所有同时活跃 worker 的内层预算总和不得超过 $B$。worker 内不得直接把 ENV 值当作
+独立线程上限，否则会形成 candidate worker 数与内层线程数的乘积。
+
 该契约限制本地批次各顺序阶段的计算通道，不限制进程 OS 线程数或 RSS。多通道
 `LatticeSieve` 执行时，外层 worker 线程会阻塞等待内层线程；运行库线程以及显式启用
 的余因子分解嵌套并行也不计入此预算。candidate worker 数受该预算约束，但预算仍不
@@ -100,8 +106,26 @@ special-Q 顺序、批次成员、归约输入或 checkpoint identity。`max_spe
 - `candidate_batch_total_chunks`：所有本地批次处理的 candidate chunks 总数；
 - `candidate_batch_peak_chunks`：单个批次的最大 candidate chunks 数；
 - `candidate_batch_peak_candidates`：单个批次保留的最大候选数；
+- `candidate_batch_rss_sample_candidates`：配对 RSS 样本对应的候选数；
+- `candidate_batch_after_generation_current_rss_bytes`：Stage A 结束后的 current RSS；
+- `candidate_batch_after_cofactor_current_rss_bytes`：Stage B 结束后的 current RSS；
+- `candidate_batch_after_release_current_rss_bytes`：批次 storage 析构后的 current RSS；
 - `timings.candidate_generation_s`：生成候选的累计 wall time；
 - `timings.candidate_cofactor_s`：candidate cofactor 阶段的累计 wall time。
+
+RSS 采样策略为 `first_max_candidates`。Pipeline 只在当前批次候选数严格大于既有样本时
+替换配对样本。因此，并列最大值保留最早批次，且三个 RSS 值始终来自同一批次。
+三个 current RSS 字段必须全有或全无；不支持的平台不以 0 bytes 伪装成功样本。
+
+`after_generation` 在 Stage A workers 和 worker-local `LatticeSieve` 析构后采样，
+但仍保留全部 `SieveResult`。`after_cofactor` 在 candidate workers、chunk scratch
+和 worker-local `Cofactorizer` 析构后采样，此时输入与归并前输出仍在内存。
+`after_release` 在输出移入 collector，并析构批次输入与输出 storage 后采样。
+它表示进程 current RSS，不表示这些对象独占的 bytes，也不保证小于前两个样本。
+
+当 candidate worker 数为 1 时，顺序路径在调用线程执行。ECM 的 thread-local state
+可保留到进程结束。allocator 也可能保留已释放页面。因此，三个样本之间不得建立
+单调断言，也不得作为跨平台 CI 阈值。
 
 `special_q_batch_peak_assigned_threads` 和 `special_q_worker_peak_sieve_threads` 在
 worker join 后从各 `LatticeSieve` 的实际配置值汇总。它们不只复述 planner 的预期

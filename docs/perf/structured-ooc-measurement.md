@@ -50,7 +50,9 @@ source/output backend。缺失的 RSS 值写为 `na`。
 该数为 50 位、164 bit。探针调用公开 Pipeline phase API：
 `select_polynomial()`、`build_factor_base()`、`sieve_and_collect()` 和
 `solve_matrix()`。它强制显式 ordinary OOC 与 structured route，并关闭 resume、
-distributed sieve、V0 BFS、V3 cascade、3LP 和其它会改变实验族的开关。
+distributed sieve、V0 BFS、V3 cascade、3LP 和其它会改变实验族的开关。探针还使用
+`cofactor_inner_parallel_policy=forced_sequential`。ECM Stage 1、ECM Stage 2 和
+Brent rho helper 固定为单线程，ECM curve pool 保持关闭。
 
 ```bash
 ./scripts/test.sh probe-50d-structured-ooc
@@ -98,6 +100,28 @@ raw/output digest 与 rows、矩阵 rows/columns、row mapping identity、有符
 delta、nonzeros、wall time 和 process RSS。`candidate_generation_s` 与
 `candidate_cofactor_s` 分别记录两个阶段的累计 wall time。runner 使用独立临时目录；
 成功后只在目录为空时执行 `rmdir`，失败或生命周期异常时保留目录供诊断。
+
+candidate 批次的 current RSS 使用 `first_max_candidates` 配对策略。Pipeline 只在
+当前批次候选数严格大于既有样本时替换样本；并列最大值保留最早批次。记录包含：
+
+- `candidate_batch_rss_sample_candidates`；
+- `candidate_batch_after_generation_current_rss_bytes`；
+- `candidate_batch_after_cofactor_current_rss_bytes`；
+- `candidate_batch_after_release_current_rss_bytes`。
+
+后三个字段必须全有或全无。缺少 current RSS 支持时统一写为 `na`，不得混合部分样本。
+`candidate_batch_rss_sample_candidates` 标识配对样本的 workload，不是 RSS 数值。
+RSS 字段只作资源观测，不参与 worker identity 比较。
+
+`after_generation` 在 Stage A workers 和 `LatticeSieve` 析构后采样，但仍保留
+`SieveResult`。`after_cofactor` 在 candidate workers、chunk scratch 和 worker-local
+`Cofactorizer` 析构后采样，此时仍保留批次输入与归并前输出。`after_release` 在输出
+移入 collector，并析构批次输入与输出 storage 后采样。
+
+`after_release` 是进程 current RSS，不是已析构 storage 的 owned bytes。allocator
+可能保留页面，因此它不保证低于前两个样本。candidate worker 数为 1 时，顺序路径在
+调用线程执行，ECM thread-local state 可保留到进程结束。任何阶段差值都不能形成
+单调断言、跨平台阈值或 CI 通过条件。
 
 ## Production Telemetry
 
@@ -292,7 +316,8 @@ workers。188 条 raw relations、两个 corpus digests、`0 x 22660` full matri
 不是单独的筛核计时。在表中这一次 fresh-process 记录里，4-worker peak RSS 增加约
 5.4%，另外两个 topology 略降；复跑可能改变方向和幅度，因此不把该差值视为稳定收益
 或回归。两阶段不会同时保留 sieve region 与活跃 cofactor workers，但分配器仍可能
-保留已释放的线程局部 arena；因此不能把顺序阶段理解为 RSS 相加或取最大值的简单模型。
+保留已释放的线程局部 arena。上述配对 current RSS 字段用于区分生命周期边界，但仍不
+表示 storage 的独占内存，不能把顺序阶段理解为 RSS 相加或取最大值的简单模型。
 
 64-SQ 对照覆盖 16 个 production batches。三组都处理 118,311 个候选和 499 个
 chunks，单批最多 29,675 个候选；candidate 阶段峰值均为 10 个 workers。输出仍为

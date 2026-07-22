@@ -4,6 +4,8 @@
 #include "progress.hpp"
 
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -57,6 +59,10 @@ struct FactorStats {
     size_t candidate_batch_total_chunks = 0;
     size_t candidate_batch_peak_chunks = 0;
     size_t candidate_batch_peak_candidates = 0;
+    size_t candidate_batch_rss_sample_candidates = 0;
+    std::optional<uint64_t> candidate_batch_after_generation_current_rss_bytes;
+    std::optional<uint64_t> candidate_batch_after_cofactor_current_rss_bytes;
+    std::optional<uint64_t> candidate_batch_after_release_current_rss_bytes;
     size_t candidates_total = 0;
     size_t relations_found = 0;
     size_t full_relations = 0;
@@ -170,6 +176,29 @@ struct FactorResult {
            << ",\n";
         os << "    \"candidate_batch_peak_candidates\": " << stats.candidate_batch_peak_candidates
            << ",\n";
+        os << "    \"candidate_batch_rss_sample_candidates\": "
+           << stats.candidate_batch_rss_sample_candidates << ",\n";
+        os << "    \"candidate_batch_after_generation_current_rss_bytes\": ";
+        if (stats.candidate_batch_after_generation_current_rss_bytes) {
+            os << *stats.candidate_batch_after_generation_current_rss_bytes;
+        } else {
+            os << "null";
+        }
+        os << ",\n";
+        os << "    \"candidate_batch_after_cofactor_current_rss_bytes\": ";
+        if (stats.candidate_batch_after_cofactor_current_rss_bytes) {
+            os << *stats.candidate_batch_after_cofactor_current_rss_bytes;
+        } else {
+            os << "null";
+        }
+        os << ",\n";
+        os << "    \"candidate_batch_after_release_current_rss_bytes\": ";
+        if (stats.candidate_batch_after_release_current_rss_bytes) {
+            os << *stats.candidate_batch_after_release_current_rss_bytes;
+        } else {
+            os << "null";
+        }
+        os << ",\n";
         os << "    \"candidates_total\": " << stats.candidates_total << ",\n";
         os << "    \"relations_found\": " << stats.relations_found << ",\n";
         os << "    \"full_relations\": " << stats.full_relations << ",\n";
@@ -266,6 +295,26 @@ struct FactorResult {
         os << "  Candidate batch peak chunks: " << stats.candidate_batch_peak_chunks << "\n";
         os << "  Candidate batch peak candidates: " << stats.candidate_batch_peak_candidates
            << "\n";
+        os << "  Candidate RSS sample candidates: "
+           << stats.candidate_batch_rss_sample_candidates << "\n";
+        os << "  Candidate after-generation current RSS: ";
+        if (stats.candidate_batch_after_generation_current_rss_bytes) {
+            os << *stats.candidate_batch_after_generation_current_rss_bytes << " bytes\n";
+        } else {
+            os << "n/a\n";
+        }
+        os << "  Candidate after-cofactor current RSS: ";
+        if (stats.candidate_batch_after_cofactor_current_rss_bytes) {
+            os << *stats.candidate_batch_after_cofactor_current_rss_bytes << " bytes\n";
+        } else {
+            os << "n/a\n";
+        }
+        os << "  Candidate after-release current RSS: ";
+        if (stats.candidate_batch_after_release_current_rss_bytes) {
+            os << *stats.candidate_batch_after_release_current_rss_bytes << " bytes\n";
+        } else {
+            os << "n/a\n";
+        }
         os << "  Candidates tested: " << stats.candidates_total << "\n";
         os << "  Relations found: " << stats.relations_found << "\n";
         os << "    Full: " << stats.full_relations << "\n";

@@ -541,6 +541,40 @@ no-op 不调 generator. caller 主路径行为完全等同 legacy, 零开销, �
 
 ---
 
+## Candidate 批次嵌套并行边界
+
+production Pipeline 先并行生成整个 special-Q 批次的候选，再启动 candidate workers。
+每个 candidate worker 当前用一个 worker-local `Cofactorizer` 串行验证候选。下表中的
+并行 helper 尚未接入 `Cofactorizer::verify()`、`ECM::quick_factor()` 或 production
+candidate batch：
+
+| Helper / ENV | 默认值 | 当前 production 状态 | 潜在线程池上限 |
+|---|---:|---|---:|
+| `GNFS_ECM_STAGE1_PARALLEL_THREADS` | 1 | helper-only | `min(N, curves)` |
+| `GNFS_ECM_STAGE2_PARALLEL` | 1 | helper-only | `min(N, curves)` |
+| `GNFS_BRENT_POLLARD_RHO_THREADS` | 1 | helper-only | `min(N, configs)` |
+| `GNFS_ECM_CURVE_POOL` | 0 | helper-only | `min(pool_size, hw, 8)` |
+
+前三个线程值最高钳制到 `hardware_concurrency * 2`。`GNFS_ECM_CURVE_POOL` 小于 4 时
+禁用；使用默认 `parallel_threads=0` 构造 pool 时，内部线程数最高为 8。ENV 本身当前
+不会让 production candidate worker 创建这些线程。
+
+未来接入这些 helper 时，调用方必须先冻结 Pipeline 总计算预算 $B$。设同时活跃的
+candidate workers 为 $W$，分配给第 $i$ 个 worker 的内层通道为 $t_i$，则必须满足：
+
+$$
+\sum_{i=0}^{W-1} t_i \le B
+$$
+
+每个 helper 的有效线程数还必须钳制到对应的 $t_i$。candidate worker 内不得直接读取
+ENV 后创建独立满额线程池。否则，最坏并行度会扩大为 $W$ 与 helper 线程数的乘积。
+
+真实 50 位有界探针使用 `forced_sequential` cofactor-inner policy。该策略把 Stage 1、
+Stage 2 和 Brent rho helper 固定为 1，并关闭 ECM curve pool。它用于隔离外层 worker
+对照，不改变 production 默认值。
+
+---
+
 ## ECM Stage 2 多曲线并行 (GNFS_ECM_STAGE2_PARALLEL)
 
 **ENV `GNFS_ECM_STAGE2_PARALLEL=N`** (2026-05-22 实施, default 1, range [1, hardware_concurrency * 2]):

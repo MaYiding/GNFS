@@ -2576,12 +2576,13 @@ case "$MODE" in
         if (( _comparison_ready )); then
             local -a _comparison_fields=(
                 status claim_boundary stop_after pipeline_batch_mode candidate_chunk_size
+                candidate_rss_sample_policy cofactor_inner_parallel_policy
                 n_digits n_bits max_special_q
                 special_q_processed special_q_batch_count special_q_batch_peak_size
                 max_local_sieve_threads_requested local_sieve_thread_budget
                 special_q_batch_peak_assigned_threads
                 candidates_total candidate_batch_total_chunks candidate_batch_peak_chunks
-                candidate_batch_peak_candidates
+                candidate_batch_peak_candidates candidate_batch_rss_sample_candidates
                 rational_fb_columns algebraic_fb_columns base_factor_columns initial_raw_target
                 first_round_complete resume_scope attempted_resume attempted_distributed
                 sge_attempted solver_attempted sqrt_attempted factorization_attempted

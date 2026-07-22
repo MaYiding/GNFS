@@ -21,6 +21,7 @@
 #include <gnfs/sieve/sieve_checkpoint.hpp>
 #include <gnfs/sieve/sieve_run_identity.hpp>
 #include <gnfs/util/process.hpp>
+#include <gnfs/util/process_memory.hpp>
 #include <gnfs/util/temp_path.hpp>
 
 #include <algorithm>
@@ -465,6 +466,10 @@ bool test_result_to_json() {
     r.stats.candidate_batch_total_chunks = 41;
     r.stats.candidate_batch_peak_chunks = 17;
     r.stats.candidate_batch_peak_candidates = 4096;
+    r.stats.candidate_batch_rss_sample_candidates = 4096;
+    r.stats.candidate_batch_after_generation_current_rss_bytes = 123456;
+    r.stats.candidate_batch_after_cofactor_current_rss_bytes = 234567;
+    r.stats.candidate_batch_after_release_current_rss_bytes = 345678;
     r.stats.timings.candidate_generation_s = 0.25;
     r.stats.timings.candidate_cofactor_s = 0.5;
 
@@ -483,6 +488,13 @@ bool test_result_to_json() {
         json.find("\"candidate_batch_total_chunks\": 41") == std::string::npos ||
         json.find("\"candidate_batch_peak_chunks\": 17") == std::string::npos ||
         json.find("\"candidate_batch_peak_candidates\": 4096") == std::string::npos ||
+        json.find("\"candidate_batch_rss_sample_candidates\": 4096") == std::string::npos ||
+        json.find("\"candidate_batch_after_generation_current_rss_bytes\": 123456") ==
+            std::string::npos ||
+        json.find("\"candidate_batch_after_cofactor_current_rss_bytes\": 234567") ==
+            std::string::npos ||
+        json.find("\"candidate_batch_after_release_current_rss_bytes\": 345678") ==
+            std::string::npos ||
         json.find("\"candidate_generation_s\": 0.25") == std::string::npos ||
         json.find("\"candidate_cofactor_s\": 0.5") == std::string::npos) {
         return false;
@@ -515,6 +527,10 @@ bool test_result_to_report() {
     r.stats.timings.sieve_s = 0.8;
     r.stats.special_q_batch_worker_limit = 2;
     r.stats.local_sieve_thread_budget = 8;
+    r.stats.candidate_batch_rss_sample_candidates = 4096;
+    r.stats.candidate_batch_after_generation_current_rss_bytes = 123456;
+    r.stats.candidate_batch_after_cofactor_current_rss_bytes = 234567;
+    r.stats.candidate_batch_after_release_current_rss_bytes = 345678;
 
     auto report = r.to_report();
     assert(report.find("GNFS Factorization Report") != std::string::npos);
@@ -524,6 +540,12 @@ bool test_result_to_report() {
         return false;
     }
     if (report.find("Local sieve compute-lane budget: 8") == std::string::npos) {
+        return false;
+    }
+    if (report.find("Candidate RSS sample candidates: 4096") == std::string::npos ||
+        report.find("Candidate after-generation current RSS: 123456 bytes") == std::string::npos ||
+        report.find("Candidate after-cofactor current RSS: 234567 bytes") == std::string::npos ||
+        report.find("Candidate after-release current RSS: 345678 bytes") == std::string::npos) {
         return false;
     }
     return true;
@@ -754,6 +776,22 @@ bool test_pipeline_step_by_step() {
         pipeline.stats().timings.candidate_generation_s <= 0.0 ||
         pipeline.stats().timings.candidate_cofactor_s <= 0.0) {
         std::cout << "(Pipeline did not apply its one-lane local sieve budget) ";
+        return false;
+    }
+    const bool candidate_after_generation_present =
+        pipeline.stats().candidate_batch_after_generation_current_rss_bytes.has_value();
+    const bool candidate_after_cofactor_present =
+        pipeline.stats().candidate_batch_after_cofactor_current_rss_bytes.has_value();
+    const bool candidate_after_release_present =
+        pipeline.stats().candidate_batch_after_release_current_rss_bytes.has_value();
+    const bool current_rss_supported =
+        gnfs::util::process_memory_snapshot().current_rss_bytes.has_value();
+    if (pipeline.stats().candidate_batch_rss_sample_candidates !=
+            pipeline.stats().candidate_batch_peak_candidates ||
+        candidate_after_generation_present != candidate_after_cofactor_present ||
+        candidate_after_generation_present != candidate_after_release_present ||
+        candidate_after_generation_present != current_rss_supported) {
+        std::cout << "(Pipeline candidate RSS boundary sample is incoherent) ";
         return false;
     }
 

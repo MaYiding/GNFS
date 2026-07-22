@@ -156,6 +156,10 @@ struct ExperimentRecord final {
     size_t candidate_batch_total_chunks = 0;
     size_t candidate_batch_peak_chunks = 0;
     size_t candidate_batch_peak_candidates = 0;
+    size_t candidate_batch_rss_sample_candidates = 0;
+    std::optional<uint64_t> candidate_batch_after_generation_current_rss_bytes;
+    std::optional<uint64_t> candidate_batch_after_cofactor_current_rss_bytes;
+    std::optional<uint64_t> candidate_batch_after_release_current_rss_bytes;
     double candidate_generation_s = 0.0;
     double candidate_cofactor_s = 0.0;
     size_t rational_fb_columns = 0;
@@ -410,6 +414,8 @@ void emit_record(const ExperimentRecord& record) {
         << " stop_after=matrix_build"
         << " pipeline_batch_mode=two_stage_candidate_batch"
         << " candidate_chunk_size=" << gnfs::cofactor::DEFAULT_CANDIDATE_CHUNK_SIZE
+        << " candidate_rss_sample_policy=first_max_candidates"
+        << " cofactor_inner_parallel_policy=forced_sequential"
         << " status=" << record.status << " failure_stage=" << record.failure_stage
         << " n_digits=" << PROBE_DIGITS << " n_bits=" << PROBE_BITS
         << " max_special_q=" << record.max_special_q
@@ -428,6 +434,13 @@ void emit_record(const ExperimentRecord& record) {
         << " candidate_batch_total_chunks=" << record.candidate_batch_total_chunks
         << " candidate_batch_peak_chunks=" << record.candidate_batch_peak_chunks
         << " candidate_batch_peak_candidates=" << record.candidate_batch_peak_candidates
+        << " candidate_batch_rss_sample_candidates=" << record.candidate_batch_rss_sample_candidates
+        << " candidate_batch_after_generation_current_rss_bytes="
+        << optional_token(record.candidate_batch_after_generation_current_rss_bytes)
+        << " candidate_batch_after_cofactor_current_rss_bytes="
+        << optional_token(record.candidate_batch_after_cofactor_current_rss_bytes)
+        << " candidate_batch_after_release_current_rss_bytes="
+        << optional_token(record.candidate_batch_after_release_current_rss_bytes)
         << " rational_fb_columns=" << record.rational_fb_columns
         << " algebraic_fb_columns=" << record.algebraic_fb_columns
         << " base_factor_columns=" << record.base_factor_columns
@@ -769,6 +782,22 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     ScopedEnvironmentVariable lattice_skew("GNFS_LATTICE_SKEW", "0");
     ScopedEnvironmentVariable thin_solver("GNFS_NO_THIN_SOLVE", "1");
     ScopedEnvironmentVariable legacy_streaming_matrix("GNFS_SGE_STREAMING", "off");
+    ScopedEnvironmentVariable cofactor_brent("GNFS_COFACTOR_BRENT", "0");
+    ScopedEnvironmentVariable ecm_brent_suyama("GNFS_ECM_BRENT_SUYAMA", "0");
+    ScopedEnvironmentVariable ecm_bs_degree("GNFS_ECM_BS_DEGREE", std::nullopt);
+    ScopedEnvironmentVariable ecm_stage1_threads("GNFS_ECM_STAGE1_PARALLEL_THREADS", "1");
+    ScopedEnvironmentVariable ecm_stage2_threads("GNFS_ECM_STAGE2_PARALLEL", "1");
+    ScopedEnvironmentVariable rho_threads("GNFS_BRENT_POLLARD_RHO_THREADS", "1");
+    ScopedEnvironmentVariable ecm_curve_pool("GNFS_ECM_CURVE_POOL", "0");
+    ScopedEnvironmentVariable cofactor_batch_size("GNFS_COFACTOR_BATCH_SIZE", "1");
+    ScopedEnvironmentVariable ecm_sigma_pool("GNFS_ECM_SIGMA_POOL_SIZE", "0");
+    ScopedEnvironmentVariable ecm_b1_cache("GNFS_ECM_B1_CACHE_SIZE", "0");
+    ScopedEnvironmentVariable cofactor_result_cache("GNFS_COFACTOR_RESULT_CACHE_SIZE", "0");
+    ScopedEnvironmentVariable ecm_batch_inverse("GNFS_ECM_BATCH_INV", "0");
+    ScopedEnvironmentVariable survival_filter("GNFS_SURVIVAL_FILTER", "0");
+    ScopedEnvironmentVariable survival_threshold("GNFS_SURVIVAL_THRESHOLD", std::nullopt);
+    ScopedEnvironmentVariable cofactor_timing("GNFS_COFACTOR_TIMING_ENABLE", "0");
+    ScopedEnvironmentVariable trial_division_simd("GNFS_TRIAL_DIV_SIMD", "auto");
 
     record.start_memory = capture_memory();
 
@@ -832,6 +861,14 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     record.candidate_batch_total_chunks = pipeline_stats.candidate_batch_total_chunks;
     record.candidate_batch_peak_chunks = pipeline_stats.candidate_batch_peak_chunks;
     record.candidate_batch_peak_candidates = pipeline_stats.candidate_batch_peak_candidates;
+    record.candidate_batch_rss_sample_candidates =
+        pipeline_stats.candidate_batch_rss_sample_candidates;
+    record.candidate_batch_after_generation_current_rss_bytes =
+        pipeline_stats.candidate_batch_after_generation_current_rss_bytes;
+    record.candidate_batch_after_cofactor_current_rss_bytes =
+        pipeline_stats.candidate_batch_after_cofactor_current_rss_bytes;
+    record.candidate_batch_after_release_current_rss_bytes =
+        pipeline_stats.candidate_batch_after_release_current_rss_bytes;
     record.candidate_generation_s = pipeline_stats.timings.candidate_generation_s;
     record.candidate_cofactor_s = pipeline_stats.timings.candidate_cofactor_s;
     record.first_round_complete = reduction_stats.input_relations >= record.initial_raw_target;
@@ -935,6 +972,21 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     require(pipeline_stats.candidate_batch_peak_candidates > 0 &&
                 pipeline_stats.candidate_batch_peak_candidates <= pipeline_stats.candidates_total,
             "candidate batch peak candidates differ from the total candidate corpus");
+    require(pipeline_stats.candidate_batch_rss_sample_candidates ==
+                pipeline_stats.candidate_batch_peak_candidates,
+            "candidate RSS sample does not identify the first maximum candidate batch");
+    const bool candidate_after_generation_present =
+        pipeline_stats.candidate_batch_after_generation_current_rss_bytes.has_value();
+    const bool candidate_after_cofactor_present =
+        pipeline_stats.candidate_batch_after_cofactor_current_rss_bytes.has_value();
+    const bool candidate_after_release_present =
+        pipeline_stats.candidate_batch_after_release_current_rss_bytes.has_value();
+    require(candidate_after_generation_present == candidate_after_cofactor_present &&
+                candidate_after_generation_present == candidate_after_release_present,
+            "candidate RSS boundary sample is only partially populated");
+    require(candidate_after_generation_present ==
+                record.after_sieve_memory.current_rss_bytes.has_value(),
+            "candidate RSS support differs from process current RSS support");
     require(pipeline_stats.timings.candidate_generation_s > 0.0 &&
                 pipeline_stats.timings.candidate_cofactor_s > 0.0,
             "two-stage candidate batch timings were not recorded");
