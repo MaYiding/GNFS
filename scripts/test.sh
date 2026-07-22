@@ -348,6 +348,7 @@ ALL_TEST_BINARIES=(
     test_local_sieve_thread_budget
     test_siqs
     test_siqs_2lp
+    test_siqs_2lp_graph
     test_siqs_e2e
     test_trial_div_simd
     test_trial_wheel_bench
@@ -368,7 +369,7 @@ MODULE_TESTS=(
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_class_group test_couveignes_large_class_group test_couveignes_parallel"
     api            "test_i18n test_method_selection test_relation_reduction_engine"
-    siqs           "test_siqs test_siqs_2lp"
+    siqs           "test_siqs test_siqs_2lp test_siqs_2lp_graph"
 )
 
 # 模块 → 慢速测试映射 (slow+heavy, 可选运行)
@@ -473,6 +474,7 @@ SMOKE_TESTS=(
     test_i18n
     test_method_selection
     test_siqs_2lp
+    test_siqs_2lp_graph
     test_clique_merger
     test_3lp_cofactor
     test_3lp_merge
@@ -729,6 +731,7 @@ TEST_TIMEOUT=(
     test_work_stealing       10
     test_siqs                180
     test_siqs_2lp            10
+    test_siqs_2lp_graph      10
 )
 
 # 测试速度分级 (用于 list 显示)
@@ -854,6 +857,7 @@ TEST_TIER=(
     test_method_selection    "instant"
     test_siqs                "fast"
     test_siqs_2lp            "instant"
+    test_siqs_2lp_graph      "instant"
     test_clique_merger       "instant"
     test_clique_merger_50d_synthetic "fast"
     test_3lp_cofactor        "instant"
@@ -950,7 +954,7 @@ MODULE_DESC=(
 
 # 有序模块列表 (按流水线顺序)
 typeset -a MODULE_ORDER
-MODULE_ORDER=(core util polynomial factor_base sieve cofactor relation linalg sqrt api)
+MODULE_ORDER=(core util polynomial factor_base sieve cofactor relation linalg sqrt siqs api)
 
 # 文件路径 → 模块映射
 path_to_module() {
@@ -958,6 +962,7 @@ path_to_module() {
     case "$path" in
         tests/test_squfof*.cpp|tests/support/squfof_*.hpp|tests/fixtures/squfof_*.hpp) echo "cofactor" ;;
         tests/test_structured*.cpp) echo "relation" ;;
+        tests/test_siqs*.cpp|*siqs/*) echo "siqs" ;;
         *core/*)       echo "core" ;;
         *util/*)       echo "util" ;;
         *polynomial/*) echo "polynomial" ;;

@@ -1959,6 +1959,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Siqs2LP COMMAND test_siqs_2lp)
     set_tests_properties(Siqs2LP PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_2lp_graph
+        tests/test_siqs_2lp_graph.cpp
+    )
+    target_link_libraries(test_siqs_2lp_graph PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME Siqs2LPGraph COMMAND test_siqs_2lp_graph)
+    set_tests_properties(Siqs2LPGraph PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # SIQS 端到端：100-bit + 180-bit 实测分解
     add_executable(test_siqs_e2e
         tests/test_siqs_e2e.cpp

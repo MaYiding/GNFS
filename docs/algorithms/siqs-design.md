@@ -59,6 +59,8 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `next_poly_B` | `siqs.hpp` ~line 591 | Gray-code switch: one bit flip rotates offsets in O(FB) |
 | `sieve_polynomial` | `siqs.hpp` ~line 658 | Log-add over `[-M, M]`, threshold filter, trial divide, 2LP cofactor split |
 | `merge_partials` | `siqs.hpp` ~line 994 | Iterative greedy LP merge — 1LP pairs plus 2LP cycle finding |
+| `normalize_two_large_prime` | `two_large_prime.hpp` | Exact, deterministic-prime validation for a candidate 2LP split |
+| `build_two_large_prime_cycle_basis` | `two_large_prime_graph.hpp` | Deterministic fundamental-cycle oracle over the 1LP/2LP multigraph |
 | `dense_gauss_left_nullspace` | `siqs.hpp` ~line 1130 | Word-packed dense GF(2) Gaussian elimination |
 | `solve_matrix` | `siqs.hpp` ~line 1231 | Dense path ≤100K cols, otherwise `linalg::BlockLanczos` |
 | `try_extract` / `try_extract_with_combos` | `siqs.hpp` ~line 1270 | Per-dependency factor extraction with random XOR retry |
@@ -90,11 +92,42 @@ The crucial knobs by digit band:
 - `small_prime_cutoff` — primes below this are skipped during sieving and
   paid back via `small_contrib` in the threshold computation
 
-Two-large-prime support is implemented end-to-end but currently disabled by
-setting `lp_bound_sq = 0`. The reason is documented inline near `siqs.hpp:1450`:
-2LP cycle extraction failed for certain multipliers in earlier runs, and 1LP
-merging already supplies enough usable relations. Re-enabling requires a
-re-validation across the 50-90 digit band.
+Two-large-prime collection and the legacy greedy merge remain disabled by
+setting `lp_bound_sq = 0`. Exact split normalization and a deterministic
+fundamental-cycle oracle are available as isolated, tested boundaries, but are
+not yet connected to production relation materialization. Re-enabling also
+requires wide exponent accumulation, exact large-prime square-root accounting,
+congruence checks, and re-validation across the 50-90 digit band.
+
+## Two-Large-Prime Re-enablement Plan
+
+The large-prime graph uses one global virtual vertex `0`: a 1LP relation is an
+edge `(0, p)`, a 2LP relation is `(p, q)`, and a repeated factor `p^2` is a
+self-loop. Parallel edges are distinct source relations. For a graph with `E`
+edges, `V` represented vertices, and `C` connected components, a complete
+fundamental-cycle basis contains exactly `E - V + C` independent cycles.
+
+The safe migration order is:
+
+1. Convert every partial through a fail-closed adapter. Candidate 2LP splits
+   must pass `normalize_two_large_prime`; relation IDs must be stable rather
+   than derived from concurrent collector insertion order.
+2. Select cycles with `build_two_large_prime_cycle_basis` and retain the source
+   IDs of each cycle. Different basis cycles may legitimately share tree edges.
+3. Materialize each cycle directly from its original relations. Do not feed it
+   through the legacy pairwise `merge_two`: multiply values modulo `kN`, XOR
+   signs, accumulate factor-base exponents in a wide checked type, and derive
+   each large-prime square-root multiplicity as graph degree divided by two.
+4. Before any GCD attempt, verify the complete congruence
+   `X^2 == Y^2 (mod kN)` and reject inconsistent rows with a diagnostic count.
+5. Exercise the path in test-only or shadow mode first. Production 2LP remains
+   off until fixed 50-90 digit corpora show valid congruences, useful cycles,
+   and no regression in the default 1LP path.
+
+The arithmetic oracle must include a single-edge `p^2` cycle, three or more
+parallel edges, a vertex of degree four, and a cycle whose factor-base exponent
+sum exceeds 255. These cases respectively prevent self-merging, lost cycle
+rank, incorrect LP square-root multiplicity, and byte-exponent wraparound.
 
 ## Performance Notes
 
@@ -111,8 +144,9 @@ SIQS's `L_N(1/2, 1)`.
 
 ## Known Limitations
 
-- **2LP cofactor handling is gated off** (`lp_bound_sq = 0`); single-LP graph
-  merging is the production path
+- **2LP cofactor handling is gated off** (`lp_bound_sq = 0`); normalization and
+  cycle selection are staged, while exact cycle materialization and extraction
+  validation remain prerequisites for production use
 - **Beyond ~57 digits, extraction failures dominate** in current calibration.
   The 60-digit band needs FB and threshold tuning before being declared
   production-ready. Use GNFS for ≥60 digits until then
