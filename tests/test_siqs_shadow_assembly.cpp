@@ -24,6 +24,11 @@ using std::uint8_t;
 
 using gnfs::core::Integer;
 using gnfs::siqs::assemble_siqs_shadow_rows;
+using gnfs::siqs::build_two_large_prime_cycle_basis;
+using gnfs::siqs::IndexedTwoLargePrimeCycleSources;
+using gnfs::siqs::materialize_two_large_prime_cycle;
+using gnfs::siqs::MaterializedTwoLargePrimeCycle;
+using gnfs::siqs::prepare_two_large_prime_corpus;
 using gnfs::siqs::SIQSFactorPower;
 using gnfs::siqs::SIQSPostMergeRow;
 using gnfs::siqs::SIQSRelation;
@@ -149,6 +154,14 @@ void check_result(const SIQSShadowAssemblyResult& result,
            lhs.factor_powers == rhs.factor_powers &&
            lhs.large_prime_sqrt_factors == rhs.large_prime_sqrt_factors &&
            lhs.source_ids == rhs.source_ids;
+}
+
+[[nodiscard]] bool same_materialized_cycle(const MaterializedTwoLargePrimeCycle& lhs,
+                                           const MaterializedTwoLargePrimeCycle& rhs) {
+    return lhs.value_modulus == rhs.value_modulus && lhs.negative == rhs.negative &&
+           lhs.factor_base_exponents == rhs.factor_base_exponents &&
+           lhs.large_prime_square_roots == rhs.large_prime_square_roots &&
+           lhs.relation_indices == rhs.relation_indices;
 }
 
 [[nodiscard]] bool same_shadow_row(const SIQSShadowRow& lhs, const SIQSShadowRow& rhs) {
@@ -306,6 +319,50 @@ void test_permutation_split_order_and_worker_determinism() {
         check_result(candidate, SIQSShadowAssemblyStatus::valid);
         if (candidate.assembly()) {
             CHECK(same_assembly(*baseline.assembly(), *candidate.assembly()));
+        }
+    }
+}
+
+void test_adapter_graph_cycles_match_generic_and_indexed_materializers() {
+    const auto relations = make_main_corpus();
+    auto corpus = prepare_two_large_prime_corpus(
+        std::span<const SIQSRelation>(relations.data(), relations.size()),
+        factor_base_primes.size(), 41, OracleSplitter{});
+    CHECK(corpus.has_value());
+    if (!corpus) {
+        return;
+    }
+
+    const auto basis = build_two_large_prime_cycle_basis(corpus->edges);
+    CHECK(basis.has_value());
+    if (!basis) {
+        return;
+    }
+    CHECK(basis->cycles.size() == 3);
+
+    std::vector<std::optional<MaterializedTwoLargePrimeCycle>> generic_results;
+    generic_results.reserve(basis->cycles.size());
+    for (const auto& cycle : basis->cycles) {
+        generic_results.push_back(
+            materialize_two_large_prime_cycle(corpus->sources, cycle, relation_modulus));
+    }
+
+    // This mirrors assembly: one immutable, move-only validated corpus is
+    // shared by every sorted graph cycle, including concurrent workers.
+    auto indexed_sources = IndexedTwoLargePrimeCycleSources::try_create(std::move(corpus->sources));
+    CHECK(indexed_sources.has_value());
+    if (!indexed_sources) {
+        return;
+    }
+
+    for (size_t cycle_ordinal = 0; cycle_ordinal < basis->cycles.size(); ++cycle_ordinal) {
+        const auto indexed = materialize_two_large_prime_cycle(
+            *indexed_sources, basis->cycles[cycle_ordinal], relation_modulus);
+        const auto& generic = generic_results[cycle_ordinal];
+        CHECK(generic.has_value());
+        CHECK(indexed.has_value());
+        if (generic && indexed) {
+            CHECK(same_materialized_cycle(*generic, *indexed));
         }
     }
 }
@@ -549,6 +606,7 @@ void test_empty_assembly_is_valid_and_fingerprinted() {
 int main() {
     test_catalog_provenance_dedup_and_trim();
     test_permutation_split_order_and_worker_determinism();
+    test_adapter_graph_cycles_match_generic_and_indexed_materializers();
     test_invalid_configuration_and_result_moves();
     test_rejection_stats_remain_partitioned();
     test_fingerprint_layers();

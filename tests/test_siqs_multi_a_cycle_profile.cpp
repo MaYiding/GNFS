@@ -1615,37 +1615,39 @@ void analyze_prefix(PrefixRecord& record, size_t relation_count, const Flattened
     record.canonical_raw = canonical_raw_digest(relations, provenances, record.a_count);
 
     const auto splitter = [](uint64_t cofactor) { return split_cofactor_64(cofactor); };
-    const auto prepared = prepare_two_large_prime_corpus(relations, factor_base_primes.size(),
-                                                         large_prime_bound, splitter);
-    require(prepared.has_value(), "typed 2LP adapter rejected the prefix configuration");
-    record.adapter = prepared->stats;
-    validate_adapter_conservation(record.adapter, relation_count);
+    {
+        const auto prepared = prepare_two_large_prime_corpus(relations, factor_base_primes.size(),
+                                                             large_prime_bound, splitter);
+        require(prepared.has_value(), "typed 2LP adapter rejected the prefix configuration");
+        record.adapter = prepared->stats;
+        validate_adapter_conservation(record.adapter, relation_count);
 
-    const auto graph =
-        build_two_large_prime_cycle_basis(std::span<const gnfs::siqs::TwoLargePrimeEdge>(
-            prepared->edges.data(), prepared->edges.size()));
-    require(graph.has_value(), "2LP graph rejected the typed adapter output");
-    record.graph_vertices = graph->vertex_count;
-    record.graph_edges = graph->edge_count;
-    record.graph_components = graph->component_count;
-    record.graph_cycles = graph->cycles.size();
-    require(record.graph_edges == prepared->edges.size(),
-            "graph edge count differs from typed adapter output");
-    require(record.graph_edges + record.graph_components >= record.graph_vertices,
-            "graph E-V+C arithmetic would underflow");
-    require(record.graph_cycles ==
-                record.graph_edges - record.graph_vertices + record.graph_components,
-            "graph cycle rank differs from E-V+C");
-    if (record.graph_edges != 0) {
-        record.graph_cycle_density_ppm =
-            checked_multiply_u64(static_cast<uint64_t>(record.graph_cycles), UINT64_C(1000000),
-                                 "cycle density numerator") /
-            static_cast<uint64_t>(record.graph_edges);
+        const auto graph =
+            build_two_large_prime_cycle_basis(std::span<const gnfs::siqs::TwoLargePrimeEdge>(
+                prepared->edges.data(), prepared->edges.size()));
+        require(graph.has_value(), "2LP graph rejected the typed adapter output");
+        record.graph_vertices = graph->vertex_count;
+        record.graph_edges = graph->edge_count;
+        record.graph_components = graph->component_count;
+        record.graph_cycles = graph->cycles.size();
+        require(record.graph_edges == prepared->edges.size(),
+                "graph edge count differs from typed adapter output");
+        require(record.graph_edges + record.graph_components >= record.graph_vertices,
+                "graph E-V+C arithmetic would underflow");
+        require(record.graph_cycles ==
+                    record.graph_edges - record.graph_vertices + record.graph_components,
+                "graph cycle rank differs from E-V+C");
+        if (record.graph_edges != 0) {
+            record.graph_cycle_density_ppm =
+                checked_multiply_u64(static_cast<uint64_t>(record.graph_cycles), UINT64_C(1000000),
+                                     "cycle density numerator") /
+                static_cast<uint64_t>(record.graph_edges);
+        }
+        const std::vector<RelationProvenance> source_provenances =
+            accepted_provenances(relations, provenances, large_prime_bound, *prepared);
+        record.cycle_evidence =
+            analyze_cycle_evidence(*prepared, *graph, source_provenances, record.a_count);
     }
-    const std::vector<RelationProvenance> source_provenances =
-        accepted_provenances(relations, provenances, large_prime_bound, *prepared);
-    record.cycle_evidence =
-        analyze_cycle_evidence(*prepared, *graph, source_provenances, record.a_count);
 
     auto assembled = assemble_siqs_shadow_rows(
         relations, factor_base_primes, sieved_modulus, large_prime_bound,
@@ -1813,6 +1815,10 @@ struct ProfileRecord final {
     const auto analysis_started = std::chrono::steady_clock::now();
     record.prefixes = initialize_prefix_records(slots, record.plan);
     FlattenedCorpus corpus = flatten_corpus(slots);
+    // Prefix slot/logical digests and relation cutoffs are frozen above. Destroy the
+    // moved-from slot corpus before analysis so its vector capacities cannot overlap
+    // the standalone graph and shadow-assembly working sets.
+    std::vector<SlotCapture>().swap(slots);
     std::vector<uint32_t> factor_base_primes;
     factor_base_primes.reserve(factor_base.size());
     for (const FBPrime& prime : factor_base) {

@@ -673,8 +673,7 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
     for (size_t i = 0; i < partial_corpus->sources.size(); ++i) {
         const TwoLargePrimeCycleSource& source = partial_corpus->sources[i];
         const TwoLargePrimeEdge& edge = partial_corpus->edges[i];
-        if (source.relation_index != i || edge.relation_index != i || source.p != edge.p ||
-            source.q != edge.q) {
+        if (edge.relation_index != i || source.p != edge.p || source.q != edge.q) {
             return SIQSShadowAssemblyResultFactory::failure(
                 SIQSShadowAssemblyStatus::internal_invariant_failure);
         }
@@ -718,6 +717,17 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
     }
     assembly.fingerprints.source_catalog = *catalog_fingerprint;
 
+    // Validate the adapter's contiguous relation identity exactly once, then
+    // transfer ownership so worker lookups cannot observe mutation or dangling
+    // source storage. The immutable move-only corpus is shared by every worker;
+    // each graph cycle can now select its sources in O(L).
+    const auto indexed_sources =
+        IndexedTwoLargePrimeCycleSources::try_create(std::move(partial_corpus->sources));
+    if (!indexed_sources) {
+        return SIQSShadowAssemblyResultFactory::failure(
+            SIQSShadowAssemblyStatus::internal_invariant_failure);
+    }
+
     const auto basis = build_two_large_prime_cycle_basis(partial_corpus->edges);
     if (!basis) {
         return SIQSShadowAssemblyResultFactory::failure(SIQSShadowAssemblyStatus::graph_failure);
@@ -733,7 +743,7 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
                 CycleSlot& slot = cycle_slots[cycle_ordinal];
                 const auto& support = basis->cycles[cycle_ordinal];
                 auto materialized =
-                    materialize_two_large_prime_cycle(partial_corpus->sources, support, modulus);
+                    materialize_two_large_prime_cycle(*indexed_sources, support, modulus);
                 if (!materialized) {
                     // The current materializer uses nullopt for both checked
                     // arithmetic exhaustion and structural rejection. Upstream

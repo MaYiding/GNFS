@@ -10,15 +10,25 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace {
 
 using gnfs::core::Integer;
+using gnfs::siqs::IndexedTwoLargePrimeCycleSources;
 using gnfs::siqs::materialize_two_large_prime_cycle;
 using gnfs::siqs::MaterializedTwoLargePrimeCycle;
 using gnfs::siqs::TwoLargePrimeCycleSource;
+
+static_assert(!std::is_default_constructible_v<IndexedTwoLargePrimeCycleSources>);
+static_assert(!std::is_copy_constructible_v<IndexedTwoLargePrimeCycleSources>);
+static_assert(std::is_nothrow_move_constructible_v<IndexedTwoLargePrimeCycleSources>);
+static_assert(!std::is_constructible_v<IndexedTwoLargePrimeCycleSources,
+                                       std::span<const TwoLargePrimeCycleSource>>);
+static_assert(!std::is_constructible_v<IndexedTwoLargePrimeCycleSources,
+                                       std::vector<TwoLargePrimeCycleSource>>);
 
 int checks_passed = 0;
 int checks_failed = 0;
@@ -59,6 +69,17 @@ int checks_failed = 0;
         std::span<const TwoLargePrimeCycleSource>(sources.data(), sources.size()),
         std::span<const size_t>(cycle_relation_indices.data(),
                                 cycle_relation_indices.size()),
+        modulus);
+}
+
+[[nodiscard]] std::optional<MaterializedTwoLargePrimeCycle>
+materialize_indexed(const IndexedTwoLargePrimeCycleSources& sources,
+                    const std::vector<size_t>& sorted_cycle_relation_indices,
+                    const Integer& modulus) {
+    return materialize_two_large_prime_cycle(
+        sources,
+        std::span<const size_t>(sorted_cycle_relation_indices.data(),
+                                sorted_cycle_relation_indices.size()),
         modulus);
 }
 
@@ -103,6 +124,14 @@ void check_materialized(
     sources.push_back(make_source(30, 2, false, {100, 1}, 101, 103));
     sources.push_back(make_source(31, 3, true, {100, 2}, 103, 107));
     sources.push_back(make_source(32, 5, true, {100, 3}, 107, 101));
+    return sources;
+}
+
+[[nodiscard]] std::vector<TwoLargePrimeCycleSource> contiguous_triangle_sources() {
+    auto sources = triangle_sources();
+    for (size_t relation_index = 0; relation_index < sources.size(); ++relation_index) {
+        sources[relation_index].relation_index = relation_index;
+    }
     return sources;
 }
 
@@ -303,6 +332,165 @@ void test_unselected_exponent_shape_is_irrelevant() {
                        {10, 11});
 }
 
+void test_indexed_and_generic_materialization_match_exactly() {
+    auto sources = contiguous_triangle_sources();
+    const std::vector<size_t> shuffled_cycle{2, 0, 1};
+    const std::vector<size_t> sorted_cycle{0, 1, 2};
+    const auto generic = materialize(sources, shuffled_cycle, Integer(97));
+
+    auto indexed_sources = IndexedTwoLargePrimeCycleSources::try_create(std::move(sources));
+    CHECK(indexed_sources.has_value());
+    if (!indexed_sources) {
+        return;
+    }
+    const auto indexed = materialize_indexed(*indexed_sources, sorted_cycle, Integer(97));
+
+    CHECK(generic.has_value());
+    CHECK(indexed.has_value());
+    if (generic && indexed) {
+        CHECK(same_materialized(*generic, *indexed));
+    }
+}
+
+void test_indexed_corpus_owns_and_validates_source_storage() {
+    // The temporary vector is destroyed at the end of this statement. The
+    // successful later lookup proves the validated corpus owns its storage.
+    auto owned_temporary =
+        IndexedTwoLargePrimeCycleSources::try_create(contiguous_triangle_sources());
+    CHECK(owned_temporary.has_value());
+    if (owned_temporary) {
+        const std::vector<size_t> cycle{0, 1, 2};
+        CHECK(materialize_indexed(*owned_temporary, cycle, Integer(97)).has_value());
+    }
+
+    {
+        auto sources = contiguous_triangle_sources();
+        sources[1].relation_index = 2;
+        CHECK(!IndexedTwoLargePrimeCycleSources::try_create(std::move(sources)).has_value());
+    }
+    {
+        auto sources = contiguous_triangle_sources();
+        sources[1].relation_index = 0;
+        CHECK(!IndexedTwoLargePrimeCycleSources::try_create(std::move(sources)).has_value());
+    }
+    {
+        auto sources = contiguous_triangle_sources();
+        std::swap(sources[0], sources[1]);
+        CHECK(!IndexedTwoLargePrimeCycleSources::try_create(std::move(sources)).has_value());
+    }
+}
+
+void test_indexed_cycle_contract_fails_closed() {
+    auto indexed_sources =
+        IndexedTwoLargePrimeCycleSources::try_create(contiguous_triangle_sources());
+    CHECK(indexed_sources.has_value());
+    if (!indexed_sources) {
+        return;
+    }
+
+    CHECK(!materialize_indexed(*indexed_sources, {1, 0}, Integer(97)).has_value());
+    CHECK(!materialize_indexed(*indexed_sources, {0, 2, 1}, Integer(97)).has_value());
+    CHECK(!materialize_indexed(*indexed_sources, {0, 0}, Integer(97)).has_value());
+    CHECK(!materialize_indexed(*indexed_sources, {0, 3}, Integer(97)).has_value());
+    CHECK(!materialize_indexed(*indexed_sources, {}, Integer(97)).has_value());
+}
+
+void test_indexed_overflow_and_unselected_source_policy_match_generic() {
+    {
+        std::vector<TwoLargePrimeCycleSource> sources;
+        sources.push_back(make_source(0, 2, false, {std::numeric_limits<uint32_t>::max()}, 0, 127));
+        sources.push_back(make_source(1, 3, false, {1}, 0, 127));
+        const std::vector<size_t> cycle{0, 1};
+        const auto generic = materialize(sources, cycle, Integer(97));
+        auto indexed_sources = IndexedTwoLargePrimeCycleSources::try_create(std::move(sources));
+        CHECK(indexed_sources.has_value());
+        if (indexed_sources) {
+            const auto indexed = materialize_indexed(*indexed_sources, cycle, Integer(97));
+            CHECK(!generic.has_value());
+            CHECK(!indexed.has_value());
+        }
+    }
+
+    {
+        auto sources = one_lp_parallel_sources();
+        sources[0].relation_index = 0;
+        sources[1].relation_index = 1;
+        // Identity is corpus-wide, but endpoint and exponent-shape checks stay
+        // scoped to selected sources exactly as in the generic API.
+        sources.push_back(make_source(2, 42, true, {9}, 1, 0));
+        const std::vector<size_t> cycle{0, 1};
+        const auto generic = materialize(sources, cycle, Integer(97));
+        auto indexed_sources = IndexedTwoLargePrimeCycleSources::try_create(std::move(sources));
+        CHECK(indexed_sources.has_value());
+        if (!indexed_sources) {
+            return;
+        }
+        const auto indexed = materialize_indexed(*indexed_sources, cycle, Integer(97));
+        CHECK(generic.has_value());
+        CHECK(indexed.has_value());
+        if (generic && indexed) {
+            CHECK(same_materialized(*generic, *indexed));
+        }
+    }
+}
+
+void test_indexed_selected_source_validation_matches_generic() {
+    {
+        std::vector<TwoLargePrimeCycleSource> sources;
+        sources.push_back(make_source(0, 2, false, {1, 2}, 0, 127));
+        sources.push_back(make_source(1, 3, false, {3}, 0, 127));
+        const std::vector<size_t> cycle{0, 1};
+        const auto generic = materialize(sources, cycle, Integer(97));
+        auto indexed_sources = IndexedTwoLargePrimeCycleSources::try_create(std::move(sources));
+        CHECK(indexed_sources.has_value());
+        if (indexed_sources) {
+            CHECK(!generic.has_value());
+            CHECK(!materialize_indexed(*indexed_sources, cycle, Integer(97)).has_value());
+        }
+    }
+
+    {
+        std::vector<TwoLargePrimeCycleSource> sources;
+        sources.push_back(make_source(0, 2, false, {1}, 1, 109));
+        sources.push_back(make_source(1, 3, false, {1}, 109, 1));
+        const std::vector<size_t> cycle{0, 1};
+        const auto generic = materialize(sources, cycle, Integer(97));
+        auto indexed_sources = IndexedTwoLargePrimeCycleSources::try_create(std::move(sources));
+        CHECK(indexed_sources.has_value());
+        if (indexed_sources) {
+            CHECK(!generic.has_value());
+            CHECK(!materialize_indexed(*indexed_sources, cycle, Integer(97)).has_value());
+        }
+    }
+}
+
+void test_large_indexed_corpus_reuses_one_corpus_for_small_cycles() {
+    constexpr size_t source_count = 8192;
+    constexpr size_t cycle_count = 256;
+    std::vector<TwoLargePrimeCycleSource> sources;
+    sources.reserve(source_count);
+    for (size_t relation_index = 0; relation_index < source_count; ++relation_index) {
+        const uint64_t endpoint = 101 + static_cast<uint64_t>(relation_index / 2);
+        sources.push_back(make_source(relation_index, 2, false, {1}, 0, endpoint));
+    }
+
+    auto indexed_sources = IndexedTwoLargePrimeCycleSources::try_create(std::move(sources));
+    CHECK(indexed_sources.has_value());
+    if (!indexed_sources) {
+        return;
+    }
+
+    // One O(E) validation is shared by many O(L) selections with L == 2.
+    for (size_t cycle_ordinal = 0; cycle_ordinal < cycle_count; ++cycle_ordinal) {
+        const std::vector<size_t> cycle{cycle_ordinal * 2, cycle_ordinal * 2 + 1};
+        const auto result = materialize_indexed(*indexed_sources, cycle, Integer(97));
+        CHECK(result.has_value());
+        if (result) {
+            CHECK(result->relation_indices == cycle);
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -316,6 +504,12 @@ int main() {
     test_duplicate_sources_and_invalid_endpoints_fail_closed();
     test_shape_parity_and_overflow_fail_closed();
     test_unselected_exponent_shape_is_irrelevant();
+    test_indexed_and_generic_materialization_match_exactly();
+    test_indexed_corpus_owns_and_validates_source_storage();
+    test_indexed_cycle_contract_fails_closed();
+    test_indexed_overflow_and_unselected_source_policy_match_generic();
+    test_indexed_selected_source_validation_matches_generic();
+    test_large_indexed_corpus_reuses_one_corpus_for_small_cycles();
 
     std::cout << checks_passed << " checks passed, " << checks_failed
               << " checks failed\n";
