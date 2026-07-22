@@ -2303,6 +2303,84 @@ void append_scale_plan_identity(StableDigestBuilder& builder, const SIQSParams& 
     return *payload;
 }
 
+enum class ScaleGlobalAdmissionStatus : uint8_t {
+    accepted,
+    relation_limit,
+    payload_limit,
+};
+
+struct ScaleGlobalAdmissionDecision final {
+    ScaleGlobalAdmissionStatus status;
+    size_t next_relation_count;
+    size_t next_payload_bytes;
+};
+
+[[nodiscard]] constexpr std::optional<ScaleGlobalAdmissionDecision>
+decide_scale_global_admission(size_t current_relation_count, size_t current_payload_bytes,
+                              size_t relation_payload_bytes, size_t relation_limit,
+                              size_t payload_limit) noexcept {
+    if (current_relation_count == std::numeric_limits<size_t>::max() ||
+        relation_payload_bytes > std::numeric_limits<size_t>::max() - current_payload_bytes) {
+        return std::nullopt;
+    }
+    const size_t next_relation_count = current_relation_count + 1;
+    const size_t next_payload_bytes = current_payload_bytes + relation_payload_bytes;
+    if (next_relation_count > relation_limit) {
+        return ScaleGlobalAdmissionDecision{ScaleGlobalAdmissionStatus::relation_limit,
+                                            next_relation_count, next_payload_bytes};
+    }
+    if (next_payload_bytes > payload_limit) {
+        return ScaleGlobalAdmissionDecision{ScaleGlobalAdmissionStatus::payload_limit,
+                                            next_relation_count, next_payload_bytes};
+    }
+    return ScaleGlobalAdmissionDecision{ScaleGlobalAdmissionStatus::accepted, next_relation_count,
+                                        next_payload_bytes};
+}
+
+void self_check_scale_global_admission() {
+    constexpr size_t relation_limit = 10;
+    constexpr size_t payload_limit = 100;
+
+    const auto exact_relation =
+        decide_scale_global_admission(9, 40, 1, relation_limit, payload_limit);
+    require(exact_relation && exact_relation->status == ScaleGlobalAdmissionStatus::accepted &&
+                exact_relation->next_relation_count == relation_limit,
+            "scale global admission rejected exact relation-count equality");
+
+    const auto exact_payload =
+        decide_scale_global_admission(4, 99, 1, relation_limit, payload_limit);
+    require(exact_payload && exact_payload->status == ScaleGlobalAdmissionStatus::accepted &&
+                exact_payload->next_payload_bytes == payload_limit,
+            "scale global admission rejected exact payload equality");
+
+    const auto exact_both = decide_scale_global_admission(9, 99, 1, relation_limit, payload_limit);
+    require(exact_both && exact_both->status == ScaleGlobalAdmissionStatus::accepted &&
+                exact_both->next_relation_count == relation_limit &&
+                exact_both->next_payload_bytes == payload_limit,
+            "scale global admission rejected simultaneous exact equality");
+
+    const auto next_relation =
+        decide_scale_global_admission(10, 40, 1, relation_limit, payload_limit);
+    require(next_relation && next_relation->status == ScaleGlobalAdmissionStatus::relation_limit,
+            "scale global admission did not reject the next relation");
+
+    const auto next_payload =
+        decide_scale_global_admission(4, 100, 1, relation_limit, payload_limit);
+    require(next_payload && next_payload->status == ScaleGlobalAdmissionStatus::payload_limit,
+            "scale global admission did not reject the next payload byte");
+
+    const auto simultaneous =
+        decide_scale_global_admission(10, 100, 1, relation_limit, payload_limit);
+    require(simultaneous && simultaneous->status == ScaleGlobalAdmissionStatus::relation_limit,
+            "scale global admission precedence is not relation-then-payload");
+
+    const size_t maximum = std::numeric_limits<size_t>::max();
+    require(!decide_scale_global_admission(maximum, 0, 0, maximum, maximum),
+            "scale global admission accepted relation-count overflow");
+    require(!decide_scale_global_admission(0, maximum, 1, maximum, maximum),
+            "scale global admission accepted payload overflow");
+}
+
 [[nodiscard]] std::optional<ScaleTerminalStatus>
 graph_cap_terminal(TwoLargePrimeCycleBasisStatus status) {
     switch (status) {
@@ -2381,7 +2459,7 @@ struct ScaleProfileRecord final {
     ProcessMemorySnapshot capture_memory;
     ProcessMemorySnapshot final_memory;
     std::string_view rss_evidence = "unavailable";
-    std::string_view scale_evidence = "fail";
+    std::string_view scale_evidence = "terminal";
     uint64_t plan_wall_nanoseconds = 0;
     uint64_t capture_wall_nanoseconds = 0;
     uint64_t analysis_wall_nanoseconds = 0;
@@ -2639,25 +2717,25 @@ void validate_scale_corpus_goldens(const ScaleProfileRecord& record, size_t raw_
                 for (size_t relation_ordinal = 0; relation_ordinal < slot.relations.size();
                      ++relation_ordinal) {
                     const size_t payload = relation_payload_bytes(slot.relations[relation_ordinal]);
-                    require(relations.size() < std::numeric_limits<size_t>::max(),
-                            "global relation count overflow");
-                    const size_t next_relation_count = relations.size() + 1;
-                    if (next_relation_count > SCALE_GLOBAL_RELATION_LIMIT) {
+                    const auto admission = decide_scale_global_admission(
+                        relations.size(), record.global_payload_bytes, payload,
+                        SCALE_GLOBAL_RELATION_LIMIT, SCALE_GLOBAL_PAYLOAD_LIMIT);
+                    require(admission.has_value(), "scale global admission size overflow");
+                    if (admission->status == ScaleGlobalAdmissionStatus::relation_limit) {
                         record.status = ScaleTerminalStatus::global_relation_limit;
                         record.terminal_detail = "global_relation_limit";
                         record.first_rejected = RelationProvenance{slot.id, relation_ordinal};
                         break;
                     }
-                    require(payload <=
-                                std::numeric_limits<size_t>::max() - record.global_payload_bytes,
-                            "global payload count overflow");
-                    const size_t next_payload = record.global_payload_bytes + payload;
-                    if (next_payload > SCALE_GLOBAL_PAYLOAD_LIMIT) {
+                    if (admission->status == ScaleGlobalAdmissionStatus::payload_limit) {
                         record.status = ScaleTerminalStatus::global_payload_limit;
                         record.terminal_detail = "global_payload_limit";
                         record.first_rejected = RelationProvenance{slot.id, relation_ordinal};
                         break;
                     }
+                    require(admission->status == ScaleGlobalAdmissionStatus::accepted &&
+                                admission->next_relation_count == relations.size() + 1,
+                            "scale global admission returned an invalid accepted decision");
                     const RelationProvenance provenance{slot.id, relation_ordinal};
                     append_provenance(raw_builder, provenance);
                     append_relation(raw_builder, slot.relations[relation_ordinal]);
@@ -2671,7 +2749,7 @@ void validate_scale_corpus_goldens(const ScaleProfileRecord& record, size_t raw_
                         ++record.admitted_two_lp_candidates;
                     }
                     relations.push_back(std::move(slot.relations[relation_ordinal]));
-                    record.global_payload_bytes = next_payload;
+                    record.global_payload_bytes = admission->next_payload_bytes;
                 }
                 if (record.status != ScaleTerminalStatus::solver_ready) {
                     break;
@@ -3088,6 +3166,7 @@ void emit_scale_records(const ScaleProfileRecord& record) {
                 "profile requires a Release build; observed " + std::string(BUILD_TYPE));
         require(RELEASE_ASSERTIONS_DISABLED, "profile requires NDEBUG to be defined");
         const ProfileOptions options = parse_options(argc, argv);
+        self_check_scale_global_admission();
         self_check_unique_a_collision_path();
         self_check_canonical_duplicate_provenance();
         const ScaleProfileRecord record = run_scale_profile(options);
