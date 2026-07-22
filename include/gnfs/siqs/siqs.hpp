@@ -13,6 +13,7 @@
 #include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/linalg/gauss.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
+#include <gnfs/siqs/relation.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <gnfs/util/primes.hpp>
 
@@ -643,16 +644,6 @@ inline void next_poly_B(const std::vector<FBPrime>& fb,
 // ================================================================
 // Relation
 // ================================================================
-
-struct SIQSRelation {
-    Integer value;                     // Ax + B (the "square root" side)
-    std::vector<uint32_t> fb_indices;  // which FB primes divide Q(x) (with multiplicity)
-    std::vector<uint8_t>  exponents;   // exponent of each FB prime (for sqrt computation)
-    uint64_t large_prime;              // LP1 (0 if fully smooth)
-    uint64_t large_prime2;             // LP2 (0 if 1LP or full)
-    std::vector<uint64_t> merge_lps;   // LP values from merged partials (for Y computation)
-    bool negative;                     // Q(x) < 0?
-};
 
 /// Exact admission predicate for a one-large-prime SIQS residual.
 ///

@@ -62,6 +62,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `normalize_two_large_prime` | `two_large_prime.hpp` | Exact, deterministic-prime validation for a candidate 2LP split |
 | `build_two_large_prime_cycle_basis` | `two_large_prime_graph.hpp` | Deterministic fundamental-cycle oracle over the 1LP/2LP multigraph |
 | `materialize_two_large_prime_cycle` | `two_large_prime_materializer.hpp` | Wide, checked cycle arithmetic and exact LP degree/2 accounting |
+| `prepare_two_large_prime_corpus` | `two_large_prime_adapter.hpp` | Fail-closed raw-partial validation, canonical deduplication, and stable relation IDs |
 | `dense_gauss_left_nullspace` | `siqs.hpp` ~line 1130 | Word-packed dense GF(2) Gaussian elimination |
 | `solve_matrix` | `siqs.hpp` ~line 1231 | Dense path ≤100K cols, otherwise `linalg::BlockLanczos` |
 | `try_extract` / `try_extract_with_combos` | `siqs.hpp` ~line 1270 | Per-dependency factor extraction with random XOR retry |
@@ -95,16 +96,17 @@ The crucial knobs by digit band:
 
 Two-large-prime collection and the legacy greedy merge remain disabled by
 setting `lp_bound_sq = 0`. Exact split normalization, deterministic cycle
-selection, and wide checked cycle materialization are available as isolated,
-tested boundaries, but are not yet connected to production relations.
-Re-enabling still requires a stable raw-partial adapter, full congruence checks,
-and re-validation across the 50-90 digit band.
+selection, wide checked cycle materialization, and a stable raw-partial adapter
+are available as isolated, tested boundaries, but are not yet connected to
+production relations. Re-enabling still requires a production bridge, full
+congruence checks, and re-validation across the 50-90 digit band.
 
 ## Two-Large-Prime Re-enablement Plan
 
 The large-prime graph uses one global virtual vertex `0`: a 1LP relation is an
 edge `(0, p)`, a 2LP relation is `(p, q)`, and a repeated factor `p^2` is a
-self-loop. Parallel edges are distinct source relations. For a graph with `E`
+self-loop. Parallel edges are distinct arithmetic source relations; exact raw
+duplicates are canonicalized before graph construction. For a graph with `E`
 edges, `V` represented vertices, and `C` connected components, a complete
 fundamental-cycle basis contains exactly `E - V + C` independent cycles.
 
@@ -146,8 +148,9 @@ SIQS's `L_N(1/2, 1)`.
 ## Known Limitations
 
 - **2LP cofactor handling is gated off** (`lp_bound_sq = 0`); normalization,
-  cycle selection, and materialization are staged, while the stable production
-  adapter and extraction congruence gate remain prerequisites
+  stable shadow-corpus preparation, cycle selection, and materialization are
+  staged, while production integration and the extraction congruence gate
+  remain prerequisites
 - **Beyond ~57 digits, extraction failures dominate** in current calibration.
   The 60-digit band needs FB and threshold tuning before being declared
   production-ready. Use GNFS for ≥60 digits until then
