@@ -1,6 +1,7 @@
 // test_siqs_multi_a_cycle_profile.cpp - isolated fixed multi-A SIQS cycle profile
 
 #include "fixtures/siqs_multi_a_cycle_profile_v2.hpp"
+#include "fixtures/siqs_multi_a_scale_profile_v3.hpp"
 
 #include <gnfs/siqs/shadow_assembly.hpp>
 #include <gnfs/siqs/siqs.hpp>
@@ -45,6 +46,7 @@ using gnfs::core::Integer;
 using gnfs::siqs::assemble_siqs_shadow_rows;
 using gnfs::siqs::build_factor_base;
 using gnfs::siqs::build_two_large_prime_cycle_basis;
+using gnfs::siqs::checked_siqs_live_sieve_relation_payload_bytes;
 using gnfs::siqs::FBPrime;
 using gnfs::siqs::init_poly;
 using gnfs::siqs::next_poly_B;
@@ -56,6 +58,7 @@ using gnfs::siqs::SIQSLiveSieveCaptureController;
 using gnfs::siqs::SIQSLiveSieveCaptureLimits;
 using gnfs::siqs::SIQSLiveSieveCaptureSnapshot;
 using gnfs::siqs::SIQSLiveSieveCaptureStopReason;
+using gnfs::siqs::SIQSLiveSieveRelationPayloadShape;
 using gnfs::siqs::SIQSParams;
 using gnfs::siqs::SIQSPoly;
 using gnfs::siqs::SIQSRelation;
@@ -66,7 +69,11 @@ using gnfs::siqs::SIQSShadowAssemblyStats;
 using gnfs::siqs::SIQSShadowAssemblyStatus;
 using gnfs::siqs::split_cofactor_64;
 using gnfs::siqs::TwoLargePrimeAdapterStats;
+using gnfs::siqs::TwoLargePrimeCycleBasis;
+using gnfs::siqs::TwoLargePrimeCycleBasisLimits;
+using gnfs::siqs::TwoLargePrimeCycleBasisStatus;
 using gnfs::tests::SIQS_MULTI_A_CYCLE_FIXTURE_V2;
+using gnfs::tests::SIQS_MULTI_A_SCALE_FIXTURE_V3;
 using gnfs::tests::SIQSMultiAExpectedParamsV2;
 using gnfs::tests::SIQSMultiAPlanGoldenV2;
 using gnfs::util::ProcessMemorySnapshot;
@@ -75,7 +82,15 @@ using gnfs::util::ProcessMemorySnapshot;
 #define GNFS_SIQS_MULTI_A_PROFILE_BUILD_TYPE "unknown"
 #endif
 
+#ifndef GNFS_SIQS_MULTI_A_PROFILE_SCHEMA
+#define GNFS_SIQS_MULTI_A_PROFILE_SCHEMA 2
+#endif
+
+static_assert(GNFS_SIQS_MULTI_A_PROFILE_SCHEMA == 2 || GNFS_SIQS_MULTI_A_PROFILE_SCHEMA == 3,
+              "GNFS_SIQS_MULTI_A_PROFILE_SCHEMA must be 2 or 3");
+
 constexpr std::string_view BUILD_TYPE = GNFS_SIQS_MULTI_A_PROFILE_BUILD_TYPE;
+constexpr uint32_t PROFILE_SCHEMA = GNFS_SIQS_MULTI_A_PROFILE_SCHEMA;
 #if defined(NDEBUG)
 constexpr bool RELEASE_ASSERTIONS_DISABLED = true;
 #else
@@ -93,6 +108,20 @@ constexpr std::array<std::pair<size_t, size_t>, 4> CAPTURE_A_STAGES{{
     {4, 16},
     {16, 64},
 }};
+
+constexpr size_t SCALE_GLOBAL_RELATION_LIMIT = 32'768;
+constexpr size_t SCALE_GLOBAL_PAYLOAD_LIMIT = size_t{64} * 1024 * 1024;
+constexpr size_t SCALE_GRAPH_EDGE_LIMIT = 16'384;
+constexpr size_t SCALE_GRAPH_CYCLE_LIMIT = 4'096;
+constexpr size_t SCALE_GRAPH_INCIDENCE_LIMIT = 262'144;
+constexpr size_t SCALE_ROW_CANDIDATE_LIMIT = 4'096;
+constexpr size_t SCALE_PRETRIM_ROW_LIMIT = 4'096;
+constexpr size_t SCALE_REQUIRED_ROWS = 1'701;
+constexpr size_t SCALE_MIN_TWO_LP_CYCLES = 32;
+constexpr size_t SCALE_MIN_TWO_LP_EDGE_SOURCE_A = 16;
+constexpr uint64_t SCALE_RSS_BUDGET_BYTES = UINT64_C(512) * 1024 * 1024;
+constexpr uint32_t SCALE_TIMEOUT_SECONDS = 1'800;
+static_assert(SCALE_ROW_CANDIDATE_LIMIT <= SCALE_PRETRIM_ROW_LIMIT);
 
 [[noreturn]] void fail(std::string message) {
     throw std::runtime_error(std::move(message));
@@ -912,20 +941,22 @@ struct StageResult final {
     size_t peak_workers = 0;
 };
 
-[[nodiscard]] StageResult capture_stage(size_t a_begin, size_t a_end, const ProfileOptions& options,
-                                        const PlanResult& plan, const Integer& sieved_modulus,
-                                        const std::vector<FBPrime>& factor_base,
-                                        const SIQSParams& params, uint8_t threshold,
-                                        uint64_t large_prime_bound, uint64_t two_large_prime_bound,
-                                        std::vector<SlotCapture>& slots,
-                                        std::atomic<bool>& cancel_capture) {
-    const size_t b_slots = SIQS_MULTI_A_CYCLE_FIXTURE_V2.b_slots_per_a;
-    require(a_begin < a_end && a_end <= plan.a_plans.size(), "capture stage A range is invalid");
+[[nodiscard]] StageResult
+capture_stage(size_t a_begin, size_t a_end, const ProfileOptions& options,
+              std::span<const APlan> a_plans, const Integer& sieved_modulus,
+              const std::vector<FBPrime>& factor_base, const SIQSParams& params, uint8_t threshold,
+              uint64_t large_prime_bound, uint64_t two_large_prime_bound, size_t b_slots,
+              size_t slot_a_origin, std::vector<SlotCapture>& slots,
+              std::atomic<bool>& cancel_capture) {
+    require(a_begin < a_end && a_end <= a_plans.size(), "capture stage A range is invalid");
+    require(slot_a_origin <= a_begin, "capture stage slot origin exceeds A begin");
     StageResult result;
     result.a_begin = a_begin;
     result.a_end = a_end;
-    result.slot_begin = checked_multiply(a_begin, b_slots, "capture stage slot begin");
-    result.slot_end = checked_multiply(a_end, b_slots, "capture stage slot end");
+    result.slot_begin =
+        checked_multiply(a_begin - slot_a_origin, b_slots, "capture stage slot begin");
+    result.slot_end = checked_multiply(a_end - slot_a_origin, b_slots, "capture stage slot end");
+    require(result.slot_end <= slots.size(), "capture stage slot range exceeds storage");
     result.resolved_workers = static_cast<size_t>(options.requested_workers);
     const size_t stage_slot_count = result.slot_end - result.slot_begin;
     require(result.resolved_workers > 0 && result.resolved_workers <= stage_slot_count,
@@ -966,11 +997,12 @@ struct StageResult final {
                     const auto [begin, end] = partitions[worker];
                     size_t global_slot = begin;
                     while (global_slot < end) {
-                        const size_t a_ordinal = global_slot / b_slots;
+                        const size_t a_ordinal = slot_a_origin + global_slot / b_slots;
                         const size_t first_gray = global_slot % b_slots;
-                        const size_t a_slot_end = std::min(
-                            end, checked_multiply(a_ordinal + 1, b_slots, "A-family slot end"));
-                        SIQSPoly polynomial = plan.a_plans[a_ordinal].initial_polynomial;
+                        const size_t a_slot_end =
+                            std::min(end, checked_multiply(a_ordinal + 1 - slot_a_origin, b_slots,
+                                                           "A-family slot end"));
+                        SIQSPoly polynomial = a_plans[a_ordinal].initial_polynomial;
                         std::vector<bool> signs(polynomial.a_indices.size(), true);
                         advance_to_gray(factor_base, params.sieve_half, polynomial, signs,
                                         first_gray);
@@ -1795,10 +1827,10 @@ struct ProfileRecord final {
     std::atomic<bool> cancel_capture{false};
     for (size_t stage_index = 0; stage_index < CAPTURE_A_STAGES.size(); ++stage_index) {
         const auto [a_begin, a_end] = CAPTURE_A_STAGES[stage_index];
-        record.stages[stage_index] =
-            capture_stage(a_begin, a_end, options, record.plan, sieved_modulus, factor_base,
-                          record.params, record.threshold, record.large_prime_bound,
-                          record.two_large_prime_bound, slots, cancel_capture);
+        record.stages[stage_index] = capture_stage(
+            a_begin, a_end, options, record.plan.a_plans, sieved_modulus, factor_base,
+            record.params, record.threshold, record.large_prime_bound, record.two_large_prime_bound,
+            fixture.b_slots_per_a, 0, slots, cancel_capture);
         require(record.stages[stage_index].resolved_workers == options.requested_workers &&
                     record.stages[stage_index].peak_workers == options.requested_workers,
                 "capture stage did not run every requested worker");
@@ -2046,9 +2078,991 @@ void emit_records(const ProfileRecord& record) {
     std::cout << output.str();
 }
 
-} // namespace
+enum class ScaleTerminalStatus : uint8_t {
+    solver_ready,
+    slot_relation_limit,
+    slot_payload_limit,
+    global_relation_limit,
+    global_payload_limit,
+    graph_edge_limit,
+    graph_cycle_limit,
+    graph_incidence_limit,
+    row_candidate_limit,
+    pretrim_limit,
+    insufficient_rows,
+    rejected_cycle_rows,
+    arithmetic_duplicates,
+    insufficient_two_lp_cycles,
+    insufficient_two_lp_source_a,
+};
 
-int main(int argc, char** argv) {
+[[nodiscard]] std::string_view scale_terminal_name(ScaleTerminalStatus status) noexcept {
+    switch (status) {
+    case ScaleTerminalStatus::solver_ready:
+        return "solver_ready";
+    case ScaleTerminalStatus::slot_relation_limit:
+        return "slot_relation_limit";
+    case ScaleTerminalStatus::slot_payload_limit:
+        return "slot_payload_limit";
+    case ScaleTerminalStatus::global_relation_limit:
+        return "global_relation_limit";
+    case ScaleTerminalStatus::global_payload_limit:
+        return "global_payload_limit";
+    case ScaleTerminalStatus::graph_edge_limit:
+        return "graph_edge_limit";
+    case ScaleTerminalStatus::graph_cycle_limit:
+        return "graph_cycle_limit";
+    case ScaleTerminalStatus::graph_incidence_limit:
+        return "graph_incidence_limit";
+    case ScaleTerminalStatus::row_candidate_limit:
+        return "row_candidate_limit";
+    case ScaleTerminalStatus::pretrim_limit:
+        return "pretrim_limit";
+    case ScaleTerminalStatus::insufficient_rows:
+        return "insufficient_rows";
+    case ScaleTerminalStatus::rejected_cycle_rows:
+        return "rejected_cycle_rows";
+    case ScaleTerminalStatus::arithmetic_duplicates:
+        return "arithmetic_duplicates";
+    case ScaleTerminalStatus::insufficient_two_lp_cycles:
+        return "insufficient_two_lp_cycles";
+    case ScaleTerminalStatus::insufficient_two_lp_source_a:
+        return "insufficient_two_lp_source_a";
+    }
+    return "unknown";
+}
+
+struct ScalePlanResult final {
+    std::vector<APlan> a_plans;
+    Digest128 digest;
+    size_t available_b_slots = 0;
+    size_t planner_attempts = 0;
+    size_t duplicate_a_draws = 0;
+    std::string first_a;
+    std::string last_a;
+};
+
+[[nodiscard]] std::vector<std::pair<size_t, size_t>> scale_capture_batches();
+
+void append_scale_plan_identity(StableDigestBuilder& builder, const SIQSParams& params,
+                                uint32_t multiplier, const Integer& sieved_modulus,
+                                std::span<const FBPrime> factor_base, uint64_t large_prime_bound,
+                                uint64_t two_large_prime_bound, uint8_t threshold) {
+    const auto& fixture = SIQS_MULTI_A_SCALE_FIXTURE_V3;
+    builder.append_u32(3);
+    builder.append_string(fixture.profile_id);
+    builder.append_u32(fixture.band);
+    builder.append_string(fixture.modulus);
+    builder.append_string(fixture.factor_p);
+    builder.append_string(fixture.factor_q);
+    builder.append_u32(fixture.seed);
+    builder.append_size(fixture.a_count);
+    builder.append_size(fixture.b_slots_per_a);
+    builder.append_size(MAX_A_PLAN_ATTEMPTS);
+    builder.append_u32(params.fb_size);
+    builder.append_u32(params.sieve_half);
+    builder.append_u32(params.lp_multiplier);
+    builder.append_u32(params.num_a_factors);
+    builder.append_u32(params.sieve_error);
+    builder.append_u32(params.small_prime_cutoff);
+    builder.append_u32(multiplier);
+    append_integer(builder, sieved_modulus);
+    builder.append_size(factor_base.size());
+    for (const FBPrime& prime : factor_base) {
+        builder.append_u32(prime.p);
+        builder.append_u32(prime.sqrt_n);
+        builder.append_byte(prime.logp);
+    }
+    builder.append_u64(large_prime_bound);
+    builder.append_u64(two_large_prime_bound);
+    builder.append_byte(threshold);
+    builder.append_size(RELATION_LIMIT_PER_SLOT);
+    builder.append_size(PAYLOAD_LIMIT_PER_SLOT);
+    builder.append_size(SCALE_GLOBAL_RELATION_LIMIT);
+    builder.append_size(SCALE_GLOBAL_PAYLOAD_LIMIT);
+    builder.append_size(SCALE_GRAPH_EDGE_LIMIT);
+    builder.append_size(SCALE_GRAPH_CYCLE_LIMIT);
+    builder.append_size(SCALE_GRAPH_INCIDENCE_LIMIT);
+    builder.append_size(SCALE_ROW_CANDIDATE_LIMIT);
+    builder.append_size(SCALE_PRETRIM_ROW_LIMIT);
+    builder.append_size(SCALE_REQUIRED_ROWS);
+    builder.append_size(SCALE_MIN_TWO_LP_CYCLES);
+    builder.append_size(SCALE_MIN_TWO_LP_EDGE_SOURCE_A);
+    builder.append_u64(SCALE_RSS_BUDGET_BYTES);
+    const std::vector<std::pair<size_t, size_t>> batches = scale_capture_batches();
+    builder.append_size(batches.size());
+    for (const auto [begin, end] : batches) {
+        builder.append_size(begin);
+        builder.append_size(end);
+    }
+}
+
+[[nodiscard]] ScalePlanResult build_scale_plan(const Integer& sieved_modulus,
+                                               const std::vector<FBPrime>& factor_base,
+                                               const SIQSParams& params, uint32_t multiplier,
+                                               uint64_t large_prime_bound,
+                                               uint64_t two_large_prime_bound, uint8_t threshold) {
+    const auto& fixture = SIQS_MULTI_A_SCALE_FIXTURE_V3;
+    ScalePlanResult result;
+    result.a_plans.reserve(fixture.a_count);
+    UniqueAAdmissionState admission;
+    admission.accepted_keys.reserve(fixture.a_count);
+    std::mt19937 random(fixture.seed);
+    StableDigestBuilder builder("GNFS-SIQS-256A-SCALE-PLAN-V3");
+    append_scale_plan_identity(builder, params, multiplier, sieved_modulus, factor_base,
+                               large_prime_bound, two_large_prime_bound, threshold);
+
+    for (size_t a_ordinal = 0; a_ordinal < fixture.a_count; ++a_ordinal) {
+        const auto candidate_factory = [&]() {
+            SIQSPoly candidate;
+            choose_stable_profile_a(sieved_modulus, params.sieve_half, params.num_a_factors,
+                                    factor_base, random, candidate.a_indices, candidate.A);
+            return candidate;
+        };
+        SelectedUniqueA selected =
+            draw_next_unique_a(admission, a_ordinal, builder, candidate_factory);
+        APlan plan;
+        plan.ordinal = a_ordinal;
+        plan.accepted_attempt_ordinal = selected.accepted_attempt_ordinal;
+        plan.duplicate_draws_before_acceptance = selected.duplicate_draws_before_acceptance;
+        plan.initial_polynomial = std::move(selected.candidate);
+        require(plan.initial_polynomial.a_indices.size() == params.num_a_factors,
+                "scale A plan selected the wrong factor count");
+        const size_t available_b_slots = size_t{1}
+                                         << (plan.initial_polynomial.a_indices.size() - 1);
+        if (a_ordinal == 0) {
+            result.available_b_slots = available_b_slots;
+            result.first_a = plan.initial_polynomial.A.to_string();
+        }
+        require(available_b_slots == result.available_b_slots &&
+                    available_b_slots == fixture.b_slots_per_a,
+                "scale plan does not cover a complete fixed B family");
+        init_poly(sieved_modulus, factor_base, params.sieve_half, plan.initial_polynomial);
+        validate_polynomial_shape(plan.initial_polynomial, factor_base);
+        result.last_a = plan.initial_polynomial.A.to_string();
+
+        builder.append_byte(0x41);
+        builder.append_size(a_ordinal);
+        builder.append_size(plan.accepted_attempt_ordinal);
+        builder.append_size(plan.duplicate_draws_before_acceptance);
+        builder.append_size(plan.initial_polynomial.a_indices.size());
+        for (const uint32_t index : plan.initial_polynomial.a_indices) {
+            builder.append_u32(index);
+        }
+        SIQSPoly polynomial = plan.initial_polynomial;
+        std::vector<bool> signs(polynomial.a_indices.size(), true);
+        for (size_t gray_ordinal = 0; gray_ordinal < fixture.b_slots_per_a; ++gray_ordinal) {
+            validate_polynomial_shape(polynomial, factor_base);
+            builder.append_byte(0x42);
+            append_logical_id(builder, {a_ordinal, gray_ordinal});
+            append_polynomial(builder, polynomial);
+            if (gray_ordinal + 1 < fixture.b_slots_per_a) {
+                advance_polynomial_gray(factor_base, params.sieve_half, polynomial, signs,
+                                        gray_ordinal + 1);
+            }
+        }
+        result.a_plans.push_back(std::move(plan));
+    }
+    result.planner_attempts = admission.attempts;
+    result.duplicate_a_draws = admission.duplicate_draws;
+    std::sort(admission.accepted_keys.begin(), admission.accepted_keys.end());
+    require(std::adjacent_find(admission.accepted_keys.begin(), admission.accepted_keys.end()) ==
+                admission.accepted_keys.end(),
+            "scale planner generated a duplicate A");
+    builder.append_string("complete_a_plan");
+    builder.append_size(result.a_plans.size());
+    result.digest = builder.finish();
+    return result;
+}
+
+[[nodiscard]] std::vector<std::pair<size_t, size_t>> scale_capture_batches() {
+    const size_t a_count = SIQS_MULTI_A_SCALE_FIXTURE_V3.a_count;
+    std::vector<std::pair<size_t, size_t>> batches{{0, 1}, {1, 4}, {4, 16}};
+    for (size_t begin = 16; begin < a_count; begin += 16) {
+        batches.emplace_back(begin, std::min(begin + size_t{16}, a_count));
+    }
+    require(batches.back().second == a_count, "scale capture batches do not reach max A");
+    size_t previous_end = 0;
+    for (const auto [begin, end] : batches) {
+        require(begin == previous_end && begin < end && end - begin <= 16,
+                "scale capture batches are not contiguous and bounded");
+        previous_end = end;
+    }
+    return batches;
+}
+
+[[nodiscard]] size_t relation_payload_bytes(const SIQSRelation& relation) {
+    const size_t value_bits = relation.value.bit_length();
+    const size_t value_bytes = value_bits / 8 + static_cast<size_t>(value_bits % 8 != 0);
+    const auto payload = checked_siqs_live_sieve_relation_payload_bytes(
+        SIQSLiveSieveRelationPayloadShape{value_bytes, relation.exponents.size(),
+                                          relation.fb_indices.size(), relation.merge_lps.size()});
+    if (!payload) {
+        fail("scale relation payload cannot be represented");
+    }
+    return *payload;
+}
+
+[[nodiscard]] std::optional<ScaleTerminalStatus>
+graph_cap_terminal(TwoLargePrimeCycleBasisStatus status) {
+    switch (status) {
+    case TwoLargePrimeCycleBasisStatus::valid:
+        return std::nullopt;
+    case TwoLargePrimeCycleBasisStatus::edge_limit:
+        return ScaleTerminalStatus::graph_edge_limit;
+    case TwoLargePrimeCycleBasisStatus::cycle_limit:
+        return ScaleTerminalStatus::graph_cycle_limit;
+    case TwoLargePrimeCycleBasisStatus::incidence_limit:
+        return ScaleTerminalStatus::graph_incidence_limit;
+    case TwoLargePrimeCycleBasisStatus::invalid_edge:
+    case TwoLargePrimeCycleBasisStatus::duplicate_relation_index:
+    case TwoLargePrimeCycleBasisStatus::size_overflow:
+    case TwoLargePrimeCycleBasisStatus::internal_invariant_failure:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+struct ScaleProfileRecord final {
+    ProfileOptions options;
+    SIQSParams params{};
+    uint32_t multiplier = 0;
+    std::string sieved_modulus;
+    size_t sieved_bits = 0;
+    size_t factor_base_columns = 0;
+    uint32_t factor_base_last_prime = 0;
+    uint64_t large_prime_bound = 0;
+    uint64_t two_large_prime_bound = 0;
+    uint8_t threshold = 0;
+    ScalePlanResult plan;
+    CaptureTotals capture;
+    size_t batch_count = 0;
+    size_t completed_batches = 0;
+    size_t planned_slots = 0;
+    size_t completed_slots = 0;
+    size_t unstarted_slots = 0;
+    size_t completed_a = 0;
+    size_t unstarted_a = 0;
+    size_t peak_workers = 0;
+    size_t global_relations = 0;
+    size_t discarded_relations = 0;
+    size_t raw_full_relations = 0;
+    size_t raw_one_lp_relations = 0;
+    size_t raw_two_lp_candidates = 0;
+    size_t admitted_full_relations = 0;
+    size_t admitted_one_lp_relations = 0;
+    size_t admitted_two_lp_candidates = 0;
+    size_t global_payload_bytes = 0;
+    size_t discarded_payload_bytes = 0;
+    Digest128 slot_digest;
+    Digest128 raw_digest;
+    TwoLargePrimeAdapterStats adapter;
+    bool graph_attempted = false;
+    TwoLargePrimeCycleBasisStatus graph_status =
+        TwoLargePrimeCycleBasisStatus::internal_invariant_failure;
+    size_t graph_input_edges = 0;
+    size_t graph_vertices = 0;
+    size_t graph_edges = 0;
+    size_t graph_components = 0;
+    size_t graph_cycles = 0;
+    size_t graph_cycle_incidences = 0;
+    size_t graph_max_cycle_length = 0;
+    CycleEvidence cycle_evidence;
+    size_t row_candidate_upper = 0;
+    bool assembly_attempted = false;
+    SIQSShadowAssemblyStatus assembly_status = SIQSShadowAssemblyStatus::internal_invariant_failure;
+    SIQSShadowAssemblyStats assembly;
+    SIQSShadowAssemblyFingerprints fingerprints;
+    ScaleTerminalStatus status = ScaleTerminalStatus::solver_ready;
+    std::string terminal_detail = "none";
+    std::optional<LogicalSlotId> terminal_slot;
+    std::optional<RelationProvenance> first_rejected;
+    ProcessMemorySnapshot plan_memory;
+    ProcessMemorySnapshot capture_memory;
+    ProcessMemorySnapshot final_memory;
+    std::string_view rss_evidence = "unavailable";
+    std::string_view scale_evidence = "fail";
+    uint64_t plan_wall_nanoseconds = 0;
+    uint64_t capture_wall_nanoseconds = 0;
+    uint64_t analysis_wall_nanoseconds = 0;
+    uint64_t wall_nanoseconds = 0;
+};
+
+[[nodiscard]] ScaleProfileRecord
+finish_scale_record(ScaleProfileRecord record, std::chrono::steady_clock::time_point started) {
+    record.final_memory = gnfs::util::process_memory_snapshot();
+    record.wall_nanoseconds =
+        elapsed_nanoseconds(started, std::chrono::steady_clock::now(), "scale profile");
+    require(record.plan_memory.backend == record.capture_memory.backend &&
+                record.plan_memory.backend == record.final_memory.backend,
+            "process-memory backend changed during scale profile");
+    if (!record.final_memory.lifetime_peak_rss_bytes) {
+        record.rss_evidence = "unavailable";
+    } else if (*record.final_memory.lifetime_peak_rss_bytes > SCALE_RSS_BUDGET_BYTES) {
+        record.rss_evidence = "over_budget";
+    } else {
+        record.rss_evidence = "pass";
+    }
+    if (record.status == ScaleTerminalStatus::solver_ready) {
+        record.scale_evidence =
+            record.rss_evidence == "pass"
+                ? "pass"
+                : (record.rss_evidence == "unavailable" ? "unavailable" : "fail");
+    }
+    return record;
+}
+
+void validate_scale_plan_golden(const ScalePlanResult& plan) {
+    const auto& golden = SIQS_MULTI_A_SCALE_FIXTURE_V3.golden;
+    require(plan.first_a == golden.first_a && plan.last_a == golden.last_a,
+            "scale A endpoint golden mismatch");
+    require(plan.planner_attempts == golden.planner_attempts &&
+                plan.duplicate_a_draws == golden.planner_duplicate_draws &&
+                plan.digest.low == golden.plan_digest_low &&
+                plan.digest.high == golden.plan_digest_high,
+            "scale plan golden mismatch");
+}
+
+void validate_scale_corpus_goldens(const ScaleProfileRecord& record, size_t raw_relations) {
+    const auto& golden = SIQS_MULTI_A_SCALE_FIXTURE_V3.golden;
+    require(raw_relations == golden.raw_relations &&
+                record.global_payload_bytes == golden.raw_payload_bytes &&
+                record.raw_digest.low == golden.raw_digest_low &&
+                record.raw_digest.high == golden.raw_digest_high &&
+                record.slot_digest.low == golden.slot_digest_low &&
+                record.slot_digest.high == golden.slot_digest_high &&
+                record.raw_full_relations == golden.raw_full_relations &&
+                record.raw_one_lp_relations == golden.raw_one_lp_relations &&
+                record.raw_two_lp_candidates == golden.raw_two_lp_candidates,
+            "scale raw corpus golden mismatch");
+    require(record.adapter.accepted_one_lp == golden.adapter_accepted_one_lp &&
+                record.adapter.accepted_two_lp == golden.adapter_accepted_two_lp &&
+                record.adapter.rejected_relations == golden.adapter_rejected_relations &&
+                record.adapter.exact_duplicate == golden.adapter_exact_duplicate,
+            "scale adapter golden mismatch");
+    require(record.graph_vertices == golden.graph_vertices &&
+                record.graph_edges == golden.graph_edges &&
+                record.graph_components == golden.graph_components &&
+                record.graph_cycles == golden.graph_cycles &&
+                record.graph_cycle_incidences == golden.graph_cycle_incidences &&
+                record.graph_max_cycle_length == golden.graph_max_cycle_length,
+            "scale graph golden mismatch");
+    require(
+        record.cycle_evidence.cycles_with_accepted_two_lp == golden.cycles_with_accepted_two_lp &&
+            record.cycle_evidence.cycles_without_accepted_two_lp ==
+                golden.cycles_without_accepted_two_lp &&
+            record.cycle_evidence.two_lp_edge_source_a_count == golden.two_lp_edge_source_a_count &&
+            record.cycle_evidence.cycle_source_a_count == golden.cycle_source_a_count &&
+            record.cycle_evidence.provenance_digest.low == golden.cycle_provenance_digest_low &&
+            record.cycle_evidence.provenance_digest.high == golden.cycle_provenance_digest_high,
+        "scale cycle-evidence golden mismatch");
+    require(record.assembly.pretrim_rows == golden.pretrim_rows &&
+                record.assembly.selected_rows == golden.selected_rows &&
+                record.assembly.selected_full_rows == golden.selected_full_rows &&
+                record.assembly.selected_cycle_rows == golden.selected_cycle_rows &&
+                record.fingerprints.source_catalog.low == golden.source_fingerprint_low &&
+                record.fingerprints.source_catalog.high == golden.source_fingerprint_high &&
+                record.fingerprints.pretrim_rows.low == golden.pretrim_fingerprint_low &&
+                record.fingerprints.pretrim_rows.high == golden.pretrim_fingerprint_high &&
+                record.fingerprints.selected_rows.low == golden.selected_fingerprint_low &&
+                record.fingerprints.selected_rows.high == golden.selected_fingerprint_high,
+            "scale assembly golden mismatch");
+}
+
+[[nodiscard]] ScaleProfileRecord run_scale_profile(const ProfileOptions& options) {
+    const auto started = std::chrono::steady_clock::now();
+    const auto& fixture = SIQS_MULTI_A_SCALE_FIXTURE_V3;
+    ScaleProfileRecord record;
+    record.options = options;
+
+    const Integer modulus(std::string(fixture.modulus));
+    const Integer factor_p(std::string(fixture.factor_p));
+    const Integer factor_q(std::string(fixture.factor_q));
+    require(factor_p * factor_q == modulus, "scale fixture factors do not multiply to N");
+    require(modulus.num_digits(10) == fixture.band,
+            "scale fixture digit count differs from its band");
+    require(factor_p.is_probable_prime(25) != 0 && factor_q.is_probable_prime(25) != 0,
+            "scale fixture factors are not probable primes");
+    record.params = select_params(fixture.band);
+    require(record.params.fb_size == fixture.factor_base_size &&
+                record.params.sieve_half == fixture.sieve_half &&
+                record.params.lp_multiplier == fixture.large_prime_multiplier &&
+                record.params.num_a_factors == fixture.a_factor_count &&
+                record.params.sieve_error == fixture.sieve_error &&
+                record.params.small_prime_cutoff == fixture.small_prime_cutoff,
+            "live SIQS parameters differ from scale fixture expectations");
+    record.multiplier = select_multiplier(modulus);
+    Integer sieved_modulus;
+    mpz_mul_ui(sieved_modulus.get_mpz(), modulus.get_mpz(), record.multiplier);
+    record.sieved_modulus = sieved_modulus.to_string();
+    record.sieved_bits = sieved_modulus.bit_length();
+    const std::vector<FBPrime> factor_base =
+        build_factor_base(sieved_modulus, record.params.fb_size);
+    require(factor_base.size() == static_cast<size_t>(record.params.fb_size) + 1 &&
+                !factor_base.empty() && factor_base.front().p == 0,
+            "scale factor-base shape differs from selected parameters");
+    record.factor_base_columns = factor_base.size();
+    record.factor_base_last_prime = factor_base.back().p;
+    record.large_prime_bound = checked_multiply_u64(
+        factor_base.back().p, record.params.lp_multiplier, "scale large-prime bound");
+    record.two_large_prime_bound = checked_multiply_u64(
+        record.large_prime_bound, record.large_prime_bound, "scale two-large-prime bound");
+    record.threshold =
+        compute_threshold(sieved_modulus, factor_base, record.params, record.large_prime_bound);
+
+    record.plan =
+        build_scale_plan(sieved_modulus, factor_base, record.params, record.multiplier,
+                         record.large_prime_bound, record.two_large_prime_bound, record.threshold);
+    require(record.plan.a_plans.size() == fixture.a_count &&
+                record.plan.available_b_slots == fixture.b_slots_per_a,
+            "scale planner did not produce the fixed 256x32 plan");
+    validate_scale_plan_golden(record.plan);
+    const auto plan_finished = std::chrono::steady_clock::now();
+    record.plan_wall_nanoseconds = elapsed_nanoseconds(started, plan_finished, "scale plan");
+    record.plan_memory = gnfs::util::process_memory_snapshot();
+
+    record.planned_slots =
+        checked_multiply(fixture.a_count, fixture.b_slots_per_a, "scale planned slots");
+    std::vector<SIQSRelation> relations;
+    std::vector<RelationProvenance> provenances;
+    relations.reserve(SCALE_GLOBAL_RELATION_LIMIT);
+    provenances.reserve(SCALE_GLOBAL_RELATION_LIMIT);
+    StableDigestBuilder slot_builder("GNFS-SIQS-256A-SLOT-STATE-V3");
+    StableDigestBuilder raw_builder("GNFS-SIQS-256A-GLOBAL-RAW-V3");
+    slot_builder.append_size(record.planned_slots);
+    raw_builder.append_size(record.planned_slots);
+
+    const auto capture_started = std::chrono::steady_clock::now();
+    const std::vector<std::pair<size_t, size_t>> batches = scale_capture_batches();
+    record.batch_count = batches.size();
+    for (const auto [a_begin, a_end] : batches) {
+        const size_t batch_a_count = a_end - a_begin;
+        const size_t batch_slot_count =
+            checked_multiply(batch_a_count, fixture.b_slots_per_a, "scale batch slot count");
+        std::vector<SlotCapture> slots(batch_slot_count);
+        for (size_t local_slot = 0; local_slot < slots.size(); ++local_slot) {
+            slots[local_slot].id = {
+                a_begin + local_slot / fixture.b_slots_per_a,
+                local_slot % fixture.b_slots_per_a,
+            };
+        }
+        std::atomic<bool> cancel_capture{false};
+        const StageResult stage = capture_stage(
+            a_begin, a_end, options, record.plan.a_plans, sieved_modulus, factor_base,
+            record.params, record.threshold, record.large_prime_bound, record.two_large_prime_bound,
+            fixture.b_slots_per_a, a_begin, slots, cancel_capture);
+        require(stage.resolved_workers == options.requested_workers &&
+                    stage.peak_workers == options.requested_workers,
+                "scale batch did not run every requested worker");
+        record.peak_workers = std::max(record.peak_workers, stage.peak_workers);
+
+        for (const SlotCapture& slot : slots) {
+            validate_slot_capture(slot, record.capture);
+            if (slot.snapshot.stop_reason == SIQSLiveSieveCaptureStopReason::relation_limit) {
+                if (record.status == ScaleTerminalStatus::solver_ready) {
+                    record.status = ScaleTerminalStatus::slot_relation_limit;
+                    record.terminal_detail = "slot_relation_limit";
+                    record.terminal_slot = slot.id;
+                }
+            } else if (slot.snapshot.stop_reason == SIQSLiveSieveCaptureStopReason::payload_limit) {
+                if (record.status == ScaleTerminalStatus::solver_ready) {
+                    record.status = ScaleTerminalStatus::slot_payload_limit;
+                    record.terminal_detail = "slot_payload_limit";
+                    record.terminal_slot = slot.id;
+                }
+            } else if (slot.snapshot.stop_reason != SIQSLiveSieveCaptureStopReason::none) {
+                fail("scale slot reported a structural or overflow terminal");
+            }
+
+            append_logical_id(slot_builder, slot.id);
+            slot_builder.append_byte(static_cast<uint8_t>(slot.snapshot.stop_reason));
+            slot_builder.append_size(slot.snapshot.threshold_candidates);
+            slot_builder.append_size(slot.snapshot.unrepresentable_residuals);
+            slot_builder.append_size(slot.snapshot.rejected_residuals);
+            slot_builder.append_size(slot.snapshot.observed_full_relations);
+            slot_builder.append_size(slot.snapshot.observed_one_lp_relations);
+            slot_builder.append_size(slot.snapshot.observed_two_lp_candidates);
+            slot_builder.append_size(slot.snapshot.captured_relations);
+            slot_builder.append_size(slot.snapshot.captured_payload_bytes);
+
+            size_t recomputed_slot_payload = 0;
+            size_t slot_full_relations = 0;
+            size_t slot_one_lp_relations = 0;
+            size_t slot_two_lp_candidates = 0;
+            for (size_t relation_ordinal = 0; relation_ordinal < slot.relations.size();
+                 ++relation_ordinal) {
+                const SIQSRelation& relation = slot.relations[relation_ordinal];
+                require(relation.merge_lps.empty() &&
+                            relation.exponents.size() == factor_base.size() &&
+                            !relation.exponents.empty() && relation.exponents.front() == 0,
+                        "scale capture produced an invalid dense relation shape");
+                const size_t payload = relation_payload_bytes(relation);
+                recomputed_slot_payload =
+                    checked_add(recomputed_slot_payload, payload, "recomputed slot payload");
+                if (relation.large_prime == 0 && relation.large_prime2 == 0) {
+                    ++record.raw_full_relations;
+                    ++slot_full_relations;
+                } else if (relation.large_prime > 1 && relation.large_prime2 == 0) {
+                    ++record.raw_one_lp_relations;
+                    ++slot_one_lp_relations;
+                } else if (relation.large_prime > 1 && relation.large_prime2 == 1) {
+                    ++record.raw_two_lp_candidates;
+                    ++slot_two_lp_candidates;
+                } else {
+                    fail("scale capture produced an invalid raw LP encoding");
+                }
+            }
+            require(recomputed_slot_payload == slot.snapshot.captured_payload_bytes,
+                    "recomputed relation payload differs from slot snapshot");
+            require(slot_full_relations <= slot.snapshot.observed_full_relations &&
+                        slot_one_lp_relations <= slot.snapshot.observed_one_lp_relations &&
+                        slot_two_lp_candidates <= slot.snapshot.observed_two_lp_candidates,
+                    "scale captured kinds exceed slot observations");
+            const size_t slot_observed_not_captured = checked_add(
+                checked_add(slot.snapshot.observed_full_relations - slot_full_relations,
+                            slot.snapshot.observed_one_lp_relations - slot_one_lp_relations,
+                            "scale slot uncommitted kind conservation"),
+                slot.snapshot.observed_two_lp_candidates - slot_two_lp_candidates,
+                "scale slot uncommitted kind conservation");
+            require(slot_observed_not_captured == slot.snapshot.observed_full_relations +
+                                                      slot.snapshot.observed_one_lp_relations +
+                                                      slot.snapshot.observed_two_lp_candidates -
+                                                      slot.snapshot.captured_relations,
+                    "scale slot observed-not-captured conservation failed");
+            ++record.completed_slots;
+        }
+        ++record.completed_batches;
+        record.completed_a = a_end;
+
+        if (record.status == ScaleTerminalStatus::solver_ready) {
+            for (SlotCapture& slot : slots) {
+                for (size_t relation_ordinal = 0; relation_ordinal < slot.relations.size();
+                     ++relation_ordinal) {
+                    const size_t payload = relation_payload_bytes(slot.relations[relation_ordinal]);
+                    require(relations.size() < std::numeric_limits<size_t>::max(),
+                            "global relation count overflow");
+                    const size_t next_relation_count = relations.size() + 1;
+                    if (next_relation_count > SCALE_GLOBAL_RELATION_LIMIT) {
+                        record.status = ScaleTerminalStatus::global_relation_limit;
+                        record.terminal_detail = "global_relation_limit";
+                        record.first_rejected = RelationProvenance{slot.id, relation_ordinal};
+                        break;
+                    }
+                    require(payload <=
+                                std::numeric_limits<size_t>::max() - record.global_payload_bytes,
+                            "global payload count overflow");
+                    const size_t next_payload = record.global_payload_bytes + payload;
+                    if (next_payload > SCALE_GLOBAL_PAYLOAD_LIMIT) {
+                        record.status = ScaleTerminalStatus::global_payload_limit;
+                        record.terminal_detail = "global_payload_limit";
+                        record.first_rejected = RelationProvenance{slot.id, relation_ordinal};
+                        break;
+                    }
+                    const RelationProvenance provenance{slot.id, relation_ordinal};
+                    append_provenance(raw_builder, provenance);
+                    append_relation(raw_builder, slot.relations[relation_ordinal]);
+                    provenances.push_back(provenance);
+                    const SIQSRelation& admitted = slot.relations[relation_ordinal];
+                    if (admitted.large_prime == 0 && admitted.large_prime2 == 0) {
+                        ++record.admitted_full_relations;
+                    } else if (admitted.large_prime2 == 0) {
+                        ++record.admitted_one_lp_relations;
+                    } else {
+                        ++record.admitted_two_lp_candidates;
+                    }
+                    relations.push_back(std::move(slot.relations[relation_ordinal]));
+                    record.global_payload_bytes = next_payload;
+                }
+                if (record.status != ScaleTerminalStatus::solver_ready) {
+                    break;
+                }
+            }
+        }
+        std::vector<SlotCapture>().swap(slots);
+        if (record.status != ScaleTerminalStatus::solver_ready) {
+            break;
+        }
+    }
+    record.slot_digest = slot_builder.finish();
+    raw_builder.append_string("global_admission_complete");
+    raw_builder.append_size(relations.size());
+    raw_builder.append_size(record.global_payload_bytes);
+    record.raw_digest = raw_builder.finish();
+    record.global_relations = relations.size();
+    require(record.completed_slots <= record.planned_slots &&
+                record.capture.captured_relations >= relations.size() &&
+                relations.size() == provenances.size(),
+            "scale global admission conservation failed");
+    record.unstarted_slots = record.planned_slots - record.completed_slots;
+    record.unstarted_a = fixture.a_count - record.completed_a;
+    record.discarded_relations = record.capture.captured_relations - relations.size();
+    require(record.capture.captured_payload_bytes >= record.global_payload_bytes,
+            "scale admitted payload exceeds produced payload");
+    record.discarded_payload_bytes =
+        record.capture.captured_payload_bytes - record.global_payload_bytes;
+    require(record.capture.captured_payload_bytes ==
+                checked_add(record.global_payload_bytes, record.discarded_payload_bytes,
+                            "scale payload admission conservation"),
+            "scale produced payload does not equal admitted plus discarded");
+    require(checked_add(checked_add(record.raw_full_relations, record.raw_one_lp_relations,
+                                    "scale raw kind conservation"),
+                        record.raw_two_lp_candidates,
+                        "scale raw kind conservation") == record.capture.captured_relations,
+            "scale raw relation kinds do not conserve produced relations");
+    require(
+        checked_add(checked_add(record.admitted_full_relations, record.admitted_one_lp_relations,
+                                "scale admitted kind conservation"),
+                    record.admitted_two_lp_candidates,
+                    "scale admitted kind conservation") == record.global_relations,
+        "scale admitted relation kinds do not conserve global relations");
+    const auto capture_finished = std::chrono::steady_clock::now();
+    record.capture_wall_nanoseconds =
+        elapsed_nanoseconds(capture_started, capture_finished, "scale capture");
+    record.capture_memory = gnfs::util::process_memory_snapshot();
+    if (record.status != ScaleTerminalStatus::solver_ready) {
+        return finish_scale_record(std::move(record), started);
+    }
+    require(record.completed_slots == record.planned_slots && record.discarded_relations == 0,
+            "successful scale capture did not admit every relation");
+
+    const auto analysis_started = std::chrono::steady_clock::now();
+    std::vector<uint32_t> factor_base_primes;
+    factor_base_primes.reserve(factor_base.size());
+    for (const FBPrime& prime : factor_base) {
+        factor_base_primes.push_back(prime.p);
+    }
+    const auto factor_base_span =
+        std::span<const uint32_t>(factor_base_primes.data(), factor_base_primes.size());
+    const auto relation_span = std::span<const SIQSRelation>(relations.data(), relations.size());
+    const auto provenance_span =
+        std::span<const RelationProvenance>(provenances.data(), provenances.size());
+    const auto splitter = [](uint64_t cofactor) { return split_cofactor_64(cofactor); };
+    record.graph_attempted = true;
+    {
+        const auto prepared = prepare_two_large_prime_corpus(relation_span, factor_base_span.size(),
+                                                             record.large_prime_bound, splitter);
+        require(prepared.has_value(), "typed adapter rejected the deterministic scale corpus");
+        record.adapter = prepared->stats;
+        validate_adapter_conservation(record.adapter, relations.size());
+        record.graph_input_edges = prepared->edges.size();
+        require(record.graph_input_edges == checked_add(record.adapter.accepted_one_lp,
+                                                        record.adapter.accepted_two_lp,
+                                                        "scale graph input conservation"),
+                "scale graph input differs from accepted adapter partials");
+
+        auto graph_result = build_two_large_prime_cycle_basis(
+            std::span<const gnfs::siqs::TwoLargePrimeEdge>(prepared->edges.data(),
+                                                           prepared->edges.size()),
+            TwoLargePrimeCycleBasisLimits{SCALE_GRAPH_EDGE_LIMIT, SCALE_GRAPH_CYCLE_LIMIT,
+                                          SCALE_GRAPH_INCIDENCE_LIMIT});
+        record.graph_status = graph_result.status();
+        if (!graph_result.is_valid() || !graph_result.basis()) {
+            const auto terminal = graph_cap_terminal(graph_result.status());
+            require(terminal.has_value(),
+                    "bounded graph reported a structural or invariant scale failure");
+            record.status = *terminal;
+            record.terminal_detail = std::string(scale_terminal_name(*terminal));
+        } else {
+            const TwoLargePrimeCycleBasis& graph = *graph_result.basis();
+            record.graph_vertices = graph.vertex_count;
+            record.graph_edges = graph.edge_count;
+            record.graph_components = graph.component_count;
+            record.graph_cycles = graph.cycles.size();
+            record.graph_cycle_incidences = graph.total_cycle_incidences;
+            record.graph_max_cycle_length = graph.max_cycle_length;
+            require(record.graph_edges == prepared->edges.size() &&
+                        record.graph_edges + record.graph_components >= record.graph_vertices &&
+                        record.graph_cycles ==
+                            record.graph_edges + record.graph_components - record.graph_vertices,
+                    "scale bounded graph conservation failed");
+            const std::vector<RelationProvenance> source_provenances = accepted_provenances(
+                relation_span, provenance_span, record.large_prime_bound, *prepared);
+            record.cycle_evidence =
+                analyze_cycle_evidence(*prepared, graph, source_provenances, fixture.a_count);
+        }
+    }
+
+    if (record.status != ScaleTerminalStatus::solver_ready) {
+        record.analysis_wall_nanoseconds = elapsed_nanoseconds(
+            analysis_started, std::chrono::steady_clock::now(), "scale analysis");
+        return finish_scale_record(std::move(record), started);
+    }
+
+    record.row_candidate_upper = checked_add(record.adapter.full_relations, record.graph_cycles,
+                                             "scale row-candidate upper bound");
+    if (record.row_candidate_upper > SCALE_ROW_CANDIDATE_LIMIT) {
+        record.status = ScaleTerminalStatus::row_candidate_limit;
+        record.terminal_detail = "row_candidate_limit";
+        record.analysis_wall_nanoseconds = elapsed_nanoseconds(
+            analysis_started, std::chrono::steady_clock::now(), "scale analysis");
+        return finish_scale_record(std::move(record), started);
+    }
+    require(checked_add(record.factor_base_columns, SHADOW_TRIM_EXCESS,
+                        "scale required-row derivation") == SCALE_REQUIRED_ROWS,
+            "scale required rows drifted from factor-base columns plus trim excess");
+
+    record.assembly_attempted = true;
+    {
+        auto assembled = assemble_siqs_shadow_rows(
+            relation_span, factor_base_span, sieved_modulus, record.large_prime_bound,
+            SIQSShadowAssemblyOptions{SHADOW_TRIM_EXCESS, options.requested_workers}, splitter);
+        record.assembly_status = assembled.status();
+        require(assembled.is_valid() && assembled.assembly().has_value(),
+                "shadow assembly rejected the deterministic scale corpus");
+        record.assembly = assembled.assembly()->stats;
+        record.fingerprints = assembled.assembly()->fingerprints;
+    }
+    validate_assembly_conservation(record.assembly);
+    require(record.assembly.rows_before_dedup <= record.row_candidate_upper,
+            "assembly rows exceed the preflight candidate upper bound");
+    require(record.assembly.adapter == record.adapter &&
+                record.assembly.graph_edges == record.graph_edges &&
+                record.assembly.graph_cycles == record.graph_cycles,
+            "preflight and assembly adapter/graph evidence differ");
+    if (record.assembly.pretrim_rows > SCALE_PRETRIM_ROW_LIMIT) {
+        record.status = ScaleTerminalStatus::pretrim_limit;
+        record.terminal_detail = "pretrim_limit";
+    } else if (record.assembly.pretrim_rows < SCALE_REQUIRED_ROWS ||
+               record.assembly.selected_rows != SCALE_REQUIRED_ROWS) {
+        record.status = ScaleTerminalStatus::insufficient_rows;
+        record.terminal_detail = "insufficient_rows";
+    } else if (record.assembly.rejected_cycle_rows != 0) {
+        record.status = ScaleTerminalStatus::rejected_cycle_rows;
+        record.terminal_detail = "rejected_cycle_rows";
+    } else if (record.assembly.arithmetic_duplicates_removed != 0) {
+        record.status = ScaleTerminalStatus::arithmetic_duplicates;
+        record.terminal_detail = "arithmetic_duplicates";
+    } else if (record.cycle_evidence.cycles_with_accepted_two_lp < SCALE_MIN_TWO_LP_CYCLES) {
+        record.status = ScaleTerminalStatus::insufficient_two_lp_cycles;
+        record.terminal_detail = "insufficient_two_lp_cycles";
+    } else if (record.cycle_evidence.two_lp_edge_source_a_count < SCALE_MIN_TWO_LP_EDGE_SOURCE_A) {
+        record.status = ScaleTerminalStatus::insufficient_two_lp_source_a;
+        record.terminal_detail = "insufficient_two_lp_source_a";
+    }
+    if (record.status == ScaleTerminalStatus::solver_ready) {
+        validate_scale_corpus_goldens(record, relations.size());
+    }
+
+    const auto analysis_finished = std::chrono::steady_clock::now();
+    record.analysis_wall_nanoseconds =
+        elapsed_nanoseconds(analysis_started, analysis_finished, "scale analysis");
+    return finish_scale_record(std::move(record), started);
+}
+
+[[nodiscard]] std::string_view graph_status_name(TwoLargePrimeCycleBasisStatus status) noexcept {
+    switch (status) {
+    case TwoLargePrimeCycleBasisStatus::valid:
+        return "valid";
+    case TwoLargePrimeCycleBasisStatus::edge_limit:
+        return "edge_limit";
+    case TwoLargePrimeCycleBasisStatus::invalid_edge:
+        return "invalid_edge";
+    case TwoLargePrimeCycleBasisStatus::duplicate_relation_index:
+        return "duplicate_relation_index";
+    case TwoLargePrimeCycleBasisStatus::size_overflow:
+        return "size_overflow";
+    case TwoLargePrimeCycleBasisStatus::cycle_limit:
+        return "cycle_limit";
+    case TwoLargePrimeCycleBasisStatus::incidence_limit:
+        return "incidence_limit";
+    case TwoLargePrimeCycleBasisStatus::internal_invariant_failure:
+        return "internal_invariant_failure";
+    }
+    return "unknown";
+}
+
+void emit_scale_records(const ScaleProfileRecord& record) {
+    const auto& fixture = SIQS_MULTI_A_SCALE_FIXTURE_V3;
+    std::ostringstream output;
+    output << "GNFS_SIQS_256A_CONFIG_V3"
+           << " schema_version=3 status=" << scale_terminal_name(record.status)
+           << " profile_id=" << fixture.profile_id << " build_type=" << BUILD_TYPE
+           << " ndebug=" << (RELEASE_ASSERTIONS_DISABLED ? "true" : "false")
+           << " band=" << fixture.band << " digits=" << fixture.band << " n=" << fixture.modulus
+           << " p=" << fixture.factor_p << " q=" << fixture.factor_q << " seed=" << fixture.seed
+           << " max_a=" << fixture.a_count << " unique_a=" << record.plan.a_plans.size()
+           << " b_per_a=" << fixture.b_slots_per_a
+           << " available_b_per_a=" << record.plan.available_b_slots << " complete_b_family=true"
+           << " batch_schedule=0-1,1-4,4-16,16-32,32-48,48-64,64-80,80-96,96-112,112-128,128-144,"
+              "144-160,160-176,176-192,192-208,208-224,224-240,240-256"
+           << " batch_max_a=16 batch_barrier=true partition=static_contiguous"
+           << " admission_order=a_gray_relation admission_race_first=false"
+           << " global_cap_boundary=next_gt_limit timeout_seconds=" << SCALE_TIMEOUT_SECONDS
+           << " planner_attempts=" << record.plan.planner_attempts
+           << " planner_duplicate_draws=" << record.plan.duplicate_a_draws
+           << " accepted_duplicate_a=0"
+           << " first_a=" << record.plan.first_a << " last_a=" << record.plan.last_a
+           << " plan_digest_low=" << record.plan.digest.low
+           << " plan_digest_high=" << record.plan.digest.high << " multiplier=" << record.multiplier
+           << " sieved_n=" << record.sieved_modulus << " sieved_bits=" << record.sieved_bits
+           << " factor_base_columns=" << record.factor_base_columns
+           << " factor_base_last_prime=" << record.factor_base_last_prime
+           << " param_fb_size=" << record.params.fb_size
+           << " param_sieve_half=" << record.params.sieve_half
+           << " param_lp_multiplier=" << record.params.lp_multiplier
+           << " param_a_factors=" << record.params.num_a_factors
+           << " param_sieve_error=" << record.params.sieve_error
+           << " param_small_prime_cutoff=" << record.params.small_prime_cutoff
+           << " threshold=" << static_cast<unsigned>(record.threshold)
+           << " relation_limit_per_slot=" << RELATION_LIMIT_PER_SLOT
+           << " payload_limit_bytes_per_slot=" << PAYLOAD_LIMIT_PER_SLOT
+           << " global_raw_limit=" << SCALE_GLOBAL_RELATION_LIMIT
+           << " global_payload_limit_bytes=" << SCALE_GLOBAL_PAYLOAD_LIMIT
+           << " graph_edge_limit=" << SCALE_GRAPH_EDGE_LIMIT
+           << " graph_cycle_limit=" << SCALE_GRAPH_CYCLE_LIMIT
+           << " graph_incidence_limit=" << SCALE_GRAPH_INCIDENCE_LIMIT
+           << " row_candidate_limit=" << SCALE_ROW_CANDIDATE_LIMIT
+           << " pretrim_limit=" << SCALE_PRETRIM_ROW_LIMIT
+           << " shadow_trim_excess=" << SHADOW_TRIM_EXCESS
+           << " selected_required=" << SCALE_REQUIRED_ROWS
+           << " min_2lp_cycles=" << SCALE_MIN_TWO_LP_CYCLES
+           << " min_2lp_edge_source_a=" << SCALE_MIN_TWO_LP_EDGE_SOURCE_A
+           << " rss_budget_bytes=" << SCALE_RSS_BUDGET_BYTES
+           << " solver_attempted=false promotion=false\n";
+
+    output << "GNFS_SIQS_256A_CAPTURE_V3"
+           << " schema_version=3 status=" << scale_terminal_name(record.status)
+           << " profile_id=" << fixture.profile_id << " batches=" << record.batch_count
+           << " completed_batches=" << record.completed_batches
+           << " unstarted_batches=" << record.batch_count - record.completed_batches
+           << " planned_a=" << fixture.a_count << " completed_a=" << record.completed_a
+           << " unstarted_a=" << record.unstarted_a << " planned_slots=" << record.planned_slots
+           << " completed_slots=" << record.completed_slots
+           << " unstarted_slots=" << record.unstarted_slots
+           << " produced_relations=" << record.capture.captured_relations
+           << " admitted_relations=" << record.global_relations
+           << " discarded_relations=" << record.discarded_relations
+           << " produced_full=" << record.raw_full_relations
+           << " produced_one_lp=" << record.raw_one_lp_relations
+           << " produced_two_lp=" << record.raw_two_lp_candidates
+           << " admitted_full=" << record.admitted_full_relations
+           << " admitted_one_lp=" << record.admitted_one_lp_relations
+           << " admitted_two_lp=" << record.admitted_two_lp_candidates
+           << " admitted_payload_bytes=" << record.global_payload_bytes
+           << " discarded_payload_bytes=" << record.discarded_payload_bytes << " terminal_slot_a="
+           << (record.terminal_slot ? std::to_string(record.terminal_slot->a_ordinal) : "none")
+           << " terminal_slot_gray="
+           << (record.terminal_slot ? std::to_string(record.terminal_slot->gray_ordinal) : "none")
+           << " first_rejected_a="
+           << (record.first_rejected ? std::to_string(record.first_rejected->slot.a_ordinal)
+                                     : "none")
+           << " first_rejected_gray="
+           << (record.first_rejected ? std::to_string(record.first_rejected->slot.gray_ordinal)
+                                     : "none")
+           << " first_rejected_relation="
+           << (record.first_rejected ? std::to_string(record.first_rejected->relation_ordinal)
+                                     : "none")
+           << " first_rejected_reason=" << (record.first_rejected ? record.terminal_detail : "none")
+           << " global_cap_precedence=relation_then_payload"
+           << " threshold_candidates=" << record.capture.threshold_candidates
+           << " unrepresentable_residuals=" << record.capture.unrepresentable_residuals
+           << " rejected_residuals=" << record.capture.rejected_residuals
+           << " observed_full=" << record.capture.observed_full_relations
+           << " observed_one_lp=" << record.capture.observed_one_lp_relations
+           << " observed_two_lp=" << record.capture.observed_two_lp_candidates
+           << " produced_payload_bytes=" << record.capture.captured_payload_bytes
+           << " slot_stop_none=" << record.capture.stop_none
+           << " slot_stop_relation_limit=" << record.capture.stop_relation_limit
+           << " slot_stop_payload_limit=" << record.capture.stop_payload_limit
+           << " slot_digest_low=" << record.slot_digest.low
+           << " slot_digest_high=" << record.slot_digest.high
+           << " raw_digest_low=" << record.raw_digest.low
+           << " raw_digest_high=" << record.raw_digest.high
+           << " workers=" << record.options.requested_workers
+           << " resolved_workers=" << record.options.requested_workers
+           << " peak_workers=" << record.peak_workers
+           << " capture_wall_ns=" << record.capture_wall_nanoseconds
+           << " solver_attempted=false promotion=false\n";
+
+    output << "GNFS_SIQS_256A_GRAPH_V3"
+           << " schema_version=3 status=" << scale_terminal_name(record.status)
+           << " profile_id=" << fixture.profile_id
+           << " attempted=" << (record.graph_attempted ? "true" : "false")
+           << " adapter_input=" << record.adapter.input_relations
+           << " adapter_full=" << record.adapter.full_relations
+           << " adapter_accepted_one_lp=" << record.adapter.accepted_one_lp
+           << " adapter_accepted_two_lp=" << record.adapter.accepted_two_lp
+           << " adapter_rejected=" << record.adapter.rejected_relations
+           << " adapter_exact_duplicate=" << record.adapter.exact_duplicate
+           << " adapter_malformed_source_shape=" << record.adapter.malformed_source_shape
+           << " adapter_unsupported_encoding=" << record.adapter.unsupported_encoding
+           << " adapter_invalid_one_large_prime=" << record.adapter.invalid_one_large_prime
+           << " adapter_invalid_two_large_prime_split="
+           << record.adapter.invalid_two_large_prime_split << " graph_status="
+           << (record.graph_attempted ? graph_status_name(record.graph_status) : "not_attempted")
+           << " graph_input_edges=" << record.graph_input_edges
+           << " graph_vertices=" << record.graph_vertices << " graph_edges=" << record.graph_edges
+           << " graph_components=" << record.graph_components
+           << " graph_cycles=" << record.graph_cycles
+           << " graph_cycle_incidences=" << record.graph_cycle_incidences
+           << " graph_max_cycle_length=" << record.graph_max_cycle_length
+           << " cycles_with_accepted_2lp=" << record.cycle_evidence.cycles_with_accepted_two_lp
+           << " cycles_without_accepted_2lp="
+           << record.cycle_evidence.cycles_without_accepted_two_lp
+           << " two_lp_edge_source_a_count=" << record.cycle_evidence.two_lp_edge_source_a_count
+           << " cycle_source_a_count=" << record.cycle_evidence.cycle_source_a_count
+           << " cycle_provenance_digest_low=" << record.cycle_evidence.provenance_digest.low
+           << " cycle_provenance_digest_high=" << record.cycle_evidence.provenance_digest.high
+           << " row_candidate_upper=" << record.row_candidate_upper
+           << " solver_attempted=false promotion=false\n";
+
+    output << "GNFS_SIQS_256A_ASSEMBLY_V3"
+           << " schema_version=3 status=" << scale_terminal_name(record.status)
+           << " profile_id=" << fixture.profile_id
+           << " attempted=" << (record.assembly_attempted ? "true" : "false") << " assembly_status="
+           << (record.assembly_attempted ? assembly_status_name(record.assembly_status)
+                                         : "not_attempted")
+           << " graph_edges=" << record.assembly.graph_edges
+           << " graph_cycles=" << record.assembly.graph_cycles
+           << " valid_full=" << record.assembly.valid_full_relations
+           << " full_sources=" << record.assembly.full_sources
+           << " partial_sources=" << record.assembly.partial_sources
+           << " valid_cycle_rows=" << record.assembly.valid_cycle_rows
+           << " rejected_cycle_rows=" << record.assembly.rejected_cycle_rows
+           << " rows_before_dedup=" << record.assembly.rows_before_dedup
+           << " arithmetic_duplicates_removed=" << record.assembly.arithmetic_duplicates_removed
+           << " pretrim_rows=" << record.assembly.pretrim_rows
+           << " required_rows=" << SCALE_REQUIRED_ROWS << " row_deficit="
+           << (record.assembly.selected_rows < SCALE_REQUIRED_ROWS
+                   ? SCALE_REQUIRED_ROWS - record.assembly.selected_rows
+                   : 0)
+           << " selected_rows=" << record.assembly.selected_rows
+           << " selected_full_rows=" << record.assembly.selected_full_rows
+           << " selected_cycle_rows=" << record.assembly.selected_cycle_rows
+           << " trimmed_rows=" << record.assembly.trimmed_rows
+           << " source_fingerprint_low=" << record.fingerprints.source_catalog.low
+           << " source_fingerprint_high=" << record.fingerprints.source_catalog.high
+           << " pretrim_fingerprint_low=" << record.fingerprints.pretrim_rows.low
+           << " pretrim_fingerprint_high=" << record.fingerprints.pretrim_rows.high
+           << " selected_fingerprint_low=" << record.fingerprints.selected_rows.low
+           << " selected_fingerprint_high=" << record.fingerprints.selected_rows.high
+           << " solver_attempted=false promotion=false\n";
+
+    output << "GNFS_SIQS_256A_PROOF_V3"
+           << " schema_version=3 attempted=false status=not_attempted factor=none"
+           << " cofactor=none deterministic_terminal=" << scale_terminal_name(record.status)
+           << " solver_attempted=false promotion=false\n";
+
+    output << "GNFS_SIQS_256A_SUMMARY_V3"
+           << " schema_version=3 status=" << scale_terminal_name(record.status)
+           << " profile_id=" << fixture.profile_id
+           << " stdout_records=6 config_records=1 capture_records=1 graph_records=1"
+           << " assembly_records=1 proof_records=1 summary_records=1"
+           << " workers=" << record.options.requested_workers
+           << " rss_scope=self_lifetime rss_backend="
+           << gnfs::util::process_memory_backend_name(record.final_memory.backend)
+           << " rss_evidence=" << record.rss_evidence << " scale_evidence=" << record.scale_evidence
+           << " final_current_rss_bytes=" << optional_u64(record.final_memory.current_rss_bytes)
+           << " final_peak_rss_bytes=" << optional_u64(record.final_memory.lifetime_peak_rss_bytes)
+           << " plan_wall_ns=" << record.plan_wall_nanoseconds
+           << " capture_wall_ns=" << record.capture_wall_nanoseconds
+           << " analysis_wall_ns=" << record.analysis_wall_nanoseconds
+           << " wall_ns=" << record.wall_nanoseconds
+           << " solver_attempted=false proof_status=not_attempted promotion=false\n";
+    std::cout << output.str();
+}
+
+[[maybe_unused]] int run_v2_main(int argc, char** argv) {
     try {
         require(BUILD_TYPE == "Release",
                 "profile requires a Release build; observed " + std::string(BUILD_TYPE));
@@ -2065,5 +3079,35 @@ int main(int argc, char** argv) {
     } catch (...) {
         std::cerr << "GNFS_SIQS_MULTI_A_CYCLE_ERROR_V2 unknown exception\n";
         return 1;
+    }
+}
+
+[[maybe_unused]] int run_v3_main(int argc, char** argv) {
+    try {
+        require(BUILD_TYPE == "Release",
+                "profile requires a Release build; observed " + std::string(BUILD_TYPE));
+        require(RELEASE_ASSERTIONS_DISABLED, "profile requires NDEBUG to be defined");
+        const ProfileOptions options = parse_options(argc, argv);
+        self_check_unique_a_collision_path();
+        self_check_canonical_duplicate_provenance();
+        const ScaleProfileRecord record = run_scale_profile(options);
+        emit_scale_records(record);
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "GNFS_SIQS_256A_ERROR_V3 status=invariant_failure " << error.what() << '\n';
+        return 1;
+    } catch (...) {
+        std::cerr << "GNFS_SIQS_256A_ERROR_V3 status=invariant_failure unknown exception\n";
+        return 1;
+    }
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    if constexpr (PROFILE_SCHEMA == 2) {
+        return run_v2_main(argc, argv);
+    } else {
+        return run_v3_main(argc, argv);
     }
 }

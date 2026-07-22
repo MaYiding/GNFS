@@ -1985,6 +1985,16 @@ if(GNFS_BUILD_TESTS)
         GNFS_SIQS_MULTI_A_PROFILE_BUILD_TYPE="$<CONFIG>")
     target_link_libraries(test_siqs_multi_a_cycle_profile PRIVATE gnfs_core Threads::Threads)
 
+    # The same source is compiled under a closed V3 schema for the bounded
+    # 256-A Release-only scale gate. It remains outside CTest and routine tiers.
+    add_executable(test_siqs_256a_scale_profile
+        tests/test_siqs_multi_a_cycle_profile.cpp
+    )
+    target_compile_definitions(test_siqs_256a_scale_profile PRIVATE
+        GNFS_SIQS_MULTI_A_PROFILE_BUILD_TYPE="$<CONFIG>"
+        GNFS_SIQS_MULTI_A_PROFILE_SCHEMA=3)
+    target_link_libraries(test_siqs_256a_scale_profile PRIVATE gnfs_core Threads::Threads)
+
     add_executable(test_siqs_2lp_graph
         tests/test_siqs_2lp_graph.cpp
     )
