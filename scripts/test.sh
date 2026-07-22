@@ -79,6 +79,10 @@
 #                                         # 固定 50 位 256x32 A scale 证据
 #   ./scripts/test.sh compare-siqs-256a
 #                                         # 同一新构建的 1/2/4 scale 独立进程对照
+#   ./scripts/test.sh profile-siqs-256a-proof <1|2|4>
+#                                         # 固定 256-A gate 后的 proof-shadow 因子证据
+#   ./scripts/test.sh compare-siqs-256a-proof
+#                                         # 同一新构建的 1/2/4 proof 独立进程对照
 #   ./scripts/test.sh bench-ram <level>   # 后台 RAM baseline: nohup + /usr/bin/time -l
 #                                         # level=1 (50d ≈2h) / 2 (60d hours+) / 3-5 (大)
 #
@@ -2024,6 +2028,8 @@ SIQS_256A_PROFILE_OUTPUT=""
 SIQS_256A_PROFILE_IDENTITY=""
 SIQS_256A_PROFILE_STDERR=""
 SIQS_256A_SCALE_PASS=0
+SIQS_256A_VALIDATOR_BASELINE=""
+SIQS_256A_VALIDATOR_NOT_ATTEMPTED=""
 
 validate_siqs_256a_profile_output() {
     local stdout="$1"
@@ -2719,6 +2725,8 @@ EOF
             return 1
         fi
     done
+    SIQS_256A_VALIDATOR_BASELINE="$baseline"
+    SIQS_256A_VALIDATOR_NOT_ATTEMPTED="$capture_terminal"
     return 0
 }
 
@@ -2741,11 +2749,14 @@ run_siqs_256a_profile_process() {
     (( TOTAL_TESTS += 1 ))
 
     local line_count blank_count last_byte stdout stderr_bytes stderr_preview=""
+    local stdout_file_bytes stdout_payload_bytes
     line_count=$(awk 'END { print NR + 0 }' "$stdout_file")
     blank_count=$(awk 'NF == 0 { count += 1 } END { print count + 0 }' "$stdout_file")
     last_byte=$(tail -c 1 "$stdout_file" | od -An -tuC | tr -d ' ')
+    stdout_file_bytes=$(wc -c < "$stdout_file" | tr -d '[:space:]')
     stderr_bytes=$(wc -c < "$stderr_file" | tr -d '[:space:]')
     stdout=$(<"$stdout_file")
+    stdout_payload_bytes=$(printf '%s' "$stdout" | wc -c | tr -d '[:space:]')
     if [[ "$stderr_bytes" != "0" ]]; then
         stderr_preview=$(LC_ALL=C tr '\000' '?' < "$stderr_file" | tail -10)
     fi
@@ -2772,9 +2783,10 @@ run_siqs_256a_profile_process() {
         (( FAILED_TESTS += 1 ))
         return 1
     fi
-    if ! validate_siqs_256a_profile_output \
+    if [[ "$stdout_file_bytes" != "$(( stdout_payload_bytes + 1 ))" ]] ||
+       ! validate_siqs_256a_profile_output \
         "$stdout" "$workers" "$line_count" "$blank_count" "$last_byte"; then
-        log_fail "SIQS 256-A stdout 必须是严格有序、闭集且守恒的六行 V3 transcript"
+        log_fail "SIQS 256-A stdout 必须是无 NUL/尾随空行且严格有序、闭集、守恒的六行 V3 transcript"
         (( FAILED_TESTS += 1 ))
         return 1
     fi
@@ -2787,6 +2799,576 @@ run_siqs_256a_profile_process() {
 
     (( PASSED_TESTS += 1 ))
     REPORT_ENTRIES+=("{\"name\":\"test_siqs_256a_scale_profile_w${workers}\",\"status\":\"pass\",\"elapsed_ms\":${elapsed}}")
+    return 0
+}
+
+# V4 reuses the first four V3 gate records. We mechanically downgrade those
+# records, synthesize the V3 proof/summary tail, and invoke the single V3 gate
+# validator above before validating the V4 proof-specific tail.
+SIQS_256A_PROOF_OUTPUT=""
+SIQS_256A_PROOF_IDENTITY=""
+SIQS_256A_PROOF_STDERR=""
+SIQS_256A_PROOF_GATE_SCALE_PASS=0
+SIQS_256A_PROOF_PASS=0
+
+validate_siqs_256a_proof_output() {
+    local stdout="$1"
+    local expected_workers="$2"
+    local line_count="$3"
+    local blank_count="$4"
+    local last_byte="$5"
+    local -a lines
+    lines=("${(@f)stdout}")
+
+    SIQS_256A_PROOF_OUTPUT=""
+    SIQS_256A_PROOF_IDENTITY=""
+    SIQS_256A_PROOF_GATE_SCALE_PASS=0
+    SIQS_256A_PROOF_PASS=0
+    [[ "$line_count" == "6" && "$blank_count" == "0" && "$last_byte" == "10" &&
+       ${#lines[@]} -eq 6 ]] || return 1
+
+    local gate_stdout="" gate_line v4_prefix v3_prefix gate_terminal
+    local record_index
+    for (( record_index = 1; record_index <= 4; ++record_index )); do
+        case "$record_index" in
+            1) v4_prefix="GNFS_SIQS_256A_CONFIG_V4"; v3_prefix="GNFS_SIQS_256A_CONFIG_V3" ;;
+            2) v4_prefix="GNFS_SIQS_256A_CAPTURE_V4"; v3_prefix="GNFS_SIQS_256A_CAPTURE_V3" ;;
+            3) v4_prefix="GNFS_SIQS_256A_GRAPH_V4"; v3_prefix="GNFS_SIQS_256A_GRAPH_V3" ;;
+            4) v4_prefix="GNFS_SIQS_256A_ASSEMBLY_V4"; v3_prefix="GNFS_SIQS_256A_ASSEMBLY_V3" ;;
+        esac
+        gate_line="${lines[$record_index]}"
+        [[ "${gate_line%% *}" == "$v4_prefix" ]] || return 1
+        gate_line="$v3_prefix${gate_line#$v4_prefix}"
+        gate_line="${gate_line/ schema_version=4 / schema_version=3 }"
+        if [[ "$gate_line" == *" solver_attempted=true "* ]]; then
+            gate_line="${gate_line/ solver_attempted=true / solver_attempted=false }"
+        elif [[ "$gate_line" != *" solver_attempted=false "* ]]; then
+            return 1
+        fi
+        gate_stdout+="$gate_line"$'\n'
+    done
+    gate_terminal=$(measurement_record_field "${lines[1]}" status) || return 1
+
+    local proof_line="${lines[5]}" summary_line="${lines[6]}"
+    local profile_id workers rss_scope rss_backend rss_evidence scale_evidence
+    local current_rss peak_rss plan_wall capture_wall analysis_wall wall
+    profile_id=$(measurement_record_field "$summary_line" profile_id) || return 1
+    workers=$(measurement_record_field "$summary_line" workers) || return 1
+    rss_scope=$(measurement_record_field "$summary_line" rss_scope) || return 1
+    rss_backend=$(measurement_record_field "$summary_line" rss_backend) || return 1
+    rss_evidence=$(measurement_record_field "$summary_line" rss_evidence) || return 1
+    scale_evidence=$(measurement_record_field "$summary_line" scale_evidence) || return 1
+    current_rss=$(measurement_record_field "$summary_line" final_current_rss_bytes) || return 1
+    peak_rss=$(measurement_record_field "$summary_line" final_peak_rss_bytes) || return 1
+    plan_wall=$(measurement_record_field "$summary_line" plan_wall_ns) || return 1
+    capture_wall=$(measurement_record_field "$summary_line" capture_wall_ns) || return 1
+    analysis_wall=$(measurement_record_field "$summary_line" analysis_wall_ns) || return 1
+    wall=$(measurement_record_field "$summary_line" wall_ns) || return 1
+
+    gate_stdout+="GNFS_SIQS_256A_PROOF_V3 schema_version=3 attempted=false status=not_attempted factor=none cofactor=none deterministic_terminal=${gate_terminal} solver_attempted=false promotion=false"$'\n'
+    gate_stdout+="GNFS_SIQS_256A_SUMMARY_V3 schema_version=3 status=${gate_terminal} profile_id=${profile_id} stdout_records=6 config_records=1 capture_records=1 graph_records=1 assembly_records=1 proof_records=1 summary_records=1 workers=${workers} rss_scope=${rss_scope} rss_backend=${rss_backend} rss_evidence=${rss_evidence} scale_evidence=${scale_evidence} final_current_rss_bytes=${current_rss} final_peak_rss_bytes=${peak_rss} plan_wall_ns=${plan_wall} capture_wall_ns=${capture_wall} analysis_wall_ns=${analysis_wall} wall_ns=${wall} solver_attempted=false proof_status=not_attempted promotion=false"
+
+    validate_siqs_256a_profile_output "$gate_stdout" "$expected_workers" 6 0 10 || return 1
+    local gate_identity="$SIQS_256A_PROFILE_IDENTITY"
+    local gate_scale_pass="$SIQS_256A_SCALE_PASS"
+    local proof_identity
+    if ! proof_identity=$(python3 - "$expected_workers" 3<<<"$stdout" <<'PY'
+import os
+import re
+import sys
+
+def need(condition):
+    if not condition:
+        raise ValueError
+
+try:
+    expected_workers = int(sys.argv[1])
+    need(expected_workers in (1, 2, 4))
+    lines = os.fdopen(3, encoding="utf-8").read().splitlines()
+    need(len(lines) == 6 and all(lines))
+    gate_prefixes = [
+        "GNFS_SIQS_256A_CONFIG_V4", "GNFS_SIQS_256A_CAPTURE_V4",
+        "GNFS_SIQS_256A_GRAPH_V4", "GNFS_SIQS_256A_ASSEMBLY_V4",
+    ]
+    gate_records = []
+    for prefix, line in zip(gate_prefixes, lines[:4]):
+        tokens = line.split(" ")
+        need(tokens[0] == prefix)
+        record = dict(token.split("=", 1) for token in tokens[1:])
+        need(record.get("schema_version") == "4" and record.get("solver_attempted") in {"true", "false"})
+        gate_records.append(record)
+
+    proof_prefix = "GNFS_SIQS_256A_PROOF_V4"
+    proof_schema = """schema_version attempted status deterministic_terminal matrix_status
+        dependency_status factor_status matrix_rows matrix_columns matrix_projected_dense_bytes
+        solver_max_dependencies solver_elimination_workers solver_parallel_column_threshold
+        solver_max_dense_matrix_bytes solver_max_dense_variable_count elimination_mode
+        dependency_search dependency_combinations_attempted dependency_search_complete
+        dependency_ordinal_base minimum_nullity dependencies_returned dependencies_examined
+        dependencies_verified dependency_cap_reached dependency_digest_low dependency_digest_high
+        first_failed_dependency factor_no_factor_count factor_found_count winning_dependency
+        winning_dependency_size square_modulus gcd_target factor cofactor solver_wall_ns
+        verify_extract_wall_ns solver_attempted promotion""".split()
+    summary_prefix = "GNFS_SIQS_256A_SUMMARY_V4"
+    summary_schema = """schema_version status profile_id stdout_records config_records capture_records
+        graph_records assembly_records proof_records summary_records workers rss_scope rss_backend
+        rss_evidence scale_evidence proof_evidence final_current_rss_bytes final_peak_rss_bytes
+        plan_wall_ns capture_wall_ns analysis_wall_ns solver_wall_ns verify_extract_wall_ns wall_ns
+        solver_attempted proof_status matrix_status dependency_status factor_status
+        dependencies_returned dependencies_examined dependency_cap_reached factor cofactor
+        promotion""".split()
+
+    def parse_closed(line, prefix, schema):
+        tokens = line.split(" ")
+        need(tokens[0] == prefix and len(tokens) == len(schema) + 1)
+        record = {}
+        for expected_key, token in zip(schema, tokens[1:]):
+            need("=" in token)
+            key, value = token.split("=", 1)
+            need(key == expected_key and value and key not in record)
+            record[key] = value
+        return record
+
+    proof = parse_closed(lines[4], proof_prefix, proof_schema)
+    summary = parse_closed(lines[5], summary_prefix, summary_schema)
+    canonical = re.compile(r"0|[1-9][0-9]*\Z")
+    positive = re.compile(r"[1-9][0-9]*\Z")
+    proof_string = {
+        "attempted", "status", "deterministic_terminal", "matrix_status", "dependency_status",
+        "factor_status", "matrix_projected_dense_bytes", "elimination_mode", "dependency_search",
+        "dependency_combinations_attempted", "dependency_search_complete", "dependency_cap_reached",
+        "dependency_digest_low", "dependency_digest_high", "first_failed_dependency",
+        "winning_dependency", "winning_dependency_size", "square_modulus", "gcd_target", "factor",
+        "cofactor", "solver_attempted", "promotion",
+    }
+    optional_numeric = {
+        "matrix_projected_dense_bytes": "not_attempted", "dependency_digest_low": "none",
+        "dependency_digest_high": "none", "first_failed_dependency": "none",
+        "winning_dependency": "none", "winning_dependency_size": "none", "factor": "none",
+        "cofactor": "none",
+    }
+    for key, value in proof.items():
+        if key in optional_numeric:
+            need(value == optional_numeric[key] or canonical.fullmatch(value))
+        elif key not in proof_string:
+            need(canonical.fullmatch(value))
+    summary_string = {
+        "status", "profile_id", "rss_scope", "rss_backend", "rss_evidence", "scale_evidence",
+        "proof_evidence", "final_current_rss_bytes", "final_peak_rss_bytes", "solver_attempted",
+        "proof_status", "matrix_status", "dependency_status", "factor_status", "factor",
+        "cofactor", "dependency_cap_reached", "promotion",
+    }
+    for key, value in summary.items():
+        if key in {"final_current_rss_bytes", "final_peak_rss_bytes"}:
+            need(value == "na" or positive.fullmatch(value))
+        elif key in {"factor", "cofactor"}:
+            need(value == "none" or positive.fullmatch(value))
+        elif key not in summary_string:
+            need(canonical.fullmatch(value))
+
+    I = lambda record, key: int(record[key])
+    attempted = proof["attempted"] == "true"
+    need(proof["attempted"] in {"true", "false"} and proof["solver_attempted"] == proof["attempted"])
+    need(all(record["solver_attempted"] == proof["attempted"] for record in gate_records))
+    need(proof["schema_version"] == "4" and summary["schema_version"] == "4")
+    need(proof["promotion"] == "false" and summary["promotion"] == "false")
+    need(summary["profile_id"] == "siqs50_multi_a_256x32_scale_v3")
+    need(proof["deterministic_terminal"] == gate_records[0]["status"])
+    gate_terminal = proof["deterministic_terminal"]
+    need(proof["solver_max_dependencies"] == "64" and
+         proof["solver_elimination_workers"] == str(expected_workers) and
+         proof["solver_parallel_column_threshold"] == "0" and
+         proof["solver_max_dense_matrix_bytes"] == "345816" and
+         proof["solver_max_dense_variable_count"] == "1701")
+    expected_mode = "not_attempted" if not attempted else ("serial" if expected_workers == 1 else "persistent_parallel")
+    need(proof["elimination_mode"] == expected_mode and
+         proof["dependency_search"] == "first_free_column_basis_prefix" and
+         proof["dependency_combinations_attempted"] == "false" and
+         proof["dependency_ordinal_base"] == "0" and proof["square_modulus"] == "sieved_n" and
+         proof["gcd_target"] == "n")
+
+    matrix_failures = {"invalid_modulus", "invalid_factor_base", "invalid_options", "size_overflow",
+                       "invalid_row", "row_identity_mismatch", "worker_failure",
+                       "internal_invariant_failure", "resource_limit", "unsupported_backend"}
+    dependency_failures = {"invalid_modulus", "invalid_factor_base", "invalid_row",
+                           "row_identity_mismatch", "invalid_dependency", "exponent_overflow",
+                           "dependency_not_square", "dependency_mismatch"}
+    factor_failures = {"invalid_verified_dependency", "invalid_target", "target_not_divisor"}
+    proof_terminals = {"not_attempted", "factor_found", "no_factor", "matrix_failure",
+                       "dependency_failure", "factor_failure"}
+    need(proof["status"] in proof_terminals)
+    if not attempted:
+        need(gate_terminal != "solver_ready" and proof["status"] == "not_attempted")
+        need(proof["matrix_status"] == proof["dependency_status"] == proof["factor_status"] == "not_attempted")
+        need(proof["matrix_rows"] == proof["matrix_columns"] == proof["minimum_nullity"] == "0")
+        need(proof["matrix_projected_dense_bytes"] == "not_attempted" and
+             proof["dependency_search_complete"] == "not_attempted")
+        for key in ("dependencies_returned", "dependencies_examined", "dependencies_verified",
+                    "factor_no_factor_count", "factor_found_count", "solver_wall_ns",
+                    "verify_extract_wall_ns"):
+            need(proof[key] == "0")
+        need(proof["dependency_cap_reached"] == "false" and
+             proof["dependency_digest_low"] == proof["dependency_digest_high"] == "none" and
+             proof["first_failed_dependency"] == proof["winning_dependency"] ==
+             proof["winning_dependency_size"] == proof["factor"] == proof["cofactor"] == "none")
+    else:
+        need(gate_terminal == "solver_ready" and proof["status"] != "not_attempted")
+        need(proof["matrix_rows"] == "1701" and proof["matrix_columns"] == "1601" and
+             proof["matrix_projected_dense_bytes"] == "345816" and proof["minimum_nullity"] == "100")
+        need(I(proof, "solver_wall_ns") > 0)
+        if proof["status"] == "matrix_failure":
+            need(proof["matrix_status"] in matrix_failures and
+                 proof["dependency_status"] == proof["factor_status"] == "not_attempted")
+            need(proof["dependency_search_complete"] == "not_attempted" and
+                 proof["dependencies_returned"] == proof["dependencies_examined"] ==
+                 proof["dependencies_verified"] == "0" and proof["dependency_cap_reached"] == "false")
+            need(proof["dependency_digest_low"] == proof["dependency_digest_high"] == "none" and
+                 proof["first_failed_dependency"] == proof["winning_dependency"] ==
+                 proof["winning_dependency_size"] == proof["factor"] == proof["cofactor"] == "none")
+            need(proof["factor_no_factor_count"] == proof["factor_found_count"] == "0" and
+                 proof["verify_extract_wall_ns"] == "0")
+        else:
+            need(proof["matrix_status"] == "valid" and proof["dependencies_returned"] == "64")
+            returned = I(proof, "dependencies_returned")
+            examined = I(proof, "dependencies_examined")
+            verified = I(proof, "dependencies_verified")
+            need(proof["dependency_cap_reached"] == "true" and
+                 proof["dependency_search_complete"] == "false")
+            need(proof["dependency_digest_low"] != "none" and proof["dependency_digest_high"] != "none" and
+                 (proof["dependency_digest_low"], proof["dependency_digest_high"]) != ("0", "0"))
+            need(0 <= verified <= examined <= returned and I(proof, "verify_extract_wall_ns") > 0)
+            no_factor = I(proof, "factor_no_factor_count")
+            found = I(proof, "factor_found_count")
+            if proof["status"] == "no_factor":
+                need(examined == verified == returned and no_factor == returned and found == 0)
+                need(proof["first_failed_dependency"] == proof["winning_dependency"] ==
+                     proof["winning_dependency_size"] == proof["factor"] == proof["cofactor"] == "none")
+                if returned == 0:
+                    need(proof["dependency_status"] == proof["factor_status"] == "not_attempted")
+                else:
+                    need(proof["dependency_status"] == "valid" and proof["factor_status"] == "no_factor")
+            elif proof["status"] == "dependency_failure":
+                need(proof["dependency_status"] in dependency_failures and examined == verified + 1 and
+                     no_factor == verified and found == 0 and
+                     proof["first_failed_dependency"] == str(verified))
+                need(proof["factor_status"] == ("not_attempted" if verified == 0 else "no_factor") and
+                     proof["winning_dependency"] == proof["winning_dependency_size"] ==
+                     proof["factor"] == proof["cofactor"] == "none")
+            elif proof["status"] == "factor_failure":
+                need(proof["dependency_status"] == "valid" and proof["factor_status"] in factor_failures and
+                     examined == verified and verified > 0 and no_factor == verified - 1 and found == 0 and
+                     proof["first_failed_dependency"] == str(verified - 1))
+                need(proof["winning_dependency"] == proof["winning_dependency_size"] ==
+                     proof["factor"] == proof["cofactor"] == "none")
+            else:
+                need(proof["status"] == "factor_found" and proof["dependency_status"] == "valid" and
+                     proof["factor_status"] == "factor_found" and examined == verified and verified > 0 and
+                     no_factor == verified - 1 and found == 1 and proof["first_failed_dependency"] == "none")
+                need(proof["winning_dependency"] == str(no_factor) and
+                     proof["winning_dependency_size"] != "none" and I(proof, "winning_dependency_size") > 0)
+                need(proof["factor"] != "none" and proof["cofactor"] != "none")
+                modulus = 18027426610499408447671494571938206274555088868093
+                factor, cofactor = int(proof["factor"]), int(proof["cofactor"])
+                need(1 < factor < modulus and 1 < cofactor < modulus and factor * cofactor == modulus)
+
+    expected_overall = gate_terminal if gate_terminal != "solver_ready" else proof["status"]
+    expected_evidence = ("not_attempted" if not attempted else
+                         "factor_found" if proof["status"] == "factor_found" else
+                         "bounded_no_factor" if proof["status"] == "no_factor" else "fail")
+    fixed_summary = {"stdout_records": "6", "config_records": "1", "capture_records": "1",
+                     "graph_records": "1", "assembly_records": "1", "proof_records": "1",
+                     "summary_records": "1", "rss_scope": "self_lifetime", "promotion": "false"}
+    need(all(summary[key] == value for key, value in fixed_summary.items()))
+    need(summary["status"] == expected_overall and summary["workers"] == str(expected_workers) and
+         summary["solver_attempted"] == proof["attempted"] and
+         summary["proof_evidence"] == expected_evidence and summary["proof_status"] == proof["status"])
+    for key in ("matrix_status", "dependency_status", "factor_status", "dependencies_returned",
+                "dependencies_examined", "dependency_cap_reached", "factor", "cofactor"):
+        need(summary[key] == proof[key])
+    need(summary["solver_wall_ns"] == proof["solver_wall_ns"] and
+         summary["verify_extract_wall_ns"] == proof["verify_extract_wall_ns"] and
+         summary["capture_wall_ns"] == gate_records[1]["capture_wall_ns"])
+    need(I(summary, "analysis_wall_ns") >= I(summary, "solver_wall_ns") + I(summary, "verify_extract_wall_ns"))
+
+    if proof["status"] == "factor_found":
+        golden = {
+            "matrix_rows": "1701", "matrix_columns": "1601",
+            "matrix_projected_dense_bytes": "345816", "minimum_nullity": "100",
+            "dependencies_returned": "64", "dependencies_examined": "4",
+            "dependencies_verified": "4", "dependency_cap_reached": "true",
+            "dependency_digest_low": "10254149926071895734",
+            "dependency_digest_high": "17300745096364993287", "first_failed_dependency": "none",
+            "factor_no_factor_count": "3", "factor_found_count": "1", "winning_dependency": "3",
+            "winning_dependency_size": "703", "factor": "2041646378661656688438487",
+            "cofactor": "8829847714527711737483339", "matrix_status": "valid",
+            "dependency_status": "valid", "factor_status": "factor_found",
+        }
+        need(all(proof[key] == value for key, value in golden.items()))
+
+    proof_dynamic = {"solver_elimination_workers", "elimination_mode", "solver_wall_ns",
+                     "verify_extract_wall_ns"}
+    summary_dynamic = {"workers", "rss_evidence", "scale_evidence", "final_current_rss_bytes",
+                       "final_peak_rss_bytes", "plan_wall_ns", "capture_wall_ns", "analysis_wall_ns",
+                       "solver_wall_ns", "verify_extract_wall_ns", "wall_ns"}
+    proof_identity = " ".join([proof_prefix] +
+        [f"{key}={proof[key]}" for key in proof_schema if key not in proof_dynamic])
+    summary_identity = " ".join([summary_prefix] +
+        [f"{key}={summary[key]}" for key in summary_schema if key not in summary_dynamic])
+    print(proof_identity + "\n" + summary_identity)
+except (ValueError, OSError, UnicodeError):
+    sys.exit(1)
+PY
+    ); then
+        return 1
+    fi
+
+    SIQS_256A_PROOF_OUTPUT="$stdout"
+    SIQS_256A_PROOF_IDENTITY="$gate_identity"$'\n'"$proof_identity"
+    SIQS_256A_PROOF_GATE_SCALE_PASS="$gate_scale_pass"
+    if (( gate_scale_pass == 1 )) && [[ "$gate_terminal" == "solver_ready" &&
+          "$(measurement_record_field "$proof_line" status)" == "factor_found" &&
+          "$(measurement_record_field "$summary_line" status)" == "factor_found" &&
+          "$(measurement_record_field "$summary_line" proof_evidence)" == "factor_found" ]]; then
+        SIQS_256A_PROOF_PASS=1
+    fi
+}
+
+siqs_256a_proof_validator_self_check() {
+    siqs_256a_validator_self_check || return 1
+    local -a gate_lines
+    gate_lines=("${(@f)SIQS_256A_VALIDATOR_BASELINE}")
+    (( ${#gate_lines[@]} == 6 )) || return 1
+
+    local baseline="" gate_line record_index v3_prefix v4_prefix
+    for (( record_index = 1; record_index <= 4; ++record_index )); do
+        case "$record_index" in
+            1) v3_prefix="GNFS_SIQS_256A_CONFIG_V3"; v4_prefix="GNFS_SIQS_256A_CONFIG_V4" ;;
+            2) v3_prefix="GNFS_SIQS_256A_CAPTURE_V3"; v4_prefix="GNFS_SIQS_256A_CAPTURE_V4" ;;
+            3) v3_prefix="GNFS_SIQS_256A_GRAPH_V3"; v4_prefix="GNFS_SIQS_256A_GRAPH_V4" ;;
+            4) v3_prefix="GNFS_SIQS_256A_ASSEMBLY_V3"; v4_prefix="GNFS_SIQS_256A_ASSEMBLY_V4" ;;
+        esac
+        gate_line="$v4_prefix${gate_lines[$record_index]#$v3_prefix}"
+        gate_line="${gate_line/ schema_version=3 / schema_version=4 }"
+        gate_line="${gate_line/ solver_attempted=false / solver_attempted=true }"
+        baseline+="$gate_line"$'\n'
+    done
+    baseline+="GNFS_SIQS_256A_PROOF_V4 schema_version=4 attempted=true status=factor_found deterministic_terminal=solver_ready matrix_status=valid dependency_status=valid factor_status=factor_found matrix_rows=1701 matrix_columns=1601 matrix_projected_dense_bytes=345816 solver_max_dependencies=64 solver_elimination_workers=1 solver_parallel_column_threshold=0 solver_max_dense_matrix_bytes=345816 solver_max_dense_variable_count=1701 elimination_mode=serial dependency_search=first_free_column_basis_prefix dependency_combinations_attempted=false dependency_search_complete=false dependency_ordinal_base=0 minimum_nullity=100 dependencies_returned=64 dependencies_examined=4 dependencies_verified=4 dependency_cap_reached=true dependency_digest_low=10254149926071895734 dependency_digest_high=17300745096364993287 first_failed_dependency=none factor_no_factor_count=3 factor_found_count=1 winning_dependency=3 winning_dependency_size=703 square_modulus=sieved_n gcd_target=n factor=2041646378661656688438487 cofactor=8829847714527711737483339 solver_wall_ns=5 verify_extract_wall_ns=6 solver_attempted=true promotion=false"$'\n'
+    baseline+="GNFS_SIQS_256A_SUMMARY_V4 schema_version=4 status=factor_found profile_id=siqs50_multi_a_256x32_scale_v3 stdout_records=6 config_records=1 capture_records=1 graph_records=1 assembly_records=1 proof_records=1 summary_records=1 workers=1 rss_scope=self_lifetime rss_backend=darwin_getrusage rss_evidence=pass scale_evidence=pass proof_evidence=factor_found final_current_rss_bytes=1000 final_peak_rss_bytes=2000 plan_wall_ns=10 capture_wall_ns=20 analysis_wall_ns=30 solver_wall_ns=5 verify_extract_wall_ns=6 wall_ns=70 solver_attempted=true proof_status=factor_found matrix_status=valid dependency_status=valid factor_status=factor_found dependencies_returned=64 dependencies_examined=4 dependency_cap_reached=true factor=2041646378661656688438487 cofactor=8829847714527711737483339 promotion=false"
+
+    validate_siqs_256a_proof_output "$baseline" 1 6 0 10 || return 1
+    (( SIQS_256A_PROOF_GATE_SCALE_PASS == 1 && SIQS_256A_PROOF_PASS == 1 )) || return 1
+    local baseline_identity="$SIQS_256A_PROOF_IDENTITY"
+    local unknown missing order digest factor summary_mismatch
+    unknown=$(printf '%s\n' "$baseline" | awk 'NR == 5 { $0 = $0 " unknown=1" } { print }')
+    missing="${baseline/ matrix_status=valid/}"
+    order="${baseline/ status=factor_found deterministic_terminal=solver_ready/ deterministic_terminal=solver_ready status=factor_found}"
+    digest=$(siqs_256a_mutate_transcript "$baseline" \
+        "5:dependency_digest_low=10254149926071895735") || return 1
+    factor=$(siqs_256a_mutate_transcript "$baseline" "5:factor=2") || return 1
+    summary_mismatch=$(siqs_256a_mutate_transcript "$baseline" "6:dependencies_examined=5") || return 1
+
+    local mutation_index mutation
+    typeset -a mutation_names=(unknown missing order digest factor summary_mismatch)
+    typeset -a mutations=("$unknown" "$missing" "$order" "$digest" "$factor" "$summary_mismatch")
+    for (( mutation_index = 1; mutation_index <= ${#mutations[@]}; ++mutation_index )); do
+        mutation="${mutations[$mutation_index]}"
+        if validate_siqs_256a_proof_output "$mutation" 1 6 0 10 2>/dev/null; then
+            log_fail "SIQS 256-A proof validator self-check 未拒绝 ${mutation_names[$mutation_index]} mutation"
+            return 1
+        fi
+    done
+
+    local dynamic retained_backend
+    dynamic=$(siqs_256a_mutate_transcript "$baseline" \
+        "2:workers=4" "2:resolved_workers=4" "2:peak_workers=4" "2:capture_wall_ns=21" \
+        "5:solver_elimination_workers=4" "5:elimination_mode=persistent_parallel" \
+        "5:solver_wall_ns=7" "5:verify_extract_wall_ns=8" \
+        "6:workers=4" "6:final_current_rss_bytes=1200" "6:final_peak_rss_bytes=2200" \
+        "6:plan_wall_ns=11" "6:capture_wall_ns=21" "6:analysis_wall_ns=31" \
+        "6:solver_wall_ns=7" "6:verify_extract_wall_ns=8" "6:wall_ns=80") || return 1
+    validate_siqs_256a_proof_output "$dynamic" 4 6 0 10 || return 1
+    [[ "$SIQS_256A_PROOF_IDENTITY" == "$baseline_identity" &&
+       SIQS_256A_PROOF_GATE_SCALE_PASS -eq 1 && SIQS_256A_PROOF_PASS -eq 1 ]] || {
+        log_fail "SIQS 256-A proof validator 动态字段 normalization 不闭合"
+        return 1
+    }
+    retained_backend=$(siqs_256a_mutate_transcript "$dynamic" "6:rss_backend=linux_getrusage") || return 1
+    validate_siqs_256a_proof_output "$retained_backend" 4 6 0 10 || return 1
+    [[ "$SIQS_256A_PROOF_IDENTITY" != "$baseline_identity" ]] || {
+        log_fail "SIQS 256-A proof validator 错误剔除了 rss_backend"
+        return 1
+    }
+
+    local no_factor matrix_failure dependency_failure_zero
+    local dependency_failure_after_verified factor_failure gate_not_attempted=""
+    no_factor=$(siqs_256a_mutate_transcript "$baseline" \
+        "5:status=no_factor" "5:factor_status=no_factor" \
+        "5:dependencies_examined=64" "5:dependencies_verified=64" \
+        "5:factor_no_factor_count=64" "5:factor_found_count=0" \
+        "5:winning_dependency=none" "5:winning_dependency_size=none" \
+        "5:factor=none" "5:cofactor=none" \
+        "6:status=no_factor" "6:proof_evidence=bounded_no_factor" \
+        "6:proof_status=no_factor" "6:factor_status=no_factor" \
+        "6:dependencies_examined=64" "6:factor=none" "6:cofactor=none") || return 1
+    matrix_failure=$(siqs_256a_mutate_transcript "$baseline" \
+        "5:status=matrix_failure" "5:matrix_status=resource_limit" \
+        "5:dependency_status=not_attempted" "5:factor_status=not_attempted" \
+        "5:dependency_search_complete=not_attempted" "5:dependencies_returned=0" \
+        "5:dependencies_examined=0" "5:dependencies_verified=0" \
+        "5:dependency_cap_reached=false" "5:dependency_digest_low=none" \
+        "5:dependency_digest_high=none" "5:factor_no_factor_count=0" \
+        "5:factor_found_count=0" "5:winning_dependency=none" \
+        "5:winning_dependency_size=none" "5:factor=none" "5:cofactor=none" \
+        "5:verify_extract_wall_ns=0" \
+        "6:status=matrix_failure" "6:proof_evidence=fail" \
+        "6:verify_extract_wall_ns=0" "6:proof_status=matrix_failure" \
+        "6:matrix_status=resource_limit" "6:dependency_status=not_attempted" \
+        "6:factor_status=not_attempted" "6:dependencies_returned=0" \
+        "6:dependencies_examined=0" "6:dependency_cap_reached=false" \
+        "6:factor=none" "6:cofactor=none") || return 1
+    dependency_failure_zero=$(siqs_256a_mutate_transcript "$baseline" \
+        "5:status=dependency_failure" "5:dependency_status=invalid_dependency" \
+        "5:factor_status=not_attempted" "5:dependencies_examined=1" \
+        "5:dependencies_verified=0" "5:first_failed_dependency=0" \
+        "5:factor_no_factor_count=0" "5:factor_found_count=0" \
+        "5:winning_dependency=none" "5:winning_dependency_size=none" \
+        "5:factor=none" "5:cofactor=none" \
+        "6:status=dependency_failure" "6:proof_evidence=fail" \
+        "6:proof_status=dependency_failure" "6:dependency_status=invalid_dependency" \
+        "6:factor_status=not_attempted" "6:dependencies_examined=1" \
+        "6:factor=none" "6:cofactor=none") || return 1
+    dependency_failure_after_verified=$(siqs_256a_mutate_transcript "$baseline" \
+        "5:status=dependency_failure" "5:dependency_status=dependency_not_square" \
+        "5:factor_status=no_factor" "5:dependencies_verified=3" \
+        "5:first_failed_dependency=3" "5:factor_found_count=0" \
+        "5:winning_dependency=none" "5:winning_dependency_size=none" \
+        "5:factor=none" "5:cofactor=none" \
+        "6:status=dependency_failure" "6:proof_evidence=fail" \
+        "6:proof_status=dependency_failure" \
+        "6:dependency_status=dependency_not_square" "6:factor_status=no_factor" \
+        "6:factor=none" "6:cofactor=none") || return 1
+    factor_failure=$(siqs_256a_mutate_transcript "$baseline" \
+        "5:status=factor_failure" "5:factor_status=invalid_target" \
+        "5:first_failed_dependency=3" "5:factor_found_count=0" \
+        "5:winning_dependency=none" "5:winning_dependency_size=none" \
+        "5:factor=none" "5:cofactor=none" \
+        "6:status=factor_failure" "6:proof_evidence=fail" \
+        "6:proof_status=factor_failure" "6:factor_status=invalid_target" \
+        "6:factor=none" "6:cofactor=none") || return 1
+
+    local -a not_attempted_lines
+    not_attempted_lines=("${(@f)SIQS_256A_VALIDATOR_NOT_ATTEMPTED}")
+    (( ${#not_attempted_lines[@]} == 6 )) || return 1
+    for (( record_index = 1; record_index <= 4; ++record_index )); do
+        case "$record_index" in
+            1) v3_prefix="GNFS_SIQS_256A_CONFIG_V3"; v4_prefix="GNFS_SIQS_256A_CONFIG_V4" ;;
+            2) v3_prefix="GNFS_SIQS_256A_CAPTURE_V3"; v4_prefix="GNFS_SIQS_256A_CAPTURE_V4" ;;
+            3) v3_prefix="GNFS_SIQS_256A_GRAPH_V3"; v4_prefix="GNFS_SIQS_256A_GRAPH_V4" ;;
+            4) v3_prefix="GNFS_SIQS_256A_ASSEMBLY_V3"; v4_prefix="GNFS_SIQS_256A_ASSEMBLY_V4" ;;
+        esac
+        gate_line="$v4_prefix${not_attempted_lines[$record_index]#$v3_prefix}"
+        gate_line="${gate_line/ schema_version=3 / schema_version=4 }"
+        gate_not_attempted+="$gate_line"$'\n'
+    done
+    gate_not_attempted+="GNFS_SIQS_256A_PROOF_V4 schema_version=4 attempted=false status=not_attempted deterministic_terminal=slot_relation_limit matrix_status=not_attempted dependency_status=not_attempted factor_status=not_attempted matrix_rows=0 matrix_columns=0 matrix_projected_dense_bytes=not_attempted solver_max_dependencies=64 solver_elimination_workers=1 solver_parallel_column_threshold=0 solver_max_dense_matrix_bytes=345816 solver_max_dense_variable_count=1701 elimination_mode=not_attempted dependency_search=first_free_column_basis_prefix dependency_combinations_attempted=false dependency_search_complete=not_attempted dependency_ordinal_base=0 minimum_nullity=0 dependencies_returned=0 dependencies_examined=0 dependencies_verified=0 dependency_cap_reached=false dependency_digest_low=none dependency_digest_high=none first_failed_dependency=none factor_no_factor_count=0 factor_found_count=0 winning_dependency=none winning_dependency_size=none square_modulus=sieved_n gcd_target=n factor=none cofactor=none solver_wall_ns=0 verify_extract_wall_ns=0 solver_attempted=false promotion=false"$'\n'
+    gate_not_attempted+="GNFS_SIQS_256A_SUMMARY_V4 schema_version=4 status=slot_relation_limit profile_id=siqs50_multi_a_256x32_scale_v3 stdout_records=6 config_records=1 capture_records=1 graph_records=1 assembly_records=1 proof_records=1 summary_records=1 workers=1 rss_scope=self_lifetime rss_backend=darwin_getrusage rss_evidence=pass scale_evidence=terminal proof_evidence=not_attempted final_current_rss_bytes=1000 final_peak_rss_bytes=2000 plan_wall_ns=10 capture_wall_ns=20 analysis_wall_ns=0 solver_wall_ns=0 verify_extract_wall_ns=0 wall_ns=70 solver_attempted=false proof_status=not_attempted matrix_status=not_attempted dependency_status=not_attempted factor_status=not_attempted dependencies_returned=0 dependencies_examined=0 dependency_cap_reached=false factor=none cofactor=none promotion=false"
+
+    local typed_index typed expected_gate_pass
+    typeset -a typed_names=(no_factor matrix_failure dependency_failure_zero \
+        dependency_failure_after_verified factor_failure gate_not_attempted)
+    typeset -a typed_outputs=("$no_factor" "$matrix_failure" "$dependency_failure_zero" \
+        "$dependency_failure_after_verified" "$factor_failure" "$gate_not_attempted")
+    typeset -a typed_gate_passes=(1 1 1 1 1 0)
+    for (( typed_index = 1; typed_index <= ${#typed_outputs[@]}; ++typed_index )); do
+        typed="${typed_outputs[$typed_index]}"
+        expected_gate_pass="${typed_gate_passes[$typed_index]}"
+        if ! validate_siqs_256a_proof_output "$typed" 1 6 0 10 ||
+           (( SIQS_256A_PROOF_GATE_SCALE_PASS != expected_gate_pass ||
+              SIQS_256A_PROOF_PASS != 0 )); then
+            log_fail "SIQS 256-A proof validator self-check 未接受合法 ${typed_names[$typed_index]}"
+            return 1
+        fi
+    done
+
+    validate_siqs_256a_proof_output "$baseline" 1 6 0 10 || return 1
+    [[ "$SIQS_256A_PROOF_IDENTITY" == "$baseline_identity" &&
+       SIQS_256A_PROOF_GATE_SCALE_PASS -eq 1 && SIQS_256A_PROOF_PASS -eq 1 ]] || {
+        log_fail "SIQS 256-A proof validator typed self-check 污染了 factor-found baseline"
+        return 1
+    }
+    return 0
+}
+
+run_siqs_256a_proof_process() {
+    local workers="$1"
+    local binary="${BUILD_DIR}/test_siqs_256a_proof_shadow"
+    local stdout_file stderr_file
+    stdout_file=$(mktemp "${TMPDIR:-/tmp}/gnfs_siqs_256a_proof_stdout.XXXXXX")
+    stderr_file=$(mktemp "${TMPDIR:-/tmp}/gnfs_siqs_256a_proof_stderr.XXXXXX")
+
+    local start_ms exit_code=0
+    start_ms=$(timer_start_ms)
+    run_with_timeout 1800 /bin/sh -c \
+        'stdout_path=$1; stderr_path=$2; shift 2; exec "$@" >"$stdout_path" 2>"$stderr_path"' \
+        sh "$stdout_file" "$stderr_file" "$binary" --workers "$workers" || exit_code=$?
+    local end_ms
+    end_ms=$(timer_start_ms)
+    local elapsed=$((end_ms - start_ms))
+    TOTAL_TIME_MS=$((TOTAL_TIME_MS + elapsed))
+    (( TOTAL_TESTS += 1 ))
+
+    local line_count blank_count last_byte stdout stderr_bytes stderr_preview=""
+    local stdout_file_bytes stdout_payload_bytes
+    line_count=$(awk 'END { print NR + 0 }' "$stdout_file")
+    blank_count=$(awk 'NF == 0 { count += 1 } END { print count + 0 }' "$stdout_file")
+    last_byte=$(tail -c 1 "$stdout_file" | od -An -tuC | tr -d ' ')
+    stdout_file_bytes=$(wc -c < "$stdout_file" | tr -d '[:space:]')
+    stderr_bytes=$(wc -c < "$stderr_file" | tr -d '[:space:]')
+    stdout=$(<"$stdout_file")
+    stdout_payload_bytes=$(printf '%s' "$stdout" | wc -c | tr -d '[:space:]')
+    if [[ "$stderr_bytes" != "0" ]]; then
+        stderr_preview=$(LC_ALL=C tr '\000' '?' < "$stderr_file" | tail -10)
+    fi
+    SIQS_256A_PROOF_STDERR="$stderr_preview"
+    rm -f "$stdout_file" "$stderr_file"
+
+    SIQS_256A_PROOF_OUTPUT=""
+    SIQS_256A_PROOF_IDENTITY=""
+    SIQS_256A_PROOF_GATE_SCALE_PASS=0
+    SIQS_256A_PROOF_PASS=0
+    if (( exit_code == 124 )); then
+        log_fail "SIQS 256-A proof workers=${workers} TIMEOUT after 1800s；拒绝任何部分 stdout"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    if (( exit_code != 0 )); then
+        log_fail "SIQS 256-A proof workers=${workers} 退出码 ${exit_code}；拒绝任何部分 stdout"
+        [[ -n "$SIQS_256A_PROOF_STDERR" ]] && printf '%s\n' "$SIQS_256A_PROOF_STDERR"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    if [[ "$stderr_bytes" != "0" ]]; then
+        log_fail "SIQS 256-A proof 成功进程不得写入 stderr（${stderr_bytes} bytes）"
+        [[ -n "$SIQS_256A_PROOF_STDERR" ]] && printf '%s\n' "$SIQS_256A_PROOF_STDERR"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    if [[ "$stdout_file_bytes" != "$(( stdout_payload_bytes + 1 ))" ]] ||
+       ! validate_siqs_256a_proof_output \
+        "$stdout" "$workers" "$line_count" "$blank_count" "$last_byte"; then
+        log_fail "SIQS 256-A proof stdout 必须是无 NUL/尾随空行且严格闭集的六行 V4 transcript"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    if (( ! SIQS_256A_PROOF_GATE_SCALE_PASS || ! SIQS_256A_PROOF_PASS )); then
+        local proof_line="${${(@f)stdout}[5]}" summary_line="${${(@f)stdout}[6]}"
+        log_fail "SIQS 256-A proof 证据未通过: gate=$(measurement_record_field "$proof_line" deterministic_terminal), proof=$(measurement_record_field "$proof_line" status), evidence=$(measurement_record_field "$summary_line" proof_evidence)"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+
+    (( PASSED_TESTS += 1 ))
+    REPORT_ENTRIES+=("{\"name\":\"test_siqs_256a_proof_shadow_w${workers}\",\"status\":\"pass\",\"elapsed_ms\":${elapsed}}")
     return 0
 }
 
@@ -3945,6 +4527,8 @@ do_list() {
     echo "  ${BULLET} ${CYAN}compare-siqs-cycle-density${RESET} — 同一新构建的 1/2/4 profile 独立进程对照"
     echo "  ${BULLET} ${CYAN}profile-siqs-256a <workers>${RESET} — 固定 50 位 256x32 A scale profile"
     echo "  ${BULLET} ${CYAN}compare-siqs-256a${RESET} — 同一新构建的 1/2/4 scale 独立进程对照"
+    echo "  ${BULLET} ${CYAN}profile-siqs-256a-proof <workers>${RESET} — 固定 256-A proof-shadow 因子证据"
+    echo "  ${BULLET} ${CYAN}compare-siqs-256a-proof${RESET} — 同一新构建的 1/2/4 proof 身份对照"
 
     echo ""
     echo "${BOLD}Sanitizer 窄通道:${RESET}"
@@ -5019,6 +5603,114 @@ case "$MODE" in
             else
                 (( FAILED_TESTS += 1 ))
                 log_fail "1/2/4 worker 的 256-A 确定性身份字段不一致"
+            fi
+        fi
+        show_summary
+        ;;
+
+    profile-siqs-256a-proof)
+        if [[ ${#MODE_ARGS[@]} -ne 1 ]]; then
+            log_fail "用法: $0 profile-siqs-256a-proof <1|2|4>"
+            exit 1
+        fi
+        local _proof_workers="${MODE_ARGS[1]}"
+        case "$_proof_workers" in
+            1|2|4) ;;
+            *) log_fail "workers 必须是 1、2 或 4"; exit 1 ;;
+        esac
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "profile-siqs-256a-proof 只接受 Release 构建 (传入: ${BUILD_TYPE})"
+            exit 1
+        fi
+        BUILD_TYPE="Release"
+        if (( SKIP_BUILD )); then
+            log_fail "profile-siqs-256a-proof 不接受 --no-build；证据必须来自本次请求的新构建"
+            exit 1
+        fi
+        if (( RETRY_EXPLICIT )); then
+            log_fail "profile-siqs-256a-proof 不接受 --retry；自动重试会破坏独立进程证据"
+            exit 1
+        fi
+        if (( TIMEOUT_EXPLICIT )); then
+            log_fail "profile-siqs-256a-proof 的 timeout 固定为 1800s，不接受 --timeout"
+            exit 1
+        fi
+        if ! siqs_256a_proof_validator_self_check; then
+            log_fail "SIQS 256-A proof validator self-check 失败；拒绝启动构建"
+            exit 1
+        fi
+
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_siqs_256a_proof_shadow" ]]; then
+            log_fail "SIQS 256-A proof profile 二进制不存在: ${BUILD_DIR}/test_siqs_256a_proof_shadow"
+            exit 1
+        fi
+        log_header "SIQS 固定 256-A proof-shadow profile"
+        log_info "Release/NDEBUG；fresh process；workers=${_proof_workers}；timeout=1800s"
+        if run_siqs_256a_proof_process "$_proof_workers"; then
+            printf '%s\n' "$SIQS_256A_PROOF_OUTPUT"
+            log_success "V3 gate scale pass 且 V4 proof 返回冻结 factor_found 证据"
+        fi
+        show_summary
+        ;;
+
+    compare-siqs-256a-proof)
+        if [[ ${#MODE_ARGS[@]} -ne 0 ]]; then
+            log_fail "用法: $0 compare-siqs-256a-proof"
+            exit 1
+        fi
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "compare-siqs-256a-proof 只接受 Release 构建 (传入: ${BUILD_TYPE})"
+            exit 1
+        fi
+        BUILD_TYPE="Release"
+        if (( SKIP_BUILD )); then
+            log_fail "compare-siqs-256a-proof 不接受 --no-build；三组证据必须共享本次新构建"
+            exit 1
+        fi
+        if (( RETRY_EXPLICIT )); then
+            log_fail "compare-siqs-256a-proof 不接受 --retry；自动重试会破坏独立进程证据"
+            exit 1
+        fi
+        if (( TIMEOUT_EXPLICIT )); then
+            log_fail "compare-siqs-256a-proof 的每进程 timeout 固定为 1800s，不接受 --timeout"
+            exit 1
+        fi
+        if ! siqs_256a_proof_validator_self_check; then
+            log_fail "SIQS 256-A proof validator self-check 失败；拒绝启动构建"
+            exit 1
+        fi
+
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_siqs_256a_proof_shadow" ]]; then
+            log_fail "SIQS 256-A proof profile 二进制不存在: ${BUILD_DIR}/test_siqs_256a_proof_shadow"
+            exit 1
+        fi
+        log_header "SIQS 固定 256-A proof-shadow 1/2/4 worker 对照"
+        log_info "单次 Release 构建；3 个 fresh processes；每进程 timeout=1800s"
+
+        local _proof_compare_ok=1 _proof_compare_worker
+        typeset -A _proof_identities
+        for _proof_compare_worker in 1 2 4; do
+            if run_siqs_256a_proof_process "$_proof_compare_worker"; then
+                _proof_identities[$_proof_compare_worker]="$SIQS_256A_PROOF_IDENTITY"
+                printf '%s\n' "$SIQS_256A_PROOF_OUTPUT"
+            else
+                _proof_compare_ok=0
+                (( FAIL_FAST )) && break
+            fi
+        done
+
+        if (( _proof_compare_ok )); then
+            (( TOTAL_TESTS += 1 ))
+            if [[ "${_proof_identities[1]}" == "${_proof_identities[2]}" &&
+                  "${_proof_identities[1]}" == "${_proof_identities[4]}" ]]; then
+                (( PASSED_TESTS += 1 ))
+                REPORT_ENTRIES+=("{\"name\":\"compare_siqs_256a_proof_50\",\"status\":\"pass\",\"elapsed_ms\":0}")
+                log_success "三次 gate/proof 均通过；仅白名单 worker、wall 与 RSS 观测字段被规范化"
+            else
+                (( FAILED_TESTS += 1 ))
+                log_fail "1/2/4 worker 的 256-A proof 确定性身份字段不一致"
             fi
         fi
         show_summary
