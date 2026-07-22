@@ -2062,6 +2062,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SiqsShadowProofRunner COMMAND test_siqs_shadow_proof_runner)
     set_tests_properties(SiqsShadowProofRunner PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_shadow_proof_observe
+        tests/test_siqs_shadow_proof_observe.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_observe PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowProofObserve COMMAND test_siqs_shadow_proof_observe)
+    set_tests_properties(SiqsShadowProofObserve PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_siqs_shadow_cross_size
         tests/test_siqs_shadow_cross_size.cpp
     )

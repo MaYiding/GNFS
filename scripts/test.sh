@@ -376,6 +376,7 @@ ALL_TEST_BINARIES=(
     test_siqs_shadow_assembly
     test_siqs_shadow_linear_algebra
     test_siqs_shadow_proof_runner
+    test_siqs_shadow_proof_observe
     test_siqs_shadow_cross_size
     test_siqs_shadow_matrix_bench
     test_siqs_e2e
@@ -398,7 +399,7 @@ MODULE_TESTS=(
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_class_group test_couveignes_large_class_group test_couveignes_parallel"
     api            "test_i18n test_method_selection test_relation_reduction_engine"
-    siqs           "test_siqs test_siqs_2lp test_siqs_live_sieve_capture test_siqs_2lp_graph test_siqs_2lp_materializer test_siqs_2lp_adapter test_siqs_2lp_congruence test_siqs_post_merge_row test_siqs_shadow_assembly test_siqs_shadow_linear_algebra test_siqs_shadow_proof_runner test_siqs_shadow_cross_size"
+    siqs           "test_siqs test_siqs_2lp test_siqs_live_sieve_capture test_siqs_2lp_graph test_siqs_2lp_materializer test_siqs_2lp_adapter test_siqs_2lp_congruence test_siqs_post_merge_row test_siqs_shadow_assembly test_siqs_shadow_linear_algebra test_siqs_shadow_proof_runner test_siqs_shadow_proof_observe test_siqs_shadow_cross_size"
 )
 
 # 模块 → 慢速测试映射 (slow+heavy, 可选运行)
@@ -512,6 +513,7 @@ SMOKE_TESTS=(
     test_siqs_shadow_assembly
     test_siqs_shadow_linear_algebra
     test_siqs_shadow_proof_runner
+    test_siqs_shadow_proof_observe
     test_clique_merger
     test_3lp_cofactor
     test_3lp_merge
@@ -579,6 +581,7 @@ TSAN_RELATION_TESTS=(
     test_structured_incidence_builder
     test_siqs_shadow_linear_algebra
     test_siqs_shadow_proof_runner
+    test_siqs_shadow_proof_observe
 )
 
 # ── 每个测试的超时秒数 (基于 2026-06-02 macOS Debug/Release 实测) ──
@@ -779,6 +782,7 @@ TEST_TIMEOUT=(
     test_siqs_shadow_assembly 10
     test_siqs_shadow_linear_algebra 10
     test_siqs_shadow_proof_runner 10
+    test_siqs_shadow_proof_observe 10
     test_siqs_shadow_cross_size 60
     test_siqs_shadow_matrix_bench 600
 )
@@ -915,6 +919,7 @@ TEST_TIER=(
     test_siqs_shadow_assembly "instant"
     test_siqs_shadow_linear_algebra "instant"
     test_siqs_shadow_proof_runner "instant"
+    test_siqs_shadow_proof_observe "instant"
     test_siqs_shadow_cross_size "fast"
     test_siqs_shadow_matrix_bench "bench"
     test_clique_merger       "instant"

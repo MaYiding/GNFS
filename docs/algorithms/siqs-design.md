@@ -70,6 +70,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `solve_siqs_shadow_matrix` | `shadow_matrix.hpp` | Direct sparse-wide row admission and deterministic packed GF(2) solving with lazy persistent elimination workers |
 | `verify_siqs_post_merge_dependency` / `extract_siqs_post_merge_factor` | `post_merge_dependency.hpp` | Proof-gated dependency reconstruction and canonical non-trivial factor extraction |
 | `run_siqs_shadow_proof` | `shadow_proof_runner.hpp` | Read-only, resource-bounded orchestration from raw relations through verified factor evidence |
+| `SIQSShadowProofObserveRecord` | `shadow_proof_observe.hpp` | Strict opt-in mode parsing, process-memory snapshots, and one-line typed telemetry |
 | `are_congruent_squares` | `congruence.hpp` | Final `X² == Y² (mod kN)` gate before GCD |
 | `dense_gauss_left_nullspace` | `siqs.hpp` ~line 1130 | Word-packed dense GF(2) Gaussian elimination |
 | `solve_matrix` | `siqs.hpp` ~line 1231 | Dense path ≤100K cols, otherwise `linalg::BlockLanczos` |
@@ -87,6 +88,8 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `tests/test_siqs.cpp` | Unit tests: tonelli, FB, split_cofactor edges, 14d/19d/31d/39d |
 | `tests/test_siqs_e2e.cpp` | 100-bit (31d) and 180-bit (55d) wall-clock proofs, ENV check |
 | `tests/test_siqs_shadow_cross_size.cpp` | Constructed arithmetic-valid 50-, 70-, and 90-digit shadow-chain corpus across 1/2/4 workers |
+| `tests/test_siqs_shadow_proof_runner.cpp` | Bounded facade terminal states, inclusive caps, exception mapping, and input immutability |
+| `tests/test_siqs_shadow_proof_observe.cpp` | Strict observe parser, typed record schema, RSS fields, and emitter contract |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 
 ## Parameter Calibration
@@ -117,14 +120,25 @@ span and inclusive relation, payload, graph, row, and dense-matrix limits. It
 returns only typed scalar evidence and an optional verified factor pair; it
 does not retain the raw corpus, graph, rows, or dependencies.
 
-The facade deliberately remains outside `factor()`. A future observe-only call
-belongs after all sieve workers join and before `merge_partials` mutates the raw
-relations. Until that wiring exists, production still runs the legacy path
-alone. The facade performs a bounded graph preflight before assembly; assembly
-currently rebuilds the adapter and graph, so the first integration must measure
-the peak with raw relations and shadow rows alive together. It must not reuse
-the lower peak from the Release-only proof runner, which releases raw storage
-before solving.
+The facade is wired into `factor()` only when
+`GNFS_SIQS_SHADOW_PROOF=observe`. The mode is parsed and frozen once at function
+entry. After all sieve workers join and before `merge_partials` mutates the raw
+relations, the observe seam snapshots process memory, constructs the
+factor-base prime vector, runs the facade through a const raw-relation span,
+attempts one typed record emission, and always continues through the legacy
+path. It does not return the shadow factor or enable 2LP collection. The
+explicit observe record is attempted even when `verbose=false`; unset or `0`
+performs no shadow work and adds no output. See
+[SIQS Runtime Flags](../env-flags/siqs.md) for the strict parser and
+failure-transparency contract.
+
+The facade performs a bounded graph preflight before assembly; assembly
+currently rebuilds the adapter and graph. Production therefore keeps raw
+relations alive together with owning shadow rows and the packed matrix.
+Before/after process snapshots describe endpoint and lifetime high-water state,
+not the exact transient shadow peak. Meaningful RSS comparisons require fresh
+processes and must not reuse the lower peak from the Release-only proof runner,
+which releases raw storage before solving.
 
 A fixed constructed corpus exercises the full chain at the live 50-, 70-, and
 90-digit factor-base column counts with stable fingerprints and dependencies
@@ -172,8 +186,9 @@ The safe migration order is:
    reconstruct each square pair, and admit GCD only through the final
    congruence proof.
 8. Run the bounded read-only proof facade at the post-join, pre-merge seam in
-   observe mode. Always continue through the legacy path and measure the peak
-   while both raw and shadow state are live.
+   explicit observe mode. This step is now wired behind
+   `GNFS_SIQS_SHADOW_PROOF=observe`; it always continues through the legacy path
+   and records process-memory endpoints while raw and shadow state overlap.
 9. Permit a proof-gated early return only after observe evidence is stable and
    the verified factor pair multiplies exactly to the original input. Keep
    production 2LP collection as a later, independently bounded change.
@@ -207,8 +222,9 @@ SIQS's `L_N(1/2, 1)`.
   sparse-wide row conversion, deterministic parallel assembly, packed solving,
   proof-gated factor extraction, a bounded read-only facade, and cross-size
   evidence are staged. The 256-A Release-only profile supplies live 50-digit
-  factor evidence. Observe-mode production wiring, overlapping-state RSS
-  measurements, and a separately bounded 2LP collector remain prerequisites.
+  factor evidence. The observe-only production seam is wired, but fresh-process
+  overlapping-state RSS evidence and a separately bounded 2LP collector remain
+  prerequisites for production 2LP collection or shadow-result routing.
   See [SIQS Live-Sieve Capture Contract](../perf/siqs-live-sieve-capture.md)
 - **The wide sparse shadow backend is not implemented**; the dense solver
   admits at most 100000 row variables and 256MiB of packed matrix payload,

@@ -6,22 +6,28 @@ This document records the scaling evidence and promotion gates for the staged
 Self-Initializing Quadratic Sieve (SIQS) shadow matrix. It covers the
 deterministic dense solver in
 `include/gnfs/siqs/shadow_matrix.hpp`. It does not claim production
-two-large-prime (2LP) yield or authorize connecting the shadow path to
+two-large-prime (2LP) yield or authorize routing a shadow factor result from
 `factor()`.
 
-`include/gnfs/siqs/shadow_proof_runner.hpp` adds a production-facing but still
-unwired read-only facade. Its default admission envelope is 32768 raw
-relations, 64MiB of portable logical payload, 16384 graph edges, 4096 cycles,
-262144 total cycle incidences, 4096 row candidates, and 4096 pretrim rows. The
-facade also preserves the solver's independent dense byte and variable limits.
-All limits are inclusive; the next object returns a typed fallback instead of
-allocating beyond the admitted envelope.
+`include/gnfs/siqs/shadow_proof_runner.hpp` provides a production-facing
+read-only facade. `GNFS_SIQS_SHADOW_PROOF=observe` now invokes it after sieve
+worker join and before the legacy merge; every terminal outcome continues into
+the legacy merge, solve, and extraction path. Its default admission envelope is
+32768 raw relations, 64MiB of portable logical payload, 16384 graph edges, 4096
+cycles, 262144 total cycle incidences, 4096 row candidates, and 4096 pretrim
+rows. The facade also preserves the solver's independent dense byte and
+variable limits. All limits are inclusive; the next object returns a typed
+fallback instead of allocating beyond the admitted envelope.
 
-The facade keeps the caller's raw relations intact so a later integration can
-fall back to the current merge and solver. Consequently, its production peak
-will include raw storage, owning assembly rows, and the packed matrix at the
-same time. The 256-A proof executable releases raw storage before solving, so
-its measured peak is correctness evidence, not a production RSS projection.
+The facade keeps the caller's raw relations intact so the observe seam can
+continue into the current merge and solver. Consequently, its production peak
+includes raw storage, owning assembly rows, and the packed matrix at the same
+time. The emitted before/after process-memory snapshots are endpoint and
+lifetime-high-water observations, not an isolated transient shadow peak.
+Allocator retention can also keep the after snapshot high. Only fresh-process
+lifetime comparisons are interpretable. The 256-A proof executable releases
+raw storage before solving, so its measured peak is correctness evidence, not
+a production RSS projection.
 
 The immediate safety decision is:
 
@@ -273,6 +279,9 @@ Before promotion it must provide:
 - [x] Bounded 256-A, 50-digit assembly with 1701 selected rows and a frozen
   proof-gated factor result across one, two, and four workers.
 - [x] Read-only typed proof facade with relation, payload, graph, row, matrix,
-  dependency, and factor boundaries; not yet called by `factor()`.
-- [ ] Controlled collector and `factor()` integration with the default 1LP path
-  unchanged.
+  dependency, and factor boundaries.
+- [x] Strict opt-in observe seam in `factor()` with default workers set to 1,
+  raw-input immutability, typed setup failures, failure-transparent telemetry,
+  and the default 1LP legacy path unchanged.
+- [ ] Fresh-process observe corpus with overlapping raw/shadow RSS evidence.
+- [ ] Controlled 2LP collector and production routing; `lp_bound_sq` remains 0.

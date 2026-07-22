@@ -8,14 +8,15 @@
 /// Uses polynomial self-initialization for fast switching between
 /// sieve polynomials, large-prime variation, and GF(2) linear algebra.
 
-#include <gnfs/core/integer.hpp>
 #include <gnfs/cofactor/squfof.hpp>
-#include <gnfs/linalg/sparse_matrix.hpp>
-#include <gnfs/linalg/gauss.hpp>
+#include <gnfs/core/integer.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
+#include <gnfs/linalg/gauss.hpp>
+#include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/siqs/congruence.hpp>
 #include <gnfs/siqs/live_sieve_capture.hpp>
 #include <gnfs/siqs/relation.hpp>
+#include <gnfs/siqs/shadow_proof_observe.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <gnfs/util/primes.hpp>
 
@@ -24,11 +25,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <numeric>
 #include <optional>
 #include <random>
+#include <span>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -1478,6 +1481,9 @@ inline std::optional<SIQSResult> factor(
     size_t max_seconds = 3600,
     bool verbose = true)
 {
+    const SIQSShadowProofObserveMode shadow_proof_observe_mode =
+        parse_siqs_shadow_proof_observe_mode(std::getenv(SIQS_SHADOW_PROOF_OBSERVE_ENV));
+
     auto start = std::chrono::steady_clock::now();
     auto elapsed = [&]() {
         return std::chrono::duration<double>(
@@ -1686,6 +1692,28 @@ inline std::optional<SIQSResult> factor(
         }
         fprintf(stderr, "[SIQS] Sieve done: %zu full + %zu partial in %zu polys (%.3fs)\n",
                 full, partial, num_polys, elapsed());
+    }
+
+    // The shadow proof is observe-only: it reads the post-join raw corpus
+    // before legacy merge mutation, attempts typed telemetry, never routes a
+    // shadow outcome, and continues the legacy path after every observe result.
+    if (shadow_proof_observe_mode == SIQSShadowProofObserveMode::observe) {
+        const SIQSShadowProofOptions shadow_options{};
+        const SIQSShadowProofObserveRecord shadow_record = observe_siqs_shadow_proof(
+            all_relations.size(), fb.size(), lp_bound, shadow_options, [&]() {
+                std::vector<uint32_t> factor_base_primes;
+                factor_base_primes.reserve(fb.size());
+                for (const FBPrime& prime : fb) {
+                    factor_base_primes.push_back(prime.p);
+                }
+
+                auto shadow_splitter = split_cofactor_64;
+                return run_siqs_shadow_proof(
+                    std::span<const SIQSRelation>(all_relations.data(), all_relations.size()),
+                    std::span<const uint32_t>(factor_base_primes.data(), factor_base_primes.size()),
+                    kN, N, lp_bound, shadow_splitter, shadow_options);
+            });
+        (void)emit_siqs_shadow_proof_observe_record(shadow_record);
     }
 
     // Merge partials

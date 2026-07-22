@@ -13,6 +13,7 @@
 | cofactor | 10 | [cofactor.md](cofactor.md) | ECM stage 并行/cache、survival predictor、Brent rho |
 | polynomial | 9 | [polynomial.md](polynomial.md) | Karatsuba / NTT / HGCD / squaring / mod-p SIMD |
 | sieve | 9 | [sieve.md](sieve.md) | checkpoint、cache tile、prefetch、lattice SIMD |
+| siqs | 1 | [siqs.md](siqs.md) | shadow proof observe-only 遥测 |
 | util | 6 | [util.md](util.md) | Integer scratch pool、批量 GMP `mpz_*` 并行 |
 | sqrt | 2 | [sqrt.md](sqrt.md) | Hensel lift 并行、Couveignes pattern search 并行 |
 | factor_base | 1 | [factor_base.md](factor_base.md) | Cantor-Zassenhaus 求根并行 |

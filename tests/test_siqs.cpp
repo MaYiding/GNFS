@@ -1,11 +1,205 @@
 #include <gnfs/siqs/siqs.hpp>
+
 #include <cassert>
-#include <cstdio>
 #include <chrono>
+#include <cstddef>
+#include <cstdio>
 #include <cstdlib>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+
+#if defined(_WIN32)
+#include <io.h>
+#define GNFS_TEST_CLOSE _close
+#define GNFS_TEST_DUP _dup
+#define GNFS_TEST_DUP2 _dup2
+#define GNFS_TEST_FILENO _fileno
+#else
+#include <unistd.h>
+#define GNFS_TEST_CLOSE ::close
+#define GNFS_TEST_DUP ::dup
+#define GNFS_TEST_DUP2 ::dup2
+#define GNFS_TEST_FILENO ::fileno
+#endif
 
 using gnfs::core::Integer;
 using namespace gnfs::siqs;
+
+namespace {
+
+[[noreturn]] void fail_test(const std::string& message) {
+    std::fprintf(stderr, "SIQS test failure: %s\n", message.c_str());
+    std::abort();
+}
+
+void require_test(bool condition, const std::string& message) {
+    if (!condition) {
+        fail_test(message);
+    }
+}
+
+class ScopedEnvironmentVariable final {
+public:
+    ScopedEnvironmentVariable(const char* name, const char* value) : name_(name) {
+        if (const char* previous = std::getenv(name_.c_str()); previous != nullptr) {
+            previous_ = previous;
+        }
+        if (set(value) != 0) {
+            throw std::runtime_error("failed to set test environment variable " + name_);
+        }
+    }
+
+    ~ScopedEnvironmentVariable() {
+        if (previous_.has_value()) {
+            (void)set(previous_->c_str());
+        } else {
+            (void)unset();
+        }
+    }
+
+    ScopedEnvironmentVariable(const ScopedEnvironmentVariable&) = delete;
+    ScopedEnvironmentVariable& operator=(const ScopedEnvironmentVariable&) = delete;
+
+private:
+    [[nodiscard]] int set(const char* value) const noexcept {
+#if defined(_WIN32)
+        return _putenv_s(name_.c_str(), value);
+#else
+        return ::setenv(name_.c_str(), value, 1);
+#endif
+    }
+
+    [[nodiscard]] int unset() const noexcept {
+#if defined(_WIN32)
+        return _putenv_s(name_.c_str(), "");
+#else
+        return ::unsetenv(name_.c_str());
+#endif
+    }
+
+    std::string name_;
+    std::optional<std::string> previous_;
+};
+
+class ScopedStderrCapture final {
+public:
+    ScopedStderrCapture() {
+        if (std::fflush(stderr) != 0) {
+            throw std::runtime_error("failed to flush stderr before capture");
+        }
+        output_ = std::tmpfile();
+        if (output_ == nullptr) {
+            throw std::runtime_error("failed to create temporary stderr capture");
+        }
+
+        stderr_fd_ = GNFS_TEST_FILENO(stderr);
+        saved_fd_ = GNFS_TEST_DUP(stderr_fd_);
+        if (stderr_fd_ < 0 || saved_fd_ < 0 ||
+            GNFS_TEST_DUP2(GNFS_TEST_FILENO(output_), stderr_fd_) < 0) {
+            if (saved_fd_ >= 0) {
+                (void)GNFS_TEST_CLOSE(saved_fd_);
+                saved_fd_ = -1;
+            }
+            std::fclose(output_);
+            output_ = nullptr;
+            throw std::runtime_error("failed to redirect stderr for capture");
+        }
+        active_ = true;
+    }
+
+    ~ScopedStderrCapture() {
+        restore_noexcept();
+        if (output_ != nullptr) {
+            std::fclose(output_);
+        }
+    }
+
+    ScopedStderrCapture(const ScopedStderrCapture&) = delete;
+    ScopedStderrCapture& operator=(const ScopedStderrCapture&) = delete;
+
+    [[nodiscard]] std::string finish() {
+        if (!active_ || output_ == nullptr) {
+            throw std::logic_error("stderr capture already finished");
+        }
+        if (std::fflush(stderr) != 0) {
+            restore_noexcept();
+            throw std::runtime_error("failed to flush captured stderr");
+        }
+        if (GNFS_TEST_DUP2(saved_fd_, stderr_fd_) < 0) {
+            restore_noexcept();
+            throw std::runtime_error("failed to restore stderr");
+        }
+        (void)GNFS_TEST_CLOSE(saved_fd_);
+        saved_fd_ = -1;
+        active_ = false;
+
+        if (std::fseek(output_, 0, SEEK_SET) != 0) {
+            throw std::runtime_error("failed to rewind captured stderr");
+        }
+        std::string text;
+        char buffer[4096];
+        while (const size_t count = std::fread(buffer, 1, sizeof(buffer), output_)) {
+            text.append(buffer, count);
+        }
+        if (std::ferror(output_) != 0) {
+            throw std::runtime_error("failed to read captured stderr");
+        }
+        std::fclose(output_);
+        output_ = nullptr;
+        return text;
+    }
+
+private:
+    void restore_noexcept() noexcept {
+        if (!active_) {
+            return;
+        }
+        (void)std::fflush(stderr);
+        if (saved_fd_ >= 0 && stderr_fd_ >= 0) {
+            (void)GNFS_TEST_DUP2(saved_fd_, stderr_fd_);
+            (void)GNFS_TEST_CLOSE(saved_fd_);
+        }
+        saved_fd_ = -1;
+        active_ = false;
+    }
+
+    std::FILE* output_ = nullptr;
+    int stderr_fd_ = -1;
+    int saved_fd_ = -1;
+    bool active_ = false;
+};
+
+[[nodiscard]] size_t count_occurrences(std::string_view text, std::string_view needle) {
+    size_t count = 0;
+    size_t position = 0;
+    while ((position = text.find(needle, position)) != std::string_view::npos) {
+        ++count;
+        position += needle.size();
+    }
+    return count;
+}
+
+[[nodiscard]] std::pair<Integer, Integer> canonical_factors(const SIQSResult& result) {
+    std::pair<Integer, Integer> factors{result.factor1, result.factor2};
+    if (factors.first > factors.second) {
+        std::swap(factors.first, factors.second);
+    }
+    return factors;
+}
+
+[[nodiscard]] std::optional<SIQSResult> factor_143_with_shadow_mode(const char* mode,
+                                                                    std::string& captured_stderr) {
+    ScopedEnvironmentVariable environment(SIQS_SHADOW_PROOF_OBSERVE_ENV, mode);
+    ScopedStderrCapture capture;
+    auto result = factor(Integer("143"), 10, false);
+    captured_stderr = capture.finish();
+    return result;
+}
+
+} // namespace
 
 void test_one_large_prime_rejects_strong_pseudoprimes() {
     // Each value is composite but passes the legacy single-witness base-2
@@ -140,15 +334,49 @@ void test_factor_base() {
 }
 
 void test_siqs_small() {
-    // 15-digit semiprime: 100000000000031 * ... actually let's use a known semiprime
-    // 143 = 11 * 13
-    Integer N("143");
-    auto result = factor(N, 10, false);
-    assert(result.has_value());
-    auto [f1, f2] = std::make_pair(result->factor1, result->factor2);
-    if (f1 > f2) std::swap(f1, f2);
-    assert(f1 == Integer(11) && f2 == Integer(13));
-    printf("  siqs_small(143): PASS (%.3fs)\n", result->time_seconds);
+    std::string off_stderr;
+    const auto off_result = factor_143_with_shadow_mode("0", off_stderr);
+    require_test(off_result.has_value(), "143 did not factor with shadow proof disabled");
+    require_test(count_occurrences(off_stderr, SIQS_SHADOW_PROOF_OBSERVE_PREFIX) == 0,
+                 "disabled shadow proof emitted an observe record");
+
+    std::string observe_stderr;
+    const auto observe_result = factor_143_with_shadow_mode("observe", observe_stderr);
+    require_test(observe_result.has_value(), "143 did not factor in observe mode");
+    require_test(count_occurrences(observe_stderr, SIQS_SHADOW_PROOF_OBSERVE_PREFIX) == 1,
+                 "observe mode did not emit exactly one schema-v1 record");
+    require_test(observe_stderr.find("route=legacy_continue") != std::string::npos,
+                 "observe record did not declare legacy continuation");
+
+    const auto off_factors = canonical_factors(*off_result);
+    const auto observe_factors = canonical_factors(*observe_result);
+    require_test(off_factors == observe_factors,
+                 "observe mode changed the canonical 143 factor result");
+    require_test(off_factors.first == Integer(11) && off_factors.second == Integer(13),
+                 "143 factorization did not return 11 and 13");
+    printf("  siqs_small(143) shadow observe parity: PASS (off %.3fs, observe %.3fs)\n",
+           off_result->time_seconds, observe_result->time_seconds);
+}
+
+void test_siqs_shadow_observe_invalid_mode() {
+    ScopedEnvironmentVariable environment(SIQS_SHADOW_PROOF_OBSERVE_ENV, "invalid");
+    ScopedStderrCapture capture;
+    bool invalid_argument_thrown = false;
+    bool unexpected_exception_thrown = false;
+    try {
+        (void)factor(Integer("143"), 10, false);
+    } catch (const std::invalid_argument&) {
+        invalid_argument_thrown = true;
+    } catch (...) {
+        unexpected_exception_thrown = true;
+    }
+    const std::string captured_stderr = capture.finish();
+
+    require_test(invalid_argument_thrown && !unexpected_exception_thrown,
+                 "invalid observe mode did not fail closed with std::invalid_argument");
+    require_test(count_occurrences(captured_stderr, SIQS_SHADOW_PROOF_OBSERVE_PREFIX) == 0,
+                 "invalid observe mode performed shadow work before throwing");
+    printf("  siqs shadow observe invalid mode: PASS\n");
 }
 
 void test_siqs_20digit() {
@@ -211,6 +439,8 @@ void test_siqs_40digit() {
 }
 
 int main() {
+    ScopedEnvironmentVariable default_shadow_mode(SIQS_SHADOW_PROOF_OBSERVE_ENV, "0");
+
     printf("=== SIQS Unit Tests ===\n\n");
 
     printf("--- Helper tests ---\n");
@@ -221,6 +451,7 @@ int main() {
 
     printf("\n--- Factorization tests ---\n");
     test_siqs_small();
+    test_siqs_shadow_observe_invalid_mode();
     test_siqs_20digit();
     test_siqs_30digit();
     test_siqs_40digit();
