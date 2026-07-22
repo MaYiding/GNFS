@@ -110,6 +110,12 @@ requires exactly 30 `GNFS_CANDIDATE_SWEEP_CASE_V1` records and one passing
 `GNFS_CANDIDATE_SWEEP_SUMMARY_V1` record. Wall times are informational and do
 not enter routine CI or a pass threshold.
 
+`test_squfof_strategy_oracle` is a `fast` deterministic policy test. It builds
+the fixed 192-case by 11-slot counterfactual matrix, verifies the frozen matrix
+and stratified split identities, and solves the train-only exact subset DP.
+Its iteration-count promotion gates are deterministic; it does not assert wall
+time and does not change the production schedule.
+
 `test_squfof_bench` is a disabled `bench` CTest target. The supported
 `./scripts/test.sh bench-squfof [repetitions]` mode builds it in Release and runs
 the fixed 50-digit SQUFOF strategy corpus. The runner validates every case,

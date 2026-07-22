@@ -819,6 +819,15 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SQUFOF COMMAND test_squfof)
     set_tests_properties(SQUFOF PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Deterministic 192-case x production-multiplier counterfactual matrix and
+    # exact subset-DP policy oracle. It asserts identities and work counts, not wall time.
+    add_executable(test_squfof_strategy_oracle
+        tests/test_squfof_strategy_oracle.cpp
+    )
+    target_link_libraries(test_squfof_strategy_oracle PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SQUFOFStrategyOracle COMMAND test_squfof_strategy_oracle)
+    set_tests_properties(SQUFOFStrategyOracle PROPERTIES LABELS "fast" TIMEOUT 60)
+
     # Fixed production-derived SQUFOF strategy corpus. Timings are manual
     # comparison evidence, so this Release-only target stays out of routine CTest lanes.
     add_executable(test_squfof_bench

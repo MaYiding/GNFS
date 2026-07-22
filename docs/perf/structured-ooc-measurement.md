@@ -364,6 +364,48 @@ raw relations、16 条 output relations 和相同的 raw/output digest。
 `0000000000000000000000000000000000000008aaaffff7`。策略实验不得新增失败；
 等价微优化还必须保持 factor digest。墙钟时间仅用于交错 A/B/B/A 比较，不进入通过阈值。
 
+### SQUFOF Strategy Matrix V2 and Order No-Go
+
+`test_squfof_strategy_oracle` 对上述 192 项语料和生产 11-slot schedule 生成完整的
+192×11 反事实矩阵。每个 cell 独立运行一个生产 multiplier stage，记录 overflow、
+forward iterations、core hit 和原始 accepted factor。当前顺序重放必须逐项等于
+`SQUFOF::factor()`；不能把互补因子规范化为较小因子。
+
+```bash
+./scripts/test.sh -t Release run test_squfof_strategy_oracle
+```
+
+矩阵优化只允许重排全部 11 个 slot，不允许删减 multiplier。精确 subset DP 对尚未解决
+的 case 累加下一 slot 的 forward iterations；26 个全失败 case 因此始终支付全部 slot
+成本。若某次转移会让不同于生产 reference factor 的因子先返回，该转移不可行。
+
+数据划分不读取 probe outcome。每个位宽段内先按 `n` 分组，再按固定哈希排序，以
+train、train、validation、holdout 循环分配；相同 `n` 的不同预算不会跨集合。V2 身份为：
+
+| Identity | Low | High |
+|---|---:|---:|
+| Matrix | 13897133093001924776 | 2379028879204942237 |
+| Stratified split | 11247766345367590209 | 16940138875728727164 |
+
+train/validation/holdout 分别包含 99/47/46 行；四个位宽段的 unique-`n` 分组分别按
+33/16/16、26/13/13、24/12/12 和 9/4/4 分配。该 holdout 在 V2 发布后是固定的回归
+切片，不应在后续实验中冒充新的独立统计样本。
+
+train-only DP 得到顺序
+`1,15,3,33,21,5,7,11,35,55,77`。它保持全部 192 项的 factor identity，但离线门禁
+明确拒绝推广：
+
+| Slice | Current iterations | Candidate iterations | Delta | Gate |
+|---|---:|---:|---:|---|
+| Train | 1,634,438 | 1,588,918 | -2.79% | fail: requires at least -5% |
+| Validation | 550,664 | 562,016 | +2.06% | fail: requires at least -3% |
+| Holdout | 399,478 | 392,062 | -1.86% | fail: requires at least -3% |
+| All 192 | 2,584,580 | 2,542,996 | -1.61% | informational |
+
+逐位宽门禁也失败：41–43 bit 与 44–46 bit 分别回退 3.21% 和 5.10%，超过 1% 上限。
+因此不构建候选生产二进制，也不运行墙钟 A/B；当前生产顺序保持不变。这个 no-go 与
+训练、验证、holdout、位宽门禁均由测试 summary 机器可读地报告。
+
 ## Production Telemetry
 
 生产 Pipeline 的 `structured_filter schema=1` 记录覆盖每个 logical generation。它
