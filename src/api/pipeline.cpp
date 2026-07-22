@@ -48,6 +48,7 @@
 #include <exception>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <random>
 #include <stdexcept>
@@ -1168,8 +1169,6 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         cofac_config.allow_3lp = (env && std::atoi(env) == 1);
     }
 
-    cofactor::Cofactorizer cofactorizer(ctx, fb, cofac_config);
-
     // Special-Q generator
     sieve::SpecialQRange sq_range;
     sq_range.min_q = params_.special_q_min;
@@ -1565,10 +1564,6 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
             // Stage 1 retains one result per canonical special-Q slot. Sieve
             // arrays are worker-local and are destroyed before candidate-level
             // cofactor work begins, so the two parallel regions never overlap.
-            std::vector<sieve::SieveResult> batch_sieve_results(sq_batch.size());
-            std::vector<std::exception_ptr> batch_sieve_errors(sq_batch.size());
-            std::atomic<size_t> next_sq_idx{0};
-
             // Divide the total compute-lane budget across the active outer
             // workers. A one-lane LatticeSieve executes inline; a multi-lane
             // instance blocks its outer worker while its inner workers run.
@@ -1583,47 +1578,24 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
             stats_.special_q_batch_peak_workers =
                 std::max(stats_.special_q_batch_peak_workers, n_workers);
 
-            auto sieve_worker = [&](size_t worker_index) {
-                sieve::LatticeSieve local_sieve(ctx, fb, sieve_params);
-                local_sieve.set_region(sieve_region);
-                local_sieve.set_max_threads(thread_plan.threads_per_worker[worker_index]);
-                configured_sieve_threads[worker_index] = local_sieve.configured_max_threads();
-                local_sieve.set_adaptive_manager(&adaptive_mgr);
-                size_t special_q_processed = 0;
-
-                while (true) {
-                    size_t idx = next_sq_idx.fetch_add(1, std::memory_order_relaxed);
-                    if (idx >= sq_batch.size())
-                        break;
-
-                    try {
-                        batch_sieve_results[idx] = local_sieve.sieve_special_q(sq_batch[idx]);
-                    } catch (...) {
-                        batch_sieve_errors[idx] = std::current_exception();
-                    }
-                    ++special_q_processed;
-                }
-                return special_q_processed;
-            };
-
             // Launch outer batch workers. The lane assignment above bounds
-            // their combined local sieve compute parallelism. Indexed worker
-            // outcomes also prevent an exception from terminating the process.
+            // their combined local sieve compute parallelism. Dynamic claiming
+            // drains every special-Q before the lowest canonical failure is
+            // surfaced, while fixed result slots preserve input order.
             const auto candidate_generation_started = std::chrono::high_resolution_clock::now();
-            const auto sieve_worker_summaries = util::ordered_parallel_map<size_t>(
-                n_workers, static_cast<uint32_t>(n_workers), sieve_worker);
-            size_t completed_special_q = 0;
-            for (const size_t worker_count : sieve_worker_summaries) {
-                completed_special_q += worker_count;
-            }
-            if (completed_special_q != sq_batch.size()) {
-                throw std::logic_error("local sieve batch did not process every special-Q");
-            }
-            for (const auto& error : batch_sieve_errors) {
-                if (error) {
-                    std::rethrow_exception(error);
-                }
-            }
+            auto batch_sieve_results = util::ordered_work_stealing_map<sieve::SieveResult>(
+                sq_batch.size(), static_cast<uint32_t>(n_workers),
+                [&](size_t worker_index) {
+                    auto local_sieve = std::make_unique<sieve::LatticeSieve>(ctx, fb, sieve_params);
+                    local_sieve->set_region(sieve_region);
+                    local_sieve->set_max_threads(thread_plan.threads_per_worker[worker_index]);
+                    configured_sieve_threads[worker_index] = local_sieve->configured_max_threads();
+                    local_sieve->set_adaptive_manager(&adaptive_mgr);
+                    return local_sieve;
+                },
+                [&](std::unique_ptr<sieve::LatticeSieve>& local_sieve, size_t special_q_index) {
+                    return local_sieve->sieve_special_q(sq_batch[special_q_index]);
+                });
             stats_.timings.candidate_generation_s +=
                 std::chrono::duration<double>(std::chrono::high_resolution_clock::now() -
                                               candidate_generation_started)
