@@ -65,6 +65,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `prepare_two_large_prime_corpus` | `two_large_prime_adapter.hpp` | Fail-closed raw-partial validation, canonical deduplication, and stable relation IDs |
 | `check_materialized_two_large_prime_identity` | `two_large_prime_congruence.hpp` | Exact signed row identity before matrix admission |
 | `make_full_post_merge_row` / `make_cycle_post_merge_row` | `post_merge_row.hpp` | Canonical sparse-wide rows shared by full and cycle relations |
+| `assemble_siqs_shadow_rows` | `shadow_assembly.hpp` | Deterministic source-ID layout, parallel cycle assembly, exact deduplication, and stable trim |
 | `are_congruent_squares` | `congruence.hpp` | Final `X² == Y² (mod kN)` gate before GCD |
 | `dense_gauss_left_nullspace` | `siqs.hpp` ~line 1130 | Word-packed dense GF(2) Gaussian elimination |
 | `solve_matrix` | `siqs.hpp` ~line 1231 | Dense path ≤100K cols, otherwise `linalg::BlockLanczos` |
@@ -100,11 +101,11 @@ The crucial knobs by digit band:
 Two-large-prime collection and the legacy greedy merge remain disabled by
 setting `lp_bound_sq = 0`. Exact split normalization, deterministic cycle
 selection, wide checked cycle materialization, a stable raw-partial adapter,
-canonical sparse post-merge rows, and exact row/dependency congruence gates are
-available as isolated, tested boundaries. The final square gate also protects
-the current extraction path, but staged 2LP rows do not yet share a global
-source-ID catalog or production matrix. Re-enabling still requires that bridge
-and re-validation across the 50-90 digit band.
+canonical sparse post-merge rows, deterministic parallel shadow assembly, and
+exact row/dependency congruence gates are available as isolated, tested
+boundaries. The final square gate also protects the current extraction path,
+but staged 2LP rows are not yet connected to the production matrix. Re-enabling
+still requires that bridge and re-validation across the 50-90 digit band.
 
 ## Two-Large-Prime Re-enablement Plan
 
@@ -133,9 +134,15 @@ The safe migration order is:
    admission. After dependency selection, require even sign and factor-base
    parity, construct `X` and `Y`, and verify
    `X^2 == Y^2 (mod kN)` before any GCD attempt.
-6. Exercise the path in test-only or shadow mode first. Production 2LP remains
-   off until fixed 50-90 digit corpora show valid congruences, useful cycles,
-   and no regression in the default 1LP path.
+6. Assemble full and cycle rows through a deterministic shadow path. Assign
+   source IDs from a canonical global layout, bind accepted source descriptors
+   into a portable fingerprint, materialize cycles into fixed parallel slots,
+   deduplicate only exact arithmetic rows, and apply a stable full/cycle trim
+   policy.
+7. Connect a wide shadow matrix and extraction path only after the assembly
+   contract is stable. Production 2LP remains off until fixed 50-90 digit
+   corpora show valid congruences, useful cycles, and no regression in the
+   default 1LP path.
 
 The arithmetic oracle must include a single-edge `p^2` cycle, three or more
 parallel edges, a vertex of degree four, and a cycle whose factor-base exponent
@@ -159,9 +166,13 @@ SIQS's `L_N(1/2, 1)`.
 
 - **2LP cofactor handling is gated off** (`lp_bound_sq = 0`); normalization,
   stable shadow-corpus preparation, cycle selection, materialization, and
-  sparse-wide row conversion and congruence verification are staged, while a
-  global source catalog, production integration, and cross-size evidence remain
-  prerequisites
+  sparse-wide row conversion, deterministic parallel assembly, and congruence
+  verification are staged, while runtime collection, matrix integration, and
+  cross-size evidence remain prerequisites
+- **Materialization rejection is not yet typed**; the shadow assembly counts a
+  `nullopt` cycle as rejected after validating adapter and graph invariants, but
+  production integration should distinguish arithmetic exhaustion from an
+  internal structural-contract failure
 - **Beyond ~57 digits, extraction failures dominate** in current calibration.
   The 60-digit band needs FB and threshold tuning before being declared
   production-ready. Use GNFS for ≥60 digits until then

@@ -1994,6 +1994,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SiqsPostMergeRow COMMAND test_siqs_post_merge_row)
     set_tests_properties(SiqsPostMergeRow PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_shadow_assembly
+        tests/test_siqs_shadow_assembly.cpp
+    )
+    target_link_libraries(test_siqs_shadow_assembly PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowAssembly COMMAND test_siqs_shadow_assembly)
+    set_tests_properties(SiqsShadowAssembly PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # SIQS 端到端：100-bit + 180-bit 实测分解
     add_executable(test_siqs_e2e
         tests/test_siqs_e2e.cpp
