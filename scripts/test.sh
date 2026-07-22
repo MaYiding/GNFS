@@ -233,6 +233,7 @@ ALL_TEST_BINARIES=(
     test_relation_identity
     test_relation_reduction_engine
     test_structured_ooc_scale
+    test_structured_filter_pipeline_120bit
     test_structured_ooc_50d_probe
     test_candidate_batch_50d_sweep
     test_structured_filter
@@ -375,7 +376,7 @@ MODULE_SLOW_TESTS=(
     polynomial     "test_kleinjung test_kleinjung_large test_factor_with_kleinjung"
     sieve          "test_lattice_sieve"
     cofactor       "test_ecm_brent_suyama_bench"
-    relation       "test_structured_ooc_scale"
+    relation       "test_structured_ooc_scale test_structured_filter_pipeline_120bit"
     api            "test_api test_full_resume"
     siqs           "test_siqs_e2e"
 )
@@ -601,6 +602,7 @@ TEST_TIMEOUT=(
     test_relation_identity   10
     test_relation_reduction_engine 10
     test_structured_ooc_scale 180
+    test_structured_filter_pipeline_120bit 600
     test_structured_ooc_50d_probe 3600
     test_candidate_batch_50d_sweep 900
     test_structured_filter   10
@@ -785,6 +787,7 @@ TEST_TIER=(
     test_relation_identity   "instant"
     test_relation_reduction_engine "instant"
     test_structured_ooc_scale "gate"
+    test_structured_filter_pipeline_120bit "heavy"
     test_structured_ooc_50d_probe "stress"
     test_candidate_batch_50d_sweep "bench"
     test_structured_filter   "instant"
@@ -950,6 +953,7 @@ path_to_module() {
     local path="$1"
     case "$path" in
         tests/test_squfof*.cpp|tests/support/squfof_*.hpp|tests/fixtures/squfof_*.hpp) echo "cofactor" ;;
+        tests/test_structured*.cpp) echo "relation" ;;
         *core/*)       echo "core" ;;
         *util/*)       echo "util" ;;
         *polynomial/*) echo "polynomial" ;;

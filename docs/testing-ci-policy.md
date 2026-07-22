@@ -163,6 +163,15 @@ fresh process and emits one `GNFS_RESOURCE_V1` record. The normal no-argument
 gate remains a deterministic correctness test and has no timing or RSS
 threshold.
 
+`test_structured_filter_pipeline_120bit` is a `heavy` targeted size-transition
+gate. It fixes a 120-bit semiprime and one polynomial/factor-base context, then
+runs the production sieve-to-reduction route with a one-lane StandardV0 baseline
+and a hardware-bounded structured route of at most four lanes. The test freezes
+the raw corpus, LP histogram, both reduction outputs, and both full-matrix
+identities. It disables the thin solver after matrix construction, and neither
+wall time nor RSS is a pass criterion. The target is manual/nightly evidence and
+does not enter pull-request CI.
+
 ## Update Checklist
 
 When adding or changing tests:

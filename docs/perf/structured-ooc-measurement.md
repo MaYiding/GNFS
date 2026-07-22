@@ -535,6 +535,46 @@ train-only DP 得到顺序
 因此不构建候选生产二进制，也不运行墙钟 A/B；当前生产顺序保持不变。这个 no-go 与
 训练、验证、holdout、位宽门禁均由测试 summary 机器可读地报告。
 
+## Deterministic 120-Bit Relation-Path Gate
+
+The M5 cross-size route now has a real sieve-to-reduction gate:
+
+```bash
+./scripts/test.sh -t Release run test_structured_filter_pipeline_120bit
+```
+
+The input is the 120-bit semiprime
+`664613997892503507403755373348813853`. The test selects one polynomial and
+factor base, fixes `max_special_q=32`, disables OOC/resume/distributed and other
+strategy-changing experiments, and compares two production routes:
+
+- StandardV0 with one local sieve lane;
+- forced structured reduction with the hardware-bounded profile, up to four
+  local sieve and reducer lanes.
+
+Two independent Release processes produced the same canonical record. The
+frozen identity is:
+
+| Field | Legacy | Structured |
+|---|---:|---:|
+| Raw rows | 9,170 | 9,170 |
+| Raw digest | `16200879394137992316 / 17871977238653261677` | same |
+| Raw LP columns | 13,479 | 13,479 |
+| Output rows | 248 | 477 |
+| Output LP columns | 18 | 23 |
+| Output digest | `10700067927127482413 / 7933828173714541669` | `16984277476308836056 / 7231745490714097264` |
+| Structured commits / emitted rows | n/a | 45 / 79 |
+| Matrix shape | 248 x 14,648 | 477 x 14,653 |
+| Matrix nonzeros | 15,585 | 25,678 |
+
+The raw LP histogram is also frozen at weight-1/2/3/4+ counts
+`13048/370/29/32`. Both routes stop after full thin-matrix construction with
+dependency extraction disabled. This closes the planned 100-150-bit
+size-transition requirement and proves raw relation identity across the one-lane
+and multi-lane schedules. It does not establish a wall-time win or justify
+`GNFS_STRUCTURED_FILTER=auto`; the complete bounded 50-digit first-round
+comparison remains the promotion boundary.
+
 ## Production Telemetry
 
 生产 Pipeline 的 `structured_filter schema=1` 记录覆盖每个 logical generation。它

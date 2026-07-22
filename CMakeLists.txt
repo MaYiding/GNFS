@@ -1189,6 +1189,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME StructuredOOCScale COMMAND test_structured_ooc_scale)
     set_tests_properties(StructuredOOCScale PROPERTIES LABELS "gate" TIMEOUT 180)
 
+    # Real 120-bit sieve-to-reduction transition. The fixed prefix compares a
+    # one-lane legacy route with the bounded multi-lane structured route and
+    # carries both results through full matrix construction.
+    add_executable(test_structured_filter_pipeline_120bit
+        tests/test_structured_filter_pipeline_120bit.cpp
+    )
+    target_link_libraries(test_structured_filter_pipeline_120bit PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredFilterPipeline120bit COMMAND test_structured_filter_pipeline_120bit)
+    set_tests_properties(StructuredFilterPipeline120bit PROPERTIES LABELS "heavy" TIMEOUT 600)
+
     # Real 50-digit Pipeline prefix probe. Disabled by default because even the
     # four-special-Q bound exercises the production sieve and factor-base path.
     add_executable(test_structured_ooc_50d_probe

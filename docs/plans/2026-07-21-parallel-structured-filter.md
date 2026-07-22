@@ -15,9 +15,10 @@
   corpus, descriptor-bound selection identity, direct matrix input,
   deterministic trim, dependency-only square-root materialization,
   transactional source/sink reduction, and paired V3 identity. Native
-  incremental OOC reduction, measured RSS, bounded 50-digit production
-  evidence, automatic-selection evidence, and cross-size route evidence remain
-  before promotion.
+  incremental OOC reduction, a complete bounded 50-digit first-round
+  comparison, and automatic-selection evidence remain before promotion. The
+  deterministic 120-bit real sieve-to-reduction transition is now covered by
+  a heavy targeted one-lane versus bounded multi-lane gate.
 - Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
 
 ## Outcome
@@ -721,7 +722,10 @@ avoids a per-generation relation-payload vector.
 - [x] Run the 17/27/40/81-bit gate after direct production OOC integration.
 - [x] Add a hard-capped real 50-digit production prefix probe with structured
   reduction and full matrix-shape telemetry.
-- [ ] Run a deterministic 100-150-bit sieve-to-reduction integration, not only polynomial selection.
+- [x] Run a deterministic 100-150-bit sieve-to-reduction integration, not only
+  polynomial selection. The fixed 120-bit semiprime processes 32 special-Qs;
+  one-lane legacy and four-lane structured collection produce the same 9,170-row
+  raw corpus and LP histogram before both routes build their full thin matrix.
 - [ ] Run a complete bounded 50-digit first-round baseline/structured comparison.
 
 Exit gate: no correctness regression; dependency dimension is preserved and structured mode meets the frozen materiality threshold for total NNZ, downstream matrix time, or raw-relation requirement under the fill and memory budgets.
