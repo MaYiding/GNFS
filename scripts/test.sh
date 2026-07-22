@@ -75,6 +75,10 @@
 #                                         # 固定 50 位 1/4/16/64 A cycle-density profile
 #   ./scripts/test.sh compare-siqs-cycle-density
 #                                         # 同一新构建的 1/2/4 profile 独立进程对照
+#   ./scripts/test.sh profile-siqs-256a <1|2|4>
+#                                         # 固定 50 位 256x32 A scale 证据
+#   ./scripts/test.sh compare-siqs-256a
+#                                         # 同一新构建的 1/2/4 scale 独立进程对照
 #   ./scripts/test.sh bench-ram <level>   # 后台 RAM baseline: nohup + /usr/bin/time -l
 #                                         # level=1 (50d ≈2h) / 2 (60d hours+) / 3-5 (大)
 #
@@ -2012,6 +2016,780 @@ run_siqs_cycle_profile_process() {
     return 0
 }
 
+# Closed V3 parser for the Release-only 256-A scale transcript. The caller
+# supplies file-level facts because command substitution intentionally strips
+# the final LF. Python is already a Harness dependency and gives exact integer
+# arithmetic for byte counters while leaving uint64 digests as canonical text.
+SIQS_256A_PROFILE_OUTPUT=""
+SIQS_256A_PROFILE_IDENTITY=""
+SIQS_256A_PROFILE_STDERR=""
+SIQS_256A_SCALE_PASS=0
+
+validate_siqs_256a_profile_output() {
+    local stdout="$1"
+    local expected_workers="$2"
+    local line_count="$3"
+    local blank_count="$4"
+    local last_byte="$5"
+    local identity
+
+    SIQS_256A_PROFILE_OUTPUT=""
+    SIQS_256A_PROFILE_IDENTITY=""
+    SIQS_256A_SCALE_PASS=0
+    [[ "$line_count" == "6" && "$blank_count" == "0" && "$last_byte" == "10" ]] || return 1
+
+    if ! identity=$(python3 - "$expected_workers" 3<<<"$stdout" <<'PY'
+import os
+import re
+import sys
+
+def need(condition):
+    if not condition:
+        raise ValueError
+
+def same(value, expected):
+    return value == str(expected)
+
+try:
+    expected_workers = int(sys.argv[1])
+    need(expected_workers in (1, 2, 4))
+    lines = os.fdopen(3, encoding="utf-8").read().splitlines()
+    need(len(lines) == 6 and all(lines))
+
+    prefixes = [
+        "GNFS_SIQS_256A_CONFIG_V3",
+        "GNFS_SIQS_256A_CAPTURE_V3",
+        "GNFS_SIQS_256A_GRAPH_V3",
+        "GNFS_SIQS_256A_ASSEMBLY_V3",
+        "GNFS_SIQS_256A_PROOF_V3",
+        "GNFS_SIQS_256A_SUMMARY_V3",
+    ]
+    schemas = [
+        """schema_version status profile_id build_type ndebug band digits n p q seed max_a
+        unique_a b_per_a available_b_per_a complete_b_family batch_schedule batch_max_a
+        batch_barrier partition admission_order admission_race_first global_cap_boundary
+        timeout_seconds planner_attempts planner_duplicate_draws accepted_duplicate_a first_a
+        last_a plan_digest_low plan_digest_high multiplier sieved_n sieved_bits
+        factor_base_columns factor_base_last_prime param_fb_size param_sieve_half
+        param_lp_multiplier param_a_factors param_sieve_error param_small_prime_cutoff threshold
+        relation_limit_per_slot payload_limit_bytes_per_slot global_raw_limit
+        global_payload_limit_bytes graph_edge_limit graph_cycle_limit graph_incidence_limit
+        row_candidate_limit pretrim_limit shadow_trim_excess selected_required min_2lp_cycles
+        min_2lp_edge_source_a rss_budget_bytes solver_attempted promotion""".split(),
+        """schema_version status profile_id batches completed_batches unstarted_batches planned_a
+        completed_a unstarted_a planned_slots completed_slots unstarted_slots produced_relations
+        admitted_relations discarded_relations produced_full produced_one_lp produced_two_lp
+        admitted_full admitted_one_lp admitted_two_lp admitted_payload_bytes
+        discarded_payload_bytes terminal_slot_a terminal_slot_gray first_rejected_a
+        first_rejected_gray first_rejected_relation first_rejected_reason global_cap_precedence
+        threshold_candidates unrepresentable_residuals rejected_residuals observed_full
+        observed_one_lp observed_two_lp produced_payload_bytes slot_stop_none
+        slot_stop_relation_limit slot_stop_payload_limit slot_digest_low slot_digest_high
+        raw_digest_low raw_digest_high workers resolved_workers peak_workers capture_wall_ns
+        solver_attempted promotion""".split(),
+        """schema_version status profile_id attempted adapter_input adapter_full
+        adapter_accepted_one_lp adapter_accepted_two_lp adapter_rejected adapter_exact_duplicate
+        adapter_malformed_source_shape adapter_unsupported_encoding adapter_invalid_one_large_prime
+        adapter_invalid_two_large_prime_split graph_status graph_input_edges graph_vertices
+        graph_edges graph_components graph_cycles graph_cycle_incidences graph_max_cycle_length
+        cycles_with_accepted_2lp cycles_without_accepted_2lp two_lp_edge_source_a_count
+        cycle_source_a_count cycle_provenance_digest_low cycle_provenance_digest_high
+        row_candidate_upper solver_attempted promotion""".split(),
+        """schema_version status profile_id attempted assembly_status graph_edges graph_cycles
+        valid_full full_sources partial_sources valid_cycle_rows rejected_cycle_rows
+        rows_before_dedup arithmetic_duplicates_removed pretrim_rows required_rows row_deficit
+        selected_rows selected_full_rows selected_cycle_rows trimmed_rows source_fingerprint_low
+        source_fingerprint_high pretrim_fingerprint_low pretrim_fingerprint_high
+        selected_fingerprint_low selected_fingerprint_high solver_attempted promotion""".split(),
+        """schema_version attempted status factor cofactor deterministic_terminal
+        solver_attempted promotion""".split(),
+        """schema_version status profile_id stdout_records config_records capture_records
+        graph_records assembly_records proof_records summary_records workers rss_scope rss_backend
+        rss_evidence scale_evidence final_current_rss_bytes final_peak_rss_bytes plan_wall_ns
+        capture_wall_ns analysis_wall_ns wall_ns solver_attempted proof_status promotion""".split(),
+    ]
+    nonnumeric = {
+        "status", "profile_id", "build_type", "ndebug", "complete_b_family",
+        "batch_schedule", "batch_barrier", "partition", "admission_order",
+        "admission_race_first", "global_cap_boundary", "solver_attempted", "promotion",
+        "first_rejected_reason", "global_cap_precedence", "attempted", "graph_status",
+        "assembly_status", "factor", "cofactor", "deterministic_terminal", "rss_scope",
+        "rss_backend", "rss_evidence", "scale_evidence", "proof_status",
+    }
+    optional_index = {
+        "terminal_slot_a", "terminal_slot_gray", "first_rejected_a",
+        "first_rejected_gray", "first_rejected_relation",
+    }
+    optional_rss = {"final_current_rss_bytes", "final_peak_rss_bytes"}
+    canonical = re.compile(r"0|[1-9][0-9]*\Z")
+    positive = re.compile(r"[1-9][0-9]*\Z")
+    records = []
+    for prefix, schema, line in zip(prefixes, schemas, lines):
+        tokens = line.split(" ")
+        need(tokens[0] == prefix and len(tokens) == len(schema) + 1)
+        record = {}
+        for expected_key, token in zip(schema, tokens[1:]):
+            need("=" in token)
+            key, value = token.split("=", 1)
+            need(key == expected_key and value and key not in record)
+            if key in optional_index:
+                need(value == "none" or canonical.fullmatch(value))
+            elif key in optional_rss:
+                need(value == "na" or positive.fullmatch(value))
+            elif key not in nonnumeric:
+                need(canonical.fullmatch(value))
+            record[key] = value
+        records.append(record)
+
+    c, cap, graph, assembly, proof, summary = records
+    I = lambda record, key: int(record[key])
+    profile_id = "siqs50_multi_a_256x32_scale_v3"
+    terminals = {
+        "solver_ready", "slot_relation_limit", "slot_payload_limit",
+        "global_relation_limit", "global_payload_limit", "graph_edge_limit",
+        "graph_cycle_limit", "graph_incidence_limit", "row_candidate_limit",
+        "pretrim_limit", "insufficient_rows", "rejected_cycle_rows",
+        "arithmetic_duplicates", "insufficient_two_lp_cycles",
+        "insufficient_two_lp_source_a",
+    }
+    terminal = c["status"]
+    need(terminal in terminals)
+    for record in (cap, graph, assembly, summary):
+        need(record["status"] == terminal and record["profile_id"] == profile_id)
+    need(c["profile_id"] == profile_id and proof["deterministic_terminal"] == terminal)
+    for record in records:
+        need(record["schema_version"] == "3" and record["solver_attempted"] == "false" and
+             record["promotion"] == "false")
+
+    need(c["build_type"] == "Release" and c["ndebug"] == "true")
+    fixed_config = {
+        "band": "50", "digits": "50",
+        "n": "18027426610499408447671494571938206274555088868093",
+        "p": "2041646378661656688438487", "q": "8829847714527711737483339",
+        "seed": "42", "max_a": "256", "unique_a": "256", "b_per_a": "32",
+        "available_b_per_a": "32", "complete_b_family": "true",
+        "batch_schedule": "0-1,1-4,4-16,16-32,32-48,48-64,64-80,80-96,96-112,112-128,128-144,144-160,160-176,176-192,192-208,208-224,224-240,240-256",
+        "batch_max_a": "16", "batch_barrier": "true", "partition": "static_contiguous",
+        "admission_order": "a_gray_relation", "admission_race_first": "false",
+        "global_cap_boundary": "next_gt_limit", "timeout_seconds": "1800",
+        "accepted_duplicate_a": "0", "factor_base_columns": "1601",
+        "param_fb_size": "1600", "param_sieve_half": "65536",
+        "param_lp_multiplier": "120", "param_a_factors": "6",
+        "param_sieve_error": "12", "param_small_prime_cutoff": "25",
+        "relation_limit_per_slot": "32", "payload_limit_bytes_per_slot": "65536",
+        "global_raw_limit": "32768", "global_payload_limit_bytes": "67108864",
+        "graph_edge_limit": "16384", "graph_cycle_limit": "4096",
+        "graph_incidence_limit": "262144", "row_candidate_limit": "4096",
+        "pretrim_limit": "4096", "shadow_trim_excess": "100",
+        "selected_required": "1701", "min_2lp_cycles": "32",
+        "min_2lp_edge_source_a": "16", "rss_budget_bytes": "536870912",
+    }
+    need(all(c[key] == value for key, value in fixed_config.items()))
+    need(I(c, "planner_attempts") == 256 + I(c, "planner_duplicate_draws"))
+    need(I(c, "first_a") > 0 and I(c, "last_a") > 0 and I(c, "multiplier") > 0)
+    need(I(c, "sieved_bits") > 0 and I(c, "factor_base_last_prime") > 0 and
+         I(c, "selected_required") == I(c, "factor_base_columns") + I(c, "shadow_trim_excess"))
+    need((c["plan_digest_low"], c["plan_digest_high"]) != ("0", "0"))
+
+    need(cap["global_cap_precedence"] == "relation_then_payload")
+    need(I(cap, "batches") == 18 and I(cap, "planned_a") == 256 and
+         I(cap, "planned_slots") == 8192)
+    need(I(cap, "batches") == I(cap, "completed_batches") + I(cap, "unstarted_batches"))
+    need(I(cap, "planned_a") == I(cap, "completed_a") + I(cap, "unstarted_a"))
+    need(I(cap, "planned_slots") == I(cap, "completed_slots") + I(cap, "unstarted_slots"))
+    endpoints = [1, 4, 16] + list(range(32, 257, 16))
+    completed_batches = I(cap, "completed_batches")
+    need(1 <= completed_batches <= 18 and I(cap, "completed_a") == endpoints[completed_batches - 1])
+    completed_batch_begin = 0 if completed_batches == 1 else endpoints[completed_batches - 2]
+    need(I(cap, "completed_slots") == I(cap, "completed_a") * 32)
+    need(I(cap, "produced_relations") == I(cap, "admitted_relations") + I(cap, "discarded_relations"))
+    need(I(cap, "produced_relations") == I(cap, "produced_full") + I(cap, "produced_one_lp") + I(cap, "produced_two_lp"))
+    need(I(cap, "admitted_relations") == I(cap, "admitted_full") + I(cap, "admitted_one_lp") + I(cap, "admitted_two_lp"))
+    need(I(cap, "produced_payload_bytes") == I(cap, "admitted_payload_bytes") + I(cap, "discarded_payload_bytes"))
+    need(I(cap, "produced_relations") <= I(cap, "completed_slots") * 32 and
+         I(cap, "produced_payload_bytes") <= I(cap, "completed_slots") * 65536)
+    need(I(cap, "admitted_relations") <= 32768 and I(cap, "admitted_payload_bytes") <= 67108864)
+    need(I(cap, "admitted_full") <= I(cap, "produced_full") and
+         I(cap, "admitted_one_lp") <= I(cap, "produced_one_lp") and
+         I(cap, "admitted_two_lp") <= I(cap, "produced_two_lp"))
+    need(I(cap, "produced_full") <= I(cap, "observed_full") and
+         I(cap, "produced_one_lp") <= I(cap, "observed_one_lp") and
+         I(cap, "produced_two_lp") <= I(cap, "observed_two_lp"))
+    need((I(cap, "produced_relations") == 0) == (I(cap, "produced_payload_bytes") == 0) and
+         (I(cap, "admitted_relations") == 0) == (I(cap, "admitted_payload_bytes") == 0))
+    need(I(cap, "threshold_candidates") == I(cap, "unrepresentable_residuals") +
+         I(cap, "rejected_residuals") + I(cap, "observed_full") +
+         I(cap, "observed_one_lp") + I(cap, "observed_two_lp"))
+    need(I(cap, "observed_full") + I(cap, "observed_one_lp") + I(cap, "observed_two_lp") >=
+         I(cap, "produced_relations"))
+    need(I(cap, "completed_slots") == I(cap, "slot_stop_none") +
+         I(cap, "slot_stop_relation_limit") + I(cap, "slot_stop_payload_limit"))
+    need(cap["workers"] == str(expected_workers) and cap["resolved_workers"] == str(expected_workers) and
+         cap["peak_workers"] == str(expected_workers) and I(cap, "capture_wall_ns") > 0)
+    need((cap["slot_digest_low"], cap["slot_digest_high"]) != ("0", "0") and
+         (cap["raw_digest_low"], cap["raw_digest_high"]) != ("0", "0"))
+
+    capture_terminals = {"slot_relation_limit", "slot_payload_limit", "global_relation_limit", "global_payload_limit"}
+    slot_terminals = {"slot_relation_limit", "slot_payload_limit"}
+    global_terminals = {"global_relation_limit", "global_payload_limit"}
+    if terminal in slot_terminals:
+        need(cap["terminal_slot_a"] != "none" and cap["terminal_slot_gray"] != "none")
+        need(completed_batch_begin <= I(cap, "terminal_slot_a") < I(cap, "completed_a") and
+             I(cap, "terminal_slot_gray") < 32)
+        need(cap["first_rejected_a"] == cap["first_rejected_gray"] ==
+             cap["first_rejected_relation"] == "none" and cap["first_rejected_reason"] == "none")
+        need(I(cap, "discarded_relations") > 0 and I(cap, "discarded_payload_bytes") > 0)
+        stop_key = "slot_stop_relation_limit" if terminal == "slot_relation_limit" else "slot_stop_payload_limit"
+        need(I(cap, stop_key) > 0)
+    elif terminal in global_terminals:
+        need(cap["terminal_slot_a"] == cap["terminal_slot_gray"] == "none")
+        need(cap["first_rejected_a"] != "none" and cap["first_rejected_gray"] != "none" and
+             cap["first_rejected_relation"] != "none" and cap["first_rejected_reason"] == terminal)
+        need(completed_batch_begin <= I(cap, "first_rejected_a") < I(cap, "completed_a") and
+             I(cap, "first_rejected_gray") < 32 and I(cap, "first_rejected_relation") < 32)
+        need(I(cap, "slot_stop_none") == I(cap, "completed_slots") and
+             I(cap, "slot_stop_relation_limit") == 0 and I(cap, "slot_stop_payload_limit") == 0 and
+             I(cap, "discarded_relations") > 0 and I(cap, "discarded_payload_bytes") > 0)
+        if terminal == "global_relation_limit":
+            need(I(cap, "admitted_relations") == 32768 and
+                 I(cap, "admitted_payload_bytes") <= 67108864)
+        else:
+            need(I(cap, "admitted_relations") < 32768 and
+                 I(cap, "admitted_payload_bytes") <= 67108864)
+    else:
+        need(cap["terminal_slot_a"] == cap["terminal_slot_gray"] ==
+             cap["first_rejected_a"] == cap["first_rejected_gray"] ==
+             cap["first_rejected_relation"] == "none" and cap["first_rejected_reason"] == "none")
+
+    if terminal not in capture_terminals:
+        need(completed_batches == 18 and I(cap, "completed_a") == 256 and I(cap, "completed_slots") == 8192)
+        need(I(cap, "discarded_relations") == 0 and I(cap, "discarded_payload_bytes") == 0)
+        need(I(cap, "slot_stop_none") == 8192 and I(cap, "slot_stop_relation_limit") == 0 and
+             I(cap, "slot_stop_payload_limit") == 0)
+
+    graph_caps = {
+        "graph_edge_limit": "edge_limit",
+        "graph_cycle_limit": "cycle_limit",
+        "graph_incidence_limit": "incidence_limit",
+    }
+    graph_attempted = graph["attempted"] == "true"
+    need(graph["attempted"] in {"true", "false"})
+    need(graph_attempted == (terminal not in capture_terminals))
+    adapter_keys = ["adapter_input", "adapter_full", "adapter_accepted_one_lp",
+                    "adapter_accepted_two_lp", "adapter_rejected", "adapter_exact_duplicate",
+                    "adapter_malformed_source_shape", "adapter_unsupported_encoding",
+                    "adapter_invalid_one_large_prime", "adapter_invalid_two_large_prime_split"]
+    graph_value_keys = ["graph_input_edges", "graph_vertices", "graph_edges", "graph_components",
+                        "graph_cycles", "graph_cycle_incidences", "graph_max_cycle_length",
+                        "cycles_with_accepted_2lp", "cycles_without_accepted_2lp",
+                        "two_lp_edge_source_a_count", "cycle_source_a_count",
+                        "cycle_provenance_digest_low", "cycle_provenance_digest_high",
+                        "row_candidate_upper"]
+    if not graph_attempted:
+        need(graph["graph_status"] == "not_attempted" and
+             all(I(graph, key) == 0 for key in adapter_keys + graph_value_keys))
+    else:
+        need(I(graph, "adapter_input") == I(cap, "admitted_relations") and
+             I(graph, "adapter_full") == I(cap, "admitted_full"))
+        need(I(graph, "adapter_accepted_one_lp") <= I(cap, "admitted_one_lp") and
+             I(graph, "adapter_accepted_two_lp") <= I(cap, "admitted_two_lp"))
+        need(I(graph, "adapter_input") == I(graph, "adapter_full") +
+             I(graph, "adapter_accepted_one_lp") + I(graph, "adapter_accepted_two_lp") +
+             I(graph, "adapter_rejected"))
+        need(I(graph, "adapter_rejected") == I(graph, "adapter_exact_duplicate") +
+             I(graph, "adapter_malformed_source_shape") + I(graph, "adapter_unsupported_encoding") +
+             I(graph, "adapter_invalid_one_large_prime") + I(graph, "adapter_invalid_two_large_prime_split"))
+        need(I(graph, "graph_input_edges") == I(graph, "adapter_accepted_one_lp") +
+             I(graph, "adapter_accepted_two_lp"))
+        if terminal in graph_caps:
+            need(graph["graph_status"] == graph_caps[terminal] and
+                 all(I(graph, key) == 0 for key in graph_value_keys[1:]))
+            if terminal == "graph_edge_limit":
+                need(I(graph, "graph_input_edges") > 16384)
+            else:
+                need(I(graph, "graph_input_edges") <= 16384)
+        else:
+            need(graph["graph_status"] == "valid" and I(graph, "graph_edges") == I(graph, "graph_input_edges"))
+            need(I(graph, "graph_edges") <= 16384 and I(graph, "graph_cycles") <= 4096 and
+                 I(graph, "graph_cycle_incidences") <= 262144)
+            need(I(graph, "graph_components") <= I(graph, "graph_vertices") and
+                 (I(graph, "graph_edges") != 0 or
+                  (I(graph, "graph_vertices") == 0 and I(graph, "graph_components") == 0)))
+            need(I(graph, "graph_edges") + I(graph, "graph_components") >= I(graph, "graph_vertices"))
+            need(I(graph, "graph_cycles") == I(graph, "graph_edges") +
+                 I(graph, "graph_components") - I(graph, "graph_vertices"))
+            need(I(graph, "graph_cycles") == I(graph, "cycles_with_accepted_2lp") +
+                 I(graph, "cycles_without_accepted_2lp"))
+            need(I(graph, "row_candidate_upper") == I(graph, "adapter_full") + I(graph, "graph_cycles"))
+            need(I(graph, "two_lp_edge_source_a_count") <= 256 and I(graph, "cycle_source_a_count") <= 256)
+            need((graph["cycle_provenance_digest_low"], graph["cycle_provenance_digest_high"]) != ("0", "0"))
+            if I(graph, "graph_cycles") == 0:
+                need(I(graph, "graph_cycle_incidences") == 0 and I(graph, "graph_max_cycle_length") == 0 and
+                     I(graph, "cycles_with_accepted_2lp") == 0 and I(graph, "cycle_source_a_count") == 0)
+            else:
+                need(I(graph, "graph_cycle_incidences") >= I(graph, "graph_cycles") and
+                     0 < I(graph, "graph_max_cycle_length") <= I(graph, "graph_cycle_incidences") and
+                     I(graph, "graph_cycle_incidences") <= I(graph, "graph_cycles") * I(graph, "graph_max_cycle_length"))
+
+    assembly_terminals = {"pretrim_limit", "insufficient_rows", "rejected_cycle_rows",
+                          "arithmetic_duplicates", "insufficient_two_lp_cycles",
+                          "insufficient_two_lp_source_a"}
+    assembly_attempted = assembly["attempted"] == "true"
+    need(assembly["attempted"] in {"true", "false"})
+    need(assembly_attempted == (terminal == "solver_ready" or terminal in assembly_terminals))
+    assembly_counter_keys = ["graph_edges", "graph_cycles", "valid_full", "full_sources",
+                             "partial_sources", "valid_cycle_rows", "rejected_cycle_rows",
+                             "rows_before_dedup", "arithmetic_duplicates_removed", "pretrim_rows",
+                             "selected_rows", "selected_full_rows", "selected_cycle_rows", "trimmed_rows",
+                             "source_fingerprint_low", "source_fingerprint_high",
+                             "pretrim_fingerprint_low", "pretrim_fingerprint_high",
+                             "selected_fingerprint_low", "selected_fingerprint_high"]
+    need(I(assembly, "required_rows") == 1701)
+    need(I(assembly, "row_deficit") == max(1701 - I(assembly, "selected_rows"), 0))
+    if not assembly_attempted:
+        need(assembly["assembly_status"] == "not_attempted" and
+             all(I(assembly, key) == 0 for key in assembly_counter_keys) and
+             I(assembly, "row_deficit") == 1701)
+    else:
+        need(assembly["assembly_status"] == "valid")
+        need(I(graph, "row_candidate_upper") <= 4096)
+        need(I(assembly, "graph_edges") == I(graph, "graph_edges") and
+             I(assembly, "graph_cycles") == I(graph, "graph_cycles") and
+             I(assembly, "valid_full") == I(graph, "adapter_full") and
+             I(assembly, "full_sources") <= I(assembly, "valid_full") and
+             I(assembly, "partial_sources") == I(graph, "graph_edges"))
+        need(I(assembly, "valid_cycle_rows") + I(assembly, "rejected_cycle_rows") == I(assembly, "graph_cycles"))
+        need(I(assembly, "rows_before_dedup") == I(assembly, "full_sources") + I(assembly, "valid_cycle_rows"))
+        need(I(assembly, "rows_before_dedup") == I(assembly, "pretrim_rows") +
+             I(assembly, "arithmetic_duplicates_removed"))
+        need(I(assembly, "pretrim_rows") == I(assembly, "selected_rows") + I(assembly, "trimmed_rows"))
+        need(I(assembly, "selected_rows") == I(assembly, "selected_full_rows") +
+             I(assembly, "selected_cycle_rows") and I(assembly, "selected_rows") <= 1701)
+        need(I(assembly, "selected_full_rows") <= I(assembly, "full_sources") and
+             I(assembly, "selected_cycle_rows") <= I(assembly, "valid_cycle_rows"))
+        need(I(assembly, "rows_before_dedup") <= I(graph, "row_candidate_upper"))
+        for low, high in (("source_fingerprint_low", "source_fingerprint_high"),
+                          ("pretrim_fingerprint_low", "pretrim_fingerprint_high"),
+                          ("selected_fingerprint_low", "selected_fingerprint_high")):
+            need((assembly[low], assembly[high]) != ("0", "0"))
+
+    if terminal == "row_candidate_limit":
+        need(I(graph, "row_candidate_upper") > 4096)
+    elif terminal == "pretrim_limit":
+        need(I(graph, "row_candidate_upper") <= 4096 and I(assembly, "pretrim_rows") > 4096)
+    elif terminal == "insufficient_rows":
+        need(I(graph, "row_candidate_upper") <= 4096 and I(assembly, "pretrim_rows") <= 4096 and
+             (I(assembly, "pretrim_rows") < 1701 or I(assembly, "selected_rows") != 1701))
+    elif terminal == "rejected_cycle_rows":
+        need(I(assembly, "pretrim_rows") <= 4096 and I(assembly, "selected_rows") == 1701 and
+             I(assembly, "rejected_cycle_rows") > 0)
+    elif terminal == "arithmetic_duplicates":
+        need(I(assembly, "pretrim_rows") <= 4096 and I(assembly, "selected_rows") == 1701 and
+             I(assembly, "rejected_cycle_rows") == 0 and I(assembly, "arithmetic_duplicates_removed") > 0)
+    elif terminal == "insufficient_two_lp_cycles":
+        need(I(assembly, "pretrim_rows") <= 4096 and I(assembly, "selected_rows") == 1701 and
+             I(assembly, "rejected_cycle_rows") == 0 and I(assembly, "arithmetic_duplicates_removed") == 0 and
+             I(graph, "cycles_with_accepted_2lp") < 32)
+    elif terminal == "insufficient_two_lp_source_a":
+        need(I(assembly, "pretrim_rows") <= 4096 and I(assembly, "selected_rows") == 1701 and
+             I(assembly, "rejected_cycle_rows") == 0 and I(assembly, "arithmetic_duplicates_removed") == 0 and
+             I(graph, "cycles_with_accepted_2lp") >= 32 and I(graph, "two_lp_edge_source_a_count") < 16)
+    elif terminal == "solver_ready":
+        need(I(assembly, "pretrim_rows") <= 4096 and I(assembly, "pretrim_rows") >= 1701 and
+             I(assembly, "selected_rows") == 1701 and I(assembly, "row_deficit") == 0 and
+             I(assembly, "rejected_cycle_rows") == 0 and I(assembly, "arithmetic_duplicates_removed") == 0 and
+             I(graph, "cycles_with_accepted_2lp") >= 32 and I(graph, "two_lp_edge_source_a_count") >= 16)
+
+    need(proof["attempted"] == "false" and proof["status"] == "not_attempted" and
+         proof["factor"] == "none" and proof["cofactor"] == "none")
+    fixed_summary = {"stdout_records": "6", "config_records": "1", "capture_records": "1",
+                     "graph_records": "1", "assembly_records": "1", "proof_records": "1",
+                     "summary_records": "1", "rss_scope": "self_lifetime",
+                     "proof_status": "not_attempted"}
+    need(all(summary[key] == value for key, value in fixed_summary.items()))
+    need(summary["workers"] == str(expected_workers))
+    need(summary["rss_backend"] in {"unsupported", "darwin_getrusage", "linux_getrusage", "windows_psapi"})
+    peak = summary["final_peak_rss_bytes"]
+    expected_rss = "unavailable" if peak == "na" else ("over_budget" if int(peak) > 536870912 else "pass")
+    need(summary["rss_evidence"] == expected_rss)
+    if summary["rss_backend"] == "unsupported":
+        need(summary["final_current_rss_bytes"] == "na" and peak == "na" and
+             summary["rss_evidence"] == "unavailable")
+    expected_scale = ("terminal" if terminal != "solver_ready" else
+                      ("pass" if expected_rss == "pass" else
+                       "unavailable" if expected_rss == "unavailable" else "fail"))
+    need(summary["scale_evidence"] == expected_scale)
+    if summary["final_current_rss_bytes"] != "na" and peak != "na":
+        need(int(summary["final_current_rss_bytes"]) <= int(peak))
+    need(I(summary, "plan_wall_ns") > 0 and I(summary, "capture_wall_ns") > 0 and
+         I(summary, "wall_ns") >= I(summary, "plan_wall_ns") + I(summary, "capture_wall_ns") +
+         I(summary, "analysis_wall_ns"))
+    need(summary["capture_wall_ns"] == cap["capture_wall_ns"])
+    if terminal in capture_terminals:
+        need(I(summary, "analysis_wall_ns") == 0)
+    else:
+        need(I(summary, "analysis_wall_ns") > 0)
+
+    if terminal == "solver_ready":
+        frozen_config = {
+            "planner_attempts": "256", "planner_duplicate_draws": "0",
+            "first_a": "228011737959984857761", "last_a": "235884298804888144139",
+            "plan_digest_low": "2132402111948970426",
+            "plan_digest_high": "3331495609548214574", "multiplier": "5",
+            "sieved_n": "90137133052497042238357472859691031372775444340465",
+            "sieved_bits": "166", "factor_base_last_prime": "28979", "threshold": "61",
+        }
+        frozen_capture = {
+            "batches": "18", "completed_batches": "18", "unstarted_batches": "0",
+            "planned_a": "256", "completed_a": "256", "unstarted_a": "0",
+            "planned_slots": "8192", "completed_slots": "8192", "unstarted_slots": "0",
+            "produced_relations": "18008", "admitted_relations": "18008",
+            "discarded_relations": "0", "produced_full": "1385", "produced_one_lp": "7420",
+            "produced_two_lp": "9203", "admitted_full": "1385", "admitted_one_lp": "7420",
+            "admitted_two_lp": "9203", "admitted_payload_bytes": "30050394",
+            "discarded_payload_bytes": "0", "terminal_slot_a": "none",
+            "terminal_slot_gray": "none", "first_rejected_a": "none",
+            "first_rejected_gray": "none", "first_rejected_relation": "none",
+            "first_rejected_reason": "none", "threshold_candidates": "164620",
+            "unrepresentable_residuals": "36261", "rejected_residuals": "110351",
+            "observed_full": "1385", "observed_one_lp": "7420", "observed_two_lp": "9203",
+            "produced_payload_bytes": "30050394", "slot_stop_none": "8192",
+            "slot_stop_relation_limit": "0", "slot_stop_payload_limit": "0",
+            "slot_digest_low": "2675139373410695744",
+            "slot_digest_high": "17317603334185087565",
+            "raw_digest_low": "5272179497076428132",
+            "raw_digest_high": "15848963677271175240",
+        }
+        frozen_graph = {
+            "attempted": "true", "adapter_input": "18008", "adapter_full": "1385",
+            "adapter_accepted_one_lp": "7419", "adapter_accepted_two_lp": "4624",
+            "adapter_rejected": "4580", "adapter_exact_duplicate": "1",
+            "adapter_malformed_source_shape": "0", "adapter_unsupported_encoding": "0",
+            "adapter_invalid_one_large_prime": "0",
+            "adapter_invalid_two_large_prime_split": "4579", "graph_status": "valid",
+            "graph_input_edges": "12043", "graph_vertices": "13581", "graph_edges": "12043",
+            "graph_components": "2346", "graph_cycles": "808",
+            "graph_cycle_incidences": "1857", "graph_max_cycle_length": "6",
+            "cycles_with_accepted_2lp": "191", "cycles_without_accepted_2lp": "617",
+            "two_lp_edge_source_a_count": "160", "cycle_source_a_count": "256",
+            "cycle_provenance_digest_low": "12977246761921163132",
+            "cycle_provenance_digest_high": "12380521641813228706",
+            "row_candidate_upper": "2193",
+        }
+        frozen_assembly = {
+            "attempted": "true", "assembly_status": "valid", "graph_edges": "12043",
+            "graph_cycles": "808", "valid_full": "1385", "full_sources": "1383",
+            "partial_sources": "12043", "valid_cycle_rows": "808",
+            "rejected_cycle_rows": "0", "rows_before_dedup": "2191",
+            "arithmetic_duplicates_removed": "0", "pretrim_rows": "2191",
+            "required_rows": "1701", "row_deficit": "0", "selected_rows": "1701",
+            "selected_full_rows": "1383", "selected_cycle_rows": "318", "trimmed_rows": "490",
+            "source_fingerprint_low": "13792072274280994075",
+            "source_fingerprint_high": "7730575491251011754",
+            "pretrim_fingerprint_low": "11231947477657928681",
+            "pretrim_fingerprint_high": "13110892638711325127",
+            "selected_fingerprint_low": "11745144848901110871",
+            "selected_fingerprint_high": "3340986363997617983",
+        }
+        need(all(c[key] == value for key, value in frozen_config.items()) and
+             all(cap[key] == value for key, value in frozen_capture.items()) and
+             all(graph[key] == value for key, value in frozen_graph.items()) and
+             all(assembly[key] == value for key, value in frozen_assembly.items()))
+
+    dynamic = {"workers", "resolved_workers", "peak_workers", "plan_wall_ns", "capture_wall_ns",
+               "analysis_wall_ns", "wall_ns", "final_current_rss_bytes", "final_peak_rss_bytes",
+               "rss_evidence", "scale_evidence"}
+    normalized = []
+    for prefix, schema, record in zip(prefixes, schemas, records):
+        normalized.append(" ".join([prefix] + [f"{key}={record[key]}" for key in schema if key not in dynamic]))
+    print("\n".join(normalized))
+except (ValueError, OSError, UnicodeError):
+    sys.exit(1)
+PY
+    ); then
+        return 1
+    fi
+
+    SIQS_256A_PROFILE_OUTPUT="$stdout"
+    SIQS_256A_PROFILE_IDENTITY="$identity"
+    if [[ "$(measurement_record_field "${${(@f)stdout}[6]}" status)" == "solver_ready" &&
+          "$(measurement_record_field "${${(@f)stdout}[6]}" rss_evidence)" == "pass" &&
+          "$(measurement_record_field "${${(@f)stdout}[6]}" scale_evidence)" == "pass" ]]; then
+        SIQS_256A_SCALE_PASS=1
+    fi
+}
+
+# Apply explicit key substitutions without changing record or field order. This
+# helper is used only by the parser self-check fixtures below.
+siqs_256a_mutate_transcript() {
+    local stdout="$1"
+    shift
+    python3 - "$@" 3<<<"$stdout" <<'PY'
+import os
+import sys
+
+lines = os.fdopen(3, encoding="utf-8").read().splitlines()
+for mutation in sys.argv[1:]:
+    record_text, assignment = mutation.split(":", 1)
+    key, value = assignment.split("=", 1)
+    record_index = int(record_text) - 1
+    if record_index < 0 or record_index >= len(lines):
+        raise SystemExit(1)
+    tokens = lines[record_index].split(" ")
+    matches = [index for index, token in enumerate(tokens) if token.startswith(key + "=")]
+    if len(matches) != 1:
+        raise SystemExit(1)
+    tokens[matches[0]] = key + "=" + value
+    lines[record_index] = " ".join(tokens)
+print("\n".join(lines))
+PY
+}
+
+# Cheap parser-only regression table. It deliberately never starts the profile
+# binary; the real modes run this before their single fresh Release build.
+siqs_256a_validator_self_check() {
+    local baseline
+    baseline=$(<<'EOF'
+GNFS_SIQS_256A_CONFIG_V3 schema_version=3 status=solver_ready profile_id=siqs50_multi_a_256x32_scale_v3 build_type=Release ndebug=true band=50 digits=50 n=18027426610499408447671494571938206274555088868093 p=2041646378661656688438487 q=8829847714527711737483339 seed=42 max_a=256 unique_a=256 b_per_a=32 available_b_per_a=32 complete_b_family=true batch_schedule=0-1,1-4,4-16,16-32,32-48,48-64,64-80,80-96,96-112,112-128,128-144,144-160,160-176,176-192,192-208,208-224,224-240,240-256 batch_max_a=16 batch_barrier=true partition=static_contiguous admission_order=a_gray_relation admission_race_first=false global_cap_boundary=next_gt_limit timeout_seconds=1800 planner_attempts=256 planner_duplicate_draws=0 accepted_duplicate_a=0 first_a=228011737959984857761 last_a=235884298804888144139 plan_digest_low=2132402111948970426 plan_digest_high=3331495609548214574 multiplier=5 sieved_n=90137133052497042238357472859691031372775444340465 sieved_bits=166 factor_base_columns=1601 factor_base_last_prime=28979 param_fb_size=1600 param_sieve_half=65536 param_lp_multiplier=120 param_a_factors=6 param_sieve_error=12 param_small_prime_cutoff=25 threshold=61 relation_limit_per_slot=32 payload_limit_bytes_per_slot=65536 global_raw_limit=32768 global_payload_limit_bytes=67108864 graph_edge_limit=16384 graph_cycle_limit=4096 graph_incidence_limit=262144 row_candidate_limit=4096 pretrim_limit=4096 shadow_trim_excess=100 selected_required=1701 min_2lp_cycles=32 min_2lp_edge_source_a=16 rss_budget_bytes=536870912 solver_attempted=false promotion=false
+GNFS_SIQS_256A_CAPTURE_V3 schema_version=3 status=solver_ready profile_id=siqs50_multi_a_256x32_scale_v3 batches=18 completed_batches=18 unstarted_batches=0 planned_a=256 completed_a=256 unstarted_a=0 planned_slots=8192 completed_slots=8192 unstarted_slots=0 produced_relations=18008 admitted_relations=18008 discarded_relations=0 produced_full=1385 produced_one_lp=7420 produced_two_lp=9203 admitted_full=1385 admitted_one_lp=7420 admitted_two_lp=9203 admitted_payload_bytes=30050394 discarded_payload_bytes=0 terminal_slot_a=none terminal_slot_gray=none first_rejected_a=none first_rejected_gray=none first_rejected_relation=none first_rejected_reason=none global_cap_precedence=relation_then_payload threshold_candidates=164620 unrepresentable_residuals=36261 rejected_residuals=110351 observed_full=1385 observed_one_lp=7420 observed_two_lp=9203 produced_payload_bytes=30050394 slot_stop_none=8192 slot_stop_relation_limit=0 slot_stop_payload_limit=0 slot_digest_low=2675139373410695744 slot_digest_high=17317603334185087565 raw_digest_low=5272179497076428132 raw_digest_high=15848963677271175240 workers=1 resolved_workers=1 peak_workers=1 capture_wall_ns=20 solver_attempted=false promotion=false
+GNFS_SIQS_256A_GRAPH_V3 schema_version=3 status=solver_ready profile_id=siqs50_multi_a_256x32_scale_v3 attempted=true adapter_input=18008 adapter_full=1385 adapter_accepted_one_lp=7419 adapter_accepted_two_lp=4624 adapter_rejected=4580 adapter_exact_duplicate=1 adapter_malformed_source_shape=0 adapter_unsupported_encoding=0 adapter_invalid_one_large_prime=0 adapter_invalid_two_large_prime_split=4579 graph_status=valid graph_input_edges=12043 graph_vertices=13581 graph_edges=12043 graph_components=2346 graph_cycles=808 graph_cycle_incidences=1857 graph_max_cycle_length=6 cycles_with_accepted_2lp=191 cycles_without_accepted_2lp=617 two_lp_edge_source_a_count=160 cycle_source_a_count=256 cycle_provenance_digest_low=12977246761921163132 cycle_provenance_digest_high=12380521641813228706 row_candidate_upper=2193 solver_attempted=false promotion=false
+GNFS_SIQS_256A_ASSEMBLY_V3 schema_version=3 status=solver_ready profile_id=siqs50_multi_a_256x32_scale_v3 attempted=true assembly_status=valid graph_edges=12043 graph_cycles=808 valid_full=1385 full_sources=1383 partial_sources=12043 valid_cycle_rows=808 rejected_cycle_rows=0 rows_before_dedup=2191 arithmetic_duplicates_removed=0 pretrim_rows=2191 required_rows=1701 row_deficit=0 selected_rows=1701 selected_full_rows=1383 selected_cycle_rows=318 trimmed_rows=490 source_fingerprint_low=13792072274280994075 source_fingerprint_high=7730575491251011754 pretrim_fingerprint_low=11231947477657928681 pretrim_fingerprint_high=13110892638711325127 selected_fingerprint_low=11745144848901110871 selected_fingerprint_high=3340986363997617983 solver_attempted=false promotion=false
+GNFS_SIQS_256A_PROOF_V3 schema_version=3 attempted=false status=not_attempted factor=none cofactor=none deterministic_terminal=solver_ready solver_attempted=false promotion=false
+GNFS_SIQS_256A_SUMMARY_V3 schema_version=3 status=solver_ready profile_id=siqs50_multi_a_256x32_scale_v3 stdout_records=6 config_records=1 capture_records=1 graph_records=1 assembly_records=1 proof_records=1 summary_records=1 workers=1 rss_scope=self_lifetime rss_backend=darwin_getrusage rss_evidence=pass scale_evidence=pass final_current_rss_bytes=1000 final_peak_rss_bytes=2000 plan_wall_ns=10 capture_wall_ns=20 analysis_wall_ns=30 wall_ns=70 solver_attempted=false proof_status=not_attempted promotion=false
+EOF
+    )
+
+    validate_siqs_256a_profile_output "$baseline" 1 6 0 10 || return 1
+    (( SIQS_256A_SCALE_PASS == 1 )) || return 1
+    local baseline_identity="$SIQS_256A_PROFILE_IDENTITY"
+    local unknown missing duplicate field_order line_order conservation attempted forged_scale
+    local frozen_drift over_payload over_incidence selected_subtype unsupported_numeric
+    local false_row_candidate false_pretrim false_insufficient
+    unknown=$(printf '%s\n' "$baseline" | awk 'NR == 1 { $0 = $0 " unknown=1" } { print }')
+    missing="${baseline/ build_type=Release/}"
+    duplicate=$(printf '%s\n' "$baseline" | awk 'NR == 1 { $0 = $0 " build_type=Release" } { print }')
+    field_order="${baseline/profile_id=siqs50_multi_a_256x32_scale_v3 build_type=Release ndebug=true/profile_id=siqs50_multi_a_256x32_scale_v3 ndebug=true build_type=Release}"
+    line_order=$(printf '%s\n' "$baseline" | awk 'NR == 1 { first=$0; next } NR == 2 { print; print first; next } { print }')
+    conservation="${baseline/discarded_relations=0/discarded_relations=1}"
+    attempted=$(siqs_256a_mutate_transcript "$baseline" "3:attempted=false") || return 1
+    forged_scale=$(siqs_256a_mutate_transcript "$baseline" \
+        "1:status=insufficient_two_lp_cycles" "2:status=insufficient_two_lp_cycles" \
+        "3:status=insufficient_two_lp_cycles" "3:cycles_with_accepted_2lp=31" \
+        "3:cycles_without_accepted_2lp=777" "4:status=insufficient_two_lp_cycles" \
+        "5:deterministic_terminal=insufficient_two_lp_cycles" \
+        "6:status=insufficient_two_lp_cycles") || return 1
+    frozen_drift=$(siqs_256a_mutate_transcript "$baseline" "1:threshold=62") || return 1
+    over_payload=$(siqs_256a_mutate_transcript "$baseline" \
+        "2:admitted_payload_bytes=67108865" "2:produced_payload_bytes=67108865") || return 1
+    over_incidence=$(siqs_256a_mutate_transcript "$baseline" "3:graph_cycle_incidences=262145") || return 1
+    selected_subtype=$(siqs_256a_mutate_transcript "$baseline" \
+        "4:selected_full_rows=1384" "4:selected_cycle_rows=317") || return 1
+    unsupported_numeric=$(siqs_256a_mutate_transcript "$baseline" "6:rss_backend=unsupported") || return 1
+    false_row_candidate=$(siqs_256a_mutate_transcript "$baseline" \
+        "1:status=row_candidate_limit" "2:status=row_candidate_limit" \
+        "3:status=row_candidate_limit" "4:status=row_candidate_limit" \
+        "5:deterministic_terminal=row_candidate_limit" "6:status=row_candidate_limit" \
+        "6:scale_evidence=terminal") || return 1
+    false_pretrim=$(siqs_256a_mutate_transcript "$baseline" \
+        "1:status=pretrim_limit" "2:status=pretrim_limit" "3:status=pretrim_limit" \
+        "4:status=pretrim_limit" "5:deterministic_terminal=pretrim_limit" \
+        "6:status=pretrim_limit" "6:scale_evidence=terminal") || return 1
+    false_insufficient=$(siqs_256a_mutate_transcript "$baseline" \
+        "1:status=insufficient_rows" "2:status=insufficient_rows" \
+        "3:status=insufficient_rows" "4:status=insufficient_rows" \
+        "5:deterministic_terminal=insufficient_rows" "6:status=insufficient_rows" \
+        "6:scale_evidence=terminal") || return 1
+
+    local mutation_index mutation
+    typeset -a mutation_names=(unknown missing duplicate field_order line_order conservation \
+        attempted forged_scale frozen_drift over_payload over_incidence selected_subtype \
+        unsupported_numeric false_row_candidate false_pretrim false_insufficient)
+    typeset -a mutations=("$unknown" "$missing" "$duplicate" "$field_order" "$line_order" \
+        "$conservation" "$attempted" "$forged_scale" "$frozen_drift" "$over_payload" \
+        "$over_incidence" "$selected_subtype" "$unsupported_numeric" "$false_row_candidate" \
+        "$false_pretrim" "$false_insufficient")
+    for (( mutation_index = 1; mutation_index <= ${#mutations[@]}; ++mutation_index )); do
+        mutation="${mutations[$mutation_index]}"
+        if validate_siqs_256a_profile_output "$mutation" 1 6 0 10 2>/dev/null; then
+            log_fail "SIQS 256-A validator self-check 未拒绝 ${mutation_names[$mutation_index]} mutation"
+            return 1
+        fi
+    done
+    if validate_siqs_256a_profile_output "$baseline" 1 6 0 9 2>/dev/null; then
+        log_fail "SIQS 256-A validator self-check 未拒绝缺失末尾 LF"
+        return 1
+    fi
+
+    local dynamic="$baseline"
+    dynamic="${dynamic//workers=1/workers=4}"
+    dynamic="${dynamic//capture_wall_ns=20/capture_wall_ns=21}"
+    dynamic="${dynamic/plan_wall_ns=10/plan_wall_ns=11}"
+    dynamic="${dynamic/analysis_wall_ns=30/analysis_wall_ns=31}"
+    dynamic="${dynamic/wall_ns=70/wall_ns=75}"
+    dynamic="${dynamic/final_current_rss_bytes=1000/final_current_rss_bytes=1200}"
+    dynamic="${dynamic/final_peak_rss_bytes=2000/final_peak_rss_bytes=2200}"
+    validate_siqs_256a_profile_output "$dynamic" 4 6 0 10 || return 1
+    [[ "$SIQS_256A_PROFILE_IDENTITY" == "$baseline_identity" && SIQS_256A_SCALE_PASS -eq 1 ]] || {
+        log_fail "SIQS 256-A validator self-check 的动态字段 normalization 不闭合"
+        return 1
+    }
+
+    local unavailable capture_terminal graph_terminal assembly_terminal
+    unavailable=$(siqs_256a_mutate_transcript "$baseline" \
+        "6:rss_evidence=unavailable" "6:scale_evidence=unavailable" \
+        "6:final_current_rss_bytes=na" \
+        "6:final_peak_rss_bytes=na") || return 1
+
+    capture_terminal=$(siqs_256a_mutate_transcript "$baseline" \
+        "1:status=slot_relation_limit" \
+        "2:status=slot_relation_limit" "2:completed_batches=1" "2:unstarted_batches=17" \
+        "2:completed_a=1" "2:unstarted_a=255" "2:completed_slots=32" \
+        "2:unstarted_slots=8160" "2:produced_relations=10" "2:admitted_relations=0" \
+        "2:discarded_relations=10" "2:produced_full=4" "2:produced_one_lp=3" \
+        "2:produced_two_lp=3" "2:admitted_full=0" "2:admitted_one_lp=0" \
+        "2:admitted_two_lp=0" "2:admitted_payload_bytes=0" \
+        "2:discarded_payload_bytes=1000" "2:terminal_slot_a=0" \
+        "2:terminal_slot_gray=0" "2:threshold_candidates=10" \
+        "2:unrepresentable_residuals=0" "2:rejected_residuals=0" "2:observed_full=4" \
+        "2:observed_one_lp=3" "2:observed_two_lp=3" "2:produced_payload_bytes=1000" \
+        "2:slot_stop_none=31" "2:slot_stop_relation_limit=1" \
+        "3:status=slot_relation_limit" "3:attempted=false" "3:adapter_input=0" \
+        "3:adapter_full=0" "3:adapter_accepted_one_lp=0" "3:adapter_accepted_two_lp=0" \
+        "3:adapter_rejected=0" "3:adapter_exact_duplicate=0" \
+        "3:adapter_invalid_two_large_prime_split=0" "3:graph_status=not_attempted" \
+        "3:graph_input_edges=0" "3:graph_vertices=0" "3:graph_edges=0" \
+        "3:graph_components=0" "3:graph_cycles=0" "3:graph_cycle_incidences=0" \
+        "3:graph_max_cycle_length=0" "3:cycles_with_accepted_2lp=0" \
+        "3:cycles_without_accepted_2lp=0" "3:two_lp_edge_source_a_count=0" \
+        "3:cycle_source_a_count=0" "3:cycle_provenance_digest_low=0" \
+        "3:cycle_provenance_digest_high=0" "3:row_candidate_upper=0" \
+        "4:status=slot_relation_limit" "4:attempted=false" "4:assembly_status=not_attempted" \
+        "4:graph_edges=0" "4:graph_cycles=0" "4:valid_full=0" "4:full_sources=0" \
+        "4:partial_sources=0" "4:valid_cycle_rows=0" "4:rows_before_dedup=0" \
+        "4:pretrim_rows=0" "4:row_deficit=1701" "4:selected_rows=0" \
+        "4:selected_full_rows=0" "4:selected_cycle_rows=0" "4:trimmed_rows=0" \
+        "4:source_fingerprint_low=0" "4:source_fingerprint_high=0" \
+        "4:pretrim_fingerprint_low=0" "4:pretrim_fingerprint_high=0" \
+        "4:selected_fingerprint_low=0" "4:selected_fingerprint_high=0" \
+        "5:deterministic_terminal=slot_relation_limit" "6:status=slot_relation_limit" \
+        "6:scale_evidence=terminal" "6:analysis_wall_ns=0") || return 1
+
+    graph_terminal=$(siqs_256a_mutate_transcript "$baseline" \
+        "1:status=graph_edge_limit" "2:status=graph_edge_limit" \
+        "3:status=graph_edge_limit" "3:adapter_accepted_one_lp=7400" \
+        "3:adapter_accepted_two_lp=9000" "3:adapter_rejected=223" \
+        "3:adapter_invalid_two_large_prime_split=222" "3:graph_status=edge_limit" \
+        "3:graph_input_edges=16400" "3:graph_vertices=0" "3:graph_edges=0" \
+        "3:graph_components=0" "3:graph_cycles=0" "3:graph_cycle_incidences=0" \
+        "3:graph_max_cycle_length=0" "3:cycles_with_accepted_2lp=0" \
+        "3:cycles_without_accepted_2lp=0" "3:two_lp_edge_source_a_count=0" \
+        "3:cycle_source_a_count=0" "3:cycle_provenance_digest_low=0" \
+        "3:cycle_provenance_digest_high=0" "3:row_candidate_upper=0" \
+        "4:status=graph_edge_limit" "4:attempted=false" "4:assembly_status=not_attempted" \
+        "4:graph_edges=0" "4:graph_cycles=0" "4:valid_full=0" "4:full_sources=0" \
+        "4:partial_sources=0" "4:valid_cycle_rows=0" "4:rows_before_dedup=0" \
+        "4:pretrim_rows=0" "4:row_deficit=1701" "4:selected_rows=0" \
+        "4:selected_full_rows=0" "4:selected_cycle_rows=0" "4:trimmed_rows=0" \
+        "4:source_fingerprint_low=0" "4:source_fingerprint_high=0" \
+        "4:pretrim_fingerprint_low=0" "4:pretrim_fingerprint_high=0" \
+        "4:selected_fingerprint_low=0" "4:selected_fingerprint_high=0" \
+        "5:deterministic_terminal=graph_edge_limit" "6:status=graph_edge_limit" \
+        "6:scale_evidence=terminal") || return 1
+
+    assembly_terminal=$(siqs_256a_mutate_transcript "$baseline" \
+        "1:status=insufficient_rows" "2:status=insufficient_rows" \
+        "3:status=insufficient_rows" "4:status=insufficient_rows" \
+        "4:valid_cycle_rows=217" "4:rejected_cycle_rows=591" \
+        "4:rows_before_dedup=1600" "4:pretrim_rows=1600" "4:row_deficit=101" \
+        "4:selected_rows=1600" "4:selected_full_rows=1383" \
+        "4:selected_cycle_rows=217" "4:trimmed_rows=0" \
+        "5:deterministic_terminal=insufficient_rows" "6:status=insufficient_rows" \
+        "6:scale_evidence=terminal") || return 1
+
+    validate_siqs_256a_profile_output "$unavailable" 1 6 0 10 || return 1
+    [[ "$SIQS_256A_PROFILE_IDENTITY" == "$baseline_identity" && SIQS_256A_SCALE_PASS -eq 0 ]] || return 1
+    local positive_index positive
+    typeset -a positive_names=(capture_terminal graph_terminal assembly_terminal)
+    typeset -a positives=("$capture_terminal" "$graph_terminal" "$assembly_terminal")
+    for (( positive_index = 1; positive_index <= ${#positives[@]}; ++positive_index )); do
+        positive="${positives[$positive_index]}"
+        if ! validate_siqs_256a_profile_output "$positive" 1 6 0 10 ||
+           (( SIQS_256A_SCALE_PASS != 0 )); then
+            log_fail "SIQS 256-A validator self-check 未接受合法 ${positive_names[$positive_index]}"
+            return 1
+        fi
+    done
+    return 0
+}
+
+run_siqs_256a_profile_process() {
+    local workers="$1"
+    local binary="${BUILD_DIR}/test_siqs_256a_scale_profile"
+    local stdout_file stderr_file
+    stdout_file=$(mktemp "${TMPDIR:-/tmp}/gnfs_siqs_256a_stdout.XXXXXX")
+    stderr_file=$(mktemp "${TMPDIR:-/tmp}/gnfs_siqs_256a_stderr.XXXXXX")
+
+    local start_ms exit_code=0
+    start_ms=$(timer_start_ms)
+    run_with_timeout 1800 /bin/sh -c \
+        'stdout_path=$1; stderr_path=$2; shift 2; exec "$@" >"$stdout_path" 2>"$stderr_path"' \
+        sh "$stdout_file" "$stderr_file" "$binary" --workers "$workers" || exit_code=$?
+    local end_ms
+    end_ms=$(timer_start_ms)
+    local elapsed=$((end_ms - start_ms))
+    TOTAL_TIME_MS=$((TOTAL_TIME_MS + elapsed))
+    (( TOTAL_TESTS += 1 ))
+
+    local line_count blank_count last_byte stdout stderr_bytes stderr_preview=""
+    line_count=$(awk 'END { print NR + 0 }' "$stdout_file")
+    blank_count=$(awk 'NF == 0 { count += 1 } END { print count + 0 }' "$stdout_file")
+    last_byte=$(tail -c 1 "$stdout_file" | od -An -tuC | tr -d ' ')
+    stderr_bytes=$(wc -c < "$stderr_file" | tr -d '[:space:]')
+    stdout=$(<"$stdout_file")
+    if [[ "$stderr_bytes" != "0" ]]; then
+        stderr_preview=$(LC_ALL=C tr '\000' '?' < "$stderr_file" | tail -10)
+    fi
+    SIQS_256A_PROFILE_STDERR="$stderr_preview"
+    rm -f "$stdout_file" "$stderr_file"
+
+    SIQS_256A_PROFILE_OUTPUT=""
+    SIQS_256A_PROFILE_IDENTITY=""
+    SIQS_256A_SCALE_PASS=0
+    if (( exit_code == 124 )); then
+        log_fail "SIQS 256-A workers=${workers} TIMEOUT after 1800s；拒绝任何部分 stdout"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    if (( exit_code != 0 )); then
+        log_fail "SIQS 256-A workers=${workers} 退出码 ${exit_code}；拒绝任何部分 stdout"
+        [[ -n "$SIQS_256A_PROFILE_STDERR" ]] && printf '%s\n' "$SIQS_256A_PROFILE_STDERR"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    if [[ "$stderr_bytes" != "0" ]]; then
+        log_fail "SIQS 256-A 成功进程不得写入 stderr（${stderr_bytes} bytes）"
+        [[ -n "$SIQS_256A_PROFILE_STDERR" ]] && printf '%s\n' "$SIQS_256A_PROFILE_STDERR"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    if ! validate_siqs_256a_profile_output \
+        "$stdout" "$workers" "$line_count" "$blank_count" "$last_byte"; then
+        log_fail "SIQS 256-A stdout 必须是严格有序、闭集且守恒的六行 V3 transcript"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    if (( ! SIQS_256A_SCALE_PASS )); then
+        local summary="${${(@f)stdout}[6]}"
+        log_fail "SIQS 256-A 规模证据未通过: status=$(measurement_record_field "$summary" status), rss_evidence=$(measurement_record_field "$summary" rss_evidence), scale_evidence=$(measurement_record_field "$summary" scale_evidence)"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+
+    (( PASSED_TESTS += 1 ))
+    REPORT_ENTRIES+=("{\"name\":\"test_siqs_256a_scale_profile_w${workers}\",\"status\":\"pass\",\"elapsed_ms\":${elapsed}}")
+    return 0
+}
+
 # Validate the complete V1 contract emitted by the Release-only SQUFOF strategy
 # benchmark. SUMMARY owns the dynamic multiplier count; CASE and MULTIPLIER
 # records must agree with its corpus and deterministic identity fields.
@@ -3165,6 +3943,8 @@ do_list() {
     echo "  ${BULLET} ${CYAN}compare-siqs-live-sieve <band>${RESET} — 同一新构建的 1/2/4 独立进程身份对照"
     echo "  ${BULLET} ${CYAN}profile-siqs-cycle-density <workers>${RESET} — 固定 50 位 1/4/16/64 A cycle-density profile"
     echo "  ${BULLET} ${CYAN}compare-siqs-cycle-density${RESET} — 同一新构建的 1/2/4 profile 独立进程对照"
+    echo "  ${BULLET} ${CYAN}profile-siqs-256a <workers>${RESET} — 固定 50 位 256x32 A scale profile"
+    echo "  ${BULLET} ${CYAN}compare-siqs-256a${RESET} — 同一新构建的 1/2/4 scale 独立进程对照"
 
     echo ""
     echo "${BOLD}Sanitizer 窄通道:${RESET}"
@@ -4131,6 +4911,114 @@ case "$MODE" in
             else
                 (( FAILED_TESTS += 1 ))
                 log_fail "1/2/4 worker 的 cycle-density 确定性身份字段不一致"
+            fi
+        fi
+        show_summary
+        ;;
+
+    profile-siqs-256a)
+        if [[ ${#MODE_ARGS[@]} -ne 1 ]]; then
+            log_fail "用法: $0 profile-siqs-256a <1|2|4>"
+            exit 1
+        fi
+        local _scale_workers="${MODE_ARGS[1]}"
+        case "$_scale_workers" in
+            1|2|4) ;;
+            *) log_fail "workers 必须是 1、2 或 4"; exit 1 ;;
+        esac
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "profile-siqs-256a 只接受 Release 构建 (传入: ${BUILD_TYPE})"
+            exit 1
+        fi
+        BUILD_TYPE="Release"
+        if (( SKIP_BUILD )); then
+            log_fail "profile-siqs-256a 不接受 --no-build；证据必须来自本次请求的新构建"
+            exit 1
+        fi
+        if (( RETRY_EXPLICIT )); then
+            log_fail "profile-siqs-256a 不接受 --retry；自动重试会破坏独立进程证据"
+            exit 1
+        fi
+        if (( TIMEOUT_EXPLICIT )); then
+            log_fail "profile-siqs-256a 的 timeout 固定为 1800s，不接受 --timeout"
+            exit 1
+        fi
+        if ! siqs_256a_validator_self_check; then
+            log_fail "SIQS 256-A validator self-check 失败；拒绝启动构建"
+            exit 1
+        fi
+
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_siqs_256a_scale_profile" ]]; then
+            log_fail "SIQS 256-A scale profile 二进制不存在: ${BUILD_DIR}/test_siqs_256a_scale_profile"
+            exit 1
+        fi
+        log_header "SIQS 固定 50 位 256x32 A scale profile"
+        log_info "Release/NDEBUG；fresh process；workers=${_scale_workers}；timeout=1800s"
+        if run_siqs_256a_profile_process "$_scale_workers"; then
+            printf '%s\n' "$SIQS_256A_PROFILE_OUTPUT"
+            log_success "严格六行 V3 transcript、全守恒与 solver_ready/RSS scale 证据均有效"
+        fi
+        show_summary
+        ;;
+
+    compare-siqs-256a)
+        if [[ ${#MODE_ARGS[@]} -ne 0 ]]; then
+            log_fail "用法: $0 compare-siqs-256a"
+            exit 1
+        fi
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "compare-siqs-256a 只接受 Release 构建 (传入: ${BUILD_TYPE})"
+            exit 1
+        fi
+        BUILD_TYPE="Release"
+        if (( SKIP_BUILD )); then
+            log_fail "compare-siqs-256a 不接受 --no-build；三组证据必须共享本次新构建"
+            exit 1
+        fi
+        if (( RETRY_EXPLICIT )); then
+            log_fail "compare-siqs-256a 不接受 --retry；自动重试会破坏独立进程证据"
+            exit 1
+        fi
+        if (( TIMEOUT_EXPLICIT )); then
+            log_fail "compare-siqs-256a 的每进程 timeout 固定为 1800s，不接受 --timeout"
+            exit 1
+        fi
+        if ! siqs_256a_validator_self_check; then
+            log_fail "SIQS 256-A validator self-check 失败；拒绝启动构建"
+            exit 1
+        fi
+
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_siqs_256a_scale_profile" ]]; then
+            log_fail "SIQS 256-A scale profile 二进制不存在: ${BUILD_DIR}/test_siqs_256a_scale_profile"
+            exit 1
+        fi
+        log_header "SIQS 固定 50 位 256x32 A 1/2/4 worker 对照"
+        log_info "单次 Release 构建；3 个 fresh processes；每进程 timeout=1800s"
+
+        local _scale_compare_ok=1 _scale_compare_worker
+        typeset -A _scale_identities
+        for _scale_compare_worker in 1 2 4; do
+            if run_siqs_256a_profile_process "$_scale_compare_worker"; then
+                _scale_identities[$_scale_compare_worker]="$SIQS_256A_PROFILE_IDENTITY"
+                printf '%s\n' "$SIQS_256A_PROFILE_OUTPUT"
+            else
+                _scale_compare_ok=0
+                (( FAIL_FAST )) && break
+            fi
+        done
+
+        if (( _scale_compare_ok )); then
+            (( TOTAL_TESTS += 1 ))
+            if [[ "${_scale_identities[1]}" == "${_scale_identities[2]}" &&
+                  "${_scale_identities[1]}" == "${_scale_identities[4]}" ]]; then
+                (( PASSED_TESTS += 1 ))
+                REPORT_ENTRIES+=("{\"name\":\"compare_siqs_256a_50\",\"status\":\"pass\",\"elapsed_ms\":0}")
+                log_success "三次均为 scale pass；仅 worker、wall、RSS 和派生 scale_evidence 字段被规范化"
+            else
+                (( FAILED_TESTS += 1 ))
+                log_fail "1/2/4 worker 的 256-A 确定性身份字段不一致"
             fi
         fi
         show_summary
