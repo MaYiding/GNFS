@@ -778,6 +778,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Cofactor COMMAND test_cofactor)
     set_tests_properties(Cofactor PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_candidate_chunk_plan
+        tests/test_candidate_chunk_plan.cpp
+    )
+    target_link_libraries(test_candidate_chunk_plan PRIVATE gnfs_core)
+    add_test(NAME CandidateChunkPlan COMMAND test_candidate_chunk_plan)
+    set_tests_properties(CandidateChunkPlan PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_trial_wheel
         tests/test_trial_wheel.cpp
     )
