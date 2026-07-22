@@ -1148,6 +1148,17 @@ if(GNFS_BUILD_TESTS)
     set_tests_properties(StructuredOOC50dProbe PROPERTIES DISABLED TRUE
         LABELS "stress" TIMEOUT 3600)
 
+    # Fixed real 50-digit candidate corpus. The executable checks every
+    # worker/chunk case against a serial oracle, but timings remain manual
+    # measurement evidence and never enter routine CTest lanes.
+    add_executable(test_candidate_batch_50d_sweep
+        tests/test_candidate_batch_50d_sweep.cpp
+    )
+    target_link_libraries(test_candidate_batch_50d_sweep PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME CandidateBatch50dSweep COMMAND test_candidate_batch_50d_sweep)
+    set_tests_properties(CandidateBatch50dSweep PROPERTIES DISABLED TRUE
+        LABELS "bench;stress" TIMEOUT 900)
+
     # Sequential structured relation reduction and exact GF(2) oracle.
     add_executable(test_structured_filter
         tests/test_structured_filter.cpp

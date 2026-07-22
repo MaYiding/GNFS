@@ -61,6 +61,8 @@
 #                                         # 真实 50 位、有界 production Pipeline 探针
 #   ./scripts/test.sh probe-50d-special-q-workers
 #                                         # 真实 50 位，外层 SQ workers=1/2/4 对照
+#   ./scripts/test.sh sweep-50d-candidate-batch
+#                                         # 固定 4-SQ candidate worker/chunk 扫测
 #   ./scripts/test.sh bench-ram <level>   # 后台 RAM baseline: nohup + /usr/bin/time -l
 #                                         # level=1 (50d ≈2h) / 2 (60d hours+) / 3-5 (大)
 #
@@ -230,6 +232,7 @@ ALL_TEST_BINARIES=(
     test_relation_reduction_engine
     test_structured_ooc_scale
     test_structured_ooc_50d_probe
+    test_candidate_batch_50d_sweep
     test_structured_filter
     test_structured_filter_policy
     test_structured_tree_basis
@@ -589,6 +592,7 @@ TEST_TIMEOUT=(
     test_relation_reduction_engine 10
     test_structured_ooc_scale 180
     test_structured_ooc_50d_probe 3600
+    test_candidate_batch_50d_sweep 900
     test_structured_filter   10
     test_structured_filter_policy 10
     test_structured_tree_basis 10
@@ -766,6 +770,7 @@ TEST_TIER=(
     test_relation_reduction_engine "instant"
     test_structured_ooc_scale "gate"
     test_structured_ooc_50d_probe "stress"
+    test_candidate_batch_50d_sweep "bench"
     test_structured_filter   "instant"
     test_structured_filter_policy "instant"
     test_structured_tree_basis "instant"
@@ -1161,7 +1166,7 @@ run_single_test() {
     local tier="${TEST_TIER[$name]:-unknown}"
 
     # 显示开始运行 (非安静模式下，对慢测试提前告知)
-    if (( !QUIET )) && [[ "$tier" == "gate" || "$tier" == "slow" || "$tier" == "heavy" || "$tier" == "stress" ]]; then
+    if (( !QUIET )) && [[ "$tier" == "gate" || "$tier" == "slow" || "$tier" == "heavy" || "$tier" == "stress" || "$tier" == "bench" ]]; then
         printf "  ${DIM}%s (timeout=%ss, tier=%s)${RESET} " "$name" "$test_timeout" "$tier" >&2
     fi
 
@@ -1178,7 +1183,7 @@ run_single_test() {
     TOTAL_TIME_MS=$((TOTAL_TIME_MS + elapsed))
 
     # 清除心跳点的行
-    if (( !QUIET )) && [[ "$tier" == "gate" || "$tier" == "slow" || "$tier" == "heavy" || "$tier" == "stress" ]]; then
+    if (( !QUIET )) && [[ "$tier" == "gate" || "$tier" == "slow" || "$tier" == "heavy" || "$tier" == "stress" || "$tier" == "bench" ]]; then
         printf "\r\033[K" >&2
     fi
 
@@ -2097,6 +2102,7 @@ do_list() {
     echo "  ${BULLET} ${CYAN}test_25digit${RESET}           — 25-digit 性能基准 (81 bit)"
     echo "  ${BULLET} ${CYAN}test_stress${RESET}            — 压力测试: 50/60-digit (164-197 bit)"
     echo "  ${BULLET} ${CYAN}test_structured_ooc_50d_probe${RESET} — 有界 50 位 production OOC 前缀探针"
+    echo "  ${BULLET} ${CYAN}test_candidate_batch_50d_sweep${RESET} — 固定 50 位 4-SQ candidate 调度扫测"
 
     echo ""
     echo "${BOLD}Sanitizer 窄通道:${RESET}"
@@ -2625,6 +2631,126 @@ case "$MODE" in
         if (( _comparison_ready )); then
             print -r -- "GNFS_EXPERIMENT_COMPARISON_V1 status=pass scope=bounded_50d_special_q_batch_workers max_special_q=${_comparison_max_special_q} max_local_sieve_threads=${_comparison_max_local_sieve_threads} workers=1,2,4 identity_fields=${#_comparison_fields[@]} timing_compared=false rss_compared=false"
             log_success "1/2/4 外层 worker 的 relation、matrix 与生命周期身份一致"
+        fi
+        show_summary
+        ;;
+
+    sweep-50d-candidate-batch)
+        if [[ ${#MODE_ARGS[@]} -gt 1 ]]; then
+            log_fail "用法: $0 sweep-50d-candidate-batch [repetitions]"
+            exit 1
+        fi
+        local _sweep_repetitions="${MODE_ARGS[1]:-3}"
+        if [[ ! "$_sweep_repetitions" =~ ^[0-9]+$ ]] ||
+           (( _sweep_repetitions < 1 || _sweep_repetitions > 9 )); then
+            log_fail "repetitions 必须在 1..9 (传入: ${_sweep_repetitions})"
+            exit 1
+        fi
+        if (( ! BUILD_TYPE_EXPLICIT )); then
+            BUILD_TYPE="Release"
+        fi
+        if (( SKIP_BUILD )); then
+            log_fail "sweep-50d-candidate-batch 不接受 --no-build；性能证据必须由本次请求的构建生成"
+            exit 1
+        fi
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_candidate_batch_50d_sweep" ]]; then
+            log_fail "50 位 candidate sweep 二进制不存在: ${BUILD_DIR}/test_candidate_batch_50d_sweep"
+            exit 1
+        fi
+
+        log_header "固定 50 位 CandidateBatch worker/chunk 扫测"
+        log_info "4 个 production special-Q；workers=1,2,4,6,8,10；chunk=64,128,256,512,1024；repetitions=${_sweep_repetitions}"
+        local _sweep_status=0
+        run_single_test test_candidate_batch_50d_sweep "$_sweep_repetitions" ||
+            _sweep_status=$?
+        if (( _sweep_status == 0 )); then
+            local _sweep_case_count _sweep_summary_count _sweep_records_valid=1
+            _sweep_case_count=$(printf '%s\n' "$RUN_OUTPUT" | awk '
+                index($0, "GNFS_CANDIDATE_SWEEP_CASE_V1 ") == 1 { count += 1 }
+                END { print count + 0 }
+            ')
+            _sweep_summary_count=$(printf '%s\n' "$RUN_OUTPUT" | awk '
+                index($0, "GNFS_CANDIDATE_SWEEP_SUMMARY_V1 ") == 1 { count += 1 }
+                END { print count + 0 }
+            ')
+            if [[ "$_sweep_case_count" != "30" || "$_sweep_summary_count" != "1" ]]; then
+                log_fail "candidate sweep 必须输出 30 条 CASE 和 1 条 SUMMARY；实际为 ${_sweep_case_count}/${_sweep_summary_count}"
+                _sweep_records_valid=0
+            fi
+
+            if (( _sweep_records_valid )); then
+                if ! printf '%s\n' "$RUN_OUTPUT" | awk -v repetitions="$_sweep_repetitions" '
+                    BEGIN {
+                        workers[1] = workers[2] = workers[4] = 1
+                        workers[6] = workers[8] = workers[10] = 1
+                        chunks[64] = chunks[128] = chunks[256] = 1
+                        chunks[512] = chunks[1024] = 1
+                    }
+                    index($0, "GNFS_CANDIDATE_SWEEP_CASE_V1 ") == 1 {
+                        status = scope = worker = chunk = observed_repetitions = ""
+                        for (i = 1; i <= NF; ++i) {
+                            if (index($i, "status=") == 1) status = substr($i, 8)
+                            if (index($i, "scope=") == 1) scope = substr($i, 7)
+                            if (index($i, "worker_cap=") == 1) worker = substr($i, 12)
+                            if (index($i, "chunk_size=") == 1) chunk = substr($i, 12)
+                            if (index($i, "repetitions=") == 1) {
+                                observed_repetitions = substr($i, 13)
+                            }
+                        }
+                        key = worker SUBSEP chunk
+                        if (status != "pass" ||
+                            scope != "fixed_50d_first_production_batch" ||
+                            observed_repetitions != repetitions ||
+                            !(worker in workers) || !(chunk in chunks) || seen[key]++) {
+                            invalid = 1
+                        }
+                        cases += 1
+                    }
+                    END {
+                        for (worker in workers) {
+                            for (chunk in chunks) {
+                                if (seen[worker SUBSEP chunk] != 1) invalid = 1
+                            }
+                        }
+                        if (cases != 30 || invalid) exit 1
+                    }
+                '; then
+                    log_fail "candidate sweep CASE 网格、状态或 repetitions 字段无效"
+                    _sweep_records_valid=0
+                fi
+            fi
+
+            if (( _sweep_records_valid )); then
+                if ! capture_single_measurement_record "GNFS_CANDIDATE_SWEEP_SUMMARY_V1 " \
+                    "candidate sweep"; then
+                    _sweep_records_valid=0
+                else
+                    local _sweep_summary_status _sweep_summary_cases _sweep_summary_repetitions
+                    if ! _sweep_summary_status=$(measurement_record_field \
+                        "$MEASUREMENT_RECORD" status) ||
+                       ! _sweep_summary_cases=$(measurement_record_field \
+                        "$MEASUREMENT_RECORD" cases) ||
+                       ! _sweep_summary_repetitions=$(measurement_record_field \
+                        "$MEASUREMENT_RECORD" repetitions) ||
+                       [[ "$_sweep_summary_status" != "pass" ||
+                          "$_sweep_summary_cases" != "30" ||
+                          "$_sweep_summary_repetitions" != "$_sweep_repetitions" ]]; then
+                        log_fail "candidate sweep SUMMARY 身份字段无效"
+                        _sweep_records_valid=0
+                    fi
+                fi
+            fi
+
+            if (( _sweep_records_valid )); then
+                printf '%s\n' "$RUN_OUTPUT" | awk '
+                    index($0, "GNFS_CANDIDATE_SWEEP_CASE_V1 ") == 1 ||
+                    index($0, "GNFS_CANDIDATE_SWEEP_SUMMARY_V1 ") == 1 { print }
+                '
+                log_success "30 组 worker/chunk 均与串行 oracle 完全一致"
+            else
+                (( FAILED_TESTS += 1 ))
+            fi
         fi
         show_summary
         ;;

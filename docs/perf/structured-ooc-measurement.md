@@ -1,8 +1,8 @@
 # Structured OOC Measurement
 
-本文定义 structured ordinary-OOC route 的可复现资源测量和真实 50 位有界探针。
-这些入口提供证据，不设置性能通过阈值，也不改变 `GNFS_STRUCTURED_FILTER` 的默认
-策略。
+本文定义 structured ordinary-OOC route 的可复现资源测量、真实 50 位有界探针和
+candidate 批次调度扫测。这些入口提供证据，不设置性能通过阈值，也不改变
+`GNFS_STRUCTURED_FILTER` 的默认策略。
 
 ## Measurement Semantics
 
@@ -122,6 +122,69 @@ RSS 字段只作资源观测，不参与 worker identity 比较。
 可能保留页面，因此它不保证低于前两个样本。candidate worker 数为 1 时，顺序路径在
 调用线程执行，ECM thread-local state 可保留到进程结束。任何阶段差值都不能形成
 单调断言、跨平台阈值或 CI 通过条件。
+
+## Candidate Worker and Chunk Sweep
+
+```bash
+./scripts/test.sh sweep-50d-candidate-batch
+./scripts/test.sh sweep-50d-candidate-batch 1
+```
+
+`sweep-50d-candidate-batch` 固定同一个 50 位输入，并通过公开 Pipeline 阶段生成
+polynomial 与 factor base。随后按 production 参数生成首个 4-SQ 批次的完整
+`SieveResult`，整个 sweep 复用该不可变候选语料。该模式不执行 relation filtering、
+matrix 或平方根；计时边界只覆盖 `verify_candidate_batch()`。
+
+测试先用单个 `Cofactorizer` 按 special-Q 和 candidate ordinal 建立串行 oracle。之后
+执行以下笛卡尔积，默认重复 3 次：
+
+- worker cap：`1,2,4,6,8,10`；
+- chunk size：`64,128,256,512,1024`。
+
+每个 case 必须逐字段匹配串行 relation corpus，并匹配 order-sensitive relation digest。
+测试还在每次调用后重算候选语料 digest，拒绝输入 mutation。重复轮次以固定 stride
+轮换起始 case，减少固定顺序偏差；这不能消除温度、调频、allocator 或 thread-local
+state 造成的噪声。
+
+成功运行输出 30 条 `GNFS_CANDIDATE_SWEEP_CASE_V1` 和 1 条
+`GNFS_CANDIDATE_SWEEP_SUMMARY_V1`。case 记录包含 worker cap、实际 worker 数、chunk
+数、候选数、关系数、最小值、中位数、最大 wall time，以及 candidate/relation digest。
+summary 记录包含固定输入身份、Stage A 通道计划和完整 sweep 网格。runner fail closed：
+记录数量、网格唯一性、状态或 repetitions 不符都会让模式失败。
+
+该测试是 disabled `bench;stress` CTest target，只能提供本机固定语料的调度证据。
+wall time 不参与测试通过条件，也不能单独证明其它输入尺寸、完整首轮或其它机器的最优
+production 默认值。修改默认 worker 或 chunk policy 前，应保留原始 30 条 case 记录，
+并结合 64-SQ 有界探针复核端到端 candidate cofactor 时间与结果身份。
+
+### 2026-07-22 Fixed-Batch Result
+
+macOS arm64、10 个逻辑 CPU、Release 构建和 3 次重复得到 2,284 个候选与 188 条
+关系。每格为 `wall_median_ns`，30 组均匹配同一个串行 oracle、candidate digest 和
+relation digest：
+
+| Worker cap | Chunk 64 | Chunk 128 | Chunk 256 | Chunk 512 | Chunk 1024 |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 1,215,956,708 | 1,201,334,542 | 1,201,845,958 | 1,205,810,667 | 1,203,964,750 |
+| 2 | 634,944,625 | 664,563,750 | 640,195,542 | 653,112,000 | 655,523,417 |
+| 4 | 367,986,792 | 377,014,750 | 365,794,083 | 388,611,333 | 555,833,458 |
+| 6 | 290,232,792 | 288,052,584 | 272,003,667 | 391,309,084 | 557,975,542 |
+| 8 | 245,546,708 | 251,104,917 | 287,579,833 | 393,264,625 | 556,367,500 |
+| 10 | 217,915,042 | 218,573,792 | 272,537,208 | 391,530,500 | 556,931,875 |
+
+固定身份为：
+
+```text
+run_fingerprint=4092857329928806441:5852943191461741189
+candidate_digest=5728613215710933158:14682671205889688810
+relation_digest=2999840282289098554:11378523343223252016
+relations_per_special_q=39,13,116,20
+```
+
+10-worker 下，chunk 64 与 128 的中位数相差约 0.3%；二者分别比当前固定 chunk 256
+缩短约 20%。4-worker 和 6-worker 的最优值仍在 chunk 256。该交叉说明单个静态值不
+适合直接按这一个批次推广。下一步应验证按 candidate 数与 worker 数选择 chunk 的有界
+策略，再用 64-SQ 探针比较端到端 cofactor 时间和 identity。
 
 ## Production Telemetry
 

@@ -102,6 +102,14 @@ and RSS as measurements, not CI assertions.
 allocation, invalid limits, and a bounded property grid. The 64-special-Q probe
 remains a manual measurement and does not enter routine CI.
 
+`test_candidate_batch_50d_sweep` is a disabled `bench;stress` CTest target. The
+supported `./scripts/test.sh sweep-50d-candidate-batch [repetitions]` mode builds
+it in Release, generates one real four-special-Q 50-digit candidate corpus, and
+checks all 30 worker/chunk cases against a serial relation oracle. The runner
+requires exactly 30 `GNFS_CANDIDATE_SWEEP_CASE_V1` records and one passing
+`GNFS_CANDIDATE_SWEEP_SUMMARY_V1` record. Wall times are informational and do
+not enter routine CI or a pass threshold.
+
 `test_structured_ooc_scale --rss-case <rows> <workers>` is a manual measurement
 mode, not a CTest performance assertion. Each invocation runs one scenario in a
 fresh process and emits one `GNFS_RESOURCE_V1` record. The normal no-argument
