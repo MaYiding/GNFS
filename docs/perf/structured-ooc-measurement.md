@@ -210,6 +210,32 @@ relations。relation digest、matrix identity 和生命周期字段一致。自�
 更大的真实尺寸。候选策略至少应稳定缩短 3% 的 cofactor 中位时间，理想目标为 5%，
 且尾部时间与 RSS 不得退化。
 
+### SQUFOF Profile and Residue-Filter No-Go
+
+固定 50 位语料的 15 秒 `/usr/bin/sample` profile 显示，active top-of-stack 样本主要
+位于 `SQUFOF::squfof_core()`。它有 21,225 个样本；`__udivmodti4`、代数试除、有理
+试除和 allocator 分别只有 614、166、99 和 11 个。该 profile 将下一轮优化边界从
+调度和分配收敛到 SQUFOF 内核。
+
+第一个原型在平方根前增加精确的模 64 二次剩余过滤。64 个 residue 中只有 12 个可能
+是平方，因此该过滤可以跳过 52 个不可能分支。编译期穷举和单元测试证明它不会拒绝
+平方；50 位 sweep 的 candidate、relation 和 run identity 也保持不变。
+
+性能对照保留两份独立 Release 二进制，并按 baseline、filter、filter、baseline 顺序
+各运行 1 次完整 30-case sweep：
+
+| Metric | Baseline | Filter | Delta |
+|---|---:|---:|---:|
+| Mean process wall | 19.375s | 19.405s | +0.15% |
+| Mean process user CPU | 44.51s | 44.90s | +0.88% |
+| Mean summed case wall | 17.306s | 17.534s | +1.32% |
+| Worker 1, chunk 256 | 1.254s | 1.276s | +1.72% |
+| Worker 10, chunk 256 | 295.806ms | 306.108ms | +3.48% |
+
+额外的 residue 检查没有抵消 Apple M5 上硬件平方根与既有循环的成本，且生产相关
+case 出现退化。该结果未达到 3% 推广门槛，因此原型不合入。后续 SQUFOF 优化必须
+减少实际循环、除法或失败 multiplier 工作量，不能只在平方检测前增加过滤分支。
+
 ## Production Telemetry
 
 生产 Pipeline 的 `structured_filter schema=1` 记录覆盖每个 logical generation。它
