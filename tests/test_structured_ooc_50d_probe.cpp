@@ -1,4 +1,5 @@
 #include "gnfs/api/pipeline.hpp"
+#include "gnfs/cofactor/candidate_batch.hpp"
 #include "gnfs/relation/ooc_relation_store.hpp"
 #include "gnfs/util/msvc_compat.hpp"
 #include "gnfs/util/process.hpp"
@@ -150,6 +151,13 @@ struct ExperimentRecord final {
     size_t local_sieve_thread_budget = 0;
     size_t special_q_batch_peak_assigned_threads = 0;
     size_t special_q_worker_peak_sieve_threads = 0;
+    size_t candidates_total = 0;
+    size_t candidate_batch_peak_workers = 0;
+    size_t candidate_batch_total_chunks = 0;
+    size_t candidate_batch_peak_chunks = 0;
+    size_t candidate_batch_peak_candidates = 0;
+    double candidate_generation_s = 0.0;
+    double candidate_cofactor_s = 0.0;
     size_t rational_fb_columns = 0;
     size_t algebraic_fb_columns = 0;
     size_t base_factor_columns = 0;
@@ -400,6 +408,8 @@ void emit_record(const ExperimentRecord& record) {
         << " scope=bounded_50d_prefix_probe"
         << " claim_boundary=relation_reduction_and_matrix_shape_only"
         << " stop_after=matrix_build"
+        << " pipeline_batch_mode=two_stage_candidate_batch"
+        << " candidate_chunk_size=" << gnfs::cofactor::DEFAULT_CANDIDATE_CHUNK_SIZE
         << " status=" << record.status << " failure_stage=" << record.failure_stage
         << " n_digits=" << PROBE_DIGITS << " n_bits=" << PROBE_BITS
         << " max_special_q=" << record.max_special_q
@@ -413,6 +423,11 @@ void emit_record(const ExperimentRecord& record) {
         << " local_sieve_thread_budget=" << record.local_sieve_thread_budget
         << " special_q_batch_peak_assigned_threads=" << record.special_q_batch_peak_assigned_threads
         << " special_q_worker_peak_sieve_threads=" << record.special_q_worker_peak_sieve_threads
+        << " candidates_total=" << record.candidates_total
+        << " candidate_batch_peak_workers=" << record.candidate_batch_peak_workers
+        << " candidate_batch_total_chunks=" << record.candidate_batch_total_chunks
+        << " candidate_batch_peak_chunks=" << record.candidate_batch_peak_chunks
+        << " candidate_batch_peak_candidates=" << record.candidate_batch_peak_candidates
         << " rational_fb_columns=" << record.rational_fb_columns
         << " algebraic_fb_columns=" << record.algebraic_fb_columns
         << " base_factor_columns=" << record.base_factor_columns
@@ -473,6 +488,8 @@ void emit_record(const ExperimentRecord& record) {
     emit_memory(std::cout, "after_cleanup", record.after_cleanup_memory);
     std::cout << " polynomial_ms=" << record.polynomial_ms
               << " factor_base_ms=" << record.factor_base_ms << " sieve_ms=" << record.sieve_ms
+              << " candidate_generation_s=" << record.candidate_generation_s
+              << " candidate_cofactor_s=" << record.candidate_cofactor_s
               << " matrix_ms=" << record.matrix_ms << " wall_ms=" << record.total_ms
               << " error=" << record.error << '\n';
 }
@@ -810,6 +827,13 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     record.special_q_batch_peak_assigned_threads =
         pipeline_stats.special_q_batch_peak_assigned_threads;
     record.special_q_worker_peak_sieve_threads = pipeline_stats.special_q_worker_peak_sieve_threads;
+    record.candidates_total = pipeline_stats.candidates_total;
+    record.candidate_batch_peak_workers = pipeline_stats.candidate_batch_peak_workers;
+    record.candidate_batch_total_chunks = pipeline_stats.candidate_batch_total_chunks;
+    record.candidate_batch_peak_chunks = pipeline_stats.candidate_batch_peak_chunks;
+    record.candidate_batch_peak_candidates = pipeline_stats.candidate_batch_peak_candidates;
+    record.candidate_generation_s = pipeline_stats.timings.candidate_generation_s;
+    record.candidate_cofactor_s = pipeline_stats.timings.candidate_cofactor_s;
     record.first_round_complete = reduction_stats.input_relations >= record.initial_raw_target;
     record.generation = reduction.generation;
     record.raw_rows = reduction_stats.input_relations;
@@ -896,6 +920,24 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
         (pipeline_stats.local_sieve_thread_budget + final_batch_workers - 1) / final_batch_workers;
     require(pipeline_stats.special_q_worker_peak_sieve_threads == expected_peak_worker_threads,
             "Pipeline per-worker sieve thread assignment differs from the total budget");
+    require(pipeline_stats.candidates_total > 0,
+            "two-stage candidate batch observed no sieve candidates");
+    require(pipeline_stats.candidate_batch_total_chunks > 0,
+            "two-stage candidate batch processed no chunks");
+    require(pipeline_stats.candidate_batch_peak_chunks > 0 &&
+                pipeline_stats.candidate_batch_peak_chunks <=
+                    pipeline_stats.candidate_batch_total_chunks,
+            "candidate batch peak chunks differ from the processed chunk total");
+    require(pipeline_stats.candidate_batch_peak_workers ==
+                std::min(pipeline_stats.local_sieve_thread_budget,
+                         pipeline_stats.candidate_batch_peak_chunks),
+            "candidate batch worker topology differs from the frozen compute budget");
+    require(pipeline_stats.candidate_batch_peak_candidates > 0 &&
+                pipeline_stats.candidate_batch_peak_candidates <= pipeline_stats.candidates_total,
+            "candidate batch peak candidates differ from the total candidate corpus");
+    require(pipeline_stats.timings.candidate_generation_s > 0.0 &&
+                pipeline_stats.timings.candidate_cofactor_s > 0.0,
+            "two-stage candidate batch timings were not recorded");
     require(reduction_stats.structured_incidence.requested_worker_count > 0,
             "structured incidence worker request is zero");
     if (reduction_stats.input_relations > 0) {

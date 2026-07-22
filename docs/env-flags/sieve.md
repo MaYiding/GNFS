@@ -35,7 +35,7 @@ time 从 1.76s 降到 0.82s。该数字用于回归证据，不是跨机器性�
 
 `max_special_q_batch_workers` 和 `max_local_sieve_threads` 是本地 production
 Pipeline 的类型化配置，不是 `GNFS_*` ENV。前者限制每批外层 worker 数，默认值为
-4，合法范围为 `[1, 4]`。后者限制本地筛法计算通道；未配置时使用
+4，合法范围为 `[1, 4]`。后者限制本地 Pipeline 的计算通道；未配置时使用
 `hardware_concurrency`，读取失败时回退到 4。显式值的合法范围为
 `[1, UINT32_MAX]`，Pipeline 构造时再钳制到硬件并发数。CLI 的 `--threads N` 设置
 同一计算通道预算。
@@ -64,13 +64,21 @@ $$
 t_i = \left\lfloor\frac{B}{W}\right\rfloor + [i < B \bmod W]
 $$
 
-因此非空批次满足 $\sum_i t_i = B$，且任意两个 worker 的分配相差不超过 1。每个
-worker 自己持有 `LatticeSieve` 和 `Cofactorizer`；`LatticeSieve::set_max_threads()`
-统一约束 bucket scatter、bucket apply 和 row-major 阶段的内层并行。
+因此非空批次满足 $\sum_i t_i = B$，且任意两个 worker 的分配相差不超过 1。
+Pipeline 按两个不重叠的阶段执行本地批次：
 
-该契约限制可运行的本地筛法计算通道，不限制进程 OS 线程数或 RSS。多通道
+1. sieve 阶段中，每个外层 worker 持有一个 `LatticeSieve`；
+2. 所有 sieve workers 结束并释放 region storage 后，candidate 阶段把每个
+   special-Q 的候选按 256 个一块切分，再由 worker-local `Cofactorizer` 动态领取。
+
+`LatticeSieve::set_max_threads()` 统一约束 bucket scatter、bucket apply 和 row-major
+阶段的内层并行。candidate 阶段最多启动 $\min(B, K)$ 个 workers，其中 $K$ 是当前
+批次的非空 candidate chunks 数。两个阶段顺序复用预算 $B$，不会叠加并行度。
+
+该契约限制本地批次各顺序阶段的计算通道，不限制进程 OS 线程数或 RSS。多通道
 `LatticeSieve` 执行时，外层 worker 线程会阻塞等待内层线程；运行库线程以及显式启用
-的余因子分解嵌套并行也不计入此预算。它不改变
+的余因子分解嵌套并行也不计入此预算。candidate worker 数受该预算约束，但预算仍不
+等于进程的 OS 线程上限。它不改变
 `DistributedSieveConfig::num_workers`，也不约束独立调用的
 `LatticeSieve::sieve_parallel()`。distributed route 不填充本地批次遥测。
 
@@ -87,10 +95,17 @@ special-Q 顺序、批次成员、归约输入或 checkpoint identity。`max_spe
 - `special_q_batch_count`：已执行的本地批次数；
 - `special_q_batch_peak_size`：实际最大批次大小；
 - `special_q_batch_peak_assigned_threads`：单批分配的最大计算通道总数；
-- `special_q_worker_peak_sieve_threads`：单个 worker 获得的最大内层通道数。
+- `special_q_worker_peak_sieve_threads`：单个 worker 获得的最大内层通道数；
+- `candidate_batch_peak_workers`：candidate 阶段实际启动的最大 worker 数；
+- `candidate_batch_total_chunks`：所有本地批次处理的 candidate chunks 总数；
+- `candidate_batch_peak_chunks`：单个批次的最大 candidate chunks 数；
+- `candidate_batch_peak_candidates`：单个批次保留的最大候选数；
+- `timings.candidate_generation_s`：生成候选的累计 wall time；
+- `timings.candidate_cofactor_s`：candidate cofactor 阶段的累计 wall time。
 
-后两个字段在 worker join 后从各 `LatticeSieve` 的实际配置值汇总。它们不只复述
-planner 的预期向量；若预算没有写入 worker，Pipeline 会 fail closed。
+`special_q_batch_peak_assigned_threads` 和 `special_q_worker_peak_sieve_threads` 在
+worker join 后从各 `LatticeSieve` 的实际配置值汇总。它们不只复述 planner 的预期
+向量；若预算没有写入 worker，Pipeline 会 fail closed。
 
 真实 50 位 Release 探针在固定 10 通道预算下对比 workers 1、2 和 4。runner 声明的
 relation、matrix 与生命周期身份集合完全一致；4-SQ 和 64-SQ 两个尺寸都通过。资源值
@@ -101,9 +116,13 @@ relation、matrix 与生命周期身份集合完全一致；4-SQ 和 64-SQ 两�
 - `include/gnfs/core/params.hpp`：默认值和冻结后的 Pipeline 参数；
 - `include/gnfs/api/config.hpp`：配置文件解析、builder、merge 和范围校验；
 - `include/gnfs/sieve/local_thread_budget.hpp`：均衡线程分配纯函数；
-- `src/api/pipeline.cpp`：预算冻结、硬上限批次切分、worker 分配和遥测；
+- `include/gnfs/cofactor/candidate_chunk_plan.hpp`：规范 candidate chunk 规划；
+- `include/gnfs/cofactor/candidate_batch.hpp`：确定性 candidate 执行器；
+- `src/api/pipeline.cpp`：预算冻结、两阶段批次执行、worker 分配和遥测；
 - `tests/test_api.cpp`：类型化配置与公开结果格式；
 - `tests/test_local_sieve_thread_budget.cpp`：分配示例、无效输入和性质网格；
+- `tests/test_candidate_chunk_plan.cpp`：chunk 覆盖、顺序和溢出契约；
+- `tests/test_candidate_batch.cpp`：真实 Special-Q fixture 和跨线程顺序不变性；
 - `tests/test_sieve_checkpoint.cpp`：调度参数不进入数学 run identity；
 - `tests/test_structured_ooc_50d_probe.cpp`：真实 50 位调度与 identity 证据。
 

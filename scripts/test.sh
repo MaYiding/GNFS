@@ -39,7 +39,7 @@
 # 合并门禁:
 #   ./scripts/test.sh gate                # 二级门禁: smoke + 回归 (17/27/40/81-bit)
 #   ./scripts/test.sh gate --quick        # 快速门禁: 仅 smoke
-#   ./scripts/test.sh tsan-relation       # 窄 ThreadSanitizer relation 并发门禁
+#   ./scripts/test.sh tsan-relation       # 窄 ThreadSanitizer 并发门禁
 #
 # 智能模式:
 #   ./scripts/test.sh changed             # 根据 git diff 自动选择受影响模块
@@ -508,12 +508,13 @@ SMOKE_TESTS=(
     test_mpz_mul_parallel
 )
 
-# ThreadSanitizer 窄通道: 只覆盖 structured relation 的有界分片构建、
+# ThreadSanitizer 窄通道: 覆盖候选级 cofactor 调度以及 structured relation 的有界分片构建、
 # 共享 engine dispatch、并发调度、准备、批提交、driver 和故障边界。保持此列表小而明确，
 # 避免把完整 instant 层复制到高成本的 sanitizer 构建。
 typeset -a TSAN_RELATION_TESTS
 TSAN_RELATION_TESTS=(
     test_ordered_parallel_map
+    test_candidate_batch
     test_relation_collector
     test_relation_reduction_engine
     test_structured_parallel_prepare
@@ -1988,7 +1989,7 @@ do_watch() {
 }
 
 # ============================================================
-# 模式: ThreadSanitizer relation 窄通道
+# 模式: ThreadSanitizer 并发窄通道
 # ============================================================
 
 do_tsan_relation() {
@@ -2007,7 +2008,7 @@ do_tsan_relation() {
     REPORT_FILE="${BUILD_DIR}/test_report.json"
     BUILD_TYPE="Debug"
 
-    log_header "ThreadSanitizer relation 窄通道"
+    log_header "ThreadSanitizer 并发窄通道"
     log_info "平台: ${host_os}; 构建目录: ${BUILD_DIR}"
     log_info "串行运行 ${#TSAN_RELATION_TESTS[@]} 个并发边界测试"
 
@@ -2099,7 +2100,7 @@ do_list() {
 
     echo ""
     echo "${BOLD}Sanitizer 窄通道:${RESET}"
-    echo "  ${BULLET} ${CYAN}tsan-relation${RESET} — ${#TSAN_RELATION_TESTS[@]} 个 structured relation 并发边界测试"
+    echo "  ${BULLET} ${CYAN}tsan-relation${RESET} — ${#TSAN_RELATION_TESTS[@]} 个候选与 structured relation 并发边界测试"
     for test in "${TSAN_RELATION_TESTS[@]}"; do
         echo "      ${DIM}${test}${RESET}"
     done
@@ -2487,7 +2488,8 @@ case "$MODE" in
         local _comparison_ready=1
         local _comparison_workers _comparison_dir _comparison_base _comparison_run_status
         local _comparison_effective_budget _comparison_observed_limit
-        local _comparison_observed_peak _comparison_expected_workers
+        local _comparison_observed_peak _comparison_candidate_peak _comparison_candidate_chunks
+        local _comparison_expected_workers _comparison_expected_candidate_workers
         for _comparison_workers in 1 2 4; do
             _comparison_dir=$(mktemp -d \
                 "${TMPDIR:-/tmp}/gnfs_structured_ooc_50d_w${_comparison_workers}.XXXXXX")
@@ -2516,7 +2518,11 @@ case "$MODE" in
                ! _comparison_observed_limit=$(measurement_record_field \
                 "$MEASUREMENT_RECORD" special_q_batch_worker_limit) ||
                ! _comparison_observed_peak=$(measurement_record_field \
-                "$MEASUREMENT_RECORD" special_q_batch_peak_workers); then
+                "$MEASUREMENT_RECORD" special_q_batch_peak_workers) ||
+               ! _comparison_candidate_peak=$(measurement_record_field \
+                "$MEASUREMENT_RECORD" candidate_batch_peak_workers) ||
+               ! _comparison_candidate_chunks=$(measurement_record_field \
+                "$MEASUREMENT_RECORD" candidate_batch_peak_chunks); then
                 log_fail "workers=${_comparison_workers} 记录缺少有效调度拓扑"
                 (( FAILED_TESTS += 1 ))
                 _comparison_ready=0
@@ -2545,6 +2551,17 @@ case "$MODE" in
                 rmdir "$_comparison_dir" 2>/dev/null || true
                 break
             fi
+            _comparison_expected_candidate_workers=$_comparison_effective_budget
+            if (( _comparison_expected_candidate_workers > _comparison_candidate_chunks )); then
+                _comparison_expected_candidate_workers=$_comparison_candidate_chunks
+            fi
+            if (( _comparison_candidate_peak != _comparison_expected_candidate_workers )); then
+                log_fail "workers=${_comparison_workers} 候选批次拓扑不符：peak=${_comparison_candidate_peak}, expected=${_comparison_expected_candidate_workers}"
+                (( FAILED_TESTS += 1 ))
+                _comparison_ready=0
+                rmdir "$_comparison_dir" 2>/dev/null || true
+                break
+            fi
             _comparison_records[$_comparison_workers]="$MEASUREMENT_RECORD"
             print -r -- "$MEASUREMENT_RECORD"
             if rmdir "$_comparison_dir"; then
@@ -2558,10 +2575,13 @@ case "$MODE" in
 
         if (( _comparison_ready )); then
             local -a _comparison_fields=(
-                status claim_boundary stop_after n_digits n_bits max_special_q
+                status claim_boundary stop_after pipeline_batch_mode candidate_chunk_size
+                n_digits n_bits max_special_q
                 special_q_processed special_q_batch_count special_q_batch_peak_size
                 max_local_sieve_threads_requested local_sieve_thread_budget
                 special_q_batch_peak_assigned_threads
+                candidates_total candidate_batch_total_chunks candidate_batch_peak_chunks
+                candidate_batch_peak_candidates
                 rational_fb_columns algebraic_fb_columns base_factor_columns initial_raw_target
                 first_round_complete resume_scope attempted_resume attempted_distributed
                 sge_attempted solver_attempted sqrt_attempted factorization_attempted

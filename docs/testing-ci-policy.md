@@ -63,7 +63,7 @@ ASan/UBSan and coverage run only `instant` tests. They already multiply test cos
 
 ## ThreadSanitizer Lane
 
-Run the supported structured-relation race detector with:
+Run the supported candidate and structured-relation race detector with:
 
 ```bash
 ./scripts/test.sh tsan-relation
@@ -72,6 +72,7 @@ Run the supported structured-relation race detector with:
 The runner uses a dedicated `build-tsan-relation` Debug directory, disables native-architecture tuning, enables `GNFS_ENABLE_TSAN`, and builds only these targets:
 
 - `test_ordered_parallel_map`
+- `test_candidate_batch`
 - `test_relation_collector`
 - `test_relation_reduction_engine`
 - `test_structured_parallel_prepare`
@@ -116,5 +117,5 @@ When adding or changing tests:
 - Add matching entries to `TEST_TIMEOUT` and `TEST_TIER`.
 - Put the test in `SMOKE_TESTS` only if it is pure `instant` and does not run a real GNFS pipeline.
 - Put real pipeline tests in `MODULE_SLOW_TESTS` or a dedicated mode.
-- For structured-relation concurrency changes, run `./scripts/test.sh tsan-relation` on a supported toolchain.
+- For candidate or structured-relation concurrency changes, run `./scripts/test.sh tsan-relation` on a supported toolchain.
 - Re-run at least `./scripts/test.sh list`, `ctest --show-only=json-v1`, and the affected local test subset.

@@ -11,8 +11,10 @@
 
 namespace gnfs::cofactor {
 
+inline constexpr size_t DEFAULT_CANDIDATE_CHUNK_SIZE = 256;
+
 struct CandidateBatchOptions final {
-    size_t max_candidates_per_chunk = 256;
+    size_t max_candidates_per_chunk = DEFAULT_CANDIDATE_CHUNK_SIZE;
     uint32_t max_workers = 1;
 };
 

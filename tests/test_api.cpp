@@ -461,6 +461,12 @@ bool test_result_to_json() {
     r.stats.local_sieve_thread_budget = 8;
     r.stats.special_q_batch_peak_assigned_threads = 8;
     r.stats.special_q_worker_peak_sieve_threads = 4;
+    r.stats.candidate_batch_peak_workers = 4;
+    r.stats.candidate_batch_total_chunks = 41;
+    r.stats.candidate_batch_peak_chunks = 17;
+    r.stats.candidate_batch_peak_candidates = 4096;
+    r.stats.timings.candidate_generation_s = 0.25;
+    r.stats.timings.candidate_cofactor_s = 0.5;
 
     auto json = r.to_json();
     assert(json.find("\"success\": true") != std::string::npos);
@@ -472,7 +478,13 @@ bool test_result_to_json() {
         json.find("\"special_q_batch_peak_size\": 4") == std::string::npos ||
         json.find("\"local_sieve_thread_budget\": 8") == std::string::npos ||
         json.find("\"special_q_batch_peak_assigned_threads\": 8") == std::string::npos ||
-        json.find("\"special_q_worker_peak_sieve_threads\": 4") == std::string::npos) {
+        json.find("\"special_q_worker_peak_sieve_threads\": 4") == std::string::npos ||
+        json.find("\"candidate_batch_peak_workers\": 4") == std::string::npos ||
+        json.find("\"candidate_batch_total_chunks\": 41") == std::string::npos ||
+        json.find("\"candidate_batch_peak_chunks\": 17") == std::string::npos ||
+        json.find("\"candidate_batch_peak_candidates\": 4096") == std::string::npos ||
+        json.find("\"candidate_generation_s\": 0.25") == std::string::npos ||
+        json.find("\"candidate_cofactor_s\": 0.5") == std::string::npos) {
         return false;
     }
     return true;
@@ -734,7 +746,13 @@ bool test_pipeline_step_by_step() {
     if (pipeline.stats().local_sieve_thread_budget != 1 ||
         pipeline.stats().special_q_batch_peak_assigned_threads != 1 ||
         pipeline.stats().special_q_worker_peak_sieve_threads != 1 ||
-        pipeline.stats().special_q_batch_peak_workers != 1) {
+        pipeline.stats().special_q_batch_peak_workers != 1 ||
+        pipeline.stats().candidate_batch_peak_workers != 1 ||
+        pipeline.stats().candidate_batch_total_chunks == 0 ||
+        pipeline.stats().candidate_batch_peak_chunks == 0 ||
+        pipeline.stats().candidate_batch_peak_candidates == 0 ||
+        pipeline.stats().timings.candidate_generation_s <= 0.0 ||
+        pipeline.stats().timings.candidate_cofactor_s <= 0.0) {
         std::cout << "(Pipeline did not apply its one-lane local sieve budget) ";
         return false;
     }

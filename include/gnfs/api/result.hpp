@@ -17,6 +17,8 @@ struct PhaseTimings {
     double poly_s      = 0.0;
     double fb_s        = 0.0;
     double sieve_s     = 0.0;
+    double candidate_generation_s = 0.0;
+    double candidate_cofactor_s = 0.0;
     double filter_s    = 0.0;
     double linalg_s    = 0.0;
     double sqrt_s      = 0.0;
@@ -51,6 +53,10 @@ struct FactorStats {
     size_t local_sieve_thread_budget = 0;
     size_t special_q_batch_peak_assigned_threads = 0;
     size_t special_q_worker_peak_sieve_threads = 0;
+    size_t candidate_batch_peak_workers = 0;
+    size_t candidate_batch_total_chunks = 0;
+    size_t candidate_batch_peak_chunks = 0;
+    size_t candidate_batch_peak_candidates = 0;
     size_t candidates_total = 0;
     size_t relations_found = 0;
     size_t full_relations = 0;
@@ -128,6 +134,8 @@ struct FactorResult {
         os << "    \"poly_s\": " << stats.timings.poly_s << ",\n";
         os << "    \"fb_s\": " << stats.timings.fb_s << ",\n";
         os << "    \"sieve_s\": " << stats.timings.sieve_s << ",\n";
+        os << "    \"candidate_generation_s\": " << stats.timings.candidate_generation_s << ",\n";
+        os << "    \"candidate_cofactor_s\": " << stats.timings.candidate_cofactor_s << ",\n";
         os << "    \"filter_s\": " << stats.timings.filter_s << ",\n";
         os << "    \"linalg_s\": " << stats.timings.linalg_s << ",\n";
         os << "    \"sqrt_s\": " << stats.timings.sqrt_s << ",\n";
@@ -154,6 +162,14 @@ struct FactorResult {
            << stats.special_q_batch_peak_assigned_threads << ",\n";
         os << "    \"special_q_worker_peak_sieve_threads\": "
            << stats.special_q_worker_peak_sieve_threads << ",\n";
+        os << "    \"candidate_batch_peak_workers\": " << stats.candidate_batch_peak_workers
+           << ",\n";
+        os << "    \"candidate_batch_total_chunks\": " << stats.candidate_batch_total_chunks
+           << ",\n";
+        os << "    \"candidate_batch_peak_chunks\": " << stats.candidate_batch_peak_chunks
+           << ",\n";
+        os << "    \"candidate_batch_peak_candidates\": " << stats.candidate_batch_peak_candidates
+           << ",\n";
         os << "    \"candidates_total\": " << stats.candidates_total << ",\n";
         os << "    \"relations_found\": " << stats.relations_found << ",\n";
         os << "    \"full_relations\": " << stats.full_relations << ",\n";
@@ -244,6 +260,11 @@ struct FactorResult {
         os << "  Special-Q batch peak assigned lanes: "
            << stats.special_q_batch_peak_assigned_threads << "\n";
         os << "  Special-Q worker peak sieve lanes: " << stats.special_q_worker_peak_sieve_threads
+           << "\n";
+        os << "  Candidate batch peak workers: " << stats.candidate_batch_peak_workers << "\n";
+        os << "  Candidate batch total chunks: " << stats.candidate_batch_total_chunks << "\n";
+        os << "  Candidate batch peak chunks: " << stats.candidate_batch_peak_chunks << "\n";
+        os << "  Candidate batch peak candidates: " << stats.candidate_batch_peak_candidates
            << "\n";
         os << "  Candidates tested: " << stats.candidates_total << "\n";
         os << "  Relations found: " << stats.relations_found << "\n";

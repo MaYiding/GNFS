@@ -56,7 +56,7 @@ jobs:
           --timeout 300
 
   tsan:
-    name: ThreadSanitizer (structured relation)
+    name: ThreadSanitizer (candidate and structured relation)
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -70,7 +70,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y clang libgmp-dev libntl-dev zsh
 
-    - name: Run narrow structured-relation lane under ThreadSanitizer
+    - name: Run narrow concurrency lane under ThreadSanitizer
       env:
         CC: clang
         CXX: clang++

@@ -2,6 +2,7 @@
 
 #include <gnfs/api/detail/solver_handoff.hpp>
 
+#include <gnfs/cofactor/candidate_batch.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/cofactor/ecm.hpp>
 #include <gnfs/factor_base/builder.hpp>
@@ -32,6 +33,7 @@
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/util/bit_intrin.hpp>
+#include <gnfs/util/ordered_parallel_map.hpp>
 #include <gnfs/util/process.hpp>
 #include <gnfs/util/process_memory.hpp>
 #include <gnfs/util/temp_path.hpp>
@@ -1131,6 +1133,12 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     stats_.local_sieve_thread_budget = 0;
     stats_.special_q_batch_peak_assigned_threads = 0;
     stats_.special_q_worker_peak_sieve_threads = 0;
+    stats_.candidate_batch_peak_workers = 0;
+    stats_.candidate_batch_total_chunks = 0;
+    stats_.candidate_batch_peak_chunks = 0;
+    stats_.candidate_batch_peak_candidates = 0;
+    stats_.timings.candidate_generation_s = 0.0;
+    stats_.timings.candidate_cofactor_s = 0.0;
 
     // Sieve params
     sieve::SieveParams sieve_params;
@@ -1554,9 +1562,11 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
             if (sq_batch.empty())
                 break;
 
-            // Parallel sieve: each thread gets its own LatticeSieve + Cofactorizer
-            std::vector<std::vector<Relation>> batch_relations(sq_batch.size());
-            std::vector<size_t> batch_candidates(sq_batch.size(), 0);
+            // Stage 1 retains one result per canonical special-Q slot. Sieve
+            // arrays are worker-local and are destroyed before candidate-level
+            // cofactor work begins, so the two parallel regions never overlap.
+            std::vector<sieve::SieveResult> batch_sieve_results(sq_batch.size());
+            std::vector<std::exception_ptr> batch_sieve_errors(sq_batch.size());
             std::atomic<size_t> next_sq_idx{0};
 
             // Divide the total compute-lane budget across the active outer
@@ -1579,37 +1589,45 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                 local_sieve.set_max_threads(thread_plan.threads_per_worker[worker_index]);
                 configured_sieve_threads[worker_index] = local_sieve.configured_max_threads();
                 local_sieve.set_adaptive_manager(&adaptive_mgr);
-                cofactor::Cofactorizer local_cofac(ctx, fb, cofac_config);
+                size_t special_q_processed = 0;
 
                 while (true) {
                     size_t idx = next_sq_idx.fetch_add(1, std::memory_order_relaxed);
                     if (idx >= sq_batch.size())
                         break;
 
-                    auto sieve_result = local_sieve.sieve_special_q(sq_batch[idx]);
-                    batch_candidates[idx] = sieve_result.candidates.size();
-
-                    // Cofactorize all candidates for this SQ
-                    // Reserve: ~10-25% candidates yield valid rel post-cofac (size band dep).
-                    // Conservative quarter avoids over-reserve.
-                    auto& local_rels = batch_relations[idx];
-                    local_rels.reserve(sieve_result.candidates.size() / 4);
-                    for (const auto& cand : sieve_result.candidates) {
-                        auto rel = local_cofac.verify(cand, sq_batch[idx].q, sq_batch[idx].r);
-                        if (rel)
-                            local_rels.push_back(std::move(*rel));
+                    try {
+                        batch_sieve_results[idx] = local_sieve.sieve_special_q(sq_batch[idx]);
+                    } catch (...) {
+                        batch_sieve_errors[idx] = std::current_exception();
                     }
+                    ++special_q_processed;
                 }
+                return special_q_processed;
             };
 
             // Launch outer batch workers. The lane assignment above bounds
-            // their combined local sieve compute parallelism.
-            std::vector<std::thread> threads;
-            threads.reserve(n_workers);
-            for (size_t t = 0; t < n_workers; ++t)
-                threads.emplace_back(sieve_worker, t);
-            for (auto& t : threads)
-                t.join();
+            // their combined local sieve compute parallelism. Indexed worker
+            // outcomes also prevent an exception from terminating the process.
+            const auto candidate_generation_started = std::chrono::high_resolution_clock::now();
+            const auto sieve_worker_summaries = util::ordered_parallel_map<size_t>(
+                n_workers, static_cast<uint32_t>(n_workers), sieve_worker);
+            size_t completed_special_q = 0;
+            for (const size_t worker_count : sieve_worker_summaries) {
+                completed_special_q += worker_count;
+            }
+            if (completed_special_q != sq_batch.size()) {
+                throw std::logic_error("local sieve batch did not process every special-Q");
+            }
+            for (const auto& error : batch_sieve_errors) {
+                if (error) {
+                    std::rethrow_exception(error);
+                }
+            }
+            stats_.timings.candidate_generation_s +=
+                std::chrono::duration<double>(std::chrono::high_resolution_clock::now() -
+                                              candidate_generation_started)
+                    .count();
 
             size_t configured_thread_total = 0;
             size_t configured_worker_peak = 0;
@@ -1627,10 +1645,40 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
             stats_.special_q_worker_peak_sieve_threads =
                 std::max(stats_.special_q_worker_peak_sieve_threads, configured_worker_peak);
 
-            // Collect results
-            for (size_t i = 0; i < sq_batch.size(); ++i) {
-                candidates_total += batch_candidates[i];
-                for (auto& rel : batch_relations[i])
+            // Stage 2 reuses the complete compute-lane budget after every
+            // LatticeSieve has been destroyed. Results are folded by special-Q
+            // and candidate ordinal, independent of worker completion order.
+            cofactor::CandidateBatchOptions cofactor_batch_options;
+            cofactor_batch_options.max_workers = static_cast<uint32_t>(local_sieve_thread_budget);
+            const auto candidate_cofactor_started = std::chrono::high_resolution_clock::now();
+            auto cofactor_batch = cofactor::verify_candidate_batch(
+                ctx, fb, cofac_config, batch_sieve_results, cofactor_batch_options);
+            stats_.timings.candidate_cofactor_s +=
+                std::chrono::duration<double>(std::chrono::high_resolution_clock::now() -
+                                              candidate_cofactor_started)
+                    .count();
+
+            stats_.candidate_batch_peak_workers =
+                std::max(stats_.candidate_batch_peak_workers, cofactor_batch.workers_used);
+            stats_.candidate_batch_peak_chunks =
+                std::max(stats_.candidate_batch_peak_chunks, cofactor_batch.planned_chunks);
+            stats_.candidate_batch_peak_candidates =
+                std::max(stats_.candidate_batch_peak_candidates, cofactor_batch.total_candidates);
+            if (cofactor_batch.planned_chunks >
+                std::numeric_limits<size_t>::max() - stats_.candidate_batch_total_chunks) {
+                throw std::overflow_error("cofactor chunk total exceeds size_t");
+            }
+            stats_.candidate_batch_total_chunks += cofactor_batch.planned_chunks;
+            if (cofactor_batch.total_candidates >
+                std::numeric_limits<size_t>::max() - candidates_total) {
+                throw std::overflow_error("candidate total exceeds size_t");
+            }
+            candidates_total += cofactor_batch.total_candidates;
+
+            // Preserve the historical collector order: special-Q first, then
+            // candidate order within that special-Q.
+            for (auto& relations : cofactor_batch.relations_by_special_q) {
+                for (auto& rel : relations)
                     collector.add(std::move(rel));
             }
             sq_count += sq_batch.size();

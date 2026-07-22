@@ -93,8 +93,10 @@ factorization_attempted=false
 
 `first_round_complete` 只在 raw relation count 达到初始 raw target 时为 true。报告还
 包含 hard cap、请求与冻结后的计算通道预算、批次 worker 配置、单批总通道和单 worker
-峰值、raw/output digest 与 rows、矩阵 rows/columns、row mapping identity、有符号
-row-column delta、nonzeros、wall time 和 process RSS。runner 使用独立临时目录；
+峰值、两阶段 candidate 模式、固定 chunk size、candidate worker/chunk/corpus 统计、
+raw/output digest 与 rows、矩阵 rows/columns、row mapping identity、有符号 row-column
+delta、nonzeros、wall time 和 process RSS。`candidate_generation_s` 与
+`candidate_cofactor_s` 分别记录两个阶段的累计 wall time。runner 使用独立临时目录；
 成功后只在目录为空时执行 `rmdir`，失败或生命周期异常时保留目录供诊断。
 
 ## Production Telemetry
@@ -267,3 +269,43 @@ output relations 和 `16 x 22660` full matrix，摘要与生命周期身份不�
 这些现象说明 lifetime peak 对分配器和进程布局敏感，不能据此建立单调预算模型或 CI
 阈值。可复现契约是计算通道上限、均衡分配和 bit-for-bit 结果身份；资源值仅作本机
 调优证据。
+
+## 2026-07-22 Two-Stage Candidate Work Stealing
+
+Pipeline 随后把本地批次拆成两个不重叠阶段。第一阶段只生成每个 special-Q 的
+`SieveResult`；第二阶段把整个批次的候选按 256 个一块切分，由 worker-local
+`Cofactorizer` 动态领取。第二阶段复用完整的 10 通道预算，不受 outer worker cap
+限制。每个 chunk 写入独立槽位，主线程再按 special-Q 和 candidate 原始顺序归并。
+
+4-SQ 对照均得到 2,284 个候选和 10 个 chunks。candidate 阶段实际使用 10 个
+workers。188 条 raw relations、两个 corpus digests、`0 x 22660` full matrix 和工件
+生命周期身份与上一节完全一致：
+
+| Outer workers | Peak RSS | Sieve-end current | Candidate generation | Candidate cofactor | Sieve wall |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 82,870,272 bytes | 82,526,208 bytes | 0.073s | 0.312s | 0.394s |
+| 2 | 143,998,976 bytes | 143,671,296 bytes | 0.068s | 0.296s | 0.370s |
+| 4 | 239,599,616 bytes | 239,288,320 bytes | 0.072s | 0.333s | 0.413s |
+
+相对上一节的统一预算基线，4-SQ Phase 3 wall 分别缩短约 3.5、2.3 和 2.1 倍；表中的
+`Sieve wall` 是历史兼容字段，包含 candidate generation、cofactor 和少量批次开销，
+不是单独的筛核计时。在表中这一次 fresh-process 记录里，4-worker peak RSS 增加约
+5.4%，另外两个 topology 略降；复跑可能改变方向和幅度，因此不把该差值视为稳定收益
+或回归。两阶段不会同时保留 sieve region 与活跃 cofactor workers，但分配器仍可能
+保留已释放的线程局部 arena；因此不能把顺序阶段理解为 RSS 相加或取最大值的简单模型。
+
+64-SQ 对照覆盖 16 个 production batches。三组都处理 118,311 个候选和 499 个
+chunks，单批最多 29,675 个候选；candidate 阶段峰值均为 10 个 workers。输出仍为
+6,047 条 raw relations、16 条 output relations 和 `16 x 22660` full matrix，raw 与
+output digests 沿用上一节的固定值：
+
+| Outer workers | Peak RSS | Sieve-end current | Candidate generation | Candidate cofactor | Sieve wall |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 110,034,944 bytes | 108,232,704 bytes | 1.171s | 11.950s | 13.168s |
+| 2 | 202,227,712 bytes | 175,652,864 bytes | 1.116s | 12.091s | 13.247s |
+| 4 | 316,817,408 bytes | 303,546,368 bytes | 1.087s | 11.906s | 13.038s |
+
+相对统一预算基线，64-SQ Phase 3 wall 分别缩短约 5.3、3.7 和 3.5 倍。在该次记录中，
+outer worker 数主要影响候选生成阶段的内存布局；占主导的 cofactor 阶段始终使用同一
+预算，因此三组总时间接近。该证据仍是 macOS arm64、10 个逻辑 CPU 上的 bounded
+prefix，不能推断完整首轮或其它机器的最优 chunk size 或 candidate worker cap。
