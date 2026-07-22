@@ -61,6 +61,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `merge_partials` | `siqs.hpp` ~line 994 | Iterative greedy LP merge — 1LP pairs plus 2LP cycle finding |
 | `normalize_two_large_prime` | `two_large_prime.hpp` | Exact, deterministic-prime validation for a candidate 2LP split |
 | `build_two_large_prime_cycle_basis` | `two_large_prime_graph.hpp` | Deterministic fundamental-cycle oracle over the 1LP/2LP multigraph |
+| `materialize_two_large_prime_cycle` | `two_large_prime_materializer.hpp` | Wide, checked cycle arithmetic and exact LP degree/2 accounting |
 | `dense_gauss_left_nullspace` | `siqs.hpp` ~line 1130 | Word-packed dense GF(2) Gaussian elimination |
 | `solve_matrix` | `siqs.hpp` ~line 1231 | Dense path ≤100K cols, otherwise `linalg::BlockLanczos` |
 | `try_extract` / `try_extract_with_combos` | `siqs.hpp` ~line 1270 | Per-dependency factor extraction with random XOR retry |
@@ -93,11 +94,11 @@ The crucial knobs by digit band:
   paid back via `small_contrib` in the threshold computation
 
 Two-large-prime collection and the legacy greedy merge remain disabled by
-setting `lp_bound_sq = 0`. Exact split normalization and a deterministic
-fundamental-cycle oracle are available as isolated, tested boundaries, but are
-not yet connected to production relation materialization. Re-enabling also
-requires wide exponent accumulation, exact large-prime square-root accounting,
-congruence checks, and re-validation across the 50-90 digit band.
+setting `lp_bound_sq = 0`. Exact split normalization, deterministic cycle
+selection, and wide checked cycle materialization are available as isolated,
+tested boundaries, but are not yet connected to production relations.
+Re-enabling still requires a stable raw-partial adapter, full congruence checks,
+and re-validation across the 50-90 digit band.
 
 ## Two-Large-Prime Re-enablement Plan
 
@@ -144,9 +145,9 @@ SIQS's `L_N(1/2, 1)`.
 
 ## Known Limitations
 
-- **2LP cofactor handling is gated off** (`lp_bound_sq = 0`); normalization and
-  cycle selection are staged, while exact cycle materialization and extraction
-  validation remain prerequisites for production use
+- **2LP cofactor handling is gated off** (`lp_bound_sq = 0`); normalization,
+  cycle selection, and materialization are staged, while the stable production
+  adapter and extraction congruence gate remain prerequisites
 - **Beyond ~57 digits, extraction failures dominate** in current calibration.
   The 60-digit band needs FB and threshold tuning before being declared
   production-ready. Use GNFS for ≥60 digits until then
