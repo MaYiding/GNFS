@@ -116,6 +116,15 @@ and stratified split identities, and solves the train-only exact subset DP.
 Its iteration-count promotion gates are deterministic; it does not assert wall
 time and does not change the production schedule.
 
+`test_squfof_budget_corpus` is an `instant`, outcome-blind data contract. It
+compiles the fixed-seed prospective budget corpus, independently verifies the
+prime-factor metadata, and freezes a grouped train/validation/holdout split.
+It deliberately neither includes nor calls SQUFOF, so the inputs and split are
+committed before a budget policy observes their factor or iteration results.
+The paired 3LP rows reproduce caller budgets but are not evidence for the
+natural three-prime distribution; promotion claims must name their caller and
+corpus scope explicitly.
+
 `test_squfof_bench` is a disabled `bench` CTest target. The supported
 `./scripts/test.sh bench-squfof [repetitions]` mode builds it in Release and runs
 the fixed 50-digit SQUFOF strategy corpus. The runner validates every case,

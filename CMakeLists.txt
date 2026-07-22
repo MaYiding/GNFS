@@ -828,6 +828,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SQUFOFStrategyOracle COMMAND test_squfof_strategy_oracle)
     set_tests_properties(SQUFOFStrategyOracle PROPERTIES LABELS "fast" TIMEOUT 60)
 
+    # Outcome-blind prospective corpus and split contract for SQUFOF budget work.
+    add_executable(test_squfof_budget_corpus
+        tests/test_squfof_budget_corpus.cpp
+    )
+    add_test(NAME SQUFOFBudgetCorpus COMMAND test_squfof_budget_corpus)
+    set_tests_properties(SQUFOFBudgetCorpus PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Fixed production-derived SQUFOF strategy corpus. Timings are manual
     # comparison evidence, so this Release-only target stays out of routine CTest lanes.
     add_executable(test_squfof_bench

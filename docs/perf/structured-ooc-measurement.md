@@ -364,6 +364,41 @@ raw relations、16 条 output relations 和相同的 raw/output digest。
 `0000000000000000000000000000000000000008aaaffff7`。策略实验不得新增失败；
 等价微优化还必须保持 factor digest。墙钟时间仅用于交错 A/B/B/A 比较，不进入通过阈值。
 
+### SQUFOF Budget Prospective Corpus V1
+
+旧 V1 在 `max_iterations=20000` 的 10 行中只有 1 个成功 case，不能据此推广按 slot
+缩短预算。统一绝对 cap `10056` 是在旧公开语料上形成的预注册候选：它保持旧语料
+192/192 的原始 factor identity，并把 forward iterations 从 2,584,580 降至
+1,888,500；训练集拟合的 per-slot cap 则在旧 validation/holdout 共丢失 4 个 factor，
+已经判为 no-go。以上数字只用于确定下一轮候选和样本需求，不构成生产推广证据。
+
+[`prospective_squfof_budget_corpus_v1`](../../tests/fixtures/squfof_budget_corpus_v1.hpp)
+在运行任何新 SQUFOF probe 前冻结。固定 SplitMix64 seed
+`0x4255444745545631` 为 low、mid、high 三个 production budget band 各生成 32 个
+不同素数乘积；生成器只因素性、重复输入和结构边界拒绝候选，禁止读取 SQUFOF
+成功、factor、multiplier 或迭代数。每个 `n` 相邻保存 3LP 与普通 2LP 两行，预算为：
+
+| Band | Product range | 3LP budget | normal 2LP budget | Unique `n` |
+|---|---:|---:|---:|---:|
+| Low | `<2^40` | 1000 | 2000 | 32 |
+| Mid | `[2^40, 2^50)` | 2000 | 5000 | 32 |
+| High | `[2^50, 2^62)` | 5000 | 20000 | 32 |
+
+相同 `n` 的两行是一个不可拆分组。每个 band 内只按固定 `n` hash 排序，再以
+train、train、validation、holdout 循环分配；三个 split 分别包含 48/24/24 个唯一
+输入。冻结 identity 为：
+
+| Identity | Low | High |
+|---|---:|---:|
+| Corpus | 16007979797267497993 | 6430637409354473680 |
+| Grouped split | 17722147925989565997 | 4435973663510799258 |
+
+`test_squfof_budget_corpus` 只验证 generator provenance、素因子、乘积、band、caller
+budget、digest 和 split；它刻意不包含 `squfof.hpp`。因此该提交形成输入密封点。
+后续首次 probe 可用于检验已预注册的 `10056` 候选。高位 semiprime 的普通 2LP 行
+是该候选的直接前瞻证据；配对的 3LP 行仅冻结预算接口，不代表自然三素因子输入分布。
+SIQS 的 50000 预算与不同 fallback 链不在此语料范围内。
+
 ### SQUFOF Strategy Matrix V2 and Order No-Go
 
 `test_squfof_strategy_oracle` 对上述 192 项语料和生产 11-slot schedule 生成完整的
