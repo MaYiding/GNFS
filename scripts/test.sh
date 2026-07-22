@@ -63,6 +63,8 @@
 #                                         # 真实 50 位，外层 SQ workers=1/2/4 对照
 #   ./scripts/test.sh sweep-50d-candidate-batch
 #                                         # 固定 4-SQ candidate worker/chunk 扫测
+#   ./scripts/test.sh bench-squfof
+#                                         # 固定 50 位 SQUFOF multiplier/吞吐基准
 #   ./scripts/test.sh bench-ram <level>   # 后台 RAM baseline: nohup + /usr/bin/time -l
 #                                         # level=1 (50d ≈2h) / 2 (60d hours+) / 3-5 (大)
 #
@@ -257,6 +259,7 @@ ALL_TEST_BINARIES=(
     test_edge_cases
     test_integration
     test_squfof
+    test_squfof_bench
     test_brent_pollard_rho
     test_survival_predictor
     test_bucket_sieve
@@ -629,6 +632,7 @@ TEST_TIMEOUT=(
     test_lattice_sieve       180
     test_gnfs_e2e            300
     test_squfof              10
+    test_squfof_bench        120
     test_brent_pollard_rho   60
     test_survival_predictor  30
     test_batch_ecm           60
@@ -807,6 +811,7 @@ TEST_TIER=(
     test_lattice_sieve       "slow"
     test_gnfs_e2e            "slow"
     test_squfof              "instant"
+    test_squfof_bench        "bench"
     test_brent_pollard_rho   "instant"
     test_survival_predictor  "instant"
     test_batch_ecm           "fast"
@@ -1281,6 +1286,328 @@ measurement_record_field() {
             }
         }
         END { if (matches != 1) exit 1 }
+    '
+}
+
+# Validate the complete V1 contract emitted by the Release-only SQUFOF strategy
+# benchmark. SUMMARY owns the dynamic multiplier count; CASE and MULTIPLIER
+# records must agree with its corpus and deterministic identity fields.
+validate_squfof_bench_output() {
+    local expected_build_type="$1"
+    local expected_repetitions="$2"
+
+    printf '%s\n' "$RUN_OUTPUT" | awk \
+        -v expected_build_type="$expected_build_type" \
+        -v expected_repetitions="$expected_repetitions" '
+        function clear_record(key) {
+            for (key in record) delete record[key]
+            for (key in occurrences) delete occurrences[key]
+        }
+        function parse_record(token_index, equals, key, value) {
+            clear_record()
+            for (token_index = 2; token_index <= NF; ++token_index) {
+                equals = index($token_index, "=")
+                if (equals <= 1) {
+                    invalid = 1
+                    continue
+                }
+                key = substr($token_index, 1, equals - 1)
+                value = substr($token_index, equals + 1)
+                if (key !~ /^[A-Za-z][A-Za-z0-9_]*$/ || value == "") {
+                    invalid = 1
+                    continue
+                }
+                record[key] = value
+                if (++occurrences[key] != 1) invalid = 1
+            }
+        }
+        function canonical_decimal(text) {
+            return text == "0" || text ~ /^[1-9][0-9]*$/
+        }
+        function positive_decimal(text) {
+            return text ~ /^[1-9][0-9]*$/
+        }
+        function u64(text, limit, digit_index, actual_digit, limit_digit) {
+            if (!canonical_decimal(text)) return 0
+            if (length(text) < 20) return 1
+            if (length(text) > 20) return 0
+            limit = "18446744073709551615"
+            for (digit_index = 1; digit_index <= 20; ++digit_index) {
+                actual_digit = substr(text, digit_index, 1) + 0
+                limit_digit = substr(limit, digit_index, 1) + 0
+                if (actual_digit < limit_digit) return 1
+                if (actual_digit > limit_digit) return 0
+            }
+            return 1
+        }
+        function valid_bitmap(text, case_count, failure_count,
+                              expected_length, remainder, last_digit,
+                              bitmap_index, digit, population) {
+            if (text !~ /^[0-9a-f]+$/) return 0
+            expected_length = int((case_count + 3) / 4)
+            if (length(text) != expected_length) return 0
+
+            population = 0
+            for (bitmap_index = 1; bitmap_index <= length(text); ++bitmap_index) {
+                digit = substr(text, bitmap_index, 1)
+                population += hex_population[digit]
+            }
+            if (population != failure_count) return 0
+
+            remainder = case_count % 4
+            last_digit = substr(text, length(text), 1)
+            if (remainder == 1 && last_digit !~ /^[01]$/) return 0
+            if (remainder == 2 && last_digit !~ /^[0-3]$/) return 0
+            if (remainder == 3 && last_digit !~ /^[0-7]$/) return 0
+            return 1
+        }
+        BEGIN {
+            case_prefix = "GNFS_SQUFOF_BENCH_CASE_V1 "
+            multiplier_prefix = "GNFS_SQUFOF_BENCH_MULTIPLIER_V1 "
+            summary_prefix = "GNFS_SQUFOF_BENCH_SUMMARY_V1 "
+            expected_scope = "fixed_50d_strategy_corpus"
+            expected_corpus = "fixed_50d_squfof_strategy_v1"
+            expected_claim_boundary = "whole_squfof_factor_call"
+            expected_timing_scope = "factor_calls_plus_preallocated_result_store"
+
+            case_required_count = split("status scope corpus build_type timing_scope timing_asserted diagnostics_timed repetition cases calls successes failures invalid_factors wall_ns corpus_digest_low corpus_digest_high factor_digest_low factor_digest_high success_digest_low success_digest_high failure_digest_low failure_digest_high failure_bitmap_hex schedule_digest_low schedule_digest_high", case_required, " ")
+            multiplier_required_count = split("status scope corpus build_type diagnostics_timed slot multiplier attempts forward_iterations core_hits accepted_hits overflow_skips schedule_digest_low schedule_digest_high", multiplier_required, " ")
+            summary_required_count = split("status scope corpus build_type claim_boundary timing_scope timing_asserted diagnostics_timed cases repetitions measured_calls successes_per_repetition failures_per_repetition invalid_factors wall_min_ns wall_median_ns wall_max_ns multiplier_count corpus_digest_low corpus_digest_high factor_digest_low factor_digest_high success_digest_low success_digest_high failure_digest_low failure_digest_high failure_bitmap_hex schedule_digest_low schedule_digest_high", summary_required, " ")
+            case_identity_count = split("scope corpus build_type timing_scope timing_asserted diagnostics_timed cases successes failures invalid_factors corpus_digest_low corpus_digest_high factor_digest_low factor_digest_high success_digest_low success_digest_high failure_digest_low failure_digest_high failure_bitmap_hex schedule_digest_low schedule_digest_high", case_identity, " ")
+            digest_count = split("corpus_digest_low corpus_digest_high factor_digest_low factor_digest_high success_digest_low success_digest_high failure_digest_low failure_digest_high schedule_digest_low schedule_digest_high", digest_fields, " ")
+
+            hex_population["0"] = 0
+            hex_population["1"] = 1
+            hex_population["2"] = 1
+            hex_population["3"] = 2
+            hex_population["4"] = 1
+            hex_population["5"] = 2
+            hex_population["6"] = 2
+            hex_population["7"] = 3
+            hex_population["8"] = 1
+            hex_population["9"] = 2
+            hex_population["a"] = 2
+            hex_population["b"] = 3
+            hex_population["c"] = 2
+            hex_population["d"] = 3
+            hex_population["e"] = 3
+            hex_population["f"] = 4
+        }
+        index($0, case_prefix) == 1 {
+            if (multiplier_records != 0 || summaries != 0) invalid = 1
+            case_records += 1
+            parse_record()
+            for (field_index = 1; field_index <= case_required_count; ++field_index) {
+                if (occurrences[case_required[field_index]] != 1) invalid = 1
+            }
+
+            repetition = record["repetition"]
+            corpus_cases = record["cases"]
+            successes = record["successes"]
+            failures = record["failures"]
+            if (record["status"] != "pass" || record["scope"] != expected_scope ||
+                record["corpus"] != expected_corpus ||
+                record["build_type"] != expected_build_type ||
+                record["timing_scope"] != expected_timing_scope ||
+                record["timing_asserted"] != "false" ||
+                record["diagnostics_timed"] != "false" ||
+                !positive_decimal(repetition) || repetition + 0 > expected_repetitions ||
+                seen_repetition[repetition]++ || !positive_decimal(corpus_cases) ||
+                !canonical_decimal(successes) || !canonical_decimal(failures) ||
+                successes + failures != corpus_cases + 0 ||
+                record["calls"] != corpus_cases || record["invalid_factors"] != "0" ||
+                !u64(record["wall_ns"]) || record["wall_ns"] == "0" ||
+                !valid_bitmap(record["failure_bitmap_hex"], corpus_cases + 0,
+                              failures + 0)) {
+                invalid = 1
+            }
+            for (field_index = 1; field_index <= digest_count; ++field_index) {
+                if (!u64(record[digest_fields[field_index]])) invalid = 1
+            }
+
+            if (case_records == 1) {
+                for (field_index = 1; field_index <= case_identity_count; ++field_index) {
+                    field = case_identity[field_index]
+                    case_reference[field] = record[field]
+                }
+            } else {
+                for (field_index = 1; field_index <= case_identity_count; ++field_index) {
+                    field = case_identity[field_index]
+                    if (record[field] != case_reference[field]) invalid = 1
+                }
+            }
+            case_wall[repetition + 0] = record["wall_ns"] + 0
+        }
+        index($0, multiplier_prefix) == 1 {
+            if (summaries != 0) invalid = 1
+            multiplier_records += 1
+            parse_record()
+            for (field_index = 1; field_index <= multiplier_required_count; ++field_index) {
+                if (occurrences[multiplier_required[field_index]] != 1) invalid = 1
+            }
+
+            slot = record["slot"]
+            attempts = record["attempts"]
+            core_hits = record["core_hits"]
+            accepted_hits = record["accepted_hits"]
+            overflow_skips = record["overflow_skips"]
+            if (record["status"] != "pass" || record["scope"] != expected_scope ||
+                record["corpus"] != expected_corpus ||
+                record["build_type"] != expected_build_type ||
+                record["diagnostics_timed"] != "false" ||
+                !canonical_decimal(slot) || seen_slot[slot]++ ||
+                !u64(record["multiplier"]) || record["multiplier"] == "0" ||
+                seen_multiplier[record["multiplier"]]++ ||
+                !u64(attempts) || !u64(record["forward_iterations"]) ||
+                !u64(core_hits) || !u64(accepted_hits) || !u64(overflow_skips) ||
+                core_hits + 0 > attempts + 0 || accepted_hits + 0 > core_hits + 0 ||
+                overflow_skips + 0 > case_reference["cases"] + 0 ||
+                attempts + 0 > case_reference["cases"] + 0 ||
+                attempts + overflow_skips > case_reference["cases"] + 0 ||
+                !u64(record["schedule_digest_low"]) ||
+                !u64(record["schedule_digest_high"])) {
+                invalid = 1
+            }
+            accepted_total += accepted_hits + 0
+
+            if (multiplier_records == 1) {
+                multiplier_scope = record["scope"]
+                multiplier_corpus = record["corpus"]
+                multiplier_build_type = record["build_type"]
+                multiplier_diagnostics_timed = record["diagnostics_timed"]
+                schedule_digest_low = record["schedule_digest_low"]
+                schedule_digest_high = record["schedule_digest_high"]
+            } else if (record["scope"] != multiplier_scope ||
+                       record["corpus"] != multiplier_corpus ||
+                       record["build_type"] != multiplier_build_type ||
+                       record["diagnostics_timed"] != multiplier_diagnostics_timed ||
+                       record["schedule_digest_low"] != schedule_digest_low ||
+                       record["schedule_digest_high"] != schedule_digest_high) {
+                invalid = 1
+            }
+        }
+        index($0, summary_prefix) == 1 {
+            summaries += 1
+            parse_record()
+            for (field_index = 1; field_index <= summary_required_count; ++field_index) {
+                if (occurrences[summary_required[field_index]] != 1) invalid = 1
+            }
+
+            if (summaries != 1 || record["status"] != "pass" ||
+                record["scope"] != expected_scope || record["corpus"] != expected_corpus ||
+                record["build_type"] != expected_build_type ||
+                record["claim_boundary"] != expected_claim_boundary ||
+                record["timing_scope"] != expected_timing_scope ||
+                record["timing_asserted"] != "false" ||
+                record["diagnostics_timed"] != "false" ||
+                !positive_decimal(record["cases"]) ||
+                record["repetitions"] != expected_repetitions ||
+                !positive_decimal(record["multiplier_count"]) ||
+                record["multiplier_count"] + 0 > 1024 ||
+                !canonical_decimal(record["successes_per_repetition"]) ||
+                !canonical_decimal(record["failures_per_repetition"]) ||
+                record["successes_per_repetition"] + record["failures_per_repetition"] != record["cases"] + 0 ||
+                record["invalid_factors"] != "0" ||
+                !u64(record["measured_calls"]) ||
+                record["measured_calls"] + 0 != record["cases"] * record["repetitions"] ||
+                !u64(record["wall_min_ns"]) || record["wall_min_ns"] == "0" ||
+                !u64(record["wall_median_ns"]) || record["wall_median_ns"] == "0" ||
+                !u64(record["wall_max_ns"]) || record["wall_max_ns"] == "0" ||
+                record["wall_min_ns"] + 0 > record["wall_median_ns"] + 0 ||
+                record["wall_median_ns"] + 0 > record["wall_max_ns"] + 0 ||
+                !valid_bitmap(record["failure_bitmap_hex"], record["cases"] + 0,
+                              record["failures_per_repetition"] + 0) ||
+                !u64(record["schedule_digest_low"]) ||
+                !u64(record["schedule_digest_high"])) {
+                invalid = 1
+            }
+            for (field_index = 1; field_index <= digest_count; ++field_index) {
+                if (!u64(record[digest_fields[field_index]])) invalid = 1
+            }
+            for (field in record) summary[field] = record[field]
+        }
+        index($0, "GNFS_SQUFOF_BENCH_") == 1 &&
+        index($0, case_prefix) != 1 &&
+        index($0, multiplier_prefix) != 1 &&
+        index($0, summary_prefix) != 1 {
+            invalid = 1
+        }
+        END {
+            if (summaries != 1 || case_records != expected_repetitions ||
+                multiplier_records != summary["multiplier_count"] + 0) {
+                invalid = 1
+            }
+            for (repetition = 1; repetition <= expected_repetitions; ++repetition) {
+                if (seen_repetition[repetition] != 1) invalid = 1
+            }
+            for (slot = 0; slot < summary["multiplier_count"] + 0; ++slot) {
+                if (seen_slot[slot] != 1) invalid = 1
+            }
+
+            if (summary["scope"] != case_reference["scope"] ||
+                summary["corpus"] != case_reference["corpus"] ||
+                summary["build_type"] != case_reference["build_type"] ||
+                summary["timing_scope"] != case_reference["timing_scope"] ||
+                summary["timing_asserted"] != case_reference["timing_asserted"] ||
+                summary["diagnostics_timed"] != case_reference["diagnostics_timed"] ||
+                summary["cases"] != case_reference["cases"] ||
+                summary["successes_per_repetition"] != case_reference["successes"] ||
+                summary["failures_per_repetition"] != case_reference["failures"] ||
+                summary["invalid_factors"] != case_reference["invalid_factors"] ||
+                summary["corpus_digest_low"] != case_reference["corpus_digest_low"] ||
+                summary["corpus_digest_high"] != case_reference["corpus_digest_high"] ||
+                summary["factor_digest_low"] != case_reference["factor_digest_low"] ||
+                summary["factor_digest_high"] != case_reference["factor_digest_high"] ||
+                summary["success_digest_low"] != case_reference["success_digest_low"] ||
+                summary["success_digest_high"] != case_reference["success_digest_high"] ||
+                summary["failure_digest_low"] != case_reference["failure_digest_low"] ||
+                summary["failure_digest_high"] != case_reference["failure_digest_high"] ||
+                summary["failure_bitmap_hex"] != case_reference["failure_bitmap_hex"] ||
+                summary["schedule_digest_low"] != case_reference["schedule_digest_low"] ||
+                summary["schedule_digest_high"] != case_reference["schedule_digest_high"] ||
+                summary["scope"] != multiplier_scope ||
+                summary["corpus"] != multiplier_corpus ||
+                summary["build_type"] != multiplier_build_type ||
+                summary["diagnostics_timed"] != multiplier_diagnostics_timed ||
+                summary["schedule_digest_low"] != schedule_digest_low ||
+                summary["schedule_digest_high"] != schedule_digest_high ||
+                accepted_total != summary["successes_per_repetition"] + 0) {
+                invalid = 1
+            }
+
+            if (case_records == expected_repetitions && expected_repetitions > 0) {
+                wall_min = case_wall[1]
+                wall_max = case_wall[1]
+                for (repetition = 1; repetition <= expected_repetitions; ++repetition) {
+                    sorted_wall[repetition] = case_wall[repetition]
+                    if (case_wall[repetition] < wall_min) wall_min = case_wall[repetition]
+                    if (case_wall[repetition] > wall_max) wall_max = case_wall[repetition]
+                }
+                for (sort_index = 2; sort_index <= expected_repetitions; ++sort_index) {
+                    value = sorted_wall[sort_index]
+                    cursor = sort_index - 1
+                    while (cursor >= 1 && sorted_wall[cursor] > value) {
+                        sorted_wall[cursor + 1] = sorted_wall[cursor]
+                        cursor -= 1
+                    }
+                    sorted_wall[cursor + 1] = value
+                }
+                middle = int(expected_repetitions / 2) + 1
+                if (expected_repetitions % 2 == 1) {
+                    wall_median = sorted_wall[middle]
+                } else {
+                    lower = sorted_wall[middle - 1]
+                    upper = sorted_wall[middle]
+                    wall_median = lower + int((upper - lower) / 2)
+                }
+                if (summary["wall_min_ns"] + 0 != wall_min ||
+                    summary["wall_median_ns"] + 0 != wall_median ||
+                    summary["wall_max_ns"] + 0 != wall_max) {
+                    invalid = 1
+                }
+            }
+            if (invalid) exit 1
+        }
     '
 }
 
@@ -2103,6 +2430,7 @@ do_list() {
     echo "  ${BULLET} ${CYAN}test_stress${RESET}            — 压力测试: 50/60-digit (164-197 bit)"
     echo "  ${BULLET} ${CYAN}test_structured_ooc_50d_probe${RESET} — 有界 50 位 production OOC 前缀探针"
     echo "  ${BULLET} ${CYAN}test_candidate_batch_50d_sweep${RESET} — 固定 50 位 4-SQ candidate 调度扫测"
+    echo "  ${BULLET} ${CYAN}test_squfof_bench${RESET}     — 固定 50 位 SQUFOF multiplier/吞吐基准"
 
     echo ""
     echo "${BOLD}Sanitizer 窄通道:${RESET}"
@@ -2804,6 +3132,63 @@ case "$MODE" in
                 log_success "30 组 worker/chunk 的 Release 构建、计时边界和身份字段均有效"
             else
                 log_fail "candidate sweep CASE/SUMMARY 构建、边界、网格或身份字段无效"
+                (( FAILED_TESTS += 1 ))
+            fi
+        fi
+        show_summary
+        ;;
+
+    bench-squfof)
+        if [[ ${#MODE_ARGS[@]} -gt 1 ]]; then
+            log_fail "用法: $0 bench-squfof [repetitions]"
+            exit 1
+        fi
+        local _squfof_repetitions="${MODE_ARGS[1]:-3}"
+        if [[ ! "$_squfof_repetitions" =~ ^[0-9]+$ ]] ||
+           (( _squfof_repetitions < 1 || _squfof_repetitions > 9 )); then
+            log_fail "repetitions 必须在 1..9 (传入: ${_squfof_repetitions})"
+            exit 1
+        fi
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "bench-squfof 只接受 Release 构建 (传入: ${BUILD_TYPE})"
+            exit 1
+        fi
+        BUILD_TYPE="Release"
+        if (( SKIP_BUILD )); then
+            log_fail "bench-squfof 不接受 --no-build；性能证据必须由本次请求的构建生成"
+            exit 1
+        fi
+        if (( RETRY_COUNT != 0 )); then
+            log_fail "bench-squfof 不接受 --retry；自动重试会破坏独立测量证据"
+            exit 1
+        fi
+
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_squfof_bench" ]]; then
+            log_fail "SQUFOF benchmark 二进制不存在: ${BUILD_DIR}/test_squfof_bench"
+            exit 1
+        fi
+
+        log_header "固定 50 位 SQUFOF multiplier/吞吐基准"
+        log_info "Release；corpus=fixed_50d_squfof_strategy_v1；repetitions=${_squfof_repetitions}；墙钟仅报告、不设阈值"
+        local _squfof_status=0
+        run_single_test test_squfof_bench "$_squfof_repetitions" ||
+            _squfof_status=$?
+        if (( _squfof_status == 0 )); then
+            if validate_squfof_bench_output "$BUILD_TYPE" "$_squfof_repetitions"; then
+                printf '%s\n' "$RUN_OUTPUT" | awk '
+                    index($0, "GNFS_SQUFOF_BENCH_CASE_V1 ") == 1 ||
+                    index($0, "GNFS_SQUFOF_BENCH_MULTIPLIER_V1 ") == 1 ||
+                    index($0, "GNFS_SQUFOF_BENCH_SUMMARY_V1 ") == 1 { print }
+                '
+                capture_single_measurement_record "GNFS_SQUFOF_BENCH_SUMMARY_V1 " \
+                    "SQUFOF benchmark" >/dev/null
+                local _squfof_multiplier_count
+                _squfof_multiplier_count=$(measurement_record_field \
+                    "$MEASUREMENT_RECORD" multiplier_count)
+                log_success "${_squfof_repetitions} 条 CASE、${_squfof_multiplier_count} 条 MULTIPLIER 与 1 条 SUMMARY 身份一致"
+            else
+                log_fail "SQUFOF benchmark CASE/MULTIPLIER/SUMMARY schema 或身份字段无效"
                 (( FAILED_TESTS += 1 ))
             fi
         fi

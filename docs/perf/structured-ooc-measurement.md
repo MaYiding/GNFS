@@ -314,6 +314,56 @@ candidate cofactor 均值从 11.889s 降至 11.716s，改善 1.46%；process wal
 提速，但没有出现超过 3% 的链路退化。四轮均保持 118,311 个 candidates、6,047 条
 raw relations、16 条 output relations 和相同的 raw/output digest。
 
+### SQUFOF Strategy Benchmark Baseline
+
+专用基准将策略筛选从完整 CandidateBatch 扫测中分离。固定
+[`fixed_50d_squfof_strategy_v1`](../../tests/fixtures/squfof_strategy_corpus_v1.hpp)
+包含 192 个 `(n, max_iterations)`，运行时不生成随机数：
+
+- 前 159 项保持固定 50 位 serial oracle 的实际 SQUFOF 调用顺序；
+- 12 项来自 hard-3LP 生产 helper 流；
+- 21 项来自现有 seed-42、60 位 ECM 测试语料，并使用生产可达预算。
+
+前一来源受 50 位 `B²` 上界限制，不能覆盖高位 cofactor。后两个来源明确作为补充，
+而不宣称来自同一无偏生产分布。语料覆盖如下：
+
+| Dimension | Value | Cases |
+|---|---:|---:|
+| Bit band | `<2^40` | 65 |
+| Bit band | `2^40`–`2^50` | 100 |
+| Bit band | `2^50`–`2^62` | 27 |
+| Iteration cap | 1000 | 6 |
+| Iteration cap | 2000 | 59 |
+| Iteration cap | 5000 | 117 |
+| Iteration cap | 20000 | 10 |
+
+`./scripts/test.sh bench-squfof 3` 只计普通 `SQUFOF::factor()` 调用和预分配结果写入。
+热身、哈希、合法性检查和 diagnostics pass 均在计时外。2026-07-22 的首个 Release
+基线通过 3 条 CASE、11 条 MULTIPLIER 和 1 条 SUMMARY 的 fail-closed 校验：
+
+| Metric | Baseline |
+|---|---:|
+| Cases per repetition | 192 |
+| Successes / bounded failures / invalid | 166 / 26 / 0 |
+| Wall min / median / max | 1.405s / 1.407s / 1.417s |
+| Untimed forward iterations | 2,584,580 |
+| Accepted by `k=1 / 15 / 3 / 5` | 84 / 47 / 18 / 9 |
+| Accepted by `k=7 / 11 / 21 / 35` | 3 / 1 / 2 / 2 |
+
+当前 identity 供后续独立二进制 A/B 使用：
+
+| Identity | Low | High |
+|---|---:|---:|
+| Corpus | 11585003526353080300 | 16066302168872607439 |
+| Schedule | 12597619067809015512 | 9409246306371504405 |
+| Factor result | 18063867608300455638 | 15891697325343906257 |
+| Success set | 5104749477666353807 | 5452693313291758656 |
+| Failure set | 13060603425789684408 | 2814528182299744335 |
+
+失败位图为
+`0000000000000000000000000000000000000008aaaffff7`。策略实验不得新增失败；
+等价微优化还必须保持 factor digest。墙钟时间仅用于交错 A/B/B/A 比较，不进入通过阈值。
+
 ## Production Telemetry
 
 生产 Pipeline 的 `structured_filter schema=1` 记录覆盖每个 logical generation。它

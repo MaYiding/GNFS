@@ -1,7 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 namespace gnfs::cofactor {
@@ -16,43 +18,151 @@ namespace gnfs::cofactor {
 /// with discriminant Δ = 4kN (for multiplier k). Uses continued fraction
 /// expansion of √(kN) to find a proper square form, then extract factor.
 class SQUFOF {
+private:
+    // Single source of truth for the production order. Diagnostics derive
+    // both their slot count and their multiplier labels from this schedule.
+    inline static constexpr auto multiplier_schedule_ = std::to_array<uint64_t>({
+        1, 3 * 5, 3, 5, 7, 11, 3 * 7, 3 * 11, 5 * 7, 5 * 11, 7 * 11,
+    });
+
 public:
+    struct MultiplierDiagnostics {
+        uint64_t multiplier = 0;
+        uint64_t attempts = 0;
+        uint64_t forward_iterations = 0;
+        uint64_t core_hits = 0;
+        uint64_t accepted_hits = 0;
+        uint64_t overflow_skips = 0;
+    };
+
+    inline static constexpr size_t diagnostic_slot_count = multiplier_schedule_.size();
+
+    /// Caller-owned cumulative counters for factor_with_diagnostics().
+    ///
+    /// This object is intentionally unsynchronized. Reuse it sequentially to
+    /// accumulate observations, or call reset() for a fresh sample. Multiplier
+    /// slots stay untouched by preprocessing fast paths:
+    ///   - n <= 1 increments trivial_input_hits;
+    ///   - every even n, including an even square, increments even_fast_path_hits;
+    ///   - only odd squares increment square_fast_path_hits.
+    struct Diagnostics {
+        uint64_t factor_calls = 0;
+        uint64_t trivial_input_hits = 0;
+        uint64_t even_fast_path_hits = 0;
+        uint64_t square_fast_path_hits = 0;
+        std::array<MultiplierDiagnostics, diagnostic_slot_count> slots{};
+
+        Diagnostics() noexcept { reset(); }
+
+        void reset() noexcept {
+            factor_calls = 0;
+            trivial_input_hits = 0;
+            even_fast_path_hits = 0;
+            square_fast_path_hits = 0;
+            for (size_t slot_index = 0; slot_index < slots.size(); ++slot_index) {
+                slots[slot_index] = MultiplierDiagnostics{};
+                slots[slot_index].multiplier = multiplier_schedule_[slot_index];
+            }
+        }
+    };
+
+    /// Production multiplier order used by factor() and diagnostics slots.
+    [[nodiscard]] static constexpr const auto& multiplier_schedule() noexcept {
+        return multiplier_schedule_;
+    }
+
     /// Factor n using SQUFOF. Returns a non-trivial factor, or 1 on failure.
     /// n must be > 1 and composite. Works for n up to ~2^62.
     [[nodiscard]] static uint64_t factor(uint64_t n, uint32_t max_iterations = 0) {
-        if (n <= 1) return 1;
-        if (n % 2 == 0) return 2;
-        if (is_square(n)) return isqrt(n);
+        // The false template instance contains no diagnostics reads, writes, or
+        // runtime branches. Counting exists only in factor_with_diagnostics().
+        return factor_impl<false>(n, max_iterations, nullptr);
+    }
+
+    /// Factor n while accumulating diagnostics in caller-owned storage.
+    ///
+    /// Return values and max_iterations semantics are identical to factor().
+    /// The supplied object is cumulative and is not reset automatically.
+    [[nodiscard]] static uint64_t factor_with_diagnostics(
+        uint64_t n, uint32_t max_iterations, Diagnostics& diagnostics) {
+        return factor_impl<true>(n, max_iterations, &diagnostics);
+    }
+
+private:
+    template <bool CollectDiagnostics>
+    [[nodiscard]] static uint64_t factor_impl(
+        uint64_t n, uint32_t max_iterations,
+        [[maybe_unused]] Diagnostics* diagnostics) {
+        if constexpr (CollectDiagnostics) {
+            ++diagnostics->factor_calls;
+        }
+
+        if (n <= 1) {
+            if constexpr (CollectDiagnostics) {
+                ++diagnostics->trivial_input_hits;
+            }
+            return 1;
+        }
+        if (n % 2 == 0) {
+            if constexpr (CollectDiagnostics) {
+                ++diagnostics->even_fast_path_hits;
+            }
+            return 2;
+        }
+        if (is_square(n)) {
+            if constexpr (CollectDiagnostics) {
+                ++diagnostics->square_fast_path_hits;
+            }
+            return isqrt(n);
+        }
 
         // Try multipliers to avoid short-period cases. Keep k=1 first for the
         // common path, then try k=15: Gower-Wagstaff Table 5 gives it the best
         // expected work among the non-trivial multipliers in this set. Preserve
         // the prior order for the remaining fallbacks.
-        static constexpr uint64_t multipliers[] = {
-            1, 3*5, 3, 5, 7, 11, 3*7, 3*11, 5*7, 5*11, 7*11
-        };
-
-        for (uint64_t k : multipliers) {
-            if (k > 1 && n > UINT64_MAX / k) continue;
+        for (size_t slot_index = 0; slot_index < multiplier_schedule_.size(); ++slot_index) {
+            const uint64_t k = multiplier_schedule_[slot_index];
+            if (k > 1 && n > UINT64_MAX / k) {
+                if constexpr (CollectDiagnostics) {
+                    ++diagnostics->slots[slot_index].overflow_skips;
+                }
+                continue;
+            }
             uint64_t D = k * n;
             if (D < 2) continue;
             // D ≡ 2,3 mod 4 时 SQUFOF 周期偏长;对 k=1 时如果 N ≢ 1 mod 4
             // 改用 D=4N 既避免 D≡2,3 又把 k 的搜索空间限制在奇 k。
             if (k == 1 && (n % 4) != 1) {
-                if (n > UINT64_MAX / 4) continue;
+                if (n > UINT64_MAX / 4) {
+                    if constexpr (CollectDiagnostics) {
+                        ++diagnostics->slots[slot_index].overflow_skips;
+                    }
+                    continue;
+                }
                 D = 4 * n;
             }
 
-            uint64_t result = squfof_core(D, max_iterations);
+            if constexpr (CollectDiagnostics) {
+                ++diagnostics->slots[slot_index].attempts;
+            }
+            uint64_t result = squfof_core<CollectDiagnostics>(
+                D, max_iterations, diagnostics, slot_index);
             if (result > 1 && result < D) {
+                if constexpr (CollectDiagnostics) {
+                    ++diagnostics->slots[slot_index].core_hits;
+                }
                 uint64_t g = gcd(result, n);
-                if (g > 1 && g < n) return g;
+                if (g > 1 && g < n) {
+                    if constexpr (CollectDiagnostics) {
+                        ++diagnostics->slots[slot_index].accepted_hits;
+                    }
+                    return g;
+                }
             }
         }
         return 1;
     }
 
-private:
     static uint64_t gcd(uint64_t a, uint64_t b) {
         while (b) { uint64_t t = b; b = a % b; a = t; }
         return a;
@@ -85,7 +195,11 @@ private:
     ///
     /// Look for Q_i that is a perfect square at even steps (i ≥ 2).
     /// Then do an inverse walk to extract the factor.
-    [[nodiscard]] static uint64_t squfof_core(uint64_t D, uint32_t max_iter) {
+    template <bool CollectDiagnostics>
+    [[nodiscard]] static uint64_t squfof_core(
+        uint64_t D, uint32_t max_iter,
+        [[maybe_unused]] Diagnostics* diagnostics,
+        [[maybe_unused]] size_t slot_index) {
         uint64_t sqrtD = isqrt(D);
         if (sqrtD * sqrtD == D) return sqrtD;
 
@@ -103,6 +217,9 @@ private:
 
         // Forward cycle
         for (uint32_t i = 0; i < max_iter; ++i) {
+            if constexpr (CollectDiagnostics) {
+                ++diagnostics->slots[slot_index].forward_iterations;
+            }
             uint64_t b = (sqrtD + Pprev) / Qcurr;
             uint64_t Pnew = b * Qcurr - Pprev;
             uint64_t Qnew = Qprev + b * (Pprev - Pnew);

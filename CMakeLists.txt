@@ -819,6 +819,18 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SQUFOF COMMAND test_squfof)
     set_tests_properties(SQUFOF PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Fixed production-derived SQUFOF strategy corpus. Timings are manual
+    # comparison evidence, so this Release-only target stays out of routine CTest lanes.
+    add_executable(test_squfof_bench
+        tests/test_squfof_bench.cpp
+    )
+    target_compile_definitions(test_squfof_bench PRIVATE
+        GNFS_SQUFOF_BENCH_BUILD_TYPE="$<CONFIG>")
+    target_link_libraries(test_squfof_bench PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SQUFOFBench COMMAND test_squfof_bench)
+    set_tests_properties(SQUFOFBench PROPERTIES DISABLED TRUE
+        LABELS "bench" TIMEOUT 120)
+
     add_executable(test_brent_pollard_rho
         tests/test_brent_pollard_rho.cpp
     )

@@ -110,6 +110,13 @@ requires exactly 30 `GNFS_CANDIDATE_SWEEP_CASE_V1` records and one passing
 `GNFS_CANDIDATE_SWEEP_SUMMARY_V1` record. Wall times are informational and do
 not enter routine CI or a pass threshold.
 
+`test_squfof_bench` is a disabled `bench` CTest target. The supported
+`./scripts/test.sh bench-squfof [repetitions]` mode builds it in Release and runs
+the fixed 50-digit SQUFOF strategy corpus. The runner validates every case,
+multiplier, and summary record against one corpus, schedule, factor-result, and
+failure-set identity. Wall times remain informational; the mode enforces no
+performance threshold and does not enter routine CI.
+
 `test_structured_ooc_scale --rss-case <rows> <workers>` is a manual measurement
 mode, not a CTest performance assertion. Each invocation runs one scenario in a
 fresh process and emits one `GNFS_RESOURCE_V1` record. The normal no-argument

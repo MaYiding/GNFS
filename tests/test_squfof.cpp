@@ -47,6 +47,40 @@ bool is_proper_factor(uint64_t n, uint64_t factor) {
     return factor > 1 && factor < n && n % factor == 0;
 }
 
+struct DiagnosticTotals {
+    uint64_t attempts = 0;
+    uint64_t forward_iterations = 0;
+    uint64_t core_hits = 0;
+    uint64_t accepted_hits = 0;
+    uint64_t overflow_skips = 0;
+};
+
+DiagnosticTotals diagnostic_totals(const SQUFOF::Diagnostics& diagnostics) {
+    DiagnosticTotals totals;
+    for (const auto& slot : diagnostics.slots) {
+        totals.attempts += slot.attempts;
+        totals.forward_iterations += slot.forward_iterations;
+        totals.core_hits += slot.core_hits;
+        totals.accepted_hits += slot.accepted_hits;
+        totals.overflow_skips += slot.overflow_skips;
+    }
+    return totals;
+}
+
+bool slots_are_clean(const SQUFOF::Diagnostics& diagnostics) {
+    const auto& schedule = SQUFOF::multiplier_schedule();
+    if (diagnostics.slots.size() != schedule.size()) return false;
+    for (size_t slot_index = 0; slot_index < diagnostics.slots.size(); ++slot_index) {
+        const auto& slot = diagnostics.slots[slot_index];
+        if (slot.multiplier != schedule[slot_index] || slot.attempts != 0 ||
+            slot.forward_iterations != 0 || slot.core_hits != 0 ||
+            slot.accepted_hits != 0 || slot.overflow_skips != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void test_api_boundaries() {
     TEST_ASSERT(SQUFOF::factor(0) == 1, "factor(0) must report failure");
     TEST_ASSERT(SQUFOF::factor(1) == 1, "factor(1) must report failure");
@@ -57,6 +91,169 @@ void test_api_boundaries() {
                 "near-uint64 discriminant must preserve the bounded failure path");
 
     TEST_PASS("API boundaries");
+}
+
+void test_diagnostics_schedule_and_fast_paths() {
+    constexpr auto expected_schedule = std::to_array<uint64_t>({
+        1, 15, 3, 5, 7, 11, 21, 33, 35, 55, 77,
+    });
+    static_assert(expected_schedule.size() == SQUFOF::diagnostic_slot_count);
+
+    const auto& schedule = SQUFOF::multiplier_schedule();
+    TEST_ASSERT(schedule == expected_schedule,
+                "public diagnostics schedule differs from production order");
+
+    SQUFOF::Diagnostics diagnostics;
+    TEST_ASSERT(slots_are_clean(diagnostics),
+                "fresh diagnostics must expose labeled zeroed slots");
+
+    TEST_ASSERT(SQUFOF::factor_with_diagnostics(0, 17, diagnostics) == 1,
+                "diagnostics factor(0) must preserve trivial failure");
+    TEST_ASSERT(SQUFOF::factor_with_diagnostics(1, 0, diagnostics) == 1,
+                "diagnostics factor(1) must preserve trivial failure");
+    TEST_ASSERT(SQUFOF::factor_with_diagnostics(64, 1, diagnostics) == 2,
+                "even-square fast path must preserve factor 2");
+    TEST_ASSERT(SQUFOF::factor_with_diagnostics(49, 1, diagnostics) == 7,
+                "odd-square fast path must preserve the square root");
+
+    TEST_ASSERT(diagnostics.factor_calls == 4,
+                "diagnostics must count every public factor call");
+    TEST_ASSERT(diagnostics.trivial_input_hits == 2,
+                "n <= 1 calls must use the trivial-input counter");
+    TEST_ASSERT(diagnostics.even_fast_path_hits == 1,
+                "even squares must be counted by the earlier even fast path");
+    TEST_ASSERT(diagnostics.square_fast_path_hits == 1,
+                "only the odd square must reach the square fast path");
+    TEST_ASSERT(slots_are_clean(diagnostics),
+                "preprocessing fast paths must not touch multiplier slots");
+
+    TEST_PASS("diagnostics schedule and preprocessing fast paths");
+}
+
+void test_diagnostics_factor_equivalence() {
+    struct DiagnosticCase {
+        uint64_t n;
+        uint32_t max_iterations;
+    };
+
+    constexpr std::array<DiagnosticCase, 6> cases{{
+        {15, 1},
+        {9991, 0},
+        {UINT64_C(1000003) * UINT64_C(1000033), 5000},
+        {1000003, 2000},
+        {27, 2000},
+        {(UINT64_C(1) << 62) - 1, 1},
+    }};
+
+    for (const auto& test_case : cases) {
+        const uint64_t ordinary = SQUFOF::factor(test_case.n, test_case.max_iterations);
+        SQUFOF::Diagnostics diagnostics;
+        const uint64_t observed = SQUFOF::factor_with_diagnostics(
+            test_case.n, test_case.max_iterations, diagnostics);
+
+        TEST_ASSERT(observed == ordinary,
+                    "diagnostics changed factor result for n=" << test_case.n
+                    << " cap=" << test_case.max_iterations << ": ordinary=" << ordinary
+                    << " diagnostics=" << observed);
+        TEST_ASSERT(diagnostics.factor_calls == 1,
+                    "one diagnostics invocation must count one factor call");
+        TEST_ASSERT(diagnostics.trivial_input_hits == 0 &&
+                        diagnostics.even_fast_path_hits == 0 &&
+                        diagnostics.square_fast_path_hits == 0,
+                    "odd non-square corpus unexpectedly used a preprocessing fast path");
+
+        const DiagnosticTotals totals = diagnostic_totals(diagnostics);
+        TEST_ASSERT(totals.attempts > 0,
+                    "odd non-square diagnostics must attempt at least one multiplier");
+        TEST_ASSERT(totals.accepted_hits == (is_proper_factor(test_case.n, observed) ? 1 : 0),
+                    "accepted-hit total must match the public return contract");
+        TEST_ASSERT(totals.core_hits >= totals.accepted_hits,
+                    "accepted hits cannot exceed core hits");
+
+        for (const auto& slot : diagnostics.slots) {
+            TEST_ASSERT(slot.attempts <= 1 && slot.overflow_skips <= 1,
+                        "one factor call cannot attempt or overflow-skip a slot twice");
+            TEST_ASSERT(slot.attempts + slot.overflow_skips <= 1,
+                        "a slot cannot be attempted and overflow-skipped in one call");
+            TEST_ASSERT(slot.core_hits <= slot.attempts &&
+                            slot.accepted_hits <= slot.core_hits,
+                        "slot hit counters violate the attempt/core/accepted ordering");
+            if (test_case.max_iterations > 0) {
+                TEST_ASSERT(slot.forward_iterations <=
+                                slot.attempts * test_case.max_iterations,
+                            "forward-iteration counter exceeded the per-slot cap");
+            }
+        }
+    }
+
+    TEST_PASS("ordinary and diagnostics factor equivalence");
+}
+
+void test_diagnostics_overflow_accumulation_and_reset() {
+    constexpr uint64_t near_supported_limit = (UINT64_C(1) << 62) - 1;
+    SQUFOF::Diagnostics overflow_diagnostics;
+    TEST_ASSERT(SQUFOF::factor_with_diagnostics(
+                    near_supported_limit, 1, overflow_diagnostics) == 1,
+                "one-iteration overflow corpus must preserve bounded failure");
+
+    const DiagnosticTotals overflow_totals = diagnostic_totals(overflow_diagnostics);
+    TEST_ASSERT(overflow_totals.attempts == 2,
+                "only k=1 and k=3 fit the near-limit discriminant");
+    TEST_ASSERT(overflow_totals.forward_iterations == 2,
+                "both non-overflowing slots must consume their one-step budget");
+    TEST_ASSERT(overflow_totals.core_hits == 0 && overflow_totals.accepted_hits == 0,
+                "one-step near-limit attempts must not report a factor hit");
+    TEST_ASSERT(overflow_totals.overflow_skips ==
+                    SQUFOF::diagnostic_slot_count - overflow_totals.attempts,
+                "every remaining near-limit multiplier must record an overflow skip");
+
+    SQUFOF::Diagnostics accumulated;
+    const uint64_t first = SQUFOF::factor_with_diagnostics(15, 0, accumulated);
+    TEST_ASSERT(is_proper_factor(15, first),
+                "accumulation fixture must produce a proper factor");
+    const SQUFOF::Diagnostics once = accumulated;
+    const uint64_t second = SQUFOF::factor_with_diagnostics(15, 0, accumulated);
+    TEST_ASSERT(second == first,
+                "repeated diagnostics calls must preserve deterministic factors");
+    TEST_ASSERT(accumulated.factor_calls == 2 &&
+                    diagnostic_totals(accumulated).accepted_hits == 2,
+                "caller-owned diagnostics must accumulate successful calls");
+
+    for (size_t slot_index = 0; slot_index < accumulated.slots.size(); ++slot_index) {
+        const auto& one = once.slots[slot_index];
+        const auto& two = accumulated.slots[slot_index];
+        TEST_ASSERT(two.multiplier == one.multiplier && two.attempts == 2 * one.attempts &&
+                        two.forward_iterations == 2 * one.forward_iterations &&
+                        two.core_hits == 2 * one.core_hits &&
+                        two.accepted_hits == 2 * one.accepted_hits &&
+                        two.overflow_skips == 2 * one.overflow_skips,
+                    "second call did not accumulate slot " << slot_index << " exactly");
+    }
+
+    const SQUFOF::Diagnostics before_fast_path = accumulated;
+    TEST_ASSERT(SQUFOF::factor_with_diagnostics(64, 1, accumulated) == 2,
+                "even fast path must remain valid after accumulated multiplier calls");
+    TEST_ASSERT(accumulated.factor_calls == 3 && accumulated.even_fast_path_hits == 1,
+                "fast path must update only call-level cumulative counters");
+    for (size_t slot_index = 0; slot_index < accumulated.slots.size(); ++slot_index) {
+        const auto& before = before_fast_path.slots[slot_index];
+        const auto& after = accumulated.slots[slot_index];
+        TEST_ASSERT(after.multiplier == before.multiplier &&
+                        after.attempts == before.attempts &&
+                        after.forward_iterations == before.forward_iterations &&
+                        after.core_hits == before.core_hits &&
+                        after.accepted_hits == before.accepted_hits &&
+                        after.overflow_skips == before.overflow_skips,
+                    "even fast path changed multiplier slot " << slot_index);
+    }
+
+    accumulated.reset();
+    TEST_ASSERT(accumulated.factor_calls == 0 && accumulated.trivial_input_hits == 0 &&
+                    accumulated.even_fast_path_hits == 0 &&
+                    accumulated.square_fast_path_hits == 0 && slots_are_clean(accumulated),
+                "reset must clear counters while restoring schedule labels");
+
+    TEST_PASS("diagnostics overflow, accumulation, and reset");
 }
 
 void test_exhaustive_small_composites() {
@@ -209,6 +406,9 @@ int main() {
     std::cout << "═══════════════════════════════════════════\n\n";
 
     test_api_boundaries();
+    test_diagnostics_schedule_and_fast_paths();
+    test_diagnostics_factor_equivalence();
+    test_diagnostics_overflow_accumulation_and_reset();
     test_exhaustive_small_composites();
     test_fixed_semiprime_corpus();
     test_prime_corpus();
