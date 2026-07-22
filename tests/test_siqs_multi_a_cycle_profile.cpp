@@ -1,9 +1,12 @@
 // test_siqs_multi_a_cycle_profile.cpp - isolated fixed multi-A SIQS cycle profile
 
 #include "fixtures/siqs_multi_a_cycle_profile_v2.hpp"
+#include "fixtures/siqs_multi_a_proof_profile_v4.hpp"
 #include "fixtures/siqs_multi_a_scale_profile_v3.hpp"
 
+#include <gnfs/siqs/post_merge_dependency.hpp>
 #include <gnfs/siqs/shadow_assembly.hpp>
+#include <gnfs/siqs/shadow_matrix.hpp>
 #include <gnfs/siqs/siqs.hpp>
 #include <gnfs/util/process_memory.hpp>
 
@@ -47,6 +50,8 @@ using gnfs::siqs::assemble_siqs_shadow_rows;
 using gnfs::siqs::build_factor_base;
 using gnfs::siqs::build_two_large_prime_cycle_basis;
 using gnfs::siqs::checked_siqs_live_sieve_relation_payload_bytes;
+using gnfs::siqs::checked_siqs_shadow_dense_matrix_bytes;
+using gnfs::siqs::extract_siqs_post_merge_factor;
 using gnfs::siqs::FBPrime;
 using gnfs::siqs::init_poly;
 using gnfs::siqs::next_poly_B;
@@ -61,18 +66,26 @@ using gnfs::siqs::SIQSLiveSieveCaptureStopReason;
 using gnfs::siqs::SIQSLiveSieveRelationPayloadShape;
 using gnfs::siqs::SIQSParams;
 using gnfs::siqs::SIQSPoly;
+using gnfs::siqs::SIQSPostMergeDependencyStatus;
+using gnfs::siqs::SIQSPostMergeFactorStatus;
 using gnfs::siqs::SIQSRelation;
 using gnfs::siqs::SIQSShadowAssembly;
 using gnfs::siqs::SIQSShadowAssemblyFingerprints;
 using gnfs::siqs::SIQSShadowAssemblyOptions;
 using gnfs::siqs::SIQSShadowAssemblyStats;
 using gnfs::siqs::SIQSShadowAssemblyStatus;
+using gnfs::siqs::SIQSShadowMatrixOptions;
+using gnfs::siqs::SIQSShadowMatrixStatus;
+using gnfs::siqs::SIQSShadowRow;
+using gnfs::siqs::solve_siqs_shadow_matrix;
 using gnfs::siqs::split_cofactor_64;
 using gnfs::siqs::TwoLargePrimeAdapterStats;
 using gnfs::siqs::TwoLargePrimeCycleBasis;
 using gnfs::siqs::TwoLargePrimeCycleBasisLimits;
 using gnfs::siqs::TwoLargePrimeCycleBasisStatus;
+using gnfs::siqs::verify_siqs_post_merge_dependency;
 using gnfs::tests::SIQS_MULTI_A_CYCLE_FIXTURE_V2;
+using gnfs::tests::SIQS_MULTI_A_PROOF_GOLDEN_V4;
 using gnfs::tests::SIQS_MULTI_A_SCALE_FIXTURE_V3;
 using gnfs::tests::SIQSMultiAExpectedParamsV2;
 using gnfs::tests::SIQSMultiAPlanGoldenV2;
@@ -86,8 +99,9 @@ using gnfs::util::ProcessMemorySnapshot;
 #define GNFS_SIQS_MULTI_A_PROFILE_SCHEMA 2
 #endif
 
-static_assert(GNFS_SIQS_MULTI_A_PROFILE_SCHEMA == 2 || GNFS_SIQS_MULTI_A_PROFILE_SCHEMA == 3,
-              "GNFS_SIQS_MULTI_A_PROFILE_SCHEMA must be 2 or 3");
+static_assert(GNFS_SIQS_MULTI_A_PROFILE_SCHEMA == 2 || GNFS_SIQS_MULTI_A_PROFILE_SCHEMA == 3 ||
+                  GNFS_SIQS_MULTI_A_PROFILE_SCHEMA == 4,
+              "GNFS_SIQS_MULTI_A_PROFILE_SCHEMA must be 2, 3, or 4");
 
 constexpr std::string_view BUILD_TYPE = GNFS_SIQS_MULTI_A_PROFILE_BUILD_TYPE;
 constexpr uint32_t PROFILE_SCHEMA = GNFS_SIQS_MULTI_A_PROFILE_SCHEMA;
@@ -117,11 +131,17 @@ constexpr size_t SCALE_GRAPH_INCIDENCE_LIMIT = 262'144;
 constexpr size_t SCALE_ROW_CANDIDATE_LIMIT = 4'096;
 constexpr size_t SCALE_PRETRIM_ROW_LIMIT = 4'096;
 constexpr size_t SCALE_REQUIRED_ROWS = 1'701;
+constexpr size_t SCALE_SOLVER_MAX_DEPENDENCIES = 64;
+constexpr size_t SCALE_SOLVER_PARALLEL_COLUMN_THRESHOLD = 0;
+constexpr size_t SCALE_SOLVER_MAX_DENSE_MATRIX_BYTES = 345'816;
+constexpr size_t SCALE_SOLVER_MAX_DENSE_VARIABLE_COUNT = SCALE_REQUIRED_ROWS;
 constexpr size_t SCALE_MIN_TWO_LP_CYCLES = 32;
 constexpr size_t SCALE_MIN_TWO_LP_EDGE_SOURCE_A = 16;
 constexpr uint64_t SCALE_RSS_BUDGET_BYTES = UINT64_C(512) * 1024 * 1024;
 constexpr uint32_t SCALE_TIMEOUT_SECONDS = 1'800;
 static_assert(SCALE_ROW_CANDIDATE_LIMIT <= SCALE_PRETRIM_ROW_LIMIT);
+static_assert(checked_siqs_shadow_dense_matrix_bytes(SCALE_REQUIRED_ROWS, 1'601) ==
+              SCALE_SOLVER_MAX_DENSE_MATRIX_BYTES);
 
 [[noreturn]] void fail(std::string message) {
     throw std::runtime_error(std::move(message));
@@ -2401,6 +2421,281 @@ graph_cap_terminal(TwoLargePrimeCycleBasisStatus status) {
     return std::nullopt;
 }
 
+enum class ScaleProofTerminalStatus : uint8_t {
+    not_attempted,
+    factor_found,
+    no_factor,
+    matrix_failure,
+    dependency_failure,
+    factor_failure,
+};
+
+[[nodiscard]] std::string_view scale_proof_terminal_name(ScaleProofTerminalStatus status) noexcept {
+    switch (status) {
+    case ScaleProofTerminalStatus::not_attempted:
+        return "not_attempted";
+    case ScaleProofTerminalStatus::factor_found:
+        return "factor_found";
+    case ScaleProofTerminalStatus::no_factor:
+        return "no_factor";
+    case ScaleProofTerminalStatus::matrix_failure:
+        return "matrix_failure";
+    case ScaleProofTerminalStatus::dependency_failure:
+        return "dependency_failure";
+    case ScaleProofTerminalStatus::factor_failure:
+        return "factor_failure";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] std::string_view matrix_status_name(SIQSShadowMatrixStatus status) noexcept {
+    switch (status) {
+    case SIQSShadowMatrixStatus::valid:
+        return "valid";
+    case SIQSShadowMatrixStatus::invalid_modulus:
+        return "invalid_modulus";
+    case SIQSShadowMatrixStatus::invalid_factor_base:
+        return "invalid_factor_base";
+    case SIQSShadowMatrixStatus::invalid_options:
+        return "invalid_options";
+    case SIQSShadowMatrixStatus::size_overflow:
+        return "size_overflow";
+    case SIQSShadowMatrixStatus::invalid_row:
+        return "invalid_row";
+    case SIQSShadowMatrixStatus::row_identity_mismatch:
+        return "row_identity_mismatch";
+    case SIQSShadowMatrixStatus::worker_failure:
+        return "worker_failure";
+    case SIQSShadowMatrixStatus::internal_invariant_failure:
+        return "internal_invariant_failure";
+    case SIQSShadowMatrixStatus::resource_limit:
+        return "resource_limit";
+    case SIQSShadowMatrixStatus::unsupported_backend:
+        return "unsupported_backend";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] std::string_view
+dependency_status_name(SIQSPostMergeDependencyStatus status) noexcept {
+    switch (status) {
+    case SIQSPostMergeDependencyStatus::valid:
+        return "valid";
+    case SIQSPostMergeDependencyStatus::invalid_modulus:
+        return "invalid_modulus";
+    case SIQSPostMergeDependencyStatus::invalid_factor_base:
+        return "invalid_factor_base";
+    case SIQSPostMergeDependencyStatus::invalid_row:
+        return "invalid_row";
+    case SIQSPostMergeDependencyStatus::row_identity_mismatch:
+        return "row_identity_mismatch";
+    case SIQSPostMergeDependencyStatus::invalid_dependency:
+        return "invalid_dependency";
+    case SIQSPostMergeDependencyStatus::exponent_overflow:
+        return "exponent_overflow";
+    case SIQSPostMergeDependencyStatus::dependency_not_square:
+        return "dependency_not_square";
+    case SIQSPostMergeDependencyStatus::dependency_mismatch:
+        return "dependency_mismatch";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] std::string_view factor_status_name(SIQSPostMergeFactorStatus status) noexcept {
+    switch (status) {
+    case SIQSPostMergeFactorStatus::invalid_verified_dependency:
+        return "invalid_verified_dependency";
+    case SIQSPostMergeFactorStatus::invalid_target:
+        return "invalid_target";
+    case SIQSPostMergeFactorStatus::target_not_divisor:
+        return "target_not_divisor";
+    case SIQSPostMergeFactorStatus::no_factor:
+        return "no_factor";
+    case SIQSPostMergeFactorStatus::factor_found:
+        return "factor_found";
+    }
+    return "unknown";
+}
+
+struct ScaleProofRecord final {
+    bool attempted = false;
+    ScaleProofTerminalStatus terminal = ScaleProofTerminalStatus::not_attempted;
+    SIQSShadowMatrixOptions options{};
+    std::optional<size_t> projected_dense_bytes;
+    std::optional<SIQSShadowMatrixStatus> matrix_status;
+    std::optional<SIQSPostMergeDependencyStatus> dependency_status;
+    std::optional<SIQSPostMergeFactorStatus> factor_status;
+    size_t matrix_rows = 0;
+    size_t matrix_columns = 0;
+    size_t minimum_nullity = 0;
+    size_t dependencies_returned = 0;
+    size_t dependencies_examined = 0;
+    size_t dependencies_verified = 0;
+    size_t no_factor_count = 0;
+    size_t factor_found_count = 0;
+    bool dependency_cap_reached = false;
+    bool dependency_digest_available = false;
+    Digest128 dependency_digest;
+    std::optional<size_t> first_failed_dependency;
+    std::optional<size_t> winning_dependency;
+    std::optional<size_t> winning_dependency_size;
+    std::string factor = "none";
+    std::string cofactor = "none";
+    uint64_t solver_wall_nanoseconds = 0;
+    uint64_t verify_extract_wall_nanoseconds = 0;
+};
+
+[[nodiscard]] ScaleProofRecord make_scale_proof_record(uint32_t requested_workers) {
+    ScaleProofRecord proof;
+    proof.options = SIQSShadowMatrixOptions{
+        SCALE_SOLVER_MAX_DEPENDENCIES,          requested_workers,
+        SCALE_SOLVER_PARALLEL_COLUMN_THRESHOLD, SCALE_SOLVER_MAX_DENSE_MATRIX_BYTES,
+        SCALE_SOLVER_MAX_DENSE_VARIABLE_COUNT,
+    };
+    return proof;
+}
+
+void run_scale_proof(ScaleProofRecord& proof, std::span<const SIQSShadowRow> rows,
+                     std::span<const uint32_t> factor_base_primes, const Integer& square_modulus,
+                     const Integer& gcd_target) {
+    proof.attempted = true;
+    proof.matrix_rows = rows.size();
+    proof.matrix_columns = factor_base_primes.size();
+    proof.minimum_nullity =
+        proof.matrix_rows > proof.matrix_columns ? proof.matrix_rows - proof.matrix_columns : 0;
+    proof.projected_dense_bytes =
+        checked_siqs_shadow_dense_matrix_bytes(proof.matrix_rows, proof.matrix_columns);
+
+    const auto solver_started = std::chrono::steady_clock::now();
+    auto matrix_result =
+        solve_siqs_shadow_matrix(rows, factor_base_primes, square_modulus, proof.options);
+    proof.solver_wall_nanoseconds =
+        elapsed_nanoseconds(solver_started, std::chrono::steady_clock::now(), "scale proof solver");
+    proof.matrix_status = matrix_result.status();
+    if (matrix_result.status() != SIQSShadowMatrixStatus::valid) {
+        proof.terminal = ScaleProofTerminalStatus::matrix_failure;
+        return;
+    }
+    require(matrix_result.solution().has_value(),
+            "valid shadow matrix result omitted its solution");
+
+    const auto& solution = *matrix_result.solution();
+    require(solution.row_count == proof.matrix_rows &&
+                solution.column_count == proof.matrix_columns,
+            "shadow matrix solution dimensions differ from the proof input");
+    require(solution.dependencies.size() <= proof.options.max_dependencies,
+            "shadow matrix exceeded the dependency cap");
+    proof.dependencies_returned = solution.dependencies.size();
+    proof.dependency_cap_reached = proof.dependencies_returned == proof.options.max_dependencies;
+
+    StableDigestBuilder dependency_builder("GNFS-SIQS-256A-DEPENDENCIES-V4");
+    dependency_builder.append_size(solution.row_count);
+    dependency_builder.append_size(solution.column_count);
+    dependency_builder.append_size(solution.dependencies.size());
+    for (const auto& dependency : solution.dependencies) {
+        dependency_builder.append_size(dependency.size());
+        for (const size_t row_index : dependency) {
+            dependency_builder.append_size(row_index);
+        }
+    }
+    proof.dependency_digest = dependency_builder.finish();
+    proof.dependency_digest_available = true;
+
+    const auto verify_extract_started = std::chrono::steady_clock::now();
+    for (size_t dependency_index = 0; dependency_index < solution.dependencies.size();
+         ++dependency_index) {
+        const auto& dependency = solution.dependencies[dependency_index];
+        ++proof.dependencies_examined;
+        auto verified = verify_siqs_post_merge_dependency(
+            rows, std::span<const size_t>(dependency.data(), dependency.size()), factor_base_primes,
+            square_modulus);
+        proof.dependency_status = verified.status();
+        if (verified.status() != SIQSPostMergeDependencyStatus::valid) {
+            require(!verified.verified().has_value(),
+                    "failed dependency verification retained a proof payload");
+            proof.first_failed_dependency = dependency_index;
+            proof.terminal = ScaleProofTerminalStatus::dependency_failure;
+            break;
+        }
+        require(verified.verified().has_value(),
+                "valid dependency verification omitted its proof payload");
+        ++proof.dependencies_verified;
+
+        auto factor_result = extract_siqs_post_merge_factor(verified, gcd_target);
+        proof.factor_status = factor_result.status();
+        if (factor_result.status() == SIQSPostMergeFactorStatus::no_factor) {
+            require(!factor_result.factors().has_value(),
+                    "no-factor result retained a factor payload");
+            ++proof.no_factor_count;
+            continue;
+        }
+        if (factor_result.status() == SIQSPostMergeFactorStatus::factor_found) {
+            require(factor_result.factors().has_value(),
+                    "factor-found result omitted its factor payload");
+            require(factor_result.factors()->factor * factor_result.factors()->cofactor ==
+                        gcd_target,
+                    "proof factor and cofactor do not multiply to N");
+            ++proof.factor_found_count;
+            proof.winning_dependency = dependency_index;
+            proof.winning_dependency_size = dependency.size();
+            proof.factor = factor_result.factors()->factor.to_string();
+            proof.cofactor = factor_result.factors()->cofactor.to_string();
+            proof.terminal = ScaleProofTerminalStatus::factor_found;
+            break;
+        }
+
+        require(!factor_result.factors().has_value(),
+                "failed factor extraction retained a factor payload");
+        proof.first_failed_dependency = dependency_index;
+        proof.terminal = ScaleProofTerminalStatus::factor_failure;
+        break;
+    }
+    proof.verify_extract_wall_nanoseconds = elapsed_nanoseconds(
+        verify_extract_started, std::chrono::steady_clock::now(), "scale proof verification");
+    if (proof.terminal == ScaleProofTerminalStatus::not_attempted) {
+        proof.terminal = ScaleProofTerminalStatus::no_factor;
+    }
+}
+
+void validate_scale_proof_golden(const ScaleProofRecord& proof) {
+    const auto& golden = SIQS_MULTI_A_PROOF_GOLDEN_V4;
+    require(proof.attempted && scale_proof_terminal_name(proof.terminal) == golden.terminal_status,
+            "scale proof terminal golden mismatch");
+    require(proof.options.max_dependencies == golden.max_dependencies &&
+                proof.options.parallel_column_threshold == golden.parallel_column_threshold &&
+                proof.options.max_dense_matrix_bytes == golden.max_dense_matrix_bytes &&
+                proof.options.max_dense_variable_count == golden.max_dense_variable_count,
+            "scale proof solver-option golden mismatch");
+    require(proof.projected_dense_bytes == golden.max_dense_matrix_bytes &&
+                proof.matrix_rows == golden.matrix_rows &&
+                proof.matrix_columns == golden.matrix_columns &&
+                proof.minimum_nullity == golden.minimum_nullity,
+            "scale proof matrix-shape golden mismatch");
+    require(proof.matrix_status.has_value() &&
+                matrix_status_name(*proof.matrix_status) == golden.matrix_status &&
+                proof.dependency_status.has_value() &&
+                dependency_status_name(*proof.dependency_status) == golden.dependency_status &&
+                proof.factor_status.has_value() &&
+                factor_status_name(*proof.factor_status) == golden.factor_status,
+            "scale proof typed-status golden mismatch");
+    require(proof.dependencies_returned == golden.dependencies_returned &&
+                proof.dependencies_examined == golden.dependencies_examined &&
+                proof.dependencies_verified == golden.dependencies_verified &&
+                proof.dependency_cap_reached == golden.dependency_cap_reached &&
+                proof.dependency_digest_available &&
+                proof.dependency_digest.low == golden.dependency_digest_low &&
+                proof.dependency_digest.high == golden.dependency_digest_high,
+            "scale proof dependency golden mismatch");
+    require(proof.no_factor_count == golden.no_factor_count &&
+                proof.factor_found_count == golden.factor_found_count &&
+                proof.winning_dependency == golden.winning_dependency &&
+                proof.winning_dependency_size == golden.winning_dependency_size &&
+                proof.factor == golden.factor && proof.cofactor == golden.cofactor,
+            "scale proof factor golden mismatch");
+    require(!proof.first_failed_dependency.has_value() && golden.failure_status == "none",
+            "scale proof failure golden mismatch");
+}
+
 struct ScaleProfileRecord final {
     ProfileOptions options;
     SIQSParams params{};
@@ -2547,7 +2842,41 @@ void validate_scale_corpus_goldens(const ScaleProfileRecord& record, size_t raw_
             "scale assembly golden mismatch");
 }
 
-[[nodiscard]] ScaleProfileRecord run_scale_profile(const ProfileOptions& options) {
+void apply_scale_assembly_gate(ScaleProfileRecord& record, size_t raw_relations) {
+    validate_assembly_conservation(record.assembly);
+    require(record.assembly.rows_before_dedup <= record.row_candidate_upper,
+            "assembly rows exceed the preflight candidate upper bound");
+    require(record.assembly.adapter == record.adapter &&
+                record.assembly.graph_edges == record.graph_edges &&
+                record.assembly.graph_cycles == record.graph_cycles,
+            "preflight and assembly adapter/graph evidence differ");
+    if (record.assembly.pretrim_rows > SCALE_PRETRIM_ROW_LIMIT) {
+        record.status = ScaleTerminalStatus::pretrim_limit;
+        record.terminal_detail = "pretrim_limit";
+    } else if (record.assembly.pretrim_rows < SCALE_REQUIRED_ROWS ||
+               record.assembly.selected_rows != SCALE_REQUIRED_ROWS) {
+        record.status = ScaleTerminalStatus::insufficient_rows;
+        record.terminal_detail = "insufficient_rows";
+    } else if (record.assembly.rejected_cycle_rows != 0) {
+        record.status = ScaleTerminalStatus::rejected_cycle_rows;
+        record.terminal_detail = "rejected_cycle_rows";
+    } else if (record.assembly.arithmetic_duplicates_removed != 0) {
+        record.status = ScaleTerminalStatus::arithmetic_duplicates;
+        record.terminal_detail = "arithmetic_duplicates";
+    } else if (record.cycle_evidence.cycles_with_accepted_two_lp < SCALE_MIN_TWO_LP_CYCLES) {
+        record.status = ScaleTerminalStatus::insufficient_two_lp_cycles;
+        record.terminal_detail = "insufficient_two_lp_cycles";
+    } else if (record.cycle_evidence.two_lp_edge_source_a_count < SCALE_MIN_TWO_LP_EDGE_SOURCE_A) {
+        record.status = ScaleTerminalStatus::insufficient_two_lp_source_a;
+        record.terminal_detail = "insufficient_two_lp_source_a";
+    }
+    if (record.status == ScaleTerminalStatus::solver_ready) {
+        validate_scale_corpus_goldens(record, raw_relations);
+    }
+}
+
+[[nodiscard]] ScaleProfileRecord run_scale_profile(const ProfileOptions& options,
+                                                   ScaleProofRecord* proof = nullptr) {
     const auto started = std::chrono::steady_clock::now();
     const auto& fixture = SIQS_MULTI_A_SCALE_FIXTURE_V3;
     ScaleProfileRecord record;
@@ -2889,36 +3218,27 @@ void validate_scale_corpus_goldens(const ScaleProfileRecord& record, size_t raw_
                 "shadow assembly rejected the deterministic scale corpus");
         record.assembly = assembled.assembly()->stats;
         record.fingerprints = assembled.assembly()->fingerprints;
+        if (proof != nullptr) {
+            const size_t proof_raw_relation_count = relations.size();
+            apply_scale_assembly_gate(record, proof_raw_relation_count);
+            if (record.status == ScaleTerminalStatus::solver_ready) {
+                std::vector<SIQSRelation>().swap(relations);
+                std::vector<RelationProvenance>().swap(provenances);
+                require(relations.empty() && relations.capacity() == 0 && provenances.empty() &&
+                            provenances.capacity() == 0,
+                        "scale proof retained raw corpus capacity before solve");
+                run_scale_proof(*proof,
+                                std::span<const SIQSShadowRow>(assembled.assembly()->rows.data(),
+                                                               assembled.assembly()->rows.size()),
+                                factor_base_span, sieved_modulus, modulus);
+                if (proof->terminal == ScaleProofTerminalStatus::factor_found) {
+                    validate_scale_proof_golden(*proof);
+                }
+            }
+        }
     }
-    validate_assembly_conservation(record.assembly);
-    require(record.assembly.rows_before_dedup <= record.row_candidate_upper,
-            "assembly rows exceed the preflight candidate upper bound");
-    require(record.assembly.adapter == record.adapter &&
-                record.assembly.graph_edges == record.graph_edges &&
-                record.assembly.graph_cycles == record.graph_cycles,
-            "preflight and assembly adapter/graph evidence differ");
-    if (record.assembly.pretrim_rows > SCALE_PRETRIM_ROW_LIMIT) {
-        record.status = ScaleTerminalStatus::pretrim_limit;
-        record.terminal_detail = "pretrim_limit";
-    } else if (record.assembly.pretrim_rows < SCALE_REQUIRED_ROWS ||
-               record.assembly.selected_rows != SCALE_REQUIRED_ROWS) {
-        record.status = ScaleTerminalStatus::insufficient_rows;
-        record.terminal_detail = "insufficient_rows";
-    } else if (record.assembly.rejected_cycle_rows != 0) {
-        record.status = ScaleTerminalStatus::rejected_cycle_rows;
-        record.terminal_detail = "rejected_cycle_rows";
-    } else if (record.assembly.arithmetic_duplicates_removed != 0) {
-        record.status = ScaleTerminalStatus::arithmetic_duplicates;
-        record.terminal_detail = "arithmetic_duplicates";
-    } else if (record.cycle_evidence.cycles_with_accepted_two_lp < SCALE_MIN_TWO_LP_CYCLES) {
-        record.status = ScaleTerminalStatus::insufficient_two_lp_cycles;
-        record.terminal_detail = "insufficient_two_lp_cycles";
-    } else if (record.cycle_evidence.two_lp_edge_source_a_count < SCALE_MIN_TWO_LP_EDGE_SOURCE_A) {
-        record.status = ScaleTerminalStatus::insufficient_two_lp_source_a;
-        record.terminal_detail = "insufficient_two_lp_source_a";
-    }
-    if (record.status == ScaleTerminalStatus::solver_ready) {
-        validate_scale_corpus_goldens(record, relations.size());
+    if (proof == nullptr) {
+        apply_scale_assembly_gate(record, relations.size());
     }
 
     const auto analysis_finished = std::chrono::steady_clock::now();
@@ -2949,11 +3269,14 @@ void validate_scale_corpus_goldens(const ScaleProfileRecord& record, size_t raw_
     return "unknown";
 }
 
-void emit_scale_records(const ScaleProfileRecord& record) {
+void emit_scale_records(const ScaleProfileRecord& record, const ScaleProofRecord* proof = nullptr) {
     const auto& fixture = SIQS_MULTI_A_SCALE_FIXTURE_V3;
+    const uint32_t schema_version = proof == nullptr ? 3 : 4;
+    const std::string_view solver_attempted =
+        proof != nullptr && proof->attempted ? "true" : "false";
     std::ostringstream output;
-    output << "GNFS_SIQS_256A_CONFIG_V3"
-           << " schema_version=3 status=" << scale_terminal_name(record.status)
+    output << "GNFS_SIQS_256A_CONFIG_V" << schema_version << " schema_version=" << schema_version
+           << " status=" << scale_terminal_name(record.status)
            << " profile_id=" << fixture.profile_id << " build_type=" << BUILD_TYPE
            << " ndebug=" << (RELEASE_ASSERTIONS_DISABLED ? "true" : "false")
            << " band=" << fixture.band << " digits=" << fixture.band << " n=" << fixture.modulus
@@ -2996,10 +3319,10 @@ void emit_scale_records(const ScaleProfileRecord& record) {
            << " min_2lp_cycles=" << SCALE_MIN_TWO_LP_CYCLES
            << " min_2lp_edge_source_a=" << SCALE_MIN_TWO_LP_EDGE_SOURCE_A
            << " rss_budget_bytes=" << SCALE_RSS_BUDGET_BYTES
-           << " solver_attempted=false promotion=false\n";
+           << " solver_attempted=" << solver_attempted << " promotion=false\n";
 
-    output << "GNFS_SIQS_256A_CAPTURE_V3"
-           << " schema_version=3 status=" << scale_terminal_name(record.status)
+    output << "GNFS_SIQS_256A_CAPTURE_V" << schema_version << " schema_version=" << schema_version
+           << " status=" << scale_terminal_name(record.status)
            << " profile_id=" << fixture.profile_id << " batches=" << record.batch_count
            << " completed_batches=" << record.completed_batches
            << " unstarted_batches=" << record.batch_count - record.completed_batches
@@ -3050,10 +3373,10 @@ void emit_scale_records(const ScaleProfileRecord& record) {
            << " resolved_workers=" << record.options.requested_workers
            << " peak_workers=" << record.peak_workers
            << " capture_wall_ns=" << record.capture_wall_nanoseconds
-           << " solver_attempted=false promotion=false\n";
+           << " solver_attempted=" << solver_attempted << " promotion=false\n";
 
-    output << "GNFS_SIQS_256A_GRAPH_V3"
-           << " schema_version=3 status=" << scale_terminal_name(record.status)
+    output << "GNFS_SIQS_256A_GRAPH_V" << schema_version << " schema_version=" << schema_version
+           << " status=" << scale_terminal_name(record.status)
            << " profile_id=" << fixture.profile_id
            << " attempted=" << (record.graph_attempted ? "true" : "false")
            << " adapter_input=" << record.adapter.input_relations
@@ -3082,10 +3405,10 @@ void emit_scale_records(const ScaleProfileRecord& record) {
            << " cycle_provenance_digest_low=" << record.cycle_evidence.provenance_digest.low
            << " cycle_provenance_digest_high=" << record.cycle_evidence.provenance_digest.high
            << " row_candidate_upper=" << record.row_candidate_upper
-           << " solver_attempted=false promotion=false\n";
+           << " solver_attempted=" << solver_attempted << " promotion=false\n";
 
-    output << "GNFS_SIQS_256A_ASSEMBLY_V3"
-           << " schema_version=3 status=" << scale_terminal_name(record.status)
+    output << "GNFS_SIQS_256A_ASSEMBLY_V" << schema_version << " schema_version=" << schema_version
+           << " status=" << scale_terminal_name(record.status)
            << " profile_id=" << fixture.profile_id
            << " attempted=" << (record.assembly_attempted ? "true" : "false") << " assembly_status="
            << (record.assembly_attempted ? assembly_status_name(record.assembly_status)
@@ -3114,29 +3437,127 @@ void emit_scale_records(const ScaleProfileRecord& record) {
            << " pretrim_fingerprint_high=" << record.fingerprints.pretrim_rows.high
            << " selected_fingerprint_low=" << record.fingerprints.selected_rows.low
            << " selected_fingerprint_high=" << record.fingerprints.selected_rows.high
-           << " solver_attempted=false promotion=false\n";
+           << " solver_attempted=" << solver_attempted << " promotion=false\n";
 
-    output << "GNFS_SIQS_256A_PROOF_V3"
-           << " schema_version=3 attempted=false status=not_attempted factor=none"
-           << " cofactor=none deterministic_terminal=" << scale_terminal_name(record.status)
-           << " solver_attempted=false promotion=false\n";
+    if (proof == nullptr) {
+        output << "GNFS_SIQS_256A_PROOF_V3"
+               << " schema_version=3 attempted=false status=not_attempted factor=none"
+               << " cofactor=none deterministic_terminal=" << scale_terminal_name(record.status)
+               << " solver_attempted=false promotion=false\n";
 
-    output << "GNFS_SIQS_256A_SUMMARY_V3"
-           << " schema_version=3 status=" << scale_terminal_name(record.status)
-           << " profile_id=" << fixture.profile_id
-           << " stdout_records=6 config_records=1 capture_records=1 graph_records=1"
-           << " assembly_records=1 proof_records=1 summary_records=1"
-           << " workers=" << record.options.requested_workers
-           << " rss_scope=self_lifetime rss_backend="
-           << gnfs::util::process_memory_backend_name(record.final_memory.backend)
-           << " rss_evidence=" << record.rss_evidence << " scale_evidence=" << record.scale_evidence
-           << " final_current_rss_bytes=" << optional_u64(record.final_memory.current_rss_bytes)
-           << " final_peak_rss_bytes=" << optional_u64(record.final_memory.lifetime_peak_rss_bytes)
-           << " plan_wall_ns=" << record.plan_wall_nanoseconds
-           << " capture_wall_ns=" << record.capture_wall_nanoseconds
-           << " analysis_wall_ns=" << record.analysis_wall_nanoseconds
-           << " wall_ns=" << record.wall_nanoseconds
-           << " solver_attempted=false proof_status=not_attempted promotion=false\n";
+        output << "GNFS_SIQS_256A_SUMMARY_V3"
+               << " schema_version=3 status=" << scale_terminal_name(record.status)
+               << " profile_id=" << fixture.profile_id
+               << " stdout_records=6 config_records=1 capture_records=1 graph_records=1"
+               << " assembly_records=1 proof_records=1 summary_records=1"
+               << " workers=" << record.options.requested_workers
+               << " rss_scope=self_lifetime rss_backend="
+               << gnfs::util::process_memory_backend_name(record.final_memory.backend)
+               << " rss_evidence=" << record.rss_evidence
+               << " scale_evidence=" << record.scale_evidence
+               << " final_current_rss_bytes=" << optional_u64(record.final_memory.current_rss_bytes)
+               << " final_peak_rss_bytes="
+               << optional_u64(record.final_memory.lifetime_peak_rss_bytes)
+               << " plan_wall_ns=" << record.plan_wall_nanoseconds
+               << " capture_wall_ns=" << record.capture_wall_nanoseconds
+               << " analysis_wall_ns=" << record.analysis_wall_nanoseconds
+               << " wall_ns=" << record.wall_nanoseconds
+               << " solver_attempted=false proof_status=not_attempted promotion=false\n";
+    } else {
+        const std::string_view proof_status = scale_proof_terminal_name(proof->terminal);
+        const std::string overall_status = record.status == ScaleTerminalStatus::solver_ready
+                                               ? std::string(proof_status)
+                                               : std::string(scale_terminal_name(record.status));
+        const std::string_view proof_evidence =
+            !proof->attempted ? "not_attempted"
+                              : (proof->terminal == ScaleProofTerminalStatus::factor_found
+                                     ? "factor_found"
+                                     : (proof->terminal == ScaleProofTerminalStatus::no_factor
+                                            ? "bounded_no_factor"
+                                            : "fail"));
+        output
+            << "GNFS_SIQS_256A_PROOF_V4"
+            << " schema_version=4 attempted=" << (proof->attempted ? "true" : "false")
+            << " status=" << proof_status
+            << " deterministic_terminal=" << scale_terminal_name(record.status) << " matrix_status="
+            << (proof->matrix_status ? matrix_status_name(*proof->matrix_status) : "not_attempted")
+            << " dependency_status="
+            << (proof->dependency_status ? dependency_status_name(*proof->dependency_status)
+                                         : "not_attempted")
+            << " factor_status="
+            << (proof->factor_status ? factor_status_name(*proof->factor_status) : "not_attempted")
+            << " matrix_rows=" << proof->matrix_rows << " matrix_columns=" << proof->matrix_columns
+            << " matrix_projected_dense_bytes="
+            << (proof->attempted ? optional_size(proof->projected_dense_bytes) : "not_attempted")
+            << " solver_max_dependencies=" << proof->options.max_dependencies
+            << " solver_elimination_workers=" << proof->options.elimination_workers
+            << " solver_parallel_column_threshold=" << proof->options.parallel_column_threshold
+            << " solver_max_dense_matrix_bytes=" << proof->options.max_dense_matrix_bytes
+            << " solver_max_dense_variable_count=" << proof->options.max_dense_variable_count
+            << " elimination_mode="
+            << (!proof->attempted
+                    ? "not_attempted"
+                    : (proof->options.elimination_workers > 1 ? "persistent_parallel" : "serial"))
+            << " dependency_search=first_free_column_basis_prefix"
+            << " dependency_combinations_attempted=false"
+            << " dependency_search_complete="
+            << (!proof->matrix_status || *proof->matrix_status != SIQSShadowMatrixStatus::valid
+                    ? "not_attempted"
+                    : (proof->dependency_cap_reached ? "false" : "true"))
+            << " dependency_ordinal_base=0"
+            << " minimum_nullity=" << proof->minimum_nullity
+            << " dependencies_returned=" << proof->dependencies_returned
+            << " dependencies_examined=" << proof->dependencies_examined
+            << " dependencies_verified=" << proof->dependencies_verified
+            << " dependency_cap_reached=" << (proof->dependency_cap_reached ? "true" : "false")
+            << " dependency_digest_low="
+            << (proof->dependency_digest_available ? std::to_string(proof->dependency_digest.low)
+                                                   : "none")
+            << " dependency_digest_high="
+            << (proof->dependency_digest_available ? std::to_string(proof->dependency_digest.high)
+                                                   : "none")
+            << " first_failed_dependency=" << optional_size(proof->first_failed_dependency)
+            << " factor_no_factor_count=" << proof->no_factor_count
+            << " factor_found_count=" << proof->factor_found_count
+            << " winning_dependency=" << optional_size(proof->winning_dependency)
+            << " winning_dependency_size=" << optional_size(proof->winning_dependency_size)
+            << " square_modulus=sieved_n gcd_target=n"
+            << " factor=" << proof->factor << " cofactor=" << proof->cofactor
+            << " solver_wall_ns=" << proof->solver_wall_nanoseconds
+            << " verify_extract_wall_ns=" << proof->verify_extract_wall_nanoseconds
+            << " solver_attempted=" << solver_attempted << " promotion=false\n";
+
+        output
+            << "GNFS_SIQS_256A_SUMMARY_V4"
+            << " schema_version=4 status=" << overall_status << " profile_id=" << fixture.profile_id
+            << " stdout_records=6 config_records=1 capture_records=1 graph_records=1"
+            << " assembly_records=1 proof_records=1 summary_records=1"
+            << " workers=" << record.options.requested_workers
+            << " rss_scope=self_lifetime rss_backend="
+            << gnfs::util::process_memory_backend_name(record.final_memory.backend)
+            << " rss_evidence=" << record.rss_evidence
+            << " scale_evidence=" << record.scale_evidence << " proof_evidence=" << proof_evidence
+            << " final_current_rss_bytes=" << optional_u64(record.final_memory.current_rss_bytes)
+            << " final_peak_rss_bytes=" << optional_u64(record.final_memory.lifetime_peak_rss_bytes)
+            << " plan_wall_ns=" << record.plan_wall_nanoseconds
+            << " capture_wall_ns=" << record.capture_wall_nanoseconds
+            << " analysis_wall_ns=" << record.analysis_wall_nanoseconds
+            << " solver_wall_ns=" << proof->solver_wall_nanoseconds
+            << " verify_extract_wall_ns=" << proof->verify_extract_wall_nanoseconds
+            << " wall_ns=" << record.wall_nanoseconds << " solver_attempted=" << solver_attempted
+            << " proof_status=" << proof_status << " matrix_status="
+            << (proof->matrix_status ? matrix_status_name(*proof->matrix_status) : "not_attempted")
+            << " dependency_status="
+            << (proof->dependency_status ? dependency_status_name(*proof->dependency_status)
+                                         : "not_attempted")
+            << " factor_status="
+            << (proof->factor_status ? factor_status_name(*proof->factor_status) : "not_attempted")
+            << " dependencies_returned=" << proof->dependencies_returned
+            << " dependencies_examined=" << proof->dependencies_examined
+            << " dependency_cap_reached=" << (proof->dependency_cap_reached ? "true" : "false")
+            << " factor=" << proof->factor << " cofactor=" << proof->cofactor
+            << " promotion=false\n";
+    }
     std::cout << output.str();
 }
 
@@ -3181,12 +3602,36 @@ void emit_scale_records(const ScaleProfileRecord& record) {
     }
 }
 
+[[maybe_unused]] int run_v4_main(int argc, char** argv) {
+    try {
+        require(BUILD_TYPE == "Release",
+                "profile requires a Release build; observed " + std::string(BUILD_TYPE));
+        require(RELEASE_ASSERTIONS_DISABLED, "profile requires NDEBUG to be defined");
+        const ProfileOptions options = parse_options(argc, argv);
+        self_check_scale_global_admission();
+        self_check_unique_a_collision_path();
+        self_check_canonical_duplicate_provenance();
+        ScaleProofRecord proof = make_scale_proof_record(options.requested_workers);
+        const ScaleProfileRecord record = run_scale_profile(options, &proof);
+        emit_scale_records(record, &proof);
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "GNFS_SIQS_256A_ERROR_V4 status=invariant_failure " << error.what() << '\n';
+        return 1;
+    } catch (...) {
+        std::cerr << "GNFS_SIQS_256A_ERROR_V4 status=invariant_failure unknown exception\n";
+        return 1;
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if constexpr (PROFILE_SCHEMA == 2) {
         return run_v2_main(argc, argv);
-    } else {
+    } else if constexpr (PROFILE_SCHEMA == 3) {
         return run_v3_main(argc, argv);
+    } else {
+        return run_v4_main(argc, argv);
     }
 }

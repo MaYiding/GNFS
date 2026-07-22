@@ -1995,6 +1995,17 @@ if(GNFS_BUILD_TESTS)
         GNFS_SIQS_MULTI_A_PROFILE_SCHEMA=3)
     target_link_libraries(test_siqs_256a_scale_profile PRIVATE gnfs_core Threads::Threads)
 
+    # Closed V4 proof-shadow path over the same frozen 256-A gate. This
+    # Release-only manual target runs the bounded dense solver and proof-gated
+    # factor extraction without enabling the production 2LP path.
+    add_executable(test_siqs_256a_proof_shadow
+        tests/test_siqs_multi_a_cycle_profile.cpp
+    )
+    target_compile_definitions(test_siqs_256a_proof_shadow PRIVATE
+        GNFS_SIQS_MULTI_A_PROFILE_BUILD_TYPE="$<CONFIG>"
+        GNFS_SIQS_MULTI_A_PROFILE_SCHEMA=4)
+    target_link_libraries(test_siqs_256a_proof_shadow PRIVATE gnfs_core Threads::Threads)
+
     add_executable(test_siqs_2lp_graph
         tests/test_siqs_2lp_graph.cpp
     )
