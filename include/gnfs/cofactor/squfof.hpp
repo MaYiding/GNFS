@@ -26,6 +26,21 @@ private:
     });
 
 public:
+    enum class MultiplierProbeStatus : uint8_t {
+        ineligible_input,
+        invalid_slot,
+        overflow,
+        attempted,
+    };
+
+    struct MultiplierProbeResult {
+        MultiplierProbeStatus status = MultiplierProbeStatus::ineligible_input;
+        uint64_t forward_iterations = 0;
+        bool core_hit = false;
+        // Zero means that the core did not yield a proper factor of n.
+        uint64_t accepted_factor = 0;
+    };
+
     struct MultiplierDiagnostics {
         uint64_t multiplier = 0;
         uint64_t attempts = 0;
@@ -71,11 +86,34 @@ public:
         return multiplier_schedule_;
     }
 
+    /// Probe exactly one slot in the production multiplier schedule.
+    ///
+    /// Invalid slots fail closed before input preprocessing. Inputs handled by
+    /// factor() preprocessing (n <= 1, even n, and odd squares) are ineligible
+    /// because no multiplier is attempted for them in production.
+    [[nodiscard]] static MultiplierProbeResult probe_multiplier(
+        uint64_t n, size_t schedule_slot, uint32_t max_iterations = 0) {
+        MultiplierProbeResult probe;
+        if (schedule_slot >= multiplier_schedule_.size()) {
+            probe.status = MultiplierProbeStatus::invalid_slot;
+            return probe;
+        }
+
+        if (n <= 1 || n % 2 == 0) return probe;
+        const uint64_t square_root = isqrt(n);
+        if (square_root * square_root == n) return probe;
+
+        const uint64_t k = multiplier_schedule_[schedule_slot];
+        (void)try_multiplier<false, true>(
+            n, k, max_iterations, nullptr, schedule_slot, &probe);
+        return probe;
+    }
+
     /// Factor n using SQUFOF. Returns a non-trivial factor, or 1 on failure.
     /// n must be > 1 and composite. Works for n up to ~2^62.
     [[nodiscard]] static uint64_t factor(uint64_t n, uint32_t max_iterations = 0) {
         // The false template instance contains no diagnostics reads, writes, or
-        // runtime branches. Counting exists only in factor_with_diagnostics().
+        // runtime branches. The production path never accepts a probe object.
         return factor_impl<false>(n, max_iterations, nullptr);
     }
 
@@ -123,42 +161,69 @@ private:
         // the prior order for the remaining fallbacks.
         for (size_t slot_index = 0; slot_index < multiplier_schedule_.size(); ++slot_index) {
             const uint64_t k = multiplier_schedule_[slot_index];
-            if (k > 1 && n > UINT64_MAX / k) {
+            const uint64_t factor = try_multiplier<CollectDiagnostics, false>(
+                n, k, max_iterations, diagnostics, slot_index, nullptr);
+            if (factor > 1) return factor;
+        }
+        return 1;
+    }
+
+    template <bool CollectDiagnostics, bool CollectProbe>
+    [[nodiscard]] static uint64_t try_multiplier(
+        uint64_t n, uint64_t k, uint32_t max_iterations,
+        [[maybe_unused]] Diagnostics* diagnostics, size_t slot_index,
+        [[maybe_unused]] MultiplierProbeResult* probe) {
+        if (k > 1 && n > UINT64_MAX / k) {
+            if constexpr (CollectDiagnostics) {
+                ++diagnostics->slots[slot_index].overflow_skips;
+            }
+            if constexpr (CollectProbe) {
+                probe->status = MultiplierProbeStatus::overflow;
+            }
+            return 1;
+        }
+
+        uint64_t D = k * n;
+        if (D < 2) return 1;
+        // D ≡ 2,3 mod 4 时 SQUFOF 周期偏长;对 k=1 时如果 N ≢ 1 mod 4
+        // 改用 D=4N 既避免 D≡2,3 又把 k 的搜索空间限制在奇 k。
+        if (k == 1 && (n % 4) != 1) {
+            if (n > UINT64_MAX / 4) {
                 if constexpr (CollectDiagnostics) {
                     ++diagnostics->slots[slot_index].overflow_skips;
                 }
-                continue;
-            }
-            uint64_t D = k * n;
-            if (D < 2) continue;
-            // D ≡ 2,3 mod 4 时 SQUFOF 周期偏长;对 k=1 时如果 N ≢ 1 mod 4
-            // 改用 D=4N 既避免 D≡2,3 又把 k 的搜索空间限制在奇 k。
-            if (k == 1 && (n % 4) != 1) {
-                if (n > UINT64_MAX / 4) {
-                    if constexpr (CollectDiagnostics) {
-                        ++diagnostics->slots[slot_index].overflow_skips;
-                    }
-                    continue;
+                if constexpr (CollectProbe) {
+                    probe->status = MultiplierProbeStatus::overflow;
                 }
-                D = 4 * n;
+                return 1;
             }
+            D = 4 * n;
+        }
 
+        if constexpr (CollectDiagnostics) {
+            ++diagnostics->slots[slot_index].attempts;
+        }
+        if constexpr (CollectProbe) {
+            probe->status = MultiplierProbeStatus::attempted;
+        }
+        const uint64_t result = squfof_core<CollectDiagnostics, CollectProbe>(
+            D, max_iterations, diagnostics, slot_index, probe);
+        if (result > 1 && result < D) {
             if constexpr (CollectDiagnostics) {
-                ++diagnostics->slots[slot_index].attempts;
+                ++diagnostics->slots[slot_index].core_hits;
             }
-            uint64_t result = squfof_core<CollectDiagnostics>(
-                D, max_iterations, diagnostics, slot_index);
-            if (result > 1 && result < D) {
+            if constexpr (CollectProbe) {
+                probe->core_hit = true;
+            }
+            const uint64_t factor = gcd(result, n);
+            if (factor > 1 && factor < n) {
                 if constexpr (CollectDiagnostics) {
-                    ++diagnostics->slots[slot_index].core_hits;
+                    ++diagnostics->slots[slot_index].accepted_hits;
                 }
-                uint64_t g = gcd(result, n);
-                if (g > 1 && g < n) {
-                    if constexpr (CollectDiagnostics) {
-                        ++diagnostics->slots[slot_index].accepted_hits;
-                    }
-                    return g;
+                if constexpr (CollectProbe) {
+                    probe->accepted_factor = factor;
                 }
+                return factor;
             }
         }
         return 1;
@@ -191,11 +256,12 @@ private:
     ///
     /// Look for Q_i that is a perfect square at even steps (i ≥ 2).
     /// Then do an inverse walk to extract the factor.
-    template <bool CollectDiagnostics>
+    template <bool CollectDiagnostics, bool CollectProbe>
     [[nodiscard]] static uint64_t squfof_core(
         uint64_t D, uint32_t max_iter,
         [[maybe_unused]] Diagnostics* diagnostics,
-        [[maybe_unused]] size_t slot_index) {
+        [[maybe_unused]] size_t slot_index,
+        [[maybe_unused]] MultiplierProbeResult* probe) {
         uint64_t sqrtD = isqrt(D);
         if (sqrtD * sqrtD == D) return sqrtD;
 
@@ -215,6 +281,9 @@ private:
         for (uint32_t i = 0; i < max_iter; ++i) {
             if constexpr (CollectDiagnostics) {
                 ++diagnostics->slots[slot_index].forward_iterations;
+            }
+            if constexpr (CollectProbe) {
+                ++probe->forward_iterations;
             }
             uint64_t b = (sqrtD + Pprev) / Qcurr;
             uint64_t Pnew = b * Qcurr - Pprev;

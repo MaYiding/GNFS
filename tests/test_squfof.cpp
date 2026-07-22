@@ -256,6 +256,136 @@ void test_diagnostics_overflow_accumulation_and_reset() {
     TEST_PASS("diagnostics overflow, accumulation, and reset");
 }
 
+void test_multiplier_probe_boundaries() {
+    using ProbeStatus = SQUFOF::MultiplierProbeStatus;
+
+    const auto invalid = SQUFOF::probe_multiplier(0, SQUFOF::diagnostic_slot_count);
+    TEST_ASSERT(invalid.status == ProbeStatus::invalid_slot,
+                "invalid slot must fail closed before input preprocessing");
+    TEST_ASSERT(invalid.forward_iterations == 0 && !invalid.core_hit &&
+                    invalid.accepted_factor == 0,
+                "invalid-slot probe must not expose execution artifacts");
+
+    constexpr std::array<uint64_t, 5> ineligible_inputs{{0, 1, 2, 64, 49}};
+    for (uint64_t n : ineligible_inputs) {
+        const auto probe = SQUFOF::probe_multiplier(n, 0);
+        TEST_ASSERT(probe.status == ProbeStatus::ineligible_input,
+                    "factor preprocessing input must be probe-ineligible: " << n);
+        TEST_ASSERT(probe.forward_iterations == 0 && !probe.core_hit &&
+                        probe.accepted_factor == 0,
+                    "ineligible probe must not execute a multiplier for n=" << n);
+    }
+
+    const auto k1_overflow = SQUFOF::probe_multiplier((UINT64_C(1) << 62) + 3, 0, 1);
+    TEST_ASSERT(k1_overflow.status == ProbeStatus::overflow,
+                "k=1 D=4N overflow must be reported before attempting the core");
+    TEST_ASSERT(k1_overflow.forward_iterations == 0 && !k1_overflow.core_hit &&
+                    k1_overflow.accepted_factor == 0,
+                "k=1 D=4N overflow must not execute the core");
+
+    const auto high_slot_overflow = SQUFOF::probe_multiplier(
+        (UINT64_C(1) << 62) - 1, SQUFOF::diagnostic_slot_count - 1, 1);
+    TEST_ASSERT(high_slot_overflow.status == ProbeStatus::overflow,
+                "high multiplier overflow must be reported before attempting the core");
+    TEST_ASSERT(high_slot_overflow.forward_iterations == 0 &&
+                    !high_slot_overflow.core_hit &&
+                    high_slot_overflow.accepted_factor == 0,
+                "high multiplier overflow must not execute the core");
+
+    const auto capped = SQUFOF::probe_multiplier(15, 0, 1);
+    TEST_ASSERT(capped.status == ProbeStatus::attempted,
+                "bounded eligible probe must report an attempt");
+    TEST_ASSERT(capped.forward_iterations == 1 && !capped.core_hit &&
+                    capped.accepted_factor == 0,
+                "one-iteration cap must stop the k=1 probe after one iteration");
+
+    const auto square_discriminant = SQUFOF::probe_multiplier(135, 1);
+    TEST_ASSERT(square_discriminant.status == ProbeStatus::attempted &&
+                    square_discriminant.forward_iterations == 0 &&
+                    square_discriminant.core_hit &&
+                    square_discriminant.accepted_factor == 45,
+                "n=135 at k=15 must accept gcd(45, 135) from square D=2025");
+
+    const auto rejected_gcd = SQUFOF::probe_multiplier(15, 1);
+    TEST_ASSERT(rejected_gcd.status == ProbeStatus::attempted &&
+                    rejected_gcd.forward_iterations == 0 && rejected_gcd.core_hit &&
+                    rejected_gcd.accepted_factor == 0,
+                "n=15 at k=15 must expose the square-D core hit rejected by gcd");
+
+    const auto repeated = SQUFOF::probe_multiplier(135, 1);
+    TEST_ASSERT(repeated.status == square_discriminant.status &&
+                    repeated.forward_iterations == square_discriminant.forward_iterations &&
+                    repeated.core_hit == square_discriminant.core_hit &&
+                    repeated.accepted_factor == square_discriminant.accepted_factor,
+                "identical multiplier probes must be deterministic");
+
+    TEST_PASS("single-multiplier probe boundaries");
+}
+
+void test_multiplier_probe_replays_production_schedule() {
+    using ProbeStatus = SQUFOF::MultiplierProbeStatus;
+
+    struct ReplayCase {
+        uint64_t n;
+        uint32_t max_iterations;
+    };
+    constexpr std::array<ReplayCase, 8> cases{{
+        {15, 0},
+        {27, 2000},
+        {77, 0},
+        {9991, 0},
+        {1000003, 2000},
+        {UINT64_C(1000003) * UINT64_C(1000033), 5000},
+        {(UINT64_C(1) << 62) - 1, 1},
+        {(UINT64_C(1) << 62) + 3, 1},
+    }};
+
+    for (const auto& test_case : cases) {
+        SQUFOF::Diagnostics diagnostics;
+        const uint64_t production = SQUFOF::factor_with_diagnostics(
+            test_case.n, test_case.max_iterations, diagnostics);
+
+        uint64_t replay_factor = 1;
+        for (size_t slot_index = 0; slot_index < SQUFOF::diagnostic_slot_count;
+             ++slot_index) {
+            const auto probe = SQUFOF::probe_multiplier(
+                test_case.n, slot_index, test_case.max_iterations);
+            const auto& slot = diagnostics.slots[slot_index];
+
+            if (slot.overflow_skips == 1) {
+                TEST_ASSERT(probe.status == ProbeStatus::overflow,
+                            "probe did not replay overflow at slot " << slot_index
+                            << " for n=" << test_case.n);
+            } else if (slot.attempts == 1) {
+                TEST_ASSERT(probe.status == ProbeStatus::attempted,
+                            "probe did not replay attempt at slot " << slot_index
+                            << " for n=" << test_case.n);
+                TEST_ASSERT(probe.forward_iterations == slot.forward_iterations &&
+                                probe.core_hit == (slot.core_hits == 1) &&
+                                (probe.accepted_factor != 0) == (slot.accepted_hits == 1),
+                            "probe counters differ from diagnostics at slot " << slot_index
+                            << " for n=" << test_case.n);
+            } else {
+                TEST_ASSERT(replay_factor != 1,
+                            "production skipped a slot before accepting a factor for n="
+                                << test_case.n);
+                break;
+            }
+
+            if (probe.accepted_factor != 0) {
+                replay_factor = probe.accepted_factor;
+                break;
+            }
+        }
+
+        TEST_ASSERT(replay_factor == production,
+                    "schedule-slot replay differs from production for n=" << test_case.n
+                    << ": replay=" << replay_factor << " production=" << production);
+    }
+
+    TEST_PASS("single-multiplier probes replay production schedule");
+}
+
 void test_exhaustive_small_composites() {
     constexpr uint64_t upper_bound = 4095;
     size_t checked = 0;
@@ -410,6 +540,8 @@ int main() {
     test_diagnostics_schedule_and_fast_paths();
     test_diagnostics_factor_equivalence();
     test_diagnostics_overflow_accumulation_and_reset();
+    test_multiplier_probe_boundaries();
+    test_multiplier_probe_replays_production_schedule();
     test_exhaustive_small_composites();
     test_fixed_semiprime_corpus();
     test_prime_corpus();
