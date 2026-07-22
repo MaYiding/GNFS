@@ -55,6 +55,10 @@
 #   ./scripts/test.sh bench               # 基准测试: 全部级别 + 计时对比
 #   ./scripts/test.sh bench --save        # 保存基准结果到 benchmarks/
 #   ./scripts/test.sh bench --compare     # 与上次保存的基准对比
+#   ./scripts/test.sh structured-ooc-rss 50000 4
+#                                         # 独立进程 structured OOC RSS 场景
+#   ./scripts/test.sh probe-50d-structured-ooc
+#                                         # 真实 50 位、有界 production Pipeline 探针
 #   ./scripts/test.sh bench-ram <level>   # 后台 RAM baseline: nohup + /usr/bin/time -l
 #                                         # level=1 (50d ≈2h) / 2 (60d hours+) / 3-5 (大)
 #
@@ -105,6 +109,7 @@ REPORT_FILE="${BUILD_DIR}/test_report.json"
 NCPU=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 
 BUILD_TYPE="Debug"
+BUILD_TYPE_EXPLICIT=0
 PARALLEL_JOBS="$NCPU"
 VERBOSE=0
 QUIET=0
@@ -167,6 +172,7 @@ ALL_TEST_BINARIES=(
     test_logger
     test_primes
     test_timer
+    test_process_memory
     test_mmap_file
     test_resultant
     test_core_types
@@ -219,6 +225,7 @@ ALL_TEST_BINARIES=(
     test_relation_identity
     test_relation_reduction_engine
     test_structured_ooc_scale
+    test_structured_ooc_50d_probe
     test_structured_filter
     test_structured_filter_policy
     test_structured_tree_basis
@@ -333,7 +340,7 @@ ALL_TEST_BINARIES=(
 typeset -A MODULE_TESTS
 MODULE_TESTS=(
     core           "test_integer test_params test_regressions test_edge_cases test_core_types"
-    util           "test_small_vector test_thread_pool test_ordered_parallel_map test_logger test_primes test_timer test_mmap_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel test_mpz_invert_parallel test_mpz_mod_parallel test_mpz_gcd_parallel test_mpz_mul_parallel"
+    util           "test_small_vector test_thread_pool test_ordered_parallel_map test_logger test_primes test_timer test_process_memory test_mmap_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel test_mpz_invert_parallel test_mpz_mod_parallel test_mpz_gcd_parallel test_mpz_mul_parallel"
     polynomial     "test_murphy test_root_property_cache test_int_polynomial test_half_gcd test_poly_karatsuba test_horner_batch_simd test_divrem_subquadratic test_poly_ntt test_poly_square test_poly_add_mod_simd test_poly_horner_mod_simd test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
     factor_base    "test_factor_base test_fb_checkpoint test_fb_roots_parallel"
     sieve          "test_special_q test_sieve_basic test_sieve_checkpoint test_distributed_sieve test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel test_sieve_apply_tile_parallel test_lattice_coords_simd test_threshold_scan_simd test_saturated_sub_simd"
@@ -377,6 +384,7 @@ SMOKE_TESTS=(
     test_logger
     test_primes
     test_timer
+    test_process_memory
     test_mmap_file
     test_resultant
     test_core_types
@@ -498,6 +506,7 @@ SMOKE_TESTS=(
 typeset -a TSAN_RELATION_TESTS
 TSAN_RELATION_TESTS=(
     test_ordered_parallel_map
+    test_relation_collector
     test_relation_reduction_engine
     test_structured_parallel_prepare
     test_structured_batch_commit
@@ -521,6 +530,7 @@ TEST_TIMEOUT=(
     test_logger              10
     test_primes              10
     test_timer               10
+    test_process_memory      10
     test_mmap_file           10
     test_resultant           10
     test_core_types          10
@@ -566,6 +576,7 @@ TEST_TIMEOUT=(
     test_relation_identity   10
     test_relation_reduction_engine 10
     test_structured_ooc_scale 180
+    test_structured_ooc_50d_probe 3600
     test_structured_filter   10
     test_structured_filter_policy 10
     test_structured_tree_basis 10
@@ -693,6 +704,7 @@ TEST_TIER=(
     test_logger              "instant"
     test_primes              "instant"
     test_timer               "instant"
+    test_process_memory      "instant"
     test_mmap_file           "instant"
     test_resultant           "instant"
     test_core_types          "instant"
@@ -738,6 +750,7 @@ TEST_TIER=(
     test_relation_identity   "instant"
     test_relation_reduction_engine "instant"
     test_structured_ooc_scale "gate"
+    test_structured_ooc_50d_probe "stress"
     test_structured_filter   "instant"
     test_structured_filter_policy "instant"
     test_structured_tree_basis "instant"
@@ -1214,6 +1227,25 @@ run_single_test() {
         fi
         return 1
     fi
+}
+
+# Capture one machine-readable measurement record from RUN_OUTPUT. Dedicated
+# resource modes fail closed if a successful binary emits no record or more
+# than one record.
+MEASUREMENT_RECORD=""
+capture_single_measurement_record() {
+    local prefix="$1"
+    local label="$2"
+    local record_count
+    record_count=$(printf '%s\n' "$RUN_OUTPUT" |
+        awk -v prefix="$prefix" 'index($0, prefix) == 1 { count += 1 } END { print count + 0 }')
+    if [[ "$record_count" != "1" ]]; then
+        log_fail "${label} 必须恰好输出 1 条 ${prefix}记录，实际为 ${record_count} 条"
+        MEASUREMENT_RECORD=""
+        return 1
+    fi
+    MEASUREMENT_RECORD=$(printf '%s\n' "$RUN_OUTPUT" |
+        awk -v prefix="$prefix" 'index($0, prefix) == 1 { print }')
 }
 
 # ============================================================
@@ -2033,6 +2065,7 @@ do_list() {
     echo "  ${BULLET} ${CYAN}test_gnfs_progressive${RESET}  — 渐进式 L1-L5 (8-61 bit)"
     echo "  ${BULLET} ${CYAN}test_25digit${RESET}           — 25-digit 性能基准 (81 bit)"
     echo "  ${BULLET} ${CYAN}test_stress${RESET}            — 压力测试: 50/60-digit (164-197 bit)"
+    echo "  ${BULLET} ${CYAN}test_structured_ooc_50d_probe${RESET} — 有界 50 位 production OOC 前缀探针"
 
     echo ""
     echo "${BOLD}Sanitizer 窄通道:${RESET}"
@@ -2134,7 +2167,7 @@ BENCH_EXTRA_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -j)          PARALLEL_JOBS="$2"; shift 2 ;;
-        -t)          BUILD_TYPE="$2"; shift 2 ;;
+        -t)          BUILD_TYPE="$2"; BUILD_TYPE_EXPLICIT=1; shift 2 ;;
         -v)          VERBOSE=1; shift ;;
         -q)          QUIET=1; shift ;;
         --no-build)  SKIP_BUILD=1; shift ;;
@@ -2272,6 +2305,96 @@ case "$MODE" in
         show_summary
         ;;
 
+    structured-ooc-rss)
+        if [[ ${#MODE_ARGS[@]} -ne 2 ]]; then
+            log_fail "用法: $0 structured-ooc-rss <rows> <workers>"
+            log_info "rows=5000|50000|200000; workers=1|2|4"
+            exit 1
+        fi
+        local _rss_rows="${MODE_ARGS[1]}"
+        local _rss_workers="${MODE_ARGS[2]}"
+        local _rss_valid=1
+        case "$_rss_rows" in 5000|50000|200000) ;; *) _rss_valid=0 ;; esac
+        case "$_rss_workers" in 1|2|4) ;; *) _rss_valid=0 ;; esac
+        if (( ! _rss_valid )); then
+            log_fail "非法 RSS 场景: rows=${_rss_rows}, workers=${_rss_workers}"
+            exit 1
+        fi
+        if (( ! BUILD_TYPE_EXPLICIT )); then
+            BUILD_TYPE="Release"
+        fi
+        if (( SKIP_BUILD )); then
+            log_fail "structured-ooc-rss 不接受 --no-build；资源证据必须由本次请求的构建生成"
+            exit 1
+        fi
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_structured_ooc_scale" ]]; then
+            log_fail "资源测量二进制不存在: ${BUILD_DIR}/test_structured_ooc_scale"
+            exit 1
+        fi
+        log_header "Structured OOC 独立进程 RSS"
+        local _rss_status=0
+        run_single_test test_structured_ooc_scale --rss-case "$_rss_rows" "$_rss_workers" ||
+            _rss_status=$?
+        if (( _rss_status == 0 )); then
+            if capture_single_measurement_record "GNFS_RESOURCE_V1 " "Structured OOC RSS"; then
+                print -r -- "$MEASUREMENT_RECORD"
+            else
+                (( FAILED_TESTS += 1 ))
+            fi
+        fi
+        show_summary
+        ;;
+
+    probe-50d-structured-ooc)
+        if [[ ${#MODE_ARGS[@]} -gt 1 ]]; then
+            log_fail "用法: $0 probe-50d-structured-ooc [max_special_q]"
+            exit 1
+        fi
+        local _probe_max_special_q="${MODE_ARGS[1]:-4}"
+        if [[ ! "$_probe_max_special_q" =~ ^[0-9]+$ ]] ||
+           (( _probe_max_special_q < 1 || _probe_max_special_q > 64 )); then
+            log_fail "max_special_q 必须在 1..64 (传入: ${_probe_max_special_q})"
+            exit 1
+        fi
+        if (( ! BUILD_TYPE_EXPLICIT )); then
+            BUILD_TYPE="Release"
+        fi
+        if (( SKIP_BUILD )); then
+            log_fail "probe-50d-structured-ooc 不接受 --no-build；资源证据必须由本次请求的构建生成"
+            exit 1
+        fi
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_structured_ooc_50d_probe" ]]; then
+            log_fail "50 位探针二进制不存在: ${BUILD_DIR}/test_structured_ooc_50d_probe"
+            exit 1
+        fi
+        local _probe_dir
+        _probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/gnfs_structured_ooc_50d.XXXXXX")
+        local _probe_base="${_probe_dir}/raw"
+        log_header "有界 50 位 production structured OOC 探针"
+        log_info "max_special_q=${_probe_max_special_q}; 临时目录=${_probe_dir}"
+        local _probe_status=0
+        run_single_test test_structured_ooc_50d_probe --max-special-q \
+            "$_probe_max_special_q" --ooc-base "$_probe_base" || _probe_status=$?
+        if (( _probe_status == 0 )); then
+            if capture_single_measurement_record "GNFS_EXPERIMENT_V1 " "50 位探针"; then
+                print -r -- "$MEASUREMENT_RECORD"
+            else
+                (( FAILED_TESTS += 1 ))
+            fi
+            if rmdir "$_probe_dir"; then
+                log_success "探针工件已完成生命周期清理"
+            else
+                log_fail "探针成功但临时目录非空，已保留: ${_probe_dir}"
+                (( FAILED_TESTS += 1 ))
+            fi
+        else
+            log_warn "探针失败，保留诊断工件: ${_probe_dir}"
+        fi
+        show_summary
+        ;;
+
     perf)
         do_build
         log_header "性能测试 (25-digit)"
@@ -2346,8 +2469,8 @@ case "$MODE" in
         do_build
         log_header "压力测试 (50/60-digit)"
         log_warn "50-digit 可能需要数小时, 60-digit 可能需要十几小时..."
-        local stress_min=${2:-1}
-        local stress_max=${3:-2}
+        local stress_min=${MODE_ARGS[1]:-1}
+        local stress_max=${MODE_ARGS[2]:-2}
         run_single_test test_stress "$stress_min" "$stress_max"
         show_summary
         ;;

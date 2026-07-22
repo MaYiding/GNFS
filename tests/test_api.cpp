@@ -87,6 +87,21 @@ static int fail_count = 0;
         std::cout << "FAILED\n";                                                                   \
     }
 
+bool has_unsigned_record_field(std::string_view record, std::string_view key) {
+    const std::string marker = std::string(key) + "=";
+    const size_t marker_position = record.find(marker);
+    if (marker_position == std::string_view::npos ||
+        (marker_position != 0 && record[marker_position - 1] != ' ')) {
+        return false;
+    }
+    size_t cursor = marker_position + marker.size();
+    const size_t value_start = cursor;
+    while (cursor < record.size() && record[cursor] >= '0' && record[cursor] <= '9') {
+        ++cursor;
+    }
+    return cursor > value_start && (cursor == record.size() || record[cursor] == ' ');
+}
+
 // ============================================================
 // Config tests
 // ============================================================
@@ -96,16 +111,36 @@ bool test_config_auto_detect() {
     // All fields should be empty (nullopt)
     assert(!cfg.degree.has_value());
     assert(!cfg.rational_bound.has_value());
+    if (cfg.max_special_q.has_value()) {
+        return false;
+    }
     assert(!cfg.verbose.has_value());
     return true;
 }
 
 bool test_config_builder() {
-    auto cfg = Config::auto_detect().set_degree(4).set_rational_bound(50000).set_verbose(true);
+    auto cfg = Config::auto_detect()
+                   .set_degree(4)
+                   .set_rational_bound(50000)
+                   .set_max_special_q(17)
+                   .set_verbose(true);
 
     assert(cfg.degree.has_value() && *cfg.degree == 4);
     assert(cfg.rational_bound.has_value() && *cfg.rational_bound == 50000);
+    if (!cfg.max_special_q.has_value() || *cfg.max_special_q != 17) {
+        return false;
+    }
     assert(cfg.verbose.has_value() && *cfg.verbose == true);
+
+    bool zero_rejected = false;
+    try {
+        (void)Config::auto_detect().set_max_special_q(0);
+    } catch (const std::out_of_range&) {
+        zero_rejected = true;
+    }
+    if (!zero_rejected) {
+        return false;
+    }
     return true;
 }
 
@@ -113,16 +148,21 @@ bool test_config_merge() {
     Config base;
     base.degree = 3;
     base.rational_bound = 5000;
+    base.max_special_q = 23;
     base.verbose = false;
 
     Config override_cfg;
     override_cfg.degree = 4;
+    override_cfg.max_special_q = 11;
     override_cfg.verbose = true;
 
     auto merged = base.merge(override_cfg);
     assert(*merged.degree == 4);            // overridden
     assert(*merged.rational_bound == 5000); // from base
-    assert(*merged.verbose == true);        // overridden
+    if (!merged.max_special_q.has_value() || *merged.max_special_q != 11) {
+        return false;
+    }
+    assert(*merged.verbose == true); // overridden
     return true;
 }
 
@@ -130,14 +170,30 @@ bool test_config_apply_to() {
     Config cfg;
     cfg.degree = 4;
     cfg.rational_bound = 99999;
+    cfg.max_special_q = 13;
 
     Integer n("1000036000099"); // ~40-bit
     auto params = cfg.apply_to(n);
 
     assert(params.degree == 4);
     assert(params.rational_bound == 99999);
+    if (params.max_special_q != 13) {
+        return false;
+    }
     // Other params should be auto-computed
     assert(params.bits > 0);
+
+    Config invalid;
+    invalid.max_special_q = 0;
+    bool zero_rejected = false;
+    try {
+        (void)invalid.apply_to(n);
+    } catch (const std::out_of_range&) {
+        zero_rejected = true;
+    }
+    if (!zero_rejected) {
+        return false;
+    }
     return true;
 }
 
@@ -149,12 +205,16 @@ bool test_config_from_file() {
         ofs << "# Test config\n";
         ofs << "degree = 4\n";
         ofs << "rational_bound = 12345\n";
+        ofs << "max_special_q = 19\n";
         ofs << "verbose = true\n";
     }
 
     auto cfg = Config::from_file(path);
     assert(cfg.degree.has_value() && *cfg.degree == 4);
     assert(cfg.rational_bound.has_value() && *cfg.rational_bound == 12345);
+    if (!cfg.max_special_q.has_value() || *cfg.max_special_q != 19) {
+        return false;
+    }
     assert(cfg.verbose.has_value() && *cfg.verbose == true);
 
     // Cleanup
@@ -193,6 +253,9 @@ bool test_config_from_file_invalid() {
     write_and_expect_throw("bogus_key = 42\n", "unknown key");
     write_and_expect_throw("degree = 999999999999999999999999\n", "out-of-range integer");
     write_and_expect_throw("degree = not-an-integer\n", "invalid integer");
+    write_and_expect_throw("max_special_q = 0\n", "zero max_special_q");
+    write_and_expect_throw("max_special_q = 4294967296\n", "overflow max_special_q");
+    write_and_expect_throw("max_special_q = 4junk\n", "trailing max_special_q characters");
 
     // Valid: empty + comment + blank lines should not throw
     {
@@ -219,9 +282,13 @@ bool test_config_to_string() {
     Config cfg;
     cfg.degree = 5;
     cfg.rational_bound = 10000u;
+    cfg.max_special_q = 29;
     auto s = cfg.to_string();
     assert(s.find("degree = 5") != std::string::npos);
     assert(s.find("rational_bound = 10000") != std::string::npos);
+    if (s.find("max_special_q = 29") == std::string::npos) {
+        return false;
+    }
     return true;
 }
 
@@ -984,9 +1051,12 @@ bool test_structured_filter_public_route() {
 
     size_t structured_records = 0;
     size_t legacy_records = 0;
+    std::string structured_record;
     pipeline.set_log_callback([&](const LogEntry& entry) {
-        if (entry.message.starts_with("structured_filter "))
+        if (entry.message.starts_with("structured_filter ")) {
             ++structured_records;
+            structured_record = entry.message;
+        }
         if (entry.message.starts_with("v0_bfs") || entry.message.starts_with("v3_cascade"))
             ++legacy_records;
     });
@@ -998,6 +1068,14 @@ bool test_structured_filter_public_route() {
             gnfs::relation::StructuredReductionStopReason::NoCandidates ||
         stats.structured_run.emitted_rows != 2 || stats.merged_relations != 1 ||
         reduction.size() != 1 || structured_records != 1 || legacy_records != 0 ||
+        !structured_record.starts_with("structured_filter schema=1 ") ||
+        structured_record.find(" route=owned_snapshot ") == std::string::npos ||
+        structured_record.find(" output_backend=in_memory ") == std::string::npos ||
+        structured_record.find(" raw_digest_low=") == std::string::npos ||
+        structured_record.find(" raw_digest_high=") == std::string::npos ||
+        structured_record.find(" process_rss_scope=self_lifetime ") == std::string::npos ||
+        !has_unsigned_record_field(structured_record, "reduction_engine_wall_us") ||
+        !has_unsigned_record_field(structured_record, "process_peak_rss_bytes") ||
         pipeline.stats().singletons_removed != stats.singleton_rows_removed ||
         pipeline.stats().merged_relations != stats.merged_relations) {
         std::cout << "(public filter did not execute one structured strategy) ";
@@ -1277,6 +1355,7 @@ bool test_ooc_base_snapshot_ignores_callback_env_drift() {
 
     bool injected = false;
     size_t structured_records = 0;
+    std::string structured_record;
     std::string logged_ooc_base;
     pipeline.set_progress_callback([&](const ProgressInfo& info) {
         if (info.phase == Phase::Sieving && !injected) {
@@ -1289,6 +1368,7 @@ bool test_ooc_base_snapshot_ignores_callback_env_drift() {
     pipeline.set_log_callback([&](const LogEntry& entry) {
         if (entry.message.starts_with("structured_filter ")) {
             ++structured_records;
+            structured_record = entry.message;
         }
         if (!entry.message.starts_with("OOC mode enabled")) {
             return;
@@ -1312,6 +1392,10 @@ bool test_ooc_base_snapshot_ignores_callback_env_drift() {
     const std::string generation_marker =
         ".g" + std::to_string(reduction->generation) + ".output.gnfs-sink-lease";
     if (!injected || reduction->generation == 0 || structured_records != 1 ||
+        structured_record.find(" route=direct_ooc_prefix ") == std::string::npos ||
+        structured_record.find(" output_backend=finalized_ooc ") == std::string::npos ||
+        !has_unsigned_record_field(structured_record, "reduction_engine_wall_us") ||
+        !has_unsigned_record_field(structured_record, "process_peak_rss_growth_bytes") ||
         reduction->stats.strategy != gnfs::relation::ReductionStrategy::Structured ||
         reduction->storage_kind() != gnfs::relation::RelationStorageKind::FinalizedOOC ||
         reduction->stats.output_relations != reduction->size() || !output_scope.has_value() ||
@@ -1764,12 +1848,22 @@ bool test_structured_filter_matrix_record_matches_final_handoff() {
 
     auto matrix_result = pipeline.solve_matrix(std::move(reduction), fb, ctx);
     const auto final_stats = gnfs::linalg::compute_matrix_stats(matrix_result.matrix);
-    const std::string expected_record =
+    const int64_t expected_row_column_delta =
+        final_stats.num_rows >= final_stats.num_cols
+            ? static_cast<int64_t>(final_stats.num_rows - final_stats.num_cols)
+            : -static_cast<int64_t>(final_stats.num_cols - final_stats.num_rows);
+    const std::string expected_record_prefix =
         "structured_filter_matrix generation=" + std::to_string(generation) +
         " rows=" + std::to_string(final_stats.num_rows) +
         " cols=" + std::to_string(final_stats.num_cols) +
         " excess=" + std::to_string(final_stats.excess) +
+        " row_column_delta=" + std::to_string(expected_row_column_delta) + " ";
+    const std::string expected_record_suffix =
         " nonzeros=" + std::to_string(final_stats.total_weight);
+    const bool matrix_record_valid =
+        matrix_records.size() == 1 && matrix_records.front().starts_with(expected_record_prefix) &&
+        matrix_records.front().ends_with(expected_record_suffix) &&
+        has_unsigned_record_field(matrix_records.front(), "matrix_build_wall_us");
 
     const auto row_to_relation = matrix_result.structured_row_to_relation();
     bool row_mapping_valid = row_to_relation.size() == final_stats.num_rows;
@@ -1817,15 +1911,15 @@ bool test_structured_filter_matrix_record_matches_final_handoff() {
         }
     }
 
-    if (!trimmed || matrix_records.size() != 1 || matrix_records.front() != expected_record ||
-        !matrix_result.owns_relation_corpus() || !matrix_result.relations.empty() ||
+    if (!trimmed || !matrix_record_valid || !matrix_result.owns_relation_corpus() ||
+        !matrix_result.relations.empty() ||
         matrix_result.relation_count() != final_stats.num_rows ||
         matrix_result.relation_count() >= input_rows || !row_mapping_valid ||
         !row_mapping_matches_sample || !materialization_matches ||
         pipeline.stats().matrix_rows != final_stats.num_rows ||
         pipeline.stats().matrix_cols != final_stats.num_cols ||
         pipeline.stats().matrix_weight != final_stats.total_weight ||
-        pipeline.stats().matrix_excess != static_cast<int64_t>(final_stats.excess)) {
+        pipeline.stats().matrix_excess != expected_row_column_delta) {
         std::cout << "(structured matrix record did not match final handoff) ";
         return false;
     }
@@ -1885,12 +1979,27 @@ bool test_structured_matrix_thin_early_return_and_malformed_dependency() {
     gnfs::relation::RelationReductionResult reduction(778, std::move(relations),
                                                       std::move(reduction_stats));
 
+    std::vector<std::string> matrix_records;
+    pipeline.set_log_callback([&](const LogEntry& entry) {
+        if (entry.message.starts_with("structured_filter_matrix ")) {
+            matrix_records.push_back(entry.message);
+        }
+    });
     auto matrix_result = pipeline.solve_matrix(std::move(reduction), fb, ctx);
     const auto row_to_relation = matrix_result.structured_row_to_relation();
+    const int64_t expected_delta =
+        matrix_result.matrix.num_rows() >= matrix_result.matrix.num_cols()
+            ? static_cast<int64_t>(matrix_result.matrix.num_rows() -
+                                   matrix_result.matrix.num_cols())
+            : -static_cast<int64_t>(matrix_result.matrix.num_cols() -
+                                    matrix_result.matrix.num_rows());
     if (!matrix_result.owns_relation_corpus() || !matrix_result.relations.empty() ||
         !matrix_result.dependencies.empty() || matrix_result.matrix.num_rows() != 1 ||
         matrix_result.relation_count() != 1 || row_to_relation.size() != 1 ||
-        row_to_relation.front() != 0) {
+        row_to_relation.front() != 0 || expected_delta >= 0 || matrix_records.size() != 1 ||
+        matrix_records.front().find(" row_column_delta=" + std::to_string(expected_delta) + " ") ==
+            std::string::npos ||
+        pipeline.stats().matrix_excess != expected_delta) {
         std::cout << "(structured thin early return lost corpus ownership or row mapping) ";
         return false;
     }

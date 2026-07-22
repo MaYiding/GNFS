@@ -3,13 +3,18 @@
 #include "gnfs/relation/reduction_engine.hpp"
 #include "gnfs/relation/structured_filter_profile.hpp"
 #include "gnfs/util/process.hpp"
+#include "gnfs/util/process_memory.hpp"
 #include "gnfs/util/temp_path.hpp"
 
+#include <algorithm>
 #include <array>
+#include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -36,6 +41,10 @@ using gnfs::relation::RelationReductionResult;
 using gnfs::relation::RelationReductionStats;
 using gnfs::relation::RelationStorageKind;
 using gnfs::relation::StructuredReductionStopReason;
+using gnfs::util::process_memory_backend_name;
+using gnfs::util::process_memory_snapshot;
+using gnfs::util::ProcessMemoryBackend;
+using gnfs::util::ProcessMemorySnapshot;
 
 namespace {
 
@@ -571,9 +580,181 @@ void run_scale(size_t raw_row_count, uint64_t generation) {
     CHECK(ordinary_artifacts_absent(input_base));
 }
 
+struct RssCaseArguments final {
+    size_t rows = 0;
+    uint32_t workers = 0;
+};
+
+[[nodiscard]] std::optional<uint64_t> parse_unsigned(std::string_view text) noexcept {
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    uint64_t value = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error != std::errc{} || end != text.data() + text.size()) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+[[nodiscard]] std::optional<RssCaseArguments> parse_rss_case_arguments(int argc,
+                                                                       char* argv[]) noexcept {
+    if (argc != 4 || std::string_view(argv[1]) != "--rss-case") {
+        return std::nullopt;
+    }
+
+    const auto parsed_rows = parse_unsigned(argv[2]);
+    const auto parsed_workers = parse_unsigned(argv[3]);
+    if (!parsed_rows.has_value() || !parsed_workers.has_value()) {
+        return std::nullopt;
+    }
+
+    constexpr std::array<uint64_t, 3> allowed_rows{5'000, 50'000, 200'000};
+    constexpr std::array<uint64_t, 3> allowed_workers{1, 2, 4};
+    if (std::find(allowed_rows.begin(), allowed_rows.end(), *parsed_rows) == allowed_rows.end() ||
+        std::find(allowed_workers.begin(), allowed_workers.end(), *parsed_workers) ==
+            allowed_workers.end()) {
+        return std::nullopt;
+    }
+
+    return RssCaseArguments{static_cast<size_t>(*parsed_rows),
+                            static_cast<uint32_t>(*parsed_workers)};
+}
+
+[[nodiscard]] std::string optional_metric(const std::optional<uint64_t>& value) {
+    return value.has_value() ? std::to_string(*value) : "na";
+}
+
+[[nodiscard]] std::optional<uint64_t>
+checked_peak_growth(const ProcessMemorySnapshot& baseline,
+                    const ProcessMemorySnapshot& final) noexcept {
+    if (baseline.backend == ProcessMemoryBackend::Unsupported ||
+        final.backend != baseline.backend || !baseline.lifetime_peak_rss_bytes.has_value() ||
+        !final.lifetime_peak_rss_bytes.has_value() ||
+        *final.lifetime_peak_rss_bytes < *baseline.lifetime_peak_rss_bytes) {
+        return std::nullopt;
+    }
+    return *final.lifetime_peak_rss_bytes - *baseline.lifetime_peak_rss_bytes;
+}
+
+void run_rss_case(size_t raw_row_count, uint32_t workers) {
+    current_case = "structured direct OOC RSS case";
+    constexpr uint64_t generation = 73'001;
+    const std::string input_base = unique_ooc_base("rss_input", raw_row_count, workers);
+    const std::string output_base = unique_ooc_base("rss_output", raw_row_count, workers);
+    ArtifactCleanup cleanup;
+    cleanup.add(input_base);
+    cleanup.add(output_base);
+
+    CollectorConfig collector_config;
+    collector_config.check_duplicates = true;
+    collector_config.ooc_enabled = true;
+    collector_config.ooc_base_path = input_base;
+    RelationCollector collector(collector_config);
+    const BuiltCollectorSource source = build_collector_source(collector, raw_row_count);
+    CHECK(ordinary_artifacts_exist(input_base));
+
+    RelationReductionConfig config = structured_config(source.rows_written, workers);
+    config.structured->output_ooc_base_path = output_base;
+    config.structured->output_ooc_cleanup = OOCCleanupPolicy::RemoveArtifacts;
+
+    const ProcessMemorySnapshot baseline_memory = process_memory_snapshot();
+    const auto wall_begin = std::chrono::steady_clock::now();
+    OOCSnapshotDescriptor source_descriptor;
+    size_t output_rows = 0;
+    {
+        auto run =
+            collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& prefix) {
+                auto result = RelationReductionEngine::reduce_direct_borrowed_structured(
+                    generation, prefix, config);
+                return std::pair(std::move(result), prefix.descriptor());
+            });
+
+        auto& result = run.first;
+        source_descriptor = run.second;
+        CHECK(source_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(source_descriptor.store_id != 0);
+        CHECK(source_descriptor.generation != 0);
+        CHECK(source_descriptor.count == source.rows_written);
+        CHECK(source_descriptor.data_end > OOCRelationWriter::DATA_HEADER_BYTES);
+        CHECK(collector.size() == source.rows_written);
+        CHECK(ordinary_artifacts_exist(input_base));
+
+        CHECK(result.generation == generation);
+        CHECK(result.storage_kind() == RelationStorageKind::FinalizedOOC);
+        CHECK(private_sink_exists(output_base));
+        check_common_result(result, source.rows_written, source.rows_written, 0, workers,
+                            source.raw_digest);
+        output_rows = result.size();
+
+        const auto output_scope = result.relation_corpus().ooc_artifact_scope();
+        CHECK(output_scope.has_value());
+        CHECK(output_scope->base_path ==
+              std::filesystem::weakly_canonical(private_sink_base(output_base)).string());
+        CHECK(output_scope->descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(output_scope->descriptor.count == output_rows);
+    }
+    CHECK(private_sink_absent(output_base));
+    CHECK(ordinary_artifacts_exist(input_base));
+    CHECK(collector.size() == source.rows_written);
+
+    const auto wall_end = std::chrono::steady_clock::now();
+    const ProcessMemorySnapshot final_memory = process_memory_snapshot();
+    const auto peak_growth = checked_peak_growth(baseline_memory, final_memory);
+    const bool supported = peak_growth.has_value();
+    const auto wall_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(wall_end - wall_begin).count();
+
+    {
+        RelationCorpus raw_corpus =
+            collector.handoff_ooc_corpus(generation, OOCCleanupPolicy::RemoveArtifacts);
+        const auto raw_scope = raw_corpus.ooc_artifact_scope();
+        CHECK(raw_scope.has_value());
+        CHECK(raw_scope->base_path == std::filesystem::weakly_canonical(input_base).string());
+        CHECK(raw_scope->descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(raw_scope->descriptor.store_id == source_descriptor.store_id);
+        CHECK(raw_scope->descriptor.generation > source_descriptor.generation);
+        CHECK(raw_scope->descriptor.count == source_descriptor.count);
+        CHECK(raw_scope->descriptor.data_end == source_descriptor.data_end);
+        CHECK(raw_corpus.count() == source.rows_written);
+    }
+    CHECK(ordinary_artifacts_absent(input_base));
+
+    std::cout << "GNFS_RESOURCE_V1"
+              << " scope=self"
+              << " unit=bytes"
+              << " backend=" << process_memory_backend_name(baseline_memory.backend)
+              << " supported=" << (supported ? "true" : "false") << " rows=" << raw_row_count
+              << " workers=" << workers << " source_rows=" << source.rows_written
+              << " output_rows=" << output_rows
+              << " baseline_current=" << optional_metric(baseline_memory.current_rss_bytes)
+              << " baseline_peak=" << optional_metric(baseline_memory.lifetime_peak_rss_bytes)
+              << " final_current=" << optional_metric(final_memory.current_rss_bytes)
+              << " final_peak=" << optional_metric(final_memory.lifetime_peak_rss_bytes)
+              << " peak_growth=" << optional_metric(peak_growth) << " wall_ns=" << wall_ns
+              << " source_backend=collector-direct-borrowed-prefix"
+              << " output_backend=finalized-ooc\n";
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
+    if (argc != 1) {
+        const auto rss_case = parse_rss_case_arguments(argc, argv);
+        if (!rss_case.has_value()) {
+            std::cerr << "Usage: " << argv[0] << " [--rss-case <5000|50000|200000> <1|2|4>]\n";
+            return 2;
+        }
+
+        try {
+            run_rss_case(rss_case->rows, rss_case->workers);
+        } catch (const std::exception& error) {
+            std::cerr << error.what() << '\n';
+            return 1;
+        }
+        return 0;
+    }
+
     try {
         run_owning_finalized_smoke();
         run_scale(5'000, 72'001);

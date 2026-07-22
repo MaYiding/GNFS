@@ -72,6 +72,8 @@ Run the supported structured-relation race detector with:
 The runner uses a dedicated `build-tsan-relation` Debug directory, disables native-architecture tuning, enables `GNFS_ENABLE_TSAN`, and builds only these targets:
 
 - `test_ordered_parallel_map`
+- `test_relation_collector`
+- `test_relation_reduction_engine`
 - `test_structured_parallel_prepare`
 - `test_structured_batch_commit`
 - `test_structured_parallel_driver`
@@ -81,6 +83,21 @@ The runner uses a dedicated `build-tsan-relation` Debug directory, disables nati
 The binaries run serially with a default 120-second timeout per binary. An explicit `--timeout` overrides that default. The Linux CI job has a separate 20-minute outer timeout, so configuration or compilation cannot leave the lane unbounded.
 
 The runner supports Linux and macOS. On any other host it prints an explicit unsupported message, records the lane as skipped, and exits successfully. On Linux or macOS, CMake requires a Clang or GNU toolchain that can compile and link the ThreadSanitizer runtime; configuration fails instead of silently executing uninstrumented binaries when that contract is not met. `--no-build` likewise refuses a cache unless it records `GNFS_ENABLE_TSAN=ON`.
+
+## Resource Measurement Lanes
+
+`test_process_memory` is an `instant` cross-platform contract test. It checks
+byte normalization and process high-water-mark monotonicity without requiring a
+fixed allocation delta. `test_structured_ooc_50d_probe` is a disabled `stress`
+target because it builds a real 50-digit factor base and runs the production
+sieve. Run it only through `./scripts/test.sh probe-50d-structured-ooc`, which
+supplies a hard special-Q cap and an isolated artifact directory.
+
+`test_structured_ooc_scale --rss-case <rows> <workers>` is a manual measurement
+mode, not a CTest performance assertion. Each invocation runs one scenario in a
+fresh process and emits one `GNFS_RESOURCE_V1` record. The normal no-argument
+gate remains a deterministic correctness test and has no timing or RSS
+threshold.
 
 ## Update Checklist
 

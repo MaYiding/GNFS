@@ -32,11 +32,13 @@
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <gnfs/util/process.hpp>
+#include <gnfs/util/process_memory.hpp>
 #include <gnfs/util/temp_path.hpp>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>  // fprintf for V3 cascade stderr signal
 #include <cstdlib> // getenv for GNFS_CASCADE_V3 flag
 #include <cstring> // strlen for SGE-OOC ENV string checks
@@ -258,6 +260,72 @@ size_t scale_by_tenths_floor(size_t value, size_t tenths) noexcept {
     return whole * tenths + fractional;
 }
 
+[[nodiscard]] uint64_t elapsed_microseconds(std::chrono::steady_clock::time_point start,
+                                            std::chrono::steady_clock::time_point finish) noexcept {
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::microseconds>(finish - start).count();
+    return elapsed > 0 ? static_cast<uint64_t>(elapsed) : 0;
+}
+
+[[nodiscard]] uint64_t checked_add_u64(uint64_t lhs, uint64_t rhs) {
+    if (lhs > std::numeric_limits<uint64_t>::max() - rhs) {
+        throw std::overflow_error("telemetry duration exceeds uint64_t");
+    }
+    return lhs + rhs;
+}
+
+[[nodiscard]] int64_t signed_size_delta(size_t lhs, size_t rhs) {
+    const std::uintmax_t positive_limit =
+        static_cast<std::uintmax_t>(std::numeric_limits<int64_t>::max());
+    if (lhs >= rhs) {
+        const std::uintmax_t delta = static_cast<std::uintmax_t>(lhs - rhs);
+        if (delta > positive_limit) {
+            throw std::overflow_error("matrix row-column delta exceeds int64_t");
+        }
+        return static_cast<int64_t>(delta);
+    }
+
+    const std::uintmax_t delta = static_cast<std::uintmax_t>(rhs - lhs);
+    const std::uintmax_t negative_limit = positive_limit + std::uintmax_t{1};
+    if (delta > negative_limit) {
+        throw std::overflow_error("matrix row-column delta exceeds int64_t");
+    }
+    if (delta == negative_limit) {
+        return std::numeric_limits<int64_t>::min();
+    }
+    return -static_cast<int64_t>(delta);
+}
+
+struct StructuredFilterRuntimeTelemetry final {
+    std::string_view route;
+    uint64_t reduction_engine_wall_us = 0;
+    util::ProcessMemorySnapshot before;
+    util::ProcessMemorySnapshot after;
+};
+
+[[nodiscard]] StructuredFilterRuntimeTelemetry
+finish_structured_filter_telemetry(std::string_view route,
+                                   std::chrono::steady_clock::time_point start,
+                                   util::ProcessMemorySnapshot before) noexcept {
+    const auto finish = std::chrono::steady_clock::now();
+    return {route, elapsed_microseconds(start, finish), std::move(before),
+            util::process_memory_snapshot()};
+}
+
+[[nodiscard]] uint64_t optional_bytes(const std::optional<uint64_t>& value) noexcept {
+    return value.value_or(0);
+}
+
+[[nodiscard]] uint64_t peak_growth_bytes(const StructuredFilterRuntimeTelemetry& telemetry) {
+    if (!telemetry.before.lifetime_peak_rss_bytes || !telemetry.after.lifetime_peak_rss_bytes) {
+        return 0;
+    }
+    if (*telemetry.after.lifetime_peak_rss_bytes < *telemetry.before.lifetime_peak_rss_bytes) {
+        throw std::logic_error("process lifetime peak RSS decreased during reduction");
+    }
+    return *telemetry.after.lifetime_peak_rss_bytes - *telemetry.before.lifetime_peak_rss_bytes;
+}
+
 // GNFS_CASCADE_V3 modes:
 //   unset / "0" / ""     → OFF (V0 only)
 //   "1" / "on" / "true"  → ON (V3 every round, original behavior)
@@ -304,14 +372,35 @@ std::string_view structured_stop_reason_name(relation::StructuredReductionStopRe
 std::string structured_filter_record(
     const relation::StructuredFilterPolicyDecision& policy,
     const relation::RelationReductionResult& reduction,
-    const relation::RelationReductionConfig::StructuredExecutionConfig& execution) {
+    const relation::RelationReductionConfig::StructuredExecutionConfig& execution,
+    const StructuredFilterRuntimeTelemetry& telemetry) {
     const auto& stats = reduction.stats;
     const auto& run = stats.structured_run;
     const auto& budget = execution.budget;
-    return "structured_filter reason=\"" + std::string(policy.reason) +
+    const bool peak_supported = telemetry.before.lifetime_peak_rss_bytes.has_value() &&
+                                telemetry.after.lifetime_peak_rss_bytes.has_value();
+    const bool current_supported = telemetry.after.current_rss_bytes.has_value();
+    const std::string_view source_backend = telemetry.route == "direct_ooc_prefix"
+                                                ? "collector_borrowed_ooc_prefix"
+                                                : "in_memory_snapshot";
+    const std::string_view output_backend =
+        reduction.storage_kind() == relation::RelationStorageKind::FinalizedOOC ? "finalized_ooc"
+                                                                                : "in_memory";
+    return "structured_filter schema=1 reason=\"" + std::string(policy.reason) +
            "\" generation=" + std::to_string(reduction.generation) +
+           " route=" + std::string(telemetry.route) +
+           " source_backend=" + std::string(source_backend) +
+           " output_backend=" + std::string(output_backend) +
            " input_rows=" + std::to_string(stats.input_relations) +
+           " raw_duplicates=" + std::to_string(stats.raw_duplicates_removed) +
+           " raw_digest_low=" + std::to_string(stats.raw_input_digest.low) +
+           " raw_digest_high=" + std::to_string(stats.raw_input_digest.high) +
            " input_lp_cols=" + std::to_string(stats.deduplicated_input_lp_histogram.unique_keys) +
+           " input_lp_w1=" + std::to_string(stats.deduplicated_input_lp_histogram.weight_1) +
+           " input_lp_w2=" + std::to_string(stats.deduplicated_input_lp_histogram.weight_2) +
+           " input_lp_w3=" + std::to_string(stats.deduplicated_input_lp_histogram.weight_3) +
+           " input_lp_w4plus=" +
+           std::to_string(stats.deduplicated_input_lp_histogram.weight_4plus) +
            " output_rows=" + std::to_string(stats.output_relations) +
            " output_lp_cols=" + std::to_string(stats.output_lp_columns) +
            " commits=" + std::to_string(run.commits) +
@@ -340,7 +429,19 @@ std::string structured_filter_record(
            std::to_string(stats.structured.budget_rejections.materialization_limit) +
            " digest_low=" + std::to_string(stats.output_digest.low) +
            " digest_high=" + std::to_string(stats.output_digest.high) +
-           " stop=" + std::string(structured_stop_reason_name(run.stop_reason));
+           " stop=" + std::string(structured_stop_reason_name(run.stop_reason)) +
+           " reduction_engine_wall_us=" + std::to_string(telemetry.reduction_engine_wall_us) +
+           " process_rss_scope=self_lifetime process_rss_backend=" +
+           std::string(util::process_memory_backend_name(telemetry.after.backend)) +
+           " process_current_rss_supported=" + (current_supported ? "1" : "0") +
+           " process_current_rss_bytes=" +
+           std::to_string(optional_bytes(telemetry.after.current_rss_bytes)) +
+           " process_peak_rss_supported=" + (peak_supported ? "1" : "0") +
+           " process_peak_rss_before_bytes=" +
+           std::to_string(optional_bytes(telemetry.before.lifetime_peak_rss_bytes)) +
+           " process_peak_rss_bytes=" +
+           std::to_string(optional_bytes(telemetry.after.lifetime_peak_rss_bytes)) +
+           " process_peak_rss_growth_bytes=" + std::to_string(peak_growth_bytes(telemetry));
 }
 
 // Pipeline resume base path (Phase 1+2+3 checkpoints).
@@ -1200,10 +1301,11 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
 
     auto publish_structured_reduction =
         [&](const relation::RelationReductionResult& reduction,
-            const relation::RelationReductionConfig& reduction_config) {
+            const relation::RelationReductionConfig& reduction_config,
+            const StructuredFilterRuntimeTelemetry& telemetry) {
             if (reduction_config.strategy == relation::ReductionStrategy::Structured) {
-                const std::string record = structured_filter_record(structured_policy, reduction,
-                                                                    *reduction_config.structured);
+                const std::string record = structured_filter_record(
+                    structured_policy, reduction, *reduction_config.structured, telemetry);
                 emit_log(LogLevel::Info, Phase::Sieving, record);
                 std::fprintf(stderr, "[%s]\n", record.c_str());
             }
@@ -1213,9 +1315,18 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                                relation::ReductionStrategy legacy_strategy) {
         auto reduction_config =
             make_reduction_config(raw_snapshot.size(), legacy_strategy, nullptr);
+        if (reduction_config.strategy == relation::ReductionStrategy::Structured) {
+            auto memory_before = util::process_memory_snapshot();
+            const auto reduction_start = std::chrono::steady_clock::now();
+            auto reduction = relation::RelationReductionEngine::reduce(std::move(raw_snapshot),
+                                                                       reduction_config);
+            const auto telemetry = finish_structured_filter_telemetry(
+                "owned_snapshot", reduction_start, std::move(memory_before));
+            publish_structured_reduction(reduction, reduction_config, telemetry);
+            return reduction;
+        }
         auto reduction =
             relation::RelationReductionEngine::reduce(std::move(raw_snapshot), reduction_config);
-        publish_structured_reduction(reduction, reduction_config);
         return reduction;
     };
 
@@ -1241,22 +1352,27 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         const uint64_t generation = allocate_relation_generation();
         const auto generation_paths = structured_preflight.ooc_paths->generation_paths(generation);
         std::optional<relation::RelationReductionConfig> reduction_config;
+        std::optional<StructuredFilterRuntimeTelemetry> telemetry;
         auto reduction_and_source = collector.with_unique_ooc_prefix(
             [&](const relation::CollectorUniqueOOCPrefixSource& source) {
                 reduction_config.emplace(
                     make_reduction_config(source.count(), legacy_strategy, &generation_paths));
+                auto memory_before = util::process_memory_snapshot();
+                const auto reduction_start = std::chrono::steady_clock::now();
                 auto reduction =
                     relation::RelationReductionEngine::reduce_direct_borrowed_structured(
                         generation, source, *reduction_config);
+                telemetry.emplace(finish_structured_filter_telemetry(
+                    "direct_ooc_prefix", reduction_start, std::move(memory_before)));
                 return std::pair(std::move(reduction), source.descriptor());
             });
 
-        if (!reduction_config.has_value()) {
+        if (!reduction_config.has_value() || !telemetry.has_value()) {
             throw std::logic_error("structured OOC reduction did not freeze its configuration");
         }
         auto reduction = std::move(reduction_and_source.first);
         const relation::OOCSnapshotDescriptor source_descriptor = reduction_and_source.second;
-        publish_structured_reduction(reduction, *reduction_config);
+        publish_structured_reduction(reduction, *reduction_config, *telemetry);
         if (reduction.stats.input_relations != source_descriptor.count) {
             throw std::logic_error(
                 "structured OOC reduction input count differs from its raw prefix");
@@ -1810,17 +1926,31 @@ relation::RelationReductionResult Pipeline::filter(std::vector<Relation> relatio
             relations.size(), relation::structured_filter_hardware_workers());
     }
 
+    std::optional<StructuredFilterRuntimeTelemetry> structured_telemetry;
+    std::optional<util::ProcessMemorySnapshot> structured_memory_before;
+    std::optional<std::chrono::steady_clock::time_point> structured_reduction_start;
+    if (reduction_config.strategy == relation::ReductionStrategy::Structured) {
+        structured_memory_before.emplace(util::process_memory_snapshot());
+        structured_reduction_start.emplace(std::chrono::steady_clock::now());
+    }
     auto reduction = relation::RelationReductionEngine::reduce(
         relation::RawRelationSnapshot(allocate_relation_generation(), std::move(relations)),
         reduction_config);
+    if (structured_reduction_start.has_value()) {
+        structured_telemetry.emplace(finish_structured_filter_telemetry(
+            "owned_snapshot", *structured_reduction_start, std::move(*structured_memory_before)));
+    }
     const auto& reduction_stats = reduction.stats;
 
     stats_.singletons_removed = reduction_stats.singleton_rows_removed;
     stats_.merged_relations = reduction_stats.merged_relations;
 
     if (reduction_config.strategy == relation::ReductionStrategy::Structured) {
-        const std::string record =
-            structured_filter_record(structured_policy, reduction, *reduction_config.structured);
+        if (!structured_telemetry.has_value()) {
+            throw std::logic_error("structured filter is missing runtime telemetry");
+        }
+        const std::string record = structured_filter_record(
+            structured_policy, reduction, *reduction_config.structured, *structured_telemetry);
         emit_log(LogLevel::Info, Phase::Filtering, record);
         std::fprintf(stderr, "[%s]\n", record.c_str());
     } else if (lp_enabled) {
@@ -1982,6 +2112,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
         }
     }
 
+    const auto initial_matrix_build_start = std::chrono::steady_clock::now();
     linalg::MatrixBuildResult build_result;
     if (structured_route) {
         build_result = mb.build_with_qc_streaming(*structured_corpus, fb, ctx);
@@ -1993,6 +2124,8 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
     } else {
         build_result = mb.build_with_qc(relations, fb, ctx);
     }
+    uint64_t matrix_build_wall_us =
+        elapsed_microseconds(initial_matrix_build_start, std::chrono::steady_clock::now());
 
     const auto finish_matrix_result =
         [&](std::vector<std::vector<bool>> dependencies) -> MatrixResult {
@@ -2012,7 +2145,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
     stats_.matrix_rows = matrix_stats.num_rows;
     stats_.matrix_cols = matrix_stats.num_cols;
     stats_.matrix_weight = matrix_stats.total_weight;
-    stats_.matrix_excess = static_cast<int64_t>(matrix_stats.excess);
+    stats_.matrix_excess = signed_size_delta(matrix_stats.num_rows, matrix_stats.num_cols);
 
     const auto emit_structured_matrix_record = [&](const linalg::MatrixStats& final_stats) {
         if (reduction.stats.strategy != relation::ReductionStrategy::Structured) {
@@ -2022,7 +2155,9 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
             "structured_filter_matrix generation=" + std::to_string(reduction.generation) +
             " rows=" + std::to_string(final_stats.num_rows) +
             " cols=" + std::to_string(final_stats.num_cols) +
-            " excess=" + std::to_string(final_stats.excess) +
+            " excess=" + std::to_string(final_stats.excess) + " row_column_delta=" +
+            std::to_string(signed_size_delta(final_stats.num_rows, final_stats.num_cols)) +
+            " matrix_build_wall_us=" + std::to_string(matrix_build_wall_us) +
             " nonzeros=" + std::to_string(final_stats.total_weight);
         emit_log(LogLevel::Info, Phase::LinearAlgebra, record);
         std::fprintf(stderr, "[%s]\n", record.c_str());
@@ -2083,6 +2218,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
                      std::to_string(target_rows) + " (keep " + std::to_string(target_rows) + "/" +
                      std::to_string(matrix_stats.num_rows) + ")");
 
+        const auto trim_matrix_build_start = std::chrono::steady_clock::now();
         linalg::MatrixBuildResult build2;
         if (structured_route) {
             const auto selection = relation::RelationSelection::deterministic_sample(
@@ -2104,12 +2240,15 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
                 build2 = mb.build_with_qc(relations, fb, ctx);
             }
         }
+        matrix_build_wall_us = checked_add_u64(
+            matrix_build_wall_us,
+            elapsed_microseconds(trim_matrix_build_start, std::chrono::steady_clock::now()));
         build_result = std::move(build2);
         matrix_stats = linalg::compute_matrix_stats(build_result.matrix);
         stats_.matrix_rows = matrix_stats.num_rows;
         stats_.matrix_cols = matrix_stats.num_cols;
         stats_.matrix_weight = matrix_stats.total_weight;
-        stats_.matrix_excess = static_cast<int64_t>(matrix_stats.excess);
+        stats_.matrix_excess = signed_size_delta(matrix_stats.num_rows, matrix_stats.num_cols);
 
         emit_log(LogLevel::Info, Phase::LinearAlgebra,
                  "Trimmed matrix: " + std::to_string(matrix_stats.num_rows) + "x" +

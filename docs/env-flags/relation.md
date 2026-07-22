@@ -86,8 +86,12 @@ raw prefix，因此累计解码与 I/O 仍为 `O(rounds * relations)`。raw writ
 collector `ABPair` set、每行 16-byte fingerprint、LP histogram、incidence、logical
 rows 与 history 仍是 corpus-scale metadata。初扫的第二个 exact AB set 和 LP weight
 map 会在 incidence 构建前释放，避免与 reducer metadata 叠加；这仍不构成 RSS 上界。
-尚无跨尺寸 RSS、bounded 50-digit 生产实验和自动选路实证，所以
-该能力仍是 forced experimental route，不构成 auto 或默认启用证据。
+跨平台 process RSS helper 和 5K/50K/200K 独立进程测量入口已经接入，但其
+lifetime peak 是进程高水位，不是 route 的净分配量。真实 50 位入口使用硬
+special-Q 上限，并明确标为 bounded prefix probe；它不等价于完整首轮或完整分解。
+当前仍无足以支持自动选路的真实尺寸收益证据，所以该能力继续保持 forced
+experimental route，不构成 auto 或默认启用依据。测量边界见
+[Structured OOC Measurement](../perf/structured-ooc-measurement.md)。
 
 完整 `Pipeline::run()` 在任何 progress/log callback、试探算法、checkpoint 读写和
 relation generation 分配前捕获不创建 artifact 的 route snapshot；callback 后续修改
@@ -135,13 +139,20 @@ corpus；上述重复 prefix 扫描、corpus-scale metadata 和未测 RSS 仍阻
 profile factory 同时拒绝 worker=0 或 worker>4，因此 4-worker ceiling 是 API
 invariant，不只是 production caller 的约定。
 
-每次 structured generation 发出一条稳定的 relation-graph `structured_filter` 记录，包含 policy
-reason、generation、输入/输出 rows 与 LP columns、commits、emitted rows、LP fill、
-planning/candidate/rejection counters、所有主 cap、batch、workers、output digest 和
-stop reason。进入 `solve_matrix()` 后另发 `structured_filter_matrix`，记录实际 full
-matrix rows、columns、excess 与 nonzeros；该记录在 deterministic trim 完成后、
-SGE 前恰好发出一次，并与最终 `MatrixResult.matrix` handoff 对齐。归约阶段不会
-伪造尚未构建的矩阵指标。
+每次 structured generation 发出一条 `schema=1` relation-graph
+`structured_filter` 记录。记录包含 policy reason、generation、route、source/output
+backend、输入/输出 rows 与 LP columns、raw/output digest、raw duplicates、输入 LP
+weight histogram、commits、emitted rows、LP fill、planning/candidate/rejection
+counters、所有主 cap、batch、workers、stop reason、reduction-engine wall time，以及
+归约前后的 process current/lifetime-peak RSS。RSS 单位固定为 bytes，scope 为
+`self_lifetime`；unsupported 字段使用显式 support bit 和数值 0。peak growth 只表示
+归约测量窗口内进程高水位的增量，不能解释成净分配量。
+
+进入 `solve_matrix()` 后另发 `structured_filter_matrix`。该记录保留兼容字段
+`excess=max(rows-cols, 0)`，并新增有符号 `row_column_delta=rows-cols`、累计
+MatrixBuilder wall time 和 nonzeros。记录在 deterministic trim 完成后、SGE 前恰好
+发出一次，并与最终 `MatrixResult.matrix` handoff 对齐。thin matrix 因此不会再把
+负缺口误报为 0；归约阶段也不会伪造尚未构建的矩阵指标。
 
 **集成点**：
 

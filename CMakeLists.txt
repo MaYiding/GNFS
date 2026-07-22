@@ -237,6 +237,9 @@ target_include_directories(gnfs_util INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+if(WIN32)
+    target_link_libraries(gnfs_util INTERFACE Psapi)
+endif()
 
 # gnfs_core - 核心类型库
 add_library(gnfs_core STATIC
@@ -456,6 +459,14 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_timer PRIVATE gnfs_util)
     add_test(NAME UtilTimer COMMAND test_timer)
     set_tests_properties(UtilTimer PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Cross-platform current/lifetime-peak process RSS normalization.
+    add_executable(test_process_memory
+        tests/test_process_memory.cpp
+    )
+    target_link_libraries(test_process_memory PRIVATE gnfs_util)
+    add_test(NAME ProcessMemory COMMAND test_process_memory)
+    set_tests_properties(ProcessMemory PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_mmap_file
         tests/test_mmap_file.cpp
@@ -1101,6 +1112,16 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_structured_ooc_scale PRIVATE gnfs_core Threads::Threads)
     add_test(NAME StructuredOOCScale COMMAND test_structured_ooc_scale)
     set_tests_properties(StructuredOOCScale PROPERTIES LABELS "gate" TIMEOUT 180)
+
+    # Real 50-digit Pipeline prefix probe. Disabled by default because even the
+    # four-special-Q bound exercises the production sieve and factor-base path.
+    add_executable(test_structured_ooc_50d_probe
+        tests/test_structured_ooc_50d_probe.cpp
+    )
+    target_link_libraries(test_structured_ooc_50d_probe PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredOOC50dProbe COMMAND test_structured_ooc_50d_probe --max-special-q 4)
+    set_tests_properties(StructuredOOC50dProbe PROPERTIES DISABLED TRUE
+        LABELS "stress" TIMEOUT 3600)
 
     # Sequential structured relation reduction and exact GF(2) oracle.
     add_executable(test_structured_filter

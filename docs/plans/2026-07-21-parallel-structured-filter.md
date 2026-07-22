@@ -704,10 +704,11 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
   full reduction, collection cannot overlap that round, and every round still
   scans its accumulated prefix for `O(rounds * relations)` decoding and I/O.
   Generic finalized-OOC reduction and generic `prepare_borrowed_structured()`
-  continue to use a private working corpus. Native incremental scanning,
-  measured RSS, bounded 50-digit production evidence, and automatic structured
-  selection remain open; size-aware OOC, resume, and distributed structured
-  routes retain legacy or unsupported behavior.
+  continue to use a private working corpus. Independent-process RSS measurement
+  and a hard-capped 50-digit production prefix probe are now available. Native
+  incremental scanning, a complete 50-digit first-round comparison, and
+  automatic structured selection remain open; size-aware OOC, resume, and
+  distributed structured routes retain legacy or unsupported behavior.
 
 Exit gate: structured mode runs exactly once, OFF mode is unchanged, every route
 reports the same metrics for the same generation input, and the explicit OOC-output route
@@ -715,10 +716,13 @@ avoids a per-generation relation-payload vector.
 
 ### M5: Scale Validation
 
-- Run overlapping 50-digit-like hypergraphs at 5K, 50K, and 200K rows.
-- Run the 17/27/40/81-bit gate.
-- Run a deterministic 100-150-bit sieve-to-reduction integration, not only polynomial selection.
-- Run a bounded 50-digit first-round experiment with structured metrics.
+- [x] Run overlapping 50-digit-like hypergraphs at 5K, 50K, and 200K rows.
+- [x] Add fresh-process RSS cases for 5K, 50K, and 200K direct OOC reduction.
+- [x] Run the 17/27/40/81-bit gate after direct production OOC integration.
+- [x] Add a hard-capped real 50-digit production prefix probe with structured
+  reduction and full matrix-shape telemetry.
+- [ ] Run a deterministic 100-150-bit sieve-to-reduction integration, not only polynomial selection.
+- [ ] Run a complete bounded 50-digit first-round baseline/structured comparison.
 
 Exit gate: no correctness regression; dependency dimension is preserved and structured mode meets the frozen materiality threshold for total NNZ, downstream matrix time, or raw-relation requirement under the fill and memory budgets.
 
@@ -1254,21 +1258,23 @@ The plan touches lifecycle diagrams embedded as comments in `collector.hpp` and 
 - [x] **T2 (P1, human: ~1d / agent: ~2h)** — OOC lifecycle — implement snapshot/finalize states with append and corruption tests.
 - [x] **T3 (P1, human: ~1d / agent: ~2h)** — routing — centralize reduction and prove OFF-mode route equivalence.
 - [x] **T4 (P1, human: ~2h / agent: ~30m)** — solver handoff — make thin solving reachable and add a regression.
-- [ ] **T5 (P1, human: ~3d / agent: ~6h)** — structured core — M2a
+- [x] **T5 (P1, human: ~3d / agent: ~6h)** — structured core — M2a
   2-way purge, M2b weight-[3,8] star/MST plan/prepare/commit, and M2c budgeted
   sequential orchestration are complete with exact projection and
-  dependency-kernel oracles; the full `MatrixBuilder` payload oracle remains.
-- [ ] **T6 (P1, human: ~2d / agent: ~4h)** — persistence — finalized writer
-  descriptor handoff, owning vector/OOC corpus lifetime, and selection instance
-  identity are complete; normalize reducer sinks and prove direct
-  stream/OOC/MatrixBuilder/dependency round trips.
+  dependency-kernel oracles, full `MatrixBuilder` payload checks, and retained
+  source-space row mappings are complete.
+- [x] **T6 (P1, human: ~2d / agent: ~4h)** — persistence — finalized writer
+  descriptor handoff, owning vector/OOC corpus lifetime, normalized reducer
+  sinks, selection identity, direct stream/OOC reduction, MatrixBuilder, and
+  selected-dependency round trips are complete.
 - [x] **T7 (P2, human: ~2d / agent: ~4h)** — parallel scheduler — add conflict batches, ordered commit, thread equivalence, and TSAN.
 - [ ] **T8 (P2, human: ~2d / agent: ~4h)** — integration evidence — strict policy
   parsing, the shared engine's single structured dispatch, the default-off
   production vector overlay, collector-proven unique ordinary-OOC direct route,
   frozen callback prefix, and unsupported-route side-effect boundaries are
-  complete; measured RSS, bounded 50-digit production evidence, automatic route
-  evidence, and cross-size validation remain.
+  complete. Cross-size direct-OOC validation, fresh-process RSS measurement,
+  and a bounded real 50-digit prefix probe are complete; complete first-round
+  comparison and automatic route evidence remain.
 
 ### CEO Review Completion Summary
 
