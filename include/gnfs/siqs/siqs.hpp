@@ -654,6 +654,16 @@ struct SIQSRelation {
     bool negative;                     // Q(x) < 0?
 };
 
+/// Exact admission predicate for a one-large-prime SIQS residual.
+///
+/// A composite residual cannot be represented by one LP column: accepting it
+/// would leave untracked prime factors and can invalidate X^2 = Y^2 during
+/// extraction. Keep this boundary named and directly testable so every sieve
+/// arithmetic backend applies the same contract.
+[[nodiscard]] inline bool is_valid_one_large_prime(uint64_t n) noexcept {
+    return gnfs::util::is_prime_u64(n);
+}
+
 // ================================================================
 // Sieve kernel
 // ================================================================
@@ -841,7 +851,7 @@ inline void sieve_polynomial(
                     }
                     return false;
                 };
-                if (cofac <= lp_bound && cofac > 1 && is_probably_prime(cofac)) {
+                if (cofac <= lp_bound && cofac > 1 && is_valid_one_large_prime(cofac)) {
                     large_prime = cofac;
                     accept = true;
                 } else if (lp_bound_sq > 0 && cofac > 1 && cofac <= lp_bound && !is_probably_prime(cofac)) {
@@ -910,7 +920,7 @@ inline void sieve_polynomial(
                 uint64_t cofac = mpz_get_ui(q_mpz);
                 // 1LP: verify cofactor is prime (composite → untracked factors → extraction fails)
                 bool cofac_is_prime = mpz_probab_prime_p(q_mpz, 1) > 0;
-                if (cofac <= lp_bound && cofac > 1 && cofac_is_prime) {
+                if (cofac <= lp_bound && cofac > 1 && is_valid_one_large_prime(cofac)) {
                     large_prime = cofac;
                     accept = true;
                 } else if (lp_bound_sq > 0 && cofac > 1 && cofac <= lp_bound && !cofac_is_prime) {

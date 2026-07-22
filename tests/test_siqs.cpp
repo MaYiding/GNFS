@@ -2,9 +2,58 @@
 #include <cassert>
 #include <cstdio>
 #include <chrono>
+#include <cstdlib>
 
 using gnfs::core::Integer;
 using namespace gnfs::siqs;
+
+void test_one_large_prime_rejects_strong_pseudoprimes() {
+    // Each value is composite but passes the legacy single-witness base-2
+    // Miller-Rabin check that used to guard SIQS 1LP admission.
+    struct CompositeCase final {
+        uint64_t value;
+        uint64_t known_divisor;
+    };
+    constexpr CompositeCase strong_base2_pseudoprimes[] = {
+        {2047ULL, 23ULL},
+        {341550071728321ULL, 10670053ULL},
+        {3825123056546413051ULL, 149491ULL},
+    };
+
+    for (const CompositeCase& sample : strong_base2_pseudoprimes) {
+        if (sample.known_divisor <= 1 || sample.known_divisor >= sample.value ||
+            sample.value % sample.known_divisor != 0) {
+            std::fprintf(stderr,
+                         "SIQS pseudoprime fixture lost its known divisor: %llu\n",
+                         static_cast<unsigned long long>(sample.value));
+            std::abort();
+        }
+        if (is_valid_one_large_prime(sample.value)) {
+            std::fprintf(stderr,
+                         "SIQS 1LP admitted strong base-2 pseudoprime: %llu\n",
+                         static_cast<unsigned long long>(sample.value));
+            std::abort();
+        }
+    }
+
+    constexpr uint64_t known_primes[] = {
+        2ULL, 3ULL, 101ULL, 4294967311ULL, 18446744073709551557ULL,
+    };
+    for (uint64_t value : known_primes) {
+        if (!is_valid_one_large_prime(value)) {
+            std::fprintf(stderr, "SIQS 1LP rejected known prime: %llu\n",
+                         static_cast<unsigned long long>(value));
+            std::abort();
+        }
+    }
+    if (is_valid_one_large_prime(0) || is_valid_one_large_prime(1) ||
+        is_valid_one_large_prime(4)) {
+        std::fprintf(stderr, "SIQS 1LP admitted a trivial composite boundary\n");
+        std::abort();
+    }
+
+    std::printf("  one_large_prime strong pseudoprimes: PASS\n");
+}
 
 void test_tonelli_shanks() {
     // sqrt(2) mod 7 = 3 (since 3^2 = 9 ≡ 2 mod 7)
@@ -165,6 +214,7 @@ int main() {
     printf("=== SIQS Unit Tests ===\n\n");
 
     printf("--- Helper tests ---\n");
+    test_one_large_prime_rejects_strong_pseudoprimes();
     test_tonelli_shanks();
     test_factor_base();
     test_split_cofactor_edge();
