@@ -281,6 +281,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cofactor/cofactorizer.cpp")
     target_sources(gnfs_core PRIVATE src/cofactor/cofactorizer.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cofactor/candidate_batch.cpp")
+    target_sources(gnfs_core PRIVATE src/cofactor/candidate_batch.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/collector.cpp")
     target_sources(gnfs_core PRIVATE src/relation/collector.cpp)
 endif()
@@ -784,6 +788,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_candidate_chunk_plan PRIVATE gnfs_core)
     add_test(NAME CandidateChunkPlan COMMAND test_candidate_chunk_plan)
     set_tests_properties(CandidateChunkPlan PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_candidate_batch
+        tests/test_candidate_batch.cpp
+    )
+    target_link_libraries(test_candidate_batch PRIVATE gnfs_core)
+    add_test(NAME CandidateBatch COMMAND test_candidate_batch)
+    set_tests_properties(CandidateBatch PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_trial_wheel
         tests/test_trial_wheel.cpp
