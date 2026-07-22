@@ -9,7 +9,9 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <span>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -168,7 +170,7 @@ void test_oracle_matrix_and_parallel_determinism() {
     CHECK(contains_dependency(solution, {0, 2}));
     check_all_dependencies(solution, rows);
 
-    for (const uint32_t workers : {1U, 2U, 4U}) {
+    for (const uint32_t workers : {1U, 2U, 3U, 4U, 8U}) {
         const auto candidate = solve_siqs_shadow_matrix(
             std::span<const SIQSShadowRow>(rows.data(), rows.size()),
             std::span<const uint32_t>(oracle_factor_base.data(), oracle_factor_base.size()),
@@ -177,6 +179,18 @@ void test_oracle_matrix_and_parallel_determinism() {
         if (candidate.solution()) {
             CHECK(*candidate.solution() == solution);
             check_all_dependencies(*candidate.solution(), rows);
+        }
+    }
+
+    // Four equations exercise both sides of the exact threshold boundary.
+    for (const size_t threshold : {size_t{3}, size_t{4}, size_t{5}}) {
+        const auto candidate = solve_siqs_shadow_matrix(
+            std::span<const SIQSShadowRow>(rows.data(), rows.size()),
+            std::span<const uint32_t>(oracle_factor_base.data(), oracle_factor_base.size()),
+            oracle_modulus, SIQSShadowMatrixOptions{64, 3, threshold});
+        check_matrix_result(candidate, SIQSShadowMatrixStatus::valid);
+        if (candidate.solution()) {
+            CHECK(*candidate.solution() == solution);
         }
     }
 
@@ -476,6 +490,7 @@ void test_matrix_fail_closed_and_move_contracts() {
 
 void test_dense_matrix_resource_estimator() {
     static_assert(noexcept(checked_siqs_shadow_dense_matrix_bytes(0, 0)));
+    static_assert(SIQSShadowMatrixOptions{}.parallel_column_threshold == 20'000);
     static_assert(SIQS_SHADOW_DEFAULT_MAX_DENSE_MATRIX_BYTES == size_t{256} * 1024 * 1024);
     static_assert(SIQS_SHADOW_DEFAULT_MAX_DENSE_VARIABLE_COUNT == 100'000);
     static_assert(static_cast<uint8_t>(SIQSShadowMatrixStatus::internal_invariant_failure) == 8);
@@ -770,7 +785,7 @@ void test_packed_word_boundary_dependencies() {
     check_all_dependencies(*baseline.solution(), rows);
     CHECK(dependency_basis_is_independent(*baseline.solution()));
 
-    for (const uint32_t workers : {1U, 2U, 4U}) {
+    for (const uint32_t workers : {1U, 2U, 3U, 4U, 8U}) {
         const auto candidate = solve_siqs_shadow_matrix(row_span, factor_base_span, modulus,
                                                         SIQSShadowMatrixOptions{70, workers, 0});
         check_matrix_result(candidate, SIQSShadowMatrixStatus::valid);
@@ -797,7 +812,7 @@ void test_packed_word_boundary_dependencies() {
     check_all_dependencies(*capped_baseline.solution(), rows);
     CHECK(dependency_basis_is_independent(*capped_baseline.solution()));
 
-    for (const uint32_t workers : {1U, 2U, 4U}) {
+    for (const uint32_t workers : {1U, 2U, 3U, 4U, 8U}) {
         const auto candidate = solve_siqs_shadow_matrix(row_span, factor_base_span, modulus,
                                                         SIQSShadowMatrixOptions{64, workers, 0});
         check_matrix_result(candidate, SIQSShadowMatrixStatus::valid);
@@ -805,6 +820,98 @@ void test_packed_word_boundary_dependencies() {
             CHECK(*candidate.solution() == *capped_baseline.solution());
             check_all_dependencies(*candidate.solution(), rows);
             CHECK(dependency_basis_is_independent(*candidate.solution()));
+        }
+    }
+}
+
+void throw_on_first_pivot_partition(std::vector<uint64_t>& matrix, size_t words_per_row,
+                                    size_t pivot_row, size_t pivot_column, size_t begin,
+                                    size_t end) {
+    if (begin == 0) {
+        throw std::runtime_error("injected persistent pivot worker failure");
+    }
+    gnfs::siqs::shadow_matrix_detail::eliminate_pivot_range(matrix, words_per_row, pivot_row,
+                                                            pivot_column, begin, end);
+}
+
+void throw_before_second_worker_submit(size_t worker) {
+    if (worker == 1) {
+        throw std::runtime_error("injected persistent pivot startup failure");
+    }
+}
+
+void test_persistent_pivot_team_failure_and_recovery() {
+    using gnfs::siqs::shadow_matrix_detail::create_persistent_pivot_elimination_team;
+    using gnfs::siqs::shadow_matrix_detail::eliminate_pivot_range;
+    using gnfs::siqs::shadow_matrix_detail::PersistentPivotEliminationTeam;
+
+    constexpr size_t equation_count = 5;
+    constexpr size_t words_per_row = 2;
+    const std::vector<uint64_t> initial{
+        UINT64_C(0x0000000000000003), UINT64_C(0x0000000000000001), UINT64_C(0x0000000000000005),
+        UINT64_C(0x0000000000000002), UINT64_C(0x0000000000000009), UINT64_C(0x0000000000000004),
+        UINT64_C(0x0000000000000011), UINT64_C(0x0000000000000008), UINT64_C(0x0000000000000021),
+        UINT64_C(0x0000000000000010),
+    };
+
+    std::vector<uint64_t> construction_matrix = initial;
+    std::unique_ptr<PersistentPivotEliminationTeam> construction_team;
+    const auto construction_status = create_persistent_pivot_elimination_team(
+        construction_matrix, equation_count, words_per_row, 3, construction_team,
+        eliminate_pivot_range, throw_before_second_worker_submit);
+    CHECK(construction_status == SIQSShadowMatrixStatus::worker_failure);
+    CHECK(!construction_team);
+
+    std::vector<uint64_t> failed_matrix = initial;
+    std::unique_ptr<PersistentPivotEliminationTeam> failing_team;
+    CHECK(create_persistent_pivot_elimination_team(failed_matrix, equation_count, words_per_row, 3,
+                                                   failing_team, throw_on_first_pivot_partition) ==
+          SIQSShadowMatrixStatus::valid);
+    CHECK(failing_team != nullptr);
+    if (failing_team) {
+        CHECK(failing_team->eliminate(0, 0) == SIQSShadowMatrixStatus::worker_failure);
+        failing_team.reset();
+    }
+
+    // A failed team's partially reduced matrix is discarded. A fresh team
+    // must still complete multiple phases and match the serial oracle exactly.
+    std::vector<uint64_t> expected = initial;
+    eliminate_pivot_range(expected, words_per_row, 0, 0, 0, equation_count);
+    eliminate_pivot_range(expected, words_per_row, 1, 1, 0, equation_count);
+
+    std::vector<uint64_t> recovered = initial;
+    std::unique_ptr<PersistentPivotEliminationTeam> recovered_team;
+    CHECK(create_persistent_pivot_elimination_team(recovered, equation_count, words_per_row, 3,
+                                                   recovered_team) ==
+          SIQSShadowMatrixStatus::valid);
+    CHECK(recovered_team != nullptr);
+    if (recovered_team) {
+        CHECK(recovered_team->eliminate(0, 0) == SIQSShadowMatrixStatus::valid);
+        CHECK(recovered_team->eliminate(1, 1) == SIQSShadowMatrixStatus::valid);
+        CHECK(recovered == expected);
+        recovered_team.reset();
+    }
+}
+
+void test_zero_pivot_matrix_is_valid() {
+    const Integer modulus(2);
+    const std::vector<uint32_t> factor_base{0, 2, 3, 5, 7};
+    std::vector<SIQSShadowRow> rows;
+    rows.reserve(70);
+    for (size_t row = 0; row < 70; ++row) {
+        rows.push_back(make_shadow_row(SIQSShadowRowOrigin::raw_full, 1, false, {}, {},
+                                       {{static_cast<uint64_t>(row)}}));
+    }
+
+    const auto result =
+        solve_siqs_shadow_matrix(std::span<const SIQSShadowRow>(rows.data(), rows.size()),
+                                 std::span<const uint32_t>(factor_base.data(), factor_base.size()),
+                                 modulus, SIQSShadowMatrixOptions{70, 8, 0});
+    check_matrix_result(result, SIQSShadowMatrixStatus::valid);
+    if (result.solution()) {
+        CHECK(result.solution()->dependencies.size() == rows.size());
+        for (size_t row = 0; row < rows.size(); ++row) {
+            CHECK(result.solution()->dependencies[row] == std::vector<size_t>{row});
         }
     }
 }
@@ -852,6 +959,8 @@ int main() {
     test_dense_matrix_resource_gate_precedence();
     test_fixed_matrix_against_brute_force();
     test_packed_word_boundary_dependencies();
+    test_persistent_pivot_team_failure_and_recovery();
+    test_zero_pivot_matrix_is_valid();
     test_empty_matrix_is_valid();
 
     std::cout << "SIQS shadow linear algebra: " << checks_passed << " checks passed, "

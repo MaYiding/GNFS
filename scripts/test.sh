@@ -542,8 +542,8 @@ SMOKE_TESTS=(
     test_mpz_mul_parallel
 )
 
-# ThreadSanitizer 窄通道: 覆盖候选级 cofactor 调度以及 structured relation 的有界分片构建、
-# 共享 engine dispatch、并发调度、准备、批提交、driver 和故障边界。保持此列表小而明确，
+# ThreadSanitizer 窄通道: 覆盖候选级 cofactor 调度、structured relation 有界并发和
+# SIQS shadow 持久消元 worker 的发布/收敛/故障边界。保持此列表小而明确，
 # 避免把完整 instant 层复制到高成本的 sanitizer 构建。
 typeset -a TSAN_RELATION_TESTS
 TSAN_RELATION_TESTS=(
@@ -556,6 +556,7 @@ TSAN_RELATION_TESTS=(
     test_structured_parallel_driver
     test_structured_parallel_failures
     test_structured_incidence_builder
+    test_siqs_shadow_linear_algebra
 )
 
 # ── 每个测试的超时秒数 (基于 2026-06-02 macOS Debug/Release 实测) ──
@@ -2504,7 +2505,7 @@ do_list() {
 
     echo ""
     echo "${BOLD}Sanitizer 窄通道:${RESET}"
-    echo "  ${BULLET} ${CYAN}tsan-relation${RESET} — ${#TSAN_RELATION_TESTS[@]} 个候选与 structured relation 并发边界测试"
+    echo "  ${BULLET} ${CYAN}tsan-relation${RESET} — ${#TSAN_RELATION_TESTS[@]} 个 cofactor/relation/SIQS 并发边界测试"
     for test in "${TSAN_RELATION_TESTS[@]}"; do
         echo "      ${DIM}${test}${RESET}"
     done
@@ -3365,8 +3366,9 @@ case "$MODE" in
                         seen[worker, implementation]++
                     } else if (mode == "kernel") {
                         if (dependency_digest != "na" ||
-                            (implementation != "current_per_pivot_jthread" &&
-                             implementation != "benchmark_only_persistent_thread_pool")) invalid = 1
+                            (implementation != "legacy_per_pivot_jthread" &&
+                             implementation != "benchmark_only_queued_thread_pool" &&
+                             implementation != "production_persistent_worker_team")) invalid = 1
                         seen[worker, implementation]++
                     } else if (mode == "prepare") {
                         if (worker != "1" || dependency_digest != "na" ||
@@ -3387,12 +3389,15 @@ case "$MODE" in
                         for (index_ = 1; index_ <= expected_count; ++index_)
                             if (seen[expected[index_], "public_solver"] != 1) invalid = 1
                     } else if (mode == "kernel") {
-                        if (results != expected_count * 2) invalid = 1
+                        if (results != expected_count * 3) invalid = 1
                         for (index_ = 1; index_ <= expected_count; ++index_) {
-                            if (seen[expected[index_], "current_per_pivot_jthread"] != 1)
+                            if (seen[expected[index_], "legacy_per_pivot_jthread"] != 1)
                                 invalid = 1
                             if (seen[expected[index_],
-                                     "benchmark_only_persistent_thread_pool"] != 1)
+                                     "benchmark_only_queued_thread_pool"] != 1)
+                                invalid = 1
+                            if (seen[expected[index_],
+                                     "production_persistent_worker_team"] != 1)
                                 invalid = 1
                         }
                     } else if (mode == "prepare") {

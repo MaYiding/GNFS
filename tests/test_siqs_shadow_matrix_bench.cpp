@@ -9,6 +9,7 @@
 #include <gnfs/util/thread_pool.hpp>
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -293,8 +294,8 @@ void print_usage() {
                  "\n"
                  "Modes:\n"
                  "  solve     Public shadow solver for each requested worker count.\n"
-                 "  kernel    Current per-pivot jthread path and a benchmark-only persistent-pool "
-                 "prototype.\n"
+                 "  kernel    Legacy jthreads, queued ThreadPool, and the production persistent "
+                 "worker team.\n"
                  "  prepare   Public row-identity wrapper and the prevalidated helper.\n"
                  "  fbcheck   Repeated factor-base validation.\n"
                  "\n"
@@ -554,25 +555,59 @@ template <typename Operation, typename Observer>
     return matrix;
 }
 
-/// Benchmark-only reduction driver. It deliberately reuses the production
-/// pivot-search and elimination helpers; the persistent ThreadPool branch is a
-/// prototype for measuring thread-lifetime overhead and is not a solver path.
+enum class KernelImplementation : uint8_t {
+    legacy_per_pivot_jthread,
+    benchmark_only_queued_thread_pool,
+    production_persistent_worker_team,
+};
+
+[[nodiscard]] std::string_view kernel_implementation_name(KernelImplementation implementation) {
+    switch (implementation) {
+    case KernelImplementation::legacy_per_pivot_jthread:
+        return "legacy_per_pivot_jthread";
+    case KernelImplementation::benchmark_only_queued_thread_pool:
+        return "benchmark_only_queued_thread_pool";
+    case KernelImplementation::production_persistent_worker_team:
+        return "production_persistent_worker_team";
+    }
+    return "unknown";
+}
+
+/// Benchmark-only reduction driver. Pivot search and elimination reuse the
+/// existing helpers. The queued ThreadPool branch is only a comparison
+/// prototype; the persistent-worker branch directly owns the production team.
 class BenchmarkKernel final {
 public:
     BenchmarkKernel(std::span<const SIQSShadowRow> rows, size_t equation_count, uint32_t workers,
-                    size_t parallel_threshold, bool persistent_pool)
+                    size_t parallel_threshold, KernelImplementation implementation)
         : variable_count_(rows.size()), equation_count_(equation_count),
           words_per_equation_(rows.size() / size_t{64} +
                               (rows.size() % size_t{64} != 0 ? size_t{1} : size_t{0})),
           worker_count_(std::min(equation_count, static_cast<size_t>(workers))),
-          parallel_threshold_(parallel_threshold), persistent_pool_(persistent_pool),
-          initial_(pack_rows(rows, equation_count)), matrix_(initial_.size()),
-          pivots_(equation_count) {
+          use_parallel_(workers > 1 && equation_count >= parallel_threshold),
+          implementation_(implementation), initial_(pack_rows(rows, equation_count)),
+          matrix_(initial_.size()), pivots_(equation_count) {
         options_.max_dependencies = 64;
         options_.elimination_workers = workers;
         options_.parallel_column_threshold = parallel_threshold;
-        if (persistent_pool_ && worker_count_ > 1) {
-            pool_ = std::make_unique<gnfs::util::ThreadPool>(static_cast<uint32_t>(worker_count_));
+        if (!use_parallel_) {
+            return;
+        }
+        if (implementation_ == KernelImplementation::benchmark_only_queued_thread_pool) {
+            queued_pool_ =
+                std::make_unique<gnfs::util::ThreadPool>(static_cast<uint32_t>(worker_count_));
+            queued_pool_->parallel_for_index(size_t{0}, worker_count_, [](size_t) {});
+        } else if (implementation_ == KernelImplementation::production_persistent_worker_team) {
+            auto status =
+                gnfs::siqs::shadow_matrix_detail::create_persistent_pivot_elimination_team(
+                    matrix_, equation_count_, words_per_equation_, worker_count_, production_team_);
+            require(status == SIQSShadowMatrixStatus::valid && production_team_ != nullptr,
+                    "production persistent elimination team construction failed");
+            // matrix_ is still all-zero. One no-op dispatch completes worker
+            // startup and the first generation rendezvous outside timed scope.
+            status = production_team_->eliminate(0, 0);
+            require(status == SIQSShadowMatrixStatus::valid,
+                    "production persistent elimination team startup failed");
         }
     }
 
@@ -592,24 +627,38 @@ public:
             }
             pivots_[equation] = pivot;
 
-            const bool use_pool = persistent_pool_ && pool_ &&
-                                  equation_count_ >= parallel_threshold_ && worker_count_ > 1;
-            if (!use_pool) {
-                const auto status = eliminate_pivot(matrix_, equation_count_, words_per_equation_,
-                                                    equation, pivot, options_);
-                require(status == SIQSShadowMatrixStatus::valid,
-                        "current elimination helper returned status " +
-                            std::to_string(static_cast<unsigned>(status)));
+            if (!use_parallel_) {
+                eliminate_pivot_range(matrix_, words_per_equation_, equation, pivot, 0,
+                                      equation_count_);
                 continue;
             }
 
-            pool_->parallel_for_index(size_t{0}, worker_count_, [&](size_t worker) {
-                const size_t base_range = equation_count_ / worker_count_;
-                const size_t remainder = equation_count_ % worker_count_;
-                const size_t begin = worker * base_range + std::min(worker, remainder);
-                const size_t end = begin + base_range + (worker < remainder ? size_t{1} : 0);
-                eliminate_pivot_range(matrix_, words_per_equation_, equation, pivot, begin, end);
-            });
+            SIQSShadowMatrixStatus status = SIQSShadowMatrixStatus::valid;
+            switch (implementation_) {
+            case KernelImplementation::legacy_per_pivot_jthread:
+                status = eliminate_pivot(matrix_, equation_count_, words_per_equation_, equation,
+                                         pivot, options_);
+                break;
+            case KernelImplementation::benchmark_only_queued_thread_pool:
+                require(queued_pool_ != nullptr, "queued ThreadPool is missing");
+                queued_pool_->parallel_for_index(size_t{0}, worker_count_, [&](size_t worker) {
+                    const size_t base_range = equation_count_ / worker_count_;
+                    const size_t remainder = equation_count_ % worker_count_;
+                    const size_t begin = worker * base_range + std::min(worker, remainder);
+                    const size_t end =
+                        begin + base_range + (worker < remainder ? size_t{1} : size_t{0});
+                    eliminate_pivot_range(matrix_, words_per_equation_, equation, pivot, begin,
+                                          end);
+                });
+                break;
+            case KernelImplementation::production_persistent_worker_team:
+                require(production_team_ != nullptr, "production persistent team is missing");
+                status = production_team_->eliminate(equation, pivot);
+                break;
+            }
+            require(status == SIQSShadowMatrixStatus::valid,
+                    "kernel elimination returned status " +
+                        std::to_string(static_cast<unsigned>(status)));
         }
         return {matrix_, pivots_};
     }
@@ -619,13 +668,15 @@ private:
     size_t equation_count_;
     size_t words_per_equation_;
     size_t worker_count_;
-    size_t parallel_threshold_;
-    bool persistent_pool_;
+    bool use_parallel_;
+    KernelImplementation implementation_;
     SIQSShadowMatrixOptions options_;
     std::vector<uint64_t> initial_;
     std::vector<uint64_t> matrix_;
     std::vector<size_t> pivots_;
-    std::unique_ptr<gnfs::util::ThreadPool> pool_;
+    std::unique_ptr<gnfs::util::ThreadPool> queued_pool_;
+    std::unique_ptr<gnfs::siqs::shadow_matrix_detail::PersistentPivotEliminationTeam>
+        production_team_;
 };
 
 void emit_optional_size(std::ostream& output, const std::optional<size_t>& value) {
@@ -712,11 +763,16 @@ void run_solve(const CliOptions& options, std::span<const SIQSShadowRow> rows,
 }
 
 void run_kernel(const CliOptions& options, std::span<const SIQSShadowRow> rows) {
+    constexpr std::array implementations{
+        KernelImplementation::legacy_per_pivot_jthread,
+        KernelImplementation::benchmark_only_queued_thread_pool,
+        KernelImplementation::production_persistent_worker_team,
+    };
     std::optional<uint64_t> cross_implementation_digest;
     for (const uint32_t workers : options.workers) {
-        for (const bool persistent_pool : {false, true}) {
+        for (const KernelImplementation implementation : implementations) {
             BenchmarkKernel kernel(rows, options.factor_base_size, workers,
-                                   options.parallel_threshold, persistent_pool);
+                                   options.parallel_threshold, implementation);
             const auto summary = measure(
                 options.warmups, options.repetitions, [&] { return kernel.run(); },
                 [](KernelView view) { return matrix_digest(view); });
@@ -726,10 +782,11 @@ void run_kernel(const CliOptions& options, std::span<const SIQSShadowRow> rows) 
             } else {
                 cross_implementation_digest = summary.result_digest;
             }
-            emit_result(options,
-                        persistent_pool ? "benchmark_only_persistent_thread_pool"
-                                        : "current_per_pivot_jthread",
-                        workers, summary, false, persistent_pool ? "benchmark_only" : "false");
+            emit_result(options, kernel_implementation_name(implementation), workers, summary,
+                        false,
+                        implementation == KernelImplementation::benchmark_only_queued_thread_pool
+                            ? "benchmark_only"
+                            : "false");
         }
     }
 }

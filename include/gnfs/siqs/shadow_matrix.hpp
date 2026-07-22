@@ -4,13 +4,17 @@
 /// @brief Deterministic GF(2) left-nullspace solving for canonical SIQS shadow rows.
 
 #include <gnfs/siqs/shadow_assembly.hpp>
+#include <gnfs/util/thread_pool.hpp>
 
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <thread>
@@ -187,6 +191,174 @@ inline void eliminate_pivot_range(std::vector<uint64_t>& matrix, size_t words_pe
     }
 }
 
+using EliminatePivotRangeFunction = void (*)(std::vector<uint64_t>&, size_t, size_t, size_t, size_t,
+                                             size_t);
+using PivotWorkerStartupHook = void (*)(size_t);
+
+/// Fixed-partition workers retained for the lifetime of one shadow solve.
+///
+/// Every ThreadPool worker receives exactly one long-lived task. A pivot uses
+/// a mutex-protected generation and completion count, so dispatch performs no
+/// task, future, or vector allocation. The matrix pointer and its allocation
+/// remain stable for the complete lifetime of this team.
+class PersistentPivotEliminationTeam final {
+public:
+    PersistentPivotEliminationTeam(std::vector<uint64_t>& matrix, size_t equation_count,
+                                   size_t words_per_row, size_t worker_count,
+                                   EliminatePivotRangeFunction eliminate_range,
+                                   PivotWorkerStartupHook startup_hook)
+        : state_(std::make_shared<State>(matrix, equation_count, words_per_row, worker_count,
+                                         eliminate_range)),
+          pool_(static_cast<uint32_t>(worker_count)) {
+        try {
+            for (size_t worker = 0; worker < worker_count; ++worker) {
+                if (startup_hook != nullptr) {
+                    startup_hook(worker);
+                }
+                auto completion = pool_.submit(
+                    [state = state_, worker]() noexcept { run_worker(state, worker); });
+                (void)completion;
+            }
+        } catch (...) {
+            // Submitted tasks may already be waiting for the first generation.
+            // Release them before ThreadPool joins during constructor unwind.
+            {
+                std::lock_guard<std::mutex> lock(state_->mutex);
+                state_->cancelled = true;
+            }
+            state_->work_available.notify_all();
+            throw;
+        }
+    }
+
+    ~PersistentPivotEliminationTeam() {
+        {
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            state_->stopping = true;
+        }
+        state_->work_available.notify_all();
+    }
+
+    PersistentPivotEliminationTeam(const PersistentPivotEliminationTeam&) = delete;
+    PersistentPivotEliminationTeam& operator=(const PersistentPivotEliminationTeam&) = delete;
+    PersistentPivotEliminationTeam(PersistentPivotEliminationTeam&&) = delete;
+    PersistentPivotEliminationTeam& operator=(PersistentPivotEliminationTeam&&) = delete;
+
+    [[nodiscard]] SIQSShadowMatrixStatus eliminate(size_t pivot_row, size_t pivot_column) {
+        {
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            state_->worker_failed = false;
+            state_->pivot_row = pivot_row;
+            state_->pivot_column = pivot_column;
+            state_->remaining_workers = state_->worker_count;
+            ++state_->generation;
+        }
+        state_->work_available.notify_all();
+
+        std::unique_lock<std::mutex> lock(state_->mutex);
+        state_->work_complete.wait(lock, [&] { return state_->remaining_workers == 0; });
+        return state_->worker_failed ? SIQSShadowMatrixStatus::worker_failure
+                                     : SIQSShadowMatrixStatus::valid;
+    }
+
+private:
+    struct State final {
+        State(std::vector<uint64_t>& matrix_arg, size_t equation_count_arg,
+              size_t words_per_row_arg, size_t worker_count_arg,
+              EliminatePivotRangeFunction eliminate_range_arg)
+            : matrix(&matrix_arg), equation_count(equation_count_arg),
+              words_per_row(words_per_row_arg), worker_count(worker_count_arg),
+              eliminate_range(eliminate_range_arg) {}
+
+        std::vector<uint64_t>* matrix;
+        size_t equation_count;
+        size_t words_per_row;
+        size_t worker_count;
+        EliminatePivotRangeFunction eliminate_range;
+        std::mutex mutex;
+        std::condition_variable work_available;
+        std::condition_variable work_complete;
+        bool cancelled = false;
+        bool worker_failed = false;
+        bool stopping = false;
+        size_t generation = 0;
+        size_t remaining_workers = 0;
+        size_t pivot_row = 0;
+        size_t pivot_column = 0;
+    };
+
+    static void run_worker(const std::shared_ptr<State>& state, size_t worker) noexcept {
+        const size_t base_range = state->equation_count / state->worker_count;
+        const size_t remainder = state->equation_count % state->worker_count;
+        const size_t begin = worker * base_range + std::min(worker, remainder);
+        const size_t end = begin + base_range + (worker < remainder ? size_t{1} : size_t{0});
+        size_t observed_generation = 0;
+        std::unique_lock<std::mutex> lock(state->mutex);
+
+        while (true) {
+            state->work_available.wait(lock, [&] {
+                return state->cancelled || state->stopping ||
+                       state->generation != observed_generation;
+            });
+            if (state->cancelled || state->stopping) {
+                return;
+            }
+
+            observed_generation = state->generation;
+            const size_t pivot_row = state->pivot_row;
+            const size_t pivot_column = state->pivot_column;
+            lock.unlock();
+
+            bool failed = false;
+            try {
+                state->eliminate_range(*state->matrix, state->words_per_row, pivot_row,
+                                       pivot_column, begin, end);
+            } catch (...) {
+                failed = true;
+            }
+
+            lock.lock();
+            if (failed) {
+                state->worker_failed = true;
+            }
+            if (state->remaining_workers == 0) {
+                state->worker_failed = true;
+                state->work_complete.notify_one();
+                return;
+            }
+            --state->remaining_workers;
+            if (state->remaining_workers == 0) {
+                state->work_complete.notify_one();
+            }
+        }
+    }
+
+    // state_ must outlive pool_: ThreadPool joins the long-lived tasks before
+    // the shared state is released during reverse member destruction.
+    std::shared_ptr<State> state_;
+    util::ThreadPool pool_;
+};
+
+[[nodiscard]] inline SIQSShadowMatrixStatus create_persistent_pivot_elimination_team(
+    std::vector<uint64_t>& matrix, size_t equation_count, size_t words_per_row, size_t worker_count,
+    std::unique_ptr<PersistentPivotEliminationTeam>& output,
+    EliminatePivotRangeFunction eliminate_range = eliminate_pivot_range,
+    PivotWorkerStartupHook startup_hook = nullptr) noexcept {
+    output.reset();
+    if (worker_count == 0 || eliminate_range == nullptr ||
+        worker_count > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+        return SIQSShadowMatrixStatus::worker_failure;
+    }
+
+    try {
+        output = std::make_unique<PersistentPivotEliminationTeam>(
+            matrix, equation_count, words_per_row, worker_count, eliminate_range, startup_hook);
+    } catch (...) {
+        return SIQSShadowMatrixStatus::worker_failure;
+    }
+    return SIQSShadowMatrixStatus::valid;
+}
+
 [[nodiscard]] inline SIQSShadowMatrixStatus
 eliminate_pivot(std::vector<uint64_t>& matrix, size_t equation_count, size_t words_per_row,
                 size_t pivot_row, size_t pivot_column, const SIQSShadowMatrixOptions& options) {
@@ -345,6 +517,11 @@ solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
     const size_t no_pivot = std::numeric_limits<size_t>::max();
     std::vector<size_t> pivot_columns(equation_count, no_pivot);
     std::vector<uint8_t> is_pivot(variable_count, uint8_t{0});
+    const bool use_parallel_elimination =
+        options.elimination_workers > 1 && equation_count >= options.parallel_column_threshold;
+    const size_t elimination_worker_count =
+        std::min(equation_count, static_cast<size_t>(options.elimination_workers));
+    std::unique_ptr<PersistentPivotEliminationTeam> elimination_team;
     for (size_t equation = 0; equation < equation_count; ++equation) {
         const size_t equation_offset = equation * words_per_row;
         const size_t pivot_column = leftmost_set_bit(
@@ -360,8 +537,19 @@ solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
         pivot_columns[equation] = pivot_column;
         is_pivot[pivot_column] = uint8_t{1};
 
-        const SIQSShadowMatrixStatus elimination_status =
-            eliminate_pivot(matrix, equation_count, words_per_row, equation, pivot_column, options);
+        SIQSShadowMatrixStatus elimination_status = SIQSShadowMatrixStatus::valid;
+        if (use_parallel_elimination) {
+            if (!elimination_team) {
+                elimination_status = create_persistent_pivot_elimination_team(
+                    matrix, equation_count, words_per_row, elimination_worker_count,
+                    elimination_team);
+            }
+            if (elimination_status == SIQSShadowMatrixStatus::valid) {
+                elimination_status = elimination_team->eliminate(equation, pivot_column);
+            }
+        } else {
+            eliminate_pivot_range(matrix, words_per_row, equation, pivot_column, 0, equation_count);
+        }
         if (elimination_status != SIQSShadowMatrixStatus::valid) {
             return SIQSShadowMatrixResult::failure(elimination_status);
         }

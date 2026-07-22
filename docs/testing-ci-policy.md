@@ -63,7 +63,8 @@ ASan/UBSan and coverage run only `instant` tests. They already multiply test cos
 
 ## ThreadSanitizer Lane
 
-Run the supported candidate and structured-relation race detector with:
+Run the supported candidate, structured-relation, and SIQS shadow race detector
+with:
 
 ```bash
 ./scripts/test.sh tsan-relation
@@ -80,6 +81,7 @@ The runner uses a dedicated `build-tsan-relation` Debug directory, disables nati
 - `test_structured_parallel_driver`
 - `test_structured_parallel_failures`
 - `test_structured_incidence_builder`
+- `test_siqs_shadow_linear_algebra`
 
 The binaries run serially with a default 120-second timeout per binary. An explicit `--timeout` overrides that default. The Linux CI job has a separate 20-minute outer timeout, so configuration or compilation cannot leave the lane unbounded.
 
@@ -182,5 +184,6 @@ When adding or changing tests:
 - Add matching entries to `TEST_TIMEOUT` and `TEST_TIER`.
 - Put the test in `SMOKE_TESTS` only if it is pure `instant` and does not run a real GNFS pipeline.
 - Put real pipeline tests in `MODULE_SLOW_TESTS` or a dedicated mode.
-- For candidate or structured-relation concurrency changes, run `./scripts/test.sh tsan-relation` on a supported toolchain.
+- For candidate, structured-relation, or SIQS shadow concurrency changes, run
+  `./scripts/test.sh tsan-relation` on a supported toolchain.
 - Re-run at least `./scripts/test.sh list`, `ctest --show-only=json-v1`, and the affected local test subset.
