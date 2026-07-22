@@ -1959,6 +1959,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Siqs2LP COMMAND test_siqs_2lp)
     set_tests_properties(Siqs2LP PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_live_sieve_capture
+        tests/test_siqs_live_sieve_capture.cpp
+    )
+    target_link_libraries(test_siqs_live_sieve_capture PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsLiveSieveCapture COMMAND test_siqs_live_sieve_capture)
+    set_tests_properties(SiqsLiveSieveCapture PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_siqs_2lp_graph
         tests/test_siqs_2lp_graph.cpp
     )

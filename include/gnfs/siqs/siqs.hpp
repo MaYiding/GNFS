@@ -14,6 +14,7 @@
 #include <gnfs/linalg/gauss.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/siqs/congruence.hpp>
+#include <gnfs/siqs/live_sieve_capture.hpp>
 #include <gnfs/siqs/relation.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <gnfs/util/primes.hpp>
@@ -657,6 +658,47 @@ inline void next_poly_B(const std::vector<FBPrime>& fb,
     return gnfs::util::is_prime_u64(n);
 }
 
+struct SIQSResidualAdmission {
+    SIQSLiveSieveRelationKind kind;
+    uint64_t large_prime;
+    uint64_t large_prime2;
+};
+
+/// Classify one exact uint64 residual at the raw SIQS relation boundary.
+///
+/// The two-large-prime result remains an unresolved sentinel cofactor. It must
+/// pass split_cofactor_64() and normalize_two_large_prime() before entering the
+/// staged graph. A zero two-large-prime bound preserves the production 1LP-only
+/// contract.
+[[nodiscard]] inline std::optional<SIQSResidualAdmission>
+classify_siqs_residual(uint64_t residual,
+                       uint64_t large_prime_bound,
+                       uint64_t two_large_prime_cofactor_bound) noexcept {
+    if (residual <= 1) {
+        return std::nullopt;
+    }
+
+    if (residual <= large_prime_bound) {
+        if (is_valid_one_large_prime(residual)) {
+            return SIQSResidualAdmission{
+                SIQSLiveSieveRelationKind::one_lp, residual, 0};
+        }
+        if (two_large_prime_cofactor_bound > 0 &&
+            residual <= two_large_prime_cofactor_bound) {
+            return SIQSResidualAdmission{
+                SIQSLiveSieveRelationKind::two_lp_candidate, residual, 1};
+        }
+        return std::nullopt;
+    }
+    if (two_large_prime_cofactor_bound > 0 &&
+        residual <= two_large_prime_cofactor_bound &&
+        !is_valid_one_large_prime(residual)) {
+        return SIQSResidualAdmission{
+            SIQSLiveSieveRelationKind::two_lp_candidate, residual, 1};
+    }
+    return std::nullopt;
+}
+
 /// Convert a nonnegative GMP integer to an exact 64-bit unsigned value.
 ///
 /// GMP's mpz_fits_ulong_p()/mpz_get_ui() pair follows the platform width of
@@ -697,8 +739,13 @@ inline void sieve_polynomial(
     std::vector<SIQSRelation>& out_relations,
     std::mutex& relations_mutex,
     std::vector<uint8_t>& sieve_buf,
-    std::vector<uint8_t>& exp_buf)
+    std::vector<uint8_t>& exp_buf,
+    SIQSLiveSieveCaptureController* live_capture = nullptr)
 {
+    if (live_capture != nullptr && live_capture->stopped()) {
+        return;
+    }
+
     uint32_t M = sieve_half;
     uint32_t sieve_size = 2 * M;
 
@@ -766,10 +813,13 @@ inline void sieve_polynomial(
         }
     }
 
-    // Phase 2: Identify candidates and trial divide
-    // Precompute raw mpz_t handles to avoid Integer wrapper overhead in hot loop
-    mpz_t ax_mpz, val_mpz, Q_mpz;
-    mpz_init(ax_mpz); mpz_init(val_mpz); mpz_init(Q_mpz);
+    // Phase 2: Identify candidates and trial divide. Keep raw GMP handles for
+    // the hot operations, but let Integer own their lifetime so an allocation
+    // or capture-sink exception cannot bypass mpz_clear().
+    Integer ax_scratch, value_scratch, q_scratch;
+    mpz_ptr ax_mpz = ax_scratch.get_mpz();
+    mpz_ptr val_mpz = value_scratch.get_mpz();
+    mpz_ptr Q_mpz = q_scratch.get_mpz();
 
     // Heap-allocated touched buffer (reused across candidates).
     // Old uint32_t touched[256] on stack overflowed for fb_size > 256 when a Q(x)
@@ -779,6 +829,13 @@ inline void sieve_polynomial(
 
     for (uint32_t cand_pos = 0; cand_pos < sieve_size; cand_pos++) {
         if (sieve[cand_pos] < threshold) continue;
+
+        if (live_capture != nullptr) {
+            live_capture->observe_threshold_candidate();
+            if (live_capture->stopped()) {
+                break;
+            }
+        }
 
         // Candidate found — compute Q(x) and trial divide
         int64_t x = static_cast<int64_t>(cand_pos) - static_cast<int64_t>(M);
@@ -806,11 +863,23 @@ inline void sieve_polynomial(
         // Previous code used uint32_t touched[256] on stack — for 100-digit configs
         // with fb_size=400000, a single Q can be hit by far more than 256 FB primes.
         touched_buf.clear();
+        struct ExponentResetGuard {
+            uint8_t* exponents;
+            const std::vector<uint32_t>& touched;
+
+            ~ExponentResetGuard() noexcept {
+                for (uint32_t index : touched) {
+                    exponents[index] = 0;
+                }
+            }
+        } exponent_reset{exp, touched_buf};
         auto record_touched = [&](uint32_t idx) { touched_buf.push_back(idx); };
 
         bool accept = false;
         uint64_t large_prime = 0;
         uint64_t large_prime2 = 0;
+        std::optional<SIQSLiveSieveRelationKind> relation_kind;
+        bool residual_unrepresentable = false;
 
 #if defined(__SIZEOF_INT128__)
         if (Q.bit_length() <= 127) {
@@ -841,74 +910,25 @@ inline void sieve_polynomial(
             // Check cofactor
             if (q128 == 1) {
                 accept = true;
+                relation_kind = SIQSLiveSieveRelationKind::full;
             } else if (q128 <= UINT64_MAX) {
-                uint64_t cofac = static_cast<uint64_t>(q128);
-                // 1LP: cofactor must be prime (composite cofactors have untracked
-                // prime factors that break X²=Y² in extraction). Quick MR test.
-                auto is_probably_prime = [](uint64_t n) -> bool {
-                    if (n < 2) return false;
-                    if (n < 4) return true;
-                    if (n % 2 == 0) return false;
-                    uint64_t d = n - 1; int r = 0;
-                    while ((d & 1) == 0) { d >>= 1; r++; }
-                    __uint128_t x = 1, b = 2;
-                    uint64_t dd = d;
-                    while (dd > 0) {
-                        if (dd & 1) x = x * b % n;
-                        b = b * b % n;
-                        dd >>= 1;
-                    }
-                    if (x == 1 || x == n - 1) return true;
-                    for (int j = 0; j < r - 1; j++) {
-                        x = x * x % n;
-                        if (x == n - 1) return true;
-                    }
-                    return false;
-                };
-                if (cofac <= lp_bound && cofac > 1 && is_valid_one_large_prime(cofac)) {
-                    large_prime = cofac;
+                const auto admission = classify_siqs_residual(
+                    static_cast<uint64_t>(q128), lp_bound, lp_bound_sq);
+                if (admission) {
                     accept = true;
-                } else if (lp_bound_sq > 0 && cofac > 1 && cofac <= lp_bound && !is_probably_prime(cofac)) {
-                    // cofac ∈ (1, lp_bound] 且是合数 — 之前被丢弃,现尝试当 2LP 处理。
-                    // split_cofactor_64 会在 merge 阶段把 cofac 分成两个因子。
-                    // 每因子 ≤ sqrt(cofac) ≤ sqrt(lp_bound) ≤ lp_bound,自动满足上界。
-                    large_prime = cofac;
-                    large_prime2 = 1;
-                    accept = true;
-                } else if (lp_bound_sq > 0 && cofac <= lp_bound_sq && cofac > lp_bound) {
-                    auto powmod128 = [](uint64_t base, uint64_t exp, uint64_t mod) -> uint64_t {
-                        __uint128_t result = 1, b = base % mod;
-                        while (exp > 0) {
-                            if (exp & 1) result = result * b % mod;
-                            b = b * b % mod;
-                            exp >>= 1;
-                        }
-                        return static_cast<uint64_t>(result);
-                    };
-                    uint64_t d_mr = cofac - 1; int r_mr = 0;
-                    while ((d_mr & 1) == 0) { d_mr >>= 1; r_mr++; }
-                    uint64_t x_mr = powmod128(2, d_mr, cofac);
-                    bool is_composite = (x_mr != 1 && x_mr != cofac - 1);
-                    if (is_composite) {
-                        for (int j = 0; j < r_mr - 1 && is_composite; j++) {
-                            x_mr = static_cast<uint64_t>(
-                                static_cast<__uint128_t>(x_mr) * x_mr % cofac);
-                            if (x_mr == cofac - 1) is_composite = false;
-                        }
-                    }
-                    if (is_composite) {
-                        large_prime = cofac;
-                        large_prime2 = 1;
-                        accept = true;
-                    }
+                    relation_kind = admission->kind;
+                    large_prime = admission->large_prime;
+                    large_prime2 = admission->large_prime2;
                 }
+            } else {
+                residual_unrepresentable = true;
             }
         } else
 #endif
         {
             // GMP fallback for very large Q (>127 bits, rare for ≤65 digits)
-            mpz_t q_mpz;
-            mpz_init(q_mpz);
+            Integer residual_scratch;
+            mpz_ptr q_mpz = residual_scratch.get_mpz();
             mpz_set(q_mpz, Q.get_mpz());
 
             for (uint32_t ai : poly.a_indices) {
@@ -930,57 +950,80 @@ inline void sieve_polynomial(
 
             if (mpz_cmp_ui(q_mpz, 1) == 0) {
                 accept = true;
+                relation_kind = SIQSLiveSieveRelationKind::full;
             } else if (auto cofactor = nonnegative_mpz_to_uint64_checked(q_mpz)) {
-                uint64_t cofac = *cofactor;
-                // 1LP: verify cofactor is prime (composite → untracked factors → extraction fails)
-                bool cofac_is_prime = mpz_probab_prime_p(q_mpz, 1) > 0;
-                if (cofac <= lp_bound && cofac > 1 && is_valid_one_large_prime(cofac)) {
-                    large_prime = cofac;
+                const auto admission =
+                    classify_siqs_residual(*cofactor, lp_bound, lp_bound_sq);
+                if (admission) {
                     accept = true;
-                } else if (lp_bound_sq > 0 && cofac > 1 && cofac <= lp_bound && !cofac_is_prime) {
-                    // 合数 cofac ≤ lp_bound — 旧代码丢弃,现作 2LP split 候选
-                    large_prime = cofac;
-                    large_prime2 = 1;
-                    accept = true;
-                } else if (lp_bound_sq > 0 && cofac <= lp_bound_sq && cofac > lp_bound) {
-                    // q_mpz retains the exact cofactor on LLP64 platforms, where
-                    // mpz_set_ui() would truncate uint64_t through unsigned long.
-                    int is_prp = mpz_probab_prime_p(q_mpz, 2);
-                    if (is_prp == 0) {
-                        large_prime = cofac;
-                        large_prime2 = 1;
-                        accept = true;
-                    }
+                    relation_kind = admission->kind;
+                    large_prime = admission->large_prime;
+                    large_prime2 = admission->large_prime2;
                 }
+            } else {
+                residual_unrepresentable = true;
             }
-            mpz_clear(q_mpz);
+        }
+
+        if (!accept && live_capture != nullptr) {
+            if (residual_unrepresentable) {
+                live_capture->observe_unrepresentable_residual();
+            } else {
+                live_capture->observe_rejected_residual();
+            }
+            if (live_capture->stopped()) {
+                break;
+            }
         }
 
         if (accept) {
-            SIQSRelation rel;
-            rel.value = std::move(value);
-            rel.negative = negative;
-            rel.large_prime = large_prime;
-            rel.large_prime2 = large_prime2;
-            // Copy only touched exponents (sparse → dense)
-            rel.exponents.assign(fb.size(), 0);
-            rel.fb_indices.reserve(touched_buf.size());
-            for (uint32_t idx : touched_buf) {
-                rel.exponents[idx] = exp[idx];
-                rel.fb_indices.push_back(idx);
+            bool capture_reserved = false;
+            if (live_capture != nullptr) {
+                if (!relation_kind) {
+                    live_capture->observe_rejected_residual();
+                    break;
+                }
+                const size_t value_bits = value.bit_length();
+                const size_t value_bytes =
+                    value_bits / 8 + static_cast<size_t>(value_bits % 8 != 0);
+                const SIQSLiveSieveRelationPayloadShape payload{
+                    value_bytes, fb.size(), touched_buf.size(), 0};
+                if (!live_capture->try_reserve_relation(*relation_kind, payload)) {
+                    break;
+                }
+                capture_reserved = true;
             }
 
-            std::lock_guard<std::mutex> lock(relations_mutex);
-            out_relations.push_back(std::move(rel));
-        }
+            try {
+                SIQSRelation rel;
+                rel.value = std::move(value);
+                rel.negative = negative;
+                rel.large_prime = large_prime;
+                rel.large_prime2 = large_prime2;
+                // Copy only touched exponents (sparse → dense)
+                rel.exponents.assign(fb.size(), 0);
+                rel.fb_indices.reserve(touched_buf.size());
+                for (uint32_t idx : touched_buf) {
+                    rel.exponents[idx] = exp[idx];
+                    rel.fb_indices.push_back(idx);
+                }
 
-        // Selective clear: only reset touched indices
-        for (uint32_t idx : touched_buf) {
-            exp[idx] = 0;
+                std::lock_guard<std::mutex> lock(relations_mutex);
+                out_relations.push_back(std::move(rel));
+            } catch (...) {
+                if (capture_reserved) {
+                    (void)live_capture->cancel_reserved_relation();
+                }
+                throw;
+            }
+            if (capture_reserved && !live_capture->commit_reserved_relation()) {
+                break;
+            }
+        }
+        if (live_capture != nullptr && live_capture->stopped()) {
+            break;
         }
     }
-
-    mpz_clear(ax_mpz); mpz_clear(val_mpz); mpz_clear(Q_mpz);
 }
 
 // ================================================================

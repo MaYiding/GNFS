@@ -28,6 +28,17 @@ struct TwoLargePrimeAdapterStats {
     size_t accepted_one_lp = 0;
     size_t accepted_two_lp = 0;
     size_t rejected_relations = 0;
+    size_t malformed_source_shape = 0;
+    size_t unsupported_encoding = 0;
+    size_t invalid_one_large_prime = 0;
+    size_t invalid_two_large_prime_split = 0;
+    size_t exact_duplicate = 0;
+
+    [[nodiscard]] constexpr size_t typed_rejections() const noexcept {
+        return malformed_source_shape + unsupported_encoding +
+               invalid_one_large_prime + invalid_two_large_prime_split +
+               exact_duplicate;
+    }
 
     [[nodiscard]] friend constexpr bool operator==(
         const TwoLargePrimeAdapterStats&,
@@ -41,6 +52,36 @@ struct PreparedTwoLargePrimeCorpus {
 };
 
 namespace two_large_prime_adapter_detail {
+
+enum class RejectionReason {
+    malformed_source_shape,
+    unsupported_encoding,
+    invalid_one_large_prime,
+    invalid_two_large_prime_split,
+    exact_duplicate,
+};
+
+inline void record_rejection(TwoLargePrimeAdapterStats& stats,
+                             RejectionReason reason) noexcept {
+    ++stats.rejected_relations;
+    switch (reason) {
+    case RejectionReason::malformed_source_shape:
+        ++stats.malformed_source_shape;
+        break;
+    case RejectionReason::unsupported_encoding:
+        ++stats.unsupported_encoding;
+        break;
+    case RejectionReason::invalid_one_large_prime:
+        ++stats.invalid_one_large_prime;
+        break;
+    case RejectionReason::invalid_two_large_prime_split:
+        ++stats.invalid_two_large_prime_split;
+        break;
+    case RejectionReason::exact_duplicate:
+        ++stats.exact_duplicate;
+        break;
+    }
+}
 
 struct AcceptedRelation {
     const SIQSRelation* relation;
@@ -162,7 +203,9 @@ prepare_two_large_prime_corpus(
     for (const SIQSRelation& relation : relations) {
         if (!two_large_prime_adapter_detail::has_valid_raw_shape(
                 relation, factor_base_size)) {
-            ++corpus.stats.rejected_relations;
+            two_large_prime_adapter_detail::record_rejection(
+                corpus.stats,
+                two_large_prime_adapter_detail::RejectionReason::malformed_source_shape);
             continue;
         }
 
@@ -177,7 +220,9 @@ prepare_two_large_prime_corpus(
                 accepted.push_back(AcceptedRelation{
                     &relation, 0, relation.large_prime});
             } else {
-                ++corpus.stats.rejected_relations;
+                two_large_prime_adapter_detail::record_rejection(
+                    corpus.stats,
+                    two_large_prime_adapter_detail::RejectionReason::invalid_one_large_prime);
             }
             continue;
         }
@@ -190,14 +235,18 @@ prepare_two_large_prime_corpus(
                 accepted.push_back(AcceptedRelation{
                     &relation, factors->p, factors->q});
             } else {
-                ++corpus.stats.rejected_relations;
+                two_large_prime_adapter_detail::record_rejection(
+                    corpus.stats,
+                    two_large_prime_adapter_detail::RejectionReason::invalid_two_large_prime_split);
             }
             continue;
         }
 
         // Pre-split lp1/lp2 records and all other encodings are outside this
         // raw adapter's accepted input contract.
-        ++corpus.stats.rejected_relations;
+        two_large_prime_adapter_detail::record_rejection(
+            corpus.stats,
+            two_large_prime_adapter_detail::RejectionReason::unsupported_encoding);
     }
 
     std::sort(accepted.begin(), accepted.end(),
@@ -210,7 +259,9 @@ prepare_two_large_prime_corpus(
         if (previous_relation != nullptr &&
             two_large_prime_adapter_detail::accepted_relation_equal(
                 *previous_relation, accepted_relation)) {
-            ++corpus.stats.rejected_relations;
+            two_large_prime_adapter_detail::record_rejection(
+                corpus.stats,
+                two_large_prime_adapter_detail::RejectionReason::exact_duplicate);
             continue;
         }
         previous_relation = &accepted_relation;

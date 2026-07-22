@@ -96,6 +96,24 @@ void check_stats(const TwoLargePrimeAdapterStats& stats,
     CHECK(stats.input_relations ==
           stats.full_relations + stats.accepted_one_lp +
               stats.accepted_two_lp + stats.rejected_relations);
+    CHECK(stats.typed_rejections() == stats.rejected_relations);
+}
+
+void check_rejection_stats(const TwoLargePrimeAdapterStats& stats,
+                           size_t malformed_source_shape,
+                           size_t unsupported_encoding,
+                           size_t invalid_one_large_prime,
+                           size_t invalid_two_large_prime_split,
+                           size_t exact_duplicate) {
+    CHECK(stats.malformed_source_shape == malformed_source_shape);
+    CHECK(stats.unsupported_encoding == unsupported_encoding);
+    CHECK(stats.invalid_one_large_prime == invalid_one_large_prime);
+    CHECK(stats.invalid_two_large_prime_split == invalid_two_large_prime_split);
+    CHECK(stats.exact_duplicate == exact_duplicate);
+    CHECK(stats.typed_rejections() ==
+          malformed_source_shape + unsupported_encoding +
+              invalid_one_large_prime + invalid_two_large_prime_split +
+              exact_duplicate);
 }
 
 [[nodiscard]] bool same_source(const TwoLargePrimeCycleSource& lhs,
@@ -230,6 +248,7 @@ void test_invalid_config_and_full_relation_count() {
     CHECK(corpus.has_value());
     if (corpus) {
         check_stats(corpus->stats, 2, 2, 0, 0, 0);
+        check_rejection_stats(corpus->stats, 0, 0, 0, 0, 0);
         CHECK(corpus->edges.empty());
         CHECK(corpus->sources.empty());
     }
@@ -259,6 +278,7 @@ void test_raw_encoding_admission_and_splitter_dispatch() {
     CHECK(corpus.has_value());
     if (corpus) {
         check_stats(corpus->stats, 6, 1, 1, 1, 3);
+        check_rejection_stats(corpus->stats, 0, 1, 2, 0, 0);
         const std::vector<TwoLargePrimeEdge> expected_edges{
             {0, 101, 0},
             {101, 103, 1},
@@ -301,6 +321,7 @@ void test_split_normalization_failures_and_prime_square() {
     CHECK(corpus.has_value());
     if (corpus) {
         check_stats(corpus->stats, 4, 0, 0, 1, 3);
+        check_rejection_stats(corpus->stats, 0, 0, 0, 3, 0);
         const std::vector<TwoLargePrimeEdge> expected_edges{{101, 101, 0}};
         CHECK(corpus->edges == expected_edges);
         CHECK(corpus->sources.size() == 1);
@@ -366,6 +387,7 @@ void test_structural_rejections_precede_splitter() {
     if (corpus) {
         check_stats(corpus->stats, relations.size(), 0, 0, 0,
                     relations.size());
+        check_rejection_stats(corpus->stats, relations.size(), 0, 0, 0, 0);
         CHECK(corpus->edges.empty());
         CHECK(corpus->sources.empty());
     }
@@ -388,6 +410,7 @@ void test_uint8_exponents_are_widened_exactly() {
     CHECK(corpus.has_value());
     if (corpus) {
         check_stats(corpus->stats, 1, 0, 1, 0, 0);
+        check_rejection_stats(corpus->stats, 0, 0, 0, 0, 0);
         CHECK(corpus->sources.size() == 1);
         if (!corpus->sources.empty()) {
             const std::vector<uint32_t> expected{0, 255, 128, 1, 0};
@@ -420,6 +443,7 @@ void test_exact_duplicates_are_deduplicated_but_parallel_payloads_survive() {
     CHECK(deduplicated.has_value());
     if (deduplicated) {
         check_stats(deduplicated->stats, 2, 0, 1, 0, 1);
+        check_rejection_stats(deduplicated->stats, 0, 0, 0, 0, 1);
         CHECK(deduplicated->edges.size() == 1);
         CHECK(deduplicated->sources.size() == 1);
         if (!deduplicated->edges.empty()) {
@@ -441,6 +465,7 @@ void test_exact_duplicates_are_deduplicated_but_parallel_payloads_survive() {
     CHECK(parallel.has_value());
     if (parallel) {
         check_stats(parallel->stats, 2, 0, 2, 0, 0);
+        check_rejection_stats(parallel->stats, 0, 0, 0, 0, 0);
         const std::vector<TwoLargePrimeEdge> expected_edges{
             {0, 109, 0},
             {0, 109, 1},
@@ -475,6 +500,7 @@ void test_exact_duplicates_are_deduplicated_but_parallel_payloads_survive() {
     CHECK(sign_distinct.has_value());
     if (sign_distinct) {
         check_stats(sign_distinct->stats, 2, 0, 2, 0, 0);
+        check_rejection_stats(sign_distinct->stats, 0, 0, 0, 0, 0);
         CHECK(sign_distinct->edges.size() == 2);
         CHECK(sign_distinct->sources.size() == 2);
         if (sign_distinct->sources.size() == 2) {
@@ -495,6 +521,7 @@ void test_exact_duplicates_are_deduplicated_but_parallel_payloads_survive() {
     CHECK(exponent_distinct.has_value());
     if (exponent_distinct) {
         check_stats(exponent_distinct->stats, 2, 0, 2, 0, 0);
+        check_rejection_stats(exponent_distinct->stats, 0, 0, 0, 0, 0);
         CHECK(exponent_distinct->edges.size() == 2);
         CHECK(exponent_distinct->sources.size() == 2);
         if (exponent_distinct->sources.size() == 2) {
@@ -544,6 +571,7 @@ void test_graph_and_materializer_shadow_oracle() {
     }
 
     check_stats(forward->stats, 7, 1, 2, 3, 1);
+    check_rejection_stats(forward->stats, 0, 0, 0, 0, 1);
     CHECK(forward_calls == 3);
     const std::vector<TwoLargePrimeEdge> expected_edges{
         {0, 109, 0},
@@ -576,6 +604,7 @@ void test_graph_and_materializer_shadow_oracle() {
     }
 
     check_stats(reversed->stats, 7, 1, 2, 3, 1);
+    check_rejection_stats(reversed->stats, 0, 0, 0, 0, 1);
     CHECK(reversed_calls == 3);
     std::sort(forward_inputs.begin(), forward_inputs.end());
     std::sort(reversed_inputs.begin(), reversed_inputs.end());

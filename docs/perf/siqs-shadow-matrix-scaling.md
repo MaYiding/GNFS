@@ -246,6 +246,8 @@ Before promotion it must provide:
   sanitizer-clean synchronization contracts.
 - [ ] Parallel threshold frozen from live row distributions.
 - [ ] Direct sparse backend with typed failure and verified dependencies.
-- [ ] Bounded live-sieve capture across the 50-, 70-, and 90-digit bands.
+- [x] Transactional per-polynomial relation/payload capture limit before dense
+  relation allocation, with typed stop reasons and default-path parity tests.
+- [ ] Fixed-plan live-sieve capture across the 50-, 70-, and 90-digit bands.
 - [ ] Controlled collector and `factor()` integration with the default 1LP path
   unchanged.

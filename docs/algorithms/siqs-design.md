@@ -58,6 +58,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `choose_A` / `init_poly` | `siqs.hpp` ~line 386 | Target `A ≈ sqrt(2N)/M`, then build B and prime sieve offsets |
 | `next_poly_B` | `siqs.hpp` ~line 591 | Gray-code switch: one bit flip rotates offsets in O(FB) |
 | `sieve_polynomial` | `siqs.hpp` ~line 658 | Log-add over `[-M, M]`, threshold filter, trial divide, 2LP cofactor split |
+| `SIQSLiveSieveCaptureController` | `live_sieve_capture.hpp` | Transactional relation/payload admission before dense capture allocation |
 | `merge_partials` | `siqs.hpp` ~line 994 | Iterative greedy LP merge — 1LP pairs plus 2LP cycle finding |
 | `normalize_two_large_prime` | `two_large_prime.hpp` | Exact, deterministic-prime validation for a candidate 2LP split |
 | `build_two_large_prime_cycle_basis` | `two_large_prime_graph.hpp` | Deterministic fundamental-cycle oracle over the 1LP/2LP multigraph |
@@ -102,8 +103,12 @@ The crucial knobs by digit band:
   paid back via `small_contrib` in the threshold computation
 
 Two-large-prime collection and the legacy greedy merge remain disabled by
-setting `lp_bound_sq = 0`. Exact split normalization, deterministic cycle
-selection, wide checked cycle materialization, a stable raw-partial adapter,
+setting `lp_bound_sq = 0`. The low-level sieve now has an optional caller-owned
+capture controller with checked relation and logical-payload limits. Its
+reserve/append/commit transaction runs before dense exponent allocation and is
+absent from the production null-controller path. Exact split normalization,
+deterministic cycle selection, wide checked cycle materialization, a stable
+raw-partial adapter with typed rejection reasons,
 canonical sparse post-merge rows, deterministic parallel shadow assembly, and
 an exact wide-row matrix, dependency, and extraction chain are available as
 isolated, tested boundaries. A fixed constructed corpus now exercises the full
@@ -184,8 +189,10 @@ SIQS's `L_N(1/2, 1)`.
   stable shadow-corpus preparation, cycle selection, materialization, and
   sparse-wide row conversion, deterministic parallel assembly, packed shadow
   solving, proof-gated factor extraction, and constructed 50-, 70-, and 90-digit
-  cross-size evidence are staged, while bounded live-sieve evidence, runtime
-  collection, and production integration remain prerequisites
+  cross-size evidence are staged. A transactional bounded capture primitive is
+  present, while the fixed-plan live runner, replayable artifacts, runtime
+  collection, and production integration remain prerequisites. See
+  [SIQS Live-Sieve Capture Contract](../perf/siqs-live-sieve-capture.md)
 - **The wide sparse shadow backend is not implemented**; the dense solver
   admits at most 100000 row variables and 256MiB of packed matrix payload,
   then returns a typed `unsupported_backend` or `resource_limit` result instead
