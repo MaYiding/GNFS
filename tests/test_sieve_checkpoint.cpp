@@ -270,6 +270,7 @@ void test_v2_round_trip() {
 }
 
 void test_run_identity_is_stable_and_matches_checkpoint() {
+    static_assert(gnfs::sieve::SIEVE_RUN_IDENTITY_SCHEMA_VERSION == 2);
     const auto first = identity_from(RunIdentityFixture{});
     const auto second = identity_from(RunIdentityFixture{});
 

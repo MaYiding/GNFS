@@ -3,6 +3,9 @@
 #include "../core/types.hpp"
 #include "../factor_base/factor_base.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -12,6 +15,23 @@ namespace gnfs::sieve {
 using core::AlgebraicPrime;
 using factor_base::FactorBase;
 
+/// Whether an algebraic factor-base entry denotes the projective root.
+[[nodiscard]] constexpr bool is_projective_special_q_root(
+        const AlgebraicPrime& prime) noexcept {
+    return prime.is_projective();
+}
+
+/// Whether an algebraic factor-base entry can define an affine special-q.
+///
+/// Invalid encodings are rejected explicitly instead of relying on the
+/// projective sentinel also comparing greater than p.
+[[nodiscard]] constexpr bool is_affine_special_q_root(
+        const AlgebraicPrime& prime) noexcept {
+    return prime.p > 1 &&
+           !is_projective_special_q_root(prime) &&
+           prime.r < prime.p;
+}
+
 /// SpecialQ - 特殊Q值
 /// 在格筛法中，每个 special-q 定义一个待筛的格
 struct SpecialQ {
@@ -19,9 +39,19 @@ struct SpecialQ {
     uint32_t r;         // f(r) ≡ 0 (mod q)
     uint32_t index;     // 在因子基中的索引
 
+    /// 是否为 projective root
+    [[nodiscard]] constexpr bool is_projective() const noexcept {
+        return r == AlgebraicPrime::PROJECTIVE_ROOT;
+    }
+
+    /// 是否为可用的 affine special-q
+    [[nodiscard]] constexpr bool is_affine() const noexcept {
+        return q > 1 && !is_projective() && r < q;
+    }
+
     /// 检查是否有效
-    [[nodiscard]] bool is_valid() const noexcept {
-        return q > 1;
+    [[nodiscard]] constexpr bool is_valid() const noexcept {
+        return is_affine();
     }
 };
 
@@ -63,45 +93,19 @@ public:
 
     /// 是否有更多 special-q
     [[nodiscard]] bool has_next() const noexcept {
-        if (current_index_ >= fb_.algebraic_count()) {
-            return false;
-        }
-        if (current_index_ >= range_.end_index) {
-            return false;
-        }
-        // 检查当前素数是否超出 max_q
-        if (range_.max_q > 0 && fb_.algebraic()[current_index_].p > range_.max_q) {
-            return false;
-        }
-        return true;
+        return find_next_affine_index(current_index_).has_value();
     }
 
     /// 获取下一个 special-q
     [[nodiscard]] std::optional<SpecialQ> next() {
-        while (current_index_ < fb_.algebraic_count()) {
-            if (current_index_ >= range_.end_index) {
-                return std::nullopt;  // 超出索引范围
-            }
-
-            const auto& ap = fb_.algebraic()[current_index_];
-
-            // 检查是否在范围内
-            if (ap.p > range_.max_q) {
-                return std::nullopt;  // 超出 q 值范围
-            }
-
-            if (ap.p >= range_.min_q) {
-                SpecialQ sq;
-                sq.q = ap.p;
-                sq.r = ap.r;
-                sq.index = current_index_;
-                ++current_index_;
-                return sq;
-            }
-
-            ++current_index_;
+        const auto index = find_next_affine_index(current_index_);
+        if (!index) {
+            return std::nullopt;
         }
-        return std::nullopt;
+
+        const auto& ap = fb_.algebraic()[*index];
+        current_index_ = *index + 1;
+        return SpecialQ{ap.p, ap.r, *index};
     }
 
     /// 获取当前索引
@@ -116,17 +120,42 @@ public:
 
     /// 估计剩余数量
     [[nodiscard]] size_t estimate_remaining() const {
-        uint32_t upper = std::min(static_cast<uint32_t>(fb_.algebraic_count()), range_.end_index);
-        if (current_index_ >= upper) {
-            return 0;
+        size_t remaining = 0;
+        auto index = find_next_affine_index(current_index_);
+        while (index) {
+            ++remaining;
+            index = find_next_affine_index(*index + 1);
         }
-        return upper - current_index_;
+        return remaining;
     }
 
 private:
     const FactorBase& fb_;
     SpecialQRange range_;
     uint32_t current_index_;
+
+    [[nodiscard]] bool exceeds_max_q(uint32_t q) const noexcept {
+        return range_.max_q > 0 && q > range_.max_q;
+    }
+
+    /// Find the next usable affine entry without changing generator state.
+    [[nodiscard]] std::optional<uint32_t> find_next_affine_index(
+            uint32_t start_index) const noexcept {
+        const auto& algebraics = fb_.algebraic();
+        const size_t upper = std::min(
+            algebraics.size(), static_cast<size_t>(range_.end_index));
+
+        for (size_t index = start_index; index < upper; ++index) {
+            const auto& ap = algebraics[index];
+            if (exceeds_max_q(ap.p)) {
+                break;
+            }
+            if (ap.p >= range_.min_q && is_affine_special_q_root(ap)) {
+                return static_cast<uint32_t>(index);
+            }
+        }
+        return std::nullopt;
+    }
 
     /// 跳过到 min_q
     void skip_to_min_q() {
@@ -204,10 +233,11 @@ private:
     size_t count = 0;
 
     for (const auto& ap : algebraics) {
-        if (ap.p >= min_q && ap.p <= max_q) {
-            ++count;
-        } else if (ap.p > max_q) {
+        if (max_q > 0 && ap.p > max_q) {
             break;  // 已排序，可以提前退出
+        }
+        if (ap.p >= min_q && is_affine_special_q_root(ap)) {
+            ++count;
         }
     }
 

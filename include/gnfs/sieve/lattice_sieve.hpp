@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <functional>
 #include <numeric>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -253,6 +254,15 @@ public:
     /// remains, the basis is perturbed via a unimodular skew transform and
     /// the region is re-sieved. Stats accumulate in adaptive_manager().
     [[nodiscard]] SieveResult sieve_special_q(const SpecialQ& sq) {
+        // The lattice basis represents an affine root modulo q. Projective
+        // roots use the UINT32_MAX sentinel, while any r >= q is a
+        // non-canonical affine representative. Reject both before preparing
+        // sieve storage or invoking basis reduction.
+        if (!sq.is_affine()) {
+            throw std::invalid_argument(
+                "LatticeSieve requires an affine Special-Q with q > 1 and r < q");
+        }
+
         SieveResult result;
         result.special_q = sq;
 

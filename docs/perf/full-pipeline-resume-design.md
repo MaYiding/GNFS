@@ -51,6 +51,8 @@ exact decimal N, a portable 128-bit run fingerprint, and the OOC relation
 descriptor: format version, durable store ID, generation, relation count, and
 data end. The fingerprint covers the selected polynomial, ordered factor-base
 contents, and the sieve parameters that affect relation generation or stopping.
+Run-identity schema 2 also binds the affine-only Special-Q enumeration policy,
+so checkpoints from the earlier projective-Q schedule fail closed.
 
 Recovery first rejects a run-identity mismatch without opening the relation
 store. It then validates the exact relation prefix and truncates later

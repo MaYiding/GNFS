@@ -24,6 +24,8 @@ struct SieveRunIdentity {
     friend bool operator==(const SieveRunIdentity&, const SieveRunIdentity&) = default;
 };
 
+inline constexpr uint32_t SIEVE_RUN_IDENTITY_SCHEMA_VERSION = 2;
+
 namespace sieve_run_identity_detail {
 
 /// Two stable, independently mixed 64-bit lanes. Every multi-byte value is fed
@@ -134,7 +136,7 @@ make_sieve_run_identity(const core::PolynomialContext& context,
 
     StableFingerprint hash;
     hash.add_field("gnfs.sieve.run-identity");
-    hash.add_u32(1); // Identity schema version, independent of checkpoint V2.
+    hash.add_u32(SIEVE_RUN_IDENTITY_SCHEMA_VERSION); // Independent of checkpoint V2.
 
     const std::string run_n = context.n().to_string();
     hash.add_field("polynomial");

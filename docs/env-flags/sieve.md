@@ -176,7 +176,9 @@ GNFS_RESUME=/var/tmp/gnfs-session ./gnfs <N>
    run identity 写入同目录临时文件；写入 checksum、完整 flush 后以原子替换发布。
 3. checkpoint 发布成功后，collector 才以同一个 descriptor 重新打开 append。
 4. 重启先严格加载 V2 checkpoint，再比对 N、多项式、因子基和 sieve 参数的
-   128-bit run fingerprint；不一致时在打开 OOC store 前 fail closed。
+   128-bit run fingerprint；不一致时在打开 OOC store 前 fail closed。当前 run
+   identity schema 2 还绑定 affine-only Special-Q 枚举规则，因此旧 schema 1
+   checkpoint 不会跨越 projective-Q 过滤边界恢复。
 5. identity 匹配后，再从同一次只读打开校验 OOC V3 index/data header、配对
    `store_id` 与 committed prefix；所有检查通过后才允许截断 checkpoint 之后的
    未提交 index/data tail。同尺寸异源 `.reldata` 也会 fail closed。

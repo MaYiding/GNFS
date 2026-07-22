@@ -5,7 +5,9 @@
 
 #include <cassert>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
+#include <string>
 
 using namespace gnfs;
 using namespace gnfs::sieve;
@@ -304,6 +306,90 @@ void test_lattice_sieve_storage_contract() {
               << " bytes, small=" << small_allocated << " bytes)" << std::endl;
 }
 
+void test_lattice_sieve_special_q_entry_contract() {
+    std::cout << "Testing lattice sieve special-q entry contract..." << std::endl;
+
+    Integer n(test_n);
+    auto selection = BaseMSelector::select(n, 3);
+    if (!selection.success) {
+        throw std::runtime_error("special-q entry fixture polynomial selection failed");
+    }
+    auto ctx = BaseMSelector::create_context(n, selection);
+
+    FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 500;
+    fb_opts.algebraic_bound = 500;
+    fb_opts.parallel = false;
+    auto fb = FactorBaseBuilder::build(ctx, fb_opts);
+
+    SieveParams params;
+    LatticeSieve rejecting_sieve(ctx, fb, params);
+    if (rejecting_sieve.allocated_sieve_bytes() != 0) {
+        throw std::runtime_error("special-q rejection fixture started with sieve storage");
+    }
+
+    const auto expect_rejected_without_storage =
+        [&](const SpecialQ& sq, const char* description) {
+            bool rejected = false;
+            try {
+                (void)rejecting_sieve.sieve_special_q(sq);
+            } catch (const std::invalid_argument&) {
+                rejected = true;
+            } catch (...) {
+                throw std::runtime_error(std::string(description) +
+                                         " raised the wrong exception type");
+            }
+
+            if (!rejected) {
+                throw std::runtime_error(std::string(description) +
+                                         " was not rejected");
+            }
+            if (rejecting_sieve.allocated_sieve_bytes() != 0) {
+                throw std::runtime_error(std::string(description) +
+                                         " allocated sieve storage before rejection");
+            }
+        };
+
+    expect_rejected_without_storage(
+        SpecialQ{101, AlgebraicPrime::PROJECTIVE_ROOT, 0},
+        "projective special-q");
+    expect_rejected_without_storage(SpecialQ{101, 101, 0},
+                                    "special-q with r equal to q");
+    expect_rejected_without_storage(SpecialQ{1, 0, 0},
+                                    "special-q with invalid modulus");
+
+    SpecialQRange range;
+    range.min_q = 100;
+    range.max_q = 500;
+    SpecialQGenerator generator(fb, range);
+    std::optional<SpecialQ> affine_sq;
+    while (auto candidate = generator.next()) {
+        if (candidate->q > 1 && candidate->r > 0 && candidate->r < candidate->q) {
+            affine_sq = *candidate;
+            break;
+        }
+    }
+    if (!affine_sq.has_value()) {
+        throw std::runtime_error("special-q entry fixture has no nonzero affine root");
+    }
+
+    LatticeSieve affine_sieve(ctx, fb, params);
+    SieveRegion region;
+    region.i_min = -16;
+    region.i_max = 15;
+    region.j_min = 1;
+    region.j_max = 8;
+    affine_sieve.set_region(region);
+    const auto affine_result = affine_sieve.sieve_special_q(*affine_sq);
+    if (affine_result.special_q.q != affine_sq->q ||
+        affine_result.special_q.r != affine_sq->r ||
+        affine_result.sieved_positions != region.size()) {
+        throw std::runtime_error("valid affine special-q did not follow the normal sieve path");
+    }
+
+    std::cout << "  Special-q entry contract: PASS" << std::endl;
+}
+
 // r=0 退化路径:LatticeSieve 在 sq.r==0 时 early-return 空 candidates。
 // 该路径仅当 q | f₀ 时出现,极罕见,但代码必须正确 short-circuit
 // (不要 estimate_initial_log 塌缩,不要在退化 basis 上跑全 sieve)。
@@ -358,6 +444,7 @@ int main() {
     test_mod_inverse();
     test_default_region();
     test_lattice_sieve_storage_contract();
+    test_lattice_sieve_special_q_entry_contract();
     test_lattice_sieve_basic();
     test_candidate_properties();
     test_lattice_sieve_r_zero();
