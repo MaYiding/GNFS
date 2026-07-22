@@ -6,12 +6,20 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace {
 
+using gnfs::core::Integer;
+using gnfs::siqs::FBPrime;
+using gnfs::siqs::nonnegative_mpz_to_uint64_checked;
 using gnfs::siqs::normalize_two_large_prime;
+using gnfs::siqs::sieve_polynomial;
+using gnfs::siqs::SIQSPoly;
+using gnfs::siqs::SIQSRelation;
 using gnfs::siqs::split_cofactor_64;
 using gnfs::siqs::TwoLargePrimeFactors;
 
@@ -89,6 +97,93 @@ void test_bounds_and_exact_product_are_required() {
         {std::numeric_limits<uint64_t>::max(), 15}));
 }
 
+void test_nonnegative_mpz_to_uint64_checked() {
+    const Integer negative("-1");
+    CHECK(!nonnegative_mpz_to_uint64_checked(negative.get_mpz()).has_value());
+
+    const Integer zero(0);
+    const auto zero_value = nonnegative_mpz_to_uint64_checked(zero.get_mpz());
+    CHECK(zero_value.has_value());
+    CHECK(zero_value.value_or(1) == 0);
+
+    constexpr uint64_t above_u32_expected = UINT64_C(4294967311);
+    const Integer above_u32("4294967311");
+    const auto above_u32_value = nonnegative_mpz_to_uint64_checked(above_u32.get_mpz());
+    CHECK(above_u32_value.has_value());
+    CHECK(above_u32_value.value_or(0) == above_u32_expected);
+
+    const Integer uint64_max("18446744073709551615");
+    const auto uint64_max_value = nonnegative_mpz_to_uint64_checked(uint64_max.get_mpz());
+    CHECK(uint64_max_value.has_value());
+    CHECK(uint64_max_value.value_or(0) == std::numeric_limits<uint64_t>::max());
+
+    const Integer above_uint64("18446744073709551616");
+    CHECK(!nonnegative_mpz_to_uint64_checked(above_uint64.get_mpz()).has_value());
+}
+
+std::vector<SIQSRelation> collect_gmp_fallback_relations(const char* cofactor_text) {
+    const Integer cofactor(cofactor_text);
+    Integer q_value;
+    mpz_mul_2exp(q_value.get_mpz(), cofactor.get_mpz(), 100);
+
+    // With A=1 and B=q_value, the x=0 candidate has
+    // Q(x)=B^2-N=q_value. Its >127-bit size forces the GMP fallback even
+    // on platforms with native __int128 support. The x=-1 candidate leaves
+    // the >64-bit residual q_value-1 and is rejected.
+    Integer modulus;
+    mpz_mul(modulus.get_mpz(), q_value.get_mpz(), q_value.get_mpz());
+    mpz_sub(modulus.get_mpz(), modulus.get_mpz(), q_value.get_mpz());
+
+    SIQSPoly poly;
+    mpz_set_ui(poly.A.get_mpz(), 1);
+    mpz_set(poly.B.get_mpz(), q_value.get_mpz());
+    const uint32_t no_solution = std::numeric_limits<uint32_t>::max();
+    poly.solns.assign(2, {no_solution, no_solution});
+
+    const std::vector<FBPrime> factor_base = {
+        {0, 0, 0},
+        {2, 1, 1},
+    };
+    std::vector<SIQSRelation> relations;
+    std::mutex relations_mutex;
+    std::vector<uint8_t> sieve_buffer;
+    std::vector<uint8_t> exponent_buffer(factor_base.size(), 0);
+
+    sieve_polynomial(poly,
+                     modulus,
+                     factor_base,
+                     1,
+                     0,
+                     3,
+                     std::numeric_limits<uint32_t>::max(),
+                     std::numeric_limits<uint64_t>::max(),
+                     relations,
+                     relations_mutex,
+                     sieve_buffer,
+                     exponent_buffer);
+    return relations;
+}
+
+void test_llp64_gmp_fallback_classification() {
+    // These values sit just above UINT32_MAX. On Windows LLP64, converting
+    // either through unsigned long truncates it to the parenthesized value.
+    // Prime 4294967311 (15) must be rejected as a 2LP composite candidate.
+    CHECK(collect_gmp_fallback_relations("4294967311").empty());
+
+    // Composite 4294967299 = 7 * 613566757 (3) must be retained for exact
+    // 2LP normalization rather than misclassified from its low 32 bits.
+    const auto relations = collect_gmp_fallback_relations("4294967299");
+    CHECK(relations.size() == 1);
+    for (const SIQSRelation& relation : relations) {
+        CHECK(relation.large_prime == UINT64_C(4294967299));
+        CHECK(relation.large_prime2 == 1);
+        CHECK(relation.exponents.size() == 2);
+        if (relation.exponents.size() == 2) {
+            CHECK(relation.exponents[1] == 100);
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -96,6 +191,8 @@ int main() {
     test_candidate_order_is_canonicalized();
     test_non_semiprimes_are_rejected();
     test_bounds_and_exact_product_are_required();
+    test_nonnegative_mpz_to_uint64_checked();
+    test_llp64_gmp_fallback_classification();
 
     std::cout << checks_passed << " checks passed, " << checks_failed
               << " checks failed\n";

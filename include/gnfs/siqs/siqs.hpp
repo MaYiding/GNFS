@@ -22,6 +22,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <mutex>
 #include <numeric>
@@ -656,6 +657,27 @@ inline void next_poly_B(const std::vector<FBPrime>& fb,
     return gnfs::util::is_prime_u64(n);
 }
 
+/// Convert a nonnegative GMP integer to an exact 64-bit unsigned value.
+///
+/// GMP's mpz_fits_ulong_p()/mpz_get_ui() pair follows the platform width of
+/// unsigned long, which is only 32 bits on Windows LLP64. Exporting one native
+/// uint64_t word keeps the SIQS cofactor boundary identical on every platform.
+/// The caller-provided destination also avoids an allocation inside mpz_export.
+[[nodiscard]] inline std::optional<uint64_t>
+nonnegative_mpz_to_uint64_checked(mpz_srcptr value) noexcept {
+    if (mpz_sgn(value) < 0 || mpz_sizeinbase(value, 2) > 64) {
+        return std::nullopt;
+    }
+
+    uint64_t result = 0;
+    size_t exported_words = 0;
+    mpz_export(&result, &exported_words, -1, sizeof(result), 0, 0, value);
+    if (exported_words > 1) {
+        return std::nullopt;
+    }
+    return result;
+}
+
 // ================================================================
 // Sieve kernel
 // ================================================================
@@ -908,8 +930,8 @@ inline void sieve_polynomial(
 
             if (mpz_cmp_ui(q_mpz, 1) == 0) {
                 accept = true;
-            } else if (mpz_fits_ulong_p(q_mpz)) {
-                uint64_t cofac = mpz_get_ui(q_mpz);
+            } else if (auto cofactor = nonnegative_mpz_to_uint64_checked(q_mpz)) {
+                uint64_t cofac = *cofactor;
                 // 1LP: verify cofactor is prime (composite → untracked factors → extraction fails)
                 bool cofac_is_prime = mpz_probab_prime_p(q_mpz, 1) > 0;
                 if (cofac <= lp_bound && cofac > 1 && is_valid_one_large_prime(cofac)) {
@@ -921,10 +943,9 @@ inline void sieve_polynomial(
                     large_prime2 = 1;
                     accept = true;
                 } else if (lp_bound_sq > 0 && cofac <= lp_bound_sq && cofac > lp_bound) {
-                    // thread_local Integer reuse (saves init/clear per check)
-                    thread_local Integer tmp_check;
-                    mpz_set_ui(tmp_check.get_mpz(), cofac);
-                    int is_prp = mpz_probab_prime_p(tmp_check.get_mpz(), 2);
+                    // q_mpz retains the exact cofactor on LLP64 platforms, where
+                    // mpz_set_ui() would truncate uint64_t through unsigned long.
+                    int is_prp = mpz_probab_prime_p(q_mpz, 2);
                     if (is_prp == 0) {
                         large_prime = cofac;
                         large_prime2 = 1;
