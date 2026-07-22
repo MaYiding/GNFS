@@ -835,6 +835,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SQUFOFBudgetCorpus COMMAND test_squfof_budget_corpus)
     set_tests_properties(SQUFOFBudgetCorpus PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Outcome-blind factor-balance challenge corpus sealed before its first probe.
+    add_executable(test_squfof_success_challenge_corpus
+        tests/test_squfof_success_challenge_corpus.cpp
+    )
+    add_test(NAME SQUFOFSuccessChallengeCorpus COMMAND test_squfof_success_challenge_corpus)
+    set_tests_properties(SQUFOFSuccessChallengeCorpus PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Deterministic case-by-slot-by-cap matrix and offline budget policy gates.
     add_executable(test_squfof_budget_oracle
         tests/test_squfof_budget_oracle.cpp

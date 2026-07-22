@@ -435,6 +435,36 @@ factor。两者都只作为过拟合回归证据，生产 schedule、per-slot ca
 下一轮需要在读取结果前冻结按 factor-balance 结构生成的高位普通 2LP success
 challenge corpus；只有补足成功覆盖后才允许重新判断 `10056` 候选。
 
+### SQUFOF Success-Coverage Challenge V1
+
+[`prospective_squfof_success_challenge_v1`](../../tests/fixtures/squfof_success_challenge_v1.hpp)
+是上述 no-go 后的独立输入密封点。生成器 `splitmix64-factor-balance-prime-pairs-v1`
+使用 seed `0x5355434345535331` 和 profile mixer `0xd1b54a32d192ed03`，只按素性、
+结构区间、重复输入或重复因子拒绝样本；它不得读取 SQUFOF 成功、factor、multiplier、
+迭代数、split 或 hash。三个 profile 的因子位数和样本数为：
+
+| Profile | Factor widths | Additional structure | Unique `n` |
+|---|---:|---|---:|
+| Close balanced | 29 × 29 bit | `q-p` in `[2^18, 2^22)` | 64 |
+| Mildly skewed | 28 × 30 bit | distinct factors | 64 |
+| Moderately skewed | 27 × 31 bit | distinct factors | 64 |
+
+三组都固定为 57 位或 58 位的普通 2LP 输入和 production budget `20000`，从而把因子
+平衡度与总位宽分离。每个 profile 内仅按固定 `n` hash 排序，再循环分配
+train、train、validation、confirmation；总 split 为 96/48/48，并且本轮 train 不得
+重新拟合已经冻结的统一 cap `10056`。密封 identity 为：
+
+| Identity | Low | High |
+|---|---:|---:|
+| Corpus | 10783171939506602749 | 9236118909252415409 |
+| Grouped split | 5936611983363779581 | 6396469101558652297 |
+
+`test_squfof_success_challenge_corpus` 不包含 `squfof.hpp`，只验证生成合同、素因子、
+乘积、profile、唯一性、split 和 digest。本提交不产生任何 factor 或迭代结果；只有在
+该输入合同提交后，后续独立提交才可比较 production cap `20000` 与候选 `10056`。
+即使挑战集补足成功覆盖，它也只验证高位 normal-2LP caller，不代表自然 LP 出现频率，
+仍不能替代真实 `classify_cofactor`、CandidateBatch 和 fallback 链 A/B。
+
 ### SQUFOF Strategy Matrix V2 and Order No-Go
 
 `test_squfof_strategy_oracle` 对上述 192 项语料和生产 11-slot schedule 生成完整的

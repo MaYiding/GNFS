@@ -134,6 +134,14 @@ wall time. Published V2 validation/holdout rows remain retrospective evidence;
 only inputs sealed before the candidate's first probe are labeled prospective.
 An offline result never changes the production path automatically.
 
+`test_squfof_success_challenge_corpus` is an `instant`, outcome-blind data
+contract for the next budget decision. It freezes 192 high-band normal-2LP
+semiprimes across three factor-balance profiles, a grouped 2:1:1 split, and the
+already selected absolute-cap candidate. It independently validates the known
+prime factors and generator identity, but deliberately neither includes nor
+calls SQUFOF. The corpus must be committed before either the production budget
+or candidate cap is probed; its train split is not a new tuning set.
+
 `test_squfof_bench` is a disabled `bench` CTest target. The supported
 `./scripts/test.sh bench-squfof [repetitions]` mode builds it in Release and runs
 the fixed 50-digit SQUFOF strategy corpus. The runner validates every case,
