@@ -544,13 +544,13 @@ The M5 cross-size route now has a real sieve-to-reduction gate:
 ```
 
 The input is the 120-bit semiprime
-`664613997892503507403755373348813853`. The test selects one polynomial and
-factor base, fixes `max_special_q=32`, disables OOC/resume/distributed and other
-strategy-changing experiments, and compares two production routes:
+`664613997892503507403755373348813853`. The test freezes one polynomial exactly,
+builds its factor base, fixes `max_special_q=32`, disables OOC/resume/distributed
+and other strategy-changing experiments, and compares two production routes:
 
 - StandardV0 with one local sieve lane;
 - forced structured reduction with the hardware-bounded profile, up to four
-  local sieve and reducer lanes.
+  local sieve and structured-incidence lanes.
 
 Two independent Release processes produced the same canonical record. The
 frozen identity is:
@@ -566,6 +566,7 @@ frozen identity is:
 | Structured commits / emitted rows | n/a | 45 / 79 |
 | Matrix shape | 248 x 14,648 | 477 x 14,653 |
 | Matrix nonzeros | 15,585 | 25,678 |
+| Matrix digest | `14525310064104378093 / 16319658707909074699` | `14532202369606426594 / 8411150515085501241` |
 
 The raw LP histogram is also frozen at weight-1/2/3/4+ counts
 `13048/370/29/32`. Both routes stop after full thin-matrix construction with

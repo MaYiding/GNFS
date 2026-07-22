@@ -1,8 +1,10 @@
 #include "gnfs/api/pipeline.hpp"
 #include "gnfs/relation/reduction_engine.hpp"
+#include "gnfs/relation/structured_filter_profile.hpp"
 #include "gnfs/util/msvc_compat.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -11,8 +13,8 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -20,6 +22,7 @@ using gnfs::api::Config;
 using gnfs::api::FactorizationMethod;
 using gnfs::api::Pipeline;
 using gnfs::core::Integer;
+using gnfs::core::PolynomialContext;
 using gnfs::factor_base::FactorBase;
 using gnfs::relation::CorpusDigest;
 using gnfs::relation::LpKeyWeightHistogram;
@@ -59,8 +62,27 @@ constexpr size_t EXPECTED_STRUCTURED_COMMITS = 45;
 constexpr size_t EXPECTED_STRUCTURED_EMITTED_ROWS = 79;
 constexpr size_t EXPECTED_LEGACY_MATRIX_COLUMNS = 14'648;
 constexpr size_t EXPECTED_LEGACY_MATRIX_NONZEROS = 15'585;
+constexpr CorpusDigest EXPECTED_LEGACY_MATRIX_DIGEST{
+    14'525'310'064'104'378'093ULL,
+    16'319'658'707'909'074'699ULL,
+};
 constexpr size_t EXPECTED_STRUCTURED_MATRIX_COLUMNS = 14'653;
 constexpr size_t EXPECTED_STRUCTURED_MATRIX_NONZEROS = 25'678;
+constexpr CorpusDigest EXPECTED_STRUCTURED_MATRIX_DIGEST{
+    14'532'202'369'606'426'594ULL,
+    8'411'150'515'085'501'241ULL,
+};
+
+[[nodiscard]] PolynomialContext make_fixture_context(const Integer& n) {
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back("61547052323");
+    coefficients.emplace_back("344271107786");
+    coefficients.emplace_back(static_cast<int64_t>(109));
+    coefficients.emplace_back(static_cast<int64_t>(1));
+    constexpr uint64_t SKEW_BITS = 4'660'900'664'167'253'969ULL;
+    return PolynomialContext(n, std::move(coefficients), Integer("872682957255"),
+                             std::bit_cast<double>(SKEW_BITS));
+}
 
 [[noreturn]] void fail(std::string_view message) {
     throw std::runtime_error(std::string(message));
@@ -130,9 +152,29 @@ struct RunEvidence final {
     size_t matrix_rows = 0;
     size_t matrix_columns = 0;
     size_t matrix_nonzeros = 0;
+    CorpusDigest matrix_digest{};
     bool owns_structured_corpus = false;
     bool structured_row_mapping_is_identity = false;
 };
+
+[[nodiscard]] CorpusDigest matrix_digest(const gnfs::linalg::SparseMatrix& matrix) {
+    gnfs::relation::detail::CorpusDigestBuilder builder;
+    constexpr uint8_t domain[] = {'G', 'N', 'F', 'S', '-', 'M', 'D', 'G', 1};
+    for (uint8_t byte : domain) {
+        builder.append_byte(byte);
+    }
+    builder.append_u64_le(static_cast<uint64_t>(matrix.num_rows()));
+    builder.append_u64_le(static_cast<uint64_t>(matrix.num_cols()));
+    for (size_t row = 0; row < matrix.num_rows(); ++row) {
+        const auto& indices = matrix.row(row).indices();
+        builder.append_u64_le(static_cast<uint64_t>(row));
+        builder.append_u64_le(static_cast<uint64_t>(indices.size()));
+        for (uint32_t column : indices) {
+            builder.append_u32_le(column);
+        }
+    }
+    return builder.finish();
+}
 
 [[nodiscard]] Config make_config(uint32_t local_threads) {
     Config config;
@@ -195,6 +237,7 @@ struct RunEvidence final {
     evidence.matrix_rows = matrix_result.matrix.num_rows();
     evidence.matrix_columns = matrix_result.matrix.num_cols();
     evidence.matrix_nonzeros = matrix_result.matrix.total_weight();
+    evidence.matrix_digest = matrix_digest(matrix_result.matrix);
     evidence.owns_structured_corpus = matrix_result.owns_relation_corpus();
     evidence.structured_row_mapping_is_identity = evidence.owns_structured_corpus;
     for (size_t row = 0; row < matrix_result.structured_row_to_relation().size(); ++row) {
@@ -218,7 +261,7 @@ struct RunEvidence final {
 }
 
 void validate_route_contract(const RunEvidence& legacy, const RunEvidence& structured,
-                             size_t hardware_threads) {
+                             uint32_t expected_structured_lanes) {
     require(legacy.strategy == ReductionStrategy::StandardV0,
             "legacy route did not select the frozen StandardV0 baseline");
     require(structured.strategy == ReductionStrategy::Structured,
@@ -238,7 +281,6 @@ void validate_route_contract(const RunEvidence& legacy, const RunEvidence& struc
 
     require(legacy.local_sieve_threads == 1 && legacy.special_q_peak_workers == 1,
             "legacy oracle did not exercise the one-lane schedule");
-    const size_t expected_structured_lanes = std::min<size_t>(MAX_BATCH_WORKERS, hardware_threads);
     require(structured.local_sieve_threads == expected_structured_lanes,
             "structured route did not freeze the requested local compute budget");
     require(structured.special_q_peak_workers == expected_structured_lanes,
@@ -264,7 +306,8 @@ void validate_route_contract(const RunEvidence& legacy, const RunEvidence& struc
                 legacy.output_digest == EXPECTED_LEGACY_OUTPUT_DIGEST &&
                 legacy.matrix_rows == EXPECTED_LEGACY_OUTPUT_ROWS &&
                 legacy.matrix_columns == EXPECTED_LEGACY_MATRIX_COLUMNS &&
-                legacy.matrix_nonzeros == EXPECTED_LEGACY_MATRIX_NONZEROS,
+                legacy.matrix_nonzeros == EXPECTED_LEGACY_MATRIX_NONZEROS &&
+                legacy.matrix_digest == EXPECTED_LEGACY_MATRIX_DIGEST,
             "fixed 120-bit legacy reduction or matrix identity changed");
     require(structured.output_rows == EXPECTED_STRUCTURED_OUTPUT_ROWS &&
                 structured.output_lp_columns == EXPECTED_STRUCTURED_OUTPUT_LP_COLUMNS &&
@@ -273,7 +316,8 @@ void validate_route_contract(const RunEvidence& legacy, const RunEvidence& struc
                 structured.structured_emitted_rows == EXPECTED_STRUCTURED_EMITTED_ROWS &&
                 structured.matrix_rows == EXPECTED_STRUCTURED_OUTPUT_ROWS &&
                 structured.matrix_columns == EXPECTED_STRUCTURED_MATRIX_COLUMNS &&
-                structured.matrix_nonzeros == EXPECTED_STRUCTURED_MATRIX_NONZEROS,
+                structured.matrix_nonzeros == EXPECTED_STRUCTURED_MATRIX_NONZEROS &&
+                structured.matrix_digest == EXPECTED_STRUCTURED_MATRIX_DIGEST,
             "fixed 120-bit structured reduction or matrix identity changed");
 }
 
@@ -288,6 +332,9 @@ void run_test() {
     ScopedEnvironmentVariable three_large_primes("GNFS_3LP", "0");
     ScopedEnvironmentVariable cascade_v3("GNFS_CASCADE_V3", "0");
     ScopedEnvironmentVariable v0_bfs("GNFS_V0_BFS", "0");
+    ScopedEnvironmentVariable v0_weight3("GNFS_V0_WEIGHT3", "0");
+    ScopedEnvironmentVariable weight_cutoff("GNFS_WEIGHT_CUTOFF", "0");
+    ScopedEnvironmentVariable drop_residual("GNFS_DROP_RESIDUAL", "0");
     ScopedEnvironmentVariable override_lp_bits("GNFS_OVERRIDE_LP_BITS", std::nullopt);
     ScopedEnvironmentVariable target_multiplier("GNFS_SIEVE_TARGET_MULT", std::nullopt);
     ScopedEnvironmentVariable lattice_lll("GNFS_LATTICE_LLL", std::nullopt);
@@ -314,13 +361,8 @@ void run_test() {
     const Integer n{std::string(FIXTURE_N)};
     require(n.bit_length() == FIXTURE_BITS, "120-bit fixture bit length changed");
 
-    size_t hardware_threads = std::thread::hardware_concurrency();
-    if (hardware_threads == 0) {
-        hardware_threads = MAX_BATCH_WORKERS;
-    }
-    hardware_threads = std::max<size_t>(1, hardware_threads);
     const uint32_t structured_threads =
-        static_cast<uint32_t>(std::min<size_t>(MAX_BATCH_WORKERS, hardware_threads));
+        gnfs::relation::structured_filter_hardware_workers();
 
     Pipeline setup_pipeline(n, make_config(structured_threads));
     require(setup_pipeline.params().bits == FIXTURE_BITS,
@@ -329,13 +371,13 @@ void run_test() {
             "Pipeline parameter digit band changed for the 120-bit fixture");
     require(setup_pipeline.params().large_prime_bits == 22,
             "120-bit fixture left the intended LP size transition");
-    auto context = setup_pipeline.select_polynomial();
+    auto context = make_fixture_context(n);
     auto factor_base = setup_pipeline.build_factor_base(context);
 
     const RunEvidence legacy = run_case(n, make_config(1), context, factor_base, "0");
     const RunEvidence structured =
         run_case(n, make_config(structured_threads), context, factor_base, "1");
-    validate_route_contract(legacy, structured, hardware_threads);
+    validate_route_contract(legacy, structured, structured_threads);
 
     std::cout << "GNFS_STRUCTURED_120BIT_V1"
               << " status=pass"
@@ -357,9 +399,13 @@ void run_test() {
               << " legacy_matrix_rows=" << legacy.matrix_rows
               << " legacy_matrix_columns=" << legacy.matrix_columns
               << " legacy_matrix_nonzeros=" << legacy.matrix_nonzeros
+              << " legacy_matrix_digest_low=" << legacy.matrix_digest.low
+              << " legacy_matrix_digest_high=" << legacy.matrix_digest.high
               << " structured_matrix_rows=" << structured.matrix_rows
               << " structured_matrix_columns=" << structured.matrix_columns
               << " structured_matrix_nonzeros=" << structured.matrix_nonzeros
+              << " structured_matrix_digest_low=" << structured.matrix_digest.low
+              << " structured_matrix_digest_high=" << structured.matrix_digest.high
               << " legacy_sieve_threads=" << legacy.local_sieve_threads
               << " structured_sieve_threads=" << structured.local_sieve_threads
               << " structured_incidence_peak_workers=" << structured.structured_peak_workers

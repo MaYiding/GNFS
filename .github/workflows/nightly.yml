@@ -31,6 +31,9 @@ jobs:
       - name: Run thorough test workflow
         run: ./scripts/test.sh -t Release thorough
 
+      - name: Run structured 120-bit route gate
+        run: ./scripts/test.sh -t Release --no-build run test_structured_filter_pipeline_120bit
+
       - name: Upload CTest logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

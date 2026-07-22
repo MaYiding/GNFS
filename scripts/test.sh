@@ -2102,6 +2102,9 @@ do_nightly() {
 
     do_thorough || true
 
+    log_section "Structured 120-bit route gate"
+    run_single_test test_structured_filter_pipeline_120bit || true
+
     log_section "Progressive L4 (可能很慢)"
     run_single_test test_gnfs_progressive 4 4 || true
 
