@@ -162,6 +162,13 @@ public:
             return std::nullopt;
         }
 
+        // Special-Q metadata identifies the algebraic prime ideal above q.
+        // Fail closed if it does not match this candidate's canonical root,
+        // including the projective-root sentinel used when q divides b.
+        if (sq_q > 0 && !special_q_root_matches(a, b, sq_q, sq_r)) {
+            return std::nullopt;
+        }
+
         // ── 有理侧: 计算值 + N-divisible 检查 + 试除 + 分类 ──
         // Rational-first 短路: 如果有理侧不可接受，立即返回，跳过代数试除
         //
@@ -469,6 +476,35 @@ private:
     }
 
 public:
+    /// Check the Special-Q ideal identity without computing b^{-1} mod q.
+    /// For a finite root, a == b*r (mod q); q | b identifies the projective
+    /// root. The sieve invokes this on every candidate, so keep it O(1).
+    [[nodiscard]] static bool special_q_root_matches(int64_t a, uint64_t b,
+                                                      uint32_t q, uint32_t root) noexcept {
+        if (q < 2) {
+            return false;
+        }
+
+        const uint64_t b_mod = b % q;
+        if (b_mod == 0) {
+            return root == core::AlgebraicPrime::PROJECTIVE_ROOT;
+        }
+        if (root == core::AlgebraicPrime::PROJECTIVE_ROOT || root >= q) {
+            return false;
+        }
+
+        const int64_t q_signed = static_cast<int64_t>(q);
+        int64_t a_mod_signed = a % q_signed;
+        if (a_mod_signed < 0) {
+            a_mod_signed += q_signed;
+        }
+
+        // Both factors are below a uint32_t modulus, so their product fits
+        // exactly in uint64_t even when q is near UINT32_MAX.
+        const uint64_t expected = (b_mod * static_cast<uint64_t>(root)) % q;
+        return static_cast<uint64_t>(a_mod_signed) == expected;
+    }
+
     /// 计算代数侧大素数对应的根 r = a·b⁻¹ mod p
     /// 这是 f(x) mod p 的一个根，标识 p 上方的具体素理想 (p, α-r)
     /// 若 p | b,投影根 — 返回 AlgebraicPrime::PROJECTIVE_ROOT (UINT32_MAX,

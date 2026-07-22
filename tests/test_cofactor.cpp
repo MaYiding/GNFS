@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -698,6 +699,69 @@ void test_cofactorizer_large_prime_storage() {
     std::cout << "  Cofactorizer large prime storage: PASSED" << std::endl;
 }
 
+// Special-Q metadata identifies a prime ideal, so verify() must reject a root
+// that does not match the candidate's a/b identity. CHECK stays active in
+// Release builds, where ordinary assert() is compiled out.
+void test_special_q_root_identity_validation() {
+    std::cout << "Testing Special-Q root identity validation..." << std::endl;
+
+    core::FactorBaseParams params;
+    params.large_prime_bound = 1000;
+    factor_base::FactorBase fb(params);
+    const uint32_t projective_root = core::AlgebraicPrime::PROJECTIVE_ROOT;
+
+    // Ordinary root: f(x) = x - 1, N = 15, m = 1. For (a,b) = (8,1)
+    // the algebraic norm is 7 and the Special-Q root is 8/1 mod 7 = 1.
+    std::vector<core::Integer> ordinary_coeffs;
+    ordinary_coeffs.emplace_back(static_cast<int64_t>(-1));
+    ordinary_coeffs.emplace_back(static_cast<int64_t>(1));
+    core::PolynomialContext ordinary_ctx(
+        core::Integer(15), std::move(ordinary_coeffs), core::Integer(1));
+    Cofactorizer ordinary_cofactorizer(ordinary_ctx, fb);
+
+    auto ordinary = ordinary_cofactorizer.verify(8, 1, 7, 1);
+    CHECK(ordinary.has_value());
+    CHECK(ordinary->algebraic_large_prime.size() == 1);
+    CHECK(ordinary->algebraic_large_prime[0].p == 7);
+    CHECK(ordinary->algebraic_large_prime[0].r == 1);
+    CHECK(ordinary->algebraic_large_prime[0].e == 1);
+    CHECK(!ordinary_cofactorizer.verify(8, 1, 7, 2).has_value());
+    CHECK(!ordinary_cofactorizer.verify(8, 1, 7, 8).has_value());
+    CHECK(!ordinary_cofactorizer.verify(8, 1, 1, projective_root).has_value());
+    CHECK(Cofactorizer::special_q_root_matches(-5, 3, 7, 3));
+    CHECK(!Cofactorizer::special_q_root_matches(-5, 3, 7, projective_root));
+    CHECK(!Cofactorizer::special_q_root_matches(1, 7, 7, 0));
+    CHECK(!Cofactorizer::special_q_root_matches(1, 1, 7, projective_root));
+
+    constexpr uint32_t LARGE_Q = 4294967291U;
+    CHECK(Cofactorizer::special_q_root_matches(1, LARGE_Q - 1, LARGE_Q,
+                                               LARGE_Q - 1));
+    const uint32_t min_root = static_cast<uint32_t>(
+        Cofactorizer::compute_alg_lp_root(std::numeric_limits<int64_t>::min(), 3, 7));
+    CHECK(Cofactorizer::special_q_root_matches(
+        std::numeric_limits<int64_t>::min(), 3, 7, min_root));
+
+    // Projective root: q | b makes b non-invertible modulo q. With
+    // f(x) = 7x - 1, N = 15, m = 13 and (a,b) = (2,7), the norm is 7,
+    // and compute_alg_lp_root() specifies the PROJECTIVE_ROOT sentinel.
+    std::vector<core::Integer> projective_coeffs;
+    projective_coeffs.emplace_back(static_cast<int64_t>(-1));
+    projective_coeffs.emplace_back(static_cast<int64_t>(7));
+    core::PolynomialContext projective_ctx(
+        core::Integer(15), std::move(projective_coeffs), core::Integer(13));
+    Cofactorizer projective_cofactorizer(projective_ctx, fb);
+
+    auto projective = projective_cofactorizer.verify(2, 7, 7, projective_root);
+    CHECK(projective.has_value());
+    CHECK(projective->algebraic_large_prime.size() == 1);
+    CHECK(projective->algebraic_large_prime[0].p == 7);
+    CHECK(projective->algebraic_large_prime[0].r == projective_root);
+    CHECK(projective->algebraic_large_prime[0].e == 1);
+    CHECK(!projective_cofactorizer.verify(2, 7, 7, 0).has_value());
+
+    std::cout << "  Special-Q root identity validation: PASSED" << std::endl;
+}
+
 // compute_alg_lp_root: 当 p | b 时,b 不可逆 mod p,LP 对应"投影根"理想 (p, 1/α)。
 // 返回 AlgebraicPrime::PROJECTIVE_ROOT 让 matrix_builder 把该 LP 合并到投影根列。
 // 此测试锁住该边界:对几个 (a, b, p) 组合验证返回 PROJECTIVE_ROOT 标记。
@@ -747,6 +811,7 @@ int main() {
     test_prime_power_uint64_storage();
     test_factor_base_params_uint64_lpb();
     test_cofactorizer_large_prime_storage();
+    test_special_q_root_identity_validation();
     test_compute_alg_lp_root_projective();
 
     std::cout << std::endl;
