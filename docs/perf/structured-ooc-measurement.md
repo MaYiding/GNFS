@@ -183,8 +183,32 @@ relations_per_special_q=39,13,116,20
 
 10-worker 下，chunk 64 与 128 的中位数相差约 0.3%；二者分别比当前固定 chunk 256
 缩短约 20%。4-worker 和 6-worker 的最优值仍在 chunk 256。该交叉说明单个静态值不
-适合直接按这一个批次推广。下一步应验证按 candidate 数与 worker 数选择 chunk 的有界
-策略，再用 64-SQ 探针比较端到端 cofactor 时间和 identity。
+适合直接按这一个批次推广。后续自适应原型结果见下一节。
+
+### Adaptive-Grain Prototype: Not Promoted
+
+`adaptive_canonical_v1` 原型根据每批 candidate 分布和 worker cap，在 64、128 与
+256 中选择最小 grain，使 canonical chunk 数不超过每个 worker 3 个。64-SQ 探针固定
+4 个 outer workers、10 个本地计算通道和同一 50 位输入。每个 case 使用 3 个独立
+Release 进程：
+
+| Policy | Candidate cofactor runs | Median | Chunks |
+|---|---|---:|---:|
+| Fixed 256 | 10.6729s, 11.0043s, 10.7301s | 10.7301s | 499 |
+| Adaptive | 11.0434s, 10.6903s, 10.6495s | 10.6903s | 571 |
+
+两组均处理 118,311 个 candidates，产生 6,047 条 raw relations 和 16 条 output
+relations。relation digest、matrix identity 和生命周期字段一致。自适应策略在 16 个
+批次中分别选择 1 次 64、5 次 128 和 10 次 256，并有 7 个批次无法满足目标 chunk
+数。
+
+自适应策略的均值和中位数只缩短 0.07% 与 0.37%，小于两组约 3% 至 4% 的轮间波动。
+它同时把 chunk 数从 499 增加到 571，增幅为 14.4%。该证据不能支持新增生产策略、
+统计 schema 和维护面，因此生产默认值继续固定为 256，原型不合入。
+
+重新评估前，应在 4-SQ 和 64-SQ 上用新进程交错比较固定 128 与固定 256，并扩展到
+更大的真实尺寸。候选策略至少应稳定缩短 3% 的 cofactor 中位时间，理想目标为 5%，
+且尾部时间与 RSS 不得退化。
 
 ## Production Telemetry
 
