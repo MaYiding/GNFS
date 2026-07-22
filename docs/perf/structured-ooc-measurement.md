@@ -142,3 +142,32 @@ route 以 12 次 commit 输出 16 行；full matrix 为 16 x 22,660，nonzeros �
 单次 64-SQ 值不能组成单调曲线；但 64-SQ 进程在批次结束后仍保留约 2.3GB current
 RSS。下一阶段因此需要独立控制 special-Q batch concurrency，并区分每批工作区和
 跨批保留状态。
+
+## 2026-07-22 Sieve Region Capacity Fix
+
+源码审计随后确认，`LatticeSieve` 构造器先为约 268.4M-cell 默认 region 分配约
+512MiB，再用 `resize()` 缩到 50 位实际 4096 x 2048 region。缩小只改变 size，不会
+释放 vector capacity。4 个 worker 加一个未使用的 Pipeline 实例因此可保留约
+2.5GiB 筛数组 capacity。
+
+修复将默认 storage 改为 lazy allocation，`set_region()` 用新 vector 加 `swap`
+确定释放旧 capacity，并删除未使用的 Pipeline sieve 实例。同一 Release 4-SQ
+探针保持以下 identity 完全不变：
+
+```text
+raw_rows=188
+raw_digest_low=2999840282289098554
+raw_digest_high=11378523343223252016
+output_rows=0
+output_digest_low=12384855047597894612
+output_digest_high=7406486012983705512
+matrix_rows=0
+matrix_cols=22660
+matrix_signed_delta=-22660
+```
+
+process lifetime peak RSS 从 1,530,101,760 bytes 降到 218,169,344 bytes；sieve-end
+current RSS 为 217,825,280 bytes，sieve wall time 从 1.76s 降到 0.82s。完整 sieve
+module 为 17/17，Release gate 为 132/132，ASan+UBSan 的 lattice-sieve storage
+回归也通过。该结果消除了 1/2/4 worker 对照中的固定 512MiB/实例测量偏差，但不替代
+后续 typed worker cap 和跨批 allocator-retention 实验。

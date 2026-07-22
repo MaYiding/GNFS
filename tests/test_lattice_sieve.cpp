@@ -5,6 +5,7 @@
 
 #include <cassert>
 #include <iostream>
+#include <stdexcept>
 
 using namespace gnfs;
 using namespace gnfs::sieve;
@@ -245,6 +246,64 @@ void test_default_region() {
               << ", skew=4: " << region2.i_width() << "x" << region2.j_height() << ")" << std::endl;
 }
 
+void test_lattice_sieve_storage_contract() {
+    std::cout << "Testing lattice sieve storage contract..." << std::endl;
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    if (!result.success) {
+        throw std::runtime_error("storage fixture polynomial selection failed");
+    }
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 500;
+    fb_opts.algebraic_bound = 500;
+    fb_opts.parallel = false;
+    auto fb = FactorBaseBuilder::build(ctx, fb_opts);
+
+    SieveParams params;
+    LatticeSieve sieve(ctx, fb, params);
+    if (sieve.allocated_sieve_bytes() != 0) {
+        throw std::runtime_error("constructor eagerly reserved the default sieve region");
+    }
+
+    SieveRegion large_region;
+    large_region.i_min = -1000;
+    large_region.i_max = 999;
+    large_region.j_min = 1;
+    large_region.j_max = 200;
+    sieve.set_region(large_region);
+    const size_t large_required = large_region.size() * sizeof(uint16_t);
+    const size_t large_allocated = sieve.allocated_sieve_bytes();
+    if (large_allocated < large_required) {
+        throw std::runtime_error("large region did not allocate its logical sieve storage");
+    }
+
+    SieveRegion small_region;
+    small_region.i_min = -50;
+    small_region.i_max = 49;
+    small_region.j_min = 1;
+    small_region.j_max = 20;
+    sieve.set_region(small_region);
+    const size_t small_required = small_region.size() * sizeof(uint16_t);
+    const size_t small_allocated = sieve.allocated_sieve_bytes();
+    if (small_allocated < small_required || small_allocated >= large_allocated / 4) {
+        throw std::runtime_error("shrinking the region retained the prior sieve capacity");
+    }
+
+    LatticeSieve degenerate(ctx, fb, params);
+    const SpecialQ r_zero{1009, 0, 0};
+    const auto empty = degenerate.sieve_special_q(r_zero);
+    if (!empty.candidates.empty() || empty.sieved_positions != 0 ||
+        degenerate.allocated_sieve_bytes() != 0) {
+        throw std::runtime_error("r=0 path allocated unused sieve storage");
+    }
+
+    std::cout << "  Storage contract: PASS (large=" << large_allocated
+              << " bytes, small=" << small_allocated << " bytes)" << std::endl;
+}
+
 // r=0 退化路径:LatticeSieve 在 sq.r==0 时 early-return 空 candidates。
 // 该路径仅当 q | f₀ 时出现,极罕见,但代码必须正确 short-circuit
 // (不要 estimate_initial_log 塌缩,不要在退化 basis 上跑全 sieve)。
@@ -298,6 +357,7 @@ int main() {
     test_sieve_region();
     test_mod_inverse();
     test_default_region();
+    test_lattice_sieve_storage_contract();
     test_lattice_sieve_basic();
     test_candidate_properties();
     test_lattice_sieve_r_zero();

@@ -1386,10 +1386,6 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                  " matrix_cols=" + std::to_string(matrix_cols) + " sq_range=[" +
                  std::to_string(sq_range.min_q) + "," + std::to_string(sq_range.max_q) + "]");
 
-    // Create sieve
-    sieve::LatticeSieve sieve_obj(ctx, fb, sieve_params);
-    sieve_obj.set_region(sieve_region);
-
     // Shared AdaptiveBasisManager across all per-thread local_sieve instances
     // so adaptive-lattice telemetry (special_qs, retries, rescues) aggregates
     // across the entire sieve phase. When the manager is disabled (default),

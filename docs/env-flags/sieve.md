@@ -6,6 +6,31 @@
 
 ---
 
+## LatticeSieve Region Storage Contract
+
+`LatticeSieve` 的默认 region 约为 268.4M 个 cell，即约 512MiB `uint16_t`
+storage。构造器现在只冻结默认 region，不立即分配数组；首次处理有效 special-Q
+时才按当前 region 分配。`set_region()` 使用新 vector 加 `swap`，所以从大 region
+切到小 region 会确定释放旧 capacity，不依赖非强制的 `shrink_to_fit()`。
+
+production Pipeline 在 worker 启动前已经知道 `GNFSParams` region。50 位 region 为
+4096 x 2048，只需 16MiB/worker。Pipeline 不再构造未使用的常驻 sieve 实例；
+`allocated_sieve_bytes()` 提供只读 capacity 诊断。该改动只修正分配生命周期，不改变
+region、special-Q 顺序、筛数组值、候选关系或停止条件。
+
+固定 4-SQ 的 Release 50 位探针在改动前后得到相同 raw/output digest 和矩阵形状。
+process lifetime peak RSS 从 1,530,101,760 bytes 降到 218,169,344 bytes，sieve wall
+time 从 1.76s 降到 0.82s。该数字用于回归证据，不是跨机器性能阈值。
+
+**集成点**：
+
+- `include/gnfs/sieve/lattice_sieve.hpp`：lazy allocation、region capacity release 和
+  `allocated_sieve_bytes()`；
+- `src/api/pipeline.cpp`：删除未使用的常驻 `LatticeSieve`；
+- `tests/test_lattice_sieve.cpp`：Release 下执行的 lazy/shrink/r=0 storage contract。
+
+---
+
 ## Sieve mid-flight checkpoint (GNFS_RESUME / GNFS_SIEVE_RESUME)
 
 **ENV `GNFS_RESUME=<base_path>`** 启用全流水线恢复；历史名称

@@ -183,23 +183,26 @@ public:
     /// @param ctx 多项式上下文
     /// @param fb 因子基
     /// @param params 筛法参数
-    LatticeSieve(const PolynomialContext& ctx,
-                 const FactorBase& fb,
+    LatticeSieve(const PolynomialContext& ctx, const FactorBase& fb,
                  const SieveParams& params = SieveParams{})
-        : ctx_(ctx)
-        , fb_(fb)
-        , params_(params)
-        , region_(default_sieve_region(ctx.skewness())) {
-
-        // 初始化筛数组
-        sieve_array_.resize(region_.size(), 0);
-    }
+        : ctx_(ctx), fb_(fb), params_(params), region_(default_sieve_region(ctx.skewness())) {}
 
     /// 设置筛区域
     void set_region(const SieveRegion& region) {
+        // Allocate for the requested region before publishing it. A plain
+        // resize() retains the previous capacity when the region shrinks; the
+        // default region can be about 512 MiB while a 50-digit production
+        // region needs only 16 MiB.
+        std::vector<uint16_t> replacement(region.size(), 0);
         region_ = region;
-        sieve_array_.resize(region_.size(), 0);
+        sieve_array_.swap(replacement);
         last_init_val_ = 0;  // 重置:不残留上次 SQ 的 estimate
+    }
+
+    /// Capacity currently reserved for the additive sieve array. This is a
+    /// resource diagnostic, not the logical region size.
+    [[nodiscard]] size_t allocated_sieve_bytes() const noexcept {
+        return sieve_array_.capacity() * sizeof(uint16_t);
     }
 
     /// 设置最大线程数（0 = auto, 1 = single-threaded）
@@ -255,6 +258,8 @@ public:
         if (sq.r == 0) {
             return result;  // empty candidates, special_q recorded
         }
+
+        ensure_sieve_array_storage_();
 
         // 1. 计算初始格基 (skewness-aware F-K 2005 风格 LLL when skewness != 1.0)
         LatticeBasis basis = compute_lattice_basis_with_skewness(sq, ctx_.skewness());
@@ -456,6 +461,15 @@ private:
     // When manager.config().enabled is false (default), zero-overhead path.
     AdaptiveBasisManager adaptive_internal_{};
     AdaptiveBasisManager* adaptive_external_ = nullptr;
+
+    void ensure_sieve_array_storage_() {
+        const size_t required_size = region_.size();
+        if (sieve_array_.size() == required_size) {
+            return;
+        }
+        std::vector<uint16_t> replacement(required_size, 0);
+        sieve_array_.swap(replacement);
+    }
 
     /// 初始化筛数组（加法筛：零填充）
     /// 加法筛中数组从 0 开始，每个 FB 素数命中时 += log_p。
