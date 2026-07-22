@@ -13,6 +13,7 @@
 #include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/linalg/gauss.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
+#include <gnfs/siqs/congruence.hpp>
 #include <gnfs/siqs/relation.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <gnfs/util/primes.hpp>
@@ -1285,9 +1286,9 @@ inline std::optional<std::pair<Integer, Integer>> try_extract(
 {
     // Verify exponents are all even (matrix correctness check)
     std::vector<uint32_t> total_exp(fb.size(), 0);
-    // Track sign parity: M[0] column encodes value sign; XOR of `negative`
-    // flags across dep must be 0 (even count) or product of values is negative
-    // and Y² ≡ -X² mod N → fake congruence (gcd(X-Y, N) returns 1 or N).
+    // Track sign parity: M[0] encodes the sign of the factorized Q side.
+    // XOR of `negative` across the dependency must be zero before that side
+    // can be represented by an ordinary modular square Y².
     uint32_t sign_parity = 0;
     for (size_t idx : dep) {
         const auto& rel = relations[idx];
@@ -1325,10 +1326,19 @@ inline std::optional<std::pair<Integer, Integer>> try_extract(
     Integer lp_int;  // hoist — reused per LP
     for (size_t idx : dep) {
         for (uint64_t lp : relations[idx].merge_lps) {
-            mpz_set_ui(lp_int.get_mpz(), lp);
+            // Integer's uint64_t assignment is lossless on Windows LLP64,
+            // where GMP's mpz_set_ui accepts only a 32-bit unsigned long.
+            lp_int = lp;
             mpz_mul(Y.get_mpz(), Y.get_mpz(), lp_int.get_mpz());
             mpz_mod(Y.get_mpz(), Y.get_mpz(), mod_N.get_mpz());
         }
+    }
+
+    // A dependency is not allowed to reach GCD merely because X +/- Y happens
+    // to share a factor with N. It must first prove the complete SIQS square
+    // congruence over the relation modulus kN.
+    if (!are_congruent_squares(X, Y, mod_N)) {
+        return std::nullopt;
     }
 
     // GCD against gcd_N (original N, not kN) to find factors

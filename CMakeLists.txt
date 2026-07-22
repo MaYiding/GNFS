@@ -1980,6 +1980,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Siqs2LPAdapter COMMAND test_siqs_2lp_adapter)
     set_tests_properties(Siqs2LPAdapter PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_2lp_congruence
+        tests/test_siqs_2lp_congruence.cpp
+    )
+    target_link_libraries(test_siqs_2lp_congruence PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME Siqs2LPCongruence COMMAND test_siqs_2lp_congruence)
+    set_tests_properties(Siqs2LPCongruence PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # SIQS 端到端：100-bit + 180-bit 实测分解
     add_executable(test_siqs_e2e
         tests/test_siqs_e2e.cpp

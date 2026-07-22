@@ -54,7 +54,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 |-----------|--------|------|
 | `select_params(digits)` | `siqs.hpp` lines 53-75 | Calibrated table (FB size, M, LP multiplier, # A factors, error budget) |
 | `select_multiplier` | `siqs.hpp` ~line 252 | Knuth-Schroeppel; picks `k` so `kN` has a denser FB |
-| `build_factor_base` | `siqs.hpp` ~line 310 | Adds primes with `Legendre(N, p) = 1` plus the `p=2` sentinel |
+| `build_factor_base` | `siqs.hpp` ~line 310 | Adds the sign sentinel at slot 0, then primes including `p=2` |
 | `choose_A` / `init_poly` | `siqs.hpp` ~line 386 | Target `A ≈ sqrt(2N)/M`, then build B and prime sieve offsets |
 | `next_poly_B` | `siqs.hpp` ~line 591 | Gray-code switch: one bit flip rotates offsets in O(FB) |
 | `sieve_polynomial` | `siqs.hpp` ~line 658 | Log-add over `[-M, M]`, threshold filter, trial divide, 2LP cofactor split |
@@ -63,6 +63,8 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `build_two_large_prime_cycle_basis` | `two_large_prime_graph.hpp` | Deterministic fundamental-cycle oracle over the 1LP/2LP multigraph |
 | `materialize_two_large_prime_cycle` | `two_large_prime_materializer.hpp` | Wide, checked cycle arithmetic and exact LP degree/2 accounting |
 | `prepare_two_large_prime_corpus` | `two_large_prime_adapter.hpp` | Fail-closed raw-partial validation, canonical deduplication, and stable relation IDs |
+| `check_materialized_two_large_prime_identity` | `two_large_prime_congruence.hpp` | Exact signed row identity before matrix admission |
+| `are_congruent_squares` | `congruence.hpp` | Final `X² == Y² (mod kN)` gate before GCD |
 | `dense_gauss_left_nullspace` | `siqs.hpp` ~line 1130 | Word-packed dense GF(2) Gaussian elimination |
 | `solve_matrix` | `siqs.hpp` ~line 1231 | Dense path ≤100K cols, otherwise `linalg::BlockLanczos` |
 | `try_extract` / `try_extract_with_combos` | `siqs.hpp` ~line 1270 | Per-dependency factor extraction with random XOR retry |
@@ -85,7 +87,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 The `select_params` table is tuned against msieve, CADO-NFS, and YAFU defaults.
 The crucial knobs by digit band:
 
-- `fb_size` — primary factor base length (excluding the `p=2` sentinel)
+- `fb_size` — primary factor base length (excluding the sign sentinel at slot 0)
 - `sieve_half` — `M`, the half-width of the sieve interval
 - `lp_multiplier` — large prime bound is `fb.back().p * multiplier`
 - `num_a_factors` — `s`, the number of primes composing each `A`. Maximum 12
@@ -96,10 +98,12 @@ The crucial knobs by digit band:
 
 Two-large-prime collection and the legacy greedy merge remain disabled by
 setting `lp_bound_sq = 0`. Exact split normalization, deterministic cycle
-selection, wide checked cycle materialization, and a stable raw-partial adapter
-are available as isolated, tested boundaries, but are not yet connected to
-production relations. Re-enabling still requires a production bridge, full
-congruence checks, and re-validation across the 50-90 digit band.
+selection, wide checked cycle materialization, a stable raw-partial adapter,
+and exact row/dependency congruence gates are available as isolated, tested
+boundaries. The final square gate also protects the current extraction path,
+but staged 2LP rows are not yet connected to its production matrix. Re-enabling
+still requires that production bridge and re-validation across the 50-90 digit
+band.
 
 ## Two-Large-Prime Re-enablement Plan
 
@@ -121,8 +125,10 @@ The safe migration order is:
    through the legacy pairwise `merge_two`: multiply values modulo `kN`, XOR
    signs, accumulate factor-base exponents in a wide checked type, and derive
    each large-prime square-root multiplicity as graph degree divided by two.
-4. Before any GCD attempt, verify the complete congruence
-   `X^2 == Y^2 (mod kN)` and reject inconsistent rows with a diagnostic count.
+4. Verify each materialized row against its signed relation identity before
+   matrix admission. After dependency selection, require even sign and
+   factor-base parity, construct `X` and `Y`, and verify
+   `X^2 == Y^2 (mod kN)` before any GCD attempt.
 5. Exercise the path in test-only or shadow mode first. Production 2LP remains
    off until fixed 50-90 digit corpora show valid congruences, useful cycles,
    and no regression in the default 1LP path.
@@ -148,9 +154,9 @@ SIQS's `L_N(1/2, 1)`.
 ## Known Limitations
 
 - **2LP cofactor handling is gated off** (`lp_bound_sq = 0`); normalization,
-  stable shadow-corpus preparation, cycle selection, and materialization are
-  staged, while production integration and the extraction congruence gate
-  remain prerequisites
+  stable shadow-corpus preparation, cycle selection, materialization, and
+  congruence verification are staged, while production integration and
+  cross-size evidence remain prerequisites
 - **Beyond ~57 digits, extraction failures dominate** in current calibration.
   The 60-digit band needs FB and threshold tuning before being declared
   production-ready. Use GNFS for ≥60 digits until then

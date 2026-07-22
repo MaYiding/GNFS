@@ -40,9 +40,9 @@ struct MaterializedTwoLargePrimeCycle {
 
 /// Materialize the relation data belonging to one graph cycle.
 ///
-/// This is a strict structural and arithmetic boundary, but not a cofactor
-/// validator: endpoint primality, configured large-prime bounds, and the full
-/// relation congruence must be validated separately before the result is used.
+/// This is a strict structural and arithmetic boundary, but not a cofactor or
+/// congruence validator: endpoint primality and bounds belong to the adapter;
+/// call check_materialized_two_large_prime_identity() before matrix admission.
 /// Endpoint zero is accepted only as the virtual endpoint of a 1LP edge.
 /// All selected sources must come from the same modulus and the same ordered
 /// factor base; this function can verify the vector width but not that identity.
