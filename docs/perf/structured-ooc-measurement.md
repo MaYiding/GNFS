@@ -271,6 +271,49 @@ baseline、unroll、unroll、baseline 顺序各运行两次完整 sweep：
 下一轮若改变 multiplier 集合、顺序、竞速方式、queue 或总预算，必须作为成功率与失败
 集合可能变化的独立策略实验，不能归类为等价微优化。
 
+### SQUFOF Multiplier Fallback Promotion
+
+固定 50 位 serial oracle 实际调用 SQUFOF 159 次。一次不计时的临时诊断显示，`k=1`
+接受 80 次；剩余调用按旧顺序由 `k=3,5,7,11,15,...` 分别再接受
+42、15、6、5、9、0、0、2 次，总计执行 744,448 个 forward iterations。
+[Gower–Wagstaff Table 5](https://homes.cerias.purdue.edu/~ssw/squfof.pdf#page=34)
+给出当前 multiplier 集合中 `k=15` 的最低理论工作系数。候选策略因此保留 `k=1`
+首位，只把 `k=15` 提到第二位，其余 fallback 顺序不变。
+
+基线 Release 二进制 SHA-256 为
+`4c523a3cd84d44ea9fece0594e73285de9edf58b7ef69b8d45da2bc401993c90`，候选二进制为
+`02862a90b9c93d453ffd5b7f605e20702d0b44c19c950ffa01f4c485944f54ac`。按
+baseline、candidate、candidate、baseline 顺序完成 ABBA sweep：
+
+| Metric | Baseline mean | `k=15` second mean | Delta |
+|---|---:|---:|---:|
+| Process wall | 19.270s | 15.400s | -20.1% |
+| Process user CPU | 44.860s | 37.375s | -16.7% |
+| Summed case wall | 17.464s | 13.817s | -20.9% |
+| Worker 1, chunk 256 | 1.271s | 1.066s | -16.1% |
+| Worker 10, chunk 256 | 294.162ms | 208.093ms | -29.3% |
+| Maximum RSS | 230.8MiB | 222.6MiB | -3.6% |
+
+每轮均保持 2,284 个 candidates、188 条 relations，以及完全相同的 run fingerprint、
+candidate digest 和 relation digest。完全倒序会让 summed case wall 增长约 81%，因为
+本实现会把每个大 multiplier 跑满预算；按论文系数重排全部 fallback 的单轮结果为
+16.166s，也明显慢于只提升 `k=15` 的 13.817s。因此不采用 msieve 的降序策略或完整
+理论排序。
+
+同集合重排不会改变单次 `SQUFOF::factor()` 的成功集合，但可能改变首先返回的因子；
+opt-in 3LP 的递归拆分因此需要单独保护。`test_3lp_cofactor` 新增 6 组约 60-bit、三个
+因子都大于一百万的 hard triples。旧顺序和候选顺序均通过全部 39 项检查，并返回相同
+的排序后三因子。该证据与 50 位生产语料共同支持推广最小重排，不支持新增 multiplier、
+共享总预算或 multiplier racing。
+
+64-SQ bounded probe 另保留两份独立二进制。旧顺序 SHA-256 为
+`75e1f4fee12b64fb02bfc440df9f4d0896abeeb812ba2df232ac60d6c57aeac3`，候选顺序为
+`f5624182a44504f8c646376c2242cab1a1f05bc6b2aaa433706d1ed27efb32ca`。ABBA 两轮中，
+candidate cofactor 均值从 11.889s 降至 11.716s，改善 1.46%；process wall 改善
+0.52%，user CPU 增加 0.29%，peak RSS 增加 2.72%。这些差异不足以单独证明 64-SQ
+提速，但没有出现超过 3% 的链路退化。四轮均保持 118,311 个 candidates、6,047 条
+raw relations、16 条 output relations 和相同的 raw/output digest。
+
 ## Production Telemetry
 
 生产 Pipeline 的 `structured_filter schema=1` 记录覆盖每个 logical generation。它

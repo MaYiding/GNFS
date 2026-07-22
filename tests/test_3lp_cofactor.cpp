@@ -13,6 +13,7 @@
 #include <gnfs/cofactor/smooth_check.hpp>
 #include <gnfs/core/integer.hpp>
 
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <iostream>
@@ -203,6 +204,43 @@ void test_prime_unchanged() {
     std::cout << "OK" << std::endl;
 }
 
+// Test 10: hard 60-bit triples remain stable across SQUFOF multiplier policies
+void test_hard_3lp_corpus() {
+    std::cout << "test_hard_3lp_corpus... ";
+    constexpr uint64_t B = UINT64_C(1) << 21;
+    constexpr std::array<std::array<uint64_t, 3>, 6> triples{{
+        {{1000003, 1000033, 1000037}},
+        {{1000039, 1000081, 1000099}},
+        {{1000117, 1000121, 1000133}},
+        {{1000151, 1000159, 1000171}},
+        {{1000183, 1000187, 1000193}},
+        {{1000199, 1000211, 1000213}},
+    }};
+
+    for (const auto& factors : triples) {
+        const uint64_t p = factors[0];
+        const uint64_t q = factors[1];
+        const uint64_t r = factors[2];
+        CHECK(is_probable_prime_u64(p) && is_probable_prime_u64(q) &&
+                  is_probable_prime_u64(r),
+              "hard 3LP corpus metadata must contain primes");
+        const uint64_t c = p * q * r;
+        CHECK(c > B * B && c <= B * B * B,
+              "hard triple must stay inside the 3LP-only classification window");
+        Integer c_int(static_cast<unsigned long long>(c));
+        const auto cls = classify_cofactor(c_int, B, /*allow_3lp=*/true);
+        CHECK(cls.type == CofactorClass::ThreeLP,
+              "hard triple classified as " << static_cast<int>(cls.type));
+        if (cls.type == CofactorClass::ThreeLP) {
+            CHECK(cls.factor1 == p && cls.factor2 == q && cls.factor3 == r,
+                  "hard triple factors changed: " << cls.factor1 << " " << cls.factor2 << " "
+                                                   << cls.factor3);
+        }
+    }
+
+    std::cout << "OK" << std::endl;
+}
+
 int main() {
     test_3lp_accepted();
     test_3lp_rejected_by_default();
@@ -213,6 +251,7 @@ int main() {
     test_2lp_still_classified();
     test_smooth_unchanged();
     test_prime_unchanged();
+    test_hard_3lp_corpus();
 
     std::cout << "\n=============================================" << std::endl;
     std::cout << "  Results: " << g_pass << " passed, "
