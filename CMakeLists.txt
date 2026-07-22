@@ -1154,6 +1154,8 @@ if(GNFS_BUILD_TESTS)
     add_executable(test_candidate_batch_50d_sweep
         tests/test_candidate_batch_50d_sweep.cpp
     )
+    target_compile_definitions(test_candidate_batch_50d_sweep PRIVATE
+        GNFS_CANDIDATE_SWEEP_BUILD_TYPE="$<CONFIG>")
     target_link_libraries(test_candidate_batch_50d_sweep PRIVATE gnfs_core Threads::Threads)
     add_test(NAME CandidateBatch50dSweep COMMAND test_candidate_batch_50d_sweep)
     set_tests_properties(CandidateBatch50dSweep PROPERTIES DISABLED TRUE

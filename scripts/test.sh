@@ -2646,9 +2646,11 @@ case "$MODE" in
             log_fail "repetitions 必须在 1..9 (传入: ${_sweep_repetitions})"
             exit 1
         fi
-        if (( ! BUILD_TYPE_EXPLICIT )); then
-            BUILD_TYPE="Release"
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "sweep-50d-candidate-batch 只接受 Release 构建 (传入: ${BUILD_TYPE})"
+            exit 1
         fi
+        BUILD_TYPE="Release"
         if (( SKIP_BUILD )); then
             log_fail "sweep-50d-candidate-batch 不接受 --no-build；性能证据必须由本次请求的构建生成"
             exit 1
@@ -2665,90 +2667,143 @@ case "$MODE" in
         run_single_test test_candidate_batch_50d_sweep "$_sweep_repetitions" ||
             _sweep_status=$?
         if (( _sweep_status == 0 )); then
-            local _sweep_case_count _sweep_summary_count _sweep_records_valid=1
-            _sweep_case_count=$(printf '%s\n' "$RUN_OUTPUT" | awk '
-                index($0, "GNFS_CANDIDATE_SWEEP_CASE_V1 ") == 1 { count += 1 }
-                END { print count + 0 }
-            ')
-            _sweep_summary_count=$(printf '%s\n' "$RUN_OUTPUT" | awk '
-                index($0, "GNFS_CANDIDATE_SWEEP_SUMMARY_V1 ") == 1 { count += 1 }
-                END { print count + 0 }
-            ')
-            if [[ "$_sweep_case_count" != "30" || "$_sweep_summary_count" != "1" ]]; then
-                log_fail "candidate sweep 必须输出 30 条 CASE 和 1 条 SUMMARY；实际为 ${_sweep_case_count}/${_sweep_summary_count}"
-                _sweep_records_valid=0
-            fi
-
-            if (( _sweep_records_valid )); then
-                if ! printf '%s\n' "$RUN_OUTPUT" | awk -v repetitions="$_sweep_repetitions" '
-                    BEGIN {
-                        workers[1] = workers[2] = workers[4] = 1
-                        workers[6] = workers[8] = workers[10] = 1
-                        chunks[64] = chunks[128] = chunks[256] = 1
-                        chunks[512] = chunks[1024] = 1
-                    }
-                    index($0, "GNFS_CANDIDATE_SWEEP_CASE_V1 ") == 1 {
-                        status = scope = worker = chunk = observed_repetitions = ""
-                        for (i = 1; i <= NF; ++i) {
-                            if (index($i, "status=") == 1) status = substr($i, 8)
-                            if (index($i, "scope=") == 1) scope = substr($i, 7)
-                            if (index($i, "worker_cap=") == 1) worker = substr($i, 12)
-                            if (index($i, "chunk_size=") == 1) chunk = substr($i, 12)
-                            if (index($i, "repetitions=") == 1) {
-                                observed_repetitions = substr($i, 13)
-                            }
+            if printf '%s\n' "$RUN_OUTPUT" | awk \
+                -v expected_build_type="$BUILD_TYPE" \
+                -v expected_repetitions="$_sweep_repetitions" '
+                function clear_record(key) {
+                    for (key in record) delete record[key]
+                    for (key in occurrences) delete occurrences[key]
+                }
+                function parse_record(token_index, equals, key) {
+                    clear_record()
+                    for (token_index = 2; token_index <= NF; ++token_index) {
+                        equals = index($token_index, "=")
+                        if (equals <= 1) {
+                            invalid = 1
+                            continue
                         }
-                        key = worker SUBSEP chunk
-                        if (status != "pass" ||
-                            scope != "fixed_50d_first_production_batch" ||
-                            observed_repetitions != repetitions ||
-                            !(worker in workers) || !(chunk in chunks) || seen[key]++) {
+                        key = substr($token_index, 1, equals - 1)
+                        record[key] = substr($token_index, equals + 1)
+                        if (++occurrences[key] != 1) invalid = 1
+                    }
+                }
+                function decimal(text) {
+                    return text ~ /^[0-9]+$/
+                }
+                BEGIN {
+                    expected_scope = "fixed_50d_first_production_batch"
+                    expected_call_boundary = "whole_verify_candidate_batch_call"
+                    workers[1] = workers[2] = workers[4] = 1
+                    workers[6] = workers[8] = workers[10] = 1
+                    chunks[64] = chunks[128] = chunks[256] = 1
+                    chunks[512] = chunks[1024] = 1
+
+                    consistent_fields[1] = "build_type"
+                    consistent_fields[2] = "timing_scope"
+                    consistent_fields[3] = "run_fingerprint_low"
+                    consistent_fields[4] = "run_fingerprint_high"
+                    consistent_fields[5] = "candidate_digest_low"
+                    consistent_fields[6] = "candidate_digest_high"
+                    consistent_fields[7] = "relation_digest_low"
+                    consistent_fields[8] = "relation_digest_high"
+                    consistent_fields[9] = "candidates"
+                    consistent_fields[10] = "relations"
+
+                    case_required_count = split("status scope build_type timing_scope timing_asserted worker_cap chunk_size planned_chunks workers_used candidates relations repetitions run_fingerprint_low run_fingerprint_high candidate_digest_low candidate_digest_high relation_digest_low relation_digest_high", case_required, " ")
+                    summary_required_count = split("status scope build_type claim_boundary timing_scope timing_asserted n_digits n_bits special_q_count candidates relations relations_per_special_q cases repetitions worker_caps chunk_sizes run_fingerprint_low run_fingerprint_high candidate_digest_low candidate_digest_high relation_digest_low relation_digest_high", summary_required, " ")
+                }
+                index($0, "GNFS_CANDIDATE_SWEEP_CASE_V1 ") == 1 {
+                    cases += 1
+                    parse_record()
+                    for (field_index = 1; field_index <= case_required_count; ++field_index) {
+                        if (occurrences[case_required[field_index]] != 1) invalid = 1
+                    }
+                    worker = record["worker_cap"]
+                    chunk = record["chunk_size"]
+                    planned_chunks = record["planned_chunks"]
+                    workers_used = record["workers_used"]
+                    key = worker SUBSEP chunk
+
+                    if (record["status"] != "pass" || record["scope"] != expected_scope ||
+                        record["build_type"] != expected_build_type ||
+                        record["timing_scope"] != expected_call_boundary ||
+                        record["timing_asserted"] != "false" ||
+                        record["repetitions"] != expected_repetitions ||
+                        !(worker in workers) || !(chunk in chunks) || seen[key]++) {
+                        invalid = 1
+                    }
+                    if (!decimal(planned_chunks) || planned_chunks + 0 < 1 ||
+                        !decimal(workers_used) || workers_used + 0 < 1 ||
+                        workers_used + 0 > worker + 0 ||
+                        workers_used + 0 > planned_chunks + 0 ||
+                        !decimal(record["candidates"]) || record["candidates"] + 0 < 1 ||
+                        !decimal(record["relations"]) || record["relations"] + 0 < 1) {
+                        invalid = 1
+                    }
+                    for (field_index = 1; field_index <= 10; ++field_index) {
+                        field = consistent_fields[field_index]
+                        if (cases == 1) {
+                            reference[field] = record[field]
+                        } else if (record[field] != reference[field]) {
                             invalid = 1
                         }
-                        cases += 1
                     }
-                    END {
-                        for (worker in workers) {
-                            for (chunk in chunks) {
-                                if (seen[worker SUBSEP chunk] != 1) invalid = 1
-                            }
+                }
+                index($0, "GNFS_CANDIDATE_SWEEP_SUMMARY_V1 ") == 1 {
+                    summaries += 1
+                    parse_record()
+                    for (field_index = 1; field_index <= summary_required_count; ++field_index) {
+                        if (occurrences[summary_required[field_index]] != 1) invalid = 1
+                    }
+                    if (record["status"] != "pass" || record["scope"] != expected_scope ||
+                        record["build_type"] != expected_build_type ||
+                        record["claim_boundary"] != expected_call_boundary ||
+                        record["timing_scope"] != expected_call_boundary ||
+                        record["timing_asserted"] != "false" || record["n_digits"] != "50" ||
+                        record["n_bits"] != "164" || record["special_q_count"] != "4" ||
+                        record["cases"] != "30" ||
+                        record["repetitions"] != expected_repetitions ||
+                        record["worker_caps"] != "1,2,4,6,8,10" ||
+                        record["chunk_sizes"] != "64,128,256,512,1024") {
+                        invalid = 1
+                    }
+                    if (!decimal(record["candidates"]) || record["candidates"] + 0 < 1 ||
+                        !decimal(record["relations"]) || record["relations"] + 0 < 1) {
+                        invalid = 1
+                    }
+
+                    relation_parts = split(record["relations_per_special_q"], relation_counts, ",")
+                    relation_sum = 0
+                    if (relation_parts != 4) invalid = 1
+                    for (part = 1; part <= relation_parts; ++part) {
+                        if (!decimal(relation_counts[part])) invalid = 1
+                        relation_sum += relation_counts[part] + 0
+                    }
+                    if (relation_sum != record["relations"] + 0) invalid = 1
+
+                    for (field_index = 1; field_index <= 10; ++field_index) {
+                        field = consistent_fields[field_index]
+                        if (record[field] != reference[field]) invalid = 1
+                        if (field_index >= 3 && !decimal(record[field])) invalid = 1
+                    }
+                }
+                END {
+                    if (cases != 30 || summaries != 1) invalid = 1
+                    for (worker in workers) {
+                        for (chunk in chunks) {
+                            if (seen[worker SUBSEP chunk] != 1) invalid = 1
                         }
-                        if (cases != 30 || invalid) exit 1
                     }
-                '; then
-                    log_fail "candidate sweep CASE 网格、状态或 repetitions 字段无效"
-                    _sweep_records_valid=0
-                fi
-            fi
-
-            if (( _sweep_records_valid )); then
-                if ! capture_single_measurement_record "GNFS_CANDIDATE_SWEEP_SUMMARY_V1 " \
-                    "candidate sweep"; then
-                    _sweep_records_valid=0
-                else
-                    local _sweep_summary_status _sweep_summary_cases _sweep_summary_repetitions
-                    if ! _sweep_summary_status=$(measurement_record_field \
-                        "$MEASUREMENT_RECORD" status) ||
-                       ! _sweep_summary_cases=$(measurement_record_field \
-                        "$MEASUREMENT_RECORD" cases) ||
-                       ! _sweep_summary_repetitions=$(measurement_record_field \
-                        "$MEASUREMENT_RECORD" repetitions) ||
-                       [[ "$_sweep_summary_status" != "pass" ||
-                          "$_sweep_summary_cases" != "30" ||
-                          "$_sweep_summary_repetitions" != "$_sweep_repetitions" ]]; then
-                        log_fail "candidate sweep SUMMARY 身份字段无效"
-                        _sweep_records_valid=0
-                    fi
-                fi
-            fi
-
-            if (( _sweep_records_valid )); then
+                    if (invalid) exit 1
+                }
+            '; then
                 printf '%s\n' "$RUN_OUTPUT" | awk '
                     index($0, "GNFS_CANDIDATE_SWEEP_CASE_V1 ") == 1 ||
                     index($0, "GNFS_CANDIDATE_SWEEP_SUMMARY_V1 ") == 1 { print }
                 '
-                log_success "30 组 worker/chunk 均与串行 oracle 完全一致"
+                log_success "30 组 worker/chunk 的 Release 构建、计时边界和身份字段均有效"
             else
+                log_fail "candidate sweep CASE/SUMMARY 构建、边界、网格或身份字段无效"
                 (( FAILED_TESTS += 1 ))
             fi
         fi

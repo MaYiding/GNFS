@@ -63,6 +63,15 @@ constexpr size_t MIN_REPETITIONS = 1;
 constexpr size_t MAX_REPETITIONS = 9;
 constexpr size_t CASE_ROTATION_STRIDE = 7;
 
+#ifndef GNFS_CANDIDATE_SWEEP_BUILD_TYPE
+#define GNFS_CANDIDATE_SWEEP_BUILD_TYPE "unknown"
+#endif
+
+constexpr std::string_view SWEEP_BUILD_TYPE = GNFS_CANDIDATE_SWEEP_BUILD_TYPE;
+constexpr std::string_view SWEEP_SCOPE = "fixed_50d_first_production_batch";
+constexpr std::string_view CLAIM_BOUNDARY = "whole_verify_candidate_batch_call";
+constexpr std::string_view TIMING_SCOPE = "whole_verify_candidate_batch_call";
+
 constexpr std::array<uint32_t, 6> WORKER_CAPS{1, 2, 4, 6, 8, 10};
 constexpr std::array<size_t, 5> CHUNK_SIZES{64, 128, 256, 512, 1024};
 constexpr size_t SWEEP_CASES = WORKER_CAPS.size() * CHUNK_SIZES.size();
@@ -597,8 +606,9 @@ void emit_case_record(const CaseMeasurements& measurement, size_t repetitions,
         std::minmax_element(measurement.wall_ns.begin(), measurement.wall_ns.end());
     std::cout << "GNFS_CANDIDATE_SWEEP_CASE_V1"
               << " status=pass"
-              << " scope=fixed_50d_first_production_batch"
-              << " timing_scope=verify_candidate_batch_only"
+              << " scope=" << SWEEP_SCOPE
+              << " build_type=" << SWEEP_BUILD_TYPE
+              << " timing_scope=" << TIMING_SCOPE
               << " timing_asserted=false"
               << " worker_cap=" << measurement.sweep_case.worker_cap
               << " chunk_size=" << measurement.sweep_case.chunk_size
@@ -629,9 +639,10 @@ void emit_summary_record(const FixedCandidateFixture& fixture, size_t repetition
 
     std::cout << "GNFS_CANDIDATE_SWEEP_SUMMARY_V1"
               << " status=pass"
-              << " scope=fixed_50d_first_production_batch"
-              << " claim_boundary=candidate_batch_scheduler_only"
-              << " timing_scope=verify_candidate_batch_only"
+              << " scope=" << SWEEP_SCOPE
+              << " build_type=" << SWEEP_BUILD_TYPE
+              << " claim_boundary=" << CLAIM_BOUNDARY
+              << " timing_scope=" << TIMING_SCOPE
               << " timing_asserted=false"
               << " n_digits=" << PROBE_DIGITS << " n_bits=" << PROBE_BITS
               << " special_q_count=" << fixture.sieve_results.size()
@@ -658,6 +669,9 @@ void emit_summary_record(const FixedCandidateFixture& fixture, size_t repetition
 }
 
 void run_sweep(size_t repetitions, std::string& failure_stage) {
+    failure_stage = "build_contract";
+    require(SWEEP_BUILD_TYPE == "Release", "candidate sweep requires a Release build");
+
     failure_stage = "environment";
     ScopedEnvironment environment;
     freeze_probe_environment(environment);
@@ -800,14 +814,20 @@ int main(int argc, char** argv) {
     } catch (const std::exception& error) {
         std::cout << "GNFS_CANDIDATE_SWEEP_SUMMARY_V1"
                   << " status=fail"
-                  << " scope=fixed_50d_first_production_batch"
+                  << " scope=" << SWEEP_SCOPE
+                  << " build_type=" << SWEEP_BUILD_TYPE
+                  << " claim_boundary=" << CLAIM_BOUNDARY
+                  << " timing_scope=" << TIMING_SCOPE
                   << " failure_stage=" << sanitize_token(failure_stage)
                   << " error=" << sanitize_token(error.what()) << '\n';
         return 1;
     } catch (...) {
         std::cout << "GNFS_CANDIDATE_SWEEP_SUMMARY_V1"
                   << " status=fail"
-                  << " scope=fixed_50d_first_production_batch"
+                  << " scope=" << SWEEP_SCOPE
+                  << " build_type=" << SWEEP_BUILD_TYPE
+                  << " claim_boundary=" << CLAIM_BOUNDARY
+                  << " timing_scope=" << TIMING_SCOPE
                   << " failure_stage=" << sanitize_token(failure_stage)
                   << " error=unknown_exception\n";
         return 1;

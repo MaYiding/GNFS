@@ -133,7 +133,9 @@ RSS 字段只作资源观测，不参与 worker identity 比较。
 `sweep-50d-candidate-batch` 固定同一个 50 位输入，并通过公开 Pipeline 阶段生成
 polynomial 与 factor base。随后按 production 参数生成首个 4-SQ 批次的完整
 `SieveResult`，整个 sweep 复用该不可变候选语料。该模式不执行 relation filtering、
-matrix 或平方根；计时边界只覆盖 `verify_candidate_batch()`。
+matrix 或平方根。计时边界覆盖一次完整的 `verify_candidate_batch()` 调用，包括 chunk
+规划、worker-local `Cofactorizer` 构造、线程创建与回收、结果 storage 和有序归并；它
+不是纯 scheduler 或纯 cofactor 内核计时。
 
 测试先用单个 `Cofactorizer` 按 special-Q 和 candidate ordinal 建立串行 oracle。之后
 执行以下笛卡尔积，默认重复 3 次：
@@ -149,8 +151,10 @@ state 造成的噪声。
 成功运行输出 30 条 `GNFS_CANDIDATE_SWEEP_CASE_V1` 和 1 条
 `GNFS_CANDIDATE_SWEEP_SUMMARY_V1`。case 记录包含 worker cap、实际 worker 数、chunk
 数、候选数、关系数、最小值、中位数、最大 wall time，以及 candidate/relation digest。
-summary 记录包含固定输入身份、Stage A 通道计划和完整 sweep 网格。runner fail closed：
-记录数量、网格唯一性、状态或 repetitions 不符都会让模式失败。
+summary 记录包含 Release 构建类型、计时边界、固定输入身份、Stage A 通道计划和完整
+sweep 网格。runner fail closed：它拒绝非 Release 构建，并验证记录数量、网格唯一性、
+状态、计时边界和 repetitions。每条 case 的 run fingerprint、candidate/relation digest
+及候选与关系计数还必须与 summary 一致。
 
 该测试是 disabled `bench;stress` CTest target，只能提供本机固定语料的调度证据。
 wall time 不参与测试通过条件，也不能单独证明其它输入尺寸、完整首轮或其它机器的最优
