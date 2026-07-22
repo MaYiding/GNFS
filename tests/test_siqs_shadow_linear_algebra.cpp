@@ -422,6 +422,16 @@ void test_matrix_fail_closed_and_move_contracts() {
                                  factor_base_span, oracle_modulus),
         SIQSShadowMatrixStatus::invalid_row);
 
+    // The solver's prevalidated per-row path must still enforce row shape.
+    auto malformed_shape = rows;
+    malformed_shape[0].row.factor_powers.back().factor_base_index =
+        static_cast<uint32_t>(oracle_factor_base.size());
+    check_matrix_result(
+        solve_siqs_shadow_matrix(
+            std::span<const SIQSShadowRow>(malformed_shape.data(), malformed_shape.size()),
+            factor_base_span, oracle_modulus),
+        SIQSShadowMatrixStatus::invalid_row);
+
     auto mismatched = rows;
     mismatched[1].row.x_modulus = Integer(39);
     check_matrix_result(solve_siqs_shadow_matrix(

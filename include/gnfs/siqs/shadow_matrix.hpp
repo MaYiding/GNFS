@@ -280,7 +280,8 @@ solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
             return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::invalid_row);
         }
         const SIQSPostMergeRowStatus row_status =
-            check_siqs_post_merge_row_identity(shadow_row.row, factor_base_primes, modulus);
+            post_merge_row_detail::check_siqs_post_merge_row_identity_prevalidated(
+                shadow_row.row, factor_base_primes, modulus);
         if (row_status == SIQSPostMergeRowStatus::row_identity_mismatch) {
             return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::row_identity_mismatch);
         }

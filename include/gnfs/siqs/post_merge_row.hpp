@@ -189,6 +189,44 @@ inline void multiply_modulus(core::Integer& product, const core::Integer& factor
     return core::powmod(core::Integer(base), core::Integer(exponent), modulus);
 }
 
+/// Validate one row after the caller has established the shared modulus and
+/// factor-base invariants.  Per-row structure, provenance, and exact arithmetic
+/// remain fail-closed here; only the shared full scans are omitted.
+[[nodiscard]] inline SIQSPostMergeRowStatus
+check_siqs_post_merge_row_identity_prevalidated(const SIQSPostMergeRow& row,
+                                                std::span<const uint32_t> factor_base_primes,
+                                                const core::Integer& modulus) {
+    if (!has_valid_source_ids(row.source_ids)) {
+        return SIQSPostMergeRowStatus::invalid_source_ids;
+    }
+    if (!has_valid_row_shape(row, factor_base_primes.size(), modulus)) {
+        return SIQSPostMergeRowStatus::invalid_post_merge_row;
+    }
+
+    core::Integer left;
+    mpz_mul(left.get_mpz(), row.x_modulus.get_mpz(), row.x_modulus.get_mpz());
+    mpz_mod(left.get_mpz(), left.get_mpz(), modulus.get_mpz());
+
+    core::Integer right(1);
+    for (const SIQSFactorPower& power : row.factor_powers) {
+        auto factor =
+            modular_power(static_cast<uint64_t>(factor_base_primes[power.factor_base_index]),
+                          static_cast<uint64_t>(power.exponent), modulus);
+        multiply_modulus(right, factor, modulus);
+    }
+    for (const uint64_t large_prime : row.large_prime_sqrt_factors) {
+        auto factor = modular_power(large_prime, uint64_t{2}, modulus);
+        multiply_modulus(right, factor, modulus);
+    }
+    if (row.q_negative) {
+        mpz_neg(right.get_mpz(), right.get_mpz());
+        mpz_mod(right.get_mpz(), right.get_mpz(), modulus.get_mpz());
+    }
+
+    return left == right ? SIQSPostMergeRowStatus::valid
+                         : SIQSPostMergeRowStatus::row_identity_mismatch;
+}
+
 [[nodiscard]] inline bool has_valid_full_relation_shape(const SIQSRelation& relation,
                                                         size_t factor_base_size) {
     if (factor_base_size == 0 || relation.large_prime != 0 || relation.large_prime2 != 0 ||
@@ -288,35 +326,7 @@ check_siqs_post_merge_row_identity(const SIQSPostMergeRow& row,
     if (!has_valid_factor_base(factor_base_primes)) {
         return SIQSPostMergeRowStatus::invalid_factor_base;
     }
-    if (!has_valid_source_ids(row.source_ids)) {
-        return SIQSPostMergeRowStatus::invalid_source_ids;
-    }
-    if (!has_valid_row_shape(row, factor_base_primes.size(), modulus)) {
-        return SIQSPostMergeRowStatus::invalid_post_merge_row;
-    }
-
-    core::Integer left;
-    mpz_mul(left.get_mpz(), row.x_modulus.get_mpz(), row.x_modulus.get_mpz());
-    mpz_mod(left.get_mpz(), left.get_mpz(), modulus.get_mpz());
-
-    core::Integer right(1);
-    for (const SIQSFactorPower& power : row.factor_powers) {
-        auto factor =
-            modular_power(static_cast<uint64_t>(factor_base_primes[power.factor_base_index]),
-                          static_cast<uint64_t>(power.exponent), modulus);
-        multiply_modulus(right, factor, modulus);
-    }
-    for (const uint64_t large_prime : row.large_prime_sqrt_factors) {
-        auto factor = modular_power(large_prime, uint64_t{2}, modulus);
-        multiply_modulus(right, factor, modulus);
-    }
-    if (row.q_negative) {
-        mpz_neg(right.get_mpz(), right.get_mpz());
-        mpz_mod(right.get_mpz(), right.get_mpz(), modulus.get_mpz());
-    }
-
-    return left == right ? SIQSPostMergeRowStatus::valid
-                         : SIQSPostMergeRowStatus::row_identity_mismatch;
+    return check_siqs_post_merge_row_identity_prevalidated(row, factor_base_primes, modulus);
 }
 
 /// Convert one raw, fully smooth SIQS relation without narrowing its arithmetic.
