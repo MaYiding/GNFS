@@ -162,6 +162,7 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
   --lp-bound <n>          大素数界
   --sieve-width <n>       筛区宽度
   --sieve-height <n>      筛区高度
+  --threads <n>           本地筛法计算通道预算（非 OS 线程上限）
 
 配置:
   -c, --config <文件>     从 key=value 配置文件加载参数
@@ -182,9 +183,14 @@ rational_bound    = 50000
 algebraic_bound   = 100000
 large_prime_bound = 3000000
 max_special_q_batch_workers = 2
+max_local_sieve_threads = 8
 verbose           = true
 ```
 </details>
+
+`max_local_sieve_threads` 未配置时使用硬件并发数；显式值会钳制到该上限。Pipeline
+在 special-Q 外层 workers 之间均衡分配这些计算通道。详细边界见
+[sieve 配置契约](docs/env-flags/sieve.md#special-q-local-compute-budget-config)。
 
 ### C++ API
 
@@ -203,6 +209,7 @@ if (result.success) {
 gnfs::api::Config cfg;
 cfg.method = gnfs::api::FactorizationMethod::GNFS;
 cfg.set_max_special_q_batch_workers(2);
+cfg.set_max_local_sieve_threads(8);
 auto r = gnfs::api::factorize(n, cfg);
 std::cout << gnfs::api::method_name(r.stats.method_used) << "\n";
 ```

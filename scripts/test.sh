@@ -331,6 +331,7 @@ ALL_TEST_BINARIES=(
     test_root_property_cache
     test_sieve_checkpoint
     test_sieve_ecore_qos
+    test_local_sieve_thread_budget
     test_siqs
     test_siqs_e2e
     test_trial_div_simd
@@ -345,7 +346,7 @@ MODULE_TESTS=(
     util           "test_small_vector test_thread_pool test_ordered_parallel_map test_logger test_primes test_timer test_process_memory test_mmap_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel test_mpz_invert_parallel test_mpz_mod_parallel test_mpz_gcd_parallel test_mpz_mul_parallel"
     polynomial     "test_murphy test_root_property_cache test_int_polynomial test_half_gcd test_poly_karatsuba test_horner_batch_simd test_divrem_subquadratic test_poly_ntt test_poly_square test_poly_add_mod_simd test_poly_horner_mod_simd test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
     factor_base    "test_factor_base test_fb_checkpoint test_fb_roots_parallel"
-    sieve          "test_special_q test_sieve_basic test_sieve_checkpoint test_distributed_sieve test_bucket_sieve test_sieve_ecore_qos test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel test_sieve_apply_tile_parallel test_lattice_coords_simd test_threshold_scan_simd test_saturated_sub_simd"
+    sieve          "test_special_q test_sieve_basic test_sieve_checkpoint test_distributed_sieve test_bucket_sieve test_sieve_ecore_qos test_local_sieve_thread_budget test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel test_sieve_apply_tile_parallel test_lattice_coords_simd test_threshold_scan_simd test_saturated_sub_simd"
     cofactor       "test_cofactor test_squfof test_brent_pollard_rho test_brent_pollard_rho_parallel test_survival_predictor test_batch_ecm test_3lp_cofactor test_trial_wheel test_batch_trial test_ecm_curve_pool test_sigma_seed_pool test_ecm_stage2_parallel test_ecm_stage1_parallel test_batch_inversion test_trial_div_simd test_cofactor_stage_timing test_ecm_prime_cache test_cofactor_result_cache test_integration test_ecm_brent_suyama"
     relation       "test_relation_collector test_relation_corpus test_relation_sink test_ooc_store_integrity test_filter test_lp_key_contract test_relation_identity test_relation_reduction_engine test_structured_filter test_structured_filter_policy test_structured_tree_basis test_structured_tree_basis_property test_structured_budgeted_driver test_structured_conflict_batch test_structured_parallel_prepare test_structured_batch_commit test_structured_parallel_driver test_structured_parallel_failures test_structured_incidence_builder test_structured_materialization test_filter_radix_sort test_lp_bloom test_lp_key_hash test_merger_parallel test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration test_relation_pool_integration"
     linalg         "test_linalg test_sge_batch_pivots test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_schirokauer_parallel test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_spmv_simd test_transpose_blocked test_popcount_simd test_and_popcnt_simd test_xor_words_simd test_and_words_simd test_xor_popcnt_simd test_row_popcount_simd test_krylov_compress test_krylov_compression test_bl_checkpoint test_bl_resume_integration test_linalg_progress"
@@ -395,6 +396,7 @@ SMOKE_TESTS=(
     test_ooc_policy
     test_v0_bfs_policy
     test_sieve_ecore_qos
+    test_local_sieve_thread_budget
     test_lll_lattice
     test_adaptive_lattice
     test_bw_rank_est
@@ -541,6 +543,7 @@ TEST_TIMEOUT=(
     test_ooc_policy          10
     test_v0_bfs_policy       10
     test_sieve_ecore_qos     10
+    test_local_sieve_thread_budget 10
     test_lll_lattice         10
     test_adaptive_lattice    30
     test_bw_rank_est         10
@@ -715,6 +718,7 @@ TEST_TIER=(
     test_ooc_policy          "instant"
     test_v0_bfs_policy       "instant"
     test_sieve_ecore_qos     "instant"
+    test_local_sieve_thread_budget "instant"
     test_lll_lattice         "instant"
     test_adaptive_lattice    "instant"
     test_bw_rank_est         "instant"
@@ -2365,12 +2369,13 @@ case "$MODE" in
         ;;
 
     probe-50d-structured-ooc)
-        if [[ ${#MODE_ARGS[@]} -gt 2 ]]; then
-            log_fail "用法: $0 probe-50d-structured-ooc [max_special_q] [max_batch_workers]"
+        if [[ ${#MODE_ARGS[@]} -gt 3 ]]; then
+            log_fail "用法: $0 probe-50d-structured-ooc [max_special_q] [max_batch_workers] [max_local_sieve_threads|auto]"
             exit 1
         fi
         local _probe_max_special_q="${MODE_ARGS[1]:-4}"
         local _probe_max_batch_workers="${MODE_ARGS[2]:-4}"
+        local _probe_max_local_sieve_threads="${MODE_ARGS[3]:-auto}"
         if [[ ! "$_probe_max_special_q" =~ ^[0-9]+$ ]] ||
            (( _probe_max_special_q < 1 || _probe_max_special_q > 64 )); then
             log_fail "max_special_q 必须在 1..64 (传入: ${_probe_max_special_q})"
@@ -2379,6 +2384,13 @@ case "$MODE" in
         if [[ ! "$_probe_max_batch_workers" =~ ^[0-9]+$ ]] ||
            (( _probe_max_batch_workers < 1 || _probe_max_batch_workers > 4 )); then
             log_fail "max_batch_workers 必须在 1..4 (传入: ${_probe_max_batch_workers})"
+            exit 1
+        fi
+        if [[ "$_probe_max_local_sieve_threads" != "auto" ]] &&
+           { [[ ! "$_probe_max_local_sieve_threads" =~ ^[0-9]+$ ]] ||
+             (( _probe_max_local_sieve_threads < 1 ||
+                _probe_max_local_sieve_threads > 4294967295 )); }; then
+            log_fail "max_local_sieve_threads 必须是 auto 或 1..4294967295 (传入: ${_probe_max_local_sieve_threads})"
             exit 1
         fi
         if (( ! BUILD_TYPE_EXPLICIT )); then
@@ -2397,11 +2409,16 @@ case "$MODE" in
         _probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/gnfs_structured_ooc_50d.XXXXXX")
         local _probe_base="${_probe_dir}/raw"
         log_header "有界 50 位 production structured OOC 探针"
-        log_info "max_special_q=${_probe_max_special_q}; max_batch_workers=${_probe_max_batch_workers}; 临时目录=${_probe_dir}"
+        log_info "max_special_q=${_probe_max_special_q}; max_batch_workers=${_probe_max_batch_workers}; max_local_sieve_threads=${_probe_max_local_sieve_threads}; 临时目录=${_probe_dir}"
+        local -a _probe_thread_args=()
+        if [[ "$_probe_max_local_sieve_threads" != "auto" ]]; then
+            _probe_thread_args=(--max-local-sieve-threads "$_probe_max_local_sieve_threads")
+        fi
         local _probe_status=0
         run_single_test test_structured_ooc_50d_probe --max-special-q \
             "$_probe_max_special_q" --max-special-q-batch-workers \
-            "$_probe_max_batch_workers" --ooc-base "$_probe_base" || _probe_status=$?
+            "$_probe_max_batch_workers" "${_probe_thread_args[@]}" \
+            --ooc-base "$_probe_base" || _probe_status=$?
         if (( _probe_status == 0 )); then
             if capture_single_measurement_record "GNFS_EXPERIMENT_V1 " "50 位探针"; then
                 print -r -- "$MEASUREMENT_RECORD"
@@ -2421,14 +2438,22 @@ case "$MODE" in
         ;;
 
     probe-50d-special-q-workers)
-        if [[ ${#MODE_ARGS[@]} -gt 1 ]]; then
-            log_fail "用法: $0 probe-50d-special-q-workers [max_special_q]"
+        if [[ ${#MODE_ARGS[@]} -gt 2 ]]; then
+            log_fail "用法: $0 probe-50d-special-q-workers [max_special_q] [max_local_sieve_threads|auto]"
             exit 1
         fi
         local _comparison_max_special_q="${MODE_ARGS[1]:-4}"
+        local _comparison_max_local_sieve_threads="${MODE_ARGS[2]:-auto}"
         if [[ ! "$_comparison_max_special_q" =~ ^[0-9]+$ ]] ||
            (( _comparison_max_special_q < 4 || _comparison_max_special_q > 64 )); then
             log_fail "对照 max_special_q 必须在 4..64 (传入: ${_comparison_max_special_q})"
+            exit 1
+        fi
+        if [[ "$_comparison_max_local_sieve_threads" != "auto" ]] &&
+           { [[ ! "$_comparison_max_local_sieve_threads" =~ ^[0-9]+$ ]] ||
+             (( _comparison_max_local_sieve_threads < 1 ||
+                _comparison_max_local_sieve_threads > 4294967295 )); }; then
+            log_fail "对照 max_local_sieve_threads 必须是 auto 或 1..4294967295 (传入: ${_comparison_max_local_sieve_threads})"
             exit 1
         fi
         if (( ! BUILD_TYPE_EXPLICIT )); then
@@ -2446,17 +2471,25 @@ case "$MODE" in
 
         log_header "50 位 Special-Q 外层 worker 独立进程对照"
         local -A _comparison_records
+        local -a _comparison_thread_args=()
+        if [[ "$_comparison_max_local_sieve_threads" != "auto" ]]; then
+            _comparison_thread_args=(--max-local-sieve-threads \
+                "$_comparison_max_local_sieve_threads")
+        fi
         local _comparison_ready=1
         local _comparison_workers _comparison_dir _comparison_base _comparison_run_status
+        local _comparison_effective_budget _comparison_observed_limit
+        local _comparison_observed_peak _comparison_expected_workers
         for _comparison_workers in 1 2 4; do
             _comparison_dir=$(mktemp -d \
                 "${TMPDIR:-/tmp}/gnfs_structured_ooc_50d_w${_comparison_workers}.XXXXXX")
             _comparison_base="${_comparison_dir}/raw"
-            log_info "workers=${_comparison_workers}; max_special_q=${_comparison_max_special_q}; 临时目录=${_comparison_dir}"
+            log_info "workers=${_comparison_workers}; max_special_q=${_comparison_max_special_q}; max_local_sieve_threads=${_comparison_max_local_sieve_threads}; 临时目录=${_comparison_dir}"
             _comparison_run_status=0
             run_single_test test_structured_ooc_50d_probe --max-special-q \
                 "$_comparison_max_special_q" --max-special-q-batch-workers \
-                "$_comparison_workers" --ooc-base "$_comparison_base" || \
+                "$_comparison_workers" "${_comparison_thread_args[@]}" \
+                --ooc-base "$_comparison_base" || \
                 _comparison_run_status=$?
             if (( _comparison_run_status != 0 )); then
                 _comparison_ready=0
@@ -2469,6 +2502,40 @@ case "$MODE" in
                 _comparison_ready=0
                 log_warn "workers=${_comparison_workers} 记录无效，保留诊断工件: ${_comparison_dir}"
                 continue
+            fi
+            if ! _comparison_effective_budget=$(measurement_record_field \
+                "$MEASUREMENT_RECORD" local_sieve_thread_budget) ||
+               ! _comparison_observed_limit=$(measurement_record_field \
+                "$MEASUREMENT_RECORD" special_q_batch_worker_limit) ||
+               ! _comparison_observed_peak=$(measurement_record_field \
+                "$MEASUREMENT_RECORD" special_q_batch_peak_workers); then
+                log_fail "workers=${_comparison_workers} 记录缺少有效调度拓扑"
+                (( FAILED_TESTS += 1 ))
+                _comparison_ready=0
+                rmdir "$_comparison_dir" 2>/dev/null || true
+                break
+            fi
+            if (( _comparison_workers == 1 && _comparison_effective_budget < 4 )); then
+                log_fail "1/2/4 对照要求有效本地筛法预算至少为 4；当前为 ${_comparison_effective_budget}"
+                (( FAILED_TESTS += 1 ))
+                _comparison_ready=0
+                rmdir "$_comparison_dir" 2>/dev/null || true
+                break
+            fi
+            _comparison_expected_workers=$_comparison_workers
+            if (( _comparison_expected_workers > _comparison_effective_budget )); then
+                _comparison_expected_workers=$_comparison_effective_budget
+            fi
+            if (( _comparison_expected_workers > 4 )); then
+                _comparison_expected_workers=4
+            fi
+            if (( _comparison_observed_limit != _comparison_expected_workers ||
+                  _comparison_observed_peak != _comparison_expected_workers )); then
+                log_fail "workers=${_comparison_workers} 未实现声明拓扑：limit=${_comparison_observed_limit}, peak=${_comparison_observed_peak}, expected=${_comparison_expected_workers}"
+                (( FAILED_TESTS += 1 ))
+                _comparison_ready=0
+                rmdir "$_comparison_dir" 2>/dev/null || true
+                break
             fi
             _comparison_records[$_comparison_workers]="$MEASUREMENT_RECORD"
             print -r -- "$MEASUREMENT_RECORD"
@@ -2485,6 +2552,8 @@ case "$MODE" in
             local -a _comparison_fields=(
                 status claim_boundary stop_after n_digits n_bits max_special_q
                 special_q_processed special_q_batch_count special_q_batch_peak_size
+                max_local_sieve_threads_requested local_sieve_thread_budget
+                special_q_batch_peak_assigned_threads
                 rational_fb_columns algebraic_fb_columns base_factor_columns initial_raw_target
                 first_round_complete resume_scope attempted_resume attempted_distributed
                 sge_attempted solver_attempted sqrt_attempted factorization_attempted
@@ -2525,7 +2594,7 @@ case "$MODE" in
             done
         fi
         if (( _comparison_ready )); then
-            print -r -- "GNFS_EXPERIMENT_COMPARISON_V1 status=pass scope=bounded_50d_special_q_batch_workers max_special_q=${_comparison_max_special_q} workers=1,2,4 identity_fields=${#_comparison_fields[@]} timing_compared=false rss_compared=false"
+            print -r -- "GNFS_EXPERIMENT_COMPARISON_V1 status=pass scope=bounded_50d_special_q_batch_workers max_special_q=${_comparison_max_special_q} max_local_sieve_threads=${_comparison_max_local_sieve_threads} workers=1,2,4 identity_fields=${#_comparison_fields[@]} timing_compared=false rss_compared=false"
             log_success "1/2/4 外层 worker 的 relation、matrix 与生命周期身份一致"
         fi
         show_summary

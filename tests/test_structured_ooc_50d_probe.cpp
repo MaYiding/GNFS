@@ -52,6 +52,7 @@ constexpr uint32_t MAX_MAX_SPECIAL_Q_BATCH_WORKERS = 4;
 struct CliOptions final {
     size_t max_special_q = DEFAULT_MAX_SPECIAL_Q;
     uint32_t max_special_q_batch_workers = DEFAULT_MAX_SPECIAL_Q_BATCH_WORKERS;
+    std::optional<uint32_t> max_local_sieve_threads;
     std::optional<std::string> ooc_base;
     bool help = false;
 };
@@ -145,6 +146,10 @@ struct ExperimentRecord final {
     size_t special_q_batch_peak_workers = 0;
     size_t special_q_batch_count = 0;
     size_t special_q_batch_peak_size = 0;
+    uint32_t max_local_sieve_threads_requested = 0;
+    size_t local_sieve_thread_budget = 0;
+    size_t special_q_batch_peak_assigned_threads = 0;
+    size_t special_q_worker_peak_sieve_threads = 0;
     size_t rational_fb_columns = 0;
     size_t algebraic_fb_columns = 0;
     size_t base_factor_columns = 0;
@@ -390,73 +395,76 @@ void emit_record(const ExperimentRecord& record) {
                << phase << "_peak_bytes=" << optional_token(observation.lifetime_peak_rss_bytes);
     };
 
-    std::cout << "GNFS_EXPERIMENT_V1"
-              << " scope=bounded_50d_prefix_probe"
-              << " claim_boundary=relation_reduction_and_matrix_shape_only"
-              << " stop_after=matrix_build"
-              << " status=" << record.status << " failure_stage=" << record.failure_stage
-              << " n_digits=" << PROBE_DIGITS << " n_bits=" << PROBE_BITS
-              << " max_special_q=" << record.max_special_q
-              << " max_special_q_batch_workers=" << record.max_special_q_batch_workers
-              << " special_q_processed=" << record.special_q_processed
-              << " special_q_batch_worker_limit=" << record.special_q_batch_worker_limit
-              << " special_q_batch_peak_workers=" << record.special_q_batch_peak_workers
-              << " special_q_batch_count=" << record.special_q_batch_count
-              << " special_q_batch_peak_size=" << record.special_q_batch_peak_size
-              << " rational_fb_columns=" << record.rational_fb_columns
-              << " algebraic_fb_columns=" << record.algebraic_fb_columns
-              << " base_factor_columns=" << record.base_factor_columns
-              << " initial_raw_target=" << record.initial_raw_target
-              << " first_round_complete=" << bool_token(record.first_round_complete)
-              << " resume_scope=none"
-              << " attempted_resume=false"
-              << " attempted_distributed=false"
-              << " sge_attempted=" << bool_token(record.sge_attempted)
-              << " solver_attempted=" << bool_token(record.solver_attempted)
-              << " sqrt_attempted=" << bool_token(record.sqrt_attempted)
-              << " factorization_attempted=" << bool_token(record.factorization_attempted)
-              << " route_evidence=" << record.route_evidence << " strategy=" << record.strategy
-              << " storage=" << record.storage << " generation=" << record.generation
-              << " raw_rows=" << record.raw_rows << " raw_duplicates=" << record.raw_duplicates
-              << " input_lp_columns=" << record.input_lp_columns
-              << " output_rows=" << record.output_rows
-              << " output_lp_columns=" << record.output_lp_columns
-              << " structured_commits=" << record.structured_commits
-              << " structured_emitted_rows=" << record.structured_emitted_rows
-              << " structured_stop=" << record.structured_stop
-              << " incidence_shards=" << record.incidence_shards
-              << " incidence_requested_workers=" << record.incidence_requested_workers
-              << " incidence_peak_workers=" << record.incidence_peak_workers
-              << " raw_digest_low=" << record.raw_digest.low
-              << " raw_digest_high=" << record.raw_digest.high
-              << " output_digest_low=" << record.output_digest.low
-              << " output_digest_high=" << record.output_digest.high
-              << " matrix_rows=" << record.matrix_rows << " matrix_cols=" << record.matrix_cols
-              << " matrix_nonzeros=" << record.matrix_nonzeros
-              << " matrix_signed_delta=" << optional_token(record.matrix_signed_delta)
-              << " matrix_row_mapping_identity=" << bool_token(record.matrix_row_mapping_identity)
-              << " thin_guard_rows=" << record.output_rows
-              << " thin_guard_non_lp_cols=" << record.base_factor_columns
-              << " thin_guard_proof_satisfied=" << bool_token(record.thin_guard_proof_satisfied)
-              << " structured_filter_records=" << record.structured_filter_records
-              << " structured_matrix_records=" << record.structured_matrix_records
-              << " raw_pair_observed=" << bool_token(record.raw_pair_observed)
-              << " raw_pair_removed=" << bool_token(record.raw_pair_removed)
-              << " output_pair_observed=" << bool_token(record.output_pair_observed)
-              << " output_pair_retained_by_matrix="
-              << bool_token(record.output_pair_retained_by_matrix)
-              << " output_pair_removed=" << bool_token(record.output_pair_removed)
-              << " output_lease_removed=" << bool_token(record.output_lease_removed)
-              << " process_rss_scope=self_lifetime"
-              << " process_rss_backend=" << memory_backend_token(record)
-              << " process_current_rss_supported="
-              << bool_token(record.after_cleanup_memory.current_rss_bytes.has_value())
-              << " process_peak_rss_supported="
-              << bool_token(record.after_cleanup_memory.lifetime_peak_rss_bytes.has_value())
-              << " process_current_rss_bytes="
-              << optional_token(record.after_cleanup_memory.current_rss_bytes)
-              << " process_peak_rss_bytes="
-              << optional_token(record.after_cleanup_memory.lifetime_peak_rss_bytes);
+    std::cout
+        << "GNFS_EXPERIMENT_V1"
+        << " scope=bounded_50d_prefix_probe"
+        << " claim_boundary=relation_reduction_and_matrix_shape_only"
+        << " stop_after=matrix_build"
+        << " status=" << record.status << " failure_stage=" << record.failure_stage
+        << " n_digits=" << PROBE_DIGITS << " n_bits=" << PROBE_BITS
+        << " max_special_q=" << record.max_special_q
+        << " max_special_q_batch_workers=" << record.max_special_q_batch_workers
+        << " special_q_processed=" << record.special_q_processed
+        << " special_q_batch_worker_limit=" << record.special_q_batch_worker_limit
+        << " special_q_batch_peak_workers=" << record.special_q_batch_peak_workers
+        << " special_q_batch_count=" << record.special_q_batch_count
+        << " special_q_batch_peak_size=" << record.special_q_batch_peak_size
+        << " max_local_sieve_threads_requested=" << record.max_local_sieve_threads_requested
+        << " local_sieve_thread_budget=" << record.local_sieve_thread_budget
+        << " special_q_batch_peak_assigned_threads=" << record.special_q_batch_peak_assigned_threads
+        << " special_q_worker_peak_sieve_threads=" << record.special_q_worker_peak_sieve_threads
+        << " rational_fb_columns=" << record.rational_fb_columns
+        << " algebraic_fb_columns=" << record.algebraic_fb_columns
+        << " base_factor_columns=" << record.base_factor_columns
+        << " initial_raw_target=" << record.initial_raw_target
+        << " first_round_complete=" << bool_token(record.first_round_complete)
+        << " resume_scope=none"
+        << " attempted_resume=false"
+        << " attempted_distributed=false"
+        << " sge_attempted=" << bool_token(record.sge_attempted)
+        << " solver_attempted=" << bool_token(record.solver_attempted)
+        << " sqrt_attempted=" << bool_token(record.sqrt_attempted)
+        << " factorization_attempted=" << bool_token(record.factorization_attempted)
+        << " route_evidence=" << record.route_evidence << " strategy=" << record.strategy
+        << " storage=" << record.storage << " generation=" << record.generation
+        << " raw_rows=" << record.raw_rows << " raw_duplicates=" << record.raw_duplicates
+        << " input_lp_columns=" << record.input_lp_columns << " output_rows=" << record.output_rows
+        << " output_lp_columns=" << record.output_lp_columns
+        << " structured_commits=" << record.structured_commits
+        << " structured_emitted_rows=" << record.structured_emitted_rows
+        << " structured_stop=" << record.structured_stop
+        << " incidence_shards=" << record.incidence_shards
+        << " incidence_requested_workers=" << record.incidence_requested_workers
+        << " incidence_peak_workers=" << record.incidence_peak_workers
+        << " raw_digest_low=" << record.raw_digest.low
+        << " raw_digest_high=" << record.raw_digest.high
+        << " output_digest_low=" << record.output_digest.low
+        << " output_digest_high=" << record.output_digest.high
+        << " matrix_rows=" << record.matrix_rows << " matrix_cols=" << record.matrix_cols
+        << " matrix_nonzeros=" << record.matrix_nonzeros
+        << " matrix_signed_delta=" << optional_token(record.matrix_signed_delta)
+        << " matrix_row_mapping_identity=" << bool_token(record.matrix_row_mapping_identity)
+        << " thin_guard_rows=" << record.output_rows
+        << " thin_guard_non_lp_cols=" << record.base_factor_columns
+        << " thin_guard_proof_satisfied=" << bool_token(record.thin_guard_proof_satisfied)
+        << " structured_filter_records=" << record.structured_filter_records
+        << " structured_matrix_records=" << record.structured_matrix_records
+        << " raw_pair_observed=" << bool_token(record.raw_pair_observed)
+        << " raw_pair_removed=" << bool_token(record.raw_pair_removed)
+        << " output_pair_observed=" << bool_token(record.output_pair_observed)
+        << " output_pair_retained_by_matrix=" << bool_token(record.output_pair_retained_by_matrix)
+        << " output_pair_removed=" << bool_token(record.output_pair_removed)
+        << " output_lease_removed=" << bool_token(record.output_lease_removed)
+        << " process_rss_scope=self_lifetime"
+        << " process_rss_backend=" << memory_backend_token(record)
+        << " process_current_rss_supported="
+        << bool_token(record.after_cleanup_memory.current_rss_bytes.has_value())
+        << " process_peak_rss_supported="
+        << bool_token(record.after_cleanup_memory.lifetime_peak_rss_bytes.has_value())
+        << " process_current_rss_bytes="
+        << optional_token(record.after_cleanup_memory.current_rss_bytes)
+        << " process_peak_rss_bytes="
+        << optional_token(record.after_cleanup_memory.lifetime_peak_rss_bytes);
     emit_memory(std::cout, "start", record.start_memory);
     emit_memory(std::cout, "after_polynomial", record.after_polynomial_memory);
     emit_memory(std::cout, "after_factor_base", record.after_factor_base_memory);
@@ -493,10 +501,24 @@ void emit_record(const ExperimentRecord& record) {
     return static_cast<uint32_t>(parsed);
 }
 
+[[nodiscard]] uint32_t parse_max_local_sieve_threads(std::string_view text) {
+    uint64_t parsed = 0;
+    const char* begin = text.data();
+    const char* end = begin + text.size();
+    const auto [position, error] = std::from_chars(begin, end, parsed);
+    if (error != std::errc{} || position != end || parsed == 0 ||
+        parsed > std::numeric_limits<uint32_t>::max()) {
+        throw std::invalid_argument(
+            "--max-local-sieve-threads must be an integer in [1,UINT32_MAX]");
+    }
+    return static_cast<uint32_t>(parsed);
+}
+
 [[nodiscard]] CliOptions parse_cli(int argc, char** argv) {
     CliOptions options;
     bool max_special_q_seen = false;
     bool max_special_q_batch_workers_seen = false;
+    bool max_local_sieve_threads_seen = false;
     bool ooc_base_seen = false;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
@@ -536,6 +558,27 @@ void emit_record(const ExperimentRecord& record) {
             options.max_special_q_batch_workers =
                 parse_max_special_q_batch_workers(argument.substr(workers_prefix.size()));
             max_special_q_batch_workers_seen = true;
+            continue;
+        }
+        if (argument == "--max-local-sieve-threads") {
+            if (max_local_sieve_threads_seen) {
+                throw std::invalid_argument("--max-local-sieve-threads may be specified only once");
+            }
+            if (index + 1 >= argc) {
+                throw std::invalid_argument("--max-local-sieve-threads requires a value");
+            }
+            options.max_local_sieve_threads = parse_max_local_sieve_threads(argv[++index]);
+            max_local_sieve_threads_seen = true;
+            continue;
+        }
+        constexpr std::string_view sieve_threads_prefix = "--max-local-sieve-threads=";
+        if (argument.starts_with(sieve_threads_prefix)) {
+            if (max_local_sieve_threads_seen) {
+                throw std::invalid_argument("--max-local-sieve-threads may be specified only once");
+            }
+            options.max_local_sieve_threads =
+                parse_max_local_sieve_threads(argument.substr(sieve_threads_prefix.size()));
+            max_local_sieve_threads_seen = true;
             continue;
         }
         constexpr std::string_view prefix = "--max-special-q=";
@@ -630,7 +673,8 @@ void observe_log(const LogEntry& entry, CallbackEvidence& evidence) {
 }
 
 void validate_probe_parameters(const Integer& n, const Pipeline& pipeline, size_t max_special_q,
-                               uint32_t max_special_q_batch_workers) {
+                               uint32_t max_special_q_batch_workers,
+                               std::optional<uint32_t> max_local_sieve_threads) {
     const auto& params = pipeline.params();
     require(n.bit_length() == PROBE_BITS, "50-digit fixture no longer has 164 bits");
     require(PROBE_N.size() == PROBE_DIGITS, "50-digit fixture literal length changed");
@@ -648,6 +692,16 @@ void validate_probe_parameters(const Integer& n, const Pipeline& pipeline, size_
     require(params.max_special_q == max_special_q, "Config max_special_q was not applied");
     require(params.max_special_q_batch_workers == max_special_q_batch_workers,
             "Config max_special_q_batch_workers was not applied");
+    size_t hardware_threads = std::thread::hardware_concurrency();
+    if (hardware_threads == 0) {
+        hardware_threads = 4;
+    }
+    const size_t expected_thread_budget =
+        max_local_sieve_threads.has_value()
+            ? std::min<size_t>(*max_local_sieve_threads, hardware_threads)
+            : hardware_threads;
+    require(params.max_local_sieve_threads == expected_thread_budget,
+            "Config max_local_sieve_threads was not frozen to the effective budget");
 }
 
 void validate_callback_boundary(const CallbackEvidence& evidence) {
@@ -668,6 +722,7 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     record.failure_stage = "preflight";
     record.max_special_q = options.max_special_q;
     record.max_special_q_batch_workers = options.max_special_q_batch_workers;
+    record.max_local_sieve_threads_requested = options.max_local_sieve_threads.value_or(0);
 
     const std::string requested_raw_base =
         options.ooc_base.has_value() ? *options.ooc_base : unique_raw_base();
@@ -706,9 +761,12 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
         .set_max_special_q(options.max_special_q)
         .set_max_special_q_batch_workers(options.max_special_q_batch_workers)
         .set_verbose(false);
+    if (options.max_local_sieve_threads.has_value()) {
+        config.set_max_local_sieve_threads(*options.max_local_sieve_threads);
+    }
     Pipeline pipeline(n, config);
     validate_probe_parameters(n, pipeline, options.max_special_q,
-                              options.max_special_q_batch_workers);
+                              options.max_special_q_batch_workers, options.max_local_sieve_threads);
 
     CallbackEvidence evidence;
     pipeline.set_progress_callback(
@@ -748,6 +806,10 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     record.special_q_batch_peak_workers = pipeline_stats.special_q_batch_peak_workers;
     record.special_q_batch_count = pipeline_stats.special_q_batch_count;
     record.special_q_batch_peak_size = pipeline_stats.special_q_batch_peak_size;
+    record.local_sieve_thread_budget = pipeline_stats.local_sieve_thread_budget;
+    record.special_q_batch_peak_assigned_threads =
+        pipeline_stats.special_q_batch_peak_assigned_threads;
+    record.special_q_worker_peak_sieve_threads = pipeline_stats.special_q_worker_peak_sieve_threads;
     record.first_round_complete = reduction_stats.input_relations >= record.initial_raw_target;
     record.generation = reduction.generation;
     record.raw_rows = reduction_stats.input_relations;
@@ -806,7 +868,8 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
         hardware_workers = 4;
     }
     const size_t expected_worker_limit =
-        std::min(hardware_workers, static_cast<size_t>(options.max_special_q_batch_workers));
+        std::min({hardware_workers, static_cast<size_t>(options.max_special_q_batch_workers),
+                  static_cast<size_t>(pipeline.params().max_local_sieve_threads)});
     require(pipeline_stats.special_q_batch_worker_limit == expected_worker_limit,
             "Pipeline special-Q batch worker limit differs from the frozen effective cap");
     require(pipeline_stats.special_q_batch_count == (pipeline_stats.special_q_processed + 3) / 4,
@@ -818,6 +881,21 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
                 std::min(pipeline_stats.special_q_batch_worker_limit,
                          pipeline_stats.special_q_batch_peak_size),
             "Pipeline special-Q peak workers differ from the effective schedule");
+    require(pipeline_stats.local_sieve_thread_budget == pipeline.params().max_local_sieve_threads,
+            "Pipeline local sieve thread budget differs from frozen params");
+    require(pipeline_stats.special_q_batch_peak_assigned_threads ==
+                pipeline_stats.local_sieve_thread_budget,
+            "Pipeline did not assign the complete local sieve thread budget");
+    size_t final_batch_size = pipeline_stats.special_q_processed % 4;
+    if (final_batch_size == 0) {
+        final_batch_size = std::min<size_t>(4, pipeline_stats.special_q_processed);
+    }
+    const size_t final_batch_workers =
+        std::min(pipeline_stats.special_q_batch_worker_limit, final_batch_size);
+    const size_t expected_peak_worker_threads =
+        (pipeline_stats.local_sieve_thread_budget + final_batch_workers - 1) / final_batch_workers;
+    require(pipeline_stats.special_q_worker_peak_sieve_threads == expected_peak_worker_threads,
+            "Pipeline per-worker sieve thread assignment differs from the total budget");
     require(reduction_stats.structured_incidence.requested_worker_count > 0,
             "structured incidence worker request is zero");
     if (reduction_stats.input_relations > 0) {
@@ -946,10 +1024,12 @@ int main(int argc, char** argv) {
         const CliOptions options = parse_cli(argc, argv);
         record.max_special_q = options.max_special_q;
         record.max_special_q_batch_workers = options.max_special_q_batch_workers;
+        record.max_local_sieve_threads_requested = options.max_local_sieve_threads.value_or(0);
         if (options.help) {
             std::cout << "Usage: test_structured_ooc_50d_probe "
                          "[--max-special-q N] [--max-special-q-batch-workers W] "
-                         "[--ooc-base PATH]  # N in [1,64], W in [1,4], defaults 4\n";
+                         "[--max-local-sieve-threads T] [--ooc-base PATH]  "
+                         "# N in [1,64], W in [1,4], T >= 1\n";
             return 0;
         }
         run_probe(options, record);

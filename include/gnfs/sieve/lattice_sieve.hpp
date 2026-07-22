@@ -208,6 +208,11 @@ public:
     /// 设置最大线程数（0 = auto, 1 = single-threaded）
     void set_max_threads(size_t n) { max_threads_ = n; }
 
+    /// Return the configured cap. Zero means the standalone auto mode.
+    [[nodiscard]] size_t configured_max_threads() const noexcept {
+        return max_threads_;
+    }
+
     /// 测试钩子: 强制大素数也走 row_major (用于 bucket vs row-major 字节级一致性比对)
     /// 默认 false: 当 large_primes.size() >= 100 走 bucket region。
     /// 仅测试代码使用,production 路径请保持默认。

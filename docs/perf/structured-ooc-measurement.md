@@ -54,19 +54,25 @@ distributed sieve、V0 BFS、V3 cascade、3LP 和其它会改变实验族的开�
 
 ```bash
 ./scripts/test.sh probe-50d-structured-ooc
-./scripts/test.sh probe-50d-structured-ooc 8 2
-./scripts/test.sh probe-50d-special-q-workers 4
+./scripts/test.sh probe-50d-structured-ooc 8 2 auto
+./scripts/test.sh probe-50d-structured-ooc 8 2 4
+./scripts/test.sh probe-50d-special-q-workers 4 auto
+./scripts/test.sh probe-50d-special-q-workers 4 4
 ```
 
 第一个可选参数是 `max_special_q`，允许范围为 1 到 64，默认值为 4。第二个可选参数
-是 `max_special_q_batch_workers`，允许范围为 1 到 4，默认值为 4。对应 `Config`
-字段在 Pipeline 构造时写入 `GNFSParams`，因此限制在进程内生效，不依赖 shell
-timeout。`max_special_q` 是严格硬上限；最后一批不会向上取整到固定批次宽度。默认
-4 个 special-Q 对应一个 production batch，但仍只是 bounded prefix，不代表完整首轮。
+是 `max_special_q_batch_workers`，允许范围为 1 到 4，默认值为 4。第三个可选参数是
+`max_local_sieve_threads`，接受 `auto` 或 `[1, UINT32_MAX]`，默认值为 `auto`。显式值
+在 Pipeline 构造时钳制到硬件并发数。`max_special_q` 是严格硬上限；最后一批不会
+向上取整到固定批次宽度。默认 4 个 special-Q 对应一个 production batch，但仍只是
+bounded prefix，不代表完整首轮。
 
 `probe-50d-special-q-workers` 使用同一个 Release 构建，分别在 3 个新进程中运行
-workers 1、2 和 4。runner 比较 relation digest、structured reduction、矩阵形状和
-工件生命周期字段；wall time 与 RSS 只记录，不参与 identity 判定。
+workers 1、2 和 4。它的第二个可选参数设置 3 个进程共同使用的
+`max_local_sieve_threads`；默认值为 `auto`。runner 比较 relation digest、structured
+reduction、矩阵形状和工件生命周期字段；每个 worker 的通道分配、wall time 与 RSS
+只记录，不参与 identity 判定。1/2/4 对照要求冻结后的预算至少为 4，并机械检查每次
+实际达到声明的 outer-worker topology；低核机器或更小显式预算会 fail closed。
 
 探针在调用 `solve_matrix()` 前机械证明 reduced rows 不超过已知 non-LP factor-base
 columns，并设置 `GNFS_NO_THIN_SOLVE=1`。实际 full matrix 必须满足
@@ -86,10 +92,10 @@ factorization_attempted=false
 ```
 
 `first_round_complete` 只在 raw relation count 达到初始 raw target 时为 true。报告还
-包含 hard cap、批次 worker 配置与实际峰值、raw/output digest 与 rows、矩阵
-rows/columns、row mapping identity、有符号 row-column delta、nonzeros、wall time 和
-process RSS。runner 使用独立临时目录；成功后只在目录为空时执行 `rmdir`，失败或
-生命周期异常时保留目录供诊断。
+包含 hard cap、请求与冻结后的计算通道预算、批次 worker 配置、单批总通道和单 worker
+峰值、raw/output digest 与 rows、矩阵 rows/columns、row mapping identity、有符号
+row-column delta、nonzeros、wall time 和 process RSS。runner 使用独立临时目录；
+成功后只在目录为空时执行 `rmdir`，失败或生命周期异常时保留目录供诊断。
 
 ## Production Telemetry
 
@@ -175,8 +181,8 @@ matrix_signed_delta=-22660
 
 process lifetime peak RSS 从 1,530,101,760 bytes 降到 218,169,344 bytes；sieve-end
 current RSS 为 217,825,280 bytes，sieve wall time 从 1.76s 降到 0.82s。完整 sieve
-module 为 17/17，Release gate 为 132/132，ASan+UBSan 的 lattice-sieve storage
-回归也通过。该结果消除了 1/2/4 worker 对照中的固定 512MiB/实例测量偏差，并为
+module、Release gate 和 ASan+UBSan 的 lattice-sieve storage 回归均通过。该结果
+消除了 1/2/4 worker 对照中的固定 512MiB/实例测量偏差，并为
 后续 typed worker cap 与跨批 allocator-retention 实验建立了可比较基线。
 
 ## 2026-07-22 Special-Q Batch Worker Evidence
@@ -186,17 +192,12 @@ module 为 17/17，Release gate 为 132/132，ASan+UBSan 的 lattice-sieve stora
 `special_q_batch_count=1`、`special_q_batch_peak_size=1`、
 `special_q_batch_peak_workers=1`，raw rows 为 39。
 
-随后执行：
-
-```bash
-./scripts/test.sh probe-50d-special-q-workers 4
-```
-
-3 个独立进程都处理同一 4-SQ prefix，得到 188 条 raw relations。raw digest 固定为
+以下数据来自统一预算落地前的 `4b1b242` revision，保留为历史 outer-only 基线。3 个
+独立进程都处理同一 4-SQ prefix，得到 188 条 raw relations。raw digest 固定为
 `2999840282289098554/11378523343223252016`，output digest 固定为
 `12384855047597894612/7406486012983705512`。full matrix 均为 `0 x 22660`，
-`matrix_signed_delta=-22660`，row mapping 为 identity。runner 比较的 54 个非资源字段
-全部一致。
+`matrix_signed_delta=-22660`，row mapping 为 identity。runner 声明的全部非资源
+identity 字段一致。
 
 | Outer workers | Peak RSS | Sieve-end current RSS | Sieve wall |
 |---:|---:|---:|---:|
@@ -206,10 +207,12 @@ module 为 17/17，Release gate 为 132/132，ASan+UBSan 的 lattice-sieve stora
 
 这些数据来自 macOS arm64、10 个逻辑 CPU 的 fresh Release 进程。它们说明外层并发
 上限能明确控制 4-SQ prefix 的内存与延迟权衡，但不能推断完整首轮或其它机器的最优值。
-每个 `LatticeSieve` 仍可使用内部线程；全进程线程预算属于后续独立里程碑。
+这些测量早于统一预算实现；当时每个 `LatticeSieve` 都独立使用硬件并发数，因此存在
+嵌套过量并行。
 
 同一 runner 的 64-SQ 扩展覆盖 16 个批次。3 个进程都得到 6,047 条 raw relations、
-16 条 output relations 和 `16 x 22660` full matrix；54 个 identity 字段仍完全一致。
+16 条 output relations 和 `16 x 22660` full matrix；runner 声明的 identity 集合仍
+完全一致。
 raw digest 为 `3689494670318064948/10851036734780297310`，output digest 为
 `8861842470919209299/15961672454890669926`。
 
@@ -222,4 +225,45 @@ raw digest 为 `3689494670318064948/10851036734780297310`，output digest 为
 4-worker 的 64-SQ sieve-end current RSS 只比 4-SQ 高约 9.6MB，不再出现修复前约
 2.3GB 的跨批残留。该单点不能证明任意长运行都没有 allocator retention，但已覆盖
 当前 16 批生产路径。2 workers 到 4 workers 只缩短约 7.6% sieve wall time，同时
-增加约 126.5MB lifetime peak RSS；因此下一阶段优先建立内外层统一线程预算。
+增加约 126.5MB lifetime peak RSS；该结果推动了下一节的统一线程预算。
+
+## 2026-07-22 Unified Local Sieve Compute Budget
+
+Pipeline 现在把外层 special-Q worker 与每个 `LatticeSieve` 的内层 fan-out 统一到
+`max_local_sieve_threads`。以下数据使用自动冻结的 10 通道预算。该值表示可运行的本地
+筛法计算通道，不是 OS 线程数或 RSS 上限。外层线程在内层 fan-out 期间会阻塞，运行库
+和显式启用的其它嵌套并行仍可能创建额外线程。表值来自实际 worker 配置回读和 outer
+topology fail-closed 校验落地后的最终 Release fresh-process 复测。
+
+4-SQ worker 对照的 raw rows 均为 188，full matrix 均为 `0 x 22660`。runner 声明的
+全部 relation、matrix 和生命周期身份字段一致：
+
+| Outer workers | Lane plan | Assigned lanes | Peak RSS | Sieve-end current | Sieve wall |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 10 | 10 | 86,245,376 bytes | 85,917,696 bytes | 1.386s |
+| 2 | 5 + 5 | 10 | 149,209,088 bytes | 148,897,792 bytes | 0.860s |
+| 4 | 3 + 3 + 2 + 2 | 10 | 227,377,152 bytes | 227,049,472 bytes | 0.859s |
+
+固定 4 个 outer workers 后再扫描总预算，所有场景仍得到同一 relation digest 和矩阵
+身份。预算小于 outer cap 时，worker 数自动下降，避免每个 worker 获得零通道：
+
+| Budget | Effective workers | Peak worker lanes | Peak RSS | Sieve wall |
+|---:|---:|---:|---:|---:|
+| 1 | 1 | 1 | 83,836,928 bytes | 1.554s |
+| 2 | 2 | 1 | 137,904,128 bytes | 0.935s |
+| 4 | 4 | 1 | 247,775,232 bytes | 0.837s |
+| 10 | 4 | 3 | 228,704,256 bytes | 0.790s |
+
+64-SQ 对照覆盖 16 个 production batches。三组都得到 6,047 条 raw relations、16 条
+output relations 和 `16 x 22660` full matrix，摘要与生命周期身份不变：
+
+| Outer workers | Lane plan | Assigned lanes | Peak RSS | Sieve-end current | Sieve wall |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 10 | 10 | 95,322,112 bytes | 90,472,448 bytes | 69.194s |
+| 2 | 5 + 5 | 10 | 204,226,560 bytes | 202,407,936 bytes | 48.501s |
+| 4 | 3 + 3 + 2 + 2 | 10 | 342,376,448 bytes | 340,557,824 bytes | 45.181s |
+
+4-SQ 的 budget 4 单次 peak 高于 budget 10，64-SQ 的 RSS 也随 outer workers 增加。
+这些现象说明 lifetime peak 对分配器和进程布局敏感，不能据此建立单调预算模型或 CI
+阈值。可复现契约是计算通道上限、均衡分配和 bit-for-bit 结果身份；资源值仅作本机
+调优证据。

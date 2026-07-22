@@ -31,48 +31,79 @@ time 从 1.76s 降到 0.82s。该数字用于回归证据，不是跨机器性�
 
 ---
 
-## Special-Q Batch Worker Limit (Config)
+## Special-Q Local Compute Budget (Config)
 
-`max_special_q_batch_workers` 是本地 production Pipeline 的类型化配置，不是
-`GNFS_*` ENV。默认值为 4，合法范围为 `[1, 4]`：
+`max_special_q_batch_workers` 和 `max_local_sieve_threads` 是本地 production
+Pipeline 的类型化配置，不是 `GNFS_*` ENV。前者限制每批外层 worker 数，默认值为
+4，合法范围为 `[1, 4]`。后者限制本地筛法计算通道；未配置时使用
+`hardware_concurrency`，读取失败时回退到 4。显式值的合法范围为
+`[1, UINT32_MAX]`，Pipeline 构造时再钳制到硬件并发数。CLI 的 `--threads N` 设置
+同一计算通道预算。
 
 ```ini
 max_special_q_batch_workers = 2
+max_local_sieve_threads = 8
 ```
 
 ```cpp
 gnfs::api::Config config;
 config.set_max_special_q_batch_workers(2);
+config.set_max_local_sieve_threads(8);
 ```
 
-该值只限制一个本地 special-Q 批次的外层 worker 数。每个 worker 自己持有
-`LatticeSieve` 和 `Cofactorizer`；`LatticeSieve` 内部线程不受该值限制。因此它不是
-进程级总线程预算，也不改变 `DistributedSieveConfig::num_workers`。distributed route
-不填充本地批次遥测。
+Pipeline 构造时冻结有效预算 $B$。非空 special-Q 批次的大小为 $Q$，外层配置上限为
+$C$ 时，实际 worker 数为：
+
+$$
+W = \min(B, C, Q)
+$$
+
+预算按商和余数分配。第 $i$ 个 worker 的 `LatticeSieve` 内层通道数为：
+
+$$
+t_i = \left\lfloor\frac{B}{W}\right\rfloor + [i < B \bmod W]
+$$
+
+因此非空批次满足 $\sum_i t_i = B$，且任意两个 worker 的分配相差不超过 1。每个
+worker 自己持有 `LatticeSieve` 和 `Cofactorizer`；`LatticeSieve::set_max_threads()`
+统一约束 bucket scatter、bucket apply 和 row-major 阶段的内层并行。
+
+该契约限制可运行的本地筛法计算通道，不限制进程 OS 线程数或 RSS。多通道
+`LatticeSieve` 执行时，外层 worker 线程会阻塞等待内层线程；运行库线程以及显式启用
+的余因子分解嵌套并行也不计入此预算。它不改变
+`DistributedSieveConfig::num_workers`，也不约束独立调用的
+`LatticeSieve::sieve_parallel()`。distributed route 不填充本地批次遥测。
 
 小于等于 50 位的固定批次宽度仍为 4，大于 50 位仍为 2。实际外层 worker 数为
-`min(hardware_concurrency, batch_size, max_special_q_batch_workers)`。调度上限不改变
+`min(local_sieve_thread_budget, batch_size, max_special_q_batch_workers)`。调度参数不改变
 special-Q 顺序、批次成员、归约输入或 checkpoint identity。`max_special_q` 仍是处理
-数量的硬上限；最后一批只取剩余配额，不会向上取整到固定批次宽度。
+数量的硬上限；最后一批只取剩余配额，并为该批重新分配完整计算通道预算。
 
 `FactorStats` 提供以下本地调度遥测：
 
-- `special_q_batch_worker_limit`：硬件上限与配置上限的较小值；
+- `local_sieve_thread_budget`：Pipeline 冻结后的有效计算通道预算；
+- `special_q_batch_worker_limit`：计算通道预算与外层配置上限的较小值；
 - `special_q_batch_peak_workers`：实际同时启动的最多外层 workers；
 - `special_q_batch_count`：已执行的本地批次数；
-- `special_q_batch_peak_size`：实际最大批次大小。
+- `special_q_batch_peak_size`：实际最大批次大小；
+- `special_q_batch_peak_assigned_threads`：单批分配的最大计算通道总数；
+- `special_q_worker_peak_sieve_threads`：单个 worker 获得的最大内层通道数。
 
-真实 50 位 Release 探针用相同 4-SQ prefix 对比 workers 1、2 和 4。三种配置的
-raw/output digest、关系数量、矩阵形状和工件生命周期共 54 个字段完全一致。
-对应 lifetime peak RSS 分别为 85,737,472、137,314,304 和 221,675,520 bytes；
-sieve wall time 分别为 1.41s、0.96s 和 0.91s。这些值是单机证据，不是跨机器阈值。
+后两个字段在 worker join 后从各 `LatticeSieve` 的实际配置值汇总。它们不只复述
+planner 的预期向量；若预算没有写入 worker，Pipeline 会 fail closed。
+
+真实 50 位 Release 探针在固定 10 通道预算下对比 workers 1、2 和 4。runner 声明的
+relation、matrix 与生命周期身份集合完全一致；4-SQ 和 64-SQ 两个尺寸都通过。资源值
+只作为单机证据，详见 [structured OOC measurement](../perf/structured-ooc-measurement.md)。
 
 **集成点**：
 
 - `include/gnfs/core/params.hpp`：默认值和冻结后的 Pipeline 参数；
 - `include/gnfs/api/config.hpp`：配置文件解析、builder、merge 和范围校验；
-- `src/api/pipeline.cpp`：硬上限批次切分、worker cap 和遥测；
+- `include/gnfs/sieve/local_thread_budget.hpp`：均衡线程分配纯函数；
+- `src/api/pipeline.cpp`：预算冻结、硬上限批次切分、worker 分配和遥测；
 - `tests/test_api.cpp`：类型化配置与公开结果格式；
+- `tests/test_local_sieve_thread_budget.cpp`：分配示例、无效输入和性质网格；
 - `tests/test_sieve_checkpoint.cpp`：调度参数不进入数学 run identity；
 - `tests/test_structured_ooc_50d_probe.cpp`：真实 50 位调度与 identity 证据。
 

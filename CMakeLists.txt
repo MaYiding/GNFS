@@ -547,6 +547,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SieveEcoreQoS COMMAND test_sieve_ecore_qos)
     set_tests_properties(SieveEcoreQoS PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_local_sieve_thread_budget
+        tests/test_local_sieve_thread_budget.cpp
+    )
+    target_link_libraries(test_local_sieve_thread_budget PRIVATE gnfs_core)
+    add_test(NAME LocalSieveThreadBudget COMMAND test_local_sieve_thread_budget)
+    set_tests_properties(LocalSieveThreadBudget PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_factor_base
         tests/test_factor_base.cpp
     )

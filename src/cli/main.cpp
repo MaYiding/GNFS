@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -594,11 +595,19 @@ int main(int argc, char* argv[]) {
         else if (arg == "--sieve-width" && i + 1 < argc) cli_config.sieve_width = std::stoi(argv[++i]);
         else if (arg == "--sieve-height" && i + 1 < argc) cli_config.sieve_height = std::stoi(argv[++i]);
         else if (arg == "--threads" && i + 1 < argc) {
-            // --threads is reserved; thread count is currently auto-detected
-            // from hardware_concurrency(). Accept and ignore the value with
-            // a warning so existing scripts don't break.
-            std::stoi(argv[++i]);  // validate but discard
-            std::cerr << "[warn] --threads is currently ignored (auto-detected from hardware_concurrency)\n";
+            const std::string value_text = argv[++i];
+            try {
+                size_t consumed = 0;
+                const uint64_t value = std::stoull(value_text, &consumed);
+                if (consumed != value_text.size() || value == 0 ||
+                    value > std::numeric_limits<uint32_t>::max()) {
+                    throw std::out_of_range("thread budget outside uint32 range");
+                }
+                cli_config.set_max_local_sieve_threads(static_cast<uint32_t>(value));
+            } catch (const std::exception&) {
+                std::cerr << "--threads must be an integer in [1, UINT32_MAX]\n";
+                return 1;
+            }
         }
         else if (arg[0] == '-') {
             std::cerr << TR(S::ERR_UNKNOWN_OPT) << " " << arg << "\n";

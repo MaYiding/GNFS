@@ -179,8 +179,8 @@ inline const Entry& get(S key) {
          "  --sieve-width N     Sieve region width"},
         {"  --sieve-height N    \xe7\xad\x9b\xe5\x8c\xba\xe9\xab\x98\xe5\xba\xa6",
          "  --sieve-height N    Sieve region height"},
-        {"  --threads N         \xe5\xb7\xa5\xe4\xbd\x9c\xe7\xba\xbf\xe7\xa8\x8b\xe6\x95\xb0",
-         "  --threads N         Worker threads"},
+        {"  --threads N         \xe6\x9c\xac\xe5\x9c\xb0\xe7\xad\x9b\xe6\xb3\x95\xe8\xae\xa1\xe7\xae\x97\xe9\x80\x9a\xe9\x81\x93\xe9\xa2\x84\xe7\xae\x97",
+         "  --threads N         Local sieve compute-lane budget"},
         {"\xe7\xa4\xba\xe4\xbe\x8b:", "Examples:"},
 
         // FACTORING

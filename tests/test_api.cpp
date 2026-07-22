@@ -34,11 +34,13 @@
 #include <initializer_list>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -117,6 +119,9 @@ bool test_config_auto_detect() {
     if (cfg.max_special_q_batch_workers.has_value()) {
         return false;
     }
+    if (cfg.max_local_sieve_threads.has_value()) {
+        return false;
+    }
     assert(!cfg.verbose.has_value());
     return true;
 }
@@ -127,6 +132,7 @@ bool test_config_builder() {
                    .set_rational_bound(50000)
                    .set_max_special_q(17)
                    .set_max_special_q_batch_workers(2)
+                   .set_max_local_sieve_threads(3)
                    .set_verbose(true);
 
     assert(cfg.degree.has_value() && *cfg.degree == 4);
@@ -135,6 +141,9 @@ bool test_config_builder() {
         return false;
     }
     if (!cfg.max_special_q_batch_workers.has_value() || *cfg.max_special_q_batch_workers != 2) {
+        return false;
+    }
+    if (!cfg.max_local_sieve_threads.has_value() || *cfg.max_local_sieve_threads != 3) {
         return false;
     }
     assert(cfg.verbose.has_value() && *cfg.verbose == true);
@@ -159,6 +168,15 @@ bool test_config_builder() {
             return false;
         }
     }
+    bool zero_thread_budget_rejected = false;
+    try {
+        (void)Config::auto_detect().set_max_local_sieve_threads(0);
+    } catch (const std::out_of_range&) {
+        zero_thread_budget_rejected = true;
+    }
+    if (!zero_thread_budget_rejected) {
+        return false;
+    }
     return true;
 }
 
@@ -168,12 +186,14 @@ bool test_config_merge() {
     base.rational_bound = 5000;
     base.max_special_q = 23;
     base.max_special_q_batch_workers = 3;
+    base.max_local_sieve_threads = 7;
     base.verbose = false;
 
     Config override_cfg;
     override_cfg.degree = 4;
     override_cfg.max_special_q = 11;
     override_cfg.max_special_q_batch_workers = 2;
+    override_cfg.max_local_sieve_threads = 5;
     override_cfg.verbose = true;
 
     auto merged = base.merge(override_cfg);
@@ -186,6 +206,9 @@ bool test_config_merge() {
         *merged.max_special_q_batch_workers != 2) {
         return false;
     }
+    if (!merged.max_local_sieve_threads.has_value() || *merged.max_local_sieve_threads != 5) {
+        return false;
+    }
     assert(*merged.verbose == true); // overridden
     return true;
 }
@@ -196,6 +219,7 @@ bool test_config_apply_to() {
     cfg.rational_bound = 99999;
     cfg.max_special_q = 13;
     cfg.max_special_q_batch_workers = 2;
+    cfg.max_local_sieve_threads = 3;
 
     Integer n("1000036000099"); // ~40-bit
     auto params = cfg.apply_to(n);
@@ -206,6 +230,9 @@ bool test_config_apply_to() {
         return false;
     }
     if (params.max_special_q_batch_workers != 2) {
+        return false;
+    }
+    if (params.max_local_sieve_threads != 3) {
         return false;
     }
     // Other params should be auto-computed
@@ -235,6 +262,32 @@ bool test_config_apply_to() {
             return false;
         }
     }
+    Config invalid_thread_budget;
+    invalid_thread_budget.max_local_sieve_threads = 0;
+    bool invalid_thread_budget_rejected = false;
+    try {
+        (void)invalid_thread_budget.apply_to(n);
+    } catch (const std::out_of_range&) {
+        invalid_thread_budget_rejected = true;
+    }
+    if (!invalid_thread_budget_rejected) {
+        return false;
+    }
+
+    size_t expected_hardware_threads = std::thread::hardware_concurrency();
+    if (expected_hardware_threads == 0) {
+        expected_hardware_threads = 4;
+    }
+    Pipeline automatic_budget(n, Config::auto_detect());
+    if (automatic_budget.params().max_local_sieve_threads != expected_hardware_threads) {
+        return false;
+    }
+    Config clamped_budget_config;
+    clamped_budget_config.set_max_local_sieve_threads(std::numeric_limits<uint32_t>::max());
+    Pipeline clamped_budget(n, clamped_budget_config);
+    if (clamped_budget.params().max_local_sieve_threads != expected_hardware_threads) {
+        return false;
+    }
     return true;
 }
 
@@ -248,6 +301,7 @@ bool test_config_from_file() {
         ofs << "rational_bound = 12345\n";
         ofs << "max_special_q = 19\n";
         ofs << "max_special_q_batch_workers = 3\n";
+        ofs << "max_local_sieve_threads = 6\n";
         ofs << "verbose = true\n";
     }
 
@@ -258,6 +312,9 @@ bool test_config_from_file() {
         return false;
     }
     if (!cfg.max_special_q_batch_workers.has_value() || *cfg.max_special_q_batch_workers != 3) {
+        return false;
+    }
+    if (!cfg.max_local_sieve_threads.has_value() || *cfg.max_local_sieve_threads != 6) {
         return false;
     }
     assert(cfg.verbose.has_value() && *cfg.verbose == true);
@@ -305,6 +362,11 @@ bool test_config_from_file_invalid() {
     write_and_expect_throw("max_special_q_batch_workers = 5\n", "excess batch workers");
     write_and_expect_throw("max_special_q_batch_workers = 2junk\n",
                            "trailing batch worker characters");
+    write_and_expect_throw("max_local_sieve_threads = 0\n", "zero local sieve threads");
+    write_and_expect_throw("max_local_sieve_threads = 4294967296\n",
+                           "overflow local sieve threads");
+    write_and_expect_throw("max_local_sieve_threads = 2junk\n",
+                           "trailing local sieve thread characters");
 
     // Valid: empty + comment + blank lines should not throw
     {
@@ -333,6 +395,7 @@ bool test_config_to_string() {
     cfg.rational_bound = 10000u;
     cfg.max_special_q = 29;
     cfg.max_special_q_batch_workers = 3;
+    cfg.max_local_sieve_threads = 6;
     auto s = cfg.to_string();
     assert(s.find("degree = 5") != std::string::npos);
     assert(s.find("rational_bound = 10000") != std::string::npos);
@@ -340,6 +403,9 @@ bool test_config_to_string() {
         return false;
     }
     if (s.find("max_special_q_batch_workers = 3") == std::string::npos) {
+        return false;
+    }
+    if (s.find("max_local_sieve_threads = 6") == std::string::npos) {
         return false;
     }
     return true;
@@ -392,6 +458,9 @@ bool test_result_to_json() {
     r.stats.special_q_batch_peak_workers = 2;
     r.stats.special_q_batch_count = 3;
     r.stats.special_q_batch_peak_size = 4;
+    r.stats.local_sieve_thread_budget = 8;
+    r.stats.special_q_batch_peak_assigned_threads = 8;
+    r.stats.special_q_worker_peak_sieve_threads = 4;
 
     auto json = r.to_json();
     assert(json.find("\"success\": true") != std::string::npos);
@@ -400,7 +469,10 @@ bool test_result_to_json() {
     if (json.find("\"special_q_batch_worker_limit\": 2") == std::string::npos ||
         json.find("\"special_q_batch_peak_workers\": 2") == std::string::npos ||
         json.find("\"special_q_batch_count\": 3") == std::string::npos ||
-        json.find("\"special_q_batch_peak_size\": 4") == std::string::npos) {
+        json.find("\"special_q_batch_peak_size\": 4") == std::string::npos ||
+        json.find("\"local_sieve_thread_budget\": 8") == std::string::npos ||
+        json.find("\"special_q_batch_peak_assigned_threads\": 8") == std::string::npos ||
+        json.find("\"special_q_worker_peak_sieve_threads\": 4") == std::string::npos) {
         return false;
     }
     return true;
@@ -430,12 +502,16 @@ bool test_result_to_report() {
     r.stats.timings.poly_s = 0.1;
     r.stats.timings.sieve_s = 0.8;
     r.stats.special_q_batch_worker_limit = 2;
+    r.stats.local_sieve_thread_budget = 8;
 
     auto report = r.to_report();
     assert(report.find("GNFS Factorization Report") != std::string::npos);
     assert(report.find("SUCCESS") != std::string::npos);
     assert(report.find("Timing Breakdown") != std::string::npos);
     if (report.find("Special-Q batch worker limit: 2") == std::string::npos) {
+        return false;
+    }
+    if (report.find("Local sieve compute-lane budget: 8") == std::string::npos) {
         return false;
     }
     return true;
@@ -634,6 +710,7 @@ bool test_pipeline_step_by_step() {
     Integer n(143);
     Config cfg;
     cfg.verbose = false;
+    cfg.set_max_local_sieve_threads(1);
 
     Pipeline pipeline(n, cfg);
 
@@ -654,6 +731,13 @@ bool test_pipeline_step_by_step() {
     // instant-tier assertion that exercises the GNFS-side counters.
     assert(pipeline.stats().relations_found > 0 &&
            "Pipeline::stats().relations_found should be set after sieving");
+    if (pipeline.stats().local_sieve_thread_budget != 1 ||
+        pipeline.stats().special_q_batch_peak_assigned_threads != 1 ||
+        pipeline.stats().special_q_worker_peak_sieve_threads != 1 ||
+        pipeline.stats().special_q_batch_peak_workers != 1) {
+        std::cout << "(Pipeline did not apply its one-lane local sieve budget) ";
+        return false;
+    }
 
     // Force only the structured corpus handoff over a real sieve reduction;
     // relation contents remain untouched so this is an end-to-end oracle for

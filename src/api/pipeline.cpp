@@ -24,6 +24,7 @@
 #include <gnfs/relation/v0_bfs_policy.hpp>
 #include <gnfs/sieve/distributed_sieve.hpp>
 #include <gnfs/sieve/lattice_sieve.hpp>
+#include <gnfs/sieve/local_thread_budget.hpp>
 #include <gnfs/sieve/sieve_checkpoint.hpp>
 #include <gnfs/sieve/sieve_run_identity.hpp>
 #include <gnfs/sieve/special_q.hpp>
@@ -824,6 +825,16 @@ Pipeline::select_method(size_t n_bits, size_t n_digits,
 Pipeline::Pipeline(const Integer& n, const Config& config)
     : n_(n), config_(config), params_(config.apply_to(n)),
       start_time_(std::chrono::high_resolution_clock::now()) {
+    uint32_t hardware_threads = std::thread::hardware_concurrency();
+    if (hardware_threads == 0) {
+        hardware_threads = 4;
+    }
+    if (params_.max_local_sieve_threads == 0) {
+        params_.max_local_sieve_threads = hardware_threads;
+    } else {
+        params_.max_local_sieve_threads =
+            std::min(params_.max_local_sieve_threads, hardware_threads);
+    }
     stats_.n_bits = n.bit_length();
     stats_.n_digits = params_.digits;
     stats_.degree = params_.degree;
@@ -1117,6 +1128,9 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     stats_.special_q_batch_peak_workers = 0;
     stats_.special_q_batch_count = 0;
     stats_.special_q_batch_peak_size = 0;
+    stats_.local_sieve_thread_budget = 0;
+    stats_.special_q_batch_peak_assigned_threads = 0;
+    stats_.special_q_worker_peak_sieve_threads = 0;
 
     // Sieve params
     sieve::SieveParams sieve_params;
@@ -1502,15 +1516,17 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     constexpr size_t CHECKPOINT_BATCH_INTERVAL = 25;
     size_t last_checkpoint_batch = 0;
 
-    // Hardware ceiling for the local outer special-Q batch scheduler.
-    size_t n_cofac_threads = std::thread::hardware_concurrency();
-    if (n_cofac_threads == 0)
-        n_cofac_threads = 4;
+    const size_t local_sieve_thread_budget = params_.max_local_sieve_threads;
+    if (local_sieve_thread_budget == 0) {
+        throw std::logic_error("max_local_sieve_threads must be frozen before sieving");
+    }
     const size_t configured_batch_workers = params_.max_special_q_batch_workers;
     if (configured_batch_workers < 1 || configured_batch_workers > 4) {
         throw std::logic_error("max_special_q_batch_workers must be in [1, 4]");
     }
-    stats_.special_q_batch_worker_limit = std::min(n_cofac_threads, configured_batch_workers);
+    stats_.local_sieve_thread_budget = local_sieve_thread_budget;
+    stats_.special_q_batch_worker_limit =
+        std::min(local_sieve_thread_budget, configured_batch_workers);
 
     int last_reduction_round = round_start;
     for (int round = round_start; round < MAX_ROUNDS; ++round) {
@@ -1543,9 +1559,25 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
             std::vector<size_t> batch_candidates(sq_batch.size(), 0);
             std::atomic<size_t> next_sq_idx{0};
 
-            auto sieve_worker = [&]() {
+            // Divide the total compute-lane budget across the active outer
+            // workers. A one-lane LatticeSieve executes inline; a multi-lane
+            // instance blocks its outer worker while its inner workers run.
+            const sieve::LocalSieveThreadPlan thread_plan = sieve::plan_local_sieve_threads(
+                local_sieve_thread_budget, stats_.special_q_batch_worker_limit, sq_batch.size());
+            const size_t n_workers = thread_plan.threads_per_worker.size();
+            std::vector<size_t> configured_sieve_threads(n_workers, 0);
+
+            ++stats_.special_q_batch_count;
+            stats_.special_q_batch_peak_size =
+                std::max(stats_.special_q_batch_peak_size, sq_batch.size());
+            stats_.special_q_batch_peak_workers =
+                std::max(stats_.special_q_batch_peak_workers, n_workers);
+
+            auto sieve_worker = [&](size_t worker_index) {
                 sieve::LatticeSieve local_sieve(ctx, fb, sieve_params);
                 local_sieve.set_region(sieve_region);
+                local_sieve.set_max_threads(thread_plan.threads_per_worker[worker_index]);
+                configured_sieve_threads[worker_index] = local_sieve.configured_max_threads();
                 local_sieve.set_adaptive_manager(&adaptive_mgr);
                 cofactor::Cofactorizer local_cofac(ctx, fb, cofac_config);
 
@@ -1570,20 +1602,30 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                 }
             };
 
-            // Launch outer batch workers. Each worker owns one LatticeSieve,
-            // whose internal thread use is intentionally outside this local cap.
-            const size_t n_workers = std::min(stats_.special_q_batch_worker_limit, sq_batch.size());
-            ++stats_.special_q_batch_count;
-            stats_.special_q_batch_peak_size =
-                std::max(stats_.special_q_batch_peak_size, sq_batch.size());
-            stats_.special_q_batch_peak_workers =
-                std::max(stats_.special_q_batch_peak_workers, n_workers);
+            // Launch outer batch workers. The lane assignment above bounds
+            // their combined local sieve compute parallelism.
             std::vector<std::thread> threads;
             threads.reserve(n_workers);
             for (size_t t = 0; t < n_workers; ++t)
-                threads.emplace_back(sieve_worker);
+                threads.emplace_back(sieve_worker, t);
             for (auto& t : threads)
                 t.join();
+
+            size_t configured_thread_total = 0;
+            size_t configured_worker_peak = 0;
+            for (size_t worker_index = 0; worker_index < n_workers; ++worker_index) {
+                if (configured_sieve_threads[worker_index] !=
+                    thread_plan.threads_per_worker[worker_index]) {
+                    throw std::logic_error("local sieve thread plan was not applied to its worker");
+                }
+                configured_thread_total += configured_sieve_threads[worker_index];
+                configured_worker_peak =
+                    std::max(configured_worker_peak, configured_sieve_threads[worker_index]);
+            }
+            stats_.special_q_batch_peak_assigned_threads =
+                std::max(stats_.special_q_batch_peak_assigned_threads, configured_thread_total);
+            stats_.special_q_worker_peak_sieve_threads =
+                std::max(stats_.special_q_worker_peak_sieve_threads, configured_worker_peak);
 
             // Collect results
             for (size_t i = 0; i < sq_batch.size(); ++i) {

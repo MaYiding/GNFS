@@ -38,11 +38,13 @@ struct Config {
     /// collection. Primarily useful for reproducible, bounded experiments.
     std::optional<size_t> max_special_q;
     /// Maximum number of outer workers used by one local special-Q batch.
-    /// This does not cap threads used inside each LatticeSieve worker.
+    /// The local sieve budget may reduce this effective worker count.
     std::optional<uint32_t> max_special_q_batch_workers;
+    /// Total compute-lane budget shared by the outer local special-Q
+    /// workers and their nested LatticeSieve phases. Unset selects hardware.
+    std::optional<uint32_t> max_local_sieve_threads;
 
-    // Note: there is no general Pipeline thread-count setting. The batch-worker
-    // limit above controls only the local outer special-Q scheduler.
+    // Neither setting controls distributed workers or non-sieve phases.
 
     // Verbosity
     std::optional<bool> verbose;
@@ -124,6 +126,15 @@ struct Config {
                         "Config: max_special_q_batch_workers must be in [1, 4]");
                 }
                 cfg.max_special_q_batch_workers = static_cast<uint32_t>(parsed);
+            } else if (key == "max_local_sieve_threads") {
+                size_t consumed = 0;
+                const uint64_t parsed = std::stoull(val, &consumed);
+                if (consumed != val.size() || parsed == 0 ||
+                    parsed > std::numeric_limits<uint32_t>::max()) {
+                    throw std::out_of_range(
+                        "Config: max_local_sieve_threads must be in [1, UINT32_MAX]");
+                }
+                cfg.max_local_sieve_threads = static_cast<uint32_t>(parsed);
             } else if (key == "verbose")
                 cfg.verbose = (val == "true" || val == "1");
             else if (key == "output_file")      cfg.output_file = val;
@@ -158,6 +169,13 @@ struct Config {
         max_special_q_batch_workers = count;
         return *this;
     }
+    Config& set_max_local_sieve_threads(uint32_t count) {
+        if (count == 0) {
+            throw std::out_of_range("Config: max_local_sieve_threads must be in [1, UINT32_MAX]");
+        }
+        max_local_sieve_threads = count;
+        return *this;
+    }
     Config& set_verbose(bool v)               { verbose = v; return *this; }
     Config& set_output_file(const std::string& f)   { output_file = f; return *this; }
     Config& set_output_format(const std::string& f) { output_format = f; return *this; }
@@ -175,6 +193,8 @@ struct Config {
         if (other.max_special_q)     result.max_special_q = other.max_special_q;
         if (other.max_special_q_batch_workers)
             result.max_special_q_batch_workers = other.max_special_q_batch_workers;
+        if (other.max_local_sieve_threads)
+            result.max_local_sieve_threads = other.max_local_sieve_threads;
         if (other.verbose)           result.verbose = other.verbose;
         if (other.output_file)       result.output_file = other.output_file;
         if (other.output_format)     result.output_format = other.output_format;
@@ -211,6 +231,13 @@ struct Config {
             }
             params.max_special_q_batch_workers = *max_special_q_batch_workers;
         }
+        if (max_local_sieve_threads) {
+            if (*max_local_sieve_threads == 0) {
+                throw std::out_of_range(
+                    "Config: max_local_sieve_threads must be in [1, UINT32_MAX]");
+            }
+            params.max_local_sieve_threads = *max_local_sieve_threads;
+        }
 
         return params;
     }
@@ -229,6 +256,8 @@ struct Config {
         if (max_special_q)    os << "max_special_q = " << *max_special_q << "\n";
         if (max_special_q_batch_workers)
             os << "max_special_q_batch_workers = " << *max_special_q_batch_workers << "\n";
+        if (max_local_sieve_threads)
+            os << "max_local_sieve_threads = " << *max_local_sieve_threads << "\n";
         if (verbose)          os << "verbose = " << (*verbose ? "true" : "false") << "\n";
         if (output_file)      os << "output_file = " << *output_file << "\n";
         if (output_format)    os << "output_format = " << *output_format << "\n";

@@ -91,7 +91,15 @@ byte normalization and process high-water-mark monotonicity without requiring a
 fixed allocation delta. `test_structured_ooc_50d_probe` is a disabled `stress`
 target because it builds a real 50-digit factor base and runs the production
 sieve. Run it only through `./scripts/test.sh probe-50d-structured-ooc`, which
-supplies a hard special-Q cap and an isolated artifact directory.
+supplies a hard special-Q cap, a bounded outer-worker configuration, a local
+sieve compute-lane budget, and an isolated artifact directory. The companion
+`probe-50d-special-q-workers` mode runs outer-worker settings 1, 2, and 4 in
+fresh processes under one fixed compute-lane budget. Both modes treat timing
+and RSS as measurements, not CI assertions.
+
+`test_local_sieve_thread_budget` is the `instant` contract for balanced lane
+allocation, invalid limits, and a bounded property grid. The 64-special-Q probe
+remains a manual measurement and does not enter routine CI.
 
 `test_structured_ooc_scale --rss-case <rows> <workers>` is a manual measurement
 mode, not a CTest performance assertion. Each invocation runs one scenario in a

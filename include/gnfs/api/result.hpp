@@ -48,6 +48,9 @@ struct FactorStats {
     size_t special_q_batch_peak_workers = 0;
     size_t special_q_batch_count = 0;
     size_t special_q_batch_peak_size = 0;
+    size_t local_sieve_thread_budget = 0;
+    size_t special_q_batch_peak_assigned_threads = 0;
+    size_t special_q_worker_peak_sieve_threads = 0;
     size_t candidates_total = 0;
     size_t relations_found = 0;
     size_t full_relations = 0;
@@ -146,6 +149,11 @@ struct FactorResult {
            << ",\n";
         os << "    \"special_q_batch_count\": " << stats.special_q_batch_count << ",\n";
         os << "    \"special_q_batch_peak_size\": " << stats.special_q_batch_peak_size << ",\n";
+        os << "    \"local_sieve_thread_budget\": " << stats.local_sieve_thread_budget << ",\n";
+        os << "    \"special_q_batch_peak_assigned_threads\": "
+           << stats.special_q_batch_peak_assigned_threads << ",\n";
+        os << "    \"special_q_worker_peak_sieve_threads\": "
+           << stats.special_q_worker_peak_sieve_threads << ",\n";
         os << "    \"candidates_total\": " << stats.candidates_total << ",\n";
         os << "    \"relations_found\": " << stats.relations_found << ",\n";
         os << "    \"full_relations\": " << stats.full_relations << ",\n";
@@ -232,6 +240,11 @@ struct FactorResult {
         os << "  Special-Q batch peak workers: " << stats.special_q_batch_peak_workers << "\n";
         os << "  Special-Q batches: " << stats.special_q_batch_count << "\n";
         os << "  Special-Q peak batch size: " << stats.special_q_batch_peak_size << "\n";
+        os << "  Local sieve compute-lane budget: " << stats.local_sieve_thread_budget << "\n";
+        os << "  Special-Q batch peak assigned lanes: "
+           << stats.special_q_batch_peak_assigned_threads << "\n";
+        os << "  Special-Q worker peak sieve lanes: " << stats.special_q_worker_peak_sieve_threads
+           << "\n";
         os << "  Candidates tested: " << stats.candidates_total << "\n";
         os << "  Relations found: " << stats.relations_found << "\n";
         os << "    Full: " << stats.full_relations << "\n";

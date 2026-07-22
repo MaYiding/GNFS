@@ -338,6 +338,7 @@ void test_run_identity_mutations_change_fingerprint() {
 
     RunIdentityFixture scheduling_only;
     scheduling_only.params.max_special_q_batch_workers = 1;
+    scheduling_only.params.max_local_sieve_threads = 1;
     CHECK(identity_from(scheduling_only) == baseline);
 }
 
