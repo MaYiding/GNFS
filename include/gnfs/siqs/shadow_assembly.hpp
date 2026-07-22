@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -118,6 +119,8 @@ enum class SIQSShadowAssemblyStatus : uint8_t {
     graph_failure,
     worker_failure,
     internal_invariant_failure,
+    resource_exhausted,
+    exception_failure,
 };
 
 namespace shadow_assembly_detail {
@@ -653,8 +656,12 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
         partial_corpus =
             prepare_two_large_prime_corpus(raw_relations, factor_base_primes.size(),
                                            large_prime_bound, std::forward<Splitter>(splitter));
+    } catch (const std::bad_alloc&) {
+        return SIQSShadowAssemblyResultFactory::failure(
+            SIQSShadowAssemblyStatus::resource_exhausted);
     } catch (...) {
-        return SIQSShadowAssemblyResultFactory::failure(SIQSShadowAssemblyStatus::adapter_failure);
+        return SIQSShadowAssemblyResultFactory::failure(
+            SIQSShadowAssemblyStatus::exception_failure);
     }
     if (!partial_corpus) {
         return SIQSShadowAssemblyResultFactory::failure(SIQSShadowAssemblyStatus::adapter_failure);
@@ -735,7 +742,8 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
     stats.graph_cycles = basis->cycles.size();
 
     std::vector<CycleSlot> cycle_slots(basis->cycles.size());
-    std::atomic<bool> worker_failed{false};
+    std::atomic<bool> worker_resource_exhausted{false};
+    std::atomic<bool> worker_exception{false};
     std::atomic<bool> internal_failure{false};
     const auto materialize_worker = [&](size_t begin_cycle, size_t end_cycle) noexcept {
         try {
@@ -781,8 +789,10 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
                 }
                 slot.row = SIQSShadowRow{SIQSShadowRowOrigin::large_prime_cycle, *converted.row()};
             }
+        } catch (const std::bad_alloc&) {
+            worker_resource_exhausted.store(true, std::memory_order_relaxed);
         } catch (...) {
-            worker_failed.store(true, std::memory_order_relaxed);
+            worker_exception.store(true, std::memory_order_relaxed);
         }
     };
 
@@ -800,13 +810,21 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
                     cycles_per_worker + (i < extra_cycles ? size_t{1} : size_t{0});
                 workers.emplace_back(materialize_worker, begin_cycle, begin_cycle + cycle_count);
             }
+        } catch (const std::bad_alloc&) {
+            return SIQSShadowAssemblyResultFactory::failure(
+                SIQSShadowAssemblyStatus::resource_exhausted);
         } catch (...) {
             return SIQSShadowAssemblyResultFactory::failure(
-                SIQSShadowAssemblyStatus::worker_failure);
+                SIQSShadowAssemblyStatus::exception_failure);
         }
     }
-    if (worker_failed.load(std::memory_order_relaxed)) {
-        return SIQSShadowAssemblyResultFactory::failure(SIQSShadowAssemblyStatus::worker_failure);
+    if (worker_resource_exhausted.load(std::memory_order_relaxed)) {
+        return SIQSShadowAssemblyResultFactory::failure(
+            SIQSShadowAssemblyStatus::resource_exhausted);
+    }
+    if (worker_exception.load(std::memory_order_relaxed)) {
+        return SIQSShadowAssemblyResultFactory::failure(
+            SIQSShadowAssemblyStatus::exception_failure);
     }
     if (internal_failure.load(std::memory_order_relaxed)) {
         return SIQSShadowAssemblyResultFactory::failure(

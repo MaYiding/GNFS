@@ -9,6 +9,20 @@ deterministic dense solver in
 two-large-prime (2LP) yield or authorize connecting the shadow path to
 `factor()`.
 
+`include/gnfs/siqs/shadow_proof_runner.hpp` adds a production-facing but still
+unwired read-only facade. Its default admission envelope is 32768 raw
+relations, 64MiB of portable logical payload, 16384 graph edges, 4096 cycles,
+262144 total cycle incidences, 4096 row candidates, and 4096 pretrim rows. The
+facade also preserves the solver's independent dense byte and variable limits.
+All limits are inclusive; the next object returns a typed fallback instead of
+allocating beyond the admitted envelope.
+
+The facade keeps the caller's raw relations intact so a later integration can
+fall back to the current merge and solver. Consequently, its production peak
+will include raw storage, owning assembly rows, and the packed matrix at the
+same time. The 256-A proof executable releases raw storage before solving, so
+its measured peak is correctness evidence, not a production RSS projection.
+
 The immediate safety decision is:
 
 1. Validate shared modulus and factor-base context once per solve.
@@ -256,5 +270,9 @@ Before promotion it must provide:
   selected rows. It therefore provides live cycle-density evidence without
   freezing the parallel threshold or satisfying the production row-excess
   gate.
+- [x] Bounded 256-A, 50-digit assembly with 1701 selected rows and a frozen
+  proof-gated factor result across one, two, and four workers.
+- [x] Read-only typed proof facade with relation, payload, graph, row, matrix,
+  dependency, and factor boundaries; not yet called by `factor()`.
 - [ ] Controlled collector and `factor()` integration with the default 1LP path
   unchanged.

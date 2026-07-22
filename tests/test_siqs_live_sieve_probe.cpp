@@ -740,6 +740,10 @@ void run_capture_slot(const SIQSPoly& polynomial, const Integer& sieved_modulus,
         return "worker_failure";
     case SIQSShadowAssemblyStatus::internal_invariant_failure:
         return "internal_invariant_failure";
+    case SIQSShadowAssemblyStatus::resource_exhausted:
+        return "resource_exhausted";
+    case SIQSShadowAssemblyStatus::exception_failure:
+        return "exception_failure";
     }
     return "unknown";
 }

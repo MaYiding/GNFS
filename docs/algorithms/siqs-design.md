@@ -69,6 +69,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `assemble_siqs_shadow_rows` | `shadow_assembly.hpp` | Deterministic source-ID layout, parallel cycle assembly, exact deduplication, and stable trim |
 | `solve_siqs_shadow_matrix` | `shadow_matrix.hpp` | Direct sparse-wide row admission and deterministic packed GF(2) solving with lazy persistent elimination workers |
 | `verify_siqs_post_merge_dependency` / `extract_siqs_post_merge_factor` | `post_merge_dependency.hpp` | Proof-gated dependency reconstruction and canonical non-trivial factor extraction |
+| `run_siqs_shadow_proof` | `shadow_proof_runner.hpp` | Read-only, resource-bounded orchestration from raw relations through verified factor evidence |
 | `are_congruent_squares` | `congruence.hpp` | Final `X² == Y² (mod kN)` gate before GCD |
 | `dense_gauss_left_nullspace` | `siqs.hpp` ~line 1130 | Word-packed dense GF(2) Gaussian elimination |
 | `solve_matrix` | `siqs.hpp` ~line 1231 | Dense path ≤100K cols, otherwise `linalg::BlockLanczos` |
@@ -108,20 +109,30 @@ capture controller with checked relation and logical-payload limits. Its
 reserve/append/commit transaction runs before dense exponent allocation and is
 absent from the production null-controller path. Exact split normalization,
 deterministic cycle selection, wide checked cycle materialization, a stable
-raw-partial adapter with typed rejection reasons,
-canonical sparse post-merge rows, deterministic parallel shadow assembly, and
-an exact wide-row matrix, dependency, and extraction chain are available as
-isolated, tested boundaries. A fixed constructed corpus now exercises the full
-chain at the live 50-, 70-, and 90-digit factor-base column counts with stable
-fingerprints and dependencies across one, two, and four workers. The corpus is
-arithmetic-valid but does not model live sieve yield. The final square gate
-also protects the current extraction path, but staged 2LP rows are not yet
-connected to the production collector or `factor()` path. Re-enabling still
-requires useful live cycles and proof-gated extraction evidence. The bounded
-fixed-plan probe now covers the live 50-, 70-, and 90-digit parameter bands
-with actual one-, two-, and four-worker runs, frozen plan and per-slot digests,
-and typed conservation checks. Its first corpus produced no large-prime graph
-cycles, so it is distribution evidence rather than a promotion result.
+raw-partial adapter with typed rejection reasons, canonical sparse post-merge
+rows, deterministic parallel shadow assembly, and an exact wide-row matrix,
+dependency, and extraction chain are available as isolated, tested boundaries.
+`run_siqs_shadow_proof` composes those boundaries behind a const raw-relation
+span and inclusive relation, payload, graph, row, and dense-matrix limits. It
+returns only typed scalar evidence and an optional verified factor pair; it
+does not retain the raw corpus, graph, rows, or dependencies.
+
+The facade deliberately remains outside `factor()`. A future observe-only call
+belongs after all sieve workers join and before `merge_partials` mutates the raw
+relations. Until that wiring exists, production still runs the legacy path
+alone. The facade performs a bounded graph preflight before assembly; assembly
+currently rebuilds the adapter and graph, so the first integration must measure
+the peak with raw relations and shadow rows alive together. It must not reuse
+the lower peak from the Release-only proof runner, which releases raw storage
+before solving.
+
+A fixed constructed corpus exercises the full chain at the live 50-, 70-, and
+90-digit factor-base column counts with stable fingerprints and dependencies
+across one, two, and four workers. A separate bounded 256-A, 50-digit profile
+now reaches 1701 selected rows and recovers the frozen factor pair through the
+proof gate across the same worker counts. These results establish deterministic
+factor evidence, but they do not yet authorize production routing or 2LP
+collection.
 
 ## Two-Large-Prime Re-enablement Plan
 
@@ -160,10 +171,12 @@ The safe migration order is:
    dependencies deterministically across worker counts, revalidate every row,
    reconstruct each square pair, and admit GCD only through the final
    congruence proof.
-8. Keep production 2LP off until fixed 50-90 digit corpora show valid
-   congruences, useful cycles, stable fingerprints and dependencies across
-   worker counts, then confirm those contracts on bounded live-sieve captures
-   without regressing the default 1LP path.
+8. Run the bounded read-only proof facade at the post-join, pre-merge seam in
+   observe mode. Always continue through the legacy path and measure the peak
+   while both raw and shadow state are live.
+9. Permit a proof-gated early return only after observe evidence is stable and
+   the verified factor pair multiplies exactly to the original input. Keep
+   production 2LP collection as a later, independently bounded change.
 
 The arithmetic oracle must include a single-edge `p^2` cycle, three or more
 parallel edges, a vertex of degree four, and a cycle whose factor-base exponent
@@ -190,13 +203,12 @@ SIQS's `L_N(1/2, 1)`.
 ## Known Limitations
 
 - **2LP cofactor handling is gated off** (`lp_bound_sq = 0`); normalization,
-  stable shadow-corpus preparation, cycle selection, materialization, and
-  sparse-wide row conversion, deterministic parallel assembly, packed shadow
-  solving, proof-gated factor extraction, and constructed 50-, 70-, and 90-digit
-  cross-size evidence are staged. A transactional bounded capture primitive and
-  Release-only fixed-plan live runner are present. The current live sample has
-  zero graph cycles; replayable persistent artifacts, useful live-cycle
-  evidence, runtime collection, and production integration remain prerequisites.
+  stable shadow-corpus preparation, cycle selection, materialization,
+  sparse-wide row conversion, deterministic parallel assembly, packed solving,
+  proof-gated factor extraction, a bounded read-only facade, and cross-size
+  evidence are staged. The 256-A Release-only profile supplies live 50-digit
+  factor evidence. Observe-mode production wiring, overlapping-state RSS
+  measurements, and a separately bounded 2LP collector remain prerequisites.
   See [SIQS Live-Sieve Capture Contract](../perf/siqs-live-sieve-capture.md)
 - **The wide sparse shadow backend is not implemented**; the dense solver
   admits at most 100000 row variables and 256MiB of packed matrix payload,

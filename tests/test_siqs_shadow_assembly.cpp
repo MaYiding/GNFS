@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <new>
 #include <optional>
 #include <span>
 #include <utility>
@@ -398,7 +399,14 @@ void test_invalid_configuration_and_result_moves() {
         std::span<const SIQSRelation>(corpus.data(), corpus.size()),
         std::span<const uint32_t>(factor_base_primes.data(), factor_base_primes.size()),
         relation_modulus, 41, options, [](uint64_t) -> std::pair<uint64_t, uint64_t> { throw 7; });
-    check_result(throwing_splitter, SIQSShadowAssemblyStatus::adapter_failure);
+    check_result(throwing_splitter, SIQSShadowAssemblyStatus::exception_failure);
+
+    const auto exhausted_splitter = assemble_siqs_shadow_rows(
+        std::span<const SIQSRelation>(corpus.data(), corpus.size()),
+        std::span<const uint32_t>(factor_base_primes.data(), factor_base_primes.size()),
+        relation_modulus, 41, options,
+        [](uint64_t) -> std::pair<uint64_t, uint64_t> { throw std::bad_alloc(); });
+    check_result(exhausted_splitter, SIQSShadowAssemblyStatus::resource_exhausted);
 
     auto valid = assemble(corpus);
     check_result(valid, SIQSShadowAssemblyStatus::valid);
