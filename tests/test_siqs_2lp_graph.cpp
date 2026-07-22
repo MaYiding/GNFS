@@ -19,6 +19,9 @@ namespace {
 
 using gnfs::siqs::build_two_large_prime_cycle_basis;
 using gnfs::siqs::TwoLargePrimeCycleBasis;
+using gnfs::siqs::TwoLargePrimeCycleBasisLimits;
+using gnfs::siqs::TwoLargePrimeCycleBasisResult;
+using gnfs::siqs::TwoLargePrimeCycleBasisStatus;
 using gnfs::siqs::TwoLargePrimeEdge;
 
 int checks_passed = 0;
@@ -171,9 +174,14 @@ void check_cycle_invariants(const std::vector<TwoLargePrimeEdge>& edges,
         edge_by_relation.emplace(edge.relation_index, &edge);
     }
 
+    size_t total_cycle_incidences = 0;
+    size_t max_cycle_length = 0;
     for (const auto& cycle : basis.cycles) {
         CHECK(!cycle.empty());
         CHECK(std::is_sorted(cycle.begin(), cycle.end()));
+        CHECK(cycle.size() <= std::numeric_limits<size_t>::max() - total_cycle_incidences);
+        total_cycle_incidences += cycle.size();
+        max_cycle_length = std::max(max_cycle_length, cycle.size());
 
         std::unordered_set<size_t> unique_relations;
         std::unordered_map<uint64_t, size_t> degree;
@@ -194,7 +202,51 @@ void check_cycle_invariants(const std::vector<TwoLargePrimeEdge>& edges,
         }
     }
 
+    CHECK(basis.total_cycle_incidences == total_cycle_incidences);
+    CHECK(basis.max_cycle_length == max_cycle_length);
+    CHECK((basis.cycles.empty() && basis.total_cycle_incidences == 0 &&
+           basis.max_cycle_length == 0) ||
+          (!basis.cycles.empty() && basis.max_cycle_length > 0 &&
+           basis.max_cycle_length <= basis.total_cycle_incidences));
     CHECK(gf2_rank(basis.cycles, edges) == basis.cycles.size());
+}
+
+[[nodiscard]] constexpr TwoLargePrimeCycleBasisLimits unlimited_limits() noexcept {
+    return {
+        std::numeric_limits<size_t>::max(),
+        std::numeric_limits<size_t>::max(),
+        std::numeric_limits<size_t>::max(),
+    };
+}
+
+void check_typed_status(const std::vector<TwoLargePrimeEdge>& edges,
+                        const TwoLargePrimeCycleBasisLimits& limits,
+                        TwoLargePrimeCycleBasisStatus expected_status) {
+    const auto result = build_two_large_prime_cycle_basis(
+        std::span<const TwoLargePrimeEdge>(edges.data(), edges.size()), limits);
+    CHECK(result.status() == expected_status);
+    CHECK(result.is_valid() == (expected_status == TwoLargePrimeCycleBasisStatus::valid));
+    CHECK(result.basis().has_value() == (expected_status == TwoLargePrimeCycleBasisStatus::valid));
+    if (result.basis()) {
+        check_cycle_invariants(edges, *result.basis());
+    }
+}
+
+void check_result_state(const TwoLargePrimeCycleBasisResult& result,
+                        TwoLargePrimeCycleBasisStatus expected_status) {
+    CHECK(result.status() == expected_status);
+    CHECK(result.is_valid() == (expected_status == TwoLargePrimeCycleBasisStatus::valid));
+    CHECK(result.basis().has_value() == (expected_status == TwoLargePrimeCycleBasisStatus::valid));
+}
+
+template <class Result> void self_copy_assign(Result& result) {
+    const Result* alias = &result;
+    result = *alias;
+}
+
+template <class Result> void self_move_assign(Result& result) {
+    Result* alias = &result;
+    result = std::move(*alias);
 }
 
 [[nodiscard]] std::optional<TwoLargePrimeCycleBasis> build_checked(
@@ -221,10 +273,10 @@ void check_expected(const TwoLargePrimeCycleBasis& basis,
 
 [[nodiscard]] bool same_basis(const TwoLargePrimeCycleBasis& lhs,
                               const TwoLargePrimeCycleBasis& rhs) {
-    return lhs.vertex_count == rhs.vertex_count &&
-           lhs.edge_count == rhs.edge_count &&
+    return lhs.vertex_count == rhs.vertex_count && lhs.edge_count == rhs.edge_count &&
            lhs.component_count == rhs.component_count &&
-           lhs.cycles == rhs.cycles;
+           lhs.total_cycle_incidences == rhs.total_cycle_incidences &&
+           lhs.max_cycle_length == rhs.max_cycle_length && lhs.cycles == rhs.cycles;
 }
 
 void test_empty_graph_and_tree() {
@@ -357,6 +409,186 @@ void test_input_order_and_endpoint_direction_are_irrelevant() {
         CHECK(same_basis(*baseline, *reversed));
         CHECK(same_basis(*baseline, *repeated));
     }
+
+    constexpr TwoLargePrimeCycleBasisLimits exact_limits{5, 2, 7};
+    const auto typed_baseline = build_two_large_prime_cycle_basis(
+        std::span<const TwoLargePrimeEdge>(edges.data(), edges.size()), exact_limits);
+    const auto typed_reversed = build_two_large_prime_cycle_basis(
+        std::span<const TwoLargePrimeEdge>(reordered.data(), reordered.size()), exact_limits);
+    CHECK(typed_baseline.status() == typed_reversed.status());
+    CHECK(typed_baseline.is_valid() && typed_reversed.is_valid());
+    if (typed_baseline.basis() && typed_reversed.basis()) {
+        CHECK(same_basis(*typed_baseline.basis(), *typed_reversed.basis()));
+    }
+
+    constexpr TwoLargePrimeCycleBasisLimits incidence_short{5, 2, 6};
+    const auto limited_baseline = build_two_large_prime_cycle_basis(
+        std::span<const TwoLargePrimeEdge>(edges.data(), edges.size()), incidence_short);
+    const auto limited_reversed = build_two_large_prime_cycle_basis(
+        std::span<const TwoLargePrimeEdge>(reordered.data(), reordered.size()), incidence_short);
+    CHECK(limited_baseline.status() == TwoLargePrimeCycleBasisStatus::incidence_limit);
+    CHECK(limited_reversed.status() == limited_baseline.status());
+    CHECK(!limited_baseline.basis().has_value());
+    CHECK(!limited_reversed.basis().has_value());
+}
+
+void test_exact_and_one_over_limits() {
+    const std::vector<TwoLargePrimeEdge> edges{
+        {101, 103, 10},
+        {103, 107, 11},
+        {107, 101, 12},
+        {109, 109, 13},
+    };
+    constexpr TwoLargePrimeCycleBasisLimits exact{4, 2, 4};
+    const auto exact_result = build_two_large_prime_cycle_basis(
+        std::span<const TwoLargePrimeEdge>(edges.data(), edges.size()), exact);
+    CHECK(exact_result.status() == TwoLargePrimeCycleBasisStatus::valid);
+    CHECK(exact_result.is_valid());
+    CHECK(exact_result.basis().has_value());
+    if (exact_result.basis()) {
+        check_cycle_invariants(edges, *exact_result.basis());
+        CHECK(exact_result.basis()->cycles.size() == exact.max_cycles);
+        CHECK(exact_result.basis()->total_cycle_incidences == exact.max_cycle_incidences);
+        CHECK(exact_result.basis()->max_cycle_length == 3);
+    }
+
+    check_typed_status(edges, {3, 2, 4}, TwoLargePrimeCycleBasisStatus::edge_limit);
+    check_typed_status(edges, {4, 1, 4}, TwoLargePrimeCycleBasisStatus::cycle_limit);
+    check_typed_status(edges, {4, 2, 3}, TwoLargePrimeCycleBasisStatus::incidence_limit);
+}
+
+void test_zero_limits() {
+    const std::vector<TwoLargePrimeEdge> empty;
+    const auto empty_result = build_two_large_prime_cycle_basis(
+        std::span<const TwoLargePrimeEdge>(empty.data(), empty.size()), {0, 0, 0});
+    CHECK(empty_result.status() == TwoLargePrimeCycleBasisStatus::valid);
+    CHECK(empty_result.is_valid());
+    CHECK(empty_result.basis().has_value());
+    if (empty_result.basis()) {
+        check_cycle_invariants(empty, *empty_result.basis());
+        check_expected(*empty_result.basis(), 0, 0, 0, {});
+    }
+
+    const std::vector<TwoLargePrimeEdge> tree{
+        {0, 101, 20},
+        {101, 103, 21},
+        {103, 107, 22},
+    };
+    check_typed_status(tree, {3, 0, 0}, TwoLargePrimeCycleBasisStatus::valid);
+    check_typed_status(tree, {0, 0, 0}, TwoLargePrimeCycleBasisStatus::edge_limit);
+
+    const std::vector<TwoLargePrimeEdge> triangle{
+        {101, 103, 30},
+        {103, 107, 31},
+        {107, 101, 32},
+    };
+    check_typed_status(triangle, {3, 0, 0}, TwoLargePrimeCycleBasisStatus::cycle_limit);
+    check_typed_status(triangle, {3, 1, 0}, TwoLargePrimeCycleBasisStatus::incidence_limit);
+}
+
+void test_bounded_status_precedence() {
+    const std::vector<TwoLargePrimeEdge> oversized_invalid{
+        {0, 0, 40},
+        {101, 103, 40},
+    };
+    check_typed_status(oversized_invalid, {1, 0, 0}, TwoLargePrimeCycleBasisStatus::edge_limit);
+    check_typed_status(oversized_invalid, {2, 0, 0}, TwoLargePrimeCycleBasisStatus::invalid_edge);
+
+    auto reordered_invalid = oversized_invalid;
+    std::reverse(reordered_invalid.begin(), reordered_invalid.end());
+    for (auto& edge : reordered_invalid) {
+        std::swap(edge.p, edge.q);
+    }
+    check_typed_status(reordered_invalid, {2, 0, 0}, TwoLargePrimeCycleBasisStatus::invalid_edge);
+
+    const std::vector<TwoLargePrimeEdge> duplicate_relation_index{
+        {0, 101, 50},
+        {101, 103, 50},
+    };
+    check_typed_status(duplicate_relation_index, {2, 0, 0},
+                       TwoLargePrimeCycleBasisStatus::duplicate_relation_index);
+
+    const std::vector<TwoLargePrimeEdge> valid_triangle{
+        {101, 103, 60},
+        {103, 107, 61},
+        {107, 101, 62},
+    };
+    check_typed_status(valid_triangle, {3, 0, 0}, TwoLargePrimeCycleBasisStatus::cycle_limit);
+    check_typed_status(valid_triangle, {3, 1, 2}, TwoLargePrimeCycleBasisStatus::incidence_limit);
+
+    const std::vector<TwoLargePrimeEdge> self_loops{
+        {101, 101, 70},
+        {103, 103, 71},
+        {107, 107, 72},
+    };
+    check_typed_status(self_loops, {3, 2, 0}, TwoLargePrimeCycleBasisStatus::cycle_limit);
+    // Every self-loop contributes one cycle incidence. Since cycle_count alone
+    // exceeds the incidence budget, this must fail before allocating cycle vectors.
+    check_typed_status(self_loops, {3, 3, 2}, TwoLargePrimeCycleBasisStatus::incidence_limit);
+}
+
+void test_unlimited_typed_and_legacy_parity() {
+    const std::vector<TwoLargePrimeEdge> edges{
+        {0, 101, 70},
+        {101, 103, 71},
+        {103, 0, 72},
+        {107, 107, 73},
+    };
+    const auto legacy = build_two_large_prime_cycle_basis(
+        std::span<const TwoLargePrimeEdge>(edges.data(), edges.size()));
+    const auto typed = build_two_large_prime_cycle_basis(
+        std::span<const TwoLargePrimeEdge>(edges.data(), edges.size()), unlimited_limits());
+    CHECK(legacy.has_value());
+    CHECK(typed.status() == TwoLargePrimeCycleBasisStatus::valid);
+    CHECK(typed.is_valid());
+    CHECK(typed.basis().has_value());
+    if (legacy && typed.basis()) {
+        CHECK(same_basis(*legacy, *typed.basis()));
+    }
+}
+
+void test_typed_result_value_semantics() {
+    const std::vector<TwoLargePrimeEdge> edges{
+        {101, 103, 80},
+        {103, 107, 81},
+        {107, 101, 82},
+    };
+    const auto edge_span = std::span<const TwoLargePrimeEdge>(edges.data(), edges.size());
+    auto valid = build_two_large_prime_cycle_basis(edge_span, {3, 1, 3});
+    auto failure = build_two_large_prime_cycle_basis(edge_span, {2, 1, 3});
+    check_result_state(valid, TwoLargePrimeCycleBasisStatus::valid);
+    check_result_state(failure, TwoLargePrimeCycleBasisStatus::edge_limit);
+
+    TwoLargePrimeCycleBasisResult copied_valid(valid);
+    TwoLargePrimeCycleBasisResult copied_failure(failure);
+    check_result_state(copied_valid, TwoLargePrimeCycleBasisStatus::valid);
+    check_result_state(copied_failure, TwoLargePrimeCycleBasisStatus::edge_limit);
+    if (valid.basis() && copied_valid.basis()) {
+        CHECK(same_basis(*valid.basis(), *copied_valid.basis()));
+    }
+    copied_failure = valid;
+    copied_valid = failure;
+    check_result_state(copied_failure, TwoLargePrimeCycleBasisStatus::valid);
+    check_result_state(copied_valid, TwoLargePrimeCycleBasisStatus::edge_limit);
+    self_copy_assign(copied_failure);
+    self_copy_assign(copied_valid);
+    check_result_state(copied_failure, TwoLargePrimeCycleBasisStatus::valid);
+    check_result_state(copied_valid, TwoLargePrimeCycleBasisStatus::edge_limit);
+
+    TwoLargePrimeCycleBasisResult moved_valid(std::move(valid));
+    TwoLargePrimeCycleBasisResult moved_failure(std::move(failure));
+    check_result_state(moved_valid, TwoLargePrimeCycleBasisStatus::valid);
+    check_result_state(moved_failure, TwoLargePrimeCycleBasisStatus::edge_limit);
+    check_result_state(valid, TwoLargePrimeCycleBasisStatus::internal_invariant_failure);
+    check_result_state(failure, TwoLargePrimeCycleBasisStatus::internal_invariant_failure);
+
+    copied_valid = std::move(moved_valid);
+    check_result_state(copied_valid, TwoLargePrimeCycleBasisStatus::valid);
+    check_result_state(moved_valid, TwoLargePrimeCycleBasisStatus::internal_invariant_failure);
+    self_move_assign(copied_valid);
+    self_move_assign(moved_failure);
+    check_result_state(copied_valid, TwoLargePrimeCycleBasisStatus::valid);
+    check_result_state(moved_failure, TwoLargePrimeCycleBasisStatus::edge_limit);
 }
 
 void test_full_size_t_relation_id_domain() {
@@ -413,10 +645,23 @@ void test_small_multigraph_exhaustive_oracle() {
         }
         const auto reordered_basis = build_two_large_prime_cycle_basis(
             std::span<const TwoLargePrimeEdge>(reordered.data(), reordered.size()));
+        const auto typed_basis = build_two_large_prime_cycle_basis(
+            std::span<const TwoLargePrimeEdge>(edges.data(), edges.size()), unlimited_limits());
+        const auto typed_reordered_basis = build_two_large_prime_cycle_basis(
+            std::span<const TwoLargePrimeEdge>(reordered.data(), reordered.size()),
+            unlimited_limits());
 
         CHECK(basis.has_value() == reordered_basis.has_value());
+        CHECK(typed_basis.status() == TwoLargePrimeCycleBasisStatus::valid);
+        CHECK(typed_reordered_basis.status() == typed_basis.status());
+        CHECK(typed_basis.basis().has_value() == basis.has_value());
+        CHECK(typed_reordered_basis.basis().has_value() == reordered_basis.has_value());
         if (basis && reordered_basis) {
             CHECK(same_basis(*basis, *reordered_basis));
+        }
+        if (basis && typed_basis.basis() && typed_reordered_basis.basis()) {
+            CHECK(same_basis(*basis, *typed_basis.basis()));
+            CHECK(same_basis(*basis, *typed_reordered_basis.basis()));
         }
     }
 }
@@ -457,6 +702,11 @@ int main() {
     test_triangle_and_mixed_one_lp_cycle();
     test_disconnected_components_and_cycle_rank();
     test_input_order_and_endpoint_direction_are_irrelevant();
+    test_exact_and_one_over_limits();
+    test_zero_limits();
+    test_bounded_status_precedence();
+    test_unlimited_typed_and_legacy_parity();
+    test_typed_result_value_semantics();
     test_full_size_t_relation_id_domain();
     test_small_multigraph_exhaustive_oracle();
     test_invalid_inputs_fail_closed();
