@@ -1,112 +1,219 @@
-// test_squfof.cpp — SQUFOF factorization correctness tests
+// test_squfof.cpp — deterministic SQUFOF factorization regression tests
 
 #include <gnfs/cofactor/squfof.hpp>
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <iostream>
-#include <vector>
+#include <limits>
 
 using gnfs::cofactor::SQUFOF;
 
-static int tests_passed = 0;
-static int tests_failed = 0;
+namespace {
+
+int tests_passed = 0;
+int tests_failed = 0;
 
 #define TEST_ASSERT(cond, msg) do { \
     if (!(cond)) { \
         std::cerr << "FAIL: " << msg << " (line " << __LINE__ << ")\n"; \
-        tests_failed++; \
+        ++tests_failed; \
         return; \
     } \
-} while(0)
+} while (0)
 
 #define TEST_PASS(name) do { \
     std::cout << "  PASS: " << name << "\n"; \
-    tests_passed++; \
-} while(0)
+    ++tests_passed; \
+} while (0)
 
-void test_small_semiprimes() {
-    // p × q pairs
-    struct Case { uint64_t n; uint64_t p; uint64_t q; };
-    std::vector<Case> cases = {
-        {15, 3, 5},
-        {77, 7, 11},
-        {143, 11, 13},
-        {323, 17, 19},
-        {9991, 97, 103},
-        {96091, 307, 313},
-        {100160063, 10007, 10009},
+// Deliberately independent of SQUFOF: bounded trial division is the reference
+// oracle for the small exhaustive corpus and for the fixed semiprime metadata.
+uint64_t smallest_factor_by_trial_division(uint64_t n) {
+    if (n < 2) return 0;
+    if ((n & 1) == 0) return 2;
+    for (uint64_t divisor = 3; divisor <= n / divisor; divisor += 2) {
+        if (n % divisor == 0) return divisor;
+    }
+    return n;
+}
+
+bool is_prime_by_trial_division(uint64_t n) {
+    return n >= 2 && smallest_factor_by_trial_division(n) == n;
+}
+
+bool is_proper_factor(uint64_t n, uint64_t factor) {
+    return factor > 1 && factor < n && n % factor == 0;
+}
+
+void test_api_boundaries() {
+    TEST_ASSERT(SQUFOF::factor(0) == 1, "factor(0) must report failure");
+    TEST_ASSERT(SQUFOF::factor(1) == 1, "factor(1) must report failure");
+    TEST_ASSERT(SQUFOF::factor(2) == 2, "factor(2) must return 2");
+    TEST_ASSERT(SQUFOF::factor(UINT64_C(1) << 62) == 2,
+                "the supported-range upper boundary must take the even fast path");
+    TEST_ASSERT(SQUFOF::factor((UINT64_C(1) << 62) - 1, 1) == 1,
+                "near-uint64 discriminant must preserve the bounded failure path");
+
+    TEST_PASS("API boundaries");
+}
+
+void test_exhaustive_small_composites() {
+    constexpr uint64_t upper_bound = 4095;
+    size_t checked = 0;
+
+    for (uint64_t n = 4; n <= upper_bound; ++n) {
+        const uint64_t reference_factor = smallest_factor_by_trial_division(n);
+        if (reference_factor == n) continue;
+
+        const uint64_t factor = SQUFOF::factor(n);
+        TEST_ASSERT(is_proper_factor(n, factor),
+                    "invalid factor " << factor << " for small composite " << n
+                    << " (oracle factor " << reference_factor << ")");
+        ++checked;
+    }
+
+    TEST_ASSERT(checked == 3530, "small-composite corpus unexpectedly changed");
+    TEST_PASS("exhaustive composites through 4095");
+}
+
+void test_fixed_semiprime_corpus() {
+    struct SemiprimeCase {
+        uint64_t p;
+        uint64_t q;
     };
 
-    for (const auto& tc : cases) {
-        uint64_t f = SQUFOF::factor(tc.n);
-        TEST_ASSERT(f != 1 && f != tc.n, "should find non-trivial factor");
-        TEST_ASSERT(tc.n % f == 0, "factor should divide n");
-        uint64_t other = tc.n / f;
-        // One of (f, other) should be (p, q) or (q, p)
-        bool match = (f == tc.p && other == tc.q) || (f == tc.q && other == tc.p);
-        if (!match) {
-            // Factor found but different factorization (shouldn't happen for semiprimes)
-            std::cerr << "  Note: " << tc.n << " = " << f << " × " << other
-                      << " (expected " << tc.p << " × " << tc.q << ")\n";
-        }
+    // Exact factor pairs span the tiny path through 60-bit cofactors. Close and
+    // skewed pairs exercise different continued-fraction periods.
+    constexpr std::array<SemiprimeCase, 12> cases{{
+        {3, 5},
+        {7, 11},
+        {11, 13},
+        {17, 19},
+        {97, 103},
+        {307, 313},
+        {1009, 1000003},
+        {10007, 10009},
+        {65537, 1000003},
+        {1000003, 1000033},
+        {10000019, 10000079},
+        {1000000007, 1000000009},
+    }};
+
+    for (const auto& test_case : cases) {
+        TEST_ASSERT(is_prime_by_trial_division(test_case.p),
+                    "invalid corpus metadata: p=" << test_case.p << " is not prime");
+        TEST_ASSERT(is_prime_by_trial_division(test_case.q),
+                    "invalid corpus metadata: q=" << test_case.q << " is not prime");
+        TEST_ASSERT(test_case.p <= std::numeric_limits<uint64_t>::max() / test_case.q,
+                    "semiprime corpus multiplication overflow");
+
+        const uint64_t n = test_case.p * test_case.q;
+        const uint64_t factor = SQUFOF::factor(n);
+        TEST_ASSERT(factor == test_case.p || factor == test_case.q,
+                    "unexpected factor " << factor << " for semiprime " << n
+                    << " = " << test_case.p << " * " << test_case.q);
+
+        const uint64_t repeated_factor = SQUFOF::factor(n);
+        TEST_ASSERT(repeated_factor == factor,
+                    "non-deterministic result for semiprime " << n << ": "
+                    << factor << " then " << repeated_factor);
     }
-    TEST_PASS("small semiprimes (7 cases)");
+
+    TEST_PASS("fixed semiprimes through 60 bits");
 }
 
-void test_medium_semiprimes() {
-    // 30-50 bit semiprimes (typical cofactor range)
-    struct Case { uint64_t n; };
-    std::vector<Case> cases = {
-        {UINT64_C(1000003) * 1000033},      // ~40 bit
-        {UINT64_C(10000019) * 10000079},     // ~47 bit
-        {UINT64_C(1000000007) * 1000000009}, // ~60 bit
-    };
+void test_prime_corpus() {
+    constexpr std::array<uint64_t, 9> primes{{
+        3,
+        5,
+        7,
+        11,
+        97,
+        65537,
+        1000003,
+        1000000007,
+        2147483647,
+    }};
 
-    for (const auto& tc : cases) {
-        uint64_t f = SQUFOF::factor(tc.n);
-        TEST_ASSERT(f != 1 && f != tc.n, "should find non-trivial factor");
-        TEST_ASSERT(tc.n % f == 0, "factor should divide n");
-        uint64_t other = tc.n / f;
-        // Both factors should be prime-ish
-        TEST_ASSERT(f > 1 && other > 1, "both factors should be > 1");
+    for (uint64_t prime : primes) {
+        TEST_ASSERT(is_prime_by_trial_division(prime),
+                    "invalid prime corpus metadata: " << prime);
+        TEST_ASSERT(SQUFOF::factor(prime) == 1,
+                    "prime " << prime << " must report failure");
     }
-    TEST_PASS("medium semiprimes (40-54 bit)");
+
+    TEST_PASS("prime failure corpus");
 }
 
-void test_edge_cases() {
-    // Primes should return 1 (failure)
-    TEST_ASSERT(SQUFOF::factor(7) == 1 || SQUFOF::factor(7) == 7, "prime should fail or return itself");
-    TEST_ASSERT(SQUFOF::factor(2) == 2, "factor(2) = 2");
-    TEST_ASSERT(SQUFOF::factor(4) != 1, "4 = 2×2 should factor");
+void test_perfect_squares_and_powers() {
+    constexpr std::array<uint64_t, 7> odd_roots{{
+        3,
+        5,
+        7,
+        11,
+        65537,
+        1000003,
+        2147483647,
+    }};
 
-    // Perfect square
-    uint64_t f = SQUFOF::factor(49);
-    TEST_ASSERT(f == 7, "49 should yield 7");
+    for (uint64_t root : odd_roots) {
+        TEST_ASSERT(root <= std::numeric_limits<uint64_t>::max() / root,
+                    "square corpus multiplication overflow");
+        const uint64_t square = root * root;
+        TEST_ASSERT(SQUFOF::factor(square) == root,
+                    "odd square " << square << " must return its exact root " << root);
+    }
 
-    TEST_PASS("edge cases (primes, small, perfect square)");
+    TEST_ASSERT(SQUFOF::factor(8) == 2, "8 = 2^3 must return 2");
+    const uint64_t factor_27 = SQUFOF::factor(27);
+    TEST_ASSERT(factor_27 == 3 || factor_27 == 9,
+                "27 = 3^3 must return 3 or 9");
+    TEST_ASSERT(SQUFOF::factor(625) == 25, "625 = 5^4 must return its square root");
+
+    TEST_PASS("perfect squares and prime powers");
 }
 
-void test_prime_powers() {
-    // p^k should factor to p
-    uint64_t f = SQUFOF::factor(8);  // 2^3
-    TEST_ASSERT(f == 2, "8 = 2^3 should yield 2");
+void test_iteration_budget_contract() {
+    constexpr std::array<uint64_t, 4> odd_non_squares{{
+        15,
+        77,
+        9991,
+        UINT64_C(1000003) * UINT64_C(1000033),
+    }};
 
-    f = SQUFOF::factor(27);  // 3^3
-    TEST_ASSERT(f == 3 || f == 9, "27 = 3^3 should yield 3 or 9");
+    // One forward iteration never reaches the even-step square check. These
+    // exact failures protect the public iteration cap during loop unrolling.
+    for (uint64_t n : odd_non_squares) {
+        TEST_ASSERT(SQUFOF::factor(n, 1) == 1,
+                    "one-iteration budget must fail for odd non-square " << n);
+        TEST_ASSERT(is_proper_factor(n, SQUFOF::factor(n)),
+                    "default budget must still factor regression input " << n);
+    }
 
-    f = SQUFOF::factor(121);  // 11^2
-    TEST_ASSERT(f == 11, "121 = 11^2 should yield 11");
+    // Preprocessing is intentionally outside the forward-iteration budget.
+    TEST_ASSERT(SQUFOF::factor(14, 1) == 2,
+                "even fast path must ignore the forward-iteration budget");
+    TEST_ASSERT(SQUFOF::factor(49, 1) == 7,
+                "square fast path must ignore the forward-iteration budget");
 
-    TEST_PASS("prime powers");
+    TEST_PASS("iteration-budget failure and preprocessing contract");
 }
+
+}  // namespace
 
 int main() {
     std::cout << "═══════════════════════════════════════════\n";
-    std::cout << "  SQUFOF Unit Tests\n";
+    std::cout << "  SQUFOF Deterministic Regression Tests\n";
     std::cout << "═══════════════════════════════════════════\n\n";
 
-    test_edge_cases();
-    test_small_semiprimes();
-    test_medium_semiprimes();
-    test_prime_powers();
+    test_api_boundaries();
+    test_exhaustive_small_composites();
+    test_fixed_semiprime_corpus();
+    test_prime_corpus();
+    test_perfect_squares_and_powers();
+    test_iteration_budget_contract();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";

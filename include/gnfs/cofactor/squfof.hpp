@@ -64,8 +64,11 @@ private:
     static uint64_t isqrt(uint64_t n) {
         if (n == 0) return 0;
         uint64_t x = static_cast<uint64_t>(std::sqrt(static_cast<double>(n)));
+        // double may round sqrt(UINT64_MAX - epsilon) to 2^32.  Clamp to
+        // floor(sqrt(UINT64_MAX)) before using multiplication for correction.
+        x = std::min<uint64_t>(x, UINT32_MAX);
         while (x > 0 && x * x > n) --x;
-        while ((x + 1) * (x + 1) <= n) ++x;
+        while (x < UINT32_MAX && (x + 1) * (x + 1) <= n) ++x;
         return x;
     }
 
