@@ -1987,6 +1987,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Siqs2LPCongruence COMMAND test_siqs_2lp_congruence)
     set_tests_properties(Siqs2LPCongruence PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_post_merge_row
+        tests/test_siqs_post_merge_row.cpp
+    )
+    target_link_libraries(test_siqs_post_merge_row PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsPostMergeRow COMMAND test_siqs_post_merge_row)
+    set_tests_properties(SiqsPostMergeRow PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # SIQS 端到端：100-bit + 180-bit 实测分解
     add_executable(test_siqs_e2e
         tests/test_siqs_e2e.cpp

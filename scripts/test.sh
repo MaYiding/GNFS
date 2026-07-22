@@ -352,6 +352,7 @@ ALL_TEST_BINARIES=(
     test_siqs_2lp_materializer
     test_siqs_2lp_adapter
     test_siqs_2lp_congruence
+    test_siqs_post_merge_row
     test_siqs_e2e
     test_trial_div_simd
     test_trial_wheel_bench
@@ -372,7 +373,7 @@ MODULE_TESTS=(
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_class_group test_couveignes_large_class_group test_couveignes_parallel"
     api            "test_i18n test_method_selection test_relation_reduction_engine"
-    siqs           "test_siqs test_siqs_2lp test_siqs_2lp_graph test_siqs_2lp_materializer test_siqs_2lp_adapter test_siqs_2lp_congruence"
+    siqs           "test_siqs test_siqs_2lp test_siqs_2lp_graph test_siqs_2lp_materializer test_siqs_2lp_adapter test_siqs_2lp_congruence test_siqs_post_merge_row"
 )
 
 # 模块 → 慢速测试映射 (slow+heavy, 可选运行)
@@ -481,6 +482,7 @@ SMOKE_TESTS=(
     test_siqs_2lp_materializer
     test_siqs_2lp_adapter
     test_siqs_2lp_congruence
+    test_siqs_post_merge_row
     test_clique_merger
     test_3lp_cofactor
     test_3lp_merge
@@ -741,6 +743,7 @@ TEST_TIMEOUT=(
     test_siqs_2lp_materializer 10
     test_siqs_2lp_adapter    10
     test_siqs_2lp_congruence 10
+    test_siqs_post_merge_row 10
 )
 
 # 测试速度分级 (用于 list 显示)
@@ -870,6 +873,7 @@ TEST_TIER=(
     test_siqs_2lp_materializer "instant"
     test_siqs_2lp_adapter    "instant"
     test_siqs_2lp_congruence "instant"
+    test_siqs_post_merge_row "instant"
     test_clique_merger       "instant"
     test_clique_merger_50d_synthetic "fast"
     test_3lp_cofactor        "instant"

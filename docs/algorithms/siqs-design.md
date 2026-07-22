@@ -64,6 +64,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `materialize_two_large_prime_cycle` | `two_large_prime_materializer.hpp` | Wide, checked cycle arithmetic and exact LP degree/2 accounting |
 | `prepare_two_large_prime_corpus` | `two_large_prime_adapter.hpp` | Fail-closed raw-partial validation, canonical deduplication, and stable relation IDs |
 | `check_materialized_two_large_prime_identity` | `two_large_prime_congruence.hpp` | Exact signed row identity before matrix admission |
+| `make_full_post_merge_row` / `make_cycle_post_merge_row` | `post_merge_row.hpp` | Canonical sparse-wide rows shared by full and cycle relations |
 | `are_congruent_squares` | `congruence.hpp` | Final `X² == Y² (mod kN)` gate before GCD |
 | `dense_gauss_left_nullspace` | `siqs.hpp` ~line 1130 | Word-packed dense GF(2) Gaussian elimination |
 | `solve_matrix` | `siqs.hpp` ~line 1231 | Dense path ≤100K cols, otherwise `linalg::BlockLanczos` |
@@ -99,11 +100,11 @@ The crucial knobs by digit band:
 Two-large-prime collection and the legacy greedy merge remain disabled by
 setting `lp_bound_sq = 0`. Exact split normalization, deterministic cycle
 selection, wide checked cycle materialization, a stable raw-partial adapter,
-and exact row/dependency congruence gates are available as isolated, tested
-boundaries. The final square gate also protects the current extraction path,
-but staged 2LP rows are not yet connected to its production matrix. Re-enabling
-still requires that production bridge and re-validation across the 50-90 digit
-band.
+canonical sparse post-merge rows, and exact row/dependency congruence gates are
+available as isolated, tested boundaries. The final square gate also protects
+the current extraction path, but staged 2LP rows do not yet share a global
+source-ID catalog or production matrix. Re-enabling still requires that bridge
+and re-validation across the 50-90 digit band.
 
 ## Two-Large-Prime Re-enablement Plan
 
@@ -125,11 +126,14 @@ The safe migration order is:
    through the legacy pairwise `merge_two`: multiply values modulo `kN`, XOR
    signs, accumulate factor-base exponents in a wide checked type, and derive
    each large-prime square-root multiplicity as graph degree divided by two.
-4. Verify each materialized row against its signed relation identity before
-   matrix admission. After dependency selection, require even sign and
-   factor-base parity, construct `X` and `Y`, and verify
+4. Convert raw full relations and materialized cycles into one sparse-wide
+   post-merge row type. Preserve sorted source provenance and repeated LP
+   square-root factors; never narrow the row back to legacy byte exponents.
+5. Verify each row against its signed relation identity before matrix
+   admission. After dependency selection, require even sign and factor-base
+   parity, construct `X` and `Y`, and verify
    `X^2 == Y^2 (mod kN)` before any GCD attempt.
-5. Exercise the path in test-only or shadow mode first. Production 2LP remains
+6. Exercise the path in test-only or shadow mode first. Production 2LP remains
    off until fixed 50-90 digit corpora show valid congruences, useful cycles,
    and no regression in the default 1LP path.
 
@@ -155,8 +159,9 @@ SIQS's `L_N(1/2, 1)`.
 
 - **2LP cofactor handling is gated off** (`lp_bound_sq = 0`); normalization,
   stable shadow-corpus preparation, cycle selection, materialization, and
-  congruence verification are staged, while production integration and
-  cross-size evidence remain prerequisites
+  sparse-wide row conversion and congruence verification are staged, while a
+  global source catalog, production integration, and cross-size evidence remain
+  prerequisites
 - **Beyond ~57 digits, extraction failures dominate** in current calibration.
   The 60-digit band needs FB and threshold tuning before being declared
   production-ready. Use GNFS for ≥60 digits until then
