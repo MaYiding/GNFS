@@ -1978,7 +1978,10 @@ do_changed() {
     changed_files+=$'\n'
     changed_files+=$(git ls-files --others --exclude-standard 2>/dev/null || true)
 
-    changed_files=$(echo "$changed_files" | sort -u | grep -v '^$')
+    # sed keeps a successful exit status for an empty stream. grep -v '^$'
+    # returns 1 when the worktree is clean and would terminate this function
+    # under set -e before the documented smoke fallback can run.
+    changed_files=$(echo "$changed_files" | sed '/^$/d' | sort -u)
 
     if [[ -z "$changed_files" ]]; then
         log_info "没有检测到代码变更"
