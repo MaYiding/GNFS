@@ -66,7 +66,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `check_materialized_two_large_prime_identity` | `two_large_prime_congruence.hpp` | Exact signed row identity before matrix admission |
 | `make_full_post_merge_row` / `make_cycle_post_merge_row` | `post_merge_row.hpp` | Canonical sparse-wide rows shared by full and cycle relations |
 | `assemble_siqs_shadow_rows` | `shadow_assembly.hpp` | Deterministic source-ID layout, parallel cycle assembly, exact deduplication, and stable trim |
-| `solve_siqs_shadow_matrix` | `shadow_matrix.hpp` | Direct sparse-wide row admission and deterministic packed GF(2) left-nullspace solving |
+| `solve_siqs_shadow_matrix` | `shadow_matrix.hpp` | Direct sparse-wide row admission and deterministic packed GF(2) solving with lazy persistent elimination workers |
 | `verify_siqs_post_merge_dependency` / `extract_siqs_post_merge_factor` | `post_merge_dependency.hpp` | Proof-gated dependency reconstruction and canonical non-trivial factor extraction |
 | `are_congruent_squares` | `congruence.hpp` | Final `X² == Y² (mod kN)` gate before GCD |
 | `dense_gauss_left_nullspace` | `siqs.hpp` ~line 1130 | Word-packed dense GF(2) Gaussian elimination |
@@ -190,6 +190,9 @@ SIQS's `L_N(1/2, 1)`.
   admits at most 100000 row variables and 256MiB of packed matrix payload,
   then returns a typed `unsupported_backend` or `resource_limit` result instead
   of attempting an unsafe allocation
+- **The shadow parallel threshold is not live-calibrated**; the persistent
+  worker team is implemented and sanitizer-clean, but the default remains
+  20000 equations until bounded live row distributions justify lowering it
 - **Materialization rejection is not yet typed**; the shadow assembly counts a
   `nullopt` cycle as rejected after validating adapter and graph invariants, but
   production integration should distinguish arithmetic exhaustion from an

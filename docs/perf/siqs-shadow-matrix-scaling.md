@@ -26,7 +26,9 @@ efficiency cores, and 24GiB RAM. The benchmark used Homebrew Clang 22.1.6 with
 were taken while developing revision `0baa518`; the shared-validation
 measurements use revision `b3aeb67`. Revision `9d95503` preserves the equivalent
 corpus, measurement scopes, safety gates, and structured output in
-`tests/test_siqs_shadow_matrix_bench.cpp`.
+`tests/test_siqs_shadow_matrix_bench.cpp`. Revision `a5c127a` adds the production
+persistent-worker implementation, its three-way kernel comparison, and the
+ThreadSanitizer (TSan) gate.
 
 The project runner always builds the current tree in Release mode, rejects
 `--no-build` and `--retry`, and does not assert timing thresholds. It prints the
@@ -37,14 +39,14 @@ time, and result digest.
 | Mode | Timed scope |
 |---|---|
 | `solve` | Complete public solver call, including row checks, packed allocation, elimination, and dependency extraction |
-| `kernel` | Matrix reset, pivot search, and elimination; corpus construction and persistent-pool construction are excluded |
+| `kernel` | Matrix reset, pivot search, and elimination; corpus and worker-team construction are excluded |
 | `prepare` | Public or prevalidated row-identity pass |
 | `fbcheck` | The requested number of full factor-base scans |
 
 Factor-base generation, row construction, the initial corpus validity check,
-and post-run digest calculation are outside every timed scope. The dense and
-persistent-pool 50-digit comparisons use two warmups and five measured runs;
-their 70-digit comparisons use two warmups and three measured runs. The
+and post-run digest calculation are outside every timed scope. The full-solver
+and three-way kernel 50-digit comparisons use two warmups and five measured
+runs; their 70-digit comparisons use two warmups and three measured runs. The
 crossover replay and 90-digit-shaped validation commands use two warmups and
 three measured runs.
 
@@ -95,10 +97,9 @@ output contract.
 
 ## Dense Solver Results
 
-When parallel elimination is selected, the current implementation creates
-`std::jthread` workers for every pivot. The benchmark sets the parallel
-threshold to zero to measure that path. The default threshold remains 20000
-equations, which keeps the current 50- and 70-digit shapes serial.
+At revision `0baa518`, parallel elimination created `std::jthread` workers for
+every pivot. The benchmark set the parallel threshold to zero to measure that
+legacy path. This historical full-solver baseline motivated retaining workers:
 
 | Shape | Worker mode | Median | Range | Relative to serial |
 |---|---|---:|---:|---:|
@@ -109,29 +110,44 @@ equations, which keeps the current 50- and 70-digit shapes serial.
 | 70-digit synthetic | `jthread` × 2 | 5.483s | 5.425–5.642s | 1.66× faster |
 | 70-digit synthetic | `jthread` × 4 | 4.506s | 4.352–4.669s | 2.02× faster |
 
-Every one-, two-, and four-worker run produced the same dependency digest.
+Every one-, two-, and four-worker full-solver run produced the same dependency
+digest.
 
-A benchmark-only persistent-pool prototype retained fixed contiguous
-partitions. It reuses worker threads but still queues one task/future batch and
-performs one completion rendezvous per pivot:
+The current kernel benchmark compares three exact implementations:
 
-| Shape | Workers | Per-pivot `jthread` | Persistent workers | Improvement |
-|---|---:|---:|---:|---:|
-| 50-digit synthetic | 1 | 16.155ms | 16.312ms | serial control |
-| 50-digit synthetic | 2 | 39.759ms | 19.123ms | 51.9% |
-| 50-digit synthetic | 4 | 58.935ms | 24.271ms | 58.8% |
-| 70-digit synthetic | 2 | 5.375s | 5.075s | 5.6% |
-| 70-digit synthetic | 4 | 4.498s | 3.767s | 16.3% |
+- `legacy_per_pivot_jthread` recreates workers at every pivot;
+- `benchmark_only_queued_thread_pool` retains threads but still allocates one
+  task/future batch per pivot;
+- `production_persistent_worker_team` submits one long-lived task per worker,
+  then publishes each pivot through a mutex-protected generation and completion
+  count without per-pivot task allocation.
 
-The prototype isolates the benefit of removing thread creation and teardown,
-but it still allocates queue and future state per pivot and is not the proposed
-production design. Its four-worker 50-digit result remains slower than the
-worker-one control in the same kernel scope, so the default stays serial until
-a live corpus calibrates the threshold. The fixed corpus with 20 non-sign
-odd-prime columns per row showed a stable four-worker gain starting near 4000
-factor-base columns:
+All paths keep the same fixed contiguous row partitions. Where parallel work is
+selected, pool or team construction and one empty prewarm or no-op startup
+dispatch are outside the timed scope. Revision `a5c127a` produced:
 
-| Factor-base columns | Serial | Persistent × 4 | Improvement |
+| Shape | Workers | Legacy `jthread` | Queued prototype | Production team | Production vs legacy |
+|---|---:|---:|---:|---:|---:|
+| 50-digit synthetic | 1 | 15.688ms | 15.637ms | 15.565ms | serial control |
+| 50-digit synthetic | 2 | 39.180ms | 18.836ms | 19.800ms | 49.5% faster |
+| 50-digit synthetic | 4 | 52.090ms | 22.879ms | 22.050ms | 57.7% faster |
+| 70-digit synthetic | 2 | 5.436s | 4.900s | 5.062s | 6.9% faster |
+| 70-digit synthetic | 4 | 4.161s | 3.751s | 3.783s | 9.1% faster |
+
+Every row in this table has the same final matrix digest across all three
+implementations and requested worker counts. The production team is created
+lazily at the first nonzero parallel pivot. Partial submission and worker
+exceptions return `worker_failure`; the test suite verifies recovery with a
+fresh team. Debug, Release, AddressSanitizer plus UndefinedBehaviorSanitizer,
+and TSan runs all pass.
+
+Four production workers remain slower than the worker-one control at the
+50-digit shape. The default threshold therefore remains 20000 equations, which
+keeps the 50- and 70-digit synthetic shapes serial until live row distributions
+justify a lower value. Earlier queued-prototype evidence showed a four-worker
+gain beginning near 4000 factor-base columns:
+
+| Factor-base columns | Serial | Queued pool × 4 | Improvement |
 |---:|---:|---:|---:|
 | 2500 | 47.421ms | 45.899ms | 3.2% |
 | 4000 | 159.828ms | 97.693ms | 38.9% |
@@ -139,9 +155,8 @@ factor-base columns:
 | 8000 | 1.300s | 496.945ms | 61.8% |
 | 10000 | 2.532s | 809.467ms | 68.0% |
 
-The crossover table's serial column is
-`implementation=current_per_pivot_jthread` with `workers=1`. The benchmark-only
-pool is not constructed for one worker.
+The crossover table's serial column is `implementation=legacy_per_pivot_jthread`
+with `workers=1`. The benchmark-only pool is not constructed for one worker.
 
 These crossover values are provisional. A production threshold must use a
 frozen live corpus and account for `affected_rows * words_per_row`, not only a
@@ -227,7 +242,9 @@ Before promotion it must provide:
   workers.
 - [x] Shared-context validation with measured 90-digit-shaped improvement.
 - [x] Checked dense resource and unsupported-backend boundary.
-- [ ] Persistent workers with a threshold frozen from live row distributions.
+- [x] Persistent worker lifecycle, deterministic output, typed failure, and
+  sanitizer-clean synchronization contracts.
+- [ ] Parallel threshold frozen from live row distributions.
 - [ ] Direct sparse backend with typed failure and verified dependencies.
 - [ ] Bounded live-sieve capture across the 50-, 70-, and 90-digit bands.
 - [ ] Controlled collector and `factor()` integration with the default 1LP path
