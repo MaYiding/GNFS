@@ -84,7 +84,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `include/gnfs/api/i18n.hpp` | Localised method labels (`siqs` tag, CLI `--method siqs`) |
 | `tests/test_siqs.cpp` | Unit tests: tonelli, FB, split_cofactor edges, 14d/19d/31d/39d |
 | `tests/test_siqs_e2e.cpp` | 100-bit (31d) and 180-bit (55d) wall-clock proofs, ENV check |
-| `tests/test_siqs_shadow_cross_size.cpp` | Constructed arithmetic-valid 50/70/90-digit shadow-chain corpus across 1/2/4 workers |
+| `tests/test_siqs_shadow_cross_size.cpp` | Constructed arithmetic-valid 50-, 70-, and 90-digit shadow-chain corpus across 1/2/4 workers |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 
 ## Parameter Calibration
@@ -163,6 +163,10 @@ rank, incorrect LP square-root multiplicity, and byte-exponent wraparound.
 
 ## Performance Notes
 
+See [SIQS Shadow Matrix Scaling](../perf/siqs-shadow-matrix-scaling.md) for the
+cross-size dense-memory boundary, shared-validation measurements, threading
+evidence, and sparse-backend promotion gates.
+
 Observed on Apple M5 (10 P+E cores), Debug build:
 
 | N (bits / digits) | SIQS factor time | GNFS path overhead | Ratio |
@@ -179,9 +183,13 @@ SIQS's `L_N(1/2, 1)`.
 - **2LP cofactor handling is gated off** (`lp_bound_sq = 0`); normalization,
   stable shadow-corpus preparation, cycle selection, materialization, and
   sparse-wide row conversion, deterministic parallel assembly, packed shadow
-  solving, proof-gated factor extraction, and constructed 50/70/90-digit
+  solving, proof-gated factor extraction, and constructed 50-, 70-, and 90-digit
   cross-size evidence are staged, while bounded live-sieve evidence, runtime
   collection, and production integration remain prerequisites
+- **The wide sparse shadow backend is not implemented**; the dense solver
+  admits at most 100000 row variables and 256MiB of packed matrix payload,
+  then returns a typed `unsupported_backend` or `resource_limit` result instead
+  of attempting an unsafe allocation
 - **Materialization rejection is not yet typed**; the shadow assembly counts a
   `nullopt` cycle as rejected after validating adapter and graph invariants, but
   production integration should distinguish arithmetic exhaustion from an
