@@ -39,6 +39,8 @@ using core::ABPairHash;
 using core::Integer;
 using core::Relation;
 
+class RelationReductionEngine;
+
 /// 关系收集器统计
 struct CollectorStats {
     size_t total_relations = 0;      // 总关系数
@@ -181,6 +183,129 @@ private:
     mutable std::atomic<bool> source_failed_{false};
 
     friend class RelationCollector;
+    friend class CollectorUniqueOOCPrefixSource;
+};
+
+/// Callback-scoped OOC prefix whose primary AB pairs are collector-proven
+/// unique.
+///
+/// This is a distinct capability type rather than a caller-supplied boolean.
+/// Only RelationCollector may construct it, and only after checking that
+/// duplicate rejection is enabled and the complete seen set matches the
+/// persisted writer/count state. The underlying reader and its failure
+/// classification remain owned by CollectorOOCPrefixSource, so the same
+/// close-before-resume and fail-closed rules apply.
+class CollectorUniqueOOCPrefixSource final {
+public:
+    /// Compile-time capability consumed by synchronous borrowed-source
+    /// reduction entry points. No ordinary RelationSource should declare this
+    /// marker unless its construction proves the same whole-prefix invariant.
+    static constexpr bool provides_unique_relations = true;
+
+    CollectorUniqueOOCPrefixSource(const CollectorUniqueOOCPrefixSource&) = delete;
+    CollectorUniqueOOCPrefixSource& operator=(const CollectorUniqueOOCPrefixSource&) = delete;
+    CollectorUniqueOOCPrefixSource(CollectorUniqueOOCPrefixSource&&) = delete;
+    CollectorUniqueOOCPrefixSource& operator=(CollectorUniqueOOCPrefixSource&&) = delete;
+
+    [[nodiscard]] size_t count() const noexcept {
+        return source_->count();
+    }
+
+    /// Runtime mirror of the private-construction capability. Public reduction
+    /// APIs must still accept this concrete type; the static marker alone is not
+    /// an authorization boundary because arbitrary source types can imitate it.
+    [[nodiscard]] bool ab_pairs_unique() const noexcept {
+        return true;
+    }
+
+    [[nodiscard]] OOCSnapshotDescriptor descriptor() const noexcept {
+        return source_->descriptor();
+    }
+
+    [[nodiscard]] Relation read(size_t ordinal) const {
+        return source_->read(ordinal);
+    }
+
+private:
+    explicit CollectorUniqueOOCPrefixSource(
+        const CollectorOOCPrefixSource& source,
+        const std::unordered_set<ABPair, ABPairHash>& proven_ab_pairs, std::string base_path,
+        OOCRelationWriter& owner)
+        : source_(&source), proven_ab_pairs_(&proven_ab_pairs), base_path_(std::move(base_path)),
+          owner_(&owner) {}
+
+    /// Engine-only membership oracle for the collector's complete uniqueness
+    /// proof. The active prefix borrow rejects collector mutation, so this set
+    /// remains stable for the capability's entire callback-scoped lifetime.
+    [[nodiscard]] bool contains_proven_ab_pair(const ABPair& ab_pair) const {
+        return proven_ab_pairs_->contains(ab_pair);
+    }
+
+    /// Engine-only fail-closed channel for a relation source whose bytes change
+    /// between validated passes. This deliberately reuses the borrowed prefix's
+    /// source-failure classification so the collector will not resume an
+    /// untrusted raw writer even if the engine propagates or catches the error.
+    void mark_untrusted(std::exception_ptr failure) const noexcept {
+        source_->record_source_failure(std::move(failure));
+    }
+
+    /// Reopen the exact suspended prefix through a new mapping and keep that
+    /// view scoped to one engine callback. This is required on platforms where
+    /// an existing MAP_PRIVATE view does not observe same-size external writes.
+    ///
+    /// Allocation pressure and invalid callback ordinals remain recoverable.
+    /// Every other construction or read failure marks the outer borrowed source
+    /// untrusted. Engine semantic checks use mark_untrusted() explicitly; an
+    /// unrelated callback exception is propagated without poisoning raw input.
+    /// A swallowed fresh-source read failure is detected after callback return
+    /// and rethrown with the same fail-closed classification.
+    template <typename Callback> void with_fresh_prefix_view(Callback&& callback) const {
+        using Result = std::invoke_result_t<Callback, const CollectorOOCPrefixSource&>;
+        static_assert(std::is_void_v<Result>, "fresh prefix callbacks must return void");
+
+        std::unique_ptr<OOCRelationPrefixReader> fresh_reader;
+        try {
+            fresh_reader = std::make_unique<OOCRelationPrefixReader>(
+                base_path_, source_->descriptor(), *owner_);
+        } catch (const std::bad_alloc&) {
+            throw;
+        } catch (const std::out_of_range&) {
+            throw;
+        } catch (...) {
+            source_->record_source_failure(std::current_exception());
+            throw;
+        }
+
+        CollectorOOCPrefixSource fresh_source(*fresh_reader, source_->descriptor());
+        std::exception_ptr callback_failure;
+        try {
+            std::invoke(std::forward<Callback>(callback),
+                        static_cast<const CollectorOOCPrefixSource&>(fresh_source));
+        } catch (...) {
+            callback_failure = std::current_exception();
+        }
+
+        if (fresh_source.source_failed()) {
+            const std::exception_ptr failure = fresh_source.source_failure();
+            source_->record_source_failure(failure);
+            if (failure) {
+                std::rethrow_exception(failure);
+            }
+            throw std::runtime_error(
+                "CollectorUniqueOOCPrefixSource: fresh prefix source read failed");
+        }
+        if (callback_failure) {
+            std::rethrow_exception(callback_failure);
+        }
+    }
+
+    const CollectorOOCPrefixSource* source_ = nullptr;
+    const std::unordered_set<ABPair, ABPairHash>* proven_ab_pairs_ = nullptr;
+    const std::string base_path_;
+    OOCRelationWriter* owner_ = nullptr;
+
+    friend class RelationCollector;
+    friend class RelationReductionEngine;
 };
 
 /// RelationCollector - 关系收集器
@@ -645,6 +770,58 @@ public:
             finish_lease(std::move(callback_failure));
             lock.unlock();
             return std::move(*callback_result);
+        }
+    }
+
+    /// Invoke a callback against a collector-proven ABPair-unique OOC prefix.
+    ///
+    /// The capability is available only when duplicate rejection is enabled
+    /// and the complete in-memory seen set, persisted writer count, and
+    /// accepted-relation statistics agree. Preflight is performed while holding
+    /// the collector mutex. The actual checkpoint/reader/callback/resume state
+    /// machine is delegated to with_ooc_prefix(), preserving its source-failure
+    /// classification, callback exception precedence, observer re-entry, and
+    /// Windows close-before-reopen ordering.
+    template <typename Callback>
+    auto with_unique_ooc_prefix(Callback&& callback)
+        -> std::invoke_result_t<Callback, const CollectorUniqueOOCPrefixSource&> {
+        using Result = std::invoke_result_t<Callback, const CollectorUniqueOOCPrefixSource&>;
+        static_assert(std::is_void_v<Result> ||
+                          (!std::is_reference_v<Result> && !std::is_pointer_v<Result> &&
+                           std::is_move_constructible_v<Result>),
+                      "with_unique_ooc_prefix callbacks must return void or a movable value");
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            require_ooc_mode("with_unique_ooc_prefix");
+            require_available_ooc_owner("with_unique_ooc_prefix");
+            if (!config_.check_duplicates) {
+                throw std::logic_error(
+                    "RelationCollector::with_unique_ooc_prefix: duplicate rejection is disabled");
+            }
+            const size_t writer_count = ooc_writer_->count();
+            if (seen_.size() != writer_count || stats_.total_relations != writer_count) {
+                throw std::logic_error(
+                    "RelationCollector::with_unique_ooc_prefix: uniqueness state does not match "
+                    "the OOC prefix");
+            }
+        }
+
+        if constexpr (std::is_void_v<Result>) {
+            with_ooc_prefix([&](const CollectorOOCPrefixSource& source) {
+                const CollectorUniqueOOCPrefixSource unique_source(
+                    source, seen_, config_.ooc_base_path, *ooc_writer_);
+                std::invoke(std::forward<Callback>(callback),
+                            static_cast<const CollectorUniqueOOCPrefixSource&>(unique_source));
+            });
+        } else {
+            return with_ooc_prefix([&](const CollectorOOCPrefixSource& source) -> Result {
+                const CollectorUniqueOOCPrefixSource unique_source(
+                    source, seen_, config_.ooc_base_path, *ooc_writer_);
+                return std::invoke(
+                    std::forward<Callback>(callback),
+                    static_cast<const CollectorUniqueOOCPrefixSource&>(unique_source));
+            });
         }
     }
 

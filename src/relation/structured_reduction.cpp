@@ -401,23 +401,39 @@ std::span<const SourceId> SourceCombination::sources() const noexcept {
 }
 
 SourceCorpus::SourceCorpus(RelationCorpus corpus)
-    : generation_(corpus.logical_generation()), corpus_(std::move(corpus)) {
-    corpus_.for_each([](const Relation& relation, size_t) { validate_input_relation(relation); });
+    : generation_(corpus.logical_generation()), storage_(std::move(corpus)) {
+    std::get<RelationCorpus>(storage_).for_each(
+        [](const Relation& relation, size_t) { validate_input_relation(relation); });
 }
 
 SourceCorpus::SourceCorpus(uint64_t generation, std::vector<Relation> relations)
     : SourceCorpus(make_in_memory_source_corpus(generation, std::move(relations))) {}
+
+SourceCorpus::SourceCorpus(uint64_t generation, BorrowedStorage borrowed, ValidatedBorrowedTag)
+    : generation_(generation), storage_(borrowed) {
+    if (generation == 0) {
+        fail(StructuredReductionErrorCode::InvalidGeneration,
+             "borrowed source corpus generation must be nonzero");
+    }
+    if (borrowed.source == nullptr || borrowed.read == nullptr) {
+        fail(StructuredReductionErrorCode::InvalidInput,
+             "borrowed source corpus has an invalid erased source");
+    }
+}
 
 uint64_t SourceCorpus::generation() const noexcept {
     return generation_;
 }
 
 size_t SourceCorpus::size() const {
-    return corpus_.count();
+    if (const auto* corpus = std::get_if<RelationCorpus>(&storage_)) {
+        return corpus->count();
+    }
+    return std::get<BorrowedStorage>(storage_).count;
 }
 
 SourceId SourceCorpus::source_id(size_t ordinal) const {
-    if (ordinal >= corpus_.count()) {
+    if (ordinal >= size()) {
         fail(StructuredReductionErrorCode::InvalidInput, "source ordinal is out of range");
     }
     return SourceId{generation_, static_cast<uint64_t>(ordinal)};
@@ -428,18 +444,26 @@ const Relation* SourceCorpus::try_borrow(SourceId source) const {
         fail(StructuredReductionErrorCode::InvalidSourceCombination,
              "source ID belongs to a different corpus generation");
     }
-    if (source.ordinal >= corpus_.count()) {
+    if (source.ordinal >= size()) {
         fail(StructuredReductionErrorCode::InvalidSourceCombination,
              "source ID ordinal is out of range");
     }
-    return corpus_.try_borrow_in_memory(static_cast<size_t>(source.ordinal));
+    if (const auto* corpus = std::get_if<RelationCorpus>(&storage_)) {
+        return corpus->try_borrow_in_memory(static_cast<size_t>(source.ordinal));
+    }
+    return nullptr;
 }
 
 Relation SourceCorpus::at(SourceId source) const {
     if (const Relation* relation = try_borrow(source)) {
         return *relation;
     }
-    return corpus_.read(static_cast<size_t>(source.ordinal));
+    const size_t ordinal = static_cast<size_t>(source.ordinal);
+    if (const auto* corpus = std::get_if<RelationCorpus>(&storage_)) {
+        return corpus->read(ordinal);
+    }
+    const auto& borrowed = std::get<BorrowedStorage>(storage_);
+    return borrowed.read(borrowed.source, ordinal);
 }
 
 Relation SourceCorpus::materialize(const SourceCombination& combination) const {
@@ -460,7 +484,7 @@ Relation SourceCorpus::materialize(const SourceCombination& combination) const {
             atoms.push_back(borrowed);
             continue;
         }
-        owned_atoms.push_back(corpus_.read(static_cast<size_t>(source.ordinal)));
+        owned_atoms.push_back(at(source));
         atoms.push_back(&owned_atoms.back());
     }
 
@@ -1841,9 +1865,9 @@ size_t SequentialStructuredReducer::active_row_count() const noexcept {
 }
 
 size_t SequentialStructuredReducer::active_lp_column_count() const noexcept {
-    return static_cast<size_t>(std::count_if(
-        impl_->buckets.begin(), impl_->buckets.end(),
-        [](const auto& bucket) { return bucket.active_degree != 0; }));
+    return static_cast<size_t>(
+        std::count_if(impl_->buckets.begin(), impl_->buckets.end(),
+                      [](const auto& bucket) { return bucket.active_degree != 0; }));
 }
 
 bool SequentialStructuredReducer::is_active(StructuredRowId row) const {

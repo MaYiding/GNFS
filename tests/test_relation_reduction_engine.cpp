@@ -1,19 +1,25 @@
 #include "gnfs/api/detail/solver_handoff.hpp"
+#include "gnfs/relation/collector.hpp"
 #include "gnfs/relation/reduction_engine.hpp"
 #include "gnfs/relation/structured_filter_profile.hpp"
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/temp_path.hpp"
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -22,10 +28,13 @@
 using gnfs::api::detail::handoff_after_collection;
 using gnfs::api::detail::SolverHandoffInfo;
 using gnfs::core::Relation;
+using gnfs::relation::CollectorConfig;
+using gnfs::relation::CollectorUniqueOOCPrefixSource;
 using gnfs::relation::corpus_digest;
 using gnfs::relation::CorpusDigest;
 using gnfs::relation::RawRelationSnapshot;
 using gnfs::relation::ReductionStrategy;
+using gnfs::relation::RelationCollector;
 using gnfs::relation::RelationReductionConfig;
 using gnfs::relation::RelationReductionEngine;
 using gnfs::relation::RelationReductionResult;
@@ -113,6 +122,33 @@ private:
 static_assert(gnfs::relation::RelationSource<BorrowedVectorRelationSource>);
 static_assert(!std::is_copy_constructible_v<BorrowedVectorRelationSource>);
 
+class SpoofedUniqueRelationSource final {
+public:
+    static constexpr bool provides_unique_relations = true;
+
+    [[nodiscard]] size_t count() const noexcept {
+        return 0;
+    }
+
+    [[nodiscard]] Relation read(size_t) const {
+        throw std::out_of_range("spoofed source is empty");
+    }
+};
+
+template <typename Source>
+concept DirectBorrowedStructuredSource =
+    requires(uint64_t generation, const Source& source, const RelationReductionConfig& config) {
+        {
+            RelationReductionEngine::reduce_direct_borrowed_structured(generation, source, config)
+        } -> std::same_as<RelationReductionResult>;
+    };
+
+static_assert(gnfs::relation::RelationSource<SpoofedUniqueRelationSource>);
+static_assert(SpoofedUniqueRelationSource::provides_unique_relations);
+static_assert(!DirectBorrowedStructuredSource<BorrowedVectorRelationSource>);
+static_assert(!DirectBorrowedStructuredSource<SpoofedUniqueRelationSource>);
+static_assert(DirectBorrowedStructuredSource<CollectorUniqueOOCPrefixSource>);
+
 [[nodiscard]] std::string unique_ooc_base(const char* label) {
     static uint64_t sequence = 0;
     return gnfs::util::temp_path("gnfs_reduction_" + std::string(label) + "_" +
@@ -133,6 +169,19 @@ static_assert(!std::is_copy_constructible_v<BorrowedVectorRelationSource>);
 
 [[nodiscard]] bool private_sink_absent(const std::string& requested_base) {
     return !std::filesystem::exists(requested_base + ".gnfs-sink-lease");
+}
+
+template <typename Value>
+[[nodiscard]] bool overwrite_binary_value(const std::string& path, std::streamoff offset,
+                                          const Value& value) {
+    std::fstream stream(path, std::ios::in | std::ios::out | std::ios::binary);
+    if (!stream) {
+        return false;
+    }
+    stream.seekp(offset);
+    stream.write(reinterpret_cast<const char*>(&value), sizeof(value));
+    stream.flush();
+    return static_cast<bool>(stream);
 }
 
 #define CHECK(condition)                                                                           \
@@ -258,6 +307,22 @@ bool equal_corpus(const std::vector<Relation>& lhs, const std::vector<Relation>&
         }
     }
     return true;
+}
+
+bool equal_collector_stats(const gnfs::relation::CollectorStats& lhs,
+                           const gnfs::relation::CollectorStats& rhs) {
+    return lhs.total_relations == rhs.total_relations && lhs.full_relations == rhs.full_relations &&
+           lhs.partial_1lp == rhs.partial_1lp && lhs.partial_2lp == rhs.partial_2lp &&
+           lhs.duplicates_rejected == rhs.duplicates_rejected &&
+           lhs.invalid_rejected == rhs.invalid_rejected &&
+           lhs.n_divisible_rejected == rhs.n_divisible_rejected;
+}
+
+void add_relations(RelationCollector& collector, const std::vector<Relation>& relations) {
+    for (const auto& relation : relations) {
+        Relation copy = relation;
+        CHECK(collector.add(std::move(copy)));
+    }
 }
 
 [[nodiscard]] gnfs::relation::RelationCorpus
@@ -1116,6 +1181,393 @@ void test_structured_borrowed_source_matches_owning_routes() {
     CHECK(private_sink_absent(owning_output.base));
 }
 
+void test_structured_direct_borrowed_source_matches_owning_and_two_stage() {
+    constexpr uint64_t generation = 719;
+    const auto input = make_shared_primary_corpus();
+
+    for (const uint32_t workers : {1U, 2U, 4U}) {
+        auto memory_result = RelationReductionEngine::reduce(RawRelationSnapshot(generation, input),
+                                                             structured_config(workers, 3));
+        const auto expected_rows = memory_result.materialize_relations();
+        CHECK(memory_result.stats.raw_duplicates_removed == 0);
+
+        OOCArtifacts two_stage_work(unique_ooc_base("direct_equivalence_two_stage_work"));
+        OOCArtifacts two_stage_output(unique_ooc_base("direct_equivalence_two_stage_output"));
+        auto two_stage_config = structured_config(workers, 3);
+        two_stage_config.structured->deduplicated_ooc_base_path = two_stage_work.base;
+        two_stage_config.structured->output_ooc_base_path = two_stage_output.base;
+        BorrowedVectorRelationSource two_stage_source(input);
+
+        auto two_stage_result = RelationReductionEngine::reduce_borrowed_structured(
+            generation, two_stage_source, two_stage_config);
+        CHECK(two_stage_result.stats == memory_result.stats);
+        CHECK(equal_corpus(two_stage_result.materialize_relations(), expected_rows));
+        CHECK(private_sink_absent(two_stage_work.base));
+
+        OOCArtifacts raw(unique_ooc_base("direct_equivalence_raw"));
+        OOCArtifacts direct_output(unique_ooc_base("direct_equivalence_output"));
+        std::optional<RelationReductionResult> direct_result;
+        {
+            CollectorConfig collector_config;
+            collector_config.ooc_enabled = true;
+            collector_config.ooc_base_path = raw.base;
+            collector_config.check_duplicates = true;
+            RelationCollector collector(collector_config);
+            add_relations(collector, input);
+
+            auto direct_config = structured_config(workers, 3);
+            direct_config.structured->output_ooc_base_path = direct_output.base;
+            direct_result.emplace(
+                collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+                    CHECK(source.ab_pairs_unique());
+                    CHECK(source.count() == input.size());
+                    CHECK(source.descriptor().count == input.size());
+                    return RelationReductionEngine::reduce_direct_borrowed_structured(
+                        generation, source, direct_config);
+                }));
+
+            CHECK(direct_result->storage_kind() ==
+                  gnfs::relation::RelationStorageKind::FinalizedOOC);
+            CHECK(private_sink_exists(direct_output.base));
+
+            // The returned corpus must not retain the callback-scoped source.
+            Relation tail = make_full(900 + workers);
+            CHECK(collector.add(std::move(tail)));
+            CHECK(collector.size() == input.size() + 1);
+        }
+
+        CHECK(direct_result.has_value());
+        CHECK(direct_result->generation == generation);
+        CHECK(direct_result->stats == memory_result.stats);
+        CHECK(direct_result->stats == two_stage_result.stats);
+        CHECK(direct_result->stats.raw_input_digest == memory_result.stats.raw_input_digest);
+        CHECK(direct_result->stats.output_digest == memory_result.stats.output_digest);
+        CHECK(equal_corpus(direct_result->materialize_relations(), expected_rows));
+        direct_result.reset();
+        CHECK(private_sink_absent(direct_output.base));
+    }
+}
+
+void test_structured_direct_borrowed_contract_and_unique_capability() {
+    constexpr uint64_t generation = 720;
+    const auto input = make_shared_primary_corpus();
+    OOCArtifacts raw(unique_ooc_base("direct_contract_raw"));
+    OOCArtifacts working(unique_ooc_base("direct_contract_work"));
+    OOCArtifacts output(unique_ooc_base("direct_contract_output"));
+
+    CollectorConfig collector_config;
+    collector_config.ooc_enabled = true;
+    collector_config.ooc_base_path = raw.base;
+    collector_config.check_duplicates = true;
+    RelationCollector collector(collector_config);
+    add_relations(collector, input);
+
+    auto invoke = [&](uint64_t requested_generation, const RelationReductionConfig& config) {
+        return collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+            return RelationReductionEngine::reduce_direct_borrowed_structured(requested_generation,
+                                                                              source, config);
+        });
+    };
+
+    auto valid = structured_config(2, 3);
+    valid.structured->output_ooc_base_path = output.base;
+    CHECK(throws_invalid_argument([&] { (void)invoke(0, valid); }));
+
+    CHECK(throws_invalid_argument([&] { (void)invoke(generation, RelationReductionConfig{}); }));
+
+    auto working_rejected = valid;
+    working_rejected.structured->deduplicated_ooc_base_path = working.base;
+    CHECK(throws_invalid_argument([&] { (void)invoke(generation, working_rejected); }));
+
+    auto missing_output = structured_config(2, 3);
+    CHECK(throws_invalid_argument([&] { (void)invoke(generation, missing_output); }));
+
+    auto preserved_output = valid;
+    preserved_output.structured->output_ooc_cleanup = gnfs::relation::OOCCleanupPolicy::Preserve;
+    CHECK(throws_invalid_argument([&] { (void)invoke(generation, preserved_output); }));
+
+    CHECK(private_sink_absent(working.base));
+    CHECK(private_sink_absent(output.base));
+    Relation tail = make_full(951);
+    CHECK(collector.add(std::move(tail)));
+
+    OOCArtifacts nonunique_raw(unique_ooc_base("direct_contract_nonunique_raw"));
+    CollectorConfig nonunique_config;
+    nonunique_config.ooc_enabled = true;
+    nonunique_config.ooc_base_path = nonunique_raw.base;
+    nonunique_config.check_duplicates = false;
+    RelationCollector nonunique_collector(nonunique_config);
+    Relation relation = make_full(953);
+    CHECK(nonunique_collector.add(std::move(relation)));
+    bool callback_called = false;
+    CHECK(throws_logic_error([&] {
+        nonunique_collector.with_unique_ooc_prefix(
+            [&](const CollectorUniqueOOCPrefixSource&) { callback_called = true; });
+    }));
+    CHECK(!callback_called);
+}
+
+void test_structured_direct_borrowed_output_failure_is_retryable() {
+    constexpr uint64_t generation = 721;
+    auto input = make_shared_primary_corpus();
+    OOCArtifacts raw(unique_ooc_base("direct_output_retry_raw"));
+    OOCArtifacts output(unique_ooc_base("direct_output_retry_output"));
+
+    CollectorConfig collector_config;
+    collector_config.ooc_enabled = true;
+    collector_config.ooc_base_path = raw.base;
+    collector_config.check_duplicates = true;
+    RelationCollector collector(collector_config);
+    add_relations(collector, input);
+
+    auto config = structured_config(2, 3);
+    config.structured->output_ooc_base_path = output.base;
+    std::error_code error;
+    CHECK(std::filesystem::create_directory(output.base + ".gnfs-sink-lease", error));
+    CHECK(!error);
+
+    CHECK(throws_runtime_error([&] {
+        (void)collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+            return RelationReductionEngine::reduce_direct_borrowed_structured(generation, source,
+                                                                              config);
+        });
+    }));
+    CHECK(std::filesystem::is_directory(output.base + ".gnfs-sink-lease"));
+
+    Relation tail = make_full(955);
+    input.push_back(tail);
+    CHECK(collector.add(std::move(tail)));
+    error.clear();
+    CHECK(std::filesystem::remove(output.base + ".gnfs-sink-lease", error));
+    CHECK(!error);
+
+    auto oracle = RelationReductionEngine::reduce(RawRelationSnapshot(generation, input),
+                                                  structured_config(2, 3));
+    {
+        auto retry =
+            collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+                return RelationReductionEngine::reduce_direct_borrowed_structured(generation,
+                                                                                  source, config);
+            });
+        CHECK(retry.stats == oracle.stats);
+        CHECK(equal_corpus(retry.materialize_relations(), oracle.materialize_relations()));
+        CHECK(private_sink_exists(output.base));
+    }
+    CHECK(private_sink_absent(output.base));
+}
+
+void test_structured_direct_borrowed_source_failure_aborts_output() {
+    constexpr uint64_t generation = 722;
+    OOCArtifacts raw(unique_ooc_base("direct_source_failure_raw"));
+    OOCArtifacts output(unique_ooc_base("direct_source_failure_output"));
+
+    CollectorConfig collector_config;
+    collector_config.ooc_enabled = true;
+    collector_config.ooc_base_path = raw.base;
+    collector_config.check_duplicates = true;
+    RelationCollector collector(collector_config);
+    Relation relation = make_partial(1, {101});
+    CHECK(collector.add(std::move(relation)));
+    const auto stats_before_failure = collector.stats();
+
+    const auto descriptor = collector.checkpoint_ooc();
+    {
+        std::fstream data(raw.base + ".reldata", std::ios::in | std::ios::out | std::ios::binary);
+        CHECK(static_cast<bool>(data));
+        const uint32_t corrupt_count = std::numeric_limits<uint32_t>::max();
+        data.seekp(
+            static_cast<std::streamoff>(gnfs::relation::OOCRelationWriter::DATA_HEADER_BYTES + 16));
+        data.write(reinterpret_cast<const char*>(&corrupt_count), sizeof(corrupt_count));
+        data.flush();
+        CHECK(static_cast<bool>(data));
+    }
+    collector.resume_ooc(descriptor);
+
+    auto config = structured_config(2, 3);
+    config.structured->output_ooc_base_path = output.base;
+    CHECK(throws_runtime_error([&] {
+        (void)collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+            return RelationReductionEngine::reduce_direct_borrowed_structured(generation, source,
+                                                                              config);
+        });
+    }));
+    CHECK(private_sink_absent(output.base));
+    CHECK(equal_collector_stats(collector.stats(), stats_before_failure));
+    CHECK(throws_logic_error([&] {
+        Relation tail = make_full(957);
+        (void)collector.add(std::move(tail));
+    }));
+}
+
+void test_structured_direct_borrowed_rejects_pre_scan_ab_proof_drift() {
+    constexpr uint64_t generation = 725;
+    OOCArtifacts raw(unique_ooc_base("direct_ab_proof_drift_raw"));
+    OOCArtifacts output(unique_ooc_base("direct_ab_proof_drift_output"));
+
+    CollectorConfig collector_config;
+    collector_config.ooc_enabled = true;
+    collector_config.ooc_base_path = raw.base;
+    collector_config.check_duplicates = true;
+    RelationCollector collector(collector_config);
+    Relation first = make_full(100);
+    Relation second = make_full(200);
+    CHECK(collector.add(std::move(first)));
+    CHECK(collector.add(std::move(second)));
+    const auto stats_before_failure = collector.stats();
+
+    const auto descriptor = collector.checkpoint_ooc();
+    constexpr int64_t replacement_a = 300;
+    CHECK(overwrite_binary_value(
+        raw.base + ".reldata",
+        static_cast<std::streamoff>(gnfs::relation::OOCRelationWriter::DATA_HEADER_BYTES),
+        replacement_a));
+    collector.resume_ooc(descriptor);
+
+    auto config = structured_config(2, 3);
+    config.structured->output_ooc_base_path = output.base;
+    CHECK(throws_runtime_error([&] {
+        (void)collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+            return RelationReductionEngine::reduce_direct_borrowed_structured(generation, source,
+                                                                              config);
+        });
+    }));
+    CHECK(private_sink_absent(output.base));
+    CHECK(equal_collector_stats(collector.stats(), stats_before_failure));
+    CHECK(throws_logic_error([&] {
+        Relation tail = make_full(400);
+        (void)collector.add(std::move(tail));
+    }));
+}
+
+void test_structured_direct_borrowed_detects_post_scan_payload_drift() {
+    constexpr uint64_t generation = 723;
+    constexpr size_t raw_row_count = 100'000;
+    OOCArtifacts raw(unique_ooc_base("direct_payload_drift_raw"));
+    OOCArtifacts output(unique_ooc_base("direct_payload_drift_output"));
+
+    CollectorConfig collector_config;
+    collector_config.ooc_enabled = true;
+    collector_config.ooc_base_path = raw.base;
+    collector_config.check_duplicates = true;
+    RelationCollector collector(collector_config);
+    for (size_t ordinal = 0; ordinal < raw_row_count; ++ordinal) {
+        Relation relation = make_full(static_cast<int64_t>(ordinal + 1'000));
+        CHECK(collector.add(std::move(relation)));
+    }
+    const auto stats_before_failure = collector.stats();
+
+    auto config = experimental_profile_config(raw_row_count, 4);
+    config.structured->output_ooc_base_path = output.base;
+    const std::string output_data = private_sink_base(output.base) + ".reldata";
+    std::atomic<bool> stop_modifier{false};
+    std::atomic<bool> payload_modified{false};
+    std::atomic<bool> modifier_failed{false};
+    std::thread modifier([&] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (!stop_modifier.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::error_code error;
+            const uintmax_t size = std::filesystem::file_size(output_data, error);
+            if (!error && size > gnfs::relation::OOCRelationWriter::DATA_HEADER_BYTES) {
+                // Changing only `a` preserves record size and all structural
+                // validity rules, but changes both the AB identity and V1 row
+                // fingerprint after the engine's authoritative first scan.
+                constexpr int64_t replacement_a = -7'230'001;
+                const bool overwritten = overwrite_binary_value(
+                    raw.base + ".reldata",
+                    static_cast<std::streamoff>(
+                        gnfs::relation::OOCRelationWriter::DATA_HEADER_BYTES),
+                    replacement_a);
+                modifier_failed.store(!overwritten, std::memory_order_release);
+                payload_modified.store(overwritten, std::memory_order_release);
+                return;
+            }
+            std::this_thread::yield();
+        }
+        if (!stop_modifier.load(std::memory_order_acquire)) {
+            modifier_failed.store(true, std::memory_order_release);
+        }
+    });
+
+    std::optional<RelationReductionResult> unexpected_result;
+    std::exception_ptr reduction_failure;
+    try {
+        unexpected_result.emplace(
+            collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+                return RelationReductionEngine::reduce_direct_borrowed_structured(generation,
+                                                                                  source, config);
+            }));
+    } catch (...) {
+        reduction_failure = std::current_exception();
+    }
+    stop_modifier.store(true, std::memory_order_release);
+    modifier.join();
+
+    bool runtime_failure = false;
+    if (reduction_failure) {
+        try {
+            std::rethrow_exception(reduction_failure);
+        } catch (const std::runtime_error&) {
+            runtime_failure = true;
+        } catch (...) {
+        }
+    }
+    CHECK(payload_modified.load(std::memory_order_acquire));
+    CHECK(!modifier_failed.load(std::memory_order_acquire));
+    CHECK(runtime_failure);
+    unexpected_result.reset();
+    CHECK(private_sink_absent(output.base));
+    CHECK(equal_collector_stats(collector.stats(), stats_before_failure));
+    CHECK(throws_logic_error([&] {
+        Relation tail = make_full(7'230'002);
+        (void)collector.add(std::move(tail));
+    }));
+}
+
+void test_structured_direct_borrowed_resume_failure_cleans_finalized_output() {
+    constexpr uint64_t generation = 724;
+    const auto input = make_shared_primary_corpus();
+    OOCArtifacts raw(unique_ooc_base("direct_resume_failure_raw"));
+    OOCArtifacts output(unique_ooc_base("direct_resume_failure_output"));
+
+    CollectorConfig collector_config;
+    collector_config.ooc_enabled = true;
+    collector_config.ooc_base_path = raw.base;
+    collector_config.check_duplicates = true;
+    RelationCollector collector(collector_config);
+    add_relations(collector, input);
+    const auto stats_before_failure = collector.stats();
+
+    auto config = structured_config(2, 3);
+    config.structured->output_ooc_base_path = output.base;
+    bool raw_corrupted_after_output = false;
+    bool resume_failure = false;
+    try {
+        (void)collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+            auto result = RelationReductionEngine::reduce_direct_borrowed_structured(
+                generation, source, config);
+            CHECK(private_sink_exists(output.base));
+
+            constexpr uint64_t corrupt_data_magic = 0;
+            raw_corrupted_after_output =
+                overwrite_binary_value(raw.base + ".reldata", 0, corrupt_data_magic);
+            return result;
+        });
+    } catch (const std::runtime_error&) {
+        resume_failure = true;
+    } catch (...) {
+    }
+
+    CHECK(raw_corrupted_after_output);
+    CHECK(resume_failure);
+    CHECK(private_sink_absent(output.base));
+    CHECK(equal_collector_stats(collector.stats(), stats_before_failure));
+    CHECK(throws_logic_error([&] {
+        Relation tail = make_full(7'240'001);
+        (void)collector.add(std::move(tail));
+    }));
+}
+
 void test_structured_borrowed_source_contract_rejects_invalid_routes() {
     const auto input = make_shared_primary_corpus();
     BorrowedVectorRelationSource source(input);
@@ -1378,6 +1830,13 @@ int main() {
     test_structured_ooc_post_prepare_failure_preserves_authoritative_input();
     test_structured_ooc_rejects_overlapping_artifact_scopes();
     test_structured_borrowed_source_matches_owning_routes();
+    test_structured_direct_borrowed_source_matches_owning_and_two_stage();
+    test_structured_direct_borrowed_contract_and_unique_capability();
+    test_structured_direct_borrowed_output_failure_is_retryable();
+    test_structured_direct_borrowed_source_failure_aborts_output();
+    test_structured_direct_borrowed_rejects_pre_scan_ab_proof_drift();
+    test_structured_direct_borrowed_detects_post_scan_payload_drift();
+    test_structured_direct_borrowed_resume_failure_cleans_finalized_output();
     test_structured_borrowed_source_contract_rejects_invalid_routes();
     test_structured_borrowed_prepared_token_drop_cleans_working_corpus();
     test_structured_borrowed_source_read_failure_rolls_back();

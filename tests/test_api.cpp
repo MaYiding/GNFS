@@ -945,36 +945,14 @@ bool test_structured_ooc_path_namespace_contract() {
         return false;
     }
 
-    const std::array requested_bases{
-        std::filesystem::path(generation.working_requested_base),
-        std::filesystem::path(generation.output_requested_base),
-    };
-    const std::array lease_roots{
-        gnfs::relation::RelationSink::lease_root_for(generation.working_requested_base),
-        gnfs::relation::RelationSink::lease_root_for(generation.output_requested_base),
-    };
-    const auto path_contains = [](const std::filesystem::path& parent,
-                                  const std::filesystem::path& child) {
-        auto parent_it = parent.begin();
-        auto child_it = child.begin();
-        while (parent_it != parent.end() && child_it != child.end() && *parent_it == *child_it) {
-            ++parent_it;
-            ++child_it;
-        }
-        return parent_it == parent.end();
-    };
-    for (size_t lhs = 0; lhs < lease_roots.size(); ++lhs) {
-        if (requested_bases[lhs].parent_path() != requested_bases.front().parent_path()) {
-            std::cout << "(OOC generation requested bases were not siblings) ";
-            return false;
-        }
-        for (size_t rhs = lhs + 1; rhs < lease_roots.size(); ++rhs) {
-            if (path_contains(lease_roots[lhs], lease_roots[rhs]) ||
-                path_contains(lease_roots[rhs], lease_roots[lhs])) {
-                std::cout << "(OOC generation lease roots overlap) ";
-                return false;
-            }
-        }
+    const std::filesystem::path output_requested_base(generation.output_requested_base);
+    const std::filesystem::path output_lease_root =
+        gnfs::relation::RelationSink::lease_root_for(generation.output_requested_base);
+    if (output_requested_base.parent_path() !=
+            std::filesystem::path(run_paths.run_namespace).parent_path() ||
+        output_lease_root.parent_path() != output_requested_base.parent_path()) {
+        std::cout << "(OOC generation output path escaped its frozen namespace) ";
+        return false;
     }
 
     bool zero_rejected = false;

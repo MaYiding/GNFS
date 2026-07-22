@@ -3,6 +3,7 @@
 #include "../core/relation.hpp"
 #include "large_prime_key.hpp"
 #include "relation_corpus.hpp"
+#include "relation_source.hpp"
 
 #include <array>
 #include <cstddef>
@@ -12,11 +13,13 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace gnfs::relation {
 
 class SequentialStructuredReducer;
+class RelationReductionEngine;
 class RelationSink;
 struct StructuredIncidenceBuildOptions;
 struct StructuredIncidenceBuildStats;
@@ -91,18 +94,22 @@ private:
     std::vector<SourceId> sources_;
 };
 
-/// Immutable owning source corpus for structured reduction.
+/// Immutable source corpus for structured reduction.
 ///
 /// Each corpus row is one provenance atom and receives exactly one SourceId.
 /// A row may already contain extra_ab_pairs; materialization expands its primary
 /// pair followed by those extras, but the extras do not receive new source IDs.
 /// Equal AB pairs from different source payloads remain separate contributions.
 ///
-/// The underlying RelationCorpus may own either a vector or a finalized OOC
-/// store. Source IDs are assigned from its stable ordinal order. Raw callers
-/// de-duplicate before construction; SourceCorpus itself never de-duplicates
-/// because merged atoms may share a primary pair while carrying different
-/// provenance and payload.
+/// The ordinary backend owns a RelationCorpus containing either a vector or a
+/// finalized OOC store. The reduction engine may instead construct a private,
+/// callback-scoped type-erased view of an already validated RelationSource.
+/// That view freezes the source count but never owns the source; the engine must
+/// finish every read and join every worker before the source callback returns.
+/// Source IDs are assigned from stable ordinal order. Raw callers de-duplicate
+/// before construction; SourceCorpus itself never de-duplicates because merged
+/// atoms may share a primary pair while carrying different provenance and
+/// payload.
 class SourceCorpus final {
 public:
     explicit SourceCorpus(RelationCorpus corpus);
@@ -116,15 +123,38 @@ public:
     [[nodiscard]] uint64_t generation() const noexcept;
     [[nodiscard]] size_t size() const;
     [[nodiscard]] SourceId source_id(size_t ordinal) const;
-    /// Borrow an in-memory atom, or return nullptr for an OOC corpus.
+    /// Borrow an owned in-memory atom, or return nullptr for OOC/borrowed storage.
     /// The pointer is tied to this SourceCorpus lifetime.
     [[nodiscard]] const core::Relation* try_borrow(SourceId source) const;
     [[nodiscard]] core::Relation at(SourceId source) const;
     [[nodiscard]] core::Relation materialize(const SourceCombination& combination) const;
 
 private:
+    struct BorrowedStorage final {
+        const void* source = nullptr;
+        size_t count = 0;
+        core::Relation (*read)(const void*, size_t) = nullptr;
+    };
+    struct ValidatedBorrowedTag final {};
+
+    template <RelationSource Source>
+    [[nodiscard]] static SourceCorpus from_validated_borrowed(uint64_t generation,
+                                                              const Source& source) {
+        const auto read = [](const void* erased, size_t ordinal) -> core::Relation {
+            return static_cast<const Source*>(erased)->read(ordinal);
+        };
+        return SourceCorpus(
+            generation,
+            BorrowedStorage{std::addressof(source), static_cast<size_t>(source.count()), read},
+            ValidatedBorrowedTag{});
+    }
+
+    SourceCorpus(uint64_t generation, BorrowedStorage borrowed, ValidatedBorrowedTag);
+
     uint64_t generation_ = 0;
-    RelationCorpus corpus_;
+    std::variant<RelationCorpus, BorrowedStorage> storage_;
+
+    friend class RelationReductionEngine;
 };
 
 struct StructuredRowId final {

@@ -193,7 +193,6 @@ detail::StructuredOOCRunPaths::generation_paths(uint64_t logical_generation) con
     const std::string generation_namespace =
         run_namespace + ".g" + std::to_string(logical_generation);
     return {
-        generation_namespace + ".working",
         generation_namespace + ".output",
     };
 }
@@ -1187,8 +1186,6 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                 reduction_config.structured = relation::make_structured_filter_experimental_config(
                     input_relations, relation::structured_filter_hardware_workers());
                 if (ooc_generation_paths != nullptr) {
-                    reduction_config.structured->deduplicated_ooc_base_path =
-                        ooc_generation_paths->working_requested_base;
                     reduction_config.structured->output_ooc_base_path =
                         ooc_generation_paths->output_requested_base;
                     reduction_config.structured->output_ooc_cleanup =
@@ -1244,25 +1241,21 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         const uint64_t generation = allocate_relation_generation();
         const auto generation_paths = structured_preflight.ooc_paths->generation_paths(generation);
         std::optional<relation::RelationReductionConfig> reduction_config;
-        auto prepared_and_source =
-            collector.with_ooc_prefix([&](const relation::CollectorOOCPrefixSource& source) {
+        auto reduction_and_source = collector.with_unique_ooc_prefix(
+            [&](const relation::CollectorUniqueOOCPrefixSource& source) {
                 reduction_config.emplace(
                     make_reduction_config(source.count(), legacy_strategy, &generation_paths));
-                auto prepared = relation::RelationReductionEngine::prepare_borrowed_structured(
-                    generation, source, *reduction_config);
-                return std::pair(std::move(prepared), source.descriptor());
+                auto reduction =
+                    relation::RelationReductionEngine::reduce_direct_borrowed_structured(
+                        generation, source, *reduction_config);
+                return std::pair(std::move(reduction), source.descriptor());
             });
 
         if (!reduction_config.has_value()) {
             throw std::logic_error("structured OOC reduction did not freeze its configuration");
         }
-        const relation::OOCSnapshotDescriptor source_descriptor = prepared_and_source.second;
-        if (prepared_and_source.first.input_relations() != source_descriptor.count) {
-            throw std::logic_error(
-                "structured OOC prepared input count differs from its raw prefix");
-        }
-        auto reduction = relation::RelationReductionEngine::reduce_prepared_structured(
-            std::move(prepared_and_source.first));
+        auto reduction = std::move(reduction_and_source.first);
+        const relation::OOCSnapshotDescriptor source_descriptor = reduction_and_source.second;
         publish_structured_reduction(reduction, *reduction_config);
         if (reduction.stats.input_relations != source_descriptor.count) {
             throw std::logic_error(

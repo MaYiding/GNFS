@@ -6,13 +6,18 @@
 - Branch: `codex/parallel-structured-filter`
 - State: M1 is complete; the vector-backed M2/M3 implementations are complete.
   M4 has default-off vector and explicitly forced ordinary-OOC production
-  routes, one frozen per-run path namespace, an owning vector/finalized-OOC
-  corpus, descriptor-bound selection identity, direct selected-corpus matrix
-  input, deterministic ordinal trimming, dependency-only square-root
-  materialization, transactional source/sink reduction, and paired V3 OOC
-  identity across readers, writers, recovery, checkpoints, and ownership.
-  Native incremental OOC reduction, measured RSS, and cross-size route evidence
-  remain before promotion.
+  routes. The ordinary-OOC route now consumes a collector-proven unique raw
+  prefix directly inside its borrow callback, completes validation, the fixed
+  V1 digest, LP histogram, incidence, reduction, and output publication before
+  exact raw resume, and creates no per-generation snapshot or working payload.
+  Generic finalized-OOC and prepared-borrowed routes retain their working
+  corpus. M4 also retains the frozen per-run path namespace, owning result
+  corpus, descriptor-bound selection identity, direct matrix input,
+  deterministic trim, dependency-only square-root materialization,
+  transactional source/sink reduction, and paired V3 identity. Native
+  incremental OOC reduction, measured RSS, bounded 50-digit production
+  evidence, automatic-selection evidence, and cross-size route evidence remain
+  before promotion.
 - Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
 
 ## Outcome
@@ -145,6 +150,15 @@ Split the collector API into two explicit operations:
 For OOC mode, add an explicit writer state machine `Open -> Suspended -> Open`, `Open -> Finalized`, and any I/O failure to `Failed`. `write()` is legal only in `Open`; rejected writes never increment count. `finalize()` is idempotent and is the only operation allowed to publish final `MAGIC`.
 
 `checkpoint_prefix()` returns a descriptor containing `store_id`, `generation`, committed `count`, and `data_end`. Under the collector lock it flushes and checks both streams, writes a temporary sentinel while keeping `MAGIC_INCOMPLETE`, closes writer handles, and then permits an explicit trusted-prefix reader to materialize that descriptor. After the reader is destroyed and all mappings are closed, the writer removes the temporary sentinel, restores the append cursors, and returns to `Open`. This strict close/read/unmap/reopen sequence is required on every platform, including Windows; the implementation must not rely on permissive POSIX sharing behavior.
+
+The production ordinary-OOC bridge uses the stronger
+`with_unique_ooc_prefix()` boundary. With `check_duplicates=true`, the
+collector verifies that its complete seen set, persisted writer count, and
+accepted-relation statistics agree before it mints the private-construction
+`CollectorUniqueOOCPrefixSource` capability. Only that concrete type may enter
+the direct reducer. The entire reduction and every worker future stay inside
+the callback; only after they finish is the reader unmapped and the exact raw
+descriptor resumed.
 
 The ordinary reader continues to reject incomplete stores. The trusted-prefix reader validates descriptor identity, overflow-safe index size, monotonic offsets, `offset[count] == data_end`, file bounds, exact deserialization consumption, and runtime bounds in Release builds. Recovery validates the last committed prefix, closes every handle, truncates uncommitted tails to `count/data_end`, and only then reopens append mode.
 
@@ -642,11 +656,12 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
   boundary; append, observer, and materialization failures abort partial output.
   Output digest and LP metrics finish before publication, and the result retains
   the owning corpus through matrix and square-root consumers.
-- [x] Remove structured OOC relation-payload materialization. A finalized V3 raw
-  snapshot now streams validation, the raw digest, and stable `ABPair`
-  de-duplication in one pass. Accepted rows enter a private working OOC corpus,
-  and the reducer reads that corpus directly with worker counts 1, 2, and 4.
-  The raw snapshot remains authoritative after any failure and is consumed only
+- [x] Remove structured OOC relation-payload materialization from the generic
+  finalized-OOC and prepared-borrowed routes. A finalized V3 raw corpus streams
+  validation, the raw digest, and stable `ABPair` de-duplication in one pass.
+  Accepted rows enter a private working OOC corpus, and the reducer reads that
+  corpus directly with worker counts 1, 2, and 4.
+  The raw corpus remains authoritative after any failure and is consumed only
   after output publication succeeds. The four source/sink backend combinations
   produce identical rows, order, digest, and complete reduction statistics.
   Explicit OOC output bounds duplicate and active-output relation payloads;
@@ -658,19 +673,45 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
   parallel materialization, commits, stable rows/order, full stats, and digest
   equivalence for worker counts 1, 2, and 4 in Release.
 - [x] Wire the adaptive ordinary-OOC collector into the structured engine when
-  both OOC and structured modes are explicitly forced. Each logical generation
-  receives sibling snapshot/working/output leases under a frozen run namespace.
-  Prefix copy resumes the raw writer before reduction; terminal descriptor and
-  input-count equality are proved before handoff, while the raw owner survives
-  all user callbacks. Size-aware automatic OOC, resume, and distributed routes
-  retain legacy/unsupported behavior. Repeated prefixes cost
-  `O(rounds * relations)` I/O and can occupy raw+snapshot+working+output payloads;
-  native incremental wiring, measured RSS, stress/progressive wiring, and final
-  cross-size route evidence remain.
+  both OOC and structured modes are explicitly forced. The production collector
+  runs with duplicate rejection enabled and mints a private-construction unique
+  prefix only after its seen set, writer count, and accepted-relation statistics
+  agree. The engine accepts that concrete capability and completes full raw
+  validation, the fixed V1 digest, LP histogram, incidence, parallel reduction,
+  and transactional output publication inside the callback. Every worker and
+  future drains before callback return; the reader is then unmapped and the raw
+  writer resumes from the exact descriptor. Terminal descriptor and input-count
+  equality are proved before handoff, while the raw owner survives all user
+  callbacks.
+- [x] Bind the collector uniqueness proof and raw digest to every payload read.
+  The first scan checks an exact raw AB set against the collector's complete
+  `seen_` set and stores one 128-bit V1 relation fingerprint per ordinal.
+  Reducer reads validate those fingerprints concurrently. After output
+  finalize, a second reader/new mapping rechecks the complete suspended prefix,
+  so platforms with snapshot-like `MAP_PRIVATE` behavior cannot hide a
+  same-size backing-file rewrite from the old mapping. Proof, payload, semantic,
+  or fresh-view drift fails the raw writer closed and removes the unpublished
+  output; a later raw-resume failure also wins and removes finalized output.
+  The fingerprints are replay guards, not cryptographic authentication.
+- [x] Remove per-generation snapshot and working payloads from the production
+  ordinary-OOC route. Each logical generation receives only an output lease
+  under the frozen run namespace, so the relation-payload disk peak is
+  `raw + output` rather than the former four-payload layout. This is not an RSS result:
+  the collector `ABPair` set, 16-byte-per-row fingerprints, LP histogram,
+  incidence, logical rows, and history remain corpus-scale metadata. The
+  temporary exact AB set and LP weight map are released before incidence state
+  is built. The raw writer stays `Suspended` throughout the
+  full reduction, collection cannot overlap that round, and every round still
+  scans its accumulated prefix for `O(rounds * relations)` decoding and I/O.
+  Generic finalized-OOC reduction and generic `prepare_borrowed_structured()`
+  continue to use a private working corpus. Native incremental scanning,
+  measured RSS, bounded 50-digit production evidence, and automatic structured
+  selection remain open; size-aware OOC, resume, and distributed structured
+  routes retain legacy or unsupported behavior.
 
 Exit gate: structured mode runs exactly once, OFF mode is unchanged, every route
-reports the same metrics for the same snapshot, and the explicit OOC-output route
-keeps relation payload memory bounded.
+reports the same metrics for the same generation input, and the explicit OOC-output route
+avoids a per-generation relation-payload vector.
 
 ### M5: Scale Validation
 
@@ -975,7 +1016,7 @@ BUILD INCIDENCE -> SCORE/PLAN -> MATERIALIZE TEMP OUTPUT -> VALIDATE
                           input remains authoritative
 ```
 
-At 10x load, incidence memory and source-set materialization break before CPU. At 100x, repeated full OOC snapshots are unacceptable; direct corpus source/sink reduction, matrix input, trimming, and selected-dependency reads are therefore promotion blockers. No network or authorization boundary is added.
+At 10x load, incidence memory and source-set materialization break before CPU. At 100x, repeated full OOC prefix scans are unacceptable; direct corpus source/sink reduction, matrix input, trimming, and selected-dependency reads are therefore promotion blockers. No network or authorization boundary is added.
 
 Rollback is `GNFS_STRUCTURED_FILTER=0` for behavior and a branch revert for contract changes. The OOC/checkpoint contract is explicitly versioned; old readers may reject deeper rows or newer headers, so producing version and persistence cap travel with owned corpora rather than being assumed compatible.
 
@@ -1153,7 +1194,7 @@ structured failure or regression?
 
 There is no database migration. Increasing a reader limit without changing the wire layout remains backward-compatible, but old binaries may reject newly deep rows. Therefore structured output is never written to a corpus intended for an older binary without recording the producing version and configured limit.
 
-Post-integration verification runs OFF and ON modes on the same fixed corpus and compares source-space validity, then exercises one adaptive OOC snapshot cycle.
+Post-integration verification runs OFF and ON modes on the same fixed corpus and compares source-space validity, then exercises one adaptive OOC borrowed-prefix cycle.
 
 ### Section 10: Long-Term Trajectory
 
@@ -1184,7 +1225,7 @@ Skipped after checking the plan for screens, components, interaction flows, resp
 
 ### Dream State Delta
 
-After this project, GNFS has one relation-reduction contract, exact source-space transformations, deterministic parallel execution, and bounded-memory integration. The remaining distance to the 12-month ideal is automatic policy learning from corpora, standalone distributed reduction when scale proves it necessary, and retirement of legacy strategies.
+After this project, GNFS has one relation-reduction contract, exact source-space transformations, deterministic parallel execution, and OOC relation-payload streaming. Measured whole-process memory bounds, automatic policy learning from corpora, standalone distributed reduction when scale proves it necessary, and retirement of legacy strategies remain part of the 12-month ideal.
 
 ### Failure Modes Registry
 
@@ -1224,9 +1265,10 @@ The plan touches lifecycle diagrams embedded as comments in `collector.hpp` and 
 - [x] **T7 (P2, human: ~2d / agent: ~4h)** — parallel scheduler — add conflict batches, ordered commit, thread equivalence, and TSAN.
 - [ ] **T8 (P2, human: ~2d / agent: ~4h)** — integration evidence — strict policy
   parsing, the shared engine's single structured dispatch, the default-off
-  production vector overlay, frozen callback snapshot, and unsupported-route
-  side-effect boundaries are complete; realistic scale corpora, bounded OOC
-  integration, and cross-size validation remain.
+  production vector overlay, collector-proven unique ordinary-OOC direct route,
+  frozen callback prefix, and unsupported-route side-effect boundaries are
+  complete; measured RSS, bounded 50-digit production evidence, automatic route
+  evidence, and cross-size validation remain.
 
 ### CEO Review Completion Summary
 
@@ -1387,13 +1429,17 @@ This diagram records the coverage plan at review time. M1, the vector-backed
 M2/M3 implementation, and the explicit M4 vector/ordinary-OOC routes now have
 tests. The full selected-source MatrixBuilder payload oracle, direct corpus
 handoff, selected dependency lifetime, source/sink reduction, paired-data
-identity, and adaptive structured OOC bridge are closed. Remaining gaps are a
-native incremental OOC route, measured RSS, and cross-size scale evidence.
+identity, and collector-proven unique structured OOC bridge are closed. The
+production bridge has no per-generation snapshot or working payload, but keeps
+the raw writer suspended for the complete reduction and rereads the full prefix
+each round. Remaining gaps are native incremental OOC scanning, measured RSS,
+bounded 50-digit production evidence, automatic-selection evidence, and
+cross-size scale evidence.
 
 ### Performance Review
 
 1. Scoring every pair by fully materializing relations would multiply allocations and integer copies. Score canonical key/source/factor metadata and materialize only selected MST edges.
-2. Repeated full accumulated OOC snapshots are O(rounds × relations) I/O and can temporarily require raw, snapshot, working, and output disk payloads. Streaming source/sink reduction removes relation-payload vectors, but promoted scale still requires an incremental source boundary and measured RSS.
+2. The production ordinary-OOC route no longer copies snapshot or working payloads, so its per-generation relation-payload disk peak is `raw + output`. It still holds raw `Suspended` and rereads the full accumulated prefix for `O(rounds × relations)` decoding and I/O; this prevents collection/reduction overlap and does not establish an RSS bound. Generic finalized-OOC and prepared-borrowed routes retain their working corpus. Promotion still requires incremental scanning and measured RSS.
 3. Ordered commit can dominate at scale. Measure batch occupancy and commit share before considering concurrent incidence mutation; redesign batch size if commit exceeds the frozen budget.
 4. Full-matrix fill, not LP weight alone, controls solver cost. Record both projected and realized matrix nonzeros and reject pivots under a global budget.
 
@@ -1414,9 +1460,11 @@ native incremental OOC route, measured RSS, and cross-size scale evidence.
 | scale policy | nominal excess hides matrix regression | Yes | Frozen materiality and full-NNZ budgets | No |
 
 The explicit structured vector route and explicitly forced ordinary-OOC route
-are available but default-off. Automatic structured selection, size-aware OOC,
-resume, and distributed structured routes remain unavailable until incremental
-OOC and scale gates land. Legacy default behavior remains unchanged.
+are available but default-off. Automatic structured selection, size-aware OOC
+structured selection, resume, and distributed structured routes remain
+unavailable until incremental OOC and scale gates land. No current result
+supplies measured RSS or bounded 50-digit production evidence. Legacy default
+behavior remains unchanged.
 
 ### NOT in Scope After Engineering Review
 

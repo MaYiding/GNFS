@@ -8,6 +8,7 @@
 #endif
 
 #include "gnfs/relation/collector.hpp"
+#include "gnfs/relation/relation_source.hpp"
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/safe_math.hpp"
 #include "gnfs/util/temp_path.hpp"
@@ -15,6 +16,7 @@
 #include <array>
 #include <cassert>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -24,11 +26,41 @@
 #include <stdexcept>
 #include <system_error>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 using namespace gnfs;
 using namespace gnfs::relation;
 using namespace gnfs::core;
+
+static_assert(RelationSource<CollectorUniqueOOCPrefixSource>);
+static_assert(CollectorUniqueOOCPrefixSource::provides_unique_relations);
+static_assert(
+    !std::is_constructible_v<CollectorUniqueOOCPrefixSource, const CollectorOOCPrefixSource&>);
+
+template <typename Source>
+concept PublicSourceUntrustChannel = requires(const Source& source, std::exception_ptr failure) {
+    source.mark_untrusted(std::move(failure));
+};
+
+static_assert(!PublicSourceUntrustChannel<CollectorUniqueOOCPrefixSource>);
+
+template <typename Source>
+concept PublicProvenABMembership = requires(const Source& source, const ABPair& ab_pair) {
+    source.contains_proven_ab_pair(ab_pair);
+};
+
+static_assert(!PublicProvenABMembership<CollectorUniqueOOCPrefixSource>);
+
+struct FreshPrefixNoop final {
+    void operator()(const CollectorOOCPrefixSource&) const {}
+};
+
+template <typename Source>
+concept PublicFreshPrefixView =
+    requires(const Source& source) { source.with_fresh_prefix_view(FreshPrefixNoop{}); };
+
+static_assert(!PublicFreshPrefixView<CollectorUniqueOOCPrefixSource>);
 
 [[noreturn]] static void check_failed(const char* expression, int line) {
     throw std::runtime_error(std::string("CHECK failed at line ") + std::to_string(line) + ": " +
@@ -1039,6 +1071,233 @@ struct ReentrantObserverResult final {
     }
 };
 } // namespace
+
+void test_ooc_unique_borrowed_prefix_capability_and_lifecycle() {
+    std::cout << "Testing unique borrowed OOC capability/lifecycle..." << std::endl;
+    const auto path = make_tmp_ooc_path("unique_borrowed_prefix");
+    OOCArtifacts cleanup(path);
+
+    CollectorConfig config;
+    config.check_duplicates = true;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+    RelationCollector collector(config);
+    for (int i = 0; i < 3; ++i) {
+        CHECK(collector.add(make_snapshot_relation(i)));
+    }
+    CHECK(!collector.add(make_snapshot_relation(0)));
+
+    bool mutation_rejected = false;
+    OOCSnapshotDescriptor descriptor;
+    auto values =
+        collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+            CHECK(source.count() == 3);
+            CHECK(source.ab_pairs_unique());
+            descriptor = source.descriptor();
+            CHECK(collector.size() == 3);
+            CHECK(collector.stats().total_relations == 3);
+
+            auto result = std::make_unique<std::array<int64_t, 3>>();
+            std::array<std::thread, 3> workers;
+            for (size_t ordinal = 0; ordinal < workers.size(); ++ordinal) {
+                workers[ordinal] =
+                    std::thread([&, ordinal]() { (*result)[ordinal] = source.read(ordinal).a; });
+            }
+            for (auto& worker : workers) {
+                worker.join();
+            }
+
+            std::thread mutation([&]() {
+                try {
+                    (void)collector.add(make_snapshot_relation(3));
+                } catch (const std::logic_error&) {
+                    mutation_rejected = true;
+                }
+            });
+            mutation.join();
+            return result;
+        });
+
+    CHECK(values != nullptr);
+    CHECK((*values)[0] == 1);
+    CHECK((*values)[1] == 3);
+    CHECK((*values)[2] == 5);
+    CHECK(mutation_rejected);
+    CHECK(descriptor.count == 3);
+    CHECK(descriptor.store_id != 0);
+    CHECK(collector.add(make_snapshot_relation(3)));
+
+    bool callback_failure_seen = false;
+    try {
+        collector.with_unique_ooc_prefix([](const CollectorUniqueOOCPrefixSource& source) {
+            CHECK(source.read(0).a == 1);
+            throw BorrowedPrefixCallbackFailure{};
+        });
+    } catch (const BorrowedPrefixCallbackFailure&) {
+        callback_failure_seen = true;
+    }
+    CHECK(callback_failure_seen);
+    CHECK(collector.add(make_snapshot_relation(4)));
+
+    const auto final_descriptor = collector.finalize_ooc();
+    CHECK(final_descriptor.has_value());
+    CHECK(final_descriptor->count == 5);
+    OOCRelationReader reader(path, *final_descriptor);
+    CHECK(reader.count() == 5);
+    CHECK(reader.read(4).a == 9);
+
+    std::cout << "  Unique borrowed OOC capability/lifecycle: PASS" << std::endl;
+}
+
+void test_ooc_unique_borrowed_prefix_rejects_unproven_sources() {
+    std::cout << "Testing unique borrowed OOC proof preconditions..." << std::endl;
+
+    const auto unchecked_path = make_tmp_ooc_path("unique_borrowed_unchecked");
+    OOCArtifacts unchecked_cleanup(unchecked_path);
+    {
+        CollectorConfig config;
+        config.check_duplicates = false;
+        config.ooc_enabled = true;
+        config.ooc_base_path = unchecked_path;
+        RelationCollector collector(config);
+        CHECK(collector.add(make_snapshot_relation(0)));
+        CHECK(collector.add(make_snapshot_relation(0)));
+
+        bool callback_called = false;
+        check_logic_error([&]() {
+            collector.with_unique_ooc_prefix(
+                [&](const CollectorUniqueOOCPrefixSource&) { callback_called = true; });
+        });
+        CHECK(!callback_called);
+
+        // The compatibility borrowed-source API remains available and does not
+        // misrepresent this prefix as unique.
+        collector.with_ooc_prefix([&](const CollectorOOCPrefixSource& source) {
+            CHECK(source.count() == 2);
+            CHECK(source.read(0).ab() == source.read(1).ab());
+        });
+        CHECK(collector.add(make_snapshot_relation(1)));
+        CHECK(collector.finalize_ooc()->count == 3);
+    }
+
+    // A recovered store may predate the collector's duplicate-rejection policy.
+    // Its reconstructed seen set exposes that the two persisted rows are not a
+    // whole-prefix uniqueness proof, so the strong capability must stay closed.
+    const auto recovered_path = make_tmp_ooc_path("unique_borrowed_recovered_duplicates");
+    OOCArtifacts recovered_cleanup(recovered_path);
+    OOCSnapshotDescriptor recovered_descriptor;
+    {
+        OOCRelationWriter writer(recovered_path);
+        const Relation duplicate = make_snapshot_relation(0);
+        CHECK(writer.write(duplicate) == 0);
+        CHECK(writer.write(duplicate) == 1);
+        recovered_descriptor = writer.checkpoint_prefix();
+        writer.fail_suspended_snapshot();
+    }
+
+    CollectorConfig recovered_config;
+    recovered_config.check_duplicates = true;
+    recovered_config.ooc_enabled = true;
+    recovered_config.ooc_base_path = recovered_path;
+    recovered_config.ooc_resume_snapshot = recovered_descriptor;
+    RelationCollector recovered(recovered_config);
+    CHECK(recovered.size() == 2);
+
+    bool recovered_callback_called = false;
+    check_logic_error([&]() {
+        recovered.with_unique_ooc_prefix(
+            [&](const CollectorUniqueOOCPrefixSource&) { recovered_callback_called = true; });
+    });
+    CHECK(!recovered_callback_called);
+    recovered.with_ooc_prefix(
+        [](const CollectorOOCPrefixSource& source) { CHECK(source.count() == 2); });
+    CHECK(recovered.add(make_snapshot_relation(1)));
+    CHECK(recovered.finalize_ooc()->count == 3);
+
+    std::cout << "  Unique borrowed OOC proof preconditions: PASS" << std::endl;
+}
+
+void test_ooc_unique_borrowed_prefix_source_corruption_fails_closed() {
+    std::cout << "Testing unique borrowed OOC corruption fail-closed..." << std::endl;
+    const auto path = make_tmp_ooc_path("unique_borrowed_corruption");
+    OOCArtifacts cleanup(path);
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+    RelationCollector collector(config);
+    CHECK(collector.add(make_snapshot_relation(0)));
+    const auto stats_before_failure = collector.stats();
+
+    const auto descriptor = collector.checkpoint_ooc();
+    {
+        std::fstream data(path + ".reldata", std::ios::in | std::ios::out | std::ios::binary);
+        CHECK(static_cast<bool>(data));
+        const uint32_t corrupt_count = std::numeric_limits<uint32_t>::max();
+        data.seekp(static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES + 16));
+        data.write(reinterpret_cast<const char*>(&corrupt_count), sizeof(corrupt_count));
+        data.flush();
+        CHECK(static_cast<bool>(data));
+    }
+    collector.resume_ooc(descriptor);
+
+    bool callback_caught_source_failure = false;
+    bool method_failed_closed = false;
+    try {
+        collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+            try {
+                (void)source.read(0);
+            } catch (const std::runtime_error&) {
+                callback_caught_source_failure = true;
+            }
+        });
+    } catch (const std::runtime_error&) {
+        method_failed_closed = true;
+    }
+    CHECK(callback_caught_source_failure);
+    CHECK(method_failed_closed);
+    check_logic_error([&]() { (void)collector.add(make_snapshot_relation(1)); });
+    check_stats_equal(collector.stats(), stats_before_failure);
+
+    std::cout << "  Unique borrowed OOC corruption fail-closed: PASS" << std::endl;
+}
+
+void test_ooc_unique_borrowed_prefix_resume_failure_takes_precedence() {
+    std::cout << "Testing unique borrowed OOC resume precedence..." << std::endl;
+    const auto path = make_tmp_ooc_path("unique_borrowed_resume_failure");
+    OOCArtifacts cleanup(path);
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+    RelationCollector collector(config);
+    CHECK(collector.add(make_snapshot_relation(0)));
+
+    bool resume_failure_seen = false;
+    bool callback_failure_leaked = false;
+    try {
+        collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+            CHECK(source.read(0).a == 1);
+            std::fstream data(path + ".reldata", std::ios::in | std::ios::out | std::ios::binary);
+            CHECK(static_cast<bool>(data));
+            const uint64_t corrupt_magic = 0;
+            data.seekp(0);
+            data.write(reinterpret_cast<const char*>(&corrupt_magic), sizeof(corrupt_magic));
+            data.flush();
+            CHECK(static_cast<bool>(data));
+            throw BorrowedPrefixCallbackFailure{};
+        });
+    } catch (const BorrowedPrefixCallbackFailure&) {
+        callback_failure_leaked = true;
+    } catch (const std::runtime_error&) {
+        resume_failure_seen = true;
+    }
+    CHECK(resume_failure_seen);
+    CHECK(!callback_failure_leaked);
+    check_logic_error([&]() { (void)collector.add(make_snapshot_relation(1)); });
+
+    std::cout << "  Unique borrowed OOC resume precedence: PASS" << std::endl;
+}
 
 void test_ooc_borrowed_prefix_callback_failures_resume() {
     std::cout << "Testing borrowed OOC callback/output failure recovery..." << std::endl;
@@ -2336,6 +2595,10 @@ int main() {
     test_finalize_ooc_vector_mode_remains_appendable();
     test_ooc_snapshot_append_snapshot_finalize();
     test_ooc_borrowed_prefix_append_and_finalize();
+    test_ooc_unique_borrowed_prefix_capability_and_lifecycle();
+    test_ooc_unique_borrowed_prefix_rejects_unproven_sources();
+    test_ooc_unique_borrowed_prefix_source_corruption_fails_closed();
+    test_ooc_unique_borrowed_prefix_resume_failure_takes_precedence();
     test_ooc_borrowed_prefix_callback_failures_resume();
     test_ooc_borrowed_prefix_source_corruption_fails_closed();
     test_ooc_borrowed_prefix_resume_failure_takes_precedence();

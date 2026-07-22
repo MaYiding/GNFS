@@ -11,18 +11,24 @@
 #include "structured_reduction.hpp"
 
 #include <algorithm>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace gnfs::relation {
+
+class CollectorUniqueOOCPrefixSource;
 
 enum class ReductionStrategy {
     NoLargePrimes,
@@ -684,13 +690,191 @@ public:
         return reduce_prepared_structured(std::move(prepared));
     }
 
+    /// Synchronously reduce one collector-proven unique OOC prefix without a
+    /// de-duplicated working corpus.
+    ///
+    /// The concrete source type is a private-construction capability minted by
+    /// RelationCollector. A static marker on an arbitrary RelationSource is
+    /// deliberately insufficient to select this overload. Every source read,
+    /// reducer worker, and output materialization completes before this method
+    /// returns, so the result owns no reference to the callback-scoped source.
+    /// The route is structured-only, requires transactional OOC output, and
+    /// rejects a working path because no intermediate relation payload is
+    /// persisted.
+    template <typename Source>
+        requires std::same_as<std::remove_cvref_t<Source>, CollectorUniqueOOCPrefixSource>
+    [[nodiscard]] static RelationReductionResult
+    reduce_direct_borrowed_structured(uint64_t generation, const Source& source,
+                                      const RelationReductionConfig& config) {
+        validate_config(config);
+        if (generation == 0) {
+            throw std::invalid_argument(
+                "direct borrowed relation source generation must be nonzero");
+        }
+        if (config.strategy != ReductionStrategy::Structured) {
+            throw std::invalid_argument(
+                "direct borrowed relation source requires the structured reduction strategy");
+        }
+        if (!source.ab_pairs_unique()) {
+            throw std::logic_error(
+                "direct borrowed relation source lacks its runtime uniqueness capability");
+        }
+
+        auto structured = freeze_direct_borrowed_structured_config(*config.structured);
+        std::optional<RelationSink> structured_sink;
+        structured_sink.emplace(RelationSink::out_of_core(
+            generation, structured.output_ooc_base_path, structured.output_ooc_cleanup));
+
+        const size_t input_relations = static_cast<size_t>(source.count());
+        struct DirectSourceScan final {
+            CorpusDigest raw_digest;
+            LpKeyWeightHistogram lp_histogram;
+            std::vector<CorpusDigest> fingerprints;
+        };
+        const DirectSourceScan scan = [&] {
+            CorpusDigestAccumulator raw_digest(input_relations);
+            LpKeyWeightAccumulator lp_histogram(input_relations);
+            std::vector<CorpusDigest> fingerprints;
+            fingerprints.reserve(input_relations);
+
+            // The capability is minted before the prefix reader opens. Prove
+            // that the bytes visible to this engine still describe exactly the
+            // collector's unique AB set, then release this temporary O(N) set
+            // and the histogram's O(N) weights before incidence construction
+            // adds its own O(N) state.
+            std::unordered_set<core::ABPair, core::ABPairHash> observed_ab_pairs;
+            observed_ab_pairs.reserve(input_relations);
+            for (size_t ordinal = 0; ordinal < input_relations; ++ordinal) {
+                const core::Relation relation = source.read(ordinal);
+                validate_trusted_direct_source_relation(source, relation);
+                if (!source.contains_proven_ab_pair(relation.ab())) {
+                    fail_direct_source_untrusted(
+                        source,
+                        "direct borrowed source contains an AB pair outside the proven set");
+                }
+                if (!observed_ab_pairs.insert(relation.ab()).second) {
+                    fail_direct_source_untrusted(
+                        source, "direct borrowed source contains a duplicate AB pair");
+                }
+                raw_digest.append(relation);
+                lp_histogram.append(relation);
+                fingerprints.push_back(direct_relation_fingerprint(relation));
+            }
+            return DirectSourceScan{raw_digest.finish(), lp_histogram.finish(),
+                                    std::move(fingerprints)};
+        }();
+
+        RelationReductionStats stats;
+        stats.strategy = ReductionStrategy::Structured;
+        stats.input_relations = input_relations;
+        stats.raw_input_digest = scan.raw_digest;
+        stats.deduplicated_input_lp_histogram = scan.lp_histogram;
+
+        ValidatedDirectBorrowedSource<Source, Source> validated_source(source, source,
+                                                                       scan.fingerprints);
+        SourceCorpus borrowed = SourceCorpus::from_validated_borrowed(generation, validated_source);
+        if (borrowed.size() != input_relations) {
+            throw std::logic_error(
+                "direct borrowed relation source count changed during synchronous reduction");
+        }
+        RelationReductionResult result =
+            reduce_structured_source(generation, std::move(borrowed), std::move(stats), structured,
+                                     std::move(structured_sink));
+
+        // Some successful reducer paths do not need to rematerialize every raw
+        // atom. Reopen a fresh view and read the whole immutable prefix after
+        // the output commits; an older MAP_PRIVATE view need not observe a
+        // legal, same-size payload rewrite. Any failure destroys the local
+        // RemoveArtifacts result before the collector observes the callback as
+        // failed.
+        source.with_fresh_prefix_view([&](const auto& fresh_source) {
+            using FreshSource = std::remove_cvref_t<decltype(fresh_source)>;
+            ValidatedDirectBorrowedSource<FreshSource, Source> fresh_validated_source(
+                fresh_source, source, scan.fingerprints);
+            for (size_t ordinal = 0; ordinal < input_relations; ++ordinal) {
+                (void)fresh_validated_source.read(ordinal);
+            }
+        });
+        return result;
+    }
+
 private:
+    template <typename Source>
+    [[noreturn]] static void fail_direct_source_untrusted(const Source& source,
+                                                          const char* message) {
+        try {
+            throw std::runtime_error(message);
+        } catch (...) {
+            source.mark_untrusted(std::current_exception());
+            throw;
+        }
+    }
+
+    template <typename Source>
+    static void validate_trusted_direct_source_relation(const Source& source,
+                                                        const core::Relation& relation) {
+        try {
+            validate_direct_structured_source_relation(relation);
+        } catch (...) {
+            source.mark_untrusted(std::current_exception());
+            throw;
+        }
+    }
+
+    [[nodiscard]] static CorpusDigest direct_relation_fingerprint(const core::Relation& relation) {
+        CorpusDigestAccumulator fingerprint(1);
+        fingerprint.append(relation);
+        return fingerprint.finish();
+    }
+
+    template <typename ReadSource, typename TrustSource> class ValidatedDirectBorrowedSource final {
+    public:
+        ValidatedDirectBorrowedSource(const ReadSource& read_source,
+                                      const TrustSource& trust_source,
+                                      const std::vector<CorpusDigest>& fingerprints) noexcept
+            : read_source_(&read_source), trust_source_(&trust_source),
+              fingerprints_(&fingerprints) {}
+
+        [[nodiscard]] size_t count() const noexcept {
+            return fingerprints_->size();
+        }
+
+        [[nodiscard]] core::Relation read(size_t ordinal) const {
+            if (ordinal >= fingerprints_->size()) {
+                throw std::out_of_range("validated direct borrowed source ordinal is out of range");
+            }
+            core::Relation relation = read_source_->read(ordinal);
+            validate_trusted_direct_source_relation(*trust_source_, relation);
+            if (direct_relation_fingerprint(relation) != fingerprints_->at(ordinal)) {
+                fail_direct_source_untrusted(
+                    *trust_source_, "direct borrowed source payload changed after validation");
+            }
+            return relation;
+        }
+
+    private:
+        const ReadSource* read_source_;
+        const TrustSource* trust_source_;
+        const std::vector<CorpusDigest>* fingerprints_;
+    };
+
     [[nodiscard]] static RelationReductionResult
     reduce_structured_corpus(uint64_t generation, RelationCorpus deduplicated,
                              RelationReductionStats stats,
                              const RelationReductionConfig::StructuredExecutionConfig& structured,
                              std::optional<RelationSink> structured_sink) {
-        SourceCorpus source(std::move(deduplicated));
+        return reduce_structured_source(generation, SourceCorpus(std::move(deduplicated)),
+                                        std::move(stats), structured, std::move(structured_sink));
+    }
+
+    [[nodiscard]] static RelationReductionResult
+    reduce_structured_source(uint64_t generation, SourceCorpus source, RelationReductionStats stats,
+                             const RelationReductionConfig::StructuredExecutionConfig& structured,
+                             std::optional<RelationSink> structured_sink) {
+        if (source.generation() != generation) {
+            throw std::logic_error(
+                "structured source generation does not match the reduction generation");
+        }
         SequentialStructuredReducer reducer(std::move(source), structured.incidence);
         stats.structured_run = reducer.reduce_budgeted_parallel(
             structured.budget, structured.parallel, structured.planner);
@@ -777,10 +961,34 @@ private:
     freeze_borrowed_structured_config(
         const RelationReductionConfig::StructuredExecutionConfig& requested) {
         auto frozen = requested;
-        frozen.deduplicated_ooc_base_path =
-            relation_corpus_detail::freeze_ooc_path(requested.deduplicated_ooc_base_path);
-        frozen.output_ooc_base_path =
-            relation_corpus_detail::freeze_ooc_path(requested.output_ooc_base_path);
+        if (!requested.deduplicated_ooc_base_path.empty()) {
+            frozen.deduplicated_ooc_base_path =
+                relation_corpus_detail::freeze_ooc_path(requested.deduplicated_ooc_base_path);
+        }
+        if (!requested.output_ooc_base_path.empty()) {
+            frozen.output_ooc_base_path =
+                relation_corpus_detail::freeze_ooc_path(requested.output_ooc_base_path);
+        }
+        return frozen;
+    }
+
+    [[nodiscard]] static RelationReductionConfig::StructuredExecutionConfig
+    freeze_direct_borrowed_structured_config(
+        const RelationReductionConfig::StructuredExecutionConfig& requested) {
+        if (!requested.deduplicated_ooc_base_path.empty()) {
+            throw std::invalid_argument(
+                "direct borrowed structured input rejects a working OOC base path");
+        }
+        if (requested.output_ooc_base_path.empty()) {
+            throw std::invalid_argument(
+                "direct borrowed structured input requires an OOC output base path");
+        }
+        if (requested.output_ooc_cleanup != OOCCleanupPolicy::RemoveArtifacts) {
+            throw std::invalid_argument(
+                "direct borrowed structured input requires removable OOC output artifacts");
+        }
+        auto frozen = freeze_borrowed_structured_config(requested);
+        validate_structured_path_pair(frozen, false, true);
         return frozen;
     }
 
@@ -871,6 +1079,45 @@ private:
     static void validate_raw_relation(const core::Relation& relation) {
         if (relation.is_merged()) {
             throw std::invalid_argument("relation reduction snapshot contains a merged relation");
+        }
+    }
+
+    static void validate_direct_structured_source_relation(const core::Relation& relation) {
+        validate_raw_relation(relation);
+        if (relation.b == 0) {
+            throw StructuredReductionError(StructuredReductionErrorCode::InvalidInput,
+                                           "source relation has b == 0");
+        }
+        for (const auto& [a, b] : relation.extra_ab_pairs) {
+            (void)a;
+            if (b == 0) {
+                throw StructuredReductionError(StructuredReductionErrorCode::InvalidInput,
+                                               "source relation has an extra pair with b == 0");
+            }
+        }
+        const auto validate_large_prime = [](const core::PrimePower& prime_power, bool algebraic) {
+            if (prime_power.p < 2 || prime_power.e == 0) {
+                throw StructuredReductionError(
+                    StructuredReductionErrorCode::InvalidInput,
+                    "source relation contains an invalid large-prime power");
+            }
+            constexpr uint64_t projective_root = std::numeric_limits<uint32_t>::max();
+            if (algebraic && prime_power.r != projective_root && prime_power.r >= prime_power.p) {
+                throw StructuredReductionError(StructuredReductionErrorCode::InvalidInput,
+                                               "algebraic large-prime power has an invalid root");
+            }
+        };
+        for (const auto& prime_power : relation.rational_large_prime) {
+            validate_large_prime(prime_power, false);
+        }
+        for (const auto& prime_power : relation.algebraic_large_prime) {
+            validate_large_prime(prime_power, true);
+        }
+        try {
+            relation.validate_persistence_limits();
+        } catch (const std::length_error&) {
+            throw StructuredReductionError(StructuredReductionErrorCode::PersistenceLimit,
+                                           "source relation exceeds persistence limits");
         }
     }
 

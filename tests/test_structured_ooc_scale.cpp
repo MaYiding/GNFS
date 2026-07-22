@@ -19,7 +19,7 @@
 
 using gnfs::core::Relation;
 using gnfs::relation::CollectorConfig;
-using gnfs::relation::CollectorOOCPrefixSource;
+using gnfs::relation::CollectorUniqueOOCPrefixSource;
 using gnfs::relation::CorpusDigest;
 using gnfs::relation::CorpusDigestAccumulator;
 using gnfs::relation::OOCCleanupPolicy;
@@ -188,11 +188,7 @@ struct BuiltOOCSource final {
 struct BuiltCollectorSource final {
     CorpusDigest raw_digest;
     size_t rows_written = 0;
-};
-
-struct PreparedBorrowedRun final {
-    RelationReductionEngine::PreparedBorrowedStructuredInput prepared;
-    OOCSnapshotDescriptor source_descriptor;
+    size_t duplicates_rejected = 0;
 };
 
 [[nodiscard]] BuiltOOCSource build_ooc_source(const std::string& base_path, size_t row_count) {
@@ -211,18 +207,29 @@ struct PreparedBorrowedRun final {
 
 [[nodiscard]] BuiltCollectorSource build_collector_source(RelationCollector& collector,
                                                           size_t row_count) {
-    CorpusDigestAccumulator digest(row_count);
+    const size_t expected_unique_rows = unique_row_count(row_count);
+    CorpusDigestAccumulator digest(expected_unique_rows);
+    size_t rows_written = 0;
+    size_t duplicates_rejected = 0;
     for (size_t raw_ordinal = 0; raw_ordinal < row_count; ++raw_ordinal) {
         Relation relation = make_raw_relation(raw_ordinal, row_count);
-        digest.append(relation);
-        CHECK(collector.add(std::move(relation)));
+        const bool duplicate = raw_ordinal % DUPLICATE_PERIOD == DUPLICATE_PERIOD - 1;
+        if (!duplicate) {
+            digest.append(relation);
+        }
+        const bool added = collector.add(std::move(relation));
+        CHECK(added != duplicate);
+        rows_written += added ? 1U : 0U;
+        duplicates_rejected += added ? 0U : 1U;
     }
 
     const auto stats = collector.stats();
-    CHECK(collector.size() == row_count);
-    CHECK(stats.total_relations == row_count);
-    CHECK(stats.duplicates_rejected == 0);
-    return {digest.finish(), row_count};
+    CHECK(rows_written == expected_unique_rows);
+    CHECK(duplicates_rejected == duplicate_count(row_count));
+    CHECK(collector.size() == rows_written);
+    CHECK(stats.total_relations == rows_written);
+    CHECK(stats.duplicates_rejected == duplicates_rejected);
+    return {digest.finish(), rows_written, duplicates_rejected};
 }
 
 [[nodiscard]] size_t verify_ooc_source_payload(const std::string& base_path,
@@ -250,7 +257,7 @@ struct PreparedBorrowedRun final {
     size_t rows_read = 0;
     for (size_t raw_ordinal = 0; raw_ordinal < source.rows_written; ++raw_ordinal) {
         const Relation relation = corpus.read(raw_ordinal);
-        CHECK(relation_equal(relation, make_raw_relation(raw_ordinal, source.rows_written)));
+        CHECK(relation_equal(relation, make_unique_relation(raw_ordinal, source.rows_written)));
         observed.append(relation);
         ++rows_read;
     }
@@ -278,18 +285,18 @@ struct PreparedBorrowedRun final {
     return normalized;
 }
 
-void check_common_result(const RelationReductionResult& result, size_t raw_row_count,
-                         uint32_t workers, const CorpusDigest& raw_digest) {
-    const size_t unique_rows = unique_row_count(raw_row_count);
+void check_common_result(const RelationReductionResult& result, size_t input_rows,
+                         size_t unique_rows, size_t duplicates_removed, uint32_t workers,
+                         const CorpusDigest& raw_digest) {
     const size_t component_groups = complete_component_groups(unique_rows);
     const size_t expected_output_rows = unique_rows - 2 * component_groups;
     const size_t shard_rows = std::min<size_t>(
-        std::max<size_t>(raw_row_count, 1),
+        std::max<size_t>(unique_rows, 1),
         gnfs::relation::StructuredFilterExperimentalCaps::max_rows_per_incidence_shard);
 
     CHECK(result.stats.strategy == ReductionStrategy::Structured);
-    CHECK(result.stats.input_relations == raw_row_count);
-    CHECK(result.stats.raw_duplicates_removed == duplicate_count(raw_row_count));
+    CHECK(result.stats.input_relations == input_rows);
+    CHECK(result.stats.raw_duplicates_removed == duplicates_removed);
     CHECK(result.stats.raw_input_digest == raw_digest);
     CHECK(result.stats.deduplicated_input_lp_histogram.weight_1 == 0);
     CHECK(result.stats.deduplicated_input_lp_histogram.weight_2 == component_groups);
@@ -336,7 +343,26 @@ struct ScaleOracle final {
     auto result = RelationReductionEngine::reduce(RawRelationSnapshot(generation, std::move(input)),
                                                   structured_config(raw_row_count, 1));
     CHECK(result.storage_kind() == RelationStorageKind::InMemory);
-    check_common_result(result, raw_row_count, 1, raw_digest);
+    check_common_result(result, raw_row_count, unique_row_count(raw_row_count),
+                        duplicate_count(raw_row_count), 1, raw_digest);
+    RelationReductionStats stats = normalized_stats(result.stats);
+    std::vector<Relation> output_rows = std::move(result).take_relations();
+    CHECK(output_rows.size() == stats.output_relations);
+    return {std::move(stats), std::move(output_rows)};
+}
+
+[[nodiscard]] ScaleOracle run_unique_memory_oracle(size_t unique_rows, uint64_t generation,
+                                                   const CorpusDigest& raw_digest) {
+    std::vector<Relation> input;
+    input.reserve(unique_rows);
+    for (size_t ordinal = 0; ordinal < unique_rows; ++ordinal) {
+        input.push_back(make_unique_relation(ordinal, unique_rows));
+    }
+
+    auto result = RelationReductionEngine::reduce(RawRelationSnapshot(generation, std::move(input)),
+                                                  structured_config(unique_rows, 1));
+    CHECK(result.storage_kind() == RelationStorageKind::InMemory);
+    check_common_result(result, unique_rows, unique_rows, 0, 1, raw_digest);
     RelationReductionStats stats = normalized_stats(result.stats);
     std::vector<Relation> output_rows = std::move(result).take_relations();
     CHECK(output_rows.size() == stats.output_relations);
@@ -370,7 +396,8 @@ void run_owning_ooc_case(size_t raw_row_count, uint64_t generation, const std::s
         CHECK(private_sink_exists(output_base));
         CHECK(private_sink_absent(working_base));
         CHECK(normalized_stats(result.stats) == oracle.stats);
-        check_common_result(result, raw_row_count, workers, source.raw_digest);
+        check_common_result(result, raw_row_count, unique_row_count(raw_row_count),
+                            duplicate_count(raw_row_count), workers, source.raw_digest);
 
         CHECK(result.size() == oracle.output_rows.size());
         CorpusDigestAccumulator observed_output(result.size());
@@ -406,47 +433,40 @@ void run_owning_ooc_case(size_t raw_row_count, uint64_t generation, const std::s
 run_borrowed_ooc_case(size_t raw_row_count, uint64_t generation, const std::string& input_base,
                       RelationCollector& collector, const BuiltCollectorSource& source,
                       const ScaleOracle& oracle, uint32_t workers) {
-    const std::string working_base = unique_ooc_base("working", raw_row_count, workers);
     const std::string output_base = unique_ooc_base("output", raw_row_count, workers);
     ArtifactCleanup cleanup;
-    cleanup.add(working_base);
     cleanup.add(output_base);
 
-    RelationReductionConfig config = structured_config(raw_row_count, workers);
-    config.structured->deduplicated_ooc_base_path = working_base;
+    RelationReductionConfig config = structured_config(source.rows_written, workers);
     config.structured->output_ooc_base_path = output_base;
     config.structured->output_ooc_cleanup = OOCCleanupPolicy::RemoveArtifacts;
 
-    PreparedBorrowedRun run = collector.with_ooc_prefix(
-        [&](const CollectorOOCPrefixSource& prefix) -> PreparedBorrowedRun {
-            return {
-                RelationReductionEngine::prepare_borrowed_structured(generation, prefix, config),
-                prefix.descriptor()};
-        });
-
-    // These observations occur only after with_ooc_prefix() has destroyed its
-    // mappings and exactly resumed the raw collector writer. The prepared
-    // token exclusively owns the de-duplicated working corpus.
-    CHECK(run.prepared.valid());
-    CHECK(run.prepared.generation() == generation);
-    CHECK(run.prepared.input_relations() == raw_row_count);
-    CHECK(run.source_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
-    CHECK(run.source_descriptor.store_id != 0);
-    CHECK(run.source_descriptor.generation != 0);
-    CHECK(run.source_descriptor.count == raw_row_count);
-    CHECK(run.source_descriptor.data_end > OOCRelationWriter::DATA_HEADER_BYTES);
-    CHECK(collector.size() == raw_row_count);
-    CHECK(ordinary_artifacts_exist(input_base));
-    CHECK(private_sink_exists(working_base));
-    CHECK(private_sink_absent(output_base));
-
+    OOCSnapshotDescriptor source_descriptor;
     {
-        auto result = RelationReductionEngine::reduce_prepared_structured(std::move(run.prepared));
+        auto run =
+            collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& prefix) {
+                auto result = RelationReductionEngine::reduce_direct_borrowed_structured(
+                    generation, prefix, config);
+                return std::pair(std::move(result), prefix.descriptor());
+            });
+
+        // The parallel reducer and every worker finish inside the callback.
+        // with_unique_ooc_prefix then destroys the raw reader and exactly
+        // resumes the collector before it exposes this owning output result.
+        auto& result = run.first;
+        source_descriptor = run.second;
+        CHECK(source_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(source_descriptor.store_id != 0);
+        CHECK(source_descriptor.generation != 0);
+        CHECK(source_descriptor.count == source.rows_written);
+        CHECK(source_descriptor.data_end > OOCRelationWriter::DATA_HEADER_BYTES);
+        CHECK(collector.size() == source.rows_written);
+        CHECK(ordinary_artifacts_exist(input_base));
         CHECK(result.storage_kind() == RelationStorageKind::FinalizedOOC);
         CHECK(private_sink_exists(output_base));
-        CHECK(private_sink_absent(working_base));
         CHECK(normalized_stats(result.stats) == oracle.stats);
-        check_common_result(result, raw_row_count, workers, source.raw_digest);
+        check_common_result(result, source.rows_written, source.rows_written, 0, workers,
+                            source.raw_digest);
 
         CHECK(result.size() == oracle.output_rows.size());
         CorpusDigestAccumulator observed_output(result.size());
@@ -462,18 +482,17 @@ run_borrowed_ooc_case(size_t raw_row_count, uint64_t generation, const std::stri
 
         std::cout << "[structured-ooc-scale] rows=" << raw_row_count << " workers=" << workers
                   << " source_rows=" << source.rows_written
-                  << " deduplicated_source_rows=" << unique_row_count(raw_row_count)
+                  << " collector_duplicates_rejected=" << source.duplicates_rejected
                   << " output_rows_read=" << result.size() << " incidence_entries="
                   << result.stats.structured_incidence.total_incidence_entries
                   << " commits=" << result.stats.structured_run.commits
-                  << " source_backend=collector-borrowed-prefix"
+                  << " source_backend=collector-direct-borrowed-prefix"
                   << " output_backend=finalized-ooc\n";
     }
     CHECK(private_sink_absent(output_base));
-    CHECK(private_sink_absent(working_base));
     CHECK(ordinary_artifacts_exist(input_base));
-    CHECK(collector.size() == raw_row_count);
-    return run.source_descriptor;
+    CHECK(collector.size() == source.rows_written);
+    return source_descriptor;
 }
 
 void run_owning_finalized_smoke() {
@@ -499,13 +518,14 @@ void run_scale(size_t raw_row_count, uint64_t generation) {
     cleanup.add(input_base);
 
     CollectorConfig collector_config;
-    collector_config.check_duplicates = false;
+    collector_config.check_duplicates = true;
     collector_config.ooc_enabled = true;
     collector_config.ooc_base_path = input_base;
     RelationCollector collector(collector_config);
     const BuiltCollectorSource source = build_collector_source(collector, raw_row_count);
     CHECK(ordinary_artifacts_exist(input_base));
-    const ScaleOracle oracle = run_memory_oracle(raw_row_count, generation, source.raw_digest);
+    const ScaleOracle oracle =
+        run_unique_memory_oracle(source.rows_written, generation, source.raw_digest);
 
     constexpr std::array<uint32_t, 3> worker_counts{1, 2, 4};
     OOCSnapshotDescriptor previous_descriptor;
@@ -532,7 +552,7 @@ void run_scale(size_t raw_row_count, uint64_t generation) {
         have_previous_descriptor = true;
     }
     CHECK(have_previous_descriptor);
-    CHECK(collector.size() == raw_row_count);
+    CHECK(collector.size() == source.rows_written);
     CHECK(ordinary_artifacts_exist(input_base));
 
     {
@@ -546,7 +566,7 @@ void run_scale(size_t raw_row_count, uint64_t generation) {
         CHECK(raw_scope->descriptor.generation > previous_descriptor.generation);
         CHECK(raw_scope->descriptor.count == previous_descriptor.count);
         CHECK(raw_scope->descriptor.data_end == previous_descriptor.data_end);
-        CHECK(verify_collector_source_payload(raw_corpus, source) == raw_row_count);
+        CHECK(verify_collector_source_payload(raw_corpus, source) == source.rows_written);
     }
     CHECK(ordinary_artifacts_absent(input_base));
 }

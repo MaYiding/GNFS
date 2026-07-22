@@ -33,10 +33,11 @@ namespace gnfs::api {
 
 namespace detail {
 
-/// Role-separated requested bases reserved for one logical relation generation.
-/// RelationSink adds its private lease suffix to each requested base.
+/// Requested output base reserved for one logical relation generation.
+/// RelationSink adds its private lease suffix to the requested base. The raw
+/// collector prefix is reduced directly, so no generation-scoped working
+/// corpus is required.
 struct StructuredOOCGenerationPaths final {
-    std::string working_requested_base;
     std::string output_requested_base;
 
     [[nodiscard]] bool operator==(const StructuredOOCGenerationPaths&) const noexcept = default;
