@@ -399,6 +399,42 @@ budget、digest 和 split；它刻意不包含 `squfof.hpp`。因此该提交形
 是该候选的直接前瞻证据；配对的 3LP 行仅冻结预算接口，不代表自然三素因子输入分布。
 SIQS 的 50000 预算与不同 fallback 链不在此语料范围内。
 
+### SQUFOF Budget Matrix V3 and Coverage No-Go
+
+`test_squfof_budget_oracle` 在上述输入密封提交之后才首次调用生产 probe。它分别为旧
+公开 V1 与 prospective V1 构建 192×11×5 的 case×slot×cap 矩阵；cap ladder 为
+`1000,2000,5000,10056,baseline`，另保留每个 slot 的独立 production-baseline
+观测。矩阵校验覆盖 clamped effective cap、重复 cap 一致性、overflow、前缀单调、
+terminal result、原始 factor 和固定顺序 baseline replay。两个 V3 identity 为：
+
+| Matrix | Low | High |
+|---|---:|---:|
+| Legacy public V1 | 17887356378357031550 | 10510892644681870966 |
+| Prospective locked V1 | 10761457262857602067 | 5850380446892829808 |
+
+矩阵采集按输入行并行，但结果写回固定 row index，最多使用 8 个 worker；摘要和所有
+digest 不包含机器相关线程数。旧矩阵的 baseline projection 还必须逐字段重现 V2
+matrix 与 split identity。
+
+预注册统一 `10056` cap 的确定性结果为：
+
+| Corpus | Baseline successes / failures | Baseline iterations | Candidate iterations | Raw-factor mismatch |
+|---|---:|---:|---:|---:|
+| Legacy public V1 | 166 / 26 | 2,584,580 | 1,888,500 | 0 |
+| Prospective locked V1 | 117 / 75 | 6,938,458 | 4,512,122 | 0 |
+
+prospective 高位普通 2LP 的 32 行是本轮真正目标切片。它们在 production cap 20000
+下全部 bounded-fail，候选将 work 从 4,880,000 降至 2,453,664，未新增 factor；但
+baseline success 覆盖为 0。门禁预先要求至少 8 个目标成功 case，因此结果必须是
+`offline_decision=insufficient_evidence`，不能因失败路径更便宜而标记 eligible。
+
+固定 production order 的精确 train-only cap 搜索进一步说明不能跳过独立切片。旧
+训练集最优 policy 在 published validation/holdout 分别产生 2/1 个 factor mismatch；
+prospective 训练最优 policy 虽在 validation 保持一致，却在 confirmation 丢失 3 个
+factor。两者都只作为过拟合回归证据，生产 schedule、per-slot cap 和 caller 均未改动。
+下一轮需要在读取结果前冻结按 factor-balance 结构生成的高位普通 2LP success
+challenge corpus；只有补足成功覆盖后才允许重新判断 `10056` 候选。
+
 ### SQUFOF Strategy Matrix V2 and Order No-Go
 
 `test_squfof_strategy_oracle` 对上述 192 项语料和生产 11-slot schedule 生成完整的

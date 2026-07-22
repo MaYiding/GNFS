@@ -125,6 +125,15 @@ The paired 3LP rows reproduce caller budgets but are not evidence for the
 natural three-prime distribution; promotion claims must name their caller and
 corpus scope explicitly.
 
+`test_squfof_budget_oracle` is a `fast` deterministic offline policy gate. It
+builds complete case-by-slot-by-cap matrices for the published V1 corpus and
+the separately committed prospective corpus, then replays the production
+budget, the preregistered absolute-cap candidate, and a train-only exact
+fixed-order search. It asserts raw factor identity and integer work counts, not
+wall time. Published V2 validation/holdout rows remain retrospective evidence;
+only inputs sealed before the candidate's first probe are labeled prospective.
+An offline result never changes the production path automatically.
+
 `test_squfof_bench` is a disabled `bench` CTest target. The supported
 `./scripts/test.sh bench-squfof [repetitions]` mode builds it in Release and runs
 the fixed 50-digit SQUFOF strategy corpus. The runner validates every case,

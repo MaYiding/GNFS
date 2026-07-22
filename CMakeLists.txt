@@ -835,6 +835,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SQUFOFBudgetCorpus COMMAND test_squfof_budget_corpus)
     set_tests_properties(SQUFOFBudgetCorpus PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Deterministic case-by-slot-by-cap matrix and offline budget policy gates.
+    add_executable(test_squfof_budget_oracle
+        tests/test_squfof_budget_oracle.cpp
+    )
+    target_link_libraries(test_squfof_budget_oracle PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SQUFOFBudgetOracle COMMAND test_squfof_budget_oracle)
+    set_tests_properties(SQUFOFBudgetOracle PROPERTIES LABELS "fast" TIMEOUT 120)
+
     # Fixed production-derived SQUFOF strategy corpus. Timings are manual
     # comparison evidence, so this Release-only target stays out of routine CTest lanes.
     add_executable(test_squfof_bench
