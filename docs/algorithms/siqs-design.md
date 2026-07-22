@@ -66,6 +66,8 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `check_materialized_two_large_prime_identity` | `two_large_prime_congruence.hpp` | Exact signed row identity before matrix admission |
 | `make_full_post_merge_row` / `make_cycle_post_merge_row` | `post_merge_row.hpp` | Canonical sparse-wide rows shared by full and cycle relations |
 | `assemble_siqs_shadow_rows` | `shadow_assembly.hpp` | Deterministic source-ID layout, parallel cycle assembly, exact deduplication, and stable trim |
+| `solve_siqs_shadow_matrix` | `shadow_matrix.hpp` | Direct sparse-wide row admission and deterministic packed GF(2) left-nullspace solving |
+| `verify_siqs_post_merge_dependency` / `extract_siqs_post_merge_factor` | `post_merge_dependency.hpp` | Proof-gated dependency reconstruction and canonical non-trivial factor extraction |
 | `are_congruent_squares` | `congruence.hpp` | Final `X² == Y² (mod kN)` gate before GCD |
 | `dense_gauss_left_nullspace` | `siqs.hpp` ~line 1130 | Word-packed dense GF(2) Gaussian elimination |
 | `solve_matrix` | `siqs.hpp` ~line 1231 | Dense path ≤100K cols, otherwise `linalg::BlockLanczos` |
@@ -102,10 +104,11 @@ Two-large-prime collection and the legacy greedy merge remain disabled by
 setting `lp_bound_sq = 0`. Exact split normalization, deterministic cycle
 selection, wide checked cycle materialization, a stable raw-partial adapter,
 canonical sparse post-merge rows, deterministic parallel shadow assembly, and
-exact row/dependency congruence gates are available as isolated, tested
-boundaries. The final square gate also protects the current extraction path,
-but staged 2LP rows are not yet connected to the production matrix. Re-enabling
-still requires that bridge and re-validation across the 50-90 digit band.
+an exact wide-row matrix, dependency, and extraction chain are available as
+isolated, tested boundaries. The final square gate also protects the current
+extraction path, but staged 2LP rows are not yet connected to the production
+collector or `factor()` path. Re-enabling still requires fixed-corpus evidence
+across the 50-90 digit band.
 
 ## Two-Large-Prime Re-enablement Plan
 
@@ -139,10 +142,14 @@ The safe migration order is:
    into a portable fingerprint, materialize cycles into fixed parallel slots,
    deduplicate only exact arithmetic rows, and apply a stable full/cycle trim
    policy.
-7. Connect a wide shadow matrix and extraction path only after the assembly
-   contract is stable. Production 2LP remains off until fixed 50-90 digit
-   corpora show valid congruences, useful cycles, and no regression in the
-   default 1LP path.
+7. Solve the selected sparse-wide rows without narrowing them back to legacy
+   byte exponents. Preserve singleton zero rows, choose pivots and output
+   dependencies deterministically across worker counts, revalidate every row,
+   reconstruct each square pair, and admit GCD only through the final
+   congruence proof.
+8. Keep production 2LP off until fixed 50-90 digit corpora show valid
+   congruences, useful cycles, stable fingerprints and dependencies across
+   worker counts, and no regression in the default 1LP path.
 
 The arithmetic oracle must include a single-edge `p^2` cycle, three or more
 parallel edges, a vertex of degree four, and a cycle whose factor-base exponent
@@ -166,9 +173,10 @@ SIQS's `L_N(1/2, 1)`.
 
 - **2LP cofactor handling is gated off** (`lp_bound_sq = 0`); normalization,
   stable shadow-corpus preparation, cycle selection, materialization, and
-  sparse-wide row conversion, deterministic parallel assembly, and congruence
-  verification are staged, while runtime collection, matrix integration, and
-  cross-size evidence remain prerequisites
+  sparse-wide row conversion, deterministic parallel assembly, packed shadow
+  solving, and proof-gated factor extraction are staged, while runtime
+  collection, production integration, and cross-size evidence remain
+  prerequisites
 - **Materialization rejection is not yet typed**; the shadow assembly counts a
   `nullopt` cycle as rejected after validating adapter and graph invariants, but
   production integration should distinguish arithmetic exhaustion from an
