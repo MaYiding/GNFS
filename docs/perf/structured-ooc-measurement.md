@@ -465,6 +465,34 @@ train、train、validation、confirmation；总 split 为 96/48/48，并且本�
 即使挑战集补足成功覆盖，它也只验证高位 normal-2LP caller，不代表自然 LP 出现频率，
 仍不能替代真实 `classify_cofactor`、CandidateBatch 和 fallback 链 A/B。
 
+密封提交后的首次观测只比较上述两个固定 cap，不运行 optimizer，也不按结果筛样。
+`test_squfof_success_challenge_oracle` 对每行独立调用两套 `factor()`，再完整采集并重放
+11 个 production multiplier slot。最多 8 个 worker 只写固定 row index；线程数和墙钟
+不进入 digest。结果为：
+
+| Scope | Baseline success / failure | Candidate success / failure | New failures | Baseline work | Candidate work |
+|---|---:|---:|---:|---:|---:|
+| All | 5 / 187 | 3 / 189 | 2 | 41,526,608 | 20,976,188 |
+| Close balanced | 0 / 64 | 0 / 64 | 0 | 13,980,000 | 7,029,144 |
+| Mildly skewed | 4 / 60 | 2 / 62 | 2 | 13,637,284 | 6,948,800 |
+| Moderately skewed | 1 / 63 | 1 / 63 | 0 | 13,909,324 | 6,998,244 |
+| Train | 1 / 95 | 1 / 95 | 0 | 20,821,282 | 10,469,578 |
+| Validation | 1 / 47 | 0 / 48 | 1 | 10,377,302 | 5,289,456 |
+| Confirmation | 3 / 45 | 2 / 46 | 1 | 10,328,024 | 5,217,154 |
+
+两个新失败都来自 mildly-skewed profile：validation row 67 的原始 factor
+`617881661` 变为失败，confirmation row 97 的原始 factor `152489791` 变为失败。
+虽然总 work 降低 49.49%，但 raw-factor identity 和 new-failure 门禁均失败；同时
+baseline 仅有 5 个成功 case，低于预注册的 8 个成功覆盖下限。正确性失败优先，因此
+最终结论是 `offline_decision=no_go`，不得进入 production 或 fallback 链 A/B。
+
+首次观测冻结的 identity 为：
+
+| Identity | Low | High |
+|---|---:|---:|
+| Matrix | 66321629368464418 | 14097916444529299682 |
+| Result | 8167599806903207849 | 12264992225924573372 |
+
 ### SQUFOF Strategy Matrix V2 and Order No-Go
 
 `test_squfof_strategy_oracle` 对上述 192 项语料和生产 11-slot schedule 生成完整的

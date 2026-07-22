@@ -842,6 +842,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SQUFOFSuccessChallengeCorpus COMMAND test_squfof_success_challenge_corpus)
     set_tests_properties(SQUFOFSuccessChallengeCorpus PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Sealed two-cap success challenge with raw-factor and deterministic work gates.
+    add_executable(test_squfof_success_challenge_oracle
+        tests/test_squfof_success_challenge_oracle.cpp
+    )
+    target_link_libraries(test_squfof_success_challenge_oracle PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SQUFOFSuccessChallengeOracle COMMAND test_squfof_success_challenge_oracle)
+    set_tests_properties(SQUFOFSuccessChallengeOracle PROPERTIES LABELS "fast" TIMEOUT 120)
+
     # Deterministic case-by-slot-by-cap matrix and offline budget policy gates.
     add_executable(test_squfof_budget_oracle
         tests/test_squfof_budget_oracle.cpp

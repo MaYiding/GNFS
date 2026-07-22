@@ -142,6 +142,14 @@ prime factors and generator identity, but deliberately neither includes nor
 calls SQUFOF. The corpus must be committed before either the production budget
 or candidate cap is probed; its train split is not a new tuning set.
 
+`test_squfof_success_challenge_oracle` is the paired `fast` two-cap policy
+gate. It replays the production multiplier order for cap 20000 and the frozen
+candidate 10056, checks every raw factor against independent `factor()` calls,
+and aggregates integer work by sealed split and factor-balance profile. It does
+not fit another policy or assert wall time. Any changed factor or new failure
+is an immediate no-go; insufficient success coverage is reported only when
+raw-factor correctness still holds. An offline result does not edit production.
+
 `test_squfof_bench` is a disabled `bench` CTest target. The supported
 `./scripts/test.sh bench-squfof [repetitions]` mode builds it in Release and runs
 the fixed 50-digit SQUFOF strategy corpus. The runner validates every case,
