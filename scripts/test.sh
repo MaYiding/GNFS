@@ -71,6 +71,10 @@
 #                                         # Release-only 有界 SIQS live-sieve 单进程探针
 #   ./scripts/test.sh compare-siqs-live-sieve <50|70|90>
 #                                         # 新构建后 1/2/4 三个独立进程身份对照
+#   ./scripts/test.sh profile-siqs-cycle-density <1|2|4>
+#                                         # 固定 50 位 1/4/16/64 A cycle-density profile
+#   ./scripts/test.sh compare-siqs-cycle-density
+#                                         # 同一新构建的 1/2/4 profile 独立进程对照
 #   ./scripts/test.sh bench-ram <level>   # 后台 RAM baseline: nohup + /usr/bin/time -l
 #                                         # level=1 (50d ≈2h) / 2 (60d hours+) / 3-5 (大)
 #
@@ -1576,6 +1580,438 @@ run_siqs_live_probe_process() {
     return 0
 }
 
+# The fixed 50-digit multi-A profile emits one CONFIG, four PREFIX, and one
+# SUMMARY record. V2 is a separate closed schema; it does not loosen the
+# single-record 129-key live-capture V1 contract above.
+SIQS_CYCLE_PROFILE_OUTPUT=""
+SIQS_CYCLE_PROFILE_IDENTITY=""
+SIQS_CYCLE_PROFILE_LINE_IDENTITY=""
+SIQS_CYCLE_PROFILE_STDERR=""
+
+validate_siqs_cycle_profile_line() {
+    local line="$1"
+    local kind="$2"
+    local expected_workers="$3"
+    local expected_a="${4:-0}"
+    local expected_prefix=""
+    local -a schema_fields numeric_fields
+
+    case "$kind" in
+        config)
+            expected_prefix="GNFS_SIQS_MULTI_A_CYCLE_CONFIG_V2"
+            schema_fields=(
+                schema_version status profile_id build_type ndebug band digits n p q seed
+                a_planner max_a unique_a planner_attempts planner_duplicate_draws
+                accepted_duplicate_a max_planner_attempts b_per_a available_b_per_a
+                complete_b_family capture_stages prefix_a_counts logical_id_schema
+                relation_provenance_schema accepted_provenance_policy multiplier sieved_n
+                sieved_bits param_fb_size factor_base_columns factor_base_last_prime
+                param_sieve_half param_lp_multiplier param_a_factors param_sieve_error
+                param_small_prime_cutoff large_prime_bound two_large_prime_bound threshold
+                relation_limit_per_slot payload_limit_bytes_per_slot theoretical_relation_cap
+                theoretical_payload_cap_bytes shadow_trim_excess first_a last_a
+                plan_1_digest_low plan_1_digest_high plan_4_digest_low plan_4_digest_high
+                plan_16_digest_low plan_16_digest_high plan_64_digest_low plan_64_digest_high
+                promotion solver_attempted
+            )
+            numeric_fields=(
+                n p q seed max_a unique_a planner_attempts planner_duplicate_draws
+                accepted_duplicate_a max_planner_attempts b_per_a available_b_per_a multiplier
+                sieved_n sieved_bits param_fb_size factor_base_columns factor_base_last_prime
+                param_sieve_half param_lp_multiplier param_a_factors param_sieve_error
+                param_small_prime_cutoff large_prime_bound two_large_prime_bound threshold
+                relation_limit_per_slot payload_limit_bytes_per_slot theoretical_relation_cap
+                theoretical_payload_cap_bytes shadow_trim_excess first_a last_a
+                plan_1_digest_low plan_1_digest_high plan_4_digest_low plan_4_digest_high
+                plan_16_digest_low plan_16_digest_high plan_64_digest_low plan_64_digest_high
+            )
+            ;;
+        prefix)
+            expected_prefix="GNFS_SIQS_MULTI_A_CYCLE_PREFIX_V2"
+            schema_fields=(
+                schema_version status profile_id prefix_a stage_a_begin stage_a_end b_per_a
+                planned_slots completed_slots stage_slots plan_digest_low plan_digest_high
+                slot_state_digest_low slot_state_digest_high logical_raw_digest_low
+                logical_raw_digest_high canonical_raw_digest_low canonical_raw_digest_high
+                capture_threshold_candidates capture_unrepresentable_residuals
+                capture_rejected_residuals capture_observed_full capture_observed_one_lp
+                capture_observed_two_lp capture_relations capture_payload_bytes
+                capture_observed_not_captured capture_stop_none capture_stop_relation_limit
+                capture_stop_payload_limit capacity_truncated_slots capacity_truncated
+                stage_captured_relations stage_capacity_truncated_slots raw_full raw_one_lp
+                raw_two_lp_candidates adapter_input adapter_full adapter_accepted_one_lp
+                adapter_accepted_two_lp adapter_rejected adapter_malformed_source_shape
+                adapter_unsupported_encoding adapter_invalid_one_large_prime
+                adapter_invalid_two_large_prime_split adapter_exact_duplicate graph_vertices
+                graph_edges graph_components graph_cycles stage_graph_cycles
+                graph_cycle_density_ppm graph_cycle_rank_identity cycles_with_accepted_2lp
+                cycles_without_accepted_2lp cycles_spanning_multiple_a max_cycle_a_coverage
+                cycle_source_a_count two_lp_edge_source_a_count two_lp_bearing_cycle_a_count
+                accepted_two_lp_source_a_count cycle_provenance_digest_low
+                cycle_provenance_digest_high assembly_status assembly_valid_full
+                assembly_full_sources assembly_duplicate_full_sources assembly_partial_sources
+                assembly_graph_cycles assembly_valid_cycle_rows assembly_rejected_cycle_rows
+                assembly_rows_before_dedup assembly_arithmetic_duplicates_removed
+                assembly_pretrim_rows assembly_selected_rows assembly_selected_full_rows
+                assembly_selected_cycle_rows assembly_trimmed_rows source_fingerprint_low
+                source_fingerprint_high pretrim_fingerprint_low pretrim_fingerprint_high
+                selected_fingerprint_low selected_fingerprint_high promotion solver_attempted
+            )
+            numeric_fields=(
+                prefix_a stage_a_begin stage_a_end b_per_a planned_slots completed_slots
+                stage_slots plan_digest_low plan_digest_high slot_state_digest_low
+                slot_state_digest_high logical_raw_digest_low logical_raw_digest_high
+                canonical_raw_digest_low canonical_raw_digest_high capture_threshold_candidates
+                capture_unrepresentable_residuals capture_rejected_residuals
+                capture_observed_full capture_observed_one_lp capture_observed_two_lp
+                capture_relations capture_payload_bytes capture_observed_not_captured
+                capture_stop_none capture_stop_relation_limit capture_stop_payload_limit
+                capacity_truncated_slots stage_captured_relations
+                stage_capacity_truncated_slots raw_full raw_one_lp raw_two_lp_candidates
+                adapter_input adapter_full adapter_accepted_one_lp adapter_accepted_two_lp
+                adapter_rejected adapter_malformed_source_shape adapter_unsupported_encoding
+                adapter_invalid_one_large_prime adapter_invalid_two_large_prime_split
+                adapter_exact_duplicate graph_vertices graph_edges graph_components graph_cycles
+                stage_graph_cycles graph_cycle_density_ppm cycles_with_accepted_2lp
+                cycles_without_accepted_2lp cycles_spanning_multiple_a max_cycle_a_coverage
+                cycle_source_a_count two_lp_edge_source_a_count two_lp_bearing_cycle_a_count
+                accepted_two_lp_source_a_count cycle_provenance_digest_low
+                cycle_provenance_digest_high assembly_valid_full assembly_full_sources
+                assembly_duplicate_full_sources assembly_partial_sources assembly_graph_cycles
+                assembly_valid_cycle_rows assembly_rejected_cycle_rows
+                assembly_rows_before_dedup assembly_arithmetic_duplicates_removed
+                assembly_pretrim_rows assembly_selected_rows assembly_selected_full_rows
+                assembly_selected_cycle_rows assembly_trimmed_rows source_fingerprint_low
+                source_fingerprint_high pretrim_fingerprint_low pretrim_fingerprint_high
+                selected_fingerprint_low selected_fingerprint_high
+            )
+            ;;
+        summary)
+            expected_prefix="GNFS_SIQS_MULTI_A_CYCLE_SUMMARY_V2"
+            schema_fields=(
+                schema_version status profile_id stdout_records config_records prefix_records
+                summary_records max_a b_per_a planned_slots completed_slots workers
+                resolved_workers peak_workers stages_with_full_peak schedule logical_merge
+                worker_independence_premises theoretical_relation_cap
+                theoretical_payload_cap_bytes any_capacity_truncation first_cycle_prefix
+                first_two_lp_cycle_prefix rss_scope rss_backend plan_current_rss_bytes
+                plan_peak_rss_bytes capture_current_rss_bytes capture_peak_rss_bytes
+                final_current_rss_bytes final_peak_rss_bytes plan_wall_ns capture_wall_ns
+                analysis_wall_ns wall_ns promotion solver_attempted
+            )
+            numeric_fields=(
+                stdout_records config_records prefix_records summary_records max_a b_per_a
+                planned_slots completed_slots workers resolved_workers peak_workers
+                stages_with_full_peak theoretical_relation_cap theoretical_payload_cap_bytes
+                plan_wall_ns capture_wall_ns analysis_wall_ns wall_ns
+            )
+            ;;
+        *) return 1 ;;
+    esac
+
+    local -a tokens
+    tokens=(${=line})
+    [[ "${tokens[1]:-}" == "$expected_prefix" ]] || return 1
+    local token key value required numeric_field
+    typeset -A fields
+    for token in "${tokens[@]:1}"; do
+        key="${token%%=*}"
+        value="${token#*=}"
+        if [[ "$key" == "$token" || -z "$value" ||
+              ! "$key" =~ '^[A-Za-z][A-Za-z0-9_]*$' ||
+              -n "${fields[$key]+present}" ]]; then
+            return 1
+        fi
+        fields[$key]="$value"
+    done
+    (( ${#fields} == ${#schema_fields} )) || return 1
+    for required in "${schema_fields[@]}"; do
+        [[ -n "${fields[$required]+present}" ]] || return 1
+    done
+    for numeric_field in "${numeric_fields[@]}"; do
+        [[ "${fields[$numeric_field]}" =~ '^(0|[1-9][0-9]*)$' ]] || return 1
+    done
+
+    if [[ "${fields[schema_version]}" != "2" ||
+          "${fields[status]}" != "valid" ||
+          "${fields[profile_id]}" != "siqs50_multi_a_64x32_v2" ||
+          "${fields[promotion]}" != "false" ||
+          "${fields[solver_attempted]}" != "false" ]]; then
+        return 1
+    fi
+
+    case "$kind" in
+        config)
+            if [[ "${fields[build_type]}" != "Release" || "${fields[ndebug]}" != "true" ||
+                  "${fields[band]}" != "50" || "${fields[digits]}" != "50" ||
+                  "${fields[a_planner]}" != "stable_mpz_root_mt19937_fisher_yates_unique_v2" ||
+                  "${fields[max_a]}" != "64" || "${fields[unique_a]}" != "64" ||
+                  "${fields[accepted_duplicate_a]}" != "0" ||
+                  "${fields[max_planner_attempts]}" != "4096" ||
+                  "${fields[b_per_a]}" != "32" || "${fields[available_b_per_a]}" != "32" ||
+                  "${fields[complete_b_family]}" != "true" ||
+                  "${fields[capture_stages]}" != "0-1,1-4,4-16,16-64" ||
+                  "${fields[prefix_a_counts]}" != "1,4,16,64" ||
+                  "${fields[logical_id_schema]}" != "a_ordinal_gray_ordinal" ||
+                  "${fields[relation_provenance_schema]}" != "a_ordinal_gray_ordinal_relation_ordinal" ||
+                  "${fields[accepted_provenance_policy]}" != "canonical_min_logical_id" ||
+                  "${fields[param_fb_size]}" != "1600" ||
+                  "${fields[factor_base_columns]}" != "1601" ||
+                  "${fields[param_sieve_half]}" != "65536" ||
+                  "${fields[param_lp_multiplier]}" != "120" ||
+                  "${fields[param_a_factors]}" != "6" ||
+                  "${fields[param_sieve_error]}" != "12" ||
+                  "${fields[param_small_prime_cutoff]}" != "25" ||
+                  "${fields[relation_limit_per_slot]}" != "32" ||
+                  "${fields[payload_limit_bytes_per_slot]}" != "65536" ||
+                  "${fields[theoretical_relation_cap]}" != "65536" ||
+                  "${fields[theoretical_payload_cap_bytes]}" != "134217728" ]]; then
+                return 1
+            fi
+            if (( fields[planner_attempts] != 64 + fields[planner_duplicate_draws] )); then
+                return 1
+            fi
+            local digest_a
+            for digest_a in 1 4 16 64; do
+                [[ "${fields[plan_${digest_a}_digest_low]}:${fields[plan_${digest_a}_digest_high]}" != "0:0" ]] || return 1
+            done
+            ;;
+        prefix)
+            local stage_begin stage_end expected_slots expected_stage_slots
+            case "$expected_a" in
+                1) stage_begin=0; stage_end=1 ;;
+                4) stage_begin=1; stage_end=4 ;;
+                16) stage_begin=4; stage_end=16 ;;
+                64) stage_begin=16; stage_end=64 ;;
+                *) return 1 ;;
+            esac
+            expected_slots=$(( expected_a * 32 ))
+            expected_stage_slots=$(( (stage_end - stage_begin) * 32 ))
+            if [[ "${fields[prefix_a]}" != "$expected_a" ||
+                  "${fields[stage_a_begin]}" != "$stage_begin" ||
+                  "${fields[stage_a_end]}" != "$stage_end" ||
+                  "${fields[b_per_a]}" != "32" ||
+                  "${fields[planned_slots]}" != "$expected_slots" ||
+                  "${fields[completed_slots]}" != "$expected_slots" ||
+                  "${fields[stage_slots]}" != "$expected_stage_slots" ||
+                  "${fields[graph_cycle_rank_identity]}" != "pass" ||
+                  "${fields[assembly_status]}" != "valid" ]]; then
+                return 1
+            fi
+            if (( fields[graph_edges] + fields[graph_components] < fields[graph_vertices] ||
+                  fields[graph_cycles] != fields[graph_edges] - fields[graph_vertices] + fields[graph_components] )); then
+                return 1
+            fi
+            local expected_density=0
+            (( fields[graph_edges] != 0 )) &&
+                expected_density=$(( fields[graph_cycles] * 1000000 / fields[graph_edges] ))
+            (( fields[graph_cycle_density_ppm] == expected_density )) || return 1
+            (( fields[capture_stop_none] + fields[capture_stop_relation_limit] +
+               fields[capture_stop_payload_limit] == fields[completed_slots] )) || return 1
+            (( fields[capture_threshold_candidates] ==
+               fields[capture_unrepresentable_residuals] +
+               fields[capture_rejected_residuals] + fields[capture_observed_full] +
+               fields[capture_observed_one_lp] + fields[capture_observed_two_lp] )) || return 1
+            (( fields[capture_observed_full] + fields[capture_observed_one_lp] +
+               fields[capture_observed_two_lp] == fields[capture_relations] +
+               fields[capture_observed_not_captured] )) || return 1
+            (( fields[capacity_truncated_slots] == fields[capture_stop_relation_limit] +
+               fields[capture_stop_payload_limit] )) || return 1
+            if (( fields[capacity_truncated_slots] == 0 )); then
+                [[ "${fields[capacity_truncated]}" == "false" ]] || return 1
+            else
+                [[ "${fields[capacity_truncated]}" == "true" ]] || return 1
+            fi
+            (( fields[raw_full] + fields[raw_one_lp] + fields[raw_two_lp_candidates] ==
+               fields[capture_relations] && fields[adapter_input] == fields[capture_relations] )) || return 1
+            (( fields[adapter_full] + fields[adapter_accepted_one_lp] +
+               fields[adapter_accepted_two_lp] + fields[adapter_rejected] ==
+               fields[adapter_input] )) || return 1
+            (( fields[adapter_full] == fields[raw_full] )) || return 1
+            (( fields[adapter_malformed_source_shape] + fields[adapter_unsupported_encoding] +
+               fields[adapter_invalid_one_large_prime] +
+               fields[adapter_invalid_two_large_prime_split] +
+               fields[adapter_exact_duplicate] == fields[adapter_rejected] )) || return 1
+            (( fields[cycles_with_accepted_2lp] + fields[cycles_without_accepted_2lp] ==
+               fields[graph_cycles] && fields[assembly_graph_cycles] == fields[graph_cycles] )) || return 1
+            (( fields[assembly_partial_sources] == fields[adapter_accepted_one_lp] +
+               fields[adapter_accepted_two_lp] &&
+               fields[assembly_partial_sources] == fields[graph_edges] )) || return 1
+            (( fields[assembly_valid_full] == fields[assembly_full_sources] +
+               fields[assembly_duplicate_full_sources] )) || return 1
+            (( fields[assembly_valid_cycle_rows] + fields[assembly_rejected_cycle_rows] ==
+               fields[graph_cycles] )) || return 1
+            (( fields[assembly_rows_before_dedup] == fields[assembly_full_sources] +
+               fields[assembly_valid_cycle_rows] &&
+               fields[assembly_rows_before_dedup] == fields[assembly_pretrim_rows] +
+               fields[assembly_arithmetic_duplicates_removed] )) || return 1
+            (( fields[assembly_pretrim_rows] == fields[assembly_selected_rows] +
+               fields[assembly_trimmed_rows] )) || return 1
+            (( fields[assembly_selected_rows] == fields[assembly_selected_full_rows] +
+               fields[assembly_selected_cycle_rows] )) || return 1
+            [[ "${fields[plan_digest_low]}:${fields[plan_digest_high]}" != "0:0" ]] || return 1
+            ;;
+        summary)
+            if [[ "${fields[stdout_records]}" != "6" ||
+                  "${fields[config_records]}" != "1" ||
+                  "${fields[prefix_records]}" != "4" ||
+                  "${fields[summary_records]}" != "1" ||
+                  "${fields[max_a]}" != "64" || "${fields[b_per_a]}" != "32" ||
+                  "${fields[planned_slots]}" != "2048" ||
+                  "${fields[completed_slots]}" != "2048" ||
+                  "${fields[workers]}" != "$expected_workers" ||
+                  "${fields[resolved_workers]}" != "$expected_workers" ||
+                  "${fields[peak_workers]}" != "$expected_workers" ||
+                  "${fields[stages_with_full_peak]}" != "4" ||
+                  "${fields[schedule]}" != "staged_static_contiguous_logical_slots" ||
+                  "${fields[logical_merge]}" != "lexicographic_a_gray_relation" ||
+                  "${fields[worker_independence_premises]}" != "pass" ||
+                  "${fields[theoretical_relation_cap]}" != "65536" ||
+                  "${fields[theoretical_payload_cap_bytes]}" != "134217728" ||
+                  "${fields[rss_scope]}" != "self_lifetime" ]]; then
+                return 1
+            fi
+            case "${fields[any_capacity_truncation]}" in true|false) ;; *) return 1 ;; esac
+            case "${fields[first_cycle_prefix]}" in none|1|4|16|64) ;; *) return 1 ;; esac
+            case "${fields[first_two_lp_cycle_prefix]}" in none|1|4|16|64) ;; *) return 1 ;; esac
+            local resource_field
+            for resource_field in plan_current_rss_bytes plan_peak_rss_bytes \
+                capture_current_rss_bytes capture_peak_rss_bytes \
+                final_current_rss_bytes final_peak_rss_bytes; do
+                [[ "${fields[$resource_field]}" =~ '^(na|[1-9][0-9]*)$' ]] || return 1
+            done
+            (( fields[plan_wall_ns] > 0 && fields[capture_wall_ns] > 0 &&
+               fields[analysis_wall_ns] > 0 && fields[wall_ns] > 0 )) || return 1
+            ;;
+    esac
+
+    local normalized="$expected_prefix"$'\n'
+    for key in ${(ok)fields}; do
+        case "$key" in
+            workers|resolved_workers|peak_workers|plan_current_rss_bytes|plan_peak_rss_bytes|capture_current_rss_bytes|capture_peak_rss_bytes|final_current_rss_bytes|final_peak_rss_bytes|plan_wall_ns|capture_wall_ns|analysis_wall_ns|wall_ns) continue ;;
+        esac
+        normalized+="${key}=${fields[$key]}"$'\n'
+    done
+    SIQS_CYCLE_PROFILE_LINE_IDENTITY="$normalized"
+}
+
+validate_siqs_cycle_profile_output() {
+    local stdout="$1"
+    local expected_workers="$2"
+    local -a lines expected_prefixes=(1 4 16 64)
+    lines=("${(@f)stdout}")
+    (( ${#lines[@]} == 6 )) || return 1
+
+    local identity="" index digest_key_low digest_key_high
+    validate_siqs_cycle_profile_line "${lines[1]}" config "$expected_workers" || return 1
+    identity+="$SIQS_CYCLE_PROFILE_LINE_IDENTITY"
+    for (( index = 1; index <= 4; ++index )); do
+        validate_siqs_cycle_profile_line "${lines[index + 1]}" prefix "$expected_workers" \
+            "${expected_prefixes[index]}" || return 1
+        digest_key_low="plan_${expected_prefixes[index]}_digest_low"
+        digest_key_high="plan_${expected_prefixes[index]}_digest_high"
+        [[ "$(measurement_record_field "${lines[1]}" "$digest_key_low")" ==
+           "$(measurement_record_field "${lines[index + 1]}" plan_digest_low)" &&
+           "$(measurement_record_field "${lines[1]}" "$digest_key_high")" ==
+           "$(measurement_record_field "${lines[index + 1]}" plan_digest_high)" ]] || return 1
+        identity+="$SIQS_CYCLE_PROFILE_LINE_IDENTITY"
+    done
+    validate_siqs_cycle_profile_line "${lines[6]}" summary "$expected_workers" || return 1
+    identity+="$SIQS_CYCLE_PROFILE_LINE_IDENTITY"
+
+    local previous_relations=0 previous_truncated=0 previous_cycles=0
+    local current stage_value expected_first="none" expected_first_two_lp="none"
+    local line two_lp_cycles
+    local any_truncated="false"
+    for (( index = 1; index <= 4; ++index )); do
+        line="${lines[index + 1]}"
+        current=$(measurement_record_field "$line" capture_relations) || return 1
+        stage_value=$(measurement_record_field "$line" stage_captured_relations) || return 1
+        (( current >= previous_relations && stage_value == current - previous_relations )) || return 1
+        previous_relations=$current
+        current=$(measurement_record_field "$line" capacity_truncated_slots) || return 1
+        stage_value=$(measurement_record_field "$line" stage_capacity_truncated_slots) || return 1
+        (( current >= previous_truncated && stage_value == current - previous_truncated )) || return 1
+        (( current != 0 )) && any_truncated="true"
+        previous_truncated=$current
+        current=$(measurement_record_field "$line" graph_cycles) || return 1
+        stage_value=$(measurement_record_field "$line" stage_graph_cycles) || return 1
+        (( current >= previous_cycles && stage_value == current - previous_cycles )) || return 1
+        if [[ "$expected_first" == "none" ]] && (( current != 0 )); then
+            expected_first="${expected_prefixes[index]}"
+        fi
+        two_lp_cycles=$(measurement_record_field "$line" cycles_with_accepted_2lp) || return 1
+        if [[ "$expected_first_two_lp" == "none" ]] && (( two_lp_cycles != 0 )); then
+            expected_first_two_lp="${expected_prefixes[index]}"
+        fi
+        previous_cycles=$current
+    done
+    local summary="${lines[6]}"
+    [[ "$(measurement_record_field "$summary" any_capacity_truncation)" == "$any_truncated" &&
+       "$(measurement_record_field "$summary" first_cycle_prefix)" == "$expected_first" &&
+       "$(measurement_record_field "$summary" first_two_lp_cycle_prefix)" == "$expected_first_two_lp" ]] || return 1
+
+    SIQS_CYCLE_PROFILE_OUTPUT="$stdout"
+    SIQS_CYCLE_PROFILE_IDENTITY="$identity"
+}
+
+run_siqs_cycle_profile_process() {
+    local workers="$1"
+    local timeout_seconds="$2"
+    local binary="${BUILD_DIR}/test_siqs_multi_a_cycle_profile"
+    local stdout_file stderr_file
+    stdout_file=$(mktemp "${TMPDIR:-/tmp}/gnfs_siqs_cycle_profile_stdout.XXXXXX")
+    stderr_file=$(mktemp "${TMPDIR:-/tmp}/gnfs_siqs_cycle_profile_stderr.XXXXXX")
+
+    local start_ms exit_code=0
+    start_ms=$(timer_start_ms)
+    run_with_timeout "$timeout_seconds" /bin/sh -c \
+        'stdout_path=$1; stderr_path=$2; shift 2; exec "$@" >"$stdout_path" 2>"$stderr_path"' \
+        sh "$stdout_file" "$stderr_file" "$binary" --workers "$workers" || exit_code=$?
+    local end_ms
+    end_ms=$(timer_start_ms)
+    local elapsed=$((end_ms - start_ms))
+    TOTAL_TIME_MS=$((TOTAL_TIME_MS + elapsed))
+    (( TOTAL_TESTS += 1 ))
+
+    local line_count blank_count last_byte stdout
+    line_count=$(awk 'END { print NR + 0 }' "$stdout_file")
+    blank_count=$(awk 'NF == 0 { count += 1 } END { print count + 0 }' "$stdout_file")
+    last_byte=$(tail -c 1 "$stdout_file" | od -An -tuC | tr -d ' ')
+    stdout=$(<"$stdout_file")
+    SIQS_CYCLE_PROFILE_STDERR=$(<"$stderr_file")
+    rm -f "$stdout_file" "$stderr_file"
+
+    if (( exit_code == 124 )); then
+        log_fail "SIQS cycle-density workers=${workers} TIMEOUT after ${timeout_seconds}s"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    if (( exit_code != 0 )); then
+        log_fail "SIQS cycle-density workers=${workers} 退出码 ${exit_code}；拒绝任何部分输出"
+        [[ -n "$SIQS_CYCLE_PROFILE_STDERR" ]] &&
+            printf '%s\n' "$SIQS_CYCLE_PROFILE_STDERR" | tail -10
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    if [[ -n "$SIQS_CYCLE_PROFILE_STDERR" ]]; then
+        log_fail "SIQS cycle-density 成功进程不得写入 stderr"
+        printf '%s\n' "$SIQS_CYCLE_PROFILE_STDERR" | tail -10
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    if [[ "$line_count" != "6" || "$blank_count" != "0" || "$last_byte" != "10" ]] ||
+       ! validate_siqs_cycle_profile_output "$stdout" "$workers"; then
+        log_fail "SIQS cycle-density stdout 必须严格为 CONFIG_V2 + 4 PREFIX_V2 + SUMMARY_V2"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+
+    (( PASSED_TESTS += 1 ))
+    REPORT_ENTRIES+=("{\"name\":\"test_siqs_multi_a_cycle_profile_w${workers}\",\"status\":\"pass\",\"elapsed_ms\":${elapsed}}")
+    return 0
+}
+
 # Validate the complete V1 contract emitted by the Release-only SQUFOF strategy
 # benchmark. SUMMARY owns the dynamic multiplier count; CASE and MULTIPLIER
 # records must agree with its corpus and deterministic identity fields.
@@ -2727,6 +3163,8 @@ do_list() {
     echo "  ${BULLET} ${CYAN}test_siqs_shadow_matrix_bench${RESET} — 固定 SIQS shadow matrix 求解/内核/准备基准"
     echo "  ${BULLET} ${CYAN}probe-siqs-live-sieve <band> <workers>${RESET} — Release-only 50/70/90 位有界现场探针"
     echo "  ${BULLET} ${CYAN}compare-siqs-live-sieve <band>${RESET} — 同一新构建的 1/2/4 独立进程身份对照"
+    echo "  ${BULLET} ${CYAN}profile-siqs-cycle-density <workers>${RESET} — 固定 50 位 1/4/16/64 A cycle-density profile"
+    echo "  ${BULLET} ${CYAN}compare-siqs-cycle-density${RESET} — 同一新构建的 1/2/4 profile 独立进程对照"
 
     echo ""
     echo "${BOLD}Sanitizer 窄通道:${RESET}"
@@ -3596,6 +4034,103 @@ case "$MODE" in
             else
                 (( FAILED_TESTS += 1 ))
                 log_fail "1/2/4 worker 的确定性身份字段不一致"
+            fi
+        fi
+        show_summary
+        ;;
+
+    profile-siqs-cycle-density)
+        if [[ ${#MODE_ARGS[@]} -ne 1 ]]; then
+            log_fail "用法: $0 profile-siqs-cycle-density <1|2|4>"
+            exit 1
+        fi
+        local _cycle_workers="${MODE_ARGS[1]}"
+        case "$_cycle_workers" in
+            1|2|4) ;;
+            *) log_fail "workers 必须是 1、2 或 4"; exit 1 ;;
+        esac
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "profile-siqs-cycle-density 只接受 Release 构建 (传入: ${BUILD_TYPE})"
+            exit 1
+        fi
+        BUILD_TYPE="Release"
+        if (( SKIP_BUILD )); then
+            log_fail "profile-siqs-cycle-density 不接受 --no-build；证据必须来自本次请求的新构建"
+            exit 1
+        fi
+        if (( RETRY_EXPLICIT )); then
+            log_fail "profile-siqs-cycle-density 不接受 --retry；自动重试会破坏独立进程证据"
+            exit 1
+        fi
+
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_siqs_multi_a_cycle_profile" ]]; then
+            log_fail "SIQS cycle-density profile 二进制不存在: ${BUILD_DIR}/test_siqs_multi_a_cycle_profile"
+            exit 1
+        fi
+        local _cycle_timeout=900
+        (( TIMEOUT_EXPLICIT )) && _cycle_timeout="$TIMEOUT"
+        log_header "SIQS 固定 50 位 multi-A cycle-density profile"
+        log_info "Release/NDEBUG；fresh process；workers=${_cycle_workers}；A=1/4/16/64；timeout=${_cycle_timeout}s"
+        if run_siqs_cycle_profile_process "$_cycle_workers" "$_cycle_timeout"; then
+            printf '%s\n' "$SIQS_CYCLE_PROFILE_OUTPUT"
+            log_success "严格六行 V2 profile、四级 prefix 和 worker 合同均有效"
+        fi
+        show_summary
+        ;;
+
+    compare-siqs-cycle-density)
+        if [[ ${#MODE_ARGS[@]} -ne 0 ]]; then
+            log_fail "用法: $0 compare-siqs-cycle-density"
+            exit 1
+        fi
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "compare-siqs-cycle-density 只接受 Release 构建 (传入: ${BUILD_TYPE})"
+            exit 1
+        fi
+        BUILD_TYPE="Release"
+        if (( SKIP_BUILD )); then
+            log_fail "compare-siqs-cycle-density 不接受 --no-build；三组证据必须共享本次新构建"
+            exit 1
+        fi
+        if (( RETRY_EXPLICIT )); then
+            log_fail "compare-siqs-cycle-density 不接受 --retry；自动重试会破坏独立进程证据"
+            exit 1
+        fi
+
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_siqs_multi_a_cycle_profile" ]]; then
+            log_fail "SIQS cycle-density profile 二进制不存在: ${BUILD_DIR}/test_siqs_multi_a_cycle_profile"
+            exit 1
+        fi
+        local _cycle_compare_timeout=900
+        (( TIMEOUT_EXPLICIT )) && _cycle_compare_timeout="$TIMEOUT"
+        log_header "SIQS 固定 50 位 multi-A 1/2/4 worker 对照"
+        log_info "单次 Release 构建；3 个 fresh processes；每进程 timeout=${_cycle_compare_timeout}s"
+
+        local _cycle_compare_ok=1 _cycle_compare_worker
+        typeset -A _cycle_identities
+        for _cycle_compare_worker in 1 2 4; do
+            if run_siqs_cycle_profile_process \
+                "$_cycle_compare_worker" "$_cycle_compare_timeout"; then
+                _cycle_identities[$_cycle_compare_worker]="$SIQS_CYCLE_PROFILE_IDENTITY"
+                printf '%s\n' "$SIQS_CYCLE_PROFILE_OUTPUT"
+            else
+                _cycle_compare_ok=0
+                (( FAIL_FAST )) && break
+            fi
+        done
+
+        if (( _cycle_compare_ok )); then
+            (( TOTAL_TESTS += 1 ))
+            if [[ "${_cycle_identities[1]}" == "${_cycle_identities[2]}" &&
+                  "${_cycle_identities[1]}" == "${_cycle_identities[4]}" ]]; then
+                (( PASSED_TESTS += 1 ))
+                REPORT_ENTRIES+=("{\"name\":\"compare_siqs_cycle_density_50\",\"status\":\"pass\",\"elapsed_ms\":0}")
+                log_success "除已验证的 worker、wall-time 和 RSS 信息字段外，全部 V2 字段一致"
+            else
+                (( FAILED_TESTS += 1 ))
+                log_fail "1/2/4 worker 的 cycle-density 确定性身份字段不一致"
             fi
         fi
         show_summary

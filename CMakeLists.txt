@@ -1976,6 +1976,15 @@ if(GNFS_BUILD_TESTS)
         GNFS_SIQS_LIVE_SIEVE_PROBE_BUILD_TYPE="$<CONFIG>")
     target_link_libraries(test_siqs_live_sieve_probe PRIVATE gnfs_core Threads::Threads)
 
+    # Fixed 50-digit multi-A cycle-density profile. This Release-only manual
+    # evidence target deliberately stays outside CTest and routine catalogs.
+    add_executable(test_siqs_multi_a_cycle_profile
+        tests/test_siqs_multi_a_cycle_profile.cpp
+    )
+    target_compile_definitions(test_siqs_multi_a_cycle_profile PRIVATE
+        GNFS_SIQS_MULTI_A_PROFILE_BUILD_TYPE="$<CONFIG>")
+    target_link_libraries(test_siqs_multi_a_cycle_profile PRIVATE gnfs_core Threads::Threads)
+
     add_executable(test_siqs_2lp_graph
         tests/test_siqs_2lp_graph.cpp
     )

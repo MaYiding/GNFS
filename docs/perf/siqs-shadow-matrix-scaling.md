@@ -251,6 +251,10 @@ Before promotion it must provide:
 - [x] Fixed-plan live-sieve capture across the 50-, 70-, and 90-digit bands,
   with a stable A planner, per-slot state digests, and actual one-, two-, and
   four-worker fresh-process identity checks. The first corpus has zero graph
-  cycles and therefore does not freeze the parallel threshold.
+  cycles. A separate fixed 64-A, 2048-slot 50-digit profile now produces 57
+  valid cycle rows, including five cycles with accepted 2LP edges, but only 397
+  selected rows. It therefore provides live cycle-density evidence without
+  freezing the parallel threshold or satisfying the production row-excess
+  gate.
 - [ ] Controlled collector and `factor()` integration with the default 1LP path
   unchanged.

@@ -460,6 +460,76 @@ Both commands reject `--no-build`, explicit `--retry`, and non-Release build
 types. The probe executable also checks its configured build type and `NDEBUG`
 before reading the fixture.
 
+## Implemented Multi-A Cycle-Density Profile
+
+The fixed 50-digit follow-up extends the deterministic plan to 64 unique A
+families and covers every one of the 32 Gray-code B values per A. One process
+captures the cumulative A prefixes 1, 4, 16, and 64. The comparison command
+builds once and launches one fresh process for each worker count:
+
+```bash
+./scripts/test.sh profile-siqs-cycle-density 1
+./scripts/test.sh profile-siqs-cycle-density 2
+./scripts/test.sh profile-siqs-cycle-density 4
+./scripts/test.sh compare-siqs-cycle-density
+```
+
+The profile is a manual Release-only target. It is not a CTest test and is not
+part of smoke, module, changed, or gate catalogs. Both commands reject
+`--no-build`, explicit `--retry`, and non-Release build types.
+
+A successful process writes exactly six non-empty stdout records in this order:
+
+```text
+GNFS_SIQS_MULTI_A_CYCLE_CONFIG_V2
+GNFS_SIQS_MULTI_A_CYCLE_PREFIX_V2 prefix_a=1
+GNFS_SIQS_MULTI_A_CYCLE_PREFIX_V2 prefix_a=4
+GNFS_SIQS_MULTI_A_CYCLE_PREFIX_V2 prefix_a=16
+GNFS_SIQS_MULTI_A_CYCLE_PREFIX_V2 prefix_a=64
+GNFS_SIQS_MULTI_A_CYCLE_SUMMARY_V2
+```
+
+Each record type has a closed schema. Missing, duplicate, empty, or unknown
+fields fail validation. The runner also checks the prefix plan and slot counts,
+capture and adapter conservation, graph rank, cycle density, assembly
+conservation, stage deltas, and the CONFIG-to-PREFIX plan-digest bindings. A
+non-zero process exit, timeout, partial transcript, blank record, missing final
+newline, or successful process with stderr output is a failure.
+
+Cross-worker identity excludes only the three validated worker fields, the
+four wall-time fields, and the six current/peak RSS measurements. Those dynamic
+fields remain format-checked. Every other CONFIG, PREFIX, and SUMMARY field must
+match across the one-, two-, and four-worker fresh processes.
+
+The reproduced fixed profile completed all 2048 logical slots without capacity
+truncation. It first observed graph cycles at 16 A and cycles containing an
+accepted 2LP source at 64 A:
+
+| A Prefix | Captured Relations | Graph Edges | Graph Cycles | 2LP-Bearing Cycles | Selected Rows |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 70 | 52 | 0 | 0 | 6 |
+| 4 | 258 | 179 | 0 | 0 | 16 |
+| 16 | 1113 | 762 | 2 | 0 | 84 |
+| 64 | 4398 | 2951 | 57 | 5 | 397 |
+
+All 57 cycles materialized successfully and none was rejected. The five
+2LP-bearing cycles collectively reference sources from 15 A families, while
+their accepted 2LP edges come from five A families. Those counts are reported
+separately, so parallel 1LP edges cannot masquerade as 2LP cycle evidence. The
+fixed plan used 64 planner attempts for 64 accepted A values, with zero
+accepted duplicate A values. Its checked worst-case logical bounds are 65536
+relations and 128MiB of relation payload, while the reproduced corpus retained
+4398 relations and did not hit either per-slot limit.
+
+The profile records `promotion=false solver_attempted=false`. These results are
+cycle-density and materialization evidence, not a production promotion or
+matrix-solver claim. In particular, 397 selected rows are well below the
+50-digit target shape of 1701 rows (1601 factor-base columns plus 100 excess
+rows). The next scale experiment should extend the same serial A plan to a
+bounded 256-A prefix before any collector or `factor()` integration is
+considered. That experiment still cannot replace the 70- and 90-digit gates or
+the direct sparse-backend work.
+
 ## Current Fixed-Plan Evidence
 
 The following evidence was reproduced on 2026-07-23 with one, two, and four
