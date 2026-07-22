@@ -47,6 +47,7 @@ struct GNFSParams {
     uint32_t special_q_min = 1000;
     uint32_t special_q_max = 5000;
     uint32_t max_special_q = 2000;           // 最大处理的 special-q 数量
+    uint32_t max_special_q_batch_workers = 4; // 单个本地 special-q 批次的外层 worker 上限
 
     // === 线性代数 ===
     uint32_t num_qc_primes = 64;             // 二次特征素数数量

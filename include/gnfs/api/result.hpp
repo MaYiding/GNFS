@@ -44,6 +44,10 @@ struct FactorStats {
 
     // Sieving
     size_t special_q_processed = 0;
+    size_t special_q_batch_worker_limit = 0;
+    size_t special_q_batch_peak_workers = 0;
+    size_t special_q_batch_count = 0;
+    size_t special_q_batch_peak_size = 0;
     size_t candidates_total = 0;
     size_t relations_found = 0;
     size_t full_relations = 0;
@@ -136,6 +140,12 @@ struct FactorResult {
         os << "    \"rational_primes\": " << stats.rational_primes << ",\n";
         os << "    \"algebraic_primes\": " << stats.algebraic_primes << ",\n";
         os << "    \"special_q_processed\": " << stats.special_q_processed << ",\n";
+        os << "    \"special_q_batch_worker_limit\": " << stats.special_q_batch_worker_limit
+           << ",\n";
+        os << "    \"special_q_batch_peak_workers\": " << stats.special_q_batch_peak_workers
+           << ",\n";
+        os << "    \"special_q_batch_count\": " << stats.special_q_batch_count << ",\n";
+        os << "    \"special_q_batch_peak_size\": " << stats.special_q_batch_peak_size << ",\n";
         os << "    \"candidates_total\": " << stats.candidates_total << ",\n";
         os << "    \"relations_found\": " << stats.relations_found << ",\n";
         os << "    \"full_relations\": " << stats.full_relations << ",\n";
@@ -218,6 +228,10 @@ struct FactorResult {
 
         os << "Sieving\n";
         os << "  Special-Q processed: " << stats.special_q_processed << "\n";
+        os << "  Special-Q batch worker limit: " << stats.special_q_batch_worker_limit << "\n";
+        os << "  Special-Q batch peak workers: " << stats.special_q_batch_peak_workers << "\n";
+        os << "  Special-Q batches: " << stats.special_q_batch_count << "\n";
+        os << "  Special-Q peak batch size: " << stats.special_q_batch_peak_size << "\n";
         os << "  Candidates tested: " << stats.candidates_total << "\n";
         os << "  Relations found: " << stats.relations_found << "\n";
         os << "    Full: " << stats.full_relations << "\n";

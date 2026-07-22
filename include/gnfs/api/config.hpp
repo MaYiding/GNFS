@@ -37,10 +37,12 @@ struct Config {
     /// Hard cap on the number of special-Q values processed by one Pipeline
     /// collection. Primarily useful for reproducible, bounded experiments.
     std::optional<size_t> max_special_q;
+    /// Maximum number of outer workers used by one local special-Q batch.
+    /// This does not cap threads used inside each LatticeSieve worker.
+    std::optional<uint32_t> max_special_q_batch_workers;
 
-    // Note: thread count is auto-detected from hardware_concurrency() at
-    // ThreadPool construction; --threads CLI option was previously parsed
-    // but never propagated. Removed to avoid silent confusion.
+    // Note: there is no general Pipeline thread-count setting. The batch-worker
+    // limit above controls only the local outer special-Q scheduler.
 
     // Verbosity
     std::optional<bool> verbose;
@@ -114,8 +116,16 @@ struct Config {
                     throw std::out_of_range("Config: max_special_q must be in [1, UINT32_MAX]");
                 }
                 cfg.max_special_q = static_cast<size_t>(parsed);
-            }
-            else if (key == "verbose")          cfg.verbose = (val == "true" || val == "1");
+            } else if (key == "max_special_q_batch_workers") {
+                size_t consumed = 0;
+                const uint64_t parsed = std::stoull(val, &consumed);
+                if (consumed != val.size() || parsed < 1 || parsed > 4) {
+                    throw std::out_of_range(
+                        "Config: max_special_q_batch_workers must be in [1, 4]");
+                }
+                cfg.max_special_q_batch_workers = static_cast<uint32_t>(parsed);
+            } else if (key == "verbose")
+                cfg.verbose = (val == "true" || val == "1");
             else if (key == "output_file")      cfg.output_file = val;
             else if (key == "output_format")    cfg.output_format = val;
             else {
@@ -141,6 +151,13 @@ struct Config {
         max_special_q = count;
         return *this;
     }
+    Config& set_max_special_q_batch_workers(uint32_t count) {
+        if (count < 1 || count > 4) {
+            throw std::out_of_range("Config: max_special_q_batch_workers must be in [1, 4]");
+        }
+        max_special_q_batch_workers = count;
+        return *this;
+    }
     Config& set_verbose(bool v)               { verbose = v; return *this; }
     Config& set_output_file(const std::string& f)   { output_file = f; return *this; }
     Config& set_output_format(const std::string& f) { output_format = f; return *this; }
@@ -156,6 +173,8 @@ struct Config {
         if (other.sieve_width)       result.sieve_width = other.sieve_width;
         if (other.sieve_height)      result.sieve_height = other.sieve_height;
         if (other.max_special_q)     result.max_special_q = other.max_special_q;
+        if (other.max_special_q_batch_workers)
+            result.max_special_q_batch_workers = other.max_special_q_batch_workers;
         if (other.verbose)           result.verbose = other.verbose;
         if (other.output_file)       result.output_file = other.output_file;
         if (other.output_format)     result.output_format = other.output_format;
@@ -186,6 +205,12 @@ struct Config {
             }
             params.max_special_q = static_cast<uint32_t>(*max_special_q);
         }
+        if (max_special_q_batch_workers) {
+            if (*max_special_q_batch_workers < 1 || *max_special_q_batch_workers > 4) {
+                throw std::out_of_range("Config: max_special_q_batch_workers must be in [1, 4]");
+            }
+            params.max_special_q_batch_workers = *max_special_q_batch_workers;
+        }
 
         return params;
     }
@@ -202,6 +227,8 @@ struct Config {
         if (sieve_width)      os << "sieve_width = " << *sieve_width << "\n";
         if (sieve_height)     os << "sieve_height = " << *sieve_height << "\n";
         if (max_special_q)    os << "max_special_q = " << *max_special_q << "\n";
+        if (max_special_q_batch_workers)
+            os << "max_special_q_batch_workers = " << *max_special_q_batch_workers << "\n";
         if (verbose)          os << "verbose = " << (*verbose ? "true" : "false") << "\n";
         if (output_file)      os << "output_file = " << *output_file << "\n";
         if (output_format)    os << "output_format = " << *output_format << "\n";

@@ -31,6 +31,53 @@ time 从 1.76s 降到 0.82s。该数字用于回归证据，不是跨机器性�
 
 ---
 
+## Special-Q Batch Worker Limit (Config)
+
+`max_special_q_batch_workers` 是本地 production Pipeline 的类型化配置，不是
+`GNFS_*` ENV。默认值为 4，合法范围为 `[1, 4]`：
+
+```ini
+max_special_q_batch_workers = 2
+```
+
+```cpp
+gnfs::api::Config config;
+config.set_max_special_q_batch_workers(2);
+```
+
+该值只限制一个本地 special-Q 批次的外层 worker 数。每个 worker 自己持有
+`LatticeSieve` 和 `Cofactorizer`；`LatticeSieve` 内部线程不受该值限制。因此它不是
+进程级总线程预算，也不改变 `DistributedSieveConfig::num_workers`。distributed route
+不填充本地批次遥测。
+
+小于等于 50 位的固定批次宽度仍为 4，大于 50 位仍为 2。实际外层 worker 数为
+`min(hardware_concurrency, batch_size, max_special_q_batch_workers)`。调度上限不改变
+special-Q 顺序、批次成员、归约输入或 checkpoint identity。`max_special_q` 仍是处理
+数量的硬上限；最后一批只取剩余配额，不会向上取整到固定批次宽度。
+
+`FactorStats` 提供以下本地调度遥测：
+
+- `special_q_batch_worker_limit`：硬件上限与配置上限的较小值；
+- `special_q_batch_peak_workers`：实际同时启动的最多外层 workers；
+- `special_q_batch_count`：已执行的本地批次数；
+- `special_q_batch_peak_size`：实际最大批次大小。
+
+真实 50 位 Release 探针用相同 4-SQ prefix 对比 workers 1、2 和 4。三种配置的
+raw/output digest、关系数量、矩阵形状和工件生命周期共 54 个字段完全一致。
+对应 lifetime peak RSS 分别为 85,737,472、137,314,304 和 221,675,520 bytes；
+sieve wall time 分别为 1.41s、0.96s 和 0.91s。这些值是单机证据，不是跨机器阈值。
+
+**集成点**：
+
+- `include/gnfs/core/params.hpp`：默认值和冻结后的 Pipeline 参数；
+- `include/gnfs/api/config.hpp`：配置文件解析、builder、merge 和范围校验；
+- `src/api/pipeline.cpp`：硬上限批次切分、worker cap 和遥测；
+- `tests/test_api.cpp`：类型化配置与公开结果格式；
+- `tests/test_sieve_checkpoint.cpp`：调度参数不进入数学 run identity；
+- `tests/test_structured_ooc_50d_probe.cpp`：真实 50 位调度与 identity 证据。
+
+---
+
 ## Sieve mid-flight checkpoint (GNFS_RESUME / GNFS_SIEVE_RESUME)
 
 **ENV `GNFS_RESUME=<base_path>`** 启用全流水线恢复；历史名称

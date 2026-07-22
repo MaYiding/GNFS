@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -44,9 +45,13 @@ constexpr size_t PROBE_DIGITS = 50;
 constexpr size_t DEFAULT_MAX_SPECIAL_Q = 4;
 constexpr size_t MIN_MAX_SPECIAL_Q = 1;
 constexpr size_t MAX_MAX_SPECIAL_Q = 64;
+constexpr uint32_t DEFAULT_MAX_SPECIAL_Q_BATCH_WORKERS = 4;
+constexpr uint32_t MIN_MAX_SPECIAL_Q_BATCH_WORKERS = 1;
+constexpr uint32_t MAX_MAX_SPECIAL_Q_BATCH_WORKERS = 4;
 
 struct CliOptions final {
     size_t max_special_q = DEFAULT_MAX_SPECIAL_Q;
+    uint32_t max_special_q_batch_workers = DEFAULT_MAX_SPECIAL_Q_BATCH_WORKERS;
     std::optional<std::string> ooc_base;
     bool help = false;
 };
@@ -134,7 +139,12 @@ struct ExperimentRecord final {
     std::string storage = "unverified";
     std::string structured_stop = "unverified";
     size_t max_special_q = DEFAULT_MAX_SPECIAL_Q;
+    uint32_t max_special_q_batch_workers = DEFAULT_MAX_SPECIAL_Q_BATCH_WORKERS;
     size_t special_q_processed = 0;
+    size_t special_q_batch_worker_limit = 0;
+    size_t special_q_batch_peak_workers = 0;
+    size_t special_q_batch_count = 0;
+    size_t special_q_batch_peak_size = 0;
     size_t rational_fb_columns = 0;
     size_t algebraic_fb_columns = 0;
     size_t base_factor_columns = 0;
@@ -157,6 +167,7 @@ struct ExperimentRecord final {
     size_t matrix_cols = 0;
     size_t matrix_nonzeros = 0;
     std::optional<int64_t> matrix_signed_delta;
+    bool matrix_row_mapping_identity = false;
     bool thin_guard_proof_satisfied = false;
     size_t structured_filter_records = 0;
     size_t structured_matrix_records = 0;
@@ -386,7 +397,12 @@ void emit_record(const ExperimentRecord& record) {
               << " status=" << record.status << " failure_stage=" << record.failure_stage
               << " n_digits=" << PROBE_DIGITS << " n_bits=" << PROBE_BITS
               << " max_special_q=" << record.max_special_q
+              << " max_special_q_batch_workers=" << record.max_special_q_batch_workers
               << " special_q_processed=" << record.special_q_processed
+              << " special_q_batch_worker_limit=" << record.special_q_batch_worker_limit
+              << " special_q_batch_peak_workers=" << record.special_q_batch_peak_workers
+              << " special_q_batch_count=" << record.special_q_batch_count
+              << " special_q_batch_peak_size=" << record.special_q_batch_peak_size
               << " rational_fb_columns=" << record.rational_fb_columns
               << " algebraic_fb_columns=" << record.algebraic_fb_columns
               << " base_factor_columns=" << record.base_factor_columns
@@ -418,6 +434,7 @@ void emit_record(const ExperimentRecord& record) {
               << " matrix_rows=" << record.matrix_rows << " matrix_cols=" << record.matrix_cols
               << " matrix_nonzeros=" << record.matrix_nonzeros
               << " matrix_signed_delta=" << optional_token(record.matrix_signed_delta)
+              << " matrix_row_mapping_identity=" << bool_token(record.matrix_row_mapping_identity)
               << " thin_guard_rows=" << record.output_rows
               << " thin_guard_non_lp_cols=" << record.base_factor_columns
               << " thin_guard_proof_satisfied=" << bool_token(record.thin_guard_proof_satisfied)
@@ -464,9 +481,22 @@ void emit_record(const ExperimentRecord& record) {
     return static_cast<size_t>(parsed);
 }
 
+[[nodiscard]] uint32_t parse_max_special_q_batch_workers(std::string_view text) {
+    uint64_t parsed = 0;
+    const char* begin = text.data();
+    const char* end = begin + text.size();
+    const auto [position, error] = std::from_chars(begin, end, parsed);
+    if (error != std::errc{} || position != end || parsed < MIN_MAX_SPECIAL_Q_BATCH_WORKERS ||
+        parsed > MAX_MAX_SPECIAL_Q_BATCH_WORKERS) {
+        throw std::invalid_argument("--max-special-q-batch-workers must be an integer in [1,4]");
+    }
+    return static_cast<uint32_t>(parsed);
+}
+
 [[nodiscard]] CliOptions parse_cli(int argc, char** argv) {
     CliOptions options;
     bool max_special_q_seen = false;
+    bool max_special_q_batch_workers_seen = false;
     bool ooc_base_seen = false;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
@@ -483,6 +513,29 @@ void emit_record(const ExperimentRecord& record) {
             }
             options.max_special_q = parse_max_special_q(argv[++index]);
             max_special_q_seen = true;
+            continue;
+        }
+        if (argument == "--max-special-q-batch-workers") {
+            if (max_special_q_batch_workers_seen) {
+                throw std::invalid_argument(
+                    "--max-special-q-batch-workers may be specified only once");
+            }
+            if (index + 1 >= argc) {
+                throw std::invalid_argument("--max-special-q-batch-workers requires a value");
+            }
+            options.max_special_q_batch_workers = parse_max_special_q_batch_workers(argv[++index]);
+            max_special_q_batch_workers_seen = true;
+            continue;
+        }
+        constexpr std::string_view workers_prefix = "--max-special-q-batch-workers=";
+        if (argument.starts_with(workers_prefix)) {
+            if (max_special_q_batch_workers_seen) {
+                throw std::invalid_argument(
+                    "--max-special-q-batch-workers may be specified only once");
+            }
+            options.max_special_q_batch_workers =
+                parse_max_special_q_batch_workers(argument.substr(workers_prefix.size()));
+            max_special_q_batch_workers_seen = true;
             continue;
         }
         constexpr std::string_view prefix = "--max-special-q=";
@@ -576,7 +629,8 @@ void observe_log(const LogEntry& entry, CallbackEvidence& evidence) {
         evidence.full_pipeline_done_observed || entry.phase == Phase::Done;
 }
 
-void validate_probe_parameters(const Integer& n, const Pipeline& pipeline, size_t max_special_q) {
+void validate_probe_parameters(const Integer& n, const Pipeline& pipeline, size_t max_special_q,
+                               uint32_t max_special_q_batch_workers) {
     const auto& params = pipeline.params();
     require(n.bit_length() == PROBE_BITS, "50-digit fixture no longer has 164 bits");
     require(PROBE_N.size() == PROBE_DIGITS, "50-digit fixture literal length changed");
@@ -592,6 +646,8 @@ void validate_probe_parameters(const Integer& n, const Pipeline& pipeline, size_
     require(params.sieve_j_min == 1 && params.sieve_j_max == 2'048,
             "50-digit sieve height changed");
     require(params.max_special_q == max_special_q, "Config max_special_q was not applied");
+    require(params.max_special_q_batch_workers == max_special_q_batch_workers,
+            "Config max_special_q_batch_workers was not applied");
 }
 
 void validate_callback_boundary(const CallbackEvidence& evidence) {
@@ -611,6 +667,7 @@ void validate_callback_boundary(const CallbackEvidence& evidence) {
 void run_probe(const CliOptions& options, ExperimentRecord& record) {
     record.failure_stage = "preflight";
     record.max_special_q = options.max_special_q;
+    record.max_special_q_batch_workers = options.max_special_q_batch_workers;
 
     const std::string requested_raw_base =
         options.ooc_base.has_value() ? *options.ooc_base : unique_raw_base();
@@ -647,9 +704,11 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     Config config;
     config.set_method(FactorizationMethod::GNFS)
         .set_max_special_q(options.max_special_q)
+        .set_max_special_q_batch_workers(options.max_special_q_batch_workers)
         .set_verbose(false);
     Pipeline pipeline(n, config);
-    validate_probe_parameters(n, pipeline, options.max_special_q);
+    validate_probe_parameters(n, pipeline, options.max_special_q,
+                              options.max_special_q_batch_workers);
 
     CallbackEvidence evidence;
     pipeline.set_progress_callback(
@@ -685,6 +744,10 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     const auto& reduction_stats = reduction.stats;
     const auto& pipeline_stats = pipeline.stats();
     record.special_q_processed = pipeline_stats.special_q_processed;
+    record.special_q_batch_worker_limit = pipeline_stats.special_q_batch_worker_limit;
+    record.special_q_batch_peak_workers = pipeline_stats.special_q_batch_peak_workers;
+    record.special_q_batch_count = pipeline_stats.special_q_batch_count;
+    record.special_q_batch_peak_size = pipeline_stats.special_q_batch_peak_size;
     record.first_round_complete = reduction_stats.input_relations >= record.initial_raw_target;
     record.generation = reduction.generation;
     record.raw_rows = reduction_stats.input_relations;
@@ -738,6 +801,23 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     require(record.first_round_complete ||
                 pipeline_stats.special_q_processed == options.max_special_q,
             "incomplete first round stopped before the special-Q cap");
+    size_t hardware_workers = std::thread::hardware_concurrency();
+    if (hardware_workers == 0) {
+        hardware_workers = 4;
+    }
+    const size_t expected_worker_limit =
+        std::min(hardware_workers, static_cast<size_t>(options.max_special_q_batch_workers));
+    require(pipeline_stats.special_q_batch_worker_limit == expected_worker_limit,
+            "Pipeline special-Q batch worker limit differs from the frozen effective cap");
+    require(pipeline_stats.special_q_batch_count == (pipeline_stats.special_q_processed + 3) / 4,
+            "Pipeline special-Q batch count differs from the fixed-width schedule");
+    require(pipeline_stats.special_q_batch_peak_size ==
+                std::min<size_t>(4, pipeline_stats.special_q_processed),
+            "Pipeline special-Q peak batch size differs from the fixed-width schedule");
+    require(pipeline_stats.special_q_batch_peak_workers ==
+                std::min(pipeline_stats.special_q_batch_worker_limit,
+                         pipeline_stats.special_q_batch_peak_size),
+            "Pipeline special-Q peak workers differ from the effective schedule");
     require(reduction_stats.structured_incidence.requested_worker_count > 0,
             "structured incidence worker request is zero");
     if (reduction_stats.input_relations > 0) {
@@ -805,6 +885,15 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
             "matrix result relation count differs from the structured output corpus");
     require(matrix_result->structured_row_to_relation().size() == record.matrix_rows,
             "structured row mapping differs from matrix row count");
+    record.matrix_row_mapping_identity = true;
+    for (size_t row = 0; row < matrix_result->structured_row_to_relation().size(); ++row) {
+        if (matrix_result->structured_row_to_relation()[row] != row) {
+            record.matrix_row_mapping_identity = false;
+            break;
+        }
+    }
+    require(record.matrix_row_mapping_identity,
+            "structured matrix row mapping is not the bounded corpus identity mapping");
     require(record.matrix_rows == expected_relation_count,
             "matrix builder changed the bounded structured row count");
     require(record.matrix_cols >= record.base_factor_columns,
@@ -856,10 +945,11 @@ int main(int argc, char** argv) {
     try {
         const CliOptions options = parse_cli(argc, argv);
         record.max_special_q = options.max_special_q;
+        record.max_special_q_batch_workers = options.max_special_q_batch_workers;
         if (options.help) {
             std::cout << "Usage: test_structured_ooc_50d_probe "
-                         "[--max-special-q N] [--ooc-base PATH]  "
-                         "# N in [1,64], default 4\n";
+                         "[--max-special-q N] [--max-special-q-batch-workers W] "
+                         "[--ooc-base PATH]  # N in [1,64], W in [1,4], defaults 4\n";
             return 0;
         }
         run_probe(options, record);

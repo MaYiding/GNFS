@@ -59,6 +59,8 @@
 #                                         # 独立进程 structured OOC RSS 场景
 #   ./scripts/test.sh probe-50d-structured-ooc
 #                                         # 真实 50 位、有界 production Pipeline 探针
+#   ./scripts/test.sh probe-50d-special-q-workers
+#                                         # 真实 50 位，外层 SQ workers=1/2/4 对照
 #   ./scripts/test.sh bench-ram <level>   # 后台 RAM baseline: nohup + /usr/bin/time -l
 #                                         # level=1 (50d ≈2h) / 2 (60d hours+) / 3-5 (大)
 #
@@ -1248,6 +1250,22 @@ capture_single_measurement_record() {
         awk -v prefix="$prefix" 'index($0, prefix) == 1 { print }')
 }
 
+measurement_record_field() {
+    local record="$1"
+    local key="$2"
+    printf '%s\n' "$record" | awk -v key="$key" '
+        {
+            for (i = 1; i <= NF; ++i) {
+                if (index($i, key "=") == 1) {
+                    print substr($i, length(key) + 2)
+                    matches += 1
+                }
+            }
+        }
+        END { if (matches != 1) exit 1 }
+    '
+}
+
 # ============================================================
 # 报告输出
 # ============================================================
@@ -2347,14 +2365,20 @@ case "$MODE" in
         ;;
 
     probe-50d-structured-ooc)
-        if [[ ${#MODE_ARGS[@]} -gt 1 ]]; then
-            log_fail "用法: $0 probe-50d-structured-ooc [max_special_q]"
+        if [[ ${#MODE_ARGS[@]} -gt 2 ]]; then
+            log_fail "用法: $0 probe-50d-structured-ooc [max_special_q] [max_batch_workers]"
             exit 1
         fi
         local _probe_max_special_q="${MODE_ARGS[1]:-4}"
+        local _probe_max_batch_workers="${MODE_ARGS[2]:-4}"
         if [[ ! "$_probe_max_special_q" =~ ^[0-9]+$ ]] ||
            (( _probe_max_special_q < 1 || _probe_max_special_q > 64 )); then
             log_fail "max_special_q 必须在 1..64 (传入: ${_probe_max_special_q})"
+            exit 1
+        fi
+        if [[ ! "$_probe_max_batch_workers" =~ ^[0-9]+$ ]] ||
+           (( _probe_max_batch_workers < 1 || _probe_max_batch_workers > 4 )); then
+            log_fail "max_batch_workers 必须在 1..4 (传入: ${_probe_max_batch_workers})"
             exit 1
         fi
         if (( ! BUILD_TYPE_EXPLICIT )); then
@@ -2373,10 +2397,11 @@ case "$MODE" in
         _probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/gnfs_structured_ooc_50d.XXXXXX")
         local _probe_base="${_probe_dir}/raw"
         log_header "有界 50 位 production structured OOC 探针"
-        log_info "max_special_q=${_probe_max_special_q}; 临时目录=${_probe_dir}"
+        log_info "max_special_q=${_probe_max_special_q}; max_batch_workers=${_probe_max_batch_workers}; 临时目录=${_probe_dir}"
         local _probe_status=0
         run_single_test test_structured_ooc_50d_probe --max-special-q \
-            "$_probe_max_special_q" --ooc-base "$_probe_base" || _probe_status=$?
+            "$_probe_max_special_q" --max-special-q-batch-workers \
+            "$_probe_max_batch_workers" --ooc-base "$_probe_base" || _probe_status=$?
         if (( _probe_status == 0 )); then
             if capture_single_measurement_record "GNFS_EXPERIMENT_V1 " "50 位探针"; then
                 print -r -- "$MEASUREMENT_RECORD"
@@ -2391,6 +2416,117 @@ case "$MODE" in
             fi
         else
             log_warn "探针失败，保留诊断工件: ${_probe_dir}"
+        fi
+        show_summary
+        ;;
+
+    probe-50d-special-q-workers)
+        if [[ ${#MODE_ARGS[@]} -gt 1 ]]; then
+            log_fail "用法: $0 probe-50d-special-q-workers [max_special_q]"
+            exit 1
+        fi
+        local _comparison_max_special_q="${MODE_ARGS[1]:-4}"
+        if [[ ! "$_comparison_max_special_q" =~ ^[0-9]+$ ]] ||
+           (( _comparison_max_special_q < 4 || _comparison_max_special_q > 64 )); then
+            log_fail "对照 max_special_q 必须在 4..64 (传入: ${_comparison_max_special_q})"
+            exit 1
+        fi
+        if (( ! BUILD_TYPE_EXPLICIT )); then
+            BUILD_TYPE="Release"
+        fi
+        if (( SKIP_BUILD )); then
+            log_fail "probe-50d-special-q-workers 不接受 --no-build；对照证据必须由本次请求的构建生成"
+            exit 1
+        fi
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_structured_ooc_50d_probe" ]]; then
+            log_fail "50 位探针二进制不存在: ${BUILD_DIR}/test_structured_ooc_50d_probe"
+            exit 1
+        fi
+
+        log_header "50 位 Special-Q 外层 worker 独立进程对照"
+        local -A _comparison_records
+        local _comparison_ready=1
+        local _comparison_workers _comparison_dir _comparison_base _comparison_run_status
+        for _comparison_workers in 1 2 4; do
+            _comparison_dir=$(mktemp -d \
+                "${TMPDIR:-/tmp}/gnfs_structured_ooc_50d_w${_comparison_workers}.XXXXXX")
+            _comparison_base="${_comparison_dir}/raw"
+            log_info "workers=${_comparison_workers}; max_special_q=${_comparison_max_special_q}; 临时目录=${_comparison_dir}"
+            _comparison_run_status=0
+            run_single_test test_structured_ooc_50d_probe --max-special-q \
+                "$_comparison_max_special_q" --max-special-q-batch-workers \
+                "$_comparison_workers" --ooc-base "$_comparison_base" || \
+                _comparison_run_status=$?
+            if (( _comparison_run_status != 0 )); then
+                _comparison_ready=0
+                log_warn "workers=${_comparison_workers} 探针失败，保留诊断工件: ${_comparison_dir}"
+                continue
+            fi
+            if ! capture_single_measurement_record "GNFS_EXPERIMENT_V1 " \
+                "50 位 workers=${_comparison_workers} 探针"; then
+                (( FAILED_TESTS += 1 ))
+                _comparison_ready=0
+                log_warn "workers=${_comparison_workers} 记录无效，保留诊断工件: ${_comparison_dir}"
+                continue
+            fi
+            _comparison_records[$_comparison_workers]="$MEASUREMENT_RECORD"
+            print -r -- "$MEASUREMENT_RECORD"
+            if rmdir "$_comparison_dir"; then
+                log_success "workers=${_comparison_workers} 探针工件已完成生命周期清理"
+            else
+                log_fail "workers=${_comparison_workers} 探针成功但临时目录非空，已保留: ${_comparison_dir}"
+                (( FAILED_TESTS += 1 ))
+                _comparison_ready=0
+            fi
+        done
+
+        if (( _comparison_ready )); then
+            local -a _comparison_fields=(
+                status claim_boundary stop_after n_digits n_bits max_special_q
+                special_q_processed special_q_batch_count special_q_batch_peak_size
+                rational_fb_columns algebraic_fb_columns base_factor_columns initial_raw_target
+                first_round_complete resume_scope attempted_resume attempted_distributed
+                sge_attempted solver_attempted sqrt_attempted factorization_attempted
+                route_evidence strategy storage generation raw_rows raw_duplicates
+                input_lp_columns output_rows output_lp_columns structured_commits
+                structured_emitted_rows structured_stop incidence_shards
+                incidence_requested_workers incidence_peak_workers raw_digest_low raw_digest_high
+                output_digest_low output_digest_high matrix_rows matrix_cols matrix_nonzeros
+                matrix_signed_delta matrix_row_mapping_identity thin_guard_proof_satisfied
+                structured_filter_records structured_matrix_records raw_pair_observed
+                raw_pair_removed output_pair_observed output_pair_retained_by_matrix
+                output_pair_removed output_lease_removed
+            )
+            local _comparison_field _comparison_reference _comparison_value
+            for _comparison_field in "${_comparison_fields[@]}"; do
+                if ! _comparison_reference=$(measurement_record_field \
+                    "${_comparison_records[1]}" "$_comparison_field"); then
+                    log_fail "workers=1 记录缺失或重复字段: ${_comparison_field}"
+                    (( FAILED_TESTS += 1 ))
+                    _comparison_ready=0
+                    break
+                fi
+                for _comparison_workers in 2 4; do
+                    if ! _comparison_value=$(measurement_record_field \
+                        "${_comparison_records[$_comparison_workers]}" "$_comparison_field"); then
+                        log_fail "workers=${_comparison_workers} 记录缺失或重复字段: ${_comparison_field}"
+                        (( FAILED_TESTS += 1 ))
+                        _comparison_ready=0
+                        break 2
+                    fi
+                    if [[ "$_comparison_value" != "$_comparison_reference" ]]; then
+                        log_fail "对照字段漂移: ${_comparison_field}; workers=1 为 ${_comparison_reference}, workers=${_comparison_workers} 为 ${_comparison_value}"
+                        (( FAILED_TESTS += 1 ))
+                        _comparison_ready=0
+                        break 2
+                    fi
+                done
+            done
+        fi
+        if (( _comparison_ready )); then
+            print -r -- "GNFS_EXPERIMENT_COMPARISON_V1 status=pass scope=bounded_50d_special_q_batch_workers max_special_q=${_comparison_max_special_q} workers=1,2,4 identity_fields=${#_comparison_fields[@]} timing_compared=false rss_compared=false"
+            log_success "1/2/4 外层 worker 的 relation、matrix 与生命周期身份一致"
         fi
         show_summary
         ;;

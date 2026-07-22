@@ -159,10 +159,9 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
   --degree <d>            多项式度数
   --fb-rational <n>       有理因子基界
   --fb-algebraic <n>      代数因子基界
-  --large-prime <n>       大素数界
+  --lp-bound <n>          大素数界
   --sieve-width <n>       筛区宽度
   --sieve-height <n>      筛区高度
-  --threads <n>           工作线程数
 
 配置:
   -c, --config <文件>     从 key=value 配置文件加载参数
@@ -176,12 +175,13 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
 ```ini
 # gnfs.cfg
-method            = auto         # auto / trial / rho / siqs / gnfs
+# method: auto / trial / rho / siqs / gnfs
+method            = auto
 degree            = 4
 rational_bound    = 50000
 algebraic_bound   = 100000
 large_prime_bound = 3000000
-threads           = 8
+max_special_q_batch_workers = 2
 verbose           = true
 ```
 </details>
@@ -201,8 +201,8 @@ if (result.success) {
 
 // 自定义配置 + 方法选择
 gnfs::api::Config cfg;
-cfg.method  = gnfs::api::FactorizationMethod::SIQS;
-cfg.threads = 8;
+cfg.method = gnfs::api::FactorizationMethod::GNFS;
+cfg.set_max_special_q_batch_workers(2);
 auto r = gnfs::api::factorize(n, cfg);
 std::cout << gnfs::api::method_name(r.stats.method_used) << "\n";
 ```
@@ -217,9 +217,8 @@ pipeline.set_progress_callback(my_progress_cb);
 
 auto ctx      = pipeline.select_polynomial();
 auto fb       = pipeline.build_factor_base(ctx);
-auto rels     = pipeline.sieve_and_collect(ctx, fb);
-auto filtered = pipeline.filter(std::move(rels));
-auto mr       = pipeline.solve_matrix(std::move(filtered), fb, ctx);
+auto reduction = pipeline.sieve_and_collect(ctx, fb);
+auto mr        = pipeline.solve_matrix(std::move(reduction), fb, ctx);
 auto result   = pipeline.extract_factors(mr, fb, ctx);
 
 const auto& stats = pipeline.stats();
@@ -237,7 +236,7 @@ struct FactorResult {
 
     std::string to_text();    // "N = p * q\n方法: SIQS | 耗时: 0.9s"
     std::string to_json();    // 完整 JSON
-    std::string to_csv();
+    std::string to_csv_line();
     std::string to_report();
 };
 ```

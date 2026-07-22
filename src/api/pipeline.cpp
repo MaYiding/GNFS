@@ -1113,6 +1113,10 @@ relation::RelationReductionResult
 Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase& fb,
                                  const StructuredRouteSnapshot& structured_preflight) {
     auto t0 = std::chrono::high_resolution_clock::now();
+    stats_.special_q_batch_worker_limit = 0;
+    stats_.special_q_batch_peak_workers = 0;
+    stats_.special_q_batch_count = 0;
+    stats_.special_q_batch_peak_size = 0;
 
     // Sieve params
     sieve::SieveParams sieve_params;
@@ -1498,10 +1502,15 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     constexpr size_t CHECKPOINT_BATCH_INTERVAL = 25;
     size_t last_checkpoint_batch = 0;
 
-    // Thread count for parallel cofactorization
+    // Hardware ceiling for the local outer special-Q batch scheduler.
     size_t n_cofac_threads = std::thread::hardware_concurrency();
     if (n_cofac_threads == 0)
         n_cofac_threads = 4;
+    const size_t configured_batch_workers = params_.max_special_q_batch_workers;
+    if (configured_batch_workers < 1 || configured_batch_workers > 4) {
+        throw std::logic_error("max_special_q_batch_workers must be in [1, 4]");
+    }
+    stats_.special_q_batch_worker_limit = std::min(n_cofac_threads, configured_batch_workers);
 
     int last_reduction_round = round_start;
     for (int round = round_start; round < MAX_ROUNDS; ++round) {
@@ -1512,13 +1521,15 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         while (!recovered_finalized_ooc && sq_gen.has_next() && collector.size() < batch_target &&
                sq_count < max_sq) {
             // Collect a batch of SQs for parallel processing
-            // Batch size: balance parallelism vs memory (each thread allocates sieve array)
-            // For ≤50 digit: 4 parallel SQs (moderate FB, ~200MB total)
-            // For >50 digit: 2 parallel SQs (large FB, high memory per thread)
-            size_t SQ_BATCH_SIZE = (params_.digits <= 50) ? 4 : 2;
+            // Batch width freezes membership and checkpoint cadence independently
+            // from the configured worker cap. Each active worker owns a sieve array.
+            // Larger inputs retain the existing two-SQ memory bound.
+            const size_t fixed_batch_width = (params_.digits <= 50) ? 4 : 2;
+            const size_t remaining_special_q = max_sq - sq_count;
+            const size_t batch_limit = std::min(fixed_batch_width, remaining_special_q);
             std::vector<sieve::SpecialQ> sq_batch;
-            sq_batch.reserve(SQ_BATCH_SIZE);
-            while (sq_batch.size() < SQ_BATCH_SIZE && sq_gen.has_next() && sq_count < max_sq) {
+            sq_batch.reserve(batch_limit);
+            while (sq_batch.size() < batch_limit && sq_gen.has_next()) {
                 auto sq = sq_gen.next();
                 if (!sq)
                     break;
@@ -1559,8 +1570,14 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                 }
             };
 
-            // Launch worker threads (one per SQ, capped at hardware threads)
-            size_t n_workers = std::min(n_cofac_threads, sq_batch.size());
+            // Launch outer batch workers. Each worker owns one LatticeSieve,
+            // whose internal thread use is intentionally outside this local cap.
+            const size_t n_workers = std::min(stats_.special_q_batch_worker_limit, sq_batch.size());
+            ++stats_.special_q_batch_count;
+            stats_.special_q_batch_peak_size =
+                std::max(stats_.special_q_batch_peak_size, sq_batch.size());
+            stats_.special_q_batch_peak_workers =
+                std::max(stats_.special_q_batch_peak_workers, n_workers);
             std::vector<std::thread> threads;
             threads.reserve(n_workers);
             for (size_t t = 0; t < n_workers; ++t)

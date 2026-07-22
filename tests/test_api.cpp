@@ -114,6 +114,9 @@ bool test_config_auto_detect() {
     if (cfg.max_special_q.has_value()) {
         return false;
     }
+    if (cfg.max_special_q_batch_workers.has_value()) {
+        return false;
+    }
     assert(!cfg.verbose.has_value());
     return true;
 }
@@ -123,11 +126,15 @@ bool test_config_builder() {
                    .set_degree(4)
                    .set_rational_bound(50000)
                    .set_max_special_q(17)
+                   .set_max_special_q_batch_workers(2)
                    .set_verbose(true);
 
     assert(cfg.degree.has_value() && *cfg.degree == 4);
     assert(cfg.rational_bound.has_value() && *cfg.rational_bound == 50000);
     if (!cfg.max_special_q.has_value() || *cfg.max_special_q != 17) {
+        return false;
+    }
+    if (!cfg.max_special_q_batch_workers.has_value() || *cfg.max_special_q_batch_workers != 2) {
         return false;
     }
     assert(cfg.verbose.has_value() && *cfg.verbose == true);
@@ -141,6 +148,17 @@ bool test_config_builder() {
     if (!zero_rejected) {
         return false;
     }
+    for (const uint32_t invalid : {0u, 5u}) {
+        bool rejected = false;
+        try {
+            (void)Config::auto_detect().set_max_special_q_batch_workers(invalid);
+        } catch (const std::out_of_range&) {
+            rejected = true;
+        }
+        if (!rejected) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -149,17 +167,23 @@ bool test_config_merge() {
     base.degree = 3;
     base.rational_bound = 5000;
     base.max_special_q = 23;
+    base.max_special_q_batch_workers = 3;
     base.verbose = false;
 
     Config override_cfg;
     override_cfg.degree = 4;
     override_cfg.max_special_q = 11;
+    override_cfg.max_special_q_batch_workers = 2;
     override_cfg.verbose = true;
 
     auto merged = base.merge(override_cfg);
     assert(*merged.degree == 4);            // overridden
     assert(*merged.rational_bound == 5000); // from base
     if (!merged.max_special_q.has_value() || *merged.max_special_q != 11) {
+        return false;
+    }
+    if (!merged.max_special_q_batch_workers.has_value() ||
+        *merged.max_special_q_batch_workers != 2) {
         return false;
     }
     assert(*merged.verbose == true); // overridden
@@ -171,6 +195,7 @@ bool test_config_apply_to() {
     cfg.degree = 4;
     cfg.rational_bound = 99999;
     cfg.max_special_q = 13;
+    cfg.max_special_q_batch_workers = 2;
 
     Integer n("1000036000099"); // ~40-bit
     auto params = cfg.apply_to(n);
@@ -178,6 +203,9 @@ bool test_config_apply_to() {
     assert(params.degree == 4);
     assert(params.rational_bound == 99999);
     if (params.max_special_q != 13) {
+        return false;
+    }
+    if (params.max_special_q_batch_workers != 2) {
         return false;
     }
     // Other params should be auto-computed
@@ -194,6 +222,19 @@ bool test_config_apply_to() {
     if (!zero_rejected) {
         return false;
     }
+    for (const uint32_t invalid_value : {0u, 5u}) {
+        Config invalid_workers;
+        invalid_workers.max_special_q_batch_workers = invalid_value;
+        bool rejected = false;
+        try {
+            (void)invalid_workers.apply_to(n);
+        } catch (const std::out_of_range&) {
+            rejected = true;
+        }
+        if (!rejected) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -206,6 +247,7 @@ bool test_config_from_file() {
         ofs << "degree = 4\n";
         ofs << "rational_bound = 12345\n";
         ofs << "max_special_q = 19\n";
+        ofs << "max_special_q_batch_workers = 3\n";
         ofs << "verbose = true\n";
     }
 
@@ -213,6 +255,9 @@ bool test_config_from_file() {
     assert(cfg.degree.has_value() && *cfg.degree == 4);
     assert(cfg.rational_bound.has_value() && *cfg.rational_bound == 12345);
     if (!cfg.max_special_q.has_value() || *cfg.max_special_q != 19) {
+        return false;
+    }
+    if (!cfg.max_special_q_batch_workers.has_value() || *cfg.max_special_q_batch_workers != 3) {
         return false;
     }
     assert(cfg.verbose.has_value() && *cfg.verbose == true);
@@ -256,6 +301,10 @@ bool test_config_from_file_invalid() {
     write_and_expect_throw("max_special_q = 0\n", "zero max_special_q");
     write_and_expect_throw("max_special_q = 4294967296\n", "overflow max_special_q");
     write_and_expect_throw("max_special_q = 4junk\n", "trailing max_special_q characters");
+    write_and_expect_throw("max_special_q_batch_workers = 0\n", "zero batch workers");
+    write_and_expect_throw("max_special_q_batch_workers = 5\n", "excess batch workers");
+    write_and_expect_throw("max_special_q_batch_workers = 2junk\n",
+                           "trailing batch worker characters");
 
     // Valid: empty + comment + blank lines should not throw
     {
@@ -283,10 +332,14 @@ bool test_config_to_string() {
     cfg.degree = 5;
     cfg.rational_bound = 10000u;
     cfg.max_special_q = 29;
+    cfg.max_special_q_batch_workers = 3;
     auto s = cfg.to_string();
     assert(s.find("degree = 5") != std::string::npos);
     assert(s.find("rational_bound = 10000") != std::string::npos);
     if (s.find("max_special_q = 29") == std::string::npos) {
+        return false;
+    }
+    if (s.find("max_special_q_batch_workers = 3") == std::string::npos) {
         return false;
     }
     return true;
@@ -335,11 +388,21 @@ bool test_result_to_json() {
     r.factors.push_back(Integer(11));
     r.factors.push_back(Integer(13));
     r.stats.n_bits = 8;
+    r.stats.special_q_batch_worker_limit = 2;
+    r.stats.special_q_batch_peak_workers = 2;
+    r.stats.special_q_batch_count = 3;
+    r.stats.special_q_batch_peak_size = 4;
 
     auto json = r.to_json();
     assert(json.find("\"success\": true") != std::string::npos);
     assert(json.find("\"143\"") != std::string::npos);
     assert(json.find("\"11\"") != std::string::npos);
+    if (json.find("\"special_q_batch_worker_limit\": 2") == std::string::npos ||
+        json.find("\"special_q_batch_peak_workers\": 2") == std::string::npos ||
+        json.find("\"special_q_batch_count\": 3") == std::string::npos ||
+        json.find("\"special_q_batch_peak_size\": 4") == std::string::npos) {
+        return false;
+    }
     return true;
 }
 
@@ -366,11 +429,15 @@ bool test_result_to_report() {
     r.stats.timings.total_s = 1.234;
     r.stats.timings.poly_s = 0.1;
     r.stats.timings.sieve_s = 0.8;
+    r.stats.special_q_batch_worker_limit = 2;
 
     auto report = r.to_report();
     assert(report.find("GNFS Factorization Report") != std::string::npos);
     assert(report.find("SUCCESS") != std::string::npos);
     assert(report.find("Timing Breakdown") != std::string::npos);
+    if (report.find("Special-Q batch worker limit: 2") == std::string::npos) {
+        return false;
+    }
     return true;
 }
 

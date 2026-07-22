@@ -54,13 +54,19 @@ distributed sieve、V0 BFS、V3 cascade、3LP 和其它会改变实验族的开�
 
 ```bash
 ./scripts/test.sh probe-50d-structured-ooc
-./scripts/test.sh probe-50d-structured-ooc 8
+./scripts/test.sh probe-50d-structured-ooc 8 2
+./scripts/test.sh probe-50d-special-q-workers 4
 ```
 
-可选参数是 `max_special_q`，允许范围为 1 到 64，默认值为 4。`Config` 的
-`max_special_q` 字段把该限制写入 `GNFSParams::max_special_q`，因此限制在进程内
-生效，不依赖 shell timeout。默认 4 个 special-Q 对应一个 production batch，但仍
-只是 bounded prefix，不代表完整首轮。
+第一个可选参数是 `max_special_q`，允许范围为 1 到 64，默认值为 4。第二个可选参数
+是 `max_special_q_batch_workers`，允许范围为 1 到 4，默认值为 4。对应 `Config`
+字段在 Pipeline 构造时写入 `GNFSParams`，因此限制在进程内生效，不依赖 shell
+timeout。`max_special_q` 是严格硬上限；最后一批不会向上取整到固定批次宽度。默认
+4 个 special-Q 对应一个 production batch，但仍只是 bounded prefix，不代表完整首轮。
+
+`probe-50d-special-q-workers` 使用同一个 Release 构建，分别在 3 个新进程中运行
+workers 1、2 和 4。runner 比较 relation digest、structured reduction、矩阵形状和
+工件生命周期字段；wall time 与 RSS 只记录，不参与 identity 判定。
 
 探针在调用 `solve_matrix()` 前机械证明 reduced rows 不超过已知 non-LP factor-base
 columns，并设置 `GNFS_NO_THIN_SOLVE=1`。实际 full matrix 必须满足
@@ -80,9 +86,10 @@ factorization_attempted=false
 ```
 
 `first_round_complete` 只在 raw relation count 达到初始 raw target 时为 true。报告还
-包含 hard cap、实际 special-Q 数、raw/output digest 与 rows、矩阵 rows/columns、
-有符号 row-column delta、nonzeros、wall time 和 process RSS。runner 使用独立临时目录；
-成功后只在目录为空时执行 `rmdir`，失败或生命周期异常时保留目录供诊断。
+包含 hard cap、批次 worker 配置与实际峰值、raw/output digest 与 rows、矩阵
+rows/columns、row mapping identity、有符号 row-column delta、nonzeros、wall time 和
+process RSS。runner 使用独立临时目录；成功后只在目录为空时执行 `rmdir`，失败或
+生命周期异常时保留目录供诊断。
 
 ## Production Telemetry
 
@@ -169,5 +176,50 @@ matrix_signed_delta=-22660
 process lifetime peak RSS 从 1,530,101,760 bytes 降到 218,169,344 bytes；sieve-end
 current RSS 为 217,825,280 bytes，sieve wall time 从 1.76s 降到 0.82s。完整 sieve
 module 为 17/17，Release gate 为 132/132，ASan+UBSan 的 lattice-sieve storage
-回归也通过。该结果消除了 1/2/4 worker 对照中的固定 512MiB/实例测量偏差，但不替代
-后续 typed worker cap 和跨批 allocator-retention 实验。
+回归也通过。该结果消除了 1/2/4 worker 对照中的固定 512MiB/实例测量偏差，并为
+后续 typed worker cap 与跨批 allocator-retention 实验建立了可比较基线。
+
+## 2026-07-22 Special-Q Batch Worker Evidence
+
+`max_special_q` 的旧批次填充逻辑只在外层检查已完成计数。`max_special_q=1` 仍会一次
+取满 4 个 special-Q。修复后，真实 50 位 Release 探针严格处理 1 个 special-Q：
+`special_q_batch_count=1`、`special_q_batch_peak_size=1`、
+`special_q_batch_peak_workers=1`，raw rows 为 39。
+
+随后执行：
+
+```bash
+./scripts/test.sh probe-50d-special-q-workers 4
+```
+
+3 个独立进程都处理同一 4-SQ prefix，得到 188 条 raw relations。raw digest 固定为
+`2999840282289098554/11378523343223252016`，output digest 固定为
+`12384855047597894612/7406486012983705512`。full matrix 均为 `0 x 22660`，
+`matrix_signed_delta=-22660`，row mapping 为 identity。runner 比较的 54 个非资源字段
+全部一致。
+
+| Outer workers | Peak RSS | Sieve-end current RSS | Sieve wall |
+|---:|---:|---:|---:|
+| 1 | 85,737,472 bytes | 85,360,640 bytes | 1.41s |
+| 2 | 137,314,304 bytes | 136,953,856 bytes | 0.96s |
+| 4 | 221,675,520 bytes | 221,331,456 bytes | 0.91s |
+
+这些数据来自 macOS arm64、10 个逻辑 CPU 的 fresh Release 进程。它们说明外层并发
+上限能明确控制 4-SQ prefix 的内存与延迟权衡，但不能推断完整首轮或其它机器的最优值。
+每个 `LatticeSieve` 仍可使用内部线程；全进程线程预算属于后续独立里程碑。
+
+同一 runner 的 64-SQ 扩展覆盖 16 个批次。3 个进程都得到 6,047 条 raw relations、
+16 条 output relations 和 `16 x 22660` full matrix；54 个 identity 字段仍完全一致。
+raw digest 为 `3689494670318064948/10851036734780297310`，output digest 为
+`8861842470919209299/15961672454890669926`。
+
+| Outer workers | Peak RSS | Sieve-end current RSS | Sieve wall |
+|---:|---:|---:|---:|
+| 1 | 100,810,752 bytes | 86,130,688 bytes | 71.54s |
+| 2 | 143,261,696 bytes | 128,548,864 bytes | 50.58s |
+| 4 | 269,762,560 bytes | 230,883,328 bytes | 46.74s |
+
+4-worker 的 64-SQ sieve-end current RSS 只比 4-SQ 高约 9.6MB，不再出现修复前约
+2.3GB 的跨批残留。该单点不能证明任意长运行都没有 allocator retention，但已覆盖
+当前 16 批生产路径。2 workers 到 4 workers 只缩短约 7.6% sieve wall time，同时
+增加约 126.5MB lifetime peak RSS；因此下一阶段优先建立内外层统一线程预算。

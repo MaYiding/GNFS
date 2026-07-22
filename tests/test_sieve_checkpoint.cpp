@@ -335,6 +335,10 @@ void test_run_identity_mutations_change_fingerprint() {
     expect_param_changed([](auto& params) { ++params.special_q_max; });
     expect_param_changed([](auto& params) { ++params.max_special_q; });
     expect_param_changed([](auto& params) { ++params.target_excess; });
+
+    RunIdentityFixture scheduling_only;
+    scheduling_only.params.max_special_q_batch_workers = 1;
+    CHECK(identity_from(scheduling_only) == baseline);
 }
 
 void test_empty_committed_prefix_round_trip() {
