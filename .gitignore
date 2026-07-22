@@ -74,3 +74,4 @@ bench/results/combo_*.md
 pgo-profiles/
 *.profraw
 *.profdata
+.myflicker/
