@@ -184,8 +184,13 @@ The pure typed gate in `include/gnfs/siqs/shadow_proof_rss_gate.hpp` exposes
 `status=blocked reason=policy_missing`. An accepted policy binds the sealed
 corpus ID and digest, operating system, architecture, RSS backend, resolved
 production sieve worker count, candidate revision, approval identity,
-deployment memory budget, and reserved headroom. The gate does not discover or
-approve any of those values.
+deployment memory budget, reserved headroom, and the versioned journal-store
+binding. That binding uses deployment-owned trusted-base and store IDs plus one
+canonical lowercase ASCII relative locator; absolute paths and runtime
+inode/file IDs are not policy fields. The gate does not discover or approve any
+of those values. Before filesystem access, a production-owned registry must
+resolve the trusted-base ID without accepting a caller path, resolver, or base
+handle, and must verify that the locator maps to the provisioned store ID.
 
 Coverage is exact: each evaluated platform and backend needs three `off` and
 seven `observe` fresh-process records for every one of the eight fixture IDs,
@@ -201,7 +206,7 @@ with `reason=all_observe_peaks_within_limit`; it still requires manual review.
 A terminal outcome carries a stable, non-cryptographic identity checksum over
 every policy binding field. `emit_siqs_shadow_proof_rss_gate_outcome`
 re-evaluates the policy and complete sample span, requires an exact outcome
-match, and writes the closed `GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V1` record. The
+match, and writes the closed `GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V2` record. The
 record includes the policy-binding checksum lanes. The emitter is terminal-only:
 `blocked` and `invalid` remain typed outcomes but do not produce an audit line.
 Every outcome keeps `shadow_outcome_routed=false` and `promotion=false`.

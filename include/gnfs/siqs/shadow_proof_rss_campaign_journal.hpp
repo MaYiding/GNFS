@@ -778,6 +778,9 @@ resume_siqs_shadow_proof_rss_campaign_journal(
             return replay_failure(SIQSShadowProofRssJournalReason::record_order_invalid);
         }
         if (record.kind == SIQSShadowProofRssJournalRecordKind::campaign_tainted) {
+            if (expecting_start || record_index + 1 != records.size()) {
+                return replay_failure(SIQSShadowProofRssJournalReason::record_order_invalid);
+            }
             if (record.commit_payload != SIQSShadowProofRssJournalCommitPayload{}) {
                 return replay_failure(SIQSShadowProofRssJournalReason::record_invalid);
             }
@@ -899,6 +902,7 @@ make_siqs_shadow_proof_rss_slot_commit(
     sample.resolved_production_sieve_workers = payload.actual_resolved_sieve_workers;
     sample.candidate_revision = policy.candidate_revision;
     sample.approval_id = policy.approval_id;
+    sample.journal_store = policy.journal_store;
     sample.deployment_budget_bytes = policy.deployment_budget_bytes;
     sample.reserved_headroom_bytes = policy.reserved_headroom_bytes;
     sample.fixture_id = slot.fixture_id;

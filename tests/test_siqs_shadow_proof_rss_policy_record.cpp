@@ -64,18 +64,26 @@ int checks_failed = 0;
     policy.resolved_production_sieve_workers = 4;
     policy.candidate_revision = "synthetic-revision-abc123";
     policy.approval_id = "synthetic-approval-42";
+    policy.journal_store = {{UINT64_C(1111111122222222), UINT64_C(3333333344444444)},
+                            {UINT64_C(1234123412341234), UINT64_C(5678567856785678)},
+                            "synthetic-rss-store-v1"};
     policy.deployment_budget_bytes = UINT64_C(4294967296);
     policy.reserved_headroom_bytes = UINT64_C(536870912);
     return policy;
 }
 
 [[nodiscard]] std::string canonical_record() {
-    return "GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V1 schema_version=1 approved=true"
+    return "GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V2 schema_version=2 approved=true"
            " corpus_id=synthetic-corpus-v7 corpus_digest_low=123456789"
            " corpus_digest_high=987654321 operating_system=darwin architecture=arm64"
            " memory_backend=darwin_getrusage resolved_production_sieve_workers=4"
            " candidate_revision=synthetic-revision-abc123"
-           " approval_id=synthetic-approval-42 deployment_budget_bytes=4294967296"
+           " approval_id=synthetic-approval-42"
+           " journal_trusted_base_id_low=1111111122222222"
+           " journal_trusted_base_id_high=3333333344444444"
+           " journal_store_id_low=1234123412341234"
+           " journal_store_id_high=5678567856785678"
+           " journal_store_locator=synthetic-rss-store-v1 deployment_budget_bytes=4294967296"
            " reserved_headroom_bytes=536870912\n";
 }
 
@@ -103,8 +111,8 @@ void expect_emit_rejected(const SIQSShadowProofRssGatePolicy& policy) {
 
 void test_constants_and_error_names() {
     CHECK(std::string_view(SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_PREFIX) ==
-          "GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V1");
-    CHECK(SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_SCHEMA_VERSION == 1);
+          "GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V2");
+    CHECK(SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_SCHEMA_VERSION == 2);
 
     constexpr std::array errors{
         std::pair{SIQSShadowProofRssPolicyRecordError::none, std::string_view("none")},
@@ -169,6 +177,7 @@ void test_exact_emit_parse_and_gate_mapping() {
     CHECK(mapped.resolved_production_sieve_workers == source.resolved_production_sieve_workers);
     CHECK(mapped.candidate_revision == source.candidate_revision);
     CHECK(mapped.approval_id == source.approval_id);
+    CHECK(mapped.journal_store == source.journal_store);
     CHECK(mapped.deployment_budget_bytes == source.deployment_budget_bytes);
     CHECK(mapped.reserved_headroom_bytes == source.reserved_headroom_bytes);
     CHECK(siqs_shadow_proof_rss_policy_binding_digest(mapped) ==
@@ -211,6 +220,7 @@ void test_closed_platform_values_and_semantic_separation() {
     policy.operating_system = SIQSShadowProofRssOperatingSystem::darwin;
     policy.memory_backend = ProcessMemoryBackend::LinuxGetrusage;
     policy.resolved_production_sieve_workers = 0;
+    policy.journal_store = {{}, {}, "syntactic/path"};
     policy.deployment_budget_bytes = 0;
     policy.reserved_headroom_bytes = std::numeric_limits<uint64_t>::max();
     std::string emitted;
@@ -220,8 +230,24 @@ void test_closed_platform_values_and_semantic_separation() {
     CHECK(!parsed.record.approved);
     CHECK(parsed.record.memory_backend == ProcessMemoryBackend::LinuxGetrusage);
     CHECK(parsed.record.resolved_production_sieve_workers == 0);
+    CHECK(parsed.record.journal_trusted_base_id == gnfs::siqs::SIQSShadowProofRssCorpusDigest{});
+    CHECK(parsed.record.journal_store_id == gnfs::siqs::SIQSShadowProofRssCorpusDigest{});
+    CHECK(parsed.record.journal_store_locator == "syntactic/path");
+    const auto invalid_store_policy = parsed.record.as_gate_policy();
+    CHECK(gnfs::siqs::siqs_shadow_proof_rss_gate_policy_error(&invalid_store_policy) ==
+          gnfs::siqs::SIQSShadowProofRssGateReason::policy_not_approved);
     CHECK(parsed.record.deployment_budget_bytes == 0);
     CHECK(parsed.record.reserved_headroom_bytes == std::numeric_limits<uint64_t>::max());
+
+    policy = make_policy();
+    policy.journal_store.relative_locator = "MixedCase";
+    emitted.clear();
+    CHECK(emit_siqs_shadow_proof_rss_policy_record(policy, emitted));
+    const auto parsed_noncanonical_locator = parse_siqs_shadow_proof_rss_policy_record(emitted);
+    CHECK(parsed_noncanonical_locator);
+    const auto noncanonical_locator_policy = parsed_noncanonical_locator.record.as_gate_policy();
+    CHECK(gnfs::siqs::siqs_shadow_proof_rss_gate_policy_error(&noncanonical_locator_policy) ==
+          gnfs::siqs::SIQSShadowProofRssGateReason::policy_binding_invalid);
 }
 
 void test_framing_and_ascii_rejections() {
@@ -248,7 +274,7 @@ void test_framing_and_ascii_rejections() {
         replace_once(canonical, "synthetic-corpus-v7", std::string_view("synthetic-\x80", 11)),
         SIQSShadowProofRssPolicyRecordError::invalid_ascii);
     expect_error(replace_once(canonical, SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_PREFIX,
-                              "GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V2"),
+                              "GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V1"),
                  SIQSShadowProofRssPolicyRecordError::invalid_prefix);
 }
 
@@ -278,7 +304,9 @@ void test_field_shape_order_and_cardinality_rejections() {
 
 void test_canonical_scalar_rejections() {
     const std::string canonical = canonical_record();
-    expect_error(replace_once(canonical, "schema_version=1", "schema_version=2"),
+    expect_error(replace_once(canonical, "schema_version=2", "schema_version=3"),
+                 SIQSShadowProofRssPolicyRecordError::invalid_schema_version);
+    expect_error(replace_once(canonical, "schema_version=2", "schema_version=1"),
                  SIQSShadowProofRssPolicyRecordError::invalid_schema_version);
     for (const std::string_view value : {"01", "+1", "-1", "1.0", "one"}) {
         expect_error(replace_once(canonical, "corpus_digest_low=123456789",
@@ -288,6 +316,22 @@ void test_canonical_scalar_rejections() {
     expect_error(replace_once(canonical, "corpus_digest_low=123456789",
                               "corpus_digest_low=18446744073709551616"),
                  SIQSShadowProofRssPolicyRecordError::unsigned_integer_out_of_range);
+    for (const auto [field, value] :
+         std::array{std::pair{std::string_view("journal_trusted_base_id_low"),
+                              std::string_view("1111111122222222")},
+                    std::pair{std::string_view("journal_trusted_base_id_high"),
+                              std::string_view("3333333344444444")},
+                    std::pair{std::string_view("journal_store_id_low"),
+                              std::string_view("1234123412341234")},
+                    std::pair{std::string_view("journal_store_id_high"),
+                              std::string_view("5678567856785678")}}) {
+        const std::string assignment = std::string(field) + "=" + std::string(value);
+        expect_error(replace_once(canonical, assignment, std::string(field) + "=01"),
+                     SIQSShadowProofRssPolicyRecordError::invalid_unsigned_integer);
+        expect_error(
+            replace_once(canonical, assignment, std::string(field) + "=18446744073709551616"),
+            SIQSShadowProofRssPolicyRecordError::unsigned_integer_out_of_range);
+    }
     for (const std::string_view value : {"True", "FALSE", "1", "yes"}) {
         expect_error(
             replace_once(canonical, "approved=true", std::string("approved=") + std::string(value)),
@@ -329,6 +373,12 @@ void test_emitter_rejections_are_transactional() {
     policy = make_policy();
     const std::string non_ascii("bad\x80", 4);
     policy.approval_id = non_ascii;
+    expect_emit_rejected(policy);
+    policy = make_policy();
+    policy.journal_store.relative_locator = "two words";
+    expect_emit_rejected(policy);
+    policy = make_policy();
+    policy.journal_store.relative_locator = "a=b";
     expect_emit_rejected(policy);
 
     policy = make_policy();

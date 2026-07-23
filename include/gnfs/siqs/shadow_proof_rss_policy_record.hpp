@@ -19,8 +19,8 @@
 namespace gnfs::siqs {
 
 inline constexpr char SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_PREFIX[] =
-    "GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V1";
-inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_SCHEMA_VERSION = 1;
+    "GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V2";
+inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_SCHEMA_VERSION = 2;
 
 /// Parse failures are syntax and representation failures only. Approval,
 /// corpus identity, backend/OS compatibility, and budget semantics remain the
@@ -87,7 +87,7 @@ siqs_shadow_proof_rss_policy_record_error_name(SIQSShadowProofRssPolicyRecordErr
 }
 
 /// Owning representation of one parsed policy record. The returned gate policy
-/// borrows the three string fields. It must not outlive this value, and moving
+/// borrows the four string fields. It must not outlive this value, and moving
 /// or modifying this record invalidates the view.
 struct SIQSShadowProofRssPolicyRecord final {
     bool approved = false;
@@ -99,6 +99,9 @@ struct SIQSShadowProofRssPolicyRecord final {
     std::size_t resolved_production_sieve_workers = 0;
     std::string candidate_revision;
     std::string approval_id;
+    SIQSShadowProofRssCorpusDigest journal_trusted_base_id;
+    SIQSShadowProofRssCorpusDigest journal_store_id;
+    std::string journal_store_locator;
     uint64_t deployment_budget_bytes = 0;
     uint64_t reserved_headroom_bytes = 0;
 
@@ -112,6 +115,7 @@ struct SIQSShadowProofRssPolicyRecord final {
                 resolved_production_sieve_workers,
                 candidate_revision,
                 approval_id,
+                {journal_trusted_base_id, journal_store_id, journal_store_locator},
                 deployment_budget_bytes,
                 reserved_headroom_bytes};
     }
@@ -131,7 +135,7 @@ struct SIQSShadowProofRssPolicyRecordParseResult final {
 
 namespace shadow_proof_rss_policy_record_detail {
 
-inline constexpr std::array<std::string_view, 13> FIELD_NAMES{
+inline constexpr std::array<std::string_view, 18> FIELD_NAMES{
     "schema_version",
     "approved",
     "corpus_id",
@@ -143,6 +147,11 @@ inline constexpr std::array<std::string_view, 13> FIELD_NAMES{
     "resolved_production_sieve_workers",
     "candidate_revision",
     "approval_id",
+    "journal_trusted_base_id_low",
+    "journal_trusted_base_id_high",
+    "journal_store_id_low",
+    "journal_store_id_high",
+    "journal_store_locator",
     "deployment_budget_bytes",
     "reserved_headroom_bytes",
 };
@@ -433,12 +442,32 @@ parse_siqs_shadow_proof_rss_policy_record(std::string_view bytes) noexcept {
         return result;
     }
     record.resolved_production_sieve_workers = static_cast<std::size_t>(workers);
-    if (const Error error = parse_canonical_uint64(values[11], record.deployment_budget_bytes);
+    if (const Error error = parse_canonical_uint64(values[11], record.journal_trusted_base_id.low);
         error != Error::none) {
         result.error = error;
         return result;
     }
-    if (const Error error = parse_canonical_uint64(values[12], record.reserved_headroom_bytes);
+    if (const Error error = parse_canonical_uint64(values[12], record.journal_trusted_base_id.high);
+        error != Error::none) {
+        result.error = error;
+        return result;
+    }
+    if (const Error error = parse_canonical_uint64(values[13], record.journal_store_id.low);
+        error != Error::none) {
+        result.error = error;
+        return result;
+    }
+    if (const Error error = parse_canonical_uint64(values[14], record.journal_store_id.high);
+        error != Error::none) {
+        result.error = error;
+        return result;
+    }
+    if (const Error error = parse_canonical_uint64(values[16], record.deployment_budget_bytes);
+        error != Error::none) {
+        result.error = error;
+        return result;
+    }
+    if (const Error error = parse_canonical_uint64(values[17], record.reserved_headroom_bytes);
         error != Error::none) {
         result.error = error;
         return result;
@@ -448,6 +477,7 @@ parse_siqs_shadow_proof_rss_policy_record(std::string_view bytes) noexcept {
         record.corpus_id.assign(values[2]);
         record.candidate_revision.assign(values[9]);
         record.approval_id.assign(values[10]);
+        record.journal_store_locator.assign(values[15]);
         result.record = std::move(record);
     } catch (...) {
         result.error = Error::resource_failure;
@@ -466,6 +496,7 @@ emit_siqs_shadow_proof_rss_policy_record(const SIQSShadowProofRssGatePolicy& pol
     if (!record_token_is_valid(policy.corpus_id) ||
         !record_token_is_valid(policy.candidate_revision) ||
         !record_token_is_valid(policy.approval_id) ||
+        !record_token_is_valid(policy.journal_store.relative_locator) ||
         !known_record_operating_system(policy.operating_system) ||
         !known_record_architecture(policy.architecture) ||
         !known_record_backend(policy.memory_backend) ||
@@ -482,7 +513,7 @@ emit_siqs_shadow_proof_rss_policy_record(const SIQSShadowProofRssGatePolicy& pol
 
     try {
         std::string candidate;
-        candidate.reserve(512);
+        candidate.reserve(640);
         candidate.append(SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_PREFIX);
         append_uint64_field(candidate, FIELD_NAMES[0],
                             SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_SCHEMA_VERSION);
@@ -500,8 +531,13 @@ emit_siqs_shadow_proof_rss_policy_record(const SIQSShadowProofRssGatePolicy& pol
                             static_cast<uint64_t>(policy.resolved_production_sieve_workers));
         append_field(candidate, FIELD_NAMES[9], policy.candidate_revision);
         append_field(candidate, FIELD_NAMES[10], policy.approval_id);
-        append_uint64_field(candidate, FIELD_NAMES[11], *policy.deployment_budget_bytes);
-        append_uint64_field(candidate, FIELD_NAMES[12], *policy.reserved_headroom_bytes);
+        append_uint64_field(candidate, FIELD_NAMES[11], policy.journal_store.trusted_base_id.low);
+        append_uint64_field(candidate, FIELD_NAMES[12], policy.journal_store.trusted_base_id.high);
+        append_uint64_field(candidate, FIELD_NAMES[13], policy.journal_store.store_id.low);
+        append_uint64_field(candidate, FIELD_NAMES[14], policy.journal_store.store_id.high);
+        append_field(candidate, FIELD_NAMES[15], policy.journal_store.relative_locator);
+        append_uint64_field(candidate, FIELD_NAMES[16], *policy.deployment_budget_bytes);
+        append_uint64_field(candidate, FIELD_NAMES[17], *policy.reserved_headroom_bytes);
         candidate.push_back('\n');
         output.swap(candidate);
         return true;

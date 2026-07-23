@@ -114,6 +114,9 @@ int checks_failed = 0;
     policy.resolved_production_sieve_workers = 4;
     policy.candidate_revision = "candidate-revision-1";
     policy.approval_id = "approval-ticket-1";
+    policy.journal_store = {{UINT64_C(1010101010101010), UINT64_C(2020202020202020)},
+                            {UINT64_C(1111222233334444), UINT64_C(5555666677778888)},
+                            "rss-campaign-prod-v1"};
     policy.deployment_budget_bytes = DEPLOYMENT_BUDGET_BYTES;
     policy.reserved_headroom_bytes = RESERVED_HEADROOM_BYTES;
     return policy;
@@ -132,6 +135,7 @@ make_sample(const SIQSShadowProofRssGatePolicy& policy, uint32_t fixture_id,
     sample.resolved_production_sieve_workers = policy.resolved_production_sieve_workers;
     sample.candidate_revision = policy.candidate_revision;
     sample.approval_id = policy.approval_id;
+    sample.journal_store = policy.journal_store;
     sample.deployment_budget_bytes = policy.deployment_budget_bytes;
     sample.reserved_headroom_bytes = policy.reserved_headroom_bytes;
     sample.fixture_id = fixture_id;
@@ -453,6 +457,20 @@ void test_policy_binding_and_tokens() {
     policy = approved;
     policy.resolved_production_sieve_workers = 0;
     expect_invalid_policy(policy);
+    policy = approved;
+    policy.journal_store.trusted_base_id = {};
+    expect_invalid_policy(policy);
+    policy = approved;
+    policy.journal_store.store_id = {};
+    expect_invalid_policy(policy);
+    for (const std::string_view bad_locator : std::array<std::string_view, 18>{
+             "", ".", "..", ".hidden", "trailing.", "two words", "child/path", "child\\path", "a=b",
+             "Store", "A_b.c-9", "CON", "con.txt", "nul", "Com1", "lpt9", "LPT1.log",
+             std::string_view("bad\x80", 4)}) {
+        policy = approved;
+        policy.journal_store.relative_locator = bad_locator;
+        expect_invalid_policy(policy);
+    }
 
     for (const auto [operating_system, backend] :
          std::array{std::pair{SIQSShadowProofRssOperatingSystem::darwin,
@@ -508,6 +526,37 @@ void test_policy_binding_and_tokens() {
     policy = approved;
     policy.approval_id = oversized_token;
     expect_invalid_policy(policy);
+
+    policy = approved;
+    policy.journal_store.relative_locator = maximum_token;
+    matching = make_complete_samples(policy, RSS_LIMIT_BYTES);
+    expect_outcome(&policy, matching, SIQSShadowProofRssGateStatus::manual_review_candidate,
+                   SIQSShadowProofRssGateReason::all_observe_peaks_within_limit);
+    policy.journal_store.relative_locator = oversized_token;
+    expect_invalid_policy(policy);
+
+    for (const auto binding : std::array{gnfs::siqs::SIQSShadowProofRssJournalStoreBinding{
+                                             {0, approved.journal_store.trusted_base_id.high},
+                                             approved.journal_store.store_id,
+                                             "a_b.c-9"},
+                                         gnfs::siqs::SIQSShadowProofRssJournalStoreBinding{
+                                             {approved.journal_store.trusted_base_id.low, 0},
+                                             approved.journal_store.store_id,
+                                             "a_b.c-9"},
+                                         gnfs::siqs::SIQSShadowProofRssJournalStoreBinding{
+                                             approved.journal_store.trusted_base_id,
+                                             {0, approved.journal_store.store_id.high},
+                                             "a_b.c-9"},
+                                         gnfs::siqs::SIQSShadowProofRssJournalStoreBinding{
+                                             approved.journal_store.trusted_base_id,
+                                             {approved.journal_store.store_id.low, 0},
+                                             "a_b.c-9"}}) {
+        policy = approved;
+        policy.journal_store = binding;
+        matching = make_complete_samples(policy, RSS_LIMIT_BYTES);
+        expect_outcome(&policy, matching, SIQSShadowProofRssGateStatus::manual_review_candidate,
+                       SIQSShadowProofRssGateReason::all_observe_peaks_within_limit);
+    }
 }
 
 void test_exact_coverage_and_sample_bindings() {
@@ -562,6 +611,12 @@ void test_exact_coverage_and_sample_bindings() {
     expect_binding_mismatch([](auto& sample) { ++sample.resolved_production_sieve_workers; });
     expect_binding_mismatch([](auto& sample) { sample.candidate_revision = "different-revision"; });
     expect_binding_mismatch([](auto& sample) { sample.approval_id = "different-approval"; });
+    expect_binding_mismatch([](auto& sample) { ++sample.journal_store.trusted_base_id.low; });
+    expect_binding_mismatch([](auto& sample) { ++sample.journal_store.trusted_base_id.high; });
+    expect_binding_mismatch([](auto& sample) { ++sample.journal_store.store_id.low; });
+    expect_binding_mismatch([](auto& sample) { ++sample.journal_store.store_id.high; });
+    expect_binding_mismatch(
+        [](auto& sample) { sample.journal_store.relative_locator = "different-store"; });
     expect_binding_mismatch([](auto& sample) { sample.deployment_budget_bytes = 1001; });
     expect_binding_mismatch([](auto& sample) { sample.reserved_headroom_bytes = 101; });
 }
@@ -808,24 +863,28 @@ void test_closed_emitter_schema_and_failures() {
     const auto [emitted, line] = emit_to_string(&policy, samples, outcome);
     CHECK(emitted);
     const std::string expected_line =
-        "GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V1 schema_version=1"
+        "GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V2 schema_version=2"
         " status=manual_review_candidate reason=all_observe_peaks_within_limit"
         " corpus_id=siqs50_shadow_observe_rss_holdout_v1"
         " digest_low=303806906129662515 digest_high=18179245792498443738"
         " operating_system=darwin architecture=arm64 memory_backend=darwin_getrusage"
         " resolved_production_sieve_workers=4 candidate_revision=candidate-revision-1"
-        " approval_id=approval-ticket-1 deployment_budget_bytes=1000"
+        " approval_id=approval-ticket-1 journal_trusted_base_id_low=1010101010101010"
+        " journal_trusted_base_id_high=2020202020202020"
+        " journal_store_id_low=1111222233334444"
+        " journal_store_id_high=5555666677778888"
+        " journal_store_locator=rss-campaign-prod-v1 deployment_budget_bytes=1000"
         " reserved_headroom_bytes=100 rss_limit_bytes=900 total_samples=80 off_samples=24"
         " observe_samples=56 max_observe_peak_rss_bytes=900"
-        " policy_binding_digest_low=9285186491029182274"
-        " policy_binding_digest_high=6692833904857931299"
+        " policy_binding_digest_low=1693149446838404574"
+        " policy_binding_digest_high=13930391788833022626"
         " gate_quantity=observe_absolute_process_peak_rss"
         " shadow_outcome_routed=false promotion=false\n";
     CHECK(line == expected_line);
     CHECK(std::count(line.begin(), line.end(), '\n') == 1);
     CHECK(line.find("shadow_outcome_routed=false promotion=false") != std::string::npos);
-    CHECK(outcome.policy_binding_digest.low == UINT64_C(9285186491029182274));
-    CHECK(outcome.policy_binding_digest.high == UINT64_C(6692833904857931299));
+    CHECK(outcome.policy_binding_digest.low == UINT64_C(1693149446838404574));
+    CHECK(outcome.policy_binding_digest.high == UINT64_C(13930391788833022626));
 
     CHECK(
         !emit_siqs_shadow_proof_rss_gate_outcome(nullptr, &policy, sample_span(samples), outcome));
@@ -870,6 +929,10 @@ void test_closed_emitter_schema_and_failures() {
     expect_emit_rejected(&changed_policy, matching_changed_samples, outcome);
     changed_policy = policy;
     changed_policy.candidate_revision = "candidate-revision-2";
+    matching_changed_samples = make_complete_samples(changed_policy, RSS_LIMIT_BYTES);
+    expect_emit_rejected(&changed_policy, matching_changed_samples, outcome);
+    changed_policy = policy;
+    ++changed_policy.journal_store.store_id.low;
     matching_changed_samples = make_complete_samples(changed_policy, RSS_LIMIT_BYTES);
     expect_emit_rejected(&changed_policy, matching_changed_samples, outcome);
     changed_policy = policy;

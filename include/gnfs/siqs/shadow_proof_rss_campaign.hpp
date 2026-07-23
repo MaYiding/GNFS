@@ -51,6 +51,7 @@ struct SIQSShadowProofRssCampaignSlot final {
     std::size_t resolved_production_sieve_workers = 0;
     std::string_view candidate_revision;
     std::string_view approval_id;
+    SIQSShadowProofRssJournalStoreBinding journal_store;
     std::optional<uint64_t> deployment_budget_bytes;
     std::optional<uint64_t> reserved_headroom_bytes;
 
@@ -104,6 +105,7 @@ campaign_slot(const SIQSShadowProofRssGatePolicy& policy,
     slot.resolved_production_sieve_workers = policy.resolved_production_sieve_workers;
     slot.candidate_revision = policy.candidate_revision;
     slot.approval_id = policy.approval_id;
+    slot.journal_store = policy.journal_store;
     slot.deployment_budget_bytes = policy.deployment_budget_bytes;
     slot.reserved_headroom_bytes = policy.reserved_headroom_bytes;
     return slot;

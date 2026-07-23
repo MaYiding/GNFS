@@ -17,8 +17,8 @@
 namespace gnfs::siqs {
 
 inline constexpr char SIQS_SHADOW_PROOF_RSS_GATE_RECORD_PREFIX[] =
-    "GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V1";
-inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_GATE_SCHEMA_VERSION = 1;
+    "GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V2";
+inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_GATE_SCHEMA_VERSION = 2;
 inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_GATE_FIXTURE_COUNT = 8;
 inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_GATE_OFF_REPETITIONS = 3;
 inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_GATE_OBSERVE_REPETITIONS = 7;
@@ -106,6 +106,23 @@ struct SIQSShadowProofRssCorpusDigest final {
                const SIQSShadowProofRssCorpusDigest&) noexcept = default;
 };
 
+/// Deployment-provisioned identity of the one journal namespace authorized
+/// for this campaign. `relative_locator` is one canonical lowercase ASCII
+/// directory leaf below a separately trusted base; it is never an absolute or
+/// caller-chosen per-record path. A production-owned registry must resolve
+/// `trusted_base_id` without accepting a caller path, resolver, or base handle.
+/// Runtime directory handles add short-lived OS object identity and locking
+/// without putting unstable inode/file-id values here.
+struct SIQSShadowProofRssJournalStoreBinding final {
+    SIQSShadowProofRssCorpusDigest trusted_base_id;
+    SIQSShadowProofRssCorpusDigest store_id;
+    std::string_view relative_locator;
+
+    [[nodiscard]] friend constexpr bool
+    operator==(const SIQSShadowProofRssJournalStoreBinding&,
+               const SIQSShadowProofRssJournalStoreBinding&) noexcept = default;
+};
+
 /// Deployment-owned, per-platform approval. String fields are audit tokens,
 /// not free-form text. Evaluation rejects empty, non-ASCII, whitespace,
 /// control-character, '=' and over-length values.
@@ -119,6 +136,7 @@ struct SIQSShadowProofRssGatePolicy final {
     std::size_t resolved_production_sieve_workers = 0;
     std::string_view candidate_revision;
     std::string_view approval_id;
+    SIQSShadowProofRssJournalStoreBinding journal_store;
     std::optional<uint64_t> deployment_budget_bytes;
     std::optional<uint64_t> reserved_headroom_bytes;
 };
@@ -137,6 +155,7 @@ struct SIQSShadowProofRssGateSample final {
     std::size_t resolved_production_sieve_workers = 0;
     std::string_view candidate_revision;
     std::string_view approval_id;
+    SIQSShadowProofRssJournalStoreBinding journal_store;
     std::optional<uint64_t> deployment_budget_bytes;
     std::optional<uint64_t> reserved_headroom_bytes;
 
@@ -376,6 +395,38 @@ backend_matches_operating_system(SIQSShadowProofRssOperatingSystem operating_sys
     return true;
 }
 
+[[nodiscard]] constexpr bool safe_store_locator(std::string_view value) noexcept {
+    const auto is_lower_alphanumeric = [](unsigned char byte) constexpr {
+        return (byte >= static_cast<unsigned char>('a') &&
+                byte <= static_cast<unsigned char>('z')) ||
+               (byte >= static_cast<unsigned char>('0') && byte <= static_cast<unsigned char>('9'));
+    };
+    if (value.empty() || value.size() > SIQS_SHADOW_PROOF_RSS_GATE_MAX_TOKEN_BYTES ||
+        !is_lower_alphanumeric(static_cast<unsigned char>(value.front())) ||
+        !is_lower_alphanumeric(static_cast<unsigned char>(value.back()))) {
+        return false;
+    }
+    for (const char character : value) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (!is_lower_alphanumeric(byte) && byte != static_cast<unsigned char>('-') &&
+            byte != static_cast<unsigned char>('_') && byte != static_cast<unsigned char>('.')) {
+            return false;
+        }
+    }
+    const std::string_view device_base = value.substr(0, value.find('.'));
+    if (device_base == "con" || device_base == "prn" || device_base == "aux" ||
+        device_base == "nul") {
+        return false;
+    }
+    if (device_base.size() == 4 &&
+        ((device_base[0] == 'c' && device_base[1] == 'o' && device_base[2] == 'm') ||
+         (device_base[0] == 'l' && device_base[1] == 'p' && device_base[2] == 't')) &&
+        device_base[3] >= '1' && device_base[3] <= '9') {
+        return false;
+    }
+    return true;
+}
+
 /// Stable, non-cryptographic fingerprint that closes a terminal outcome over
 /// every approved policy field without retaining caller-owned string views.
 class PolicyBindingDigestBuilder final {
@@ -420,7 +471,7 @@ private:
 [[nodiscard]] constexpr SIQSShadowProofRssCorpusDigest
 policy_binding_digest(const SIQSShadowProofRssGatePolicy& policy) noexcept {
     PolicyBindingDigestBuilder builder;
-    builder.append_string("gnfs.siqs.shadow_proof_rss_gate.policy.v1");
+    builder.append_string("gnfs.siqs.shadow_proof_rss_gate.policy.v2");
     builder.append_bool(policy.approved);
     builder.append_string(policy.corpus_id);
     builder.append_u64(policy.corpus_digest.low);
@@ -431,6 +482,11 @@ policy_binding_digest(const SIQSShadowProofRssGatePolicy& policy) noexcept {
     builder.append_u64(static_cast<uint64_t>(policy.resolved_production_sieve_workers));
     builder.append_string(policy.candidate_revision);
     builder.append_string(policy.approval_id);
+    builder.append_u64(policy.journal_store.trusted_base_id.low);
+    builder.append_u64(policy.journal_store.trusted_base_id.high);
+    builder.append_u64(policy.journal_store.store_id.low);
+    builder.append_u64(policy.journal_store.store_id.high);
+    builder.append_string(policy.journal_store.relative_locator);
     builder.append_bool(policy.deployment_budget_bytes.has_value());
     builder.append_u64(policy.deployment_budget_bytes.value_or(0));
     builder.append_bool(policy.reserved_headroom_bytes.has_value());
@@ -448,7 +504,11 @@ policy_binding_is_valid(const SIQSShadowProofRssGatePolicy& policy) noexcept {
            policy.memory_backend != util::ProcessMemoryBackend::Unsupported &&
            backend_matches_operating_system(policy.operating_system, policy.memory_backend) &&
            policy.resolved_production_sieve_workers > 0 && safe_token(policy.candidate_revision) &&
-           safe_token(policy.approval_id);
+           safe_token(policy.approval_id) &&
+           (policy.journal_store.trusted_base_id.low != 0 ||
+            policy.journal_store.trusted_base_id.high != 0) &&
+           (policy.journal_store.store_id.low != 0 || policy.journal_store.store_id.high != 0) &&
+           safe_store_locator(policy.journal_store.relative_locator);
 }
 
 [[nodiscard]] constexpr bool
@@ -462,6 +522,7 @@ sample_binding_matches_policy(const SIQSShadowProofRssGateSample& sample,
            sample.resolved_production_sieve_workers == policy.resolved_production_sieve_workers &&
            sample.candidate_revision == policy.candidate_revision &&
            sample.approval_id == policy.approval_id &&
+           sample.journal_store == policy.journal_store &&
            sample.deployment_budget_bytes == policy.deployment_budget_bytes &&
            sample.reserved_headroom_bytes == policy.reserved_headroom_bytes;
 }
@@ -742,7 +803,10 @@ siqs_shadow_proof_rss_policy_binding_digest(const SIQSShadowProofRssGatePolicy& 
             " status=%.*s reason=%.*s corpus_id=%.*s digest_low=%" PRIu64 " digest_high=%" PRIu64
             " operating_system=%.*s architecture=%.*s memory_backend=%.*s"
             " resolved_production_sieve_workers=%zu candidate_revision=%.*s"
-            " approval_id=%.*s deployment_budget_bytes=%" PRIu64 " reserved_headroom_bytes=%" PRIu64
+            " approval_id=%.*s journal_trusted_base_id_low=%" PRIu64
+            " journal_trusted_base_id_high=%" PRIu64 " journal_store_id_low=%" PRIu64
+            " journal_store_id_high=%" PRIu64 " journal_store_locator=%.*s"
+            " deployment_budget_bytes=%" PRIu64 " reserved_headroom_bytes=%" PRIu64
             " rss_limit_bytes=%" PRIu64 " total_samples=%zu off_samples=%" PRIu32
             " observe_samples=%" PRIu32 " max_observe_peak_rss_bytes=%" PRIu64
             " policy_binding_digest_low=%" PRIu64 " policy_binding_digest_high=%" PRIu64
@@ -758,10 +822,14 @@ siqs_shadow_proof_rss_policy_binding_digest(const SIQSShadowProofRssGatePolicy& 
             policy->resolved_production_sieve_workers,
             static_cast<int>(policy->candidate_revision.size()), policy->candidate_revision.data(),
             static_cast<int>(policy->approval_id.size()), policy->approval_id.data(),
-            *policy->deployment_budget_bytes, *policy->reserved_headroom_bytes,
-            verified.rss_limit_bytes, verified.total_sample_count, verified.valid_off_sample_count,
-            verified.valid_observe_sample_count, verified.max_observe_peak_rss_bytes,
-            verified.policy_binding_digest.low, verified.policy_binding_digest.high);
+            policy->journal_store.trusted_base_id.low, policy->journal_store.trusted_base_id.high,
+            policy->journal_store.store_id.low, policy->journal_store.store_id.high,
+            static_cast<int>(policy->journal_store.relative_locator.size()),
+            policy->journal_store.relative_locator.data(), *policy->deployment_budget_bytes,
+            *policy->reserved_headroom_bytes, verified.rss_limit_bytes, verified.total_sample_count,
+            verified.valid_off_sample_count, verified.valid_observe_sample_count,
+            verified.max_observe_peak_rss_bytes, verified.policy_binding_digest.low,
+            verified.policy_binding_digest.high);
         if (written < 0 || std::fflush(output) != 0) {
             return false;
         }

@@ -153,7 +153,11 @@ Darwin、Linux 和 Windows 必须分平台评估；每个 backend、每个 fixtu
 返回 `status=blocked reason=policy_missing`。有效 policy 必须绑定 `approval_id`、
 sealed corpus ID 和 digest、operating system、architecture、RSS backend、resolved
 production sieve workers、candidate revision、deployment budget 和 reserved headroom；
-gate 不负责发现或批准这些值。
+以及 deployment-owned trusted-base ID、journal-store ID 和 canonical lowercase ASCII
+relative locator；gate 不负责发现或批准这些值。absolute path 和 runtime inode/file
+ID 不进入 policy binding。任何 filesystem I/O 之前，production-owned registry 必须
+根据 trusted-base ID 解析已配置的 base，且不得接收 caller path、resolver 或 base
+handle；locator 对应的 store ID 也必须与 provisioned mapping 一致。
 
 coverage 必须严格等于 80 个 fresh-process records。8 个 fixture 中的每一个都必须
 恰好包含 3 个 `off` 和 7 个 `observe` records；缺失、重复或额外 coverage 均不能
@@ -168,7 +172,7 @@ RSS、`peak_growth_bytes` 和 wall time 都只用于诊断，不能改变 gate �
 binding 的 stable、non-cryptographic identity checksum。
 `emit_siqs_shadow_proof_rss_gate_outcome` 会重新评估 policy 和完整 sample span，并
 要求结果与 supplied outcome 完全一致，然后输出以
-`GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V1` 开头的 closed record。emitter 只接受
+`GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V2` 开头的 closed record。emitter 只接受
 `limit_exceeded` 和 `manual_review_candidate`；`blocked` / `invalid` 保持 typed
 outcome，但不形成 audit line。terminal record 同时输出
 `policy_binding_digest_low` 和 `policy_binding_digest_high`。Outcome 中的

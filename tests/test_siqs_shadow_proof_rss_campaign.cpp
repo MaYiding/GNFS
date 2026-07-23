@@ -52,8 +52,8 @@ static_assert(noexcept(make_siqs_shadow_proof_rss_campaign_plan(
 
 constexpr uint64_t DEPLOYMENT_BUDGET_BYTES = UINT64_C(1000);
 constexpr uint64_t RESERVED_HEADROOM_BYTES = UINT64_C(100);
-constexpr uint64_t EXPECTED_POLICY_DIGEST_LOW = UINT64_C(9285186491029182274);
-constexpr uint64_t EXPECTED_POLICY_DIGEST_HIGH = UINT64_C(6692833904857931299);
+constexpr uint64_t EXPECTED_POLICY_DIGEST_LOW = UINT64_C(1693149446838404574);
+constexpr uint64_t EXPECTED_POLICY_DIGEST_HIGH = UINT64_C(13930391788833022626);
 
 int checks_passed = 0;
 int checks_failed = 0;
@@ -80,6 +80,9 @@ int checks_failed = 0;
     policy.resolved_production_sieve_workers = 4;
     policy.candidate_revision = "candidate-revision-1";
     policy.approval_id = "approval-ticket-1";
+    policy.journal_store = {{UINT64_C(1010101010101010), UINT64_C(2020202020202020)},
+                            {UINT64_C(1111222233334444), UINT64_C(5555666677778888)},
+                            "rss-campaign-prod-v1"};
     policy.deployment_budget_bytes = DEPLOYMENT_BUDGET_BYTES;
     policy.reserved_headroom_bytes = RESERVED_HEADROOM_BYTES;
     return policy;
@@ -129,7 +132,7 @@ void expect_invalid_binding(const SIQSShadowProofRssGatePolicy& policy) {
            slot.memory_backend == policy.memory_backend &&
            slot.resolved_production_sieve_workers == policy.resolved_production_sieve_workers &&
            slot.candidate_revision == policy.candidate_revision &&
-           slot.approval_id == policy.approval_id &&
+           slot.approval_id == policy.approval_id && slot.journal_store == policy.journal_store &&
            slot.deployment_budget_bytes == policy.deployment_budget_bytes &&
            slot.reserved_headroom_bytes == policy.reserved_headroom_bytes;
 }
@@ -302,6 +305,21 @@ void test_policy_digest_sensitivity_and_typed_platform_independence() {
     expect_distinct_ready_plan(policy);
     policy = baseline_policy;
     policy.approval_id = "approval-ticket-2";
+    expect_distinct_ready_plan(policy);
+    policy = baseline_policy;
+    ++policy.journal_store.trusted_base_id.low;
+    expect_distinct_ready_plan(policy);
+    policy = baseline_policy;
+    ++policy.journal_store.trusted_base_id.high;
+    expect_distinct_ready_plan(policy);
+    policy = baseline_policy;
+    ++policy.journal_store.store_id.low;
+    expect_distinct_ready_plan(policy);
+    policy = baseline_policy;
+    ++policy.journal_store.store_id.high;
+    expect_distinct_ready_plan(policy);
+    policy = baseline_policy;
+    policy.journal_store.relative_locator = "rss-campaign-prod-v2";
     expect_distinct_ready_plan(policy);
     policy = baseline_policy;
     policy.architecture = SIQSShadowProofRssArchitecture::x86_64;

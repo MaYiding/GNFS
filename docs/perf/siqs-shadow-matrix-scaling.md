@@ -239,6 +239,8 @@ using holdout results to retune the implementation:
 - the approved deployment memory budget and its reserved headroom;
 - the exact OS, architecture, RSS backend, resolved production sieve worker
   count, candidate revision, and approval identity for each platform policy;
+- the deployment-owned trusted-base ID, journal-store ID, and one portable
+  ASCII store locator below that base;
 - the rule that compares every absolute observe-process peak with the remaining
   budget after headroom.
 
@@ -254,7 +256,11 @@ construct a campaign. A null policy returns
 
 An approved policy binds `approval_id`, the sealed corpus ID and digest,
 operating system, architecture, RSS backend, resolved production sieve worker
-count, candidate revision, deployment memory budget, and reserved headroom.
+count, candidate revision, deployment memory budget, reserved headroom, and a
+versioned journal-store binding. The binding contains a trusted-base ID, a
+store ID, and one canonical lowercase ASCII relative locator. It deliberately
+contains no absolute path, inode, volume file ID, mount point, or caller-chosen
+record path.
 `SIQSShadowProofRssOperatingSystem` is closed over `unknown`, `darwin`, `linux`,
 and `windows`; `unknown` is invalid for an approved binding.
 `SIQSShadowProofRssArchitecture` similarly admits `unknown`, `x86_64`, and
@@ -304,12 +310,13 @@ A terminal `SIQSShadowProofRssGateOutcome` carries a stable, non-cryptographic
 `policy_binding_digest` over every policy field. Together with re-evaluation
 and exact outcome matching, this identity checksum rejects ordinary relabeling
 across approval, revision, corpus, operating system, backend, worker count,
-budget, or headroom changes. It is not a cryptographic authenticity proof.
+journal-store binding, budget, or headroom changes. It is not a cryptographic
+authenticity proof.
 
 `emit_siqs_shadow_proof_rss_gate_outcome` accepts a `FILE*`, the policy pointer,
 the complete sample span, and the supplied outcome. It re-evaluates the inputs,
 requires an exact outcome match, validates the complete policy binding, and
-writes one closed record with prefix `GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V1` only
+writes one closed record with prefix `GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V2` only
 after those checks. The record publishes `policy_binding_digest_low` and
 `policy_binding_digest_high`. A successful write and flush commits this audit
 record only; it does not authorize routing or promotion. The emitter is
@@ -336,16 +343,17 @@ future probe can report the worker count used by the measured run instead of
 querying the host a second time.
 
 `include/gnfs/siqs/shadow_proof_rss_policy_record.hpp` defines the canonical
-single-line `GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V1` codec. It accepts exactly one
+single-line `GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V2` codec. It accepts exactly one
 printable-ASCII record terminated by one LF, with a fixed field order and
 canonical boolean and unsigned-integer forms. The parsed record owns its token
 storage and can provide a temporary `SIQSShadowProofRssGatePolicy` view while
 the record remains alive, unchanged, and unmoved. Rvalue view construction is
-deleted. The codec validates representation only. Approval, frozen corpus identity,
-OS/backend compatibility, nonzero worker count, and budget semantics continue
-to use the gate's shared policy preflight. No approved policy record is stored
-in the repository. The `approved` field and the policy-binding digest are audit
-claims, not cryptographic authorization.
+deleted. The codec validates representation only. Approval, frozen corpus
+identity, OS/backend compatibility, nonzero worker count, trusted-base and
+journal-store IDs, canonical lowercase relative-locator syntax, and budget semantics
+continue to use the gate's shared policy preflight. No approved policy record
+is stored in the repository. The `approved` field and the policy-binding digest
+are audit claims, not cryptographic authorization.
 
 `include/gnfs/siqs/shadow_proof_rss_campaign.hpp` consumes an already-typed
 policy and performs no I/O. A missing, unapproved, incomplete, or invalid policy
@@ -361,6 +369,9 @@ journal from a present header with no records. The absent state may contain
 neither a header nor records and requests header creation. A valid present,
 header-only state requests the first slot start. Later records must form one
 digest-linked `slot_started`/`slot_committed` pair per frozen slot, in order.
+`campaign_tainted` is valid only immediately after one unmatched start and only
+as the final record; taint before a start, after a commit, or before trailing
+records is rejected.
 
 A proposed start record does not authorize process launch. Only the storage
 layer may acknowledge the exact record after it reaches a durable commit
@@ -374,12 +385,23 @@ header and records again before the caller invokes the existing RSS gate.
 The move-only capabilities prevent accidental reuse within one replay result;
 they do not prove filesystem durability or serialize two callers that replay
 the same stale snapshot. The durable-record receipt is therefore intentionally
-not constructible yet. A future journal store must own a canonical header-bound
-root, derive the one allowed filename for each sequence, and issue the receipt
-only after that exact record reaches the storage boundary. An API that accepts
-an arbitrary output path or a caller-supplied successful I/O backend is not a
-receipt issuer because either would permit duplicate launches from one stale
-replay.
+not constructible yet. The deployment policy now binds one trusted-base ID,
+store ID, and canonical lowercase ASCII relative locator, which flow through
+the policy, plan, header, and record digests. Before any filesystem I/O, a
+future journal store must validate the approved policy and ask a
+production-owned registry to resolve `trusted_base_id` to an already-open base
+handle. That registry is part of the deployment, not a caller-injected callback:
+the store API accepts no caller path, resolver, or base handle. It must then
+open exactly the provisioned locator without following links and verify the
+provisioned mapping's `store_id` before creating a header in an empty root.
+
+The store must hold the root's runtime directory-object identity and an
+exclusive cross-process session lease, derive the one allowed filename for
+each sequence, and issue the receipt only after that exact record reaches the
+storage boundary. The lease must begin before replay and remain held through
+start, child execution, and commit or taint. An API that accepts an arbitrary
+output path or a caller-supplied successful I/O backend is not a receipt issuer
+because either would permit duplicate launches from one stale replay.
 
 `include/gnfs/siqs/shadow_proof_rss_campaign_journal_codec.hpp` defines the
 canonical storage representation without opening a file. Headers are exactly
@@ -676,7 +698,8 @@ Before promotion it must provide:
   The header-bound journal store and receipt issuer remain pending.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved
   headroom, OS, architecture, RSS backend, resolved production sieve workers,
-  candidate revision, approval identity, and sealed corpus digest.
+  candidate revision, approval identity, sealed corpus digest, trusted journal
+  base ID, journal store ID, and canonical lowercase relative locator.
 - [ ] Fresh-process campaign runner that refuses to construct or launch the
   80-process plan until the matching per-platform policy is approved.
 - [ ] Sealed holdout measurement with overlapping raw/shadow RSS evidence. Each
