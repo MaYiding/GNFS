@@ -2152,6 +2152,15 @@ if(GNFS_BUILD_TESTS)
     set_tests_properties(SiqsShadowProofRssCampaignJournalCodec
         PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_shadow_proof_rss_campaign_journal_layout
+        tests/test_siqs_shadow_proof_rss_campaign_journal_layout.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_campaign_journal_layout PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssCampaignJournalLayout
+        COMMAND test_siqs_shadow_proof_rss_campaign_journal_layout)
+    set_tests_properties(SiqsShadowProofRssCampaignJournalLayout
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_siqs_shadow_proof_rss_holdout_probe_contract
         tests/test_siqs_shadow_proof_rss_holdout_probe_contract.cpp
     )

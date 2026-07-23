@@ -413,6 +413,19 @@ Decoding rejects short and trailing data and reports a closed error plus the
 first failing byte offset. The codec never persists C++ object layout,
 `size_t`, enum representation, or `std::optional` representation.
 
+`include/gnfs/siqs/shadow_proof_rss_campaign_journal_layout.hpp` adds a pure
+layout inspector without opening a directory. Its strict allowlist contains
+one persistent `.session.lock` leaf, one exact 96-byte
+`campaign-header.rjhd`, and a contiguous prefix of `record-%010u.rjrc` leaves
+starting at sequence 1, with at most 160 leaves and exactly 256 bytes per leaf.
+Unknown names, case variants, temporary artifacts, wrong entry kinds, invalid
+link counts, wrong sizes, sequence gaps, codec failures, and filename-to-wire
+sequence mismatches all fail closed. The inspector cannot sign a durable-record
+receipt. Its decoded snapshot is ordinary, forgeable data that the native
+loader must construct and consume internally while holding the root and
+cross-process lease; it is never a public store or receipt-authority input.
+That native loader remains pending.
+
 `include/gnfs/util/durable_immutable_file.hpp` and its compiled implementation
 provide the lower publication boundary. The publisher opens and holds the
 parent directory before creating a leaf exclusively, completes short writes,
@@ -434,7 +447,8 @@ single-sample production target with `EXCLUDE_FROM_ALL`. Default builds do not
 build it, and neither CTest nor any runner catalog executes it. The paired
 `test_siqs_shadow_proof_rss_holdout_probe_contract` target is an instant pure
 contract test. `test_siqs_shadow_proof_rss_campaign_journal` is also an instant
-pure contract test. None of these contract targets is a campaign runner.
+pure contract test, as are its codec and layout tests. None of these contract
+targets is a campaign runner or native leased loader.
 
 The pure probe protocol binds each `fixture_id` to the exact modulus and
 canonical factor pair in the sealed constexpr manifest. Relabeling one row as
@@ -480,7 +494,8 @@ retried in place.
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
 `tests/test_siqs_shadow_proof_rss_campaign.cpp`,
 `tests/test_siqs_shadow_proof_rss_campaign_journal.cpp`,
-`tests/test_siqs_shadow_proof_rss_campaign_journal_codec.cpp`, and
+`tests/test_siqs_shadow_proof_rss_campaign_journal_codec.cpp`,
+`tests/test_siqs_shadow_proof_rss_campaign_journal_layout.cpp`, and
 `tests/test_siqs_shadow_proof_rss_holdout_probe_contract.cpp` cover only
 injected values, synthetic metrics, and constexpr fixture identity. They do not
 run a probe, factor a holdout, or read live process memory.

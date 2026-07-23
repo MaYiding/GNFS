@@ -192,6 +192,18 @@ of those values. Before filesystem access, a production-owned registry must
 resolve the trusted-base ID without accepting a caller path, resolver, or base
 handle, and must verify that the locator maps to the provisioned store ID.
 
+The pure journal-layout inspector accepts only one persistent `.session.lock`
+leaf, the exact 96-byte `campaign-header.rjhd`, and a contiguous prefix of
+`record-%010u.rjrc` leaves starting at sequence 1, with at most 160 leaves and
+exactly 256 bytes per leaf. It rejects unknown names, case variants, temporary
+artifacts, wrong entry kinds or link counts, wrong sizes, sequence gaps, codec
+errors, and disagreement between the filename sequence and decoded wire
+sequence. This fail-closed inspection neither opens the root nor signs a
+durable-record receipt. Its decoded snapshot is ordinary, forgeable data and
+must never be a receipt authority or public input to the future store. The
+native loader that owns the root handle and cross-process lease remains
+pending.
+
 Coverage is exact: each evaluated platform and backend needs three `off` and
 seven `observe` fresh-process records for every one of the eight fixture IDs,
 for 80 records total. Missing, duplicate, or extra coverage cannot pass. The
