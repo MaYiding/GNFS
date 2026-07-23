@@ -141,8 +141,9 @@ void test_exact_parser() {
     CHECK(siqs_shadow_proof_observe_mode_name(static_cast<SIQSShadowProofObserveMode>(255)) ==
           "unknown");
 
-    constexpr std::array invalid_values{"",         "off",      "1",  "Observe", "OBSERVE",
-                                        " observe", "observe ", "0 ", "00",      "\nobserve"};
+    constexpr std::array invalid_values{"",        "off",     "1",        "prefer",
+                                        "Observe", "OBSERVE", " observe", "observe ",
+                                        "0 ",      "00",      "\nobserve"};
     for (const char* value : invalid_values) {
         try {
             (void)parse_siqs_shadow_proof_observe_mode(value);

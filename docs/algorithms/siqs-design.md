@@ -71,6 +71,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `verify_siqs_post_merge_dependency` / `extract_siqs_post_merge_factor` | `post_merge_dependency.hpp` | Proof-gated dependency reconstruction and canonical non-trivial factor extraction |
 | `run_siqs_shadow_proof` | `shadow_proof_runner.hpp` | Read-only, resource-bounded orchestration from raw relations through verified factor evidence |
 | `SIQSShadowProofObserveRecord` | `shadow_proof_observe.hpp` | Strict opt-in mode parsing, process-memory snapshots, and one-line typed telemetry |
+| `SIQSShadowProofPreferDecision` | `shadow_proof_prefer.hpp` | Pure V2 factor/result validation and a fail-closed pre-route audit decision |
 | `are_congruent_squares` | `congruence.hpp` | Final `X² == Y² (mod kN)` gate before GCD |
 | `dense_gauss_left_nullspace` | `siqs.hpp` ~line 1130 | Word-packed dense GF(2) Gaussian elimination |
 | `solve_matrix` | `siqs.hpp` ~line 1231 | Dense path ≤100K cols, otherwise `linalg::BlockLanczos` |
@@ -91,6 +92,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `tests/test_siqs_shadow_proof_runner.cpp` | Bounded facade terminal states, inclusive caps, exception mapping, and input immutability |
 | `tests/test_siqs_shadow_proof_observe.cpp` | Strict observe parser, typed record schema, RSS fields, and emitter contract |
 | `tests/test_siqs_shadow_proof_observe_probe.cpp` | Release-only production 1LP fresh-process factor and RSS probe |
+| `tests/test_siqs_shadow_proof_prefer.cpp` | Pure V2 decisions, defensive metadata validation, and pre-route emitter contract |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 
 ## Parameter Calibration
@@ -156,6 +158,39 @@ available from one consistent backend; otherwise it reports
 [SIQS Shadow Matrix Scaling](../perf/siqs-shadow-matrix-scaling.md) for the
 complete command and HWM interpretation.
 
+These first samples are `calibration_excluded`; they cannot be recycled as a
+promotion gate. A sealed gate must preregister at least eight untuned 50-digit
+holdout fixtures, then run three `off` and seven `observe` fresh processes for
+every fixture on each evaluated backend. Darwin, Linux, and Windows are judged
+separately. Only absolute observe-process peak RSS is compared with an approved
+deployment budget after reserved headroom. Off/observe deltas and in-record
+peak growth remain diagnostic. No deployment budget or headroom is approved,
+so the numeric gate remains blocked and pending. A future pass must still emit
+`promotion=false` and proceed to a separate manual review.
+
+The staged V2 `prefer` boundary is a pure decision and audit contract. It does
+not extend the environment parser, connect to `factor()`, alter the observe
+seam, or route a shadow result. The implementation in
+`include/gnfs/siqs/shadow_proof_prefer.hpp` evaluates an owning draft with
+`evaluate_siqs_shadow_proof_prefer`, attaches the caller's wall-time sample with
+`finalize_siqs_shadow_proof_prefer`, and emits the closed
+`GNFS_SIQS_SHADOW_PROOF_PREFER_DECISION_V2` record with
+`emit_siqs_shadow_proof_prefer_decision`. Its `next_route` field is a pre-route
+recommendation recorded with `emit_phase=before_route`, not a claim that the
+route ran. A future integration may use a `true` emitter return as the commit
+point. That return requires a successful write and flush with no stream error.
+Every construction, write, partial-write, flush, or stream-error failure must
+keep the legacy path available.
+
+For a future shadow return, `SIQSResult::relations_found` means the selected row
+count actually submitted to the shadow matrix and must equal the matrix row
+count. `polynomials_used` remains the production sieve counter sampled after
+all workers join. `time_seconds` is derived from the same pre-emit decision
+wall-time sample measured from the existing SIQS timer start. The caller samples
+after pure proof/factor/evidence evaluation and accepted-factor copying, but
+before `finalize_siqs_shadow_proof_prefer` and emitter I/O. A future
+`SIQSResult` must copy this value without resampling.
+
 A fixed constructed corpus exercises the full chain at the live 50-, 70-, and
 90-digit factor-base column counts with stable fingerprints and dependencies
 across one, two, and four workers. A separate bounded 256-A, 50-digit profile
@@ -206,12 +241,14 @@ The safe migration order is:
    `GNFS_SIQS_SHADOW_PROOF=observe`; it always continues through the legacy path
    and records process-memory endpoints while raw and shadow state overlap.
 9. Permit a proof-gated early return only after observe evidence is stable.
-   `prefer` is not implemented today. A future explicit experiment must add a
-   V2 per-call decision record, defensively revalidate that the canonical,
-   non-trivial factor pair multiplies exactly to the original input, construct
-   the complete `SIQSResult`, and emit the decision before routing the shadow
-   result. Any validation or emission failure continues the legacy path. Keep
-   production 2LP collection as a later, independently bounded change.
+   The pure V2 contract is staged, but `prefer` remains rejected by the parser
+   and neither `factor()` nor observe is connected to it. A future explicit
+   experiment must defensively revalidate that the canonical, non-trivial
+   factor pair multiplies exactly to the original input, construct the complete
+   `SIQSResult`, and successfully emit the pre-route decision before committing
+   its `next_route`. Any validation or emission failure continues the legacy
+   path. Keep production 2LP collection as a later, independently bounded
+   change.
 
 The arithmetic oracle must include a single-edge `p^2` cycle, three or more
 parallel edges, a vertex of degree four, and a cycle whose factor-base exponent
@@ -244,11 +281,13 @@ SIQS's `L_N(1/2, 1)`.
   evidence are staged. The 256-A Release-only profile supplies live 50-digit
   factor evidence. The observe-only production seam and fresh-process probe
   protocol are wired and a current-tree comparison has exercised the contract.
-  The production-overlap checklist remains pending because no predeclared RSS
-  budget or promotion threshold is frozen. A separately bounded 2LP collector
-  remains a prerequisite for production 2LP collection.
-  The future shadow-result route must first remain an explicit, V2-audited
-  experiment; current probe records never authorize it.
+  These samples are calibration-excluded. The production-overlap checklist
+  remains pending until a sealed, per-platform holdout corpus is measured
+  against an approved deployment budget with reserved headroom. No numeric RSS
+  gate is currently available. A separately bounded 2LP collector remains a
+  prerequisite for production 2LP collection. The pure V2 decision contract
+  does not change parser or production routing; current probe and V2 records
+  never authorize automatic promotion.
   See [SIQS Live-Sieve Capture Contract](../perf/siqs-live-sieve-capture.md)
 - **The wide sparse shadow backend is not implemented**; the dense solver
   admits at most 100000 row variables and 256MiB of packed matrix payload,

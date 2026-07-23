@@ -190,6 +190,63 @@ observation is available from one consistent backend, it reports
 Do not derive or freeze a budget from ad hoc runs. A later change must declare
 the sample set and threshold before collecting promotion evidence.
 
+### Sealed Holdout RSS Gate
+
+All samples produced while defining or debugging the current protocol are
+`calibration_excluded`. They may validate schema, backend support, and
+measurement scale, but they cannot enter a later promotion decision.
+
+Before opening a sealed corpus, preregister all of the following without using
+holdout results to retune the implementation:
+
+- at least eight previously untuned 50-digit semiprime fixtures;
+- three `off` and seven `observe` fresh processes for every fixture and backend;
+- separate Darwin, Linux, and Windows evaluations rather than pooling their RSS
+  distributions;
+- the approved deployment memory budget and its reserved headroom;
+- the rule that compares every absolute observe-process peak with the remaining
+  budget after headroom.
+
+Absolute observe-process peak RSS is the only promotion-gate quantity. The
+off/observe difference, observe-only `peak_growth_bytes`, current RSS, and wall
+time remain diagnostics because independent processes do not share an exact
+corpus or prior lifetime high-water state. They must not rescue a sample whose
+absolute observe peak exceeds the approved deployment envelope, and they must
+not fail an otherwise conforming sample by themselves.
+
+The project has not received an approved deployment budget or headroom value.
+The numeric RSS gate is therefore blocked and remains pending; this document
+does not turn current measurements into a threshold. Even if every sealed
+holdout later passes, the resulting record must retain `promotion=false`. A pass
+only makes an explicit route experiment eligible for separate review.
+
+### Pure V2 Prefer Boundary
+
+The V2 prefer layer is a pure decision and audit boundary. The environment
+parser still rejects `prefer`; neither `factor()` nor the production observe
+seam calls the V2 contract, and no shadow result is routed. The pure header
+`include/gnfs/siqs/shadow_proof_prefer.hpp` exposes
+`evaluate_siqs_shadow_proof_prefer`, `finalize_siqs_shadow_proof_prefer`, and
+`emit_siqs_shadow_proof_prefer_decision`. Its closed record prefix is
+`GNFS_SIQS_SHADOW_PROOF_PREFER_DECISION_V2`.
+
+The record's `next_route` is a recommendation created at
+`emit_phase=before_route`. It does not report a completed route. A future
+adapter may commit `next_route=shadow_return` only after the complete record is
+written and flushed successfully with no stream error, so the emitter returns
+`true`. Construction, partial-write, write, flush, or stream-error failure
+continues the unchanged legacy path. This remains truthful even when a failed
+stream exposes bytes from the pre-route record because the record never claims
+that the route was applied.
+
+A future shadow `SIQSResult` uses the selected shadow matrix row count for
+`relations_found`, the post-join production sieve counter for
+`polynomials_used`, and the same pre-emit decision wall-time sample for
+`time_seconds`, measured from the existing SIQS timer start. The caller samples
+after pure proof/factor/evidence evaluation and accepted-factor copying, but
+before `finalize_siqs_shadow_proof_prefer` and emitter I/O. A future
+`SIQSResult` copies that value without resampling.
+
 ## Dense Solver Results
 
 At revision `0baa518`, parallel elimination created `std::jthread` workers for
@@ -359,9 +416,13 @@ Before promotion it must provide:
   raw-input immutability, typed setup failures, failure-transparent telemetry,
   and the default 1LP legacy path unchanged.
 - [ ] Fresh-process observe corpus with overlapping raw/shadow RSS evidence.
-  The one-`off` plus three-`observe` protocol is defined and has been exercised
-  on the current tree, but this gate remains pending because no predeclared RSS
-  budget or promotion threshold is frozen.
-- [ ] Explicit V2-audited `prefer` routing with per-call factor revalidation;
-  default promotion remains disabled.
+  The one-`off` plus three-`observe` protocol is defined and has been exercised,
+  but those samples are calibration-excluded. The gate requires at least eight
+  sealed 50-digit holdouts, separate Darwin/Linux/Windows evaluation, and three
+  `off` plus seven `observe` runs per fixture and backend. It remains blocked
+  because no deployment budget or reserved headroom is approved.
+- [x] Pure V2 `prefer` decision and audit contract with fail-closed factor and
+  `SIQSResult` metadata validation.
+- [ ] Parser and production routing for explicit V2-audited `prefer`; a future
+  emitter success is the commit point, and default promotion remains disabled.
 - [ ] Controlled 2LP collector; `lp_bound_sq` remains 0.

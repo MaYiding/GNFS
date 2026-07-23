@@ -1,3 +1,4 @@
+#include <gnfs/siqs/shadow_proof_prefer.hpp>
 #include <gnfs/siqs/siqs.hpp>
 
 #include <cassert>
@@ -358,8 +359,8 @@ void test_siqs_small() {
            off_result->time_seconds, observe_result->time_seconds);
 }
 
-void test_siqs_shadow_observe_invalid_mode() {
-    ScopedEnvironmentVariable environment(SIQS_SHADOW_PROOF_OBSERVE_ENV, "invalid");
+void require_siqs_shadow_mode_rejected(const char* mode) {
+    ScopedEnvironmentVariable environment(SIQS_SHADOW_PROOF_OBSERVE_ENV, mode);
     ScopedStderrCapture capture;
     bool invalid_argument_thrown = false;
     bool unexpected_exception_thrown = false;
@@ -373,10 +374,19 @@ void test_siqs_shadow_observe_invalid_mode() {
     const std::string captured_stderr = capture.finish();
 
     require_test(invalid_argument_thrown && !unexpected_exception_thrown,
-                 "invalid observe mode did not fail closed with std::invalid_argument");
+                 std::string("shadow mode '") + mode +
+                     "' did not fail closed with std::invalid_argument");
     require_test(count_occurrences(captured_stderr, SIQS_SHADOW_PROOF_OBSERVE_PREFIX) == 0,
-                 "invalid observe mode performed shadow work before throwing");
-    printf("  siqs shadow observe invalid mode: PASS\n");
+                 std::string("shadow mode '") + mode + "' performed observe work before throwing");
+    require_test(count_occurrences(captured_stderr, SIQS_SHADOW_PROOF_PREFER_DECISION_PREFIX) == 0,
+                 std::string("shadow mode '") + mode +
+                     "' emitted a prefer decision before throwing");
+}
+
+void test_siqs_shadow_rejected_modes() {
+    require_siqs_shadow_mode_rejected("invalid");
+    require_siqs_shadow_mode_rejected("prefer");
+    printf("  siqs shadow rejected modes (invalid, prefer): PASS\n");
 }
 
 void test_siqs_20digit() {
@@ -451,7 +461,7 @@ int main() {
 
     printf("\n--- Factorization tests ---\n");
     test_siqs_small();
-    test_siqs_shadow_observe_invalid_mode();
+    test_siqs_shadow_rejected_modes();
     test_siqs_20digit();
     test_siqs_30digit();
     test_siqs_40digit();

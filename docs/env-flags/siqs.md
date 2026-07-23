@@ -14,7 +14,7 @@
 
 解析是严格且大小写敏感的。空字符串、`1`、`Observe`、前后带空格的值以及其他任何值都会抛出 `std::invalid_argument`，不会静默回退。该异常是公开的 fail-closed 边界，调用方必须处理；没有统一异常处理的命令行入口可能因此终止。
 
-`prefer` 尚未实现，因此也属于非法值。当前 V1 记录只表示
+`prefer` 运行模式尚未接线，因此也属于非法值。当前 V1 记录只表示
 `mode=observe`、`route=legacy_continue` 和 `promotion=false`，不能将它解释为
 shadow 结果路由协议。
 
@@ -120,25 +120,104 @@ corpus 的因果差值。
 `rss_evidence=unavailable` 和 `experiment_eligibility=insufficient_evidence`。
 手工运行结果不能冻结 RSS 预算，也不能勾选 production promotion gate。
 
-### Future `prefer` contract
+上述样本固定归类为 `calibration_excluded`。它们只验证采集协议、RSS 可用性和
+量级，不得重新用作 promotion gate。正式 RSS gate 必须先封存至少 8 个未用于
+调参的 50 位 holdout fixtures。Darwin、Linux 和 Windows 必须分平台评估；每个
+backend、每个 fixture 分别运行 3 次 `off` 和 7 次 `observe` fresh processes。
 
-未来若加入显式 `prefer`，必须使用新的逐调用 V2 decision schema，不能放宽或
-重解释 observe V1。每次 early return 前都必须重新检查 typed result：terminal
-必须为 `factor_found`，factorization 必须存在，两个因子必须非平凡且采用规范
-顺序，并且乘积必须精确等于原始输入 `N`。还必须冻结
-`SIQSResult::relations_found`、`polynomials_used` 和 `time_seconds` 的 shadow-route
-语义。
+预注册的判定量只能是 `observe` 的绝对 process peak RSS，并与部署方批准的内存
+预算减去预留 headroom 后的上限比较。`off` 与 `observe` 的差值以及 record 内
+`peak_growth_bytes` 只保留为诊断信息，不能单独通过或否决 gate。当前没有批准的
+deployment budget 或 headroom，因此数值 gate 仍是 `blocked` / `pending`。即使
+将来 sealed holdout 全部通过，也必须保持 `promotion=false`；通过仅允许进入下一
+个人工审查阶段。
+
+### Pure V2 `prefer` Decision Contract
+
+V2 只定义纯决策和审计合同，不能放宽或重解释 observe V1。当前 parser 仍只接受
+未设置、`0` 和 `observe`；`prefer` 仍会 fail closed。`factor()` 和生产 observe
+seam 都没有接入 V2，也不会返回 shadow 结果。
+
+纯实现位于 `include/gnfs/siqs/shadow_proof_prefer.hpp`。
+`evaluate_siqs_shadow_proof_prefer` 先生成 owning draft，
+`finalize_siqs_shadow_proof_prefer(SIQSShadowProofPreferDraft&&, uint64_t)`
+只接收 owning rvalue draft，再附加调用方提供的 wall-time 样本，
+`emit_siqs_shadow_proof_prefer_decision` 输出以
+`GNFS_SIQS_SHADOW_PROOF_PREFER_DECISION_V2` 开头的单行闭集记录。记录固定
+`schema_version=2`、`status=valid`、`mode=prefer`、
+`emit_phase=before_route` 和 `promotion=false`。`decision` 只能是 `shadow_candidate` 或
+`legacy_fallback`；`reason` 只能是 `shadow_factor_valid`、
+`shadow_not_factor`、`shadow_contract_invalid`、`factor_identity_invalid`、
+`result_metadata_invalid` 或 `decision_internal_failure`。
+
+V2 字段顺序和语义固定如下：
+
+| 字段 | 语义 |
+|------|------|
+| `schema_version status mode` | 固定为 `2 valid prefer`；`valid` 表示审计记录自身通过一致性检查，不表示 shadow 一定成功 |
+| `decision reason next_route` | 闭集决策、闭集原因和尚未执行的路由建议 |
+| `shadow_terminal shadow_stage shadow_fallback` | 被审计 typed shadow result 的 terminal、最后阶段和 bounded fallback 原因 |
+| `factorization_present input_n factor cofactor factor_identity` | source 是否报告 factorization、原始十进制输入和重新验证结果；fallback 不输出因子值，`factor` / `cofactor` 为 `0` |
+| `result_present relations_found relations_source` | 只有 candidate 携带 future result；关系数来自 `shadow_selected_rows` |
+| `polynomials_used polynomials_source` | 只有 candidate 携带 post-join `production_sieve_counter` |
+| `decision_wall_ns_supported decision_wall_ns time_scope` | candidate 携带正的 caller sample 和 `siqs_timer_to_pre_emit_decision`；fallback 为 `false`、`0`、`unavailable` |
+| `emit_phase promotion` | 固定为 `before_route false` |
+
+`factorization_present` 只陈述 source 是否报告了 factorization，因此它在某些
+fallback 中仍可为 `true`；只有 `result_present=true` 才表示 candidate result
+存在。`factor_identity` 的闭集值是 `pass`、`fail` 和 `not_checked`。对
+candidate 传入零 `decision_wall_ns` 会使
+`finalize_siqs_shadow_proof_prefer` 转为
+`reason=result_metadata_invalid` 的 legacy fallback。
+
+V2 对每次候选 early return 重新检查 typed result：terminal 必须为
+`factor_found`，factorization 必须存在，两个因子必须非平凡且采用规范顺序，
+并且乘积必须精确等于原始输入 `N`。任何未知 enum、terminal / fallback / factor
+presence 矛盾、proof evidence 不守恒、结果指标非法或内部异常，都只产生
+`legacy_fallback` 决策。
+
+V2 record 中的 `next_route` 是在 `emit_phase=before_route` 时生成的下一步建议，
+不是已经执行的返回路径。纯合同不会自行路由。未来接线只有在完整 record 成功
+写出、flush 成功且 stream 无错误，emitter 返回 `true` 后，才能把该成功视为
+shadow route 的 commit point；写入失败、部分写入、flush 失败或 stream 错误都必须
+继续未修改的 legacy 路径。即使失败通道留下完整
+可见行，该行仍只陈述 pre-emit 决策，不声称 route 已执行。
+
+`shadow_candidate` 记录使用 `next_route=shadow_return`、
+`relations_source=shadow_selected_rows`、
+`polynomials_source=production_sieve_counter`、
+`decision_wall_ns_supported=true` 和
+`time_scope=siqs_timer_to_pre_emit_decision`。`legacy_fallback` 则使用
+`next_route=legacy_continue`，不携带 candidate result，相关 source 为 `none`。
+
+未来 shadow `SIQSResult` 的指标语义固定如下：
+
+- `relations_found` 等于实际送入 shadow matrix 的 selected row 数，并且必须与
+  matrix row count 一致；它不是 raw、pretrim 或 graph edge 数。
+- `polynomials_used` 复用所有 production sieve workers join 后的 polynomial
+  counter，不使用 shadow 内部计数。
+- `time_seconds` 由同一份 pre-emit decision wall-time 样本派生。它从现有 SIQS
+  timer 起点计到 pure evaluation 完成，包含 shadow proof、factor / evidence
+  验证和 accepted-factor copy；样本在
+  `finalize_siqs_shadow_proof_prefer` 和 emitter I/O 之前取得。未来的
+  `SIQSResult` 必须直接复用该值，不得重新采样。
 
 实验期采用 emit-before-route：先完整构造 shadow `SIQSResult` 和 V2 decision
-record，成功写出 `route=shadow_return` 记录后才能返回 shadow 结果。记录构造或
-emitter 失败时继续未修改的 legacy 路径。所有 `no_factor`、bounded fallback、
-invalid input、stage failure、resource exhaustion、exception 和 invariant failure
-同样继续 legacy。默认模式仍是 `off`，且 future `prefer` 只能先作为显式实验，
-不能由当前 candidate comparison 自动启用。
+record；未来只有 emitter 成功后才能执行其 `next_route=shadow_return` 建议。记录
+构造或 emitter 失败时继续未修改的 legacy 路径。所有 `no_factor`、bounded
+fallback、invalid input、stage failure、resource exhaustion、exception 和
+invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `prefer`
+只能先作为显式实验，不能由当前 candidate comparison 或 sealed holdout 自动
+启用。
 
 ### 测试
 
-- `tests/test_siqs_shadow_proof_observe.cpp` 覆盖严格 parser、typed record、RSS 可用性字段和 emitter 合同。
+- `tests/test_siqs_shadow_proof_prefer.cpp` 覆盖纯 V2 决策、防御性 typed
+  result / factor / metadata 验证和 pre-route emitter 合同。
+- `tests/test_siqs_shadow_proof_observe.cpp` 覆盖严格 parser（包括拒绝
+  `prefer`）、typed record、RSS 可用性字段和 emitter 合同。
+- `tests/test_siqs.cpp` 锁定公开 `factor()` 路径对 `prefer` 的 fail-closed
+  拒绝，并确认拒绝前不发出 V1 或 V2 记录。
 - `tests/test_siqs_shadow_proof_observe_probe.cpp` 提供 Release-only production 1LP fresh-process measurement target；它不进入 CTest 或常规测试 tier。
 - `tests/test_siqs_shadow_proof_runner.cpp` 覆盖各阶段 terminal status、inclusive caps、异常和输入不可变性。
 - `tests/test_siqs.cpp` 使用跨平台 RAII 环境变量夹具，验证 `143 = 11 * 13` 在 `0` 与 `observe` 下返回同一规范因子对，并验证非法值在 SIQS 工作开始前抛出。
@@ -146,6 +225,7 @@ invalid input、stage failure、resource exhaustion、exception 和 invariant fa
 常用验证命令：
 
 ```bash
+./scripts/test.sh run test_siqs_shadow_proof_prefer
 ./scripts/test.sh run test_siqs_shadow_proof_observe
 ./scripts/test.sh run test_siqs_shadow_proof_runner
 ./scripts/test.sh run test_siqs
