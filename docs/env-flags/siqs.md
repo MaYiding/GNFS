@@ -121,16 +121,35 @@ corpus 的因果差值。
 手工运行结果不能冻结 RSS 预算，也不能勾选 production promotion gate。
 
 上述样本固定归类为 `calibration_excluded`。它们只验证采集协议、RSS 可用性和
-量级，不得重新用作 promotion gate。正式 RSS gate 必须先封存至少 8 个未用于
-调参的 50 位 holdout fixtures。Darwin、Linux 和 Windows 必须分平台评估；每个
-backend、每个 fixture 分别运行 3 次 `off` 和 7 次 `observe` fresh processes。
+量级，不得重新用作 promotion gate。正式语料已在
+`tests/fixtures/siqs_shadow_observe_rss_holdouts_v1.hpp` 中 outcome-blind 封存。
+corpus ID 为 `siqs50_shadow_observe_rss_holdout_v1`，包含 8 个全新、balanced 的
+50 位 semiprimes。header 使用公开 decimal base/stride 常量和 GMP
+`mpz_nextprime` 规则确定因子，selection protocol ID 为
+`gmp_nextprime_decimal_stride_v1`。header 固定规范因子顺序，并以 stable、
+non-cryptographic 128-bit identity digest 绑定有序 corpus identity；digest lanes 为
+`low=303806906129662515` 和 `high=18179245792498443738`。
 
-预注册的判定量只能是 `observe` 的绝对 process peak RSS，并与部署方批准的内存
-预算减去预留 headroom 后的上限比较。`off` 与 `observe` 的差值以及 record 内
-`peak_growth_bytes` 只保留为诊断信息，不能单独通过或否决 gate。当前没有批准的
-deployment budget 或 headroom，因此数值 gate 仍是 `blocked` / `pending`。即使
-将来 sealed holdout 全部通过，也必须保持 `promotion=false`；通过仅允许进入下一
-个人工审查阶段。
+`tests/test_siqs_shadow_observe_rss_holdouts.cpp` 只验证 corpus ID、数量、十进制位数、
+seed 生成、规范因子顺序、probable-prime identity、乘积、唯一性和 digest。该测试
+不会调用 production `factor()`、observe probe 或任何 RSS measurement path。上述
+8 个输入从未产生 production factorization result、shadow proof record、timing
+sample 或 memory measurement，因此 holdout 尚未打开。现有
+`GNFS_SIQS_SHADOW_PROOF_OBSERVE_PROBE_V1` 和
+`GNFS_SIQS_SHADOW_PROOF_OBSERVE_COMPARISON_V1` 仍只属于 calibration evidence。
+
+Darwin、Linux 和 Windows 必须分平台评估；每个 backend、每个 fixture 分别运行
+3 次 `off` 和 7 次 `observe` fresh processes。预注册的判定量只能是 `observe`
+的绝对 process peak RSS，并与部署方批准的内存预算减去预留 headroom 后的上限
+比较。`off` 与 `observe` 的差值以及 record 内 `peak_growth_bytes` 只保留为诊断
+信息，不能单独通过或否决 gate。
+
+当前没有批准的 per-platform policy。deployment budget、reserved headroom、
+OS/architecture/backend、resolved production sieve workers 和 candidate revision
+均未冻结。typed gate、runner 和 measurement 仍是 `blocked` / `pending`；policy
+落地前不得构造或启动每个平台的 80-process campaign，也不得从 sealed corpus
+推导阈值。即使将来 holdout 全部通过，也必须保持 `shadow_outcome_routed=false`
+和 `promotion=false`；通过仅允许进入下一轮人工审查。
 
 ### Pure V2 `prefer` Decision Contract
 
@@ -216,6 +235,8 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
   result / factor / metadata 验证和 pre-route emitter 合同。
 - `tests/test_siqs_shadow_proof_observe.cpp` 覆盖严格 parser（包括拒绝
   `prefer`）、typed record、RSS 可用性字段和 emitter 合同。
+- `tests/test_siqs_shadow_observe_rss_holdouts.cpp` 只覆盖 sealed corpus 的数学和
+  identity 合同；它不调用 production `factor()` 或 probe，也不采集 outcome。
 - `tests/test_siqs.cpp` 锁定公开 `factor()` 路径对 `prefer` 的 fail-closed
   拒绝，并确认拒绝前不发出 V1 或 V2 记录。
 - `tests/test_siqs_shadow_proof_observe_probe.cpp` 提供 Release-only production 1LP fresh-process measurement target；它不进入 CTest 或常规测试 tier。
@@ -227,6 +248,7 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
 ```bash
 ./scripts/test.sh run test_siqs_shadow_proof_prefer
 ./scripts/test.sh run test_siqs_shadow_proof_observe
+./scripts/test.sh run test_siqs_shadow_observe_rss_holdouts
 ./scripts/test.sh run test_siqs_shadow_proof_runner
 ./scripts/test.sh run test_siqs
 ./scripts/test.sh probe-siqs-shadow-observe observe

@@ -196,14 +196,49 @@ All samples produced while defining or debugging the current protocol are
 `calibration_excluded`. They may validate schema, backend support, and
 measurement scale, but they cannot enter a later promotion decision.
 
-Before opening a sealed corpus, preregister all of the following without using
-holdout results to retune the implementation:
+The outcome-blind corpus seal is now frozen in
+`tests/fixtures/siqs_shadow_observe_rss_holdouts_v1.hpp`. Its corpus ID is
+`siqs50_shadow_observe_rss_holdout_v1`. It contains eight new, balanced,
+50-digit semiprimes derived from public decimal base and stride constants with
+GMP `mpz_nextprime`. Canonical factor ordering and a stable, non-cryptographic
+128-bit identity digest bind the ordered corpus identity.
 
-- at least eight previously untuned 50-digit semiprime fixtures;
+The frozen selection contract is:
+
+| Field | Value |
+|---|---|
+| Selection protocol | `gmp_nextprime_decimal_stride_v1` |
+| `p` base / stride | `2100000000000000000000000` / `11000000000000000000000` |
+| `q` base / stride | `8100000000000000000000000` / `17000000000000000000000` |
+| Fixture mapping | For zero-based `i`, form each seed as `base + i * stride`; `mpz_nextprime(seed)` selects the factor strictly greater than that seed |
+| Stable identity digest | `low=303806906129662515`, `high=18179245792498443738` |
+
+The digest domain is `gnfs.siqs.shadow_observe_rss_holdout.v1`, and its schema
+version is 1. The digest covers the corpus and selection IDs, all base and
+stride constants, the sealed and calibration flags, fixture count, frozen
+timeout metadata, and every ordered fixture identity field. Changing any of
+those inputs creates a different corpus identity. This digest is an identity
+checksum, not a cryptographic authenticity proof.
+
+`tests/test_siqs_shadow_observe_rss_holdouts.cpp` checks only the versioned
+identity, fixture count, decimal width, seed generation, canonical factor
+order, probable primality, factor product, uniqueness, and digest. It does not
+call production `factor()`, the observe probe, or an RSS measurement path. No
+production factorization result, shadow proof record, timing sample, or memory
+measurement has been collected for these inputs. The corpus is therefore
+sealed but unopened. The existing one-`off` plus three-`observe` V1 evidence
+remains calibration-only and cannot enter this gate.
+
+Before opening the sealed corpus, preregister all of the following without
+using holdout results to retune the implementation:
+
+- the frozen eight-fixture corpus identity and stable digest;
 - three `off` and seven `observe` fresh processes for every fixture and backend;
 - separate Darwin, Linux, and Windows evaluations rather than pooling their RSS
   distributions;
 - the approved deployment memory budget and its reserved headroom;
+- the exact OS, architecture, RSS backend, resolved production sieve worker
+  count, and candidate revision for each platform policy;
 - the rule that compares every absolute observe-process peak with the remaining
   budget after headroom.
 
@@ -214,11 +249,15 @@ corpus or prior lifetime high-water state. They must not rescue a sample whose
 absolute observe peak exceeds the approved deployment envelope, and they must
 not fail an otherwise conforming sample by themselves.
 
-The project has not received an approved deployment budget or headroom value.
-The numeric RSS gate is therefore blocked and remains pending; this document
-does not turn current measurements into a threshold. Even if every sealed
-holdout later passes, the resulting record must retain `promotion=false`. A pass
-only makes an explicit route experiment eligible for separate review.
+The project has no approved per-platform policy. No deployment budget,
+reserved headroom, OS/architecture/backend binding, resolved production sieve
+worker count, or candidate revision is frozen. The typed gate, runner, and
+measurement campaign are therefore blocked and remain pending. Nothing may
+construct or launch the 80-process campaign on any platform until that policy
+exists, and this document does not turn current measurements into a threshold.
+Even if every sealed holdout later passes, the resulting record must retain
+`shadow_outcome_routed=false` and `promotion=false`. A pass only makes an
+explicit route experiment eligible for separate review.
 
 ### Pure V2 Prefer Boundary
 
@@ -415,12 +454,18 @@ Before promotion it must provide:
 - [x] Strict opt-in observe seam in `factor()` with default workers set to 1,
   raw-input immutability, typed setup failures, failure-transparent telemetry,
   and the default 1LP legacy path unchanged.
-- [ ] Fresh-process observe corpus with overlapping raw/shadow RSS evidence.
-  The one-`off` plus three-`observe` protocol is defined and has been exercised,
-  but those samples are calibration-excluded. The gate requires at least eight
-  sealed 50-digit holdouts, separate Darwin/Linux/Windows evaluation, and three
-  `off` plus seven `observe` runs per fixture and backend. It remains blocked
-  because no deployment budget or reserved headroom is approved.
+- [x] Outcome-blind seal for eight new, balanced, 50-digit RSS holdouts, with a
+  public deterministic generator, stable non-cryptographic 128-bit identity
+  digest, and mathematical identity test that never calls production `factor()`
+  or probe.
+- [ ] Typed per-platform RSS policy and gate runner. The policy must bind the
+  budget, reserved headroom, OS, architecture, RSS backend, resolved production
+  sieve workers, candidate revision, and sealed corpus digest.
+- [ ] Fresh-process holdout measurement with overlapping raw/shadow RSS
+  evidence. Each platform still requires three `off` plus seven `observe` runs
+  for each of the eight fixtures, for 80 fresh processes. The existing
+  one-`off` plus three-`observe` V1 samples remain calibration-excluded. No
+  campaign may start until the per-platform policy is approved.
 - [x] Pure V2 `prefer` decision and audit contract with fail-closed factor and
   `SIQSResult` metadata validation.
 - [ ] Parser and production routing for explicit V2-audited `prefer`; a future
