@@ -273,8 +273,9 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
   policy binding、严格 80-sample coverage、budget 等号边界、diagnostic independence
   和 terminal-only closed emitter；它不运行 sealed holdout。
 - `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` 使用临时本地目录和
-  subprocess 覆盖 deployment registry、严格 native layout、跨进程 lease、崩溃释放
-  和 replay action；它不运行 probe，也不签发 launch permit。
+  subprocess 覆盖 deployment registry、严格 native layout、跨进程 lease、崩溃释放、
+  held-root header/start publication 和私有 permit issuance。permit 只存在于无 launch
+  API 的 lease-bound active slot 中；测试不运行 probe。
 - `tests/test_siqs.cpp` 锁定公开 `factor()` 路径对 `prefer` 的 fail-closed
   拒绝，并确认拒绝前不发出 V1 或 V2 记录。
 - `tests/test_siqs_shadow_proof_observe_probe.cpp` 提供 Release-only production 1LP fresh-process measurement target；它不进入 CTest 或常规测试 tier。

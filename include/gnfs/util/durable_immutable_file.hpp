@@ -145,6 +145,25 @@ public:
     open_exclusive(NativeHandle parent_handle, const std::filesystem::path& leaf,
                    const std::filesystem::path& frozen_absolute_path) noexcept = 0;
 
+    /// Create one leaf relative to an already-held parent handle. The default
+    /// implementation fails closed so platforms without a handle-relative
+    /// create operation cannot silently fall back to a path lookup.
+    [[nodiscard]] virtual OpenResult open_exclusive_at(NativeHandle parent_handle,
+                                                       const std::filesystem::path& leaf) noexcept {
+        (void)parent_handle;
+        (void)leaf;
+        return OpenResult::failed(std::make_error_code(std::errc::operation_not_supported));
+    }
+
+    /// Open an existing immutable leaf relative to an already-held parent
+    /// handle without truncation or path fallback. The default fails closed.
+    [[nodiscard]] virtual OpenResult open_existing_at(NativeHandle parent_handle,
+                                                      const std::filesystem::path& leaf) noexcept {
+        (void)parent_handle;
+        (void)leaf;
+        return OpenResult::failed(std::make_error_code(std::errc::operation_not_supported));
+    }
+
     [[nodiscard]] virtual WriteResult write_some(NativeHandle handle,
                                                  std::span<const std::byte> bytes) noexcept = 0;
 
@@ -219,8 +238,35 @@ private:
                                              std::span<const std::byte> bytes,
                                              FileOps& ops) noexcept;
 
+/// Publish one immutable single-component leaf relative to a borrowed parent
+/// handle. This operation never opens, closes, or replaces `parent_handle`.
+/// It still syncs that exact handle as the directory publication boundary.
+[[nodiscard]] PublishResult publish_at_with_ops(NativeHandle parent_handle,
+                                                const std::filesystem::path& leaf,
+                                                std::span<const std::byte> bytes,
+                                                FileOps& ops) noexcept;
+
+/// Re-establish the file and directory durability barriers for one existing
+/// immutable leaf through a borrowed parent handle. This operation never
+/// modifies the file contents and never closes the parent handle. The caller
+/// must validate the leaf's regular-file kind, link count, identity, and exact
+/// contents before and after this durability-only operation.
+[[nodiscard]] PublishResult confirm_durable_at_with_ops(NativeHandle parent_handle,
+                                                        const std::filesystem::path& leaf,
+                                                        FileOps& ops) noexcept;
+
 /// Production native implementation of publish_with_ops().
 [[nodiscard]] PublishResult publish(const std::filesystem::path& path,
                                     std::span<const std::byte> bytes) noexcept;
+
+/// Production native implementation of publish_at_with_ops(). Platforms
+/// without a handle-relative exclusive-create primitive fail closed.
+[[nodiscard]] PublishResult publish_at(NativeHandle parent_handle,
+                                       const std::filesystem::path& leaf,
+                                       std::span<const std::byte> bytes) noexcept;
+
+/// Production native implementation of confirm_durable_at_with_ops().
+[[nodiscard]] PublishResult confirm_durable_at(NativeHandle parent_handle,
+                                               const std::filesystem::path& leaf) noexcept;
 
 } // namespace gnfs::util::durable_immutable_file

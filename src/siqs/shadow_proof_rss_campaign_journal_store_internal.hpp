@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -21,6 +22,16 @@ struct DeploymentEntry final {
     uint64_t expected_owner = 0;
 };
 
+struct SessionBeginSlotResult final {
+    std::optional<SIQSShadowProofRssLaunchPermit> permit;
+    SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return permit.has_value() && permit->active() &&
+               diagnostic.error == SIQSShadowProofRssCampaignJournalStoreError::none;
+    }
+};
+
 class SessionCore {
 public:
     SessionCore() = default;
@@ -32,6 +43,13 @@ public:
     SessionCore& operator=(SessionCore&&) = delete;
 
     [[nodiscard]] virtual SIQSShadowProofRssCampaignJournalSessionView view() const noexcept = 0;
+    [[nodiscard]] virtual SessionBeginSlotResult begin_next_slot() noexcept = 0;
+
+protected:
+    [[nodiscard]] static constexpr SIQSShadowProofRssDurableRecordReceipt
+    issue_durable_record_receipt(const SIQSShadowProofRssCampaignJournalRecord& record) noexcept {
+        return SIQSShadowProofRssDurableRecordReceipt(record);
+    }
 };
 
 [[nodiscard]] constexpr SIQSShadowProofRssCampaignJournalSessionView

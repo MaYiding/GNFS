@@ -10,12 +10,19 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <span>
 #include <string>
 #include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -71,6 +78,8 @@ public:
 
     std::size_t parent_open_calls = 0;
     std::size_t file_open_calls = 0;
+    std::size_t relative_file_open_calls = 0;
+    std::size_t existing_file_open_calls = 0;
     std::size_t write_calls = 0;
     std::size_t sync_calls = 0;
     std::size_t close_calls = 0;
@@ -115,6 +124,38 @@ public:
         }
         if (file_open_reports_existing) {
             return durable::OpenResult::failed(std::make_error_code(std::errc::file_exists));
+        }
+        if (file_open_returns_invalid_handle) {
+            return durable::OpenResult::succeeded(durable::INVALID_NATIVE_HANDLE);
+        }
+        if (file_open_returns_parent_handle) {
+            return durable::OpenResult::succeeded(11);
+        }
+        return durable::OpenResult::succeeded(17);
+    }
+
+    [[nodiscard]] durable::OpenResult
+    open_exclusive_at(durable::NativeHandle parent_handle,
+                      const std::filesystem::path& leaf) noexcept override {
+        ++relative_file_open_calls;
+        return open_exclusive(parent_handle, leaf, leaf);
+    }
+
+    [[nodiscard]] durable::OpenResult
+    open_existing_at(durable::NativeHandle parent_handle,
+                     const std::filesystem::path& leaf) noexcept override {
+        ++existing_file_open_calls;
+        ++file_open_calls;
+        opened_path = leaf;
+        if (parent_handle != 11 || leaf.has_parent_path()) {
+            return durable::OpenResult::failed(std::make_error_code(std::errc::protocol_error));
+        }
+        if (file_open_interrupts != 0) {
+            --file_open_interrupts;
+            return durable::OpenResult::interrupted(std::make_error_code(std::errc::interrupted));
+        }
+        if (file_open_fails) {
+            return durable::OpenResult::failed(injected_error());
         }
         if (file_open_returns_invalid_handle) {
             return durable::OpenResult::succeeded(durable::INVALID_NATIVE_HANDLE);
@@ -450,6 +491,162 @@ void test_injected_failures_are_never_durable() {
     }
 }
 
+void test_borrowed_parent_happy_path_and_failures() {
+    {
+        ScriptedFileOps ops;
+        ops.file_open_interrupts = 1;
+        ops.writes = {{durable::OperationState::succeeded, 1},
+                      {durable::OperationState::interrupted, 0},
+                      {durable::OperationState::succeeded, 2}};
+        ops.sync_interrupts = 1;
+        ops.parent_interrupts = 1;
+
+        const auto result = durable::publish_at_with_ops(11, "record.bin", PAYLOAD, ops);
+        CHECK(result.status() == durable::PublishStatus::durable);
+        CHECK(result.is_durable());
+        CHECK(result.bytes_written() == PAYLOAD.size());
+        CHECK(ops.parent_open_calls == 0);
+        CHECK(ops.parent_close_calls == 0);
+        CHECK(ops.relative_file_open_calls == 2);
+        CHECK(ops.file_open_calls == 2);
+        CHECK(ops.write_calls == 4);
+        CHECK(ops.sync_calls == 3);
+        CHECK(ops.parent_calls == 2);
+        CHECK(ops.close_calls == 1);
+        CHECK(!ops.file_handle_mismatch);
+        CHECK(ops.opened_path == "record.bin");
+        CHECK(std::equal(ops.captured.begin(), ops.captured.end(), PAYLOAD.begin(), PAYLOAD.end()));
+    }
+    {
+        ScriptedFileOps ops;
+        ops.file_open_reports_existing = true;
+        const auto result = durable::publish_at_with_ops(11, "record.bin", PAYLOAD, ops);
+        CHECK(result.status() == durable::PublishStatus::already_exists);
+        CHECK(!result.is_durable());
+        CHECK(ops.parent_open_calls == 0);
+        CHECK(ops.parent_close_calls == 0);
+        CHECK(ops.close_calls == 0);
+    }
+    {
+        ScriptedFileOps ops;
+        ops.file_open_returns_parent_handle = true;
+        const auto result = durable::publish_at_with_ops(11, "record.bin", PAYLOAD, ops);
+        CHECK(result.status() == durable::PublishStatus::file_ops_contract_violation);
+        CHECK(!result.is_durable());
+        CHECK(ops.parent_close_calls == 0);
+        CHECK(ops.close_calls == 0);
+    }
+    {
+        ScriptedFileOps ops;
+        ops.writes = {{durable::OperationState::succeeded, 2},
+                      {durable::OperationState::failed, 0}};
+        const auto result = durable::publish_at_with_ops(11, "record.bin", PAYLOAD, ops);
+        CHECK(result.status() == durable::PublishStatus::write_failed);
+        CHECK(result.bytes_written() == 2);
+        CHECK(ops.close_calls == 1);
+        CHECK(ops.parent_close_calls == 0);
+    }
+    {
+        ScriptedFileOps ops;
+        ops.parent_fails = true;
+        const auto result = durable::publish_at_with_ops(11, "record.bin", PAYLOAD, ops);
+        CHECK(result.status() == durable::PublishStatus::parent_directory_sync_failed);
+        CHECK(result.bytes_written() == PAYLOAD.size());
+        CHECK(ops.close_calls == 1);
+        CHECK(ops.parent_close_calls == 0);
+    }
+    {
+        ScriptedFileOps ops;
+        ops.close_returns_interrupted = true;
+        const auto result = durable::publish_at_with_ops(11, "record.bin", PAYLOAD, ops);
+        CHECK(result.status() == durable::PublishStatus::close_failed);
+        CHECK(result.bytes_written() == PAYLOAD.size());
+        CHECK(ops.close_calls == 1);
+        CHECK(ops.parent_close_calls == 0);
+    }
+}
+
+void test_borrowed_parent_confirm_durability() {
+    {
+        ScriptedFileOps ops;
+        ops.file_open_interrupts = 1;
+        ops.sync_interrupts = 1;
+        ops.parent_interrupts = 1;
+        const auto result = durable::confirm_durable_at_with_ops(11, "record.bin", ops);
+        CHECK(result.status() == durable::PublishStatus::durable);
+        CHECK(result.bytes_written() == 0);
+        CHECK(ops.parent_open_calls == 0);
+        CHECK(ops.parent_close_calls == 0);
+        CHECK(ops.existing_file_open_calls == 2);
+        CHECK(ops.write_calls == 0);
+        CHECK(ops.sync_calls == 3);
+        CHECK(ops.parent_calls == 2);
+        CHECK(ops.close_calls == 1);
+    }
+    {
+        ScriptedFileOps ops;
+        ops.file_open_fails = true;
+        const auto result = durable::confirm_durable_at_with_ops(11, "record.bin", ops);
+        CHECK(result.status() == durable::PublishStatus::open_failed);
+        CHECK(ops.close_calls == 0);
+        CHECK(ops.parent_close_calls == 0);
+    }
+    for (std::size_t failing_sync : {std::size_t{1}, std::size_t{2}}) {
+        ScriptedFileOps ops;
+        ops.sync_fail_on_call = failing_sync;
+        const auto result = durable::confirm_durable_at_with_ops(11, "record.bin", ops);
+        CHECK(result.status() == durable::PublishStatus::file_sync_failed);
+        CHECK(result.bytes_written() == 0);
+        CHECK(ops.close_calls == 1);
+        CHECK(ops.parent_close_calls == 0);
+    }
+    {
+        ScriptedFileOps ops;
+        ops.parent_fails = true;
+        const auto result = durable::confirm_durable_at_with_ops(11, "record.bin", ops);
+        CHECK(result.status() == durable::PublishStatus::parent_directory_sync_failed);
+        CHECK(ops.close_calls == 1);
+        CHECK(ops.parent_close_calls == 0);
+    }
+    {
+        ScriptedFileOps ops;
+        ops.close_fails = true;
+        const auto result = durable::confirm_durable_at_with_ops(11, "record.bin", ops);
+        CHECK(result.status() == durable::PublishStatus::close_failed);
+        CHECK(ops.close_calls == 1);
+        CHECK(ops.parent_close_calls == 0);
+    }
+    {
+        ScriptedFileOps ops;
+        const auto invalid = durable::confirm_durable_at_with_ops(11, "dir/record.bin", ops);
+        CHECK(invalid.status() == durable::PublishStatus::invalid_path);
+        CHECK(ops.file_open_calls == 0);
+    }
+}
+
+void test_borrowed_parent_rejects_non_leaf_paths() {
+    for (const std::filesystem::path& invalid :
+         {std::filesystem::path{}, std::filesystem::path("."), std::filesystem::path(".."),
+          std::filesystem::path("/record.bin"), std::filesystem::path("dir/record.bin"),
+          std::filesystem::path("./record.bin"),
+          std::filesystem::path(std::string("record\0.bin", 10))}) {
+        ScriptedFileOps ops;
+        const auto result = durable::publish_at_with_ops(11, invalid, PAYLOAD, ops);
+        CHECK(result.status() == durable::PublishStatus::invalid_path);
+        CHECK(!result.is_durable());
+        CHECK(ops.parent_open_calls == 0);
+        CHECK(ops.file_open_calls == 0);
+        CHECK(ops.parent_calls == 0);
+        CHECK(ops.parent_close_calls == 0);
+    }
+
+    ScriptedFileOps ops;
+    const auto invalid_handle =
+        durable::publish_at_with_ops(durable::INVALID_NATIVE_HANDLE, "record.bin", PAYLOAD, ops);
+    CHECK(invalid_handle.status() == durable::PublishStatus::invalid_path);
+    CHECK(ops.file_open_calls == 0);
+}
+
 void test_invalid_paths_do_not_reach_file_ops() {
     ScriptedFileOps ops;
     const auto empty = durable::publish_with_ops({}, PAYLOAD, ops);
@@ -536,15 +733,55 @@ void test_real_symlink_leaf_is_not_followed() {
     CHECK(read_bytes(target) == before);
 }
 
+void test_real_borrowed_parent_publish_preserves_handle() {
+    TempDirectory directory;
+#ifndef _WIN32
+    const int parent = ::open(directory.path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CHECK(parent >= 0);
+    if (parent < 0) {
+        return;
+    }
+
+    const auto first = durable::publish_at(parent, "record.bin", PAYLOAD);
+    CHECK(first.status() == durable::PublishStatus::durable);
+    CHECK(first.bytes_written() == PAYLOAD.size());
+    struct stat metadata{};
+    CHECK(::fstat(parent, &metadata) == 0);
+    CHECK(S_ISDIR(metadata.st_mode));
+    CHECK(read_bytes(directory.path() / "record.bin") ==
+          std::vector<std::byte>(PAYLOAD.begin(), PAYLOAD.end()));
+
+    const auto second = durable::publish_at(parent, "record.bin", PAYLOAD);
+    CHECK(second.status() == durable::PublishStatus::already_exists);
+    CHECK(::chmod((directory.path() / "record.bin").c_str(), 0400) == 0);
+    const auto confirmed = durable::confirm_durable_at(parent, "record.bin");
+    CHECK(confirmed.status() == durable::PublishStatus::durable);
+    CHECK(confirmed.bytes_written() == 0);
+    CHECK(::fstat(parent, &metadata) == 0);
+    CHECK(::close(parent) == 0);
+#else
+    const auto unsupported = durable::publish_at(1, "record.bin", PAYLOAD);
+    CHECK(unsupported.status() == durable::PublishStatus::open_failed);
+    CHECK(unsupported.native_error() == std::errc::operation_not_supported);
+    const auto confirm_unsupported = durable::confirm_durable_at(1, "record.bin");
+    CHECK(confirm_unsupported.status() == durable::PublishStatus::open_failed);
+    CHECK(confirm_unsupported.native_error() == std::errc::operation_not_supported);
+#endif
+}
+
 } // namespace
 
 int main() {
     test_injected_happy_path_and_retries();
     test_injected_failures_are_never_durable();
+    test_borrowed_parent_happy_path_and_failures();
+    test_borrowed_parent_confirm_durability();
+    test_borrowed_parent_rejects_non_leaf_paths();
     test_invalid_paths_do_not_reach_file_ops();
     test_real_publish_is_exclusive_and_preserves_existing_bytes();
     test_real_concurrent_publish_has_one_winner();
     test_real_symlink_leaf_is_not_followed();
+    test_real_borrowed_parent_publish_preserves_handle();
 
     std::cout << "durable immutable file tests: " << checks_passed << " passed, " << checks_failed
               << " failed\n";

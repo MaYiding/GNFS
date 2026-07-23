@@ -47,6 +47,11 @@ struct FrozenPath final {
     return leaf.empty() || leaf == "." || leaf == ".." || contains_nul(leaf);
 }
 
+[[nodiscard]] bool invalid_relative_leaf(const std::filesystem::path& leaf) {
+    return invalid_leaf(leaf) || leaf.is_absolute() || leaf.has_parent_path() ||
+           leaf.filename() != leaf;
+}
+
 [[nodiscard]] std::optional<FrozenPath> freeze_path(const std::filesystem::path& requested,
                                                     std::error_code& error) {
     if (requested.empty() || contains_nul(requested) || invalid_leaf(requested.filename())) {
@@ -93,8 +98,17 @@ struct FrozenPath final {
     return result.native_error() ? result.native_error() : protocol_error();
 }
 
+enum class ParentHandleOwnership : std::uint8_t {
+    borrowed,
+    owned,
+};
+
 [[nodiscard]] PublishResult close_parent_and_return(FileOps& ops, NativeHandle parent_handle,
+                                                    ParentHandleOwnership ownership,
                                                     const PublishResult& intended) noexcept {
+    if (ownership == ParentHandleOwnership::borrowed) {
+        return intended;
+    }
     const OperationResult closed = ops.close_parent_directory(parent_handle);
     switch (closed.state()) {
     case OperationState::succeeded:
@@ -111,22 +125,175 @@ struct FrozenPath final {
 
 [[nodiscard]] PublishResult close_file_and_parent(FileOps& ops, NativeHandle file_handle,
                                                   NativeHandle parent_handle,
+                                                  ParentHandleOwnership ownership,
                                                   const PublishResult& intended) noexcept {
     const OperationResult closed = ops.close_file(file_handle);
     switch (closed.state()) {
     case OperationState::succeeded:
-        return close_parent_and_return(ops, parent_handle, intended);
+        return close_parent_and_return(ops, parent_handle, ownership, intended);
     case OperationState::interrupted:
     case OperationState::failed:
-        return close_parent_and_return(ops, parent_handle,
+        return close_parent_and_return(ops, parent_handle, ownership,
                                        PublishResult(PublishStatus::close_failed,
                                                      close_error_or_protocol(closed),
                                                      intended.bytes_written()));
     default:
-        return close_parent_and_return(ops, parent_handle,
+        return close_parent_and_return(ops, parent_handle, ownership,
                                        PublishResult(PublishStatus::file_ops_contract_violation,
                                                      protocol_error(), intended.bytes_written()));
     }
+}
+
+[[nodiscard]] PublishResult finish_durable_file(FileOps& ops, NativeHandle file_handle,
+                                                NativeHandle parent_handle,
+                                                ParentHandleOwnership ownership,
+                                                std::size_t bytes_written) noexcept {
+    for (;;) {
+        const OperationResult synced = ops.sync_file(file_handle);
+        switch (synced.state()) {
+        case OperationState::succeeded:
+            break;
+        case OperationState::interrupted:
+            continue;
+        case OperationState::failed:
+            return close_file_and_parent(
+                ops, file_handle, parent_handle, ownership,
+                failure(PublishStatus::file_sync_failed, synced.native_error(), bytes_written));
+        default:
+            return close_file_and_parent(ops, file_handle, parent_handle, ownership,
+                                         failure(PublishStatus::file_ops_contract_violation,
+                                                 protocol_error(), bytes_written));
+        }
+        break;
+    }
+
+    for (;;) {
+        const OperationResult synced_parent = ops.sync_parent_directory(parent_handle);
+        switch (synced_parent.state()) {
+        case OperationState::succeeded:
+            break;
+        case OperationState::interrupted:
+            continue;
+        case OperationState::failed:
+            return close_file_and_parent(ops, file_handle, parent_handle, ownership,
+                                         failure(PublishStatus::parent_directory_sync_failed,
+                                                 synced_parent.native_error(), bytes_written));
+        default:
+            return close_file_and_parent(ops, file_handle, parent_handle, ownership,
+                                         failure(PublishStatus::file_ops_contract_violation,
+                                                 protocol_error(), bytes_written));
+        }
+        break;
+    }
+
+    // Keep both handles open through a final file barrier. The first file
+    // barrier establishes content durability, the parent barrier publishes the
+    // directory entry, and this second file barrier orders both before close.
+    for (;;) {
+        const OperationResult synced = ops.sync_file(file_handle);
+        switch (synced.state()) {
+        case OperationState::succeeded:
+            break;
+        case OperationState::interrupted:
+            continue;
+        case OperationState::failed:
+            return close_file_and_parent(
+                ops, file_handle, parent_handle, ownership,
+                failure(PublishStatus::file_sync_failed, synced.native_error(), bytes_written));
+        default:
+            return close_file_and_parent(ops, file_handle, parent_handle, ownership,
+                                         failure(PublishStatus::file_ops_contract_violation,
+                                                 protocol_error(), bytes_written));
+        }
+        break;
+    }
+
+    const OperationResult closed_file = ops.close_file(file_handle);
+    switch (closed_file.state()) {
+    case OperationState::succeeded:
+        break;
+    case OperationState::interrupted:
+    case OperationState::failed:
+        return close_parent_and_return(ops, parent_handle, ownership,
+                                       failure(PublishStatus::close_failed,
+                                               close_error_or_protocol(closed_file),
+                                               bytes_written));
+    default:
+        return close_parent_and_return(
+            ops, parent_handle, ownership,
+            failure(PublishStatus::file_ops_contract_violation, protocol_error(), bytes_written));
+    }
+
+    return close_parent_and_return(ops, parent_handle, ownership,
+                                   failure(PublishStatus::durable, {}, bytes_written));
+}
+
+template <typename OpenExclusive>
+[[nodiscard]] PublishResult
+publish_to_open_parent(NativeHandle parent_handle, std::span<const std::byte> bytes, FileOps& ops,
+                       ParentHandleOwnership ownership, OpenExclusive&& open_exclusive) noexcept {
+    NativeHandle file_handle = INVALID_NATIVE_HANDLE;
+    for (;;) {
+        const OpenResult opened_file = open_exclusive();
+        switch (opened_file.state()) {
+        case OperationState::succeeded:
+            if (opened_file.handle() == INVALID_NATIVE_HANDLE ||
+                opened_file.handle() == parent_handle) {
+                return close_parent_and_return(
+                    ops, parent_handle, ownership,
+                    PublishResult(PublishStatus::file_ops_contract_violation, protocol_error(), 0));
+            }
+            file_handle = opened_file.handle();
+            break;
+        case OperationState::interrupted:
+            continue;
+        case OperationState::failed:
+            return close_parent_and_return(
+                ops, parent_handle, ownership,
+                PublishResult(opened_file.native_error() == std::errc::file_exists
+                                  ? PublishStatus::already_exists
+                                  : PublishStatus::open_failed,
+                              opened_file.native_error(), 0));
+        default:
+            return close_parent_and_return(
+                ops, parent_handle, ownership,
+                PublishResult(PublishStatus::file_ops_contract_violation, protocol_error(), 0));
+        }
+        break;
+    }
+
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        const WriteResult written = ops.write_some(file_handle, bytes.subspan(offset));
+        switch (written.state()) {
+        case OperationState::interrupted:
+            continue;
+        case OperationState::failed:
+            return close_file_and_parent(
+                ops, file_handle, parent_handle, ownership,
+                failure(PublishStatus::write_failed, written.native_error(), offset));
+        case OperationState::succeeded:
+            if (written.bytes_written() == 0) {
+                return close_file_and_parent(ops, file_handle, parent_handle, ownership,
+                                             failure(PublishStatus::zero_write_progress,
+                                                     std::make_error_code(std::errc::io_error),
+                                                     offset));
+            }
+            if (written.bytes_written() > bytes.size() - offset) {
+                return close_file_and_parent(
+                    ops, file_handle, parent_handle, ownership,
+                    failure(PublishStatus::file_ops_contract_violation, protocol_error(), offset));
+            }
+            offset += written.bytes_written();
+            break;
+        default:
+            return close_file_and_parent(
+                ops, file_handle, parent_handle, ownership,
+                failure(PublishStatus::file_ops_contract_violation, protocol_error(), offset));
+        }
+    }
+
+    return finish_durable_file(ops, file_handle, parent_handle, ownership, offset);
 }
 
 #ifdef _WIN32
@@ -253,8 +420,28 @@ public:
     [[nodiscard]] OpenResult open_exclusive(NativeHandle parent_handle,
                                             const std::filesystem::path& leaf,
                                             const std::filesystem::path&) noexcept override {
+        return open_exclusive_at(parent_handle, leaf);
+    }
+
+    [[nodiscard]] OpenResult
+    open_exclusive_at(NativeHandle parent_handle,
+                      const std::filesystem::path& leaf) noexcept override {
         const int descriptor = ::openat(static_cast<int>(parent_handle), leaf.c_str(),
                                         O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (descriptor >= 0) {
+            return OpenResult::succeeded(static_cast<NativeHandle>(descriptor));
+        }
+        const int saved_errno = errno;
+        if (saved_errno == EINTR) {
+            return OpenResult::interrupted(posix_error(saved_errno));
+        }
+        return OpenResult::failed(posix_error(saved_errno));
+    }
+
+    [[nodiscard]] OpenResult open_existing_at(NativeHandle parent_handle,
+                                              const std::filesystem::path& leaf) noexcept override {
+        const int descriptor = ::openat(static_cast<int>(parent_handle), leaf.c_str(),
+                                        O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
         if (descriptor >= 0) {
             return OpenResult::succeeded(static_cast<NativeHandle>(descriptor));
         }
@@ -388,150 +575,97 @@ PublishResult publish_with_ops(const std::filesystem::path& path, std::span<cons
         break;
     }
 
+    return publish_to_open_parent(
+        parent_handle, bytes, ops, ParentHandleOwnership::owned,
+        [&]() noexcept { return ops.open_exclusive(parent_handle, frozen->leaf, frozen->file); });
+}
+
+PublishResult publish_at_with_ops(NativeHandle parent_handle, const std::filesystem::path& leaf,
+                                  std::span<const std::byte> bytes, FileOps& ops) noexcept {
+    if constexpr (sizeof(std::size_t) > sizeof(std::uint64_t)) {
+        if (bytes.size() > std::numeric_limits<std::uint64_t>::max()) {
+            return PublishResult(PublishStatus::input_too_large,
+                                 std::make_error_code(std::errc::value_too_large), 0);
+        }
+    }
+
+    try {
+        if (parent_handle == INVALID_NATIVE_HANDLE || invalid_relative_leaf(leaf)) {
+            return PublishResult(PublishStatus::invalid_path, invalid_argument_error(), 0);
+        }
+    } catch (const std::bad_alloc&) {
+        return PublishResult(PublishStatus::unexpected_failure,
+                             std::make_error_code(std::errc::not_enough_memory), 0);
+    } catch (const std::filesystem::filesystem_error& error) {
+        return PublishResult(PublishStatus::invalid_path, error.code(), 0);
+    } catch (...) {
+        return PublishResult(PublishStatus::unexpected_failure,
+                             std::make_error_code(std::errc::io_error), 0);
+    }
+
+    return publish_to_open_parent(
+        parent_handle, bytes, ops, ParentHandleOwnership::borrowed,
+        [&]() noexcept { return ops.open_exclusive_at(parent_handle, leaf); });
+}
+
+PublishResult confirm_durable_at_with_ops(NativeHandle parent_handle,
+                                          const std::filesystem::path& leaf,
+                                          FileOps& ops) noexcept {
+    try {
+        if (parent_handle == INVALID_NATIVE_HANDLE || invalid_relative_leaf(leaf)) {
+            return PublishResult(PublishStatus::invalid_path, invalid_argument_error(), 0);
+        }
+    } catch (const std::bad_alloc&) {
+        return PublishResult(PublishStatus::unexpected_failure,
+                             std::make_error_code(std::errc::not_enough_memory), 0);
+    } catch (const std::filesystem::filesystem_error& error) {
+        return PublishResult(PublishStatus::invalid_path, error.code(), 0);
+    } catch (...) {
+        return PublishResult(PublishStatus::unexpected_failure,
+                             std::make_error_code(std::errc::io_error), 0);
+    }
+
     NativeHandle file_handle = INVALID_NATIVE_HANDLE;
     for (;;) {
-        const OpenResult opened_file =
-            ops.open_exclusive(parent_handle, frozen->leaf, frozen->file);
+        const OpenResult opened_file = ops.open_existing_at(parent_handle, leaf);
         switch (opened_file.state()) {
         case OperationState::succeeded:
             if (opened_file.handle() == INVALID_NATIVE_HANDLE ||
                 opened_file.handle() == parent_handle) {
-                return close_parent_and_return(
-                    ops, parent_handle,
-                    PublishResult(PublishStatus::file_ops_contract_violation, protocol_error(), 0));
+                return PublishResult(PublishStatus::file_ops_contract_violation, protocol_error(),
+                                     0);
             }
             file_handle = opened_file.handle();
             break;
         case OperationState::interrupted:
             continue;
         case OperationState::failed:
-            return close_parent_and_return(
-                ops, parent_handle,
-                PublishResult(opened_file.native_error() == std::errc::file_exists
-                                  ? PublishStatus::already_exists
-                                  : PublishStatus::open_failed,
-                              opened_file.native_error(), 0));
+            return PublishResult(PublishStatus::open_failed, opened_file.native_error(), 0);
         default:
-            return close_parent_and_return(
-                ops, parent_handle,
-                PublishResult(PublishStatus::file_ops_contract_violation, protocol_error(), 0));
+            return PublishResult(PublishStatus::file_ops_contract_violation, protocol_error(), 0);
         }
         break;
     }
 
-    std::size_t offset = 0;
-    while (offset < bytes.size()) {
-        const WriteResult written = ops.write_some(file_handle, bytes.subspan(offset));
-        switch (written.state()) {
-        case OperationState::interrupted:
-            continue;
-        case OperationState::failed:
-            return close_file_and_parent(
-                ops, file_handle, parent_handle,
-                failure(PublishStatus::write_failed, written.native_error(), offset));
-        case OperationState::succeeded:
-            if (written.bytes_written() == 0) {
-                return close_file_and_parent(ops, file_handle, parent_handle,
-                                             failure(PublishStatus::zero_write_progress,
-                                                     std::make_error_code(std::errc::io_error),
-                                                     offset));
-            }
-            if (written.bytes_written() > bytes.size() - offset) {
-                return close_file_and_parent(
-                    ops, file_handle, parent_handle,
-                    failure(PublishStatus::file_ops_contract_violation, protocol_error(), offset));
-            }
-            offset += written.bytes_written();
-            break;
-        default:
-            return close_file_and_parent(
-                ops, file_handle, parent_handle,
-                failure(PublishStatus::file_ops_contract_violation, protocol_error(), offset));
-        }
-    }
-
-    for (;;) {
-        const OperationResult synced = ops.sync_file(file_handle);
-        switch (synced.state()) {
-        case OperationState::succeeded:
-            break;
-        case OperationState::interrupted:
-            continue;
-        case OperationState::failed:
-            return close_file_and_parent(
-                ops, file_handle, parent_handle,
-                failure(PublishStatus::file_sync_failed, synced.native_error(), offset));
-        default:
-            return close_file_and_parent(
-                ops, file_handle, parent_handle,
-                failure(PublishStatus::file_ops_contract_violation, protocol_error(), offset));
-        }
-        break;
-    }
-
-    for (;;) {
-        const OperationResult synced_parent = ops.sync_parent_directory(parent_handle);
-        switch (synced_parent.state()) {
-        case OperationState::succeeded:
-            break;
-        case OperationState::interrupted:
-            continue;
-        case OperationState::failed:
-            return close_file_and_parent(ops, file_handle, parent_handle,
-                                         failure(PublishStatus::parent_directory_sync_failed,
-                                                 synced_parent.native_error(), offset));
-        default:
-            return close_file_and_parent(
-                ops, file_handle, parent_handle,
-                failure(PublishStatus::file_ops_contract_violation, protocol_error(), offset));
-        }
-        break;
-    }
-
-    // Keep both handles open through a final file barrier. The first file
-    // barrier establishes content durability, the parent barrier publishes the
-    // directory entry, and this second file barrier orders both before close.
-    for (;;) {
-        const OperationResult synced = ops.sync_file(file_handle);
-        switch (synced.state()) {
-        case OperationState::succeeded:
-            break;
-        case OperationState::interrupted:
-            continue;
-        case OperationState::failed:
-            return close_file_and_parent(
-                ops, file_handle, parent_handle,
-                failure(PublishStatus::file_sync_failed, synced.native_error(), offset));
-        default:
-            return close_file_and_parent(
-                ops, file_handle, parent_handle,
-                failure(PublishStatus::file_ops_contract_violation, protocol_error(), offset));
-        }
-        break;
-    }
-
-    const OperationResult closed_file = ops.close_file(file_handle);
-    switch (closed_file.state()) {
-    case OperationState::succeeded:
-        break;
-    case OperationState::interrupted:
-    case OperationState::failed:
-        return close_parent_and_return(
-            ops, parent_handle,
-            failure(PublishStatus::close_failed, close_error_or_protocol(closed_file), offset));
-    default:
-        return close_parent_and_return(
-            ops, parent_handle,
-            failure(PublishStatus::file_ops_contract_violation, protocol_error(), offset));
-    }
-
-    return close_parent_and_return(ops, parent_handle, failure(PublishStatus::durable, {}, offset));
+    return finish_durable_file(ops, file_handle, parent_handle, ParentHandleOwnership::borrowed, 0);
 }
 
 PublishResult publish(const std::filesystem::path& path,
                       std::span<const std::byte> bytes) noexcept {
     ProductionFileOps ops;
     return publish_with_ops(path, bytes, ops);
+}
+
+PublishResult publish_at(NativeHandle parent_handle, const std::filesystem::path& leaf,
+                         std::span<const std::byte> bytes) noexcept {
+    ProductionFileOps ops;
+    return publish_at_with_ops(parent_handle, leaf, bytes, ops);
+}
+
+PublishResult confirm_durable_at(NativeHandle parent_handle,
+                                 const std::filesystem::path& leaf) noexcept {
+    ProductionFileOps ops;
+    return confirm_durable_at_with_ops(parent_handle, leaf, ops);
 }
 
 } // namespace gnfs::util::durable_immutable_file

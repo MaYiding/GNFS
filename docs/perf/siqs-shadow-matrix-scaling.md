@@ -384,27 +384,36 @@ header and records again before the caller invokes the existing RSS gate.
 
 The move-only capabilities prevent accidental reuse within one replay result;
 they do not prove filesystem durability or serialize two callers that replay
-the same stale snapshot. The durable-record receipt is therefore intentionally
-not constructible yet. The deployment policy now binds one trusted-base ID,
-store ID, and canonical lowercase ASCII relative locator, which flow through
-the policy, plan, header, and record digests. Before any filesystem I/O, the
-native store validates the approved policy and selects the unique matching row
-from a production-owned logical registry. The row owns the absolute trusted
-base path, expected native owner, store ID, and locator. It is part of the
-deployment, not a caller-injected callback: the public API accepts no path,
-resolver, base handle, or registry installer. The POSIX loader component-walks
-that owned path for each session, obtains a held base descriptor, opens exactly
-the provisioned locator without following links, and verifies the mapping's
-`store_id` before it scans the root.
+the same stale snapshot. The native store now constructs the durable-record
+receipt only after it publishes and rereads the exact start record through its
+held root. The receipt is consumed immediately to create a private launch
+permit. Neither capability crosses the public store boundary. The deployment
+policy binds one trusted-base ID, store ID, and canonical lowercase ASCII
+relative locator, which flow through the policy, plan, header, and record
+digests. Before any filesystem I/O, the native store validates the approved
+policy and selects the unique matching row from a production-owned logical
+registry. The row owns the absolute trusted base path, expected native owner,
+store ID, and locator. It is part of the deployment, not a caller-injected
+callback: the public API accepts no path, resolver, base handle, or registry
+installer. The POSIX loader component-walks that owned path for each session,
+obtains a held base descriptor, opens exactly the provisioned locator without
+following links, and verifies the mapping's `store_id` before it scans the
+root.
 
-The current store holds the root's runtime directory-object identity and an
-exclusive cross-process session lease beginning before replay. A future writer
-must retain that lease through start, child execution, and commit or taint,
-derive the one allowed filename for each sequence from the held root, and issue
-a receipt only after that exact record reaches the storage boundary. An API
-that accepts an arbitrary output path or a caller-supplied successful I/O
-backend is not a receipt issuer because either would permit duplicate launches
-from one stale replay.
+The store holds the root's runtime directory-object identity and an exclusive
+cross-process session lease beginning before replay. Consuming
+`begin_next_slot()` derives the only allowed header and record leaves, performs
+exclusive immutable publication relative to the held root, refreshes the
+strict layout and replay, and returns a move-only active-slot transaction. The
+transaction owns both the lease and the private permit, but it intentionally
+exposes no launch operation. Before publishing a start from an existing
+header-only journal, the store re-establishes the header file and directory
+durability barriers through the held root. This prevents a complete header
+left by an earlier failed sync from being treated as durable merely because it
+can be decoded after reopen. A later runner must retain the transaction through
+child execution and commit or taint. An API that accepts an arbitrary output
+path or a caller-supplied successful I/O backend is not a receipt issuer because
+either would permit duplicate launches from one stale replay.
 
 `include/gnfs/siqs/shadow_proof_rss_campaign_journal_codec.hpp` defines the
 canonical storage representation without opening a file. Headers are exactly
@@ -451,13 +460,28 @@ size, timestamps, bytes, root identity, and the held lock binding must remain
 stable. Only then does the loader invoke the pure layout inspector and replay
 state machine. Unknown leaves, link substitutions, gaps, malformed wire data,
 concurrent leases, and snapshot changes fail closed with typed diagnostics.
+The store tracks directory authority identity separately from a full namespace
+generation fingerprint. Every authority-bearing action checks the latter
+before publication, including on filesystems where adding a regular leaf does
+not change the directory link count. After an owned publication, the store
+commits a new generation only after two stable snapshots and exact replay
+validation succeed. APFS link-count changes are rebased only inside that
+verified transition.
 Windows builds compile an explicit
 `platform_unavailable` implementation until a held `RootDirectory` HANDLE
 implementation is available; they never fall back to caller-controlled paths.
 
-The session exposes only an authority-free replay view. It cannot publish a
-header or record, issue a launch permit, or start a child process. Durable
-publication and private receipt issuance remain the next storage slice.
+The session exposes an authority-free replay view and one rvalue-qualified
+`begin_next_slot()` transition. That transition consumes the session, publishes
+an absent header when required, publishes exactly one pending start, and keeps
+the lease and private permit inside the returned active-slot transaction. A
+moved-from session, a terminal replay action, an existing target leaf, or any
+root or lock drift returns a typed failure with no authority. The active slot
+cannot start a child, publish artifacts, commit a sample, or release a raw
+receipt or permit. If a later stage fails after an earlier immutable leaf is
+already durable, the diagnostic separately retains the last durable object,
+record sequence, and byte count. A start conflict or allocation failure cannot
+therefore erase the fact that header publication already changed the journal.
 
 This boundary assumes a trusted local filesystem and treats every process with
 the expected UID as the same principal. `flock` is advisory, so it cannot
@@ -469,15 +493,19 @@ using its authority; the current session view deliberately carries no such
 action authority.
 
 `include/gnfs/util/durable_immutable_file.hpp` and its compiled implementation
-provide the lower publication boundary. The publisher opens and holds the
-parent directory before creating a leaf exclusively, completes short writes,
-syncs file and directory metadata, closes both handles exactly once, and never
-deletes, truncates, renames, or repairs a failed artifact. POSIX creation uses
-`openat()` relative to the held parent descriptor. macOS uses full-sync barriers
-for the file and parent directory; Windows uses write-through file creation and
-requires an actual parent-directory `FlushFileBuffers` success. Unsupported
-filesystems fail closed. Injectable file operations test the state machine, but
-cannot construct a journal durable-record receipt.
+provide the lower publication boundary. The path-based publisher opens and
+holds the parent directory before creating a leaf exclusively. The held-parent
+variant accepts only one relative leaf, never reopens or closes the borrowed
+parent handle, and syncs that exact handle as the directory boundary. Both
+variants complete short writes, sync file and directory metadata, close owned
+handles exactly once, and never delete, truncate, rename, or repair a failed
+artifact. POSIX creation uses `openat()` relative to the held parent descriptor.
+macOS uses full-sync barriers for the file and parent directory. The Windows
+held-parent variant fails closed until a true handle-relative create operation
+is available. A held-parent confirmation operation can reopen one existing
+immutable leaf without truncation and repeat the file-directory-file barrier
+sequence. Injectable file operations test both state machines, but cannot
+construct a journal durable-record receipt.
 
 Artifact seals in the pure journal remain stable accidental-corruption
 identities only. They do not parse or validate child stdout/stderr. Strict
@@ -537,19 +565,19 @@ command, sample RSS, or call `factor()`. The approved-policy execution path
 around the production holdout probe remains pending. The pure journal contract
 still performs no file I/O.
 
-The native leased loader now supplies the header-bound read side, but it
-intentionally does not yet combine the canonical codec and durable
-immutable-file primitive into a receipt issuer. A test-private portable
+The native leased store now combines the canonical codec and held-root durable
+publisher for header and start records. It validates the resulting strict
+snapshot before privately issuing the launch permit, then traps the permit
+inside a lease-owning active-slot transaction. A test-private portable
 transport can capture both streams from one synthetic child, but it is not
-connected to the sealed probe or the authority-free join. Durable artifact
-publication, same-child capture-to-join integration, an approved per-platform
-policy, and the serial campaign runner remain pending. Those authority-bearing
-components must validate the approved policy, actual runtime facts, and
-candidate revision before loading the sealed fixture table or constructing the
-first production command. The future store must derive the unique start-record
-path from its held root and durably publish the start before it requests a
-launch permit. A campaign interrupted after that start but before its sample
-commits remains tainted and cannot be retried in place.
+connected to that transaction, the sealed probe, or the authority-free join.
+Durable artifact publication, same-child capture-to-join integration, commit
+and taint publication, an approved per-platform policy, and the serial campaign
+runner remain pending. Those authority-bearing components must validate the
+approved policy, actual runtime facts, and candidate revision before loading
+the sealed fixture table or constructing the first production command. A
+campaign interrupted after its durable start but before its sample commits
+remains tainted and cannot be retried in place.
 
 `tests/test_siqs_runtime_facts.cpp`,
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
@@ -573,14 +601,17 @@ calls `factor()`, samples RSS, publishes an artifact, or opens the holdout.
 It has no sealed-fixture, policy, journal, receipt, or launch-permit interface.
 
 `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` opens only
-temporary synthetic stores. It exercises native object identity and leases but
-does not open a sealed holdout, run a probe, issue a launch permit, or collect
-campaign evidence.
+temporary synthetic stores. It exercises native object identity, leases,
+held-root header/start publication, strict reread, and private permit issuance.
+The permit remains inside a non-launching active-slot transaction; the test
+does not open a sealed holdout, run a probe, or collect campaign evidence.
 
 `tests/test_durable_immutable_file.cpp` uses temporary synthetic bytes to cover
 exclusive-create contention, partial writes, interrupted calls, zero progress,
 file and parent sync failures, close failures, existing leaves, and symlink
-leaves. It never opens a holdout or issues a launch permit.
+leaves. It also verifies that held-parent publication neither reopens nor closes
+the borrowed directory handle. It never opens a holdout or issues a launch
+permit.
 
 ### Pure V2 Prefer Boundary
 
@@ -797,8 +828,9 @@ Before promotion it must provide:
 - [x] Test-private shell-free child transport with independent stdout/stderr
   caps, a monotonic deadline, process-tree cleanup, exact environment transfer,
   and POSIX and Windows implementations sharing one synthetic contract suite.
-- [ ] Durable header/start publication and private receipt issuance from the
-  held root, with root and lock revalidation at every authority-bearing action.
+- [x] Durable header/start publication and private receipt issuance from the
+  held root, with root and lock revalidation at every authority-bearing action
+  and a lease-bound active-slot transaction that exposes no raw permit.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved
   headroom, OS, architecture, RSS backend, resolved production sieve workers,
   candidate revision, approval identity, sealed corpus digest, trusted journal

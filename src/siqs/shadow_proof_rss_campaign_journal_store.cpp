@@ -9,6 +9,77 @@ namespace gnfs::siqs {
 
 namespace detail = shadow_proof_rss_campaign_journal_store_detail;
 
+SIQSShadowProofRssCampaignJournalActiveSlot::SIQSShadowProofRssCampaignJournalActiveSlot(
+    std::unique_ptr<detail::SessionCore> core, SIQSShadowProofRssLaunchPermit&& permit) noexcept
+    : core_(std::move(core)), permit_(std::move(permit)) {}
+
+SIQSShadowProofRssCampaignJournalActiveSlot::~SIQSShadowProofRssCampaignJournalActiveSlot() =
+    default;
+
+SIQSShadowProofRssCampaignJournalActiveSlot::SIQSShadowProofRssCampaignJournalActiveSlot(
+    SIQSShadowProofRssCampaignJournalActiveSlot&&) noexcept = default;
+
+SIQSShadowProofRssCampaignJournalActiveSlot& SIQSShadowProofRssCampaignJournalActiveSlot::operator=(
+    SIQSShadowProofRssCampaignJournalActiveSlot&&) noexcept = default;
+
+bool SIQSShadowProofRssCampaignJournalActiveSlot::active() const noexcept {
+    return core_ != nullptr && permit_.has_value() && permit_->active();
+}
+
+uint32_t SIQSShadowProofRssCampaignJournalActiveSlot::slot_number() const noexcept {
+    return active() ? permit_->durable_start_record().slot_number : 0;
+}
+
+SIQSShadowProofRssCampaignJournalSessionView
+SIQSShadowProofRssCampaignJournalActiveSlot::view() const noexcept {
+    return core_ != nullptr ? core_->view() : SIQSShadowProofRssCampaignJournalSessionView{};
+}
+
+SIQSShadowProofRssCampaignJournalBeginSlotResult::SIQSShadowProofRssCampaignJournalBeginSlotResult(
+    SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic) noexcept
+    : diagnostic_(std::move(diagnostic)) {}
+
+SIQSShadowProofRssCampaignJournalBeginSlotResult::SIQSShadowProofRssCampaignJournalBeginSlotResult(
+    SIQSShadowProofRssCampaignJournalActiveSlot&& active_slot) noexcept
+    : active_slot_(std::move(active_slot)) {}
+
+SIQSShadowProofRssCampaignJournalBeginSlotResult::
+    ~SIQSShadowProofRssCampaignJournalBeginSlotResult() = default;
+
+SIQSShadowProofRssCampaignJournalBeginSlotResult::SIQSShadowProofRssCampaignJournalBeginSlotResult(
+    SIQSShadowProofRssCampaignJournalBeginSlotResult&& other) noexcept
+    : active_slot_(std::move(other.active_slot_)), diagnostic_(std::move(other.diagnostic_)) {
+    other.active_slot_.reset();
+}
+
+SIQSShadowProofRssCampaignJournalBeginSlotResult&
+SIQSShadowProofRssCampaignJournalBeginSlotResult::operator=(
+    SIQSShadowProofRssCampaignJournalBeginSlotResult&& other) noexcept {
+    if (this != &other) {
+        active_slot_ = std::move(other.active_slot_);
+        diagnostic_ = std::move(other.diagnostic_);
+        other.active_slot_.reset();
+    }
+    return *this;
+}
+
+SIQSShadowProofRssCampaignJournalBeginSlotResult::operator bool() const noexcept {
+    return active_slot_.has_value() && active_slot_->active() &&
+           diagnostic_.error == SIQSShadowProofRssCampaignJournalStoreError::none;
+}
+
+const SIQSShadowProofRssCampaignJournalStoreDiagnostic&
+SIQSShadowProofRssCampaignJournalBeginSlotResult::diagnostic() const noexcept {
+    return diagnostic_;
+}
+
+std::optional<SIQSShadowProofRssCampaignJournalActiveSlot>
+SIQSShadowProofRssCampaignJournalBeginSlotResult::take_active_slot() && noexcept {
+    auto active_slot = std::move(active_slot_);
+    active_slot_.reset();
+    return active_slot;
+}
+
 SIQSShadowProofRssCampaignJournalSession::SIQSShadowProofRssCampaignJournalSession(
     std::unique_ptr<detail::SessionCore> core) noexcept
     : core_(std::move(core)) {}
@@ -28,6 +99,29 @@ bool SIQSShadowProofRssCampaignJournalSession::active() const noexcept {
 SIQSShadowProofRssCampaignJournalSessionView
 SIQSShadowProofRssCampaignJournalSession::view() const noexcept {
     return core_ != nullptr ? core_->view() : SIQSShadowProofRssCampaignJournalSessionView{};
+}
+
+SIQSShadowProofRssCampaignJournalBeginSlotResult
+SIQSShadowProofRssCampaignJournalSession::begin_next_slot() && noexcept {
+    if (core_ == nullptr) {
+        SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic;
+        diagnostic.error = SIQSShadowProofRssCampaignJournalStoreError::session_inactive;
+        return SIQSShadowProofRssCampaignJournalBeginSlotResult(std::move(diagnostic));
+    }
+
+    auto core = std::move(core_);
+    detail::SessionBeginSlotResult result = core->begin_next_slot();
+    if (!result) {
+        if (result.diagnostic.error == SIQSShadowProofRssCampaignJournalStoreError::none) {
+            result.diagnostic.error = SIQSShadowProofRssCampaignJournalStoreError::receipt_rejected;
+        }
+        return SIQSShadowProofRssCampaignJournalBeginSlotResult(std::move(result.diagnostic));
+    }
+
+    auto permit = std::move(*result.permit);
+    result.permit.reset();
+    return SIQSShadowProofRssCampaignJournalBeginSlotResult(
+        SIQSShadowProofRssCampaignJournalActiveSlot(std::move(core), std::move(permit)));
 }
 
 SIQSShadowProofRssCampaignJournalStoreOpenResult::SIQSShadowProofRssCampaignJournalStoreOpenResult(

@@ -4,6 +4,7 @@
 /// @brief Leased native-store boundary for an approved SIQS RSS campaign.
 
 #include <gnfs/siqs/shadow_proof_rss_campaign_journal_layout.hpp>
+#include <gnfs/util/durable_immutable_file.hpp>
 
 #include <cstdint>
 #include <memory>
@@ -39,6 +40,12 @@ enum class SIQSShadowProofRssCampaignJournalStoreError : uint8_t {
     snapshot_changed,
     layout_invalid,
     replay_rejected,
+    session_inactive,
+    session_action_invalid,
+    journal_encode_failed,
+    publication_conflict,
+    publication_failed,
+    receipt_rejected,
     resource_exhausted,
     unexpected_failure,
 };
@@ -96,6 +103,18 @@ enum class SIQSShadowProofRssCampaignJournalStoreError : uint8_t {
         return "layout_invalid";
     case SIQSShadowProofRssCampaignJournalStoreError::replay_rejected:
         return "replay_rejected";
+    case SIQSShadowProofRssCampaignJournalStoreError::session_inactive:
+        return "session_inactive";
+    case SIQSShadowProofRssCampaignJournalStoreError::session_action_invalid:
+        return "session_action_invalid";
+    case SIQSShadowProofRssCampaignJournalStoreError::journal_encode_failed:
+        return "journal_encode_failed";
+    case SIQSShadowProofRssCampaignJournalStoreError::publication_conflict:
+        return "publication_conflict";
+    case SIQSShadowProofRssCampaignJournalStoreError::publication_failed:
+        return "publication_failed";
+    case SIQSShadowProofRssCampaignJournalStoreError::receipt_rejected:
+        return "receipt_rejected";
     case SIQSShadowProofRssCampaignJournalStoreError::resource_exhausted:
         return "resource_exhausted";
     case SIQSShadowProofRssCampaignJournalStoreError::unexpected_failure:
@@ -147,6 +166,12 @@ struct SIQSShadowProofRssCampaignJournalStoreDiagnostic final {
     SIQSShadowProofRssCampaignJournalLayoutDiagnostic layout;
     std::optional<SIQSShadowProofRssJournalReason> journal_reason;
     uint32_t record_sequence = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE;
+    std::optional<util::durable_immutable_file::PublishStatus> publication_status;
+    uint64_t publication_bytes_written = 0;
+    std::optional<SIQSShadowProofRssCampaignJournalStoreObject> last_durable_publication_object;
+    uint32_t last_durable_publication_record_sequence =
+        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE;
+    uint64_t last_durable_publication_bytes_written = 0;
 };
 
 /// Authority-free projection of the replay state held by one active lease.
@@ -168,6 +193,74 @@ class SessionCore;
 class SessionFactory;
 } // namespace shadow_proof_rss_campaign_journal_store_detail
 
+class SIQSShadowProofRssCampaignJournalSession;
+
+/// Move-only in-flight slot authority. It owns both the native session lease
+/// and the launch permit, so neither capability can escape the transaction.
+/// The current storage slice intentionally exposes no launch operation.
+class SIQSShadowProofRssCampaignJournalActiveSlot final {
+public:
+    SIQSShadowProofRssCampaignJournalActiveSlot() = delete;
+    ~SIQSShadowProofRssCampaignJournalActiveSlot();
+
+    SIQSShadowProofRssCampaignJournalActiveSlot(
+        SIQSShadowProofRssCampaignJournalActiveSlot&&) noexcept;
+    SIQSShadowProofRssCampaignJournalActiveSlot&
+    operator=(SIQSShadowProofRssCampaignJournalActiveSlot&&) noexcept;
+
+    SIQSShadowProofRssCampaignJournalActiveSlot(
+        const SIQSShadowProofRssCampaignJournalActiveSlot&) = delete;
+    SIQSShadowProofRssCampaignJournalActiveSlot&
+    operator=(const SIQSShadowProofRssCampaignJournalActiveSlot&) = delete;
+
+    [[nodiscard]] bool active() const noexcept;
+    [[nodiscard]] uint32_t slot_number() const noexcept;
+    [[nodiscard]] SIQSShadowProofRssCampaignJournalSessionView view() const noexcept;
+
+private:
+    SIQSShadowProofRssCampaignJournalActiveSlot(
+        std::unique_ptr<shadow_proof_rss_campaign_journal_store_detail::SessionCore>,
+        SIQSShadowProofRssLaunchPermit&&) noexcept;
+
+    std::unique_ptr<shadow_proof_rss_campaign_journal_store_detail::SessionCore> core_;
+    std::optional<SIQSShadowProofRssLaunchPermit> permit_;
+
+    friend class SIQSShadowProofRssCampaignJournalSession;
+};
+
+class SIQSShadowProofRssCampaignJournalBeginSlotResult final {
+public:
+    SIQSShadowProofRssCampaignJournalBeginSlotResult() = delete;
+    ~SIQSShadowProofRssCampaignJournalBeginSlotResult();
+
+    SIQSShadowProofRssCampaignJournalBeginSlotResult(
+        SIQSShadowProofRssCampaignJournalBeginSlotResult&&) noexcept;
+    SIQSShadowProofRssCampaignJournalBeginSlotResult&
+    operator=(SIQSShadowProofRssCampaignJournalBeginSlotResult&&) noexcept;
+
+    SIQSShadowProofRssCampaignJournalBeginSlotResult(
+        const SIQSShadowProofRssCampaignJournalBeginSlotResult&) = delete;
+    SIQSShadowProofRssCampaignJournalBeginSlotResult&
+    operator=(const SIQSShadowProofRssCampaignJournalBeginSlotResult&) = delete;
+
+    [[nodiscard]] explicit operator bool() const noexcept;
+    [[nodiscard]] const SIQSShadowProofRssCampaignJournalStoreDiagnostic&
+    diagnostic() const noexcept;
+    [[nodiscard]] std::optional<SIQSShadowProofRssCampaignJournalActiveSlot>
+    take_active_slot() && noexcept;
+
+private:
+    explicit SIQSShadowProofRssCampaignJournalBeginSlotResult(
+        SIQSShadowProofRssCampaignJournalStoreDiagnostic) noexcept;
+    explicit SIQSShadowProofRssCampaignJournalBeginSlotResult(
+        SIQSShadowProofRssCampaignJournalActiveSlot&&) noexcept;
+
+    std::optional<SIQSShadowProofRssCampaignJournalActiveSlot> active_slot_;
+    SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic_;
+
+    friend class SIQSShadowProofRssCampaignJournalSession;
+};
+
 /// Move-only lifetime token for the native root and its cross-process lease.
 class SIQSShadowProofRssCampaignJournalSession final {
 public:
@@ -185,6 +278,11 @@ public:
 
     [[nodiscard]] bool active() const noexcept;
     [[nodiscard]] SIQSShadowProofRssCampaignJournalSessionView view() const noexcept;
+
+    /// Consume this session, durably publish any pending header and the exact
+    /// next slot-start record, then return one lease-bound active slot. The
+    /// raw receipt and launch permit never cross the public store boundary.
+    [[nodiscard]] SIQSShadowProofRssCampaignJournalBeginSlotResult begin_next_slot() && noexcept;
 
 private:
     explicit SIQSShadowProofRssCampaignJournalSession(

@@ -15,6 +15,10 @@
 
 namespace gnfs::siqs {
 
+namespace shadow_proof_rss_campaign_journal_store_detail {
+class SessionCore;
+}
+
 inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION = 1;
 
 enum class SIQSShadowProofRssJournalPresence : uint8_t {
@@ -204,6 +208,7 @@ private:
     acknowledge_siqs_shadow_proof_rss_durable_slot_start(
         class SIQSShadowProofRssPreparedSlotStart&&,
         SIQSShadowProofRssDurableRecordReceipt&&) noexcept;
+    friend class shadow_proof_rss_campaign_journal_store_detail::SessionCore;
 };
 
 struct SIQSShadowProofRssCampaignJournalResume;

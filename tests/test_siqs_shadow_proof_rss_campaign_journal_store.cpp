@@ -17,7 +17,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -38,6 +40,7 @@ namespace {
 
 using namespace gnfs::siqs;
 using gnfs::util::ProcessMemoryBackend;
+namespace durable = gnfs::util::durable_immutable_file;
 namespace store_detail = gnfs::siqs::shadow_proof_rss_campaign_journal_store_detail;
 
 using DeploymentEntry = store_detail::DeploymentEntry;
@@ -61,6 +64,21 @@ static_assert(!std::is_copy_assignable_v<SIQSShadowProofRssCampaignJournalStoreO
 static_assert(
     std::is_nothrow_move_constructible_v<SIQSShadowProofRssCampaignJournalStoreOpenResult>);
 static_assert(std::is_nothrow_move_assignable_v<SIQSShadowProofRssCampaignJournalStoreOpenResult>);
+static_assert(!std::is_default_constructible_v<SIQSShadowProofRssCampaignJournalActiveSlot>);
+static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssCampaignJournalActiveSlot>);
+static_assert(!std::is_copy_assignable_v<SIQSShadowProofRssCampaignJournalActiveSlot>);
+static_assert(std::is_nothrow_move_constructible_v<SIQSShadowProofRssCampaignJournalActiveSlot>);
+static_assert(std::is_nothrow_move_assignable_v<SIQSShadowProofRssCampaignJournalActiveSlot>);
+static_assert(!std::is_default_constructible_v<SIQSShadowProofRssCampaignJournalBeginSlotResult>);
+static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssCampaignJournalBeginSlotResult>);
+static_assert(!std::is_copy_assignable_v<SIQSShadowProofRssCampaignJournalBeginSlotResult>);
+static_assert(
+    std::is_nothrow_move_constructible_v<SIQSShadowProofRssCampaignJournalBeginSlotResult>);
+static_assert(std::is_nothrow_move_assignable_v<SIQSShadowProofRssCampaignJournalBeginSlotResult>);
+using BeginSlotFunction = SIQSShadowProofRssCampaignJournalBeginSlotResult (
+    SIQSShadowProofRssCampaignJournalSession::*)() && noexcept;
+static_assert(std::same_as<decltype(&SIQSShadowProofRssCampaignJournalSession::begin_next_slot),
+                           BeginSlotFunction>);
 
 [[noreturn]] void fail_check(const char* expression, const char* file, int line) {
     throw std::runtime_error(std::string(file) + ":" + std::to_string(line) +
@@ -265,51 +283,60 @@ void test_public_authority_and_preflight_boundaries() {
 
 void test_diagnostic_name_contracts() {
     constexpr std::array known_errors{
-        StoreError::none,
-        StoreError::preflight_rejected,
-        StoreError::platform_unavailable,
-        StoreError::binding_not_registered,
-        StoreError::binding_ambiguous,
-        StoreError::registry_binding_mismatch,
-        StoreError::base_open_failed,
-        StoreError::base_invalid,
-        StoreError::root_open_failed,
-        StoreError::root_invalid,
-        StoreError::lock_open_failed,
-        StoreError::lock_invalid,
-        StoreError::lock_busy,
-        StoreError::lock_failed,
-        StoreError::directory_open_failed,
-        StoreError::directory_read_failed,
-        StoreError::entry_metadata_failed,
-        StoreError::entry_trust_invalid,
-        StoreError::entry_open_failed,
-        StoreError::entry_read_failed,
-        StoreError::entry_identity_mismatch,
-        StoreError::entry_changed_during_read,
-        StoreError::snapshot_changed,
-        StoreError::layout_invalid,
-        StoreError::replay_rejected,
-        StoreError::resource_exhausted,
-        StoreError::unexpected_failure,
+        std::pair{StoreError::none, std::string_view{"none"}},
+        std::pair{StoreError::preflight_rejected, std::string_view{"preflight_rejected"}},
+        std::pair{StoreError::platform_unavailable, std::string_view{"platform_unavailable"}},
+        std::pair{StoreError::binding_not_registered, std::string_view{"binding_not_registered"}},
+        std::pair{StoreError::binding_ambiguous, std::string_view{"binding_ambiguous"}},
+        std::pair{StoreError::registry_binding_mismatch,
+                  std::string_view{"registry_binding_mismatch"}},
+        std::pair{StoreError::base_open_failed, std::string_view{"base_open_failed"}},
+        std::pair{StoreError::base_invalid, std::string_view{"base_invalid"}},
+        std::pair{StoreError::root_open_failed, std::string_view{"root_open_failed"}},
+        std::pair{StoreError::root_invalid, std::string_view{"root_invalid"}},
+        std::pair{StoreError::lock_open_failed, std::string_view{"lock_open_failed"}},
+        std::pair{StoreError::lock_invalid, std::string_view{"lock_invalid"}},
+        std::pair{StoreError::lock_busy, std::string_view{"lock_busy"}},
+        std::pair{StoreError::lock_failed, std::string_view{"lock_failed"}},
+        std::pair{StoreError::directory_open_failed, std::string_view{"directory_open_failed"}},
+        std::pair{StoreError::directory_read_failed, std::string_view{"directory_read_failed"}},
+        std::pair{StoreError::entry_metadata_failed, std::string_view{"entry_metadata_failed"}},
+        std::pair{StoreError::entry_trust_invalid, std::string_view{"entry_trust_invalid"}},
+        std::pair{StoreError::entry_open_failed, std::string_view{"entry_open_failed"}},
+        std::pair{StoreError::entry_read_failed, std::string_view{"entry_read_failed"}},
+        std::pair{StoreError::entry_identity_mismatch, std::string_view{"entry_identity_mismatch"}},
+        std::pair{StoreError::entry_changed_during_read,
+                  std::string_view{"entry_changed_during_read"}},
+        std::pair{StoreError::snapshot_changed, std::string_view{"snapshot_changed"}},
+        std::pair{StoreError::layout_invalid, std::string_view{"layout_invalid"}},
+        std::pair{StoreError::replay_rejected, std::string_view{"replay_rejected"}},
+        std::pair{StoreError::session_inactive, std::string_view{"session_inactive"}},
+        std::pair{StoreError::session_action_invalid, std::string_view{"session_action_invalid"}},
+        std::pair{StoreError::journal_encode_failed, std::string_view{"journal_encode_failed"}},
+        std::pair{StoreError::publication_conflict, std::string_view{"publication_conflict"}},
+        std::pair{StoreError::publication_failed, std::string_view{"publication_failed"}},
+        std::pair{StoreError::receipt_rejected, std::string_view{"receipt_rejected"}},
+        std::pair{StoreError::resource_exhausted, std::string_view{"resource_exhausted"}},
+        std::pair{StoreError::unexpected_failure, std::string_view{"unexpected_failure"}},
     };
-    for (const auto error : known_errors) {
-        const auto name = siqs_shadow_proof_rss_campaign_journal_store_error_name(error);
-        CHECK(!name.empty());
-        CHECK(name != "unknown");
+    for (const auto& [error, expected_name] : known_errors) {
+        CHECK(siqs_shadow_proof_rss_campaign_journal_store_error_name(error) == expected_name);
     }
     CHECK(siqs_shadow_proof_rss_campaign_journal_store_error_name(
               static_cast<StoreError>(UINT8_C(255))) == "unknown");
 
     constexpr std::array known_objects{
-        StoreObject::none,           StoreObject::deployment_registry, StoreObject::trusted_base,
-        StoreObject::store_root,     StoreObject::session_lock,        StoreObject::directory,
-        StoreObject::journal_header, StoreObject::journal_record,
+        std::pair{StoreObject::none, std::string_view{"none"}},
+        std::pair{StoreObject::deployment_registry, std::string_view{"deployment_registry"}},
+        std::pair{StoreObject::trusted_base, std::string_view{"trusted_base"}},
+        std::pair{StoreObject::store_root, std::string_view{"store_root"}},
+        std::pair{StoreObject::session_lock, std::string_view{"session_lock"}},
+        std::pair{StoreObject::directory, std::string_view{"directory"}},
+        std::pair{StoreObject::journal_header, std::string_view{"journal_header"}},
+        std::pair{StoreObject::journal_record, std::string_view{"journal_record"}},
     };
-    for (const auto object : known_objects) {
-        const auto name = siqs_shadow_proof_rss_campaign_journal_store_object_name(object);
-        CHECK(!name.empty());
-        CHECK(name != "unknown");
+    for (const auto& [object, expected_name] : known_objects) {
+        CHECK(siqs_shadow_proof_rss_campaign_journal_store_object_name(object) == expected_name);
     }
     CHECK(siqs_shadow_proof_rss_campaign_journal_store_object_name(
               static_cast<StoreObject>(UINT8_C(255))) == "unknown");
@@ -386,6 +413,15 @@ public:
 
     void write_base_leaf(std::string_view leaf, std::span<const std::byte> bytes) const {
         write_file(base_leaf(leaf), bytes);
+    }
+
+    [[nodiscard]] std::vector<std::byte> read_store_leaf(std::string_view leaf) const {
+        std::ifstream stream(store_leaf(leaf), std::ios::binary);
+        std::vector<std::byte> bytes;
+        for (std::istreambuf_iterator<char> it(stream), end; it != end; ++it) {
+            bytes.push_back(static_cast<std::byte>(static_cast<unsigned char>(*it)));
+        }
+        return bytes;
     }
 
 private:
@@ -465,6 +501,52 @@ void write_record(const TempStore& fixture, uint32_t leaf_sequence,
     const auto encoded = encode_siqs_shadow_proof_rss_campaign_journal_record(record);
     CHECK(encoded.bytes.has_value());
     fixture.write_store_leaf(leaf->view(), byte_span(*encoded.bytes));
+}
+
+void expect_private_regular_leaf(const std::filesystem::path& path, std::size_t expected_size) {
+    struct stat metadata{};
+    CHECK(::lstat(path.c_str(), &metadata) == 0);
+    CHECK(S_ISREG(metadata.st_mode));
+    CHECK(static_cast<uint64_t>(metadata.st_uid) == static_cast<uint64_t>(::geteuid()));
+    CHECK((metadata.st_mode & (S_IWGRP | S_IWOTH)) == 0);
+    CHECK(metadata.st_nlink == 1);
+    CHECK(metadata.st_size >= 0);
+    CHECK(static_cast<std::size_t>(metadata.st_size) == expected_size);
+}
+
+void expect_begin_error(SIQSShadowProofRssCampaignJournalBeginSlotResult result, StoreError error,
+                        StoreObject object) {
+    CHECK(!static_cast<bool>(result));
+    if (result.diagnostic().error != error || result.diagnostic().object != object) {
+        std::cerr
+            << "expected begin error "
+            << siqs_shadow_proof_rss_campaign_journal_store_error_name(error) << '/'
+            << siqs_shadow_proof_rss_campaign_journal_store_object_name(object) << ", got "
+            << siqs_shadow_proof_rss_campaign_journal_store_error_name(result.diagnostic().error)
+            << '/'
+            << siqs_shadow_proof_rss_campaign_journal_store_object_name(result.diagnostic().object)
+            << " native=" << result.diagnostic().native_error.value() << '\n';
+    }
+    CHECK(result.diagnostic().error == error);
+    CHECK(result.diagnostic().object == object);
+    CHECK(!std::move(result).take_active_slot().has_value());
+    CHECK(!std::move(result).take_active_slot().has_value());
+}
+
+void expect_prepublication_namespace_change(
+    SIQSShadowProofRssCampaignJournalBeginSlotResult result) {
+    CHECK(!static_cast<bool>(result));
+    const auto& diagnostic = result.diagnostic();
+    CHECK(diagnostic.error == StoreError::snapshot_changed);
+    CHECK(diagnostic.object == StoreObject::directory);
+    CHECK(!diagnostic.publication_status.has_value());
+    CHECK(diagnostic.publication_bytes_written == 0);
+    CHECK(!diagnostic.last_durable_publication_object.has_value());
+    CHECK(diagnostic.last_durable_publication_record_sequence ==
+          SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE);
+    CHECK(diagnostic.last_durable_publication_bytes_written == 0);
+    CHECK(!std::move(result).take_active_slot().has_value());
+    CHECK(!std::move(result).take_active_slot().has_value());
 }
 
 [[nodiscard]] SIQSShadowProofRssCampaignJournalStoreOpenResult
@@ -799,6 +881,228 @@ void test_valid_header_and_dangling_start_actions() {
     }
 }
 
+void test_empty_store_begins_one_lease_bound_slot(const std::string& executable) {
+    TempStore fixture;
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    const auto expected_absent = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {});
+    CHECK(expected_absent.header_to_create.has_value());
+    const auto expected_header = *expected_absent.header_to_create;
+    const auto expected_start = canonical_start(expected_header);
+
+    auto session = take_successful_session(open_fixture(fixture));
+    CHECK(session.has_value());
+    CHECK(session->view().action == SIQSShadowProofRssJournalAction::create_header);
+
+    auto begin = std::move(*session).begin_next_slot();
+    CHECK(!session->active());
+    if (!begin) {
+        std::cerr
+            << "empty-store begin failed: "
+            << siqs_shadow_proof_rss_campaign_journal_store_error_name(begin.diagnostic().error)
+            << '/'
+            << siqs_shadow_proof_rss_campaign_journal_store_object_name(begin.diagnostic().object)
+            << " native=" << begin.diagnostic().native_error.value();
+        if (begin.diagnostic().journal_reason.has_value()) {
+            std::cerr << " journal_reason=" << static_cast<int>(*begin.diagnostic().journal_reason);
+        }
+        std::cerr << '\n';
+    }
+    CHECK(static_cast<bool>(begin));
+    CHECK(begin.diagnostic().error == StoreError::none);
+    auto active = std::move(begin).take_active_slot();
+    CHECK(active.has_value());
+    CHECK(active->active());
+    CHECK(active->slot_number() == 1);
+    CHECK(active->view().status == SIQSShadowProofRssJournalStatus::tainted);
+    CHECK(active->view().reason == SIQSShadowProofRssJournalReason::dangling_slot_start);
+    CHECK(active->view().action == SIQSShadowProofRssJournalAction::append_taint);
+    CHECK(!static_cast<bool>(begin));
+
+    const auto header_path = fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF);
+    const auto record_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(1);
+    CHECK(record_leaf.has_value());
+    const auto record_path = fixture.store_leaf(record_leaf->view());
+    expect_private_regular_leaf(header_path,
+                                SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_WIRE_SIZE);
+    expect_private_regular_leaf(record_path,
+                                SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_RECORD_WIRE_SIZE);
+
+    const auto header_bytes =
+        fixture.read_store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF);
+    const auto decoded_header = decode_siqs_shadow_proof_rss_campaign_journal_header(header_bytes);
+    CHECK(decoded_header);
+    CHECK(decoded_header.value == expected_header);
+    const auto record_bytes = fixture.read_store_leaf(record_leaf->view());
+    const auto decoded_record = decode_siqs_shadow_proof_rss_campaign_journal_record(record_bytes);
+    CHECK(decoded_record);
+    CHECK(decoded_record.value == expected_start);
+
+    const auto busy = gnfs::test::run_child_process(
+        executable, {"--expect-lock-busy", fixture.trusted_base().string()});
+    CHECK(busy.exited);
+    CHECK(!busy.signaled);
+    CHECK(busy.exit_code == 0);
+
+    std::optional<SIQSShadowProofRssCampaignJournalActiveSlot> moved(std::move(*active));
+    CHECK(!active->active());
+    CHECK(moved->active());
+    CHECK(moved->slot_number() == 1);
+    active.reset();
+    moved.reset();
+
+    auto reopened = take_successful_session(open_fixture(fixture));
+    CHECK(reopened.has_value());
+    CHECK(reopened->view().status == SIQSShadowProofRssJournalStatus::tainted);
+    CHECK(reopened->view().reason == SIQSShadowProofRssJournalReason::dangling_slot_start);
+    CHECK(reopened->view().action == SIQSShadowProofRssJournalAction::append_taint);
+}
+
+void test_header_only_store_begins_slot_without_replacing_header() {
+    TempStore fixture;
+    const auto header = write_canonical_header(fixture);
+    const auto original_header =
+        fixture.read_store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF);
+    auto session = take_successful_session(open_fixture(fixture));
+    CHECK(session.has_value());
+    CHECK(session->view().action == SIQSShadowProofRssJournalAction::append_slot_start);
+
+    auto begin = std::move(*session).begin_next_slot();
+    CHECK(begin);
+    auto active = std::move(begin).take_active_slot();
+    CHECK(active.has_value());
+    CHECK(active->active());
+    CHECK(active->slot_number() == 1);
+    CHECK(fixture.read_store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF) ==
+          original_header);
+
+    const auto record_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(1);
+    CHECK(record_leaf.has_value());
+    const auto decoded = decode_siqs_shadow_proof_rss_campaign_journal_record(
+        fixture.read_store_leaf(record_leaf->view()));
+    CHECK(decoded);
+    CHECK(decoded.value == canonical_start(header));
+}
+
+void test_begin_rejects_inactive_and_nonready_sessions() {
+    {
+        TempStore fixture;
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        auto first = std::move(*session).begin_next_slot();
+        CHECK(first);
+        auto inactive = std::move(*session).begin_next_slot();
+        expect_begin_error(std::move(inactive), StoreError::session_inactive, StoreObject::none);
+    }
+    {
+        TempStore fixture;
+        const auto header = write_canonical_header(fixture);
+        write_record(fixture, 1, canonical_start(header));
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        CHECK(session->view().status == SIQSShadowProofRssJournalStatus::tainted);
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin.diagnostic().journal_reason ==
+              SIQSShadowProofRssJournalReason::dangling_slot_start);
+        expect_begin_error(std::move(begin), StoreError::session_action_invalid, StoreObject::none);
+    }
+}
+
+void test_begin_rejects_prepublication_namespace_changes() {
+    {
+        TempStore fixture;
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        fixture.write_store_leaf("unregistered-leaf", {});
+        auto begin = std::move(*session).begin_next_slot();
+        expect_prepublication_namespace_change(std::move(begin));
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+    }
+    {
+        TempStore fixture;
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        std::array<std::byte, SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_WIRE_SIZE> sentinel{};
+        sentinel.front() = std::byte{0x5a};
+        fixture.write_store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF, sentinel);
+        auto begin = std::move(*session).begin_next_slot();
+        expect_prepublication_namespace_change(std::move(begin));
+        CHECK(fixture.read_store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF) ==
+              std::vector<std::byte>(sentinel.begin(), sentinel.end()));
+    }
+    {
+        TempStore fixture;
+        (void)write_canonical_header(fixture);
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        const auto record_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(1);
+        CHECK(record_leaf.has_value());
+        std::array<std::byte, SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_RECORD_WIRE_SIZE> sentinel{};
+        sentinel.front() = std::byte{0xa5};
+        fixture.write_store_leaf(record_leaf->view(), sentinel);
+        auto begin = std::move(*session).begin_next_slot();
+        expect_prepublication_namespace_change(std::move(begin));
+        CHECK(fixture.read_store_leaf(record_leaf->view()) ==
+              std::vector<std::byte>(sentinel.begin(), sentinel.end()));
+    }
+    {
+        TempStore fixture;
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        const auto target = fixture.base_leaf("header-symlink-target");
+        std::array<std::byte, 3> protected_bytes{std::byte{1}, std::byte{2}, std::byte{3}};
+        fixture.write_base_leaf("header-symlink-target", protected_bytes);
+        CHECK(::symlink(
+                  target.c_str(),
+                  fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF).c_str()) ==
+              0);
+        auto begin = std::move(*session).begin_next_slot();
+        expect_prepublication_namespace_change(std::move(begin));
+        std::ifstream stream(target, std::ios::binary);
+        std::vector<std::byte> observed;
+        for (std::istreambuf_iterator<char> it(stream), end; it != end; ++it) {
+            observed.push_back(static_cast<std::byte>(static_cast<unsigned char>(*it)));
+        }
+        CHECK(observed == std::vector<std::byte>(protected_bytes.begin(), protected_bytes.end()));
+    }
+}
+
+void test_begin_revalidates_root_and_lock_before_publication() {
+    {
+        TempStore fixture;
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        const auto displaced = fixture.base_leaf("displaced-store-root");
+        std::error_code rename_error;
+        std::filesystem::rename(fixture.store_root(), displaced, rename_error);
+        CHECK(!rename_error);
+        CHECK(::mkdir(fixture.store_root().c_str(), 0700) == 0);
+
+        auto begin = std::move(*session).begin_next_slot();
+        expect_begin_error(std::move(begin), StoreError::snapshot_changed, StoreObject::directory);
+        CHECK(!std::filesystem::exists(
+            displaced / std::string(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+    }
+    {
+        TempStore fixture;
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        const auto lock =
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF);
+        CHECK(::unlink(lock.c_str()) == 0);
+        fixture.write_store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF, {});
+
+        auto begin = std::move(*session).begin_next_slot();
+        expect_begin_error(std::move(begin), StoreError::lock_invalid, StoreObject::session_lock);
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+    }
+}
+
 int run_child_mode(std::string_view mode, const std::filesystem::path& trusted_base) {
     const auto policy = make_policy();
     const auto facts = make_facts();
@@ -866,6 +1170,11 @@ int main(int argc, char** argv) {
         test_invalid_header_shapes_sizes_and_codec();
         test_record_gap_and_filename_wire_binding();
         test_valid_header_and_dangling_start_actions();
+        test_empty_store_begins_one_lease_bound_slot(executable);
+        test_header_only_store_begins_slot_without_replacing_header();
+        test_begin_rejects_inactive_and_nonready_sessions();
+        test_begin_rejects_prepublication_namespace_changes();
+        test_begin_revalidates_root_and_lock_before_publication();
 #else
         test_windows_private_boundary_is_unavailable();
 #endif
