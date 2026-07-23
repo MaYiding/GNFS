@@ -1476,6 +1476,9 @@ struct SIQSResult {
     size_t  relations_found;
     size_t  polynomials_used;
     unsigned resolved_sieve_workers = 0;
+    // True only after the observe record is written, flushed, and
+    // stream-error free.
+    bool shadow_proof_observe_record_committed = false;
 };
 
 inline std::optional<SIQSResult> factor(
@@ -1700,6 +1703,7 @@ inline std::optional<SIQSResult> factor(
     // The shadow proof is observe-only: it reads the post-join raw corpus
     // before legacy merge mutation, attempts typed telemetry, never routes a
     // shadow outcome, and continues the legacy path after every observe result.
+    bool shadow_proof_observe_record_committed = false;
     if (shadow_proof_observe_mode == SIQSShadowProofObserveMode::observe) {
         const SIQSShadowProofOptions shadow_options{};
         const SIQSShadowProofObserveRecord shadow_record = observe_siqs_shadow_proof(
@@ -1716,7 +1720,8 @@ inline std::optional<SIQSResult> factor(
                     std::span<const uint32_t>(factor_base_primes.data(), factor_base_primes.size()),
                     kN, N, lp_bound, shadow_splitter, shadow_options);
             });
-        (void)emit_siqs_shadow_proof_observe_record(shadow_record);
+        shadow_proof_observe_record_committed =
+            emit_siqs_shadow_proof_observe_record(shadow_record);
     }
 
     // Merge partials
@@ -1769,6 +1774,7 @@ inline std::optional<SIQSResult> factor(
         sr.relations_found = relations.size();
         sr.polynomials_used = num_polys;
         sr.resolved_sieve_workers = num_threads;
+        sr.shadow_proof_observe_record_committed = shadow_proof_observe_record_committed;
 
         if (verbose) {
             fprintf(stderr, "[SIQS] SUCCESS: %s * %s (%.3fs, %zu polys)\n",

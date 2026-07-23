@@ -355,21 +355,54 @@ slots in frozen fixture-major order: `off` ordinals 1 through 3 followed by
 the complete policy and its stable digest. Campaign concurrency is the constant
 one and is not configurable.
 
-These contracts do not load a holdout modulus, resolve a probe path, create an
+CMake declares `test_siqs_shadow_proof_rss_holdout_probe` as a Release-only,
+single-sample production target with `EXCLUDE_FROM_ALL`. Default builds do not
+build it, and neither CTest nor any runner catalog executes it. The paired
+`test_siqs_shadow_proof_rss_holdout_probe_contract` target is an instant pure
+contract test. Neither target is a campaign runner.
+
+The pure probe protocol binds each `fixture_id` to the exact modulus and
+canonical factor pair in the sealed constexpr manifest. Relabeling one row as
+another fixture is invalid even when the decimal shape and factor fields are
+otherwise self-consistent.
+
+The production binary accepts exactly one fixture ID, one mode, and one
+mode-specific ordinal. One fresh process calls `factor()` once. A successful
+stdout record uses `GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_V1`, binds the
+sealed corpus identity, reports the canonical factors and actual sieve-worker
+count, and records the lifetime peak captured after the complete factor call as
+`absolute_peak_rss_bytes`. The record keeps route and promotion closed. It does
+not claim proof or matrix evidence. In `observe` mode, stdout success is closed
+unless the production observe record was also written and flushed successfully
+to stderr. For a future collector, `off` must have an empty stderr stream, while
+`observe` must have exactly one independently validated production
+`GNFS_SIQS_SHADOW_PROOF_OBSERVE_V1` record. Only that two-stream join may derive
+proof and matrix evidence for a gate sample.
+
+The project still has no approved policy or campaign runner. Operators must not
+build or invoke the production target manually to bypass policy preflight or
+open a sealed holdout. A future approved serial runner must validate the policy,
+host facts, and candidate revision before it invokes this single-sample target.
+The existing `GNFS_SIQS_SHADOW_PROOF_OBSERVE_PROBE_V1` calibration path remains
+unchanged and calibration-excluded; it does not provide holdout gate evidence.
+
+The pure preparation contracts above may inspect the constexpr sealed manifest,
+but do not construct a production modulus, resolve a probe path, create an
 output directory, construct a child-process command, sample RSS, or call
-`factor()`. The production holdout probe, host and candidate-revision preflight,
-portable serial launcher, write-once journal, resume rules, stream join, and
-terminal gate aggregation remain separate pending work. The execution layer
-must validate the approved policy and the actual runtime facts before it loads
-the sealed fixture table or constructs the first command. A campaign interrupted
-after a child starts but before its sample commits must be treated as tainted,
-not retried in place.
+`factor()`. The approved-policy execution path around the production holdout
+probe remains pending. It includes host and candidate-revision preflight, the
+portable serial launcher, a write-once journal, resume rules, the stream join,
+and terminal gate aggregation. The execution layer must validate the approved
+policy and the actual runtime facts before it loads the sealed fixture table or
+constructs the first command. A campaign interrupted after a child starts but
+before its sample commits must be treated as tainted, not retried in place.
 
 `tests/test_siqs_runtime_facts.cpp`,
-`tests/test_siqs_shadow_proof_rss_policy_record.cpp`, and
-`tests/test_siqs_shadow_proof_rss_campaign.cpp` cover only injected values and
-synthetic bytes. They do not run a probe, factor a holdout, or read live process
-memory.
+`tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
+`tests/test_siqs_shadow_proof_rss_campaign.cpp`, and
+`tests/test_siqs_shadow_proof_rss_holdout_probe_contract.cpp` cover only
+injected values, synthetic metrics, and constexpr fixture identity. They do not
+run a probe, factor a holdout, or read live process memory.
 
 ### Pure V2 Prefer Boundary
 

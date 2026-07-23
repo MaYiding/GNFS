@@ -1987,6 +1987,16 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_siqs_shadow_proof_observe_probe PRIVATE
         gnfs_core Threads::Threads)
 
+    # Single-sample sealed-holdout evidence probe. This Release-only production
+    # target is excluded from default builds, CTest, and every runner catalog.
+    add_executable(test_siqs_shadow_proof_rss_holdout_probe EXCLUDE_FROM_ALL
+        tests/test_siqs_shadow_proof_rss_holdout_probe.cpp
+    )
+    target_compile_definitions(test_siqs_shadow_proof_rss_holdout_probe PRIVATE
+        GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_BUILD_TYPE="$<CONFIG>")
+    target_link_libraries(test_siqs_shadow_proof_rss_holdout_probe PRIVATE
+        gnfs_core Threads::Threads)
+
     # Fixed 50-digit multi-A cycle-density profile. This Release-only manual
     # evidence target deliberately stays outside CTest and routine catalogs.
     add_executable(test_siqs_multi_a_cycle_profile
@@ -2114,6 +2124,15 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_siqs_shadow_proof_rss_campaign PRIVATE gnfs_core)
     add_test(NAME SiqsShadowProofRssCampaign COMMAND test_siqs_shadow_proof_rss_campaign)
     set_tests_properties(SiqsShadowProofRssCampaign PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_holdout_probe_contract
+        tests/test_siqs_shadow_proof_rss_holdout_probe_contract.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_holdout_probe_contract PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssHoldoutProbeContract
+        COMMAND test_siqs_shadow_proof_rss_holdout_probe_contract)
+    set_tests_properties(SiqsShadowProofRssHoldoutProbeContract
+        PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_siqs_shadow_proof_prefer
         tests/test_siqs_shadow_proof_prefer.cpp

@@ -14,12 +14,14 @@
 #include <utility>
 
 #if defined(_WIN32)
+#include <fcntl.h>
 #include <io.h>
 #define GNFS_TEST_CLOSE _close
 #define GNFS_TEST_DUP _dup
 #define GNFS_TEST_DUP2 _dup2
 #define GNFS_TEST_FILENO _fileno
 #else
+#include <fcntl.h>
 #include <unistd.h>
 #define GNFS_TEST_CLOSE ::close
 #define GNFS_TEST_DUP ::dup
@@ -41,6 +43,14 @@ void require_test(bool condition, const std::string& message) {
     if (!condition) {
         fail_test(message);
     }
+}
+
+[[nodiscard]] int open_read_only_stderr_target() noexcept {
+#if defined(_WIN32)
+    return ::_open("NUL", _O_RDONLY | _O_BINARY);
+#else
+    return ::open("/dev/null", O_RDONLY);
+#endif
 }
 
 class ScopedEnvironmentVariable final {
@@ -174,6 +184,75 @@ private:
     bool active_ = false;
 };
 
+class ScopedUnwritableStderr final {
+public:
+    ScopedUnwritableStderr() {
+        if (std::fflush(stderr) != 0) {
+            throw std::runtime_error("failed to flush stderr before failure injection");
+        }
+        const int read_only_fd = open_read_only_stderr_target();
+        if (read_only_fd < 0) {
+            throw std::runtime_error("failed to open a read-only stderr target");
+        }
+
+        stderr_fd_ = GNFS_TEST_FILENO(stderr);
+        if (stderr_fd_ >= 0) {
+            saved_fd_ = GNFS_TEST_DUP(stderr_fd_);
+        }
+        if (stderr_fd_ < 0 || saved_fd_ < 0 || GNFS_TEST_DUP2(read_only_fd, stderr_fd_) < 0) {
+            if (saved_fd_ >= 0) {
+                (void)GNFS_TEST_CLOSE(saved_fd_);
+                saved_fd_ = -1;
+            }
+            (void)GNFS_TEST_CLOSE(read_only_fd);
+            throw std::runtime_error("failed to inject an unwritable stderr target");
+        }
+        (void)GNFS_TEST_CLOSE(read_only_fd);
+        active_ = true;
+    }
+
+    ~ScopedUnwritableStderr() {
+        restore_noexcept();
+    }
+
+    ScopedUnwritableStderr(const ScopedUnwritableStderr&) = delete;
+    ScopedUnwritableStderr& operator=(const ScopedUnwritableStderr&) = delete;
+
+    void finish() {
+        if (!active_) {
+            throw std::logic_error("unwritable stderr injection already finished");
+        }
+        (void)std::fflush(stderr);
+        if (GNFS_TEST_DUP2(saved_fd_, stderr_fd_) < 0) {
+            restore_noexcept();
+            throw std::runtime_error("failed to restore stderr after failure injection");
+        }
+        (void)GNFS_TEST_CLOSE(saved_fd_);
+        saved_fd_ = -1;
+        active_ = false;
+        std::clearerr(stderr);
+    }
+
+private:
+    void restore_noexcept() noexcept {
+        if (!active_) {
+            return;
+        }
+        (void)std::fflush(stderr);
+        if (saved_fd_ >= 0 && stderr_fd_ >= 0) {
+            (void)GNFS_TEST_DUP2(saved_fd_, stderr_fd_);
+            (void)GNFS_TEST_CLOSE(saved_fd_);
+        }
+        saved_fd_ = -1;
+        active_ = false;
+        std::clearerr(stderr);
+    }
+
+    int stderr_fd_ = -1;
+    int saved_fd_ = -1;
+    bool active_ = false;
+};
+
 [[nodiscard]] size_t count_occurrences(std::string_view text, std::string_view needle) {
     size_t count = 0;
     size_t position = 0;
@@ -198,6 +277,14 @@ private:
     ScopedStderrCapture capture;
     auto result = factor(Integer("143"), 10, false);
     captured_stderr = capture.finish();
+    return result;
+}
+
+[[nodiscard]] std::optional<SIQSResult> factor_143_with_unwritable_observe_stderr() {
+    ScopedEnvironmentVariable environment(SIQS_SHADOW_PROOF_OBSERVE_ENV, "observe");
+    ScopedUnwritableStderr stderr_failure;
+    auto result = factor(Integer("143"), 10, false);
+    stderr_failure.finish();
     return result;
 }
 
@@ -341,6 +428,8 @@ void test_siqs_small() {
     require_test(off_result.has_value(), "143 did not factor with shadow proof disabled");
     require_test(count_occurrences(off_stderr, SIQS_SHADOW_PROOF_OBSERVE_PREFIX) == 0,
                  "disabled shadow proof emitted an observe record");
+    require_test(!off_result->shadow_proof_observe_record_committed,
+                 "disabled shadow proof reported a committed observe record");
 
     std::string observe_stderr;
     const auto observe_result = factor_143_with_shadow_mode("observe", observe_stderr);
@@ -349,9 +438,18 @@ void test_siqs_small() {
                  "observe mode did not emit exactly one schema-v1 record");
     require_test(observe_stderr.find("route=legacy_continue") != std::string::npos,
                  "observe record did not declare legacy continuation");
+    require_test(observe_result->shadow_proof_observe_record_committed,
+                 "observe mode did not report a committed schema-v1 record");
+
+    const auto failed_commit_result = factor_143_with_unwritable_observe_stderr();
+    require_test(failed_commit_result.has_value(),
+                 "143 did not continue the legacy factor path after observe write failure");
+    require_test(!failed_commit_result->shadow_proof_observe_record_committed,
+                 "observe write failure reported a committed schema-v1 record");
 
     const auto off_factors = canonical_factors(*off_result);
     const auto observe_factors = canonical_factors(*observe_result);
+    const auto failed_commit_factors = canonical_factors(*failed_commit_result);
     const unsigned expected_sieve_workers =
         resolve_siqs_sieve_workers(std::thread::hardware_concurrency());
     require_test(off_result->resolved_sieve_workers == expected_sieve_workers,
@@ -362,6 +460,8 @@ void test_siqs_small() {
                  "shadow mode changed the production sieve worker count");
     require_test(off_factors == observe_factors,
                  "observe mode changed the canonical 143 factor result");
+    require_test(off_factors == failed_commit_factors,
+                 "observe write failure changed the canonical 143 factor result");
     require_test(off_factors.first == Integer(11) && off_factors.second == Integer(13),
                  "143 factorization did not return 11 and 13");
     printf("  siqs_small(143) shadow observe parity: PASS (off %.3fs, observe %.3fs)\n",

@@ -14,6 +14,7 @@ using gnfs::siqs::SIQSResult;
 
 static_assert(noexcept(resolve_siqs_sieve_workers(0U)));
 static_assert(std::is_same_v<decltype(SIQSResult::resolved_sieve_workers), unsigned>);
+static_assert(std::is_same_v<decltype(SIQSResult::shadow_proof_observe_record_committed), bool>);
 static_assert(resolve_siqs_sieve_workers(0U) == 1U);
 static_assert(resolve_siqs_sieve_workers(1U) == 1U);
 static_assert(resolve_siqs_sieve_workers(2U) == 2U);

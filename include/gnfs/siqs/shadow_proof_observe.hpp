@@ -465,8 +465,8 @@ observe_siqs_shadow_proof(size_t raw_count, size_t factor_base_columns, uint64_t
                                      std::forward<Operation>(operation), snapshot_provider);
 }
 
-/// Emit exactly one stable schema-v1 line. A write error is reported to the
-/// caller and never throws.
+/// Emit and commit exactly one stable schema-v1 line. A write or flush error is
+/// reported to the caller and never throws.
 [[nodiscard]] inline bool
 emit_siqs_shadow_proof_observe_record(std::FILE* output,
                                       const SIQSShadowProofObserveRecord& record) noexcept {
@@ -587,7 +587,10 @@ emit_siqs_shadow_proof_observe_record(std::FILE* output,
             record.after_memory.lifetime_peak_rss_bytes),
         shadow_proof_observe_detail::bool_name(record.peak_growth_supported),
         record.peak_growth_bytes);
-    return result >= 0;
+    if (result < 0) {
+        return false;
+    }
+    return std::fflush(output) == 0 && std::ferror(output) == 0;
 }
 
 [[nodiscard]] inline bool
