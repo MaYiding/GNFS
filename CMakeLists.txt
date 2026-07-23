@@ -1976,6 +1976,17 @@ if(GNFS_BUILD_TESTS)
         GNFS_SIQS_LIVE_SIEVE_PROBE_BUILD_TYPE="$<CONFIG>")
     target_link_libraries(test_siqs_live_sieve_probe PRIVATE gnfs_core Threads::Threads)
 
+    # Fresh-process production factor probe for the opt-in shadow-proof
+    # telemetry seam. This Release-only measurement target stays outside CTest
+    # and every routine test catalog.
+    add_executable(test_siqs_shadow_proof_observe_probe
+        tests/test_siqs_shadow_proof_observe_probe.cpp
+    )
+    target_compile_definitions(test_siqs_shadow_proof_observe_probe PRIVATE
+        GNFS_SIQS_SHADOW_PROOF_OBSERVE_PROBE_BUILD_TYPE="$<CONFIG>")
+    target_link_libraries(test_siqs_shadow_proof_observe_probe PRIVATE
+        gnfs_core Threads::Threads)
+
     # Fixed 50-digit multi-A cycle-density profile. This Release-only manual
     # evidence target deliberately stays outside CTest and routine catalogs.
     add_executable(test_siqs_multi_a_cycle_profile

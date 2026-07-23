@@ -83,6 +83,10 @@
 #                                         # 固定 256-A gate 后的 proof-shadow 因子证据
 #   ./scripts/test.sh compare-siqs-256a-proof
 #                                         # 同一新构建的 1/2/4 proof 独立进程对照
+#   ./scripts/test.sh probe-siqs-shadow-observe <off|observe>
+#                                         # Release-only production factor 双流探针
+#   ./scripts/test.sh compare-siqs-shadow-observe
+#                                         # 1 次 off + 3 次 observe fresh-process 对照
 #   ./scripts/test.sh bench-ram <level>   # 后台 RAM baseline: nohup + /usr/bin/time -l
 #                                         # level=1 (50d ≈2h) / 2 (60d hours+) / 3-5 (大)
 #
@@ -1382,6 +1386,542 @@ measurement_record_field() {
         }
         END { if (matches != 1) exit 1 }
     '
+}
+
+# Validate both raw process streams before shell command substitution can strip
+# terminators or hide NUL bytes. The protocol is deliberately ASCII-only:
+# printable bytes plus one final LF per expected record, with no blank lines.
+siqs_shadow_observe_validate_protocol() {
+    python3 - "$@" <<'PY'
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+
+class ProtocolError(Exception):
+    pass
+
+
+def require(condition, message):
+    if not condition:
+        raise ProtocolError(message)
+
+
+def read_closed_stream(path, expected_lines, label):
+    data = Path(path).read_bytes()
+    if expected_lines == 0:
+        require(data == b"", f"{label} must be byte-empty")
+        return []
+    require(data, f"{label} must not be empty")
+    require(data.endswith(b"\n"), f"{label} must end in LF")
+    require(data.count(b"\n") == expected_lines,
+            f"{label} must contain exactly {expected_lines} LF-terminated record(s)")
+    for byte in data:
+        require(byte == 10 or 32 <= byte <= 126,
+                f"{label} contains a byte outside printable ASCII plus LF")
+    records = data[:-1].split(b"\n")
+    require(len(records) == expected_lines and all(records),
+            f"{label} contains an empty record")
+    return [record.decode("ascii") for record in records]
+
+
+def parse_ordered_record(line, prefix, order, label):
+    tokens = line.split(" ")
+    require(tokens and tokens[0] == prefix, f"{label} prefix mismatch")
+    require(len(tokens) == len(order) + 1, f"{label} field cardinality mismatch")
+    fields = {}
+    observed_order = []
+    for token in tokens[1:]:
+        require(token.count("=") == 1, f"{label} token is not one key=value pair")
+        key, value = token.split("=", 1)
+        require(re.fullmatch(r"[a-z][a-z0-9_]*", key) is not None,
+                f"{label} has an invalid key")
+        require(value != "", f"{label} has an empty value")
+        require(key not in fields, f"{label} repeats field {key}")
+        fields[key] = value
+        observed_order.append(key)
+    require(observed_order == order, f"{label} field set/order is not the frozen schema")
+    return fields
+
+
+def uint(fields, key, positive=False):
+    value = fields[key]
+    require(re.fullmatch(r"0|[1-9][0-9]*", value) is not None,
+            f"{key} is not a canonical unsigned integer")
+    number = int(value)
+    require(number <= (1 << 64) - 1, f"{key} exceeds uint64")
+    if positive:
+        require(number > 0, f"{key} must be positive")
+    return number
+
+
+def boolean(fields, key):
+    require(fields[key] in ("true", "false"), f"{key} is not a canonical boolean")
+    return fields[key] == "true"
+
+
+BACKENDS = {"unsupported", "darwin_getrusage", "linux_getrusage", "windows_psapi"}
+
+
+def validate_memory_fields(fields, label):
+    for side in ("before", "after"):
+        backend = fields[f"{side}_rss_backend"]
+        require(backend in BACKENDS, f"{label} has an unknown {side} RSS backend")
+        current_supported = boolean(fields, f"{side}_current_rss_supported")
+        current = uint(fields, f"{side}_current_rss_bytes")
+        peak_supported = boolean(fields, f"{side}_peak_rss_supported")
+        peak = uint(fields, f"{side}_peak_rss_bytes")
+        require((current > 0) == current_supported,
+                f"{label} {side} current RSS support/value mismatch")
+        require((peak > 0) == peak_supported,
+                f"{label} {side} peak RSS support/value mismatch")
+        if backend == "unsupported":
+            require(not current_supported and not peak_supported,
+                    f"{label} unsupported backend cannot report RSS")
+
+    before_backend = fields["before_rss_backend"]
+    after_backend = fields["after_rss_backend"]
+    before_peak_supported = boolean(fields, "before_peak_rss_supported")
+    after_peak_supported = boolean(fields, "after_peak_rss_supported")
+    before_peak = uint(fields, "before_peak_rss_bytes")
+    after_peak = uint(fields, "after_peak_rss_bytes")
+    growth_supported = boolean(fields, "peak_growth_supported")
+    growth = uint(fields, "peak_growth_bytes")
+    comparable = (before_backend != "unsupported" and before_backend == after_backend and
+                  before_peak_supported and after_peak_supported and after_peak >= before_peak)
+    require(growth_supported == comparable, f"{label} peak growth support is inconsistent")
+    require(growth == (after_peak - before_peak if comparable else 0),
+            f"{label} peak RSS difference is not conserved")
+
+
+PROBE_PREFIX = "GNFS_SIQS_SHADOW_PROOF_OBSERVE_PROBE_V1"
+PROBE_ORDER = [
+    "schema_version", "status", "profile_id", "build_type", "ndebug", "scope", "mode",
+    "env_value", "sample_ordinal", "band", "digits", "n", "expected_factor",
+    "expected_cofactor", "max_seconds", "factor_status", "factor", "cofactor",
+    "factor_identity", "relations_found", "polynomials_used", "factor_wall_ns", "rss_scope",
+    "before_rss_backend", "before_current_rss_supported", "before_current_rss_bytes",
+    "before_peak_rss_supported", "before_peak_rss_bytes", "after_rss_backend",
+    "after_current_rss_supported", "after_current_rss_bytes", "after_peak_rss_supported",
+    "after_peak_rss_bytes", "peak_growth_supported", "peak_growth_bytes", "route", "promotion",
+]
+
+TELEMETRY_PREFIX = "GNFS_SIQS_SHADOW_PROOF_OBSERVE_V1"
+TELEMETRY_ORDER = [
+    "schema_version", "mode", "route", "rss_scope", "proof_attempted", "terminal", "stage",
+    "fallback", "factor_found", "observe_wall_ns", "raw_relations", "raw_payload_supported",
+    "raw_payload_bytes", "factor_base_columns", "large_prime_bound", "raw_relation_cap",
+    "raw_payload_cap_bytes", "graph_edge_cap", "graph_cycle_cap", "graph_incidence_cap",
+    "row_candidate_cap", "pretrim_row_cap", "minimum_row_excess", "trim_excess_rows",
+    "assembly_workers", "matrix_max_dependencies", "matrix_workers",
+    "matrix_parallel_column_threshold", "matrix_dense_bytes_cap", "matrix_dense_variable_cap",
+    "adapter_input_relations", "adapter_full_relations", "adapter_accepted_one_lp",
+    "adapter_accepted_two_lp", "adapter_rejected_relations", "adapter_malformed_source_shape",
+    "adapter_unsupported_encoding", "adapter_invalid_one_large_prime",
+    "adapter_invalid_two_large_prime_split", "adapter_exact_duplicate",
+    "graph_evidence_supported", "graph_vertices", "graph_edges", "graph_components",
+    "graph_cycles", "graph_cycle_incidences", "graph_max_cycle_length", "row_candidate_upper",
+    "assembly_evidence_supported", "assembly_pretrim_rows", "assembly_selected_rows",
+    "assembly_selected_full_rows", "assembly_selected_cycle_rows", "assembly_trimmed_rows",
+    "assembly_fingerprint_supported", "assembly_source_fingerprint_low",
+    "assembly_source_fingerprint_high", "assembly_pretrim_fingerprint_low",
+    "assembly_pretrim_fingerprint_high", "assembly_selected_fingerprint_low",
+    "assembly_selected_fingerprint_high", "projected_dense_bytes_supported",
+    "projected_dense_bytes", "matrix_evidence_supported", "matrix_rows", "matrix_columns",
+    "minimum_nullity", "dependencies_returned", "dependencies_examined",
+    "dependencies_verified", "no_factor_count", "factor_found_count", "dependency_cap_reached",
+    "dependency_fingerprint_supported", "dependency_fingerprint_low",
+    "dependency_fingerprint_high", "first_failed_dependency_supported",
+    "first_failed_dependency", "winning_dependency_supported", "winning_dependency",
+    "winning_dependency_size_supported", "winning_dependency_size", "before_rss_backend",
+    "before_current_rss_supported", "before_current_rss_bytes", "before_peak_rss_supported",
+    "before_peak_rss_bytes", "after_rss_backend", "after_current_rss_supported",
+    "after_current_rss_bytes", "after_peak_rss_supported", "after_peak_rss_bytes",
+    "peak_growth_supported", "peak_growth_bytes", "promotion",
+]
+
+
+def validate_probe(line, expected_mode, expected_sample):
+    fields = parse_ordered_record(line, PROBE_PREFIX, PROBE_ORDER, "probe stdout")
+    exact = {
+        "schema_version": "1", "status": "valid",
+        "profile_id": "siqs50_production_shadow_observe_v1", "build_type": "Release",
+        "ndebug": "true", "scope": "production_factor_fresh_process", "mode": expected_mode,
+        "env_value": "0" if expected_mode == "off" else "observe", "band": "50", "digits": "50",
+        "n": "18027426610499408447671494571938206274555088868093",
+        "expected_factor": "2041646378661656688438487",
+        "expected_cofactor": "8829847714527711737483339", "max_seconds": "30",
+        "factor_status": "factor_found", "factor": "2041646378661656688438487",
+        "cofactor": "8829847714527711737483339", "factor_identity": "pass",
+        "relations_found": "1701", "rss_scope": "self_lifetime", "route": "legacy_result",
+        "promotion": "false",
+    }
+    for key, expected in exact.items():
+        require(fields[key] == expected, f"probe {key} mismatch")
+    require(uint(fields, "sample_ordinal") == expected_sample, "probe sample_ordinal mismatch")
+    require(0 <= expected_sample <= 3, "expected sample ordinal is outside 0..3")
+    uint(fields, "polynomials_used", positive=True)
+    uint(fields, "factor_wall_ns", positive=True)
+    validate_memory_fields(fields, "probe")
+    return fields
+
+
+def validate_telemetry(line):
+    fields = parse_ordered_record(line, TELEMETRY_PREFIX, TELEMETRY_ORDER, "observe stderr")
+    exact = {
+        "schema_version": "1", "mode": "observe", "route": "legacy_continue",
+        "rss_scope": "self_lifetime", "proof_attempted": "true", "terminal": "factor_found",
+        "stage": "factor_extraction", "fallback": "none", "factor_found": "true",
+        "raw_payload_supported": "true", "factor_base_columns": "1601",
+        "large_prime_bound": "3477480", "raw_relation_cap": "32768",
+        "raw_payload_cap_bytes": "67108864", "graph_edge_cap": "16384",
+        "graph_cycle_cap": "4096", "graph_incidence_cap": "262144",
+        "row_candidate_cap": "4096", "pretrim_row_cap": "4096", "minimum_row_excess": "1",
+        "trim_excess_rows": "100", "assembly_workers": "1", "matrix_max_dependencies": "64",
+        "matrix_workers": "1", "matrix_parallel_column_threshold": "20000",
+        "matrix_dense_bytes_cap": "268435456", "matrix_dense_variable_cap": "100000",
+        "adapter_accepted_two_lp": "0", "graph_evidence_supported": "true",
+        "assembly_evidence_supported": "true", "assembly_fingerprint_supported": "true",
+        "projected_dense_bytes_supported": "true", "projected_dense_bytes": "345816",
+        "matrix_evidence_supported": "true", "matrix_rows": "1701", "matrix_columns": "1601",
+        "minimum_nullity": "100", "dependencies_returned": "64",
+        "dependency_cap_reached": "true", "dependency_fingerprint_supported": "true",
+        "first_failed_dependency_supported": "false", "first_failed_dependency": "0",
+        "winning_dependency_supported": "true", "winning_dependency_size_supported": "true",
+        "promotion": "false",
+    }
+    for key, expected in exact.items():
+        require(fields[key] == expected, f"telemetry {key} mismatch")
+
+    bool_fields = [
+        "proof_attempted", "factor_found", "raw_payload_supported", "graph_evidence_supported",
+        "assembly_evidence_supported", "assembly_fingerprint_supported",
+        "projected_dense_bytes_supported", "matrix_evidence_supported", "dependency_cap_reached",
+        "dependency_fingerprint_supported", "first_failed_dependency_supported",
+        "winning_dependency_supported", "winning_dependency_size_supported", "promotion",
+    ]
+    for key in bool_fields:
+        boolean(fields, key)
+
+    numeric_fields = [key for key in TELEMETRY_ORDER if key not in {
+        "mode", "route", "rss_scope", "proof_attempted", "terminal", "stage", "fallback",
+        "factor_found", "raw_payload_supported", "graph_evidence_supported",
+        "assembly_evidence_supported", "assembly_fingerprint_supported",
+        "projected_dense_bytes_supported", "matrix_evidence_supported", "dependency_cap_reached",
+        "dependency_fingerprint_supported", "first_failed_dependency_supported",
+        "winning_dependency_supported", "winning_dependency_size_supported", "before_rss_backend",
+        "before_current_rss_supported", "before_peak_rss_supported", "after_rss_backend",
+        "after_current_rss_supported", "after_peak_rss_supported", "peak_growth_supported",
+        "promotion",
+    }]
+    for key in numeric_fields:
+        uint(fields, key)
+    uint(fields, "observe_wall_ns", positive=True)
+    raw = uint(fields, "raw_relations", positive=True)
+    raw_payload = uint(fields, "raw_payload_bytes", positive=True)
+    require(raw <= uint(fields, "raw_relation_cap"), "raw relation cap exceeded")
+    require(raw_payload <= uint(fields, "raw_payload_cap_bytes"), "raw payload cap exceeded")
+
+    adapter_input = uint(fields, "adapter_input_relations")
+    full = uint(fields, "adapter_full_relations")
+    one_lp = uint(fields, "adapter_accepted_one_lp")
+    two_lp = uint(fields, "adapter_accepted_two_lp")
+    rejected = uint(fields, "adapter_rejected_relations")
+    require(adapter_input == raw, "adapter input/raw relation conservation failed")
+    require(full + one_lp + two_lp + rejected == adapter_input,
+            "adapter disposition conservation failed")
+    rejection_sum = sum(uint(fields, key) for key in (
+        "adapter_malformed_source_shape", "adapter_unsupported_encoding",
+        "adapter_invalid_one_large_prime", "adapter_invalid_two_large_prime_split",
+        "adapter_exact_duplicate"))
+    require(rejection_sum == rejected, "adapter rejection taxonomy conservation failed")
+
+    vertices = uint(fields, "graph_vertices")
+    edges = uint(fields, "graph_edges")
+    components = uint(fields, "graph_components")
+    cycles = uint(fields, "graph_cycles")
+    incidences = uint(fields, "graph_cycle_incidences")
+    max_cycle = uint(fields, "graph_max_cycle_length")
+    require(edges == one_lp + two_lp, "graph edge/accepted partial conservation failed")
+    require(edges <= uint(fields, "graph_edge_cap"), "graph edge cap exceeded")
+    require(cycles <= uint(fields, "graph_cycle_cap"), "graph cycle cap exceeded")
+    require(incidences <= uint(fields, "graph_incidence_cap"), "graph incidence cap exceeded")
+    require(edges + components == vertices + cycles, "graph cycle-rank identity failed")
+    require((cycles == 0 and incidences == 0 and max_cycle == 0) or
+            (cycles > 0 and incidences >= 2 * cycles and 2 <= max_cycle <= incidences),
+            "graph cycle incidence/length invariant failed")
+    row_upper = uint(fields, "row_candidate_upper")
+    require(row_upper == full + cycles, "row candidate upper conservation failed")
+    require(row_upper <= uint(fields, "row_candidate_cap"), "row candidate cap exceeded")
+
+    pretrim = uint(fields, "assembly_pretrim_rows")
+    selected = uint(fields, "assembly_selected_rows")
+    selected_full = uint(fields, "assembly_selected_full_rows")
+    selected_cycle = uint(fields, "assembly_selected_cycle_rows")
+    trimmed = uint(fields, "assembly_trimmed_rows")
+    require(pretrim <= row_upper and pretrim <= uint(fields, "pretrim_row_cap"),
+            "assembly pretrim bound failed")
+    require(pretrim == selected + trimmed, "assembly trim conservation failed")
+    require(selected == selected_full + selected_cycle, "assembly origin conservation failed")
+    require(selected_full <= full and selected_cycle <= cycles,
+            "assembly selected-source bounds failed")
+    require(selected == 1701, "frozen 50-digit selected row count mismatch")
+
+    rows = uint(fields, "matrix_rows")
+    columns = uint(fields, "matrix_columns")
+    nullity = uint(fields, "minimum_nullity")
+    require(rows == selected and rows > columns and nullity == rows - columns,
+            "matrix shape/nullity conservation failed")
+    projected = uint(fields, "projected_dense_bytes")
+    require(projected == columns * ((rows + 63) // 64) * 8,
+            "projected dense byte formula failed")
+    require(projected <= uint(fields, "matrix_dense_bytes_cap") and
+            rows <= uint(fields, "matrix_dense_variable_cap"), "matrix resource cap exceeded")
+
+    returned = uint(fields, "dependencies_returned")
+    examined = uint(fields, "dependencies_examined")
+    verified = uint(fields, "dependencies_verified")
+    no_factor = uint(fields, "no_factor_count")
+    found = uint(fields, "factor_found_count")
+    winning = uint(fields, "winning_dependency")
+    winning_size = uint(fields, "winning_dependency_size")
+    require(returned == uint(fields, "matrix_max_dependencies"),
+            "dependency cap count mismatch")
+    require(0 < examined <= returned and verified == examined,
+            "dependency examined/verified conservation failed")
+    require(no_factor + found == verified and found == 1,
+            "dependency factor outcome conservation failed")
+    require(winning == no_factor and winning + 1 == examined and winning < returned,
+            "winning dependency ordinal conservation failed")
+    require(0 < winning_size <= rows, "winning dependency size is invalid")
+    validate_memory_fields(fields, "telemetry")
+    return fields
+
+
+def validate_paths(stdout_path, stderr_path, expected_mode, expected_sample):
+    require(expected_mode in ("off", "observe"), "expected mode must be off or observe")
+    stdout_records = read_closed_stream(stdout_path, 1, "probe stdout")
+    stderr_records = read_closed_stream(stderr_path, 0 if expected_mode == "off" else 1,
+                                        "probe stderr")
+    validate_probe(stdout_records[0], expected_mode, expected_sample)
+    if expected_mode == "observe":
+        validate_telemetry(stderr_records[0])
+
+
+SELF_PROBE = b"GNFS_SIQS_SHADOW_PROOF_OBSERVE_PROBE_V1 schema_version=1 status=valid profile_id=siqs50_production_shadow_observe_v1 build_type=Release ndebug=true scope=production_factor_fresh_process mode=observe env_value=observe sample_ordinal=1 band=50 digits=50 n=18027426610499408447671494571938206274555088868093 expected_factor=2041646378661656688438487 expected_cofactor=8829847714527711737483339 max_seconds=30 factor_status=factor_found factor=2041646378661656688438487 cofactor=8829847714527711737483339 factor_identity=pass relations_found=1701 polynomials_used=7780 factor_wall_ns=688934375 rss_scope=self_lifetime before_rss_backend=darwin_getrusage before_current_rss_supported=true before_current_rss_bytes=6209536 before_peak_rss_supported=true before_peak_rss_bytes=6209536 after_rss_backend=darwin_getrusage after_current_rss_supported=true after_current_rss_bytes=84901888 after_peak_rss_supported=true after_peak_rss_bytes=84901888 peak_growth_supported=true peak_growth_bytes=78692352 route=legacy_result promotion=false\n"
+SELF_TELEMETRY = b"GNFS_SIQS_SHADOW_PROOF_OBSERVE_V1 schema_version=1 mode=observe route=legacy_continue rss_scope=self_lifetime proof_attempted=true terminal=factor_found stage=factor_extraction fallback=none factor_found=true observe_wall_ns=345026625 raw_relations=8457 raw_payload_supported=true raw_payload_bytes=14151664 factor_base_columns=1601 large_prime_bound=3477480 raw_relation_cap=32768 raw_payload_cap_bytes=67108864 graph_edge_cap=16384 graph_cycle_cap=4096 graph_incidence_cap=262144 row_candidate_cap=4096 pretrim_row_cap=4096 minimum_row_excess=1 trim_excess_rows=100 assembly_workers=1 matrix_max_dependencies=64 matrix_workers=1 matrix_parallel_column_threshold=20000 matrix_dense_bytes_cap=268435456 matrix_dense_variable_cap=100000 adapter_input_relations=8457 adapter_full_relations=1243 adapter_accepted_one_lp=7214 adapter_accepted_two_lp=0 adapter_rejected_relations=0 adapter_malformed_source_shape=0 adapter_unsupported_encoding=0 adapter_invalid_one_large_prime=0 adapter_invalid_two_large_prime_split=0 adapter_exact_duplicate=0 graph_evidence_supported=true graph_vertices=6641 graph_edges=7214 graph_components=1 graph_cycles=574 graph_cycle_incidences=1148 graph_max_cycle_length=2 row_candidate_upper=1817 assembly_evidence_supported=true assembly_pretrim_rows=1816 assembly_selected_rows=1701 assembly_selected_full_rows=1242 assembly_selected_cycle_rows=459 assembly_trimmed_rows=115 assembly_fingerprint_supported=true assembly_source_fingerprint_low=3951595500518709611 assembly_source_fingerprint_high=3592456487407473912 assembly_pretrim_fingerprint_low=6526707829188145409 assembly_pretrim_fingerprint_high=4365835778597310596 assembly_selected_fingerprint_low=2564175583998209799 assembly_selected_fingerprint_high=330467350989717490 projected_dense_bytes_supported=true projected_dense_bytes=345816 matrix_evidence_supported=true matrix_rows=1701 matrix_columns=1601 minimum_nullity=100 dependencies_returned=64 dependencies_examined=1 dependencies_verified=1 no_factor_count=0 factor_found_count=1 dependency_cap_reached=true dependency_fingerprint_supported=true dependency_fingerprint_low=7822033740691768892 dependency_fingerprint_high=279485519398704092 first_failed_dependency_supported=false first_failed_dependency=0 winning_dependency_supported=true winning_dependency=0 winning_dependency_size_supported=true winning_dependency_size=671 before_rss_backend=darwin_getrusage before_current_rss_supported=true before_current_rss_bytes=26542080 before_peak_rss_supported=true before_peak_rss_bytes=26722304 after_rss_backend=darwin_getrusage after_current_rss_supported=true after_current_rss_bytes=82575360 after_peak_rss_supported=true after_peak_rss_bytes=82575360 peak_growth_supported=true peak_growth_bytes=55853056 promotion=false\n"
+
+
+def self_check():
+    with tempfile.TemporaryDirectory(prefix="gnfs_shadow_observe_validator_") as directory:
+        stdout_path = Path(directory) / "stdout"
+        stderr_path = Path(directory) / "stderr"
+
+        def validate_bytes(stdout_data, stderr_data, mode="observe", sample=1):
+            stdout_path.write_bytes(stdout_data)
+            stderr_path.write_bytes(stderr_data)
+            validate_paths(stdout_path, stderr_path, mode, sample)
+
+        validate_bytes(SELF_PROBE, SELF_TELEMETRY)
+        off_probe = SELF_PROBE.replace(b" mode=observe env_value=observe sample_ordinal=1 ",
+                                       b" mode=off env_value=0 sample_ordinal=0 ")
+        validate_bytes(off_probe, b"", "off", 0)
+
+        invalid_cases = [
+            (SELF_PROBE.replace(b" status=valid", b"", 1), SELF_TELEMETRY),
+            (SELF_PROBE.replace(b" status=valid", b" status=valid status=valid", 1), SELF_TELEMETRY),
+            (SELF_PROBE.replace(b" status=valid", b" unknown=1 status=valid", 1), SELF_TELEMETRY),
+            (SELF_PROBE.replace(b" schema_version=1 status=valid",
+                                b" status=valid schema_version=1", 1), SELF_TELEMETRY),
+            (SELF_PROBE.replace(b" max_seconds=30", b" max_seconds=31", 1), SELF_TELEMETRY),
+            (SELF_PROBE, SELF_TELEMETRY.replace(b" assembly_workers=1", b" assembly_workers=2", 1)),
+            (SELF_PROBE, SELF_TELEMETRY.replace(b" matrix_rows=1701", b" matrix_rows=1702", 1)),
+            (SELF_PROBE, SELF_TELEMETRY.replace(b" peak_growth_bytes=55853056",
+                                                b" peak_growth_bytes=55853057", 1)),
+            (SELF_PROBE, SELF_TELEMETRY.replace(b" adapter_input_relations=8457",
+                                                b" adapter_input_relations=8458", 1)),
+            (SELF_PROBE[:-1], SELF_TELEMETRY),
+            (SELF_PROBE.replace(b"\n", b"\r\n"), SELF_TELEMETRY),
+            (SELF_PROBE.replace(b" status", b"\x00 status", 1), SELF_TELEMETRY),
+            (SELF_PROBE.replace(b" status", b"\xc3\xa9 status", 1), SELF_TELEMETRY),
+            (SELF_PROBE + b"\n", SELF_TELEMETRY),
+        ]
+        for stdout_data, stderr_data in invalid_cases:
+            try:
+                validate_bytes(stdout_data, stderr_data)
+            except ProtocolError:
+                continue
+            raise ProtocolError("validator self-check accepted an invalid transcript")
+        try:
+            validate_bytes(off_probe, SELF_TELEMETRY, "off", 0)
+        except ProtocolError:
+            pass
+        else:
+            raise ProtocolError("validator self-check accepted off-mode stderr")
+
+
+try:
+    if len(sys.argv) == 2 and sys.argv[1] == "--self-check":
+        self_check()
+    else:
+        require(len(sys.argv) == 5,
+                "validator requires stdout path, stderr path, mode, and sample ordinal")
+        require(re.fullmatch(r"0|[1-3]", sys.argv[4]) is not None,
+                "sample ordinal argument must be canonical 0..3")
+        validate_paths(sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]))
+except (OSError, ProtocolError) as error:
+    print(f"SIQS shadow observe protocol validation failed: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+siqs_shadow_observe_validator_self_check() {
+    siqs_shadow_observe_validate_protocol --self-check
+}
+
+SIQS_SHADOW_OBSERVE_PROBE_RECORD=""
+SIQS_SHADOW_OBSERVE_TELEMETRY_RECORD=""
+DUAL_STREAM_TIMED_OUT=0
+
+# Fresh-process evidence needs stdout and stderr as independent byte streams.
+# This timeout wrapper never combines them and never stores them in shell
+# variables before the protocol validator has inspected the raw bytes.
+run_dual_stream_with_timeout() {
+    local stdout_file="$1"
+    local stderr_file="$2"
+    local timeout_seconds="$3"
+    shift 3
+    local cmd=("$@")
+
+    DUAL_STREAM_TIMED_OUT=0
+    "${cmd[@]}" >"$stdout_file" 2>"$stderr_file" &
+    local pid=$!
+    local elapsed_tenths=0
+    local timeout_tenths=$((timeout_seconds * 10))
+    local next_heartbeat_tenths=100
+
+    while kill -0 "$pid" 2>/dev/null; do
+        if (( elapsed_tenths >= timeout_tenths )); then
+            DUAL_STREAM_TIMED_OUT=1
+            kill "$pid" 2>/dev/null || true
+            sleep 0.2
+            kill -9 "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return 124
+        fi
+        if (( elapsed_tenths < 20 )); then
+            sleep 0.1
+            (( elapsed_tenths += 1 ))
+        else
+            sleep 1
+            (( elapsed_tenths += 10 ))
+        fi
+        if (( elapsed_tenths >= next_heartbeat_tenths && !QUIET )); then
+            printf "${DIM}[%ds]${RESET}" "$((elapsed_tenths / 10))" >&2
+            (( next_heartbeat_tenths += 100 ))
+        fi
+    done
+
+    local exit_code=0
+    wait "$pid" 2>/dev/null || exit_code=$?
+    return "$exit_code"
+}
+
+show_siqs_shadow_observe_stream_bytes() {
+    local stdout_file="$1"
+    local stderr_file="$2"
+    local stdout_bytes stderr_bytes
+    stdout_bytes=$(wc -c <"$stdout_file" | tr -d '[:space:]')
+    stderr_bytes=$(wc -c <"$stderr_file" | tr -d '[:space:]')
+    log_info "原始通道字节数: stdout=${stdout_bytes}, stderr=${stderr_bytes}"
+    if (( stdout_bytes > 0 )); then
+        printf '%s\n' "stdout 前 96 bytes (hex):"
+        od -An -v -t x1 -N 96 "$stdout_file"
+    fi
+    if (( stderr_bytes > 0 )); then
+        printf '%s\n' "stderr 前 96 bytes (hex):"
+        od -An -v -t x1 -N 96 "$stderr_file"
+    fi
+}
+
+# Run exactly one production factor process. A successful off run is 1 stdout
+# record plus byte-empty stderr; observe is 1 stdout probe plus exactly 1
+# existing telemetry record on stderr.
+run_siqs_shadow_observe_process() {
+    local mode="$1"
+    local sample_ordinal="$2"
+    local timeout_seconds="$3"
+    local binary="${BUILD_DIR}/test_siqs_shadow_proof_observe_probe"
+    local stdout_file stderr_file
+    stdout_file=$(mktemp "${TMPDIR:-/tmp}/gnfs_siqs_shadow_observe_stdout.XXXXXX") || return 1
+    stderr_file=$(mktemp "${TMPDIR:-/tmp}/gnfs_siqs_shadow_observe_stderr.XXXXXX") || {
+        rm -f "$stdout_file"
+        return 1
+    }
+
+    SIQS_SHADOW_OBSERVE_PROBE_RECORD=""
+    SIQS_SHADOW_OBSERVE_TELEMETRY_RECORD=""
+    local start_ms end_ms elapsed exit_code=0
+    start_ms=$(timer_start_ms)
+    run_dual_stream_with_timeout "$stdout_file" "$stderr_file" "$timeout_seconds" \
+        "$binary" --mode "$mode" --sample-ordinal "$sample_ordinal" || exit_code=$?
+    end_ms=$(timer_start_ms)
+    elapsed=$((end_ms - start_ms))
+    TOTAL_TIME_MS=$((TOTAL_TIME_MS + elapsed))
+    (( TOTAL_TESTS += 1 ))
+
+    if (( exit_code == 124 )); then
+        log_fail "SIQS shadow observe mode=${mode} sample=${sample_ordinal} TIMEOUT after ${timeout_seconds}s"
+        (( FAILED_TESTS += 1 ))
+        rm -f "$stdout_file" "$stderr_file"
+        return 1
+    fi
+    if (( exit_code != 0 )); then
+        log_fail "SIQS shadow observe mode=${mode} sample=${sample_ordinal} 退出码 ${exit_code}"
+        show_siqs_shadow_observe_stream_bytes "$stdout_file" "$stderr_file"
+        (( FAILED_TESTS += 1 ))
+        rm -f "$stdout_file" "$stderr_file"
+        return 1
+    fi
+    if ! siqs_shadow_observe_validate_protocol \
+        "$stdout_file" "$stderr_file" "$mode" "$sample_ordinal"; then
+        log_fail "SIQS shadow observe 双流不满足冻结协议"
+        show_siqs_shadow_observe_stream_bytes "$stdout_file" "$stderr_file"
+        (( FAILED_TESTS += 1 ))
+        rm -f "$stdout_file" "$stderr_file"
+        return 1
+    fi
+
+    SIQS_SHADOW_OBSERVE_PROBE_RECORD=$(LC_ALL=C sed -n '1p' "$stdout_file")
+    if [[ "$mode" == "observe" ]]; then
+        SIQS_SHADOW_OBSERVE_TELEMETRY_RECORD=$(LC_ALL=C sed -n '1p' "$stderr_file")
+    fi
+    rm -f "$stdout_file" "$stderr_file"
+
+    (( PASSED_TESTS += 1 ))
+    REPORT_ENTRIES+=("{\"name\":\"siqs_shadow_observe_${mode}_sample_${sample_ordinal}\",\"status\":\"pass\",\"elapsed_ms\":${elapsed}}")
+    return 0
+}
+
+uint_values_min() {
+    local minimum="$1"
+    shift
+    local value
+    for value in "$@"; do
+        (( value < minimum )) && minimum="$value"
+    done
+    printf '%s\n' "$minimum"
+}
+
+uint_values_max() {
+    local maximum="$1"
+    shift
+    local value
+    for value in "$@"; do
+        (( value > maximum )) && maximum="$value"
+    done
+    printf '%s\n' "$maximum"
 }
 
 # The live-sieve probe has one stdout record and a separate diagnostic stderr
@@ -4539,6 +5079,8 @@ do_list() {
     echo "  ${BULLET} ${CYAN}compare-siqs-256a${RESET} — 同一新构建的 1/2/4 scale 独立进程对照"
     echo "  ${BULLET} ${CYAN}profile-siqs-256a-proof <workers>${RESET} — 固定 256-A proof-shadow 因子证据"
     echo "  ${BULLET} ${CYAN}compare-siqs-256a-proof${RESET} — 同一新构建的 1/2/4 proof 身份对照"
+    echo "  ${BULLET} ${CYAN}probe-siqs-shadow-observe <off|observe>${RESET} — Release-only production factor 双流探针"
+    echo "  ${BULLET} ${CYAN}compare-siqs-shadow-observe${RESET} — 1 次 off + 3 次 observe fresh-process 对照"
 
     echo ""
     echo "${BOLD}Sanitizer 窄通道:${RESET}"
@@ -5722,6 +6264,251 @@ case "$MODE" in
                 (( FAILED_TESTS += 1 ))
                 log_fail "1/2/4 worker 的 256-A proof 确定性身份字段不一致"
             fi
+        fi
+        show_summary
+        ;;
+
+    probe-siqs-shadow-observe)
+        if [[ ${#MODE_ARGS[@]} -ne 1 ]]; then
+            log_fail "用法: $0 probe-siqs-shadow-observe <off|observe>"
+            exit 1
+        fi
+        local _shadow_observe_mode="${MODE_ARGS[1]}"
+        case "$_shadow_observe_mode" in
+            off|observe) ;;
+            *) log_fail "mode 必须是 off 或 observe"; exit 1 ;;
+        esac
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "probe-siqs-shadow-observe 只接受 Release 构建 (传入: ${BUILD_TYPE})"
+            exit 1
+        fi
+        BUILD_TYPE="Release"
+        if (( SKIP_BUILD )); then
+            log_fail "probe-siqs-shadow-observe 不接受 --no-build；证据必须来自本次请求的新构建"
+            exit 1
+        fi
+        if (( RETRY_EXPLICIT )); then
+            log_fail "probe-siqs-shadow-observe 不接受 --retry；自动重试会破坏 fresh-process 证据"
+            exit 1
+        fi
+        local _shadow_observe_timeout=60
+        (( TIMEOUT_EXPLICIT )) && _shadow_observe_timeout="$TIMEOUT"
+        if [[ ! "$_shadow_observe_timeout" =~ '^[1-9][0-9]*$' ]]; then
+            log_fail "probe-siqs-shadow-observe 的 timeout 必须是正整数秒"
+            exit 1
+        fi
+        if ! siqs_shadow_observe_validator_self_check; then
+            log_fail "SIQS shadow observe validator self-check 失败；拒绝启动构建"
+            exit 1
+        fi
+
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_siqs_shadow_proof_observe_probe" ]]; then
+            log_fail "SIQS shadow observe probe 二进制不存在: ${BUILD_DIR}/test_siqs_shadow_proof_observe_probe"
+            exit 1
+        fi
+        local _shadow_observe_sample=0
+        [[ "$_shadow_observe_mode" == "observe" ]] && _shadow_observe_sample=1
+        log_header "SIQS production shadow-proof ${_shadow_observe_mode} 探针"
+        log_info "Release/NDEBUG；fresh process；严格双流；timeout=${_shadow_observe_timeout}s"
+        if run_siqs_shadow_observe_process \
+            "$_shadow_observe_mode" "$_shadow_observe_sample" "$_shadow_observe_timeout"; then
+            printf '%s\n' "$SIQS_SHADOW_OBSERVE_PROBE_RECORD"
+            if [[ "$_shadow_observe_mode" == "observe" ]]; then
+                printf '%s\n' "$SIQS_SHADOW_OBSERVE_TELEMETRY_RECORD"
+            fi
+            log_success "probe 与 telemetry 的冻结 schema、50 位证据和 RSS 守恒均有效"
+        fi
+        show_summary
+        ;;
+
+    compare-siqs-shadow-observe)
+        if [[ ${#MODE_ARGS[@]} -ne 0 ]]; then
+            log_fail "用法: $0 compare-siqs-shadow-observe"
+            exit 1
+        fi
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "compare-siqs-shadow-observe 只接受 Release 构建 (传入: ${BUILD_TYPE})"
+            exit 1
+        fi
+        BUILD_TYPE="Release"
+        if (( SKIP_BUILD )); then
+            log_fail "compare-siqs-shadow-observe 不接受 --no-build；四组证据必须共享本次新构建"
+            exit 1
+        fi
+        if (( RETRY_EXPLICIT )); then
+            log_fail "compare-siqs-shadow-observe 不接受 --retry；自动重试会破坏 fresh-process 证据"
+            exit 1
+        fi
+        local _shadow_compare_timeout=60
+        (( TIMEOUT_EXPLICIT )) && _shadow_compare_timeout="$TIMEOUT"
+        if [[ ! "$_shadow_compare_timeout" =~ '^[1-9][0-9]*$' ]]; then
+            log_fail "compare-siqs-shadow-observe 的 timeout 必须是正整数秒"
+            exit 1
+        fi
+        if ! siqs_shadow_observe_validator_self_check; then
+            log_fail "SIQS shadow observe validator self-check 失败；拒绝启动构建"
+            exit 1
+        fi
+
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_siqs_shadow_proof_observe_probe" ]]; then
+            log_fail "SIQS shadow observe probe 二进制不存在: ${BUILD_DIR}/test_siqs_shadow_proof_observe_probe"
+            exit 1
+        fi
+        log_header "SIQS production shadow-proof off/observe fresh-process 对照"
+        log_info "单次 Release 构建；1 次 off + 3 次 observe；每进程 timeout=${_shadow_compare_timeout}s"
+        log_info "不跨运行比较 raw corpus、指纹、依赖序号或其他 identity 字段"
+
+        local _shadow_compare_ok=1
+        local _off_probe="" _off_factor_wall_ns="" _off_process_peak_supported="false"
+        local _off_process_peak_bytes="0" _off_backend="unavailable"
+        typeset -a _observe_factor_wall_values
+        typeset -a _observe_process_peak_values
+        typeset -a _shadow_before_peak_values
+        typeset -a _shadow_after_peak_values
+        typeset -a _shadow_growth_values
+        typeset -a _supported_backends
+        _observe_factor_wall_values=()
+        _observe_process_peak_values=()
+        _shadow_before_peak_values=()
+        _shadow_after_peak_values=()
+        _shadow_growth_values=()
+        _supported_backends=()
+
+        if run_siqs_shadow_observe_process off 0 "$_shadow_compare_timeout"; then
+            _off_probe="$SIQS_SHADOW_OBSERVE_PROBE_RECORD"
+            printf '%s\n' "$_off_probe"
+            _off_factor_wall_ns=$(measurement_record_field "$_off_probe" factor_wall_ns)
+            _off_process_peak_supported=$(measurement_record_field \
+                "$_off_probe" after_peak_rss_supported)
+            _off_process_peak_bytes=$(measurement_record_field "$_off_probe" after_peak_rss_bytes)
+            if [[ "$_off_process_peak_supported" == "true" ]]; then
+                _off_backend=$(measurement_record_field "$_off_probe" after_rss_backend)
+                _supported_backends+=("$_off_backend")
+            fi
+        else
+            _shadow_compare_ok=0
+        fi
+
+        local _shadow_sample _observe_probe _observe_telemetry
+        local _process_peak_supported _process_peak_bytes _process_backend
+        local _shadow_growth_supported _shadow_backend
+        if (( _shadow_compare_ok || !FAIL_FAST )); then
+            for _shadow_sample in 1 2 3; do
+                if run_siqs_shadow_observe_process \
+                    observe "$_shadow_sample" "$_shadow_compare_timeout"; then
+                    _observe_probe="$SIQS_SHADOW_OBSERVE_PROBE_RECORD"
+                    _observe_telemetry="$SIQS_SHADOW_OBSERVE_TELEMETRY_RECORD"
+                    printf '%s\n' "$_observe_probe"
+                    printf '%s\n' "$_observe_telemetry"
+                    _observe_factor_wall_values+=("$(measurement_record_field \
+                        "$_observe_probe" factor_wall_ns)")
+                    _process_peak_supported=$(measurement_record_field \
+                        "$_observe_probe" after_peak_rss_supported)
+                    if [[ "$_process_peak_supported" == "true" ]]; then
+                        _process_peak_bytes=$(measurement_record_field \
+                            "$_observe_probe" after_peak_rss_bytes)
+                        _process_backend=$(measurement_record_field \
+                            "$_observe_probe" after_rss_backend)
+                        _observe_process_peak_values+=("$_process_peak_bytes")
+                        _supported_backends+=("$_process_backend")
+                    fi
+                    _shadow_growth_supported=$(measurement_record_field \
+                        "$_observe_telemetry" peak_growth_supported)
+                    if [[ "$_shadow_growth_supported" == "true" ]]; then
+                        _shadow_before_peak_values+=("$(measurement_record_field \
+                            "$_observe_telemetry" before_peak_rss_bytes)")
+                        _shadow_after_peak_values+=("$(measurement_record_field \
+                            "$_observe_telemetry" after_peak_rss_bytes)")
+                        _shadow_growth_values+=("$(measurement_record_field \
+                            "$_observe_telemetry" peak_growth_bytes)")
+                        _shadow_backend=$(measurement_record_field \
+                            "$_observe_telemetry" after_rss_backend)
+                        _supported_backends+=("$_shadow_backend")
+                    fi
+                else
+                    _shadow_compare_ok=0
+                    (( FAIL_FAST )) && break
+                fi
+            done
+        fi
+
+        if (( _shadow_compare_ok )); then
+            local _observe_wall_min _observe_wall_max
+            _observe_wall_min=$(uint_values_min "${_observe_factor_wall_values[@]}")
+            _observe_wall_max=$(uint_values_max "${_observe_factor_wall_values[@]}")
+
+            local _observe_peak_min="na" _observe_peak_max="na"
+            local _shadow_before_min="na" _shadow_before_max="na"
+            local _shadow_after_min="na" _shadow_after_max="na"
+            local _shadow_growth_min="na" _shadow_growth_max="na"
+            if (( ${#_observe_process_peak_values[@]} > 0 )); then
+                _observe_peak_min=$(uint_values_min "${_observe_process_peak_values[@]}")
+                _observe_peak_max=$(uint_values_max "${_observe_process_peak_values[@]}")
+            fi
+            if (( ${#_shadow_growth_values[@]} > 0 )); then
+                _shadow_before_min=$(uint_values_min "${_shadow_before_peak_values[@]}")
+                _shadow_before_max=$(uint_values_max "${_shadow_before_peak_values[@]}")
+                _shadow_after_min=$(uint_values_min "${_shadow_after_peak_values[@]}")
+                _shadow_after_max=$(uint_values_max "${_shadow_after_peak_values[@]}")
+                _shadow_growth_min=$(uint_values_min "${_shadow_growth_values[@]}")
+                _shadow_growth_max=$(uint_values_max "${_shadow_growth_values[@]}")
+            fi
+
+            local _rss_evidence="unavailable" _rss_backend="unavailable"
+            local _experiment_eligibility="insufficient_evidence"
+            local _backend_consistent=1 _backend_value=""
+            if (( ${#_supported_backends[@]} > 0 )); then
+                _backend_value="${_supported_backends[1]}"
+                local _candidate_backend
+                for _candidate_backend in "${_supported_backends[@]}"; do
+                    [[ "$_candidate_backend" == "$_backend_value" ]] || _backend_consistent=0
+                done
+            else
+                _backend_consistent=0
+            fi
+            if [[ "$_off_process_peak_supported" == "true" ]] &&
+               (( ${#_observe_process_peak_values[@]} == 3 &&
+                  ${#_shadow_growth_values[@]} == 3 && _backend_consistent )); then
+                _rss_evidence="available"
+                _rss_backend="$_backend_value"
+                _experiment_eligibility="candidate"
+            fi
+
+            local _comparison_record
+            _comparison_record="GNFS_SIQS_SHADOW_PROOF_OBSERVE_COMPARISON_V1"
+            _comparison_record+=" schema_version=1 status=valid"
+            _comparison_record+=" profile_id=siqs50_production_shadow_observe_v1"
+            _comparison_record+=" off_runs=1 observe_runs=3"
+            _comparison_record+=" legacy_factor_parity=pass proof_evidence=pass"
+            _comparison_record+=" matrix_shape_evidence=pass rss_evidence=${_rss_evidence}"
+            _comparison_record+=" rss_backend=${_rss_backend}"
+            _comparison_record+=" off_factor_wall_ns=${_off_factor_wall_ns}"
+            _comparison_record+=" observe_factor_wall_ns_min=${_observe_wall_min}"
+            _comparison_record+=" observe_factor_wall_ns_max=${_observe_wall_max}"
+            _comparison_record+=" off_process_peak_rss_supported=${_off_process_peak_supported}"
+            _comparison_record+=" off_process_peak_rss_bytes=${_off_process_peak_bytes}"
+            _comparison_record+=" observe_process_peak_rss_supported_runs=${#_observe_process_peak_values[@]}"
+            _comparison_record+=" observe_process_peak_rss_bytes_min=${_observe_peak_min}"
+            _comparison_record+=" observe_process_peak_rss_bytes_max=${_observe_peak_max}"
+            _comparison_record+=" shadow_before_peak_rss_bytes_min=${_shadow_before_min}"
+            _comparison_record+=" shadow_before_peak_rss_bytes_max=${_shadow_before_max}"
+            _comparison_record+=" shadow_after_peak_rss_bytes_min=${_shadow_after_min}"
+            _comparison_record+=" shadow_after_peak_rss_bytes_max=${_shadow_after_max}"
+            _comparison_record+=" shadow_peak_growth_supported_runs=${#_shadow_growth_values[@]}"
+            _comparison_record+=" shadow_peak_growth_bytes_min=${_shadow_growth_min}"
+            _comparison_record+=" shadow_peak_growth_bytes_max=${_shadow_growth_max}"
+            _comparison_record+=" identity_compared=false timing_threshold_applied=false"
+            _comparison_record+=" rss_threshold_applied=false shadow_outcome_routed=false"
+            _comparison_record+=" prefer_scope=explicit_experiment_only"
+            _comparison_record+=" experiment_eligibility=${_experiment_eligibility} promotion=false"
+            printf '%s\n' "$_comparison_record"
+
+            (( TOTAL_TESTS += 1 ))
+            (( PASSED_TESTS += 1 ))
+            REPORT_ENTRIES+=("{\"name\":\"compare_siqs_shadow_observe_50\",\"status\":\"pass\",\"elapsed_ms\":0}")
+            log_success "1+3 fresh processes 均通过；comparison 仅报告范围，不比较跨运行 identity"
         fi
         show_summary
         ;;

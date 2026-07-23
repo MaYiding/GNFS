@@ -90,6 +90,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `tests/test_siqs_shadow_cross_size.cpp` | Constructed arithmetic-valid 50-, 70-, and 90-digit shadow-chain corpus across 1/2/4 workers |
 | `tests/test_siqs_shadow_proof_runner.cpp` | Bounded facade terminal states, inclusive caps, exception mapping, and input immutability |
 | `tests/test_siqs_shadow_proof_observe.cpp` | Strict observe parser, typed record schema, RSS fields, and emitter contract |
+| `tests/test_siqs_shadow_proof_observe_probe.cpp` | Release-only production 1LP fresh-process factor and RSS probe |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 
 ## Parameter Calibration
@@ -140,6 +141,21 @@ not the exact transient shadow peak. Meaningful RSS comparisons require fresh
 processes and must not reuse the lower peak from the Release-only proof runner,
 which releases raw storage before solving.
 
+The production-overlap measurement contract uses the fixed production 1LP
+profile rather than the raw-releasing proof executable. One comparison launches
+one `off` control and three independent `observe` samples in fresh
+Release/NDEBUG processes. It validates each typed proof, matrix shape, canonical
+legacy factor, and RSS record separately. It does not compare raw corpus or
+fingerprint identity because the production multi-threaded collection boundary
+is schedule-sensitive. The resulting
+`GNFS_SIQS_SHADOW_PROOF_OBSERVE_COMPARISON_V1` record applies no timing or RSS
+threshold and keeps both shadow routing and promotion false. It labels prefer
+eligibility as `candidate` only when all required RSS observations are
+available from one consistent backend; otherwise it reports
+`insufficient_evidence`. See
+[SIQS Shadow Matrix Scaling](../perf/siqs-shadow-matrix-scaling.md) for the
+complete command and HWM interpretation.
+
 A fixed constructed corpus exercises the full chain at the live 50-, 70-, and
 90-digit factor-base column counts with stable fingerprints and dependencies
 across one, two, and four workers. A separate bounded 256-A, 50-digit profile
@@ -189,8 +205,12 @@ The safe migration order is:
    explicit observe mode. This step is now wired behind
    `GNFS_SIQS_SHADOW_PROOF=observe`; it always continues through the legacy path
    and records process-memory endpoints while raw and shadow state overlap.
-9. Permit a proof-gated early return only after observe evidence is stable and
-   the verified factor pair multiplies exactly to the original input. Keep
+9. Permit a proof-gated early return only after observe evidence is stable.
+   `prefer` is not implemented today. A future explicit experiment must add a
+   V2 per-call decision record, defensively revalidate that the canonical,
+   non-trivial factor pair multiplies exactly to the original input, construct
+   the complete `SIQSResult`, and emit the decision before routing the shadow
+   result. Any validation or emission failure continues the legacy path. Keep
    production 2LP collection as a later, independently bounded change.
 
 The arithmetic oracle must include a single-edge `p^2` cycle, three or more
@@ -222,9 +242,13 @@ SIQS's `L_N(1/2, 1)`.
   sparse-wide row conversion, deterministic parallel assembly, packed solving,
   proof-gated factor extraction, a bounded read-only facade, and cross-size
   evidence are staged. The 256-A Release-only profile supplies live 50-digit
-  factor evidence. The observe-only production seam is wired, but fresh-process
-  overlapping-state RSS evidence and a separately bounded 2LP collector remain
-  prerequisites for production 2LP collection or shadow-result routing.
+  factor evidence. The observe-only production seam and fresh-process probe
+  protocol are wired and a current-tree comparison has exercised the contract.
+  The production-overlap checklist remains pending because no predeclared RSS
+  budget or promotion threshold is frozen. A separately bounded 2LP collector
+  remains a prerequisite for production 2LP collection.
+  The future shadow-result route must first remain an explicit, V2-audited
+  experiment; current probe records never authorize it.
   See [SIQS Live-Sieve Capture Contract](../perf/siqs-live-sieve-capture.md)
 - **The wide sparse shadow backend is not implemented**; the dense solver
   admits at most 100000 row variables and 256MiB of packed matrix payload,

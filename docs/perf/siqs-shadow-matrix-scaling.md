@@ -29,6 +29,14 @@ lifetime comparisons are interpretable. The 256-A proof executable releases
 raw storage before solving, so its measured peak is correctness evidence, not
 a production RSS projection.
 
+The production-overlap probe uses the current 1LP collector and the actual
+`factor()` observe seam. It is a measurement contract, not a routing mode. Its
+comparison runs one `off` control and three independent `observe` samples in
+fresh processes. It validates every sample separately and does not require raw
+corpus or fingerprint identity across processes. Production sieve completion
+is schedule-sensitive, so such an identity requirement would reject valid
+measurements without strengthening the proof or RSS contract.
+
 The immediate safety decision is:
 
 1. Validate shared modulus and factor-base context once per solve.
@@ -114,6 +122,73 @@ done
 The disabled `SiqsShadowMatrixBench` CTest entry provides discovery only. Use
 the runner above for measurements because it enforces the Release build and
 output contract.
+
+### Production Observe RSS Probe
+
+The dedicated commands exercise the fixed
+`siqs50_production_shadow_observe_v1` profile through the production 1LP
+collector:
+
+```bash
+./scripts/test.sh probe-siqs-shadow-observe off
+./scripts/test.sh probe-siqs-shadow-observe observe
+./scripts/test.sh compare-siqs-shadow-observe
+```
+
+Each probe launches exactly one fresh Release/NDEBUG process and calls
+`factor()` once. A successful process emits one closed
+`GNFS_SIQS_SHADOW_PROOF_OBSERVE_PROBE_V1` record. Its `mode`,
+`sample_ordinal`, canonical `factor_identity`, factor wall time, RSS fields,
+`route=legacy_result`, and `promotion=false` describe that process only. An
+`observe` process must also produce exactly one valid
+`GNFS_SIQS_SHADOW_PROOF_OBSERVE_V1` record from the production seam. An `off`
+process must produce none. A timeout, nonzero exit, malformed or partial
+record, unexpected diagnostic output, missing factor, or factor mismatch
+invalidates the sample. The driver does not retry a failed process.
+`test_siqs_shadow_proof_observe_probe` is a manual measurement executable; it
+is not a CTest entry or part of a routine test tier.
+
+The comparison builds once and launches four fresh processes: one `off` and
+three `observe` samples with distinct ordinals. It emits one closed
+`GNFS_SIQS_SHADOW_PROOF_OBSERVE_COMPARISON_V1` record only after all four
+records pass their individual contracts. The comparison requires canonical
+factor parity, valid proof and matrix-shape evidence in every observe sample,
+and internally consistent RSS support and monotonicity. It intentionally
+records `identity_compared=false`; raw counts, corpus fingerprints, dependency
+fingerprints, and winning dependency ordinals may vary between production
+runs.
+
+The RSS quantities have narrow, schema-specific meanings:
+
+- In `PROBE_V1`, the before snapshot occurs immediately before `factor()` and
+  the after snapshot occurs after the legacy result returns. Its peak growth is
+  the additional process HWM across the complete factor call.
+- In the observe V1 telemetry, `before_peak_rss_bytes` is the process HWM from
+  launch through the post-join, pre-shadow snapshot.
+- The observe telemetry's `after_peak_rss_bytes` is the HWM through shadow
+  completion. Because raw relations remain live throughout the facade, it
+  covers the production raw/shadow overlap when that overlap establishes the
+  process HWM.
+- Every supported `peak_growth_bytes` is exactly the matching
+  `after_peak_rss_bytes - before_peak_rss_bytes`. It is additional HWM within
+  that record's scope, not an allocation total. An earlier peak can censor the
+  growth to zero.
+- Current-RSS fields are endpoint diagnostics for their stated scope. In the
+  observe record, the after snapshot occurs after shadow-owned state has been
+  released. Allocator retention prevents treating it as live-object size.
+- The `off` process and observe min/max values describe a small process
+  distribution. Their difference is not a paired corpus delta because the
+  production collector does not promise cross-process corpus identity.
+
+This first comparison reports min/max wall time, peak RSS, and peak growth but
+sets `timing_threshold_applied=false` and `rss_threshold_applied=false`. It
+also fixes `prefer_scope=explicit_experiment_only`,
+`shadow_outcome_routed=false`, and `promotion=false`. When every required RSS
+observation is available from one consistent backend, it reports
+`experiment_eligibility=candidate`; otherwise it reports
+`rss_evidence=unavailable` and `experiment_eligibility=insufficient_evidence`.
+Do not derive or freeze a budget from ad hoc runs. A later change must declare
+the sample set and threshold before collecting promotion evidence.
 
 ## Dense Solver Results
 
@@ -284,4 +359,9 @@ Before promotion it must provide:
   raw-input immutability, typed setup failures, failure-transparent telemetry,
   and the default 1LP legacy path unchanged.
 - [ ] Fresh-process observe corpus with overlapping raw/shadow RSS evidence.
-- [ ] Controlled 2LP collector and production routing; `lp_bound_sq` remains 0.
+  The one-`off` plus three-`observe` protocol is defined and has been exercised
+  on the current tree, but this gate remains pending because no predeclared RSS
+  budget or promotion threshold is frozen.
+- [ ] Explicit V2-audited `prefer` routing with per-call factor revalidation;
+  default promotion remains disabled.
+- [ ] Controlled 2LP collector; `lp_bound_sq` remains 0.
