@@ -387,21 +387,24 @@ they do not prove filesystem durability or serialize two callers that replay
 the same stale snapshot. The durable-record receipt is therefore intentionally
 not constructible yet. The deployment policy now binds one trusted-base ID,
 store ID, and canonical lowercase ASCII relative locator, which flow through
-the policy, plan, header, and record digests. Before any filesystem I/O, a
-future journal store must validate the approved policy and ask a
-production-owned registry to resolve `trusted_base_id` to an already-open base
-handle. That registry is part of the deployment, not a caller-injected callback:
-the store API accepts no caller path, resolver, or base handle. It must then
-open exactly the provisioned locator without following links and verify the
-provisioned mapping's `store_id` before creating a header in an empty root.
+the policy, plan, header, and record digests. Before any filesystem I/O, the
+native store validates the approved policy and selects the unique matching row
+from a production-owned logical registry. The row owns the absolute trusted
+base path, expected native owner, store ID, and locator. It is part of the
+deployment, not a caller-injected callback: the public API accepts no path,
+resolver, base handle, or registry installer. The POSIX loader component-walks
+that owned path for each session, obtains a held base descriptor, opens exactly
+the provisioned locator without following links, and verifies the mapping's
+`store_id` before it scans the root.
 
-The store must hold the root's runtime directory-object identity and an
-exclusive cross-process session lease, derive the one allowed filename for
-each sequence, and issue the receipt only after that exact record reaches the
-storage boundary. The lease must begin before replay and remain held through
-start, child execution, and commit or taint. An API that accepts an arbitrary
-output path or a caller-supplied successful I/O backend is not a receipt issuer
-because either would permit duplicate launches from one stale replay.
+The current store holds the root's runtime directory-object identity and an
+exclusive cross-process session lease beginning before replay. A future writer
+must retain that lease through start, child execution, and commit or taint,
+derive the one allowed filename for each sequence from the held root, and issue
+a receipt only after that exact record reaches the storage boundary. An API
+that accepts an arbitrary output path or a caller-supplied successful I/O
+backend is not a receipt issuer because either would permit duplicate launches
+from one stale replay.
 
 `include/gnfs/siqs/shadow_proof_rss_campaign_journal_codec.hpp` defines the
 canonical storage representation without opening a file. Headers are exactly
@@ -424,7 +427,46 @@ sequence mismatches all fail closed. The inspector cannot sign a durable-record
 receipt. Its decoded snapshot is ordinary, forgeable data that the native
 loader must construct and consume internally while holding the root and
 cross-process lease; it is never a public store or receipt-authority input.
-That native loader remains pending.
+
+`include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` and the native
+implementation now close that read boundary. The public entry point accepts
+only the validated policy and runtime facts. The default production deployment
+registry is deliberately empty, so an otherwise valid request returns
+`binding_not_registered`; there is no public path, descriptor, resolver, or
+registry-installation input. Deployment packaging may replace only the private
+owned registry table, whose rows include the expected native owner identity.
+
+On POSIX systems, the loader walks the registered absolute base one component
+at a time from `/`, opens every component and the registered store root with
+`O_NOFOLLOW`. Every ancestor must be owned by root or the expected owner and
+must reject group/other writes; the final base, store root, lock, header, and
+records must be owned by the expected owner. macOS additionally rejects any
+extended ACL instead of assuming that mode bits describe all write grants. The
+loader verifies the process identity before it can create the persistent
+zero-length `.session.lock`, then takes a non-blocking exclusive `flock` before
+scanning. It keeps the base, root, and lock descriptors alive in a move-only
+session. Two independent directory enumerations surround fixed-size double
+reads of every known journal leaf. Identity, owner, group, mode, link count,
+size, timestamps, bytes, root identity, and the held lock binding must remain
+stable. Only then does the loader invoke the pure layout inspector and replay
+state machine. Unknown leaves, link substitutions, gaps, malformed wire data,
+concurrent leases, and snapshot changes fail closed with typed diagnostics.
+Windows builds compile an explicit
+`platform_unavailable` implementation until a held `RootDirectory` HANDLE
+implementation is available; they never fall back to caller-controlled paths.
+
+The session exposes only an authority-free replay view. It cannot publish a
+header or record, issue a launch permit, or start a child process. Durable
+publication and private receipt issuance remain the next storage slice.
+
+This boundary assumes a trusted local filesystem and treats every process with
+the expected UID as the same principal. `flock` is advisory, so it cannot
+isolate a malicious same-UID process that ignores the protocol. Deployment
+provisioning must also reject unapproved ACL mechanisms on platforms where
+they are not inspected at runtime. Every future publication, receipt, and
+launch action must revalidate the held root and lock namespace bindings before
+using its authority; the current session view deliberately carries no such
+action authority.
 
 `include/gnfs/util/durable_immutable_file.hpp` and its compiled implementation
 provide the lower publication boundary. The publisher opens and holds the
@@ -447,8 +489,11 @@ single-sample production target with `EXCLUDE_FROM_ALL`. Default builds do not
 build it, and neither CTest nor any runner catalog executes it. The paired
 `test_siqs_shadow_proof_rss_holdout_probe_contract` target is an instant pure
 contract test. `test_siqs_shadow_proof_rss_campaign_journal` is also an instant
-pure contract test, as are its codec and layout tests. None of these contract
-targets is a campaign runner or native leased loader.
+pure contract test, as are its codec and layout tests. The instant native-store
+test uses a temporary real filesystem and subprocesses to cover the registry
+boundary, component walking, strict layouts, move-only lease ownership,
+cross-process contention, crash release, and replay actions. None of these
+targets is a campaign runner.
 
 The pure probe protocol binds each `fixture_id` to the exact modulus and
 canonical factor pair in the sealed constexpr manifest. Relabeling one row as
@@ -480,15 +525,16 @@ but do not construct a production modulus, resolve a probe path, create an
 output directory, construct a child-process command, sample RSS, or call
 `factor()`. The approved-policy execution path around the production holdout
 probe remains pending. The pure journal contract still performs no file I/O.
-The canonical codec and durable immutable-file primitive do not yet constitute
-the header-bound journal store, portable serial launcher, stdout/stderr parser,
-stream join, or approved policy. Those execution components must validate the
-approved policy, actual runtime facts, and candidate revision before loading
-the sealed fixture table or constructing the first command. The future store
-must derive the unique start-record path from its validated root and durably
-publish the start before it requests a launch permit. A campaign interrupted
-after that start but before its sample commits remains tainted and cannot be
-retried in place.
+The native leased loader now supplies the header-bound read side, but it
+intentionally does not yet combine the canonical codec and durable
+immutable-file primitive into a receipt issuer. The portable serial launcher,
+stdout/stderr parser, stream join, and approved policy also remain pending.
+Those execution components must validate the approved policy, actual runtime
+facts, and candidate revision before loading the sealed fixture table or
+constructing the first command. The future store must derive the unique
+start-record path from its held root and durably publish the start before it
+requests a launch permit. A campaign interrupted after that start but before
+its sample commits remains tainted and cannot be retried in place.
 
 `tests/test_siqs_runtime_facts.cpp`,
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
@@ -499,6 +545,11 @@ retried in place.
 `tests/test_siqs_shadow_proof_rss_holdout_probe_contract.cpp` cover only
 injected values, synthetic metrics, and constexpr fixture identity. They do not
 run a probe, factor a holdout, or read live process memory.
+
+`tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` opens only
+temporary synthetic stores. It exercises native object identity and leases but
+does not open a sealed holdout, run a probe, issue a launch permit, or collect
+campaign evidence.
 
 `tests/test_durable_immutable_file.cpp` uses temporary synthetic bytes to cover
 exclusive-create contention, partial writes, interrupted calls, zero progress,
@@ -710,7 +761,12 @@ Before promotion it must provide:
   outcome.
 - [x] Canonical fixed-width campaign-journal codec plus a fail-closed durable
   immutable-file primitive with exclusive publication and injected fault tests.
-  The header-bound journal store and receipt issuer remain pending.
+- [x] POSIX native leased journal loader with a private deployment binding,
+  strict owner/permission/ACL checks, held root and lock descriptors, stable
+  double snapshots, and authority-free replay views. Windows remains an
+  explicit fail-closed platform stub.
+- [ ] Durable header/start publication and private receipt issuance from the
+  held root, with root and lock revalidation at every authority-bearing action.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved
   headroom, OS, architecture, RSS backend, resolved production sieve workers,
   candidate revision, approval identity, sealed corpus digest, trusted journal

@@ -1,0 +1,189 @@
+#include "shadow_proof_rss_campaign_journal_store_internal.hpp"
+
+#include <cstddef>
+#include <new>
+#include <span>
+#include <utility>
+
+namespace gnfs::siqs {
+
+namespace detail = shadow_proof_rss_campaign_journal_store_detail;
+
+SIQSShadowProofRssCampaignJournalSession::SIQSShadowProofRssCampaignJournalSession(
+    std::unique_ptr<detail::SessionCore> core) noexcept
+    : core_(std::move(core)) {}
+
+SIQSShadowProofRssCampaignJournalSession::~SIQSShadowProofRssCampaignJournalSession() = default;
+
+SIQSShadowProofRssCampaignJournalSession::SIQSShadowProofRssCampaignJournalSession(
+    SIQSShadowProofRssCampaignJournalSession&&) noexcept = default;
+
+SIQSShadowProofRssCampaignJournalSession& SIQSShadowProofRssCampaignJournalSession::operator=(
+    SIQSShadowProofRssCampaignJournalSession&&) noexcept = default;
+
+bool SIQSShadowProofRssCampaignJournalSession::active() const noexcept {
+    return core_ != nullptr;
+}
+
+SIQSShadowProofRssCampaignJournalSessionView
+SIQSShadowProofRssCampaignJournalSession::view() const noexcept {
+    return core_ != nullptr ? core_->view() : SIQSShadowProofRssCampaignJournalSessionView{};
+}
+
+SIQSShadowProofRssCampaignJournalStoreOpenResult::SIQSShadowProofRssCampaignJournalStoreOpenResult(
+    SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic) noexcept
+    : diagnostic_(std::move(diagnostic)) {}
+
+SIQSShadowProofRssCampaignJournalStoreOpenResult::SIQSShadowProofRssCampaignJournalStoreOpenResult(
+    SIQSShadowProofRssCampaignJournalSession&& session) noexcept
+    : session_(std::move(session)) {}
+
+SIQSShadowProofRssCampaignJournalStoreOpenResult::
+    ~SIQSShadowProofRssCampaignJournalStoreOpenResult() = default;
+
+SIQSShadowProofRssCampaignJournalStoreOpenResult::SIQSShadowProofRssCampaignJournalStoreOpenResult(
+    SIQSShadowProofRssCampaignJournalStoreOpenResult&& other) noexcept
+    : session_(std::move(other.session_)), diagnostic_(std::move(other.diagnostic_)) {
+    // A moved-from result must not retain an engaged, inactive capability
+    // wrapper. The destination owns the only observable session token.
+    other.session_.reset();
+}
+
+SIQSShadowProofRssCampaignJournalStoreOpenResult&
+SIQSShadowProofRssCampaignJournalStoreOpenResult::operator=(
+    SIQSShadowProofRssCampaignJournalStoreOpenResult&& other) noexcept {
+    if (this != &other) {
+        session_ = std::move(other.session_);
+        diagnostic_ = std::move(other.diagnostic_);
+        other.session_.reset();
+    }
+    return *this;
+}
+
+SIQSShadowProofRssCampaignJournalStoreOpenResult::operator bool() const noexcept {
+    return session_.has_value() && session_->active() &&
+           diagnostic_.error == SIQSShadowProofRssCampaignJournalStoreError::none;
+}
+
+const SIQSShadowProofRssCampaignJournalStoreDiagnostic&
+SIQSShadowProofRssCampaignJournalStoreOpenResult::diagnostic() const noexcept {
+    return diagnostic_;
+}
+
+std::optional<SIQSShadowProofRssCampaignJournalSession>
+SIQSShadowProofRssCampaignJournalStoreOpenResult::take_session() && noexcept {
+    auto session = std::move(session_);
+    session_.reset();
+    return session;
+}
+
+namespace shadow_proof_rss_campaign_journal_store_detail {
+namespace {
+
+[[nodiscard]] SIQSShadowProofRssCampaignJournalStoreDiagnostic
+make_common_diagnostic(SIQSShadowProofRssCampaignJournalStoreError error,
+                       SIQSShadowProofRssCampaignJournalStoreObject object =
+                           SIQSShadowProofRssCampaignJournalStoreObject::none) noexcept {
+    SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic;
+    diagnostic.error = error;
+    diagnostic.object = object;
+    return diagnostic;
+}
+
+[[nodiscard]] bool authority_locator_match(const SIQSShadowProofRssJournalStoreBinding& binding,
+                                           const DeploymentEntry& deployment) noexcept {
+    return deployment.trusted_base_id == binding.trusted_base_id &&
+           deployment.relative_locator == binding.relative_locator;
+}
+
+[[nodiscard]] bool
+preflight_is_ready(const SIQSShadowProofRssCampaignJournalResume& preflight) noexcept {
+    return preflight.status == SIQSShadowProofRssJournalStatus::ready &&
+           preflight.reason == SIQSShadowProofRssJournalReason::ready &&
+           preflight.action == SIQSShadowProofRssJournalAction::create_header &&
+           preflight.committed_slot_count == 0 && preflight.next_slot_number == 1 &&
+           preflight.header_to_create.has_value() && !preflight.prepared_slot_start.has_value() &&
+           !preflight.taint_to_append.has_value();
+}
+
+} // namespace
+
+SIQSShadowProofRssCampaignJournalStoreOpenResult
+SessionFactory::open_with_deployments(const SIQSShadowProofRssGatePolicy* policy,
+                                      const SIQSShadowProofRssCampaignRuntimeFacts* runtime_facts,
+                                      std::span<const DeploymentEntry> deployments) noexcept {
+    try {
+        // This pure preflight must remain before registry lookup or any
+        // platform call, so rejected policy/facts never touch the filesystem.
+        const auto preflight = resume_siqs_shadow_proof_rss_campaign_journal(
+            policy, runtime_facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {});
+        if (!preflight_is_ready(preflight)) {
+            auto diagnostic = make_common_diagnostic(
+                SIQSShadowProofRssCampaignJournalStoreError::preflight_rejected);
+            diagnostic.journal_reason = preflight.reason;
+            return SIQSShadowProofRssCampaignJournalStoreOpenResult(std::move(diagnostic));
+        }
+
+        const DeploymentEntry* selected = nullptr;
+        std::size_t authority_match_count = 0;
+        for (const DeploymentEntry& deployment : deployments) {
+            if (authority_locator_match(policy->journal_store, deployment)) {
+                ++authority_match_count;
+                if (selected == nullptr) {
+                    selected = &deployment;
+                }
+            }
+        }
+
+        if (authority_match_count == 0) {
+            return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
+                SIQSShadowProofRssCampaignJournalStoreError::binding_not_registered,
+                SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry));
+        }
+        if (authority_match_count != 1) {
+            return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
+                SIQSShadowProofRssCampaignJournalStoreError::binding_ambiguous,
+                SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry));
+        }
+        if (selected == nullptr || selected->store_id != policy->journal_store.store_id ||
+            selected->trusted_base_path.empty()) {
+            return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
+                SIQSShadowProofRssCampaignJournalStoreError::registry_binding_mismatch,
+                SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry));
+        }
+
+        PlatformOpenResult platform = open_siqs_shadow_proof_rss_campaign_journal_platform_session(
+            *policy, *runtime_facts, *selected);
+        if (!platform) {
+            if (platform.diagnostic.error == SIQSShadowProofRssCampaignJournalStoreError::none) {
+                platform.diagnostic = make_common_diagnostic(
+                    SIQSShadowProofRssCampaignJournalStoreError::unexpected_failure);
+            }
+            return SIQSShadowProofRssCampaignJournalStoreOpenResult(std::move(platform.diagnostic));
+        }
+        return SIQSShadowProofRssCampaignJournalStoreOpenResult(
+            SIQSShadowProofRssCampaignJournalSession(std::move(platform.core)));
+    } catch (const std::bad_alloc&) {
+        return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
+            SIQSShadowProofRssCampaignJournalStoreError::resource_exhausted));
+    } catch (...) {
+        return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
+            SIQSShadowProofRssCampaignJournalStoreError::unexpected_failure));
+    }
+}
+
+} // namespace shadow_proof_rss_campaign_journal_store_detail
+
+SIQSShadowProofRssCampaignJournalStoreOpenResult
+open_siqs_shadow_proof_rss_campaign_journal_session(
+    const SIQSShadowProofRssGatePolicy* policy,
+    const SIQSShadowProofRssCampaignRuntimeFacts* runtime_facts) noexcept {
+    // Production provisioning is deliberately closed in the default build.
+    // Deployment packaging may replace this private table; callers cannot
+    // populate it at runtime through the public API.
+    static constexpr std::span<const detail::DeploymentEntry> production_deployments{};
+    return detail::SessionFactory::open_with_deployments(policy, runtime_facts,
+                                                         production_deployments);
+}
+
+} // namespace gnfs::siqs

@@ -356,6 +356,22 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/util/thread_pool.cpp")
     target_sources(gnfs_core PRIVATE src/util/thread_pool.cpp)
 endif()
 
+# SIQS RSS campaign journal native lease boundary. The common source owns the
+# closed production registry and public result/session state; exactly one
+# platform loader supplies the native implementation.
+target_sources(gnfs_core PRIVATE
+    src/siqs/shadow_proof_rss_campaign_journal_store.cpp
+)
+if(WIN32)
+    target_sources(gnfs_core PRIVATE
+        src/siqs/shadow_proof_rss_campaign_journal_store_windows.cpp
+    )
+else()
+    target_sources(gnfs_core PRIVATE
+        src/siqs/shadow_proof_rss_campaign_journal_store_posix.cpp
+    )
+endif()
+
 # API 层
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/api/pipeline.cpp")
     target_sources(gnfs_core PRIVATE src/api/pipeline.cpp)
@@ -2160,6 +2176,21 @@ if(GNFS_BUILD_TESTS)
         COMMAND test_siqs_shadow_proof_rss_campaign_journal_layout)
     set_tests_properties(SiqsShadowProofRssCampaignJournalLayout
         PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_campaign_journal_store
+        tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp
+    )
+    target_include_directories(test_siqs_shadow_proof_rss_campaign_journal_store PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_campaign_journal_store PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssCampaignJournalStore
+        COMMAND test_siqs_shadow_proof_rss_campaign_journal_store)
+    set_tests_properties(SiqsShadowProofRssCampaignJournalStore
+        PROPERTIES
+            LABELS "instant"
+            TIMEOUT 20
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     add_executable(test_siqs_shadow_proof_rss_holdout_probe_contract
         tests/test_siqs_shadow_proof_rss_holdout_probe_contract.cpp

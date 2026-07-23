@@ -96,6 +96,8 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `tests/test_siqs_shadow_observe_rss_holdouts.cpp` | Mathematical corpus generation, primality, identity, uniqueness, and digest checks without calling `factor()` |
 | `include/gnfs/siqs/shadow_proof_rss_gate.hpp` | `SIQSShadowProofRssGatePolicy`, `SIQSShadowProofRssGateSample`, and closed `SIQSShadowProofRssGateOutcome` |
 | `tests/test_siqs_shadow_proof_rss_gate.cpp` | Synthetic policy binding, exact sample coverage, budget boundary, and closed terminal-emitter tests |
+| `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-only native journal session that binds replay to one deployment-registered root and cross-process lease |
+| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, strict real-filesystem loading, lease lifetime, crash recovery, and platform fallback |
 | `tests/test_siqs_shadow_proof_prefer.cpp` | Pure V2 decisions, defensive metadata validation, and pre-route emitter contract |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 
@@ -200,8 +202,10 @@ artifacts, wrong entry kinds or link counts, wrong sizes, sequence gaps, codec
 errors, and disagreement between the filename sequence and decoded wire
 sequence. This fail-closed inspection neither opens the root nor signs a
 durable-record receipt. Its decoded snapshot is ordinary, forgeable data and
-must never be a receipt authority or public input to the future store. The
-native loader that owns the root handle and cross-process lease remains
+is never a receipt authority or public store input. The native POSIX loader
+constructs and consumes that snapshot internally while holding a verified root
+descriptor and cross-process lease. Its public session exposes only an
+authority-free replay view; durable publication and receipt issuance remain
 pending.
 
 Coverage is exact: each evaluated platform and backend needs three `off` and
