@@ -437,6 +437,19 @@ receipt. Its decoded snapshot is ordinary, forgeable data that the native
 loader must construct and consume internally while holding the root and
 cross-process lease; it is never a public store or receipt-authority input.
 
+`include/gnfs/siqs/shadow_proof_rss_campaign_artifact_layout.hpp` defines the
+separate bounded artifact namespace under the fixed, preprovisioned
+`.artifacts-v1` directory. Each of the 80 slots may own exactly one
+`stdout`, `stderr`, and `joined` leaf with a canonical 10-digit slot number.
+Stdout and joined records must be nonempty and no larger than 4096 bytes.
+Stderr may be empty and is capped at 16384 bytes. The pure inspector rejects
+unknown or duplicate leaves, non-regular files, non-unit link counts, and size
+mismatches before it derives ordinary artifact seals. A second pure check
+closes that snapshot against validated journal replay: every committed slot
+requires all three exact seals, ready and complete states reject future
+artifacts, and only the current tainted slot may retain any durable orphan
+subset.
+
 `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` and the native
 implementation now close that read boundary. The public entry point accepts
 only the validated policy and runtime facts. The default production deployment
@@ -449,24 +462,29 @@ On POSIX systems, the loader walks the registered absolute base one component
 at a time from `/`, opens every component and the registered store root with
 `O_NOFOLLOW`. Every ancestor must be owned by root or the expected owner and
 must reject group/other writes; the final base, store root, lock, header, and
-records must be owned by the expected owner. macOS additionally rejects any
-extended ACL instead of assuming that mode bits describe all write grants. The
-loader verifies the process identity before it can create the persistent
-zero-length `.session.lock`, then takes a non-blocking exclusive `flock` before
-scanning. It keeps the base, root, and lock descriptors alive in a move-only
-session. Two independent directory enumerations surround fixed-size double
-reads of every known journal leaf. Identity, owner, group, mode, link count,
-size, timestamps, bytes, root identity, and the held lock binding must remain
-stable. Only then does the loader invoke the pure layout inspector and replay
-state machine. Unknown leaves, link substitutions, gaps, malformed wire data,
-concurrent leases, and snapshot changes fail closed with typed diagnostics.
-The store tracks directory authority identity separately from a full namespace
-generation fingerprint. Every authority-bearing action checks the latter
-before publication, including on filesystems where adding a regular leaf does
-not change the directory link count. After an owned publication, the store
-commits a new generation only after two stable snapshots and exact replay
-validation succeed. APFS link-count changes are rebased only inside that
-verified transition.
+records must be owned by the expected owner. The provisioned artifact root must
+be an exact `0700` directory owned by the same principal and on the same
+filesystem as the journal root. Artifact leaves must be exact `0600` regular
+files with one link. macOS additionally rejects any extended ACL instead of
+assuming that mode bits describe all write grants. The loader verifies the
+process identity before it can create the persistent zero-length
+`.session.lock`, then takes a non-blocking exclusive `flock` before scanning.
+It keeps the base, journal root, artifact root, and lock descriptors alive in a
+move-only session. Independent directory enumerations surround bounded double
+reads of every known journal and artifact leaf. Identity, owner, group, mode,
+link count, size, timestamps, bytes, root identity, and the held lock binding
+must remain stable. Only then does the loader invoke both pure layout
+inspectors, replay the journal, and close the artifacts against that replay.
+Unknown leaves, link substitutions, gaps, malformed wire data, concurrent
+leases, and snapshot changes fail closed with typed diagnostics.
+
+The store tracks directory authority identity separately from full journal and
+artifact namespace generation fingerprints. Every authority-bearing action
+checks both generations before publication, including on filesystems where
+adding a regular leaf does not change the directory link count. After an owned
+publication, the store commits a new generation only after two stable snapshots
+and exact replay and artifact validation succeed. APFS link-count changes are
+rebased only inside that verified transition.
 Windows builds compile an explicit
 `platform_unavailable` implementation until a held `RootDirectory` HANDLE
 implementation is available; they never fall back to caller-controlled paths.
@@ -477,11 +495,23 @@ an absent header when required, publishes exactly one pending start, and keeps
 the lease and private permit inside the returned active-slot transaction. A
 moved-from session, a terminal replay action, an existing target leaf, or any
 root or lock drift returns a typed failure with no authority. The active slot
-cannot start a child, publish artifacts, commit a sample, or release a raw
-receipt or permit. If a later stage fails after an earlier immutable leaf is
-already durable, the diagnostic separately retains the last durable object,
-record sequence, and byte count. A start conflict or allocation failure cannot
-therefore erase the fact that header publication already changed the journal.
+cannot start a child, commit a sample, or release a raw receipt or permit. Its
+public consuming `taint()` transition durably closes the unmatched start. A
+reopened dangling start exposes only the equivalent consuming
+`append_pending_taint()` recovery. Before that recovery appends a taint record,
+the held root re-establishes the header and exact start-record durability
+barriers, then strictly refreshes the unchanged replay. Neither destructor
+claims that a taint record reached storage.
+
+The private store integration may publish exactly one three-artifact batch
+while the active slot still traps the lease and launch permit. It creates
+stdout, stderr, and joined leaves in order relative to the held artifact root,
+then rereads and validates each exact seal. Only a complete batch creates a
+private receipt inside the session core. The receipt is not public commit
+authority and is discarded by taint. If a later stage fails after an earlier
+immutable leaf is already durable, the diagnostic separately retains the last
+durable object, record or artifact address, and byte count. A start conflict,
+partial artifact batch, or allocation failure cannot erase the durable prefix.
 
 This boundary assumes a trusted local filesystem and treats every process with
 the expected UID as the same principal. `flock` is advisory, so it cannot
@@ -508,13 +538,16 @@ sequence. Injectable file operations test both state machines, but cannot
 construct a journal durable-record receipt.
 
 Artifact seals in the pure journal remain stable accidental-corruption
-identities only. They do not parse or validate child stdout/stderr. Strict
-stdout and stderr codecs plus an authority-free join now produce an owning,
-typed `uncommitted` draft bound to the approved policy, runtime facts, and one
-canonical slot. That draft cannot publish an artifact, construct a journal
-commit payload, issue a receipt, or grant a launch permit. The live commit path
-therefore remains closed until a held-root publisher durably binds those exact
-bytes to a private receipt.
+identities only. They do not parse or validate child stdout/stderr or prove
+which process produced the bytes. Strict stdout and stderr codecs plus an
+authority-free join produce an owning, typed `uncommitted` draft bound to the
+approved policy, runtime facts, and one canonical slot. That draft cannot call
+the private publisher, construct a journal commit payload, issue a receipt, or
+grant a launch permit. The native store can durably bind three caller-provided
+byte sequences to a private batch receipt, but the live commit path remains
+closed until one authority-bearing runner owns child launch, bounded capture,
+wait status, strict join, artifact publication, and commit as one same-child
+transaction.
 
 CMake declares `test_siqs_shadow_proof_rss_holdout_probe` as a Release-only,
 single-sample production target with `EXCLUDE_FROM_ALL`. Default builds do not
@@ -571,20 +604,23 @@ snapshot before privately issuing the launch permit, then traps the permit
 inside a lease-owning active-slot transaction. A test-private portable
 transport can capture both streams from one synthetic child, but it is not
 connected to that transaction, the sealed probe, or the authority-free join.
-Durable artifact publication, same-child capture-to-join integration, commit
-and taint publication, an approved per-platform policy, and the serial campaign
-runner remain pending. Those authority-bearing components must validate the
-approved policy, actual runtime facts, and candidate revision before loading
-the sealed fixture table or constructing the first production command. A
-campaign interrupted after its durable start but before its sample commits
-remains tainted and cannot be retried in place.
+The store now also owns the fixed artifact root, strict artifact snapshots,
+three-leaf durable batch publication, private batch receipts, and explicit
+taint publication. Same-child capture-to-join integration, commit publication,
+an approved per-platform policy, and the serial campaign runner remain pending.
+Those authority-bearing components must validate the approved policy, actual
+runtime facts, and candidate revision before loading the sealed fixture table
+or constructing the first production command. A campaign interrupted after
+its durable start but before its sample commits remains tainted and cannot be
+retried in place.
 
 `tests/test_siqs_runtime_facts.cpp`,
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
 `tests/test_siqs_shadow_proof_rss_campaign.cpp`,
 `tests/test_siqs_shadow_proof_rss_campaign_journal.cpp`,
 `tests/test_siqs_shadow_proof_rss_campaign_journal_codec.cpp`,
-`tests/test_siqs_shadow_proof_rss_campaign_journal_layout.cpp`, and
+`tests/test_siqs_shadow_proof_rss_campaign_journal_layout.cpp`,
+`tests/test_siqs_shadow_proof_rss_campaign_artifact_layout.cpp`, and
 `tests/test_siqs_shadow_proof_rss_holdout_probe_contract.cpp` cover only
 injected values, synthetic metrics, and constexpr fixture identity. They do not
 run a probe, factor a holdout, or read live process memory.
@@ -602,9 +638,11 @@ It has no sealed-fixture, policy, journal, receipt, or launch-permit interface.
 
 `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` opens only
 temporary synthetic stores. It exercises native object identity, leases,
-held-root header/start publication, strict reread, and private permit issuance.
-The permit remains inside a non-launching active-slot transaction; the test
-does not open a sealed holdout, run a probe, or collect campaign evidence.
+held-root header/start and artifact publication, strict reread, crash recovery,
+explicit taint, injected publication failures, and private permit and batch
+receipt issuance. The capabilities remain inside a non-launching active-slot
+transaction; the test does not open a sealed holdout, run a probe, or collect
+campaign evidence.
 
 `tests/test_durable_immutable_file.cpp` uses temporary synthetic bytes to cover
 exclusive-create contention, partial writes, interrupted calls, zero progress,
@@ -831,6 +869,10 @@ Before promotion it must provide:
 - [x] Durable header/start publication and private receipt issuance from the
   held root, with root and lock revalidation at every authority-bearing action
   and a lease-bound active-slot transaction that exposes no raw permit.
+- [x] Fixed held artifact root with strict bounded layout and journal closure,
+  three-leaf durable batch publication, private batch receipts, explicit
+  durable taint and reopen recovery with predecessor confirmation, and injected
+  publication-failure tests.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved
   headroom, OS, architecture, RSS backend, resolved production sieve workers,
   candidate revision, approval identity, sealed corpus digest, trusted journal

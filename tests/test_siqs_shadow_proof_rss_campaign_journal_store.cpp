@@ -79,6 +79,20 @@ using BeginSlotFunction = SIQSShadowProofRssCampaignJournalBeginSlotResult (
     SIQSShadowProofRssCampaignJournalSession::*)() && noexcept;
 static_assert(std::same_as<decltype(&SIQSShadowProofRssCampaignJournalSession::begin_next_slot),
                            BeginSlotFunction>);
+static_assert(!std::is_default_constructible_v<SIQSShadowProofRssCampaignJournalTaintResult>);
+static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssCampaignJournalTaintResult>);
+static_assert(!std::is_copy_assignable_v<SIQSShadowProofRssCampaignJournalTaintResult>);
+static_assert(std::is_nothrow_move_constructible_v<SIQSShadowProofRssCampaignJournalTaintResult>);
+static_assert(std::is_nothrow_move_assignable_v<SIQSShadowProofRssCampaignJournalTaintResult>);
+using ActiveSlotTaintFunction = SIQSShadowProofRssCampaignJournalTaintResult (
+    SIQSShadowProofRssCampaignJournalActiveSlot::*)() && noexcept;
+using PendingTaintFunction = SIQSShadowProofRssCampaignJournalTaintResult (
+    SIQSShadowProofRssCampaignJournalSession::*)() && noexcept;
+static_assert(std::same_as<decltype(&SIQSShadowProofRssCampaignJournalActiveSlot::taint),
+                           ActiveSlotTaintFunction>);
+static_assert(
+    std::same_as<decltype(&SIQSShadowProofRssCampaignJournalSession::append_pending_taint),
+                 PendingTaintFunction>);
 
 [[noreturn]] void fail_check(const char* expression, const char* file, int line) {
     throw std::runtime_error(std::string(file) + ":" + std::to_string(line) +
@@ -294,6 +308,9 @@ void test_diagnostic_name_contracts() {
         std::pair{StoreError::base_invalid, std::string_view{"base_invalid"}},
         std::pair{StoreError::root_open_failed, std::string_view{"root_open_failed"}},
         std::pair{StoreError::root_invalid, std::string_view{"root_invalid"}},
+        std::pair{StoreError::artifact_root_open_failed,
+                  std::string_view{"artifact_root_open_failed"}},
+        std::pair{StoreError::artifact_root_invalid, std::string_view{"artifact_root_invalid"}},
         std::pair{StoreError::lock_open_failed, std::string_view{"lock_open_failed"}},
         std::pair{StoreError::lock_invalid, std::string_view{"lock_invalid"}},
         std::pair{StoreError::lock_busy, std::string_view{"lock_busy"}},
@@ -309,6 +326,9 @@ void test_diagnostic_name_contracts() {
                   std::string_view{"entry_changed_during_read"}},
         std::pair{StoreError::snapshot_changed, std::string_view{"snapshot_changed"}},
         std::pair{StoreError::layout_invalid, std::string_view{"layout_invalid"}},
+        std::pair{StoreError::artifact_layout_invalid, std::string_view{"artifact_layout_invalid"}},
+        std::pair{StoreError::artifact_consistency_invalid,
+                  std::string_view{"artifact_consistency_invalid"}},
         std::pair{StoreError::replay_rejected, std::string_view{"replay_rejected"}},
         std::pair{StoreError::session_inactive, std::string_view{"session_inactive"}},
         std::pair{StoreError::session_action_invalid, std::string_view{"session_action_invalid"}},
@@ -330,6 +350,8 @@ void test_diagnostic_name_contracts() {
         std::pair{StoreObject::deployment_registry, std::string_view{"deployment_registry"}},
         std::pair{StoreObject::trusted_base, std::string_view{"trusted_base"}},
         std::pair{StoreObject::store_root, std::string_view{"store_root"}},
+        std::pair{StoreObject::artifact_root, std::string_view{"artifact_root"}},
+        std::pair{StoreObject::artifact, std::string_view{"artifact"}},
         std::pair{StoreObject::session_lock, std::string_view{"session_lock"}},
         std::pair{StoreObject::directory, std::string_view{"directory"}},
         std::pair{StoreObject::journal_header, std::string_view{"journal_header"}},
@@ -343,6 +365,98 @@ void test_diagnostic_name_contracts() {
 }
 
 #ifndef _WIN32
+
+class TestPublicationOps final : public store_detail::PublicationOps {
+public:
+    enum class Action : uint8_t {
+        fail_before_create,
+        report_durable_without_file,
+        publish_bytes_then_report_sync_failure,
+    };
+
+    TestPublicationOps(std::size_t target_call, Action action) noexcept
+        : target_call_(target_call), action_(action) {}
+
+    [[nodiscard]] durable::PublishResult
+    publish_at(durable::NativeHandle parent_handle, const std::filesystem::path& leaf,
+               std::span<const std::byte> bytes) noexcept override {
+        ++publish_calls_;
+        if (publish_calls_ == target_call_) {
+            if (action_ == Action::report_durable_without_file) {
+                return {durable::PublishStatus::durable, {}, static_cast<uint64_t>(bytes.size())};
+            }
+            if (action_ == Action::publish_bytes_then_report_sync_failure) {
+                const auto publication = durable::publish_at(parent_handle, leaf, bytes);
+                if (!publication.is_durable()) {
+                    return publication;
+                }
+                return {durable::PublishStatus::parent_directory_sync_failed,
+                        std::make_error_code(std::errc::io_error), publication.bytes_written()};
+            }
+            return {durable::PublishStatus::open_failed, std::make_error_code(std::errc::io_error),
+                    0};
+        }
+        return durable::publish_at(parent_handle, leaf, bytes);
+    }
+
+    [[nodiscard]] durable::PublishResult
+    confirm_durable_at(durable::NativeHandle parent_handle,
+                       const std::filesystem::path& leaf) noexcept override {
+        return durable::confirm_durable_at(parent_handle, leaf);
+    }
+
+    [[nodiscard]] std::size_t publish_calls() const noexcept {
+        return publish_calls_;
+    }
+
+private:
+    std::size_t target_call_ = 0;
+    Action action_ = Action::fail_before_create;
+    std::size_t publish_calls_ = 0;
+};
+
+class TestConfirmationOps final : public store_detail::PublicationOps {
+public:
+    enum class Action : uint8_t {
+        fail_before_confirm,
+        remove_and_report_durable,
+    };
+
+    TestConfirmationOps(std::size_t target_call, Action action) noexcept
+        : target_call_(target_call), action_(action) {}
+
+    [[nodiscard]] durable::PublishResult
+    publish_at(durable::NativeHandle parent_handle, const std::filesystem::path& leaf,
+               std::span<const std::byte> bytes) noexcept override {
+        return durable::publish_at(parent_handle, leaf, bytes);
+    }
+
+    [[nodiscard]] durable::PublishResult
+    confirm_durable_at(durable::NativeHandle parent_handle,
+                       const std::filesystem::path& leaf) noexcept override {
+        ++confirm_calls_;
+        if (confirm_calls_ != target_call_) {
+            return durable::confirm_durable_at(parent_handle, leaf);
+        }
+        if (action_ == Action::remove_and_report_durable) {
+            if (::unlinkat(static_cast<int>(parent_handle), leaf.c_str(), 0) != 0) {
+                return {durable::PublishStatus::open_failed,
+                        std::error_code(errno, std::generic_category()), 0};
+            }
+            return {durable::PublishStatus::durable, {}, 0};
+        }
+        return {durable::PublishStatus::open_failed, std::make_error_code(std::errc::io_error), 0};
+    }
+
+    [[nodiscard]] std::size_t confirm_calls() const noexcept {
+        return confirm_calls_;
+    }
+
+private:
+    std::size_t target_call_ = 0;
+    Action action_ = Action::fail_before_confirm;
+    std::size_t confirm_calls_ = 0;
+};
 
 class TempStore final {
 public:
@@ -377,6 +491,11 @@ public:
         if (::mkdir(store_root_.c_str(), 0700) != 0) {
             throw std::system_error(errno, std::generic_category(), "mkdir store root");
         }
+        artifact_root_ =
+            store_root_ / std::string(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_DIRECTORY_LEAF);
+        if (::mkdir(artifact_root_.c_str(), 0700) != 0) {
+            throw std::system_error(errno, std::generic_category(), "mkdir artifact root");
+        }
     }
 
     ~TempStore() {
@@ -399,8 +518,16 @@ public:
         return store_root_;
     }
 
+    [[nodiscard]] const std::filesystem::path& artifact_root() const noexcept {
+        return artifact_root_;
+    }
+
     [[nodiscard]] std::filesystem::path store_leaf(std::string_view leaf) const {
         return store_root_ / std::string(leaf);
+    }
+
+    [[nodiscard]] std::filesystem::path artifact_leaf(std::string_view leaf) const {
+        return artifact_root_ / std::string(leaf);
     }
 
     [[nodiscard]] std::filesystem::path base_leaf(std::string_view leaf) const {
@@ -415,8 +542,26 @@ public:
         write_file(base_leaf(leaf), bytes);
     }
 
+    void write_artifact_leaf(std::string_view leaf, std::span<const std::byte> bytes) const {
+        write_file(artifact_leaf(leaf), bytes);
+    }
+
+    void write_artifact_leaf(std::string_view leaf, std::string_view bytes) const {
+        write_file(artifact_leaf(leaf),
+                   std::as_bytes(std::span<const char>(bytes.data(), bytes.size())));
+    }
+
     [[nodiscard]] std::vector<std::byte> read_store_leaf(std::string_view leaf) const {
-        std::ifstream stream(store_leaf(leaf), std::ios::binary);
+        return read_file(store_leaf(leaf));
+    }
+
+    [[nodiscard]] std::vector<std::byte> read_artifact_leaf(std::string_view leaf) const {
+        return read_file(artifact_leaf(leaf));
+    }
+
+private:
+    [[nodiscard]] static std::vector<std::byte> read_file(const std::filesystem::path& path) {
+        std::ifstream stream(path, std::ios::binary);
         std::vector<std::byte> bytes;
         for (std::istreambuf_iterator<char> it(stream), end; it != end; ++it) {
             bytes.push_back(static_cast<std::byte>(static_cast<unsigned char>(*it)));
@@ -424,7 +569,6 @@ public:
         return bytes;
     }
 
-private:
     static void write_file(const std::filesystem::path& path, std::span<const std::byte> bytes) {
         const int descriptor = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
         if (descriptor < 0) {
@@ -457,6 +601,7 @@ private:
     std::filesystem::path created_path_;
     std::filesystem::path trusted_base_;
     std::filesystem::path store_root_;
+    std::filesystem::path artifact_root_;
 };
 
 template <std::size_t Size>
@@ -494,6 +639,49 @@ canonical_start(const SIQSShadowProofRssCampaignJournalHeader& header) {
     return resume.prepared_slot_start->record();
 }
 
+[[nodiscard]] SIQSShadowProofRssJournalCommitPayload
+make_off_payload(std::string_view stdout_bytes, std::string_view stderr_bytes,
+                 std::string_view joined_bytes) {
+    const auto policy = make_policy();
+    SIQSShadowProofRssJournalCommitPayload payload;
+    payload.actual_operating_system = policy.operating_system;
+    payload.actual_architecture = policy.architecture;
+    payload.actual_memory_backend = policy.memory_backend;
+    payload.actual_resolved_sieve_workers = policy.resolved_production_sieve_workers;
+    payload.fresh_process = true;
+    payload.completed = true;
+    payload.factor_identity = SIQSShadowProofRssFactorIdentity::pass;
+    payload.proof_evidence = SIQSShadowProofRssEvidence::not_applicable;
+    payload.matrix_evidence = SIQSShadowProofRssEvidence::not_applicable;
+    payload.absolute_peak_rss_bytes = UINT64_C(123456);
+    payload.current_rss_bytes = UINT64_C(65432);
+    payload.peak_growth_bytes = UINT64_C(1234);
+    payload.wall_ns = UINT64_C(9999);
+    payload.stdout_seal = seal_siqs_shadow_proof_rss_artifact(
+        SIQSShadowProofRssArtifactKind::probe_stdout, stdout_bytes);
+    payload.stderr_seal = seal_siqs_shadow_proof_rss_artifact(
+        SIQSShadowProofRssArtifactKind::probe_stderr, stderr_bytes);
+    payload.joined_sample_seal = seal_siqs_shadow_proof_rss_artifact(
+        SIQSShadowProofRssArtifactKind::joined_gate_sample, joined_bytes);
+    return payload;
+}
+
+[[nodiscard]] SIQSShadowProofRssCampaignJournalRecord
+make_commit(const SIQSShadowProofRssCampaignJournalRecord& start,
+            const SIQSShadowProofRssJournalCommitPayload& payload) {
+    SIQSShadowProofRssCampaignJournalRecord commit;
+    commit.schema_version = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION;
+    commit.sequence_number = start.sequence_number + 1;
+    commit.kind = SIQSShadowProofRssJournalRecordKind::slot_committed;
+    commit.previous_record_digest = start.record_digest;
+    commit.plan_digest = start.plan_digest;
+    commit.slot_number = start.slot_number;
+    commit.slot_digest = start.slot_digest;
+    commit.commit_payload = payload;
+    commit.record_digest = shadow_proof_rss_campaign_journal_detail::record_digest(commit);
+    return commit;
+}
+
 void write_record(const TempStore& fixture, uint32_t leaf_sequence,
                   const SIQSShadowProofRssCampaignJournalRecord& record) {
     const auto leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(leaf_sequence);
@@ -501,6 +689,52 @@ void write_record(const TempStore& fixture, uint32_t leaf_sequence,
     const auto encoded = encode_siqs_shadow_proof_rss_campaign_journal_record(record);
     CHECK(encoded.bytes.has_value());
     fixture.write_store_leaf(leaf->view(), byte_span(*encoded.bytes));
+}
+
+[[nodiscard]] SIQSShadowProofRssCampaignArtifactLeaf
+artifact_leaf(uint32_t slot_number, SIQSShadowProofRssArtifactKind kind) {
+    const auto leaf = make_siqs_shadow_proof_rss_campaign_artifact_leaf(slot_number, kind);
+    CHECK(leaf.has_value());
+    return *leaf;
+}
+
+void write_artifact(const TempStore& fixture, uint32_t slot_number,
+                    SIQSShadowProofRssArtifactKind kind, std::string_view bytes) {
+    const auto leaf = artifact_leaf(slot_number, kind);
+    fixture.write_artifact_leaf(leaf.view(), bytes);
+}
+
+void write_committed_off_slots(const TempStore& fixture, uint32_t slot_count,
+                               std::string_view stdout_bytes, std::string_view stderr_bytes,
+                               std::string_view joined_bytes) {
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    const auto header = write_canonical_header(fixture);
+    std::vector<SIQSShadowProofRssCampaignJournalRecord> records;
+    records.reserve(static_cast<std::size_t>(slot_count) * 2);
+    for (uint32_t slot_number = 1; slot_number <= slot_count; ++slot_number) {
+        const auto resume = resume_siqs_shadow_proof_rss_campaign_journal(
+            &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header,
+            std::span<const SIQSShadowProofRssCampaignJournalRecord>(records));
+        CHECK(resume.status == SIQSShadowProofRssJournalStatus::ready);
+        CHECK(resume.action == SIQSShadowProofRssJournalAction::append_slot_start);
+        CHECK(resume.next_slot_number == slot_number);
+        CHECK(resume.prepared_slot_start.has_value());
+        const auto start = resume.prepared_slot_start->record();
+        write_record(fixture, start.sequence_number, start);
+        records.push_back(start);
+
+        write_artifact(fixture, slot_number, SIQSShadowProofRssArtifactKind::probe_stdout,
+                       stdout_bytes);
+        write_artifact(fixture, slot_number, SIQSShadowProofRssArtifactKind::probe_stderr,
+                       stderr_bytes);
+        write_artifact(fixture, slot_number, SIQSShadowProofRssArtifactKind::joined_gate_sample,
+                       joined_bytes);
+        const auto commit =
+            make_commit(start, make_off_payload(stdout_bytes, stderr_bytes, joined_bytes));
+        write_record(fixture, commit.sequence_number, commit);
+        records.push_back(commit);
+    }
 }
 
 void expect_private_regular_leaf(const std::filesystem::path& path, std::size_t expected_size) {
@@ -729,6 +963,777 @@ void test_crash_releases_persistent_lease(const std::string& executable) {
     auto reopened = take_successful_session(open_fixture(fixture));
     CHECK(reopened.has_value());
     CHECK(reopened->view().action == SIQSShadowProofRssJournalAction::create_header);
+}
+
+void test_active_slot_taint_is_durable_and_terminal() {
+    TempStore fixture;
+    auto session = take_successful_session(open_fixture(fixture));
+    CHECK(session.has_value());
+    auto begin = std::move(*session).begin_next_slot();
+    CHECK(begin);
+    auto active = std::move(begin).take_active_slot();
+    CHECK(active.has_value());
+    CHECK(active->active());
+
+    auto taint = std::move(*active).taint();
+    CHECK(!active->active());
+    CHECK(static_cast<bool>(taint));
+    CHECK(taint.diagnostic().error == StoreError::none);
+    CHECK(taint.view().status == SIQSShadowProofRssJournalStatus::tainted);
+    CHECK(taint.view().reason == SIQSShadowProofRssJournalReason::explicitly_tainted);
+    CHECK(taint.view().action == SIQSShadowProofRssJournalAction::none);
+    CHECK(taint.view().committed_slot_count == 0);
+    CHECK(taint.view().next_slot_number == 1);
+
+    const auto taint_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(2);
+    CHECK(taint_leaf.has_value());
+    const auto decoded = decode_siqs_shadow_proof_rss_campaign_journal_record(
+        fixture.read_store_leaf(taint_leaf->view()));
+    CHECK(decoded);
+    CHECK(decoded.value->kind == SIQSShadowProofRssJournalRecordKind::campaign_tainted);
+    CHECK(decoded.value->slot_number == 1);
+
+    auto reopened = take_successful_session(open_fixture(fixture));
+    CHECK(reopened.has_value());
+    CHECK(reopened->view() == taint.view());
+}
+
+void test_reopened_dangling_start_appends_pending_taint() {
+    TempStore fixture;
+    const auto header = write_canonical_header(fixture);
+    write_record(fixture, 1, canonical_start(header));
+    auto session = take_successful_session(open_fixture(fixture));
+    CHECK(session.has_value());
+    CHECK(session->view().action == SIQSShadowProofRssJournalAction::append_taint);
+
+    auto taint = std::move(*session).append_pending_taint();
+    CHECK(!session->active());
+    CHECK(static_cast<bool>(taint));
+    CHECK(taint.view().reason == SIQSShadowProofRssJournalReason::explicitly_tainted);
+    CHECK(taint.view().action == SIQSShadowProofRssJournalAction::none);
+
+    auto reopened = take_successful_session(open_fixture(fixture));
+    CHECK(reopened.has_value());
+    CHECK(reopened->view() == taint.view());
+}
+
+void test_reopened_taint_confirms_dangling_chain_durability() {
+    {
+        TempStore fixture;
+        TestPublicationOps ops(2,
+                               TestPublicationOps::Action::publish_bytes_then_report_sync_failure);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+
+        const auto begin = std::move(*session).begin_next_slot();
+        CHECK(!static_cast<bool>(begin));
+        CHECK(ops.publish_calls() == 2);
+        CHECK(begin.diagnostic().error == StoreError::publication_failed);
+        CHECK(begin.diagnostic().object == StoreObject::journal_record);
+        CHECK(begin.diagnostic().publication_status ==
+              durable::PublishStatus::parent_directory_sync_failed);
+        CHECK(begin.diagnostic().publication_bytes_written ==
+              SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_RECORD_WIRE_SIZE);
+        const auto start_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(1);
+        CHECK(start_leaf.has_value());
+        CHECK(std::filesystem::exists(fixture.store_leaf(start_leaf->view())));
+
+        auto reopened = take_successful_session(open_fixture(fixture));
+        CHECK(reopened.has_value());
+        CHECK(reopened->view().action == SIQSShadowProofRssJournalAction::append_taint);
+        const auto recovered = std::move(*reopened).append_pending_taint();
+        CHECK(static_cast<bool>(recovered));
+        CHECK(recovered.view().reason == SIQSShadowProofRssJournalReason::explicitly_tainted);
+    }
+    {
+        TempStore fixture;
+        const auto header = write_canonical_header(fixture);
+        write_record(fixture, 1, canonical_start(header));
+        TestConfirmationOps ops(1, TestConfirmationOps::Action::fail_before_confirm);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+
+        const auto taint = std::move(*session).append_pending_taint();
+        CHECK(!static_cast<bool>(taint));
+        CHECK(ops.confirm_calls() == 1);
+        CHECK(taint.diagnostic().error == StoreError::publication_failed);
+        CHECK(taint.diagnostic().object == StoreObject::journal_header);
+        CHECK(taint.diagnostic().publication_status == durable::PublishStatus::open_failed);
+        const auto taint_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(2);
+        CHECK(taint_leaf.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+
+        auto reopened = take_successful_session(open_fixture(fixture));
+        CHECK(reopened.has_value());
+        const auto recovered = std::move(*reopened).append_pending_taint();
+        CHECK(static_cast<bool>(recovered));
+    }
+    {
+        TempStore fixture;
+        const auto header = write_canonical_header(fixture);
+        write_record(fixture, 1, canonical_start(header));
+        TestConfirmationOps ops(2, TestConfirmationOps::Action::fail_before_confirm);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+
+        const auto taint = std::move(*session).append_pending_taint();
+        CHECK(!static_cast<bool>(taint));
+        CHECK(ops.confirm_calls() == 2);
+        CHECK(taint.diagnostic().error == StoreError::publication_failed);
+        CHECK(taint.diagnostic().object == StoreObject::journal_record);
+        CHECK(taint.diagnostic().record_sequence == 1);
+        CHECK(taint.diagnostic().publication_status == durable::PublishStatus::open_failed);
+        const auto taint_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(2);
+        CHECK(taint_leaf.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+
+        auto reopened = take_successful_session(open_fixture(fixture));
+        CHECK(reopened.has_value());
+        const auto recovered = std::move(*reopened).append_pending_taint();
+        CHECK(static_cast<bool>(recovered));
+    }
+    {
+        TempStore fixture;
+        const auto header = write_canonical_header(fixture);
+        write_record(fixture, 1, canonical_start(header));
+        TestConfirmationOps ops(2, TestConfirmationOps::Action::remove_and_report_durable);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+
+        const auto taint = std::move(*session).append_pending_taint();
+        CHECK(!static_cast<bool>(taint));
+        CHECK(ops.confirm_calls() == 2);
+        CHECK(taint.diagnostic().error == StoreError::snapshot_changed);
+        CHECK(taint.diagnostic().publication_status == durable::PublishStatus::durable);
+        const auto start_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(1);
+        const auto taint_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(2);
+        CHECK(start_leaf.has_value());
+        CHECK(taint_leaf.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(start_leaf->view())));
+        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+    }
+    {
+        TempStore fixture;
+        TestConfirmationOps ops(1, TestConfirmationOps::Action::fail_before_confirm);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin);
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+
+        const auto taint = std::move(*active).taint();
+        CHECK(static_cast<bool>(taint));
+        CHECK(ops.confirm_calls() == 0);
+    }
+}
+
+void test_taint_rejects_inactive_and_nonpending_sessions() {
+    {
+        TempStore fixture;
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        auto rejected = std::move(*session).append_pending_taint();
+        CHECK(!static_cast<bool>(rejected));
+        CHECK(rejected.diagnostic().error == StoreError::session_action_invalid);
+        CHECK(rejected.diagnostic().journal_reason == SIQSShadowProofRssJournalReason::ready);
+        auto inactive = std::move(*session).append_pending_taint();
+        CHECK(!static_cast<bool>(inactive));
+        CHECK(inactive.diagnostic().error == StoreError::session_inactive);
+    }
+    {
+        TempStore fixture;
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin);
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+        auto moved(std::move(*active));
+        CHECK(!active->active());
+        auto rejected = std::move(*active).taint();
+        CHECK(!static_cast<bool>(rejected));
+        CHECK(rejected.diagnostic().error == StoreError::session_inactive);
+        auto taint = std::move(moved).taint();
+        CHECK(static_cast<bool>(taint));
+    }
+}
+
+void test_begin_crash_recovers_only_through_pending_taint(const std::string& executable) {
+    TempStore fixture;
+    const auto crash = gnfs::test::run_child_process(
+        executable, {"--begin-and-crash", fixture.trusted_base().string()});
+    CHECK(crash.exited);
+    CHECK(!crash.signaled);
+    CHECK(crash.exit_code == 74);
+
+    auto reopened = take_successful_session(open_fixture(fixture));
+    CHECK(reopened.has_value());
+    CHECK(reopened->view().status == SIQSShadowProofRssJournalStatus::tainted);
+    CHECK(reopened->view().reason == SIQSShadowProofRssJournalReason::dangling_slot_start);
+    CHECK(reopened->view().action == SIQSShadowProofRssJournalAction::append_taint);
+    auto taint = std::move(*reopened).append_pending_taint();
+    CHECK(static_cast<bool>(taint));
+    CHECK(taint.view().reason == SIQSShadowProofRssJournalReason::explicitly_tainted);
+}
+
+void test_artifact_root_is_required_and_private() {
+    {
+        TempStore fixture;
+        std::error_code error;
+        CHECK(std::filesystem::remove(fixture.artifact_root(), error));
+        CHECK(!error);
+        expect_open_error(open_fixture(fixture), StoreError::artifact_root_open_failed,
+                          StoreObject::artifact_root);
+    }
+    {
+        TempStore fixture;
+        CHECK(::chmod(fixture.artifact_root().c_str(), 0750) == 0);
+        expect_open_error(open_fixture(fixture), StoreError::artifact_root_invalid,
+                          StoreObject::artifact_root);
+    }
+    {
+        TempStore fixture;
+        CHECK(::chmod(fixture.artifact_root().c_str(), 01700) == 0);
+        expect_open_error(open_fixture(fixture), StoreError::artifact_root_invalid,
+                          StoreObject::artifact_root);
+    }
+    {
+        TempStore fixture;
+        fixture.write_artifact_leaf("unexpected.rssa", "sentinel");
+        auto result = open_fixture(fixture);
+        CHECK(result.diagnostic().artifact_layout.error ==
+              SIQSShadowProofRssCampaignArtifactLayoutError::unknown_entry);
+        expect_open_error(std::move(result), StoreError::artifact_layout_invalid,
+                          StoreObject::artifact);
+    }
+}
+
+void test_artifact_root_identity_and_generation_are_revalidated() {
+    {
+        TempStore fixture;
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        const auto displaced = fixture.store_root() / ".artifacts-displaced";
+        std::error_code error;
+        std::filesystem::rename(fixture.artifact_root(), displaced, error);
+        CHECK(!error);
+        CHECK(::mkdir(fixture.artifact_root().c_str(), 0700) == 0);
+
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(!static_cast<bool>(begin));
+        CHECK(begin.diagnostic().error == StoreError::snapshot_changed);
+        CHECK(begin.diagnostic().object == StoreObject::artifact_root);
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+    }
+    {
+        TempStore fixture;
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        write_artifact(fixture, 1, SIQSShadowProofRssArtifactKind::probe_stdout, "out-of-band\n");
+
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(!static_cast<bool>(begin));
+        CHECK(begin.diagnostic().error == StoreError::snapshot_changed);
+        CHECK(begin.diagnostic().object == StoreObject::artifact_root);
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+    }
+}
+
+void test_active_slot_actions_revalidate_authority_before_publication() {
+    constexpr std::string_view stdout_bytes = "synthetic-stdout\n";
+    constexpr std::string_view stderr_bytes;
+    constexpr std::string_view joined_bytes = "synthetic-joined\n";
+
+    {
+        TempStore fixture;
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin);
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+
+        const auto displaced = fixture.store_root() / ".artifacts-displaced";
+        std::error_code error;
+        std::filesystem::rename(fixture.artifact_root(), displaced, error);
+        CHECK(!error);
+        CHECK(::mkdir(fixture.artifact_root().c_str(), 0700) == 0);
+
+        const auto publication = store_detail::SessionFactory::publish_artifact_batch(
+            *active, stdout_bytes, stderr_bytes, joined_bytes);
+        CHECK(!static_cast<bool>(publication));
+        CHECK(publication.diagnostic.error == StoreError::snapshot_changed);
+        CHECK(publication.diagnostic.object == StoreObject::artifact_root);
+        for (const auto kind : {SIQSShadowProofRssArtifactKind::probe_stdout,
+                                SIQSShadowProofRssArtifactKind::probe_stderr,
+                                SIQSShadowProofRssArtifactKind::joined_gate_sample}) {
+            const auto leaf = artifact_leaf(1, kind);
+            CHECK(!std::filesystem::exists(displaced / std::string(leaf.view())));
+            CHECK(!std::filesystem::exists(fixture.artifact_leaf(leaf.view())));
+        }
+    }
+    {
+        TempStore fixture;
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin);
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+        fixture.write_artifact_leaf("unexpected.rssa", "sentinel");
+
+        const auto taint = std::move(*active).taint();
+        CHECK(!static_cast<bool>(taint));
+        CHECK(taint.diagnostic().error == StoreError::snapshot_changed);
+        CHECK(taint.diagnostic().object == StoreObject::artifact_root);
+        const auto taint_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(2);
+        CHECK(taint_leaf.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+    }
+    {
+        TempStore fixture;
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin);
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+
+        const auto lock =
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF);
+        std::error_code error;
+        CHECK(std::filesystem::remove(lock, error));
+        CHECK(!error);
+        fixture.write_store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF, {});
+
+        const auto taint = std::move(*active).taint();
+        CHECK(!static_cast<bool>(taint));
+        CHECK(taint.diagnostic().error == StoreError::lock_invalid);
+        CHECK(taint.diagnostic().object == StoreObject::session_lock);
+        const auto taint_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(2);
+        CHECK(taint_leaf.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+    }
+}
+
+void test_private_artifact_batch_publisher_preserves_closed_commit_boundary(
+    const std::string& executable) {
+    constexpr std::string_view stdout_bytes = "synthetic-stdout\n";
+    constexpr std::string_view stderr_bytes;
+    constexpr std::string_view joined_bytes = "synthetic-joined\n";
+
+    TempStore fixture;
+    auto session = take_successful_session(open_fixture(fixture));
+    CHECK(session.has_value());
+    auto begin = std::move(*session).begin_next_slot();
+    CHECK(begin);
+    auto active = std::move(begin).take_active_slot();
+    CHECK(active.has_value());
+
+    const auto publication = store_detail::SessionFactory::publish_artifact_batch(
+        *active, stdout_bytes, stderr_bytes, joined_bytes);
+    if (!publication) {
+        std::cerr << "artifact batch failed: "
+                  << siqs_shadow_proof_rss_campaign_journal_store_error_name(
+                         publication.diagnostic.error)
+                  << '/'
+                  << siqs_shadow_proof_rss_campaign_journal_store_object_name(
+                         publication.diagnostic.object)
+                  << " native=" << publication.diagnostic.native_error.value() << " layout="
+                  << siqs_shadow_proof_rss_campaign_artifact_layout_error_name(
+                         publication.diagnostic.artifact_layout.error)
+                  << " consistency="
+                  << siqs_shadow_proof_rss_campaign_artifact_consistency_error_name(
+                         publication.diagnostic.artifact_consistency.error)
+                  << '\n';
+    }
+    CHECK(static_cast<bool>(publication));
+    CHECK(publication.seals[0] == seal_siqs_shadow_proof_rss_artifact(
+                                      SIQSShadowProofRssArtifactKind::probe_stdout, stdout_bytes));
+    CHECK(publication.seals[1] == seal_siqs_shadow_proof_rss_artifact(
+                                      SIQSShadowProofRssArtifactKind::probe_stderr, stderr_bytes));
+    CHECK(publication.seals[2] ==
+          seal_siqs_shadow_proof_rss_artifact(SIQSShadowProofRssArtifactKind::joined_gate_sample,
+                                              joined_bytes));
+    CHECK(active->active());
+    CHECK(active->view().reason == SIQSShadowProofRssJournalReason::dangling_slot_start);
+    const auto duplicate = store_detail::SessionFactory::publish_artifact_batch(
+        *active, stdout_bytes, stderr_bytes, joined_bytes);
+    CHECK(!static_cast<bool>(duplicate));
+    CHECK(duplicate.diagnostic.error == StoreError::session_action_invalid);
+
+    const std::array kinds{
+        SIQSShadowProofRssArtifactKind::probe_stdout,
+        SIQSShadowProofRssArtifactKind::probe_stderr,
+        SIQSShadowProofRssArtifactKind::joined_gate_sample,
+    };
+    const std::array expected_bytes{stdout_bytes, stderr_bytes, joined_bytes};
+    for (std::size_t index = 0; index < kinds.size(); ++index) {
+        const auto leaf = artifact_leaf(1, kinds[index]);
+        expect_private_regular_leaf(fixture.artifact_leaf(leaf.view()),
+                                    expected_bytes[index].size());
+        const auto expected_span = std::as_bytes(
+            std::span<const char>(expected_bytes[index].data(), expected_bytes[index].size()));
+        CHECK(fixture.read_artifact_leaf(leaf.view()) ==
+              std::vector<std::byte>(expected_span.begin(), expected_span.end()));
+    }
+
+    const auto busy = gnfs::test::run_child_process(
+        executable, {"--expect-lock-busy", fixture.trusted_base().string()});
+    CHECK(busy.exited);
+    CHECK(!busy.signaled);
+    CHECK(busy.exit_code == 0);
+
+    // Publishing durable artifacts deliberately does not create a public
+    // commit authority. The only currently exposed closure is terminal taint.
+    const auto taint = std::move(*active).taint();
+    CHECK(static_cast<bool>(taint));
+    auto reopened = take_successful_session(open_fixture(fixture));
+    CHECK(reopened.has_value());
+    CHECK(reopened->view().reason == SIQSShadowProofRssJournalReason::explicitly_tainted);
+}
+
+void test_artifact_batch_validates_mode_and_bounds_before_publication() {
+    constexpr std::string_view stdout_bytes = "synthetic-stdout\n";
+    constexpr std::string_view joined_bytes = "synthetic-joined\n";
+
+    {
+        TempStore fixture;
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin);
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+
+        const std::string oversized_stdout(
+            SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_STDOUT_MAX_BYTES + 1, 's');
+        const std::string oversized_stderr(
+            SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_STDERR_MAX_BYTES + 1, 'e');
+        const std::string oversized_joined(
+            SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_JOINED_MAX_BYTES + 1, 'j');
+        const auto expect_rejected = [&](std::string_view probe_stdout,
+                                         std::string_view probe_stderr, std::string_view joined) {
+            const auto publication = store_detail::SessionFactory::publish_artifact_batch(
+                *active, probe_stdout, probe_stderr, joined);
+            CHECK(!static_cast<bool>(publication));
+            CHECK(publication.diagnostic.error == StoreError::receipt_rejected);
+            CHECK(publication.diagnostic.object == StoreObject::artifact);
+            CHECK(!publication.diagnostic.last_durable_publication_object.has_value());
+        };
+        expect_rejected("", "", joined_bytes);
+        expect_rejected(stdout_bytes, "off-mode-stderr\n", joined_bytes);
+        expect_rejected(stdout_bytes, "", "");
+        expect_rejected(oversized_stdout, "", joined_bytes);
+        expect_rejected(stdout_bytes, oversized_stderr, joined_bytes);
+        expect_rejected(stdout_bytes, "", oversized_joined);
+        for (const auto kind : {SIQSShadowProofRssArtifactKind::probe_stdout,
+                                SIQSShadowProofRssArtifactKind::probe_stderr,
+                                SIQSShadowProofRssArtifactKind::joined_gate_sample}) {
+            CHECK(!std::filesystem::exists(fixture.artifact_leaf(artifact_leaf(1, kind).view())));
+        }
+        const auto taint = std::move(*active).taint();
+        CHECK(static_cast<bool>(taint));
+    }
+    {
+        constexpr std::string_view off_stdout = "committed-off-stdout\n";
+        constexpr std::string_view off_stderr;
+        constexpr std::string_view off_joined = "committed-off-joined\n";
+        constexpr std::string_view observe_stderr = "synthetic-observe-stderr\n";
+
+        TempStore fixture;
+        write_committed_off_slots(fixture, 3, off_stdout, off_stderr, off_joined);
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        CHECK(session->view().next_slot_number == 4);
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin);
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+
+        const auto rejected = store_detail::SessionFactory::publish_artifact_batch(
+            *active, stdout_bytes, "", joined_bytes);
+        CHECK(!static_cast<bool>(rejected));
+        CHECK(rejected.diagnostic.error == StoreError::receipt_rejected);
+        for (const auto kind : {SIQSShadowProofRssArtifactKind::probe_stdout,
+                                SIQSShadowProofRssArtifactKind::probe_stderr,
+                                SIQSShadowProofRssArtifactKind::joined_gate_sample}) {
+            CHECK(!std::filesystem::exists(fixture.artifact_leaf(artifact_leaf(4, kind).view())));
+        }
+
+        const auto publication = store_detail::SessionFactory::publish_artifact_batch(
+            *active, stdout_bytes, observe_stderr, joined_bytes);
+        CHECK(static_cast<bool>(publication));
+        CHECK(publication.seals[1] ==
+              seal_siqs_shadow_proof_rss_artifact(SIQSShadowProofRssArtifactKind::probe_stderr,
+                                                  observe_stderr));
+        const auto taint = std::move(*active).taint();
+        CHECK(static_cast<bool>(taint));
+    }
+}
+
+void test_artifact_publication_failures_preserve_prefix_and_trace() {
+    constexpr std::string_view stdout_bytes = "synthetic-stdout\n";
+    constexpr std::string_view stderr_bytes;
+    constexpr std::string_view joined_bytes = "synthetic-joined\n";
+
+    {
+        TempStore fixture;
+        TestPublicationOps ops(4, TestPublicationOps::Action::fail_before_create);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin);
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+
+        const auto publication = store_detail::SessionFactory::publish_artifact_batch(
+            *active, stdout_bytes, stderr_bytes, joined_bytes);
+        CHECK(!static_cast<bool>(publication));
+        CHECK(ops.publish_calls() == 4);
+        CHECK(publication.diagnostic.error == StoreError::publication_failed);
+        CHECK(publication.diagnostic.object == StoreObject::artifact);
+        CHECK(publication.diagnostic.artifact_slot_number == 1);
+        CHECK(publication.diagnostic.artifact_kind == SIQSShadowProofRssArtifactKind::probe_stderr);
+        CHECK(publication.diagnostic.last_durable_publication_object == StoreObject::artifact);
+        CHECK(publication.diagnostic.last_durable_artifact_slot_number == 1);
+        CHECK(publication.diagnostic.last_durable_artifact_kind ==
+              SIQSShadowProofRssArtifactKind::probe_stdout);
+        CHECK(publication.diagnostic.last_durable_publication_bytes_written == stdout_bytes.size());
+        CHECK(std::filesystem::exists(fixture.artifact_leaf(
+            artifact_leaf(1, SIQSShadowProofRssArtifactKind::probe_stdout).view())));
+        CHECK(!std::filesystem::exists(fixture.artifact_leaf(
+            artifact_leaf(1, SIQSShadowProofRssArtifactKind::probe_stderr).view())));
+        const auto taint = std::move(*active).taint();
+        CHECK(static_cast<bool>(taint));
+    }
+    {
+        TempStore fixture;
+        TestPublicationOps ops(3, TestPublicationOps::Action::report_durable_without_file);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin);
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+
+        const auto publication = store_detail::SessionFactory::publish_artifact_batch(
+            *active, stdout_bytes, stderr_bytes, joined_bytes);
+        CHECK(!static_cast<bool>(publication));
+        CHECK(publication.diagnostic.error == StoreError::snapshot_changed);
+        CHECK(publication.diagnostic.object == StoreObject::artifact);
+        CHECK(publication.diagnostic.last_durable_artifact_kind ==
+              SIQSShadowProofRssArtifactKind::probe_stdout);
+        CHECK(!std::filesystem::exists(fixture.artifact_leaf(
+            artifact_leaf(1, SIQSShadowProofRssArtifactKind::probe_stdout).view())));
+        const auto taint = std::move(*active).taint();
+        CHECK(static_cast<bool>(taint));
+    }
+    {
+        TempStore fixture;
+        {
+            TestPublicationOps ops(5, TestPublicationOps::Action::fail_before_create);
+            auto deployment = make_deployment(fixture.trusted_base());
+            deployment.publication_ops = &ops;
+            const auto policy = make_policy();
+            const auto facts = make_facts();
+            auto session = take_successful_session(open_private(&policy, &facts, deployment));
+            CHECK(session.has_value());
+            auto begin = std::move(*session).begin_next_slot();
+            CHECK(begin);
+            auto active = std::move(begin).take_active_slot();
+            CHECK(active.has_value());
+
+            const auto publication = store_detail::SessionFactory::publish_artifact_batch(
+                *active, stdout_bytes, stderr_bytes, joined_bytes);
+            CHECK(!static_cast<bool>(publication));
+            CHECK(ops.publish_calls() == 5);
+            CHECK(publication.diagnostic.error == StoreError::publication_failed);
+            CHECK(publication.diagnostic.object == StoreObject::artifact);
+            CHECK(publication.diagnostic.artifact_slot_number == 1);
+            CHECK(publication.diagnostic.artifact_kind ==
+                  SIQSShadowProofRssArtifactKind::joined_gate_sample);
+            CHECK(publication.diagnostic.last_durable_artifact_slot_number == 1);
+            CHECK(publication.diagnostic.last_durable_artifact_kind ==
+                  SIQSShadowProofRssArtifactKind::probe_stderr);
+            CHECK(publication.diagnostic.last_durable_publication_bytes_written == 0);
+            CHECK(std::filesystem::exists(fixture.artifact_leaf(
+                artifact_leaf(1, SIQSShadowProofRssArtifactKind::probe_stdout).view())));
+            CHECK(std::filesystem::exists(fixture.artifact_leaf(
+                artifact_leaf(1, SIQSShadowProofRssArtifactKind::probe_stderr).view())));
+            CHECK(!std::filesystem::exists(fixture.artifact_leaf(
+                artifact_leaf(1, SIQSShadowProofRssArtifactKind::joined_gate_sample).view())));
+        }
+
+        auto reopened = take_successful_session(open_fixture(fixture));
+        CHECK(reopened.has_value());
+        CHECK(reopened->view().reason == SIQSShadowProofRssJournalReason::dangling_slot_start);
+        CHECK(reopened->view().action == SIQSShadowProofRssJournalAction::append_taint);
+        const auto taint = std::move(*reopened).append_pending_taint();
+        CHECK(static_cast<bool>(taint));
+        CHECK(taint.view().reason == SIQSShadowProofRssJournalReason::explicitly_tainted);
+    }
+}
+
+void test_artifact_batch_crash_recovers_only_to_taint(const std::string& executable) {
+    TempStore fixture;
+    const auto crash = gnfs::test::run_child_process(
+        executable, {"--publish-artifacts-and-crash", fixture.trusted_base().string()});
+    CHECK(crash.exited);
+    CHECK(!crash.signaled);
+    CHECK(crash.exit_code == 75);
+
+    auto reopened = take_successful_session(open_fixture(fixture));
+    CHECK(reopened.has_value());
+    CHECK(reopened->view().reason == SIQSShadowProofRssJournalReason::dangling_slot_start);
+    CHECK(reopened->view().action == SIQSShadowProofRssJournalAction::append_taint);
+    const auto taint = std::move(*reopened).append_pending_taint();
+    CHECK(static_cast<bool>(taint));
+}
+
+void test_reopen_closes_artifacts_against_journal() {
+    constexpr std::string_view stdout_bytes = "synthetic-stdout-record\n";
+    constexpr std::string_view stderr_bytes;
+    constexpr std::string_view joined_bytes = "synthetic-joined-sample\n";
+
+    {
+        TempStore fixture;
+        const auto header = write_canonical_header(fixture);
+        const auto start = canonical_start(header);
+        write_record(fixture, 1, start);
+        write_artifact(fixture, 1, SIQSShadowProofRssArtifactKind::probe_stdout, stdout_bytes);
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        CHECK(session->view().action == SIQSShadowProofRssJournalAction::append_taint);
+    }
+    {
+        TempStore fixture;
+        const auto header = write_canonical_header(fixture);
+        write_record(fixture, 1, canonical_start(header));
+        write_artifact(fixture, 2, SIQSShadowProofRssArtifactKind::probe_stdout, stdout_bytes);
+        auto result = open_fixture(fixture);
+        CHECK(result.diagnostic().artifact_consistency.error ==
+              SIQSShadowProofRssCampaignArtifactConsistencyError::unexpected_artifact);
+        expect_open_error(std::move(result), StoreError::artifact_consistency_invalid,
+                          StoreObject::artifact);
+    }
+    {
+        TempStore fixture;
+        const auto header = write_canonical_header(fixture);
+        const auto start = canonical_start(header);
+        write_record(fixture, 1, start);
+        const auto payload = make_off_payload(stdout_bytes, stderr_bytes, joined_bytes);
+        write_record(fixture, 2, make_commit(start, payload));
+        write_artifact(fixture, 1, SIQSShadowProofRssArtifactKind::probe_stdout, stdout_bytes);
+        write_artifact(fixture, 1, SIQSShadowProofRssArtifactKind::probe_stderr, stderr_bytes);
+        write_artifact(fixture, 1, SIQSShadowProofRssArtifactKind::joined_gate_sample,
+                       joined_bytes);
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        CHECK(session->view().status == SIQSShadowProofRssJournalStatus::ready);
+        CHECK(session->view().committed_slot_count == 1);
+        CHECK(session->view().next_slot_number == 2);
+    }
+    {
+        TempStore fixture;
+        const auto header = write_canonical_header(fixture);
+        const auto start = canonical_start(header);
+        write_record(fixture, 1, start);
+        const auto payload = make_off_payload(stdout_bytes, stderr_bytes, joined_bytes);
+        write_record(fixture, 2, make_commit(start, payload));
+        write_artifact(fixture, 1, SIQSShadowProofRssArtifactKind::probe_stdout,
+                       "tampered-stdout\n");
+        write_artifact(fixture, 1, SIQSShadowProofRssArtifactKind::probe_stderr, stderr_bytes);
+        write_artifact(fixture, 1, SIQSShadowProofRssArtifactKind::joined_gate_sample,
+                       joined_bytes);
+        auto result = open_fixture(fixture);
+        CHECK(result.diagnostic().artifact_consistency.error ==
+              SIQSShadowProofRssCampaignArtifactConsistencyError::committed_artifact_mismatch);
+        expect_open_error(std::move(result), StoreError::artifact_consistency_invalid,
+                          StoreObject::artifact);
+    }
+}
+
+void test_artifact_leaf_trust_and_shape_fail_closed() {
+    constexpr std::string_view stdout_bytes = "synthetic-stdout\n";
+    const auto stdout_leaf = artifact_leaf(1, SIQSShadowProofRssArtifactKind::probe_stdout);
+    {
+        TempStore fixture;
+        const auto header = write_canonical_header(fixture);
+        write_record(fixture, 1, canonical_start(header));
+        write_artifact(fixture, 1, SIQSShadowProofRssArtifactKind::probe_stdout, stdout_bytes);
+        CHECK(::chmod(fixture.artifact_leaf(stdout_leaf.view()).c_str(), 0640) == 0);
+        expect_open_error(open_fixture(fixture), StoreError::entry_trust_invalid,
+                          StoreObject::artifact);
+    }
+    {
+        TempStore fixture;
+        const auto header = write_canonical_header(fixture);
+        write_record(fixture, 1, canonical_start(header));
+        write_artifact(fixture, 1, SIQSShadowProofRssArtifactKind::probe_stdout, stdout_bytes);
+        CHECK(::chmod(fixture.artifact_leaf(stdout_leaf.view()).c_str(), 04600) == 0);
+        expect_open_error(open_fixture(fixture), StoreError::entry_trust_invalid,
+                          StoreObject::artifact);
+    }
+    {
+        TempStore fixture;
+        const auto header = write_canonical_header(fixture);
+        write_record(fixture, 1, canonical_start(header));
+        const auto target = fixture.base_leaf("artifact-symlink-target");
+        fixture.write_base_leaf("artifact-symlink-target", {});
+        CHECK(::symlink(target.c_str(), fixture.artifact_leaf(stdout_leaf.view()).c_str()) == 0);
+        auto result = open_fixture(fixture);
+        CHECK(result.diagnostic().artifact_layout.error ==
+              SIQSShadowProofRssCampaignArtifactLayoutError::entry_not_regular_file);
+        expect_open_error(std::move(result), StoreError::artifact_layout_invalid,
+                          StoreObject::artifact);
+    }
+    {
+        TempStore fixture;
+        const auto header = write_canonical_header(fixture);
+        write_record(fixture, 1, canonical_start(header));
+        fixture.write_base_leaf(
+            "artifact-hardlink-target",
+            std::as_bytes(std::span<const char>(stdout_bytes.data(), stdout_bytes.size())));
+        CHECK(::link(fixture.base_leaf("artifact-hardlink-target").c_str(),
+                     fixture.artifact_leaf(stdout_leaf.view()).c_str()) == 0);
+        auto result = open_fixture(fixture);
+        CHECK(result.diagnostic().artifact_layout.error ==
+              SIQSShadowProofRssCampaignArtifactLayoutError::link_count_invalid);
+        expect_open_error(std::move(result), StoreError::artifact_layout_invalid,
+                          StoreObject::artifact);
+    }
 }
 
 void test_unknown_case_and_temporary_leaves_fail_closed() {
@@ -985,6 +1990,126 @@ void test_header_only_store_begins_slot_without_replacing_header() {
     CHECK(decoded.value == canonical_start(header));
 }
 
+void test_store_publication_injection_preserves_durable_trace() {
+    {
+        TempStore fixture;
+        TestPublicationOps ops(2, TestPublicationOps::Action::fail_before_create);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(!static_cast<bool>(begin));
+        CHECK(ops.publish_calls() == 2);
+        CHECK(begin.diagnostic().error == StoreError::publication_failed);
+        CHECK(begin.diagnostic().object == StoreObject::journal_record);
+        CHECK(begin.diagnostic().publication_status == durable::PublishStatus::open_failed);
+        CHECK(begin.diagnostic().publication_bytes_written == 0);
+        CHECK(begin.diagnostic().last_durable_publication_object == StoreObject::journal_header);
+        CHECK(begin.diagnostic().last_durable_publication_record_sequence ==
+              SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE);
+        CHECK(begin.diagnostic().last_durable_publication_bytes_written ==
+              SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_WIRE_SIZE);
+        CHECK(std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+        const auto start_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(1);
+        CHECK(start_leaf.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(start_leaf->view())));
+    }
+    {
+        TempStore fixture;
+        TestPublicationOps ops(1, TestPublicationOps::Action::report_durable_without_file);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(!static_cast<bool>(begin));
+        CHECK(ops.publish_calls() == 1);
+        CHECK(begin.diagnostic().error == StoreError::snapshot_changed);
+        CHECK(begin.diagnostic().object == StoreObject::journal_header);
+        CHECK(begin.diagnostic().last_durable_publication_object == StoreObject::journal_header);
+        CHECK(begin.diagnostic().last_durable_publication_bytes_written ==
+              SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_WIRE_SIZE);
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+    }
+}
+
+void test_taint_publication_injection_preserves_recovery() {
+    {
+        TempStore fixture;
+        TestPublicationOps ops(3, TestPublicationOps::Action::fail_before_create);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin);
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+
+        const auto taint = std::move(*active).taint();
+        CHECK(!static_cast<bool>(taint));
+        CHECK(ops.publish_calls() == 3);
+        CHECK(taint.diagnostic().error == StoreError::publication_failed);
+        CHECK(taint.diagnostic().object == StoreObject::journal_record);
+        CHECK(taint.diagnostic().record_sequence == 2);
+        CHECK(taint.diagnostic().publication_status == durable::PublishStatus::open_failed);
+        CHECK(taint.diagnostic().publication_bytes_written == 0);
+        CHECK(!taint.diagnostic().last_durable_publication_object.has_value());
+        const auto taint_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(2);
+        CHECK(taint_leaf.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+
+        auto reopened = take_successful_session(open_fixture(fixture));
+        CHECK(reopened.has_value());
+        CHECK(reopened->view().action == SIQSShadowProofRssJournalAction::append_taint);
+        const auto recovered = std::move(*reopened).append_pending_taint();
+        CHECK(static_cast<bool>(recovered));
+        CHECK(recovered.view().reason == SIQSShadowProofRssJournalReason::explicitly_tainted);
+    }
+    {
+        TempStore fixture;
+        TestPublicationOps ops(3, TestPublicationOps::Action::report_durable_without_file);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin);
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+
+        const auto taint = std::move(*active).taint();
+        CHECK(!static_cast<bool>(taint));
+        CHECK(ops.publish_calls() == 3);
+        CHECK(taint.diagnostic().error == StoreError::snapshot_changed);
+        CHECK(taint.diagnostic().object == StoreObject::journal_record);
+        CHECK(taint.diagnostic().last_durable_publication_object == StoreObject::journal_record);
+        CHECK(taint.diagnostic().last_durable_publication_record_sequence == 2);
+        CHECK(taint.diagnostic().last_durable_publication_bytes_written ==
+              SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_RECORD_WIRE_SIZE);
+        const auto taint_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(2);
+        CHECK(taint_leaf.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+
+        auto reopened = take_successful_session(open_fixture(fixture));
+        CHECK(reopened.has_value());
+        const auto recovered = std::move(*reopened).append_pending_taint();
+        CHECK(static_cast<bool>(recovered));
+        CHECK(recovered.view().reason == SIQSShadowProofRssJournalReason::explicitly_tainted);
+    }
+}
+
 void test_begin_rejects_inactive_and_nonready_sessions() {
     {
         TempStore fixture;
@@ -1127,6 +2252,47 @@ int run_child_mode(std::string_view mode, const std::filesystem::path& trusted_b
         }
         std::_Exit(73);
     }
+    if (mode == "--begin-and-crash") {
+        if (!result) {
+            return 72;
+        }
+        auto session = std::move(result).take_session();
+        if (!session.has_value() || !session->active()) {
+            return 72;
+        }
+        auto begin = std::move(*session).begin_next_slot();
+        if (!begin) {
+            return 72;
+        }
+        auto active = std::move(begin).take_active_slot();
+        if (!active.has_value() || !active->active()) {
+            return 72;
+        }
+        std::_Exit(74);
+    }
+    if (mode == "--publish-artifacts-and-crash") {
+        if (!result) {
+            return 72;
+        }
+        auto session = std::move(result).take_session();
+        if (!session.has_value() || !session->active()) {
+            return 72;
+        }
+        auto begin = std::move(*session).begin_next_slot();
+        if (!begin) {
+            return 72;
+        }
+        auto active = std::move(begin).take_active_slot();
+        if (!active.has_value() || !active->active()) {
+            return 72;
+        }
+        const auto publication = store_detail::SessionFactory::publish_artifact_batch(
+            *active, "synthetic-stdout\n", "", "synthetic-joined\n");
+        if (!publication) {
+            return 72;
+        }
+        std::_Exit(75);
+    }
     return 64;
 }
 
@@ -1147,7 +2313,9 @@ void test_windows_private_boundary_is_unavailable() {
 int main(int argc, char** argv) {
 #ifndef _WIN32
     if (argc == 3 && (std::string_view(argv[1]) == "--expect-lock-busy" ||
-                      std::string_view(argv[1]) == "--open-and-crash")) {
+                      std::string_view(argv[1]) == "--open-and-crash" ||
+                      std::string_view(argv[1]) == "--begin-and-crash" ||
+                      std::string_view(argv[1]) == "--publish-artifacts-and-crash")) {
         return run_child_mode(argv[1], std::filesystem::path(argv[2]));
     }
 #else
@@ -1165,6 +2333,20 @@ int main(int argc, char** argv) {
         test_untrusted_owner_and_write_permissions_fail_closed();
         test_empty_store_lease_move_and_release(executable);
         test_crash_releases_persistent_lease(executable);
+        test_active_slot_taint_is_durable_and_terminal();
+        test_reopened_dangling_start_appends_pending_taint();
+        test_reopened_taint_confirms_dangling_chain_durability();
+        test_taint_rejects_inactive_and_nonpending_sessions();
+        test_begin_crash_recovers_only_through_pending_taint(executable);
+        test_artifact_root_is_required_and_private();
+        test_artifact_root_identity_and_generation_are_revalidated();
+        test_active_slot_actions_revalidate_authority_before_publication();
+        test_private_artifact_batch_publisher_preserves_closed_commit_boundary(executable);
+        test_artifact_batch_validates_mode_and_bounds_before_publication();
+        test_artifact_publication_failures_preserve_prefix_and_trace();
+        test_artifact_batch_crash_recovers_only_to_taint(executable);
+        test_reopen_closes_artifacts_against_journal();
+        test_artifact_leaf_trust_and_shape_fail_closed();
         test_unknown_case_and_temporary_leaves_fail_closed();
         test_invalid_session_lock_shapes();
         test_invalid_header_shapes_sizes_and_codec();
@@ -1172,6 +2354,8 @@ int main(int argc, char** argv) {
         test_valid_header_and_dangling_start_actions();
         test_empty_store_begins_one_lease_bound_slot(executable);
         test_header_only_store_begins_slot_without_replacing_header();
+        test_store_publication_injection_preserves_durable_trace();
+        test_taint_publication_injection_preserves_recovery();
         test_begin_rejects_inactive_and_nonready_sessions();
         test_begin_rejects_prepublication_namespace_changes();
         test_begin_revalidates_root_and_lock_before_publication();

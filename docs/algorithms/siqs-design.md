@@ -97,8 +97,10 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `tests/test_siqs_shadow_observe_rss_holdouts.cpp` | Mathematical corpus generation, primality, identity, uniqueness, and digest checks without calling `factor()` |
 | `include/gnfs/siqs/shadow_proof_rss_gate.hpp` | `SIQSShadowProofRssGatePolicy`, `SIQSShadowProofRssGateSample`, and closed `SIQSShadowProofRssGateOutcome` |
 | `tests/test_siqs_shadow_proof_rss_gate.cpp` | Synthetic policy binding, exact sample coverage, budget boundary, and closed terminal-emitter tests |
-| `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-only native journal session plus lease-bound active-slot transaction for held-root header/start publication |
-| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, strict loading, lease lifetime, crash recovery, durable header/start publication, and platform fallback |
+| `include/gnfs/siqs/shadow_proof_rss_campaign_artifact_layout.hpp` | Fixed three-artifact-per-slot namespace, bounded pure inspection, and exact closure against validated journal replay |
+| `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-only native session plus lease-bound start, artifact-batch, and explicit-taint authority boundaries |
+| `tests/test_siqs_shadow_proof_rss_campaign_artifact_layout.cpp` | Canonical leaf grammar, bounded sizes, deterministic diagnostics, and journal-to-artifact consistency |
+| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, durable start/artifact/taint publication, crash recovery, and platform fallback |
 | `tests/support/siqs_shadow_proof_rss_holdout_probe_record_codec.hpp` | Strict owning decoder for one canonical holdout-probe stdout record |
 | `tests/support/siqs_shadow_proof_rss_holdout_stream_join.hpp` | Approved-policy, runtime-facts, slot, and two-stream validation into an authority-free uncommitted draft |
 | `tests/support/bounded_child_process.hpp` | Test-private shell-free, deadline-bounded dual-stream capture; it grants no campaign authority |
@@ -213,9 +215,20 @@ authority-free replay view plus one consuming `begin_next_slot()` transition.
 That transition publishes the exact pending header and start through the held
 root, rereads the strict snapshot, privately exchanges the durable receipt for
 a launch permit, and traps both the permit and lease inside a move-only active
-slot. The active slot has no launch, artifact, or commit operation yet. Windows
-remains explicitly unavailable until it has an equivalent held-directory
-implementation.
+slot.
+
+The store also holds the preprovisioned `.artifacts-v1` directory and tracks its
+namespace generation independently. Its strict pure layout permits one bounded
+stdout, stderr, and joined leaf for each canonical slot. Reopen verifies that
+every committed record names the exact three durable artifact seals, rejects
+future artifacts, and permits only a partial current-slot orphan set after
+taint. A private store integration can publish the three leaves while the active
+slot retains the lease and permit. The public active slot exposes only a
+consuming explicit-taint transition. Reopen confirms the immutable header and
+start durability barriers and rereads the exact dangling replay before it may
+append the terminal taint. The active slot still has no child launch or sample
+commit operation. Windows remains explicitly unavailable until it has an
+equivalent held-directory implementation.
 
 Coverage is exact: each evaluated platform and backend needs three `off` and
 seven `observe` fresh-process records for every one of the eight fixture IDs,

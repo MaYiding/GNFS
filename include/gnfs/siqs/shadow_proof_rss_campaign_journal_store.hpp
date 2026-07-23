@@ -3,6 +3,7 @@
 /// @file shadow_proof_rss_campaign_journal_store.hpp
 /// @brief Leased native-store boundary for an approved SIQS RSS campaign.
 
+#include <gnfs/siqs/shadow_proof_rss_campaign_artifact_layout.hpp>
 #include <gnfs/siqs/shadow_proof_rss_campaign_journal_layout.hpp>
 #include <gnfs/util/durable_immutable_file.hpp>
 
@@ -25,6 +26,8 @@ enum class SIQSShadowProofRssCampaignJournalStoreError : uint8_t {
     base_invalid,
     root_open_failed,
     root_invalid,
+    artifact_root_open_failed,
+    artifact_root_invalid,
     lock_open_failed,
     lock_invalid,
     lock_busy,
@@ -39,6 +42,8 @@ enum class SIQSShadowProofRssCampaignJournalStoreError : uint8_t {
     entry_changed_during_read,
     snapshot_changed,
     layout_invalid,
+    artifact_layout_invalid,
+    artifact_consistency_invalid,
     replay_rejected,
     session_inactive,
     session_action_invalid,
@@ -73,6 +78,10 @@ enum class SIQSShadowProofRssCampaignJournalStoreError : uint8_t {
         return "root_open_failed";
     case SIQSShadowProofRssCampaignJournalStoreError::root_invalid:
         return "root_invalid";
+    case SIQSShadowProofRssCampaignJournalStoreError::artifact_root_open_failed:
+        return "artifact_root_open_failed";
+    case SIQSShadowProofRssCampaignJournalStoreError::artifact_root_invalid:
+        return "artifact_root_invalid";
     case SIQSShadowProofRssCampaignJournalStoreError::lock_open_failed:
         return "lock_open_failed";
     case SIQSShadowProofRssCampaignJournalStoreError::lock_invalid:
@@ -101,6 +110,10 @@ enum class SIQSShadowProofRssCampaignJournalStoreError : uint8_t {
         return "snapshot_changed";
     case SIQSShadowProofRssCampaignJournalStoreError::layout_invalid:
         return "layout_invalid";
+    case SIQSShadowProofRssCampaignJournalStoreError::artifact_layout_invalid:
+        return "artifact_layout_invalid";
+    case SIQSShadowProofRssCampaignJournalStoreError::artifact_consistency_invalid:
+        return "artifact_consistency_invalid";
     case SIQSShadowProofRssCampaignJournalStoreError::replay_rejected:
         return "replay_rejected";
     case SIQSShadowProofRssCampaignJournalStoreError::session_inactive:
@@ -128,6 +141,8 @@ enum class SIQSShadowProofRssCampaignJournalStoreObject : uint8_t {
     deployment_registry,
     trusted_base,
     store_root,
+    artifact_root,
+    artifact,
     session_lock,
     directory,
     journal_header,
@@ -145,6 +160,10 @@ enum class SIQSShadowProofRssCampaignJournalStoreObject : uint8_t {
         return "trusted_base";
     case SIQSShadowProofRssCampaignJournalStoreObject::store_root:
         return "store_root";
+    case SIQSShadowProofRssCampaignJournalStoreObject::artifact_root:
+        return "artifact_root";
+    case SIQSShadowProofRssCampaignJournalStoreObject::artifact:
+        return "artifact";
     case SIQSShadowProofRssCampaignJournalStoreObject::session_lock:
         return "session_lock";
     case SIQSShadowProofRssCampaignJournalStoreObject::directory:
@@ -164,13 +183,19 @@ struct SIQSShadowProofRssCampaignJournalStoreDiagnostic final {
         SIQSShadowProofRssCampaignJournalStoreObject::none;
     std::error_code native_error;
     SIQSShadowProofRssCampaignJournalLayoutDiagnostic layout;
+    SIQSShadowProofRssCampaignArtifactLayoutDiagnostic artifact_layout;
+    SIQSShadowProofRssCampaignArtifactConsistencyDiagnostic artifact_consistency;
     std::optional<SIQSShadowProofRssJournalReason> journal_reason;
     uint32_t record_sequence = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE;
+    uint32_t artifact_slot_number = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_NO_SLOT;
+    std::optional<SIQSShadowProofRssArtifactKind> artifact_kind;
     std::optional<util::durable_immutable_file::PublishStatus> publication_status;
     uint64_t publication_bytes_written = 0;
     std::optional<SIQSShadowProofRssCampaignJournalStoreObject> last_durable_publication_object;
     uint32_t last_durable_publication_record_sequence =
         SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE;
+    uint32_t last_durable_artifact_slot_number = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_NO_SLOT;
+    std::optional<SIQSShadowProofRssArtifactKind> last_durable_artifact_kind;
     uint64_t last_durable_publication_bytes_written = 0;
 };
 
@@ -194,6 +219,7 @@ class SessionFactory;
 } // namespace shadow_proof_rss_campaign_journal_store_detail
 
 class SIQSShadowProofRssCampaignJournalSession;
+class SIQSShadowProofRssCampaignJournalTaintResult;
 
 /// Move-only in-flight slot authority. It owns both the native session lease
 /// and the launch permit, so neither capability can escape the transaction.
@@ -217,6 +243,11 @@ public:
     [[nodiscard]] uint32_t slot_number() const noexcept;
     [[nodiscard]] SIQSShadowProofRssCampaignJournalSessionView view() const noexcept;
 
+    /// Consume this in-flight slot and durably append its exact prepared taint
+    /// record. Destruction alone only releases the lease; it never claims that
+    /// the journal reached a durable terminal state.
+    [[nodiscard]] SIQSShadowProofRssCampaignJournalTaintResult taint() && noexcept;
+
 private:
     SIQSShadowProofRssCampaignJournalActiveSlot(
         std::unique_ptr<shadow_proof_rss_campaign_journal_store_detail::SessionCore>,
@@ -226,6 +257,7 @@ private:
     std::optional<SIQSShadowProofRssLaunchPermit> permit_;
 
     friend class SIQSShadowProofRssCampaignJournalSession;
+    friend class shadow_proof_rss_campaign_journal_store_detail::SessionFactory;
 };
 
 class SIQSShadowProofRssCampaignJournalBeginSlotResult final {
@@ -284,6 +316,10 @@ public:
     /// raw receipt and launch permit never cross the public store boundary.
     [[nodiscard]] SIQSShadowProofRssCampaignJournalBeginSlotResult begin_next_slot() && noexcept;
 
+    /// Consume a reopened dangling-start session and durably append the exact
+    /// taint record prepared by replay. No retry or launch authority is issued.
+    [[nodiscard]] SIQSShadowProofRssCampaignJournalTaintResult append_pending_taint() && noexcept;
+
 private:
     explicit SIQSShadowProofRssCampaignJournalSession(
         std::unique_ptr<shadow_proof_rss_campaign_journal_store_detail::SessionCore>) noexcept;
@@ -291,6 +327,39 @@ private:
     std::unique_ptr<shadow_proof_rss_campaign_journal_store_detail::SessionCore> core_;
 
     friend class shadow_proof_rss_campaign_journal_store_detail::SessionFactory;
+};
+
+/// Move-only terminal result for a durable campaign-taint transition.
+class SIQSShadowProofRssCampaignJournalTaintResult final {
+public:
+    SIQSShadowProofRssCampaignJournalTaintResult() = delete;
+    ~SIQSShadowProofRssCampaignJournalTaintResult();
+
+    SIQSShadowProofRssCampaignJournalTaintResult(
+        SIQSShadowProofRssCampaignJournalTaintResult&&) noexcept;
+    SIQSShadowProofRssCampaignJournalTaintResult&
+    operator=(SIQSShadowProofRssCampaignJournalTaintResult&&) noexcept;
+
+    SIQSShadowProofRssCampaignJournalTaintResult(
+        const SIQSShadowProofRssCampaignJournalTaintResult&) = delete;
+    SIQSShadowProofRssCampaignJournalTaintResult&
+    operator=(const SIQSShadowProofRssCampaignJournalTaintResult&) = delete;
+
+    [[nodiscard]] explicit operator bool() const noexcept;
+    [[nodiscard]] SIQSShadowProofRssCampaignJournalSessionView view() const noexcept;
+    [[nodiscard]] const SIQSShadowProofRssCampaignJournalStoreDiagnostic&
+    diagnostic() const noexcept;
+
+private:
+    SIQSShadowProofRssCampaignJournalTaintResult(
+        SIQSShadowProofRssCampaignJournalSessionView,
+        SIQSShadowProofRssCampaignJournalStoreDiagnostic) noexcept;
+
+    SIQSShadowProofRssCampaignJournalSessionView view_;
+    SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic_;
+
+    friend class SIQSShadowProofRssCampaignJournalActiveSlot;
+    friend class SIQSShadowProofRssCampaignJournalSession;
 };
 
 class SIQSShadowProofRssCampaignJournalStoreOpenResult final {
