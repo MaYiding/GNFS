@@ -355,11 +355,36 @@ slots in frozen fixture-major order: `off` ordinals 1 through 3 followed by
 the complete policy and its stable digest. Campaign concurrency is the constant
 one and is not configurable.
 
+`include/gnfs/siqs/shadow_proof_rss_campaign_journal.hpp` adds a pure,
+write-once replay state machine around that plan. It distinguishes an absent
+journal from a present header with no records. The absent state may contain
+neither a header nor records and requests header creation. A valid present,
+header-only state requests the first slot start. Later records must form one
+digest-linked `slot_started`/`slot_committed` pair per frozen slot, in order.
+
+A proposed start record does not authorize process launch. Only the storage
+layer may acknowledge the exact record after it reaches a durable commit
+boundary, which yields the move-only launch permit required to construct its
+matching commit. A replay ending in a start without its commit is permanently
+tainted and returns only the matching taint record for durable append, never a
+retry or launch action. An explicit taint record has the same terminal effect.
+After all 80 commits validate, sample reconstruction replays the original
+header and records again before the caller invokes the existing RSS gate.
+
+The move-only capabilities prevent accidental reuse within one replay result;
+they do not prove filesystem durability or serialize two callers that replay
+the same stale snapshot. The pending storage layer must provide the single-writer,
+exclusive journal lease and a one-shot durable-append receipt. Artifact seals in
+this pure layer are stable accidental-corruption identities only. They do not
+parse or validate child stdout/stderr. A live commit path remains closed until
+the strict two-stream parser and join can issue typed validated evidence.
+
 CMake declares `test_siqs_shadow_proof_rss_holdout_probe` as a Release-only,
 single-sample production target with `EXCLUDE_FROM_ALL`. Default builds do not
 build it, and neither CTest nor any runner catalog executes it. The paired
 `test_siqs_shadow_proof_rss_holdout_probe_contract` target is an instant pure
-contract test. Neither target is a campaign runner.
+contract test. `test_siqs_shadow_proof_rss_campaign_journal` is also an instant
+pure contract test. None of these contract targets is a campaign runner.
 
 The pure probe protocol binds each `fixture_id` to the exact modulus and
 canonical factor pair in the sealed constexpr manifest. Relabeling one row as
@@ -390,16 +415,19 @@ The pure preparation contracts above may inspect the constexpr sealed manifest,
 but do not construct a production modulus, resolve a probe path, create an
 output directory, construct a child-process command, sample RSS, or call
 `factor()`. The approved-policy execution path around the production holdout
-probe remains pending. It includes host and candidate-revision preflight, the
-portable serial launcher, a write-once journal, resume rules, the stream join,
-and terminal gate aggregation. The execution layer must validate the approved
-policy and the actual runtime facts before it loads the sealed fixture table or
-constructs the first command. A campaign interrupted after a child starts but
-before its sample commits must be treated as tainted, not retried in place.
+probe remains pending. The pure journal contract performs no file I/O and does
+not provide an exclusive-create/append/fsync storage layer, portable serial
+launcher, stdout/stderr parser, stream join, or approved policy. Those execution
+components must validate the approved policy, actual runtime facts, and
+candidate revision before loading the sealed fixture table or constructing the
+first command. The future storage layer must durably append the start before it
+requests a launch permit. A campaign interrupted after that start but before
+its sample commits remains tainted and cannot be retried in place.
 
 `tests/test_siqs_runtime_facts.cpp`,
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
-`tests/test_siqs_shadow_proof_rss_campaign.cpp`, and
+`tests/test_siqs_shadow_proof_rss_campaign.cpp`,
+`tests/test_siqs_shadow_proof_rss_campaign_journal.cpp`, and
 `tests/test_siqs_shadow_proof_rss_holdout_probe_contract.cpp` cover only
 injected values, synthetic metrics, and constexpr fixture identity. They do not
 run a probe, factor a holdout, or read live process memory.
