@@ -480,20 +480,29 @@ filesystems fail closed. Injectable file operations test the state machine, but
 cannot construct a journal durable-record receipt.
 
 Artifact seals in the pure journal remain stable accidental-corruption
-identities only. They do not parse or validate child stdout/stderr. A live
-commit path remains closed until the canonical journal root and strict
-two-stream parser and join can issue typed validated evidence.
+identities only. They do not parse or validate child stdout/stderr. Strict
+stdout and stderr codecs plus an authority-free join now produce an owning,
+typed `uncommitted` draft bound to the approved policy, runtime facts, and one
+canonical slot. That draft cannot publish an artifact, construct a journal
+commit payload, issue a receipt, or grant a launch permit. The live commit path
+therefore remains closed until a held-root publisher durably binds those exact
+bytes to a private receipt.
 
 CMake declares `test_siqs_shadow_proof_rss_holdout_probe` as a Release-only,
 single-sample production target with `EXCLUDE_FROM_ALL`. Default builds do not
 build it, and neither CTest nor any runner catalog executes it. The paired
 `test_siqs_shadow_proof_rss_holdout_probe_contract` target is an instant pure
 contract test. `test_siqs_shadow_proof_rss_campaign_journal` is also an instant
-pure contract test, as are its codec and layout tests. The instant native-store
-test uses a temporary real filesystem and subprocesses to cover the registry
-boundary, component walking, strict layouts, move-only lease ownership,
-cross-process contention, crash release, and replay actions. None of these
-targets is a campaign runner.
+pure contract test, as are its codec and layout tests. The strict stdout codec,
+stderr codec, and authority-free stream-join tests are also instant and use
+synthetic records only. `test_bounded_child_process` runs a synthetic fake
+executable to cover shell-free argument/environment transfer, independently
+bounded dual-pipe capture, deadlines, overflow, descendant writers, and cleanup
+semantics. It is test-private and is not a campaign launcher. The instant
+native-store test uses a temporary real filesystem and subprocesses to cover
+the registry boundary, component walking, strict layouts, move-only lease
+ownership, cross-process contention, crash release, and replay actions. None of
+these targets is a campaign runner.
 
 The pure probe protocol binds each `fixture_id` to the exact modulus and
 canonical factor pair in the sealed constexpr manifest. Relabeling one row as
@@ -520,21 +529,27 @@ host facts, and candidate revision before it invokes this single-sample target.
 The existing `GNFS_SIQS_SHADOW_PROOF_OBSERVE_PROBE_V1` calibration path remains
 unchanged and calibration-excluded; it does not provide holdout gate evidence.
 
-The pure preparation contracts above may inspect the constexpr sealed manifest,
-but do not construct a production modulus, resolve a probe path, create an
-output directory, construct a child-process command, sample RSS, or call
-`factor()`. The approved-policy execution path around the production holdout
-probe remains pending. The pure journal contract still performs no file I/O.
+The pure preparation contracts above may inspect the constexpr sealed manifest
+and derive the deterministic production parameter, multiplier, factor-base,
+and one-large-prime profile used to validate a slot. They do not resolve a
+probe path, create an output directory, construct a production child-process
+command, sample RSS, or call `factor()`. The approved-policy execution path
+around the production holdout probe remains pending. The pure journal contract
+still performs no file I/O.
+
 The native leased loader now supplies the header-bound read side, but it
 intentionally does not yet combine the canonical codec and durable
-immutable-file primitive into a receipt issuer. The portable serial launcher,
-stdout/stderr parser, stream join, and approved policy also remain pending.
-Those execution components must validate the approved policy, actual runtime
-facts, and candidate revision before loading the sealed fixture table or
-constructing the first command. The future store must derive the unique
-start-record path from its held root and durably publish the start before it
-requests a launch permit. A campaign interrupted after that start but before
-its sample commits remains tainted and cannot be retried in place.
+immutable-file primitive into a receipt issuer. A test-private portable
+transport can capture both streams from one synthetic child, but it is not
+connected to the sealed probe or the authority-free join. Durable artifact
+publication, same-child capture-to-join integration, an approved per-platform
+policy, and the serial campaign runner remain pending. Those authority-bearing
+components must validate the approved policy, actual runtime facts, and
+candidate revision before loading the sealed fixture table or constructing the
+first production command. The future store must derive the unique start-record
+path from its held root and durably publish the start before it requests a
+launch permit. A campaign interrupted after that start but before its sample
+commits remains tainted and cannot be retried in place.
 
 `tests/test_siqs_runtime_facts.cpp`,
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
@@ -545,6 +560,17 @@ its sample commits remains tainted and cannot be retried in place.
 `tests/test_siqs_shadow_proof_rss_holdout_probe_contract.cpp` cover only
 injected values, synthetic metrics, and constexpr fixture identity. They do not
 run a probe, factor a holdout, or read live process memory.
+
+`tests/test_siqs_shadow_proof_observe_record_codec.cpp`,
+`tests/test_siqs_shadow_proof_rss_holdout_probe_record_codec.cpp`, and
+`tests/test_siqs_shadow_proof_rss_holdout_stream_join.cpp` cover strict wire
+decoding, cross-stream invariants, and uncommitted draft ownership with
+synthetic records. The join test independently derives each fixture's current
+production factor-base profile, but none of these tests launches a child,
+calls `factor()`, samples RSS, publishes an artifact, or opens the holdout.
+
+`tests/test_bounded_child_process.cpp` launches only its synthetic fake child.
+It has no sealed-fixture, policy, journal, receipt, or launch-permit interface.
 
 `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` opens only
 temporary synthetic stores. It exercises native object identity and leases but
@@ -765,6 +791,12 @@ Before promotion it must provide:
   strict owner/permission/ACL checks, held root and lock descriptors, stable
   double snapshots, and authority-free replay views. Windows remains an
   explicit fail-closed platform stub.
+- [x] Strict owning decoders for the probe stdout and observe stderr records,
+  plus an approved-policy and runtime-bound join that yields only an
+  authority-free uncommitted evidence draft.
+- [x] Test-private shell-free child transport with independent stdout/stderr
+  caps, a monotonic deadline, process-tree cleanup, exact environment transfer,
+  and POSIX and Windows implementations sharing one synthetic contract suite.
 - [ ] Durable header/start publication and private receipt issuance from the
   held root, with root and lock revalidation at every authority-bearing action.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved

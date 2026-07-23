@@ -202,6 +202,7 @@ ALL_TEST_BINARIES=(
     test_primes
     test_timer
     test_process_memory
+    test_bounded_child_process
     test_durable_immutable_file
     test_mmap_file
     test_resultant
@@ -382,6 +383,7 @@ ALL_TEST_BINARIES=(
     test_siqs_shadow_linear_algebra
     test_siqs_shadow_proof_runner
     test_siqs_shadow_proof_observe
+    test_siqs_shadow_proof_observe_record_codec
     test_siqs_runtime_facts
     test_siqs_shadow_observe_rss_holdouts
     test_siqs_shadow_proof_rss_gate
@@ -392,6 +394,8 @@ ALL_TEST_BINARIES=(
     test_siqs_shadow_proof_rss_campaign_journal_layout
     test_siqs_shadow_proof_rss_campaign_journal_store
     test_siqs_shadow_proof_rss_holdout_probe_contract
+    test_siqs_shadow_proof_rss_holdout_probe_record_codec
+    test_siqs_shadow_proof_rss_holdout_stream_join
     test_siqs_shadow_proof_prefer
     test_siqs_shadow_cross_size
     test_siqs_shadow_matrix_bench
@@ -405,7 +409,7 @@ ALL_TEST_BINARIES=(
 typeset -A MODULE_TESTS
 MODULE_TESTS=(
     core           "test_integer test_params test_regressions test_edge_cases test_core_types"
-    util           "test_small_vector test_thread_pool test_ordered_parallel_map test_logger test_primes test_timer test_process_memory test_durable_immutable_file test_mmap_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel test_mpz_invert_parallel test_mpz_mod_parallel test_mpz_gcd_parallel test_mpz_mul_parallel"
+    util           "test_small_vector test_thread_pool test_ordered_parallel_map test_logger test_primes test_timer test_process_memory test_bounded_child_process test_durable_immutable_file test_mmap_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel test_mpz_invert_parallel test_mpz_mod_parallel test_mpz_gcd_parallel test_mpz_mul_parallel"
     polynomial     "test_murphy test_root_property_cache test_int_polynomial test_half_gcd test_poly_karatsuba test_horner_batch_simd test_divrem_subquadratic test_poly_ntt test_poly_square test_poly_add_mod_simd test_poly_horner_mod_simd test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
     factor_base    "test_factor_base test_fb_checkpoint test_fb_roots_parallel"
     sieve          "test_special_q test_sieve_basic test_sieve_checkpoint test_distributed_sieve test_bucket_sieve test_sieve_ecore_qos test_local_sieve_thread_budget test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel test_sieve_apply_tile_parallel test_lattice_coords_simd test_threshold_scan_simd test_saturated_sub_simd"
@@ -415,7 +419,7 @@ MODULE_TESTS=(
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_class_group test_couveignes_large_class_group test_couveignes_parallel"
     api            "test_i18n test_method_selection test_relation_reduction_engine"
-    siqs           "test_siqs test_siqs_2lp test_siqs_live_sieve_capture test_siqs_2lp_graph test_siqs_2lp_materializer test_siqs_2lp_adapter test_siqs_2lp_congruence test_siqs_post_merge_row test_siqs_shadow_assembly test_siqs_shadow_linear_algebra test_siqs_shadow_proof_runner test_siqs_shadow_proof_observe test_siqs_runtime_facts test_siqs_shadow_observe_rss_holdouts test_siqs_shadow_proof_rss_gate test_siqs_shadow_proof_rss_policy_record test_siqs_shadow_proof_rss_campaign test_siqs_shadow_proof_rss_campaign_journal test_siqs_shadow_proof_rss_campaign_journal_codec test_siqs_shadow_proof_rss_campaign_journal_layout test_siqs_shadow_proof_rss_campaign_journal_store test_siqs_shadow_proof_rss_holdout_probe_contract test_siqs_shadow_proof_prefer test_siqs_shadow_cross_size"
+    siqs           "test_siqs test_siqs_2lp test_siqs_live_sieve_capture test_siqs_2lp_graph test_siqs_2lp_materializer test_siqs_2lp_adapter test_siqs_2lp_congruence test_siqs_post_merge_row test_siqs_shadow_assembly test_siqs_shadow_linear_algebra test_siqs_shadow_proof_runner test_siqs_shadow_proof_observe test_siqs_shadow_proof_observe_record_codec test_siqs_runtime_facts test_siqs_shadow_observe_rss_holdouts test_siqs_shadow_proof_rss_gate test_siqs_shadow_proof_rss_policy_record test_siqs_shadow_proof_rss_campaign test_siqs_shadow_proof_rss_campaign_journal test_siqs_shadow_proof_rss_campaign_journal_codec test_siqs_shadow_proof_rss_campaign_journal_layout test_siqs_shadow_proof_rss_campaign_journal_store test_siqs_shadow_proof_rss_holdout_probe_contract test_siqs_shadow_proof_rss_holdout_probe_record_codec test_siqs_shadow_proof_rss_holdout_stream_join test_siqs_shadow_proof_prefer test_siqs_shadow_cross_size"
 )
 
 # 模块 → 慢速测试映射 (slow+heavy, 可选运行)
@@ -450,6 +454,7 @@ SMOKE_TESTS=(
     test_primes
     test_timer
     test_process_memory
+    test_bounded_child_process
     test_durable_immutable_file
     test_mmap_file
     test_resultant
@@ -531,6 +536,7 @@ SMOKE_TESTS=(
     test_siqs_shadow_linear_algebra
     test_siqs_shadow_proof_runner
     test_siqs_shadow_proof_observe
+    test_siqs_shadow_proof_observe_record_codec
     test_siqs_runtime_facts
     test_siqs_shadow_observe_rss_holdouts
     test_siqs_shadow_proof_rss_gate
@@ -541,6 +547,8 @@ SMOKE_TESTS=(
     test_siqs_shadow_proof_rss_campaign_journal_layout
     test_siqs_shadow_proof_rss_campaign_journal_store
     test_siqs_shadow_proof_rss_holdout_probe_contract
+    test_siqs_shadow_proof_rss_holdout_probe_record_codec
+    test_siqs_shadow_proof_rss_holdout_stream_join
     test_siqs_shadow_proof_prefer
     test_clique_merger
     test_3lp_cofactor
@@ -628,6 +636,7 @@ TEST_TIMEOUT=(
     test_primes              10
     test_timer               10
     test_process_memory      10
+    test_bounded_child_process 30
     test_durable_immutable_file 10
     test_mmap_file           10
     test_resultant           10
@@ -812,6 +821,7 @@ TEST_TIMEOUT=(
     test_siqs_shadow_linear_algebra 10
     test_siqs_shadow_proof_runner 10
     test_siqs_shadow_proof_observe 10
+    test_siqs_shadow_proof_observe_record_codec 10
     test_siqs_runtime_facts 10
     test_siqs_shadow_observe_rss_holdouts 10
     test_siqs_shadow_proof_rss_gate 10
@@ -822,6 +832,8 @@ TEST_TIMEOUT=(
     test_siqs_shadow_proof_rss_campaign_journal_layout 10
     test_siqs_shadow_proof_rss_campaign_journal_store 20
     test_siqs_shadow_proof_rss_holdout_probe_contract 10
+    test_siqs_shadow_proof_rss_holdout_probe_record_codec 10
+    test_siqs_shadow_proof_rss_holdout_stream_join 10
     test_siqs_shadow_proof_prefer 10
     test_siqs_shadow_cross_size 60
     test_siqs_shadow_matrix_bench 600
@@ -838,6 +850,7 @@ TEST_TIER=(
     test_primes              "instant"
     test_timer               "instant"
     test_process_memory      "instant"
+    test_bounded_child_process "instant"
     test_durable_immutable_file "instant"
     test_mmap_file           "instant"
     test_resultant           "instant"
@@ -961,6 +974,7 @@ TEST_TIER=(
     test_siqs_shadow_linear_algebra "instant"
     test_siqs_shadow_proof_runner "instant"
     test_siqs_shadow_proof_observe "instant"
+    test_siqs_shadow_proof_observe_record_codec "instant"
     test_siqs_runtime_facts "instant"
     test_siqs_shadow_observe_rss_holdouts "instant"
     test_siqs_shadow_proof_rss_gate "instant"
@@ -971,6 +985,8 @@ TEST_TIER=(
     test_siqs_shadow_proof_rss_campaign_journal_layout "instant"
     test_siqs_shadow_proof_rss_campaign_journal_store "instant"
     test_siqs_shadow_proof_rss_holdout_probe_contract "instant"
+    test_siqs_shadow_proof_rss_holdout_probe_record_codec "instant"
+    test_siqs_shadow_proof_rss_holdout_stream_join "instant"
     test_siqs_shadow_proof_prefer "instant"
     test_siqs_shadow_cross_size "fast"
     test_siqs_shadow_matrix_bench "bench"

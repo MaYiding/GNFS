@@ -91,6 +91,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `tests/test_siqs_shadow_cross_size.cpp` | Constructed arithmetic-valid 50-, 70-, and 90-digit shadow-chain corpus across 1/2/4 workers |
 | `tests/test_siqs_shadow_proof_runner.cpp` | Bounded facade terminal states, inclusive caps, exception mapping, and input immutability |
 | `tests/test_siqs_shadow_proof_observe.cpp` | Strict observe parser, typed record schema, RSS fields, and emitter contract |
+| `include/gnfs/siqs/shadow_proof_observe_record_codec.hpp` | Strict owning decoder for one canonical observe stderr record |
 | `tests/test_siqs_shadow_proof_observe_probe.cpp` | Release-only production 1LP fresh-process factor and RSS probe |
 | `tests/fixtures/siqs_shadow_observe_rss_holdouts_v1.hpp` | Outcome-blind sealed 50-digit RSS holdout identities and stable corpus digest |
 | `tests/test_siqs_shadow_observe_rss_holdouts.cpp` | Mathematical corpus generation, primality, identity, uniqueness, and digest checks without calling `factor()` |
@@ -98,6 +99,9 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `tests/test_siqs_shadow_proof_rss_gate.cpp` | Synthetic policy binding, exact sample coverage, budget boundary, and closed terminal-emitter tests |
 | `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-only native journal session that binds replay to one deployment-registered root and cross-process lease |
 | `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, strict real-filesystem loading, lease lifetime, crash recovery, and platform fallback |
+| `tests/support/siqs_shadow_proof_rss_holdout_probe_record_codec.hpp` | Strict owning decoder for one canonical holdout-probe stdout record |
+| `tests/support/siqs_shadow_proof_rss_holdout_stream_join.hpp` | Approved-policy, runtime-facts, slot, and two-stream validation into an authority-free uncommitted draft |
+| `tests/support/bounded_child_process.hpp` | Test-private shell-free, deadline-bounded dual-stream capture; it grants no campaign authority |
 | `tests/test_siqs_shadow_proof_prefer.cpp` | Pure V2 decisions, defensive metadata validation, and pre-route emitter contract |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 

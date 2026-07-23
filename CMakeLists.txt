@@ -497,6 +497,31 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME DurableImmutableFile COMMAND test_durable_immutable_file)
     set_tests_properties(DurableImmutableFile PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(bounded_child_process_fake_child
+        tests/support/bounded_child_process_fake_child.cpp
+    )
+    if(WIN32)
+        set(BOUNDED_CHILD_PROCESS_SOURCE
+            tests/support/bounded_child_process_windows.cpp)
+    else()
+        set(BOUNDED_CHILD_PROCESS_SOURCE
+            tests/support/bounded_child_process_posix.cpp)
+    endif()
+    add_executable(test_bounded_child_process
+        tests/test_bounded_child_process.cpp
+        ${BOUNDED_CHILD_PROCESS_SOURCE}
+    )
+    if(MINGW)
+        target_link_options(bounded_child_process_fake_child PRIVATE -municode)
+        target_link_options(test_bounded_child_process PRIVATE -municode)
+    endif()
+    target_link_libraries(bounded_child_process_fake_child PRIVATE Threads::Threads)
+    target_link_libraries(test_bounded_child_process PRIVATE Threads::Threads)
+    add_dependencies(test_bounded_child_process bounded_child_process_fake_child)
+    add_test(NAME BoundedChildProcess
+        COMMAND test_bounded_child_process $<TARGET_FILE:bounded_child_process_fake_child>)
+    set_tests_properties(BoundedChildProcess PROPERTIES LABELS "instant" TIMEOUT 30)
+
     add_executable(test_mmap_file
         tests/test_mmap_file.cpp
     )
@@ -2115,6 +2140,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SiqsShadowProofObserve COMMAND test_siqs_shadow_proof_observe)
     set_tests_properties(SiqsShadowProofObserve PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_shadow_proof_observe_record_codec
+        tests/test_siqs_shadow_proof_observe_record_codec.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_observe_record_codec PRIVATE
+        gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowProofObserveRecordCodec
+        COMMAND test_siqs_shadow_proof_observe_record_codec)
+    set_tests_properties(SiqsShadowProofObserveRecordCodec
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_siqs_runtime_facts
         tests/test_siqs_runtime_facts.cpp
     )
@@ -2199,6 +2234,25 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SiqsShadowProofRssHoldoutProbeContract
         COMMAND test_siqs_shadow_proof_rss_holdout_probe_contract)
     set_tests_properties(SiqsShadowProofRssHoldoutProbeContract
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_holdout_probe_record_codec
+        tests/test_siqs_shadow_proof_rss_holdout_probe_record_codec.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_holdout_probe_record_codec PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssHoldoutProbeRecordCodec
+        COMMAND test_siqs_shadow_proof_rss_holdout_probe_record_codec)
+    set_tests_properties(SiqsShadowProofRssHoldoutProbeRecordCodec
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_holdout_stream_join
+        tests/test_siqs_shadow_proof_rss_holdout_stream_join.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_holdout_stream_join PRIVATE
+        gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowProofRssHoldoutStreamJoin
+        COMMAND test_siqs_shadow_proof_rss_holdout_stream_join)
+    set_tests_properties(SiqsShadowProofRssHoldoutStreamJoin
         PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_siqs_shadow_proof_prefer
