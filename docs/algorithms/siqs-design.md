@@ -94,6 +94,8 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `tests/test_siqs_shadow_proof_observe_probe.cpp` | Release-only production 1LP fresh-process factor and RSS probe |
 | `tests/fixtures/siqs_shadow_observe_rss_holdouts_v1.hpp` | Outcome-blind sealed 50-digit RSS holdout identities and stable corpus digest |
 | `tests/test_siqs_shadow_observe_rss_holdouts.cpp` | Mathematical corpus generation, primality, identity, uniqueness, and digest checks without calling `factor()` |
+| `include/gnfs/siqs/shadow_proof_rss_gate.hpp` | `SIQSShadowProofRssGatePolicy`, `SIQSShadowProofRssGateSample`, and closed `SIQSShadowProofRssGateOutcome` |
+| `tests/test_siqs_shadow_proof_rss_gate.cpp` | Synthetic policy binding, exact sample coverage, budget boundary, and closed terminal-emitter tests |
 | `tests/test_siqs_shadow_proof_prefer.cpp` | Pure V2 decisions, defensive metadata validation, and pre-route emitter contract |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 
@@ -173,19 +175,42 @@ stable, non-cryptographic 128-bit identity digest. Its frozen digest lanes are
 The matching test checks only mathematical and corpus identity invariants. It
 has never called production `factor()`, the observe probe, or an RSS
 measurement path for these inputs. No production factorization result, shadow
-proof record, timing sample, or memory measurement has opened the holdout. A
-later gate must still run three `off` and seven `observe` fresh processes for
-every fixture on each evaluated backend. Darwin, Linux, and Windows remain
-separate evidence domains. Only absolute observe-process peak RSS may be
-compared with an approved deployment budget after reserved headroom.
-Off/observe deltas and in-record peak growth remain diagnostic.
+proof record, timing sample, or memory measurement has opened the holdout.
 
-No per-platform policy currently approves a budget, reserved headroom,
-OS/architecture/backend tuple, resolved production sieve worker count, or
-candidate revision. The typed gate, runner, and measurement campaign therefore
-remain blocked and pending. The sealed corpus must not be used to construct or
-launch the 80-process campaign until that policy exists. A future pass must
-still emit `promotion=false` and proceed to a separate manual review.
+The pure typed gate in `include/gnfs/siqs/shadow_proof_rss_gate.hpp` exposes
+`evaluate_siqs_shadow_proof_rss_gate`. It accepts a nullable
+`SIQSShadowProofRssGatePolicy` pointer and a span of
+`SIQSShadowProofRssGateSample` records. A null policy produces
+`status=blocked reason=policy_missing`. An accepted policy binds the sealed
+corpus ID and digest, operating system, architecture, RSS backend, resolved
+production sieve worker count, candidate revision, approval identity,
+deployment memory budget, and reserved headroom. The gate does not discover or
+approve any of those values.
+
+Coverage is exact: each evaluated platform and backend needs three `off` and
+seven `observe` fresh-process records for every one of the eight fixture IDs,
+for 80 records total. Missing, duplicate, or extra coverage cannot pass. The
+only deciding measurement is each `observe` record's absolute process peak RSS.
+Every peak must satisfy `peak <= budget - headroom`; equality passes. The `off`
+records, cross-process deltas, current RSS, in-record peak growth, and wall time
+remain diagnostic and cannot change the result.
+
+A `SIQSShadowProofRssGateOutcome` uses the closed statuses `blocked`, `invalid`,
+`limit_exceeded`, and `manual_review_candidate`. Only the last one is a pass,
+with `reason=all_observe_peaks_within_limit`; it still requires manual review.
+A terminal outcome carries a stable, non-cryptographic identity checksum over
+every policy binding field. `emit_siqs_shadow_proof_rss_gate_outcome`
+re-evaluates the policy and complete sample span, requires an exact outcome
+match, and writes the closed `GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V1` record. The
+record includes the policy-binding checksum lanes. The emitter is terminal-only:
+`blocked` and `invalid` remain typed outcomes but do not produce an audit line.
+Every outcome keeps `shadow_outcome_routed=false` and `promotion=false`.
+
+No approved per-platform policy currently exists, no sealed holdout has been
+run, and no approved numeric threshold or real gate result is available. The
+campaign runner and production measurement remain blocked and pending. The
+sealed corpus must not be used to construct or launch the 80-process campaign
+until the policy is approved.
 
 The staged V2 `prefer` boundary is a pure decision and audit contract. It does
 not extend the environment parser, connect to `factor()`, alter the observe
@@ -302,10 +327,12 @@ SIQS's `L_N(1/2, 1)`.
   protocol are wired and a current-tree comparison has exercised the contract.
   These samples are calibration-excluded. The eight-fixture outcome-blind
   holdout corpus is sealed with a stable identity digest, but no production
-  factor or probe has opened it. The production-overlap checklist remains
-  pending until the typed per-platform policy and runner exist, and the corpus
-  is measured against an approved deployment budget with reserved headroom.
-  No numeric RSS gate is currently available. A separately bounded 2LP
+  factor or probe has opened it. The pure typed RSS gate is staged and tested
+  only with synthetic records. The production-overlap checklist remains pending
+  until an approved per-platform policy and campaign runner exist, and the
+  corpus is measured against the approved deployment budget with reserved
+  headroom. No numeric RSS threshold or real gate result is currently
+  available. A separately bounded 2LP
   collector remains a prerequisite for production 2LP collection. The pure V2
   decision contract does not change parser or production routing; current
   probe and V2 records never authorize automatic promotion.

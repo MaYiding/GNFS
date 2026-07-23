@@ -238,26 +238,93 @@ using holdout results to retune the implementation:
   distributions;
 - the approved deployment memory budget and its reserved headroom;
 - the exact OS, architecture, RSS backend, resolved production sieve worker
-  count, and candidate revision for each platform policy;
+  count, candidate revision, and approval identity for each platform policy;
 - the rule that compares every absolute observe-process peak with the remaining
   budget after headroom.
 
-Absolute observe-process peak RSS is the only promotion-gate quantity. The
-off/observe difference, observe-only `peak_growth_bytes`, current RSS, and wall
-time remain diagnostics because independent processes do not share an exact
-corpus or prior lifetime high-water state. They must not rescue a sample whose
-absolute observe peak exceeds the approved deployment envelope, and they must
-not fail an otherwise conforming sample by themselves.
+#### Pure Typed Gate Contract
 
-The project has no approved per-platform policy. No deployment budget,
-reserved headroom, OS/architecture/backend binding, resolved production sieve
-worker count, or candidate revision is frozen. The typed gate, runner, and
-measurement campaign are therefore blocked and remain pending. Nothing may
-construct or launch the 80-process campaign on any platform until that policy
-exists, and this document does not turn current measurements into a threshold.
-Even if every sealed holdout later passes, the resulting record must retain
-`shadow_outcome_routed=false` and `promotion=false`. A pass only makes an
-explicit route experiment eligible for separate review.
+`include/gnfs/siqs/shadow_proof_rss_gate.hpp` implements a pure typed gate over
+caller-owned `SIQSShadowProofRssGatePolicy` and
+`SIQSShadowProofRssGateSample` values. The allocation-free, `noexcept`
+`evaluate_siqs_shadow_proof_rss_gate` function does not read environment
+variables, run `factor()`, invoke the observe probe, collect process memory, or
+construct a campaign. A null policy returns
+`status=blocked reason=policy_missing`.
+
+An approved policy binds `approval_id`, the sealed corpus ID and digest,
+operating system, architecture, RSS backend, resolved production sieve worker
+count, candidate revision, deployment memory budget, and reserved headroom.
+`SIQSShadowProofRssOperatingSystem` is closed over `unknown`, `darwin`, `linux`,
+and `windows`; `unknown` is invalid for an approved binding.
+`SIQSShadowProofRssArchitecture` similarly admits `unknown`, `x86_64`, and
+`arm64`, with `unknown` invalid for an approved binding. The selected RSS
+backend must be supported and match the operating system. The budget and
+headroom remain optional so an incomplete deployment envelope can produce a
+typed `blocked` outcome. A present budget must be greater than headroom before
+the policy is a valid gate input.
+
+The gate requires exactly 80 records for one bound policy, operating system, and
+backend. Each of the eight sealed fixture IDs must have exactly three `off` and
+seven `observe` fresh-process records with the complete policy binding. Every
+record must report a completed fresh process and passing factor identity. An
+`observe` record must report passing proof and matrix evidence plus a nonzero
+absolute peak RSS. Missing, duplicate, and extra coverage cannot pass.
+
+`SIQSShadowProofRssSampleMode` admits `unknown`, `off`, and `observe`, with
+`unknown` rejected during validation. `SIQSShadowProofRssEvidence` admits
+`unknown`, `not_applicable`, `pass`, and `fail`;
+`SIQSShadowProofRssFactorIdentity` admits `unknown`, `pass`, `fail`, and
+`not_checked`. The gate rejects unknown enum values and requires factor identity
+`pass` for every sample. Proof and matrix evidence affect structural validity
+only for `observe`; their values remain diagnostic for `off`.
+
+Absolute observe-process peak RSS is the only deciding quantity. The evaluator
+computes `rss_limit_bytes = deployment_budget_bytes -
+reserved_headroom_bytes` and compares the maximum validated observe peak with
+that limit. `max_observe_peak_rss_bytes <= rss_limit_bytes` passes, so equality
+is accepted.
+
+The `off` peak, off/observe differences, `current_rss_bytes`,
+`peak_growth_bytes`, and `wall_ns` remain diagnostics. They are absent from the
+decision and cannot rescue an observe peak above the approved envelope or fail
+an otherwise conforming sample.
+
+`SIQSShadowProofRssGateStatus` is closed over `blocked`, `invalid`,
+`limit_exceeded`, and `manual_review_candidate`. Policy absence, lack of
+approval, and missing budget or headroom remain blocked. Invalid policy or
+sample contracts return `invalid` with a specific `SIQSShadowProofRssGateReason`.
+An over-limit peak returns `status=limit_exceeded
+reason=observe_peak_over_limit`. A passing gate returns only
+`status=manual_review_candidate reason=all_observe_peaks_within_limit`. Every
+outcome retains
+`shadow_outcome_routed=false` and `promotion=false`.
+
+A terminal `SIQSShadowProofRssGateOutcome` carries a stable, non-cryptographic
+`policy_binding_digest` over every policy field. Together with re-evaluation
+and exact outcome matching, this identity checksum rejects ordinary relabeling
+across approval, revision, corpus, operating system, backend, worker count,
+budget, or headroom changes. It is not a cryptographic authenticity proof.
+
+`emit_siqs_shadow_proof_rss_gate_outcome` accepts a `FILE*`, the policy pointer,
+the complete sample span, and the supplied outcome. It re-evaluates the inputs,
+requires an exact outcome match, validates the complete policy binding, and
+writes one closed record with prefix `GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V1` only
+after those checks. The record publishes `policy_binding_digest_low` and
+`policy_binding_digest_high`. A successful write and flush commits this audit
+record only; it does not authorize routing or promotion. The emitter is
+terminal-only. It accepts `limit_exceeded` and `manual_review_candidate`;
+`blocked` and `invalid` remain typed outcomes but do not produce an audit line.
+
+`tests/test_siqs_shadow_proof_rss_gate.cpp` exercises policy binding, exact
+coverage, the inclusive limit, diagnostic independence, outcome mutation,
+relabel rejection, and the terminal-only closed emitter. It uses only synthetic
+policies and records. The project has no approved per-platform policy. No
+deployment budget, reserved headroom, OS/architecture/backend binding, resolved
+production sieve worker count, candidate revision, approval, or numeric
+threshold is frozen. No sealed holdout has been run, and no real gate result
+exists. The campaign runner and measurement remain blocked and pending. Nothing
+may construct or launch the 80-process campaign until the policy is approved.
 
 ### Pure V2 Prefer Boundary
 
@@ -458,14 +525,19 @@ Before promotion it must provide:
   public deterministic generator, stable non-cryptographic 128-bit identity
   digest, and mathematical identity test that never calls production `factor()`
   or probe.
-- [ ] Typed per-platform RSS policy and gate runner. The policy must bind the
-  budget, reserved headroom, OS, architecture, RSS backend, resolved production
-  sieve workers, candidate revision, and sealed corpus digest.
-- [ ] Fresh-process holdout measurement with overlapping raw/shadow RSS
-  evidence. Each platform still requires three `off` plus seven `observe` runs
-  for each of the eight fixtures, for 80 fresh processes. The existing
-  one-`off` plus three-`observe` V1 samples remain calibration-excluded. No
-  campaign may start until the per-platform policy is approved.
+- [x] Pure typed RSS gate with closed policy binding, strict 80-record coverage,
+  inclusive absolute observe-peak budget comparison, diagnostic-only secondary
+  metrics, manual-review-only pass, and route/promotion disabled for every
+  outcome.
+- [ ] Approved per-platform RSS policy. It must bind the budget, reserved
+  headroom, OS, architecture, RSS backend, resolved production sieve workers,
+  candidate revision, approval identity, and sealed corpus digest.
+- [ ] Fresh-process campaign runner that refuses to construct or launch the
+  80-process plan until the matching per-platform policy is approved.
+- [ ] Sealed holdout measurement with overlapping raw/shadow RSS evidence. Each
+  platform still requires three `off` plus seven `observe` runs for each of the
+  eight fixtures. The existing one-`off` plus three-`observe` V1 samples remain
+  calibration-excluded, and no holdout result currently exists.
 - [x] Pure V2 `prefer` decision and audit contract with fail-closed factor and
   `SIQSResult` metadata validation.
 - [ ] Parser and production routing for explicit V2-audited `prefer`; a future

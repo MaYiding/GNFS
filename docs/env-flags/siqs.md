@@ -144,12 +144,40 @@ Darwin、Linux 和 Windows 必须分平台评估；每个 backend、每个 fixtu
 比较。`off` 与 `observe` 的差值以及 record 内 `peak_growth_bytes` 只保留为诊断
 信息，不能单独通过或否决 gate。
 
-当前没有批准的 per-platform policy。deployment budget、reserved headroom、
-OS/architecture/backend、resolved production sieve workers 和 candidate revision
-均未冻结。typed gate、runner 和 measurement 仍是 `blocked` / `pending`；policy
-落地前不得构造或启动每个平台的 80-process campaign，也不得从 sealed corpus
-推导阈值。即使将来 holdout 全部通过，也必须保持 `shadow_outcome_routed=false`
-和 `promotion=false`；通过仅允许进入下一轮人工审查。
+### Pure RSS Gate Contract
+
+纯 typed gate 位于 `include/gnfs/siqs/shadow_proof_rss_gate.hpp`。
+`evaluate_siqs_shadow_proof_rss_gate` 接收
+`SIQSShadowProofRssGatePolicy` pointer 和 `SIQSShadowProofRssGateSample` span。它不读取
+环境变量，不调用 production `factor()`，也不运行 probe 或 measurement。null policy
+返回 `status=blocked reason=policy_missing`。有效 policy 必须绑定 `approval_id`、
+sealed corpus ID 和 digest、operating system、architecture、RSS backend、resolved
+production sieve workers、candidate revision、deployment budget 和 reserved headroom；
+gate 不负责发现或批准这些值。
+
+coverage 必须严格等于 80 个 fresh-process records。8 个 fixture 中的每一个都必须
+恰好包含 3 个 `off` 和 7 个 `observe` records；缺失、重复或额外 coverage 均不能
+通过。唯一判定量是每个 `observe` record 的 absolute process peak RSS，并要求
+`peak <= budget - headroom`，因此等号通过。`off` records、跨进程 delta、current
+RSS、`peak_growth_bytes` 和 wall time 都只用于诊断，不能改变 gate 结果。
+
+`SIQSShadowProofRssGateStatus` 是闭集：`blocked`、`invalid`、`limit_exceeded` 和
+`manual_review_candidate`。只有
+`status=manual_review_candidate reason=all_observe_peaks_within_limit` 表示通过，且
+仅进入人工审查。terminal `SIQSShadowProofRssGateOutcome` 还保存覆盖完整 policy
+binding 的 stable、non-cryptographic identity checksum。
+`emit_siqs_shadow_proof_rss_gate_outcome` 会重新评估 policy 和完整 sample span，并
+要求结果与 supplied outcome 完全一致，然后输出以
+`GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V1` 开头的 closed record。emitter 只接受
+`limit_exceeded` 和 `manual_review_candidate`；`blocked` / `invalid` 保持 typed
+outcome，但不形成 audit line。terminal record 同时输出
+`policy_binding_digest_low` 和 `policy_binding_digest_high`。Outcome 中的
+`shadow_outcome_routed=false` 和 `promotion=false` 对所有 status 固定，不会启用
+`prefer` 或返回 shadow factor；terminal record 也固定输出这两个值。
+
+当前没有批准的 per-platform policy，也没有实际 budget、headroom 或阈值。sealed
+holdout 尚未运行，runner 和 80-process campaign 仍是 `blocked` / `pending`。policy
+获批前不得构造或启动 campaign，也不得写入任何 holdout 结果。
 
 ### Pure V2 `prefer` Decision Contract
 
@@ -237,6 +265,9 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
   `prefer`）、typed record、RSS 可用性字段和 emitter 合同。
 - `tests/test_siqs_shadow_observe_rss_holdouts.cpp` 只覆盖 sealed corpus 的数学和
   identity 合同；它不调用 production `factor()` 或 probe，也不采集 outcome。
+- `tests/test_siqs_shadow_proof_rss_gate.cpp` 使用 synthetic policy 和 records 覆盖
+  policy binding、严格 80-sample coverage、budget 等号边界、diagnostic independence
+  和 terminal-only closed emitter；它不运行 sealed holdout。
 - `tests/test_siqs.cpp` 锁定公开 `factor()` 路径对 `prefer` 的 fail-closed
   拒绝，并确认拒绝前不发出 V1 或 V2 记录。
 - `tests/test_siqs_shadow_proof_observe_probe.cpp` 提供 Release-only production 1LP fresh-process measurement target；它不进入 CTest 或常规测试 tier。
@@ -249,6 +280,7 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
 ./scripts/test.sh run test_siqs_shadow_proof_prefer
 ./scripts/test.sh run test_siqs_shadow_proof_observe
 ./scripts/test.sh run test_siqs_shadow_observe_rss_holdouts
+./scripts/test.sh run test_siqs_shadow_proof_rss_gate
 ./scripts/test.sh run test_siqs_shadow_proof_runner
 ./scripts/test.sh run test_siqs
 ./scripts/test.sh probe-siqs-shadow-observe observe

@@ -2087,6 +2087,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SiqsShadowObserveRssHoldouts COMMAND test_siqs_shadow_observe_rss_holdouts)
     set_tests_properties(SiqsShadowObserveRssHoldouts PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_shadow_proof_rss_gate
+        tests/test_siqs_shadow_proof_rss_gate.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_gate PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssGate COMMAND test_siqs_shadow_proof_rss_gate)
+    set_tests_properties(SiqsShadowProofRssGate PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_siqs_shadow_proof_prefer
         tests/test_siqs_shadow_proof_prefer.cpp
     )
