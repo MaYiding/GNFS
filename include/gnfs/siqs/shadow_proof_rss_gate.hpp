@@ -524,6 +524,41 @@ outcome_is_consistent(const SIQSShadowProofRssGateOutcome& value) noexcept {
 
 } // namespace shadow_proof_rss_gate_detail
 
+/// Return the first fail-closed policy error, or `std::nullopt` when the
+/// complete policy is approved and structurally valid. This is the shared
+/// policy boundary for evidence evaluation and pre-execution campaign
+/// planning; neither caller may weaken or reorder it independently.
+[[nodiscard]] constexpr std::optional<SIQSShadowProofRssGateReason>
+siqs_shadow_proof_rss_gate_policy_error(const SIQSShadowProofRssGatePolicy* policy) noexcept {
+    if (policy == nullptr) {
+        return SIQSShadowProofRssGateReason::policy_missing;
+    }
+    if (!policy->approved) {
+        return SIQSShadowProofRssGateReason::policy_not_approved;
+    }
+    if (!policy->deployment_budget_bytes.has_value()) {
+        return SIQSShadowProofRssGateReason::policy_budget_missing;
+    }
+    if (!policy->reserved_headroom_bytes.has_value()) {
+        return SIQSShadowProofRssGateReason::policy_headroom_missing;
+    }
+    if (*policy->deployment_budget_bytes <= *policy->reserved_headroom_bytes) {
+        return SIQSShadowProofRssGateReason::policy_budget_not_above_headroom;
+    }
+    if (!shadow_proof_rss_gate_detail::policy_binding_is_valid(*policy)) {
+        return SIQSShadowProofRssGateReason::policy_binding_invalid;
+    }
+    return std::nullopt;
+}
+
+/// Stable, non-cryptographic identity checksum over every policy field. The
+/// policy must remain alive only for the duration of this call; no string view
+/// is retained.
+[[nodiscard]] constexpr SIQSShadowProofRssCorpusDigest
+siqs_shadow_proof_rss_policy_binding_digest(const SIQSShadowProofRssGatePolicy& policy) noexcept {
+    return shadow_proof_rss_gate_detail::policy_binding_digest(policy);
+}
+
 /// Evaluate already-collected evidence only. A null policy represents the
 /// absence of an approved per-platform policy. Structural validation always
 /// completes before the limit comparison, so malformed evidence cannot be
@@ -534,34 +569,22 @@ outcome_is_consistent(const SIQSShadowProofRssGateOutcome& value) noexcept {
     using namespace shadow_proof_rss_gate_detail;
 
     const std::size_t sample_count = samples.size();
-    if (policy == nullptr) {
-        return outcome(SIQSShadowProofRssGateStatus::blocked,
-                       SIQSShadowProofRssGateReason::policy_missing, sample_count);
-    }
-    if (!policy->approved) {
-        return outcome(SIQSShadowProofRssGateStatus::blocked,
-                       SIQSShadowProofRssGateReason::policy_not_approved, sample_count);
-    }
-    if (!policy->deployment_budget_bytes.has_value()) {
-        return outcome(SIQSShadowProofRssGateStatus::blocked,
-                       SIQSShadowProofRssGateReason::policy_budget_missing, sample_count);
-    }
-    if (!policy->reserved_headroom_bytes.has_value()) {
-        return outcome(SIQSShadowProofRssGateStatus::blocked,
-                       SIQSShadowProofRssGateReason::policy_headroom_missing, sample_count);
-    }
-    if (*policy->deployment_budget_bytes <= *policy->reserved_headroom_bytes) {
-        return outcome(SIQSShadowProofRssGateStatus::invalid,
-                       SIQSShadowProofRssGateReason::policy_budget_not_above_headroom,
-                       sample_count);
+    if (const auto policy_error = siqs_shadow_proof_rss_gate_policy_error(policy)) {
+        const bool blocked = *policy_error == SIQSShadowProofRssGateReason::policy_missing ||
+                             *policy_error == SIQSShadowProofRssGateReason::policy_not_approved ||
+                             *policy_error == SIQSShadowProofRssGateReason::policy_budget_missing ||
+                             *policy_error == SIQSShadowProofRssGateReason::policy_headroom_missing;
+        uint64_t policy_rss_limit_bytes = 0;
+        if (*policy_error == SIQSShadowProofRssGateReason::policy_binding_invalid) {
+            policy_rss_limit_bytes =
+                *policy->deployment_budget_bytes - *policy->reserved_headroom_bytes;
+        }
+        return outcome(blocked ? SIQSShadowProofRssGateStatus::blocked
+                               : SIQSShadowProofRssGateStatus::invalid,
+                       *policy_error, sample_count, policy_rss_limit_bytes);
     }
     const uint64_t rss_limit_bytes =
         *policy->deployment_budget_bytes - *policy->reserved_headroom_bytes;
-    if (!policy_binding_is_valid(*policy)) {
-        return outcome(SIQSShadowProofRssGateStatus::invalid,
-                       SIQSShadowProofRssGateReason::policy_binding_invalid, sample_count,
-                       rss_limit_bytes);
-    }
     if (sample_count != SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT) {
         return outcome(SIQSShadowProofRssGateStatus::invalid,
                        SIQSShadowProofRssGateReason::sample_count_invalid, sample_count,

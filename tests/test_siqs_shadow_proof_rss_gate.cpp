@@ -46,6 +46,7 @@ using gnfs::siqs::SIQS_SHADOW_PROOF_RSS_GATE_FIXTURE_COUNT;
 using gnfs::siqs::SIQS_SHADOW_PROOF_RSS_GATE_MAX_TOKEN_BYTES;
 using gnfs::siqs::SIQS_SHADOW_PROOF_RSS_GATE_OBSERVE_REPETITIONS;
 using gnfs::siqs::SIQS_SHADOW_PROOF_RSS_GATE_OFF_REPETITIONS;
+using gnfs::siqs::siqs_shadow_proof_rss_gate_policy_error;
 using gnfs::siqs::siqs_shadow_proof_rss_gate_reason_name;
 using gnfs::siqs::siqs_shadow_proof_rss_gate_status_name;
 using gnfs::siqs::siqs_shadow_proof_rss_operating_system_name;
@@ -343,24 +344,32 @@ void test_policy_and_budget_boundaries() {
     const auto approved = make_policy();
     const auto complete = make_complete_samples(approved, RSS_LIMIT_BYTES);
 
+    CHECK(!siqs_shadow_proof_rss_gate_policy_error(&approved).has_value());
+    CHECK(siqs_shadow_proof_rss_gate_policy_error(nullptr) ==
+          SIQSShadowProofRssGateReason::policy_missing);
+
     const auto missing = expect_outcome(nullptr, complete, SIQSShadowProofRssGateStatus::blocked,
                                         SIQSShadowProofRssGateReason::policy_missing);
     CHECK(missing.total_sample_count == SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+    CHECK(missing.rss_limit_bytes == 0);
 
     auto policy = approved;
     policy.approved = false;
-    expect_outcome(&policy, complete, SIQSShadowProofRssGateStatus::blocked,
-                   SIQSShadowProofRssGateReason::policy_not_approved);
+    auto rejected = expect_outcome(&policy, complete, SIQSShadowProofRssGateStatus::blocked,
+                                   SIQSShadowProofRssGateReason::policy_not_approved);
+    CHECK(rejected.rss_limit_bytes == 0);
 
     policy = approved;
     policy.deployment_budget_bytes.reset();
-    expect_outcome(&policy, complete, SIQSShadowProofRssGateStatus::blocked,
-                   SIQSShadowProofRssGateReason::policy_budget_missing);
+    rejected = expect_outcome(&policy, complete, SIQSShadowProofRssGateStatus::blocked,
+                              SIQSShadowProofRssGateReason::policy_budget_missing);
+    CHECK(rejected.rss_limit_bytes == 0);
 
     policy = approved;
     policy.reserved_headroom_bytes.reset();
-    expect_outcome(&policy, complete, SIQSShadowProofRssGateStatus::blocked,
-                   SIQSShadowProofRssGateReason::policy_headroom_missing);
+    rejected = expect_outcome(&policy, complete, SIQSShadowProofRssGateStatus::blocked,
+                              SIQSShadowProofRssGateReason::policy_headroom_missing);
+    CHECK(rejected.rss_limit_bytes == 0);
 
     for (const auto [budget, headroom] :
          std::array{std::pair<uint64_t, uint64_t>{0, 0}, std::pair<uint64_t, uint64_t>{100, 100},
@@ -370,8 +379,9 @@ void test_policy_and_budget_boundaries() {
         policy = approved;
         policy.deployment_budget_bytes = budget;
         policy.reserved_headroom_bytes = headroom;
-        expect_outcome(&policy, complete, SIQSShadowProofRssGateStatus::invalid,
-                       SIQSShadowProofRssGateReason::policy_budget_not_above_headroom);
+        rejected = expect_outcome(&policy, complete, SIQSShadowProofRssGateStatus::invalid,
+                                  SIQSShadowProofRssGateReason::policy_budget_not_above_headroom);
+        CHECK(rejected.rss_limit_bytes == 0);
     }
 
     policy = approved;
@@ -404,8 +414,9 @@ void test_policy_binding_and_tokens() {
     const auto approved = make_policy();
     const auto samples = make_complete_samples(approved, RSS_LIMIT_BYTES);
     const auto expect_invalid_policy = [&](const SIQSShadowProofRssGatePolicy& policy) {
-        expect_outcome(&policy, samples, SIQSShadowProofRssGateStatus::invalid,
-                       SIQSShadowProofRssGateReason::policy_binding_invalid);
+        const auto outcome = expect_outcome(&policy, samples, SIQSShadowProofRssGateStatus::invalid,
+                                            SIQSShadowProofRssGateReason::policy_binding_invalid);
+        CHECK(outcome.rss_limit_bytes == RSS_LIMIT_BYTES);
     };
 
     auto policy = approved;

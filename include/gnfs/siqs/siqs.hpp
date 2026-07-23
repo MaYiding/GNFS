@@ -16,6 +16,7 @@
 #include <gnfs/siqs/congruence.hpp>
 #include <gnfs/siqs/live_sieve_capture.hpp>
 #include <gnfs/siqs/relation.hpp>
+#include <gnfs/siqs/runtime_facts.hpp>
 #include <gnfs/siqs/shadow_proof_observe.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <gnfs/util/primes.hpp>
@@ -1474,6 +1475,7 @@ struct SIQSResult {
     double  time_seconds;
     size_t  relations_found;
     size_t  polynomials_used;
+    unsigned resolved_sieve_workers = 0;
 };
 
 inline std::optional<SIQSResult> factor(
@@ -1585,7 +1587,8 @@ inline std::optional<SIQSResult> factor(
     };
 
     // Multi-threaded sieve: each thread processes its own A values
-    unsigned num_threads = std::max(1u, std::thread::hardware_concurrency());
+    const unsigned num_threads =
+        resolve_siqs_sieve_workers(std::thread::hardware_concurrency());
     std::atomic<size_t> atomic_polys{0};
     std::atomic<bool> enough{false};
 
@@ -1765,6 +1768,7 @@ inline std::optional<SIQSResult> factor(
         sr.time_seconds = elapsed();
         sr.relations_found = relations.size();
         sr.polynomials_used = num_polys;
+        sr.resolved_sieve_workers = num_threads;
 
         if (verbose) {
             fprintf(stderr, "[SIQS] SUCCESS: %s * %s (%.3fs, %zu polys)\n",

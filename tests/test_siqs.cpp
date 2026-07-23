@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #if defined(_WIN32)
@@ -351,6 +352,14 @@ void test_siqs_small() {
 
     const auto off_factors = canonical_factors(*off_result);
     const auto observe_factors = canonical_factors(*observe_result);
+    const unsigned expected_sieve_workers =
+        resolve_siqs_sieve_workers(std::thread::hardware_concurrency());
+    require_test(off_result->resolved_sieve_workers == expected_sieve_workers,
+                 "disabled-mode result did not report the production sieve worker count");
+    require_test(observe_result->resolved_sieve_workers == expected_sieve_workers,
+                 "observe-mode result did not report the production sieve worker count");
+    require_test(off_result->resolved_sieve_workers == observe_result->resolved_sieve_workers,
+                 "shadow mode changed the production sieve worker count");
     require_test(off_factors == observe_factors,
                  "observe mode changed the canonical 143 factor result");
     require_test(off_factors.first == Integer(11) && off_factors.second == Integer(13),

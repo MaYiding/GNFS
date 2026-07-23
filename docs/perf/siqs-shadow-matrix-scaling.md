@@ -326,6 +326,51 @@ threshold is frozen. No sealed holdout has been run, and no real gate result
 exists. The campaign runner and measurement remain blocked and pending. Nothing
 may construct or launch the 80-process campaign until the policy is approved.
 
+### Policy-Gated Campaign Preparation
+
+Campaign preparation is split into pure contracts that remain usable without
+opening the sealed holdouts. `include/gnfs/siqs/runtime_facts.hpp` owns the
+single production sieve-worker resolution rule. `factor()` resolves that value
+once and returns the actual value in `SIQSResult::resolved_sieve_workers`, so a
+future probe can report the worker count used by the measured run instead of
+querying the host a second time.
+
+`include/gnfs/siqs/shadow_proof_rss_policy_record.hpp` defines the canonical
+single-line `GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V1` codec. It accepts exactly one
+printable-ASCII record terminated by one LF, with a fixed field order and
+canonical boolean and unsigned-integer forms. The parsed record owns its token
+storage and can provide a temporary `SIQSShadowProofRssGatePolicy` view while
+the record remains alive, unchanged, and unmoved. Rvalue view construction is
+deleted. The codec validates representation only. Approval, frozen corpus identity,
+OS/backend compatibility, nonzero worker count, and budget semantics continue
+to use the gate's shared policy preflight. No approved policy record is stored
+in the repository. The `approved` field and the policy-binding digest are audit
+claims, not cryptographic authorization.
+
+`include/gnfs/siqs/shadow_proof_rss_campaign.hpp` consumes an already-typed
+policy and performs no I/O. A missing, unapproved, incomplete, or invalid policy
+returns an empty plan. A valid synthetic policy produces exactly 80 abstract
+slots in frozen fixture-major order: `off` ordinals 1 through 3 followed by
+`observe` ordinals 1 through 7 for each fixture 1 through 8. Every slot binds
+the complete policy and its stable digest. Campaign concurrency is the constant
+one and is not configurable.
+
+These contracts do not load a holdout modulus, resolve a probe path, create an
+output directory, construct a child-process command, sample RSS, or call
+`factor()`. The production holdout probe, host and candidate-revision preflight,
+portable serial launcher, write-once journal, resume rules, stream join, and
+terminal gate aggregation remain separate pending work. The execution layer
+must validate the approved policy and the actual runtime facts before it loads
+the sealed fixture table or constructs the first command. A campaign interrupted
+after a child starts but before its sample commits must be treated as tainted,
+not retried in place.
+
+`tests/test_siqs_runtime_facts.cpp`,
+`tests/test_siqs_shadow_proof_rss_policy_record.cpp`, and
+`tests/test_siqs_shadow_proof_rss_campaign.cpp` cover only injected values and
+synthetic bytes. They do not run a probe, factor a holdout, or read live process
+memory.
+
 ### Pure V2 Prefer Boundary
 
 The V2 prefer layer is a pure decision and audit boundary. The environment

@@ -2080,6 +2080,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SiqsShadowProofObserve COMMAND test_siqs_shadow_proof_observe)
     set_tests_properties(SiqsShadowProofObserve PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_runtime_facts
+        tests/test_siqs_runtime_facts.cpp
+    )
+    target_link_libraries(test_siqs_runtime_facts PRIVATE gnfs_core)
+    add_test(NAME SiqsRuntimeFacts COMMAND test_siqs_runtime_facts)
+    set_tests_properties(SiqsRuntimeFacts PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_siqs_shadow_observe_rss_holdouts
         tests/test_siqs_shadow_observe_rss_holdouts.cpp
     )
@@ -2093,6 +2100,20 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_siqs_shadow_proof_rss_gate PRIVATE gnfs_core)
     add_test(NAME SiqsShadowProofRssGate COMMAND test_siqs_shadow_proof_rss_gate)
     set_tests_properties(SiqsShadowProofRssGate PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_policy_record
+        tests/test_siqs_shadow_proof_rss_policy_record.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_policy_record PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssPolicyRecord COMMAND test_siqs_shadow_proof_rss_policy_record)
+    set_tests_properties(SiqsShadowProofRssPolicyRecord PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_campaign
+        tests/test_siqs_shadow_proof_rss_campaign.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_campaign PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssCampaign COMMAND test_siqs_shadow_proof_rss_campaign)
+    set_tests_properties(SiqsShadowProofRssCampaign PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_siqs_shadow_proof_prefer
         tests/test_siqs_shadow_proof_prefer.cpp
