@@ -597,17 +597,16 @@ decode_siqs_shadow_proof_rss_campaign_journal_header(std::span<const std::byte> 
         !frame) {
         return decode_failure<SIQSShadowProofRssCampaignJournalHeader>(frame.error, frame.offset);
     }
-    if (const Status reserved = check_reserved(bytes, 20, 24); !reserved) {
-        return decode_failure<SIQSShadowProofRssCampaignJournalHeader>(reserved.error,
-                                                                       reserved.offset);
-    }
-
     SIQSShadowProofRssCampaignJournalHeader header;
     header.schema_version = read_u32(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_SCHEMA_OFFSET);
     if (header.schema_version != SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION) {
         return decode_failure<SIQSShadowProofRssCampaignJournalHeader>(
             Error::unsupported_journal_schema_version,
             SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_SCHEMA_OFFSET);
+    }
+    if (const Status reserved = check_reserved(bytes, 20, 24); !reserved) {
+        return decode_failure<SIQSShadowProofRssCampaignJournalHeader>(reserved.error,
+                                                                       reserved.offset);
     }
     header.policy_binding_digest =
         read_digest(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_POLICY_DIGEST_OFFSET);
@@ -760,14 +759,6 @@ decode_siqs_shadow_proof_rss_campaign_journal_record(std::span<const std::byte> 
         !frame) {
         return decode_failure<Record>(frame.error, frame.offset);
     }
-    for (const auto [begin, end] :
-         std::array{std::array<std::size_t, 2>{25, 32}, std::array<std::size_t, 2>{68, 72},
-                    std::array<std::size_t, 2>{101, 104}}) {
-        if (const Status reserved = check_reserved(bytes, begin, end); !reserved) {
-            return decode_failure<Record>(reserved.error, reserved.offset);
-        }
-    }
-
     Record record;
     record.schema_version = read_u32(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_SCHEMA_OFFSET);
     if (record.schema_version != SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION) {
@@ -782,11 +773,17 @@ decode_siqs_shadow_proof_rss_campaign_journal_record(std::span<const std::byte> 
                                       SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_KIND_OFFSET);
     }
     record.kind = *record_kind;
+    if (const Status reserved = check_reserved(bytes, 25, 32); !reserved) {
+        return decode_failure<Record>(reserved.error, reserved.offset);
+    }
     record.previous_record_digest =
         read_digest(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_PREVIOUS_DIGEST_OFFSET);
     record.plan_digest =
         read_digest(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_PLAN_DIGEST_OFFSET);
     record.slot_number = read_u32(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_SLOT_NUMBER_OFFSET);
+    if (const Status reserved = check_reserved(bytes, 68, 72); !reserved) {
+        return decode_failure<Record>(reserved.error, reserved.offset);
+    }
     record.slot_digest =
         read_digest(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_SLOT_DIGEST_OFFSET);
 
@@ -847,6 +844,9 @@ decode_siqs_shadow_proof_rss_campaign_journal_record(std::span<const std::byte> 
     if ((optional_mask & static_cast<uint8_t>(~OPTIONAL_MASK_ALL)) != 0) {
         return decode_failure<Record>(Error::invalid_optional_mask,
                                       SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_OPTIONAL_MASK_OFFSET);
+    }
+    if (const Status reserved = check_reserved(bytes, 101, 104); !reserved) {
+        return decode_failure<Record>(reserved.error, reserved.offset);
     }
 
     const auto read_optional_unsigned =
