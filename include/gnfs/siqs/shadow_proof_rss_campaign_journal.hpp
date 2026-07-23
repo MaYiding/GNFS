@@ -160,6 +160,52 @@ struct SIQSShadowProofRssCampaignJournalRecord final {
                const SIQSShadowProofRssCampaignJournalRecord&) noexcept = default;
 };
 
+/// Move-only proof that the storage layer durably published one exact journal
+/// record. Ordinary callers cannot construct this capability. A receipt binds
+/// the complete typed record, including its plan, sequence, and digest, so a
+/// stale or mismatched receipt cannot authorize a process launch.
+class SIQSShadowProofRssDurableRecordReceipt final {
+public:
+    SIQSShadowProofRssDurableRecordReceipt() = delete;
+    SIQSShadowProofRssDurableRecordReceipt(const SIQSShadowProofRssDurableRecordReceipt&) = delete;
+    SIQSShadowProofRssDurableRecordReceipt&
+    operator=(const SIQSShadowProofRssDurableRecordReceipt&) = delete;
+
+    constexpr SIQSShadowProofRssDurableRecordReceipt(
+        SIQSShadowProofRssDurableRecordReceipt&& other) noexcept
+        : record_(other.record_), active_(std::exchange(other.active_, false)) {}
+
+    constexpr SIQSShadowProofRssDurableRecordReceipt&
+    operator=(SIQSShadowProofRssDurableRecordReceipt&& other) noexcept {
+        if (this != &other) {
+            record_ = other.record_;
+            active_ = std::exchange(other.active_, false);
+        }
+        return *this;
+    }
+
+    [[nodiscard]] constexpr const SIQSShadowProofRssCampaignJournalRecord& record() const noexcept {
+        return record_;
+    }
+
+    [[nodiscard]] constexpr bool active() const noexcept {
+        return active_;
+    }
+
+private:
+    explicit constexpr SIQSShadowProofRssDurableRecordReceipt(
+        SIQSShadowProofRssCampaignJournalRecord record) noexcept
+        : record_(record), active_(true) {}
+
+    SIQSShadowProofRssCampaignJournalRecord record_;
+    bool active_ = false;
+
+    friend constexpr std::optional<class SIQSShadowProofRssLaunchPermit>
+    acknowledge_siqs_shadow_proof_rss_durable_slot_start(
+        class SIQSShadowProofRssPreparedSlotStart&&,
+        SIQSShadowProofRssDurableRecordReceipt&&) noexcept;
+};
+
 struct SIQSShadowProofRssCampaignJournalResume;
 
 [[nodiscard]] constexpr SIQSShadowProofRssCampaignJournalResume
@@ -215,8 +261,7 @@ private:
 
     friend constexpr std::optional<class SIQSShadowProofRssLaunchPermit>
     acknowledge_siqs_shadow_proof_rss_durable_slot_start(
-        SIQSShadowProofRssPreparedSlotStart&&,
-        const SIQSShadowProofRssCampaignJournalRecord&) noexcept;
+        SIQSShadowProofRssPreparedSlotStart&&, SIQSShadowProofRssDurableRecordReceipt&&) noexcept;
 };
 
 struct SIQSShadowProofRssCampaignJournalResume final {
@@ -271,8 +316,7 @@ private:
 
     friend constexpr std::optional<SIQSShadowProofRssLaunchPermit>
     acknowledge_siqs_shadow_proof_rss_durable_slot_start(
-        SIQSShadowProofRssPreparedSlotStart&&,
-        const SIQSShadowProofRssCampaignJournalRecord&) noexcept;
+        SIQSShadowProofRssPreparedSlotStart&&, SIQSShadowProofRssDurableRecordReceipt&&) noexcept;
 
     friend constexpr std::optional<SIQSShadowProofRssCampaignJournalRecord>
     make_siqs_shadow_proof_rss_slot_commit(SIQSShadowProofRssLaunchPermit&&,
@@ -793,12 +837,14 @@ resume_siqs_shadow_proof_rss_campaign_journal(
 [[nodiscard]] constexpr std::optional<SIQSShadowProofRssLaunchPermit>
 acknowledge_siqs_shadow_proof_rss_durable_slot_start(
     SIQSShadowProofRssPreparedSlotStart&& prepared,
-    const SIQSShadowProofRssCampaignJournalRecord& durable_record) noexcept {
-    if (!prepared.active_ || durable_record != prepared.record_) {
+    SIQSShadowProofRssDurableRecordReceipt&& receipt) noexcept {
+    const bool matches = prepared.active_ && receipt.active_ && receipt.record_ == prepared.record_;
+    prepared.active_ = false;
+    receipt.active_ = false;
+    if (!matches) {
         return std::nullopt;
     }
-    prepared.active_ = false;
-    return SIQSShadowProofRssLaunchPermit(durable_record);
+    return SIQSShadowProofRssLaunchPermit(receipt.record_);
 }
 
 [[nodiscard]] constexpr std::optional<SIQSShadowProofRssCampaignJournalRecord>

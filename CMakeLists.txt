@@ -232,13 +232,15 @@ endif()
 # ============================================================
 
 # gnfs_util - 工具库
-add_library(gnfs_util INTERFACE)
-target_include_directories(gnfs_util INTERFACE
+add_library(gnfs_util STATIC
+    src/util/durable_immutable_file.cpp
+)
+target_include_directories(gnfs_util PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 if(WIN32)
-    target_link_libraries(gnfs_util INTERFACE Psapi)
+    target_link_libraries(gnfs_util PUBLIC Psapi)
 endif()
 
 # gnfs_core - 核心类型库
@@ -471,6 +473,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_process_memory PRIVATE gnfs_util)
     add_test(NAME ProcessMemory COMMAND test_process_memory)
     set_tests_properties(ProcessMemory PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_durable_immutable_file
+        tests/test_durable_immutable_file.cpp
+    )
+    target_link_libraries(test_durable_immutable_file PRIVATE gnfs_util Threads::Threads)
+    add_test(NAME DurableImmutableFile COMMAND test_durable_immutable_file)
+    set_tests_properties(DurableImmutableFile PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_mmap_file
         tests/test_mmap_file.cpp
@@ -2132,6 +2141,15 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SiqsShadowProofRssCampaignJournal
         COMMAND test_siqs_shadow_proof_rss_campaign_journal)
     set_tests_properties(SiqsShadowProofRssCampaignJournal
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_campaign_journal_codec
+        tests/test_siqs_shadow_proof_rss_campaign_journal_codec.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_campaign_journal_codec PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssCampaignJournalCodec
+        COMMAND test_siqs_shadow_proof_rss_campaign_journal_codec)
+    set_tests_properties(SiqsShadowProofRssCampaignJournalCodec
         PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_siqs_shadow_proof_rss_holdout_probe_contract

@@ -373,11 +373,39 @@ header and records again before the caller invokes the existing RSS gate.
 
 The move-only capabilities prevent accidental reuse within one replay result;
 they do not prove filesystem durability or serialize two callers that replay
-the same stale snapshot. The pending storage layer must provide the single-writer,
-exclusive journal lease and a one-shot durable-append receipt. Artifact seals in
-this pure layer are stable accidental-corruption identities only. They do not
-parse or validate child stdout/stderr. A live commit path remains closed until
-the strict two-stream parser and join can issue typed validated evidence.
+the same stale snapshot. The durable-record receipt is therefore intentionally
+not constructible yet. A future journal store must own a canonical header-bound
+root, derive the one allowed filename for each sequence, and issue the receipt
+only after that exact record reaches the storage boundary. An API that accepts
+an arbitrary output path or a caller-supplied successful I/O backend is not a
+receipt issuer because either would permit duplicate launches from one stale
+replay.
+
+`include/gnfs/siqs/shadow_proof_rss_campaign_journal_codec.hpp` defines the
+canonical storage representation without opening a file. Headers are exactly
+96 bytes and records are exactly 256 bytes. Both use distinct eight-byte magic,
+an explicit wire version and declared size, fixed little-endian integers,
+dedicated enum tags, zeroed reserved bytes, and semantic-digest verification.
+Optional values use a presence bitmap and require a zero payload when absent.
+Decoding rejects short and trailing data and reports a closed error plus the
+first failing byte offset. The codec never persists C++ object layout,
+`size_t`, enum representation, or `std::optional` representation.
+
+`include/gnfs/util/durable_immutable_file.hpp` and its compiled implementation
+provide the lower publication boundary. The publisher opens and holds the
+parent directory before creating a leaf exclusively, completes short writes,
+syncs file and directory metadata, closes both handles exactly once, and never
+deletes, truncates, renames, or repairs a failed artifact. POSIX creation uses
+`openat()` relative to the held parent descriptor. macOS uses full-sync barriers
+for the file and parent directory; Windows uses write-through file creation and
+requires an actual parent-directory `FlushFileBuffers` success. Unsupported
+filesystems fail closed. Injectable file operations test the state machine, but
+cannot construct a journal durable-record receipt.
+
+Artifact seals in the pure journal remain stable accidental-corruption
+identities only. They do not parse or validate child stdout/stderr. A live
+commit path remains closed until the canonical journal root and strict
+two-stream parser and join can issue typed validated evidence.
 
 CMake declares `test_siqs_shadow_proof_rss_holdout_probe` as a Release-only,
 single-sample production target with `EXCLUDE_FROM_ALL`. Default builds do not
@@ -415,22 +443,30 @@ The pure preparation contracts above may inspect the constexpr sealed manifest,
 but do not construct a production modulus, resolve a probe path, create an
 output directory, construct a child-process command, sample RSS, or call
 `factor()`. The approved-policy execution path around the production holdout
-probe remains pending. The pure journal contract performs no file I/O and does
-not provide an exclusive-create/append/fsync storage layer, portable serial
-launcher, stdout/stderr parser, stream join, or approved policy. Those execution
-components must validate the approved policy, actual runtime facts, and
-candidate revision before loading the sealed fixture table or constructing the
-first command. The future storage layer must durably append the start before it
-requests a launch permit. A campaign interrupted after that start but before
-its sample commits remains tainted and cannot be retried in place.
+probe remains pending. The pure journal contract still performs no file I/O.
+The canonical codec and durable immutable-file primitive do not yet constitute
+the header-bound journal store, portable serial launcher, stdout/stderr parser,
+stream join, or approved policy. Those execution components must validate the
+approved policy, actual runtime facts, and candidate revision before loading
+the sealed fixture table or constructing the first command. The future store
+must derive the unique start-record path from its validated root and durably
+publish the start before it requests a launch permit. A campaign interrupted
+after that start but before its sample commits remains tainted and cannot be
+retried in place.
 
 `tests/test_siqs_runtime_facts.cpp`,
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
 `tests/test_siqs_shadow_proof_rss_campaign.cpp`,
-`tests/test_siqs_shadow_proof_rss_campaign_journal.cpp`, and
+`tests/test_siqs_shadow_proof_rss_campaign_journal.cpp`,
+`tests/test_siqs_shadow_proof_rss_campaign_journal_codec.cpp`, and
 `tests/test_siqs_shadow_proof_rss_holdout_probe_contract.cpp` cover only
 injected values, synthetic metrics, and constexpr fixture identity. They do not
 run a probe, factor a holdout, or read live process memory.
+
+`tests/test_durable_immutable_file.cpp` uses temporary synthetic bytes to cover
+exclusive-create contention, partial writes, interrupted calls, zero progress,
+file and parent sync failures, close failures, existing leaves, and symlink
+leaves. It never opens a holdout or issues a launch permit.
 
 ### Pure V2 Prefer Boundary
 
@@ -635,6 +671,9 @@ Before promotion it must provide:
   inclusive absolute observe-peak budget comparison, diagnostic-only secondary
   metrics, manual-review-only pass, and route/promotion disabled for every
   outcome.
+- [x] Canonical fixed-width campaign-journal codec plus a fail-closed durable
+  immutable-file primitive with exclusive publication and injected fault tests.
+  The header-bound journal store and receipt issuer remain pending.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved
   headroom, OS, architecture, RSS backend, resolved production sieve workers,
   candidate revision, approval identity, and sealed corpus digest.

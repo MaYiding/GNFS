@@ -20,6 +20,9 @@ using gnfs::util::ProcessMemoryBackend;
 static_assert(!std::is_default_constructible_v<SIQSShadowProofRssPreparedSlotStart>);
 static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssPreparedSlotStart>);
 static_assert(std::is_move_constructible_v<SIQSShadowProofRssPreparedSlotStart>);
+static_assert(!std::is_default_constructible_v<SIQSShadowProofRssDurableRecordReceipt>);
+static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssDurableRecordReceipt>);
+static_assert(std::is_move_constructible_v<SIQSShadowProofRssDurableRecordReceipt>);
 static_assert(!std::is_default_constructible_v<SIQSShadowProofRssLaunchPermit>);
 static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssLaunchPermit>);
 static_assert(std::is_move_constructible_v<SIQSShadowProofRssLaunchPermit>);
@@ -105,6 +108,22 @@ int checks_failed = 0;
     return payload;
 }
 
+[[nodiscard]] SIQSShadowProofRssCampaignJournalRecord
+make_synthetic_commit(const SIQSShadowProofRssCampaignJournalRecord& start,
+                      const SIQSShadowProofRssJournalCommitPayload& payload) {
+    SIQSShadowProofRssCampaignJournalRecord commit;
+    commit.schema_version = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION;
+    commit.sequence_number = start.sequence_number + 1;
+    commit.kind = SIQSShadowProofRssJournalRecordKind::slot_committed;
+    commit.previous_record_digest = start.record_digest;
+    commit.plan_digest = start.plan_digest;
+    commit.slot_number = start.slot_number;
+    commit.slot_digest = start.slot_digest;
+    commit.commit_payload = payload;
+    commit.record_digest = shadow_proof_rss_campaign_journal_detail::record_digest(commit);
+    return commit;
+}
+
 [[nodiscard]] SIQSShadowProofRssCampaignJournalHeader
 make_header(const SIQSShadowProofRssGatePolicy& policy,
             const SIQSShadowProofRssCampaignRuntimeFacts& facts) {
@@ -162,28 +181,15 @@ make_header(const SIQSShadowProofRssGatePolicy& policy,
         }
     }
 
-    records.push_back(start); // Synthetic durable append boundary.
-    auto permit =
-        acknowledge_siqs_shadow_proof_rss_durable_slot_start(std::move(prepared), records.back());
-    CHECK(permit.has_value());
-    CHECK(!prepared.active());
-    if (!permit.has_value()) {
-        return false;
-    }
-
+    records.push_back(start); // Pure replay fixture; no durability claim is made.
     const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy);
     const auto& slot = plan.slots[start.slot_number - 1];
     const auto payload = make_payload(slot.mode, UINT64_C(1000000) + start.slot_number);
-    auto commit = make_siqs_shadow_proof_rss_slot_commit(std::move(*permit), &policy, payload);
-    CHECK(commit.has_value());
-    CHECK(!permit->active());
-    if (!commit.has_value()) {
-        return false;
-    }
-    CHECK(commit->kind == SIQSShadowProofRssJournalRecordKind::slot_committed);
-    CHECK(commit->sequence_number == start.sequence_number + 1);
-    CHECK(commit->previous_record_digest == start.record_digest);
-    records.push_back(*commit);
+    const auto commit = make_synthetic_commit(start, payload);
+    CHECK(commit.kind == SIQSShadowProofRssJournalRecordKind::slot_committed);
+    CHECK(commit.sequence_number == start.sequence_number + 1);
+    CHECK(commit.previous_record_digest == start.record_digest);
+    records.push_back(commit);
     return true;
 }
 
@@ -390,27 +396,7 @@ void test_presence_header_and_capability_boundaries() {
     auto moved = std::move(first);
     CHECK(!first.active());
     CHECK(moved.active());
-    CHECK(!acknowledge_siqs_shadow_proof_rss_durable_slot_start(std::move(first), start));
-
-    auto wrong = start;
-    ++wrong.sequence_number;
-    CHECK(!acknowledge_siqs_shadow_proof_rss_durable_slot_start(std::move(moved), wrong));
-    CHECK(moved.active());
-    auto permit = acknowledge_siqs_shadow_proof_rss_durable_slot_start(std::move(moved), start);
-    CHECK(permit.has_value());
-    CHECK(!moved.active());
-    if (permit.has_value()) {
-        auto moved_permit = std::move(*permit);
-        CHECK(!permit->active());
-        CHECK(moved_permit.active());
-        auto bad_payload = make_payload(SIQSShadowProofRssSampleMode::off, 1);
-        bad_payload.completed = false;
-        CHECK(
-            !make_siqs_shadow_proof_rss_slot_commit(std::move(moved_permit), &policy, bad_payload));
-        CHECK(!moved_permit.active());
-        CHECK(!make_siqs_shadow_proof_rss_slot_commit(
-            std::move(moved_permit), &policy, make_payload(SIQSShadowProofRssSampleMode::off, 1)));
-    }
+    CHECK(moved.record() == start);
 }
 
 void test_post_start_failures_are_tainted() {
