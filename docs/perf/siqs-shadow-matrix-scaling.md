@@ -595,7 +595,9 @@ child variants. Those variants read only the compiled sealed identity manifest;
 they never call `factor()`, collect a holdout measurement, or invoke the
 production probe. They cover successful same-child commit, nonzero exit,
 malformed output, capture overflow, timeout cleanup, partial artifact
-publication, explicit taint, and commit-terminal uncertainty. None of these
+publication, explicit taint, and commit-terminal uncertainty. The success path
+covers both an empty-stderr `off` slot and the first `observe` slot with one
+strict typed stderr record and `pass` proof and matrix evidence. None of these
 targets is a production campaign runner.
 
 The pure probe protocol binds each `fixture_id` to the exact modulus and
@@ -644,8 +646,11 @@ per-platform policy, private production executable binding, and the serial
 80-slot campaign loop remain pending. Those authority-bearing components must
 validate the approved policy, actual runtime facts, and candidate revision
 before loading the sealed fixture table or constructing the first production
-command. A campaign interrupted after its durable start but before its sample
-commits remains tainted and cannot be retried in place.
+command. Synthetic committed prefixes validate the transaction machinery only;
+they must not be reconstructed into gate samples or evaluated until the
+durable journal binds production probe provenance. A campaign interrupted after
+its durable start but before its sample commits remains tainted and cannot be
+retried in place.
 
 `tests/test_siqs_runtime_facts.cpp`,
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
@@ -910,7 +915,9 @@ Before promotion it must provide:
 - [x] Private same-child single-slot transaction with deployment-owned
   executable, environment and timeout; bounded dual-stream capture; strict
   join; exact artifact publication; private commit authority; and fail-closed
-  terminal-leaf classification. Its tests use synthetic children only.
+  terminal-leaf classification. Its synthetic tests cover canonical `off` and
+  first-`observe` commits without factoring or measuring the sealed production
+  holdout.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved
   headroom, OS, architecture, RSS backend, resolved production sieve workers,
   candidate revision, approval identity, sealed corpus digest, trusted journal

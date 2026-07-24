@@ -4,6 +4,7 @@
 // through the private deployment table so no test path or resolver is added to
 // the public authority boundary.
 
+#include <gnfs/siqs/shadow_proof_observe_record_codec.hpp>
 #include <gnfs/siqs/shadow_proof_rss_campaign_journal_codec.hpp>
 #include <gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp>
 
@@ -1430,7 +1431,7 @@ void test_committed_prefix_durability_precedes_next_authority() {
 }
 
 [[nodiscard]] std::optional<SIQSShadowProofRssCampaignJournalActiveSlot>
-begin_runner_slot(const DeploymentEntry& deployment) {
+begin_runner_slot(const DeploymentEntry& deployment, uint32_t expected_slot_number = 1) {
     const auto policy = make_policy();
     const auto facts = make_facts();
     auto session = take_successful_session(open_private(&policy, &facts, deployment));
@@ -1440,15 +1441,20 @@ begin_runner_slot(const DeploymentEntry& deployment) {
     auto active = std::move(begin).take_active_slot();
     CHECK(active.has_value());
     CHECK(active->active());
-    CHECK(active->slot_number() == 1);
+    CHECK(active->slot_number() == expected_slot_number);
     return active;
 }
 
-void expect_single_synthetic_launch(const std::filesystem::path& marker) {
+void expect_single_synthetic_launch(
+    const std::filesystem::path& marker, uint32_t fixture_id = 1,
+    SIQSShadowProofRssSampleMode mode = SIQSShadowProofRssSampleMode::off, uint32_t ordinal = 1) {
     if (!std::filesystem::is_directory(marker)) {
         throw std::runtime_error("missing synthetic launch marker: " + marker.string());
     }
-    CHECK(read_text_file(marker / "launch.txt") == "fixture_id=1 mode=off ordinal=1\n");
+    const std::string expected = "fixture_id=" + std::to_string(fixture_id) + " mode=" +
+                                 std::string(siqs_shadow_proof_rss_sample_mode_name(mode)) +
+                                 " ordinal=" + std::to_string(ordinal) + '\n';
+    CHECK(read_text_file(marker / "launch.txt") == expected);
 }
 
 void expect_no_runner_artifacts(const TempStore& fixture) {
@@ -1605,6 +1611,96 @@ void test_slot_runner_happy_off_commits_one_same_child(const std::filesystem::pa
     CHECK(reopened.has_value());
     CHECK(reopened->view().committed_slot_count == 1);
     CHECK(reopened->view().next_slot_number == 2);
+}
+
+void test_slot_runner_happy_observe_commits_one_same_child(
+    const std::filesystem::path& executable) {
+    constexpr std::string_view off_stdout = "committed-off-stdout\n";
+    constexpr std::string_view off_stderr;
+    constexpr std::string_view off_joined = "committed-off-joined\n";
+
+    TempStore fixture;
+    write_committed_off_slots(fixture, 3, off_stdout, off_stderr, off_joined);
+    const auto marker = fixture.base_leaf("runner-happy-observe-marker");
+    auto deployment = make_runner_deployment(fixture, executable, marker);
+    auto active = begin_runner_slot(deployment, 4);
+
+    auto result = store_detail::SlotRunnerFactory::run(std::move(*active));
+    CHECK(static_cast<bool>(result));
+    CHECK(result.diagnostic().error == SlotRunnerError::none);
+    CHECK(result.view().status == SIQSShadowProofRssJournalStatus::ready);
+    CHECK(result.view().reason == SIQSShadowProofRssJournalReason::ready);
+    CHECK(result.view().action == SIQSShadowProofRssJournalAction::append_slot_start);
+    CHECK(result.view().committed_slot_count == 4);
+    CHECK(result.view().next_slot_number == 5);
+    expect_single_synthetic_launch(marker, 1, SIQSShadowProofRssSampleMode::observe, 1);
+
+    const auto stdout_leaf = artifact_leaf(4, SIQSShadowProofRssArtifactKind::probe_stdout);
+    const auto stderr_leaf = artifact_leaf(4, SIQSShadowProofRssArtifactKind::probe_stderr);
+    const auto joined_leaf = artifact_leaf(4, SIQSShadowProofRssArtifactKind::joined_gate_sample);
+    const std::string stdout_bytes =
+        bytes_as_string(fixture.read_artifact_leaf(stdout_leaf.view()));
+    const std::string stderr_bytes =
+        bytes_as_string(fixture.read_artifact_leaf(stderr_leaf.view()));
+    const std::string joined_bytes =
+        bytes_as_string(fixture.read_artifact_leaf(joined_leaf.view()));
+    CHECK(!stdout_bytes.empty());
+    CHECK(!stderr_bytes.empty());
+    CHECK(!joined_bytes.empty());
+
+    const auto parsed_observe = parse_siqs_shadow_proof_observe_record(stderr_bytes);
+    CHECK(parsed_observe);
+    CHECK(parsed_observe.record.has_value());
+    const auto& observe = *parsed_observe.record;
+    CHECK(observe.proof_attempted);
+    CHECK(observe.terminal_status == SIQSShadowProofTerminalStatus::factor_found);
+    CHECK(observe.stage == SIQSShadowProofStage::factor_extraction);
+    CHECK(observe.observe_wall_ns == UINT64_C(6000000));
+    CHECK(observe.matrix_rows == 1701);
+    CHECK(observe.matrix_columns == 1601);
+    CHECK(observe.minimum_nullity == 100);
+    CHECK(observe.before_memory.backend == host_memory_backend());
+    CHECK(observe.after_memory.backend == host_memory_backend());
+    CHECK(observe.peak_growth_supported);
+    CHECK(observe.peak_growth_bytes == UINT64_C(2000000));
+    CHECK(joined_bytes.find(" proof_evidence=pass matrix_evidence=pass ") != std::string::npos);
+
+    const auto commit_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(8);
+    CHECK(commit_leaf.has_value());
+    const auto decoded = decode_siqs_shadow_proof_rss_campaign_journal_record(
+        fixture.read_store_leaf(commit_leaf->view()));
+    CHECK(decoded);
+    CHECK(decoded.value->sequence_number == 8);
+    CHECK(decoded.value->slot_number == 4);
+    CHECK(decoded.value->kind == SIQSShadowProofRssJournalRecordKind::slot_committed);
+    const auto& payload = decoded.value->commit_payload;
+    CHECK(payload.factor_identity == SIQSShadowProofRssFactorIdentity::pass);
+    CHECK(payload.proof_evidence == SIQSShadowProofRssEvidence::pass);
+    CHECK(payload.matrix_evidence == SIQSShadowProofRssEvidence::pass);
+    CHECK(payload.absolute_peak_rss_bytes == UINT64_C(14000000));
+    CHECK(payload.current_rss_bytes == UINT64_C(13000000));
+    CHECK(payload.peak_growth_bytes == UINT64_C(2000000));
+    CHECK(payload.wall_ns == UINT64_C(7000000));
+    CHECK(payload.stdout_seal == seal_siqs_shadow_proof_rss_artifact(
+                                     SIQSShadowProofRssArtifactKind::probe_stdout, stdout_bytes));
+    CHECK(payload.stderr_seal == seal_siqs_shadow_proof_rss_artifact(
+                                     SIQSShadowProofRssArtifactKind::probe_stderr, stderr_bytes));
+    CHECK(payload.joined_sample_seal ==
+          seal_siqs_shadow_proof_rss_artifact(SIQSShadowProofRssArtifactKind::joined_gate_sample,
+                                              joined_bytes));
+
+    auto continuation = std::move(result).take_session();
+    CHECK(continuation.has_value());
+    CHECK(continuation->active());
+    CHECK(continuation->view().committed_slot_count == 4);
+    continuation.reset();
+
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    auto reopened = take_successful_session(open_private(&policy, &facts, deployment));
+    CHECK(reopened.has_value());
+    CHECK(reopened->view().committed_slot_count == 4);
+    CHECK(reopened->view().next_slot_number == 5);
 }
 
 void run_slot_runner_failure_case(const std::filesystem::path& executable,
@@ -3033,6 +3129,7 @@ int main(int argc, char** argv) {
         test_slot_runner_contract_and_missing_deployment();
         test_slot_runner_rejects_invalid_deployment(children.success);
         test_slot_runner_happy_off_commits_one_same_child(children.success);
+        test_slot_runner_happy_observe_commits_one_same_child(children.success);
         test_slot_runner_execution_and_join_failures(children);
         test_slot_runner_artifact_prefix_failure_taints(children.success);
         test_slot_runner_commit_terminal_leaf_matrix(children.success);
