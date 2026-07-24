@@ -181,6 +181,7 @@ static_assert(!std::is_copy_constructible_v<store_detail::SameChildExecutionRece
         .architecture = host_architecture(),
         .memory_backend = host_memory_backend(),
         .resolved_production_sieve_workers = 4,
+        .probe_kind = SIQSShadowProofRssProbeKind::synthetic_test,
         .candidate_revision = "candidate-revision-1",
         .release_build = true,
         .ndebug = true,
@@ -200,6 +201,7 @@ static_assert(!std::is_copy_constructible_v<store_detail::SameChildExecutionRece
         .relative_locator = std::string(policy.journal_store.relative_locator),
         .trusted_base_path = trusted_base_path,
         .expected_owner = expected_owner,
+        .probe_kind = SIQSShadowProofRssProbeKind::synthetic_test,
     };
 }
 
@@ -282,6 +284,27 @@ void test_public_authority_and_preflight_boundaries() {
     auto mismatch = store_detail::SessionFactory::open_with_deployments(&policy, &facts,
                                                                         {&mismatched_store, 1});
     expect_open_error(std::move(mismatch), StoreError::registry_binding_mismatch,
+                      StoreObject::deployment_registry);
+
+    auto production_facts = facts;
+    production_facts.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
+    auto kind_mismatch_entry = make_deployment("unused");
+    auto kind_mismatch = store_detail::SessionFactory::open_with_deployments(
+        &policy, &production_facts, {&kind_mismatch_entry, 1});
+    expect_open_error(std::move(kind_mismatch), StoreError::registry_binding_mismatch,
+                      StoreObject::deployment_registry);
+
+    auto executable_kind_mismatch = make_deployment("unused");
+    executable_kind_mismatch.holdout_probe.emplace(store_detail::ProbeExecutableBinding{
+        .executable = "/unused/synthetic-probe",
+        .candidate_revision = "candidate-revision-1",
+        .probe_kind = SIQSShadowProofRssProbeKind::production_holdout,
+        .timeout = std::chrono::seconds(1),
+        .expected_owner = executable_kind_mismatch.expected_owner,
+    });
+    auto binding_mismatch = store_detail::SessionFactory::open_with_deployments(
+        &policy, &facts, {&executable_kind_mismatch, 1});
+    expect_open_error(std::move(binding_mismatch), StoreError::registry_binding_mismatch,
                       StoreObject::deployment_registry);
 
     DeploymentEntry poisonous = make_deployment({});
@@ -710,6 +733,7 @@ make_runner_deployment(const TempStore& fixture, const std::filesystem::path& ex
     deployment.holdout_probe.emplace(store_detail::ProbeExecutableBinding{
         .executable = std::filesystem::absolute(executable),
         .candidate_revision = std::string(make_policy().candidate_revision),
+        .probe_kind = SIQSShadowProofRssProbeKind::synthetic_test,
         .environment =
             {
                 "GNFS_SIQS_RSS_SYNTHETIC_MARKER=" + marker.string(),
@@ -771,18 +795,22 @@ canonical_start(const SIQSShadowProofRssCampaignJournalHeader& header) {
 
 [[nodiscard]] SIQSShadowProofRssJournalCommitPayload
 make_off_payload(std::string_view stdout_bytes, std::string_view stderr_bytes,
-                 std::string_view joined_bytes) {
+                 std::string_view joined_bytes,
+                 SIQSShadowProofRssSampleMode mode = SIQSShadowProofRssSampleMode::off) {
     const auto policy = make_policy();
     SIQSShadowProofRssJournalCommitPayload payload;
     payload.actual_operating_system = policy.operating_system;
     payload.actual_architecture = policy.architecture;
     payload.actual_memory_backend = policy.memory_backend;
     payload.actual_resolved_sieve_workers = policy.resolved_production_sieve_workers;
+    payload.deployment_probe_kind = SIQSShadowProofRssProbeKind::synthetic_test;
     payload.fresh_process = true;
     payload.completed = true;
     payload.factor_identity = SIQSShadowProofRssFactorIdentity::pass;
-    payload.proof_evidence = SIQSShadowProofRssEvidence::not_applicable;
-    payload.matrix_evidence = SIQSShadowProofRssEvidence::not_applicable;
+    payload.proof_evidence = mode == SIQSShadowProofRssSampleMode::off
+                                 ? SIQSShadowProofRssEvidence::not_applicable
+                                 : SIQSShadowProofRssEvidence::pass;
+    payload.matrix_evidence = payload.proof_evidence;
     payload.absolute_peak_rss_bytes = UINT64_C(123456);
     payload.current_rss_bytes = UINT64_C(65432);
     payload.peak_growth_bytes = UINT64_C(1234);
@@ -840,6 +868,7 @@ void write_committed_off_slots(const TempStore& fixture, uint32_t slot_count,
     const auto policy = make_policy();
     const auto facts = make_facts();
     const auto header = write_canonical_header(fixture);
+    const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy);
     std::vector<SIQSShadowProofRssCampaignJournalRecord> records;
     records.reserve(static_cast<std::size_t>(slot_count) * 2);
     for (uint32_t slot_number = 1; slot_number <= slot_count; ++slot_number) {
@@ -851,17 +880,21 @@ void write_committed_off_slots(const TempStore& fixture, uint32_t slot_count,
         CHECK(resume.next_slot_number == slot_number);
         CHECK(resume.prepared_slot_start.has_value());
         const auto start = resume.prepared_slot_start->record();
+        const auto mode = plan.slots[start.slot_number - 1].mode;
+        const std::string_view slot_stderr = mode == SIQSShadowProofRssSampleMode::off
+                                                 ? stderr_bytes
+                                                 : std::string_view{"synthetic-observe-stderr\n"};
         write_record(fixture, start.sequence_number, start);
         records.push_back(start);
 
         write_artifact(fixture, slot_number, SIQSShadowProofRssArtifactKind::probe_stdout,
                        stdout_bytes);
         write_artifact(fixture, slot_number, SIQSShadowProofRssArtifactKind::probe_stderr,
-                       stderr_bytes);
+                       slot_stderr);
         write_artifact(fixture, slot_number, SIQSShadowProofRssArtifactKind::joined_gate_sample,
                        joined_bytes);
         const auto commit =
-            make_commit(start, make_off_payload(stdout_bytes, stderr_bytes, joined_bytes));
+            make_commit(start, make_off_payload(stdout_bytes, slot_stderr, joined_bytes, mode));
         write_record(fixture, commit.sequence_number, commit);
         records.push_back(commit);
     }
@@ -1569,6 +1602,7 @@ void test_slot_runner_happy_off_commits_one_same_child(const std::filesystem::pa
     CHECK(!stdout_bytes.empty());
     CHECK(stderr_bytes.empty());
     CHECK(!joined_bytes.empty());
+    CHECK(joined_bytes.find(" probe_kind=synthetic_test ") != std::string::npos);
 
     const auto commit_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(2);
     CHECK(commit_leaf.has_value());
@@ -1581,6 +1615,7 @@ void test_slot_runner_happy_off_commits_one_same_child(const std::filesystem::pa
     CHECK(payload.actual_architecture == make_facts().architecture);
     CHECK(payload.actual_memory_backend == make_facts().memory_backend);
     CHECK(payload.actual_resolved_sieve_workers == 4);
+    CHECK(payload.deployment_probe_kind == SIQSShadowProofRssProbeKind::synthetic_test);
     CHECK(payload.fresh_process);
     CHECK(payload.completed);
     CHECK(payload.factor_identity == SIQSShadowProofRssFactorIdentity::pass);
@@ -1647,6 +1682,7 @@ void test_slot_runner_happy_observe_commits_one_same_child(
     CHECK(!stdout_bytes.empty());
     CHECK(!stderr_bytes.empty());
     CHECK(!joined_bytes.empty());
+    CHECK(joined_bytes.find(" probe_kind=synthetic_test ") != std::string::npos);
 
     const auto parsed_observe = parse_siqs_shadow_proof_observe_record(stderr_bytes);
     CHECK(parsed_observe);
@@ -1675,6 +1711,7 @@ void test_slot_runner_happy_observe_commits_one_same_child(
     CHECK(decoded.value->kind == SIQSShadowProofRssJournalRecordKind::slot_committed);
     const auto& payload = decoded.value->commit_payload;
     CHECK(payload.factor_identity == SIQSShadowProofRssFactorIdentity::pass);
+    CHECK(payload.deployment_probe_kind == SIQSShadowProofRssProbeKind::synthetic_test);
     CHECK(payload.proof_evidence == SIQSShadowProofRssEvidence::pass);
     CHECK(payload.matrix_evidence == SIQSShadowProofRssEvidence::pass);
     CHECK(payload.absolute_peak_rss_bytes == UINT64_C(14000000));
@@ -1701,6 +1738,57 @@ void test_slot_runner_happy_observe_commits_one_same_child(
     CHECK(reopened.has_value());
     CHECK(reopened->view().committed_slot_count == 4);
     CHECK(reopened->view().next_slot_number == 5);
+}
+
+void test_slot_runner_final_synthetic_commit_stays_gate_ineligible(
+    const std::filesystem::path& executable) {
+    constexpr std::string_view stdout_bytes = "seeded-stdout\n";
+    constexpr std::string_view stderr_bytes;
+    constexpr std::string_view joined_bytes = "seeded-joined\n";
+
+    TempStore fixture;
+    write_committed_off_slots(
+        fixture, static_cast<uint32_t>(SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT - 1),
+        stdout_bytes, stderr_bytes, joined_bytes);
+    const auto marker = fixture.base_leaf("runner-final-synthetic-marker");
+    auto deployment = make_runner_deployment(fixture, executable, marker);
+    auto active = begin_runner_slot(
+        deployment, static_cast<uint32_t>(SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT));
+
+    auto result = store_detail::SlotRunnerFactory::run(std::move(*active));
+    CHECK(static_cast<bool>(result));
+    CHECK(result.view().status == SIQSShadowProofRssJournalStatus::complete);
+    CHECK(result.view().reason == SIQSShadowProofRssJournalReason::synthetic_complete);
+    CHECK(result.view().action == SIQSShadowProofRssJournalAction::none);
+    CHECK(result.view().committed_slot_count == SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+    CHECK(result.view().next_slot_number == 0);
+    const auto policy = make_policy();
+    const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy);
+    const auto& final_slot = plan.slots.back();
+    expect_single_synthetic_launch(marker, final_slot.fixture_id, final_slot.mode,
+                                   final_slot.ordinal);
+
+    auto continuation = std::move(result).take_session();
+    CHECK(continuation.has_value());
+    continuation.reset();
+    const auto facts = make_facts();
+    auto reopened = take_successful_session(open_private(&policy, &facts, deployment));
+    CHECK(reopened.has_value());
+    CHECK(reopened->view().status == SIQSShadowProofRssJournalStatus::complete);
+    CHECK(reopened->view().reason == SIQSShadowProofRssJournalReason::synthetic_complete);
+    CHECK(reopened->view().action == SIQSShadowProofRssJournalAction::none);
+    reopened.reset();
+
+    auto relabeled_deployment = deployment;
+    relabeled_deployment.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
+    relabeled_deployment.holdout_probe->probe_kind =
+        SIQSShadowProofRssProbeKind::production_holdout;
+    auto production_facts = facts;
+    production_facts.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
+    auto relabeled = open_private(&policy, &production_facts, relabeled_deployment);
+    CHECK(relabeled.diagnostic().journal_reason == SIQSShadowProofRssJournalReason::header_invalid);
+    expect_open_error(std::move(relabeled), StoreError::replay_rejected,
+                      StoreObject::journal_header);
 }
 
 void run_slot_runner_failure_case(const std::filesystem::path& executable,
@@ -3130,6 +3218,7 @@ int main(int argc, char** argv) {
         test_slot_runner_rejects_invalid_deployment(children.success);
         test_slot_runner_happy_off_commits_one_same_child(children.success);
         test_slot_runner_happy_observe_commits_one_same_child(children.success);
+        test_slot_runner_final_synthetic_commit_stays_gate_ineligible(children.success);
         test_slot_runner_execution_and_join_failures(children);
         test_slot_runner_artifact_prefix_failure_taints(children.success);
         test_slot_runner_commit_terminal_leaf_matrix(children.success);

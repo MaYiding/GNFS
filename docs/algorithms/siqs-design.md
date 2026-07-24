@@ -98,11 +98,11 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `include/gnfs/siqs/shadow_proof_rss_gate.hpp` | `SIQSShadowProofRssGatePolicy`, `SIQSShadowProofRssGateSample`, and closed `SIQSShadowProofRssGateOutcome` |
 | `tests/test_siqs_shadow_proof_rss_gate.cpp` | Synthetic policy binding, exact sample coverage, budget boundary, and closed terminal-emitter tests |
 | `include/gnfs/siqs/shadow_proof_rss_campaign_artifact_layout.hpp` | Fixed three-artifact-per-slot namespace, bounded pure inspection, and exact closure against validated journal replay |
-| `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-only native session plus lease-bound start, artifact-batch, and explicit-taint authority boundaries |
+| `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-only native session plus lease-bound start, artifact-batch, explicit-taint, and probe-classification authority boundaries |
 | `tests/test_siqs_shadow_proof_rss_campaign_artifact_layout.cpp` | Canonical leaf grammar, bounded sizes, deterministic diagnostics, and journal-to-artifact consistency |
-| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, durable start/artifact/taint publication, crash recovery, and platform fallback |
+| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, durable same-child commits, synthetic terminal/relabel rejection, crash recovery, and platform fallback |
 | `src/siqs/shadow_proof_rss_holdout_probe_record_codec_internal.hpp` | Source-private strict owning decoder for one canonical holdout-probe stdout record |
-| `src/siqs/shadow_proof_rss_holdout_stream_join_internal.hpp` | Source-private approved-policy, runtime-facts, slot, and two-stream validation into an authority-free uncommitted draft |
+| `src/siqs/shadow_proof_rss_holdout_stream_join_internal.hpp` | Source-private approved-policy, runtime-facts, slot, and two-stream validation into a V2 probe-classified authority-free draft |
 | `include/gnfs/util/bounded_child_process.hpp` | Production shell-free, deadline-bounded dual-stream capture; it transports data but grants no campaign authority |
 | `tests/test_siqs_shadow_proof_prefer.cpp` | Pure V2 decisions, defensive metadata validation, and pre-route emitter contract |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
@@ -216,6 +216,18 @@ That transition publishes the exact pending header and start through the held
 root, rereads the strict snapshot, privately exchanges the durable receipt for
 a launch permit, and traps both the permit and lease inside a move-only active
 slot.
+
+Journal schema and wire V2 bind `synthetic_test` or `production_holdout`
+through runtime facts, the fixed-width header, plan and record digests, every
+commit payload, and the canonical joined draft. The native store checks the
+runtime claim against both the private deployment row and live executable row;
+the same-child receipt carries that classification into commit publication.
+A complete synthetic journal terminates as `synthetic_complete` with no gate
+action, and reopening it under a production label fails. This is a durable
+classification boundary, not proof of executable bytes: candidate revision
+and path metadata do not close the path-check-to-spawn gap. Exact executable
+digest binding and authority-held gate evaluation remain later production
+work.
 
 The store also holds the preprovisioned `.artifacts-v1` directory and tracks its
 namespace generation independently. Its strict pure layout permits one bounded

@@ -407,6 +407,7 @@ void test_size_contracts() {
         .architecture = SIQSShadowProofRssArchitecture::arm64,
         .memory_backend = ProcessMemoryBackend::DarwinGetrusage,
         .resolved_production_sieve_workers = 4,
+        .probe_kind = SIQSShadowProofRssProbeKind::production_holdout,
         .candidate_revision = "candidate-revision-1",
         .release_build = true,
         .ndebug = true,
@@ -418,7 +419,8 @@ void test_size_contracts() {
 }
 
 [[nodiscard]] SIQSShadowProofRssJournalCommitPayload
-make_payload(SIQSShadowProofRssSampleMode mode, uint32_t slot, std::vector<OwnedEntry>& artifacts) {
+make_payload(SIQSShadowProofRssSampleMode mode, uint32_t slot, std::vector<OwnedEntry>& artifacts,
+             SIQSShadowProofRssProbeKind probe_kind) {
     const std::string stdout_bytes = slot_bytes(slot, "stdout");
     const std::string stderr_bytes =
         mode == SIQSShadowProofRssSampleMode::off ? "" : slot_bytes(slot, "stderr");
@@ -435,6 +437,7 @@ make_payload(SIQSShadowProofRssSampleMode mode, uint32_t slot, std::vector<Owned
     payload.actual_architecture = SIQSShadowProofRssArchitecture::arm64;
     payload.actual_memory_backend = ProcessMemoryBackend::DarwinGetrusage;
     payload.actual_resolved_sieve_workers = 4;
+    payload.deployment_probe_kind = probe_kind;
     payload.fresh_process = true;
     payload.completed = true;
     payload.factor_identity = SIQSShadowProofRssFactorIdentity::pass;
@@ -475,7 +478,9 @@ struct JournalFixture final {
     std::vector<Record> records;
     std::vector<OwnedEntry> artifacts;
 
-    JournalFixture() {
+    explicit JournalFixture(
+        SIQSShadowProofRssProbeKind probe_kind = SIQSShadowProofRssProbeKind::production_holdout) {
+        facts.probe_kind = probe_kind;
         auto absent = resume_siqs_shadow_proof_rss_campaign_journal(
             &policy, &facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {});
         CHECK(absent.header_to_create.has_value());
@@ -495,8 +500,8 @@ struct JournalFixture final {
         const Record start = ready.prepared_slot_start->record();
         records.push_back(start);
         const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy);
-        const auto payload =
-            make_payload(plan.slots[start.slot_number - 1].mode, start.slot_number, artifacts);
+        const auto payload = make_payload(plan.slots[start.slot_number - 1].mode, start.slot_number,
+                                          artifacts, facts.probe_kind);
         records.push_back(make_commit(start, payload));
     }
 
@@ -569,6 +574,17 @@ void test_ready_and_complete_consistency() {
     CHECK(complete_snapshot.artifact_count == SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_MAX_ENTRIES);
     expect_consistency(
         validate_siqs_shadow_proof_rss_campaign_artifact_consistency(complete, complete_snapshot));
+
+    JournalFixture synthetic(SIQSShadowProofRssProbeKind::synthetic_test);
+    while (synthetic.records.size() / 2 < SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT) {
+        synthetic.append_slot();
+    }
+    const auto synthetic_complete = synthetic.resume();
+    CHECK(synthetic_complete.status == SIQSShadowProofRssJournalStatus::complete);
+    CHECK(synthetic_complete.reason == SIQSShadowProofRssJournalReason::synthetic_complete);
+    CHECK(synthetic_complete.action == SIQSShadowProofRssJournalAction::none);
+    expect_consistency(validate_siqs_shadow_proof_rss_campaign_artifact_consistency(
+        synthetic_complete, synthetic.artifact_snapshot()));
 }
 
 void test_dangling_and_explicit_taint_orphans() {

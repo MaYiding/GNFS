@@ -72,6 +72,7 @@ void check(bool condition, const char* expression, int line) {
         .architecture = SIQSShadowProofRssArchitecture::arm64,
         .memory_backend = ProcessMemoryBackend::DarwinGetrusage,
         .resolved_production_sieve_workers = 4,
+        .probe_kind = SIQSShadowProofRssProbeKind::production_holdout,
         .candidate_revision = "candidate-revision-1",
         .release_build = true,
         .ndebug = true,
@@ -85,6 +86,7 @@ void check(bool condition, const char* expression, int line) {
     payload.actual_architecture = SIQSShadowProofRssArchitecture::arm64;
     payload.actual_memory_backend = ProcessMemoryBackend::DarwinGetrusage;
     payload.actual_resolved_sieve_workers = 4;
+    payload.deployment_probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
     payload.fresh_process = true;
     payload.completed = true;
     payload.factor_identity = SIQSShadowProofRssFactorIdentity::pass;
@@ -525,12 +527,22 @@ void test_wire_diagnostics_and_filename_binding(const JournalFixture& fixture) {
     expect_layout_error(inspect(bad_header), LayoutError::header_codec_invalid,
                         CodecError::unsupported_wire_version,
                         SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET);
+    auto old_header = entries_for_prefix(fixture, 0);
+    old_header[1].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET] = std::byte{1};
+    expect_layout_error(inspect(old_header), LayoutError::header_codec_invalid,
+                        CodecError::unsupported_wire_version,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET);
 
     auto bad_record = entries_for_prefix(fixture, 1);
     bad_record[2].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_KIND_OFFSET] = std::byte{0xff};
     expect_layout_error(inspect(bad_record), LayoutError::record_codec_invalid,
                         CodecError::invalid_record_kind,
                         SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_KIND_OFFSET, 1);
+    auto old_record = entries_for_prefix(fixture, 1);
+    old_record[2].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET] = std::byte{1};
+    expect_layout_error(inspect(old_record), LayoutError::record_codec_invalid,
+                        CodecError::unsupported_wire_version,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET, 1);
 
     auto filename_wire_mismatch = entries_for_prefix(fixture, 0);
     filename_wire_mismatch.push_back(

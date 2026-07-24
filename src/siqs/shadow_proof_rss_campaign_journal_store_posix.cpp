@@ -2112,7 +2112,9 @@ public:
             const auto& executable = *deployment_.holdout_probe;
             if (executable.candidate_revision != policy_candidate_revision_ ||
                 executable.candidate_revision != runtime_candidate_revision_ ||
-                executable.expected_owner != deployment_.expected_owner) {
+                executable.expected_owner != deployment_.expected_owner ||
+                executable.probe_kind != deployment_.probe_kind ||
+                executable.probe_kind != runtime_facts_.probe_kind) {
                 return fail(make_diagnostic(StoreError::registry_binding_mismatch,
                                             StoreObject::deployment_registry));
             }
@@ -2122,6 +2124,7 @@ public:
                 .policy = &policy_,
                 .runtime_facts = &runtime_facts_,
                 .executable = &executable,
+                .deployment_probe_kind = executable.probe_kind,
                 .slot = slot,
             });
             return result;
@@ -2352,6 +2355,8 @@ public:
                 execution->memory_backend == runtime_facts_.memory_backend &&
                 execution->resolved_production_sieve_workers ==
                     runtime_facts_.resolved_production_sieve_workers &&
+                execution->deployment_probe_kind == deployment_.probe_kind &&
+                execution->deployment_probe_kind == runtime_facts_.probe_kind &&
                 execution->fresh_process && execution->completed &&
                 execution->factor_identity == SIQSShadowProofRssFactorIdentity::pass &&
                 execution->relations_found != 0 && execution->polynomials_used != 0 &&
@@ -2390,6 +2395,7 @@ public:
             payload.actual_memory_backend = runtime_facts_.memory_backend;
             payload.actual_resolved_sieve_workers =
                 runtime_facts_.resolved_production_sieve_workers;
+            payload.deployment_probe_kind = execution->deployment_probe_kind;
             payload.fresh_process = execution->fresh_process;
             payload.completed = execution->completed;
             payload.factor_identity = execution->factor_identity;
@@ -2486,8 +2492,13 @@ public:
                     (final_slot ? 0U : start_record.slot_number + 1) &&
                 ((final_slot &&
                   observed.replay->status == SIQSShadowProofRssJournalStatus::complete &&
-                  observed.replay->reason == SIQSShadowProofRssJournalReason::complete &&
-                  observed.replay->action == SIQSShadowProofRssJournalAction::evaluate_gate) ||
+                  ((runtime_facts_.probe_kind == SIQSShadowProofRssProbeKind::production_holdout &&
+                    observed.replay->reason == SIQSShadowProofRssJournalReason::complete &&
+                    observed.replay->action == SIQSShadowProofRssJournalAction::evaluate_gate) ||
+                   (runtime_facts_.probe_kind == SIQSShadowProofRssProbeKind::synthetic_test &&
+                    observed.replay->reason ==
+                        SIQSShadowProofRssJournalReason::synthetic_complete &&
+                    observed.replay->action == SIQSShadowProofRssJournalAction::none))) ||
                  (!final_slot &&
                   observed.replay->status == SIQSShadowProofRssJournalStatus::ready &&
                   observed.replay->reason == SIQSShadowProofRssJournalReason::ready &&
@@ -3038,7 +3049,10 @@ PlatformOpenResult open_siqs_shadow_proof_rss_campaign_journal_platform_session(
     const SIQSShadowProofRssCampaignRuntimeFacts& runtime_facts,
     const DeploymentEntry& deployment) noexcept {
     try {
-        if (!deployment_matches_policy(policy, deployment)) {
+        if (!deployment_matches_policy(policy, deployment) ||
+            (deployment.probe_kind != SIQSShadowProofRssProbeKind::synthetic_test &&
+             deployment.probe_kind != SIQSShadowProofRssProbeKind::production_holdout) ||
+            deployment.probe_kind != runtime_facts.probe_kind) {
             return {nullptr, make_diagnostic(StoreError::registry_binding_mismatch,
                                              StoreObject::deployment_registry)};
         }

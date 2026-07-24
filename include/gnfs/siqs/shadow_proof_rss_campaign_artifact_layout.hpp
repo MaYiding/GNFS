@@ -529,10 +529,16 @@ resume_artifact_domain(const SIQSShadowProofRssCampaignJournalResume& resume) no
         return {};
     }
     if (resume.status == SIQSShadowProofRssJournalStatus::complete &&
-        resume.reason == SIQSShadowProofRssJournalReason::complete &&
-        resume.action == SIQSShadowProofRssJournalAction::evaluate_gate &&
         resume.committed_slot_count == slot_count && resume.next_slot_number == 0) {
-        return {true, false, slot_count, 0};
+        const bool production_complete =
+            resume.reason == SIQSShadowProofRssJournalReason::complete &&
+            resume.action == SIQSShadowProofRssJournalAction::evaluate_gate;
+        const bool synthetic_complete =
+            resume.reason == SIQSShadowProofRssJournalReason::synthetic_complete &&
+            resume.action == SIQSShadowProofRssJournalAction::none;
+        if (production_complete || synthetic_complete) {
+            return {true, false, slot_count, 0};
+        }
     }
     if (resume.status == SIQSShadowProofRssJournalStatus::tainted &&
         resume.committed_slot_count < slot_count &&

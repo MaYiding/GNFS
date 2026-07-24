@@ -19,7 +19,7 @@ namespace shadow_proof_rss_campaign_journal_store_detail {
 class SessionCore;
 }
 
-inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION = 1;
+inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION = 2;
 
 enum class SIQSShadowProofRssJournalPresence : uint8_t {
     absent,
@@ -54,6 +54,7 @@ enum class SIQSShadowProofRssJournalReason : uint8_t {
     committed_sample_invalid,
     dangling_slot_start,
     explicitly_tainted,
+    synthetic_complete,
     ready,
     complete,
 };
@@ -80,13 +81,40 @@ enum class SIQSShadowProofRssArtifactKind : uint8_t {
     joined_gate_sample,
 };
 
+/// Deployment classification claimed by the campaign runtime facts and later
+/// cross-checked against the private deployment row for every launched slot.
+/// This tag is not executable-image authentication. Only
+/// `production_holdout` data can reach the data-level gate reconstruction;
+/// `synthetic_test` exists solely for private transaction tests.
+enum class SIQSShadowProofRssProbeKind : uint8_t {
+    unknown,
+    synthetic_test,
+    production_holdout,
+};
+
+[[nodiscard]] constexpr std::string_view
+siqs_shadow_proof_rss_probe_kind_name(SIQSShadowProofRssProbeKind value) noexcept {
+    switch (value) {
+    case SIQSShadowProofRssProbeKind::unknown:
+        return "unknown";
+    case SIQSShadowProofRssProbeKind::synthetic_test:
+        return "synthetic_test";
+    case SIQSShadowProofRssProbeKind::production_holdout:
+        return "production_holdout";
+    }
+    return "unknown";
+}
+
 /// Values observed by the future launcher before it is allowed to open a
-/// journal. The candidate revision is a borrowed audit token.
+/// journal. The probe kind is a caller claim that the private store/runner
+/// boundary must cross-check against its deployment row. The candidate
+/// revision is a borrowed audit token, not a digest of executable bytes.
 struct SIQSShadowProofRssCampaignRuntimeFacts final {
     SIQSShadowProofRssOperatingSystem operating_system = SIQSShadowProofRssOperatingSystem::unknown;
     SIQSShadowProofRssArchitecture architecture = SIQSShadowProofRssArchitecture::unknown;
     util::ProcessMemoryBackend memory_backend = util::ProcessMemoryBackend::Unsupported;
     std::size_t resolved_production_sieve_workers = 0;
+    SIQSShadowProofRssProbeKind probe_kind = SIQSShadowProofRssProbeKind::unknown;
     std::string_view candidate_revision;
     bool release_build = false;
     bool ndebug = false;
@@ -115,6 +143,7 @@ struct SIQSShadowProofRssJournalCommitPayload final {
     SIQSShadowProofRssArchitecture actual_architecture = SIQSShadowProofRssArchitecture::unknown;
     util::ProcessMemoryBackend actual_memory_backend = util::ProcessMemoryBackend::Unsupported;
     std::size_t actual_resolved_sieve_workers = 0;
+    SIQSShadowProofRssProbeKind deployment_probe_kind = SIQSShadowProofRssProbeKind::unknown;
     bool fresh_process = false;
     bool completed = false;
     SIQSShadowProofRssFactorIdentity factor_identity = SIQSShadowProofRssFactorIdentity::unknown;
@@ -136,6 +165,7 @@ struct SIQSShadowProofRssJournalCommitPayload final {
 
 struct SIQSShadowProofRssCampaignJournalHeader final {
     uint32_t schema_version = 0;
+    SIQSShadowProofRssProbeKind probe_kind = SIQSShadowProofRssProbeKind::unknown;
     SIQSShadowProofRssCorpusDigest policy_binding_digest;
     SIQSShadowProofRssCorpusDigest runtime_facts_digest;
     SIQSShadowProofRssCorpusDigest plan_digest;
@@ -422,7 +452,10 @@ runtime_facts_are_valid(const SIQSShadowProofRssCampaignRuntimeFacts& facts) noe
          facts.memory_backend == util::ProcessMemoryBackend::LinuxGetrusage) ||
         (facts.operating_system == SIQSShadowProofRssOperatingSystem::windows &&
          facts.memory_backend == util::ProcessMemoryBackend::WindowsPsapi);
-    return operating_system_known && architecture_known && backend_matches &&
+    const bool probe_kind_known =
+        facts.probe_kind == SIQSShadowProofRssProbeKind::synthetic_test ||
+        facts.probe_kind == SIQSShadowProofRssProbeKind::production_holdout;
+    return operating_system_known && architecture_known && backend_matches && probe_kind_known &&
            facts.resolved_production_sieve_workers != 0 && safe_token(facts.candidate_revision);
 }
 
@@ -439,11 +472,12 @@ runtime_facts_match_policy(const SIQSShadowProofRssCampaignRuntimeFacts& facts,
 [[nodiscard]] constexpr SIQSShadowProofRssCorpusDigest
 runtime_facts_digest(const SIQSShadowProofRssCampaignRuntimeFacts& facts) noexcept {
     DigestBuilder builder;
-    builder.append_string("gnfs.siqs.shadow_proof_rss_campaign.runtime_facts.v1");
+    builder.append_string("gnfs.siqs.shadow_proof_rss_campaign.runtime_facts.v2");
     builder.append_u64(static_cast<uint64_t>(facts.operating_system));
     builder.append_u64(static_cast<uint64_t>(facts.architecture));
     builder.append_u64(static_cast<uint64_t>(facts.memory_backend));
     builder.append_u64(static_cast<uint64_t>(facts.resolved_production_sieve_workers));
+    builder.append_u64(static_cast<uint64_t>(facts.probe_kind));
     builder.append_string(facts.candidate_revision);
     builder.append_bool(facts.release_build);
     builder.append_bool(facts.ndebug);
@@ -455,7 +489,7 @@ plan_digest(const SIQSShadowProofRssCampaignPlan& plan,
             SIQSShadowProofRssCorpusDigest policy_digest,
             SIQSShadowProofRssCorpusDigest facts_digest) noexcept {
     DigestBuilder builder;
-    builder.append_string("gnfs.siqs.shadow_proof_rss_campaign.plan.v1");
+    builder.append_string("gnfs.siqs.shadow_proof_rss_campaign.plan.v2");
     builder.append_digest(policy_digest);
     builder.append_digest(facts_digest);
     builder.append_u64(static_cast<uint64_t>(plan.slot_count));
@@ -475,7 +509,7 @@ plan_digest(const SIQSShadowProofRssCampaignPlan& plan,
 slot_digest(SIQSShadowProofRssCorpusDigest plan_digest_value,
             const SIQSShadowProofRssCampaignSlot& slot) noexcept {
     DigestBuilder builder;
-    builder.append_string("gnfs.siqs.shadow_proof_rss_campaign.slot.v1");
+    builder.append_string("gnfs.siqs.shadow_proof_rss_campaign.slot.v2");
     builder.append_digest(plan_digest_value);
     builder.append_u64(slot.slot_number);
     builder.append_u64(slot.fixture_id);
@@ -488,8 +522,9 @@ slot_digest(SIQSShadowProofRssCorpusDigest plan_digest_value,
 [[nodiscard]] constexpr SIQSShadowProofRssCorpusDigest
 header_digest(const SIQSShadowProofRssCampaignJournalHeader& header) noexcept {
     DigestBuilder builder;
-    builder.append_string("gnfs.siqs.shadow_proof_rss_campaign.journal_header.v1");
+    builder.append_string("gnfs.siqs.shadow_proof_rss_campaign.journal_header.v2");
     builder.append_u64(header.schema_version);
+    builder.append_u64(static_cast<uint64_t>(header.probe_kind));
     builder.append_digest(header.policy_binding_digest);
     builder.append_digest(header.runtime_facts_digest);
     builder.append_digest(header.plan_digest);
@@ -513,6 +548,7 @@ append_commit_payload(DigestBuilder& builder,
     builder.append_u64(static_cast<uint64_t>(payload.actual_architecture));
     builder.append_u64(static_cast<uint64_t>(payload.actual_memory_backend));
     builder.append_u64(static_cast<uint64_t>(payload.actual_resolved_sieve_workers));
+    builder.append_u64(static_cast<uint64_t>(payload.deployment_probe_kind));
     builder.append_bool(payload.fresh_process);
     builder.append_bool(payload.completed);
     builder.append_u64(static_cast<uint64_t>(payload.factor_identity));
@@ -531,7 +567,7 @@ append_commit_payload(DigestBuilder& builder,
 [[nodiscard]] constexpr SIQSShadowProofRssCorpusDigest
 record_digest(const SIQSShadowProofRssCampaignJournalRecord& record) noexcept {
     DigestBuilder builder;
-    builder.append_string("gnfs.siqs.shadow_proof_rss_campaign.journal_record.v1");
+    builder.append_string("gnfs.siqs.shadow_proof_rss_campaign.journal_record.v2");
     builder.append_u64(record.schema_version);
     builder.append_u64(record.sequence_number);
     builder.append_u64(static_cast<uint64_t>(record.kind));
@@ -567,6 +603,8 @@ commit_payload_is_valid(const SIQSShadowProofRssJournalCommitPayload& payload,
         payload.actual_architecture != policy.architecture ||
         payload.actual_memory_backend != policy.memory_backend ||
         payload.actual_resolved_sieve_workers != policy.resolved_production_sieve_workers ||
+        (payload.deployment_probe_kind != SIQSShadowProofRssProbeKind::synthetic_test &&
+         payload.deployment_probe_kind != SIQSShadowProofRssProbeKind::production_holdout) ||
         !payload.fresh_process || !payload.completed ||
         payload.factor_identity != SIQSShadowProofRssFactorIdentity::pass ||
         !payload.absolute_peak_rss_bytes.has_value() || *payload.absolute_peak_rss_bytes == 0 ||
@@ -591,12 +629,12 @@ commit_payload_is_valid(const SIQSShadowProofRssJournalCommitPayload& payload,
            payload.matrix_evidence == SIQSShadowProofRssEvidence::pass;
 }
 
-[[nodiscard]] constexpr SIQSShadowProofRssCampaignJournalHeader
-make_header(const SIQSShadowProofRssCampaignPlan& plan,
-            SIQSShadowProofRssCorpusDigest policy_digest,
-            SIQSShadowProofRssCorpusDigest facts_digest) noexcept {
+[[nodiscard]] constexpr SIQSShadowProofRssCampaignJournalHeader make_header(
+    const SIQSShadowProofRssCampaignPlan& plan, SIQSShadowProofRssCorpusDigest policy_digest,
+    SIQSShadowProofRssCorpusDigest facts_digest, SIQSShadowProofRssProbeKind probe_kind) noexcept {
     SIQSShadowProofRssCampaignJournalHeader header;
     header.schema_version = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION;
+    header.probe_kind = probe_kind;
     header.policy_binding_digest = policy_digest;
     header.runtime_facts_digest = facts_digest;
     header.plan_digest = plan_digest(plan, policy_digest, facts_digest);
@@ -723,7 +761,8 @@ resume_siqs_shadow_proof_rss_campaign_journal(
     }
     const auto policy_digest = siqs_shadow_proof_rss_policy_binding_digest(*policy);
     const auto facts_digest = runtime_facts_digest(*runtime_facts);
-    const auto expected_header = make_header(plan, policy_digest, facts_digest);
+    const auto expected_header =
+        make_header(plan, policy_digest, facts_digest, runtime_facts->probe_kind);
 
     if (presence == SIQSShadowProofRssJournalPresence::absent) {
         if (header != nullptr || !records.empty()) {
@@ -809,6 +848,9 @@ resume_siqs_shadow_proof_rss_campaign_journal(
             if (!commit_payload_is_valid(record.commit_payload, slot, *policy)) {
                 return replay_failure(SIQSShadowProofRssJournalReason::committed_sample_invalid);
             }
+            if (record.commit_payload.deployment_probe_kind != header->probe_kind) {
+                return replay_failure(SIQSShadowProofRssJournalReason::committed_sample_invalid);
+            }
             result.committed_payloads[slot_index] = record.commit_payload;
             ++slot_index;
             expecting_start = true;
@@ -828,8 +870,12 @@ resume_siqs_shadow_proof_rss_campaign_journal(
     }
     if (slot_index == plan.slot_count) {
         result.status = SIQSShadowProofRssJournalStatus::complete;
-        result.reason = SIQSShadowProofRssJournalReason::complete;
-        result.action = SIQSShadowProofRssJournalAction::evaluate_gate;
+        const bool production_probe =
+            runtime_facts->probe_kind == SIQSShadowProofRssProbeKind::production_holdout;
+        result.reason = production_probe ? SIQSShadowProofRssJournalReason::complete
+                                         : SIQSShadowProofRssJournalReason::synthetic_complete;
+        result.action = production_probe ? SIQSShadowProofRssJournalAction::evaluate_gate
+                                         : SIQSShadowProofRssJournalAction::none;
         result.next_slot_number = 0;
         return result;
     }
@@ -926,6 +972,10 @@ make_siqs_shadow_proof_rss_slot_commit(
     return sample;
 }
 
+/// Reconstruct data from a fully consistent production-classified journal.
+/// The inputs are ordinary forgeable values, so success proves internal replay
+/// consistency only. Executable authenticity and permission to evaluate a
+/// production gate must come from a later authority-holding session boundary.
 [[nodiscard]] inline std::optional<
     std::array<SIQSShadowProofRssGateSample, SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT>>
 reconstruct_siqs_shadow_proof_rss_gate_samples(
@@ -938,12 +988,16 @@ reconstruct_siqs_shadow_proof_rss_gate_samples(
         siqs_shadow_proof_rss_gate_policy_error(policy).has_value() ||
         !runtime_facts_are_valid(*runtime_facts) ||
         !runtime_facts_match_policy(*runtime_facts, *policy) || !runtime_facts->release_build ||
-        !runtime_facts->ndebug || header == nullptr) {
+        !runtime_facts->ndebug ||
+        runtime_facts->probe_kind != SIQSShadowProofRssProbeKind::production_holdout ||
+        header == nullptr ||
+        header->probe_kind != SIQSShadowProofRssProbeKind::production_holdout) {
         return std::nullopt;
     }
     const auto resume = resume_siqs_shadow_proof_rss_campaign_journal(
         policy, runtime_facts, SIQSShadowProofRssJournalPresence::present, header, records);
     if (resume.status != SIQSShadowProofRssJournalStatus::complete ||
+        resume.reason != SIQSShadowProofRssJournalReason::complete ||
         resume.action != SIQSShadowProofRssJournalAction::evaluate_gate ||
         resume.committed_slot_count != SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT) {
         return std::nullopt;

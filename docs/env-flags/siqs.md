@@ -179,6 +179,15 @@ outcome，但不形成 audit line。terminal record 同时输出
 `shadow_outcome_routed=false` 和 `promotion=false` 对所有 status 固定，不会启用
 `prefer` 或返回 shadow factor；terminal record 也固定输出这两个值。
 
+campaign journal 的 schema 和 wire V2 会将 `synthetic_test` 或
+`production_holdout` 分类绑定到 runtime facts、header、plan/record digest、commit
+payload 和 joined artifact。native store 在文件系统访问前核对 private deployment
+row，并在运行与提交时再次核对 executable binding 和 same-child receipt。完整
+synthetic campaign 只能终止为 `synthetic_complete` 且 `action=none`，不能重建 gate
+samples。该分类不等于 executable-image authentication；candidate revision、path 和
+owner metadata 尚未证明实际执行字节，后续 production runner 仍需绑定批准的
+executable/bundle digest 并在持有 authority 的 session 内完成 gate evaluation。
+
 当前没有批准的 per-platform policy，也没有实际 budget、headroom 或阈值。sealed
 holdout 尚未运行，runner 和 80-process campaign 仍是 `blocked` / `pending`。policy
 获批前不得构造或启动 campaign，也不得写入任何 holdout 结果。
@@ -274,8 +283,9 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
   和 terminal-only closed emitter；它不运行 sealed holdout。
 - `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` 使用临时本地目录和
   subprocess 覆盖 deployment registry、严格 native layout、跨进程 lease、崩溃释放、
-  held-root header/start publication 和私有 permit issuance。permit 只存在于无 launch
-  API 的 lease-bound active slot 中；测试不运行 probe。
+  held-root publication、私有 same-child commit、完整 80-slot synthetic 终态和
+  restart relabel rejection。测试只启动 synthetic child，不运行 production probe 或
+  打开 sealed holdout。
 - `tests/test_siqs.cpp` 锁定公开 `factor()` 路径对 `prefer` 的 fail-closed
   拒绝，并确认拒绝前不发出 V1 或 V2 记录。
 - `tests/test_siqs_shadow_proof_observe_probe.cpp` 提供 Release-only production 1LP fresh-process measurement target；它不进入 CTest 或常规测试 tier。

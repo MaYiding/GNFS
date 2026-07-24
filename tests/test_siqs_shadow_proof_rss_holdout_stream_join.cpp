@@ -21,7 +21,7 @@ using namespace gnfs::siqs::shadow_proof_rss_holdout_fixture_detail;
 using namespace gnfs::siqs::shadow_proof_rss_holdout_detail;
 using gnfs::util::ProcessMemoryBackend;
 
-static_assert(SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_SCHEMA_VERSION == 1);
+static_assert(SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_SCHEMA_VERSION == 2);
 static_assert(SIQS_SHADOW_PROOF_RSS_HOLDOUT_FACTOR_BASE_COLUMNS == 1601);
 static_assert(SIQS_SHADOW_PROOF_RSS_HOLDOUT_SELECTED_ROWS == 1701);
 static_assert(SIQS_SHADOW_PROOF_RSS_HOLDOUT_LARGE_PRIME_BOUNDS.size() == 8);
@@ -72,6 +72,7 @@ int checks_failed = 0;
         .architecture = SIQSShadowProofRssArchitecture::arm64,
         .memory_backend = ProcessMemoryBackend::DarwinGetrusage,
         .resolved_production_sieve_workers = 4,
+        .probe_kind = SIQSShadowProofRssProbeKind::production_holdout,
         .candidate_revision = "candidate-revision-1",
         .release_build = true,
         .ndebug = true,
@@ -299,6 +300,7 @@ void test_all_slots_and_draft_contract() {
         CHECK(draft.fixture_id == slot.fixture_id);
         CHECK(draft.mode == slot.mode);
         CHECK(draft.ordinal == slot.ordinal);
+        CHECK(draft.probe_kind == SIQSShadowProofRssProbeKind::production_holdout);
         CHECK(draft.fresh_process);
         CHECK(draft.completed);
         CHECK(draft.factor_identity == SIQSShadowProofRssFactorIdentity::pass);
@@ -321,6 +323,7 @@ void test_all_slots_and_draft_contract() {
         CHECK(draft.stderr_fingerprint.byte_count == stderr_bytes.size());
         CHECK(draft.joined_bytes.starts_with(SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_PREFIX));
         CHECK(draft.joined_bytes.find(" authority=uncommitted ") != std::string::npos);
+        CHECK(draft.joined_bytes.find(" probe_kind=production_holdout ") != std::string::npos);
         CHECK(draft.joined_bytes.find(" committed=") == std::string::npos);
         CHECK(draft.joined_bytes.ends_with(" route=none promotion=false\n"));
     }
@@ -350,6 +353,11 @@ void test_preflight_and_stream_failures() {
         SIQSShadowProofRssHoldoutStreamJoinError::runtime_facts_invalid);
     auto facts = valid_facts;
     facts.memory_backend = ProcessMemoryBackend::LinuxGetrusage;
+    expect_error(
+        join_siqs_shadow_proof_rss_holdout_streams(&approved, &facts, &off_slot, off_stdout, {}),
+        SIQSShadowProofRssHoldoutStreamJoinError::runtime_facts_invalid);
+    facts = valid_facts;
+    facts.probe_kind = SIQSShadowProofRssProbeKind::unknown;
     expect_error(
         join_siqs_shadow_proof_rss_holdout_streams(&approved, &facts, &off_slot, off_stdout, {}),
         SIQSShadowProofRssHoldoutStreamJoinError::runtime_facts_invalid);
@@ -480,15 +488,25 @@ void test_fingerprint_and_projection_binding() {
     const auto first_result = join(policy, facts, first, emit_probe(make_probe_record(first)), {});
     const auto second_result =
         join(policy, facts, second, emit_probe(make_probe_record(second)), {});
+    auto synthetic_facts = facts;
+    synthetic_facts.probe_kind = SIQSShadowProofRssProbeKind::synthetic_test;
+    const auto synthetic_result =
+        join(policy, synthetic_facts, first, emit_probe(make_probe_record(first)), {});
     CHECK(first_result);
     CHECK(second_result);
-    if (first_result && second_result) {
+    CHECK(synthetic_result);
+    if (first_result && second_result && synthetic_result) {
         CHECK(first_result.draft->stdout_fingerprint.digest !=
               second_result.draft->stdout_fingerprint.digest);
         CHECK(first_result.draft->joined_bytes != second_result.draft->joined_bytes);
         CHECK(first_result.draft->stderr_fingerprint.digest ==
               second_result.draft->stderr_fingerprint.digest);
         CHECK(first_result.draft->stderr_fingerprint.byte_count == 0);
+        CHECK(first_result.draft->stdout_fingerprint == synthetic_result.draft->stdout_fingerprint);
+        CHECK(first_result.draft->joined_bytes != synthetic_result.draft->joined_bytes);
+        CHECK(synthetic_result.draft->probe_kind == SIQSShadowProofRssProbeKind::synthetic_test);
+        CHECK(synthetic_result.draft->joined_bytes.find(" probe_kind=synthetic_test ") !=
+              std::string::npos);
     }
 }
 

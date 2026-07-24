@@ -300,7 +300,12 @@ SessionFactory::open_with_deployments(const SIQSShadowProofRssGatePolicy* policy
                 SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry));
         }
         if (selected == nullptr || selected->store_id != policy->journal_store.store_id ||
-            selected->trusted_base_path.empty()) {
+            selected->trusted_base_path.empty() ||
+            (selected->probe_kind != SIQSShadowProofRssProbeKind::synthetic_test &&
+             selected->probe_kind != SIQSShadowProofRssProbeKind::production_holdout) ||
+            selected->probe_kind != runtime_facts->probe_kind ||
+            (selected->holdout_probe.has_value() &&
+             selected->holdout_probe->probe_kind != selected->probe_kind)) {
             return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
                 SIQSShadowProofRssCampaignJournalStoreError::registry_binding_mismatch,
                 SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry));

@@ -52,6 +52,8 @@ void retain_transport_diagnostic(SlotRunnerDiagnostic& diagnostic,
 [[nodiscard]] bool executable_binding_is_valid(const ProbeExecutableBinding& executable) noexcept {
     if (executable.executable.empty() || !executable.executable.is_absolute() ||
         executable.candidate_revision.empty() ||
+        (executable.probe_kind != SIQSShadowProofRssProbeKind::synthetic_test &&
+         executable.probe_kind != SIQSShadowProofRssProbeKind::production_holdout) ||
         executable.timeout <= std::chrono::milliseconds::zero() ||
         executable.timeout > MAX_RUNNER_TIMEOUT) {
         return false;
@@ -97,6 +99,7 @@ make_execution_evidence(const SIQSShadowProofRssCampaignJournalRecord& durable_s
     evidence.architecture = draft.architecture;
     evidence.memory_backend = draft.memory_backend;
     evidence.resolved_production_sieve_workers = draft.resolved_production_sieve_workers;
+    evidence.deployment_probe_kind = draft.probe_kind;
     evidence.fresh_process = draft.fresh_process;
     evidence.completed = draft.completed;
     evidence.factor_identity = draft.factor_identity;
@@ -227,8 +230,10 @@ SlotRunnerFactory::run(SIQSShadowProofRssCampaignJournalActiveSlot&& active_slot
             return finish_with_taint(std::move(active_slot), std::move(diagnostic));
         }
 
+        SIQSShadowProofRssCampaignRuntimeFacts effective_runtime_facts = *context.runtime_facts;
+        effective_runtime_facts.probe_kind = context.deployment_probe_kind;
         auto joined = join_support::join_siqs_shadow_proof_rss_holdout_streams(
-            context.policy, context.runtime_facts, &context.slot, transport.stdout_bytes,
+            context.policy, &effective_runtime_facts, &context.slot, transport.stdout_bytes,
             transport.stderr_bytes);
         if (!joined) {
             SlotRunnerDiagnostic diagnostic;

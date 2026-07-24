@@ -383,7 +383,12 @@ matching commit. A replay ending in a start without its commit is permanently
 tainted and returns only the matching taint record for durable append, never a
 retry or launch action. An explicit taint record has the same terminal effect.
 After all 80 commits validate, sample reconstruction replays the original
-header and records again before the caller invokes the existing RSS gate.
+header and records again before the caller invokes the existing RSS gate. The
+V2 journal also binds a closed probe classification through runtime facts,
+header, plan, every commit, and the joined artifact. A complete
+`synthetic_test` campaign terminates as `synthetic_complete` with no gate
+action; only consistently tagged `production_holdout` data reaches the
+data-level reconstruction contract.
 
 The move-only capabilities prevent accidental reuse within one replay result;
 they do not prove filesystem durability or serialize two callers that replay
@@ -396,9 +401,12 @@ relative locator, which flow through the policy, plan, header, and record
 digests. Before any filesystem I/O, the native store validates the approved
 policy and selects the unique matching row from a production-owned logical
 registry. The row owns the absolute trusted base path, expected native owner,
-store ID, and locator. It is part of the deployment, not a caller-injected
-callback: the public API accepts no path, resolver, base handle, or registry
-installer. The POSIX loader component-walks that owned path for each session,
+store ID, locator, and probe classification. The store cross-checks the
+caller's runtime classification against that private row before filesystem
+access. A live executable binding must repeat the same classification before a
+slot runs. The row is part of the deployment, not a caller-injected callback:
+the public API accepts no path, resolver, base handle, or registry installer.
+The POSIX loader component-walks that owned path for each session,
 obtains a held base descriptor, opens exactly the provisioned locator without
 following links, and verifies the mapping's `store_id` before it scans the
 root.
@@ -423,10 +431,12 @@ receipt issuer because either would permit duplicate launches from one stale
 replay.
 
 `include/gnfs/siqs/shadow_proof_rss_campaign_journal_codec.hpp` defines the
-canonical storage representation without opening a file. Headers are exactly
-96 bytes and records are exactly 256 bytes. Both use distinct eight-byte magic,
-an explicit wire version and declared size, fixed little-endian integers,
-dedicated enum tags, zeroed reserved bytes, and semantic-digest verification.
+canonical V2 storage representation without opening a file. Headers are
+exactly 96 bytes and records are exactly 256 bytes. Both use distinct
+eight-byte magic, an explicit wire version and declared size, fixed
+little-endian integers, dedicated enum tags, zeroed reserved bytes, and
+semantic-digest verification. Header byte 20 and record byte 101 carry the
+probe classification; V1 wire data is rejected rather than relabeled.
 Optional values use a presence bitmap and require a zero payload when absent.
 Decoding rejects short and trailing data and reports a closed error plus the
 first failing byte offset. The codec never persists C++ object layout,
@@ -519,10 +529,13 @@ then rereads and validates each exact seal. Only a complete batch creates a
 private artifact receipt inside the session core. A separate move-only
 same-child receipt can be minted only by the private runner after one bounded
 child succeeds, both pipes reach EOF, cleanup completes, and the strict join
-accepts those exact bytes. The store consumes the permit and both private
-receipts, reconstructs the commit payload from the owned evidence, revalidates
-the stable journal and artifact snapshots, and publishes the matching commit.
-None of these capabilities crosses the public store boundary.
+accepts those exact bytes. The V2 joined draft records the deployment
+classification. The store consumes the permit and both private receipts,
+requires receipt, deployment row, executable binding, runtime facts, header,
+and commit classifications to agree, reconstructs the commit payload from the
+owned evidence, revalidates the stable journal and artifact snapshots, and
+publishes the matching commit. None of these capabilities crosses the public
+store boundary.
 
 The commit terminal state is classified before any recovery action. If a
 failed publication leaves the intended commit leaf provably absent under a
@@ -646,11 +659,15 @@ per-platform policy, private production executable binding, and the serial
 80-slot campaign loop remain pending. Those authority-bearing components must
 validate the approved policy, actual runtime facts, and candidate revision
 before loading the sealed fixture table or constructing the first production
-command. Synthetic committed prefixes validate the transaction machinery only;
-they must not be reconstructed into gate samples or evaluated until the
-durable journal binds production probe provenance. A campaign interrupted after
-its durable start but before its sample commits remains tainted and cannot be
-retried in place.
+command. Synthetic committed prefixes validate the transaction machinery only.
+V2 now binds their `synthetic_test` classification durably and makes even a
+complete 80-slot synthetic journal gate-ineligible. This is a classification
+boundary, not executable-image authentication: `candidate_revision` is an
+audit token, and the current `lstat(path)` followed by path-based spawn does
+not bind the executed bytes. A future production milestone must bind an
+approved executable or bundle digest and keep gate evaluation inside the
+authority-holding session. A campaign interrupted after its durable start but
+before its sample commits remains tainted and cannot be retried in place.
 
 `tests/test_siqs_runtime_facts.cpp`,
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
@@ -677,10 +694,10 @@ It has no sealed-fixture, policy, journal, receipt, or launch-permit interface.
 `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` opens only
 temporary synthetic stores. It exercises native object identity, leases,
 held-root header/start and artifact publication, strict reread, crash recovery,
-explicit taint, injected publication failures, and private permit and batch
-receipt issuance. The capabilities remain inside a non-launching active-slot
-transaction; the test does not open a sealed holdout, run a probe, or collect
-campaign evidence.
+explicit taint, injected publication failures, private same-child commits, a
+complete 80-slot synthetic terminal state, and restart relabel rejection. Its
+children emit synthetic protocol records only; the test does not open a sealed
+holdout, run the production probe, or collect campaign evidence.
 
 `tests/test_durable_immutable_file.cpp` uses temporary synthetic bytes to cover
 exclusive-create contention, partial writes, interrupted calls, zero progress,
@@ -918,6 +935,10 @@ Before promotion it must provide:
   terminal-leaf classification. Its synthetic tests cover canonical `off` and
   first-`observe` commits without factoring or measuring the sealed production
   holdout.
+- [x] V2 durable probe-classification binding across runtime facts, private
+  deployment and executable rows, journal header and commits, same-child
+  receipts, and joined artifacts. Complete synthetic campaigns terminate
+  without gate authority; executable-image authentication remains pending.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved
   headroom, OS, architecture, RSS backend, resolved production sieve workers,
   candidate revision, approval identity, sealed corpus digest, trusted journal

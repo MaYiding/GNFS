@@ -26,8 +26,8 @@
 namespace gnfs::siqs::shadow_proof_rss_holdout_detail {
 
 inline constexpr std::string_view SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_PREFIX =
-    "GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_V1";
-inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_SCHEMA_VERSION = 1;
+    "GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_V2";
+inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_SCHEMA_VERSION = 2;
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_HOLDOUT_FACTOR_BASE_COLUMNS = 1601;
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_HOLDOUT_SELECTED_ROWS = 1701;
 // Outcome-blind, fixture-specific values derived from the current production
@@ -136,6 +136,7 @@ struct SIQSShadowProofRssUncommittedSampleDraft final {
         siqs::SIQSShadowProofRssArchitecture::unknown;
     util::ProcessMemoryBackend memory_backend = util::ProcessMemoryBackend::Unsupported;
     std::size_t resolved_production_sieve_workers = 0;
+    siqs::SIQSShadowProofRssProbeKind probe_kind = siqs::SIQSShadowProofRssProbeKind::unknown;
     bool fresh_process = false;
     bool completed = false;
     siqs::SIQSShadowProofRssFactorIdentity factor_identity =
@@ -458,6 +459,8 @@ canonical_projection(const siqs::SIQSShadowProofRssGatePolicy& policy,
     append_field(output, "rss_backend", util::process_memory_backend_name(facts.memory_backend));
     append_u64(output, "resolved_production_sieve_workers",
                static_cast<uint64_t>(facts.resolved_production_sieve_workers));
+    append_field(output, "probe_kind",
+                 siqs::siqs_shadow_proof_rss_probe_kind_name(facts.probe_kind));
     append_field(output, "candidate_revision", facts.candidate_revision);
     append_field(output, "fresh_process", "true");
     append_field(output, "completed", "true");
@@ -613,6 +616,7 @@ join_siqs_shadow_proof_rss_holdout_streams(
         draft.architecture = runtime_facts->architecture;
         draft.memory_backend = runtime_facts->memory_backend;
         draft.resolved_production_sieve_workers = runtime_facts->resolved_production_sieve_workers;
+        draft.probe_kind = runtime_facts->probe_kind;
         draft.fresh_process = true;
         draft.completed = true;
         draft.factor_identity = siqs::SIQSShadowProofRssFactorIdentity::pass;

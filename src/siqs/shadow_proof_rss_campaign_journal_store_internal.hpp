@@ -45,6 +45,7 @@ public:
 struct ProbeExecutableBinding final {
     std::filesystem::path executable;
     std::string candidate_revision;
+    SIQSShadowProofRssProbeKind probe_kind = SIQSShadowProofRssProbeKind::unknown;
     std::vector<std::string> environment;
     std::chrono::milliseconds timeout{35000};
     uint64_t expected_owner = 0;
@@ -59,6 +60,7 @@ struct DeploymentEntry final {
     std::string relative_locator;
     std::filesystem::path trusted_base_path;
     uint64_t expected_owner = 0;
+    SIQSShadowProofRssProbeKind probe_kind = SIQSShadowProofRssProbeKind::unknown;
     PublicationOps* publication_ops = nullptr;
     std::optional<ProbeExecutableBinding> holdout_probe;
 };
@@ -109,6 +111,7 @@ struct SameChildExecutionEvidence final {
     SIQSShadowProofRssArchitecture architecture = SIQSShadowProofRssArchitecture::unknown;
     util::ProcessMemoryBackend memory_backend = util::ProcessMemoryBackend::Unsupported;
     std::size_t resolved_production_sieve_workers = 0;
+    SIQSShadowProofRssProbeKind deployment_probe_kind = SIQSShadowProofRssProbeKind::unknown;
     bool fresh_process = false;
     bool completed = false;
     SIQSShadowProofRssFactorIdentity factor_identity = SIQSShadowProofRssFactorIdentity::unknown;
@@ -178,6 +181,7 @@ struct SessionSlotRunContext final {
     const SIQSShadowProofRssGatePolicy* policy = nullptr;
     const SIQSShadowProofRssCampaignRuntimeFacts* runtime_facts = nullptr;
     const ProbeExecutableBinding* executable = nullptr;
+    SIQSShadowProofRssProbeKind deployment_probe_kind = SIQSShadowProofRssProbeKind::unknown;
     SIQSShadowProofRssCampaignSlot slot;
 };
 
@@ -188,6 +192,7 @@ struct SessionPrepareRunResult final {
     [[nodiscard]] explicit operator bool() const noexcept {
         return context.has_value() && context->policy != nullptr &&
                context->runtime_facts != nullptr && context->executable != nullptr &&
+               context->deployment_probe_kind != SIQSShadowProofRssProbeKind::unknown &&
                diagnostic.error == SIQSShadowProofRssCampaignJournalStoreError::none;
     }
 };
