@@ -438,7 +438,6 @@ if(GNFS_BUILD_TESTS)
     )
     target_include_directories(gnfs_siqs_rss_campaign_runner_private PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )
     target_link_libraries(gnfs_siqs_rss_campaign_runner_private PUBLIC
         gnfs_core
@@ -449,7 +448,7 @@ if(GNFS_BUILD_TESTS)
             tests/support/siqs_shadow_proof_rss_campaign_slot_synthetic_child.cpp
         )
         target_include_directories(${target_name} PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
         )
         target_compile_definitions(${target_name} PRIVATE
             GNFS_SIQS_RSS_SYNTHETIC_BEHAVIOR=${behavior}
@@ -2082,6 +2081,9 @@ if(GNFS_BUILD_TESTS)
     add_executable(test_siqs_shadow_proof_rss_holdout_probe EXCLUDE_FROM_ALL
         tests/test_siqs_shadow_proof_rss_holdout_probe.cpp
     )
+    target_include_directories(test_siqs_shadow_proof_rss_holdout_probe PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
     target_compile_definitions(test_siqs_shadow_proof_rss_holdout_probe PRIVATE
         GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_BUILD_TYPE="$<CONFIG>")
     target_link_libraries(test_siqs_shadow_proof_rss_holdout_probe PRIVATE
@@ -2200,12 +2202,18 @@ if(GNFS_BUILD_TESTS)
     add_executable(test_siqs_shadow_observe_rss_holdouts
         tests/test_siqs_shadow_observe_rss_holdouts.cpp
     )
+    target_include_directories(test_siqs_shadow_observe_rss_holdouts PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
     target_link_libraries(test_siqs_shadow_observe_rss_holdouts PRIVATE gnfs_core)
     add_test(NAME SiqsShadowObserveRssHoldouts COMMAND test_siqs_shadow_observe_rss_holdouts)
     set_tests_properties(SiqsShadowObserveRssHoldouts PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_siqs_shadow_proof_rss_gate
         tests/test_siqs_shadow_proof_rss_gate.cpp
+    )
+    target_include_directories(test_siqs_shadow_proof_rss_gate PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
     )
     target_link_libraries(test_siqs_shadow_proof_rss_gate PRIVATE gnfs_core)
     add_test(NAME SiqsShadowProofRssGate COMMAND test_siqs_shadow_proof_rss_gate)
@@ -2294,6 +2302,9 @@ if(GNFS_BUILD_TESTS)
     add_executable(test_siqs_shadow_proof_rss_holdout_probe_contract
         tests/test_siqs_shadow_proof_rss_holdout_probe_contract.cpp
     )
+    target_include_directories(test_siqs_shadow_proof_rss_holdout_probe_contract PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
     target_link_libraries(test_siqs_shadow_proof_rss_holdout_probe_contract PRIVATE gnfs_core)
     add_test(NAME SiqsShadowProofRssHoldoutProbeContract
         COMMAND test_siqs_shadow_proof_rss_holdout_probe_contract)
@@ -2303,6 +2314,9 @@ if(GNFS_BUILD_TESTS)
     add_executable(test_siqs_shadow_proof_rss_holdout_probe_record_codec
         tests/test_siqs_shadow_proof_rss_holdout_probe_record_codec.cpp
     )
+    target_include_directories(test_siqs_shadow_proof_rss_holdout_probe_record_codec PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
     target_link_libraries(test_siqs_shadow_proof_rss_holdout_probe_record_codec PRIVATE gnfs_core)
     add_test(NAME SiqsShadowProofRssHoldoutProbeRecordCodec
         COMMAND test_siqs_shadow_proof_rss_holdout_probe_record_codec)
@@ -2311,6 +2325,9 @@ if(GNFS_BUILD_TESTS)
 
     add_executable(test_siqs_shadow_proof_rss_holdout_stream_join
         tests/test_siqs_shadow_proof_rss_holdout_stream_join.cpp
+    )
+    target_include_directories(test_siqs_shadow_proof_rss_holdout_stream_join PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
     )
     target_link_libraries(test_siqs_shadow_proof_rss_holdout_stream_join PRIVATE
         gnfs_core Threads::Threads)

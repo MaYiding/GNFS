@@ -1,9 +1,9 @@
 // Synthetic-only child for the private RSS campaign slot runner. It never
 // calls factor(), opens a holdout campaign store, or launches another process.
 
-#include "fixtures/siqs_shadow_observe_rss_holdouts_v1.hpp"
-#include "support/siqs_shadow_proof_rss_holdout_probe_protocol.hpp"
-#include "support/siqs_shadow_proof_rss_holdout_stream_join.hpp"
+#include "shadow_proof_rss_holdout_fixture_internal.hpp"
+#include "shadow_proof_rss_holdout_probe_protocol_internal.hpp"
+#include "shadow_proof_rss_holdout_stream_join_internal.hpp"
 
 #include <gnfs/util/process_memory.hpp>
 
@@ -24,8 +24,8 @@
 
 namespace {
 
-namespace fixtures = gnfs::tests::fixtures;
-namespace support = gnfs::tests::support;
+namespace fixtures = gnfs::siqs::shadow_proof_rss_holdout_fixture_detail;
+namespace support = gnfs::siqs::shadow_proof_rss_holdout_detail;
 
 enum class Behavior : int {
     success = 0,

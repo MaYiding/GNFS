@@ -4,7 +4,7 @@
 // stdout record. The decoder borrows its input only for the duration of the
 // call and returns an owning scalar projection.
 
-#include "siqs_shadow_proof_rss_holdout_probe_protocol.hpp"
+#include "shadow_proof_rss_holdout_probe_protocol_internal.hpp"
 
 #include <gnfs/util/process_memory.hpp>
 
@@ -19,7 +19,7 @@
 #include <system_error>
 #include <utility>
 
-namespace gnfs::tests::support {
+namespace gnfs::siqs::shadow_proof_rss_holdout_detail {
 
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_RECORD_MAX_BYTES = 4096;
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_RECORD_FIELD_COUNT = 45;
@@ -758,4 +758,4 @@ decode_siqs_shadow_proof_rss_holdout_probe_record(std::string_view input) noexce
     return CodecAccess::success(std::move(decoded));
 }
 
-} // namespace gnfs::tests::support
+} // namespace gnfs::siqs::shadow_proof_rss_holdout_detail

@@ -5,7 +5,7 @@
 // child bytes and a canonical typed projection, but it cannot create an
 // artifact seal, journal commit, durable receipt, or launch permit.
 
-#include "siqs_shadow_proof_rss_holdout_probe_record_codec.hpp"
+#include "shadow_proof_rss_holdout_probe_record_codec_internal.hpp"
 
 #include <gnfs/siqs/shadow_matrix.hpp>
 #include <gnfs/siqs/shadow_proof_observe_record_codec.hpp>
@@ -23,7 +23,7 @@
 #include <system_error>
 #include <utility>
 
-namespace gnfs::tests::support {
+namespace gnfs::siqs::shadow_proof_rss_holdout_detail {
 
 inline constexpr std::string_view SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_PREFIX =
     "GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_V1";
@@ -639,4 +639,4 @@ join_siqs_shadow_proof_rss_holdout_streams(
     }
 }
 
-} // namespace gnfs::tests::support
+} // namespace gnfs::siqs::shadow_proof_rss_holdout_detail

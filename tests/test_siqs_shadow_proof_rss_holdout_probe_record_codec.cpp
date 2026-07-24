@@ -1,7 +1,7 @@
 // Pure codec contracts for the sealed SIQS RSS holdout probe stdout record.
 // This test does not launch a process, capture RSS, or call factor().
 
-#include "support/siqs_shadow_proof_rss_holdout_probe_record_codec.hpp"
+#include "shadow_proof_rss_holdout_probe_record_codec_internal.hpp"
 
 #include <gnfs/util/process_memory.hpp>
 
@@ -19,16 +19,21 @@
 
 namespace {
 
-using gnfs::tests::support::decode_siqs_shadow_proof_rss_holdout_probe_record;
-using gnfs::tests::support::emit_siqs_shadow_proof_rss_holdout_probe_record;
-using gnfs::tests::support::siqs_shadow_proof_rss_holdout_probe_record_codec_error_name;
-using gnfs::tests::support::SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_RECORD_FIELD_COUNT;
-using gnfs::tests::support::SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_RECORD_MAX_BYTES;
-using gnfs::tests::support::SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_RECORD_NO_FIELD;
-using gnfs::tests::support::SIQSShadowProofRssHoldoutProbeDecodedRecord;
-using gnfs::tests::support::SIQSShadowProofRssHoldoutProbeMode;
-using gnfs::tests::support::SIQSShadowProofRssHoldoutProbeRecord;
-using gnfs::tests::support::SIQSShadowProofRssHoldoutProbeRecordCodecError;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::
+    decode_siqs_shadow_proof_rss_holdout_probe_record;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::emit_siqs_shadow_proof_rss_holdout_probe_record;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::
+    siqs_shadow_proof_rss_holdout_probe_record_codec_error_name;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::
+    SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_RECORD_FIELD_COUNT;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::
+    SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_RECORD_MAX_BYTES;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::
+    SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_RECORD_NO_FIELD;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::SIQSShadowProofRssHoldoutProbeDecodedRecord;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::SIQSShadowProofRssHoldoutProbeMode;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::SIQSShadowProofRssHoldoutProbeRecord;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::SIQSShadowProofRssHoldoutProbeRecordCodecError;
 using gnfs::util::ProcessMemoryBackend;
 
 static_assert(SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_RECORD_MAX_BYTES == 4096);
@@ -101,15 +106,16 @@ make_record(uint32_t fixture_id = 8,
             SIQSShadowProofRssHoldoutProbeMode mode = SIQSShadowProofRssHoldoutProbeMode::observe,
             uint32_t ordinal = 7,
             ProcessMemoryBackend backend = ProcessMemoryBackend::LinuxGetrusage) {
-    const auto& fixture =
-        gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUTS_V1[fixture_id - 1];
+    const auto& fixture = gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+        SIQS_SHADOW_OBSERVE_RSS_HOLDOUTS_V1[fixture_id - 1];
     SIQSShadowProofRssHoldoutProbeRecord record;
     record.fixture_id = fixture_id;
     record.mode = mode;
     record.ordinal = ordinal;
-    record.environment_value =
-        gnfs::tests::support::siqs_shadow_proof_rss_holdout_probe_environment_value(mode);
-    record.digits = gnfs::tests::support::SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_DIGITS;
+    record.environment_value = gnfs::siqs::shadow_proof_rss_holdout_detail::
+        siqs_shadow_proof_rss_holdout_probe_environment_value(mode);
+    record.digits =
+        gnfs::siqs::shadow_proof_rss_holdout_detail::SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_DIGITS;
     record.modulus = fixture.modulus;
     record.expected_factor = fixture.factor_p;
     record.expected_cofactor = fixture.factor_q;

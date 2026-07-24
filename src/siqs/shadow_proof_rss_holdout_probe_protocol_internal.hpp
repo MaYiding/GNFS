@@ -4,7 +4,7 @@
 // probe. This header binds records to the constexpr fixture manifest but
 // performs no I/O, factoring, or memory capture.
 
-#include "../fixtures/siqs_shadow_observe_rss_holdouts_v1.hpp"
+#include "shadow_proof_rss_holdout_fixture_internal.hpp"
 
 #include <gnfs/siqs/shadow_proof_rss_gate.hpp>
 
@@ -18,7 +18,9 @@
 #include <string_view>
 #include <system_error>
 
-namespace gnfs::tests::support {
+namespace gnfs::siqs::shadow_proof_rss_holdout_detail {
+
+namespace fixtures = gnfs::siqs::shadow_proof_rss_holdout_fixture_detail;
 
 inline constexpr std::string_view SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_PREFIX =
     "GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_V1";
@@ -549,4 +551,4 @@ emit_siqs_shadow_proof_rss_holdout_probe_record(const SIQSShadowProofRssHoldoutP
     }
 }
 
-} // namespace gnfs::tests::support
+} // namespace gnfs::siqs::shadow_proof_rss_holdout_detail

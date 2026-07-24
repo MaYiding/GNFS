@@ -1,7 +1,7 @@
 // Pure strict-parser and typed-join tests. No child process, holdout factor(),
 // journal store, artifact publication, receipt, or launch permit is used.
 
-#include "support/siqs_shadow_proof_rss_holdout_stream_join.hpp"
+#include "shadow_proof_rss_holdout_stream_join_internal.hpp"
 
 #include <gnfs/siqs/siqs.hpp>
 
@@ -17,8 +17,8 @@
 namespace {
 
 using namespace gnfs::siqs;
-using namespace gnfs::tests::fixtures;
-using namespace gnfs::tests::support;
+using namespace gnfs::siqs::shadow_proof_rss_holdout_fixture_detail;
+using namespace gnfs::siqs::shadow_proof_rss_holdout_detail;
 using gnfs::util::ProcessMemoryBackend;
 
 static_assert(SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_SCHEMA_VERSION == 1);

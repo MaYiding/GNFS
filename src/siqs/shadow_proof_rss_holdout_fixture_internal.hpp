@@ -11,7 +11,7 @@
 #include <span>
 #include <string_view>
 
-namespace gnfs::tests::fixtures {
+namespace gnfs::siqs::shadow_proof_rss_holdout_fixture_detail {
 
 struct SIQSShadowObserveRssHoldoutFixtureV1 final {
     uint32_t id;
@@ -201,4 +201,4 @@ static_assert(siqs_shadow_observe_rss_holdout_v1_digest().low ==
 static_assert(siqs_shadow_observe_rss_holdout_v1_digest().high ==
               SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_DIGEST_HIGH);
 
-} // namespace gnfs::tests::fixtures
+} // namespace gnfs::siqs::shadow_proof_rss_holdout_fixture_detail

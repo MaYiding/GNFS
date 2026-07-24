@@ -2,7 +2,7 @@
 // This test deliberately never includes or calls production SIQS factoring,
 // probes, holdout measurements, or live process-memory capture.
 
-#include "fixtures/siqs_shadow_observe_rss_holdouts_v1.hpp"
+#include "shadow_proof_rss_holdout_fixture_internal.hpp"
 
 #include <gnfs/siqs/shadow_proof_rss_gate.hpp>
 
@@ -62,9 +62,12 @@ using gnfs::siqs::SIQSShadowProofRssGateSample;
 using gnfs::siqs::SIQSShadowProofRssGateStatus;
 using gnfs::siqs::SIQSShadowProofRssOperatingSystem;
 using gnfs::siqs::SIQSShadowProofRssSampleMode;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_CORPUS_ID;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_DIGEST_HIGH;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_DIGEST_LOW;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_CORPUS_ID;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_DIGEST_HIGH;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_DIGEST_LOW;
 using gnfs::util::ProcessMemoryBackend;
 
 static_assert(SIQS_SHADOW_PROOF_RSS_GATE_FIXTURE_COUNT == 8);

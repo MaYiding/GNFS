@@ -196,8 +196,8 @@ All samples produced while defining or debugging the current protocol are
 `calibration_excluded`. They may validate schema, backend support, and
 measurement scale, but they cannot enter a later promotion decision.
 
-The outcome-blind corpus seal is now frozen in
-`tests/fixtures/siqs_shadow_observe_rss_holdouts_v1.hpp`. Its corpus ID is
+The outcome-blind corpus seal is now frozen in the source-private
+`src/siqs/shadow_proof_rss_holdout_fixture_internal.hpp`. Its corpus ID is
 `siqs50_shadow_observe_rss_holdout_v1`. It contains eight new, balanced,
 50-digit semiprimes derived from public decimal base and stride constants with
 GMP `mpz_nextprime`. Canonical factor ordering and a stable, non-cryptographic
@@ -591,8 +591,9 @@ native-store test uses a temporary real filesystem and subprocesses to cover
 the registry boundary, component walking, strict layouts, move-only lease
 ownership, cross-process contention, crash release, and replay actions. It also
 links one `EXCLUDE_FROM_ALL`, non-installed private runner and five synthetic
-child variants. Those variants never call `factor()`, read a holdout, or invoke
-the production probe; they cover successful same-child commit, nonzero exit,
+child variants. Those variants read only the compiled sealed identity manifest;
+they never call `factor()`, collect a holdout measurement, or invoke the
+production probe. They cover successful same-child commit, nonzero exit,
 malformed output, capture overflow, timeout cleanup, partial artifact
 publication, explicit taint, and commit-terminal uncertainty. None of these
 targets is a production campaign runner.

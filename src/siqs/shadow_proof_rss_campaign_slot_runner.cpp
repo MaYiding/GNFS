@@ -1,6 +1,6 @@
 #include "shadow_proof_rss_campaign_slot_runner_internal.hpp"
 
-#include "support/siqs_shadow_proof_rss_holdout_stream_join.hpp"
+#include "shadow_proof_rss_holdout_stream_join_internal.hpp"
 
 #include <gnfs/siqs/shadow_proof_rss_campaign_artifact_layout.hpp>
 
@@ -22,7 +22,7 @@
 namespace gnfs::siqs::shadow_proof_rss_campaign_journal_store_detail {
 namespace {
 
-namespace join_support = gnfs::tests::support;
+namespace join_support = gnfs::siqs::shadow_proof_rss_holdout_detail;
 
 using StoreError = SIQSShadowProofRssCampaignJournalStoreError;
 using StoreObject = SIQSShadowProofRssCampaignJournalStoreObject;

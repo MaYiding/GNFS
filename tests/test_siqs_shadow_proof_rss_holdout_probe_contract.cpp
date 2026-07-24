@@ -2,7 +2,7 @@
 // only the constexpr fixture manifest; it never calls factor(), captures RSS,
 // or launches a process.
 
-#include "support/siqs_shadow_proof_rss_holdout_probe_protocol.hpp"
+#include "shadow_proof_rss_holdout_probe_protocol_internal.hpp"
 
 #include <array>
 #include <cstdint>
@@ -19,21 +19,26 @@ namespace {
 using std::uint32_t;
 using std::uint64_t;
 
-using gnfs::tests::support::emit_siqs_shadow_proof_rss_holdout_probe_record;
-using gnfs::tests::support::parse_siqs_shadow_proof_rss_holdout_probe_options;
-using gnfs::tests::support::SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_DIGITS;
-using gnfs::tests::support::SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_ERROR_PREFIX;
-using gnfs::tests::support::siqs_shadow_proof_rss_holdout_probe_mode_name;
-using gnfs::tests::support::siqs_shadow_proof_rss_holdout_probe_options_error_name;
-using gnfs::tests::support::SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_PREFIX;
-using gnfs::tests::support::siqs_shadow_proof_rss_holdout_probe_record_error_name;
-using gnfs::tests::support::SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_SCHEMA_VERSION;
-using gnfs::tests::support::SIQSShadowProofRssHoldoutProbeMode;
-using gnfs::tests::support::SIQSShadowProofRssHoldoutProbeOptionsError;
-using gnfs::tests::support::SIQSShadowProofRssHoldoutProbeOptionsParseResult;
-using gnfs::tests::support::SIQSShadowProofRssHoldoutProbeRecord;
-using gnfs::tests::support::SIQSShadowProofRssHoldoutProbeRecordError;
-using gnfs::tests::support::validate_siqs_shadow_proof_rss_holdout_probe_record;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::emit_siqs_shadow_proof_rss_holdout_probe_record;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::
+    parse_siqs_shadow_proof_rss_holdout_probe_options;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_DIGITS;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_ERROR_PREFIX;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::siqs_shadow_proof_rss_holdout_probe_mode_name;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::
+    siqs_shadow_proof_rss_holdout_probe_options_error_name;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_PREFIX;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::
+    siqs_shadow_proof_rss_holdout_probe_record_error_name;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::
+    SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_SCHEMA_VERSION;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::SIQSShadowProofRssHoldoutProbeMode;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::SIQSShadowProofRssHoldoutProbeOptionsError;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::SIQSShadowProofRssHoldoutProbeOptionsParseResult;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::SIQSShadowProofRssHoldoutProbeRecord;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::SIQSShadowProofRssHoldoutProbeRecordError;
+using gnfs::siqs::shadow_proof_rss_holdout_detail::
+    validate_siqs_shadow_proof_rss_holdout_probe_record;
 
 static_assert(SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_SCHEMA_VERSION == 1);
 static_assert(SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_DIGITS == 50);
@@ -71,7 +76,9 @@ void expect_options_error(std::initializer_list<std::string_view> arguments,
 }
 
 [[nodiscard]] SIQSShadowProofRssHoldoutProbeRecord make_record() {
-    const auto& fixture = gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUTS_V1.back();
+    const auto& fixture =
+        gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::SIQS_SHADOW_OBSERVE_RSS_HOLDOUTS_V1
+            .back();
     SIQSShadowProofRssHoldoutProbeRecord record;
     record.fixture_id = fixture.id;
     record.mode = SIQSShadowProofRssHoldoutProbeMode::observe;
@@ -373,7 +380,10 @@ void test_record_rejections() {
     expect_record_error(record,
                         SIQSShadowProofRssHoldoutProbeRecordError::fixture_identity_invalid);
     record = valid;
-    record.modulus = gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUTS_V1.front().modulus;
+    record.modulus =
+        gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::SIQS_SHADOW_OBSERVE_RSS_HOLDOUTS_V1
+            .front()
+            .modulus;
     expect_record_error(record,
                         SIQSShadowProofRssHoldoutProbeRecordError::fixture_identity_invalid);
     record = valid;

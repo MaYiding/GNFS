@@ -122,7 +122,7 @@ corpus 的因果差值。
 
 上述样本固定归类为 `calibration_excluded`。它们只验证采集协议、RSS 可用性和
 量级，不得重新用作 promotion gate。正式语料已在
-`tests/fixtures/siqs_shadow_observe_rss_holdouts_v1.hpp` 中 outcome-blind 封存。
+`src/siqs/shadow_proof_rss_holdout_fixture_internal.hpp` 中 outcome-blind 封存。
 corpus ID 为 `siqs50_shadow_observe_rss_holdout_v1`，包含 8 个全新、balanced 的
 50 位 semiprimes。header 使用公开 decimal base/stride 常量和 GMP
 `mpz_nextprime` 规则确定因子，selection protocol ID 为

@@ -1,7 +1,7 @@
 // Outcome-blind contract for the sealed SIQS shadow-observe RSS holdouts.
 // This test deliberately does not include or call production SIQS or its probe.
 
-#include "fixtures/siqs_shadow_observe_rss_holdouts_v1.hpp"
+#include "shadow_proof_rss_holdout_fixture_internal.hpp"
 
 #include <gnfs/core/integer.hpp>
 
@@ -25,24 +25,39 @@ using std::uint32_t;
 using std::uint64_t;
 
 using gnfs::core::Integer;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_CORPUS_ID;
-using gnfs::tests::fixtures::siqs_shadow_observe_rss_holdout_v1_digest;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_DIGEST_DOMAIN;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_DIGEST_HIGH;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_DIGEST_LOW;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_FIXTURE_COUNT;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_MAX_SECONDS;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_P_BASE;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_P_STRIDE;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_Q_BASE;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_Q_STRIDE;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_SCHEMA_VERSION;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_SEALED_BEFORE_MEASUREMENT;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_SELECTION_PROTOCOL_ID;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_USED_FOR_CALIBRATION;
-using gnfs::tests::fixtures::SIQS_SHADOW_OBSERVE_RSS_HOLDOUTS_V1;
-using gnfs::tests::fixtures::SIQSShadowObserveRssHoldoutDigestV1;
-using gnfs::tests::fixtures::SIQSShadowObserveRssHoldoutFixtureV1;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_CORPUS_ID;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    siqs_shadow_observe_rss_holdout_v1_digest;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_DIGEST_DOMAIN;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_DIGEST_HIGH;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_DIGEST_LOW;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_FIXTURE_COUNT;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_MAX_SECONDS;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_P_BASE;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_P_STRIDE;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_Q_BASE;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_Q_STRIDE;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_SCHEMA_VERSION;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_SEALED_BEFORE_MEASUREMENT;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_SELECTION_PROTOCOL_ID;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
+    SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_USED_FOR_CALIBRATION;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::SIQS_SHADOW_OBSERVE_RSS_HOLDOUTS_V1;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::SIQSShadowObserveRssHoldoutDigestV1;
+using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::SIQSShadowObserveRssHoldoutFixtureV1;
 
 static_assert(SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_SCHEMA_VERSION == 1);
 static_assert(SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_FIXTURE_COUNT == 8);

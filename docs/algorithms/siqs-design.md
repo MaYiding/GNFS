@@ -93,7 +93,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `tests/test_siqs_shadow_proof_observe.cpp` | Strict observe parser, typed record schema, RSS fields, and emitter contract |
 | `include/gnfs/siqs/shadow_proof_observe_record_codec.hpp` | Strict owning decoder for one canonical observe stderr record |
 | `tests/test_siqs_shadow_proof_observe_probe.cpp` | Release-only production 1LP fresh-process factor and RSS probe |
-| `tests/fixtures/siqs_shadow_observe_rss_holdouts_v1.hpp` | Outcome-blind sealed 50-digit RSS holdout identities and stable corpus digest |
+| `src/siqs/shadow_proof_rss_holdout_fixture_internal.hpp` | Source-private outcome-blind sealed 50-digit RSS holdout identities and stable corpus digest |
 | `tests/test_siqs_shadow_observe_rss_holdouts.cpp` | Mathematical corpus generation, primality, identity, uniqueness, and digest checks without calling `factor()` |
 | `include/gnfs/siqs/shadow_proof_rss_gate.hpp` | `SIQSShadowProofRssGatePolicy`, `SIQSShadowProofRssGateSample`, and closed `SIQSShadowProofRssGateOutcome` |
 | `tests/test_siqs_shadow_proof_rss_gate.cpp` | Synthetic policy binding, exact sample coverage, budget boundary, and closed terminal-emitter tests |
@@ -101,8 +101,8 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-only native session plus lease-bound start, artifact-batch, and explicit-taint authority boundaries |
 | `tests/test_siqs_shadow_proof_rss_campaign_artifact_layout.cpp` | Canonical leaf grammar, bounded sizes, deterministic diagnostics, and journal-to-artifact consistency |
 | `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, durable start/artifact/taint publication, crash recovery, and platform fallback |
-| `tests/support/siqs_shadow_proof_rss_holdout_probe_record_codec.hpp` | Strict owning decoder for one canonical holdout-probe stdout record |
-| `tests/support/siqs_shadow_proof_rss_holdout_stream_join.hpp` | Approved-policy, runtime-facts, slot, and two-stream validation into an authority-free uncommitted draft |
+| `src/siqs/shadow_proof_rss_holdout_probe_record_codec_internal.hpp` | Source-private strict owning decoder for one canonical holdout-probe stdout record |
+| `src/siqs/shadow_proof_rss_holdout_stream_join_internal.hpp` | Source-private approved-policy, runtime-facts, slot, and two-stream validation into an authority-free uncommitted draft |
 | `include/gnfs/util/bounded_child_process.hpp` | Production shell-free, deadline-bounded dual-stream capture; it transports data but grants no campaign authority |
 | `tests/test_siqs_shadow_proof_prefer.cpp` | Pure V2 decisions, defensive metadata validation, and pre-route emitter contract |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
@@ -172,7 +172,7 @@ complete command and HWM interpretation.
 
 These first samples are `calibration_excluded`; they cannot be recycled as a
 promotion gate. The outcome-blind corpus seal now lives in
-`tests/fixtures/siqs_shadow_observe_rss_holdouts_v1.hpp` under corpus ID
+`src/siqs/shadow_proof_rss_holdout_fixture_internal.hpp` under corpus ID
 `siqs50_shadow_observe_rss_holdout_v1`. It freezes eight new, balanced,
 50-digit semiprimes. It freezes factors derived from public decimal base and
 stride constants with the `gmp_nextprime_decimal_stride_v1` protocol,
