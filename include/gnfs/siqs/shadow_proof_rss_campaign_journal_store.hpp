@@ -22,6 +22,7 @@ enum class SIQSShadowProofRssCampaignJournalStoreError : uint8_t {
     binding_not_registered,
     binding_ambiguous,
     registry_binding_mismatch,
+    executable_authentication_failed,
     base_open_failed,
     base_invalid,
     root_open_failed,
@@ -71,6 +72,8 @@ enum class SIQSShadowProofRssCampaignJournalStoreError : uint8_t {
         return "binding_ambiguous";
     case SIQSShadowProofRssCampaignJournalStoreError::registry_binding_mismatch:
         return "registry_binding_mismatch";
+    case SIQSShadowProofRssCampaignJournalStoreError::executable_authentication_failed:
+        return "executable_authentication_failed";
     case SIQSShadowProofRssCampaignJournalStoreError::base_open_failed:
         return "base_open_failed";
     case SIQSShadowProofRssCampaignJournalStoreError::base_invalid:
@@ -142,6 +145,7 @@ enum class SIQSShadowProofRssCampaignJournalStoreError : uint8_t {
 enum class SIQSShadowProofRssCampaignJournalStoreObject : uint8_t {
     none,
     deployment_registry,
+    probe_executable,
     trusted_base,
     store_root,
     artifact_root,
@@ -159,6 +163,8 @@ enum class SIQSShadowProofRssCampaignJournalStoreObject : uint8_t {
         return "none";
     case SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry:
         return "deployment_registry";
+    case SIQSShadowProofRssCampaignJournalStoreObject::probe_executable:
+        return "probe_executable";
     case SIQSShadowProofRssCampaignJournalStoreObject::trusted_base:
         return "trusted_base";
     case SIQSShadowProofRssCampaignJournalStoreObject::store_root:

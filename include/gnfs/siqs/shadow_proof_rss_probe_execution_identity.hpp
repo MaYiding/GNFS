@@ -10,7 +10,7 @@
 
 namespace gnfs::siqs {
 
-inline constexpr std::uint32_t SIQS_SHADOW_PROOF_RSS_PROBE_EXECUTION_CONTRACT_SCHEMA_VERSION = 1;
+inline constexpr std::uint32_t SIQS_SHADOW_PROOF_RSS_PROBE_EXECUTION_CONTRACT_SCHEMA_VERSION = 2;
 
 /// Stable content identity for the executable bytes and the approved,
 /// versioned launch contract represented here. Filesystem paths are deployment

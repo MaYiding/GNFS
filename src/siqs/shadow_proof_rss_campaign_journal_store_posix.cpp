@@ -1782,6 +1782,10 @@ public:
                  replay_.action != SIQSShadowProofRssJournalAction::append_slot_start)) {
                 return fail(action_diagnostic());
             }
+            if (StoreDiagnostic diagnostic = confirm_prepublication_snapshot_unchanged();
+                diagnostic.error != StoreError::none) {
+                return fail(std::move(diagnostic));
+            }
 
             if (replay_.action == SIQSShadowProofRssJournalAction::create_header) {
                 if (!replay_.header_to_create.has_value() ||
@@ -2362,6 +2366,8 @@ public:
                     runtime_facts_.resolved_production_sieve_workers &&
                 execution->deployment_probe_kind == deployment_.probe_kind &&
                 execution->deployment_probe_kind == runtime_facts_.probe_kind &&
+                (execution->deployment_probe_kind == SIQSShadowProofRssProbeKind::synthetic_test ||
+                 execution->same_object_authenticated) &&
                 deployment_.holdout_probe.has_value() &&
                 execution->probe_execution_identity ==
                     deployment_.approval.probe_execution_identity &&
@@ -2784,6 +2790,40 @@ private:
         StoreDiagnostic diagnostic = make_diagnostic(StoreError::session_action_invalid);
         diagnostic.journal_reason = replay_.reason;
         return diagnostic;
+    }
+
+    [[nodiscard]] StoreDiagnostic confirm_prepublication_snapshot_unchanged() const {
+        VerifiedReplayResult confirmed =
+            refresh(initial_root_fingerprint_, &root_namespace_fingerprint_,
+                    &artifact_namespace_fingerprint_);
+        if (!confirmed) {
+            switch (confirmed.diagnostic.error) {
+            case StoreError::entry_metadata_failed:
+            case StoreError::entry_trust_invalid:
+            case StoreError::entry_open_failed:
+            case StoreError::entry_read_failed:
+            case StoreError::entry_identity_mismatch:
+            case StoreError::entry_changed_during_read:
+                return make_diagnostic(StoreError::snapshot_changed,
+                                       confirmed.diagnostic.object == StoreObject::artifact ||
+                                               confirmed.diagnostic.object ==
+                                                   StoreObject::artifact_root
+                                           ? StoreObject::artifact_root
+                                           : StoreObject::directory);
+            case StoreError::layout_invalid:
+            case StoreError::replay_rejected:
+                return make_diagnostic(StoreError::snapshot_changed, StoreObject::directory);
+            case StoreError::artifact_layout_invalid:
+            case StoreError::artifact_consistency_invalid:
+                return make_diagnostic(StoreError::snapshot_changed, StoreObject::artifact_root);
+            default:
+                return std::move(confirmed.diagnostic);
+            }
+        }
+        if (!replay_matches(*confirmed.replay, replay_)) {
+            return make_diagnostic(StoreError::snapshot_changed, StoreObject::directory);
+        }
+        return {};
     }
 
     [[nodiscard]] StoreDiagnostic verify_authority() const noexcept {

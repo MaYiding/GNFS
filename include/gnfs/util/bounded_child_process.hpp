@@ -22,6 +22,7 @@ enum class BoundedChildProcessError : std::uint8_t {
     invalid_spec,
     pipe_failed,
     spawn_failed,
+    platform_unavailable,
     read_failed,
     overflow,
     timeout,
@@ -45,6 +46,8 @@ bounded_child_process_error_name(BoundedChildProcessError error) noexcept {
         return "pipe_failed";
     case BoundedChildProcessError::spawn_failed:
         return "spawn_failed";
+    case BoundedChildProcessError::platform_unavailable:
+        return "platform_unavailable";
     case BoundedChildProcessError::read_failed:
         return "read_failed";
     case BoundedChildProcessError::overflow:

@@ -33,14 +33,15 @@ using gnfs::util::sha256;
 using gnfs::util::Sha256Accumulator;
 using gnfs::util::Sha256Digest;
 using identity_detail::make_siqs_shadow_proof_rss_probe_execution_identity;
+using identity_detail::ProbeExecutableLaunchProfile;
 using identity_detail::ProbeExecutionContractInput;
 
 constexpr std::string_view EXECUTABLE_SHA256 =
     "7cd5084a925acabf1d46b47291a92effd2cbf7eef3a5ed354f626b1878fa114b";
 constexpr std::string_view EXECUTION_CONTRACT_SHA256 =
-    "46fa874273fe84602ffc2b953fb210df5a8d87411e64c754e10268ad2e20c020";
+    "957bb595f9edbb4dcbbcd09331c85cceef4662f8ea9f6da4da9a9830bba230e6";
 
-static_assert(gnfs::siqs::SIQS_SHADOW_PROOF_RSS_PROBE_EXECUTION_CONTRACT_SCHEMA_VERSION == 1);
+static_assert(gnfs::siqs::SIQS_SHADOW_PROOF_RSS_PROBE_EXECUTION_CONTRACT_SCHEMA_VERSION == 2);
 static_assert(sizeof(SIQSShadowProofRssProbeExecutionIdentity) == 64);
 static_assert(std::is_trivially_copyable_v<SIQSShadowProofRssProbeExecutionIdentity>);
 static_assert(identity_detail::SIQS_SHADOW_PROOF_RSS_PROBE_TIMEOUT_MIN_MS == 1);
@@ -96,6 +97,7 @@ struct Fixture final {
     Fixture() {
         input.executable_sha256 = required_digest(EXECUTABLE_SHA256);
         input.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
+        input.launch_profile = ProbeExecutableLaunchProfile::linux_sealed_memfd_execveat_v1;
         input.candidate_revision = "candidate-revision-2026-07-25";
         input.operating_system = SIQSShadowProofRssOperatingSystem::linux;
         input.architecture = SIQSShadowProofRssArchitecture::x86_64;
@@ -133,12 +135,14 @@ void append_string(std::vector<std::byte>& output, std::string_view value) {
 
 [[nodiscard]] std::vector<std::byte> independent_golden_preimage() {
     std::vector<std::byte> output;
-    output.reserve(809);
-    append_string(output, "gnfs.siqs.shadow_proof_rss.probe_execution_contract.sha256.v1");
-    append_u64(output, 1);
+    output.reserve(900);
+    append_string(output, "gnfs.siqs.shadow_proof_rss.probe_execution_contract.sha256.v2");
+    append_u64(output, 2);
     const Sha256Digest executable = required_digest(EXECUTABLE_SHA256);
     output.insert(output.end(), executable.bytes.begin(), executable.bytes.end());
     append_u64(output, 2);
+    append_u64(output, 2);
+    append_string(output, "gnfs-siqs-rss-holdout-probe");
     append_string(output, "candidate-revision-2026-07-25");
     append_u64(output, 2);
     append_u64(output, 1);
@@ -181,7 +185,7 @@ void append_string(std::vector<std::byte>& output, std::string_view value) {
     append_u64(output, 1);
     append_string(output, "GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_V3");
     append_u64(output, 3);
-    append_string(output, "gnfs.util.bounded_child_process.transport.v1");
+    append_string(output, "gnfs.util.authenticated_bounded_child_process.linux_memfd_execveat.v1");
     append_u64(output, 1);
     append_u64(output, 1);
     append_u64(output, 1);
@@ -218,7 +222,7 @@ void test_golden_identity_and_split_hash() {
     EXPECT(decoded_contract == std::optional(identity->execution_contract_sha256));
 
     const std::vector<std::byte> preimage = independent_golden_preimage();
-    EXPECT(preimage.size() == 809);
+    EXPECT(preimage.size() == 877);
     const auto one_shot = sha256(std::span<const std::byte>(preimage));
     EXPECT(one_shot.has_value());
     EXPECT(one_shot == decoded_contract);
@@ -252,11 +256,27 @@ void test_every_input_field_is_bound() {
         changed.input.probe_kind = SIQSShadowProofRssProbeKind::synthetic_test;
     });
     expect_valid_change(*baseline, [](Fixture& changed) {
+        changed.input.probe_kind = SIQSShadowProofRssProbeKind::synthetic_test;
+        changed.input.launch_profile = ProbeExecutableLaunchProfile::synthetic_path_spawn_v1;
+    });
+    Fixture synthetic_sealed;
+    synthetic_sealed.input.probe_kind = SIQSShadowProofRssProbeKind::synthetic_test;
+    const auto synthetic_sealed_identity = identity_for(synthetic_sealed);
+    EXPECT(synthetic_sealed_identity.has_value());
+    synthetic_sealed.input.launch_profile = ProbeExecutableLaunchProfile::synthetic_path_spawn_v1;
+    const auto synthetic_path_identity = identity_for(synthetic_sealed);
+    EXPECT(synthetic_path_identity.has_value());
+    if (synthetic_sealed_identity.has_value() && synthetic_path_identity.has_value()) {
+        EXPECT(synthetic_sealed_identity->execution_contract_sha256 !=
+               synthetic_path_identity->execution_contract_sha256);
+    }
+    expect_valid_change(*baseline, [](Fixture& changed) {
         changed.input.candidate_revision = "candidate-revision-2026-07-26";
     });
     expect_valid_change(*baseline, [](Fixture& changed) {
         changed.input.operating_system = SIQSShadowProofRssOperatingSystem::darwin;
         changed.input.memory_backend = ProcessMemoryBackend::DarwinGetrusage;
+        changed.input.launch_profile = ProbeExecutableLaunchProfile::darwin_hardened_suspended_v1;
     });
     expect_valid_change(*baseline, [](Fixture& changed) {
         changed.input.architecture = SIQSShadowProofRssArchitecture::arm64;
@@ -293,6 +313,16 @@ void test_identity_and_scalar_rejections() {
     Fixture unknown_kind;
     unknown_kind.input.probe_kind = SIQSShadowProofRssProbeKind::unknown;
     EXPECT(!identity_for(unknown_kind).has_value());
+    Fixture unknown_profile;
+    unknown_profile.input.launch_profile = ProbeExecutableLaunchProfile::unknown;
+    EXPECT(!identity_for(unknown_profile).has_value());
+    Fixture production_path;
+    production_path.input.launch_profile = ProbeExecutableLaunchProfile::synthetic_path_spawn_v1;
+    EXPECT(!identity_for(production_path).has_value());
+    Fixture linux_darwin_profile;
+    linux_darwin_profile.input.launch_profile =
+        ProbeExecutableLaunchProfile::darwin_hardened_suspended_v1;
+    EXPECT(!identity_for(linux_darwin_profile).has_value());
     Fixture unknown_os;
     unknown_os.input.operating_system = SIQSShadowProofRssOperatingSystem::unknown;
     EXPECT(!identity_for(unknown_os).has_value());
@@ -356,6 +386,18 @@ void test_environment_validation() {
     Fixture embedded_nul;
     embedded_nul.environment = {std::string("LANG=C\0hidden", 13)};
     EXPECT(!identity_for(embedded_nul).has_value());
+    Fixture loader_preload;
+    loader_preload.environment = {"LD_PRELOAD=/tmp/unapproved.so"};
+    EXPECT(!identity_for(loader_preload).has_value());
+    Fixture loader_tunables;
+    loader_tunables.environment = {"GLIBC_TUNABLES=glibc.malloc.check=3"};
+    EXPECT(!identity_for(loader_tunables).has_value());
+    Fixture darwin_loader;
+    darwin_loader.input.operating_system = SIQSShadowProofRssOperatingSystem::darwin;
+    darwin_loader.input.memory_backend = ProcessMemoryBackend::DarwinGetrusage;
+    darwin_loader.input.launch_profile = ProbeExecutableLaunchProfile::darwin_hardened_suspended_v1;
+    darwin_loader.environment = {"DYLD_INSERT_LIBRARIES=/tmp/unapproved.dylib"};
+    EXPECT(!identity_for(darwin_loader).has_value());
 
     Fixture empty_environment;
     empty_environment.environment.clear();

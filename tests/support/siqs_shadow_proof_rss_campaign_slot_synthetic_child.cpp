@@ -53,7 +53,8 @@ constexpr Behavior BEHAVIOR = static_cast<Behavior>(GNFS_SIQS_RSS_SYNTHETIC_BEHA
 }
 
 [[nodiscard]] bool
-write_launch_marker(const support::SIQSShadowProofRssHoldoutProbeOptions& options) {
+write_launch_marker(const support::SIQSShadowProofRssHoldoutProbeOptions& options,
+                    std::string_view argv0) {
     const char* marker_value = std::getenv("GNFS_SIQS_RSS_SYNTHETIC_MARKER");
     if (marker_value == nullptr || *marker_value == '\0' ||
         std::getenv("GNFS_SIQS_SHADOW_PROOF") != nullptr) {
@@ -65,7 +66,7 @@ write_launch_marker(const support::SIQSShadowProofRssHoldoutProbeOptions& option
         return false;
     }
     std::ofstream output(marker / "launch.txt", std::ios::binary | std::ios::out);
-    output << "fixture_id=" << options.fixture_id
+    output << "argv0=" << argv0 << " fixture_id=" << options.fixture_id
            << " mode=" << support::siqs_shadow_proof_rss_holdout_probe_mode_name(options.mode)
            << " ordinal=" << options.ordinal << '\n';
     output.flush();
@@ -227,6 +228,9 @@ emit_valid_observe_record(const support::SIQSShadowProofRssHoldoutProbeOptions& 
 } // namespace
 
 int main(int argc, char** argv) {
+    if (argc < 1 || argv[0] == nullptr) {
+        return 90;
+    }
     std::vector<std::string_view> arguments;
     for (int index = 1; index < argc; ++index) {
         if (argv[index] == nullptr) {
@@ -235,7 +239,7 @@ int main(int argc, char** argv) {
         arguments.emplace_back(argv[index]);
     }
     const auto parsed = support::parse_siqs_shadow_proof_rss_holdout_probe_options(arguments);
-    if (!parsed || !write_launch_marker(parsed.options)) {
+    if (!parsed || !write_launch_marker(parsed.options, argv[0])) {
         return 91;
     }
 

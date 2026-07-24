@@ -370,6 +370,7 @@ executable_environment_is_canonical(std::span<const std::string> environment) no
         make_siqs_shadow_proof_rss_probe_execution_identity(ProbeExecutionContractInput{
             .executable_sha256 = executable.probe_execution_identity.executable_sha256,
             .probe_kind = deployment.probe_kind,
+            .launch_profile = executable.launch_profile,
             .candidate_revision = deployment.approval.candidate_revision,
             .operating_system = deployment.approval.operating_system,
             .architecture = deployment.approval.architecture,
@@ -394,6 +395,29 @@ preflight_is_ready(const SIQSShadowProofRssCampaignJournalResume& preflight) noe
            preflight.committed_slot_count == 0 && preflight.next_slot_number == 1 &&
            preflight.header_to_create.has_value() && !preflight.prepared_slot_start.has_value() &&
            !preflight.taint_to_append.has_value();
+}
+
+[[nodiscard]] bool
+production_launch_profile_is_supported_on_host(const DeploymentEntry& deployment) noexcept {
+    if (deployment.probe_kind != SIQSShadowProofRssProbeKind::production_holdout) {
+        return true;
+    }
+    if (!deployment.holdout_probe.has_value()) {
+        return false;
+    }
+
+#if defined(__linux__)
+    using LaunchProfile =
+        shadow_proof_rss_probe_execution_identity_detail::ProbeExecutableLaunchProfile;
+    return deployment.approval.operating_system == SIQSShadowProofRssOperatingSystem::linux &&
+           deployment.holdout_probe->launch_profile ==
+               LaunchProfile::linux_sealed_memfd_execveat_v1;
+#else
+    // Darwin's hardened launch profile remains contract-only until the
+    // same-object authenticator is implemented. Windows and unknown hosts are
+    // likewise explicitly unavailable.
+    return false;
+#endif
 }
 
 } // namespace
@@ -453,6 +477,14 @@ SessionFactory::open_with_deployments(const SIQSShadowProofRssGatePolicy* policy
             return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
                 SIQSShadowProofRssCampaignJournalStoreError::registry_binding_mismatch,
                 SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry));
+        }
+
+        // No production slot may publish a durable start on a platform whose
+        // exact host/profile same-object authenticator is not available.
+        if (!production_launch_profile_is_supported_on_host(*selected)) {
+            return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
+                SIQSShadowProofRssCampaignJournalStoreError::platform_unavailable,
+                SIQSShadowProofRssCampaignJournalStoreObject::probe_executable));
         }
 
         PlatformOpenResult platform = open_siqs_shadow_proof_rss_campaign_journal_platform_session(

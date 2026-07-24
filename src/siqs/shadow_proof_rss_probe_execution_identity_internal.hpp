@@ -20,10 +20,33 @@
 namespace gnfs::siqs::shadow_proof_rss_probe_execution_identity_detail {
 
 inline constexpr std::string_view SIQS_SHADOW_PROOF_RSS_PROBE_EXECUTION_CONTRACT_DOMAIN =
-    "gnfs.siqs.shadow_proof_rss.probe_execution_contract.sha256.v1";
+    "gnfs.siqs.shadow_proof_rss.probe_execution_contract.sha256.v2";
 inline constexpr std::uint64_t SIQS_SHADOW_PROOF_RSS_PROBE_TIMEOUT_MIN_MS = 1;
 inline constexpr std::uint64_t SIQS_SHADOW_PROOF_RSS_PROBE_TIMEOUT_MAX_MS = 60'000;
 
+enum class ProbeExecutableLaunchProfile : std::uint8_t {
+    unknown,
+    synthetic_path_spawn_v1,
+    linux_sealed_memfd_execveat_v1,
+    darwin_hardened_suspended_v1,
+};
+
+[[nodiscard]] constexpr std::string_view
+probe_executable_launch_profile_name(ProbeExecutableLaunchProfile profile) noexcept {
+    switch (profile) {
+    case ProbeExecutableLaunchProfile::unknown:
+        return "unknown";
+    case ProbeExecutableLaunchProfile::synthetic_path_spawn_v1:
+        return "synthetic_path_spawn_v1";
+    case ProbeExecutableLaunchProfile::linux_sealed_memfd_execveat_v1:
+        return "linux_sealed_memfd_execveat_v1";
+    case ProbeExecutableLaunchProfile::darwin_hardened_suspended_v1:
+        return "darwin_hardened_suspended_v1";
+    }
+    return "unknown";
+}
+
+inline constexpr std::string_view SIQS_SHADOW_PROOF_RSS_PROBE_ARGV0 = "gnfs-siqs-rss-holdout-probe";
 inline constexpr std::string_view SIQS_SHADOW_PROOF_RSS_PROBE_ARGUMENT_TEMPLATE_ID =
     "gnfs.siqs.shadow_proof_rss.argv_template.v1";
 inline constexpr std::uint64_t SIQS_SHADOW_PROOF_RSS_PROBE_ARGUMENT_TEMPLATE_VERSION = 1;
@@ -42,8 +65,14 @@ inline constexpr std::string_view SIQS_SHADOW_PROOF_RSS_PROBE_JOINED_SCHEMA =
     "GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_V3";
 inline constexpr std::uint64_t SIQS_SHADOW_PROOF_RSS_PROBE_JOINED_SCHEMA_VERSION = 3;
 
-inline constexpr std::string_view SIQS_SHADOW_PROOF_RSS_PROBE_TRANSPORT_CONTRACT_ID =
+inline constexpr std::string_view SIQS_SHADOW_PROOF_RSS_PROBE_PATH_TRANSPORT_CONTRACT_ID =
     "gnfs.util.bounded_child_process.transport.v1";
+inline constexpr std::string_view
+    SIQS_SHADOW_PROOF_RSS_PROBE_LINUX_AUTHENTICATED_TRANSPORT_CONTRACT_ID =
+        "gnfs.util.authenticated_bounded_child_process.linux_memfd_execveat.v1";
+inline constexpr std::string_view
+    SIQS_SHADOW_PROOF_RSS_PROBE_DARWIN_AUTHENTICATED_TRANSPORT_CONTRACT_ID =
+        "gnfs.util.authenticated_bounded_child_process.darwin_suspended_codesign.v1";
 inline constexpr std::uint64_t SIQS_SHADOW_PROOF_RSS_PROBE_TRANSPORT_CONTRACT_VERSION = 1;
 
 inline constexpr std::uint64_t SIQS_SHADOW_PROOF_RSS_PROBE_STDOUT_CAP_BYTES =
@@ -57,6 +86,7 @@ inline constexpr std::uint64_t SIQS_SHADOW_PROOF_RSS_PROBE_JOINED_CAP_BYTES =
 struct ProbeExecutionContractInput final {
     util::Sha256Digest executable_sha256;
     SIQSShadowProofRssProbeKind probe_kind = SIQSShadowProofRssProbeKind::unknown;
+    ProbeExecutableLaunchProfile launch_profile = ProbeExecutableLaunchProfile::unknown;
     std::string_view candidate_revision;
     SIQSShadowProofRssOperatingSystem operating_system = SIQSShadowProofRssOperatingSystem::unknown;
     SIQSShadowProofRssArchitecture architecture = SIQSShadowProofRssArchitecture::unknown;
@@ -152,6 +182,27 @@ environment_is_canonical(std::span<const std::string> environment) noexcept {
     return true;
 }
 
+[[nodiscard]] inline bool
+environment_is_safe_for_launch_profile(std::span<const std::string> environment,
+                                       ProbeExecutableLaunchProfile launch_profile) noexcept {
+    if (launch_profile == ProbeExecutableLaunchProfile::synthetic_path_spawn_v1) {
+        return true;
+    }
+    for (const std::string& entry : environment) {
+        const auto name = environment_name(entry);
+        if (!name.has_value()) {
+            return false;
+        }
+        if ((launch_profile == ProbeExecutableLaunchProfile::linux_sealed_memfd_execveat_v1 &&
+             (name->starts_with("LD_") || *name == "GLIBC_TUNABLES")) ||
+            (launch_profile == ProbeExecutableLaunchProfile::darwin_hardened_suspended_v1 &&
+             name->starts_with("DYLD_"))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 [[nodiscard]] constexpr std::optional<std::uint64_t>
 probe_kind_tag(SIQSShadowProofRssProbeKind value) noexcept {
     switch (value) {
@@ -163,6 +214,54 @@ probe_kind_tag(SIQSShadowProofRssProbeKind value) noexcept {
         return std::nullopt;
     }
     return std::nullopt;
+}
+
+[[nodiscard]] constexpr std::optional<std::uint64_t>
+launch_profile_tag(ProbeExecutableLaunchProfile value) noexcept {
+    switch (value) {
+    case ProbeExecutableLaunchProfile::synthetic_path_spawn_v1:
+        return 1;
+    case ProbeExecutableLaunchProfile::linux_sealed_memfd_execveat_v1:
+        return 2;
+    case ProbeExecutableLaunchProfile::darwin_hardened_suspended_v1:
+        return 3;
+    case ProbeExecutableLaunchProfile::unknown:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] constexpr bool
+launch_profile_matches_contract(ProbeExecutableLaunchProfile profile,
+                                SIQSShadowProofRssProbeKind probe_kind,
+                                SIQSShadowProofRssOperatingSystem operating_system) noexcept {
+    switch (profile) {
+    case ProbeExecutableLaunchProfile::synthetic_path_spawn_v1:
+        return probe_kind == SIQSShadowProofRssProbeKind::synthetic_test;
+    case ProbeExecutableLaunchProfile::linux_sealed_memfd_execveat_v1:
+        return operating_system == SIQSShadowProofRssOperatingSystem::linux;
+    case ProbeExecutableLaunchProfile::darwin_hardened_suspended_v1:
+        return probe_kind == SIQSShadowProofRssProbeKind::production_holdout &&
+               operating_system == SIQSShadowProofRssOperatingSystem::darwin;
+    case ProbeExecutableLaunchProfile::unknown:
+        return false;
+    }
+    return false;
+}
+
+[[nodiscard]] constexpr std::string_view
+transport_contract_id(ProbeExecutableLaunchProfile profile) noexcept {
+    switch (profile) {
+    case ProbeExecutableLaunchProfile::synthetic_path_spawn_v1:
+        return SIQS_SHADOW_PROOF_RSS_PROBE_PATH_TRANSPORT_CONTRACT_ID;
+    case ProbeExecutableLaunchProfile::linux_sealed_memfd_execveat_v1:
+        return SIQS_SHADOW_PROOF_RSS_PROBE_LINUX_AUTHENTICATED_TRANSPORT_CONTRACT_ID;
+    case ProbeExecutableLaunchProfile::darwin_hardened_suspended_v1:
+        return SIQS_SHADOW_PROOF_RSS_PROBE_DARWIN_AUTHENTICATED_TRANSPORT_CONTRACT_ID;
+    case ProbeExecutableLaunchProfile::unknown:
+        return {};
+    }
+    return {};
 }
 
 [[nodiscard]] constexpr std::optional<std::uint64_t>
@@ -248,7 +347,8 @@ private:
 } // namespace canonical_detail
 
 /// Canonical preimage order:
-/// domain, contract schema, raw executable digest, probe kind, revision,
+/// domain, contract schema, raw executable digest, probe kind, launch profile,
+/// fixed argv[0], revision,
 /// OS/architecture/backend/workers, release/NDEBUG, sorted complete
 /// environment, timeout/owner, argv template ID/version/items, capture caps,
 /// output schemas, then transport ID/version and the
@@ -259,15 +359,20 @@ make_siqs_shadow_proof_rss_probe_execution_identity(
     using namespace canonical_detail;
 
     const auto probe_tag = probe_kind_tag(input.probe_kind);
+    const auto profile_tag = launch_profile_tag(input.launch_profile);
     const auto os_tag = operating_system_tag(input.operating_system);
     const auto arch_tag = architecture_tag(input.architecture);
     const auto backend_tag = memory_backend_tag(input.memory_backend);
     if (!digest_is_nonzero(input.executable_sha256) || !probe_tag.has_value() ||
+        !profile_tag.has_value() ||
+        !launch_profile_matches_contract(input.launch_profile, input.probe_kind,
+                                         input.operating_system) ||
         !safe_token(input.candidate_revision) || !os_tag.has_value() || !arch_tag.has_value() ||
         !backend_tag.has_value() ||
         !backend_matches_operating_system(input.operating_system, input.memory_backend) ||
         input.resolved_production_sieve_workers == 0 ||
         !environment_is_canonical(input.environment) ||
+        !environment_is_safe_for_launch_profile(input.environment, input.launch_profile) ||
         input.timeout_ms < SIQS_SHADOW_PROOF_RSS_PROBE_TIMEOUT_MIN_MS ||
         input.timeout_ms > SIQS_SHADOW_PROOF_RSS_PROBE_TIMEOUT_MAX_MS) {
         return std::nullopt;
@@ -277,6 +382,8 @@ make_siqs_shadow_proof_rss_probe_execution_identity(
     if (!writer.append_string(SIQS_SHADOW_PROOF_RSS_PROBE_EXECUTION_CONTRACT_DOMAIN) ||
         !writer.append_u64(SIQS_SHADOW_PROOF_RSS_PROBE_EXECUTION_CONTRACT_SCHEMA_VERSION) ||
         !writer.append_digest(input.executable_sha256) || !writer.append_u64(*probe_tag) ||
+        !writer.append_u64(*profile_tag) ||
+        !writer.append_string(SIQS_SHADOW_PROOF_RSS_PROBE_ARGV0) ||
         !writer.append_string(input.candidate_revision) || !writer.append_u64(*os_tag) ||
         !writer.append_u64(*arch_tag) || !writer.append_u64(*backend_tag) ||
         !writer.append_u64(static_cast<std::uint64_t>(input.resolved_production_sieve_workers)) ||
@@ -311,7 +418,7 @@ make_siqs_shadow_proof_rss_probe_execution_identity(
         !writer.append_u64(SIQS_SHADOW_PROOF_RSS_PROBE_OBSERVE_STDERR_SCHEMA_VERSION) ||
         !writer.append_string(SIQS_SHADOW_PROOF_RSS_PROBE_JOINED_SCHEMA) ||
         !writer.append_u64(SIQS_SHADOW_PROOF_RSS_PROBE_JOINED_SCHEMA_VERSION) ||
-        !writer.append_string(SIQS_SHADOW_PROOF_RSS_PROBE_TRANSPORT_CONTRACT_ID) ||
+        !writer.append_string(transport_contract_id(input.launch_profile)) ||
         !writer.append_u64(SIQS_SHADOW_PROOF_RSS_PROBE_TRANSPORT_CONTRACT_VERSION) ||
         !writer.append_u64(1) || // shell-free
         !writer.append_u64(1) || // fresh process

@@ -3,6 +3,8 @@
 
 #include <gnfs/util/bounded_child_process.hpp>
 
+#include "bounded_child_process_internal.hpp"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -11,33 +13,53 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #if defined(_WIN32)
 #define NOMINMAX
 #include <windows.h>
+#elif defined(__linux__)
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace {
 
+using gnfs::util::authenticate_executable_image;
 using gnfs::util::bounded_child_process_error_name;
 using gnfs::util::BoundedChildProcessError;
 using gnfs::util::BoundedChildProcessResult;
 using gnfs::util::BoundedChildProcessSpec;
 using gnfs::util::BoundedChildTerminationKind;
+using gnfs::util::executable_image_authentication_error_name;
+using gnfs::util::ExecutableImageAuthenticationError;
+using gnfs::util::run_authenticated_bounded_child_process;
 using gnfs::util::run_bounded_child_process;
+using gnfs::util::Sha256Accumulator;
+using gnfs::util::Sha256Digest;
 #if !defined(_WIN32)
 using gnfs::util::detail::PosixTerminationScope;
 using gnfs::util::detail::select_posix_termination_scope;
 #endif
 using namespace std::chrono_literals;
+
+static_assert(!std::is_default_constructible_v<gnfs::util::AuthenticatedExecutableImage>);
+static_assert(!std::is_copy_constructible_v<gnfs::util::AuthenticatedExecutableImage>);
+static_assert(!std::is_copy_assignable_v<gnfs::util::AuthenticatedExecutableImage>);
+static_assert(std::is_nothrow_move_constructible_v<gnfs::util::AuthenticatedExecutableImage>);
+static_assert(std::is_nothrow_move_assignable_v<gnfs::util::AuthenticatedExecutableImage>);
 
 int checks_passed = 0;
 int checks_failed = 0;
@@ -113,12 +135,36 @@ void check_success(const BoundedChildProcessResult& result) {
     CHECK_CONTEXT(!result.cleanup_error, context);
 }
 
+#if defined(__linux__)
+[[nodiscard]] std::optional<Sha256Digest> sha256_file(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        return std::nullopt;
+    }
+    Sha256Accumulator accumulator;
+    std::array<char, 64 * 1024> buffer{};
+    while (input) {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize count = input.gcount();
+        if (count > 0 &&
+            !accumulator.update(std::string_view(buffer.data(), static_cast<std::size_t>(count)))) {
+            return std::nullopt;
+        }
+    }
+    if (!input.eof()) {
+        return std::nullopt;
+    }
+    return accumulator.finalize();
+}
+#endif
+
 void test_error_name_contract() {
     const std::vector<std::pair<BoundedChildProcessError, std::string_view>> names{
         {BoundedChildProcessError::none, "none"},
         {BoundedChildProcessError::invalid_spec, "invalid_spec"},
         {BoundedChildProcessError::pipe_failed, "pipe_failed"},
         {BoundedChildProcessError::spawn_failed, "spawn_failed"},
+        {BoundedChildProcessError::platform_unavailable, "platform_unavailable"},
         {BoundedChildProcessError::read_failed, "read_failed"},
         {BoundedChildProcessError::overflow, "overflow"},
         {BoundedChildProcessError::timeout, "timeout"},
@@ -135,7 +181,335 @@ void test_error_name_contract() {
     }
     CHECK(bounded_child_process_error_name(static_cast<BoundedChildProcessError>(255)) ==
           "unknown");
+
+    const std::vector<std::pair<ExecutableImageAuthenticationError, std::string_view>>
+        authentication_names{
+            {ExecutableImageAuthenticationError::none, "none"},
+            {ExecutableImageAuthenticationError::platform_unavailable, "platform_unavailable"},
+            {ExecutableImageAuthenticationError::invalid_spec, "invalid_spec"},
+            {ExecutableImageAuthenticationError::open_failed, "open_failed"},
+            {ExecutableImageAuthenticationError::metadata_failed, "metadata_failed"},
+            {ExecutableImageAuthenticationError::trust_invalid, "trust_invalid"},
+            {ExecutableImageAuthenticationError::read_failed, "read_failed"},
+            {ExecutableImageAuthenticationError::snapshot_failed, "snapshot_failed"},
+            {ExecutableImageAuthenticationError::seal_failed, "seal_failed"},
+            {ExecutableImageAuthenticationError::identity_mismatch, "identity_mismatch"},
+            {ExecutableImageAuthenticationError::resource_failure, "resource_failure"},
+            {ExecutableImageAuthenticationError::unexpected_failure, "unexpected_failure"},
+        };
+    for (const auto& [error, name] : authentication_names) {
+        CHECK(executable_image_authentication_error_name(error) == name);
+    }
+    CHECK(executable_image_authentication_error_name(
+              static_cast<ExecutableImageAuthenticationError>(255)) == "unknown");
 }
+
+void test_authenticated_platform_boundary(const std::filesystem::path& executable) {
+    Sha256Digest digest{};
+    digest.bytes[0] = std::byte{1};
+    const auto zero_digest = authenticate_executable_image(executable, Sha256Digest{}, UINT64_C(0));
+    CHECK(!static_cast<bool>(zero_digest));
+    CHECK(zero_digest.diagnostic.error == ExecutableImageAuthenticationError::invalid_spec);
+
+#if !defined(__linux__)
+    const auto unavailable = authenticate_executable_image(executable, digest, UINT64_C(0));
+    CHECK(!static_cast<bool>(unavailable));
+    CHECK(unavailable.diagnostic.error == ExecutableImageAuthenticationError::platform_unavailable);
+#else
+    (void)digest;
+#endif
+}
+
+#if defined(__linux__)
+
+class AuthenticatedTempDirectory final {
+public:
+    AuthenticatedTempDirectory() {
+        const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+        path_ = std::filesystem::temp_directory_path() /
+                ("gnfs-bcp-auth-" + std::to_string(static_cast<long long>(::getpid())) + "-" +
+                 std::to_string(nonce));
+        if (!std::filesystem::create_directory(path_)) {
+            throw std::runtime_error("unable to create authenticated transport fixture");
+        }
+    }
+
+    ~AuthenticatedTempDirectory() {
+        std::error_code ignored;
+        std::filesystem::remove_all(path_, ignored);
+    }
+
+    AuthenticatedTempDirectory(const AuthenticatedTempDirectory&) = delete;
+    AuthenticatedTempDirectory& operator=(const AuthenticatedTempDirectory&) = delete;
+
+    [[nodiscard]] std::filesystem::path leaf(std::string_view name) const {
+        return path_ / std::string(name);
+    }
+
+private:
+    std::filesystem::path path_;
+};
+
+void copy_executable(const std::filesystem::path& source,
+                     const std::filesystem::path& destination) {
+    if (!std::filesystem::copy_file(source, destination,
+                                    std::filesystem::copy_options::overwrite_existing)) {
+        throw std::runtime_error("unable to copy authenticated executable fixture");
+    }
+    if (::chmod(destination.c_str(), S_IRUSR | S_IXUSR) != 0) {
+        throw std::runtime_error("unable to chmod authenticated executable fixture");
+    }
+}
+
+[[nodiscard]] std::uint64_t current_owner() noexcept {
+    return static_cast<std::uint64_t>(::geteuid());
+}
+
+void test_authenticated_linux_rejections(const std::filesystem::path& executable) {
+    AuthenticatedTempDirectory fixture;
+    const auto approved = fixture.leaf("approved-probe");
+    copy_executable(executable, approved);
+    const auto digest = sha256_file(approved);
+    CHECK(digest.has_value());
+    if (!digest.has_value()) {
+        return;
+    }
+
+    auto availability = authenticate_executable_image(approved, *digest, current_owner());
+    if (!availability &&
+        availability.diagnostic.error == ExecutableImageAuthenticationError::platform_unavailable) {
+        CHECK(!availability.image.has_value());
+        return;
+    }
+    CHECK(static_cast<bool>(availability));
+    if (!availability) {
+        return;
+    }
+    availability.image.reset();
+
+    auto wrong_digest = *digest;
+    wrong_digest.bytes[0] ^= std::byte{1};
+    const auto mismatch = authenticate_executable_image(approved, wrong_digest, current_owner());
+    CHECK(!static_cast<bool>(mismatch));
+    CHECK(mismatch.diagnostic.error == ExecutableImageAuthenticationError::identity_mismatch);
+
+    const auto missing =
+        authenticate_executable_image(fixture.leaf("missing"), *digest, current_owner());
+    CHECK(!static_cast<bool>(missing));
+    CHECK(missing.diagnostic.error == ExecutableImageAuthenticationError::open_failed);
+
+    const auto symlink = fixture.leaf("symlink-probe");
+    std::filesystem::create_symlink(approved, symlink);
+    const auto symlink_result = authenticate_executable_image(symlink, *digest, current_owner());
+    CHECK(!static_cast<bool>(symlink_result));
+    CHECK(symlink_result.diagnostic.error == ExecutableImageAuthenticationError::open_failed);
+
+    const auto hardlink = fixture.leaf("hardlink-probe");
+    std::filesystem::create_hard_link(approved, hardlink);
+    const auto hardlink_result = authenticate_executable_image(approved, *digest, current_owner());
+    CHECK(!static_cast<bool>(hardlink_result));
+    CHECK(hardlink_result.diagnostic.error == ExecutableImageAuthenticationError::trust_invalid);
+    std::filesystem::remove(hardlink);
+
+    const auto writable = fixture.leaf("group-writable-probe");
+    copy_executable(executable, writable);
+    CHECK(::chmod(writable.c_str(), S_IRUSR | S_IXUSR | S_IWGRP) == 0);
+    const auto writable_digest = sha256_file(writable);
+    CHECK(writable_digest.has_value());
+    if (writable_digest.has_value()) {
+        const auto writable_result =
+            authenticate_executable_image(writable, *writable_digest, current_owner());
+        CHECK(!static_cast<bool>(writable_result));
+        CHECK(writable_result.diagnostic.error ==
+              ExecutableImageAuthenticationError::trust_invalid);
+    }
+
+    const auto fifo = fixture.leaf("fifo-probe");
+    CHECK(::mkfifo(fifo.c_str(), S_IRUSR | S_IXUSR) == 0);
+    const auto fifo_result = authenticate_executable_image(fifo, *digest, current_owner());
+    CHECK(!static_cast<bool>(fifo_result));
+    CHECK(fifo_result.diagnostic.error == ExecutableImageAuthenticationError::trust_invalid);
+
+    const auto oversized = fixture.leaf("oversized-probe");
+    {
+        std::ofstream output(oversized, std::ios::binary);
+        output.write("\x7f"
+                     "ELF",
+                     4);
+    }
+    std::filesystem::resize_file(oversized, gnfs::util::AUTHENTICATED_EXECUTABLE_IMAGE_MAX_BYTES +
+                                                UINT64_C(1));
+    CHECK(::chmod(oversized.c_str(), S_IRUSR | S_IXUSR) == 0);
+    const auto oversized_result =
+        authenticate_executable_image(oversized, *digest, current_owner());
+    CHECK(!static_cast<bool>(oversized_result));
+    CHECK(oversized_result.diagnostic.error == ExecutableImageAuthenticationError::trust_invalid);
+
+    const auto wrong_owner =
+        authenticate_executable_image(approved, *digest, current_owner() + UINT64_C(1));
+    CHECK(!static_cast<bool>(wrong_owner));
+    CHECK(wrong_owner.diagnostic.error == ExecutableImageAuthenticationError::trust_invalid);
+}
+
+void test_authenticated_linux_same_object_and_supervision(const std::filesystem::path& executable) {
+    AuthenticatedTempDirectory fixture;
+    const auto approved = fixture.leaf("approved-probe");
+    const auto held_original = fixture.leaf("held-original-probe");
+    copy_executable(executable, approved);
+    const auto digest = sha256_file(approved);
+    CHECK(digest.has_value());
+    if (!digest.has_value()) {
+        return;
+    }
+
+    auto authenticated = authenticate_executable_image(approved, *digest, current_owner());
+    if (!authenticated && authenticated.diagnostic.error ==
+                              ExecutableImageAuthenticationError::platform_unavailable) {
+        CHECK(!authenticated.image.has_value());
+        return;
+    }
+    CHECK(static_cast<bool>(authenticated));
+    if (!authenticated) {
+        return;
+    }
+
+    std::filesystem::rename(approved, held_original);
+    {
+        std::ofstream replacement(approved, std::ios::binary);
+        replacement << "not an ELF executable\n";
+    }
+    CHECK(::chmod(approved.c_str(), S_IRUSR | S_IXUSR) == 0);
+
+    auto argv0_spec = make_spec(approved, {"--argv0"}, 128, 0);
+    auto argv0_result = run_authenticated_bounded_child_process(
+        std::move(*authenticated.image), argv0_spec, "authenticated-test-probe");
+    check_success(argv0_result);
+    CHECK(argv0_result.stdout_bytes == "authenticated-test-probe\n");
+    CHECK(!authenticated.image->active());
+
+    const auto reused = run_authenticated_bounded_child_process(
+        std::move(*authenticated.image), argv0_spec, "authenticated-test-probe");
+    CHECK(reused.error == BoundedChildProcessError::invalid_spec);
+    CHECK(!reused.child_started);
+    CHECK(reused.cleanup_complete);
+
+    const auto invalid_elf = fixture.leaf("invalid-elf-probe");
+    {
+        std::array<char, 64> bytes{};
+        bytes[0] = '\x7f';
+        bytes[1] = 'E';
+        bytes[2] = 'L';
+        bytes[3] = 'F';
+        std::ofstream output(invalid_elf, std::ios::binary);
+        output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+    CHECK(::chmod(invalid_elf.c_str(), S_IRUSR | S_IXUSR) == 0);
+    const auto invalid_digest = sha256_file(invalid_elf);
+    CHECK(invalid_digest.has_value());
+    if (invalid_digest.has_value()) {
+        auto invalid_image =
+            authenticate_executable_image(invalid_elf, *invalid_digest, current_owner());
+        CHECK(static_cast<bool>(invalid_image));
+        if (invalid_image) {
+            const auto invalid_run = run_authenticated_bounded_child_process(
+                std::move(*invalid_image.image), make_spec(invalid_elf, {}, 32, 32),
+                "authenticated-test-probe");
+            CHECK_CONTEXT(invalid_run.error == BoundedChildProcessError::spawn_failed,
+                          describe(invalid_run));
+            CHECK_CONTEXT(!invalid_run.child_started, describe(invalid_run));
+            CHECK_CONTEXT(invalid_run.cleanup_complete, describe(invalid_run));
+            CHECK_CONTEXT(invalid_run.native_error.value() == ENOEXEC, describe(invalid_run));
+        }
+    }
+
+    auto timeout_image = authenticate_executable_image(held_original, *digest, current_owner());
+    CHECK(static_cast<bool>(timeout_image));
+    if (timeout_image) {
+        const auto timeout = run_authenticated_bounded_child_process(
+            std::move(*timeout_image.image), make_spec(held_original, {"--hang"}, 32, 32, 200ms),
+            "authenticated-test-probe");
+        CHECK_CONTEXT(timeout.error == BoundedChildProcessError::timeout, describe(timeout));
+        CHECK_CONTEXT(timeout.cleanup_complete, describe(timeout));
+    }
+
+    struct sigaction previous_usr1{};
+    struct sigaction previous_alrm{};
+    struct sigaction ignored_action{};
+    ignored_action.sa_handler = SIG_IGN;
+    CHECK(::sigemptyset(&ignored_action.sa_mask) == 0);
+    CHECK(::sigaction(SIGUSR1, &ignored_action, &previous_usr1) == 0);
+    CHECK(::sigaction(SIGALRM, &ignored_action, &previous_alrm) == 0);
+    auto signal_image = authenticate_executable_image(held_original, *digest, current_owner());
+    CHECK(static_cast<bool>(signal_image));
+    if (signal_image) {
+        const auto signal_state = run_authenticated_bounded_child_process(
+            std::move(*signal_image.image),
+            make_spec(held_original, {"--signal-dispositions"}, 32, 0), "authenticated-test-probe");
+        check_success(signal_state);
+        CHECK(signal_state.stdout_bytes == "default\n");
+    }
+    CHECK(::sigaction(SIGALRM, &previous_alrm, nullptr) == 0);
+    CHECK(::sigaction(SIGUSR1, &previous_usr1, nullptr) == 0);
+
+    auto overflow_image = authenticate_executable_image(held_original, *digest, current_owner());
+    CHECK(static_cast<bool>(overflow_image));
+    if (overflow_image) {
+        const auto overflow = run_authenticated_bounded_child_process(
+            std::move(*overflow_image.image),
+            make_spec(held_original, {"--write-sizes", "4097", "0"}, 4096, 0),
+            "authenticated-test-probe");
+        CHECK_CONTEXT(overflow.error == BoundedChildProcessError::overflow, describe(overflow));
+        CHECK_CONTEXT(overflow.cleanup_complete, describe(overflow));
+    }
+
+    int sentinel = ::open("/dev/null", O_RDONLY);
+    CHECK(sentinel >= 0);
+    if (sentinel >= 0) {
+        if (sentinel < 3) {
+            const int duplicate = ::fcntl(sentinel, F_DUPFD, 3);
+            (void)::close(sentinel);
+            sentinel = duplicate;
+        }
+        auto fd_image = authenticate_executable_image(held_original, *digest, current_owner());
+        CHECK(static_cast<bool>(fd_image));
+        if (fd_image) {
+            const auto fd_result = run_authenticated_bounded_child_process(
+                std::move(*fd_image.image),
+                make_spec(held_original, {"--check-fd-closed", std::to_string(sentinel)}, 32, 0),
+                "authenticated-test-probe");
+            check_success(fd_result);
+            CHECK(fd_result.stdout_bytes == "closed\n");
+        }
+        (void)::close(sentinel);
+    }
+
+    constexpr std::size_t parallel_count = 4;
+    std::array<BoundedChildProcessResult, parallel_count> results;
+    std::array<std::thread, parallel_count> threads;
+    for (std::size_t index = 0; index < parallel_count; ++index) {
+        threads[index] = std::thread([&, index] {
+            auto image = authenticate_executable_image(held_original, *digest, current_owner());
+            if (!image) {
+                results[index].error = BoundedChildProcessError::unexpected_failure;
+                return;
+            }
+            results[index] = run_authenticated_bounded_child_process(
+                std::move(*image.image),
+                make_spec(held_original, {"--write-sizes", "1024", "1024"}, 1024, 1024),
+                "authenticated-test-probe");
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    for (const auto& result : results) {
+        check_success(result);
+        CHECK(result.stdout_bytes.size() == 1024);
+        CHECK(result.stderr_bytes.size() == 1024);
+    }
+}
+
+#endif
 
 #if !defined(_WIN32)
 static_assert(select_posix_termination_scope(0, 0, 41, 0, false, true, false, false) ==
@@ -543,6 +917,11 @@ template <class Char> int bounded_child_process_test_main(int argc, Char* argv[]
 #endif
         }
         test_error_name_contract();
+        test_authenticated_platform_boundary(executable);
+#if defined(__linux__)
+        test_authenticated_linux_rejections(executable);
+        test_authenticated_linux_same_object_and_supervision(executable);
+#endif
 #if !defined(_WIN32)
         test_posix_termination_scope_guard();
 #endif

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "shadow_proof_rss_probe_execution_identity_internal.hpp"
+
 #include <gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp>
 
 #include <array>
@@ -67,6 +69,8 @@ struct ProbeExecutableBinding final {
     std::filesystem::path executable;
     std::string candidate_revision;
     SIQSShadowProofRssProbeKind probe_kind = SIQSShadowProofRssProbeKind::unknown;
+    shadow_proof_rss_probe_execution_identity_detail::ProbeExecutableLaunchProfile launch_profile =
+        shadow_proof_rss_probe_execution_identity_detail::ProbeExecutableLaunchProfile::unknown;
     std::vector<std::string> environment;
     std::chrono::milliseconds timeout{35000};
     uint64_t expected_owner = 0;
@@ -136,6 +140,7 @@ struct SameChildExecutionEvidence final {
     std::size_t resolved_production_sieve_workers = 0;
     SIQSShadowProofRssProbeKind deployment_probe_kind = SIQSShadowProofRssProbeKind::unknown;
     SIQSShadowProofRssProbeExecutionIdentity probe_execution_identity;
+    bool same_object_authenticated = false;
     bool fresh_process = false;
     bool completed = false;
     SIQSShadowProofRssFactorIdentity factor_identity = SIQSShadowProofRssFactorIdentity::unknown;

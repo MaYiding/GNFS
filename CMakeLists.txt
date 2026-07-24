@@ -233,6 +233,7 @@ endif()
 
 # gnfs_util - 工具库
 add_library(gnfs_util STATIC
+    src/util/authenticated_bounded_child_process.cpp
     src/util/durable_immutable_file.cpp
     src/util/sha256.cpp
 )
@@ -557,6 +558,9 @@ if(GNFS_BUILD_TESTS)
     )
     add_executable(test_bounded_child_process
         tests/test_bounded_child_process.cpp
+    )
+    target_include_directories(test_bounded_child_process PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/util
     )
     if(MINGW)
         target_link_options(bounded_child_process_fake_child PRIVATE -municode)

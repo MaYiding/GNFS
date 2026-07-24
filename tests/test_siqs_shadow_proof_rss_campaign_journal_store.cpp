@@ -44,11 +44,14 @@
 namespace {
 
 using namespace gnfs::siqs;
+using gnfs::util::ExecutableImageAuthenticationError;
 using gnfs::util::ProcessMemoryBackend;
 namespace durable = gnfs::util::durable_immutable_file;
 namespace store_detail = gnfs::siqs::shadow_proof_rss_campaign_journal_store_detail;
+namespace identity_detail = gnfs::siqs::shadow_proof_rss_probe_execution_identity_detail;
 
 using DeploymentEntry = store_detail::DeploymentEntry;
+using ProbeLaunchProfile = identity_detail::ProbeExecutableLaunchProfile;
 using LayoutError = SIQSShadowProofRssCampaignJournalLayoutError;
 using StoreError = SIQSShadowProofRssCampaignJournalStoreError;
 using StoreObject = SIQSShadowProofRssCampaignJournalStoreObject;
@@ -131,6 +134,20 @@ static_assert(!std::is_copy_constructible_v<store_detail::SameChildExecutionRece
     return SIQSShadowProofRssOperatingSystem::linux;
 #else
     return SIQSShadowProofRssOperatingSystem::unknown;
+#endif
+}
+
+[[nodiscard]] constexpr ProbeLaunchProfile synthetic_launch_profile() noexcept {
+    return ProbeLaunchProfile::synthetic_path_spawn_v1;
+}
+
+[[nodiscard]] constexpr ProbeLaunchProfile production_launch_profile() noexcept {
+#if defined(__linux__)
+    return ProbeLaunchProfile::linux_sealed_memfd_execveat_v1;
+#elif defined(__APPLE__)
+    return ProbeLaunchProfile::darwin_hardened_suspended_v1;
+#else
+    return ProbeLaunchProfile::unknown;
 #endif
 }
 
@@ -341,6 +358,7 @@ void test_public_authority_and_preflight_boundaries() {
         .executable = "/unused/synthetic-probe",
         .candidate_revision = "candidate-revision-1",
         .probe_kind = SIQSShadowProofRssProbeKind::production_holdout,
+        .launch_profile = production_launch_profile(),
         .timeout = std::chrono::seconds(1),
         .expected_owner = executable_kind_mismatch.expected_owner,
     });
@@ -473,6 +491,8 @@ void test_diagnostic_name_contracts() {
         std::pair{StoreError::binding_ambiguous, std::string_view{"binding_ambiguous"}},
         std::pair{StoreError::registry_binding_mismatch,
                   std::string_view{"registry_binding_mismatch"}},
+        std::pair{StoreError::executable_authentication_failed,
+                  std::string_view{"executable_authentication_failed"}},
         std::pair{StoreError::base_open_failed, std::string_view{"base_open_failed"}},
         std::pair{StoreError::base_invalid, std::string_view{"base_invalid"}},
         std::pair{StoreError::root_open_failed, std::string_view{"root_open_failed"}},
@@ -519,6 +539,7 @@ void test_diagnostic_name_contracts() {
     constexpr std::array known_objects{
         std::pair{StoreObject::none, std::string_view{"none"}},
         std::pair{StoreObject::deployment_registry, std::string_view{"deployment_registry"}},
+        std::pair{StoreObject::probe_executable, std::string_view{"probe_executable"}},
         std::pair{StoreObject::trusted_base, std::string_view{"trusted_base"}},
         std::pair{StoreObject::store_root, std::string_view{"store_root"}},
         std::pair{StoreObject::artifact_root, std::string_view{"artifact_root"}},
@@ -891,6 +912,7 @@ canonical_identity_for(const DeploymentEntry& deployment,
     return make_siqs_shadow_proof_rss_probe_execution_identity(ProbeExecutionContractInput{
         .executable_sha256 = executable_sha256,
         .probe_kind = binding.probe_kind,
+        .launch_profile = binding.launch_profile,
         .candidate_revision = binding.candidate_revision,
         .operating_system = deployment.approval.operating_system,
         .architecture = deployment.approval.architecture,
@@ -907,12 +929,14 @@ canonical_identity_for(const DeploymentEntry& deployment,
 [[nodiscard]] DeploymentEntry
 make_runner_deployment(const TempStore& fixture, const std::filesystem::path& executable,
                        const std::filesystem::path& marker,
-                       std::chrono::milliseconds timeout = std::chrono::seconds(2)) {
+                       std::chrono::milliseconds timeout = std::chrono::seconds(2),
+                       ProbeLaunchProfile launch_profile = synthetic_launch_profile()) {
     auto deployment = make_deployment(fixture.trusted_base());
     store_detail::ProbeExecutableBinding binding{
         .executable = std::filesystem::absolute(executable),
         .candidate_revision = std::string(make_policy().candidate_revision),
         .probe_kind = SIQSShadowProofRssProbeKind::synthetic_test,
+        .launch_profile = launch_profile,
         .environment =
             {
                 "GNFS_SIQS_RSS_SYNTHETIC_MARKER=" + marker.string(),
@@ -937,6 +961,9 @@ void rebind_probe_kind(DeploymentEntry& deployment, SIQSShadowProofRssProbeKind 
     }
     deployment.probe_kind = probe_kind;
     deployment.holdout_probe->probe_kind = probe_kind;
+    deployment.holdout_probe->launch_profile =
+        probe_kind == SIQSShadowProofRssProbeKind::production_holdout ? production_launch_profile()
+                                                                      : synthetic_launch_profile();
     const auto identity = canonical_identity_for(
         deployment, *deployment.holdout_probe,
         deployment.holdout_probe->probe_execution_identity.executable_sha256);
@@ -947,17 +974,60 @@ void rebind_probe_kind(DeploymentEntry& deployment, SIQSShadowProofRssProbeKind 
     deployment.holdout_probe->probe_execution_identity = *identity;
 }
 
+#if defined(__linux__)
+void rebind_launch_platform(DeploymentEntry& deployment,
+                            SIQSShadowProofRssOperatingSystem operating_system,
+                            ProcessMemoryBackend memory_backend,
+                            ProbeLaunchProfile launch_profile) {
+    if (!deployment.holdout_probe.has_value()) {
+        throw std::runtime_error("runner deployment has no executable binding");
+    }
+    deployment.approval.operating_system = operating_system;
+    deployment.approval.memory_backend = memory_backend;
+    deployment.holdout_probe->launch_profile = launch_profile;
+    const auto identity = canonical_identity_for(
+        deployment, *deployment.holdout_probe,
+        deployment.holdout_probe->probe_execution_identity.executable_sha256);
+    if (!identity.has_value()) {
+        throw std::runtime_error("unable to rebind runner launch platform");
+    }
+    deployment.approval.probe_execution_identity = *identity;
+    deployment.holdout_probe->probe_execution_identity = *identity;
+}
+#endif
+
 [[nodiscard]] SIQSShadowProofRssGatePolicy policy_for(const DeploymentEntry& deployment) noexcept {
     auto policy = make_policy();
+    policy.corpus_id = deployment.approval.corpus_id;
+    policy.corpus_digest = deployment.approval.corpus_digest;
+    policy.operating_system = deployment.approval.operating_system;
+    policy.architecture = deployment.approval.architecture;
+    policy.memory_backend = deployment.approval.memory_backend;
+    policy.resolved_production_sieve_workers =
+        deployment.approval.resolved_production_sieve_workers;
+    policy.candidate_revision = deployment.approval.candidate_revision;
     policy.probe_execution_identity = deployment.approval.probe_execution_identity;
+    policy.approval_id = deployment.approval.approval_id;
+    policy.journal_store.trusted_base_id = deployment.trusted_base_id;
+    policy.journal_store.store_id = deployment.store_id;
+    policy.journal_store.relative_locator = deployment.relative_locator;
+    policy.deployment_budget_bytes = deployment.approval.deployment_budget_bytes;
+    policy.reserved_headroom_bytes = deployment.approval.reserved_headroom_bytes;
     return policy;
 }
 
 [[nodiscard]] SIQSShadowProofRssCampaignRuntimeFacts
 facts_for(const DeploymentEntry& deployment) noexcept {
     auto facts = make_facts();
+    facts.operating_system = deployment.approval.operating_system;
+    facts.architecture = deployment.approval.architecture;
+    facts.memory_backend = deployment.approval.memory_backend;
+    facts.resolved_production_sieve_workers = deployment.approval.resolved_production_sieve_workers;
     facts.probe_kind = deployment.probe_kind;
+    facts.candidate_revision = deployment.approval.candidate_revision;
     facts.probe_execution_identity = deployment.approval.probe_execution_identity;
+    facts.release_build = deployment.approval.release_build;
+    facts.ndebug = deployment.approval.ndebug;
     return facts;
 }
 
@@ -1177,6 +1247,14 @@ void expect_prepublication_namespace_change(
     SIQSShadowProofRssCampaignJournalBeginSlotResult result) {
     CHECK(!static_cast<bool>(result));
     const auto& diagnostic = result.diagnostic();
+    if (diagnostic.error != StoreError::snapshot_changed ||
+        diagnostic.object != StoreObject::directory) {
+        std::cerr << "expected prepublication namespace change snapshot_changed/directory, got "
+                  << siqs_shadow_proof_rss_campaign_journal_store_error_name(diagnostic.error)
+                  << '/'
+                  << siqs_shadow_proof_rss_campaign_journal_store_object_name(diagnostic.object)
+                  << " native=" << diagnostic.native_error.value() << '\n';
+    }
     CHECK(diagnostic.error == StoreError::snapshot_changed);
     CHECK(diagnostic.object == StoreObject::directory);
     CHECK(!diagnostic.publication_status.has_value());
@@ -1727,9 +1805,10 @@ void expect_single_synthetic_launch(
     if (!std::filesystem::is_directory(marker)) {
         throw std::runtime_error("missing synthetic launch marker: " + marker.string());
     }
-    const std::string expected = "fixture_id=" + std::to_string(fixture_id) + " mode=" +
-                                 std::string(siqs_shadow_proof_rss_sample_mode_name(mode)) +
-                                 " ordinal=" + std::to_string(ordinal) + '\n';
+    const std::string expected =
+        "argv0=gnfs-siqs-rss-holdout-probe fixture_id=" + std::to_string(fixture_id) +
+        " mode=" + std::string(siqs_shadow_proof_rss_sample_mode_name(mode)) +
+        " ordinal=" + std::to_string(ordinal) + '\n';
     CHECK(read_text_file(marker / "launch.txt") == expected);
 }
 
@@ -1759,6 +1838,8 @@ void test_slot_runner_contract_and_missing_deployment() {
         std::pair{SlotRunnerError::deployment_unavailable,
                   std::string_view{"deployment_unavailable"}},
         std::pair{SlotRunnerError::deployment_invalid, std::string_view{"deployment_invalid"}},
+        std::pair{SlotRunnerError::executable_authentication_failed,
+                  std::string_view{"executable_authentication_failed"}},
         std::pair{SlotRunnerError::transport_failed, std::string_view{"transport_failed"}},
         std::pair{SlotRunnerError::stream_join_failed, std::string_view{"stream_join_failed"}},
         std::pair{SlotRunnerError::artifact_publication_failed,
@@ -1816,6 +1897,11 @@ void test_store_rejects_invalid_runner_contract_before_journal_mutation(
                 [](auto& binding) { binding.executable = "relative-probe"; });
     run_invalid("runner-revision-mismatch-marker",
                 [](auto& binding) { binding.candidate_revision = "different-revision"; });
+    run_invalid("runner-unknown-launch-profile-marker",
+                [](auto& binding) { binding.launch_profile = ProbeLaunchProfile::unknown; });
+    run_invalid("runner-mismatched-launch-profile-marker", [](auto& binding) {
+        binding.launch_profile = ProbeLaunchProfile::darwin_hardened_suspended_v1;
+    });
     run_invalid("runner-zero-timeout-marker",
                 [](auto& binding) { binding.timeout = std::chrono::milliseconds::zero(); });
     run_invalid("runner-long-timeout-marker",
@@ -1907,6 +1993,109 @@ void test_production_deployment_rejects_publication_test_seam(
         fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF)));
     CHECK(!std::filesystem::exists(marker));
 }
+
+void test_production_authentication_platform_preflight(const std::filesystem::path& executable) {
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("production-platform-preflight-marker");
+    auto deployment = make_runner_deployment(fixture, executable, marker);
+    rebind_probe_kind(deployment, SIQSShadowProofRssProbeKind::production_holdout);
+#if defined(__linux__)
+    // Rebuild a fully self-consistent Darwin production contract. A claimed
+    // platform and matching identity must not override the actual Linux host.
+    rebind_launch_platform(deployment, SIQSShadowProofRssOperatingSystem::darwin,
+                           ProcessMemoryBackend::DarwinGetrusage,
+                           ProbeLaunchProfile::darwin_hardened_suspended_v1);
+#endif
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+
+    expect_open_error(open_private(&policy, &facts, deployment), StoreError::platform_unavailable,
+                      StoreObject::probe_executable);
+    CHECK(!std::filesystem::exists(
+        fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF)));
+    CHECK(!std::filesystem::exists(
+        fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+    CHECK(!std::filesystem::exists(marker));
+}
+
+#if defined(__linux__)
+void test_slot_runner_authentication_failure_taints_without_launch(
+    const SyntheticChildren& children) {
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("runner-authentication-failure-marker");
+    const auto private_probe = fixture.base_leaf("approved-probe");
+    CHECK(std::filesystem::copy_file(children.success, private_probe));
+    CHECK(::chmod(private_probe.c_str(), S_IRUSR | S_IXUSR) == 0);
+    auto deployment = make_runner_deployment(fixture, private_probe, marker);
+    deployment.holdout_probe->launch_profile = ProbeLaunchProfile::linux_sealed_memfd_execveat_v1;
+    const auto rebound_identity = canonical_identity_for(
+        deployment, *deployment.holdout_probe,
+        deployment.holdout_probe->probe_execution_identity.executable_sha256);
+    CHECK(rebound_identity.has_value());
+    if (!rebound_identity.has_value()) {
+        return;
+    }
+    deployment.approval.probe_execution_identity = *rebound_identity;
+    deployment.holdout_probe->probe_execution_identity = *rebound_identity;
+    auto active = begin_runner_slot(deployment);
+
+    CHECK(std::filesystem::copy_file(children.nonzero, private_probe,
+                                     std::filesystem::copy_options::overwrite_existing));
+    CHECK(::chmod(private_probe.c_str(), S_IRUSR | S_IXUSR) == 0);
+
+    auto result = store_detail::SlotRunnerFactory::run(std::move(*active));
+    CHECK(!static_cast<bool>(result));
+    if (result.diagnostic().error == SlotRunnerError::platform_unavailable) {
+        CHECK(result.diagnostic().authentication.error ==
+              ExecutableImageAuthenticationError::platform_unavailable);
+        CHECK(result.diagnostic().store_diagnostic.error == StoreError::platform_unavailable);
+    } else {
+        CHECK(result.diagnostic().error == SlotRunnerError::executable_authentication_failed);
+        CHECK(result.diagnostic().authentication.error ==
+              ExecutableImageAuthenticationError::identity_mismatch);
+        CHECK(result.diagnostic().store_diagnostic.error ==
+              StoreError::executable_authentication_failed);
+    }
+    CHECK(result.diagnostic().store_diagnostic.object == StoreObject::probe_executable);
+    CHECK(!result.diagnostic().child_started);
+    CHECK(result.diagnostic().taint_attempted);
+    CHECK(result.diagnostic().taint_durable);
+    CHECK(!std::filesystem::exists(marker));
+    expect_no_runner_artifacts(fixture);
+    expect_explicit_taint_record(fixture);
+}
+
+void test_slot_runner_linux_sealed_profile_is_capability_gated(
+    const std::filesystem::path& executable) {
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("runner-sealed-capability-marker");
+    const auto private_probe = fixture.base_leaf("sealed-capability-probe");
+    CHECK(std::filesystem::copy_file(executable, private_probe));
+    CHECK(::chmod(private_probe.c_str(), S_IRUSR | S_IXUSR) == 0);
+    auto deployment =
+        make_runner_deployment(fixture, private_probe, marker, std::chrono::seconds(2),
+                               ProbeLaunchProfile::linux_sealed_memfd_execveat_v1);
+    auto active = begin_runner_slot(deployment);
+
+    auto result = store_detail::SlotRunnerFactory::run(std::move(*active));
+    if (result) {
+        CHECK(result.diagnostic().error == SlotRunnerError::none);
+        CHECK(result.view().committed_slot_count == 1);
+        expect_single_synthetic_launch(marker);
+        return;
+    }
+
+    CHECK(result.diagnostic().error == SlotRunnerError::platform_unavailable);
+    CHECK(result.diagnostic().store_diagnostic.error == StoreError::platform_unavailable);
+    CHECK(result.diagnostic().store_diagnostic.object == StoreObject::probe_executable);
+    CHECK(!result.diagnostic().child_started);
+    CHECK(result.diagnostic().taint_attempted);
+    CHECK(result.diagnostic().taint_durable);
+    CHECK(!std::filesystem::exists(marker));
+    expect_no_runner_artifacts(fixture);
+    expect_explicit_taint_record(fixture);
+}
+#endif
 
 void test_slot_runner_happy_off_commits_one_same_child(const std::filesystem::path& executable) {
     TempStore fixture;
@@ -2120,9 +2309,15 @@ void test_slot_runner_final_synthetic_commit_stays_gate_ineligible(
     const auto production_policy = policy_for(relabeled_deployment);
     const auto production_facts = facts_for(relabeled_deployment);
     auto relabeled = open_private(&production_policy, &production_facts, relabeled_deployment);
+#if defined(__linux__)
     CHECK(relabeled.diagnostic().journal_reason == SIQSShadowProofRssJournalReason::header_invalid);
     expect_open_error(std::move(relabeled), StoreError::replay_rejected,
                       StoreObject::journal_header);
+#else
+    CHECK(!relabeled.diagnostic().journal_reason.has_value());
+    expect_open_error(std::move(relabeled), StoreError::platform_unavailable,
+                      StoreObject::probe_executable);
+#endif
 }
 
 void run_slot_runner_failure_case(const std::filesystem::path& executable,
@@ -3551,6 +3746,11 @@ int main(int argc, char** argv) {
         test_slot_runner_contract_and_missing_deployment();
         test_store_rejects_invalid_runner_contract_before_journal_mutation(children.success);
         test_production_deployment_rejects_publication_test_seam(children.success);
+        test_production_authentication_platform_preflight(children.success);
+#if defined(__linux__)
+        test_slot_runner_authentication_failure_taints_without_launch(children);
+        test_slot_runner_linux_sealed_profile_is_capability_gated(children.success);
+#endif
         test_slot_runner_happy_off_commits_one_same_child(children.success);
         test_slot_runner_happy_observe_commits_one_same_child(children.success);
         test_slot_runner_final_synthetic_commit_stays_gate_ineligible(children.success);

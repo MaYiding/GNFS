@@ -4,12 +4,15 @@
 
 #include <gnfs/util/bounded_child_process.hpp>
 
+#include "bounded_child_process_internal.hpp"
+
 #if !defined(_WIN32)
 
 #include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
@@ -28,6 +31,12 @@
 #include <unistd.h>
 #include <utility>
 #include <vector>
+
+#if defined(__linux__)
+#include <features.h>
+#include <pthread.h>
+#include <sys/syscall.h>
+#endif
 
 namespace gnfs::util {
 namespace {
@@ -198,6 +207,7 @@ void set_cleanup_error(BoundedChildProcessResult& result, int native_error) noex
     }
 }
 
+#if !defined(__linux__)
 [[nodiscard]] bool set_cloexec(int fd) noexcept {
     int flags = -1;
     do {
@@ -212,6 +222,7 @@ void set_cleanup_error(BoundedChildProcessResult& result, int native_error) noex
     } while (status < 0 && errno == EINTR);
     return status == 0;
 }
+#endif
 
 [[nodiscard]] bool move_above_standard_streams(UniqueFd& fd) noexcept {
     if (fd.get() >= 3) {
@@ -304,11 +315,16 @@ void set_cleanup_error(BoundedChildProcessResult& result, int native_error) noex
 [[nodiscard]] int configure_spawn_attributes(SpawnAttributes& attributes) noexcept {
     sigset_t empty_mask;
     sigset_t default_signals;
-    if (sigemptyset(&empty_mask) != 0 || sigemptyset(&default_signals) != 0 ||
-        sigaddset(&default_signals, SIGPIPE) != 0 || sigaddset(&default_signals, SIGINT) != 0 ||
-        sigaddset(&default_signals, SIGTERM) != 0 || sigaddset(&default_signals, SIGHUP) != 0 ||
-        sigaddset(&default_signals, SIGQUIT) != 0) {
+    if (sigemptyset(&empty_mask) != 0 || sigemptyset(&default_signals) != 0) {
         return errno;
+    }
+    for (int signal_number = 1; signal_number < NSIG; ++signal_number) {
+        if (signal_number == SIGKILL || signal_number == SIGSTOP) {
+            continue;
+        }
+        if (sigaddset(&default_signals, signal_number) != 0 && errno != EINVAL) {
+            return errno;
+        }
     }
     int status = ::posix_spawnattr_setsigmask(attributes.get(), &empty_mask);
     if (status == 0) {
@@ -327,6 +343,289 @@ void set_cleanup_error(BoundedChildProcessResult& result, int native_error) noex
     }
     return status;
 }
+
+#if defined(__linux__)
+
+struct DescriptorSpawnResult final {
+    pid_t child = -1;
+    int native_error = 0;
+    BoundedChildProcessError error = BoundedChildProcessError::spawn_failed;
+    bool cleanup_complete = true;
+    int cleanup_error = 0;
+};
+
+enum class DescriptorPreExecStage : std::uint32_t {
+    set_process_group = 1,
+    reset_signals = 2,
+    duplicate_stdio = 3,
+    close_descriptors = 4,
+    restore_signal_mask = 5,
+    execveat = 6,
+};
+
+struct DescriptorPreExecFailure final {
+    DescriptorPreExecStage stage = DescriptorPreExecStage::set_process_group;
+    int native_error = EIO;
+};
+
+static_assert(sizeof(DescriptorPreExecFailure) <= PIPE_BUF);
+
+[[noreturn]] void report_pre_exec_failure(int diagnostic_fd, DescriptorPreExecStage stage,
+                                          int native_error) noexcept {
+    const DescriptorPreExecFailure failure{
+        .stage = stage,
+        .native_error = native_error != 0 ? native_error : EIO,
+    };
+    const auto* bytes = reinterpret_cast<const std::byte*>(&failure);
+    std::size_t written = 0;
+    ssize_t count = -1;
+    while (written < sizeof(failure)) {
+        do {
+            count = ::write(diagnostic_fd, bytes + written, sizeof(failure) - written);
+        } while (count < 0 && errno == EINTR);
+        if (count <= 0) {
+            break;
+        }
+        written += static_cast<std::size_t>(count);
+    }
+    (void)count;
+    ::_exit(127);
+}
+
+[[nodiscard]] bool mark_all_nonstandard_fds_cloexec() noexcept {
+#if defined(SYS_close_range)
+    constexpr unsigned int close_range_cloexec = 1U << 2U;
+    return ::syscall(SYS_close_range, 3U, std::numeric_limits<unsigned int>::max(),
+                     close_range_cloexec) == 0;
+#else
+    errno = ENOSYS;
+    return false;
+#endif
+}
+
+[[nodiscard]] int reset_descriptor_child_signals() noexcept {
+    struct sigaction default_action{};
+    default_action.sa_handler = SIG_DFL;
+    if (::sigemptyset(&default_action.sa_mask) != 0) {
+        return errno;
+    }
+    for (int signal_number = 1; signal_number < NSIG; ++signal_number) {
+        if (signal_number == SIGKILL || signal_number == SIGSTOP) {
+            continue;
+        }
+        if (::sigaction(signal_number, &default_action, nullptr) != 0 && errno != EINVAL) {
+            return errno;
+        }
+    }
+    return 0;
+}
+
+struct DescriptorCleanupResult final {
+    bool complete = false;
+    int native_error = 0;
+};
+
+[[nodiscard]] DescriptorCleanupResult kill_and_reap_descriptor_child(pid_t child) noexcept {
+    if (child <= 1) {
+        return {false, EPERM};
+    }
+
+    int retained_error = 0;
+    if (::kill(-child, SIGKILL) != 0 && errno != ESRCH) {
+        retained_error = errno;
+    }
+    if (::kill(child, SIGKILL) != 0 && errno != ESRCH && retained_error == 0) {
+        retained_error = errno;
+    }
+
+    const auto cleanup_deadline = Clock::now() + TERMINATION_CLEANUP_GRACE;
+    while (true) {
+        int wait_status = 0;
+        pid_t waited = -1;
+        do {
+            waited = ::waitpid(child, &wait_status, WNOHANG);
+        } while (waited < 0 && errno == EINTR);
+        if (waited == child) {
+            return {retained_error == 0, retained_error};
+        }
+        if (waited < 0) {
+            return {false, errno != 0 ? errno : ECHILD};
+        }
+        if (Clock::now() >= cleanup_deadline) {
+            return {false, ETIMEDOUT};
+        }
+        int poll_status = -1;
+        do {
+            poll_status = ::poll(nullptr, 0, static_cast<int>(POLL_QUANTUM.count()));
+        } while (poll_status < 0 && errno == EINTR);
+        if (poll_status < 0) {
+            return {false, errno};
+        }
+    }
+}
+
+[[nodiscard]] constexpr bool descriptor_exec_is_platform_unavailable(int native_error) noexcept {
+    return native_error == ENOSYS || native_error == EACCES || native_error == EPERM;
+}
+
+[[nodiscard]] DescriptorSpawnResult
+spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
+                         const CapturePipe& stderr_pipe, char* const* argv,
+                         char* const* environment, Clock::time_point deadline) noexcept {
+    int descriptors[2]{-1, -1};
+    if (::pipe2(descriptors, O_CLOEXEC) != 0) {
+        return {-1, errno, BoundedChildProcessError::spawn_failed};
+    }
+    UniqueFd diagnostic_read(descriptors[0]);
+    UniqueFd diagnostic_write(descriptors[1]);
+    if (!move_above_standard_streams(diagnostic_read) ||
+        !move_above_standard_streams(diagnostic_write)) {
+        return {-1, errno, BoundedChildProcessError::spawn_failed};
+    }
+
+    int null_descriptor = -1;
+    do {
+        null_descriptor = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+    } while (null_descriptor < 0 && errno == EINTR);
+    if (null_descriptor < 0) {
+        return {-1, errno, BoundedChildProcessError::spawn_failed};
+    }
+    UniqueFd null_fd(null_descriptor);
+    if (!move_above_standard_streams(null_fd)) {
+        return {-1, errno, BoundedChildProcessError::spawn_failed};
+    }
+
+    sigset_t blocked_signals;
+    sigset_t previous_mask;
+    if (::sigfillset(&blocked_signals) != 0) {
+        return {-1, errno, BoundedChildProcessError::spawn_failed};
+    }
+    const int block_status = ::pthread_sigmask(SIG_SETMASK, &blocked_signals, &previous_mask);
+    if (block_status != 0) {
+        return {-1, block_status, BoundedChildProcessError::spawn_failed};
+    }
+
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ) && __GLIBC_PREREQ(2, 34)
+    const pid_t child = ::_Fork();
+#else
+    const pid_t child = -1;
+    errno = ENOTSUP;
+#endif
+    if (child < 0) {
+        const int fork_error = errno;
+        (void)::pthread_sigmask(SIG_SETMASK, &previous_mask, nullptr);
+        return {-1, fork_error, BoundedChildProcessError::spawn_failed};
+    }
+    if (child == 0) {
+        (void)::close(diagnostic_read.get());
+        if (::setpgid(0, 0) != 0) {
+            report_pre_exec_failure(diagnostic_write.get(),
+                                    DescriptorPreExecStage::set_process_group, errno);
+        }
+        if (const int signal_error = reset_descriptor_child_signals(); signal_error != 0) {
+            report_pre_exec_failure(diagnostic_write.get(), DescriptorPreExecStage::reset_signals,
+                                    signal_error);
+        }
+        if (::dup2(null_fd.get(), STDIN_FILENO) < 0 ||
+            ::dup2(stdout_pipe.write_end.get(), STDOUT_FILENO) < 0 ||
+            ::dup2(stderr_pipe.write_end.get(), STDERR_FILENO) < 0) {
+            report_pre_exec_failure(diagnostic_write.get(), DescriptorPreExecStage::duplicate_stdio,
+                                    errno);
+        }
+        if (!mark_all_nonstandard_fds_cloexec()) {
+            report_pre_exec_failure(diagnostic_write.get(),
+                                    DescriptorPreExecStage::close_descriptors, errno);
+        }
+        sigset_t empty_mask;
+        if (::sigemptyset(&empty_mask) != 0 ||
+            ::sigprocmask(SIG_SETMASK, &empty_mask, nullptr) != 0) {
+            report_pre_exec_failure(diagnostic_write.get(),
+                                    DescriptorPreExecStage::restore_signal_mask, errno);
+        }
+
+#if defined(SYS_execveat)
+        (void)::syscall(SYS_execveat, executable_fd, "", argv, environment, AT_EMPTY_PATH);
+        report_pre_exec_failure(diagnostic_write.get(), DescriptorPreExecStage::execveat, errno);
+#else
+        report_pre_exec_failure(diagnostic_write.get(), DescriptorPreExecStage::execveat, ENOSYS);
+#endif
+    }
+
+    (void)::setpgid(child, child);
+    const int restore_status = ::pthread_sigmask(SIG_SETMASK, &previous_mask, nullptr);
+    if (restore_status != 0) {
+        const auto cleanup = kill_and_reap_descriptor_child(child);
+        return {-1, restore_status, BoundedChildProcessError::spawn_failed, cleanup.complete,
+                cleanup.native_error};
+    }
+
+    diagnostic_write.reset();
+    DescriptorPreExecFailure child_failure{};
+    auto* bytes = reinterpret_cast<std::byte*>(&child_failure);
+    std::size_t received = 0;
+    bool handshake_timed_out = false;
+    while (received < sizeof(child_failure)) {
+        const auto now = Clock::now();
+        if (now >= deadline) {
+            handshake_timed_out = true;
+            break;
+        }
+        const auto remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+        const auto bounded_remaining =
+            std::max<std::chrono::milliseconds>(1ms, std::min(remaining, POLL_QUANTUM));
+        pollfd descriptor{diagnostic_read.get(), POLLIN | POLLHUP, 0};
+        int poll_status = -1;
+        do {
+            poll_status = ::poll(&descriptor, 1, static_cast<int>(bounded_remaining.count()));
+        } while (poll_status < 0 && errno == EINTR);
+        if (poll_status == 0) {
+            continue;
+        }
+        if (poll_status < 0 || (descriptor.revents & (POLLERR | POLLNVAL)) != 0) {
+            child_failure.native_error = poll_status < 0 ? errno : EIO;
+            received = sizeof(child_failure);
+            break;
+        }
+        if ((descriptor.revents & (POLLIN | POLLHUP)) == 0) {
+            continue;
+        }
+        ssize_t count = -1;
+        do {
+            count =
+                ::read(diagnostic_read.get(), bytes + received, sizeof(child_failure) - received);
+        } while (count < 0 && errno == EINTR);
+        if (count == 0) {
+            break;
+        }
+        if (count < 0) {
+            child_failure.native_error = errno;
+            received = sizeof(child_failure);
+            break;
+        }
+        received += static_cast<std::size_t>(count);
+    }
+    diagnostic_read.reset();
+    if (received == 0) {
+        if (!handshake_timed_out) {
+            return {child, 0, BoundedChildProcessError::none};
+        }
+        child_failure.native_error = ETIMEDOUT;
+    }
+    if (received != sizeof(child_failure) || child_failure.native_error == 0) {
+        child_failure.native_error = EIO;
+    }
+
+    const auto cleanup = kill_and_reap_descriptor_child(child);
+    const auto error = handshake_timed_out ? BoundedChildProcessError::timeout
+                       : child_failure.stage == DescriptorPreExecStage::execveat &&
+                               descriptor_exec_is_platform_unavailable(child_failure.native_error)
+                           ? BoundedChildProcessError::platform_unavailable
+                           : BoundedChildProcessError::spawn_failed;
+    return {-1, child_failure.native_error, error, cleanup.complete, cleanup.native_error};
+}
+
+#endif
 
 struct StreamState final {
     UniqueFd* fd = nullptr;
@@ -572,12 +871,26 @@ void record_termination(int status, BoundedChildProcessResult& result) noexcept 
 
 } // namespace
 
-BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpec& spec) noexcept {
+namespace {
+
+BoundedChildProcessResult run_bounded_child_process_impl(const BoundedChildProcessSpec& spec,
+                                                         int executable_fd,
+                                                         std::string_view logical_argv0,
+                                                         bool logical_argv0_is_explicit) noexcept {
     BoundedChildProcessResult result;
     result.error = BoundedChildProcessError::none;
 
     try {
-        if (!valid_spec(spec)) {
+        if (!valid_spec(spec) || executable_fd < -1 ||
+            (logical_argv0_is_explicit &&
+             (logical_argv0.empty() || has_embedded_nul(logical_argv0))) ||
+            (executable_fd >= 0 && !logical_argv0_is_explicit)
+#if defined(__linux__)
+            || (executable_fd >= 0 && executable_fd < 3)
+#else
+            || executable_fd >= 0
+#endif
+        ) {
             result.error = BoundedChildProcessError::invalid_spec;
             result.cleanup_complete = true;
             return result;
@@ -588,7 +901,8 @@ BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpe
 
         std::vector<std::string> argv_storage;
         argv_storage.reserve(spec.arguments.size() + 1);
-        argv_storage.push_back(spec.executable.native());
+        argv_storage.emplace_back(
+            logical_argv0_is_explicit ? logical_argv0 : std::string_view(spec.executable.native()));
         argv_storage.insert(argv_storage.end(), spec.arguments.begin(), spec.arguments.end());
         std::vector<char*> argv;
         argv.reserve(argv_storage.size() + 1);
@@ -615,31 +929,48 @@ BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpe
             return result;
         }
 
-        SpawnFileActions actions;
-        SpawnAttributes attributes;
-        int status = actions.status();
-        if (status == 0) {
-            status = attributes.status();
-        }
-        if (status == 0) {
-            status = add_spawn_file_actions(actions, stdout_pipe, stderr_pipe);
-        }
-        if (status == 0) {
-            status = configure_spawn_attributes(attributes);
-        }
-        if (status != 0) {
-            set_primary_error(result, BoundedChildProcessError::spawn_failed, status);
-            result.cleanup_complete = true;
-            return result;
-        }
-
         const pid_t caller_process_group = ::getpgrp();
         pid_t child = -1;
-        status = ::posix_spawn(&child, argv_storage.front().c_str(), actions.get(),
-                               attributes.get(), argv.data(), environment.data());
+        int status = 0;
+        BoundedChildProcessError launch_error = BoundedChildProcessError::spawn_failed;
+        bool launch_cleanup_complete = true;
+        int launch_cleanup_error = 0;
+#if defined(__linux__)
+        if (executable_fd >= 0) {
+            const DescriptorSpawnResult spawned =
+                spawn_from_executable_fd(executable_fd, stdout_pipe, stderr_pipe, argv.data(),
+                                         environment.data(), spec.deadline);
+            child = spawned.child;
+            status = spawned.native_error;
+            launch_error = spawned.error;
+            launch_cleanup_complete = spawned.cleanup_complete;
+            launch_cleanup_error = spawned.cleanup_error;
+        } else
+#endif
+        {
+            SpawnFileActions actions;
+            SpawnAttributes attributes;
+            status = actions.status();
+            if (status == 0) {
+                status = attributes.status();
+            }
+            if (status == 0) {
+                status = add_spawn_file_actions(actions, stdout_pipe, stderr_pipe);
+            }
+            if (status == 0) {
+                status = configure_spawn_attributes(attributes);
+            }
+            if (status == 0) {
+                status = ::posix_spawn(&child, spec.executable.c_str(), actions.get(),
+                                       attributes.get(), argv.data(), environment.data());
+            }
+        }
         if (status != 0) {
-            set_primary_error(result, BoundedChildProcessError::spawn_failed, status);
-            result.cleanup_complete = true;
+            set_primary_error(result, launch_error, status);
+            result.cleanup_complete = launch_cleanup_complete;
+            if (launch_cleanup_error != 0) {
+                set_cleanup_error(result, launch_cleanup_error);
+            }
             return result;
         }
         result.child_started = true;
@@ -869,6 +1200,29 @@ BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpe
         return result;
     }
 }
+
+} // namespace
+
+BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpec& spec) noexcept {
+    return run_bounded_child_process_impl(spec, -1, {}, false);
+}
+
+namespace detail {
+
+BoundedChildProcessResult run_bounded_child_process_with_argv0(const BoundedChildProcessSpec& spec,
+                                                               std::string_view argv0) noexcept {
+    return run_bounded_child_process_impl(spec, -1, argv0, true);
+}
+
+#if defined(__linux__)
+BoundedChildProcessResult
+run_bounded_child_process_from_executable_fd(const BoundedChildProcessSpec& spec, int executable_fd,
+                                             std::string_view argv0) noexcept {
+    return run_bounded_child_process_impl(spec, executable_fd, argv0, true);
+}
+#endif
+
+} // namespace detail
 
 } // namespace gnfs::util
 

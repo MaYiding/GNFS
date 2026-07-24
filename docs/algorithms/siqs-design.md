@@ -98,14 +98,16 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `include/gnfs/siqs/shadow_proof_rss_gate.hpp` | `SIQSShadowProofRssGatePolicy`, `SIQSShadowProofRssGateSample`, and closed `SIQSShadowProofRssGateOutcome` |
 | `tests/test_siqs_shadow_proof_rss_gate.cpp` | Synthetic policy binding, exact sample coverage, budget boundary, and closed terminal-emitter tests |
 | `include/gnfs/siqs/shadow_proof_rss_probe_execution_identity.hpp` | Fixed SHA-256 identity for approved probe bytes and the canonical launch contract |
-| `tests/test_siqs_shadow_proof_rss_probe_execution_identity.cpp` | Canonical contract, environment, boundary-vector, and mutation tests without launching a probe |
+| `tests/test_siqs_shadow_proof_rss_probe_execution_identity.cpp` | Schema V2 launch-profile, environment, boundary-vector, and mutation tests without launching a probe |
 | `include/gnfs/siqs/shadow_proof_rss_campaign_artifact_layout.hpp` | Fixed three-artifact-per-slot namespace, bounded pure inspection, and exact closure against validated journal replay |
 | `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-only native session plus lease-bound start, artifact-batch, explicit-taint, and probe-classification authority boundaries |
 | `tests/test_siqs_shadow_proof_rss_campaign_artifact_layout.cpp` | Canonical leaf grammar, bounded sizes, deterministic diagnostics, and journal-to-artifact consistency |
-| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, durable same-child commits, synthetic terminal/relabel rejection, crash recovery, and platform fallback |
+| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, authenticated Linux same-child commits, synthetic terminal/relabel rejection, crash recovery, and platform fallback |
 | `src/siqs/shadow_proof_rss_holdout_probe_record_codec_internal.hpp` | Source-private strict owning decoder for one canonical holdout-probe stdout record |
 | `src/siqs/shadow_proof_rss_holdout_stream_join_internal.hpp` | Source-private approved-policy, runtime-facts, slot, and two-stream validation into a V3 identity-bound authority-free draft |
 | `include/gnfs/util/bounded_child_process.hpp` | Production shell-free, deadline-bounded dual-stream capture; it transports data but grants no campaign authority |
+| `src/util/bounded_child_process_internal.hpp` | Source-private one-shot executable-image capability and authenticated Linux transport boundary |
+| `tests/test_bounded_child_process.cpp` | Cross-platform transport tests plus Linux sealed-image, replacement, one-shot, descriptor-closure, and concurrency tests |
 | `tests/test_siqs_shadow_proof_prefer.cpp` | Pure V2 decisions, defensive metadata validation, and pre-route emitter contract |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 
@@ -230,14 +232,42 @@ directly. The textual policy and audit records use strict lowercase
 label or different execution identity fails.
 
 The private deployment row provides the approved executable SHA-256 and the
-canonical execution-contract SHA-256. The contract covers the probe kind,
-candidate revision, platform, memory backend, worker count, build mode, exact
-sorted environment, timeout, owner, argument template, capture limits, output
-schemas, and transport guarantees. The store recomputes this contract before it
-opens the journal. The runner, joined draft, same-child receipt, and commit
-path require the same identity. This remains a deployment-claim boundary:
-the current `lstat(path)` followed by path-based spawn does not prove that the
-child executed the object whose bytes produced the approved SHA-256.
+canonical execution-contract SHA-256. Execution-contract schema V2 also binds
+the launch profile, fixed logical `argv[0]`, and profile-specific transport ID.
+The remaining fields cover the probe kind, candidate revision, platform,
+memory backend, worker count, build mode, exact sorted environment, timeout,
+owner, argument template, capture limits, and output schemas. Authenticated
+profiles reject `LD_*`, `DYLD_*`, and `GLIBC_TUNABLES` where applicable. The
+store recomputes the contract before it opens the journal. The runner, joined
+draft, same-child receipt, and commit path require the same identity.
+
+On Linux, `linux_sealed_memfd_execveat_v1` closes the same-object boundary.
+After the start record is durable and the store revalidates the pending slot,
+the runner creates one move-only capability for that slot. It opens the
+approved path with `O_NOFOLLOW`, checks owner and executable metadata, copies
+the bounded ELF image into an `MFD_EXEC` memfd, confirms that the source
+snapshot stayed stable, verifies the approved SHA-256, applies the write,
+growth, shrink, execution, and seal seals, and rehashes the sealed object. The
+child then uses the fixed logical `argv[0]` and
+`execveat(..., AT_EMPTY_PATH)` under the existing bounded dual-stream,
+post-authentication deadline, process-group, and descendant-cleanup supervisor.
+Replacing the path after authentication cannot change the executed object. The
+capability is consumed by one launch and cannot be cached or reused across
+slots.
+
+An authentication or launch failure after the durable start publishes the
+terminal taint and cannot publish artifacts or a sample commit. A production
+commit additionally requires private same-object evidence from the
+authenticated launch. The profile deliberately requires modern Linux support
+for executable memfds, `F_SEAL_EXEC`, `execveat`, `close_range`, and `_Fork`;
+missing support fails closed without a path fallback. The executable image
+digest does not authenticate the dynamic loader, shared libraries, kernel,
+Linux Security Module policy, or external configuration. Those dependencies
+remain part of the approved deployment and host boundary. Authentication is
+size-bounded to 256 MiB but uses synchronous regular-file I/O before the child
+deadline starts. A slow or stalled filesystem can therefore delay terminal
+taint; a separately supervised authenticator remains required for a
+clock-bounded authentication phase.
 
 The private deployment row also owns the complete approved policy and expected
 runtime contract. Public policy and runtime values act only as claims. After
@@ -286,17 +316,20 @@ Every outcome keeps `shadow_outcome_routed=false` and `promotion=false`.
 
 No approved per-platform policy currently exists, no sealed holdout has been
 run, and no approved numeric threshold or real gate result is available. The
-campaign runner and production measurement remain blocked and pending. The
-sealed corpus must not be used to construct or launch the 80-process campaign
-until the policy is approved.
+production deployment registry remains empty, so the 80-process campaign and
+production measurement remain blocked. The sealed corpus must not be used to
+construct or launch that campaign until the policy is approved.
 
-The next executable-authentication boundary must close the same-object launch
-gap. The Linux design requires a sealed file descriptor, byte rehash, and
-descriptor-based execution such as `execveat(..., AT_EMPTY_PATH)`. The macOS
-design requires a signed hardened Mach-O, suspended spawn, and process code
-validation before resume, or it must remain unavailable. Windows remains
-fail-closed until an equivalent design exists. Authority-held gate evaluation
-and the serial 80-slot production controller remain later milestones.
+`darwin_hardened_suspended_v1` is reserved in schema V2 but has no production
+implementation. A platform prototype confirmed that suspended spawn and
+process code validation are available, but the current hardened probe links a
+Homebrew GMP library with a different signing identity. The resulting process
+cannot satisfy one signer chain for all loaded code. macOS production rows
+therefore fail before journal filesystem access; only the explicitly
+synthetic path profile remains available to private tests. Windows remains
+fail-closed until an equivalent held-object design exists. Authority-held gate
+evaluation and the serial 80-slot production controller remain later
+milestones.
 
 The staged V2 `prefer` boundary is a pure decision and audit contract. It does
 not extend the environment parser, connect to `factor()`, alter the observe

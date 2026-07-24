@@ -189,23 +189,43 @@ plan/record digest、commit payload 和 joined artifact。header/record 固定�
 
 private deployment row 同时持有完整 approved policy 和 expected runtime contract。
 调用方提供的 policy/runtime 只是声明；store 选出唯一 row 后逐字段核对，并仅用
-row-owned 值构造 session。store 会重算 canonical execution contract。该 contract
-覆盖平台、build mode、完整排序 environment、timeout、owner、argv template、capture
-上限、输出 schema 和 transport guarantees。相对 executable path、revision mismatch、
-非法或未排序 environment、configured-owner mismatch、非法 timeout、零 identity 或
-identity mismatch 都会在打开 journal 目录前失败。production row 必须配置 probe
-binding，且不能使用 `PublicationOps` 测试 seam。
+row-owned 值构造 session。store 会重算 canonical execution contract。schema V2
+除平台、build mode、完整排序 environment、timeout、owner、argument template、capture
+上限和 output schema 外，还绑定 launch profile、固定逻辑 `argv[0]` 和 profile-specific
+transport ID。authenticated profile 会按平台拒绝 `LD_*`、`DYLD_*` 和
+`GLIBC_TUNABLES`。相对 executable path、revision mismatch、非法或未排序 environment、
+configured-owner mismatch、非法 timeout、零 identity 或 identity mismatch 都会在打开
+journal 目录前失败。production row 必须配置 probe binding，且不能使用
+`PublicationOps` 测试 seam。
 
-当前身份仍是受信 deployment row 的声明，不是 executable-image authentication。
-现有 `lstat(path)` 后按 path spawn 的流程无法证明实际执行对象就是已批准 digest
-对应的字节。Linux 仍需 sealed descriptor、rehash 和 descriptor-based execution；
-macOS 仍需签名 hardened Mach-O、suspended spawn 和 resume 前的 process code
-validation，否则保持 unavailable。Windows 继续显式 fail closed。authority-held gate
-evaluation 和 serial 80-slot production controller 也仍待实现。
+Linux 的 `linux_sealed_memfd_execveat_v1` 已闭合 same-object launch。start record
+持久化且 pending slot 再验证后，runner 才为该 slot 创建一次性 move-only capability。
+它以 `O_NOFOLLOW` 打开批准路径，验证 owner、link、mode 和 bounded size，将稳定 ELF
+字节复制到 `MFD_EXEC` memfd，核对 source SHA-256，施加包含 `F_SEAL_EXEC` 的完整
+seals，再重新 hash sealed object。child 使用固定逻辑 `argv[0]` 和
+`execveat(..., AT_EMPTY_PATH)`；之后替换原路径不会改变执行对象。capability 每个 slot
+只消费一次。authentication 或 launch 失败会 durable taint，不能发布 artifacts 或
+sample commit；production commit 还必须携带私有 same-object evidence。
 
-当前没有批准的 per-platform policy，也没有实际 budget、headroom 或阈值。sealed
-holdout 尚未运行，runner 和 80-process campaign 仍是 `blocked` / `pending`。policy
-获批前不得构造或启动 campaign，也不得写入任何 holdout 结果。
+该 Linux profile 要求 executable memfd、`F_SEAL_EXEC`、`execveat`、`close_range`
+和 `_Fork`，缺失任一能力即 fail closed，且不回退到 path spawn。digest 只认证主 ELF
+image，不认证 dynamic loader、shared libraries、kernel、Linux Security Module policy
+或外部配置，这些仍属于 approved deployment 与 host boundary。approved timeout 是
+authentication 成功后才开始的 child launch/capture deadline。authentication 本身只受
+256 MiB size cap 约束，使用同步 regular-file I/O；慢或阻塞 filesystem 仍可能造成
+availability stall，真正的时钟上限需要后续加入独立监督的 authenticator。
+
+`darwin_hardened_suspended_v1` 只保留 schema 合同，尚未实现 production launch。
+当前 hardened probe 链接的 Homebrew GMP 与主 binary 使用不同 signing identity，
+无法形成统一 loaded-code signer chain。因此 macOS production row 会在 journal
+filesystem I/O 前返回 unavailable；private test 才能使用 synthetic path profile。
+Windows 继续显式 fail closed。authority-held gate evaluation 和 serial 80-slot
+production controller 仍待实现。
+
+当前没有批准的 per-platform policy，也没有实际 budget、headroom 或阈值。
+production deployment registry 仍为空，sealed holdout 尚未运行，80-process
+campaign 仍是 `blocked` / `pending`。policy 获批前不得构造或启动 campaign，也不得
+写入任何 holdout 结果。
 
 ### Pure V2 `prefer` Decision Contract
 
@@ -297,13 +317,17 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
   policy binding、严格 80-sample coverage、budget 等号边界、diagnostic independence
   和 terminal-only closed emitter；它不运行 sealed holdout。
 - `tests/test_siqs_shadow_proof_rss_probe_execution_identity.cpp` 覆盖 executable
-  SHA-256、canonical contract、严格 environment 和单字段 mutation；它不启动 child。
+  SHA-256、schema V2 launch profile、canonical contract、严格 environment 和单字段
+  mutation；它不启动 child。
+- `tests/test_bounded_child_process.cpp` 只启动 synthetic fake child。Linux case 会覆盖
+  sealed-image authentication、认证后 path replacement、one-shot consumption、timeout、
+  overflow、descriptor closure 和并发 launch；它不读取 sealed fixture。
 - `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` 使用临时本地目录和
   subprocess 覆盖 deployment registry、严格 native layout、跨进程 lease、崩溃释放、
-  held-root publication、私有 same-child commit、完整 80-slot synthetic 终态和
-  restart relabel rejection，以及 execution identity 与完整 approval/runtime 字段错配
-  的 journal 零写入拒绝。测试只启动 synthetic child，不运行 production probe 或打开
-  sealed holdout。
+  held-root publication、Linux same-object authentication、认证失败后的 durable taint、
+  私有 same-child commit、完整 80-slot synthetic 终态和 restart relabel rejection，
+  以及 execution identity 与完整 approval/runtime 字段错配的 journal 零写入拒绝。
+  测试只启动 synthetic child，不运行 production probe 或打开 sealed holdout。
 - `tests/test_siqs.cpp` 锁定公开 `factor()` 路径对 `prefer` 的 fail-closed
   拒绝，并确认拒绝前不发出 V1 或 V2 记录。
 - `tests/test_siqs_shadow_proof_observe_probe.cpp` 提供 Release-only production 1LP fresh-process measurement target；它不进入 CTest 或常规测试 tier。

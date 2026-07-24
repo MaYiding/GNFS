@@ -608,8 +608,10 @@ stderr codec, and authority-free stream-join tests are also instant and use
 synthetic records only. `test_bounded_child_process` runs a synthetic fake
 executable to cover shell-free argument/environment transfer, independently
 bounded dual-pipe capture, deadlines, overflow, descendant writers, and cleanup
-semantics. The transport is a production utility, but it carries data only and
-is not a campaign launcher. The instant
+semantics. Linux tests additionally cover sealed-image authentication, path
+replacement after authentication, one-shot consumption, arbitrary descriptor
+closure, and concurrent launches. The transport is a production utility, but
+it carries data only and is not a campaign launcher. The instant
 native-store test uses a temporary real filesystem and subprocesses to cover
 the registry boundary, component walking, strict layouts, move-only lease
 ownership, cross-process contention, crash release, and replay actions. It also
@@ -664,30 +666,51 @@ inside a lease-owning active-slot transaction. The private integration target
 connects the portable transport, strict join, three-leaf artifact publication,
 private same-child receipt, and commit publication without exposing a public
 authority-bearing API. It also owns explicit taint publication for every
-failure whose terminal commit leaf is provably absent. An approved
-per-platform policy, same-object executable authentication, and the serial
-80-slot campaign loop remain pending. Those authority-bearing components must
-validate the approved policy, actual runtime facts, and execution identity
-before loading the sealed fixture table or constructing the first production
-command. Synthetic committed prefixes validate the transaction machinery only.
-V3 now binds their `synthetic_test` classification and two-part execution
-identity durably, and it makes even a complete 80-slot synthetic journal
-gate-ineligible. The private deployment row owns the approved executable
-SHA-256 and canonical execution-contract SHA-256. The contract covers the
+failure whose terminal commit leaf is provably absent. Synthetic committed
+prefixes validate the transaction machinery only. V3 binds their
+`synthetic_test` classification and two-part execution identity durably, and
+it makes even a complete 80-slot synthetic journal gate-ineligible.
+
+Execution-contract schema V2 binds a launch profile, fixed logical `argv[0]`,
+and profile-specific transport ID in addition to the executable SHA-256,
 platform, build mode, exact sorted environment, timeout, owner, argument
-template, stream schemas, capture limits, and transport guarantees. The store
-recomputes it before filesystem access, and the runner carries it through the
+template, stream schemas, and capture limits. The store recomputes the
+contract before filesystem access, and the runner carries it through the
 joined draft, same-child receipt, artifacts, and commit.
 
-This is still a deployment-claim boundary, not executable-image
-authentication. The current `lstat(path)` followed by path-based spawn does
-not bind the executed file object to the approved executable digest. Linux
-still needs sealed-descriptor hashing plus descriptor-based execution. macOS
-still needs signed-code validation of a suspended child before resume, or it
-must remain unavailable. Authority-held gate evaluation and the serial
-80-slot controller also remain pending. A campaign interrupted after its
-durable start but before its sample commits remains tainted and cannot be
-retried in place.
+Linux `linux_sealed_memfd_execveat_v1` now authenticates the executed object.
+After the durable start and pending-slot revalidation, the runner creates a
+one-shot move-only capability. It opens the approved path without following a
+link, verifies trusted executable metadata, copies the stable bounded ELF into
+an executable memfd, verifies the approved SHA-256, applies all write, size,
+execution, and final seals, and rehashes the sealed object. The supervisor
+executes only that descriptor with `execveat(..., AT_EMPTY_PATH)`, a fixed
+logical `argv[0]`, exact environment transfer, bounded capture, one
+post-authentication child deadline, and process-group cleanup. Replacing the
+path after authentication therefore cannot select different executable bytes.
+Authentication failures after a durable start taint the slot before artifacts,
+and a production commit requires private same-object evidence.
+
+The Linux profile requires executable memfds, `F_SEAL_EXEC`, `execveat`,
+`close_range`, and `_Fork`; unsupported hosts fail closed without a path
+fallback. The main ELF digest does not authenticate the dynamic loader, shared
+libraries, kernel, Linux Security Module policy, or external configuration.
+Those dependencies remain in the approved deployment and host boundary.
+Authentication is capped at 256 MiB but uses synchronous regular-file I/O
+before the child deadline starts. Slow or stalled filesystems can therefore
+delay terminal taint; a separately supervised authenticator remains future
+work for a clock-bounded authentication phase.
+
+The macOS suspended-spawn and process-code-validation primitives were
+prototyped, but the current hardened probe and its Homebrew GMP dependency do
+not share one signing identity. `darwin_hardened_suspended_v1` therefore
+remains contract-only, and production rows fail before journal filesystem
+access. The path profile is synthetic-only. Windows remains unavailable.
+An approved per-platform policy, authority-held gate evaluation, and the
+serial 80-slot controller also remain pending. A campaign interrupted after
+its durable start but before its sample commits remains tainted and cannot be
+retried in place. The production registry is empty, and no sealed holdout has
+run.
 
 `tests/test_siqs_runtime_facts.cpp`,
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
@@ -709,7 +732,10 @@ production factor-base profile, but none of these tests launches a child,
 calls `factor()`, samples RSS, publishes an artifact, or opens the holdout.
 
 `tests/test_bounded_child_process.cpp` launches only its synthetic fake child.
-It has no sealed-fixture, policy, journal, receipt, or launch-permit interface.
+On Linux it also verifies sealed-image authentication, path replacement after
+authentication, one-shot consumption, timeout and overflow cleanup, descriptor
+closure, and concurrent launches. It has no sealed-fixture, policy, journal,
+receipt, or launch-permit interface.
 
 `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` opens only
 temporary synthetic stores. It exercises native object identity, leases,
@@ -958,7 +984,12 @@ Before promotion it must provide:
 - [x] V2 durable probe-classification binding across runtime facts, private
   deployment and executable rows, journal header and commits, same-child
   receipts, and joined artifacts. Complete synthetic campaigns terminate
-  without gate authority; executable-image authentication remains pending.
+  without gate authority.
+- [x] Execution-contract schema V2 and Linux same-object authentication with a
+  sealed executable memfd, source and sealed-image SHA-256 checks,
+  descriptor-based execution, fixed logical `argv[0]`, one-shot authority,
+  production-receipt enforcement, and fail-closed capability checks. macOS and
+  Windows production launch remain unavailable.
 - [x] Deployment-owned approval and expected-runtime binding. Caller policy
   and runtime values must match every private row field, and malformed runner
   configuration fails before journal I/O. These expected values are not

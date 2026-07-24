@@ -91,6 +91,7 @@ execution_identity_matches_context(const SessionSlotRunContext& context) noexcep
         make_siqs_shadow_proof_rss_probe_execution_identity(ProbeExecutionContractInput{
             .executable_sha256 = identity.executable_sha256,
             .probe_kind = context.deployment_probe_kind,
+            .launch_profile = context.executable->launch_profile,
             .candidate_revision = context.executable->candidate_revision,
             .operating_system = context.runtime_facts->operating_system,
             .architecture = context.runtime_facts->architecture,
@@ -127,7 +128,8 @@ make_process_spec(const SessionSlotRunContext& context) {
 [[nodiscard]] SameChildExecutionEvidence
 make_execution_evidence(const SIQSShadowProofRssCampaignJournalRecord& durable_start_record,
                         const SIQSShadowProofRssCampaignSlot& slot,
-                        join_support::SIQSShadowProofRssUncommittedSampleDraft&& draft) {
+                        join_support::SIQSShadowProofRssUncommittedSampleDraft&& draft,
+                        bool same_object_authenticated) {
     SameChildExecutionEvidence evidence;
     evidence.durable_start_record = durable_start_record;
     evidence.policy_binding_digest = draft.policy_binding_digest;
@@ -138,6 +140,7 @@ make_execution_evidence(const SIQSShadowProofRssCampaignJournalRecord& durable_s
     evidence.resolved_production_sieve_workers = draft.resolved_production_sieve_workers;
     evidence.deployment_probe_kind = draft.probe_kind;
     evidence.probe_execution_identity = draft.probe_execution_identity;
+    evidence.same_object_authenticated = same_object_authenticated;
     evidence.fresh_process = draft.fresh_process;
     evidence.completed = draft.completed;
     evidence.factor_identity = draft.factor_identity;
@@ -245,17 +248,7 @@ SlotRunnerFactory::run(SIQSShadowProofRssCampaignJournalActiveSlot&& active_slot
             return finish_with_taint(std::move(active_slot), std::move(diagnostic));
         }
         const SessionSlotRunContext& context = *prepared.context;
-#if defined(_WIN32)
-        SlotRunnerDiagnostic diagnostic;
-        diagnostic.error = SlotRunnerError::platform_unavailable;
-        diagnostic.store_diagnostic = make_store_diagnostic(StoreError::platform_unavailable);
-        return finish_with_taint(std::move(active_slot), std::move(diagnostic));
-#else
-        // The identity here is still a deployment claim. Same-object hashing
-        // and launch are a separate platform boundary; this check ensures the
-        // exact approved canonical contract reaches that boundary unchanged.
-        if (!execution_identity_matches_context(context) ||
-            !executable_binding_is_valid(*context.executable)) {
+        if (!execution_identity_matches_context(context)) {
             SlotRunnerDiagnostic diagnostic;
             diagnostic.error = SlotRunnerError::deployment_invalid;
             diagnostic.store_diagnostic = make_store_diagnostic(
@@ -263,12 +256,122 @@ SlotRunnerFactory::run(SIQSShadowProofRssCampaignJournalActiveSlot&& active_slot
             return finish_with_taint(std::move(active_slot), std::move(diagnostic));
         }
 
-        const util::BoundedChildProcessResult transport =
-            util::run_bounded_child_process(make_process_spec(context));
+        using LaunchProfile =
+            shadow_proof_rss_probe_execution_identity_detail::ProbeExecutableLaunchProfile;
+        util::BoundedChildProcessResult transport;
+        bool same_object_authenticated = false;
+        util::BoundedChildProcessSpec process_spec = make_process_spec(context);
+        switch (context.executable->launch_profile) {
+        case LaunchProfile::linux_sealed_memfd_execveat_v1:
+#if defined(__linux__)
+        {
+            auto authenticated = util::authenticate_executable_image(
+                context.executable->executable,
+                context.executable->probe_execution_identity.executable_sha256,
+                context.executable->expected_owner);
+            if (!authenticated) {
+                SlotRunnerDiagnostic diagnostic;
+                diagnostic.authentication = std::move(authenticated.diagnostic);
+                switch (diagnostic.authentication.error) {
+                case util::ExecutableImageAuthenticationError::platform_unavailable:
+                    diagnostic.error = SlotRunnerError::platform_unavailable;
+                    diagnostic.store_diagnostic = make_store_diagnostic(
+                        StoreError::platform_unavailable, StoreObject::probe_executable);
+                    break;
+                case util::ExecutableImageAuthenticationError::resource_failure:
+                    diagnostic.error = SlotRunnerError::resource_exhausted;
+                    diagnostic.store_diagnostic = make_store_diagnostic(
+                        StoreError::resource_exhausted, StoreObject::probe_executable);
+                    break;
+                case util::ExecutableImageAuthenticationError::unexpected_failure:
+                    diagnostic.error = SlotRunnerError::unexpected_failure;
+                    diagnostic.store_diagnostic = make_store_diagnostic(
+                        StoreError::unexpected_failure, StoreObject::probe_executable);
+                    break;
+                default:
+                    diagnostic.error = SlotRunnerError::executable_authentication_failed;
+                    diagnostic.store_diagnostic =
+                        make_store_diagnostic(StoreError::executable_authentication_failed,
+                                              StoreObject::probe_executable);
+                    break;
+                }
+                diagnostic.store_diagnostic.native_error = diagnostic.authentication.native_error;
+                return finish_with_taint(std::move(active_slot), std::move(diagnostic));
+            }
+            // The approved timeout is the child launch/capture budget. Synchronous
+            // executable authentication has a separate size bound and completes
+            // before this clock starts.
+            process_spec.deadline = std::chrono::steady_clock::now() + context.executable->timeout;
+            transport = util::run_authenticated_bounded_child_process(
+                std::move(*authenticated.image), process_spec,
+                shadow_proof_rss_probe_execution_identity_detail::
+                    SIQS_SHADOW_PROOF_RSS_PROBE_ARGV0);
+            same_object_authenticated = true;
+            break;
+        }
+#else
+        {
+            SlotRunnerDiagnostic diagnostic;
+            diagnostic.error = SlotRunnerError::platform_unavailable;
+            diagnostic.authentication.error =
+                util::ExecutableImageAuthenticationError::platform_unavailable;
+            diagnostic.store_diagnostic = make_store_diagnostic(StoreError::platform_unavailable,
+                                                                StoreObject::probe_executable);
+            return finish_with_taint(std::move(active_slot), std::move(diagnostic));
+        }
+#endif
+        case LaunchProfile::synthetic_path_spawn_v1:
+            if (context.deployment_probe_kind != SIQSShadowProofRssProbeKind::synthetic_test ||
+                !executable_binding_is_valid(*context.executable)) {
+                SlotRunnerDiagnostic diagnostic;
+                diagnostic.error = SlotRunnerError::deployment_invalid;
+                diagnostic.store_diagnostic = make_store_diagnostic(
+                    StoreError::registry_binding_mismatch, StoreObject::deployment_registry);
+                return finish_with_taint(std::move(active_slot), std::move(diagnostic));
+            }
+#if !defined(_WIN32)
+            transport = util::detail::run_bounded_child_process_with_argv0(
+                process_spec, shadow_proof_rss_probe_execution_identity_detail::
+                                  SIQS_SHADOW_PROOF_RSS_PROBE_ARGV0);
+            break;
+#else
+            {
+                SlotRunnerDiagnostic diagnostic;
+                diagnostic.error = SlotRunnerError::platform_unavailable;
+                diagnostic.store_diagnostic = make_store_diagnostic(
+                    StoreError::platform_unavailable, StoreObject::probe_executable);
+                return finish_with_taint(std::move(active_slot), std::move(diagnostic));
+            }
+#endif
+        case LaunchProfile::darwin_hardened_suspended_v1: {
+            SlotRunnerDiagnostic diagnostic;
+            diagnostic.error = SlotRunnerError::platform_unavailable;
+            diagnostic.authentication.error =
+                util::ExecutableImageAuthenticationError::platform_unavailable;
+            diagnostic.store_diagnostic = make_store_diagnostic(StoreError::platform_unavailable,
+                                                                StoreObject::probe_executable);
+            return finish_with_taint(std::move(active_slot), std::move(diagnostic));
+        }
+        case LaunchProfile::unknown: {
+            SlotRunnerDiagnostic diagnostic;
+            diagnostic.error = SlotRunnerError::deployment_invalid;
+            diagnostic.store_diagnostic = make_store_diagnostic(
+                StoreError::registry_binding_mismatch, StoreObject::deployment_registry);
+            return finish_with_taint(std::move(active_slot), std::move(diagnostic));
+        }
+        }
         if (!transport.succeeded()) {
             SlotRunnerDiagnostic diagnostic;
-            diagnostic.error = SlotRunnerError::transport_failed;
+            diagnostic.error =
+                transport.error == util::BoundedChildProcessError::platform_unavailable
+                    ? SlotRunnerError::platform_unavailable
+                    : SlotRunnerError::transport_failed;
             retain_transport_diagnostic(diagnostic, transport);
+            if (diagnostic.error == SlotRunnerError::platform_unavailable) {
+                diagnostic.store_diagnostic = make_store_diagnostic(
+                    StoreError::platform_unavailable, StoreObject::probe_executable);
+                diagnostic.store_diagnostic.native_error = transport.native_error;
+            }
             return finish_with_taint(std::move(active_slot), std::move(diagnostic));
         }
 
@@ -286,7 +389,8 @@ SlotRunnerFactory::run(SIQSShadowProofRssCampaignJournalActiveSlot&& active_slot
         }
 
         SameChildExecutionReceipt execution_receipt(
-            make_execution_evidence(durable_start_record, context.slot, std::move(*joined.draft)));
+            make_execution_evidence(durable_start_record, context.slot, std::move(*joined.draft),
+                                    same_object_authenticated));
         const auto& evidence = execution_receipt.evidence_;
         SessionArtifactBatchResult artifacts =
             active_slot.core_->publish_artifact_batch(durable_start_record, evidence.stdout_bytes,
@@ -317,7 +421,6 @@ SlotRunnerFactory::run(SIQSShadowProofRssCampaignJournalActiveSlot&& active_slot
         }
         diagnostic.error = SlotRunnerError::commit_failed;
         return finish_with_taint(std::move(active_slot), std::move(diagnostic));
-#endif
     } catch (const std::bad_alloc&) {
         SlotRunnerDiagnostic diagnostic;
         diagnostic.error = SlotRunnerError::resource_exhausted;

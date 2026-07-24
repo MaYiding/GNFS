@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../util/bounded_child_process_internal.hpp"
 #include "shadow_proof_rss_campaign_journal_store_internal.hpp"
 
 #include <gnfs/util/bounded_child_process.hpp>
@@ -17,6 +18,7 @@ enum class SlotRunnerError : uint8_t {
     session_inactive,
     deployment_unavailable,
     deployment_invalid,
+    executable_authentication_failed,
     transport_failed,
     stream_join_failed,
     artifact_publication_failed,
@@ -39,6 +41,8 @@ enum class SlotRunnerError : uint8_t {
         return "deployment_unavailable";
     case SlotRunnerError::deployment_invalid:
         return "deployment_invalid";
+    case SlotRunnerError::executable_authentication_failed:
+        return "executable_authentication_failed";
     case SlotRunnerError::transport_failed:
         return "transport_failed";
     case SlotRunnerError::stream_join_failed:
@@ -62,6 +66,7 @@ enum class SlotRunnerError : uint8_t {
 struct SlotRunnerDiagnostic final {
     SlotRunnerError error = SlotRunnerError::none;
     util::BoundedChildProcessError transport_error = util::BoundedChildProcessError::none;
+    util::ExecutableImageAuthenticationDiagnostic authentication;
     uint8_t stream_join_error = 0;
     SIQSShadowProofRssCampaignJournalStoreDiagnostic store_diagnostic;
     SIQSShadowProofRssCampaignJournalStoreDiagnostic taint_diagnostic;

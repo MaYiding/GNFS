@@ -20,6 +20,7 @@
 #else
 #include <cerrno>
 #include <csignal>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
@@ -413,6 +414,50 @@ template <class Char> int fake_child_main(int argc, Char* argv[]) {
                     )) {
         return echo_contract(argc, argv);
     }
+    if (mode == NativeView(
+#if defined(_WIN32)
+                    L"--argv0"
+#else
+                    "--argv0"
+#endif
+                    )) {
+        std::string argv0;
+#if defined(_WIN32)
+        if (!wide_to_utf8(argv[0], argv0)) {
+            return 65;
+        }
+#else
+        argv0 = argv[0];
+#endif
+        argv0.push_back('\n');
+        return write_stdout(argv0) ? 0 : 66;
+    }
+#if !defined(_WIN32)
+    if (mode == NativeView("--signal-dispositions")) {
+        struct sigaction action{};
+        for (const int signal_number : {SIGUSR1, SIGALRM, SIGCHLD}) {
+            if (::sigaction(signal_number, nullptr, &action) != 0 || action.sa_handler != SIG_DFL) {
+                return 70;
+            }
+        }
+        return write_stdout("default\n") ? 0 : 71;
+    }
+#endif
+#if defined(__linux__)
+    if (mode == NativeView("--check-fd-closed")) {
+        if (argc != 3) {
+            return 64;
+        }
+        std::size_t descriptor = 0;
+        if (!parse_size(NativeView(argv[2]), descriptor) ||
+            descriptor > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+            return 64;
+        }
+        errno = 0;
+        const int status = ::fcntl(static_cast<int>(descriptor), F_GETFD);
+        return status < 0 && errno == EBADF && write_stdout("closed\n") ? 0 : 69;
+    }
+#endif
     if (mode == NativeView(
 #if defined(_WIN32)
                     L"--flood-stdout"
