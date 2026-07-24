@@ -204,16 +204,25 @@ Linux 的 `linux_sealed_memfd_execveat_v1` 已闭合 same-object launch。start 
 字节复制到 `MFD_EXEC` memfd，核对 source SHA-256，施加包含 `F_SEAL_EXEC` 的完整
 seals，再重新 hash sealed object。child 使用固定逻辑 `argv[0]` 和
 `execveat(..., AT_EMPTY_PATH)`；之后替换原路径不会改变执行对象。capability 每个 slot
-只消费一次。authentication 或 launch 失败会 durable taint，不能发布 artifacts 或
-sample commit；production commit 还必须携带私有 same-object evidence。
+只消费一次。child 在任何其他 setup 前设置 `PR_SET_PDEATHSIG(SIGKILL)`，随后确认
+`getppid()` 仍等于 `_Fork` 前捕获的 launcher PID；即使 supervisor 被 `SIGKILL`、无法
+执行常规 process-group cleanup，direct probe 也会终止。对应 transport ID 为
+`gnfs.util.authenticated_bounded_child_process.linux_memfd_execveat_pdeathsig.v2`，
+contract version 为 2，旧 execution identity 不能复用。authentication 或 launch
+失败会 durable taint，不能发布 artifacts 或 sample commit；production commit 还必须
+携带私有 same-object evidence。
 
-该 Linux profile 要求 executable memfd、`F_SEAL_EXEC`、`execveat`、`close_range`
-和 `_Fork`，缺失任一能力即 fail closed，且不回退到 path spawn。digest 只认证主 ELF
-image，不认证 dynamic loader、shared libraries、kernel、Linux Security Module policy
-或外部配置，这些仍属于 approved deployment 与 host boundary。approved timeout 是
-authentication 成功后才开始的 child launch/capture deadline。authentication 本身只受
-256 MiB size cap 约束，使用同步 regular-file I/O；慢或阻塞 filesystem 仍可能造成
-availability stall，真正的时钟上限需要后续加入独立监督的 authenticator。
+该 Linux profile 要求 executable memfd、`F_SEAL_EXEC`、`execveat`、`close_range`、
+`_Fork`、`prctl` 和 `getppid`，缺失或被 host policy 阻止即 fail closed，且不回退到
+path spawn。`PR_SET_PDEATHSIG` 绑定创建 child 的具体线程，且 child 后续 `fork()` 不会
+继承该设置。因此 approved probe 固定为 direct、no-fork/no-descendant process，runner
+必须在同一个持续存活的同步调用线程内完成 launch；这不是任意 process tree 的
+containment 保证。digest 只认证主 ELF image，不认证 dynamic loader、shared libraries、
+kernel、Linux Security Module policy 或外部配置，这些仍属于 approved deployment 与
+host boundary。approved timeout 是 authentication 成功后才开始的 child launch/capture
+deadline。authentication 本身只受 256 MiB size cap 约束，使用同步 regular-file I/O；
+慢或阻塞 filesystem 仍可能造成 availability stall，真正的时钟上限需要后续加入独立监督
+的 authenticator。
 
 `darwin_hardened_suspended_v1` 只保留 schema 合同，尚未实现 production launch。
 当前 hardened probe 链接的 Homebrew GMP 与主 binary 使用不同 signing identity，

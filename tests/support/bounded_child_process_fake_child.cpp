@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <string>
@@ -456,6 +457,44 @@ template <class Char> int fake_child_main(int argc, Char* argv[]) {
         errno = 0;
         const int status = ::fcntl(static_cast<int>(descriptor), F_GETFD);
         return status < 0 && errno == EBADF && write_stdout("closed\n") ? 0 : 69;
+    }
+    if (mode == NativeView("--pid-ledger-hang")) {
+        if (argc != 3) {
+            return 64;
+        }
+        const pid_t pid = ::getpid();
+        const pid_t parent = ::getppid();
+        const pid_t group = ::getpgid(0);
+        if (pid <= 1 || parent <= 1 || group <= 1) {
+            return 72;
+        }
+        const std::string destination(argv[2]);
+        const std::string pending = destination + ".tmp." + std::to_string(pid);
+        int ledger = -1;
+        do {
+            ledger = ::open(pending.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+        } while (ledger < 0 && errno == EINTR);
+        if (ledger < 0) {
+            return 73;
+        }
+        const std::string bytes = "pid=" + std::to_string(pid) +
+                                  "\nppid=" + std::to_string(parent) +
+                                  "\npgid=" + std::to_string(group) + "\n";
+        bool published = write_all(ledger, bytes.data(), bytes.size()) && ::fsync(ledger) == 0;
+        const int close_status = ::close(ledger);
+        ledger = -1;
+        published =
+            published && close_status == 0 && ::rename(pending.c_str(), destination.c_str()) == 0;
+        if (!published) {
+            if (ledger >= 0) {
+                (void)::close(ledger);
+            }
+            (void)::unlink(pending.c_str());
+            return 74;
+        }
+        for (;;) {
+            (void)::pause();
+        }
     }
 #endif
     if (mode == NativeView(

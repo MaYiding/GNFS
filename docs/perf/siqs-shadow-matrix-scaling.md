@@ -686,16 +686,27 @@ an executable memfd, verifies the approved SHA-256, applies all write, size,
 execution, and final seals, and rehashes the sealed object. The supervisor
 executes only that descriptor with `execveat(..., AT_EMPTY_PATH)`, a fixed
 logical `argv[0]`, exact environment transfer, bounded capture, one
-post-authentication child deadline, and process-group cleanup. Replacing the
-path after authentication therefore cannot select different executable bytes.
-Authentication failures after a durable start taint the slot before artifacts,
-and a production commit requires private same-object evidence.
+post-authentication child deadline, and process-group cleanup. As its first
+child action, the Linux transport arms `PR_SET_PDEATHSIG(SIGKILL)` and checks
+the observed parent against the PID captured before `_Fork`. The direct probe
+therefore dies with a crashed supervisor even though supervisor-driven cleanup
+cannot run. The changed behavior is bound as transport
+`gnfs.util.authenticated_bounded_child_process.linux_memfd_execveat_pdeathsig.v2`
+version 2. Replacing the path after authentication therefore cannot select
+different executable bytes. Authentication failures after a durable start
+taint the slot before artifacts, and a production commit requires private
+same-object evidence.
 
 The Linux profile requires executable memfds, `F_SEAL_EXEC`, `execveat`,
-`close_range`, and `_Fork`; unsupported hosts fail closed without a path
-fallback. The main ELF digest does not authenticate the dynamic loader, shared
-libraries, kernel, Linux Security Module policy, or external configuration.
-Those dependencies remain in the approved deployment and host boundary.
+`close_range`, `_Fork`, `prctl`, and `getppid`; unsupported or policy-blocked
+hosts fail closed without a path fallback. Parent-death delivery is tied to the
+thread that created the child, and a later child `fork()` clears the setting.
+The approved probe must therefore remain a direct no-fork/no-descendant
+process, with the synchronous launch thread alive until the transport returns.
+This closes direct-probe orphaning, not arbitrary process-tree containment.
+The main ELF digest does not authenticate the dynamic loader, shared libraries,
+kernel, Linux Security Module policy, or external configuration. Those
+dependencies remain in the approved deployment and host boundary.
 Authentication is capped at 256 MiB but uses synchronous regular-file I/O
 before the child deadline starts. Slow or stalled filesystems can therefore
 delay terminal taint; a separately supervised authenticator remains future
@@ -988,8 +999,9 @@ Before promotion it must provide:
 - [x] Execution-contract schema V2 and Linux same-object authentication with a
   sealed executable memfd, source and sealed-image SHA-256 checks,
   descriptor-based execution, fixed logical `argv[0]`, one-shot authority,
-  production-receipt enforcement, and fail-closed capability checks. macOS and
-  Windows production launch remain unavailable.
+  direct-child parent-death containment, production-receipt enforcement, and
+  fail-closed capability checks. macOS and Windows production launch remain
+  unavailable.
 - [x] Deployment-owned approval and expected-runtime binding. Caller policy
   and runtime values must match every private row field, and malformed runner
   configuration fails before journal I/O. These expected values are not

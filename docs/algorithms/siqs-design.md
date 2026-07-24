@@ -251,23 +251,35 @@ growth, shrink, execution, and seal seals, and rehashes the sealed object. The
 child then uses the fixed logical `argv[0]` and
 `execveat(..., AT_EMPTY_PATH)` under the existing bounded dual-stream,
 post-authentication deadline, process-group, and descendant-cleanup supervisor.
-Replacing the path after authentication cannot change the executed object. The
-capability is consumed by one launch and cannot be cached or reused across
-slots.
+Before any other child setup, the Linux transport arms
+`PR_SET_PDEATHSIG(SIGKILL)` and verifies that `getppid()` still names the
+captured launcher process. Supervisor death therefore terminates the direct
+probe even when ordinary process-group cleanup cannot run. The transport
+identity is
+`gnfs.util.authenticated_bounded_child_process.linux_memfd_execveat_pdeathsig.v2`
+with contract version 2, so an approval for the earlier launch semantics
+cannot authorize this path. Replacing the path after authentication cannot
+change the executed object. The capability is consumed by one launch and
+cannot be cached or reused across slots.
 
 An authentication or launch failure after the durable start publishes the
 terminal taint and cannot publish artifacts or a sample commit. A production
 commit additionally requires private same-object evidence from the
 authenticated launch. The profile deliberately requires modern Linux support
-for executable memfds, `F_SEAL_EXEC`, `execveat`, `close_range`, and `_Fork`;
-missing support fails closed without a path fallback. The executable image
-digest does not authenticate the dynamic loader, shared libraries, kernel,
-Linux Security Module policy, or external configuration. Those dependencies
-remain part of the approved deployment and host boundary. Authentication is
-size-bounded to 256 MiB but uses synchronous regular-file I/O before the child
-deadline starts. A slow or stalled filesystem can therefore delay terminal
-taint; a separately supervised authenticator remains required for a
-clock-bounded authentication phase.
+for executable memfds, `F_SEAL_EXEC`, `execveat`, `close_range`, `_Fork`,
+`prctl`, and `getppid`; missing or policy-blocked support fails closed without
+a path fallback. `PR_SET_PDEATHSIG` is tied to the thread that created the
+child and is cleared in a child created by a later `fork()`. The approved probe
+is therefore a direct, no-fork/no-descendant process, and the runner must keep
+the same synchronous launch thread alive for the complete call. This is
+direct-probe containment, not a general process-tree guarantee. The executable
+image digest does not authenticate the dynamic loader, shared libraries,
+kernel, Linux Security Module policy, or external configuration. Those
+dependencies remain part of the approved deployment and host boundary.
+Authentication is size-bounded to 256 MiB but uses synchronous regular-file
+I/O before the child deadline starts. A slow or stalled filesystem can
+therefore delay terminal taint; a separately supervised authenticator remains
+required for a clock-bounded authentication phase.
 
 The private deployment row also owns the complete approved policy and expected
 runtime contract. Public policy and runtime values act only as claims. After

@@ -569,8 +569,25 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(bounded_child_process_fake_child PRIVATE Threads::Threads)
     target_link_libraries(test_bounded_child_process PRIVATE gnfs_util Threads::Threads)
     add_dependencies(test_bounded_child_process bounded_child_process_fake_child)
-    add_test(NAME BoundedChildProcess
-        COMMAND test_bounded_child_process $<TARGET_FILE:bounded_child_process_fake_child>)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(bounded_child_process_authenticated_supervisor EXCLUDE_FROM_ALL
+            tests/support/bounded_child_process_authenticated_supervisor.cpp
+        )
+        target_include_directories(bounded_child_process_authenticated_supervisor PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/util
+        )
+        target_link_libraries(bounded_child_process_authenticated_supervisor
+            PRIVATE gnfs_util Threads::Threads)
+        add_dependencies(test_bounded_child_process
+            bounded_child_process_authenticated_supervisor)
+        add_test(NAME BoundedChildProcess
+            COMMAND test_bounded_child_process
+                $<TARGET_FILE:bounded_child_process_fake_child>
+                $<TARGET_FILE:bounded_child_process_authenticated_supervisor>)
+    else()
+        add_test(NAME BoundedChildProcess
+            COMMAND test_bounded_child_process $<TARGET_FILE:bounded_child_process_fake_child>)
+    endif()
     set_tests_properties(BoundedChildProcess PROPERTIES LABELS "instant" TIMEOUT 30)
 
     add_executable(test_mmap_file

@@ -34,6 +34,7 @@
 
 #if defined(__linux__)
 #include <features.h>
+#include <linux/prctl.h>
 #include <pthread.h>
 #include <sys/syscall.h>
 #endif
@@ -361,6 +362,8 @@ enum class DescriptorPreExecStage : std::uint32_t {
     close_descriptors = 4,
     restore_signal_mask = 5,
     execveat = 6,
+    arm_parent_death_signal = 7,
+    verify_parent_liveness = 8,
 };
 
 struct DescriptorPreExecFailure final {
@@ -468,6 +471,18 @@ struct DescriptorCleanupResult final {
     return native_error == ENOSYS || native_error == EACCES || native_error == EPERM;
 }
 
+[[nodiscard]] constexpr bool
+descriptor_parent_death_is_platform_unavailable(int native_error) noexcept {
+    return native_error == ENOSYS || native_error == EINVAL || native_error == EACCES ||
+           native_error == EPERM;
+}
+
+[[nodiscard]] constexpr bool
+descriptor_stage_is_parent_death_setup(DescriptorPreExecStage stage) noexcept {
+    return stage == DescriptorPreExecStage::arm_parent_death_signal ||
+           stage == DescriptorPreExecStage::verify_parent_liveness;
+}
+
 [[nodiscard]] DescriptorSpawnResult
 spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
                          const CapturePipe& stderr_pipe, char* const* argv,
@@ -505,6 +520,7 @@ spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
         return {-1, block_status, BoundedChildProcessError::spawn_failed};
     }
 
+    const pid_t expected_parent = ::getpid();
 #if defined(__GLIBC__) && defined(__GLIBC_PREREQ) && __GLIBC_PREREQ(2, 34)
     const pid_t child = ::_Fork();
 #else
@@ -517,6 +533,24 @@ spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
         return {-1, fork_error, BoundedChildProcessError::spawn_failed};
     }
     if (child == 0) {
+#if defined(SYS_prctl) && defined(SYS_getppid) && defined(PR_SET_PDEATHSIG)
+        if (::syscall(SYS_prctl, PR_SET_PDEATHSIG, SIGKILL, 0L, 0L, 0L) != 0) {
+            report_pre_exec_failure(diagnostic_write.get(),
+                                    DescriptorPreExecStage::arm_parent_death_signal, errno);
+        }
+        const long observed_parent = ::syscall(SYS_getppid);
+        if (observed_parent < 0) {
+            report_pre_exec_failure(diagnostic_write.get(),
+                                    DescriptorPreExecStage::verify_parent_liveness, errno);
+        }
+        if (observed_parent != static_cast<long>(expected_parent)) {
+            report_pre_exec_failure(diagnostic_write.get(),
+                                    DescriptorPreExecStage::verify_parent_liveness, ECHILD);
+        }
+#else
+        report_pre_exec_failure(diagnostic_write.get(),
+                                DescriptorPreExecStage::arm_parent_death_signal, ENOSYS);
+#endif
         (void)::close(diagnostic_read.get());
         if (::setpgid(0, 0) != 0) {
             report_pre_exec_failure(diagnostic_write.get(),
@@ -617,11 +651,15 @@ spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
     }
 
     const auto cleanup = kill_and_reap_descriptor_child(child);
-    const auto error = handshake_timed_out ? BoundedChildProcessError::timeout
-                       : child_failure.stage == DescriptorPreExecStage::execveat &&
-                               descriptor_exec_is_platform_unavailable(child_failure.native_error)
-                           ? BoundedChildProcessError::platform_unavailable
-                           : BoundedChildProcessError::spawn_failed;
+    const auto error =
+        handshake_timed_out ? BoundedChildProcessError::timeout
+        : child_failure.stage == DescriptorPreExecStage::execveat &&
+                descriptor_exec_is_platform_unavailable(child_failure.native_error)
+            ? BoundedChildProcessError::platform_unavailable
+        : descriptor_stage_is_parent_death_setup(child_failure.stage) &&
+                descriptor_parent_death_is_platform_unavailable(child_failure.native_error)
+            ? BoundedChildProcessError::platform_unavailable
+            : BoundedChildProcessError::spawn_failed;
     return {-1, child_failure.native_error, error, cleanup.complete, cleanup.native_error};
 }
 

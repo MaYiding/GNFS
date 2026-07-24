@@ -39,7 +39,7 @@ using identity_detail::ProbeExecutionContractInput;
 constexpr std::string_view EXECUTABLE_SHA256 =
     "7cd5084a925acabf1d46b47291a92effd2cbf7eef3a5ed354f626b1878fa114b";
 constexpr std::string_view EXECUTION_CONTRACT_SHA256 =
-    "957bb595f9edbb4dcbbcd09331c85cceef4662f8ea9f6da4da9a9830bba230e6";
+    "f159f66eb3aeb601aa5ac4bb0fc839efcaa0f074fca651001fe54d508ad2546a";
 
 static_assert(gnfs::siqs::SIQS_SHADOW_PROOF_RSS_PROBE_EXECUTION_CONTRACT_SCHEMA_VERSION == 2);
 static_assert(sizeof(SIQSShadowProofRssProbeExecutionIdentity) == 64);
@@ -50,6 +50,18 @@ static_assert(identity_detail::SIQS_SHADOW_PROOF_RSS_PROBE_STDOUT_CAP_BYTES == 4
 static_assert(identity_detail::SIQS_SHADOW_PROOF_RSS_PROBE_OFF_STDERR_CAP_BYTES == 0);
 static_assert(identity_detail::SIQS_SHADOW_PROOF_RSS_PROBE_OBSERVE_STDERR_CAP_BYTES == 16 * 1024);
 static_assert(identity_detail::SIQS_SHADOW_PROOF_RSS_PROBE_JOINED_CAP_BYTES == 4096);
+static_assert(identity_detail::canonical_detail::transport_contract_version(
+                  ProbeExecutableLaunchProfile::synthetic_path_spawn_v1) ==
+              std::optional<std::uint64_t>{1});
+static_assert(identity_detail::canonical_detail::transport_contract_version(
+                  ProbeExecutableLaunchProfile::linux_sealed_memfd_execveat_v1) ==
+              std::optional<std::uint64_t>{2});
+static_assert(identity_detail::canonical_detail::transport_contract_version(
+                  ProbeExecutableLaunchProfile::darwin_hardened_suspended_v1) ==
+              std::optional<std::uint64_t>{1});
+static_assert(!identity_detail::canonical_detail::transport_contract_version(
+                   ProbeExecutableLaunchProfile::unknown)
+                   .has_value());
 static_assert(
     identity_detail::SIQS_SHADOW_PROOF_RSS_PROBE_STDOUT_SCHEMA ==
     gnfs::siqs::shadow_proof_rss_holdout_detail::SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_PREFIX);
@@ -185,8 +197,9 @@ void append_string(std::vector<std::byte>& output, std::string_view value) {
     append_u64(output, 1);
     append_string(output, "GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_V3");
     append_u64(output, 3);
-    append_string(output, "gnfs.util.authenticated_bounded_child_process.linux_memfd_execveat.v1");
-    append_u64(output, 1);
+    append_string(
+        output, "gnfs.util.authenticated_bounded_child_process.linux_memfd_execveat_pdeathsig.v2");
+    append_u64(output, 2);
     append_u64(output, 1);
     append_u64(output, 1);
     append_u64(output, 1);
@@ -222,7 +235,7 @@ void test_golden_identity_and_split_hash() {
     EXPECT(decoded_contract == std::optional(identity->execution_contract_sha256));
 
     const std::vector<std::byte> preimage = independent_golden_preimage();
-    EXPECT(preimage.size() == 877);
+    EXPECT(preimage.size() == 887);
     const auto one_shot = sha256(std::span<const std::byte>(preimage));
     EXPECT(one_shot.has_value());
     EXPECT(one_shot == decoded_contract);

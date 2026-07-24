@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <csignal>
 #include <cstddef>
@@ -16,10 +17,12 @@
 #include <fstream>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -31,7 +34,10 @@
 #elif defined(__linux__)
 #include <cerrno>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -263,6 +269,136 @@ void copy_executable(const std::filesystem::path& source,
 
 [[nodiscard]] std::uint64_t current_owner() noexcept {
     return static_cast<std::uint64_t>(::geteuid());
+}
+
+class UniqueTestFd final {
+public:
+    UniqueTestFd() = default;
+    explicit UniqueTestFd(int fd) noexcept : fd_(fd) {}
+    ~UniqueTestFd() {
+        if (fd_ >= 0) {
+            (void)::close(fd_);
+        }
+    }
+
+    UniqueTestFd(const UniqueTestFd&) = delete;
+    UniqueTestFd& operator=(const UniqueTestFd&) = delete;
+    UniqueTestFd(UniqueTestFd&&) = delete;
+    UniqueTestFd& operator=(UniqueTestFd&&) = delete;
+
+    [[nodiscard]] int get() const noexcept {
+        return fd_;
+    }
+
+private:
+    int fd_ = -1;
+};
+
+struct ProcessLedger final {
+    pid_t pid = -1;
+    pid_t parent = -1;
+    pid_t group = -1;
+};
+
+[[nodiscard]] bool parse_pid_field(std::string_view line, std::string_view prefix,
+                                   pid_t& output) noexcept {
+    if (!line.starts_with(prefix)) {
+        return false;
+    }
+    const std::string_view encoded = line.substr(prefix.size());
+    std::int64_t parsed = 0;
+    const auto [end, error] =
+        std::from_chars(encoded.data(), encoded.data() + encoded.size(), parsed);
+    if (error != std::errc{} || end != encoded.data() + encoded.size() || parsed <= 1 ||
+        parsed > static_cast<std::int64_t>(std::numeric_limits<pid_t>::max())) {
+        return false;
+    }
+    output = static_cast<pid_t>(parsed);
+    return true;
+}
+
+[[nodiscard]] std::optional<ProcessLedger> read_process_ledger(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) {
+        return std::nullopt;
+    }
+    std::array<std::string, 3> lines;
+    for (auto& line : lines) {
+        if (!std::getline(input, line)) {
+            return std::nullopt;
+        }
+    }
+    std::string trailing;
+    if (std::getline(input, trailing)) {
+        return std::nullopt;
+    }
+    ProcessLedger ledger;
+    if (!parse_pid_field(lines[0], "pid=", ledger.pid) ||
+        !parse_pid_field(lines[1], "ppid=", ledger.parent) ||
+        !parse_pid_field(lines[2], "pgid=", ledger.group)) {
+        return std::nullopt;
+    }
+    return ledger;
+}
+
+[[nodiscard]] bool pidfd_capability_unavailable(int native_error) noexcept {
+    return native_error == ENOSYS || native_error == EINVAL || native_error == EPERM ||
+           native_error == EACCES;
+}
+
+[[nodiscard]] int pidfd_open_for(pid_t pid) noexcept {
+#if defined(SYS_pidfd_open)
+    return static_cast<int>(::syscall(SYS_pidfd_open, pid, 0U));
+#else
+    (void)pid;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+[[nodiscard]] int pidfd_send_signal_to(int pidfd, int signal_number) noexcept {
+#if defined(SYS_pidfd_send_signal)
+    return static_cast<int>(::syscall(SYS_pidfd_send_signal, pidfd, signal_number, nullptr, 0U));
+#else
+    (void)pidfd;
+    (void)signal_number;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+[[nodiscard]] pid_t waitpid_no_intr(pid_t pid, int* status, int options) noexcept {
+    pid_t waited = -1;
+    do {
+        waited = ::waitpid(pid, status, options);
+    } while (waited < 0 && errno == EINTR);
+    return waited;
+}
+
+[[nodiscard]] pid_t waitpid_until(pid_t pid, int* status,
+                                  std::chrono::milliseconds timeout) noexcept {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (true) {
+        const pid_t waited = waitpid_no_intr(pid, status, WNOHANG);
+        if (waited != 0) {
+            return waited;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return 0;
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+}
+
+[[nodiscard]] pid_t terminate_and_reap_owned_process(pid_t pid, int pidfd, int* status) noexcept {
+    int signal_status = pidfd >= 0 ? pidfd_send_signal_to(pidfd, SIGKILL) : -1;
+    if (signal_status != 0) {
+        signal_status = ::kill(pid, SIGKILL);
+    }
+    if (signal_status != 0 && errno != ESRCH) {
+        return -1;
+    }
+    return waitpid_until(pid, status, 2s);
 }
 
 void test_authenticated_linux_rejections(const std::filesystem::path& executable) {
@@ -506,6 +642,173 @@ void test_authenticated_linux_same_object_and_supervision(const std::filesystem:
         check_success(result);
         CHECK(result.stdout_bytes.size() == 1024);
         CHECK(result.stderr_bytes.size() == 1024);
+    }
+}
+
+void test_authenticated_linux_parent_death_containment(
+    const std::filesystem::path& executable, const std::filesystem::path& supervisor_executable) {
+    AuthenticatedTempDirectory fixture;
+    const auto approved = fixture.leaf("approved-parent-death-probe");
+    const auto ledger_path = fixture.leaf("child-process-ledger");
+    copy_executable(executable, approved);
+    const auto digest = sha256_file(approved);
+    CHECK(digest.has_value());
+    if (!digest.has_value()) {
+        return;
+    }
+
+    auto availability = authenticate_executable_image(approved, *digest, current_owner());
+    if (!availability &&
+        availability.diagnostic.error == ExecutableImageAuthenticationError::platform_unavailable) {
+        std::cout << "SKIP: authenticated parent-death containment is unavailable on this host\n";
+        return;
+    }
+    CHECK(static_cast<bool>(availability));
+    if (!availability) {
+        return;
+    }
+    availability.image.reset();
+
+    const int capability_fd = pidfd_open_for(::getpid());
+    if (capability_fd < 0) {
+        if (pidfd_capability_unavailable(errno)) {
+            std::cout << "SKIP: pidfd_open is unavailable for parent-death containment test\n";
+            return;
+        }
+        CHECK_CONTEXT(false, "pidfd_open capability probe");
+        return;
+    }
+    {
+        UniqueTestFd capability(capability_fd);
+        if (pidfd_send_signal_to(capability.get(), 0) != 0) {
+            if (pidfd_capability_unavailable(errno)) {
+                std::cout
+                    << "SKIP: pidfd_send_signal is unavailable for parent-death containment test\n";
+                return;
+            }
+            CHECK_CONTEXT(false, "pidfd_send_signal capability probe");
+            return;
+        }
+    }
+
+    const std::string supervisor_native = supervisor_executable.string();
+    const std::string approved_native = approved.string();
+    const std::string ledger_native = ledger_path.string();
+    const pid_t supervisor = ::fork();
+    CHECK(supervisor >= 0);
+    if (supervisor < 0) {
+        return;
+    }
+    if (supervisor == 0) {
+        ::execl(supervisor_native.c_str(), supervisor_native.c_str(), approved_native.c_str(),
+                ledger_native.c_str(), static_cast<char*>(nullptr));
+        ::_exit(126);
+    }
+
+    const int supervisor_pidfd_native = pidfd_open_for(supervisor);
+    CHECK_CONTEXT(supervisor_pidfd_native >= 0, "pidfd_open supervisor");
+    if (supervisor_pidfd_native < 0) {
+        int ignored = 0;
+        CHECK_CONTEXT(terminate_and_reap_owned_process(supervisor, -1, &ignored) == supervisor,
+                      "cleanup supervisor after pidfd_open failure");
+        return;
+    }
+    UniqueTestFd supervisor_pidfd(supervisor_pidfd_native);
+
+    std::optional<ProcessLedger> ledger;
+    bool supervisor_reaped = false;
+    int early_status = 0;
+    const auto ledger_deadline = std::chrono::steady_clock::now() + 5s;
+    while (std::chrono::steady_clock::now() < ledger_deadline) {
+        ledger = read_process_ledger(ledger_path);
+        if (ledger.has_value()) {
+            break;
+        }
+        const pid_t waited = waitpid_no_intr(supervisor, &early_status, WNOHANG);
+        if (waited == supervisor) {
+            supervisor_reaped = true;
+            break;
+        }
+        if (waited < 0) {
+            break;
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+
+    if (!ledger.has_value() && supervisor_reaped && WIFEXITED(early_status) &&
+        WEXITSTATUS(early_status) == 77) {
+        std::cout << "SKIP: parent-death signal transport is unavailable on this host\n";
+        return;
+    }
+    CHECK_CONTEXT(ledger.has_value(), "authenticated child did not publish process ledger");
+    if (!ledger.has_value()) {
+        if (!supervisor_reaped) {
+            int ignored = 0;
+            CHECK_CONTEXT(terminate_and_reap_owned_process(supervisor, supervisor_pidfd.get(),
+                                                           &ignored) == supervisor,
+                          "cleanup supervisor without child ledger");
+        }
+        return;
+    }
+
+    const int child_pidfd_native = pidfd_open_for(ledger->pid);
+    CHECK_CONTEXT(child_pidfd_native >= 0, "pidfd_open authenticated child");
+    if (child_pidfd_native < 0) {
+        if (!supervisor_reaped) {
+            int ignored = 0;
+            CHECK_CONTEXT(terminate_and_reap_owned_process(supervisor, supervisor_pidfd.get(),
+                                                           &ignored) == supervisor,
+                          "cleanup supervisor after child pidfd_open failure");
+        }
+        return;
+    }
+    UniqueTestFd child_pidfd(child_pidfd_native);
+
+    CHECK(ledger->parent == supervisor);
+    CHECK(ledger->group == ledger->pid);
+    pollfd child_poll{child_pidfd.get(), POLLIN, 0};
+    int poll_status = -1;
+    do {
+        poll_status = ::poll(&child_poll, 1, 0);
+    } while (poll_status < 0 && errno == EINTR);
+    CHECK_CONTEXT(poll_status == 0, "authenticated child exited before supervisor kill");
+    CHECK_CONTEXT(!supervisor_reaped, "supervisor exited before explicit kill");
+
+    int signal_status =
+        supervisor_reaped ? -1 : pidfd_send_signal_to(supervisor_pidfd.get(), SIGKILL);
+    CHECK_CONTEXT(signal_status == 0, "pidfd SIGKILL supervisor");
+    if (signal_status != 0 && !supervisor_reaped) {
+        signal_status = ::kill(supervisor, SIGKILL);
+        CHECK_CONTEXT(signal_status == 0, "fallback SIGKILL supervisor");
+    }
+    int supervisor_status = 0;
+    const pid_t waited = supervisor_reaped ? -1 : waitpid_until(supervisor, &supervisor_status, 2s);
+    CHECK_CONTEXT(waited == supervisor, "waitpid supervisor");
+    if (!supervisor_reaped && waited != supervisor) {
+        int cleanup_status = 0;
+        CHECK_CONTEXT(terminate_and_reap_owned_process(supervisor, supervisor_pidfd.get(),
+                                                       &cleanup_status) == supervisor,
+                      "final supervisor cleanup");
+    }
+    if (waited == supervisor) {
+        CHECK(WIFSIGNALED(supervisor_status));
+        CHECK(WTERMSIG(supervisor_status) == SIGKILL);
+    }
+
+    child_poll.revents = 0;
+    do {
+        poll_status = ::poll(&child_poll, 1, 2000);
+    } while (poll_status < 0 && errno == EINTR);
+    CHECK_CONTEXT(poll_status == 1, "parent-death SIGKILL did not terminate direct child");
+    CHECK_CONTEXT((child_poll.revents & POLLIN) != 0,
+                  "child pidfd did not report terminal process state");
+    if (poll_status != 1 || (child_poll.revents & POLLIN) == 0) {
+        (void)pidfd_send_signal_to(child_pidfd.get(), SIGKILL);
+        child_poll.revents = 0;
+        do {
+            poll_status = ::poll(&child_poll, 1, 2000);
+        } while (poll_status < 0 && errno == EINTR);
+        CHECK_CONTEXT(poll_status == 1, "authenticated child cleanup did not reach terminal state");
     }
 }
 
@@ -901,13 +1204,21 @@ void test_external_reaper_fails_closed(const std::filesystem::path& executable) 
 } // namespace
 
 template <class Char> int bounded_child_process_test_main(int argc, Char* argv[]) {
+#if defined(__linux__)
+    if (argc < 1 || argc > 3) {
+        std::cerr << "usage: test_bounded_child_process "
+                     "[absolute-fake-child [absolute-authenticated-supervisor]]\n";
+        return 2;
+    }
+#else
     if (argc < 1 || argc > 2) {
         std::cerr << "usage: test_bounded_child_process [absolute-fake-child]\n";
         return 2;
     }
+#endif
     try {
         std::filesystem::path executable;
-        if (argc == 2) {
+        if (argc >= 2) {
             executable = std::filesystem::absolute(std::filesystem::path(argv[1]));
         } else {
             executable = std::filesystem::absolute(std::filesystem::path(argv[0])).parent_path() /
@@ -919,8 +1230,16 @@ template <class Char> int bounded_child_process_test_main(int argc, Char* argv[]
         test_error_name_contract();
         test_authenticated_platform_boundary(executable);
 #if defined(__linux__)
+        std::filesystem::path supervisor_executable;
+        if (argc == 3) {
+            supervisor_executable = std::filesystem::absolute(std::filesystem::path(argv[2]));
+        } else {
+            supervisor_executable =
+                executable.parent_path() / "bounded_child_process_authenticated_supervisor";
+        }
         test_authenticated_linux_rejections(executable);
         test_authenticated_linux_same_object_and_supervision(executable);
+        test_authenticated_linux_parent_death_containment(executable, supervisor_executable);
 #endif
 #if !defined(_WIN32)
         test_posix_termination_scope_guard();

@@ -18,6 +18,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <features.h>
+#include <linux/prctl.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -252,7 +253,8 @@ authenticate_executable_image(const std::filesystem::path& executable,
 #if !defined(__GLIBC__) || !defined(__GLIBC_PREREQ)
         (void)expected_owner;
         return authentication_failure(ExecutableImageAuthenticationError::platform_unavailable);
-#elif !__GLIBC_PREREQ(2, 34) || !defined(SYS_execveat) || !defined(SYS_close_range)
+#elif !__GLIBC_PREREQ(2, 34) || !defined(SYS_execveat) || !defined(SYS_close_range) ||             \
+    !defined(SYS_prctl) || !defined(SYS_getppid) || !defined(PR_SET_PDEATHSIG)
         (void)expected_owner;
         return authentication_failure(ExecutableImageAuthenticationError::platform_unavailable);
 #else

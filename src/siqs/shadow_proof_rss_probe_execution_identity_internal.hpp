@@ -69,11 +69,10 @@ inline constexpr std::string_view SIQS_SHADOW_PROOF_RSS_PROBE_PATH_TRANSPORT_CON
     "gnfs.util.bounded_child_process.transport.v1";
 inline constexpr std::string_view
     SIQS_SHADOW_PROOF_RSS_PROBE_LINUX_AUTHENTICATED_TRANSPORT_CONTRACT_ID =
-        "gnfs.util.authenticated_bounded_child_process.linux_memfd_execveat.v1";
+        "gnfs.util.authenticated_bounded_child_process.linux_memfd_execveat_pdeathsig.v2";
 inline constexpr std::string_view
     SIQS_SHADOW_PROOF_RSS_PROBE_DARWIN_AUTHENTICATED_TRANSPORT_CONTRACT_ID =
         "gnfs.util.authenticated_bounded_child_process.darwin_suspended_codesign.v1";
-inline constexpr std::uint64_t SIQS_SHADOW_PROOF_RSS_PROBE_TRANSPORT_CONTRACT_VERSION = 1;
 
 inline constexpr std::uint64_t SIQS_SHADOW_PROOF_RSS_PROBE_STDOUT_CAP_BYTES =
     SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_STDOUT_MAX_BYTES;
@@ -265,6 +264,21 @@ transport_contract_id(ProbeExecutableLaunchProfile profile) noexcept {
 }
 
 [[nodiscard]] constexpr std::optional<std::uint64_t>
+transport_contract_version(ProbeExecutableLaunchProfile profile) noexcept {
+    switch (profile) {
+    case ProbeExecutableLaunchProfile::synthetic_path_spawn_v1:
+        return 1;
+    case ProbeExecutableLaunchProfile::linux_sealed_memfd_execveat_v1:
+        return 2;
+    case ProbeExecutableLaunchProfile::darwin_hardened_suspended_v1:
+        return 1;
+    case ProbeExecutableLaunchProfile::unknown:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] constexpr std::optional<std::uint64_t>
 operating_system_tag(SIQSShadowProofRssOperatingSystem value) noexcept {
     switch (value) {
     case SIQSShadowProofRssOperatingSystem::darwin:
@@ -363,8 +377,9 @@ make_siqs_shadow_proof_rss_probe_execution_identity(
     const auto os_tag = operating_system_tag(input.operating_system);
     const auto arch_tag = architecture_tag(input.architecture);
     const auto backend_tag = memory_backend_tag(input.memory_backend);
+    const auto transport_version = transport_contract_version(input.launch_profile);
     if (!digest_is_nonzero(input.executable_sha256) || !probe_tag.has_value() ||
-        !profile_tag.has_value() ||
+        !profile_tag.has_value() || !transport_version.has_value() ||
         !launch_profile_matches_contract(input.launch_profile, input.probe_kind,
                                          input.operating_system) ||
         !safe_token(input.candidate_revision) || !os_tag.has_value() || !arch_tag.has_value() ||
@@ -419,9 +434,8 @@ make_siqs_shadow_proof_rss_probe_execution_identity(
         !writer.append_string(SIQS_SHADOW_PROOF_RSS_PROBE_JOINED_SCHEMA) ||
         !writer.append_u64(SIQS_SHADOW_PROOF_RSS_PROBE_JOINED_SCHEMA_VERSION) ||
         !writer.append_string(transport_contract_id(input.launch_profile)) ||
-        !writer.append_u64(SIQS_SHADOW_PROOF_RSS_PROBE_TRANSPORT_CONTRACT_VERSION) ||
-        !writer.append_u64(1) || // shell-free
-        !writer.append_u64(1) || // fresh process
+        !writer.append_u64(*transport_version) || !writer.append_u64(1) || // shell-free
+        !writer.append_u64(1) ||                                           // fresh process
         !writer.append_u64(1)) { // process-group descendant cleanup
         return std::nullopt;
     }
