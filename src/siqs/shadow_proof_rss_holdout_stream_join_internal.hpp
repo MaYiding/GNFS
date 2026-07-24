@@ -10,6 +10,7 @@
 #include <gnfs/siqs/shadow_matrix.hpp>
 #include <gnfs/siqs/shadow_proof_observe_record_codec.hpp>
 #include <gnfs/siqs/shadow_proof_rss_campaign_journal.hpp>
+#include <gnfs/util/sha256.hpp>
 
 #include <array>
 #include <charconv>
@@ -26,8 +27,8 @@
 namespace gnfs::siqs::shadow_proof_rss_holdout_detail {
 
 inline constexpr std::string_view SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_PREFIX =
-    "GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_V2";
-inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_SCHEMA_VERSION = 2;
+    "GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_V3";
+inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_SCHEMA_VERSION = 3;
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_HOLDOUT_FACTOR_BASE_COLUMNS = 1601;
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_HOLDOUT_SELECTED_ROWS = 1701;
 // Outcome-blind, fixture-specific values derived from the current production
@@ -137,6 +138,7 @@ struct SIQSShadowProofRssUncommittedSampleDraft final {
     util::ProcessMemoryBackend memory_backend = util::ProcessMemoryBackend::Unsupported;
     std::size_t resolved_production_sieve_workers = 0;
     siqs::SIQSShadowProofRssProbeKind probe_kind = siqs::SIQSShadowProofRssProbeKind::unknown;
+    siqs::SIQSShadowProofRssProbeExecutionIdentity probe_execution_identity;
     bool fresh_process = false;
     bool completed = false;
     siqs::SIQSShadowProofRssFactorIdentity factor_identity =
@@ -432,6 +434,12 @@ inline void append_digest(std::string& output, std::string_view prefix,
     append_u64(output, high_key, digest.high);
 }
 
+inline void append_sha256(std::string& output, std::string_view key,
+                          const util::Sha256Digest& digest) {
+    const util::Sha256Hex encoded = util::encode_sha256_hex(digest);
+    append_field(output, key, std::string_view(encoded.data(), encoded.size()));
+}
+
 [[nodiscard]] inline std::string
 canonical_projection(const siqs::SIQSShadowProofRssGatePolicy& policy,
                      const siqs::SIQSShadowProofRssCampaignRuntimeFacts& facts,
@@ -462,6 +470,10 @@ canonical_projection(const siqs::SIQSShadowProofRssGatePolicy& policy,
     append_field(output, "probe_kind",
                  siqs::siqs_shadow_proof_rss_probe_kind_name(facts.probe_kind));
     append_field(output, "candidate_revision", facts.candidate_revision);
+    append_sha256(output, "probe_executable_sha256",
+                  facts.probe_execution_identity.executable_sha256);
+    append_sha256(output, "probe_execution_contract_sha256",
+                  facts.probe_execution_identity.execution_contract_sha256);
     append_field(output, "fresh_process", "true");
     append_field(output, "completed", "true");
     append_field(output, "factor_identity", "pass");
@@ -521,6 +533,10 @@ join_siqs_shadow_proof_rss_holdout_streams(
     const auto plan = siqs::make_siqs_shadow_proof_rss_campaign_plan(policy);
     if (plan.status != siqs::SIQSShadowProofRssCampaignPlanStatus::ready ||
         slot->slot_number == 0 || slot->slot_number > plan.slot_count ||
+        !siqs::siqs_shadow_proof_rss_probe_execution_identity_is_valid(
+            slot->probe_execution_identity) ||
+        slot->probe_execution_identity != policy->probe_execution_identity ||
+        slot->probe_execution_identity != runtime_facts->probe_execution_identity ||
         *slot != plan.slots[slot->slot_number - 1]) {
         return failure(Error::slot_invalid);
     }
@@ -617,6 +633,7 @@ join_siqs_shadow_proof_rss_holdout_streams(
         draft.memory_backend = runtime_facts->memory_backend;
         draft.resolved_production_sieve_workers = runtime_facts->resolved_production_sieve_workers;
         draft.probe_kind = runtime_facts->probe_kind;
+        draft.probe_execution_identity = runtime_facts->probe_execution_identity;
         draft.fresh_process = true;
         draft.completed = true;
         draft.factor_identity = siqs::SIQSShadowProofRssFactorIdentity::pass;

@@ -46,6 +46,18 @@ void check(bool condition, const char* expression, int line) {
 
 #define CHECK(condition) check(static_cast<bool>(condition), #condition, __LINE__)
 
+[[nodiscard]] constexpr SIQSShadowProofRssProbeExecutionIdentity
+test_probe_execution_identity() noexcept {
+    SIQSShadowProofRssProbeExecutionIdentity identity;
+    for (std::size_t index = 0; index < identity.executable_sha256.bytes.size(); ++index) {
+        identity.executable_sha256.bytes[index] = static_cast<std::byte>(index);
+        identity.execution_contract_sha256.bytes[index] = static_cast<std::byte>(index + 32);
+    }
+    return identity;
+}
+
+inline constexpr auto TEST_PROBE_EXECUTION_IDENTITY = test_probe_execution_identity();
+
 [[nodiscard]] constexpr SIQSShadowProofRssGatePolicy make_policy() noexcept {
     SIQSShadowProofRssGatePolicy policy;
     policy.approved = true;
@@ -57,6 +69,7 @@ void check(bool condition, const char* expression, int line) {
     policy.memory_backend = ProcessMemoryBackend::DarwinGetrusage;
     policy.resolved_production_sieve_workers = 4;
     policy.candidate_revision = "candidate-revision-1";
+    policy.probe_execution_identity = TEST_PROBE_EXECUTION_IDENTITY;
     policy.approval_id = "approval-ticket-1";
     policy.journal_store = {{UINT64_C(1010101010101010), UINT64_C(2020202020202020)},
                             {UINT64_C(1111222233334444), UINT64_C(5555666677778888)},
@@ -74,6 +87,7 @@ void check(bool condition, const char* expression, int line) {
         .resolved_production_sieve_workers = 4,
         .probe_kind = SIQSShadowProofRssProbeKind::production_holdout,
         .candidate_revision = "candidate-revision-1",
+        .probe_execution_identity = TEST_PROBE_EXECUTION_IDENTITY,
         .release_build = true,
         .ndebug = true,
     };
@@ -107,6 +121,7 @@ void check(bool condition, const char* expression, int line) {
                                                   : std::string_view{"synthetic-observe-record\n"});
     payload.joined_sample_seal = seal_siqs_shadow_proof_rss_artifact(
         SIQSShadowProofRssArtifactKind::joined_gate_sample, "synthetic-joined-sample\n");
+    payload.probe_execution_identity = TEST_PROBE_EXECUTION_IDENTITY;
     return payload;
 }
 
@@ -528,7 +543,7 @@ void test_wire_diagnostics_and_filename_binding(const JournalFixture& fixture) {
                         CodecError::unsupported_wire_version,
                         SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET);
     auto old_header = entries_for_prefix(fixture, 0);
-    old_header[1].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET] = std::byte{1};
+    old_header[1].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET] = std::byte{2};
     expect_layout_error(inspect(old_header), LayoutError::header_codec_invalid,
                         CodecError::unsupported_wire_version,
                         SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET);
@@ -539,10 +554,32 @@ void test_wire_diagnostics_and_filename_binding(const JournalFixture& fixture) {
                         CodecError::invalid_record_kind,
                         SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_KIND_OFFSET, 1);
     auto old_record = entries_for_prefix(fixture, 1);
-    old_record[2].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET] = std::byte{1};
+    old_record[2].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET] = std::byte{2};
     expect_layout_error(inspect(old_record), LayoutError::record_codec_invalid,
                         CodecError::unsupported_wire_version,
                         SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET, 1);
+
+    auto exact_v2_header = entries_for_prefix(fixture, 0);
+    exact_v2_header[1].bytes.resize(96);
+    exact_v2_header[1].observed_size = 96;
+    exact_v2_header[1].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET] = std::byte{2};
+    exact_v2_header[1].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET] = std::byte{0x60};
+    exact_v2_header[1].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET + 1] = std::byte{0};
+    exact_v2_header[1].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET + 2] = std::byte{0};
+    exact_v2_header[1].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET + 3] = std::byte{0};
+    expect_layout_error(inspect(exact_v2_header), LayoutError::header_size_invalid);
+
+    auto exact_v2_record = entries_for_prefix(fixture, 1);
+    exact_v2_record[2].bytes.resize(256);
+    exact_v2_record[2].observed_size = 256;
+    exact_v2_record[2].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET] = std::byte{2};
+    exact_v2_record[2].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET] = std::byte{0};
+    exact_v2_record[2].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET + 1] = std::byte{1};
+    exact_v2_record[2].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET + 2] = std::byte{0};
+    exact_v2_record[2].bytes[SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET + 3] = std::byte{0};
+    expect_layout_error(inspect(exact_v2_record), LayoutError::record_size_invalid,
+                        CodecError::none, SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_ERROR_OFFSET,
+                        1);
 
     auto filename_wire_mismatch = entries_for_prefix(fixture, 0);
     filename_wire_mismatch.push_back(

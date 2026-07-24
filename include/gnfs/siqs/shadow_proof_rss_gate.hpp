@@ -3,6 +3,7 @@
 /// @file shadow_proof_rss_gate.hpp
 /// @brief Pure, fail-closed RSS evidence gate for SIQS shadow-proof review.
 
+#include <gnfs/siqs/shadow_proof_rss_probe_execution_identity.hpp>
 #include <gnfs/util/process_memory.hpp>
 
 #include <array>
@@ -17,8 +18,8 @@
 namespace gnfs::siqs {
 
 inline constexpr char SIQS_SHADOW_PROOF_RSS_GATE_RECORD_PREFIX[] =
-    "GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V2";
-inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_GATE_SCHEMA_VERSION = 2;
+    "GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V3";
+inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_GATE_SCHEMA_VERSION = 3;
 inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_GATE_FIXTURE_COUNT = 8;
 inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_GATE_OFF_REPETITIONS = 3;
 inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_GATE_OBSERVE_REPETITIONS = 7;
@@ -135,6 +136,7 @@ struct SIQSShadowProofRssGatePolicy final {
     util::ProcessMemoryBackend memory_backend = util::ProcessMemoryBackend::Unsupported;
     std::size_t resolved_production_sieve_workers = 0;
     std::string_view candidate_revision;
+    SIQSShadowProofRssProbeExecutionIdentity probe_execution_identity;
     std::string_view approval_id;
     SIQSShadowProofRssJournalStoreBinding journal_store;
     std::optional<uint64_t> deployment_budget_bytes;
@@ -154,6 +156,7 @@ struct SIQSShadowProofRssGateSample final {
     util::ProcessMemoryBackend memory_backend = util::ProcessMemoryBackend::Unsupported;
     std::size_t resolved_production_sieve_workers = 0;
     std::string_view candidate_revision;
+    SIQSShadowProofRssProbeExecutionIdentity probe_execution_identity;
     std::string_view approval_id;
     SIQSShadowProofRssJournalStoreBinding journal_store;
     std::optional<uint64_t> deployment_budget_bytes;
@@ -185,6 +188,7 @@ struct SIQSShadowProofRssGateOutcome final {
     uint64_t rss_limit_bytes = 0;
     uint64_t max_observe_peak_rss_bytes = 0;
     SIQSShadowProofRssCorpusDigest policy_binding_digest;
+    SIQSShadowProofRssProbeExecutionIdentity probe_execution_identity;
     bool shadow_outcome_routed = false;
     bool promotion = false;
 
@@ -457,6 +461,12 @@ public:
         }
     }
 
+    constexpr void append_sha256_digest(const util::Sha256Digest& digest) noexcept {
+        for (const std::byte value : digest.bytes) {
+            append_byte(std::to_integer<uint8_t>(value));
+        }
+    }
+
     [[nodiscard]] constexpr SIQSShadowProofRssCorpusDigest finish() const noexcept {
         return {low_ ^ (byte_index_ * UINT64_C(0xbf58476d1ce4e5b9)),
                 high_ ^ (byte_index_ * UINT64_C(0x94d049bb133111eb))};
@@ -471,7 +481,7 @@ private:
 [[nodiscard]] constexpr SIQSShadowProofRssCorpusDigest
 policy_binding_digest(const SIQSShadowProofRssGatePolicy& policy) noexcept {
     PolicyBindingDigestBuilder builder;
-    builder.append_string("gnfs.siqs.shadow_proof_rss_gate.policy.v2");
+    builder.append_string("gnfs.siqs.shadow_proof_rss_gate.policy.v3");
     builder.append_bool(policy.approved);
     builder.append_string(policy.corpus_id);
     builder.append_u64(policy.corpus_digest.low);
@@ -481,6 +491,8 @@ policy_binding_digest(const SIQSShadowProofRssGatePolicy& policy) noexcept {
     builder.append_string(util::process_memory_backend_name(policy.memory_backend));
     builder.append_u64(static_cast<uint64_t>(policy.resolved_production_sieve_workers));
     builder.append_string(policy.candidate_revision);
+    builder.append_sha256_digest(policy.probe_execution_identity.executable_sha256);
+    builder.append_sha256_digest(policy.probe_execution_identity.execution_contract_sha256);
     builder.append_string(policy.approval_id);
     builder.append_u64(policy.journal_store.trusted_base_id.low);
     builder.append_u64(policy.journal_store.trusted_base_id.high);
@@ -504,6 +516,8 @@ policy_binding_is_valid(const SIQSShadowProofRssGatePolicy& policy) noexcept {
            policy.memory_backend != util::ProcessMemoryBackend::Unsupported &&
            backend_matches_operating_system(policy.operating_system, policy.memory_backend) &&
            policy.resolved_production_sieve_workers > 0 && safe_token(policy.candidate_revision) &&
+           siqs_shadow_proof_rss_probe_execution_identity_is_valid(
+               policy.probe_execution_identity) &&
            safe_token(policy.approval_id) &&
            (policy.journal_store.trusted_base_id.low != 0 ||
             policy.journal_store.trusted_base_id.high != 0) &&
@@ -521,6 +535,7 @@ sample_binding_matches_policy(const SIQSShadowProofRssGateSample& sample,
            sample.memory_backend == policy.memory_backend &&
            sample.resolved_production_sieve_workers == policy.resolved_production_sieve_workers &&
            sample.candidate_revision == policy.candidate_revision &&
+           sample.probe_execution_identity == policy.probe_execution_identity &&
            sample.approval_id == policy.approval_id &&
            sample.journal_store == policy.journal_store &&
            sample.deployment_budget_bytes == policy.deployment_budget_bytes &&
@@ -531,8 +546,8 @@ sample_binding_matches_policy(const SIQSShadowProofRssGateSample& sample,
 outcome(SIQSShadowProofRssGateStatus status, SIQSShadowProofRssGateReason reason,
         std::size_t total_sample_count, uint64_t rss_limit_bytes = 0,
         uint32_t valid_off_sample_count = 0, uint32_t valid_observe_sample_count = 0,
-        uint64_t max_observe_peak_rss_bytes = 0,
-        SIQSShadowProofRssCorpusDigest policy_digest = {}) noexcept {
+        uint64_t max_observe_peak_rss_bytes = 0, SIQSShadowProofRssCorpusDigest policy_digest = {},
+        SIQSShadowProofRssProbeExecutionIdentity probe_execution_identity = {}) noexcept {
     return {status,
             reason,
             total_sample_count,
@@ -541,6 +556,7 @@ outcome(SIQSShadowProofRssGateStatus status, SIQSShadowProofRssGateReason reason
             rss_limit_bytes,
             max_observe_peak_rss_bytes,
             policy_digest,
+            probe_execution_identity,
             false,
             false};
 }
@@ -561,7 +577,8 @@ outcome(SIQSShadowProofRssGateStatus status, SIQSShadowProofRssGateReason reason
 }
 
 [[nodiscard]] constexpr bool
-outcome_is_consistent(const SIQSShadowProofRssGateOutcome& value) noexcept {
+outcome_is_consistent(const SIQSShadowProofRssGateOutcome& value,
+                      const SIQSShadowProofRssGatePolicy& policy) noexcept {
     if (!known_status(value.status) || !known_reason(value.reason) || value.shadow_outcome_routed ||
         value.promotion ||
         value.total_sample_count != SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT ||
@@ -569,7 +586,9 @@ outcome_is_consistent(const SIQSShadowProofRssGateOutcome& value) noexcept {
             SIQS_SHADOW_PROOF_RSS_GATE_FIXTURE_COUNT * SIQS_SHADOW_PROOF_RSS_GATE_OFF_REPETITIONS ||
         value.valid_observe_sample_count != SIQS_SHADOW_PROOF_RSS_GATE_FIXTURE_COUNT *
                                                 SIQS_SHADOW_PROOF_RSS_GATE_OBSERVE_REPETITIONS ||
-        value.rss_limit_bytes == 0 || value.max_observe_peak_rss_bytes == 0) {
+        value.rss_limit_bytes == 0 || value.max_observe_peak_rss_bytes == 0 ||
+        !siqs_shadow_proof_rss_probe_execution_identity_is_valid(value.probe_execution_identity) ||
+        value.probe_execution_identity != policy.probe_execution_identity) {
         return false;
     }
     if (value.status == SIQSShadowProofRssGateStatus::manual_review_candidate) {
@@ -761,12 +780,12 @@ siqs_shadow_proof_rss_policy_binding_digest(const SIQSShadowProofRssGatePolicy& 
         return outcome(SIQSShadowProofRssGateStatus::limit_exceeded,
                        SIQSShadowProofRssGateReason::observe_peak_over_limit, sample_count,
                        rss_limit_bytes, off_count, observe_count, max_observe_peak,
-                       policy_binding_digest(*policy));
+                       policy_binding_digest(*policy), policy->probe_execution_identity);
     }
     return outcome(SIQSShadowProofRssGateStatus::manual_review_candidate,
                    SIQSShadowProofRssGateReason::all_observe_peaks_within_limit, sample_count,
                    rss_limit_bytes, off_count, observe_count, max_observe_peak,
-                   policy_binding_digest(*policy));
+                   policy_binding_digest(*policy), policy->probe_execution_identity);
 }
 
 /// Emit one closed audit line only after recomputing and matching the supplied
@@ -784,7 +803,7 @@ siqs_shadow_proof_rss_policy_binding_digest(const SIQSShadowProofRssGatePolicy& 
         const SIQSShadowProofRssGateOutcome verified =
             evaluate_siqs_shadow_proof_rss_gate(policy, samples);
         if (verified != supplied_outcome ||
-            !shadow_proof_rss_gate_detail::outcome_is_consistent(verified) ||
+            !shadow_proof_rss_gate_detail::outcome_is_consistent(verified, *policy) ||
             !shadow_proof_rss_gate_detail::policy_binding_is_valid(*policy)) {
             return false;
         }
@@ -796,6 +815,10 @@ siqs_shadow_proof_rss_policy_binding_digest(const SIQSShadowProofRssGatePolicy& 
         const std::string_view architecture =
             siqs_shadow_proof_rss_architecture_name(policy->architecture);
         const std::string_view backend = util::process_memory_backend_name(policy->memory_backend);
+        const util::Sha256Hex executable_sha256 =
+            util::encode_sha256_hex(verified.probe_execution_identity.executable_sha256);
+        const util::Sha256Hex execution_contract_sha256 =
+            util::encode_sha256_hex(verified.probe_execution_identity.execution_contract_sha256);
 
         const int written = std::fprintf(
             output,
@@ -803,6 +826,7 @@ siqs_shadow_proof_rss_policy_binding_digest(const SIQSShadowProofRssGatePolicy& 
             " status=%.*s reason=%.*s corpus_id=%.*s digest_low=%" PRIu64 " digest_high=%" PRIu64
             " operating_system=%.*s architecture=%.*s memory_backend=%.*s"
             " resolved_production_sieve_workers=%zu candidate_revision=%.*s"
+            " probe_executable_sha256=%.*s probe_execution_contract_sha256=%.*s"
             " approval_id=%.*s journal_trusted_base_id_low=%" PRIu64
             " journal_trusted_base_id_high=%" PRIu64 " journal_store_id_low=%" PRIu64
             " journal_store_id_high=%" PRIu64 " journal_store_locator=%.*s"
@@ -821,6 +845,8 @@ siqs_shadow_proof_rss_policy_binding_digest(const SIQSShadowProofRssGatePolicy& 
             static_cast<int>(backend.size()), backend.data(),
             policy->resolved_production_sieve_workers,
             static_cast<int>(policy->candidate_revision.size()), policy->candidate_revision.data(),
+            static_cast<int>(executable_sha256.size()), executable_sha256.data(),
+            static_cast<int>(execution_contract_sha256.size()), execution_contract_sha256.data(),
             static_cast<int>(policy->approval_id.size()), policy->approval_id.data(),
             policy->journal_store.trusted_base_id.low, policy->journal_store.trusted_base_id.high,
             policy->journal_store.store_id.low, policy->journal_store.store_id.high,

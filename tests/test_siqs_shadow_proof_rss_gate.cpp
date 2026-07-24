@@ -48,6 +48,8 @@ using gnfs::siqs::SIQS_SHADOW_PROOF_RSS_GATE_OBSERVE_REPETITIONS;
 using gnfs::siqs::SIQS_SHADOW_PROOF_RSS_GATE_OFF_REPETITIONS;
 using gnfs::siqs::siqs_shadow_proof_rss_gate_policy_error;
 using gnfs::siqs::siqs_shadow_proof_rss_gate_reason_name;
+using gnfs::siqs::SIQS_SHADOW_PROOF_RSS_GATE_RECORD_PREFIX;
+using gnfs::siqs::SIQS_SHADOW_PROOF_RSS_GATE_SCHEMA_VERSION;
 using gnfs::siqs::siqs_shadow_proof_rss_gate_status_name;
 using gnfs::siqs::siqs_shadow_proof_rss_operating_system_name;
 using gnfs::siqs::siqs_shadow_proof_rss_sample_mode_name;
@@ -61,6 +63,7 @@ using gnfs::siqs::SIQSShadowProofRssGateReason;
 using gnfs::siqs::SIQSShadowProofRssGateSample;
 using gnfs::siqs::SIQSShadowProofRssGateStatus;
 using gnfs::siqs::SIQSShadowProofRssOperatingSystem;
+using gnfs::siqs::SIQSShadowProofRssProbeExecutionIdentity;
 using gnfs::siqs::SIQSShadowProofRssSampleMode;
 using gnfs::siqs::shadow_proof_rss_holdout_fixture_detail::
     SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_CORPUS_ID;
@@ -92,6 +95,16 @@ constexpr uint64_t DEPLOYMENT_BUDGET_BYTES = UINT64_C(1000);
 constexpr uint64_t RESERVED_HEADROOM_BYTES = UINT64_C(100);
 constexpr uint64_t RSS_LIMIT_BYTES = DEPLOYMENT_BUDGET_BYTES - RESERVED_HEADROOM_BYTES;
 
+[[nodiscard]] constexpr SIQSShadowProofRssProbeExecutionIdentity
+test_probe_execution_identity() noexcept {
+    SIQSShadowProofRssProbeExecutionIdentity identity;
+    for (size_t index = 0; index < identity.executable_sha256.bytes.size(); ++index) {
+        identity.executable_sha256.bytes[index] = static_cast<std::byte>(index);
+        identity.execution_contract_sha256.bytes[index] = static_cast<std::byte>(index + 32);
+    }
+    return identity;
+}
+
 int checks_passed = 0;
 int checks_failed = 0;
 
@@ -116,6 +129,7 @@ int checks_failed = 0;
     policy.memory_backend = ProcessMemoryBackend::DarwinGetrusage;
     policy.resolved_production_sieve_workers = 4;
     policy.candidate_revision = "candidate-revision-1";
+    policy.probe_execution_identity = test_probe_execution_identity();
     policy.approval_id = "approval-ticket-1";
     policy.journal_store = {{UINT64_C(1010101010101010), UINT64_C(2020202020202020)},
                             {UINT64_C(1111222233334444), UINT64_C(5555666677778888)},
@@ -137,6 +151,7 @@ make_sample(const SIQSShadowProofRssGatePolicy& policy, uint32_t fixture_id,
     sample.memory_backend = policy.memory_backend;
     sample.resolved_production_sieve_workers = policy.resolved_production_sieve_workers;
     sample.candidate_revision = policy.candidate_revision;
+    sample.probe_execution_identity = policy.probe_execution_identity;
     sample.approval_id = policy.approval_id;
     sample.journal_store = policy.journal_store;
     sample.deployment_budget_bytes = policy.deployment_budget_bytes;
@@ -205,6 +220,15 @@ expect_outcome(const SIQSShadowProofRssGatePolicy* policy,
     const SIQSShadowProofRssGateOutcome result = evaluate_closed(policy, samples);
     CHECK(result.status == status);
     CHECK(result.reason == reason);
+    if (status == SIQSShadowProofRssGateStatus::limit_exceeded ||
+        status == SIQSShadowProofRssGateStatus::manual_review_candidate) {
+        CHECK(policy != nullptr);
+        if (policy != nullptr) {
+            CHECK(result.probe_execution_identity == policy->probe_execution_identity);
+        }
+    } else {
+        CHECK(result.probe_execution_identity == SIQSShadowProofRssProbeExecutionIdentity{});
+    }
     return result;
 }
 
@@ -217,6 +241,9 @@ expect_outcome(const SIQSShadowProofRssGatePolicy* policy,
 }
 
 void test_frozen_contract_and_enum_names() {
+    CHECK(std::string_view(SIQS_SHADOW_PROOF_RSS_GATE_RECORD_PREFIX) ==
+          "GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V3");
+    CHECK(SIQS_SHADOW_PROOF_RSS_GATE_SCHEMA_VERSION == 3);
     CHECK(SIQS_SHADOW_PROOF_RSS_GATE_CORPUS_ID == SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_CORPUS_ID);
     CHECK(SIQS_SHADOW_PROOF_RSS_GATE_CORPUS_DIGEST_LOW ==
           SIQS_SHADOW_OBSERVE_RSS_HOLDOUT_V1_DIGEST_LOW);
@@ -438,6 +465,12 @@ void test_policy_binding_and_tokens() {
     policy = approved;
     policy.corpus_digest = {};
     expect_invalid_policy(policy);
+    policy = approved;
+    policy.probe_execution_identity.executable_sha256 = {};
+    expect_invalid_policy(policy);
+    policy = approved;
+    policy.probe_execution_identity.execution_contract_sha256 = {};
+    expect_invalid_policy(policy);
 
     policy = approved;
     policy.operating_system = SIQSShadowProofRssOperatingSystem::unknown;
@@ -613,6 +646,12 @@ void test_exact_coverage_and_sample_bindings() {
         [](auto& sample) { sample.memory_backend = ProcessMemoryBackend::LinuxGetrusage; });
     expect_binding_mismatch([](auto& sample) { ++sample.resolved_production_sieve_workers; });
     expect_binding_mismatch([](auto& sample) { sample.candidate_revision = "different-revision"; });
+    expect_binding_mismatch([](auto& sample) {
+        sample.probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{0x80};
+    });
+    expect_binding_mismatch([](auto& sample) {
+        sample.probe_execution_identity.execution_contract_sha256.bytes[0] ^= std::byte{0x80};
+    });
     expect_binding_mismatch([](auto& sample) { sample.approval_id = "different-approval"; });
     expect_binding_mismatch([](auto& sample) { ++sample.journal_store.trusted_base_id.low; });
     expect_binding_mismatch([](auto& sample) { ++sample.journal_store.trusted_base_id.high; });
@@ -866,12 +905,16 @@ void test_closed_emitter_schema_and_failures() {
     const auto [emitted, line] = emit_to_string(&policy, samples, outcome);
     CHECK(emitted);
     const std::string expected_line =
-        "GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V2 schema_version=2"
+        "GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V3 schema_version=3"
         " status=manual_review_candidate reason=all_observe_peaks_within_limit"
         " corpus_id=siqs50_shadow_observe_rss_holdout_v1"
         " digest_low=303806906129662515 digest_high=18179245792498443738"
         " operating_system=darwin architecture=arm64 memory_backend=darwin_getrusage"
         " resolved_production_sieve_workers=4 candidate_revision=candidate-revision-1"
+        " probe_executable_sha256="
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        " probe_execution_contract_sha256="
+        "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
         " approval_id=approval-ticket-1 journal_trusted_base_id_low=1010101010101010"
         " journal_trusted_base_id_high=2020202020202020"
         " journal_store_id_low=1111222233334444"
@@ -879,15 +922,16 @@ void test_closed_emitter_schema_and_failures() {
         " journal_store_locator=rss-campaign-prod-v1 deployment_budget_bytes=1000"
         " reserved_headroom_bytes=100 rss_limit_bytes=900 total_samples=80 off_samples=24"
         " observe_samples=56 max_observe_peak_rss_bytes=900"
-        " policy_binding_digest_low=1693149446838404574"
-        " policy_binding_digest_high=13930391788833022626"
+        " policy_binding_digest_low=1784317931318511583"
+        " policy_binding_digest_high=9961551924237951430"
         " gate_quantity=observe_absolute_process_peak_rss"
         " shadow_outcome_routed=false promotion=false\n";
     CHECK(line == expected_line);
     CHECK(std::count(line.begin(), line.end(), '\n') == 1);
     CHECK(line.find("shadow_outcome_routed=false promotion=false") != std::string::npos);
-    CHECK(outcome.policy_binding_digest.low == UINT64_C(1693149446838404574));
-    CHECK(outcome.policy_binding_digest.high == UINT64_C(13930391788833022626));
+    CHECK(outcome.policy_binding_digest.low == UINT64_C(1784317931318511583));
+    CHECK(outcome.policy_binding_digest.high == UINT64_C(9961551924237951430));
+    CHECK(outcome.probe_execution_identity == policy.probe_execution_identity);
 
     CHECK(
         !emit_siqs_shadow_proof_rss_gate_outcome(nullptr, &policy, sample_span(samples), outcome));
@@ -909,11 +953,24 @@ void test_closed_emitter_schema_and_failures() {
     expect_outcome_mutation_rejected([](auto& value) { --value.max_observe_peak_rss_bytes; });
     expect_outcome_mutation_rejected([](auto& value) { ++value.policy_binding_digest.low; });
     expect_outcome_mutation_rejected([](auto& value) { ++value.policy_binding_digest.high; });
+    expect_outcome_mutation_rejected([](auto& value) {
+        value.probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{0x80};
+    });
+    expect_outcome_mutation_rejected([](auto& value) {
+        value.probe_execution_identity.execution_contract_sha256.bytes[0] ^= std::byte{0x80};
+    });
     expect_outcome_mutation_rejected([](auto& value) { value.shadow_outcome_routed = true; });
     expect_outcome_mutation_rejected([](auto& value) { value.promotion = true; });
 
     auto changed_samples = samples;
     changed_samples.back().approval_id = "forged-approval";
+    expect_emit_rejected(&policy, changed_samples, outcome);
+    changed_samples = samples;
+    changed_samples.back().probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{0x80};
+    expect_emit_rejected(&policy, changed_samples, outcome);
+    changed_samples = samples;
+    changed_samples.back().probe_execution_identity.execution_contract_sha256.bytes[0] ^=
+        std::byte{0x80};
     expect_emit_rejected(&policy, changed_samples, outcome);
     changed_samples = samples;
     changed_samples.pop_back();
@@ -932,6 +989,14 @@ void test_closed_emitter_schema_and_failures() {
     expect_emit_rejected(&changed_policy, matching_changed_samples, outcome);
     changed_policy = policy;
     changed_policy.candidate_revision = "candidate-revision-2";
+    matching_changed_samples = make_complete_samples(changed_policy, RSS_LIMIT_BYTES);
+    expect_emit_rejected(&changed_policy, matching_changed_samples, outcome);
+    changed_policy = policy;
+    changed_policy.probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{0x80};
+    matching_changed_samples = make_complete_samples(changed_policy, RSS_LIMIT_BYTES);
+    expect_emit_rejected(&changed_policy, matching_changed_samples, outcome);
+    changed_policy = policy;
+    changed_policy.probe_execution_identity.execution_contract_sha256.bytes[0] ^= std::byte{0x80};
     matching_changed_samples = make_complete_samples(changed_policy, RSS_LIMIT_BYTES);
     expect_emit_rejected(&changed_policy, matching_changed_samples, outcome);
     changed_policy = policy;

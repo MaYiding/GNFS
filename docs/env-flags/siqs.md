@@ -154,8 +154,9 @@ Darwin、Linux 和 Windows 必须分平台评估；每个 backend、每个 fixtu
 sealed corpus ID 和 digest、operating system、architecture、RSS backend、resolved
 production sieve workers、candidate revision、deployment budget 和 reserved headroom；
 以及 deployment-owned trusted-base ID、journal-store ID 和 canonical lowercase ASCII
-relative locator；gate 不负责发现或批准这些值。absolute path 和 runtime inode/file
-ID 不进入 policy binding。任何 filesystem I/O 之前，production-owned registry 必须
+relative locator，以及 probe executable SHA-256 和 canonical execution-contract
+SHA-256；gate 不负责发现或批准这些值。absolute path 和 runtime inode/file ID
+不进入 policy binding。任何 filesystem I/O 之前，production-owned registry 必须
 根据 trusted-base ID 解析已配置的 base，且不得接收 caller path、resolver 或 base
 handle；locator 对应的 store ID 也必须与 provisioned mapping 一致。
 
@@ -168,33 +169,39 @@ RSS、`peak_growth_bytes` 和 wall time 都只用于诊断，不能改变 gate �
 `SIQSShadowProofRssGateStatus` 是闭集：`blocked`、`invalid`、`limit_exceeded` 和
 `manual_review_candidate`。只有
 `status=manual_review_candidate reason=all_observe_peaks_within_limit` 表示通过，且
-仅进入人工审查。terminal `SIQSShadowProofRssGateOutcome` 还保存覆盖完整 policy
-binding 的 stable、non-cryptographic identity checksum。
+仅进入人工审查。terminal `SIQSShadowProofRssGateOutcome` 还保存完整 probe execution
+identity，以及覆盖完整 policy binding 的 stable、non-cryptographic checksum。
 `emit_siqs_shadow_proof_rss_gate_outcome` 会重新评估 policy 和完整 sample span，并
 要求结果与 supplied outcome 完全一致，然后输出以
-`GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V2` 开头的 closed record。emitter 只接受
+`GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V3` 开头的 closed record。emitter 只接受
 `limit_exceeded` 和 `manual_review_candidate`；`blocked` / `invalid` 保持 typed
 outcome，但不形成 audit line。terminal record 同时输出
+`probe_executable_sha256`、`probe_execution_contract_sha256`、
 `policy_binding_digest_low` 和 `policy_binding_digest_high`。Outcome 中的
 `shadow_outcome_routed=false` 和 `promotion=false` 对所有 status 固定，不会启用
 `prefer` 或返回 shadow factor；terminal record 也固定输出这两个值。
 
-campaign journal 的 schema 和 wire V2 会将 `synthetic_test` 或
-`production_holdout` 分类绑定到 runtime facts、header、plan/record digest、commit
-payload 和 joined artifact。native store 在文件系统访问前核对 private deployment
-row，并在运行与提交时再次核对 executable binding 和 same-child receipt。完整
-synthetic campaign 只能终止为 `synthetic_complete` 且 `action=none`，不能重建 gate
-samples。该分类不等于 executable-image authentication；candidate revision、path 和
-owner metadata 尚未证明实际执行字节，后续 production runner 仍需绑定批准的
-executable/bundle digest 并在持有 authority 的 session 内完成 gate evaluation。
+campaign journal 的 schema 和 wire V3 会将 `synthetic_test` 或
+`production_holdout` 分类及两段 32-byte SHA-256 直接绑定到 runtime facts、header、
+plan/record digest、commit payload 和 joined artifact。header/record 固定宽度分别为
+160B 和 320B；V1/V2 wire 均 fail closed。完整 synthetic campaign 只能终止为
+`synthetic_complete` 且 `action=none`，不能重建 gate samples。
 
 private deployment row 同时持有完整 approved policy 和 expected runtime contract。
 调用方提供的 policy/runtime 只是声明；store 选出唯一 row 后逐字段核对，并仅用
-row-owned 值构造 session。相对 executable path、revision mismatch、非法 environment、
-configured-owner mismatch 或非法 timeout 会在打开 journal 目录前失败。production
-row 必须配置 probe binding，且不能使用 `PublicationOps` 测试 seam。`release_build`
-和 `ndebug` 目前仍是 deployment expected values，随后由 child protocol 核对，不代表
-store 已实测 host 或认证 executable bytes。
+row-owned 值构造 session。store 会重算 canonical execution contract。该 contract
+覆盖平台、build mode、完整排序 environment、timeout、owner、argv template、capture
+上限、输出 schema 和 transport guarantees。相对 executable path、revision mismatch、
+非法或未排序 environment、configured-owner mismatch、非法 timeout、零 identity 或
+identity mismatch 都会在打开 journal 目录前失败。production row 必须配置 probe
+binding，且不能使用 `PublicationOps` 测试 seam。
+
+当前身份仍是受信 deployment row 的声明，不是 executable-image authentication。
+现有 `lstat(path)` 后按 path spawn 的流程无法证明实际执行对象就是已批准 digest
+对应的字节。Linux 仍需 sealed descriptor、rehash 和 descriptor-based execution；
+macOS 仍需签名 hardened Mach-O、suspended spawn 和 resume 前的 process code
+validation，否则保持 unavailable。Windows 继续显式 fail closed。authority-held gate
+evaluation 和 serial 80-slot production controller 也仍待实现。
 
 当前没有批准的 per-platform policy，也没有实际 budget、headroom 或阈值。sealed
 holdout 尚未运行，runner 和 80-process campaign 仍是 `blocked` / `pending`。policy
@@ -289,11 +296,14 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
 - `tests/test_siqs_shadow_proof_rss_gate.cpp` 使用 synthetic policy 和 records 覆盖
   policy binding、严格 80-sample coverage、budget 等号边界、diagnostic independence
   和 terminal-only closed emitter；它不运行 sealed holdout。
+- `tests/test_siqs_shadow_proof_rss_probe_execution_identity.cpp` 覆盖 executable
+  SHA-256、canonical contract、严格 environment 和单字段 mutation；它不启动 child。
 - `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` 使用临时本地目录和
   subprocess 覆盖 deployment registry、严格 native layout、跨进程 lease、崩溃释放、
   held-root publication、私有 same-child commit、完整 80-slot synthetic 终态和
-  restart relabel rejection，以及完整 approval/runtime 字段错配的 journal 零写入拒绝。
-  测试只启动 synthetic child，不运行 production probe 或打开 sealed holdout。
+  restart relabel rejection，以及 execution identity 与完整 approval/runtime 字段错配
+  的 journal 零写入拒绝。测试只启动 synthetic child，不运行 production probe 或打开
+  sealed holdout。
 - `tests/test_siqs.cpp` 锁定公开 `factor()` 路径对 `prefer` 的 fail-closed
   拒绝，并确认拒绝前不发出 V1 或 V2 记录。
 - `tests/test_siqs_shadow_proof_observe_probe.cpp` 提供 Release-only production 1LP fresh-process measurement target；它不进入 CTest 或常规测试 tier。

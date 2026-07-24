@@ -53,6 +53,7 @@ struct ApprovedCampaignBinding final {
     std::size_t resolved_production_sieve_workers = 0;
     std::string candidate_revision;
     std::string approval_id;
+    SIQSShadowProofRssProbeExecutionIdentity probe_execution_identity;
     std::optional<uint64_t> deployment_budget_bytes;
     std::optional<uint64_t> reserved_headroom_bytes;
     bool release_build = false;
@@ -69,6 +70,7 @@ struct ProbeExecutableBinding final {
     std::vector<std::string> environment;
     std::chrono::milliseconds timeout{35000};
     uint64_t expected_owner = 0;
+    SIQSShadowProofRssProbeExecutionIdentity probe_execution_identity;
 };
 
 /// Private deployment table row. Production builds keep the table empty.
@@ -133,6 +135,7 @@ struct SameChildExecutionEvidence final {
     util::ProcessMemoryBackend memory_backend = util::ProcessMemoryBackend::Unsupported;
     std::size_t resolved_production_sieve_workers = 0;
     SIQSShadowProofRssProbeKind deployment_probe_kind = SIQSShadowProofRssProbeKind::unknown;
+    SIQSShadowProofRssProbeExecutionIdentity probe_execution_identity;
     bool fresh_process = false;
     bool completed = false;
     SIQSShadowProofRssFactorIdentity factor_identity = SIQSShadowProofRssFactorIdentity::unknown;

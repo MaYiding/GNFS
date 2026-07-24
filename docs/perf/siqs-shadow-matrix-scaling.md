@@ -316,10 +316,11 @@ authenticity proof.
 `emit_siqs_shadow_proof_rss_gate_outcome` accepts a `FILE*`, the policy pointer,
 the complete sample span, and the supplied outcome. It re-evaluates the inputs,
 requires an exact outcome match, validates the complete policy binding, and
-writes one closed record with prefix `GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V2` only
-after those checks. The record publishes `policy_binding_digest_low` and
-`policy_binding_digest_high`. A successful write and flush commits this audit
-record only; it does not authorize routing or promotion. The emitter is
+writes one closed record with prefix `GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V3` only
+after those checks. The record publishes both probe SHA-256 fields plus
+`policy_binding_digest_low` and `policy_binding_digest_high`. A successful
+write and flush commits this audit record only; it does not authorize routing
+or promotion. The emitter is
 terminal-only. It accepts `limit_exceeded` and `manual_review_candidate`;
 `blocked` and `invalid` remain typed outcomes but do not produce an audit line.
 
@@ -346,17 +347,17 @@ future probe can report the worker count used by the measured run instead of
 querying the host a second time.
 
 `include/gnfs/siqs/shadow_proof_rss_policy_record.hpp` defines the canonical
-single-line `GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V2` codec. It accepts exactly one
-printable-ASCII record terminated by one LF, with a fixed field order and
-canonical boolean and unsigned-integer forms. The parsed record owns its token
-storage and can provide a temporary `SIQSShadowProofRssGatePolicy` view while
-the record remains alive, unchanged, and unmoved. Rvalue view construction is
-deleted. The codec validates representation only. Approval, frozen corpus
-identity, OS/backend compatibility, nonzero worker count, trusted-base and
-journal-store IDs, canonical lowercase relative-locator syntax, and budget semantics
-continue to use the gate's shared policy preflight. No approved policy record
-is stored in the repository. The `approved` field and the policy-binding digest
-are audit claims, not cryptographic authorization.
+single-line `GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V3` codec. It accepts exactly one
+printable-ASCII record terminated by one LF, with a fixed field order,
+canonical boolean and unsigned-integer forms, and two strict lowercase
+64-character SHA-256 fields. The parsed record owns its token storage and can
+provide a temporary `SIQSShadowProofRssGatePolicy` view while the record
+remains alive, unchanged, and unmoved. Rvalue view construction is deleted.
+The codec validates representation only. Approval, frozen corpus identity,
+OS/backend compatibility, nonzero worker count, trusted-base and journal-store
+IDs, canonical lowercase relative-locator syntax, execution-identity validity,
+and budget semantics continue to use the gate's shared policy preflight. No
+approved policy record is stored in the repository.
 
 `include/gnfs/siqs/shadow_proof_rss_campaign.hpp` consumes an already-typed
 policy and performs no I/O. A missing, unapproved, incomplete, or invalid policy
@@ -384,11 +385,11 @@ tainted and returns only the matching taint record for durable append, never a
 retry or launch action. An explicit taint record has the same terminal effect.
 After all 80 commits validate, sample reconstruction replays the original
 header and records again before the caller invokes the existing RSS gate. The
-V2 journal also binds a closed probe classification through runtime facts,
-header, plan, every commit, and the joined artifact. A complete
-`synthetic_test` campaign terminates as `synthetic_complete` with no gate
-action; only consistently tagged `production_holdout` data reaches the
-data-level reconstruction contract.
+V3 journal also binds a closed probe classification and the two-part probe
+execution identity through runtime facts, header, plan, every commit, and the
+joined artifact. A complete `synthetic_test` campaign terminates as
+`synthetic_complete` with no gate action; only consistently tagged
+`production_holdout` data reaches the data-level reconstruction contract.
 
 The move-only capabilities prevent accidental reuse within one replay result;
 they do not prove filesystem durability or serialize two callers that replay
@@ -437,12 +438,14 @@ receipt issuer because either would permit duplicate launches from one stale
 replay.
 
 `include/gnfs/siqs/shadow_proof_rss_campaign_journal_codec.hpp` defines the
-canonical V2 storage representation without opening a file. Headers are
-exactly 96 bytes and records are exactly 256 bytes. Both use distinct
+canonical V3 storage representation without opening a file. Headers are
+exactly 160 bytes and records are exactly 320 bytes. Both use distinct
 eight-byte magic, an explicit wire version and declared size, fixed
 little-endian integers, dedicated enum tags, zeroed reserved bytes, and
 semantic-digest verification. Header byte 20 and record byte 101 carry the
-probe classification; V1 wire data is rejected rather than relabeled.
+probe classification. Header offsets 80 and 112, and record offsets 240 and
+272, carry the two raw 32-byte SHA-256 values. V1 and V2 wire data are rejected
+rather than relabeled.
 Optional values use a presence bitmap and require a zero payload when absent.
 Decoding rejects short and trailing data and reports a closed error plus the
 first failing byte offset. The codec never persists C++ object layout,
@@ -450,9 +453,9 @@ first failing byte offset. The codec never persists C++ object layout,
 
 `include/gnfs/siqs/shadow_proof_rss_campaign_journal_layout.hpp` adds a pure
 layout inspector without opening a directory. Its strict allowlist contains
-one persistent `.session.lock` leaf, one exact 96-byte
+one persistent `.session.lock` leaf, one exact 160-byte
 `campaign-header.rjhd`, and a contiguous prefix of `record-%010u.rjrc` leaves
-starting at sequence 1, with at most 160 leaves and exactly 256 bytes per leaf.
+starting at sequence 1, with at most 160 leaves and exactly 320 bytes per leaf.
 Unknown names, case variants, temporary artifacts, wrong entry kinds, invalid
 link counts, wrong sizes, sequence gaps, codec failures, and filename-to-wire
 sequence mismatches all fail closed. The inspector cannot sign a durable-record
@@ -535,8 +538,9 @@ then rereads and validates each exact seal. Only a complete batch creates a
 private artifact receipt inside the session core. A separate move-only
 same-child receipt can be minted only by the private runner after one bounded
 child succeeds, both pipes reach EOF, cleanup completes, and the strict join
-accepts those exact bytes. The V2 joined draft records the deployment
-classification. The store consumes the permit and both private receipts,
+accepts those exact bytes. The V3 joined draft records the deployment
+classification and two-part execution identity. The store consumes the permit
+and both private receipts,
 requires receipt, deployment row, executable binding, runtime facts, header,
 and commit classifications to agree, reconstructs the commit payload from the
 owned evidence, revalidates the stable journal and artifact snapshots, and
@@ -661,19 +665,29 @@ connects the portable transport, strict join, three-leaf artifact publication,
 private same-child receipt, and commit publication without exposing a public
 authority-bearing API. It also owns explicit taint publication for every
 failure whose terminal commit leaf is provably absent. An approved
-per-platform policy, private production executable binding, and the serial
+per-platform policy, same-object executable authentication, and the serial
 80-slot campaign loop remain pending. Those authority-bearing components must
-validate the approved policy, actual runtime facts, and candidate revision
+validate the approved policy, actual runtime facts, and execution identity
 before loading the sealed fixture table or constructing the first production
 command. Synthetic committed prefixes validate the transaction machinery only.
-V2 now binds their `synthetic_test` classification durably and makes even a
-complete 80-slot synthetic journal gate-ineligible. This is a classification
-boundary, not executable-image authentication: `candidate_revision` is an
-audit token, and the current `lstat(path)` followed by path-based spawn does
-not bind the executed bytes. A future production milestone must bind an
-approved executable or bundle digest and keep gate evaluation inside the
-authority-holding session. A campaign interrupted after its durable start but
-before its sample commits remains tainted and cannot be retried in place.
+V3 now binds their `synthetic_test` classification and two-part execution
+identity durably, and it makes even a complete 80-slot synthetic journal
+gate-ineligible. The private deployment row owns the approved executable
+SHA-256 and canonical execution-contract SHA-256. The contract covers the
+platform, build mode, exact sorted environment, timeout, owner, argument
+template, stream schemas, capture limits, and transport guarantees. The store
+recomputes it before filesystem access, and the runner carries it through the
+joined draft, same-child receipt, artifacts, and commit.
+
+This is still a deployment-claim boundary, not executable-image
+authentication. The current `lstat(path)` followed by path-based spawn does
+not bind the executed file object to the approved executable digest. Linux
+still needs sealed-descriptor hashing plus descriptor-based execution. macOS
+still needs signed-code validation of a suspended child before resume, or it
+must remain unavailable. Authority-held gate evaluation and the serial
+80-slot controller also remain pending. A campaign interrupted after its
+durable start but before its sample commits remains tainted and cannot be
+retried in place.
 
 `tests/test_siqs_runtime_facts.cpp`,
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,

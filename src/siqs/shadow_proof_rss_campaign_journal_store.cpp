@@ -1,7 +1,9 @@
 #include "shadow_proof_rss_campaign_journal_store_internal.hpp"
+#include "shadow_proof_rss_probe_execution_identity_internal.hpp"
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <new>
 #include <span>
 #include <string>
@@ -264,6 +266,7 @@ approved_policy_view(const DeploymentEntry& deployment) noexcept {
         .memory_backend = approval.memory_backend,
         .resolved_production_sieve_workers = approval.resolved_production_sieve_workers,
         .candidate_revision = approval.candidate_revision,
+        .probe_execution_identity = approval.probe_execution_identity,
         .approval_id = approval.approval_id,
         .journal_store =
             {
@@ -286,6 +289,7 @@ approved_runtime_facts_view(const DeploymentEntry& deployment) noexcept {
         .resolved_production_sieve_workers = approval.resolved_production_sieve_workers,
         .probe_kind = deployment.probe_kind,
         .candidate_revision = approval.candidate_revision,
+        .probe_execution_identity = approval.probe_execution_identity,
         .release_build = approval.release_build,
         .ndebug = approval.ndebug,
     };
@@ -300,6 +304,7 @@ approved_runtime_facts_view(const DeploymentEntry& deployment) noexcept {
            claim.memory_backend == approved.memory_backend &&
            claim.resolved_production_sieve_workers == approved.resolved_production_sieve_workers &&
            claim.candidate_revision == approved.candidate_revision &&
+           claim.probe_execution_identity == approved.probe_execution_identity &&
            claim.approval_id == approved.approval_id &&
            claim.journal_store == approved.journal_store &&
            claim.deployment_budget_bytes == approved.deployment_budget_bytes &&
@@ -315,27 +320,14 @@ runtime_claim_matches(const SIQSShadowProofRssCampaignRuntimeFacts& claim,
            claim.resolved_production_sieve_workers == approved.resolved_production_sieve_workers &&
            claim.probe_kind == approved.probe_kind &&
            claim.candidate_revision == approved.candidate_revision &&
+           claim.probe_execution_identity == approved.probe_execution_identity &&
            claim.release_build == approved.release_build && claim.ndebug == approved.ndebug;
 }
 
 [[nodiscard]] bool
 executable_environment_is_canonical(std::span<const std::string> environment) noexcept {
-    for (std::size_t index = 0; index < environment.size(); ++index) {
-        const std::string_view entry = environment[index];
-        const std::size_t separator = entry.find('=');
-        if (entry.find('\0') != std::string_view::npos || separator == std::string_view::npos ||
-            separator == 0) {
-            return false;
-        }
-        const std::string_view name = entry.substr(0, separator);
-        for (std::size_t prior = 0; prior < index; ++prior) {
-            const std::string_view prior_entry = environment[prior];
-            if (prior_entry.substr(0, prior_entry.find('=')) == name) {
-                return false;
-            }
-        }
-    }
-    return true;
+    return shadow_proof_rss_probe_execution_identity_detail::canonical_detail::
+        environment_is_canonical(environment);
 }
 
 [[nodiscard]] bool deployment_contract_is_well_formed(const DeploymentEntry& deployment) noexcept {
@@ -343,7 +335,9 @@ executable_environment_is_canonical(std::span<const std::string> environment) no
     const bool known_probe_kind =
         deployment.probe_kind == SIQSShadowProofRssProbeKind::synthetic_test ||
         deployment.probe_kind == SIQSShadowProofRssProbeKind::production_holdout;
-    if (!known_probe_kind || deployment.trusted_base_path.empty()) {
+    if (!known_probe_kind || deployment.trusted_base_path.empty() ||
+        !siqs_shadow_proof_rss_probe_execution_identity_is_valid(
+            deployment.approval.probe_execution_identity)) {
         return false;
     }
     if (deployment.probe_kind == SIQSShadowProofRssProbeKind::production_holdout &&
@@ -355,14 +349,41 @@ executable_environment_is_canonical(std::span<const std::string> environment) no
     }
     const ProbeExecutableBinding& executable = *deployment.holdout_probe;
     const auto& native_executable = executable.executable.native();
-    return !executable.executable.empty() && executable.executable.is_absolute() &&
-           native_executable.find('\0') == std::string::npos &&
-           executable.candidate_revision == deployment.approval.candidate_revision &&
-           executable.probe_kind == deployment.probe_kind &&
-           executable.expected_owner == deployment.expected_owner &&
-           executable.timeout > std::chrono::milliseconds::zero() &&
-           executable.timeout <= max_probe_timeout &&
-           executable_environment_is_canonical(executable.environment);
+    if (executable.executable.empty() || !executable.executable.is_absolute() ||
+        native_executable.find('\0') != std::string::npos ||
+        executable.candidate_revision != deployment.approval.candidate_revision ||
+        executable.probe_kind != deployment.probe_kind ||
+        executable.expected_owner != deployment.expected_owner ||
+        executable.timeout <= std::chrono::milliseconds::zero() ||
+        executable.timeout > max_probe_timeout ||
+        !executable_environment_is_canonical(executable.environment) ||
+        !siqs_shadow_proof_rss_probe_execution_identity_is_valid(
+            executable.probe_execution_identity) ||
+        executable.probe_execution_identity != deployment.approval.probe_execution_identity) {
+        return false;
+    }
+
+    using shadow_proof_rss_probe_execution_identity_detail::
+        make_siqs_shadow_proof_rss_probe_execution_identity;
+    using shadow_proof_rss_probe_execution_identity_detail::ProbeExecutionContractInput;
+    const auto canonical_identity =
+        make_siqs_shadow_proof_rss_probe_execution_identity(ProbeExecutionContractInput{
+            .executable_sha256 = executable.probe_execution_identity.executable_sha256,
+            .probe_kind = deployment.probe_kind,
+            .candidate_revision = deployment.approval.candidate_revision,
+            .operating_system = deployment.approval.operating_system,
+            .architecture = deployment.approval.architecture,
+            .memory_backend = deployment.approval.memory_backend,
+            .resolved_production_sieve_workers =
+                deployment.approval.resolved_production_sieve_workers,
+            .release_build = deployment.approval.release_build,
+            .ndebug = deployment.approval.ndebug,
+            .environment = executable.environment,
+            .timeout_ms = static_cast<std::uint64_t>(executable.timeout.count()),
+            .expected_owner = executable.expected_owner,
+        });
+    return canonical_identity.has_value() &&
+           *canonical_identity == executable.probe_execution_identity;
 }
 
 [[nodiscard]] bool

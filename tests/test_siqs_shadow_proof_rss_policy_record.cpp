@@ -21,6 +21,9 @@ using std::uint64_t;
 
 using gnfs::siqs::emit_siqs_shadow_proof_rss_policy_record;
 using gnfs::siqs::parse_siqs_shadow_proof_rss_policy_record;
+using gnfs::siqs::SIQS_SHADOW_PROOF_RSS_GATE_CORPUS_DIGEST_HIGH;
+using gnfs::siqs::SIQS_SHADOW_PROOF_RSS_GATE_CORPUS_DIGEST_LOW;
+using gnfs::siqs::SIQS_SHADOW_PROOF_RSS_GATE_CORPUS_ID;
 using gnfs::siqs::siqs_shadow_proof_rss_policy_binding_digest;
 using gnfs::siqs::siqs_shadow_proof_rss_policy_record_error_name;
 using gnfs::siqs::SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_PREFIX;
@@ -30,6 +33,7 @@ using gnfs::siqs::SIQSShadowProofRssGatePolicy;
 using gnfs::siqs::SIQSShadowProofRssOperatingSystem;
 using gnfs::siqs::SIQSShadowProofRssPolicyRecord;
 using gnfs::siqs::SIQSShadowProofRssPolicyRecordError;
+using gnfs::siqs::SIQSShadowProofRssProbeExecutionIdentity;
 using gnfs::util::ProcessMemoryBackend;
 
 template <typename T>
@@ -43,6 +47,11 @@ static_assert(!CanBorrowGatePolicy<const SIQSShadowProofRssPolicyRecord>);
 int checks_passed = 0;
 int checks_failed = 0;
 
+constexpr std::string_view TEST_EXECUTABLE_SHA256 =
+    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+constexpr std::string_view TEST_EXECUTION_CONTRACT_SHA256 =
+    "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f";
+
 #define CHECK(condition)                                                                           \
     do {                                                                                           \
         if (condition) {                                                                           \
@@ -52,6 +61,16 @@ int checks_failed = 0;
             std::cerr << "FAIL: " #condition " at " << __FILE__ << ':' << __LINE__ << '\n';        \
         }                                                                                          \
     } while (false)
+
+[[nodiscard]] constexpr SIQSShadowProofRssProbeExecutionIdentity
+test_probe_execution_identity() noexcept {
+    SIQSShadowProofRssProbeExecutionIdentity identity;
+    for (std::size_t index = 0; index < identity.executable_sha256.bytes.size(); ++index) {
+        identity.executable_sha256.bytes[index] = static_cast<std::byte>(index);
+        identity.execution_contract_sha256.bytes[index] = static_cast<std::byte>(index + 32);
+    }
+    return identity;
+}
 
 [[nodiscard]] SIQSShadowProofRssGatePolicy make_policy() {
     SIQSShadowProofRssGatePolicy policy;
@@ -63,6 +82,7 @@ int checks_failed = 0;
     policy.memory_backend = ProcessMemoryBackend::DarwinGetrusage;
     policy.resolved_production_sieve_workers = 4;
     policy.candidate_revision = "synthetic-revision-abc123";
+    policy.probe_execution_identity = test_probe_execution_identity();
     policy.approval_id = "synthetic-approval-42";
     policy.journal_store = {{UINT64_C(1111111122222222), UINT64_C(3333333344444444)},
                             {UINT64_C(1234123412341234), UINT64_C(5678567856785678)},
@@ -73,11 +93,15 @@ int checks_failed = 0;
 }
 
 [[nodiscard]] std::string canonical_record() {
-    return "GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V2 schema_version=2 approved=true"
+    return "GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V3 schema_version=3 approved=true"
            " corpus_id=synthetic-corpus-v7 corpus_digest_low=123456789"
            " corpus_digest_high=987654321 operating_system=darwin architecture=arm64"
            " memory_backend=darwin_getrusage resolved_production_sieve_workers=4"
            " candidate_revision=synthetic-revision-abc123"
+           " probe_executable_sha256="
+           "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+           " probe_execution_contract_sha256="
+           "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
            " approval_id=synthetic-approval-42"
            " journal_trusted_base_id_low=1111111122222222"
            " journal_trusted_base_id_high=3333333344444444"
@@ -111,8 +135,8 @@ void expect_emit_rejected(const SIQSShadowProofRssGatePolicy& policy) {
 
 void test_constants_and_error_names() {
     CHECK(std::string_view(SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_PREFIX) ==
-          "GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V2");
-    CHECK(SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_SCHEMA_VERSION == 2);
+          "GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V3");
+    CHECK(SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_SCHEMA_VERSION == 3);
 
     constexpr std::array errors{
         std::pair{SIQSShadowProofRssPolicyRecordError::none, std::string_view("none")},
@@ -146,6 +170,8 @@ void test_constants_and_error_names() {
                   std::string_view("invalid_architecture")},
         std::pair{SIQSShadowProofRssPolicyRecordError::invalid_memory_backend,
                   std::string_view("invalid_memory_backend")},
+        std::pair{SIQSShadowProofRssPolicyRecordError::invalid_sha256,
+                  std::string_view("invalid_sha256")},
         std::pair{SIQSShadowProofRssPolicyRecordError::resource_failure,
                   std::string_view("resource_failure")},
     };
@@ -176,6 +202,7 @@ void test_exact_emit_parse_and_gate_mapping() {
     CHECK(mapped.memory_backend == source.memory_backend);
     CHECK(mapped.resolved_production_sieve_workers == source.resolved_production_sieve_workers);
     CHECK(mapped.candidate_revision == source.candidate_revision);
+    CHECK(mapped.probe_execution_identity == source.probe_execution_identity);
     CHECK(mapped.approval_id == source.approval_id);
     CHECK(mapped.journal_store == source.journal_store);
     CHECK(mapped.deployment_budget_bytes == source.deployment_budget_bytes);
@@ -248,6 +275,32 @@ void test_closed_platform_values_and_semantic_separation() {
     const auto noncanonical_locator_policy = parsed_noncanonical_locator.record.as_gate_policy();
     CHECK(gnfs::siqs::siqs_shadow_proof_rss_gate_policy_error(&noncanonical_locator_policy) ==
           gnfs::siqs::SIQSShadowProofRssGateReason::policy_binding_invalid);
+
+    auto gate_valid_policy = make_policy();
+    gate_valid_policy.corpus_id = SIQS_SHADOW_PROOF_RSS_GATE_CORPUS_ID;
+    gate_valid_policy.corpus_digest = {SIQS_SHADOW_PROOF_RSS_GATE_CORPUS_DIGEST_LOW,
+                                       SIQS_SHADOW_PROOF_RSS_GATE_CORPUS_DIGEST_HIGH};
+    CHECK(!gnfs::siqs::siqs_shadow_proof_rss_gate_policy_error(&gate_valid_policy).has_value());
+    const auto expect_zero_digest_rejected_by_gate = [&](bool executable_digest) {
+        auto changed = gate_valid_policy;
+        if (executable_digest) {
+            changed.probe_execution_identity.executable_sha256 = {};
+        } else {
+            changed.probe_execution_identity.execution_contract_sha256 = {};
+        }
+        std::string zero_digest_record;
+        CHECK(emit_siqs_shadow_proof_rss_policy_record(changed, zero_digest_record));
+        const auto zero_digest_parsed =
+            parse_siqs_shadow_proof_rss_policy_record(zero_digest_record);
+        CHECK(zero_digest_parsed);
+        if (zero_digest_parsed) {
+            const auto zero_digest_policy = zero_digest_parsed.record.as_gate_policy();
+            CHECK(gnfs::siqs::siqs_shadow_proof_rss_gate_policy_error(&zero_digest_policy) ==
+                  gnfs::siqs::SIQSShadowProofRssGateReason::policy_binding_invalid);
+        }
+    };
+    expect_zero_digest_rejected_by_gate(true);
+    expect_zero_digest_rejected_by_gate(false);
 }
 
 void test_framing_and_ascii_rejections() {
@@ -274,6 +327,9 @@ void test_framing_and_ascii_rejections() {
         replace_once(canonical, "synthetic-corpus-v7", std::string_view("synthetic-\x80", 11)),
         SIQSShadowProofRssPolicyRecordError::invalid_ascii);
     expect_error(replace_once(canonical, SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_PREFIX,
+                              "GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V2"),
+                 SIQSShadowProofRssPolicyRecordError::invalid_prefix);
+    expect_error(replace_once(canonical, SIQS_SHADOW_PROOF_RSS_POLICY_RECORD_PREFIX,
                               "GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V1"),
                  SIQSShadowProofRssPolicyRecordError::invalid_prefix);
 }
@@ -287,6 +343,16 @@ void test_field_shape_order_and_cardinality_rejections() {
     expect_error(replace_once(canonical, " approval_id=synthetic-approval-42",
                               " candidate_revision=synthetic-approval-42"),
                  SIQSShadowProofRssPolicyRecordError::duplicate_field);
+    expect_error(
+        replace_once(canonical, " probe_execution_contract_sha256=", " probe_executable_sha256="),
+        SIQSShadowProofRssPolicyRecordError::duplicate_field);
+    const std::string executable_field =
+        " probe_executable_sha256=" + std::string(TEST_EXECUTABLE_SHA256);
+    const std::string contract_field =
+        " probe_execution_contract_sha256=" + std::string(TEST_EXECUTION_CONTRACT_SHA256);
+    expect_error(replace_once(canonical, executable_field + contract_field,
+                              contract_field + executable_field),
+                 SIQSShadowProofRssPolicyRecordError::field_out_of_order);
     expect_error(replace_once(canonical, " approved=true", " approved"),
                  SIQSShadowProofRssPolicyRecordError::invalid_field);
     expect_error(replace_once(canonical, " approval_id=synthetic-approval-42", " approval_id="),
@@ -304,10 +370,37 @@ void test_field_shape_order_and_cardinality_rejections() {
 
 void test_canonical_scalar_rejections() {
     const std::string canonical = canonical_record();
-    expect_error(replace_once(canonical, "schema_version=2", "schema_version=3"),
+    expect_error(replace_once(canonical, "schema_version=3", "schema_version=4"),
                  SIQSShadowProofRssPolicyRecordError::invalid_schema_version);
-    expect_error(replace_once(canonical, "schema_version=2", "schema_version=1"),
+    expect_error(replace_once(canonical, "schema_version=3", "schema_version=2"),
                  SIQSShadowProofRssPolicyRecordError::invalid_schema_version);
+    for (const auto [field, canonical_value] :
+         std::array{std::pair{std::string_view("probe_executable_sha256"), TEST_EXECUTABLE_SHA256},
+                    std::pair{std::string_view("probe_execution_contract_sha256"),
+                              TEST_EXECUTION_CONTRACT_SHA256}}) {
+        const std::string assignment = std::string(field) + "=" + std::string(canonical_value);
+        expect_error(
+            replace_once(canonical, assignment,
+                         std::string(field) + "=" + std::string(canonical_value.substr(0, 63))),
+            SIQSShadowProofRssPolicyRecordError::invalid_sha256);
+        expect_error(replace_once(canonical, assignment,
+                                  std::string(field) + "=" + std::string(canonical_value) + "0"),
+                     SIQSShadowProofRssPolicyRecordError::invalid_sha256);
+
+        std::string uppercase(canonical_value);
+        const std::size_t lowercase_hex = uppercase.find_first_of("abcdef");
+        CHECK(lowercase_hex != std::string::npos);
+        if (lowercase_hex != std::string::npos) {
+            uppercase[lowercase_hex] = 'A';
+        }
+        expect_error(replace_once(canonical, assignment, std::string(field) + "=" + uppercase),
+                     SIQSShadowProofRssPolicyRecordError::invalid_sha256);
+
+        std::string non_hex(canonical_value);
+        non_hex[0] = 'g';
+        expect_error(replace_once(canonical, assignment, std::string(field) + "=" + non_hex),
+                     SIQSShadowProofRssPolicyRecordError::invalid_sha256);
+    }
     for (const std::string_view value : {"01", "+1", "-1", "1.0", "one"}) {
         expect_error(replace_once(canonical, "corpus_digest_low=123456789",
                                   std::string("corpus_digest_low=") + std::string(value)),

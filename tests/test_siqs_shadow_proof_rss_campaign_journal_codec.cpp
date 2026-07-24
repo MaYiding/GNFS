@@ -21,10 +21,10 @@ using CodecError = SIQSShadowProofRssCampaignJournalCodecError;
 using Header = SIQSShadowProofRssCampaignJournalHeader;
 using Record = SIQSShadowProofRssCampaignJournalRecord;
 
-static_assert(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_WIRE_SIZE == 96);
-static_assert(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_RECORD_WIRE_SIZE == 256);
-static_assert(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_WIRE_VERSION == 2);
-static_assert(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION == 2);
+static_assert(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_WIRE_SIZE == 160);
+static_assert(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_RECORD_WIRE_SIZE == 320);
+static_assert(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_WIRE_VERSION == 3);
+static_assert(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION == 3);
 static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_ARTIFACT_SEAL_WIRE_SIZE == 32);
 
 static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_MAGIC_OFFSET == 0);
@@ -38,7 +38,9 @@ static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_RUNTIME_DIGEST_OFFSET == 40);
 static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_PLAN_DIGEST_OFFSET == 56);
 static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_SLOT_COUNT_OFFSET == 72);
 static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_CONCURRENCY_OFFSET == 76);
-static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_DIGEST_OFFSET == 80);
+static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTABLE_SHA256_OFFSET == 80);
+static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET == 112);
+static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_DIGEST_OFFSET == 144);
 
 static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_SCHEMA_OFFSET == 16);
 static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_SEQUENCE_OFFSET == 20);
@@ -59,7 +61,21 @@ static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_WALL_NS_OFFSET == 136);
 static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_STDOUT_SEAL_OFFSET == 144);
 static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_STDERR_SEAL_OFFSET == 176);
 static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_JOINED_SEAL_OFFSET == 208);
-static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_DIGEST_OFFSET == 240);
+static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET == 240);
+static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET == 272);
+static_assert(SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_DIGEST_OFFSET == 304);
+
+[[nodiscard]] constexpr SIQSShadowProofRssProbeExecutionIdentity
+test_probe_execution_identity() noexcept {
+    SIQSShadowProofRssProbeExecutionIdentity identity;
+    for (std::size_t index = 0; index < identity.executable_sha256.bytes.size(); ++index) {
+        identity.executable_sha256.bytes[index] = static_cast<std::byte>(index);
+        identity.execution_contract_sha256.bytes[index] = static_cast<std::byte>(index + 32);
+    }
+    return identity;
+}
+
+inline constexpr auto TEST_PROBE_EXECUTION_IDENTITY = test_probe_execution_identity();
 
 int checks_passed = 0;
 int checks_failed = 0;
@@ -113,6 +129,14 @@ void put_digest(std::array<std::byte, Size>& bytes, std::size_t offset,
                 SIQSShadowProofRssCorpusDigest digest) noexcept {
     put_u64(bytes, offset, digest.low);
     put_u64(bytes, offset + 8, digest.high);
+}
+
+template <std::size_t Size>
+void put_sha256(std::array<std::byte, Size>& bytes, std::size_t offset,
+                const gnfs::util::Sha256Digest& digest) noexcept {
+    for (const std::byte byte : digest.bytes) {
+        bytes[offset++] = byte;
+    }
 }
 
 template <std::size_t Size>
@@ -269,6 +293,7 @@ void reseal(Record& record) {
     header.plan_digest = {UINT64_C(0x4142434445464748), UINT64_C(0x5152535455565758)};
     header.slot_count = 80;
     header.max_concurrency = 1;
+    header.probe_execution_identity = TEST_PROBE_EXECUTION_IDENTITY;
     reseal(header);
     return header;
 }
@@ -320,6 +345,7 @@ void reseal(Record& record) {
     payload.joined_sample_seal = make_artifact(
         true, SIQSShadowProofRssArtifactKind::joined_gate_sample, UINT64_C(0x6162636465666768),
         UINT64_C(0x7172737475767778), UINT64_C(0x8182838485868788));
+    payload.probe_execution_identity = TEST_PROBE_EXECUTION_IDENTITY;
     reseal(record);
     return record;
 }
@@ -342,6 +368,10 @@ golden_header_wire(const Header& header) {
     put_digest(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_PLAN_DIGEST_OFFSET, header.plan_digest);
     put_u32(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_SLOT_COUNT_OFFSET, header.slot_count);
     put_u32(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_CONCURRENCY_OFFSET, header.max_concurrency);
+    put_sha256(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTABLE_SHA256_OFFSET,
+               header.probe_execution_identity.executable_sha256);
+    put_sha256(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET,
+               header.probe_execution_identity.execution_contract_sha256);
     put_digest(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_DIGEST_OFFSET, header.header_digest);
     return bytes;
 }
@@ -400,6 +430,10 @@ golden_record_wire(const Record& record) {
                  payload.stderr_seal);
     put_artifact(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_JOINED_SEAL_OFFSET,
                  payload.joined_sample_seal);
+    put_sha256(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET,
+               payload.probe_execution_identity.executable_sha256);
+    put_sha256(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET,
+               payload.probe_execution_identity.execution_contract_sha256);
     put_digest(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_DIGEST_OFFSET, record.record_digest);
     return bytes;
 }
@@ -479,17 +513,26 @@ void expect_record_round_trip(Record record) {
 void test_fixed_width_golden_layout_and_round_trip() {
     const auto header = make_header();
     const auto header_bytes = encoded_header(header);
-    EXPECT(header_bytes.size() == 96);
+    EXPECT(header_bytes.size() == 160);
     EXPECT(header_bytes == golden_header_wire(header));
     EXPECT(byte_at(header_bytes, 0) == 'G');
     EXPECT(byte_at(header_bytes, 7) == 'D');
-    EXPECT(byte_at(header_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET) == 0x60);
+    EXPECT(byte_at(header_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET) == 0xa0);
     EXPECT(byte_at(header_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET + 1) == 0x00);
     EXPECT(byte_at(header_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_POLICY_DIGEST_OFFSET) ==
            0x08);
     EXPECT(byte_at(header_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_POLICY_DIGEST_OFFSET + 7) ==
            0x01);
     EXPECT(byte_at(header_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_PROBE_KIND_OFFSET) == 2);
+    EXPECT(byte_at(header_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTABLE_SHA256_OFFSET) ==
+           0x00);
+    EXPECT(byte_at(header_bytes,
+                   SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTABLE_SHA256_OFFSET + 31) == 0x1f);
+    EXPECT(byte_at(header_bytes,
+                   SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET) == 0x20);
+    EXPECT(byte_at(header_bytes,
+                   SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET + 31) ==
+           0x3f);
     expect_zero_range(header_bytes, 21, 24);
 
     const auto decoded_header = decode_siqs_shadow_proof_rss_campaign_journal_header(header_bytes);
@@ -501,12 +544,21 @@ void test_fixed_width_golden_layout_and_round_trip() {
 
     const auto record = make_record();
     const auto record_bytes = encoded_record(record);
-    EXPECT(record_bytes.size() == 256);
+    EXPECT(record_bytes.size() == 320);
     EXPECT(record_bytes == golden_record_wire(record));
     EXPECT(byte_at(record_bytes, 0) == 'G');
     EXPECT(byte_at(record_bytes, 7) == 'C');
-    EXPECT(byte_at(record_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET) == 0x00);
+    EXPECT(byte_at(record_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET) == 0x40);
     EXPECT(byte_at(record_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET + 1) == 0x01);
+    EXPECT(byte_at(record_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET) ==
+           0x00);
+    EXPECT(byte_at(record_bytes,
+                   SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET + 31) == 0x1f);
+    EXPECT(byte_at(record_bytes,
+                   SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET) == 0x20);
+    EXPECT(byte_at(record_bytes,
+                   SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET + 31) ==
+           0x3f);
     EXPECT(byte_at(record_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_SEQUENCE_OFFSET) == 0x04);
     EXPECT(byte_at(record_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_SEQUENCE_OFFSET + 1) == 0x03);
     EXPECT(byte_at(record_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_SEQUENCE_OFFSET + 2) == 0x02);
@@ -542,6 +594,26 @@ void test_fixed_width_golden_layout_and_round_trip() {
 
 void test_frame_size_magic_version_schema_and_reserved_rejection() {
     const auto header_bytes = encoded_header(make_header());
+    std::array<std::byte, 96> legacy_header{};
+    put_magic(legacy_header, "GNFSRJHD");
+    put_u32(legacy_header, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET, 2);
+    put_u32(legacy_header, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET,
+            static_cast<uint32_t>(legacy_header.size()));
+    expect_decode_error(decode_siqs_shadow_proof_rss_campaign_journal_header(legacy_header),
+                        CodecError::unsupported_wire_version,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET);
+
+    auto mislabeled_legacy_header = legacy_header;
+    put_u32(mislabeled_legacy_header, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET,
+            SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_WIRE_VERSION);
+    expect_decode_error(
+        decode_siqs_shadow_proof_rss_campaign_journal_header(mislabeled_legacy_header),
+        CodecError::declared_size_mismatch, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET);
+
+    std::array<std::byte, 15> short_header_prefix{};
+    expect_decode_error(decode_siqs_shadow_proof_rss_campaign_journal_header(short_header_prefix),
+                        CodecError::truncated, short_header_prefix.size());
+
     expect_decode_error(
         decode_siqs_shadow_proof_rss_campaign_journal_header(
             std::span<const std::byte>(header_bytes).first(header_bytes.size() - 1)),
@@ -594,6 +666,26 @@ void test_frame_size_magic_version_schema_and_reserved_rejection() {
     }
 
     const auto record_bytes = encoded_record(make_record());
+    std::array<std::byte, 256> legacy_record{};
+    put_magic(legacy_record, "GNFSRJRC");
+    put_u32(legacy_record, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET, 2);
+    put_u32(legacy_record, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET,
+            static_cast<uint32_t>(legacy_record.size()));
+    expect_decode_error(decode_siqs_shadow_proof_rss_campaign_journal_record(legacy_record),
+                        CodecError::unsupported_wire_version,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET);
+
+    auto mislabeled_legacy_record = legacy_record;
+    put_u32(mislabeled_legacy_record, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_VERSION_OFFSET,
+            SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_WIRE_VERSION);
+    expect_decode_error(
+        decode_siqs_shadow_proof_rss_campaign_journal_record(mislabeled_legacy_record),
+        CodecError::declared_size_mismatch, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET);
+
+    std::array<std::byte, 15> short_record_prefix{};
+    expect_decode_error(decode_siqs_shadow_proof_rss_campaign_journal_record(short_record_prefix),
+                        CodecError::truncated, short_record_prefix.size());
+
     expect_decode_error(
         decode_siqs_shadow_proof_rss_campaign_journal_record(
             std::span<const std::byte>(record_bytes).first(record_bytes.size() - 1)),
@@ -697,9 +789,16 @@ void test_all_enum_and_boolean_domains() {
     for (const auto [value, tag] : record_kind_cases) {
         auto record = make_record();
         record.kind = value;
+        if (value != SIQSShadowProofRssJournalRecordKind::slot_committed) {
+            record.commit_payload.probe_execution_identity = {};
+        }
         reseal(record);
         const auto bytes = encoded_record(record);
         EXPECT(byte_at(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_KIND_OFFSET) == tag);
+        if (value != SIQSShadowProofRssJournalRecordKind::slot_committed) {
+            expect_zero_range(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET,
+                              SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_DIGEST_OFFSET);
+        }
         expect_record_round_trip(record);
     }
 
@@ -718,6 +817,7 @@ void test_all_enum_and_boolean_domains() {
     auto start = make_record();
     start.kind = SIQSShadowProofRssJournalRecordKind::slot_started;
     start.commit_payload.deployment_probe_kind = SIQSShadowProofRssProbeKind::unknown;
+    start.commit_payload.probe_execution_identity = {};
     reseal(start);
     const auto start_bytes = encoded_record(start);
     EXPECT(byte_at(start_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_PROBE_KIND_OFFSET) == 0);
@@ -860,6 +960,117 @@ void test_all_enum_and_boolean_domains() {
                 expect_record_round_trip(record);
             }
         }
+    }
+}
+
+void test_probe_execution_identity_canonicality() {
+    auto header = make_header();
+    header.probe_execution_identity.executable_sha256 = {};
+    reseal(header);
+    expect_encode_error(encode_siqs_shadow_proof_rss_campaign_journal_header(header),
+                        CodecError::invalid_probe_execution_identity,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTABLE_SHA256_OFFSET);
+
+    header = make_header();
+    header.probe_execution_identity.execution_contract_sha256 = {};
+    reseal(header);
+    expect_encode_error(encode_siqs_shadow_proof_rss_campaign_journal_header(header),
+                        CodecError::invalid_probe_execution_identity,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET);
+
+    auto header_bytes = encoded_header(make_header());
+    for (std::size_t offset = SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTABLE_SHA256_OFFSET;
+         offset < SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET; ++offset) {
+        put_u8(header_bytes, offset, 0);
+    }
+    expect_decode_error(decode_siqs_shadow_proof_rss_campaign_journal_header(header_bytes),
+                        CodecError::invalid_probe_execution_identity,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTABLE_SHA256_OFFSET);
+
+    header_bytes = encoded_header(make_header());
+    for (std::size_t offset = SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET;
+         offset < SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_DIGEST_OFFSET; ++offset) {
+        put_u8(header_bytes, offset, 0);
+    }
+    expect_decode_error(decode_siqs_shadow_proof_rss_campaign_journal_header(header_bytes),
+                        CodecError::invalid_probe_execution_identity,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET);
+
+    auto commit = make_record();
+    commit.commit_payload.probe_execution_identity.executable_sha256 = {};
+    reseal(commit);
+    expect_encode_error(encode_siqs_shadow_proof_rss_campaign_journal_record(commit),
+                        CodecError::invalid_probe_execution_identity,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET);
+
+    commit = make_record();
+    commit.commit_payload.probe_execution_identity.execution_contract_sha256 = {};
+    reseal(commit);
+    expect_encode_error(encode_siqs_shadow_proof_rss_campaign_journal_record(commit),
+                        CodecError::invalid_probe_execution_identity,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET);
+
+    auto commit_bytes = encoded_record(make_record());
+    for (std::size_t offset = SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET;
+         offset < SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET; ++offset) {
+        put_u8(commit_bytes, offset, 0);
+    }
+    expect_decode_error(decode_siqs_shadow_proof_rss_campaign_journal_record(commit_bytes),
+                        CodecError::invalid_probe_execution_identity,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET);
+
+    commit_bytes = encoded_record(make_record());
+    for (std::size_t offset = SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET;
+         offset < SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_DIGEST_OFFSET; ++offset) {
+        put_u8(commit_bytes, offset, 0);
+    }
+    expect_decode_error(decode_siqs_shadow_proof_rss_campaign_journal_record(commit_bytes),
+                        CodecError::invalid_probe_execution_identity,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET);
+
+    for (const auto kind : {SIQSShadowProofRssJournalRecordKind::slot_started,
+                            SIQSShadowProofRssJournalRecordKind::campaign_tainted}) {
+        auto absent = make_record();
+        absent.kind = kind;
+        absent.commit_payload.probe_execution_identity = {};
+        reseal(absent);
+        const auto absent_bytes = encoded_record(absent);
+        expect_zero_range(absent_bytes,
+                          SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET,
+                          SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_DIGEST_OFFSET);
+        expect_record_round_trip(absent);
+
+        auto nonzero_executable = absent;
+        nonzero_executable.commit_payload.probe_execution_identity.executable_sha256.bytes[0] =
+            std::byte{1};
+        reseal(nonzero_executable);
+        expect_encode_error(
+            encode_siqs_shadow_proof_rss_campaign_journal_record(nonzero_executable),
+            CodecError::invalid_probe_execution_identity,
+            SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET);
+
+        auto nonzero_contract = absent;
+        nonzero_contract.commit_payload.probe_execution_identity.execution_contract_sha256
+            .bytes[0] = std::byte{1};
+        reseal(nonzero_contract);
+        expect_encode_error(encode_siqs_shadow_proof_rss_campaign_journal_record(nonzero_contract),
+                            CodecError::invalid_probe_execution_identity,
+                            SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET);
+
+        auto noncanonical_bytes = absent_bytes;
+        put_u8(noncanonical_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET,
+               1);
+        expect_decode_error(
+            decode_siqs_shadow_proof_rss_campaign_journal_record(noncanonical_bytes),
+            CodecError::invalid_probe_execution_identity,
+            SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET);
+        noncanonical_bytes = absent_bytes;
+        put_u8(noncanonical_bytes,
+               SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET, 1);
+        expect_decode_error(
+            decode_siqs_shadow_proof_rss_campaign_journal_record(noncanonical_bytes),
+            CodecError::invalid_probe_execution_identity,
+            SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET);
     }
 }
 
@@ -1150,6 +1361,24 @@ void test_worker_range_and_digest_guards() {
                         CodecError::digest_mismatch,
                         SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_DIGEST_OFFSET);
     header_bytes = encoded_header(make_header());
+    put_u8(header_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTABLE_SHA256_OFFSET + 1,
+           static_cast<uint8_t>(
+               byte_at(header_bytes,
+                       SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTABLE_SHA256_OFFSET + 1) +
+               1));
+    expect_decode_error(decode_siqs_shadow_proof_rss_campaign_journal_header(header_bytes),
+                        CodecError::digest_mismatch,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_DIGEST_OFFSET);
+    header_bytes = encoded_header(make_header());
+    put_u8(header_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET,
+           static_cast<uint8_t>(
+               byte_at(header_bytes,
+                       SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET) +
+               1));
+    expect_decode_error(decode_siqs_shadow_proof_rss_campaign_journal_header(header_bytes),
+                        CodecError::digest_mismatch,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_DIGEST_OFFSET);
+    header_bytes = encoded_header(make_header());
     put_u8(header_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_DIGEST_OFFSET,
            static_cast<uint8_t>(
                byte_at(header_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_DIGEST_OFFSET) + 1));
@@ -1174,6 +1403,24 @@ void test_worker_range_and_digest_guards() {
         record_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_ABSOLUTE_PEAK_OFFSET,
         static_cast<uint8_t>(
             byte_at(record_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_ABSOLUTE_PEAK_OFFSET) + 1));
+    expect_decode_error(decode_siqs_shadow_proof_rss_campaign_journal_record(record_bytes),
+                        CodecError::digest_mismatch,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_DIGEST_OFFSET);
+    record_bytes = encoded_record(make_record());
+    put_u8(record_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET + 1,
+           static_cast<uint8_t>(
+               byte_at(record_bytes,
+                       SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET + 1) +
+               1));
+    expect_decode_error(decode_siqs_shadow_proof_rss_campaign_journal_record(record_bytes),
+                        CodecError::digest_mismatch,
+                        SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_DIGEST_OFFSET);
+    record_bytes = encoded_record(make_record());
+    put_u8(record_bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET,
+           static_cast<uint8_t>(
+               byte_at(record_bytes,
+                       SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET) +
+               1));
     expect_decode_error(decode_siqs_shadow_proof_rss_campaign_journal_record(record_bytes),
                         CodecError::digest_mismatch,
                         SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_DIGEST_OFFSET);
@@ -1265,6 +1512,7 @@ void test_codec_error_names_are_total() {
         CodecError::invalid_artifact_kind,
         CodecError::invalid_optional_mask,
         CodecError::noncanonical_absent_value,
+        CodecError::invalid_probe_execution_identity,
         CodecError::integer_out_of_range,
         CodecError::digest_mismatch,
     };
@@ -1282,6 +1530,7 @@ int main() {
     test_fixed_width_golden_layout_and_round_trip();
     test_frame_size_magic_version_schema_and_reserved_rejection();
     test_all_enum_and_boolean_domains();
+    test_probe_execution_identity_canonicality();
     test_invalid_enum_and_boolean_tags();
     test_optional_masks_canonical_absence_and_signed_boundaries();
     test_worker_range_and_digest_guards();

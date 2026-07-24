@@ -16,9 +16,9 @@
 
 namespace gnfs::siqs {
 
-inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_WIRE_VERSION = 2;
-inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_WIRE_SIZE = 96;
-inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_RECORD_WIRE_SIZE = 256;
+inline constexpr uint32_t SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_WIRE_VERSION = 3;
+inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_WIRE_SIZE = 160;
+inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_RECORD_WIRE_SIZE = 320;
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_ERROR_OFFSET =
     std::numeric_limits<std::size_t>::max();
 
@@ -33,7 +33,10 @@ inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_RUNTIME_DIGEST
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_PLAN_DIGEST_OFFSET = 56;
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_SLOT_COUNT_OFFSET = 72;
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_CONCURRENCY_OFFSET = 76;
-inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_DIGEST_OFFSET = 80;
+inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTABLE_SHA256_OFFSET = 80;
+inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET =
+    112;
+inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_DIGEST_OFFSET = 144;
 
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_SCHEMA_OFFSET = 16;
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_SEQUENCE_OFFSET = 20;
@@ -54,7 +57,10 @@ inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_WALL_NS_OFFSET
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_STDOUT_SEAL_OFFSET = 144;
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_STDERR_SEAL_OFFSET = 176;
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_JOINED_SEAL_OFFSET = 208;
-inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_DIGEST_OFFSET = 240;
+inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET = 240;
+inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET =
+    272;
+inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_DIGEST_OFFSET = 304;
 inline constexpr std::size_t SIQS_SHADOW_PROOF_RSS_JOURNAL_ARTIFACT_SEAL_WIRE_SIZE = 32;
 
 enum class SIQSShadowProofRssCampaignJournalCodecError : uint8_t {
@@ -77,6 +83,7 @@ enum class SIQSShadowProofRssCampaignJournalCodecError : uint8_t {
     invalid_artifact_kind,
     invalid_optional_mask,
     noncanonical_absent_value,
+    invalid_probe_execution_identity,
     integer_out_of_range,
     digest_mismatch,
 };
@@ -122,6 +129,8 @@ enum class SIQSShadowProofRssCampaignJournalCodecError : uint8_t {
         return "invalid_optional_mask";
     case SIQSShadowProofRssCampaignJournalCodecError::noncanonical_absent_value:
         return "noncanonical_absent_value";
+    case SIQSShadowProofRssCampaignJournalCodecError::invalid_probe_execution_identity:
+        return "invalid_probe_execution_identity";
     case SIQSShadowProofRssCampaignJournalCodecError::integer_out_of_range:
         return "integer_out_of_range";
     case SIQSShadowProofRssCampaignJournalCodecError::digest_mismatch:
@@ -220,6 +229,14 @@ constexpr void write_digest(std::array<std::byte, Size>& bytes, std::size_t offs
     write_u64(bytes, offset + 8, digest.high);
 }
 
+template <std::size_t Size>
+constexpr void write_sha256(std::array<std::byte, Size>& bytes, std::size_t offset,
+                            const util::Sha256Digest& digest) noexcept {
+    for (const std::byte byte : digest.bytes) {
+        bytes[offset++] = byte;
+    }
+}
+
 [[nodiscard]] constexpr uint8_t read_u8(std::span<const std::byte> bytes,
                                         std::size_t offset) noexcept {
     return std::to_integer<uint8_t>(bytes[offset]);
@@ -248,6 +265,24 @@ constexpr void write_digest(std::array<std::byte, Size>& bytes, std::size_t offs
     return {read_u64(bytes, offset), read_u64(bytes, offset + 8)};
 }
 
+[[nodiscard]] constexpr util::Sha256Digest read_sha256(std::span<const std::byte> bytes,
+                                                       std::size_t offset) noexcept {
+    util::Sha256Digest digest;
+    for (std::byte& byte : digest.bytes) {
+        byte = bytes[offset++];
+    }
+    return digest;
+}
+
+[[nodiscard]] constexpr bool sha256_is_zero(const util::Sha256Digest& digest) noexcept {
+    for (const std::byte byte : digest.bytes) {
+        if (byte != std::byte{0}) {
+            return false;
+        }
+    }
+    return true;
+}
+
 [[nodiscard]] constexpr Status check_reserved(std::span<const std::byte> bytes, std::size_t begin,
                                               std::size_t end) noexcept {
     for (std::size_t offset = begin; offset < end; ++offset) {
@@ -261,11 +296,9 @@ constexpr void write_digest(std::array<std::byte, Size>& bytes, std::size_t offs
 template <std::size_t ExpectedSize>
 [[nodiscard]] constexpr Status check_frame(std::span<const std::byte> bytes,
                                            const std::array<char, 8>& magic) noexcept {
-    if (bytes.size() < ExpectedSize) {
+    constexpr std::size_t COMMON_PREFIX_SIZE = 16;
+    if (bytes.size() < COMMON_PREFIX_SIZE) {
         return failure(SIQSShadowProofRssCampaignJournalCodecError::truncated, bytes.size());
-    }
-    if (bytes.size() > ExpectedSize) {
-        return failure(SIQSShadowProofRssCampaignJournalCodecError::trailing_bytes, ExpectedSize);
     }
     for (std::size_t index = 0; index < magic.size(); ++index) {
         if (read_u8(bytes, index) !=
@@ -281,6 +314,31 @@ template <std::size_t ExpectedSize>
     if (read_u32(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET) != ExpectedSize) {
         return failure(SIQSShadowProofRssCampaignJournalCodecError::declared_size_mismatch,
                        SIQS_SHADOW_PROOF_RSS_JOURNAL_WIRE_SIZE_OFFSET);
+    }
+    if (bytes.size() < ExpectedSize) {
+        return failure(SIQSShadowProofRssCampaignJournalCodecError::truncated, bytes.size());
+    }
+    if (bytes.size() > ExpectedSize) {
+        return failure(SIQSShadowProofRssCampaignJournalCodecError::trailing_bytes, ExpectedSize);
+    }
+    return {};
+}
+
+[[nodiscard]] constexpr Status
+validate_probe_execution_identity(const SIQSShadowProofRssProbeExecutionIdentity& identity,
+                                  bool must_be_present, std::size_t executable_offset,
+                                  std::size_t contract_offset) noexcept {
+    const bool executable_zero = sha256_is_zero(identity.executable_sha256);
+    if (executable_zero == must_be_present) {
+        return failure(
+            SIQSShadowProofRssCampaignJournalCodecError::invalid_probe_execution_identity,
+            executable_offset);
+    }
+    const bool contract_zero = sha256_is_zero(identity.execution_contract_sha256);
+    if (contract_zero == must_be_present) {
+        return failure(
+            SIQSShadowProofRssCampaignJournalCodecError::invalid_probe_execution_identity,
+            contract_offset);
     }
     return {};
 }
@@ -597,6 +655,13 @@ encode_siqs_shadow_proof_rss_campaign_journal_header(
         return encode_failure<Size>(Error::invalid_probe_kind,
                                     SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_PROBE_KIND_OFFSET);
     }
+    if (const Status identity = validate_probe_execution_identity(
+            header.probe_execution_identity, true,
+            SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTABLE_SHA256_OFFSET,
+            SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET);
+        !identity) {
+        return encode_failure<Size>(identity.error, identity.offset);
+    }
     if (header.header_digest != shadow_proof_rss_campaign_journal_detail::header_digest(header)) {
         return encode_failure<Size>(Error::digest_mismatch,
                                     SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_DIGEST_OFFSET);
@@ -618,6 +683,10 @@ encode_siqs_shadow_proof_rss_campaign_journal_header(
     write_u32(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_SLOT_COUNT_OFFSET, header.slot_count);
     write_u32(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_CONCURRENCY_OFFSET,
               header.max_concurrency);
+    write_sha256(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTABLE_SHA256_OFFSET,
+                 header.probe_execution_identity.executable_sha256);
+    write_sha256(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET,
+                 header.probe_execution_identity.execution_contract_sha256);
     write_digest(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_DIGEST_OFFSET, header.header_digest);
 
     SIQSShadowProofRssCampaignJournalHeaderEncodeResult result;
@@ -662,6 +731,18 @@ decode_siqs_shadow_proof_rss_campaign_journal_header(std::span<const std::byte> 
     header.slot_count = read_u32(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_SLOT_COUNT_OFFSET);
     header.max_concurrency =
         read_u32(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_CONCURRENCY_OFFSET);
+    header.probe_execution_identity.executable_sha256 =
+        read_sha256(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTABLE_SHA256_OFFSET);
+    header.probe_execution_identity.execution_contract_sha256 =
+        read_sha256(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET);
+    if (const Status identity = validate_probe_execution_identity(
+            header.probe_execution_identity, true,
+            SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTABLE_SHA256_OFFSET,
+            SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_EXECUTION_CONTRACT_SHA256_OFFSET);
+        !identity) {
+        return decode_failure<SIQSShadowProofRssCampaignJournalHeader>(identity.error,
+                                                                       identity.offset);
+    }
     header.header_digest = read_digest(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_HEADER_DIGEST_OFFSET);
     if (header.header_digest != shadow_proof_rss_campaign_journal_detail::header_digest(header)) {
         return decode_failure<SIQSShadowProofRssCampaignJournalHeader>(
@@ -727,6 +808,14 @@ encode_siqs_shadow_proof_rss_campaign_journal_record(
         static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
         return encode_failure<Size>(Error::integer_out_of_range,
                                     SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_WORKERS_OFFSET);
+    }
+    if (const Status identity = validate_probe_execution_identity(
+            record.commit_payload.probe_execution_identity,
+            record.kind == SIQSShadowProofRssJournalRecordKind::slot_committed,
+            SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET,
+            SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET);
+        !identity) {
+        return encode_failure<Size>(identity.error, identity.offset);
     }
     if (record.record_digest != shadow_proof_rss_campaign_journal_detail::record_digest(record)) {
         return encode_failure<Size>(Error::digest_mismatch,
@@ -796,6 +885,10 @@ encode_siqs_shadow_proof_rss_campaign_journal_record(
         !status) {
         return encode_failure<Size>(status.error, status.offset);
     }
+    write_sha256(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET,
+                 payload.probe_execution_identity.executable_sha256);
+    write_sha256(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET,
+                 payload.probe_execution_identity.execution_contract_sha256);
     write_digest(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_DIGEST_OFFSET, record.record_digest);
 
     SIQSShadowProofRssCampaignJournalRecordEncodeResult result;
@@ -981,6 +1074,18 @@ decode_siqs_shadow_proof_rss_campaign_journal_record(std::span<const std::byte> 
                                payload.joined_sample_seal);
         !status) {
         return decode_failure<Record>(status.error, status.offset);
+    }
+    payload.probe_execution_identity.executable_sha256 =
+        read_sha256(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET);
+    payload.probe_execution_identity.execution_contract_sha256 =
+        read_sha256(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET);
+    if (const Status identity = validate_probe_execution_identity(
+            payload.probe_execution_identity,
+            record.kind == SIQSShadowProofRssJournalRecordKind::slot_committed,
+            SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTABLE_SHA256_OFFSET,
+            SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_EXECUTION_CONTRACT_SHA256_OFFSET);
+        !identity) {
+        return decode_failure<Record>(identity.error, identity.offset);
     }
 
     record.record_digest = read_digest(bytes, SIQS_SHADOW_PROOF_RSS_JOURNAL_RECORD_DIGEST_OFFSET);

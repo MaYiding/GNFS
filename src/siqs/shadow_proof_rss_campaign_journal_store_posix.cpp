@@ -2114,7 +2114,12 @@ public:
                 executable.candidate_revision != runtime_candidate_revision_ ||
                 executable.expected_owner != deployment_.expected_owner ||
                 executable.probe_kind != deployment_.probe_kind ||
-                executable.probe_kind != runtime_facts_.probe_kind) {
+                executable.probe_kind != runtime_facts_.probe_kind ||
+                executable.probe_execution_identity !=
+                    deployment_.approval.probe_execution_identity ||
+                executable.probe_execution_identity != policy_.probe_execution_identity ||
+                executable.probe_execution_identity != runtime_facts_.probe_execution_identity ||
+                executable.probe_execution_identity != slot.probe_execution_identity) {
                 return fail(make_diagnostic(StoreError::registry_binding_mismatch,
                                             StoreObject::deployment_registry));
             }
@@ -2357,6 +2362,16 @@ public:
                     runtime_facts_.resolved_production_sieve_workers &&
                 execution->deployment_probe_kind == deployment_.probe_kind &&
                 execution->deployment_probe_kind == runtime_facts_.probe_kind &&
+                deployment_.holdout_probe.has_value() &&
+                execution->probe_execution_identity ==
+                    deployment_.approval.probe_execution_identity &&
+                execution->probe_execution_identity ==
+                    deployment_.holdout_probe->probe_execution_identity &&
+                execution->probe_execution_identity == policy_.probe_execution_identity &&
+                execution->probe_execution_identity == runtime_facts_.probe_execution_identity &&
+                execution->probe_execution_identity == slot.probe_execution_identity &&
+                siqs_shadow_proof_rss_probe_execution_identity_is_valid(
+                    execution->probe_execution_identity) &&
                 execution->fresh_process && execution->completed &&
                 execution->factor_identity == SIQSShadowProofRssFactorIdentity::pass &&
                 execution->relations_found != 0 && execution->polynomials_used != 0 &&
@@ -2396,6 +2411,7 @@ public:
             payload.actual_resolved_sieve_workers =
                 runtime_facts_.resolved_production_sieve_workers;
             payload.deployment_probe_kind = execution->deployment_probe_kind;
+            payload.probe_execution_identity = execution->probe_execution_identity;
             payload.fresh_process = execution->fresh_process;
             payload.completed = execution->completed;
             payload.factor_identity = execution->factor_identity;

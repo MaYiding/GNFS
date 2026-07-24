@@ -1,6 +1,7 @@
 #include "shadow_proof_rss_campaign_slot_runner_internal.hpp"
 
 #include "shadow_proof_rss_holdout_stream_join_internal.hpp"
+#include "shadow_proof_rss_probe_execution_identity_internal.hpp"
 
 #include <gnfs/siqs/shadow_proof_rss_campaign_artifact_layout.hpp>
 
@@ -69,6 +70,42 @@ void retain_transport_diagnostic(SlotRunnerDiagnostic& diagnostic,
 #endif
 }
 
+[[nodiscard]] bool
+execution_identity_matches_context(const SessionSlotRunContext& context) noexcept {
+    if (context.policy == nullptr || context.runtime_facts == nullptr ||
+        context.executable == nullptr) {
+        return false;
+    }
+    const auto& identity = context.executable->probe_execution_identity;
+    if (!siqs_shadow_proof_rss_probe_execution_identity_is_valid(identity) ||
+        identity != context.policy->probe_execution_identity ||
+        identity != context.runtime_facts->probe_execution_identity ||
+        identity != context.slot.probe_execution_identity) {
+        return false;
+    }
+
+    using shadow_proof_rss_probe_execution_identity_detail::
+        make_siqs_shadow_proof_rss_probe_execution_identity;
+    using shadow_proof_rss_probe_execution_identity_detail::ProbeExecutionContractInput;
+    const auto canonical_identity =
+        make_siqs_shadow_proof_rss_probe_execution_identity(ProbeExecutionContractInput{
+            .executable_sha256 = identity.executable_sha256,
+            .probe_kind = context.deployment_probe_kind,
+            .candidate_revision = context.executable->candidate_revision,
+            .operating_system = context.runtime_facts->operating_system,
+            .architecture = context.runtime_facts->architecture,
+            .memory_backend = context.runtime_facts->memory_backend,
+            .resolved_production_sieve_workers =
+                context.runtime_facts->resolved_production_sieve_workers,
+            .release_build = context.runtime_facts->release_build,
+            .ndebug = context.runtime_facts->ndebug,
+            .environment = context.executable->environment,
+            .timeout_ms = static_cast<std::uint64_t>(context.executable->timeout.count()),
+            .expected_owner = context.executable->expected_owner,
+        });
+    return canonical_identity.has_value() && *canonical_identity == identity;
+}
+
 [[nodiscard]] util::BoundedChildProcessSpec
 make_process_spec(const SessionSlotRunContext& context) {
     util::BoundedChildProcessSpec spec;
@@ -100,6 +137,7 @@ make_execution_evidence(const SIQSShadowProofRssCampaignJournalRecord& durable_s
     evidence.memory_backend = draft.memory_backend;
     evidence.resolved_production_sieve_workers = draft.resolved_production_sieve_workers;
     evidence.deployment_probe_kind = draft.probe_kind;
+    evidence.probe_execution_identity = draft.probe_execution_identity;
     evidence.fresh_process = draft.fresh_process;
     evidence.completed = draft.completed;
     evidence.factor_identity = draft.factor_identity;
@@ -213,7 +251,11 @@ SlotRunnerFactory::run(SIQSShadowProofRssCampaignJournalActiveSlot&& active_slot
         diagnostic.store_diagnostic = make_store_diagnostic(StoreError::platform_unavailable);
         return finish_with_taint(std::move(active_slot), std::move(diagnostic));
 #else
-        if (!executable_binding_is_valid(*context.executable)) {
+        // The identity here is still a deployment claim. Same-object hashing
+        // and launch are a separate platform boundary; this check ensures the
+        // exact approved canonical contract reaches that boundary unchanged.
+        if (!execution_identity_matches_context(context) ||
+            !executable_binding_is_valid(*context.executable)) {
             SlotRunnerDiagnostic diagnostic;
             diagnostic.error = SlotRunnerError::deployment_invalid;
             diagnostic.store_diagnostic = make_store_diagnostic(

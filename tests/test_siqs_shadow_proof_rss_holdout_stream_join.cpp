@@ -20,8 +20,9 @@ using namespace gnfs::siqs;
 using namespace gnfs::siqs::shadow_proof_rss_holdout_fixture_detail;
 using namespace gnfs::siqs::shadow_proof_rss_holdout_detail;
 using gnfs::util::ProcessMemoryBackend;
+using gnfs::util::Sha256Digest;
 
-static_assert(SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_SCHEMA_VERSION == 2);
+static_assert(SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_SCHEMA_VERSION == 3);
 static_assert(SIQS_SHADOW_PROOF_RSS_HOLDOUT_FACTOR_BASE_COLUMNS == 1601);
 static_assert(SIQS_SHADOW_PROOF_RSS_HOLDOUT_SELECTED_ROWS == 1701);
 static_assert(SIQS_SHADOW_PROOF_RSS_HOLDOUT_LARGE_PRIME_BOUNDS.size() == 8);
@@ -46,6 +47,66 @@ int checks_failed = 0;
         }                                                                                          \
     } while (false)
 
+[[nodiscard]] constexpr Sha256Digest filled_sha256_digest(std::byte value) noexcept {
+    Sha256Digest digest;
+    for (std::byte& byte : digest.bytes) {
+        byte = value;
+    }
+    return digest;
+}
+
+[[nodiscard]] constexpr SIQSShadowProofRssProbeExecutionIdentity
+make_probe_execution_identity() noexcept {
+    return {
+        .executable_sha256 = filled_sha256_digest(std::byte{0xab}),
+        .execution_contract_sha256 = filled_sha256_digest(std::byte{0xcd}),
+    };
+}
+
+constexpr std::string_view OFF_JOINED_DRAFT_GOLDEN =
+    "GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_V3"
+    " schema_version=3 status=validated authority=uncommitted"
+    " policy_binding_digest_low=18351891235512848262"
+    " policy_binding_digest_high=2641144352527364091"
+    " slot_number=1 fixture_id=1 mode=off ordinal=1"
+    " operating_system=darwin architecture=arm64 rss_backend=darwin_getrusage"
+    " resolved_production_sieve_workers=4 probe_kind=production_holdout"
+    " candidate_revision=candidate-revision-1"
+    " probe_executable_sha256=abababababababababababababababababababababababababababababababab"
+    " probe_execution_contract_sha256="
+    "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+    " fresh_process=true completed=true factor_identity=pass"
+    " proof_evidence=not_applicable matrix_evidence=not_applicable"
+    " relations_found=1701 polynomials_used=9 absolute_peak_rss_bytes=1000"
+    " current_rss_supported=true current_rss_bytes=700"
+    " peak_growth_supported=true peak_growth_bytes=800 wall_ns=1000000000"
+    " stdout_byte_count=1222 stdout_digest_low=8891870161186256003"
+    " stdout_digest_high=15729363573332071801"
+    " stderr_byte_count=0 stderr_digest_low=17767629546599948427"
+    " stderr_digest_high=1504657104732856512 route=none promotion=false\n";
+
+constexpr std::string_view OBSERVE_JOINED_DRAFT_GOLDEN =
+    "GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_V3"
+    " schema_version=3 status=validated authority=uncommitted"
+    " policy_binding_digest_low=18351891235512848262"
+    " policy_binding_digest_high=2641144352527364091"
+    " slot_number=4 fixture_id=1 mode=observe ordinal=1"
+    " operating_system=darwin architecture=arm64 rss_backend=darwin_getrusage"
+    " resolved_production_sieve_workers=4 probe_kind=production_holdout"
+    " candidate_revision=candidate-revision-1"
+    " probe_executable_sha256=abababababababababababababababababababababababababababababababab"
+    " probe_execution_contract_sha256="
+    "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+    " fresh_process=true completed=true factor_identity=pass"
+    " proof_evidence=pass matrix_evidence=pass"
+    " relations_found=1701 polynomials_used=9 absolute_peak_rss_bytes=1000"
+    " current_rss_supported=true current_rss_bytes=700"
+    " peak_growth_supported=true peak_growth_bytes=800 wall_ns=1000000000"
+    " stdout_byte_count=1232 stdout_digest_low=1635225378183550372"
+    " stdout_digest_high=12738254898446632118"
+    " stderr_byte_count=2610 stderr_digest_low=5154940619139237661"
+    " stderr_digest_high=815281155815787516 route=none promotion=false\n";
+
 [[nodiscard]] constexpr SIQSShadowProofRssGatePolicy make_policy() noexcept {
     SIQSShadowProofRssGatePolicy policy;
     policy.approved = true;
@@ -57,6 +118,7 @@ int checks_failed = 0;
     policy.memory_backend = ProcessMemoryBackend::DarwinGetrusage;
     policy.resolved_production_sieve_workers = 4;
     policy.candidate_revision = "candidate-revision-1";
+    policy.probe_execution_identity = make_probe_execution_identity();
     policy.approval_id = "approval-ticket-1";
     policy.journal_store = {{UINT64_C(1010101010101010), UINT64_C(2020202020202020)},
                             {UINT64_C(1111222233334444), UINT64_C(5555666677778888)},
@@ -74,6 +136,7 @@ int checks_failed = 0;
         .resolved_production_sieve_workers = 4,
         .probe_kind = SIQSShadowProofRssProbeKind::production_holdout,
         .candidate_revision = "candidate-revision-1",
+        .probe_execution_identity = make_probe_execution_identity(),
         .release_build = true,
         .ndebug = true,
     };
@@ -301,6 +364,7 @@ void test_all_slots_and_draft_contract() {
         CHECK(draft.mode == slot.mode);
         CHECK(draft.ordinal == slot.ordinal);
         CHECK(draft.probe_kind == SIQSShadowProofRssProbeKind::production_holdout);
+        CHECK(draft.probe_execution_identity == facts.probe_execution_identity);
         CHECK(draft.fresh_process);
         CHECK(draft.completed);
         CHECK(draft.factor_identity == SIQSShadowProofRssFactorIdentity::pass);
@@ -324,6 +388,14 @@ void test_all_slots_and_draft_contract() {
         CHECK(draft.joined_bytes.starts_with(SIQS_SHADOW_PROOF_RSS_HOLDOUT_JOINED_DRAFT_PREFIX));
         CHECK(draft.joined_bytes.find(" authority=uncommitted ") != std::string::npos);
         CHECK(draft.joined_bytes.find(" probe_kind=production_holdout ") != std::string::npos);
+        CHECK(draft.joined_bytes.find(
+                  " probe_executable_sha256="
+                  "abababababababababababababababababababababababababababababababab ") !=
+              std::string::npos);
+        CHECK(draft.joined_bytes.find(
+                  " probe_execution_contract_sha256="
+                  "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd ") !=
+              std::string::npos);
         CHECK(draft.joined_bytes.find(" committed=") == std::string::npos);
         CHECK(draft.joined_bytes.ends_with(" route=none promotion=false\n"));
     }
@@ -347,6 +419,11 @@ void test_preflight_and_stream_failures() {
     expect_error(join_siqs_shadow_proof_rss_holdout_streams(&policy, &valid_facts, &off_slot,
                                                             off_stdout, {}),
                  SIQSShadowProofRssHoldoutStreamJoinError::policy_invalid);
+    policy = approved;
+    policy.probe_execution_identity = {};
+    expect_error(join_siqs_shadow_proof_rss_holdout_streams(&policy, &valid_facts, &off_slot,
+                                                            off_stdout, {}),
+                 SIQSShadowProofRssHoldoutStreamJoinError::policy_invalid);
 
     expect_error(
         join_siqs_shadow_proof_rss_holdout_streams(&approved, nullptr, &off_slot, off_stdout, {}),
@@ -362,6 +439,21 @@ void test_preflight_and_stream_failures() {
         join_siqs_shadow_proof_rss_holdout_streams(&approved, &facts, &off_slot, off_stdout, {}),
         SIQSShadowProofRssHoldoutStreamJoinError::runtime_facts_invalid);
     facts = valid_facts;
+    facts.probe_execution_identity = {};
+    expect_error(
+        join_siqs_shadow_proof_rss_holdout_streams(&approved, &facts, &off_slot, off_stdout, {}),
+        SIQSShadowProofRssHoldoutStreamJoinError::runtime_facts_invalid);
+    facts = valid_facts;
+    facts.probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{1};
+    expect_error(
+        join_siqs_shadow_proof_rss_holdout_streams(&approved, &facts, &off_slot, off_stdout, {}),
+        SIQSShadowProofRssHoldoutStreamJoinError::runtime_facts_mismatch);
+    facts = valid_facts;
+    facts.probe_execution_identity.execution_contract_sha256.bytes[0] ^= std::byte{1};
+    expect_error(
+        join_siqs_shadow_proof_rss_holdout_streams(&approved, &facts, &off_slot, off_stdout, {}),
+        SIQSShadowProofRssHoldoutStreamJoinError::runtime_facts_mismatch);
+    facts = valid_facts;
     facts.resolved_production_sieve_workers = 8;
     expect_error(
         join_siqs_shadow_proof_rss_holdout_streams(&approved, &facts, &off_slot, off_stdout, {}),
@@ -376,6 +468,14 @@ void test_preflight_and_stream_failures() {
                  SIQSShadowProofRssHoldoutStreamJoinError::slot_invalid);
     auto changed_slot = off_slot;
     changed_slot.ordinal = 2;
+    expect_error(join(approved, valid_facts, changed_slot, off_stdout, {}),
+                 SIQSShadowProofRssHoldoutStreamJoinError::slot_invalid);
+    changed_slot = off_slot;
+    changed_slot.probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{1};
+    expect_error(join(approved, valid_facts, changed_slot, off_stdout, {}),
+                 SIQSShadowProofRssHoldoutStreamJoinError::slot_invalid);
+    changed_slot = off_slot;
+    changed_slot.probe_execution_identity.execution_contract_sha256.bytes[0] ^= std::byte{1};
     expect_error(join(approved, valid_facts, changed_slot, off_stdout, {}),
                  SIQSShadowProofRssHoldoutStreamJoinError::slot_invalid);
 
@@ -510,6 +610,27 @@ void test_fingerprint_and_projection_binding() {
     }
 }
 
+void test_joined_projection_goldens() {
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy);
+    const auto& off_slot = plan.slots[0];
+    const auto& observe_slot = plan.slots[3];
+    const auto off =
+        join(policy, facts, off_slot, emit_probe(make_probe_record(off_slot)), std::string{});
+    const auto observe =
+        join(policy, facts, observe_slot, emit_probe(make_probe_record(observe_slot)),
+             emit_observe(make_observe_record(observe_slot.fixture_id)));
+    CHECK(off);
+    CHECK(observe);
+    if (off) {
+        CHECK(off.draft->joined_bytes == OFF_JOINED_DRAFT_GOLDEN);
+    }
+    if (observe) {
+        CHECK(observe.draft->joined_bytes == OBSERVE_JOINED_DRAFT_GOLDEN);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -519,6 +640,7 @@ int main() {
     test_preflight_and_stream_failures();
     test_observe_semantic_failures();
     test_fingerprint_and_projection_binding();
+    test_joined_projection_goldens();
 
     std::cout << "SIQS RSS holdout stream join: " << checks_passed << " passed, " << checks_failed
               << " failed\n";

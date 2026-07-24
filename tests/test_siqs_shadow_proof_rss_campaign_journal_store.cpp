@@ -10,6 +10,7 @@
 
 #include "shadow_proof_rss_campaign_journal_store_internal.hpp"
 #include "shadow_proof_rss_campaign_slot_runner_internal.hpp"
+#include "shadow_proof_rss_probe_execution_identity_internal.hpp"
 #include "support/child_process.hpp"
 
 #include <algorithm>
@@ -155,6 +156,16 @@ static_assert(!std::is_copy_constructible_v<store_detail::SameChildExecutionRece
 #endif
 }
 
+[[nodiscard]] constexpr SIQSShadowProofRssProbeExecutionIdentity
+synthetic_claim_identity() noexcept {
+    SIQSShadowProofRssProbeExecutionIdentity identity;
+    for (std::size_t index = 0; index < identity.executable_sha256.bytes.size(); ++index) {
+        identity.executable_sha256.bytes[index] = static_cast<std::byte>(index);
+        identity.execution_contract_sha256.bytes[index] = static_cast<std::byte>(index + 32);
+    }
+    return identity;
+}
+
 [[nodiscard]] constexpr SIQSShadowProofRssGatePolicy make_policy() noexcept {
     SIQSShadowProofRssGatePolicy policy;
     policy.approved = true;
@@ -166,6 +177,7 @@ static_assert(!std::is_copy_constructible_v<store_detail::SameChildExecutionRece
     policy.memory_backend = host_memory_backend();
     policy.resolved_production_sieve_workers = 4;
     policy.candidate_revision = "candidate-revision-1";
+    policy.probe_execution_identity = synthetic_claim_identity();
     policy.approval_id = "approval-ticket-1";
     policy.journal_store = {{UINT64_C(1010101010101010), UINT64_C(2020202020202020)},
                             {UINT64_C(1111222233334444), UINT64_C(5555666677778888)},
@@ -183,6 +195,7 @@ static_assert(!std::is_copy_constructible_v<store_detail::SameChildExecutionRece
         .resolved_production_sieve_workers = 4,
         .probe_kind = SIQSShadowProofRssProbeKind::synthetic_test,
         .candidate_revision = "candidate-revision-1",
+        .probe_execution_identity = synthetic_claim_identity(),
         .release_build = true,
         .ndebug = true,
     };
@@ -213,6 +226,7 @@ static_assert(!std::is_copy_constructible_v<store_detail::SameChildExecutionRece
                 .resolved_production_sieve_workers = policy.resolved_production_sieve_workers,
                 .candidate_revision = std::string(policy.candidate_revision),
                 .approval_id = std::string(policy.approval_id),
+                .probe_execution_identity = policy.probe_execution_identity,
                 .deployment_budget_bytes = policy.deployment_budget_bytes,
                 .reserved_headroom_bytes = policy.reserved_headroom_bytes,
                 .release_build = facts.release_build,
@@ -842,12 +856,60 @@ struct SyntheticChildren final {
     std::filesystem::path hang;
 };
 
+[[nodiscard]] gnfs::util::Sha256Digest sha256_file(const std::filesystem::path& executable) {
+    std::ifstream input(executable, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("unable to open executable for SHA-256: " + executable.string());
+    }
+    gnfs::util::Sha256Accumulator accumulator;
+    std::array<char, 8192> buffer{};
+    while (input) {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize count = input.gcount();
+        if (count > 0 && !accumulator.update(std::as_bytes(std::span<const char>(
+                             buffer.data(), static_cast<std::size_t>(count))))) {
+            throw std::runtime_error("unable to hash executable: " + executable.string());
+        }
+    }
+    if (!input.eof()) {
+        throw std::runtime_error("unable to read executable for SHA-256: " + executable.string());
+    }
+    const auto digest = accumulator.finalize();
+    if (!digest.has_value()) {
+        throw std::runtime_error("unable to finalize executable SHA-256: " + executable.string());
+    }
+    return *digest;
+}
+
+[[nodiscard]] std::optional<SIQSShadowProofRssProbeExecutionIdentity>
+canonical_identity_for(const DeploymentEntry& deployment,
+                       const store_detail::ProbeExecutableBinding& binding,
+                       const gnfs::util::Sha256Digest& executable_sha256) noexcept {
+    using gnfs::siqs::shadow_proof_rss_probe_execution_identity_detail::
+        make_siqs_shadow_proof_rss_probe_execution_identity;
+    using gnfs::siqs::shadow_proof_rss_probe_execution_identity_detail::ProbeExecutionContractInput;
+    return make_siqs_shadow_proof_rss_probe_execution_identity(ProbeExecutionContractInput{
+        .executable_sha256 = executable_sha256,
+        .probe_kind = binding.probe_kind,
+        .candidate_revision = binding.candidate_revision,
+        .operating_system = deployment.approval.operating_system,
+        .architecture = deployment.approval.architecture,
+        .memory_backend = deployment.approval.memory_backend,
+        .resolved_production_sieve_workers = deployment.approval.resolved_production_sieve_workers,
+        .release_build = deployment.approval.release_build,
+        .ndebug = deployment.approval.ndebug,
+        .environment = binding.environment,
+        .timeout_ms = static_cast<std::uint64_t>(binding.timeout.count()),
+        .expected_owner = binding.expected_owner,
+    });
+}
+
 [[nodiscard]] DeploymentEntry
 make_runner_deployment(const TempStore& fixture, const std::filesystem::path& executable,
                        const std::filesystem::path& marker,
                        std::chrono::milliseconds timeout = std::chrono::seconds(2)) {
     auto deployment = make_deployment(fixture.trusted_base());
-    deployment.holdout_probe.emplace(store_detail::ProbeExecutableBinding{
+    store_detail::ProbeExecutableBinding binding{
         .executable = std::filesystem::absolute(executable),
         .candidate_revision = std::string(make_policy().candidate_revision),
         .probe_kind = SIQSShadowProofRssProbeKind::synthetic_test,
@@ -857,8 +919,46 @@ make_runner_deployment(const TempStore& fixture, const std::filesystem::path& ex
             },
         .timeout = timeout,
         .expected_owner = deployment.expected_owner,
-    });
+    };
+    const auto identity =
+        canonical_identity_for(deployment, binding, sha256_file(binding.executable));
+    if (!identity.has_value()) {
+        throw std::runtime_error("unable to construct runner execution identity");
+    }
+    binding.probe_execution_identity = *identity;
+    deployment.approval.probe_execution_identity = *identity;
+    deployment.holdout_probe.emplace(std::move(binding));
     return deployment;
+}
+
+void rebind_probe_kind(DeploymentEntry& deployment, SIQSShadowProofRssProbeKind probe_kind) {
+    if (!deployment.holdout_probe.has_value()) {
+        throw std::runtime_error("runner deployment has no executable binding");
+    }
+    deployment.probe_kind = probe_kind;
+    deployment.holdout_probe->probe_kind = probe_kind;
+    const auto identity = canonical_identity_for(
+        deployment, *deployment.holdout_probe,
+        deployment.holdout_probe->probe_execution_identity.executable_sha256);
+    if (!identity.has_value()) {
+        throw std::runtime_error("unable to rebind runner execution identity");
+    }
+    deployment.approval.probe_execution_identity = *identity;
+    deployment.holdout_probe->probe_execution_identity = *identity;
+}
+
+[[nodiscard]] SIQSShadowProofRssGatePolicy policy_for(const DeploymentEntry& deployment) noexcept {
+    auto policy = make_policy();
+    policy.probe_execution_identity = deployment.approval.probe_execution_identity;
+    return policy;
+}
+
+[[nodiscard]] SIQSShadowProofRssCampaignRuntimeFacts
+facts_for(const DeploymentEntry& deployment) noexcept {
+    auto facts = make_facts();
+    facts.probe_kind = deployment.probe_kind;
+    facts.probe_execution_identity = deployment.approval.probe_execution_identity;
+    return facts;
 }
 
 [[nodiscard]] std::string read_text_file(const std::filesystem::path& path) {
@@ -882,9 +982,8 @@ byte_span(const std::array<std::byte, Size>& bytes) noexcept {
 }
 
 [[nodiscard]] SIQSShadowProofRssCampaignJournalHeader
-write_canonical_header(const TempStore& fixture) {
-    const auto policy = make_policy();
-    const auto facts = make_facts();
+write_canonical_header(const TempStore& fixture, const SIQSShadowProofRssGatePolicy& policy,
+                       const SIQSShadowProofRssCampaignRuntimeFacts& facts) {
     const auto resume = resume_siqs_shadow_proof_rss_campaign_journal(
         &policy, &facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {});
     CHECK(resume.status == SIQSShadowProofRssJournalStatus::ready);
@@ -898,10 +997,17 @@ write_canonical_header(const TempStore& fixture) {
     return *resume.header_to_create;
 }
 
-[[nodiscard]] SIQSShadowProofRssCampaignJournalRecord
-canonical_start(const SIQSShadowProofRssCampaignJournalHeader& header) {
+[[nodiscard]] SIQSShadowProofRssCampaignJournalHeader
+write_canonical_header(const TempStore& fixture) {
     const auto policy = make_policy();
     const auto facts = make_facts();
+    return write_canonical_header(fixture, policy, facts);
+}
+
+[[nodiscard]] SIQSShadowProofRssCampaignJournalRecord
+canonical_start(const SIQSShadowProofRssCampaignJournalHeader& header,
+                const SIQSShadowProofRssGatePolicy& policy,
+                const SIQSShadowProofRssCampaignRuntimeFacts& facts) {
     const auto resume = resume_siqs_shadow_proof_rss_campaign_journal(
         &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, {});
     CHECK(resume.status == SIQSShadowProofRssJournalStatus::ready);
@@ -910,10 +1016,19 @@ canonical_start(const SIQSShadowProofRssCampaignJournalHeader& header) {
     return resume.prepared_slot_start->record();
 }
 
+[[nodiscard]] SIQSShadowProofRssCampaignJournalRecord
+canonical_start(const SIQSShadowProofRssCampaignJournalHeader& header) {
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    return canonical_start(header, policy, facts);
+}
+
 [[nodiscard]] SIQSShadowProofRssJournalCommitPayload
 make_off_payload(std::string_view stdout_bytes, std::string_view stderr_bytes,
                  std::string_view joined_bytes,
-                 SIQSShadowProofRssSampleMode mode = SIQSShadowProofRssSampleMode::off) {
+                 SIQSShadowProofRssSampleMode mode = SIQSShadowProofRssSampleMode::off,
+                 SIQSShadowProofRssProbeExecutionIdentity probe_execution_identity =
+                     synthetic_claim_identity()) {
     const auto policy = make_policy();
     SIQSShadowProofRssJournalCommitPayload payload;
     payload.actual_operating_system = policy.operating_system;
@@ -921,6 +1036,7 @@ make_off_payload(std::string_view stdout_bytes, std::string_view stderr_bytes,
     payload.actual_memory_backend = policy.memory_backend;
     payload.actual_resolved_sieve_workers = policy.resolved_production_sieve_workers;
     payload.deployment_probe_kind = SIQSShadowProofRssProbeKind::synthetic_test;
+    payload.probe_execution_identity = probe_execution_identity;
     payload.fresh_process = true;
     payload.completed = true;
     payload.factor_identity = SIQSShadowProofRssFactorIdentity::pass;
@@ -981,10 +1097,10 @@ void write_artifact(const TempStore& fixture, uint32_t slot_number,
 
 void write_committed_off_slots(const TempStore& fixture, uint32_t slot_count,
                                std::string_view stdout_bytes, std::string_view stderr_bytes,
-                               std::string_view joined_bytes) {
-    const auto policy = make_policy();
-    const auto facts = make_facts();
-    const auto header = write_canonical_header(fixture);
+                               std::string_view joined_bytes,
+                               const SIQSShadowProofRssGatePolicy& policy,
+                               const SIQSShadowProofRssCampaignRuntimeFacts& facts) {
+    const auto header = write_canonical_header(fixture, policy, facts);
     const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy);
     std::vector<SIQSShadowProofRssCampaignJournalRecord> records;
     records.reserve(static_cast<std::size_t>(slot_count) * 2);
@@ -1011,10 +1127,20 @@ void write_committed_off_slots(const TempStore& fixture, uint32_t slot_count,
         write_artifact(fixture, slot_number, SIQSShadowProofRssArtifactKind::joined_gate_sample,
                        joined_bytes);
         const auto commit =
-            make_commit(start, make_off_payload(stdout_bytes, slot_stderr, joined_bytes, mode));
+            make_commit(start, make_off_payload(stdout_bytes, slot_stderr, joined_bytes, mode,
+                                                policy.probe_execution_identity));
         write_record(fixture, commit.sequence_number, commit);
         records.push_back(commit);
     }
+}
+
+void write_committed_off_slots(const TempStore& fixture, uint32_t slot_count,
+                               std::string_view stdout_bytes, std::string_view stderr_bytes,
+                               std::string_view joined_bytes) {
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    write_committed_off_slots(fixture, slot_count, stdout_bytes, stderr_bytes, joined_bytes, policy,
+                              facts);
 }
 
 void expect_private_regular_leaf(const std::filesystem::path& path, std::size_t expected_size) {
@@ -1582,8 +1708,8 @@ void test_committed_prefix_durability_precedes_next_authority() {
 
 [[nodiscard]] std::optional<SIQSShadowProofRssCampaignJournalActiveSlot>
 begin_runner_slot(const DeploymentEntry& deployment, uint32_t expected_slot_number = 1) {
-    const auto policy = make_policy();
-    const auto facts = make_facts();
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
     auto session = take_successful_session(open_private(&policy, &facts, deployment));
     CHECK(session.has_value());
     auto begin = std::move(*session).begin_next_slot();
@@ -1670,8 +1796,8 @@ void test_store_rejects_invalid_runner_contract_before_journal_mutation(
         const auto marker = fixture.base_leaf(marker_name);
         auto deployment = make_runner_deployment(fixture, executable, marker);
         mutate(*deployment.holdout_probe);
-        const auto policy = make_policy();
-        const auto facts = make_facts();
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
         expect_open_error(open_private(&policy, &facts, deployment),
                           StoreError::registry_binding_mismatch, StoreObject::deployment_registry);
         CHECK(!std::filesystem::exists(marker));
@@ -1699,6 +1825,68 @@ void test_store_rejects_invalid_runner_contract_before_journal_mutation(
                 [](auto& binding) { binding.environment = {"MALFORMED"}; });
     run_invalid("runner-duplicate-environment-marker",
                 [](auto& binding) { binding.environment = {"DUPLICATE=1", "DUPLICATE=2"}; });
+    run_invalid("runner-unsorted-environment-marker",
+                [](auto& binding) { binding.environment = {"Z_LAST=1", "A_FIRST=2"}; });
+    run_invalid("runner-invalid-environment-name-marker",
+                [](auto& binding) { binding.environment = {"9INVALID=1"}; });
+    run_invalid("runner-environment-contract-mismatch-marker", [](auto& binding) {
+        binding.environment = {"GNFS_SIQS_RSS_SYNTHETIC_MARKER=/different/marker"};
+    });
+    run_invalid("runner-executable-identity-mismatch-marker", [](auto& binding) {
+        binding.probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{1};
+    });
+    run_invalid("runner-contract-identity-mismatch-marker", [](auto& binding) {
+        binding.probe_execution_identity.execution_contract_sha256.bytes[0] ^= std::byte{1};
+    });
+
+    {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("runner-approval-identity-mismatch-marker");
+        auto deployment = make_runner_deployment(fixture, executable, marker);
+        deployment.approval.probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{1};
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        expect_open_error(open_private(&policy, &facts, deployment),
+                          StoreError::registry_binding_mismatch, StoreObject::deployment_registry);
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+        CHECK(!std::filesystem::exists(marker));
+    }
+
+    {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("runner-canonical-identity-mismatch-marker");
+        auto deployment = make_runner_deployment(fixture, executable, marker);
+        deployment.approval.probe_execution_identity.execution_contract_sha256.bytes[0] ^=
+            std::byte{1};
+        deployment.holdout_probe->probe_execution_identity =
+            deployment.approval.probe_execution_identity;
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        expect_open_error(open_private(&policy, &facts, deployment),
+                          StoreError::registry_binding_mismatch, StoreObject::deployment_registry);
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+        CHECK(!std::filesystem::exists(marker));
+    }
+
+    {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("runner-caller-identity-mismatch-marker");
+        const auto deployment = make_runner_deployment(fixture, executable, marker);
+        auto policy = policy_for(deployment);
+        auto facts = facts_for(deployment);
+        policy.probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{1};
+        expect_open_error(open_private(&policy, &facts, deployment), StoreError::preflight_rejected,
+                          StoreObject::none);
+        policy = policy_for(deployment);
+        facts.probe_execution_identity.execution_contract_sha256.bytes[0] ^= std::byte{1};
+        expect_open_error(open_private(&policy, &facts, deployment), StoreError::preflight_rejected,
+                          StoreObject::none);
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+        CHECK(!std::filesystem::exists(marker));
+    }
 }
 
 void test_production_deployment_rejects_publication_test_seam(
@@ -1706,14 +1894,12 @@ void test_production_deployment_rejects_publication_test_seam(
     TempStore fixture;
     const auto marker = fixture.base_leaf("production-publication-seam-marker");
     auto deployment = make_runner_deployment(fixture, executable, marker);
-    deployment.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
-    deployment.holdout_probe->probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
+    rebind_probe_kind(deployment, SIQSShadowProofRssProbeKind::production_holdout);
     TestPublicationOps publication_ops(1, TestPublicationOps::Action::fail_before_create);
     deployment.publication_ops = &publication_ops;
 
-    const auto policy = make_policy();
-    auto facts = make_facts();
-    facts.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
     expect_open_error(open_private(&policy, &facts, deployment),
                       StoreError::registry_binding_mismatch, StoreObject::deployment_registry);
     CHECK(publication_ops.publish_calls() == 0);
@@ -1764,6 +1950,7 @@ void test_slot_runner_happy_off_commits_one_same_child(const std::filesystem::pa
     CHECK(payload.actual_memory_backend == make_facts().memory_backend);
     CHECK(payload.actual_resolved_sieve_workers == 4);
     CHECK(payload.deployment_probe_kind == SIQSShadowProofRssProbeKind::synthetic_test);
+    CHECK(payload.probe_execution_identity == deployment.approval.probe_execution_identity);
     CHECK(payload.fresh_process);
     CHECK(payload.completed);
     CHECK(payload.factor_identity == SIQSShadowProofRssFactorIdentity::pass);
@@ -1788,8 +1975,8 @@ void test_slot_runner_happy_off_commits_one_same_child(const std::filesystem::pa
     CHECK(continuation->view().committed_slot_count == 1);
     continuation.reset();
 
-    const auto policy = make_policy();
-    const auto facts = make_facts();
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
     auto reopened = take_successful_session(open_private(&policy, &facts, deployment));
     CHECK(reopened.has_value());
     CHECK(reopened->view().committed_slot_count == 1);
@@ -1803,9 +1990,11 @@ void test_slot_runner_happy_observe_commits_one_same_child(
     constexpr std::string_view off_joined = "committed-off-joined\n";
 
     TempStore fixture;
-    write_committed_off_slots(fixture, 3, off_stdout, off_stderr, off_joined);
     const auto marker = fixture.base_leaf("runner-happy-observe-marker");
     auto deployment = make_runner_deployment(fixture, executable, marker);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    write_committed_off_slots(fixture, 3, off_stdout, off_stderr, off_joined, policy, facts);
     auto active = begin_runner_slot(deployment, 4);
 
     auto result = store_detail::SlotRunnerFactory::run(std::move(*active));
@@ -1860,6 +2049,7 @@ void test_slot_runner_happy_observe_commits_one_same_child(
     const auto& payload = decoded.value->commit_payload;
     CHECK(payload.factor_identity == SIQSShadowProofRssFactorIdentity::pass);
     CHECK(payload.deployment_probe_kind == SIQSShadowProofRssProbeKind::synthetic_test);
+    CHECK(payload.probe_execution_identity == deployment.approval.probe_execution_identity);
     CHECK(payload.proof_evidence == SIQSShadowProofRssEvidence::pass);
     CHECK(payload.matrix_evidence == SIQSShadowProofRssEvidence::pass);
     CHECK(payload.absolute_peak_rss_bytes == UINT64_C(14000000));
@@ -1880,8 +2070,6 @@ void test_slot_runner_happy_observe_commits_one_same_child(
     CHECK(continuation->view().committed_slot_count == 4);
     continuation.reset();
 
-    const auto policy = make_policy();
-    const auto facts = make_facts();
     auto reopened = take_successful_session(open_private(&policy, &facts, deployment));
     CHECK(reopened.has_value());
     CHECK(reopened->view().committed_slot_count == 4);
@@ -1895,11 +2083,13 @@ void test_slot_runner_final_synthetic_commit_stays_gate_ineligible(
     constexpr std::string_view joined_bytes = "seeded-joined\n";
 
     TempStore fixture;
-    write_committed_off_slots(
-        fixture, static_cast<uint32_t>(SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT - 1),
-        stdout_bytes, stderr_bytes, joined_bytes);
     const auto marker = fixture.base_leaf("runner-final-synthetic-marker");
     auto deployment = make_runner_deployment(fixture, executable, marker);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    write_committed_off_slots(
+        fixture, static_cast<uint32_t>(SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT - 1),
+        stdout_bytes, stderr_bytes, joined_bytes, policy, facts);
     auto active = begin_runner_slot(
         deployment, static_cast<uint32_t>(SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT));
 
@@ -1910,7 +2100,6 @@ void test_slot_runner_final_synthetic_commit_stays_gate_ineligible(
     CHECK(result.view().action == SIQSShadowProofRssJournalAction::none);
     CHECK(result.view().committed_slot_count == SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
     CHECK(result.view().next_slot_number == 0);
-    const auto policy = make_policy();
     const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy);
     const auto& final_slot = plan.slots.back();
     expect_single_synthetic_launch(marker, final_slot.fixture_id, final_slot.mode,
@@ -1919,7 +2108,6 @@ void test_slot_runner_final_synthetic_commit_stays_gate_ineligible(
     auto continuation = std::move(result).take_session();
     CHECK(continuation.has_value());
     continuation.reset();
-    const auto facts = make_facts();
     auto reopened = take_successful_session(open_private(&policy, &facts, deployment));
     CHECK(reopened.has_value());
     CHECK(reopened->view().status == SIQSShadowProofRssJournalStatus::complete);
@@ -1928,12 +2116,10 @@ void test_slot_runner_final_synthetic_commit_stays_gate_ineligible(
     reopened.reset();
 
     auto relabeled_deployment = deployment;
-    relabeled_deployment.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
-    relabeled_deployment.holdout_probe->probe_kind =
-        SIQSShadowProofRssProbeKind::production_holdout;
-    auto production_facts = facts;
-    production_facts.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
-    auto relabeled = open_private(&policy, &production_facts, relabeled_deployment);
+    rebind_probe_kind(relabeled_deployment, SIQSShadowProofRssProbeKind::production_holdout);
+    const auto production_policy = policy_for(relabeled_deployment);
+    const auto production_facts = facts_for(relabeled_deployment);
+    auto relabeled = open_private(&production_policy, &production_facts, relabeled_deployment);
     CHECK(relabeled.diagnostic().journal_reason == SIQSShadowProofRssJournalReason::header_invalid);
     expect_open_error(std::move(relabeled), StoreError::replay_rejected,
                       StoreObject::journal_header);
@@ -1966,8 +2152,8 @@ void run_slot_runner_failure_case(const std::filesystem::path& executable,
     expect_no_runner_artifacts(fixture);
     expect_explicit_taint_record(fixture);
 
-    const auto policy = make_policy();
-    const auto facts = make_facts();
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
     auto reopened = take_successful_session(open_private(&policy, &facts, deployment));
     CHECK(reopened.has_value());
     CHECK(reopened->view() == result.view());
@@ -2068,8 +2254,8 @@ void test_slot_runner_commit_terminal_leaf_matrix(const std::filesystem::path& e
         CHECK(decoded.value->kind == SIQSShadowProofRssJournalRecordKind::slot_committed);
 
         auto normal_deployment = make_runner_deployment(fixture, executable, marker);
-        const auto policy = make_policy();
-        const auto facts = make_facts();
+        const auto policy = policy_for(normal_deployment);
+        const auto facts = facts_for(normal_deployment);
         auto reopened = take_successful_session(open_private(&policy, &facts, normal_deployment));
         CHECK(reopened.has_value());
         CHECK(reopened->view().committed_slot_count == 1);
@@ -2093,8 +2279,8 @@ void test_slot_runner_commit_terminal_leaf_matrix(const std::filesystem::path& e
         CHECK(std::filesystem::file_size(fixture.store_leaf(commit_leaf->view())) == 1);
 
         auto normal_deployment = make_runner_deployment(fixture, executable, marker);
-        const auto policy = make_policy();
-        const auto facts = make_facts();
+        const auto policy = policy_for(normal_deployment);
+        const auto facts = facts_for(normal_deployment);
         auto reopened = open_private(&policy, &facts, normal_deployment);
         expect_layout_error(std::move(reopened), LayoutError::record_size_invalid,
                             StoreObject::journal_record, 2);
@@ -2119,8 +2305,8 @@ void test_slot_runner_commit_terminal_leaf_matrix(const std::filesystem::path& e
               SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_RECORD_WIRE_SIZE);
 
         auto normal_deployment = make_runner_deployment(fixture, executable, marker);
-        const auto policy = make_policy();
-        const auto facts = make_facts();
+        const auto policy = policy_for(normal_deployment);
+        const auto facts = facts_for(normal_deployment);
         auto reopened = open_private(&policy, &facts, normal_deployment);
         expect_layout_error(std::move(reopened), LayoutError::record_codec_invalid,
                             StoreObject::journal_record, 2);
@@ -2143,8 +2329,8 @@ void test_slot_runner_commit_terminal_leaf_matrix(const std::filesystem::path& e
         CHECK(ops.confirm_calls() == 0);
 
         auto normal_deployment = make_runner_deployment(fixture, executable, marker);
-        const auto policy = make_policy();
-        const auto facts = make_facts();
+        const auto policy = policy_for(normal_deployment);
+        const auto facts = facts_for(normal_deployment);
         auto reopened = take_successful_session(open_private(&policy, &facts, normal_deployment));
         CHECK(reopened.has_value());
         CHECK(reopened->view().committed_slot_count == 1);

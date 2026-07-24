@@ -139,7 +139,8 @@ environment_name(std::string_view entry) noexcept {
     return name;
 }
 
-[[nodiscard]] bool environment_is_canonical(std::span<const std::string> environment) noexcept {
+[[nodiscard]] inline bool
+environment_is_canonical(std::span<const std::string> environment) noexcept {
     std::string_view previous_name;
     for (const std::string& owned_entry : environment) {
         const auto name = environment_name(owned_entry);

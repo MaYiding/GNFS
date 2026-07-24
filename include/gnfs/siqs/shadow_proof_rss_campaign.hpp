@@ -50,6 +50,7 @@ struct SIQSShadowProofRssCampaignSlot final {
     util::ProcessMemoryBackend memory_backend = util::ProcessMemoryBackend::Unsupported;
     std::size_t resolved_production_sieve_workers = 0;
     std::string_view candidate_revision;
+    SIQSShadowProofRssProbeExecutionIdentity probe_execution_identity;
     std::string_view approval_id;
     SIQSShadowProofRssJournalStoreBinding journal_store;
     std::optional<uint64_t> deployment_budget_bytes;
@@ -104,6 +105,7 @@ campaign_slot(const SIQSShadowProofRssGatePolicy& policy,
     slot.memory_backend = policy.memory_backend;
     slot.resolved_production_sieve_workers = policy.resolved_production_sieve_workers;
     slot.candidate_revision = policy.candidate_revision;
+    slot.probe_execution_identity = policy.probe_execution_identity;
     slot.approval_id = policy.approval_id;
     slot.journal_store = policy.journal_store;
     slot.deployment_budget_bytes = policy.deployment_budget_bytes;

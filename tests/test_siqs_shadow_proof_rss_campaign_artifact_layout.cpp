@@ -82,6 +82,18 @@ void check(bool condition, const char* expression, int line) {
 
 #define CHECK(condition) check(static_cast<bool>(condition), #condition, __LINE__)
 
+[[nodiscard]] constexpr SIQSShadowProofRssProbeExecutionIdentity
+test_probe_execution_identity() noexcept {
+    SIQSShadowProofRssProbeExecutionIdentity identity;
+    for (std::size_t index = 0; index < identity.executable_sha256.bytes.size(); ++index) {
+        identity.executable_sha256.bytes[index] = static_cast<std::byte>(index);
+        identity.execution_contract_sha256.bytes[index] = static_cast<std::byte>(index + 32);
+    }
+    return identity;
+}
+
+inline constexpr auto TEST_PROBE_EXECUTION_IDENTITY = test_probe_execution_identity();
+
 struct OwnedEntry final {
     std::string leaf_name;
     EntryKind kind = EntryKind::regular_file;
@@ -392,6 +404,7 @@ void test_size_contracts() {
     policy.memory_backend = ProcessMemoryBackend::DarwinGetrusage;
     policy.resolved_production_sieve_workers = 4;
     policy.candidate_revision = "candidate-revision-1";
+    policy.probe_execution_identity = TEST_PROBE_EXECUTION_IDENTITY;
     policy.approval_id = "approval-ticket-1";
     policy.journal_store = {{UINT64_C(1010101010101010), UINT64_C(2020202020202020)},
                             {UINT64_C(1111222233334444), UINT64_C(5555666677778888)},
@@ -409,6 +422,7 @@ void test_size_contracts() {
         .resolved_production_sieve_workers = 4,
         .probe_kind = SIQSShadowProofRssProbeKind::production_holdout,
         .candidate_revision = "candidate-revision-1",
+        .probe_execution_identity = TEST_PROBE_EXECUTION_IDENTITY,
         .release_build = true,
         .ndebug = true,
     };
@@ -453,6 +467,7 @@ make_payload(SIQSShadowProofRssSampleMode mode, uint32_t slot, std::vector<Owned
         SIQSShadowProofRssArtifactKind::probe_stderr, stderr_bytes);
     payload.joined_sample_seal = seal_siqs_shadow_proof_rss_artifact(
         SIQSShadowProofRssArtifactKind::joined_gate_sample, joined_bytes);
+    payload.probe_execution_identity = TEST_PROBE_EXECUTION_IDENTITY;
     return payload;
 }
 

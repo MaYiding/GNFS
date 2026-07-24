@@ -97,12 +97,14 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `tests/test_siqs_shadow_observe_rss_holdouts.cpp` | Mathematical corpus generation, primality, identity, uniqueness, and digest checks without calling `factor()` |
 | `include/gnfs/siqs/shadow_proof_rss_gate.hpp` | `SIQSShadowProofRssGatePolicy`, `SIQSShadowProofRssGateSample`, and closed `SIQSShadowProofRssGateOutcome` |
 | `tests/test_siqs_shadow_proof_rss_gate.cpp` | Synthetic policy binding, exact sample coverage, budget boundary, and closed terminal-emitter tests |
+| `include/gnfs/siqs/shadow_proof_rss_probe_execution_identity.hpp` | Fixed SHA-256 identity for approved probe bytes and the canonical launch contract |
+| `tests/test_siqs_shadow_proof_rss_probe_execution_identity.cpp` | Canonical contract, environment, boundary-vector, and mutation tests without launching a probe |
 | `include/gnfs/siqs/shadow_proof_rss_campaign_artifact_layout.hpp` | Fixed three-artifact-per-slot namespace, bounded pure inspection, and exact closure against validated journal replay |
 | `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-only native session plus lease-bound start, artifact-batch, explicit-taint, and probe-classification authority boundaries |
 | `tests/test_siqs_shadow_proof_rss_campaign_artifact_layout.cpp` | Canonical leaf grammar, bounded sizes, deterministic diagnostics, and journal-to-artifact consistency |
 | `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, durable same-child commits, synthetic terminal/relabel rejection, crash recovery, and platform fallback |
 | `src/siqs/shadow_proof_rss_holdout_probe_record_codec_internal.hpp` | Source-private strict owning decoder for one canonical holdout-probe stdout record |
-| `src/siqs/shadow_proof_rss_holdout_stream_join_internal.hpp` | Source-private approved-policy, runtime-facts, slot, and two-stream validation into a V2 probe-classified authority-free draft |
+| `src/siqs/shadow_proof_rss_holdout_stream_join_internal.hpp` | Source-private approved-policy, runtime-facts, slot, and two-stream validation into a V3 identity-bound authority-free draft |
 | `include/gnfs/util/bounded_child_process.hpp` | Production shell-free, deadline-bounded dual-stream capture; it transports data but grants no campaign authority |
 | `tests/test_siqs_shadow_proof_prefer.cpp` | Pure V2 decisions, defensive metadata validation, and pre-route emitter contract |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
@@ -191,9 +193,10 @@ The pure typed gate in `include/gnfs/siqs/shadow_proof_rss_gate.hpp` exposes
 `SIQSShadowProofRssGateSample` records. A null policy produces
 `status=blocked reason=policy_missing`. An accepted policy binds the sealed
 corpus ID and digest, operating system, architecture, RSS backend, resolved
-production sieve worker count, candidate revision, approval identity,
-deployment memory budget, reserved headroom, and the versioned journal-store
-binding. That binding uses deployment-owned trusted-base and store IDs plus one
+production sieve worker count, candidate revision, probe execution identity,
+approval identity, deployment memory budget, reserved headroom, and the
+versioned journal-store binding. That binding uses deployment-owned
+trusted-base and store IDs plus one
 canonical lowercase ASCII relative locator; absolute paths and runtime
 inode/file IDs are not policy fields. The gate does not discover or approve any
 of those values. Before filesystem access, a production-owned registry must
@@ -201,9 +204,9 @@ resolve the trusted-base ID without accepting a caller path, resolver, or base
 handle, and must verify that the locator maps to the provisioned store ID.
 
 The pure journal-layout inspector accepts only one persistent `.session.lock`
-leaf, the exact 96-byte `campaign-header.rjhd`, and a contiguous prefix of
+leaf, the exact 160-byte `campaign-header.rjhd`, and a contiguous prefix of
 `record-%010u.rjrc` leaves starting at sequence 1, with at most 160 leaves and
-exactly 256 bytes per leaf. It rejects unknown names, case variants, temporary
+exactly 320 bytes per leaf. It rejects unknown names, case variants, temporary
 artifacts, wrong entry kinds or link counts, wrong sizes, sequence gaps, codec
 errors, and disagreement between the filename sequence and decoded wire
 sequence. This fail-closed inspection neither opens the root nor signs a
@@ -217,28 +220,35 @@ root, rereads the strict snapshot, privately exchanges the durable receipt for
 a launch permit, and traps both the permit and lease inside a move-only active
 slot.
 
-Journal schema and wire V2 bind `synthetic_test` or `production_holdout`
-through runtime facts, the fixed-width header, plan and record digests, every
-commit payload, and the canonical joined draft. The native store checks the
-runtime claim against both the private deployment row and live executable row;
-the same-child receipt carries that classification into commit publication.
-A complete synthetic journal terminates as `synthetic_complete` with no gate
-action, and reopening it under a production label fails. This is a durable
-classification boundary, not proof of executable bytes: candidate revision
-and path metadata do not close the path-check-to-spawn gap. Exact executable
-digest binding and authority-held gate evaluation remain later production
-work.
+Journal schema and wire V3 bind `synthetic_test` or `production_holdout` plus
+the two-part `SIQSShadowProofRssProbeExecutionIdentity` through runtime facts,
+the fixed-width header, plan and record digests, every commit payload, and the
+canonical joined draft. Digest builders append the two 32-byte SHA-256 values
+directly. The textual policy and audit records use strict lowercase
+64-character hexadecimal fields. A complete synthetic journal terminates as
+`synthetic_complete` with no gate action, and reopening it under a production
+label or different execution identity fails.
+
+The private deployment row provides the approved executable SHA-256 and the
+canonical execution-contract SHA-256. The contract covers the probe kind,
+candidate revision, platform, memory backend, worker count, build mode, exact
+sorted environment, timeout, owner, argument template, capture limits, output
+schemas, and transport guarantees. The store recomputes this contract before it
+opens the journal. The runner, joined draft, same-child receipt, and commit
+path require the same identity. This remains a deployment-claim boundary:
+the current `lstat(path)` followed by path-based spawn does not prove that the
+child executed the object whose bytes produced the approved SHA-256.
 
 The private deployment row also owns the complete approved policy and expected
 runtime contract. Public policy and runtime values act only as claims. After
 selecting one unique row, the store compares every field and constructs the
 native session from row-owned strings and values. A malformed executable
-contract, including a relative path, revision mismatch, invalid environment,
-configured-owner mismatch, or invalid timeout, fails before the store opens a
-filesystem object. A production row must contain a probe binding and cannot
-use the publication test seam. Expected `release_build` and `ndebug` values are
-still deployment assertions that the child protocol later checks; they are not
-host observations or executable authentication.
+contract, including a relative path, revision mismatch, unsorted or invalid
+environment, configured-owner mismatch, invalid timeout, zero identity, or
+identity disagreement, fails before the store opens a filesystem object. A
+production row must contain a probe binding and cannot use the publication test
+seam. Expected `release_build` and `ndebug` values remain deployment assertions;
+they are not host observations or executable authentication.
 
 The store also holds the preprovisioned `.artifacts-v1` directory and tracks its
 namespace generation independently. Its strict pure layout permits one bounded
@@ -249,9 +259,9 @@ taint. A private store integration can publish the three leaves while the active
 slot retains the lease and permit. The public active slot exposes only a
 consuming explicit-taint transition. Reopen confirms the immutable header and
 start durability barriers and rereads the exact dangling replay before it may
-append the terminal taint. The active slot still has no child launch or sample
-commit operation. Windows remains explicitly unavailable until it has an
-equivalent held-directory implementation.
+append the terminal taint. The public active-slot interface still has no child
+launch or sample commit operation. Windows remains explicitly unavailable until
+it has an equivalent held-directory implementation.
 
 Coverage is exact: each evaluated platform and backend needs three `off` and
 seven `observe` fresh-process records for every one of the eight fixture IDs,
@@ -264,11 +274,13 @@ remain diagnostic and cannot change the result.
 A `SIQSShadowProofRssGateOutcome` uses the closed statuses `blocked`, `invalid`,
 `limit_exceeded`, and `manual_review_candidate`. Only the last one is a pass,
 with `reason=all_observe_peaks_within_limit`; it still requires manual review.
-A terminal outcome carries a stable, non-cryptographic identity checksum over
-every policy binding field. `emit_siqs_shadow_proof_rss_gate_outcome`
+A terminal outcome carries the probe execution identity plus a stable,
+non-cryptographic checksum over every policy binding field.
+`emit_siqs_shadow_proof_rss_gate_outcome`
 re-evaluates the policy and complete sample span, requires an exact outcome
-match, and writes the closed `GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V2` record. The
-record includes the policy-binding checksum lanes. The emitter is terminal-only:
+match, and writes the closed `GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V3` record. The
+record includes both SHA-256 fields and the policy-binding checksum lanes. The
+emitter is terminal-only:
 `blocked` and `invalid` remain typed outcomes but do not produce an audit line.
 Every outcome keeps `shadow_outcome_routed=false` and `promotion=false`.
 
@@ -277,6 +289,14 @@ run, and no approved numeric threshold or real gate result is available. The
 campaign runner and production measurement remain blocked and pending. The
 sealed corpus must not be used to construct or launch the 80-process campaign
 until the policy is approved.
+
+The next executable-authentication boundary must close the same-object launch
+gap. The Linux design requires a sealed file descriptor, byte rehash, and
+descriptor-based execution such as `execveat(..., AT_EMPTY_PATH)`. The macOS
+design requires a signed hardened Mach-O, suspended spawn, and process code
+validation before resume, or it must remain unavailable. Windows remains
+fail-closed until an equivalent design exists. Authority-held gate evaluation
+and the serial 80-slot production controller remain later milestones.
 
 The staged V2 `prefer` boundary is a pure decision and audit contract. It does
 not extend the environment parser, connect to `factor()`, alter the observe
