@@ -401,12 +401,18 @@ relative locator, which flow through the policy, plan, header, and record
 digests. Before any filesystem I/O, the native store validates the approved
 policy and selects the unique matching row from a production-owned logical
 registry. The row owns the absolute trusted base path, expected native owner,
-store ID, locator, and probe classification. The store cross-checks the
-caller's runtime classification against that private row before filesystem
-access. A live executable binding must repeat the same classification before a
-slot runs. The row is part of the deployment, not a caller-injected callback:
-the public API accepts no path, resolver, base handle, or registry installer.
-The POSIX loader component-walks that owned path for each session,
+store ID, locator, probe classification, complete approved policy, and expected
+runtime contract. Public policy and runtime values are untrusted claims. The
+store compares every field, validates the row through the same pure preflight,
+and constructs the native session only from row-owned values. A malformed
+executable contract, including a relative path, revision mismatch, invalid
+environment, configured-owner mismatch, or invalid timeout, fails before any
+journal object opens. A production row must contain a probe binding and cannot
+install the private publication test seam. The expected build-mode values
+remain deployment assertions, not independently observed host facts. The row
+is part of the deployment, not a caller-injected callback: the public API
+accepts no path, resolver, base handle, or registry installer. The POSIX loader
+component-walks that owned path for each session,
 obtains a held base descriptor, opens exactly the provisioned locator without
 following links, and verifies the mapping's `store_id` before it scans the
 root.
@@ -939,6 +945,10 @@ Before promotion it must provide:
   deployment and executable rows, journal header and commits, same-child
   receipts, and joined artifacts. Complete synthetic campaigns terminate
   without gate authority; executable-image authentication remains pending.
+- [x] Deployment-owned approval and expected-runtime binding. Caller policy
+  and runtime values must match every private row field, and malformed runner
+  configuration fails before journal I/O. These expected values are not
+  executable authentication or independently observed host facts.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved
   headroom, OS, architecture, RSS backend, resolved production sieve workers,
   candidate revision, approval identity, sealed corpus digest, trusted journal

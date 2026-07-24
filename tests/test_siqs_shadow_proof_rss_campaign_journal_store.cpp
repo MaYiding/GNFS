@@ -190,6 +190,7 @@ static_assert(!std::is_copy_constructible_v<store_detail::SameChildExecutionRece
 
 [[nodiscard]] DeploymentEntry make_deployment(const std::filesystem::path& trusted_base_path) {
     const auto policy = make_policy();
+    const auto facts = make_facts();
 #ifndef _WIN32
     const uint64_t expected_owner = static_cast<uint64_t>(::geteuid());
 #else
@@ -202,6 +203,21 @@ static_assert(!std::is_copy_constructible_v<store_detail::SameChildExecutionRece
         .trusted_base_path = trusted_base_path,
         .expected_owner = expected_owner,
         .probe_kind = SIQSShadowProofRssProbeKind::synthetic_test,
+        .approval =
+            {
+                .corpus_id = std::string(policy.corpus_id),
+                .corpus_digest = policy.corpus_digest,
+                .operating_system = policy.operating_system,
+                .architecture = policy.architecture,
+                .memory_backend = policy.memory_backend,
+                .resolved_production_sieve_workers = policy.resolved_production_sieve_workers,
+                .candidate_revision = std::string(policy.candidate_revision),
+                .approval_id = std::string(policy.approval_id),
+                .deployment_budget_bytes = policy.deployment_budget_bytes,
+                .reserved_headroom_bytes = policy.reserved_headroom_bytes,
+                .release_build = facts.release_build,
+                .ndebug = facts.ndebug,
+            },
     };
 }
 
@@ -246,6 +262,18 @@ void expect_open_error(SIQSShadowProofRssCampaignJournalStoreOpenResult result, 
 
 [[maybe_unused, nodiscard]] std::optional<SIQSShadowProofRssCampaignJournalSession>
 take_successful_session(SIQSShadowProofRssCampaignJournalStoreOpenResult result) {
+    if (!result) {
+        std::cerr
+            << "expected successful store open, got "
+            << siqs_shadow_proof_rss_campaign_journal_store_error_name(result.diagnostic().error)
+            << '/'
+            << siqs_shadow_proof_rss_campaign_journal_store_object_name(result.diagnostic().object)
+            << " journal_reason="
+            << (result.diagnostic().journal_reason.has_value()
+                    ? static_cast<unsigned>(*result.diagnostic().journal_reason)
+                    : 255U)
+            << '\n';
+    }
     CHECK(static_cast<bool>(result));
     CHECK(result.diagnostic().error == StoreError::none);
     CHECK(result.diagnostic().object == StoreObject::none);
@@ -306,6 +334,95 @@ void test_public_authority_and_preflight_boundaries() {
         &policy, &facts, {&executable_kind_mismatch, 1});
     expect_open_error(std::move(binding_mismatch), StoreError::registry_binding_mismatch,
                       StoreObject::deployment_registry);
+
+    const auto expect_approval_mismatch = [&](DeploymentEntry deployment) {
+        expect_open_error(open_private(&policy, &facts, deployment),
+                          StoreError::registry_binding_mismatch, StoreObject::deployment_registry);
+    };
+    {
+        auto deployment = make_deployment("unused");
+        deployment.approval.corpus_id = "different-corpus";
+        expect_approval_mismatch(std::move(deployment));
+    }
+    {
+        auto deployment = make_deployment("unused");
+        ++deployment.approval.corpus_digest.low;
+        expect_approval_mismatch(std::move(deployment));
+    }
+    {
+        auto deployment = make_deployment("unused");
+        deployment.approval.operating_system = SIQSShadowProofRssOperatingSystem::unknown;
+        expect_approval_mismatch(std::move(deployment));
+    }
+    {
+        auto deployment = make_deployment("unused");
+        deployment.approval.architecture = SIQSShadowProofRssArchitecture::unknown;
+        expect_approval_mismatch(std::move(deployment));
+    }
+    {
+        auto deployment = make_deployment("unused");
+        deployment.approval.memory_backend = ProcessMemoryBackend::Unsupported;
+        expect_approval_mismatch(std::move(deployment));
+    }
+    {
+        auto deployment = make_deployment("unused");
+        ++deployment.approval.resolved_production_sieve_workers;
+        expect_approval_mismatch(std::move(deployment));
+    }
+    {
+        auto deployment = make_deployment("unused");
+        deployment.approval.candidate_revision = "different-revision";
+        expect_approval_mismatch(std::move(deployment));
+    }
+    {
+        auto deployment = make_deployment("unused");
+        deployment.approval.approval_id = "different-approval";
+        expect_approval_mismatch(std::move(deployment));
+    }
+    {
+        auto deployment = make_deployment("unused");
+        ++*deployment.approval.deployment_budget_bytes;
+        expect_approval_mismatch(std::move(deployment));
+    }
+    {
+        auto deployment = make_deployment("unused");
+        ++*deployment.approval.reserved_headroom_bytes;
+        expect_approval_mismatch(std::move(deployment));
+    }
+    {
+        auto deployment = make_deployment("unused");
+        deployment.approval.release_build = false;
+        expect_approval_mismatch(std::move(deployment));
+    }
+    {
+        auto deployment = make_deployment("unused");
+        deployment.approval.ndebug = false;
+        expect_approval_mismatch(std::move(deployment));
+    }
+    {
+        auto caller_policy = policy;
+        caller_policy.approval_id = "caller-selected-approval";
+        const auto deployment = make_deployment("unused");
+        expect_open_error(open_private(&caller_policy, &facts, deployment),
+                          StoreError::registry_binding_mismatch, StoreObject::deployment_registry);
+    }
+    {
+        auto caller_policy = policy;
+        auto caller_facts = facts;
+        caller_policy.candidate_revision = "caller-selected-revision";
+        caller_facts.candidate_revision = caller_policy.candidate_revision;
+        const auto deployment = make_deployment("unused");
+        expect_open_error(open_private(&caller_policy, &caller_facts, deployment),
+                          StoreError::registry_binding_mismatch, StoreObject::deployment_registry);
+    }
+    {
+        auto production_deployment = make_deployment("unused");
+        production_deployment.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
+        auto production_runtime = facts;
+        production_runtime.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
+        expect_open_error(open_private(&policy, &production_runtime, production_deployment),
+                          StoreError::registry_binding_mismatch, StoreObject::deployment_registry);
+    }
 
     DeploymentEntry poisonous = make_deployment({});
     std::array preflight_poison{poisonous, poisonous};
@@ -1546,24 +1663,27 @@ void test_slot_runner_contract_and_missing_deployment() {
     expect_explicit_taint_record(fixture);
 }
 
-void test_slot_runner_rejects_invalid_deployment(const std::filesystem::path& executable) {
+void test_store_rejects_invalid_runner_contract_before_journal_mutation(
+    const std::filesystem::path& executable) {
     const auto run_invalid = [&](std::string_view marker_name, const auto& mutate) {
         TempStore fixture;
         const auto marker = fixture.base_leaf(marker_name);
         auto deployment = make_runner_deployment(fixture, executable, marker);
         mutate(*deployment.holdout_probe);
-        auto active = begin_runner_slot(deployment);
-
-        auto result = store_detail::SlotRunnerFactory::run(std::move(*active));
-        CHECK(!static_cast<bool>(result));
-        CHECK(result.diagnostic().error == SlotRunnerError::deployment_invalid);
-        CHECK(result.diagnostic().store_diagnostic.error == StoreError::registry_binding_mismatch);
-        CHECK(result.diagnostic().store_diagnostic.object == StoreObject::deployment_registry);
-        CHECK(result.diagnostic().taint_attempted);
-        CHECK(result.diagnostic().taint_durable);
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        expect_open_error(open_private(&policy, &facts, deployment),
+                          StoreError::registry_binding_mismatch, StoreObject::deployment_registry);
         CHECK(!std::filesystem::exists(marker));
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF)));
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+        const auto first_record =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(UINT32_C(1));
+        CHECK(first_record.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(first_record->view())));
         expect_no_runner_artifacts(fixture);
-        expect_explicit_taint_record(fixture);
     };
 
     run_invalid("runner-relative-executable-marker",
@@ -1572,6 +1692,34 @@ void test_slot_runner_rejects_invalid_deployment(const std::filesystem::path& ex
                 [](auto& binding) { binding.candidate_revision = "different-revision"; });
     run_invalid("runner-zero-timeout-marker",
                 [](auto& binding) { binding.timeout = std::chrono::milliseconds::zero(); });
+    run_invalid("runner-long-timeout-marker",
+                [](auto& binding) { binding.timeout = std::chrono::seconds(61); });
+    run_invalid("runner-owner-mismatch-marker", [](auto& binding) { ++binding.expected_owner; });
+    run_invalid("runner-malformed-environment-marker",
+                [](auto& binding) { binding.environment = {"MALFORMED"}; });
+    run_invalid("runner-duplicate-environment-marker",
+                [](auto& binding) { binding.environment = {"DUPLICATE=1", "DUPLICATE=2"}; });
+}
+
+void test_production_deployment_rejects_publication_test_seam(
+    const std::filesystem::path& executable) {
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("production-publication-seam-marker");
+    auto deployment = make_runner_deployment(fixture, executable, marker);
+    deployment.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
+    deployment.holdout_probe->probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
+    TestPublicationOps publication_ops(1, TestPublicationOps::Action::fail_before_create);
+    deployment.publication_ops = &publication_ops;
+
+    const auto policy = make_policy();
+    auto facts = make_facts();
+    facts.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
+    expect_open_error(open_private(&policy, &facts, deployment),
+                      StoreError::registry_binding_mismatch, StoreObject::deployment_registry);
+    CHECK(publication_ops.publish_calls() == 0);
+    CHECK(!std::filesystem::exists(
+        fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF)));
+    CHECK(!std::filesystem::exists(marker));
 }
 
 void test_slot_runner_happy_off_commits_one_same_child(const std::filesystem::path& executable) {
@@ -3215,7 +3363,8 @@ int main(int argc, char** argv) {
         test_reopened_taint_confirms_dangling_chain_durability();
         test_committed_prefix_durability_precedes_next_authority();
         test_slot_runner_contract_and_missing_deployment();
-        test_slot_runner_rejects_invalid_deployment(children.success);
+        test_store_rejects_invalid_runner_contract_before_journal_mutation(children.success);
+        test_production_deployment_rejects_publication_test_seam(children.success);
         test_slot_runner_happy_off_commits_one_same_child(children.success);
         test_slot_runner_happy_observe_commits_one_same_child(children.success);
         test_slot_runner_final_synthetic_commit_stays_gate_ineligible(children.success);

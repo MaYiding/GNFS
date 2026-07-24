@@ -229,6 +229,17 @@ and path metadata do not close the path-check-to-spawn gap. Exact executable
 digest binding and authority-held gate evaluation remain later production
 work.
 
+The private deployment row also owns the complete approved policy and expected
+runtime contract. Public policy and runtime values act only as claims. After
+selecting one unique row, the store compares every field and constructs the
+native session from row-owned strings and values. A malformed executable
+contract, including a relative path, revision mismatch, invalid environment,
+configured-owner mismatch, or invalid timeout, fails before the store opens a
+filesystem object. A production row must contain a probe binding and cannot
+use the publication test seam. Expected `release_build` and `ndebug` values are
+still deployment assertions that the child protocol later checks; they are not
+host observations or executable authentication.
+
 The store also holds the preprovisioned `.artifacts-v1` directory and tracks its
 namespace generation independently. Its strict pure layout permits one bounded
 stdout, stderr, and joined leaf for each canonical slot. Reopen verifies that

@@ -401,8 +401,10 @@ private:
     friend class shadow_proof_rss_campaign_journal_store_detail::SessionFactory;
 };
 
-/// Open the one deployment-registered store named by `policy`. No caller path,
-/// descriptor, resolver, snapshot, or publication result crosses this boundary.
+/// Select the one deployment-registered store named by the caller's policy
+/// claim, require exact policy and runtime agreement with that private row,
+/// and construct the session from row-owned values. No caller path, descriptor,
+/// resolver, snapshot, or publication result crosses this boundary.
 [[nodiscard]] SIQSShadowProofRssCampaignJournalStoreOpenResult
 open_siqs_shadow_proof_rss_campaign_journal_session(
     const SIQSShadowProofRssGatePolicy* policy,

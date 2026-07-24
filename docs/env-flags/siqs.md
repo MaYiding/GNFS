@@ -188,6 +188,14 @@ samples。该分类不等于 executable-image authentication；candidate revisio
 owner metadata 尚未证明实际执行字节，后续 production runner 仍需绑定批准的
 executable/bundle digest 并在持有 authority 的 session 内完成 gate evaluation。
 
+private deployment row 同时持有完整 approved policy 和 expected runtime contract。
+调用方提供的 policy/runtime 只是声明；store 选出唯一 row 后逐字段核对，并仅用
+row-owned 值构造 session。相对 executable path、revision mismatch、非法 environment、
+configured-owner mismatch 或非法 timeout 会在打开 journal 目录前失败。production
+row 必须配置 probe binding，且不能使用 `PublicationOps` 测试 seam。`release_build`
+和 `ndebug` 目前仍是 deployment expected values，随后由 child protocol 核对，不代表
+store 已实测 host 或认证 executable bytes。
+
 当前没有批准的 per-platform policy，也没有实际 budget、headroom 或阈值。sealed
 holdout 尚未运行，runner 和 80-process campaign 仍是 `blocked` / `pending`。policy
 获批前不得构造或启动 campaign，也不得写入任何 holdout 结果。
@@ -284,8 +292,8 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
 - `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` 使用临时本地目录和
   subprocess 覆盖 deployment registry、严格 native layout、跨进程 lease、崩溃释放、
   held-root publication、私有 same-child commit、完整 80-slot synthetic 终态和
-  restart relabel rejection。测试只启动 synthetic child，不运行 production probe 或
-  打开 sealed holdout。
+  restart relabel rejection，以及完整 approval/runtime 字段错配的 journal 零写入拒绝。
+  测试只启动 synthetic child，不运行 production probe 或打开 sealed holdout。
 - `tests/test_siqs.cpp` 锁定公开 `factor()` 路径对 `prefer` 的 fail-closed
   拒绝，并确认拒绝前不发出 V1 或 V2 记录。
 - `tests/test_siqs_shadow_proof_observe_probe.cpp` 提供 Release-only production 1LP fresh-process measurement target；它不进入 CTest 或常规测试 tier。

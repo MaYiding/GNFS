@@ -39,6 +39,26 @@ public:
                        const std::filesystem::path& leaf) noexcept = 0;
 };
 
+/// Complete deployment-owned approval and runtime contract for one campaign
+/// namespace. Public policy/runtime values are untrusted claims: the store
+/// selects a unique private deployment row, requires an exact field-by-field
+/// match, and then constructs the authority-bearing session from this owning
+/// snapshot instead of retaining caller-provided views.
+struct ApprovedCampaignBinding final {
+    std::string corpus_id;
+    SIQSShadowProofRssCorpusDigest corpus_digest;
+    SIQSShadowProofRssOperatingSystem operating_system = SIQSShadowProofRssOperatingSystem::unknown;
+    SIQSShadowProofRssArchitecture architecture = SIQSShadowProofRssArchitecture::unknown;
+    util::ProcessMemoryBackend memory_backend = util::ProcessMemoryBackend::Unsupported;
+    std::size_t resolved_production_sieve_workers = 0;
+    std::string candidate_revision;
+    std::string approval_id;
+    std::optional<uint64_t> deployment_budget_bytes;
+    std::optional<uint64_t> reserved_headroom_bytes;
+    bool release_build = false;
+    bool ndebug = false;
+};
+
 /// Private executable row selected before a slot can launch. The complete
 /// child environment and timeout are deployment-owned; callers cannot amend
 /// either through the runner API.
@@ -61,6 +81,7 @@ struct DeploymentEntry final {
     std::filesystem::path trusted_base_path;
     uint64_t expected_owner = 0;
     SIQSShadowProofRssProbeKind probe_kind = SIQSShadowProofRssProbeKind::unknown;
+    ApprovedCampaignBinding approval;
     PublicationOps* publication_ops = nullptr;
     std::optional<ProbeExecutableBinding> holdout_probe;
 };

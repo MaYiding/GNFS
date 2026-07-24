@@ -1,8 +1,10 @@
 #include "shadow_proof_rss_campaign_journal_store_internal.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <new>
 #include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -250,6 +252,119 @@ make_common_diagnostic(SIQSShadowProofRssCampaignJournalStoreError error,
            deployment.relative_locator == binding.relative_locator;
 }
 
+[[nodiscard]] SIQSShadowProofRssGatePolicy
+approved_policy_view(const DeploymentEntry& deployment) noexcept {
+    const ApprovedCampaignBinding& approval = deployment.approval;
+    return {
+        .approved = true,
+        .corpus_id = approval.corpus_id,
+        .corpus_digest = approval.corpus_digest,
+        .operating_system = approval.operating_system,
+        .architecture = approval.architecture,
+        .memory_backend = approval.memory_backend,
+        .resolved_production_sieve_workers = approval.resolved_production_sieve_workers,
+        .candidate_revision = approval.candidate_revision,
+        .approval_id = approval.approval_id,
+        .journal_store =
+            {
+                .trusted_base_id = deployment.trusted_base_id,
+                .store_id = deployment.store_id,
+                .relative_locator = deployment.relative_locator,
+            },
+        .deployment_budget_bytes = approval.deployment_budget_bytes,
+        .reserved_headroom_bytes = approval.reserved_headroom_bytes,
+    };
+}
+
+[[nodiscard]] SIQSShadowProofRssCampaignRuntimeFacts
+approved_runtime_facts_view(const DeploymentEntry& deployment) noexcept {
+    const ApprovedCampaignBinding& approval = deployment.approval;
+    return {
+        .operating_system = approval.operating_system,
+        .architecture = approval.architecture,
+        .memory_backend = approval.memory_backend,
+        .resolved_production_sieve_workers = approval.resolved_production_sieve_workers,
+        .probe_kind = deployment.probe_kind,
+        .candidate_revision = approval.candidate_revision,
+        .release_build = approval.release_build,
+        .ndebug = approval.ndebug,
+    };
+}
+
+[[nodiscard]] bool policy_claim_matches(const SIQSShadowProofRssGatePolicy& claim,
+                                        const SIQSShadowProofRssGatePolicy& approved) noexcept {
+    return claim.approved == approved.approved && claim.corpus_id == approved.corpus_id &&
+           claim.corpus_digest == approved.corpus_digest &&
+           claim.operating_system == approved.operating_system &&
+           claim.architecture == approved.architecture &&
+           claim.memory_backend == approved.memory_backend &&
+           claim.resolved_production_sieve_workers == approved.resolved_production_sieve_workers &&
+           claim.candidate_revision == approved.candidate_revision &&
+           claim.approval_id == approved.approval_id &&
+           claim.journal_store == approved.journal_store &&
+           claim.deployment_budget_bytes == approved.deployment_budget_bytes &&
+           claim.reserved_headroom_bytes == approved.reserved_headroom_bytes;
+}
+
+[[nodiscard]] bool
+runtime_claim_matches(const SIQSShadowProofRssCampaignRuntimeFacts& claim,
+                      const SIQSShadowProofRssCampaignRuntimeFacts& approved) noexcept {
+    return claim.operating_system == approved.operating_system &&
+           claim.architecture == approved.architecture &&
+           claim.memory_backend == approved.memory_backend &&
+           claim.resolved_production_sieve_workers == approved.resolved_production_sieve_workers &&
+           claim.probe_kind == approved.probe_kind &&
+           claim.candidate_revision == approved.candidate_revision &&
+           claim.release_build == approved.release_build && claim.ndebug == approved.ndebug;
+}
+
+[[nodiscard]] bool
+executable_environment_is_canonical(std::span<const std::string> environment) noexcept {
+    for (std::size_t index = 0; index < environment.size(); ++index) {
+        const std::string_view entry = environment[index];
+        const std::size_t separator = entry.find('=');
+        if (entry.find('\0') != std::string_view::npos || separator == std::string_view::npos ||
+            separator == 0) {
+            return false;
+        }
+        const std::string_view name = entry.substr(0, separator);
+        for (std::size_t prior = 0; prior < index; ++prior) {
+            const std::string_view prior_entry = environment[prior];
+            if (prior_entry.substr(0, prior_entry.find('=')) == name) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool deployment_contract_is_well_formed(const DeploymentEntry& deployment) noexcept {
+    constexpr auto max_probe_timeout = std::chrono::seconds(60);
+    const bool known_probe_kind =
+        deployment.probe_kind == SIQSShadowProofRssProbeKind::synthetic_test ||
+        deployment.probe_kind == SIQSShadowProofRssProbeKind::production_holdout;
+    if (!known_probe_kind || deployment.trusted_base_path.empty()) {
+        return false;
+    }
+    if (deployment.probe_kind == SIQSShadowProofRssProbeKind::production_holdout &&
+        (!deployment.holdout_probe.has_value() || deployment.publication_ops != nullptr)) {
+        return false;
+    }
+    if (!deployment.holdout_probe.has_value()) {
+        return true;
+    }
+    const ProbeExecutableBinding& executable = *deployment.holdout_probe;
+    const auto& native_executable = executable.executable.native();
+    return !executable.executable.empty() && executable.executable.is_absolute() &&
+           native_executable.find('\0') == std::string::npos &&
+           executable.candidate_revision == deployment.approval.candidate_revision &&
+           executable.probe_kind == deployment.probe_kind &&
+           executable.expected_owner == deployment.expected_owner &&
+           executable.timeout > std::chrono::milliseconds::zero() &&
+           executable.timeout <= max_probe_timeout &&
+           executable_environment_is_canonical(executable.environment);
+}
+
 [[nodiscard]] bool
 preflight_is_ready(const SIQSShadowProofRssCampaignJournalResume& preflight) noexcept {
     return preflight.status == SIQSShadowProofRssJournalStatus::ready &&
@@ -299,20 +414,28 @@ SessionFactory::open_with_deployments(const SIQSShadowProofRssGatePolicy* policy
                 SIQSShadowProofRssCampaignJournalStoreError::binding_ambiguous,
                 SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry));
         }
-        if (selected == nullptr || selected->store_id != policy->journal_store.store_id ||
-            selected->trusted_base_path.empty() ||
-            (selected->probe_kind != SIQSShadowProofRssProbeKind::synthetic_test &&
-             selected->probe_kind != SIQSShadowProofRssProbeKind::production_holdout) ||
-            selected->probe_kind != runtime_facts->probe_kind ||
-            (selected->holdout_probe.has_value() &&
-             selected->holdout_probe->probe_kind != selected->probe_kind)) {
+        if (selected == nullptr || !deployment_contract_is_well_formed(*selected)) {
+            return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
+                SIQSShadowProofRssCampaignJournalStoreError::registry_binding_mismatch,
+                SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry));
+        }
+
+        const SIQSShadowProofRssGatePolicy approved_policy = approved_policy_view(*selected);
+        const SIQSShadowProofRssCampaignRuntimeFacts approved_runtime_facts =
+            approved_runtime_facts_view(*selected);
+        const auto approved_preflight = resume_siqs_shadow_proof_rss_campaign_journal(
+            &approved_policy, &approved_runtime_facts, SIQSShadowProofRssJournalPresence::absent,
+            nullptr, {});
+        if (!preflight_is_ready(approved_preflight) ||
+            !policy_claim_matches(*policy, approved_policy) ||
+            !runtime_claim_matches(*runtime_facts, approved_runtime_facts)) {
             return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
                 SIQSShadowProofRssCampaignJournalStoreError::registry_binding_mismatch,
                 SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry));
         }
 
         PlatformOpenResult platform = open_siqs_shadow_proof_rss_campaign_journal_platform_session(
-            *policy, *runtime_facts, *selected);
+            approved_policy, approved_runtime_facts, *selected);
         if (!platform) {
             if (platform.diagnostic.error == SIQSShadowProofRssCampaignJournalStoreError::none) {
                 platform.diagnostic = make_common_diagnostic(
