@@ -559,7 +559,8 @@ stderr codec, and authority-free stream-join tests are also instant and use
 synthetic records only. `test_bounded_child_process` runs a synthetic fake
 executable to cover shell-free argument/environment transfer, independently
 bounded dual-pipe capture, deadlines, overflow, descendant writers, and cleanup
-semantics. It is test-private and is not a campaign launcher. The instant
+semantics. The transport is a production utility, but it carries data only and
+is not a campaign launcher. The instant
 native-store test uses a temporary real filesystem and subprocesses to cover
 the registry boundary, component walking, strict layouts, move-only lease
 ownership, cross-process contention, crash release, and replay actions. None of
@@ -601,8 +602,8 @@ still performs no file I/O.
 The native leased store now combines the canonical codec and held-root durable
 publisher for header and start records. It validates the resulting strict
 snapshot before privately issuing the launch permit, then traps the permit
-inside a lease-owning active-slot transaction. A test-private portable
-transport can capture both streams from one synthetic child, but it is not
+inside a lease-owning active-slot transaction. A production portable transport
+can capture both streams from one child, but it is not
 connected to that transaction, the sealed probe, or the authority-free join.
 The store now also owns the fixed artifact root, strict artifact snapshots,
 three-leaf durable batch publication, private batch receipts, and explicit
@@ -863,9 +864,10 @@ Before promotion it must provide:
 - [x] Strict owning decoders for the probe stdout and observe stderr records,
   plus an approved-policy and runtime-bound join that yields only an
   authority-free uncommitted evidence draft.
-- [x] Test-private shell-free child transport with independent stdout/stderr
-  caps, a monotonic deadline, process-tree cleanup, exact environment transfer,
-  and POSIX and Windows implementations sharing one synthetic contract suite.
+- [x] Production data-only shell-free child transport with independent
+  stdout/stderr caps, a monotonic deadline, process-tree cleanup, exact
+  environment transfer, and POSIX and Windows implementations sharing one
+  synthetic contract suite.
 - [x] Durable header/start publication and private receipt issuance from the
   held root, with root and lock revalidation at every authority-bearing action
   and a lease-bound active-slot transaction that exposes no raw permit.

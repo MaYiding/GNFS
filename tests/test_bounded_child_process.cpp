@@ -1,7 +1,7 @@
-// Cross-platform integration tests for the test-private bounded child
-// transport. The fake executable emits only synthetic bytes.
+// Cross-platform integration tests for the production bounded child transport.
+// The fake executable emits only synthetic bytes.
 
-#include "support/bounded_child_process.hpp"
+#include <gnfs/util/bounded_child_process.hpp>
 
 #include <algorithm>
 #include <array>
@@ -27,15 +27,15 @@
 
 namespace {
 
-using gnfs::test::bounded_child_process_error_name;
-using gnfs::test::BoundedChildProcessError;
-using gnfs::test::BoundedChildProcessResult;
-using gnfs::test::BoundedChildProcessSpec;
-using gnfs::test::BoundedChildTerminationKind;
-using gnfs::test::run_bounded_child_process;
+using gnfs::util::bounded_child_process_error_name;
+using gnfs::util::BoundedChildProcessError;
+using gnfs::util::BoundedChildProcessResult;
+using gnfs::util::BoundedChildProcessSpec;
+using gnfs::util::BoundedChildTerminationKind;
+using gnfs::util::run_bounded_child_process;
 #if !defined(_WIN32)
-using gnfs::test::detail::PosixTerminationScope;
-using gnfs::test::detail::select_posix_termination_scope;
+using gnfs::util::detail::PosixTerminationScope;
+using gnfs::util::detail::select_posix_termination_scope;
 #endif
 using namespace std::chrono_literals;
 

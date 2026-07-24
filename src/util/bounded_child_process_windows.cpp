@@ -1,4 +1,4 @@
-#include "bounded_child_process.hpp"
+#include <gnfs/util/bounded_child_process.hpp>
 
 #if defined(_WIN32)
 
@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-namespace gnfs::test {
+namespace gnfs::util {
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -697,6 +697,6 @@ BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpe
     return result;
 }
 
-} // namespace gnfs::test
+} // namespace gnfs::util
 
 #endif

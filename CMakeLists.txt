@@ -235,6 +235,15 @@ endif()
 add_library(gnfs_util STATIC
     src/util/durable_immutable_file.cpp
 )
+if(WIN32)
+    target_sources(gnfs_util PRIVATE
+        src/util/bounded_child_process_windows.cpp
+    )
+else()
+    target_sources(gnfs_util PRIVATE
+        src/util/bounded_child_process_posix.cpp
+    )
+endif()
 target_include_directories(gnfs_util PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
@@ -500,23 +509,15 @@ if(GNFS_BUILD_TESTS)
     add_executable(bounded_child_process_fake_child
         tests/support/bounded_child_process_fake_child.cpp
     )
-    if(WIN32)
-        set(BOUNDED_CHILD_PROCESS_SOURCE
-            tests/support/bounded_child_process_windows.cpp)
-    else()
-        set(BOUNDED_CHILD_PROCESS_SOURCE
-            tests/support/bounded_child_process_posix.cpp)
-    endif()
     add_executable(test_bounded_child_process
         tests/test_bounded_child_process.cpp
-        ${BOUNDED_CHILD_PROCESS_SOURCE}
     )
     if(MINGW)
         target_link_options(bounded_child_process_fake_child PRIVATE -municode)
         target_link_options(test_bounded_child_process PRIVATE -municode)
     endif()
     target_link_libraries(bounded_child_process_fake_child PRIVATE Threads::Threads)
-    target_link_libraries(test_bounded_child_process PRIVATE Threads::Threads)
+    target_link_libraries(test_bounded_child_process PRIVATE gnfs_util Threads::Threads)
     add_dependencies(test_bounded_child_process bounded_child_process_fake_child)
     add_test(NAME BoundedChildProcess
         COMMAND test_bounded_child_process $<TARGET_FILE:bounded_child_process_fake_child>)

@@ -1,8 +1,10 @@
 #pragma once
 
-// Test-private, shell-free child-process transport with independently bounded
-// stdout and stderr capture. Production campaign authority must not be added
-// to this interface: callers supply only synthetic test executables.
+/// @file bounded_child_process.hpp
+/// @brief Shell-free child-process transport with bounded stdout and stderr.
+///
+/// This utility transports bytes and termination facts only. It does not grant
+/// campaign launch, persistence, or commit authority.
 
 #include <chrono>
 #include <cstddef>
@@ -13,7 +15,7 @@
 #include <system_error>
 #include <vector>
 
-namespace gnfs::test {
+namespace gnfs::util {
 
 enum class BoundedChildProcessError : std::uint8_t {
     none,
@@ -160,4 +162,4 @@ select_posix_termination_scope(std::int64_t child, std::int64_t verified_group,
 [[nodiscard]] BoundedChildProcessResult
 run_bounded_child_process(const BoundedChildProcessSpec& spec) noexcept;
 
-} // namespace gnfs::test
+} // namespace gnfs::util
