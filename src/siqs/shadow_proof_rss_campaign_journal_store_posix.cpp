@@ -1566,6 +1566,22 @@ verify_artifact_namespace_generation(int artifact_root_fd,
            status == SIQSShadowProofRssJournalStatus::complete;
 }
 
+[[nodiscard]] bool replay_matches(const SIQSShadowProofRssCampaignJournalResume& left,
+                                  const SIQSShadowProofRssCampaignJournalResume& right) noexcept {
+    const bool prepared_matches =
+        left.prepared_slot_start.has_value() == right.prepared_slot_start.has_value() &&
+        (!left.prepared_slot_start.has_value() ||
+         (left.prepared_slot_start->active() == right.prepared_slot_start->active() &&
+          left.prepared_slot_start->record() == right.prepared_slot_start->record()));
+    return left.status == right.status && left.reason == right.reason &&
+           left.action == right.action && left.committed_slot_count == right.committed_slot_count &&
+           left.next_slot_number == right.next_slot_number &&
+           left.plan_digest == right.plan_digest &&
+           left.header_to_create == right.header_to_create && prepared_matches &&
+           left.taint_to_append == right.taint_to_append &&
+           left.committed_payloads == right.committed_payloads;
+}
+
 [[nodiscard]] uint32_t first_invalid_record_sequence(
     const SIQSShadowProofRssGatePolicy& policy,
     const SIQSShadowProofRssCampaignRuntimeFacts& runtime_facts,
@@ -1810,6 +1826,7 @@ public:
                 root_namespace_fingerprint_ = *refreshed.root_namespace_fingerprint;
                 artifact_namespace_fingerprint_ = *refreshed.artifact_namespace_fingerprint;
                 replay_ = std::move(*refreshed.replay);
+                committed_prefix_confirmed_durable_ = true;
             }
 
             if (replay_.status != SIQSShadowProofRssJournalStatus::ready ||
@@ -1821,35 +1838,15 @@ public:
 
             const auto expected_start_record = replay_.prepared_slot_start->record();
             if (!published_header_in_this_action) {
-                if (StoreDiagnostic diagnostic = verify_authority();
+                if (StoreDiagnostic diagnostic = confirm_committed_prefix_durable();
                     diagnostic.error != StoreError::none) {
                     return fail(std::move(diagnostic));
                 }
-                const auto header_confirmation = publication_ops_->confirm_durable_at(
-                    static_cast<durable::NativeHandle>(root_fd_.get()), HEADER_LEAF);
-                if (!header_confirmation.is_durable()) {
-                    return fail(make_publication_diagnostic(header_confirmation,
-                                                            StoreObject::journal_header));
+                if (!replay_.prepared_slot_start.has_value() ||
+                    replay_.prepared_slot_start->record() != expected_start_record) {
+                    return fail(
+                        make_diagnostic(StoreError::snapshot_changed, StoreObject::journal_record));
                 }
-                VerifiedReplayResult confirmed =
-                    refresh(initial_root_fingerprint_, &root_namespace_fingerprint_,
-                            &artifact_namespace_fingerprint_);
-                if (!confirmed) {
-                    return fail(with_completed_publication(std::move(confirmed.diagnostic),
-                                                           header_confirmation));
-                }
-                if (!confirmed.snapshot->header.has_value() ||
-                    confirmed.replay->status != SIQSShadowProofRssJournalStatus::ready ||
-                    confirmed.replay->reason != SIQSShadowProofRssJournalReason::ready ||
-                    confirmed.replay->action !=
-                        SIQSShadowProofRssJournalAction::append_slot_start ||
-                    !confirmed.replay->prepared_slot_start.has_value() ||
-                    confirmed.replay->prepared_slot_start->record() != expected_start_record) {
-                    return fail(with_completed_publication(
-                        make_diagnostic(StoreError::snapshot_changed, StoreObject::journal_header),
-                        header_confirmation));
-                }
-                replay_ = std::move(*confirmed.replay);
             }
 
             const auto start_record = replay_.prepared_slot_start->record();
@@ -2189,6 +2186,118 @@ private:
         return result;
     }
 
+    [[nodiscard]] StoreDiagnostic confirm_committed_prefix_durable() {
+        if (committed_prefix_confirmed_durable_) {
+            return {};
+        }
+        if (!replay_status_is_leasable(replay_.status) ||
+            replay_.committed_slot_count > SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT) {
+            return action_diagnostic();
+        }
+
+        std::optional<durable::PublishResult> last_confirmation;
+        const auto with_last_confirmation = [&](StoreDiagnostic diagnostic) noexcept {
+            return last_confirmation.has_value()
+                       ? with_completed_publication(std::move(diagnostic), *last_confirmation)
+                       : diagnostic;
+        };
+        const auto verify_before_confirmation = [&]() -> std::optional<StoreDiagnostic> {
+            StoreDiagnostic diagnostic = verify_authority();
+            if (diagnostic.error == StoreError::none) {
+                return std::nullopt;
+            }
+            return with_last_confirmation(std::move(diagnostic));
+        };
+        const auto confirm_journal_leaf =
+            [&](const std::filesystem::path& leaf, StoreObject object,
+                uint32_t sequence = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE)
+            -> std::optional<StoreDiagnostic> {
+            if (auto diagnostic = verify_before_confirmation(); diagnostic.has_value()) {
+                return diagnostic;
+            }
+            const auto confirmation = publication_ops_->confirm_durable_at(
+                static_cast<durable::NativeHandle>(root_fd_.get()), leaf);
+            if (!confirmation.is_durable()) {
+                return make_publication_diagnostic(confirmation, object, sequence);
+            }
+            last_confirmation = confirmation;
+            return std::nullopt;
+        };
+        const auto confirm_artifact_leaf =
+            [&](uint32_t slot_number,
+                SIQSShadowProofRssArtifactKind kind) -> std::optional<StoreDiagnostic> {
+            const auto leaf = make_siqs_shadow_proof_rss_campaign_artifact_leaf(slot_number, kind);
+            if (!leaf.has_value()) {
+                return make_diagnostic(StoreError::artifact_consistency_invalid,
+                                       StoreObject::artifact);
+            }
+            if (auto diagnostic = verify_before_confirmation(); diagnostic.has_value()) {
+                return diagnostic;
+            }
+            const auto confirmation = publication_ops_->confirm_durable_at(
+                static_cast<durable::NativeHandle>(artifact_root_fd_.get()),
+                std::filesystem::path(leaf->view()));
+            if (!confirmation.is_durable()) {
+                return make_artifact_publication_diagnostic(confirmation, slot_number, kind);
+            }
+            last_confirmation = confirmation;
+            return std::nullopt;
+        };
+
+        if (auto diagnostic = confirm_journal_leaf(HEADER_LEAF, StoreObject::journal_header);
+            diagnostic.has_value()) {
+            return *diagnostic;
+        }
+        for (uint32_t slot_number = 1; slot_number <= replay_.committed_slot_count; ++slot_number) {
+            const uint32_t start_sequence = slot_number * 2 - 1;
+            const uint32_t commit_sequence = slot_number * 2;
+            const auto start_leaf =
+                make_siqs_shadow_proof_rss_campaign_journal_record_leaf(start_sequence);
+            const auto commit_leaf =
+                make_siqs_shadow_proof_rss_campaign_journal_record_leaf(commit_sequence);
+            if (!start_leaf.has_value() || !commit_leaf.has_value()) {
+                return with_last_confirmation(action_diagnostic());
+            }
+            if (auto diagnostic = confirm_journal_leaf(std::filesystem::path(start_leaf->view()),
+                                                       StoreObject::journal_record, start_sequence);
+                diagnostic.has_value()) {
+                return *diagnostic;
+            }
+            for (const auto kind : {SIQSShadowProofRssArtifactKind::probe_stdout,
+                                    SIQSShadowProofRssArtifactKind::probe_stderr,
+                                    SIQSShadowProofRssArtifactKind::joined_gate_sample}) {
+                if (auto diagnostic = confirm_artifact_leaf(slot_number, kind);
+                    diagnostic.has_value()) {
+                    return *diagnostic;
+                }
+            }
+            if (auto diagnostic =
+                    confirm_journal_leaf(std::filesystem::path(commit_leaf->view()),
+                                         StoreObject::journal_record, commit_sequence);
+                diagnostic.has_value()) {
+                return *diagnostic;
+            }
+        }
+
+        VerifiedReplayResult confirmed =
+            refresh(initial_root_fingerprint_, &root_namespace_fingerprint_,
+                    &artifact_namespace_fingerprint_);
+        if (!confirmed) {
+            return with_last_confirmation(std::move(confirmed.diagnostic));
+        }
+        if (!confirmed.snapshot->header.has_value() ||
+            !replay_matches(*confirmed.replay, replay_)) {
+            return with_last_confirmation(
+                make_diagnostic(StoreError::snapshot_changed, StoreObject::journal_record));
+        }
+
+        root_namespace_fingerprint_ = *confirmed.root_namespace_fingerprint;
+        artifact_namespace_fingerprint_ = *confirmed.artifact_namespace_fingerprint;
+        replay_ = std::move(*confirmed.replay);
+        committed_prefix_confirmed_durable_ = true;
+        return {};
+    }
+
     [[nodiscard]] StoreDiagnostic confirm_pending_start_durable() {
         if (pending_start_confirmed_durable_) {
             return {};
@@ -2200,6 +2309,10 @@ private:
             return action_diagnostic();
         }
 
+        if (StoreDiagnostic diagnostic = confirm_committed_prefix_durable();
+            diagnostic.error != StoreError::none) {
+            return diagnostic;
+        }
         const auto expected_taint = *replay_.taint_to_append;
         if (expected_taint.sequence_number <= 1) {
             return action_diagnostic();
@@ -2213,15 +2326,6 @@ private:
 
         if (StoreDiagnostic diagnostic = verify_authority(); diagnostic.error != StoreError::none) {
             return diagnostic;
-        }
-        const auto header_confirmation = publication_ops_->confirm_durable_at(
-            static_cast<durable::NativeHandle>(root_fd_.get()), HEADER_LEAF);
-        if (!header_confirmation.is_durable()) {
-            return make_publication_diagnostic(header_confirmation, StoreObject::journal_header);
-        }
-
-        if (StoreDiagnostic diagnostic = verify_authority(); diagnostic.error != StoreError::none) {
-            return with_completed_publication(std::move(diagnostic), header_confirmation);
         }
         const auto start_confirmation =
             publication_ops_->confirm_durable_at(static_cast<durable::NativeHandle>(root_fd_.get()),
@@ -2531,6 +2635,7 @@ private:
     SIQSShadowProofRssGatePolicy policy_;
     SIQSShadowProofRssCampaignRuntimeFacts runtime_facts_;
     SIQSShadowProofRssCampaignJournalResume replay_;
+    bool committed_prefix_confirmed_durable_ = false;
     bool pending_start_confirmed_durable_ = false;
     std::optional<ArtifactBatchReceipt> artifact_batch_receipt_;
     PublicationOps* publication_ops_ = nullptr;

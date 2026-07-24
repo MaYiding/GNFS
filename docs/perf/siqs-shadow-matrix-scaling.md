@@ -407,13 +407,17 @@ exclusive immutable publication relative to the held root, refreshes the
 strict layout and replay, and returns a move-only active-slot transaction. The
 transaction owns both the lease and the private permit, but it intentionally
 exposes no launch operation. Before publishing a start from an existing
-header-only journal, the store re-establishes the header file and directory
-durability barriers through the held root. This prevents a complete header
-left by an earlier failed sync from being treated as durable merely because it
-can be decoded after reopen. A later runner must retain the transaction through
-child execution and commit or taint. An API that accepts an arbitrary output
-path or a caller-supplied successful I/O backend is not a receipt issuer because
-either would permit duplicate launches from one stale replay.
+journal, the store re-establishes durability for the header and every visible
+committed slot in causal order: start record, stdout, stderr, joined artifact,
+then commit record. It revalidates held authority before each barrier and
+requires one stable replay and artifact snapshot equal to the pre-confirmation
+state before it may publish the next start. This prevents a complete-looking
+prefix left by an earlier failed sync from being treated as durable merely
+because it can be decoded after reopen. A later runner must retain the
+transaction through child execution and commit or taint. An API that accepts
+an arbitrary output path or a caller-supplied successful I/O backend is not a
+receipt issuer because either would permit duplicate launches from one stale
+replay.
 
 `include/gnfs/siqs/shadow_proof_rss_campaign_journal_codec.hpp` defines the
 canonical storage representation without opening a file. Headers are exactly
@@ -499,9 +503,11 @@ cannot start a child, commit a sample, or release a raw receipt or permit. Its
 public consuming `taint()` transition durably closes the unmatched start. A
 reopened dangling start exposes only the equivalent consuming
 `append_pending_taint()` recovery. Before that recovery appends a taint record,
-the held root re-establishes the header and exact start-record durability
-barriers, then strictly refreshes the unchanged replay. Neither destructor
-claims that a taint record reached storage.
+the held roots re-establish the complete committed prefix in the same causal
+order, then confirm the exact unmatched start and strictly refresh the
+unchanged replay. Failure or namespace drift at any predecessor leaves both the
+next-start and taint actions closed. Neither destructor claims that a taint
+record reached storage.
 
 The private store integration may publish exactly one three-artifact batch
 while the active slot still traps the lease and launch permit. It creates
@@ -873,8 +879,8 @@ Before promotion it must provide:
   and a lease-bound active-slot transaction that exposes no raw permit.
 - [x] Fixed held artifact root with strict bounded layout and journal closure,
   three-leaf durable batch publication, private batch receipts, explicit
-  durable taint and reopen recovery with predecessor confirmation, and injected
-  publication-failure tests.
+  durable taint, reopen recovery with full committed-prefix and dangling-start
+  confirmation, and injected publication and confirmation-failure tests.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved
   headroom, OS, architecture, RSS backend, resolved production sieve workers,
   candidate revision, approval identity, sealed corpus digest, trusted journal

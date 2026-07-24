@@ -1148,6 +1148,158 @@ void test_reopened_taint_confirms_dangling_chain_durability() {
     }
 }
 
+void test_committed_prefix_durability_precedes_next_authority() {
+    constexpr std::string_view stdout_bytes = "committed-off-stdout\n";
+    constexpr std::string_view stderr_bytes;
+    constexpr std::string_view joined_bytes = "committed-off-joined\n";
+    struct ExpectedFailure final {
+        StoreObject object = StoreObject::none;
+        uint32_t record_sequence = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE;
+        std::optional<SIQSShadowProofRssArtifactKind> artifact_kind;
+    };
+    const std::array expected_failures{
+        ExpectedFailure{StoreObject::journal_header,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE, std::nullopt},
+        ExpectedFailure{StoreObject::journal_record, 1, std::nullopt},
+        ExpectedFailure{StoreObject::artifact,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE,
+                        SIQSShadowProofRssArtifactKind::probe_stdout},
+        ExpectedFailure{StoreObject::artifact,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE,
+                        SIQSShadowProofRssArtifactKind::probe_stderr},
+        ExpectedFailure{StoreObject::artifact,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE,
+                        SIQSShadowProofRssArtifactKind::joined_gate_sample},
+        ExpectedFailure{StoreObject::journal_record, 2, std::nullopt},
+    };
+
+    for (std::size_t index = 0; index < expected_failures.size(); ++index) {
+        TempStore fixture;
+        write_committed_off_slots(fixture, 1, stdout_bytes, stderr_bytes, joined_bytes);
+        TestConfirmationOps ops(index + 1, TestConfirmationOps::Action::fail_before_confirm);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(!static_cast<bool>(begin));
+        CHECK(ops.confirm_calls() == index + 1);
+        CHECK(begin.diagnostic().error == StoreError::publication_failed);
+        CHECK(begin.diagnostic().object == expected_failures[index].object);
+        CHECK(begin.diagnostic().record_sequence == expected_failures[index].record_sequence);
+        CHECK(begin.diagnostic().artifact_slot_number ==
+              (expected_failures[index].artifact_kind.has_value()
+                   ? 1U
+                   : SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_NO_SLOT));
+        CHECK(begin.diagnostic().artifact_kind == expected_failures[index].artifact_kind);
+        CHECK(begin.diagnostic().publication_status == durable::PublishStatus::open_failed);
+        const auto next_start = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(3);
+        CHECK(next_start.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(next_start->view())));
+    }
+
+    {
+        TempStore fixture;
+        write_committed_off_slots(fixture, 1, stdout_bytes, stderr_bytes, joined_bytes);
+        TestConfirmationOps ops(100, TestConfirmationOps::Action::fail_before_confirm);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin);
+        CHECK(ops.confirm_calls() == expected_failures.size());
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+        CHECK(active->slot_number() == 2);
+        const auto taint = std::move(*active).taint();
+        CHECK(static_cast<bool>(taint));
+        CHECK(ops.confirm_calls() == expected_failures.size());
+    }
+
+    {
+        TempStore fixture;
+        write_committed_off_slots(fixture, 2, stdout_bytes, stderr_bytes, joined_bytes);
+        TestConfirmationOps ops(7, TestConfirmationOps::Action::fail_before_confirm);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(!static_cast<bool>(begin));
+        CHECK(ops.confirm_calls() == 7);
+        CHECK(begin.diagnostic().error == StoreError::publication_failed);
+        CHECK(begin.diagnostic().object == StoreObject::journal_record);
+        CHECK(begin.diagnostic().record_sequence == 3);
+        const auto next_start = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(5);
+        CHECK(next_start.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(next_start->view())));
+    }
+
+    {
+        TempStore fixture;
+        write_committed_off_slots(fixture, 1, stdout_bytes, stderr_bytes, joined_bytes);
+        TestConfirmationOps ops(3, TestConfirmationOps::Action::remove_and_report_durable);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(!static_cast<bool>(begin));
+        CHECK(ops.confirm_calls() == 3);
+        CHECK(begin.diagnostic().error == StoreError::snapshot_changed);
+        CHECK(begin.diagnostic().object == StoreObject::artifact_root);
+        CHECK(begin.diagnostic().publication_status == durable::PublishStatus::durable);
+        const auto next_start = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(3);
+        CHECK(next_start.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(next_start->view())));
+    }
+
+    {
+        TempStore fixture;
+        write_committed_off_slots(fixture, 1, stdout_bytes, stderr_bytes, joined_bytes);
+        {
+            auto session = take_successful_session(open_fixture(fixture));
+            CHECK(session.has_value());
+            auto begin = std::move(*session).begin_next_slot();
+            CHECK(begin);
+            auto active = std::move(begin).take_active_slot();
+            CHECK(active.has_value());
+        }
+
+        TestConfirmationOps ops(7, TestConfirmationOps::Action::fail_before_confirm);
+        auto deployment = make_deployment(fixture.trusted_base());
+        deployment.publication_ops = &ops;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        auto reopened = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(reopened.has_value());
+        CHECK(reopened->view().reason == SIQSShadowProofRssJournalReason::dangling_slot_start);
+
+        const auto taint = std::move(*reopened).append_pending_taint();
+        CHECK(!static_cast<bool>(taint));
+        CHECK(ops.confirm_calls() == 7);
+        CHECK(taint.diagnostic().error == StoreError::publication_failed);
+        CHECK(taint.diagnostic().object == StoreObject::journal_record);
+        CHECK(taint.diagnostic().record_sequence == 3);
+        const auto taint_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(4);
+        CHECK(taint_leaf.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+    }
+}
+
 void test_taint_rejects_inactive_and_nonpending_sessions() {
     {
         TempStore fixture;
@@ -2336,6 +2488,7 @@ int main(int argc, char** argv) {
         test_active_slot_taint_is_durable_and_terminal();
         test_reopened_dangling_start_appends_pending_taint();
         test_reopened_taint_confirms_dangling_chain_durability();
+        test_committed_prefix_durability_precedes_next_authority();
         test_taint_rejects_inactive_and_nonpending_sessions();
         test_begin_crash_recovers_only_through_pending_taint(executable);
         test_artifact_root_is_required_and_private();
