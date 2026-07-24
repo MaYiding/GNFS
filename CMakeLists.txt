@@ -2207,6 +2207,18 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SiqsRuntimeFacts COMMAND test_siqs_runtime_facts)
     set_tests_properties(SiqsRuntimeFacts PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_shadow_proof_rss_probe_execution_identity
+        tests/test_siqs_shadow_proof_rss_probe_execution_identity.cpp
+    )
+    target_include_directories(test_siqs_shadow_proof_rss_probe_execution_identity PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_probe_execution_identity PRIVATE gnfs_util)
+    add_test(NAME SiqsShadowProofRssProbeExecutionIdentity
+        COMMAND test_siqs_shadow_proof_rss_probe_execution_identity)
+    set_tests_properties(SiqsShadowProofRssProbeExecutionIdentity
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_siqs_shadow_observe_rss_holdouts
         tests/test_siqs_shadow_observe_rss_holdouts.cpp
     )
