@@ -1582,6 +1582,22 @@ verify_artifact_namespace_generation(int artifact_root_fd,
            left.committed_payloads == right.committed_payloads;
 }
 
+[[nodiscard]] SIQSShadowProofRssCampaignJournalRecord
+make_private_slot_commit(const SIQSShadowProofRssCampaignJournalRecord& start,
+                         const SIQSShadowProofRssJournalCommitPayload& payload) noexcept {
+    SIQSShadowProofRssCampaignJournalRecord commit;
+    commit.schema_version = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION;
+    commit.sequence_number = start.sequence_number + 1;
+    commit.kind = SIQSShadowProofRssJournalRecordKind::slot_committed;
+    commit.previous_record_digest = start.record_digest;
+    commit.plan_digest = start.plan_digest;
+    commit.slot_number = start.slot_number;
+    commit.slot_digest = start.slot_digest;
+    commit.commit_payload = payload;
+    commit.record_digest = shadow_proof_rss_campaign_journal_detail::record_digest(commit);
+    return commit;
+}
+
 [[nodiscard]] uint32_t first_invalid_record_sequence(
     const SIQSShadowProofRssGatePolicy& policy,
     const SIQSShadowProofRssCampaignRuntimeFacts& runtime_facts,
@@ -2032,6 +2048,90 @@ public:
         }
     }
 
+    [[nodiscard]] SessionPrepareRunResult prepare_pending_slot_run(
+        const SIQSShadowProofRssCampaignJournalRecord& durable_start_record) noexcept override {
+        const auto fail = [](StoreDiagnostic diagnostic) noexcept {
+            SessionPrepareRunResult result;
+            result.diagnostic = std::move(diagnostic);
+            return result;
+        };
+        try {
+            if (replay_.status != SIQSShadowProofRssJournalStatus::tainted ||
+                replay_.reason != SIQSShadowProofRssJournalReason::dangling_slot_start ||
+                replay_.action != SIQSShadowProofRssJournalAction::append_taint ||
+                !replay_.taint_to_append.has_value() || artifact_batch_receipt_.has_value()) {
+                return fail(action_diagnostic());
+            }
+            const auto& taint_record = *replay_.taint_to_append;
+            const bool start_matches =
+                durable_start_record.schema_version ==
+                    SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION &&
+                durable_start_record.kind == SIQSShadowProofRssJournalRecordKind::slot_started &&
+                durable_start_record.commit_payload == SIQSShadowProofRssJournalCommitPayload{} &&
+                durable_start_record.record_digest ==
+                    shadow_proof_rss_campaign_journal_detail::record_digest(durable_start_record) &&
+                taint_record.sequence_number == durable_start_record.sequence_number + 1 &&
+                taint_record.previous_record_digest == durable_start_record.record_digest &&
+                taint_record.plan_digest == durable_start_record.plan_digest &&
+                taint_record.slot_number == durable_start_record.slot_number &&
+                taint_record.slot_digest == durable_start_record.slot_digest;
+            if (!start_matches) {
+                return fail(make_diagnostic(StoreError::receipt_rejected,
+                                            StoreObject::journal_record, {},
+                                            durable_start_record.sequence_number));
+            }
+            if (StoreDiagnostic diagnostic = confirm_pending_start_durable();
+                diagnostic.error != StoreError::none) {
+                return fail(std::move(diagnostic));
+            }
+            if (StoreDiagnostic diagnostic = verify_authority();
+                diagnostic.error != StoreError::none) {
+                return fail(std::move(diagnostic));
+            }
+
+            const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy_);
+            if (plan.status != SIQSShadowProofRssCampaignPlanStatus::ready ||
+                durable_start_record.slot_number == 0 ||
+                durable_start_record.slot_number > plan.slot_count) {
+                return fail(make_diagnostic(StoreError::receipt_rejected,
+                                            StoreObject::journal_record, {},
+                                            durable_start_record.sequence_number));
+            }
+            const auto& slot = plan.slots[durable_start_record.slot_number - 1];
+            if (durable_start_record.slot_digest !=
+                shadow_proof_rss_campaign_journal_detail::slot_digest(
+                    durable_start_record.plan_digest, slot)) {
+                return fail(make_diagnostic(StoreError::receipt_rejected,
+                                            StoreObject::journal_record, {},
+                                            durable_start_record.sequence_number));
+            }
+            if (!deployment_.holdout_probe.has_value()) {
+                return fail(make_diagnostic(StoreError::binding_not_registered,
+                                            StoreObject::deployment_registry));
+            }
+            const auto& executable = *deployment_.holdout_probe;
+            if (executable.candidate_revision != policy_candidate_revision_ ||
+                executable.candidate_revision != runtime_candidate_revision_ ||
+                executable.expected_owner != deployment_.expected_owner) {
+                return fail(make_diagnostic(StoreError::registry_binding_mismatch,
+                                            StoreObject::deployment_registry));
+            }
+
+            SessionPrepareRunResult result;
+            result.context.emplace(SessionSlotRunContext{
+                .policy = &policy_,
+                .runtime_facts = &runtime_facts_,
+                .executable = &executable,
+                .slot = slot,
+            });
+            return result;
+        } catch (const std::bad_alloc&) {
+            return fail(make_diagnostic(StoreError::resource_exhausted));
+        } catch (...) {
+            return fail(make_diagnostic(StoreError::unexpected_failure));
+        }
+    }
+
     [[nodiscard]] SessionArtifactBatchResult
     publish_artifact_batch(const SIQSShadowProofRssCampaignJournalRecord& durable_start_record,
                            std::string_view stdout_bytes, std::string_view stderr_bytes,
@@ -2176,6 +2276,296 @@ public:
             return fail(make_diagnostic(StoreError::resource_exhausted));
         } catch (...) {
             return fail(make_diagnostic(StoreError::unexpected_failure));
+        }
+    }
+
+    [[nodiscard]] SessionCommitResult
+    commit_same_child_execution(SIQSShadowProofRssLaunchPermit&& permit,
+                                SameChildExecutionReceipt&& receipt) noexcept override {
+        bool commit_publish_invoked = false;
+        std::optional<durable::PublishResult> commit_publication;
+        const auto fail = [&](SessionCommitStatus status, StoreDiagnostic diagnostic) noexcept {
+            if (commit_publish_invoked) {
+                diagnostic.error = StoreError::commit_outcome_uncertain;
+            }
+            if (commit_publication.has_value()) {
+                diagnostic = with_completed_publication(std::move(diagnostic), *commit_publication);
+                if (commit_publication->is_durable()) {
+                    diagnostic = with_durable_publication_trace(
+                        std::move(diagnostic),
+                        DurablePublicationTrace{
+                            .object = StoreObject::journal_record,
+                            .record_sequence =
+                                replay_.taint_to_append.has_value()
+                                    ? replay_.taint_to_append->sequence_number
+                                    : SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE,
+                            .bytes_written = commit_publication->bytes_written(),
+                        });
+                }
+            }
+            SessionCommitResult result;
+            result.status = status;
+            result.view = make_session_view(replay_);
+            result.diagnostic = std::move(diagnostic);
+            return result;
+        };
+        const auto reject = [&](StoreObject object = StoreObject::journal_record) noexcept {
+            return fail(SessionCommitStatus::taint_allowed,
+                        make_diagnostic(StoreError::receipt_rejected, object));
+        };
+
+        try {
+            if (!permit.active() || replay_.status != SIQSShadowProofRssJournalStatus::tainted ||
+                replay_.reason != SIQSShadowProofRssJournalReason::dangling_slot_start ||
+                replay_.action != SIQSShadowProofRssJournalAction::append_taint ||
+                !replay_.taint_to_append.has_value() || !artifact_batch_receipt_.has_value()) {
+                return reject();
+            }
+            auto execution = consume_same_child_execution_receipt(std::move(receipt));
+            if (!execution.has_value()) {
+                return reject();
+            }
+
+            const auto start_record = permit.durable_start_record();
+            const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy_);
+            if (plan.status != SIQSShadowProofRssCampaignPlanStatus::ready ||
+                start_record.slot_number == 0 || start_record.slot_number > plan.slot_count) {
+                return reject();
+            }
+            const auto& slot = plan.slots[start_record.slot_number - 1];
+            const auto& artifact_receipt = *artifact_batch_receipt_;
+            const std::array expected_seals{
+                seal_siqs_shadow_proof_rss_artifact(SIQSShadowProofRssArtifactKind::probe_stdout,
+                                                    execution->stdout_bytes),
+                seal_siqs_shadow_proof_rss_artifact(SIQSShadowProofRssArtifactKind::probe_stderr,
+                                                    execution->stderr_bytes),
+                seal_siqs_shadow_proof_rss_artifact(
+                    SIQSShadowProofRssArtifactKind::joined_gate_sample, execution->joined_bytes),
+            };
+            const bool execution_shape_valid =
+                execution->durable_start_record == start_record &&
+                execution->policy_binding_digest ==
+                    siqs_shadow_proof_rss_policy_binding_digest(policy_) &&
+                execution->slot == slot &&
+                execution->operating_system == runtime_facts_.operating_system &&
+                execution->architecture == runtime_facts_.architecture &&
+                execution->memory_backend == runtime_facts_.memory_backend &&
+                execution->resolved_production_sieve_workers ==
+                    runtime_facts_.resolved_production_sieve_workers &&
+                execution->fresh_process && execution->completed &&
+                execution->factor_identity == SIQSShadowProofRssFactorIdentity::pass &&
+                execution->relations_found != 0 && execution->polynomials_used != 0 &&
+                execution->absolute_peak_rss_bytes != 0 && execution->wall_ns != 0 &&
+                !execution->stdout_bytes.empty() &&
+                execution->stdout_bytes.size() <=
+                    SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_STDOUT_MAX_BYTES &&
+                execution->stderr_bytes.size() <=
+                    SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_STDERR_MAX_BYTES &&
+                !execution->joined_bytes.empty() &&
+                execution->joined_bytes.size() <=
+                    SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_JOINED_MAX_BYTES &&
+                ((slot.mode == SIQSShadowProofRssSampleMode::off &&
+                  execution->stderr_bytes.empty() &&
+                  execution->proof_evidence == SIQSShadowProofRssEvidence::not_applicable &&
+                  execution->matrix_evidence == SIQSShadowProofRssEvidence::not_applicable) ||
+                 (slot.mode == SIQSShadowProofRssSampleMode::observe &&
+                  !execution->stderr_bytes.empty() &&
+                  execution->proof_evidence == SIQSShadowProofRssEvidence::pass &&
+                  execution->matrix_evidence == SIQSShadowProofRssEvidence::pass));
+            const bool artifact_receipt_valid =
+                artifact_receipt.durable_start_record == start_record &&
+                artifact_receipt.seals == expected_seals &&
+                artifact_receipt.journal_root_authority == initial_root_fingerprint_ &&
+                artifact_receipt.journal_namespace_generation == root_namespace_fingerprint_ &&
+                artifact_receipt.artifact_root_authority == initial_artifact_root_fingerprint_ &&
+                artifact_receipt.artifact_namespace_generation == artifact_namespace_fingerprint_ &&
+                artifact_receipt.lock_identity == initial_lock_fingerprint_;
+            if (!execution_shape_valid || !artifact_receipt_valid) {
+                return reject(StoreObject::artifact);
+            }
+
+            SIQSShadowProofRssJournalCommitPayload payload;
+            payload.actual_operating_system = runtime_facts_.operating_system;
+            payload.actual_architecture = runtime_facts_.architecture;
+            payload.actual_memory_backend = runtime_facts_.memory_backend;
+            payload.actual_resolved_sieve_workers =
+                runtime_facts_.resolved_production_sieve_workers;
+            payload.fresh_process = execution->fresh_process;
+            payload.completed = execution->completed;
+            payload.factor_identity = execution->factor_identity;
+            payload.proof_evidence = execution->proof_evidence;
+            payload.matrix_evidence = execution->matrix_evidence;
+            payload.absolute_peak_rss_bytes = execution->absolute_peak_rss_bytes;
+            payload.current_rss_bytes = execution->current_rss_bytes;
+            payload.peak_growth_bytes = execution->peak_growth_bytes;
+            payload.wall_ns = execution->wall_ns;
+            payload.stdout_seal = expected_seals[0];
+            payload.stderr_seal = expected_seals[1];
+            payload.joined_sample_seal = expected_seals[2];
+            if (!shadow_proof_rss_campaign_journal_detail::commit_payload_is_valid(payload, slot,
+                                                                                   policy_)) {
+                return reject(StoreObject::artifact);
+            }
+
+            if (StoreDiagnostic diagnostic = verify_authority();
+                diagnostic.error != StoreError::none) {
+                return fail(SessionCommitStatus::taint_allowed, std::move(diagnostic));
+            }
+            VerifiedReplayResult before_commit =
+                refresh(initial_root_fingerprint_, &root_namespace_fingerprint_,
+                        &artifact_namespace_fingerprint_);
+            if (!before_commit) {
+                return fail(SessionCommitStatus::taint_allowed,
+                            std::move(before_commit.diagnostic));
+            }
+            if (!replay_matches(*before_commit.replay, replay_) ||
+                before_commit.artifact_snapshot->seal(
+                    start_record.slot_number, SIQSShadowProofRssArtifactKind::probe_stdout) !=
+                    expected_seals[0] ||
+                before_commit.artifact_snapshot->seal(
+                    start_record.slot_number, SIQSShadowProofRssArtifactKind::probe_stderr) !=
+                    expected_seals[1] ||
+                before_commit.artifact_snapshot->seal(
+                    start_record.slot_number, SIQSShadowProofRssArtifactKind::joined_gate_sample) !=
+                    expected_seals[2]) {
+                return fail(SessionCommitStatus::taint_allowed,
+                            make_diagnostic(StoreError::snapshot_changed, StoreObject::artifact));
+            }
+            replay_ = std::move(*before_commit.replay);
+
+            SIQSShadowProofRssLaunchPermit consumed_permit(std::move(permit));
+            (void)consumed_permit;
+            const auto commit_record = make_private_slot_commit(start_record, payload);
+            const auto leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(
+                commit_record.sequence_number);
+            if (!leaf.has_value()) {
+                return fail(SessionCommitStatus::taint_allowed, action_diagnostic());
+            }
+            const auto encoded =
+                encode_siqs_shadow_proof_rss_campaign_journal_record(commit_record);
+            if (!encoded) {
+                return fail(SessionCommitStatus::taint_allowed,
+                            make_encode_diagnostic(encoded.error, encoded.error_offset,
+                                                   StoreObject::journal_record,
+                                                   commit_record.sequence_number));
+            }
+            if (StoreDiagnostic diagnostic = verify_authority();
+                diagnostic.error != StoreError::none) {
+                return fail(SessionCommitStatus::taint_allowed, std::move(diagnostic));
+            }
+
+            const auto bytes =
+                std::span<const std::byte>(encoded.bytes->data(), encoded.bytes->size());
+            commit_publish_invoked = true;
+            commit_publication =
+                publication_ops_->publish_at(static_cast<durable::NativeHandle>(root_fd_.get()),
+                                             std::filesystem::path(leaf->view()), bytes);
+
+            DirectoryAuthorityFingerprint observed_root_fingerprint;
+            if (StoreDiagnostic diagnostic =
+                    capture_authority_after_owned_publication(observed_root_fingerprint);
+                diagnostic.error != StoreError::none) {
+                return fail(SessionCommitStatus::outcome_uncertain, std::move(diagnostic));
+            }
+            VerifiedReplayResult observed =
+                refresh(observed_root_fingerprint, nullptr, &artifact_namespace_fingerprint_);
+            if (!observed) {
+                return fail(SessionCommitStatus::outcome_uncertain, std::move(observed.diagnostic));
+            }
+
+            const std::size_t expected_record_count =
+                static_cast<std::size_t>(commit_record.sequence_number);
+            const uint32_t expected_committed_count = replay_.committed_slot_count + 1;
+            const bool final_slot = expected_committed_count == plan.slot_count;
+            const bool exact_commit_visible =
+                observed.snapshot->record_count == expected_record_count &&
+                expected_record_count != 0 &&
+                observed.snapshot->records[expected_record_count - 1] == commit_record &&
+                observed.replay->committed_slot_count == expected_committed_count &&
+                observed.replay->next_slot_number ==
+                    (final_slot ? 0U : start_record.slot_number + 1) &&
+                ((final_slot &&
+                  observed.replay->status == SIQSShadowProofRssJournalStatus::complete &&
+                  observed.replay->reason == SIQSShadowProofRssJournalReason::complete &&
+                  observed.replay->action == SIQSShadowProofRssJournalAction::evaluate_gate) ||
+                 (!final_slot &&
+                  observed.replay->status == SIQSShadowProofRssJournalStatus::ready &&
+                  observed.replay->reason == SIQSShadowProofRssJournalReason::ready &&
+                  observed.replay->action == SIQSShadowProofRssJournalAction::append_slot_start));
+            if (!exact_commit_visible) {
+                const bool exact_precommit_visible = replay_matches(*observed.replay, replay_);
+                if (exact_precommit_visible &&
+                    observed.snapshot->record_count ==
+                        static_cast<std::size_t>(start_record.sequence_number)) {
+                    commit_publish_invoked = false;
+                    return fail(SessionCommitStatus::taint_allowed,
+                                make_publication_diagnostic(*commit_publication,
+                                                            StoreObject::journal_record,
+                                                            commit_record.sequence_number));
+                }
+                return fail(SessionCommitStatus::outcome_uncertain,
+                            make_diagnostic(StoreError::snapshot_changed,
+                                            StoreObject::journal_record, {},
+                                            commit_record.sequence_number));
+            }
+
+            if (!commit_publication->is_durable()) {
+                if (commit_publication->status() == durable::PublishStatus::already_exists) {
+                    return fail(SessionCommitStatus::outcome_uncertain,
+                                make_publication_diagnostic(*commit_publication,
+                                                            StoreObject::journal_record,
+                                                            commit_record.sequence_number));
+                }
+                const auto confirmation = publication_ops_->confirm_durable_at(
+                    static_cast<durable::NativeHandle>(root_fd_.get()),
+                    std::filesystem::path(leaf->view()));
+                if (!confirmation.is_durable()) {
+                    commit_publication = confirmation;
+                    return fail(SessionCommitStatus::outcome_uncertain,
+                                make_publication_diagnostic(confirmation,
+                                                            StoreObject::journal_record,
+                                                            commit_record.sequence_number));
+                }
+                VerifiedReplayResult confirmed =
+                    refresh(observed_root_fingerprint, &*observed.root_namespace_fingerprint,
+                            &artifact_namespace_fingerprint_);
+                if (!confirmed || confirmed.snapshot->record_count != expected_record_count ||
+                    confirmed.snapshot->records[expected_record_count - 1] != commit_record ||
+                    !replay_matches(*confirmed.replay, *observed.replay)) {
+                    if (!confirmed) {
+                        return fail(SessionCommitStatus::outcome_uncertain,
+                                    std::move(confirmed.diagnostic));
+                    }
+                    return fail(SessionCommitStatus::outcome_uncertain,
+                                make_diagnostic(StoreError::snapshot_changed,
+                                                StoreObject::journal_record, {},
+                                                commit_record.sequence_number));
+                }
+                observed = std::move(confirmed);
+                commit_publication = confirmation;
+            }
+
+            initial_root_fingerprint_ = observed_root_fingerprint;
+            root_namespace_fingerprint_ = *observed.root_namespace_fingerprint;
+            artifact_namespace_fingerprint_ = *observed.artifact_namespace_fingerprint;
+            replay_ = std::move(*observed.replay);
+            artifact_batch_receipt_.reset();
+            committed_prefix_confirmed_durable_ = true;
+            pending_start_confirmed_durable_ = false;
+            commit_publish_invoked = false;
+
+            SessionCommitResult result;
+            result.status = SessionCommitStatus::committed;
+            result.view = make_session_view(replay_);
+            return result;
+        } catch (const std::bad_alloc&) {
+            return fail(commit_publish_invoked ? SessionCommitStatus::outcome_uncertain
+                                               : SessionCommitStatus::taint_allowed,
+                        make_diagnostic(StoreError::resource_exhausted));
+        } catch (...) {
+            return fail(commit_publish_invoked ? SessionCommitStatus::outcome_uncertain
+                                               : SessionCommitStatus::taint_allowed,
+                        make_diagnostic(StoreError::unexpected_failure));
         }
     }
 

@@ -3,6 +3,7 @@
 #include <gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -11,6 +12,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace gnfs::siqs::shadow_proof_rss_campaign_journal_store_detail {
 
@@ -36,6 +39,17 @@ public:
                        const std::filesystem::path& leaf) noexcept = 0;
 };
 
+/// Private executable row selected before a slot can launch. The complete
+/// child environment and timeout are deployment-owned; callers cannot amend
+/// either through the runner API.
+struct ProbeExecutableBinding final {
+    std::filesystem::path executable;
+    std::string candidate_revision;
+    std::vector<std::string> environment;
+    std::chrono::milliseconds timeout{35000};
+    uint64_t expected_owner = 0;
+};
+
 /// Private deployment table row. Production builds keep the table empty.
 /// Tests may supply owning rows through SessionFactory without adding a public
 /// path, descriptor, resolver, or registry installation API.
@@ -46,6 +60,7 @@ struct DeploymentEntry final {
     std::filesystem::path trusted_base_path;
     uint64_t expected_owner = 0;
     PublicationOps* publication_ops = nullptr;
+    std::optional<ProbeExecutableBinding> holdout_probe;
 };
 
 struct SessionBeginSlotResult final {
@@ -81,6 +96,102 @@ struct SessionArtifactBatchResult final {
     }
 };
 
+/// Private synchronous projection produced only after one bounded child has
+/// exited successfully, both streams reached EOF, cleanup completed, and the
+/// strict stream join accepted the exact bytes. Byte streams are owned; the
+/// canonical slot retains policy-backed views while the session core remains
+/// alive. Ordinary data-only transport results cannot construct its receipt.
+struct SameChildExecutionEvidence final {
+    SIQSShadowProofRssCampaignJournalRecord durable_start_record;
+    SIQSShadowProofRssCorpusDigest policy_binding_digest;
+    SIQSShadowProofRssCampaignSlot slot;
+    SIQSShadowProofRssOperatingSystem operating_system = SIQSShadowProofRssOperatingSystem::unknown;
+    SIQSShadowProofRssArchitecture architecture = SIQSShadowProofRssArchitecture::unknown;
+    util::ProcessMemoryBackend memory_backend = util::ProcessMemoryBackend::Unsupported;
+    std::size_t resolved_production_sieve_workers = 0;
+    bool fresh_process = false;
+    bool completed = false;
+    SIQSShadowProofRssFactorIdentity factor_identity = SIQSShadowProofRssFactorIdentity::unknown;
+    SIQSShadowProofRssEvidence proof_evidence = SIQSShadowProofRssEvidence::unknown;
+    SIQSShadowProofRssEvidence matrix_evidence = SIQSShadowProofRssEvidence::unknown;
+    uint64_t relations_found = 0;
+    uint64_t polynomials_used = 0;
+    uint64_t absolute_peak_rss_bytes = 0;
+    std::optional<uint64_t> current_rss_bytes;
+    std::optional<uint64_t> peak_growth_bytes;
+    uint64_t wall_ns = 0;
+    std::string stdout_bytes;
+    std::string stderr_bytes;
+    std::string joined_bytes;
+};
+
+class SameChildExecutionReceipt final {
+public:
+    SameChildExecutionReceipt() = delete;
+    SameChildExecutionReceipt(const SameChildExecutionReceipt&) = delete;
+    SameChildExecutionReceipt& operator=(const SameChildExecutionReceipt&) = delete;
+
+    SameChildExecutionReceipt(SameChildExecutionReceipt&& other) noexcept
+        : evidence_(std::move(other.evidence_)), active_(std::exchange(other.active_, false)) {}
+
+    SameChildExecutionReceipt& operator=(SameChildExecutionReceipt&& other) noexcept {
+        if (this != &other) {
+            evidence_ = std::move(other.evidence_);
+            active_ = std::exchange(other.active_, false);
+        }
+        return *this;
+    }
+
+    [[nodiscard]] bool active() const noexcept {
+        return active_;
+    }
+
+private:
+    explicit SameChildExecutionReceipt(SameChildExecutionEvidence evidence) noexcept
+        : evidence_(std::move(evidence)), active_(true) {}
+
+    SameChildExecutionEvidence evidence_;
+    bool active_ = false;
+
+    friend class SessionCore;
+    friend class SlotRunnerFactory;
+};
+
+enum class SessionCommitStatus : uint8_t {
+    committed,
+    taint_allowed,
+    outcome_uncertain,
+};
+
+struct SessionCommitResult final {
+    SessionCommitStatus status = SessionCommitStatus::outcome_uncertain;
+    SIQSShadowProofRssCampaignJournalSessionView view;
+    SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return status == SessionCommitStatus::committed &&
+               diagnostic.error == SIQSShadowProofRssCampaignJournalStoreError::none;
+    }
+};
+
+struct SessionSlotRunContext final {
+    const SIQSShadowProofRssGatePolicy* policy = nullptr;
+    const SIQSShadowProofRssCampaignRuntimeFacts* runtime_facts = nullptr;
+    const ProbeExecutableBinding* executable = nullptr;
+    SIQSShadowProofRssCampaignSlot slot;
+};
+
+struct SessionPrepareRunResult final {
+    std::optional<SessionSlotRunContext> context;
+    SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return context.has_value() && context->policy != nullptr &&
+               context->runtime_facts != nullptr && context->executable != nullptr &&
+               diagnostic.error == SIQSShadowProofRssCampaignJournalStoreError::none;
+    }
+};
+
 class SessionCore {
 public:
     SessionCore() = default;
@@ -94,15 +205,29 @@ public:
     [[nodiscard]] virtual SIQSShadowProofRssCampaignJournalSessionView view() const noexcept = 0;
     [[nodiscard]] virtual SessionBeginSlotResult begin_next_slot() noexcept = 0;
     [[nodiscard]] virtual SessionTaintResult append_pending_taint() noexcept = 0;
+    [[nodiscard]] virtual SessionPrepareRunResult prepare_pending_slot_run(
+        const SIQSShadowProofRssCampaignJournalRecord& durable_start_record) noexcept = 0;
     [[nodiscard]] virtual SessionArtifactBatchResult
     publish_artifact_batch(const SIQSShadowProofRssCampaignJournalRecord& durable_start_record,
                            std::string_view stdout_bytes, std::string_view stderr_bytes,
                            std::string_view joined_bytes) noexcept = 0;
+    [[nodiscard]] virtual SessionCommitResult
+    commit_same_child_execution(SIQSShadowProofRssLaunchPermit&& permit,
+                                SameChildExecutionReceipt&& receipt) noexcept = 0;
 
 protected:
     [[nodiscard]] static constexpr SIQSShadowProofRssDurableRecordReceipt
     issue_durable_record_receipt(const SIQSShadowProofRssCampaignJournalRecord& record) noexcept {
         return SIQSShadowProofRssDurableRecordReceipt(record);
+    }
+
+    [[nodiscard]] static std::optional<SameChildExecutionEvidence>
+    consume_same_child_execution_receipt(SameChildExecutionReceipt&& receipt) noexcept {
+        if (!receipt.active_) {
+            return std::nullopt;
+        }
+        receipt.active_ = false;
+        return std::move(receipt.evidence_);
     }
 };
 

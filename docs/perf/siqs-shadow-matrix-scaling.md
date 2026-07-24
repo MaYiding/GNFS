@@ -330,8 +330,11 @@ policies and records. The project has no approved per-platform policy. No
 deployment budget, reserved headroom, OS/architecture/backend binding, resolved
 production sieve worker count, candidate revision, approval, or numeric
 threshold is frozen. No sealed holdout has been run, and no real gate result
-exists. The campaign runner and measurement remain blocked and pending. Nothing
-may construct or launch the 80-process campaign until the policy is approved.
+exists. The approved production campaign runner and measurement remain blocked
+and pending. Nothing may construct or launch the 80-process campaign until the
+policy is approved. The private synthetic single-slot transaction described
+below is an integration proof only and cannot select the production probe or
+open a holdout.
 
 ### Policy-Gated Campaign Preparation
 
@@ -405,17 +408,17 @@ cross-process session lease beginning before replay. Consuming
 `begin_next_slot()` derives the only allowed header and record leaves, performs
 exclusive immutable publication relative to the held root, refreshes the
 strict layout and replay, and returns a move-only active-slot transaction. The
-transaction owns both the lease and the private permit, but it intentionally
-exposes no launch operation. Before publishing a start from an existing
-journal, the store re-establishes durability for the header and every visible
-committed slot in causal order: start record, stdout, stderr, joined artifact,
-then commit record. It revalidates held authority before each barrier and
-requires one stable replay and artifact snapshot equal to the pre-confirmation
-state before it may publish the next start. This prevents a complete-looking
-prefix left by an earlier failed sync from being treated as durable merely
-because it can be decoded after reopen. A later runner must retain the
-transaction through child execution and commit or taint. An API that accepts
-an arbitrary output path or a caller-supplied successful I/O backend is not a
+transaction owns both the lease and the private permit, while its public
+interface intentionally exposes no launch operation. A private, non-installed
+runner consumes the transaction directly. Before publishing a start from an
+existing journal, the store re-establishes durability for the header and every
+visible committed slot in causal order: start record, stdout, stderr, joined
+artifact, then commit record. It revalidates held authority before each barrier
+and requires one stable replay and artifact snapshot equal to the
+pre-confirmation state before it may publish the next start. This prevents a
+complete-looking prefix left by an earlier failed sync from being treated as
+durable merely because it can be decoded after reopen. An API that accepts an
+arbitrary output path or a caller-supplied successful I/O backend is not a
 receipt issuer because either would permit duplicate launches from one stale
 replay.
 
@@ -513,11 +516,27 @@ The private store integration may publish exactly one three-artifact batch
 while the active slot still traps the lease and launch permit. It creates
 stdout, stderr, and joined leaves in order relative to the held artifact root,
 then rereads and validates each exact seal. Only a complete batch creates a
-private receipt inside the session core. The receipt is not public commit
-authority and is discarded by taint. If a later stage fails after an earlier
-immutable leaf is already durable, the diagnostic separately retains the last
-durable object, record or artifact address, and byte count. A start conflict,
-partial artifact batch, or allocation failure cannot erase the durable prefix.
+private artifact receipt inside the session core. A separate move-only
+same-child receipt can be minted only by the private runner after one bounded
+child succeeds, both pipes reach EOF, cleanup completes, and the strict join
+accepts those exact bytes. The store consumes the permit and both private
+receipts, reconstructs the commit payload from the owned evidence, revalidates
+the stable journal and artifact snapshots, and publishes the matching commit.
+None of these capabilities crosses the public store boundary.
+
+The commit terminal state is classified before any recovery action. If a
+failed publication leaves the intended commit leaf provably absent under a
+stable refresh, the runner may append the explicit taint. If the exact intended
+leaf is visible after a non-durable publication result, the store confirms
+that immutable leaf and strictly refreshes the replay before accepting the
+commit. A partial leaf, different leaf, failed confirmation, or unstable
+refresh is `commit_outcome_uncertain`; an exact leaf reported as
+`already_exists` is also uncertain because this transaction cannot claim its
+publication. The runner drops its authority and must not append a competing
+taint. If an earlier immutable artifact is already durable, diagnostics
+separately retain the last durable object, record or artifact address, and byte
+count. A start conflict, partial artifact batch, or allocation failure cannot
+erase the durable prefix.
 
 This boundary assumes a trusted local filesystem and treats every process with
 the expected UID as the same principal. `flock` is advisory, so it cannot
@@ -549,11 +568,12 @@ which process produced the bytes. Strict stdout and stderr codecs plus an
 authority-free join produce an owning, typed `uncommitted` draft bound to the
 approved policy, runtime facts, and one canonical slot. That draft cannot call
 the private publisher, construct a journal commit payload, issue a receipt, or
-grant a launch permit. The native store can durably bind three caller-provided
-byte sequences to a private batch receipt, but the live commit path remains
-closed until one authority-bearing runner owns child launch, bounded capture,
-wait status, strict join, artifact publication, and commit as one same-child
-transaction.
+grant a launch permit. The private runner now owns child launch, bounded
+capture, wait status, strict join, artifact publication, and commit as one
+same-child transaction. It accepts only the active slot; the executable,
+candidate revision, complete environment, timeout, canonical arguments, and
+capture limits come from the private deployment row and frozen slot. The
+ordinary data-only transport result cannot mint either private receipt.
 
 CMake declares `test_siqs_shadow_proof_rss_holdout_probe` as a Release-only,
 single-sample production target with `EXCLUDE_FROM_ALL`. Default builds do not
@@ -569,8 +589,13 @@ semantics. The transport is a production utility, but it carries data only and
 is not a campaign launcher. The instant
 native-store test uses a temporary real filesystem and subprocesses to cover
 the registry boundary, component walking, strict layouts, move-only lease
-ownership, cross-process contention, crash release, and replay actions. None of
-these targets is a campaign runner.
+ownership, cross-process contention, crash release, and replay actions. It also
+links one `EXCLUDE_FROM_ALL`, non-installed private runner and five synthetic
+child variants. Those variants never call `factor()`, read a holdout, or invoke
+the production probe; they cover successful same-child commit, nonzero exit,
+malformed output, capture overflow, timeout cleanup, partial artifact
+publication, explicit taint, and commit-terminal uncertainty. None of these
+targets is a production campaign runner.
 
 The pure probe protocol binds each `fixture_id` to the exact modulus and
 canonical factor pair in the sealed constexpr manifest. Relabeling one row as
@@ -590,12 +615,13 @@ to stderr. For a future collector, `off` must have an empty stderr stream, while
 `GNFS_SIQS_SHADOW_PROOF_OBSERVE_V1` record. Only that two-stream join may derive
 proof and matrix evidence for a gate sample.
 
-The project still has no approved policy or campaign runner. Operators must not
-build or invoke the production target manually to bypass policy preflight or
-open a sealed holdout. A future approved serial runner must validate the policy,
-host facts, and candidate revision before it invokes this single-sample target.
-The existing `GNFS_SIQS_SHADOW_PROOF_OBSERVE_PROBE_V1` calibration path remains
-unchanged and calibration-excluded; it does not provide holdout gate evidence.
+The project still has no approved policy or production campaign runner.
+Operators must not build or invoke the production target manually to bypass
+policy preflight or open a sealed holdout. A future approved serial runner must
+validate the policy, host facts, and candidate revision before it invokes this
+single-sample target. The existing
+`GNFS_SIQS_SHADOW_PROOF_OBSERVE_PROBE_V1` calibration path remains unchanged
+and calibration-excluded; it does not provide holdout gate evidence.
 
 The pure preparation contracts above may inspect the constexpr sealed manifest
 and derive the deterministic production parameter, multiplier, factor-base,
@@ -608,18 +634,17 @@ still performs no file I/O.
 The native leased store now combines the canonical codec and held-root durable
 publisher for header and start records. It validates the resulting strict
 snapshot before privately issuing the launch permit, then traps the permit
-inside a lease-owning active-slot transaction. A production portable transport
-can capture both streams from one child, but it is not
-connected to that transaction, the sealed probe, or the authority-free join.
-The store now also owns the fixed artifact root, strict artifact snapshots,
-three-leaf durable batch publication, private batch receipts, and explicit
-taint publication. Same-child capture-to-join integration, commit publication,
-an approved per-platform policy, and the serial campaign runner remain pending.
-Those authority-bearing components must validate the approved policy, actual
-runtime facts, and candidate revision before loading the sealed fixture table
-or constructing the first production command. A campaign interrupted after
-its durable start but before its sample commits remains tainted and cannot be
-retried in place.
+inside a lease-owning active-slot transaction. The private integration target
+connects the portable transport, strict join, three-leaf artifact publication,
+private same-child receipt, and commit publication without exposing a public
+authority-bearing API. It also owns explicit taint publication for every
+failure whose terminal commit leaf is provably absent. An approved
+per-platform policy, private production executable binding, and the serial
+80-slot campaign loop remain pending. Those authority-bearing components must
+validate the approved policy, actual runtime facts, and candidate revision
+before loading the sealed fixture table or constructing the first production
+command. A campaign interrupted after its durable start but before its sample
+commits remains tainted and cannot be retried in place.
 
 `tests/test_siqs_runtime_facts.cpp`,
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
@@ -881,6 +906,10 @@ Before promotion it must provide:
   three-leaf durable batch publication, private batch receipts, explicit
   durable taint, reopen recovery with full committed-prefix and dangling-start
   confirmation, and injected publication and confirmation-failure tests.
+- [x] Private same-child single-slot transaction with deployment-owned
+  executable, environment and timeout; bounded dual-stream capture; strict
+  join; exact artifact publication; private commit authority; and fail-closed
+  terminal-leaf classification. Its tests use synthetic children only.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved
   headroom, OS, architecture, RSS backend, resolved production sieve workers,
   candidate revision, approval identity, sealed corpus digest, trusted journal

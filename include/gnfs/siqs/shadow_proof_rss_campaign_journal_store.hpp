@@ -51,6 +51,7 @@ enum class SIQSShadowProofRssCampaignJournalStoreError : uint8_t {
     publication_conflict,
     publication_failed,
     receipt_rejected,
+    commit_outcome_uncertain,
     resource_exhausted,
     unexpected_failure,
 };
@@ -128,6 +129,8 @@ enum class SIQSShadowProofRssCampaignJournalStoreError : uint8_t {
         return "publication_failed";
     case SIQSShadowProofRssCampaignJournalStoreError::receipt_rejected:
         return "receipt_rejected";
+    case SIQSShadowProofRssCampaignJournalStoreError::commit_outcome_uncertain:
+        return "commit_outcome_uncertain";
     case SIQSShadowProofRssCampaignJournalStoreError::resource_exhausted:
         return "resource_exhausted";
     case SIQSShadowProofRssCampaignJournalStoreError::unexpected_failure:
@@ -216,6 +219,7 @@ struct SIQSShadowProofRssCampaignJournalSessionView final {
 namespace shadow_proof_rss_campaign_journal_store_detail {
 class SessionCore;
 class SessionFactory;
+class SlotRunnerFactory;
 } // namespace shadow_proof_rss_campaign_journal_store_detail
 
 class SIQSShadowProofRssCampaignJournalSession;
@@ -258,6 +262,7 @@ private:
 
     friend class SIQSShadowProofRssCampaignJournalSession;
     friend class shadow_proof_rss_campaign_journal_store_detail::SessionFactory;
+    friend class shadow_proof_rss_campaign_journal_store_detail::SlotRunnerFactory;
 };
 
 class SIQSShadowProofRssCampaignJournalBeginSlotResult final {
@@ -327,6 +332,7 @@ private:
     std::unique_ptr<shadow_proof_rss_campaign_journal_store_detail::SessionCore> core_;
 
     friend class shadow_proof_rss_campaign_journal_store_detail::SessionFactory;
+    friend class shadow_proof_rss_campaign_journal_store_detail::SlotRunnerFactory;
 };
 
 /// Move-only terminal result for a durable campaign-taint transition.

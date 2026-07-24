@@ -429,6 +429,45 @@ option(GNFS_BUILD_FUZZERS "Build libFuzzer fuzz targets" OFF)
 if(GNFS_BUILD_TESTS)
     enable_testing()
 
+    # Private same-child RSS campaign runner. Fixture-aware codecs and joins
+    # compile only into this non-installed test dependency; gnfs_core and the
+    # public transport remain fixture-agnostic.
+    add_library(gnfs_siqs_rss_campaign_runner_private STATIC EXCLUDE_FROM_ALL
+        src/siqs/shadow_proof_rss_campaign_slot_runner.cpp
+        src/siqs/shadow_proof_rss_campaign_slot_runner_internal.hpp
+    )
+    target_include_directories(gnfs_siqs_rss_campaign_runner_private PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
+    target_link_libraries(gnfs_siqs_rss_campaign_runner_private PUBLIC
+        gnfs_core
+    )
+
+    function(add_siqs_rss_campaign_synthetic_child target_name behavior)
+        add_executable(${target_name} EXCLUDE_FROM_ALL
+            tests/support/siqs_shadow_proof_rss_campaign_slot_synthetic_child.cpp
+        )
+        target_include_directories(${target_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        )
+        target_compile_definitions(${target_name} PRIVATE
+            GNFS_SIQS_RSS_SYNTHETIC_BEHAVIOR=${behavior}
+        )
+        target_link_libraries(${target_name} PRIVATE gnfs_core Threads::Threads)
+    endfunction()
+
+    add_siqs_rss_campaign_synthetic_child(
+        siqs_rss_campaign_synthetic_success 0)
+    add_siqs_rss_campaign_synthetic_child(
+        siqs_rss_campaign_synthetic_nonzero 1)
+    add_siqs_rss_campaign_synthetic_child(
+        siqs_rss_campaign_synthetic_malformed 2)
+    add_siqs_rss_campaign_synthetic_child(
+        siqs_rss_campaign_synthetic_overflow 3)
+    add_siqs_rss_campaign_synthetic_child(
+        siqs_rss_campaign_synthetic_hang 4)
+
     find_program(BASH_EXECUTABLE bash)
     find_program(PYTHON_EXECUTABLE NAMES python3 python)
     if(BASH_EXECUTABLE AND PYTHON_EXECUTABLE)
@@ -2228,9 +2267,24 @@ if(GNFS_BUILD_TESTS)
     target_include_directories(test_siqs_shadow_proof_rss_campaign_journal_store PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
     )
-    target_link_libraries(test_siqs_shadow_proof_rss_campaign_journal_store PRIVATE gnfs_core)
+    target_link_libraries(test_siqs_shadow_proof_rss_campaign_journal_store PRIVATE
+        gnfs_siqs_rss_campaign_runner_private
+    )
+    add_dependencies(test_siqs_shadow_proof_rss_campaign_journal_store
+        siqs_rss_campaign_synthetic_success
+        siqs_rss_campaign_synthetic_nonzero
+        siqs_rss_campaign_synthetic_malformed
+        siqs_rss_campaign_synthetic_overflow
+        siqs_rss_campaign_synthetic_hang
+    )
     add_test(NAME SiqsShadowProofRssCampaignJournalStore
-        COMMAND test_siqs_shadow_proof_rss_campaign_journal_store)
+        COMMAND test_siqs_shadow_proof_rss_campaign_journal_store
+            $<TARGET_FILE:siqs_rss_campaign_synthetic_success>
+            $<TARGET_FILE:siqs_rss_campaign_synthetic_nonzero>
+            $<TARGET_FILE:siqs_rss_campaign_synthetic_malformed>
+            $<TARGET_FILE:siqs_rss_campaign_synthetic_overflow>
+            $<TARGET_FILE:siqs_rss_campaign_synthetic_hang>
+    )
     set_tests_properties(SiqsShadowProofRssCampaignJournalStore
         PROPERTIES
             LABELS "instant"
