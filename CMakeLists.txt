@@ -234,6 +234,7 @@ endif()
 # gnfs_util - 工具库
 add_library(gnfs_util STATIC
     src/util/durable_immutable_file.cpp
+    src/util/sha256.cpp
 )
 if(WIN32)
     target_sources(gnfs_util PRIVATE
@@ -486,6 +487,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_small_vector PRIVATE gnfs_util)
     add_test(NAME SmallVector COMMAND test_small_vector)
     set_tests_properties(SmallVector PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_sha256
+        tests/test_sha256.cpp
+    )
+    target_link_libraries(test_sha256 PRIVATE gnfs_util)
+    add_test(NAME Sha256 COMMAND test_sha256)
+    set_tests_properties(Sha256 PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_integer
         tests/test_integer.cpp
