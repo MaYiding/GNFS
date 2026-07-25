@@ -1,6 +1,6 @@
 # Distributed Sieve Durable Wave Resume
 
-Status: reviewed implementation plan
+Status: implementation in progress (M0 complete)
 
 Branch: `codex/parallel-structured-filter`
 
@@ -1325,18 +1325,22 @@ the existing one-shot implementation available.
 
 ### M0: Freeze the Protocol
 
-- [ ] Finalize this plan and independent reviews.
-- [ ] Add every canonical record type: manifest, attempt, terminal failure,
+- [x] Finalize this plan and independent reviews.
+- [x] Add every canonical record type: manifest, attempt, terminal failure,
   handoff payload, merge start/prepared/commit, cleanup
   authorization/completion, consumption start, successor prepared, ACK, and
   completed.
-- [ ] Implement full execution policy, deterministic-randomness contract,
+- [x] Implement full execution policy, deterministic-randomness contract,
   environment inventory checker, work identity, and field-drift tests.
-- [ ] Add the core test suite and Harness entries.
-- [ ] Verify with the dedicated target, `module sieve`, and `changed`.
+- [x] Add the core test suite and Harness entries.
+- [x] Verify with the dedicated target, `module sieve`, and `changed`.
 
 Exit criterion: no filesystem mutation exists yet; every record and digest has
 closed validation and drift coverage.
+
+Completed on 2026-07-26. The dedicated core suite, all 19 sieve tests, the
+21-test changed selection including GNFS E2E, the policy inventory, and Harness
+checks passed in Debug.
 
 ### M1: Generic Durable Handoff
 
@@ -1460,10 +1464,10 @@ Lane D: main integrator, deterministic merge, pipeline boundary, Harness
 
 Synthesized from CEO and engineering review findings.
 
-- [ ] **T1 (P1, human: ~2 days / agent: ~3h)** — Protocol — Freeze all canonical records, execution policy, deterministic randomness, and complete work identity.
+- [x] **T1 (P1, human: ~2 days / agent: ~3h)** — Protocol — Freeze all canonical records, execution policy, deterministic randomness, and complete work identity.
   - Surfaced by: security/test review, environment and retry-randomness closure.
   - Files: protocol header/source and core tests.
-  - Verify: `./scripts/test.sh run test_distributed_sieve_resume -- --suite core`.
+  - Verify: `./scripts/test.sh run test_distributed_sieve_resume --suite core`.
 - [ ] **T2 (P1, human: ~3 days / agent: ~5h)** — Relation storage — Add the rollback-revoking handoff phase, same-handle adoption/read-only view, and typed authorized-cleanup conversion.
   - Surfaced by: cleanup-before-adoption, stale receipt, path-following, and authority-bridge risks.
   - Files: OOC handoff, cleanup transaction, mmap/reader/corpus, relation crash tests.

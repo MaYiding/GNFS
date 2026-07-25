@@ -158,9 +158,18 @@ class Checks:
         cmake = self.read("CMakeLists.txt")
         if "add_test(NAME HarnessHooks" not in cmake or "tests/test_harness_hooks.sh" not in cmake:
             self.fail("CMakeLists.txt: register the HarnessHooks CTest")
+        if (
+            "add_test(NAME DistributedSievePolicyInventory" not in cmake
+            or "scripts/check_distributed_sieve_policy.py" not in cmake
+        ):
+            self.fail("CMakeLists.txt: register the distributed-sieve policy inventory CTest")
 
         workflow = self.read(".github/workflows/scripts.yml")
-        for command in ("python3 scripts/check_harness.py", "bash tests/test_harness_hooks.sh"):
+        for command in (
+            "python3 scripts/check_distributed_sieve_policy.py --self-test",
+            "python3 scripts/check_harness.py",
+            "bash tests/test_harness_hooks.sh",
+        ):
             if command not in workflow:
                 self.fail(f".github/workflows/scripts.yml: missing CI command {command!r}")
 

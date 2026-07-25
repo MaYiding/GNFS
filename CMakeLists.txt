@@ -290,6 +290,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve.cpp")
     target_sources(gnfs_core PRIVATE src/sieve/distributed_sieve.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_protocol.cpp")
+    target_sources(gnfs_core PRIVATE src/sieve/distributed_sieve_protocol.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cofactor/cofactorizer.cpp")
     target_sources(gnfs_core PRIVATE src/cofactor/cofactorizer.cpp)
 endif()
@@ -472,6 +476,17 @@ if(GNFS_BUILD_TESTS)
                 PYTHON=${Python3_EXECUTABLE}
                 ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_harness_hooks.sh)
         set_tests_properties(HarnessHooks PROPERTIES
+            LABELS "instant" TIMEOUT 10
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
+
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME DistributedSievePolicyInventory
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_distributed_sieve_policy.py
+                --self-test
+                --root ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(DistributedSievePolicyInventory PROPERTIES
             LABELS "instant" TIMEOUT 10
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
@@ -867,6 +882,19 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_distributed_sieve PRIVATE gnfs_core Threads::Threads)
     add_test(NAME DistributedSieve COMMAND test_distributed_sieve)
     set_tests_properties(DistributedSieve PROPERTIES LABELS "fast" TIMEOUT 180)
+
+    add_executable(test_distributed_sieve_resume
+        tests/test_distributed_sieve_resume.cpp
+    )
+    target_link_libraries(test_distributed_sieve_resume PRIVATE gnfs_core Threads::Threads)
+    add_test(
+        NAME DistributedSieveResumeCore
+        COMMAND test_distributed_sieve_resume --suite core
+    )
+    set_tests_properties(
+        DistributedSieveResumeCore
+        PROPERTIES LABELS "instant" TIMEOUT 20
+    )
 
     add_executable(test_poly_checkpoint
         tests/test_poly_checkpoint.cpp
