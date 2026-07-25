@@ -63,6 +63,18 @@ queue, or stop after a shared first-arrival relation count. Each logical B slot
 owns its output and applies the same local limits. The runner joins all slots in
 logical B order before canonicalization.
 
+The implemented V2 cycle-density, V3 scale, and V4 proof-shadow profiles route
+this stage through `execute_fixed_slots`. Each worker owns its sieve buffers and
+reconstructs the polynomial at the beginning of its static partition and at
+every crossed A boundary. It advances Gray ordinals sequentially only within
+one A family. An operation or Gray-transition failure cancels remaining slots,
+joins every worker, and discards all internal results.
+The caller validates the complete returned identity set before publishing any
+slot, and `SlotCapture` has compile-time nothrow move requirements for the final
+publication pass. In-process fault checks inject failures at both boundaries
+and require the caller's sentinel slots to remain unchanged. This is a profile
+runner property; it does not enable the production SIQS collector.
+
 Runs with one, two, and four workers must therefore consume the same planned
 corpus. A worker-count comparison is invalid unless all three records have the
 same plan digest, planned B count, completed B set, per-slot state digest, raw

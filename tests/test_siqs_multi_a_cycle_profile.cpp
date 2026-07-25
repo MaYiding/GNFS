@@ -8,22 +8,21 @@
 #include <gnfs/siqs/shadow_assembly.hpp>
 #include <gnfs/siqs/shadow_matrix.hpp>
 #include <gnfs/siqs/siqs.hpp>
+#include <gnfs/util/fixed_slot_executor.hpp>
 #include <gnfs/util/process_memory.hpp>
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <bit>
 #include <charconv>
 #include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <exception>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <numeric>
 #include <optional>
@@ -34,7 +33,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -89,6 +88,9 @@ using gnfs::tests::SIQS_MULTI_A_PROOF_GOLDEN_V4;
 using gnfs::tests::SIQS_MULTI_A_SCALE_FIXTURE_V3;
 using gnfs::tests::SIQSMultiAExpectedParamsV2;
 using gnfs::tests::SIQSMultiAPlanGoldenV2;
+using gnfs::util::execute_fixed_slots;
+using gnfs::util::FixedSlotFailurePolicy;
+using gnfs::util::FixedSlotPartition;
 using gnfs::util::ProcessMemorySnapshot;
 
 #ifndef GNFS_SIQS_MULTI_A_PROFILE_BUILD_TYPE
@@ -875,47 +877,6 @@ void add_capture_snapshot(CaptureTotals& totals, const SIQSLiveSieveCaptureSnaps
     add_stop_reason(totals, snapshot.stop_reason);
 }
 
-class LaunchGate final {
-public:
-    explicit LaunchGate(size_t expected) : expected_(expected) {}
-
-    [[nodiscard]] bool worker_arrive_and_wait() {
-        std::unique_lock lock(mutex_);
-        ++arrived_;
-        condition_.notify_all();
-        condition_.wait(lock, [&] { return released_ || cancelled_; });
-        return !cancelled_;
-    }
-
-    void release_when_ready() {
-        std::unique_lock lock(mutex_);
-        condition_.wait(lock, [&] { return arrived_ == expected_; });
-        peak_workers_ = arrived_;
-        released_ = true;
-        condition_.notify_all();
-    }
-
-    void cancel() noexcept {
-        std::lock_guard lock(mutex_);
-        cancelled_ = true;
-        condition_.notify_all();
-    }
-
-    [[nodiscard]] size_t peak_workers() const noexcept {
-        std::lock_guard lock(mutex_);
-        return peak_workers_;
-    }
-
-private:
-    size_t expected_;
-    mutable std::mutex mutex_;
-    std::condition_variable condition_;
-    size_t arrived_ = 0;
-    size_t peak_workers_ = 0;
-    bool released_ = false;
-    bool cancelled_ = false;
-};
-
 struct CaptureScratch final {
     CaptureScratch(uint32_t sieve_half, size_t factor_base_size)
         : exponent_buffer(factor_base_size, uint8_t{0}) {
@@ -926,6 +887,24 @@ struct CaptureScratch final {
     std::vector<uint8_t> sieve_buffer;
     std::vector<uint8_t> exponent_buffer;
     std::mutex relation_mutex;
+};
+
+static_assert(std::is_nothrow_move_constructible_v<SlotCapture>);
+static_assert(std::is_nothrow_move_assignable_v<SlotCapture>);
+
+struct CaptureWorkerState final {
+    CaptureWorkerState(const FixedSlotPartition& assigned_partition, uint32_t sieve_half,
+                       size_t factor_base_size)
+        : partition(assigned_partition), next_local_slot(assigned_partition.begin),
+          scratch(sieve_half, factor_base_size) {}
+
+    FixedSlotPartition partition;
+    size_t next_local_slot;
+    CaptureScratch scratch;
+    std::optional<size_t> loaded_a_ordinal;
+    size_t loaded_gray_ordinal = 0;
+    SIQSPoly polynomial;
+    std::vector<bool> signs;
 };
 
 void run_capture_slot(const SIQSPoly& polynomial, const Integer& sieved_modulus,
@@ -961,13 +940,12 @@ struct StageResult final {
     size_t peak_workers = 0;
 };
 
+template <class SlotRunner>
 [[nodiscard]] StageResult
-capture_stage(size_t a_begin, size_t a_end, const ProfileOptions& options,
-              std::span<const APlan> a_plans, const Integer& sieved_modulus,
-              const std::vector<FBPrime>& factor_base, const SIQSParams& params, uint8_t threshold,
-              uint64_t large_prime_bound, uint64_t two_large_prime_bound, size_t b_slots,
-              size_t slot_a_origin, std::vector<SlotCapture>& slots,
-              std::atomic<bool>& cancel_capture) {
+capture_stage_with_runner(size_t a_begin, size_t a_end, const ProfileOptions& options,
+                          std::span<const APlan> a_plans, const std::vector<FBPrime>& factor_base,
+                          const SIQSParams& params, size_t b_slots, size_t slot_a_origin,
+                          std::vector<SlotCapture>& slots, SlotRunner&& slot_runner) {
     require(a_begin < a_end && a_end <= a_plans.size(), "capture stage A range is invalid");
     require(slot_a_origin <= a_begin, "capture stage slot origin exceeds A begin");
     StageResult result;
@@ -977,101 +955,174 @@ capture_stage(size_t a_begin, size_t a_end, const ProfileOptions& options,
         checked_multiply(a_begin - slot_a_origin, b_slots, "capture stage slot begin");
     result.slot_end = checked_multiply(a_end - slot_a_origin, b_slots, "capture stage slot end");
     require(result.slot_end <= slots.size(), "capture stage slot range exceeds storage");
-    result.resolved_workers = static_cast<size_t>(options.requested_workers);
     const size_t stage_slot_count = result.slot_end - result.slot_begin;
-    require(result.resolved_workers > 0 && result.resolved_workers <= stage_slot_count,
+    require(options.requested_workers > 0 &&
+                static_cast<size_t>(options.requested_workers) <= stage_slot_count,
             "capture stage cannot provide one slot per requested worker");
 
-    std::vector<std::pair<size_t, size_t>> partitions;
-    partitions.reserve(result.resolved_workers);
-    std::vector<size_t> assignment_counts(stage_slot_count, size_t{0});
-    const size_t base_slots = stage_slot_count / result.resolved_workers;
-    const size_t extra_slots = stage_slot_count % result.resolved_workers;
-    for (size_t worker = 0; worker < result.resolved_workers; ++worker) {
-        const size_t local_begin = worker * base_slots + std::min(worker, extra_slots);
-        const size_t count = base_slots + (worker < extra_slots ? size_t{1} : size_t{0});
-        const size_t local_end = local_begin + count;
-        require(local_begin < local_end && local_end <= stage_slot_count,
-                "capture stage worker partition is invalid");
-        partitions.emplace_back(result.slot_begin + local_begin, result.slot_begin + local_end);
-        for (size_t slot = local_begin; slot < local_end; ++slot) {
-            ++assignment_counts[slot];
-        }
-    }
-    require(std::all_of(assignment_counts.begin(), assignment_counts.end(),
-                        [](size_t count) { return count == 1; }),
-            "capture stage partitions do not cover each logical slot exactly once");
+    auto execution = execute_fixed_slots<SlotCapture>(
+        stage_slot_count, options.requested_workers, FixedSlotFailurePolicy::cancel_remaining,
+        [&](const FixedSlotPartition& partition) {
+            return std::make_unique<CaptureWorkerState>(partition, params.sieve_half,
+                                                        factor_base.size());
+        },
+        [&](std::unique_ptr<CaptureWorkerState>& state_handle, size_t local_slot) {
+            CaptureWorkerState& state = *state_handle;
+            require(local_slot == state.next_local_slot && local_slot >= state.partition.begin &&
+                        local_slot < state.partition.end,
+                    "capture worker received a non-sequential slot");
+            const size_t storage_slot = result.slot_begin + local_slot;
+            const size_t a_ordinal = slot_a_origin + storage_slot / b_slots;
+            const size_t gray_ordinal = storage_slot % b_slots;
+            require(a_ordinal >= a_begin && a_ordinal < a_end,
+                    "capture slot maps outside its A range");
 
-    std::vector<std::exception_ptr> worker_errors(result.resolved_workers);
-    LaunchGate launch_gate(result.resolved_workers);
-    std::vector<std::jthread> workers;
-    workers.reserve(result.resolved_workers);
-    try {
-        for (size_t worker = 0; worker < result.resolved_workers; ++worker) {
-            workers.emplace_back([&, worker] {
-                if (!launch_gate.worker_arrive_and_wait()) {
-                    return;
+            if (!state.loaded_a_ordinal || *state.loaded_a_ordinal != a_ordinal) {
+                if (state.loaded_a_ordinal) {
+                    require(a_ordinal == *state.loaded_a_ordinal + 1 && gray_ordinal == 0,
+                            "capture worker crossed a non-contiguous A boundary");
                 }
-                try {
-                    CaptureScratch scratch(params.sieve_half, factor_base.size());
-                    const auto [begin, end] = partitions[worker];
-                    size_t global_slot = begin;
-                    while (global_slot < end) {
-                        const size_t a_ordinal = slot_a_origin + global_slot / b_slots;
-                        const size_t first_gray = global_slot % b_slots;
-                        const size_t a_slot_end =
-                            std::min(end, checked_multiply(a_ordinal + 1 - slot_a_origin, b_slots,
-                                                           "A-family slot end"));
-                        SIQSPoly polynomial = a_plans[a_ordinal].initial_polynomial;
-                        std::vector<bool> signs(polynomial.a_indices.size(), true);
-                        advance_to_gray(factor_base, params.sieve_half, polynomial, signs,
-                                        first_gray);
-                        for (; global_slot < a_slot_end; ++global_slot) {
-                            if (cancel_capture.load(std::memory_order_acquire)) {
-                                return;
-                            }
-                            const size_t gray_ordinal = global_slot % b_slots;
-                            SlotCapture& slot = slots[global_slot];
-                            require(slot.id == LogicalSlotId{a_ordinal, gray_ordinal},
-                                    "capture slot logical identity mismatch");
-                            validate_polynomial_shape(polynomial, factor_base);
-                            run_capture_slot(polynomial, sieved_modulus, factor_base, params,
-                                             threshold, large_prime_bound, two_large_prime_bound,
-                                             scratch, slot);
-                            if (global_slot + 1 < a_slot_end) {
-                                advance_polynomial_gray(factor_base, params.sieve_half, polynomial,
-                                                        signs, gray_ordinal + 1);
-                            }
-                        }
-                    }
-                } catch (...) {
-                    worker_errors[worker] = std::current_exception();
-                    cancel_capture.store(true, std::memory_order_release);
-                }
-            });
-        }
-        launch_gate.release_when_ready();
-    } catch (...) {
-        launch_gate.cancel();
-        cancel_capture.store(true, std::memory_order_release);
-        throw;
-    }
-    workers.clear();
-    result.peak_workers = launch_gate.peak_workers();
+                state.polynomial = a_plans[a_ordinal].initial_polynomial;
+                state.signs.assign(state.polynomial.a_indices.size(), true);
+                advance_to_gray(factor_base, params.sieve_half, state.polynomial, state.signs,
+                                gray_ordinal);
+                state.loaded_a_ordinal = a_ordinal;
+                state.loaded_gray_ordinal = gray_ordinal;
+            } else {
+                require(gray_ordinal == state.loaded_gray_ordinal + 1,
+                        "capture worker received a non-sequential Gray slot");
+                advance_polynomial_gray(factor_base, params.sieve_half, state.polynomial,
+                                        state.signs, gray_ordinal);
+                state.loaded_gray_ordinal = gray_ordinal;
+            }
+
+            validate_polynomial_shape(state.polynomial, factor_base);
+            SlotCapture captured;
+            captured.id = {a_ordinal, gray_ordinal};
+            slot_runner(state.polynomial, state.scratch, captured);
+            ++state.next_local_slot;
+            return captured;
+        });
+
+    result.resolved_workers = execution.stats.resolved_workers;
+    result.peak_workers = execution.stats.peak_workers;
+    require(execution.stats.slot_count == stage_slot_count &&
+                execution.slots.size() == stage_slot_count,
+            "fixed-slot capture returned the wrong slot count");
     require(result.peak_workers == result.resolved_workers,
             "not all resolved workers reached the stage launch gate");
-    for (const std::exception_ptr& error : worker_errors) {
-        if (error) {
-            std::rethrow_exception(error);
-        }
+    for (size_t local_slot = 0; local_slot < execution.slots.size(); ++local_slot) {
+        const size_t storage_slot = result.slot_begin + local_slot;
+        const SlotCapture& captured = execution.slots[local_slot];
+        require(!slots[storage_slot].completed && slots[storage_slot].id == captured.id &&
+                    captured.completed,
+                "capture result failed its pre-publication identity check");
     }
-    require(!cancel_capture.load(std::memory_order_acquire),
-            "capture workers cancelled without a published exception");
+    for (size_t local_slot = 0; local_slot < execution.slots.size(); ++local_slot) {
+        slots[result.slot_begin + local_slot] = std::move(execution.slots[local_slot]);
+    }
     require(std::all_of(slots.begin() + static_cast<std::ptrdiff_t>(result.slot_begin),
                         slots.begin() + static_cast<std::ptrdiff_t>(result.slot_end),
                         [](const SlotCapture& slot) { return slot.completed; }),
             "capture stage did not complete every logical slot");
     return result;
+}
+
+[[nodiscard]] StageResult
+capture_stage(size_t a_begin, size_t a_end, const ProfileOptions& options,
+              std::span<const APlan> a_plans, const Integer& sieved_modulus,
+              const std::vector<FBPrime>& factor_base, const SIQSParams& params, uint8_t threshold,
+              uint64_t large_prime_bound, uint64_t two_large_prime_bound, size_t b_slots,
+              size_t slot_a_origin, std::vector<SlotCapture>& slots) {
+    return capture_stage_with_runner(
+        a_begin, a_end, options, a_plans, factor_base, params, b_slots, slot_a_origin, slots,
+        [&](const SIQSPoly& polynomial, CaptureScratch& scratch, SlotCapture& captured) {
+            run_capture_slot(polynomial, sieved_modulus, factor_base, params, threshold,
+                             large_prime_bound, two_large_prime_bound, scratch, captured);
+        });
+}
+
+void self_check_capture_stage_failure_atomicity(const APlan& source_plan,
+                                                const std::vector<FBPrime>& factor_base,
+                                                const SIQSParams& params) {
+    constexpr size_t self_check_slot_count = 3;
+    SIQSLiveSieveCaptureSnapshot sentinel_snapshot;
+    sentinel_snapshot.stop_reason = SIQSLiveSieveCaptureStopReason::payload_limit;
+    sentinel_snapshot.threshold_candidates = 17;
+    sentinel_snapshot.rejected_residuals = 777;
+
+    const auto make_unpublished_slots = [&] {
+        std::vector<SlotCapture> slots(self_check_slot_count);
+        for (size_t slot = 0; slot < slots.size(); ++slot) {
+            slots[slot].id = {0, slot};
+            slots[slot].snapshot = sentinel_snapshot;
+        }
+        return slots;
+    };
+    const auto require_unpublished_slots = [&](std::span<const SlotCapture> slots) {
+        require(slots.size() == self_check_slot_count,
+                "capture failure self-check changed the external slot count");
+        for (size_t slot = 0; slot < slots.size(); ++slot) {
+            require(slots[slot].id == LogicalSlotId{0, slot} && !slots[slot].completed &&
+                        slots[slot].relations.empty() && slots[slot].snapshot == sentinel_snapshot,
+                    "capture failure self-check leaked a partial slot result");
+        }
+    };
+
+    APlan gray_failure_plan = source_plan;
+    gray_failure_plan.initial_polynomial.a_indices.clear();
+    gray_failure_plan.initial_polynomial.B_parts.clear();
+    gray_failure_plan.initial_polynomial.coeffs.clear();
+    gray_failure_plan.initial_polynomial.bp_mod_p.clear();
+    gray_failure_plan.initial_polynomial.bp_fb_size = factor_base.size();
+    std::vector<APlan> gray_failure_plans;
+    gray_failure_plans.push_back(std::move(gray_failure_plan));
+    std::vector<SlotCapture> gray_failure_slots = make_unpublished_slots();
+    std::array<size_t, self_check_slot_count> gray_runner_calls{};
+    bool gray_failure_observed = false;
+    try {
+        (void)capture_stage_with_runner(
+            0, 1, ProfileOptions{1}, gray_failure_plans, factor_base, params, self_check_slot_count,
+            0, gray_failure_slots, [&](const SIQSPoly&, CaptureScratch&, SlotCapture& captured) {
+                ++gray_runner_calls[captured.id.gray_ordinal];
+                captured.completed = true;
+            });
+    } catch (const std::runtime_error& error) {
+        require(std::string_view(error.what()) == "Gray-code B transition is out of range",
+                "capture Gray failure self-check observed the wrong error");
+        gray_failure_observed = true;
+    }
+    require(gray_failure_observed,
+            "capture Gray failure self-check did not observe its injected failure");
+    require(gray_runner_calls == std::array<size_t, self_check_slot_count>{1, 0, 0},
+            "capture Gray failure self-check ran slots past the failing transition");
+    require_unpublished_slots(gray_failure_slots);
+
+    std::vector<APlan> runner_failure_plans{source_plan};
+    std::vector<SlotCapture> runner_failure_slots = make_unpublished_slots();
+    std::array<size_t, self_check_slot_count> runner_calls{};
+    bool runner_failure_observed = false;
+    try {
+        (void)capture_stage_with_runner(
+            0, 1, ProfileOptions{1}, runner_failure_plans, factor_base, params,
+            self_check_slot_count, 0, runner_failure_slots,
+            [&](const SIQSPoly&, CaptureScratch&, SlotCapture& captured) {
+                ++runner_calls[captured.id.gray_ordinal];
+                if (captured.id.gray_ordinal == 1) {
+                    fail("injected capture runner failure");
+                }
+                captured.completed = true;
+            });
+    } catch (const std::runtime_error& error) {
+        require(std::string_view(error.what()) == "injected capture runner failure",
+                "capture runner failure self-check observed the wrong error");
+        runner_failure_observed = true;
+    }
+    require(runner_failure_observed,
+            "capture runner failure self-check did not observe its injected failure");
+    require(runner_calls == std::array<size_t, self_check_slot_count>{1, 1, 0},
+            "capture runner failure self-check ran slots past the failing runner");
+    require_unpublished_slots(runner_failure_slots);
 }
 
 [[nodiscard]] Digest128 slot_state_digest(std::span<const SlotCapture> slots, size_t a_count) {
@@ -1842,6 +1893,9 @@ struct ProfileRecord final {
     const auto plan_finished = std::chrono::steady_clock::now();
     record.plan_wall_nanoseconds = elapsed_nanoseconds(started, plan_finished, "plan");
     record.plan_memory = gnfs::util::process_memory_snapshot();
+    require(!record.plan.a_plans.empty(), "profile planner produced no A plans");
+    self_check_capture_stage_failure_atomicity(record.plan.a_plans.front(), factor_base,
+                                               record.params);
 
     record.planned_slots =
         checked_multiply(fixture.max_a_count, fixture.b_slots_per_a, "profile planned slots");
@@ -1858,13 +1912,12 @@ struct ProfileRecord final {
     }
 
     const auto capture_started = std::chrono::steady_clock::now();
-    std::atomic<bool> cancel_capture{false};
     for (size_t stage_index = 0; stage_index < CAPTURE_A_STAGES.size(); ++stage_index) {
         const auto [a_begin, a_end] = CAPTURE_A_STAGES[stage_index];
-        record.stages[stage_index] = capture_stage(
-            a_begin, a_end, options, record.plan.a_plans, sieved_modulus, factor_base,
-            record.params, record.threshold, record.large_prime_bound, record.two_large_prime_bound,
-            fixture.b_slots_per_a, 0, slots, cancel_capture);
+        record.stages[stage_index] =
+            capture_stage(a_begin, a_end, options, record.plan.a_plans, sieved_modulus, factor_base,
+                          record.params, record.threshold, record.large_prime_bound,
+                          record.two_large_prime_bound, fixture.b_slots_per_a, 0, slots);
         require(record.stages[stage_index].resolved_workers == options.requested_workers &&
                     record.stages[stage_index].peak_workers == options.requested_workers,
                 "capture stage did not run every requested worker");
@@ -2941,6 +2994,8 @@ void apply_scale_assembly_gate(ScaleProfileRecord& record, size_t raw_relations)
     const auto plan_finished = std::chrono::steady_clock::now();
     record.plan_wall_nanoseconds = elapsed_nanoseconds(started, plan_finished, "scale plan");
     record.plan_memory = gnfs::util::process_memory_snapshot();
+    self_check_capture_stage_failure_atomicity(record.plan.a_plans.front(), factor_base,
+                                               record.params);
 
     record.planned_slots =
         checked_multiply(fixture.a_count, fixture.b_slots_per_a, "scale planned slots");
@@ -2967,11 +3022,10 @@ void apply_scale_assembly_gate(ScaleProfileRecord& record, size_t raw_relations)
                 local_slot % fixture.b_slots_per_a,
             };
         }
-        std::atomic<bool> cancel_capture{false};
-        const StageResult stage = capture_stage(
-            a_begin, a_end, options, record.plan.a_plans, sieved_modulus, factor_base,
-            record.params, record.threshold, record.large_prime_bound, record.two_large_prime_bound,
-            fixture.b_slots_per_a, a_begin, slots, cancel_capture);
+        const StageResult stage =
+            capture_stage(a_begin, a_end, options, record.plan.a_plans, sieved_modulus, factor_base,
+                          record.params, record.threshold, record.large_prime_bound,
+                          record.two_large_prime_bound, fixture.b_slots_per_a, a_begin, slots);
         require(stage.resolved_workers == options.requested_workers &&
                     stage.peak_workers == options.requested_workers,
                 "scale batch did not run every requested worker");
