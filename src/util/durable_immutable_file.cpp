@@ -17,6 +17,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -426,16 +427,61 @@ public:
     [[nodiscard]] OpenResult
     open_exclusive_at(NativeHandle parent_handle,
                       const std::filesystem::path& leaf) noexcept override {
-        const int descriptor = ::openat(static_cast<int>(parent_handle), leaf.c_str(),
+        const int parent_descriptor = static_cast<int>(parent_handle);
+        const int descriptor = ::openat(parent_descriptor, leaf.c_str(),
                                         O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-        if (descriptor >= 0) {
+        if (descriptor < 0) {
+            const int saved_errno = errno;
+            if (saved_errno == EINTR) {
+                return OpenResult::interrupted(posix_error(saved_errno));
+            }
+            return OpenResult::failed(posix_error(saved_errno));
+        }
+
+        struct stat created{};
+        int stat_result = -1;
+        do {
+            stat_result = ::fstat(descriptor, &created);
+        } while (stat_result != 0 && errno == EINTR);
+        if (stat_result != 0) {
+            const int saved_errno = errno;
+            (void)::close(descriptor);
+            return OpenResult::failed(posix_error(saved_errno));
+        }
+
+        int chmod_result = -1;
+        do {
+            chmod_result = ::fchmod(descriptor, 0600);
+        } while (chmod_result != 0 && errno == EINTR);
+
+        int setup_error = chmod_result == 0 ? 0 : errno;
+        struct stat configured{};
+        if (setup_error == 0) {
+            do {
+                stat_result = ::fstat(descriptor, &configured);
+            } while (stat_result != 0 && errno == EINTR);
+            if (stat_result != 0) {
+                setup_error = errno;
+            } else if (configured.st_dev != created.st_dev || configured.st_ino != created.st_ino ||
+                       !S_ISREG(configured.st_mode) || configured.st_nlink != 1 ||
+                       static_cast<std::uint64_t>(configured.st_uid) !=
+                           static_cast<std::uint64_t>(::geteuid()) ||
+                       (configured.st_mode & static_cast<mode_t>(07777)) !=
+                           static_cast<mode_t>(0600)) {
+                setup_error = EACCES;
+            }
+        }
+        if (setup_error == 0) {
             return OpenResult::succeeded(static_cast<NativeHandle>(descriptor));
         }
-        const int saved_errno = errno;
-        if (saved_errno == EINTR) {
-            return OpenResult::interrupted(posix_error(saved_errno));
+
+        // FileOps never removes or renames a destination. Preserve the
+        // O_EXCL-created leaf after a setup failure so a higher-level protocol
+        // can classify its exact identity without a path-based cleanup race.
+        if (::close(descriptor) != 0) {
+            return OpenResult::failed(posix_error(errno));
         }
-        return OpenResult::failed(posix_error(saved_errno));
+        return OpenResult::failed(posix_error(setup_error));
     }
 
     [[nodiscard]] OpenResult open_existing_at(NativeHandle parent_handle,

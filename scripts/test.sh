@@ -212,6 +212,7 @@ ALL_TEST_BINARIES=(
     test_process_memory
     test_bounded_child_process
     test_durable_immutable_file
+    test_durable_immutable_record
     test_mmap_file
     test_resultant
     test_core_types
@@ -424,7 +425,7 @@ ALL_TEST_BINARIES=(
 typeset -A MODULE_TESTS
 MODULE_TESTS=(
     core           "test_integer test_params test_regressions test_edge_cases test_core_types"
-    util           "test_small_vector test_sha256 test_thread_pool test_ordered_parallel_map test_fixed_slot_executor test_logger test_primes test_timer test_process_memory test_bounded_child_process test_durable_immutable_file test_mmap_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel test_mpz_invert_parallel test_mpz_mod_parallel test_mpz_gcd_parallel test_mpz_mul_parallel"
+    util           "test_small_vector test_sha256 test_thread_pool test_ordered_parallel_map test_fixed_slot_executor test_logger test_primes test_timer test_process_memory test_bounded_child_process test_durable_immutable_file test_durable_immutable_record test_mmap_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel test_mpz_invert_parallel test_mpz_mod_parallel test_mpz_gcd_parallel test_mpz_mul_parallel"
     polynomial     "test_murphy test_root_property_cache test_int_polynomial test_half_gcd test_poly_karatsuba test_horner_batch_simd test_divrem_subquadratic test_poly_ntt test_poly_square test_poly_add_mod_simd test_poly_horner_mod_simd test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
     factor_base    "test_factor_base test_fb_checkpoint test_fb_roots_parallel"
     sieve          "test_special_q test_sieve_basic test_sieve_checkpoint test_distributed_sieve test_distributed_sieve_resume test_bucket_sieve test_sieve_ecore_qos test_local_sieve_thread_budget test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel test_sieve_apply_tile_parallel test_lattice_coords_simd test_threshold_scan_simd test_saturated_sub_simd"
@@ -473,6 +474,7 @@ SMOKE_TESTS=(
     test_process_memory
     test_bounded_child_process
     test_durable_immutable_file
+    test_durable_immutable_record
     test_mmap_file
     test_resultant
     test_core_types
@@ -662,6 +664,7 @@ TEST_TIMEOUT=(
     test_process_memory      10
     test_bounded_child_process 30
     test_durable_immutable_file 10
+    test_durable_immutable_record 20
     test_mmap_file           10
     test_resultant           10
     test_core_types          10
@@ -885,6 +888,7 @@ TEST_TIER=(
     test_process_memory      "instant"
     test_bounded_child_process "instant"
     test_durable_immutable_file "instant"
+    test_durable_immutable_record "instant"
     test_mmap_file           "instant"
     test_resultant           "instant"
     test_core_types          "instant"
@@ -1132,7 +1136,7 @@ MODULE_ORDER=(core util polynomial factor_base sieve cofactor relation linalg sq
 path_to_module() {
     local path="$1"
     case "$path" in
-        tests/test_sha256.cpp) echo "util" ;;
+        tests/test_sha256.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp) echo "util" ;;
         tests/test_squfof*.cpp|tests/support/squfof_*.hpp|tests/fixtures/squfof_*.hpp) echo "cofactor" ;;
         tests/test_relation_collector.cpp|tests/test_relation_corpus.cpp|tests/test_relation_sink.cpp|tests/test_relation_reduction_engine.cpp|tests/test_ooc_store_integrity.cpp|tests/test_ooc_cleanup_transaction.cpp) echo "relation" ;;
         tests/test_structured*.cpp) echo "relation" ;;

@@ -1344,7 +1344,7 @@ checks passed in Debug.
 
 ### M1: Generic Durable Handoff
 
-- [ ] Add the relative-dirfd immutable record publisher.
+- [x] Add the relative-dirfd immutable record publisher.
 - [ ] Add an opaque no-delete auxiliary record inside a private lease.
 - [ ] Make canonical handoff dominate recovery, revoke/consume `RESERVED`, and
   invalidate stale writer/private-lease receipts.
@@ -1355,6 +1355,13 @@ checks passed in Debug.
   semantics closed.
 - [ ] Cover pending/canonical, rollback, link, replacement, and lock crash
   points in relation tests.
+
+Publisher foundation completed on 2026-07-26. The production path is
+handle-relative and no-follow, uses native no-replace promotion, preserves
+foreign entries, and verifies exact owner, mode, link count, bytes, native
+identity, and durability across every recovery boundary. Its core/crash suites,
+the complete utility module, dependency-deep changed selection, GNFS E2E,
+Harness checks, and the independent security review passed in Debug.
 
 Exit criterion: a finalized synthetic private OOC corpus can survive owner
 death, reject every stale cleanup receipt, be adopted without deletion

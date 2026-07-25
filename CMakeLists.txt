@@ -235,6 +235,7 @@ endif()
 add_library(gnfs_util STATIC
     src/util/authenticated_bounded_child_process.cpp
     src/util/durable_immutable_file.cpp
+    src/util/durable_immutable_record.cpp
     src/util/sha256.cpp
 )
 if(WIN32)
@@ -569,6 +570,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_durable_immutable_file PRIVATE gnfs_util Threads::Threads)
     add_test(NAME DurableImmutableFile COMMAND test_durable_immutable_file)
     set_tests_properties(DurableImmutableFile PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_durable_immutable_record
+        tests/test_durable_immutable_record.cpp
+    )
+    target_link_libraries(test_durable_immutable_record PRIVATE gnfs_util Threads::Threads)
+    add_test(NAME DurableImmutableRecord COMMAND test_durable_immutable_record)
+    set_tests_properties(DurableImmutableRecord PROPERTIES LABELS "instant" TIMEOUT 20)
 
     add_executable(bounded_child_process_fake_child
         tests/support/bounded_child_process_fake_child.cpp
