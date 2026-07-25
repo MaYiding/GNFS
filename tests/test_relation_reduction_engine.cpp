@@ -438,10 +438,8 @@ void test_generation_and_no_large_primes() {
         CHECK(result.size() == 2);
         CHECK(result.stats.strategy == ReductionStrategy::NoLargePrimes);
         CHECK(result.stats.output_lp_columns == 1);
-        CHECK(!gnfs::relation::has_effective_column_excess(3, 2,
-                                                            result.stats.output_lp_columns));
-        CHECK(gnfs::relation::has_effective_column_excess(4, 2,
-                                                           result.stats.output_lp_columns));
+        CHECK(!gnfs::relation::has_effective_column_excess(3, 2, result.stats.output_lp_columns));
+        CHECK(gnfs::relation::has_effective_column_excess(4, 2, result.stats.output_lp_columns));
     }
 }
 
@@ -1462,6 +1460,47 @@ void test_structured_direct_borrowed_rejects_pre_scan_ab_proof_drift() {
     }));
 }
 
+void test_structured_direct_borrowed_rejects_pre_scan_factor_drift() {
+    constexpr uint64_t generation = 726;
+    OOCArtifacts raw(unique_ooc_base("direct_factor_receipt_drift_raw"));
+    OOCArtifacts output(unique_ooc_base("direct_factor_receipt_drift_output"));
+
+    CollectorConfig collector_config;
+    collector_config.ooc_enabled = true;
+    collector_config.ooc_base_path = raw.base;
+    collector_config.check_duplicates = true;
+    RelationCollector collector(collector_config);
+    Relation first = make_full(100);
+    Relation second = make_full(200);
+    CHECK(collector.add(std::move(first)));
+    CHECK(collector.add(std::move(second)));
+    const auto stats_before_failure = collector.stats();
+
+    const auto descriptor = collector.checkpoint_ooc();
+    constexpr uint32_t replacement_factor = 777;
+    constexpr std::streamoff first_rational_factor_offset =
+        static_cast<std::streamoff>(gnfs::relation::OOCRelationWriter::DATA_HEADER_BYTES) +
+        static_cast<std::streamoff>(sizeof(int64_t) + sizeof(uint64_t) + sizeof(uint32_t));
+    CHECK(overwrite_binary_value(raw.base + ".reldata", first_rational_factor_offset,
+                                 replacement_factor));
+    collector.resume_ooc(descriptor);
+
+    auto config = structured_config(2, 3);
+    config.structured->output_ooc_base_path = output.base;
+    CHECK(throws_runtime_error([&] {
+        (void)collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+            return RelationReductionEngine::reduce_direct_borrowed_structured(generation, source,
+                                                                              config);
+        });
+    }));
+    CHECK(private_sink_absent(output.base));
+    CHECK(equal_collector_stats(collector.stats(), stats_before_failure));
+    CHECK(throws_logic_error([&] {
+        Relation tail = make_full(300);
+        (void)collector.add(std::move(tail));
+    }));
+}
+
 void test_structured_direct_borrowed_detects_post_scan_payload_drift() {
     constexpr uint64_t generation = 723;
     constexpr size_t raw_row_count = 100'000;
@@ -1858,6 +1897,7 @@ int main() {
     test_structured_direct_borrowed_output_failure_is_retryable();
     test_structured_direct_borrowed_source_failure_aborts_output();
     test_structured_direct_borrowed_rejects_pre_scan_ab_proof_drift();
+    test_structured_direct_borrowed_rejects_pre_scan_factor_drift();
     test_structured_direct_borrowed_detects_post_scan_payload_drift();
     test_structured_direct_borrowed_resume_failure_cleans_finalized_output();
     test_structured_borrowed_source_contract_rejects_invalid_routes();

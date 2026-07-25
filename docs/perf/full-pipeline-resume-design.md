@@ -40,24 +40,38 @@ phase. There is no attempt to capture in-loop state for Phase 1 / Phase 2.
 ## File Format
 
 Polynomial and factor-base checkpoints use an incomplete-to-final magic
-transition. The sieve checkpoint uses the stronger V2 paired transaction
+transition. The sieve checkpoint uses the stronger V3 paired transaction
 described below: it publishes a checksummed temporary file by atomic replace
 only after the OOC relation prefix is durable.
 
-### `<base>.sieve_ckpt` V2
+### `<base>.sieve_ckpt` V3
 
 The sieve checkpoint records the Special-Q cursor and adaptive-round state, an
 exact decimal N, a portable 128-bit run fingerprint, and the OOC relation
 descriptor: format version, durable store ID, generation, relation count, and
-data end. The fingerprint covers the selected polynomial, ordered factor-base
-contents, and the sieve parameters that affect relation generation or stopping.
-Run-identity schema 2 also binds the affine-only Special-Q enumeration policy,
-so checkpoints from the earlier projective-Q schedule fail closed.
+data end. It also records the collector's constant-memory relation-sequence
+receipt, accumulated only after each OOC relation is accepted. A
+`collection_complete` field distinguishes periodic appendable progress from
+the exact terminal prefix waiting for final magic. The fingerprint covers the
+selected polynomial, ordered factor-base contents, and the sieve parameters
+that affect relation generation or stopping. Run-identity schema 3 also binds
+the affine-only Special-Q enumeration policy and the frozen cascade-V3, 3LP,
+V0 weight/cutoff/residual, and structured-versus-legacy reduction decisions.
+Checkpoints from the earlier projective-Q schedule or a different semantic
+reduction policy fail closed.
 
 Recovery first rejects a run-identity mismatch without opening the relation
-store. It then validates the exact relation prefix and truncates later
-uncommitted tail bytes before applying the Special-Q cursor. V1 sieve
-checkpoints cannot prove this pairing and are rejected for automatic resume.
+store. It then validates the exact relation prefix, decodes it in ordinal order,
+and compares the reconstructed receipt before truncating later uncommitted tail
+bytes or applying the Special-Q cursor. V1/V2 sieve checkpoints cannot prove
+this payload pairing and are rejected for automatic resume.
+
+Periodic publication reopens the exact descriptor for append. Terminal
+publication leaves it suspended and sets `collection_complete=true` before
+final magic. Recovery from that pre-final-magic window rebuilds the reduction
+and finishes the commit without repeating collection. Recovery after final
+magic requires the finalized count and extent to equal the terminal descriptor;
+an unreceipted finalized extension is rejected.
 
 The paired V3 OOC files keep identity immutable across finalize:
 
@@ -88,8 +102,9 @@ paired recovery and corpus ownership promotion reject them.
 The active single-writer checkpoint/reopen path validates paired headers,
 physical extents, first offset, and sentinel in constant time. Final precommit
 and process-restart recovery perform the complete offset scan; recovery also
-decodes every committed record. This keeps corruption fail-closed without
-rescanning the full growing index at every checkpoint interval.
+decodes every committed record and checks the published receipt. This keeps
+corruption and same-size payload drift fail-closed without rescanning the full
+growing index at every checkpoint interval.
 
 ### `<base>.poly_ckpt`
 

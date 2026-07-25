@@ -23,6 +23,8 @@
 #include <vector>
 
 using gnfs::relation::OOCRelationWriter;
+using gnfs::relation::RelationSequenceReceipt;
+using gnfs::relation::RelationSequenceReceiptAccumulator;
 using gnfs::sieve::SieveCheckpoint;
 using gnfs::sieve::SieveRunIdentity;
 
@@ -94,6 +96,8 @@ SieveCheckpoint make_checkpoint(uint64_t generation = 7) {
     checkpoint.ooc_generation = generation;
     checkpoint.ooc_relation_count = 41;
     checkpoint.ooc_data_end = 8'192;
+    checkpoint.ooc_sequence_receipt_low = 0x267b'91ee'f481'35c2ULL;
+    checkpoint.ooc_sequence_receipt_high = 0x8e43'6a0d'2b95'17f4ULL;
     checkpoint.ooc_base_path = "portable-relation-store";
     return checkpoint;
 }
@@ -105,13 +109,19 @@ gnfs::core::Relation make_ooc_relation(int64_t a) {
 }
 
 SieveCheckpoint make_paired_checkpoint(const gnfs::relation::OOCSnapshotDescriptor& descriptor,
-                                       const std::string& base_path) {
+                                       RelationSequenceReceipt receipt,
+                                       const std::string& base_path,
+                                       bool collection_complete = false) {
+    CHECK(receipt.relation_count == descriptor.count);
     auto checkpoint = make_checkpoint(descriptor.generation);
     checkpoint.ooc_format_version = descriptor.format_version;
     checkpoint.ooc_store_id = descriptor.store_id;
     checkpoint.ooc_generation = descriptor.generation;
     checkpoint.ooc_relation_count = descriptor.count;
     checkpoint.ooc_data_end = descriptor.data_end;
+    checkpoint.ooc_sequence_receipt_low = receipt.low;
+    checkpoint.ooc_sequence_receipt_high = receipt.high;
+    checkpoint.collection_complete = collection_complete;
     checkpoint.ooc_base_path = base_path;
     return checkpoint;
 }
@@ -123,6 +133,14 @@ gnfs::relation::OOCSnapshotDescriptor descriptor_from(const SieveCheckpoint& che
         .generation = checkpoint.ooc_generation,
         .count = checkpoint.ooc_relation_count,
         .data_end = checkpoint.ooc_data_end,
+    };
+}
+
+RelationSequenceReceipt sequence_receipt_from(const SieveCheckpoint& checkpoint) {
+    return {
+        .relation_count = checkpoint.ooc_relation_count,
+        .low = checkpoint.ooc_sequence_receipt_low,
+        .high = checkpoint.ooc_sequence_receipt_high,
     };
 }
 
@@ -141,6 +159,9 @@ void check_equal(const SieveCheckpoint& actual, const SieveCheckpoint& expected)
     CHECK(actual.ooc_generation == expected.ooc_generation);
     CHECK(actual.ooc_relation_count == expected.ooc_relation_count);
     CHECK(actual.ooc_data_end == expected.ooc_data_end);
+    CHECK(actual.ooc_sequence_receipt_low == expected.ooc_sequence_receipt_low);
+    CHECK(actual.ooc_sequence_receipt_high == expected.ooc_sequence_receipt_high);
+    CHECK(actual.collection_complete == expected.collection_complete);
     CHECK(actual.ooc_base_path == expected.ooc_base_path);
 }
 
@@ -178,6 +199,7 @@ struct RunIdentityFixture {
     uint32_t algebraic_root_delta = 0;
     size_t sieve_algebraic_count = 2;
     gnfs::core::GNFSParams params = make_identity_params();
+    gnfs::sieve::SieveRunPolicyIdentity policy;
 };
 
 SieveRunIdentity identity_from(const RunIdentityFixture& fixture) {
@@ -201,7 +223,8 @@ SieveRunIdentity identity_from(const RunIdentityFixture& fixture) {
     factor_base.add_algebraic(11, 4, 55, 2);
     factor_base.set_sieve_algebraic_count(fixture.sieve_algebraic_count);
 
-    return gnfs::sieve::make_sieve_run_identity(context, factor_base, fixture.params);
+    return gnfs::sieve::make_sieve_run_identity(context, factor_base, fixture.params,
+                                                fixture.policy);
 }
 
 std::vector<uint8_t> read_bytes(const std::string& path) {
@@ -256,11 +279,12 @@ void refresh_checksum(std::vector<uint8_t>& bytes) {
     write_u64(bytes, checksum_offset, checksum(bytes.data() + 8, checksum_offset - 8));
 }
 
-void test_v2_round_trip() {
+void test_v3_round_trip() {
     const auto path = checkpoint_path("round_trip");
     CheckpointCleanup cleanup{path};
 
-    const auto original = make_checkpoint();
+    auto original = make_checkpoint();
+    original.collection_complete = true;
     original.save(path);
 
     CHECK(SieveCheckpoint::exists(path));
@@ -270,7 +294,7 @@ void test_v2_round_trip() {
 }
 
 void test_run_identity_is_stable_and_matches_checkpoint() {
-    static_assert(gnfs::sieve::SIEVE_RUN_IDENTITY_SCHEMA_VERSION == 2);
+    static_assert(gnfs::sieve::SIEVE_RUN_IDENTITY_SCHEMA_VERSION == 3);
     const auto first = identity_from(RunIdentityFixture{});
     const auto second = identity_from(RunIdentityFixture{});
 
@@ -336,6 +360,12 @@ void test_run_identity_mutations_change_fingerprint() {
     expect_param_changed([](auto& params) { ++params.special_q_max; });
     expect_param_changed([](auto& params) { ++params.max_special_q; });
     expect_param_changed([](auto& params) { ++params.target_excess; });
+    expect_changed([](auto& fixture) { fixture.policy.cascade_v3_mode = 1; });
+    expect_changed([](auto& fixture) { fixture.policy.accept_3lp = true; });
+    expect_changed([](auto& fixture) { fixture.policy.merge_weight3 = true; });
+    expect_changed([](auto& fixture) { fixture.policy.weight_cutoff = 3; });
+    expect_changed([](auto& fixture) { fixture.policy.drop_residual = true; });
+    expect_changed([](auto& fixture) { fixture.policy.structured_filter_selection = 1; });
 
     RunIdentityFixture scheduling_only;
     scheduling_only.params.max_special_q_batch_workers = 1;
@@ -395,6 +425,10 @@ void test_invalid_state_rejected_before_write() {
     expect_invalid([](auto& checkpoint) { checkpoint.ooc_store_id = 0; });
     expect_invalid([](auto& checkpoint) { checkpoint.ooc_generation = 0; });
     expect_invalid([](auto& checkpoint) {
+        checkpoint.ooc_sequence_receipt_low = 0;
+        checkpoint.ooc_sequence_receipt_high = 0;
+    });
+    expect_invalid([](auto& checkpoint) {
         checkpoint.ooc_relation_count = static_cast<uint64_t>(std::numeric_limits<size_t>::max());
     });
     expect_invalid([](auto& checkpoint) {
@@ -436,6 +470,20 @@ void test_v1_rejected_even_with_valid_checksum() {
 
     auto bytes = read_bytes(path);
     write_u64(bytes, 8, 1);
+    refresh_checksum(bytes);
+    write_bytes(path, bytes);
+
+    check_throws([&] { (void)SieveCheckpoint::load(path); });
+    CHECK(!SieveCheckpoint::exists_and_valid(path));
+}
+
+void test_v2_rejected_even_with_valid_checksum() {
+    const auto path = checkpoint_path("v2");
+    CheckpointCleanup cleanup{path};
+    make_checkpoint().save(path);
+
+    auto bytes = read_bytes(path);
+    write_u64(bytes, SieveCheckpoint::WIRE_VERSION_OFFSET, 2);
     refresh_checksum(bytes);
     write_bytes(path, bytes);
 
@@ -507,7 +555,22 @@ void test_checksummed_malformed_fields_rejected() {
 
     make_checkpoint().save(path);
     bytes = read_bytes(path);
+    write_u64(bytes, SieveCheckpoint::WIRE_OOC_SEQUENCE_RECEIPT_LO_OFFSET, 0);
+    write_u64(bytes, SieveCheckpoint::WIRE_OOC_SEQUENCE_RECEIPT_HI_OFFSET, 0);
+    refresh_checksum(bytes);
+    write_bytes(path, bytes);
+    check_throws([&] { (void)SieveCheckpoint::load(path); });
+
+    make_checkpoint().save(path);
+    bytes = read_bytes(path);
     write_u64(bytes, SieveCheckpoint::WIRE_OOC_GENERATION_OFFSET, 0);
+    refresh_checksum(bytes);
+    write_bytes(path, bytes);
+    check_throws([&] { (void)SieveCheckpoint::load(path); });
+
+    make_checkpoint().save(path);
+    bytes = read_bytes(path);
+    write_u32(bytes, SieveCheckpoint::WIRE_COLLECTION_COMPLETE_OFFSET, 2);
     refresh_checksum(bytes);
     write_bytes(path, bytes);
     check_throws([&] { (void)SieveCheckpoint::load(path); });
@@ -677,29 +740,37 @@ int run_paired_crash_child(const std::string& point_name, const std::string& bas
 
     const std::string checkpoint_path = base_path + ".sieve_ckpt";
     OOCRelationWriter writer(base_path);
-    CHECK(writer.write(make_ooc_relation(1)) == 0);
+    RelationSequenceReceiptAccumulator accepted_sequence;
+    const auto first_relation = make_ooc_relation(1);
+    CHECK(writer.write(first_relation) == 0);
+    accepted_sequence.append(first_relation);
     const auto first = writer.checkpoint_prefix();
-    make_paired_checkpoint(first, base_path).save(checkpoint_path);
+    make_paired_checkpoint(first, accepted_sequence.finish(), base_path).save(checkpoint_path);
     writer.resume_append(first);
-    CHECK(writer.write(make_ooc_relation(3)) == 1);
+    const auto second_relation = make_ooc_relation(3);
+    CHECK(writer.write(second_relation) == 1);
+    accepted_sequence.append(second_relation);
 
-    if (point_name == "finalize-metadata") {
-        (void)writer.finalize(paired_finalize_crash_hook);
-        return 65;
-    }
-
-    if (point_name == "finalized") {
+    const auto second = writer.checkpoint_prefix();
+    CHECK(second.generation == first.generation + 1);
+    if (point_name == "finalize-metadata" || point_name == "finalized") {
+        make_paired_checkpoint(second, accepted_sequence.finish(), base_path, true)
+            .save(checkpoint_path);
+        writer.resume_append(second);
+        if (point_name == "finalize-metadata") {
+            (void)writer.finalize(paired_finalize_crash_hook);
+            return 65;
+        }
         CHECK(writer.finalize().count == 2);
         std::_Exit(static_cast<int>(PairedCrashPoint::FinalizedBeforeRemoval));
     }
 
-    const auto second = writer.checkpoint_prefix();
-    CHECK(second.generation == first.generation + 1);
     if (point_name == "prefix") {
         std::_Exit(static_cast<int>(PairedCrashPoint::PrefixBeforeCheckpoint));
     }
 
-    const auto second_checkpoint = make_paired_checkpoint(second, base_path);
+    const auto second_checkpoint =
+        make_paired_checkpoint(second, accepted_sequence.finish(), base_path);
     if (point_name == "temporary") {
         paired_checkpoint_exit_code = static_cast<int>(PairedCrashPoint::CheckpointTemporary);
         second_checkpoint.save(checkpoint_path, paired_checkpoint_crash_hook);
@@ -753,7 +824,8 @@ void run_paired_recovery_case(const std::string& executable, const char* child_m
     CHECK(checkpoint.ooc_relation_count == expected_committed_count);
     const auto descriptor = descriptor_from(checkpoint);
 
-    gnfs::relation::OOCRelationWriter recovered(base_path, descriptor);
+    gnfs::relation::OOCRelationWriter recovered(base_path, descriptor,
+                                                sequence_receipt_from(checkpoint));
     CHECK(recovered.recovery_outcome() == gnfs::relation::OOCRecoveryOutcome::AppendablePrefix);
     CHECK(recovered.count() == expected_committed_count);
     CHECK(std::filesystem::file_size(base_path + ".relidx") ==
@@ -764,6 +836,12 @@ void run_paired_recovery_case(const std::string& executable, const char* child_m
     CHECK(prefix.has_value());
     CHECK(prefix->count == expected_committed_count);
     CHECK(prefix->seen.size() == expected_committed_count);
+    CHECK(prefix->checkpoint_sequence_receipt ==
+          (RelationSequenceReceipt{
+              .relation_count = checkpoint.ooc_relation_count,
+              .low = checkpoint.ooc_sequence_receipt_low,
+              .high = checkpoint.ooc_sequence_receipt_high,
+          }));
 
     CHECK(recovered.write(make_ooc_relation(9)) == expected_committed_count);
     CHECK(recovered.finalize().count == expected_committed_count + 1);
@@ -780,7 +858,7 @@ void test_paired_ooc_process_crash_boundaries(const std::string& executable) {
     run_paired_recovery_case(executable, "published", PairedCrashPoint::CheckpointPublished, 2);
     run_paired_recovery_case(executable, "resumed-tail", PairedCrashPoint::ResumedWithNewPrefix, 2);
     run_paired_recovery_case(executable, "finalize-metadata",
-                             PairedCrashPoint::FinalizeMetadataDurable, 1);
+                             PairedCrashPoint::FinalizeMetadataDurable, 2);
 
     const std::string base_path = checkpoint_path("finalized") + "_ooc";
     PairedArtifactsCleanup cleanup{base_path};
@@ -789,11 +867,13 @@ void test_paired_ooc_process_crash_boundaries(const std::string& executable) {
     check_paired_child_exit(result, PairedCrashPoint::FinalizedBeforeRemoval);
 
     const auto checkpoint = SieveCheckpoint::load(base_path + ".sieve_ckpt");
-    CHECK(checkpoint.ooc_relation_count == 1);
-    gnfs::relation::OOCRelationWriter recovered(base_path, descriptor_from(checkpoint));
+    CHECK(checkpoint.ooc_relation_count == 2);
+    CHECK(checkpoint.collection_complete);
+    gnfs::relation::OOCRelationWriter recovered(base_path, descriptor_from(checkpoint),
+                                                sequence_receipt_from(checkpoint));
     CHECK(recovered.recovery_outcome() == gnfs::relation::OOCRecoveryOutcome::FinalizedCorpus);
     CHECK(recovered.state() == gnfs::relation::OOCWriterState::Finalized);
-    CHECK(recovered.count() == 2);
+    CHECK(recovered.count() == checkpoint.ooc_relation_count);
     check_final_relation_sequence(base_path, {1, 3});
     check_throws([&] { (void)recovered.write(make_ooc_relation(9)); });
 }
@@ -812,6 +892,37 @@ void test_remove_cleans_official_and_temporary() {
     CHECK(SieveCheckpoint::exists(SieveCheckpoint::temporary_path(path)));
 
     SieveCheckpoint::remove(path);
+    CHECK(!SieveCheckpoint::exists(path));
+    CHECK(!SieveCheckpoint::exists(SieveCheckpoint::temporary_path(path)));
+}
+
+void test_remove_checked_requires_expected_identity() {
+    const auto path = checkpoint_path("remove_checked");
+    CheckpointCleanup cleanup{path};
+    const auto expected = make_checkpoint(1);
+    const auto replacement = make_checkpoint(2);
+
+    SieveCheckpoint::remove_checked(path, nullptr);
+
+    expected.save(path);
+    check_throws([&] { SieveCheckpoint::remove_checked(path, nullptr); });
+    check_equal(SieveCheckpoint::load(path), expected);
+
+    {
+        std::ofstream temporary(SieveCheckpoint::temporary_path(path));
+        CHECK(temporary.good());
+        temporary << "foreign temporary checkpoint";
+    }
+    check_throws([&] { SieveCheckpoint::remove_checked(path, &expected); });
+    check_equal(SieveCheckpoint::load(path), expected);
+    CHECK(SieveCheckpoint::exists(SieveCheckpoint::temporary_path(path)));
+    SieveCheckpoint::remove(SieveCheckpoint::temporary_path(path));
+
+    replacement.save(path);
+    check_throws([&] { SieveCheckpoint::remove_checked(path, &expected); });
+    check_equal(SieveCheckpoint::load(path), replacement);
+
+    SieveCheckpoint::remove_checked(path, &replacement);
     CHECK(!SieveCheckpoint::exists(path));
     CHECK(!SieveCheckpoint::exists(SieveCheckpoint::temporary_path(path)));
 }
@@ -838,7 +949,7 @@ int main(int argc, char** argv) {
         const std::string executable =
             std::filesystem::absolute(std::filesystem::path(argv[0])).string();
         const std::vector<std::pair<const char*, std::function<void()>>> tests = {
-            {"V2 round-trip", test_v2_round_trip},
+            {"V3 round-trip", test_v3_round_trip},
             {"run identity stability", test_run_identity_is_stable_and_matches_checkpoint},
             {"run identity mutations", test_run_identity_mutations_change_fingerprint},
             {"empty committed prefix", test_empty_committed_prefix_round_trip},
@@ -846,6 +957,7 @@ int main(int argc, char** argv) {
             {"invalid states", test_invalid_state_rejected_before_write},
             {"incomplete magic", test_incomplete_magic_rejected},
             {"V1 rejection", test_v1_rejected_even_with_valid_checksum},
+            {"V2 checkpoint rejection", test_v2_rejected_even_with_valid_checksum},
             {"legacy OOC V2 rejection", test_legacy_v2_ooc_rejected_even_with_valid_checksum},
             {"checksum corruption", test_checksum_corruption_rejected},
             {"truncation", test_truncation_rejected},
@@ -858,15 +970,16 @@ int main(int argc, char** argv) {
             {"paired OOC process crash stages",
              [&] { test_paired_ooc_process_crash_boundaries(executable); }},
             {"remove", test_remove_cleans_official_and_temporary},
+            {"checked remove identity", test_remove_checked_requires_expected_identity},
             {"nonexistent", test_nonexistent_load},
         };
 
-        std::cout << "===== SieveCheckpoint V2 Tests =====\n";
+        std::cout << "===== SieveCheckpoint V3 Tests =====\n";
         for (const auto& [name, test] : tests) {
             test();
             std::cout << "  " << name << ": PASS\n";
         }
-        std::cout << "===== All SieveCheckpoint V2 tests PASSED =====\n";
+        std::cout << "===== All SieveCheckpoint V3 tests PASSED =====\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "SieveCheckpoint test failure: " << error.what() << '\n';

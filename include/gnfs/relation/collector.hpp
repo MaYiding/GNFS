@@ -8,6 +8,7 @@
 #include "large_prime_key.hpp"
 #include "ooc_relation_store.hpp"
 #include "radix_sort.hpp"
+#include "relation_sequence_receipt.hpp"
 #include "relation_sink.hpp"
 
 #include <algorithm>
@@ -72,10 +73,11 @@ struct CollectorConfig {
 
     // ── Paired resume mode (sieve mid-flight checkpoint) ──
     // Recovery is permitted only with a descriptor loaded from the paired
-    // SieveCheckpoint V2. The V3 writer validates the descriptor, verifies the
+    // SieveCheckpoint V3. The V3 writer validates the descriptor, verifies the
     // durable store identity and prefix, restores generation, then rolls back
     // uncommitted tails and restores seen_ plus relation statistics.
     std::optional<OOCSnapshotDescriptor> ooc_resume_snapshot;
+    std::optional<RelationSequenceReceipt> ooc_resume_sequence_receipt;
 
     // Source-compatibility guard for old call sites. `true` is rejected before
     // opening the store; production recovery must use ooc_resume_snapshot.
@@ -226,19 +228,49 @@ public:
         return source_->read(ordinal);
     }
 
+    /// Materialize this immutable prefix and prove that every payload field
+    /// still matches the collector's independently accumulated acceptance
+    /// receipt. A mismatch poisons the borrowed raw owner just like any other
+    /// source-integrity failure.
+    [[nodiscard]] std::vector<Relation> read_all_verified() const {
+        std::vector<Relation> relations;
+        relations.reserve(count());
+        RelationSequenceReceiptAccumulator observed;
+        for (size_t ordinal = 0; ordinal < count(); ++ordinal) {
+            Relation relation = read(ordinal);
+            observed.append(relation);
+            relations.push_back(std::move(relation));
+        }
+        if (observed.finish() != accepted_sequence_receipt_) {
+            try {
+                throw std::runtime_error(
+                    "collector OOC prefix payload differs from its accepted sequence");
+            } catch (...) {
+                mark_untrusted(std::current_exception());
+                throw;
+            }
+        }
+        return relations;
+    }
+
 private:
     explicit CollectorUniqueOOCPrefixSource(
         const CollectorOOCPrefixSource& source,
-        const std::unordered_set<ABPair, ABPairHash>& proven_ab_pairs, std::string base_path,
+        const std::unordered_set<ABPair, ABPairHash>& proven_ab_pairs,
+        RelationSequenceReceipt accepted_sequence_receipt, std::string base_path,
         OOCRelationWriter& owner)
         : source_(&source), proven_ab_pairs_(&proven_ab_pairs), base_path_(std::move(base_path)),
-          owner_(&owner) {}
+          owner_(&owner), accepted_sequence_receipt_(accepted_sequence_receipt) {}
 
     /// Engine-only membership oracle for the collector's complete uniqueness
     /// proof. The active prefix borrow rejects collector mutation, so this set
     /// remains stable for the capability's entire callback-scoped lifetime.
     [[nodiscard]] bool contains_proven_ab_pair(const ABPair& ab_pair) const {
         return proven_ab_pairs_->contains(ab_pair);
+    }
+
+    [[nodiscard]] RelationSequenceReceipt accepted_sequence_receipt() const noexcept {
+        return accepted_sequence_receipt_;
     }
 
     /// Engine-only fail-closed channel for a relation source whose bytes change
@@ -303,6 +335,7 @@ private:
     const std::unordered_set<ABPair, ABPairHash>* proven_ab_pairs_ = nullptr;
     const std::string base_path_;
     OOCRelationWriter* owner_ = nullptr;
+    RelationSequenceReceipt accepted_sequence_receipt_;
 
     friend class RelationCollector;
     friend class RelationReductionEngine;
@@ -325,6 +358,17 @@ public:
         if (config_.ooc_resume_snapshot && !config_.ooc_enabled) {
             throw std::invalid_argument(
                 "RelationCollector: ooc_resume_snapshot requires ooc_enabled=true");
+        }
+        if (config_.ooc_resume_snapshot.has_value() !=
+            config_.ooc_resume_sequence_receipt.has_value()) {
+            throw std::invalid_argument(
+                "RelationCollector: paired OOC recovery requires both descriptor and "
+                "relation-sequence receipt");
+        }
+        if (config_.ooc_resume_snapshot && config_.ooc_resume_sequence_receipt->relation_count !=
+                                               config_.ooc_resume_snapshot->count) {
+            throw std::invalid_argument(
+                "RelationCollector: OOC recovery receipt count does not match descriptor");
         }
         if (config_.ooc_enabled) {
             if (config_.ooc_base_path.empty()) {
@@ -353,11 +397,14 @@ public:
         // OOC mode: initialize only after fresh-path collision checks or paired
         // recovery validation selected the exact existing store.
         if (config_.ooc_enabled) {
-            ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path,
-                                                              config_.ooc_resume_snapshot);
             if (config_.ooc_resume_snapshot) {
+                ooc_writer_ = std::make_unique<OOCRelationWriter>(
+                    config_.ooc_base_path, *config_.ooc_resume_snapshot,
+                    *config_.ooc_resume_sequence_receipt);
                 auto prefix = ooc_writer_->take_validated_resume_prefix();
                 if (!prefix || prefix->count != static_cast<uint64_t>(ooc_writer_->count()) ||
+                    prefix->accepted_sequence.count() != prefix->count ||
+                    prefix->checkpoint_sequence_receipt != *config_.ooc_resume_sequence_receipt ||
                     prefix->full_relations > prefix->count ||
                     prefix->partial_1lp > prefix->count - prefix->full_relations ||
                     prefix->partial_2lp !=
@@ -370,10 +417,13 @@ public:
                 // full ABPair vector and hash set being resident at once.
                 if (config_.check_duplicates)
                     seen_.swap(prefix->seen);
+                accepted_sequence_ = std::move(prefix->accepted_sequence);
                 stats_.total_relations = static_cast<size_t>(prefix->count);
                 stats_.full_relations = static_cast<size_t>(prefix->full_relations);
                 stats_.partial_1lp = static_cast<size_t>(prefix->partial_1lp);
                 stats_.partial_2lp = static_cast<size_t>(prefix->partial_2lp);
+            } else {
+                ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path);
             }
         }
     }
@@ -475,6 +525,7 @@ public:
 
                 if (ooc_writer_) {
                     ooc_writer_->write(rel);
+                    accepted_sequence_.append(rel);
                 } else if (relations_pmr_) {
                     relations_pmr_->push_back(std::move(rel));
                 } else {
@@ -589,7 +640,13 @@ public:
             if (ooc_writer_->state() == OOCWriterState::Finalized) {
                 const auto descriptor = ooc_writer_->finalize();
                 OOCRelationReader reader(config_.ooc_base_path, descriptor);
-                return reader.read_all();
+                auto result = reader.read_all();
+                if (relation_sequence_receipt(result) != accepted_sequence_.finish()) {
+                    throw std::runtime_error(
+                        "RelationCollector::snapshot_relations: finalized OOC payload differs "
+                        "from its accepted sequence");
+                }
+                return result;
             }
             if (ooc_writer_->state() == OOCWriterState::Failed) {
                 throw std::runtime_error(
@@ -602,6 +659,11 @@ public:
                 {
                     OOCRelationPrefixReader reader(config_.ooc_base_path, descriptor, *ooc_writer_);
                     result = reader.read_all();
+                    if (relation_sequence_receipt(result) != accepted_sequence_.finish()) {
+                        throw std::runtime_error(
+                            "RelationCollector::snapshot_relations: OOC payload differs from its "
+                            "accepted sequence");
+                    }
                 } // Reader must unmap before Windows reopens the writer handles.
                 ooc_writer_->resume_append(descriptor);
                 return result;
@@ -800,7 +862,8 @@ public:
                     "RelationCollector::with_unique_ooc_prefix: duplicate rejection is disabled");
             }
             const size_t writer_count = ooc_writer_->count();
-            if (seen_.size() != writer_count || stats_.total_relations != writer_count) {
+            if (seen_.size() != writer_count || stats_.total_relations != writer_count ||
+                accepted_sequence_.count() != writer_count) {
                 throw std::logic_error(
                     "RelationCollector::with_unique_ooc_prefix: uniqueness state does not match "
                     "the OOC prefix");
@@ -810,14 +873,16 @@ public:
         if constexpr (std::is_void_v<Result>) {
             with_ooc_prefix([&](const CollectorOOCPrefixSource& source) {
                 const CollectorUniqueOOCPrefixSource unique_source(
-                    source, seen_, config_.ooc_base_path, *ooc_writer_);
+                    source, seen_, accepted_sequence_.finish(), config_.ooc_base_path,
+                    *ooc_writer_);
                 std::invoke(std::forward<Callback>(callback),
                             static_cast<const CollectorUniqueOOCPrefixSource&>(unique_source));
             });
         } else {
             return with_ooc_prefix([&](const CollectorOOCPrefixSource& source) -> Result {
                 const CollectorUniqueOOCPrefixSource unique_source(
-                    source, seen_, config_.ooc_base_path, *ooc_writer_);
+                    source, seen_, accepted_sequence_.finish(), config_.ooc_base_path,
+                    *ooc_writer_);
                 return std::invoke(
                     std::forward<Callback>(callback),
                     static_cast<const CollectorUniqueOOCPrefixSource&>(unique_source));
@@ -866,6 +931,7 @@ public:
 
         std::exception_ptr recoverable_destination_failure;
         std::exception_ptr untrusted_prefix_failure;
+        RelationSequenceReceiptAccumulator observed_sequence;
         try {
             OOCRelationPrefixReader reader(config_.ooc_base_path, descriptor, *ooc_writer_);
             for (size_t ordinal = 0; ordinal < reader.count(); ++ordinal) {
@@ -882,6 +948,7 @@ public:
                     break;
                 }
 
+                observed_sequence.append(relation);
                 try {
                     (void)destination.append(std::move(relation));
                 } catch (...) {
@@ -894,6 +961,17 @@ public:
         } catch (...) {
             untrusted_prefix_failure = std::current_exception();
         } // Prefix reader mappings and handles are closed before either transition.
+
+        if (!recoverable_destination_failure && !untrusted_prefix_failure &&
+            observed_sequence.finish() != accepted_sequence_.finish()) {
+            try {
+                throw std::runtime_error(
+                    "RelationCollector::snapshot_ooc_corpus: OOC payload differs from its "
+                    "accepted sequence");
+            } catch (...) {
+                untrusted_prefix_failure = std::current_exception();
+            }
+        }
 
         if (untrusted_prefix_failure) {
             if (ooc_writer_->state() == OOCWriterState::Suspended) {
@@ -960,6 +1038,21 @@ public:
         return ooc_writer_->checkpoint_prefix();
     }
 
+    /// Return the independent receipt for every relation accepted by the
+    /// current OOC owner. When paired with checkpoint_ooc(), the suspended
+    /// writer makes descriptor+receipt an immutable recovery record.
+    [[nodiscard]] RelationSequenceReceipt ooc_accepted_sequence_receipt() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        require_ooc_mode("ooc_accepted_sequence_receipt");
+        require_available_ooc_owner("ooc_accepted_sequence_receipt");
+        if (accepted_sequence_.count() != ooc_writer_->count()) {
+            throw std::logic_error(
+                "RelationCollector::ooc_accepted_sequence_receipt: receipt count differs from "
+                "writer");
+        }
+        return accepted_sequence_.finish();
+    }
+
     /// Resume an explicitly checkpointed OOC collector. Stale or foreign
     /// descriptors are rejected by the writer and leave it suspended.
     void resume_ooc(const OOCSnapshotDescriptor& descriptor) {
@@ -1006,6 +1099,23 @@ public:
         return std::nullopt;
     }
 
+    /// Exception-only cleanup for a fresh OOC store not paired with resume.
+    ///
+    /// Recovery stores are preserved. Open prefixes and finalized fresh
+    /// corpora are removed only after the writer validates their exact V3
+    /// identity, so callback-driven path replacement fails closed.
+    [[nodiscard]] bool discard_uncommitted_fresh_ooc_noexcept() noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!ooc_writer_ || config_.ooc_resume_snapshot) {
+                return true;
+            }
+            return ooc_writer_->abort_and_remove_owned_fresh_artifacts_noexcept();
+        } catch (...) {
+            return false;
+        }
+    }
+
     /// 清空收集器
     /// OOC 模式: finalize + descriptor-bound 删除 .reldata/.relidx + reopen。
     /// Failed/handoff 状态拒绝 clear，避免按不再可信或已转移的路径删除文件。
@@ -1047,6 +1157,7 @@ public:
             seen_.swap(tmp);
         }
         stats_ = CollectorStats{};
+        accepted_sequence_ = RelationSequenceReceiptAccumulator{};
         if (relations_pmr_) {
             // 先 destroy pmr::vector (析构 Relations); 再 reset pool (释放 chunks).
             relations_pmr_.reset();
@@ -1200,6 +1311,7 @@ public:
             try {
                 if (ooc_writer_) {
                     ooc_writer_->write(copy);
+                    accepted_sequence_.append(copy);
                 } else if (relations_pmr_) {
                     relations_pmr_->push_back(std::move(copy));
                 } else {
@@ -1257,6 +1369,7 @@ private:
     // OOC 模式 (BACKLOG #11c): 构造 collector 时 eager exclusive-create writer。
     // unique_ptr 因为 OOCRelationWriter 不可移动(持有 fstream + 内部 buffer)。
     std::unique_ptr<OOCRelationWriter> ooc_writer_;
+    RelationSequenceReceiptAccumulator accepted_sequence_;
     bool ooc_corpus_handed_off_ = false;
     bool ooc_prefix_borrow_active_ = false;
 
@@ -1328,7 +1441,8 @@ private:
         if (!ooc_writer_ || descriptor.format_version != OOCRelationWriter::FORMAT_VERSION_V3 ||
             descriptor.store_id == 0 || descriptor.store_id != ooc_writer_->store_id() ||
             descriptor.count != static_cast<uint64_t>(ooc_writer_->count()) ||
-            descriptor.count != static_cast<uint64_t>(stats_.total_relations)) {
+            descriptor.count != static_cast<uint64_t>(stats_.total_relations) ||
+            descriptor.count != accepted_sequence_.count()) {
             throw std::logic_error(std::string("RelationCollector::") + operation +
                                    ": OOC descriptor does not match collector state");
         }

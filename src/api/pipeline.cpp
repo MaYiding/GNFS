@@ -50,6 +50,7 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <random>
 #include <stdexcept>
@@ -60,9 +61,85 @@
 
 namespace gnfs::api {
 
+namespace {
+
+class FactorStatsRollback final {
+public:
+    explicit FactorStatsRollback(FactorStats& target) : target_(&target), snapshot_(target) {
+        static_assert(std::is_nothrow_move_assignable_v<FactorStats>);
+    }
+
+    FactorStatsRollback(const FactorStatsRollback&) = delete;
+    FactorStatsRollback& operator=(const FactorStatsRollback&) = delete;
+
+    ~FactorStatsRollback() {
+        if (target_ != nullptr) {
+            *target_ = std::move(snapshot_);
+        }
+    }
+
+    void commit() noexcept {
+        target_ = nullptr;
+    }
+
+private:
+    FactorStats* target_;
+    FactorStats snapshot_;
+};
+
+class FreshOOCExceptionCleanup final {
+public:
+    explicit FreshOOCExceptionCleanup(relation::RelationCollector& collector,
+                                      const bool& preserve_for_resume) noexcept
+        : collector_(&collector), preserve_for_resume_(&preserve_for_resume),
+          uncaught_at_entry_(std::uncaught_exceptions()) {}
+
+    FreshOOCExceptionCleanup(const FreshOOCExceptionCleanup&) = delete;
+    FreshOOCExceptionCleanup& operator=(const FreshOOCExceptionCleanup&) = delete;
+
+    ~FreshOOCExceptionCleanup() {
+        if (collector_ != nullptr && preserve_for_resume_ != nullptr && !*preserve_for_resume_ &&
+            std::uncaught_exceptions() > uncaught_at_entry_ &&
+            !collector_->discard_uncommitted_fresh_ooc_noexcept()) {
+            std::fprintf(stderr,
+                         "[ooc] preserving an uncommitted fresh store after exception cleanup "
+                         "could not prove and remove both owned artifacts\n");
+        }
+    }
+
+private:
+    relation::RelationCollector* collector_;
+    const bool* preserve_for_resume_;
+    int uncaught_at_entry_;
+};
+
+} // namespace
+
+void Pipeline::refresh_relation_corpus_checked(relation::RelationCorpus& corpus,
+                                               const relation::CorpusDigest& expected,
+                                               const char* mismatch_message) {
+    const auto scope = corpus.ooc_artifact_scope();
+    if (!scope.has_value()) {
+        throw std::invalid_argument(
+            "Pipeline: fresh relation-corpus validation requires finalized OOC storage");
+    }
+
+    // Validate a temporary descriptor-bound reader before replacing the
+    // corpus's current mmap. A failed digest check therefore preserves the
+    // caller's move-only owner and identity token. On success, the private
+    // structural handoff makes this same reader the next phase's source.
+    auto candidate = relation::RelationCorpus::from_finalized_ooc(
+        corpus.logical_generation(), scope->base_path, scope->descriptor,
+        relation::OOCCleanupPolicy::Preserve);
+    if (relation::corpus_digest(candidate) != expected) {
+        throw std::runtime_error(mismatch_message);
+    }
+    corpus.replace_ooc_reader_from(std::move(candidate));
+}
+
 struct Pipeline::MatrixResult::StructuredRelations final {
     StructuredRelations(relation::RelationCorpus source_corpus,
-                        std::vector<size_t> source_row_to_relation)
+                        std::vector<size_t> source_row_to_relation) noexcept
         : corpus(std::move(source_corpus)), row_to_relation(std::move(source_row_to_relation)) {}
 
     relation::RelationCorpus corpus;
@@ -108,7 +185,7 @@ std::span<const size_t> Pipeline::MatrixResult::structured_row_to_relation() con
     return structured_relations_->row_to_relation;
 }
 
-void Pipeline::MatrixResult::retain_structured_relations(relation::RelationCorpus corpus,
+void Pipeline::MatrixResult::retain_structured_relations(relation::RelationCorpus&& corpus,
                                                          std::vector<size_t> row_to_relation) {
     if (structured_relations_ != nullptr || !relations.empty()) {
         throw std::logic_error(
@@ -128,8 +205,11 @@ void Pipeline::MatrixResult::retain_structured_relations(relation::RelationCorpu
                 "MatrixResult: structured row mapping contains an invalid corpus ordinal");
         }
     }
-    structured_relations_ =
-        std::make_unique<StructuredRelations>(std::move(corpus), std::move(row_to_relation));
+    // A new-expression allocates before evaluating constructor arguments.
+    // Allocation failure therefore leaves the caller's corpus owner intact;
+    // the noexcept constructor performs only the final ownership transfer.
+    structured_relations_.reset(
+        new StructuredRelations(std::move(corpus), std::move(row_to_relation)));
 }
 
 const relation::RelationCorpus& Pipeline::MatrixResult::structured_corpus() const {
@@ -346,8 +426,8 @@ inline V3Mode cascade_v3_mode() {
     return V3Mode::On;
 }
 
-inline bool cascade_v3_enabled_for_round(int round_index) {
-    V3Mode m = cascade_v3_mode();
+inline bool cascade_v3_enabled_for_round(V3Mode mode, int round_index) {
+    const V3Mode m = mode;
     if (m == V3Mode::Off)
         return false;
     if (m == V3Mode::On)
@@ -850,6 +930,9 @@ Pipeline::Pipeline(const Integer& n, const Config& config)
 Pipeline::StructuredRouteSnapshot Pipeline::capture_structured_route_snapshot() const {
     const auto mode = relation::parse_structured_filter_mode(std::getenv("GNFS_STRUCTURED_FILTER"));
     std::string resume_base_path = pipeline_resume_base_path();
+    if (!resume_base_path.empty()) {
+        resume_base_path = relation::relation_corpus_detail::freeze_ooc_path(resume_base_path);
+    }
     const bool resume_enabled = !resume_base_path.empty();
     const auto ooc_policy =
         relation::decide_ooc_policy(std::getenv("GNFS_OOC_RELATIONS"), params_.large_prime_bound);
@@ -860,7 +943,12 @@ Pipeline::StructuredRouteSnapshot Pipeline::capture_structured_route_snapshot() 
         configured_ooc_base_path.emplace(path_env);
     }
     const bool large_primes_enabled = params_.large_prime_bound > params_.algebraic_bound;
-    const size_t distributed_workers = sieve::parse_distributed_sieve_workers_env();
+    auto distributed_config = sieve::parse_distributed_sieve_env();
+    const size_t distributed_workers = distributed_config.num_workers;
+    if (distributed_workers > 0) {
+        distributed_config.base_path =
+            relation::relation_corpus_detail::freeze_ooc_path(distributed_config.base_path);
+    }
     const bool distributed_size_gate_ok = params_.digits >= 30;
     const char* distributed_force_env = std::getenv("GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL");
     const bool distributed_force_small =
@@ -890,9 +978,11 @@ Pipeline::StructuredRouteSnapshot Pipeline::capture_structured_route_snapshot() 
         std::move(resume_base_path),
         std::move(ooc_paths),
         std::string(ooc_policy.reason),
+        std::move(distributed_config.base_path),
         large_primes_enabled,
         ooc_enabled,
         distributed_workers,
+        distributed_config.sq_per_worker,
         distributed_size_gate_ok,
         distributed_force_small,
         distributed_route_selected,
@@ -1119,15 +1209,38 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
 // ============================================================
 
 relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialContext& ctx,
-                                                              const FactorBase& fb) {
+                                                              const FactorBase& fb,
+                                                              SieveCollectionOptions options) {
+    if (options.adaptive_round_limit == 0 ||
+        options.adaptive_round_limit > DEFAULT_ADAPTIVE_SIEVE_ROUND_LIMIT) {
+        throw std::out_of_range("adaptive_round_limit must be in [1, 10]");
+    }
+    switch (options.legacy_raw_ooc_cleanup) {
+    case LegacyRawOOCCleanupPolicy::RetainArtifacts:
+    case LegacyRawOOCCleanupPolicy::RemoveArtifacts:
+        break;
+    default:
+        throw std::invalid_argument("invalid legacy raw OOC cleanup policy");
+    }
     const auto structured_route = capture_structured_route_snapshot();
-    return sieve_and_collect_impl(ctx, fb, structured_route);
+    if (structured_route.distributed_route_selected &&
+        (options.adaptive_round_limit != DEFAULT_ADAPTIVE_SIEVE_ROUND_LIMIT ||
+         options.legacy_raw_ooc_cleanup != LegacyRawOOCCleanupPolicy::RetainArtifacts)) {
+        throw std::invalid_argument(
+            "bounded local sieve collection options are incompatible with distributed sieving");
+    }
+    return sieve_and_collect_impl(ctx, fb, structured_route, options);
 }
 
 relation::RelationReductionResult
 Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase& fb,
-                                 const StructuredRouteSnapshot& structured_preflight) {
+                                 const StructuredRouteSnapshot& structured_preflight,
+                                 SieveCollectionOptions options) {
     auto t0 = std::chrono::high_resolution_clock::now();
+    FactorStatsRollback stats_rollback(stats_);
+    const int adaptive_round_limit = static_cast<int>(options.adaptive_round_limit);
+    stats_.sieve_rounds_completed = 0;
+    stats_.sieve_stop_reason = SieveStopReason::NotStarted;
     stats_.special_q_batch_worker_limit = 0;
     stats_.special_q_batch_peak_workers = 0;
     stats_.special_q_batch_count = 0;
@@ -1145,6 +1258,22 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     stats_.candidate_batch_after_release_current_rss_bytes.reset();
     stats_.timings.candidate_generation_s = 0.0;
     stats_.timings.candidate_cofactor_s = 0.0;
+
+    // Freeze every relation-acceptance/reduction policy before callbacks can
+    // mutate process ENV. The same effective values are hashed into the sieve
+    // run identity, so restart with a different policy fails before OOC
+    // recovery mutation.
+    const V3Mode frozen_cascade_v3_mode = cascade_v3_mode();
+    const relation::RelationMergePolicy frozen_merge_policy =
+        relation::relation_merge_policy_from_environment();
+    const sieve::SieveRunPolicyIdentity run_policy_identity{
+        .cascade_v3_mode = static_cast<uint8_t>(frozen_cascade_v3_mode),
+        .accept_3lp = frozen_merge_policy.accept_3lp,
+        .merge_weight3 = frozen_merge_policy.merge_weight3,
+        .weight_cutoff = static_cast<uint32_t>(frozen_merge_policy.weight_cutoff),
+        .drop_residual = frozen_merge_policy.drop_residual,
+        .structured_filter_selection = static_cast<uint8_t>(structured_preflight.policy.selection),
+    };
 
     // Sieve params
     sieve::SieveParams sieve_params;
@@ -1169,10 +1298,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     // 拓宽 LP space. 50d β plateau ~121% 主因是 lp_bits=23 时 weight≥3 LP keys 占 30%,
     // 接受 3LP 后 V3 cascade BFS spanning tree 处理 chain merge.
     // 默认 OFF: 零回归. 启用 OPT-IN 时 cofactor + filter + clique_merger 三处同步.
-    {
-        const char* env = std::getenv("GNFS_3LP");
-        cofac_config.allow_3lp = (env && std::atoi(env) == 1);
-    }
+    cofac_config.allow_3lp = frozen_merge_policy.accept_3lp;
 
     // Special-Q generator
     sieve::SpecialQRange sq_range;
@@ -1187,7 +1313,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     // Bind every persisted Special-Q cursor to the exact mathematical inputs
     // that produced its relation prefix. This is computed once per sieve run
     // after polynomial and factor-base construction.
-    const auto run_identity = sieve::make_sieve_run_identity(ctx, fb, params_);
+    const auto run_identity = sieve::make_sieve_run_identity(ctx, fb, params_, run_policy_identity);
 
     // ── Sieve mid-flight checkpoint resume (BACKLOG #11e, ENV GNFS_SIEVE_RESUME) ──
     // GNFS_SIEVE_RESUME=<base_path> (or GNFS_RESUME, 2026-05-21 alias covering
@@ -1197,6 +1323,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     // batches. Normal completion → remove ckpt + flip OOC writer to MAGIC.
     std::string sieve_resume_path = structured_preflight.resume_base_path;
     std::optional<sieve::SieveCheckpoint> prior_ckpt;
+    std::optional<sieve::SieveCheckpoint> terminal_checkpoint;
     if (!sieve_resume_path.empty()) {
         const std::string ckpt_file = sieve_resume_path + ".sieve_ckpt";
         if (sieve::SieveCheckpoint::exists(ckpt_file)) {
@@ -1209,13 +1336,19 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                     "sieve checkpoint run identity does not match N, polynomial, "
                     "factor base, or sieve parameters");
             }
-            if (prior_ckpt->ooc_base_path != sieve_resume_path) {
+            const std::string checkpoint_ooc_path =
+                relation::relation_corpus_detail::freeze_ooc_path(prior_ckpt->ooc_base_path);
+            if (checkpoint_ooc_path != sieve_resume_path) {
                 throw std::runtime_error(
                     "sieve checkpoint OOC path does not match the configured resume path");
             }
             if (prior_ckpt->ooc_format_version != relation::OOCRelationWriter::FORMAT_VERSION_V3) {
                 throw std::runtime_error(
                     "sieve checkpoint requires paired OOC V3; legacy V2 recovery is unsafe");
+            }
+            if (prior_ckpt->round < 0 || prior_ckpt->round >= adaptive_round_limit) {
+                throw std::runtime_error(
+                    "sieve checkpoint round is outside the configured adaptive round limit");
             }
 
             coll_config.ooc_resume_snapshot = relation::OOCSnapshotDescriptor{
@@ -1224,6 +1357,11 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                 .generation = prior_ckpt->ooc_generation,
                 .count = prior_ckpt->ooc_relation_count,
                 .data_end = prior_ckpt->ooc_data_end,
+            };
+            coll_config.ooc_resume_sequence_receipt = relation::RelationSequenceReceipt{
+                .relation_count = prior_ckpt->ooc_relation_count,
+                .low = prior_ckpt->ooc_sequence_receipt_low,
+                .high = prior_ckpt->ooc_sequence_receipt_high,
             };
             emit_log(LogLevel::Info, Phase::Sieving,
                      "checkpoint loaded: sq_count=" + std::to_string(prior_ckpt->sq_count) +
@@ -1235,6 +1373,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                          ckpt_file.c_str(), static_cast<unsigned long long>(prior_ckpt->sq_count),
                          prior_ckpt->current_index, prior_ckpt->round,
                          static_cast<unsigned long long>(prior_ckpt->ooc_generation));
+            terminal_checkpoint = *prior_ckpt;
         }
         coll_config.ooc_enabled = true;
         coll_config.ooc_base_path = sieve_resume_path;
@@ -1268,10 +1407,27 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     const bool distributed_force_small = structured_preflight.distributed_force_small;
     const bool distributed_route_selected = structured_preflight.distributed_route_selected;
     const auto& structured_policy = structured_preflight.policy;
+    if (distributed_route_selected) {
+        // Distributed workers own every relation artifact. Do not reserve an
+        // unused master OOC pair: a process-level crash cannot run cleanup and
+        // would otherwise strand that empty namespace.
+        coll_config.ooc_enabled = false;
+        coll_config.ooc_base_path.clear();
+    }
 
+    const bool verify_ooc_payload_after_callbacks =
+        static_cast<bool>(progress_cb_) || static_cast<bool>(log_cb_);
+    bool preserve_ooc_for_resume = terminal_checkpoint.has_value();
     relation::RelationCollector collector(coll_config);
+    FreshOOCExceptionCleanup fresh_ooc_exception_cleanup(collector, preserve_ooc_for_resume);
     const bool recovered_finalized_ooc =
         collector.ooc_recovery_outcome() == relation::OOCRecoveryOutcome::FinalizedCorpus;
+    const bool recovered_terminal_checkpoint =
+        prior_ckpt.has_value() && prior_ckpt->collection_complete;
+    if (recovered_finalized_ooc && !recovered_terminal_checkpoint) {
+        throw std::runtime_error(
+            "finalized OOC recovery requires a terminal collection checkpoint");
+    }
     // Reserve/validate the exact OOC pair before the first sieve-stage callback.
     // A direct sieve invocation with a colliding raw base therefore fails with
     // no callback, relation generation, or artifact mutation.
@@ -1299,10 +1455,9 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     collector.set_polynomial_context(ctx.n(), ctx.m());
 
     // Target
-    const size_t factor_base_cols = gnfs::util::saturating_size_add(
-        fb.rational_count(), fb.sieve_algebraic_count());
-    size_t matrix_cols =
-        gnfs::util::saturating_size_add(factor_base_cols, params_.target_excess);
+    const size_t factor_base_cols =
+        gnfs::util::saturating_size_add(fb.rational_count(), fb.sieve_algebraic_count());
+    size_t matrix_cols = gnfs::util::saturating_size_add(factor_base_cols, params_.target_excess);
     size_t initial_target = params_.raw_relation_target(matrix_cols);
     size_t batch_target = initial_target;
 
@@ -1314,6 +1469,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
             reduction_config.filter.max_passes = 10;
             reduction_config.large_primes_enabled = lp_enabled;
             reduction_config.merge_rounds = 10;
+            reduction_config.merge_policy = frozen_merge_policy;
             reduction_config.strategy =
                 relation::select_reduction_strategy(structured_policy, legacy_strategy);
             if (reduction_config.strategy == relation::ReductionStrategy::Structured) {
@@ -1374,9 +1530,35 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         coll_config.ooc_enabled &&
         structured_policy.selection == relation::StructuredFilterSelection::Structured;
     std::optional<relation::OOCSnapshotDescriptor> last_structured_ooc_source;
+    std::optional<relation::OOCSnapshotDescriptor> last_legacy_ooc_source;
     auto reduce_collector_snapshot = [&](relation::ReductionStrategy legacy_strategy) {
         if (!structured_ooc_route) {
-            return reduce_vector(collector.snapshot_relations(), legacy_strategy);
+            if (!coll_config.ooc_enabled) {
+                return reduce_vector(collector.snapshot_relations(), legacy_strategy);
+            }
+
+            std::pair<std::vector<Relation>, relation::OOCSnapshotDescriptor> snapshot;
+            if (recovered_finalized_ooc) {
+                const auto descriptor = collector.finalize_ooc();
+                if (!descriptor.has_value()) {
+                    throw std::logic_error(
+                        "recovered legacy OOC collector has no finalized descriptor");
+                }
+                snapshot = {collector.snapshot_relations(), *descriptor};
+            } else {
+                snapshot = collector.with_unique_ooc_prefix(
+                    [](const relation::CollectorUniqueOOCPrefixSource& source) {
+                        return std::pair(source.read_all_verified(), source.descriptor());
+                    });
+            }
+
+            auto reduction = reduce_vector(std::move(snapshot.first), legacy_strategy);
+            if (reduction.stats.input_relations != snapshot.second.count) {
+                throw std::logic_error(
+                    "legacy OOC reduction input count differs from its raw prefix");
+            }
+            last_legacy_ooc_source = snapshot.second;
+            return reduction;
         }
         if (!structured_preflight.ooc_paths.has_value()) {
             throw std::logic_error("structured OOC reduction is missing its frozen run paths");
@@ -1479,8 +1661,11 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
             std::fprintf(stderr, "[dist_sieve] dispatch: workers=%zu sq_range=[%u,%u] max_sq=%zu\n",
                          distributed_workers, sq_range.min_q, sq_range.max_q, max_sq);
 
-            sieve::DistributedSieveConfig dist_cfg = sieve::parse_distributed_sieve_env();
-            dist_cfg.num_workers = distributed_workers;
+            sieve::DistributedSieveConfig dist_cfg{
+                .num_workers = distributed_workers,
+                .base_path = structured_preflight.distributed_base_path,
+                .sq_per_worker = structured_preflight.distributed_sq_per_worker,
+            };
             // Cap each worker at ~max_special_q / num_workers SQs to avoid
             // runaway sieve when the caller-specified sq_range covers vastly
             // more primes than needed.
@@ -1507,6 +1692,16 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
             auto dist_reduction = reduce_vector(
                 std::move(dist_rels), lp_enabled ? relation::ReductionStrategy::StandardV0
                                                  : relation::ReductionStrategy::NoLargePrimes);
+            // The distributed workers own every relation payload; the eager
+            // master collector is unused. Remove its exact fresh empty pair
+            // before any success callback or normal return can strand it and
+            // block a same-path retry.
+            if (!collector.discard_uncommitted_fresh_ooc_noexcept()) {
+                throw std::runtime_error(
+                    "distributed sieve could not remove its unused master OOC artifacts");
+            }
+            stats_.sieve_rounds_completed = 1;
+            stats_.sieve_stop_reason = SieveStopReason::DistributedWaveComplete;
 
             emit_log(LogLevel::Info, Phase::Sieving,
                      "distributed sieve done: raw=" + std::to_string(stats_.relations_found) +
@@ -1516,6 +1711,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                          stats_.relations_found, dist_reduction.size(), sq_count);
             emit_progress(Phase::Sieving, "Sieving complete (distributed)", 1.0);
 
+            stats_rollback.commit();
             return dist_reduction;
         }
     }
@@ -1524,12 +1720,126 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     // Collect raw relations, filter+merge, check if enough usable.
     // If not, increase target and continue sieving.
     std::optional<relation::RelationReductionResult> last_reduction;
-    constexpr int MAX_ROUNDS = 10;
     // BACKLOG #11e: checkpoint write 频率. Every N SQ batches (each batch
     // 2-4 SQs) we persist state. N=25 → ~50-100 SQs/checkpoint.
     // Trade-off: 频繁 → 多 disk IO; 稀疏 → resume 时丢更多 SQ.
     constexpr size_t CHECKPOINT_BATCH_INTERVAL = 25;
     size_t last_checkpoint_batch = 0;
+    auto publish_sieve_checkpoint = [&](int checkpoint_round, bool terminal_boundary) {
+        const auto descriptor = collector.checkpoint_ooc();
+        const auto sequence_receipt = collector.ooc_accepted_sequence_receipt();
+        if (sequence_receipt.relation_count != descriptor.count) {
+            throw std::logic_error("OOC checkpoint receipt count differs from its descriptor");
+        }
+
+        sieve::SieveCheckpoint checkpoint;
+        checkpoint.sq_count = sq_count;
+        checkpoint.current_index = sq_gen.current_index();
+        checkpoint.round = checkpoint_round;
+        checkpoint.batch_target = batch_target;
+        checkpoint.candidates_total = candidates_total;
+        checkpoint.run_n = run_identity.run_n;
+        checkpoint.run_fingerprint_lo = run_identity.fingerprint_lo;
+        checkpoint.run_fingerprint_hi = run_identity.fingerprint_hi;
+        checkpoint.ooc_base_path = sieve_resume_path;
+        checkpoint.ooc_format_version = descriptor.format_version;
+        checkpoint.ooc_store_id = descriptor.store_id;
+        checkpoint.ooc_generation = descriptor.generation;
+        checkpoint.ooc_relation_count = descriptor.count;
+        checkpoint.ooc_data_end = descriptor.data_end;
+        checkpoint.ooc_sequence_receipt_low = sequence_receipt.low;
+        checkpoint.ooc_sequence_receipt_high = sequence_receipt.high;
+        checkpoint.collection_complete = terminal_boundary;
+
+        const std::string checkpoint_path = sieve_resume_path + ".sieve_ckpt";
+        const std::string checkpoint_temporary =
+            sieve::SieveCheckpoint::temporary_path(checkpoint_path);
+        bool checkpoint_published = false;
+        bool checkpoint_proven_absent = false;
+        bool recovered_postpublication_error = false;
+        std::string checkpoint_error;
+        // From this point onward, a save failure may mean rename succeeded but
+        // the directory durability barrier failed. Preserve the suspended raw
+        // prefix until both official checkpoint paths are strictly proven
+        // absent.
+        preserve_ooc_for_resume = true;
+        try {
+            checkpoint.save(checkpoint_path);
+            checkpoint_published = true;
+        } catch (const std::exception& error) {
+            checkpoint_error = error.what();
+        } catch (...) {
+            checkpoint_error = "unknown error";
+        }
+
+        if (!checkpoint_published) {
+            // POSIX rename precedes the parent-directory fsync. If that
+            // durability step reports an error, the intended checkpoint may
+            // already be the visible official file.
+            try {
+                const auto visible = sieve::SieveCheckpoint::load(checkpoint_path);
+                if (visible == checkpoint) {
+                    checkpoint_published = true;
+                    recovered_postpublication_error = true;
+                }
+            } catch (...) {
+                // The intended checkpoint is not provably visible.
+            }
+        }
+
+        if (!checkpoint_published && !terminal_checkpoint.has_value() &&
+            !sieve::SieveCheckpoint::exists(checkpoint_path) &&
+            !sieve::SieveCheckpoint::exists(checkpoint_temporary)) {
+            checkpoint_proven_absent = true;
+        }
+
+        if (!checkpoint_published && !checkpoint_proven_absent) {
+            throw std::runtime_error("checkpoint publication outcome is uncertain; preserving the "
+                                     "suspended OOC prefix for restart: " +
+                                     checkpoint_error);
+        }
+
+        if (checkpoint_proven_absent) {
+            // Reopen this durable prefix. A periodic checkpoint can retry on a
+            // later batch, but the terminal boundary must not finalize a raw
+            // prefix that has no exact durable receipt.
+            preserve_ooc_for_resume = false;
+            try {
+                collector.resume_ooc(descriptor);
+            } catch (const std::exception& resume_error) {
+                throw std::runtime_error("checkpoint save failed (" + checkpoint_error +
+                                         ") and OOC append recovery also failed (" +
+                                         resume_error.what() + ")");
+            }
+            if (terminal_boundary) {
+                throw std::runtime_error(
+                    "terminal checkpoint publication failed before becoming visible; "
+                    "refusing to finalize an unbound OOC prefix: " +
+                    checkpoint_error);
+            }
+            emit_log(LogLevel::Warn, Phase::Sieving,
+                     "checkpoint publication failed before the intended checkpoint became "
+                     "visible; OOC prefix reopened for retry: " +
+                         checkpoint_error);
+            return;
+        }
+
+        // A published checkpoint and its suspended prefix form the durable
+        // pair. Periodic publication reopens it for append; terminal
+        // publication deliberately remains suspended so finalize commits the
+        // exact descriptor generation recorded by the checkpoint.
+        terminal_checkpoint = checkpoint;
+        if (!terminal_boundary) {
+            collector.resume_ooc(descriptor);
+        }
+        last_checkpoint_batch = 0;
+        if (recovered_postpublication_error) {
+            emit_log(LogLevel::Warn, Phase::Sieving,
+                     "checkpoint save reported a post-publication durability error, but the "
+                     "intended checkpoint is visible and valid: " +
+                         checkpoint_error);
+        }
+    };
 
     const size_t local_sieve_thread_budget = params_.max_local_sieve_threads;
     if (local_sieve_thread_budget == 0) {
@@ -1544,13 +1854,13 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         std::min(local_sieve_thread_budget, configured_batch_workers);
 
     int last_reduction_round = round_start;
-    for (int round = round_start; round < MAX_ROUNDS; ++round) {
+    for (int round = round_start; round < adaptive_round_limit; ++round) {
         last_reduction_round = round;
         // ── Batch SQ processing: sieve + cofac in parallel ──
         // Collect a batch of SQ primes, sieve them in parallel (each thread
         // owns its own LatticeSieve copy), then cofac results in parallel.
-        while (!recovered_finalized_ooc && sq_gen.has_next() && collector.size() < batch_target &&
-               sq_count < max_sq) {
+        while (!recovered_finalized_ooc && !recovered_terminal_checkpoint && sq_gen.has_next() &&
+               collector.size() < batch_target && sq_count < max_sq) {
             // Collect a batch of SQs for parallel processing
             // Batch width freezes membership and checkpoint cadence independently
             // from the configured worker cap. Each active worker owns a sieve array.
@@ -1723,81 +2033,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
             if (!sieve_resume_path.empty()) {
                 ++last_checkpoint_batch;
                 if (last_checkpoint_batch >= CHECKPOINT_BATCH_INTERVAL) {
-                    const auto descriptor = collector.checkpoint_ooc();
-                    sieve::SieveCheckpoint ck;
-                    ck.sq_count = sq_count;
-                    ck.current_index = sq_gen.current_index();
-                    ck.round = round;
-                    ck.batch_target = batch_target;
-                    ck.candidates_total = candidates_total;
-                    ck.run_n = run_identity.run_n;
-                    ck.run_fingerprint_lo = run_identity.fingerprint_lo;
-                    ck.run_fingerprint_hi = run_identity.fingerprint_hi;
-                    ck.ooc_base_path = sieve_resume_path;
-                    ck.ooc_format_version = descriptor.format_version;
-                    ck.ooc_store_id = descriptor.store_id;
-                    ck.ooc_generation = descriptor.generation;
-                    ck.ooc_relation_count = descriptor.count;
-                    ck.ooc_data_end = descriptor.data_end;
-
-                    bool checkpoint_published = false;
-                    bool recovered_postpublication_error = false;
-                    std::string checkpoint_error;
-                    try {
-                        ck.save(sieve_resume_path + ".sieve_ckpt");
-                        checkpoint_published = true;
-                    } catch (const std::exception& e) {
-                        checkpoint_error = e.what();
-                    } catch (...) {
-                        checkpoint_error = "unknown error";
-                    }
-
-                    if (!checkpoint_published) {
-                        // POSIX rename precedes the parent-directory fsync. If
-                        // that durability step reports an error, the intended
-                        // checkpoint may already be the visible official file.
-                        // Resolve the state by strict load + exact comparison
-                        // before deciding whether to retry the old generation.
-                        try {
-                            const auto visible =
-                                sieve::SieveCheckpoint::load(sieve_resume_path + ".sieve_ckpt");
-                            if (visible == ck) {
-                                checkpoint_published = true;
-                                recovered_postpublication_error = true;
-                            }
-                        } catch (...) {
-                            // The intended checkpoint is not provably visible;
-                            // reopen the durable OOC prefix and retry later.
-                        }
-                    }
-
-                    if (!checkpoint_published) {
-                        // Reopen this durable prefix and retry on the next batch
-                        // rather than leaving the active process suspended.
-                        try {
-                            collector.resume_ooc(descriptor);
-                        } catch (const std::exception& resume_error) {
-                            throw std::runtime_error("checkpoint save failed (" + checkpoint_error +
-                                                     ") and OOC append recovery also failed (" +
-                                                     resume_error.what() + ")");
-                        }
-                        emit_log(LogLevel::Warn, Phase::Sieving,
-                                 "checkpoint publication failed before the intended "
-                                 "checkpoint became visible; OOC prefix reopened for retry: " +
-                                     checkpoint_error);
-                    } else {
-                        // A published checkpoint and its suspended prefix form
-                        // the durable pair. Reopen failure must abort so a
-                        // restart can recover that exact pair.
-                        collector.resume_ooc(descriptor);
-                        last_checkpoint_batch = 0;
-                        if (recovered_postpublication_error) {
-                            emit_log(LogLevel::Warn, Phase::Sieving,
-                                     "checkpoint save reported a post-publication durability "
-                                     "error, but the intended checkpoint is visible and valid: " +
-                                         checkpoint_error);
-                        }
-                    }
+                    publish_sieve_checkpoint(round, false);
                 }
             }
 
@@ -1822,18 +2058,26 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
             }
         }
 
-        if (collector.size() < 10 && !recovered_finalized_ooc)
+        if (collector.size() < 10 && !recovered_finalized_ooc && !recovered_terminal_checkpoint) {
+            stats_.sieve_stop_reason =
+                sq_count >= max_sq
+                    ? SieveStopReason::SpecialQBudgetReached
+                    : (!sq_gen.has_next() ? SieveStopReason::SpecialQRangeExhausted
+                                          : SieveStopReason::InsufficientRawRelations);
             break;
+        }
 
         // Filter + merge a stable snapshot to check usable relation count. OOC
         // collection must remain appendable when another adaptive round is needed.
-        const bool use_v3 = lp_enabled && cascade_v3_enabled_for_round(round);
+        const bool use_v3 =
+            lp_enabled && cascade_v3_enabled_for_round(frozen_cascade_v3_mode, round);
         const auto strategy = !lp_enabled ? relation::ReductionStrategy::NoLargePrimes
                                           : (use_v3 ? relation::ReductionStrategy::StandardV0WithV3
                                                     : relation::ReductionStrategy::StandardV0);
         // Avoid retaining the previous reduced corpus while materializing the next probe.
         last_reduction.reset();
         last_reduction.emplace(reduce_collector_snapshot(strategy));
+        ++stats_.sieve_rounds_completed;
         const auto& reduction_stats = last_reduction->stats;
 
         // V3 cascade (GNFS_CASCADE_V3=1): engine runs it after V0 on a
@@ -1852,18 +2096,28 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         // (matrix builder will create one column per odd-exp unique LP key).
         // 50d/60d 实测 lp_cols ratio = 64% of usable, far above 旧 5% guess.
         const size_t lp_cols = reduction_stats.output_lp_columns;
-        const size_t effective_cols =
-            relation::effective_column_count(matrix_cols, lp_cols);
+        const size_t effective_cols = relation::effective_column_count(matrix_cols, lp_cols);
 
         // Check: enough usable relations?
-        if (relation::has_effective_column_excess(
-                last_reduction->size(), matrix_cols, lp_cols) ||
-            recovered_finalized_ooc)
+        if (recovered_finalized_ooc) {
+            stats_.sieve_stop_reason = SieveStopReason::RecoveredFinalizedCorpus;
             break;
+        }
+        if (recovered_terminal_checkpoint) {
+            stats_.sieve_stop_reason = SieveStopReason::RecoveredTerminalCheckpoint;
+            break;
+        }
+        if (relation::has_effective_column_excess(last_reduction->size(), matrix_cols, lp_cols)) {
+            stats_.sieve_stop_reason = SieveStopReason::EffectiveColumnExcess;
+            break;
+        }
 
         // Not enough — increase target and continue if SQs available
-        if (!sq_gen.has_next() || sq_count >= max_sq)
+        if (!sq_gen.has_next() || sq_count >= max_sq) {
+            stats_.sieve_stop_reason = sq_count >= max_sq ? SieveStopReason::SpecialQBudgetReached
+                                                          : SieveStopReason::SpecialQRangeExhausted;
             break;
+        }
 
         double merge_rate = (collector.size() > 0) ? static_cast<double>(last_reduction->size()) /
                                                          static_cast<double>(collector.size())
@@ -1872,9 +2126,10 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         const size_t needed_raw = gnfs::util::size_from_nonnegative_double_floor(
             static_cast<double>(target_usable) / std::max(merge_rate, 0.001));
         // Raise cap: for low merge rates (~2%), need up to 100× initial target
-        batch_target = std::min(
-            std::max(gnfs::util::saturating_size_product(batch_target, 2), needed_raw),
-            gnfs::util::saturating_size_product(initial_target, 100)); // generous cap for low merge rates
+        batch_target =
+            std::min(std::max(gnfs::util::saturating_size_product(batch_target, 2), needed_raw),
+                     gnfs::util::saturating_size_product(initial_target,
+                                                         100)); // generous cap for low merge rates
 
         // β = lp_cols / usable (BACKLOG #1 diagnostic). β << 1 means matrix
         // build has excess and BW can find dependencies; β >= 1 means LP cols
@@ -1897,53 +2152,95 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                      merge_rate, beta, batch_target);
     }
 
+    if (stats_.sieve_stop_reason == SieveStopReason::NotStarted) {
+        stats_.sieve_stop_reason = SieveStopReason::AdaptiveRoundLimitReached;
+    }
+
     // A tiny or already-exhausted corpus may leave the adaptive loop without
     // probing. Still publish one reduced generation for the current stable
     // raw prefix instead of exposing raw relations through the step API.
     if (!last_reduction) {
-        const bool use_v3 = lp_enabled && cascade_v3_enabled_for_round(last_reduction_round);
+        const bool use_v3 = lp_enabled && cascade_v3_enabled_for_round(frozen_cascade_v3_mode,
+                                                                       last_reduction_round);
         const auto strategy = !lp_enabled ? relation::ReductionStrategy::NoLargePrimes
                                           : (use_v3 ? relation::ReductionStrategy::StandardV0WithV3
                                                     : relation::ReductionStrategy::StandardV0);
         last_reduction.emplace(reduce_collector_snapshot(strategy));
+        ++stats_.sieve_rounds_completed;
+    }
+    if (!sieve_resume_path.empty() && !recovered_finalized_ooc) {
+        // Final magic may be recovered after a process exit but before
+        // checkpoint removal. Bind the complete terminal relation sequence and
+        // logical sieve cursor first; finalized recovery therefore never
+        // adopts an extension beyond the checkpoint receipt.
+        publish_sieve_checkpoint(last_reduction_round, true);
     }
     // The adaptive loop is the last append boundary. Finalize OOC storage only
     // after every possible continuation has been decided. A structured OOC
     // result is authoritative only when its last probe describes the exact
     // terminal raw prefix. Prove that while the collector still owns the raw
     // pair; only then transfer and remove those no-longer-needed artifacts.
+    const bool remove_legacy_terminal_raw_ooc =
+        coll_config.ooc_enabled && !structured_ooc_route &&
+        options.legacy_raw_ooc_cleanup == LegacyRawOOCCleanupPolicy::RemoveArtifacts;
+    std::optional<relation::OOCSnapshotDescriptor> terminal_ooc_descriptor;
     if (structured_ooc_route) {
         if (!last_structured_ooc_source.has_value()) {
             throw std::logic_error("structured OOC route has no successful raw-prefix probe");
         }
-        const auto final_descriptor = collector.finalize_ooc();
-        if (!final_descriptor.has_value()) {
+        terminal_ooc_descriptor = collector.finalize_ooc();
+        if (!terminal_ooc_descriptor.has_value()) {
             throw std::logic_error("structured OOC route did not finalize an OOC store");
         }
         const auto& probed = *last_structured_ooc_source;
         const bool same_terminal_prefix =
-            final_descriptor->format_version == probed.format_version &&
-            final_descriptor->store_id == probed.store_id &&
-            final_descriptor->count == probed.count &&
-            final_descriptor->data_end == probed.data_end;
-        if (!same_terminal_prefix ||
-            last_reduction->stats.input_relations != final_descriptor->count) {
+            terminal_ooc_descriptor->format_version == probed.format_version &&
+            terminal_ooc_descriptor->store_id == probed.store_id &&
+            terminal_ooc_descriptor->count == probed.count &&
+            terminal_ooc_descriptor->data_end == probed.data_end;
+        const bool generation_transition_valid =
+            recovered_finalized_ooc
+                ? terminal_ooc_descriptor->generation == probed.generation
+                : probed.generation != std::numeric_limits<uint64_t>::max() &&
+                      terminal_ooc_descriptor->generation == probed.generation + 1;
+        if (!same_terminal_prefix || !generation_transition_valid ||
+            last_reduction->stats.input_relations != terminal_ooc_descriptor->count) {
             throw std::logic_error(
                 "structured OOC final reduction does not match the terminal raw prefix");
         }
     } else {
-        (void)collector.finalize_ooc();
+        terminal_ooc_descriptor = collector.finalize_ooc();
+        if (remove_legacy_terminal_raw_ooc) {
+            if (!terminal_ooc_descriptor.has_value()) {
+                throw std::logic_error(
+                    "legacy raw OOC cleanup requested without a finalized OOC store");
+            }
+            if (!last_legacy_ooc_source.has_value()) {
+                throw std::logic_error(
+                    "legacy raw OOC cleanup requested without a proven reduction prefix");
+            }
+            const auto& probed = *last_legacy_ooc_source;
+            const bool same_physical_prefix =
+                terminal_ooc_descriptor->format_version == probed.format_version &&
+                terminal_ooc_descriptor->store_id == probed.store_id &&
+                terminal_ooc_descriptor->count == probed.count &&
+                terminal_ooc_descriptor->data_end == probed.data_end;
+            const bool generation_transition_valid =
+                recovered_finalized_ooc
+                    ? terminal_ooc_descriptor->generation == probed.generation
+                    : probed.generation != std::numeric_limits<uint64_t>::max() &&
+                          terminal_ooc_descriptor->generation == probed.generation + 1;
+            if (!same_physical_prefix || !generation_transition_valid ||
+                last_reduction->stats.input_relations != terminal_ooc_descriptor->count ||
+                collector.size() != terminal_ooc_descriptor->count) {
+                throw std::logic_error(
+                    "legacy reduction does not match the terminal raw OOC prefix");
+            }
+        }
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
     stats_.timings.sieve_s = std::chrono::duration<double>(t1 - t0).count();
-
-    // Sieve normally complete → remove checkpoint (resume not needed).
-    // Crash before this line leaves ckpt + INCOMPLETE OOC files for next run.
-    if (!sieve_resume_path.empty()) {
-        sieve::SieveCheckpoint::remove(sieve_resume_path + ".sieve_ckpt");
-        emit_log(LogLevel::Info, Phase::Sieving, "sieve complete, checkpoint removed");
-    }
 
     // Collect final stats
     stats_.relations_found = collector.size();
@@ -1978,21 +2275,21 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     }
 
     // BACKLOG #1: emit warning when sieve loop exits without sufficient usable
-    // relations. Two cases: (a) MAX_ROUNDS reached without break (β plateau
+    // relations. Two cases: (a) the adaptive round limit was reached without
+    // enough excess (β plateau
     // signature), (b) SQs exhausted before target met (sieve depth too small).
     // Phase 5 will then attempt BW thin solve on the under-built matrix.
     const size_t terminal_lp_cols = last_reduction->stats.output_lp_columns;
-    if (!relation::has_effective_column_excess(
-            last_reduction->size(), matrix_cols, terminal_lp_cols)) {
-        const bool sqs_exhausted = !sq_gen.has_next() || sq_count >= max_sq;
+    if (!relation::has_effective_column_excess(last_reduction->size(), matrix_cols,
+                                               terminal_lp_cols)) {
+        const std::string_view stop_reason = sieve_stop_reason_name(stats_.sieve_stop_reason);
         std::fprintf(stderr,
                      "[sieve-warn] exit without excess: usable=%zu base_cols=%zu lp_cols=%zu, "
-                     "%s. Phase 5 will attempt BW thin solve.\n",
+                     "stop=%.*s. Phase 5 will attempt BW thin solve.\n",
                      last_reduction->size(), matrix_cols, terminal_lp_cols,
-                     sqs_exhausted ? "SQs exhausted" : "MAX_ROUNDS reached");
+                     static_cast<int>(stop_reason.size()), stop_reason.data());
         emit_log(LogLevel::Warn, Phase::Sieving,
-                 std::string("sieve exit without excess: ") +
-                     (sqs_exhausted ? "SQs exhausted" : "MAX_ROUNDS reached"));
+                 "sieve exit without excess: stop=" + std::string(stop_reason));
     }
     emit_progress(Phase::Sieving, "Sieving complete", 1.0);
 
@@ -2014,16 +2311,54 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                      " rescues=" + std::to_string(al.rescues_succeeded));
     }
 
-    if (structured_ooc_route) {
+    std::optional<relation::RelationCorpus> terminal_raw_cleanup;
+    if (verify_ooc_payload_after_callbacks &&
+        last_reduction->storage_kind() == relation::RelationStorageKind::FinalizedOOC) {
+        refresh_relation_corpus_checked(
+            last_reduction->corpus, last_reduction->stats.output_digest,
+            "structured OOC reduction changed after its terminal sieve snapshot");
+    }
+    if (structured_ooc_route || remove_legacy_terminal_raw_ooc) {
         // Keep the validated, finalized raw pair owned by the collector across
         // every user callback above. If a callback throws, unwinding removes
-        // the provisional reduced output but leaves the authoritative raw
+        // any provisional reduced output but leaves the authoritative raw
         // corpus for diagnosis or retry. Adoption happens only at this final
-        // no-callback boundary; failure retains the collector's raw owner.
-        relation::RelationCorpus terminal_raw = collector.handoff_ooc_corpus(
-            last_reduction->generation, relation::OOCCleanupPolicy::RemoveArtifacts);
-        (void)terminal_raw;
+        // no-callback boundary; failure retains the collector's raw owner. The
+        // legacy route enters this branch only through its explicit opt-in
+        // cleanup policy. Cleanup is armed only after any paired checkpoint
+        // has been removed successfully.
+        terminal_raw_cleanup.emplace(collector.handoff_ooc_corpus(
+            last_reduction->generation, relation::OOCCleanupPolicy::Preserve));
+        if (terminal_raw_cleanup->storage_kind() != relation::RelationStorageKind::FinalizedOOC) {
+            throw std::logic_error("terminal raw OOC handoff returned non-OOC storage");
+        }
+        if (!preserve_ooc_for_resume) {
+            // With no paired checkpoint, this handoff is the last owner able to
+            // remove a fresh raw pair if validation below throws.
+            (void)terminal_raw_cleanup->arm_ooc_cleanup();
+        }
+        if (verify_ooc_payload_after_callbacks && relation::corpus_digest(*terminal_raw_cleanup) !=
+                                                      last_reduction->stats.raw_input_digest) {
+            throw std::runtime_error(
+                "terminal raw OOC corpus changed after its reduction snapshot");
+        }
     }
+
+    // Final no-callback commit. A checked removal failure leaves the
+    // authoritative checkpoint and the preserve-policy raw corpus available.
+    if (!sieve_resume_path.empty()) {
+        sieve::SieveCheckpoint::remove_checked(
+            sieve_resume_path + ".sieve_ckpt",
+            terminal_checkpoint.has_value() ? &*terminal_checkpoint : nullptr);
+        std::fprintf(stderr, "[sieve-resume] completed checkpoint removed\n");
+    }
+
+    if (terminal_raw_cleanup.has_value()) {
+        // The storage kind was proven above and no operation can change it.
+        // Arming performs no allocation or filesystem access.
+        (void)terminal_raw_cleanup->arm_ooc_cleanup();
+    }
+    stats_rollback.commit();
     return std::move(*last_reduction);
 }
 
@@ -2197,20 +2532,72 @@ relation::RelationReductionResult Pipeline::filter(std::vector<Relation> relatio
 // Phase 5: Linear Algebra
 // ============================================================
 
-Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult reduction,
+Pipeline::MatrixResult Pipeline::build_matrix(relation::RelationReductionResult&& reduction,
                                               const FactorBase& fb, const PolynomialContext& ctx) {
-    emit_progress(Phase::LinearAlgebra, "Building matrix");
+    return matrix_phase(reduction, fb, ctx, false);
+}
 
-    auto t0 = std::chrono::high_resolution_clock::now();
+Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult&& reduction,
+                                              const FactorBase& fb, const PolynomialContext& ctx) {
+    return matrix_phase(reduction, fb, ctx, true);
+}
+
+Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult& reduction,
+                                              const FactorBase& fb, const PolynomialContext& ctx,
+                                              bool solve_dependencies) {
+    if (reduction.generation == 0 || !reduction.corpus.valid()) {
+        throw std::invalid_argument("matrix phase requires a valid reduction owner");
+    }
+    if (reduction.corpus.logical_generation() != reduction.generation) {
+        throw std::invalid_argument("matrix phase reduction generation does not match its corpus");
+    }
+    switch (reduction.stats.strategy) {
+    case relation::ReductionStrategy::NoLargePrimes:
+    case relation::ReductionStrategy::FilterOnly:
+    case relation::ReductionStrategy::StandardV0:
+    case relation::ReductionStrategy::StandardV0WithV3:
+    case relation::ReductionStrategy::CliqueV0:
+    case relation::ReductionStrategy::Structured:
+        break;
+    default:
+        throw std::invalid_argument("matrix phase received an unknown reduction strategy");
+    }
+    if (reduction.stats.output_relations != reduction.size()) {
+        throw std::invalid_argument(
+            "matrix phase reduction output count does not match its corpus");
+    }
     const bool structured_route =
         reduction.stats.strategy == relation::ReductionStrategy::Structured;
-    std::vector<Relation> relations;
-    std::optional<relation::RelationCorpus> structured_corpus;
-    if (structured_route) {
-        structured_corpus.emplace(std::move(reduction).take_corpus());
-    } else {
-        relations = std::move(reduction).take_relations();
+    if (!structured_route && reduction.storage_kind() != relation::RelationStorageKind::InMemory) {
+        throw std::invalid_argument("legacy matrix route requires an in-memory reduction corpus");
     }
+    const bool structured_ooc =
+        structured_route && reduction.storage_kind() == relation::RelationStorageKind::FinalizedOOC;
+    if (structured_ooc) {
+        refresh_relation_corpus_checked(
+            reduction.corpus, reduction.stats.output_digest,
+            "structured OOC reduction does not match its matrix-phase digest");
+    }
+    const bool verify_ooc_payload_after_callbacks =
+        structured_ooc && (static_cast<bool>(progress_cb_) || static_cast<bool>(log_cb_));
+    FactorStatsRollback stats_rollback(stats_);
+    static_assert(std::is_nothrow_move_assignable_v<Relation>);
+    static_assert(std::is_nothrow_move_assignable_v<std::vector<Relation>>);
+
+    emit_progress(Phase::LinearAlgebra, "Building matrix");
+    if (verify_ooc_payload_after_callbacks) {
+        refresh_relation_corpus_checked(
+            reduction.corpus, reduction.stats.output_digest,
+            "structured OOC reduction changed before the matrix build snapshot");
+    }
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+    const relation::RelationCorpus* structured_corpus =
+        structured_route ? &reduction.corpus : nullptr;
+    const std::vector<Relation>* legacy_relations =
+        structured_route ? nullptr : &reduction.corpus.borrow_in_memory();
+    std::vector<size_t> legacy_trim_order;
+    std::vector<Relation> legacy_result_slots;
 
     // Matrix builder config
     linalg::MatrixBuilderConfig mb_config;
@@ -2259,27 +2646,41 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
     if (structured_route) {
         build_result = mb.build_with_qc_streaming(*structured_corpus, fb, ctx);
     } else if (use_streaming_mb) {
-        linalg::VectorRelationSource src(relations);
+        linalg::VectorRelationSource src(*legacy_relations);
         build_result = mb.build_with_qc_streaming(src, fb, ctx);
         std::fprintf(stderr, "[matrix-streaming] matrix built from vector source "
                              "(GNFS_SGE_STREAMING)\n");
     } else {
-        build_result = mb.build_with_qc(relations, fb, ctx);
+        build_result = mb.build_with_qc(*legacy_relations, fb, ctx);
     }
     uint64_t matrix_build_wall_us =
         elapsed_microseconds(initial_matrix_build_start, std::chrono::steady_clock::now());
 
     const auto finish_matrix_result =
         [&](std::vector<std::vector<bool>> dependencies) -> MatrixResult {
+        if (verify_ooc_payload_after_callbacks) {
+            refresh_relation_corpus_checked(
+                reduction.corpus, reduction.stats.output_digest,
+                "structured OOC reduction changed after the matrix build snapshot");
+        }
         MatrixResult result;
         result.matrix = std::move(build_result.matrix);
         result.dependencies = std::move(dependencies);
         if (structured_route) {
-            result.retain_structured_relations(std::move(*structured_corpus),
+            result.retain_structured_relations(std::move(reduction.corpus),
                                                std::move(build_result.row_to_relation));
         } else {
-            result.relations = std::move(relations);
+            auto owned_relations = std::move(reduction).take_relations();
+            if (legacy_trim_order.empty()) {
+                result.relations = std::move(owned_relations);
+            } else {
+                for (size_t row = 0; row < legacy_trim_order.size(); ++row) {
+                    legacy_result_slots[row] = std::move(owned_relations[legacy_trim_order[row]]);
+                }
+                result.relations = std::move(legacy_result_slots);
+            }
         }
+        stats_rollback.commit();
         return result;
     };
 
@@ -2328,7 +2729,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
         std::fprintf(stderr, "%s\n", buf);
     }
 
-    if (!matrix_stats.has_excess()) {
+    if (solve_dependencies && !matrix_stats.has_excess()) {
         // BACKLOG #80 step 7 (2026-05-17): thin matrix (m ≤ n) now solved by
         // block_wiedemann_thin_solve, which uses B'=M^T·M and recovers via
         // u=M·w (strict over GF(2) by associativity). Works on realistic
@@ -2359,6 +2760,11 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
                  "Trimming excess: " + std::to_string(matrix_stats.num_rows) + " rows -> " +
                      std::to_string(target_rows) + " (keep " + std::to_string(target_rows) + "/" +
                      std::to_string(matrix_stats.num_rows) + ")");
+        if (verify_ooc_payload_after_callbacks) {
+            refresh_relation_corpus_checked(
+                reduction.corpus, reduction.stats.output_digest,
+                "structured OOC reduction changed before the trimmed matrix snapshot");
+        }
 
         const auto trim_matrix_build_start = std::chrono::steady_clock::now();
         linalg::MatrixBuildResult build2;
@@ -2368,19 +2774,34 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
             const linalg::RelationSelectionSource source(*structured_corpus, selection);
             build2 = mb.build_with_qc_streaming(source, fb, ctx);
         } else {
-            // Preserve the legacy vector route and its established shuffle.
+            // Preserve the legacy vector route and its established shuffle,
+            // but leave the caller-owned reduction unchanged until every
+            // matrix operation and callback succeeds.
+            legacy_trim_order.resize(legacy_relations->size());
+            std::iota(legacy_trim_order.begin(), legacy_trim_order.end(), size_t{0});
             std::mt19937 rng(42);
-            std::shuffle(relations.begin(), relations.end(), rng);
-            relations.resize(target_rows);
+            std::shuffle(legacy_trim_order.begin(), legacy_trim_order.end(), rng);
+            legacy_trim_order.resize(target_rows);
+
+            std::vector<Relation> trimmed_relations;
+            trimmed_relations.reserve(target_rows);
+            for (size_t ordinal : legacy_trim_order) {
+                trimmed_relations.push_back((*legacy_relations)[ordinal]);
+            }
 
             // SGE-OOC: rebuild via streaming MB if enabled (same gate as
             // initial build above so the trim path is consistent).
             if (use_streaming_mb) {
-                linalg::VectorRelationSource src(relations);
+                linalg::VectorRelationSource src(trimmed_relations);
                 build2 = mb.build_with_qc_streaming(src, fb, ctx);
             } else {
-                build2 = mb.build_with_qc(relations, fb, ctx);
+                build2 = mb.build_with_qc(trimmed_relations, fb, ctx);
             }
+
+            // Reserve the exact final ownership payload before any subsequent
+            // user callback. The final commit then consists only of noexcept
+            // Relation moves into these preallocated slots.
+            legacy_result_slots.resize(target_rows);
         }
         matrix_build_wall_us = checked_add_u64(
             matrix_build_wall_us,
@@ -2418,6 +2839,18 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult 
     // MatrixResult. Emit after deterministic trimming so the stable record is
     // never a stale pre-trim snapshot.
     emit_structured_matrix_record(matrix_stats);
+
+    if (!solve_dependencies) {
+        stats_.dependencies_found = 0;
+        const auto t1 = std::chrono::high_resolution_clock::now();
+        stats_.timings.linalg_s = std::chrono::duration<double>(t1 - t0).count();
+        emit_log(LogLevel::Info, Phase::LinearAlgebra,
+                 "matrix build complete: rows=" + std::to_string(matrix_stats.num_rows) +
+                     " cols=" + std::to_string(matrix_stats.num_cols) +
+                     " time=" + std::to_string(stats_.timings.linalg_s) + "s");
+        emit_progress(Phase::LinearAlgebra, "Matrix build complete", 1.0);
+        return finish_matrix_result({});
+    }
 
     // SGE preprocessing
     emit_progress(Phase::LinearAlgebra, "SGE preprocessing");
@@ -3084,17 +3517,15 @@ FactorResult Pipeline::run() {
 
     auto ctx = select_polynomial_impl(structured_route.resume_base_path);
     auto fb = build_factor_base_impl(ctx, structured_route.resume_base_path);
-    auto reduction = sieve_and_collect_impl(ctx, fb, structured_route);
+    auto reduction = sieve_and_collect_impl(ctx, fb, structured_route, {});
 
-    const size_t factor_base_cols = gnfs::util::saturating_size_add(
-        fb.rational_count(), fb.sieve_algebraic_count());
-    size_t matrix_cols =
-        gnfs::util::saturating_size_add(factor_base_cols, params_.target_excess);
+    const size_t factor_base_cols =
+        gnfs::util::saturating_size_add(fb.rational_count(), fb.sieve_algebraic_count());
+    size_t matrix_cols = gnfs::util::saturating_size_add(factor_base_cols, params_.target_excess);
 
     // Effective cols includes LP columns matrix_builder will create.
     const size_t post_lp_cols = reduction.stats.output_lp_columns;
-    const size_t effective_cols_post =
-        relation::effective_column_count(matrix_cols, post_lp_cols);
+    const size_t effective_cols_post = relation::effective_column_count(matrix_cols, post_lp_cols);
 
     return detail::handoff_after_collection(
         std::move(reduction), effective_cols_post,

@@ -3,6 +3,7 @@
 #include "gnfs/core/relation.hpp"
 #include "gnfs/relation/large_prime_key.hpp"
 #include "gnfs/relation/ooc_relation_format.hpp"
+#include "gnfs/relation/relation_sequence_receipt.hpp"
 #include "gnfs/util/mmap_file.hpp"
 #include "gnfs/util/process.hpp"
 #include <atomic>
@@ -25,9 +26,16 @@
 #include <vector>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <fcntl.h>
 #include <io.h>
 #include <sys/stat.h>
+#include <windows.h>
 #else
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -73,6 +81,8 @@ struct OOCValidatedResumePrefix {
     uint64_t count = 0;
     uint64_t data_end = 0;
     std::unordered_set<gnfs::core::ABPair, gnfs::core::ABPairHash> seen;
+    RelationSequenceReceipt checkpoint_sequence_receipt;
+    RelationSequenceReceiptAccumulator accepted_sequence;
     uint64_t full_relations = 0;
     uint64_t partial_1lp = 0;
     uint64_t partial_2lp = 0;
@@ -81,6 +91,77 @@ struct OOCValidatedResumePrefix {
 class OOCRelationPrefixReader;
 
 namespace detail {
+
+inline void sync_parent_directory_after_metadata_change(const std::filesystem::path& entry_path) {
+    auto parent = entry_path.parent_path();
+    if (parent.empty()) {
+        parent = ".";
+    }
+#ifdef _WIN32
+    const HANDLE directory = ::CreateFileW(
+        parent.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH,
+        nullptr);
+    if (directory == INVALID_HANDLE_VALUE) {
+        throw std::runtime_error(
+            "OOC directory sync cannot open " + parent.string() + " (Win32 error " +
+            std::to_string(static_cast<unsigned long>(::GetLastError())) + ")");
+    }
+
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (!::GetFileInformationByHandle(directory, &information)) {
+        const auto code = static_cast<unsigned long>(::GetLastError());
+        (void)::CloseHandle(directory);
+        throw std::runtime_error("OOC directory sync cannot inspect " + parent.string() +
+                                 " (Win32 error " + std::to_string(code) + ")");
+    }
+    if ((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+        (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        const auto code = static_cast<unsigned long>(
+            (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ? ERROR_ACCESS_DENIED
+                                                                               : ERROR_DIRECTORY);
+        (void)::CloseHandle(directory);
+        throw std::runtime_error("OOC directory sync rejected untrusted parent " + parent.string() +
+                                 " (Win32 error " + std::to_string(code) + ")");
+    }
+    if (!::FlushFileBuffers(directory)) {
+        const auto code = static_cast<unsigned long>(::GetLastError());
+        (void)::CloseHandle(directory);
+        throw std::runtime_error("OOC directory sync failed for " + parent.string() +
+                                 " (Win32 error " + std::to_string(code) + ")");
+    }
+    if (!::CloseHandle(directory)) {
+        throw std::runtime_error(
+            "OOC directory sync close failed for " + parent.string() + " (Win32 error " +
+            std::to_string(static_cast<unsigned long>(::GetLastError())) + ")");
+    }
+#else
+    int directory = -1;
+    do {
+        directory = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    } while (directory < 0 && errno == EINTR);
+    if (directory < 0) {
+        throw std::runtime_error("OOC directory sync cannot open " + parent.string() + ": " +
+                                 std::strerror(errno));
+    }
+
+    int result = -1;
+    do {
+        result = ::fsync(directory);
+    } while (result != 0 && errno == EINTR);
+    if (result != 0) {
+        const int saved_errno = errno;
+        (void)::close(directory);
+        throw std::runtime_error("OOC directory sync failed for " + parent.string() + ": " +
+                                 std::strerror(saved_errno));
+    }
+    if (::close(directory) != 0) {
+        throw std::runtime_error("OOC directory sync close failed for " + parent.string() + ": " +
+                                 std::strerror(errno));
+    }
+#endif
+}
 
 inline constexpr uint64_t MAX_COMPACT_RELATION_BYTES =
     sizeof(int64_t) + sizeof(uint64_t) +
@@ -264,15 +345,43 @@ public:
     // 1 MB stream buffer per stream — 千万级关系下减少 syscall。
     static constexpr size_t BUFFER_BYTES = 1 << 20;
 
-    /// Fresh create (default) writes paired incomplete V3 headers with one
-    /// durable store identity. Paired recovery requires an explicit V3
-    /// descriptor; no bare "resume whatever is present" path is accepted.
-    explicit OOCRelationWriter(
-        const std::string& base_path,
-        std::optional<OOCSnapshotDescriptor> recovery_descriptor = std::nullopt)
+private:
+    struct ConstructionToken final {};
+
+public:
+    /// Fresh create writes paired incomplete V3 headers with one durable store
+    /// identity.
+    explicit OOCRelationWriter(const std::string& base_path)
+        : OOCRelationWriter(base_path, std::nullopt, std::nullopt, ConstructionToken{}) {}
+
+    /// Paired recovery requires both the structural descriptor and the
+    /// semantic relation-sequence receipt from the same durable checkpoint.
+    /// There is intentionally no descriptor-only recovery overload.
+    OOCRelationWriter(const std::string& base_path,
+                      const OOCSnapshotDescriptor& recovery_descriptor,
+                      const RelationSequenceReceipt& recovery_sequence_receipt)
+        : OOCRelationWriter(base_path, recovery_descriptor, recovery_sequence_receipt,
+                            ConstructionToken{}) {}
+
+private:
+    explicit OOCRelationWriter(const std::string& base_path,
+                               std::optional<OOCSnapshotDescriptor> recovery_descriptor,
+                               std::optional<RelationSequenceReceipt> recovery_sequence_receipt,
+                               ConstructionToken)
         : base_path_(base_path), data_buf_(BUFFER_BYTES),
           idx_buf_(BUFFER_BYTES / 4), // 256 KB suffices for index
-          uncaught_at_ctor_(std::uncaught_exceptions()) {
+          uncaught_at_ctor_(std::uncaught_exceptions()),
+          fresh_store_(!recovery_descriptor.has_value()) {
+        if (recovery_sequence_receipt.has_value() != recovery_descriptor.has_value()) {
+            throw std::logic_error(
+                "OOCRelationWriter: internal recovery descriptor/receipt pairing violated");
+        }
+        if (recovery_descriptor &&
+            recovery_sequence_receipt->relation_count != recovery_descriptor->count) {
+            throw std::invalid_argument(
+                "OOCRelationWriter recovery: sequence receipt count differs from descriptor");
+        }
+
         // pubsetbuf 必须在 open 之前调用,所以 fstream 默认构造、
         // 然后手动 attach buffer、最后 open。
         data_stream_.rdbuf()->pubsetbuf(data_buf_.data(),
@@ -301,6 +410,7 @@ public:
                 // turn the immutable corpus back into an appendable one.
                 validated_resume_prefix_ =
                     validate_finalized_prefix(base_path, *recovery_descriptor);
+                validate_recovery_receipt(*validated_resume_prefix_, *recovery_sequence_receipt);
                 store_id_ = recovery_descriptor->store_id;
                 generation_ = recovery_descriptor->generation;
                 count_ = static_cast<size_t>(validated_resume_prefix_->count);
@@ -315,6 +425,10 @@ public:
                 return;
             }
             validated_resume_prefix_ = validate_resume_prefix(base_path, *recovery_descriptor);
+            // The semantic receipt is part of the durable checkpoint. Compare
+            // it while recovery is still read-only: a mismatch must not
+            // truncate an uncommitted tail or rewrite incomplete metadata.
+            validate_recovery_receipt(*validated_resume_prefix_, *recovery_sequence_receipt);
 
             // Validation is read-only. Only after the full committed prefix has
             // proved valid do we discard uncommitted crash tails. Truncate data
@@ -407,11 +521,13 @@ public:
         }
     }
 
+public:
     /// The historical bool overload remains only to fail closed at runtime.
     /// In particular, `true` throws before either store file is opened or
     /// truncated. Passing `false` is equivalent to fresh construction.
     explicit OOCRelationWriter(const std::string& base_path, bool legacy_resume)
-        : OOCRelationWriter(base_path, reject_legacy_resume(legacy_resume)) {}
+        : OOCRelationWriter(base_path, reject_legacy_resume(legacy_resume), std::nullopt,
+                            ConstructionToken{}) {}
 
     /// Append a single relation. Returns the index of the written relation.
     size_t write(const gnfs::core::Relation& rel) {
@@ -677,6 +793,57 @@ public:
         abort_close_noexcept();
     }
 
+    /// Abandon and remove an uncommitted store created by this writer.
+    ///
+    /// Recovery writers are deliberately preserved. A fresh incomplete or
+    /// finalized pair enters sequential best-effort removal only after both
+    /// closed V3 headers still carry this writer's store identity. A failure
+    /// after the first removal may leave one owned artifact; durable
+    /// intent/quarantine recovery is a separate cleanup transaction.
+    [[nodiscard]] bool abort_and_remove_owned_fresh_artifacts_noexcept() noexcept {
+        if (fresh_artifacts_removed_) {
+            return true;
+        }
+        if (!fresh_store_) {
+            return true;
+        }
+
+        bool owned_pair = false;
+        if (state_ == OOCWriterState::Finalized) {
+            owned_pair = closed_pair_is_owned_finalized_store_noexcept();
+        } else {
+            abort();
+            owned_pair = closed_pair_has_owned_incomplete_headers_noexcept();
+        }
+        if (!owned_pair) {
+            return false;
+        }
+
+        try {
+            const std::filesystem::path data_path(base_path_ + ".reldata");
+            const std::filesystem::path index_path(base_path_ + ".relidx");
+            const bool finalized = state_ == OOCWriterState::Finalized;
+            const auto& first_path = finalized ? index_path : data_path;
+            const auto& second_path = finalized ? data_path : index_path;
+            std::error_code first_error;
+            std::error_code second_error;
+            const bool first_removed = std::filesystem::remove(first_path, first_error);
+            if (!first_removed || first_error) {
+                return false;
+            }
+            const bool second_removed = std::filesystem::remove(second_path, second_error);
+            if (!second_removed || second_error) {
+                detail::sync_parent_directory_after_metadata_change(first_path);
+                return false;
+            }
+            detail::sync_parent_directory_after_metadata_change(index_path);
+            fresh_artifacts_removed_ = true;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
     ~OOCRelationWriter() {
         if (state_ == OOCWriterState::Open || state_ == OOCWriterState::Suspended) {
             if (std::uncaught_exceptions() > uncaught_at_ctor_) {
@@ -940,13 +1107,63 @@ private:
         return magic;
     }
 
+    [[nodiscard]] bool closed_pair_has_owned_incomplete_headers_noexcept() const noexcept {
+        try {
+            std::ifstream index(base_path_ + ".relidx", std::ios::binary);
+            std::ifstream data(base_path_ + ".reldata", std::ios::binary);
+            if (!index || !data) {
+                return false;
+            }
+
+            const uint64_t index_magic =
+                read_u64_checked(index, "exception cleanup", "index magic");
+            const uint64_t index_version =
+                read_u64_checked(index, "exception cleanup", "index version");
+            const uint64_t index_store_id =
+                read_u64_checked(index, "exception cleanup", "index store identity");
+            const uint64_t data_magic = read_u64_checked(data, "exception cleanup", "data magic");
+            const uint64_t data_version =
+                read_u64_checked(data, "exception cleanup", "data version");
+            const uint64_t data_store_id =
+                read_u64_checked(data, "exception cleanup", "data store identity");
+            return index_magic == MAGIC_V3_INCOMPLETE && index_version == FORMAT_VERSION_V3 &&
+                   index_store_id == store_id_ && data_magic == MAGIC_V3_DATA &&
+                   data_version == FORMAT_VERSION_V3 && data_store_id == store_id_;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    [[nodiscard]] bool closed_pair_is_owned_finalized_store_noexcept() const noexcept {
+        try {
+            if (!finalized_descriptor_.has_value() ||
+                finalized_descriptor_->store_id != store_id_) {
+                return false;
+            }
+            validate_exact_v3_pair(base_path_, *finalized_descriptor_, MAGIC_V3_FINAL,
+                                   finalized_descriptor_->count, OffsetValidation::FullTable,
+                                   "exception cleanup");
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
     static OOCValidatedResumePrefix validate_records(std::ifstream& data,
                                                      const std::vector<uint64_t>& offsets,
-                                                     uint64_t count, uint64_t data_end) {
+                                                     uint64_t count, uint64_t data_end,
+                                                     uint64_t checkpoint_count) {
+        if (checkpoint_count > count) {
+            throw std::logic_error(
+                "OOCRelationWriter recovery: checkpoint receipt exceeds validated prefix");
+        }
         OOCValidatedResumePrefix prefix;
         prefix.count = count;
         prefix.data_end = data_end;
         prefix.seen.reserve(static_cast<size_t>(count));
+        if (checkpoint_count == 0) {
+            prefix.checkpoint_sequence_receipt = prefix.accepted_sequence.finish();
+        }
 
         std::vector<uint8_t> record;
         for (size_t i = 0; i < static_cast<size_t>(count); ++i) {
@@ -978,6 +1195,10 @@ private:
             const auto relation =
                 detail::deserialize_compact_relation(record.data(), record.size());
             prefix.seen.insert(relation.ab());
+            prefix.accepted_sequence.append(relation);
+            if (prefix.accepted_sequence.count() == checkpoint_count) {
+                prefix.checkpoint_sequence_receipt = prefix.accepted_sequence.finish();
+            }
             const size_t lp_count = count_odd_large_prime_keys(relation);
             if (lp_count == 0) {
                 ++prefix.full_relations;
@@ -988,6 +1209,14 @@ private:
             }
         }
         return prefix;
+    }
+
+    static void validate_recovery_receipt(const OOCValidatedResumePrefix& prefix,
+                                          const RelationSequenceReceipt& expected) {
+        if (prefix.checkpoint_sequence_receipt != expected) {
+            throw std::runtime_error(
+                "OOCRelationWriter recovery: relation-sequence receipt mismatch");
+        }
     }
 
     static OOCValidatedResumePrefix
@@ -1029,9 +1258,9 @@ private:
             throw std::runtime_error(
                 "OOCRelationWriter recovery: finalized V3 index/data header mismatch");
         }
-        if (final_count < descriptor.count) {
+        if (final_count != descriptor.count) {
             throw std::runtime_error(
-                "OOCRelationWriter recovery: finalized corpus predates checkpoint prefix");
+                "OOCRelationWriter recovery: finalized corpus is not the exact checkpoint prefix");
         }
         if (index_size != index_size_for_count(final_count)) {
             throw std::runtime_error("OOCRelationWriter recovery: finalized index size mismatch");
@@ -1055,7 +1284,7 @@ private:
             throw std::runtime_error(
                 "OOCRelationWriter recovery: finalized corpus does not contain checkpoint prefix");
         }
-        return validate_records(data, offsets, final_count, data_size);
+        return validate_records(data, offsets, final_count, data_size, descriptor.count);
     }
 
     static OOCValidatedResumePrefix
@@ -1150,7 +1379,7 @@ private:
             }
         }
 
-        return validate_records(data, offsets, count, descriptor.data_end);
+        return validate_records(data, offsets, count, descriptor.data_end, count);
     }
 
     void acquire_prefix_reader(const OOCSnapshotDescriptor& descriptor) {
@@ -1360,43 +1589,12 @@ private:
 #endif
     }
 
-    static void sync_parent_directory(const std::filesystem::path& file_path) {
-#ifndef _WIN32
-        auto parent = file_path.parent_path();
-        if (parent.empty()) {
-            parent = ".";
-        }
-        int fd = -1;
-        do {
-            fd = ::open(parent.c_str(), O_RDONLY);
-        } while (fd < 0 && errno == EINTR);
-        if (fd < 0) {
-            throw sync_error("directory sync cannot open", parent, errno);
-        }
-
-        int result = -1;
-        do {
-            result = ::fsync(fd);
-        } while (result != 0 && errno == EINTR);
-        if (result != 0) {
-            const int saved_errno = errno;
-            ::close(fd);
-            throw sync_error("directory sync failed", parent, saved_errno);
-        }
-        if (::close(fd) != 0) {
-            throw sync_error("directory sync close failed", parent, errno);
-        }
-#else
-        (void)file_path;
-#endif
-    }
-
     void sync_store_files_and_directory() const {
         const std::filesystem::path data_path(base_path_ + ".reldata");
         const std::filesystem::path index_path(base_path_ + ".relidx");
         sync_file(data_path);
         sync_file(index_path);
-        sync_parent_directory(index_path);
+        detail::sync_parent_directory_after_metadata_change(index_path);
     }
 
     static uint64_t allocate_store_id() noexcept {
@@ -1433,6 +1631,8 @@ private:
     int uncaught_at_ctor_ = 0;
     uint64_t store_id_ = allocate_store_id();
     uint64_t generation_ = 0;
+    bool fresh_store_ = false;
+    bool fresh_artifacts_removed_ = false;
     OOCWriterState state_ = OOCWriterState::Open;
     std::optional<OOCSnapshotDescriptor> suspended_descriptor_;
     std::optional<OOCSnapshotDescriptor> finalized_descriptor_;

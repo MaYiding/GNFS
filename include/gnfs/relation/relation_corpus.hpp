@@ -13,10 +13,15 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
+
+namespace gnfs::api {
+class Pipeline;
+}
 
 namespace gnfs::relation {
 
@@ -130,7 +135,11 @@ inline void validate_finalized_ooc_ownership_descriptor(const OOCSnapshotDescrip
 /// This reopens both artifacts through the descriptor-bound mmap reader after
 /// the corpus reader has closed. The same handles verify both V3 headers,
 /// paired store identity, exact extents, sentinel, and offsets immediately
-/// before cleanup. Any replacement or damage therefore preserves both paths.
+/// before cleanup. Any replacement or damage observed during prevalidation
+/// prevents deletion. The later two-path removal is best-effort rather than a
+/// crash-recoverable transaction and may leave one owned artifact if the
+/// process or second removal fails. Concurrent path replacement after
+/// prevalidation is outside this guard's current guarantee.
 inline void validate_finalized_ooc_cleanup_target(const std::string& base_path,
                                                   const OOCSnapshotDescriptor& descriptor) {
     validate_ooc_base_path(base_path);
@@ -145,9 +154,9 @@ inline void validate_finalized_ooc_cleanup_target(const std::string& base_path,
 /// Optional artifact cleanup. The enclosing storage declares this member
 /// before its reader, so C++ reverse member destruction closes every mmap/file
 /// handle before this destructor runs. Before removing anything, revalidate the
-/// durable index identity and exact extents; a replaced or damaged path is
-/// preserved rather than deleting it. V3 paired identity also rejects a
-/// same-sized data file from another store.
+/// durable index identity and exact extents. A replaced or damaged path
+/// observed at that boundary is preserved rather than deleted. V3 paired
+/// identity also rejects a same-sized data file from another store.
 class FinalizedOOCArtifactCleanup final {
 public:
     FinalizedOOCArtifactCleanup(std::string base_path, OOCSnapshotDescriptor descriptor,
@@ -191,6 +200,7 @@ private:
             return;
         }
 
+        bool namespace_mutated = false;
         try {
             validate_finalized_ooc_cleanup_target(base_path_, descriptor_);
 
@@ -204,15 +214,20 @@ private:
                                      "preserving data artifact\n");
                 return;
             }
+            namespace_mutated = true;
 
             ec.clear();
             const bool data_removed = std::filesystem::remove(base_path_ + ".reldata", ec);
             if (ec || !data_removed) {
+                gnfs::relation::detail::sync_parent_directory_after_metadata_change(
+                    std::filesystem::path(base_path_ + ".relidx"));
                 std::fprintf(stderr,
                              "[relation_corpus] finalized OOC index was removed but data cleanup "
                              "failed\n");
                 return;
             }
+            gnfs::relation::detail::sync_parent_directory_after_metadata_change(
+                std::filesystem::path(base_path_ + ".relidx"));
 
             if (!cleanup_directory_.empty()) {
                 ec.clear();
@@ -221,16 +236,30 @@ private:
                     std::fprintf(stderr,
                                  "[relation_corpus] finalized OOC artifacts were removed but "
                                  "their private directory cleanup failed\n");
+                    return;
                 }
+                gnfs::relation::detail::sync_parent_directory_after_metadata_change(
+                    std::filesystem::path(cleanup_directory_));
             }
         } catch (const std::exception& error) {
-            std::fprintf(stderr,
-                         "[relation_corpus] preserving OOC artifacts after cleanup identity "
-                         "validation failed: %s\n",
-                         error.what());
+            if (namespace_mutated) {
+                std::fprintf(stderr,
+                             "[relation_corpus] OOC cleanup changed the namespace but its "
+                             "durability could not be confirmed: %s\n",
+                             error.what());
+            } else {
+                std::fprintf(stderr,
+                             "[relation_corpus] preserving OOC artifacts after cleanup identity "
+                             "validation failed: %s\n",
+                             error.what());
+            }
         } catch (...) {
-            std::fprintf(stderr, "[relation_corpus] preserving OOC artifacts after unknown cleanup "
-                                 "identity failure\n");
+            std::fprintf(stderr,
+                         namespace_mutated
+                             ? "[relation_corpus] OOC cleanup changed the namespace but an unknown "
+                               "durability failure occurred\n"
+                             : "[relation_corpus] preserving OOC artifacts after unknown cleanup "
+                               "identity failure\n");
         }
     }
 
@@ -347,6 +376,21 @@ public:
         return ooc->artifact_scope();
     }
 
+    /// Promote an already validated finalized OOC corpus to exclusive cleanup
+    /// ownership. The transition performs no allocation or filesystem access.
+    /// It returns false for invalid or in-memory corpora.
+    [[nodiscard]] bool arm_ooc_cleanup() noexcept {
+        if (state_ == nullptr) {
+            return false;
+        }
+        auto* ooc = std::get_if<FinalizedOOCStorage>(&state_->storage);
+        if (ooc == nullptr) {
+            return false;
+        }
+        ooc->arm_cleanup();
+        return true;
+    }
+
     [[nodiscard]] size_t count() const {
         return std::visit([](const auto& storage) { return storage.count(); },
                           require_state().storage);
@@ -373,6 +417,17 @@ public:
             throw std::out_of_range("RelationCorpus: source ordinal out of range");
         }
         return nullptr;
+    }
+
+    /// Borrow the complete in-memory backend without transferring ownership.
+    /// Finalized OOC corpora are rejected rather than materialized.
+    [[nodiscard]] const std::vector<core::Relation>& borrow_in_memory() const {
+        const State& state = require_state();
+        const auto* storage = std::get_if<InMemoryStorage>(&state.storage);
+        if (storage == nullptr) {
+            throw std::logic_error("RelationCorpus: finalized OOC corpus is not in memory");
+        }
+        return storage->relations;
     }
 
     /// Visit every relation in stable ordinal order without copying the
@@ -425,6 +480,8 @@ public:
     }
 
 private:
+    friend class gnfs::api::Pipeline;
+
     using IdentityToken = relation_corpus_detail::RelationCorpusIdentityToken;
 
     struct InMemoryStorage final {
@@ -489,6 +546,22 @@ private:
     };
 
     explicit RelationCorpus(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+
+    void replace_ooc_reader_from(RelationCorpus&& candidate) {
+        State& target_state = require_state();
+        State& candidate_state = candidate.require_state();
+        auto* target = std::get_if<FinalizedOOCStorage>(&target_state.storage);
+        auto* source = std::get_if<FinalizedOOCStorage>(&candidate_state.storage);
+        if (target == nullptr || source == nullptr ||
+            target_state.logical_generation != candidate_state.logical_generation ||
+            target->cleanup.base_path() != source->cleanup.base_path() ||
+            target->cleanup.descriptor() != source->cleanup.descriptor()) {
+            throw std::invalid_argument(
+                "RelationCorpus: replacement reader does not match the owned OOC corpus");
+        }
+        static_assert(std::is_nothrow_move_assignable_v<OOCRelationReader>);
+        target->reader = std::move(source->reader);
+    }
 
     [[nodiscard]] State& require_state() {
         if (!state_) {

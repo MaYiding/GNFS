@@ -27,12 +27,44 @@ struct FilterStats {
     [[nodiscard]] bool operator==(const FilterStats&) const noexcept = default;
 };
 
+/// Frozen semantic controls for V0/V3 partial-relation merging.
+///
+/// Pipeline capture stores this once before callbacks and checkpoints bind the
+/// same values through SieveRunIdentity. Direct merger callers retain the
+/// historical ENV behavior through their default argument.
+struct RelationMergePolicy {
+    bool accept_3lp = false;
+    bool merge_weight3 = false;
+    size_t weight_cutoff = 0;
+    bool drop_residual = false;
+
+    [[nodiscard]] bool operator==(const RelationMergePolicy&) const noexcept = default;
+};
+
+[[nodiscard]] inline RelationMergePolicy relation_merge_policy_from_environment() noexcept {
+    const auto enabled = [](const char* name) {
+        const char* value = std::getenv(name);
+        return value != nullptr && std::atoi(value) == 1;
+    };
+    RelationMergePolicy policy;
+    policy.accept_3lp = enabled("GNFS_3LP");
+    policy.merge_weight3 = enabled("GNFS_V0_WEIGHT3");
+    policy.drop_residual = enabled("GNFS_DROP_RESIDUAL");
+    if (const char* value = std::getenv("GNFS_WEIGHT_CUTOFF"); value != nullptr) {
+        const int parsed = std::atoi(value);
+        if (parsed >= 2 && parsed <= 100) {
+            policy.weight_cutoff = static_cast<size_t>(parsed);
+        }
+    }
+    return policy;
+}
+
 /// 过滤配置
 struct FilterConfig {
-    bool remove_singletons = true;     // 移除单例大素数
-    size_t max_passes = 10;            // 最大过滤轮数
-    size_t min_relations = 0;          // 最小关系数（0 = 无限制）
-    bool verbose = false;              // 详细输出
+    bool remove_singletons = true; // 移除单例大素数
+    size_t max_passes = 10;        // 最大过滤轮数
+    size_t min_relations = 0;      // 最小关系数（0 = 无限制）
+    bool verbose = false;          // 详细输出
 };
 
 /// RelationFilter - 关系过滤器
@@ -42,8 +74,7 @@ public:
     using Config = FilterConfig;
 
     /// 构造函数
-    explicit RelationFilter(const Config& config = Config{})
-        : config_(config) {}
+    explicit RelationFilter(const Config& config = Config{}) : config_(config) {}
 
     /// 过滤关系
     /// 移除包含仅出现一次的大素数的关系（单例）
@@ -99,9 +130,7 @@ public:
         counts.reserve(relations.size());
 
         for (const auto& rel : relations) {
-            for_each_odd_large_prime_key(rel, [&](const LargePrimeKey& key) {
-                ++counts[key];
-            });
+            for_each_odd_large_prime_key(rel, [&](const LargePrimeKey& key) { ++counts[key]; });
         }
 
         return counts;
@@ -115,9 +144,7 @@ public:
         seen.reserve(relations.size());
 
         for (const auto& rel : relations) {
-            for_each_odd_large_prime_key(rel, [&](const LargePrimeKey& key) {
-                seen.insert(key);
-            });
+            for_each_odd_large_prime_key(rel, [&](const LargePrimeKey& key) { seen.insert(key); });
         }
 
         std::vector<LargePrimeKey> unique(seen.begin(), seen.end());
@@ -180,34 +207,32 @@ private:
 ///
 /// rat: 按 prime 聚合 (no root). alg: 按 (p, r) pair 聚合.
 /// 只 count 奇指数 keys (matrix_builder.hpp collect_large_primes 同 convention).
-[[nodiscard]] inline size_t count_unique_lp_keys(
-        const std::vector<Relation>& relations) {
+[[nodiscard]] inline size_t count_unique_lp_keys(const std::vector<Relation>& relations) {
     // A structural key is required here: p and r are both uint64_t and cannot
     // be packed losslessly into one uint64_t value.
     std::unordered_set<LargePrimeKey, LargePrimeKeyHash> unique_keys;
     unique_keys.reserve(relations.size());
 
     for (const auto& rel : relations) {
-        for_each_odd_large_prime_key(rel, [&](const LargePrimeKey& key) {
-            unique_keys.insert(key);
-        });
+        for_each_odd_large_prime_key(rel,
+                                     [&](const LargePrimeKey& key) { unique_keys.insert(key); });
     }
     return unique_keys.size();
 }
 
 /// Saturating estimate of all matrix columns, including large-prime columns.
 /// Saturation keeps downstream target and handoff arithmetic fail-closed.
-[[nodiscard]] constexpr size_t effective_column_count(
-        size_t matrix_columns, size_t large_prime_columns) noexcept {
+[[nodiscard]] constexpr size_t effective_column_count(size_t matrix_columns,
+                                                      size_t large_prime_columns) noexcept {
     return util::saturating_size_add(matrix_columns, large_prime_columns);
 }
 
 /// Whether relation rows strictly exceed all estimated matrix columns.
 /// Keep this comparison centralized so LP-aware adaptive drivers cannot
 /// accidentally stop at the bare factor-base estimate.
-[[nodiscard]] constexpr bool has_effective_column_excess(
-        size_t relation_rows, size_t matrix_columns,
-        size_t large_prime_columns) noexcept {
+[[nodiscard]] constexpr bool has_effective_column_excess(size_t relation_rows,
+                                                         size_t matrix_columns,
+                                                         size_t large_prime_columns) noexcept {
     return relation_rows > effective_column_count(matrix_columns, large_prime_columns);
 }
 
@@ -274,12 +299,11 @@ count_lp_key_weights(const std::vector<Relation>& relations) {
 
 /// 分离完全关系和部分关系
 struct SeparatedRelations {
-    std::vector<Relation> full;      // 无大素数
-    std::vector<Relation> partial;   // 有大素数
+    std::vector<Relation> full;    // 无大素数
+    std::vector<Relation> partial; // 有大素数
 };
 
-[[nodiscard]] inline SeparatedRelations separate_relations(
-        std::vector<Relation>&& relations) {
+[[nodiscard]] inline SeparatedRelations separate_relations(std::vector<Relation>&& relations) {
 
     SeparatedRelations result;
     // Reserve: in 50d/60d typically ~5-10% full + 90-95% partial. Reserve
@@ -307,16 +331,16 @@ class PartialRelationMerger {
 public:
     /// 合并结果统计
     struct MergeStats {
-        size_t full_produced = 0;       // 返回的 effective-full 关系数
-        size_t rounds = 0;              // 迭代轮数
-        size_t weight2_merges = 0;      // weight-2 合并次数
-        size_t singletons_removed = 0;  // 移除的 singleton 关系数
-        size_t input_1lp = 0;           // 输入 1LP 关系数
-        size_t input_2lp = 0;           // 输入 2LP 关系数
-        size_t input_3lp_plus = 0;      // 输入 3LP+ 关系数（已丢弃）
-        size_t residual_emitted = 0;    // 返回的 merged residual 关系数
-        size_t residual_dropped = 0;    // 由 residual-drop policy 丢弃的关系数
-        size_t output_relations = 0;    // 总返回数 = full + emitted residual
+        size_t full_produced = 0;      // 返回的 effective-full 关系数
+        size_t rounds = 0;             // 迭代轮数
+        size_t weight2_merges = 0;     // weight-2 合并次数
+        size_t singletons_removed = 0; // 移除的 singleton 关系数
+        size_t input_1lp = 0;          // 输入 1LP 关系数
+        size_t input_2lp = 0;          // 输入 2LP 关系数
+        size_t input_3lp_plus = 0;     // 输入 3LP+ 关系数（已丢弃）
+        size_t residual_emitted = 0;   // 返回的 merged residual 关系数
+        size_t residual_dropped = 0;   // 由 residual-drop policy 丢弃的关系数
+        size_t output_relations = 0;   // 总返回数 = full + emitted residual
 
         [[nodiscard]] bool operator==(const MergeStats&) const noexcept = default;
     };
@@ -347,37 +371,41 @@ public:
         // copy-assignment may reset capacity (impl-defined), so reserve+insert
         // is the only way to guarantee a single allocation per vector.
         m.extra_ab_pairs.reserve(r1.extra_ab_pairs.size() + 1 + r2.extra_ab_pairs.size());
-        m.extra_ab_pairs.insert(m.extra_ab_pairs.end(),
-            r1.extra_ab_pairs.begin(), r1.extra_ab_pairs.end());
+        m.extra_ab_pairs.insert(m.extra_ab_pairs.end(), r1.extra_ab_pairs.begin(),
+                                r1.extra_ab_pairs.end());
         m.extra_ab_pairs.emplace_back(r2.a, r2.b);
-        m.extra_ab_pairs.insert(m.extra_ab_pairs.end(),
-            r2.extra_ab_pairs.begin(), r2.extra_ab_pairs.end());
+        m.extra_ab_pairs.insert(m.extra_ab_pairs.end(), r2.extra_ab_pairs.begin(),
+                                r2.extra_ab_pairs.end());
 
         m.rational_factors.reserve(r1.rational_factors.size() + r2.rational_factors.size());
-        m.rational_factors.insert(m.rational_factors.end(),
-            r1.rational_factors.begin(), r1.rational_factors.end());
-        m.rational_factors.insert(m.rational_factors.end(),
-            r2.rational_factors.begin(), r2.rational_factors.end());
+        m.rational_factors.insert(m.rational_factors.end(), r1.rational_factors.begin(),
+                                  r1.rational_factors.end());
+        m.rational_factors.insert(m.rational_factors.end(), r2.rational_factors.begin(),
+                                  r2.rational_factors.end());
 
         m.algebraic_factors.reserve(r1.algebraic_factors.size() + r2.algebraic_factors.size());
-        m.algebraic_factors.insert(m.algebraic_factors.end(),
-            r1.algebraic_factors.begin(), r1.algebraic_factors.end());
-        m.algebraic_factors.insert(m.algebraic_factors.end(),
-            r2.algebraic_factors.begin(), r2.algebraic_factors.end());
+        m.algebraic_factors.insert(m.algebraic_factors.end(), r1.algebraic_factors.begin(),
+                                   r1.algebraic_factors.end());
+        m.algebraic_factors.insert(m.algebraic_factors.end(), r2.algebraic_factors.begin(),
+                                   r2.algebraic_factors.end());
 
         // LP 列表完整连接（不取消共享 LP）
         // rational_sqrt 和 matrix_builder 都需要完整列表来正确计算指数
-        m.rational_large_prime.reserve(r1.rational_large_prime.size() + r2.rational_large_prime.size());
-        m.rational_large_prime.insert(m.rational_large_prime.end(),
-            r1.rational_large_prime.begin(), r1.rational_large_prime.end());
-        m.rational_large_prime.insert(m.rational_large_prime.end(),
-            r2.rational_large_prime.begin(), r2.rational_large_prime.end());
+        m.rational_large_prime.reserve(r1.rational_large_prime.size() +
+                                       r2.rational_large_prime.size());
+        m.rational_large_prime.insert(m.rational_large_prime.end(), r1.rational_large_prime.begin(),
+                                      r1.rational_large_prime.end());
+        m.rational_large_prime.insert(m.rational_large_prime.end(), r2.rational_large_prime.begin(),
+                                      r2.rational_large_prime.end());
 
-        m.algebraic_large_prime.reserve(r1.algebraic_large_prime.size() + r2.algebraic_large_prime.size());
+        m.algebraic_large_prime.reserve(r1.algebraic_large_prime.size() +
+                                        r2.algebraic_large_prime.size());
         m.algebraic_large_prime.insert(m.algebraic_large_prime.end(),
-            r1.algebraic_large_prime.begin(), r1.algebraic_large_prime.end());
+                                       r1.algebraic_large_prime.begin(),
+                                       r1.algebraic_large_prime.end());
         m.algebraic_large_prime.insert(m.algebraic_large_prime.end(),
-            r2.algebraic_large_prime.begin(), r2.algebraic_large_prime.end());
+                                       r2.algebraic_large_prime.begin(),
+                                       r2.algebraic_large_prime.end());
 
         return m;
     }
@@ -387,15 +415,15 @@ public:
     /// @param partials 所有部分关系（1LP + 2LP，3LP+ 会被丢弃）
     /// @param max_rounds 最大迭代轮数
     /// @return 产出的完全关系列表
-    [[nodiscard]] static std::vector<Relation> merge_all(
-            std::vector<Relation> partials,
-            size_t max_rounds = 10,
-            MergeStats* stats_out = nullptr) {
+    [[nodiscard]] static std::vector<Relation>
+    merge_all(std::vector<Relation> partials, size_t max_rounds = 10,
+              MergeStats* stats_out = nullptr,
+              const RelationMergePolicy& policy = relation_merge_policy_from_environment()) {
 
         MergeStats stats;
         std::vector<Relation> full_results;
 
-        // 分类并入池 LP 关系。3LP+ 是否进 pool 取决于 ENV GNFS_3LP=1.
+        // 分类并入池 LP 关系。3LP+ 是否进 pool 取决于 frozen policy.
         //
         // 旧行为 (default): 3LP+ 弃 (input_3lp_plus 仅统计).
         // 新行为 (GNFS_3LP=1): 3LP+ 也进 pool, Phase 2 weight-2 merge 步骤会处理.
@@ -403,13 +431,7 @@ public:
         //   供更多 weight-2 候选 (每个 3LP 提供 3 个 LP keys), 仍可被 V0 处理.
         //   完整 3LP chain merge 需要 CliqueRelationMerger BFS spanning tree.
         //
-        // ENV 每次调用重读 (非 static cache): 测试可在同一进程内切换模式,
-        // 也不会因第一次 Pipeline 调用就 "固化" 模式. 性能影响微小 (1 个 getenv
-        // per merge_all 调用, 而非 per relation).
-        const bool accept_3lp_pool = []() {
-            const char* env = std::getenv("GNFS_3LP");
-            return env && std::atoi(env) == 1;
-        }();
+        const bool accept_3lp_pool = policy.accept_3lp;
         std::vector<Relation> pool;
         pool.reserve(partials.size());
         for (auto& rel : partials) {
@@ -419,15 +441,19 @@ public:
                 // even-exponent LP relation is already matrix-full and must
                 // never disappear merely because it retains raw LP entries.
                 full_results.push_back(std::move(rel));
-            }
-            else if (nlp == 1) { ++stats.input_1lp; pool.push_back(std::move(rel)); }
-            else if (nlp == 2) { ++stats.input_2lp; pool.push_back(std::move(rel)); }
-            else if (accept_3lp_pool) {
+            } else if (nlp == 1) {
+                ++stats.input_1lp;
+                pool.push_back(std::move(rel));
+            } else if (nlp == 2) {
+                ++stats.input_2lp;
+                pool.push_back(std::move(rel));
+            } else if (accept_3lp_pool) {
                 // 3LP+ 进 pool 但 input_3lp_plus 仍计数, 便于诊断
                 ++stats.input_3lp_plus;
                 pool.push_back(std::move(rel));
-            }
-            else { ++stats.input_3lp_plus; }  // 旧路径: 丢弃
+            } else {
+                ++stats.input_3lp_plus;
+            } // 旧路径: 丢弃
         }
 
         // ═══ Phase 1: 1LP 贪婪匹配 (weight≥2, 与旧 merge() 行为一致) ═══
@@ -451,7 +477,8 @@ public:
             std::vector<LargePrimeKey> sorted_1lp_keys;
             sorted_1lp_keys.reserve(lp1_index.size());
             for (const auto& [key, indices] : lp1_index) {
-                if (indices.size() >= 2) sorted_1lp_keys.push_back(key);
+                if (indices.size() >= 2)
+                    sorted_1lp_keys.push_back(key);
             }
             std::sort(sorted_1lp_keys.begin(), sorted_1lp_keys.end());
 
@@ -463,9 +490,11 @@ public:
                 const auto& indices = lp1_index.at(key);
                 size_t first_unused = SIZE_MAX;
                 for (size_t idx : indices) {
-                    if (used_1lp.count(idx)) continue;
+                    if (used_1lp.count(idx))
+                        continue;
                     if (first_unused == SIZE_MAX) {
-                        first_unused = idx; continue;
+                        first_unused = idx;
+                        continue;
                     }
                     auto m = merge_two(pool[first_unused], pool[idx]);
                     used_1lp.insert(first_unused);
@@ -509,7 +538,8 @@ public:
             std::unordered_set<LargePrimeKey, LargePrimeKeyHash> singleton_keys;
             singleton_keys.reserve(lp_index.size() / 3);
             for (const auto& [key, indices] : lp_index) {
-                if (indices.size() == 1) singleton_keys.insert(key);
+                if (indices.size() == 1)
+                    singleton_keys.insert(key);
             }
 
             // Weight-2 merge（标准 2LP 处理）
@@ -526,11 +556,7 @@ public:
             // cascade already handles full chain, this is a lighter
             // V0-internal alternative without BFS overhead). Conservative
             // since the 3rd partial becomes singleton next round.
-            static const bool merge_weight3 = []() {
-                const char* env = std::getenv("GNFS_V0_WEIGHT3");
-                return env && std::atoi(env) == 1;
-            }();
-            const size_t max_merge_weight = merge_weight3 ? 3 : 2;
+            const size_t max_merge_weight = policy.merge_weight3 ? 3 : 2;
 
             // Sort keys for deterministic merge order across runs.
             // Reserve: typical ~20-30% LP keys are weight=2 in 50d/lp_bits=23.
@@ -546,7 +572,8 @@ public:
             for (const auto& key : sorted_2lp_keys) {
                 const auto& indices = lp_index.at(key);
                 size_t i = indices[0], j = indices[1];
-                if (used.count(i) || used.count(j)) continue;
+                if (used.count(i) || used.count(j))
+                    continue;
 
                 auto m = merge_two(pool[i], pool[j]);
                 used.insert(i);
@@ -568,21 +595,19 @@ public:
             // 还把 "any LP key has weight > N" 的关系标 dead.
             // CADO-NFS purge.c 思路: weight-3+ LP keys 形成 chain residue 污染 matrix,
             // 直接 drop 比 try-merge 更净空 β. N=2 时只保留 weight≤2 keys (= V0 mergeable).
-            static const size_t weight_cutoff = []() {
-                const char* env = std::getenv("GNFS_WEIGHT_CUTOFF");
-                if (!env) return size_t(0);  // 0 = disabled (no cutoff)
-                int v = std::atoi(env);
-                return (v >= 2 && v <= 100) ? size_t(v) : size_t(0);
-            }();
+            const size_t weight_cutoff = policy.weight_cutoff;
             std::unordered_set<size_t> dead;
             dead.reserve(pool.size() / 8);
             for (size_t i = 0; i < pool.size(); ++i) {
-                if (used.count(i)) continue;
+                if (used.count(i))
+                    continue;
                 const auto& keys = pool_lp_keys_cache[i];
                 bool all_singleton = true;
                 bool over_cutoff = false;
                 for (const auto& k : keys) {
-                    if (!singleton_keys.count(k)) { all_singleton = false; }
+                    if (!singleton_keys.count(k)) {
+                        all_singleton = false;
+                    }
                     if (weight_cutoff > 0) {
                         auto it = lp_index.find(k);
                         if (it != lp_index.end() && it->second.size() > weight_cutoff) {
@@ -591,26 +616,27 @@ public:
                         }
                     }
                 }
-                if ((all_singleton && !keys.empty()) || over_cutoff) dead.insert(i);
+                if ((all_singleton && !keys.empty()) || over_cutoff)
+                    dead.insert(i);
             }
 
-            if (used.empty() && dead.empty()) break;
+            if (used.empty() && dead.empty())
+                break;
             stats.singletons_removed += dead.size();
 
             // 重建 pool
             std::vector<Relation> new_pool;
-            new_pool.reserve(pool.size() - used.size() - dead.size()
-                             + new_merged.size());
+            new_pool.reserve(pool.size() - used.size() - dead.size() + new_merged.size());
             for (size_t i = 0; i < pool.size(); ++i) {
                 if (!used.count(i) && !dead.count(i))
                     new_pool.push_back(std::move(pool[i]));
             }
-            new_pool.insert(new_pool.end(),
-                std::make_move_iterator(new_merged.begin()),
-                std::make_move_iterator(new_merged.end()));
+            new_pool.insert(new_pool.end(), std::make_move_iterator(new_merged.begin()),
+                            std::make_move_iterator(new_merged.end()));
 
             pool = std::move(new_pool);
-            if (pool.empty()) break;
+            if (pool.empty())
+                break;
         }
 
         // 收集 pool 中已合并但仍有残留 LP 的关系
@@ -620,13 +646,9 @@ public:
         //
         // BACKLOG #80 [drop-residual]: GNFS_DROP_RESIDUAL=1 同 V3 path 一致, drop
         // 这些 residual partial (含残留 LP 的 merged), 仅 emit 完全 cancel 的 full.
-        static const bool drop_residual = []() {
-            const char* env = std::getenv("GNFS_DROP_RESIDUAL");
-            return env && std::atoi(env) == 1;
-        }();
         for (auto& rel : pool) {
             if (rel.is_merged()) {
-                if (drop_residual) {
+                if (policy.drop_residual) {
                     // 检查是否有残留 LP — 若有, drop; 完全 cancel 的 emit
                     auto keys = remaining_lp_keys(rel);
                     if (keys.empty()) {
@@ -651,16 +673,16 @@ public:
             }
         }
         stats.output_relations = full_results.size();
-        if (stats_out) *stats_out = stats;
+        if (stats_out)
+            *stats_out = stats;
         return full_results;
     }
 
     /// 旧版 1LP-only 合并（保留向后兼容）
-    [[nodiscard]] static std::vector<Relation> merge(
-            const std::vector<Relation>& partials) {
+    [[nodiscard]] static std::vector<Relation> merge(const std::vector<Relation>& partials) {
 
         std::vector<Relation> merged;
-        merged.reserve(partials.size() / 8);  // ~12% merge yield typical
+        merged.reserve(partials.size() / 8); // ~12% merge yield typical
 
         // Pre-filter: only index relations with exactly one effective LP key.
         std::vector<size_t> lp1_indices;
@@ -681,12 +703,14 @@ public:
         used.reserve(lp1_indices.size());
 
         for (const auto& [key, indices] : prime_to_relations) {
-            if (indices.size() < 2) continue;
+            if (indices.size() < 2)
+                continue;
 
             // Linear scan: match consecutive unused pairs
             size_t first_unused = SIZE_MAX;
             for (size_t idx : indices) {
-                if (used.count(idx) > 0) continue;
+                if (used.count(idx) > 0)
+                    continue;
                 if (first_unused == SIZE_MAX) {
                     first_unused = idx;
                     continue;
@@ -707,8 +731,7 @@ public:
     }
 
     /// 获取可合并的关系对数量
-    [[nodiscard]] static size_t count_mergeable_pairs(
-            const std::vector<Relation>& partials) {
+    [[nodiscard]] static size_t count_mergeable_pairs(const std::vector<Relation>& partials) {
 
         auto counts = RelationFilter::count_large_primes(partials);
 
@@ -726,24 +749,20 @@ public:
 
 /// 计算矩阵所需的关系数量
 /// 需要 关系数 > 因子基大小 + 大素数数量
-[[nodiscard]] inline size_t required_relations(
-        size_t factor_base_size,
-        size_t unique_large_primes,
-        double excess_factor = 1.05) {
+[[nodiscard]] inline size_t required_relations(size_t factor_base_size, size_t unique_large_primes,
+                                               double excess_factor = 1.05) {
 
     size_t columns = factor_base_size + unique_large_primes;
     return static_cast<size_t>(static_cast<double>(columns) * excess_factor) + 1;
 }
 
 /// 检查是否有足够的关系
-[[nodiscard]] inline bool has_enough_relations(
-        size_t num_relations,
-        size_t factor_base_size,
-        size_t unique_large_primes,
-        double excess_factor = 1.05) {
+[[nodiscard]] inline bool has_enough_relations(size_t num_relations, size_t factor_base_size,
+                                               size_t unique_large_primes,
+                                               double excess_factor = 1.05) {
 
-    return num_relations >= required_relations(
-        factor_base_size, unique_large_primes, excess_factor);
+    return num_relations >=
+           required_relations(factor_base_size, unique_large_primes, excess_factor);
 }
 
 } // namespace gnfs::relation

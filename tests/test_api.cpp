@@ -17,6 +17,7 @@
 #include <gnfs/linalg/sge_streaming.hpp>
 #include <gnfs/relation/ooc_relation_store.hpp>
 #include <gnfs/relation/relation_corpus.hpp>
+#include <gnfs/relation/relation_sequence_receipt.hpp>
 #include <gnfs/relation/relation_sink.hpp>
 #include <gnfs/sieve/sieve_checkpoint.hpp>
 #include <gnfs/sieve/sieve_run_identity.hpp>
@@ -54,17 +55,25 @@ using RelationReductionResult = gnfs::relation::RelationReductionResult;
 using RelationVector = std::vector<gnfs::core::Relation>;
 using PipelineSieveMethod = decltype(&Pipeline::sieve_and_collect);
 using PipelineFilterMethod = decltype(&Pipeline::filter);
+using PipelineBuildMethod = decltype(&Pipeline::build_matrix);
 using PipelineSolveMethod = decltype(&Pipeline::solve_matrix);
 
 static_assert(!std::is_copy_constructible_v<RelationReductionResult>);
 static_assert(!std::is_copy_assignable_v<RelationReductionResult>);
 static_assert(!std::is_convertible_v<RelationReductionResult, RelationVector>);
-static_assert(std::is_invocable_r_v<RelationReductionResult, PipelineSieveMethod, Pipeline&,
-                                    const gnfs::core::PolynomialContext&,
-                                    const gnfs::factor_base::FactorBase&>);
+static_assert(
+    std::is_invocable_r_v<RelationReductionResult, PipelineSieveMethod, Pipeline&,
+                          const gnfs::core::PolynomialContext&,
+                          const gnfs::factor_base::FactorBase&, gnfs::api::SieveCollectionOptions>);
 static_assert(std::is_invocable_r_v<RelationReductionResult, PipelineFilterMethod, Pipeline&,
                                     RelationVector>);
 static_assert(!std::is_invocable_v<PipelineFilterMethod, Pipeline&, RelationReductionResult&&>);
+static_assert(std::is_invocable_r_v<Pipeline::MatrixResult, PipelineBuildMethod, Pipeline&,
+                                    RelationReductionResult&&, const gnfs::factor_base::FactorBase&,
+                                    const gnfs::core::PolynomialContext&>);
+static_assert(!std::is_invocable_v<PipelineBuildMethod, Pipeline&, RelationVector&&,
+                                   const gnfs::factor_base::FactorBase&,
+                                   const gnfs::core::PolynomialContext&>);
 static_assert(std::is_invocable_r_v<Pipeline::MatrixResult, PipelineSolveMethod, Pipeline&,
                                     RelationReductionResult&&, const gnfs::factor_base::FactorBase&,
                                     const gnfs::core::PolynomialContext&>);
@@ -455,6 +464,8 @@ bool test_result_to_json() {
     r.factors.push_back(Integer(11));
     r.factors.push_back(Integer(13));
     r.stats.n_bits = 8;
+    r.stats.sieve_rounds_completed = 1;
+    r.stats.sieve_stop_reason = SieveStopReason::AdaptiveRoundLimitReached;
     r.stats.special_q_batch_worker_limit = 2;
     r.stats.special_q_batch_peak_workers = 2;
     r.stats.special_q_batch_count = 3;
@@ -477,7 +488,9 @@ bool test_result_to_json() {
     assert(json.find("\"success\": true") != std::string::npos);
     assert(json.find("\"143\"") != std::string::npos);
     assert(json.find("\"11\"") != std::string::npos);
-    if (json.find("\"special_q_batch_worker_limit\": 2") == std::string::npos ||
+    if (json.find("\"sieve_rounds_completed\": 1") == std::string::npos ||
+        json.find("\"sieve_stop_reason\": \"adaptive_round_limit_reached\"") == std::string::npos ||
+        json.find("\"special_q_batch_worker_limit\": 2") == std::string::npos ||
         json.find("\"special_q_batch_peak_workers\": 2") == std::string::npos ||
         json.find("\"special_q_batch_count\": 3") == std::string::npos ||
         json.find("\"special_q_batch_peak_size\": 4") == std::string::npos ||
@@ -525,6 +538,8 @@ bool test_result_to_report() {
     r.stats.timings.total_s = 1.234;
     r.stats.timings.poly_s = 0.1;
     r.stats.timings.sieve_s = 0.8;
+    r.stats.sieve_rounds_completed = 1;
+    r.stats.sieve_stop_reason = SieveStopReason::AdaptiveRoundLimitReached;
     r.stats.special_q_batch_worker_limit = 2;
     r.stats.local_sieve_thread_budget = 8;
     r.stats.candidate_batch_rss_sample_candidates = 4096;
@@ -537,6 +552,10 @@ bool test_result_to_report() {
     assert(report.find("SUCCESS") != std::string::npos);
     assert(report.find("Timing Breakdown") != std::string::npos);
     if (report.find("Special-Q batch worker limit: 2") == std::string::npos) {
+        return false;
+    }
+    if (report.find("Reduction rounds completed: 1") == std::string::npos ||
+        report.find("Stop reason: adaptive_round_limit_reached") == std::string::npos) {
         return false;
     }
     if (report.find("Local sieve compute-lane budget: 8") == std::string::npos) {
@@ -1151,6 +1170,23 @@ void bind_checkpoint_to_run(gnfs::sieve::SieveCheckpoint& checkpoint,
     checkpoint.run_fingerprint_hi = identity.fingerprint_hi;
 }
 
+void bind_checkpoint_to_ooc(gnfs::sieve::SieveCheckpoint& checkpoint,
+                            const gnfs::relation::OOCSnapshotDescriptor& descriptor,
+                            const gnfs::relation::RelationSequenceReceipt& sequence_receipt,
+                            const std::string& base_path) {
+    if (sequence_receipt.relation_count != descriptor.count) {
+        throw std::logic_error("test checkpoint receipt count differs from descriptor");
+    }
+    checkpoint.ooc_format_version = descriptor.format_version;
+    checkpoint.ooc_store_id = descriptor.store_id;
+    checkpoint.ooc_generation = descriptor.generation;
+    checkpoint.ooc_relation_count = descriptor.count;
+    checkpoint.ooc_data_end = descriptor.data_end;
+    checkpoint.ooc_sequence_receipt_low = sequence_receipt.low;
+    checkpoint.ooc_sequence_receipt_high = sequence_receipt.high;
+    checkpoint.ooc_base_path = base_path;
+}
+
 void write_test_file(const std::string& path, std::string_view contents) {
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     if (!output) {
@@ -1440,6 +1476,74 @@ bool test_structured_filter_invalid_env_precedes_generation() {
     return true;
 }
 
+bool test_sieve_collection_options_preflight() {
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+
+    size_t progress_callbacks = 0;
+    size_t log_callbacks = 0;
+    pipeline.set_progress_callback([&](const ProgressInfo&) { ++progress_callbacks; });
+    pipeline.set_log_callback([&](const LogEntry&) { ++log_callbacks; });
+
+    const auto rejected = [&](SieveCollectionOptions options) {
+        try {
+            (void)pipeline.sieve_and_collect(ctx, fb, options);
+        } catch (const std::invalid_argument&) {
+            return true;
+        } catch (const std::out_of_range&) {
+            return true;
+        }
+        return false;
+    };
+
+    SieveCollectionOptions zero_rounds;
+    zero_rounds.adaptive_round_limit = 0;
+    SieveCollectionOptions excess_rounds;
+    excess_rounds.adaptive_round_limit = DEFAULT_ADAPTIVE_SIEVE_ROUND_LIMIT + 1;
+    SieveCollectionOptions invalid_cleanup;
+    invalid_cleanup.legacy_raw_ooc_cleanup =
+        static_cast<LegacyRawOOCCleanupPolicy>(std::numeric_limits<uint8_t>::max());
+
+    if (!rejected(zero_rounds) || !rejected(excess_rounds) || !rejected(invalid_cleanup) ||
+        progress_callbacks != 0 || log_callbacks != 0) {
+        std::cout << "(invalid sieve collection options crossed the preflight boundary) ";
+        return false;
+    }
+
+    SieveCollectionOptions bounded_distributed;
+    bounded_distributed.adaptive_round_limit = 1;
+    bool distributed_rejected = false;
+    {
+        ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "0");
+        ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "1");
+        ScopedEnvironmentVariable force_small("GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL", "1");
+        ScopedEnvironmentVariable resume("GNFS_SIEVE_RESUME", std::nullopt);
+        ScopedEnvironmentVariable full_resume("GNFS_RESUME", std::nullopt);
+        try {
+            (void)pipeline.sieve_and_collect(ctx, fb, bounded_distributed);
+        } catch (const std::invalid_argument&) {
+            distributed_rejected = true;
+        }
+    }
+    if (!distributed_rejected || progress_callbacks != 0 || log_callbacks != 0) {
+        std::cout << "(bounded local options crossed the distributed-route preflight) ";
+        return false;
+    }
+
+    auto reduction = pipeline.filter({});
+    if (reduction.generation != 1) {
+        std::cout << "(invalid sieve collection options consumed a relation generation) ";
+        return false;
+    }
+    return true;
+}
+
 bool test_structured_filter_adaptive_route() {
     ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
     ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "0");
@@ -1523,6 +1627,65 @@ bool test_structured_filter_ooc_collision_rejected_without_clobber() {
     if (!rejected || callbacks != 0 || read_test_file(base + ".reldata") != data_sentinel ||
         read_test_file(base + ".relidx") != index_sentinel) {
         std::cout << "(structured OOC collision mutated a store or emitted a callback) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_fresh_ooc_callback_failure_cleans_uncommitted_raw() {
+    const std::string base = gnfs::util::temp_path("gnfs_test_fresh_ooc_callback_cleanup_" +
+                                                   std::to_string(gnfs::util::process_id()));
+    SieveResumeArtifacts artifacts(base);
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+    ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "1");
+    ScopedEnvironmentVariable ooc_path("GNFS_OOC_BASE_PATH", base);
+    ScopedEnvironmentVariable resume("GNFS_SIEVE_RESUME", std::nullopt);
+    ScopedEnvironmentVariable full_resume("GNFS_RESUME", std::nullopt);
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+    ScopedEnvironmentVariable v0_bfs("GNFS_V0_BFS", "0");
+    ScopedEnvironmentVariable cascade("GNFS_CASCADE_V3", "0");
+    ScopedEnvironmentVariable three_lp("GNFS_3LP", "0");
+
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+
+    bool callback_invoked = false;
+    pipeline.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.phase == Phase::Sieving && !callback_invoked) {
+            callback_invoked = true;
+            throw std::runtime_error("injected pre-finalize OOC callback failure");
+        }
+    });
+
+    SieveCollectionOptions options;
+    options.adaptive_round_limit = 1;
+    bool injected_failure = false;
+    try {
+        (void)pipeline.sieve_and_collect(ctx, fb, options);
+    } catch (const std::runtime_error& error) {
+        injected_failure =
+            std::string_view(error.what()) == "injected pre-finalize OOC callback failure";
+    }
+    if (!injected_failure || !callback_invoked || std::filesystem::exists(base + ".reldata") ||
+        std::filesystem::exists(base + ".relidx") ||
+        pipeline.stats().sieve_stop_reason != SieveStopReason::NotStarted ||
+        pipeline.stats().sieve_rounds_completed != 0) {
+        std::cout << "(pre-finalize callback failure left an unresumable fresh OOC pair) ";
+        return false;
+    }
+
+    pipeline.set_progress_callback({});
+    auto reduction = pipeline.sieve_and_collect(ctx, fb, options);
+    if (reduction.generation == 0 ||
+        reduction.stats.strategy != gnfs::relation::ReductionStrategy::Structured ||
+        std::filesystem::exists(base + ".reldata") || std::filesystem::exists(base + ".relidx")) {
+        std::cout << "(fresh OOC path was not reusable after exception cleanup) ";
         return false;
     }
     return true;
@@ -1626,7 +1789,7 @@ bool test_ooc_base_snapshot_ignores_callback_env_drift() {
     return true;
 }
 
-bool test_structured_ooc_callback_failure_preserves_finalized_raw() {
+bool test_structured_ooc_callback_failure_cleans_fresh_raw() {
     const std::string configured_base = gnfs::util::temp_path(
         "gnfs_test_structured_ooc_callback_failure_" + std::to_string(gnfs::util::process_id()));
     const std::string frozen_base =
@@ -1644,9 +1807,9 @@ bool test_structured_ooc_callback_failure_preserves_finalized_raw() {
     ScopedEnvironmentVariable three_lp("GNFS_3LP", "0");
 
     Config cfg;
-    cfg.rational_bound = 5;
-    cfg.algebraic_bound = 5;
-    cfg.large_prime_bound = 101;
+    cfg.rational_bound = 500;
+    cfg.algebraic_bound = 1000;
+    cfg.large_prime_bound = 4096;
     cfg.verbose = false;
     Pipeline pipeline(Integer(143), cfg);
     auto ctx = pipeline.select_polynomial();
@@ -1670,19 +1833,162 @@ bool test_structured_ooc_callback_failure_preserves_finalized_raw() {
             std::string_view(error.what()) == "injected structured OOC terminal callback failure";
     }
     if (!injected_failure || structured_records != 1 ||
-        !std::filesystem::exists(frozen_base + ".relidx") ||
-        !std::filesystem::exists(frozen_base + ".reldata")) {
-        std::cout << "(terminal callback failure did not retain finalized structured OOC raw) ";
+        std::filesystem::exists(frozen_base + ".relidx") ||
+        std::filesystem::exists(frozen_base + ".reldata")) {
+        std::cout << "(terminal callback failure left an unpaired finalized structured OOC raw) ";
         return false;
     }
 
-    gnfs::relation::OOCRelationReader finalized_raw(frozen_base);
-    (void)finalized_raw.count();
     const std::filesystem::path raw_path(frozen_base);
     const std::string private_prefix = raw_path.filename().string() + ".gnfs-structured-run-";
     for (const auto& entry : std::filesystem::directory_iterator(raw_path.parent_path())) {
         if (entry.path().filename().string().starts_with(private_prefix)) {
             std::cout << "(terminal callback failure leaked a private structured OOC lease) ";
+            return false;
+        }
+    }
+
+    bool raw_mutated = false;
+    pipeline.set_log_callback([&](const LogEntry& entry) {
+        if (!entry.message.starts_with("done:") || raw_mutated) {
+            return;
+        }
+        std::string payload = read_test_file(frozen_base + ".reldata");
+        if (payload.size() <= gnfs::relation::OOCRelationWriter::DATA_HEADER_BYTES) {
+            throw std::runtime_error("structured raw mutation fixture has no relation payload");
+        }
+        payload[gnfs::relation::OOCRelationWriter::DATA_HEADER_BYTES] ^= '\x01';
+        write_test_file(frozen_base + ".reldata", payload);
+        raw_mutated = true;
+    });
+
+    bool raw_mutation_rejected = false;
+    try {
+        (void)pipeline.sieve_and_collect(ctx, fb);
+    } catch (const std::runtime_error& error) {
+        raw_mutation_rejected =
+            std::string_view(error.what()).find("terminal raw OOC corpus changed") !=
+            std::string_view::npos;
+    }
+    if (!raw_mutation_rejected || !raw_mutated ||
+        std::filesystem::exists(frozen_base + ".relidx") ||
+        std::filesystem::exists(frozen_base + ".reldata")) {
+        std::cout << "(same-size raw mutation was not rejected and cleaned) ";
+        return false;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(raw_path.parent_path())) {
+        if (entry.path().filename().string().starts_with(private_prefix)) {
+            std::cout << "(raw mutation failure leaked a private structured OOC lease) ";
+            return false;
+        }
+    }
+
+    pipeline.set_log_callback({});
+    std::optional<gnfs::relation::RelationReductionResult> retry;
+    retry.emplace(pipeline.sieve_and_collect(ctx, fb));
+    const auto output_scope = retry->relation_corpus().ooc_artifact_scope();
+    if (retry->stats.strategy != gnfs::relation::ReductionStrategy::Structured ||
+        std::filesystem::exists(frozen_base + ".relidx") ||
+        std::filesystem::exists(frozen_base + ".reldata") || !output_scope.has_value() ||
+        output_scope->cleanup_directory.empty()) {
+        std::cout << "(terminal callback cleanup did not make the structured OOC path retryable) ";
+        return false;
+    }
+    const std::string output_cleanup = output_scope->cleanup_directory;
+    retry.reset();
+    if (std::filesystem::exists(output_cleanup)) {
+        std::cout << "(retried structured OOC result did not clean its output lease) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_legacy_ooc_explicit_terminal_cleanup() {
+    const auto make_pipeline = [] {
+        Config cfg;
+        cfg.rational_bound = 5;
+        cfg.algebraic_bound = 5;
+        cfg.large_prime_bound = 101;
+        cfg.verbose = false;
+        return Pipeline(Integer(143), cfg);
+    };
+    const auto make_options = [] {
+        SieveCollectionOptions options;
+        options.adaptive_round_limit = 1;
+        options.legacy_raw_ooc_cleanup = LegacyRawOOCCleanupPolicy::RemoveArtifacts;
+        return options;
+    };
+
+    const std::string success_base = gnfs::util::temp_path(
+        "gnfs_test_legacy_ooc_cleanup_success_" + std::to_string(gnfs::util::process_id()));
+    SieveResumeArtifacts success_artifacts(success_base);
+    {
+        ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "0");
+        ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "1");
+        ScopedEnvironmentVariable ooc_path("GNFS_OOC_BASE_PATH", success_base);
+        ScopedEnvironmentVariable resume("GNFS_SIEVE_RESUME", std::nullopt);
+        ScopedEnvironmentVariable full_resume("GNFS_RESUME", std::nullopt);
+        ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+        ScopedEnvironmentVariable v0_bfs("GNFS_V0_BFS", "0");
+        ScopedEnvironmentVariable cascade("GNFS_CASCADE_V3", "0");
+        ScopedEnvironmentVariable three_lp("GNFS_3LP", "0");
+
+        auto pipeline = make_pipeline();
+        auto ctx = pipeline.select_polynomial();
+        auto fb = pipeline.build_factor_base(ctx);
+        auto reduction = pipeline.sieve_and_collect(ctx, fb, make_options());
+        if (pipeline.stats().sieve_rounds_completed != 1 ||
+            pipeline.stats().sieve_stop_reason != SieveStopReason::SpecialQRangeExhausted ||
+            reduction.stats.strategy != gnfs::relation::ReductionStrategy::StandardV0 ||
+            reduction.storage_kind() != gnfs::relation::RelationStorageKind::InMemory ||
+            reduction.stats.input_relations != pipeline.stats().relations_found ||
+            std::filesystem::exists(success_base + ".reldata") ||
+            std::filesystem::exists(success_base + ".relidx")) {
+            std::cout << "(legacy explicit OOC cleanup lost its typed terminal contract) ";
+            return false;
+        }
+    }
+
+    const std::string failure_base = gnfs::util::temp_path(
+        "gnfs_test_legacy_ooc_cleanup_failure_" + std::to_string(gnfs::util::process_id()));
+    SieveResumeArtifacts failure_artifacts(failure_base);
+    {
+        ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "0");
+        ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "1");
+        ScopedEnvironmentVariable ooc_path("GNFS_OOC_BASE_PATH", failure_base);
+        ScopedEnvironmentVariable resume("GNFS_SIEVE_RESUME", std::nullopt);
+        ScopedEnvironmentVariable full_resume("GNFS_RESUME", std::nullopt);
+        ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+        ScopedEnvironmentVariable v0_bfs("GNFS_V0_BFS", "0");
+        ScopedEnvironmentVariable cascade("GNFS_CASCADE_V3", "0");
+        ScopedEnvironmentVariable three_lp("GNFS_3LP", "0");
+
+        auto pipeline = make_pipeline();
+        auto ctx = pipeline.select_polynomial();
+        auto fb = pipeline.build_factor_base(ctx);
+        pipeline.set_log_callback([&](const LogEntry& entry) {
+            if (entry.message.starts_with("done:")) {
+                throw std::runtime_error("injected legacy OOC terminal callback failure");
+            }
+        });
+        bool injected_failure = false;
+        try {
+            (void)pipeline.sieve_and_collect(ctx, fb, make_options());
+        } catch (const std::runtime_error& error) {
+            injected_failure =
+                std::string_view(error.what()) == "injected legacy OOC terminal callback failure";
+        }
+        if (!injected_failure || std::filesystem::exists(failure_base + ".reldata") ||
+            std::filesystem::exists(failure_base + ".relidx")) {
+            std::cout << "(legacy callback failure left an unpaired finalized raw OOC) ";
+            return false;
+        }
+        pipeline.set_log_callback({});
+        auto retry = pipeline.sieve_and_collect(ctx, fb, make_options());
+        if (retry.stats.strategy != gnfs::relation::ReductionStrategy::StandardV0 ||
+            std::filesystem::exists(failure_base + ".reldata") ||
+            std::filesystem::exists(failure_base + ".relidx")) {
+            std::cout << "(legacy terminal callback cleanup did not make the path retryable) ";
             return false;
         }
     }
@@ -2012,6 +2318,90 @@ bool test_structured_filter_distributed_precedes_worker_side_effects() {
     return true;
 }
 
+bool test_distributed_sieve_removes_unused_master_ooc_pair() {
+    const std::string master_base = gnfs::util::temp_path("gnfs_test_distributed_master_ooc_" +
+                                                          std::to_string(gnfs::util::process_id()));
+    ScopedTestFiles cleanup;
+    cleanup.paths.push_back(master_base + ".reldata");
+    cleanup.paths.push_back(master_base + ".relidx");
+
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.max_special_q = 1;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "0");
+    ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "1");
+    ScopedEnvironmentVariable ooc_path("GNFS_OOC_BASE_PATH", master_base);
+    ScopedEnvironmentVariable resume("GNFS_RESUME", std::nullopt);
+    ScopedEnvironmentVariable legacy_resume("GNFS_SIEVE_RESUME", std::nullopt);
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "1");
+    ScopedEnvironmentVariable force_small("GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL", "1");
+    ScopedEnvironmentVariable sq_per_worker("GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER", "1");
+
+    for (size_t attempt = 0; attempt < 2; ++attempt) {
+        const std::string worker_base =
+            master_base + ".distributed-attempt-" + std::to_string(attempt);
+        const std::string drift_base =
+            master_base + ".distributed-drift-" + std::to_string(attempt);
+        cleanup.paths.push_back(worker_base + ".worker_0.reldata");
+        cleanup.paths.push_back(worker_base + ".worker_0.relidx");
+        cleanup.paths.push_back(worker_base + ".worker_0.attempts");
+        cleanup.paths.push_back(drift_base + ".worker_0.reldata");
+        cleanup.paths.push_back(drift_base + ".worker_0.relidx");
+        cleanup.paths.push_back(drift_base + ".worker_0.attempts");
+        for (size_t index = cleanup.paths.size() - 3; index < cleanup.paths.size(); ++index) {
+            write_test_file(cleanup.paths[index],
+                            "distributed-drift-sentinel-" + std::to_string(index));
+        }
+
+        bool callback_drift_injected = false;
+        pipeline.set_progress_callback([&](const ProgressInfo& info) {
+            if (info.phase != Phase::Sieving || callback_drift_injected) {
+                return;
+            }
+            if (setenv("GNFS_DISTRIBUTED_SIEVE_BASE_PATH", drift_base.c_str(), 1) != 0 ||
+                setenv("GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER", "0", 1) != 0) {
+                throw std::runtime_error("failed to inject distributed config drift");
+            }
+            callback_drift_injected = true;
+        });
+
+        std::optional<gnfs::relation::RelationReductionResult> reduction;
+        {
+            ScopedEnvironmentVariable distributed_base("GNFS_DISTRIBUTED_SIEVE_BASE_PATH",
+                                                       worker_base);
+            ScopedEnvironmentVariable entry_sq_per_worker("GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER",
+                                                          "1");
+            reduction.emplace(pipeline.sieve_and_collect(ctx, fb));
+        }
+        pipeline.set_progress_callback({});
+        if (!callback_drift_injected || reduction->generation == 0 ||
+            pipeline.stats().sieve_stop_reason != SieveStopReason::DistributedWaveComplete) {
+            std::cout << "(distributed OOC fixture did not retain its entry config) ";
+            return false;
+        }
+        if (std::filesystem::exists(master_base + ".reldata") ||
+            std::filesystem::exists(master_base + ".relidx")) {
+            std::cout << "(distributed success stranded its unused master OOC pair) ";
+            return false;
+        }
+        for (size_t index = cleanup.paths.size() - 3; index < cleanup.paths.size(); ++index) {
+            if (read_test_file(cleanup.paths[index]) !=
+                "distributed-drift-sentinel-" + std::to_string(index)) {
+                std::cout << "(distributed callback drift changed a foreign worker artifact) ";
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool test_structured_filter_matrix_record_matches_final_handoff() {
     ScopedEnvironmentVariable streaming("GNFS_SGE_STREAMING", "off");
     ScopedEnvironmentVariable mmap("GNFS_LINALG_MMAP", "off");
@@ -2040,12 +2430,19 @@ bool test_structured_filter_matrix_record_matches_final_handoff() {
 
     gnfs::relation::RelationReductionStats reduction_stats;
     reduction_stats.strategy = gnfs::relation::ReductionStrategy::Structured;
+    reduction_stats.output_relations = input_rows;
     constexpr uint64_t generation = 777;
     gnfs::relation::RelationReductionResult reduction(generation, make_relations(),
                                                       std::move(reduction_stats));
 
     bool trimmed = false;
+    bool solver_phase_attempted = false;
     std::vector<std::string> matrix_records;
+    pipeline.set_progress_callback([&](const ProgressInfo& info) {
+        solver_phase_attempted = solver_phase_attempted || info.message == "SGE preprocessing" ||
+                                 info.message == "Block Lanczos" ||
+                                 info.message == "Block Wiedemann";
+    });
     pipeline.set_log_callback([&](const LogEntry& entry) {
         if (entry.message.starts_with("Trimming excess:"))
             trimmed = true;
@@ -2053,7 +2450,7 @@ bool test_structured_filter_matrix_record_matches_final_handoff() {
             matrix_records.push_back(entry.message);
     });
 
-    auto matrix_result = pipeline.solve_matrix(std::move(reduction), fb, ctx);
+    auto matrix_result = pipeline.build_matrix(std::move(reduction), fb, ctx);
     const auto final_stats = gnfs::linalg::compute_matrix_stats(matrix_result.matrix);
     const int64_t expected_row_column_delta =
         final_stats.num_rows >= final_stats.num_cols
@@ -2118,7 +2515,8 @@ bool test_structured_filter_matrix_record_matches_final_handoff() {
         }
     }
 
-    if (!trimmed || !matrix_record_valid || !matrix_result.owns_relation_corpus() ||
+    if (!trimmed || solver_phase_attempted || !matrix_result.dependencies.empty() ||
+        !matrix_record_valid || !matrix_result.owns_relation_corpus() ||
         !matrix_result.relations.empty() ||
         matrix_result.relation_count() != final_stats.num_rows ||
         matrix_result.relation_count() >= input_rows || !row_mapping_valid ||
@@ -2128,6 +2526,148 @@ bool test_structured_filter_matrix_record_matches_final_handoff() {
         pipeline.stats().matrix_weight != final_stats.total_weight ||
         pipeline.stats().matrix_excess != expected_row_column_delta) {
         std::cout << "(structured matrix record did not match final handoff) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_matrix_build_failure_preserves_reduction() {
+    ScopedEnvironmentVariable streaming("GNFS_SGE_STREAMING", "off");
+    ScopedEnvironmentVariable mmap("GNFS_LINALG_MMAP", "off");
+
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+
+    constexpr uint64_t generation = 786;
+    const std::string requested_base = gnfs::util::temp_path(
+        "gnfs_test_matrix_build_retry_" + std::to_string(gnfs::util::process_id()));
+    auto sink = gnfs::relation::RelationSink::out_of_core(
+        generation, requested_base, gnfs::relation::OOCCleanupPolicy::RemoveArtifacts);
+    constexpr size_t relation_count = 8;
+    for (size_t index = 0; index < relation_count; ++index) {
+        gnfs::core::Relation relation(static_cast<int64_t>(7'000 + index), 1);
+        relation.rational_factors.push_back(2);
+        (void)sink.append(std::move(relation));
+    }
+    auto corpus = sink.finalize();
+    const auto artifact_scope = corpus.ooc_artifact_scope();
+    if (!artifact_scope.has_value()) {
+        std::cout << "(matrix failure fixture has no OOC artifact scope) ";
+        return false;
+    }
+
+    gnfs::relation::RelationReductionStats reduction_stats;
+    reduction_stats.strategy = gnfs::relation::ReductionStrategy::Structured;
+    reduction_stats.output_relations = relation_count;
+    reduction_stats.output_digest = gnfs::relation::corpus_digest(corpus);
+    gnfs::relation::RelationReductionResult reduction(std::move(corpus),
+                                                      std::move(reduction_stats));
+
+    const std::string original_data = read_test_file(artifact_scope->base_path + ".reldata");
+    bool throwing_callback_mutated = false;
+    pipeline.set_log_callback([&](const LogEntry& entry) {
+        if (entry.message.starts_with("matrix build complete:")) {
+            std::string changed = read_test_file(artifact_scope->base_path + ".reldata");
+            if (changed.size() <= gnfs::relation::OOCRelationWriter::DATA_HEADER_BYTES) {
+                throw std::runtime_error("matrix mutation fixture has no relation payload");
+            }
+            changed[gnfs::relation::OOCRelationWriter::DATA_HEADER_BYTES] ^= '\x01';
+            write_test_file(artifact_scope->base_path + ".reldata", changed);
+            throwing_callback_mutated = true;
+            throw std::runtime_error("injected matrix build terminal callback failure");
+        }
+    });
+
+    bool injected_failure = false;
+    try {
+        (void)pipeline.build_matrix(std::move(reduction), fb, ctx);
+    } catch (const std::runtime_error& error) {
+        injected_failure =
+            std::string_view(error.what()) == "injected matrix build terminal callback failure";
+    }
+    if (!injected_failure || !throwing_callback_mutated || !reduction.corpus.valid() ||
+        reduction.generation != generation || reduction.size() != relation_count ||
+        reduction.storage_kind() != gnfs::relation::RelationStorageKind::FinalizedOOC ||
+        !std::filesystem::exists(artifact_scope->base_path + ".reldata") ||
+        !std::filesystem::exists(artifact_scope->base_path + ".relidx") ||
+        !std::filesystem::exists(artifact_scope->cleanup_directory) ||
+        pipeline.stats().matrix_rows != 0 || pipeline.stats().matrix_cols != 0 ||
+        pipeline.stats().matrix_weight != 0 || pipeline.stats().matrix_excess != 0 ||
+        pipeline.stats().dependencies_found != 0 || pipeline.stats().timings.linalg_s != 0.0) {
+        std::cout << "(matrix callback failure consumed input or published partial stats) ";
+        return false;
+    }
+
+    pipeline.set_log_callback({});
+    bool stale_retry_rejected = false;
+    try {
+        (void)pipeline.build_matrix(std::move(reduction), fb, ctx);
+    } catch (const std::runtime_error& error) {
+        stale_retry_rejected =
+            std::string_view(error.what()).find("does not match its matrix-phase digest") !=
+            std::string_view::npos;
+    }
+    if (!stale_retry_rejected || !reduction.corpus.valid() || reduction.generation != generation ||
+        reduction.size() != relation_count) {
+        std::cout << "(matrix retry accepted callback-mutated OOC input) ";
+        return false;
+    }
+    write_test_file(artifact_scope->base_path + ".reldata", original_data);
+
+    bool payload_mutated = false;
+    pipeline.set_log_callback([&](const LogEntry& entry) {
+        if (!entry.message.starts_with("matrix build complete:") || payload_mutated) {
+            return;
+        }
+        std::string changed = read_test_file(artifact_scope->base_path + ".reldata");
+        if (changed.size() <= gnfs::relation::OOCRelationWriter::DATA_HEADER_BYTES) {
+            throw std::runtime_error("matrix mutation fixture has no relation payload");
+        }
+        changed[gnfs::relation::OOCRelationWriter::DATA_HEADER_BYTES] ^= '\x01';
+        write_test_file(artifact_scope->base_path + ".reldata", changed);
+        payload_mutated = true;
+    });
+
+    bool payload_mutation_rejected = false;
+    try {
+        (void)pipeline.build_matrix(std::move(reduction), fb, ctx);
+    } catch (const std::runtime_error& error) {
+        payload_mutation_rejected =
+            std::string_view(error.what()).find("changed after the matrix build snapshot") !=
+            std::string_view::npos;
+    }
+    if (!payload_mutation_rejected || !payload_mutated || !reduction.corpus.valid() ||
+        reduction.generation != generation || reduction.size() != relation_count ||
+        !std::filesystem::exists(artifact_scope->base_path + ".reldata") ||
+        !std::filesystem::exists(artifact_scope->base_path + ".relidx") ||
+        pipeline.stats().matrix_rows != 0 || pipeline.stats().matrix_cols != 0 ||
+        pipeline.stats().matrix_weight != 0 || pipeline.stats().matrix_excess != 0) {
+        std::cout << "(matrix same-size OOC mutation was not rejected without consuming input) ";
+        return false;
+    }
+    write_test_file(artifact_scope->base_path + ".reldata", original_data);
+
+    pipeline.set_log_callback({});
+    std::optional<Pipeline::MatrixResult> matrix_result;
+    matrix_result.emplace(pipeline.build_matrix(std::move(reduction), fb, ctx));
+    if (reduction.corpus.valid() || !matrix_result->owns_relation_corpus() ||
+        matrix_result->relation_count() != relation_count ||
+        !std::filesystem::exists(artifact_scope->base_path + ".reldata") ||
+        !std::filesystem::exists(artifact_scope->base_path + ".relidx")) {
+        std::cout << "(matrix retry did not transfer the preserved corpus exactly once) ";
+        return false;
+    }
+    matrix_result.reset();
+    if (std::filesystem::exists(artifact_scope->base_path + ".reldata") ||
+        std::filesystem::exists(artifact_scope->base_path + ".relidx") ||
+        std::filesystem::exists(artifact_scope->cleanup_directory)) {
+        std::cout << "(matrix retry result did not clean its OOC ownership scope) ";
         return false;
     }
     return true;
@@ -2151,6 +2691,7 @@ bool test_legacy_matrix_result_retains_vector() {
     relations.emplace_back(1'000, 1);
     gnfs::relation::RelationReductionStats reduction_stats;
     reduction_stats.strategy = gnfs::relation::ReductionStrategy::StandardV0;
+    reduction_stats.output_relations = relations.size();
     gnfs::relation::RelationReductionResult reduction(779, std::move(relations),
                                                       std::move(reduction_stats));
 
@@ -2183,6 +2724,7 @@ bool test_structured_matrix_thin_early_return_and_malformed_dependency() {
     relations.emplace_back(1'000, 1);
     gnfs::relation::RelationReductionStats reduction_stats;
     reduction_stats.strategy = gnfs::relation::ReductionStrategy::Structured;
+    reduction_stats.output_relations = relations.size();
     gnfs::relation::RelationReductionResult reduction(778, std::move(relations),
                                                       std::move(reduction_stats));
 
@@ -2251,6 +2793,7 @@ bool test_matrix_result_move_assignment() {
         }
         gnfs::relation::RelationReductionStats reduction_stats;
         reduction_stats.strategy = strategy;
+        reduction_stats.output_relations = relations.size();
         gnfs::relation::RelationReductionResult reduction(generation, std::move(relations),
                                                           std::move(reduction_stats));
         return pipeline.solve_matrix(std::move(reduction), fb, ctx);
@@ -2404,8 +2947,146 @@ bool test_sieve_resume_fresh_no_prior_ckpt() {
     return true;
 }
 
+bool test_sieve_resume_round_limit_preflight() {
+    SieveResumeArtifacts artifacts(gnfs::util::temp_path("gnfs_test_sieve_resume_round_limit_" +
+                                                         std::to_string(gnfs::util::process_id())));
+    const std::string& base = artifacts.base;
+
+    Integer n("1000036000099");
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline pipeline(n, cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+    const auto identity = gnfs::sieve::make_sieve_run_identity(ctx, fb, pipeline.params());
+
+    gnfs::relation::OOCSnapshotDescriptor descriptor;
+    {
+        gnfs::relation::OOCRelationWriter writer(base);
+        descriptor = writer.checkpoint_prefix();
+        writer.fail_suspended_snapshot();
+    }
+
+    gnfs::sieve::SieveCheckpoint checkpoint;
+    checkpoint.sq_count = 0;
+    checkpoint.current_index = 0;
+    checkpoint.round = 1;
+    checkpoint.batch_target = 5000;
+    checkpoint.candidates_total = 0;
+    bind_checkpoint_to_run(checkpoint, identity);
+    bind_checkpoint_to_ooc(checkpoint, descriptor,
+                           gnfs::relation::RelationSequenceReceiptAccumulator{}.finish(), base);
+    checkpoint.save(base + ".sieve_ckpt");
+
+    const std::string checkpoint_before = read_test_file(base + ".sieve_ckpt");
+    const std::string data_before = read_test_file(base + ".reldata");
+    const std::string index_before = read_test_file(base + ".relidx");
+
+    size_t progress_callbacks = 0;
+    size_t log_callbacks = 0;
+    pipeline.set_progress_callback([&](const ProgressInfo&) { ++progress_callbacks; });
+    pipeline.set_log_callback([&](const LogEntry&) { ++log_callbacks; });
+
+    SieveCollectionOptions options;
+    options.adaptive_round_limit = 1;
+    bool rejected = false;
+    {
+        ScopedEnvironmentVariable resume_env("GNFS_SIEVE_RESUME", base);
+        try {
+            (void)pipeline.sieve_and_collect(ctx, fb, options);
+        } catch (const std::runtime_error& error) {
+            rejected = std::string_view(error.what()).find("adaptive round limit") !=
+                       std::string_view::npos;
+        }
+    }
+
+    if (!rejected || progress_callbacks != 0 || log_callbacks != 0 ||
+        read_test_file(base + ".sieve_ckpt") != checkpoint_before ||
+        read_test_file(base + ".reldata") != data_before ||
+        read_test_file(base + ".relidx") != index_before ||
+        !gnfs::sieve::SieveCheckpoint::exists_and_valid(base + ".sieve_ckpt") ||
+        pipeline.stats().sieve_stop_reason != SieveStopReason::NotStarted ||
+        pipeline.stats().sieve_rounds_completed != 0) {
+        std::cout << "(resume round limit mismatch did not fail closed before mutation) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_sieve_resume_policy_identity_preflight() {
+    SieveResumeArtifacts artifacts(gnfs::util::temp_path("gnfs_test_sieve_resume_policy_identity_" +
+                                                         std::to_string(gnfs::util::process_id())));
+    const std::string& base = artifacts.base;
+
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "0");
+    ScopedEnvironmentVariable cascade_baseline("GNFS_CASCADE_V3", "0");
+    ScopedEnvironmentVariable three_lp("GNFS_3LP", "0");
+    ScopedEnvironmentVariable merge_weight3("GNFS_V0_WEIGHT3", "0");
+    ScopedEnvironmentVariable weight_cutoff("GNFS_WEIGHT_CUTOFF", "0");
+    ScopedEnvironmentVariable drop_residual("GNFS_DROP_RESIDUAL", "0");
+
+    Integer n("1000036000099");
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline pipeline(n, cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+    const auto identity = gnfs::sieve::make_sieve_run_identity(ctx, fb, pipeline.params());
+
+    gnfs::relation::OOCSnapshotDescriptor descriptor;
+    {
+        gnfs::relation::OOCRelationWriter writer(base);
+        descriptor = writer.checkpoint_prefix();
+        writer.fail_suspended_snapshot();
+    }
+
+    gnfs::sieve::SieveCheckpoint checkpoint;
+    checkpoint.sq_count = 0;
+    checkpoint.current_index = 0;
+    checkpoint.round = 0;
+    checkpoint.batch_target = 5'000;
+    checkpoint.candidates_total = 0;
+    bind_checkpoint_to_run(checkpoint, identity);
+    bind_checkpoint_to_ooc(checkpoint, descriptor,
+                           gnfs::relation::RelationSequenceReceiptAccumulator{}.finish(), base);
+    checkpoint.save(base + ".sieve_ckpt");
+
+    const std::string checkpoint_before = read_test_file(base + ".sieve_ckpt");
+    const std::string data_before = read_test_file(base + ".reldata");
+    const std::string index_before = read_test_file(base + ".relidx");
+
+    size_t progress_callbacks = 0;
+    size_t log_callbacks = 0;
+    pipeline.set_progress_callback([&](const ProgressInfo&) { ++progress_callbacks; });
+    pipeline.set_log_callback([&](const LogEntry&) { ++log_callbacks; });
+
+    bool rejected = false;
+    {
+        ScopedEnvironmentVariable changed_cascade("GNFS_CASCADE_V3", "1");
+        ScopedEnvironmentVariable resume_env("GNFS_SIEVE_RESUME", base);
+        try {
+            (void)pipeline.sieve_and_collect(ctx, fb);
+        } catch (const std::runtime_error& error) {
+            rejected =
+                std::string_view(error.what()).find("run identity") != std::string_view::npos;
+        }
+    }
+
+    if (!rejected || progress_callbacks != 0 || log_callbacks != 0 ||
+        read_test_file(base + ".sieve_ckpt") != checkpoint_before ||
+        read_test_file(base + ".reldata") != data_before ||
+        read_test_file(base + ".relidx") != index_before ||
+        !gnfs::sieve::SieveCheckpoint::exists_and_valid(base + ".sieve_ckpt") ||
+        pipeline.stats().sieve_stop_reason != SieveStopReason::NotStarted ||
+        pipeline.stats().sieve_rounds_completed != 0) {
+        std::cout << "(resume policy mismatch did not fail closed before mutation) ";
+        return false;
+    }
+    return true;
+}
+
 bool test_sieve_resume_with_paired_checkpoint() {
-    // Build a real empty V2 relation prefix and pair it with a V2 sieve
+    // Build a real empty V3 relation prefix and pair it with a V3 sieve
     // checkpoint. The pipeline must validate the descriptor before applying
     // the Special-Q cursor, reopen append mode, and complete normally.
     SieveResumeArtifacts artifacts(gnfs::util::temp_path("gnfs_test_sieve_resume_paired_" +
@@ -2434,12 +3115,8 @@ bool test_sieve_resume_with_paired_checkpoint() {
     ck.batch_target = 5000;
     ck.candidates_total = 0;
     bind_checkpoint_to_run(ck, identity);
-    ck.ooc_format_version = descriptor.format_version;
-    ck.ooc_store_id = descriptor.store_id;
-    ck.ooc_generation = descriptor.generation;
-    ck.ooc_relation_count = descriptor.count;
-    ck.ooc_data_end = descriptor.data_end;
-    ck.ooc_base_path = base;
+    bind_checkpoint_to_ooc(ck, descriptor,
+                           gnfs::relation::RelationSequenceReceiptAccumulator{}.finish(), base);
     ck.save(base + ".sieve_ckpt");
 
     ScopedEnvironmentVariable resume_env("GNFS_SIEVE_RESUME", base);
@@ -2478,12 +3155,22 @@ bool test_sieve_resume_after_ooc_finalize() {
 
     gnfs::relation::OOCSnapshotDescriptor committed;
     gnfs::sieve::SieveCheckpoint checkpoint;
+    gnfs::relation::RelationSequenceReceiptAccumulator checkpoint_sequence;
     {
         gnfs::relation::OOCRelationWriter writer(base);
         for (int64_t i = 0; i < 12; ++i) {
             gnfs::core::Relation relation(2 * i + 1, static_cast<uint64_t>(2 * i + 2));
             relation.rational_factors.push_back(static_cast<uint32_t>(100 + i));
             (void)writer.write(relation);
+            checkpoint_sequence.append(relation);
+        }
+        committed = writer.checkpoint_prefix();
+        writer.resume_append(committed);
+        for (int64_t i = 12; i < 20; ++i) {
+            gnfs::core::Relation relation(2 * i + 1, static_cast<uint64_t>(2 * i + 2));
+            relation.rational_factors.push_back(static_cast<uint32_t>(100 + i));
+            (void)writer.write(relation);
+            checkpoint_sequence.append(relation);
         }
         committed = writer.checkpoint_prefix();
 
@@ -2493,12 +3180,8 @@ bool test_sieve_resume_after_ooc_finalize() {
         checkpoint.batch_target = 5000;
         checkpoint.candidates_total = 0;
         bind_checkpoint_to_run(checkpoint, identity);
-        checkpoint.ooc_format_version = committed.format_version;
-        checkpoint.ooc_store_id = committed.store_id;
-        checkpoint.ooc_generation = committed.generation;
-        checkpoint.ooc_relation_count = committed.count;
-        checkpoint.ooc_data_end = committed.data_end;
-        checkpoint.ooc_base_path = base;
+        bind_checkpoint_to_ooc(checkpoint, committed, checkpoint_sequence.finish(), base);
+        checkpoint.collection_complete = true;
 
         // Save a structurally valid but foreign run identity first. The
         // pipeline must reject it before opening or truncating the OOC store.
@@ -2506,11 +3189,6 @@ bool test_sieve_resume_after_ooc_finalize() {
         checkpoint.save(base + ".sieve_ckpt");
 
         writer.resume_append(committed);
-        for (int64_t i = 12; i < 20; ++i) {
-            gnfs::core::Relation relation(2 * i + 1, static_cast<uint64_t>(2 * i + 2));
-            relation.rational_factors.push_back(static_cast<uint32_t>(100 + i));
-            (void)writer.write(relation);
-        }
         (void)writer.finalize();
     }
 
@@ -2537,6 +3215,56 @@ bool test_sieve_resume_after_ooc_finalize() {
     // next call must consume the already-finalized corpus without new appends.
     bind_checkpoint_to_run(checkpoint, identity);
     checkpoint.save(base + ".sieve_ckpt");
+
+    pipeline.set_log_callback([&](const LogEntry& entry) {
+        if (entry.message.starts_with("done:")) {
+            throw std::runtime_error("injected recovered OOC terminal callback failure");
+        }
+    });
+    bool terminal_callback_failed = false;
+    try {
+        (void)pipeline.sieve_and_collect(ctx, fb);
+    } catch (const std::runtime_error& error) {
+        terminal_callback_failed =
+            std::string_view(error.what()) == "injected recovered OOC terminal callback failure";
+    }
+    if (!terminal_callback_failed ||
+        std::filesystem::file_size(base + ".reldata") != data_size_before ||
+        std::filesystem::file_size(base + ".relidx") != index_size_before ||
+        !gnfs::sieve::SieveCheckpoint::exists_and_valid(base + ".sieve_ckpt") ||
+        pipeline.stats().sieve_stop_reason != SieveStopReason::NotStarted ||
+        pipeline.stats().sieve_rounds_completed != 0) {
+        std::cout << "(terminal callback failure broke the finalized raw/checkpoint pair) ";
+        return false;
+    }
+
+    constexpr std::string_view foreign_checkpoint = "foreign-terminal-checkpoint";
+    bool checkpoint_replaced = false;
+    pipeline.set_log_callback([&](const LogEntry& entry) {
+        if (entry.message.starts_with("done:") && !checkpoint_replaced) {
+            write_test_file(base + ".sieve_ckpt", foreign_checkpoint);
+            checkpoint_replaced = true;
+        }
+    });
+    bool replacement_rejected = false;
+    try {
+        (void)pipeline.sieve_and_collect(ctx, fb);
+    } catch (const std::runtime_error& error) {
+        replacement_rejected =
+            std::string_view(error.what()).find("SieveCheckpoint") != std::string_view::npos;
+    }
+    if (!replacement_rejected || !checkpoint_replaced ||
+        read_test_file(base + ".sieve_ckpt") != foreign_checkpoint ||
+        std::filesystem::file_size(base + ".reldata") != data_size_before ||
+        std::filesystem::file_size(base + ".relidx") != index_size_before ||
+        pipeline.stats().sieve_stop_reason != SieveStopReason::NotStarted ||
+        pipeline.stats().sieve_rounds_completed != 0) {
+        std::cout << "(terminal checkpoint replacement was deleted or consumed) ";
+        return false;
+    }
+
+    checkpoint.save(base + ".sieve_ckpt");
+    pipeline.set_log_callback({});
     auto relations = pipeline.sieve_and_collect(ctx, fb);
 
     std::ifstream checkpoint_file(base + ".sieve_ckpt");
@@ -2548,6 +3276,62 @@ bool test_sieve_resume_after_ooc_finalize() {
     }
     if (!checkpoint_removed) {
         std::cout << "(finalized OOC checkpoint not cleaned up) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_sieve_resume_after_terminal_checkpoint_publication() {
+    // Exercise the other half of the terminal transaction: collection has
+    // stopped and its exact receipt/cursor checkpoint is durable, but OOC
+    // final magic has not been published. Recovery must not append or repeat
+    // the last adaptive round.
+    SieveResumeArtifacts artifacts(gnfs::util::temp_path(
+        "gnfs_test_sieve_resume_terminal_checkpoint_" + std::to_string(gnfs::util::process_id())));
+    const std::string& base = artifacts.base;
+
+    Integer n("1000036000099");
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline pipeline(n, cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+    const auto identity = gnfs::sieve::make_sieve_run_identity(ctx, fb, pipeline.params());
+
+    gnfs::relation::RelationSequenceReceiptAccumulator sequence;
+    gnfs::relation::OOCSnapshotDescriptor terminal_descriptor;
+    {
+        gnfs::relation::OOCRelationWriter writer(base);
+        for (int64_t i = 0; i < 20; ++i) {
+            gnfs::core::Relation relation(2 * i + 1, static_cast<uint64_t>(2 * i + 2));
+            relation.rational_factors.push_back(static_cast<uint32_t>(100 + i));
+            (void)writer.write(relation);
+            sequence.append(relation);
+        }
+        terminal_descriptor = writer.checkpoint_prefix();
+        writer.fail_suspended_snapshot();
+    }
+
+    gnfs::sieve::SieveCheckpoint checkpoint;
+    checkpoint.sq_count = 0;
+    checkpoint.current_index = 0;
+    checkpoint.round = 0;
+    checkpoint.batch_target = 5'000;
+    checkpoint.candidates_total = 0;
+    checkpoint.collection_complete = true;
+    bind_checkpoint_to_run(checkpoint, identity);
+    bind_checkpoint_to_ooc(checkpoint, terminal_descriptor, sequence.finish(), base);
+    checkpoint.save(base + ".sieve_ckpt");
+
+    ScopedEnvironmentVariable resume_env("GNFS_SIEVE_RESUME", base);
+    auto relations = pipeline.sieve_and_collect(ctx, fb);
+
+    if (relations.stats.input_relations != terminal_descriptor.count ||
+        pipeline.stats().special_q_processed != 0 ||
+        pipeline.stats().sieve_stop_reason != SieveStopReason::RecoveredTerminalCheckpoint ||
+        pipeline.stats().sieve_rounds_completed != 1 ||
+        gnfs::sieve::SieveCheckpoint::exists(base + ".sieve_ckpt")) {
+        std::cout << "(terminal checkpoint recovery repeated collection or lost its commit) ";
         return false;
     }
     return true;
@@ -2632,16 +3416,21 @@ int main() {
     TEST(structured_filter_public_route);
     TEST(structured_filter_public_off_equivalence);
     TEST(structured_filter_invalid_env_precedes_generation);
+    TEST(sieve_collection_options_preflight);
     TEST(structured_filter_adaptive_route);
     TEST(structured_filter_ooc_collision_rejected_without_clobber);
+    TEST(fresh_ooc_callback_failure_cleans_uncommitted_raw);
     TEST(ooc_base_snapshot_ignores_callback_env_drift);
-    TEST(structured_ooc_callback_failure_preserves_finalized_raw);
+    TEST(structured_ooc_callback_failure_cleans_fresh_raw);
+    TEST(legacy_ooc_explicit_terminal_cleanup);
     TEST(structured_filter_run_preflight_preserves_resume_artifacts);
     TEST(structured_filter_run_freezes_route_before_callbacks);
     TEST(structured_filter_sieve_freezes_route_before_callbacks);
     TEST(structured_filter_size_aware_ooc_run_preflight);
     TEST(structured_filter_distributed_precedes_worker_side_effects);
+    TEST(distributed_sieve_removes_unused_master_ooc_pair);
     TEST(structured_filter_matrix_record_matches_final_handoff);
+    TEST(matrix_build_failure_preserves_reduction);
     TEST(legacy_matrix_result_retains_vector);
     TEST(structured_matrix_thin_early_return_and_malformed_dependency);
     TEST(matrix_result_move_assignment);
@@ -2650,7 +3439,10 @@ int main() {
     TEST(v3_cascade_disabled_by_default);
     TEST(v3_cascade_auto_mode);
     TEST(sieve_resume_fresh_no_prior_ckpt);
+    TEST(sieve_resume_round_limit_preflight);
+    TEST(sieve_resume_policy_identity_preflight);
     TEST(sieve_resume_with_paired_checkpoint);
+    TEST(sieve_resume_after_terminal_checkpoint_publication);
     TEST(sieve_resume_after_ooc_finalize);
 
     std::cout << "\n========================================\n";

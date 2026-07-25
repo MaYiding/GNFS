@@ -648,8 +648,12 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
   `.reldata` carries an immutable header with the same store identity as
   `.relidx`; offsets and descriptor `data_end` are physical file positions, so
   an empty store ends at byte 24. Same-sized foreign data files fail closed
-  before recovery mutation. Ordinary finalized readers retain V1/V2
-  compatibility, while append recovery and ownership promotion reject them.
+  before recovery mutation. SieveCheckpoint V3 also binds the accepted payload
+  sequence and marks the exact terminal prefix with `collection_complete`;
+  pre-final-magic recovery does not repeat collection, and finalized recovery
+  rejects any extension beyond that terminal receipt. Ordinary finalized
+  readers retain V1/V2 compatibility, while append recovery and ownership
+  promotion reject them.
 - [x] Add a neutral indexed `RelationSource` contract and a move-only,
   transactional `RelationSink`. Structured active rows now materialize directly
   into either an in-memory corpus or a paired V3 store inside an atomically
@@ -1355,7 +1359,7 @@ special-Q/distributed producers
            |
            +-- checkpoint_prefix --> OOCSnapshotDescriptor
            |                            |
-           |                            +--> SieveCheckpoint V2 commit
+           |                            +--> SieveCheckpoint V3 commit
            +-- snapshot/finalize ------+
                                         v
                          move-only RawRelationSnapshot
@@ -1545,3 +1549,26 @@ Implementation gate        M0 contract/baseline freeze, then M1a-M1d
 ```
 
 NO UNRESOLVED DECISIONS
+
+## 2026-07-25 Follow-up: Durable OOC Cleanup Transaction
+
+The paired checkpoint and receipt protocol now closes recovery before any
+truncate or append. Artifact deletion remains a separate boundary: writer,
+corpus, and sink cleanup currently validate ownership first and then remove the
+two paths sequentially. A crash or second-path removal failure can therefore
+leave one owned artifact. The current code and documentation treat this as
+best-effort cleanup, not as a crash-recoverable same-path retry contract.
+
+The next milestone will introduce one shared cleanup transaction:
+
+1. publish a checksummed, durable intent bound to the V3 `store_id` and exact
+   finalized descriptor when available;
+2. atomically quarantine both leaves under one frozen parent namespace, with
+   no-follow and file-identity checks before deleting either quarantine entry;
+3. resume from every original/quarantined/deleted combination after process
+   failure, while preserving any foreign replacement;
+4. use whole-private-directory quarantine as the fast path for structured
+   output leases; and
+5. cover intent publication, each rename/unlink boundary, foreign
+   replacement, symlink/hardlink, Windows sharing failures, and next-process
+   same-base reuse in the crash matrix.

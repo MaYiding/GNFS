@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 using gnfs::core::ABPair;
@@ -26,6 +27,12 @@ using gnfs::relation::OOCRelationReader;
 using gnfs::relation::OOCRelationWriter;
 using gnfs::relation::OOCSnapshotDescriptor;
 using gnfs::relation::OOCWriterState;
+using gnfs::relation::RelationSequenceReceipt;
+using gnfs::relation::RelationSequenceReceiptAccumulator;
+
+static_assert(!std::is_constructible_v<OOCRelationWriter, std::string, OOCSnapshotDescriptor>);
+static_assert(std::is_constructible_v<OOCRelationWriter, std::string, OOCSnapshotDescriptor,
+                                      RelationSequenceReceipt>);
 
 [[noreturn]] static void check_failed(const char* expression, int line) {
     throw std::runtime_error(std::string("CHECK failed at line ") + std::to_string(line) + ": " +
@@ -62,6 +69,14 @@ Relation make_relation(int64_t a, uint64_t b) {
     Relation relation(a, b);
     relation.rational_factors.push_back(static_cast<uint32_t>(100 + static_cast<uint64_t>(a)));
     return relation;
+}
+
+RelationSequenceReceipt standard_sequence_receipt(uint64_t count) {
+    RelationSequenceReceiptAccumulator sequence;
+    for (uint64_t ordinal = 0; ordinal < count; ++ordinal) {
+        sequence.append(make_relation(static_cast<int64_t>(2 * ordinal + 1), 2 * ordinal + 2));
+    }
+    return sequence.finish();
 }
 
 Relation make_large_prime_relation(size_t count) {
@@ -338,7 +353,8 @@ void expect_resume_rejected_without_mutation(const std::string& base_path,
 
     bool rejected = false;
     try {
-        OOCRelationWriter writer(base_path, descriptor);
+        OOCRelationWriter writer(base_path, descriptor,
+                                 standard_sequence_receipt(descriptor.count));
         (void)writer;
     } catch (const std::exception&) {
         rejected = true;
@@ -457,7 +473,7 @@ void test_validated_resume_handoff_and_append() {
     const auto descriptor = create_recovery_store(path);
     check_v3_pair_layout(path, descriptor, OOCRelationWriter::MAGIC_V3_INCOMPLETE, 0);
 
-    OOCRelationWriter writer(path, descriptor);
+    OOCRelationWriter writer(path, descriptor, standard_sequence_receipt(descriptor.count));
     CHECK(writer.state() == OOCWriterState::Open);
     CHECK(writer.count() == 2);
 
@@ -546,7 +562,7 @@ void test_resume_rejects_data_corruption() {
         const auto data_bytes = read_file_bytes(path + ".reldata");
         bool rejected_at_size_gate = false;
         try {
-            OOCRelationWriter writer(path, descriptor);
+            OOCRelationWriter writer(path, descriptor, standard_sequence_receipt(descriptor.count));
             (void)writer;
         } catch (const std::runtime_error& error) {
             rejected_at_size_gate =
@@ -711,7 +727,7 @@ void test_paired_recovery_empty_prefix_and_generation() {
     CHECK(descriptor.data_end == OOCRelationWriter::DATA_HEADER_BYTES);
     check_v3_pair_layout(path, descriptor, OOCRelationWriter::MAGIC_V3_INCOMPLETE, 0);
 
-    OOCRelationWriter writer(path, descriptor);
+    OOCRelationWriter writer(path, descriptor, standard_sequence_receipt(descriptor.count));
     CHECK(writer.recovery_outcome() == OOCRecoveryOutcome::AppendablePrefix);
     CHECK(writer.count() == 0);
     auto prefix = writer.take_validated_resume_prefix();
@@ -770,7 +786,7 @@ void test_paired_recovery_rolls_back_uncommitted_tails() {
     const auto committed = create_recovery_store(path);
 
     {
-        OOCRelationWriter writer(path, committed);
+        OOCRelationWriter writer(path, committed, standard_sequence_receipt(committed.count));
         CHECK(writer.write(make_relation(5, 6)) == 2);
         CHECK(writer.write(make_relation(7, 8)) == 3);
         const auto later = writer.checkpoint_prefix();
@@ -782,7 +798,7 @@ void test_paired_recovery_rolls_back_uncommitted_tails() {
           OOCRelationWriter::index_size_for_count(committed.count));
     CHECK(std::filesystem::file_size(path + ".reldata") > committed.data_end);
 
-    OOCRelationWriter recovered(path, committed);
+    OOCRelationWriter recovered(path, committed, standard_sequence_receipt(committed.count));
     CHECK(recovered.recovery_outcome() == OOCRecoveryOutcome::AppendablePrefix);
     CHECK(recovered.count() == committed.count);
     CHECK(std::filesystem::file_size(path + ".relidx") ==
@@ -803,20 +819,24 @@ void test_paired_recovery_rolls_back_uncommitted_tails() {
 void test_finalized_corpus_recovery_is_read_only() {
     const std::string path = make_path("finalized_recovery");
     OOCArtifacts cleanup(path);
+    OOCSnapshotDescriptor stale_committed;
     OOCSnapshotDescriptor committed;
     {
         OOCRelationWriter writer(path);
         CHECK(writer.write(make_relation(1, 2)) == 0);
         CHECK(writer.write(make_relation(3, 4)) == 1);
+        stale_committed = writer.checkpoint_prefix();
+        writer.resume_append(stale_committed);
+        CHECK(writer.write(make_relation(5, 6)) == 2);
         committed = writer.checkpoint_prefix();
         writer.resume_append(committed);
-        CHECK(writer.write(make_relation(5, 6)) == 2);
         CHECK(writer.finalize().count == 3);
     }
     const auto index_size = std::filesystem::file_size(path + ".relidx");
     const auto data_size = std::filesystem::file_size(path + ".reldata");
 
-    OOCRelationWriter recovered(path, committed);
+    expect_resume_rejected_without_mutation(path, stale_committed);
+    OOCRelationWriter recovered(path, committed, standard_sequence_receipt(committed.count));
     CHECK(recovered.recovery_outcome() == OOCRecoveryOutcome::FinalizedCorpus);
     CHECK(recovered.state() == OOCWriterState::Finalized);
     CHECK(recovered.count() == 3);
@@ -885,7 +905,7 @@ void test_interrupted_finalize_preserves_paired_recovery() {
     CHECK(read_u64_at(path + ".reldata", OOCRelationWriter::DATA_STORE_ID_OFFSET) ==
           committed.store_id);
 
-    OOCRelationWriter recovered(path, committed);
+    OOCRelationWriter recovered(path, committed, standard_sequence_receipt(committed.count));
     CHECK(recovered.recovery_outcome() == OOCRecoveryOutcome::AppendablePrefix);
     CHECK(recovered.count() == 1);
     CHECK(read_u64_at(path + ".relidx", OOCRelationWriter::INDEX_COUNT_OFFSET) == 0);

@@ -8,31 +8,73 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace gnfs::api {
 
 using core::Integer;
 
+/// Terminal cause for one adaptive sieve collection invocation.
+///
+/// The value is part of the public evidence boundary: callers can distinguish
+/// an intentionally bounded first round from special-Q exhaustion without
+/// parsing log text.
+enum class SieveStopReason : uint8_t {
+    NotStarted,
+    EffectiveColumnExcess,
+    RecoveredFinalizedCorpus,
+    RecoveredTerminalCheckpoint,
+    InsufficientRawRelations,
+    SpecialQBudgetReached,
+    SpecialQRangeExhausted,
+    AdaptiveRoundLimitReached,
+    DistributedWaveComplete,
+};
+
+[[nodiscard]] constexpr std::string_view sieve_stop_reason_name(SieveStopReason reason) noexcept {
+    switch (reason) {
+    case SieveStopReason::NotStarted:
+        return "not_started";
+    case SieveStopReason::EffectiveColumnExcess:
+        return "effective_column_excess";
+    case SieveStopReason::RecoveredFinalizedCorpus:
+        return "recovered_finalized_corpus";
+    case SieveStopReason::RecoveredTerminalCheckpoint:
+        return "recovered_terminal_checkpoint";
+    case SieveStopReason::InsufficientRawRelations:
+        return "insufficient_raw_relations";
+    case SieveStopReason::SpecialQBudgetReached:
+        return "special_q_budget_reached";
+    case SieveStopReason::SpecialQRangeExhausted:
+        return "special_q_range_exhausted";
+    case SieveStopReason::AdaptiveRoundLimitReached:
+        return "adaptive_round_limit_reached";
+    case SieveStopReason::DistributedWaveComplete:
+        return "distributed_wave_complete";
+    }
+    return "unknown";
+}
+
 /// Per-phase timing breakdown
 struct PhaseTimings {
-    double poly_s      = 0.0;
-    double fb_s        = 0.0;
-    double sieve_s     = 0.0;
+    double poly_s = 0.0;
+    double fb_s = 0.0;
+    double sieve_s = 0.0;
     double candidate_generation_s = 0.0;
     double candidate_cofactor_s = 0.0;
-    double filter_s    = 0.0;
-    double linalg_s    = 0.0;
-    double sqrt_s      = 0.0;
-    double extract_s   = 0.0;
-    double total_s     = 0.0;
+    double filter_s = 0.0;
+    double linalg_s = 0.0;
+    double sqrt_s = 0.0;
+    double extract_s = 0.0;
+    double total_s = 0.0;
 };
 
 /// Statistics collected during factorization
 struct FactorStats {
     // Method selection
     FactorizationMethod method_used = FactorizationMethod::Auto;
-    std::string method_reason;  // why this method was chosen
+    std::string method_reason; // why this method was chosen
 
     // Input
     size_t n_bits = 0;
@@ -48,6 +90,8 @@ struct FactorStats {
 
     // Sieving
     size_t special_q_processed = 0;
+    size_t sieve_rounds_completed = 0;
+    SieveStopReason sieve_stop_reason = SieveStopReason::NotStarted;
     size_t special_q_batch_worker_limit = 0;
     size_t special_q_batch_peak_workers = 0;
     size_t special_q_batch_count = 0;
@@ -91,8 +135,8 @@ struct FactorStats {
 /// Factorization result
 struct FactorResult {
     bool success = false;
-    Integer n;                          // original input
-    std::vector<Integer> factors;       // found factors (sorted ascending)
+    Integer n;                    // original input
+    std::vector<Integer> factors; // found factors (sorted ascending)
     FactorStats stats;
 
     /// Format as human-readable text
@@ -101,7 +145,8 @@ struct FactorResult {
         if (success) {
             os << n.to_string() << " =";
             for (size_t i = 0; i < factors.size(); ++i) {
-                if (i > 0) os << " *";
+                if (i > 0)
+                    os << " *";
                 os << " " << factors[i].to_string();
             }
             os << "\n";
@@ -129,7 +174,8 @@ struct FactorResult {
 
         os << "  \"factors\": [";
         for (size_t i = 0; i < factors.size(); ++i) {
-            if (i > 0) os << ", ";
+            if (i > 0)
+                os << ", ";
             os << "\"" << factors[i].to_string() << "\"";
         }
         os << "],\n";
@@ -157,6 +203,9 @@ struct FactorResult {
         os << "    \"rational_primes\": " << stats.rational_primes << ",\n";
         os << "    \"algebraic_primes\": " << stats.algebraic_primes << ",\n";
         os << "    \"special_q_processed\": " << stats.special_q_processed << ",\n";
+        os << "    \"sieve_rounds_completed\": " << stats.sieve_rounds_completed << ",\n";
+        os << "    \"sieve_stop_reason\": \"" << sieve_stop_reason_name(stats.sieve_stop_reason)
+           << "\",\n";
         os << "    \"special_q_batch_worker_limit\": " << stats.special_q_batch_worker_limit
            << ",\n";
         os << "    \"special_q_batch_peak_workers\": " << stats.special_q_batch_peak_workers
@@ -172,8 +221,7 @@ struct FactorResult {
            << ",\n";
         os << "    \"candidate_batch_total_chunks\": " << stats.candidate_batch_total_chunks
            << ",\n";
-        os << "    \"candidate_batch_peak_chunks\": " << stats.candidate_batch_peak_chunks
-           << ",\n";
+        os << "    \"candidate_batch_peak_chunks\": " << stats.candidate_batch_peak_chunks << ",\n";
         os << "    \"candidate_batch_peak_candidates\": " << stats.candidate_batch_peak_candidates
            << ",\n";
         os << "    \"candidate_batch_rss_sample_candidates\": "
@@ -225,21 +273,14 @@ struct FactorResult {
                << "poly_s,fb_s,sieve_s,filter_s,linalg_s,sqrt_s,"
                << "relations,matrix_rows,matrix_cols,deps_found\n";
         }
-        os << n.to_string() << ","
-           << (success ? "true" : "false") << ","
+        os << n.to_string() << "," << (success ? "true" : "false") << ","
            << method_tag(stats.method_used) << ","
            << (factors.size() > 0 ? factors[0].to_string() : "") << ","
-           << (factors.size() > 1 ? factors[1].to_string() : "") << ","
-           << stats.n_bits << "," << stats.n_digits << ","
-           << stats.timings.total_s << ","
-           << stats.timings.poly_s << ","
-           << stats.timings.fb_s << ","
-           << stats.timings.sieve_s << ","
-           << stats.timings.filter_s << ","
-           << stats.timings.linalg_s << ","
-           << stats.timings.sqrt_s << ","
-           << stats.relations_found << ","
-           << stats.matrix_rows << "," << stats.matrix_cols << ","
+           << (factors.size() > 1 ? factors[1].to_string() : "") << "," << stats.n_bits << ","
+           << stats.n_digits << "," << stats.timings.total_s << "," << stats.timings.poly_s << ","
+           << stats.timings.fb_s << "," << stats.timings.sieve_s << "," << stats.timings.filter_s
+           << "," << stats.timings.linalg_s << "," << stats.timings.sqrt_s << ","
+           << stats.relations_found << "," << stats.matrix_rows << "," << stats.matrix_cols << ","
            << stats.dependencies_found << "\n";
         return os.str();
     }
@@ -255,14 +296,15 @@ struct FactorResult {
         os << "  N = " << n.to_string() << "\n";
         os << "  Bits: " << stats.n_bits << ", Digits: " << stats.n_digits << "\n";
         os << "  Method: " << method_name(stats.method_used);
-        if (!stats.method_reason.empty()) os << " (" << stats.method_reason << ")";
+        if (!stats.method_reason.empty())
+            os << " (" << stats.method_reason << ")";
         os << "\n";
         os << "  Result: " << (success ? "SUCCESS" : "FAILED") << "\n\n";
 
         if (success) {
             os << "Factors\n";
             for (size_t i = 0; i < factors.size(); ++i) {
-                os << "  p" << (i+1) << " = " << factors[i].to_string() << "\n";
+                os << "  p" << (i + 1) << " = " << factors[i].to_string() << "\n";
             }
             os << "\n";
         }
@@ -281,6 +323,8 @@ struct FactorResult {
 
         os << "Sieving\n";
         os << "  Special-Q processed: " << stats.special_q_processed << "\n";
+        os << "  Reduction rounds completed: " << stats.sieve_rounds_completed << "\n";
+        os << "  Stop reason: " << sieve_stop_reason_name(stats.sieve_stop_reason) << "\n";
         os << "  Special-Q batch worker limit: " << stats.special_q_batch_worker_limit << "\n";
         os << "  Special-Q batch peak workers: " << stats.special_q_batch_peak_workers << "\n";
         os << "  Special-Q batches: " << stats.special_q_batch_count << "\n";
@@ -295,8 +339,8 @@ struct FactorResult {
         os << "  Candidate batch peak chunks: " << stats.candidate_batch_peak_chunks << "\n";
         os << "  Candidate batch peak candidates: " << stats.candidate_batch_peak_candidates
            << "\n";
-        os << "  Candidate RSS sample candidates: "
-           << stats.candidate_batch_rss_sample_candidates << "\n";
+        os << "  Candidate RSS sample candidates: " << stats.candidate_batch_rss_sample_candidates
+           << "\n";
         os << "  Candidate after-generation current RSS: ";
         if (stats.candidate_batch_after_generation_current_rss_bytes) {
             os << *stats.candidate_batch_after_generation_current_rss_bytes << " bytes\n";

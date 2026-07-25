@@ -4,6 +4,7 @@
 #include "filter.hpp"
 #include "relation_corpus.hpp"
 #include "relation_identity.hpp"
+#include "relation_sequence_receipt.hpp"
 #include "relation_sink.hpp"
 #include "relation_source.hpp"
 #include "structured_filter_policy.hpp"
@@ -125,6 +126,7 @@ struct RelationReductionConfig {
     FilterConfig filter{};
     bool large_primes_enabled = false;
     size_t merge_rounds = 10;
+    RelationMergePolicy merge_policy = relation_merge_policy_from_environment();
     ReductionStrategy strategy = ReductionStrategy::NoLargePrimes;
     /// Required only for Structured. Legacy strategies reject a populated
     /// value so research limits can never be accepted and then ignored.
@@ -571,11 +573,12 @@ public:
 
         std::vector<core::Relation> merged;
         if (config.strategy == ReductionStrategy::CliqueV0) {
-            merged =
-                CliqueRelationMerger::merge_cliques(std::move(separated.partial), &stats.clique_v0);
+            merged = CliqueRelationMerger::merge_cliques(std::move(separated.partial),
+                                                         &stats.clique_v0, config.merge_policy);
         } else {
-            merged = PartialRelationMerger::merge_all(std::move(separated.partial),
-                                                      config.merge_rounds, &stats.standard_v0);
+            merged =
+                PartialRelationMerger::merge_all(std::move(separated.partial), config.merge_rounds,
+                                                 &stats.standard_v0, config.merge_policy);
         }
 
         stats.merged_relations = merged.size();
@@ -586,8 +589,8 @@ public:
 
         if (config.strategy == ReductionStrategy::StandardV0WithV3 &&
             !partial_copy_for_v3.empty()) {
-            auto v3_merged =
-                CliqueRelationMerger::merge_cliques(std::move(partial_copy_for_v3), &stats.v3);
+            auto v3_merged = CliqueRelationMerger::merge_cliques(std::move(partial_copy_for_v3),
+                                                                 &stats.v3, config.merge_policy);
 
             std::unordered_set<RelationSourceCombination, RelationSourceCombinationHash>
                 existing_combinations;
@@ -733,6 +736,7 @@ public:
         };
         const DirectSourceScan scan = [&] {
             CorpusDigestAccumulator raw_digest(input_relations);
+            RelationSequenceReceiptAccumulator accepted_sequence;
             LpKeyWeightAccumulator lp_histogram(input_relations);
             std::vector<CorpusDigest> fingerprints;
             fingerprints.reserve(input_relations);
@@ -757,8 +761,14 @@ public:
                         source, "direct borrowed source contains a duplicate AB pair");
                 }
                 raw_digest.append(relation);
+                accepted_sequence.append(relation);
                 lp_histogram.append(relation);
                 fingerprints.push_back(direct_relation_fingerprint(relation));
+            }
+            if (accepted_sequence.finish() != source.accepted_sequence_receipt()) {
+                fail_direct_source_untrusted(
+                    source,
+                    "direct borrowed source payload differs from the collector-accepted sequence");
             }
             return DirectSourceScan{raw_digest.finish(), lp_histogram.finish(),
                                     std::move(fingerprints)};

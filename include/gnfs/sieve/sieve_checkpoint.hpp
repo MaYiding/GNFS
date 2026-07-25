@@ -124,6 +124,81 @@ inline void atomic_replace(const std::filesystem::path& temporary,
 #endif
 }
 
+inline void sync_parent_directory_after_remove(const std::filesystem::path& target) {
+    auto parent = target.parent_path();
+    if (parent.empty()) {
+        parent = ".";
+    }
+#ifdef _WIN32
+    const HANDLE directory = ::CreateFileW(
+        parent.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH,
+        nullptr);
+    if (directory == INVALID_HANDLE_VALUE) {
+        const auto code = static_cast<unsigned long>(::GetLastError());
+        throw std::runtime_error(
+            "SieveCheckpoint::remove_checked: cannot open checkpoint directory " + parent.string() +
+            " (Win32 error " + std::to_string(code) + ")");
+    }
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (!::GetFileInformationByHandle(directory, &information)) {
+        const auto code = static_cast<unsigned long>(::GetLastError());
+        (void)::CloseHandle(directory);
+        throw std::runtime_error(
+            "SieveCheckpoint::remove_checked: checkpoint parent is not a trusted directory " +
+            parent.string() + " (Win32 error " + std::to_string(code) + ")");
+    }
+    if ((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+        (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        const auto code = static_cast<unsigned long>(
+            (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ? ERROR_ACCESS_DENIED
+                                                                               : ERROR_DIRECTORY);
+        (void)::CloseHandle(directory);
+        throw std::runtime_error(
+            "SieveCheckpoint::remove_checked: checkpoint parent is not a trusted directory " +
+            parent.string() + " (Win32 error " + std::to_string(code) + ")");
+    }
+    if (!::FlushFileBuffers(directory)) {
+        const auto code = static_cast<unsigned long>(::GetLastError());
+        (void)::CloseHandle(directory);
+        throw std::runtime_error(
+            "SieveCheckpoint::remove_checked: cannot flush checkpoint directory " +
+            parent.string() + " (Win32 error " + std::to_string(code) + ")");
+    }
+    if (!::CloseHandle(directory)) {
+        const auto code = static_cast<unsigned long>(::GetLastError());
+        throw std::runtime_error(
+            "SieveCheckpoint::remove_checked: cannot close checkpoint directory " +
+            parent.string() + " (Win32 error " + std::to_string(code) + ")");
+    }
+#else
+    int directory = -1;
+    do {
+        directory = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    } while (directory < 0 && errno == EINTR);
+    if (directory < 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "SieveCheckpoint::remove_checked: cannot open directory");
+    }
+
+    int sync_result = -1;
+    do {
+        sync_result = ::fsync(directory);
+    } while (sync_result != 0 && errno == EINTR);
+    if (sync_result != 0) {
+        const int saved_errno = errno;
+        (void)::close(directory);
+        throw std::system_error(saved_errno, std::generic_category(),
+                                "SieveCheckpoint::remove_checked: cannot flush directory");
+    }
+    if (::close(directory) != 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "SieveCheckpoint::remove_checked: cannot close directory");
+    }
+#endif
+}
+
 inline void append_u32(std::vector<uint8_t>& bytes, uint32_t value) {
     for (unsigned shift = 0; shift < 32; shift += 8) {
         bytes.push_back(static_cast<uint8_t>((value >> shift) & 0xffU));
@@ -173,19 +248,22 @@ inline uint64_t checksum(const uint8_t* data, size_t size) noexcept {
 
 /// Paired sieve/OOC checkpoint for long-running 50d+/60d factorizations.
 ///
-/// Wire V2 binds the Special-Q cursor to one exact run identity and one exact,
-/// durable V3 relation-store prefix. The official checkpoint is replaced only
-/// after a complete temporary file has been flushed, protected by its checksum,
-/// and marked complete.
+/// Wire V3 binds the Special-Q cursor to one exact run identity, one exact
+/// durable V3 relation-store prefix, and the collector's independent
+/// relation-sequence receipt. `collection_complete` distinguishes an ordinary
+/// appendable progress prefix from the exact terminal prefix awaiting OOC
+/// finalization. The official checkpoint is replaced only after a complete
+/// temporary file has been flushed, protected by its checksum, and marked
+/// complete.
 struct SieveCheckpoint {
     // MAGIC = 'GNFSSCKP'; MAGIC_INCOMPLETE is used only in the temporary file.
     static constexpr uint64_t MAGIC = 0x474E465353434B50ULL;
     static constexpr uint64_t MAGIC_INCOMPLETE = 0x474E465353434B4EULL;
-    static constexpr uint64_t VERSION = 2;
+    static constexpr uint64_t VERSION = 3;
     static constexpr uint32_t MAX_PATH_LENGTH = 4096;
     static constexpr uint32_t MAX_RUN_N_LENGTH = 1U << 20;
 
-    // Stable V2 byte offsets used by format-level tests and future readers.
+    // Stable V3 byte offsets used by format-level tests and future readers.
     // All values are little-endian. Variable strings are run_n then OOC path.
     static constexpr size_t WIRE_VERSION_OFFSET = 8;
     static constexpr size_t WIRE_RUN_FINGERPRINT_LO_OFFSET = 48;
@@ -195,10 +273,13 @@ struct SieveCheckpoint {
     static constexpr size_t WIRE_OOC_GENERATION_OFFSET = 80;
     static constexpr size_t WIRE_OOC_RELATION_COUNT_OFFSET = 88;
     static constexpr size_t WIRE_OOC_DATA_END_OFFSET = 96;
-    static constexpr size_t WIRE_RUN_N_LENGTH_OFFSET = 104;
-    static constexpr size_t WIRE_OOC_PATH_LENGTH_OFFSET = 108;
-    static constexpr size_t WIRE_STRINGS_OFFSET = 112;
-    static constexpr size_t WIRE_PAYLOAD_FIXED_SIZE = 104;
+    static constexpr size_t WIRE_OOC_SEQUENCE_RECEIPT_LO_OFFSET = 104;
+    static constexpr size_t WIRE_OOC_SEQUENCE_RECEIPT_HI_OFFSET = 112;
+    static constexpr size_t WIRE_COLLECTION_COMPLETE_OFFSET = 120;
+    static constexpr size_t WIRE_RUN_N_LENGTH_OFFSET = 124;
+    static constexpr size_t WIRE_OOC_PATH_LENGTH_OFFSET = 128;
+    static constexpr size_t WIRE_STRINGS_OFFSET = 132;
+    static constexpr size_t WIRE_PAYLOAD_FIXED_SIZE = 124;
 
     enum class SaveStage {
         PayloadFlushed,
@@ -222,6 +303,9 @@ struct SieveCheckpoint {
     uint64_t ooc_generation = 0;
     uint64_t ooc_relation_count = 0;
     uint64_t ooc_data_end = 0;
+    uint64_t ooc_sequence_receipt_low = 0;
+    uint64_t ooc_sequence_receipt_high = 0;
+    bool collection_complete = false;
     std::string ooc_base_path;
 
     friend bool operator==(const SieveCheckpoint&, const SieveCheckpoint&) = default;
@@ -261,6 +345,9 @@ struct SieveCheckpoint {
         append_u64(payload, ooc_generation);
         append_u64(payload, ooc_relation_count);
         append_u64(payload, ooc_data_end);
+        append_u64(payload, ooc_sequence_receipt_low);
+        append_u64(payload, ooc_sequence_receipt_high);
+        append_u32(payload, collection_complete ? 1U : 0U);
         append_u32(payload, static_cast<uint32_t>(run_n.size()));
         append_u32(payload, static_cast<uint32_t>(ooc_base_path.size()));
         payload.insert(payload.end(), run_n.begin(), run_n.end());
@@ -326,7 +413,7 @@ struct SieveCheckpoint {
         }
     }
 
-    /// Load only a complete, exact V2 file. V1, incomplete, truncated,
+    /// Load only a complete, exact V3 file. Older versions, incomplete, truncated,
     /// checksummed-but-malformed, and trailing-byte files are all rejected.
     static SieveCheckpoint load(const std::string& path) {
         std::ifstream in(path, std::ios::binary | std::ios::ate);
@@ -386,6 +473,13 @@ struct SieveCheckpoint {
         checkpoint.ooc_generation = read_u64(bytes, cursor, checksum_offset);
         checkpoint.ooc_relation_count = read_u64(bytes, cursor, checksum_offset);
         checkpoint.ooc_data_end = read_u64(bytes, cursor, checksum_offset);
+        checkpoint.ooc_sequence_receipt_low = read_u64(bytes, cursor, checksum_offset);
+        checkpoint.ooc_sequence_receipt_high = read_u64(bytes, cursor, checksum_offset);
+        const uint32_t collection_complete = read_u32(bytes, cursor, checksum_offset);
+        if (collection_complete > 1) {
+            throw std::runtime_error("SieveCheckpoint::load: collection_complete is not boolean");
+        }
+        checkpoint.collection_complete = collection_complete != 0;
 
         const uint32_t run_n_length = read_u32(bytes, cursor, checksum_offset);
         const uint32_t path_length = read_u32(bytes, cursor, checksum_offset);
@@ -423,6 +517,92 @@ struct SieveCheckpoint {
             std::filesystem::remove(std::filesystem::path(temporary_path(path)), ignored);
         } catch (...) {
             // Cleanup is best-effort by contract, including allocation errors.
+        }
+    }
+
+    /// Remove only the exact checkpoint the caller last loaded or published.
+    ///
+    /// A crash-temporary file or any path replacement fails closed before
+    /// unlink. Passing nullptr proves that neither checkpoint path exists. The
+    /// caller must exclusively control this namespace while the check/unlink
+    /// sequence runs; callbacks have already ended at this boundary.
+    static void remove_checked(const std::string& path, const SieveCheckpoint* expected) {
+        const std::string temporary = temporary_path(path);
+        if (exists(temporary)) {
+            throw std::runtime_error(
+                "SieveCheckpoint::remove_checked: unexpected temporary checkpoint");
+        }
+
+        if (expected == nullptr) {
+            if (exists(path)) {
+                throw std::runtime_error(
+                    "SieveCheckpoint::remove_checked: unexpected published checkpoint");
+            }
+            return;
+        }
+
+        const auto restore_exact_checkpoint_and_throw = [&](const std::exception& sync_error) {
+            bool restored = false;
+            try {
+                expected->save(path);
+                restored = true;
+            } catch (...) {
+                try {
+                    restored = load(path) == *expected;
+                } catch (...) {
+                    restored = false;
+                }
+            }
+            if (!restored) {
+                throw std::runtime_error(
+                    "SieveCheckpoint::remove_checked: checkpoint absence was visible, directory "
+                    "durability failed, and exact restoration failed: " +
+                    std::string(sync_error.what()));
+            }
+            throw std::runtime_error(
+                "SieveCheckpoint::remove_checked: checkpoint removal durability failed; the "
+                "exact checkpoint was restored for retry: " +
+                std::string(sync_error.what()));
+        };
+
+        if (!exists(path)) {
+            // Callbacks may have removed the exact official file. With the
+            // namespace now exclusive, making that observed absence durable is
+            // equivalent to completing our own checked unlink and avoids
+            // stranding the paired raw corpus behind a missing checkpoint.
+            try {
+                sieve_checkpoint_detail::sync_parent_directory_after_remove(
+                    std::filesystem::path(path));
+            } catch (const std::exception& sync_error) {
+                restore_exact_checkpoint_and_throw(sync_error);
+            }
+            return;
+        }
+
+        const SieveCheckpoint visible = load(path);
+        if (visible != *expected) {
+            throw std::runtime_error(
+                "SieveCheckpoint::remove_checked: published checkpoint identity changed");
+        }
+
+        std::error_code error;
+        const bool removed = std::filesystem::remove(std::filesystem::path(path), error);
+        if (error) {
+            throw std::system_error(error,
+                                    "SieveCheckpoint::remove_checked: cannot remove published");
+        }
+        if (!removed) {
+            throw std::runtime_error(
+                "SieveCheckpoint::remove_checked: published checkpoint disappeared");
+        }
+        try {
+            sieve_checkpoint_detail::sync_parent_directory_after_remove(
+                std::filesystem::path(path));
+        } catch (const std::exception& sync_error) {
+            // The namespace has already changed. Re-publish the exact
+            // checkpoint so the caller can preserve and resume its paired raw
+            // prefix instead of leaving an orphan that blocks the same path.
+            restore_exact_checkpoint_and_throw(sync_error);
         }
     }
 
@@ -490,6 +670,9 @@ private:
         }
         if (ooc_generation == 0) {
             throw std::runtime_error(prefix + "ooc_generation must be nonzero");
+        }
+        if (ooc_sequence_receipt_low == 0 && ooc_sequence_receipt_high == 0) {
+            throw std::runtime_error(prefix + "OOC relation-sequence receipt must be present");
         }
         // count+1 offsets must remain representable in every downstream reader.
         if (ooc_relation_count >= static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||

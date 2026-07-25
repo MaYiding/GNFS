@@ -84,6 +84,24 @@ using core::Relation;
 using factor_base::FactorBase;
 using linalg::SparseMatrix;
 
+inline constexpr uint32_t DEFAULT_ADAPTIVE_SIEVE_ROUND_LIMIT = 10;
+
+/// Ownership policy for the terminal raw ordinary-OOC corpus on the legacy
+/// reduction route. The production default retains the finalized artifacts.
+enum class LegacyRawOOCCleanupPolicy : uint8_t {
+    RetainArtifacts,
+    RemoveArtifacts,
+};
+
+/// Per-invocation collection controls for reproducible phase experiments.
+///
+/// `adaptive_round_limit` is the absolute exclusive upper bound used by the
+/// existing round index, so the default preserves checkpoint/resume behavior.
+struct SieveCollectionOptions final {
+    uint32_t adaptive_round_limit = DEFAULT_ADAPTIVE_SIEVE_ROUND_LIMIT;
+    LegacyRawOOCCleanupPolicy legacy_raw_ooc_cleanup = LegacyRawOOCCleanupPolicy::RetainArtifacts;
+};
+
 /// Mid-level API: step-by-step pipeline control
 ///
 /// Usage:
@@ -102,7 +120,8 @@ public:
     PolynomialContext select_polynomial();
     FactorBase build_factor_base(const PolynomialContext& ctx);
     relation::RelationReductionResult sieve_and_collect(const PolynomialContext& ctx,
-                                                        const FactorBase& fb);
+                                                        const FactorBase& fb,
+                                                        SieveCollectionOptions options = {});
     relation::RelationReductionResult filter(std::vector<Relation> relations);
 
     struct MatrixResult {
@@ -136,13 +155,17 @@ public:
         [[nodiscard]] std::span<const size_t> structured_row_to_relation() const noexcept;
 
     private:
-        void retain_structured_relations(relation::RelationCorpus corpus,
+        void retain_structured_relations(relation::RelationCorpus&& corpus,
                                          std::vector<size_t> row_to_relation);
         [[nodiscard]] const relation::RelationCorpus& structured_corpus() const;
 
         friend class Pipeline;
     };
-    MatrixResult solve_matrix(relation::RelationReductionResult reduction, const FactorBase& fb,
+    /// Build and deterministically trim the final full matrix, then return
+    /// before SGE or a dependency solver is entered.
+    MatrixResult build_matrix(relation::RelationReductionResult&& reduction, const FactorBase& fb,
+                              const PolynomialContext& ctx);
+    MatrixResult solve_matrix(relation::RelationReductionResult&& reduction, const FactorBase& fb,
                               const PolynomialContext& ctx);
 
     FactorResult extract_factors(const MatrixResult& mr, const FactorBase& fb,
@@ -178,9 +201,11 @@ private:
         std::string resume_base_path;
         std::optional<detail::StructuredOOCRunPaths> ooc_paths;
         std::string ooc_reason;
+        std::string distributed_base_path;
         bool large_primes_enabled = false;
         bool ooc_enabled = false;
         size_t distributed_workers = 0;
+        size_t distributed_sq_per_worker = 0;
         bool distributed_size_gate_ok = false;
         bool distributed_force_small = false;
         bool distributed_route_selected = false;
@@ -203,7 +228,13 @@ private:
     FactorBase build_factor_base_impl(const PolynomialContext& ctx, const std::string& resume_base);
     relation::RelationReductionResult
     sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase& fb,
-                           const StructuredRouteSnapshot& structured_route);
+                           const StructuredRouteSnapshot& structured_route,
+                           SieveCollectionOptions options);
+    static void refresh_relation_corpus_checked(relation::RelationCorpus& corpus,
+                                                const relation::CorpusDigest& expected,
+                                                const char* mismatch_message);
+    MatrixResult matrix_phase(relation::RelationReductionResult& reduction, const FactorBase& fb,
+                              const PolynomialContext& ctx, bool solve_dependencies);
     void emit_progress(Phase phase, const std::string& msg, double phase_progress = -1.0);
     void emit_log(LogLevel level, Phase phase, const std::string& msg);
     double elapsed_s() const;

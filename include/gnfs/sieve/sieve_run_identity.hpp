@@ -24,7 +24,21 @@ struct SieveRunIdentity {
     friend bool operator==(const SieveRunIdentity&, const SieveRunIdentity&) = default;
 };
 
-inline constexpr uint32_t SIEVE_RUN_IDENTITY_SCHEMA_VERSION = 2;
+/// Frozen semantic policy that can change relation acceptance or reduction
+/// output independently of GNFSParams. Scheduling-only worker counts remain
+/// excluded so a checkpoint may resume on a different machine.
+struct SieveRunPolicyIdentity {
+    uint8_t cascade_v3_mode = 0;
+    bool accept_3lp = false;
+    bool merge_weight3 = false;
+    uint32_t weight_cutoff = 0;
+    bool drop_residual = false;
+    uint8_t structured_filter_selection = 0;
+
+    friend bool operator==(const SieveRunPolicyIdentity&, const SieveRunPolicyIdentity&) = default;
+};
+
+inline constexpr uint32_t SIEVE_RUN_IDENTITY_SCHEMA_VERSION = 3;
 
 namespace sieve_run_identity_detail {
 
@@ -130,13 +144,13 @@ inline void add_i32(StableFingerprint& hash, std::string_view field, int32_t val
 /// relation generation, stopping, or the target used by the sieve phase.
 [[nodiscard]] inline SieveRunIdentity
 make_sieve_run_identity(const core::PolynomialContext& context,
-                        const factor_base::FactorBase& factor_base,
-                        const core::GNFSParams& params) {
+                        const factor_base::FactorBase& factor_base, const core::GNFSParams& params,
+                        const SieveRunPolicyIdentity& policy = {}) {
     using namespace sieve_run_identity_detail;
 
     StableFingerprint hash;
     hash.add_field("gnfs.sieve.run-identity");
-    hash.add_u32(SIEVE_RUN_IDENTITY_SCHEMA_VERSION); // Independent of checkpoint V2.
+    hash.add_u32(SIEVE_RUN_IDENTITY_SCHEMA_VERSION); // Independent of checkpoint wire version.
 
     const std::string run_n = context.n().to_string();
     hash.add_field("polynomial");
@@ -208,6 +222,19 @@ make_sieve_run_identity(const core::PolynomialContext& context,
     add_u32(hash, "special_q_max", params.special_q_max);
     add_u32(hash, "max_special_q", params.max_special_q);
     add_u32(hash, "target_excess", params.target_excess);
+
+    hash.add_field("semantic-policy");
+    hash.add_field("cascade_v3_mode");
+    hash.add_u8(policy.cascade_v3_mode);
+    hash.add_field("accept_3lp");
+    hash.add_u8(policy.accept_3lp ? 1U : 0U);
+    hash.add_field("merge_weight3");
+    hash.add_u8(policy.merge_weight3 ? 1U : 0U);
+    add_u32(hash, "weight_cutoff", policy.weight_cutoff);
+    hash.add_field("drop_residual");
+    hash.add_u8(policy.drop_residual ? 1U : 0U);
+    hash.add_field("structured_filter_selection");
+    hash.add_u8(policy.structured_filter_selection);
 
     return SieveRunIdentity{
         .run_n = run_n,

@@ -166,28 +166,38 @@ GNFS_RESUME=/var/tmp/gnfs-session ./gnfs <N>
 GNFS_RESUME=/var/tmp/gnfs-session ./gnfs <N>
 ```
 
-**SieveCheckpoint V2 + OOC V3 配对恢复流程**:
+**SieveCheckpoint V3 + OOC V3 配对恢复流程**:
 
 1. 新 OOC store 在 `.relidx` 与 `.reldata` 的 V3 header 中持久化同一个不可变
    `store_id`。`RelationCollector::checkpoint_ooc()` flush 两个 stream，写入 prefix
-   sentinel，并返回 `format_version/store_id/generation/count/data_end`；offset 与
+   sentinel，并返回 `format_version/store_id/generation/count/data_end`；collector
+   同时给出从每次成功 `add()` 独立滚动得到的 relation-sequence receipt。offset 与
    `data_end` 都是包含 24-byte data header 的物理文件偏移。
-2. `SieveCheckpoint` 把该 descriptor、`sq_count/current_index/round` 和本次
-   run identity 写入同目录临时文件；写入 checksum、完整 flush 后以原子替换发布。
-3. checkpoint 发布成功后，collector 才以同一个 descriptor 重新打开 append。
-4. 重启先严格加载 V2 checkpoint，再比对 N、多项式、因子基和 sieve 参数的
+2. `SieveCheckpoint` 把 descriptor、sequence receipt、`sq_count/current_index/round`
+   和本次 run identity 写入同目录临时文件；写入 checksum、完整 flush 后以原子
+   替换发布。
+3. 周期性 checkpoint 发布成功后，collector 才以同一个 descriptor 重新打开
+   append。终态 checkpoint 额外写入 `collection_complete=true`，保持该 exact prefix
+   suspended，并直接从同一 generation 发布 final magic。
+4. 重启先严格加载 V3 checkpoint，再比对 N、多项式、因子基和 sieve 参数的
    128-bit run fingerprint；不一致时在打开 OOC store 前 fail closed。当前 run
-   identity schema 2 还绑定 affine-only Special-Q 枚举规则，因此旧 schema 1
-   checkpoint 不会跨越 projective-Q 过滤边界恢复。
+   identity schema 3 还绑定 affine-only Special-Q 枚举规则，以及冻结后的 cascade
+   V3、3LP、V0 weight/cutoff/residual 和 structured/legacy reduction 选择，因此旧
+   schema 或不同语义策略不会跨 checkpoint 恢复。
 5. identity 匹配后，再从同一次只读打开校验 OOC V3 index/data header、配对
-   `store_id` 与 committed prefix；所有检查通过后才允许截断 checkpoint 之后的
-   未提交 index/data tail。同尺寸异源 `.reldata` 也会 fail closed。
-6. OOC prefix 恢复成功后，才应用 Special-Q 游标。V1/V2 OOC descriptor、checksum
-   错误、路径或 store identity 不匹配都 fail closed，不会回退到 fresh 并截断证据。
+   `store_id` 与 committed prefix，并重算 checkpoint prefix 的 sequence receipt；
+   所有检查通过后才允许截断 checkpoint 之后的未提交 index/data tail。同尺寸改写
+   factor payload、异源 `.reldata` 或 AB 保持不变的载荷漂移都会 fail closed。
+6. OOC prefix 恢复成功后，才应用 Special-Q 游标。旧 SieveCheckpoint V1/V2、
+   V1/V2 OOC descriptor、checksum 错误、路径、store identity 或 receipt 不匹配
+   都 fail closed，不会回退到 fresh 并截断证据。
    Finalized V1/V2 只保留普通 reader 的只读兼容，不允许 append recovery 或 corpus
    ownership promotion。
-7. 若进程在 OOC finalize 与 checkpoint 删除之间退出，重启会验证 finalized
-   corpus 的 checkpoint prefix 连续性，以只读方式继续，禁止重新 append。
+7. 若进程在终态 checkpoint 发布后、OOC final magic 前退出，重启会识别
+   `collection_complete`，只重做确定性 reduction/finalize，不再重复 adaptive round
+   或追加 relation。若退出发生在 final magic 与 checkpoint 删除之间，重启要求
+   finalized corpus 与终态 descriptor/receipt 的 count 和 extent 精确相等，以只读
+   方式继续；任何 checkpoint 后 finalized extension 都 fail closed。
 
 **Crash-safety 边界**:
 
@@ -198,19 +208,22 @@ GNFS_RESUME=/var/tmp/gnfs-session ./gnfs <N>
   本次目标逐字段比较，只有目标版本已可见时才按“已发布、耐久性告警”继续。
 - OOC prefix checkpoint 和 finalize 会同步 data/index 文件，并在 POSIX 上同步
   父目录。进程崩溃矩阵覆盖 prefix、checkpoint 临时态/发布态、append tail、
-  finalize metadata 与 final magic；文件系统和硬件仍决定断电耐久性的最终边界。
+  terminal publication、finalize metadata 与 final magic；文件系统和硬件仍决定
+  断电耐久性的最终边界。
 - 同进程 checkpoint/resume 只重验 paired header、精确 extent、首 offset 与
-  sentinel，保持 O(1) checkpoint 边界；final precommit 与进程重启恢复才完整扫描
-  offset/record，避免固定 checkpoint 周期对增长中 relation index 造成二次复杂度。
+  sentinel，并读取 collector 已滚动维护的 receipt，保持 O(1) checkpoint 边界；
+  final precommit 与进程重启恢复才完整扫描 offset/record，避免固定 checkpoint
+  周期对增长中 relation index 造成二次复杂度。
 - 测试用 self-exec 子进程在 typed save stage 调用 `std::_Exit()`，避免析构自动
   finalize 造成“伪崩溃”。这些测试证明进程退出一致性；不把它表述为完整断电证明。
 
 **集成点**:
 
-- `include/gnfs/sieve/sieve_checkpoint.hpp` — V2 wire format、checksum、原子发布
+- `include/gnfs/sieve/sieve_checkpoint.hpp` — V3 wire format、receipt、checksum、原子发布
 - `include/gnfs/sieve/sieve_run_identity.hpp` — portable run identity
 - `include/gnfs/relation/ooc_relation_format.hpp` — 轻量 V3 format contract
 - `include/gnfs/relation/ooc_relation_store.hpp` — paired V3 identity、prefix rollback
+- `include/gnfs/relation/relation_sequence_receipt.hpp` — constant-memory accepted-sequence receipt
 - `include/gnfs/relation/collector.hpp` — paired resume descriptor 与 recovery outcome
 - `src/api/pipeline.cpp` — fail-closed load 与 prefix/checkpoint/reopen 顺序
 - `tests/test_sieve_checkpoint.cpp` — 格式、原子发布与真实子进程 crash 边界

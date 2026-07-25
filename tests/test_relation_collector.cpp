@@ -843,6 +843,67 @@ void test_ooc_fresh_store_refuses_existing_artifacts() {
     std::cout << "  Fresh OOC collision guard: PASS" << std::endl;
 }
 
+void test_ooc_uncommitted_fresh_exception_cleanup() {
+    std::cout << "Testing uncommitted fresh OOC exception cleanup..." << std::endl;
+
+    {
+        const auto path = make_tmp_ooc_path("fresh_exception_cleanup");
+        OOCArtifacts cleanup(path);
+        CollectorConfig config;
+        config.ooc_enabled = true;
+        config.ooc_base_path = path;
+
+        RelationCollector collector(config);
+        Relation relation(1, 2);
+        CHECK(collector.add(std::move(relation)));
+        CHECK(collector.discard_uncommitted_fresh_ooc_noexcept());
+        CHECK(!std::filesystem::exists(path + ".relidx"));
+        CHECK(!std::filesystem::exists(path + ".reldata"));
+        CHECK(collector.discard_uncommitted_fresh_ooc_noexcept());
+    }
+
+    {
+        const auto path = make_tmp_ooc_path("fresh_exception_foreign_header");
+        OOCArtifacts cleanup(path);
+        CollectorConfig config;
+        config.ooc_enabled = true;
+        config.ooc_base_path = path;
+
+        RelationCollector collector(config);
+        {
+            std::fstream index(path + ".relidx", std::ios::binary | std::ios::in | std::ios::out);
+            CHECK(static_cast<bool>(index));
+            index.seekp(static_cast<std::streamoff>(OOCRelationWriter::INDEX_STORE_ID_OFFSET));
+            const uint64_t foreign_store_id = 1;
+            index.write(reinterpret_cast<const char*>(&foreign_store_id),
+                        static_cast<std::streamsize>(sizeof(foreign_store_id)));
+            index.flush();
+            CHECK(static_cast<bool>(index));
+        }
+        CHECK(!collector.discard_uncommitted_fresh_ooc_noexcept());
+        CHECK(std::filesystem::exists(path + ".relidx"));
+        CHECK(std::filesystem::exists(path + ".reldata"));
+    }
+
+    {
+        const auto path = make_tmp_ooc_path("fresh_exception_finalized");
+        OOCArtifacts cleanup(path);
+        CollectorConfig config;
+        config.ooc_enabled = true;
+        config.ooc_base_path = path;
+
+        RelationCollector collector(config);
+        Relation relation(3, 4);
+        CHECK(collector.add(std::move(relation)));
+        CHECK(collector.finalize_ooc().has_value());
+        CHECK(collector.discard_uncommitted_fresh_ooc_noexcept());
+        CHECK(!std::filesystem::exists(path + ".relidx"));
+        CHECK(!std::filesystem::exists(path + ".reldata"));
+    }
+
+    std::cout << "  Uncommitted fresh OOC exception cleanup: PASS" << std::endl;
+}
+
 void test_ooc_legacy_save_load_disabled() {
     std::cout << "Testing OOC save/load legacy methods disabled..." << std::endl;
     auto path = make_tmp_ooc_path("legacy");
@@ -1186,11 +1247,14 @@ void test_ooc_unique_borrowed_prefix_rejects_unproven_sources() {
     const auto recovered_path = make_tmp_ooc_path("unique_borrowed_recovered_duplicates");
     OOCArtifacts recovered_cleanup(recovered_path);
     OOCSnapshotDescriptor recovered_descriptor;
+    RelationSequenceReceiptAccumulator recovered_sequence;
     {
         OOCRelationWriter writer(recovered_path);
         const Relation duplicate = make_snapshot_relation(0);
         CHECK(writer.write(duplicate) == 0);
+        recovered_sequence.append(duplicate);
         CHECK(writer.write(duplicate) == 1);
+        recovered_sequence.append(duplicate);
         recovered_descriptor = writer.checkpoint_prefix();
         writer.fail_suspended_snapshot();
     }
@@ -1200,6 +1264,7 @@ void test_ooc_unique_borrowed_prefix_rejects_unproven_sources() {
     recovered_config.ooc_enabled = true;
     recovered_config.ooc_base_path = recovered_path;
     recovered_config.ooc_resume_snapshot = recovered_descriptor;
+    recovered_config.ooc_resume_sequence_receipt = recovered_sequence.finish();
     RelationCollector recovered(recovered_config);
     CHECK(recovered.size() == 2);
 
@@ -2219,7 +2284,7 @@ void test_ooc_prefix_reader_rejects_bad_descriptor_and_offsets() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Paired OOC V3 resume tests (persisted by SieveCheckpoint V2).
+// Paired OOC V3 resume tests (persisted by SieveCheckpoint V3).
 // ──────────────────────────────────────────────────────────────────────────
 
 void test_ooc_collector_rejects_legacy_resume_flag() {
@@ -2248,19 +2313,21 @@ void test_ooc_writer_resume_append() {
     OOCArtifacts cleanup(path);
 
     OOCSnapshotDescriptor descriptor;
+    RelationSequenceReceiptAccumulator committed_sequence;
     {
         OOCRelationWriter writer(path);
         for (int i = 1; i <= 3; ++i) {
             Relation r(i * 10, static_cast<uint64_t>(i * 10 + 1));
             r.rational_factors.push_back(static_cast<uint32_t>(i));
             CHECK(writer.write(r) == static_cast<size_t>(i - 1));
+            committed_sequence.append(r);
         }
         descriptor = writer.checkpoint_prefix();
         writer.fail_suspended_snapshot();
     }
 
     {
-        OOCRelationWriter writer(path, descriptor);
+        OOCRelationWriter writer(path, descriptor, committed_sequence.finish());
         CHECK(writer.recovery_outcome() == OOCRecoveryOutcome::AppendablePrefix);
         CHECK(writer.count() == 3);
         for (int i = 4; i <= 5; ++i) {
@@ -2291,16 +2358,18 @@ void test_ooc_writer_finalized_recovery() {
     OOCArtifacts cleanup(path);
 
     OOCSnapshotDescriptor descriptor;
+    RelationSequenceReceiptAccumulator committed_sequence;
     {
         OOCRelationWriter writer(path);
         Relation r(1, 2);
         CHECK(writer.write(r) == 0);
+        committed_sequence.append(r);
         descriptor = writer.checkpoint_prefix();
         writer.resume_append(descriptor);
         CHECK(writer.finalize().count == 1);
     }
 
-    OOCRelationWriter recovered(path, descriptor);
+    OOCRelationWriter recovered(path, descriptor, committed_sequence.finish());
     CHECK(recovered.recovery_outcome() == OOCRecoveryOutcome::FinalizedCorpus);
     CHECK(recovered.state() == OOCWriterState::Finalized);
     CHECK(recovered.count() == 1);
@@ -2320,7 +2389,7 @@ void test_ooc_writer_resume_nonexistent_rejected() {
     descriptor.data_end = OOCRelationWriter::DATA_HEADER_BYTES;
     bool threw = false;
     try {
-        OOCRelationWriter resumed(path, descriptor);
+        OOCRelationWriter resumed(path, descriptor, RelationSequenceReceiptAccumulator{}.finish());
         (void)resumed;
     } catch (const std::runtime_error&) {
         threw = true;
@@ -2336,6 +2405,7 @@ void test_ooc_collector_resume_loads_seen() {
     OOCArtifacts cleanup(path);
 
     OOCSnapshotDescriptor descriptor;
+    RelationSequenceReceiptAccumulator accepted_sequence;
     {
         OOCRelationWriter writer(path);
         for (int i = 1; i <= 3; ++i) {
@@ -2348,6 +2418,7 @@ void test_ooc_collector_resume_loads_seen() {
                 r.algebraic_large_prime.push_back(PrimePower{2003, 17, 1});
             }
             CHECK(writer.write(r) == static_cast<size_t>(i - 1));
+            accepted_sequence.append(r);
         }
         descriptor = writer.checkpoint_prefix();
         writer.fail_suspended_snapshot();
@@ -2358,6 +2429,7 @@ void test_ooc_collector_resume_loads_seen() {
         cfg.check_duplicates = true;
         cfg.ooc_enabled = true;
         cfg.ooc_resume_snapshot = descriptor;
+        cfg.ooc_resume_sequence_receipt = accepted_sequence.finish();
         cfg.ooc_base_path = path;
         RelationCollector collector(cfg);
         CHECK(collector.ooc_recovery_outcome() == OOCRecoveryOutcome::AppendablePrefix);
@@ -2405,12 +2477,79 @@ void test_ooc_collector_resume_loads_seen() {
     std::cout << "  OOC collector resume + seen restore: PASS" << std::endl;
 }
 
+void test_ooc_collector_resume_rejects_sequence_receipt_drift() {
+    std::cout << "Testing paired OOC collector receipt drift rejection..." << std::endl;
+    const auto path = make_tmp_ooc_path("collector_resume_receipt_drift");
+    OOCArtifacts cleanup(path);
+
+    const Relation original = make_snapshot_relation(0);
+    RelationSequenceReceiptAccumulator accepted_sequence;
+    accepted_sequence.append(original);
+    OOCSnapshotDescriptor descriptor;
+    {
+        OOCRelationWriter writer(path);
+        CHECK(writer.write(original) == 0);
+        descriptor = writer.checkpoint_prefix();
+        writer.resume_append(descriptor);
+        CHECK(writer.write(make_snapshot_relation(1)) == 1);
+        (void)writer.checkpoint_prefix();
+        writer.fail_suspended_snapshot();
+    }
+
+    {
+        CollectorConfig missing_receipt;
+        missing_receipt.ooc_enabled = true;
+        missing_receipt.ooc_base_path = path;
+        missing_receipt.ooc_resume_snapshot = descriptor;
+        bool rejected = false;
+        try {
+            RelationCollector collector(missing_receipt);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        CHECK(rejected);
+    }
+
+    {
+        std::fstream data(path + ".reldata", std::ios::in | std::ios::out | std::ios::binary);
+        CHECK(static_cast<bool>(data));
+        constexpr uint32_t replacement_factor = 777;
+        constexpr std::streamoff first_rational_factor_offset =
+            static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES) +
+            static_cast<std::streamoff>(sizeof(int64_t) + sizeof(uint64_t) + sizeof(uint32_t));
+        data.seekp(first_rational_factor_offset);
+        data.write(reinterpret_cast<const char*>(&replacement_factor), sizeof(replacement_factor));
+        data.flush();
+        CHECK(static_cast<bool>(data));
+    }
+
+    CollectorConfig config;
+    config.ooc_enabled = true;
+    config.ooc_base_path = path;
+    config.ooc_resume_snapshot = descriptor;
+    config.ooc_resume_sequence_receipt = accepted_sequence.finish();
+    const auto index_size_before = std::filesystem::file_size(path + ".relidx");
+    const auto data_size_before = std::filesystem::file_size(path + ".reldata");
+    bool drift_rejected = false;
+    try {
+        RelationCollector collector(config);
+    } catch (const std::runtime_error&) {
+        drift_rejected = true;
+    }
+    CHECK(drift_rejected);
+    CHECK(std::filesystem::file_size(path + ".relidx") == index_size_before);
+    CHECK(std::filesystem::file_size(path + ".reldata") == data_size_before);
+
+    std::cout << "  Paired OOC collector receipt drift rejection: PASS" << std::endl;
+}
+
 void test_ooc_collector_resume_empty_files_graceful() {
     std::cout << "Testing paired OOC collector recovery from empty prefix..." << std::endl;
     auto path = make_tmp_ooc_path("collector_resume_empty");
     OOCArtifacts cleanup(path);
 
     OOCSnapshotDescriptor descriptor;
+    RelationSequenceReceiptAccumulator empty_sequence;
     {
         OOCRelationWriter writer(path);
         descriptor = writer.checkpoint_prefix();
@@ -2422,6 +2561,7 @@ void test_ooc_collector_resume_empty_files_graceful() {
         CollectorConfig cfg;
         cfg.ooc_enabled = true;
         cfg.ooc_resume_snapshot = descriptor;
+        cfg.ooc_resume_sequence_receipt = empty_sequence.finish();
         cfg.ooc_base_path = path;
         RelationCollector collector(cfg);
         CHECK(collector.ooc_recovery_outcome() == OOCRecoveryOutcome::AppendablePrefix);
@@ -2447,20 +2587,48 @@ void test_ooc_collector_recovers_finalized_corpus() {
     auto path = make_tmp_ooc_path("collector_finalized_recovery");
     OOCArtifacts cleanup(path);
 
+    OOCSnapshotDescriptor stale_descriptor;
     OOCSnapshotDescriptor descriptor;
+    RelationSequenceReceipt stale_sequence_receipt;
+    RelationSequenceReceiptAccumulator checkpoint_sequence;
     {
         OOCRelationWriter writer(path);
-        CHECK(writer.write(make_snapshot_relation(0)) == 0);
+        const auto checkpoint_relation = make_snapshot_relation(0);
+        CHECK(writer.write(checkpoint_relation) == 0);
+        checkpoint_sequence.append(checkpoint_relation);
+        stale_descriptor = writer.checkpoint_prefix();
+        stale_sequence_receipt = checkpoint_sequence.finish();
+        writer.resume_append(stale_descriptor);
+        const auto terminal_relation = make_snapshot_relation(1);
+        CHECK(writer.write(terminal_relation) == 1);
+        checkpoint_sequence.append(terminal_relation);
         descriptor = writer.checkpoint_prefix();
         writer.resume_append(descriptor);
-        CHECK(writer.write(make_snapshot_relation(1)) == 1);
         CHECK(writer.finalize().count == 2);
     }
+
+    const auto index_size_before = std::filesystem::file_size(path + ".relidx");
+    const auto data_size_before = std::filesystem::file_size(path + ".reldata");
+    CollectorConfig stale_config;
+    stale_config.ooc_enabled = true;
+    stale_config.ooc_base_path = path;
+    stale_config.ooc_resume_snapshot = stale_descriptor;
+    stale_config.ooc_resume_sequence_receipt = stale_sequence_receipt;
+    bool stale_extension_rejected = false;
+    try {
+        RelationCollector collector(stale_config);
+    } catch (const std::runtime_error&) {
+        stale_extension_rejected = true;
+    }
+    CHECK(stale_extension_rejected);
+    CHECK(std::filesystem::file_size(path + ".relidx") == index_size_before);
+    CHECK(std::filesystem::file_size(path + ".reldata") == data_size_before);
 
     CollectorConfig config;
     config.ooc_enabled = true;
     config.ooc_base_path = path;
     config.ooc_resume_snapshot = descriptor;
+    config.ooc_resume_sequence_receipt = checkpoint_sequence.finish();
     RelationCollector collector(config);
     CHECK(collector.ooc_recovery_outcome() == OOCRecoveryOutcome::FinalizedCorpus);
     CHECK(collector.size() == 2);
@@ -2482,7 +2650,7 @@ void test_ooc_collector_recovers_finalized_corpus() {
     CHECK(recovered_descriptor->store_id == descriptor.store_id);
     CHECK(recovered_descriptor->generation == descriptor.generation);
     CHECK(recovered_descriptor->count == 2);
-    CHECK(recovered_descriptor->data_end > descriptor.data_end);
+    CHECK(recovered_descriptor->data_end == descriptor.data_end);
 
     const auto snapshot = collector.snapshot_relations();
     CHECK(snapshot.size() == 2);
@@ -2506,6 +2674,7 @@ void test_ooc_writer_resume_large_payload() {
     OOCArtifacts cleanup(path);
 
     OOCSnapshotDescriptor descriptor;
+    RelationSequenceReceiptAccumulator committed_sequence;
     {
         OOCRelationWriter writer(path);
         for (int i = 1; i <= 100; ++i) {
@@ -2515,13 +2684,14 @@ void test_ooc_writer_resume_large_payload() {
                 r.rational_factors.push_back(static_cast<uint32_t>(static_cast<size_t>(i) + j));
             }
             CHECK(writer.write(r) == static_cast<size_t>(i - 1));
+            committed_sequence.append(r);
         }
         descriptor = writer.checkpoint_prefix();
         writer.fail_suspended_snapshot();
     }
 
     {
-        OOCRelationWriter writer(path, descriptor);
+        OOCRelationWriter writer(path, descriptor, committed_sequence.finish());
         CHECK(writer.count() == 100);
         for (int i = 101; i <= 150; ++i) {
             Relation r(i, static_cast<uint64_t>(i + 1000));
@@ -2591,6 +2761,7 @@ int main() {
     test_ooc_clear_recycle();
     test_ooc_empty_base_path_rejected();
     test_ooc_fresh_store_refuses_existing_artifacts();
+    test_ooc_uncommitted_fresh_exception_cleanup();
     test_ooc_legacy_save_load_disabled();
     test_finalize_ooc_vector_mode_remains_appendable();
     test_ooc_snapshot_append_snapshot_finalize();
@@ -2623,6 +2794,7 @@ int main() {
     test_ooc_writer_resume_nonexistent_rejected();
     test_ooc_writer_resume_large_payload();
     test_ooc_collector_resume_loads_seen();
+    test_ooc_collector_resume_rejects_sequence_receipt_drift();
     test_ooc_collector_resume_empty_files_graceful();
     test_ooc_collector_recovers_finalized_corpus();
 

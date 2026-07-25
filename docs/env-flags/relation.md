@@ -214,6 +214,13 @@ GNFS_OVERRIDE_LP_BITS=27 ./gnfs <N>          # any size with lp_bits=27
 
 ## V0 weight-3 merge (GNFS_V0_WEIGHT3)
 
+`Pipeline::sieve_and_collect()` captures the effective merge policy once, before
+any callback, and binds it into sieve run-identity schema 3. The same frozen
+values drive every adaptive round and terminal recovery reduction; changing
+them across restart rejects the checkpoint before opening the OOC store.
+Standalone merger/reduction calls still resolve their default policy when the
+call/config object is created.
+
 **ENV `GNFS_V0_WEIGHT3=1`** (commit `81d3331`, 2026-05-17):
 V0 Phase 2 也 merge weight=3 LP keys 的 first 2 partials (3rd 下轮变 singleton).
 V0 partial weight≥3 handling — lightweight V3 cascade alternative
