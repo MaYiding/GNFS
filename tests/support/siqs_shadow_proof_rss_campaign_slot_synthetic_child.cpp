@@ -62,15 +62,27 @@ write_launch_marker(const support::SIQSShadowProofRssHoldoutProbeOptions& option
     }
     const std::filesystem::path marker(marker_value);
     std::error_code error;
-    if (!std::filesystem::create_directory(marker, error) || error) {
+    const bool created = std::filesystem::create_directory(marker, error);
+    if (error || (!created && !std::filesystem::is_directory(marker, error)) || error) {
         return false;
     }
-    std::ofstream output(marker / "launch.txt", std::ios::binary | std::ios::out);
-    output << "argv0=" << argv0 << " fixture_id=" << options.fixture_id
-           << " mode=" << support::siqs_shadow_proof_rss_holdout_probe_mode_name(options.mode)
-           << " ordinal=" << options.ordinal << '\n';
-    output.flush();
-    return static_cast<bool>(output);
+    const std::string launch =
+        "argv0=" + std::string(argv0) + " fixture_id=" + std::to_string(options.fixture_id) +
+        " mode=" +
+        std::string(support::siqs_shadow_proof_rss_holdout_probe_mode_name(options.mode)) +
+        " ordinal=" + std::to_string(options.ordinal) + '\n';
+
+    std::ofstream latest(marker / "launch.txt", std::ios::binary | std::ios::out | std::ios::trunc);
+    latest.write(launch.data(), static_cast<std::streamsize>(launch.size()));
+    latest.flush();
+    if (!latest) {
+        return false;
+    }
+
+    std::ofstream ledger(marker / "launches.txt", std::ios::binary | std::ios::out | std::ios::app);
+    ledger.write(launch.data(), static_cast<std::streamsize>(launch.size()));
+    ledger.flush();
+    return static_cast<bool>(ledger);
 }
 
 [[nodiscard]] std::string

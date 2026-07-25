@@ -215,14 +215,8 @@ public:
         SIQSShadowProofRssDurableRecordReceipt&& other) noexcept
         : record_(other.record_), active_(std::exchange(other.active_, false)) {}
 
-    constexpr SIQSShadowProofRssDurableRecordReceipt&
-    operator=(SIQSShadowProofRssDurableRecordReceipt&& other) noexcept {
-        if (this != &other) {
-            record_ = other.record_;
-            active_ = std::exchange(other.active_, false);
-        }
-        return *this;
-    }
+    SIQSShadowProofRssDurableRecordReceipt&
+    operator=(SIQSShadowProofRssDurableRecordReceipt&&) = delete;
 
     [[nodiscard]] constexpr const SIQSShadowProofRssCampaignJournalRecord& record() const noexcept {
         return record_;
@@ -269,6 +263,9 @@ public:
         SIQSShadowProofRssPreparedSlotStart&& other) noexcept
         : record_(other.record_), active_(std::exchange(other.active_, false)) {}
 
+    // Unlike durable receipts and launch permits, this is a replaceable,
+    // pre-publication replay proposal. Refresh may intentionally replace it
+    // with an equivalent proposal before any execution authority exists.
     constexpr SIQSShadowProofRssPreparedSlotStart&
     operator=(SIQSShadowProofRssPreparedSlotStart&& other) noexcept {
         if (this != &other) {
@@ -329,14 +326,7 @@ public:
         : durable_start_record_(other.durable_start_record_),
           active_(std::exchange(other.active_, false)) {}
 
-    constexpr SIQSShadowProofRssLaunchPermit&
-    operator=(SIQSShadowProofRssLaunchPermit&& other) noexcept {
-        if (this != &other) {
-            durable_start_record_ = other.durable_start_record_;
-            active_ = std::exchange(other.active_, false);
-        }
-        return *this;
-    }
+    SIQSShadowProofRssLaunchPermit& operator=(SIQSShadowProofRssLaunchPermit&&) = delete;
 
     [[nodiscard]] constexpr const SIQSShadowProofRssCampaignJournalRecord&
     durable_start_record() const noexcept {

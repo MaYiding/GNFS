@@ -23,6 +23,7 @@
 #include <sys/acl.h>
 #endif
 #include <system_error>
+#include <type_traits>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -520,6 +521,12 @@ struct FdOpenResult final {
 }
 
 struct LockOpenResult final {
+    LockOpenResult() = default;
+    LockOpenResult(const LockOpenResult&) = delete;
+    LockOpenResult& operator=(const LockOpenResult&) = delete;
+    LockOpenResult(LockOpenResult&&) noexcept = default;
+    LockOpenResult& operator=(LockOpenResult&&) = delete;
+
     UniqueFd fd;
     struct stat metadata{};
     StoreDiagnostic diagnostic;
@@ -528,6 +535,9 @@ struct LockOpenResult final {
         return static_cast<bool>(fd) && diagnostic.error == StoreError::none;
     }
 };
+
+static_assert(std::is_nothrow_move_constructible_v<LockOpenResult>);
+static_assert(!std::is_move_assignable_v<LockOpenResult>);
 
 [[nodiscard]] bool valid_lock_metadata(const struct stat& metadata,
                                        uint64_t expected_owner) noexcept {
@@ -1722,15 +1732,41 @@ struct VerifiedReplayResult final {
 /// reread under one start record and one pair of held namespace generations.
 /// No public or test-facing result can construct or extract this value.
 struct ArtifactBatchReceipt final {
-    SIQSShadowProofRssCampaignJournalRecord durable_start_record;
-    std::array<SIQSShadowProofRssArtifactSeal, SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACTS_PER_SLOT>
+    ArtifactBatchReceipt() = delete;
+    ArtifactBatchReceipt(
+        const SIQSShadowProofRssCampaignJournalRecord& selected_durable_start_record,
+        const std::array<SIQSShadowProofRssArtifactSeal,
+                         SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACTS_PER_SLOT>& selected_seals,
+        DirectoryAuthorityFingerprint selected_journal_root_authority,
+        FileFingerprint selected_journal_namespace_generation,
+        DirectoryAuthorityFingerprint selected_artifact_root_authority,
+        FileFingerprint selected_artifact_namespace_generation,
+        FileFingerprint selected_lock_identity) noexcept
+        : durable_start_record(selected_durable_start_record), seals(selected_seals),
+          journal_root_authority(selected_journal_root_authority),
+          journal_namespace_generation(selected_journal_namespace_generation),
+          artifact_root_authority(selected_artifact_root_authority),
+          artifact_namespace_generation(selected_artifact_namespace_generation),
+          lock_identity(selected_lock_identity) {}
+    ArtifactBatchReceipt(const ArtifactBatchReceipt&) = delete;
+    ArtifactBatchReceipt& operator=(const ArtifactBatchReceipt&) = delete;
+    ArtifactBatchReceipt(ArtifactBatchReceipt&&) = delete;
+    ArtifactBatchReceipt& operator=(ArtifactBatchReceipt&&) = delete;
+
+    const SIQSShadowProofRssCampaignJournalRecord durable_start_record;
+    const std::array<SIQSShadowProofRssArtifactSeal,
+                     SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACTS_PER_SLOT>
         seals{};
-    DirectoryAuthorityFingerprint journal_root_authority;
-    FileFingerprint journal_namespace_generation;
-    DirectoryAuthorityFingerprint artifact_root_authority;
-    FileFingerprint artifact_namespace_generation;
-    FileFingerprint lock_identity;
+    const DirectoryAuthorityFingerprint journal_root_authority;
+    const FileFingerprint journal_namespace_generation;
+    const DirectoryAuthorityFingerprint artifact_root_authority;
+    const FileFingerprint artifact_namespace_generation;
+    const FileFingerprint lock_identity;
 };
+
+static_assert(!std::is_copy_constructible_v<ArtifactBatchReceipt>);
+static_assert(!std::is_move_constructible_v<ArtifactBatchReceipt>);
+static_assert(!std::is_move_assignable_v<ArtifactBatchReceipt>);
 
 class PosixSessionCore final : public SessionCore {
 public:
@@ -1949,7 +1985,7 @@ public:
             replay_ = std::move(*refreshed.replay);
             pending_start_confirmed_durable_ = true;
             SessionBeginSlotResult result;
-            result.permit = std::move(*permit);
+            result.permit.emplace(std::move(*permit));
             return result;
         } catch (const std::bad_alloc&) {
             return fail(make_diagnostic(StoreError::resource_exhausted));
@@ -2274,15 +2310,10 @@ public:
                 diagnostic.error != StoreError::none) {
                 return fail(std::move(diagnostic));
             }
-            artifact_batch_receipt_.emplace(ArtifactBatchReceipt{
-                .durable_start_record = durable_start_record,
-                .seals = result.seals,
-                .journal_root_authority = initial_root_fingerprint_,
-                .journal_namespace_generation = root_namespace_fingerprint_,
-                .artifact_root_authority = initial_artifact_root_fingerprint_,
-                .artifact_namespace_generation = artifact_namespace_fingerprint_,
-                .lock_identity = initial_lock_fingerprint_,
-            });
+            artifact_batch_receipt_.emplace(
+                durable_start_record, result.seals, initial_root_fingerprint_,
+                root_namespace_fingerprint_, initial_artifact_root_fingerprint_,
+                artifact_namespace_fingerprint_, initial_lock_fingerprint_);
             return result;
         } catch (const std::bad_alloc&) {
             return fail(make_diagnostic(StoreError::resource_exhausted));

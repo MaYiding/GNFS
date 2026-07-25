@@ -24,9 +24,6 @@ SIQSShadowProofRssCampaignJournalActiveSlot::~SIQSShadowProofRssCampaignJournalA
 SIQSShadowProofRssCampaignJournalActiveSlot::SIQSShadowProofRssCampaignJournalActiveSlot(
     SIQSShadowProofRssCampaignJournalActiveSlot&&) noexcept = default;
 
-SIQSShadowProofRssCampaignJournalActiveSlot& SIQSShadowProofRssCampaignJournalActiveSlot::operator=(
-    SIQSShadowProofRssCampaignJournalActiveSlot&&) noexcept = default;
-
 bool SIQSShadowProofRssCampaignJournalActiveSlot::active() const noexcept {
     return core_ != nullptr && permit_.has_value() && permit_->active();
 }
@@ -71,17 +68,6 @@ SIQSShadowProofRssCampaignJournalBeginSlotResult::SIQSShadowProofRssCampaignJour
     other.active_slot_.reset();
 }
 
-SIQSShadowProofRssCampaignJournalBeginSlotResult&
-SIQSShadowProofRssCampaignJournalBeginSlotResult::operator=(
-    SIQSShadowProofRssCampaignJournalBeginSlotResult&& other) noexcept {
-    if (this != &other) {
-        active_slot_ = std::move(other.active_slot_);
-        diagnostic_ = std::move(other.diagnostic_);
-        other.active_slot_.reset();
-    }
-    return *this;
-}
-
 SIQSShadowProofRssCampaignJournalBeginSlotResult::operator bool() const noexcept {
     return active_slot_.has_value() && active_slot_->active() &&
            diagnostic_.error == SIQSShadowProofRssCampaignJournalStoreError::none;
@@ -106,9 +92,6 @@ SIQSShadowProofRssCampaignJournalSession::SIQSShadowProofRssCampaignJournalSessi
 SIQSShadowProofRssCampaignJournalSession::~SIQSShadowProofRssCampaignJournalSession() = default;
 
 SIQSShadowProofRssCampaignJournalSession::SIQSShadowProofRssCampaignJournalSession(
-    SIQSShadowProofRssCampaignJournalSession&&) noexcept = default;
-
-SIQSShadowProofRssCampaignJournalSession& SIQSShadowProofRssCampaignJournalSession::operator=(
     SIQSShadowProofRssCampaignJournalSession&&) noexcept = default;
 
 bool SIQSShadowProofRssCampaignJournalSession::active() const noexcept {
@@ -205,17 +188,6 @@ SIQSShadowProofRssCampaignJournalStoreOpenResult::SIQSShadowProofRssCampaignJour
     // A moved-from result must not retain an engaged, inactive capability
     // wrapper. The destination owns the only observable session token.
     other.session_.reset();
-}
-
-SIQSShadowProofRssCampaignJournalStoreOpenResult&
-SIQSShadowProofRssCampaignJournalStoreOpenResult::operator=(
-    SIQSShadowProofRssCampaignJournalStoreOpenResult&& other) noexcept {
-    if (this != &other) {
-        session_ = std::move(other.session_);
-        diagnostic_ = std::move(other.diagnostic_);
-        other.session_.reset();
-    }
-    return *this;
 }
 
 SIQSShadowProofRssCampaignJournalStoreOpenResult::operator bool() const noexcept {

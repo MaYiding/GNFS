@@ -65,7 +65,10 @@ static_assert(!std::is_default_constructible_v<gnfs::util::AuthenticatedExecutab
 static_assert(!std::is_copy_constructible_v<gnfs::util::AuthenticatedExecutableImage>);
 static_assert(!std::is_copy_assignable_v<gnfs::util::AuthenticatedExecutableImage>);
 static_assert(std::is_nothrow_move_constructible_v<gnfs::util::AuthenticatedExecutableImage>);
-static_assert(std::is_nothrow_move_assignable_v<gnfs::util::AuthenticatedExecutableImage>);
+static_assert(!std::is_move_assignable_v<gnfs::util::AuthenticatedExecutableImage>);
+static_assert(
+    std::is_nothrow_move_constructible_v<gnfs::util::ExecutableImageAuthenticationResult>);
+static_assert(!std::is_move_assignable_v<gnfs::util::ExecutableImageAuthenticationResult>);
 
 int checks_passed = 0;
 int checks_failed = 0;

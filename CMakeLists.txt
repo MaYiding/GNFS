@@ -435,6 +435,8 @@ if(GNFS_BUILD_TESTS)
     # compile only into this non-installed test dependency; gnfs_core and the
     # public transport remain fixture-agnostic.
     add_library(gnfs_siqs_rss_campaign_runner_private STATIC EXCLUDE_FROM_ALL
+        src/siqs/shadow_proof_rss_campaign_controller.cpp
+        src/siqs/shadow_proof_rss_campaign_controller_internal.hpp
         src/siqs/shadow_proof_rss_campaign_slot_runner.cpp
         src/siqs/shadow_proof_rss_campaign_slot_runner_internal.hpp
     )
@@ -2334,11 +2336,15 @@ if(GNFS_BUILD_TESTS)
             $<TARGET_FILE:siqs_rss_campaign_synthetic_overflow>
             $<TARGET_FILE:siqs_rss_campaign_synthetic_hang>
     )
+    if(WIN32)
+        set_tests_properties(SiqsShadowProofRssCampaignJournalStore
+            PROPERTIES LABELS "instant" TIMEOUT 20)
+    else()
+        set_tests_properties(SiqsShadowProofRssCampaignJournalStore
+            PROPERTIES LABELS "fast" TIMEOUT 60)
+    endif()
     set_tests_properties(SiqsShadowProofRssCampaignJournalStore
-        PROPERTIES
-            LABELS "instant"
-            TIMEOUT 20
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     add_executable(test_siqs_shadow_proof_rss_holdout_probe_contract
         tests/test_siqs_shadow_proof_rss_holdout_probe_contract.cpp

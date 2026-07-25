@@ -242,7 +242,7 @@ public:
     SIQSShadowProofRssCampaignJournalActiveSlot(
         SIQSShadowProofRssCampaignJournalActiveSlot&&) noexcept;
     SIQSShadowProofRssCampaignJournalActiveSlot&
-    operator=(SIQSShadowProofRssCampaignJournalActiveSlot&&) noexcept;
+    operator=(SIQSShadowProofRssCampaignJournalActiveSlot&&) = delete;
 
     SIQSShadowProofRssCampaignJournalActiveSlot(
         const SIQSShadowProofRssCampaignJournalActiveSlot&) = delete;
@@ -279,7 +279,7 @@ public:
     SIQSShadowProofRssCampaignJournalBeginSlotResult(
         SIQSShadowProofRssCampaignJournalBeginSlotResult&&) noexcept;
     SIQSShadowProofRssCampaignJournalBeginSlotResult&
-    operator=(SIQSShadowProofRssCampaignJournalBeginSlotResult&&) noexcept;
+    operator=(SIQSShadowProofRssCampaignJournalBeginSlotResult&&) = delete;
 
     SIQSShadowProofRssCampaignJournalBeginSlotResult(
         const SIQSShadowProofRssCampaignJournalBeginSlotResult&) = delete;
@@ -312,7 +312,7 @@ public:
 
     SIQSShadowProofRssCampaignJournalSession(SIQSShadowProofRssCampaignJournalSession&&) noexcept;
     SIQSShadowProofRssCampaignJournalSession&
-    operator=(SIQSShadowProofRssCampaignJournalSession&&) noexcept;
+    operator=(SIQSShadowProofRssCampaignJournalSession&&) = delete;
 
     SIQSShadowProofRssCampaignJournalSession(const SIQSShadowProofRssCampaignJournalSession&) =
         delete;
@@ -382,7 +382,7 @@ public:
     SIQSShadowProofRssCampaignJournalStoreOpenResult(
         SIQSShadowProofRssCampaignJournalStoreOpenResult&&) noexcept;
     SIQSShadowProofRssCampaignJournalStoreOpenResult&
-    operator=(SIQSShadowProofRssCampaignJournalStoreOpenResult&&) noexcept;
+    operator=(SIQSShadowProofRssCampaignJournalStoreOpenResult&&) = delete;
 
     SIQSShadowProofRssCampaignJournalStoreOpenResult(
         const SIQSShadowProofRssCampaignJournalStoreOpenResult&) = delete;

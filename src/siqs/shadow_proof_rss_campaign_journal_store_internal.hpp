@@ -166,13 +166,7 @@ public:
     SameChildExecutionReceipt(SameChildExecutionReceipt&& other) noexcept
         : evidence_(std::move(other.evidence_)), active_(std::exchange(other.active_, false)) {}
 
-    SameChildExecutionReceipt& operator=(SameChildExecutionReceipt&& other) noexcept {
-        if (this != &other) {
-            evidence_ = std::move(other.evidence_);
-            active_ = std::exchange(other.active_, false);
-        }
-        return *this;
-    }
+    SameChildExecutionReceipt& operator=(SameChildExecutionReceipt&&) = delete;
 
     [[nodiscard]] bool active() const noexcept {
         return active_;
@@ -278,6 +272,16 @@ make_session_view(const SIQSShadowProofRssCampaignJournalResume& resume) noexcep
 }
 
 struct PlatformOpenResult final {
+    PlatformOpenResult() = default;
+    PlatformOpenResult(
+        std::unique_ptr<SessionCore> selected_core,
+        SIQSShadowProofRssCampaignJournalStoreDiagnostic selected_diagnostic) noexcept
+        : core(std::move(selected_core)), diagnostic(std::move(selected_diagnostic)) {}
+    PlatformOpenResult(const PlatformOpenResult&) = delete;
+    PlatformOpenResult& operator=(const PlatformOpenResult&) = delete;
+    PlatformOpenResult(PlatformOpenResult&&) noexcept = default;
+    PlatformOpenResult& operator=(PlatformOpenResult&&) = delete;
+
     std::unique_ptr<SessionCore> core;
     SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic;
 

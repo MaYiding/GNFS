@@ -551,7 +551,6 @@ SMOKE_TESTS=(
     test_siqs_shadow_proof_rss_campaign_journal_codec
     test_siqs_shadow_proof_rss_campaign_journal_layout
     test_siqs_shadow_proof_rss_campaign_artifact_layout
-    test_siqs_shadow_proof_rss_campaign_journal_store
     test_siqs_shadow_proof_rss_holdout_probe_contract
     test_siqs_shadow_proof_rss_holdout_probe_record_codec
     test_siqs_shadow_proof_rss_holdout_stream_join
@@ -839,7 +838,7 @@ TEST_TIMEOUT=(
     test_siqs_shadow_proof_rss_campaign_journal_codec 10
     test_siqs_shadow_proof_rss_campaign_journal_layout 10
     test_siqs_shadow_proof_rss_campaign_artifact_layout 10
-    test_siqs_shadow_proof_rss_campaign_journal_store 20
+    test_siqs_shadow_proof_rss_campaign_journal_store 60
     test_siqs_shadow_proof_rss_holdout_probe_contract 10
     test_siqs_shadow_proof_rss_holdout_probe_record_codec 10
     test_siqs_shadow_proof_rss_holdout_stream_join 10
@@ -995,7 +994,7 @@ TEST_TIER=(
     test_siqs_shadow_proof_rss_campaign_journal_codec "instant"
     test_siqs_shadow_proof_rss_campaign_journal_layout "instant"
     test_siqs_shadow_proof_rss_campaign_artifact_layout "instant"
-    test_siqs_shadow_proof_rss_campaign_journal_store "instant"
+    test_siqs_shadow_proof_rss_campaign_journal_store "fast"
     test_siqs_shadow_proof_rss_holdout_probe_contract "instant"
     test_siqs_shadow_proof_rss_holdout_probe_record_codec "instant"
     test_siqs_shadow_proof_rss_holdout_stream_join "instant"

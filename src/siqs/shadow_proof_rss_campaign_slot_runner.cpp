@@ -162,7 +162,11 @@ make_execution_evidence(const SIQSShadowProofRssCampaignJournalRecord& durable_s
 
 SlotRunnerResult::SlotRunnerResult(SlotRunnerDiagnostic diagnostic,
                                    SIQSShadowProofRssCampaignJournalSessionView view) noexcept
-    : view_(view), diagnostic_(std::move(diagnostic)) {}
+    : view_(view), diagnostic_(std::move(diagnostic)) {
+    if (diagnostic_.primary_error == SlotRunnerError::none) {
+        diagnostic_.primary_error = diagnostic_.error;
+    }
+}
 
 SlotRunnerResult::SlotRunnerResult(SIQSShadowProofRssCampaignJournalSession&& session) noexcept
     : session_(std::move(session)), view_(session_->view()) {}
@@ -173,16 +177,6 @@ SlotRunnerResult::SlotRunnerResult(SlotRunnerResult&& other) noexcept
     : session_(std::move(other.session_)), view_(other.view_),
       diagnostic_(std::move(other.diagnostic_)) {
     other.session_.reset();
-}
-
-SlotRunnerResult& SlotRunnerResult::operator=(SlotRunnerResult&& other) noexcept {
-    if (this != &other) {
-        session_ = std::move(other.session_);
-        view_ = other.view_;
-        diagnostic_ = std::move(other.diagnostic_);
-        other.session_.reset();
-    }
-    return *this;
 }
 
 SlotRunnerResult::operator bool() const noexcept {
@@ -207,9 +201,13 @@ SlotRunnerResult::take_session() && noexcept {
 SlotRunnerResult
 SlotRunnerFactory::finish_with_taint(SIQSShadowProofRssCampaignJournalActiveSlot&& active_slot,
                                      SlotRunnerDiagnostic diagnostic) noexcept {
+    if (diagnostic.primary_error == SlotRunnerError::none) {
+        diagnostic.primary_error = diagnostic.error;
+    }
     diagnostic.taint_attempted = active_slot.core_ != nullptr;
     if (active_slot.core_ == nullptr) {
         diagnostic.error = SlotRunnerError::taint_failed;
+        diagnostic.closure_error = SlotRunnerError::taint_failed;
         diagnostic.taint_diagnostic = make_store_diagnostic(StoreError::session_inactive);
         return SlotRunnerResult(std::move(diagnostic));
     }
@@ -221,6 +219,7 @@ SlotRunnerFactory::finish_with_taint(SIQSShadowProofRssCampaignJournalActiveSlot
     diagnostic.taint_durable = static_cast<bool>(taint);
     if (!diagnostic.taint_durable) {
         diagnostic.error = SlotRunnerError::taint_failed;
+        diagnostic.closure_error = SlotRunnerError::taint_failed;
     }
     return SlotRunnerResult(std::move(diagnostic), taint.view);
 }
@@ -417,7 +416,9 @@ SlotRunnerFactory::run(SIQSShadowProofRssCampaignJournalActiveSlot&& active_slot
         if (committed.status == SessionCommitStatus::outcome_uncertain) {
             diagnostic.error = SlotRunnerError::commit_outcome_uncertain;
             active_slot.core_.reset();
-            return SlotRunnerResult(std::move(diagnostic), committed.view);
+            // Publication may already have committed. Withhold the pre-commit
+            // replay view so no caller can treat stale state as authoritative.
+            return SlotRunnerResult(std::move(diagnostic));
         }
         diagnostic.error = SlotRunnerError::commit_failed;
         return finish_with_taint(std::move(active_slot), std::move(diagnostic));

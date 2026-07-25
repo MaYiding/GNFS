@@ -229,7 +229,26 @@ deadline。authentication 本身只受 256 MiB size cap 约束，使用同步 re
 无法形成统一 loaded-code signer chain。因此 macOS production row 会在 journal
 filesystem I/O 前返回 unavailable；private test 才能使用 synthetic path profile。
 Windows 继续显式 fail closed。authority-held gate evaluation 和 serial 80-slot
-production controller 仍待实现。
+production entry point 仍待实现。
+
+测试专用私有层已经有 fresh-only serial controller。它只接收空 journal 的
+`ready/create_header/count=0/next=1` session，并在同一 lease 链上按 canonical
+顺序启动全部 80 个 synthetic child。partial committed prefix、complete journal
+和 dangling start 都会在零 child、零新 journal 写入下被拒绝；controller 不拥有
+reopen、resume、pending-taint recovery、retry、callback、cancellation 或 gate
+evaluation 权限。begin/commit 不确定以及 taint closure 失败只返回
+`reconcile_required`，不会暴露可能过时的 terminal view。完整 synthetic run 的唯一
+终态是 `synthetic_complete/none`，不会获得 gate authority。
+
+durable receipt、launch permit、authenticated executable image、session、
+active slot 及其 authority-bearing result wrapper 只允许 move construction，
+不允许 move assignment，避免覆盖目标时静默丢弃现有 lease 或 one-shot capability。
+这是 journal-store 已安装类型的有意破坏性源码/链接兼容收紧；调用方必须改用
+move construction，或只对空 `optional` 使用 `emplace()`。
+`SIQSShadowProofRssPreparedSlotStart` 是例外：它是 durable publication 前可由 replay
+重建的 proposal，verified refresh 可以在任何 execution authority 产生前替换它。
+source-private artifact-batch receipt 更严格：它只在持有 lease 的 core 内原位构造，
+既不可复制也不可移动。
 
 当前没有批准的 per-platform policy，也没有实际 budget、headroom 或阈值。
 production deployment registry 仍为空，sealed holdout 尚未运行，80-process
@@ -334,8 +353,10 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
 - `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` 使用临时本地目录和
   subprocess 覆盖 deployment registry、严格 native layout、跨进程 lease、崩溃释放、
   held-root publication、Linux same-object authentication、认证失败后的 durable taint、
-  私有 same-child commit、完整 80-slot synthetic 终态和 restart relabel rejection，
-  以及 execution identity 与完整 approval/runtime 字段错配的 journal 零写入拒绝。
+  私有 same-child commit、fresh-only controller 实际串行启动 80 个 synthetic child
+  后的完整终态、prefix/dangling 拒绝、begin/taint/commit 不确定性闭包和 restart
+  relabel rejection，以及 execution identity 与完整 approval/runtime 字段错配的
+  journal 零写入拒绝。
   测试只启动 synthetic child，不运行 production probe 或打开 sealed holdout。
 - `tests/test_siqs.cpp` 锁定公开 `factor()` 路径对 `prefer` 的 fail-closed
   拒绝，并确认拒绝前不发出 V1 或 V2 记录。

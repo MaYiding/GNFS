@@ -100,9 +100,9 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `include/gnfs/siqs/shadow_proof_rss_probe_execution_identity.hpp` | Fixed SHA-256 identity for approved probe bytes and the canonical launch contract |
 | `tests/test_siqs_shadow_proof_rss_probe_execution_identity.cpp` | Schema V2 launch-profile, environment, boundary-vector, and mutation tests without launching a probe |
 | `include/gnfs/siqs/shadow_proof_rss_campaign_artifact_layout.hpp` | Fixed three-artifact-per-slot namespace, bounded pure inspection, and exact closure against validated journal replay |
-| `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-only native session plus lease-bound start, artifact-batch, explicit-taint, and probe-classification authority boundaries |
+| `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-construct-only native session plus lease-bound start, artifact-batch, explicit-taint, and probe-classification authority boundaries |
 | `tests/test_siqs_shadow_proof_rss_campaign_artifact_layout.cpp` | Canonical leaf grammar, bounded sizes, deterministic diagnostics, and journal-to-artifact consistency |
-| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, authenticated Linux same-child commits, synthetic terminal/relabel rejection, crash recovery, and platform fallback |
+| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, authenticated Linux same-child commits, actual 80-child synthetic controller completion, nonfresh rejection, uncertainty closure, crash recovery, and platform fallback |
 | `src/siqs/shadow_proof_rss_holdout_probe_record_codec_internal.hpp` | Source-private strict owning decoder for one canonical holdout-probe stdout record |
 | `src/siqs/shadow_proof_rss_holdout_stream_join_internal.hpp` | Source-private approved-policy, runtime-facts, slot, and two-stream validation into a V3 identity-bound authority-free draft |
 | `include/gnfs/util/bounded_child_process.hpp` | Production shell-free, deadline-bounded dual-stream capture; it transports data but grants no campaign authority |
@@ -332,6 +332,16 @@ production deployment registry remains empty, so the 80-process campaign and
 production measurement remain blocked. The sealed corpus must not be used to
 construct or launch that campaign until the policy is approved.
 
+A source-private, fresh-only serial controller now closes the synthetic
+Session -> ActiveSlot -> same-child runner -> continuation chain. Its
+integration test starts all 80 synthetic children in canonical order and
+reaches only `synthetic_complete`; it never evaluates the gate. The controller
+rejects committed prefixes, complete stores, and dangling starts instead of
+gaining implicit reopen, resume, or recovery authority. Begin uncertainty,
+taint closure failure, and commit uncertainty return `reconcile_required`
+without a possibly stale terminal view. No retry, callback, cancellation
+insertion point, caller policy input, or gate authority crosses this boundary.
+
 `darwin_hardened_suspended_v1` is reserved in schema V2 but has no production
 implementation. A platform prototype confirmed that suspended spawn and
 process code validation are available, but the current hardened probe links a
@@ -340,8 +350,19 @@ cannot satisfy one signer chain for all loaded code. macOS production rows
 therefore fail before journal filesystem access; only the explicitly
 synthetic path profile remains available to private tests. Windows remains
 fail-closed until an equivalent held-object design exists. Authority-held gate
-evaluation and the serial 80-slot production controller remain later
-milestones.
+evaluation and an approved production entry point remain later milestones.
+
+Durable receipts, launch permits, executable-image handles, sessions, active
+slots, and authority-bearing result wrappers are move-constructible but not
+move-assignable. This intentionally prevents assignment from silently
+destroying a live lease or one-shot capability. It is a source and link
+compatibility break for the installed journal-store types; callers must use
+move construction or `reset()` followed by `emplace()` on an empty optional.
+`SIQSShadowProofRssPreparedSlotStart` is the documented exception: it is a
+pre-publication proposal reproducible from replay and may be replaced during a
+verified refresh before a durable receipt exists.
+The source-private artifact-batch receipt is stricter: it is constructed in
+place inside the lease-owning core and is neither copyable nor movable.
 
 The staged V2 `prefer` boundary is a pure decision and audit contract. It does
 not extend the environment parser, connect to `factor()`, alter the observe

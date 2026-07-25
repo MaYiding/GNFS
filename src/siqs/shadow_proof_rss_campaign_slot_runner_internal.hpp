@@ -64,7 +64,11 @@ enum class SlotRunnerError : uint8_t {
 }
 
 struct SlotRunnerDiagnostic final {
+    /// Final summary error. If closure fails this is `taint_failed`; inspect
+    /// `primary_error` and `closure_error` to retain both causes.
     SlotRunnerError error = SlotRunnerError::none;
+    SlotRunnerError primary_error = SlotRunnerError::none;
+    SlotRunnerError closure_error = SlotRunnerError::none;
     util::BoundedChildProcessError transport_error = util::BoundedChildProcessError::none;
     util::ExecutableImageAuthenticationDiagnostic authentication;
     uint8_t stream_join_error = 0;
@@ -87,7 +91,7 @@ public:
     ~SlotRunnerResult();
 
     SlotRunnerResult(SlotRunnerResult&&) noexcept;
-    SlotRunnerResult& operator=(SlotRunnerResult&&) noexcept;
+    SlotRunnerResult& operator=(SlotRunnerResult&&) = delete;
 
     SlotRunnerResult(const SlotRunnerResult&) = delete;
     SlotRunnerResult& operator=(const SlotRunnerResult&) = delete;

@@ -77,7 +77,7 @@ public:
     AuthenticatedExecutableImage& operator=(const AuthenticatedExecutableImage&) = delete;
 
     AuthenticatedExecutableImage(AuthenticatedExecutableImage&& other) noexcept;
-    AuthenticatedExecutableImage& operator=(AuthenticatedExecutableImage&& other) noexcept;
+    AuthenticatedExecutableImage& operator=(AuthenticatedExecutableImage&&) = delete;
 
     [[nodiscard]] bool active() const noexcept;
 

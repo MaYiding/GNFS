@@ -8,6 +8,7 @@
 #include <gnfs/siqs/shadow_proof_rss_campaign_journal_codec.hpp>
 #include <gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp>
 
+#include "shadow_proof_rss_campaign_controller_internal.hpp"
 #include "shadow_proof_rss_campaign_journal_store_internal.hpp"
 #include "shadow_proof_rss_campaign_slot_runner_internal.hpp"
 #include "shadow_proof_rss_probe_execution_identity_internal.hpp"
@@ -66,24 +67,24 @@ static_assert(!std::is_default_constructible_v<SIQSShadowProofRssCampaignJournal
 static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssCampaignJournalSession>);
 static_assert(!std::is_copy_assignable_v<SIQSShadowProofRssCampaignJournalSession>);
 static_assert(std::is_nothrow_move_constructible_v<SIQSShadowProofRssCampaignJournalSession>);
-static_assert(std::is_nothrow_move_assignable_v<SIQSShadowProofRssCampaignJournalSession>);
+static_assert(!std::is_move_assignable_v<SIQSShadowProofRssCampaignJournalSession>);
 static_assert(!std::is_default_constructible_v<SIQSShadowProofRssCampaignJournalStoreOpenResult>);
 static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssCampaignJournalStoreOpenResult>);
 static_assert(!std::is_copy_assignable_v<SIQSShadowProofRssCampaignJournalStoreOpenResult>);
 static_assert(
     std::is_nothrow_move_constructible_v<SIQSShadowProofRssCampaignJournalStoreOpenResult>);
-static_assert(std::is_nothrow_move_assignable_v<SIQSShadowProofRssCampaignJournalStoreOpenResult>);
+static_assert(!std::is_move_assignable_v<SIQSShadowProofRssCampaignJournalStoreOpenResult>);
 static_assert(!std::is_default_constructible_v<SIQSShadowProofRssCampaignJournalActiveSlot>);
 static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssCampaignJournalActiveSlot>);
 static_assert(!std::is_copy_assignable_v<SIQSShadowProofRssCampaignJournalActiveSlot>);
 static_assert(std::is_nothrow_move_constructible_v<SIQSShadowProofRssCampaignJournalActiveSlot>);
-static_assert(std::is_nothrow_move_assignable_v<SIQSShadowProofRssCampaignJournalActiveSlot>);
+static_assert(!std::is_move_assignable_v<SIQSShadowProofRssCampaignJournalActiveSlot>);
 static_assert(!std::is_default_constructible_v<SIQSShadowProofRssCampaignJournalBeginSlotResult>);
 static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssCampaignJournalBeginSlotResult>);
 static_assert(!std::is_copy_assignable_v<SIQSShadowProofRssCampaignJournalBeginSlotResult>);
 static_assert(
     std::is_nothrow_move_constructible_v<SIQSShadowProofRssCampaignJournalBeginSlotResult>);
-static_assert(std::is_nothrow_move_assignable_v<SIQSShadowProofRssCampaignJournalBeginSlotResult>);
+static_assert(!std::is_move_assignable_v<SIQSShadowProofRssCampaignJournalBeginSlotResult>);
 using BeginSlotFunction = SIQSShadowProofRssCampaignJournalBeginSlotResult (
     SIQSShadowProofRssCampaignJournalSession::*)() && noexcept;
 static_assert(std::same_as<decltype(&SIQSShadowProofRssCampaignJournalSession::begin_next_slot),
@@ -109,9 +110,29 @@ static_assert(!std::is_default_constructible_v<store_detail::SlotRunnerResult>);
 static_assert(!std::is_copy_constructible_v<store_detail::SlotRunnerResult>);
 static_assert(!std::is_copy_assignable_v<store_detail::SlotRunnerResult>);
 static_assert(std::is_nothrow_move_constructible_v<store_detail::SlotRunnerResult>);
-static_assert(std::is_nothrow_move_assignable_v<store_detail::SlotRunnerResult>);
+static_assert(!std::is_move_assignable_v<store_detail::SlotRunnerResult>);
 static_assert(!std::is_default_constructible_v<store_detail::SameChildExecutionReceipt>);
 static_assert(!std::is_copy_constructible_v<store_detail::SameChildExecutionReceipt>);
+static_assert(std::is_nothrow_move_constructible_v<store_detail::SameChildExecutionReceipt>);
+static_assert(!std::is_move_assignable_v<store_detail::SameChildExecutionReceipt>);
+static_assert(std::is_nothrow_move_constructible_v<store_detail::SessionBeginSlotResult>);
+static_assert(!std::is_move_assignable_v<store_detail::SessionBeginSlotResult>);
+static_assert(std::is_nothrow_move_constructible_v<store_detail::PlatformOpenResult>);
+static_assert(!std::is_move_assignable_v<store_detail::PlatformOpenResult>);
+static_assert(
+    std::is_nothrow_move_constructible_v<std::optional<SIQSShadowProofRssCampaignJournalSession>>);
+static_assert(!std::is_move_assignable_v<std::optional<SIQSShadowProofRssCampaignJournalSession>>);
+static_assert(std::is_nothrow_move_constructible_v<
+              std::optional<SIQSShadowProofRssCampaignJournalActiveSlot>>);
+static_assert(
+    !std::is_move_assignable_v<std::optional<SIQSShadowProofRssCampaignJournalActiveSlot>>);
+using SerialCampaignFunction =
+    store_detail::SerialCampaignResult (*)(SIQSShadowProofRssCampaignJournalSession) noexcept;
+static_assert(
+    std::same_as<decltype(&store_detail::run_serial_campaign_to_terminal), SerialCampaignFunction>);
+static_assert(!std::is_default_constructible_v<store_detail::SerialCampaignResult>);
+static_assert(std::is_copy_constructible_v<store_detail::SerialCampaignResult>);
+static_assert(!std::is_convertible_v<store_detail::SerialCampaignResult, bool>);
 
 [[noreturn]] void fail_check(const char* expression, const char* file, int line) {
     throw std::runtime_error(std::string(file) + ":" + std::to_string(line) +
@@ -554,6 +575,109 @@ void test_diagnostic_name_contracts() {
     }
     CHECK(siqs_shadow_proof_rss_campaign_journal_store_object_name(
               static_cast<StoreObject>(UINT8_C(255))) == "unknown");
+
+    constexpr std::array known_controller_outcomes{
+        std::pair{store_detail::SerialCampaignOutcome::production_complete_gate_required,
+                  std::string_view{"production_complete_gate_required"}},
+        std::pair{store_detail::SerialCampaignOutcome::synthetic_complete,
+                  std::string_view{"synthetic_complete"}},
+        std::pair{store_detail::SerialCampaignOutcome::durably_tainted,
+                  std::string_view{"durably_tainted"}},
+        std::pair{store_detail::SerialCampaignOutcome::stopped, std::string_view{"stopped"}},
+        std::pair{store_detail::SerialCampaignOutcome::reconcile_required,
+                  std::string_view{"reconcile_required"}},
+    };
+    for (const auto& [outcome, expected_name] : known_controller_outcomes) {
+        CHECK(store_detail::serial_campaign_outcome_name(outcome) == expected_name);
+    }
+    CHECK(store_detail::serial_campaign_outcome_name(
+              static_cast<store_detail::SerialCampaignOutcome>(UINT8_C(255))) == "unknown");
+
+    constexpr std::array known_controller_failures{
+        std::pair{store_detail::SerialCampaignFailure::none, std::string_view{"none"}},
+        std::pair{store_detail::SerialCampaignFailure::inactive_session,
+                  std::string_view{"inactive_session"}},
+        std::pair{store_detail::SerialCampaignFailure::initial_state_invalid,
+                  std::string_view{"initial_state_invalid"}},
+        std::pair{store_detail::SerialCampaignFailure::begin_failed,
+                  std::string_view{"begin_failed"}},
+        std::pair{store_detail::SerialCampaignFailure::active_slot_invalid,
+                  std::string_view{"active_slot_invalid"}},
+        std::pair{store_detail::SerialCampaignFailure::slot_failed,
+                  std::string_view{"slot_failed"}},
+        std::pair{store_detail::SerialCampaignFailure::progress_violation,
+                  std::string_view{"progress_violation"}},
+    };
+    for (const auto& [failure, expected_name] : known_controller_failures) {
+        CHECK(store_detail::serial_campaign_failure_name(failure) == expected_name);
+    }
+    CHECK(store_detail::serial_campaign_failure_name(
+              static_cast<store_detail::SerialCampaignFailure>(UINT8_C(255))) == "unknown");
+}
+
+void test_serial_campaign_transition_predicates_are_fail_closed() {
+    using namespace store_detail::serial_campaign_detail;
+
+    const SIQSShadowProofRssCampaignJournalSessionView fresh{
+        .status = SIQSShadowProofRssJournalStatus::ready,
+        .reason = SIQSShadowProofRssJournalReason::ready,
+        .action = SIQSShadowProofRssJournalAction::create_header,
+        .committed_slot_count = 0,
+        .next_slot_number = 1,
+        .plan_digest = {UINT64_C(11), UINT64_C(22)},
+    };
+    CHECK(fresh_view_is_valid(fresh));
+    CHECK(!continuation_view_is_valid(fresh));
+
+    auto continuation = fresh;
+    continuation.action = SIQSShadowProofRssJournalAction::append_slot_start;
+    continuation.committed_slot_count = 1;
+    continuation.next_slot_number = 2;
+    CHECK(!fresh_view_is_valid(continuation));
+    CHECK(continuation_view_is_valid(continuation));
+    CHECK(transition_is_valid(fresh, continuation));
+
+    auto pending = fresh;
+    pending.status = SIQSShadowProofRssJournalStatus::tainted;
+    pending.reason = SIQSShadowProofRssJournalReason::dangling_slot_start;
+    pending.action = SIQSShadowProofRssJournalAction::append_taint;
+    CHECK(pending_slot_view_is_valid(fresh, pending));
+    CHECK(!explicit_taint_view_is_valid(pending));
+
+    auto explicit_taint = pending;
+    explicit_taint.reason = SIQSShadowProofRssJournalReason::explicitly_tainted;
+    explicit_taint.action = SIQSShadowProofRssJournalAction::none;
+    CHECK(explicit_taint_view_is_valid(explicit_taint));
+    CHECK(!pending_slot_view_is_valid(fresh, explicit_taint));
+
+    auto final_before = continuation;
+    final_before.committed_slot_count = SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT - 1;
+    final_before.next_slot_number = SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT;
+    CHECK(continuation_view_is_valid(final_before));
+
+    auto synthetic_terminal = final_before;
+    synthetic_terminal.status = SIQSShadowProofRssJournalStatus::complete;
+    synthetic_terminal.reason = SIQSShadowProofRssJournalReason::synthetic_complete;
+    synthetic_terminal.action = SIQSShadowProofRssJournalAction::none;
+    synthetic_terminal.committed_slot_count = SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT;
+    synthetic_terminal.next_slot_number = 0;
+    CHECK(terminal_view_is_valid(synthetic_terminal));
+    CHECK(transition_is_valid(final_before, synthetic_terminal));
+
+    auto production_terminal = synthetic_terminal;
+    production_terminal.reason = SIQSShadowProofRssJournalReason::complete;
+    production_terminal.action = SIQSShadowProofRssJournalAction::evaluate_gate;
+    CHECK(terminal_view_is_valid(production_terminal));
+    CHECK(transition_is_valid(final_before, production_terminal));
+
+    auto malformed = continuation;
+    malformed.next_slot_number = 3;
+    CHECK(!continuation_view_is_valid(malformed));
+    CHECK(!transition_is_valid(fresh, malformed));
+    malformed = continuation;
+    malformed.plan_digest = {};
+    CHECK(!continuation_view_is_valid(malformed));
+    CHECK(!transition_is_valid(fresh, malformed));
 }
 
 #ifndef _WIN32
@@ -566,14 +690,16 @@ public:
         publish_bytes_then_report_sync_failure,
     };
 
-    TestPublicationOps(std::size_t target_call, Action action) noexcept
-        : target_call_(target_call), action_(action) {}
+    TestPublicationOps(std::size_t target_call, Action action,
+                       std::size_t secondary_target_call = 0) noexcept
+        : target_call_(target_call), secondary_target_call_(secondary_target_call),
+          action_(action) {}
 
     [[nodiscard]] durable::PublishResult
     publish_at(durable::NativeHandle parent_handle, const std::filesystem::path& leaf,
                std::span<const std::byte> bytes) noexcept override {
         ++publish_calls_;
-        if (publish_calls_ == target_call_) {
+        if (publish_calls_ == target_call_ || publish_calls_ == secondary_target_call_) {
             if (action_ == Action::report_durable_without_file) {
                 return {durable::PublishStatus::durable, {}, static_cast<uint64_t>(bytes.size())};
             }
@@ -603,6 +729,7 @@ public:
 
 private:
     std::size_t target_call_ = 0;
+    std::size_t secondary_target_call_ = 0;
     Action action_ = Action::fail_before_create;
     std::size_t publish_calls_ = 0;
 };
@@ -1799,17 +1926,54 @@ begin_runner_slot(const DeploymentEntry& deployment, uint32_t expected_slot_numb
     return active;
 }
 
+[[nodiscard]] std::string
+synthetic_launch_line(uint32_t fixture_id, SIQSShadowProofRssSampleMode mode, uint32_t ordinal) {
+    return "argv0=gnfs-siqs-rss-holdout-probe fixture_id=" + std::to_string(fixture_id) +
+           " mode=" + std::string(siqs_shadow_proof_rss_sample_mode_name(mode)) +
+           " ordinal=" + std::to_string(ordinal) + '\n';
+}
+
 void expect_single_synthetic_launch(
     const std::filesystem::path& marker, uint32_t fixture_id = 1,
     SIQSShadowProofRssSampleMode mode = SIQSShadowProofRssSampleMode::off, uint32_t ordinal = 1) {
     if (!std::filesystem::is_directory(marker)) {
         throw std::runtime_error("missing synthetic launch marker: " + marker.string());
     }
-    const std::string expected =
-        "argv0=gnfs-siqs-rss-holdout-probe fixture_id=" + std::to_string(fixture_id) +
-        " mode=" + std::string(siqs_shadow_proof_rss_sample_mode_name(mode)) +
-        " ordinal=" + std::to_string(ordinal) + '\n';
+    const std::string expected = synthetic_launch_line(fixture_id, mode, ordinal);
     CHECK(read_text_file(marker / "launch.txt") == expected);
+    CHECK(read_text_file(marker / "launches.txt") == expected);
+}
+
+void expect_canonical_synthetic_launch_ledger(const std::filesystem::path& marker,
+                                              const SIQSShadowProofRssGatePolicy& policy) {
+    if (!std::filesystem::is_directory(marker)) {
+        throw std::runtime_error("missing synthetic launch marker: " + marker.string());
+    }
+    const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy);
+    CHECK(plan.status == SIQSShadowProofRssCampaignPlanStatus::ready);
+    CHECK(plan.slot_count == SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+
+    std::string expected;
+    std::size_t off_count = 0;
+    std::size_t observe_count = 0;
+    for (std::size_t index = 0; index < plan.slot_count; ++index) {
+        const auto& slot = plan.slots[index];
+        expected += synthetic_launch_line(slot.fixture_id, slot.mode, slot.ordinal);
+        if (slot.mode == SIQSShadowProofRssSampleMode::off) {
+            ++off_count;
+        } else {
+            ++observe_count;
+        }
+    }
+    CHECK(off_count == 24);
+    CHECK(observe_count == 56);
+    const std::string actual = read_text_file(marker / "launches.txt");
+    CHECK(actual == expected);
+    CHECK(static_cast<std::size_t>(std::count(actual.begin(), actual.end(), '\n')) ==
+          SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+    const auto& final_slot = plan.slots[plan.slot_count - 1];
+    CHECK(read_text_file(marker / "launch.txt") ==
+          synthetic_launch_line(final_slot.fixture_id, final_slot.mode, final_slot.ordinal));
 }
 
 void expect_no_runner_artifacts(const TempStore& fixture) {
@@ -2320,6 +2484,330 @@ void test_slot_runner_final_synthetic_commit_stays_gate_ineligible(
 #endif
 }
 
+void test_serial_campaign_runs_fresh_synthetic_plan_to_terminal(
+    const std::filesystem::path& executable) {
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("controller-full-campaign-marker");
+    auto deployment = make_runner_deployment(fixture, executable, marker);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    auto session = take_successful_session(open_private(&policy, &facts, deployment));
+    CHECK(session.has_value());
+    CHECK(store_detail::serial_campaign_detail::fresh_view_is_valid(session->view()));
+
+    auto result = store_detail::run_serial_campaign_to_terminal(std::move(*session));
+    CHECK(!session->active());
+    CHECK(result.outcome() == store_detail::SerialCampaignOutcome::synthetic_complete);
+    CHECK(result.failure() == store_detail::SerialCampaignFailure::none);
+    CHECK(result.initial_view().status == SIQSShadowProofRssJournalStatus::ready);
+    CHECK(result.initial_view().action == SIQSShadowProofRssJournalAction::create_header);
+    CHECK(result.attempted_slot_number() == SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+    CHECK(result.committed_slots_in_run() == SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+    CHECK(result.terminal_durable());
+    CHECK(result.terminal_view().has_value());
+    CHECK(result.terminal_view()->status == SIQSShadowProofRssJournalStatus::complete);
+    CHECK(result.terminal_view()->reason == SIQSShadowProofRssJournalReason::synthetic_complete);
+    CHECK(result.terminal_view()->action == SIQSShadowProofRssJournalAction::none);
+    CHECK(result.terminal_view()->committed_slot_count ==
+          SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+    CHECK(result.terminal_view()->next_slot_number == 0);
+    expect_canonical_synthetic_launch_ledger(marker, policy);
+
+    for (uint32_t slot_number = 1; slot_number <= SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT;
+         ++slot_number) {
+        for (uint32_t offset = 0; offset < 2; ++offset) {
+            const uint32_t sequence_number = (slot_number * 2) - 1 + offset;
+            const auto leaf =
+                make_siqs_shadow_proof_rss_campaign_journal_record_leaf(sequence_number);
+            CHECK(leaf.has_value());
+            CHECK(std::filesystem::exists(fixture.store_leaf(leaf->view())));
+            const auto decoded = decode_siqs_shadow_proof_rss_campaign_journal_record(
+                fixture.read_store_leaf(leaf->view()));
+            CHECK(decoded);
+            CHECK(decoded.value->sequence_number == sequence_number);
+            CHECK(decoded.value->slot_number == slot_number);
+            CHECK(decoded.value->kind ==
+                  (offset == 0 ? SIQSShadowProofRssJournalRecordKind::slot_started
+                               : SIQSShadowProofRssJournalRecordKind::slot_committed));
+        }
+        for (const auto kind : {SIQSShadowProofRssArtifactKind::probe_stdout,
+                                SIQSShadowProofRssArtifactKind::probe_stderr,
+                                SIQSShadowProofRssArtifactKind::joined_gate_sample}) {
+            CHECK(std::filesystem::exists(
+                fixture.artifact_leaf(artifact_leaf(slot_number, kind).view())));
+        }
+    }
+    const auto artifact_count = static_cast<std::size_t>(
+        std::distance(std::filesystem::directory_iterator(fixture.artifact_root()),
+                      std::filesystem::directory_iterator{}));
+    CHECK(artifact_count == SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT *
+                                SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACTS_PER_SLOT);
+
+    const std::string launch_ledger = read_text_file(marker / "launches.txt");
+    auto reopened = take_successful_session(open_private(&policy, &facts, deployment));
+    CHECK(reopened.has_value());
+    CHECK(reopened->view() == *result.terminal_view());
+
+    auto rejected = store_detail::run_serial_campaign_to_terminal(std::move(*reopened));
+    CHECK(!reopened->active());
+    CHECK(rejected.outcome() == store_detail::SerialCampaignOutcome::stopped);
+    CHECK(rejected.failure() == store_detail::SerialCampaignFailure::initial_state_invalid);
+    CHECK(rejected.attempted_slot_number() == 0);
+    CHECK(rejected.committed_slots_in_run() == 0);
+    CHECK(!rejected.terminal_view().has_value());
+    CHECK(!rejected.terminal_durable());
+    CHECK(read_text_file(marker / "launches.txt") == launch_ledger);
+
+    auto final_reopen = take_successful_session(open_private(&policy, &facts, deployment));
+    CHECK(final_reopen.has_value());
+    CHECK(final_reopen->view() == *result.terminal_view());
+}
+
+void test_serial_campaign_rejects_nonfresh_sessions_without_mutation(
+    const std::filesystem::path& executable) {
+    {
+        constexpr std::string_view stdout_bytes = "prefix-stdout\n";
+        constexpr std::string_view stderr_bytes;
+        constexpr std::string_view joined_bytes = "prefix-joined\n";
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("controller-prefix-rejection-marker");
+        auto deployment = make_runner_deployment(fixture, executable, marker);
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        write_committed_off_slots(fixture, 1, stdout_bytes, stderr_bytes, joined_bytes, policy,
+                                  facts);
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+        CHECK(session->view().status == SIQSShadowProofRssJournalStatus::ready);
+        CHECK(session->view().action == SIQSShadowProofRssJournalAction::append_slot_start);
+        CHECK(session->view().committed_slot_count == 1);
+        CHECK(session->view().next_slot_number == 2);
+
+        auto result = store_detail::run_serial_campaign_to_terminal(std::move(*session));
+        CHECK(!session->active());
+        CHECK(result.outcome() == store_detail::SerialCampaignOutcome::stopped);
+        CHECK(result.failure() == store_detail::SerialCampaignFailure::initial_state_invalid);
+        CHECK(result.committed_slots_in_run() == 0);
+        CHECK(result.attempted_slot_number() == 0);
+        CHECK(!result.terminal_view().has_value());
+        CHECK(!std::filesystem::exists(marker));
+        const auto next_start =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(UINT32_C(3));
+        CHECK(next_start.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(next_start->view())));
+        CHECK(!std::filesystem::exists(fixture.artifact_leaf(
+            artifact_leaf(2, SIQSShadowProofRssArtifactKind::probe_stdout).view())));
+    }
+    {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("controller-dangling-rejection-marker");
+        auto deployment = make_runner_deployment(fixture, executable, marker);
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        auto fresh = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(fresh.has_value());
+        auto begin = std::move(*fresh).begin_next_slot();
+        CHECK(begin);
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+        active.reset();
+
+        auto dangling = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(dangling.has_value());
+        CHECK(dangling->view().reason == SIQSShadowProofRssJournalReason::dangling_slot_start);
+        CHECK(dangling->view().action == SIQSShadowProofRssJournalAction::append_taint);
+        auto result = store_detail::run_serial_campaign_to_terminal(std::move(*dangling));
+        CHECK(!dangling->active());
+        CHECK(result.outcome() == store_detail::SerialCampaignOutcome::stopped);
+        CHECK(result.failure() == store_detail::SerialCampaignFailure::initial_state_invalid);
+        CHECK(result.committed_slots_in_run() == 0);
+        CHECK(!result.terminal_view().has_value());
+        CHECK(!result.terminal_durable());
+        CHECK(!std::filesystem::exists(marker));
+        const auto taint_leaf =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(UINT32_C(2));
+        CHECK(taint_leaf.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+    }
+}
+
+void test_serial_campaign_begin_failures_require_reconcile(
+    const std::filesystem::path& executable) {
+    {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("controller-header-failure-marker");
+        TestPublicationOps ops(1, TestPublicationOps::Action::fail_before_create);
+        auto deployment = make_runner_deployment(fixture, executable, marker);
+        deployment.publication_ops = &ops;
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+
+        const auto result = store_detail::run_serial_campaign_to_terminal(std::move(*session));
+        CHECK(!session->active());
+        CHECK(result.outcome() == store_detail::SerialCampaignOutcome::reconcile_required);
+        CHECK(result.failure() == store_detail::SerialCampaignFailure::begin_failed);
+        CHECK(result.attempted_slot_number() == 1);
+        CHECK(result.committed_slots_in_run() == 0);
+        CHECK(!result.terminal_view().has_value());
+        CHECK(!result.terminal_durable());
+        CHECK(result.begin_diagnostic().error == StoreError::publication_failed);
+        CHECK(result.begin_diagnostic().object == StoreObject::journal_header);
+        CHECK(ops.publish_calls() == 1);
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+        CHECK(!std::filesystem::exists(marker));
+    }
+    {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("controller-start-uncertain-marker");
+        TestPublicationOps ops(2,
+                               TestPublicationOps::Action::publish_bytes_then_report_sync_failure);
+        auto deployment = make_runner_deployment(fixture, executable, marker);
+        deployment.publication_ops = &ops;
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+
+        const auto result = store_detail::run_serial_campaign_to_terminal(std::move(*session));
+        CHECK(!session->active());
+        CHECK(result.outcome() == store_detail::SerialCampaignOutcome::reconcile_required);
+        CHECK(result.failure() == store_detail::SerialCampaignFailure::begin_failed);
+        CHECK(result.attempted_slot_number() == 1);
+        CHECK(result.committed_slots_in_run() == 0);
+        CHECK(!result.terminal_view().has_value());
+        CHECK(!result.terminal_durable());
+        CHECK(result.begin_diagnostic().error == StoreError::publication_failed);
+        CHECK(result.begin_diagnostic().object == StoreObject::journal_record);
+        CHECK(result.begin_diagnostic().publication_status ==
+              durable::PublishStatus::parent_directory_sync_failed);
+        CHECK(ops.publish_calls() == 2);
+        CHECK(!std::filesystem::exists(marker));
+        const auto start_leaf =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(UINT32_C(1));
+        const auto taint_leaf =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(UINT32_C(2));
+        CHECK(start_leaf.has_value());
+        CHECK(taint_leaf.has_value());
+        CHECK(std::filesystem::exists(fixture.store_leaf(start_leaf->view())));
+        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+
+        auto normal_deployment = deployment;
+        normal_deployment.publication_ops = nullptr;
+        auto reopened = take_successful_session(open_private(&policy, &facts, normal_deployment));
+        CHECK(reopened.has_value());
+        CHECK(reopened->view().reason == SIQSShadowProofRssJournalReason::dangling_slot_start);
+        CHECK(reopened->view().action == SIQSShadowProofRssJournalAction::append_taint);
+    }
+}
+
+void test_serial_campaign_slot_failures_close_or_require_reconcile(
+    const SyntheticChildren& children) {
+    {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("controller-nonzero-marker");
+        auto deployment = make_runner_deployment(fixture, children.nonzero, marker);
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+
+        const auto result = store_detail::run_serial_campaign_to_terminal(std::move(*session));
+        CHECK(!session->active());
+        CHECK(result.outcome() == store_detail::SerialCampaignOutcome::durably_tainted);
+        CHECK(result.failure() == store_detail::SerialCampaignFailure::slot_failed);
+        CHECK(result.attempted_slot_number() == 1);
+        CHECK(result.committed_slots_in_run() == 0);
+        CHECK(result.terminal_durable());
+        CHECK(result.terminal_view().has_value());
+        CHECK(result.terminal_view()->reason ==
+              SIQSShadowProofRssJournalReason::explicitly_tainted);
+        CHECK(result.terminal_view()->action == SIQSShadowProofRssJournalAction::none);
+        CHECK(result.slot_diagnostic().error == SlotRunnerError::transport_failed);
+        CHECK(result.slot_diagnostic().primary_error == SlotRunnerError::transport_failed);
+        CHECK(result.slot_diagnostic().closure_error == SlotRunnerError::none);
+        CHECK(result.slot_diagnostic().taint_durable);
+        expect_single_synthetic_launch(marker);
+        expect_explicit_taint_record(fixture);
+    }
+    {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("controller-taint-failure-marker");
+        TestPublicationOps ops(4, TestPublicationOps::Action::fail_before_create, 5);
+        auto deployment = make_runner_deployment(fixture, children.success, marker);
+        deployment.publication_ops = &ops;
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+
+        const auto result = store_detail::run_serial_campaign_to_terminal(std::move(*session));
+        CHECK(!session->active());
+        CHECK(result.outcome() == store_detail::SerialCampaignOutcome::reconcile_required);
+        CHECK(result.failure() == store_detail::SerialCampaignFailure::slot_failed);
+        CHECK(result.attempted_slot_number() == 1);
+        CHECK(result.committed_slots_in_run() == 0);
+        CHECK(!result.terminal_durable());
+        CHECK(!result.terminal_view().has_value());
+        CHECK(result.slot_diagnostic().error == SlotRunnerError::taint_failed);
+        CHECK(result.slot_diagnostic().primary_error ==
+              SlotRunnerError::artifact_publication_failed);
+        CHECK(result.slot_diagnostic().closure_error == SlotRunnerError::taint_failed);
+        CHECK(result.slot_diagnostic().taint_attempted);
+        CHECK(!result.slot_diagnostic().taint_durable);
+        CHECK(ops.publish_calls() == 5);
+        expect_single_synthetic_launch(marker);
+        const auto taint_leaf =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(UINT32_C(2));
+        CHECK(taint_leaf.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+    }
+    {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("controller-commit-uncertain-marker");
+        CommitPublicationOps ops(6, CommitPublicationOps::LeafShape::exact, true);
+        auto deployment = make_runner_deployment(fixture, children.success, marker);
+        deployment.publication_ops = &ops;
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        auto session = take_successful_session(open_private(&policy, &facts, deployment));
+        CHECK(session.has_value());
+
+        const auto result = store_detail::run_serial_campaign_to_terminal(std::move(*session));
+        CHECK(!session->active());
+        CHECK(result.outcome() == store_detail::SerialCampaignOutcome::reconcile_required);
+        CHECK(result.failure() == store_detail::SerialCampaignFailure::slot_failed);
+        CHECK(result.attempted_slot_number() == 1);
+        CHECK(result.committed_slots_in_run() == 0);
+        CHECK(!result.terminal_durable());
+        CHECK(!result.terminal_view().has_value());
+        CHECK(result.slot_diagnostic().error == SlotRunnerError::commit_outcome_uncertain);
+        CHECK(result.slot_diagnostic().primary_error == SlotRunnerError::commit_outcome_uncertain);
+        CHECK(result.slot_diagnostic().closure_error == SlotRunnerError::none);
+        CHECK(!result.slot_diagnostic().taint_attempted);
+        CHECK(!result.slot_diagnostic().taint_durable);
+        CHECK(ops.publish_calls() == 6);
+        CHECK(ops.confirm_calls() == 1);
+        expect_single_synthetic_launch(marker);
+
+        auto normal_deployment = deployment;
+        normal_deployment.publication_ops = nullptr;
+        auto reopened = take_successful_session(open_private(&policy, &facts, normal_deployment));
+        CHECK(reopened.has_value());
+        CHECK(reopened->view().status == SIQSShadowProofRssJournalStatus::ready);
+        CHECK(reopened->view().committed_slot_count == 1);
+        CHECK(reopened->view().next_slot_number == 2);
+        const auto next_start =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(UINT32_C(3));
+        CHECK(next_start.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(next_start->view())));
+        CHECK(read_text_file(marker / "launches.txt") ==
+              synthetic_launch_line(1, SIQSShadowProofRssSampleMode::off, 1));
+    }
+}
+
 void run_slot_runner_failure_case(const std::filesystem::path& executable,
                                   std::string_view marker_name, SlotRunnerError expected_error,
                                   gnfs::util::BoundedChildProcessError expected_transport_error,
@@ -2437,6 +2925,7 @@ void test_slot_runner_commit_terminal_leaf_matrix(const std::filesystem::path& e
         auto result = store_detail::SlotRunnerFactory::run(std::move(*active));
         CHECK(!static_cast<bool>(result));
         CHECK(result.diagnostic().error == SlotRunnerError::commit_outcome_uncertain);
+        CHECK(result.view().status == SIQSShadowProofRssJournalStatus::invalid);
         CHECK(!result.diagnostic().taint_attempted);
         CHECK(!result.diagnostic().taint_durable);
         CHECK(ops.publish_calls() == 6);
@@ -3710,6 +4199,7 @@ int main(int argc, char** argv) {
     try {
         test_public_authority_and_preflight_boundaries();
         test_diagnostic_name_contracts();
+        test_serial_campaign_transition_predicates_are_fail_closed();
 #ifndef _WIN32
         CHECK(argc == 1 || argc == 6);
         const auto test_executable = std::filesystem::absolute(std::filesystem::path(argv[0]));
@@ -3754,6 +4244,10 @@ int main(int argc, char** argv) {
         test_slot_runner_happy_off_commits_one_same_child(children.success);
         test_slot_runner_happy_observe_commits_one_same_child(children.success);
         test_slot_runner_final_synthetic_commit_stays_gate_ineligible(children.success);
+        test_serial_campaign_runs_fresh_synthetic_plan_to_terminal(children.success);
+        test_serial_campaign_rejects_nonfresh_sessions_without_mutation(children.success);
+        test_serial_campaign_begin_failures_require_reconcile(children.success);
+        test_serial_campaign_slot_failures_close_or_require_reconcile(children);
         test_slot_runner_execution_and_join_failures(children);
         test_slot_runner_artifact_prefix_failure_taints(children.success);
         test_slot_runner_commit_terminal_leaf_matrix(children.success);

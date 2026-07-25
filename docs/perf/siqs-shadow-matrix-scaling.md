@@ -333,9 +333,9 @@ production sieve worker count, candidate revision, approval, or numeric
 threshold is frozen. No sealed holdout has been run, and no real gate result
 exists. The approved production campaign runner and measurement remain blocked
 and pending. Nothing may construct or launch the 80-process campaign until the
-policy is approved. The private synthetic single-slot transaction described
-below is an integration proof only and cannot select the production probe or
-open a holdout.
+policy is approved. The private synthetic transaction and fresh-only
+full-controller tests described below are integration proofs only; they cannot
+select the production probe or open a holdout.
 
 ### Policy-Gated Campaign Preparation
 
@@ -611,8 +611,8 @@ bounded dual-pipe capture, deadlines, overflow, descendant writers, and cleanup
 semantics. Linux tests additionally cover sealed-image authentication, path
 replacement after authentication, one-shot consumption, arbitrary descriptor
 closure, and concurrent launches. The transport is a production utility, but
-it carries data only and is not a campaign launcher. The instant
-native-store test uses a temporary real filesystem and subprocesses to cover
+it carries data only and is not a campaign launcher. The fast native-store
+test uses a temporary real filesystem and subprocesses to cover
 the registry boundary, component walking, strict layouts, move-only lease
 ownership, cross-process contention, crash release, and replay actions. It also
 links one `EXCLUDE_FROM_ALL`, non-installed private runner and five synthetic
@@ -622,8 +622,9 @@ production probe. They cover successful same-child commit, nonzero exit,
 malformed output, capture overflow, timeout cleanup, partial artifact
 publication, explicit taint, and commit-terminal uncertainty. The success path
 covers both an empty-stderr `off` slot and the first `observe` slot with one
-strict typed stderr record and `pass` proof and matrix evidence. None of these
-targets is a production campaign runner.
+strict typed stderr record and `pass` proof and matrix evidence. The same fast
+integration target also runs the fresh-only controller through all 80
+synthetic slots. None of these targets is a production campaign runner.
 
 The pure probe protocol binds each `fixture_id` to the exact modulus and
 canonical factor pair in the sealed constexpr manifest. Relabeling one row as
@@ -717,11 +718,14 @@ prototyped, but the current hardened probe and its Homebrew GMP dependency do
 not share one signing identity. `darwin_hardened_suspended_v1` therefore
 remains contract-only, and production rows fail before journal filesystem
 access. The path profile is synthetic-only. Windows remains unavailable.
-An approved per-platform policy, authority-held gate evaluation, and the
-serial 80-slot controller also remain pending. A campaign interrupted after
-its durable start but before its sample commits remains tainted and cannot be
-retried in place. The production registry is empty, and no sealed holdout has
-run.
+An approved per-platform policy, authority-held gate evaluation, and an
+approved production entry point remain pending. A source-private fresh-only
+controller now runs the complete canonical plan only for synthetic tests. It
+rejects a committed prefix or dangling start rather than acquiring resume or
+recovery authority, and it has no retry, callback, cancellation, or gate
+operation. A campaign interrupted after its durable start but before its sample
+commits remains tainted and cannot be retried in place. The production registry
+is empty, and no sealed holdout has run.
 
 `tests/test_siqs_runtime_facts.cpp`,
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
@@ -751,10 +755,13 @@ receipt, or launch-permit interface.
 `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` opens only
 temporary synthetic stores. It exercises native object identity, leases,
 held-root header/start and artifact publication, strict reread, crash recovery,
-explicit taint, injected publication failures, private same-child commits, a
-complete 80-slot synthetic terminal state, and restart relabel rejection. Its
-children emit synthetic protocol records only; the test does not open a sealed
-holdout, run the production probe, or collect campaign evidence.
+explicit taint, injected publication failures, private same-child commits, and
+a fresh-only controller that actually starts all 80 synthetic children in
+canonical order. It also proves prefix and dangling-start rejection, closed
+begin/taint/commit uncertainty, complete synthetic termination, and restart
+relabel rejection. Its children emit synthetic protocol records only; the test
+does not open a sealed holdout, run the production probe, evaluate the gate, or
+collect campaign evidence.
 
 `tests/test_durable_immutable_file.cpp` uses temporary synthetic bytes to cover
 exclusive-create contention, partial writes, interrupted calls, zero progress,
@@ -1006,12 +1013,24 @@ Before promotion it must provide:
   and runtime values must match every private row field, and malformed runner
   configuration fails before journal I/O. These expected values are not
   executable authentication or independently observed host facts.
+- [x] Source-private fresh-only serial controller with a fixed 80-slot bound,
+  same-lease Session-to-runner transitions, canonical full-plan synthetic
+  execution, distinct synthetic/production-complete data outcomes, durable
+  taint classification, and stale-view-free reconcile results. It rejects
+  partial prefixes and dangling starts and grants no gate authority.
+- [x] Move-construction-only linear authority across durable receipts, launch
+  permits, authenticated executable images, sessions, active slots, and their
+  authority-bearing result wrappers. Move assignment is intentionally deleted
+  so replacing a live destination cannot silently discard authority. The
+  source-private artifact-batch receipt is noncopyable and nonmovable and is
+  constructed only in place inside the lease-owning core.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved
   headroom, OS, architecture, RSS backend, resolved production sieve workers,
   candidate revision, approval identity, sealed corpus digest, trusted journal
   base ID, journal store ID, and canonical lowercase relative locator.
-- [ ] Fresh-process campaign runner that refuses to construct or launch the
-  80-process plan until the matching per-platform policy is approved.
+- [ ] Approved production campaign entry point that refuses to open the private
+  runner or launch the 80-process plan until the matching per-platform policy
+  and deployment registry row exist.
 - [ ] Sealed holdout measurement with overlapping raw/shadow RSS evidence. Each
   platform still requires three `off` plus seven `observe` runs for each of the
   eight fixtures. The existing one-`off` plus three-`observe` V1 samples remain

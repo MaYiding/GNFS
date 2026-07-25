@@ -217,20 +217,6 @@ AuthenticatedExecutableImage::AuthenticatedExecutableImage(
     : native_handle_(std::exchange(other.native_handle_, -1)),
       executable_(std::move(other.executable_)) {}
 
-AuthenticatedExecutableImage&
-AuthenticatedExecutableImage::operator=(AuthenticatedExecutableImage&& other) noexcept {
-    if (this != &other) {
-#if defined(__linux__)
-        if (native_handle_ >= 0) {
-            (void)::close(static_cast<int>(native_handle_));
-        }
-#endif
-        native_handle_ = std::exchange(other.native_handle_, -1);
-        executable_ = std::move(other.executable_);
-    }
-    return *this;
-}
-
 bool AuthenticatedExecutableImage::active() const noexcept {
     return native_handle_ >= 0 && !executable_.empty();
 }
@@ -413,8 +399,8 @@ authenticate_executable_image(const std::filesystem::path& executable,
         }
 
         ExecutableImageAuthenticationResult result;
-        result.image =
-            AuthenticatedExecutableImage(snapshot.release(), std::filesystem::path(executable));
+        result.image.emplace(
+            AuthenticatedExecutableImage(snapshot.release(), std::filesystem::path(executable)));
         result.diagnostic.error = ExecutableImageAuthenticationError::none;
         return result;
 #endif

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <exception>
 #include <iostream>
+#include <optional>
 #include <span>
 #include <type_traits>
 #include <utility>
@@ -21,12 +22,17 @@ using gnfs::util::ProcessMemoryBackend;
 static_assert(!std::is_default_constructible_v<SIQSShadowProofRssPreparedSlotStart>);
 static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssPreparedSlotStart>);
 static_assert(std::is_move_constructible_v<SIQSShadowProofRssPreparedSlotStart>);
+static_assert(std::is_nothrow_move_assignable_v<SIQSShadowProofRssPreparedSlotStart>);
 static_assert(!std::is_default_constructible_v<SIQSShadowProofRssDurableRecordReceipt>);
 static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssDurableRecordReceipt>);
 static_assert(std::is_move_constructible_v<SIQSShadowProofRssDurableRecordReceipt>);
+static_assert(!std::is_move_assignable_v<SIQSShadowProofRssDurableRecordReceipt>);
 static_assert(!std::is_default_constructible_v<SIQSShadowProofRssLaunchPermit>);
 static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssLaunchPermit>);
 static_assert(std::is_move_constructible_v<SIQSShadowProofRssLaunchPermit>);
+static_assert(!std::is_move_assignable_v<SIQSShadowProofRssLaunchPermit>);
+static_assert(std::is_nothrow_move_constructible_v<std::optional<SIQSShadowProofRssLaunchPermit>>);
+static_assert(!std::is_move_assignable_v<std::optional<SIQSShadowProofRssLaunchPermit>>);
 static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssCampaignJournalResume>);
 static_assert(SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT == 80);
 static_assert(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_MAX_CONCURRENCY == 1);
