@@ -741,6 +741,27 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME OOCStoreIntegrity COMMAND test_ooc_store_integrity)
     set_tests_properties(OOCStoreIntegrity PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_ooc_cleanup_transaction
+        tests/test_ooc_cleanup_transaction.cpp
+    )
+    target_link_libraries(test_ooc_cleanup_transaction PRIVATE gnfs_core Threads::Threads)
+    add_test(
+        NAME OOCCleanupTransactionCore
+        COMMAND test_ooc_cleanup_transaction --suite core
+    )
+    set_tests_properties(
+        OOCCleanupTransactionCore
+        PROPERTIES LABELS "instant" TIMEOUT 20
+    )
+    add_test(
+        NAME OOCCleanupTransactionCrash
+        COMMAND test_ooc_cleanup_transaction --suite crash
+    )
+    set_tests_properties(
+        OOCCleanupTransactionCrash
+        PROPERTIES LABELS "fast" TIMEOUT 60
+    )
+
     # ── W6 T4: relation collector memory pool ──
     add_executable(test_memory_pool
         tests/test_memory_pool.cpp

@@ -134,6 +134,24 @@ and multi-config build trees cannot accidentally validate a stale root
 `build/` binary. This keeps CLI/schema drift in routine CTest without weakening
 the disabled stress boundary above.
 
+`test_ooc_cleanup_transaction` is split into two CTest entries.
+`OOCCleanupTransactionCore` is an `instant` ownership and state-machine
+contract covering move-only receipt consumption, repairable pending
+publication, exact finalized expectations, a production writer/reader fixture,
+SHA-256 marker corruption, ordered namespace states, injected rename/unlink
+and parent-sync failures, foreign replacement, symlink/hardlink rejection,
+reserved-name isolation, and real self-exec lock contention.
+`OOCCleanupTransactionCrash` is a `fast` self-exec matrix that terminates the
+child process at every canonical durable intent, quarantine,
+delete-authorization, unlink, and intent-consumption boundary, then completes
+recovery in the parent and reuses the same base. Pending-marker interruption
+is tested in-process because an unspent ownership receipt is deliberately
+non-serializable; cross-process pending recovery belongs to the writer-creation
+receipt integration slice. The no-argument binary runs both suites, so its
+`scripts/test.sh` tier and timeout are `fast` and 60 seconds. Windows Release
+also runs a native sharing-violation retry branch; non-Windows execution cannot
+substitute for that platform evidence.
+
 `test_local_sieve_thread_budget` is the `instant` contract for balanced lane
 allocation, invalid limits, and a bounded property grid. The 64-special-Q probe
 remains a manual measurement and does not enter routine CI.

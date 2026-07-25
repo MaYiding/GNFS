@@ -1559,16 +1559,87 @@ two paths sequentially. A crash or second-path removal failure can therefore
 leave one owned artifact. The current code and documentation treat this as
 best-effort cleanup, not as a crash-recoverable same-path retry contract.
 
-The next milestone will introduce one shared cleanup transaction:
+The first implementation slice introduces one shared cleanup transaction:
 
-1. publish a checksummed, durable intent bound to the V3 `store_id` and exact
-   finalized descriptor when available;
-2. atomically quarantine both leaves under one frozen parent namespace, with
-   no-follow and file-identity checks before deleting either quarantine entry;
-3. resume from every original/quarantined/deleted combination after process
-   failure, while preserving any foreign replacement;
-4. use whole-private-directory quarantine as the fast path for structured
+1. require a move-only ownership receipt captured from both native file
+   identities before an intent can begin; `store_id` correlates the V3 pair but
+   never grants deletion authority by itself;
+2. write each SHA-256-protected marker to a no-authority pending leaf, make the
+   complete marker durable, and publish its canonical name with no-replace
+   rename;
+3. move each leaf atomically to a no-replace quarantine name under one frozen
+   parent namespace, with no-follow and file-identity checks before deleting
+   either quarantine entry;
+4. publish a second durable `staged` marker only after both exact leaves are
+   quarantined; only that marker grants unlink authority;
+5. resume from every valid original/quarantined/deleted combination after
+   process failure, while preserving any foreign replacement;
+6. use whole-private-directory quarantine as the fast path for structured
    output leases; and
-5. cover intent publication, each rename/unlink boundary, foreign
+7. cover marker publication, each rename/unlink boundary, foreign
    replacement, symlink/hardlink, Windows sharing failures, and next-process
    same-base reuse in the crash matrix.
+
+The paired-leaf state machine is deliberately one-way:
+
+```text
+live/live
+  -> quarantined/live
+  -> quarantined/quarantined
+  -> staged/delete-authorized
+  -> quarantined/absent
+  -> absent/absent
+  -> intent removed
+  -> staged removed
+```
+
+Every namespace transition must reach the parent-directory durability
+boundary before the next transition. The immutable intent and staged marker
+remain present while owned leaves are deleted. After both leaves, and any
+exclusively owned cleanup directory, are durably absent, recovery first
+removes the intent and finally removes the staged marker. A staged-only tail
+therefore records completion but grants no authority to delete a newly created
+store. Recovery accepts only the states in this sequence. A
+pre-existing half-pair without a valid intent, multiple intents for one base,
+an unexpected live/quarantine combination, or a replacement whose identity
+does not match the intent fails closed.
+
+Pending marker leaves never authorize artifact deletion. A regular,
+single-link malformed pending leaf is repairable only under the declared
+trusted-parent contract and only while the matching unspent receipt or
+canonical intent still supplies authority. Valid markers for another
+transaction, symlinks, hardlinks, and reparse points are preserved. Base names
+ending in the reserved `.gnfs-ooc-cleanup-v1` suffix are rejected so one
+transaction's quarantine names cannot alias another store's live pair.
+
+Native identity is `dev + ino` on POSIX and 64-bit volume serial plus the full
+128-bit `FILE_ID_INFO` identity on Windows. A platform or filesystem that
+cannot supply that identity fails closed. macOS uses `F_FULLFSYNC` for both
+file and parent-directory durability boundaries. Marker confirmation preserves
+the file handle across the file -> parent -> file barrier.
+
+Implementation is split into three independently reviewable slices:
+
+1. land the receipt-gated common intent/quarantine engine and its core plus
+   self-exec crash matrix;
+2. issue receipts during fresh-writer creation, transfer them through
+   RelationSink/RelationCollector into RelationCorpus, and route pair cleanup
+   through that engine;
+3. add fresh-path reconciliation so a later process can finish a valid pending
+   cleanup before reusing the same base.
+
+The transaction does not grant deletion authority from a pending marker, from
+a leaf name alone, or from a non-cryptographic `store_id` alone. Before intent
+publication, only the unspent move-only receipt can start cleanup. Once the
+canonical intent is durable, the receipt is consumed and recovery may proceed
+from that intent alone. Each quarantined leaf is reopened and checked again
+before staged publication and before unlink. One per-base cross-process lock
+serializes cooperating GNFS cleanup processes.
+
+The portable threat boundary is a trusted parent namespace with cooperating
+same-UID processes. Linux and macOS cannot condition a path-based rename or
+unlink on a previously opened inode, so this transaction does not promise
+that a malicious same-UID process can never temporarily move or replace a
+name. It does promise that a detected foreign object is preserved and never
+unlinked. Stronger adversarial isolation requires a trusted private directory
+or a platform-specific handle-bound implementation.
