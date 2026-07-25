@@ -297,7 +297,9 @@ pure gate。
 limit、max observe peak 和 gate outcome；只允许 `limit_exceeded` 或
 `manual_review_candidate`，并保持 route/promotion 为 false。首次提交只有在 terminal
 leaf 自身确认 durable 且 strict reread 精确匹配后才返回 observation。精确重开会先
-确认 401 个 predecessor，再把 terminal leaf 作为第 402 个对象确认。
+确认 401 个 predecessor，再把 terminal leaf 作为第 402 个对象确认。两条成功路径
+都会跨 object 402 confirmation 保存并比较 terminal leaf 的完整文件指纹；即使
+192-byte 内容未变，metadata 漂移或同字节对象替换也不能继承先前 durability 结论。
 
 malformed bytes 返回 `layout_invalid`；可正常解码但不等于当前 approved binding 与
 leased journal 唯一推导值的 record 返回 `publication_conflict`。同次调用观察到
@@ -439,8 +441,9 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
   taint 和完整 80-slot/401-confirmation 终态，以及 recovery 与 launch capability
   解耦；还覆盖第 41 槽 commit 确认失败后不启动第 42 槽并由 reopen 观察真实前缀、
   terminal 第 402 次确认、durable publish/confirm 后真实进程崩溃重开、durable
-  half-frame 残留的三入口零修复拒绝、restart relabel rejection，以及 execution
-  identity 与完整 approval/runtime 字段错配的 journal 零写入拒绝。
+  half-frame 残留的三入口零修复拒绝、terminal metadata 漂移、同字节 inode 替换、
+  restart relabel rejection，以及 execution identity 与完整 approval/runtime 字段
+  错配的 journal 零写入拒绝。
   测试只启动 synthetic child，不运行 production probe 或打开 sealed holdout。
 - `tests/test_siqs_shadow_proof_rss_terminal_gate_record.cpp` 只覆盖 synthetic
   fixed-width record 的 round trip，以及 length、magic、version、reserved/tag、

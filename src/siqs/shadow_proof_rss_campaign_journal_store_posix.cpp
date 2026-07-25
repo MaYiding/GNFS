@@ -1550,6 +1550,7 @@ verify_artifact_namespace_generation(int artifact_root_fd,
 
 struct TerminalGateRecordInspection final {
     std::optional<TerminalGateRecord> record;
+    std::optional<FileFingerprint> fingerprint;
     StoreDiagnostic diagnostic;
 
     [[nodiscard]] explicit operator bool() const noexcept {
@@ -1572,6 +1573,7 @@ inspect_terminal_gate_record(const DirectorySnapshot& directory,
     }
     const auto fail = [&](StoreError error) noexcept {
         result.record.reset();
+        result.fingerprint.reset();
         result.diagnostic = make_diagnostic(error, StoreObject::terminal_gate_record);
         return result;
     };
@@ -1605,6 +1607,7 @@ inspect_terminal_gate_record(const DirectorySnapshot& directory,
         return fail(StoreError::publication_conflict);
     }
     result.record = *decoded.record;
+    result.fingerprint = captured->file_fingerprint;
     return result;
 }
 
@@ -1819,12 +1822,14 @@ struct VerifiedReplayResult final {
     std::optional<SIQSShadowProofRssCampaignArtifactLayoutSnapshot> artifact_snapshot;
     std::optional<SIQSShadowProofRssCampaignJournalResume> replay;
     std::optional<TerminalGateRecord> terminal_gate_record;
+    std::optional<FileFingerprint> terminal_gate_record_fingerprint;
     std::optional<FileFingerprint> root_namespace_fingerprint;
     std::optional<FileFingerprint> artifact_namespace_fingerprint;
     StoreDiagnostic diagnostic;
 
     [[nodiscard]] explicit operator bool() const noexcept {
         return snapshot.has_value() && artifact_snapshot.has_value() && replay.has_value() &&
+               terminal_gate_record.has_value() == terminal_gate_record_fingerprint.has_value() &&
                root_namespace_fingerprint.has_value() &&
                artifact_namespace_fingerprint.has_value() && diagnostic.error == StoreError::none;
     }
@@ -1889,6 +1894,7 @@ public:
                         FileFingerprint initial_lock_fingerprint,
                         SIQSShadowProofRssCampaignJournalResume replay,
                         std::optional<TerminalGateRecord> terminal_gate_record,
+                        std::optional<FileFingerprint> terminal_gate_record_fingerprint,
                         PublicationOps& publication_ops)
         : base_fd_(std::move(base_fd)), root_fd_(std::move(root_fd)),
           artifact_root_fd_(std::move(artifact_root_fd)), lock_fd_(std::move(lock_fd)),
@@ -1902,6 +1908,7 @@ public:
           initial_lock_fingerprint_(initial_lock_fingerprint), policy_(policy),
           runtime_facts_(runtime_facts), replay_(std::move(replay)),
           terminal_gate_record_(std::move(terminal_gate_record)),
+          terminal_gate_record_fingerprint_(std::move(terminal_gate_record_fingerprint)),
           publication_ops_(&publication_ops) {
         policy_.corpus_id = corpus_id_;
         policy_.candidate_revision = policy_candidate_revision_;
@@ -2095,13 +2102,17 @@ public:
                 return fail(TerminalGateTransactionOutcome::reconcile_required,
                             std::move(refreshed.diagnostic));
             }
+            const bool terminal_changed =
+                refreshed.terminal_gate_record != terminal_gate_record_ ||
+                refreshed.terminal_gate_record_fingerprint != terminal_gate_record_fingerprint_;
             if (!refreshed.snapshot->header.has_value() ||
                 refreshed.snapshot->record_count !=
                     SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_MAX_RECORDS ||
-                !replay_matches(*refreshed.replay, replay_)) {
-                return fail(
-                    TerminalGateTransactionOutcome::reconcile_required,
-                    make_diagnostic(StoreError::snapshot_changed, StoreObject::journal_record));
+                !replay_matches(*refreshed.replay, replay_) || terminal_changed) {
+                return fail(TerminalGateTransactionOutcome::reconcile_required,
+                            make_diagnostic(StoreError::snapshot_changed,
+                                            terminal_changed ? StoreObject::terminal_gate_record
+                                                             : StoreObject::journal_record));
             }
             const auto samples = reconstruct_siqs_shadow_proof_rss_gate_samples(
                 &policy_, &runtime_facts_, &*refreshed.snapshot->header,
@@ -2127,6 +2138,8 @@ public:
             artifact_namespace_fingerprint_ = *refreshed.artifact_namespace_fingerprint;
             replay_ = std::move(*refreshed.replay);
             terminal_gate_record_ = std::move(refreshed.terminal_gate_record);
+            terminal_gate_record_fingerprint_ =
+                std::move(refreshed.terminal_gate_record_fingerprint);
 
             if (terminal_gate_record_.has_value()) {
                 if (*terminal_gate_record_ != *expected_record) {
@@ -2134,6 +2147,8 @@ public:
                                 make_diagnostic(StoreError::layout_invalid,
                                                 StoreObject::terminal_gate_record));
                 }
+                const FileFingerprint expected_terminal_fingerprint =
+                    *terminal_gate_record_fingerprint_;
                 if (StoreDiagnostic diagnostic = verify_authority();
                     diagnostic.error != StoreError::none) {
                     return fail(TerminalGateTransactionOutcome::reconcile_required,
@@ -2152,6 +2167,8 @@ public:
                     refresh(initial_root_fingerprint_, &root_namespace_fingerprint_,
                             &artifact_namespace_fingerprint_);
                 if (!confirmed_replay || confirmed_replay.terminal_gate_record != expected_record ||
+                    confirmed_replay.terminal_gate_record_fingerprint !=
+                        expected_terminal_fingerprint ||
                     !replay_matches(*confirmed_replay.replay, replay_)) {
                     if (!confirmed_replay) {
                         return fail(TerminalGateTransactionOutcome::outcome_uncertain,
@@ -2165,6 +2182,8 @@ public:
                 artifact_namespace_fingerprint_ = *confirmed_replay.artifact_namespace_fingerprint;
                 replay_ = std::move(*confirmed_replay.replay);
                 terminal_gate_record_ = std::move(confirmed_replay.terminal_gate_record);
+                terminal_gate_record_fingerprint_ =
+                    std::move(confirmed_replay.terminal_gate_record_fingerprint);
                 terminal_durability_action_invoked = false;
                 return confirmed(*terminal_gate_record_);
             }
@@ -2219,45 +2238,46 @@ public:
                                             StoreObject::terminal_gate_record));
             }
 
-            if (!publication->is_durable()) {
-                if (publication->status() == durable::PublishStatus::already_exists) {
-                    return fail(TerminalGateTransactionOutcome::outcome_uncertain,
-                                make_publication_diagnostic(*publication,
-                                                            StoreObject::terminal_gate_record));
-                }
-                const auto confirmation = publication_ops_->confirm_durable_at(
-                    static_cast<durable::NativeHandle>(root_fd_.get()),
-                    std::filesystem::path(TERMINAL_GATE_RECORD_LEAF));
-                if (!confirmation.is_durable()) {
-                    publication = confirmation;
-                    return fail(TerminalGateTransactionOutcome::outcome_uncertain,
-                                make_publication_diagnostic(confirmation,
-                                                            StoreObject::terminal_gate_record));
-                }
-                VerifiedReplayResult confirmed_replay =
-                    refresh(observed_root_fingerprint, &*observed.root_namespace_fingerprint,
-                            &artifact_namespace_fingerprint_);
-                if (!confirmed_replay || confirmed_replay.terminal_gate_record != expected_record ||
-                    !replay_matches(*confirmed_replay.replay, *observed.replay)) {
-                    if (!confirmed_replay) {
-                        publication = confirmation;
-                        return fail(TerminalGateTransactionOutcome::outcome_uncertain,
-                                    std::move(confirmed_replay.diagnostic));
-                    }
-                    publication = confirmation;
-                    return fail(TerminalGateTransactionOutcome::outcome_uncertain,
-                                make_diagnostic(StoreError::snapshot_changed,
-                                                StoreObject::terminal_gate_record));
-                }
-                observed = std::move(confirmed_replay);
-                publication = confirmation;
+            if (publication->status() == durable::PublishStatus::already_exists) {
+                return fail(
+                    TerminalGateTransactionOutcome::outcome_uncertain,
+                    make_publication_diagnostic(*publication, StoreObject::terminal_gate_record));
             }
+            const FileFingerprint observed_terminal_fingerprint =
+                *observed.terminal_gate_record_fingerprint;
+            const auto confirmation = publication_ops_->confirm_durable_at(
+                static_cast<durable::NativeHandle>(root_fd_.get()),
+                std::filesystem::path(TERMINAL_GATE_RECORD_LEAF));
+            publication = confirmation;
+            if (!confirmation.is_durable()) {
+                return fail(
+                    TerminalGateTransactionOutcome::outcome_uncertain,
+                    make_publication_diagnostic(confirmation, StoreObject::terminal_gate_record));
+            }
+            VerifiedReplayResult confirmed_replay =
+                refresh(observed_root_fingerprint, &*observed.root_namespace_fingerprint,
+                        &artifact_namespace_fingerprint_);
+            if (!confirmed_replay || confirmed_replay.terminal_gate_record != expected_record ||
+                confirmed_replay.terminal_gate_record_fingerprint !=
+                    observed_terminal_fingerprint ||
+                !replay_matches(*confirmed_replay.replay, *observed.replay)) {
+                if (!confirmed_replay) {
+                    return fail(TerminalGateTransactionOutcome::outcome_uncertain,
+                                std::move(confirmed_replay.diagnostic));
+                }
+                return fail(TerminalGateTransactionOutcome::outcome_uncertain,
+                            make_diagnostic(StoreError::snapshot_changed,
+                                            StoreObject::terminal_gate_record));
+            }
+            observed = std::move(confirmed_replay);
 
             initial_root_fingerprint_ = observed_root_fingerprint;
             root_namespace_fingerprint_ = *observed.root_namespace_fingerprint;
             artifact_namespace_fingerprint_ = *observed.artifact_namespace_fingerprint;
             replay_ = std::move(*observed.replay);
             terminal_gate_record_ = std::move(observed.terminal_gate_record);
+            terminal_gate_record_fingerprint_ =
+                std::move(observed.terminal_gate_record_fingerprint);
             terminal_durability_action_invoked = false;
             return confirmed(*terminal_gate_record_);
         } catch (const std::bad_alloc&) {
@@ -3653,6 +3673,7 @@ private:
         result.artifact_snapshot = std::move(*artifact_layout.value);
         result.replay = std::move(replay);
         result.terminal_gate_record = std::move(terminal.record);
+        result.terminal_gate_record_fingerprint = std::move(terminal.fingerprint);
         result.root_namespace_fingerprint = namespace_after_fingerprint;
         result.artifact_namespace_fingerprint = artifact_namespace_after_fingerprint;
         return result;
@@ -3678,6 +3699,7 @@ private:
     SIQSShadowProofRssCampaignRuntimeFacts runtime_facts_;
     SIQSShadowProofRssCampaignJournalResume replay_;
     std::optional<TerminalGateRecord> terminal_gate_record_;
+    std::optional<FileFingerprint> terminal_gate_record_fingerprint_;
     bool committed_prefix_confirmed_durable_ = false;
     bool pending_start_confirmed_durable_ = false;
     std::optional<ArtifactBatchReceipt> artifact_batch_receipt_;
@@ -4056,7 +4078,7 @@ open_platform_campaign_engine(const SIQSShadowProofRssGatePolicy& policy,
             policy, runtime_facts, deployment, initial_root_fingerprint,
             initial_root_namespace_fingerprint, initial_artifact_root_fingerprint,
             initial_artifact_namespace_fingerprint, initial_lock_fingerprint, std::move(replay),
-            std::move(terminal.record), publication_ops);
+            std::move(terminal.record), std::move(terminal.fingerprint), publication_ops);
         return result;
     } catch (const std::bad_alloc&) {
         PlatformEngineOpenResult result;

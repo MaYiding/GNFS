@@ -1310,6 +1310,124 @@ private:
     std::size_t confirm_calls_ = 0;
 };
 
+class TerminalExactReplacementAfterPublishOps final : public store_detail::PublicationOps {
+public:
+    ~TerminalExactReplacementAfterPublishOps() override {
+        if (held_original_fd_ >= 0) {
+            (void)::close(held_original_fd_);
+        }
+    }
+
+    [[nodiscard]] durable::PublishResult
+    publish_at(durable::NativeHandle parent_handle, const std::filesystem::path& leaf,
+               std::span<const std::byte> bytes) noexcept override {
+        ++publish_calls_;
+        if (leaf.native() !=
+                terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF ||
+            bytes.size() != terminal_bytes_.size()) {
+            return {durable::PublishStatus::file_ops_contract_violation, {}, 0};
+        }
+        std::copy(bytes.begin(), bytes.end(), terminal_bytes_.begin());
+        const auto publication = durable::publish_at(parent_handle, leaf, bytes);
+        if (!publication.is_durable()) {
+            return publication;
+        }
+
+        const int replacement_error =
+            replace_without_sync(static_cast<int>(parent_handle), leaf.c_str());
+        if (replacement_error != 0) {
+            return {durable::PublishStatus::open_failed,
+                    std::error_code(replacement_error, std::generic_category()), 0};
+        }
+        return publication;
+    }
+
+    [[nodiscard]] durable::PublishResult
+    confirm_durable_at(durable::NativeHandle, const std::filesystem::path& leaf) noexcept override {
+        ++confirm_calls_;
+        if (confirm_calls_ != 402) {
+            return {durable::PublishStatus::durable, {}, 0};
+        }
+        if (leaf.native() !=
+            terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF) {
+            return {durable::PublishStatus::file_ops_contract_violation, {}, 0};
+        }
+        return {durable::PublishStatus::open_failed, std::make_error_code(std::errc::io_error), 0};
+    }
+
+    [[nodiscard]] std::size_t publish_calls() const noexcept {
+        return publish_calls_;
+    }
+
+    [[nodiscard]] std::size_t confirm_calls() const noexcept {
+        return confirm_calls_;
+    }
+
+    [[nodiscard]] bool replaced_inode() const noexcept {
+        return replaced_inode_;
+    }
+
+private:
+    [[nodiscard]] int replace_without_sync(int parent_fd, const char* leaf) noexcept {
+        held_original_fd_ = ::openat(parent_fd, leaf, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        if (held_original_fd_ < 0) {
+            return errno;
+        }
+        struct stat original_metadata{};
+        if (::fstat(held_original_fd_, &original_metadata) != 0) {
+            return errno;
+        }
+        if (::unlinkat(parent_fd, leaf, 0) != 0) {
+            return errno;
+        }
+        const int fd =
+            ::openat(parent_fd, leaf, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (fd < 0) {
+            return errno;
+        }
+
+        std::size_t offset = 0;
+        while (offset < terminal_bytes_.size()) {
+            const ssize_t written =
+                ::write(fd, terminal_bytes_.data() + offset, terminal_bytes_.size() - offset);
+            if (written < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                const int saved_errno = errno;
+                (void)::close(fd);
+                return saved_errno;
+            }
+            if (written == 0) {
+                (void)::close(fd);
+                return EIO;
+            }
+            offset += static_cast<std::size_t>(written);
+        }
+        if (::close(fd) != 0) {
+            return errno;
+        }
+        struct stat replacement_metadata{};
+        if (::fstatat(parent_fd, leaf, &replacement_metadata, AT_SYMLINK_NOFOLLOW) != 0) {
+            return errno;
+        }
+        if (original_metadata.st_dev == replacement_metadata.st_dev &&
+            original_metadata.st_ino == replacement_metadata.st_ino) {
+            return EIO;
+        }
+        replaced_inode_ = true;
+        return 0;
+    }
+
+    std::array<std::byte,
+               terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_WIRE_SIZE>
+        terminal_bytes_{};
+    int held_original_fd_ = -1;
+    bool replaced_inode_ = false;
+    std::size_t publish_calls_ = 0;
+    std::size_t confirm_calls_ = 0;
+};
+
 class CrashAfterDurableTerminalPublishOps final : public store_detail::PublicationOps {
 public:
     [[nodiscard]] durable::PublishResult
@@ -1376,6 +1494,110 @@ public:
                        const std::filesystem::path& leaf) noexcept override {
         return durable::confirm_durable_at(parent_handle, leaf);
     }
+};
+
+class TerminalPostConfirmationMutationOps final : public store_detail::PublicationOps {
+public:
+    enum class Action : uint8_t {
+        remove_terminal,
+        add_root_leaf,
+        replace_lock,
+        add_artifact_leaf,
+        chmod_terminal,
+    };
+
+    explicit TerminalPostConfirmationMutationOps(Action action,
+                                                 std::size_t target_confirmation = 402) noexcept
+        : action_(action), target_confirmation_(target_confirmation) {}
+
+    [[nodiscard]] durable::PublishResult
+    publish_at(durable::NativeHandle parent_handle, const std::filesystem::path& leaf,
+               std::span<const std::byte> bytes) noexcept override {
+        ++publish_calls_;
+        return durable::publish_at(parent_handle, leaf, bytes);
+    }
+
+    [[nodiscard]] durable::PublishResult
+    confirm_durable_at(durable::NativeHandle parent_handle,
+                       const std::filesystem::path& leaf) noexcept override {
+        ++confirm_calls_;
+        if (confirm_calls_ != target_confirmation_) {
+            return {durable::PublishStatus::durable, {}, 0};
+        }
+        const bool terminal_confirmation =
+            leaf.native() == terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF;
+        if ((target_confirmation_ == 402) != terminal_confirmation) {
+            return {durable::PublishStatus::file_ops_contract_violation, {}, 0};
+        }
+        const auto confirmation = durable::confirm_durable_at(parent_handle, leaf);
+        if (!confirmation.is_durable()) {
+            return confirmation;
+        }
+        if (!mutate_after_confirmation(
+                static_cast<int>(parent_handle),
+                std::filesystem::path(
+                    terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF))) {
+            return {durable::PublishStatus::open_failed,
+                    std::error_code(errno, std::generic_category()), 0};
+        }
+        return confirmation;
+    }
+
+    [[nodiscard]] std::size_t confirm_calls() const noexcept {
+        return confirm_calls_;
+    }
+
+    [[nodiscard]] std::size_t publish_calls() const noexcept {
+        return publish_calls_;
+    }
+
+private:
+    [[nodiscard]] static bool create_private_empty_leaf(int parent_fd, const char* leaf) noexcept {
+        const int fd =
+            ::openat(parent_fd, leaf, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (fd < 0) {
+            return false;
+        }
+        return ::close(fd) == 0;
+    }
+
+    [[nodiscard]] bool
+    mutate_after_confirmation(int root_fd,
+                              const std::filesystem::path& terminal_leaf) const noexcept {
+        switch (action_) {
+        case Action::remove_terminal:
+            return ::unlinkat(root_fd, terminal_leaf.c_str(), 0) == 0;
+        case Action::add_root_leaf:
+            return create_private_empty_leaf(root_fd, "terminal-post-confirm-root-drift");
+        case Action::replace_lock:
+            if (::unlinkat(root_fd, SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF.data(),
+                           0) != 0) {
+                return false;
+            }
+            return create_private_empty_leaf(
+                root_fd, SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF.data());
+        case Action::add_artifact_leaf: {
+            const int artifact_fd =
+                ::openat(root_fd, SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_DIRECTORY_LEAF.data(),
+                         O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            if (artifact_fd < 0) {
+                return false;
+            }
+            const bool created =
+                create_private_empty_leaf(artifact_fd, "terminal-post-confirm-artifact-drift");
+            const int close_result = ::close(artifact_fd);
+            return created && close_result == 0;
+        }
+        case Action::chmod_terminal:
+            return ::fchmodat(root_fd, terminal_leaf.c_str(), 0644, 0) == 0;
+        }
+        return false;
+    }
+
+    Action action_ = Action::remove_terminal;
+    std::size_t target_confirmation_ = 402;
+    std::size_t publish_calls_ = 0;
+    std::size_t confirm_calls_ = 0;
 };
 
 class CommitPublicationOps final : public store_detail::PublicationOps {
@@ -2490,6 +2712,20 @@ void write_complete_production_gate_fixture(const TempStore& fixture,
 void expect_terminal_gate_failure(const store_detail::TerminalGateTransactionResult& result,
                                   store_detail::TerminalGateTransactionOutcome outcome,
                                   StoreError error, StoreObject object) {
+    if (result.outcome() != outcome || result.store_diagnostic().error != error ||
+        result.store_diagnostic().object != object) {
+        std::cerr << "expected terminal gate failure "
+                  << store_detail::terminal_gate_transaction_outcome_name(outcome) << '/'
+                  << siqs_shadow_proof_rss_campaign_journal_store_error_name(error) << '/'
+                  << siqs_shadow_proof_rss_campaign_journal_store_object_name(object) << ", got "
+                  << store_detail::terminal_gate_transaction_outcome_name(result.outcome()) << '/'
+                  << siqs_shadow_proof_rss_campaign_journal_store_error_name(
+                         result.store_diagnostic().error)
+                  << '/'
+                  << siqs_shadow_proof_rss_campaign_journal_store_object_name(
+                         result.store_diagnostic().object)
+                  << '\n';
+    }
     CHECK(result.outcome() == outcome);
     CHECK(!result.confirmed_observation().has_value());
     CHECK(result.store_diagnostic().error == error);
@@ -2556,7 +2792,7 @@ void test_terminal_gate_complete_commit_and_idempotent_reopen(
           SIQSShadowProofRssGateReason::all_observe_peaks_within_limit);
     CHECK(!first.confirmed_observation()->gate_outcome.shadow_outcome_routed);
     CHECK(!first.confirmed_observation()->gate_outcome.promotion);
-    CHECK(first_ops.confirm_calls() == 401);
+    CHECK(first_ops.confirm_calls() == 402);
     const auto terminal_path =
         fixture.store_leaf(terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF);
     expect_private_regular_leaf(
@@ -2621,6 +2857,58 @@ void test_terminal_gate_crash_after_durable_publish_reopens(
     CHECK(!std::filesystem::exists(marker));
 }
 
+void test_terminal_gate_exact_leaf_session_has_no_forward_authority(
+    const std::filesystem::path& executable) {
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("terminal-session-must-not-launch");
+    auto deployment = make_production_gate_deployment(fixture, executable, marker);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    write_complete_production_gate_fixture(fixture, policy, facts);
+
+    FastConfirmationOps commit_ops(999);
+    deployment.publication_ops = &commit_ops;
+    const auto committed = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    CHECK(committed.outcome() ==
+          store_detail::TerminalGateTransactionOutcome::durable_outcome_confirmed);
+    CHECK(committed.confirmed_observation().has_value());
+    const auto terminal_bytes = fixture.read_store_leaf(
+        terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF);
+    const auto root_entries_before =
+        std::distance(std::filesystem::directory_iterator(fixture.store_root()),
+                      std::filesystem::directory_iterator{});
+    const auto artifact_entries_before =
+        std::distance(std::filesystem::directory_iterator(fixture.artifact_root()),
+                      std::filesystem::directory_iterator{});
+
+    FastConfirmationOps forbidden_ops(999);
+    deployment.publication_ops = &forbidden_ops;
+    auto platform_session =
+        store_detail::open_siqs_shadow_proof_rss_campaign_journal_platform_session(policy, facts,
+                                                                                   deployment);
+    CHECK(platform_session);
+    CHECK(platform_session.core->view().status == SIQSShadowProofRssJournalStatus::complete);
+    CHECK(platform_session.core->view().reason == SIQSShadowProofRssJournalReason::complete);
+    CHECK(platform_session.core->view().action == SIQSShadowProofRssJournalAction::evaluate_gate);
+
+    const auto begin = platform_session.core->begin_next_slot();
+    CHECK(!begin);
+    CHECK(begin.diagnostic.error == StoreError::session_action_invalid);
+    const auto taint = platform_session.core->append_pending_taint();
+    CHECK(!taint);
+    CHECK(taint.diagnostic.error == StoreError::session_action_invalid);
+    CHECK(forbidden_ops.confirm_calls() == 0);
+    CHECK(forbidden_ops.publish_calls() == 0);
+    CHECK(std::distance(std::filesystem::directory_iterator(fixture.store_root()),
+                        std::filesystem::directory_iterator{}) == root_entries_before);
+    CHECK(std::distance(std::filesystem::directory_iterator(fixture.artifact_root()),
+                        std::filesystem::directory_iterator{}) == artifact_entries_before);
+    CHECK(fixture.read_store_leaf(
+              terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF) ==
+          terminal_bytes);
+    CHECK(!std::filesystem::exists(marker));
+}
+
 void test_terminal_gate_crash_after_terminal_confirmation_reopens(
     const std::filesystem::path& executable) {
     using Outcome = store_detail::TerminalGateTransactionOutcome;
@@ -2636,7 +2924,7 @@ void test_terminal_gate_crash_after_terminal_confirmation_reopens(
     const auto committed = evaluate_terminal_gate_private(&policy, &facts, deployment);
     CHECK(committed.outcome() == Outcome::durable_outcome_confirmed);
     CHECK(commit_ops.publish_calls() == 1);
-    CHECK(commit_ops.confirm_calls() == 401);
+    CHECK(commit_ops.confirm_calls() == 402);
     const auto committed_bytes = fixture.read_store_leaf(
         terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF);
 
@@ -2865,6 +3153,35 @@ void test_terminal_gate_publication_recovery_matrix(const std::filesystem::path&
     }
 }
 
+void test_terminal_gate_exact_replacement_after_publish_requires_confirmation(
+    const std::filesystem::path& executable) {
+    using Outcome = store_detail::TerminalGateTransactionOutcome;
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("terminal-replacement-must-not-launch");
+    auto deployment = make_production_gate_deployment(fixture, executable, marker);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    write_complete_production_gate_fixture(fixture, policy, facts);
+
+    TerminalExactReplacementAfterPublishOps replacement_ops;
+    deployment.publication_ops = &replacement_ops;
+    const auto uncertain = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    expect_terminal_gate_failure(uncertain, Outcome::outcome_uncertain,
+                                 StoreError::publication_failed, StoreObject::terminal_gate_record);
+    CHECK(replacement_ops.publish_calls() == 1);
+    CHECK(replacement_ops.confirm_calls() == 402);
+    CHECK(replacement_ops.replaced_inode());
+    expect_private_regular_leaf(
+        fixture.store_leaf(terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF),
+        terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_WIRE_SIZE);
+
+    deployment.publication_ops = nullptr;
+    const auto recovered = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    CHECK(recovered.outcome() == Outcome::durable_outcome_confirmed);
+    CHECK(recovered.confirmed_observation().has_value());
+    CHECK(!std::filesystem::exists(marker));
+}
+
 [[nodiscard]] std::array<std::byte,
                          terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_WIRE_SIZE>
 make_conflicting_terminal_gate_bytes(const SIQSShadowProofRssGatePolicy& policy,
@@ -2922,6 +3239,208 @@ void test_terminal_gate_preexisting_leaf_rejection(const std::filesystem::path& 
         CHECK(!platform_session);
         CHECK(platform_session.diagnostic.error == expected);
         CHECK(platform_session.diagnostic.object == StoreObject::terminal_gate_record);
+        CHECK(!std::filesystem::exists(marker));
+    }
+}
+
+void expect_terminal_leaf_rejected_by_all_open_paths(
+    const SIQSShadowProofRssGatePolicy& policy, const SIQSShadowProofRssCampaignRuntimeFacts& facts,
+    const DeploymentEntry& deployment, StoreError expected_error) {
+    using Outcome = store_detail::TerminalGateTransactionOutcome;
+    const auto terminal = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    expect_terminal_gate_failure(terminal, Outcome::reconcile_required, expected_error,
+                                 StoreObject::terminal_gate_record);
+
+    const auto reconciliation = reconcile_private(&policy, &facts, deployment);
+    expect_reconciliation_failure(reconciliation, expected_error,
+                                  StoreObject::terminal_gate_record);
+
+    auto session = store_detail::open_siqs_shadow_proof_rss_campaign_journal_platform_session(
+        policy, facts, deployment);
+    CHECK(!session);
+    CHECK(session.diagnostic.error == expected_error);
+    CHECK(session.diagnostic.object == StoreObject::terminal_gate_record);
+}
+
+void test_terminal_gate_leaf_identity_and_shape_fail_closed(
+    const std::filesystem::path& executable) {
+    constexpr std::size_t wire_size =
+        terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_WIRE_SIZE;
+    constexpr std::string_view terminal_leaf =
+        terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF;
+    const auto run_case = [&](auto install_terminal, StoreError expected_error) {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("terminal-shape-must-not-launch");
+        const auto deployment = make_production_gate_deployment(fixture, executable, marker);
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        write_session_lock(fixture);
+        install_terminal(fixture);
+
+        expect_terminal_leaf_rejected_by_all_open_paths(policy, facts, deployment, expected_error);
+        CHECK(!std::filesystem::exists(marker));
+    };
+
+    for (const std::size_t size : {wire_size - 1, wire_size + 1}) {
+        run_case(
+            [=](const TempStore& fixture) {
+                fixture.write_store_leaf(terminal_leaf, std::vector<std::byte>(size));
+            },
+            StoreError::layout_invalid);
+    }
+    run_case(
+        [=](const TempStore& fixture) {
+            CHECK(::mkdir(fixture.store_leaf(terminal_leaf).c_str(), 0700) == 0);
+        },
+        StoreError::layout_invalid);
+    run_case(
+        [=](const TempStore& fixture) {
+            const auto target = fixture.base_leaf("terminal-symlink-target");
+            fixture.write_base_leaf("terminal-symlink-target", std::array<std::byte, wire_size>{});
+            CHECK(::symlink(target.c_str(), fixture.store_leaf(terminal_leaf).c_str()) == 0);
+        },
+        StoreError::layout_invalid);
+    run_case(
+        [=](const TempStore& fixture) {
+            fixture.write_base_leaf("terminal-hardlink-target", std::array<std::byte, wire_size>{});
+            CHECK(::link(fixture.base_leaf("terminal-hardlink-target").c_str(),
+                         fixture.store_leaf(terminal_leaf).c_str()) == 0);
+        },
+        StoreError::layout_invalid);
+    run_case(
+        [=](const TempStore& fixture) {
+            fixture.write_store_leaf(terminal_leaf, std::array<std::byte, wire_size>{});
+            CHECK(::chmod(fixture.store_leaf(terminal_leaf).c_str(), 0620) == 0);
+        },
+        StoreError::entry_trust_invalid);
+}
+
+void test_terminal_gate_fresh_publish_post_confirmation_metadata_drift(
+    const std::filesystem::path& executable) {
+    using Outcome = store_detail::TerminalGateTransactionOutcome;
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("terminal-fresh-drift-must-not-launch");
+    auto deployment = make_production_gate_deployment(fixture, executable, marker);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    write_complete_production_gate_fixture(fixture, policy, facts);
+
+    TerminalPostConfirmationMutationOps mutation_ops(
+        TerminalPostConfirmationMutationOps::Action::chmod_terminal);
+    deployment.publication_ops = &mutation_ops;
+    const auto uncertain = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    expect_terminal_gate_failure(uncertain, Outcome::outcome_uncertain,
+                                 StoreError::snapshot_changed, StoreObject::terminal_gate_record);
+    CHECK(mutation_ops.confirm_calls() == 402);
+    CHECK(mutation_ops.publish_calls() == 1);
+
+    FastConfirmationOps reopen_ops(999);
+    deployment.publication_ops = &reopen_ops;
+    const auto recovered = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    CHECK(recovered.outcome() == Outcome::durable_outcome_confirmed);
+    CHECK(recovered.confirmed_observation().has_value());
+    CHECK(reopen_ops.confirm_calls() == 402);
+    CHECK(reopen_ops.publish_calls() == 0);
+    CHECK(!std::filesystem::exists(marker));
+}
+
+void test_terminal_gate_predecessor_confirmation_terminal_metadata_drift(
+    const std::filesystem::path& executable) {
+    using Outcome = store_detail::TerminalGateTransactionOutcome;
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("terminal-pre-confirm-drift-must-not-launch");
+    auto deployment = make_production_gate_deployment(fixture, executable, marker);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    write_complete_production_gate_fixture(fixture, policy, facts);
+
+    FastConfirmationOps commit_ops(999);
+    deployment.publication_ops = &commit_ops;
+    const auto committed = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    CHECK(committed.outcome() == Outcome::durable_outcome_confirmed);
+    CHECK(committed.confirmed_observation().has_value());
+
+    TerminalPostConfirmationMutationOps mutation_ops(
+        TerminalPostConfirmationMutationOps::Action::chmod_terminal, 1);
+    deployment.publication_ops = &mutation_ops;
+    const auto rejected = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    expect_terminal_gate_failure(rejected, Outcome::reconcile_required,
+                                 StoreError::snapshot_changed, StoreObject::terminal_gate_record);
+    CHECK(mutation_ops.confirm_calls() == 401);
+    CHECK(mutation_ops.publish_calls() == 0);
+
+    FastConfirmationOps reopen_ops(999);
+    deployment.publication_ops = &reopen_ops;
+    const auto recovered = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    CHECK(recovered.outcome() == Outcome::durable_outcome_confirmed);
+    CHECK(recovered.confirmed_observation() == committed.confirmed_observation());
+    CHECK(reopen_ops.confirm_calls() == 402);
+    CHECK(reopen_ops.publish_calls() == 0);
+    CHECK(!std::filesystem::exists(marker));
+}
+
+void test_terminal_gate_post_confirmation_namespace_drift(const std::filesystem::path& executable) {
+    using Action = TerminalPostConfirmationMutationOps::Action;
+    using Outcome = store_detail::TerminalGateTransactionOutcome;
+    struct ExpectedDrift final {
+        Action action = Action::remove_terminal;
+        StoreError uncertain_error = StoreError::none;
+        StoreObject uncertain_object = StoreObject::none;
+        StoreError reopen_error = StoreError::none;
+        StoreObject reopen_object = StoreObject::none;
+        bool permits_fresh_recovery = false;
+    };
+    constexpr std::array cases{
+        ExpectedDrift{Action::remove_terminal, StoreError::snapshot_changed, StoreObject::directory,
+                      StoreError::none, StoreObject::none, true},
+        ExpectedDrift{Action::add_root_leaf, StoreError::snapshot_changed, StoreObject::directory,
+                      StoreError::layout_invalid, StoreObject::directory, false},
+        ExpectedDrift{Action::replace_lock, StoreError::lock_invalid, StoreObject::session_lock,
+                      StoreError::none, StoreObject::none, true},
+        ExpectedDrift{Action::add_artifact_leaf, StoreError::snapshot_changed,
+                      StoreObject::artifact_root, StoreError::artifact_layout_invalid,
+                      StoreObject::artifact_root, false},
+        ExpectedDrift{Action::chmod_terminal, StoreError::snapshot_changed,
+                      StoreObject::terminal_gate_record, StoreError::none, StoreObject::none, true},
+    };
+
+    for (const auto& expected : cases) {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("terminal-drift-must-not-launch");
+        auto deployment = make_production_gate_deployment(fixture, executable, marker);
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        write_complete_production_gate_fixture(fixture, policy, facts);
+
+        FastConfirmationOps commit_ops(999);
+        deployment.publication_ops = &commit_ops;
+        const auto committed = evaluate_terminal_gate_private(&policy, &facts, deployment);
+        CHECK(committed.outcome() == Outcome::durable_outcome_confirmed);
+        CHECK(committed.confirmed_observation().has_value());
+
+        TerminalPostConfirmationMutationOps mutation_ops(expected.action);
+        deployment.publication_ops = &mutation_ops;
+        const auto uncertain = evaluate_terminal_gate_private(&policy, &facts, deployment);
+        expect_terminal_gate_failure(uncertain, Outcome::outcome_uncertain,
+                                     expected.uncertain_error, expected.uncertain_object);
+        CHECK(mutation_ops.publish_calls() == 0);
+        CHECK(mutation_ops.confirm_calls() == 402);
+
+        FastConfirmationOps reopen_ops(999);
+        deployment.publication_ops = &reopen_ops;
+        const auto reopened = evaluate_terminal_gate_private(&policy, &facts, deployment);
+        if (expected.permits_fresh_recovery) {
+            CHECK(reopened.outcome() == Outcome::durable_outcome_confirmed);
+            CHECK(reopened.confirmed_observation() == committed.confirmed_observation());
+            CHECK(reopen_ops.confirm_calls() == 402);
+            CHECK(reopen_ops.publish_calls() ==
+                  (expected.action == Action::remove_terminal ? 1U : 0U));
+        } else {
+            expect_terminal_gate_failure(reopened, Outcome::reconcile_required,
+                                         expected.reopen_error, expected.reopen_object);
+            CHECK(reopen_ops.confirm_calls() == 0);
+            CHECK(reopen_ops.publish_calls() == 0);
+        }
         CHECK(!std::filesystem::exists(marker));
     }
 }
@@ -5948,11 +6467,17 @@ int main(int argc, char** argv) {
         test_terminal_gate_pristine_and_prefix_are_no_write(test_executable);
         test_terminal_gate_complete_commit_and_idempotent_reopen(test_executable);
         test_terminal_gate_crash_after_durable_publish_reopens(test_executable);
+        test_terminal_gate_exact_leaf_session_has_no_forward_authority(test_executable);
         test_terminal_gate_crash_after_terminal_confirmation_reopens(test_executable);
         test_terminal_gate_partial_crash_residue_is_never_repaired(test_executable);
         test_terminal_gate_confirmation_failures_and_reopen(test_executable);
         test_terminal_gate_publication_recovery_matrix(test_executable);
+        test_terminal_gate_exact_replacement_after_publish_requires_confirmation(test_executable);
         test_terminal_gate_preexisting_leaf_rejection(test_executable);
+        test_terminal_gate_leaf_identity_and_shape_fail_closed(test_executable);
+        test_terminal_gate_fresh_publish_post_confirmation_metadata_drift(test_executable);
+        test_terminal_gate_predecessor_confirmation_terminal_metadata_drift(test_executable);
+        test_terminal_gate_post_confirmation_namespace_drift(test_executable);
         test_trusted_base_component_walk_is_fail_closed();
         test_untrusted_owner_and_write_permissions_fail_closed();
         test_empty_store_lease_move_and_release(executable);

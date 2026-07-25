@@ -760,7 +760,10 @@ outcome. Only `limit_exceeded/observe_peak_over_limit` and
 `manual_review_candidate/all_observe_peaks_within_limit` are encodable; route
 and promotion remain false. A new record is observable only after terminal
 durability confirmation and a strict reread. An exact reopen reconfirms 401
-predecessors and the terminal leaf as object 402.
+predecessors and the terminal leaf as object 402. The transaction carries the
+terminal leaf's full file fingerprint across object 402 confirmation, so
+metadata-only drift and same-byte object replacement cannot inherit an earlier
+durability result.
 
 Malformed terminal bytes are `layout_invalid`; canonical but nonderived bytes
 are `publication_conflict`. Same-call `already_exists`, failed confirmation, or
@@ -1099,8 +1102,9 @@ Before promotion it must provide:
 - [x] Default-closed authority-held terminal gate transaction with one shared
   empty production registry, fresh-lease 401-object predecessor confirmation,
   exact 80-sample reconstruction, fixed immutable 192-byte outcome commit,
-  object-402 reopen confirmation, authority-free projection, and fail-closed
-  malformed, conflict, and uncertain-publication recovery.
+  object-402 publish/reopen confirmation, cross-confirmation file identity,
+  authority-free projection, and fail-closed malformed, conflict, and
+  uncertain-publication recovery.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved
   headroom, OS, architecture, RSS backend, resolved production sieve workers,
   candidate revision, approval identity, sealed corpus digest, trusted journal

@@ -428,7 +428,9 @@ only `limit_exceeded/observe_peak_over_limit` or
 remain false. A newly published record is returned only after its own durability
 confirmation and a strict post-confirmation reread. Reopening an exact record
 reconfirms the 401 predecessors and then the terminal leaf as durability object
-402 before returning the same observation.
+402 before returning the same observation. Both paths carry the terminal leaf's
+full file fingerprint across that confirmation and reject metadata or object
+identity drift even when the 192 record bytes remain unchanged.
 
 Any malformed terminal bytes fail as `layout_invalid`; canonical bytes that do
 not equal the one record derivable from the leased journal and approved binding
@@ -470,8 +472,10 @@ Homebrew GMP library with a different signing identity. The resulting process
 cannot satisfy one signer chain for all loaded code. macOS production rows
 therefore fail before journal filesystem access; only the explicitly
 synthetic path profile remains available to private tests. Windows remains
-fail-closed until an equivalent held-object design exists. Authority-held gate
-evaluation and an approved production entry point remain later milestones.
+fail-closed until an equivalent held-object design exists. The default-closed
+authority-held terminal transaction is present; an approved policy, first
+production registry row, and approved production entry point remain later
+activation milestones.
 
 Durable receipts, launch permits, executable-image handles, sessions, active
 slots, and authority-bearing result wrappers are move-constructible but not
