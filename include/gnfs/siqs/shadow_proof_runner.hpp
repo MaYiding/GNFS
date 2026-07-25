@@ -128,6 +128,7 @@ struct SIQSShadowProofEvidence {
     size_t row_candidate_upper = 0;
 
     std::optional<SIQSShadowAssemblyStatus> assembly_status;
+    std::optional<SIQSShadowAssemblyLimitEvidence> assembly_limit_evidence;
     SIQSShadowAssemblyStats assembly{};
     SIQSShadowAssemblyFingerprints assembly_fingerprints{};
 
@@ -463,6 +464,33 @@ private:
     return true;
 }
 
+[[nodiscard]] inline std::optional<SIQSShadowProofFallbackReason>
+assembly_fallback(SIQSShadowAssemblyStatus status) noexcept {
+    switch (status) {
+    case SIQSShadowAssemblyStatus::pretrim_row_limit:
+        return SIQSShadowProofFallbackReason::pretrim_row_limit;
+    case SIQSShadowAssemblyStatus::valid:
+    case SIQSShadowAssemblyStatus::invalid_modulus:
+    case SIQSShadowAssemblyStatus::invalid_factor_base:
+    case SIQSShadowAssemblyStatus::invalid_large_prime_bound:
+    case SIQSShadowAssemblyStatus::invalid_options:
+    case SIQSShadowAssemblyStatus::size_overflow:
+    case SIQSShadowAssemblyStatus::source_id_overflow:
+    case SIQSShadowAssemblyStatus::adapter_failure:
+    case SIQSShadowAssemblyStatus::graph_failure:
+    case SIQSShadowAssemblyStatus::graph_edge_limit:
+    case SIQSShadowAssemblyStatus::graph_cycle_limit:
+    case SIQSShadowAssemblyStatus::graph_incidence_limit:
+    case SIQSShadowAssemblyStatus::row_candidate_limit:
+    case SIQSShadowAssemblyStatus::worker_failure:
+    case SIQSShadowAssemblyStatus::internal_invariant_failure:
+    case SIQSShadowAssemblyStatus::resource_exhausted:
+    case SIQSShadowAssemblyStatus::exception_failure:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 } // namespace shadow_proof_detail
 
 /// Run the bounded shadow proof path without mutating or retaining raw input.
@@ -605,10 +633,16 @@ run_siqs_shadow_proof(std::span<const SIQSRelation> raw_relations,
         }
 
         current_stage = SIQSShadowProofStage::assembly;
-        auto assembly_result =
-            assemble_siqs_shadow_rows(raw_relations, factor_base_primes, square_modulus,
-                                      large_prime_bound, options.assembly, observed_splitter);
+        auto assembly_result = assemble_siqs_shadow_rows_bounded(
+            raw_relations, factor_base_primes, square_modulus, large_prime_bound, options.assembly,
+            SIQSShadowAssemblyLimits{
+                options.limits.graph,
+                options.limits.max_row_candidates,
+                options.limits.max_pretrim_rows,
+            },
+            observed_splitter);
         evidence.assembly_status = assembly_result.status();
+        evidence.assembly_limit_evidence = assembly_result.limit_evidence();
         if (observed_splitter.exception() != shadow_proof_detail::SplitterException::none) {
             const auto terminal =
                 observed_splitter.exception() == shadow_proof_detail::SplitterException::bad_alloc
@@ -627,6 +661,12 @@ run_siqs_shadow_proof(std::span<const SIQSRelation> raw_relations,
                 SIQSShadowProofTerminalStatus::exception_failure, current_stage,
                 SIQSShadowProofFallbackReason::none, std::move(evidence));
         }
+        if (const auto fallback =
+                shadow_proof_detail::assembly_fallback(assembly_result.status())) {
+            return SIQSShadowProofResultFactory::make(
+                SIQSShadowProofTerminalStatus::bounded_fallback, current_stage, *fallback,
+                std::move(evidence));
+        }
         if (!assembly_result.is_valid() || !assembly_result.assembly()) {
             const bool internal =
                 assembly_result.status() == SIQSShadowAssemblyStatus::valid ||
@@ -635,6 +675,10 @@ run_siqs_shadow_proof(std::span<const SIQSRelation> raw_relations,
                 assembly_result.status() == SIQSShadowAssemblyStatus::invalid_large_prime_bound ||
                 assembly_result.status() == SIQSShadowAssemblyStatus::invalid_options ||
                 assembly_result.status() == SIQSShadowAssemblyStatus::graph_failure ||
+                assembly_result.status() == SIQSShadowAssemblyStatus::graph_edge_limit ||
+                assembly_result.status() == SIQSShadowAssemblyStatus::graph_cycle_limit ||
+                assembly_result.status() == SIQSShadowAssemblyStatus::graph_incidence_limit ||
+                assembly_result.status() == SIQSShadowAssemblyStatus::row_candidate_limit ||
                 assembly_result.status() == SIQSShadowAssemblyStatus::internal_invariant_failure;
             return SIQSShadowProofResultFactory::make(
                 internal ? SIQSShadowProofTerminalStatus::internal_invariant_failure

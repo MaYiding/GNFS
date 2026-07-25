@@ -65,6 +65,27 @@ struct SIQSShadowAssemblyOptions {
                                                    const SIQSShadowAssemblyOptions&) = default;
 };
 
+/// Inclusive resource limits for bounded shadow assembly.
+///
+/// These limits apply after adapter normalization. The graph limits are
+/// enforced by the graph builder itself. Row candidates are bounded before
+/// cycle slots or the combined row vector are allocated, and pretrim rows are
+/// bounded before the selection mask is allocated.
+struct SIQSShadowAssemblyLimits {
+    TwoLargePrimeCycleBasisLimits graph;
+    size_t max_row_candidates;
+    size_t max_pretrim_rows;
+
+    [[nodiscard]] friend constexpr bool operator==(const SIQSShadowAssemblyLimits& lhs,
+                                                   const SIQSShadowAssemblyLimits& rhs) noexcept {
+        return lhs.graph.max_edges == rhs.graph.max_edges &&
+               lhs.graph.max_cycles == rhs.graph.max_cycles &&
+               lhs.graph.max_cycle_incidences == rhs.graph.max_cycle_incidences &&
+               lhs.max_row_candidates == rhs.max_row_candidates &&
+               lhs.max_pretrim_rows == rhs.max_pretrim_rows;
+    }
+};
+
 struct SIQSShadowAssemblyStats {
     size_t input_relations = 0;
     size_t encoded_full_relations = 0;
@@ -116,34 +137,60 @@ enum class SIQSShadowAssemblyStatus : uint8_t {
     source_id_overflow,
     adapter_failure,
     graph_failure,
+    graph_edge_limit,
+    graph_cycle_limit,
+    graph_incidence_limit,
+    row_candidate_limit,
+    pretrim_row_limit,
     worker_failure,
     internal_invariant_failure,
     resource_exhausted,
     exception_failure,
 };
 
+struct SIQSShadowAssemblyLimitEvidence {
+    size_t observed;
+    size_t maximum;
+
+    [[nodiscard]] friend constexpr bool
+    operator==(const SIQSShadowAssemblyLimitEvidence&,
+               const SIQSShadowAssemblyLimitEvidence&) = default;
+};
+
 namespace shadow_assembly_detail {
 struct SIQSShadowAssemblyResultFactory;
 }
 
-/// Invariant-safe result: an assembly is present exactly when status() is valid.
+/// Invariant-safe result: an assembly is present exactly when status() is
+/// valid. Row-limit failures may retain only their observed and maximum scalar
+/// values; they never retain a partial assembly.
 class SIQSShadowAssemblyResult {
 public:
     SIQSShadowAssemblyResult(const SIQSShadowAssemblyResult&) = default;
-    SIQSShadowAssemblyResult& operator=(const SIQSShadowAssemblyResult&) = default;
+    SIQSShadowAssemblyResult& operator=(const SIQSShadowAssemblyResult& other) {
+        if (this != &other) {
+            SIQSShadowAssemblyResult replacement(other);
+            *this = std::move(replacement);
+        }
+        return *this;
+    }
 
     SIQSShadowAssemblyResult(SIQSShadowAssemblyResult&& other) noexcept
-        : status_(other.status_), assembly_(std::move(other.assembly_)) {
+        : status_(other.status_), assembly_(std::move(other.assembly_)),
+          limit_evidence_(std::move(other.limit_evidence_)) {
         other.status_ = SIQSShadowAssemblyStatus::internal_invariant_failure;
         other.assembly_.reset();
+        other.limit_evidence_.reset();
     }
 
     SIQSShadowAssemblyResult& operator=(SIQSShadowAssemblyResult&& other) noexcept {
         if (this != &other) {
             status_ = other.status_;
             assembly_ = std::move(other.assembly_);
+            limit_evidence_ = std::move(other.limit_evidence_);
             other.status_ = SIQSShadowAssemblyStatus::internal_invariant_failure;
             other.assembly_.reset();
+            other.limit_evidence_.reset();
         }
         return *this;
     }
@@ -156,19 +203,28 @@ public:
         return assembly_;
     }
 
+    [[nodiscard]] const std::optional<SIQSShadowAssemblyLimitEvidence>&
+    limit_evidence() const noexcept {
+        return limit_evidence_;
+    }
+
     [[nodiscard]] bool is_valid() const noexcept {
-        return status_ == SIQSShadowAssemblyStatus::valid && assembly_.has_value();
+        return status_ == SIQSShadowAssemblyStatus::valid && assembly_.has_value() &&
+               !limit_evidence_.has_value();
     }
 
 private:
     friend struct shadow_assembly_detail::SIQSShadowAssemblyResultFactory;
 
     SIQSShadowAssemblyResult(SIQSShadowAssemblyStatus status,
-                             std::optional<SIQSShadowAssembly> assembly)
-        : status_(status), assembly_(std::move(assembly)) {}
+                             std::optional<SIQSShadowAssembly> assembly,
+                             std::optional<SIQSShadowAssemblyLimitEvidence> limit_evidence)
+        : status_(status), assembly_(std::move(assembly)),
+          limit_evidence_(std::move(limit_evidence)) {}
 
     SIQSShadowAssemblyStatus status_;
     std::optional<SIQSShadowAssembly> assembly_;
+    std::optional<SIQSShadowAssemblyLimitEvidence> limit_evidence_;
 };
 
 inline constexpr uint32_t SIQS_SHADOW_FINGERPRINT_SCHEMA_VERSION = 1;
@@ -178,14 +234,30 @@ namespace shadow_assembly_detail {
 
 struct SIQSShadowAssemblyResultFactory {
     [[nodiscard]] static SIQSShadowAssemblyResult failure(SIQSShadowAssemblyStatus status) {
-        if (status == SIQSShadowAssemblyStatus::valid) {
+        if (status == SIQSShadowAssemblyStatus::valid ||
+            status == SIQSShadowAssemblyStatus::row_candidate_limit ||
+            status == SIQSShadowAssemblyStatus::pretrim_row_limit) {
             status = SIQSShadowAssemblyStatus::internal_invariant_failure;
         }
-        return SIQSShadowAssemblyResult(status, std::nullopt);
+        return SIQSShadowAssemblyResult(status, std::nullopt, std::nullopt);
+    }
+
+    [[nodiscard]] static SIQSShadowAssemblyResult limit_failure(SIQSShadowAssemblyStatus status,
+                                                                size_t observed, size_t maximum) {
+        if (status != SIQSShadowAssemblyStatus::row_candidate_limit &&
+            status != SIQSShadowAssemblyStatus::pretrim_row_limit) {
+            return failure(SIQSShadowAssemblyStatus::internal_invariant_failure);
+        }
+        if (observed <= maximum) {
+            return failure(SIQSShadowAssemblyStatus::internal_invariant_failure);
+        }
+        return SIQSShadowAssemblyResult(status, std::nullopt,
+                                        SIQSShadowAssemblyLimitEvidence{observed, maximum});
     }
 
     [[nodiscard]] static SIQSShadowAssemblyResult success(SIQSShadowAssembly assembly) {
-        return SIQSShadowAssemblyResult(SIQSShadowAssemblyStatus::valid, std::move(assembly));
+        return SIQSShadowAssemblyResult(SIQSShadowAssemblyStatus::valid, std::move(assembly),
+                                        std::nullopt);
     }
 };
 
@@ -205,6 +277,27 @@ struct SIQSShadowAssemblyResultFactory {
     }
     result = static_cast<uint64_t>(value);
     return true;
+}
+
+[[nodiscard]] inline SIQSShadowAssemblyStatus
+assembly_status_for_graph(TwoLargePrimeCycleBasisStatus status) noexcept {
+    switch (status) {
+    case TwoLargePrimeCycleBasisStatus::valid:
+        return SIQSShadowAssemblyStatus::valid;
+    case TwoLargePrimeCycleBasisStatus::edge_limit:
+        return SIQSShadowAssemblyStatus::graph_edge_limit;
+    case TwoLargePrimeCycleBasisStatus::cycle_limit:
+        return SIQSShadowAssemblyStatus::graph_cycle_limit;
+    case TwoLargePrimeCycleBasisStatus::incidence_limit:
+        return SIQSShadowAssemblyStatus::graph_incidence_limit;
+    case TwoLargePrimeCycleBasisStatus::size_overflow:
+        return SIQSShadowAssemblyStatus::size_overflow;
+    case TwoLargePrimeCycleBasisStatus::invalid_edge:
+    case TwoLargePrimeCycleBasisStatus::duplicate_relation_index:
+    case TwoLargePrimeCycleBasisStatus::internal_invariant_failure:
+        return SIQSShadowAssemblyStatus::internal_invariant_failure;
+    }
+    return SIQSShadowAssemblyStatus::internal_invariant_failure;
 }
 
 [[nodiscard]] inline bool is_encoded_full(const SIQSRelation& relation) noexcept {
@@ -649,10 +742,11 @@ reduce_cycle_slot_statuses(std::span<const CycleSlot> slots) noexcept {
 /// fail the whole result closed.
 template <class Splitter>
 [[nodiscard]] SIQSShadowAssemblyResult
-assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
-                          std::span<const uint32_t> factor_base_primes,
-                          const core::Integer& modulus, uint64_t large_prime_bound,
-                          const SIQSShadowAssemblyOptions& options, Splitter&& splitter) {
+assemble_siqs_shadow_rows_bounded(std::span<const SIQSRelation> raw_relations,
+                                  std::span<const uint32_t> factor_base_primes,
+                                  const core::Integer& modulus, uint64_t large_prime_bound,
+                                  const SIQSShadowAssemblyOptions& options,
+                                  const SIQSShadowAssemblyLimits& limits, Splitter&& splitter) {
     using namespace shadow_assembly_detail;
 
     if (!post_merge_row_detail::has_valid_modulus(modulus)) {
@@ -747,6 +841,33 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
         }
     }
 
+    auto basis_result = build_two_large_prime_cycle_basis(
+        std::span<const TwoLargePrimeEdge>(partial_corpus->edges.data(),
+                                           partial_corpus->edges.size()),
+        limits.graph);
+    const SIQSShadowAssemblyStatus graph_status = assembly_status_for_graph(basis_result.status());
+    if (!basis_result.is_valid() || !basis_result.basis()) {
+        return SIQSShadowAssemblyResultFactory::failure(
+            graph_status == SIQSShadowAssemblyStatus::valid
+                ? SIQSShadowAssemblyStatus::internal_invariant_failure
+                : graph_status);
+    }
+    if (graph_status != SIQSShadowAssemblyStatus::valid) {
+        return SIQSShadowAssemblyResultFactory::failure(
+            SIQSShadowAssemblyStatus::internal_invariant_failure);
+    }
+    const TwoLargePrimeCycleBasis& basis = *basis_result.basis();
+    stats.graph_cycles = basis.cycles.size();
+
+    size_t maximum_rows = 0;
+    if (!checked_add_size(full_sources.size(), basis.cycles.size(), maximum_rows)) {
+        return SIQSShadowAssemblyResultFactory::failure(SIQSShadowAssemblyStatus::size_overflow);
+    }
+    if (maximum_rows > limits.max_row_candidates) {
+        return SIQSShadowAssemblyResultFactory::limit_failure(
+            SIQSShadowAssemblyStatus::row_candidate_limit, maximum_rows, limits.max_row_candidates);
+    }
+
     uint64_t full_count = 0;
     uint64_t partial_count = 0;
     if (!size_to_u64(full_sources.size(), full_count) ||
@@ -796,18 +917,12 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
             SIQSShadowAssemblyStatus::internal_invariant_failure);
     }
 
-    const auto basis = build_two_large_prime_cycle_basis(partial_corpus->edges);
-    if (!basis) {
-        return SIQSShadowAssemblyResultFactory::failure(SIQSShadowAssemblyStatus::graph_failure);
-    }
-    stats.graph_cycles = basis->cycles.size();
-
-    std::vector<CycleSlot> cycle_slots(basis->cycles.size());
+    std::vector<CycleSlot> cycle_slots(basis.cycles.size());
     const auto materialize_worker = [&](size_t begin_cycle, size_t end_cycle) noexcept {
         for (size_t cycle_ordinal = begin_cycle; cycle_ordinal < end_cycle; ++cycle_ordinal) {
             CycleSlot& slot = cycle_slots[cycle_ordinal];
             try {
-                const auto& support = basis->cycles[cycle_ordinal];
+                const auto& support = basis.cycles[cycle_ordinal];
                 auto materialization =
                     materialize_two_large_prime_cycle_checked(*indexed_sources, support, modulus);
                 slot.status = cycle_slot_status_for_materialization(materialization.status());
@@ -890,10 +1005,6 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
         return SIQSShadowAssemblyResultFactory::failure(cycle_status);
     }
 
-    size_t maximum_rows = 0;
-    if (!checked_add_size(full_sources.size(), cycle_slots.size(), maximum_rows)) {
-        return SIQSShadowAssemblyResultFactory::failure(SIQSShadowAssemblyStatus::size_overflow);
-    }
     std::vector<SIQSShadowRow> rows;
     rows.reserve(maximum_rows);
     for (CanonicalFullSource& source : full_sources) {
@@ -917,6 +1028,11 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
     rows.erase(unique_row_end, rows.end());
     stats.pretrim_rows = rows.size();
     stats.arithmetic_duplicates_removed = stats.rows_before_dedup - stats.pretrim_rows;
+    if (stats.pretrim_rows > limits.max_pretrim_rows) {
+        return SIQSShadowAssemblyResultFactory::limit_failure(
+            SIQSShadowAssemblyStatus::pretrim_row_limit, stats.pretrim_rows,
+            limits.max_pretrim_rows);
+    }
 
     const auto pretrim_fingerprint =
         fingerprint_rows("GNFS-SIQS-PRETRIM-ROWS", assembly.fingerprints.source_catalog,
@@ -978,6 +1094,24 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
             SIQSShadowAssemblyStatus::internal_invariant_failure);
     }
     return SIQSShadowAssemblyResultFactory::success(std::move(assembly));
+}
+
+/// Source-compatible wrapper with the historical unlimited assembly policy.
+template <class Splitter>
+[[nodiscard]] SIQSShadowAssemblyResult
+assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
+                          std::span<const uint32_t> factor_base_primes,
+                          const core::Integer& modulus, uint64_t large_prime_bound,
+                          const SIQSShadowAssemblyOptions& options, Splitter&& splitter) {
+    const size_t unlimited = std::numeric_limits<size_t>::max();
+    return assemble_siqs_shadow_rows_bounded(
+        raw_relations, factor_base_primes, modulus, large_prime_bound, options,
+        SIQSShadowAssemblyLimits{
+            TwoLargePrimeCycleBasisLimits{unlimited, unlimited, unlimited},
+            unlimited,
+            unlimited,
+        },
+        std::forward<Splitter>(splitter));
 }
 
 } // namespace gnfs::siqs

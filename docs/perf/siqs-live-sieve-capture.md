@@ -192,7 +192,7 @@ sequence:
 prepare_two_large_prime_corpus
 build_two_large_prime_cycle_basis
 materialize_two_large_prime_cycle_checked
-assemble_siqs_shadow_rows
+assemble_siqs_shadow_rows_bounded
 solve_siqs_shadow_matrix (only when its existing resource gates admit the shape)
 verify_siqs_post_merge_dependency
 extract_siqs_post_merge_factor
@@ -421,6 +421,22 @@ invariant failure after the strict adapter and graph terminates assembly as
 `internal_invariant_failure`. Workers write only their fixed cycle slots, and
 the joined outcomes are reduced in cycle order. Only a later exact
 row-identity mismatch contributes `rejected_cycle_rows`.
+
+Bounded assembly carries the proof envelope through its owning rebuild. Graph
+edge, cycle, and incidence caps are checked by the graph builder before cycle
+slot allocation; the candidate-row cap is checked before cycle slots and the
+combined row vector; and the pre-trim cap is checked before the selection mask.
+The compatibility `assemble_siqs_shadow_rows` overload remains unlimited for
+existing direct callers, while the proof facade always calls
+`assemble_siqs_shadow_rows_bounded` with its frozen limits.
+If the owning rebuild alone reaches a graph or candidate-row limit after the
+same preflight passed, the proof facade treats that difference as a splitter
+purity or corpus invariant failure. The pre-trim limit remains a normal
+bounded fallback because its exact count is observed only by assembly. Both
+row-limit statuses retain their observed and maximum scalar values for
+in-memory diagnostics while discarding every partial assembly object. This
+change does not extend the stable V1 observe-record schema, which continues to
+carry the terminal status but not the two scalar values.
 
 ## Zero-Cycle and Promotion Rules
 

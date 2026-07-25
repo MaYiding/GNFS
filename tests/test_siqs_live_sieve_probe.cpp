@@ -736,6 +736,16 @@ void run_capture_slot(const SIQSPoly& polynomial, const Integer& sieved_modulus,
         return "adapter_failure";
     case SIQSShadowAssemblyStatus::graph_failure:
         return "graph_failure";
+    case SIQSShadowAssemblyStatus::graph_edge_limit:
+        return "graph_edge_limit";
+    case SIQSShadowAssemblyStatus::graph_cycle_limit:
+        return "graph_cycle_limit";
+    case SIQSShadowAssemblyStatus::graph_incidence_limit:
+        return "graph_incidence_limit";
+    case SIQSShadowAssemblyStatus::row_candidate_limit:
+        return "row_candidate_limit";
+    case SIQSShadowAssemblyStatus::pretrim_row_limit:
+        return "pretrim_row_limit";
     case SIQSShadowAssemblyStatus::worker_failure:
         return "worker_failure";
     case SIQSShadowAssemblyStatus::internal_invariant_failure:

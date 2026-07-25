@@ -161,9 +161,22 @@ collection. Explicit records are attempted even when `verbose=false`; unset or
 [SIQS Runtime Flags](../env-flags/siqs.md) for the strict parser and
 failure-transparency contract.
 
-The facade performs a bounded graph preflight before assembly; assembly
-currently rebuilds the adapter and graph. Production therefore keeps raw
-relations alive together with owning shadow rows and the packed matrix.
+The facade performs a bounded graph preflight before assembly. Assembly still
+rebuilds the adapter and graph from the immutable raw corpus, but the rebuild
+now receives the same inclusive graph, row-candidate, and pre-trim limits. An
+edge, cycle, incidence, candidate-row, or pre-trim cap therefore terminates
+before the corresponding downstream allocation, even if a stateful splitter
+violates the required pure-function contract between the two passes.
+Because graph and candidate-row bounds are already proven during preflight, a
+corresponding failure during the owning rebuild is classified as an internal
+invariant failure rather than an ordinary bounded fallback. A pre-trim limit
+has no equivalent preflight observation and remains a bounded fallback.
+Candidate-row and pre-trim failures retain only the observed and maximum
+scalar counts in the in-memory assembly and proof results; no partial assembly
+escapes the boundary. The existing V1 observe-record schema is unchanged and
+continues to expose only the terminal status for these failures.
+Production keeps raw relations alive together with owning shadow rows and the
+packed matrix.
 Before/after process snapshots describe endpoint and lifetime high-water state,
 not the exact transient shadow peak. Meaningful RSS comparisons require fresh
 processes and must not reuse the lower peak from the Release-only proof runner,

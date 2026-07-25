@@ -25,6 +25,7 @@ using std::uint8_t;
 
 using gnfs::core::Integer;
 using gnfs::siqs::assemble_siqs_shadow_rows;
+using gnfs::siqs::assemble_siqs_shadow_rows_bounded;
 using gnfs::siqs::build_two_large_prime_cycle_basis;
 using gnfs::siqs::IndexedTwoLargePrimeCycleSources;
 using gnfs::siqs::materialize_two_large_prime_cycle;
@@ -34,6 +35,7 @@ using gnfs::siqs::SIQSFactorPower;
 using gnfs::siqs::SIQSPostMergeRow;
 using gnfs::siqs::SIQSRelation;
 using gnfs::siqs::SIQSShadowAssembly;
+using gnfs::siqs::SIQSShadowAssemblyLimits;
 using gnfs::siqs::SIQSShadowAssemblyOptions;
 using gnfs::siqs::SIQSShadowAssemblyResult;
 using gnfs::siqs::SIQSShadowAssemblyStats;
@@ -42,6 +44,7 @@ using gnfs::siqs::SIQSShadowFingerprint;
 using gnfs::siqs::SIQSShadowRow;
 using gnfs::siqs::SIQSShadowRowOrigin;
 using gnfs::siqs::SIQSSourceId;
+using gnfs::siqs::TwoLargePrimeCycleBasisLimits;
 using gnfs::siqs::TwoLargePrimeMaterializationStatus;
 using gnfs::siqs::shadow_assembly_detail::cycle_slot_status_for_materialization;
 using gnfs::siqs::shadow_assembly_detail::CycleSlot;
@@ -153,6 +156,9 @@ void check_result(const SIQSShadowAssemblyResult& result,
     CHECK(result.status() == expected_status);
     CHECK(result.assembly().has_value() == (expected_status == SIQSShadowAssemblyStatus::valid));
     CHECK(result.is_valid() == (expected_status == SIQSShadowAssemblyStatus::valid));
+    const bool is_row_limit = expected_status == SIQSShadowAssemblyStatus::row_candidate_limit ||
+                              expected_status == SIQSShadowAssemblyStatus::pretrim_row_limit;
+    CHECK(result.limit_evidence().has_value() == is_row_limit);
 }
 
 [[nodiscard]] bool same_post_merge_row(const SIQSPostMergeRow& lhs, const SIQSPostMergeRow& rhs) {
@@ -571,6 +577,78 @@ void test_parallel_rejection_slots_are_deterministic() {
     }
 }
 
+void test_bounded_graph_and_row_limits_are_inclusive() {
+    const auto relations = make_main_corpus();
+    const auto call = [&](SIQSShadowAssemblyLimits limits) {
+        return assemble_siqs_shadow_rows_bounded(
+            std::span<const SIQSRelation>(relations.data(), relations.size()),
+            std::span<const uint32_t>(factor_base_primes.data(), factor_base_primes.size()),
+            relation_modulus, 41, SIQSShadowAssemblyOptions{3, 4}, limits, OracleSplitter{});
+    };
+
+    const SIQSShadowAssemblyLimits exact{
+        TwoLargePrimeCycleBasisLimits{6, 3, 6},
+        10,
+        9,
+    };
+    const auto bounded = call(exact);
+    check_result(bounded, SIQSShadowAssemblyStatus::valid);
+    const auto unlimited = assemble(relations, {3, 4});
+    check_result(unlimited, SIQSShadowAssemblyStatus::valid);
+    if (bounded.assembly() && unlimited.assembly()) {
+        CHECK(same_assembly(*bounded.assembly(), *unlimited.assembly()));
+    }
+
+    auto edge_short = exact;
+    edge_short.graph.max_edges = 5;
+    check_result(call(edge_short), SIQSShadowAssemblyStatus::graph_edge_limit);
+
+    auto cycle_short = exact;
+    cycle_short.graph.max_cycles = 2;
+    check_result(call(cycle_short), SIQSShadowAssemblyStatus::graph_cycle_limit);
+
+    auto incidence_short = exact;
+    incidence_short.graph.max_cycle_incidences = 5;
+    check_result(call(incidence_short), SIQSShadowAssemblyStatus::graph_incidence_limit);
+
+    auto candidate_short = exact;
+    candidate_short.max_row_candidates = 9;
+    const auto candidate_result = call(candidate_short);
+    check_result(candidate_result, SIQSShadowAssemblyStatus::row_candidate_limit);
+    if (candidate_result.limit_evidence()) {
+        CHECK(candidate_result.limit_evidence()->observed == 10);
+        CHECK(candidate_result.limit_evidence()->maximum == 9);
+    }
+
+    auto pretrim_short = exact;
+    pretrim_short.max_pretrim_rows = 8;
+    const auto pretrim_result = call(pretrim_short);
+    check_result(pretrim_result, SIQSShadowAssemblyStatus::pretrim_row_limit);
+    if (pretrim_result.limit_evidence()) {
+        CHECK(pretrim_result.limit_evidence()->observed == 9);
+        CHECK(pretrim_result.limit_evidence()->maximum == 8);
+    }
+
+    SIQSShadowAssemblyResult copied_limit(candidate_result);
+    check_result(copied_limit, SIQSShadowAssemblyStatus::row_candidate_limit);
+    CHECK(copied_limit.limit_evidence() == candidate_result.limit_evidence());
+    auto assigned_limit = assemble(relations);
+    assigned_limit = pretrim_result;
+    check_result(assigned_limit, SIQSShadowAssemblyStatus::pretrim_row_limit);
+    CHECK(assigned_limit.limit_evidence() == pretrim_result.limit_evidence());
+
+    const std::vector<SIQSRelation> empty;
+    const auto empty_result = assemble_siqs_shadow_rows_bounded(
+        std::span<const SIQSRelation>(empty.data(), empty.size()),
+        std::span<const uint32_t>(factor_base_primes.data(), factor_base_primes.size()),
+        relation_modulus, 41, SIQSShadowAssemblyOptions{0, 1},
+        SIQSShadowAssemblyLimits{TwoLargePrimeCycleBasisLimits{0, 0, 0}, 0, 0}, OracleSplitter{});
+    check_result(empty_result, SIQSShadowAssemblyStatus::valid);
+    if (empty_result.assembly()) {
+        CHECK(empty_result.assembly()->rows.empty());
+    }
+}
+
 void test_fingerprint_layers() {
     const auto baseline = assemble(make_main_corpus(), {3, 1});
     check_result(baseline, SIQSShadowAssemblyStatus::valid);
@@ -725,6 +803,7 @@ int main() {
     test_invalid_configuration_and_result_moves();
     test_rejection_stats_remain_partitioned();
     test_parallel_rejection_slots_are_deterministic();
+    test_bounded_graph_and_row_limits_are_inclusive();
     test_fingerprint_layers();
     test_independent_golden_fingerprints();
     test_empty_assembly_is_valid_and_fingerprinted();

@@ -269,8 +269,9 @@ void check_terminal_contract(const SIQSShadowProofResult& result,
            lhs.graph_cycle_incidences == rhs.graph_cycle_incidences &&
            lhs.graph_max_cycle_length == rhs.graph_max_cycle_length &&
            lhs.row_candidate_upper == rhs.row_candidate_upper &&
-           lhs.assembly_status == rhs.assembly_status && lhs.assembly == rhs.assembly &&
-           lhs.assembly_fingerprints == rhs.assembly_fingerprints &&
+           lhs.assembly_status == rhs.assembly_status &&
+           lhs.assembly_limit_evidence == rhs.assembly_limit_evidence &&
+           lhs.assembly == rhs.assembly && lhs.assembly_fingerprints == rhs.assembly_fingerprints &&
            lhs.projected_dense_matrix_bytes == rhs.projected_dense_matrix_bytes &&
            lhs.matrix_status == rhs.matrix_status && lhs.matrix_rows == rhs.matrix_rows &&
            lhs.matrix_columns == rhs.matrix_columns && lhs.minimum_nullity == rhs.minimum_nullity &&
@@ -299,6 +300,7 @@ void check_factor_oracle(const SIQSShadowProofResult& result) {
     CHECK(evidence.minimum_nullity == 1);
     CHECK(evidence.projected_dense_matrix_bytes == 8);
     CHECK(evidence.matrix_status == SIQSShadowMatrixStatus::valid);
+    CHECK(!evidence.assembly_limit_evidence.has_value());
     CHECK(evidence.dependencies_returned == 2);
     CHECK(evidence.dependencies_examined == 2);
     CHECK(evidence.dependencies_verified == 2);
@@ -415,7 +417,11 @@ void test_raw_payload_row_and_pretrim_inclusive_caps() {
     check_terminal_contract(pretrim_rejected, SIQSShadowProofTerminalStatus::bounded_fallback,
                             SIQSShadowProofStage::assembly,
                             SIQSShadowProofFallbackReason::pretrim_row_limit);
-    CHECK(pretrim_rejected.evidence().assembly.pretrim_rows == 2);
+    CHECK(pretrim_rejected.evidence().assembly_status ==
+          SIQSShadowAssemblyStatus::pretrim_row_limit);
+    CHECK(pretrim_rejected.evidence().assembly_limit_evidence ==
+          (gnfs::siqs::SIQSShadowAssemblyLimitEvidence{2, 1}));
+    CHECK(pretrim_rejected.evidence().assembly == gnfs::siqs::SIQSShadowAssemblyStats{});
 }
 
 void test_graph_inclusive_caps() {
@@ -682,6 +688,18 @@ struct DriftingSplitter {
     }
 };
 
+struct LateOracleSplitter {
+    size_t calls = 0;
+
+    [[nodiscard]] std::pair<uint64_t, uint64_t> operator()(uint64_t cofactor) noexcept {
+        ++calls;
+        if (calls <= 4) {
+            return {0, 0};
+        }
+        return OracleSplitter{}(cofactor);
+    }
+};
+
 void test_splitter_exceptions_and_drift() {
     const std::vector<SIQSRelation> relations{
         make_relation(379, false, {0, 1, 2, 2}, 319, 1),
@@ -728,6 +746,80 @@ void test_splitter_exceptions_and_drift() {
     CHECK(drifting_splitter.calls == 2);
     CHECK(drift_result.evidence().adapter.accepted_two_lp == 1);
     CHECK(drift_result.evidence().assembly.adapter.invalid_two_large_prime_split == 1);
+}
+
+void test_second_pass_assembly_limits_cannot_be_bypassed() {
+    const auto relations = make_main_corpus();
+
+    SIQSShadowProofOptions edge_options;
+    edge_options.limits.graph = TwoLargePrimeCycleBasisLimits{2, 3, 6};
+    LateOracleSplitter edge_splitter;
+    const auto edge_result = run_immutable(relations, mixed_factor_base, oracle_modulus,
+                                           oracle_modulus, 41, edge_splitter, edge_options);
+    check_terminal_contract(edge_result, SIQSShadowProofTerminalStatus::internal_invariant_failure,
+                            SIQSShadowProofStage::assembly, SIQSShadowProofFallbackReason::none);
+    CHECK(edge_splitter.calls == 8);
+    CHECK(edge_result.evidence().graph_status == TwoLargePrimeCycleBasisStatus::valid);
+    CHECK(edge_result.evidence().graph_edges == 2);
+    CHECK(edge_result.evidence().assembly_status == SIQSShadowAssemblyStatus::graph_edge_limit);
+
+    SIQSShadowProofOptions cycle_options;
+    cycle_options.limits.graph = TwoLargePrimeCycleBasisLimits{6, 1, 6};
+    LateOracleSplitter cycle_splitter;
+    const auto cycle_result = run_immutable(relations, mixed_factor_base, oracle_modulus,
+                                            oracle_modulus, 41, cycle_splitter, cycle_options);
+    check_terminal_contract(cycle_result, SIQSShadowProofTerminalStatus::internal_invariant_failure,
+                            SIQSShadowProofStage::assembly, SIQSShadowProofFallbackReason::none);
+    CHECK(cycle_splitter.calls == 8);
+    CHECK(cycle_result.evidence().graph_cycles == 1);
+    CHECK(cycle_result.evidence().assembly_status == SIQSShadowAssemblyStatus::graph_cycle_limit);
+
+    SIQSShadowProofOptions incidence_options;
+    incidence_options.limits.graph = TwoLargePrimeCycleBasisLimits{6, 3, 2};
+    LateOracleSplitter incidence_splitter;
+    const auto incidence_result =
+        run_immutable(relations, mixed_factor_base, oracle_modulus, oracle_modulus, 41,
+                      incidence_splitter, incidence_options);
+    check_terminal_contract(incidence_result,
+                            SIQSShadowProofTerminalStatus::internal_invariant_failure,
+                            SIQSShadowProofStage::assembly, SIQSShadowProofFallbackReason::none);
+    CHECK(incidence_splitter.calls == 8);
+    CHECK(incidence_result.evidence().graph_cycle_incidences == 2);
+    CHECK(incidence_result.evidence().assembly_status ==
+          SIQSShadowAssemblyStatus::graph_incidence_limit);
+
+    SIQSShadowProofOptions candidate_options;
+    candidate_options.limits.graph = TwoLargePrimeCycleBasisLimits{6, 3, 6};
+    candidate_options.limits.max_row_candidates = 9;
+    LateOracleSplitter candidate_splitter;
+    const auto candidate_result =
+        run_immutable(relations, mixed_factor_base, oracle_modulus, oracle_modulus, 41,
+                      candidate_splitter, candidate_options);
+    check_terminal_contract(candidate_result,
+                            SIQSShadowProofTerminalStatus::internal_invariant_failure,
+                            SIQSShadowProofStage::assembly, SIQSShadowProofFallbackReason::none);
+    CHECK(candidate_splitter.calls == 8);
+    CHECK(candidate_result.evidence().row_candidate_upper == 9);
+    CHECK(candidate_result.evidence().assembly_status ==
+          SIQSShadowAssemblyStatus::row_candidate_limit);
+    CHECK(candidate_result.evidence().assembly_limit_evidence ==
+          (gnfs::siqs::SIQSShadowAssemblyLimitEvidence{10, 9}));
+
+    SIQSShadowProofOptions pretrim_options;
+    pretrim_options.limits.graph = TwoLargePrimeCycleBasisLimits{6, 3, 6};
+    pretrim_options.limits.max_row_candidates = 10;
+    pretrim_options.limits.max_pretrim_rows = 8;
+    LateOracleSplitter pretrim_splitter;
+    const auto pretrim_result =
+        run_immutable(relations, mixed_factor_base, oracle_modulus, oracle_modulus, 41,
+                      pretrim_splitter, pretrim_options);
+    check_terminal_contract(pretrim_result, SIQSShadowProofTerminalStatus::bounded_fallback,
+                            SIQSShadowProofStage::assembly,
+                            SIQSShadowProofFallbackReason::pretrim_row_limit);
+    CHECK(pretrim_splitter.calls == 8);
+    CHECK(pretrim_result.evidence().assembly_status == SIQSShadowAssemblyStatus::pretrim_row_limit);
+    CHECK(pretrim_result.evidence().assembly_limit_evidence ==
+          (gnfs::siqs::SIQSShadowAssemblyLimitEvidence{9, 8}));
 }
 
 void test_result_copy_and_move_contracts() {
@@ -838,6 +930,7 @@ int main() {
     test_invalid_context_and_options();
     test_malformed_full_and_rejected_cycle();
     test_splitter_exceptions_and_drift();
+    test_second_pass_assembly_limits_cannot_be_bypassed();
     test_result_copy_and_move_contracts();
     test_mixed_corpus_worker_determinism();
 

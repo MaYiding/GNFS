@@ -381,8 +381,9 @@ proof_evidence_is_consistent(const SIQSShadowProofEvidence& evidence) noexcept {
 [[nodiscard]] inline bool result_metadata_is_consistent(const SIQSShadowProofEvidence& evidence,
                                                         size_t polynomials_used) noexcept {
     if (!evidence.assembly_status || *evidence.assembly_status != SIQSShadowAssemblyStatus::valid ||
-        !evidence.matrix_status || *evidence.matrix_status != SIQSShadowMatrixStatus::valid ||
-        evidence.matrix_columns == 0 || evidence.matrix_rows <= evidence.matrix_columns ||
+        evidence.assembly_limit_evidence.has_value() || !evidence.matrix_status ||
+        *evidence.matrix_status != SIQSShadowMatrixStatus::valid || evidence.matrix_columns == 0 ||
+        evidence.matrix_rows <= evidence.matrix_columns ||
         evidence.minimum_nullity != evidence.matrix_rows - evidence.matrix_columns ||
         evidence.assembly.selected_rows != evidence.matrix_rows || polynomials_used == 0 ||
         *evidence.winning_dependency_size == 0 ||
