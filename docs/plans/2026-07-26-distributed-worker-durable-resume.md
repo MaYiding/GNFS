@@ -1363,6 +1363,15 @@ identity, and durability across every recovery boundary. Its core/crash suites,
 the complete utility module, dependency-deep changed selection, GNFS E2E,
 Harness checks, and the independent security review passed in Debug.
 
+The M1 handoff protocol foundation also completed on 2026-07-26. The pure
+`OOCPrivateHandoffV1` codec binds the complete lease generation, native
+identities, finalized V3 pair and extents, payload kind/version, and a bounded
+opaque payload through canonical little-endian bytes and independent payload
+and record digests. It grants no filesystem, adoption, or cleanup authority.
+The locked classifier, publication transition, move-only adoption receipt, and
+two-capability cleanup conversion remain required before the next M1 checkbox
+or exit criterion is complete.
+
 Exit criterion: a finalized synthetic private OOC corpus can survive owner
 death, reject every stale cleanup receipt, be adopted without deletion
 authority, and later be cleaned only after an external durable authorization

@@ -134,6 +134,13 @@ and multi-config build trees cannot accidentally validate a stale root
 `build/` binary. This keeps CLI/schema drift in routine CTest without weakening
 the disabled stress boundary above.
 
+`test_ooc_durable_handoff` is split into two `instant` CTest entries. The core
+suite fixes the canonical V1 encoding, sealing, round-trip, zero-row, and
+64-KiB opaque-payload boundary. The negative suite mutates every durable
+binding class and rejects malformed lengths, versions, identities, extents,
+digests, truncation, and trailing bytes. This target is a pure protocol test:
+it performs no filesystem mutation and grants no adoption or cleanup authority.
+
 `test_ooc_cleanup_transaction` is split into three CTest entries.
 `OOCCleanupTransactionCore` is an `instant` ownership and state-machine
 contract covering move-only receipt consumption, repairable pending

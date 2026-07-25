@@ -307,6 +307,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/collector.cpp")
     target_sources(gnfs_core PRIVATE src/relation/collector.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/ooc_durable_handoff.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/ooc_durable_handoff.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/filter.cpp")
     target_sources(gnfs_core PRIVATE src/relation/filter.cpp)
 endif()
@@ -763,6 +767,27 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_ooc_store_integrity PRIVATE gnfs_core Threads::Threads)
     add_test(NAME OOCStoreIntegrity COMMAND test_ooc_store_integrity)
     set_tests_properties(OOCStoreIntegrity PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_ooc_durable_handoff
+        tests/test_ooc_durable_handoff.cpp
+    )
+    target_link_libraries(test_ooc_durable_handoff PRIVATE gnfs_core Threads::Threads)
+    add_test(
+        NAME OOCPrivateHandoffProtocolCore
+        COMMAND test_ooc_durable_handoff --suite core
+    )
+    set_tests_properties(
+        OOCPrivateHandoffProtocolCore
+        PROPERTIES LABELS "instant" TIMEOUT 10
+    )
+    add_test(
+        NAME OOCPrivateHandoffProtocolNegative
+        COMMAND test_ooc_durable_handoff --suite negative
+    )
+    set_tests_properties(
+        OOCPrivateHandoffProtocolNegative
+        PROPERTIES LABELS "instant" TIMEOUT 10
+    )
 
     add_executable(test_ooc_cleanup_transaction
         tests/test_ooc_cleanup_transaction.cpp
