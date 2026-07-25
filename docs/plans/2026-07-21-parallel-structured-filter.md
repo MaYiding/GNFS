@@ -1559,7 +1559,7 @@ two paths sequentially. A crash or second-path removal failure can therefore
 leave one owned artifact. The current code and documentation treat this as
 best-effort cleanup, not as a crash-recoverable same-path retry contract.
 
-The first implementation slice introduces one shared cleanup transaction:
+The target cleanup design uses one shared cleanup transaction:
 
 1. require a move-only ownership receipt captured from both native file
    identities before an intent can begin; `store_id` correlates the V3 pair but
@@ -1574,8 +1574,8 @@ The first implementation slice introduces one shared cleanup transaction:
    quarantined; only that marker grants unlink authority;
 5. resume from every valid original/quarantined/deleted combination after
    process failure, while preserving any foreign replacement;
-6. use whole-private-directory quarantine as the fast path for structured
-   output leases; and
+6. later use whole-private-directory quarantine as the fast path for
+   structured output leases; and
 7. cover marker publication, each rename/unlink boundary, foreign
    replacement, symlink/hardlink, Windows sharing failures, and next-process
    same-base reuse in the crash matrix.
@@ -1618,7 +1618,7 @@ cannot supply that identity fails closed. macOS uses `F_FULLFSYNC` for both
 file and parent-directory durability boundaries. Marker confirmation preserves
 the file handle across the file -> parent -> file barrier.
 
-Implementation is split into three independently reviewable slices:
+Implementation is split into four independently reviewable slices:
 
 1. land the receipt-gated common intent/quarantine engine and its core plus
    self-exec crash matrix;
@@ -1626,7 +1626,10 @@ Implementation is split into three independently reviewable slices:
    RelationSink/RelationCollector into RelationCorpus, and route pair cleanup
    through that engine;
 3. add fresh-path reconciliation so a later process can finish a valid pending
-   cleanup before reusing the same base.
+   cleanup before reusing the same base; and
+4. add whole-private-directory quarantine for exclusively owned RelationSink
+   leases after the persistent lock-file lifecycle is separated from that
+   directory.
 
 The transaction does not grant deletion authority from a pending marker, from
 a leaf name alone, or from a non-cryptographic `store_id` alone. Before intent
