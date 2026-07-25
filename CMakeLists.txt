@@ -761,6 +761,14 @@ if(GNFS_BUILD_TESTS)
         OOCCleanupTransactionCrash
         PROPERTIES LABELS "fast" TIMEOUT 60
     )
+    add_test(
+        NAME OOCCleanupPrivateLeaseCrash
+        COMMAND test_ooc_cleanup_transaction --suite lease-crash
+    )
+    set_tests_properties(
+        OOCCleanupPrivateLeaseCrash
+        PROPERTIES LABELS "fast" TIMEOUT 30
+    )
 
     # ── W6 T4: relation collector memory pool ──
     add_executable(test_memory_pool
@@ -1320,7 +1328,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_relation_reduction_engine PRIVATE gnfs_core Threads::Threads)
     add_test(NAME RelationReductionEngine COMMAND test_relation_reduction_engine)
-    set_tests_properties(RelationReductionEngine PROPERTIES LABELS "instant" TIMEOUT 10)
+    set_tests_properties(RelationReductionEngine PROPERTIES LABELS "fast" TIMEOUT 30)
 
     # Multi-size finalized-OOC structured source and cross-worker determinism gate.
     add_executable(test_structured_ooc_scale

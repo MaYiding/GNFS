@@ -708,7 +708,7 @@ TEST_TIMEOUT=(
     test_filter              10
     test_lp_key_contract     10
     test_relation_identity   10
-    test_relation_reduction_engine 10
+    test_relation_reduction_engine 30
     test_structured_ooc_scale 180
     test_structured_filter_pipeline_120bit 600
     test_structured_ooc_50d_probe 3600
@@ -930,7 +930,7 @@ TEST_TIER=(
     test_filter              "instant"
     test_lp_key_contract     "instant"
     test_relation_identity   "instant"
-    test_relation_reduction_engine "instant"
+    test_relation_reduction_engine "fast"
     test_structured_ooc_scale "gate"
     test_structured_filter_pipeline_120bit "heavy"
     test_structured_ooc_50d_probe "stress"

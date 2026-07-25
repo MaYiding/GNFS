@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <random>
 #include <stdexcept>
@@ -355,7 +356,13 @@ public:
     /// Fresh create writes paired incomplete V3 headers with one durable store
     /// identity.
     explicit OOCRelationWriter(const std::string& base_path)
-        : OOCRelationWriter(base_path, std::nullopt, std::nullopt, ConstructionToken{}) {}
+        : OOCRelationWriter(base_path, std::nullopt, std::nullopt, nullptr, ConstructionToken{}) {}
+
+    /// Fresh private-lease creation keeps the lease's persistent BaseLock held
+    /// across both O_EXCL reservations and durable lease activation.
+    OOCRelationWriter(const std::string& base_path, OOCPrivateLeaseOwnershipReceipt& private_lease)
+        : OOCRelationWriter(base_path, std::nullopt, std::nullopt, &private_lease,
+                            ConstructionToken{}) {}
 
     /// Paired recovery requires both the structural descriptor and the
     /// semantic relation-sequence receipt from the same durable checkpoint.
@@ -363,14 +370,14 @@ public:
     OOCRelationWriter(const std::string& base_path,
                       const OOCSnapshotDescriptor& recovery_descriptor,
                       const RelationSequenceReceipt& recovery_sequence_receipt)
-        : OOCRelationWriter(base_path, recovery_descriptor, recovery_sequence_receipt,
+        : OOCRelationWriter(base_path, recovery_descriptor, recovery_sequence_receipt, nullptr,
                             ConstructionToken{}) {}
 
 private:
     explicit OOCRelationWriter(const std::string& base_path,
                                std::optional<OOCSnapshotDescriptor> recovery_descriptor,
                                std::optional<RelationSequenceReceipt> recovery_sequence_receipt,
-                               ConstructionToken)
+                               OOCPrivateLeaseOwnershipReceipt* private_lease, ConstructionToken)
         : base_path_(freeze_base_path_checked(base_path)), data_buf_(BUFFER_BYTES),
           idx_buf_(BUFFER_BYTES / 4), // 256 KB suffices for index
           uncaught_at_ctor_(std::uncaught_exceptions()),
@@ -378,6 +385,10 @@ private:
         if (recovery_sequence_receipt.has_value() != recovery_descriptor.has_value()) {
             throw std::logic_error(
                 "OOCRelationWriter: internal recovery descriptor/receipt pairing violated");
+        }
+        if (private_lease != nullptr && recovery_descriptor) {
+            throw std::invalid_argument(
+                "OOCRelationWriter: private lease is valid only for fresh creation");
         }
         if (recovery_descriptor &&
             recovery_sequence_receipt->relation_count != recovery_descriptor->count) {
@@ -478,8 +489,20 @@ private:
                 // canonical, staged, or quarantine leaves fail closed; explicit
                 // transaction recovery must finish before fresh reuse.
                 const auto cleanup_paths = ooc_cleanup_detail::freeze_paths(base_path_);
-                ooc_cleanup_detail::BaseLock cleanup_lock(cleanup_paths.lock_path,
-                                                          cleanup_paths.private_directory.empty());
+                std::shared_ptr<ooc_cleanup_detail::BaseLock> cleanup_lock;
+                if (private_lease != nullptr) {
+                    if (private_lease->spent_ || private_lease->active_ ||
+                        !private_lease->live_lock_ ||
+                        private_lease->base_path_ != cleanup_paths.base_path ||
+                        private_lease->lock_path_ != cleanup_paths.lock_path) {
+                        throw std::logic_error(
+                            "OOCRelationWriter: invalid private lease activation handoff");
+                    }
+                    cleanup_lock = private_lease->live_lock_;
+                } else {
+                    cleanup_lock = std::make_shared<ooc_cleanup_detail::BaseLock>(
+                        cleanup_paths.lock_path, cleanup_paths.private_directory.empty());
+                }
                 ooc_cleanup_detail::require_pair_namespace_reusable_locked(cleanup_paths);
 
                 // Reserve both fresh names with O_EXCL before opening either
@@ -524,6 +547,19 @@ private:
                         data_reservation->identity());
                     static_assert(std::is_nothrow_move_constructible_v<OOCCleanupOwnershipReceipt>);
                     cleanup_receipt_.emplace(std::move(cleanup_receipt));
+                    if (private_lease != nullptr) {
+                        const auto activated =
+                            OOCCleanupTransaction::activate_private_lease_for_fresh_writer(
+                                *private_lease, *cleanup_receipt_);
+                        if (!activated.completed()) {
+                            const auto error =
+                                activated.native_error
+                                    ? activated.native_error
+                                    : std::make_error_code(std::errc::protocol_error);
+                            throw std::system_error(
+                                error, "OOCRelationWriter: private lease activation failed");
+                        }
+                    }
                 } catch (...) {
                     abort_close_noexcept();
                     if (data_reservation) {
@@ -548,7 +584,7 @@ public:
     /// In particular, `true` throws before either store file is opened or
     /// truncated. Passing `false` is equivalent to fresh construction.
     explicit OOCRelationWriter(const std::string& base_path, bool legacy_resume)
-        : OOCRelationWriter(base_path, reject_legacy_resume(legacy_resume), std::nullopt,
+        : OOCRelationWriter(base_path, reject_legacy_resume(legacy_resume), std::nullopt, nullptr,
                             ConstructionToken{}) {}
 
     /// Append a single relation. Returns the index of the written relation.

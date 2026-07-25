@@ -1680,15 +1680,47 @@ The fresh-writer integration slice now enforces the following authority chain:
    `arm_ooc_cleanup()` therefore removes the owned pair and lease together;
    descriptor-only recovery still returns `false`.
 
-The current milestone deliberately does not recreate deletion authority after
-process recovery. A pending-only marker cannot authorize cleanup after its
-in-memory receipt is lost, so fresh construction fails closed until an
-independent durable ownership-token design lands. A canonical intent remains
-sufficient for cross-process transaction completion. Distributed-sieve worker
-artifacts still use their existing parent/child deletion path and require a
-separate interprocess ownership handoff. Whole-directory quarantine also
-remains deferred. An existing lease is never adopted automatically, so a
-process exit between lease creation and writer reservation, or between pair
-completion and lease removal, leaves a safe fail-closed directory that
-requires a future durable lease-marker recovery design. The external lock is
-never deleted and therefore cannot split into two cooperating lock domains.
+### Durable Private-Lease Recovery Status
+
+Private lease creation now publishes a separate versioned ownership protocol
+under the persistent external lock:
+
+1. A canonical `RESERVED` record binds a 128-bit lease generation, the frozen
+   base-path digest, parent identity, and the identity of the held lock. It can
+   roll back only the exact random staging directory derived from that
+   generation.
+2. The staging directory receives a durable internal owner record. Canonical
+   `OWNED` then binds the directory and owner-file identities and the digest of
+   `RESERVED`.
+3. A no-replace rename moves that exact directory to the fixed lease name.
+   The reservation receipt retains the same `BaseLock` across this transition,
+   both writer `O_EXCL` reservations, header validation, and cleanup-receipt
+   issuance.
+4. Only after the fresh pair is identity-validated does activation durably
+   consume `RESERVED` and release the retained lock. This closes the interval
+   in which another cooperating process could mistake a live pre-writer lease
+   for abandoned state.
+5. `OWNED` remains until teardown. Recovery may remove its exact owner marker
+   and exact empty directory, but it cannot create pair-cleanup authority.
+   Live pair leaves without a canonical pair intent, and pending-only pair
+   intent, are preserved.
+
+Every record is fixed-size and SHA-256 protected. Pending names remain
+no-authority publication state. Recovery validates platform, path, parent,
+lock, directory, generation, owner identity, and single-link regular-file
+shape before a mutation. Directory replacement, marker replacement, unknown
+children, symlinks, hardlinks, and reparse points fail closed. The durable
+teardown order is owner unlink and directory sync, exact-directory removal and
+parent sync, then `OWNED` unlink and another parent sync. Crash tests terminate
+children after every pending/canonical publication, directory rename, and
+teardown barrier and require idempotent parent-process convergence.
+
+This protocol intentionally does not turn a lease marker into pair-deletion
+authority. A process death after fresh pair creation but before activation can
+therefore leave a live pair with `RESERVED`; recovery preserves it because its
+move-only writer receipt was lost and no canonical pair intent exists. Closing
+that same-child pair-publication boundary remains a separate milestone.
+Distributed-sieve worker artifacts likewise retain their existing parent/child
+deletion path and require a separate interprocess ownership handoff.
+Whole-directory quarantine remains deferred. The external lock is never
+deleted and therefore cannot split into two cooperating lock domains.

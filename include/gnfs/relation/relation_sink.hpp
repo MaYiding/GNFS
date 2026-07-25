@@ -80,7 +80,8 @@ public:
             sink.private_lease_receipt_ = std::make_unique<OOCPrivateLeaseOwnershipReceipt>(
                 std::move(*reservation.ownership));
             sink.owns_artifacts_ = true;
-            sink.ooc_writer_ = std::make_unique<OOCRelationWriter>(sink.base_path_);
+            sink.ooc_writer_ =
+                std::make_unique<OOCRelationWriter>(sink.base_path_, *sink.private_lease_receipt_);
         } catch (...) {
             if (reservation.ownership && !reservation.ownership->spent()) {
                 (void)OOCCleanupTransaction::remove_private_lease(*reservation.ownership);
@@ -285,6 +286,15 @@ private:
             OOCCleanupResult result;
             if (ooc_writer_) {
                 result = ooc_writer_->remove_owned_artifacts_noexcept();
+            } else if (private_lease_receipt_) {
+                // Constructor failure occurs before a writer object exists,
+                // while the pre-active lease receipt still retains the
+                // external BaseLock. Reuse that held lock instead of trying
+                // to acquire it again through a path-only namespace check.
+                result = OOCCleanupTransaction::remove_private_lease(*private_lease_receipt_);
+                if (result.completed()) {
+                    private_lease_receipt_.reset();
+                }
             } else {
                 // Constructor failure before receipt issuance may leave no pair
                 // at all. Confirm the complete namespace before releasing the

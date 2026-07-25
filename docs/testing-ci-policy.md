@@ -134,7 +134,7 @@ and multi-config build trees cannot accidentally validate a stale root
 `build/` binary. This keeps CLI/schema drift in routine CTest without weakening
 the disabled stress boundary above.
 
-`test_ooc_cleanup_transaction` is split into two CTest entries.
+`test_ooc_cleanup_transaction` is split into three CTest entries.
 `OOCCleanupTransactionCore` is an `instant` ownership and state-machine
 contract covering move-only receipt consumption, repairable pending
 publication, exact finalized expectations, a production writer/reader fixture,
@@ -155,8 +155,15 @@ pair transaction share one persistent external lock, that a real
 cross-process contender reports `Busy`, and that the same base is reusable
 without replacing that lock after a completed lease removal. It also replaces
 an owned empty lease with a different live directory and verifies that the old
-identity-bound receipt rejects the ABA target. The no-argument binary runs both
+identity-bound receipt rejects the ABA target. The no-argument binary runs all
 suites, so its `scripts/test.sh` tier and timeout are `fast` and 60 seconds.
+`OOCCleanupPrivateLeaseCrash` is a `fast` self-exec suite from the same
+binary. It terminates children at each durable private-lease marker, rename,
+and teardown boundary. The broader `RelationReductionEngine` integration
+target is `fast`: it repeatedly creates and removes durable OOC leases, so its
+Debug single-run cost includes the required file and parent-directory
+barriers.
+
 Windows Release also runs a native sharing-violation retry branch; non-Windows
 execution cannot substitute for that platform evidence.
 
