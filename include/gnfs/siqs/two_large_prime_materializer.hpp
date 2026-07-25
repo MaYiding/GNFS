@@ -38,6 +38,90 @@ struct MaterializedTwoLargePrimeCycle {
     std::vector<size_t> relation_indices;
 };
 
+enum class TwoLargePrimeMaterializationStatus : uint8_t {
+    valid,
+    invalid_modulus,
+    invalid_source_catalog,
+    invalid_cycle_support,
+    invalid_source_shape,
+    size_overflow,
+    exponent_overflow,
+    odd_large_prime_degree,
+    internal_invariant_failure,
+};
+
+namespace two_large_prime_materializer_detail {
+struct TwoLargePrimeMaterializationResultFactory;
+}
+
+/// Invariant-safe result: a materialized cycle is present exactly when
+/// status() is valid.
+class TwoLargePrimeMaterializationResult {
+public:
+    TwoLargePrimeMaterializationResult(const TwoLargePrimeMaterializationResult&) = default;
+    TwoLargePrimeMaterializationResult& operator=(const TwoLargePrimeMaterializationResult& other) {
+        if (this != &other) {
+            TwoLargePrimeMaterializationResult replacement(other);
+            *this = std::move(replacement);
+        }
+        return *this;
+    }
+
+    TwoLargePrimeMaterializationResult(TwoLargePrimeMaterializationResult&& other) noexcept
+        : status_(other.status_), materialized_cycle_(std::move(other.materialized_cycle_)) {
+        other.status_ = TwoLargePrimeMaterializationStatus::internal_invariant_failure;
+        other.materialized_cycle_.reset();
+    }
+
+    TwoLargePrimeMaterializationResult&
+    operator=(TwoLargePrimeMaterializationResult&& other) noexcept {
+        if (this != &other) {
+            status_ = other.status_;
+            materialized_cycle_ = std::move(other.materialized_cycle_);
+            other.status_ = TwoLargePrimeMaterializationStatus::internal_invariant_failure;
+            other.materialized_cycle_.reset();
+        }
+        return *this;
+    }
+
+    [[nodiscard]] TwoLargePrimeMaterializationStatus status() const noexcept {
+        return status_;
+    }
+
+    [[nodiscard]] const std::optional<MaterializedTwoLargePrimeCycle>&
+    materialized_cycle() const& noexcept {
+        return materialized_cycle_;
+    }
+
+    /// Transfer a checked payload out of a temporary result.
+    ///
+    /// The consumed result is reset to internal_invariant_failure so the
+    /// payload/status invariant remains true even if the moved-from object is
+    /// observed.
+    [[nodiscard]] std::optional<MaterializedTwoLargePrimeCycle> materialized_cycle() && noexcept {
+        std::optional<MaterializedTwoLargePrimeCycle> result(std::move(materialized_cycle_));
+        materialized_cycle_.reset();
+        status_ = TwoLargePrimeMaterializationStatus::internal_invariant_failure;
+        return result;
+    }
+
+    [[nodiscard]] bool is_valid() const noexcept {
+        return status_ == TwoLargePrimeMaterializationStatus::valid &&
+               materialized_cycle_.has_value();
+    }
+
+private:
+    friend struct two_large_prime_materializer_detail::TwoLargePrimeMaterializationResultFactory;
+
+    TwoLargePrimeMaterializationResult(
+        TwoLargePrimeMaterializationStatus status,
+        std::optional<MaterializedTwoLargePrimeCycle> materialized_cycle)
+        : status_(status), materialized_cycle_(std::move(materialized_cycle)) {}
+
+    TwoLargePrimeMaterializationStatus status_;
+    std::optional<MaterializedTwoLargePrimeCycle> materialized_cycle_;
+};
+
 /// An immutable source corpus whose relation identifiers are exactly [0, size).
 ///
 /// Construction performs the only full-corpus validation pass. The private
@@ -84,40 +168,73 @@ private:
 
 namespace two_large_prime_materializer_detail {
 
-[[nodiscard]] inline std::optional<MaterializedTwoLargePrimeCycle>
-materialize_selected_two_large_prime_cycle(
+struct TwoLargePrimeMaterializationResultFactory {
+    [[nodiscard]] static TwoLargePrimeMaterializationResult
+    failure(TwoLargePrimeMaterializationStatus status) {
+        if (status == TwoLargePrimeMaterializationStatus::valid) {
+            status = TwoLargePrimeMaterializationStatus::internal_invariant_failure;
+        }
+        return TwoLargePrimeMaterializationResult(status, std::nullopt);
+    }
+
+    [[nodiscard]] static TwoLargePrimeMaterializationResult
+    success(MaterializedTwoLargePrimeCycle materialized_cycle) {
+        return TwoLargePrimeMaterializationResult(TwoLargePrimeMaterializationStatus::valid,
+                                                  std::move(materialized_cycle));
+    }
+};
+
+[[nodiscard]] inline TwoLargePrimeMaterializationResult materialize_selected_two_large_prime_cycle(
     std::span<const TwoLargePrimeCycleSource* const> selected_sources,
     std::vector<size_t> relation_indices, const core::Integer& modulus) {
-    if (!modulus.is_positive() || modulus.is_one() || selected_sources.empty() ||
-        selected_sources.size() != relation_indices.size()) {
-        return std::nullopt;
+    using Factory = TwoLargePrimeMaterializationResultFactory;
+
+    if (!modulus.is_positive() || modulus.is_one()) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::invalid_modulus);
+    }
+    if (selected_sources.empty()) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::invalid_cycle_support);
+    }
+    if (selected_sources.size() != relation_indices.size()) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::internal_invariant_failure);
+    }
+    if (selected_sources.front() == nullptr) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::internal_invariant_failure);
     }
 
     const size_t exponent_count = selected_sources.front()->factor_base_exponents.size();
-    std::vector<uint32_t> factor_base_exponents(exponent_count, 0);
+    std::vector<uint32_t> factor_base_exponents;
+    if (exponent_count > factor_base_exponents.max_size()) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::size_overflow);
+    }
+    factor_base_exponents.resize(exponent_count, 0);
+
     std::vector<uint64_t> large_prime_incidence;
     if (selected_sources.size() > large_prime_incidence.max_size() / 2) {
-        return std::nullopt;
+        return Factory::failure(TwoLargePrimeMaterializationStatus::size_overflow);
     }
     large_prime_incidence.reserve(selected_sources.size() * 2);
 
     core::Integer value_modulus(1);
     bool negative = false;
     for (const auto* source : selected_sources) {
+        if (source == nullptr) {
+            return Factory::failure(TwoLargePrimeMaterializationStatus::internal_invariant_failure);
+        }
         if (source->factor_base_exponents.size() != exponent_count) {
-            return std::nullopt;
+            return Factory::failure(TwoLargePrimeMaterializationStatus::invalid_source_shape);
         }
 
         const uint64_t lower = std::min(source->p, source->q);
         const uint64_t upper = std::max(source->p, source->q);
         if ((lower == 0 && upper < 2) || (lower != 0 && lower < 2)) {
-            return std::nullopt;
+            return Factory::failure(TwoLargePrimeMaterializationStatus::invalid_source_shape);
         }
 
         for (size_t i = 0; i < exponent_count; ++i) {
             const uint32_t addend = source->factor_base_exponents[i];
             if (addend > std::numeric_limits<uint32_t>::max() - factor_base_exponents[i]) {
-                return std::nullopt;
+                return Factory::failure(TwoLargePrimeMaterializationStatus::exponent_overflow);
             }
             factor_base_exponents[i] += addend;
         }
@@ -139,6 +256,9 @@ materialize_selected_two_large_prime_cycle(
 
     std::sort(large_prime_incidence.begin(), large_prime_incidence.end());
     std::vector<uint64_t> large_prime_square_roots;
+    if (large_prime_incidence.size() / 2 > large_prime_square_roots.max_size()) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::size_overflow);
+    }
     large_prime_square_roots.reserve(large_prime_incidence.size() / 2);
     for (size_t begin = 0; begin < large_prime_incidence.size();) {
         size_t end = begin + 1;
@@ -149,19 +269,16 @@ materialize_selected_two_large_prime_cycle(
 
         const size_t degree = end - begin;
         if ((degree & 1U) != 0) {
-            return std::nullopt;
+            return Factory::failure(TwoLargePrimeMaterializationStatus::odd_large_prime_degree);
         }
         large_prime_square_roots.insert(large_prime_square_roots.end(), degree / 2,
                                         large_prime_incidence[begin]);
         begin = end;
     }
 
-    return MaterializedTwoLargePrimeCycle{
-        std::move(value_modulus),
-        negative,
-        std::move(factor_base_exponents),
-        std::move(large_prime_square_roots),
-        std::move(relation_indices)};
+    return Factory::success(MaterializedTwoLargePrimeCycle{
+        std::move(value_modulus), negative, std::move(factor_base_exponents),
+        std::move(large_prime_square_roots), std::move(relation_indices)});
 }
 
 } // namespace two_large_prime_materializer_detail
@@ -178,17 +295,26 @@ materialize_selected_two_large_prime_cycle(
 ///
 /// Unselected sources may use different factor-base vector dimensions; only
 /// their globally unique relation identifiers are relevant to this operation.
-[[nodiscard]] inline std::optional<MaterializedTwoLargePrimeCycle>
-materialize_two_large_prime_cycle(std::span<const TwoLargePrimeCycleSource> sources,
-                                  std::span<const size_t> cycle_relation_indices,
-                                  const core::Integer& modulus) {
-    if (!modulus.is_positive() || modulus.is_one() || cycle_relation_indices.empty()) {
-        return std::nullopt;
+[[nodiscard]] inline TwoLargePrimeMaterializationResult
+materialize_two_large_prime_cycle_checked(std::span<const TwoLargePrimeCycleSource> sources,
+                                          std::span<const size_t> cycle_relation_indices,
+                                          const core::Integer& modulus) {
+    using Factory = two_large_prime_materializer_detail::TwoLargePrimeMaterializationResultFactory;
+
+    if (!modulus.is_positive() || modulus.is_one()) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::invalid_modulus);
+    }
+    if (cycle_relation_indices.empty()) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::invalid_cycle_support);
     }
 
     // Sort source references by identifier so lookup and all later processing
     // are independent of source and cycle input order.
-    std::vector<size_t> source_order(sources.size());
+    std::vector<size_t> source_order;
+    if (sources.size() > source_order.max_size()) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::size_overflow);
+    }
+    source_order.resize(sources.size());
     std::iota(source_order.begin(), source_order.end(), size_t{0});
     std::sort(source_order.begin(), source_order.end(), [&sources](size_t lhs, size_t rhs) {
         return sources[lhs].relation_index < sources[rhs].relation_index;
@@ -196,19 +322,25 @@ materialize_two_large_prime_cycle(std::span<const TwoLargePrimeCycleSource> sour
     for (size_t i = 1; i < source_order.size(); ++i) {
         if (sources[source_order[i - 1]].relation_index ==
             sources[source_order[i]].relation_index) {
-            return std::nullopt;
+            return Factory::failure(TwoLargePrimeMaterializationStatus::invalid_source_catalog);
         }
     }
 
-    std::vector<size_t> relation_indices(cycle_relation_indices.begin(),
-                                         cycle_relation_indices.end());
+    std::vector<size_t> relation_indices;
+    if (cycle_relation_indices.size() > relation_indices.max_size()) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::size_overflow);
+    }
+    relation_indices.assign(cycle_relation_indices.begin(), cycle_relation_indices.end());
     std::sort(relation_indices.begin(), relation_indices.end());
     if (std::adjacent_find(relation_indices.begin(), relation_indices.end()) !=
         relation_indices.end()) {
-        return std::nullopt;
+        return Factory::failure(TwoLargePrimeMaterializationStatus::invalid_cycle_support);
     }
 
     std::vector<const TwoLargePrimeCycleSource*> selected_sources;
+    if (relation_indices.size() > selected_sources.max_size()) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::size_overflow);
+    }
     selected_sources.reserve(relation_indices.size());
     for (const size_t relation_index : relation_indices) {
         const auto position = std::lower_bound(
@@ -217,7 +349,7 @@ materialize_two_large_prime_cycle(std::span<const TwoLargePrimeCycleSource> sour
                 return sources[source_index].relation_index < target_relation_index;
             });
         if (position == source_order.end() || sources[*position].relation_index != relation_index) {
-            return std::nullopt;
+            return Factory::failure(TwoLargePrimeMaterializationStatus::invalid_source_catalog);
         }
         selected_sources.push_back(&sources[*position]);
     }
@@ -226,33 +358,59 @@ materialize_two_large_prime_cycle(std::span<const TwoLargePrimeCycleSource> sour
         selected_sources, std::move(relation_indices), modulus);
 }
 
+/// Compatibility wrapper for callers that need only success/failure.
+[[nodiscard]] inline std::optional<MaterializedTwoLargePrimeCycle>
+materialize_two_large_prime_cycle(std::span<const TwoLargePrimeCycleSource> sources,
+                                  std::span<const size_t> cycle_relation_indices,
+                                  const core::Integer& modulus) {
+    auto result =
+        materialize_two_large_prime_cycle_checked(sources, cycle_relation_indices, modulus);
+    return std::move(result).materialized_cycle();
+}
+
 /// Materialize one already-sorted graph cycle from a validated indexed source
 /// corpus. Lookup is direct by relation_index and visits only the selected
 /// cycle sources. The cycle must be strictly increasing; unsorted, duplicate,
 /// out-of-range, or internally inconsistent source identities fail closed.
-[[nodiscard]] inline std::optional<MaterializedTwoLargePrimeCycle>
-materialize_two_large_prime_cycle(const IndexedTwoLargePrimeCycleSources& sources,
-                                  std::span<const size_t> sorted_cycle_relation_indices,
-                                  const core::Integer& modulus) {
-    if (!modulus.is_positive() || modulus.is_one() || sorted_cycle_relation_indices.empty()) {
-        return std::nullopt;
+[[nodiscard]] inline TwoLargePrimeMaterializationResult
+materialize_two_large_prime_cycle_checked(const IndexedTwoLargePrimeCycleSources& sources,
+                                          std::span<const size_t> sorted_cycle_relation_indices,
+                                          const core::Integer& modulus) {
+    using Factory = two_large_prime_materializer_detail::TwoLargePrimeMaterializationResultFactory;
+
+    if (!modulus.is_positive() || modulus.is_one()) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::invalid_modulus);
+    }
+    if (sorted_cycle_relation_indices.empty()) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::invalid_cycle_support);
     }
 
     std::vector<const TwoLargePrimeCycleSource*> selected_sources;
+    if (sorted_cycle_relation_indices.size() > selected_sources.max_size()) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::size_overflow);
+    }
     selected_sources.reserve(sorted_cycle_relation_indices.size());
     std::vector<size_t> relation_indices;
+    if (sorted_cycle_relation_indices.size() > relation_indices.max_size()) {
+        return Factory::failure(TwoLargePrimeMaterializationStatus::size_overflow);
+    }
     relation_indices.reserve(sorted_cycle_relation_indices.size());
     size_t previous_relation_index = 0;
     for (size_t cycle_position = 0; cycle_position < sorted_cycle_relation_indices.size();
          ++cycle_position) {
         const size_t relation_index = sorted_cycle_relation_indices[cycle_position];
-        if ((cycle_position != 0 && relation_index <= previous_relation_index) ||
-            relation_index >= sources.size()) {
-            return std::nullopt;
+        if (cycle_position != 0 && relation_index <= previous_relation_index) {
+            return Factory::failure(TwoLargePrimeMaterializationStatus::invalid_cycle_support);
+        }
+        if (relation_index >= sources.size()) {
+            return Factory::failure(TwoLargePrimeMaterializationStatus::invalid_source_catalog);
         }
         const TwoLargePrimeCycleSource* source = sources.source_at(relation_index);
-        if (source == nullptr || source->relation_index != relation_index) {
-            return std::nullopt;
+        if (source == nullptr) {
+            return Factory::failure(TwoLargePrimeMaterializationStatus::invalid_source_catalog);
+        }
+        if (source->relation_index != relation_index) {
+            return Factory::failure(TwoLargePrimeMaterializationStatus::internal_invariant_failure);
         }
         selected_sources.push_back(source);
         relation_indices.push_back(relation_index);
@@ -261,6 +419,16 @@ materialize_two_large_prime_cycle(const IndexedTwoLargePrimeCycleSources& source
 
     return two_large_prime_materializer_detail::materialize_selected_two_large_prime_cycle(
         selected_sources, std::move(relation_indices), modulus);
+}
+
+/// Compatibility wrapper for callers that need only success/failure.
+[[nodiscard]] inline std::optional<MaterializedTwoLargePrimeCycle>
+materialize_two_large_prime_cycle(const IndexedTwoLargePrimeCycleSources& sources,
+                                  std::span<const size_t> sorted_cycle_relation_indices,
+                                  const core::Integer& modulus) {
+    auto result =
+        materialize_two_large_prime_cycle_checked(sources, sorted_cycle_relation_indices, modulus);
+    return std::move(result).materialized_cycle();
 }
 
 } // namespace gnfs::siqs

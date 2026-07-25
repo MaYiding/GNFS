@@ -19,8 +19,11 @@ namespace {
 using gnfs::core::Integer;
 using gnfs::siqs::IndexedTwoLargePrimeCycleSources;
 using gnfs::siqs::materialize_two_large_prime_cycle;
+using gnfs::siqs::materialize_two_large_prime_cycle_checked;
 using gnfs::siqs::MaterializedTwoLargePrimeCycle;
 using gnfs::siqs::TwoLargePrimeCycleSource;
+using gnfs::siqs::TwoLargePrimeMaterializationResult;
+using gnfs::siqs::TwoLargePrimeMaterializationStatus;
 
 static_assert(!std::is_default_constructible_v<IndexedTwoLargePrimeCycleSources>);
 static_assert(!std::is_copy_constructible_v<IndexedTwoLargePrimeCycleSources>);
@@ -29,46 +32,38 @@ static_assert(!std::is_constructible_v<IndexedTwoLargePrimeCycleSources,
                                        std::span<const TwoLargePrimeCycleSource>>);
 static_assert(!std::is_constructible_v<IndexedTwoLargePrimeCycleSources,
                                        std::vector<TwoLargePrimeCycleSource>>);
+static_assert(!std::is_default_constructible_v<TwoLargePrimeMaterializationResult>);
+static_assert(std::is_copy_constructible_v<TwoLargePrimeMaterializationResult>);
+static_assert(std::is_nothrow_move_constructible_v<TwoLargePrimeMaterializationResult>);
 
 int checks_passed = 0;
 int checks_failed = 0;
 
-#define CHECK(condition)                                                        \
-    do {                                                                        \
-        if (condition) {                                                        \
-            ++checks_passed;                                                    \
-        } else {                                                                \
-            ++checks_failed;                                                    \
-            std::cerr << "FAIL: " #condition " at " << __FILE__ << ':'       \
-                      << __LINE__ << '\n';                                      \
-        }                                                                       \
+#define CHECK(condition)                                                                           \
+    do {                                                                                           \
+        if (condition) {                                                                           \
+            ++checks_passed;                                                                       \
+        } else {                                                                                   \
+            ++checks_failed;                                                                       \
+            std::cerr << "FAIL: " #condition " at " << __FILE__ << ':' << __LINE__ << '\n';        \
+        }                                                                                          \
     } while (false)
 
-[[nodiscard]] TwoLargePrimeCycleSource make_source(
-        size_t relation_index,
-        int64_t value,
-        bool negative,
-        std::vector<uint32_t> factor_base_exponents,
-        uint64_t p,
-        uint64_t q) {
+[[nodiscard]] TwoLargePrimeCycleSource make_source(size_t relation_index, int64_t value,
+                                                   bool negative,
+                                                   std::vector<uint32_t> factor_base_exponents,
+                                                   uint64_t p, uint64_t q) {
     return TwoLargePrimeCycleSource{
-        relation_index,
-        Integer(value),
-        negative,
-        std::move(factor_base_exponents),
-        p,
-        q,
+        relation_index, Integer(value), negative, std::move(factor_base_exponents), p, q,
     };
 }
 
-[[nodiscard]] std::optional<MaterializedTwoLargePrimeCycle> materialize(
-        const std::vector<TwoLargePrimeCycleSource>& sources,
-        const std::vector<size_t>& cycle_relation_indices,
-        const Integer& modulus) {
+[[nodiscard]] std::optional<MaterializedTwoLargePrimeCycle>
+materialize(const std::vector<TwoLargePrimeCycleSource>& sources,
+            const std::vector<size_t>& cycle_relation_indices, const Integer& modulus) {
     return materialize_two_large_prime_cycle(
         std::span<const TwoLargePrimeCycleSource>(sources.data(), sources.size()),
-        std::span<const size_t>(cycle_relation_indices.data(),
-                                cycle_relation_indices.size()),
+        std::span<const size_t>(cycle_relation_indices.data(), cycle_relation_indices.size()),
         modulus);
 }
 
@@ -83,13 +78,39 @@ materialize_indexed(const IndexedTwoLargePrimeCycleSources& sources,
         modulus);
 }
 
-void check_materialized(
-        const std::optional<MaterializedTwoLargePrimeCycle>& result,
-        const Integer& value_modulus,
-        bool negative,
-        const std::vector<uint32_t>& factor_base_exponents,
-        const std::vector<uint64_t>& large_prime_square_roots,
-        const std::vector<size_t>& relation_indices) {
+[[nodiscard]] TwoLargePrimeMaterializationResult
+materialize_checked(const std::vector<TwoLargePrimeCycleSource>& sources,
+                    const std::vector<size_t>& cycle_relation_indices, const Integer& modulus) {
+    return materialize_two_large_prime_cycle_checked(
+        std::span<const TwoLargePrimeCycleSource>(sources.data(), sources.size()),
+        std::span<const size_t>(cycle_relation_indices.data(), cycle_relation_indices.size()),
+        modulus);
+}
+
+[[nodiscard]] TwoLargePrimeMaterializationResult
+materialize_indexed_checked(const IndexedTwoLargePrimeCycleSources& sources,
+                            const std::vector<size_t>& sorted_cycle_relation_indices,
+                            const Integer& modulus) {
+    return materialize_two_large_prime_cycle_checked(
+        sources,
+        std::span<const size_t>(sorted_cycle_relation_indices.data(),
+                                sorted_cycle_relation_indices.size()),
+        modulus);
+}
+
+void check_status(const TwoLargePrimeMaterializationResult& result,
+                  TwoLargePrimeMaterializationStatus expected) {
+    CHECK(result.status() == expected);
+    CHECK(result.materialized_cycle().has_value() ==
+          (expected == TwoLargePrimeMaterializationStatus::valid));
+    CHECK(result.is_valid() == (expected == TwoLargePrimeMaterializationStatus::valid));
+}
+
+void check_materialized(const std::optional<MaterializedTwoLargePrimeCycle>& result,
+                        const Integer& value_modulus, bool negative,
+                        const std::vector<uint32_t>& factor_base_exponents,
+                        const std::vector<uint64_t>& large_prime_square_roots,
+                        const std::vector<size_t>& relation_indices) {
     CHECK(result.has_value());
     if (!result) {
         return;
@@ -102,11 +123,9 @@ void check_materialized(
     CHECK(result->relation_indices == relation_indices);
 }
 
-[[nodiscard]] bool same_materialized(
-        const MaterializedTwoLargePrimeCycle& lhs,
-        const MaterializedTwoLargePrimeCycle& rhs) {
-    return lhs.value_modulus == rhs.value_modulus &&
-           lhs.negative == rhs.negative &&
+[[nodiscard]] bool same_materialized(const MaterializedTwoLargePrimeCycle& lhs,
+                                     const MaterializedTwoLargePrimeCycle& rhs) {
+    return lhs.value_modulus == rhs.value_modulus && lhs.negative == rhs.negative &&
            lhs.factor_base_exponents == rhs.factor_base_exponents &&
            lhs.large_prime_square_roots == rhs.large_prime_square_roots &&
            lhs.relation_indices == rhs.relation_indices;
@@ -140,12 +159,7 @@ void test_parallel_one_lp_materialization() {
     const std::vector<size_t> cycle{10, 11};
     const auto result = materialize(sources, cycle, Integer(97));
 
-    check_materialized(result,
-                       Integer(18),
-                       true,
-                       {5, 7, 9},
-                       {101},
-                       {10, 11});
+    check_materialized(result, Integer(18), true, {5, 7, 9}, {101}, {10, 11});
 }
 
 void test_negative_values_use_canonical_modulus() {
@@ -156,12 +170,7 @@ void test_negative_values_use_canonical_modulus() {
     const std::vector<size_t> cycle{10, 11};
     const auto result = materialize(sources, cycle, Integer(97));
 
-    check_materialized(result,
-                       Integer(79),
-                       false,
-                       {5, 7, 9},
-                       {101},
-                       {10, 11});
+    check_materialized(result, Integer(79), false, {5, 7, 9}, {101}, {10, 11});
 }
 
 void test_square_self_loop_materialization() {
@@ -171,12 +180,7 @@ void test_square_self_loop_materialization() {
     const std::vector<size_t> cycle{20};
     const auto result = materialize(sources, cycle, Integer(97));
 
-    check_materialized(result,
-                       Integer(23),
-                       true,
-                       {7, 8, 9},
-                       {103},
-                       {20});
+    check_materialized(result, Integer(23), true, {7, 8, 9}, {103}, {20});
 }
 
 void test_triangle_and_wide_exponent_sum() {
@@ -184,12 +188,7 @@ void test_triangle_and_wide_exponent_sum() {
     const std::vector<size_t> cycle{30, 31, 32};
     const auto result = materialize(sources, cycle, Integer(97));
 
-    check_materialized(result,
-                       Integer(30),
-                       false,
-                       {300, 6},
-                       {101, 103, 107},
-                       {30, 31, 32});
+    check_materialized(result, Integer(30), false, {300, 6}, {101, 103, 107}, {30, 31, 32});
 }
 
 void test_degree_four_vertex_repeats_square_root() {
@@ -201,12 +200,7 @@ void test_degree_four_vertex_repeats_square_root() {
 
     const std::vector<size_t> cycle{40, 41, 42, 43};
     const auto result = materialize(sources, cycle, Integer(97));
-    check_materialized(result,
-                       Integer(16),
-                       false,
-                       {10, 4},
-                       {101, 101, 103, 107},
-                       {40, 41, 42, 43});
+    check_materialized(result, Integer(16), false, {10, 4}, {101, 101, 103, 107}, {40, 41, 42, 43});
 }
 
 void test_endpoint_and_cycle_order_are_deterministic() {
@@ -220,8 +214,7 @@ void test_endpoint_and_cycle_order_are_deterministic() {
         std::swap(source.p, source.q);
     }
     const std::vector<size_t> shuffled_cycle{32, 30, 31};
-    const auto reordered = materialize(
-        reversed_sources, shuffled_cycle, Integer(97));
+    const auto reordered = materialize(reversed_sources, shuffled_cycle, Integer(97));
 
     CHECK(baseline.has_value());
     CHECK(reordered.has_value());
@@ -303,17 +296,116 @@ void test_shape_parity_and_overflow_fail_closed() {
 
     {
         std::vector<TwoLargePrimeCycleSource> sources;
-        sources.push_back(make_source(
-            93,
-            2,
-            false,
-            {std::numeric_limits<uint32_t>::max()},
-            0,
-            127));
+        sources.push_back(
+            make_source(93, 2, false, {std::numeric_limits<uint32_t>::max()}, 0, 127));
         sources.push_back(make_source(94, 3, false, {1}, 0, 127));
         const std::vector<size_t> cycle{93, 94};
         CHECK(!materialize(sources, cycle, Integer(97)).has_value());
     }
+}
+
+void test_checked_statuses_are_specific_and_invariant_safe() {
+    {
+        const auto sources = one_lp_parallel_sources();
+        const std::vector<size_t> cycle{10, 11};
+        auto valid = materialize_checked(sources, cycle, Integer(97));
+        check_status(valid, TwoLargePrimeMaterializationStatus::valid);
+
+        auto copied = valid;
+        check_status(copied, TwoLargePrimeMaterializationStatus::valid);
+        auto moved = std::move(copied);
+        check_status(moved, TwoLargePrimeMaterializationStatus::valid);
+        check_status(copied, TwoLargePrimeMaterializationStatus::internal_invariant_failure);
+
+        auto assigned = materialize_checked(sources, cycle, Integer(1));
+        check_status(assigned, TwoLargePrimeMaterializationStatus::invalid_modulus);
+        assigned = valid;
+        check_status(assigned, TwoLargePrimeMaterializationStatus::valid);
+
+        const auto extracted = std::move(moved).materialized_cycle();
+        CHECK(extracted.has_value());
+        check_status(moved, TwoLargePrimeMaterializationStatus::internal_invariant_failure);
+    }
+
+    {
+        const auto sources = one_lp_parallel_sources();
+        const std::vector<size_t> valid_cycle{10, 11};
+        check_status(materialize_checked(sources, valid_cycle, Integer(1)),
+                     TwoLargePrimeMaterializationStatus::invalid_modulus);
+        check_status(materialize_checked(sources, {}, Integer(97)),
+                     TwoLargePrimeMaterializationStatus::invalid_cycle_support);
+        check_status(materialize_checked(sources, {10, 10}, Integer(97)),
+                     TwoLargePrimeMaterializationStatus::invalid_cycle_support);
+        check_status(materialize_checked(sources, {10, 999}, Integer(97)),
+                     TwoLargePrimeMaterializationStatus::invalid_source_catalog);
+    }
+
+    {
+        auto sources = one_lp_parallel_sources();
+        sources.push_back(make_source(99, 7, false, {0}, 109, 113));
+        sources.push_back(make_source(99, 11, false, {0}, 127, 131));
+        check_status(materialize_checked(sources, {10, 11}, Integer(97)),
+                     TwoLargePrimeMaterializationStatus::invalid_source_catalog);
+    }
+
+    {
+        std::vector<TwoLargePrimeCycleSource> sources;
+        sources.push_back(make_source(0, 2, false, {1, 2}, 0, 127));
+        sources.push_back(make_source(1, 3, false, {3}, 0, 127));
+        check_status(materialize_checked(sources, {0, 1}, Integer(97)),
+                     TwoLargePrimeMaterializationStatus::invalid_source_shape);
+    }
+
+    {
+        const std::vector<TwoLargePrimeCycleSource> sources{
+            make_source(0, 2, false, {1}, 1, 109),
+            make_source(1, 3, false, {1}, 109, 1),
+        };
+        check_status(materialize_checked(sources, {0, 1}, Integer(97)),
+                     TwoLargePrimeMaterializationStatus::invalid_source_shape);
+    }
+
+    {
+        const std::vector<TwoLargePrimeCycleSource> sources{
+            make_source(0, 2, false, {std::numeric_limits<uint32_t>::max()}, 0, 127),
+            make_source(1, 3, false, {1}, 0, 127),
+        };
+        check_status(materialize_checked(sources, {0, 1}, Integer(97)),
+                     TwoLargePrimeMaterializationStatus::exponent_overflow);
+    }
+
+    {
+        const std::vector<TwoLargePrimeCycleSource> sources{
+            make_source(0, 2, false, {1}, 0, 127),
+        };
+        check_status(materialize_checked(sources, {0}, Integer(97)),
+                     TwoLargePrimeMaterializationStatus::odd_large_prime_degree);
+    }
+
+    {
+        auto indexed_sources =
+            IndexedTwoLargePrimeCycleSources::try_create(contiguous_triangle_sources());
+        CHECK(indexed_sources.has_value());
+        if (indexed_sources) {
+            check_status(materialize_indexed_checked(*indexed_sources, {}, Integer(97)),
+                         TwoLargePrimeMaterializationStatus::invalid_cycle_support);
+            check_status(materialize_indexed_checked(*indexed_sources, {1, 0}, Integer(97)),
+                         TwoLargePrimeMaterializationStatus::invalid_cycle_support);
+            check_status(materialize_indexed_checked(*indexed_sources, {0, 0}, Integer(97)),
+                         TwoLargePrimeMaterializationStatus::invalid_cycle_support);
+            check_status(materialize_indexed_checked(*indexed_sources, {0, 3}, Integer(97)),
+                         TwoLargePrimeMaterializationStatus::invalid_source_catalog);
+            check_status(materialize_indexed_checked(*indexed_sources, {0, 1, 2}, Integer(0)),
+                         TwoLargePrimeMaterializationStatus::invalid_modulus);
+        }
+    }
+
+    // The address-space size failure cannot be constructed portably, but its
+    // public result invariant remains independently testable.
+    const auto capacity_failure =
+        gnfs::siqs::two_large_prime_materializer_detail::TwoLargePrimeMaterializationResultFactory::
+            failure(TwoLargePrimeMaterializationStatus::size_overflow);
+    check_status(capacity_failure, TwoLargePrimeMaterializationStatus::size_overflow);
 }
 
 void test_unselected_exponent_shape_is_irrelevant() {
@@ -324,12 +416,7 @@ void test_unselected_exponent_shape_is_irrelevant() {
     const std::vector<size_t> cycle{11, 10};
     const auto result = materialize(sources, cycle, Integer(97));
 
-    check_materialized(result,
-                       Integer(18),
-                       true,
-                       {5, 7, 9},
-                       {101},
-                       {10, 11});
+    check_materialized(result, Integer(18), true, {5, 7, 9}, {101}, {10, 11});
 }
 
 void test_indexed_and_generic_materialization_match_exactly() {
@@ -503,6 +590,7 @@ int main() {
     test_invalid_modulus_and_cycle_identifiers_fail_closed();
     test_duplicate_sources_and_invalid_endpoints_fail_closed();
     test_shape_parity_and_overflow_fail_closed();
+    test_checked_statuses_are_specific_and_invariant_safe();
     test_unselected_exponent_shape_is_irrelevant();
     test_indexed_and_generic_materialization_match_exactly();
     test_indexed_corpus_owns_and_validates_source_storage();
@@ -511,7 +599,6 @@ int main() {
     test_indexed_selected_source_validation_matches_generic();
     test_large_indexed_corpus_reuses_one_corpus_for_small_cycles();
 
-    std::cout << checks_passed << " checks passed, " << checks_failed
-              << " checks failed\n";
+    std::cout << checks_passed << " checks passed, " << checks_failed << " checks failed\n";
     return checks_failed == 0 ? 0 : 1;
 }

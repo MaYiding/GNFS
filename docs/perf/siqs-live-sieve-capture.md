@@ -191,7 +191,7 @@ sequence:
 ```text
 prepare_two_large_prime_corpus
 build_two_large_prime_cycle_basis
-materialize_two_large_prime_cycle
+materialize_two_large_prime_cycle_checked
 assemble_siqs_shadow_rows
 solve_siqs_shadow_matrix (only when its existing resource gates admit the shape)
 verify_siqs_post_merge_dependency
@@ -413,6 +413,14 @@ Across one, two, and four workers, all non-informational configuration, count,
 stop-reason, graph, assembly, and fingerprint fields must match. Only the
 requested, resolved, and observed worker counts plus wall time and peak RSS may
 differ; all five are separately validated.
+
+Cycle materialization has a typed, fail-closed boundary. Size or exponent
+overflow terminates assembly as `size_overflow`. Invalid source catalogs,
+cycle support, source shape, odd large-prime degree, or another materializer
+invariant failure after the strict adapter and graph terminates assembly as
+`internal_invariant_failure`. Workers write only their fixed cycle slots, and
+the joined outcomes are reduced in cycle order. Only a later exact
+row-identity mismatch contributes `rejected_cycle_rows`.
 
 ## Zero-Cycle and Promotion Rules
 

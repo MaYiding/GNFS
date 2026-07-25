@@ -42,6 +42,11 @@ using gnfs::siqs::SIQSShadowFingerprint;
 using gnfs::siqs::SIQSShadowRow;
 using gnfs::siqs::SIQSShadowRowOrigin;
 using gnfs::siqs::SIQSSourceId;
+using gnfs::siqs::TwoLargePrimeMaterializationStatus;
+using gnfs::siqs::shadow_assembly_detail::cycle_slot_status_for_materialization;
+using gnfs::siqs::shadow_assembly_detail::CycleSlot;
+using gnfs::siqs::shadow_assembly_detail::CycleSlotStatus;
+using gnfs::siqs::shadow_assembly_detail::reduce_cycle_slot_statuses;
 
 int checks_passed = 0;
 int checks_failed = 0;
@@ -368,6 +373,72 @@ void test_adapter_graph_cycles_match_generic_and_indexed_materializers() {
     }
 }
 
+void test_materialization_failures_map_fail_closed() {
+    CHECK(cycle_slot_status_for_materialization(TwoLargePrimeMaterializationStatus::valid) ==
+          CycleSlotStatus::valid);
+    CHECK(cycle_slot_status_for_materialization(
+              TwoLargePrimeMaterializationStatus::size_overflow) == CycleSlotStatus::size_overflow);
+    CHECK(cycle_slot_status_for_materialization(
+              TwoLargePrimeMaterializationStatus::exponent_overflow) ==
+          CycleSlotStatus::size_overflow);
+
+    for (const auto status : {
+             TwoLargePrimeMaterializationStatus::invalid_modulus,
+             TwoLargePrimeMaterializationStatus::invalid_source_catalog,
+             TwoLargePrimeMaterializationStatus::invalid_cycle_support,
+             TwoLargePrimeMaterializationStatus::invalid_source_shape,
+             TwoLargePrimeMaterializationStatus::odd_large_prime_degree,
+             TwoLargePrimeMaterializationStatus::internal_invariant_failure,
+         }) {
+        CHECK(cycle_slot_status_for_materialization(status) ==
+              CycleSlotStatus::internal_invariant_failure);
+    }
+
+    CHECK(reduce_cycle_slot_statuses(std::span<const CycleSlot>{}) ==
+          SIQSShadowAssemblyStatus::valid);
+
+    const std::vector<CycleSlot> rejection_only{
+        {CycleSlotStatus::row_identity_rejected, std::nullopt},
+    };
+    CHECK(reduce_cycle_slot_statuses(rejection_only) == SIQSShadowAssemblyStatus::valid);
+
+    const std::vector<CycleSlot> invalid_valid_slot{
+        {CycleSlotStatus::valid, std::nullopt},
+    };
+    CHECK(reduce_cycle_slot_statuses(invalid_valid_slot) ==
+          SIQSShadowAssemblyStatus::internal_invariant_failure);
+
+    const std::vector<CycleSlot> size_before_resource{
+        {CycleSlotStatus::row_identity_rejected, std::nullopt},
+        {CycleSlotStatus::size_overflow, std::nullopt},
+        {CycleSlotStatus::resource_exhausted, std::nullopt},
+    };
+    CHECK(reduce_cycle_slot_statuses(size_before_resource) ==
+          SIQSShadowAssemblyStatus::size_overflow);
+
+    const std::vector<CycleSlot> resource_before_size{
+        {CycleSlotStatus::row_identity_rejected, std::nullopt},
+        {CycleSlotStatus::resource_exhausted, std::nullopt},
+        {CycleSlotStatus::size_overflow, std::nullopt},
+    };
+    CHECK(reduce_cycle_slot_statuses(resource_before_size) ==
+          SIQSShadowAssemblyStatus::resource_exhausted);
+
+    const std::vector<CycleSlot> terminal_before_pending{
+        {CycleSlotStatus::size_overflow, std::nullopt},
+        {CycleSlotStatus::pending, std::nullopt},
+    };
+    CHECK(reduce_cycle_slot_statuses(terminal_before_pending) ==
+          SIQSShadowAssemblyStatus::size_overflow);
+
+    const std::vector<CycleSlot> pending_before_terminal{
+        {CycleSlotStatus::pending, std::nullopt},
+        {CycleSlotStatus::exception_failure, std::nullopt},
+    };
+    CHECK(reduce_cycle_slot_statuses(pending_before_terminal) ==
+          SIQSShadowAssemblyStatus::internal_invariant_failure);
+}
+
 void test_invalid_configuration_and_result_moves() {
     const auto corpus = make_main_corpus();
     const SIQSShadowAssemblyOptions options{3, 1};
@@ -433,12 +504,12 @@ void test_rejection_stats_remain_partitioned() {
     relations.push_back(make_relation(3, true, {0, 252, 1, 0}, 29, 0));
     relations.push_back(make_relation(31, false, {0, 253, 1, 1}, 29, 0));
 
-    const auto result = assemble(relations, {3, 2});
-    check_result(result, SIQSShadowAssemblyStatus::valid);
-    if (!result.assembly()) {
+    const auto baseline = assemble(relations, {3, 1});
+    check_result(baseline, SIQSShadowAssemblyStatus::valid);
+    if (!baseline.assembly()) {
         return;
     }
-    const auto& stats = result.assembly()->stats;
+    const auto& stats = baseline.assembly()->stats;
     CHECK(stats.input_relations == 4);
     CHECK(stats.encoded_full_relations == 2);
     CHECK(stats.valid_full_relations == 1);
@@ -463,6 +534,41 @@ void test_rejection_stats_remain_partitioned() {
           stats.encoded_full_relations);
     CHECK(stats.valid_cycle_rows + stats.rejected_cycle_rows == stats.graph_cycles);
     CHECK(stats.selected_full_rows + stats.selected_cycle_rows == stats.selected_rows);
+
+    for (const uint32_t workers : {2U, 4U}) {
+        const auto candidate = assemble(relations, {3, workers});
+        check_result(candidate, SIQSShadowAssemblyStatus::valid);
+        if (candidate.assembly()) {
+            CHECK(same_assembly(*baseline.assembly(), *candidate.assembly()));
+        }
+    }
+}
+
+void test_parallel_rejection_slots_are_deterministic() {
+    auto relations = make_main_corpus();
+    // Preserve the duplicate relation while invalidating only the 1LP cycle's
+    // exact arithmetic identity. The triangle and self-loop remain valid, so
+    // requested worker counts 2 and 4 resolve to real parallel execution over
+    // three independent cycle slots.
+    relations[8].value = Integer(3);
+    relations[9].value = Integer(3);
+
+    const auto baseline = assemble(relations, {3, 1});
+    check_result(baseline, SIQSShadowAssemblyStatus::valid);
+    if (!baseline.assembly()) {
+        return;
+    }
+    CHECK(baseline.assembly()->stats.graph_cycles == 3);
+    CHECK(baseline.assembly()->stats.valid_cycle_rows == 2);
+    CHECK(baseline.assembly()->stats.rejected_cycle_rows == 1);
+
+    for (const uint32_t workers : {2U, 4U}) {
+        const auto candidate = assemble(relations, {3, workers});
+        check_result(candidate, SIQSShadowAssemblyStatus::valid);
+        if (candidate.assembly()) {
+            CHECK(same_assembly(*baseline.assembly(), *candidate.assembly()));
+        }
+    }
 }
 
 void test_fingerprint_layers() {
@@ -615,8 +721,10 @@ int main() {
     test_catalog_provenance_dedup_and_trim();
     test_permutation_split_order_and_worker_determinism();
     test_adapter_graph_cycles_match_generic_and_indexed_materializers();
+    test_materialization_failures_map_fail_closed();
     test_invalid_configuration_and_result_moves();
     test_rejection_stats_remain_partitioned();
+    test_parallel_rejection_slots_are_deterministic();
     test_fingerprint_layers();
     test_independent_golden_fingerprints();
     test_empty_assembly_is_valid_and_fingerprinted();

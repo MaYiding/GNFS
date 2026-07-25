@@ -9,7 +9,6 @@
 #include <gnfs/siqs/two_large_prime_materializer.hpp>
 
 #include <algorithm>
-#include <atomic>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -529,10 +528,72 @@ fingerprint_selected_rows(const SIQSShadowFingerprint& source_catalog,
     return hash.finish();
 }
 
+enum class CycleSlotStatus : uint8_t {
+    pending,
+    valid,
+    row_identity_rejected,
+    size_overflow,
+    internal_invariant_failure,
+    resource_exhausted,
+    exception_failure,
+};
+
+[[nodiscard]] inline constexpr CycleSlotStatus
+cycle_slot_status_for_materialization(TwoLargePrimeMaterializationStatus status) noexcept {
+    switch (status) {
+    case TwoLargePrimeMaterializationStatus::valid:
+        return CycleSlotStatus::valid;
+    case TwoLargePrimeMaterializationStatus::size_overflow:
+    case TwoLargePrimeMaterializationStatus::exponent_overflow:
+        return CycleSlotStatus::size_overflow;
+    case TwoLargePrimeMaterializationStatus::invalid_modulus:
+    case TwoLargePrimeMaterializationStatus::invalid_source_catalog:
+    case TwoLargePrimeMaterializationStatus::invalid_cycle_support:
+    case TwoLargePrimeMaterializationStatus::invalid_source_shape:
+    case TwoLargePrimeMaterializationStatus::odd_large_prime_degree:
+    case TwoLargePrimeMaterializationStatus::internal_invariant_failure:
+        return CycleSlotStatus::internal_invariant_failure;
+    }
+    return CycleSlotStatus::internal_invariant_failure;
+}
+
 struct CycleSlot {
-    bool rejected = false;
+    CycleSlotStatus status = CycleSlotStatus::pending;
     std::optional<SIQSShadowRow> row;
 };
+
+/// Reduce joined worker slots in canonical cycle order.
+///
+/// A pending slot is an invariant failure unless an earlier terminal slot has
+/// already selected the result. This permits a worker to stop after its first
+/// terminal failure without making thread scheduling part of the outcome.
+[[nodiscard]] inline SIQSShadowAssemblyStatus
+reduce_cycle_slot_statuses(std::span<const CycleSlot> slots) noexcept {
+    for (const CycleSlot& slot : slots) {
+        switch (slot.status) {
+        case CycleSlotStatus::valid:
+            if (!slot.row) {
+                return SIQSShadowAssemblyStatus::internal_invariant_failure;
+            }
+            break;
+        case CycleSlotStatus::row_identity_rejected:
+            if (slot.row) {
+                return SIQSShadowAssemblyStatus::internal_invariant_failure;
+            }
+            break;
+        case CycleSlotStatus::size_overflow:
+            return SIQSShadowAssemblyStatus::size_overflow;
+        case CycleSlotStatus::resource_exhausted:
+            return SIQSShadowAssemblyStatus::resource_exhausted;
+        case CycleSlotStatus::exception_failure:
+            return SIQSShadowAssemblyStatus::exception_failure;
+        case CycleSlotStatus::pending:
+        case CycleSlotStatus::internal_invariant_failure:
+            return SIQSShadowAssemblyStatus::internal_invariant_failure;
+        }
+    }
+    return SIQSShadowAssemblyStatus::valid;
+}
 
 [[nodiscard]] inline bool stats_are_consistent(const SIQSShadowAssemblyStats& stats) noexcept {
     size_t sum = 0;
@@ -742,24 +803,21 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
     stats.graph_cycles = basis->cycles.size();
 
     std::vector<CycleSlot> cycle_slots(basis->cycles.size());
-    std::atomic<bool> worker_resource_exhausted{false};
-    std::atomic<bool> worker_exception{false};
-    std::atomic<bool> internal_failure{false};
     const auto materialize_worker = [&](size_t begin_cycle, size_t end_cycle) noexcept {
-        try {
-            for (size_t cycle_ordinal = begin_cycle; cycle_ordinal < end_cycle; ++cycle_ordinal) {
-                CycleSlot& slot = cycle_slots[cycle_ordinal];
+        for (size_t cycle_ordinal = begin_cycle; cycle_ordinal < end_cycle; ++cycle_ordinal) {
+            CycleSlot& slot = cycle_slots[cycle_ordinal];
+            try {
                 const auto& support = basis->cycles[cycle_ordinal];
-                auto materialized =
-                    materialize_two_large_prime_cycle(*indexed_sources, support, modulus);
+                auto materialization =
+                    materialize_two_large_prime_cycle_checked(*indexed_sources, support, modulus);
+                slot.status = cycle_slot_status_for_materialization(materialization.status());
+                if (!materialization.is_valid()) {
+                    return;
+                }
+                auto materialized = std::move(materialization).materialized_cycle();
                 if (!materialized) {
-                    // The current materializer uses nullopt for both checked
-                    // arithmetic exhaustion and structural rejection. Upstream
-                    // adapter/graph invariants exclude the structural cases;
-                    // retain fail-closed row rejection until that API exposes
-                    // a typed status before production integration.
-                    slot.rejected = true;
-                    continue;
+                    slot.status = CycleSlotStatus::internal_invariant_failure;
+                    return;
                 }
 
                 std::vector<SIQSSourceId> mapped_source_ids;
@@ -773,7 +831,7 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
                     mapped_source_ids.push_back(assembly.sources.partial_source_ids[local_id]);
                 }
                 if (invalid_index) {
-                    internal_failure.store(true, std::memory_order_relaxed);
+                    slot.status = CycleSlotStatus::internal_invariant_failure;
                     return;
                 }
 
@@ -781,18 +839,23 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
                     std::move(*materialized), mapped_source_ids, factor_base_primes, modulus);
                 if (!converted.is_valid()) {
                     if (converted.status() == SIQSPostMergeRowStatus::row_identity_mismatch) {
-                        slot.rejected = true;
+                        slot.status = CycleSlotStatus::row_identity_rejected;
                         continue;
                     }
-                    internal_failure.store(true, std::memory_order_relaxed);
+                    slot.status = CycleSlotStatus::internal_invariant_failure;
                     return;
                 }
                 slot.row = SIQSShadowRow{SIQSShadowRowOrigin::large_prime_cycle, *converted.row()};
+                slot.status = CycleSlotStatus::valid;
+            } catch (const std::bad_alloc&) {
+                slot.row.reset();
+                slot.status = CycleSlotStatus::resource_exhausted;
+                return;
+            } catch (...) {
+                slot.row.reset();
+                slot.status = CycleSlotStatus::exception_failure;
+                return;
             }
-        } catch (const std::bad_alloc&) {
-            worker_resource_exhausted.store(true, std::memory_order_relaxed);
-        } catch (...) {
-            worker_exception.store(true, std::memory_order_relaxed);
         }
     };
 
@@ -818,17 +881,13 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
                 SIQSShadowAssemblyStatus::exception_failure);
         }
     }
-    if (worker_resource_exhausted.load(std::memory_order_relaxed)) {
-        return SIQSShadowAssemblyResultFactory::failure(
-            SIQSShadowAssemblyStatus::resource_exhausted);
-    }
-    if (worker_exception.load(std::memory_order_relaxed)) {
-        return SIQSShadowAssemblyResultFactory::failure(
-            SIQSShadowAssemblyStatus::exception_failure);
-    }
-    if (internal_failure.load(std::memory_order_relaxed)) {
-        return SIQSShadowAssemblyResultFactory::failure(
-            SIQSShadowAssemblyStatus::internal_invariant_failure);
+
+    // Reduce fixed per-cycle outcomes only after every worker has joined.
+    // Cycle ordinal, rather than thread scheduling, therefore selects the first
+    // terminal failure.
+    const SIQSShadowAssemblyStatus cycle_status = reduce_cycle_slot_statuses(cycle_slots);
+    if (cycle_status != SIQSShadowAssemblyStatus::valid) {
+        return SIQSShadowAssemblyResultFactory::failure(cycle_status);
     }
 
     size_t maximum_rows = 0;
@@ -841,11 +900,14 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
         rows.push_back(SIQSShadowRow{SIQSShadowRowOrigin::raw_full, std::move(source.row)});
     }
     for (CycleSlot& slot : cycle_slots) {
-        if (slot.row) {
+        if (slot.status == CycleSlotStatus::valid && slot.row) {
             ++stats.valid_cycle_rows;
             rows.push_back(std::move(*slot.row));
-        } else {
+        } else if (slot.status == CycleSlotStatus::row_identity_rejected && !slot.row) {
             ++stats.rejected_cycle_rows;
+        } else {
+            return SIQSShadowAssemblyResultFactory::failure(
+                SIQSShadowAssemblyStatus::internal_invariant_failure);
         }
     }
     stats.rows_before_dedup = rows.size();

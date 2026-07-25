@@ -62,7 +62,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `merge_partials` | `siqs.hpp` ~line 994 | Iterative greedy LP merge — 1LP pairs plus 2LP cycle finding |
 | `normalize_two_large_prime` | `two_large_prime.hpp` | Exact, deterministic-prime validation for a candidate 2LP split |
 | `build_two_large_prime_cycle_basis` | `two_large_prime_graph.hpp` | Deterministic fundamental-cycle oracle over the 1LP/2LP multigraph |
-| `materialize_two_large_prime_cycle` | `two_large_prime_materializer.hpp` | Wide, checked cycle arithmetic and exact LP degree/2 accounting |
+| `materialize_two_large_prime_cycle_checked` | `two_large_prime_materializer.hpp` | Typed, wide cycle arithmetic and exact LP degree/2 accounting |
 | `prepare_two_large_prime_corpus` | `two_large_prime_adapter.hpp` | Fail-closed raw-partial validation, canonical deduplication, and stable relation IDs |
 | `check_materialized_two_large_prime_identity` | `two_large_prime_congruence.hpp` | Exact signed row identity before matrix admission |
 | `make_full_post_merge_row` / `make_cycle_post_merge_row` | `post_merge_row.hpp` | Canonical sparse-wide rows shared by full and cycle relations |
@@ -553,6 +553,9 @@ The safe migration order is:
    through the legacy pairwise `merge_two`: multiply values modulo `kN`, XOR
    signs, accumulate factor-base exponents in a wide checked type, and derive
    each large-prime square-root multiplicity as graph degree divided by two.
+   Preserve the typed result: capacity and exponent overflow fail the stage,
+   while a source, support, shape, or odd-degree failure after the strict
+   adapter and graph is an internal invariant failure.
 4. Convert raw full relations and materialized cycles into one sparse-wide
    post-merge row type. Preserve sorted source provenance and repeated LP
    square-root factors; never narrow the row back to legacy byte exponents.
@@ -563,8 +566,10 @@ The safe migration order is:
 6. Assemble full and cycle rows through a deterministic shadow path. Assign
    source IDs from a canonical global layout, bind accepted source descriptors
    into a portable fingerprint, materialize cycles into fixed parallel slots,
+   reduce typed slot outcomes by cycle ordinal after every worker joins,
    deduplicate only exact arithmetic rows, and apply a stable full/cycle trim
-   policy.
+   policy. Only an exact row-identity mismatch remains a counted cycle-row
+   rejection.
 7. Solve the selected sparse-wide rows without narrowing them back to legacy
    byte exponents. Preserve singleton zero rows, choose pivots and output
    dependencies deterministically across worker counts, revalidate every row,
@@ -633,10 +638,6 @@ SIQS's `L_N(1/2, 1)`.
 - **The shadow parallel threshold is not live-calibrated**; the persistent
   worker team is implemented and sanitizer-clean, but the default remains
   20000 equations until bounded live row distributions justify lowering it
-- **Materialization rejection is not yet typed**; the shadow assembly counts a
-  `nullopt` cycle as rejected after validating adapter and graph invariants, but
-  production integration should distinguish arithmetic exhaustion from an
-  internal structural-contract failure
 - **Beyond ~57 digits, extraction failures dominate** in current calibration.
   The 60-digit band needs FB and threshold tuning before being declared
   production-ready. Use GNFS for ≥60 digits until then
