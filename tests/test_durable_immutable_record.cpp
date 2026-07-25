@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -31,6 +32,10 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <membership.h>
+#include <sys/acl.h>
+#endif
 #endif
 
 namespace {
@@ -40,6 +45,11 @@ namespace durable_record = gnfs::util::durable_immutable_record;
 
 static_assert(!std::is_default_constructible_v<durable_record::InspectResult>);
 static_assert(!std::is_default_constructible_v<durable_record::MutationResult>);
+static_assert(!std::is_default_constructible_v<durable_record::BoundedReadResult>);
+static_assert(
+    !std::is_constructible_v<durable_record::BoundedReadResult, durable_record::BoundedReadState,
+                             std::optional<std::vector<std::byte>>,
+                             std::optional<durable_record::RecordSnapshot>, std::error_code>);
 static_assert(!std::is_default_constructible_v<durable_record::RecordPublishResult>);
 static_assert(!std::is_constructible_v<
               durable_record::RecordPublishResult, durable_record::RecordPublishStatus,
@@ -113,7 +123,7 @@ private:
     std::filesystem::path path_;
 };
 
-class ScriptedRecordOps final : public durable_record::RecordOps {
+class ScriptedRecordOps : public durable_record::RecordOps {
 public:
     durable_record::NativeHandle expected_parent = 73;
     durable_record::MutationResult probe_result = durable_record::MutationResult::succeeded();
@@ -236,6 +246,53 @@ private:
     }
 };
 
+class ScriptedBoundedReadOps final : public ScriptedRecordOps {
+public:
+    durable_record::BoundedReadState bounded_read_state =
+        durable_record::BoundedReadState::unsupported;
+    std::vector<durable_record::BoundedReadState> bounded_read_sequence;
+    std::vector<std::byte> bounded_read_bytes;
+    durable_record::RecordSnapshot bounded_read_snapshot{};
+    std::error_code bounded_read_error = std::make_error_code(std::errc::operation_not_supported);
+    std::size_t bounded_read_calls = 0;
+    std::filesystem::path bounded_read_leaf;
+    std::uint64_t bounded_read_min = 0;
+    std::uint64_t bounded_read_max = 0;
+
+    [[nodiscard]] durable_record::BoundedReadResult
+    read_bounded_at(durable_record::NativeHandle parent_handle, const std::filesystem::path& leaf,
+                    std::uint64_t min_bytes, std::uint64_t max_bytes) noexcept override {
+        const std::size_t call_index = bounded_read_calls++;
+        parent_mismatch = parent_mismatch || parent_handle != expected_parent;
+        bounded_read_leaf = leaf;
+        bounded_read_min = min_bytes;
+        bounded_read_max = max_bytes;
+        if (leaf.has_parent_path()) {
+            parent_mismatch = true;
+        }
+        const auto state = call_index < bounded_read_sequence.size()
+                               ? bounded_read_sequence[call_index]
+                               : bounded_read_state;
+        switch (state) {
+        case durable_record::BoundedReadState::missing:
+            return durable_record::BoundedReadResult::missing();
+        case durable_record::BoundedReadState::exact:
+            return durable_record::BoundedReadResult::exact(bounded_read_bytes,
+                                                            bounded_read_snapshot);
+        case durable_record::BoundedReadState::rejected:
+            return durable_record::BoundedReadResult::rejected(bounded_read_error);
+        case durable_record::BoundedReadState::interrupted:
+            return durable_record::BoundedReadResult::interrupted(bounded_read_error);
+        case durable_record::BoundedReadState::unsupported:
+            return durable_record::BoundedReadResult::unsupported(bounded_read_error);
+        case durable_record::BoundedReadState::failed:
+            return durable_record::BoundedReadResult::failed(bounded_read_error);
+        }
+        return durable_record::BoundedReadResult::failed(
+            std::make_error_code(std::errc::protocol_error));
+    }
+};
+
 void test_invalid_requests_stop_before_ops() {
     constexpr durable_record::NativeHandle PARENT = 73;
 
@@ -300,6 +357,166 @@ void test_probe_fails_closed_before_mutation() {
         CHECK(ops.calls_after_probe() == 0);
         CHECK(!ops.parent_mismatch);
     }
+}
+
+void test_bounded_read_invalid_requests_stop_before_ops() {
+    constexpr durable_record::NativeHandle PARENT = 73;
+
+    const auto require_rejected = [&](durable_record::NativeHandle parent,
+                                      const std::filesystem::path& leaf, std::uint64_t min_bytes,
+                                      std::uint64_t max_bytes, std::errc expected_error) {
+        ScriptedBoundedReadOps ops;
+        const auto result =
+            durable_record::read_bounded_at_with_ops(parent, leaf, min_bytes, max_bytes, ops);
+        CHECK(result.state() == durable_record::BoundedReadState::rejected);
+        CHECK(!result.bytes().has_value());
+        CHECK(!result.snapshot().has_value());
+        CHECK(result.native_error() == expected_error);
+        CHECK(ops.bounded_read_calls == 0);
+    };
+
+    require_rejected(durable_record::INVALID_NATIVE_HANDLE, "record.bin", 0, PAYLOAD.size(),
+                     std::errc::invalid_argument);
+#ifndef _WIN32
+    if constexpr (sizeof(durable_record::NativeHandle) > sizeof(int)) {
+        require_rejected(static_cast<durable_record::NativeHandle>(
+                             static_cast<std::uint64_t>(std::numeric_limits<int>::max()) + 1),
+                         "record.bin", 0, PAYLOAD.size(), std::errc::invalid_argument);
+    }
+#endif
+    require_rejected(PARENT, "", 0, PAYLOAD.size(), std::errc::invalid_argument);
+    require_rejected(PARENT, ".", 0, PAYLOAD.size(), std::errc::invalid_argument);
+    require_rejected(PARENT, "..", 0, PAYLOAD.size(), std::errc::invalid_argument);
+    require_rejected(PARENT, "nested/record.bin", 0, PAYLOAD.size(), std::errc::invalid_argument);
+    require_rejected(PARENT, std::filesystem::path("/record.bin"), 0, PAYLOAD.size(),
+                     std::errc::invalid_argument);
+    require_rejected(PARENT, std::filesystem::path(std::string("bad\0leaf", 8)), 0, PAYLOAD.size(),
+                     std::errc::invalid_argument);
+    require_rejected(PARENT, std::filesystem::path(std::u8string{u8"récord.bin"}), 0,
+                     PAYLOAD.size(), std::errc::invalid_argument);
+    require_rejected(PARENT, "record.bin", PAYLOAD.size(), PAYLOAD.size() - 1,
+                     std::errc::invalid_argument);
+    require_rejected(PARENT, "record.bin", 0, durable_record::MAX_BOUNDED_READ_BYTES + 1,
+                     std::errc::value_too_large);
+}
+
+void test_bounded_read_synthetic_results_and_contract() {
+    constexpr durable_record::RecordSnapshot SNAPSHOT{{0x10, 0x20, 0x30}, PAYLOAD.size()};
+
+    {
+        ScriptedBoundedReadOps ops;
+        ops.bounded_read_state = durable_record::BoundedReadState::exact;
+        ops.bounded_read_bytes.assign(PAYLOAD.begin(), PAYLOAD.end());
+        ops.bounded_read_snapshot = SNAPSHOT;
+        const auto result = durable_record::read_bounded_at_with_ops(
+            ops.expected_parent, "record.bin", PAYLOAD.size(), PAYLOAD.size(), ops);
+        CHECK(result.state() == durable_record::BoundedReadState::exact);
+        CHECK(result.bytes() == std::optional<std::vector<std::byte>>{
+                                    std::vector<std::byte>(PAYLOAD.begin(), PAYLOAD.end())});
+        CHECK(result.snapshot() == std::optional<durable_record::RecordSnapshot>{SNAPSHOT});
+        CHECK(!result.native_error());
+        CHECK(ops.bounded_read_calls == 1);
+        CHECK(ops.bounded_read_leaf == "record.bin");
+        CHECK(ops.bounded_read_min == PAYLOAD.size());
+        CHECK(ops.bounded_read_max == PAYLOAD.size());
+        CHECK(!ops.parent_mismatch);
+    }
+    {
+        ScriptedRecordOps ops;
+        const auto result = durable_record::read_bounded_at_with_ops(
+            ops.expected_parent, "record.bin", 0, PAYLOAD.size(), ops);
+        CHECK(result.state() == durable_record::BoundedReadState::unsupported);
+        CHECK(!result.bytes().has_value());
+        CHECK(!result.snapshot().has_value());
+        CHECK(result.native_error() == std::errc::operation_not_supported);
+    }
+    {
+        ScriptedBoundedReadOps ops;
+        ops.bounded_read_state = durable_record::BoundedReadState::missing;
+        const auto result = durable_record::read_bounded_at_with_ops(
+            ops.expected_parent, "record.bin", 0, PAYLOAD.size(), ops);
+        CHECK(result.state() == durable_record::BoundedReadState::missing);
+        CHECK(!result.bytes().has_value());
+        CHECK(!result.snapshot().has_value());
+        CHECK(!result.native_error());
+        CHECK(ops.bounded_read_calls == 1);
+    }
+
+    for (const auto state :
+         {durable_record::BoundedReadState::rejected, durable_record::BoundedReadState::unsupported,
+          durable_record::BoundedReadState::failed}) {
+        ScriptedBoundedReadOps ops;
+        ops.bounded_read_state = state;
+        ops.bounded_read_error = injected_error();
+        const auto result = durable_record::read_bounded_at_with_ops(
+            ops.expected_parent, "record.bin", 0, PAYLOAD.size(), ops);
+        CHECK(result.state() == state);
+        CHECK(!result.bytes().has_value());
+        CHECK(!result.snapshot().has_value());
+        CHECK(result.native_error() == injected_error());
+        CHECK(ops.bounded_read_calls == 1);
+        CHECK(!ops.parent_mismatch);
+    }
+    {
+        ScriptedBoundedReadOps ops;
+        ops.bounded_read_sequence = {
+            durable_record::BoundedReadState::interrupted,
+            durable_record::BoundedReadState::exact,
+        };
+        ops.bounded_read_state = durable_record::BoundedReadState::exact;
+        ops.bounded_read_bytes.assign(PAYLOAD.begin(), PAYLOAD.end());
+        ops.bounded_read_snapshot = SNAPSHOT;
+        ops.bounded_read_error = std::make_error_code(std::errc::interrupted);
+        const auto result = durable_record::read_bounded_at_with_ops(
+            ops.expected_parent, "record.bin", PAYLOAD.size(), PAYLOAD.size(), ops);
+        CHECK(result.state() == durable_record::BoundedReadState::exact);
+        CHECK(result.bytes() == std::optional<std::vector<std::byte>>{
+                                    std::vector<std::byte>(PAYLOAD.begin(), PAYLOAD.end())});
+        CHECK(result.snapshot() == std::optional<durable_record::RecordSnapshot>{SNAPSHOT});
+        CHECK(ops.bounded_read_calls == 2);
+        CHECK(!ops.parent_mismatch);
+    }
+    {
+        ScriptedBoundedReadOps ops;
+        ops.bounded_read_sequence = {
+            durable_record::BoundedReadState::interrupted,
+            durable_record::BoundedReadState::missing,
+        };
+        ops.bounded_read_state = durable_record::BoundedReadState::missing;
+        ops.bounded_read_error = std::make_error_code(std::errc::interrupted);
+        const auto result = durable_record::read_bounded_at_with_ops(
+            ops.expected_parent, "record.bin", 0, PAYLOAD.size(), ops);
+        CHECK(result.state() == durable_record::BoundedReadState::missing);
+        CHECK(!result.bytes().has_value());
+        CHECK(!result.snapshot().has_value());
+        CHECK(ops.bounded_read_calls == 2);
+        CHECK(!ops.parent_mismatch);
+    }
+
+    const auto require_contract_failure = [&](std::size_t byte_count, std::uint64_t snapshot_size,
+                                              std::uint64_t min_bytes, std::uint64_t max_bytes) {
+        ScriptedBoundedReadOps ops;
+        ops.bounded_read_state = durable_record::BoundedReadState::exact;
+        ops.bounded_read_bytes.assign(byte_count, std::byte{0x41});
+        ops.bounded_read_snapshot = durable_record::RecordSnapshot{
+            .identity = {0x40, 0x50, 0x60},
+            .size = snapshot_size,
+        };
+        const auto result = durable_record::read_bounded_at_with_ops(
+            ops.expected_parent, "record.bin", min_bytes, max_bytes, ops);
+        CHECK(result.state() == durable_record::BoundedReadState::failed);
+        CHECK(!result.bytes().has_value());
+        CHECK(!result.snapshot().has_value());
+        CHECK(result.native_error() == std::errc::protocol_error);
+        CHECK(ops.bounded_read_calls == 1);
+    };
+
+    // A synthetic exact result is test data, not trusted authority. The wrapper
+    // rejects inconsistent or out-of-contract sizes before exposing it.
+    require_contract_failure(PAYLOAD.size(), PAYLOAD.size() + 1, 0, PAYLOAD.size() + 1);
+    require_contract_failure(PAYLOAD.size(), PAYLOAD.size(), PAYLOAD.size() + 1,
+                             PAYLOAD.size() + 2);
+    require_contract_failure(PAYLOAD.size(), PAYLOAD.size(), 0, PAYLOAD.size() - 1);
 }
 
 #ifndef _WIN32
@@ -414,6 +631,15 @@ void write_leaf(int parent_fd, std::string_view leaf, std::span<const std::byte>
     return status.st_mode & 07777;
 }
 
+[[nodiscard]] struct stat leaf_stat(int parent_fd, std::string_view leaf) {
+    const std::string name{leaf};
+    struct stat status{};
+    if (::fstatat(parent_fd, name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0) {
+        throw TestFailure("cannot stat fixture leaf");
+    }
+    return status;
+}
+
 [[nodiscard]] std::vector<std::byte> read_leaf(int parent_fd, std::string_view leaf) {
     const std::string name{leaf};
     const int fd = ::openat(parent_fd, name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
@@ -450,6 +676,262 @@ void require_preserved(int parent_fd, std::string_view leaf, std::span<const std
     CHECK(leaf_exists(parent_fd, leaf));
     CHECK(read_leaf(parent_fd, leaf) == std::vector<std::byte>(expected.begin(), expected.end()));
 }
+
+#if defined(__APPLE__)
+
+void check_bounded_rejected(const durable_record::BoundedReadResult& result) {
+    CHECK(result.state() == durable_record::BoundedReadState::rejected);
+    CHECK(!result.bytes().has_value());
+    CHECK(!result.snapshot().has_value());
+    CHECK(result.native_error());
+}
+
+void test_bounded_read_exact_missing_and_stable_identity() {
+    TempDirectory directory;
+    ParentDirectory parent(directory.path());
+    write_leaf(parent.fd(), "record.bin", PAYLOAD);
+
+    const auto first = durable_record::read_bounded_at(parent.native_handle(), "record.bin",
+                                                       PAYLOAD.size(), PAYLOAD.size());
+    CHECK(first.state() == durable_record::BoundedReadState::exact);
+    CHECK(first.bytes().has_value());
+    CHECK(*first.bytes() == std::vector<std::byte>(PAYLOAD.begin(), PAYLOAD.end()));
+    CHECK(first.snapshot().has_value());
+    CHECK(first.snapshot()->size == PAYLOAD.size());
+    CHECK(!first.native_error());
+
+    const struct stat named = leaf_stat(parent.fd(), "record.bin");
+    CHECK(first.snapshot()->identity.first == static_cast<std::uint64_t>(named.st_dev));
+    CHECK(first.snapshot()->identity.second == static_cast<std::uint64_t>(named.st_ino));
+    CHECK(first.snapshot()->identity.third == 0);
+
+    const auto second = durable_record::read_bounded_at(parent.native_handle(), "record.bin",
+                                                        PAYLOAD.size(), PAYLOAD.size());
+    CHECK(second.state() == durable_record::BoundedReadState::exact);
+    CHECK(second.bytes().has_value());
+    CHECK(*second.bytes() == std::vector<std::byte>(PAYLOAD.begin(), PAYLOAD.end()));
+    CHECK(second.snapshot() == first.snapshot());
+    CHECK(parent.is_open());
+
+    const auto missing =
+        durable_record::read_bounded_at(parent.native_handle(), "missing.bin", 0, PAYLOAD.size());
+    CHECK(missing.state() == durable_record::BoundedReadState::missing);
+    CHECK(!missing.bytes().has_value());
+    CHECK(!missing.snapshot().has_value());
+    CHECK(!missing.native_error());
+    require_preserved(parent.fd(), "record.bin", PAYLOAD);
+    CHECK(parent.is_open());
+}
+
+void test_bounded_read_inclusive_size_bounds() {
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "record.bin", PAYLOAD);
+
+        const auto inclusive = durable_record::read_bounded_at(parent.native_handle(), "record.bin",
+                                                               0, PAYLOAD.size());
+        CHECK(inclusive.state() == durable_record::BoundedReadState::exact);
+        CHECK(inclusive.bytes().has_value());
+        CHECK(*inclusive.bytes() == std::vector<std::byte>(PAYLOAD.begin(), PAYLOAD.end()));
+
+        check_bounded_rejected(durable_record::read_bounded_at(
+            parent.native_handle(), "record.bin", PAYLOAD.size() + 1,
+            durable_record::MAX_BOUNDED_READ_BYTES));
+        check_bounded_rejected(durable_record::read_bounded_at(parent.native_handle(), "record.bin",
+                                                               0, PAYLOAD.size() - 1));
+        require_preserved(parent.fd(), "record.bin", PAYLOAD);
+        CHECK(parent.is_open());
+    }
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        constexpr std::array<std::byte, 0> EMPTY{};
+        write_leaf(parent.fd(), "empty.bin", EMPTY);
+
+        const auto empty =
+            durable_record::read_bounded_at(parent.native_handle(), "empty.bin", 0, 0);
+        CHECK(empty.state() == durable_record::BoundedReadState::exact);
+        CHECK(empty.bytes().has_value());
+        CHECK(empty.bytes()->empty());
+        CHECK(empty.snapshot().has_value());
+        CHECK(empty.snapshot()->size == 0);
+        CHECK(parent.is_open());
+    }
+}
+
+void install_extended_read_acl(int descriptor);
+
+void test_bounded_read_rejects_malformed_leaves_without_blocking() {
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "target.bin", PAYLOAD);
+        CHECK(::symlinkat("target.bin", parent.fd(), "record.bin") == 0);
+        sync_parent(parent.fd());
+
+        check_bounded_rejected(durable_record::read_bounded_at(parent.native_handle(), "record.bin",
+                                                               0, PAYLOAD.size()));
+        require_preserved(parent.fd(), "target.bin", PAYLOAD);
+        CHECK(S_ISLNK(leaf_stat(parent.fd(), "record.bin").st_mode));
+        CHECK(parent.is_open());
+    }
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "target.bin", PAYLOAD);
+        CHECK(::linkat(parent.fd(), "target.bin", parent.fd(), "record.bin", 0) == 0);
+        sync_parent(parent.fd());
+        CHECK(leaf_stat(parent.fd(), "target.bin").st_nlink == 2);
+
+        check_bounded_rejected(durable_record::read_bounded_at(parent.native_handle(), "record.bin",
+                                                               0, PAYLOAD.size()));
+        require_preserved(parent.fd(), "target.bin", PAYLOAD);
+        require_preserved(parent.fd(), "record.bin", PAYLOAD);
+        CHECK(parent.is_open());
+    }
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        CHECK(::mkfifoat(parent.fd(), "record.bin", 0600) == 0);
+        sync_parent(parent.fd());
+
+        // Production opens with O_NONBLOCK, so a writer-less FIFO must be
+        // rejected immediately rather than hanging the test process.
+        check_bounded_rejected(durable_record::read_bounded_at(parent.native_handle(), "record.bin",
+                                                               0, PAYLOAD.size()));
+        CHECK(S_ISFIFO(leaf_stat(parent.fd(), "record.bin").st_mode));
+        CHECK(parent.is_open());
+    }
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        CHECK(::mkdirat(parent.fd(), "record.bin", 0700) == 0);
+        sync_parent(parent.fd());
+
+        check_bounded_rejected(durable_record::read_bounded_at(parent.native_handle(), "record.bin",
+                                                               0, PAYLOAD.size()));
+        CHECK(S_ISDIR(leaf_stat(parent.fd(), "record.bin").st_mode));
+        CHECK(parent.is_open());
+    }
+
+    for (const mode_t mode : {static_cast<mode_t>(0400), static_cast<mode_t>(0640),
+                              static_cast<mode_t>(0700), static_cast<mode_t>(04600)}) {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "record.bin", PAYLOAD, mode);
+        CHECK(leaf_mode(parent.fd(), "record.bin") == mode);
+
+        check_bounded_rejected(durable_record::read_bounded_at(parent.native_handle(), "record.bin",
+                                                               0, PAYLOAD.size()));
+        require_preserved(parent.fd(), "record.bin", PAYLOAD);
+        CHECK(leaf_mode(parent.fd(), "record.bin") == mode);
+        CHECK(parent.is_open());
+    }
+
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "record.bin", PAYLOAD);
+        const int leaf_descriptor =
+            ::openat(parent.fd(), "record.bin", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        CHECK(leaf_descriptor >= 0);
+        install_extended_read_acl(leaf_descriptor);
+        CHECK(::close(leaf_descriptor) == 0);
+
+        check_bounded_rejected(durable_record::read_bounded_at(parent.native_handle(), "record.bin",
+                                                               0, PAYLOAD.size()));
+        require_preserved(parent.fd(), "record.bin", PAYLOAD);
+        CHECK(parent.is_open());
+    }
+}
+
+void install_extended_read_acl(int descriptor) {
+    acl_t acl = ::acl_init(1);
+    if (acl == nullptr) {
+        throw TestFailure("cannot allocate test ACL");
+    }
+
+    acl_entry_t entry = nullptr;
+    acl_permset_t permissions = nullptr;
+    uuid_t owner_uuid{};
+    const int membership_error = ::mbr_uid_to_uuid(::geteuid(), owner_uuid);
+    const bool configured = membership_error == 0 && ::acl_create_entry(&acl, &entry) == 0 &&
+                            ::acl_set_tag_type(entry, ACL_EXTENDED_ALLOW) == 0 &&
+                            ::acl_set_qualifier(entry, owner_uuid) == 0 &&
+                            ::acl_get_permset(entry, &permissions) == 0 &&
+                            ::acl_clear_perms(permissions) == 0 &&
+                            ::acl_add_perm(permissions, ACL_READ_DATA) == 0 &&
+                            ::acl_set_permset(entry, permissions) == 0 && ::acl_valid(acl) == 0 &&
+                            ::acl_set_fd_np(descriptor, acl, ACL_TYPE_EXTENDED) == 0;
+    const int saved_errno = errno;
+    (void)::acl_free(acl);
+    if (!configured) {
+        throw TestFailure("cannot install test ACL: " +
+                          std::error_code(membership_error != 0 ? membership_error : saved_errno,
+                                          std::generic_category())
+                              .message());
+    }
+}
+
+void test_bounded_read_parent_policy_fails_closed() {
+    for (const mode_t mode : {static_cast<mode_t>(0770), static_cast<mode_t>(0707)}) {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "record.bin", PAYLOAD);
+        CHECK(::chmod(directory.path().c_str(), mode) == 0);
+
+        check_bounded_rejected(durable_record::read_bounded_at(parent.native_handle(), "record.bin",
+                                                               0, PAYLOAD.size()));
+        require_preserved(parent.fd(), "record.bin", PAYLOAD);
+        CHECK(parent.is_open());
+    }
+
+    TempDirectory directory;
+    ParentDirectory parent(directory.path());
+    write_leaf(parent.fd(), "record.bin", PAYLOAD);
+    install_extended_read_acl(parent.fd());
+
+    check_bounded_rejected(
+        durable_record::read_bounded_at(parent.native_handle(), "record.bin", 0, PAYLOAD.size()));
+    require_preserved(parent.fd(), "record.bin", PAYLOAD);
+    CHECK(parent.is_open());
+}
+
+#elif defined(__linux__)
+
+void test_linux_bounded_read_is_unsupported_before_action() {
+    TempDirectory directory;
+    ParentDirectory parent(directory.path());
+    write_leaf(parent.fd(), "record.bin", PAYLOAD);
+    const struct stat before = leaf_stat(parent.fd(), "record.bin");
+
+    const auto existing =
+        durable_record::read_bounded_at(parent.native_handle(), "record.bin", 0, PAYLOAD.size());
+    CHECK(existing.state() == durable_record::BoundedReadState::unsupported);
+    CHECK(!existing.bytes().has_value());
+    CHECK(!existing.snapshot().has_value());
+    CHECK(existing.native_error() == std::errc::operation_not_supported);
+    require_preserved(parent.fd(), "record.bin", PAYLOAD);
+    const struct stat after = leaf_stat(parent.fd(), "record.bin");
+    CHECK(after.st_dev == before.st_dev);
+    CHECK(after.st_ino == before.st_ino);
+    CHECK(after.st_size == before.st_size);
+    CHECK(after.st_mode == before.st_mode);
+
+    // A valid missing leaf is still unsupported rather than observed as
+    // missing, proving the production entry point returns before open/stat.
+    const auto missing =
+        durable_record::read_bounded_at(parent.native_handle(), "missing.bin", 0, PAYLOAD.size());
+    CHECK(missing.state() == durable_record::BoundedReadState::unsupported);
+    CHECK(!missing.bytes().has_value());
+    CHECK(!missing.snapshot().has_value());
+    CHECK(missing.native_error() == std::errc::operation_not_supported);
+    CHECK(!leaf_exists(parent.fd(), "missing.bin"));
+    CHECK(parent.is_open());
+}
+
+#endif
 
 void test_real_casefold_alias_rejected_before_mutation() {
     TempDirectory directory;
@@ -761,6 +1243,16 @@ private:
 void test_windows_production_fails_before_mutation() {
     TempDirectory directory;
     WindowsParentDirectory parent(directory.path());
+
+    const auto read =
+        durable_record::read_bounded_at(parent.native_handle(), "record.bin", 0, PAYLOAD.size());
+    CHECK(read.state() == durable_record::BoundedReadState::unsupported);
+    CHECK(!read.bytes().has_value());
+    CHECK(!read.snapshot().has_value());
+    CHECK(read.native_error() == std::errc::operation_not_supported);
+    CHECK(std::filesystem::is_empty(directory.path()));
+    CHECK(parent.is_open());
+
     const auto result =
         durable_record::publish_at(parent.native_handle(), "record.pending", "record.bin", PAYLOAD);
     CHECK(result.status() == durable_record::RecordPublishStatus::platform_unsupported);
@@ -1035,6 +1527,18 @@ void run_tests(std::string_view suite) {
         std::cout << "===== Durable Immutable Record Core Tests =====\n";
         run("invalid requests stop before ops", test_invalid_requests_stop_before_ops);
         run("probe fail-closed", test_probe_fails_closed_before_mutation);
+        run("bounded read request validation", test_bounded_read_invalid_requests_stop_before_ops);
+        run("bounded read synthetic contract", test_bounded_read_synthetic_results_and_contract);
+#if defined(__APPLE__)
+        run("bounded read exact and missing", test_bounded_read_exact_missing_and_stable_identity);
+        run("bounded read inclusive bounds", test_bounded_read_inclusive_size_bounds);
+        run("bounded read malformed leaves",
+            test_bounded_read_rejects_malformed_leaves_without_blocking);
+        run("bounded read parent policy", test_bounded_read_parent_policy_fails_closed);
+#elif defined(__linux__)
+        run("Linux bounded read unsupported before action",
+            test_linux_bounded_read_is_unsupported_before_action);
+#endif
 #ifndef _WIN32
         run("real casefold alias", test_real_casefold_alias_rejected_before_mutation);
         run("parent descriptor policy", test_parent_descriptor_policy_preflight);

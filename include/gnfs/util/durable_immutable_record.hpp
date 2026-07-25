@@ -8,11 +8,13 @@
 #include <optional>
 #include <span>
 #include <system_error>
+#include <vector>
 
 namespace gnfs::util::durable_immutable_record {
 
 using NativeHandle = durable_immutable_file::NativeHandle;
 inline constexpr NativeHandle INVALID_NATIVE_HANDLE = durable_immutable_file::INVALID_NATIVE_HANDLE;
+inline constexpr std::uint64_t MAX_BOUNDED_READ_BYTES = 16U * 1024U * 1024U;
 
 namespace detail {
 class RecordPublishResultFactory;
@@ -82,6 +84,60 @@ private:
     std::error_code native_error_;
 };
 
+enum class BoundedReadState : std::uint8_t {
+    missing,
+    exact,
+    rejected,
+    interrupted,
+    unsupported,
+    failed,
+};
+
+/// Closed result for one bounded relative no-follow read.
+///
+/// `exact` is the only state that carries both bytes and a snapshot. The
+/// snapshot describes the same held file descriptor from which all bytes were
+/// read after its stable name, identity, ownership, mode, link count, and size
+/// were re-established.
+class BoundedReadResult final {
+public:
+    BoundedReadResult() = delete;
+
+    [[nodiscard]] static BoundedReadResult missing() noexcept;
+    [[nodiscard]] static BoundedReadResult exact(std::vector<std::byte> bytes,
+                                                 RecordSnapshot snapshot) noexcept;
+    [[nodiscard]] static BoundedReadResult rejected(std::error_code error) noexcept;
+    [[nodiscard]] static BoundedReadResult interrupted(std::error_code error) noexcept;
+    [[nodiscard]] static BoundedReadResult unsupported(std::error_code error) noexcept;
+    [[nodiscard]] static BoundedReadResult failed(std::error_code error) noexcept;
+
+    [[nodiscard]] constexpr BoundedReadState state() const noexcept {
+        return state_;
+    }
+
+    [[nodiscard]] const std::optional<std::vector<std::byte>>& bytes() const noexcept {
+        return bytes_;
+    }
+
+    [[nodiscard]] const std::optional<RecordSnapshot>& snapshot() const noexcept {
+        return snapshot_;
+    }
+
+    [[nodiscard]] const std::error_code& native_error() const noexcept {
+        return native_error_;
+    }
+
+private:
+    BoundedReadResult(BoundedReadState state, std::optional<std::vector<std::byte>> bytes,
+                      std::optional<RecordSnapshot> snapshot,
+                      std::error_code native_error) noexcept;
+
+    BoundedReadState state_;
+    std::optional<std::vector<std::byte>> bytes_;
+    std::optional<RecordSnapshot> snapshot_;
+    std::error_code native_error_;
+};
+
 enum class MutationState : std::uint8_t {
     succeeded,
     source_missing,
@@ -131,6 +187,20 @@ class RecordOps {
 public:
     virtual ~RecordOps() = default;
 
+    /// Read one leaf through a relative no-follow open, within an inclusive
+    /// byte range. Production accepts only a regular, single-link,
+    /// current-owner file with exact mode 0600 and stable name and identity
+    /// before and after the read. The borrowed parent directory must also
+    /// satisfy the production owner, mode, and ACL policy.
+    ///
+    /// The default is fail-closed so existing test doubles do not silently
+    /// acquire read authority. Synthetic `exact` results are data only and
+    /// never establish filesystem identity or deletion/adoption authority.
+    [[nodiscard]] virtual BoundedReadResult read_bounded_at(NativeHandle parent_handle,
+                                                            const std::filesystem::path& leaf,
+                                                            std::uint64_t min_bytes,
+                                                            std::uint64_t max_bytes) noexcept;
+
     /// Prove that this parent/filesystem supports handle-relative no-replace
     /// promotion without creating a leaf. Production uses an empty-source
     /// native call that cannot name or mutate a filesystem object and accepts
@@ -173,6 +243,27 @@ public:
     remove_exact_at(NativeHandle parent_handle, const std::filesystem::path& pending_leaf,
                     const RecordSnapshot& expected_pending) noexcept = 0;
 };
+
+/// Test-only bounded-read seam. `min_bytes` and `max_bytes` are inclusive, and
+/// `max_bytes` may not exceed MAX_BOUNDED_READ_BYTES.
+/// Inputs are validated before `ops` is called, interrupted operations are
+/// retried, and malformed synthetic results fail closed. An exact synthetic
+/// result is protocol data only and never a filesystem authority receipt.
+[[nodiscard]] BoundedReadResult
+read_bounded_at_with_ops(NativeHandle parent_handle, const std::filesystem::path& leaf,
+                         std::uint64_t min_bytes, std::uint64_t max_bytes, RecordOps& ops) noexcept;
+
+/// Production bounded relative no-follow read. macOS performs the entire read
+/// from one held descriptor and validates the parent policy plus the named and
+/// held objects before and after reading. Linux, Windows, and other platforms
+/// return `unsupported` after request validation and before filesystem
+/// observation because this layer has no approved full-filesystem ACL adapter
+/// there. Only this production entry point may support a classifier's
+/// filesystem observation; the with-ops seam is non-authoritative.
+[[nodiscard]] BoundedReadResult read_bounded_at(NativeHandle parent_handle,
+                                                const std::filesystem::path& leaf,
+                                                std::uint64_t min_bytes,
+                                                std::uint64_t max_bytes) noexcept;
 
 /// Test-only crash boundaries. `CanonicalPromoted` intentionally occurs before
 /// the following parent-directory durability barrier.

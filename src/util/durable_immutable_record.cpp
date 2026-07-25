@@ -11,6 +11,7 @@
 #include <optional>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -153,6 +154,33 @@ namespace {
     return true;
 }
 
+[[nodiscard]] std::optional<BoundedReadResult>
+validate_bounded_read_request(NativeHandle parent_handle, const std::filesystem::path& leaf,
+                              std::uint64_t min_bytes, std::uint64_t max_bytes) noexcept {
+    try {
+        if (parent_handle == INVALID_NATIVE_HANDLE || invalid_relative_leaf(leaf) ||
+            min_bytes > max_bytes) {
+            return BoundedReadResult::rejected(invalid_argument_error());
+        }
+#ifndef _WIN32
+        if (parent_handle < 0 || static_cast<std::uintmax_t>(parent_handle) >
+                                     static_cast<std::uintmax_t>(std::numeric_limits<int>::max())) {
+            return BoundedReadResult::rejected(invalid_argument_error());
+        }
+#endif
+        if (max_bytes > MAX_BOUNDED_READ_BYTES) {
+            return BoundedReadResult::rejected(std::make_error_code(std::errc::value_too_large));
+        }
+    } catch (const std::bad_alloc&) {
+        return BoundedReadResult::failed(std::make_error_code(std::errc::not_enough_memory));
+    } catch (const std::filesystem::filesystem_error& error) {
+        return BoundedReadResult::rejected(error.code());
+    } catch (...) {
+        return BoundedReadResult::failed(std::make_error_code(std::errc::io_error));
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] std::optional<RecordPublishResult>
 validate_request(NativeHandle parent_handle, const std::filesystem::path& pending_leaf,
                  const std::filesystem::path& canonical_leaf,
@@ -194,6 +222,32 @@ validate_request(NativeHandle parent_handle, const std::filesystem::path& pendin
             std::make_error_code(std::errc::io_error));
     }
     return std::nullopt;
+}
+
+[[nodiscard]] bool valid_bounded_read_result(const BoundedReadResult& result,
+                                             std::uint64_t min_bytes,
+                                             std::uint64_t max_bytes) noexcept {
+    switch (result.state()) {
+    case BoundedReadState::missing:
+        return !result.bytes().has_value() && !result.snapshot().has_value() &&
+               !result.native_error();
+    case BoundedReadState::exact:
+        if (!result.bytes().has_value() || !result.snapshot().has_value() ||
+            result.native_error()) {
+            return false;
+        }
+        if (result.bytes()->size() != result.snapshot()->size) {
+            return false;
+        }
+        return result.snapshot()->size >= min_bytes && result.snapshot()->size <= max_bytes;
+    case BoundedReadState::rejected:
+    case BoundedReadState::interrupted:
+    case BoundedReadState::unsupported:
+    case BoundedReadState::failed:
+        return !result.bytes().has_value() && !result.snapshot().has_value() &&
+               static_cast<bool>(result.native_error());
+    }
+    return false;
 }
 
 [[nodiscard]] RecordPublishResult
@@ -438,16 +492,27 @@ inspect_failure(const InspectResult& inspection, RecordPublishStatus rejected_st
     return static_cast<int>(handle);
 }
 
-[[nodiscard]] bool metadata_has_expected_policy(const struct stat& metadata,
-                                                std::uint64_t expected_size) noexcept {
+[[nodiscard]] bool metadata_has_file_policy(const struct stat& metadata) noexcept {
     if (!S_ISREG(metadata.st_mode) || metadata.st_nlink != 1 || metadata.st_size < 0 ||
-        static_cast<std::uintmax_t>(metadata.st_size) !=
-            static_cast<std::uintmax_t>(expected_size) ||
         static_cast<std::uint64_t>(metadata.st_uid) != static_cast<std::uint64_t>(::geteuid()) ||
         (metadata.st_mode & static_cast<mode_t>(07777)) != static_cast<mode_t>(0600)) {
         return false;
     }
     return true;
+}
+
+[[nodiscard]] bool metadata_has_bounded_policy(const struct stat& metadata, std::uint64_t min_bytes,
+                                               std::uint64_t max_bytes) noexcept {
+    if (!metadata_has_file_policy(metadata)) {
+        return false;
+    }
+    const auto size = static_cast<std::uint64_t>(metadata.st_size);
+    return size >= min_bytes && size <= max_bytes;
+}
+
+[[nodiscard]] bool metadata_has_expected_policy(const struct stat& metadata,
+                                                std::uint64_t expected_size) noexcept {
+    return metadata_has_bounded_policy(metadata, expected_size, expected_size);
 }
 
 [[nodiscard]] NativeIdentity native_identity(const struct stat& metadata) noexcept {
@@ -499,6 +564,274 @@ enum class ExtendedAclState : std::uint8_t {
 }
 #endif
 
+enum class ParentPolicyState : std::uint8_t {
+    accepted,
+    rejected,
+    unsupported,
+    failed,
+};
+
+struct ParentPolicyResult final {
+    ParentPolicyState state = ParentPolicyState::failed;
+    std::error_code error{};
+};
+
+[[nodiscard]] ParentPolicyResult inspect_parent_policy(int descriptor) noexcept {
+    struct stat parent_metadata{};
+    int stat_result = -1;
+    do {
+        stat_result = ::fstat(descriptor, &parent_metadata);
+    } while (stat_result != 0 && errno == EINTR);
+    if (stat_result != 0) {
+        return {ParentPolicyState::failed, posix_error(errno)};
+    }
+    if (!S_ISDIR(parent_metadata.st_mode) ||
+        static_cast<std::uint64_t>(parent_metadata.st_uid) !=
+            static_cast<std::uint64_t>(::geteuid()) ||
+        (parent_metadata.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+        return {ParentPolicyState::rejected, protocol_error()};
+    }
+#if defined(__APPLE__)
+    std::error_code acl_error;
+    const auto acl_state = inspect_extended_acl(descriptor, acl_error);
+    if (acl_state == ExtendedAclState::present) {
+        return {ParentPolicyState::rejected, protocol_error()};
+    }
+    if (acl_state == ExtendedAclState::unsupported) {
+        return {ParentPolicyState::unsupported, acl_error};
+    }
+    if (acl_state == ExtendedAclState::failed) {
+        return {ParentPolicyState::failed, acl_error};
+    }
+#endif
+    return {ParentPolicyState::accepted, {}};
+}
+
+struct StableRelativeReadResult final {
+    BoundedReadState state = BoundedReadState::failed;
+    std::optional<RecordSnapshot> snapshot{};
+    std::error_code error{};
+};
+
+[[nodiscard]] StableRelativeReadResult stable_read_missing() noexcept {
+    return {.state = BoundedReadState::missing, .snapshot = std::nullopt, .error = {}};
+}
+
+[[nodiscard]] StableRelativeReadResult stable_read_exact(RecordSnapshot snapshot) noexcept {
+    return {.state = BoundedReadState::exact, .snapshot = snapshot, .error = {}};
+}
+
+[[nodiscard]] StableRelativeReadResult stable_read_error(BoundedReadState state,
+                                                         std::error_code error) noexcept {
+    return {.state = state, .snapshot = std::nullopt, .error = error_or_protocol(error)};
+}
+
+/// One security policy and one streaming read path back both the bounded
+/// materializer and the existing exact-byte inspector. `prepare` runs after
+/// the first stable size observation; `consume` sees ordered chunks from the
+/// same held descriptor. A false callback result is a byte-level rejection.
+template <typename Prepare, typename Consume>
+[[nodiscard]] StableRelativeReadResult
+read_stable_relative_file(NativeHandle parent_handle, const std::filesystem::path& leaf,
+                          std::uint64_t min_bytes, std::uint64_t max_bytes, Prepare&& prepare,
+                          Consume&& consume) noexcept {
+    const auto descriptor = parent_descriptor(parent_handle);
+    if (!descriptor) {
+        return stable_read_error(BoundedReadState::rejected, posix_error(EBADF));
+    }
+
+    const auto map_parent_policy = [](const ParentPolicyResult& policy) noexcept {
+        switch (policy.state) {
+        case ParentPolicyState::accepted:
+            return StableRelativeReadResult{
+                .state = BoundedReadState::exact, .snapshot = std::nullopt, .error = {}};
+        case ParentPolicyState::rejected:
+            return stable_read_error(BoundedReadState::rejected, policy.error);
+        case ParentPolicyState::unsupported:
+            return stable_read_error(BoundedReadState::unsupported, policy.error);
+        case ParentPolicyState::failed:
+            return stable_read_error(BoundedReadState::failed, policy.error);
+        }
+        return stable_read_error(BoundedReadState::failed, protocol_error());
+    };
+
+    const auto parent_before = map_parent_policy(inspect_parent_policy(*descriptor));
+    if (parent_before.state != BoundedReadState::exact) {
+        return parent_before;
+    }
+
+    int file_descriptor = -1;
+    do {
+        file_descriptor =
+            ::openat(*descriptor, leaf.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    } while (file_descriptor < 0 && errno == EINTR);
+    if (file_descriptor < 0) {
+        const int saved_errno = errno;
+        if (saved_errno == ENOENT) {
+            return stable_read_missing();
+        }
+        if (saved_errno == ELOOP) {
+            return stable_read_error(BoundedReadState::rejected, posix_error(saved_errno));
+        }
+        return stable_read_error(BoundedReadState::failed, posix_error(saved_errno));
+    }
+
+    const auto close_and_return =
+        [&](StableRelativeReadResult intended) noexcept -> StableRelativeReadResult {
+        // Do not retry close(2): after EINTR the descriptor state is
+        // platform-dependent and a retry can close a reused descriptor.
+        if (::close(file_descriptor) == 0) {
+            return intended;
+        }
+        return stable_read_error(BoundedReadState::failed, posix_error(errno));
+    };
+
+    struct stat held_before{};
+    struct stat named_before{};
+    int stat_result = -1;
+    do {
+        stat_result = ::fstat(file_descriptor, &held_before);
+    } while (stat_result != 0 && errno == EINTR);
+    if (stat_result != 0) {
+        return close_and_return(stable_read_error(BoundedReadState::failed, posix_error(errno)));
+    }
+    do {
+        stat_result = ::fstatat(*descriptor, leaf.c_str(), &named_before, AT_SYMLINK_NOFOLLOW);
+    } while (stat_result != 0 && errno == EINTR);
+    if (stat_result != 0) {
+        return close_and_return(stable_read_error(BoundedReadState::rejected, posix_error(errno)));
+    }
+
+    if (!metadata_has_bounded_policy(held_before, min_bytes, max_bytes)) {
+        return close_and_return(stable_read_error(BoundedReadState::rejected, protocol_error()));
+    }
+    const auto exact_size = static_cast<std::uint64_t>(held_before.st_size);
+    if (exact_size > std::numeric_limits<std::size_t>::max() ||
+        !metadata_has_expected_policy(named_before, exact_size) ||
+        !same_named_object(held_before, named_before)) {
+        return close_and_return(stable_read_error(BoundedReadState::rejected, protocol_error()));
+    }
+#if defined(__APPLE__)
+    std::error_code acl_error;
+    const auto acl_before = inspect_extended_acl(file_descriptor, acl_error);
+    if (acl_before == ExtendedAclState::present) {
+        return close_and_return(stable_read_error(BoundedReadState::rejected, protocol_error()));
+    }
+    if (acl_before == ExtendedAclState::unsupported) {
+        return close_and_return(stable_read_error(BoundedReadState::unsupported, acl_error));
+    }
+    if (acl_before == ExtendedAclState::failed) {
+        return close_and_return(stable_read_error(BoundedReadState::failed, acl_error));
+    }
+#endif
+
+    const auto read_size = static_cast<std::size_t>(exact_size);
+    try {
+        if (!prepare(read_size)) {
+            return close_and_return(
+                stable_read_error(BoundedReadState::rejected, protocol_error()));
+        }
+    } catch (const std::bad_alloc&) {
+        return close_and_return(stable_read_error(
+            BoundedReadState::failed, std::make_error_code(std::errc::not_enough_memory)));
+    } catch (...) {
+        return close_and_return(
+            stable_read_error(BoundedReadState::failed, std::make_error_code(std::errc::io_error)));
+    }
+
+    std::array<std::byte, 64U * 1024U> buffer{};
+    std::size_t offset = 0;
+    while (offset < read_size) {
+        const std::size_t requested = std::min(buffer.size(), read_size - offset);
+        ssize_t count = -1;
+        do {
+            count = ::pread(file_descriptor, buffer.data(), requested, static_cast<off_t>(offset));
+        } while (count < 0 && errno == EINTR);
+        if (count < 0) {
+            return close_and_return(
+                stable_read_error(BoundedReadState::failed, posix_error(errno)));
+        }
+        if (count == 0) {
+            return close_and_return(
+                stable_read_error(BoundedReadState::rejected, protocol_error()));
+        }
+        const auto read_count = static_cast<std::size_t>(count);
+        if (read_count > requested) {
+            return close_and_return(
+                stable_read_error(BoundedReadState::rejected, protocol_error()));
+        }
+        try {
+            if (!consume(std::span<const std::byte>(buffer.data(), read_count), offset)) {
+                return close_and_return(
+                    stable_read_error(BoundedReadState::rejected, protocol_error()));
+            }
+        } catch (const std::bad_alloc&) {
+            return close_and_return(stable_read_error(
+                BoundedReadState::failed, std::make_error_code(std::errc::not_enough_memory)));
+        } catch (...) {
+            return close_and_return(stable_read_error(BoundedReadState::failed,
+                                                      std::make_error_code(std::errc::io_error)));
+        }
+        offset += read_count;
+    }
+
+    std::byte trailing{};
+    ssize_t trailing_count = -1;
+    do {
+        trailing_count = ::pread(file_descriptor, &trailing, 1, static_cast<off_t>(offset));
+    } while (trailing_count < 0 && errno == EINTR);
+    if (trailing_count < 0) {
+        return close_and_return(stable_read_error(BoundedReadState::failed, posix_error(errno)));
+    }
+    if (trailing_count != 0) {
+        return close_and_return(stable_read_error(BoundedReadState::rejected, protocol_error()));
+    }
+
+    struct stat held_after{};
+    struct stat named_after{};
+    do {
+        stat_result = ::fstat(file_descriptor, &held_after);
+    } while (stat_result != 0 && errno == EINTR);
+    if (stat_result != 0) {
+        return close_and_return(stable_read_error(BoundedReadState::failed, posix_error(errno)));
+    }
+    do {
+        stat_result = ::fstatat(*descriptor, leaf.c_str(), &named_after, AT_SYMLINK_NOFOLLOW);
+    } while (stat_result != 0 && errno == EINTR);
+    if (stat_result != 0) {
+        return close_and_return(stable_read_error(BoundedReadState::rejected, posix_error(errno)));
+    }
+    if (!metadata_has_expected_policy(held_after, exact_size) ||
+        !metadata_has_expected_policy(named_after, exact_size) ||
+        !same_named_object(held_after, named_after) ||
+        native_identity(held_before) != native_identity(held_after)) {
+        return close_and_return(stable_read_error(BoundedReadState::rejected, protocol_error()));
+    }
+#if defined(__APPLE__)
+    acl_error.clear();
+    const auto acl_after = inspect_extended_acl(file_descriptor, acl_error);
+    if (acl_after == ExtendedAclState::present) {
+        return close_and_return(stable_read_error(BoundedReadState::rejected, protocol_error()));
+    }
+    if (acl_after == ExtendedAclState::unsupported) {
+        return close_and_return(stable_read_error(BoundedReadState::unsupported, acl_error));
+    }
+    if (acl_after == ExtendedAclState::failed) {
+        return close_and_return(stable_read_error(BoundedReadState::failed, acl_error));
+    }
+#endif
+
+    const auto parent_after = map_parent_policy(inspect_parent_policy(*descriptor));
+    if (parent_after.state != BoundedReadState::exact) {
+        return close_and_return(parent_after);
+    }
+
+    return close_and_return(stable_read_exact(RecordSnapshot{
+        .identity = native_identity(held_after),
+        .size = exact_size,
+    }));
+}
+
 [[nodiscard]] MutationResult native_rename_no_replace(int parent_fd, const char* source,
                                                       const char* destination) noexcept {
 #if defined(__APPLE__)
@@ -536,39 +869,62 @@ enum class ExtendedAclState : std::uint8_t {
 
 class ProductionRecordOps final : public RecordOps {
 public:
+    [[nodiscard]] BoundedReadResult read_bounded_at(NativeHandle parent_handle,
+                                                    const std::filesystem::path& leaf,
+                                                    std::uint64_t min_bytes,
+                                                    std::uint64_t max_bytes) noexcept override {
+        std::vector<std::byte> bytes;
+        const auto prepared = [&](std::size_t exact_size) {
+            bytes.resize(exact_size);
+            return true;
+        };
+        const auto captured = [&](std::span<const std::byte> chunk, std::size_t offset) noexcept {
+            if (offset > bytes.size() || chunk.size() > bytes.size() - offset) {
+                return false;
+            }
+            std::copy(chunk.begin(), chunk.end(),
+                      bytes.begin() + static_cast<std::ptrdiff_t>(offset));
+            return true;
+        };
+        const auto outcome = read_stable_relative_file(parent_handle, leaf, min_bytes, max_bytes,
+                                                       prepared, captured);
+        switch (outcome.state) {
+        case BoundedReadState::missing:
+            return BoundedReadResult::missing();
+        case BoundedReadState::exact:
+            if (!outcome.snapshot.has_value()) {
+                return BoundedReadResult::failed(protocol_error());
+            }
+            return BoundedReadResult::exact(std::move(bytes), *outcome.snapshot);
+        case BoundedReadState::rejected:
+            return BoundedReadResult::rejected(outcome.error);
+        case BoundedReadState::interrupted:
+            return BoundedReadResult::interrupted(outcome.error);
+        case BoundedReadState::unsupported:
+            return BoundedReadResult::unsupported(outcome.error);
+        case BoundedReadState::failed:
+            return BoundedReadResult::failed(outcome.error);
+        }
+        return BoundedReadResult::failed(protocol_error());
+    }
+
     [[nodiscard]] MutationResult probe_no_replace_at(NativeHandle parent_handle) noexcept override {
         const auto descriptor = parent_descriptor(parent_handle);
         if (!descriptor) {
             return MutationResult::failed(posix_error(EBADF));
         }
 
-        struct stat parent_metadata{};
-        int stat_result = -1;
-        do {
-            stat_result = ::fstat(*descriptor, &parent_metadata);
-        } while (stat_result != 0 && errno == EINTR);
-        if (stat_result != 0) {
-            return MutationResult::failed(posix_error(errno));
+        const auto parent_policy = inspect_parent_policy(*descriptor);
+        switch (parent_policy.state) {
+        case ParentPolicyState::accepted:
+            break;
+        case ParentPolicyState::rejected:
+            return MutationResult::identity_mismatch(parent_policy.error);
+        case ParentPolicyState::unsupported:
+            return MutationResult::unsupported(parent_policy.error);
+        case ParentPolicyState::failed:
+            return MutationResult::failed(parent_policy.error);
         }
-        if (!S_ISDIR(parent_metadata.st_mode) ||
-            static_cast<std::uint64_t>(parent_metadata.st_uid) !=
-                static_cast<std::uint64_t>(::geteuid()) ||
-            (parent_metadata.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
-            return MutationResult::identity_mismatch(protocol_error());
-        }
-#if defined(__APPLE__)
-        std::error_code acl_error;
-        const auto acl_state = inspect_extended_acl(*descriptor, acl_error);
-        if (acl_state == ExtendedAclState::present) {
-            return MutationResult::identity_mismatch(protocol_error());
-        }
-        if (acl_state == ExtendedAclState::unsupported) {
-            return MutationResult::unsupported(acl_error);
-        }
-        if (acl_state == ExtendedAclState::failed) {
-            return MutationResult::failed(acl_error);
-        }
-#endif
 
         // Empty leaf names cannot designate filesystem objects. ENOENT proves
         // that the kernel accepted the handle-relative no-replace operation and
@@ -589,143 +945,39 @@ public:
     [[nodiscard]] InspectResult
     inspect_exact_at(NativeHandle parent_handle, const std::filesystem::path& leaf,
                      std::span<const std::byte> expected_bytes) noexcept override {
-        const auto descriptor = parent_descriptor(parent_handle);
-        if (!descriptor) {
-            return InspectResult::failed(posix_error(EBADF));
-        }
-
-        int file_descriptor = -1;
-        do {
-            file_descriptor =
-                ::openat(*descriptor, leaf.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-        } while (file_descriptor < 0 && errno == EINTR);
-        if (file_descriptor < 0) {
-            const int saved_errno = errno;
-            if (saved_errno == ENOENT) {
-                return InspectResult::missing();
-            }
-            if (saved_errno == ELOOP) {
-                return InspectResult::rejected(posix_error(saved_errno));
-            }
-            return InspectResult::failed(posix_error(saved_errno));
-        }
-
-        const auto close_and_return = [&](InspectResult intended) noexcept -> InspectResult {
-            if (::close(file_descriptor) == 0) {
-                return intended;
-            }
-            return InspectResult::failed(posix_error(errno));
-        };
-
-        struct stat held_before{};
-        struct stat named_before{};
-        int stat_result = -1;
-        do {
-            stat_result = ::fstat(file_descriptor, &held_before);
-        } while (stat_result != 0 && errno == EINTR);
-        if (stat_result != 0) {
-            return close_and_return(InspectResult::failed(posix_error(errno)));
-        }
-        do {
-            stat_result = ::fstatat(*descriptor, leaf.c_str(), &named_before, AT_SYMLINK_NOFOLLOW);
-        } while (stat_result != 0 && errno == EINTR);
-        if (stat_result != 0) {
-            return close_and_return(InspectResult::rejected(posix_error(errno)));
-        }
-
         const std::uint64_t expected_size = static_cast<std::uint64_t>(expected_bytes.size());
-        if (!metadata_has_expected_policy(held_before, expected_size) ||
-            !metadata_has_expected_policy(named_before, expected_size) ||
-            !same_named_object(held_before, named_before)) {
-            return close_and_return(InspectResult::rejected(protocol_error()));
-        }
-#if defined(__APPLE__)
-        std::error_code acl_error;
-        const auto acl_before = inspect_extended_acl(file_descriptor, acl_error);
-        if (acl_before == ExtendedAclState::present) {
-            return close_and_return(InspectResult::rejected(protocol_error()));
-        }
-        if (acl_before == ExtendedAclState::unsupported) {
-            return close_and_return(InspectResult::unsupported(acl_error));
-        }
-        if (acl_before == ExtendedAclState::failed) {
-            return close_and_return(InspectResult::failed(acl_error));
-        }
-#endif
-
-        std::array<std::byte, 64U * 1024U> buffer{};
-        std::size_t offset = 0;
-        while (offset < expected_bytes.size()) {
-            const std::size_t requested = std::min(buffer.size(), expected_bytes.size() - offset);
-            ssize_t count = -1;
-            do {
-                count =
-                    ::pread(file_descriptor, buffer.data(), requested, static_cast<off_t>(offset));
-            } while (count < 0 && errno == EINTR);
-            if (count < 0) {
-                return close_and_return(InspectResult::failed(posix_error(errno)));
+        const auto prepared = [&](std::size_t exact_size) noexcept {
+            return exact_size == expected_bytes.size();
+        };
+        const auto compared = [&](std::span<const std::byte> chunk, std::size_t offset) noexcept {
+            if (offset > expected_bytes.size() || chunk.size() > expected_bytes.size() - offset) {
+                return false;
             }
-            if (count == 0) {
-                return close_and_return(InspectResult::rejected(protocol_error()));
+            const auto expected_begin =
+                expected_bytes.begin() + static_cast<std::ptrdiff_t>(offset);
+            return std::equal(chunk.begin(), chunk.end(), expected_begin,
+                              expected_begin + static_cast<std::ptrdiff_t>(chunk.size()));
+        };
+        const auto outcome = read_stable_relative_file(parent_handle, leaf, expected_size,
+                                                       expected_size, prepared, compared);
+        switch (outcome.state) {
+        case BoundedReadState::missing:
+            return InspectResult::missing();
+        case BoundedReadState::exact:
+            if (!outcome.snapshot.has_value()) {
+                return InspectResult::failed(protocol_error());
             }
-            const auto read_count = static_cast<std::size_t>(count);
-            if (read_count > requested ||
-                std::memcmp(buffer.data(), expected_bytes.data() + offset, read_count) != 0) {
-                return close_and_return(InspectResult::rejected(protocol_error()));
-            }
-            offset += read_count;
+            return InspectResult::exact(*outcome.snapshot);
+        case BoundedReadState::rejected:
+            return InspectResult::rejected(outcome.error);
+        case BoundedReadState::interrupted:
+            return InspectResult::interrupted(outcome.error);
+        case BoundedReadState::unsupported:
+            return InspectResult::unsupported(outcome.error);
+        case BoundedReadState::failed:
+            return InspectResult::failed(outcome.error);
         }
-
-        std::byte trailing{};
-        ssize_t trailing_count = -1;
-        do {
-            trailing_count = ::pread(file_descriptor, &trailing, 1, static_cast<off_t>(offset));
-        } while (trailing_count < 0 && errno == EINTR);
-        if (trailing_count < 0) {
-            return close_and_return(InspectResult::failed(posix_error(errno)));
-        }
-        if (trailing_count != 0) {
-            return close_and_return(InspectResult::rejected(protocol_error()));
-        }
-
-        struct stat held_after{};
-        struct stat named_after{};
-        do {
-            stat_result = ::fstat(file_descriptor, &held_after);
-        } while (stat_result != 0 && errno == EINTR);
-        if (stat_result != 0) {
-            return close_and_return(InspectResult::failed(posix_error(errno)));
-        }
-        do {
-            stat_result = ::fstatat(*descriptor, leaf.c_str(), &named_after, AT_SYMLINK_NOFOLLOW);
-        } while (stat_result != 0 && errno == EINTR);
-        if (stat_result != 0) {
-            return close_and_return(InspectResult::rejected(posix_error(errno)));
-        }
-        if (!metadata_has_expected_policy(held_after, expected_size) ||
-            !metadata_has_expected_policy(named_after, expected_size) ||
-            !same_named_object(held_after, named_after) ||
-            native_identity(held_before) != native_identity(held_after)) {
-            return close_and_return(InspectResult::rejected(protocol_error()));
-        }
-#if defined(__APPLE__)
-        acl_error.clear();
-        const auto acl_after = inspect_extended_acl(file_descriptor, acl_error);
-        if (acl_after == ExtendedAclState::present) {
-            return close_and_return(InspectResult::rejected(protocol_error()));
-        }
-        if (acl_after == ExtendedAclState::unsupported) {
-            return close_and_return(InspectResult::unsupported(acl_error));
-        }
-        if (acl_after == ExtendedAclState::failed) {
-            return close_and_return(InspectResult::failed(acl_error));
-        }
-#endif
-
-        return close_and_return(InspectResult::exact(RecordSnapshot{
-            .identity = native_identity(held_after),
-            .size = expected_size,
-        }));
+        return InspectResult::failed(protocol_error());
     }
 
     [[nodiscard]] MutationResult
@@ -864,6 +1116,99 @@ InspectResult InspectResult::unsupported(std::error_code error) noexcept {
 
 InspectResult InspectResult::failed(std::error_code error) noexcept {
     return InspectResult(InspectState::failed, std::nullopt, error_or_protocol(error));
+}
+
+BoundedReadResult::BoundedReadResult(BoundedReadState state,
+                                     std::optional<std::vector<std::byte>> bytes,
+                                     std::optional<RecordSnapshot> snapshot,
+                                     std::error_code native_error) noexcept
+    : state_(state), bytes_(std::move(bytes)), snapshot_(std::move(snapshot)),
+      native_error_(native_error) {}
+
+BoundedReadResult BoundedReadResult::missing() noexcept {
+    return BoundedReadResult(BoundedReadState::missing, std::nullopt, std::nullopt, {});
+}
+
+BoundedReadResult BoundedReadResult::exact(std::vector<std::byte> bytes,
+                                           RecordSnapshot snapshot) noexcept {
+    if (bytes.size() != snapshot.size) {
+        return failed(protocol_error());
+    }
+    return BoundedReadResult(BoundedReadState::exact, std::move(bytes), snapshot, {});
+}
+
+BoundedReadResult BoundedReadResult::rejected(std::error_code error) noexcept {
+    return BoundedReadResult(BoundedReadState::rejected, std::nullopt, std::nullopt,
+                             error_or_protocol(error));
+}
+
+BoundedReadResult BoundedReadResult::interrupted(std::error_code error) noexcept {
+    return BoundedReadResult(BoundedReadState::interrupted, std::nullopt, std::nullopt,
+                             error_or_protocol(error));
+}
+
+BoundedReadResult BoundedReadResult::unsupported(std::error_code error) noexcept {
+    return BoundedReadResult(BoundedReadState::unsupported, std::nullopt, std::nullopt,
+                             error_or_protocol(error));
+}
+
+BoundedReadResult BoundedReadResult::failed(std::error_code error) noexcept {
+    return BoundedReadResult(BoundedReadState::failed, std::nullopt, std::nullopt,
+                             error_or_protocol(error));
+}
+
+BoundedReadResult RecordOps::read_bounded_at(NativeHandle parent_handle,
+                                             const std::filesystem::path& leaf,
+                                             std::uint64_t min_bytes,
+                                             std::uint64_t max_bytes) noexcept {
+    (void)parent_handle;
+    (void)leaf;
+    (void)min_bytes;
+    (void)max_bytes;
+    return BoundedReadResult::unsupported(unsupported_error());
+}
+
+BoundedReadResult read_bounded_at_with_ops(NativeHandle parent_handle,
+                                           const std::filesystem::path& leaf,
+                                           std::uint64_t min_bytes, std::uint64_t max_bytes,
+                                           RecordOps& ops) noexcept {
+    if (const auto invalid =
+            validate_bounded_read_request(parent_handle, leaf, min_bytes, max_bytes)) {
+        return *invalid;
+    }
+
+    try {
+        for (;;) {
+            auto result = ops.read_bounded_at(parent_handle, leaf, min_bytes, max_bytes);
+            if (!valid_bounded_read_result(result, min_bytes, max_bytes)) {
+                return BoundedReadResult::failed(protocol_error());
+            }
+            if (result.state() != BoundedReadState::interrupted) {
+                return result;
+            }
+        }
+    } catch (const std::bad_alloc&) {
+        return BoundedReadResult::failed(std::make_error_code(std::errc::not_enough_memory));
+    } catch (const std::filesystem::filesystem_error& error) {
+        return BoundedReadResult::failed(error.code());
+    } catch (...) {
+        return BoundedReadResult::failed(std::make_error_code(std::errc::io_error));
+    }
+}
+
+BoundedReadResult read_bounded_at(NativeHandle parent_handle, const std::filesystem::path& leaf,
+                                  std::uint64_t min_bytes, std::uint64_t max_bytes) noexcept {
+    if (const auto invalid =
+            validate_bounded_read_request(parent_handle, leaf, min_bytes, max_bytes)) {
+        return *invalid;
+    }
+
+#if !defined(__APPLE__)
+    return BoundedReadResult::unsupported(unsupported_error());
+#else
+    ProductionRecordOps ops;
+    return read_bounded_at_with_ops(parent_handle, leaf, min_bytes, max_bytes, ops);
+#endif
 }
 
 MutationResult::MutationResult(MutationState state, std::error_code native_error) noexcept
