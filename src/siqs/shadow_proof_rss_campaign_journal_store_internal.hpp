@@ -271,6 +271,20 @@ make_session_view(const SIQSShadowProofRssCampaignJournalResume& resume) noexcep
     };
 }
 
+/// Shared exact predicate for the pure absent-journal preflight. Production
+/// composition may classify the probe only after this predicate succeeds; the
+/// native store uses the same predicate before registry lookup or filesystem
+/// access.
+[[nodiscard]] constexpr bool absent_journal_preflight_is_ready(
+    const SIQSShadowProofRssCampaignJournalResume& preflight) noexcept {
+    return preflight.status == SIQSShadowProofRssJournalStatus::ready &&
+           preflight.reason == SIQSShadowProofRssJournalReason::ready &&
+           preflight.action == SIQSShadowProofRssJournalAction::create_header &&
+           preflight.committed_slot_count == 0 && preflight.next_slot_number == 1 &&
+           preflight.header_to_create.has_value() && !preflight.prepared_slot_start.has_value() &&
+           !preflight.taint_to_append.has_value();
+}
+
 struct PlatformOpenResult final {
     PlatformOpenResult() = default;
     PlatformOpenResult(

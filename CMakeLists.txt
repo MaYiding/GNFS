@@ -367,11 +367,16 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/util/thread_pool.cpp")
     target_sources(gnfs_core PRIVATE src/util/thread_pool.cpp)
 endif()
 
-# SIQS RSS campaign journal native lease boundary. The common source owns the
-# closed production registry and public result/session state; exactly one
-# platform loader supplies the native implementation.
+# SIQS RSS campaign journal native lease and source-private execution
+# boundary. The common source owns the closed production registry and public
+# result/session state; exactly one platform loader supplies the native
+# implementation. The controller and entry compile in production builds, but
+# neither is installed as a public entry point.
 target_sources(gnfs_core PRIVATE
     src/siqs/shadow_proof_rss_campaign_journal_store.cpp
+    src/siqs/shadow_proof_rss_campaign_slot_runner.cpp
+    src/siqs/shadow_proof_rss_campaign_controller.cpp
+    src/siqs/shadow_proof_rss_campaign_entry.cpp
 )
 if(WIN32)
     target_sources(gnfs_core PRIVATE
@@ -430,22 +435,6 @@ option(GNFS_BUILD_FUZZERS "Build libFuzzer fuzz targets" OFF)
 
 if(GNFS_BUILD_TESTS)
     enable_testing()
-
-    # Private same-child RSS campaign runner. Fixture-aware codecs and joins
-    # compile only into this non-installed test dependency; gnfs_core and the
-    # public transport remain fixture-agnostic.
-    add_library(gnfs_siqs_rss_campaign_runner_private STATIC EXCLUDE_FROM_ALL
-        src/siqs/shadow_proof_rss_campaign_controller.cpp
-        src/siqs/shadow_proof_rss_campaign_controller_internal.hpp
-        src/siqs/shadow_proof_rss_campaign_slot_runner.cpp
-        src/siqs/shadow_proof_rss_campaign_slot_runner_internal.hpp
-    )
-    target_include_directories(gnfs_siqs_rss_campaign_runner_private PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
-    )
-    target_link_libraries(gnfs_siqs_rss_campaign_runner_private PUBLIC
-        gnfs_core
-    )
 
     function(add_siqs_rss_campaign_synthetic_child target_name behavior)
         add_executable(${target_name} EXCLUDE_FROM_ALL
@@ -2319,7 +2308,7 @@ if(GNFS_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
     )
     target_link_libraries(test_siqs_shadow_proof_rss_campaign_journal_store PRIVATE
-        gnfs_siqs_rss_campaign_runner_private
+        gnfs_core
     )
     add_dependencies(test_siqs_shadow_proof_rss_campaign_journal_store
         siqs_rss_campaign_synthetic_success
@@ -2345,6 +2334,20 @@ if(GNFS_BUILD_TESTS)
     endif()
     set_tests_properties(SiqsShadowProofRssCampaignJournalStore
         PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    add_executable(test_siqs_shadow_proof_rss_campaign_entry
+        tests/test_siqs_shadow_proof_rss_campaign_entry.cpp
+    )
+    target_include_directories(test_siqs_shadow_proof_rss_campaign_entry PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_campaign_entry PRIVATE
+        gnfs_core
+    )
+    add_test(NAME SiqsShadowProofRssCampaignEntry
+        COMMAND test_siqs_shadow_proof_rss_campaign_entry)
+    set_tests_properties(SiqsShadowProofRssCampaignEntry
+        PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_siqs_shadow_proof_rss_holdout_probe_contract
         tests/test_siqs_shadow_proof_rss_holdout_probe_contract.cpp

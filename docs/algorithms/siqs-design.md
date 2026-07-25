@@ -101,8 +101,11 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `tests/test_siqs_shadow_proof_rss_probe_execution_identity.cpp` | Schema V2 launch-profile, environment, boundary-vector, and mutation tests without launching a probe |
 | `include/gnfs/siqs/shadow_proof_rss_campaign_artifact_layout.hpp` | Fixed three-artifact-per-slot namespace, bounded pure inspection, and exact closure against validated journal replay |
 | `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-construct-only native session plus lease-bound start, artifact-batch, explicit-taint, and probe-classification authority boundaries |
+| `src/siqs/shadow_proof_rss_campaign_controller_internal.hpp` | Source-private fresh-only 80-slot controller and authority-free terminal projection |
+| `src/siqs/shadow_proof_rss_campaign_entry_internal.hpp` | Default-closed source-private production composition through the public store-open boundary |
 | `tests/test_siqs_shadow_proof_rss_campaign_artifact_layout.cpp` | Canonical leaf grammar, bounded sizes, deterministic diagnostics, and journal-to-artifact consistency |
 | `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, authenticated Linux same-child commits, actual 80-child synthetic controller completion, nonfresh rejection, slot-41 uncertainty stop and reopen, crash recovery, and platform fallback |
+| `tests/test_siqs_shadow_proof_rss_campaign_entry.cpp` | Cross-platform preflight, production-classification, empty-registry, zero-side-effect, and authority-free result contract |
 | `src/siqs/shadow_proof_rss_holdout_probe_record_codec_internal.hpp` | Source-private strict owning decoder for one canonical holdout-probe stdout record |
 | `src/siqs/shadow_proof_rss_holdout_stream_join_internal.hpp` | Source-private approved-policy, runtime-facts, slot, and two-stream validation into a V3 identity-bound authority-free draft |
 | `include/gnfs/util/bounded_child_process.hpp` | Production shell-free, deadline-bounded dual-stream capture; it transports data but grants no campaign authority |
@@ -344,6 +347,22 @@ insertion point, caller policy input, or gate authority crosses this boundary.
 The commit-uncertainty test also fails confirmation at slot 41: the controller
 reports only 40 confirmed slots and starts no slot 42, while a clean reopen may
 observe the exact slot-41 commit that was already durable.
+
+A source-private production composition now compiles with `gnfs_core`, including
+when tests are disabled. It performs the exact pure absent-journal preflight,
+rejects synthetic classification before registry lookup, calls the public
+store-open boundary exactly once for a production claim, and immediately
+consumes any returned session in the fresh-only controller. Its result is
+copyable data with no session, retry, recovery, or gate authority. The default
+registry is still empty, so the independent cross-platform entry test proves
+that a superficially valid production claim returns
+`binding_not_registered/deployment_registry` twice with an unchanged recursive
+temporary-directory snapshot and no child marker. No successful production
+execution is injected into this test. The internal symbol is compiled into the
+installed static core archive, but no entry header is installed and this is not
+a supported public API. Adding the first production registry row would be an
+entry-activation change requiring the still-pending approval, not an ordinary
+packaging update.
 
 `darwin_hardened_suspended_v1` is reserved in schema V2 but has no production
 implementation. A platform prototype confirmed that suspended spawn and

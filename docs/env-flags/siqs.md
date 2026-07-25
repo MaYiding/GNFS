@@ -231,7 +231,8 @@ filesystem I/O 前返回 unavailable；private test 才能使用 synthetic path 
 Windows 继续显式 fail closed。authority-held gate evaluation 和 serial 80-slot
 production entry point 仍待实现。
 
-测试专用私有层已经有 fresh-only serial controller。它只接收空 journal 的
+编译进 `gnfs_core`、但不安装 internal header 的 source-private 层已经有 fresh-only
+serial controller。它只接收空 journal 的
 `ready/create_header/count=0/next=1` session，并在同一 lease 链上按 canonical
 顺序启动全部 80 个 synthetic child。partial committed prefix、complete journal
 和 dangling start 都会在零 child、零新 journal 写入下被拒绝；controller 不拥有
@@ -239,6 +240,17 @@ reopen、resume、pending-taint recovery、retry、callback、cancellation 或 g
 evaluation 权限。begin/commit 不确定以及 taint closure 失败只返回
 `reconcile_required`，不会暴露可能过时的 terminal view。完整 synthetic run 的唯一
 终态是 `synthetic_complete/none`，不会获得 gate authority。
+
+同一私有层还包含默认关闭的 production composition。它先复用 journal 的精确
+absent-state preflight，随后在 registry lookup 前拒绝 synthetic claim；production
+claim 只能调用一次公开 store-open boundary，成功得到的 session 必须立刻被 controller
+消费。返回值只含 outcome、diagnostic 和可选 controller 数据，不含 session、retry、
+reopen、recovery 或 gate 能力。默认 registry 为空，因此表面合法的 production claim
+固定返回 `binding_not_registered/deployment_registry`，不会创建目录、写 journal、
+启动 child 或读取 sealed holdout。该 composition 没有 installed public header；
+它不是受支持的 installed API。加入首个 production registry row 属于入口激活提交，
+必须携带仍待完成的审批证据，不能作为普通 packaging 变更。批准 policy、部署
+registry row 和公开生产入口仍是独立的后续审批里程碑。
 
 durable receipt、launch permit、authenticated executable image、session、
 active slot 及其 authority-bearing result wrapper 只允许 move construction，
@@ -359,6 +371,10 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
   rejection；还覆盖 execution identity 与完整 approval/runtime 字段错配的 journal
   零写入拒绝。
   测试只启动 synthetic child，不运行 production probe 或打开 sealed holdout。
+- `tests/test_siqs_shadow_proof_rss_campaign_entry.cpp` 独立覆盖 source-private
+  composition 的 policy-first preflight、synthetic classification 拒绝、默认空
+  registry 的两次一致拒绝和递归目录快照不变；它不注入 deployment、session、
+  controller callback 或成功 production 分支。
 - `tests/test_siqs.cpp` 锁定公开 `factor()` 路径对 `prefer` 的 fail-closed
   拒绝，并确认拒绝前不发出 V1 或 V2 记录。
 - `tests/test_siqs_shadow_proof_observe_probe.cpp` 提供 Release-only production 1LP fresh-process measurement target；它不进入 CTest 或常规测试 tier。
@@ -373,6 +389,7 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
 ./scripts/test.sh run test_siqs_shadow_observe_rss_holdouts
 ./scripts/test.sh run test_siqs_shadow_proof_rss_gate
 ./scripts/test.sh run test_siqs_shadow_proof_rss_campaign_journal_store
+./scripts/test.sh run test_siqs_shadow_proof_rss_campaign_entry
 ./scripts/test.sh run test_siqs_shadow_proof_runner
 ./scripts/test.sh run test_siqs
 ./scripts/test.sh probe-siqs-shadow-observe observe

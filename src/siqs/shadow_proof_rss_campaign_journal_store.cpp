@@ -360,16 +360,6 @@ executable_environment_is_canonical(std::span<const std::string> environment) no
 }
 
 [[nodiscard]] bool
-preflight_is_ready(const SIQSShadowProofRssCampaignJournalResume& preflight) noexcept {
-    return preflight.status == SIQSShadowProofRssJournalStatus::ready &&
-           preflight.reason == SIQSShadowProofRssJournalReason::ready &&
-           preflight.action == SIQSShadowProofRssJournalAction::create_header &&
-           preflight.committed_slot_count == 0 && preflight.next_slot_number == 1 &&
-           preflight.header_to_create.has_value() && !preflight.prepared_slot_start.has_value() &&
-           !preflight.taint_to_append.has_value();
-}
-
-[[nodiscard]] bool
 production_launch_profile_is_supported_on_host(const DeploymentEntry& deployment) noexcept {
     if (deployment.probe_kind != SIQSShadowProofRssProbeKind::production_holdout) {
         return true;
@@ -403,7 +393,7 @@ SessionFactory::open_with_deployments(const SIQSShadowProofRssGatePolicy* policy
         // platform call, so rejected policy/facts never touch the filesystem.
         const auto preflight = resume_siqs_shadow_proof_rss_campaign_journal(
             policy, runtime_facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {});
-        if (!preflight_is_ready(preflight)) {
+        if (!absent_journal_preflight_is_ready(preflight)) {
             auto diagnostic = make_common_diagnostic(
                 SIQSShadowProofRssCampaignJournalStoreError::preflight_rejected);
             diagnostic.journal_reason = preflight.reason;
@@ -443,7 +433,7 @@ SessionFactory::open_with_deployments(const SIQSShadowProofRssGatePolicy* policy
         const auto approved_preflight = resume_siqs_shadow_proof_rss_campaign_journal(
             &approved_policy, &approved_runtime_facts, SIQSShadowProofRssJournalPresence::absent,
             nullptr, {});
-        if (!preflight_is_ready(approved_preflight) ||
+        if (!absent_journal_preflight_is_ready(approved_preflight) ||
             !policy_claim_matches(*policy, approved_policy) ||
             !runtime_claim_matches(*runtime_facts, approved_runtime_facts)) {
             return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(

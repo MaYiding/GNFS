@@ -477,12 +477,13 @@ artifacts, and only the current tainted slot may retain any durable orphan
 subset.
 
 `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` and the native
-implementation now close that read boundary. The public entry point accepts
-only the validated policy and runtime facts. The default production deployment
-registry is deliberately empty, so an otherwise valid request returns
-`binding_not_registered`; there is no public path, descriptor, resolver, or
-registry-installation input. Deployment packaging may replace only the private
-owned registry table, whose rows include the expected native owner identity.
+implementation now close that read boundary. The public store-open boundary
+accepts only the validated policy and runtime facts. The default production
+deployment registry is deliberately empty, so an otherwise valid request
+returns `binding_not_registered`; there is no public path, descriptor, resolver,
+or registry-installation input. Deployment packaging may replace only the
+private owned registry table, whose rows include the expected native owner
+identity.
 
 On POSIX systems, the loader walks the registered absolute base one component
 at a time from `/`, opens every component and the registered store root with
@@ -615,10 +616,11 @@ it carries data only and is not a campaign launcher. The fast native-store
 test uses a temporary real filesystem and subprocesses to cover
 the registry boundary, component walking, strict layouts, move-only lease
 ownership, cross-process contention, crash release, and replay actions. It also
-links one `EXCLUDE_FROM_ALL`, non-installed private runner and five synthetic
-child variants. Those variants read only the compiled sealed identity manifest;
-they never call `factor()`, collect a holdout measurement, or invoke the
-production probe. They cover successful same-child commit, nonzero exit,
+links the source-private runner compiled into `gnfs_core` and five
+`EXCLUDE_FROM_ALL` synthetic child variants. Those variants read only the
+compiled sealed identity manifest; they never call `factor()`, collect a
+holdout measurement, or invoke the production probe. They cover successful
+same-child commit, nonzero exit,
 malformed output, capture overflow, timeout cleanup, partial artifact
 publication, explicit taint, and commit-terminal uncertainty. The success path
 covers both an empty-stderr `off` slot and the first `observe` slot with one
@@ -727,6 +729,21 @@ operation. A campaign interrupted after its durable start but before its sample
 commits remains tainted and cannot be retried in place. The production registry
 is empty, and no sealed holdout has run.
 
+A default-closed source-private composition is also present in production
+builds. It reuses the exact absent-journal preflight, rejects synthetic
+classification before registry lookup, calls the public store-open boundary
+exactly once for a production claim, and consumes any returned session directly
+in the controller. The result is authority-free data. Its independent
+cross-platform test makes no deployment injection: a valid production claim
+returns `binding_not_registered/deployment_registry` on repeated calls, leaves
+a recursive temporary-workspace snapshot unchanged, and creates no child
+marker. This staging does not approve a policy, provision a deployment row,
+publish an entry API, run a holdout, or evaluate the gate. The implementation
+symbol is present in the installed static core archive, but no entry header is
+installed and this is not a supported public API. Adding the first production
+registry row is an entry-activation change that requires the still-pending
+approval evidence, not an ordinary packaging update.
+
 `tests/test_siqs_runtime_facts.cpp`,
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
 `tests/test_siqs_shadow_proof_rss_campaign.cpp`,
@@ -765,6 +782,13 @@ leaves the exact committed 41-slot prefix for a clean reopen to discover. Its
 children emit synthetic protocol records only; the test does not open a sealed
 holdout, run the production probe, evaluate the gate, or collect campaign
 evidence.
+
+`tests/test_siqs_shadow_proof_rss_campaign_entry.cpp` covers only the
+source-private composition's policy-first preflight, production-only
+classification, default empty-registry rejection, repeated no-fallback
+behavior, authority-free result surface, and recursive filesystem snapshot
+invariance. It cannot inject a registry row, session, runner callback, or
+successful production execution.
 
 `tests/test_durable_immutable_file.cpp` uses temporary synthetic bytes to cover
 exclusive-create contention, partial writes, interrupted calls, zero progress,
@@ -1027,6 +1051,12 @@ Before promotion it must provide:
   so replacing a live destination cannot silently discard authority. The
   source-private artifact-batch receipt is noncopyable and nonmovable and is
   constructed only in place inside the lease-owning core.
+- [x] Default-closed source-private production composition compiled with
+  `gnfs_core`: exact pure preflight, production-only classification, one public
+  store-open attempt, immediate controller consumption, authority-free result,
+  and cross-platform repeated empty-registry rejection with zero filesystem or
+  child side effects. It has no installed header and is neither a supported nor
+  approved production entry point.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved
   headroom, OS, architecture, RSS backend, resolved production sieve workers,
   candidate revision, approval identity, sealed corpus digest, trusted journal
