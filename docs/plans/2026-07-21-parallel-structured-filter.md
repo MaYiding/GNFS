@@ -1688,7 +1688,8 @@ under the persistent external lock:
 1. A canonical `RESERVED` record binds a 128-bit lease generation, the frozen
    base-path digest, parent identity, and the identity of the held lock. It can
    roll back only the exact random staging directory derived from that
-   generation.
+   generation until a matching `OWNED` record adds an explicit preactivation
+   capability.
 2. The staging directory receives a durable internal owner record. Canonical
    `OWNED` then binds the directory and owner-file identities and the digest of
    `RESERVED`.
@@ -1700,10 +1701,11 @@ under the persistent external lock:
    consume `RESERVED` and release the retained lock. This closes the interval
    in which another cooperating process could mistake a live pre-writer lease
    for abandoned state.
-5. `OWNED` remains until teardown. Recovery may remove its exact owner marker
-   and exact empty directory, but it cannot create pair-cleanup authority.
-   Live pair leaves without a canonical pair intent, and pending-only pair
-   intent, are preserved.
+5. `OWNED` remains until teardown. `OWNED` alone may remove only its exact
+   owner marker and empty directory. The new capability authorizes pair
+   rollback only while its canonical `RESERVED` predecessor still exists.
+   Activation consumes `RESERVED`, so active live pairs without a canonical
+   pair intent remain preserved.
 
 Every record is fixed-size and SHA-256 protected. Pending names remain
 no-authority publication state. Recovery validates platform, path, parent,
@@ -1715,12 +1717,33 @@ parent sync, then `OWNED` unlink and another parent sync. Crash tests terminate
 children after every pending/canonical publication, directory rename, and
 teardown barrier and require idempotent parent-process convergence.
 
-This protocol intentionally does not turn a lease marker into pair-deletion
-authority. A process death after fresh pair creation but before activation can
-therefore leave a live pair with `RESERVED`; recovery preserves it because its
-move-only writer receipt was lost and no canonical pair intent exists. Closing
-that same-child pair-publication boundary remains a separate milestone.
-Distributed-sieve worker artifacts likewise retain their existing parent/child
-deletion path and require a separate interprocess ownership handoff.
-Whole-directory quarantine remains deferred. The external lock is never
-deleted and therefore cannot split into two cooperating lock domains.
+### Preactivation Pair Rollback Status
+
+The same-child writer boundary now uses whole-directory quarantine. A newly
+created lease records `RollbackPreactivePairAndLease` in `OWNED`, but recovery
+accepts that capability only together with the exact canonical `RESERVED`
+record. This conjunction exists before the first pair `O_EXCL` and ends at the
+activation commit point.
+
+Recovery first validates the lock, lease chain, owner marker, and directory
+identity. It accepts only the owner marker plus the expected `.relidx` and
+`.reldata` leaves. It then moves the exact fixed directory back to its
+generation-specific staging name with a no-replace rename. This atomic
+quarantine removes the pair from the reusable live namespace before deletion.
+Recovery revalidates each regular single-link leaf, removes data and index with
+directory barriers, removes the owner and directory, and finally consumes
+`RESERVED` and `OWNED`. Every step is idempotent after process termination.
+Unknown children, links, replacement directories, and inconsistent protocol
+tails remain fail closed.
+
+Fresh-writer crash tests cover the first reservation, second reservation,
+header validation, cleanup-receipt capture, and activation commit. Separate
+recovery crashes cover directory quarantine, both leaf removals, owner and
+directory removal, and both external marker removals. A crash after
+`RESERVED` removal proves the inverse property: recovery preserves the active
+pair and cannot reconstruct deletion authority from `OWNED`.
+
+Distributed-sieve worker artifacts still use their existing parent/child
+deletion path and require a separate interprocess ownership handoff. That
+handoff is the next ownership milestone. The external lock is never deleted,
+so it cannot split into two cooperating lock domains.

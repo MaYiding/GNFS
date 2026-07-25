@@ -1419,6 +1419,24 @@ constexpr std::array PRIVATE_LEASE_REMOVE_FAULT_POINTS{
     OOCPrivateLeaseFaultPoint::OwnedRemovedDurable,
 };
 
+constexpr std::array PRIVATE_WRITER_FAULT_POINTS{
+    OOCPrivateLeaseFaultPoint::FreshIndexReserved,
+    OOCPrivateLeaseFaultPoint::FreshDataReserved,
+    OOCPrivateLeaseFaultPoint::FreshHeadersValidated,
+    OOCPrivateLeaseFaultPoint::FreshPairOwnershipCaptured,
+    OOCPrivateLeaseFaultPoint::ReservedRemovedDurable,
+};
+
+constexpr std::array PRIVATE_PREACTIVE_RECOVERY_FAULT_POINTS{
+    OOCPrivateLeaseFaultPoint::PreactiveDirectoryQuarantinedDurable,
+    OOCPrivateLeaseFaultPoint::PreactiveDataRemovedDurable,
+    OOCPrivateLeaseFaultPoint::PreactiveIndexRemovedDurable,
+    OOCPrivateLeaseFaultPoint::OwnerRemovedDurable,
+    OOCPrivateLeaseFaultPoint::FinalDirectoryRemovedDurable,
+    OOCPrivateLeaseFaultPoint::ReservedRemovedDurable,
+    OOCPrivateLeaseFaultPoint::OwnedRemovedDurable,
+};
+
 constexpr int PRIVATE_LEASE_CRASH_EXIT_BASE = 140;
 
 struct PrivateLeaseCrashContext final {
@@ -1471,7 +1489,45 @@ int run_private_lease_crash_child(std::string_view operation, std::size_t point_
         (void)result;
         return 67;
     }
+    if (operation == "preactive-recover") {
+        if (point_index >= PRIVATE_PREACTIVE_RECOVERY_FAULT_POINTS.size()) {
+            return 64;
+        }
+        {
+            auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+            if (!reservation.completed()) {
+                return 68;
+            }
+            const auto paths = OOCCleanupTransaction::paths_for(base);
+            write_test_leaf(paths.index_path, "partial preactive index");
+            write_test_leaf(paths.data_path, "partial preactive data");
+        }
+        PrivateLeaseCrashContext context{
+            .target = PRIVATE_PREACTIVE_RECOVERY_FAULT_POINTS[point_index],
+        };
+        const auto result =
+            OOCCleanupTransaction::recover_private_lease(base, private_lease_crash_hooks(context));
+        (void)result;
+        return 69;
+    }
     return 64;
+}
+
+int run_private_writer_crash_child(std::size_t point_index, const std::filesystem::path& base) {
+    if (point_index >= PRIVATE_WRITER_FAULT_POINTS.size()) {
+        return 64;
+    }
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    if (!reservation.completed()) {
+        return 70;
+    }
+    PrivateLeaseCrashContext context{
+        .target = PRIVATE_WRITER_FAULT_POINTS[point_index],
+    };
+    OOCRelationWriter writer(base.string(), *reservation.ownership,
+                             private_lease_crash_hooks(context));
+    (void)writer;
+    return 71;
 }
 
 constexpr int PRIVATE_LEASE_ABANDONED_EXIT = 93;
@@ -1505,6 +1561,25 @@ int run_private_lease_abandon_child(std::string_view scenario, const std::filesy
     return 64;
 }
 
+[[nodiscard]] std::vector<std::filesystem::path>
+private_lease_staging_entries(const gnfs::relation::OOCCleanupPaths& paths) {
+    std::vector<std::filesystem::path> entries;
+    const auto prefix =
+        paths.private_directory.filename().generic_string() + ".gnfs-private-lease-v1.stage-";
+    std::error_code error;
+    std::filesystem::directory_iterator cursor(paths.private_directory.parent_path(), error);
+    if (error) {
+        throw std::filesystem::filesystem_error("inspect private lease staging entries",
+                                                paths.private_directory.parent_path(), error);
+    }
+    for (const auto& entry : cursor) {
+        if (entry.path().filename().generic_string().starts_with(prefix)) {
+            entries.push_back(entry.path());
+        }
+    }
+    return entries;
+}
+
 void check_empty_private_lease_recovery(const std::filesystem::path& base) {
     const auto paths = OOCCleanupTransaction::paths_for(base);
     const auto recovered = OOCCleanupTransaction::recover_private_lease(base);
@@ -1519,6 +1594,7 @@ void check_empty_private_lease_recovery(const std::filesystem::path& base) {
     CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
     CHECK(!entry_exists_no_follow(paths.lease_owned_pending_path));
     CHECK(!entry_exists_no_follow(paths.lease_owned_path));
+    CHECK(private_lease_staging_entries(paths).empty());
     CHECK(entry_exists_no_follow(paths.lock_path));
 
     const auto repeated = OOCCleanupTransaction::recover_private_lease(base);
@@ -1562,6 +1638,119 @@ void test_private_lease_process_crash_recovery(const std::string& executable) {
         CHECK(child.exit_code == PRIVATE_LEASE_CRASH_EXIT_BASE +
                                      static_cast<int>(PRIVATE_LEASE_REMOVE_FAULT_POINTS[index]));
         check_empty_private_lease_recovery(base);
+    }
+}
+
+void test_private_lease_preactive_rollback_crash_recovery(const std::string& executable) {
+    TempDirectory temp;
+
+    for (std::size_t index = 0; index < PRIVATE_PREACTIVE_RECOVERY_FAULT_POINTS.size(); ++index) {
+        const auto lease =
+            temp.path() / ("preactive-recovery-" + std::to_string(index) + ".gnfs-sink-lease");
+        const auto base = lease / "corpus";
+        const auto child =
+            gnfs::test::run_child_process(executable, {"--crash-private-lease", "preactive-recover",
+                                                       std::to_string(index), base.string()});
+        CHECK(child.exited);
+        CHECK(!child.signaled);
+        CHECK(child.exit_code ==
+              PRIVATE_LEASE_CRASH_EXIT_BASE +
+                  static_cast<int>(PRIVATE_PREACTIVE_RECOVERY_FAULT_POINTS[index]));
+        check_empty_private_lease_recovery(base);
+    }
+}
+
+void test_private_writer_preactivation_crash_recovery(const std::string& executable) {
+    TempDirectory temp;
+
+    // Every writer boundary before RESERVED is consumed remains rollback
+    // state. Recovery owns the exact lease generation and removes any zero,
+    // partial, or fully header-written pair left by process termination.
+    for (std::size_t index = 0; index + 1 < PRIVATE_WRITER_FAULT_POINTS.size(); ++index) {
+        const auto lease =
+            temp.path() / ("writer-precommit-" + std::to_string(index) + ".gnfs-sink-lease");
+        const auto base = lease / "corpus";
+        const auto child = gnfs::test::run_child_process(
+            executable, {"--crash-private-writer", std::to_string(index), base.string()});
+        CHECK(child.exited);
+        CHECK(!child.signaled);
+        CHECK(child.exit_code ==
+              PRIVATE_LEASE_CRASH_EXIT_BASE + static_cast<int>(PRIVATE_WRITER_FAULT_POINTS[index]));
+        check_empty_private_lease_recovery(base);
+    }
+
+    // RESERVED removal is the activation commit point. A crash after that
+    // durable boundary must preserve the live pair and may not recreate
+    // cleanup authority from OWNED alone.
+    const std::size_t commit_index = PRIVATE_WRITER_FAULT_POINTS.size() - 1;
+    const auto committed_base = temp.path() / "writer-committed.gnfs-sink-lease" / "corpus";
+    const auto committed_paths = OOCCleanupTransaction::paths_for(committed_base);
+    const auto child = gnfs::test::run_child_process(
+        executable,
+        {"--crash-private-writer", std::to_string(commit_index), committed_base.string()});
+    CHECK(child.exited);
+    CHECK(!child.signaled);
+    CHECK(child.exit_code == PRIVATE_LEASE_CRASH_EXIT_BASE +
+                                 static_cast<int>(PRIVATE_WRITER_FAULT_POINTS[commit_index]));
+    CHECK(!entry_exists_no_follow(committed_paths.lease_reserved_path));
+    CHECK(entry_exists_no_follow(committed_paths.lease_owned_path));
+    CHECK(entry_exists_no_follow(committed_paths.private_directory));
+    CHECK(entry_exists_no_follow(committed_paths.index_path));
+    CHECK(entry_exists_no_follow(committed_paths.data_path));
+    CHECK(private_lease_staging_entries(committed_paths).empty());
+    CHECK(OOCCleanupTransaction::recover_private_lease(committed_base).status ==
+          OOCCleanupStatus::RecoveryRequired);
+    CHECK(entry_exists_no_follow(committed_paths.index_path));
+    CHECK(entry_exists_no_follow(committed_paths.data_path));
+}
+
+void test_private_lease_preactive_link_attacks_are_preserved() {
+    TempDirectory temp;
+
+    {
+        const auto base = temp.path() / "preactive-hardlink.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        const auto foreign = temp.path() / "preactive-hardlink-target";
+        write_test_leaf(foreign, "foreign hardlink target");
+        {
+            auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+            CHECK(reservation.completed());
+            CHECK(create_hard_link_checked(foreign, paths.index_path));
+        }
+
+        const auto recovered = OOCCleanupTransaction::recover_private_lease(base);
+        CHECK(recovered.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(entry_exists_no_follow(foreign));
+        CHECK(entry_exists_no_follow(paths.private_directory));
+        CHECK(entry_exists_no_follow(paths.index_path));
+        check_entries_equivalent(foreign, paths.index_path);
+        CHECK(private_lease_staging_entries(paths).empty());
+        CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(entry_exists_no_follow(paths.lease_owned_path));
+    }
+
+    {
+        const auto base = temp.path() / "preactive-symlink.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        const auto foreign = temp.path() / "preactive-symlink-target";
+        write_test_leaf(foreign, "foreign symlink target");
+        {
+            auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+            CHECK(reservation.completed());
+            if (!create_symlink_or_explicit_skip(foreign, paths.data_path,
+                                                 "preactive pair symlink")) {
+                return;
+            }
+        }
+
+        const auto recovered = OOCCleanupTransaction::recover_private_lease(base);
+        CHECK(recovered.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(entry_exists_no_follow(foreign));
+        CHECK(entry_exists_no_follow(paths.private_directory));
+        CHECK(entry_is_symlink_no_follow(paths.data_path));
+        CHECK(private_lease_staging_entries(paths).empty());
+        CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(entry_exists_no_follow(paths.lease_owned_path));
     }
 }
 
@@ -1908,6 +2097,9 @@ void run_core_suite(const std::string& executable) {
 
 void run_private_lease_crash_suite(const std::string& executable) {
     test_private_lease_process_crash_recovery(executable);
+    test_private_lease_preactive_rollback_crash_recovery(executable);
+    test_private_writer_preactivation_crash_recovery(executable);
+    test_private_lease_preactive_link_attacks_are_preserved();
     test_private_lease_recovery_preserves_live_pair_without_intent(executable);
     test_private_lease_recovery_preserves_pending_only_pair(executable);
     test_private_lease_writer_activation_closes_reservation();
@@ -1953,6 +2145,14 @@ int main(int argc, char* argv[]) {
             const auto point_index = static_cast<std::size_t>(std::stoull(argv[3]));
             return run_private_lease_crash_child(std::string_view(argv[2]), point_index,
                                                  std::filesystem::path(argv[4]));
+        } catch (...) {
+            return 64;
+        }
+    }
+    if (argc == 4 && std::string_view(argv[1]) == "--crash-private-writer") {
+        try {
+            const auto point_index = static_cast<std::size_t>(std::stoull(argv[2]));
+            return run_private_writer_crash_child(point_index, std::filesystem::path(argv[3]));
         } catch (...) {
             return 64;
         }

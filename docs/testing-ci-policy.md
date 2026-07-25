@@ -159,10 +159,15 @@ identity-bound receipt rejects the ABA target. The no-argument binary runs all
 suites, so its `scripts/test.sh` tier and timeout are `fast` and 60 seconds.
 `OOCCleanupPrivateLeaseCrash` is a `fast` self-exec suite from the same
 binary. It terminates children at each durable private-lease marker, rename,
-and teardown boundary. The broader `RelationReductionEngine` integration
-target is `fast`: it repeatedly creates and removes durable OOC leases, so its
-Debug single-run cost includes the required file and parent-directory
-barriers.
+and teardown boundary. It also covers writer termination after the first and
+second `O_EXCL`, header validation, cleanup-receipt capture, and activation
+commit. Preactivation recovery is interrupted after whole-directory
+quarantine, both pair-leaf removals, owner and directory removal, and both
+external marker removals. The suite verifies that links and unknown children
+remain preserved, while a crash after activation keeps the live pair. The
+broader `RelationReductionEngine` integration target is `fast`: it repeatedly
+creates and removes durable OOC leases, so its Debug single-run cost includes
+the required file and parent-directory barriers.
 
 Windows Release also runs a native sharing-violation retry branch; non-Windows
 execution cannot substitute for that platform evidence.

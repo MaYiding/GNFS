@@ -356,13 +356,21 @@ public:
     /// Fresh create writes paired incomplete V3 headers with one durable store
     /// identity.
     explicit OOCRelationWriter(const std::string& base_path)
-        : OOCRelationWriter(base_path, std::nullopt, std::nullopt, nullptr, ConstructionToken{}) {}
+        : OOCRelationWriter(base_path, std::nullopt, std::nullopt, nullptr, {},
+                            ConstructionToken{}) {}
 
     /// Fresh private-lease creation keeps the lease's persistent BaseLock held
     /// across both O_EXCL reservations and durable lease activation.
     OOCRelationWriter(const std::string& base_path, OOCPrivateLeaseOwnershipReceipt& private_lease)
-        : OOCRelationWriter(base_path, std::nullopt, std::nullopt, &private_lease,
+        : OOCRelationWriter(base_path, std::nullopt, std::nullopt, &private_lease, {},
                             ConstructionToken{}) {}
+
+    /// Trusted test seam for process termination inside fresh private-writer
+    /// construction. Production callers use the overload above.
+    OOCRelationWriter(const std::string& base_path, OOCPrivateLeaseOwnershipReceipt& private_lease,
+                      OOCPrivateLeaseTestHooks private_lease_hooks)
+        : OOCRelationWriter(base_path, std::nullopt, std::nullopt, &private_lease,
+                            private_lease_hooks, ConstructionToken{}) {}
 
     /// Paired recovery requires both the structural descriptor and the
     /// semantic relation-sequence receipt from the same durable checkpoint.
@@ -370,14 +378,15 @@ public:
     OOCRelationWriter(const std::string& base_path,
                       const OOCSnapshotDescriptor& recovery_descriptor,
                       const RelationSequenceReceipt& recovery_sequence_receipt)
-        : OOCRelationWriter(base_path, recovery_descriptor, recovery_sequence_receipt, nullptr,
+        : OOCRelationWriter(base_path, recovery_descriptor, recovery_sequence_receipt, nullptr, {},
                             ConstructionToken{}) {}
 
 private:
     explicit OOCRelationWriter(const std::string& base_path,
                                std::optional<OOCSnapshotDescriptor> recovery_descriptor,
                                std::optional<RelationSequenceReceipt> recovery_sequence_receipt,
-                               OOCPrivateLeaseOwnershipReceipt* private_lease, ConstructionToken)
+                               OOCPrivateLeaseOwnershipReceipt* private_lease,
+                               OOCPrivateLeaseTestHooks private_lease_hooks, ConstructionToken)
         : base_path_(freeze_base_path_checked(base_path)), data_buf_(BUFFER_BYTES),
           idx_buf_(BUFFER_BYTES / 4), // 256 KB suffices for index
           uncaught_at_ctor_(std::uncaught_exceptions()),
@@ -514,7 +523,19 @@ private:
                 std::optional<FreshArtifactReservation> data_reservation;
                 try {
                     index_reservation.emplace(FreshArtifactReservation::create(index_path));
+                    if (ooc_cleanup_detail::should_interrupt_private_lease(
+                            private_lease_hooks, OOCPrivateLeaseFaultPoint::FreshIndexReserved)) {
+                        throw std::system_error(
+                            std::make_error_code(std::errc::operation_canceled),
+                            "OOCRelationWriter: interrupted after fresh index reservation");
+                    }
                     data_reservation.emplace(FreshArtifactReservation::create(data_path));
+                    if (ooc_cleanup_detail::should_interrupt_private_lease(
+                            private_lease_hooks, OOCPrivateLeaseFaultPoint::FreshDataReserved)) {
+                        throw std::system_error(
+                            std::make_error_code(std::errc::operation_canceled),
+                            "OOCRelationWriter: interrupted after fresh data reservation");
+                    }
 
                     data_stream_.open(data_path, std::ios::in | std::ios::out | std::ios::binary);
                     idx_stream_.open(index_path, std::ios::in | std::ios::out | std::ios::binary);
@@ -540,6 +561,13 @@ private:
                     ensure_streams_good("constructor header write");
                     validate_open_v3_pair_headers("constructor header validation",
                                                   incomplete_count);
+                    if (ooc_cleanup_detail::should_interrupt_private_lease(
+                            private_lease_hooks,
+                            OOCPrivateLeaseFaultPoint::FreshHeadersValidated)) {
+                        throw std::system_error(
+                            std::make_error_code(std::errc::operation_canceled),
+                            "OOCRelationWriter: interrupted after fresh header validation");
+                    }
                     data_reservation->close_checked(data_path);
                     index_reservation->close_checked(index_path);
                     auto cleanup_receipt = capture_fresh_cleanup_ownership_checked(
@@ -548,9 +576,16 @@ private:
                     static_assert(std::is_nothrow_move_constructible_v<OOCCleanupOwnershipReceipt>);
                     cleanup_receipt_.emplace(std::move(cleanup_receipt));
                     if (private_lease != nullptr) {
+                        if (ooc_cleanup_detail::should_interrupt_private_lease(
+                                private_lease_hooks,
+                                OOCPrivateLeaseFaultPoint::FreshPairOwnershipCaptured)) {
+                            throw std::system_error(
+                                std::make_error_code(std::errc::operation_canceled),
+                                "OOCRelationWriter: interrupted after fresh pair ownership");
+                        }
                         const auto activated =
                             OOCCleanupTransaction::activate_private_lease_for_fresh_writer(
-                                *private_lease, *cleanup_receipt_);
+                                *private_lease, *cleanup_receipt_, private_lease_hooks);
                         if (!activated.completed()) {
                             const auto error =
                                 activated.native_error
@@ -585,7 +620,7 @@ public:
     /// truncated. Passing `false` is equivalent to fresh construction.
     explicit OOCRelationWriter(const std::string& base_path, bool legacy_resume)
         : OOCRelationWriter(base_path, reject_legacy_resume(legacy_resume), std::nullopt, nullptr,
-                            ConstructionToken{}) {}
+                            {}, ConstructionToken{}) {}
 
     /// Append a single relation. Returns the index of the written relation.
     size_t write(const gnfs::core::Relation& rel) {
