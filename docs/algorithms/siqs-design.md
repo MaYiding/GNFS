@@ -110,7 +110,8 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `src/siqs/shadow_proof_rss_holdout_stream_join_internal.hpp` | Source-private approved-policy, runtime-facts, slot, and two-stream validation into a V3 identity-bound authority-free draft |
 | `include/gnfs/util/bounded_child_process.hpp` | Production shell-free, deadline-bounded dual-stream capture; it transports data but grants no campaign authority |
 | `src/util/bounded_child_process_internal.hpp` | Source-private one-shot executable-image capability and authenticated Linux transport boundary |
-| `tests/test_bounded_child_process.cpp` | Cross-platform transport tests plus Linux sealed-image, replacement, one-shot, descriptor-closure, and concurrency tests |
+| `src/util/authenticated_bounded_child_process_capability_internal.hpp` | Source-private positive compile-capability grant shared by store admission, authentication, and descriptor launch |
+| `tests/test_bounded_child_process.cpp` | Cross-platform transport tests plus compile-capability classification and Linux sealed-image, replacement, one-shot, descriptor-closure, and concurrency tests |
 | `tests/test_siqs_shadow_proof_prefer.cpp` | Pure V2 decisions, defensive metadata validation, and pre-route emitter contract |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 
@@ -283,6 +284,17 @@ Authentication is size-bounded to 256 MiB but uses synchronous regular-file
 I/O before the child deadline starts. A slow or stalled filesystem can
 therefore delay terminal taint; a separately supervised authenticator remains
 required for a clock-bounded authentication phase.
+
+The ordinary POSIX path transport remains libc-portable and is required to
+build and pass its focused transport test on Alpine Linux with musl. The
+authenticated descriptor launch is intentionally narrower: it is available
+only with modern glibc and the complete required syscall and macro surface.
+Unsupported libcs, including musl, return `platform_unavailable` before any
+campaign journal is opened or any executable-path or permission access occurs.
+A runtime capability rejection classified as unavailable on a supported glibc
+build also returns `platform_unavailable` and preserves its native error in
+`native_error`. GNFS does not support authenticated launch on musl, and this
+portability guard does not change the existing transport ID.
 
 The private deployment row also owns the complete approved policy and expected
 runtime contract. Public policy and runtime values act only as claims. After

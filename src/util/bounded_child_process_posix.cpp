@@ -4,6 +4,7 @@
 
 #include <gnfs/util/bounded_child_process.hpp>
 
+#include "authenticated_bounded_child_process_capability_internal.hpp"
 #include "bounded_child_process_internal.hpp"
 
 #if !defined(_WIN32)
@@ -355,6 +356,8 @@ struct DescriptorSpawnResult final {
     int cleanup_error = 0;
 };
 
+#if GNFS_AUTHENTICATED_BOUNDED_CHILD_COMPILE_CAPABLE
+
 enum class DescriptorPreExecStage : std::uint32_t {
     set_process_group = 1,
     reset_signals = 2,
@@ -483,10 +486,21 @@ descriptor_stage_is_parent_death_setup(DescriptorPreExecStage stage) noexcept {
            stage == DescriptorPreExecStage::verify_parent_liveness;
 }
 
+#endif
+
 [[nodiscard]] DescriptorSpawnResult
 spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
                          const CapturePipe& stderr_pipe, char* const* argv,
                          char* const* environment, Clock::time_point deadline) noexcept {
+#if !GNFS_AUTHENTICATED_BOUNDED_CHILD_COMPILE_CAPABLE
+    (void)executable_fd;
+    (void)stdout_pipe;
+    (void)stderr_pipe;
+    (void)argv;
+    (void)environment;
+    (void)deadline;
+    return {-1, ENOTSUP, BoundedChildProcessError::platform_unavailable};
+#else
     int descriptors[2]{-1, -1};
     if (::pipe2(descriptors, O_CLOEXEC) != 0) {
         return {-1, errno, BoundedChildProcessError::spawn_failed};
@@ -521,19 +535,13 @@ spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
     }
 
     const pid_t expected_parent = ::getpid();
-#if defined(__GLIBC__) && defined(__GLIBC_PREREQ) && __GLIBC_PREREQ(2, 34)
     const pid_t child = ::_Fork();
-#else
-    const pid_t child = -1;
-    errno = ENOTSUP;
-#endif
     if (child < 0) {
         const int fork_error = errno;
         (void)::pthread_sigmask(SIG_SETMASK, &previous_mask, nullptr);
         return {-1, fork_error, BoundedChildProcessError::spawn_failed};
     }
     if (child == 0) {
-#if defined(SYS_prctl) && defined(SYS_getppid) && defined(PR_SET_PDEATHSIG)
         if (::syscall(SYS_prctl, PR_SET_PDEATHSIG, SIGKILL, 0L, 0L, 0L) != 0) {
             report_pre_exec_failure(diagnostic_write.get(),
                                     DescriptorPreExecStage::arm_parent_death_signal, errno);
@@ -547,10 +555,6 @@ spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
             report_pre_exec_failure(diagnostic_write.get(),
                                     DescriptorPreExecStage::verify_parent_liveness, ECHILD);
         }
-#else
-        report_pre_exec_failure(diagnostic_write.get(),
-                                DescriptorPreExecStage::arm_parent_death_signal, ENOSYS);
-#endif
         (void)::close(diagnostic_read.get());
         if (::setpgid(0, 0) != 0) {
             report_pre_exec_failure(diagnostic_write.get(),
@@ -577,12 +581,8 @@ spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
                                     DescriptorPreExecStage::restore_signal_mask, errno);
         }
 
-#if defined(SYS_execveat)
         (void)::syscall(SYS_execveat, executable_fd, "", argv, environment, AT_EMPTY_PATH);
         report_pre_exec_failure(diagnostic_write.get(), DescriptorPreExecStage::execveat, errno);
-#else
-        report_pre_exec_failure(diagnostic_write.get(), DescriptorPreExecStage::execveat, ENOSYS);
-#endif
     }
 
     (void)::setpgid(child, child);
@@ -661,6 +661,7 @@ spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
             ? BoundedChildProcessError::platform_unavailable
             : BoundedChildProcessError::spawn_failed;
     return {-1, child_failure.native_error, error, cleanup.complete, cleanup.native_error};
+#endif
 }
 
 #endif
@@ -1256,7 +1257,17 @@ BoundedChildProcessResult run_bounded_child_process_with_argv0(const BoundedChil
 BoundedChildProcessResult
 run_bounded_child_process_from_executable_fd(const BoundedChildProcessSpec& spec, int executable_fd,
                                              std::string_view argv0) noexcept {
+#if !GNFS_AUTHENTICATED_BOUNDED_CHILD_COMPILE_CAPABLE
+    (void)spec;
+    (void)executable_fd;
+    (void)argv0;
+    BoundedChildProcessResult result;
+    result.error = BoundedChildProcessError::platform_unavailable;
+    result.cleanup_complete = true;
+    return result;
+#else
     return run_bounded_child_process_impl(spec, executable_fd, argv0, true);
+#endif
 }
 #endif
 

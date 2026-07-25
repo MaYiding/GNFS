@@ -47,7 +47,7 @@ Do not classify a test from Release timing alone. Debug, sanitizer, coverage, Wi
 
 ## CI Policy
 
-The PR CI intentionally has two layers:
+The PR CI intentionally has three layers:
 
 1. Cross-platform quick matrix:
    - Linux Release runs `instant|fast`.
@@ -55,11 +55,30 @@ The PR CI intentionally has two layers:
    - macOS Release runs `instant|fast`.
    - Windows Release runs `instant`.
    - Linux arm64 runs `instant` as an experimental public-runner signal.
+   - Required glibc Linux rows set `GNFS_TEST_REQUIRE_AUTHENTICATED_LINUX=1`, so the sealed-image, same-object, descriptor-closure, and parent-death tests cannot silently skip a disabled authenticated transport.
 2. Linux Release deep gate:
    - Runs `gate|slow`, excluding `heavy|stress|bench`.
    - Uses `--parallel 1` because these tests compete for the same integer-heavy hot paths and can falsely timeout under high parallelism.
+3. Required Alpine Linux 3.21 musl transport-boundary lane:
+   - Runs inside Docker on an Ubuntu host with the checkout mounted read-only at `/src`.
+   - Installs only `build-base`, `cmake`, `gmp-dev`, and `linux-headers`.
+   - Copies the checkout into a root-owned, mode-0700, container-native `/gnfs-src` test workspace because the journal-store test deliberately requires a trusted writable working directory.
+   - Keeps the build directory and `TMPDIR` in the container-native `/tmp`; the host checkout remains read-only.
+   - Configures `GNFS_BUILD_TESTS=ON`, `GNFS_BUILD_FUZZERS=OFF`, and `GNFS_ENABLE_NATIVE_ARCH=OFF`, then builds only the bounded-child and SIQS campaign-journal-store targets.
+   - Runs `BoundedChildProcess` and `SiqsShadowProofRssCampaignJournalStore` with a 60-second CTest timeout.
+   - Proves that the ordinary POSIX path transport builds and runs on musl, while production campaign admission rejects the unavailable authenticated profile without creating the journal lock, header, artifact entries, or launch marker.
 
 ASan/UBSan and coverage run only `instant` tests. They already multiply test cost through instrumentation, and they should not duplicate the Release deep gate. TSan uses the narrower lane below because its purpose is to exercise explicit concurrency boundaries, not to repeat every isolated helper.
+
+The authenticated Linux profile requires modern glibc plus its complete
+syscall and macro surface. On unsupported libcs, store admission reports
+`platform_unavailable` before opening the journal namespace, and direct
+authentication reports the same error before opening or otherwise accessing
+the executable path. Pure input-shape validation still precedes that platform
+decision. A runtime capability rejection that is classified as unavailable on
+an otherwise supported build retains its native cause in `native_error`. The
+musl lane does not add an authenticated launch implementation and does not
+change the authenticated transport ID.
 
 ## ThreadSanitizer Lane
 

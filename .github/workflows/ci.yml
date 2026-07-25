@@ -140,6 +140,8 @@ jobs:
     - name: Run selected tests (POSIX)
       if: runner.os != 'Windows'
       working-directory: build
+      env:
+        GNFS_TEST_REQUIRE_AUTHENTICATED_LINUX: ${{ runner.os == 'Linux' && !matrix.experimental && '1' || '' }}
       # Cross-platform PR coverage stays on instant/fast tests. Real GNFS
       # pipeline tests run in the Linux Release deep-gate job below.
       run: |
@@ -200,12 +202,53 @@ jobs:
           --timeout 900 \
           --no-tests=error
 
+  linux-musl-transport:
+    name: Alpine 3.21 musl transport boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      with:
+        persist-credentials: false
+
+    - name: Build and test in Alpine 3.21
+      shell: bash
+      run: |
+        docker run --rm \
+          --mount "type=bind,source=${GITHUB_WORKSPACE},target=/src,readonly" \
+          --env TMPDIR=/tmp \
+          alpine:3.21 \
+          /bin/sh -euxc '
+            apk add --no-cache build-base cmake gmp-dev linux-headers
+            install -d -m 0700 /gnfs-src
+            cp -a /src/. /gnfs-src/
+            chown 0:0 /gnfs-src
+            chmod 0700 /gnfs-src
+            cmake -S /gnfs-src -B /tmp/gnfs-build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DGNFS_BUILD_TESTS=ON \
+              -DGNFS_BUILD_FUZZERS=OFF \
+              -DGNFS_ENABLE_NATIVE_ARCH=OFF
+            cmake --build /tmp/gnfs-build \
+              --target \
+                test_bounded_child_process \
+                test_siqs_shadow_proof_rss_campaign_journal_store \
+              --parallel 2
+            ctest --test-dir /tmp/gnfs-build \
+              --output-on-failure \
+              -R "^(BoundedChildProcess|SiqsShadowProofRssCampaignJournalStore)$" \
+              --timeout 60 \
+              --no-tests=error
+          '
+
   required:
     name: CI required
     runs-on: ubuntu-24.04
     needs:
       - build-and-test
       - linux-release-gate
+      - linux-musl-transport
     if: always()
     timeout-minutes: 5
 
@@ -214,9 +257,11 @@ jobs:
       shell: bash
       run: |
         if [[ "${{ needs.build-and-test.result }}" != "success" ||
-              "${{ needs.linux-release-gate.result }}" != "success" ]]; then
+              "${{ needs.linux-release-gate.result }}" != "success" ||
+              "${{ needs.linux-musl-transport.result }}" != "success" ]]; then
           echo "Required CI matrix result: ${{ needs.build-and-test.result }}"
           echo "Linux Release deep gate result: ${{ needs.linux-release-gate.result }}"
+          echo "Alpine musl transport boundary result: ${{ needs.linux-musl-transport.result }}"
           exit 1
         fi
-        echo "Required CI matrix and Linux Release deep gate passed."
+        echo "Required CI matrix, Linux Release deep gate, and Alpine musl boundary passed."

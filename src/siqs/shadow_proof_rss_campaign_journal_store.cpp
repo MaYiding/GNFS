@@ -1,5 +1,11 @@
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #include "shadow_proof_rss_campaign_journal_store_internal.hpp"
 #include "shadow_proof_rss_probe_execution_identity_internal.hpp"
+
+#include "../util/authenticated_bounded_child_process_capability_internal.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -368,7 +374,7 @@ production_launch_profile_is_supported_on_host(const DeploymentEntry& deployment
         return false;
     }
 
-#if defined(__linux__)
+#if GNFS_AUTHENTICATED_BOUNDED_CHILD_COMPILE_CAPABLE
     using LaunchProfile =
         shadow_proof_rss_probe_execution_identity_detail::ProbeExecutableLaunchProfile;
     return deployment.approval.operating_system == SIQSShadowProofRssOperatingSystem::linux &&

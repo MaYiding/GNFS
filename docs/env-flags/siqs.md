@@ -224,6 +224,14 @@ deadline。authentication 本身只受 256 MiB size cap 约束，使用同步 re
 慢或阻塞 filesystem 仍可能造成 availability stall，真正的时钟上限需要后续加入独立监督
 的 authenticator。
 
+普通 POSIX path transport 保持 libc 可移植，并由 Alpine Linux musl 定向 CI
+验证构建与 transport test。authenticated descriptor launch 的范围更窄：只有现代
+glibc 且所需 syscall 与 macro 完整时才可用。musl 等 unsupported libc 会在访问
+campaign journal namespace、executable path 或权限前返回 `platform_unavailable`。
+在受支持的 glibc 构建上，被归类为 capability unavailable 的 runtime 拒绝同样返回
+`platform_unavailable`，并通过 `native_error` 保留原生错误。项目不支持 musl
+authenticated launch；该可移植性边界不会修改现有 transport ID。
+
 `darwin_hardened_suspended_v1` 只保留 schema 合同，尚未实现 production launch。
 当前 hardened probe 链接的 Homebrew GMP 与主 binary 使用不同 signing identity，
 无法形成统一 loaded-code signer chain。因此 macOS production row 会在 journal

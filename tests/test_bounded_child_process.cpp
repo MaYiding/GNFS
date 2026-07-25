@@ -1,8 +1,13 @@
 // Cross-platform integration tests for the production bounded child transport.
 // The fake executable emits only synthetic bytes.
 
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #include <gnfs/util/bounded_child_process.hpp>
 
+#include "authenticated_bounded_child_process_capability_internal.hpp"
 #include "bounded_child_process_internal.hpp"
 
 #include <algorithm>
@@ -55,6 +60,7 @@ using gnfs::util::run_authenticated_bounded_child_process;
 using gnfs::util::run_bounded_child_process;
 using gnfs::util::Sha256Accumulator;
 using gnfs::util::Sha256Digest;
+namespace authenticated_capability = gnfs::util::authenticated_bounded_child_capability_detail;
 #if !defined(_WIN32)
 using gnfs::util::detail::PosixTerminationScope;
 using gnfs::util::detail::select_posix_termination_scope;
@@ -72,6 +78,13 @@ static_assert(!std::is_move_assignable_v<gnfs::util::ExecutableImageAuthenticati
 
 int checks_passed = 0;
 int checks_failed = 0;
+
+#if defined(__linux__)
+[[nodiscard]] bool authenticated_linux_transport_is_required() noexcept {
+    const char* value = std::getenv("GNFS_TEST_REQUIRE_AUTHENTICATED_LINUX");
+    return value != nullptr && std::string_view(value) == "1";
+}
+#endif
 
 void check(bool condition, std::string_view expression, std::string_view context = {}) {
     if (condition) {
@@ -211,6 +224,138 @@ void test_error_name_contract() {
     }
     CHECK(executable_image_authentication_error_name(
               static_cast<ExecutableImageAuthenticationError>(255)) == "unknown");
+}
+
+void test_authenticated_compile_capability_contract() {
+    using authenticated_capability::classify_compile_capability;
+    using authenticated_capability::CompileCapabilityReason;
+    using authenticated_capability::CompileFacts;
+
+    constexpr CompileFacts all_supported{
+        .linux_target = true,
+        .glibc = true,
+        .glibc_version_predicate = true,
+        .glibc_at_least_2_34 = true,
+        .memfd_create = true,
+        .execveat = true,
+        .close_range = true,
+        .prctl = true,
+        .getppid = true,
+        .parent_death_signal = true,
+        .sealing_api = true,
+        .at_empty_path = true,
+    };
+    CHECK(classify_compile_capability(all_supported) == CompileCapabilityReason::supported);
+
+    struct MissingFactCase final {
+        bool CompileFacts::* fact = nullptr;
+        CompileCapabilityReason reason = CompileCapabilityReason::supported;
+        std::string_view name;
+    };
+    constexpr std::array missing_fact_cases{
+        MissingFactCase{&CompileFacts::linux_target, CompileCapabilityReason::unsupported_platform,
+                        "linux_target"},
+        MissingFactCase{&CompileFacts::glibc, CompileCapabilityReason::unsupported_libc, "glibc"},
+        MissingFactCase{&CompileFacts::glibc_version_predicate,
+                        CompileCapabilityReason::missing_glibc_version_predicate,
+                        "glibc_version_predicate"},
+        MissingFactCase{&CompileFacts::glibc_at_least_2_34, CompileCapabilityReason::glibc_too_old,
+                        "glibc_at_least_2_34"},
+        MissingFactCase{&CompileFacts::memfd_create, CompileCapabilityReason::missing_memfd_create,
+                        "memfd_create"},
+        MissingFactCase{&CompileFacts::execveat, CompileCapabilityReason::missing_execveat,
+                        "execveat"},
+        MissingFactCase{&CompileFacts::close_range, CompileCapabilityReason::missing_close_range,
+                        "close_range"},
+        MissingFactCase{&CompileFacts::prctl, CompileCapabilityReason::missing_prctl, "prctl"},
+        MissingFactCase{&CompileFacts::getppid, CompileCapabilityReason::missing_getppid,
+                        "getppid"},
+        MissingFactCase{&CompileFacts::parent_death_signal,
+                        CompileCapabilityReason::missing_parent_death_signal,
+                        "parent_death_signal"},
+        MissingFactCase{&CompileFacts::sealing_api, CompileCapabilityReason::missing_sealing_api,
+                        "sealing_api"},
+        MissingFactCase{&CompileFacts::at_empty_path,
+                        CompileCapabilityReason::missing_at_empty_path, "at_empty_path"},
+    };
+    for (const auto& test_case : missing_fact_cases) {
+        auto facts = all_supported;
+        facts.*test_case.fact = false;
+        CHECK_CONTEXT(classify_compile_capability(facts) == test_case.reason, test_case.name);
+        CHECK_CONTEXT(classify_compile_capability(facts) != CompileCapabilityReason::supported,
+                      test_case.name);
+    }
+
+    CHECK(authenticated_capability::current_compile_capability ==
+          classify_compile_capability(authenticated_capability::current_compile_facts));
+    CHECK(authenticated_capability::compile_capable ==
+          (authenticated_capability::current_compile_capability ==
+           CompileCapabilityReason::supported));
+    CHECK(authenticated_capability::compile_capable ==
+          (GNFS_AUTHENTICATED_BOUNDED_CHILD_COMPILE_CAPABLE != 0));
+#if defined(__linux__)
+    CHECK(authenticated_capability::current_compile_facts.linux_target);
+#if !defined(__GLIBC__)
+    CHECK(authenticated_capability::current_compile_capability ==
+          CompileCapabilityReason::unsupported_libc);
+#elif defined(__GLIBC_PREREQ)
+#if !__GLIBC_PREREQ(2, 34)
+    CHECK(authenticated_capability::current_compile_capability ==
+          CompileCapabilityReason::glibc_too_old);
+#endif
+#endif
+    if (authenticated_linux_transport_is_required()) {
+        CHECK_CONTEXT(authenticated_capability::compile_capable,
+                      "required Linux target must compile the authenticated transport");
+    }
+#else
+    CHECK(authenticated_capability::current_compile_capability ==
+          CompileCapabilityReason::unsupported_platform);
+#endif
+}
+
+void test_authenticated_compile_capability_matches_runtime_boundary() {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path missing_absolute_path =
+        std::filesystem::temp_directory_path() /
+        ("gnfs-authenticated-capability-path-that-must-not-exist-" + std::to_string(nonce));
+    CHECK(missing_absolute_path.is_absolute());
+    CHECK(!std::filesystem::exists(missing_absolute_path));
+
+    Sha256Digest digest{};
+    digest.bytes[0] = std::byte{1};
+    const std::uint64_t expected_owner =
+#if defined(__linux__)
+        static_cast<std::uint64_t>(::geteuid());
+#else
+        UINT64_C(0);
+#endif
+    const auto result =
+        authenticate_executable_image(missing_absolute_path, digest, expected_owner);
+    CHECK(!static_cast<bool>(result));
+    CHECK(!result.image.has_value());
+
+    if (!authenticated_capability::compile_capable) {
+        CHECK(result.diagnostic.error == ExecutableImageAuthenticationError::platform_unavailable);
+        CHECK(!result.diagnostic.native_error);
+#if defined(__linux__)
+        const auto descriptor_result =
+            gnfs::util::detail::run_bounded_child_process_from_executable_fd(
+                BoundedChildProcessSpec{}, -1, {});
+        CHECK(descriptor_result.error == BoundedChildProcessError::platform_unavailable);
+        CHECK(!descriptor_result.child_started);
+        CHECK(descriptor_result.cleanup_complete);
+        CHECK(!descriptor_result.native_error);
+#endif
+        return;
+    }
+
+    // A compile-capable glibc >= 2.34 build must reach either the runtime
+    // capability probe or the missing path. It must not take the silent
+    // compile-time platform-unavailable branch.
+    CHECK(result.diagnostic.native_error);
+    CHECK(result.diagnostic.error == ExecutableImageAuthenticationError::platform_unavailable ||
+          result.diagnostic.error == ExecutableImageAuthenticationError::open_failed);
 }
 
 void test_authenticated_platform_boundary(const std::filesystem::path& executable) {
@@ -418,6 +563,8 @@ void test_authenticated_linux_rejections(const std::filesystem::path& executable
     if (!availability &&
         availability.diagnostic.error == ExecutableImageAuthenticationError::platform_unavailable) {
         CHECK(!availability.image.has_value());
+        CHECK_CONTEXT(!authenticated_linux_transport_is_required(),
+                      "required authenticated Linux rejection tests were unavailable");
         return;
     }
     CHECK(static_cast<bool>(availability));
@@ -505,6 +652,8 @@ void test_authenticated_linux_same_object_and_supervision(const std::filesystem:
     if (!authenticated && authenticated.diagnostic.error ==
                               ExecutableImageAuthenticationError::platform_unavailable) {
         CHECK(!authenticated.image.has_value());
+        CHECK_CONTEXT(!authenticated_linux_transport_is_required(),
+                      "required authenticated Linux same-object tests were unavailable");
         return;
     }
     CHECK(static_cast<bool>(authenticated));
@@ -664,6 +813,8 @@ void test_authenticated_linux_parent_death_containment(
     if (!availability &&
         availability.diagnostic.error == ExecutableImageAuthenticationError::platform_unavailable) {
         std::cout << "SKIP: authenticated parent-death containment is unavailable on this host\n";
+        CHECK_CONTEXT(!authenticated_linux_transport_is_required(),
+                      "required authenticated Linux parent-death test was unavailable");
         return;
     }
     CHECK(static_cast<bool>(availability));
@@ -676,6 +827,8 @@ void test_authenticated_linux_parent_death_containment(
     if (capability_fd < 0) {
         if (pidfd_capability_unavailable(errno)) {
             std::cout << "SKIP: pidfd_open is unavailable for parent-death containment test\n";
+            CHECK_CONTEXT(!authenticated_linux_transport_is_required(),
+                          "required pidfd_open capability was unavailable");
             return;
         }
         CHECK_CONTEXT(false, "pidfd_open capability probe");
@@ -687,6 +840,8 @@ void test_authenticated_linux_parent_death_containment(
             if (pidfd_capability_unavailable(errno)) {
                 std::cout
                     << "SKIP: pidfd_send_signal is unavailable for parent-death containment test\n";
+                CHECK_CONTEXT(!authenticated_linux_transport_is_required(),
+                              "required pidfd_send_signal capability was unavailable");
                 return;
             }
             CHECK_CONTEXT(false, "pidfd_send_signal capability probe");
@@ -741,6 +896,8 @@ void test_authenticated_linux_parent_death_containment(
     if (!ledger.has_value() && supervisor_reaped && WIFEXITED(early_status) &&
         WEXITSTATUS(early_status) == 77) {
         std::cout << "SKIP: parent-death signal transport is unavailable on this host\n";
+        CHECK_CONTEXT(!authenticated_linux_transport_is_required(),
+                      "required parent-death signal transport was unavailable");
         return;
     }
     CHECK_CONTEXT(ledger.has_value(), "authenticated child did not publish process ledger");
@@ -1231,6 +1388,8 @@ template <class Char> int bounded_child_process_test_main(int argc, Char* argv[]
 #endif
         }
         test_error_name_contract();
+        test_authenticated_compile_capability_contract();
+        test_authenticated_compile_capability_matches_runtime_boundary();
         test_authenticated_platform_boundary(executable);
 #if defined(__linux__)
         std::filesystem::path supervisor_executable;

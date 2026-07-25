@@ -2306,6 +2306,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_include_directories(test_siqs_shadow_proof_rss_campaign_journal_store PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/util
     )
     target_link_libraries(test_siqs_shadow_proof_rss_campaign_journal_store PRIVATE
         gnfs_core

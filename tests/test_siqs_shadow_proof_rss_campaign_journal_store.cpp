@@ -4,10 +4,15 @@
 // through the private deployment table so no test path or resolver is added to
 // the public authority boundary.
 
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #include <gnfs/siqs/shadow_proof_observe_record_codec.hpp>
 #include <gnfs/siqs/shadow_proof_rss_campaign_journal_codec.hpp>
 #include <gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp>
 
+#include "authenticated_bounded_child_process_capability_internal.hpp"
 #include "shadow_proof_rss_campaign_controller_internal.hpp"
 #include "shadow_proof_rss_campaign_journal_store_internal.hpp"
 #include "shadow_proof_rss_campaign_slot_runner_internal.hpp"
@@ -48,6 +53,7 @@ using namespace gnfs::siqs;
 using gnfs::util::ExecutableImageAuthenticationError;
 using gnfs::util::ProcessMemoryBackend;
 namespace durable = gnfs::util::durable_immutable_file;
+namespace authenticated_capability = gnfs::util::authenticated_bounded_child_capability_detail;
 namespace store_detail = gnfs::siqs::shadow_proof_rss_campaign_journal_store_detail;
 namespace identity_detail = gnfs::siqs::shadow_proof_rss_probe_execution_identity_detail;
 
@@ -2209,6 +2215,38 @@ void test_production_authentication_platform_preflight(const std::filesystem::pa
     CHECK(!std::filesystem::exists(marker));
 }
 
+void test_production_authenticated_compile_capability_preflight(
+    const std::filesystem::path& executable) {
+    if constexpr (authenticated_capability::compile_capable) {
+        return;
+    }
+
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("production-compile-capability-preflight-marker");
+    auto deployment = make_runner_deployment(fixture, executable, marker);
+    rebind_probe_kind(deployment, SIQSShadowProofRssProbeKind::production_holdout);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    const auto store_entry_count_before =
+        std::distance(std::filesystem::directory_iterator(fixture.store_root()),
+                      std::filesystem::directory_iterator{});
+    const auto artifact_entry_count_before =
+        std::distance(std::filesystem::directory_iterator(fixture.artifact_root()),
+                      std::filesystem::directory_iterator{});
+
+    expect_open_error(open_private(&policy, &facts, deployment), StoreError::platform_unavailable,
+                      StoreObject::probe_executable);
+    CHECK(!std::filesystem::exists(
+        fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF)));
+    CHECK(!std::filesystem::exists(
+        fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+    CHECK(std::distance(std::filesystem::directory_iterator(fixture.store_root()),
+                        std::filesystem::directory_iterator{}) == store_entry_count_before);
+    CHECK(std::distance(std::filesystem::directory_iterator(fixture.artifact_root()),
+                        std::filesystem::directory_iterator{}) == artifact_entry_count_before);
+    CHECK(!std::filesystem::exists(marker));
+}
+
 #if defined(__linux__)
 void test_slot_runner_authentication_failure_taints_without_launch(
     const SyntheticChildren& children) {
@@ -2500,7 +2538,7 @@ void test_slot_runner_final_synthetic_commit_stays_gate_ineligible(
     const auto production_policy = policy_for(relabeled_deployment);
     const auto production_facts = facts_for(relabeled_deployment);
     auto relabeled = open_private(&production_policy, &production_facts, relabeled_deployment);
-#if defined(__linux__)
+#if GNFS_AUTHENTICATED_BOUNDED_CHILD_COMPILE_CAPABLE
     CHECK(relabeled.diagnostic().journal_reason == SIQSShadowProofRssJournalReason::header_invalid);
     expect_open_error(std::move(relabeled), StoreError::replay_rejected,
                       StoreObject::journal_header);
@@ -4354,6 +4392,7 @@ int main(int argc, char** argv) {
         test_store_rejects_invalid_runner_contract_before_journal_mutation(children.success);
         test_production_deployment_rejects_publication_test_seam(children.success);
         test_production_authentication_platform_preflight(children.success);
+        test_production_authenticated_compile_capability_preflight(children.success);
 #if defined(__linux__)
         test_slot_runner_authentication_failure_taints_without_launch(children);
         test_slot_runner_linux_sealed_profile_is_capability_gated(children.success);

@@ -106,9 +106,10 @@ struct ExecutableImageAuthenticationResult final {
     }
 };
 
-/// Create a one-shot, same-byte executable capability. Linux copies the
-/// approved native ELF into a sealed executable memfd and hashes the sealed
-/// object. Other platforms fail closed before opening the supplied path.
+/// Create a one-shot, same-byte executable capability. A compile-capable
+/// modern-glibc Linux target copies the approved native ELF into a sealed
+/// executable memfd and hashes the sealed object. Unsupported libcs and other
+/// platforms fail closed before opening the supplied path.
 [[nodiscard]] ExecutableImageAuthenticationResult
 authenticate_executable_image(const std::filesystem::path& executable,
                               const Sha256Digest& expected_sha256,
@@ -134,14 +135,16 @@ run_bounded_child_process_with_argv0(const BoundedChildProcessSpec& spec,
                                      std::string_view argv0) noexcept;
 
 #if defined(__linux__)
-/// Linux-only source-private transport entry point. `executable_fd` must name
-/// an executable object held by the caller for the duration of the call. The
-/// child executes that descriptor with execveat(AT_EMPTY_PATH). Before any
-/// other child setup it arms SIGKILL on exit of the launching parent thread
-/// and separately verifies the process-level fork-to-prctl parent race. The
-/// caller must keep that synchronous launch thread alive. This contains only
-/// the direct, no-fork probe process. The approved logical `argv0` is explicit,
-/// and `spec.executable` is never reopened.
+/// Linux-only source-private transport entry point. On a compile-capable
+/// modern-glibc target, `executable_fd` must name an executable object held by
+/// the caller for the duration of the call. The child executes that descriptor
+/// with execveat(AT_EMPTY_PATH). Before any other child setup it arms SIGKILL
+/// on exit of the launching parent thread and separately verifies the
+/// process-level fork-to-prctl parent race. The caller must keep that
+/// synchronous launch thread alive. This contains only the direct, no-fork
+/// probe process. The approved logical `argv0` is explicit, and
+/// `spec.executable` is never reopened. Unsupported Linux libc/header
+/// combinations return `platform_unavailable` before spawn setup.
 [[nodiscard]] BoundedChildProcessResult
 run_bounded_child_process_from_executable_fd(const BoundedChildProcessSpec& spec, int executable_fd,
                                              std::string_view argv0) noexcept;

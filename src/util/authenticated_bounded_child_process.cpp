@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 
+#include "authenticated_bounded_child_process_capability_internal.hpp"
 #include "bounded_child_process_internal.hpp"
 
 #include <algorithm>
@@ -54,7 +55,7 @@ authentication_failure(ExecutableImageAuthenticationError error, int native_erro
     return result;
 }
 
-#if defined(__linux__)
+#if GNFS_AUTHENTICATED_BOUNDED_CHILD_COMPILE_CAPABLE
 
 class UniqueFd final {
 public:
@@ -183,16 +184,11 @@ private:
 }
 
 [[nodiscard]] int create_executable_memfd() noexcept {
-#if defined(SYS_memfd_create)
     constexpr unsigned int mfd_cloexec = 0x0001U;
     constexpr unsigned int mfd_allow_sealing = 0x0002U;
     constexpr unsigned int mfd_exec = 0x0010U;
     return static_cast<int>(
         ::syscall(SYS_memfd_create, "gnfs-siqs-probe", mfd_cloexec | mfd_allow_sealing | mfd_exec));
-#else
-    errno = ENOSYS;
-    return -1;
-#endif
 }
 
 #endif
@@ -232,15 +228,7 @@ authenticate_executable_image(const std::filesystem::path& executable,
             return authentication_failure(ExecutableImageAuthenticationError::invalid_spec);
         }
 
-#if !defined(__linux__)
-        (void)expected_owner;
-        return authentication_failure(ExecutableImageAuthenticationError::platform_unavailable);
-#else
-#if !defined(__GLIBC__) || !defined(__GLIBC_PREREQ)
-        (void)expected_owner;
-        return authentication_failure(ExecutableImageAuthenticationError::platform_unavailable);
-#elif !__GLIBC_PREREQ(2, 34) || !defined(SYS_execveat) || !defined(SYS_close_range) ||             \
-    !defined(SYS_prctl) || !defined(SYS_getppid) || !defined(PR_SET_PDEATHSIG)
+#if !GNFS_AUTHENTICATED_BOUNDED_CHILD_COMPILE_CAPABLE
         (void)expected_owner;
         return authentication_failure(ExecutableImageAuthenticationError::platform_unavailable);
 #else
@@ -404,7 +392,6 @@ authenticate_executable_image(const std::filesystem::path& executable,
         result.diagnostic.error = ExecutableImageAuthenticationError::none;
         return result;
 #endif
-#endif
     } catch (const std::bad_alloc&) {
         return authentication_failure(ExecutableImageAuthenticationError::resource_failure);
     } catch (...) {
@@ -419,7 +406,7 @@ run_authenticated_bounded_child_process(AuthenticatedExecutableImage&& image,
     try {
         const std::intptr_t native_handle = std::exchange(image.native_handle_, -1);
         const std::filesystem::path authenticated_path = std::move(image.executable_);
-#if defined(__linux__)
+#if GNFS_AUTHENTICATED_BOUNDED_CHILD_COMPILE_CAPABLE
         UniqueFd consumed(static_cast<int>(native_handle));
         if (native_handle < 3 || authenticated_path.empty() ||
             authenticated_path.native() != spec.executable.native() || argv0.empty() ||
