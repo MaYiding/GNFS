@@ -1094,6 +1094,61 @@ bool test_v3_cascade_auto_mode() {
 
 namespace {
 
+constexpr std::string_view STRUCTURED_RUN_PREFIX = ".gnfs-structured-run-";
+constexpr std::string_view STRUCTURED_RUN_LOCK_SUFFIX = ".gnfs-sink-lease.gnfs-ooc-cleanup-v1.lock";
+
+struct StructuredRunArtifactState {
+    size_t persistent_locks = 0;
+    size_t unexpected_artifacts = 0;
+};
+
+[[nodiscard]] StructuredRunArtifactState
+inspect_structured_run_artifacts(const std::string& raw_base_path) {
+    const std::filesystem::path raw_path(raw_base_path);
+    const std::string private_prefix =
+        raw_path.filename().string() + std::string(STRUCTURED_RUN_PREFIX);
+    StructuredRunArtifactState state;
+    for (const auto& entry : std::filesystem::directory_iterator(raw_path.parent_path())) {
+        const std::string leaf = entry.path().filename().string();
+        if (!leaf.starts_with(private_prefix)) {
+            continue;
+        }
+
+        std::error_code error;
+        const auto status = entry.symlink_status(error);
+        if (!error && std::filesystem::is_regular_file(status) &&
+            std::string_view(leaf).ends_with(STRUCTURED_RUN_LOCK_SUFFIX)) {
+            ++state.persistent_locks;
+        } else {
+            ++state.unexpected_artifacts;
+        }
+    }
+    return state;
+}
+
+void remove_structured_run_persistent_locks(const std::string& raw_base_path) noexcept {
+    const std::filesystem::path raw_path(raw_base_path);
+    const std::string private_prefix =
+        raw_path.filename().string() + std::string(STRUCTURED_RUN_PREFIX);
+    std::error_code error;
+    std::filesystem::directory_iterator cursor(raw_path.parent_path(), error);
+    const std::filesystem::directory_iterator end;
+    while (!error && cursor != end) {
+        const auto path = cursor->path();
+        const std::string leaf = path.filename().string();
+        if (leaf.starts_with(private_prefix) &&
+            std::string_view(leaf).ends_with(STRUCTURED_RUN_LOCK_SUFFIX)) {
+            const auto status = cursor->symlink_status(error);
+            if (!error && std::filesystem::is_regular_file(status)) {
+                (void)std::filesystem::remove(path, error);
+            }
+        }
+        if (!error) {
+            cursor.increment(error);
+        }
+    }
+}
+
 void remove_sieve_resume_artifacts(const std::string& base) noexcept {
     gnfs::sieve::SieveCheckpoint::remove(base + ".sieve_ckpt");
     std::remove((base + ".reldata").c_str());
@@ -1102,6 +1157,7 @@ void remove_sieve_resume_artifacts(const std::string& base) noexcept {
     std::remove((base + ".fb_ckpt").c_str());
     std::error_code ignored;
     (void)std::filesystem::remove(base + ".gnfs-collector-lease", ignored);
+    remove_structured_run_persistent_locks(base);
 }
 
 struct SieveResumeArtifacts {
@@ -1839,13 +1895,12 @@ bool test_structured_ooc_callback_failure_cleans_fresh_raw() {
         return false;
     }
 
-    const std::filesystem::path raw_path(frozen_base);
-    const std::string private_prefix = raw_path.filename().string() + ".gnfs-structured-run-";
-    for (const auto& entry : std::filesystem::directory_iterator(raw_path.parent_path())) {
-        if (entry.path().filename().string().starts_with(private_prefix)) {
-            std::cout << "(terminal callback failure leaked a private structured OOC lease) ";
-            return false;
-        }
+    const auto first_run_artifacts = inspect_structured_run_artifacts(frozen_base);
+    if (first_run_artifacts.persistent_locks == 0 ||
+        first_run_artifacts.unexpected_artifacts != 0) {
+        std::cout << "(terminal callback failure leaked a private structured OOC lease or did not "
+                     "retain its external lock) ";
+        return false;
     }
 
     bool raw_mutated = false;
@@ -1876,11 +1931,12 @@ bool test_structured_ooc_callback_failure_cleans_fresh_raw() {
         std::cout << "(same-size raw mutation was not rejected and cleaned) ";
         return false;
     }
-    for (const auto& entry : std::filesystem::directory_iterator(raw_path.parent_path())) {
-        if (entry.path().filename().string().starts_with(private_prefix)) {
-            std::cout << "(raw mutation failure leaked a private structured OOC lease) ";
-            return false;
-        }
+    const auto mutated_run_artifacts = inspect_structured_run_artifacts(frozen_base);
+    if (mutated_run_artifacts.persistent_locks <= first_run_artifacts.persistent_locks ||
+        mutated_run_artifacts.unexpected_artifacts != 0) {
+        std::cout << "(raw mutation failure leaked a private structured OOC lease or replaced its "
+                     "external lock domain) ";
+        return false;
     }
 
     pipeline.set_log_callback({});
@@ -1898,6 +1954,13 @@ bool test_structured_ooc_callback_failure_cleans_fresh_raw() {
     retry.reset();
     if (std::filesystem::exists(output_cleanup)) {
         std::cout << "(retried structured OOC result did not clean its output lease) ";
+        return false;
+    }
+    const auto retried_run_artifacts = inspect_structured_run_artifacts(frozen_base);
+    if (retried_run_artifacts.persistent_locks <= mutated_run_artifacts.persistent_locks ||
+        retried_run_artifacts.unexpected_artifacts != 0) {
+        std::cout << "(retried structured OOC result leaked its lease or replaced its external "
+                     "lock domain) ";
         return false;
     }
     return true;

@@ -523,6 +523,7 @@ struct OOCArtifacts {
     ~OOCArtifacts() {
         std::remove((base + ".reldata").c_str());
         std::remove((base + ".relidx").c_str());
+        std::remove((base + ".gnfs-ooc-cleanup-v1.lock").c_str());
     }
 };
 
@@ -534,6 +535,8 @@ struct OOCSinkLeaseArtifacts {
     ~OOCSinkLeaseArtifacts() {
         std::error_code ec;
         (void)std::filesystem::remove_all(lease_root, ec);
+        ec.clear();
+        (void)std::filesystem::remove(lease_root.string() + ".gnfs-ooc-cleanup-v1.lock", ec);
     }
 };
 
@@ -2462,7 +2465,23 @@ void test_ooc_collector_resume_loads_seen() {
         CHECK(stats1.full_relations == 3);
         CHECK(stats1.partial_1lp == 1);
         CHECK(stats1.partial_2lp == 1);
-        collector.finalize_ooc();
+        const auto final_descriptor = collector.finalize_ooc();
+        CHECK(final_descriptor.has_value());
+        CHECK(final_descriptor->count == 5);
+
+        check_logic_error([&]() { collector.clear(); });
+        CHECK(std::filesystem::exists(path + ".relidx"));
+        CHECK(std::filesystem::exists(path + ".reldata"));
+        check_logic_error([&]() {
+            (void)collector.handoff_ooc_corpus(8'501, OOCCleanupPolicy::RemoveArtifacts);
+        });
+        {
+            auto preserved = collector.handoff_ooc_corpus(8'501, OOCCleanupPolicy::Preserve);
+            CHECK(preserved.count() == 5);
+            CHECK(!preserved.arm_ooc_cleanup());
+        }
+        CHECK(std::filesystem::exists(path + ".relidx"));
+        CHECK(std::filesystem::exists(path + ".reldata"));
     }
 
     // Reader 验证 final state
@@ -2662,8 +2681,37 @@ void test_ooc_collector_recovers_finalized_corpus() {
     CHECK(finalized[0].a == 1);
     CHECK(finalized[1].a == 3);
 
-    OOCRelationReader expected_reader(path, *recovered_descriptor);
-    CHECK(expected_reader.count() == 2);
+    {
+        OOCRelationReader expected_reader(path, *recovered_descriptor);
+        CHECK(expected_reader.count() == 2);
+    }
+
+    bool clear_rejected = false;
+    try {
+        collector.clear();
+    } catch (const std::logic_error&) {
+        clear_rejected = true;
+    }
+    CHECK(clear_rejected);
+    CHECK(std::filesystem::exists(path + ".relidx"));
+    CHECK(std::filesystem::exists(path + ".reldata"));
+
+    bool remove_handoff_rejected = false;
+    try {
+        (void)collector.handoff_ooc_corpus(9'001, OOCCleanupPolicy::RemoveArtifacts);
+    } catch (const std::logic_error&) {
+        remove_handoff_rejected = true;
+    }
+    CHECK(remove_handoff_rejected);
+    CHECK(collector.finalize_ooc() == recovered_descriptor);
+
+    {
+        auto preserved = collector.handoff_ooc_corpus(9'001, OOCCleanupPolicy::Preserve);
+        CHECK(preserved.count() == 2);
+        CHECK(!preserved.arm_ooc_cleanup());
+    }
+    CHECK(std::filesystem::exists(path + ".relidx"));
+    CHECK(std::filesystem::exists(path + ".reldata"));
 
     std::cout << "  Collector finalized crash-window recovery: PASS" << std::endl;
 }

@@ -31,11 +31,9 @@ enum class RelationStorageKind {
 };
 
 /// Whether an owned finalized OOC corpus should preserve or remove its two
-/// artifacts when the final corpus owner is destroyed. RemoveArtifacts is an
-/// explicit transfer of exclusive artifact ownership: callers must not retain
-/// independent readers, replace either artifact, or reuse the same base path
-/// while the corpus is alive. Ownership promotion accepts only finalized V3,
-/// whose index and data headers carry the same persistent store identity.
+/// artifacts when the final corpus owner is destroyed. RemoveArtifacts is
+/// accepted only by the fresh-writer ownership-transfer factory. A structural
+/// descriptor can reopen bytes for reading but never grants deletion authority.
 enum class OOCCleanupPolicy {
     Preserve,
     RemoveArtifacts,
@@ -130,46 +128,30 @@ inline void validate_finalized_ooc_ownership_descriptor(const OOCSnapshotDescrip
     (void)OOCRelationWriter::index_size_for_count(descriptor.count);
 }
 
-/// Best-effort deletion guard for an owned finalized V3 store.
-///
-/// This reopens both artifacts through the descriptor-bound mmap reader after
-/// the corpus reader has closed. The same handles verify both V3 headers,
-/// paired store identity, exact extents, sentinel, and offsets immediately
-/// before cleanup. Any replacement or damage observed during prevalidation
-/// prevents deletion. The later two-path removal is best-effort rather than a
-/// crash-recoverable transaction and may leave one owned artifact if the
-/// process or second removal fails. Concurrent path replacement after
-/// prevalidation is outside this guard's current guarantee.
-inline void validate_finalized_ooc_cleanup_target(const std::string& base_path,
-                                                  const OOCSnapshotDescriptor& descriptor) {
-    validate_ooc_base_path(base_path);
-    validate_finalized_ooc_ownership_descriptor(descriptor);
-
-    // The local reader is destroyed before this function returns, which keeps
-    // Windows mappings and file handles closed before remove() is attempted.
-    OOCRelationReader validated_pair(base_path, descriptor);
-    (void)validated_pair;
+inline void validate_cleanup_policy(OOCCleanupPolicy cleanup_policy) {
+    if (cleanup_policy != OOCCleanupPolicy::Preserve &&
+        cleanup_policy != OOCCleanupPolicy::RemoveArtifacts) {
+        throw std::invalid_argument("RelationCorpus: invalid OOC cleanup policy");
+    }
 }
 
-/// Optional artifact cleanup. The enclosing storage declares this member
-/// before its reader, so C++ reverse member destruction closes every mmap/file
-/// handle before this destructor runs. Before removing anything, revalidate the
-/// durable index identity and exact extents. A replaced or damaged path
-/// observed at that boundary is preserved rather than deleted. V3 paired
-/// identity also rejects a same-sized data file from another store.
+/// Optional transaction-backed artifact cleanup. The enclosing storage declares
+/// this member before its reader, so reverse destruction closes every mmap/file
+/// handle before this destructor runs. Only a receipt issued by the original
+/// fresh O_EXCL writer can arm the guard; descriptors and sequence digests are
+/// read-integrity evidence, not deletion authority.
 class FinalizedOOCArtifactCleanup final {
 public:
-    FinalizedOOCArtifactCleanup(std::string base_path, OOCSnapshotDescriptor descriptor,
-                                std::string cleanup_directory = {})
-        : base_path_(std::move(base_path)), descriptor_(descriptor),
-          cleanup_directory_(std::move(cleanup_directory)) {}
+    FinalizedOOCArtifactCleanup(std::string base_path, OOCSnapshotDescriptor descriptor)
+        : base_path_(std::move(base_path)), descriptor_(descriptor) {}
 
     FinalizedOOCArtifactCleanup(const FinalizedOOCArtifactCleanup&) = delete;
     FinalizedOOCArtifactCleanup& operator=(const FinalizedOOCArtifactCleanup&) = delete;
 
     FinalizedOOCArtifactCleanup(FinalizedOOCArtifactCleanup&& other) noexcept
         : base_path_(std::move(other.base_path_)), descriptor_(other.descriptor_),
-          cleanup_directory_(std::move(other.cleanup_directory_)),
+          cleanup_receipt_(std::move(other.cleanup_receipt_)),
+          private_lease_receipt_(std::move(other.private_lease_receipt_)),
           armed_(std::exchange(other.armed_, false)) {}
 
     FinalizedOOCArtifactCleanup& operator=(FinalizedOOCArtifactCleanup&&) = delete;
@@ -178,8 +160,22 @@ public:
         cleanup_noexcept();
     }
 
-    void arm() noexcept {
+    void adopt_cleanup_ownership(OOCCleanupOwnershipReceipt receipt) noexcept {
+        static_assert(std::is_nothrow_move_constructible_v<OOCCleanupOwnershipReceipt>);
+        cleanup_receipt_.emplace(std::move(receipt));
+    }
+
+    void adopt_private_lease_ownership(OOCPrivateLeaseOwnershipReceipt receipt) noexcept {
+        static_assert(std::is_nothrow_move_constructible_v<OOCPrivateLeaseOwnershipReceipt>);
+        private_lease_receipt_.emplace(std::move(receipt));
+    }
+
+    [[nodiscard]] bool arm() noexcept {
+        if (!cleanup_receipt_.has_value()) {
+            return false;
+        }
         armed_ = true;
+        return true;
     }
 
     [[nodiscard]] const std::string& base_path() const noexcept {
@@ -190,82 +186,90 @@ public:
         return descriptor_;
     }
 
-    [[nodiscard]] const std::string& cleanup_directory() const noexcept {
-        return cleanup_directory_;
+    [[nodiscard]] std::string cleanup_directory() const {
+        return private_lease_receipt_ ? private_lease_receipt_->private_directory().string()
+                                      : std::string{};
     }
 
 private:
+    [[nodiscard]] OOCExactCleanupExpectation exact_expectation() const {
+        return OOCExactCleanupExpectation{
+            .index_magic = OOCRelationWriter::MAGIC_V3_FINAL,
+            .persisted_count = descriptor_.count,
+            .index_size = OOCRelationWriter::index_size_for_count(descriptor_.count),
+            .data_size = descriptor_.data_end,
+        };
+    }
+
+    [[nodiscard]] OOCCleanupResult remove_pair() {
+        if (!cleanup_receipt_) {
+            return OOCCleanupResult{
+                .status = OOCCleanupStatus::InvalidRequest,
+                .stage = OOCCleanupStage::None,
+                .native_error = std::make_error_code(std::errc::operation_not_permitted),
+            };
+        }
+
+        const auto exact = exact_expectation();
+        OOCCleanupResult result;
+        if (cleanup_receipt_->spent()) {
+            result = OOCCleanupTransaction::resume(OOCCleanupRequest{
+                .base_path = base_path_,
+                .store_id = descriptor_.store_id,
+                .exact = exact,
+            });
+        } else {
+            result = OOCCleanupTransaction::begin_or_resume(*cleanup_receipt_, exact);
+        }
+        if (result.status == OOCCleanupStatus::NoTransaction) {
+            result = OOCCleanupTransaction::confirm_pair_namespace_reusable(base_path_);
+        }
+        return result;
+    }
+
+    void remove_private_directory_after_pair_noexcept() noexcept {
+        if (!private_lease_receipt_) {
+            return;
+        }
+        const auto result = OOCCleanupTransaction::remove_private_lease(*private_lease_receipt_);
+        if (!result.completed()) {
+            std::fprintf(stderr,
+                         "[relation_corpus] private OOC lease removal failed "
+                         "(status=%u, stage=%u); retaining directory and external lock\n",
+                         static_cast<unsigned>(result.status), static_cast<unsigned>(result.stage));
+        }
+    }
+
     void cleanup_noexcept() noexcept {
-        if (!armed_) {
+        if (!armed_ || !cleanup_receipt_) {
             return;
         }
 
-        bool namespace_mutated = false;
         try {
-            validate_finalized_ooc_cleanup_target(base_path_, descriptor_);
-
-            // Removing the index first makes the corpus unavailable to new readers
-            // before its payload is removed. Existing reader handles are already
-            // closed by the enclosing storage's member destruction order.
-            std::error_code ec;
-            const bool index_removed = std::filesystem::remove(base_path_ + ".relidx", ec);
-            if (ec || !index_removed) {
-                std::fprintf(stderr, "[relation_corpus] could not remove finalized OOC index; "
-                                     "preserving data artifact\n");
-                return;
-            }
-            namespace_mutated = true;
-
-            ec.clear();
-            const bool data_removed = std::filesystem::remove(base_path_ + ".reldata", ec);
-            if (ec || !data_removed) {
-                gnfs::relation::detail::sync_parent_directory_after_metadata_change(
-                    std::filesystem::path(base_path_ + ".relidx"));
+            const auto result = remove_pair();
+            if (!result.completed()) {
                 std::fprintf(stderr,
-                             "[relation_corpus] finalized OOC index was removed but data cleanup "
-                             "failed\n");
+                             "[relation_corpus] transaction could not remove owned OOC pair "
+                             "(status=%u, stage=%u); preserving remaining namespace\n",
+                             static_cast<unsigned>(result.status),
+                             static_cast<unsigned>(result.stage));
                 return;
             }
-            gnfs::relation::detail::sync_parent_directory_after_metadata_change(
-                std::filesystem::path(base_path_ + ".relidx"));
-
-            if (!cleanup_directory_.empty()) {
-                ec.clear();
-                const bool directory_removed = std::filesystem::remove(cleanup_directory_, ec);
-                if (ec || !directory_removed) {
-                    std::fprintf(stderr,
-                                 "[relation_corpus] finalized OOC artifacts were removed but "
-                                 "their private directory cleanup failed\n");
-                    return;
-                }
-                gnfs::relation::detail::sync_parent_directory_after_metadata_change(
-                    std::filesystem::path(cleanup_directory_));
-            }
+            remove_private_directory_after_pair_noexcept();
         } catch (const std::exception& error) {
-            if (namespace_mutated) {
-                std::fprintf(stderr,
-                             "[relation_corpus] OOC cleanup changed the namespace but its "
-                             "durability could not be confirmed: %s\n",
-                             error.what());
-            } else {
-                std::fprintf(stderr,
-                             "[relation_corpus] preserving OOC artifacts after cleanup identity "
-                             "validation failed: %s\n",
-                             error.what());
-            }
-        } catch (...) {
             std::fprintf(stderr,
-                         namespace_mutated
-                             ? "[relation_corpus] OOC cleanup changed the namespace but an unknown "
-                               "durability failure occurred\n"
-                             : "[relation_corpus] preserving OOC artifacts after unknown cleanup "
-                               "identity failure\n");
+                         "[relation_corpus] preserving OOC cleanup namespace after failure: %s\n",
+                         error.what());
+        } catch (...) {
+            std::fprintf(stderr, "[relation_corpus] preserving OOC cleanup namespace after unknown "
+                                 "failure\n");
         }
     }
 
     std::string base_path_;
     OOCSnapshotDescriptor descriptor_;
-    std::string cleanup_directory_;
+    std::optional<OOCCleanupOwnershipReceipt> cleanup_receipt_;
+    std::optional<OOCPrivateLeaseOwnershipReceipt> private_lease_receipt_;
     bool armed_ = false;
 };
 
@@ -273,8 +277,9 @@ private:
 
 /// Read-only path and identity scope of one finalized OOC corpus.
 ///
-/// `cleanup_directory` is populated only when the corpus exclusively owns that
-/// directory and will attempt to remove it after removing the paired store.
+/// `cleanup_directory` is populated only when the corpus holds the move-only
+/// capability for that exact directory. Cleanup occurs only when the corpus is
+/// armed, either by RemoveArtifacts adoption or a later explicit arm call.
 /// Callers creating adjacent transactional stores can use this scope to reject
 /// overlapping lease roots before mutating the filesystem.
 struct OOCCorpusArtifactScope final {
@@ -304,45 +309,74 @@ public:
     [[nodiscard]] static RelationCorpus
     from_finalized_ooc(uint64_t logical_generation, std::string base_path,
                        const OOCSnapshotDescriptor& descriptor,
-                       OOCCleanupPolicy cleanup_policy = OOCCleanupPolicy::Preserve,
-                       std::string cleanup_directory = {}) {
+                       OOCCleanupPolicy cleanup_policy = OOCCleanupPolicy::Preserve) {
         relation_corpus_detail::validate_logical_generation(logical_generation);
         relation_corpus_detail::validate_ooc_base_path(base_path);
+        relation_corpus_detail::validate_cleanup_policy(cleanup_policy);
+        if (cleanup_policy != OOCCleanupPolicy::Preserve) {
+            throw std::invalid_argument(
+                "RelationCorpus: descriptor-only OOC reopen cannot acquire cleanup ownership");
+        }
         relation_corpus_detail::validate_finalized_ooc_ownership_descriptor(descriptor);
         base_path = relation_corpus_detail::freeze_ooc_path(base_path);
-        if (!cleanup_directory.empty()) {
-            if (cleanup_policy != OOCCleanupPolicy::RemoveArtifacts) {
-                throw std::invalid_argument(
-                    "RelationCorpus: cleanup directory requires artifact ownership");
-            }
-            if (cleanup_directory.find('\0') != std::string::npos) {
-                throw std::invalid_argument(
-                    "RelationCorpus: cleanup directory must contain no NUL");
-            }
-            cleanup_directory = relation_corpus_detail::freeze_ooc_path(cleanup_directory);
-            const auto expected_parent =
-                std::filesystem::path(base_path).parent_path().lexically_normal();
-            const auto requested_directory =
-                std::filesystem::path(cleanup_directory).lexically_normal();
-            if (expected_parent.empty() || requested_directory != expected_parent) {
-                throw std::invalid_argument(
-                    "RelationCorpus: cleanup directory must be the OOC store parent");
-            }
-        }
 
         // Expected-descriptor construction binds the corpus to one mapped V3
         // index/data pair and validates both headers, identity, count, exact
-        // extents, sentinel, and every offset. The reader is created before
-        // cleanup is armed, so validation/allocation failures leave artifacts
-        // untouched.
+        // extents, sentinel, and every offset. This public reopen carries no
+        // cleanup receipt, so arm_ooc_cleanup() remains fail-closed.
         OOCRelationReader reader(base_path, descriptor);
 
-        auto state = std::make_unique<State>(logical_generation,
-                                             FinalizedOOCStorage{std::move(base_path), descriptor,
-                                                                 std::move(reader),
-                                                                 std::move(cleanup_directory)});
+        auto state = std::make_unique<State>(
+            logical_generation,
+            FinalizedOOCStorage{std::move(base_path), descriptor, std::move(reader)});
+        return RelationCorpus(std::move(state));
+    }
+
+    /// Finalize a fresh writer and transfer its unique cleanup capability into
+    /// an immutable corpus. All path, descriptor, reader, and State operations
+    /// that may throw complete before the final noexcept receipt move. If any
+    /// earlier step fails, the writer retains its receipt and adoption can be
+    /// retried. Public recovery writers never carry this capability.
+    [[nodiscard]] static RelationCorpus
+    from_owned_finalized_ooc(uint64_t logical_generation, OOCRelationWriter& owner,
+                             OOCCleanupPolicy cleanup_policy = OOCCleanupPolicy::Preserve,
+                             OOCPrivateLeaseOwnershipReceipt* private_lease = nullptr) {
+        relation_corpus_detail::validate_logical_generation(logical_generation);
+        relation_corpus_detail::validate_cleanup_policy(cleanup_policy);
+
+        const OOCSnapshotDescriptor descriptor = owner.finalize();
+        relation_corpus_detail::validate_finalized_ooc_ownership_descriptor(descriptor);
+        std::string base_path = relation_corpus_detail::freeze_ooc_path(owner.base_path());
+        if (!owner.has_cleanup_ownership_receipt()) {
+            throw std::logic_error(
+                "RelationCorpus: OOC writer has no transferable cleanup ownership");
+        }
+        if (private_lease != nullptr) {
+            if (private_lease->spent() ||
+                private_lease->base_path() != std::filesystem::path(base_path) ||
+                private_lease->private_directory() !=
+                    std::filesystem::path(base_path).parent_path()) {
+                throw std::invalid_argument(
+                    "RelationCorpus: private lease receipt does not own this OOC store");
+            }
+        }
+
+        OOCRelationReader reader(base_path, descriptor);
+        auto state = std::make_unique<State>(
+            logical_generation,
+            FinalizedOOCStorage{std::move(base_path), descriptor, std::move(reader)});
+
+        // No throwing work follows this transfer. take_cleanup_ownership_receipt()
+        // performs all rejecting checks before its noexcept move, and emplacing
+        // the move-only receipt cannot allocate.
+        auto receipt = owner.take_cleanup_ownership_receipt();
+        auto& storage = std::get<FinalizedOOCStorage>(state->storage);
+        storage.adopt_cleanup_ownership(std::move(receipt));
+        if (private_lease != nullptr) {
+            storage.adopt_private_lease_ownership(std::move(*private_lease));
+        }
         if (cleanup_policy == OOCCleanupPolicy::RemoveArtifacts) {
-            std::get<FinalizedOOCStorage>(state->storage).arm_cleanup();
+            (void)storage.arm_cleanup();
         }
         return RelationCorpus(std::move(state));
     }
@@ -376,9 +410,8 @@ public:
         return ooc->artifact_scope();
     }
 
-    /// Promote an already validated finalized OOC corpus to exclusive cleanup
-    /// ownership. The transition performs no allocation or filesystem access.
-    /// It returns false for invalid or in-memory corpora.
+    /// Arm cleanup only when this corpus already received the original fresh
+    /// writer's move-only receipt. Descriptor-only reopens return false.
     [[nodiscard]] bool arm_ooc_cleanup() noexcept {
         if (state_ == nullptr) {
             return false;
@@ -387,8 +420,7 @@ public:
         if (ooc == nullptr) {
             return false;
         }
-        ooc->arm_cleanup();
-        return true;
+        return ooc->arm_cleanup();
     }
 
     [[nodiscard]] size_t count() const {
@@ -498,9 +530,8 @@ private:
 
     struct FinalizedOOCStorage final {
         FinalizedOOCStorage(std::string base_path, OOCSnapshotDescriptor descriptor,
-                            OOCRelationReader reader, std::string cleanup_directory)
-            : cleanup(std::move(base_path), descriptor, std::move(cleanup_directory)),
-              reader(std::move(reader)) {}
+                            OOCRelationReader reader)
+            : cleanup(std::move(base_path), descriptor), reader(std::move(reader)) {}
 
         FinalizedOOCStorage(const FinalizedOOCStorage&) = delete;
         FinalizedOOCStorage& operator=(const FinalizedOOCStorage&) = delete;
@@ -515,8 +546,16 @@ private:
             return reader.read(ordinal);
         }
 
-        void arm_cleanup() noexcept {
-            cleanup.arm();
+        void adopt_cleanup_ownership(OOCCleanupOwnershipReceipt receipt) noexcept {
+            cleanup.adopt_cleanup_ownership(std::move(receipt));
+        }
+
+        void adopt_private_lease_ownership(OOCPrivateLeaseOwnershipReceipt receipt) noexcept {
+            cleanup.adopt_private_lease_ownership(std::move(receipt));
+        }
+
+        [[nodiscard]] bool arm_cleanup() noexcept {
+            return cleanup.arm();
         }
 
         [[nodiscard]] OOCCorpusArtifactScope artifact_scope() const {

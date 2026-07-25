@@ -146,11 +146,19 @@ child process at every canonical durable intent, quarantine,
 delete-authorization, unlink, and intent-consumption boundary, then completes
 recovery in the parent and reuses the same base. Pending-marker interruption
 is tested in-process because an unspent ownership receipt is deliberately
-non-serializable; cross-process pending recovery belongs to the writer-creation
-receipt integration slice. The no-argument binary runs both suites, so its
-`scripts/test.sh` tier and timeout are `fast` and 60 seconds. Windows Release
-also runs a native sharing-violation retry branch; non-Windows execution cannot
-substitute for that platform evidence.
+non-serializable. After that process exits, pending-only state does not grant
+recovery or fresh-reuse authority; a future durable ownership-token design must
+close that boundary. The core suite also verifies that fresh writer creation
+rejects every live, pending, canonical, staged, and quarantine namespace leaf.
+RelationSink lease coverage verifies that the removable directory and every
+pair transaction share one persistent external lock, that a real
+cross-process contender reports `Busy`, and that the same base is reusable
+without replacing that lock after a completed lease removal. It also replaces
+an owned empty lease with a different live directory and verifies that the old
+identity-bound receipt rejects the ABA target. The no-argument binary runs both
+suites, so its `scripts/test.sh` tier and timeout are `fast` and 60 seconds.
+Windows Release also runs a native sharing-violation retry branch; non-Windows
+execution cannot substitute for that platform evidence.
 
 `test_local_sieve_thread_budget` is the `instant` contract for balanced lane
 allocation, invalid limits, and a bounded property grid. The 64-special-Q probe

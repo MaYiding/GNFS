@@ -1131,7 +1131,7 @@ path_to_module() {
     case "$path" in
         tests/test_sha256.cpp) echo "util" ;;
         tests/test_squfof*.cpp|tests/support/squfof_*.hpp|tests/fixtures/squfof_*.hpp) echo "cofactor" ;;
-        tests/test_relation_collector.cpp|tests/test_relation_reduction_engine.cpp|tests/test_ooc_store_integrity.cpp|tests/test_ooc_cleanup_transaction.cpp) echo "relation" ;;
+        tests/test_relation_collector.cpp|tests/test_relation_corpus.cpp|tests/test_relation_sink.cpp|tests/test_relation_reduction_engine.cpp|tests/test_ooc_store_integrity.cpp|tests/test_ooc_cleanup_transaction.cpp) echo "relation" ;;
         tests/test_structured*.cpp) echo "relation" ;;
         tests/test_api.cpp|*api/*) echo "api" ;;
         tests/test_siqs*.cpp|*siqs/*) echo "siqs" ;;

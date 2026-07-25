@@ -14,10 +14,12 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -35,18 +37,6 @@
 #include <unistd.h>
 #endif
 
-namespace gnfs::relation {
-
-class OOCCleanupTransactionTestAccess final {
-public:
-    [[nodiscard]] static OOCCleanupOwnershipReceipt capture(const std::filesystem::path& base_path,
-                                                            std::uint64_t store_id) {
-        return OOCCleanupTransaction::capture_ownership_receipt(base_path, store_id);
-    }
-};
-
-} // namespace gnfs::relation
-
 namespace {
 
 using gnfs::core::Relation;
@@ -59,8 +49,8 @@ using gnfs::relation::OOCCleanupStatus;
 using gnfs::relation::OOCCleanupTestHooks;
 using gnfs::relation::OOCCleanupTestOperation;
 using gnfs::relation::OOCCleanupTransaction;
-using gnfs::relation::OOCCleanupTransactionTestAccess;
 using gnfs::relation::OOCExactCleanupExpectation;
+using gnfs::relation::OOCPrivateLeaseOwnershipReceipt;
 using gnfs::relation::OOCRelationReader;
 using gnfs::relation::OOCRelationStoreFormat;
 using gnfs::relation::OOCRelationWriter;
@@ -70,25 +60,11 @@ static_assert(!std::is_default_constructible_v<OOCCleanupOwnershipReceipt>);
 static_assert(!std::is_copy_constructible_v<OOCCleanupOwnershipReceipt>);
 static_assert(!std::is_copy_assignable_v<OOCCleanupOwnershipReceipt>);
 static_assert(std::is_nothrow_move_constructible_v<OOCCleanupOwnershipReceipt>);
-static_assert(std::is_nothrow_move_assignable_v<OOCCleanupOwnershipReceipt>);
-
-[[nodiscard]] OOCCleanupOwnershipReceipt
-capture_cleanup_ownership(const std::filesystem::path& base_path, std::uint64_t store_id) {
-    return OOCCleanupTransactionTestAccess::capture(base_path, store_id);
-}
-
-[[nodiscard]] gnfs::relation::OOCCleanupResult begin_cleanup(const OOCCleanupRequest& request,
-                                                             OOCCleanupTestHooks hooks = {}) {
-    auto ownership = capture_cleanup_ownership(request.base_path, request.store_id);
-    return OOCCleanupTransaction::begin_or_resume(ownership, request.exact, hooks);
-}
-
-[[nodiscard]] gnfs::relation::OOCCleanupResult begin_cleanup(const std::filesystem::path& base_path,
-                                                             std::uint64_t store_id,
-                                                             OOCCleanupTestHooks hooks = {}) {
-    auto ownership = capture_cleanup_ownership(base_path, store_id);
-    return OOCCleanupTransaction::begin_or_resume(ownership, std::nullopt, hooks);
-}
+static_assert(!std::is_move_assignable_v<OOCCleanupOwnershipReceipt>);
+static_assert(!std::is_default_constructible_v<OOCPrivateLeaseOwnershipReceipt>);
+static_assert(!std::is_copy_constructible_v<OOCPrivateLeaseOwnershipReceipt>);
+static_assert(std::is_nothrow_move_constructible_v<OOCPrivateLeaseOwnershipReceipt>);
+static_assert(!std::is_move_assignable_v<OOCPrivateLeaseOwnershipReceipt>);
 
 int checks_passed = 0;
 int checks_failed = 0;
@@ -263,6 +239,34 @@ struct PairShape final {
     std::uint64_t data_size = OOCRelationStoreFormat::DATA_HEADER_BYTES + 16;
 };
 
+struct RegisteredOwnedPair final {
+    std::uint64_t logical_store_id = 0;
+    std::uint64_t actual_store_id = 0;
+    std::optional<OOCCleanupOwnershipReceipt> ownership;
+};
+
+[[nodiscard]] std::string owned_pair_key(const std::filesystem::path& base) {
+    return OOCCleanupTransaction::paths_for(base).base_path.string();
+}
+
+[[nodiscard]] std::unordered_map<std::string, RegisteredOwnedPair>& owned_pair_registry() {
+    static std::unordered_map<std::string, RegisteredOwnedPair> registry;
+    return registry;
+}
+
+void register_cleanup_ownership(const std::filesystem::path& base, std::uint64_t logical_store_id,
+                                std::uint64_t actual_store_id,
+                                OOCCleanupOwnershipReceipt ownership) {
+    auto& registry = owned_pair_registry();
+    const auto key = owned_pair_key(base);
+    registry.erase(key);
+    registry.emplace(key, RegisteredOwnedPair{
+                              .logical_store_id = logical_store_id,
+                              .actual_store_id = actual_store_id,
+                              .ownership = std::move(ownership),
+                          });
+}
+
 [[nodiscard]] Relation make_real_relation(std::int64_t a, std::uint64_t b) {
     Relation relation(a, b);
     relation.rational_factors.push_back(static_cast<std::uint32_t>(100 + a));
@@ -272,8 +276,50 @@ struct PairShape final {
 
 void write_pair(const std::filesystem::path& base, std::uint64_t store_id,
                 const PairShape& shape = {}) {
-    write_index(base.string() + ".relidx", shape.magic, store_id, shape.count, shape.index_size);
-    write_data(base.string() + ".reldata", store_id, shape.data_size);
+    OOCRelationWriter writer(base.string());
+    const std::uint64_t actual_store_id = writer.store_id();
+    writer.abort();
+    auto ownership = writer.take_cleanup_ownership_receipt();
+    write_index(base.string() + ".relidx", shape.magic, actual_store_id, shape.count,
+                shape.index_size);
+    write_data(base.string() + ".reldata", actual_store_id, shape.data_size);
+    register_cleanup_ownership(base, store_id, actual_store_id, std::move(ownership));
+}
+
+[[nodiscard]] OOCCleanupOwnershipReceipt
+capture_cleanup_ownership(const std::filesystem::path& base_path, std::uint64_t store_id) {
+    auto& registry = owned_pair_registry();
+    const auto found = registry.find(owned_pair_key(base_path));
+    if (found == registry.end() || found->second.logical_store_id != store_id ||
+        !found->second.ownership) {
+        throw std::logic_error("test pair has no matching production cleanup ownership");
+    }
+    OOCCleanupOwnershipReceipt ownership(std::move(*found->second.ownership));
+    found->second.ownership.reset();
+    return ownership;
+}
+
+[[nodiscard]] std::uint64_t actual_store_id_for(const std::filesystem::path& base_path,
+                                                std::uint64_t logical_store_id) {
+    const auto& registry = owned_pair_registry();
+    const auto found = registry.find(owned_pair_key(base_path));
+    if (found == registry.end() || found->second.logical_store_id != logical_store_id) {
+        throw std::logic_error("test pair has no matching production store identity");
+    }
+    return found->second.actual_store_id;
+}
+
+[[nodiscard]] gnfs::relation::OOCCleanupResult begin_cleanup(const OOCCleanupRequest& request,
+                                                             OOCCleanupTestHooks hooks = {}) {
+    auto ownership = capture_cleanup_ownership(request.base_path, request.store_id);
+    return OOCCleanupTransaction::begin_or_resume(ownership, request.exact, hooks);
+}
+
+[[nodiscard]] gnfs::relation::OOCCleanupResult begin_cleanup(const std::filesystem::path& base_path,
+                                                             std::uint64_t store_id,
+                                                             OOCCleanupTestHooks hooks = {}) {
+    auto ownership = capture_cleanup_ownership(base_path, store_id);
+    return OOCCleanupTransaction::begin_or_resume(ownership, std::nullopt, hooks);
 }
 
 [[nodiscard]] OOCExactCleanupExpectation exact_for(const PairShape& shape) {
@@ -558,7 +604,8 @@ void test_receipt_authority_and_pending_publication() {
         const auto paths = OOCCleanupTransaction::paths_for(base);
         const auto saved_data = temp.path() / "receipt-owned-data";
         std::filesystem::rename(paths.data_path, saved_data);
-        write_data(paths.data_path, store_id + 2, OOCRelationStoreFormat::DATA_HEADER_BYTES + 16);
+        write_data(paths.data_path, actual_store_id_for(base, store_id + 2),
+                   OOCRelationStoreFormat::DATA_HEADER_BYTES + 16);
         CHECK(OOCCleanupTransaction::begin_or_resume(ownership).status ==
               OOCCleanupStatus::SourcePairInvalid);
         CHECK(!ownership.spent());
@@ -576,6 +623,37 @@ void test_receipt_authority_and_pending_publication() {
         std::filesystem::remove(paths.data_path);
         CHECK(OOCCleanupTransaction::begin_or_resume(ownership).completed());
         CHECK(ownership.spent());
+    }
+
+    {
+        const auto base = temp.path() / "receipt-one-shot-move";
+        OOCRelationWriter writer(base.string());
+        const auto descriptor = writer.finalize();
+        auto source = writer.take_cleanup_ownership_receipt();
+        bool second_transfer_rejected = false;
+        try {
+            (void)writer.take_cleanup_ownership_receipt();
+        } catch (const std::logic_error&) {
+            second_transfer_rejected = true;
+        }
+        CHECK(second_transfer_rejected);
+
+        OOCCleanupOwnershipReceipt destination(std::move(source));
+        CHECK(source.spent());
+        CHECK(!destination.spent());
+        CHECK(OOCCleanupTransaction::begin_or_resume(source).status ==
+              OOCCleanupStatus::InvalidRequest);
+        const auto moved_cleanup = OOCCleanupTransaction::begin_or_resume(
+            destination,
+            OOCExactCleanupExpectation{
+                .index_magic = OOCRelationStoreFormat::MAGIC_V3_FINAL,
+                .persisted_count = descriptor.count,
+                .index_size = OOCRelationWriter::index_size_for_count(descriptor.count),
+                .data_size = descriptor.data_end,
+            });
+        CHECK(moved_cleanup.completed());
+        CHECK(destination.spent());
+        check_cleanup_complete(OOCCleanupTransaction::paths_for(base));
     }
 }
 
@@ -626,7 +704,8 @@ void test_namespace_operation_failures_are_retryable() {
         } else {
             CHECK(resumed.completed());
         }
-        CHECK(resumed.quiescent());
+        CHECK(resumed.transaction_terminal());
+        CHECK(OOCCleanupTransaction::confirm_pair_namespace_reusable(base).completed());
         check_cleanup_complete(OOCCleanupTransaction::paths_for(base));
     }
 }
@@ -635,11 +714,54 @@ void test_reserved_cleanup_suffix_is_rejected() {
     TempDirectory temp;
     constexpr std::uint64_t store_id = 0xb1b1'c2c2'd3d3'e4e4ULL;
     const auto base = temp.path() / "foreign.gnfs-ooc-cleanup-v1";
-    write_pair(base, store_id);
+    write_index(base.string() + ".relidx", OOCRelationStoreFormat::MAGIC_V3_INCOMPLETE, store_id, 0,
+                OOCRelationStoreFormat::INDEX_HEADER_BYTES);
+    write_data(base.string() + ".reldata", store_id,
+               OOCRelationStoreFormat::DATA_HEADER_BYTES + 16);
     const auto result = OOCCleanupTransaction::resume(base);
     CHECK(result.status == OOCCleanupStatus::InvalidRequest);
     CHECK(entry_exists_no_follow(base.string() + ".relidx"));
     CHECK(entry_exists_no_follow(base.string() + ".reldata"));
+}
+
+void test_fresh_writer_rejects_nonempty_cleanup_namespace() {
+    TempDirectory temp;
+    constexpr std::array<std::string_view, 8> labels{
+        "index",  "data",           "intent",           "intent-pending",
+        "staged", "staged-pending", "quarantine-index", "quarantine-data",
+    };
+
+    for (std::size_t index = 0; index < labels.size(); ++index) {
+        const auto base = temp.path() / ("fresh-reuse-" + std::to_string(index));
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        const std::array<const std::filesystem::path*, 8> leaves{
+            &paths.index_path,
+            &paths.data_path,
+            &paths.intent_path,
+            &paths.intent_pending_path,
+            &paths.staged_path,
+            &paths.staged_pending_path,
+            &paths.quarantine_index_path,
+            &paths.quarantine_data_path,
+        };
+        write_test_leaf(*leaves[index], labels[index]);
+
+        bool rejected = false;
+        try {
+            OOCRelationWriter writer(base.string());
+            (void)writer;
+        } catch (const std::system_error&) {
+            rejected = true;
+        }
+        CHECK(rejected);
+        CHECK(entry_exists_no_follow(*leaves[index]));
+        if (index != 0) {
+            CHECK(!entry_exists_no_follow(paths.index_path));
+        }
+        if (index != 1) {
+            CHECK(!entry_exists_no_follow(paths.data_path));
+        }
+    }
 }
 
 void test_windows_sharing_violation_is_retryable() {
@@ -721,12 +843,16 @@ void test_real_finalized_store_cleanup() {
     TempDirectory temp;
     const auto base = temp.path() / "real-finalized";
     OOCSnapshotDescriptor descriptor;
+    std::optional<OOCCleanupOwnershipReceipt> ownership;
     {
         OOCRelationWriter writer(base.string());
         CHECK(writer.write(make_real_relation(11, 12)) == 0);
         CHECK(writer.write(make_real_relation(13, 14)) == 1);
         descriptor = writer.finalize();
+        ownership.emplace(writer.take_cleanup_ownership_receipt());
     }
+    register_cleanup_ownership(base, descriptor.store_id, descriptor.store_id,
+                               std::move(*ownership));
 
     CHECK(descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
     CHECK(descriptor.store_id != 0);
@@ -954,6 +1080,7 @@ void test_lock_link_attacks_are_fail_closed() {
         write_pair(base, store_id);
         auto ownership = capture_cleanup_ownership(base, store_id);
         const auto paths = OOCCleanupTransaction::paths_for(base);
+        write_test_leaf(paths.lock_path, "owned cleanup lock");
         const auto saved_lock = temp.path() / "lock-symlink-owned-lock";
         std::filesystem::rename(paths.lock_path, saved_lock);
         const auto target = temp.path() / "lock-symlink-target";
@@ -974,6 +1101,7 @@ void test_lock_link_attacks_are_fail_closed() {
         write_pair(base, store_id + 1);
         auto ownership = capture_cleanup_ownership(base, store_id + 1);
         const auto paths = OOCCleanupTransaction::paths_for(base);
+        write_test_leaf(paths.lock_path, "owned cleanup lock");
         const auto alias = temp.path() / "lock-hardlink-alias";
         if (create_hard_link_checked(paths.lock_path, alias)) {
             CHECK(OOCCleanupTransaction::begin_or_resume(ownership).status ==
@@ -1016,7 +1144,8 @@ void test_foreign_replacements_are_preserved() {
         const auto paths = OOCCleanupTransaction::paths_for(base);
         const auto saved = temp.path() / "saved-owned-data";
         std::filesystem::rename(paths.data_path, saved);
-        write_data(paths.data_path, store_id + 1, OOCRelationStoreFormat::DATA_HEADER_BYTES + 16);
+        write_data(paths.data_path, actual_store_id_for(base, store_id + 1),
+                   OOCRelationStoreFormat::DATA_HEADER_BYTES + 16);
         CHECK(OOCCleanupTransaction::resume(base).status ==
               OOCCleanupStatus::ForeignReplacementPreserved);
         CHECK(exists(paths.data_path));
@@ -1033,7 +1162,7 @@ void test_foreign_replacements_are_preserved() {
         const auto paths = OOCCleanupTransaction::paths_for(base);
         const auto saved = temp.path() / "saved-quarantine-data";
         std::filesystem::rename(paths.quarantine_data_path, saved);
-        write_data(paths.quarantine_data_path, store_id + 2,
+        write_data(paths.quarantine_data_path, actual_store_id_for(base, store_id + 2),
                    OOCRelationStoreFormat::DATA_HEADER_BYTES + 16);
         CHECK(OOCCleanupTransaction::resume(base).status ==
               OOCCleanupStatus::ForeignReplacementPreserved);
@@ -1073,7 +1202,12 @@ void test_staged_only_tail_has_no_delete_authority() {
     CHECK(exists(paths.staged_path));
     std::filesystem::remove(paths.intent_path);
 
-    write_pair(base, new_store_id);
+    // A cooperating fresh writer must reject a staged-only namespace. Model an
+    // external/noncooperating replacement directly to verify that staged alone
+    // still cannot authorize deletion of the live pair.
+    write_index(paths.index_path, OOCRelationStoreFormat::MAGIC_V3_INCOMPLETE, new_store_id, 0,
+                OOCRelationStoreFormat::INDEX_HEADER_BYTES);
+    write_data(paths.data_path, new_store_id, OOCRelationStoreFormat::DATA_HEADER_BYTES + 16);
     CHECK(OOCCleanupTransaction::resume(base).completed());
     CHECK(exists(paths.index_path));
     CHECK(exists(paths.data_path));
@@ -1179,6 +1313,75 @@ void test_cross_process_lock_reports_busy(const std::string& executable) {
     check_cleanup_complete(paths);
 }
 
+void test_private_lease_uses_one_persistent_external_lock(const std::string& executable) {
+    TempDirectory temp;
+    const auto lease = temp.path() / "private.gnfs-sink-lease";
+    const auto base = lease / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    const auto frozen_temp = std::filesystem::weakly_canonical(temp.path());
+    CHECK(paths.private_directory == frozen_temp / "private.gnfs-sink-lease");
+    CHECK(paths.lock_path.parent_path() == frozen_temp);
+    CHECK(paths.lock_path.parent_path() != paths.private_directory);
+
+    auto first = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(first.completed());
+    CHECK(entry_exists_no_follow(paths.private_directory));
+    CHECK(entry_exists_no_follow(paths.lock_path));
+
+    constexpr std::uint64_t unused_store_id = 0x8899'aabb'ccdd'eeffULL;
+    const auto holder = gnfs::test::run_child_process(
+        executable, {"--hold-cleanup-lock", base.string(), std::to_string(unused_store_id)});
+    CHECK(holder.exited);
+    CHECK(!holder.signaled);
+    CHECK(holder.exit_code == LOCK_HOLDER_CONFIRMED_EXIT);
+    CHECK(entry_exists_no_follow(paths.private_directory));
+    CHECK(entry_exists_no_follow(paths.lock_path));
+
+    CHECK(OOCCleanupTransaction::remove_private_lease(*first.ownership).completed());
+    CHECK(!entry_exists_no_follow(paths.private_directory));
+    CHECK(entry_exists_no_follow(paths.lock_path));
+
+    auto second = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(second.completed());
+    CHECK(entry_exists_no_follow(paths.private_directory));
+    CHECK(entry_exists_no_follow(paths.lock_path));
+    CHECK(OOCCleanupTransaction::remove_private_lease(*second.ownership).completed());
+    CHECK(!entry_exists_no_follow(paths.private_directory));
+    CHECK(entry_exists_no_follow(paths.lock_path));
+}
+
+void test_private_lease_receipt_rejects_replacement_directory() {
+    TempDirectory temp;
+    const auto lease = temp.path() / "aba.gnfs-sink-lease";
+    const auto base = lease / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    const auto replacement = temp.path() / "replacement-lease";
+
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+    CHECK(std::filesystem::create_directory(replacement));
+
+    std::error_code error;
+    CHECK(std::filesystem::remove(paths.private_directory, error));
+    CHECK(!error);
+    std::filesystem::rename(replacement, paths.private_directory, error);
+    CHECK(!error);
+
+    const auto rejected = OOCCleanupTransaction::remove_private_lease(*reservation.ownership);
+    CHECK(rejected.status == OOCCleanupStatus::NamespaceConflict);
+    CHECK(!reservation.ownership->spent());
+    CHECK(entry_exists_no_follow(paths.private_directory));
+    CHECK(entry_exists_no_follow(paths.lock_path));
+
+    error.clear();
+    CHECK(std::filesystem::remove(paths.private_directory, error));
+    CHECK(!error);
+    CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
+    CHECK(reservation.ownership->spent());
+    CHECK(!entry_exists_no_follow(paths.private_directory));
+    CHECK(entry_exists_no_follow(paths.lock_path));
+}
+
 struct CrashContext final {
     OOCCleanupFaultPoint target = OOCCleanupFaultPoint::IntentDurable;
 };
@@ -1226,7 +1429,6 @@ int run_crash_child(std::size_t point_index, const std::filesystem::path& base,
 void test_process_crash_recovery(const std::string& executable) {
     TempDirectory temp;
     constexpr std::uint64_t initial_store_id = 0x8888'9999'aaaa'bbb0ULL;
-    const PairShape shape = finalized_crash_shape();
 
     for (std::size_t index = 0; index < CLEANUP_FAULT_POINTS.size(); ++index) {
         const auto base = temp.path() / ("process-crash-" + std::to_string(index));
@@ -1240,12 +1442,7 @@ void test_process_crash_recovery(const std::string& executable) {
 
         const auto paths = OOCCleanupTransaction::paths_for(base);
         check_fault_namespace(paths, CLEANUP_FAULT_POINTS[index]);
-        const OOCCleanupRequest request{
-            .base_path = base,
-            .store_id = store_id,
-            .exact = exact_for(shape),
-        };
-        CHECK(OOCCleanupTransaction::resume(request).completed());
+        CHECK(OOCCleanupTransaction::resume(base).completed());
         check_cleanup_complete(paths);
         CHECK(OOCCleanupTransaction::resume(base).status == OOCCleanupStatus::NoTransaction);
 
@@ -1263,6 +1460,7 @@ void run_core_suite(const std::string& executable) {
     test_receipt_authority_and_pending_publication();
     test_namespace_operation_failures_are_retryable();
     test_reserved_cleanup_suffix_is_rejected();
+    test_fresh_writer_rejects_nonempty_cleanup_namespace();
     test_windows_sharing_violation_is_retryable();
     test_exact_finalized_expectation();
     test_real_finalized_store_cleanup();
@@ -1278,6 +1476,8 @@ void run_core_suite(const std::string& executable) {
     test_staged_only_tail_has_no_delete_authority();
     test_quarantine_collision_is_preserved();
     test_cross_process_lock_reports_busy(executable);
+    test_private_lease_uses_one_persistent_external_lock(executable);
+    test_private_lease_receipt_rejects_replacement_directory();
 }
 
 } // namespace

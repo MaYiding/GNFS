@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -76,7 +77,12 @@ public:
             ignored.clear();
             std::filesystem::remove(base_path + ".reldata", ignored);
             ignored.clear();
+            std::filesystem::remove(base_path + ".gnfs-ooc-cleanup-v1.lock", ignored);
+            ignored.clear();
             std::filesystem::remove_all(base_path + ".gnfs-sink-lease", ignored);
+            ignored.clear();
+            std::filesystem::remove(base_path + ".gnfs-sink-lease.gnfs-ooc-cleanup-v1.lock",
+                                    ignored);
         }
     }
 
@@ -189,6 +195,7 @@ constexpr size_t COMPONENT_STRIDE = 4'096;
 }
 
 struct BuiltOOCSource final {
+    std::unique_ptr<OOCRelationWriter> writer;
     OOCSnapshotDescriptor descriptor;
     CorpusDigest raw_digest;
     size_t rows_written = 0;
@@ -201,17 +208,17 @@ struct BuiltCollectorSource final {
 };
 
 [[nodiscard]] BuiltOOCSource build_ooc_source(const std::string& base_path, size_t row_count) {
-    OOCRelationWriter writer(base_path);
+    auto writer = std::make_unique<OOCRelationWriter>(base_path);
     CorpusDigestAccumulator digest(row_count);
     for (size_t raw_ordinal = 0; raw_ordinal < row_count; ++raw_ordinal) {
         const Relation relation = make_raw_relation(raw_ordinal, row_count);
         digest.append(relation);
-        CHECK(writer.write(relation) == raw_ordinal);
+        CHECK(writer->write(relation) == raw_ordinal);
     }
-    const OOCSnapshotDescriptor descriptor = writer.finalize();
+    const OOCSnapshotDescriptor descriptor = writer->finalize();
     CHECK(descriptor.count == row_count);
-    CHECK(writer.count() == row_count);
-    return {descriptor, digest.finish(), row_count};
+    CHECK(writer->count() == row_count);
+    return {std::move(writer), descriptor, digest.finish(), row_count};
 }
 
 [[nodiscard]] BuiltCollectorSource build_collector_source(RelationCollector& collector,
@@ -387,8 +394,8 @@ void run_owning_ooc_case(size_t raw_row_count, uint64_t generation, const std::s
     cleanup.add(working_base);
     cleanup.add(output_base);
 
-    RelationCorpus corpus = RelationCorpus::from_finalized_ooc(
-        generation, input_base, source.descriptor,
+    RelationCorpus corpus = RelationCorpus::from_owned_finalized_ooc(
+        generation, *source.writer,
         remove_input_artifacts ? OOCCleanupPolicy::RemoveArtifacts : OOCCleanupPolicy::Preserve);
     CHECK(corpus.storage_kind() == RelationStorageKind::FinalizedOOC);
     CHECK(corpus.count() == raw_row_count);

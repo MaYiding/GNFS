@@ -2,10 +2,12 @@
 
 #include "gnfs/core/relation.hpp"
 #include "gnfs/relation/large_prime_key.hpp"
+#include "gnfs/relation/ooc_cleanup_transaction.hpp"
 #include "gnfs/relation/ooc_relation_format.hpp"
 #include "gnfs/relation/relation_sequence_receipt.hpp"
 #include "gnfs/util/mmap_file.hpp"
 #include "gnfs/util/process.hpp"
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <cerrno>
@@ -21,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -368,7 +371,7 @@ private:
                                std::optional<OOCSnapshotDescriptor> recovery_descriptor,
                                std::optional<RelationSequenceReceipt> recovery_sequence_receipt,
                                ConstructionToken)
-        : base_path_(base_path), data_buf_(BUFFER_BYTES),
+        : base_path_(freeze_base_path_checked(base_path)), data_buf_(BUFFER_BYTES),
           idx_buf_(BUFFER_BYTES / 4), // 256 KB suffices for index
           uncaught_at_ctor_(std::uncaught_exceptions()),
           fresh_store_(!recovery_descriptor.has_value()) {
@@ -469,54 +472,73 @@ private:
             ensure_streams_good("resume constructor seek");
             recovery_outcome_ = OOCRecoveryOutcome::AppendablePrefix;
         } else {
-            // Reserve both fresh names with O_EXCL before opening either
-            // stream. A second writer can therefore never pass an exists check
-            // and then truncate this store. Resume remains the only path that
-            // may open an existing pair.
-            const std::string index_path = base_path + ".relidx";
-            const std::string data_path = base_path + ".reldata";
-            bool index_reserved = false;
-            bool data_reserved = false;
             try {
-                create_empty_file_exclusive(index_path);
-                index_reserved = true;
-                create_empty_file_exclusive(data_path);
-                data_reserved = true;
+                // Serialize the complete namespace-empty check and both O_EXCL
+                // reservations with cleanup/recovery callers. Pending,
+                // canonical, staged, or quarantine leaves fail closed; explicit
+                // transaction recovery must finish before fresh reuse.
+                const auto cleanup_paths = ooc_cleanup_detail::freeze_paths(base_path_);
+                ooc_cleanup_detail::BaseLock cleanup_lock(cleanup_paths.lock_path,
+                                                          cleanup_paths.private_directory.empty());
+                ooc_cleanup_detail::require_pair_namespace_reusable_locked(cleanup_paths);
 
-                data_stream_.open(data_path, std::ios::in | std::ios::out | std::ios::binary);
-                idx_stream_.open(index_path, std::ios::in | std::ios::out | std::ios::binary);
-                if (!data_stream_ || !idx_stream_) {
-                    throw std::runtime_error("OOCRelationWriter: cannot open files at " +
-                                             base_path);
+                // Reserve both fresh names with O_EXCL before opening either
+                // stream. A second writer can therefore never pass an exists
+                // check and then truncate this store.
+                const std::string index_path = cleanup_paths.index_path.string();
+                const std::string data_path = cleanup_paths.data_path.string();
+                std::optional<FreshArtifactReservation> index_reservation;
+                std::optional<FreshArtifactReservation> data_reservation;
+                try {
+                    index_reservation.emplace(FreshArtifactReservation::create(index_path));
+                    data_reservation.emplace(FreshArtifactReservation::create(data_path));
+
+                    data_stream_.open(data_path, std::ios::in | std::ios::out | std::ios::binary);
+                    idx_stream_.open(index_path, std::ios::in | std::ios::out | std::ios::binary);
+                    if (!data_stream_ || !idx_stream_) {
+                        throw std::runtime_error("OOCRelationWriter: cannot open files at " +
+                                                 base_path);
+                    }
+                    // 先写 INCOMPLETE 标志。若 write 中途抛(磁盘满等),析构跳过
+                    // finalize → reader 看到 INCOMPLETE 拒读,避免 idx/data 不一致。
+                    // 成功 close 后再翻成 MAGIC。
+                    const uint64_t magic = MAGIC_INCOMPLETE;
+                    const uint64_t format_version = FORMAT_VERSION;
+                    const uint64_t durable_store_id = store_id_;
+                    const uint64_t incomplete_count = 0;
+                    idx_stream_.write(reinterpret_cast<const char*>(&magic), 8);
+                    idx_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
+                    idx_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
+                    idx_stream_.write(reinterpret_cast<const char*>(&incomplete_count), 8);
+                    const uint64_t data_magic = MAGIC_V3_DATA;
+                    data_stream_.write(reinterpret_cast<const char*>(&data_magic), 8);
+                    data_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
+                    data_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
+                    ensure_streams_good("constructor header write");
+                    validate_open_v3_pair_headers("constructor header validation",
+                                                  incomplete_count);
+                    data_reservation->close_checked(data_path);
+                    index_reservation->close_checked(index_path);
+                    auto cleanup_receipt = capture_fresh_cleanup_ownership_checked(
+                        base_path_, store_id_, index_reservation->identity(),
+                        data_reservation->identity());
+                    static_assert(std::is_nothrow_move_constructible_v<OOCCleanupOwnershipReceipt>);
+                    cleanup_receipt_.emplace(std::move(cleanup_receipt));
+                } catch (...) {
+                    abort_close_noexcept();
+                    if (data_reservation) {
+                        data_reservation->remove_path_if_same_identity_noexcept(data_path);
+                    }
+                    if (index_reservation) {
+                        index_reservation->remove_path_if_same_identity_noexcept(index_path);
+                    }
+                    throw;
                 }
-                // 先写 INCOMPLETE 标志。若 write 中途抛(磁盘满等),析构跳过
-                // finalize → reader 看到 INCOMPLETE 拒读,避免 idx/data 不一致。
-                // 成功 close 后再翻成 MAGIC。
-                const uint64_t magic = MAGIC_INCOMPLETE;
-                const uint64_t format_version = FORMAT_VERSION;
-                const uint64_t durable_store_id = store_id_;
-                const uint64_t incomplete_count = 0;
-                idx_stream_.write(reinterpret_cast<const char*>(&magic), 8);
-                idx_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
-                idx_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
-                idx_stream_.write(reinterpret_cast<const char*>(&incomplete_count), 8);
-                const uint64_t data_magic = MAGIC_V3_DATA;
-                data_stream_.write(reinterpret_cast<const char*>(&data_magic), 8);
-                data_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
-                data_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
-                ensure_streams_good("constructor header write");
-                validate_open_v3_pair_headers("constructor header validation", incomplete_count);
-            } catch (...) {
-                abort_close_noexcept();
-                std::error_code ignored;
-                if (data_reserved) {
-                    (void)std::filesystem::remove(data_path, ignored);
-                }
-                ignored.clear();
-                if (index_reserved) {
-                    (void)std::filesystem::remove(index_path, ignored);
-                }
-                throw;
+            } catch (const ooc_cleanup_detail::Failure& failure) {
+                const auto error =
+                    failure.error ? failure.error : std::make_error_code(std::errc::protocol_error);
+                throw std::system_error(error,
+                                        "OOCRelationWriter: fresh namespace is not reusable");
             }
         }
     }
@@ -793,55 +815,115 @@ public:
         abort_close_noexcept();
     }
 
-    /// Abandon and remove an uncommitted store created by this writer.
-    ///
-    /// Recovery writers are deliberately preserved. A fresh incomplete or
-    /// finalized pair enters sequential best-effort removal only after both
-    /// closed V3 headers still carry this writer's store identity. A failure
-    /// after the first removal may leave one owned artifact; durable
-    /// intent/quarantine recovery is a separate cleanup transaction.
-    [[nodiscard]] bool abort_and_remove_owned_fresh_artifacts_noexcept() noexcept {
-        if (fresh_artifacts_removed_) {
-            return true;
-        }
-        if (!fresh_store_) {
-            return true;
-        }
+    /// Transfer this writer's unique cleanup authority after all append and
+    /// prefix-reader handles have closed. Public recovery writers never carry
+    /// this capability, and a writer can transfer it only once.
+    [[nodiscard]] bool has_cleanup_ownership_receipt() const noexcept {
+        return cleanup_receipt_.has_value() && !cleanup_receipt_->spent();
+    }
 
-        bool owned_pair = false;
-        if (state_ == OOCWriterState::Finalized) {
-            owned_pair = closed_pair_is_owned_finalized_store_noexcept();
-        } else {
-            abort();
-            owned_pair = closed_pair_has_owned_incomplete_headers_noexcept();
+    [[nodiscard]] OOCCleanupOwnershipReceipt take_cleanup_ownership_receipt() {
+        if (state_ != OOCWriterState::Finalized && state_ != OOCWriterState::Failed) {
+            throw std::logic_error("OOCRelationWriter: cleanup ownership requires a closed writer");
         }
-        if (!owned_pair) {
-            return false;
+        if (active_prefix_readers_ != 0) {
+            throw std::logic_error(
+                "OOCRelationWriter: cleanup ownership cannot outlive an active prefix reader");
+        }
+        if (!cleanup_receipt_ || cleanup_receipt_->spent()) {
+            throw std::logic_error(
+                "OOCRelationWriter: cleanup ownership is unavailable or already consumed");
+        }
+        OOCCleanupOwnershipReceipt receipt(std::move(*cleanup_receipt_));
+        cleanup_receipt_.reset();
+        return receipt;
+    }
+
+    /// Close and transactionally remove the exact pair authorized by this
+    /// writer's move-only cleanup receipt.
+    ///
+    /// Fresh construction is the only public receipt issuer. Descriptor-based
+    /// recovery deliberately has no receipt because structural and sequence
+    /// validation prove byte consistency, not path ownership. Once a durable
+    /// cleanup intent exists, retries resume it using the receipt-bound
+    /// request; no path/store-id pair can create a new intent by itself.
+    [[nodiscard]] OOCCleanupResult remove_owned_artifacts_noexcept() noexcept {
+        if (fresh_artifacts_removed_) {
+            return OOCCleanupResult{
+                .status = OOCCleanupStatus::Completed,
+                .stage = OOCCleanupStage::Completed,
+                .native_error = {},
+            };
+        }
+        if (!cleanup_receipt_) {
+            return OOCCleanupResult{
+                .status = OOCCleanupStatus::InvalidRequest,
+                .stage = OOCCleanupStage::None,
+                .native_error = std::make_error_code(std::errc::operation_not_permitted),
+            };
+        }
+        if (active_prefix_readers_ != 0) {
+            return OOCCleanupResult{
+                .status = OOCCleanupStatus::Busy,
+                .stage = OOCCleanupStage::None,
+                .native_error = std::make_error_code(std::errc::device_or_resource_busy),
+            };
         }
 
         try {
-            const std::filesystem::path data_path(base_path_ + ".reldata");
-            const std::filesystem::path index_path(base_path_ + ".relidx");
-            const bool finalized = state_ == OOCWriterState::Finalized;
-            const auto& first_path = finalized ? index_path : data_path;
-            const auto& second_path = finalized ? data_path : index_path;
-            std::error_code first_error;
-            std::error_code second_error;
-            const bool first_removed = std::filesystem::remove(first_path, first_error);
-            if (!first_removed || first_error) {
-                return false;
+            std::optional<OOCExactCleanupExpectation> exact;
+            if (state_ == OOCWriterState::Finalized) {
+                if (!finalized_descriptor_ || finalized_descriptor_->store_id != store_id_) {
+                    return OOCCleanupResult{
+                        .status = OOCCleanupStatus::SourcePairInvalid,
+                        .stage = OOCCleanupStage::None,
+                        .native_error = std::make_error_code(std::errc::protocol_error),
+                    };
+                }
+                exact = OOCExactCleanupExpectation{
+                    .index_magic = MAGIC_V3_FINAL,
+                    .persisted_count = finalized_descriptor_->count,
+                    .index_size = index_size_for_count(finalized_descriptor_->count),
+                    .data_size = finalized_descriptor_->data_end,
+                };
+            } else {
+                abort();
             }
-            const bool second_removed = std::filesystem::remove(second_path, second_error);
-            if (!second_removed || second_error) {
-                detail::sync_parent_directory_after_metadata_change(first_path);
-                return false;
+
+            const OOCCleanupRequest request{
+                .base_path = cleanup_receipt_->base_path_,
+                .store_id = cleanup_receipt_->store_id_,
+                .exact = exact,
+            };
+            OOCCleanupResult result;
+            if (cleanup_receipt_->spent()) {
+                result = OOCCleanupTransaction::resume(request);
+            } else {
+                result = OOCCleanupTransaction::begin_or_resume(*cleanup_receipt_, exact);
             }
-            detail::sync_parent_directory_after_metadata_change(index_path);
-            fresh_artifacts_removed_ = true;
-            return true;
+            if (result.status == OOCCleanupStatus::NoTransaction) {
+                result = OOCCleanupTransaction::confirm_pair_namespace_reusable(
+                    cleanup_receipt_->base_path_);
+            }
+            if (result.completed()) {
+                fresh_artifacts_removed_ = true;
+            }
+            return result;
         } catch (...) {
-            return false;
+            return OOCCleanupResult{
+                .status = OOCCleanupStatus::UnexpectedFailure,
+                .stage = OOCCleanupStage::None,
+                .native_error = {},
+            };
         }
+    }
+
+    /// Compatibility wrapper for exception-only fresh-store cleanup.
+    [[nodiscard]] bool abort_and_remove_owned_fresh_artifacts_noexcept() noexcept {
+        if (!fresh_store_) {
+            return true;
+        }
+        return remove_owned_artifacts_noexcept().completed();
     }
 
     ~OOCRelationWriter() {
@@ -901,33 +983,175 @@ private:
         FullTable,
     };
 
-    static void create_empty_file_exclusive(const std::string& path) {
-#ifdef _WIN32
-        const std::filesystem::path filesystem_path(path);
-        const int descriptor =
-            ::_wopen(filesystem_path.c_str(), _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY,
-                     _S_IREAD | _S_IWRITE);
-#else
-        const int descriptor = ::open(path.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
-#endif
-        if (descriptor < 0) {
-            throw std::system_error(errno, std::generic_category(),
-                                    "OOCRelationWriter: cannot reserve fresh artifact " + path);
-        }
-
-#ifdef _WIN32
-        const int close_result = ::_close(descriptor);
-#else
-        const int close_result = ::close(descriptor);
-#endif
-        if (close_result != 0) {
-            const int saved_errno = errno;
-            std::error_code ignored;
-            (void)std::filesystem::remove(path, ignored);
-            throw std::system_error(saved_errno, std::generic_category(),
-                                    "OOCRelationWriter: cannot close fresh artifact " + path);
+    [[nodiscard]] static std::string freeze_base_path_checked(const std::string& base_path) {
+        try {
+            return ooc_cleanup_detail::freeze_paths(base_path).base_path.string();
+        } catch (const ooc_cleanup_detail::Failure& failure) {
+            const auto error =
+                failure.error ? failure.error : std::make_error_code(std::errc::invalid_argument);
+            throw std::system_error(error, "OOCRelationWriter: invalid base path");
         }
     }
+
+    [[nodiscard]] static OOCCleanupOwnershipReceipt capture_fresh_cleanup_ownership_checked(
+        const std::string& base_path, std::uint64_t store_id,
+        const std::array<std::uint64_t, 3>& expected_index_identity,
+        const std::array<std::uint64_t, 3>& expected_data_identity) {
+        try {
+            return OOCCleanupTransaction::capture_fresh_ownership_receipt(
+                base_path, store_id, expected_index_identity, expected_data_identity);
+        } catch (const ooc_cleanup_detail::Failure& failure) {
+            const auto error =
+                failure.error ? failure.error : std::make_error_code(std::errc::protocol_error);
+            throw std::system_error(error,
+                                    "OOCRelationWriter: cannot issue fresh cleanup ownership");
+        }
+    }
+
+    class FreshArtifactReservation final {
+    public:
+        FreshArtifactReservation(const FreshArtifactReservation&) = delete;
+        FreshArtifactReservation& operator=(const FreshArtifactReservation&) = delete;
+
+        FreshArtifactReservation(FreshArtifactReservation&& other) noexcept
+            : identity_(other.identity_)
+#ifdef _WIN32
+              ,
+              handle_(std::exchange(other.handle_, INVALID_HANDLE_VALUE))
+#else
+              ,
+              descriptor_(std::exchange(other.descriptor_, -1))
+#endif
+        {
+        }
+
+        FreshArtifactReservation& operator=(FreshArtifactReservation&&) = delete;
+
+        ~FreshArtifactReservation() {
+            close_noexcept();
+        }
+
+        [[nodiscard]] static FreshArtifactReservation create(const std::string& path) {
+#ifdef _WIN32
+            const std::filesystem::path filesystem_path(path);
+            const HANDLE handle = ::CreateFileW(
+                filesystem_path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+            if (handle == INVALID_HANDLE_VALUE) {
+                throw std::system_error(static_cast<int>(::GetLastError()), std::system_category(),
+                                        "OOCRelationWriter: cannot reserve fresh artifact " + path);
+            }
+            BY_HANDLE_FILE_INFORMATION information{};
+            if (!::GetFileInformationByHandle(handle, &information)) {
+                const DWORD error = ::GetLastError();
+                (void)::CloseHandle(handle);
+                throw std::system_error(static_cast<int>(error), std::system_category(),
+                                        "OOCRelationWriter: cannot identify fresh artifact " +
+                                            path);
+            }
+            const auto identity = ooc_cleanup_detail::windows_identity(handle, information);
+            if (!identity || !ooc_cleanup_detail::windows_regular_single_link(information)) {
+                (void)::CloseHandle(handle);
+                throw std::runtime_error(
+                    "OOCRelationWriter: fresh artifact has no stable regular-file identity");
+            }
+            return FreshArtifactReservation({identity->first, identity->second, identity->third},
+                                            handle);
+#else
+            const int descriptor =
+                ::open(path.c_str(), O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
+            if (descriptor < 0) {
+                throw std::system_error(errno, std::generic_category(),
+                                        "OOCRelationWriter: cannot reserve fresh artifact " + path);
+            }
+            struct stat information{};
+            if (::fstat(descriptor, &information) != 0) {
+                const int error = errno;
+                (void)::close(descriptor);
+                throw std::system_error(error, std::generic_category(),
+                                        "OOCRelationWriter: cannot identify fresh artifact " +
+                                            path);
+            }
+            if (!S_ISREG(information.st_mode) || information.st_nlink != 1) {
+                (void)::close(descriptor);
+                throw std::runtime_error(
+                    "OOCRelationWriter: fresh artifact has no stable regular-file identity");
+            }
+            return FreshArtifactReservation({static_cast<std::uint64_t>(information.st_dev),
+                                             static_cast<std::uint64_t>(information.st_ino), 0},
+                                            descriptor);
+#endif
+        }
+
+        void close_checked(const std::string& path) {
+#ifdef _WIN32
+            if (handle_ == INVALID_HANDLE_VALUE) {
+                return;
+            }
+            const HANDLE handle = std::exchange(handle_, INVALID_HANDLE_VALUE);
+            if (!::CloseHandle(handle)) {
+                throw std::system_error(static_cast<int>(::GetLastError()), std::system_category(),
+                                        "OOCRelationWriter: cannot close fresh artifact " + path);
+            }
+#else
+            if (descriptor_ < 0) {
+                return;
+            }
+            const int descriptor = std::exchange(descriptor_, -1);
+            if (::close(descriptor) != 0) {
+                throw std::system_error(errno, std::generic_category(),
+                                        "OOCRelationWriter: cannot close fresh artifact " + path);
+            }
+#endif
+        }
+
+        [[nodiscard]] const std::array<std::uint64_t, 3>& identity() const noexcept {
+            return identity_;
+        }
+
+        void remove_path_if_same_identity_noexcept(const std::string& path) noexcept {
+            try {
+                const auto inspected =
+                    ooc_cleanup_detail::inspect_file(std::filesystem::path(path), 0, false);
+                if (inspected.kind != ooc_cleanup_detail::InspectKind::Present ||
+                    ooc_cleanup_detail::stable_identity(inspected.identity) != identity_) {
+                    return;
+                }
+                std::error_code ignored;
+                (void)std::filesystem::remove(path, ignored);
+            } catch (...) {
+            }
+        }
+
+    private:
+#ifdef _WIN32
+        FreshArtifactReservation(std::array<std::uint64_t, 3> identity, HANDLE handle) noexcept
+            : identity_(identity), handle_(handle) {}
+#else
+        FreshArtifactReservation(std::array<std::uint64_t, 3> identity, int descriptor) noexcept
+            : identity_(identity), descriptor_(descriptor) {}
+#endif
+
+        void close_noexcept() noexcept {
+#ifdef _WIN32
+            if (handle_ != INVALID_HANDLE_VALUE) {
+                (void)::CloseHandle(std::exchange(handle_, INVALID_HANDLE_VALUE));
+            }
+#else
+            if (descriptor_ >= 0) {
+                (void)::close(std::exchange(descriptor_, -1));
+            }
+#endif
+        }
+
+        std::array<std::uint64_t, 3> identity_{};
+#ifdef _WIN32
+        HANDLE handle_ = INVALID_HANDLE_VALUE;
+#else
+        int descriptor_ = -1;
+#endif
+    };
 
     static std::optional<OOCSnapshotDescriptor> reject_legacy_resume(bool legacy_resume) {
         if (legacy_resume) {
@@ -1633,6 +1857,7 @@ private:
     uint64_t generation_ = 0;
     bool fresh_store_ = false;
     bool fresh_artifacts_removed_ = false;
+    std::optional<OOCCleanupOwnershipReceipt> cleanup_receipt_;
     OOCWriterState state_ = OOCWriterState::Open;
     std::optional<OOCSnapshotDescriptor> suspended_descriptor_;
     std::optional<OOCSnapshotDescriptor> finalized_descriptor_;
@@ -1878,7 +2103,15 @@ public:
     OOCRelationPrefixReader(const std::string& base_path, const OOCSnapshotDescriptor& descriptor,
                             OOCRelationWriter& owner)
         : descriptor_(descriptor), owner_(&owner) {
-        if (descriptor.store_id == 0 || owner.base_path() != base_path ||
+        std::string frozen_base_path;
+        try {
+            frozen_base_path = ooc_cleanup_detail::freeze_paths(base_path).base_path.string();
+        } catch (const ooc_cleanup_detail::Failure& failure) {
+            const auto error =
+                failure.error ? failure.error : std::make_error_code(std::errc::invalid_argument);
+            throw std::system_error(error, "OOCRelationPrefixReader: invalid base path");
+        }
+        if (descriptor.store_id == 0 || owner.base_path() != frozen_base_path ||
             !owner.owns_suspended_prefix(descriptor)) {
             throw std::invalid_argument(
                 "OOCRelationPrefixReader: foreign or stale snapshot descriptor");
@@ -1888,8 +2121,8 @@ public:
         try {
             // Validate ownership and the Suspended state before opening either file.
             // On Windows, mmap must never race an open std::fstream writer handle.
-            idx_file_ = gnfs::util::MmapFile(base_path + ".relidx");
-            data_file_ = gnfs::util::MmapFile(base_path + ".reldata");
+            idx_file_ = gnfs::util::MmapFile(frozen_base_path + ".relidx");
+            data_file_ = gnfs::util::MmapFile(frozen_base_path + ".reldata");
             if (idx_file_.size() < OOCRelationWriter::INDEX_HEADER_BYTES) {
                 throw std::runtime_error("OOCRelationPrefixReader: index file too small");
             }

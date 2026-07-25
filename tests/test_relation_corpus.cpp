@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -24,6 +25,7 @@ using gnfs::core::Relation;
 using gnfs::relation::CollectorConfig;
 using gnfs::relation::materialize_selected;
 using gnfs::relation::OOCCleanupPolicy;
+using gnfs::relation::OOCCleanupTransaction;
 using gnfs::relation::OOCRelationWriter;
 using gnfs::relation::OOCSnapshotDescriptor;
 using gnfs::relation::RelationCollector;
@@ -106,23 +108,23 @@ struct TestArtifactCleanup final {
 
     ~TestArtifactCleanup() {
         std::error_code ignored;
-        std::filesystem::remove(base + ".relidx", ignored);
-        ignored.clear();
-        std::filesystem::remove(base + ".reldata", ignored);
+        try {
+            const auto paths = OOCCleanupTransaction::paths_for(base);
+            for (const auto* path :
+                 {&paths.index_path, &paths.data_path, &paths.intent_path,
+                  &paths.intent_pending_path, &paths.staged_path, &paths.staged_pending_path,
+                  &paths.quarantine_index_path, &paths.quarantine_data_path, &paths.lock_path}) {
+                ignored.clear();
+                std::filesystem::remove(*path, ignored);
+            }
+        } catch (...) {
+            std::filesystem::remove(base + ".relidx", ignored);
+            ignored.clear();
+            std::filesystem::remove(base + ".reldata", ignored);
+        }
     }
 
     std::string base;
-};
-
-struct TestFileCleanup final {
-    explicit TestFileCleanup(std::string file_path) : path(std::move(file_path)) {}
-
-    ~TestFileCleanup() {
-        std::error_code ignored;
-        std::filesystem::remove(path, ignored);
-    }
-
-    std::string path;
 };
 
 struct TestPathCleanup final {
@@ -153,25 +155,30 @@ OOCSnapshotDescriptor write_finalized_store(const std::string& base_path,
     return descriptor;
 }
 
-OOCSnapshotDescriptor collect_finalized_store(const std::string& base_path,
-                                              const std::vector<Relation>& relations) {
+[[nodiscard]] std::unique_ptr<OOCRelationWriter>
+make_finalized_writer(const std::string& base_path, const std::vector<Relation>& relations) {
+    auto writer = std::make_unique<OOCRelationWriter>(base_path);
+    for (const auto& relation : relations) {
+        (void)writer->write(relation);
+    }
+    const auto descriptor = writer->finalize();
+    CHECK(descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+    CHECK(descriptor.count == relations.size());
+    return writer;
+}
+
+RelationCorpus collect_owned_corpus(uint64_t logical_generation, const std::string& base_path,
+                                    const std::vector<Relation>& relations) {
     CollectorConfig config;
     config.ooc_enabled = true;
     config.ooc_base_path = base_path;
     config.use_pool = false;
 
-    std::optional<OOCSnapshotDescriptor> descriptor;
-    {
-        RelationCollector collector(config);
-        for (const auto& relation : relations) {
-            CHECK(collector.add(Relation(relation)));
-        }
-        descriptor = collector.finalize_ooc();
-        CHECK(descriptor.has_value());
-        CHECK(descriptor->format_version == OOCRelationWriter::FORMAT_VERSION_V3);
-        CHECK(descriptor->count == relations.size());
+    RelationCollector collector(config);
+    for (const auto& relation : relations) {
+        CHECK(collector.add(Relation(relation)));
     }
-    return *descriptor;
+    return collector.handoff_ooc_corpus(logical_generation, OOCCleanupPolicy::RemoveArtifacts);
 }
 
 void test_in_memory_move_generation_and_bounds() {
@@ -275,14 +282,16 @@ void test_finalized_ooc_cleanup_and_move_assignment() {
     TestArtifactCleanup second_artifacts(unique_base("cleanup_second"));
     const auto first_relations = make_relations(2);
     const auto second_relations = make_relations(3);
-    const auto first_descriptor = write_finalized_store(first_artifacts.base, first_relations);
-    const auto second_descriptor = write_finalized_store(second_artifacts.base, second_relations);
+    auto first_writer = make_finalized_writer(first_artifacts.base, first_relations);
+    auto second_writer = make_finalized_writer(second_artifacts.base, second_relations);
 
     {
-        auto first = RelationCorpus::from_finalized_ooc(301, first_artifacts.base, first_descriptor,
-                                                        OOCCleanupPolicy::RemoveArtifacts);
-        auto second = RelationCorpus::from_finalized_ooc(
-            302, second_artifacts.base, second_descriptor, OOCCleanupPolicy::RemoveArtifacts);
+        auto first = RelationCorpus::from_owned_finalized_ooc(301, *first_writer,
+                                                              OOCCleanupPolicy::RemoveArtifacts);
+        auto second = RelationCorpus::from_owned_finalized_ooc(302, *second_writer,
+                                                               OOCCleanupPolicy::RemoveArtifacts);
+        first_writer.reset();
+        second_writer.reset();
 
         CHECK(artifacts_exist(first_artifacts.base));
         CHECK(artifacts_exist(second_artifacts.base));
@@ -308,90 +317,85 @@ void test_ooc_adoption_fails_closed() {
     const auto descriptor = write_finalized_store(artifacts.base, expected);
 
     expect_throws<std::invalid_argument>([&] {
-        (void)RelationCorpus::from_finalized_ooc(401, "", descriptor,
+        (void)RelationCorpus::from_finalized_ooc(401, artifacts.base, descriptor,
                                                  OOCCleanupPolicy::RemoveArtifacts);
     });
+    {
+        auto reopened = RelationCorpus::from_finalized_ooc(401, artifacts.base, descriptor,
+                                                           OOCCleanupPolicy::Preserve);
+        CHECK(!reopened.arm_ooc_cleanup());
+    }
+    CHECK(artifacts_exist(artifacts.base));
+
+    expect_throws<std::invalid_argument>(
+        [&] { (void)RelationCorpus::from_finalized_ooc(401, "", descriptor); });
     expect_throws<std::invalid_argument>([&] {
-        (void)RelationCorpus::from_finalized_ooc(401, std::string("invalid\0path", 12), descriptor,
-                                                 OOCCleanupPolicy::RemoveArtifacts);
+        (void)RelationCorpus::from_finalized_ooc(401, std::string("invalid\0path", 12), descriptor);
     });
     CHECK(artifacts_exist(artifacts.base));
 
-    expect_throws<std::invalid_argument>([&] {
-        (void)RelationCorpus::from_finalized_ooc(0, artifacts.base, descriptor,
-                                                 OOCCleanupPolicy::RemoveArtifacts);
-    });
+    expect_throws<std::invalid_argument>(
+        [&] { (void)RelationCorpus::from_finalized_ooc(0, artifacts.base, descriptor); });
     CHECK(artifacts_exist(artifacts.base));
 
     auto zero_descriptor_generation = descriptor;
     zero_descriptor_generation.generation = 0;
     expect_throws<std::invalid_argument>([&] {
-        (void)RelationCorpus::from_finalized_ooc(401, artifacts.base, zero_descriptor_generation,
-                                                 OOCCleanupPolicy::RemoveArtifacts);
+        (void)RelationCorpus::from_finalized_ooc(401, artifacts.base, zero_descriptor_generation);
     });
     CHECK(artifacts_exist(artifacts.base));
 
     auto legacy_v2 = descriptor;
     legacy_v2.format_version = OOCRelationWriter::FORMAT_VERSION_V2;
-    expect_throws<std::invalid_argument>([&] {
-        (void)RelationCorpus::from_finalized_ooc(401, artifacts.base, legacy_v2,
-                                                 OOCCleanupPolicy::RemoveArtifacts);
-    });
+    expect_throws<std::invalid_argument>(
+        [&] { (void)RelationCorpus::from_finalized_ooc(401, artifacts.base, legacy_v2); });
     CHECK(artifacts_exist(artifacts.base));
 
     auto foreign_store = descriptor;
     ++foreign_store.store_id;
-    expect_throws<std::runtime_error>([&] {
-        (void)RelationCorpus::from_finalized_ooc(401, artifacts.base, foreign_store,
-                                                 OOCCleanupPolicy::RemoveArtifacts);
-    });
+    expect_throws<std::runtime_error>(
+        [&] { (void)RelationCorpus::from_finalized_ooc(401, artifacts.base, foreign_store); });
     CHECK(artifacts_exist(artifacts.base));
 
     auto wrong_count = descriptor;
     ++wrong_count.count;
-    expect_throws<std::runtime_error>([&] {
-        (void)RelationCorpus::from_finalized_ooc(401, artifacts.base, wrong_count,
-                                                 OOCCleanupPolicy::RemoveArtifacts);
-    });
+    expect_throws<std::runtime_error>(
+        [&] { (void)RelationCorpus::from_finalized_ooc(401, artifacts.base, wrong_count); });
     CHECK(artifacts_exist(artifacts.base));
 }
 
-void test_cleanup_preserves_foreign_same_size_data_pair() {
-    TestArtifactCleanup owned_artifacts(unique_base("cleanup_pair_owned"));
-    TestArtifactCleanup foreign_artifacts(unique_base("cleanup_pair_foreign"));
+void test_owned_adoption_failure_retains_receipt_for_retry() {
+    TestArtifactCleanup artifacts(unique_base("owned_adoption_retry"));
+    const std::string foreign_root = unique_base("foreign_private_lease");
+    const std::string foreign_store =
+        (std::filesystem::path(foreign_root + ".gnfs-sink-lease") / "corpus").string();
+    const auto foreign_paths = OOCCleanupTransaction::paths_for(foreign_store);
+    TestPathCleanup foreign_directory(foreign_paths.private_directory);
+    TestPathCleanup foreign_lock(foreign_paths.lock_path);
+    auto foreign_reservation = OOCCleanupTransaction::reserve_private_lease(foreign_store);
+    CHECK(foreign_reservation.completed());
 
     const auto expected = make_relations(2);
-    auto foreign_relations = expected;
-    foreign_relations[0].a += 1'000;
+    auto writer = make_finalized_writer(artifacts.base, expected);
 
-    const auto owned_descriptor = write_finalized_store(owned_artifacts.base, expected);
-    const auto foreign_descriptor =
-        write_finalized_store(foreign_artifacts.base, foreign_relations);
-    CHECK(owned_descriptor.store_id != foreign_descriptor.store_id);
-    CHECK(owned_descriptor.data_end == foreign_descriptor.data_end);
+    expect_throws<std::invalid_argument>([&] {
+        (void)RelationCorpus::from_owned_finalized_ooc(
+            450, *writer, OOCCleanupPolicy::RemoveArtifacts, &*foreign_reservation.ownership);
+    });
+    CHECK(writer->has_cleanup_ownership_receipt());
+    CHECK(artifacts_exist(artifacts.base));
+    CHECK(OOCCleanupTransaction::remove_private_lease(*foreign_reservation.ownership).completed());
 
-    const std::string displaced_data = owned_artifacts.base + ".reldata.displaced";
-    TestFileCleanup displaced_cleanup(displaced_data);
     {
-        // Exercise the cleanup guard without an active mmap so the same test
-        // can replace paths on Windows as well as POSIX.
-        gnfs::relation::relation_corpus_detail::FinalizedOOCArtifactCleanup cleanup_guard(
-            owned_artifacts.base, owned_descriptor);
-        cleanup_guard.arm();
-
-        std::error_code ec;
-        std::filesystem::rename(owned_artifacts.base + ".reldata", displaced_data, ec);
-        CHECK(!ec);
-        ec.clear();
-        std::filesystem::rename(foreign_artifacts.base + ".reldata",
-                                owned_artifacts.base + ".reldata", ec);
-        CHECK(!ec);
+        auto corpus =
+            RelationCorpus::from_owned_finalized_ooc(450, *writer, OOCCleanupPolicy::Preserve);
+        CHECK(!writer->has_cleanup_ownership_receipt());
+        CHECK(corpus.count() == expected.size());
+        CHECK(corpus.arm_ooc_cleanup());
+        writer.reset();
     }
-
-    // Cleanup revalidation must reject the mixed pair before deleting either
-    // path artifact.
-    CHECK(artifacts_exist(owned_artifacts.base));
-    CHECK(std::filesystem::exists(foreign_artifacts.base + ".relidx"));
+    CHECK(!std::filesystem::exists(artifacts.base + ".relidx"));
+    CHECK(!std::filesystem::exists(artifacts.base + ".reldata"));
 }
 
 void test_selection_stable_dedup_order_and_identity() {
@@ -570,14 +574,9 @@ void test_collector_handoff_and_independent_cleanup() {
         second_relations.push_back(make_relation(static_cast<int64_t>(61 + 2 * i), 1, 40 + i));
     }
 
-    const auto first_descriptor = collect_finalized_store(first_artifacts.base, first_relations);
-    const auto second_descriptor = collect_finalized_store(second_artifacts.base, second_relations);
-    CHECK(artifacts_exist(first_artifacts.base));
-    CHECK(artifacts_exist(second_artifacts.base));
-
     {
-        auto first = RelationCorpus::from_finalized_ooc(701, first_artifacts.base, first_descriptor,
-                                                        OOCCleanupPolicy::RemoveArtifacts);
+        auto first = collect_owned_corpus(701, first_artifacts.base, first_relations);
+        CHECK(artifacts_exist(first_artifacts.base));
         CHECK(first.count() == first_relations.size());
         for (size_t i = 0; i < first_relations.size(); ++i) {
             CHECK(relations_equal(first.read(i), first_relations[i]));
@@ -591,8 +590,7 @@ void test_collector_handoff_and_independent_cleanup() {
         CHECK(relations_equal(selected[1], first_relations[0]));
 
         {
-            auto second = RelationCorpus::from_finalized_ooc(
-                702, second_artifacts.base, second_descriptor, OOCCleanupPolicy::RemoveArtifacts);
+            auto second = collect_owned_corpus(702, second_artifacts.base, second_relations);
             CHECK(second.count() == second_relations.size());
             CHECK(artifacts_exist(first_artifacts.base));
             CHECK(artifacts_exist(second_artifacts.base));
@@ -618,7 +616,7 @@ int main() {
         test_finalized_ooc_roundtrip_and_preserve_lifetime();
         test_finalized_ooc_cleanup_and_move_assignment();
         test_ooc_adoption_fails_closed();
-        test_cleanup_preserves_foreign_same_size_data_pair();
+        test_owned_adoption_failure_retains_receipt_for_retry();
         test_selection_stable_dedup_order_and_identity();
         test_selection_xor_parity_canonical_order_and_identity();
         test_deterministic_sample_boundaries_fixture_and_identity();

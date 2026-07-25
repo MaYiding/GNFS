@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <stdexcept>
 #include <utility>
@@ -35,7 +36,8 @@ public:
     MmapFile() = default;
 
     explicit MmapFile(const std::string& path) {
-        file_ = ::CreateFileA(path.c_str(), GENERIC_READ,
+        const std::filesystem::path filesystem_path(path);
+        file_ = ::CreateFileW(filesystem_path.c_str(), GENERIC_READ,
                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                               nullptr, OPEN_EXISTING,
                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
@@ -63,7 +65,7 @@ public:
             return;
         }
 
-        mapping_ = ::CreateFileMappingA(file_, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        mapping_ = ::CreateFileMappingW(file_, nullptr, PAGE_READONLY, 0, 0, nullptr);
         if (mapping_ == nullptr) {
             close();
             throw std::runtime_error("MmapFile: CreateFileMapping failed for '" + path + "': " +

@@ -2335,7 +2335,14 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         if (!preserve_ooc_for_resume) {
             // With no paired checkpoint, this handoff is the last owner able to
             // remove a fresh raw pair if validation below throws.
-            (void)terminal_raw_cleanup->arm_ooc_cleanup();
+            const bool armed = terminal_raw_cleanup->arm_ooc_cleanup();
+            if (!armed && !recovered_finalized_ooc) {
+                throw std::logic_error("fresh terminal raw OOC handoff lost cleanup ownership");
+            }
+            if (!armed) {
+                std::fprintf(stderr, "[ooc] recovered terminal raw corpus has no durable cleanup "
+                                     "ownership; preserving artifacts\n");
+            }
         }
         if (verify_ooc_payload_after_callbacks && relation::corpus_digest(*terminal_raw_cleanup) !=
                                                       last_reduction->stats.raw_input_digest) {
@@ -2356,7 +2363,15 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     if (terminal_raw_cleanup.has_value()) {
         // The storage kind was proven above and no operation can change it.
         // Arming performs no allocation or filesystem access.
-        (void)terminal_raw_cleanup->arm_ooc_cleanup();
+        const bool armed = terminal_raw_cleanup->arm_ooc_cleanup();
+        if (!armed && !recovered_finalized_ooc) {
+            throw std::logic_error("fresh terminal raw OOC corpus lost cleanup ownership");
+        }
+        if (!armed) {
+            std::fprintf(stderr,
+                         "[ooc] recovered terminal raw corpus remains preserved because its "
+                         "checkpoint did not carry deletion authority\n");
+        }
     }
     stats_rollback.commit();
     return std::move(*last_reduction);

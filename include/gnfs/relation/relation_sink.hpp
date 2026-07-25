@@ -26,10 +26,12 @@ enum class RelationSinkState {
 ///
 /// In-memory sinks retain appended relations until finalize() moves them into
 /// a RelationCorpus. Out-of-core sinks create the paired V3 store inside an
-/// atomically reserved private directory. The directory remains the exclusive
-/// artifact container after handoff and, for RemoveArtifacts, is removed by the
-/// final corpus owner. Until handoff succeeds, every failure path closes the
-/// writer and best-effort removes only that private container's pair.
+/// atomically reserved private directory. One persistent external lock
+/// serializes directory creation/removal and every pair transaction without
+/// ever being unlinked. The directory remains the exclusive artifact container
+/// after handoff and can be removed only through its move-only lease receipt.
+/// Until handoff succeeds, the fresh writer separately retains the only receipt
+/// capable of starting crash-recoverable pair cleanup.
 ///
 /// Destruction never commits: an open sink is aborted, and only an explicit
 /// finalize() may publish an immutable corpus.
@@ -58,31 +60,31 @@ public:
         base_path = relation_corpus_detail::freeze_ooc_path(base_path);
 
         const std::string lease_path = base_path + lease_suffix();
+        const std::string store_base = (std::filesystem::path(lease_path) / "corpus").string();
         reject_existing_artifacts(base_path);
 
         RelationSink sink(logical_generation, Backend::OutOfCore, cleanup_policy);
-        sink.lease_path_ = lease_path;
+        sink.base_path_ = store_base;
 
-        std::error_code ec;
-        const bool lease_created = std::filesystem::create_directory(sink.lease_path_, ec);
-        if (ec) {
-            throw std::filesystem::filesystem_error("RelationSink: cannot create OOC lease",
-                                                    sink.lease_path_, ec);
+        auto reservation = OOCCleanupTransaction::reserve_private_lease(store_base);
+        if (!reservation.completed()) {
+            if (reservation.ownership && !reservation.ownership->spent()) {
+                (void)OOCCleanupTransaction::remove_private_lease(*reservation.ownership);
+            }
+            throw std::runtime_error(
+                "RelationSink: cannot reserve OOC lease at " + lease_path + " (status=" +
+                std::to_string(static_cast<unsigned>(reservation.result.status)) + ")");
         }
-        if (!lease_created) {
-            throw std::runtime_error("RelationSink: OOC lease already exists at " +
-                                     sink.lease_path_);
-        }
-        sink.owns_lease_ = true;
 
         try {
-            // The paired files live inside the directory created exclusively
-            // above, so a concurrent ordinary writer at the requested base can
-            // neither be truncated nor be mistaken for this sink's artifacts.
-            sink.base_path_ = (std::filesystem::path(sink.lease_path_) / "corpus").string();
+            sink.private_lease_receipt_ = std::make_unique<OOCPrivateLeaseOwnershipReceipt>(
+                std::move(*reservation.ownership));
             sink.owns_artifacts_ = true;
             sink.ooc_writer_ = std::make_unique<OOCRelationWriter>(sink.base_path_);
         } catch (...) {
+            if (reservation.ownership && !reservation.ownership->spent()) {
+                (void)OOCCleanupTransaction::remove_private_lease(*reservation.ownership);
+            }
             sink.abort();
             throw;
         }
@@ -98,9 +100,8 @@ public:
           state_(std::exchange(other.state_, RelationSinkState::Aborted)),
           backend_(std::exchange(other.backend_, Backend::InMemory)),
           cleanup_policy_(other.cleanup_policy_), relations_(std::move(other.relations_)),
-          base_path_(std::move(other.base_path_)), lease_path_(std::move(other.lease_path_)),
-          ooc_writer_(std::move(other.ooc_writer_)),
-          owns_lease_(std::exchange(other.owns_lease_, false)),
+          base_path_(std::move(other.base_path_)), ooc_writer_(std::move(other.ooc_writer_)),
+          private_lease_receipt_(std::move(other.private_lease_receipt_)),
           owns_artifacts_(std::exchange(other.owns_artifacts_, false)) {}
 
     RelationSink& operator=(RelationSink&& other) noexcept {
@@ -172,24 +173,23 @@ public:
             if (!ooc_writer_) {
                 throw std::logic_error("RelationSink::finalize: missing OOC writer");
             }
+            if (!private_lease_receipt_) {
+                throw std::logic_error("RelationSink::finalize: missing private lease ownership");
+            }
             const OOCSnapshotDescriptor descriptor = ooc_writer_->finalize();
             if (descriptor.count != static_cast<uint64_t>(count_)) {
                 throw std::runtime_error("RelationSink::finalize: OOC count mismatch");
             }
 
-            // Finalize closes both fstreams. Destroy the writer before opening
-            // descriptor-bound mmap handles, which is required on Windows.
-            ooc_writer_.reset();
-            const std::string cleanup_directory =
-                cleanup_policy_ == OOCCleanupPolicy::RemoveArtifacts ? lease_path_ : std::string{};
-            RelationCorpus corpus = RelationCorpus::from_finalized_ooc(
-                logical_generation_, base_path_, descriptor, cleanup_policy_, cleanup_directory);
+            RelationCorpus corpus = RelationCorpus::from_owned_finalized_ooc(
+                logical_generation_, *ooc_writer_, cleanup_policy_, private_lease_receipt_.get());
 
-            // The corpus is now the live reader and, when requested, the sole
-            // cleanup owner. Preserve deliberately leaves the private directory
-            // and pair in place for a later descriptor-bound reopen.
+            // Reader/State construction completed before the factory's final
+            // noexcept receipt move. Only now may the empty writer shell go
+            // away; on every earlier exception abort() can retry its receipt.
+            ooc_writer_.reset();
+            private_lease_receipt_.reset();
             owns_artifacts_ = false;
-            owns_lease_ = false;
             state_ = RelationSinkState::Finalized;
             return corpus;
         } catch (...) {
@@ -205,10 +205,6 @@ public:
             return;
         }
 
-        if (ooc_writer_) {
-            ooc_writer_->abort();
-            ooc_writer_.reset();
-        }
         relations_.clear();
         cleanup_owned_ooc_noexcept();
         state_ = RelationSinkState::Aborted;
@@ -285,37 +281,34 @@ private:
             return;
         }
 
-        bool artifacts_removed = true;
         if (owns_artifacts_) {
-            std::error_code ec;
-            (void)std::filesystem::remove(base_path_ + ".relidx", ec);
-            if (ec) {
-                artifacts_removed = false;
+            OOCCleanupResult result;
+            if (ooc_writer_) {
+                result = ooc_writer_->remove_owned_artifacts_noexcept();
+            } else {
+                // Constructor failure before receipt issuance may leave no pair
+                // at all. Confirm the complete namespace before releasing the
+                // private lease; live or partial artifacts remain fail-closed.
+                result = OOCCleanupTransaction::confirm_pair_namespace_reusable(base_path_);
             }
-            ec.clear();
-            (void)std::filesystem::remove(base_path_ + ".reldata", ec);
-            if (ec) {
-                artifacts_removed = false;
-            }
-            if (artifacts_removed) {
+            if (result.completed()) {
                 owns_artifacts_ = false;
+                ooc_writer_.reset();
             }
         }
 
-        // Keep the lease when an artifact could not be removed. That makes a
-        // later sink fail closed instead of truncating a partially rolled-back
-        // pair. A repeated abort() retries the exact same cleanup.
-        if (owns_lease_ && (!owns_artifacts_ || artifacts_removed)) {
-            std::error_code ec;
-            (void)std::filesystem::remove(lease_path_, ec);
-            // remove() returning false without an error means the lease is
-            // already absent, which is also a completed best-effort cleanup.
-            if (!ec) {
-                owns_lease_ = false;
+        // The move-only lease receipt proves that this sink created the exact
+        // private directory. Its lock is outside that directory and persists
+        // across rmdir/recreate cycles.
+        if (private_lease_receipt_ && !owns_artifacts_) {
+            const auto result =
+                OOCCleanupTransaction::remove_private_lease(*private_lease_receipt_);
+            if (result.completed()) {
+                private_lease_receipt_.reset();
             }
         }
 
-        if (owns_artifacts_ || owns_lease_) {
+        if (owns_artifacts_ || private_lease_receipt_) {
             std::fprintf(stderr,
                          "[relation_sink] incomplete OOC rollback at %s; lease retained when "
                          "possible\n",
@@ -332,9 +325,8 @@ private:
         swap(cleanup_policy_, other.cleanup_policy_);
         relations_.swap(other.relations_);
         base_path_.swap(other.base_path_);
-        lease_path_.swap(other.lease_path_);
         ooc_writer_.swap(other.ooc_writer_);
-        swap(owns_lease_, other.owns_lease_);
+        private_lease_receipt_.swap(other.private_lease_receipt_);
         swap(owns_artifacts_, other.owns_artifacts_);
     }
 
@@ -345,9 +337,8 @@ private:
     OOCCleanupPolicy cleanup_policy_ = OOCCleanupPolicy::Preserve;
     std::vector<core::Relation> relations_;
     std::string base_path_;
-    std::string lease_path_;
     std::unique_ptr<OOCRelationWriter> ooc_writer_;
-    bool owns_lease_ = false;
+    std::unique_ptr<OOCPrivateLeaseOwnershipReceipt> private_lease_receipt_;
     bool owns_artifacts_ = false;
 };
 

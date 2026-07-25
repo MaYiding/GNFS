@@ -16,6 +16,7 @@
 #include <span>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -44,7 +45,6 @@ namespace gnfs::relation {
 
 class OOCRelationWriter;
 class OOCCleanupTransaction;
-class OOCCleanupTransactionTestAccess;
 
 /// Last durable cleanup boundary reached by an OOC cleanup transaction.
 enum class OOCCleanupStage : std::uint8_t {
@@ -85,10 +85,10 @@ struct OOCCleanupResult final {
         return status == OOCCleanupStatus::Completed;
     }
 
-    /// The namespace is safe for reuse. NoTransaction intentionally does not
-    /// claim this caller performed cleanup, but it is a terminal idempotent
-    /// result for recovery after the final staged unlink became visible.
-    [[nodiscard]] bool quiescent() const noexcept {
+    /// No further canonical cleanup transaction is currently actionable.
+    /// This does not prove the pair namespace is empty: NoTransaction is also
+    /// returned when unrelated live artifacts exist without an intent.
+    [[nodiscard]] bool transaction_terminal() const noexcept {
         return status == OOCCleanupStatus::Completed || status == OOCCleanupStatus::NoTransaction;
     }
 
@@ -113,8 +113,9 @@ struct OOCExactCleanupExpectation final {
 /// owner. The stable native identities are captured at ownership acquisition;
 /// store_id correlates the two V3 headers but never grants authority alone.
 ///
-/// No public path/store-id factory exists. Fresh writers and trusted recovery
-/// adoption issue this receipt while they still own the exact pair. Once a
+/// No public path/store-id factory exists. Only a fresh writer issues this
+/// receipt while it still owns the exact O_EXCL-created pair. Structural
+/// recovery descriptors and sequence digests never recreate it. Once a
 /// canonical durable intent exists, begin_or_resume() consumes the receipt and
 /// later processes resume from that intent alone.
 class OOCCleanupOwnershipReceipt final {
@@ -132,20 +133,7 @@ public:
         other.spent_ = true;
     }
 
-    OOCCleanupOwnershipReceipt& operator=(OOCCleanupOwnershipReceipt&& other) noexcept {
-        if (this != &other) {
-            base_path_ = std::move(other.base_path_);
-            store_id_ = other.store_id_;
-            index_identity_ = other.index_identity_;
-            data_identity_ = other.data_identity_;
-            spent_ = other.spent_;
-            other.store_id_ = 0;
-            other.index_identity_ = {};
-            other.data_identity_ = {};
-            other.spent_ = true;
-        }
-        return *this;
-    }
+    OOCCleanupOwnershipReceipt& operator=(OOCCleanupOwnershipReceipt&&) = delete;
 
     [[nodiscard]] bool spent() const noexcept {
         return spent_;
@@ -173,7 +161,66 @@ private:
 
     friend class OOCRelationWriter;
     friend class OOCCleanupTransaction;
-    friend class OOCCleanupTransactionTestAccess;
+};
+
+/// Move-only authority to remove one RelationSink lease directory created
+/// under the matching persistent external lock. The receipt does not authorize
+/// pair deletion; that remains the separate fresh-writer receipt above.
+class OOCPrivateLeaseOwnershipReceipt final {
+public:
+    OOCPrivateLeaseOwnershipReceipt(const OOCPrivateLeaseOwnershipReceipt&) = delete;
+    OOCPrivateLeaseOwnershipReceipt& operator=(const OOCPrivateLeaseOwnershipReceipt&) = delete;
+
+    OOCPrivateLeaseOwnershipReceipt(OOCPrivateLeaseOwnershipReceipt&& other) noexcept
+        : base_path_(std::move(other.base_path_)),
+          private_directory_(std::move(other.private_directory_)),
+          lock_path_(std::move(other.lock_path_)), directory_identity_(other.directory_identity_),
+          spent_(other.spent_) {
+        other.base_path_.clear();
+        other.private_directory_.clear();
+        other.lock_path_.clear();
+        other.directory_identity_ = {};
+        other.spent_ = true;
+    }
+
+    OOCPrivateLeaseOwnershipReceipt& operator=(OOCPrivateLeaseOwnershipReceipt&&) = delete;
+
+    [[nodiscard]] bool spent() const noexcept {
+        return spent_;
+    }
+
+    [[nodiscard]] const std::filesystem::path& base_path() const noexcept {
+        return base_path_;
+    }
+
+    [[nodiscard]] const std::filesystem::path& private_directory() const noexcept {
+        return private_directory_;
+    }
+
+private:
+    OOCPrivateLeaseOwnershipReceipt(std::filesystem::path base_path,
+                                    std::filesystem::path private_directory,
+                                    std::filesystem::path lock_path,
+                                    std::array<std::uint64_t, 3> directory_identity) noexcept
+        : base_path_(std::move(base_path)), private_directory_(std::move(private_directory)),
+          lock_path_(std::move(lock_path)), directory_identity_(directory_identity) {}
+
+    std::filesystem::path base_path_;
+    std::filesystem::path private_directory_;
+    std::filesystem::path lock_path_;
+    std::array<std::uint64_t, 3> directory_identity_{};
+    bool spent_ = false;
+
+    friend class OOCCleanupTransaction;
+};
+
+struct OOCPrivateLeaseReservation final {
+    OOCCleanupResult result;
+    std::optional<OOCPrivateLeaseOwnershipReceipt> ownership;
+
+    [[nodiscard]] bool completed() const noexcept {
+        return result.completed() && ownership.has_value() && !ownership->spent();
+    }
 };
 
 /// Optional narrowing expectation for resume(). It cannot authorize a new
@@ -234,6 +281,7 @@ struct OOCCleanupTestHooks final {
 
 struct OOCCleanupPaths final {
     std::filesystem::path base_path;
+    std::filesystem::path private_directory;
     std::filesystem::path index_path;
     std::filesystem::path data_path;
     std::filesystem::path intent_path;
@@ -309,6 +357,53 @@ path_leaf_uses_reserved_cleanup_suffix(const std::filesystem::path& leaf) noexce
     return true;
 }
 
+[[nodiscard]] inline bool path_leaf_equals_ascii(const std::filesystem::path& leaf,
+                                                 const char* expected) noexcept {
+    using Character = std::filesystem::path::value_type;
+    const auto& native = leaf.native();
+    const auto expected_native = std::filesystem::path(expected).native();
+    if (native.size() != expected_native.size()) {
+        return false;
+    }
+    const auto fold_ascii = [](Character value) noexcept {
+        const Character upper_a = static_cast<Character>('A');
+        const Character upper_z = static_cast<Character>('Z');
+        const Character case_delta = static_cast<Character>('a' - 'A');
+        return value >= upper_a && value <= upper_z ? static_cast<Character>(value + case_delta)
+                                                    : value;
+    };
+    for (std::size_t index = 0; index < native.size(); ++index) {
+        if (fold_ascii(native[index]) != fold_ascii(expected_native[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] inline bool path_leaf_ends_with_ascii(const std::filesystem::path& leaf,
+                                                    const char* suffix) noexcept {
+    using Character = std::filesystem::path::value_type;
+    const auto& native = leaf.native();
+    const auto suffix_native = std::filesystem::path(suffix).native();
+    if (native.size() < suffix_native.size()) {
+        return false;
+    }
+    const auto fold_ascii = [](Character value) noexcept {
+        const Character upper_a = static_cast<Character>('A');
+        const Character upper_z = static_cast<Character>('Z');
+        const Character case_delta = static_cast<Character>('a' - 'A');
+        return value >= upper_a && value <= upper_z ? static_cast<Character>(value + case_delta)
+                                                    : value;
+    };
+    const std::size_t offset = native.size() - suffix_native.size();
+    for (std::size_t index = 0; index < suffix_native.size(); ++index) {
+        if (fold_ascii(native[offset + index]) != fold_ascii(suffix_native[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 [[nodiscard]] inline std::filesystem::path append_leaf_suffix(const std::filesystem::path& parent,
                                                               const std::filesystem::path& leaf,
                                                               const char* suffix) {
@@ -334,27 +429,52 @@ path_leaf_uses_reserved_cleanup_suffix(const std::filesystem::path& leaf) noexce
         fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
     }
 
-    auto parent = std::filesystem::weakly_canonical(absolute.parent_path(), error);
-    if (error || parent.empty() || !parent.is_absolute()) {
+    const auto requested_parent = absolute.parent_path();
+    const auto requested_parent_leaf = requested_parent.filename();
+    const bool private_sink_layout =
+        path_leaf_equals_ascii(leaf, "corpus") &&
+        path_leaf_ends_with_ascii(requested_parent_leaf, ".gnfs-sink-lease");
+    const auto parent_to_freeze =
+        private_sink_layout ? requested_parent.parent_path() : requested_parent;
+    auto frozen_parent = std::filesystem::weakly_canonical(parent_to_freeze, error);
+    if (error || frozen_parent.empty() || !frozen_parent.is_absolute()) {
         fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
              error ? error : invalid_argument_error());
     }
-    parent = parent.lexically_normal();
+    frozen_parent = frozen_parent.lexically_normal();
 
-    const auto base = parent / leaf;
+    std::filesystem::path artifact_parent = frozen_parent;
+    std::filesystem::path private_directory;
+    std::filesystem::path lock_parent = frozen_parent;
+    std::filesystem::path lock_leaf = leaf;
+    if (private_sink_layout) {
+        if (requested_parent_leaf.empty() || requested_parent_leaf == "." ||
+            requested_parent_leaf == ".." || path_contains_nul(requested_parent_leaf) ||
+            path_leaf_uses_reserved_cleanup_suffix(requested_parent_leaf)) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        artifact_parent = frozen_parent / requested_parent_leaf;
+        private_directory = artifact_parent;
+        lock_leaf = requested_parent_leaf;
+    }
+
+    const auto base = artifact_parent / leaf;
     return OOCCleanupPaths{
         .base_path = base,
-        .index_path = append_leaf_suffix(parent, leaf, ".relidx"),
-        .data_path = append_leaf_suffix(parent, leaf, ".reldata"),
-        .intent_path = append_leaf_suffix(parent, leaf, ".gnfs-ooc-cleanup-v1.intent"),
+        .private_directory = private_directory,
+        .index_path = append_leaf_suffix(artifact_parent, leaf, ".relidx"),
+        .data_path = append_leaf_suffix(artifact_parent, leaf, ".reldata"),
+        .intent_path = append_leaf_suffix(artifact_parent, leaf, ".gnfs-ooc-cleanup-v1.intent"),
         .intent_pending_path =
-            append_leaf_suffix(parent, leaf, ".gnfs-ooc-cleanup-v1.intent.pending"),
-        .staged_path = append_leaf_suffix(parent, leaf, ".gnfs-ooc-cleanup-v1.staged"),
+            append_leaf_suffix(artifact_parent, leaf, ".gnfs-ooc-cleanup-v1.intent.pending"),
+        .staged_path = append_leaf_suffix(artifact_parent, leaf, ".gnfs-ooc-cleanup-v1.staged"),
         .staged_pending_path =
-            append_leaf_suffix(parent, leaf, ".gnfs-ooc-cleanup-v1.staged.pending"),
-        .lock_path = append_leaf_suffix(parent, leaf, ".gnfs-ooc-cleanup-v1.lock"),
-        .quarantine_index_path = append_leaf_suffix(parent, leaf, ".gnfs-ooc-cleanup-v1.relidx"),
-        .quarantine_data_path = append_leaf_suffix(parent, leaf, ".gnfs-ooc-cleanup-v1.reldata"),
+            append_leaf_suffix(artifact_parent, leaf, ".gnfs-ooc-cleanup-v1.staged.pending"),
+        .lock_path = append_leaf_suffix(lock_parent, lock_leaf, ".gnfs-ooc-cleanup-v1.lock"),
+        .quarantine_index_path =
+            append_leaf_suffix(artifact_parent, leaf, ".gnfs-ooc-cleanup-v1.relidx"),
+        .quarantine_data_path =
+            append_leaf_suffix(artifact_parent, leaf, ".gnfs-ooc-cleanup-v1.reldata"),
     };
 }
 
@@ -945,9 +1065,11 @@ public:
     BaseLock(BaseLock&&) = delete;
     BaseLock& operator=(BaseLock&&) = delete;
 
-    explicit BaseLock(const std::filesystem::path& path) {
+    explicit BaseLock(const std::filesystem::path& path, bool allow_create = true) {
 #ifdef _WIN32
-        handle_ = ::CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
+        ::SetLastError(ERROR_SUCCESS);
+        handle_ = ::CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                                allow_create ? OPEN_ALWAYS : OPEN_EXISTING,
                                 FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
                                     FILE_FLAG_WRITE_THROUGH,
                                 nullptr);
@@ -956,23 +1078,66 @@ public:
             if (code == ERROR_SHARING_VIOLATION || code == ERROR_LOCK_VIOLATION) {
                 fail(OOCCleanupStatus::Busy, OOCCleanupStage::None, windows_error(code));
             }
+            if (!allow_create && (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND)) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                     windows_error(code));
+            }
             fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, windows_error(code));
         }
+        const bool created = allow_create && ::GetLastError() != ERROR_ALREADY_EXISTS;
         BY_HANDLE_FILE_INFORMATION information{};
         if (!::GetFileInformationByHandle(handle_, &information) ||
             !windows_regular_single_link(information)) {
             const DWORD code =
                 ::GetLastError() == ERROR_SUCCESS ? ERROR_ACCESS_DENIED : ::GetLastError();
-            (void)::CloseHandle(handle_);
-            handle_ = INVALID_HANDLE_VALUE;
+            release_noexcept();
             fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, windows_error(code));
         }
+        if (created) {
+            if (!::FlushFileBuffers(handle_)) {
+                const DWORD code = ::GetLastError();
+                release_noexcept();
+                fail(OOCCleanupStatus::DurabilityFailure, OOCCleanupStage::None,
+                     windows_error(code));
+            }
+            try {
+                sync_parent_directory(path.parent_path(), OOCCleanupStage::None);
+            } catch (...) {
+                release_noexcept();
+                throw;
+            }
+            if (!::FlushFileBuffers(handle_)) {
+                const DWORD code = ::GetLastError();
+                release_noexcept();
+                fail(OOCCleanupStatus::DurabilityFailure, OOCCleanupStage::None,
+                     windows_error(code));
+            }
+        }
 #else
-        do {
-            descriptor_ = ::open(path.c_str(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
-        } while (descriptor_ < 0 && errno == EINTR);
+        bool created = false;
+        if (allow_create) {
+            do {
+                descriptor_ =
+                    ::open(path.c_str(), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+            } while (descriptor_ < 0 && errno == EINTR);
+            if (descriptor_ >= 0) {
+                created = true;
+            } else if (errno == EEXIST) {
+                do {
+                    descriptor_ = ::open(path.c_str(), O_RDWR | O_NOFOLLOW | O_CLOEXEC);
+                } while (descriptor_ < 0 && errno == EINTR);
+            }
+        } else {
+            do {
+                descriptor_ = ::open(path.c_str(), O_RDWR | O_NOFOLLOW | O_CLOEXEC);
+            } while (descriptor_ < 0 && errno == EINTR);
+        }
         if (descriptor_ < 0) {
             const int saved_errno = errno;
+            if (!allow_create && saved_errno == ENOENT) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                     posix_error(saved_errno));
+            }
             fail(saved_errno == ELOOP ? OOCCleanupStatus::NamespaceConflict
                                       : OOCCleanupStatus::IoFailure,
                  OOCCleanupStage::None, posix_error(saved_errno));
@@ -984,15 +1149,13 @@ public:
             !posix_regular_single_link(held) || !S_ISREG(named.st_mode) || named.st_nlink != 1 ||
             held.st_dev != named.st_dev || held.st_ino != named.st_ino) {
             const int saved_errno = errno == 0 ? EACCES : errno;
-            (void)::close(descriptor_);
-            descriptor_ = -1;
+            release_noexcept();
             fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
                  posix_error(saved_errno));
         }
         if (::flock(descriptor_, LOCK_EX | LOCK_NB) != 0) {
             const int saved_errno = errno;
-            (void)::close(descriptor_);
-            descriptor_ = -1;
+            release_noexcept();
             if (saved_errno == EWOULDBLOCK || saved_errno == EAGAIN) {
                 fail(OOCCleanupStatus::Busy, OOCCleanupStage::None, posix_error(saved_errno));
             }
@@ -1007,29 +1170,64 @@ public:
             locked_name.st_ino != held.st_ino || !S_ISREG(locked_name.st_mode) ||
             locked_name.st_nlink != 1) {
             const int saved_errno = errno == 0 ? EACCES : errno;
-            (void)::flock(descriptor_, LOCK_UN);
-            (void)::close(descriptor_);
-            descriptor_ = -1;
+            release_noexcept();
             fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
                  posix_error(saved_errno));
+        }
+        if (created) {
+            const auto sync_held_lock = [&]() noexcept {
+                int result = -1;
+                do {
+#if defined(__APPLE__)
+                    result = ::fcntl(descriptor_, F_FULLFSYNC);
+#else
+                    result = ::fsync(descriptor_);
+#endif
+                } while (result != 0 && errno == EINTR);
+                return result;
+            };
+            if (sync_held_lock() != 0) {
+                const int saved_errno = errno;
+                release_noexcept();
+                fail(OOCCleanupStatus::DurabilityFailure, OOCCleanupStage::None,
+                     posix_error(saved_errno));
+            }
+            try {
+                sync_parent_directory(path.parent_path(), OOCCleanupStage::None);
+            } catch (...) {
+                release_noexcept();
+                throw;
+            }
+            if (sync_held_lock() != 0) {
+                const int saved_errno = errno;
+                release_noexcept();
+                fail(OOCCleanupStatus::DurabilityFailure, OOCCleanupStage::None,
+                     posix_error(saved_errno));
+            }
         }
 #endif
     }
 
     ~BaseLock() {
+        release_noexcept();
+    }
+
+private:
+    void release_noexcept() noexcept {
 #ifdef _WIN32
         if (handle_ != INVALID_HANDLE_VALUE) {
             (void)::CloseHandle(handle_);
+            handle_ = INVALID_HANDLE_VALUE;
         }
 #else
         if (descriptor_ >= 0) {
             (void)::flock(descriptor_, LOCK_UN);
             (void)::close(descriptor_);
+            descriptor_ = -1;
         }
 #endif
     }
 
-private:
 #ifdef _WIN32
     HANDLE handle_ = INVALID_HANDLE_VALUE;
 #else
@@ -2114,7 +2312,7 @@ run_transaction(const std::filesystem::path& requested_base, const OOCCleanupReq
         (!allow_begin && ownership_proof != nullptr)) {
         fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
     }
-    BaseLock lock(paths.lock_path);
+    BaseLock lock(paths.lock_path, paths.private_directory.empty());
 
     auto intent_inspection = inspect_file(paths.intent_path, MARKER_BYTES, true);
     if (intent_inspection.kind == InspectKind::Error) {
@@ -2237,6 +2435,170 @@ run_transaction(const std::filesystem::path& requested_base, const OOCCleanupReq
     return advance_transaction(paths, intent, staged_exists, hooks);
 }
 
+/// Require the complete pair namespace to be empty while the caller holds the
+/// matching BaseLock. The persistent regular lock leaf itself is intentionally
+/// outside this set.
+inline void require_pair_namespace_reusable_locked(const OOCCleanupPaths& paths) {
+    const std::array<const std::filesystem::path*, 8> leaves{
+        &paths.index_path,
+        &paths.data_path,
+        &paths.intent_path,
+        &paths.intent_pending_path,
+        &paths.staged_path,
+        &paths.staged_pending_path,
+        &paths.quarantine_index_path,
+        &paths.quarantine_data_path,
+    };
+    for (const auto* leaf : leaves) {
+        const auto inspected = inspect_file(*leaf, 0, false);
+        if (inspected.kind == InspectKind::Error) {
+            fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, inspected.error);
+        }
+        if (inspected.kind != InspectKind::Missing) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+        }
+    }
+}
+
+enum class PrivateDirectoryState : std::uint8_t {
+    Missing,
+    Empty,
+};
+
+[[nodiscard]] inline PrivateDirectoryState inspect_private_directory(const OOCCleanupPaths& paths) {
+    if (paths.private_directory.empty() ||
+        paths.base_path.parent_path() != paths.private_directory ||
+        paths.lock_path.parent_path() == paths.private_directory) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(paths.private_directory, error);
+    if (error) {
+        if (error == std::errc::no_such_file_or_directory) {
+            return PrivateDirectoryState::Missing;
+        }
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, error);
+    }
+    if (status.type() == std::filesystem::file_type::not_found) {
+        return PrivateDirectoryState::Missing;
+    }
+    if (!std::filesystem::is_directory(status)) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+
+    std::filesystem::directory_iterator cursor(paths.private_directory, error);
+    if (error) {
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, error);
+    }
+    if (cursor != std::filesystem::directory_iterator{}) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+    return PrivateDirectoryState::Empty;
+}
+
+[[nodiscard]] inline std::array<std::uint64_t, 3>
+capture_private_directory_identity_locked(const OOCCleanupPaths& paths) {
+#ifdef _WIN32
+    const HANDLE handle = ::CreateFileW(
+        paths.private_directory.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, windows_error(::GetLastError()));
+    }
+
+    BY_HANDLE_FILE_INFORMATION information{};
+    const bool inspected = ::GetFileInformationByHandle(handle, &information) != FALSE;
+    const auto identity = inspected ? windows_identity(handle, information) : std::nullopt;
+    if (!inspected || !identity || (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+        (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        const DWORD code =
+            ::GetLastError() == ERROR_SUCCESS ? ERROR_ACCESS_DENIED : ::GetLastError();
+        (void)::CloseHandle(handle);
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, windows_error(code));
+    }
+    if (!::CloseHandle(handle)) {
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, windows_error(::GetLastError()));
+    }
+    return stable_identity(*identity);
+#else
+    int descriptor = -1;
+    do {
+        descriptor = ::open(paths.private_directory.c_str(),
+                            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) {
+        fail(errno == ELOOP ? OOCCleanupStatus::NamespaceConflict : OOCCleanupStatus::IoFailure,
+             OOCCleanupStage::None, posix_error(errno));
+    }
+
+    struct stat held{};
+    struct stat named{};
+    if (::fstat(descriptor, &held) != 0 || ::lstat(paths.private_directory.c_str(), &named) != 0 ||
+        !S_ISDIR(held.st_mode) || !S_ISDIR(named.st_mode) || held.st_dev != named.st_dev ||
+        held.st_ino != named.st_ino) {
+        const int saved_errno = errno == 0 ? EACCES : errno;
+        (void)::close(descriptor);
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, posix_error(saved_errno));
+    }
+    const auto identity = stable_identity(posix_identity(held));
+    if (::close(descriptor) != 0) {
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
+    }
+    return identity;
+#endif
+}
+
+inline void create_private_directory_entry_locked(const OOCCleanupPaths& paths) {
+    if (inspect_private_directory(paths) != PrivateDirectoryState::Missing) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+
+    std::error_code error;
+    const bool created = std::filesystem::create_directory(paths.private_directory, error);
+    if (error) {
+        fail(error == std::errc::file_exists ? OOCCleanupStatus::NamespaceConflict
+                                             : OOCCleanupStatus::IoFailure,
+             OOCCleanupStage::None, error);
+    }
+    if (!created) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+}
+
+inline void confirm_private_directory_durable_locked(const OOCCleanupPaths& paths) {
+    sync_parent_directory(paths.private_directory.parent_path(), OOCCleanupStage::None);
+}
+
+inline void
+remove_private_directory_locked(const OOCCleanupPaths& paths,
+                                const std::array<std::uint64_t, 3>& expected_directory_identity) {
+    if (inspect_private_directory(paths) == PrivateDirectoryState::Missing) {
+        // A previous removal may have reached the namespace but failed its
+        // durability barrier. Re-establish that barrier before reporting the
+        // receipt consumed.
+        sync_parent_directory(paths.private_directory.parent_path(), OOCCleanupStage::None);
+        return;
+    }
+
+    if (capture_private_directory_identity_locked(paths) != expected_directory_identity) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+
+    std::error_code error;
+    const bool removed = std::filesystem::remove(paths.private_directory, error);
+    if (error) {
+        fail(error == std::errc::directory_not_empty ? OOCCleanupStatus::NamespaceConflict
+                                                     : OOCCleanupStatus::IoFailure,
+             OOCCleanupStage::None, error);
+    }
+    if (!removed) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+    sync_parent_directory(paths.private_directory.parent_path(), OOCCleanupStage::None);
+}
+
 } // namespace ooc_cleanup_detail
 
 /// Recoverable cleanup for one closed V3 `.relidx`/`.reldata` pair.
@@ -2323,13 +2685,120 @@ public:
         return ooc_cleanup_detail::freeze_paths(base_path);
     }
 
+    /// Reserve one fresh RelationSink private directory. The directory name is
+    /// derived from the recognized `<requested>.gnfs-sink-lease/corpus`
+    /// layout, and its lock is a persistent sibling outside the removable
+    /// directory. Existing directories are never adopted automatically.
+    [[nodiscard]] static OOCPrivateLeaseReservation
+    reserve_private_lease(const std::filesystem::path& base_path) noexcept {
+        std::optional<OOCPrivateLeaseOwnershipReceipt> ownership;
+        const auto result = invoke([&] {
+            const auto paths = ooc_cleanup_detail::freeze_paths(base_path);
+            if (paths.private_directory.empty()) {
+                ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                         ooc_cleanup_detail::invalid_argument_error());
+            }
+
+            // Reject a pre-existing directory before creating the persistent
+            // lock. This keeps foreign collisions free of GNFS side effects.
+            if (ooc_cleanup_detail::inspect_private_directory(paths) !=
+                ooc_cleanup_detail::PrivateDirectoryState::Missing) {
+                ooc_cleanup_detail::fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                                         ooc_cleanup_detail::protocol_error());
+            }
+
+            ooc_cleanup_detail::BaseLock lock(paths.lock_path);
+            ooc_cleanup_detail::require_pair_namespace_reusable_locked(paths);
+            ooc_cleanup_detail::create_private_directory_entry_locked(paths);
+            const auto directory_identity =
+                ooc_cleanup_detail::capture_private_directory_identity_locked(paths);
+            OOCPrivateLeaseOwnershipReceipt candidate(paths.base_path, paths.private_directory,
+                                                      paths.lock_path, directory_identity);
+            static_assert(std::is_nothrow_move_constructible_v<OOCPrivateLeaseOwnershipReceipt>);
+            ownership.emplace(std::move(candidate));
+            ooc_cleanup_detail::confirm_private_directory_durable_locked(paths);
+            return OOCCleanupResult{
+                .status = OOCCleanupStatus::Completed,
+                .stage = OOCCleanupStage::Completed,
+                .native_error = {},
+            };
+        });
+        return OOCPrivateLeaseReservation{
+            .result = result,
+            .ownership = std::move(ownership),
+        };
+    }
+
+    /// Remove one exact private lease after its pair namespace is fully empty.
+    /// The external lock remains permanently in place, so directory reuse
+    /// cannot create a second simultaneously valid lock inode.
+    [[nodiscard]] static OOCCleanupResult
+    remove_private_lease(OOCPrivateLeaseOwnershipReceipt& ownership) noexcept {
+        if (ownership.spent_ || ownership.base_path_.empty() ||
+            ownership.private_directory_.empty() || ownership.lock_path_.empty()) {
+            return OOCCleanupResult{
+                .status = OOCCleanupStatus::InvalidRequest,
+                .stage = OOCCleanupStage::None,
+                .native_error = ooc_cleanup_detail::invalid_argument_error(),
+            };
+        }
+
+        const auto result = invoke([&] {
+            const auto paths = ooc_cleanup_detail::freeze_paths(ownership.base_path_);
+            if (paths.private_directory.empty() || paths.base_path != ownership.base_path_ ||
+                paths.private_directory != ownership.private_directory_ ||
+                paths.lock_path != ownership.lock_path_) {
+                ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                         ooc_cleanup_detail::invalid_argument_error());
+            }
+            ooc_cleanup_detail::BaseLock lock(paths.lock_path, false);
+            ooc_cleanup_detail::require_pair_namespace_reusable_locked(paths);
+            ooc_cleanup_detail::remove_private_directory_locked(paths,
+                                                                ownership.directory_identity_);
+            return OOCCleanupResult{
+                .status = OOCCleanupStatus::Completed,
+                .stage = OOCCleanupStage::Completed,
+                .native_error = {},
+            };
+        });
+        if (result.completed()) {
+            ownership.spent_ = true;
+        }
+        return result;
+    }
+
+    /// Confirm that no live, quarantined, pending, or canonical cleanup leaf
+    /// remains for this pair. The persistent regular lock leaf is deliberately
+    /// retained and is not part of the pair-reuse decision.
+    [[nodiscard]] static OOCCleanupResult
+    confirm_pair_namespace_reusable(const std::filesystem::path& base_path) noexcept {
+        return invoke([&] {
+            const auto paths = ooc_cleanup_detail::freeze_paths(base_path);
+            ooc_cleanup_detail::BaseLock lock(paths.lock_path, paths.private_directory.empty());
+            ooc_cleanup_detail::require_pair_namespace_reusable_locked(paths);
+            return OOCCleanupResult{
+                .status = OOCCleanupStatus::Completed,
+                .stage = OOCCleanupStage::Completed,
+                .native_error = {},
+            };
+        });
+    }
+
 private:
     [[nodiscard]] static OOCCleanupOwnershipReceipt
-    capture_ownership_receipt(const std::filesystem::path& base_path, std::uint64_t store_id) {
+    capture_fresh_ownership_receipt(const std::filesystem::path& base_path, std::uint64_t store_id,
+                                    const std::array<std::uint64_t, 3>& expected_index_identity,
+                                    const std::array<std::uint64_t, 3>& expected_data_identity) {
         const auto paths = ooc_cleanup_detail::freeze_paths(base_path);
-        ooc_cleanup_detail::BaseLock lock(paths.lock_path);
         const auto source = ooc_cleanup_detail::capture_source_pair(paths, store_id);
         ooc_cleanup_detail::require_source_pair_unchanged(paths, source);
+        const auto index_identity = ooc_cleanup_detail::stable_identity(source.index.identity);
+        const auto data_identity = ooc_cleanup_detail::stable_identity(source.data.identity);
+        if (index_identity != expected_index_identity || data_identity != expected_data_identity ||
+            index_identity == data_identity) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::SourcePairInvalid, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::protocol_error());
+        }
         return OOCCleanupOwnershipReceipt(paths.base_path, store_id,
                                           OOCCleanupOwnershipReceipt::NativeIdentity{
                                               .first = source.index.identity.first,
@@ -2375,7 +2844,6 @@ private:
     }
 
     friend class OOCRelationWriter;
-    friend class OOCCleanupTransactionTestAccess;
 };
 
 } // namespace gnfs::relation

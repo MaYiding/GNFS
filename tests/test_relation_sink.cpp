@@ -26,6 +26,7 @@ using gnfs::linalg::OOCRelationSource;
 using gnfs::linalg::RelationSelectionSource;
 using gnfs::linalg::VectorRelationSource;
 using gnfs::relation::OOCCleanupPolicy;
+using gnfs::relation::OOCCleanupTransaction;
 using gnfs::relation::OOCRelationReader;
 using gnfs::relation::OOCRelationWriter;
 using gnfs::relation::OOCWriterState;
@@ -130,7 +131,16 @@ struct ArtifactCleanup final {
         ignored.clear();
         std::filesystem::remove(base + ".reldata", ignored);
         ignored.clear();
+        std::filesystem::remove(base + ".gnfs-ooc-cleanup-v1.lock", ignored);
+        ignored.clear();
         std::filesystem::remove_all(base + ".gnfs-sink-lease", ignored);
+        ignored.clear();
+        try {
+            const auto sink_paths = OOCCleanupTransaction::paths_for(
+                std::filesystem::path(base + ".gnfs-sink-lease") / "corpus");
+            std::filesystem::remove(sink_paths.lock_path, ignored);
+        } catch (...) {
+        }
     }
 
     std::string base;
@@ -163,6 +173,11 @@ struct ArtifactCleanup final {
 
 [[nodiscard]] bool lease_exists(const std::string& base) {
     return std::filesystem::is_directory(base + ".gnfs-sink-lease");
+}
+
+[[nodiscard]] bool sink_lock_exists(const std::string& base) {
+    return std::filesystem::is_regular_file(
+        OOCCleanupTransaction::paths_for(sink_store_base(base)).lock_path);
 }
 
 void write_file(const std::string& path, std::string_view bytes) {
@@ -225,10 +240,16 @@ void test_out_of_core_empty_and_descriptor_backed_lifetime() {
             CHECK(corpus.storage_kind() == RelationStorageKind::FinalizedOOC);
             CHECK(sink_artifacts_exist(artifacts.base));
             CHECK(lease_exists(artifacts.base));
+            CHECK(sink_lock_exists(artifacts.base));
+            const auto scope = corpus.ooc_artifact_scope();
+            CHECK(scope.has_value());
+            CHECK(scope->cleanup_directory ==
+                  RelationSink::lease_root_for(artifacts.base).string());
             check_corpus(corpus, 201, {});
         }
         CHECK(sink_artifacts_exist(artifacts.base));
         CHECK(lease_exists(artifacts.base));
+        CHECK(sink_lock_exists(artifacts.base));
     }
 
     ArtifactCleanup artifacts(unique_base("nonempty_ooc"));
@@ -258,6 +279,39 @@ void test_out_of_core_empty_and_descriptor_backed_lifetime() {
     result.reset();
     CHECK(sink_artifacts_absent(artifacts.base));
     CHECK(lease_absent(artifacts.base));
+    CHECK(sink_lock_exists(artifacts.base));
+}
+
+void test_preserve_can_arm_private_lease_and_reuse_one_lock_domain() {
+    ArtifactCleanup artifacts(unique_base("preserve_arm_reuse"));
+    const auto paths = OOCCleanupTransaction::paths_for(sink_store_base(artifacts.base));
+
+    {
+        auto sink = RelationSink::out_of_core(203, artifacts.base, OOCCleanupPolicy::Preserve);
+        CHECK(sink.append(make_relation(70, 3, 70)) == 0);
+        auto corpus = sink.finalize();
+        CHECK(corpus.arm_ooc_cleanup());
+        CHECK(sink_artifacts_exist(artifacts.base));
+        CHECK(lease_exists(artifacts.base));
+        CHECK(sink_lock_exists(artifacts.base));
+    }
+    CHECK(sink_artifacts_absent(artifacts.base));
+    CHECK(lease_absent(artifacts.base));
+    CHECK(sink_lock_exists(artifacts.base));
+
+    {
+        auto sink =
+            RelationSink::out_of_core(204, artifacts.base, OOCCleanupPolicy::RemoveArtifacts);
+        CHECK(sink.append(make_relation(71, 3, 71)) == 0);
+        auto corpus = sink.finalize();
+        CHECK(sink_artifacts_exist(artifacts.base));
+        CHECK(lease_exists(artifacts.base));
+        CHECK(paths.lock_path ==
+              OOCCleanupTransaction::paths_for(sink_store_base(artifacts.base)).lock_path);
+    }
+    CHECK(sink_artifacts_absent(artifacts.base));
+    CHECK(lease_absent(artifacts.base));
+    CHECK(sink_lock_exists(artifacts.base));
 }
 
 void test_abort_never_finalizes_and_cleans_ooc_artifacts() {
@@ -378,6 +432,7 @@ void test_partial_artifact_and_lease_collisions_are_rejected() {
     });
     CHECK(lease_exists(leased.base));
     CHECK(sink_artifacts_absent(leased.base));
+    CHECK(!sink_lock_exists(leased.base));
 }
 
 void test_dangling_symlink_is_rejected_without_following_it() {
@@ -487,6 +542,7 @@ int main() {
     try {
         test_in_memory_empty_and_ordered_nonempty();
         test_out_of_core_empty_and_descriptor_backed_lifetime();
+        test_preserve_can_arm_private_lease_and_reuse_one_lock_domain();
         test_abort_never_finalizes_and_cleans_ooc_artifacts();
         test_open_sink_destructor_aborts_without_publishing();
         test_post_commit_hook_failure_keeps_writer_finalized();

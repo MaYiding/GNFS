@@ -21,6 +21,8 @@
 using gnfs::core::ABPair;
 using gnfs::core::PrimePower;
 using gnfs::core::Relation;
+using gnfs::relation::OOCCleanupStatus;
+using gnfs::relation::OOCCleanupTransaction;
 using gnfs::relation::OOCRecoveryOutcome;
 using gnfs::relation::OOCRelationPrefixReader;
 using gnfs::relation::OOCRelationReader;
@@ -54,6 +56,24 @@ public:
     ~OOCArtifacts() {
         std::remove((base_path_ + ".reldata").c_str());
         std::remove((base_path_ + ".relidx").c_str());
+        try {
+            const auto paths = OOCCleanupTransaction::paths_for(base_path_);
+            std::error_code ignored;
+            std::filesystem::remove(paths.intent_path, ignored);
+            ignored.clear();
+            std::filesystem::remove(paths.intent_pending_path, ignored);
+            ignored.clear();
+            std::filesystem::remove(paths.staged_path, ignored);
+            ignored.clear();
+            std::filesystem::remove(paths.staged_pending_path, ignored);
+            ignored.clear();
+            std::filesystem::remove(paths.quarantine_index_path, ignored);
+            ignored.clear();
+            std::filesystem::remove(paths.quarantine_data_path, ignored);
+            ignored.clear();
+            std::filesystem::remove(paths.lock_path, ignored);
+        } catch (...) {
+        }
     }
 
 private:
@@ -1500,6 +1520,62 @@ void test_concurrent_fresh_writers_have_one_durable_winner() {
     CHECK(relation.a == 11 || relation.a == 13);
 }
 
+void test_cleanup_receipt_is_fresh_only_and_transactional() {
+    {
+        const std::string path = make_path("fresh_cleanup_receipt");
+        OOCArtifacts cleanup(path);
+        OOCRelationWriter writer(path);
+        CHECK(writer.write(make_relation(1, 2)) == 0);
+        CHECK(writer.write(make_relation(3, 4)) == 1);
+        CHECK(writer.finalize().count == 2);
+
+        const auto result = writer.remove_owned_artifacts_noexcept();
+        CHECK(result.status == OOCCleanupStatus::Completed);
+        CHECK(result.transaction_terminal());
+        CHECK(!std::filesystem::exists(path + ".relidx"));
+        CHECK(!std::filesystem::exists(path + ".reldata"));
+
+        const auto repeated = writer.remove_owned_artifacts_noexcept();
+        CHECK(repeated.status == OOCCleanupStatus::Completed);
+        CHECK(repeated.transaction_terminal());
+    }
+
+    {
+        const std::string path = make_path("cleanup_waits_for_prefix_reader");
+        OOCArtifacts cleanup(path);
+        OOCRelationWriter writer(path);
+        CHECK(writer.write(make_relation(1, 2)) == 0);
+        const auto descriptor = writer.checkpoint_prefix();
+        {
+            OOCRelationPrefixReader reader(path, descriptor, writer);
+            CHECK(reader.count() == 1);
+            const auto busy = writer.remove_owned_artifacts_noexcept();
+            CHECK(busy.status == OOCCleanupStatus::Busy);
+            CHECK(!busy.transaction_terminal());
+            CHECK(std::filesystem::exists(path + ".relidx"));
+            CHECK(std::filesystem::exists(path + ".reldata"));
+        }
+        CHECK(writer.remove_owned_artifacts_noexcept().completed());
+        CHECK(!std::filesystem::exists(path + ".relidx"));
+        CHECK(!std::filesystem::exists(path + ".reldata"));
+    }
+
+    {
+        const std::string path = make_path("recovery_has_no_cleanup_receipt");
+        OOCArtifacts cleanup(path);
+        const auto descriptor = create_recovery_store(path);
+        OOCRelationWriter recovered(path, descriptor, standard_sequence_receipt(descriptor.count));
+        CHECK(recovered.recovery_outcome() == OOCRecoveryOutcome::AppendablePrefix);
+
+        const auto rejected = recovered.remove_owned_artifacts_noexcept();
+        CHECK(rejected.status == OOCCleanupStatus::InvalidRequest);
+        CHECK(!rejected.transaction_terminal());
+        CHECK(std::filesystem::exists(path + ".relidx"));
+        CHECK(std::filesystem::exists(path + ".reldata"));
+        recovered.abort();
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1533,6 +1609,7 @@ int main() {
     test_failed_snapshot_transition();
     test_fresh_writer_reserves_pair_without_clobbering();
     test_concurrent_fresh_writers_have_one_durable_winner();
+    test_cleanup_receipt_is_fresh_only_and_transactional();
     std::cout << "All OOC store integrity tests passed!\n";
     return 0;
 }

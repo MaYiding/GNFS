@@ -1646,3 +1646,49 @@ that a malicious same-UID process can never temporarily move or replace a
 name. It does promise that a detected foreign object is preserved and never
 unlinked. Stronger adversarial isolation requires a trusted private directory
 or a platform-specific handle-bound implementation.
+
+### Cleanup Integration Status
+
+The fresh-writer integration slice now enforces the following authority chain:
+
+1. Fresh construction freezes the base path, acquires the per-base lock,
+   confirms that every live, pending, canonical, staged, and quarantine leaf is
+   absent, and reserves both artifacts with `O_EXCL` while retaining that lock.
+2. The writer closes both exclusive-create reservation handles, then captures
+   the pair again under the same namespace lock. Receipt construction occurs
+   only after the captured identities match the retained reservation
+   identities, so no throwing work follows issuance.
+3. `RelationCorpus::from_owned_finalized_ooc()` constructs and validates its
+   descriptor-bound reader and allocates its complete state before the final
+   non-throwing receipt move.
+4. Public descriptor-only corpus reopen always preserves artifacts.
+   `arm_ooc_cleanup()` returns `false` when no fresh-writer receipt was
+   transferred.
+5. Fresh collector handoff and `clear()` use the receipt-backed transaction.
+   Descriptor-plus-sequence recovery rejects destructive handoff and `clear()`.
+6. `RelationSink` retains its writer receipt through finalize and abort.
+   A second move-only receipt proves ownership of its exact private lease;
+   public corpus adoption no longer accepts a raw cleanup-directory string.
+7. The sink pair lock is a persistent sibling outside the removable lease.
+   Lease creation, pair cleanup, and lease removal all serialize on that one
+   inode. The lease receipt also binds the directory's native identity. Pair
+   cleanup confirms the full namespace empty, then removes only that exact
+   empty lease while retaining the external lock for later same-base use. An
+   old receipt rejects a replacement directory instead of deleting a newer
+   lease after an uncertain parent-directory durability barrier.
+8. `Preserve` transfers both receipts without arming cleanup. A later explicit
+   `arm_ooc_cleanup()` therefore removes the owned pair and lease together;
+   descriptor-only recovery still returns `false`.
+
+The current milestone deliberately does not recreate deletion authority after
+process recovery. A pending-only marker cannot authorize cleanup after its
+in-memory receipt is lost, so fresh construction fails closed until an
+independent durable ownership-token design lands. A canonical intent remains
+sufficient for cross-process transaction completion. Distributed-sieve worker
+artifacts still use their existing parent/child deletion path and require a
+separate interprocess ownership handoff. Whole-directory quarantine also
+remains deferred. An existing lease is never adopted automatically, so a
+process exit between lease creation and writer reservation, or between pair
+completion and lease removal, leaves a safe fail-closed directory that
+requires a future durable lease-marker recovery design. The external lock is
+never deleted and therefore cannot split into two cooperating lock domains.

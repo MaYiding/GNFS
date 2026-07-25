@@ -74,7 +74,11 @@ struct OOCArtifacts final {
         ignored.clear();
         std::filesystem::remove(base + ".reldata", ignored);
         ignored.clear();
+        std::filesystem::remove(base + ".gnfs-ooc-cleanup-v1.lock", ignored);
+        ignored.clear();
         std::filesystem::remove_all(base + ".gnfs-sink-lease", ignored);
+        ignored.clear();
+        std::filesystem::remove(base + ".gnfs-sink-lease.gnfs-ooc-cleanup-v1.lock", ignored);
     }
 
     std::string base;
@@ -328,16 +332,12 @@ void add_relations(RelationCollector& collector, const std::vector<Relation>& re
 [[nodiscard]] gnfs::relation::RelationCorpus
 make_owned_ooc_corpus(uint64_t generation, const std::string& base,
                       const std::vector<Relation>& relations) {
-    gnfs::relation::OOCSnapshotDescriptor descriptor;
-    {
-        gnfs::relation::OOCRelationWriter writer(base);
-        for (const auto& relation : relations) {
-            (void)writer.write(relation);
-        }
-        descriptor = writer.finalize();
+    gnfs::relation::OOCRelationWriter writer(base);
+    for (const auto& relation : relations) {
+        (void)writer.write(relation);
     }
-    return gnfs::relation::RelationCorpus::from_finalized_ooc(
-        generation, base, descriptor, gnfs::relation::OOCCleanupPolicy::RemoveArtifacts);
+    return gnfs::relation::RelationCorpus::from_owned_finalized_ooc(
+        generation, writer, gnfs::relation::OOCCleanupPolicy::RemoveArtifacts);
 }
 
 template <typename Fn> bool throws_invalid_argument(Fn&& fn) {

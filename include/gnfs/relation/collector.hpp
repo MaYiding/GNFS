@@ -994,9 +994,9 @@ public:
     /// Finalize and transfer the collector's original OOC V3 store into a
     /// move-only corpus. This is a one-shot terminal handoff.
     ///
-    /// Corpus adoption occurs before the writer/descriptor is released. If
-    /// validation or allocation throws, the collector retains its Finalized
-    /// writer and the idempotent descriptor so the same handoff can be retried.
+    /// A fresh writer transfers its move-only cleanup receipt only after corpus
+    /// reader/State construction succeeds. Recovery writers have integrity
+    /// evidence but no deletion capability and therefore support Preserve only.
     /// After success, collection, clearing, snapshots, materialization, and
     /// repeated finalization/handoff are rejected deterministically.
     [[nodiscard]] RelationCorpus
@@ -1008,12 +1008,22 @@ public:
 
         const OOCSnapshotDescriptor descriptor = ooc_writer_->finalize();
         validate_descriptor_matches_collector(descriptor, "handoff_ooc_corpus");
-        RelationCorpus corpus = RelationCorpus::from_finalized_ooc(
-            logical_generation, config_.ooc_base_path, descriptor, cleanup_policy);
+        RelationCorpus corpus = [&]() {
+            if (ooc_writer_->has_cleanup_ownership_receipt()) {
+                return RelationCorpus::from_owned_finalized_ooc(logical_generation, *ooc_writer_,
+                                                                cleanup_policy);
+            }
+            if (cleanup_policy != OOCCleanupPolicy::Preserve) {
+                throw std::logic_error(
+                    "RelationCollector::handoff_ooc_corpus: recovered OOC stores cannot acquire "
+                    "cleanup ownership");
+            }
+            return RelationCorpus::from_finalized_ooc(logical_generation, config_.ooc_base_path,
+                                                      descriptor, OOCCleanupPolicy::Preserve);
+        }();
 
-        // Both fstreams are already closed in Finalized. Destroying the writer
-        // after the corpus reader has adopted the descriptor cannot invalidate
-        // the immutable mappings or throw.
+        // Fresh receipt transfer or descriptor-only recovery adoption completed
+        // before the writer shell is released.
         ooc_writer_.reset();
         ooc_corpus_handed_off_ = true;
         return corpus;
@@ -1117,8 +1127,8 @@ public:
     }
 
     /// 清空收集器
-    /// OOC 模式: finalize + descriptor-bound 删除 .reldata/.relidx + reopen。
-    /// Failed/handoff 状态拒绝 clear，避免按不再可信或已转移的路径删除文件。
+    /// OOC 模式: receipt 驱动的事务删除 + fresh O_EXCL reopen。
+    /// Recovery/Failed/handoff 状态拒绝 clear，避免把结构或摘要证据升级为删除权。
     /// Pool 模式 (W6 T4): 释放 pmr vector + reset RelationPoolResource (释放 chunks).
     void clear() {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1128,24 +1138,31 @@ public:
         // collector owns. Complete it before erasing in-memory bookkeeping so
         // a finalize/delete/reopen failure remains fail-closed and diagnosable.
         if (config_.ooc_enabled) {
+            if (config_.ooc_resume_snapshot) {
+                throw std::logic_error(
+                    "RelationCollector::clear: recovered OOC stores have no cleanup ownership");
+            }
             if (!ooc_writer_) {
-                throw std::logic_error(
-                    "RelationCollector::clear: OOC writer ownership is unavailable");
-            }
-            if (ooc_writer_->state() == OOCWriterState::Failed) {
-                throw std::logic_error(
-                    "RelationCollector::clear: failed OOC store identity is untrusted");
-            }
-
-            const OOCSnapshotDescriptor descriptor = ooc_writer_->finalize();
-            validate_descriptor_matches_collector(descriptor, "clear");
-            {
-                RelationCorpus cleanup = RelationCorpus::from_finalized_ooc(
-                    descriptor.generation, config_.ooc_base_path, descriptor,
-                    OOCCleanupPolicy::RemoveArtifacts);
+                // A prior clear may have completed deletion and then failed to
+                // allocate/open its replacement writer. Fresh construction
+                // rechecks the entire cleanup namespace under the base lock.
+                ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path);
+            } else {
+                if (ooc_writer_->state() == OOCWriterState::Failed) {
+                    throw std::logic_error(
+                        "RelationCollector::clear: failed OOC store identity is untrusted");
+                }
+                const auto cleanup_result = ooc_writer_->remove_owned_artifacts_noexcept();
+                if (!cleanup_result.completed()) {
+                    throw std::runtime_error(
+                        "RelationCollector::clear: owned OOC cleanup transaction did not complete "
+                        "(status=" +
+                        std::to_string(static_cast<unsigned>(cleanup_result.status)) + ", stage=" +
+                        std::to_string(static_cast<unsigned>(cleanup_result.stage)) + ")");
+                }
                 ooc_writer_.reset();
-            } // Descriptor-bound identity validation precedes exact pair deletion.
-            ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path);
+                ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path);
+            }
         }
 
         {

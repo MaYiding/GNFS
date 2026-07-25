@@ -166,8 +166,13 @@ MatrixBuilder wall time 和 nonzeros。记录在 deterministic trim 完成后、
   production worker 选择。
 - `include/gnfs/relation/relation_source.hpp` / `relation_sink.hpp`：共享 indexed
   source 契约与显式 finalize/abort output transaction。OOC sink pair 位于
-  `<base>.gnfs-sink-lease/corpus.{relidx,reldata}`；`RemoveArtifacts` 把 pair 与
-  私有目录的清理责任一并交给最终 corpus owner，`Preserve` 保留两者。
+  `<base>.gnfs-sink-lease/corpus.{relidx,reldata}`，对应的跨进程锁位于可删除
+  lease 之外并永久保留。fresh sink 另持有不可伪造、绑定目录原生 identity 的
+  move-only lease receipt；
+  `RemoveArtifacts` 自动把 pair 与私有目录的清理能力交给最终 corpus owner，
+  `Preserve` 则只转移能力而不自动 arm，后续显式 `arm_ooc_cleanup()` 仍可同时清理
+  两者。pair 删除权只由 fresh writer 的 move-only receipt 转移；
+  descriptor-only reopen 与 recovery receipt 只能读，不能升级为清理权限。
 - `RelationReductionConfig::StructuredExecutionConfig::deduplicated_ooc_base_path`：
   generic finalized-OOC 输入以及 generic `prepare_borrowed_structured()` route 的必填 working
   base。它必须与 output base 不同；engine 使用 `RemoveArtifacts` 管理 working
