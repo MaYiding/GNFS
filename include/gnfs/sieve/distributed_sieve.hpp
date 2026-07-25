@@ -4,21 +4,24 @@
 //
 // Design (POSIX fork/waitpid, no MPI, single-machine):
 //   Master splits the Special-Q index range into N contiguous chunks.
-//   For each chunk, master fork()s a worker child process. The child runs the
-//   sieve over its assigned [start, end) SQ-index range, writes resulting
-//   relations to an OOC store at `<base_path>.worker_<chunk_id>.{reldata,relidx}`
-//   and exits with status 0 (success) or 1 (failure).
+//   For each chunk, the master reserves an exact private artifact lease, then
+//   fork()s a worker child process. The child runs the sieve over its assigned
+//   [start, end) SQ-index range, writes relations inside that lease, finalizes
+//   the V3 pair, and durably publishes cleanup ownership before _exit().
 //
 //   Master waitpid()s for all workers. Any worker that exits non-zero or with a
-//   signal triggers a single retry: master re-forks a fresh worker on the same
-//   range (cleaning the prior partial OOC files first). After retry, an
+//   signal, or whose finalized store cannot be read, triggers a single retry.
+//   The parent converges the prior exact lease before reserving a fresh
+//   generation for that range. After retry, an
 //   unrecoverable failure leaves the SQ range's relations missing from the
 //   merged output (warning logged, not fatal — the adaptive sieve loop above
 //   can compensate).
 //
-//   Once every worker has finished, master opens each worker OOC store with
-//   OOCRelationReader, concatenates their relations into a single vector,
-//   deletes the worker stores, and returns the merged vector.
+//   Each successful attempt is fully read and its lease is transactionally
+//   removed before the slot becomes successful. The master then concatenates
+//   those validated buffers into one vector and returns it. A master crash
+//   invalidates the whole wave; a later reservation safely removes orphaned
+//   worker artifacts before recomputing them.
 //
 // Default OFF: when `num_workers == 0` the caller falls back to the in-process
 // sieve path (this header provides no fallback — it is the caller's job to
@@ -27,12 +30,12 @@
 // Cross-platform: uses POSIX fork()/waitpid()/_exit(). Works on Linux + macOS.
 // Not Windows-portable (acceptable for GNFS which already requires POSIX).
 
+#include "gnfs/cofactor/cofactorizer.hpp"
 #include "gnfs/core/polynomial_context.hpp"
 #include "gnfs/core/relation.hpp"
 #include "gnfs/factor_base/factor_base.hpp"
 #include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/sieve/special_q.hpp"
-#include "gnfs/cofactor/cofactorizer.hpp"
 
 #ifndef _WIN32
 #include <sys/types.h>
@@ -58,8 +61,9 @@ struct DistributedSieveConfig {
     /// (caller must fall back to in-process sieve).
     size_t num_workers = 0;
 
-    /// Filesystem base path for per-worker OOC stores. Each worker writes to
-    /// `<base_path>.worker_<chunk_id>.{reldata,relidx}` (chunk_id 0-indexed).
+    /// Filesystem root for per-worker private leases. Each worker writes to
+    /// `<base_path>.worker_<chunk_id>.gnfs-sink-lease/corpus.{reldata,relidx}`
+    /// (chunk_id 0-indexed).
     /// Must not be empty when num_workers > 0.
     std::string base_path;
 
@@ -76,16 +80,19 @@ struct DistributedSieveConfig {
 
 /// Outcome metadata for a single worker process.
 struct DistributedSieveWorkerResult {
-    distributed_pid_t pid = -1;      ///< Worker PID (after fork).
-    size_t chunk_id = 0;             ///< Zero-indexed chunk identifier.
-    uint32_t sq_index_begin = 0;     ///< First SQ index assigned to this worker.
-    uint32_t sq_index_end = 0;       ///< Past-the-last SQ index assigned to this worker.
-    size_t sq_count = 0;             ///< Number of SQs actually processed.
-    size_t relations_count = 0;      ///< Number of relations written to the worker OOC store.
-    bool success = false;            ///< true iff child exited with status 0 and OOC store finalized.
-    int exit_status = -1;            ///< Raw WEXITSTATUS / -1 if killed by signal.
-    int signal = 0;                  ///< If killed by signal, signal number; else 0.
-    std::string ooc_base_path;       ///< Per-worker OOC base path.
+    distributed_pid_t pid = -1;        ///< Worker PID (after fork).
+    size_t chunk_id = 0;               ///< Zero-indexed chunk identifier.
+    uint32_t sq_index_begin = 0;       ///< First SQ index assigned to this worker.
+    uint32_t sq_index_end = 0;         ///< Past-the-last SQ index assigned to this worker.
+    size_t sq_count = 0;               ///< Number of SQs actually processed.
+    size_t relations_count = 0;        ///< Number of relations written to the worker OOC store.
+    size_t merged_relations_count = 0; ///< Rows retained after cross-worker deduplication.
+    size_t attempt_count = 0;          ///< Number of parent-launched attempts (maximum 2).
+    bool reap_confirmed = true; ///< false means waitpid was uncertain; cleanup was suppressed.
+    bool success = false;       ///< true iff child exited with status 0 and OOC store finalized.
+    int exit_status = -1;       ///< Raw WEXITSTATUS / -1 if killed by signal.
+    int signal = 0;             ///< If killed by signal, signal number; else 0.
+    std::string ooc_base_path;  ///< Per-worker OOC base path.
 };
 
 /// Run the sieve in num_workers child processes.
@@ -108,27 +115,26 @@ struct DistributedSieveWorkerResult {
 ///   - Worker failure    → master retries once. Persistent failure → that chunk
 ///     contributes zero relations; an informational stderr line is emitted.
 ///
-/// On return, all per-worker OOC files are removed regardless of success.
+/// On return, every removable owned worker lease has been transactionally
+/// removed. A foreign replacement or durability failure remains preserved and
+/// makes that worker unsuccessful.
 [[nodiscard]] std::vector<gnfs::core::Relation> run_distributed_sieve(
-    const DistributedSieveConfig& cfg,
-    const gnfs::core::PolynomialContext& ctx,
-    const gnfs::factor_base::FactorBase& fb,
-    const SieveParams& sieve_params,
-    const SieveRegion& sieve_region,
-    const gnfs::cofactor::CofactorizerConfig& cofac_config,
-    const gnfs::core::Integer& n,
-    const gnfs::core::Integer& m,
-    const SpecialQRange& sq_range,
+    const DistributedSieveConfig& cfg, const gnfs::core::PolynomialContext& ctx,
+    const gnfs::factor_base::FactorBase& fb, const SieveParams& sieve_params,
+    const SieveRegion& sieve_region, const gnfs::cofactor::CofactorizerConfig& cofac_config,
+    const gnfs::core::Integer& n, const gnfs::core::Integer& m, const SpecialQRange& sq_range,
     std::vector<DistributedSieveWorkerResult>* out_worker_stats = nullptr);
 
 /// Parse `GNFS_DISTRIBUTED_SIEVE_WORKERS=N` (range [0, 64]).
 /// Out-of-range / non-numeric / unset → 0 (disabled).
 inline size_t parse_distributed_sieve_workers_env() noexcept {
     const char* env = std::getenv("GNFS_DISTRIBUTED_SIEVE_WORKERS");
-    if (env == nullptr || env[0] == '\0') return 0;
+    if (env == nullptr || env[0] == '\0')
+        return 0;
     char* end = nullptr;
     long value = std::strtol(env, &end, 10);
-    if (end == env || value <= 0 || value > 64) return 0;
+    if (end == env || value <= 0 || value > 64)
+        return 0;
     return static_cast<size_t>(value);
 }
 

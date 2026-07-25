@@ -1743,7 +1743,63 @@ directory removal, and both external marker removals. A crash after
 `RESERVED` removal proves the inverse property: recovery preserves the active
 pair and cannot reconstruct deletion authority from `OWNED`.
 
-Distributed-sieve worker artifacts still use their existing parent/child
-deletion path and require a separate interprocess ownership handoff. That
-handoff is the next ownership milestone. The external lock is never deleted,
-so it cannot split into two cooperating lock domains.
+The next ownership milestone applies this same durable lease authority to
+distributed-sieve worker artifacts. The external lock remains persistent, so
+it cannot split into two cooperating lock domains.
+
+### Distributed Worker Cleanup Handoff Status
+
+Distributed sieve workers now use a parent-owned private lease for every
+nonempty chunk. The master freezes and allocates all slot paths before the
+first fork, reserves the lease, and retains the move-only receipt. The child
+inherits the held lock, creates the V3 pair without activating the lease,
+finalizes the pair, and publishes only its exact canonical cleanup intent.
+The child then calls `_exit()` without running receipt or lock destructors.
+
+The cleanup handoff follows this order:
+
+1. The parent assigns the attempt ordinal in memory. No `.attempts` leaf
+   exists in the artifact namespace.
+2. A failed child is reaped before the parent may remove its lease or reuse
+   the path.
+3. After cleanup-intent publication, the child writes a fixed completion
+   report through a parent-owned pipe. The report binds the attempt ordinal,
+   actual special-Q and relation counts, and the finalized pair's store ID,
+   generation, data end, and independent relation-sequence receipt.
+4. A successful child is not accepted until the parent reconstructs that
+   exact snapshot descriptor and reads every relation through the
+   descriptor-bound reader into an isolated buffer. It then recomputes and
+   matches the complete sequence receipt, so structurally valid same-size
+   payload drift also fails closed.
+5. The parent closes the reader and converges the exact canonical transaction
+   plus private lease before marking the attempt successful.
+6. Only successful, fully read, and fully cleaned buffers enter the
+   cross-worker deduplication pass.
+7. A failed attempt must finish exact lease cleanup before a fresh lease
+   generation can be reserved for its single retry.
+
+The POSIX lock owner closes its descriptor without an explicit `LOCK_UN`.
+After `fork()`, this keeps the advisory lock held until the final inherited
+descriptor closes. The lease receipt also records its creator PID.
+Fork children cannot activate or remove the parent lease, and deferred writers
+reject generic destructive APIs. Their only authority transition is exact
+cleanup-intent publication.
+
+Recovery validates the complete private-directory allowlist before the first
+pair rename. An unknown sibling, link, marker replacement, or pair identity
+mismatch therefore preserves the live pair and makes the worker unsuccessful.
+The parent never uses a raw suffix-based `unlink()`. Read errors can no longer
+appear as a successful zero-relation chunk, and an uncertain `waitpid()` result
+suppresses cleanup for that slot and every retry in the whole wave. Whole-wave
+suppression is required because later fork children inherit earlier lease-lock
+descriptors. Worker statistics distinguish persisted rows from rows retained
+after cross-worker deduplication and come from the completion report rather
+than inferred chunk bounds.
+
+This milestone defines cleanup ownership, not a durable distributed-wave
+checkpoint. If the master process crashes, the whole wave is invalid and the
+next run recomputes it. A later reservation may therefore finish a canonical
+orphan cleanup intent. Preserving and adopting completed workers across a
+master restart requires a separate no-delete handoff record bound to a work
+digest and a merge-completion receipt. That durable-resume protocol remains a
+future milestone.

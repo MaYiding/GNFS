@@ -165,12 +165,31 @@ commit. Preactivation recovery is interrupted after whole-directory
 quarantine, both pair-leaf removals, owner and directory removal, and both
 external marker removals. The suite verifies that links and unknown children
 remain preserved, while a crash after activation keeps the live pair. The
-broader `RelationReductionEngine` integration target is `fast`: it repeatedly
+suite also covers deferred worker cleanup handoff, pending-intent rollback,
+canonical-intent cleanup, canonical intent with an unknown sibling, creator-PID
+enforcement, and the POSIX fork rule that closing the parent receipt does not
+unlock a still-running child. The broader `RelationReductionEngine`
+integration target is `fast`: it repeatedly
 creates and removes durable OOC leases, so its Debug single-run cost includes
 the required file and parent-directory barriers.
 
 Windows Release also runs a native sharing-violation retry branch; non-Windows
 execution cannot substitute for that platform evidence.
+
+`test_distributed_sieve` is the `fast` integration contract for the POSIX
+worker pool. Its checks remain active under `NDEBUG`. In addition to serial
+relation-set equivalence and chunk splitting, it verifies parent-numbered
+attempts, first-attempt failure, cleanup-intent pending failure, corrupted
+completion-descriptor and relation-sequence-receipt rejection, retry
+exhaustion, full private-directory and external lease-marker removal, and
+preservation of legacy raw worker leaves.
+A worker becomes successful only after a confirmed `waitpid()`, complete OOC
+descriptor-bound read, and exact lease cleanup. The suite validates the fixed
+completion report's actual special-Q and persisted-relation counts separately
+from post-merge rows. The parent recomputes the complete relation-sequence
+receipt after its descriptor-bound read. The test does not claim that a
+completed worker can be adopted after a master crash; the current contract
+invalidates and recomputes the whole distributed wave.
 
 `test_local_sieve_thread_budget` is the `instant` contract for balanced lane
 allocation, invalid limits, and a bounded property grid. The 64-special-Q probe

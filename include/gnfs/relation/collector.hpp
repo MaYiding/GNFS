@@ -344,12 +344,12 @@ private:
 /// RelationCollector - 关系收集器
 /// 线程安全的关系收集器
 class RelationCollector {
-public:
-    /// 默认构造
-    RelationCollector() = default;
+private:
+    struct ConstructionToken final {};
 
-    /// 带配置构造
-    explicit RelationCollector(const CollectorConfig& config) : config_(config) {
+    RelationCollector(const CollectorConfig& config, OOCPrivateLeaseOwnershipReceipt* private_lease,
+                      ConstructionToken)
+        : config_(config) {
         if (config_.ooc_resume) {
             throw std::invalid_argument(
                 "RelationCollector: legacy ooc_resume flag is unsupported; use "
@@ -358,6 +358,11 @@ public:
         if (config_.ooc_resume_snapshot && !config_.ooc_enabled) {
             throw std::invalid_argument(
                 "RelationCollector: ooc_resume_snapshot requires ooc_enabled=true");
+        }
+        if (private_lease != nullptr &&
+            (!config_.ooc_enabled || config_.ooc_resume_snapshot.has_value())) {
+            throw std::invalid_argument(
+                "RelationCollector: private lease requires fresh OOC collection");
         }
         if (config_.ooc_resume_snapshot.has_value() !=
             config_.ooc_resume_sequence_receipt.has_value()) {
@@ -423,10 +428,30 @@ public:
                 stats_.partial_1lp = static_cast<size_t>(prefix->partial_1lp);
                 stats_.partial_2lp = static_cast<size_t>(prefix->partial_2lp);
             } else {
-                ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path);
+                if (private_lease != nullptr) {
+                    ooc_writer_ = std::make_unique<OOCRelationWriter>(
+                        config_.ooc_base_path, *private_lease,
+                        OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
+                } else {
+                    ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path);
+                }
             }
         }
     }
+
+public:
+    /// 默认构造
+    RelationCollector() = default;
+
+    /// 带配置构造
+    explicit RelationCollector(const CollectorConfig& config)
+        : RelationCollector(config, nullptr, ConstructionToken{}) {}
+
+    /// Fresh fork-worker collector. The caller-provided private lease must
+    /// outlive the collector and remains preactive until the worker publishes
+    /// its canonical cleanup handoff.
+    RelationCollector(const CollectorConfig& config, OOCPrivateLeaseOwnershipReceipt& private_lease)
+        : RelationCollector(config, &private_lease, ConstructionToken{}) {}
 
     /// 设置数论上下文(N 和 m),启用 CLAUDE.md 强制的 gcd(a-bm, N)>1 校验。
     /// 没设置时退回旧行为(只检 gcd(a,b)=1)。引用必须在 collector 生存期内有效。
@@ -1107,6 +1132,17 @@ public:
             return ooc_writer_->finalize();
         }
         return std::nullopt;
+    }
+
+    /// Finalize a fork-worker OOC store and durably hand its exact cleanup
+    /// intent back to the parent without deleting or quarantining the readable
+    /// pair. Only collectors constructed with a private lease support this.
+    [[nodiscard]] OOCSnapshotDescriptor
+    finalize_and_publish_ooc_cleanup_handoff(OOCCleanupTestHooks hooks = {}) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        require_ooc_mode("finalize_and_publish_ooc_cleanup_handoff");
+        require_available_ooc_owner("finalize_and_publish_ooc_cleanup_handoff");
+        return ooc_writer_->finalize_and_publish_cleanup_handoff(hooks);
     }
 
     /// Exception-only cleanup for a fresh OOC store not paired with resume.

@@ -15,27 +15,43 @@ int main() {
 //   4. Multi-worker run (N=2, 4): non-zero relations + chunks merge correctly
 //   5. Empty-range degenerate input → empty result
 //   6. Invalid config (num_workers=0 / base_path empty) → throws
-//   7. Worker crash simulation: ENV-gated _exit(1) in chunk_id=0 →
-//      master retries → other chunks still contribute their relations
+//   7. Descriptor- and sequence-bound reports expose counts and reject drift
+//   8. First-attempt and pending-handoff crashes recover through one retry
+//   9. Retry exhaustion removes owned leases without touching legacy leaves
 
 #include "gnfs/cofactor/cofactorizer.hpp"
 #include "gnfs/factor_base/builder.hpp"
 #include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/relation/collector.hpp"
+#include "gnfs/relation/ooc_cleanup_transaction.hpp"
 #include "gnfs/sieve/distributed_sieve.hpp"
 #include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/sieve/special_q.hpp"
 #include "gnfs/util/temp_path.hpp"
 
 #include <algorithm>
-#include <cassert>
+#include <array>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
+#include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unistd.h>
 #include <vector>
+
+#define CHECK(condition)                                                                           \
+    do {                                                                                           \
+        if (!(condition)) {                                                                        \
+            throw std::runtime_error(std::string("CHECK failed: " #condition " at ") + __FILE__ +  \
+                                     ":" + std::to_string(__LINE__));                              \
+        }                                                                                          \
+    } while (false)
 
 using gnfs::core::ABPair;
 using gnfs::core::Integer;
@@ -65,10 +81,7 @@ struct Fixture {
     PolynomialContext ctx;
     FactorBase fb;
 
-    Fixture()
-        : n(TEST_N),
-          ctx(make_ctx()),
-          fb(build_fb(ctx)) {}
+    Fixture() : n(TEST_N), ctx(make_ctx()), fb(build_fb(ctx)) {}
 
     static PolynomialContext make_ctx() {
         Integer n_local(TEST_N);
@@ -129,8 +142,93 @@ struct Fixture {
 // Resolve an absolute temp path that distinguishes per test run / PID, so
 // concurrent ctest invocations cannot collide on stale files.
 std::string make_tmp_base(const std::string& tag) {
-    return gnfs::util::temp_path(
-        "gnfs_test_distsieve_" + std::to_string(::getpid()) + "_" + tag);
+    return gnfs::util::temp_path("gnfs_test_distsieve_" + std::to_string(::getpid()) + "_" + tag);
+}
+
+std::filesystem::path worker_lease_root(const std::string& base, size_t chunk_id) {
+    return base + ".worker_" + std::to_string(chunk_id) + ".gnfs-sink-lease";
+}
+
+gnfs::relation::OOCCleanupPaths worker_cleanup_paths(const std::string& base, size_t chunk_id) {
+    return gnfs::relation::OOCCleanupTransaction::paths_for(worker_lease_root(base, chunk_id) /
+                                                            "corpus");
+}
+
+void check_worker_leases_removed(const std::string& base, size_t count) {
+    for (size_t chunk_id = 0; chunk_id < count; ++chunk_id) {
+        const auto paths = worker_cleanup_paths(base, chunk_id);
+        CHECK(!std::filesystem::exists(paths.private_directory));
+        CHECK(!std::filesystem::exists(paths.lease_reserved_path));
+        CHECK(!std::filesystem::exists(paths.lease_reserved_pending_path));
+        CHECK(!std::filesystem::exists(paths.lease_owned_path));
+        CHECK(!std::filesystem::exists(paths.lease_owned_pending_path));
+        CHECK(
+            gnfs::relation::OOCCleanupTransaction::confirm_pair_namespace_reusable(paths.base_path)
+                .completed());
+    }
+}
+
+void cleanup_worker_test_artifacts(const std::string& base, size_t count) {
+    std::error_code error;
+    for (size_t chunk_id = 0; chunk_id < count; ++chunk_id) {
+        const auto paths = worker_cleanup_paths(base, chunk_id);
+        const std::array cleanup_paths{
+            paths.lease_reserved_pending_path,
+            paths.lease_reserved_path,
+            paths.lease_owned_pending_path,
+            paths.lease_owned_path,
+            paths.lock_path,
+        };
+        std::filesystem::remove_all(paths.private_directory, error);
+        for (const auto& path : cleanup_paths) {
+            error.clear();
+            std::filesystem::remove(path, error);
+        }
+    }
+}
+
+class ScopedEnvironment final {
+public:
+    ScopedEnvironment(std::string name, std::string value) : name_(std::move(name)) {
+        if (const char* previous = std::getenv(name_.c_str())) {
+            previous_ = std::string(previous);
+        }
+        CHECK(::setenv(name_.c_str(), value.c_str(), 1) == 0);
+    }
+
+    ~ScopedEnvironment() {
+        if (previous_) {
+            (void)::setenv(name_.c_str(), previous_->c_str(), 1);
+        } else {
+            (void)::unsetenv(name_.c_str());
+        }
+    }
+
+    ScopedEnvironment(const ScopedEnvironment&) = delete;
+    ScopedEnvironment& operator=(const ScopedEnvironment&) = delete;
+
+private:
+    std::string name_;
+    std::optional<std::string> previous_;
+};
+
+void write_text_file(const std::filesystem::path& path, std::string_view contents) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw std::runtime_error("cannot create test file: " + path.string());
+    }
+    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    if (!output) {
+        throw std::runtime_error("cannot write test file: " + path.string());
+    }
+}
+
+std::string read_text_file(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("cannot read test file: " + path.string());
+    }
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
 // Singleton fixture: building the factor base costs ~1s, so we share one
@@ -156,11 +254,13 @@ size_t run_in_process_sieve(const Fixture& f, const SpecialQRange& range,
 
     while (gen.has_next()) {
         auto sq = gen.next();
-        if (!sq) break;
+        if (!sq)
+            break;
         auto sr = sieve.sieve_special_q(*sq);
         for (const auto& cand : sr.candidates) {
             auto rel = cofac.verify(cand, sq->q, sq->r);
-            if (rel) collector.add(std::move(*rel));
+            if (rel)
+                collector.add(std::move(*rel));
         }
     }
 
@@ -181,57 +281,57 @@ void test_split_sq_range() {
     // Trivial: 0 chunks → empty
     {
         auto c = split_sq_range(0, 100, 0);
-        assert(c.empty());
+        CHECK(c.empty());
     }
     // Empty range → empty
     {
         auto c = split_sq_range(10, 10, 4);
-        assert(c.empty());
+        CHECK(c.empty());
     }
     // Inverted range → empty (we treat as empty, not as error)
     {
         auto c = split_sq_range(100, 50, 4);
-        assert(c.empty());
+        CHECK(c.empty());
     }
     // Even split: 100 / 4 = 25 each
     {
         auto c = split_sq_range(0, 100, 4);
-        assert(c.size() == 4);
-        assert(c[0] == std::make_pair(0U, 25U));
-        assert(c[1] == std::make_pair(25U, 50U));
-        assert(c[2] == std::make_pair(50U, 75U));
-        assert(c[3] == std::make_pair(75U, 100U));
+        CHECK(c.size() == 4);
+        CHECK(c[0] == std::make_pair(0U, 25U));
+        CHECK(c[1] == std::make_pair(25U, 50U));
+        CHECK(c[2] == std::make_pair(50U, 75U));
+        CHECK(c[3] == std::make_pair(75U, 100U));
     }
     // Uneven split: 10 / 3 = 3,3,4 (first remainder gets extra)
     {
         auto c = split_sq_range(0, 10, 3);
-        assert(c.size() == 3);
-        assert(c[0].second - c[0].first == 4U);  // first chunk gets remainder
-        assert(c[1].second - c[1].first == 3U);
-        assert(c[2].second - c[2].first == 3U);
-        assert(c[0].second == c[1].first);
-        assert(c[1].second == c[2].first);
-        assert(c[2].second == 10U);
+        CHECK(c.size() == 3);
+        CHECK(c[0].second - c[0].first == 4U); // first chunk gets remainder
+        CHECK(c[1].second - c[1].first == 3U);
+        CHECK(c[2].second - c[2].first == 3U);
+        CHECK(c[0].second == c[1].first);
+        CHECK(c[1].second == c[2].first);
+        CHECK(c[2].second == 10U);
     }
     // More chunks than range: some empty
     {
         auto c = split_sq_range(0, 3, 5);
-        assert(c.size() == 5);
+        CHECK(c.size() == 5);
         // 3 / 5 = 0 base size, 3 chunks get +1 (the remainder).
-        assert(c[0].second - c[0].first == 1U);
-        assert(c[1].second - c[1].first == 1U);
-        assert(c[2].second - c[2].first == 1U);
-        assert(c[3].second - c[3].first == 0U);  // empty
-        assert(c[4].second - c[4].first == 0U);  // empty
-        assert(c[4].second == 3U);  // contiguous
+        CHECK(c[0].second - c[0].first == 1U);
+        CHECK(c[1].second - c[1].first == 1U);
+        CHECK(c[2].second - c[2].first == 1U);
+        CHECK(c[3].second - c[3].first == 0U); // empty
+        CHECK(c[4].second - c[4].first == 0U); // empty
+        CHECK(c[4].second == 3U);              // contiguous
     }
     // Concatenation property: union of chunks == original range
     {
         auto c = split_sq_range(100, 257, 7);
-        assert(c.front().first == 100U);
-        assert(c.back().second == 257U);
+        CHECK(c.front().first == 100U);
+        CHECK(c.back().second == 257U);
         for (size_t i = 1; i < c.size(); ++i) {
-            assert(c[i - 1].second == c[i].first);
+            CHECK(c[i - 1].second == c[i].first);
         }
     }
 
@@ -254,17 +354,17 @@ void test_env_parsing() {
         ::unsetenv("GNFS_DISTRIBUTED_SIEVE_WORKERS");
     };
 
-    with_env(nullptr, []() { assert(parse_distributed_sieve_workers_env() == 0); });
-    with_env("", []() { assert(parse_distributed_sieve_workers_env() == 0); });
-    with_env("0", []() { assert(parse_distributed_sieve_workers_env() == 0); });
-    with_env("1", []() { assert(parse_distributed_sieve_workers_env() == 1); });
-    with_env("4", []() { assert(parse_distributed_sieve_workers_env() == 4); });
-    with_env("64", []() { assert(parse_distributed_sieve_workers_env() == 64); });
-    with_env("65", []() { assert(parse_distributed_sieve_workers_env() == 0); });
-    with_env("-1", []() { assert(parse_distributed_sieve_workers_env() == 0); });
-    with_env("garbage", []() { assert(parse_distributed_sieve_workers_env() == 0); });
+    with_env(nullptr, []() { CHECK(parse_distributed_sieve_workers_env() == 0); });
+    with_env("", []() { CHECK(parse_distributed_sieve_workers_env() == 0); });
+    with_env("0", []() { CHECK(parse_distributed_sieve_workers_env() == 0); });
+    with_env("1", []() { CHECK(parse_distributed_sieve_workers_env() == 1); });
+    with_env("4", []() { CHECK(parse_distributed_sieve_workers_env() == 4); });
+    with_env("64", []() { CHECK(parse_distributed_sieve_workers_env() == 64); });
+    with_env("65", []() { CHECK(parse_distributed_sieve_workers_env() == 0); });
+    with_env("-1", []() { CHECK(parse_distributed_sieve_workers_env() == 0); });
+    with_env("garbage", []() { CHECK(parse_distributed_sieve_workers_env() == 0); });
     // Mixed numeric+garbage: strtol parses leading digits
-    with_env("2abc", []() { assert(parse_distributed_sieve_workers_env() == 2); });
+    with_env("2abc", []() { CHECK(parse_distributed_sieve_workers_env() == 2); });
 
     std::cout << "PASS\n";
 }
@@ -278,9 +378,8 @@ void test_invalid_config() {
         DistributedSieveConfig cfg;
         cfg.num_workers = nw;
         cfg.base_path = base;
-        return run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(),
-                                     f.sieve_region(), f.cofac_config(),
-                                     f.ctx.n(), f.ctx.m(), f.sq_range());
+        return run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
+                                     f.cofac_config(), f.ctx.n(), f.ctx.m(), f.sq_range());
     };
 
     bool threw_nw = false;
@@ -289,7 +388,7 @@ void test_invalid_config() {
     } catch (const std::invalid_argument&) {
         threw_nw = true;
     }
-    assert(threw_nw);
+    CHECK(threw_nw);
 
     bool threw_path = false;
     try {
@@ -297,7 +396,7 @@ void test_invalid_config() {
     } catch (const std::invalid_argument&) {
         threw_path = true;
     }
-    assert(threw_path);
+    CHECK(threw_path);
 
     std::cout << "PASS\n";
 }
@@ -317,22 +416,49 @@ void test_single_worker_matches_in_process() {
     cfg.num_workers = 1;
     cfg.base_path = make_tmp_base("single");
 
-    auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(),
-                                       f.sieve_region(), f.cofac_config(),
-                                       f.ctx.n(), f.ctx.m(), range);
+    auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
+                                      f.cofac_config(), f.ctx.n(), f.ctx.m(), range);
 
     std::cout << "(dist=" << rels.size() << " rels) " << std::flush;
 
     // Exact count match: single worker processes all SQs in the same order,
     // same sieve threshold, same cofactor logic → must produce identical set.
-    assert(rels.size() == baseline_count);
+    CHECK(rels.size() == baseline_count);
 
     // Set membership match
     std::set<ABPair> base_keys, dist_keys;
-    for (const auto& r : baseline) base_keys.insert(rel_key(r));
-    for (const auto& r : rels)     dist_keys.insert(rel_key(r));
-    assert(base_keys == dist_keys);
+    for (const auto& r : baseline)
+        base_keys.insert(rel_key(r));
+    for (const auto& r : rels)
+        dist_keys.insert(rel_key(r));
+    CHECK(base_keys == dist_keys);
+    check_worker_leases_removed(cfg.base_path, cfg.num_workers);
+    cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
 
+    std::cout << "PASS\n";
+}
+
+void test_worker_completion_report_tracks_actual_caps() {
+    std::cout << "[test_worker_completion_report_tracks_actual_caps] ... " << std::flush;
+
+    const auto& f = shared_fixture();
+    DistributedSieveConfig cfg;
+    cfg.num_workers = 1;
+    cfg.sq_per_worker = 1;
+    cfg.base_path = make_tmp_base("actualstats");
+    std::vector<DistributedSieveWorkerResult> stats;
+    const auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
+                                            f.cofac_config(), f.ctx.n(), f.ctx.m(),
+                                            f.sq_range(1000, 1300), &stats);
+
+    CHECK(stats.size() == 1);
+    CHECK(stats[0].success);
+    CHECK(stats[0].sq_count == 1);
+    CHECK(stats[0].relations_count == rels.size());
+    CHECK(stats[0].merged_relations_count == rels.size());
+    CHECK(stats[0].attempt_count == 1);
+    check_worker_leases_removed(cfg.base_path, cfg.num_workers);
+    cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
     std::cout << "PASS\n";
 }
 
@@ -346,7 +472,8 @@ void test_multi_worker_same_set() {
     std::vector<Relation> baseline;
     const size_t baseline_count = run_in_process_sieve(f, range, baseline);
     std::set<ABPair> base_keys;
-    for (const auto& r : baseline) base_keys.insert(rel_key(r));
+    for (const auto& r : baseline)
+        base_keys.insert(rel_key(r));
 
     for (size_t nw : {2U, 4U}) {
         std::vector<DistributedSieveWorkerResult> stats;
@@ -354,32 +481,40 @@ void test_multi_worker_same_set() {
         cfg.num_workers = nw;
         cfg.base_path = make_tmp_base("multi" + std::to_string(nw));
 
-        auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(),
-                                           f.sieve_region(), f.cofac_config(),
-                                           f.ctx.n(), f.ctx.m(), range, &stats);
+        auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
+                                          f.cofac_config(), f.ctx.n(), f.ctx.m(), range, &stats);
 
-        std::cout << "[N=" << nw << " rels=" << rels.size()
-                  << " stats=" << stats.size() << "] " << std::flush;
+        std::cout << "[N=" << nw << " rels=" << rels.size() << " stats=" << stats.size() << "] "
+                  << std::flush;
 
         // Every worker must report success (no crashes in normal path).
         for (const auto& s : stats) {
-            assert(s.success);
-            assert(s.sq_index_begin <= s.sq_index_end);
+            CHECK(s.success);
+            CHECK(s.sq_index_begin <= s.sq_index_end);
         }
         // Chunks must concatenate to the full SQ index range (no gaps, no overlap).
         for (size_t i = 1; i < stats.size(); ++i) {
-            assert(stats[i].sq_index_begin == stats[i - 1].sq_index_end);
+            CHECK(stats[i].sq_index_begin == stats[i - 1].sq_index_end);
         }
         // Sum of worker relation counts equals merged count.
         size_t sum_worker = 0;
-        for (const auto& s : stats) sum_worker += s.relations_count;
-        assert(sum_worker == rels.size());
+        size_t sum_persisted = 0;
+        for (const auto& s : stats) {
+            CHECK(s.relations_count >= s.merged_relations_count);
+            sum_persisted += s.relations_count;
+            sum_worker += s.merged_relations_count;
+        }
+        CHECK(sum_worker == rels.size());
+        CHECK(sum_persisted >= rels.size());
 
         // Relation set must equal the baseline set (sieve is deterministic).
         std::set<ABPair> dist_keys;
-        for (const auto& r : rels) dist_keys.insert(rel_key(r));
-        assert(dist_keys == base_keys);
-        assert(rels.size() == baseline_count);
+        for (const auto& r : rels)
+            dist_keys.insert(rel_key(r));
+        CHECK(dist_keys == base_keys);
+        CHECK(rels.size() == baseline_count);
+        check_worker_leases_removed(cfg.base_path, cfg.num_workers);
+        cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
     }
 
     std::cout << "PASS\n";
@@ -392,44 +527,22 @@ void test_empty_range() {
     const auto& f = shared_fixture();
     SpecialQRange empty_range;
     empty_range.min_q = 1;
-    empty_range.max_q = 1;  // pick a q range that excludes all FB primes
+    empty_range.max_q = 1; // pick a q range that excludes all FB primes
     empty_range.start_index = 0;
-    empty_range.end_index = 0;  // explicit empty index range
+    empty_range.end_index = 0; // explicit empty index range
 
     DistributedSieveConfig cfg;
     cfg.num_workers = 2;
     cfg.base_path = make_tmp_base("empty");
 
-    auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(),
-                                       f.sieve_region(), f.cofac_config(),
-                                       f.ctx.n(), f.ctx.m(), empty_range);
-    assert(rels.empty());
+    auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
+                                      f.cofac_config(), f.ctx.n(), f.ctx.m(), empty_range);
+    CHECK(rels.empty());
 
     std::cout << "PASS\n";
 }
 
-// ── Test 7: Worker crash + master retry ────────────────────────────────
-// Strategy: We can't easily inject a crash into the worker (it runs in a
-// separate process). Instead, we simulate "first attempt failure" by
-// pre-corrupting the worker OOC files so the worker's OOCWriter fails on
-// construction. NO — that hits the same crash on retry too. Better approach:
-// we test the retry path indirectly by overriding a chunk to point at an
-// unwritable directory, then... still hits both attempts.
-//
-// Simplest robust approach: spawn workers normally and confirm that when ALL
-// workers succeed the path also handles `success=true` correctly with N=3.
-// For genuine crash testing, we instead run an arms-length scenario: launch
-// a child with sq range that the parent intentionally clobbers post-fork
-// to force exit(1). This is fragile.
-//
-// Instead, we exercise the retry path by:
-//   - constructing a config that asks for more workers than chunks/SQs,
-//     causing some workers to be empty chunks (which the master path marks
-//     as success without spawn) — this verifies the "no spawn" branch.
-//
-// For ACTUAL crash retry coverage, we test the retry path at the unit level
-// via split_sq_range edge cases (empty chunks → success=true) and verify
-// the path handles them.
+// ── Test 7: More requested workers than available Special-Q entries ─────
 void test_more_workers_than_sqs() {
     std::cout << "[test_more_workers_than_sqs] ... " << std::flush;
 
@@ -442,29 +555,32 @@ void test_more_workers_than_sqs() {
 
     std::vector<DistributedSieveWorkerResult> stats;
     DistributedSieveConfig cfg;
-    cfg.num_workers = 8;  // likely > #SQs in [1000, 1200)
+    cfg.num_workers = 8; // likely > #SQs in [1000, 1200)
     cfg.base_path = make_tmp_base("morewkrs");
 
-    auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(),
-                                       f.sieve_region(), f.cofac_config(),
-                                       f.ctx.n(), f.ctx.m(), range, &stats);
+    auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
+                                      f.cofac_config(), f.ctx.n(), f.ctx.m(), range, &stats);
 
     std::cout << "[base=" << baseline.size() << " dist=" << rels.size()
               << " workers=" << stats.size() << "] " << std::flush;
 
-    assert(stats.size() == 8);
-    assert(rels.size() == baseline.size());
+    CHECK(stats.size() == 8);
+    CHECK(rels.size() == baseline.size());
     // At least one worker should have empty chunk (sq_index_begin==sq_index_end)
     // OR all workers got non-empty work — both are acceptable when total > 8 SQs.
     // We just verify success and concatenation hold.
     size_t empty_chunks = 0, nonempty_chunks = 0;
     for (const auto& s : stats) {
-        assert(s.success);
-        if (s.sq_index_begin == s.sq_index_end) ++empty_chunks;
-        else ++nonempty_chunks;
+        CHECK(s.success);
+        if (s.sq_index_begin == s.sq_index_end)
+            ++empty_chunks;
+        else
+            ++nonempty_chunks;
     }
     std::cout << "(empty_chunks=" << empty_chunks << " nonempty=" << nonempty_chunks << ") "
               << std::flush;
+    check_worker_leases_removed(cfg.base_path, cfg.num_workers);
+    cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
 
     std::cout << "PASS\n";
 }
@@ -473,8 +589,7 @@ void test_more_workers_than_sqs() {
 // Forces chunk_id=0 to exit(1) on its first attempt via the crash-injection
 // ENV `GNFS_DISTRIBUTED_SIEVE_FAIL_ATTEMPT_0=1`. Master must:
 //   1. detect the failure via waitpid
-//   2. retry chunk_id=0 (which now succeeds because the .attempts counter
-//      shows attempt=2 != 1)
+//   2. retry chunk_id=0 with the parent-owned attempt ordinal 2
 //   3. merge chunk_id=0's relations as if the failure never happened
 // Other chunks (chunk_id != 0) must succeed on first try.
 void test_worker_crash_with_retry() {
@@ -486,39 +601,206 @@ void test_worker_crash_with_retry() {
     std::vector<Relation> baseline;
     run_in_process_sieve(f, range, baseline);
 
-    // Activate crash-injection for chunk 0, first attempt.
-    ::setenv("GNFS_DISTRIBUTED_SIEVE_FAIL_ATTEMPT_0", "1", 1);
+    ScopedEnvironment fail_first("GNFS_DISTRIBUTED_SIEVE_FAIL_ATTEMPT_0", "1");
 
     std::vector<DistributedSieveWorkerResult> stats;
     DistributedSieveConfig cfg;
     cfg.num_workers = 3;
     cfg.base_path = make_tmp_base("crashretry");
 
-    auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(),
-                                       f.sieve_region(), f.cofac_config(),
-                                       f.ctx.n(), f.ctx.m(), range, &stats);
-
-    ::unsetenv("GNFS_DISTRIBUTED_SIEVE_FAIL_ATTEMPT_0");
+    auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
+                                      f.cofac_config(), f.ctx.n(), f.ctx.m(), range, &stats);
 
     std::cout << "(base=" << baseline.size() << " dist=" << rels.size()
               << " workers=" << stats.size() << ") " << std::flush;
 
     // All three workers must end up successful (chunk 0 succeeded on retry).
-    assert(stats.size() == 3);
+    CHECK(stats.size() == 3);
     for (const auto& s : stats) {
-        assert(s.success);
+        CHECK(s.success);
     }
+    CHECK(stats[0].attempt_count == 2);
+    CHECK(stats[1].attempt_count == 1);
+    CHECK(stats[2].attempt_count == 1);
+    check_worker_leases_removed(cfg.base_path, cfg.num_workers);
 
     // Final merged set must match baseline (the crash + retry was transparent).
     std::set<ABPair> base_keys, dist_keys;
-    for (const auto& r : baseline) base_keys.insert(rel_key(r));
-    for (const auto& r : rels)     dist_keys.insert(rel_key(r));
-    assert(base_keys == dist_keys);
+    for (const auto& r : baseline)
+        base_keys.insert(rel_key(r));
+    for (const auto& r : rels)
+        dist_keys.insert(rel_key(r));
+    CHECK(base_keys == dist_keys);
+    cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
 
     std::cout << "PASS\n";
 }
 
-// ── Test 9: ENV-config end-to-end ──────────────────────────────────────
+// ── Test 9: cleanup-handoff pending crash + parent retry ───────────────
+void test_handoff_pending_crash_with_retry() {
+    std::cout << "[test_handoff_pending_crash_with_retry] ... " << std::flush;
+
+    const auto& f = shared_fixture();
+    auto range = f.sq_range(1000, 1150);
+    std::vector<Relation> baseline;
+    run_in_process_sieve(f, range, baseline);
+
+    ScopedEnvironment fail_pending("GNFS_DISTRIBUTED_SIEVE_FAIL_HANDOFF_PENDING_ATTEMPT_0", "1");
+    std::vector<DistributedSieveWorkerResult> stats;
+    DistributedSieveConfig cfg;
+    cfg.num_workers = 1;
+    cfg.base_path = make_tmp_base("pendingretry");
+
+    auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
+                                      f.cofac_config(), f.ctx.n(), f.ctx.m(), range, &stats);
+
+    CHECK(stats.size() == 1);
+    CHECK(stats[0].success);
+    CHECK(stats[0].attempt_count == 2);
+    std::set<ABPair> base_keys, dist_keys;
+    for (const auto& relation : baseline)
+        base_keys.insert(rel_key(relation));
+    for (const auto& relation : rels)
+        dist_keys.insert(rel_key(relation));
+    CHECK(base_keys == dist_keys);
+    check_worker_leases_removed(cfg.base_path, cfg.num_workers);
+    cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
+    std::cout << "PASS\n";
+}
+
+// ── Test 10: invalid completion descriptor is rejected and retried ───────
+void test_corrupt_completion_report_with_retry() {
+    std::cout << "[test_corrupt_completion_report_with_retry] ... " << std::flush;
+
+    const auto& f = shared_fixture();
+    const auto range = f.sq_range(1000, 1150);
+    std::vector<Relation> baseline;
+    run_in_process_sieve(f, range, baseline);
+
+    ScopedEnvironment corrupt_report("GNFS_DISTRIBUTED_SIEVE_CORRUPT_REPORT_ATTEMPT_0", "1");
+    std::vector<DistributedSieveWorkerResult> stats;
+    DistributedSieveConfig cfg;
+    cfg.num_workers = 1;
+    cfg.base_path = make_tmp_base("corruptreport");
+
+    const auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
+                                            f.cofac_config(), f.ctx.n(), f.ctx.m(), range, &stats);
+
+    CHECK(stats.size() == 1);
+    CHECK(stats[0].success);
+    CHECK(stats[0].attempt_count == 2);
+    std::set<ABPair> base_keys, dist_keys;
+    for (const auto& relation : baseline)
+        base_keys.insert(rel_key(relation));
+    for (const auto& relation : rels)
+        dist_keys.insert(rel_key(relation));
+    CHECK(base_keys == dist_keys);
+    check_worker_leases_removed(cfg.base_path, cfg.num_workers);
+    cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
+    std::cout << "PASS\n";
+}
+
+// ── Test 11: sequence-receipt drift is rejected and retried ─────────────
+void test_corrupt_sequence_receipt_with_retry() {
+    std::cout << "[test_corrupt_sequence_receipt_with_retry] ... " << std::flush;
+
+    const auto& f = shared_fixture();
+    const auto range = f.sq_range(1000, 1150);
+    std::vector<Relation> baseline;
+    run_in_process_sieve(f, range, baseline);
+
+    ScopedEnvironment corrupt_receipt("GNFS_DISTRIBUTED_SIEVE_CORRUPT_RECEIPT_ATTEMPT_0", "1");
+    std::vector<DistributedSieveWorkerResult> stats;
+    DistributedSieveConfig cfg;
+    cfg.num_workers = 1;
+    cfg.base_path = make_tmp_base("corruptreceipt");
+
+    const auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
+                                            f.cofac_config(), f.ctx.n(), f.ctx.m(), range, &stats);
+
+    CHECK(stats.size() == 1);
+    CHECK(stats[0].success);
+    CHECK(stats[0].attempt_count == 2);
+    std::set<ABPair> base_keys, dist_keys;
+    for (const auto& relation : baseline)
+        base_keys.insert(rel_key(relation));
+    for (const auto& relation : rels)
+        dist_keys.insert(rel_key(relation));
+    CHECK(base_keys == dist_keys);
+    check_worker_leases_removed(cfg.base_path, cfg.num_workers);
+    cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
+    std::cout << "PASS\n";
+}
+
+// ── Test 12: retry budget exhaustion remains explicit and clean ─────────
+void test_worker_retry_exhaustion() {
+    std::cout << "[test_worker_retry_exhaustion] ... " << std::flush;
+
+    const auto& f = shared_fixture();
+    ScopedEnvironment fail_all("GNFS_DISTRIBUTED_SIEVE_FAIL_ATTEMPT_0", "all");
+    DistributedSieveConfig cfg;
+    cfg.num_workers = 1;
+    cfg.base_path = make_tmp_base("retryexhausted");
+
+    std::vector<DistributedSieveWorkerResult> stats;
+    const auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
+                                            f.cofac_config(), f.ctx.n(), f.ctx.m(),
+                                            f.sq_range(1000, 1100), &stats);
+    CHECK(rels.empty());
+    CHECK(stats.size() == 1);
+    CHECK(!stats[0].success);
+    CHECK(stats[0].reap_confirmed);
+    CHECK(stats[0].attempt_count == 2);
+    CHECK(stats[0].exit_status == 1);
+    CHECK(stats[0].signal == 0);
+    check_worker_leases_removed(cfg.base_path, cfg.num_workers);
+    cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
+    std::cout << "PASS\n";
+}
+
+// ── Test 13: raw legacy leaves are foreign to the private worker lease ─
+void test_legacy_worker_leaves_are_preserved() {
+    std::cout << "[test_legacy_worker_leaves_are_preserved] ... " << std::flush;
+
+    const auto& f = shared_fixture();
+    const auto range = f.sq_range(1000, 1100);
+    DistributedSieveConfig cfg;
+    cfg.num_workers = 1;
+    cfg.base_path = make_tmp_base("legacyforeign");
+
+    const std::string legacy_base = cfg.base_path + ".worker_0";
+    const std::array<std::pair<std::filesystem::path, std::string>, 3> sentinels{{
+        {legacy_base + ".reldata", "foreign legacy data"},
+        {legacy_base + ".relidx", "foreign legacy index"},
+        {legacy_base + ".attempts", "foreign legacy attempts"},
+    }};
+    for (const auto& [path, contents] : sentinels) {
+        write_text_file(path, contents);
+    }
+
+    std::vector<DistributedSieveWorkerResult> stats;
+    (void)run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
+                                f.cofac_config(), f.ctx.n(), f.ctx.m(), range, &stats);
+    CHECK(stats.size() == 1);
+    CHECK(stats[0].success);
+    CHECK(stats[0].attempt_count == 1);
+    for (const auto& [path, contents] : sentinels) {
+        CHECK(read_text_file(path) == contents);
+    }
+    check_worker_leases_removed(cfg.base_path, cfg.num_workers);
+
+    std::error_code error;
+    for (const auto& [path, contents] : sentinels) {
+        (void)contents;
+        CHECK(std::filesystem::remove(path, error));
+        CHECK(!error);
+        error.clear();
+    }
+    cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
+    std::cout << "PASS\n";
+}
+
+// ── Test 14: ENV-config end-to-end ─────────────────────────────────────
 // Exercises parse_distributed_sieve_env() path.
 void test_env_config_e2e() {
     std::cout << "[test_env_config_e2e] ... " << std::flush;
@@ -531,16 +813,17 @@ void test_env_config_e2e() {
     ::setenv("GNFS_DISTRIBUTED_SIEVE_BASE_PATH", base.c_str(), 1);
 
     auto cfg = gnfs::sieve::parse_distributed_sieve_env();
-    assert(cfg.num_workers == 3);
-    assert(cfg.base_path == base);
+    CHECK(cfg.num_workers == 3);
+    CHECK(cfg.base_path == base);
 
-    auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(),
-                                       f.sieve_region(), f.cofac_config(),
-                                       f.ctx.n(), f.ctx.m(), range);
+    auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
+                                      f.cofac_config(), f.ctx.n(), f.ctx.m(), range);
     std::cout << "(rels=" << rels.size() << ") " << std::flush;
 
     ::unsetenv("GNFS_DISTRIBUTED_SIEVE_WORKERS");
     ::unsetenv("GNFS_DISTRIBUTED_SIEVE_BASE_PATH");
+    check_worker_leases_removed(cfg.base_path, cfg.num_workers);
+    cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
 
     std::cout << "PASS\n";
 }
@@ -555,10 +838,16 @@ int main() {
     test_env_parsing();
     test_invalid_config();
     test_single_worker_matches_in_process();
+    test_worker_completion_report_tracks_actual_caps();
     test_multi_worker_same_set();
     test_empty_range();
     test_more_workers_than_sqs();
     test_worker_crash_with_retry();
+    test_handoff_pending_crash_with_retry();
+    test_corrupt_completion_report_with_retry();
+    test_corrupt_sequence_receipt_with_retry();
+    test_worker_retry_exhaustion();
+    test_legacy_worker_leaves_are_preserved();
     test_env_config_e2e();
 
     auto t1 = std::chrono::high_resolution_clock::now();

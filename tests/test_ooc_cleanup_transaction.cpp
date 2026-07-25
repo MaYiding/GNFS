@@ -34,6 +34,7 @@
 #else
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -1853,6 +1854,139 @@ void test_private_lease_recovery_finishes_canonical_pair_intent(const std::strin
           OOCCleanupStatus::NoTransaction);
 }
 
+void test_deferred_private_writer_handoff_and_pending_recovery() {
+    TempDirectory temp;
+
+    {
+        const auto base = temp.path() / "deferred-handoff.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+        CHECK(reservation.completed());
+        {
+            OOCRelationWriter writer(base.string(), *reservation.ownership,
+                                     OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
+            const auto descriptor = writer.finalize_and_publish_cleanup_handoff();
+            CHECK(descriptor.count == 0);
+        }
+        CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(entry_exists_no_follow(paths.lease_owned_path));
+        CHECK(entry_exists_no_follow(paths.intent_path));
+        CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(entry_exists_no_follow(paths.data_path));
+        CHECK(OOCRelationReader(base.string()).count() == 0);
+        CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
+        check_cleanup_complete(paths);
+        CHECK(!entry_exists_no_follow(paths.private_directory));
+    }
+
+    {
+        const auto base = temp.path() / "deferred-pending.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+        CHECK(reservation.completed());
+        bool interrupted = false;
+        {
+            OOCRelationWriter writer(base.string(), *reservation.ownership,
+                                     OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
+            PublishStopContext stop{
+                .target = OOCCleanupPublishFaultPoint::IntentPendingDurable,
+            };
+            try {
+                (void)writer.finalize_and_publish_cleanup_handoff(publish_stop_hooks(stop));
+            } catch (const std::system_error&) {
+                interrupted = true;
+            }
+        }
+        CHECK(interrupted);
+        CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(entry_exists_no_follow(paths.lease_owned_path));
+        CHECK(!entry_exists_no_follow(paths.intent_path));
+        CHECK(entry_exists_no_follow(paths.intent_pending_path));
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(entry_exists_no_follow(paths.data_path));
+        CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
+        check_cleanup_complete(paths);
+        CHECK(!entry_exists_no_follow(paths.private_directory));
+    }
+}
+
+void test_deferred_handoff_foreign_leaf_blocks_pair_mutation() {
+    TempDirectory temp;
+    const auto base = temp.path() / "handoff-foreign.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+    {
+        OOCRelationWriter writer(base.string(), *reservation.ownership,
+                                 OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
+        (void)writer.finalize_and_publish_cleanup_handoff();
+    }
+
+    const auto foreign = paths.private_directory / "foreign-control-leaf";
+    write_test_leaf(foreign, "foreign");
+    const auto rejected = OOCCleanupTransaction::remove_private_lease(*reservation.ownership);
+    CHECK(rejected.status == OOCCleanupStatus::NamespaceConflict);
+    CHECK(entry_exists_no_follow(foreign));
+    CHECK(entry_exists_no_follow(paths.intent_path));
+    CHECK(entry_exists_no_follow(paths.index_path));
+    CHECK(entry_exists_no_follow(paths.data_path));
+
+    std::error_code error;
+    CHECK(std::filesystem::remove(foreign, error));
+    CHECK(!error);
+    CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
+    check_cleanup_complete(paths);
+}
+
+#ifndef _WIN32
+void test_fork_copy_cannot_remove_or_unlock_parent_lease() {
+    TempDirectory temp;
+    const auto base = temp.path() / "fork-lock.gnfs-sink-lease" / "corpus";
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+
+    int ready_pipe[2]{-1, -1};
+    int release_pipe[2]{-1, -1};
+    CHECK(::pipe(ready_pipe) == 0);
+    CHECK(::pipe(release_pipe) == 0);
+    const pid_t child = ::fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        (void)::close(ready_pipe[0]);
+        (void)::close(release_pipe[1]);
+        const auto forbidden = OOCCleanupTransaction::remove_private_lease(*reservation.ownership);
+        const char result = forbidden.status == OOCCleanupStatus::InvalidRequest ? '1' : '0';
+        (void)::write(ready_pipe[1], &result, 1);
+        char release = 0;
+        (void)::read(release_pipe[0], &release, 1);
+        ::_exit(result == '1' && release == 'x' ? 0 : 72);
+    }
+
+    (void)::close(ready_pipe[1]);
+    (void)::close(release_pipe[0]);
+    char child_result = 0;
+    CHECK(::read(ready_pipe[0], &child_result, 1) == 1);
+    CHECK(child_result == '1');
+
+    // Dropping the parent's COW receipt closes only its descriptor. The child
+    // still holds the inherited open-file description, so path recovery must
+    // remain Busy until that child exits.
+    reservation.ownership.reset();
+    CHECK(OOCCleanupTransaction::recover_private_lease(base).status == OOCCleanupStatus::Busy);
+
+    const char release = 'x';
+    CHECK(::write(release_pipe[1], &release, 1) == 1);
+    (void)::close(ready_pipe[0]);
+    (void)::close(release_pipe[1]);
+    int status = 0;
+    CHECK(::waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+    CHECK(OOCCleanupTransaction::recover_private_lease(base).completed());
+}
+#endif
+
 void test_private_lease_recovery_preserves_unknown_owner_leaf() {
     TempDirectory temp;
     const auto base = temp.path() / "unknown-owner-leaf.gnfs-sink-lease" / "corpus";
@@ -2104,6 +2238,11 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_private_lease_recovery_preserves_pending_only_pair(executable);
     test_private_lease_writer_activation_closes_reservation();
     test_private_lease_recovery_finishes_canonical_pair_intent(executable);
+    test_deferred_private_writer_handoff_and_pending_recovery();
+    test_deferred_handoff_foreign_leaf_blocks_pair_mutation();
+#ifndef _WIN32
+    test_fork_copy_cannot_remove_or_unlock_parent_lease();
+#endif
     test_private_lease_recovery_preserves_unknown_owner_leaf();
     test_private_lease_marker_attacks_fail_closed();
     test_private_lease_recovery_rejects_directory_aba();
