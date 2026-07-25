@@ -102,7 +102,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `include/gnfs/siqs/shadow_proof_rss_campaign_artifact_layout.hpp` | Fixed three-artifact-per-slot namespace, bounded pure inspection, and exact closure against validated journal replay |
 | `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-construct-only native session plus lease-bound start, artifact-batch, explicit-taint, and probe-classification authority boundaries |
 | `tests/test_siqs_shadow_proof_rss_campaign_artifact_layout.cpp` | Canonical leaf grammar, bounded sizes, deterministic diagnostics, and journal-to-artifact consistency |
-| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, authenticated Linux same-child commits, actual 80-child synthetic controller completion, nonfresh rejection, uncertainty closure, crash recovery, and platform fallback |
+| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, authenticated Linux same-child commits, actual 80-child synthetic controller completion, nonfresh rejection, slot-41 uncertainty stop and reopen, crash recovery, and platform fallback |
 | `src/siqs/shadow_proof_rss_holdout_probe_record_codec_internal.hpp` | Source-private strict owning decoder for one canonical holdout-probe stdout record |
 | `src/siqs/shadow_proof_rss_holdout_stream_join_internal.hpp` | Source-private approved-policy, runtime-facts, slot, and two-stream validation into a V3 identity-bound authority-free draft |
 | `include/gnfs/util/bounded_child_process.hpp` | Production shell-free, deadline-bounded dual-stream capture; it transports data but grants no campaign authority |
@@ -341,6 +341,9 @@ gaining implicit reopen, resume, or recovery authority. Begin uncertainty,
 taint closure failure, and commit uncertainty return `reconcile_required`
 without a possibly stale terminal view. No retry, callback, cancellation
 insertion point, caller policy input, or gate authority crosses this boundary.
+The commit-uncertainty test also fails confirmation at slot 41: the controller
+reports only 40 confirmed slots and starts no slot 42, while a clean reopen may
+observe the exact slot-41 commit that was already durable.
 
 `darwin_hardened_suspended_v1` is reserved in schema V2 but has no production
 implementation. A platform prototype confirmed that suspended spawn and

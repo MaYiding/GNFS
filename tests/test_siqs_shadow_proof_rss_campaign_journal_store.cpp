@@ -1933,6 +1933,23 @@ synthetic_launch_line(uint32_t fixture_id, SIQSShadowProofRssSampleMode mode, ui
            " ordinal=" + std::to_string(ordinal) + '\n';
 }
 
+[[nodiscard]] constexpr std::size_t campaign_commit_publish_call(uint32_t slot_number) noexcept {
+    return 1 + (static_cast<std::size_t>(slot_number) *
+                (SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACTS_PER_SLOT + 2));
+}
+
+[[nodiscard]] constexpr uint32_t campaign_start_sequence(uint32_t slot_number) noexcept {
+    return (slot_number * 2) - 1;
+}
+
+[[nodiscard]] constexpr uint32_t campaign_terminal_sequence(uint32_t slot_number) noexcept {
+    return slot_number * 2;
+}
+
+static_assert(campaign_commit_publish_call(1) == 6);
+static_assert(campaign_start_sequence(1) == 1);
+static_assert(campaign_terminal_sequence(1) == 2);
+
 void expect_single_synthetic_launch(
     const std::filesystem::path& marker, uint32_t fixture_id = 1,
     SIQSShadowProofRssSampleMode mode = SIQSShadowProofRssSampleMode::off, uint32_t ordinal = 1) {
@@ -1944,36 +1961,46 @@ void expect_single_synthetic_launch(
     CHECK(read_text_file(marker / "launches.txt") == expected);
 }
 
-void expect_canonical_synthetic_launch_ledger(const std::filesystem::path& marker,
-                                              const SIQSShadowProofRssGatePolicy& policy) {
+void expect_canonical_synthetic_launch_prefix(const std::filesystem::path& marker,
+                                              const SIQSShadowProofRssGatePolicy& policy,
+                                              std::size_t expected_slot_count) {
     if (!std::filesystem::is_directory(marker)) {
         throw std::runtime_error("missing synthetic launch marker: " + marker.string());
     }
     const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy);
     CHECK(plan.status == SIQSShadowProofRssCampaignPlanStatus::ready);
     CHECK(plan.slot_count == SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+    CHECK(expected_slot_count > 0);
+    CHECK(expected_slot_count <= plan.slot_count);
 
     std::string expected;
-    std::size_t off_count = 0;
-    std::size_t observe_count = 0;
-    for (std::size_t index = 0; index < plan.slot_count; ++index) {
+    for (std::size_t index = 0; index < expected_slot_count; ++index) {
         const auto& slot = plan.slots[index];
         expected += synthetic_launch_line(slot.fixture_id, slot.mode, slot.ordinal);
-        if (slot.mode == SIQSShadowProofRssSampleMode::off) {
-            ++off_count;
-        } else {
-            ++observe_count;
-        }
     }
-    CHECK(off_count == 24);
-    CHECK(observe_count == 56);
     const std::string actual = read_text_file(marker / "launches.txt");
     CHECK(actual == expected);
     CHECK(static_cast<std::size_t>(std::count(actual.begin(), actual.end(), '\n')) ==
-          SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
-    const auto& final_slot = plan.slots[plan.slot_count - 1];
+          expected_slot_count);
+    const auto& final_slot = plan.slots[expected_slot_count - 1];
     CHECK(read_text_file(marker / "launch.txt") ==
           synthetic_launch_line(final_slot.fixture_id, final_slot.mode, final_slot.ordinal));
+}
+
+void expect_canonical_synthetic_launch_ledger(const std::filesystem::path& marker,
+                                              const SIQSShadowProofRssGatePolicy& policy) {
+    expect_canonical_synthetic_launch_prefix(marker, policy,
+                                             SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+    const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy);
+    CHECK(plan.status == SIQSShadowProofRssCampaignPlanStatus::ready);
+    CHECK(static_cast<std::size_t>(
+              std::count_if(plan.slots.begin(), plan.slots.end(), [](const auto& slot) {
+                  return slot.mode == SIQSShadowProofRssSampleMode::off;
+              })) == 24);
+    CHECK(static_cast<std::size_t>(
+              std::count_if(plan.slots.begin(), plan.slots.end(), [](const auto& slot) {
+                  return slot.mode == SIQSShadowProofRssSampleMode::observe;
+              })) == 56);
 }
 
 void expect_no_runner_artifacts(const TempStore& fixture) {
@@ -2806,6 +2833,96 @@ void test_serial_campaign_slot_failures_close_or_require_reconcile(
         CHECK(read_text_file(marker / "launches.txt") ==
               synthetic_launch_line(1, SIQSShadowProofRssSampleMode::off, 1));
     }
+}
+
+void test_serial_campaign_stops_after_midcampaign_commit_uncertainty(
+    const std::filesystem::path& executable) {
+    constexpr uint32_t uncertain_slot = 41;
+    constexpr uint32_t confirmed_slots_before_uncertainty = uncertain_slot - 1;
+    constexpr uint32_t uncertain_start_sequence = campaign_start_sequence(uncertain_slot);
+    constexpr uint32_t uncertain_commit_sequence = campaign_terminal_sequence(uncertain_slot);
+    constexpr uint32_t forbidden_next_start_sequence = campaign_start_sequence(uncertain_slot + 1);
+    static_assert(campaign_commit_publish_call(uncertain_slot) == 206);
+    static_assert(uncertain_start_sequence == 81);
+    static_assert(uncertain_commit_sequence == 82);
+    static_assert(forbidden_next_start_sequence == 83);
+
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("controller-midcampaign-uncertain-marker");
+    CommitPublicationOps ops(campaign_commit_publish_call(uncertain_slot),
+                             CommitPublicationOps::LeafShape::exact, true);
+    auto deployment = make_runner_deployment(fixture, executable, marker);
+    deployment.publication_ops = &ops;
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    auto session = take_successful_session(open_private(&policy, &facts, deployment));
+    CHECK(session.has_value());
+
+    const auto result = store_detail::run_serial_campaign_to_terminal(std::move(*session));
+    CHECK(!session->active());
+    CHECK(result.outcome() == store_detail::SerialCampaignOutcome::reconcile_required);
+    CHECK(result.failure() == store_detail::SerialCampaignFailure::slot_failed);
+    CHECK(result.attempted_slot_number() == uncertain_slot);
+    CHECK(result.committed_slots_in_run() == confirmed_slots_before_uncertainty);
+    CHECK(!result.terminal_durable());
+    CHECK(!result.terminal_view().has_value());
+    CHECK(result.slot_diagnostic().error == SlotRunnerError::commit_outcome_uncertain);
+    CHECK(result.slot_diagnostic().primary_error == SlotRunnerError::commit_outcome_uncertain);
+    CHECK(result.slot_diagnostic().closure_error == SlotRunnerError::none);
+    CHECK(!result.slot_diagnostic().taint_attempted);
+    CHECK(!result.slot_diagnostic().taint_durable);
+    CHECK(ops.publish_calls() == campaign_commit_publish_call(uncertain_slot));
+    CHECK(ops.confirm_calls() == 1);
+    expect_canonical_synthetic_launch_prefix(marker, policy, uncertain_slot);
+
+    for (uint32_t slot_number = 1; slot_number <= uncertain_slot; ++slot_number) {
+        for (const auto kind : {SIQSShadowProofRssArtifactKind::probe_stdout,
+                                SIQSShadowProofRssArtifactKind::probe_stderr,
+                                SIQSShadowProofRssArtifactKind::joined_gate_sample}) {
+            CHECK(std::filesystem::exists(
+                fixture.artifact_leaf(artifact_leaf(slot_number, kind).view())));
+        }
+    }
+    for (const auto kind : {SIQSShadowProofRssArtifactKind::probe_stdout,
+                            SIQSShadowProofRssArtifactKind::probe_stderr,
+                            SIQSShadowProofRssArtifactKind::joined_gate_sample}) {
+        CHECK(!std::filesystem::exists(
+            fixture.artifact_leaf(artifact_leaf(uncertain_slot + 1, kind).view())));
+    }
+    const auto artifact_count = static_cast<std::size_t>(
+        std::distance(std::filesystem::directory_iterator(fixture.artifact_root()),
+                      std::filesystem::directory_iterator{}));
+    CHECK(artifact_count == static_cast<std::size_t>(uncertain_slot) *
+                                SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACTS_PER_SLOT);
+
+    const auto start_leaf =
+        make_siqs_shadow_proof_rss_campaign_journal_record_leaf(uncertain_start_sequence);
+    const auto commit_leaf =
+        make_siqs_shadow_proof_rss_campaign_journal_record_leaf(uncertain_commit_sequence);
+    const auto next_start_leaf =
+        make_siqs_shadow_proof_rss_campaign_journal_record_leaf(forbidden_next_start_sequence);
+    CHECK(start_leaf.has_value());
+    CHECK(commit_leaf.has_value());
+    CHECK(next_start_leaf.has_value());
+    CHECK(std::filesystem::exists(fixture.store_leaf(start_leaf->view())));
+    CHECK(std::filesystem::exists(fixture.store_leaf(commit_leaf->view())));
+    CHECK(!std::filesystem::exists(fixture.store_leaf(next_start_leaf->view())));
+    const auto decoded_commit = decode_siqs_shadow_proof_rss_campaign_journal_record(
+        fixture.read_store_leaf(commit_leaf->view()));
+    CHECK(decoded_commit);
+    CHECK(decoded_commit.value->sequence_number == uncertain_commit_sequence);
+    CHECK(decoded_commit.value->slot_number == uncertain_slot);
+    CHECK(decoded_commit.value->kind == SIQSShadowProofRssJournalRecordKind::slot_committed);
+
+    auto normal_deployment = deployment;
+    normal_deployment.publication_ops = nullptr;
+    auto reopened = take_successful_session(open_private(&policy, &facts, normal_deployment));
+    CHECK(reopened.has_value());
+    CHECK(reopened->view().status == SIQSShadowProofRssJournalStatus::ready);
+    CHECK(reopened->view().reason == SIQSShadowProofRssJournalReason::ready);
+    CHECK(reopened->view().action == SIQSShadowProofRssJournalAction::append_slot_start);
+    CHECK(reopened->view().committed_slot_count == uncertain_slot);
+    CHECK(reopened->view().next_slot_number == uncertain_slot + 1);
 }
 
 void run_slot_runner_failure_case(const std::filesystem::path& executable,
@@ -4248,6 +4365,7 @@ int main(int argc, char** argv) {
         test_serial_campaign_rejects_nonfresh_sessions_without_mutation(children.success);
         test_serial_campaign_begin_failures_require_reconcile(children.success);
         test_serial_campaign_slot_failures_close_or_require_reconcile(children);
+        test_serial_campaign_stops_after_midcampaign_commit_uncertainty(children.success);
         test_slot_runner_execution_and_join_failures(children);
         test_slot_runner_artifact_prefix_failure_taints(children.success);
         test_slot_runner_commit_terminal_leaf_matrix(children.success);

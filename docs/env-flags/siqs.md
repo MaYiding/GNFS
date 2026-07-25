@@ -354,9 +354,10 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
   subprocess 覆盖 deployment registry、严格 native layout、跨进程 lease、崩溃释放、
   held-root publication、Linux same-object authentication、认证失败后的 durable taint、
   私有 same-child commit、fresh-only controller 实际串行启动 80 个 synthetic child
-  后的完整终态、prefix/dangling 拒绝、begin/taint/commit 不确定性闭包和 restart
-  relabel rejection，以及 execution identity 与完整 approval/runtime 字段错配的
-  journal 零写入拒绝。
+  后的完整终态、prefix/dangling 拒绝、begin/taint/commit 不确定性闭包、第 41 槽
+  commit 确认失败后不启动第 42 槽并由 reopen 观察真实前缀，以及 restart relabel
+  rejection；还覆盖 execution identity 与完整 approval/runtime 字段错配的 journal
+  零写入拒绝。
   测试只启动 synthetic child，不运行 production probe 或打开 sealed holdout。
 - `tests/test_siqs.cpp` 锁定公开 `factor()` 路径对 `prefer` 的 fail-closed
   拒绝，并确认拒绝前不发出 V1 或 V2 记录。

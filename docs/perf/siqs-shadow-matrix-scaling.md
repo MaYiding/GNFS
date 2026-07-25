@@ -759,9 +759,12 @@ explicit taint, injected publication failures, private same-child commits, and
 a fresh-only controller that actually starts all 80 synthetic children in
 canonical order. It also proves prefix and dangling-start rejection, closed
 begin/taint/commit uncertainty, complete synthetic termination, and restart
-relabel rejection. Its children emit synthetic protocol records only; the test
-does not open a sealed holdout, run the production probe, evaluate the gate, or
-collect campaign evidence.
+relabel rejection. A slot-41 commit-confirmation failure proves that the
+controller reports only its 40 confirmed continuations, starts no slot 42, and
+leaves the exact committed 41-slot prefix for a clean reopen to discover. Its
+children emit synthetic protocol records only; the test does not open a sealed
+holdout, run the production probe, evaluate the gate, or collect campaign
+evidence.
 
 `tests/test_durable_immutable_file.cpp` uses temporary synthetic bytes to cover
 exclusive-create contention, partial writes, interrupted calls, zero progress,
