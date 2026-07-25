@@ -103,8 +103,9 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-construct-only native session plus lease-bound start, artifact-batch, explicit-taint, and probe-classification authority boundaries |
 | `src/siqs/shadow_proof_rss_campaign_controller_internal.hpp` | Source-private fresh-only 80-slot controller and authority-free terminal projection |
 | `src/siqs/shadow_proof_rss_campaign_entry_internal.hpp` | Default-closed source-private production composition through the public store-open boundary |
+| `src/siqs/shadow_proof_rss_campaign_reconciliation_internal.hpp` | Source-private claims-only recovery boundary with authority-free confirmed-state projections |
 | `tests/test_siqs_shadow_proof_rss_campaign_artifact_layout.cpp` | Canonical leaf grammar, bounded sizes, deterministic diagnostics, and journal-to-artifact consistency |
-| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, authenticated Linux same-child commits, actual 80-child synthetic controller completion, nonfresh rejection, slot-41 uncertainty stop and reopen, crash recovery, and platform fallback |
+| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, authenticated Linux same-child commits, actual 80-child synthetic controller completion, nonfresh rejection, authority-free reconciliation, slot-41 uncertainty stop and reopen, crash recovery, and platform fallback |
 | `tests/test_siqs_shadow_proof_rss_campaign_entry.cpp` | Cross-platform preflight, production-classification, empty-registry, zero-side-effect, and authority-free result contract |
 | `src/siqs/shadow_proof_rss_holdout_probe_record_codec_internal.hpp` | Source-private strict owning decoder for one canonical holdout-probe stdout record |
 | `src/siqs/shadow_proof_rss_holdout_stream_join_internal.hpp` | Source-private approved-policy, runtime-facts, slot, and two-stream validation into a V3 identity-bound authority-free draft |
@@ -359,6 +360,52 @@ insertion point, caller policy input, or gate authority crosses this boundary.
 The commit-uncertainty test also fails confirmation at slot 41: the controller
 reports only 40 confirmed slots and starts no slot 42, while a clean reopen may
 observe the exact slot-41 commit that was already durable.
+
+A separate source-private reconciliation boundary closes the nonfresh side
+without extending controller authority. Its only caller inputs are untrusted
+policy and runtime claims; deployment selection still comes from the private
+registry. It acquires a new native lease and then derives one of the following
+results solely from the reopened namespace:
+
+- a truly pristine namespace with no persistent lock returns
+  `no_nonfresh_state` without creating the lock, header, or record;
+- a header-only or committed prefix confirms the header and, for every
+  committed slot, its start, three artifacts, and commit before returning
+  `stable_prefix_confirmed`;
+- a dangling start confirms the complete predecessor chain and that start,
+  appends the exact derived taint record once, rereads the namespace, and
+  returns `dangling_start_durably_tainted`;
+- an explicit taint confirms the committed prefix, dangling start, exact taint,
+  and replay before returning `terminal_confirmed`;
+- a complete 80-slot journal confirms the header and all 400 per-slot durable
+  objects before returning `terminal_confirmed`.
+
+Missing-lock nonfresh state, a held lease, malformed layout, identity or
+generation drift, failed confirmation, and uncertain taint publication all
+return `reconcile_required` without a confirmed observation. A later invocation
+must reopen the namespace; the same invocation does not retry after publication
+has started. Deployment selection failures return `admission_rejected`.
+Reconciliation cannot launch a child, so it does not require the platform's
+authenticated-launch capability. It still requires a complete valid deployment
+row and uses the same held-directory, no-follow, owner, link, and immutable-leaf
+checks as the launch-capable store.
+
+The core library has no reconciliation function that accepts a deployment
+table, path, handle, or publication seam. The closed selector converts its
+owning deployment row into a move-only opaque binding, and the platform loader
+consumes only that binding. Session and reconciliation platform results own
+independent interfaces and independent concrete wrappers; the reconciliation
+wrapper is not a `SessionCore` and exposes only `reconcile()`. Fixture
+deployment injection is compiled into the native-store test executable rather
+than `gnfs_core`. A final projector also requires the exact nonzero
+deployment-derived plan digest and rejects any outcome, observation, or
+diagnostic mismatch.
+
+The result is copyable data containing only outcome, diagnostic, and an optional
+confirmed status, reason, committed count, and plan digest. It has no session,
+active slot, action, next-slot, retry, reopen, callback, controller, executable,
+or gate projection. The header is not installed, and the default production
+registry remains empty.
 
 A source-private production composition now compiles with `gnfs_core`, including
 when tests are disabled. It performs the exact pure absent-journal preflight,

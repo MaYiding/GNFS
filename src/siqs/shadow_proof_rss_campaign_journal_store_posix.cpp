@@ -530,6 +530,7 @@ struct LockOpenResult final {
     UniqueFd fd;
     struct stat metadata{};
     StoreDiagnostic diagnostic;
+    bool missing = false;
 
     [[nodiscard]] explicit operator bool() const noexcept {
         return static_cast<bool>(fd) && diagnostic.error == StoreError::none;
@@ -546,16 +547,24 @@ static_assert(!std::is_move_assignable_v<LockOpenResult>);
            (metadata.st_mode & (S_IWGRP | S_IWOTH)) == 0;
 }
 
-[[nodiscard]] LockOpenResult open_and_lock_session(int root_fd, uint64_t expected_owner) noexcept {
+[[nodiscard]] LockOpenResult open_and_lock_session(int root_fd, uint64_t expected_owner,
+                                                   bool create_if_missing) noexcept {
     LockOpenResult result;
     constexpr int common_flags = O_RDWR | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC;
-    int raw_fd =
-        openat_retrying_eintr(root_fd, SESSION_LOCK_LEAF, common_flags | O_CREAT | O_EXCL, 0600);
-    if (raw_fd < 0 && errno == EEXIST) {
+    int raw_fd = -1;
+    if (create_if_missing) {
+        raw_fd = openat_retrying_eintr(root_fd, SESSION_LOCK_LEAF, common_flags | O_CREAT | O_EXCL,
+                                       0600);
+    }
+    if (!create_if_missing || (raw_fd < 0 && errno == EEXIST)) {
         raw_fd = openat_retrying_eintr(root_fd, SESSION_LOCK_LEAF, common_flags);
     }
     if (raw_fd < 0) {
         const int saved_errno = errno;
+        if (!create_if_missing && saved_errno == ENOENT) {
+            result.missing = true;
+            return result;
+        }
         result.diagnostic = make_diagnostic(StoreError::lock_open_failed, StoreObject::session_lock,
                                             native_error(saved_errno));
         return result;
@@ -1016,6 +1025,15 @@ struct SnapshotDifference final {
         }
     }
     return {};
+}
+
+[[nodiscard]] bool
+snapshot_is_pristine_without_session_lock(const DirectorySnapshot& journal,
+                                          const DirectorySnapshot& artifacts) noexcept {
+    return journal.entries.size() == 1 &&
+           journal.entries.front().leaf_name ==
+               SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_DIRECTORY_LEAF &&
+           artifacts.entries.empty();
 }
 
 [[nodiscard]] std::size_t artifact_max_bytes(SIQSShadowProofRssArtifactKind kind) noexcept {
@@ -1592,6 +1610,16 @@ verify_artifact_namespace_generation(int artifact_root_fd,
            left.committed_payloads == right.committed_payloads;
 }
 
+[[nodiscard]] CampaignReconciliationObservation
+make_reconciliation_observation(const SIQSShadowProofRssCampaignJournalResume& replay) noexcept {
+    return {
+        .status = replay.status,
+        .reason = replay.reason,
+        .committed_slot_count = replay.committed_slot_count,
+        .plan_digest = replay.plan_digest,
+    };
+}
+
 [[nodiscard]] SIQSShadowProofRssCampaignJournalRecord
 make_private_slot_commit(const SIQSShadowProofRssCampaignJournalRecord& start,
                          const SIQSShadowProofRssJournalCommitPayload& payload) noexcept {
@@ -1768,19 +1796,24 @@ static_assert(!std::is_copy_constructible_v<ArtifactBatchReceipt>);
 static_assert(!std::is_move_constructible_v<ArtifactBatchReceipt>);
 static_assert(!std::is_move_assignable_v<ArtifactBatchReceipt>);
 
-class PosixSessionCore final : public SessionCore {
+} // namespace
+
+/// Descriptor-backed implementation shared by the two disjoint platform
+/// wrappers below. The engine is not a SessionCore or ReconciliationCore;
+/// callers can obtain only the interface selected by the platform entrypoint.
+class PosixCampaignEngine final {
 public:
-    PosixSessionCore(UniqueFd base_fd, UniqueFd root_fd, UniqueFd artifact_root_fd,
-                     UniqueFd lock_fd, const SIQSShadowProofRssGatePolicy& policy,
-                     const SIQSShadowProofRssCampaignRuntimeFacts& runtime_facts,
-                     const DeploymentEntry& deployment,
-                     DirectoryAuthorityFingerprint initial_root_fingerprint,
-                     FileFingerprint initial_root_namespace_fingerprint,
-                     DirectoryAuthorityFingerprint initial_artifact_root_fingerprint,
-                     FileFingerprint initial_artifact_namespace_fingerprint,
-                     FileFingerprint initial_lock_fingerprint,
-                     SIQSShadowProofRssCampaignJournalResume replay,
-                     PublicationOps& publication_ops)
+    PosixCampaignEngine(UniqueFd base_fd, UniqueFd root_fd, UniqueFd artifact_root_fd,
+                        UniqueFd lock_fd, const SIQSShadowProofRssGatePolicy& policy,
+                        const SIQSShadowProofRssCampaignRuntimeFacts& runtime_facts,
+                        const DeploymentEntry& deployment,
+                        DirectoryAuthorityFingerprint initial_root_fingerprint,
+                        FileFingerprint initial_root_namespace_fingerprint,
+                        DirectoryAuthorityFingerprint initial_artifact_root_fingerprint,
+                        FileFingerprint initial_artifact_namespace_fingerprint,
+                        FileFingerprint initial_lock_fingerprint,
+                        SIQSShadowProofRssCampaignJournalResume replay,
+                        PublicationOps& publication_ops)
         : base_fd_(std::move(base_fd)), root_fd_(std::move(root_fd)),
           artifact_root_fd_(std::move(artifact_root_fd)), lock_fd_(std::move(lock_fd)),
           corpus_id_(policy.corpus_id), policy_candidate_revision_(policy.candidate_revision),
@@ -1800,11 +1833,138 @@ public:
         runtime_facts_.candidate_revision = runtime_candidate_revision_;
     }
 
-    [[nodiscard]] SIQSShadowProofRssCampaignJournalSessionView view() const noexcept override {
+    [[nodiscard]] SIQSShadowProofRssCampaignJournalSessionView view() const noexcept {
         return make_session_view(replay_);
     }
 
-    [[nodiscard]] SessionBeginSlotResult begin_next_slot() noexcept override {
+    [[nodiscard]] CoreReconciliationResult reconcile() noexcept {
+        artifact_batch_receipt_.reset();
+        const auto fail = [&](StoreDiagnostic diagnostic) noexcept {
+            CoreReconciliationResult result;
+            result.outcome = CampaignReconciliationOutcome::reconcile_required;
+            if (diagnostic.error == StoreError::none) {
+                diagnostic.error = StoreError::unexpected_failure;
+            }
+            result.diagnostic = std::move(diagnostic);
+            return result;
+        };
+        const auto confirmed = [&](CampaignReconciliationOutcome outcome) noexcept {
+            CoreReconciliationResult result;
+            result.outcome = outcome;
+            result.confirmed_observation = make_reconciliation_observation(replay_);
+            return result;
+        };
+
+        try {
+            const bool fresh_absent =
+                replay_.status == SIQSShadowProofRssJournalStatus::ready &&
+                replay_.reason == SIQSShadowProofRssJournalReason::ready &&
+                replay_.action == SIQSShadowProofRssJournalAction::create_header &&
+                replay_.committed_slot_count == 0 && replay_.next_slot_number == 1 &&
+                replay_.header_to_create.has_value() && !replay_.prepared_slot_start.has_value() &&
+                !replay_.taint_to_append.has_value();
+            const bool header_only =
+                replay_.status == SIQSShadowProofRssJournalStatus::ready &&
+                replay_.reason == SIQSShadowProofRssJournalReason::ready &&
+                replay_.action == SIQSShadowProofRssJournalAction::append_slot_start &&
+                replay_.committed_slot_count == 0 && replay_.next_slot_number == 1 &&
+                !replay_.header_to_create.has_value() && replay_.prepared_slot_start.has_value() &&
+                !replay_.taint_to_append.has_value();
+            if (fresh_absent) {
+                CoreReconciliationResult result;
+                result.outcome = CampaignReconciliationOutcome::no_nonfresh_state;
+                return result;
+            }
+
+            const bool stable_prefix =
+                header_only ||
+                (replay_.status == SIQSShadowProofRssJournalStatus::ready &&
+                 replay_.reason == SIQSShadowProofRssJournalReason::ready &&
+                 replay_.action == SIQSShadowProofRssJournalAction::append_slot_start &&
+                 replay_.committed_slot_count > 0 &&
+                 replay_.committed_slot_count < SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT &&
+                 replay_.next_slot_number == replay_.committed_slot_count + 1 &&
+                 !replay_.header_to_create.has_value() && replay_.prepared_slot_start.has_value() &&
+                 !replay_.taint_to_append.has_value());
+            if (stable_prefix) {
+                if (StoreDiagnostic diagnostic = confirm_committed_prefix_durable();
+                    diagnostic.error != StoreError::none) {
+                    return fail(std::move(diagnostic));
+                }
+                return confirmed(CampaignReconciliationOutcome::stable_prefix_confirmed);
+            }
+
+            const bool dangling_start =
+                replay_.status == SIQSShadowProofRssJournalStatus::tainted &&
+                replay_.reason == SIQSShadowProofRssJournalReason::dangling_slot_start &&
+                replay_.action == SIQSShadowProofRssJournalAction::append_taint &&
+                replay_.committed_slot_count < SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT &&
+                replay_.next_slot_number == replay_.committed_slot_count + 1 &&
+                !replay_.header_to_create.has_value() && !replay_.prepared_slot_start.has_value() &&
+                replay_.taint_to_append.has_value();
+            if (dangling_start) {
+                const auto before = make_session_view(replay_);
+                SessionTaintResult taint = append_pending_taint();
+                if (!taint) {
+                    return fail(std::move(taint.diagnostic));
+                }
+                const auto after = make_session_view(replay_);
+                if (after != taint.view ||
+                    after.status != SIQSShadowProofRssJournalStatus::tainted ||
+                    after.reason != SIQSShadowProofRssJournalReason::explicitly_tainted ||
+                    after.action != SIQSShadowProofRssJournalAction::none ||
+                    after.committed_slot_count != before.committed_slot_count ||
+                    after.next_slot_number != before.next_slot_number ||
+                    after.plan_digest != before.plan_digest) {
+                    return fail(
+                        make_diagnostic(StoreError::snapshot_changed, StoreObject::journal_record));
+                }
+                return confirmed(CampaignReconciliationOutcome::dangling_start_durably_tainted);
+            }
+
+            const bool explicit_taint =
+                replay_.status == SIQSShadowProofRssJournalStatus::tainted &&
+                replay_.reason == SIQSShadowProofRssJournalReason::explicitly_tainted &&
+                replay_.action == SIQSShadowProofRssJournalAction::none &&
+                replay_.committed_slot_count < SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT &&
+                replay_.next_slot_number == replay_.committed_slot_count + 1 &&
+                !replay_.header_to_create.has_value() && !replay_.prepared_slot_start.has_value() &&
+                !replay_.taint_to_append.has_value();
+            if (explicit_taint) {
+                if (StoreDiagnostic diagnostic = confirm_explicit_taint_durable();
+                    diagnostic.error != StoreError::none) {
+                    return fail(std::move(diagnostic));
+                }
+                return confirmed(CampaignReconciliationOutcome::terminal_confirmed);
+            }
+
+            const bool complete =
+                replay_.status == SIQSShadowProofRssJournalStatus::complete &&
+                (replay_.reason == SIQSShadowProofRssJournalReason::complete ||
+                 replay_.reason == SIQSShadowProofRssJournalReason::synthetic_complete) &&
+                replay_.action == (replay_.reason == SIQSShadowProofRssJournalReason::complete
+                                       ? SIQSShadowProofRssJournalAction::evaluate_gate
+                                       : SIQSShadowProofRssJournalAction::none) &&
+                replay_.committed_slot_count == SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT &&
+                replay_.next_slot_number == 0 && !replay_.header_to_create.has_value() &&
+                !replay_.prepared_slot_start.has_value() && !replay_.taint_to_append.has_value();
+            if (complete) {
+                if (StoreDiagnostic diagnostic = confirm_committed_prefix_durable();
+                    diagnostic.error != StoreError::none) {
+                    return fail(std::move(diagnostic));
+                }
+                return confirmed(CampaignReconciliationOutcome::terminal_confirmed);
+            }
+
+            return fail(action_diagnostic());
+        } catch (const std::bad_alloc&) {
+            return fail(make_diagnostic(StoreError::resource_exhausted));
+        } catch (...) {
+            return fail(make_diagnostic(StoreError::unexpected_failure));
+        }
+    }
+
+    [[nodiscard]] SessionBeginSlotResult begin_next_slot() noexcept {
         std::optional<DurablePublicationTrace> durable_publication;
         bool published_header_in_this_action = false;
         const auto fail = [&](StoreDiagnostic diagnostic) noexcept {
@@ -1972,7 +2132,7 @@ public:
 
             auto prepared = std::move(*replay_.prepared_slot_start);
             replay_.prepared_slot_start.reset();
-            auto receipt = issue_durable_record_receipt(start_record);
+            auto receipt = SessionCore::issue_durable_record_receipt(start_record);
             auto permit = acknowledge_siqs_shadow_proof_rss_durable_slot_start(std::move(prepared),
                                                                                std::move(receipt));
             if (!permit.has_value() || !permit->active()) {
@@ -1994,7 +2154,7 @@ public:
         }
     }
 
-    [[nodiscard]] SessionTaintResult append_pending_taint() noexcept override {
+    [[nodiscard]] SessionTaintResult append_pending_taint() noexcept {
         artifact_batch_receipt_.reset();
         std::optional<DurablePublicationTrace> durable_publication;
         const auto fail = [&](StoreDiagnostic diagnostic) noexcept {
@@ -2089,7 +2249,7 @@ public:
     }
 
     [[nodiscard]] SessionPrepareRunResult prepare_pending_slot_run(
-        const SIQSShadowProofRssCampaignJournalRecord& durable_start_record) noexcept override {
+        const SIQSShadowProofRssCampaignJournalRecord& durable_start_record) noexcept {
         const auto fail = [](StoreDiagnostic diagnostic) noexcept {
             SessionPrepareRunResult result;
             result.diagnostic = std::move(diagnostic);
@@ -2183,7 +2343,7 @@ public:
     [[nodiscard]] SessionArtifactBatchResult
     publish_artifact_batch(const SIQSShadowProofRssCampaignJournalRecord& durable_start_record,
                            std::string_view stdout_bytes, std::string_view stderr_bytes,
-                           std::string_view joined_bytes) noexcept override {
+                           std::string_view joined_bytes) noexcept {
         std::optional<DurablePublicationTrace> durable_publication;
         const auto fail = [&](StoreDiagnostic diagnostic) noexcept {
             SessionArtifactBatchResult result;
@@ -2324,7 +2484,7 @@ public:
 
     [[nodiscard]] SessionCommitResult
     commit_same_child_execution(SIQSShadowProofRssLaunchPermit&& permit,
-                                SameChildExecutionReceipt&& receipt) noexcept override {
+                                SameChildExecutionReceipt&& receipt) noexcept {
         bool commit_publish_invoked = false;
         std::optional<durable::PublishResult> commit_publication;
         const auto fail = [&](SessionCommitStatus status, StoreDiagnostic diagnostic) noexcept {
@@ -2364,7 +2524,7 @@ public:
                 !replay_.taint_to_append.has_value() || !artifact_batch_receipt_.has_value()) {
                 return reject();
             }
-            auto execution = consume_same_child_execution_receipt(std::move(receipt));
+            auto execution = SessionCore::consume_same_child_execution_receipt(std::move(receipt));
             if (!execution.has_value()) {
                 return reject();
             }
@@ -2817,6 +2977,84 @@ private:
         return {};
     }
 
+    [[nodiscard]] StoreDiagnostic confirm_explicit_taint_durable() {
+        if (replay_.status != SIQSShadowProofRssJournalStatus::tainted ||
+            replay_.reason != SIQSShadowProofRssJournalReason::explicitly_tainted ||
+            replay_.action != SIQSShadowProofRssJournalAction::none ||
+            replay_.committed_slot_count >= SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT ||
+            replay_.next_slot_number != replay_.committed_slot_count + 1 ||
+            replay_.header_to_create.has_value() || replay_.prepared_slot_start.has_value() ||
+            replay_.taint_to_append.has_value()) {
+            return action_diagnostic();
+        }
+        if (StoreDiagnostic diagnostic = confirm_committed_prefix_durable();
+            diagnostic.error != StoreError::none) {
+            return diagnostic;
+        }
+
+        const auto expected_view = make_session_view(replay_);
+        const uint32_t start_sequence = replay_.committed_slot_count * 2 + 1;
+        const uint32_t taint_sequence = start_sequence + 1;
+        const auto start_leaf =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(start_sequence);
+        const auto taint_leaf =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(taint_sequence);
+        if (!start_leaf.has_value() || !taint_leaf.has_value()) {
+            return action_diagnostic();
+        }
+
+        std::optional<durable::PublishResult> last_confirmation;
+        const std::array leaves{
+            std::pair{start_sequence, std::filesystem::path(start_leaf->view())},
+            std::pair{taint_sequence, std::filesystem::path(taint_leaf->view())},
+        };
+        for (const auto& [sequence, leaf] : leaves) {
+            if (StoreDiagnostic diagnostic = verify_authority();
+                diagnostic.error != StoreError::none) {
+                return last_confirmation.has_value()
+                           ? with_completed_publication(std::move(diagnostic), *last_confirmation)
+                           : diagnostic;
+            }
+            const auto confirmation = publication_ops_->confirm_durable_at(
+                static_cast<durable::NativeHandle>(root_fd_.get()), leaf);
+            if (!confirmation.is_durable()) {
+                return make_publication_diagnostic(confirmation, StoreObject::journal_record,
+                                                   sequence);
+            }
+            last_confirmation = confirmation;
+        }
+
+        VerifiedReplayResult confirmed =
+            refresh(initial_root_fingerprint_, &root_namespace_fingerprint_,
+                    &artifact_namespace_fingerprint_);
+        if (!confirmed) {
+            return with_completed_publication(std::move(confirmed.diagnostic), *last_confirmation);
+        }
+        const std::size_t expected_count = static_cast<std::size_t>(taint_sequence);
+        if (confirmed.snapshot->record_count != expected_count || expected_count < 2 ||
+            confirmed.snapshot->records[start_sequence - 1].kind !=
+                SIQSShadowProofRssJournalRecordKind::slot_started ||
+            confirmed.snapshot->records[taint_sequence - 1].kind !=
+                SIQSShadowProofRssJournalRecordKind::campaign_tainted ||
+            confirmed.snapshot->records[taint_sequence - 1] !=
+                shadow_proof_rss_campaign_journal_detail::make_taint_record(
+                    confirmed.snapshot->records[start_sequence - 1]) ||
+            confirmed.snapshot->records[taint_sequence - 1].previous_record_digest !=
+                confirmed.snapshot->records[start_sequence - 1].record_digest ||
+            make_session_view(*confirmed.replay) != expected_view ||
+            !replay_matches(*confirmed.replay, replay_)) {
+            return with_completed_publication(make_diagnostic(StoreError::snapshot_changed,
+                                                              StoreObject::journal_record, {},
+                                                              taint_sequence),
+                                              *last_confirmation);
+        }
+
+        root_namespace_fingerprint_ = *confirmed.root_namespace_fingerprint;
+        artifact_namespace_fingerprint_ = *confirmed.artifact_namespace_fingerprint;
+        replay_ = std::move(*confirmed.replay);
+        return {};
+    }
+
     [[nodiscard]] StoreDiagnostic action_diagnostic() const noexcept {
         StoreDiagnostic diagnostic = make_diagnostic(StoreError::session_action_invalid);
         diagnostic.journal_reason = replay_.reason;
@@ -3129,12 +3367,188 @@ private:
     PublicationOps* publication_ops_ = nullptr;
 };
 
-} // namespace
+static_assert(!std::is_base_of_v<SessionCore, PosixCampaignEngine>);
+static_assert(!std::is_base_of_v<ReconciliationCore, PosixCampaignEngine>);
 
-PlatformOpenResult open_siqs_shadow_proof_rss_campaign_journal_platform_session(
-    const SIQSShadowProofRssGatePolicy& policy,
-    const SIQSShadowProofRssCampaignRuntimeFacts& runtime_facts,
-    const DeploymentEntry& deployment) noexcept {
+namespace {
+
+class PosixSessionCore final : public SessionCore {
+public:
+    explicit PosixSessionCore(std::unique_ptr<PosixCampaignEngine> engine) noexcept
+        : engine_(std::move(engine)) {}
+
+    [[nodiscard]] SIQSShadowProofRssCampaignJournalSessionView view() const noexcept override {
+        return engine_->view();
+    }
+
+    [[nodiscard]] SessionBeginSlotResult begin_next_slot() noexcept override {
+        return engine_->begin_next_slot();
+    }
+
+    [[nodiscard]] SessionTaintResult append_pending_taint() noexcept override {
+        return engine_->append_pending_taint();
+    }
+
+    [[nodiscard]] SessionPrepareRunResult prepare_pending_slot_run(
+        const SIQSShadowProofRssCampaignJournalRecord& durable_start_record) noexcept override {
+        return engine_->prepare_pending_slot_run(durable_start_record);
+    }
+
+    [[nodiscard]] SessionArtifactBatchResult
+    publish_artifact_batch(const SIQSShadowProofRssCampaignJournalRecord& durable_start_record,
+                           std::string_view stdout_bytes, std::string_view stderr_bytes,
+                           std::string_view joined_bytes) noexcept override {
+        return engine_->publish_artifact_batch(durable_start_record, stdout_bytes, stderr_bytes,
+                                               joined_bytes);
+    }
+
+    [[nodiscard]] SessionCommitResult
+    commit_same_child_execution(SIQSShadowProofRssLaunchPermit&& permit,
+                                SameChildExecutionReceipt&& receipt) noexcept override {
+        return engine_->commit_same_child_execution(std::move(permit), std::move(receipt));
+    }
+
+private:
+    std::unique_ptr<PosixCampaignEngine> engine_;
+};
+
+class PosixReconciliationCore final : public ReconciliationCore {
+public:
+    explicit PosixReconciliationCore(std::unique_ptr<PosixCampaignEngine> engine) noexcept
+        : engine_(std::move(engine)) {}
+
+    [[nodiscard]] CoreReconciliationResult reconcile() noexcept override {
+        return engine_->reconcile();
+    }
+
+private:
+    std::unique_ptr<PosixCampaignEngine> engine_;
+};
+
+static_assert(!std::is_base_of_v<SessionCore, PosixReconciliationCore>);
+static_assert(!std::is_base_of_v<ReconciliationCore, PosixSessionCore>);
+
+struct PlatformEngineOpenResult final {
+    std::unique_ptr<PosixCampaignEngine> engine;
+    StoreDiagnostic diagnostic;
+    bool no_persistent_state = false;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return engine != nullptr && diagnostic.error == StoreError::none;
+    }
+};
+
+[[nodiscard]] PlatformEngineOpenResult
+inspect_pristine_state_without_session_lock(int base_fd, int root_fd, int artifact_root_fd,
+                                            const DeploymentEntry& deployment) {
+    struct stat root_before{};
+    if (::fstat(root_fd, &root_before) != 0) {
+        return {nullptr, make_diagnostic(StoreError::root_invalid, StoreObject::store_root,
+                                         native_error(errno))};
+    }
+    struct stat artifact_before{};
+    if (::fstat(artifact_root_fd, &artifact_before) != 0) {
+        return {nullptr, make_diagnostic(StoreError::artifact_root_invalid,
+                                         StoreObject::artifact_root, native_error(errno))};
+    }
+    const auto root_authority = directory_authority_fingerprint(root_before);
+    const auto root_generation = fingerprint(root_before);
+    const auto artifact_authority = directory_authority_fingerprint(artifact_before);
+    const auto artifact_generation = fingerprint(artifact_before);
+
+    SnapshotResult first =
+        capture_directory_snapshot(root_fd, -1, artifact_root_fd, deployment.expected_owner);
+    if (!first) {
+        return {nullptr, std::move(first.diagnostic)};
+    }
+    SnapshotResult second =
+        capture_directory_snapshot(root_fd, -1, artifact_root_fd, deployment.expected_owner);
+    if (!second) {
+        return {nullptr, std::move(second.diagnostic)};
+    }
+    const SnapshotDifference difference = compare_snapshots(*first.snapshot, *second.snapshot);
+    if (difference.different) {
+        return {nullptr, make_diagnostic(StoreError::snapshot_changed, difference.object, {},
+                                         difference.record_sequence)};
+    }
+
+    SnapshotResult first_artifacts =
+        capture_artifact_directory_snapshot(artifact_root_fd, deployment.expected_owner);
+    if (!first_artifacts) {
+        return {nullptr, std::move(first_artifacts.diagnostic)};
+    }
+    SnapshotResult second_artifacts =
+        capture_artifact_directory_snapshot(artifact_root_fd, deployment.expected_owner);
+    if (!second_artifacts) {
+        return {nullptr, std::move(second_artifacts.diagnostic)};
+    }
+    const SnapshotDifference artifact_difference =
+        compare_artifact_snapshots(*first_artifacts.snapshot, *second_artifacts.snapshot);
+    if (artifact_difference.different) {
+        return {nullptr, make_diagnostic(StoreError::snapshot_changed, artifact_difference.object)};
+    }
+
+    struct stat root_after{};
+    if (::fstat(root_fd, &root_after) != 0) {
+        return {nullptr, make_diagnostic(StoreError::root_invalid, StoreObject::store_root,
+                                         native_error(errno))};
+    }
+    struct stat artifact_after{};
+    if (::fstat(artifact_root_fd, &artifact_after) != 0) {
+        return {nullptr, make_diagnostic(StoreError::artifact_root_invalid,
+                                         StoreObject::artifact_root, native_error(errno))};
+    }
+    if (fingerprint(root_after) != root_generation) {
+        return {nullptr, make_diagnostic(StoreError::snapshot_changed, StoreObject::directory)};
+    }
+    if (fingerprint(artifact_after) != artifact_generation) {
+        return {nullptr, make_diagnostic(StoreError::snapshot_changed, StoreObject::artifact_root)};
+    }
+
+    StoreDiagnostic root_identity =
+        verify_root_identity(base_fd, root_fd, deployment, root_authority);
+    if (root_identity.error != StoreError::none) {
+        return {nullptr, std::move(root_identity)};
+    }
+    StoreDiagnostic artifact_identity = verify_artifact_root_identity(
+        root_fd, artifact_root_fd, artifact_authority, deployment.expected_owner);
+    if (artifact_identity.error != StoreError::none) {
+        return {nullptr, std::move(artifact_identity)};
+    }
+    StoreDiagnostic root_namespace = verify_root_namespace_generation(root_fd, root_generation);
+    if (root_namespace.error != StoreError::none) {
+        return {nullptr, std::move(root_namespace)};
+    }
+    StoreDiagnostic artifact_namespace =
+        verify_artifact_namespace_generation(artifact_root_fd, artifact_generation);
+    if (artifact_namespace.error != StoreError::none) {
+        return {nullptr, std::move(artifact_namespace)};
+    }
+
+    if (!snapshot_is_pristine_without_session_lock(*second.snapshot, *second_artifacts.snapshot)) {
+        if (second.snapshot->entries.size() == 1 &&
+            second.snapshot->entries.front().leaf_name ==
+                SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_DIRECTORY_LEAF) {
+            return {nullptr, make_diagnostic(StoreError::artifact_consistency_invalid,
+                                             StoreObject::artifact)};
+        }
+        const std::vector<LayoutEntry> projected = project_layout_entries(*second.snapshot);
+        const auto layout = inspect_siqs_shadow_proof_rss_campaign_journal_layout(projected);
+        if (!layout) {
+            return {nullptr, make_layout_diagnostic(layout.diagnostic, *second.snapshot)};
+        }
+        return {nullptr, make_diagnostic(StoreError::snapshot_changed, StoreObject::directory)};
+    }
+
+    PlatformEngineOpenResult result;
+    result.no_persistent_state = true;
+    return result;
+}
+
+[[nodiscard]] PlatformEngineOpenResult
+open_platform_campaign_engine(const SIQSShadowProofRssGatePolicy& policy,
+                              const SIQSShadowProofRssCampaignRuntimeFacts& runtime_facts,
+                              const DeploymentEntry& deployment, bool create_lock) noexcept {
     try {
         if (!deployment_matches_policy(policy, deployment) ||
             (deployment.probe_kind != SIQSShadowProofRssProbeKind::synthetic_test &&
@@ -3157,16 +3571,22 @@ PlatformOpenResult open_siqs_shadow_proof_rss_campaign_journal_platform_session(
             return {nullptr, std::move(root.diagnostic)};
         }
 
-        // The persistent lock is created/acquired before the first directory
-        // open or readdir call and remains held by the returned session.
-        LockOpenResult lock = open_and_lock_session(root.fd.get(), deployment.expected_owner);
-        if (!lock) {
+        // Launch-capable sessions may establish the persistent lock. A
+        // reconciliation observation opens an existing lock only, so a
+        // pristine namespace remains byte-for-byte untouched.
+        LockOpenResult lock =
+            open_and_lock_session(root.fd.get(), deployment.expected_owner, create_lock);
+        if (!lock && !lock.missing) {
             return {nullptr, std::move(lock.diagnostic)};
         }
 
         FdOpenResult artifact_root = open_artifact_root(root.fd.get(), deployment.expected_owner);
         if (!artifact_root) {
             return {nullptr, std::move(artifact_root.diagnostic)};
+        }
+        if (lock.missing) {
+            return inspect_pristine_state_without_session_lock(base.fd.get(), root.fd.get(),
+                                                               artifact_root.fd.get(), deployment);
         }
 
         struct stat root_metadata{};
@@ -3281,11 +3701,11 @@ PlatformOpenResult open_siqs_shadow_proof_rss_campaign_journal_platform_session(
             return {nullptr, make_artifact_consistency_diagnostic(artifact_consistency.diagnostic)};
         }
 
-        PlatformOpenResult result;
+        PlatformEngineOpenResult result;
         PublicationOps& publication_ops = deployment.publication_ops != nullptr
                                               ? *deployment.publication_ops
                                               : native_publication_ops();
-        result.core = std::make_unique<PosixSessionCore>(
+        result.engine = std::make_unique<PosixCampaignEngine>(
             std::move(base.fd), std::move(root.fd), std::move(artifact_root.fd), std::move(lock.fd),
             policy, runtime_facts, deployment, initial_root_fingerprint,
             initial_root_namespace_fingerprint, initial_artifact_root_fingerprint,
@@ -3293,12 +3713,66 @@ PlatformOpenResult open_siqs_shadow_proof_rss_campaign_journal_platform_session(
             publication_ops);
         return result;
     } catch (const std::bad_alloc&) {
-        PlatformOpenResult result;
+        PlatformEngineOpenResult result;
         result.diagnostic.error = StoreError::resource_exhausted;
         return result;
     } catch (...) {
-        PlatformOpenResult result;
+        PlatformEngineOpenResult result;
         result.diagnostic.error = StoreError::unexpected_failure;
+        return result;
+    }
+}
+
+} // namespace
+
+PlatformSessionOpenResult open_siqs_shadow_proof_rss_campaign_journal_platform_session(
+    const SIQSShadowProofRssGatePolicy& policy,
+    const SIQSShadowProofRssCampaignRuntimeFacts& runtime_facts,
+    const DeploymentEntry& deployment) noexcept {
+    try {
+        PlatformEngineOpenResult opened =
+            open_platform_campaign_engine(policy, runtime_facts, deployment, true);
+        PlatformSessionOpenResult result;
+        result.diagnostic = std::move(opened.diagnostic);
+        if (opened.no_persistent_state) {
+            result.diagnostic = make_diagnostic(StoreError::unexpected_failure);
+            return result;
+        }
+        if (opened.engine != nullptr && result.diagnostic.error == StoreError::none) {
+            result.core = std::make_unique<PosixSessionCore>(std::move(opened.engine));
+        }
+        return result;
+    } catch (const std::bad_alloc&) {
+        PlatformSessionOpenResult result;
+        result.diagnostic = make_diagnostic(StoreError::resource_exhausted);
+        return result;
+    } catch (...) {
+        PlatformSessionOpenResult result;
+        result.diagnostic = make_diagnostic(StoreError::unexpected_failure);
+        return result;
+    }
+}
+
+PlatformReconciliationOpenResult
+open_siqs_shadow_proof_rss_campaign_journal_platform_reconciliation(
+    ApprovedReconciliationBinding binding) noexcept {
+    try {
+        PlatformEngineOpenResult opened = open_platform_campaign_engine(
+            binding.approved_policy_, binding.approved_runtime_facts_, binding.deployment_, false);
+        PlatformReconciliationOpenResult result;
+        result.diagnostic = std::move(opened.diagnostic);
+        result.no_persistent_state = opened.no_persistent_state;
+        if (opened.engine != nullptr && result.diagnostic.error == StoreError::none) {
+            result.core = std::make_unique<PosixReconciliationCore>(std::move(opened.engine));
+        }
+        return result;
+    } catch (const std::bad_alloc&) {
+        PlatformReconciliationOpenResult result;
+        result.diagnostic = make_diagnostic(StoreError::resource_exhausted);
+        return result;
+    } catch (...) {
+        PlatformReconciliationOpenResult result;
+        result.diagnostic = make_diagnostic(StoreError::unexpected_failure);
         return result;
     }
 }

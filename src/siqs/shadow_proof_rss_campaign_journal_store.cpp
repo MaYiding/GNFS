@@ -216,6 +216,8 @@ SIQSShadowProofRssCampaignJournalStoreOpenResult::take_session() && noexcept {
 namespace shadow_proof_rss_campaign_journal_store_detail {
 namespace {
 
+using StoreError = SIQSShadowProofRssCampaignJournalStoreError;
+
 [[nodiscard]] SIQSShadowProofRssCampaignJournalStoreDiagnostic
 make_common_diagnostic(SIQSShadowProofRssCampaignJournalStoreError error,
                        SIQSShadowProofRssCampaignJournalStoreObject object =
@@ -388,6 +390,147 @@ production_launch_profile_is_supported_on_host(const DeploymentEntry& deployment
 #endif
 }
 
+enum class DeploymentAdmissionPurpose : std::uint8_t {
+    launch_capable_session,
+    reconciliation,
+};
+
+struct DeploymentSelectionResult final {
+    const DeploymentEntry* deployment = nullptr;
+    SIQSShadowProofRssGatePolicy approved_policy;
+    SIQSShadowProofRssCampaignRuntimeFacts approved_runtime_facts;
+    SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return deployment != nullptr && diagnostic.error == StoreError::none;
+    }
+};
+
+[[nodiscard]] DeploymentSelectionResult
+select_deployment(const SIQSShadowProofRssGatePolicy* policy,
+                  const SIQSShadowProofRssCampaignRuntimeFacts* runtime_facts,
+                  std::span<const DeploymentEntry> deployments,
+                  DeploymentAdmissionPurpose purpose) {
+    DeploymentSelectionResult result;
+
+    // This pure preflight must remain before registry lookup or any platform
+    // call, so rejected policy/facts never touch the filesystem.
+    const auto preflight = resume_siqs_shadow_proof_rss_campaign_journal(
+        policy, runtime_facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {});
+    if (!absent_journal_preflight_is_ready(preflight)) {
+        result.diagnostic = make_common_diagnostic(StoreError::preflight_rejected);
+        result.diagnostic.journal_reason = preflight.reason;
+        return result;
+    }
+
+    const DeploymentEntry* selected = nullptr;
+    std::size_t authority_match_count = 0;
+    for (const DeploymentEntry& deployment : deployments) {
+        if (authority_locator_match(policy->journal_store, deployment)) {
+            ++authority_match_count;
+            if (selected == nullptr) {
+                selected = &deployment;
+            }
+        }
+    }
+
+    if (authority_match_count == 0) {
+        result.diagnostic = make_common_diagnostic(
+            StoreError::binding_not_registered,
+            SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry);
+        return result;
+    }
+    if (authority_match_count != 1) {
+        result.diagnostic = make_common_diagnostic(
+            StoreError::binding_ambiguous,
+            SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry);
+        return result;
+    }
+    if (selected == nullptr || !deployment_contract_is_well_formed(*selected)) {
+        result.diagnostic = make_common_diagnostic(
+            StoreError::registry_binding_mismatch,
+            SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry);
+        return result;
+    }
+
+    result.approved_policy = approved_policy_view(*selected);
+    result.approved_runtime_facts = approved_runtime_facts_view(*selected);
+    const auto approved_preflight = resume_siqs_shadow_proof_rss_campaign_journal(
+        &result.approved_policy, &result.approved_runtime_facts,
+        SIQSShadowProofRssJournalPresence::absent, nullptr, {});
+    if (!absent_journal_preflight_is_ready(approved_preflight) ||
+        !policy_claim_matches(*policy, result.approved_policy) ||
+        !runtime_claim_matches(*runtime_facts, result.approved_runtime_facts)) {
+        result.diagnostic = make_common_diagnostic(
+            StoreError::registry_binding_mismatch,
+            SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry);
+        return result;
+    }
+
+    // Reconciliation cannot launch a process and therefore does not depend on
+    // the host's authenticated-launch implementation. The deployment row
+    // remains fully validated and still owns the executable contract.
+    if (purpose == DeploymentAdmissionPurpose::launch_capable_session &&
+        !production_launch_profile_is_supported_on_host(*selected)) {
+        result.diagnostic =
+            make_common_diagnostic(StoreError::platform_unavailable,
+                                   SIQSShadowProofRssCampaignJournalStoreObject::probe_executable);
+        return result;
+    }
+
+    result.deployment = selected;
+    return result;
+}
+
+[[nodiscard]] bool
+core_reconciliation_result_is_valid(const CoreReconciliationResult& result,
+                                    SIQSShadowProofRssCorpusDigest expected_plan_digest) noexcept {
+    if (expected_plan_digest == SIQSShadowProofRssCorpusDigest{}) {
+        return false;
+    }
+    const bool diagnostic_clear = result.diagnostic.error == StoreError::none;
+    const bool has_observation = result.confirmed_observation.has_value();
+    const bool digest_matches =
+        has_observation && result.confirmed_observation->plan_digest == expected_plan_digest;
+    switch (result.outcome) {
+    case CampaignReconciliationOutcome::no_nonfresh_state:
+        return diagnostic_clear && !has_observation;
+    case CampaignReconciliationOutcome::stable_prefix_confirmed:
+        return diagnostic_clear && digest_matches &&
+               result.confirmed_observation->status == SIQSShadowProofRssJournalStatus::ready &&
+               result.confirmed_observation->reason == SIQSShadowProofRssJournalReason::ready &&
+               result.confirmed_observation->committed_slot_count <
+                   SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT;
+    case CampaignReconciliationOutcome::dangling_start_durably_tainted:
+        return diagnostic_clear && digest_matches &&
+               result.confirmed_observation->status == SIQSShadowProofRssJournalStatus::tainted &&
+               result.confirmed_observation->reason ==
+                   SIQSShadowProofRssJournalReason::explicitly_tainted &&
+               result.confirmed_observation->committed_slot_count <
+                   SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT;
+    case CampaignReconciliationOutcome::terminal_confirmed:
+        return diagnostic_clear && digest_matches &&
+               ((result.confirmed_observation->status == SIQSShadowProofRssJournalStatus::tainted &&
+                 result.confirmed_observation->reason ==
+                     SIQSShadowProofRssJournalReason::explicitly_tainted &&
+                 result.confirmed_observation->committed_slot_count <
+                     SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT) ||
+                (result.confirmed_observation->status ==
+                     SIQSShadowProofRssJournalStatus::complete &&
+                 (result.confirmed_observation->reason ==
+                      SIQSShadowProofRssJournalReason::complete ||
+                  result.confirmed_observation->reason ==
+                      SIQSShadowProofRssJournalReason::synthetic_complete) &&
+                 result.confirmed_observation->committed_slot_count ==
+                     SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT));
+    case CampaignReconciliationOutcome::reconcile_required:
+        return !diagnostic_clear && !has_observation;
+    case CampaignReconciliationOutcome::admission_rejected:
+        return false;
+    }
+    return false;
+}
+
 } // namespace
 
 SIQSShadowProofRssCampaignJournalStoreOpenResult
@@ -395,68 +538,15 @@ SessionFactory::open_with_deployments(const SIQSShadowProofRssGatePolicy* policy
                                       const SIQSShadowProofRssCampaignRuntimeFacts* runtime_facts,
                                       std::span<const DeploymentEntry> deployments) noexcept {
     try {
-        // This pure preflight must remain before registry lookup or any
-        // platform call, so rejected policy/facts never touch the filesystem.
-        const auto preflight = resume_siqs_shadow_proof_rss_campaign_journal(
-            policy, runtime_facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {});
-        if (!absent_journal_preflight_is_ready(preflight)) {
-            auto diagnostic = make_common_diagnostic(
-                SIQSShadowProofRssCampaignJournalStoreError::preflight_rejected);
-            diagnostic.journal_reason = preflight.reason;
-            return SIQSShadowProofRssCampaignJournalStoreOpenResult(std::move(diagnostic));
+        DeploymentSelectionResult selected = select_deployment(
+            policy, runtime_facts, deployments, DeploymentAdmissionPurpose::launch_capable_session);
+        if (!selected) {
+            return SIQSShadowProofRssCampaignJournalStoreOpenResult(std::move(selected.diagnostic));
         }
 
-        const DeploymentEntry* selected = nullptr;
-        std::size_t authority_match_count = 0;
-        for (const DeploymentEntry& deployment : deployments) {
-            if (authority_locator_match(policy->journal_store, deployment)) {
-                ++authority_match_count;
-                if (selected == nullptr) {
-                    selected = &deployment;
-                }
-            }
-        }
-
-        if (authority_match_count == 0) {
-            return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
-                SIQSShadowProofRssCampaignJournalStoreError::binding_not_registered,
-                SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry));
-        }
-        if (authority_match_count != 1) {
-            return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
-                SIQSShadowProofRssCampaignJournalStoreError::binding_ambiguous,
-                SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry));
-        }
-        if (selected == nullptr || !deployment_contract_is_well_formed(*selected)) {
-            return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
-                SIQSShadowProofRssCampaignJournalStoreError::registry_binding_mismatch,
-                SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry));
-        }
-
-        const SIQSShadowProofRssGatePolicy approved_policy = approved_policy_view(*selected);
-        const SIQSShadowProofRssCampaignRuntimeFacts approved_runtime_facts =
-            approved_runtime_facts_view(*selected);
-        const auto approved_preflight = resume_siqs_shadow_proof_rss_campaign_journal(
-            &approved_policy, &approved_runtime_facts, SIQSShadowProofRssJournalPresence::absent,
-            nullptr, {});
-        if (!absent_journal_preflight_is_ready(approved_preflight) ||
-            !policy_claim_matches(*policy, approved_policy) ||
-            !runtime_claim_matches(*runtime_facts, approved_runtime_facts)) {
-            return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
-                SIQSShadowProofRssCampaignJournalStoreError::registry_binding_mismatch,
-                SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry));
-        }
-
-        // No production slot may publish a durable start on a platform whose
-        // exact host/profile same-object authenticator is not available.
-        if (!production_launch_profile_is_supported_on_host(*selected)) {
-            return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
-                SIQSShadowProofRssCampaignJournalStoreError::platform_unavailable,
-                SIQSShadowProofRssCampaignJournalStoreObject::probe_executable));
-        }
-
-        PlatformOpenResult platform = open_siqs_shadow_proof_rss_campaign_journal_platform_session(
-            approved_policy, approved_runtime_facts, *selected);
+        PlatformSessionOpenResult platform =
+            open_siqs_shadow_proof_rss_campaign_journal_platform_session(
+                selected.approved_policy, selected.approved_runtime_facts, *selected.deployment);
         if (!platform) {
             if (platform.diagnostic.error == SIQSShadowProofRssCampaignJournalStoreError::none) {
                 platform.diagnostic = make_common_diagnostic(
@@ -472,6 +562,95 @@ SessionFactory::open_with_deployments(const SIQSShadowProofRssGatePolicy* policy
     } catch (...) {
         return SIQSShadowProofRssCampaignJournalStoreOpenResult(make_common_diagnostic(
             SIQSShadowProofRssCampaignJournalStoreError::unexpected_failure));
+    }
+}
+
+CampaignReconciliationResult ReconciliationResultProjector::project(
+    CoreReconciliationResult core_result,
+    SIQSShadowProofRssCorpusDigest expected_plan_digest) noexcept {
+    if (!core_reconciliation_result_is_valid(core_result, expected_plan_digest)) {
+        return {CampaignReconciliationOutcome::reconcile_required,
+                make_common_diagnostic(StoreError::unexpected_failure)};
+    }
+    if (core_result.confirmed_observation.has_value()) {
+        return {core_result.outcome, *core_result.confirmed_observation};
+    }
+    return {core_result.outcome, std::move(core_result.diagnostic)};
+}
+
+CampaignReconciliationResult ReconciliationOrchestrator::reconcile_claims(
+    const SIQSShadowProofRssGatePolicy* policy,
+    const SIQSShadowProofRssCampaignRuntimeFacts* runtime_facts) noexcept {
+    try {
+        // Production provisioning remains deliberately closed in the default
+        // build. Only this claims-only orchestration owns the table.
+        static constexpr std::span<const DeploymentEntry> production_deployments{};
+        DeploymentSelectionResult selected =
+            select_deployment(policy, runtime_facts, production_deployments,
+                              DeploymentAdmissionPurpose::reconciliation);
+        if (!selected) {
+            return {CampaignReconciliationOutcome::admission_rejected,
+                    std::move(selected.diagnostic)};
+        }
+
+        ApprovedReconciliationBinding binding;
+        binding.deployment_ = *selected.deployment;
+        binding.bind_approved_views();
+        const auto approved_preflight = resume_siqs_shadow_proof_rss_campaign_journal(
+            &binding.approved_policy_, &binding.approved_runtime_facts_,
+            SIQSShadowProofRssJournalPresence::absent, nullptr, {});
+        if (!absent_journal_preflight_is_ready(approved_preflight) ||
+            approved_preflight.plan_digest == SIQSShadowProofRssCorpusDigest{}) {
+            return {CampaignReconciliationOutcome::admission_rejected,
+                    make_common_diagnostic(
+                        StoreError::registry_binding_mismatch,
+                        SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry)};
+        }
+        binding.expected_plan_digest_ = approved_preflight.plan_digest;
+        return reconcile_approved(std::move(binding));
+    } catch (const std::bad_alloc&) {
+        return {CampaignReconciliationOutcome::admission_rejected,
+                make_common_diagnostic(StoreError::resource_exhausted)};
+    } catch (...) {
+        return {CampaignReconciliationOutcome::admission_rejected,
+                make_common_diagnostic(StoreError::unexpected_failure)};
+    }
+}
+
+CampaignReconciliationResult
+ReconciliationOrchestrator::reconcile_approved(ApprovedReconciliationBinding binding) noexcept {
+    const SIQSShadowProofRssCorpusDigest expected_plan_digest = binding.expected_plan_digest_;
+    try {
+        PlatformReconciliationOpenResult platform =
+            open_siqs_shadow_proof_rss_campaign_journal_platform_reconciliation(std::move(binding));
+        if (platform.no_persistent_state &&
+            platform.diagnostic.error == SIQSShadowProofRssCampaignJournalStoreError::none &&
+            platform.core == nullptr) {
+            CoreReconciliationResult core_result;
+            core_result.outcome = CampaignReconciliationOutcome::no_nonfresh_state;
+            return ReconciliationResultProjector::project(std::move(core_result),
+                                                          expected_plan_digest);
+        }
+        if (!platform) {
+            if (platform.diagnostic.error == SIQSShadowProofRssCampaignJournalStoreError::none) {
+                platform.diagnostic = make_common_diagnostic(StoreError::unexpected_failure);
+            }
+            CoreReconciliationResult core_result;
+            core_result.outcome = CampaignReconciliationOutcome::reconcile_required;
+            core_result.diagnostic = std::move(platform.diagnostic);
+            return ReconciliationResultProjector::project(std::move(core_result),
+                                                          expected_plan_digest);
+        }
+
+        CoreReconciliationResult reconciled = platform.core->reconcile();
+        platform.core.reset();
+        return ReconciliationResultProjector::project(std::move(reconciled), expected_plan_digest);
+    } catch (const std::bad_alloc&) {
+        return {CampaignReconciliationOutcome::reconcile_required,
+                make_common_diagnostic(StoreError::resource_exhausted)};
+    } catch (...) {
+        return {CampaignReconciliationOutcome::reconcile_required,
+                make_common_diagnostic(StoreError::unexpected_failure)};
     }
 }
 

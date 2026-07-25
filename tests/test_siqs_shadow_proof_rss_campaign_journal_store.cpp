@@ -15,9 +15,11 @@
 #include "authenticated_bounded_child_process_capability_internal.hpp"
 #include "shadow_proof_rss_campaign_controller_internal.hpp"
 #include "shadow_proof_rss_campaign_journal_store_internal.hpp"
+#include "shadow_proof_rss_campaign_reconciliation_internal.hpp"
 #include "shadow_proof_rss_campaign_slot_runner_internal.hpp"
 #include "shadow_proof_rss_probe_execution_identity_internal.hpp"
 #include "support/child_process.hpp"
+#include "support/siqs_shadow_proof_rss_campaign_reconciliation_test_peer.hpp"
 
 #include <algorithm>
 #include <array>
@@ -123,8 +125,10 @@ static_assert(std::is_nothrow_move_constructible_v<store_detail::SameChildExecut
 static_assert(!std::is_move_assignable_v<store_detail::SameChildExecutionReceipt>);
 static_assert(std::is_nothrow_move_constructible_v<store_detail::SessionBeginSlotResult>);
 static_assert(!std::is_move_assignable_v<store_detail::SessionBeginSlotResult>);
-static_assert(std::is_nothrow_move_constructible_v<store_detail::PlatformOpenResult>);
-static_assert(!std::is_move_assignable_v<store_detail::PlatformOpenResult>);
+static_assert(std::is_nothrow_move_constructible_v<store_detail::PlatformSessionOpenResult>);
+static_assert(!std::is_move_assignable_v<store_detail::PlatformSessionOpenResult>);
+static_assert(std::is_nothrow_move_constructible_v<store_detail::PlatformReconciliationOpenResult>);
+static_assert(!std::is_move_assignable_v<store_detail::PlatformReconciliationOpenResult>);
 static_assert(
     std::is_nothrow_move_constructible_v<std::optional<SIQSShadowProofRssCampaignJournalSession>>);
 static_assert(!std::is_move_assignable_v<std::optional<SIQSShadowProofRssCampaignJournalSession>>);
@@ -139,6 +143,81 @@ static_assert(
 static_assert(!std::is_default_constructible_v<store_detail::SerialCampaignResult>);
 static_assert(std::is_copy_constructible_v<store_detail::SerialCampaignResult>);
 static_assert(!std::is_convertible_v<store_detail::SerialCampaignResult, bool>);
+
+using ReconciliationFunction = store_detail::CampaignReconciliationResult (*)(
+    const SIQSShadowProofRssGatePolicy*, const SIQSShadowProofRssCampaignRuntimeFacts*) noexcept;
+static_assert(std::same_as<decltype(&store_detail::reconcile_siqs_shadow_proof_rss_campaign),
+                           ReconciliationFunction>);
+static_assert(!std::is_default_constructible_v<store_detail::ApprovedReconciliationBinding>);
+static_assert(!std::is_copy_constructible_v<store_detail::ApprovedReconciliationBinding>);
+static_assert(std::is_nothrow_move_constructible_v<store_detail::ApprovedReconciliationBinding>);
+static_assert(!std::is_move_assignable_v<store_detail::ApprovedReconciliationBinding>);
+static_assert(!std::is_base_of_v<store_detail::SessionCore, store_detail::ReconciliationCore>);
+static_assert(!std::is_base_of_v<store_detail::ReconciliationCore, store_detail::SessionCore>);
+static_assert(!std::is_default_constructible_v<store_detail::CampaignReconciliationResult>);
+static_assert(std::is_copy_constructible_v<store_detail::CampaignReconciliationResult>);
+static_assert(std::is_copy_assignable_v<store_detail::CampaignReconciliationResult>);
+static_assert(std::is_nothrow_move_constructible_v<store_detail::CampaignReconciliationResult>);
+static_assert(!std::is_convertible_v<store_detail::CampaignReconciliationResult, bool>);
+static_assert(!std::is_convertible_v<store_detail::CampaignReconciliationResult,
+                                     SIQSShadowProofRssCampaignJournalSession>);
+static_assert(!std::is_convertible_v<store_detail::CampaignReconciliationResult,
+                                     SIQSShadowProofRssCampaignJournalActiveSlot>);
+static_assert(!std::is_convertible_v<store_detail::CampaignReconciliationResult,
+                                     SIQSShadowProofRssCampaignJournalStoreOpenResult>);
+
+template <class T>
+concept HasTakeSession = requires { &T::take_session; };
+
+template <class T>
+concept HasTakeActiveSlot = requires { &T::take_active_slot; };
+
+template <class T>
+concept HasBeginNextSlot = requires { &T::begin_next_slot; };
+
+template <class T>
+concept HasAppendPendingTaint = requires { &T::append_pending_taint; };
+
+template <class T>
+concept HasRetry = requires { &T::retry; };
+
+template <class T>
+concept HasResume = requires { &T::resume; };
+
+template <class T>
+concept HasReopen = requires { &T::reopen; };
+
+template <class T>
+concept HasLaunch = requires { &T::launch; };
+
+template <class T>
+concept HasRun = requires { &T::run; };
+
+template <class T>
+concept HasEvaluateGate = requires { &T::evaluate_gate; };
+
+template <class T>
+concept HasGateOutcome = requires { &T::gate_outcome; };
+
+template <class T>
+concept HasNextSlot = requires { &T::next_slot; };
+
+template <class T>
+concept HasRecoveryAuthority =
+    HasTakeSession<T> || HasTakeActiveSlot<T> || HasBeginNextSlot<T> || HasAppendPendingTaint<T> ||
+    HasRetry<T> || HasResume<T> || HasReopen<T> || HasLaunch<T> || HasRun<T> ||
+    HasEvaluateGate<T> || HasGateOutcome<T> || HasNextSlot<T>;
+
+template <class T>
+concept ExposesAction = requires(T value) { value.action; };
+
+template <class T>
+concept ExposesNextSlotNumber = requires(T value) { value.next_slot_number; };
+
+static_assert(!HasRecoveryAuthority<store_detail::CampaignReconciliationResult>);
+static_assert(!HasRecoveryAuthority<store_detail::CampaignReconciliationObservation>);
+static_assert(!ExposesAction<store_detail::CampaignReconciliationObservation>);
+static_assert(!ExposesNextSlotNumber<store_detail::CampaignReconciliationObservation>);
 
 [[noreturn]] void fail_check(const char* expression, const char* file, int line) {
     throw std::runtime_error(std::string(file) + ":" + std::to_string(line) +
@@ -285,6 +364,13 @@ open_private(const SIQSShadowProofRssGatePolicy* policy,
              const DeploymentEntry& deployment) {
     return store_detail::SessionFactory::open_with_deployments(
         policy, facts, std::span<const DeploymentEntry>(&deployment, 1));
+}
+
+[[nodiscard]] store_detail::CampaignReconciliationResult
+reconcile_private(const SIQSShadowProofRssGatePolicy* policy,
+                  const SIQSShadowProofRssCampaignRuntimeFacts* facts,
+                  const DeploymentEntry& deployment) {
+    return store_detail::ReconciliationTestPeer::reconcile(policy, facts, deployment);
 }
 
 void expect_open_error(SIQSShadowProofRssCampaignJournalStoreOpenResult result, StoreError error,
@@ -686,6 +772,119 @@ void test_serial_campaign_transition_predicates_are_fail_closed() {
     CHECK(!transition_is_valid(fresh, malformed));
 }
 
+void test_reconciliation_authority_free_contract() {
+    using Outcome = store_detail::CampaignReconciliationOutcome;
+    constexpr std::array names{
+        std::pair{Outcome::admission_rejected, std::string_view{"admission_rejected"}},
+        std::pair{Outcome::no_nonfresh_state, std::string_view{"no_nonfresh_state"}},
+        std::pair{Outcome::stable_prefix_confirmed, std::string_view{"stable_prefix_confirmed"}},
+        std::pair{Outcome::dangling_start_durably_tainted,
+                  std::string_view{"dangling_start_durably_tainted"}},
+        std::pair{Outcome::terminal_confirmed, std::string_view{"terminal_confirmed"}},
+        std::pair{Outcome::reconcile_required, std::string_view{"reconcile_required"}},
+    };
+    for (const auto& [outcome, name] : names) {
+        CHECK(store_detail::campaign_reconciliation_outcome_name(outcome) == name);
+    }
+    CHECK(store_detail::campaign_reconciliation_outcome_name(static_cast<Outcome>(255)) ==
+          "unknown");
+
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    const auto result = store_detail::reconcile_siqs_shadow_proof_rss_campaign(&policy, &facts);
+    CHECK(result.outcome() == Outcome::admission_rejected);
+    CHECK(!result.confirmed_observation().has_value());
+    CHECK(result.store_diagnostic().error == StoreError::binding_not_registered);
+    CHECK(result.store_diagnostic().object == StoreObject::deployment_registry);
+
+    const auto copied = result;
+    CHECK(copied.outcome() == result.outcome());
+    CHECK(copied.confirmed_observation() == result.confirmed_observation());
+    CHECK(copied.store_diagnostic().error == result.store_diagnostic().error);
+
+    const auto preflight_rejected =
+        store_detail::reconcile_siqs_shadow_proof_rss_campaign(nullptr, &facts);
+    CHECK(preflight_rejected.outcome() == Outcome::admission_rejected);
+    CHECK(!preflight_rejected.confirmed_observation().has_value());
+    CHECK(preflight_rejected.store_diagnostic().error == StoreError::preflight_rejected);
+    CHECK(preflight_rejected.store_diagnostic().journal_reason ==
+          SIQSShadowProofRssJournalReason::policy_missing);
+
+    const auto approved_preflight = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {});
+    CHECK(store_detail::absent_journal_preflight_is_ready(approved_preflight));
+    CHECK(approved_preflight.plan_digest != SIQSShadowProofRssCorpusDigest{});
+
+    store_detail::CoreReconciliationResult stable_core;
+    stable_core.outcome = Outcome::stable_prefix_confirmed;
+    stable_core.confirmed_observation = store_detail::CampaignReconciliationObservation{
+        .status = SIQSShadowProofRssJournalStatus::ready,
+        .reason = SIQSShadowProofRssJournalReason::ready,
+        .committed_slot_count = 0,
+        .plan_digest = approved_preflight.plan_digest,
+    };
+    const auto stable = store_detail::ReconciliationResultProjector::project(
+        stable_core, approved_preflight.plan_digest);
+    CHECK(stable.outcome() == Outcome::stable_prefix_confirmed);
+    CHECK(stable.confirmed_observation() == stable_core.confirmed_observation);
+
+    const auto expect_projection_rejected = [&](store_detail::CoreReconciliationResult core,
+                                                SIQSShadowProofRssCorpusDigest expected_digest) {
+        const auto projected =
+            store_detail::ReconciliationResultProjector::project(std::move(core), expected_digest);
+        CHECK(projected.outcome() == Outcome::reconcile_required);
+        CHECK(!projected.confirmed_observation().has_value());
+        CHECK(projected.store_diagnostic().error == StoreError::unexpected_failure);
+    };
+
+    expect_projection_rejected(stable_core, {});
+    {
+        auto malformed = stable_core;
+        malformed.confirmed_observation->plan_digest = {};
+        expect_projection_rejected(std::move(malformed), approved_preflight.plan_digest);
+    }
+    {
+        auto malformed = stable_core;
+        malformed.confirmed_observation->plan_digest.low ^= UINT64_C(1);
+        expect_projection_rejected(std::move(malformed), approved_preflight.plan_digest);
+    }
+    {
+        auto malformed = stable_core;
+        malformed.confirmed_observation->status = SIQSShadowProofRssJournalStatus::complete;
+        expect_projection_rejected(std::move(malformed), approved_preflight.plan_digest);
+    }
+    {
+        auto malformed = stable_core;
+        malformed.diagnostic.error = StoreError::publication_failed;
+        expect_projection_rejected(std::move(malformed), approved_preflight.plan_digest);
+    }
+    {
+        auto malformed = stable_core;
+        malformed.outcome = Outcome::reconcile_required;
+        expect_projection_rejected(std::move(malformed), approved_preflight.plan_digest);
+    }
+    {
+        store_detail::CoreReconciliationResult malformed;
+        malformed.outcome = Outcome::reconcile_required;
+        expect_projection_rejected(std::move(malformed), approved_preflight.plan_digest);
+    }
+    {
+        store_detail::CoreReconciliationResult malformed;
+        malformed.outcome = Outcome::admission_rejected;
+        malformed.diagnostic.error = StoreError::preflight_rejected;
+        expect_projection_rejected(std::move(malformed), approved_preflight.plan_digest);
+    }
+
+    store_detail::CoreReconciliationResult failed_core;
+    failed_core.outcome = Outcome::reconcile_required;
+    failed_core.diagnostic.error = StoreError::platform_unavailable;
+    const auto failed = store_detail::ReconciliationResultProjector::project(
+        std::move(failed_core), approved_preflight.plan_digest);
+    CHECK(failed.outcome() == Outcome::reconcile_required);
+    CHECK(!failed.confirmed_observation().has_value());
+    CHECK(failed.store_diagnostic().error == StoreError::platform_unavailable);
+}
+
 #ifndef _WIN32
 
 class TestPublicationOps final : public store_detail::PublicationOps {
@@ -780,6 +979,38 @@ public:
 private:
     std::size_t target_call_ = 0;
     Action action_ = Action::fail_before_confirm;
+    std::size_t confirm_calls_ = 0;
+};
+
+class FastConfirmationOps final : public store_detail::PublicationOps {
+public:
+    explicit FastConfirmationOps(std::size_t target_call) noexcept : target_call_(target_call) {}
+
+    [[nodiscard]] durable::PublishResult
+    publish_at(durable::NativeHandle parent_handle, const std::filesystem::path& leaf,
+               std::span<const std::byte> bytes) noexcept override {
+        return durable::publish_at(parent_handle, leaf, bytes);
+    }
+
+    [[nodiscard]] durable::PublishResult
+    confirm_durable_at(durable::NativeHandle, const std::filesystem::path&) noexcept override {
+        ++confirm_calls_;
+        if (confirm_calls_ == target_call_) {
+            return {
+                durable::PublishStatus::open_failed,
+                std::make_error_code(std::errc::io_error),
+                0,
+            };
+        }
+        return {durable::PublishStatus::durable, {}, 0};
+    }
+
+    [[nodiscard]] std::size_t confirm_calls() const noexcept {
+        return confirm_calls_;
+    }
+
+private:
+    std::size_t target_call_ = 0;
     std::size_t confirm_calls_ = 0;
 };
 
@@ -1226,19 +1457,19 @@ canonical_start(const SIQSShadowProofRssCampaignJournalHeader& header) {
     return canonical_start(header, policy, facts);
 }
 
-[[nodiscard]] SIQSShadowProofRssJournalCommitPayload
-make_off_payload(std::string_view stdout_bytes, std::string_view stderr_bytes,
-                 std::string_view joined_bytes,
-                 SIQSShadowProofRssSampleMode mode = SIQSShadowProofRssSampleMode::off,
-                 SIQSShadowProofRssProbeExecutionIdentity probe_execution_identity =
-                     synthetic_claim_identity()) {
+[[nodiscard]] SIQSShadowProofRssJournalCommitPayload make_off_payload(
+    std::string_view stdout_bytes, std::string_view stderr_bytes, std::string_view joined_bytes,
+    SIQSShadowProofRssSampleMode mode = SIQSShadowProofRssSampleMode::off,
+    SIQSShadowProofRssProbeExecutionIdentity probe_execution_identity = synthetic_claim_identity(),
+    SIQSShadowProofRssProbeKind deployment_probe_kind =
+        SIQSShadowProofRssProbeKind::synthetic_test) {
     const auto policy = make_policy();
     SIQSShadowProofRssJournalCommitPayload payload;
     payload.actual_operating_system = policy.operating_system;
     payload.actual_architecture = policy.architecture;
     payload.actual_memory_backend = policy.memory_backend;
     payload.actual_resolved_sieve_workers = policy.resolved_production_sieve_workers;
-    payload.deployment_probe_kind = SIQSShadowProofRssProbeKind::synthetic_test;
+    payload.deployment_probe_kind = deployment_probe_kind;
     payload.probe_execution_identity = probe_execution_identity;
     payload.fresh_process = true;
     payload.completed = true;
@@ -1331,7 +1562,7 @@ void write_committed_off_slots(const TempStore& fixture, uint32_t slot_count,
                        joined_bytes);
         const auto commit =
             make_commit(start, make_off_payload(stdout_bytes, slot_stderr, joined_bytes, mode,
-                                                policy.probe_execution_identity));
+                                                policy.probe_execution_identity, facts.probe_kind));
         write_record(fixture, commit.sequence_number, commit);
         records.push_back(commit);
     }
@@ -1414,6 +1645,452 @@ open_with_base_path(const std::filesystem::path& trusted_base) {
     const auto facts = make_facts();
     const auto deployment = make_deployment(trusted_base);
     return open_private(&policy, &facts, deployment);
+}
+
+void write_session_lock(const TempStore& fixture) {
+    fixture.write_store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF, {});
+}
+
+[[nodiscard]] store_detail::CampaignReconciliationResult
+reconcile_fixture(const TempStore& fixture,
+                  store_detail::PublicationOps* publication_ops = nullptr) {
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    auto deployment = make_deployment(fixture.trusted_base());
+    deployment.publication_ops = publication_ops;
+    return reconcile_private(&policy, &facts, deployment);
+}
+
+void expect_reconciliation_failure(
+    const store_detail::CampaignReconciliationResult& result, StoreError error, StoreObject object,
+    uint32_t record_sequence = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE) {
+    CHECK(result.outcome() == store_detail::CampaignReconciliationOutcome::reconcile_required);
+    CHECK(!result.confirmed_observation().has_value());
+    CHECK(result.store_diagnostic().error == error);
+    CHECK(result.store_diagnostic().object == object);
+    CHECK(result.store_diagnostic().record_sequence == record_sequence);
+}
+
+void write_dangling_first_slot(const TempStore& fixture) {
+    write_session_lock(fixture);
+    const auto header = write_canonical_header(fixture);
+    write_record(fixture, 1, canonical_start(header));
+}
+
+void write_dangling_after_one_committed_slot(const TempStore& fixture) {
+    constexpr std::string_view stdout_bytes = "reconciliation-prefix-stdout\n";
+    constexpr std::string_view stderr_bytes;
+    constexpr std::string_view joined_bytes = "reconciliation-prefix-joined\n";
+    write_session_lock(fixture);
+    write_committed_off_slots(fixture, 1, stdout_bytes, stderr_bytes, joined_bytes);
+
+    auto session = take_successful_session(open_fixture(fixture));
+    CHECK(session.has_value());
+    CHECK(session->view().committed_slot_count == 1);
+    auto begin = std::move(*session).begin_next_slot();
+    CHECK(begin);
+    auto active = std::move(begin).take_active_slot();
+    CHECK(active.has_value());
+    CHECK(active->slot_number() == 2);
+    active.reset();
+
+    const auto start_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(3);
+    const auto taint_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(4);
+    CHECK(start_leaf.has_value());
+    CHECK(taint_leaf.has_value());
+    CHECK(std::filesystem::exists(fixture.store_leaf(start_leaf->view())));
+    CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+}
+
+void test_reconciliation_pristine_header_and_lease_boundaries() {
+    using Outcome = store_detail::CampaignReconciliationOutcome;
+    {
+        TempStore fixture;
+        const auto store_entry_count_before =
+            std::distance(std::filesystem::directory_iterator(fixture.store_root()),
+                          std::filesystem::directory_iterator{});
+        const auto artifact_entry_count_before =
+            std::distance(std::filesystem::directory_iterator(fixture.artifact_root()),
+                          std::filesystem::directory_iterator{});
+
+        const auto result = reconcile_fixture(fixture);
+        CHECK(result.outcome() == Outcome::no_nonfresh_state);
+        CHECK(!result.confirmed_observation().has_value());
+        CHECK(result.store_diagnostic().error == StoreError::none);
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF)));
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+        CHECK(std::distance(std::filesystem::directory_iterator(fixture.store_root()),
+                            std::filesystem::directory_iterator{}) == store_entry_count_before);
+        CHECK(std::distance(std::filesystem::directory_iterator(fixture.artifact_root()),
+                            std::filesystem::directory_iterator{}) == artifact_entry_count_before);
+    }
+    {
+        TempStore fixture;
+        (void)write_canonical_header(fixture);
+
+        const auto result = reconcile_fixture(fixture);
+        CHECK(result.outcome() == Outcome::reconcile_required);
+        CHECK(!result.confirmed_observation().has_value());
+        CHECK(result.store_diagnostic().error == StoreError::layout_invalid);
+        CHECK(result.store_diagnostic().object == StoreObject::session_lock);
+        CHECK(result.store_diagnostic().layout.layout_error == LayoutError::session_lock_missing);
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF)));
+    }
+    {
+        TempStore fixture;
+        write_session_lock(fixture);
+        const auto header = write_canonical_header(fixture);
+        TestConfirmationOps ops(999, TestConfirmationOps::Action::fail_before_confirm);
+
+        const auto result = reconcile_fixture(fixture, &ops);
+        CHECK(result.outcome() == Outcome::stable_prefix_confirmed);
+        CHECK(result.confirmed_observation().has_value());
+        CHECK(result.confirmed_observation()->status == SIQSShadowProofRssJournalStatus::ready);
+        CHECK(result.confirmed_observation()->reason == SIQSShadowProofRssJournalReason::ready);
+        CHECK(result.confirmed_observation()->committed_slot_count == 0);
+        CHECK(result.confirmed_observation()->plan_digest == header.plan_digest);
+        CHECK(result.store_diagnostic().error == StoreError::none);
+        CHECK(ops.confirm_calls() == 1);
+        const auto first_record =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(UINT32_C(1));
+        CHECK(first_record.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(first_record->view())));
+
+        auto reopened = take_successful_session(open_fixture(fixture));
+        CHECK(reopened.has_value());
+        CHECK(reopened->view().action == SIQSShadowProofRssJournalAction::append_slot_start);
+    }
+    {
+        TempStore fixture;
+        auto held = take_successful_session(open_fixture(fixture));
+        CHECK(held.has_value());
+
+        const auto busy = reconcile_fixture(fixture);
+        expect_reconciliation_failure(busy, StoreError::lock_busy, StoreObject::session_lock);
+
+        held.reset();
+        const auto result = reconcile_fixture(fixture);
+        CHECK(result.outcome() == Outcome::no_nonfresh_state);
+        CHECK(!result.confirmed_observation().has_value());
+        const auto copied = result;
+        CHECK(copied.outcome() == Outcome::no_nonfresh_state);
+
+        auto reopened = take_successful_session(open_fixture(fixture));
+        CHECK(reopened.has_value());
+        CHECK(reopened->view().action == SIQSShadowProofRssJournalAction::create_header);
+    }
+    {
+        TempStore fixture;
+        const auto policy = make_policy();
+        const auto facts = make_facts();
+        const auto deployment = make_deployment(fixture.base_leaf("missing-trusted-base"));
+
+        const auto result = reconcile_private(&policy, &facts, deployment);
+        expect_reconciliation_failure(result, StoreError::base_open_failed,
+                                      StoreObject::trusted_base);
+    }
+}
+
+void test_reconciliation_stable_prefix_confirmation_matrix() {
+    using Outcome = store_detail::CampaignReconciliationOutcome;
+    constexpr std::string_view stdout_bytes = "reconciliation-stable-stdout\n";
+    constexpr std::string_view stderr_bytes;
+    constexpr std::string_view joined_bytes = "reconciliation-stable-joined\n";
+    struct ExpectedFailure final {
+        StoreObject object = StoreObject::none;
+        uint32_t record_sequence = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE;
+        std::optional<SIQSShadowProofRssArtifactKind> artifact_kind;
+    };
+    const std::array expected_failures{
+        ExpectedFailure{StoreObject::journal_header,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE, std::nullopt},
+        ExpectedFailure{StoreObject::journal_record, 1, std::nullopt},
+        ExpectedFailure{StoreObject::artifact,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE,
+                        SIQSShadowProofRssArtifactKind::probe_stdout},
+        ExpectedFailure{StoreObject::artifact,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE,
+                        SIQSShadowProofRssArtifactKind::probe_stderr},
+        ExpectedFailure{StoreObject::artifact,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE,
+                        SIQSShadowProofRssArtifactKind::joined_gate_sample},
+        ExpectedFailure{StoreObject::journal_record, 2, std::nullopt},
+    };
+
+    for (std::size_t index = 0; index < expected_failures.size(); ++index) {
+        TempStore fixture;
+        write_session_lock(fixture);
+        write_committed_off_slots(fixture, 1, stdout_bytes, stderr_bytes, joined_bytes);
+        TestConfirmationOps ops(index + 1, TestConfirmationOps::Action::fail_before_confirm);
+
+        const auto result = reconcile_fixture(fixture, &ops);
+        expect_reconciliation_failure(result, StoreError::publication_failed,
+                                      expected_failures[index].object,
+                                      expected_failures[index].record_sequence);
+        CHECK(ops.confirm_calls() == index + 1);
+        CHECK(result.store_diagnostic().artifact_slot_number ==
+              (expected_failures[index].artifact_kind.has_value()
+                   ? 1U
+                   : SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_NO_SLOT));
+        CHECK(result.store_diagnostic().artifact_kind == expected_failures[index].artifact_kind);
+        CHECK(result.store_diagnostic().publication_status == durable::PublishStatus::open_failed);
+        const auto next_start =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(UINT32_C(3));
+        CHECK(next_start.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(next_start->view())));
+    }
+
+    {
+        TempStore fixture;
+        write_session_lock(fixture);
+        (void)write_canonical_header(fixture);
+        TestConfirmationOps ops(1, TestConfirmationOps::Action::remove_and_report_durable);
+
+        const auto drifted = reconcile_fixture(fixture, &ops);
+        CHECK(drifted.outcome() == Outcome::reconcile_required);
+        CHECK(!drifted.confirmed_observation().has_value());
+        CHECK(drifted.store_diagnostic().error == StoreError::snapshot_changed);
+        CHECK(drifted.store_diagnostic().publication_status == durable::PublishStatus::durable);
+        CHECK(ops.confirm_calls() == 1);
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+    }
+
+    TempStore fixture;
+    write_session_lock(fixture);
+    write_committed_off_slots(fixture, 2, stdout_bytes, stderr_bytes, joined_bytes);
+    TestConfirmationOps ops(999, TestConfirmationOps::Action::fail_before_confirm);
+    const auto result = reconcile_fixture(fixture, &ops);
+    CHECK(result.outcome() == Outcome::stable_prefix_confirmed);
+    CHECK(result.confirmed_observation().has_value());
+    CHECK(result.confirmed_observation()->status == SIQSShadowProofRssJournalStatus::ready);
+    CHECK(result.confirmed_observation()->reason == SIQSShadowProofRssJournalReason::ready);
+    CHECK(result.confirmed_observation()->committed_slot_count == 2);
+    CHECK(ops.confirm_calls() == 11);
+    const auto next_start = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(UINT32_C(5));
+    CHECK(next_start.has_value());
+    CHECK(!std::filesystem::exists(fixture.store_leaf(next_start->view())));
+
+    auto reopened = take_successful_session(open_fixture(fixture));
+    CHECK(reopened.has_value());
+    CHECK(reopened->view().committed_slot_count == 2);
+}
+
+void test_reconciliation_dangling_and_explicit_taint_closure() {
+    using Outcome = store_detail::CampaignReconciliationOutcome;
+    for (std::size_t target = 1; target <= 2; ++target) {
+        TempStore fixture;
+        write_dangling_first_slot(fixture);
+        TestConfirmationOps ops(target, TestConfirmationOps::Action::fail_before_confirm);
+
+        const auto result = reconcile_fixture(fixture, &ops);
+        expect_reconciliation_failure(
+            result, StoreError::publication_failed,
+            target == 1 ? StoreObject::journal_header : StoreObject::journal_record,
+            target == 1 ? SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE : UINT32_C(1));
+        CHECK(ops.confirm_calls() == target);
+        const auto taint_leaf =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(UINT32_C(2));
+        CHECK(taint_leaf.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+    }
+
+    {
+        TempStore fixture;
+        write_dangling_after_one_committed_slot(fixture);
+        TestConfirmationOps append_ops(999, TestConfirmationOps::Action::fail_before_confirm);
+
+        const auto appended = reconcile_fixture(fixture, &append_ops);
+        CHECK(appended.outcome() == Outcome::dangling_start_durably_tainted);
+        CHECK(appended.confirmed_observation().has_value());
+        CHECK(appended.confirmed_observation()->status == SIQSShadowProofRssJournalStatus::tainted);
+        CHECK(appended.confirmed_observation()->reason ==
+              SIQSShadowProofRssJournalReason::explicitly_tainted);
+        CHECK(appended.confirmed_observation()->committed_slot_count == 1);
+        CHECK(append_ops.confirm_calls() == 7);
+        const auto taint_leaf =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(UINT32_C(4));
+        CHECK(taint_leaf.has_value());
+        const auto taint_bytes = fixture.read_store_leaf(taint_leaf->view());
+
+        for (const std::size_t target : {std::size_t{7}, std::size_t{8}}) {
+            TestConfirmationOps failure_ops(target,
+                                            TestConfirmationOps::Action::fail_before_confirm);
+            const auto failed = reconcile_fixture(fixture, &failure_ops);
+            expect_reconciliation_failure(failed, StoreError::publication_failed,
+                                          StoreObject::journal_record,
+                                          static_cast<uint32_t>(target == 7 ? 3 : 4));
+            CHECK(failure_ops.confirm_calls() == target);
+            CHECK(fixture.read_store_leaf(taint_leaf->view()) == taint_bytes);
+        }
+
+        TestConfirmationOps terminal_ops(999, TestConfirmationOps::Action::fail_before_confirm);
+        const auto terminal = reconcile_fixture(fixture, &terminal_ops);
+        CHECK(terminal.outcome() == Outcome::terminal_confirmed);
+        CHECK(terminal.confirmed_observation().has_value());
+        CHECK(terminal.confirmed_observation()->status == SIQSShadowProofRssJournalStatus::tainted);
+        CHECK(terminal.confirmed_observation()->reason ==
+              SIQSShadowProofRssJournalReason::explicitly_tainted);
+        CHECK(terminal.confirmed_observation()->committed_slot_count == 1);
+        CHECK(terminal_ops.confirm_calls() == 8);
+        CHECK(fixture.read_store_leaf(taint_leaf->view()) == taint_bytes);
+
+        auto reopened = take_successful_session(open_fixture(fixture));
+        CHECK(reopened.has_value());
+        CHECK(reopened->view().reason == SIQSShadowProofRssJournalReason::explicitly_tainted);
+    }
+    {
+        TempStore fixture;
+        write_dangling_first_slot(fixture);
+        TestPublicationOps ops(1, TestPublicationOps::Action::fail_before_create);
+
+        const auto result = reconcile_fixture(fixture, &ops);
+        expect_reconciliation_failure(result, StoreError::publication_failed,
+                                      StoreObject::journal_record, 2);
+        CHECK(ops.publish_calls() == 1);
+        const auto taint_leaf =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(UINT32_C(2));
+        CHECK(taint_leaf.has_value());
+        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+    }
+    {
+        TempStore fixture;
+        write_dangling_first_slot(fixture);
+        TestPublicationOps ops(1,
+                               TestPublicationOps::Action::publish_bytes_then_report_sync_failure);
+
+        const auto uncertain = reconcile_fixture(fixture, &ops);
+        expect_reconciliation_failure(uncertain, StoreError::publication_failed,
+                                      StoreObject::journal_record, 2);
+        CHECK(!uncertain.confirmed_observation().has_value());
+        CHECK(ops.publish_calls() == 1);
+        const auto taint_leaf =
+            make_siqs_shadow_proof_rss_campaign_journal_record_leaf(UINT32_C(2));
+        CHECK(taint_leaf.has_value());
+        CHECK(std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+
+        const auto terminal = reconcile_fixture(fixture);
+        CHECK(terminal.outcome() == Outcome::terminal_confirmed);
+        CHECK(terminal.confirmed_observation().has_value());
+        CHECK(terminal.confirmed_observation()->status == SIQSShadowProofRssJournalStatus::tainted);
+        CHECK(terminal.confirmed_observation()->reason ==
+              SIQSShadowProofRssJournalReason::explicitly_tainted);
+        CHECK(terminal.confirmed_observation()->committed_slot_count == 0);
+    }
+}
+
+void test_reconciliation_rejects_unsupported_leasable_taint() {
+    constexpr std::string_view stdout_bytes = "unsupported-taint-stdout\n";
+    constexpr std::string_view stderr_bytes;
+    constexpr std::string_view joined_bytes = "unsupported-taint-joined\n";
+    TempStore fixture;
+    write_session_lock(fixture);
+    const auto header = write_canonical_header(fixture);
+    const auto start = canonical_start(header);
+    write_record(fixture, start.sequence_number, start);
+
+    auto invalid_commit =
+        make_commit(start, make_off_payload(stdout_bytes, stderr_bytes, joined_bytes,
+                                            SIQSShadowProofRssSampleMode::off,
+                                            make_policy().probe_execution_identity));
+    invalid_commit.commit_payload.completed = false;
+    invalid_commit.record_digest =
+        shadow_proof_rss_campaign_journal_detail::record_digest(invalid_commit);
+    write_record(fixture, invalid_commit.sequence_number, invalid_commit);
+
+    const auto result = reconcile_fixture(fixture);
+    expect_reconciliation_failure(result, StoreError::artifact_consistency_invalid,
+                                  StoreObject::artifact);
+    CHECK(result.store_diagnostic().artifact_consistency.error ==
+          SIQSShadowProofRssCampaignArtifactConsistencyError::resume_state_invalid);
+    CHECK(result.store_diagnostic().journal_reason == std::nullopt);
+    const auto next_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(3);
+    CHECK(next_leaf.has_value());
+    CHECK(!std::filesystem::exists(fixture.store_leaf(next_leaf->view())));
+}
+
+void test_reconciliation_complete_confirmation_key_failures() {
+    constexpr std::string_view stdout_bytes = "reconciliation-complete-failure-stdout\n";
+    constexpr std::string_view stderr_bytes;
+    constexpr std::string_view joined_bytes = "reconciliation-complete-failure-joined\n";
+    TempStore fixture;
+    write_session_lock(fixture);
+    write_committed_off_slots(fixture, SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT,
+                              stdout_bytes, stderr_bytes, joined_bytes);
+
+    struct ExpectedFailure final {
+        std::size_t confirmation = 0;
+        StoreObject object = StoreObject::none;
+        uint32_t record_sequence = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE;
+    };
+    constexpr std::array failures{
+        ExpectedFailure{1, StoreObject::journal_header,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE},
+        ExpectedFailure{201, StoreObject::journal_record, 80},
+        ExpectedFailure{202, StoreObject::journal_record, 81},
+        ExpectedFailure{401, StoreObject::journal_record, 160},
+    };
+    for (const auto& failure : failures) {
+        FastConfirmationOps ops(failure.confirmation);
+        const auto result = reconcile_fixture(fixture, &ops);
+        expect_reconciliation_failure(result, StoreError::publication_failed, failure.object,
+                                      failure.record_sequence);
+        CHECK(ops.confirm_calls() == failure.confirmation);
+        CHECK(result.store_diagnostic().publication_status == durable::PublishStatus::open_failed);
+    }
+}
+
+void test_reconciliation_complete_confirmation_without_launch(
+    const std::filesystem::path& executable) {
+    using Outcome = store_detail::CampaignReconciliationOutcome;
+    constexpr std::string_view stdout_bytes = "reconciliation-complete-stdout\n";
+    constexpr std::string_view stderr_bytes;
+    constexpr std::string_view joined_bytes = "reconciliation-complete-joined\n";
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("complete-reconciliation-must-not-launch-marker");
+    auto deployment = make_runner_deployment(fixture, executable, marker);
+    rebind_probe_kind(deployment, SIQSShadowProofRssProbeKind::production_holdout);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    write_session_lock(fixture);
+    write_committed_off_slots(fixture, SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT,
+                              stdout_bytes, stderr_bytes, joined_bytes, policy, facts);
+
+    const auto result = reconcile_private(&policy, &facts, deployment);
+    CHECK(result.outcome() == Outcome::terminal_confirmed);
+    CHECK(result.confirmed_observation().has_value());
+    CHECK(result.confirmed_observation()->status == SIQSShadowProofRssJournalStatus::complete);
+    CHECK(result.confirmed_observation()->reason == SIQSShadowProofRssJournalReason::complete);
+    CHECK(result.confirmed_observation()->committed_slot_count ==
+          SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+    const auto preflight = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {});
+    CHECK(result.confirmed_observation()->plan_digest == preflight.plan_digest);
+    CHECK(!std::filesystem::exists(marker));
+}
+
+void test_reconciliation_ignores_launch_capability_without_launching(
+    const std::filesystem::path& executable) {
+    using Outcome = store_detail::CampaignReconciliationOutcome;
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("reconciliation-must-not-launch-marker");
+    auto deployment = make_runner_deployment(fixture, executable, marker);
+    rebind_probe_kind(deployment, SIQSShadowProofRssProbeKind::production_holdout);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+
+    const auto result = reconcile_private(&policy, &facts, deployment);
+    CHECK(result.outcome() == Outcome::no_nonfresh_state);
+    CHECK(!result.confirmed_observation().has_value());
+    CHECK(result.store_diagnostic().error == StoreError::none);
+    CHECK(!std::filesystem::exists(marker));
+    CHECK(!std::filesystem::exists(
+        fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF)));
+    CHECK(!std::filesystem::exists(
+        fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
 }
 
 void test_trusted_base_component_walk_is_fail_closed() {
@@ -4332,6 +5009,13 @@ void test_windows_private_boundary_is_unavailable() {
     const auto deployment = make_deployment("C:\\gnfs-test-deployment");
     expect_open_error(open_private(&policy, &facts, deployment), StoreError::platform_unavailable,
                       StoreObject::none);
+
+    const auto reconciliation = reconcile_private(&policy, &facts, deployment);
+    CHECK(reconciliation.outcome() ==
+          store_detail::CampaignReconciliationOutcome::reconcile_required);
+    CHECK(!reconciliation.confirmed_observation().has_value());
+    CHECK(reconciliation.store_diagnostic().error == StoreError::platform_unavailable);
+    CHECK(reconciliation.store_diagnostic().object == StoreObject::none);
 }
 
 #endif
@@ -4355,6 +5039,7 @@ int main(int argc, char** argv) {
         test_public_authority_and_preflight_boundaries();
         test_diagnostic_name_contracts();
         test_serial_campaign_transition_predicates_are_fail_closed();
+        test_reconciliation_authority_free_contract();
 #ifndef _WIN32
         CHECK(argc == 1 || argc == 6);
         const auto test_executable = std::filesystem::absolute(std::filesystem::path(argv[0]));
@@ -4380,6 +5065,13 @@ int main(int argc, char** argv) {
                       .hang = helper_directory / "siqs_rss_campaign_synthetic_hang",
                   };
         const std::string executable = test_executable.string();
+        test_reconciliation_pristine_header_and_lease_boundaries();
+        test_reconciliation_stable_prefix_confirmation_matrix();
+        test_reconciliation_dangling_and_explicit_taint_closure();
+        test_reconciliation_rejects_unsupported_leasable_taint();
+        test_reconciliation_complete_confirmation_key_failures();
+        test_reconciliation_complete_confirmation_without_launch(test_executable);
+        test_reconciliation_ignores_launch_capability_without_launching(test_executable);
         test_trusted_base_component_walk_is_fail_closed();
         test_untrusted_owner_and_write_permissions_fail_closed();
         test_empty_store_lease_move_and_release(executable);

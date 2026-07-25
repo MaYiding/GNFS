@@ -1,5 +1,6 @@
 #pragma once
 
+#include "shadow_proof_rss_campaign_reconciliation_internal.hpp"
 #include "shadow_proof_rss_probe_execution_identity_internal.hpp"
 
 #include <gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp>
@@ -90,6 +91,72 @@ struct DeploymentEntry final {
     ApprovedCampaignBinding approval;
     PublicationOps* publication_ops = nullptr;
     std::optional<ProbeExecutableBinding> holdout_probe;
+};
+
+struct PlatformReconciliationOpenResult;
+
+/// Move-only, opaque proof that one deployment-owned row has already passed
+/// closed-registry selection and exact claim validation. It deliberately has
+/// no public constructor or accessor, so a path, deployment row, publication
+/// seam, or approved view cannot be recovered from it by an ordinary caller.
+class ApprovedReconciliationBinding final {
+public:
+    ApprovedReconciliationBinding(const ApprovedReconciliationBinding&) = delete;
+    ApprovedReconciliationBinding& operator=(const ApprovedReconciliationBinding&) = delete;
+    ApprovedReconciliationBinding(ApprovedReconciliationBinding&& other) noexcept
+        : deployment_(std::move(other.deployment_)),
+          expected_plan_digest_(other.expected_plan_digest_) {
+        bind_approved_views();
+    }
+    ApprovedReconciliationBinding& operator=(ApprovedReconciliationBinding&&) = delete;
+    ~ApprovedReconciliationBinding() = default;
+
+private:
+    ApprovedReconciliationBinding() = default;
+
+    void bind_approved_views() noexcept {
+        approved_policy_.approved = true;
+        approved_policy_.corpus_id = deployment_.approval.corpus_id;
+        approved_policy_.corpus_digest = deployment_.approval.corpus_digest;
+        approved_policy_.operating_system = deployment_.approval.operating_system;
+        approved_policy_.architecture = deployment_.approval.architecture;
+        approved_policy_.memory_backend = deployment_.approval.memory_backend;
+        approved_policy_.resolved_production_sieve_workers =
+            deployment_.approval.resolved_production_sieve_workers;
+        approved_policy_.candidate_revision = deployment_.approval.candidate_revision;
+        approved_policy_.probe_execution_identity = deployment_.approval.probe_execution_identity;
+        approved_policy_.approval_id = deployment_.approval.approval_id;
+        approved_policy_.journal_store = {
+            deployment_.trusted_base_id,
+            deployment_.store_id,
+            deployment_.relative_locator,
+        };
+        approved_policy_.deployment_budget_bytes = deployment_.approval.deployment_budget_bytes;
+        approved_policy_.reserved_headroom_bytes = deployment_.approval.reserved_headroom_bytes;
+
+        approved_runtime_facts_.operating_system = deployment_.approval.operating_system;
+        approved_runtime_facts_.architecture = deployment_.approval.architecture;
+        approved_runtime_facts_.memory_backend = deployment_.approval.memory_backend;
+        approved_runtime_facts_.resolved_production_sieve_workers =
+            deployment_.approval.resolved_production_sieve_workers;
+        approved_runtime_facts_.probe_kind = deployment_.probe_kind;
+        approved_runtime_facts_.candidate_revision = deployment_.approval.candidate_revision;
+        approved_runtime_facts_.probe_execution_identity =
+            deployment_.approval.probe_execution_identity;
+        approved_runtime_facts_.release_build = deployment_.approval.release_build;
+        approved_runtime_facts_.ndebug = deployment_.approval.ndebug;
+    }
+
+    DeploymentEntry deployment_;
+    SIQSShadowProofRssGatePolicy approved_policy_;
+    SIQSShadowProofRssCampaignRuntimeFacts approved_runtime_facts_;
+    SIQSShadowProofRssCorpusDigest expected_plan_digest_;
+
+    friend class ReconciliationOrchestrator;
+    friend class ReconciliationTestPeer;
+    friend PlatformReconciliationOpenResult
+    open_siqs_shadow_proof_rss_campaign_journal_platform_reconciliation(
+        ApprovedReconciliationBinding binding) noexcept;
 };
 
 struct SessionBeginSlotResult final {
@@ -220,6 +287,19 @@ struct SessionPrepareRunResult final {
     }
 };
 
+class ReconciliationCore {
+public:
+    ReconciliationCore() = default;
+    virtual ~ReconciliationCore() = default;
+
+    ReconciliationCore(const ReconciliationCore&) = delete;
+    ReconciliationCore& operator=(const ReconciliationCore&) = delete;
+    ReconciliationCore(ReconciliationCore&&) = delete;
+    ReconciliationCore& operator=(ReconciliationCore&&) = delete;
+
+    [[nodiscard]] virtual CoreReconciliationResult reconcile() noexcept = 0;
+};
+
 class SessionCore {
 public:
     SessionCore() = default;
@@ -257,6 +337,9 @@ protected:
         receipt.active_ = false;
         return std::move(receipt.evidence_);
     }
+
+private:
+    friend class PosixCampaignEngine;
 };
 
 [[nodiscard]] constexpr SIQSShadowProofRssCampaignJournalSessionView
@@ -285,19 +368,40 @@ make_session_view(const SIQSShadowProofRssCampaignJournalResume& resume) noexcep
            !preflight.taint_to_append.has_value();
 }
 
-struct PlatformOpenResult final {
-    PlatformOpenResult() = default;
-    PlatformOpenResult(
+struct PlatformSessionOpenResult final {
+    PlatformSessionOpenResult() = default;
+    PlatformSessionOpenResult(
         std::unique_ptr<SessionCore> selected_core,
         SIQSShadowProofRssCampaignJournalStoreDiagnostic selected_diagnostic) noexcept
         : core(std::move(selected_core)), diagnostic(std::move(selected_diagnostic)) {}
-    PlatformOpenResult(const PlatformOpenResult&) = delete;
-    PlatformOpenResult& operator=(const PlatformOpenResult&) = delete;
-    PlatformOpenResult(PlatformOpenResult&&) noexcept = default;
-    PlatformOpenResult& operator=(PlatformOpenResult&&) = delete;
+    PlatformSessionOpenResult(const PlatformSessionOpenResult&) = delete;
+    PlatformSessionOpenResult& operator=(const PlatformSessionOpenResult&) = delete;
+    PlatformSessionOpenResult(PlatformSessionOpenResult&&) noexcept = default;
+    PlatformSessionOpenResult& operator=(PlatformSessionOpenResult&&) = delete;
 
     std::unique_ptr<SessionCore> core;
     SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return core != nullptr &&
+               diagnostic.error == SIQSShadowProofRssCampaignJournalStoreError::none;
+    }
+};
+
+struct PlatformReconciliationOpenResult final {
+    PlatformReconciliationOpenResult() = default;
+    PlatformReconciliationOpenResult(
+        std::unique_ptr<ReconciliationCore> selected_core,
+        SIQSShadowProofRssCampaignJournalStoreDiagnostic selected_diagnostic) noexcept
+        : core(std::move(selected_core)), diagnostic(std::move(selected_diagnostic)) {}
+    PlatformReconciliationOpenResult(const PlatformReconciliationOpenResult&) = delete;
+    PlatformReconciliationOpenResult& operator=(const PlatformReconciliationOpenResult&) = delete;
+    PlatformReconciliationOpenResult(PlatformReconciliationOpenResult&&) noexcept = default;
+    PlatformReconciliationOpenResult& operator=(PlatformReconciliationOpenResult&&) = delete;
+
+    std::unique_ptr<ReconciliationCore> core;
+    SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic;
+    bool no_persistent_state = false;
 
     [[nodiscard]] explicit operator bool() const noexcept {
         return core != nullptr &&
@@ -321,9 +425,14 @@ public:
                            std::string_view joined_bytes) noexcept;
 };
 
-[[nodiscard]] PlatformOpenResult open_siqs_shadow_proof_rss_campaign_journal_platform_session(
+[[nodiscard]] PlatformSessionOpenResult
+open_siqs_shadow_proof_rss_campaign_journal_platform_session(
     const SIQSShadowProofRssGatePolicy& policy,
     const SIQSShadowProofRssCampaignRuntimeFacts& runtime_facts,
     const DeploymentEntry& deployment) noexcept;
+
+[[nodiscard]] PlatformReconciliationOpenResult
+open_siqs_shadow_proof_rss_campaign_journal_platform_reconciliation(
+    ApprovedReconciliationBinding binding) noexcept;
 
 } // namespace gnfs::siqs::shadow_proof_rss_campaign_journal_store_detail

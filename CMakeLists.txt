@@ -370,13 +370,15 @@ endif()
 # SIQS RSS campaign journal native lease and source-private execution
 # boundary. The common source owns the closed production registry and public
 # result/session state; exactly one platform loader supplies the native
-# implementation. The controller and entry compile in production builds, but
-# neither is installed as a public entry point.
+# implementation. The controller, entry, and authority-free reconciliation
+# orchestrator compile in production builds, but none is installed as a public
+# entry point.
 target_sources(gnfs_core PRIVATE
     src/siqs/shadow_proof_rss_campaign_journal_store.cpp
     src/siqs/shadow_proof_rss_campaign_slot_runner.cpp
     src/siqs/shadow_proof_rss_campaign_controller.cpp
     src/siqs/shadow_proof_rss_campaign_entry.cpp
+    src/siqs/shadow_proof_rss_campaign_reconciliation.cpp
 )
 if(WIN32)
     target_sources(gnfs_core PRIVATE
@@ -2303,6 +2305,7 @@ if(GNFS_BUILD_TESTS)
 
     add_executable(test_siqs_shadow_proof_rss_campaign_journal_store
         tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp
+        tests/support/siqs_shadow_proof_rss_campaign_reconciliation_test_peer.cpp
     )
     target_include_directories(test_siqs_shadow_proof_rss_campaign_journal_store PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs

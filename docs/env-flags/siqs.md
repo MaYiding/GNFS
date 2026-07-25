@@ -249,6 +249,41 @@ evaluation 权限。begin/commit 不确定以及 taint closure 失败只返回
 `reconcile_required`，不会暴露可能过时的 terminal view。完整 synthetic run 的唯一
 终态是 `synthetic_complete/none`，不会获得 gate authority。
 
+独立的 source-private reconciliation boundary 已闭合 nonfresh journal 的恢复侧，
+但不会给 controller 增加权限。调用方只能提供 policy/runtime claims；deployment
+仍由私有 registry 唯一选择。reconciliation 每次重新打开 namespace 并取得 fresh
+native lease，然后只按磁盘证据分类：
+
+- 真正 pristine 且没有 persistent lock 时返回 `no_nonfresh_state`，不创建 lock、
+  header 或 record；
+- header-only 或 committed prefix 会依次确认 header，以及每个已提交 slot 的
+  start、三个 artifact 和 commit，再返回 `stable_prefix_confirmed`；
+- dangling start 会先确认完整 predecessor chain 和 start，只追加一次精确派生的
+  taint，严格 reread 后返回 `dangling_start_durably_tainted`；
+- explicit taint 会确认 prefix、start、精确 taint 和 replay；完整 80-slot journal
+  会确认 header 加 400 个 slot 对象；两者都只返回 `terminal_confirmed`。
+
+nonfresh state 缺少 lock、lease 正被持有、layout/identity/generation 漂移、任一
+durability confirmation 失败，或 taint publication 已开始但结果不确定，都会返回
+`reconcile_required` 且不携带 observation。同一次调用不会在 publication 后重试；
+后续调用必须重新打开磁盘状态。registry/preflight 拒绝单独返回
+`admission_rejected`。reconciliation 不会 launch child，因此不要求当前平台具备
+authenticated-launch capability；但 deployment row 仍必须完整有效。
+
+`gnfs_core` 不提供接收 deployment table、path、handle 或 publication seam 的
+reconciliation 函数。closed selector 会把自己持有的 deployment row 转换成
+move-only opaque binding，platform loader 只消费该 binding。session 与
+reconciliation 使用彼此独立的 interface 和 concrete wrapper；reconciliation
+wrapper 不是 `SessionCore`，只暴露 `reconcile()`。fixture deployment 注入桥仅编译
+进 native-store 测试可执行文件，不进入 `gnfs_core`。最终 projector 还要求精确匹配
+deployment 派生的非零 plan digest；outcome、observation 或 diagnostic 任一组合不合法
+都会 fail closed。
+
+其 copyable result 只含 outcome、diagnostic，以及可选的 confirmed
+status/reason/committed-count/plan-digest。类型不暴露 session、active slot、action、
+next slot、retry、reopen、callback、controller、executable 或 gate。internal header
+不安装，默认 production registry 继续为空。
+
 同一私有层还包含默认关闭的 production composition。它先复用 journal 的精确
 absent-state preflight，随后在 registry lookup 前拒绝 synthetic claim；production
 claim 只能调用一次公开 store-open boundary，成功得到的 session 必须立刻被 controller
@@ -374,10 +409,13 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
   subprocess 覆盖 deployment registry、严格 native layout、跨进程 lease、崩溃释放、
   held-root publication、Linux same-object authentication、认证失败后的 durable taint、
   私有 same-child commit、fresh-only controller 实际串行启动 80 个 synthetic child
-  后的完整终态、prefix/dangling 拒绝、begin/taint/commit 不确定性闭包、第 41 槽
-  commit 确认失败后不启动第 42 槽并由 reopen 观察真实前缀，以及 restart relabel
-  rejection；还覆盖 execution identity 与完整 approval/runtime 字段错配的 journal
-  零写入拒绝。
+  后的完整终态、prefix/dangling 拒绝、begin/taint/commit 不确定性闭包、source-private
+  reconciliation 的 pristine 零写入、缺锁/活跃 lease 拒绝、逐 durable object
+  confirmation fault、dangling 精确 taint、uncertain publication 后 reopen、explicit
+  taint 和完整 80-slot/401-confirmation 终态，以及 recovery 与 launch capability
+  解耦；还覆盖第 41 槽 commit 确认失败后不启动第 42 槽并由 reopen 观察真实前缀、
+  restart relabel rejection，以及 execution identity 与完整 approval/runtime 字段
+  错配的 journal 零写入拒绝。
   测试只启动 synthetic child，不运行 production probe 或打开 sealed holdout。
 - `tests/test_siqs_shadow_proof_rss_campaign_entry.cpp` 独立覆盖 source-private
   composition 的 policy-first preflight、synthetic classification 拒绝、默认空

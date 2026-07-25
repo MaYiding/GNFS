@@ -2,7 +2,7 @@
 
 namespace gnfs::siqs::shadow_proof_rss_campaign_journal_store_detail {
 
-PlatformOpenResult open_siqs_shadow_proof_rss_campaign_journal_platform_session(
+PlatformSessionOpenResult open_siqs_shadow_proof_rss_campaign_journal_platform_session(
     const SIQSShadowProofRssGatePolicy& policy,
     const SIQSShadowProofRssCampaignRuntimeFacts& runtime_facts,
     const DeploymentEntry& deployment) noexcept {
@@ -10,7 +10,17 @@ PlatformOpenResult open_siqs_shadow_proof_rss_campaign_journal_platform_session(
     (void)runtime_facts;
     (void)deployment;
 
-    PlatformOpenResult result;
+    PlatformSessionOpenResult result;
+    result.diagnostic.error = SIQSShadowProofRssCampaignJournalStoreError::platform_unavailable;
+    return result;
+}
+
+PlatformReconciliationOpenResult
+open_siqs_shadow_proof_rss_campaign_journal_platform_reconciliation(
+    ApprovedReconciliationBinding binding) noexcept {
+    (void)binding;
+
+    PlatformReconciliationOpenResult result;
     result.diagnostic.error = SIQSShadowProofRssCampaignJournalStoreError::platform_unavailable;
     return result;
 }
