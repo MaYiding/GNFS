@@ -532,7 +532,29 @@ private:
                     cleanup_lock = std::make_shared<ooc_cleanup_detail::BaseLock>(
                         cleanup_paths.lock_path, cleanup_paths.private_directory.empty());
                 }
-                ooc_cleanup_detail::require_pair_namespace_reusable_locked(cleanup_paths);
+                if (private_lease != nullptr) {
+                    const auto validated =
+                        OOCCleanupTransaction::validate_private_lease_for_fresh_writer(
+                            *private_lease);
+                    if (!validated.completed()) {
+                        const auto error = validated.native_error
+                                               ? validated.native_error
+                                               : std::make_error_code(std::errc::protocol_error);
+                        throw std::system_error(
+                            error, "OOCRelationWriter: private lease preflight failed");
+                    }
+                } else {
+                    if (!cleanup_paths.private_directory.empty()) {
+                        // The recognized sink-lease layout is capability-gated.
+                        // A persistent lock alone never permits directory
+                        // inspection or pair creation without the exact
+                        // move-only private-lease receipt.
+                        ooc_cleanup_detail::fail(OOCCleanupStatus::NamespaceConflict,
+                                                 OOCCleanupStage::None,
+                                                 ooc_cleanup_detail::protocol_error());
+                    }
+                    ooc_cleanup_detail::require_pair_namespace_reusable_locked(cleanup_paths);
+                }
 
                 // Reserve both fresh names with O_EXCL before opening either
                 // stream. A second writer can therefore never pass an exists
@@ -969,6 +991,55 @@ public:
                                    : std::make_error_code(std::errc::protocol_error);
             throw std::system_error(error, "OOCRelationWriter: cleanup handoff publication failed");
         }
+        return descriptor;
+    }
+
+    /// Finalize a deferred private-lease writer and publish an immutable,
+    /// application-bound no-delete handoff. The generic relation layer binds
+    /// the opaque payload to the exact lease generation and finalized pair,
+    /// revokes preactivation rollback, and consumes this writer's fresh cleanup
+    /// receipt. The handoff itself grants read/adoption eligibility only; it
+    /// does not publish cleanup intent or authorize deletion.
+    [[nodiscard]] OOCSnapshotDescriptor
+    finalize_and_publish_private_handoff(std::uint32_t payload_kind, std::uint32_t payload_version,
+                                         std::span<const std::byte> opaque_payload,
+                                         OOCPrivateHandoffTestHooks hooks = {}) {
+        if (deferred_private_lease_ == nullptr) {
+            throw std::logic_error(
+                "OOCRelationWriter: private handoff requires deferred private-lease mode");
+        }
+        if (!cleanup_receipt_) {
+            throw std::logic_error("OOCRelationWriter: private handoff ownership is unavailable");
+        }
+        if (payload_kind == 0 || payload_version == 0 ||
+            opaque_payload.size() > OOC_PRIVATE_HANDOFF_MAX_OPAQUE_PAYLOAD_BYTES) {
+            throw std::invalid_argument(
+                "OOCRelationWriter: private handoff payload contract is invalid");
+        }
+
+        const OOCSnapshotDescriptor descriptor = finalize();
+        if (descriptor.store_id != store_id_) {
+            throw std::runtime_error(
+                "OOCRelationWriter: private handoff descriptor identity mismatch");
+        }
+        const OOCPrivateHandoffPairDescriptorV1 pair{
+            .format_version = descriptor.format_version,
+            .store_id = descriptor.store_id,
+            .generation = descriptor.generation,
+            .count = descriptor.count,
+            .index_extent = index_size_for_count(descriptor.count),
+            .data_extent = descriptor.data_end,
+        };
+        const auto result = OOCCleanupTransaction::publish_private_handoff(
+            *cleanup_receipt_, *deferred_private_lease_, pair, payload_kind, payload_version,
+            opaque_payload, hooks);
+        if (!result.canonical()) {
+            const auto error = result.result.native_error
+                                   ? result.result.native_error
+                                   : std::make_error_code(std::errc::protocol_error);
+            throw std::system_error(error, "OOCRelationWriter: private handoff publication failed");
+        }
+        deferred_private_lease_ = nullptr;
         return descriptor;
     }
 

@@ -1,10 +1,12 @@
 #include <gnfs/core/relation.hpp>
 #include <gnfs/relation/ooc_cleanup_transaction.hpp>
+#include <gnfs/relation/ooc_durable_handoff.hpp>
 #include <gnfs/relation/ooc_relation_format.hpp>
 #include <gnfs/relation/ooc_relation_store.hpp>
 
 #include "support/child_process.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -15,6 +17,7 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -51,6 +54,12 @@ using gnfs::relation::OOCCleanupTestHooks;
 using gnfs::relation::OOCCleanupTestOperation;
 using gnfs::relation::OOCCleanupTransaction;
 using gnfs::relation::OOCExactCleanupExpectation;
+using gnfs::relation::OOCPrivateHandoffFaultPoint;
+using gnfs::relation::OOCPrivateHandoffPairDescriptorV1;
+using gnfs::relation::OOCPrivateHandoffPublishResult;
+using gnfs::relation::OOCPrivateHandoffRecordV1;
+using gnfs::relation::OOCPrivateHandoffState;
+using gnfs::relation::OOCPrivateHandoffTestHooks;
 using gnfs::relation::OOCPrivateLeaseFaultPoint;
 using gnfs::relation::OOCPrivateLeaseOwnershipReceipt;
 using gnfs::relation::OOCPrivateLeaseTestHooks;
@@ -150,6 +159,48 @@ void write_test_leaf(const std::filesystem::path& path, std::string_view payload
     output.flush();
     if (!output) {
         throw std::runtime_error("could not write test leaf");
+    }
+}
+
+[[maybe_unused, nodiscard]] std::vector<std::byte>
+read_test_bytes(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) {
+        throw std::runtime_error("could not open test bytes");
+    }
+    const auto end = input.tellg();
+    if (end < 0) {
+        throw std::runtime_error("could not size test bytes");
+    }
+    std::vector<std::byte> bytes(static_cast<std::size_t>(end));
+    input.seekg(0, std::ios::beg);
+    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!input) {
+        throw std::runtime_error("could not read test bytes");
+    }
+    return bytes;
+}
+
+[[maybe_unused]] void write_test_bytes(const std::filesystem::path& path,
+                                       std::span<const std::byte> bytes) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw std::runtime_error("could not create test byte leaf");
+    }
+    output.write(reinterpret_cast<const char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    output.flush();
+    if (!output) {
+        throw std::runtime_error("could not write test bytes");
+    }
+}
+
+void check_test_bytes_preserved(const std::filesystem::path& path,
+                                const std::vector<std::byte>& expected) {
+    const bool present = entry_exists_no_follow(path);
+    CHECK(present);
+    if (present) {
+        CHECK(read_test_bytes(path) == expected);
     }
 }
 
@@ -346,6 +397,91 @@ capture_cleanup_ownership(const std::filesystem::path& base_path, std::uint64_t 
     };
 }
 
+[[maybe_unused, nodiscard]] OOCPrivateHandoffPairDescriptorV1
+handoff_pair_descriptor(const OOCSnapshotDescriptor& descriptor) {
+    return OOCPrivateHandoffPairDescriptorV1{
+        .format_version = descriptor.format_version,
+        .store_id = descriptor.store_id,
+        .generation = descriptor.generation,
+        .count = descriptor.count,
+        .index_extent = OOCRelationWriter::index_size_for_count(descriptor.count),
+        .data_extent = descriptor.data_end,
+    };
+}
+
+constexpr std::uint32_t PRIVATE_HANDOFF_PAYLOAD_KIND = 0x474E4653U;
+constexpr std::uint32_t PRIVATE_HANDOFF_PAYLOAD_VERSION = 1;
+constexpr std::array<std::byte, 5> PRIVATE_HANDOFF_PAYLOAD{
+    std::byte{0x10}, std::byte{0x20}, std::byte{0x30}, std::byte{0x40}, std::byte{0x50},
+};
+
+struct PreparedPrivateHandoff final {
+    OOCSnapshotDescriptor descriptor;
+    OOCCleanupOwnershipReceipt pair_ownership;
+    OOCPrivateLeaseOwnershipReceipt lease_ownership;
+};
+
+[[nodiscard]] PreparedPrivateHandoff prepare_private_handoff(const std::filesystem::path& base) {
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    if (!reservation.completed()) {
+        throw std::runtime_error("could not reserve private handoff fixture");
+    }
+
+    OOCRelationWriter writer(base.string(), *reservation.ownership,
+                             OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
+    (void)writer.write(make_real_relation(17, 19));
+    const auto descriptor = writer.finalize();
+    auto pair_ownership = writer.take_cleanup_ownership_receipt();
+    return PreparedPrivateHandoff{
+        .descriptor = descriptor,
+        .pair_ownership = std::move(pair_ownership),
+        .lease_ownership = std::move(*reservation.ownership),
+    };
+}
+
+[[nodiscard]] OOCPrivateHandoffPublishResult
+publish_private_handoff(PreparedPrivateHandoff& prepared, OOCPrivateHandoffTestHooks hooks = {}) {
+    return OOCCleanupTransaction::publish_private_handoff(
+        prepared.pair_ownership, prepared.lease_ownership,
+        handoff_pair_descriptor(prepared.descriptor), PRIVATE_HANDOFF_PAYLOAD_KIND,
+        PRIVATE_HANDOFF_PAYLOAD_VERSION, PRIVATE_HANDOFF_PAYLOAD, hooks);
+}
+
+void set_private_control_leaf_mode(const std::filesystem::path& path) {
+    std::error_code error;
+    std::filesystem::permissions(
+        path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+        std::filesystem::perm_options::replace, error);
+    if (error) {
+        throw std::filesystem::filesystem_error("set private control leaf mode", path, error);
+    }
+}
+
+void write_private_control_bytes(const std::filesystem::path& path,
+                                 std::span<const std::byte> bytes) {
+    write_test_bytes(path, bytes);
+    set_private_control_leaf_mode(path);
+}
+
+void store_u32_le(std::span<std::byte> bytes, std::size_t offset, std::uint32_t value) {
+    if (offset > bytes.size() || bytes.size() - offset < sizeof(value)) {
+        throw std::runtime_error("test u32 mutation is out of range");
+    }
+    for (std::size_t index = 0; index < sizeof(value); ++index) {
+        bytes[offset + index] =
+            static_cast<std::byte>((value >> static_cast<unsigned int>(index * 8U)) & 0xffU);
+    }
+}
+
+[[nodiscard]] std::vector<std::byte>
+encode_private_handoff_record(const OOCPrivateHandoffRecordV1& record) {
+    const auto encoded = gnfs::relation::encode_ooc_private_handoff_record(record);
+    if (!encoded || !encoded.bytes) {
+        throw std::runtime_error("could not encode private handoff test record");
+    }
+    return *encoded.bytes;
+}
+
 void flip_last_byte(const std::filesystem::path& path) {
     std::fstream stream(path, std::ios::binary | std::ios::in | std::ios::out);
     if (!stream) {
@@ -425,6 +561,36 @@ struct PublishStopContext final {
         .context = &context,
     };
 }
+
+struct PrivateHandoffStopContext final {
+    OOCPrivateHandoffFaultPoint target = OOCPrivateHandoffFaultPoint::PendingDurable;
+    bool stopped = false;
+};
+
+[[nodiscard]] bool stop_at_private_handoff(OOCPrivateHandoffFaultPoint point,
+                                           void* opaque) noexcept {
+    auto& context = *static_cast<PrivateHandoffStopContext*>(opaque);
+    if (!context.stopped && point == context.target) {
+        context.stopped = true;
+        return true;
+    }
+    return false;
+}
+
+[[nodiscard]] OOCPrivateHandoffTestHooks
+private_handoff_stop_hooks(PrivateHandoffStopContext& context) noexcept {
+    return OOCPrivateHandoffTestHooks{
+        .stop_after = stop_at_private_handoff,
+        .context = &context,
+    };
+}
+
+constexpr std::array PRIVATE_HANDOFF_FAULT_POINTS{
+    OOCPrivateHandoffFaultPoint::PendingDurable,
+    OOCPrivateHandoffFaultPoint::CanonicalPromoted,
+    OOCPrivateHandoffFaultPoint::CanonicalDurable,
+    OOCPrivateHandoffFaultPoint::ReservedRevokedDurable,
+};
 
 struct OperationFailureContext final {
     OOCCleanupTestOperation target = OOCCleanupTestOperation::IndexRename;
@@ -1810,11 +1976,15 @@ void test_private_lease_writer_activation_closes_reservation() {
     CHECK(reservation.completed());
     CHECK(entry_exists_no_follow(paths.lease_reserved_path));
     CHECK(entry_exists_no_follow(paths.lease_owned_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
 
     write_pair(base, store_id, *reservation.ownership);
     CHECK(!entry_exists_no_follow(paths.lease_reserved_pending_path));
     CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
     CHECK(entry_exists_no_follow(paths.lease_owned_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
     CHECK(!reservation.ownership->spent());
 
     const auto recovered = OOCCleanupTransaction::recover_private_lease(base);
@@ -1826,6 +1996,8 @@ void test_private_lease_writer_activation_closes_reservation() {
     CHECK(reservation.ownership->spent());
     CHECK(!entry_exists_no_follow(paths.private_directory));
     CHECK(!entry_exists_no_follow(paths.lease_owned_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
 }
 
 void test_private_lease_recovery_finishes_canonical_pair_intent(const std::string& executable) {
@@ -1874,10 +2046,14 @@ void test_deferred_private_writer_handoff_and_pending_recovery() {
         CHECK(!entry_exists_no_follow(paths.intent_pending_path));
         CHECK(entry_exists_no_follow(paths.index_path));
         CHECK(entry_exists_no_follow(paths.data_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
         CHECK(OOCRelationReader(base.string()).count() == 0);
         CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
         check_cleanup_complete(paths);
         CHECK(!entry_exists_no_follow(paths.private_directory));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
     }
 
     {
@@ -1905,9 +2081,13 @@ void test_deferred_private_writer_handoff_and_pending_recovery() {
         CHECK(entry_exists_no_follow(paths.intent_pending_path));
         CHECK(entry_exists_no_follow(paths.index_path));
         CHECK(entry_exists_no_follow(paths.data_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
         CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
         check_cleanup_complete(paths);
         CHECK(!entry_exists_no_follow(paths.private_directory));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
     }
 }
 
@@ -1931,13 +2111,1297 @@ void test_deferred_handoff_foreign_leaf_blocks_pair_mutation() {
     CHECK(entry_exists_no_follow(paths.intent_path));
     CHECK(entry_exists_no_follow(paths.index_path));
     CHECK(entry_exists_no_follow(paths.data_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
 
     std::error_code error;
     CHECK(std::filesystem::remove(foreign, error));
     CHECK(!error);
     CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
     check_cleanup_complete(paths);
+    CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
 }
+
+void test_private_handoff_writer_rejects_metadata_before_finalize() {
+    TempDirectory temp;
+    const auto base = temp.path() / "private-handoff-invalid-metadata.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+
+    std::optional<OOCSnapshotDescriptor> descriptor;
+    {
+        OOCRelationWriter writer(base.string(), *reservation.ownership,
+                                 OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
+        (void)writer.write(make_real_relation(31, 37));
+
+        bool zero_kind_rejected = false;
+        try {
+            (void)writer.finalize_and_publish_private_handoff(0, PRIVATE_HANDOFF_PAYLOAD_VERSION,
+                                                              PRIVATE_HANDOFF_PAYLOAD);
+        } catch (const std::invalid_argument&) {
+            zero_kind_rejected = true;
+        }
+        CHECK(zero_kind_rejected);
+        (void)writer.write(make_real_relation(41, 43));
+
+        bool zero_version_rejected = false;
+        try {
+            (void)writer.finalize_and_publish_private_handoff(PRIVATE_HANDOFF_PAYLOAD_KIND, 0,
+                                                              PRIVATE_HANDOFF_PAYLOAD);
+        } catch (const std::invalid_argument&) {
+            zero_version_rejected = true;
+        }
+        CHECK(zero_version_rejected);
+
+        const std::vector<std::byte> oversized_payload(
+            gnfs::relation::OOC_PRIVATE_HANDOFF_MAX_OPAQUE_PAYLOAD_BYTES + 1U, std::byte{0x7f});
+        bool oversized_rejected = false;
+        try {
+            (void)writer.finalize_and_publish_private_handoff(
+                PRIVATE_HANDOFF_PAYLOAD_KIND, PRIVATE_HANDOFF_PAYLOAD_VERSION, oversized_payload);
+        } catch (const std::invalid_argument&) {
+            oversized_rejected = true;
+        }
+        CHECK(oversized_rejected);
+        (void)writer.write(make_real_relation(47, 53));
+
+        descriptor = writer.finalize_and_publish_cleanup_handoff();
+    }
+    CHECK(descriptor.has_value());
+    if (descriptor) {
+        CHECK(descriptor->count == 3);
+    }
+    CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+    CHECK(entry_exists_no_follow(paths.intent_path));
+    CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
+    check_cleanup_complete(paths);
+    CHECK(!entry_exists_no_follow(paths.private_directory));
+}
+
+void test_private_handoff_transaction_rejects_oversize_before_mutation() {
+    TempDirectory temp;
+    const auto base =
+        temp.path() / "private-handoff-oversize-transaction.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto prepared = prepare_private_handoff(base);
+    const auto index_bytes = read_test_bytes(paths.index_path);
+    const auto data_bytes = read_test_bytes(paths.data_path);
+    const auto reserved_bytes = read_test_bytes(paths.lease_reserved_path);
+    const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
+    const std::vector<std::byte> oversized_payload(
+        gnfs::relation::OOC_PRIVATE_HANDOFF_MAX_OPAQUE_PAYLOAD_BYTES + 1U, std::byte{0x6a});
+
+    const auto rejected = OOCCleanupTransaction::publish_private_handoff(
+        prepared.pair_ownership, prepared.lease_ownership,
+        handoff_pair_descriptor(prepared.descriptor), PRIVATE_HANDOFF_PAYLOAD_KIND,
+        PRIVATE_HANDOFF_PAYLOAD_VERSION, oversized_payload);
+    CHECK(rejected.result.status == OOCCleanupStatus::InvalidRequest);
+    CHECK(!rejected.canonical());
+    CHECK(!prepared.pair_ownership.spent());
+    CHECK(!prepared.lease_ownership.spent());
+
+    CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+    CHECK(read_test_bytes(paths.index_path) == index_bytes);
+    CHECK(read_test_bytes(paths.data_path) == data_bytes);
+    CHECK(read_test_bytes(paths.lease_reserved_path) == reserved_bytes);
+    CHECK(read_test_bytes(paths.lease_owned_path) == owned_bytes);
+    CHECK(!entry_exists_no_follow(paths.intent_path));
+    CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+    CHECK(!entry_exists_no_follow(paths.staged_path));
+    CHECK(!entry_exists_no_follow(paths.staged_pending_path));
+    CHECK(!entry_exists_no_follow(paths.quarantine_index_path));
+    CHECK(!entry_exists_no_follow(paths.quarantine_data_path));
+
+    CHECK(OOCCleanupTransaction::remove_private_lease(prepared.lease_ownership).completed());
+    CHECK(prepared.lease_ownership.spent());
+    check_cleanup_complete(paths);
+    CHECK(!entry_exists_no_follow(paths.private_directory));
+}
+
+#if !defined(__APPLE__)
+void test_private_handoff_unsupported_publish_is_non_mutating() {
+    TempDirectory temp;
+    const auto base =
+        temp.path() / "unsupported-private-handoff-publish.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto prepared = prepare_private_handoff(base);
+    const auto index_bytes = read_test_bytes(paths.index_path);
+    const auto data_bytes = read_test_bytes(paths.data_path);
+    const auto reserved_bytes = read_test_bytes(paths.lease_reserved_path);
+    const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
+
+    const auto rejected = publish_private_handoff(prepared);
+    CHECK(rejected.result.status == OOCCleanupStatus::PlatformUnsupported);
+    CHECK(rejected.state == OOCPrivateHandoffState::TaintedPreserved);
+    CHECK(!rejected.canonical());
+    CHECK(!prepared.pair_ownership.spent());
+    CHECK(!prepared.lease_ownership.spent());
+
+    CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+    CHECK(read_test_bytes(paths.index_path) == index_bytes);
+    CHECK(read_test_bytes(paths.data_path) == data_bytes);
+    CHECK(read_test_bytes(paths.lease_reserved_path) == reserved_bytes);
+    CHECK(read_test_bytes(paths.lease_owned_path) == owned_bytes);
+    CHECK(!entry_exists_no_follow(paths.intent_path));
+    CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+    CHECK(!entry_exists_no_follow(paths.staged_path));
+    CHECK(!entry_exists_no_follow(paths.staged_pending_path));
+    CHECK(!entry_exists_no_follow(paths.quarantine_index_path));
+    CHECK(!entry_exists_no_follow(paths.quarantine_data_path));
+
+    CHECK(OOCCleanupTransaction::remove_private_lease(prepared.lease_ownership).completed());
+    CHECK(prepared.lease_ownership.spent());
+    check_cleanup_complete(paths);
+    CHECK(!entry_exists_no_follow(paths.private_directory));
+}
+#endif
+
+[[nodiscard]] std::filesystem::path
+private_lease_stage_path_for_token(const gnfs::relation::OOCCleanupPaths& paths,
+                                   std::string_view token) {
+    auto leaf = paths.private_directory.filename().native();
+    leaf.append(std::filesystem::path(".gnfs-private-lease-v1.stage-").native());
+    leaf.append(std::filesystem::path(std::string(token)).native());
+    return paths.private_directory.parent_path() / std::filesystem::path(std::move(leaf));
+}
+
+void check_missing_lock_orphan_stage_conflict(
+    const std::filesystem::path& base, const std::filesystem::path& stage_path,
+    const std::filesystem::path& sentinel_path,
+    const std::optional<std::array<std::uint64_t, 3>>& expected_identity) {
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    const auto sentinel_bytes = read_test_bytes(sentinel_path);
+    CHECK(!entry_exists_no_follow(paths.lock_path));
+
+    const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+    CHECK(inspected.result.status == OOCCleanupStatus::NamespaceConflict);
+    CHECK(inspected.state == OOCPrivateHandoffState::TaintedPreserved);
+    CHECK(OOCCleanupTransaction::recover_private_lease(base).status ==
+          OOCCleanupStatus::NamespaceConflict);
+    const auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.result.status == OOCCleanupStatus::NamespaceConflict);
+    CHECK(!reservation.ownership.has_value());
+
+    CHECK(!entry_exists_no_follow(paths.lock_path));
+    CHECK(entry_exists_no_follow(stage_path));
+    CHECK(read_test_bytes(sentinel_path) == sentinel_bytes);
+    if (expected_identity) {
+        CHECK(gnfs::relation::ooc_cleanup_detail::inspect_directory_identity_locked(stage_path) ==
+              expected_identity);
+    }
+}
+
+void test_private_handoff_missing_lock_orphan_stage_is_preserved() {
+    TempDirectory temp;
+    constexpr std::string_view EXACT_TOKEN = "0123456789abcdef0123456789abcdef";
+
+    {
+        const auto base = temp.path() / "orphan-stage.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        const auto stage_path = private_lease_stage_path_for_token(paths, EXACT_TOKEN);
+        const auto sentinel_path = stage_path / "sentinel";
+        std::error_code error;
+        CHECK(std::filesystem::create_directory(stage_path, error));
+        CHECK(!error);
+        write_test_leaf(sentinel_path, "orphan stage sentinel");
+        const auto identity =
+            gnfs::relation::ooc_cleanup_detail::inspect_directory_identity_locked(stage_path);
+        CHECK(identity.has_value());
+
+        check_missing_lock_orphan_stage_conflict(base, stage_path, sentinel_path, identity);
+    }
+
+    {
+        const auto base = temp.path() / "orphan-stage-symlink.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        const auto stage_path = private_lease_stage_path_for_token(paths, EXACT_TOKEN);
+        const auto target = temp.path() / "orphan-stage-symlink-target";
+        const auto sentinel_path = target / "sentinel";
+        std::error_code error;
+        CHECK(std::filesystem::create_directory(target, error));
+        CHECK(!error);
+        write_test_leaf(sentinel_path, "orphan symlink stage sentinel");
+        if (create_symlink_or_explicit_skip(target, stage_path,
+                                            "missing-lock private lease stage symlink")) {
+            check_missing_lock_orphan_stage_conflict(base, stage_path, sentinel_path, std::nullopt);
+            CHECK(entry_is_symlink_no_follow(stage_path));
+            check_entries_equivalent(stage_path, target);
+        }
+    }
+}
+
+void test_private_handoff_invalid_orphan_stage_names_are_ignored() {
+    TempDirectory temp;
+    const auto base = temp.path() / "invalid-orphan-stages.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    constexpr std::array<std::string_view, 5> INVALID_TOKENS{
+        "0123456789abcdef0123456789abcde",        "0123456789abcdef0123456789abcdef0",
+        "0123456789abcdef0123456789abcdeF",       "0123456789abcdef0123456789abcdeg",
+        "0123456789abcdef0123456789abcdef.extra",
+    };
+
+    std::array<std::filesystem::path, INVALID_TOKENS.size()> stage_paths;
+    std::array<std::optional<std::array<std::uint64_t, 3>>, INVALID_TOKENS.size()> identities;
+    std::array<std::vector<std::byte>, INVALID_TOKENS.size()> sentinel_bytes;
+    for (std::size_t index = 0; index < INVALID_TOKENS.size(); ++index) {
+        stage_paths[index] = private_lease_stage_path_for_token(paths, INVALID_TOKENS[index]);
+        std::error_code error;
+        CHECK(std::filesystem::create_directory(stage_paths[index], error));
+        CHECK(!error);
+        write_test_leaf(stage_paths[index] / "sentinel", std::to_string(index));
+        sentinel_bytes[index] = read_test_bytes(stage_paths[index] / "sentinel");
+        identities[index] = gnfs::relation::ooc_cleanup_detail::inspect_directory_identity_locked(
+            stage_paths[index]);
+        CHECK(identities[index].has_value());
+    }
+
+    CHECK(!entry_exists_no_follow(paths.lock_path));
+    const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+    CHECK(inspected.result.status == OOCCleanupStatus::NoTransaction);
+    CHECK(inspected.state == OOCPrivateHandoffState::None);
+    CHECK(OOCCleanupTransaction::recover_private_lease(base).status ==
+          OOCCleanupStatus::NoTransaction);
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+    if (reservation.completed()) {
+        CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
+        CHECK(reservation.ownership->spent());
+    }
+
+    for (std::size_t index = 0; index < INVALID_TOKENS.size(); ++index) {
+        CHECK(gnfs::relation::ooc_cleanup_detail::inspect_directory_identity_locked(
+                  stage_paths[index]) == identities[index]);
+        CHECK(read_test_bytes(stage_paths[index] / "sentinel") == sentinel_bytes[index]);
+    }
+}
+
+[[nodiscard]] bool is_preserving_namespace_status(OOCCleanupStatus status) {
+    return status == OOCCleanupStatus::NamespaceConflict ||
+           status == OOCCleanupStatus::ForeignReplacementPreserved;
+}
+
+struct PrivateLeaseStopOnceContext final {
+    OOCPrivateLeaseFaultPoint target = OOCPrivateLeaseFaultPoint::OwnedDurable;
+    bool stopped = false;
+};
+
+[[nodiscard]] bool stop_private_lease_once(OOCPrivateLeaseFaultPoint point, void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseStopOnceContext*>(opaque);
+    if (!context.stopped && point == context.target) {
+        context.stopped = true;
+        return true;
+    }
+    return false;
+}
+
+void test_private_lease_unknown_child_preserves_matching_pending() {
+    TempDirectory temp;
+
+    {
+        const auto base =
+            temp.path() / "final-unknown-before-pending-cleanup.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        const auto owner_path = paths.private_directory / ".gnfs-private-lease-v1.owner";
+        const auto foreign_path = paths.private_directory / "foreign-control-leaf";
+        write_private_control_bytes(paths.lease_reserved_pending_path,
+                                    read_test_bytes(paths.lease_reserved_path));
+        write_private_control_bytes(paths.lease_owned_pending_path,
+                                    read_test_bytes(paths.lease_owned_path));
+        write_test_leaf(foreign_path, "foreign final child");
+
+        const auto reserved_bytes = read_test_bytes(paths.lease_reserved_path);
+        const auto reserved_pending_bytes = read_test_bytes(paths.lease_reserved_pending_path);
+        const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
+        const auto owned_pending_bytes = read_test_bytes(paths.lease_owned_pending_path);
+        const auto owner_bytes = read_test_bytes(owner_path);
+        const auto index_bytes = read_test_bytes(paths.index_path);
+        const auto data_bytes = read_test_bytes(paths.data_path);
+        const auto foreign_bytes = read_test_bytes(foreign_path);
+        const auto directory_identity =
+            gnfs::relation::ooc_cleanup_detail::inspect_directory_identity_locked(
+                paths.private_directory);
+
+        const auto removed = OOCCleanupTransaction::remove_private_lease(prepared.lease_ownership);
+        CHECK(is_preserving_namespace_status(removed.status));
+        CHECK(!prepared.lease_ownership.spent());
+        check_test_bytes_preserved(paths.lease_reserved_path, reserved_bytes);
+        check_test_bytes_preserved(paths.lease_reserved_pending_path, reserved_pending_bytes);
+        check_test_bytes_preserved(paths.lease_owned_path, owned_bytes);
+        check_test_bytes_preserved(paths.lease_owned_pending_path, owned_pending_bytes);
+        check_test_bytes_preserved(owner_path, owner_bytes);
+        check_test_bytes_preserved(paths.index_path, index_bytes);
+        check_test_bytes_preserved(paths.data_path, data_bytes);
+        check_test_bytes_preserved(foreign_path, foreign_bytes);
+        CHECK(gnfs::relation::ooc_cleanup_detail::inspect_directory_identity_locked(
+                  paths.private_directory) == directory_identity);
+
+        std::optional<OOCPrivateLeaseOwnershipReceipt> stale_lease;
+        stale_lease.emplace(std::move(prepared.lease_ownership));
+        stale_lease.reset();
+        const auto recovered = OOCCleanupTransaction::recover_private_lease(base);
+        CHECK(is_preserving_namespace_status(recovered.status));
+        check_test_bytes_preserved(paths.lease_reserved_path, reserved_bytes);
+        check_test_bytes_preserved(paths.lease_reserved_pending_path, reserved_pending_bytes);
+        check_test_bytes_preserved(paths.lease_owned_path, owned_bytes);
+        check_test_bytes_preserved(paths.lease_owned_pending_path, owned_pending_bytes);
+        check_test_bytes_preserved(owner_path, owner_bytes);
+        check_test_bytes_preserved(paths.index_path, index_bytes);
+        check_test_bytes_preserved(paths.data_path, data_bytes);
+        check_test_bytes_preserved(foreign_path, foreign_bytes);
+        CHECK(!prepared.pair_ownership.spent());
+    }
+
+    {
+        const auto base =
+            temp.path() / "staging-unknown-before-pending-cleanup.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        PrivateLeaseStopOnceContext stop{
+            .target = OOCPrivateLeaseFaultPoint::OwnedDurable,
+        };
+        const auto reservation = OOCCleanupTransaction::reserve_private_lease(
+            base, OOCPrivateLeaseTestHooks{
+                      .stop_after = stop_private_lease_once,
+                      .context = &stop,
+                  });
+        CHECK(reservation.result.status == OOCCleanupStatus::Interrupted);
+        CHECK(!reservation.ownership.has_value());
+        CHECK(stop.stopped);
+        const auto staging = private_lease_staging_entries(paths);
+        CHECK(staging.size() == 1);
+        if (staging.size() != 1) {
+            return;
+        }
+        const auto owner_path = staging.front() / ".gnfs-private-lease-v1.owner";
+        const auto foreign_path = staging.front() / "foreign-control-leaf";
+        write_private_control_bytes(paths.lease_reserved_pending_path,
+                                    read_test_bytes(paths.lease_reserved_path));
+        write_private_control_bytes(paths.lease_owned_pending_path,
+                                    read_test_bytes(paths.lease_owned_path));
+        write_test_leaf(foreign_path, "foreign staging child");
+
+        const auto reserved_bytes = read_test_bytes(paths.lease_reserved_path);
+        const auto reserved_pending_bytes = read_test_bytes(paths.lease_reserved_pending_path);
+        const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
+        const auto owned_pending_bytes = read_test_bytes(paths.lease_owned_pending_path);
+        const auto owner_bytes = read_test_bytes(owner_path);
+        const auto foreign_bytes = read_test_bytes(foreign_path);
+        const auto staging_identity =
+            gnfs::relation::ooc_cleanup_detail::inspect_directory_identity_locked(staging.front());
+
+        const auto recovered = OOCCleanupTransaction::recover_private_lease(base);
+        CHECK(is_preserving_namespace_status(recovered.status));
+        check_test_bytes_preserved(paths.lease_reserved_path, reserved_bytes);
+        check_test_bytes_preserved(paths.lease_reserved_pending_path, reserved_pending_bytes);
+        check_test_bytes_preserved(paths.lease_owned_path, owned_bytes);
+        check_test_bytes_preserved(paths.lease_owned_pending_path, owned_pending_bytes);
+        check_test_bytes_preserved(owner_path, owner_bytes);
+        check_test_bytes_preserved(foreign_path, foreign_bytes);
+        CHECK(gnfs::relation::ooc_cleanup_detail::inspect_directory_identity_locked(
+                  staging.front()) == staging_identity);
+    }
+}
+
+struct FreshWriterBoundaryContext final {
+    OOCPrivateLeaseFaultPoint observe = OOCPrivateLeaseFaultPoint::FreshIndexReserved;
+    std::filesystem::path foreign_path;
+    bool observed = false;
+    bool injected = false;
+    bool injection_failed = false;
+};
+
+[[nodiscard]] bool observe_or_inject_fresh_writer_boundary(OOCPrivateLeaseFaultPoint point,
+                                                           void* opaque) noexcept {
+    auto& context = *static_cast<FreshWriterBoundaryContext*>(opaque);
+    if (point != context.observe) {
+        return false;
+    }
+    context.observed = true;
+    if (!context.foreign_path.empty()) {
+        try {
+            write_test_leaf(context.foreign_path, "injected activation foreign child");
+            context.injected = true;
+        } catch (...) {
+            context.injection_failed = true;
+        }
+    }
+    return point == OOCPrivateLeaseFaultPoint::FreshIndexReserved;
+}
+
+void test_private_lease_unknown_scan_precedes_writer_mutation() {
+    TempDirectory temp;
+
+    {
+        const auto base = temp.path() / "unknown-before-fresh-writer.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+        CHECK(reservation.completed());
+        const auto owner_path = paths.private_directory / ".gnfs-private-lease-v1.owner";
+        const auto foreign_path = paths.private_directory / "foreign-control-leaf";
+        write_test_leaf(foreign_path, "foreign before writer");
+        const auto reserved_bytes = read_test_bytes(paths.lease_reserved_path);
+        const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
+        const auto owner_bytes = read_test_bytes(owner_path);
+        const auto foreign_bytes = read_test_bytes(foreign_path);
+        FreshWriterBoundaryContext boundary;
+
+        bool rejected = false;
+        try {
+            OOCRelationWriter writer(base.string(), *reservation.ownership,
+                                     OOCPrivateLeaseTestHooks{
+                                         .stop_after = observe_or_inject_fresh_writer_boundary,
+                                         .context = &boundary,
+                                     });
+        } catch (const std::system_error&) {
+            rejected = true;
+        }
+        CHECK(rejected);
+        CHECK(!boundary.observed);
+        CHECK(!entry_exists_no_follow(paths.index_path));
+        CHECK(!entry_exists_no_follow(paths.data_path));
+        check_test_bytes_preserved(paths.lease_reserved_path, reserved_bytes);
+        check_test_bytes_preserved(paths.lease_owned_path, owned_bytes);
+        check_test_bytes_preserved(owner_path, owner_bytes);
+        check_test_bytes_preserved(foreign_path, foreign_bytes);
+        CHECK(!reservation.ownership->spent());
+    }
+
+    {
+        const auto base = temp.path() / "unknown-before-reserved-revoke.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+        CHECK(reservation.completed());
+        const auto owner_path = paths.private_directory / ".gnfs-private-lease-v1.owner";
+        const auto foreign_path = paths.private_directory / "activation-foreign-control-leaf";
+        const auto reserved_bytes = read_test_bytes(paths.lease_reserved_path);
+        const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
+        const auto owner_bytes = read_test_bytes(owner_path);
+        FreshWriterBoundaryContext boundary{
+            .observe = OOCPrivateLeaseFaultPoint::FreshPairOwnershipCaptured,
+            .foreign_path = foreign_path,
+        };
+
+        bool rejected = false;
+        try {
+            OOCRelationWriter writer(base.string(), *reservation.ownership,
+                                     OOCPrivateLeaseTestHooks{
+                                         .stop_after = observe_or_inject_fresh_writer_boundary,
+                                         .context = &boundary,
+                                     });
+        } catch (const std::system_error&) {
+            rejected = true;
+        }
+        CHECK(boundary.observed);
+        CHECK(boundary.injected);
+        CHECK(!boundary.injection_failed);
+        CHECK(rejected);
+        CHECK(!entry_exists_no_follow(paths.index_path));
+        CHECK(!entry_exists_no_follow(paths.data_path));
+        check_test_bytes_preserved(paths.lease_reserved_path, reserved_bytes);
+        check_test_bytes_preserved(paths.lease_owned_path, owned_bytes);
+        check_test_bytes_preserved(owner_path, owner_bytes);
+        if (boundary.injected) {
+            constexpr std::string_view EXPECTED = "injected activation foreign child";
+            const auto actual = read_test_bytes(foreign_path);
+            CHECK(actual.size() == EXPECTED.size());
+            CHECK(std::equal(actual.begin(), actual.end(), EXPECTED.begin(), EXPECTED.end(),
+                             [](std::byte byte, char character) {
+                                 return std::to_integer<unsigned char>(byte) ==
+                                        static_cast<unsigned char>(character);
+                             }));
+        }
+        CHECK(!reservation.ownership->spent());
+    }
+}
+
+void test_unscoped_writer_rejects_existing_preactive_private_lease() {
+    TempDirectory temp;
+
+    for (const bool add_unknown_child : {false, true}) {
+        const std::string lease_name = add_unknown_child ? "unscoped-writer-preactive-unknown"
+                                                         : "unscoped-writer-preactive-clean";
+        const auto base = temp.path() / (lease_name + ".gnfs-sink-lease") / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+        CHECK(reservation.completed());
+
+        const auto owner_path = paths.private_directory / ".gnfs-private-lease-v1.owner";
+        const auto unknown_path = paths.private_directory / "foreign-control-leaf";
+        if (add_unknown_child) {
+            write_test_leaf(unknown_path, "unscoped writer foreign child");
+        }
+
+        const auto reserved_bytes = read_test_bytes(paths.lease_reserved_path);
+        const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
+        const auto owner_bytes = read_test_bytes(owner_path);
+        std::optional<std::vector<std::byte>> unknown_bytes;
+        if (add_unknown_child) {
+            unknown_bytes = read_test_bytes(unknown_path);
+        }
+        const auto directory_identity =
+            gnfs::relation::ooc_cleanup_detail::inspect_directory_identity_locked(
+                paths.private_directory);
+        CHECK(directory_identity.has_value());
+        CHECK(entry_exists_no_follow(paths.lock_path));
+        CHECK(!entry_exists_no_follow(paths.index_path));
+        CHECK(!entry_exists_no_follow(paths.data_path));
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_pending_path));
+        CHECK(!entry_exists_no_follow(paths.lease_owned_pending_path));
+
+        // Leave the durable preactive namespace in place but release the live
+        // lock, so rejection must come from the namespace gate rather than Busy.
+        reservation.ownership.reset();
+        CHECK(!reservation.ownership.has_value());
+        CHECK(entry_exists_no_follow(paths.lock_path));
+
+        bool rejected = false;
+        std::optional<OOCRelationWriter> writer;
+        try {
+            writer.emplace(base.string());
+        } catch (const std::system_error&) {
+            rejected = true;
+        }
+        CHECK(rejected);
+        CHECK(!writer.has_value());
+
+        // Keep an erroneously constructed writer alive through these checks so
+        // its destructor cannot hide an O_EXCL pair mutation.
+        CHECK(!entry_exists_no_follow(paths.index_path));
+        CHECK(!entry_exists_no_follow(paths.data_path));
+        check_test_bytes_preserved(paths.lease_reserved_path, reserved_bytes);
+        check_test_bytes_preserved(paths.lease_owned_path, owned_bytes);
+        check_test_bytes_preserved(owner_path, owner_bytes);
+        if (unknown_bytes.has_value()) {
+            check_test_bytes_preserved(unknown_path, *unknown_bytes);
+        }
+        CHECK(entry_exists_no_follow(paths.lock_path));
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_pending_path));
+        CHECK(!entry_exists_no_follow(paths.lease_owned_pending_path));
+        CHECK(gnfs::relation::ooc_cleanup_detail::inspect_directory_identity_locked(
+                  paths.private_directory) == directory_identity);
+
+        writer.reset();
+    }
+}
+
+void test_private_lease_unknown_scan_precedes_legacy_intent_publication() {
+    TempDirectory temp;
+    const auto base = temp.path() / "unknown-before-legacy-intent.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+    const auto owner_path = paths.private_directory / ".gnfs-private-lease-v1.owner";
+
+    OOCRelationWriter writer(base.string(), *reservation.ownership,
+                             OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
+    (void)writer.write(make_real_relation(59, 61));
+    const auto descriptor = writer.finalize();
+    CHECK(descriptor.count == 1);
+    const auto foreign_path = paths.private_directory / "foreign-control-leaf";
+    write_test_leaf(foreign_path, "foreign before legacy intent");
+
+    const auto reserved_bytes = read_test_bytes(paths.lease_reserved_path);
+    const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
+    const auto owner_bytes = read_test_bytes(owner_path);
+    const auto index_bytes = read_test_bytes(paths.index_path);
+    const auto data_bytes = read_test_bytes(paths.data_path);
+    const auto foreign_bytes = read_test_bytes(foreign_path);
+    bool rejected = false;
+    try {
+        (void)writer.finalize_and_publish_cleanup_handoff();
+    } catch (const std::system_error&) {
+        rejected = true;
+    }
+    CHECK(rejected);
+    CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+    CHECK(!entry_exists_no_follow(paths.intent_path));
+    check_test_bytes_preserved(paths.lease_reserved_path, reserved_bytes);
+    check_test_bytes_preserved(paths.lease_owned_path, owned_bytes);
+    check_test_bytes_preserved(owner_path, owner_bytes);
+    check_test_bytes_preserved(paths.index_path, index_bytes);
+    check_test_bytes_preserved(paths.data_path, data_bytes);
+    check_test_bytes_preserved(foreign_path, foreign_bytes);
+    CHECK(!reservation.ownership->spent());
+}
+
+#if defined(__APPLE__)
+void create_abandoned_private_handoff_pending(const std::filesystem::path& base,
+                                              bool remove_reserved) {
+    const pid_t child = ::fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        try {
+            auto prepared = prepare_private_handoff(base);
+            PrivateHandoffStopContext stop{
+                .target = OOCPrivateHandoffFaultPoint::PendingDurable,
+            };
+            const auto interrupted =
+                publish_private_handoff(prepared, private_handoff_stop_hooks(stop));
+            if (!stop.stopped || interrupted.result.status != OOCCleanupStatus::Interrupted ||
+                interrupted.state != OOCPrivateHandoffState::PendingOnly) {
+                ::_exit(82);
+            }
+            if (remove_reserved) {
+                const auto paths = OOCCleanupTransaction::paths_for(base);
+                std::error_code error;
+                if (!std::filesystem::remove(paths.lease_reserved_path, error) || error) {
+                    ::_exit(83);
+                }
+            }
+            ::_exit(0);
+        } catch (...) {
+            ::_exit(84);
+        }
+    }
+
+    int status = 0;
+    CHECK(::waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+}
+
+void test_private_handoff_writer_round_trip() {
+    TempDirectory temp;
+
+    for (const std::size_t relation_count : {std::size_t{0}, std::size_t{2}}) {
+        const auto base =
+            temp.path() /
+            ("writer-private-handoff-" + std::to_string(relation_count) + ".gnfs-sink-lease") /
+            "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+        CHECK(reservation.completed());
+
+        std::optional<OOCSnapshotDescriptor> descriptor;
+        {
+            OOCRelationWriter writer(base.string(), *reservation.ownership,
+                                     OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
+            for (std::size_t index = 0; index < relation_count; ++index) {
+                (void)writer.write(
+                    make_real_relation(23 + static_cast<std::int64_t>(index), 29 + index));
+            }
+            descriptor = writer.finalize_and_publish_private_handoff(
+                PRIVATE_HANDOFF_PAYLOAD_KIND, PRIVATE_HANDOFF_PAYLOAD_VERSION,
+                PRIVATE_HANDOFF_PAYLOAD);
+        }
+
+        CHECK(descriptor.has_value());
+        const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+        CHECK(inspected.canonical());
+        CHECK(inspected.result.status == OOCCleanupStatus::HandoffPresent);
+        CHECK(inspected.state == OOCPrivateHandoffState::Canonical);
+        CHECK(inspected.record.has_value());
+        if (descriptor && inspected.record) {
+            CHECK(inspected.record->pair == handoff_pair_descriptor(*descriptor));
+            CHECK(inspected.record->payload_kind == PRIVATE_HANDOFF_PAYLOAD_KIND);
+            CHECK(inspected.record->payload_version == PRIVATE_HANDOFF_PAYLOAD_VERSION);
+            CHECK(inspected.record->opaque_payload.size() == PRIVATE_HANDOFF_PAYLOAD.size());
+            CHECK(std::equal(inspected.record->opaque_payload.begin(),
+                             inspected.record->opaque_payload.end(),
+                             PRIVATE_HANDOFF_PAYLOAD.begin()));
+        }
+        CHECK(OOCRelationReader(base.string()).count() == relation_count);
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(entry_exists_no_follow(paths.data_path));
+        CHECK(entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(entry_exists_no_follow(paths.lease_owned_path));
+        CHECK(!entry_exists_no_follow(paths.intent_path));
+        CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+
+        const auto retained = OOCCleanupTransaction::remove_private_lease(*reservation.ownership);
+        CHECK(retained.status == OOCCleanupStatus::HandoffPresent);
+        CHECK(!reservation.ownership->spent());
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(entry_exists_no_follow(paths.data_path));
+        CHECK(entry_exists_no_follow(paths.private_handoff_path));
+    }
+}
+
+void test_private_handoff_pending_only_never_authorizes_cleanup() {
+    TempDirectory temp;
+    const auto base = temp.path() / "pending-private-handoff.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    create_abandoned_private_handoff_pending(base, false);
+
+    CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+    CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+    CHECK(entry_exists_no_follow(paths.lease_owned_path));
+
+    const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+    CHECK(inspected.result.status == OOCCleanupStatus::RecoveryRequired);
+    CHECK(inspected.state == OOCPrivateHandoffState::PendingOnly);
+    CHECK(!inspected.canonical());
+
+    CHECK(OOCCleanupTransaction::resume(base).status == OOCCleanupStatus::RecoveryRequired);
+    CHECK(!entry_exists_no_follow(paths.intent_path));
+    CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+    CHECK(entry_exists_no_follow(paths.index_path));
+    CHECK(entry_exists_no_follow(paths.data_path));
+    CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+
+    const auto rolled_back = OOCCleanupTransaction::recover_private_lease(base);
+    CHECK(rolled_back.completed());
+    check_cleanup_complete(paths);
+    CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+    CHECK(!entry_exists_no_follow(paths.private_directory));
+}
+
+void test_private_handoff_pending_without_reserved_is_preserved() {
+    TempDirectory temp;
+    const auto base = temp.path() / "pending-without-reserved.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    create_abandoned_private_handoff_pending(base, true);
+    const auto pending_bytes = read_test_bytes(paths.private_handoff_pending_path);
+    const auto index_bytes = read_test_bytes(paths.index_path);
+    const auto data_bytes = read_test_bytes(paths.data_path);
+    CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+
+    const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+    CHECK(inspected.result.status == OOCCleanupStatus::RecoveryRequired);
+    CHECK(inspected.state == OOCPrivateHandoffState::PendingOnly);
+    CHECK(OOCCleanupTransaction::recover_private_lease(base).status ==
+          OOCCleanupStatus::RecoveryRequired);
+    CHECK(OOCCleanupTransaction::resume(base).status == OOCCleanupStatus::RecoveryRequired);
+
+    CHECK(read_test_bytes(paths.private_handoff_pending_path) == pending_bytes);
+    CHECK(read_test_bytes(paths.index_path) == index_bytes);
+    CHECK(read_test_bytes(paths.data_path) == data_bytes);
+    CHECK(entry_exists_no_follow(paths.lease_owned_path));
+    CHECK(!entry_exists_no_follow(paths.intent_path));
+    CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+}
+
+void test_private_handoff_missing_lock_conflicts_before_mutation() {
+    TempDirectory temp;
+    const auto base = temp.path() / "missing-lock.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    std::error_code error;
+    CHECK(std::filesystem::create_directories(paths.private_directory, error));
+    CHECK(!error);
+    write_private_control_bytes(paths.private_handoff_pending_path, PRIVATE_HANDOFF_PAYLOAD);
+    const auto original = read_test_bytes(paths.private_handoff_pending_path);
+    CHECK(!entry_exists_no_follow(paths.lock_path));
+
+    const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+    CHECK(inspected.result.status == OOCCleanupStatus::NamespaceConflict);
+    CHECK(inspected.state == OOCPrivateHandoffState::TaintedPreserved);
+    CHECK(OOCCleanupTransaction::recover_private_lease(base).status ==
+          OOCCleanupStatus::NamespaceConflict);
+    const auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.result.status == OOCCleanupStatus::NamespaceConflict);
+    CHECK(!reservation.ownership.has_value());
+
+    CHECK(!entry_exists_no_follow(paths.lock_path));
+    CHECK(read_test_bytes(paths.private_handoff_pending_path) == original);
+}
+
+void test_private_handoff_canonical_pending_convergence_and_taint() {
+    TempDirectory temp;
+
+    {
+        const auto base = temp.path() / "canonical-duplicate-pending.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        const auto canonical_bytes = read_test_bytes(paths.private_handoff_path);
+        write_private_control_bytes(paths.private_handoff_pending_path, canonical_bytes);
+
+        const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+        CHECK(inspected.canonical());
+        CHECK(inspected.state == OOCPrivateHandoffState::Canonical);
+        CHECK(OOCCleanupTransaction::recover_private_lease(base).status ==
+              OOCCleanupStatus::HandoffPresent);
+        CHECK(entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(read_test_bytes(paths.private_handoff_path) == canonical_bytes);
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(entry_exists_no_follow(paths.data_path));
+    }
+
+    {
+        const auto base = temp.path() / "canonical-corrupt-pending.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        const auto canonical_bytes = read_test_bytes(paths.private_handoff_path);
+        constexpr std::array corrupt{
+            std::byte{0xde},
+            std::byte{0xad},
+            std::byte{0xbe},
+            std::byte{0xef},
+        };
+        write_private_control_bytes(paths.private_handoff_pending_path, corrupt);
+        const auto pending_bytes = read_test_bytes(paths.private_handoff_pending_path);
+
+        const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+        CHECK(inspected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(inspected.state == OOCPrivateHandoffState::TaintedPreserved);
+        CHECK(!inspected.canonical());
+        CHECK(OOCCleanupTransaction::recover_private_lease(base).status ==
+              OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(OOCCleanupTransaction::remove_private_lease(prepared.lease_ownership).status ==
+              OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(read_test_bytes(paths.private_handoff_path) == canonical_bytes);
+        CHECK(read_test_bytes(paths.private_handoff_pending_path) == pending_bytes);
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(entry_exists_no_follow(paths.data_path));
+    }
+
+    {
+        const auto base = temp.path() / "canonical-foreign-pending.gnfs-sink-lease" / "corpus";
+        const auto foreign_base = temp.path() / "foreign-pending-source.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        const auto foreign_paths = OOCCleanupTransaction::paths_for(foreign_base);
+        auto prepared = prepare_private_handoff(base);
+        auto foreign_prepared = prepare_private_handoff(foreign_base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        CHECK(publish_private_handoff(foreign_prepared).canonical());
+        const auto canonical_bytes = read_test_bytes(paths.private_handoff_path);
+        const auto foreign_bytes = read_test_bytes(foreign_paths.private_handoff_path);
+        write_private_control_bytes(paths.private_handoff_pending_path, foreign_bytes);
+
+        const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+        CHECK(inspected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(inspected.state == OOCPrivateHandoffState::TaintedPreserved);
+        CHECK(!inspected.canonical());
+        CHECK(OOCCleanupTransaction::recover_private_lease(base).status ==
+              OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(read_test_bytes(paths.private_handoff_path) == canonical_bytes);
+        CHECK(read_test_bytes(paths.private_handoff_pending_path) == foreign_bytes);
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(entry_exists_no_follow(paths.data_path));
+    }
+}
+
+enum class PrivateHandoffCanonicalMutation : std::uint8_t {
+    Truncated,
+    DigestCorrupt,
+    WireVersionMismatch,
+    IdentityMismatch,
+};
+
+void mutate_private_handoff_canonical(const std::filesystem::path& path,
+                                      PrivateHandoffCanonicalMutation mutation) {
+    auto bytes = read_test_bytes(path);
+    switch (mutation) {
+    case PrivateHandoffCanonicalMutation::Truncated:
+        if (bytes.empty()) {
+            throw std::runtime_error("cannot truncate empty private handoff");
+        }
+        bytes.pop_back();
+        break;
+    case PrivateHandoffCanonicalMutation::DigestCorrupt:
+        if (bytes.empty()) {
+            throw std::runtime_error("cannot corrupt empty private handoff");
+        }
+        bytes.back() ^= std::byte{0x80};
+        break;
+    case PrivateHandoffCanonicalMutation::WireVersionMismatch:
+        store_u32_le(bytes, 8, gnfs::relation::OOC_PRIVATE_HANDOFF_WIRE_VERSION_V1 + 1U);
+        break;
+    case PrivateHandoffCanonicalMutation::IdentityMismatch: {
+        const auto decoded = gnfs::relation::decode_ooc_private_handoff_record(bytes);
+        if (!decoded || !decoded.value) {
+            throw std::runtime_error("could not decode private handoff mutation fixture");
+        }
+        auto record = *decoded.value;
+        record.index.identity.first ^= UINT64_C(0x8000000000000000);
+        if (!gnfs::relation::seal_ooc_private_handoff_record(record)) {
+            throw std::runtime_error("could not seal private handoff mutation fixture");
+        }
+        bytes = encode_private_handoff_record(record);
+        break;
+    }
+    }
+    write_private_control_bytes(path, bytes);
+}
+
+void test_private_handoff_canonical_corruption_is_preserved() {
+    TempDirectory temp;
+    constexpr std::array mutations{
+        PrivateHandoffCanonicalMutation::Truncated,
+        PrivateHandoffCanonicalMutation::DigestCorrupt,
+        PrivateHandoffCanonicalMutation::WireVersionMismatch,
+        PrivateHandoffCanonicalMutation::IdentityMismatch,
+    };
+
+    for (std::size_t index = 0; index < mutations.size(); ++index) {
+        const auto base = temp.path() /
+                          ("canonical-mutation-" + std::to_string(index) + ".gnfs-sink-lease") /
+                          "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        const auto index_bytes = read_test_bytes(paths.index_path);
+        const auto data_bytes = read_test_bytes(paths.data_path);
+        mutate_private_handoff_canonical(paths.private_handoff_path, mutations[index]);
+        const auto mutated = read_test_bytes(paths.private_handoff_path);
+
+        const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+        CHECK(inspected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(inspected.state == OOCPrivateHandoffState::TaintedPreserved);
+        CHECK(!inspected.canonical());
+        CHECK(OOCCleanupTransaction::recover_private_lease(base).status ==
+              OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(OOCCleanupTransaction::remove_private_lease(prepared.lease_ownership).status ==
+              OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(!prepared.lease_ownership.spent());
+
+        CHECK(read_test_bytes(paths.private_handoff_path) == mutated);
+        CHECK(read_test_bytes(paths.index_path) == index_bytes);
+        CHECK(read_test_bytes(paths.data_path) == data_bytes);
+        CHECK(entry_exists_no_follow(paths.lease_owned_path));
+        CHECK(!entry_exists_no_follow(paths.intent_path));
+        CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+    }
+}
+
+void test_private_handoff_macos_path_policy_is_fail_closed() {
+    TempDirectory temp;
+
+    {
+        const auto base = temp.path() / "handoff-mode.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        const auto canonical_bytes = read_test_bytes(paths.private_handoff_path);
+        std::error_code error;
+        std::filesystem::permissions(paths.private_handoff_path,
+                                     std::filesystem::perms::owner_read |
+                                         std::filesystem::perms::owner_write |
+                                         std::filesystem::perms::group_read,
+                                     std::filesystem::perm_options::replace, error);
+        CHECK(!error);
+
+        const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+        CHECK(inspected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(inspected.state == OOCPrivateHandoffState::TaintedPreserved);
+        CHECK(read_test_bytes(paths.private_handoff_path) == canonical_bytes);
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(entry_exists_no_follow(paths.data_path));
+    }
+
+    {
+        const auto base = temp.path() / "handoff-symlink.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        const auto canonical_bytes = read_test_bytes(paths.private_handoff_path);
+        const auto foreign = temp.path() / "handoff-symlink-target";
+        write_private_control_bytes(foreign, canonical_bytes);
+        std::error_code error;
+        CHECK(std::filesystem::remove(paths.private_handoff_path, error));
+        CHECK(!error);
+        if (create_symlink_or_explicit_skip(foreign, paths.private_handoff_path,
+                                            "private handoff canonical symlink")) {
+            const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+            CHECK(inspected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+            CHECK(inspected.state == OOCPrivateHandoffState::TaintedPreserved);
+            CHECK(entry_is_symlink_no_follow(paths.private_handoff_path));
+            CHECK(read_test_bytes(foreign) == canonical_bytes);
+            CHECK(entry_exists_no_follow(paths.index_path));
+            CHECK(entry_exists_no_follow(paths.data_path));
+        }
+    }
+}
+
+void test_private_handoff_mixed_with_legacy_authority_is_preserved() {
+    TempDirectory temp;
+    const auto base = temp.path() / "mixed-generic-and-legacy.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto prepared = prepare_private_handoff(base);
+
+    const pid_t child = ::fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        const auto published = publish_private_handoff(prepared);
+        ::_exit(published.canonical() ? 0 : 81);
+    }
+
+    int status = 0;
+    CHECK(::waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+    CHECK(!prepared.pair_ownership.spent());
+    CHECK(!prepared.lease_ownership.spent());
+    CHECK(entry_exists_no_follow(paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+
+    const auto legacy = gnfs::relation::ooc_cleanup_detail::capture_source_pair(
+        paths, prepared.descriptor.store_id);
+    const auto intent_bytes = gnfs::relation::ooc_cleanup_detail::serialize_marker(
+        legacy, gnfs::relation::ooc_cleanup_detail::INTENT_MAGIC);
+    const auto staged_bytes = gnfs::relation::ooc_cleanup_detail::serialize_marker(
+        legacy, gnfs::relation::ooc_cleanup_detail::STAGED_MAGIC);
+    write_private_control_bytes(paths.intent_path, intent_bytes);
+    write_private_control_bytes(paths.staged_path, staged_bytes);
+
+    const auto generic_bytes = read_test_bytes(paths.private_handoff_path);
+    const auto index_bytes = read_test_bytes(paths.index_path);
+    const auto data_bytes = read_test_bytes(paths.data_path);
+    const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
+
+    CHECK(OOCCleanupTransaction::remove_private_lease(prepared.lease_ownership).status ==
+          OOCCleanupStatus::NamespaceConflict);
+    CHECK(!prepared.lease_ownership.spent());
+    std::optional<OOCPrivateLeaseOwnershipReceipt> stale_lease;
+    stale_lease.emplace(std::move(prepared.lease_ownership));
+    stale_lease.reset();
+
+    const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+    CHECK(inspected.result.status == OOCCleanupStatus::NamespaceConflict);
+    CHECK(inspected.state == OOCPrivateHandoffState::TaintedPreserved);
+    CHECK(!inspected.canonical());
+    CHECK(OOCCleanupTransaction::begin_or_resume(prepared.pair_ownership).status ==
+          OOCCleanupStatus::NamespaceConflict);
+    CHECK(!prepared.pair_ownership.spent());
+    CHECK(OOCCleanupTransaction::resume(base).status == OOCCleanupStatus::NamespaceConflict);
+    CHECK(OOCCleanupTransaction::recover_private_lease(base).status ==
+          OOCCleanupStatus::NamespaceConflict);
+
+    CHECK(read_test_bytes(paths.private_handoff_path) == generic_bytes);
+    CHECK(read_test_bytes(paths.intent_path) == intent_bytes);
+    CHECK(read_test_bytes(paths.staged_path) == staged_bytes);
+    CHECK(read_test_bytes(paths.index_path) == index_bytes);
+    CHECK(read_test_bytes(paths.data_path) == data_bytes);
+    CHECK(read_test_bytes(paths.lease_owned_path) == owned_bytes);
+    CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+    CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+    CHECK(!entry_exists_no_follow(paths.staged_pending_path));
+    CHECK(!entry_exists_no_follow(paths.quarantine_index_path));
+    CHECK(!entry_exists_no_follow(paths.quarantine_data_path));
+}
+
+void test_private_handoff_canonical_blocks_stale_pair_receipt() {
+    TempDirectory temp;
+    const auto base = temp.path() / "canonical-stale-pair.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto prepared = prepare_private_handoff(base);
+
+    const pid_t child = ::fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        const auto published = publish_private_handoff(prepared);
+        ::_exit(published.canonical() ? 0 : 85);
+    }
+    int status = 0;
+    CHECK(::waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+    CHECK(!prepared.pair_ownership.spent());
+    CHECK(!prepared.lease_ownership.spent());
+
+    std::optional<OOCPrivateLeaseOwnershipReceipt> stale_lease;
+    stale_lease.emplace(std::move(prepared.lease_ownership));
+    stale_lease.reset();
+
+    const auto canonical_bytes = read_test_bytes(paths.private_handoff_path);
+    const auto index_bytes = read_test_bytes(paths.index_path);
+    const auto data_bytes = read_test_bytes(paths.data_path);
+    const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+    CHECK(inspected.canonical());
+    CHECK(inspected.result.status == OOCCleanupStatus::HandoffPresent);
+    CHECK(OOCCleanupTransaction::begin_or_resume(prepared.pair_ownership).status ==
+          OOCCleanupStatus::HandoffPresent);
+    CHECK(!prepared.pair_ownership.spent());
+    CHECK(OOCCleanupTransaction::resume(base).status == OOCCleanupStatus::HandoffPresent);
+    const auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.result.status == OOCCleanupStatus::HandoffPresent);
+    CHECK(!reservation.ownership.has_value());
+
+    CHECK(read_test_bytes(paths.private_handoff_path) == canonical_bytes);
+    CHECK(read_test_bytes(paths.index_path) == index_bytes);
+    CHECK(read_test_bytes(paths.data_path) == data_bytes);
+    CHECK(!entry_exists_no_follow(paths.intent_path));
+    CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+    CHECK(!entry_exists_no_follow(paths.quarantine_index_path));
+    CHECK(!entry_exists_no_follow(paths.quarantine_data_path));
+}
+
+constexpr int PRIVATE_HANDOFF_CRASH_EXIT_BASE = 180;
+
+struct PrivateHandoffCrashContext final {
+    OOCPrivateHandoffFaultPoint target = OOCPrivateHandoffFaultPoint::PendingDurable;
+};
+
+[[nodiscard]] bool crash_at_private_handoff(OOCPrivateHandoffFaultPoint point,
+                                            void* opaque) noexcept {
+    const auto& context = *static_cast<PrivateHandoffCrashContext*>(opaque);
+    if (point == context.target) {
+        ::_exit(PRIVATE_HANDOFF_CRASH_EXIT_BASE + static_cast<int>(point));
+    }
+    return false;
+}
+
+void test_private_handoff_process_crash_and_cow_retry() {
+    TempDirectory temp;
+
+    for (std::size_t index = 0; index < PRIVATE_HANDOFF_FAULT_POINTS.size(); ++index) {
+        const auto point = PRIVATE_HANDOFF_FAULT_POINTS[index];
+        const auto base = temp.path() /
+                          ("private-handoff-crash-" + std::to_string(index) + ".gnfs-sink-lease") /
+                          "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        const auto index_bytes = read_test_bytes(paths.index_path);
+        const auto data_bytes = read_test_bytes(paths.data_path);
+
+        const pid_t child = ::fork();
+        CHECK(child >= 0);
+        if (child == 0) {
+            PrivateHandoffCrashContext context{.target = point};
+            (void)publish_private_handoff(prepared, OOCPrivateHandoffTestHooks{
+                                                        .stop_after = crash_at_private_handoff,
+                                                        .context = &context,
+                                                    });
+            ::_exit(79);
+        }
+
+        int status = 0;
+        CHECK(::waitpid(child, &status, 0) == child);
+        CHECK(WIFEXITED(status));
+        CHECK(WEXITSTATUS(status) == PRIVATE_HANDOFF_CRASH_EXIT_BASE + static_cast<int>(point));
+        CHECK(!prepared.pair_ownership.spent());
+        CHECK(!prepared.lease_ownership.spent());
+        CHECK(read_test_bytes(paths.index_path) == index_bytes);
+        CHECK(read_test_bytes(paths.data_path) == data_bytes);
+        CHECK(!entry_exists_no_follow(paths.intent_path));
+        CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+
+        if (point == OOCPrivateHandoffFaultPoint::PendingDurable) {
+            CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+            CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+            CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+        } else {
+            CHECK(entry_exists_no_follow(paths.private_handoff_path));
+            CHECK(entry_exists_no_follow(paths.lease_reserved_path) ==
+                  (point != OOCPrivateHandoffFaultPoint::ReservedRevokedDurable));
+
+            const auto canonical_bytes = read_test_bytes(paths.private_handoff_path);
+            bool stale_writer_rejected = false;
+            try {
+                OOCRelationWriter stale_writer(base.string(), prepared.lease_ownership);
+            } catch (const std::system_error&) {
+                stale_writer_rejected = true;
+            }
+            CHECK(stale_writer_rejected);
+            CHECK(read_test_bytes(paths.private_handoff_path) == canonical_bytes);
+            CHECK(read_test_bytes(paths.index_path) == index_bytes);
+            CHECK(read_test_bytes(paths.data_path) == data_bytes);
+
+            CHECK(OOCCleanupTransaction::remove_private_lease(prepared.lease_ownership).status ==
+                  OOCCleanupStatus::HandoffPresent);
+            CHECK(!prepared.lease_ownership.spent());
+            CHECK(read_test_bytes(paths.index_path) == index_bytes);
+            CHECK(read_test_bytes(paths.data_path) == data_bytes);
+            CHECK(entry_exists_no_follow(paths.private_handoff_path));
+            CHECK(!entry_exists_no_follow(paths.intent_path));
+            CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+        }
+
+        const auto retried = publish_private_handoff(prepared);
+        CHECK(retried.canonical());
+        CHECK(retried.result.status == OOCCleanupStatus::HandoffPresent);
+        CHECK(prepared.pair_ownership.spent());
+        CHECK(!prepared.lease_ownership.spent());
+        CHECK(entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(entry_exists_no_follow(paths.lease_owned_path));
+        CHECK(read_test_bytes(paths.index_path) == index_bytes);
+        CHECK(read_test_bytes(paths.data_path) == data_bytes);
+        const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+        CHECK(inspected.canonical());
+        CHECK(inspected.result.status == OOCCleanupStatus::HandoffPresent);
+        CHECK(inspected.state == OOCPrivateHandoffState::Canonical);
+        CHECK(OOCCleanupTransaction::recover_private_lease(base).status ==
+              OOCCleanupStatus::HandoffPresent);
+    }
+}
+#endif
+
+#if defined(__linux__)
+void test_private_handoff_linux_platform_policy() {
+    TempDirectory temp;
+
+    {
+        const auto base = temp.path() / "linux-legacy-no-generic.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(OOCCleanupTransaction::remove_private_lease(prepared.lease_ownership).completed());
+        CHECK(prepared.lease_ownership.spent());
+        check_cleanup_complete(paths);
+        CHECK(!entry_exists_no_follow(paths.private_directory));
+    }
+
+    for (const bool canonical : {false, true}) {
+        const auto base =
+            temp.path() /
+            (std::string(canonical ? "linux-generic-canonical" : "linux-generic-pending") +
+             ".gnfs-sink-lease") /
+            "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        const auto generic_path =
+            canonical ? paths.private_handoff_path : paths.private_handoff_pending_path;
+        write_private_control_bytes(generic_path, PRIVATE_HANDOFF_PAYLOAD);
+
+        const auto generic_bytes = read_test_bytes(generic_path);
+        const auto index_bytes = read_test_bytes(paths.index_path);
+        const auto data_bytes = read_test_bytes(paths.data_path);
+        const auto reserved_bytes = read_test_bytes(paths.lease_reserved_path);
+        const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
+
+        CHECK(OOCCleanupTransaction::remove_private_lease(prepared.lease_ownership).status ==
+              OOCCleanupStatus::PlatformUnsupported);
+        CHECK(!prepared.lease_ownership.spent());
+        std::optional<OOCPrivateLeaseOwnershipReceipt> stale_lease;
+        stale_lease.emplace(std::move(prepared.lease_ownership));
+        stale_lease.reset();
+
+        const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+        CHECK(inspected.result.status == OOCCleanupStatus::PlatformUnsupported);
+        CHECK(inspected.state == OOCPrivateHandoffState::TaintedPreserved);
+        CHECK(OOCCleanupTransaction::begin_or_resume(prepared.pair_ownership).status ==
+              OOCCleanupStatus::PlatformUnsupported);
+        CHECK(!prepared.pair_ownership.spent());
+        CHECK(OOCCleanupTransaction::resume(base).status == OOCCleanupStatus::PlatformUnsupported);
+        CHECK(OOCCleanupTransaction::recover_private_lease(base).status ==
+              OOCCleanupStatus::PlatformUnsupported);
+        const auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+        CHECK(reservation.result.status == OOCCleanupStatus::PlatformUnsupported);
+        CHECK(!reservation.ownership.has_value());
+
+        CHECK(read_test_bytes(generic_path) == generic_bytes);
+        CHECK(read_test_bytes(paths.index_path) == index_bytes);
+        CHECK(read_test_bytes(paths.data_path) == data_bytes);
+        CHECK(read_test_bytes(paths.lease_reserved_path) == reserved_bytes);
+        CHECK(read_test_bytes(paths.lease_owned_path) == owned_bytes);
+        CHECK(!entry_exists_no_follow(paths.intent_path));
+        CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+        CHECK(!entry_exists_no_follow(paths.quarantine_index_path));
+        CHECK(!entry_exists_no_follow(paths.quarantine_data_path));
+
+        std::error_code error;
+        CHECK(std::filesystem::remove(generic_path, error));
+        CHECK(!error);
+        CHECK(OOCCleanupTransaction::recover_private_lease(base).completed());
+        check_cleanup_complete(paths);
+        CHECK(!entry_exists_no_follow(paths.private_directory));
+    }
+}
+#endif
 
 #ifndef _WIN32
 void test_fork_copy_cannot_remove_or_unlock_parent_lease() {
@@ -2240,6 +3704,32 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_private_lease_recovery_finishes_canonical_pair_intent(executable);
     test_deferred_private_writer_handoff_and_pending_recovery();
     test_deferred_handoff_foreign_leaf_blocks_pair_mutation();
+    test_private_handoff_writer_rejects_metadata_before_finalize();
+    test_private_handoff_transaction_rejects_oversize_before_mutation();
+    test_private_handoff_missing_lock_orphan_stage_is_preserved();
+    test_private_handoff_invalid_orphan_stage_names_are_ignored();
+    test_private_lease_unknown_child_preserves_matching_pending();
+    test_private_lease_unknown_scan_precedes_writer_mutation();
+    test_unscoped_writer_rejects_existing_preactive_private_lease();
+    test_private_lease_unknown_scan_precedes_legacy_intent_publication();
+#if !defined(__APPLE__)
+    test_private_handoff_unsupported_publish_is_non_mutating();
+#endif
+#if defined(__APPLE__)
+    test_private_handoff_writer_round_trip();
+    test_private_handoff_pending_only_never_authorizes_cleanup();
+    test_private_handoff_pending_without_reserved_is_preserved();
+    test_private_handoff_missing_lock_conflicts_before_mutation();
+    test_private_handoff_canonical_pending_convergence_and_taint();
+    test_private_handoff_canonical_corruption_is_preserved();
+    test_private_handoff_macos_path_policy_is_fail_closed();
+    test_private_handoff_mixed_with_legacy_authority_is_preserved();
+    test_private_handoff_canonical_blocks_stale_pair_receipt();
+    test_private_handoff_process_crash_and_cow_retry();
+#endif
+#if defined(__linux__)
+    test_private_handoff_linux_platform_policy();
+#endif
 #ifndef _WIN32
     test_fork_copy_cannot_remove_or_unlock_parent_lease();
 #endif
