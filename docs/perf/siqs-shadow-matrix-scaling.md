@@ -6,18 +6,20 @@ This document records the scaling evidence and promotion gates for the staged
 Self-Initializing Quadratic Sieve (SIQS) shadow matrix. It covers the
 deterministic dense solver in
 `include/gnfs/siqs/shadow_matrix.hpp`. It does not claim production
-two-large-prime (2LP) yield or authorize routing a shadow factor result from
-`factor()`.
+two-large-prime (2LP) yield or authorize automatic promotion of explicit
+`prefer`.
 
 `include/gnfs/siqs/shadow_proof_runner.hpp` provides a production-facing
-read-only facade. `GNFS_SIQS_SHADOW_PROOF=observe` now invokes it after sieve
-worker join and before the legacy merge; every terminal outcome continues into
-the legacy merge, solve, and extraction path. Its default admission envelope is
-32768 raw relations, 64MiB of portable logical payload, 16384 graph edges, 4096
-cycles, 262144 total cycle incidences, 4096 row candidates, and 4096 pretrim
-rows. The facade also preserves the solver's independent dense byte and
-variable limits. All limits are inclusive; the next object returns a typed
-fallback instead of allocating beyond the admitted envelope.
+read-only facade. Explicit `observe` and `prefer` invoke it after sieve worker
+join and before the legacy merge. Every observe terminal and every prefer
+fallback continues into the legacy merge, solve, and extraction path; only a
+fully validated and emitted prefer candidate may return early. Its default
+admission envelope is 32768 raw relations, 64MiB of portable logical payload,
+16384 graph edges, 4096 cycles, 262144 total cycle incidences, 4096 row
+candidates, and 4096 pretrim rows. The facade also preserves the solver's
+independent dense byte and variable limits. All limits are inclusive; the next
+object returns a typed fallback instead of allocating beyond the admitted
+envelope.
 
 The facade keeps the caller's raw relations intact so the observe seam can
 continue into the current merge and solver. Consequently, its production peak
@@ -839,32 +841,53 @@ leaves. It also verifies that held-parent publication neither reopens nor closes
 the borrowed directory handle. It never opens a holdout or issues a launch
 permit.
 
-### Pure V2 Prefer Boundary
+### V2 Prefer Boundary
 
-The V2 prefer layer is a pure decision and audit boundary. The environment
-parser still rejects `prefer`; neither `factor()` nor the production observe
-seam calls the V2 contract, and no shadow result is routed. The pure header
+The V2 prefer layer keeps a pure decision and audit boundary inside an
+explicit, default-off production adapter. The strict environment parser accepts
+exact `prefer`; `factor()` calls the V2 contract after all production sieve
+workers join and before legacy merge mutation. The pure header
 `include/gnfs/siqs/shadow_proof_prefer.hpp` exposes
 `evaluate_siqs_shadow_proof_prefer`, `finalize_siqs_shadow_proof_prefer`, and
 `emit_siqs_shadow_proof_prefer_decision`. Its closed record prefix is
 `GNFS_SIQS_SHADOW_PROOF_PREFER_DECISION_V2`.
 
 The record's `next_route` is a recommendation created at
-`emit_phase=before_route`. It does not report a completed route. A future
-adapter may commit `next_route=shadow_return` only after the complete record is
-written and flushed successfully with no stream error, so the emitter returns
-`true`. Construction, partial-write, write, flush, or stream-error failure
-continues the unchanged legacy path. This remains truthful even when a failed
-stream exposes bytes from the pre-route record because the record never claims
-that the route was applied.
+`emit_phase=before_route`. It does not report a completed route. A record
+consumer must not infer that the route ran from the line alone. The adapter may
+return the shadow result only after the complete record is written and flushed
+successfully with no stream error, so the emitter returns `true`. Candidate
+validation, complete result preparation, and emitter success form the three
+ephemeral route gates. A fallback record may be emitted but never authorizes an
+early return; candidate mismatch emits nothing. Ordinary construction,
+partial-write, write, flush, or stream-error failure continues the unchanged
+legacy path.
 
-A future shadow `SIQSResult` uses the selected shadow matrix row count for
+`tests/test_siqs_shadow_prefer_route.cpp` is the instant composition test for
+that boundary. It calls the production adapter and real emitter, covers all
+eight gate combinations, checks exact candidate and fallback records, injects
+an unwritable stderr target, rejects candidate/prepared mismatches without
+emission, and proves that a finalize-time fallback cannot return a stale
+prepared result. Its shared fixture runs the `_putenv_s`, `_dup2`, and `NUL`
+branches on Windows smoke. The public 50-digit test remains a live-sieve route
+and legacy-continuation smoke test rather than the sole proof that the two
+routes differ.
+
+This is an in-process stdio gate, not `fsync` durability, consumer
+acknowledgement, or a cross-process transaction. Default POSIX `SIGPIPE`, other
+fatal signals, crash, abort, and allocator fatal failure are outside the
+recoverable C++ fallback contract. It assumes `stderr` and its descriptor remain
+stable throughout emission; concurrent `freopen`, `dup2`, `fclose`, `clearerr`,
+or writes bypassing the same `FILE*` are outside the pre/post-`ferror`
+guarantee. A shadow `SIQSResult` uses the selected shadow matrix row count for
 `relations_found`, the post-join production sieve counter for
 `polynomials_used`, and the same pre-emit decision wall-time sample for
 `time_seconds`, measured from the existing SIQS timer start. The caller samples
-after pure proof/factor/evidence evaluation and accepted-factor copying, but
-before `finalize_siqs_shadow_proof_prefer` and emitter I/O. A future
-`SIQSResult` copies that value without resampling.
+after pure proof/factor/evidence evaluation and complete `SIQSResult`
+preparation, but before `finalize_siqs_shadow_proof_prefer` and emitter I/O.
+The returned `SIQSResult` copies that value without resampling. Default off,
+observe continuation, 2LP disabled, and the empty production RSS deployment
+registry remain unchanged.
 
 ## Dense Solver Results
 
@@ -1118,6 +1141,7 @@ Before promotion it must provide:
   calibration-excluded, and no holdout result currently exists.
 - [x] Pure V2 `prefer` decision and audit contract with fail-closed factor and
   `SIQSResult` metadata validation.
-- [ ] Parser and production routing for explicit V2-audited `prefer`; a future
-  emitter success is the commit point, and default promotion remains disabled.
+- [x] Strict parser and production routing for explicit V2-audited `prefer`;
+  emitter success is the in-process commit point, while default and automatic
+  promotion remain disabled.
 - [ ] Controlled 2LP collector; `lp_bound_sq` remains 0.

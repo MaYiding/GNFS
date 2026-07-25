@@ -35,7 +35,7 @@ using std::uint64_t;
 
 using gnfs::core::Integer;
 using gnfs::siqs::factor;
-using gnfs::siqs::SIQS_SHADOW_PROOF_OBSERVE_ENV;
+using gnfs::siqs::SIQS_SHADOW_PROOF_ENV;
 using gnfs::siqs::SIQSResult;
 using gnfs::tests::siqs_live_sieve_fixture_v1;
 using gnfs::tests::SIQSLiveSieveFixtureV1;
@@ -138,11 +138,11 @@ struct ProbeOptions final {
 
 void set_shadow_mode_environment(ProbeMode mode) {
 #if defined(_WIN32)
-    if (::_putenv_s(SIQS_SHADOW_PROOF_OBSERVE_ENV, environment_value(mode)) != 0) {
+    if (::_putenv_s(SIQS_SHADOW_PROOF_ENV, environment_value(mode)) != 0) {
         fail("failed to set GNFS_SIQS_SHADOW_PROOF");
     }
 #else
-    if (::setenv(SIQS_SHADOW_PROOF_OBSERVE_ENV, environment_value(mode), 1) != 0) {
+    if (::setenv(SIQS_SHADOW_PROOF_ENV, environment_value(mode), 1) != 0) {
         fail("failed to set GNFS_SIQS_SHADOW_PROOF");
     }
 #endif

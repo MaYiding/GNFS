@@ -35,14 +35,17 @@ using gnfs::siqs::emit_siqs_shadow_proof_observe_record;
 using gnfs::siqs::make_siqs_shadow_proof_observe_record_from_result;
 using gnfs::siqs::make_siqs_shadow_proof_observe_setup_failure;
 using gnfs::siqs::observe_siqs_shadow_proof;
+using gnfs::siqs::parse_siqs_shadow_proof_mode;
 using gnfs::siqs::parse_siqs_shadow_proof_observe_mode;
 using gnfs::siqs::run_siqs_shadow_proof;
 using gnfs::siqs::siqs_shadow_proof_fallback_reason_name;
+using gnfs::siqs::siqs_shadow_proof_mode_name;
 using gnfs::siqs::siqs_shadow_proof_observe_mode_name;
 using gnfs::siqs::siqs_shadow_proof_stage_name;
 using gnfs::siqs::siqs_shadow_proof_terminal_status_name;
 using gnfs::siqs::SIQSRelation;
 using gnfs::siqs::SIQSShadowProofFallbackReason;
+using gnfs::siqs::SIQSShadowProofMode;
 using gnfs::siqs::SIQSShadowProofObserveMode;
 using gnfs::siqs::SIQSShadowProofObserveRecord;
 using gnfs::siqs::SIQSShadowProofObserveSetupFailure;
@@ -133,6 +136,30 @@ struct NoSplit {
 }
 
 void test_exact_parser() {
+    CHECK(parse_siqs_shadow_proof_mode(nullptr) == SIQSShadowProofMode::off);
+    CHECK(parse_siqs_shadow_proof_mode("0") == SIQSShadowProofMode::off);
+    CHECK(parse_siqs_shadow_proof_mode("observe") == SIQSShadowProofMode::observe);
+    CHECK(parse_siqs_shadow_proof_mode("prefer") == SIQSShadowProofMode::prefer);
+    CHECK(siqs_shadow_proof_mode_name(SIQSShadowProofMode::off) == "off");
+    CHECK(siqs_shadow_proof_mode_name(SIQSShadowProofMode::observe) == "observe");
+    CHECK(siqs_shadow_proof_mode_name(SIQSShadowProofMode::prefer) == "prefer");
+    CHECK(siqs_shadow_proof_mode_name(static_cast<SIQSShadowProofMode>(255)) == "unknown");
+    constexpr std::array invalid_values{
+        "",       "off",     "1",       "Observe", "OBSERVE", " observe",  "observe ", "Prefer",
+        "PREFER", " prefer", "prefer ", "0 ",      "00",      "\nobserve", "\nprefer",
+    };
+    for (const char* value : invalid_values) {
+        try {
+            (void)parse_siqs_shadow_proof_mode(value);
+            CHECK(false);
+        } catch (const std::invalid_argument& error) {
+            CHECK(std::string_view(error.what()) ==
+                  "GNFS_SIQS_SHADOW_PROOF must be unset or exactly one of: 0, observe, prefer");
+        } catch (...) {
+            CHECK(false);
+        }
+    }
+
     CHECK(parse_siqs_shadow_proof_observe_mode(nullptr) == SIQSShadowProofObserveMode::off);
     CHECK(parse_siqs_shadow_proof_observe_mode("0") == SIQSShadowProofObserveMode::off);
     CHECK(parse_siqs_shadow_proof_observe_mode("observe") == SIQSShadowProofObserveMode::observe);
@@ -140,11 +167,7 @@ void test_exact_parser() {
     CHECK(siqs_shadow_proof_observe_mode_name(SIQSShadowProofObserveMode::observe) == "observe");
     CHECK(siqs_shadow_proof_observe_mode_name(static_cast<SIQSShadowProofObserveMode>(255)) ==
           "unknown");
-
-    constexpr std::array invalid_values{"",        "off",     "1",        "prefer",
-                                        "Observe", "OBSERVE", " observe", "observe ",
-                                        "0 ",      "00",      "\nobserve"};
-    for (const char* value : invalid_values) {
+    const auto check_observe_invalid = [](const char* value) {
         try {
             (void)parse_siqs_shadow_proof_observe_mode(value);
             CHECK(false);
@@ -154,7 +177,11 @@ void test_exact_parser() {
         } catch (...) {
             CHECK(false);
         }
+    };
+    for (const char* value : invalid_values) {
+        check_observe_invalid(value);
     }
+    check_observe_invalid("prefer");
 }
 
 void test_all_enum_names() {

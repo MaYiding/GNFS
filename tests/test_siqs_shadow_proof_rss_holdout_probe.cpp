@@ -51,7 +51,7 @@ using std::uint64_t;
 
 using gnfs::core::Integer;
 using gnfs::siqs::factor;
-using gnfs::siqs::SIQS_SHADOW_PROOF_OBSERVE_ENV;
+using gnfs::siqs::SIQS_SHADOW_PROOF_ENV;
 using gnfs::siqs::SIQSResult;
 using gnfs::siqs::shadow_proof_rss_holdout_detail::emit_siqs_shadow_proof_rss_holdout_probe_record;
 using gnfs::siqs::shadow_proof_rss_holdout_detail::
@@ -206,11 +206,11 @@ void set_shadow_mode_environment(SIQSShadowProofRssHoldoutProbeMode mode) {
     const std::string_view value = siqs_shadow_proof_rss_holdout_probe_environment_value(mode);
     require(mode != SIQSShadowProofRssHoldoutProbeMode::unknown, "probe mode is unknown");
 #if defined(_WIN32)
-    if (::_putenv_s(SIQS_SHADOW_PROOF_OBSERVE_ENV, value.data()) != 0) {
+    if (::_putenv_s(SIQS_SHADOW_PROOF_ENV, value.data()) != 0) {
         fail("failed to set GNFS_SIQS_SHADOW_PROOF");
     }
 #else
-    if (::setenv(SIQS_SHADOW_PROOF_OBSERVE_ENV, value.data(), 1) != 0) {
+    if (::setenv(SIQS_SHADOW_PROOF_ENV, value.data(), 1) != 0) {
         fail("failed to set GNFS_SIQS_SHADOW_PROOF");
     }
 #endif

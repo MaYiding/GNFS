@@ -23,17 +23,56 @@ namespace gnfs::siqs {
 
 using std::size_t;
 
+inline constexpr char SIQS_SHADOW_PROOF_ENV[] = "GNFS_SIQS_SHADOW_PROOF";
+// Preserve the original observe-only public spelling for source compatibility.
+// Production factor routing uses SIQS_SHADOW_PROOF_ENV and the three-state
+// parser below.
 inline constexpr char SIQS_SHADOW_PROOF_OBSERVE_ENV[] = "GNFS_SIQS_SHADOW_PROOF";
 inline constexpr uint32_t SIQS_SHADOW_PROOF_OBSERVE_SCHEMA_VERSION = 1;
 inline constexpr char SIQS_SHADOW_PROOF_OBSERVE_PREFIX[] = "GNFS_SIQS_SHADOW_PROOF_OBSERVE_V1";
+
+enum class SIQSShadowProofMode : uint8_t {
+    off,
+    observe,
+    prefer,
+};
+
+/// Parse the exact public environment contract. A missing value and `0` are
+/// off; every other spelling must be exactly `observe` or `prefer`.
+[[nodiscard]] inline SIQSShadowProofMode parse_siqs_shadow_proof_mode(const char* value) {
+    if (value == nullptr || std::string_view(value) == "0") {
+        return SIQSShadowProofMode::off;
+    }
+    if (std::string_view(value) == "observe") {
+        return SIQSShadowProofMode::observe;
+    }
+    if (std::string_view(value) == "prefer") {
+        return SIQSShadowProofMode::prefer;
+    }
+    throw std::invalid_argument(
+        "GNFS_SIQS_SHADOW_PROOF must be unset or exactly one of: 0, observe, prefer");
+}
+
+[[nodiscard]] constexpr std::string_view
+siqs_shadow_proof_mode_name(SIQSShadowProofMode mode) noexcept {
+    switch (mode) {
+    case SIQSShadowProofMode::off:
+        return "off";
+    case SIQSShadowProofMode::observe:
+        return "observe";
+    case SIQSShadowProofMode::prefer:
+        return "prefer";
+    }
+    return "unknown";
+}
 
 enum class SIQSShadowProofObserveMode : uint8_t {
     off,
     observe,
 };
 
-/// Parse the exact public environment contract. A missing value and `0` are
-/// off; all spellings other than `observe` are rejected.
+/// Source-compatible observe-only parser. In particular, this legacy API does
+/// not silently acquire `prefer` semantics.
 [[nodiscard]] inline SIQSShadowProofObserveMode
 parse_siqs_shadow_proof_observe_mode(const char* value) {
     if (value == nullptr || std::string_view(value) == "0") {

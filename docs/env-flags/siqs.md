@@ -2,7 +2,11 @@
 
 ## `GNFS_SIQS_SHADOW_PROOF`
 
-`GNFS_SIQS_SHADOW_PROOF` 控制生产 SIQS 在不改变旧求解路径的前提下，是否运行一次有界的 shadow proof 并输出结构化观测记录。该开关只用于采集迁移证据，不会把 shadow proof 的因子结果用于生产返回，也不会启用 two-large-prime（2LP）收集。
+`GNFS_SIQS_SHADOW_PROOF` 控制生产 SIQS 是否在 legacy merge 前运行一次有界的
+shadow proof。`observe` 只输出结构化观测记录并继续 legacy；显式 `prefer` 可在完整
+V2 pre-route 记录成功写出后返回重新验证的 shadow 因子。任何模式都不会启用
+two-large-prime（2LP）收集，也不会自动激活 RSS policy、holdout campaign 或
+production promotion。
 
 ### 取值与解析
 
@@ -11,38 +15,57 @@
 | 未设置 | `off` | 完全沿用 legacy 路径 |
 | `0` | `off` | 完全沿用 legacy 路径 |
 | `observe` | `observe` | 在 legacy merge 前运行一次只读 shadow proof |
+| `prefer` | `prefer` | 运行同一只读 proof；仅在 candidate、结果预构造和 V2 emitter 三门全部通过时 early return |
 
 解析是严格且大小写敏感的。空字符串、`1`、`Observe`、前后带空格的值以及其他任何值都会抛出 `std::invalid_argument`，不会静默回退。该异常是公开的 fail-closed 边界，调用方必须处理；没有统一异常处理的命令行入口可能因此终止。
 
-`prefer` 运行模式尚未接线，因此也属于非法值。当前 V1 记录只表示
-`mode=observe`、`route=legacy_continue` 和 `promotion=false`，不能将它解释为
-shadow 结果路由协议。
+Observe V1 记录仍只表示 `mode=observe`、`route=legacy_continue` 和
+`promotion=false`，不能将它解释为 shadow 结果路由协议。`prefer` 使用独立的 V2
+pre-route 记录。
 
 `factor()` 在入口处、开始计时和任何 SIQS 工作之前调用一次 `getenv` 并冻结解析结果。该值不做进程级缓存，因此下一次 `factor()` 调用可以使用新的环境值；一次调用进行期间的环境变化不会改变已冻结的模式。并发修改进程环境不属于支持的使用方式。
 
 ### Default 与 bit-for-bit 契约
 
-Default 是未设置，即 `off`。未设置和 `0` 都不进入 shadow 分支、不分配 shadow 状态，也不新增 stderr 输出；它们保留原有 legacy merge、linear algebra 和 extraction 控制流及 factor/relation 结果语义。现有的 `time_seconds` 是墙钟测量，本身不承诺不同进程或重复运行之间逐位一致。
+Default 是未设置，即 `off`。未设置和 `0` 都不运行 shadow proof、不做 shadow
+动态分配，也不新增 stderr 输出；它们保留原有 legacy merge、linear algebra 和
+extraction 控制流及 factor/relation 结果语义。现有的 `time_seconds` 是墙钟测量，
+本身不承诺不同进程或重复运行之间逐位一致。
 
-`observe` 不是零开销模式。shadow proof 位于最终 `SIQSResult::time_seconds` 的计时范围内，因此会增加墙钟时间，且可能间接改变并发调度下的运行统计。它只保证不修改 raw relations，并继续执行同一个 legacy merge、solve 和 extract 路径；测试只要求最终因子结果和关系语义一致，不要求 wall time 或所有统计字段逐位相同。
+`observe` 和 `prefer` 都不是零开销模式。shadow proof 位于
+`SIQSResult::time_seconds` 的计时范围内，因此会增加墙钟时间，且可能间接改变并发
+调度下的运行统计。两者都不修改 raw relations。`observe` 无条件继续同一个 legacy
+merge、solve 和 extract 路径；`prefer` 的任意 fallback 或普通 emitter 错误也继续
+该路径。
 
 ### 集成点与输出
 
 生产接线位于所有 sieve workers `join()` 之后、`merge_partials()` 修改 raw relations 之前：
 
-1. 读取进程内存快照。
-2. 从 factor base 构造包含 sign sentinel 的 `{fb.p}` 向量。
-3. 以 `const` raw-relation span、`kN`、原始 `N`、当前 1LP bound、`split_cofactor_64` 和默认 `SIQSShadowProofOptions` 调用 `run_siqs_shadow_proof()`。
-4. 再读取一份进程内存快照，生成并尝试写出一行 `GNFS_SIQS_SHADOW_PROOF_OBSERVE_V1` 记录。
-5. 忽略 shadow 结果，继续 legacy merge、solve 和 extract。
+1. 从 factor base 构造包含 sign sentinel 的 `{fb.p}` 向量。
+2. 以 `const` raw-relation span、`kN`、原始 `N`、当前 1LP bound、
+   `split_cofactor_64` 和默认 `SIQSShadowProofOptions` 调用
+   `run_siqs_shadow_proof()`。
+3. `observe` 在 proof 前后读取进程内存快照，尝试写出一行
+   `GNFS_SIQS_SHADOW_PROOF_OBSERVE_V1`，然后无条件继续 legacy。
+4. `prefer` defensively evaluate owning result，预构造完整 `SIQSResult`，取得唯一
+   pre-emit wall sample，finalize 并再次比对 candidate，随后尝试写出一行
+   `GNFS_SIQS_SHADOW_PROOF_PREFER_DECISION_V2`。
+5. `prefer` 只在 finalized decision 是 candidate、预构造结果逐字段匹配且 emitter
+   返回 `true` 时 early return；其他情况继续未修改的 legacy corpus。
 
-显式 `observe` 即使 `verbose=false` 也尝试写出记录。输出属于独立的机器可读观测通道，不受普通 SIQS 诊断日志开关控制。
+显式 `observe` 或 `prefer` 即使 `verbose=false` 也尝试写出相应记录。输出属于独立
+的机器可读通道，不受普通 SIQS 诊断日志开关控制。
 
-所有 shadow terminal outcomes 都是观测结果，而不是生产分解结果。factor-base 向量准备期间的 `std::bad_alloc` 会记录为 `resource_exhausted`，其他异常会记录为 `exception_failure`。runner 已将其内部失败映射为 typed result。记录构造或 emitter 失败同样不得影响 legacy 路径；emitter 失败时该次调用可能没有完整记录，但仍继续分解。唯一有意向调用方传播的新增异常是入口处的非法环境值。
+Observe 的所有 shadow terminal outcomes 都只是观测结果。Prefer 只有完整重新验证的
+`factor_found` candidate 能进入三门权限谓词；其他 typed terminal、结果构造异常和
+普通 emitter 错误都继续 legacy。runner 已将其内部失败映射为 typed result。
+Observe 的 setup 异常进入 V1 typed record；prefer setup/evaluation 异常可没有 V2
+记录。唯一有意向调用方传播的新增异常是入口处的非法环境值。
 
 ### 固定默认上限
 
-生产 observe 当前使用 `SIQSShadowProofOptions{}`，不从其他环境变量调参：
+生产 observe 和 prefer 当前都使用 `SIQSShadowProofOptions{}`，不从其他环境变量调参：
 
 | 边界 | 默认值 |
 |------|-------:|
@@ -66,7 +89,9 @@ Default 是未设置，即 `off`。未设置和 `0` 都不进入 shadow 分支�
 
 ### 2LP 与 RSS 限制
 
-生产 collector 仍设置 `lp_bound_sq = 0`，因此 2LP 保持关闭。observe 只分析当前 full + 1LP raw corpus；它不会改变 sieve admission，也不能作为生产 2LP yield 的证据。
+生产 collector 仍设置 `lp_bound_sq = 0`，因此 2LP 保持关闭。Observe 和 prefer
+都只分析当前 full + 1LP raw corpus；它们不会改变 sieve admission，也不能作为
+生产 2LP yield 的证据。
 
 observe 的 before/after 内存字段是进程级端点快照，不是 shadow 阶段的精确瞬时峰值。为保证 legacy fallback，raw relations 在 shadow rows 和 packed matrix 存活时仍被保留；分配器也可能在 shadow 对象析构后保留页面。因此：
 
@@ -336,11 +361,12 @@ campaign 仍是 `blocked` / `pending`。policy 获批前不得构造或启动 ca
 写入任何 holdout 结果。terminal transaction 的存在不激活 production entry，也不
 产生真实 gate outcome。
 
-### Pure V2 `prefer` Decision Contract
+### V2 `prefer` Decision and Routing Contract
 
-V2 只定义纯决策和审计合同，不能放宽或重解释 observe V1。当前 parser 仍只接受
-未设置、`0` 和 `observe`；`prefer` 仍会 fail closed。`factor()` 和生产 observe
-seam 都没有接入 V2，也不会返回 shadow 结果。
+V2 的 typed decision 和审计 schema 不放宽或重解释 observe V1。统一 parser 接受
+未设置、`0`、`observe` 和显式 `prefer`；原有 observe-only parser 名称保留源兼容，
+仍只接受未设置、`0` 和 `observe`。`factor()` 在 post-join、pre-merge seam 接入
+V2，默认 `off` 和现有 `observe` 行为不变。
 
 纯实现位于 `include/gnfs/siqs/shadow_proof_prefer.hpp`。
 `evaluate_siqs_shadow_proof_prefer` 先生成 owning draft，
@@ -362,7 +388,7 @@ V2 字段顺序和语义固定如下：
 | `decision reason next_route` | 闭集决策、闭集原因和尚未执行的路由建议 |
 | `shadow_terminal shadow_stage shadow_fallback` | 被审计 typed shadow result 的 terminal、最后阶段和 bounded fallback 原因 |
 | `factorization_present input_n factor cofactor factor_identity` | source 是否报告 factorization、原始十进制输入和重新验证结果；fallback 不输出因子值，`factor` / `cofactor` 为 `0` |
-| `result_present relations_found relations_source` | 只有 candidate 携带 future result；关系数来自 `shadow_selected_rows` |
+| `result_present relations_found relations_source` | 只有 candidate 携带返回结果；关系数来自 `shadow_selected_rows` |
 | `polynomials_used polynomials_source` | 只有 candidate 携带 post-join `production_sieve_counter` |
 | `decision_wall_ns_supported decision_wall_ns time_scope` | candidate 携带正的 caller sample 和 `siqs_timer_to_pre_emit_decision`；fallback 为 `false`、`0`、`unavailable` |
 | `emit_phase promotion` | 固定为 `before_route false` |
@@ -381,11 +407,19 @@ presence 矛盾、proof evidence 不守恒、结果指标非法或内部异常�
 `legacy_fallback` 决策。
 
 V2 record 中的 `next_route` 是在 `emit_phase=before_route` 时生成的下一步建议，
-不是已经执行的返回路径。纯合同不会自行路由。未来接线只有在完整 record 成功
-写出、flush 成功且 stream 无错误，emitter 返回 `true` 后，才能把该成功视为
-shadow route 的 commit point；写入失败、部分写入、flush 失败或 stream 错误都必须
-继续未修改的 legacy 路径。即使失败通道留下完整
-可见行，该行仍只陈述 pre-emit 决策，不声称 route 已执行。
+不是已经执行的返回路径。Production adapter 只有在完整 record 的 `fprintf`、
+`fflush` 和 `ferror` 检查都成功，emitter 返回 `true` 后，才把 candidate 视为
+shadow route 的 commit point。普通 partial-write、write、flush 或 stream error
+都继续未修改的 legacy 路径；失败通道即使留下完整可见行，该行也仍只陈述
+pre-route 决策。
+
+这里的 commit point 只是当前进程内的 stdio 路由门，不是 `fsync` durability、
+consumer acknowledgement 或跨进程事务。默认 POSIX `SIGPIPE`、其他致命 signal、
+`kill`、crash、abort 和 allocator fatal failure 不会作为普通 C++ I/O 错误返回，
+因此不属于可恢复的 legacy fallback 合同；例如 stderr pipe 的 reader 提前关闭时，
+进程可在 emitter 内由 `SIGPIPE` 终止。合同还假定 emitter 调用期间 `stderr` 及其
+底层 fd 保持稳定；并发 `freopen`、`dup2`、`fclose`、`clearerr` 或绕过同一
+`FILE*` 的写入不受调用前后 `ferror` 检查固定或证明。
 
 `shadow_candidate` 记录使用 `next_route=shadow_return`、
 `relations_source=shadow_selected_rows`、
@@ -394,7 +428,7 @@ shadow route 的 commit point；写入失败、部分写入、flush 失败或 st
 `time_scope=siqs_timer_to_pre_emit_decision`。`legacy_fallback` 则使用
 `next_route=legacy_continue`，不携带 candidate result，相关 source 为 `none`。
 
-未来 shadow `SIQSResult` 的指标语义固定如下：
+Shadow `SIQSResult` 的指标语义固定如下：
 
 - `relations_found` 等于实际送入 shadow matrix 的 selected row 数，并且必须与
   matrix row count 一致；它不是 raw、pretrim 或 graph edge 数。
@@ -402,24 +436,31 @@ shadow route 的 commit point；写入失败、部分写入、flush 失败或 st
   counter，不使用 shadow 内部计数。
 - `time_seconds` 由同一份 pre-emit decision wall-time 样本派生。它从现有 SIQS
   timer 起点计到 pure evaluation 完成，包含 shadow proof、factor / evidence
-  验证和 accepted-factor copy；样本在
-  `finalize_siqs_shadow_proof_prefer` 和 emitter I/O 之前取得。未来的
-  `SIQSResult` 必须直接复用该值，不得重新采样。
+  验证和完整 `SIQSResult` preparation；样本在
+  `finalize_siqs_shadow_proof_prefer` 和 emitter I/O 之前取得。返回的
+  `SIQSResult` 直接复用该值，不重新采样。
 
-实验期采用 emit-before-route：先完整构造 shadow `SIQSResult` 和 V2 decision
-record；未来只有 emitter 成功后才能执行其 `next_route=shadow_return` 建议。记录
-构造或 emitter 失败时继续未修改的 legacy 路径。所有 `no_factor`、bounded
-fallback、invalid input、stage failure、resource exhaustion、exception 和
-invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `prefer`
-只能先作为显式实验，不能由当前 candidate comparison 或 sealed holdout 自动
-启用。
+当前显式实验采用 emit-before-route：先完整构造 shadow `SIQSResult`，再取得一次
+wall sample、finalize V2 decision，并重新比对 factors、relations 和 polynomials。
+唯一瞬时权限谓词要求 finalized candidate、预构造结果匹配和 emitter success 三门
+同时成立。Fallback decision 可以成功写出，但权限谓词必为 false；candidate mismatch
+不输出记录。成功 emitter 之后只剩 no-throw 三门谓词和已静态验证为 nothrow-move
+的 `optional<SIQSResult>` 返回。所有 `no_factor`、bounded fallback、invalid input、
+stage failure、resource exhaustion、exception 和 invariant failure 都继续 legacy。
+默认模式仍是 `off`，`prefer` 只能显式启用，不能由 candidate comparison、RSS gate、
+terminal record 或 sealed holdout 自动启用。
 
 ### 测试
 
 - `tests/test_siqs_shadow_proof_prefer.cpp` 覆盖纯 V2 决策、防御性 typed
   result / factor / metadata 验证和 pre-route emitter 合同。
-- `tests/test_siqs_shadow_proof_observe.cpp` 覆盖严格 parser（包括拒绝
-  `prefer`）、typed record、RSS 可用性字段和 emitter 合同。
+- `tests/test_siqs_shadow_prefer_route.cpp` 直接组合 production route adapter、真实
+  emitter 和跨平台环境变量 / stderr 夹具，覆盖八组三门真值、candidate commit、
+  写失败、fallback 携带陈旧预构造结果、finalize 降级、candidate mismatch 和空
+  output。该 `instant` 测试在 Windows smoke 中实际执行 `_putenv_s`、`_dup2` 和
+  `NUL` 路径。
+- `tests/test_siqs_shadow_proof_observe.cpp` 覆盖严格三态 parser、observe-only
+  compatibility parser、typed record、RSS 可用性字段和 emitter 合同。
 - `tests/test_siqs_shadow_observe_rss_holdouts.cpp` 只覆盖 sealed corpus 的数学和
   identity 合同；它不调用 production `factor()` 或 probe，也不采集 outcome。
 - `tests/test_siqs_shadow_proof_rss_gate.cpp` 使用 synthetic policy 和 records 覆盖
@@ -452,17 +493,23 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
   composition 的 policy-first preflight、synthetic classification 拒绝、默认空
   registry 的两次一致拒绝和递归目录快照不变；它不注入 deployment、session、
   controller callback 或成功 production 分支。
-- `tests/test_siqs.cpp` 锁定公开 `factor()` 路径对 `prefer` 的 fail-closed
-  拒绝，并确认拒绝前不发出 V1 或 V2 记录。
+- `tests/test_siqs.cpp` 锁定公开 `factor()` 的 off/observe/prefer truth table、
+  零预算 exact typed fallback、公开 50-digit candidate early return 和 candidate
+  V2 写失败后的 legacy continuation；非法值在工作前不发出 V1/V2。50-digit
+  写失败用例是 live-sieve continuation smoke；确定区分 shadow return 与 legacy
+  continuation 的断言位于独立的 instant adapter 测试。
 - `tests/test_siqs_shadow_proof_observe_probe.cpp` 提供 Release-only production 1LP fresh-process measurement target；它不进入 CTest 或常规测试 tier。
 - `tests/test_siqs_shadow_proof_runner.cpp` 覆盖各阶段 terminal status、inclusive caps、异常和输入不可变性。
-- `tests/test_siqs.cpp` 使用跨平台 RAII 环境变量夹具，验证 `143 = 11 * 13` 在 `0` 与 `observe` 下返回同一规范因子对，并验证非法值在 SIQS 工作开始前抛出。
+- `tests/test_siqs.cpp` 使用跨平台 RAII 环境变量和 stderr 夹具；unset、`0` 与
+  `observe` 对 `143 = 11 * 13` 返回同一规范因子对。
 
 常用验证命令：
 
 ```bash
 ./scripts/test.sh run test_siqs_shadow_proof_prefer
+./scripts/test.sh run test_siqs_shadow_prefer_route
 ./scripts/test.sh run test_siqs_shadow_proof_observe
+./scripts/test.sh run test_siqs_shadow_cross_size
 ./scripts/test.sh run test_siqs_shadow_observe_rss_holdouts
 ./scripts/test.sh run test_siqs_shadow_proof_rss_gate
 ./scripts/test.sh run test_siqs_shadow_proof_rss_campaign_journal_store

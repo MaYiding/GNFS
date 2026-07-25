@@ -86,11 +86,11 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `src/api/pipeline.cpp:1798` | Phase 2 SIQS invocation, adaptive timeout, fallback to GNFS |
 | `include/gnfs/api/progress.hpp` | `FactorizationMethod::SIQS` enum + name/tag helpers |
 | `include/gnfs/api/i18n.hpp` | Localised method labels (`siqs` tag, CLI `--method siqs`) |
-| `tests/test_siqs.cpp` | Unit tests: tonelli, FB, split_cofactor edges, 14d/19d/31d/39d |
+| `tests/test_siqs.cpp` | Unit tests: helpers, off/observe parity, exact prefer fallback, public 50-digit prefer route, and 14d/19d/31d/39d factorization |
 | `tests/test_siqs_e2e.cpp` | 100-bit (31d) and 180-bit (55d) wall-clock proofs, ENV check |
 | `tests/test_siqs_shadow_cross_size.cpp` | Constructed arithmetic-valid 50-, 70-, and 90-digit shadow-chain corpus across 1/2/4 workers |
 | `tests/test_siqs_shadow_proof_runner.cpp` | Bounded facade terminal states, inclusive caps, exception mapping, and input immutability |
-| `tests/test_siqs_shadow_proof_observe.cpp` | Strict observe parser, typed record schema, RSS fields, and emitter contract |
+| `tests/test_siqs_shadow_proof_observe.cpp` | Strict three-state parser, observe-only compatibility parser, typed record schema, RSS fields, and emitter contract |
 | `include/gnfs/siqs/shadow_proof_observe_record_codec.hpp` | Strict owning decoder for one canonical observe stderr record |
 | `tests/test_siqs_shadow_proof_observe_probe.cpp` | Release-only production 1LP fresh-process factor and RSS probe |
 | `src/siqs/shadow_proof_rss_holdout_fixture_internal.hpp` | Source-private outcome-blind sealed 50-digit RSS holdout identities and stable corpus digest |
@@ -117,6 +117,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `src/util/authenticated_bounded_child_process_capability_internal.hpp` | Source-private positive compile-capability grant shared by store admission, authentication, and descriptor launch |
 | `tests/test_bounded_child_process.cpp` | Cross-platform transport tests plus compile-capability classification and Linux sealed-image, replacement, one-shot, descriptor-closure, and concurrency tests |
 | `tests/test_siqs_shadow_proof_prefer.cpp` | Pure V2 decisions, defensive metadata validation, and pre-route emitter contract |
+| `tests/test_siqs_shadow_prefer_route.cpp` | Instant production-adapter composition, three-gate truth table, exact candidate/fallback records, write failure, stale candidate rejection, and cross-platform environment/stderr paths |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 
 ## Parameter Calibration
@@ -147,15 +148,16 @@ span and inclusive relation, payload, graph, row, and dense-matrix limits. It
 returns only typed scalar evidence and an optional verified factor pair; it
 does not retain the raw corpus, graph, rows, or dependencies.
 
-The facade is wired into `factor()` only when
-`GNFS_SIQS_SHADOW_PROOF=observe`. The mode is parsed and frozen once at function
-entry. After all sieve workers join and before `merge_partials` mutates the raw
-relations, the observe seam snapshots process memory, constructs the
-factor-base prime vector, runs the facade through a const raw-relation span,
-attempts one typed record emission, and always continues through the legacy
-path. It does not return the shadow factor or enable 2LP collection. The
-explicit observe record is attempted even when `verbose=false`; unset or `0`
-performs no shadow work and adds no output. See
+The facade is wired into `factor()` for explicit `observe` and `prefer`. The
+mode is parsed and frozen once at function entry. After all sieve workers join
+and before `merge_partials` mutates the raw relations, both modes construct the
+factor-base prime vector and run the facade through a const raw-relation span.
+Observe snapshots process memory, attempts one typed V1 record emission, and
+always continues through the legacy path. Prefer may return a revalidated
+shadow factor only after a complete V2 pre-route record passes its stdio gate;
+every fallback continues the untouched legacy corpus. Neither mode enables 2LP
+collection. Explicit records are attempted even when `verbose=false`; unset or
+`0` performs no shadow work and adds no output. See
 [SIQS Runtime Flags](../env-flags/siqs.md) for the strict parser and
 failure-transparency contract.
 
@@ -489,35 +491,46 @@ verified refresh before a durable receipt exists.
 The source-private artifact-batch receipt is stricter: it is constructed in
 place inside the lease-owning core and is neither copyable nor movable.
 
-The staged V2 `prefer` boundary is a pure decision and audit contract. It does
-not extend the environment parser, connect to `factor()`, alter the observe
-seam, or route a shadow result. The implementation in
+The V2 `prefer` boundary separates pure decision validation from the
+production adapter. The implementation in
 `include/gnfs/siqs/shadow_proof_prefer.hpp` evaluates an owning draft with
 `evaluate_siqs_shadow_proof_prefer`, attaches the caller's wall-time sample with
 `finalize_siqs_shadow_proof_prefer`, and emits the closed
 `GNFS_SIQS_SHADOW_PROOF_PREFER_DECISION_V2` record with
 `emit_siqs_shadow_proof_prefer_decision`. Its `next_route` field is a pre-route
 recommendation recorded with `emit_phase=before_route`, not a claim that the
-route ran. A future integration may use a `true` emitter return as the commit
-point. That return requires a successful write and flush with no stream error.
-Every construction, write, partial-write, flush, or stream-error failure must
-keep the legacy path available.
+route ran. The production adapter prepares the complete `SIQSResult`, samples
+the wall clock once, finalizes and rechecks the candidate, then uses a `true`
+emitter return as the third and final route gate. Ordinary write,
+partial-write, flush, or stream-error failure keeps the legacy path available.
+`tests/test_siqs_shadow_prefer_route.cpp` exercises this composition directly:
+it admits a prepared result only after the real emitter succeeds, rejects
+candidate mismatches without emitting, and proves that fallback decisions
+cannot return a stale pre-finalization candidate. The public 50-digit test is a
+live-sieve route and continuation smoke test; the instant adapter test provides
+the deterministic route distinction.
 
-For a future shadow return, `SIQSResult::relations_found` means the selected row
-count actually submitted to the shadow matrix and must equal the matrix row
-count. `polynomials_used` remains the production sieve counter sampled after
-all workers join. `time_seconds` is derived from the same pre-emit decision
-wall-time sample measured from the existing SIQS timer start. The caller samples
-after pure proof/factor/evidence evaluation and accepted-factor copying, but
-before `finalize_siqs_shadow_proof_prefer` and emitter I/O. A future
-`SIQSResult` must copy this value without resampling.
+This stdio gate is not filesystem durability, consumer acknowledgement, or a
+cross-process transaction. Default POSIX `SIGPIPE` and other fatal signals,
+crash, abort, and allocator fatal failure are outside the recoverable C++ error
+contract. It also assumes `stderr` and its underlying descriptor remain stable
+during emission; concurrent `freopen`, `dup2`, `fclose`, `clearerr`, or writes
+that bypass the same `FILE*` are outside the pre/post-`ferror` guarantee. For a
+shadow return, `SIQSResult::relations_found` is the selected row count actually
+submitted to the shadow matrix and equals the matrix row count.
+`polynomials_used` remains the production sieve counter sampled after all
+workers join. `time_seconds` is derived from the same pre-emit decision
+wall-time sample measured from the existing SIQS timer start. The caller
+samples after pure proof/factor/evidence evaluation and complete `SIQSResult`
+preparation, but before finalization and emitter I/O; the returned `SIQSResult`
+copies this value without resampling.
 
 A fixed constructed corpus exercises the full chain at the live 50-, 70-, and
 90-digit factor-base column counts with stable fingerprints and dependencies
 across one, two, and four workers. A separate bounded 256-A, 50-digit profile
 now reaches 1701 selected rows and recovers the frozen factor pair through the
 proof gate across the same worker counts. These results establish deterministic
-factor evidence, but they do not yet authorize production routing or 2LP
+factor evidence, but they do not authorize automatic promotion or 2LP
 collection.
 
 ## Two-Large-Prime Re-enablement Plan
@@ -558,18 +571,17 @@ The safe migration order is:
    reconstruct each square pair, and admit GCD only through the final
    congruence proof.
 8. Run the bounded read-only proof facade at the post-join, pre-merge seam in
-   explicit observe mode. This step is now wired behind
-   `GNFS_SIQS_SHADOW_PROOF=observe`; it always continues through the legacy path
-   and records process-memory endpoints while raw and shadow state overlap.
-9. Permit a proof-gated early return only after observe evidence is stable.
-   The pure V2 contract is staged, but `prefer` remains rejected by the parser
-   and neither `factor()` nor observe is connected to it. A future explicit
-   experiment must defensively revalidate that the canonical, non-trivial
-   factor pair multiplies exactly to the original input, construct the complete
-   `SIQSResult`, and successfully emit the pre-route decision before committing
-   its `next_route`. Any validation or emission failure continues the legacy
-   path. Keep production 2LP collection as a later, independently bounded
-   change.
+   explicit observe mode. `GNFS_SIQS_SHADOW_PROOF=observe` always continues
+   through the legacy path and records process-memory endpoints while raw and
+   shadow state overlap.
+9. Permit a proof-gated early return only for explicit
+   `GNFS_SIQS_SHADOW_PROOF=prefer`. The adapter defensively revalidates that the
+   canonical, non-trivial factor pair multiplies exactly to the original input,
+   constructs the complete `SIQSResult`, and successfully emits the pre-route
+   decision before committing its recommendation. Any validation or ordinary
+   emission failure continues the legacy path. Default mode and automatic
+   promotion stay disabled. Keep production 2LP collection as a later,
+   independently bounded change.
 
 The arithmetic oracle must include a single-edge `p^2` cycle, three or more
 parallel edges, a vertex of degree four, and a cycle whose factor-base exponent
@@ -600,19 +612,19 @@ SIQS's `L_N(1/2, 1)`.
   sparse-wide row conversion, deterministic parallel assembly, packed solving,
   proof-gated factor extraction, a bounded read-only facade, and cross-size
   evidence are staged. The 256-A Release-only profile supplies live 50-digit
-  factor evidence. The observe-only production seam and fresh-process probe
+  factor evidence. The observe telemetry seam and fresh-process probe
   protocol are wired and a current-tree comparison has exercised the contract.
   These samples are calibration-excluded. The eight-fixture outcome-blind
   holdout corpus is sealed with a stable identity digest, but no production
   factor or probe has opened it. The pure typed RSS gate is staged and tested
   only with synthetic records. The production-overlap checklist remains pending
-  until an approved per-platform policy and campaign runner exist, and the
-  corpus is measured against the approved deployment budget with reserved
-  headroom. No numeric RSS threshold or real gate result is currently
+  until an approved per-platform policy and matching deployment registry row
+  exist, and the corpus is measured against the approved deployment budget with
+  reserved headroom. No numeric RSS threshold or real gate result is currently
   available. A separately bounded 2LP
-  collector remains a prerequisite for production 2LP collection. The pure V2
-  decision contract does not change parser or production routing; current
-  probe and V2 records never authorize automatic promotion.
+  collector remains a prerequisite for production 2LP collection. Explicit
+  V2-audited `prefer` routing is available, but current probe, RSS gate,
+  terminal, and V2 records never authorize automatic promotion.
   See [SIQS Live-Sieve Capture Contract](../perf/siqs-live-sieve-capture.md)
 - **The wide sparse shadow backend is not implemented**; the dense solver
   admits at most 100000 row variables and 256MiB of packed matrix payload,

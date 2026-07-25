@@ -83,8 +83,9 @@ struct SIQSShadowProofPreferCandidate final {
     double time_seconds = 0.0;
 };
 
-/// Final immutable-by-convention decision consumed by the V2 emitter. A future
-/// adapter may follow next_route=shadow_return only after successful emission.
+/// Final immutable-by-convention decision consumed by the V2 emitter. The
+/// production adapter may follow next_route=shadow_return only after
+/// successful emission.
 struct SIQSShadowProofPreferDecision final {
     SIQSShadowProofPreferDecisionKind decision = SIQSShadowProofPreferDecisionKind::legacy_fallback;
     SIQSShadowProofPreferReason reason = SIQSShadowProofPreferReason::decision_internal_failure;
@@ -661,8 +662,8 @@ finalize_siqs_shadow_proof_prefer(SIQSShadowProofPreferDraft&& draft,
 }
 
 /// Emit one closed V2 pre-route record. The record states next_route rather
-/// than claiming the route occurred. A future caller may commit that route only
-/// after this function returns true.
+/// than claiming the route occurred. A caller may commit that route only after
+/// this function returns true.
 [[nodiscard]] inline bool
 emit_siqs_shadow_proof_prefer_decision(std::FILE* output, const core::Integer& original_n,
                                        const SIQSShadowProofPreferDecision& decision) noexcept {

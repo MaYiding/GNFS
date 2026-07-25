@@ -18,6 +18,7 @@
 #include <gnfs/siqs/relation.hpp>
 #include <gnfs/siqs/runtime_facts.hpp>
 #include <gnfs/siqs/shadow_proof_observe.hpp>
+#include <gnfs/siqs/shadow_proof_prefer.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <gnfs/util/primes.hpp>
 
@@ -26,6 +27,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -34,7 +36,9 @@
 #include <random>
 #include <span>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace gnfs::siqs {
@@ -1481,13 +1485,68 @@ struct SIQSResult {
     bool shadow_proof_observe_record_committed = false;
 };
 
+namespace siqs_factor_detail {
+
+/// Ephemeral route authority: no draft, decision, result, or telemetry object
+/// retains this bit after factor() evaluates the three gates.
+[[nodiscard]] constexpr bool
+prefer_shadow_return_authorized(bool decision_is_shadow_candidate, bool prepared_candidate_matches,
+                                bool prefer_decision_committed) noexcept {
+    return decision_is_shadow_candidate && prepared_candidate_matches && prefer_decision_committed;
+}
+
+/// Revalidate the fully prepared result, emit the V2 pre-route decision, and
+/// return a result only when all three ephemeral route gates pass. This helper
+/// owns no callback or persistent authority and is the sole prefer route
+/// adapter used by factor().
+[[nodiscard]] inline std::optional<SIQSResult>
+commit_prefer_route(std::FILE* output, const Integer& original_n,
+                    const SIQSShadowProofPreferDecision& decision,
+                    std::optional<SIQSResult> prepared_result) noexcept {
+    const bool decision_is_shadow_candidate = decision.is_shadow_candidate();
+    const bool prepared_candidate_matches =
+        decision_is_shadow_candidate && prepared_result.has_value() &&
+        prepared_result->factor1 == decision.candidate->factorization.factor &&
+        prepared_result->factor2 == decision.candidate->factorization.cofactor &&
+        prepared_result->time_seconds == 0.0 &&
+        prepared_result->relations_found == decision.candidate->relations_found &&
+        prepared_result->polynomials_used == decision.candidate->polynomials_used &&
+        prepared_result->resolved_sieve_workers > 0 &&
+        !prepared_result->shadow_proof_observe_record_committed;
+    if (prepared_candidate_matches) {
+        prepared_result->time_seconds = decision.candidate->time_seconds;
+    }
+
+    // A fallback decision may be recorded for audit, but it can never
+    // authorize a shadow return even if a pre-finalization candidate was
+    // prepared. A candidate/prepared mismatch emits nothing.
+    if (!decision_is_shadow_candidate || prepared_candidate_matches) {
+        const bool prefer_decision_committed =
+            emit_siqs_shadow_proof_prefer_decision(output, original_n, decision);
+        if (prefer_shadow_return_authorized(decision_is_shadow_candidate,
+                                            prepared_candidate_matches,
+                                            prefer_decision_committed)) {
+            return prepared_result;
+        }
+    }
+    return std::nullopt;
+}
+
+} // namespace siqs_factor_detail
+
+static_assert(std::is_nothrow_move_constructible_v<std::optional<SIQSResult>>);
+static_assert(noexcept(siqs_factor_detail::prefer_shadow_return_authorized(false, false, false)));
+static_assert(noexcept(siqs_factor_detail::commit_prefer_route(
+    nullptr, std::declval<const Integer&>(), std::declval<const SIQSShadowProofPreferDecision&>(),
+    std::nullopt)));
+
 inline std::optional<SIQSResult> factor(
     const Integer& N,
     size_t max_seconds = 3600,
     bool verbose = true)
 {
-    const SIQSShadowProofObserveMode shadow_proof_observe_mode =
-        parse_siqs_shadow_proof_observe_mode(std::getenv(SIQS_SHADOW_PROOF_OBSERVE_ENV));
+    const SIQSShadowProofMode shadow_proof_mode =
+        parse_siqs_shadow_proof_mode(std::getenv(SIQS_SHADOW_PROOF_ENV));
 
     auto start = std::chrono::steady_clock::now();
     auto elapsed = [&]() {
@@ -1700,28 +1759,69 @@ inline std::optional<SIQSResult> factor(
                 full, partial, num_polys, elapsed());
     }
 
-    // The shadow proof is observe-only: it reads the post-join raw corpus
-    // before legacy merge mutation, attempts typed telemetry, never routes a
-    // shadow outcome, and continues the legacy path after every observe result.
+    // Both explicit shadow modes read the post-join raw corpus before legacy
+    // merge mutation. Observe always continues. Prefer may return a fully
+    // revalidated candidate only after its V2 pre-route decision is written,
+    // flushed, and stream-error free on the caller's stderr stream.
     bool shadow_proof_observe_record_committed = false;
-    if (shadow_proof_observe_mode == SIQSShadowProofObserveMode::observe) {
-        const SIQSShadowProofOptions shadow_options{};
-        const SIQSShadowProofObserveRecord shadow_record = observe_siqs_shadow_proof(
-            all_relations.size(), fb.size(), lp_bound, shadow_options, [&]() {
-                std::vector<uint32_t> factor_base_primes;
-                factor_base_primes.reserve(fb.size());
-                for (const FBPrime& prime : fb) {
-                    factor_base_primes.push_back(prime.p);
-                }
+    const SIQSShadowProofOptions shadow_options{};
+    const auto run_shadow_proof = [&]() {
+        std::vector<uint32_t> factor_base_primes;
+        factor_base_primes.reserve(fb.size());
+        for (const FBPrime& prime : fb) {
+            factor_base_primes.push_back(prime.p);
+        }
 
-                auto shadow_splitter = split_cofactor_64;
-                return run_siqs_shadow_proof(
-                    std::span<const SIQSRelation>(all_relations.data(), all_relations.size()),
-                    std::span<const uint32_t>(factor_base_primes.data(), factor_base_primes.size()),
-                    kN, N, lp_bound, shadow_splitter, shadow_options);
-            });
+        auto shadow_splitter = split_cofactor_64;
+        return run_siqs_shadow_proof(
+            std::span<const SIQSRelation>(all_relations.data(), all_relations.size()),
+            std::span<const uint32_t>(factor_base_primes.data(), factor_base_primes.size()), kN, N,
+            lp_bound, shadow_splitter, shadow_options);
+    };
+    if (shadow_proof_mode == SIQSShadowProofMode::observe) {
+        const SIQSShadowProofObserveRecord shadow_record = observe_siqs_shadow_proof(
+            all_relations.size(), fb.size(), lp_bound, shadow_options, run_shadow_proof);
         shadow_proof_observe_record_committed =
             emit_siqs_shadow_proof_observe_record(shadow_record);
+    } else if (shadow_proof_mode == SIQSShadowProofMode::prefer) {
+        try {
+            SIQSShadowProofResult shadow_result = run_shadow_proof();
+            SIQSShadowProofPreferDraft draft =
+                evaluate_siqs_shadow_proof_prefer(shadow_result, N, num_polys);
+
+            std::optional<SIQSResult> prepared_shadow_result;
+            if (draft.decision == SIQSShadowProofPreferDecisionKind::shadow_candidate &&
+                draft.accepted.has_value()) {
+                SIQSResult candidate;
+                candidate.factor1 = draft.accepted->factorization.factor;
+                candidate.factor2 = draft.accepted->factorization.cofactor;
+                candidate.time_seconds = 0.0;
+                candidate.relations_found = draft.accepted->relations_found;
+                candidate.polynomials_used = draft.accepted->polynomials_used;
+                candidate.resolved_sieve_workers = num_threads;
+                prepared_shadow_result.emplace(std::move(candidate));
+            }
+
+            const auto decision_wall_end = std::chrono::steady_clock::now();
+            const auto decision_wall_count =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(decision_wall_end - start)
+                    .count();
+            const uint64_t decision_wall_ns =
+                decision_wall_count > 0 && std::in_range<uint64_t>(decision_wall_count)
+                    ? static_cast<uint64_t>(decision_wall_count)
+                    : 0;
+            SIQSShadowProofPreferDecision decision =
+                finalize_siqs_shadow_proof_prefer(std::move(draft), decision_wall_ns);
+
+            std::optional<SIQSResult> routed_shadow_result =
+                siqs_factor_detail::commit_prefer_route(stderr, N, decision,
+                                                        std::move(prepared_shadow_result));
+            if (routed_shadow_result.has_value()) {
+                return routed_shadow_result;
+            }
+        } catch (...) {
+            // Explicit prefer never prevents the untouched legacy path.
+        }
     }
 
     // Merge partials
