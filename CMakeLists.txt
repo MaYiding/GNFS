@@ -511,6 +511,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME OrderedParallelMap COMMAND test_ordered_parallel_map)
     set_tests_properties(OrderedParallelMap PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_fixed_slot_executor
+        tests/test_fixed_slot_executor.cpp
+    )
+    target_link_libraries(test_fixed_slot_executor PRIVATE gnfs_util Threads::Threads)
+    add_test(NAME FixedSlotExecutor COMMAND test_fixed_slot_executor)
+    set_tests_properties(FixedSlotExecutor PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_logger
         tests/test_logger.cpp
     )

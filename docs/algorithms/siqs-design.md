@@ -59,6 +59,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `next_poly_B` | `siqs.hpp` ~line 591 | Gray-code switch: one bit flip rotates offsets in O(FB) |
 | `sieve_polynomial` | `siqs.hpp` ~line 658 | Log-add over `[-M, M]`, threshold filter, trial divide, 2LP cofactor split |
 | `SIQSLiveSieveCaptureController` | `live_sieve_capture.hpp` | Transactional relation/payload admission before dense capture allocation |
+| `execute_fixed_slots` | `util/fixed_slot_executor.hpp` | Static contiguous worker partitions, a full-participation launch gate, canonical slot results, and explicit cancel-or-drain failure policy |
 | `merge_partials` | `siqs.hpp` ~line 994 | Iterative greedy LP merge — 1LP pairs plus 2LP cycle finding |
 | `normalize_two_large_prime` | `two_large_prime.hpp` | Exact, deterministic-prime validation for a candidate 2LP split |
 | `build_two_large_prime_cycle_basis` | `two_large_prime_graph.hpp` | Deterministic fundamental-cycle oracle over the 1LP/2LP multigraph |
