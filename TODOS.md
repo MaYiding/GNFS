@@ -29,3 +29,27 @@ These items were considered during the structured relation-reduction review and 
 - **Why:** LP distributions change sharply across size bands.
 - **Deferred because:** A policy cannot be calibrated before fixed 120-bit and 50-digit corpora establish stable measurements.
 - **Depends on:** Reproducible M5 reports across several size bands.
+
+## Cross-build distributed-sieve adoption
+
+- **What:** Certify durable worker adoption across different executable byte
+  identities that declare the same execution contract.
+- **Why:** It would allow a deployment upgrade to finish an older wave without
+  pinning the exact executable.
+- **Deferred because:** The first durable-wave protocol deliberately requires an
+  exact executable SHA-256; semantic compatibility needs its own mixed-build
+  fixture and release policy.
+- **Depends on:** The local same-executable crash suite and bounded 50-digit
+  evidence for durable resume.
+
+## Multi-wave durable sieve campaign and operator GC
+
+- **What:** Add a general append-only campaign journal, authenticated fork/exec
+  workers, remote scheduling, Windows launch, and an inspection-driven garbage
+  collector for stale-valid waves.
+- **Why:** It would turn the bounded local wave transaction into a reusable
+  long-running distributed service.
+- **Deferred because:** Those features add scheduling and trust boundaries that
+  are not required to recover one local fork-based wave.
+- **Depends on:** Stable manifest, handoff, merge-commit, and consumer-ACK
+  formats plus measured recovery value.
