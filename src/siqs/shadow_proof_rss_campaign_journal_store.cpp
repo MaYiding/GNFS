@@ -218,6 +218,12 @@ namespace {
 
 using StoreError = SIQSShadowProofRssCampaignJournalStoreError;
 
+/// Sole production deployment registry provider. The default build keeps it
+/// empty, and no injection, installation, or exported registry surface exists.
+[[nodiscard]] constexpr std::span<const DeploymentEntry> production_deployments() noexcept {
+    return {};
+}
+
 [[nodiscard]] SIQSShadowProofRssCampaignJournalStoreDiagnostic
 make_common_diagnostic(SIQSShadowProofRssCampaignJournalStoreError error,
                        SIQSShadowProofRssCampaignJournalStoreObject object =
@@ -582,11 +588,8 @@ CampaignReconciliationResult ReconciliationOrchestrator::reconcile_claims(
     const SIQSShadowProofRssGatePolicy* policy,
     const SIQSShadowProofRssCampaignRuntimeFacts* runtime_facts) noexcept {
     try {
-        // Production provisioning remains deliberately closed in the default
-        // build. Only this claims-only orchestration owns the table.
-        static constexpr std::span<const DeploymentEntry> production_deployments{};
         DeploymentSelectionResult selected =
-            select_deployment(policy, runtime_facts, production_deployments,
+            select_deployment(policy, runtime_facts, production_deployments(),
                               DeploymentAdmissionPurpose::reconciliation);
         if (!selected) {
             return {CampaignReconciliationOutcome::admission_rejected,
@@ -674,11 +677,10 @@ open_siqs_shadow_proof_rss_campaign_journal_session(
     const SIQSShadowProofRssGatePolicy* policy,
     const SIQSShadowProofRssCampaignRuntimeFacts* runtime_facts) noexcept {
     // Production provisioning is deliberately closed in the default build.
-    // Deployment packaging may replace this private table; callers cannot
-    // populate it at runtime through the public API.
-    static constexpr std::span<const detail::DeploymentEntry> production_deployments{};
+    // Both session admission and reconciliation consult the same private
+    // provider; callers cannot populate it through the public API.
     return detail::SessionFactory::open_with_deployments(policy, runtime_facts,
-                                                         production_deployments);
+                                                         detail::production_deployments());
 }
 
 } // namespace gnfs::siqs
