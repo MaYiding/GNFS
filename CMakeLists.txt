@@ -464,11 +464,12 @@ if(GNFS_BUILD_TESTS)
         siqs_rss_campaign_synthetic_hang 4)
 
     find_program(BASH_EXECUTABLE bash)
-    find_program(PYTHON_EXECUTABLE NAMES python3 python)
-    if(BASH_EXECUTABLE AND PYTHON_EXECUTABLE)
+    find_program(ZSH_EXECUTABLE zsh)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(BASH_EXECUTABLE AND Python3_Interpreter_FOUND)
         add_test(NAME HarnessHooks
             COMMAND ${CMAKE_COMMAND} -E env
-                PYTHON=${PYTHON_EXECUTABLE}
+                PYTHON=${Python3_EXECUTABLE}
                 ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_harness_hooks.sh)
         set_tests_properties(HarnessHooks PROPERTIES
             LABELS "instant" TIMEOUT 10
@@ -1324,9 +1325,22 @@ if(GNFS_BUILD_TESTS)
         tests/test_structured_ooc_50d_probe.cpp
     )
     target_link_libraries(test_structured_ooc_50d_probe PRIVATE gnfs_core Threads::Threads)
-    add_test(NAME StructuredOOC50dProbe COMMAND test_structured_ooc_50d_probe --max-special-q 4)
+    add_test(NAME StructuredOOC50dProbe
+        COMMAND test_structured_ooc_50d_probe --strategy structured --max-special-q 4)
     set_tests_properties(StructuredOOC50dProbe PROPERTIES DISABLED TRUE
         LABELS "stress" TIMEOUT 3600)
+    if(ZSH_EXECUTABLE AND Python3_Interpreter_FOUND)
+        add_test(NAME StructuredOOC50dContract
+            COMMAND ${CMAKE_COMMAND} -E env
+                "GNFS_50D_PROBE_EXECUTABLE=$<TARGET_FILE:test_structured_ooc_50d_probe>"
+                "GNFS_PYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
+                "${ZSH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/test.sh"
+                --no-build --no-color check-50d-contracts)
+        set_tests_properties(StructuredOOC50dContract PROPERTIES
+            LABELS "fast"
+            TIMEOUT 30
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    endif()
 
     # Fixed real 50-digit candidate corpus. The executable checks every
     # worker/chunk case against a serial oracle, but timings remain manual

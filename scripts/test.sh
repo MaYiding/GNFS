@@ -59,6 +59,11 @@
 #                                         # 独立进程 structured OOC RSS 场景
 #   ./scripts/test.sh probe-50d-structured-ooc
 #                                         # 真实 50 位、有界 production Pipeline 探针
+#   ./scripts/test.sh check-50d-contracts  # 仅 CLI/schema 合同，不运行真实 50 位流水线
+#   ./scripts/test.sh compare-50d-bounded-routes
+#                                         # 真实 50 位，4-SQ legacy/structured 独立进程对照
+#   ./scripts/test.sh compare-50d-first-round
+#                                         # 真实 50 位，完整首轮 legacy/structured 独立进程对照
 #   ./scripts/test.sh probe-50d-special-q-workers
 #                                         # 真实 50 位，外层 SQ workers=1/2/4 对照
 #   ./scripts/test.sh sweep-50d-candidate-batch
@@ -134,6 +139,7 @@ PROJECT_ROOT="${0:A:h:h}"
 BUILD_DIR="${PROJECT_ROOT}/build"
 BENCH_DIR="${PROJECT_ROOT}/benchmarks"
 REPORT_FILE="${BUILD_DIR}/test_report.json"
+GNFS_TEST_PYTHON="${GNFS_PYTHON_EXECUTABLE:-python3}"
 NCPU=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 
 BUILD_TYPE="Debug"
@@ -1088,9 +1094,9 @@ MODULE_DEPS=(
     util           "core polynomial factor_base sieve cofactor relation linalg sqrt siqs"
     polynomial     "factor_base sieve"
     factor_base    "sieve cofactor relation linalg"
-    sieve          "relation"
+    sieve          "relation api"
     cofactor       "relation"
-    relation       "linalg"
+    relation       "linalg api"
     linalg         "sqrt"
     sqrt           ""
     siqs           ""
@@ -1122,8 +1128,11 @@ path_to_module() {
     case "$path" in
         tests/test_sha256.cpp) echo "util" ;;
         tests/test_squfof*.cpp|tests/support/squfof_*.hpp|tests/fixtures/squfof_*.hpp) echo "cofactor" ;;
+        tests/test_relation_collector.cpp|tests/test_relation_reduction_engine.cpp|tests/test_ooc_store_integrity.cpp) echo "relation" ;;
         tests/test_structured*.cpp) echo "relation" ;;
+        tests/test_api.cpp|*api/*) echo "api" ;;
         tests/test_siqs*.cpp|*siqs/*) echo "siqs" ;;
+        tests/test_sieve_checkpoint.cpp|tests/test_distributed_sieve.cpp) echo "sieve" ;;
         *core/*)       echo "core" ;;
         *util/*)       echo "util" ;;
         *polynomial/*) echo "polynomial" ;;
@@ -1181,7 +1190,7 @@ log_section() { echo "\n${BOLD}── $* ──${RESET}\n"; }
 
 # 高精度计时 (毫秒)
 timer_start_ms() {
-    python3 -c 'import time; print(int(time.time()*1000))'
+    "$GNFS_TEST_PYTHON" -c 'import time; print(int(time.time()*1000))'
 }
 
 format_duration() {
@@ -1481,11 +1490,814 @@ measurement_record_field() {
     '
 }
 
+validate_50d_experiment_v2_schema() {
+    local record="$1"
+    local label="$2"
+    "$GNFS_TEST_PYTHON" - "$record" "$label" <<'PY'
+import re
+import sys
+from decimal import Decimal, InvalidOperation
+
+
+class SchemaError(Exception):
+    pass
+
+
+def require(condition, message):
+    if not condition:
+        raise SchemaError(message)
+
+
+EXPECTED_KEYS = """
+scope claim_boundary stop_after pipeline_batch_mode candidate_chunk_size
+candidate_rss_sample_policy cofactor_inner_parallel_policy status failure_stage
+n n_digits n_bits max_special_q max_special_q_batch_workers special_q_processed
+special_q_batch_worker_limit special_q_batch_peak_workers special_q_batch_count
+special_q_batch_peak_size max_local_sieve_threads_requested local_sieve_thread_budget
+special_q_batch_peak_assigned_threads special_q_worker_peak_sieve_threads candidates_total
+candidate_batch_peak_workers candidate_batch_total_chunks candidate_batch_peak_chunks
+candidate_batch_peak_candidates candidate_batch_rss_sample_candidates
+candidate_batch_after_generation_current_rss_bytes
+candidate_batch_after_cofactor_current_rss_bytes
+candidate_batch_after_release_current_rss_bytes rational_fb_columns algebraic_fb_columns
+base_factor_columns initial_raw_target first_round_complete sieve_rounds_completed
+sieve_stop_reason resume_scope attempted_resume attempted_distributed sge_attempted
+solver_attempted sqrt_attempted factorization_attempted route route_evidence strategy storage
+generation raw_rows raw_duplicates input_lp_columns input_lp_w1 input_lp_w2 input_lp_w3
+input_lp_w4plus output_rows output_lp_columns structured_commits structured_emitted_rows
+structured_stop incidence_shards incidence_requested_workers incidence_peak_workers
+raw_digest_low raw_digest_high output_digest_low output_digest_high matrix_rows matrix_cols
+matrix_nonzeros matrix_signed_delta matrix_row_mapping_identity structured_filter_records
+structured_matrix_records raw_pair_observed raw_pair_removed output_pair_observed
+output_pair_retained_by_matrix output_pair_removed output_lease_removed process_rss_scope
+process_rss_backend process_current_rss_supported process_peak_rss_supported
+process_current_rss_bytes process_peak_rss_bytes rss_start_current_bytes rss_start_peak_bytes
+rss_after_polynomial_current_bytes rss_after_polynomial_peak_bytes
+rss_after_factor_base_current_bytes rss_after_factor_base_peak_bytes
+rss_after_sieve_current_bytes rss_after_sieve_peak_bytes rss_after_matrix_current_bytes
+rss_after_matrix_peak_bytes rss_after_cleanup_current_bytes rss_after_cleanup_peak_bytes
+polynomial_ms factor_base_ms sieve_ms candidate_generation_s candidate_cofactor_s matrix_ms
+wall_ms error
+""".split()
+
+BOOLEAN_FIELDS = {
+    "first_round_complete", "attempted_resume", "attempted_distributed", "sge_attempted",
+    "solver_attempted", "sqrt_attempted", "factorization_attempted",
+    "matrix_row_mapping_identity", "raw_pair_observed", "raw_pair_removed",
+    "output_pair_observed", "output_pair_retained_by_matrix", "output_pair_removed",
+    "output_lease_removed", "process_current_rss_supported", "process_peak_rss_supported",
+}
+
+OPTIONAL_UINT_FIELDS = {
+    "candidate_batch_after_generation_current_rss_bytes",
+    "candidate_batch_after_cofactor_current_rss_bytes",
+    "candidate_batch_after_release_current_rss_bytes",
+    "process_current_rss_bytes", "process_peak_rss_bytes",
+    "rss_start_current_bytes", "rss_start_peak_bytes",
+    "rss_after_polynomial_current_bytes", "rss_after_polynomial_peak_bytes",
+    "rss_after_factor_base_current_bytes", "rss_after_factor_base_peak_bytes",
+    "rss_after_sieve_current_bytes", "rss_after_sieve_peak_bytes",
+    "rss_after_matrix_current_bytes", "rss_after_matrix_peak_bytes",
+    "rss_after_cleanup_current_bytes", "rss_after_cleanup_peak_bytes",
+}
+
+FLOAT_FIELDS = {"candidate_generation_s", "candidate_cofactor_s"}
+SIGNED_OPTIONAL_FIELDS = {"matrix_signed_delta"}
+BIG_UINT_FIELDS = {"n"}
+STRING_FIELDS = {
+    "scope", "claim_boundary", "stop_after", "pipeline_batch_mode",
+    "candidate_rss_sample_policy", "cofactor_inner_parallel_policy", "status",
+    "failure_stage", "sieve_stop_reason", "resume_scope", "route", "route_evidence",
+    "strategy", "storage", "structured_stop", "process_rss_scope", "process_rss_backend",
+    "error",
+}
+UINT_FIELDS = set(EXPECTED_KEYS) - (
+    BOOLEAN_FIELDS | OPTIONAL_UINT_FIELDS | FLOAT_FIELDS | SIGNED_OPTIONAL_FIELDS |
+    BIG_UINT_FIELDS | STRING_FIELDS
+)
+require(
+    BOOLEAN_FIELDS | OPTIONAL_UINT_FIELDS | FLOAT_FIELDS | SIGNED_OPTIONAL_FIELDS |
+    BIG_UINT_FIELDS | STRING_FIELDS | UINT_FIELDS == set(EXPECTED_KEYS),
+    "internal schema field coverage is incomplete",
+)
+
+UINT_RE = re.compile(r"(?:0|[1-9][0-9]*)\Z")
+SIGNED_RE = re.compile(r"(?:0|[1-9][0-9]*|-[1-9][0-9]*)\Z")
+FLOAT_RE = re.compile(
+    r"(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\Z"
+)
+TOKEN_RE = re.compile(r"[A-Za-z0-9_.-]+\Z")
+UINT64_MAX = (1 << 64) - 1
+INT64_MIN = -(1 << 63)
+INT64_MAX = (1 << 63) - 1
+
+
+def parse_uint(value, field, bounded=True):
+    require(UINT_RE.fullmatch(value) is not None, f"{field} is not canonical unsigned decimal")
+    number = int(value)
+    if bounded:
+        require(number <= UINT64_MAX, f"{field} exceeds uint64")
+    return number
+
+
+def parse_optional_uint(value, field):
+    if value == "na":
+        return None
+    return parse_uint(value, field)
+
+
+def parse_record(line):
+    require(line.isascii(), "record is not ASCII")
+    require("\n" not in line and "\r" not in line and "\x00" not in line,
+            "record contains a forbidden control byte")
+    tokens = line.split(" ")
+    require(tokens[0] == "GNFS_EXPERIMENT_V2", "record prefix mismatch")
+    require(len(tokens) == len(EXPECTED_KEYS) + 1, "field count mismatch")
+
+    fields = {}
+    observed_keys = []
+    for token in tokens[1:]:
+        require(token.count("=") == 1, "field token must contain one equals sign")
+        key, value = token.split("=", 1)
+        require(key and value, "field key/value must be nonempty")
+        require(key not in fields, f"duplicate field {key}")
+        fields[key] = value
+        observed_keys.append(key)
+    require(observed_keys == EXPECTED_KEYS, "field set or order mismatch")
+
+    for field in BOOLEAN_FIELDS:
+        require(fields[field] in {"true", "false"}, f"{field} is not canonical boolean")
+    for field in UINT_FIELDS:
+        parse_uint(fields[field], field)
+    for field in BIG_UINT_FIELDS:
+        parse_uint(fields[field], field, bounded=False)
+    for field in OPTIONAL_UINT_FIELDS:
+        parse_optional_uint(fields[field], field)
+    for field in SIGNED_OPTIONAL_FIELDS:
+        value = fields[field]
+        require(value == "na" or SIGNED_RE.fullmatch(value) is not None,
+                f"{field} is not canonical signed decimal or na")
+        if value != "na":
+            number = int(value)
+            require(INT64_MIN <= number <= INT64_MAX, f"{field} exceeds int64")
+    for field in FLOAT_FIELDS:
+        value = fields[field]
+        require(FLOAT_RE.fullmatch(value) is not None, f"{field} is not canonical decimal")
+        try:
+            number = Decimal(value)
+        except InvalidOperation as error:
+            raise SchemaError(f"{field} is not a finite decimal") from error
+        require(number.is_finite() and number >= 0, f"{field} must be finite and nonnegative")
+    for field in STRING_FIELDS:
+        require(TOKEN_RE.fullmatch(fields[field]) is not None,
+                f"{field} contains a non-token value")
+
+    require(fields["scope"] == "bounded_50d_prefix_probe", "scope mismatch")
+    require(fields["claim_boundary"] == "relation_reduction_and_matrix_shape_only",
+            "claim boundary mismatch")
+    require(fields["stop_after"] == "matrix_build", "stop boundary mismatch")
+    require(fields["pipeline_batch_mode"] == "two_stage_candidate_batch",
+            "pipeline batch mode mismatch")
+    require(fields["candidate_rss_sample_policy"] == "first_max_candidates",
+            "candidate RSS policy mismatch")
+    require(fields["cofactor_inner_parallel_policy"] == "forced_sequential",
+            "cofactor inner policy mismatch")
+    require(fields["status"] == "pass" and fields["failure_stage"] == "none",
+            "successful runner received a non-pass record")
+    require(fields["error"] == "none", "pass record carries an error")
+    require(fields["resume_scope"] == "none", "probe unexpectedly reports resume scope")
+    require(fields["process_rss_scope"] == "self_lifetime", "RSS scope mismatch")
+    require(fields["sieve_stop_reason"] in {
+        "effective_column_excess", "recovered_finalized_corpus", "insufficient_raw_relations",
+        "special_q_budget_reached", "special_q_range_exhausted",
+        "adaptive_round_limit_reached", "distributed_wave_complete",
+    }, "unknown sieve stop reason")
+    require(fields["route"] in {"legacy", "structured"}, "unknown route")
+    require(fields["route_evidence"] in {
+        "production_legacy_ooc", "production_direct_ooc",
+    }, "unknown route evidence")
+    require(fields["strategy"] in {"standard_v0", "structured"}, "unknown strategy")
+    require(fields["storage"] in {"in_memory", "finalized_ooc"}, "unknown storage")
+    require(fields["structured_stop"] in {
+        "not_started", "no_candidates", "budget_limit", "persistence_limit",
+    }, "unknown structured stop reason")
+    require(fields["process_rss_backend"] in {
+        "unsupported", "unobserved", "darwin_getrusage", "linux_getrusage", "windows_psapi",
+    }, "unknown process RSS backend")
+
+    require(
+        parse_uint(fields["base_factor_columns"], "base_factor_columns") ==
+        parse_uint(fields["rational_fb_columns"], "rational_fb_columns") +
+        parse_uint(fields["algebraic_fb_columns"], "algebraic_fb_columns"),
+        "factor-base column total mismatch",
+    )
+    require(fields["matrix_signed_delta"] != "na", "pass record lacks matrix delta")
+    require(
+        int(fields["matrix_signed_delta"]) ==
+        parse_uint(fields["matrix_rows"], "matrix_rows") -
+        parse_uint(fields["matrix_cols"], "matrix_cols"),
+        "matrix signed delta mismatch",
+    )
+
+    candidate_rss = [
+        fields["candidate_batch_after_generation_current_rss_bytes"],
+        fields["candidate_batch_after_cofactor_current_rss_bytes"],
+        fields["candidate_batch_after_release_current_rss_bytes"],
+    ]
+    require(all(value == "na" for value in candidate_rss) or
+            all(value != "na" for value in candidate_rss),
+            "candidate RSS fields are partially populated")
+
+    current_supported = fields["process_current_rss_supported"] == "true"
+    peak_supported = fields["process_peak_rss_supported"] == "true"
+    current_fields = [
+        "process_current_rss_bytes", "rss_start_current_bytes",
+        "rss_after_polynomial_current_bytes", "rss_after_factor_base_current_bytes",
+        "rss_after_sieve_current_bytes", "rss_after_matrix_current_bytes",
+        "rss_after_cleanup_current_bytes",
+    ]
+    peak_fields = [
+        "process_peak_rss_bytes", "rss_start_peak_bytes", "rss_after_polynomial_peak_bytes",
+        "rss_after_factor_base_peak_bytes", "rss_after_sieve_peak_bytes",
+        "rss_after_matrix_peak_bytes", "rss_after_cleanup_peak_bytes",
+    ]
+    require(all((fields[key] != "na") == current_supported for key in current_fields),
+            "current RSS support/value linkage mismatch")
+    require(all((fields[key] != "na") == peak_supported for key in peak_fields),
+            "peak RSS support/value linkage mismatch")
+    require((candidate_rss[0] != "na") == current_supported,
+            "candidate/process current RSS support mismatch")
+    require(fields["process_current_rss_bytes"] == fields["rss_after_cleanup_current_bytes"],
+            "terminal current RSS mismatch")
+    require(fields["process_peak_rss_bytes"] == fields["rss_after_cleanup_peak_bytes"],
+            "terminal peak RSS mismatch")
+    if fields["process_rss_backend"] in {"unsupported", "unobserved"}:
+        require(not current_supported and not peak_supported,
+                "unsupported backend reports supported RSS")
+    else:
+        require(current_supported and peak_supported, "supported backend omitted RSS")
+        phase_currents = [int(fields[key]) for key in current_fields[1:]]
+        phase_peaks = [int(fields[key]) for key in peak_fields[1:]]
+        require(all(current <= peak for current, peak in zip(phase_currents, phase_peaks)),
+                "phase current RSS exceeds lifetime peak")
+        require(phase_peaks == sorted(phase_peaks), "lifetime peak RSS regressed")
+    return fields
+
+
+def expect_rejected(line, description):
+    try:
+        parse_record(line)
+    except SchemaError:
+        return
+    raise SchemaError(f"schema self-check accepted {description}")
+
+
+record = sys.argv[1]
+label = sys.argv[2]
+try:
+    parsed = parse_record(record)
+    tokens = record.split(" ")
+    status_index = EXPECTED_KEYS.index("status") + 1
+    max_q_index = EXPECTED_KEYS.index("max_special_q") + 1
+    bool_index = EXPECTED_KEYS.index("first_round_complete") + 1
+    rss_index = EXPECTED_KEYS.index("process_current_rss_bytes") + 1
+    route_index = EXPECTED_KEYS.index("route") + 1
+
+    expect_rejected(" ".join(tokens[:status_index] + tokens[status_index + 1:]),
+                    "a missing field")
+    duplicate = tokens.copy()
+    duplicate[status_index] = tokens[1]
+    expect_rejected(" ".join(duplicate), "a duplicate field")
+    unknown = tokens.copy()
+    unknown[status_index] = "unknown_field=1"
+    expect_rejected(" ".join(unknown), "an unknown field")
+    reordered = tokens.copy()
+    reordered[1], reordered[2] = reordered[2], reordered[1]
+    expect_rejected(" ".join(reordered), "field reordering")
+    noncanonical = tokens.copy()
+    noncanonical[max_q_index] = "max_special_q=01"
+    expect_rejected(" ".join(noncanonical), "a noncanonical integer")
+    invalid_bool = tokens.copy()
+    invalid_bool[bool_index] = "first_round_complete=TRUE"
+    expect_rejected(" ".join(invalid_bool), "a noncanonical boolean")
+    invalid_enum = tokens.copy()
+    invalid_enum[route_index] = "route=experimental"
+    expect_rejected(" ".join(invalid_enum), "an unknown enum value")
+    partial_rss = tokens.copy()
+    partial_rss[rss_index] = (
+        "process_current_rss_bytes=na"
+        if parsed["process_current_rss_bytes"] != "na"
+        else "process_current_rss_bytes=1"
+    )
+    expect_rejected(" ".join(partial_rss), "partial RSS linkage")
+except SchemaError as error:
+    print(f"{label}: GNFS_EXPERIMENT_V2 schema error: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+validate_50d_uint32_argument() {
+    local value="$1"
+    local label="$2"
+    local minimum="$3"
+    local maximum="4294967295"
+    if [[ ! "$value" =~ ^[1-9][0-9]*$ ]] ||
+       (( ${#value} > ${#maximum} )) ||
+       (( value < minimum || value > maximum )); then
+        log_fail "${label} 必须在 ${minimum}..${maximum}（传入: ${value}）"
+        return 1
+    fi
+}
+
+validate_50d_batch_workers() {
+    local value="$1"
+    case "$value" in
+        1|2|3|4) ;;
+        *)
+            log_fail "max_batch_workers 必须在 1..4（传入: ${value}）"
+            return 1
+            ;;
+    esac
+}
+
+validate_50d_local_threads() {
+    local value="$1"
+    if [[ "$value" != "auto" ]]; then
+        validate_50d_uint32_argument "$value" "max_local_sieve_threads" 1
+    fi
+}
+
+run_50d_probe_with_timeout() {
+    local default_timeout="$1"
+    shift
+    local saved_timeout="$TIMEOUT"
+    local saved_timeout_explicit="$TIMEOUT_EXPLICIT"
+    local bounded_timeout="$default_timeout"
+    if (( TIMEOUT_EXPLICIT )); then
+        bounded_timeout="$TIMEOUT"
+    fi
+    validate_50d_uint32_argument "$bounded_timeout" "50 位探针 timeout（秒）" 1 ||
+        return 1
+
+    TIMEOUT="$bounded_timeout"
+    TIMEOUT_EXPLICIT=1
+    local probe_status=0
+    run_single_test test_structured_ooc_50d_probe "$@" || probe_status=$?
+    TIMEOUT="$saved_timeout"
+    TIMEOUT_EXPLICIT="$saved_timeout_explicit"
+    return "$probe_status"
+}
+
+self_check_50d_probe_cli() {
+    local executable="${GNFS_50D_PROBE_EXECUTABLE:-${BUILD_DIR}/test_structured_ooc_50d_probe}"
+    "$GNFS_TEST_PYTHON" - "$executable" <<'PY'
+import subprocess
+import sys
+import os
+import tempfile
+from pathlib import Path
+
+
+executable = sys.argv[1]
+invalid_cases = [
+    ["--strategy"],
+    ["--strategy", "legacy", "--strategy", "structured"],
+    ["--strategy", "invalid"],
+    ["--max-special-q", "0"],
+    ["--max-special-q", "4294967296"],
+    ["--max-special-q", "18446744073709551616"],
+    ["--max-special-q", "1", "--max-special-q=2"],
+    ["--max-special-q-batch-workers", "0"],
+    ["--max-special-q-batch-workers", "5"],
+    ["--max-local-sieve-threads", "0"],
+    ["--max-local-sieve-threads", "4294967296"],
+    ["--ooc-base", ""],
+    ["--unknown"],
+]
+valid_help_cases = [
+    ["--help"],
+    [
+        "--strategy", "legacy", "--max-special-q", "1",
+        "--max-special-q-batch-workers", "1", "--max-local-sieve-threads", "1",
+        "--ooc-base", "unused-help-path", "--help",
+    ],
+    [
+        "--strategy=structured", "--max-special-q=4294967295",
+        "--max-special-q-batch-workers=4", "--max-local-sieve-threads=4294967295",
+        "--help",
+    ],
+]
+
+for arguments in invalid_cases:
+    with tempfile.TemporaryDirectory(prefix="gnfs_50d_cli_contract_") as temp_dir:
+        environment = dict(os.environ)
+        environment["TMPDIR"] = temp_dir
+        result = subprocess.run(
+            [executable, *arguments], capture_output=True, text=True, timeout=5, check=False,
+            env=environment,
+        )
+        if result.returncode == 0:
+            raise SystemExit(f"50d CLI self-check accepted invalid arguments: {arguments}")
+        records = [
+            line for line in result.stdout.splitlines()
+            if line.startswith("GNFS_EXPERIMENT_V2 ")
+        ]
+        if len(records) != 1:
+            raise SystemExit(f"50d CLI self-check lost its single failure record: {arguments}")
+        fields = dict(token.split("=", 1) for token in records[0].split()[1:])
+        if fields.get("status") != "fail" or fields.get("failure_stage") != "cli" or \
+                fields.get("error") in {None, "none"}:
+            raise SystemExit(
+                f"50d CLI self-check crossed the CLI rejection boundary: {arguments}"
+            )
+        if any(Path(temp_dir).iterdir()):
+            raise SystemExit(f"50d CLI self-check created artifacts: {arguments}")
+
+for arguments in valid_help_cases:
+    result = subprocess.run(
+        [executable, *arguments], capture_output=True, text=True, timeout=5, check=False
+    )
+    if result.returncode != 0 or not result.stdout.startswith("Usage: ") or \
+            "GNFS_EXPERIMENT_V2 " in result.stdout:
+        raise SystemExit(f"50d CLI self-check rejected valid help boundary: {arguments}")
+PY
+}
+
+self_check_50d_probe_contracts() {
+    local executable="${GNFS_50D_PROBE_EXECUTABLE:-${BUILD_DIR}/test_structured_ooc_50d_probe}"
+    if [[ ! -x "$executable" ]]; then
+        log_fail "50 位探针合同二进制不存在: ${executable}"
+        return 1
+    fi
+    self_check_50d_probe_cli || return 1
+
+    local fixture_output fixture_status=0
+    fixture_output=$("$executable" --emit-contract-fixture 2>&1) || fixture_status=$?
+    if (( fixture_status != 0 )); then
+        log_fail "50 位探针合同 fixture 生成失败 (exit=${fixture_status})"
+        return 1
+    fi
+
+    if [[ "$fixture_output" == *"GNFS_EXPERIMENT_V2 "* ]]; then
+        log_fail "50 位探针 synthetic fixture 冒充了 production V2 证据"
+        return 1
+    fi
+
+    local saved_run_output="$RUN_OUTPUT"
+    RUN_OUTPUT="$fixture_output"
+    if ! capture_single_measurement_record "GNFS_EXPERIMENT_FIXTURE_V2 " \
+        "50 位探针合同 fixture"; then
+        RUN_OUTPUT="$saved_run_output"
+        return 1
+    fi
+    local fixture_record="${MEASUREMENT_RECORD/GNFS_EXPERIMENT_FIXTURE_V2/GNFS_EXPERIMENT_V2}"
+    RUN_OUTPUT="$saved_run_output"
+
+    validate_50d_route_record "$fixture_record" structured false \
+        "50 位探针合同 fixture" 4 4 auto
+}
+
+expect_measurement_field() {
+    local record="$1"
+    local key="$2"
+    local expected="$3"
+    local label="$4"
+    local actual
+    if ! actual=$(measurement_record_field "$record" "$key"); then
+        log_fail "${label} 缺少或重复字段: ${key}"
+        return 1
+    fi
+    if [[ "$actual" != "$expected" ]]; then
+        log_fail "${label} 字段 ${key}=${actual}，预期 ${expected}"
+        return 1
+    fi
+}
+
+validate_50d_route_record() {
+    local record="$1"
+    local route="$2"
+    local expected_complete="$3"
+    local label="$4"
+    local expected_max_special_q="$5"
+    local expected_batch_workers="$6"
+    local expected_local_threads="$7"
+    if [[ "$expected_local_threads" == "auto" ]]; then
+        expected_local_threads=0
+    fi
+    validate_50d_experiment_v2_schema "$record" "$label" || return 1
+    local expected_strategy expected_storage expected_evidence
+    case "$route" in
+        legacy)
+            expected_strategy="standard_v0"
+            expected_storage="in_memory"
+            expected_evidence="production_legacy_ooc"
+            ;;
+        structured)
+            expected_strategy="structured"
+            expected_storage="finalized_ooc"
+            expected_evidence="production_direct_ooc"
+            ;;
+        *)
+            log_fail "${label} 使用未知 route: ${route}"
+            return 1
+            ;;
+    esac
+
+    expect_measurement_field "$record" status pass "$label" &&
+        expect_measurement_field "$record" failure_stage none "$label" &&
+        expect_measurement_field "$record" scope bounded_50d_prefix_probe "$label" &&
+        expect_measurement_field "$record" claim_boundary \
+            relation_reduction_and_matrix_shape_only "$label" &&
+        expect_measurement_field "$record" stop_after matrix_build "$label" &&
+        expect_measurement_field "$record" pipeline_batch_mode \
+            two_stage_candidate_batch "$label" &&
+        expect_measurement_field "$record" n \
+            16000000000000004000000216000000000000027000000729 "$label" &&
+        expect_measurement_field "$record" n_digits 50 "$label" &&
+        expect_measurement_field "$record" n_bits 164 "$label" &&
+        expect_measurement_field "$record" max_special_q \
+            "$expected_max_special_q" "$label" &&
+        expect_measurement_field "$record" max_special_q_batch_workers \
+            "$expected_batch_workers" "$label" &&
+        expect_measurement_field "$record" max_local_sieve_threads_requested \
+            "$expected_local_threads" "$label" &&
+        expect_measurement_field "$record" route "$route" "$label" &&
+        expect_measurement_field "$record" strategy "$expected_strategy" "$label" &&
+        expect_measurement_field "$record" storage "$expected_storage" "$label" &&
+        expect_measurement_field "$record" route_evidence "$expected_evidence" "$label" &&
+        expect_measurement_field "$record" first_round_complete "$expected_complete" "$label" &&
+        expect_measurement_field "$record" sieve_rounds_completed 1 "$label" &&
+        expect_measurement_field "$record" resume_scope none "$label" &&
+        expect_measurement_field "$record" attempted_resume false "$label" &&
+        expect_measurement_field "$record" attempted_distributed false "$label" &&
+        expect_measurement_field "$record" sge_attempted false "$label" &&
+        expect_measurement_field "$record" solver_attempted false "$label" &&
+        expect_measurement_field "$record" sqrt_attempted false "$label" &&
+        expect_measurement_field "$record" factorization_attempted false "$label" &&
+        expect_measurement_field "$record" raw_pair_observed true "$label" &&
+        expect_measurement_field "$record" raw_pair_removed true "$label" &&
+        expect_measurement_field "$record" process_rss_scope self_lifetime "$label" ||
+        return 1
+
+    local stop_reason
+    if ! stop_reason=$(measurement_record_field "$record" sieve_stop_reason); then
+        log_fail "${label} 缺少或重复字段: sieve_stop_reason"
+        return 1
+    fi
+    if [[ "$expected_complete" == "false" ]]; then
+        case "$stop_reason" in
+            special_q_budget_reached|special_q_range_exhausted) ;;
+            *)
+                log_fail "${label} 短前缀 stop=${stop_reason}；仅接受 special-Q budget/range"
+                return 1
+                ;;
+        esac
+    else
+        case "$stop_reason" in
+            adaptive_round_limit_reached|effective_column_excess) ;;
+            *)
+                log_fail "${label} 完整首轮 stop=${stop_reason}；仅接受 round limit/effective excess"
+                return 1
+                ;;
+        esac
+    fi
+}
+
+run_50d_route_comparison() {
+    local scope="$1"
+    local expected_complete="$2"
+    local default_cap="$3"
+    local default_timeout="$4"
+    shift 4
+    if (( $# > 3 )); then
+        log_fail "用法: $0 ${MODE} [max_special_q] [max_batch_workers] [max_local_sieve_threads|auto]"
+        return 1
+    fi
+
+    local max_special_q="${1:-$default_cap}"
+    local max_batch_workers="${2:-4}"
+    local max_local_sieve_threads="${3:-auto}"
+    local route_timeout="$default_timeout"
+    if (( TIMEOUT_EXPLICIT )); then
+        route_timeout="$TIMEOUT"
+    fi
+    validate_50d_uint32_argument "$max_special_q" max_special_q 1 || return 1
+    validate_50d_batch_workers "$max_batch_workers" || return 1
+    validate_50d_local_threads "$max_local_sieve_threads" || return 1
+    validate_50d_uint32_argument "$route_timeout" "50 位探针 timeout（秒）" 1 || return 1
+
+    if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+        log_fail "${MODE} 只接受 Release 构建（传入: ${BUILD_TYPE}）"
+        return 1
+    fi
+    BUILD_TYPE="Release"
+    if (( SKIP_BUILD )); then
+        log_fail "${MODE} 不接受 --no-build；对照证据必须由本次请求的构建生成"
+        return 1
+    fi
+    if (( RETRY_EXPLICIT )); then
+        log_fail "${MODE} 不接受 --retry；自动重试会破坏每条 route 的 fresh-process 证据"
+        return 1
+    fi
+    do_build
+    if [[ ! -x "${BUILD_DIR}/test_structured_ooc_50d_probe" ]]; then
+        log_fail "50 位探针二进制不存在: ${BUILD_DIR}/test_structured_ooc_50d_probe"
+        return 1
+    fi
+    if ! self_check_50d_probe_cli; then
+        log_fail "50 位探针 CLI 边界自检失败"
+        return 1
+    fi
+
+    log_header "50 位 legacy/structured 独立进程对照"
+    log_info "scope=${scope}; max_special_q=${max_special_q}; max_batch_workers=${max_batch_workers}; max_local_sieve_threads=${max_local_sieve_threads}; per_route_timeout=${route_timeout}s"
+
+    local -A route_records
+    local route probe_dir probe_base run_status
+    local -a thread_args=()
+    if [[ "$max_local_sieve_threads" != "auto" ]]; then
+        thread_args=(--max-local-sieve-threads "$max_local_sieve_threads")
+    fi
+    local comparison_ready=1
+    for route in legacy structured; do
+        probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/gnfs_50d_${route}.XXXXXX")
+        probe_base="${probe_dir}/raw"
+        log_info "route=${route}; 独占临时目录=${probe_dir}"
+        run_status=0
+        run_50d_probe_with_timeout "$route_timeout" \
+            --strategy "$route" \
+            --max-special-q "$max_special_q" \
+            --max-special-q-batch-workers "$max_batch_workers" \
+            "${thread_args[@]}" \
+            --ooc-base "$probe_base" || run_status=$?
+        if (( run_status != 0 )); then
+            comparison_ready=0
+            log_warn "route=${route} 探针失败，保留诊断工件: ${probe_dir}"
+            continue
+        fi
+        if ! capture_single_measurement_record "GNFS_EXPERIMENT_V2 " \
+            "50 位 route=${route} 探针"; then
+            (( FAILED_TESTS += 1 ))
+            comparison_ready=0
+            log_warn "route=${route} 记录无效，保留诊断工件: ${probe_dir}"
+            continue
+        fi
+        if ! validate_50d_route_record "$MEASUREMENT_RECORD" "$route" \
+            "$expected_complete" "50 位 route=${route}" "$max_special_q" \
+            "$max_batch_workers" "$max_local_sieve_threads"; then
+            (( FAILED_TESTS += 1 ))
+            comparison_ready=0
+            log_warn "route=${route} 契约无效，保留诊断工件: ${probe_dir}"
+            continue
+        fi
+        route_records[$route]="$MEASUREMENT_RECORD"
+        print -r -- "$MEASUREMENT_RECORD"
+
+        if [[ -e "${probe_base}.reldata" || -L "${probe_base}.reldata" ||
+              -e "${probe_base}.relidx" || -L "${probe_base}.relidx" ]]; then
+            log_fail "route=${route} 成功后仍残留原始 OOC pair: ${probe_base}"
+            (( FAILED_TESTS += 1 ))
+            comparison_ready=0
+            continue
+        fi
+        if rmdir "$probe_dir"; then
+            log_success "route=${route} 探针工件已完成生命周期清理"
+        else
+            log_fail "route=${route} 成功但临时目录非空，已保留: ${probe_dir}"
+            (( FAILED_TESTS += 1 ))
+            comparison_ready=0
+        fi
+    done
+
+    local -a identity_fields=(
+        scope claim_boundary stop_after pipeline_batch_mode candidate_chunk_size
+        candidate_rss_sample_policy cofactor_inner_parallel_policy
+        n_digits n_bits n max_special_q max_special_q_batch_workers
+        special_q_processed special_q_batch_worker_limit special_q_batch_peak_workers
+        special_q_batch_count special_q_batch_peak_size
+        max_local_sieve_threads_requested local_sieve_thread_budget
+        special_q_batch_peak_assigned_threads special_q_worker_peak_sieve_threads
+        candidates_total candidate_batch_peak_workers candidate_batch_total_chunks
+        candidate_batch_peak_chunks candidate_batch_peak_candidates
+        candidate_batch_rss_sample_candidates
+        rational_fb_columns algebraic_fb_columns base_factor_columns initial_raw_target
+        sieve_rounds_completed first_round_complete resume_scope attempted_resume
+        attempted_distributed sge_attempted solver_attempted sqrt_attempted
+        factorization_attempted raw_rows raw_duplicates input_lp_columns
+        input_lp_w1 input_lp_w2 input_lp_w3 input_lp_w4plus
+        raw_digest_low raw_digest_high raw_pair_observed raw_pair_removed
+    )
+    local field reference value
+    if (( comparison_ready )); then
+        for field in "${identity_fields[@]}"; do
+            if ! reference=$(measurement_record_field "${route_records[legacy]}" "$field"); then
+                log_fail "legacy 记录缺少或重复身份字段: ${field}"
+                (( FAILED_TESTS += 1 ))
+                comparison_ready=0
+                break
+            fi
+            if ! value=$(measurement_record_field "${route_records[structured]}" "$field"); then
+                log_fail "structured 记录缺少或重复身份字段: ${field}"
+                (( FAILED_TESTS += 1 ))
+                comparison_ready=0
+                break
+            fi
+            if [[ "$value" != "$reference" ]]; then
+                log_fail "原始身份字段漂移: ${field}; legacy=${reference}, structured=${value}"
+                (( FAILED_TESTS += 1 ))
+                comparison_ready=0
+                break
+            fi
+        done
+    fi
+
+    if (( comparison_ready )); then
+        local shared_n shared_special_q shared_raw_rows shared_raw_duplicates
+        local shared_lp_columns shared_lp_w1 shared_lp_w2 shared_lp_w3 shared_lp_w4plus
+        local shared_raw_digest_low shared_raw_digest_high
+        local shared_sq_worker_limit shared_sq_peak_workers shared_local_budget
+        local shared_sq_assigned_threads shared_sq_peak_sieve_threads
+        local shared_candidates shared_candidate_peak_workers shared_candidate_total_chunks
+        local shared_candidate_peak_chunks shared_candidate_peak_candidates
+        local legacy_stop structured_stop
+        local legacy_output_rows structured_output_rows
+        local legacy_output_lp structured_output_lp
+        local legacy_output_digest_low legacy_output_digest_high
+        local structured_output_digest_low structured_output_digest_high
+        local legacy_matrix_rows legacy_matrix_cols legacy_matrix_nonzeros legacy_matrix_delta
+        local structured_matrix_rows structured_matrix_cols structured_matrix_nonzeros
+        local structured_matrix_delta legacy_matrix_mapping structured_matrix_mapping
+        local legacy_wall structured_wall legacy_peak structured_peak
+        shared_n=$(measurement_record_field "${route_records[legacy]}" n)
+        shared_special_q=$(measurement_record_field "${route_records[legacy]}" special_q_processed)
+        shared_raw_rows=$(measurement_record_field "${route_records[legacy]}" raw_rows)
+        shared_raw_duplicates=$(measurement_record_field "${route_records[legacy]}" raw_duplicates)
+        shared_lp_columns=$(measurement_record_field "${route_records[legacy]}" input_lp_columns)
+        shared_lp_w1=$(measurement_record_field "${route_records[legacy]}" input_lp_w1)
+        shared_lp_w2=$(measurement_record_field "${route_records[legacy]}" input_lp_w2)
+        shared_lp_w3=$(measurement_record_field "${route_records[legacy]}" input_lp_w3)
+        shared_lp_w4plus=$(measurement_record_field "${route_records[legacy]}" input_lp_w4plus)
+        shared_raw_digest_low=$(measurement_record_field \
+            "${route_records[legacy]}" raw_digest_low)
+        shared_raw_digest_high=$(measurement_record_field \
+            "${route_records[legacy]}" raw_digest_high)
+        shared_sq_worker_limit=$(measurement_record_field \
+            "${route_records[legacy]}" special_q_batch_worker_limit)
+        shared_sq_peak_workers=$(measurement_record_field \
+            "${route_records[legacy]}" special_q_batch_peak_workers)
+        shared_local_budget=$(measurement_record_field \
+            "${route_records[legacy]}" local_sieve_thread_budget)
+        shared_sq_assigned_threads=$(measurement_record_field \
+            "${route_records[legacy]}" special_q_batch_peak_assigned_threads)
+        shared_sq_peak_sieve_threads=$(measurement_record_field \
+            "${route_records[legacy]}" special_q_worker_peak_sieve_threads)
+        shared_candidates=$(measurement_record_field "${route_records[legacy]}" candidates_total)
+        shared_candidate_peak_workers=$(measurement_record_field \
+            "${route_records[legacy]}" candidate_batch_peak_workers)
+        shared_candidate_total_chunks=$(measurement_record_field \
+            "${route_records[legacy]}" candidate_batch_total_chunks)
+        shared_candidate_peak_chunks=$(measurement_record_field \
+            "${route_records[legacy]}" candidate_batch_peak_chunks)
+        shared_candidate_peak_candidates=$(measurement_record_field \
+            "${route_records[legacy]}" candidate_batch_peak_candidates)
+        legacy_stop=$(measurement_record_field "${route_records[legacy]}" sieve_stop_reason)
+        structured_stop=$(measurement_record_field "${route_records[structured]}" sieve_stop_reason)
+        legacy_output_rows=$(measurement_record_field "${route_records[legacy]}" output_rows)
+        structured_output_rows=$(measurement_record_field "${route_records[structured]}" output_rows)
+        legacy_output_lp=$(measurement_record_field "${route_records[legacy]}" output_lp_columns)
+        structured_output_lp=$(measurement_record_field "${route_records[structured]}" output_lp_columns)
+        legacy_output_digest_low=$(measurement_record_field "${route_records[legacy]}" output_digest_low)
+        legacy_output_digest_high=$(measurement_record_field "${route_records[legacy]}" output_digest_high)
+        structured_output_digest_low=$(measurement_record_field "${route_records[structured]}" output_digest_low)
+        structured_output_digest_high=$(measurement_record_field "${route_records[structured]}" output_digest_high)
+        legacy_matrix_rows=$(measurement_record_field "${route_records[legacy]}" matrix_rows)
+        legacy_matrix_cols=$(measurement_record_field "${route_records[legacy]}" matrix_cols)
+        legacy_matrix_nonzeros=$(measurement_record_field "${route_records[legacy]}" matrix_nonzeros)
+        legacy_matrix_delta=$(measurement_record_field "${route_records[legacy]}" matrix_signed_delta)
+        legacy_matrix_mapping=$(measurement_record_field \
+            "${route_records[legacy]}" matrix_row_mapping_identity)
+        structured_matrix_rows=$(measurement_record_field "${route_records[structured]}" matrix_rows)
+        structured_matrix_cols=$(measurement_record_field "${route_records[structured]}" matrix_cols)
+        structured_matrix_nonzeros=$(measurement_record_field "${route_records[structured]}" matrix_nonzeros)
+        structured_matrix_delta=$(measurement_record_field "${route_records[structured]}" matrix_signed_delta)
+        structured_matrix_mapping=$(measurement_record_field \
+            "${route_records[structured]}" matrix_row_mapping_identity)
+        legacy_wall=$(measurement_record_field "${route_records[legacy]}" wall_ms)
+        structured_wall=$(measurement_record_field "${route_records[structured]}" wall_ms)
+        legacy_peak=$(measurement_record_field "${route_records[legacy]}" process_peak_rss_bytes)
+        structured_peak=$(measurement_record_field "${route_records[structured]}" process_peak_rss_bytes)
+
+        print -r -- "GNFS_EXPERIMENT_COMPARISON_V2 status=pass scope=${scope} routes=legacy,structured n=${shared_n} max_special_q=${max_special_q} max_special_q_batch_workers=${max_batch_workers} max_local_sieve_threads=${max_local_sieve_threads} special_q_processed=${shared_special_q} special_q_batch_worker_limit=${shared_sq_worker_limit} special_q_batch_peak_workers=${shared_sq_peak_workers} local_sieve_thread_budget=${shared_local_budget} special_q_batch_peak_assigned_threads=${shared_sq_assigned_threads} special_q_worker_peak_sieve_threads=${shared_sq_peak_sieve_threads} candidates_total=${shared_candidates} candidate_batch_peak_workers=${shared_candidate_peak_workers} candidate_batch_total_chunks=${shared_candidate_total_chunks} candidate_batch_peak_chunks=${shared_candidate_peak_chunks} candidate_batch_peak_candidates=${shared_candidate_peak_candidates} first_round_complete=${expected_complete} legacy_stop=${legacy_stop} structured_stop=${structured_stop} raw_rows=${shared_raw_rows} raw_duplicates=${shared_raw_duplicates} input_lp_columns=${shared_lp_columns} input_lp_w1=${shared_lp_w1} input_lp_w2=${shared_lp_w2} input_lp_w3=${shared_lp_w3} input_lp_w4plus=${shared_lp_w4plus} raw_digest_low=${shared_raw_digest_low} raw_digest_high=${shared_raw_digest_high} raw_identity_fields=${#identity_fields[@]} legacy_output_rows=${legacy_output_rows} structured_output_rows=${structured_output_rows} legacy_output_lp_columns=${legacy_output_lp} structured_output_lp_columns=${structured_output_lp} legacy_output_digest_low=${legacy_output_digest_low} legacy_output_digest_high=${legacy_output_digest_high} structured_output_digest_low=${structured_output_digest_low} structured_output_digest_high=${structured_output_digest_high} legacy_matrix_rows=${legacy_matrix_rows} legacy_matrix_cols=${legacy_matrix_cols} legacy_matrix_nonzeros=${legacy_matrix_nonzeros} legacy_matrix_signed_delta=${legacy_matrix_delta} legacy_matrix_row_mapping_identity=${legacy_matrix_mapping} structured_matrix_rows=${structured_matrix_rows} structured_matrix_cols=${structured_matrix_cols} structured_matrix_nonzeros=${structured_matrix_nonzeros} structured_matrix_signed_delta=${structured_matrix_delta} structured_matrix_row_mapping_identity=${structured_matrix_mapping} legacy_wall_ms=${legacy_wall} structured_wall_ms=${structured_wall} legacy_peak_rss_bytes=${legacy_peak} structured_peak_rss_bytes=${structured_peak} timing_scope=fresh_process_per_route rss_scope=fresh_process_per_route timing_asserted=false rss_asserted=false promotion=false"
+        log_success "legacy/structured 原始语料身份一致；策略输出与矩阵结果已分别记录"
+    fi
+    show_summary
+}
+
 # Validate both raw process streams before shell command substitution can strip
 # terminators or hide NUL bytes. The protocol is deliberately ASCII-only:
 # printable bytes plus one final LF per expected record, with no blank lines.
 siqs_shadow_observe_validate_protocol() {
-    python3 - "$@" <<'PY'
+    "$GNFS_TEST_PYTHON" - "$@" <<'PY'
 import re
 import sys
 import tempfile
@@ -2687,7 +3499,7 @@ validate_siqs_256a_profile_output() {
     SIQS_256A_SCALE_PASS=0
     [[ "$line_count" == "6" && "$blank_count" == "0" && "$last_byte" == "10" ]] || return 1
 
-    if ! identity=$(python3 - "$expected_workers" 3<<<"$stdout" <<'PY'
+    if ! identity=$("$GNFS_TEST_PYTHON" - "$expected_workers" 3<<<"$stdout" <<'PY'
 import os
 import re
 import sys
@@ -3173,7 +3985,7 @@ PY
 siqs_256a_mutate_transcript() {
     local stdout="$1"
     shift
-    python3 - "$@" 3<<<"$stdout" <<'PY'
+    "$GNFS_TEST_PYTHON" - "$@" 3<<<"$stdout" <<'PY'
 import os
 import sys
 
@@ -3515,7 +4327,7 @@ validate_siqs_256a_proof_output() {
     local gate_identity="$SIQS_256A_PROFILE_IDENTITY"
     local gate_scale_pass="$SIQS_256A_SCALE_PASS"
     local proof_identity
-    if ! proof_identity=$(python3 - "$expected_workers" 3<<<"$stdout" <<'PY'
+    if ! proof_identity=$("$GNFS_TEST_PYTHON" - "$expected_workers" 3<<<"$stdout" <<'PY'
 import os
 import re
 import sys
@@ -4686,6 +5498,11 @@ do_changed() {
     # returns 1 when the worktree is clean and would terminate this function
     # under set -e before the documented smoke fallback can run.
     changed_files=$(echo "$changed_files" | sed '/^$/d' | sort -u)
+    local needs_50d_contract=0
+    if echo "$changed_files" |
+        grep -Eq '^(CMakeLists\.txt|scripts/test\.sh|tests/test_structured_ooc_50d_probe\.cpp)$'; then
+        needs_50d_contract=1
+    fi
 
     if [[ -z "$changed_files" ]]; then
         log_info "没有检测到代码变更"
@@ -4746,8 +5563,13 @@ do_changed() {
     local modules=("${(k)affected_modules[@]}")
 
     if (( ${#modules[@]} == 0 )); then
-        log_info "变更文件未匹配到已知模块，运行冒烟测试"
-        do_smoke
+        if (( needs_50d_contract )); then
+            log_info "变更仅命中 50 位探针合同，运行 fast 合同"
+            do_50d_probe_contracts || true
+        else
+            log_info "变更文件未匹配到已知模块，运行冒烟测试"
+            do_smoke
+        fi
         return
     fi
 
@@ -4755,6 +5577,18 @@ do_changed() {
     echo ""
 
     do_module "${modules[@]}" || true
+
+    if (( needs_50d_contract )); then
+        do_50d_probe_contracts || true
+    fi
+
+    # Public API contract tests are deliberately slow and therefore live in
+    # MODULE_SLOW_TESTS. Deep change validation must still execute them when
+    # API headers, implementation, or test_api itself changed.
+    if (( deep )) && [[ -n "${affected_modules[api]:-}" ]]; then
+        log_section "API 深层合同回归"
+        run_single_test test_api || true
+    fi
 
     # 核心模块变更 → 额外 E2E
     local needs_e2e=0
@@ -4954,7 +5788,7 @@ EOF
             log_info "对比文件: ${latest}"
             for level in 1 2 3 4 5; do
                 local prev_ms
-                prev_ms=$(python3 -c "
+                prev_ms=$("$GNFS_TEST_PYTHON" -c "
 import json
 with open('${latest}') as f:
     data = json.load(f)
@@ -4965,7 +5799,7 @@ for r in data['results']:
 " 2>/dev/null || echo "0")
                 local curr_entry="${bench_results[$level]}"
                 local curr_ms
-                curr_ms=$(echo "$curr_entry" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['elapsed_ms'])" 2>/dev/null || echo "0")
+                curr_ms=$(echo "$curr_entry" | "$GNFS_TEST_PYTHON" -c "import json,sys; print(json.loads(sys.stdin.read())['elapsed_ms'])" 2>/dev/null || echo "0")
 
                 if (( prev_ms > 0 && curr_ms > 0 )); then
                     local diff_pct=$(( (curr_ms - prev_ms) * 100 / prev_ms ))
@@ -5122,6 +5956,38 @@ do_tsan_relation() {
 }
 
 # ============================================================
+# 模式: 50 位探针合同（不运行真实 50 位流水线）
+# ============================================================
+
+do_50d_probe_contracts() {
+    log_header "50 位探针 CLI / V2 schema 合同"
+    (( TOTAL_TESTS += 1 ))
+    local start_ms end_ms elapsed
+    start_ms=$(timer_start_ms)
+    if self_check_50d_probe_contracts; then
+        end_ms=$(timer_start_ms)
+        elapsed=$((end_ms - start_ms))
+        (( TOTAL_TIME_MS += elapsed ))
+        (( PASSED_TESTS += 1 ))
+        REPORT_ENTRIES+=(
+            "{\"name\":\"test_structured_ooc_50d_contract\",\"status\":\"pass\",\"elapsed_ms\":${elapsed},\"detail\":\"\"}"
+        )
+        log_success "CLI 负例、fixture emitter、schema synthetic 负例全部通过"
+        return 0
+    fi
+
+    end_ms=$(timer_start_ms)
+    elapsed=$((end_ms - start_ms))
+    (( TOTAL_TIME_MS += elapsed ))
+    (( FAILED_TESTS += 1 ))
+    REPORT_ENTRIES+=(
+        "{\"name\":\"test_structured_ooc_50d_contract\",\"status\":\"fail\",\"elapsed_ms\":${elapsed},\"detail\":\"contract failure\"}"
+    )
+    log_fail "50 位探针合同失败"
+    return 1
+}
+
+# ============================================================
 # 模式: 列表
 # ============================================================
 
@@ -5161,6 +6027,9 @@ do_list() {
     echo "  ${BULLET} ${CYAN}test_25digit${RESET}           — 25-digit 性能基准 (81 bit)"
     echo "  ${BULLET} ${CYAN}test_stress${RESET}            — 压力测试: 50/60-digit (164-197 bit)"
     echo "  ${BULLET} ${CYAN}test_structured_ooc_50d_probe${RESET} — 有界 50 位 production OOC 前缀探针"
+    echo "  ${BULLET} ${CYAN}check-50d-contracts${RESET} — 不运行真实 50 位流水线的 CLI/schema 合同"
+    echo "  ${BULLET} ${CYAN}compare-50d-bounded-routes${RESET} — 4-SQ legacy/structured fresh-process 对照"
+    echo "  ${BULLET} ${CYAN}compare-50d-first-round${RESET} — 完整首轮 legacy/structured fresh-process 对照"
     echo "  ${BULLET} ${CYAN}test_candidate_batch_50d_sweep${RESET} — 固定 50 位 4-SQ candidate 调度扫测"
     echo "  ${BULLET} ${CYAN}test_squfof_bench${RESET}     — 固定 50 位 SQUFOF multiplier/吞吐基准"
     echo "  ${BULLET} ${CYAN}test_siqs_shadow_matrix_bench${RESET} — 固定 SIQS shadow matrix 求解/内核/准备基准"
@@ -5413,6 +6282,17 @@ case "$MODE" in
         show_summary
         ;;
 
+    check-50d-contracts)
+        if [[ ${#MODE_ARGS[@]} -ne 0 ]]; then
+            log_fail "用法: $0 check-50d-contracts"
+            exit 1
+        fi
+        do_build
+        do_50d_probe_contracts || true
+        show_summary
+        (( FAILED_TESTS == 0 ))
+        ;;
+
     structured-ooc-rss)
         if [[ ${#MODE_ARGS[@]} -ne 2 ]]; then
             log_fail "用法: $0 structured-ooc-rss <rows> <workers>"
@@ -5462,33 +6342,29 @@ case "$MODE" in
         local _probe_max_special_q="${MODE_ARGS[1]:-4}"
         local _probe_max_batch_workers="${MODE_ARGS[2]:-4}"
         local _probe_max_local_sieve_threads="${MODE_ARGS[3]:-auto}"
-        if [[ ! "$_probe_max_special_q" =~ ^[0-9]+$ ]] ||
-           (( _probe_max_special_q < 1 || _probe_max_special_q > 64 )); then
-            log_fail "max_special_q 必须在 1..64 (传入: ${_probe_max_special_q})"
+        validate_50d_uint32_argument "$_probe_max_special_q" max_special_q 1 || exit 1
+        validate_50d_batch_workers "$_probe_max_batch_workers" || exit 1
+        validate_50d_local_threads "$_probe_max_local_sieve_threads" || exit 1
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "probe-50d-structured-ooc 只接受 Release 构建（传入: ${BUILD_TYPE}）"
             exit 1
         fi
-        if [[ ! "$_probe_max_batch_workers" =~ ^[0-9]+$ ]] ||
-           (( _probe_max_batch_workers < 1 || _probe_max_batch_workers > 4 )); then
-            log_fail "max_batch_workers 必须在 1..4 (传入: ${_probe_max_batch_workers})"
-            exit 1
-        fi
-        if [[ "$_probe_max_local_sieve_threads" != "auto" ]] &&
-           { [[ ! "$_probe_max_local_sieve_threads" =~ ^[0-9]+$ ]] ||
-             (( _probe_max_local_sieve_threads < 1 ||
-                _probe_max_local_sieve_threads > 4294967295 )); }; then
-            log_fail "max_local_sieve_threads 必须是 auto 或 1..4294967295 (传入: ${_probe_max_local_sieve_threads})"
-            exit 1
-        fi
-        if (( ! BUILD_TYPE_EXPLICIT )); then
-            BUILD_TYPE="Release"
-        fi
+        BUILD_TYPE="Release"
         if (( SKIP_BUILD )); then
             log_fail "probe-50d-structured-ooc 不接受 --no-build；资源证据必须由本次请求的构建生成"
+            exit 1
+        fi
+        if (( RETRY_EXPLICIT )); then
+            log_fail "probe-50d-structured-ooc 不接受 --retry；自动重试会破坏 fresh-process 证据"
             exit 1
         fi
         do_build
         if [[ ! -x "${BUILD_DIR}/test_structured_ooc_50d_probe" ]]; then
             log_fail "50 位探针二进制不存在: ${BUILD_DIR}/test_structured_ooc_50d_probe"
+            exit 1
+        fi
+        if ! self_check_50d_probe_cli; then
+            log_fail "50 位探针 CLI 边界自检失败"
             exit 1
         fi
         local _probe_dir
@@ -5501,26 +6377,61 @@ case "$MODE" in
             _probe_thread_args=(--max-local-sieve-threads "$_probe_max_local_sieve_threads")
         fi
         local _probe_status=0
-        run_single_test test_structured_ooc_50d_probe --max-special-q \
+        run_single_test test_structured_ooc_50d_probe --strategy structured --max-special-q \
             "$_probe_max_special_q" --max-special-q-batch-workers \
             "$_probe_max_batch_workers" "${_probe_thread_args[@]}" \
             --ooc-base "$_probe_base" || _probe_status=$?
         if (( _probe_status == 0 )); then
-            if capture_single_measurement_record "GNFS_EXPERIMENT_V1 " "50 位探针"; then
-                print -r -- "$MEASUREMENT_RECORD"
+            local _probe_contract_valid=1
+            if capture_single_measurement_record "GNFS_EXPERIMENT_V2 " "50 位探针"; then
+                local _probe_first_round_complete
+                if ! _probe_first_round_complete=$(measurement_record_field \
+                    "$MEASUREMENT_RECORD" first_round_complete) ||
+                   ! validate_50d_route_record "$MEASUREMENT_RECORD" structured \
+                    "$_probe_first_round_complete" "50 位 structured 探针" \
+                    "$_probe_max_special_q" "$_probe_max_batch_workers" \
+                    "$_probe_max_local_sieve_threads"; then
+                    (( FAILED_TESTS += 1 ))
+                    _probe_contract_valid=0
+                else
+                    print -r -- "$MEASUREMENT_RECORD"
+                fi
             else
                 (( FAILED_TESTS += 1 ))
+                _probe_contract_valid=0
             fi
-            if rmdir "$_probe_dir"; then
+            if (( _probe_contract_valid )); then
+                if [[ -e "${_probe_base}.reldata" || -L "${_probe_base}.reldata" ||
+                      -e "${_probe_base}.relidx" || -L "${_probe_base}.relidx" ]]; then
+                    log_fail "探针成功后仍残留原始 OOC pair: ${_probe_base}"
+                    (( FAILED_TESTS += 1 ))
+                    _probe_contract_valid=0
+                fi
+            fi
+            if (( _probe_contract_valid )) && rmdir "$_probe_dir"; then
                 log_success "探针工件已完成生命周期清理"
             else
-                log_fail "探针成功但临时目录非空，已保留: ${_probe_dir}"
-                (( FAILED_TESTS += 1 ))
+                if (( _probe_contract_valid )); then
+                    log_fail "探针成功但临时目录非空，已保留: ${_probe_dir}"
+                    (( FAILED_TESTS += 1 ))
+                else
+                    log_warn "探针记录或生命周期无效，保留诊断工件: ${_probe_dir}"
+                fi
             fi
         else
             log_warn "探针失败，保留诊断工件: ${_probe_dir}"
         fi
         show_summary
+        ;;
+
+    compare-50d-bounded-routes|probe-50d-route-comparison)
+        run_50d_route_comparison \
+            bounded_50d_route_prefix_comparison false 4 900 "${MODE_ARGS[@]}"
+        ;;
+
+    compare-50d-first-round|probe-50d-first-round-comparison)
+        run_50d_route_comparison \
+            bounded_50d_first_round_comparison true 8192 7200 "${MODE_ARGS[@]}"
         ;;
 
     probe-50d-special-q-workers)
@@ -5530,28 +6441,29 @@ case "$MODE" in
         fi
         local _comparison_max_special_q="${MODE_ARGS[1]:-4}"
         local _comparison_max_local_sieve_threads="${MODE_ARGS[2]:-auto}"
-        if [[ ! "$_comparison_max_special_q" =~ ^[0-9]+$ ]] ||
-           (( _comparison_max_special_q < 4 || _comparison_max_special_q > 64 )); then
-            log_fail "对照 max_special_q 必须在 4..64 (传入: ${_comparison_max_special_q})"
+        validate_50d_uint32_argument "$_comparison_max_special_q" \
+            "对照 max_special_q" 4 || exit 1
+        validate_50d_local_threads "$_comparison_max_local_sieve_threads" || exit 1
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "probe-50d-special-q-workers 只接受 Release 构建（传入: ${BUILD_TYPE}）"
             exit 1
         fi
-        if [[ "$_comparison_max_local_sieve_threads" != "auto" ]] &&
-           { [[ ! "$_comparison_max_local_sieve_threads" =~ ^[0-9]+$ ]] ||
-             (( _comparison_max_local_sieve_threads < 1 ||
-                _comparison_max_local_sieve_threads > 4294967295 )); }; then
-            log_fail "对照 max_local_sieve_threads 必须是 auto 或 1..4294967295 (传入: ${_comparison_max_local_sieve_threads})"
-            exit 1
-        fi
-        if (( ! BUILD_TYPE_EXPLICIT )); then
-            BUILD_TYPE="Release"
-        fi
+        BUILD_TYPE="Release"
         if (( SKIP_BUILD )); then
             log_fail "probe-50d-special-q-workers 不接受 --no-build；对照证据必须由本次请求的构建生成"
+            exit 1
+        fi
+        if (( RETRY_EXPLICIT )); then
+            log_fail "probe-50d-special-q-workers 不接受 --retry；自动重试会破坏每个 worker 的 fresh-process 证据"
             exit 1
         fi
         do_build
         if [[ ! -x "${BUILD_DIR}/test_structured_ooc_50d_probe" ]]; then
             log_fail "50 位探针二进制不存在: ${BUILD_DIR}/test_structured_ooc_50d_probe"
+            exit 1
+        fi
+        if ! self_check_50d_probe_cli; then
+            log_fail "50 位探针 CLI 边界自检失败"
             exit 1
         fi
 
@@ -5567,13 +6479,14 @@ case "$MODE" in
         local _comparison_effective_budget _comparison_observed_limit
         local _comparison_observed_peak _comparison_candidate_peak _comparison_candidate_chunks
         local _comparison_expected_workers _comparison_expected_candidate_workers
+        local _comparison_first_round_complete
         for _comparison_workers in 1 2 4; do
             _comparison_dir=$(mktemp -d \
                 "${TMPDIR:-/tmp}/gnfs_structured_ooc_50d_w${_comparison_workers}.XXXXXX")
             _comparison_base="${_comparison_dir}/raw"
             log_info "workers=${_comparison_workers}; max_special_q=${_comparison_max_special_q}; max_local_sieve_threads=${_comparison_max_local_sieve_threads}; 临时目录=${_comparison_dir}"
             _comparison_run_status=0
-            run_single_test test_structured_ooc_50d_probe --max-special-q \
+            run_single_test test_structured_ooc_50d_probe --strategy structured --max-special-q \
                 "$_comparison_max_special_q" --max-special-q-batch-workers \
                 "$_comparison_workers" "${_comparison_thread_args[@]}" \
                 --ooc-base "$_comparison_base" || \
@@ -5583,11 +6496,23 @@ case "$MODE" in
                 log_warn "workers=${_comparison_workers} 探针失败，保留诊断工件: ${_comparison_dir}"
                 continue
             fi
-            if ! capture_single_measurement_record "GNFS_EXPERIMENT_V1 " \
+            if ! capture_single_measurement_record "GNFS_EXPERIMENT_V2 " \
                 "50 位 workers=${_comparison_workers} 探针"; then
                 (( FAILED_TESTS += 1 ))
                 _comparison_ready=0
                 log_warn "workers=${_comparison_workers} 记录无效，保留诊断工件: ${_comparison_dir}"
+                continue
+            fi
+            if ! _comparison_first_round_complete=$(measurement_record_field \
+                "$MEASUREMENT_RECORD" first_round_complete) ||
+               ! validate_50d_route_record "$MEASUREMENT_RECORD" structured \
+                "$_comparison_first_round_complete" \
+                "50 位 workers=${_comparison_workers} 探针" \
+                "$_comparison_max_special_q" "$_comparison_workers" \
+                "$_comparison_max_local_sieve_threads"; then
+                (( FAILED_TESTS += 1 ))
+                _comparison_ready=0
+                log_warn "workers=${_comparison_workers} 契约无效，保留诊断工件: ${_comparison_dir}"
                 continue
             fi
             if ! _comparison_effective_budget=$(measurement_record_field \
@@ -5654,7 +6579,8 @@ case "$MODE" in
             local -a _comparison_fields=(
                 status claim_boundary stop_after pipeline_batch_mode candidate_chunk_size
                 candidate_rss_sample_policy cofactor_inner_parallel_policy
-                n_digits n_bits max_special_q
+                n n_digits n_bits max_special_q
+                route sieve_rounds_completed sieve_stop_reason
                 special_q_processed special_q_batch_count special_q_batch_peak_size
                 max_local_sieve_threads_requested local_sieve_thread_budget
                 special_q_batch_peak_assigned_threads
@@ -5664,11 +6590,12 @@ case "$MODE" in
                 first_round_complete resume_scope attempted_resume attempted_distributed
                 sge_attempted solver_attempted sqrt_attempted factorization_attempted
                 route_evidence strategy storage generation raw_rows raw_duplicates
-                input_lp_columns output_rows output_lp_columns structured_commits
+                input_lp_columns input_lp_w1 input_lp_w2 input_lp_w3 input_lp_w4plus
+                output_rows output_lp_columns structured_commits
                 structured_emitted_rows structured_stop incidence_shards
                 incidence_requested_workers incidence_peak_workers raw_digest_low raw_digest_high
                 output_digest_low output_digest_high matrix_rows matrix_cols matrix_nonzeros
-                matrix_signed_delta matrix_row_mapping_identity thin_guard_proof_satisfied
+                matrix_signed_delta matrix_row_mapping_identity
                 structured_filter_records structured_matrix_records raw_pair_observed
                 raw_pair_removed output_pair_observed output_pair_retained_by_matrix
                 output_pair_removed output_lease_removed
@@ -5700,7 +6627,7 @@ case "$MODE" in
             done
         fi
         if (( _comparison_ready )); then
-            print -r -- "GNFS_EXPERIMENT_COMPARISON_V1 status=pass scope=bounded_50d_special_q_batch_workers max_special_q=${_comparison_max_special_q} max_local_sieve_threads=${_comparison_max_local_sieve_threads} workers=1,2,4 identity_fields=${#_comparison_fields[@]} timing_compared=false rss_compared=false"
+            print -r -- "GNFS_EXPERIMENT_COMPARISON_V2 status=pass scope=bounded_50d_special_q_batch_workers max_special_q=${_comparison_max_special_q} max_local_sieve_threads=${_comparison_max_local_sieve_threads} workers=1,2,4 identity_fields=${#_comparison_fields[@]} timing_scope=fresh_process_per_worker rss_scope=fresh_process_per_worker timing_asserted=false rss_asserted=false promotion=false"
             log_success "1/2/4 外层 worker 的 relation、matrix 与生命周期身份一致"
         fi
         show_summary

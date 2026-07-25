@@ -49,7 +49,8 @@ source/output backend。缺失的 RSS 值写为 `na`。
 
 该数为 50 位、164 bit。探针调用公开 Pipeline phase API：
 `select_polynomial()`、`build_factor_base()`、`sieve_and_collect()` 和
-`solve_matrix()`。它强制显式 ordinary OOC 与 structured route，并关闭 resume、
+`build_matrix()`。二进制显式选择 legacy ordinary-OOC 或 structured direct-OOC
+生产路由；旧短命令固定 structured，双路命令分别运行两者。两条路都关闭 resume、
 distributed sieve、V0 BFS、V3 cascade、3LP 和其它会改变实验族的开关。探针还使用
 `cofactor_inner_parallel_policy=forced_sequential`。ECM Stage 1、ECM Stage 2 和
 Brent rho helper 固定为单线程，ECM curve pool 保持关闭。
@@ -58,16 +59,56 @@ Brent rho helper 固定为单线程，ECM curve pool 保持关闭。
 ./scripts/test.sh probe-50d-structured-ooc
 ./scripts/test.sh probe-50d-structured-ooc 8 2 auto
 ./scripts/test.sh probe-50d-structured-ooc 8 2 4
+./scripts/test.sh compare-50d-bounded-routes
+./scripts/test.sh compare-50d-bounded-routes 8 2 4
+./scripts/test.sh compare-50d-first-round
+./scripts/test.sh compare-50d-first-round 8192 4 auto
 ./scripts/test.sh probe-50d-special-q-workers 4 auto
 ./scripts/test.sh probe-50d-special-q-workers 4 4
+./scripts/test.sh check-50d-contracts
 ```
 
-第一个可选参数是 `max_special_q`，允许范围为 1 到 64，默认值为 4。第二个可选参数
-是 `max_special_q_batch_workers`，允许范围为 1 到 4，默认值为 4。第三个可选参数是
-`max_local_sieve_threads`，接受 `auto` 或 `[1, UINT32_MAX]`，默认值为 `auto`。显式值
-在 Pipeline 构造时钳制到硬件并发数。`max_special_q` 是严格硬上限；最后一批不会
-向上取整到固定批次宽度。默认 4 个 special-Q 对应一个 production batch，但仍只是
-bounded prefix，不代表完整首轮。
+`probe-50d-structured-ooc` 保留短 structured-only 命令。三个可选参数依次是
+`max_special_q`、`max_special_q_batch_workers` 和 `max_local_sieve_threads`。
+`max_special_q` 接受 `[1, UINT32_MAX]`，默认值为 4。batch worker 接受 `[1, 4]`，
+默认值为 4。local thread 接受 `auto` 或 `[1, UINT32_MAX]`，默认值为 `auto`。
+显式线程值在 Pipeline 构造时钳制到硬件并发数。`max_special_q` 是严格硬上限；
+最后一批不会向上取整到固定批次宽度。默认 4 个 special-Q 对应一个 production
+batch，但仍只是 bounded prefix，不代表完整首轮。
+CTest 中禁用的 `StructuredOOC50dProbe` 也固定使用 structured route 和 4-SQ 上限。
+
+`compare-50d-bounded-routes` 使用相同参数，默认在两个顺序 fresh processes 中运行
+4-SQ legacy 和 structured route。每个进程有独占临时 OOC base。runner 要求两条
+`GNFS_EXPERIMENT_V2` 记录都报告 `first_round_complete=false`、
+`sieve_rounds_completed=1`，以及
+`special_q_budget_reached` 或 `special_q_range_exhausted`。默认每个进程的硬超时为
+900 秒；显式 `--timeout` 可以替换该上限。
+
+`compare-50d-first-round` 使用同一双进程协议，但默认
+`max_special_q=8192`，每个进程的默认硬超时为 7200 秒。两条记录都必须报告
+`first_round_complete=true`、`sieve_rounds_completed=1`，以及
+`adaptive_round_limit_reached` 或 `effective_column_excess`。首轮限制来自 typed
+Pipeline option，不依赖日志文本，也不会因为较大的 special-Q cap 进入第二轮。
+
+两个双路由 runner 都只接受 Release 构建，并拒绝 `--no-build` 和 `--retry`。每个
+子进程结束后，runner 检查原始 `.reldata`/`.relidx` pair 已删除，然后要求独占临时
+目录可由 `rmdir` 删除。legacy 和 structured route 因此使用相同的终端清理契约。
+任一路径失败或留下工件都会使对照失败，并保留非空目录供诊断。
+
+双路由对照强制比较输入数字、固定配置、special-Q 数、raw rows/digest/duplicates、
+完整 LP weight histogram、factor-base 列和 candidate 调度拓扑。output rows/digest、
+LP columns 和 full-matrix shape/nonzeros 属于策略结果，runner 分别记录而不要求相同。
+最终 `GNFS_EXPERIMENT_COMPARISON_V2` 明示 `promotion=false`；wall time 和 RSS 仅来自
+两个 fresh processes，不是门禁阈值。
+
+所有 50 位 runner 通过同一封闭式 `GNFS_EXPERIMENT_V2` schema 解析器。它固定完整
+字段集合和顺序，拒绝缺失、重复、未知或非规范字段，并校验布尔/数值/枚举、RSS
+support-value 联动、factor-base 列总数和 matrix signed delta。解析器同时运行
+missing/duplicate/unknown/reordered/noncanonical/partial-RSS 合成负向自检。
+`check-50d-contracts` 通过 probe emitter 的无流水线固定
+`GNFS_EXPERIMENT_FIXTURE_V2` fixture 执行同一解析器，并先断言 fixture 没有输出
+production `GNFS_EXPERIMENT_V2` 前缀，再覆盖 CLI 负例和 help 边界；
+`StructuredOOC50dContract` 将它作为 fast CTest。
 
 `probe-50d-special-q-workers` 使用同一个 Release 构建，分别在 3 个新进程中运行
 workers 1、2 和 4。它的第二个可选参数设置 3 个进程共同使用的
@@ -76,30 +117,40 @@ reduction、矩阵形状和工件生命周期字段；每个 worker 的通道分
 只记录，不参与 identity 判定。1/2/4 对照要求冻结后的预算至少为 4，并机械检查每次
 实际达到声明的 outer-worker topology；低核机器或更小显式预算会 fail closed。
 
-探针在调用 `solve_matrix()` 前机械证明 reduced rows 不超过已知 non-LP factor-base
-columns，并设置 `GNFS_NO_THIN_SOLVE=1`。实际 full matrix 必须满足
-`row_column_delta < 0`，否则 fail closed。Pipeline 只构建 full matrix，然后在 thin
-分支返回；探针不进入 SGE、Block Lanczos、Block Wiedemann、平方根或因子提取。
+探针使用显式 matrix-only 边界，在 MatrixBuilder 完成后返回。它不依赖 thin-matrix
+bypass，也不要求 `matrix_signed_delta` 为负；该值和矩阵形状都是需要分别记录的策略
+结果。记录必须证明没有进入 SGE、Block Lanczos、Block Wiedemann、平方根或因子提取。
 
-成功时输出一行 `GNFS_EXPERIMENT_V1`。报告必须使用以下 claim boundary：
+成功时输出一行 `GNFS_EXPERIMENT_V2`。报告必须使用以下 claim boundary：
 
 ```text
 scope=bounded_50d_prefix_probe
 resume_scope=none
-route_evidence=production_direct_ooc
+route=legacy|structured
+route_evidence=production_legacy_ooc|production_direct_ooc
 sge_attempted=false
 solver_attempted=false
 sqrt_attempted=false
 factorization_attempted=false
 ```
 
-`first_round_complete` 只在 raw relation count 达到初始 raw target 时为 true。报告还
-包含 hard cap、请求与冻结后的计算通道预算、批次 worker 配置、单批总通道和单 worker
-峰值、两阶段 candidate 模式、固定 chunk size、candidate worker/chunk/corpus 统计、
-raw/output digest 与 rows、矩阵 rows/columns、row mapping identity、有符号 row-column
-delta、nonzeros、wall time 和 process RSS。`candidate_generation_s` 与
-`candidate_cofactor_s` 分别记录两个阶段的累计 wall time。runner 使用独立临时目录；
-成功后只在目录为空时执行 `rmdir`，失败或生命周期异常时保留目录供诊断。
+legacy route 使用 `production_legacy_ooc`；structured route 使用
+`production_direct_ooc`。`first_round_complete` 只在 raw relation count 达到初始 raw
+target、恰好完成一轮 reduction，且 typed stop reason 为
+`adaptive_round_limit_reached` 或 `effective_column_excess` 时为 true。报告还包含
+typed `sieve_stop_reason`、完成轮数、hard cap、请求与
+冻结后的计算通道预算、批次 worker 配置、单批总通道和单 worker 峰值、两阶段
+candidate 模式、固定 chunk size、candidate worker/chunk/corpus 统计、raw/output
+digest 与 rows、完整输入 LP weight histogram、矩阵 rows/columns、row mapping
+identity、有符号 row-column delta、nonzeros、wall time 和 process RSS。
+`candidate_generation_s` 与 `candidate_cofactor_s` 分别记录两个阶段的累计 wall time。
+runner 使用独立临时目录；成功后只在目录为空时执行 `rmdir`，失败或生命周期异常时保留
+目录供诊断。
+
+完整首轮双路由记录是 M5 的真实输入证据入口，不是 M5 自动通过标志。它也不是 SIQS
+sealed RSS 协议，两者的语料、进程边界和 promotion authority 都不同。生成一条通过的
+comparison record 不会启用 `GNFS_STRUCTURED_FILTER=auto`，不会授权 M6，也不会改变
+默认 reduction policy。
 
 candidate 批次的 current RSS 使用 `first_max_candidates` 配对策略。Pipeline 只在
 当前批次候选数严格大于既有样本时替换样本；并列最大值保留最早批次。记录包含：
@@ -604,9 +655,9 @@ corpus 上的 legacy/structured 对照、完整首轮关系目标、依赖空间
 
 测量环境为 macOS 26.5.2、Apple M5（10 个逻辑 CPU、24GiB RAM）和 Apple Clang
 21.0.0。源码基线为 `05993af` 加本里程碑改动；`build/CMakeCache.txt` 明确记录
-`CMAKE_BUILD_TYPE=Release`。原始记录通过本文列出的 runner 命令生成，runner 会
-拒绝 `--no-build` 并强制每次成功运行恰好输出一条 `GNFS_RESOURCE_V1` 或
-`GNFS_EXPERIMENT_V1`。
+`CMAKE_BUILD_TYPE=Release`。当时的原始记录通过本文列出的 runner 命令生成，并使用
+`GNFS_RESOURCE_V1` 或 `GNFS_EXPERIMENT_V1`。当前 50 位双路由 runner 拒绝
+`--no-build`，并强制每个成功进程恰好输出一条 `GNFS_EXPERIMENT_V2`。
 
 | Scenario | Source rows | Output rows | Workers | Reduction wall | Peak growth |
 |---|---:|---:|---:|---:|---:|

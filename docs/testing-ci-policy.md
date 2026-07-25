@@ -113,12 +113,26 @@ The runner supports Linux and macOS. On any other host it prints an explicit uns
 byte normalization and process high-water-mark monotonicity without requiring a
 fixed allocation delta. `test_structured_ooc_50d_probe` is a disabled `stress`
 target because it builds a real 50-digit factor base and runs the production
-sieve. Run it only through `./scripts/test.sh probe-50d-structured-ooc`, which
-supplies a hard special-Q cap, a bounded outer-worker configuration, a local
-sieve compute-lane budget, and an isolated artifact directory. The companion
-`probe-50d-special-q-workers` mode runs outer-worker settings 1, 2, and 4 in
-fresh processes under one fixed compute-lane budget. Both modes treat timing
-and RSS as measurements, not CI assertions.
+sieve. Run it only through `./scripts/test.sh probe-50d-structured-ooc`,
+`compare-50d-bounded-routes`, `compare-50d-first-round`, or
+`probe-50d-special-q-workers`. These modes supply a hard special-Q cap, a
+bounded outer-worker configuration, a local sieve compute-lane budget, fresh
+processes, and isolated artifact directories. The worker mode runs settings 1,
+2, and 4 under one fixed compute-lane budget; the two route modes compare
+legacy and structured production paths. Every mode uses the closed
+`GNFS_EXPERIMENT_V2` schema validator and treats timing and RSS as measurements,
+not CI assertions.
+
+`StructuredOOC50dContract` is a `fast` CTest that runs
+`./scripts/test.sh --no-build check-50d-contracts`. It never enters the real
+50-digit pipeline. It exercises all CLI rejection/help cases, asks the probe
+emitter for one deterministic `GNFS_EXPERIMENT_FIXTURE_V2` pass fixture, rejects
+any production-evidence prefix in that fixture, then runs the closed schema and
+its synthetic negative mutations against it. CMake passes the selected target's
+exact `$<TARGET_FILE:...>` and Python executable into the runner, so non-default
+and multi-config build trees cannot accidentally validate a stale root
+`build/` binary. This keeps CLI/schema drift in routine CTest without weakening
+the disabled stress boundary above.
 
 `test_local_sieve_thread_budget` is the `instant` contract for balanced lane
 allocation, invalid limits, and a bounded property grid. The 64-special-Q probe

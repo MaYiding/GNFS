@@ -6,6 +6,7 @@
 #include "gnfs/util/process_memory.hpp"
 #include "gnfs/util/temp_path.hpp"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <chrono>
@@ -22,15 +23,19 @@
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace {
 
 using gnfs::api::Config;
 using gnfs::api::FactorizationMethod;
+using gnfs::api::LegacyRawOOCCleanupPolicy;
 using gnfs::api::LogEntry;
 using gnfs::api::Phase;
 using gnfs::api::Pipeline;
 using gnfs::api::ProgressInfo;
+using gnfs::api::SieveCollectionOptions;
+using gnfs::api::SieveStopReason;
 using gnfs::core::Integer;
 using gnfs::relation::CorpusDigest;
 using gnfs::relation::OOCCorpusArtifactScope;
@@ -45,12 +50,18 @@ constexpr size_t PROBE_BITS = 164;
 constexpr size_t PROBE_DIGITS = 50;
 constexpr size_t DEFAULT_MAX_SPECIAL_Q = 4;
 constexpr size_t MIN_MAX_SPECIAL_Q = 1;
-constexpr size_t MAX_MAX_SPECIAL_Q = 64;
+constexpr size_t MAX_MAX_SPECIAL_Q = std::numeric_limits<uint32_t>::max();
 constexpr uint32_t DEFAULT_MAX_SPECIAL_Q_BATCH_WORKERS = 4;
 constexpr uint32_t MIN_MAX_SPECIAL_Q_BATCH_WORKERS = 1;
 constexpr uint32_t MAX_MAX_SPECIAL_Q_BATCH_WORKERS = 4;
 
+enum class ProbeStrategy : uint8_t {
+    Legacy,
+    Structured,
+};
+
 struct CliOptions final {
+    ProbeStrategy strategy = ProbeStrategy::Structured;
     size_t max_special_q = DEFAULT_MAX_SPECIAL_Q;
     uint32_t max_special_q_batch_workers = DEFAULT_MAX_SPECIAL_Q_BATCH_WORKERS;
     std::optional<uint32_t> max_local_sieve_threads;
@@ -136,10 +147,12 @@ struct ExperimentRecord final {
     std::string status = "fail";
     std::string failure_stage = "cli";
     std::string error = "none";
+    std::string route = "unverified";
     std::string route_evidence = "unverified";
     std::string strategy = "unverified";
     std::string storage = "unverified";
     std::string structured_stop = "unverified";
+    std::string sieve_stop_reason = "unverified";
     size_t max_special_q = DEFAULT_MAX_SPECIAL_Q;
     uint32_t max_special_q_batch_workers = DEFAULT_MAX_SPECIAL_Q_BATCH_WORKERS;
     size_t special_q_processed = 0;
@@ -167,10 +180,15 @@ struct ExperimentRecord final {
     size_t base_factor_columns = 0;
     size_t initial_raw_target = 0;
     bool first_round_complete = false;
+    size_t sieve_rounds_completed = 0;
     uint64_t generation = 0;
     size_t raw_rows = 0;
     size_t raw_duplicates = 0;
     size_t input_lp_columns = 0;
+    size_t input_lp_w1 = 0;
+    size_t input_lp_w2 = 0;
+    size_t input_lp_w3 = 0;
+    size_t input_lp_w4plus = 0;
     size_t output_rows = 0;
     size_t output_lp_columns = 0;
     size_t structured_commits = 0;
@@ -185,7 +203,6 @@ struct ExperimentRecord final {
     size_t matrix_nonzeros = 0;
     std::optional<int64_t> matrix_signed_delta;
     bool matrix_row_mapping_identity = false;
-    bool thin_guard_proof_satisfied = false;
     size_t structured_filter_records = 0;
     size_t structured_matrix_records = 0;
     bool raw_pair_observed = false;
@@ -312,6 +329,16 @@ void require(bool condition, std::string_view message) {
     return "unknown";
 }
 
+[[nodiscard]] constexpr std::string_view probe_strategy_name(ProbeStrategy strategy) noexcept {
+    switch (strategy) {
+    case ProbeStrategy::Legacy:
+        return "legacy";
+    case ProbeStrategy::Structured:
+        return "structured";
+    }
+    return "unknown";
+}
+
 [[nodiscard]] std::string_view storage_name(RelationStorageKind storage) noexcept {
     switch (storage) {
     case RelationStorageKind::InMemory:
@@ -399,7 +426,7 @@ void validate_memory_backends(const ExperimentRecord& record) {
     }
 }
 
-void emit_record(const ExperimentRecord& record) {
+void emit_record(const ExperimentRecord& record, std::string_view prefix = "GNFS_EXPERIMENT_V2") {
     const auto emit_memory = [](std::ostream& output, std::string_view phase,
                                 const MemoryObservation& observation) {
         output << " rss_" << phase
@@ -408,8 +435,7 @@ void emit_record(const ExperimentRecord& record) {
     };
 
     std::cout
-        << "GNFS_EXPERIMENT_V1"
-        << " scope=bounded_50d_prefix_probe"
+        << prefix << " scope=bounded_50d_prefix_probe"
         << " claim_boundary=relation_reduction_and_matrix_shape_only"
         << " stop_after=matrix_build"
         << " pipeline_batch_mode=two_stage_candidate_batch"
@@ -417,7 +443,7 @@ void emit_record(const ExperimentRecord& record) {
         << " candidate_rss_sample_policy=first_max_candidates"
         << " cofactor_inner_parallel_policy=forced_sequential"
         << " status=" << record.status << " failure_stage=" << record.failure_stage
-        << " n_digits=" << PROBE_DIGITS << " n_bits=" << PROBE_BITS
+        << " n=" << PROBE_N << " n_digits=" << PROBE_DIGITS << " n_bits=" << PROBE_BITS
         << " max_special_q=" << record.max_special_q
         << " max_special_q_batch_workers=" << record.max_special_q_batch_workers
         << " special_q_processed=" << record.special_q_processed
@@ -446,17 +472,21 @@ void emit_record(const ExperimentRecord& record) {
         << " base_factor_columns=" << record.base_factor_columns
         << " initial_raw_target=" << record.initial_raw_target
         << " first_round_complete=" << bool_token(record.first_round_complete)
-        << " resume_scope=none"
+        << " sieve_rounds_completed=" << record.sieve_rounds_completed
+        << " sieve_stop_reason=" << record.sieve_stop_reason << " resume_scope=none"
         << " attempted_resume=false"
         << " attempted_distributed=false"
         << " sge_attempted=" << bool_token(record.sge_attempted)
         << " solver_attempted=" << bool_token(record.solver_attempted)
         << " sqrt_attempted=" << bool_token(record.sqrt_attempted)
         << " factorization_attempted=" << bool_token(record.factorization_attempted)
-        << " route_evidence=" << record.route_evidence << " strategy=" << record.strategy
-        << " storage=" << record.storage << " generation=" << record.generation
-        << " raw_rows=" << record.raw_rows << " raw_duplicates=" << record.raw_duplicates
-        << " input_lp_columns=" << record.input_lp_columns << " output_rows=" << record.output_rows
+        << " route=" << record.route << " route_evidence=" << record.route_evidence
+        << " strategy=" << record.strategy << " storage=" << record.storage
+        << " generation=" << record.generation << " raw_rows=" << record.raw_rows
+        << " raw_duplicates=" << record.raw_duplicates
+        << " input_lp_columns=" << record.input_lp_columns << " input_lp_w1=" << record.input_lp_w1
+        << " input_lp_w2=" << record.input_lp_w2 << " input_lp_w3=" << record.input_lp_w3
+        << " input_lp_w4plus=" << record.input_lp_w4plus << " output_rows=" << record.output_rows
         << " output_lp_columns=" << record.output_lp_columns
         << " structured_commits=" << record.structured_commits
         << " structured_emitted_rows=" << record.structured_emitted_rows
@@ -472,9 +502,6 @@ void emit_record(const ExperimentRecord& record) {
         << " matrix_nonzeros=" << record.matrix_nonzeros
         << " matrix_signed_delta=" << optional_token(record.matrix_signed_delta)
         << " matrix_row_mapping_identity=" << bool_token(record.matrix_row_mapping_identity)
-        << " thin_guard_rows=" << record.output_rows
-        << " thin_guard_non_lp_cols=" << record.base_factor_columns
-        << " thin_guard_proof_satisfied=" << bool_token(record.thin_guard_proof_satisfied)
         << " structured_filter_records=" << record.structured_filter_records
         << " structured_matrix_records=" << record.structured_matrix_records
         << " raw_pair_observed=" << bool_token(record.raw_pair_observed)
@@ -507,6 +534,36 @@ void emit_record(const ExperimentRecord& record) {
               << " error=" << record.error << '\n';
 }
 
+[[nodiscard]] ExperimentRecord contract_fixture_record() {
+    ExperimentRecord record;
+    record.status = "pass";
+    record.failure_stage = "none";
+    record.error = "none";
+    record.route = "structured";
+    record.route_evidence = "production_direct_ooc";
+    record.strategy = "structured";
+    record.storage = "finalized_ooc";
+    record.structured_stop = "no_candidates";
+    record.sieve_stop_reason = "special_q_budget_reached";
+    record.sieve_rounds_completed = 1;
+    record.generation = 1;
+    record.matrix_signed_delta = 0;
+    record.matrix_row_mapping_identity = true;
+    record.raw_pair_observed = true;
+    record.raw_pair_removed = true;
+    return record;
+}
+
+[[nodiscard]] ProbeStrategy parse_probe_strategy(std::string_view text) {
+    if (text == "legacy") {
+        return ProbeStrategy::Legacy;
+    }
+    if (text == "structured") {
+        return ProbeStrategy::Structured;
+    }
+    throw std::invalid_argument("--strategy must be legacy or structured");
+}
+
 [[nodiscard]] size_t parse_max_special_q(std::string_view text) {
     uint64_t parsed = 0;
     const char* begin = text.data();
@@ -514,7 +571,7 @@ void emit_record(const ExperimentRecord& record) {
     const auto [position, error] = std::from_chars(begin, end, parsed);
     if (error != std::errc{} || position != end || parsed < MIN_MAX_SPECIAL_Q ||
         parsed > MAX_MAX_SPECIAL_Q) {
-        throw std::invalid_argument("--max-special-q must be an integer in [1,64]");
+        throw std::invalid_argument("--max-special-q must be an integer in [1,UINT32_MAX]");
     }
     return static_cast<size_t>(parsed);
 }
@@ -546,6 +603,7 @@ void emit_record(const ExperimentRecord& record) {
 
 [[nodiscard]] CliOptions parse_cli(int argc, char** argv) {
     CliOptions options;
+    bool strategy_seen = false;
     bool max_special_q_seen = false;
     bool max_special_q_batch_workers_seen = false;
     bool max_local_sieve_threads_seen = false;
@@ -554,6 +612,26 @@ void emit_record(const ExperimentRecord& record) {
         const std::string_view argument(argv[index]);
         if (argument == "--help" || argument == "-h") {
             options.help = true;
+            continue;
+        }
+        if (argument == "--strategy") {
+            if (strategy_seen) {
+                throw std::invalid_argument("--strategy may be specified only once");
+            }
+            if (index + 1 >= argc) {
+                throw std::invalid_argument("--strategy requires a value");
+            }
+            options.strategy = parse_probe_strategy(argv[++index]);
+            strategy_seen = true;
+            continue;
+        }
+        constexpr std::string_view strategy_prefix = "--strategy=";
+        if (argument.starts_with(strategy_prefix)) {
+            if (strategy_seen) {
+                throw std::invalid_argument("--strategy may be specified only once");
+            }
+            options.strategy = parse_probe_strategy(argument.substr(strategy_prefix.size()));
+            strategy_seen = true;
             continue;
         }
         if (argument == "--max-special-q") {
@@ -638,9 +716,8 @@ void emit_record(const ExperimentRecord& record) {
 
 [[nodiscard]] std::string unique_raw_base() {
     const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
-    return gnfs::util::temp_path("gnfs_structured_ooc_50d_probe_" +
-                                 std::to_string(gnfs::util::process_id()) + "_" +
-                                 std::to_string(ticks));
+    return gnfs::util::temp_path("gnfs_ooc_50d_probe_" + std::to_string(gnfs::util::process_id()) +
+                                 "_" + std::to_string(ticks));
 }
 
 void observe_raw_pair(const std::string& raw_base, CallbackEvidence& evidence) noexcept {
@@ -740,7 +817,7 @@ void validate_callback_boundary(const CallbackEvidence& evidence) {
     require(!evidence.raw_pair_incoherent,
             "raw OOC artifact pair was only partially visible during a callback");
     require(evidence.raw_pair_observed, "raw OOC pair was never observed during sieving");
-    require(!evidence.sge_attempted, "solve_matrix crossed into SGE preprocessing");
+    require(!evidence.sge_attempted, "matrix-build-only probe crossed into SGE preprocessing");
     require(!evidence.block_lanczos_attempted, "Block Lanczos was attempted");
     require(!evidence.block_wiedemann_attempted, "Block Wiedemann was attempted");
     require(!evidence.square_root_attempted, "square-root phase was attempted");
@@ -750,6 +827,7 @@ void validate_callback_boundary(const CallbackEvidence& evidence) {
 
 void run_probe(const CliOptions& options, ExperimentRecord& record) {
     record.failure_stage = "preflight";
+    record.route = std::string(probe_strategy_name(options.strategy));
     record.max_special_q = options.max_special_q;
     record.max_special_q_batch_workers = options.max_special_q_batch_workers;
     record.max_local_sieve_threads_requested = options.max_local_sieve_threads.value_or(0);
@@ -762,7 +840,8 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     require(!path_exists(raw_base + ".gnfs-collector-lease"),
             "fresh raw OOC collector lease already exists");
 
-    ScopedEnvironmentVariable structured_filter("GNFS_STRUCTURED_FILTER", "1");
+    ScopedEnvironmentVariable structured_filter(
+        "GNFS_STRUCTURED_FILTER", options.strategy == ProbeStrategy::Structured ? "1" : "0");
     ScopedEnvironmentVariable ordinary_ooc("GNFS_OOC_RELATIONS", "1");
     ScopedEnvironmentVariable ooc_base("GNFS_OOC_BASE_PATH", raw_base);
     ScopedEnvironmentVariable resume("GNFS_RESUME", std::nullopt);
@@ -780,7 +859,6 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     ScopedEnvironmentVariable target_multiplier("GNFS_SIEVE_TARGET_MULT", std::nullopt);
     ScopedEnvironmentVariable lattice_lll("GNFS_LATTICE_LLL", std::nullopt);
     ScopedEnvironmentVariable lattice_skew("GNFS_LATTICE_SKEW", "0");
-    ScopedEnvironmentVariable thin_solver("GNFS_NO_THIN_SOLVE", "1");
     ScopedEnvironmentVariable legacy_streaming_matrix("GNFS_SGE_STREAMING", "off");
     ScopedEnvironmentVariable cofactor_brent("GNFS_COFACTOR_BRENT", "0");
     ScopedEnvironmentVariable ecm_brent_suyama("GNFS_ECM_BRENT_SUYAMA", "0");
@@ -840,7 +918,12 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
 
     record.failure_stage = "sieve";
     phase_started = std::chrono::steady_clock::now();
-    auto reduction = pipeline.sieve_and_collect(context, factor_base);
+    auto reduction = pipeline.sieve_and_collect(
+        context, factor_base,
+        SieveCollectionOptions{
+            .adaptive_round_limit = 1,
+            .legacy_raw_ooc_cleanup = LegacyRawOOCCleanupPolicy::RemoveArtifacts,
+        });
     record.sieve_ms = elapsed_milliseconds(phase_started, std::chrono::steady_clock::now());
     record.after_sieve_memory = capture_memory();
 
@@ -871,11 +954,29 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
         pipeline_stats.candidate_batch_after_release_current_rss_bytes;
     record.candidate_generation_s = pipeline_stats.timings.candidate_generation_s;
     record.candidate_cofactor_s = pipeline_stats.timings.candidate_cofactor_s;
-    record.first_round_complete = reduction_stats.input_relations >= record.initial_raw_target;
+    record.sieve_rounds_completed = pipeline_stats.sieve_rounds_completed;
+    record.sieve_stop_reason =
+        std::string(gnfs::api::sieve_stop_reason_name(pipeline_stats.sieve_stop_reason));
+    const bool raw_target_reached = reduction_stats.input_relations >= record.initial_raw_target;
+    const bool complete_stop_reason =
+        pipeline_stats.sieve_stop_reason == SieveStopReason::AdaptiveRoundLimitReached ||
+        pipeline_stats.sieve_stop_reason == SieveStopReason::EffectiveColumnExcess;
+    const bool short_prefix_stop_reason =
+        pipeline_stats.sieve_stop_reason == SieveStopReason::SpecialQBudgetReached ||
+        pipeline_stats.sieve_stop_reason == SieveStopReason::SpecialQRangeExhausted;
+    record.first_round_complete =
+        raw_target_reached && pipeline_stats.sieve_rounds_completed == 1 && complete_stop_reason;
     record.generation = reduction.generation;
     record.raw_rows = reduction_stats.input_relations;
     record.raw_duplicates = reduction_stats.raw_duplicates_removed;
     record.input_lp_columns = reduction_stats.deduplicated_input_lp_histogram.unique_keys;
+    record.input_lp_w1 = reduction_stats.deduplicated_input_lp_histogram.weight_1;
+    record.input_lp_w2 = reduction_stats.deduplicated_input_lp_histogram.weight_2;
+    record.input_lp_w3 = reduction_stats.deduplicated_input_lp_histogram.weight_3;
+    record.input_lp_w4plus = reduction_stats.deduplicated_input_lp_histogram.weight_4plus;
+    const size_t input_lp_weight_buckets =
+        checked_add_size(checked_add_size(record.input_lp_w1, record.input_lp_w2),
+                         checked_add_size(record.input_lp_w3, record.input_lp_w4plus));
     record.output_rows = reduction_stats.output_relations;
     record.output_lp_columns = reduction_stats.output_lp_columns;
     record.structured_commits = reduction_stats.structured_run.commits;
@@ -899,31 +1000,68 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     record.factorization_attempted = evidence.factor_extraction_attempted;
 
     require(reduction.generation != 0, "reduction generation is zero");
-    require(reduction_stats.strategy == ReductionStrategy::Structured,
-            "production reduction did not select the structured strategy");
-    require(reduction.storage_kind() == RelationStorageKind::FinalizedOOC,
-            "structured result is not finalized OOC");
     require(reduction_stats.raw_duplicates_removed == 0,
             "collector unique-prefix route unexpectedly removed raw duplicates");
     require(reduction_stats.input_relations == pipeline_stats.relations_found,
             "raw relation count differs across Pipeline and reduction stats");
     require(reduction_stats.output_relations == reduction.size(),
             "reduction output count differs from corpus size");
-    require(reduction_stats.structured_run.stop_reason != StructuredReductionStopReason::NotStarted,
-            "structured reduction did not start");
-    require(evidence.structured_filter_records == 1,
-            "bounded prefix produced an unexpected number of structured records");
-    require(evidence.direct_ooc_filter_records == 1,
-            "structured record did not prove the direct OOC route");
-    require(evidence.structured_filter_record.find(
-                " generation=" + std::to_string(reduction.generation) + " ") != std::string::npos,
-            "structured record generation differs from the returned reduction");
+    require(input_lp_weight_buckets == record.input_lp_columns,
+            "input LP weight histogram differs from its unique-key count");
+    require(pipeline_stats.sieve_rounds_completed == 1,
+            "typed first-round limit did not produce exactly one reduction round");
+    require(pipeline_stats.sieve_stop_reason != SieveStopReason::NotStarted,
+            "typed sieve stop reason was not published");
+    require(record.first_round_complete || short_prefix_stop_reason,
+            "incomplete first round did not stop at the special-Q budget or range boundary");
+    if (record.first_round_complete) {
+        require(raw_target_reached && pipeline_stats.sieve_rounds_completed == 1 &&
+                    complete_stop_reason,
+                "first-round completion lacks target, round, or stop-reason evidence");
+    }
+    if (options.strategy == ProbeStrategy::Structured) {
+        require(reduction_stats.strategy == ReductionStrategy::Structured,
+                "production reduction did not select the structured strategy");
+        require(reduction.storage_kind() == RelationStorageKind::FinalizedOOC,
+                "structured result is not finalized OOC");
+        require(reduction_stats.structured_run.stop_reason !=
+                    StructuredReductionStopReason::NotStarted,
+                "structured reduction did not start");
+        require(evidence.structured_filter_records == 1,
+                "bounded prefix produced an unexpected number of structured records");
+        require(evidence.direct_ooc_filter_records == 1,
+                "structured record did not prove the direct OOC route");
+        require(evidence.structured_filter_record.find(
+                    " generation=" + std::to_string(reduction.generation) + " ") !=
+                    std::string::npos,
+                "structured record generation differs from the returned reduction");
+        require(reduction_stats.structured_incidence.requested_worker_count > 0,
+                "structured incidence worker request is zero");
+        if (reduction_stats.input_relations > 0) {
+            require(reduction_stats.structured_incidence.peak_worker_count > 0,
+                    "nonempty structured incidence build used no worker slot");
+        }
+    } else {
+        require(reduction_stats.strategy == ReductionStrategy::StandardV0,
+                "production reduction did not select the frozen legacy strategy");
+        require(reduction.storage_kind() == RelationStorageKind::InMemory,
+                "legacy result is not an in-memory vector corpus");
+        require(reduction_stats.structured_run.stop_reason ==
+                    StructuredReductionStopReason::NotStarted,
+                "legacy reduction unexpectedly entered the structured reducer");
+        require(evidence.structured_filter_records == 0 && evidence.direct_ooc_filter_records == 0,
+                "legacy reduction emitted structured-route evidence");
+        require(reduction_stats.structured_run.commits == 0 &&
+                    reduction_stats.structured_run.emitted_rows == 0,
+                "legacy reduction reported structured commit activity");
+        require(reduction_stats.structured_incidence.shard_count == 0 &&
+                    reduction_stats.structured_incidence.requested_worker_count == 0 &&
+                    reduction_stats.structured_incidence.peak_worker_count == 0,
+                "legacy reduction reported structured incidence activity");
+    }
     require(pipeline_stats.special_q_processed > 0, "bounded probe did not process any special-Q");
     require(pipeline_stats.special_q_processed <= options.max_special_q,
             "bounded probe exceeded max_special_q");
-    require(record.first_round_complete ||
-                pipeline_stats.special_q_processed == options.max_special_q,
-            "incomplete first round stopped before the special-Q cap");
     size_t hardware_workers = std::thread::hardware_concurrency();
     if (hardware_workers == 0) {
         hardware_workers = 4;
@@ -990,50 +1128,50 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     require(pipeline_stats.timings.candidate_generation_s > 0.0 &&
                 pipeline_stats.timings.candidate_cofactor_s > 0.0,
             "two-stage candidate batch timings were not recorded");
-    require(reduction_stats.structured_incidence.requested_worker_count > 0,
-            "structured incidence worker request is zero");
-    if (reduction_stats.input_relations > 0) {
-        require(reduction_stats.structured_incidence.peak_worker_count > 0,
-                "nonempty structured incidence build used no worker slot");
-    }
     validate_callback_boundary(evidence);
 
     const ArtifactPairState raw_after_sieve = inspect_artifact_pair(raw_base);
     require(raw_after_sieve.absent(), "raw OOC pair survived successful terminal handoff");
+    require(!path_exists(raw_base + ".gnfs-collector-lease"),
+            "raw OOC collector lease survived successful terminal handoff");
     record.raw_pair_removed = true;
 
     const std::optional<OOCCorpusArtifactScope> output_scope =
         reduction.relation_corpus().ooc_artifact_scope();
-    require(output_scope.has_value(), "finalized OOC result has no artifact scope");
-    require(output_scope->descriptor.format_version ==
-                gnfs::relation::OOCRelationWriter::FORMAT_VERSION_V3,
-            "structured output is not paired OOC V3");
-    require(output_scope->descriptor.store_id != 0, "structured output store identity is zero");
-    require(output_scope->descriptor.count == static_cast<uint64_t>(reduction.size()),
-            "structured output descriptor count differs from reduction size");
-    require(!output_scope->cleanup_directory.empty(),
-            "structured output has no exclusive cleanup lease");
-    require(output_scope->base_path.find(raw_base + ".gnfs-structured-run-") == 0,
-            "structured output is outside the production run namespace");
-    require(inspect_artifact_pair(output_scope->base_path).complete(),
-            "structured output artifact pair is not live");
-    require(path_is_directory(output_scope->cleanup_directory),
-            "structured output cleanup lease is not live");
-    record.output_pair_observed = true;
-    record.route_evidence = "production_direct_ooc";
+    std::optional<std::string> output_base;
+    std::optional<std::string> output_cleanup_directory;
+    if (options.strategy == ProbeStrategy::Structured) {
+        require(output_scope.has_value(), "finalized OOC result has no artifact scope");
+        require(output_scope->descriptor.format_version ==
+                    gnfs::relation::OOCRelationWriter::FORMAT_VERSION_V3,
+                "structured output is not paired OOC V3");
+        require(output_scope->descriptor.store_id != 0, "structured output store identity is zero");
+        require(output_scope->descriptor.count == static_cast<uint64_t>(reduction.size()),
+                "structured output descriptor count differs from reduction size");
+        require(!output_scope->cleanup_directory.empty(),
+                "structured output has no exclusive cleanup lease");
+        require(output_scope->base_path.find(raw_base + ".gnfs-structured-run-") == 0,
+                "structured output is outside the production run namespace");
+        require(inspect_artifact_pair(output_scope->base_path).complete(),
+                "structured output artifact pair is not live");
+        require(path_is_directory(output_scope->cleanup_directory),
+                "structured output cleanup lease is not live");
+        output_base = output_scope->base_path;
+        output_cleanup_directory = output_scope->cleanup_directory;
+        record.output_pair_observed = true;
+        record.route_evidence = "production_direct_ooc";
+    } else {
+        require(!output_scope.has_value(),
+                "legacy reduction unexpectedly returned an OOC output corpus");
+        record.route_evidence = "production_legacy_ooc";
+    }
 
-    require(reduction.size() <= record.base_factor_columns,
-            "bounded reduction is not provably thin before matrix construction");
-    record.thin_guard_proof_satisfied = true;
-
-    const std::string output_base = output_scope->base_path;
-    const std::string output_cleanup_directory = output_scope->cleanup_directory;
-    const size_t expected_relation_count = reduction.size();
+    const size_t reduction_output_count = reduction.size();
 
     record.failure_stage = "matrix";
     phase_started = std::chrono::steady_clock::now();
     std::optional<Pipeline::MatrixResult> matrix_result;
-    matrix_result.emplace(pipeline.solve_matrix(std::move(reduction), factor_base, context));
+    matrix_result.emplace(pipeline.build_matrix(std::move(reduction), factor_base, context));
     record.matrix_ms = elapsed_milliseconds(phase_started, std::chrono::steady_clock::now());
     record.after_matrix_memory = capture_memory();
     record.matrix_rows = matrix_result->matrix.num_rows();
@@ -1047,61 +1185,87 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     record.sqrt_attempted = evidence.square_root_attempted;
     record.factorization_attempted = evidence.factor_extraction_attempted;
 
-    require(matrix_result->owns_relation_corpus(),
-            "matrix result did not retain the structured relation corpus");
-    require(matrix_result->relations.empty(),
-            "structured matrix result unexpectedly materialized the legacy relation vector");
     require(matrix_result->dependencies.empty(),
-            "thin matrix opt-out unexpectedly returned dependencies");
-    require(matrix_result->relation_count() == expected_relation_count,
-            "matrix result relation count differs from the structured output corpus");
-    require(matrix_result->structured_row_to_relation().size() == record.matrix_rows,
-            "structured row mapping differs from matrix row count");
-    record.matrix_row_mapping_identity = true;
-    for (size_t row = 0; row < matrix_result->structured_row_to_relation().size(); ++row) {
-        if (matrix_result->structured_row_to_relation()[row] != row) {
-            record.matrix_row_mapping_identity = false;
-            break;
+            "matrix-build-only API unexpectedly returned dependencies");
+    require(pipeline.stats().dependencies_found == 0,
+            "matrix-build-only API reported solver dependencies");
+    require(matrix_result->relation_count() == record.matrix_rows,
+            "matrix result relation count differs from the final matrix row count");
+    require(record.matrix_rows <= reduction_output_count,
+            "matrix builder increased the reduction output row count");
+    if (options.strategy == ProbeStrategy::Structured) {
+        require(matrix_result->owns_relation_corpus(),
+                "matrix result did not retain the structured relation corpus");
+        require(matrix_result->relations.empty(),
+                "structured matrix result unexpectedly materialized the legacy relation vector");
+        require(matrix_result->structured_row_to_relation().size() == record.matrix_rows,
+                "structured row mapping differs from matrix row count");
+        std::vector<bool> observed_source_ordinals(reduction_output_count, false);
+        record.matrix_row_mapping_identity = true;
+        for (size_t row = 0; row < matrix_result->structured_row_to_relation().size(); ++row) {
+            const size_t source_ordinal = matrix_result->structured_row_to_relation()[row];
+            require(source_ordinal < reduction_output_count,
+                    "structured matrix row mapping exceeds the source corpus");
+            require(!observed_source_ordinals[source_ordinal],
+                    "structured matrix row mapping contains a duplicate source ordinal");
+            observed_source_ordinals[source_ordinal] = true;
+            if (source_ordinal != row) {
+                record.matrix_row_mapping_identity = false;
+            }
         }
+    } else {
+        require(!matrix_result->owns_relation_corpus(),
+                "legacy matrix result unexpectedly retained a structured corpus");
+        require(matrix_result->structured_row_to_relation().empty(),
+                "legacy matrix result unexpectedly exposed a structured row mapping");
+        require(matrix_result->relations.size() == record.matrix_rows,
+                "legacy matrix result did not retain the final in-memory relation vector");
+        record.matrix_row_mapping_identity = true;
     }
-    require(record.matrix_row_mapping_identity,
-            "structured matrix row mapping is not the bounded corpus identity mapping");
-    require(record.matrix_rows == expected_relation_count,
-            "matrix builder changed the bounded structured row count");
     require(record.matrix_cols >= record.base_factor_columns,
             "matrix has fewer columns than its factor-base mapping");
-    require(*record.matrix_signed_delta < 0,
-            "bounded matrix did not retain a strictly negative signed delta");
     require(pipeline.stats().matrix_rows == record.matrix_rows &&
                 pipeline.stats().matrix_cols == record.matrix_cols &&
                 pipeline.stats().matrix_excess == *record.matrix_signed_delta,
             "Pipeline matrix stats differ from the returned matrix");
-    require(evidence.structured_matrix_records == 1,
-            "matrix build emitted an unexpected number of structured records");
-    require(evidence.structured_matrix_record.find(
-                "generation=" + std::to_string(record.generation) + " ") != std::string::npos,
-            "structured matrix record generation differs from the reduction");
-    require(evidence.structured_matrix_record.find(
-                " row_column_delta=" + std::to_string(*record.matrix_signed_delta) + " ") !=
-                std::string::npos,
-            "structured matrix record lost the signed row-column delta");
-    require(evidence.structured_matrix_record.find(" matrix_build_wall_us=") != std::string::npos,
-            "structured matrix record lost MatrixBuilder wall telemetry");
+    if (options.strategy == ProbeStrategy::Structured) {
+        require(evidence.structured_matrix_records == 1,
+                "matrix build emitted an unexpected number of structured records");
+        require(evidence.structured_matrix_record.find(
+                    "generation=" + std::to_string(record.generation) + " ") != std::string::npos,
+                "structured matrix record generation differs from the reduction");
+        require(evidence.structured_matrix_record.find(
+                    " row_column_delta=" + std::to_string(*record.matrix_signed_delta) + " ") !=
+                    std::string::npos,
+                "structured matrix record lost the signed row-column delta");
+        require(evidence.structured_matrix_record.find(" matrix_build_wall_us=") !=
+                    std::string::npos,
+                "structured matrix record lost MatrixBuilder wall telemetry");
+    } else {
+        require(evidence.structured_matrix_records == 0,
+                "legacy matrix build emitted structured-route evidence");
+    }
     validate_callback_boundary(evidence);
-    require(inspect_artifact_pair(output_base).complete(),
-            "matrix ownership did not retain the output OOC pair");
-    require(path_is_directory(output_cleanup_directory),
-            "matrix ownership did not retain the output cleanup lease");
-    record.output_pair_retained_by_matrix = true;
+    if (options.strategy == ProbeStrategy::Structured) {
+        require(output_base.has_value() && output_cleanup_directory.has_value(),
+                "structured output ownership paths were not captured");
+        require(inspect_artifact_pair(*output_base).complete(),
+                "matrix ownership did not retain the output OOC pair");
+        require(path_is_directory(*output_cleanup_directory),
+                "matrix ownership did not retain the output cleanup lease");
+        record.output_pair_retained_by_matrix = true;
+    }
 
     record.failure_stage = "cleanup";
     matrix_result.reset();
-    require(inspect_artifact_pair(output_base).absent(),
-            "output OOC pair survived final matrix-owner destruction");
-    require(!path_exists(output_cleanup_directory),
-            "output cleanup lease survived final matrix-owner destruction");
-    record.output_pair_removed = true;
-    record.output_lease_removed = true;
+    if (options.strategy == ProbeStrategy::Structured) {
+        require(inspect_artifact_pair(*output_base).absent(),
+                "output OOC pair survived final matrix-owner destruction");
+        require(!path_exists(*output_cleanup_directory),
+                "output cleanup lease survived final matrix-owner destruction");
+        record.output_pair_removed = true;
+        record.output_lease_removed = true;
+    }
     record.after_cleanup_memory = capture_memory();
     validate_memory_backends(record);
 
@@ -1115,15 +1279,21 @@ int main(int argc, char** argv) {
     ExperimentRecord record;
     const auto started = std::chrono::steady_clock::now();
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--emit-contract-fixture") {
+            emit_record(contract_fixture_record(), "GNFS_EXPERIMENT_FIXTURE_V2");
+            return 0;
+        }
         const CliOptions options = parse_cli(argc, argv);
+        record.route = std::string(probe_strategy_name(options.strategy));
         record.max_special_q = options.max_special_q;
         record.max_special_q_batch_workers = options.max_special_q_batch_workers;
         record.max_local_sieve_threads_requested = options.max_local_sieve_threads.value_or(0);
         if (options.help) {
             std::cout << "Usage: test_structured_ooc_50d_probe "
-                         "[--max-special-q N] [--max-special-q-batch-workers W] "
+                         "[--strategy legacy|structured] [--max-special-q N] "
+                         "[--max-special-q-batch-workers W] "
                          "[--max-local-sieve-threads T] [--ooc-base PATH]  "
-                         "# N in [1,64], W in [1,4], T >= 1\n";
+                         "# N in [1,UINT32_MAX], W in [1,4], T >= 1\n";
             return 0;
         }
         run_probe(options, record);
