@@ -1,4 +1,5 @@
 #include "shadow_proof_rss_campaign_journal_store_internal.hpp"
+#include "shadow_proof_rss_terminal_gate_record_internal.hpp"
 
 #include <gnfs/util/durable_immutable_file.hpp>
 
@@ -42,16 +43,21 @@ using ArtifactLayoutEntry = SIQSShadowProofRssCampaignArtifactLayoutEntry;
 using ArtifactLayoutEntryKind = SIQSShadowProofRssCampaignArtifactLayoutEntryKind;
 using ArtifactLayoutError = SIQSShadowProofRssCampaignArtifactLayoutError;
 namespace durable = gnfs::util::durable_immutable_file;
+namespace terminal_gate_record = gnfs::siqs::shadow_proof_rss_terminal_gate_record_detail;
+using TerminalGateRecord = terminal_gate_record::SIQSShadowProofRssTerminalGateRecord;
 
 inline constexpr char SESSION_LOCK_LEAF[] = ".session.lock";
 inline constexpr char HEADER_LEAF[] = "campaign-header.rjhd";
 inline constexpr char ARTIFACT_ROOT_LEAF[] = ".artifacts-v1";
+inline constexpr char TERMINAL_GATE_RECORD_LEAF[] = "terminal-gate.rtgr";
 
 static_assert(std::string_view(SESSION_LOCK_LEAF) ==
               SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF);
 static_assert(std::string_view(HEADER_LEAF) == SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF);
 static_assert(std::string_view(ARTIFACT_ROOT_LEAF) ==
               SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_DIRECTORY_LEAF);
+static_assert(std::string_view(TERMINAL_GATE_RECORD_LEAF) ==
+              terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF);
 
 class NativePublicationOps final : public PublicationOps {
 public:
@@ -623,6 +629,7 @@ enum class LeafTargetKind : uint8_t {
     artifact_root,
     header,
     record,
+    terminal_gate_record,
 };
 
 struct LeafTarget final {
@@ -645,6 +652,11 @@ struct LeafTarget final {
         return {LeafTargetKind::header, StoreObject::journal_header,
                 SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE,
                 SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_WIRE_SIZE};
+    }
+    if (leaf_name == TERMINAL_GATE_RECORD_LEAF) {
+        return {LeafTargetKind::terminal_gate_record, StoreObject::terminal_gate_record,
+                SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE,
+                terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_WIRE_SIZE};
     }
     const auto sequence = parse_siqs_shadow_proof_rss_campaign_journal_record_leaf(leaf_name);
     if (sequence.has_value()) {
@@ -936,7 +948,7 @@ struct CaptureResult final {
     }
     UniqueDirectory directory(raw_directory);
     DirectorySnapshot snapshot;
-    snapshot.entries.reserve(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_MAX_ENTRIES + 1);
+    snapshot.entries.reserve(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_MAX_ENTRIES + 2);
 
     for (;;) {
         errno = 0;
@@ -956,7 +968,7 @@ struct CaptureResult final {
         if (borrowed_name == "." || borrowed_name == "..") {
             continue;
         }
-        if (snapshot.entries.size() == SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_MAX_ENTRIES + 1) {
+        if (snapshot.entries.size() == SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_MAX_ENTRIES + 2) {
             result.diagnostic = too_many_entries_diagnostic();
             return result;
         }
@@ -1019,7 +1031,8 @@ struct SnapshotDifference final {
             return {true, target.object, target.record_sequence};
         }
         const LeafTarget target = classify_leaf(left.leaf_name);
-        if ((target.kind == LeafTargetKind::header || target.kind == LeafTargetKind::record) &&
+        if ((target.kind == LeafTargetKind::header || target.kind == LeafTargetKind::record ||
+             target.kind == LeafTargetKind::terminal_gate_record) &&
             left.bytes != right.bytes) {
             return {true, target.object, target.record_sequence};
         }
@@ -1520,7 +1533,8 @@ verify_artifact_namespace_generation(int artifact_root_fd,
     std::vector<LayoutEntry> entries;
     entries.reserve(snapshot.entries.size());
     for (const CapturedEntry& captured : snapshot.entries) {
-        if (captured.leaf_name == ARTIFACT_ROOT_LEAF) {
+        if (captured.leaf_name == ARTIFACT_ROOT_LEAF ||
+            captured.leaf_name == TERMINAL_GATE_RECORD_LEAF) {
             continue;
         }
         entries.push_back({
@@ -1532,6 +1546,66 @@ verify_artifact_namespace_generation(int artifact_root_fd,
         });
     }
     return entries;
+}
+
+struct TerminalGateRecordInspection final {
+    std::optional<TerminalGateRecord> record;
+    StoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return diagnostic.error == StoreError::none;
+    }
+};
+
+[[nodiscard]] TerminalGateRecordInspection
+inspect_terminal_gate_record(const DirectorySnapshot& directory,
+                             const SIQSShadowProofRssCampaignJournalLayoutSnapshot& journal,
+                             const SIQSShadowProofRssCampaignJournalResume& replay,
+                             const SIQSShadowProofRssGatePolicy& policy,
+                             const SIQSShadowProofRssCampaignRuntimeFacts& runtime_facts) noexcept {
+    TerminalGateRecordInspection result;
+    const auto captured = std::find_if(
+        directory.entries.begin(), directory.entries.end(),
+        [](const CapturedEntry& entry) { return entry.leaf_name == TERMINAL_GATE_RECORD_LEAF; });
+    if (captured == directory.entries.end()) {
+        return result;
+    }
+    const auto fail = [&](StoreError error) noexcept {
+        result.record.reset();
+        result.diagnostic = make_diagnostic(error, StoreObject::terminal_gate_record);
+        return result;
+    };
+
+    const auto decoded = terminal_gate_record::decode_terminal_gate_record(captured->bytes);
+    const bool complete_production =
+        replay.status == SIQSShadowProofRssJournalStatus::complete &&
+        replay.reason == SIQSShadowProofRssJournalReason::complete &&
+        replay.action == SIQSShadowProofRssJournalAction::evaluate_gate &&
+        replay.committed_slot_count == SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT &&
+        replay.next_slot_number == 0 &&
+        runtime_facts.probe_kind == SIQSShadowProofRssProbeKind::production_holdout &&
+        journal.header.has_value() &&
+        journal.record_count == SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_MAX_RECORDS;
+    if (!decoded) {
+        return fail(StoreError::layout_invalid);
+    }
+    if (!complete_production || journal.record_count == 0) {
+        return fail(StoreError::publication_conflict);
+    }
+
+    const auto samples = reconstruct_siqs_shadow_proof_rss_gate_samples(
+        &policy, &runtime_facts, &*journal.header, journal.record_span());
+    if (!samples.has_value()) {
+        return fail(StoreError::publication_conflict);
+    }
+    const auto outcome = evaluate_siqs_shadow_proof_rss_gate(&policy, *samples);
+    const auto expected = terminal_gate_record::make_terminal_gate_record(
+        replay.plan_digest, journal.records[journal.record_count - 1].record_digest, outcome);
+    if (!expected.has_value() || *decoded.record != *expected) {
+        return fail(StoreError::publication_conflict);
+    }
+    result.record = *decoded.record;
+    return result;
 }
 
 [[nodiscard]] StoreObject layout_failure_object(const LayoutDiagnostic& diagnostic,
@@ -1744,6 +1818,7 @@ struct VerifiedReplayResult final {
     std::optional<SIQSShadowProofRssCampaignJournalLayoutSnapshot> snapshot;
     std::optional<SIQSShadowProofRssCampaignArtifactLayoutSnapshot> artifact_snapshot;
     std::optional<SIQSShadowProofRssCampaignJournalResume> replay;
+    std::optional<TerminalGateRecord> terminal_gate_record;
     std::optional<FileFingerprint> root_namespace_fingerprint;
     std::optional<FileFingerprint> artifact_namespace_fingerprint;
     StoreDiagnostic diagnostic;
@@ -1813,6 +1888,7 @@ public:
                         FileFingerprint initial_artifact_namespace_fingerprint,
                         FileFingerprint initial_lock_fingerprint,
                         SIQSShadowProofRssCampaignJournalResume replay,
+                        std::optional<TerminalGateRecord> terminal_gate_record,
                         PublicationOps& publication_ops)
         : base_fd_(std::move(base_fd)), root_fd_(std::move(root_fd)),
           artifact_root_fd_(std::move(artifact_root_fd)), lock_fd_(std::move(lock_fd)),
@@ -1825,6 +1901,7 @@ public:
           artifact_namespace_fingerprint_(initial_artifact_namespace_fingerprint),
           initial_lock_fingerprint_(initial_lock_fingerprint), policy_(policy),
           runtime_facts_(runtime_facts), replay_(std::move(replay)),
+          terminal_gate_record_(std::move(terminal_gate_record)),
           publication_ops_(&publication_ops) {
         policy_.corpus_id = corpus_id_;
         policy_.candidate_revision = policy_candidate_revision_;
@@ -1961,6 +2038,238 @@ public:
             return fail(make_diagnostic(StoreError::resource_exhausted));
         } catch (...) {
             return fail(make_diagnostic(StoreError::unexpected_failure));
+        }
+    }
+
+    [[nodiscard]] CoreTerminalGateResult evaluate_and_commit_terminal_gate() noexcept {
+        bool terminal_durability_action_invoked = false;
+        std::optional<durable::PublishResult> publication;
+        const auto fail = [&](TerminalGateTransactionOutcome outcome,
+                              StoreDiagnostic diagnostic) noexcept {
+            CoreTerminalGateResult result;
+            result.outcome = outcome;
+            if (diagnostic.error == StoreError::none) {
+                diagnostic.error = StoreError::unexpected_failure;
+            }
+            if (publication.has_value()) {
+                diagnostic = with_completed_publication(std::move(diagnostic), *publication);
+            }
+            result.diagnostic = std::move(diagnostic);
+            return result;
+        };
+        const auto confirmed = [](const TerminalGateRecord& record) noexcept {
+            CoreTerminalGateResult result;
+            result.outcome = TerminalGateTransactionOutcome::durable_outcome_confirmed;
+            result.confirmed_observation = TerminalGateObservation{
+                .gate_outcome = record.gate_outcome(),
+                .plan_digest = record.plan_digest,
+                .terminal_journal_record_digest = record.final_journal_record_digest,
+                .terminal_gate_record_digest = record.record_digest,
+            };
+            return result;
+        };
+
+        try {
+            const bool complete_production =
+                replay_.status == SIQSShadowProofRssJournalStatus::complete &&
+                replay_.reason == SIQSShadowProofRssJournalReason::complete &&
+                replay_.action == SIQSShadowProofRssJournalAction::evaluate_gate &&
+                replay_.committed_slot_count == SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT &&
+                replay_.next_slot_number == 0 &&
+                runtime_facts_.probe_kind == SIQSShadowProofRssProbeKind::production_holdout;
+            if (!complete_production) {
+                CoreTerminalGateResult result;
+                result.outcome = TerminalGateTransactionOutcome::gate_not_ready;
+                return result;
+            }
+            if (StoreDiagnostic diagnostic = confirm_committed_prefix_durable();
+                diagnostic.error != StoreError::none) {
+                return fail(TerminalGateTransactionOutcome::reconcile_required,
+                            std::move(diagnostic));
+            }
+
+            VerifiedReplayResult refreshed =
+                refresh(initial_root_fingerprint_, &root_namespace_fingerprint_,
+                        &artifact_namespace_fingerprint_);
+            if (!refreshed) {
+                return fail(TerminalGateTransactionOutcome::reconcile_required,
+                            std::move(refreshed.diagnostic));
+            }
+            if (!refreshed.snapshot->header.has_value() ||
+                refreshed.snapshot->record_count !=
+                    SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_MAX_RECORDS ||
+                !replay_matches(*refreshed.replay, replay_)) {
+                return fail(
+                    TerminalGateTransactionOutcome::reconcile_required,
+                    make_diagnostic(StoreError::snapshot_changed, StoreObject::journal_record));
+            }
+            const auto samples = reconstruct_siqs_shadow_proof_rss_gate_samples(
+                &policy_, &runtime_facts_, &*refreshed.snapshot->header,
+                refreshed.snapshot->record_span());
+            if (!samples.has_value()) {
+                return fail(TerminalGateTransactionOutcome::reconcile_required,
+                            make_diagnostic(StoreError::replay_rejected,
+                                            StoreObject::terminal_gate_record));
+            }
+            const auto gate_outcome = evaluate_siqs_shadow_proof_rss_gate(&policy_, *samples);
+            const auto expected_record = terminal_gate_record::make_terminal_gate_record(
+                replay_.plan_digest,
+                refreshed.snapshot->records[SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_MAX_RECORDS - 1]
+                    .record_digest,
+                gate_outcome);
+            if (!expected_record.has_value()) {
+                return fail(TerminalGateTransactionOutcome::reconcile_required,
+                            make_diagnostic(StoreError::replay_rejected,
+                                            StoreObject::terminal_gate_record));
+            }
+
+            root_namespace_fingerprint_ = *refreshed.root_namespace_fingerprint;
+            artifact_namespace_fingerprint_ = *refreshed.artifact_namespace_fingerprint;
+            replay_ = std::move(*refreshed.replay);
+            terminal_gate_record_ = std::move(refreshed.terminal_gate_record);
+
+            if (terminal_gate_record_.has_value()) {
+                if (*terminal_gate_record_ != *expected_record) {
+                    return fail(TerminalGateTransactionOutcome::reconcile_required,
+                                make_diagnostic(StoreError::layout_invalid,
+                                                StoreObject::terminal_gate_record));
+                }
+                if (StoreDiagnostic diagnostic = verify_authority();
+                    diagnostic.error != StoreError::none) {
+                    return fail(TerminalGateTransactionOutcome::reconcile_required,
+                                std::move(diagnostic));
+                }
+                terminal_durability_action_invoked = true;
+                publication = publication_ops_->confirm_durable_at(
+                    static_cast<durable::NativeHandle>(root_fd_.get()),
+                    std::filesystem::path(TERMINAL_GATE_RECORD_LEAF));
+                if (!publication->is_durable()) {
+                    return fail(TerminalGateTransactionOutcome::outcome_uncertain,
+                                make_publication_diagnostic(*publication,
+                                                            StoreObject::terminal_gate_record));
+                }
+                VerifiedReplayResult confirmed_replay =
+                    refresh(initial_root_fingerprint_, &root_namespace_fingerprint_,
+                            &artifact_namespace_fingerprint_);
+                if (!confirmed_replay || confirmed_replay.terminal_gate_record != expected_record ||
+                    !replay_matches(*confirmed_replay.replay, replay_)) {
+                    if (!confirmed_replay) {
+                        return fail(TerminalGateTransactionOutcome::outcome_uncertain,
+                                    std::move(confirmed_replay.diagnostic));
+                    }
+                    return fail(TerminalGateTransactionOutcome::outcome_uncertain,
+                                make_diagnostic(StoreError::snapshot_changed,
+                                                StoreObject::terminal_gate_record));
+                }
+                root_namespace_fingerprint_ = *confirmed_replay.root_namespace_fingerprint;
+                artifact_namespace_fingerprint_ = *confirmed_replay.artifact_namespace_fingerprint;
+                replay_ = std::move(*confirmed_replay.replay);
+                terminal_gate_record_ = std::move(confirmed_replay.terminal_gate_record);
+                terminal_durability_action_invoked = false;
+                return confirmed(*terminal_gate_record_);
+            }
+
+            const auto encoded =
+                terminal_gate_record::encode_terminal_gate_record(*expected_record);
+            if (!encoded) {
+                return fail(TerminalGateTransactionOutcome::reconcile_required,
+                            make_diagnostic(StoreError::journal_encode_failed,
+                                            StoreObject::terminal_gate_record));
+            }
+            if (StoreDiagnostic diagnostic = verify_authority();
+                diagnostic.error != StoreError::none) {
+                return fail(TerminalGateTransactionOutcome::reconcile_required,
+                            std::move(diagnostic));
+            }
+
+            terminal_durability_action_invoked = true;
+            publication = publication_ops_->publish_at(
+                static_cast<durable::NativeHandle>(root_fd_.get()),
+                std::filesystem::path(TERMINAL_GATE_RECORD_LEAF),
+                std::span<const std::byte>(encoded.bytes->data(), encoded.bytes->size()));
+
+            DirectoryAuthorityFingerprint observed_root_fingerprint;
+            if (StoreDiagnostic diagnostic =
+                    capture_authority_after_owned_publication(observed_root_fingerprint);
+                diagnostic.error != StoreError::none) {
+                return fail(TerminalGateTransactionOutcome::outcome_uncertain,
+                            std::move(diagnostic));
+            }
+            VerifiedReplayResult observed =
+                refresh(observed_root_fingerprint, nullptr, &artifact_namespace_fingerprint_);
+            if (!observed || observed.terminal_gate_record != expected_record ||
+                !replay_matches(*observed.replay, replay_)) {
+                if (!observed) {
+                    return fail(TerminalGateTransactionOutcome::outcome_uncertain,
+                                std::move(observed.diagnostic));
+                }
+                const bool known_absent_publication_failure =
+                    publication->status() == durable::PublishStatus::open_failed &&
+                    publication->bytes_written() == 0 &&
+                    !observed.terminal_gate_record.has_value() &&
+                    replay_matches(*observed.replay, replay_);
+                if (known_absent_publication_failure) {
+                    terminal_durability_action_invoked = false;
+                    return fail(TerminalGateTransactionOutcome::reconcile_required,
+                                make_publication_diagnostic(*publication,
+                                                            StoreObject::terminal_gate_record));
+                }
+                return fail(TerminalGateTransactionOutcome::outcome_uncertain,
+                            make_diagnostic(StoreError::snapshot_changed,
+                                            StoreObject::terminal_gate_record));
+            }
+
+            if (!publication->is_durable()) {
+                if (publication->status() == durable::PublishStatus::already_exists) {
+                    return fail(TerminalGateTransactionOutcome::outcome_uncertain,
+                                make_publication_diagnostic(*publication,
+                                                            StoreObject::terminal_gate_record));
+                }
+                const auto confirmation = publication_ops_->confirm_durable_at(
+                    static_cast<durable::NativeHandle>(root_fd_.get()),
+                    std::filesystem::path(TERMINAL_GATE_RECORD_LEAF));
+                if (!confirmation.is_durable()) {
+                    publication = confirmation;
+                    return fail(TerminalGateTransactionOutcome::outcome_uncertain,
+                                make_publication_diagnostic(confirmation,
+                                                            StoreObject::terminal_gate_record));
+                }
+                VerifiedReplayResult confirmed_replay =
+                    refresh(observed_root_fingerprint, &*observed.root_namespace_fingerprint,
+                            &artifact_namespace_fingerprint_);
+                if (!confirmed_replay || confirmed_replay.terminal_gate_record != expected_record ||
+                    !replay_matches(*confirmed_replay.replay, *observed.replay)) {
+                    if (!confirmed_replay) {
+                        publication = confirmation;
+                        return fail(TerminalGateTransactionOutcome::outcome_uncertain,
+                                    std::move(confirmed_replay.diagnostic));
+                    }
+                    publication = confirmation;
+                    return fail(TerminalGateTransactionOutcome::outcome_uncertain,
+                                make_diagnostic(StoreError::snapshot_changed,
+                                                StoreObject::terminal_gate_record));
+                }
+                observed = std::move(confirmed_replay);
+                publication = confirmation;
+            }
+
+            initial_root_fingerprint_ = observed_root_fingerprint;
+            root_namespace_fingerprint_ = *observed.root_namespace_fingerprint;
+            artifact_namespace_fingerprint_ = *observed.artifact_namespace_fingerprint;
+            replay_ = std::move(*observed.replay);
+            terminal_gate_record_ = std::move(observed.terminal_gate_record);
+            terminal_durability_action_invoked = false;
+            return confirmed(*terminal_gate_record_);
+        } catch (const std::bad_alloc&) {
+            return fail(terminal_durability_action_invoked
+                            ? TerminalGateTransactionOutcome::outcome_uncertain
+                            : TerminalGateTransactionOutcome::reconcile_required,
+                        make_diagnostic(StoreError::resource_exhausted));
+        } catch (...) {
+            return fail(terminal_durability_action_invoked
+                            ? TerminalGateTransactionOutcome::outcome_uncertain
+                            : TerminalGateTransactionOutcome::reconcile_required,
+                        make_diagnostic(StoreError::unexpected_failure));
         }
     }
 
@@ -3334,9 +3643,16 @@ private:
                 make_artifact_consistency_diagnostic(artifact_consistency.diagnostic);
             return result;
         }
+        auto terminal = inspect_terminal_gate_record(*second.snapshot, *layout.value, replay,
+                                                     policy_, runtime_facts_);
+        if (!terminal) {
+            result.diagnostic = std::move(terminal.diagnostic);
+            return result;
+        }
         result.snapshot = std::move(*layout.value);
         result.artifact_snapshot = std::move(*artifact_layout.value);
         result.replay = std::move(replay);
+        result.terminal_gate_record = std::move(terminal.record);
         result.root_namespace_fingerprint = namespace_after_fingerprint;
         result.artifact_namespace_fingerprint = artifact_namespace_after_fingerprint;
         return result;
@@ -3361,6 +3677,7 @@ private:
     SIQSShadowProofRssGatePolicy policy_;
     SIQSShadowProofRssCampaignRuntimeFacts runtime_facts_;
     SIQSShadowProofRssCampaignJournalResume replay_;
+    std::optional<TerminalGateRecord> terminal_gate_record_;
     bool committed_prefix_confirmed_durable_ = false;
     bool pending_start_confirmed_durable_ = false;
     std::optional<ArtifactBatchReceipt> artifact_batch_receipt_;
@@ -3425,8 +3742,32 @@ private:
     std::unique_ptr<PosixCampaignEngine> engine_;
 };
 
+class PosixTerminalGateCore final : public TerminalGateCore {
+public:
+    explicit PosixTerminalGateCore(std::unique_ptr<PosixCampaignEngine> engine) noexcept
+        : engine_(std::move(engine)) {}
+
+    [[nodiscard]] CoreTerminalGateResult evaluate_and_commit() && noexcept override {
+        auto engine = std::move(engine_);
+        if (engine == nullptr) {
+            CoreTerminalGateResult result;
+            result.outcome = TerminalGateTransactionOutcome::reconcile_required;
+            result.diagnostic.error = StoreError::session_inactive;
+            return result;
+        }
+        return engine->evaluate_and_commit_terminal_gate();
+    }
+
+private:
+    std::unique_ptr<PosixCampaignEngine> engine_;
+};
+
 static_assert(!std::is_base_of_v<SessionCore, PosixReconciliationCore>);
 static_assert(!std::is_base_of_v<ReconciliationCore, PosixSessionCore>);
+static_assert(!std::is_base_of_v<SessionCore, PosixTerminalGateCore>);
+static_assert(!std::is_base_of_v<ReconciliationCore, PosixTerminalGateCore>);
+static_assert(!std::is_base_of_v<TerminalGateCore, PosixSessionCore>);
+static_assert(!std::is_base_of_v<TerminalGateCore, PosixReconciliationCore>);
 
 struct PlatformEngineOpenResult final {
     std::unique_ptr<PosixCampaignEngine> engine;
@@ -3700,6 +4041,11 @@ open_platform_campaign_engine(const SIQSShadowProofRssGatePolicy& policy,
         if (!artifact_consistency) {
             return {nullptr, make_artifact_consistency_diagnostic(artifact_consistency.diagnostic)};
         }
+        auto terminal = inspect_terminal_gate_record(*second.snapshot, *layout.value, replay,
+                                                     policy, runtime_facts);
+        if (!terminal) {
+            return {nullptr, std::move(terminal.diagnostic)};
+        }
 
         PlatformEngineOpenResult result;
         PublicationOps& publication_ops = deployment.publication_ops != nullptr
@@ -3710,7 +4056,7 @@ open_platform_campaign_engine(const SIQSShadowProofRssGatePolicy& policy,
             policy, runtime_facts, deployment, initial_root_fingerprint,
             initial_root_namespace_fingerprint, initial_artifact_root_fingerprint,
             initial_artifact_namespace_fingerprint, initial_lock_fingerprint, std::move(replay),
-            publication_ops);
+            std::move(terminal.record), publication_ops);
         return result;
     } catch (const std::bad_alloc&) {
         PlatformEngineOpenResult result;
@@ -3772,6 +4118,29 @@ open_siqs_shadow_proof_rss_campaign_journal_platform_reconciliation(
         return result;
     } catch (...) {
         PlatformReconciliationOpenResult result;
+        result.diagnostic = make_diagnostic(StoreError::unexpected_failure);
+        return result;
+    }
+}
+
+PlatformTerminalGateOpenResult open_siqs_shadow_proof_rss_campaign_journal_platform_terminal_gate(
+    ApprovedTerminalGateBinding binding) noexcept {
+    try {
+        PlatformEngineOpenResult opened = open_platform_campaign_engine(
+            binding.approved_policy_, binding.approved_runtime_facts_, binding.deployment_, false);
+        PlatformTerminalGateOpenResult result;
+        result.diagnostic = std::move(opened.diagnostic);
+        result.no_persistent_state = opened.no_persistent_state;
+        if (opened.engine != nullptr && result.diagnostic.error == StoreError::none) {
+            result.core = std::make_unique<PosixTerminalGateCore>(std::move(opened.engine));
+        }
+        return result;
+    } catch (const std::bad_alloc&) {
+        PlatformTerminalGateOpenResult result;
+        result.diagnostic = make_diagnostic(StoreError::resource_exhausted);
+        return result;
+    } catch (...) {
+        PlatformTerminalGateOpenResult result;
         result.diagnostic = make_diagnostic(StoreError::unexpected_failure);
         return result;
     }

@@ -389,6 +389,7 @@ ALL_TEST_BINARIES=(
     test_siqs_shadow_proof_rss_probe_execution_identity
     test_siqs_shadow_observe_rss_holdouts
     test_siqs_shadow_proof_rss_gate
+    test_siqs_shadow_proof_rss_terminal_gate_record
     test_siqs_shadow_proof_rss_policy_record
     test_siqs_shadow_proof_rss_campaign
     test_siqs_shadow_proof_rss_campaign_journal
@@ -423,7 +424,7 @@ MODULE_TESTS=(
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_class_group test_couveignes_large_class_group test_couveignes_parallel"
     api            "test_i18n test_method_selection test_relation_reduction_engine"
-    siqs           "test_siqs test_siqs_2lp test_siqs_live_sieve_capture test_siqs_2lp_graph test_siqs_2lp_materializer test_siqs_2lp_adapter test_siqs_2lp_congruence test_siqs_post_merge_row test_siqs_shadow_assembly test_siqs_shadow_linear_algebra test_siqs_shadow_proof_runner test_siqs_shadow_proof_observe test_siqs_shadow_proof_observe_record_codec test_siqs_runtime_facts test_siqs_shadow_proof_rss_probe_execution_identity test_siqs_shadow_observe_rss_holdouts test_siqs_shadow_proof_rss_gate test_siqs_shadow_proof_rss_policy_record test_siqs_shadow_proof_rss_campaign test_siqs_shadow_proof_rss_campaign_journal test_siqs_shadow_proof_rss_campaign_journal_codec test_siqs_shadow_proof_rss_campaign_journal_layout test_siqs_shadow_proof_rss_campaign_artifact_layout test_siqs_shadow_proof_rss_campaign_journal_store test_siqs_shadow_proof_rss_campaign_entry test_siqs_shadow_proof_rss_holdout_probe_contract test_siqs_shadow_proof_rss_holdout_probe_record_codec test_siqs_shadow_proof_rss_holdout_stream_join test_siqs_shadow_proof_prefer test_siqs_shadow_cross_size"
+    siqs           "test_siqs test_siqs_2lp test_siqs_live_sieve_capture test_siqs_2lp_graph test_siqs_2lp_materializer test_siqs_2lp_adapter test_siqs_2lp_congruence test_siqs_post_merge_row test_siqs_shadow_assembly test_siqs_shadow_linear_algebra test_siqs_shadow_proof_runner test_siqs_shadow_proof_observe test_siqs_shadow_proof_observe_record_codec test_siqs_runtime_facts test_siqs_shadow_proof_rss_probe_execution_identity test_siqs_shadow_observe_rss_holdouts test_siqs_shadow_proof_rss_gate test_siqs_shadow_proof_rss_terminal_gate_record test_siqs_shadow_proof_rss_policy_record test_siqs_shadow_proof_rss_campaign test_siqs_shadow_proof_rss_campaign_journal test_siqs_shadow_proof_rss_campaign_journal_codec test_siqs_shadow_proof_rss_campaign_journal_layout test_siqs_shadow_proof_rss_campaign_artifact_layout test_siqs_shadow_proof_rss_campaign_journal_store test_siqs_shadow_proof_rss_campaign_entry test_siqs_shadow_proof_rss_holdout_probe_contract test_siqs_shadow_proof_rss_holdout_probe_record_codec test_siqs_shadow_proof_rss_holdout_stream_join test_siqs_shadow_proof_prefer test_siqs_shadow_cross_size"
 )
 
 # 模块 → 慢速测试映射 (slow+heavy, 可选运行)
@@ -546,6 +547,7 @@ SMOKE_TESTS=(
     test_siqs_shadow_proof_rss_probe_execution_identity
     test_siqs_shadow_observe_rss_holdouts
     test_siqs_shadow_proof_rss_gate
+    test_siqs_shadow_proof_rss_terminal_gate_record
     test_siqs_shadow_proof_rss_policy_record
     test_siqs_shadow_proof_rss_campaign
     test_siqs_shadow_proof_rss_campaign_journal
@@ -834,6 +836,7 @@ TEST_TIMEOUT=(
     test_siqs_shadow_proof_rss_probe_execution_identity 10
     test_siqs_shadow_observe_rss_holdouts 10
     test_siqs_shadow_proof_rss_gate 10
+    test_siqs_shadow_proof_rss_terminal_gate_record 10
     test_siqs_shadow_proof_rss_policy_record 10
     test_siqs_shadow_proof_rss_campaign 10
     test_siqs_shadow_proof_rss_campaign_journal 10
@@ -991,6 +994,7 @@ TEST_TIER=(
     test_siqs_shadow_proof_rss_probe_execution_identity "instant"
     test_siqs_shadow_observe_rss_holdouts "instant"
     test_siqs_shadow_proof_rss_gate "instant"
+    test_siqs_shadow_proof_rss_terminal_gate_record "instant"
     test_siqs_shadow_proof_rss_policy_record "instant"
     test_siqs_shadow_proof_rss_campaign "instant"
     test_siqs_shadow_proof_rss_campaign_journal "instant"

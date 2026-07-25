@@ -2,6 +2,7 @@
 
 #include "shadow_proof_rss_campaign_reconciliation_internal.hpp"
 #include "shadow_proof_rss_probe_execution_identity_internal.hpp"
+#include "shadow_proof_rss_terminal_gate_internal.hpp"
 
 #include <gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp>
 
@@ -94,6 +95,7 @@ struct DeploymentEntry final {
 };
 
 struct PlatformReconciliationOpenResult;
+struct PlatformTerminalGateOpenResult;
 
 /// Move-only, opaque proof that one deployment-owned row has already passed
 /// closed-registry selection and exact claim validation. It deliberately has
@@ -157,6 +159,70 @@ private:
     friend PlatformReconciliationOpenResult
     open_siqs_shadow_proof_rss_campaign_journal_platform_reconciliation(
         ApprovedReconciliationBinding binding) noexcept;
+};
+
+/// Move-only, opaque proof that one deployment-owned row passed the closed
+/// selector specifically for a terminal gate transaction. It is deliberately
+/// disjoint from session and reconciliation bindings: no ordinary caller can
+/// change the selected purpose after registry admission.
+class ApprovedTerminalGateBinding final {
+public:
+    ApprovedTerminalGateBinding(const ApprovedTerminalGateBinding&) = delete;
+    ApprovedTerminalGateBinding& operator=(const ApprovedTerminalGateBinding&) = delete;
+    ApprovedTerminalGateBinding(ApprovedTerminalGateBinding&& other) noexcept
+        : deployment_(std::move(other.deployment_)),
+          expected_plan_digest_(other.expected_plan_digest_) {
+        bind_approved_views();
+    }
+    ApprovedTerminalGateBinding& operator=(ApprovedTerminalGateBinding&&) = delete;
+    ~ApprovedTerminalGateBinding() = default;
+
+private:
+    ApprovedTerminalGateBinding() = default;
+
+    void bind_approved_views() noexcept {
+        approved_policy_.approved = true;
+        approved_policy_.corpus_id = deployment_.approval.corpus_id;
+        approved_policy_.corpus_digest = deployment_.approval.corpus_digest;
+        approved_policy_.operating_system = deployment_.approval.operating_system;
+        approved_policy_.architecture = deployment_.approval.architecture;
+        approved_policy_.memory_backend = deployment_.approval.memory_backend;
+        approved_policy_.resolved_production_sieve_workers =
+            deployment_.approval.resolved_production_sieve_workers;
+        approved_policy_.candidate_revision = deployment_.approval.candidate_revision;
+        approved_policy_.probe_execution_identity = deployment_.approval.probe_execution_identity;
+        approved_policy_.approval_id = deployment_.approval.approval_id;
+        approved_policy_.journal_store = {
+            deployment_.trusted_base_id,
+            deployment_.store_id,
+            deployment_.relative_locator,
+        };
+        approved_policy_.deployment_budget_bytes = deployment_.approval.deployment_budget_bytes;
+        approved_policy_.reserved_headroom_bytes = deployment_.approval.reserved_headroom_bytes;
+
+        approved_runtime_facts_.operating_system = deployment_.approval.operating_system;
+        approved_runtime_facts_.architecture = deployment_.approval.architecture;
+        approved_runtime_facts_.memory_backend = deployment_.approval.memory_backend;
+        approved_runtime_facts_.resolved_production_sieve_workers =
+            deployment_.approval.resolved_production_sieve_workers;
+        approved_runtime_facts_.probe_kind = deployment_.probe_kind;
+        approved_runtime_facts_.candidate_revision = deployment_.approval.candidate_revision;
+        approved_runtime_facts_.probe_execution_identity =
+            deployment_.approval.probe_execution_identity;
+        approved_runtime_facts_.release_build = deployment_.approval.release_build;
+        approved_runtime_facts_.ndebug = deployment_.approval.ndebug;
+    }
+
+    DeploymentEntry deployment_;
+    SIQSShadowProofRssGatePolicy approved_policy_;
+    SIQSShadowProofRssCampaignRuntimeFacts approved_runtime_facts_;
+    SIQSShadowProofRssCorpusDigest expected_plan_digest_;
+
+    friend class TerminalGateOrchestrator;
+    friend class TerminalGateTestPeer;
+    friend PlatformTerminalGateOpenResult
+    open_siqs_shadow_proof_rss_campaign_journal_platform_terminal_gate(
+        ApprovedTerminalGateBinding binding) noexcept;
 };
 
 struct SessionBeginSlotResult final {
@@ -300,6 +366,19 @@ public:
     [[nodiscard]] virtual CoreReconciliationResult reconcile() noexcept = 0;
 };
 
+class TerminalGateCore {
+public:
+    TerminalGateCore() = default;
+    virtual ~TerminalGateCore() = default;
+
+    TerminalGateCore(const TerminalGateCore&) = delete;
+    TerminalGateCore& operator=(const TerminalGateCore&) = delete;
+    TerminalGateCore(TerminalGateCore&&) = delete;
+    TerminalGateCore& operator=(TerminalGateCore&&) = delete;
+
+    [[nodiscard]] virtual CoreTerminalGateResult evaluate_and_commit() && noexcept = 0;
+};
+
 class SessionCore {
 public:
     SessionCore() = default;
@@ -409,6 +488,27 @@ struct PlatformReconciliationOpenResult final {
     }
 };
 
+struct PlatformTerminalGateOpenResult final {
+    PlatformTerminalGateOpenResult() = default;
+    PlatformTerminalGateOpenResult(
+        std::unique_ptr<TerminalGateCore> selected_core,
+        SIQSShadowProofRssCampaignJournalStoreDiagnostic selected_diagnostic) noexcept
+        : core(std::move(selected_core)), diagnostic(std::move(selected_diagnostic)) {}
+    PlatformTerminalGateOpenResult(const PlatformTerminalGateOpenResult&) = delete;
+    PlatformTerminalGateOpenResult& operator=(const PlatformTerminalGateOpenResult&) = delete;
+    PlatformTerminalGateOpenResult(PlatformTerminalGateOpenResult&&) noexcept = default;
+    PlatformTerminalGateOpenResult& operator=(PlatformTerminalGateOpenResult&&) = delete;
+
+    std::unique_ptr<TerminalGateCore> core;
+    SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic;
+    bool no_persistent_state = false;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return core != nullptr &&
+               diagnostic.error == SIQSShadowProofRssCampaignJournalStoreError::none;
+    }
+};
+
 class SessionFactory final {
 public:
     [[nodiscard]] static SIQSShadowProofRssCampaignJournalStoreOpenResult
@@ -434,5 +534,9 @@ open_siqs_shadow_proof_rss_campaign_journal_platform_session(
 [[nodiscard]] PlatformReconciliationOpenResult
 open_siqs_shadow_proof_rss_campaign_journal_platform_reconciliation(
     ApprovedReconciliationBinding binding) noexcept;
+
+[[nodiscard]] PlatformTerminalGateOpenResult
+open_siqs_shadow_proof_rss_campaign_journal_platform_terminal_gate(
+    ApprovedTerminalGateBinding binding) noexcept;
 
 } // namespace gnfs::siqs::shadow_proof_rss_campaign_journal_store_detail

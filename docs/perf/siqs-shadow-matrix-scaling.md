@@ -720,9 +720,10 @@ prototyped, but the current hardened probe and its Homebrew GMP dependency do
 not share one signing identity. `darwin_hardened_suspended_v1` therefore
 remains contract-only, and production rows fail before journal filesystem
 access. The path profile is synthetic-only. Windows remains unavailable.
-An approved per-platform policy, authority-held gate evaluation, and an
-approved production entry point remain pending. A source-private fresh-only
-controller now runs the complete canonical plan only for synthetic tests. It
+An approved per-platform policy and an approved production entry point remain
+pending. The authority-held terminal gate transaction is staged behind the
+same default-empty production registry. A source-private fresh-only controller
+runs the complete canonical plan only for synthetic tests. It
 rejects a committed prefix or dangling start rather than acquiring resume or
 recovery authority, and it has no retry, callback, cancellation, or gate
 operation. A campaign interrupted after its durable start but before its sample
@@ -743,6 +744,32 @@ symbol is present in the installed static core archive, but no entry header is
 installed and this is not a supported public API. Adding the first production
 registry row is an entry-activation change that requires the still-pending
 approval evidence, not an ordinary packaging update.
+
+A separate source-private terminal transaction consumes a move-only approved
+binding from the same sole registry provider and never launches a process. A
+pristine namespace or a nonterminal prefix returns `gate_not_ready` without
+creating a lock or leaf. For a complete `production_holdout` journal it holds a
+fresh lease, confirms the header and all 400 per-slot objects, strictly rereads
+the journal and artifacts, reconstructs the exact 80 samples, and evaluates the
+pure gate under deployment-owned policy and runtime facts.
+
+Its commit point is one immutable 192-byte `terminal-gate.rtgr` record. The
+record binds the plan, final journal record, policy, executable identity,
+execution contract, counts, RSS limit, maximum observe peak, and closed gate
+outcome. Only `limit_exceeded/observe_peak_over_limit` and
+`manual_review_candidate/all_observe_peaks_within_limit` are encodable; route
+and promotion remain false. A new record is observable only after terminal
+durability confirmation and a strict reread. An exact reopen reconfirms 401
+predecessors and the terminal leaf as object 402.
+
+Malformed terminal bytes are `layout_invalid`; canonical but nonderived bytes
+are `publication_conflict`. Same-call `already_exists`, failed confirmation, or
+namespace drift after a durability action returns `outcome_uncertain` without
+an observation. A provable pre-create failure returns `reconcile_required`, and
+recovery always starts through a fresh open. Session, reconciliation, and gate
+open paths share this fail-closed terminal classification. The result carries
+data only and cannot expose samples, deployment state, a filesystem path,
+session, retry, callback, launch, routing, or promotion authority.
 
 `tests/test_siqs_runtime_facts.cpp`,
 `tests/test_siqs_shadow_proof_rss_policy_record.cpp`,
@@ -778,10 +805,22 @@ canonical order. It also proves prefix and dangling-start rejection, closed
 begin/taint/commit uncertainty, complete synthetic termination, and restart
 relabel rejection. A slot-41 commit-confirmation failure proves that the
 controller reports only its 40 confirmed continuations, starts no slot 42, and
-leaves the exact committed 41-slot prefix for a clean reopen to discover. Its
-children emit synthetic protocol records only; the test does not open a sealed
-holdout, run the production probe, evaluate the gate, or collect campaign
-evidence.
+leaves the exact committed 41-slot prefix for a clean reopen to discover. The
+same target uses a test-only closed deployment peer to cover the terminal
+transaction against synthetic complete-production journal bytes: no-write
+pristine/prefix outcomes, 401/402 durability order, immutable commit and reopen,
+predecessor and terminal confirmation failures, publication uncertainty, and
+malformed/conflicting leaf rejection across session, reconciliation, and gate
+open. Real child exits cover durable publish before return, reopened object-402
+confirmation before return, and durable half-frame residue; exact records
+converge on reopen while the half frame is never repaired. Its children emit
+synthetic protocol records only; the test does not open a sealed holdout, run
+the production probe, sample RSS, or produce a real campaign outcome.
+
+`tests/test_siqs_shadow_proof_rss_terminal_gate_record.cpp` is an instant,
+allocation-free codec test. It covers the exact 192-byte round trip and
+fail-closed length, magic, wire/schema version, reserved/tail, enum/boolean,
+terminal-outcome, executable-identity, and self-digest cases.
 
 `tests/test_siqs_shadow_proof_rss_campaign_entry.cpp` covers only the
 source-private composition's policy-first preflight, production-only
@@ -1057,6 +1096,11 @@ Before promotion it must provide:
   and cross-platform repeated empty-registry rejection with zero filesystem or
   child side effects. It has no installed header and is neither a supported nor
   approved production entry point.
+- [x] Default-closed authority-held terminal gate transaction with one shared
+  empty production registry, fresh-lease 401-object predecessor confirmation,
+  exact 80-sample reconstruction, fixed immutable 192-byte outcome commit,
+  object-402 reopen confirmation, authority-free projection, and fail-closed
+  malformed, conflict, and uncertain-publication recovery.
 - [ ] Approved per-platform RSS policy. It must bind the budget, reserved
   headroom, OS, architecture, RSS backend, resolved production sieve workers,
   candidate revision, approval identity, sealed corpus digest, trusted journal

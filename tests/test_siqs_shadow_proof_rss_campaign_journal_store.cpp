@@ -18,8 +18,11 @@
 #include "shadow_proof_rss_campaign_reconciliation_internal.hpp"
 #include "shadow_proof_rss_campaign_slot_runner_internal.hpp"
 #include "shadow_proof_rss_probe_execution_identity_internal.hpp"
+#include "shadow_proof_rss_terminal_gate_internal.hpp"
+#include "shadow_proof_rss_terminal_gate_record_internal.hpp"
 #include "support/child_process.hpp"
 #include "support/siqs_shadow_proof_rss_campaign_reconciliation_test_peer.hpp"
+#include "support/siqs_shadow_proof_rss_terminal_gate_test_peer.hpp"
 
 #include <algorithm>
 #include <array>
@@ -58,6 +61,7 @@ namespace durable = gnfs::util::durable_immutable_file;
 namespace authenticated_capability = gnfs::util::authenticated_bounded_child_capability_detail;
 namespace store_detail = gnfs::siqs::shadow_proof_rss_campaign_journal_store_detail;
 namespace identity_detail = gnfs::siqs::shadow_proof_rss_probe_execution_identity_detail;
+namespace terminal_gate_record = gnfs::siqs::shadow_proof_rss_terminal_gate_record_detail;
 
 using DeploymentEntry = store_detail::DeploymentEntry;
 using ProbeLaunchProfile = identity_detail::ProbeExecutableLaunchProfile;
@@ -129,6 +133,8 @@ static_assert(std::is_nothrow_move_constructible_v<store_detail::PlatformSession
 static_assert(!std::is_move_assignable_v<store_detail::PlatformSessionOpenResult>);
 static_assert(std::is_nothrow_move_constructible_v<store_detail::PlatformReconciliationOpenResult>);
 static_assert(!std::is_move_assignable_v<store_detail::PlatformReconciliationOpenResult>);
+static_assert(std::is_nothrow_move_constructible_v<store_detail::PlatformTerminalGateOpenResult>);
+static_assert(!std::is_move_assignable_v<store_detail::PlatformTerminalGateOpenResult>);
 static_assert(
     std::is_nothrow_move_constructible_v<std::optional<SIQSShadowProofRssCampaignJournalSession>>);
 static_assert(!std::is_move_assignable_v<std::optional<SIQSShadowProofRssCampaignJournalSession>>);
@@ -164,6 +170,30 @@ static_assert(!std::is_convertible_v<store_detail::CampaignReconciliationResult,
 static_assert(!std::is_convertible_v<store_detail::CampaignReconciliationResult,
                                      SIQSShadowProofRssCampaignJournalActiveSlot>);
 static_assert(!std::is_convertible_v<store_detail::CampaignReconciliationResult,
+                                     SIQSShadowProofRssCampaignJournalStoreOpenResult>);
+
+using TerminalGateFunction = store_detail::TerminalGateTransactionResult (*)(
+    const SIQSShadowProofRssGatePolicy*, const SIQSShadowProofRssCampaignRuntimeFacts*) noexcept;
+static_assert(std::same_as<decltype(&store_detail::evaluate_siqs_shadow_proof_rss_terminal_gate),
+                           TerminalGateFunction>);
+static_assert(!std::is_default_constructible_v<store_detail::ApprovedTerminalGateBinding>);
+static_assert(!std::is_copy_constructible_v<store_detail::ApprovedTerminalGateBinding>);
+static_assert(std::is_nothrow_move_constructible_v<store_detail::ApprovedTerminalGateBinding>);
+static_assert(!std::is_move_assignable_v<store_detail::ApprovedTerminalGateBinding>);
+static_assert(!std::is_base_of_v<store_detail::SessionCore, store_detail::TerminalGateCore>);
+static_assert(!std::is_base_of_v<store_detail::ReconciliationCore, store_detail::TerminalGateCore>);
+static_assert(!std::is_base_of_v<store_detail::TerminalGateCore, store_detail::SessionCore>);
+static_assert(!std::is_base_of_v<store_detail::TerminalGateCore, store_detail::ReconciliationCore>);
+static_assert(!std::is_default_constructible_v<store_detail::TerminalGateTransactionResult>);
+static_assert(std::is_copy_constructible_v<store_detail::TerminalGateTransactionResult>);
+static_assert(std::is_copy_assignable_v<store_detail::TerminalGateTransactionResult>);
+static_assert(std::is_nothrow_move_constructible_v<store_detail::TerminalGateTransactionResult>);
+static_assert(!std::is_convertible_v<store_detail::TerminalGateTransactionResult, bool>);
+static_assert(!std::is_convertible_v<store_detail::TerminalGateTransactionResult,
+                                     SIQSShadowProofRssCampaignJournalSession>);
+static_assert(!std::is_convertible_v<store_detail::TerminalGateTransactionResult,
+                                     SIQSShadowProofRssCampaignJournalActiveSlot>);
+static_assert(!std::is_convertible_v<store_detail::TerminalGateTransactionResult,
                                      SIQSShadowProofRssCampaignJournalStoreOpenResult>);
 
 template <class T>
@@ -218,6 +248,9 @@ static_assert(!HasRecoveryAuthority<store_detail::CampaignReconciliationResult>)
 static_assert(!HasRecoveryAuthority<store_detail::CampaignReconciliationObservation>);
 static_assert(!ExposesAction<store_detail::CampaignReconciliationObservation>);
 static_assert(!ExposesNextSlotNumber<store_detail::CampaignReconciliationObservation>);
+static_assert(!HasRecoveryAuthority<store_detail::TerminalGateTransactionResult>);
+static_assert(!ExposesAction<store_detail::TerminalGateObservation>);
+static_assert(!ExposesNextSlotNumber<store_detail::TerminalGateObservation>);
 
 [[noreturn]] void fail_check(const char* expression, const char* file, int line) {
     throw std::runtime_error(std::string(file) + ":" + std::to_string(line) +
@@ -371,6 +404,48 @@ reconcile_private(const SIQSShadowProofRssGatePolicy* policy,
                   const SIQSShadowProofRssCampaignRuntimeFacts* facts,
                   const DeploymentEntry& deployment) {
     return store_detail::ReconciliationTestPeer::reconcile(policy, facts, deployment);
+}
+
+[[nodiscard]] store_detail::TerminalGateTransactionResult
+evaluate_terminal_gate_private(const SIQSShadowProofRssGatePolicy* policy,
+                               const SIQSShadowProofRssCampaignRuntimeFacts* facts,
+                               const DeploymentEntry& deployment) {
+    return store_detail::TerminalGateTestPeer::evaluate(policy, facts, deployment);
+}
+
+[[nodiscard]] SIQSShadowProofRssGatePolicy policy_for(const DeploymentEntry& deployment) noexcept {
+    auto policy = make_policy();
+    policy.corpus_id = deployment.approval.corpus_id;
+    policy.corpus_digest = deployment.approval.corpus_digest;
+    policy.operating_system = deployment.approval.operating_system;
+    policy.architecture = deployment.approval.architecture;
+    policy.memory_backend = deployment.approval.memory_backend;
+    policy.resolved_production_sieve_workers =
+        deployment.approval.resolved_production_sieve_workers;
+    policy.candidate_revision = deployment.approval.candidate_revision;
+    policy.probe_execution_identity = deployment.approval.probe_execution_identity;
+    policy.approval_id = deployment.approval.approval_id;
+    policy.journal_store.trusted_base_id = deployment.trusted_base_id;
+    policy.journal_store.store_id = deployment.store_id;
+    policy.journal_store.relative_locator = deployment.relative_locator;
+    policy.deployment_budget_bytes = deployment.approval.deployment_budget_bytes;
+    policy.reserved_headroom_bytes = deployment.approval.reserved_headroom_bytes;
+    return policy;
+}
+
+[[nodiscard]] SIQSShadowProofRssCampaignRuntimeFacts
+facts_for(const DeploymentEntry& deployment) noexcept {
+    auto facts = make_facts();
+    facts.operating_system = deployment.approval.operating_system;
+    facts.architecture = deployment.approval.architecture;
+    facts.memory_backend = deployment.approval.memory_backend;
+    facts.resolved_production_sieve_workers = deployment.approval.resolved_production_sieve_workers;
+    facts.probe_kind = deployment.probe_kind;
+    facts.candidate_revision = deployment.approval.candidate_revision;
+    facts.probe_execution_identity = deployment.approval.probe_execution_identity;
+    facts.release_build = deployment.approval.release_build;
+    facts.ndebug = deployment.approval.ndebug;
+    return facts;
 }
 
 void expect_open_error(SIQSShadowProofRssCampaignJournalStoreOpenResult result, StoreError error,
@@ -661,6 +736,7 @@ void test_diagnostic_name_contracts() {
         std::pair{StoreObject::directory, std::string_view{"directory"}},
         std::pair{StoreObject::journal_header, std::string_view{"journal_header"}},
         std::pair{StoreObject::journal_record, std::string_view{"journal_record"}},
+        std::pair{StoreObject::terminal_gate_record, std::string_view{"terminal_gate_record"}},
     };
     for (const auto& [object, expected_name] : known_objects) {
         CHECK(siqs_shadow_proof_rss_campaign_journal_store_object_name(object) == expected_name);
@@ -885,6 +961,149 @@ void test_reconciliation_authority_free_contract() {
     CHECK(failed.store_diagnostic().error == StoreError::platform_unavailable);
 }
 
+void test_terminal_gate_authority_free_contract() {
+    using Outcome = store_detail::TerminalGateTransactionOutcome;
+    constexpr std::array names{
+        std::pair{Outcome::admission_rejected, std::string_view{"admission_rejected"}},
+        std::pair{Outcome::gate_not_ready, std::string_view{"gate_not_ready"}},
+        std::pair{Outcome::durable_outcome_confirmed,
+                  std::string_view{"durable_outcome_confirmed"}},
+        std::pair{Outcome::outcome_uncertain, std::string_view{"outcome_uncertain"}},
+        std::pair{Outcome::reconcile_required, std::string_view{"reconcile_required"}},
+    };
+    for (const auto& [outcome, name] : names) {
+        CHECK(store_detail::terminal_gate_transaction_outcome_name(outcome) == name);
+    }
+    CHECK(store_detail::terminal_gate_transaction_outcome_name(static_cast<Outcome>(255)) ==
+          "unknown");
+
+    const auto policy = make_policy();
+    auto facts = make_facts();
+    facts.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
+    const auto rejected =
+        store_detail::evaluate_siqs_shadow_proof_rss_terminal_gate(&policy, &facts);
+    CHECK(rejected.outcome() == Outcome::admission_rejected);
+    CHECK(!rejected.confirmed_observation().has_value());
+    CHECK(rejected.store_diagnostic().error == StoreError::binding_not_registered);
+    CHECK(rejected.store_diagnostic().object == StoreObject::deployment_registry);
+    const auto rejected_again =
+        store_detail::evaluate_siqs_shadow_proof_rss_terminal_gate(&policy, &facts);
+    CHECK(rejected_again.outcome() == rejected.outcome());
+    CHECK(rejected_again.store_diagnostic().error == rejected.store_diagnostic().error);
+
+    const auto preflight = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {});
+    CHECK(store_detail::absent_journal_preflight_is_ready(preflight));
+    const auto policy_digest = siqs_shadow_proof_rss_policy_binding_digest(policy);
+    const std::uint64_t rss_limit =
+        *policy.deployment_budget_bytes - *policy.reserved_headroom_bytes;
+    SIQSShadowProofRssGateOutcome gate_outcome;
+    gate_outcome.status = SIQSShadowProofRssGateStatus::manual_review_candidate;
+    gate_outcome.reason = SIQSShadowProofRssGateReason::all_observe_peaks_within_limit;
+    gate_outcome.total_sample_count = SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT;
+    gate_outcome.valid_off_sample_count =
+        SIQS_SHADOW_PROOF_RSS_GATE_FIXTURE_COUNT * SIQS_SHADOW_PROOF_RSS_GATE_OFF_REPETITIONS;
+    gate_outcome.valid_observe_sample_count =
+        SIQS_SHADOW_PROOF_RSS_GATE_FIXTURE_COUNT * SIQS_SHADOW_PROOF_RSS_GATE_OBSERVE_REPETITIONS;
+    gate_outcome.rss_limit_bytes = rss_limit;
+    gate_outcome.max_observe_peak_rss_bytes = rss_limit;
+    gate_outcome.policy_binding_digest = policy_digest;
+    gate_outcome.probe_execution_identity = policy.probe_execution_identity;
+
+    const auto make_observation = [&](const SIQSShadowProofRssGateOutcome& outcome,
+                                      SIQSShadowProofRssCorpusDigest plan_digest) {
+        constexpr SIQSShadowProofRssCorpusDigest final_journal_digest{
+            UINT64_C(0x1020304050607080),
+            UINT64_C(0x90a0b0c0d0e0f001),
+        };
+        const auto record = terminal_gate_record::make_terminal_gate_record(
+            plan_digest, final_journal_digest, outcome);
+        CHECK(record.has_value());
+        return store_detail::TerminalGateObservation{
+            .gate_outcome = outcome,
+            .plan_digest = plan_digest,
+            .terminal_journal_record_digest = final_journal_digest,
+            .terminal_gate_record_digest = record->record_digest,
+        };
+    };
+    const auto project = [&](store_detail::CoreTerminalGateResult core) {
+        return store_detail::TerminalGateResultProjector::project(
+            std::move(core), preflight.plan_digest, policy_digest, policy.probe_execution_identity,
+            rss_limit);
+    };
+    const auto expect_projection_rejected = [&](store_detail::CoreTerminalGateResult core) {
+        const auto result = project(std::move(core));
+        CHECK(result.outcome() == Outcome::reconcile_required);
+        CHECK(!result.confirmed_observation().has_value());
+        CHECK(result.store_diagnostic().error == StoreError::unexpected_failure);
+    };
+
+    store_detail::CoreTerminalGateResult confirmed_core;
+    confirmed_core.outcome = Outcome::durable_outcome_confirmed;
+    confirmed_core.confirmed_observation = make_observation(gate_outcome, preflight.plan_digest);
+    const auto confirmed = project(confirmed_core);
+    CHECK(confirmed.outcome() == Outcome::durable_outcome_confirmed);
+    CHECK(confirmed.confirmed_observation() == confirmed_core.confirmed_observation);
+    CHECK(confirmed.store_diagnostic().error == StoreError::none);
+    const auto copied = confirmed;
+    CHECK(copied.confirmed_observation() == confirmed.confirmed_observation());
+
+    {
+        auto malformed = confirmed_core;
+        auto raised_limit = gate_outcome;
+        ++raised_limit.rss_limit_bytes;
+        malformed.confirmed_observation = make_observation(raised_limit, preflight.plan_digest);
+        expect_projection_rejected(std::move(malformed));
+    }
+    {
+        auto malformed = confirmed_core;
+        auto changed_plan = preflight.plan_digest;
+        changed_plan.low ^= UINT64_C(1);
+        malformed.confirmed_observation = make_observation(gate_outcome, changed_plan);
+        expect_projection_rejected(std::move(malformed));
+    }
+    {
+        auto malformed = confirmed_core;
+        auto changed_outcome = gate_outcome;
+        changed_outcome.policy_binding_digest.low ^= UINT64_C(1);
+        malformed.confirmed_observation = make_observation(changed_outcome, preflight.plan_digest);
+        expect_projection_rejected(std::move(malformed));
+    }
+    {
+        auto malformed = confirmed_core;
+        malformed.confirmed_observation->terminal_gate_record_digest.low ^= UINT64_C(1);
+        expect_projection_rejected(std::move(malformed));
+    }
+    {
+        auto malformed = confirmed_core;
+        malformed.diagnostic.error = StoreError::publication_failed;
+        expect_projection_rejected(std::move(malformed));
+    }
+
+    store_detail::CoreTerminalGateResult not_ready;
+    not_ready.outcome = Outcome::gate_not_ready;
+    const auto not_ready_result = project(not_ready);
+    CHECK(not_ready_result.outcome() == Outcome::gate_not_ready);
+    CHECK(!not_ready_result.confirmed_observation().has_value());
+    CHECK(not_ready_result.store_diagnostic().error == StoreError::none);
+    not_ready.diagnostic.error = StoreError::session_action_invalid;
+    expect_projection_rejected(std::move(not_ready));
+
+    store_detail::CoreTerminalGateResult uncertain;
+    uncertain.outcome = Outcome::outcome_uncertain;
+    uncertain.diagnostic.error = StoreError::publication_failed;
+    const auto uncertain_result = project(uncertain);
+    CHECK(uncertain_result.outcome() == Outcome::outcome_uncertain);
+    CHECK(!uncertain_result.confirmed_observation().has_value());
+    uncertain.diagnostic.error = StoreError::none;
+    expect_projection_rejected(std::move(uncertain));
+
+    store_detail::CoreTerminalGateResult forged_admission;
+    forged_admission.outcome = Outcome::admission_rejected;
+    forged_admission.diagnostic.error = StoreError::preflight_rejected;
+    expect_projection_rejected(std::move(forged_admission));
+}
+
 #ifndef _WIN32
 
 class TestPublicationOps final : public store_detail::PublicationOps {
@@ -989,6 +1208,7 @@ public:
     [[nodiscard]] durable::PublishResult
     publish_at(durable::NativeHandle parent_handle, const std::filesystem::path& leaf,
                std::span<const std::byte> bytes) noexcept override {
+        ++publish_calls_;
         return durable::publish_at(parent_handle, leaf, bytes);
     }
 
@@ -1009,9 +1229,153 @@ public:
         return confirm_calls_;
     }
 
+    [[nodiscard]] std::size_t publish_calls() const noexcept {
+        return publish_calls_;
+    }
+
 private:
     std::size_t target_call_ = 0;
+    std::size_t publish_calls_ = 0;
     std::size_t confirm_calls_ = 0;
+};
+
+class TerminalGatePublicationOps final : public store_detail::PublicationOps {
+public:
+    enum class Action : uint8_t {
+        publish_exact_report_already_exists,
+        publish_exact_report_sync_failure,
+        publish_different_report_sync_failure,
+    };
+
+    TerminalGatePublicationOps(Action action, bool fail_confirmation) noexcept
+        : action_(action), fail_confirmation_(fail_confirmation) {}
+
+    [[nodiscard]] durable::PublishResult
+    publish_at(durable::NativeHandle parent_handle, const std::filesystem::path& leaf,
+               std::span<const std::byte> bytes) noexcept override {
+        ++publish_calls_;
+        if (leaf.native() !=
+                terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF ||
+            bytes.size() !=
+                terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_WIRE_SIZE) {
+            return {durable::PublishStatus::file_ops_contract_violation, {}, 0};
+        }
+
+        std::array<std::byte,
+                   terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_WIRE_SIZE>
+            changed{};
+        std::span<const std::byte> selected = bytes;
+        if (action_ == Action::publish_different_report_sync_failure) {
+            std::copy(bytes.begin(), bytes.end(), changed.begin());
+            changed.back() ^= std::byte{1};
+            selected = changed;
+        }
+        const auto publication = durable::publish_at(parent_handle, leaf, selected);
+        if (!publication.is_durable()) {
+            return publication;
+        }
+        if (action_ == Action::publish_exact_report_already_exists) {
+            return {durable::PublishStatus::already_exists,
+                    std::make_error_code(std::errc::file_exists), 0};
+        }
+        return {durable::PublishStatus::parent_directory_sync_failed,
+                std::make_error_code(std::errc::io_error), publication.bytes_written()};
+    }
+
+    [[nodiscard]] durable::PublishResult
+    confirm_durable_at(durable::NativeHandle parent_handle,
+                       const std::filesystem::path& leaf) noexcept override {
+        ++confirm_calls_;
+        if (fail_confirmation_ &&
+            leaf.native() ==
+                terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF) {
+            return {durable::PublishStatus::open_failed, std::make_error_code(std::errc::io_error),
+                    0};
+        }
+        return durable::confirm_durable_at(parent_handle, leaf);
+    }
+
+    [[nodiscard]] std::size_t publish_calls() const noexcept {
+        return publish_calls_;
+    }
+
+    [[nodiscard]] std::size_t confirm_calls() const noexcept {
+        return confirm_calls_;
+    }
+
+private:
+    Action action_ = Action::publish_exact_report_sync_failure;
+    bool fail_confirmation_ = false;
+    std::size_t publish_calls_ = 0;
+    std::size_t confirm_calls_ = 0;
+};
+
+class CrashAfterDurableTerminalPublishOps final : public store_detail::PublicationOps {
+public:
+    [[nodiscard]] durable::PublishResult
+    publish_at(durable::NativeHandle parent_handle, const std::filesystem::path& leaf,
+               std::span<const std::byte> bytes) noexcept override {
+        const auto publication = durable::publish_at(parent_handle, leaf, bytes);
+        if (publication.is_durable() &&
+            leaf.native() ==
+                terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF) {
+            std::_Exit(76);
+        }
+        return publication;
+    }
+
+    [[nodiscard]] durable::PublishResult
+    confirm_durable_at(durable::NativeHandle parent_handle,
+                       const std::filesystem::path& leaf) noexcept override {
+        return durable::confirm_durable_at(parent_handle, leaf);
+    }
+};
+
+class CrashAfterDurableTerminalConfirmOps final : public store_detail::PublicationOps {
+public:
+    [[nodiscard]] durable::PublishResult
+    publish_at(durable::NativeHandle parent_handle, const std::filesystem::path& leaf,
+               std::span<const std::byte> bytes) noexcept override {
+        return durable::publish_at(parent_handle, leaf, bytes);
+    }
+
+    [[nodiscard]] durable::PublishResult
+    confirm_durable_at(durable::NativeHandle parent_handle,
+                       const std::filesystem::path& leaf) noexcept override {
+        const auto confirmation = durable::confirm_durable_at(parent_handle, leaf);
+        if (confirmation.is_durable() &&
+            leaf.native() ==
+                terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF) {
+            std::_Exit(77);
+        }
+        return confirmation;
+    }
+};
+
+class CrashAfterPartialTerminalPublishOps final : public store_detail::PublicationOps {
+public:
+    [[nodiscard]] durable::PublishResult
+    publish_at(durable::NativeHandle parent_handle, const std::filesystem::path& leaf,
+               std::span<const std::byte> bytes) noexcept override {
+        if (leaf.native() !=
+                terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF ||
+            bytes.size() !=
+                terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_WIRE_SIZE) {
+            return {durable::PublishStatus::file_ops_contract_violation, {}, 0};
+        }
+        const auto publication =
+            durable::publish_at(parent_handle, leaf, bytes.first(bytes.size() / 2));
+        if (publication.is_durable()) {
+            std::_Exit(78);
+        }
+        return publication;
+    }
+
+    [[nodiscard]] durable::PublishResult
+    confirm_durable_at(durable::NativeHandle parent_handle,
+                       const std::filesystem::path& leaf) noexcept override {
+        return durable::confirm_durable_at(parent_handle, leaf);
+    }
 };
 
 class CommitPublicationOps final : public store_detail::PublicationOps {
@@ -1291,11 +1655,11 @@ canonical_identity_for(const DeploymentEntry& deployment,
 }
 
 [[nodiscard]] DeploymentEntry
-make_runner_deployment(const TempStore& fixture, const std::filesystem::path& executable,
-                       const std::filesystem::path& marker,
+make_runner_deployment(const std::filesystem::path& trusted_base,
+                       const std::filesystem::path& executable, const std::filesystem::path& marker,
                        std::chrono::milliseconds timeout = std::chrono::seconds(2),
                        ProbeLaunchProfile launch_profile = synthetic_launch_profile()) {
-    auto deployment = make_deployment(fixture.trusted_base());
+    auto deployment = make_deployment(trusted_base);
     store_detail::ProbeExecutableBinding binding{
         .executable = std::filesystem::absolute(executable),
         .candidate_revision = std::string(make_policy().candidate_revision),
@@ -1317,6 +1681,15 @@ make_runner_deployment(const TempStore& fixture, const std::filesystem::path& ex
     deployment.approval.probe_execution_identity = *identity;
     deployment.holdout_probe.emplace(std::move(binding));
     return deployment;
+}
+
+[[nodiscard]] DeploymentEntry
+make_runner_deployment(const TempStore& fixture, const std::filesystem::path& executable,
+                       const std::filesystem::path& marker,
+                       std::chrono::milliseconds timeout = std::chrono::seconds(2),
+                       ProbeLaunchProfile launch_profile = synthetic_launch_profile()) {
+    return make_runner_deployment(fixture.trusted_base(), executable, marker, timeout,
+                                  launch_profile);
 }
 
 void rebind_probe_kind(DeploymentEntry& deployment, SIQSShadowProofRssProbeKind probe_kind) {
@@ -1359,41 +1732,6 @@ void rebind_launch_platform(DeploymentEntry& deployment,
     deployment.holdout_probe->probe_execution_identity = *identity;
 }
 #endif
-
-[[nodiscard]] SIQSShadowProofRssGatePolicy policy_for(const DeploymentEntry& deployment) noexcept {
-    auto policy = make_policy();
-    policy.corpus_id = deployment.approval.corpus_id;
-    policy.corpus_digest = deployment.approval.corpus_digest;
-    policy.operating_system = deployment.approval.operating_system;
-    policy.architecture = deployment.approval.architecture;
-    policy.memory_backend = deployment.approval.memory_backend;
-    policy.resolved_production_sieve_workers =
-        deployment.approval.resolved_production_sieve_workers;
-    policy.candidate_revision = deployment.approval.candidate_revision;
-    policy.probe_execution_identity = deployment.approval.probe_execution_identity;
-    policy.approval_id = deployment.approval.approval_id;
-    policy.journal_store.trusted_base_id = deployment.trusted_base_id;
-    policy.journal_store.store_id = deployment.store_id;
-    policy.journal_store.relative_locator = deployment.relative_locator;
-    policy.deployment_budget_bytes = deployment.approval.deployment_budget_bytes;
-    policy.reserved_headroom_bytes = deployment.approval.reserved_headroom_bytes;
-    return policy;
-}
-
-[[nodiscard]] SIQSShadowProofRssCampaignRuntimeFacts
-facts_for(const DeploymentEntry& deployment) noexcept {
-    auto facts = make_facts();
-    facts.operating_system = deployment.approval.operating_system;
-    facts.architecture = deployment.approval.architecture;
-    facts.memory_backend = deployment.approval.memory_backend;
-    facts.resolved_production_sieve_workers = deployment.approval.resolved_production_sieve_workers;
-    facts.probe_kind = deployment.probe_kind;
-    facts.candidate_revision = deployment.approval.candidate_revision;
-    facts.probe_execution_identity = deployment.approval.probe_execution_identity;
-    facts.release_build = deployment.approval.release_build;
-    facts.ndebug = deployment.approval.ndebug;
-    return facts;
-}
 
 [[nodiscard]] std::string read_text_file(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
@@ -2022,15 +2360,49 @@ void test_reconciliation_complete_confirmation_key_failures() {
                               stdout_bytes, stderr_bytes, joined_bytes);
 
     struct ExpectedFailure final {
+        constexpr ExpectedFailure(
+            std::size_t confirmation_value, StoreObject object_value,
+            uint32_t record_sequence_value =
+                SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE,
+            uint32_t artifact_slot_value = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_NO_SLOT,
+            std::optional<SIQSShadowProofRssArtifactKind> artifact_kind_value =
+                std::nullopt) noexcept
+            : confirmation(confirmation_value), object(object_value),
+              record_sequence(record_sequence_value), artifact_slot(artifact_slot_value),
+              artifact_kind(artifact_kind_value) {}
+
         std::size_t confirmation = 0;
         StoreObject object = StoreObject::none;
         uint32_t record_sequence = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE;
+        uint32_t artifact_slot = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_ARTIFACT_NO_SLOT;
+        std::optional<SIQSShadowProofRssArtifactKind> artifact_kind;
     };
     constexpr std::array failures{
         ExpectedFailure{1, StoreObject::journal_header,
                         SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE},
+        ExpectedFailure{2, StoreObject::journal_record, 1},
+        ExpectedFailure{3, StoreObject::artifact,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE, 1,
+                        SIQSShadowProofRssArtifactKind::probe_stdout},
+        ExpectedFailure{4, StoreObject::artifact,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE, 1,
+                        SIQSShadowProofRssArtifactKind::probe_stderr},
+        ExpectedFailure{5, StoreObject::artifact,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE, 1,
+                        SIQSShadowProofRssArtifactKind::joined_gate_sample},
+        ExpectedFailure{6, StoreObject::journal_record, 2},
         ExpectedFailure{201, StoreObject::journal_record, 80},
         ExpectedFailure{202, StoreObject::journal_record, 81},
+        ExpectedFailure{397, StoreObject::journal_record, 159},
+        ExpectedFailure{398, StoreObject::artifact,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE, 80,
+                        SIQSShadowProofRssArtifactKind::probe_stdout},
+        ExpectedFailure{399, StoreObject::artifact,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE, 80,
+                        SIQSShadowProofRssArtifactKind::probe_stderr},
+        ExpectedFailure{400, StoreObject::artifact,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE, 80,
+                        SIQSShadowProofRssArtifactKind::joined_gate_sample},
         ExpectedFailure{401, StoreObject::journal_record, 160},
     };
     for (const auto& failure : failures) {
@@ -2038,7 +2410,10 @@ void test_reconciliation_complete_confirmation_key_failures() {
         const auto result = reconcile_fixture(fixture, &ops);
         expect_reconciliation_failure(result, StoreError::publication_failed, failure.object,
                                       failure.record_sequence);
+        CHECK(result.store_diagnostic().artifact_slot_number == failure.artifact_slot);
+        CHECK(result.store_diagnostic().artifact_kind == failure.artifact_kind);
         CHECK(ops.confirm_calls() == failure.confirmation);
+        CHECK(ops.publish_calls() == 0);
         CHECK(result.store_diagnostic().publication_status == durable::PublishStatus::open_failed);
     }
 }
@@ -2091,6 +2466,464 @@ void test_reconciliation_ignores_launch_capability_without_launching(
         fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF)));
     CHECK(!std::filesystem::exists(
         fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_HEADER_LEAF)));
+}
+
+[[nodiscard]] DeploymentEntry
+make_production_gate_deployment(const TempStore& fixture, const std::filesystem::path& executable,
+                                const std::filesystem::path& marker) {
+    auto deployment = make_runner_deployment(fixture, executable, marker);
+    rebind_probe_kind(deployment, SIQSShadowProofRssProbeKind::production_holdout);
+    return deployment;
+}
+
+void write_complete_production_gate_fixture(const TempStore& fixture,
+                                            const SIQSShadowProofRssGatePolicy& policy,
+                                            const SIQSShadowProofRssCampaignRuntimeFacts& facts) {
+    constexpr std::string_view stdout_bytes = "terminal-gate-complete-stdout\n";
+    constexpr std::string_view stderr_bytes;
+    constexpr std::string_view joined_bytes = "terminal-gate-complete-joined\n";
+    write_session_lock(fixture);
+    write_committed_off_slots(fixture, SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT,
+                              stdout_bytes, stderr_bytes, joined_bytes, policy, facts);
+}
+
+void expect_terminal_gate_failure(const store_detail::TerminalGateTransactionResult& result,
+                                  store_detail::TerminalGateTransactionOutcome outcome,
+                                  StoreError error, StoreObject object) {
+    CHECK(result.outcome() == outcome);
+    CHECK(!result.confirmed_observation().has_value());
+    CHECK(result.store_diagnostic().error == error);
+    CHECK(result.store_diagnostic().object == object);
+}
+
+void test_terminal_gate_pristine_and_prefix_are_no_write(const std::filesystem::path& executable) {
+    using Outcome = store_detail::TerminalGateTransactionOutcome;
+    {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("terminal-pristine-must-not-launch");
+        const auto deployment = make_production_gate_deployment(fixture, executable, marker);
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+
+        const auto result = evaluate_terminal_gate_private(&policy, &facts, deployment);
+        CHECK(result.outcome() == Outcome::gate_not_ready);
+        CHECK(!result.confirmed_observation().has_value());
+        CHECK(result.store_diagnostic().error == StoreError::none);
+        CHECK(!std::filesystem::exists(
+            fixture.store_leaf(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SESSION_LOCK_LEAF)));
+        CHECK(!std::filesystem::exists(fixture.store_leaf(
+            terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF)));
+        CHECK(!std::filesystem::exists(marker));
+    }
+    {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("terminal-prefix-must-not-launch");
+        const auto deployment = make_production_gate_deployment(fixture, executable, marker);
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        write_session_lock(fixture);
+        write_committed_off_slots(fixture, 2, "terminal-prefix-stdout\n", {},
+                                  "terminal-prefix-joined\n", policy, facts);
+
+        const auto result = evaluate_terminal_gate_private(&policy, &facts, deployment);
+        CHECK(result.outcome() == Outcome::gate_not_ready);
+        CHECK(!result.confirmed_observation().has_value());
+        CHECK(result.store_diagnostic().error == StoreError::none);
+        CHECK(!std::filesystem::exists(fixture.store_leaf(
+            terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF)));
+        CHECK(!std::filesystem::exists(marker));
+    }
+}
+
+void test_terminal_gate_complete_commit_and_idempotent_reopen(
+    const std::filesystem::path& executable) {
+    using Outcome = store_detail::TerminalGateTransactionOutcome;
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("terminal-complete-must-not-launch");
+    auto deployment = make_production_gate_deployment(fixture, executable, marker);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    write_complete_production_gate_fixture(fixture, policy, facts);
+
+    FastConfirmationOps first_ops(999);
+    deployment.publication_ops = &first_ops;
+    const auto first = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    CHECK(first.outcome() == Outcome::durable_outcome_confirmed);
+    CHECK(first.confirmed_observation().has_value());
+    CHECK(first.confirmed_observation()->gate_outcome.status ==
+          SIQSShadowProofRssGateStatus::manual_review_candidate);
+    CHECK(first.confirmed_observation()->gate_outcome.reason ==
+          SIQSShadowProofRssGateReason::all_observe_peaks_within_limit);
+    CHECK(!first.confirmed_observation()->gate_outcome.shadow_outcome_routed);
+    CHECK(!first.confirmed_observation()->gate_outcome.promotion);
+    CHECK(first_ops.confirm_calls() == 401);
+    const auto terminal_path =
+        fixture.store_leaf(terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF);
+    expect_private_regular_leaf(
+        terminal_path, terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_WIRE_SIZE);
+    const auto first_bytes = fixture.read_store_leaf(
+        terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF);
+    CHECK(!std::filesystem::exists(marker));
+
+    FastConfirmationOps reopen_ops(999);
+    deployment.publication_ops = &reopen_ops;
+    const auto reopened = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    CHECK(reopened.outcome() == Outcome::durable_outcome_confirmed);
+    CHECK(reopened.confirmed_observation() == first.confirmed_observation());
+    CHECK(reopen_ops.confirm_calls() == 402);
+    CHECK(fixture.read_store_leaf(
+              terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF) ==
+          first_bytes);
+    CHECK(!std::filesystem::exists(marker));
+
+    deployment.publication_ops = nullptr;
+    const auto reconciliation = reconcile_private(&policy, &facts, deployment);
+    CHECK(reconciliation.outcome() ==
+          store_detail::CampaignReconciliationOutcome::terminal_confirmed);
+    CHECK(reconciliation.confirmed_observation().has_value());
+    CHECK(reconciliation.confirmed_observation()->status ==
+          SIQSShadowProofRssJournalStatus::complete);
+}
+
+void test_terminal_gate_crash_after_durable_publish_reopens(
+    const std::filesystem::path& executable) {
+    using Outcome = store_detail::TerminalGateTransactionOutcome;
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("terminal-crash-must-not-launch");
+    auto deployment = make_production_gate_deployment(fixture, executable, marker);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    write_complete_production_gate_fixture(fixture, policy, facts);
+
+    const auto crash = gnfs::test::run_child_process(
+        executable, {"--commit-terminal-and-crash", fixture.trusted_base().string()});
+    CHECK(crash.exited);
+    CHECK(!crash.signaled);
+    CHECK(crash.exit_code == 76);
+
+    const auto terminal_path =
+        fixture.store_leaf(terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF);
+    expect_private_regular_leaf(
+        terminal_path, terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_WIRE_SIZE);
+    const auto committed_bytes = fixture.read_store_leaf(
+        terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF);
+
+    FastConfirmationOps reopen_ops(999);
+    deployment.publication_ops = &reopen_ops;
+    const auto reopened = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    CHECK(reopened.outcome() == Outcome::durable_outcome_confirmed);
+    CHECK(reopened.confirmed_observation().has_value());
+    CHECK(reopen_ops.publish_calls() == 0);
+    CHECK(reopen_ops.confirm_calls() == 402);
+    CHECK(fixture.read_store_leaf(
+              terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF) ==
+          committed_bytes);
+    CHECK(!std::filesystem::exists(marker));
+}
+
+void test_terminal_gate_crash_after_terminal_confirmation_reopens(
+    const std::filesystem::path& executable) {
+    using Outcome = store_detail::TerminalGateTransactionOutcome;
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("terminal-crash-must-not-launch");
+    auto deployment = make_production_gate_deployment(fixture, executable, marker);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    write_complete_production_gate_fixture(fixture, policy, facts);
+
+    FastConfirmationOps commit_ops(999);
+    deployment.publication_ops = &commit_ops;
+    const auto committed = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    CHECK(committed.outcome() == Outcome::durable_outcome_confirmed);
+    CHECK(commit_ops.publish_calls() == 1);
+    CHECK(commit_ops.confirm_calls() == 401);
+    const auto committed_bytes = fixture.read_store_leaf(
+        terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF);
+
+    const auto crash = gnfs::test::run_child_process(
+        executable, {"--confirm-terminal-and-crash", fixture.trusted_base().string()});
+    CHECK(crash.exited);
+    CHECK(!crash.signaled);
+    CHECK(crash.exit_code == 77);
+
+    FastConfirmationOps reopen_ops(999);
+    deployment.publication_ops = &reopen_ops;
+    const auto reopened = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    CHECK(reopened.outcome() == Outcome::durable_outcome_confirmed);
+    CHECK(reopened.confirmed_observation() == committed.confirmed_observation());
+    CHECK(reopen_ops.publish_calls() == 0);
+    CHECK(reopen_ops.confirm_calls() == 402);
+    CHECK(fixture.read_store_leaf(
+              terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF) ==
+          committed_bytes);
+    CHECK(!std::filesystem::exists(marker));
+}
+
+void test_terminal_gate_partial_crash_residue_is_never_repaired(
+    const std::filesystem::path& executable) {
+    using Outcome = store_detail::TerminalGateTransactionOutcome;
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("terminal-crash-must-not-launch");
+    auto deployment = make_production_gate_deployment(fixture, executable, marker);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    write_complete_production_gate_fixture(fixture, policy, facts);
+
+    const auto crash = gnfs::test::run_child_process(
+        executable, {"--publish-partial-terminal-and-crash", fixture.trusted_base().string()});
+    CHECK(crash.exited);
+    CHECK(!crash.signaled);
+    CHECK(crash.exit_code == 78);
+
+    const auto partial_bytes = fixture.read_store_leaf(
+        terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF);
+    CHECK(partial_bytes.size() ==
+          terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_WIRE_SIZE / 2);
+
+    deployment.publication_ops = nullptr;
+    const auto terminal = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    expect_terminal_gate_failure(terminal, Outcome::reconcile_required, StoreError::layout_invalid,
+                                 StoreObject::terminal_gate_record);
+    const auto reconciliation = reconcile_private(&policy, &facts, deployment);
+    expect_reconciliation_failure(reconciliation, StoreError::layout_invalid,
+                                  StoreObject::terminal_gate_record);
+    auto session = store_detail::open_siqs_shadow_proof_rss_campaign_journal_platform_session(
+        policy, facts, deployment);
+    CHECK(!session);
+    CHECK(session.diagnostic.error == StoreError::layout_invalid);
+    CHECK(session.diagnostic.object == StoreObject::terminal_gate_record);
+    CHECK(fixture.read_store_leaf(
+              terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF) ==
+          partial_bytes);
+    CHECK(!std::filesystem::exists(marker));
+}
+
+void test_terminal_gate_confirmation_failures_and_reopen(const std::filesystem::path& executable) {
+    using Outcome = store_detail::TerminalGateTransactionOutcome;
+    TempStore fixture;
+    const auto marker = fixture.base_leaf("terminal-confirm-must-not-launch");
+    auto deployment = make_production_gate_deployment(fixture, executable, marker);
+    const auto policy = policy_for(deployment);
+    const auto facts = facts_for(deployment);
+    write_complete_production_gate_fixture(fixture, policy, facts);
+
+    struct ExpectedFailure final {
+        std::size_t confirmation = 0;
+        StoreObject object = StoreObject::none;
+        uint32_t record_sequence = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE;
+    };
+    constexpr std::array failures{
+        ExpectedFailure{1, StoreObject::journal_header,
+                        SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_NO_RECORD_SEQUENCE},
+        ExpectedFailure{201, StoreObject::journal_record, 80},
+        ExpectedFailure{202, StoreObject::journal_record, 81},
+        ExpectedFailure{401, StoreObject::journal_record, 160},
+    };
+    for (const auto& failure : failures) {
+        FastConfirmationOps ops(failure.confirmation);
+        deployment.publication_ops = &ops;
+        const auto result = evaluate_terminal_gate_private(&policy, &facts, deployment);
+        expect_terminal_gate_failure(result, Outcome::reconcile_required,
+                                     StoreError::publication_failed, failure.object);
+        CHECK(result.store_diagnostic().record_sequence == failure.record_sequence);
+        CHECK(ops.confirm_calls() == failure.confirmation);
+        CHECK(ops.publish_calls() == 0);
+        CHECK(!std::filesystem::exists(fixture.store_leaf(
+            terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF)));
+    }
+
+    FastConfirmationOps commit_ops(999);
+    deployment.publication_ops = &commit_ops;
+    const auto committed = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    CHECK(committed.outcome() == Outcome::durable_outcome_confirmed);
+    const auto stable_bytes = fixture.read_store_leaf(
+        terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF);
+
+    FastConfirmationOps terminal_failure(402);
+    deployment.publication_ops = &terminal_failure;
+    const auto uncertain = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    expect_terminal_gate_failure(uncertain, Outcome::outcome_uncertain,
+                                 StoreError::publication_failed, StoreObject::terminal_gate_record);
+    CHECK(terminal_failure.confirm_calls() == 402);
+    CHECK(fixture.read_store_leaf(
+              terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF) ==
+          stable_bytes);
+
+    deployment.publication_ops = nullptr;
+    const auto recovered = evaluate_terminal_gate_private(&policy, &facts, deployment);
+    CHECK(recovered.outcome() == Outcome::durable_outcome_confirmed);
+    CHECK(recovered.confirmed_observation() == committed.confirmed_observation());
+    CHECK(!std::filesystem::exists(marker));
+}
+
+void test_terminal_gate_publication_recovery_matrix(const std::filesystem::path& executable) {
+    using Outcome = store_detail::TerminalGateTransactionOutcome;
+    {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("terminal-open-failure-must-not-launch");
+        auto deployment = make_production_gate_deployment(fixture, executable, marker);
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        write_complete_production_gate_fixture(fixture, policy, facts);
+        TestPublicationOps ops(1, TestPublicationOps::Action::fail_before_create);
+        deployment.publication_ops = &ops;
+
+        const auto result = evaluate_terminal_gate_private(&policy, &facts, deployment);
+        expect_terminal_gate_failure(result, Outcome::reconcile_required,
+                                     StoreError::publication_failed,
+                                     StoreObject::terminal_gate_record);
+        CHECK(ops.publish_calls() == 1);
+        CHECK(!std::filesystem::exists(fixture.store_leaf(
+            terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF)));
+        deployment.publication_ops = nullptr;
+        const auto reconciliation = reconcile_private(&policy, &facts, deployment);
+        CHECK(reconciliation.outcome() ==
+              store_detail::CampaignReconciliationOutcome::terminal_confirmed);
+        CHECK(reconciliation.confirmed_observation().has_value());
+        const auto recovered = evaluate_terminal_gate_private(&policy, &facts, deployment);
+        CHECK(recovered.outcome() == Outcome::durable_outcome_confirmed);
+        CHECK(recovered.confirmed_observation().has_value());
+        CHECK(!std::filesystem::exists(marker));
+    }
+    for (const auto action :
+         {TerminalGatePublicationOps::Action::publish_exact_report_already_exists,
+          TerminalGatePublicationOps::Action::publish_exact_report_sync_failure}) {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("terminal-reopen-must-not-launch");
+        auto deployment = make_production_gate_deployment(fixture, executable, marker);
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        write_complete_production_gate_fixture(fixture, policy, facts);
+        const bool fail_confirmation =
+            action == TerminalGatePublicationOps::Action::publish_exact_report_sync_failure;
+        TerminalGatePublicationOps ops(action, fail_confirmation);
+        deployment.publication_ops = &ops;
+
+        const auto uncertain = evaluate_terminal_gate_private(&policy, &facts, deployment);
+        expect_terminal_gate_failure(
+            uncertain, Outcome::outcome_uncertain,
+            action == TerminalGatePublicationOps::Action::publish_exact_report_already_exists
+                ? StoreError::publication_conflict
+                : StoreError::publication_failed,
+            StoreObject::terminal_gate_record);
+        CHECK(ops.publish_calls() == 1);
+        CHECK(std::filesystem::exists(fixture.store_leaf(
+            terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF)));
+        const auto stable_bytes = fixture.read_store_leaf(
+            terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF);
+
+        deployment.publication_ops = nullptr;
+        const auto recovered = evaluate_terminal_gate_private(&policy, &facts, deployment);
+        CHECK(recovered.outcome() == Outcome::durable_outcome_confirmed);
+        CHECK(recovered.confirmed_observation().has_value());
+        CHECK(fixture.read_store_leaf(
+                  terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF) ==
+              stable_bytes);
+        CHECK(!std::filesystem::exists(marker));
+    }
+    {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("terminal-confirm-recovery-must-not-launch");
+        auto deployment = make_production_gate_deployment(fixture, executable, marker);
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        write_complete_production_gate_fixture(fixture, policy, facts);
+        TerminalGatePublicationOps ops(
+            TerminalGatePublicationOps::Action::publish_exact_report_sync_failure, false);
+        deployment.publication_ops = &ops;
+
+        const auto recovered_in_place = evaluate_terminal_gate_private(&policy, &facts, deployment);
+        CHECK(recovered_in_place.outcome() == Outcome::durable_outcome_confirmed);
+        CHECK(recovered_in_place.confirmed_observation().has_value());
+        CHECK(ops.publish_calls() == 1);
+        CHECK(ops.confirm_calls() == 402);
+        expect_private_regular_leaf(
+            fixture.store_leaf(
+                terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF),
+            terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_WIRE_SIZE);
+        CHECK(!std::filesystem::exists(marker));
+    }
+    {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("terminal-conflict-must-not-launch");
+        auto deployment = make_production_gate_deployment(fixture, executable, marker);
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        write_complete_production_gate_fixture(fixture, policy, facts);
+        TerminalGatePublicationOps ops(
+            TerminalGatePublicationOps::Action::publish_different_report_sync_failure, false);
+        deployment.publication_ops = &ops;
+
+        const auto uncertain = evaluate_terminal_gate_private(&policy, &facts, deployment);
+        expect_terminal_gate_failure(uncertain, Outcome::outcome_uncertain,
+                                     StoreError::layout_invalid, StoreObject::terminal_gate_record);
+        deployment.publication_ops = nullptr;
+        const auto reopened = evaluate_terminal_gate_private(&policy, &facts, deployment);
+        expect_terminal_gate_failure(reopened, Outcome::reconcile_required,
+                                     StoreError::layout_invalid, StoreObject::terminal_gate_record);
+        CHECK(!std::filesystem::exists(marker));
+    }
+}
+
+[[nodiscard]] std::array<std::byte,
+                         terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_WIRE_SIZE>
+make_conflicting_terminal_gate_bytes(const SIQSShadowProofRssGatePolicy& policy,
+                                     SIQSShadowProofRssCorpusDigest plan_digest) {
+    SIQSShadowProofRssGateOutcome outcome;
+    outcome.status = SIQSShadowProofRssGateStatus::manual_review_candidate;
+    outcome.reason = SIQSShadowProofRssGateReason::all_observe_peaks_within_limit;
+    outcome.total_sample_count = SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT;
+    outcome.valid_off_sample_count =
+        SIQS_SHADOW_PROOF_RSS_GATE_FIXTURE_COUNT * SIQS_SHADOW_PROOF_RSS_GATE_OFF_REPETITIONS;
+    outcome.valid_observe_sample_count =
+        SIQS_SHADOW_PROOF_RSS_GATE_FIXTURE_COUNT * SIQS_SHADOW_PROOF_RSS_GATE_OBSERVE_REPETITIONS;
+    outcome.rss_limit_bytes = *policy.deployment_budget_bytes - *policy.reserved_headroom_bytes;
+    outcome.max_observe_peak_rss_bytes = UINT64_C(123456);
+    outcome.policy_binding_digest = siqs_shadow_proof_rss_policy_binding_digest(policy);
+    outcome.probe_execution_identity = policy.probe_execution_identity;
+    const auto record = terminal_gate_record::make_terminal_gate_record(
+        plan_digest, {UINT64_C(7), UINT64_C(11)}, outcome);
+    CHECK(record.has_value());
+    const auto encoded = terminal_gate_record::encode_terminal_gate_record(*record);
+    CHECK(encoded);
+    return *encoded.bytes;
+}
+
+void test_terminal_gate_preexisting_leaf_rejection(const std::filesystem::path& executable) {
+    using Outcome = store_detail::TerminalGateTransactionOutcome;
+    for (const bool canonical_conflict : {false, true}) {
+        TempStore fixture;
+        const auto marker = fixture.base_leaf("terminal-preexisting-must-not-launch");
+        auto deployment = make_production_gate_deployment(fixture, executable, marker);
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        write_complete_production_gate_fixture(fixture, policy, facts);
+        std::array<std::byte,
+                   terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_WIRE_SIZE>
+            bytes{};
+        if (canonical_conflict) {
+            const auto preflight = resume_siqs_shadow_proof_rss_campaign_journal(
+                &policy, &facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {});
+            bytes = make_conflicting_terminal_gate_bytes(policy, preflight.plan_digest);
+        }
+        fixture.write_store_leaf(
+            terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF, bytes);
+        const StoreError expected =
+            canonical_conflict ? StoreError::publication_conflict : StoreError::layout_invalid;
+
+        const auto terminal = evaluate_terminal_gate_private(&policy, &facts, deployment);
+        expect_terminal_gate_failure(terminal, Outcome::reconcile_required, expected,
+                                     StoreObject::terminal_gate_record);
+        const auto reconciliation = reconcile_private(&policy, &facts, deployment);
+        expect_reconciliation_failure(reconciliation, expected, StoreObject::terminal_gate_record);
+        auto platform_session =
+            store_detail::open_siqs_shadow_proof_rss_campaign_journal_platform_session(
+                policy, facts, deployment);
+        CHECK(!platform_session);
+        CHECK(platform_session.diagnostic.error == expected);
+        CHECK(platform_session.diagnostic.object == StoreObject::terminal_gate_record);
+        CHECK(!std::filesystem::exists(marker));
+    }
 }
 
 void test_trusted_base_component_walk_is_fail_closed() {
@@ -4933,7 +5766,31 @@ void test_begin_revalidates_root_and_lock_before_publication() {
     }
 }
 
-int run_child_mode(std::string_view mode, const std::filesystem::path& trusted_base) {
+int run_child_mode(std::string_view mode, const std::filesystem::path& trusted_base,
+                   const std::filesystem::path& test_executable) {
+    if (mode == "--commit-terminal-and-crash" || mode == "--confirm-terminal-and-crash" ||
+        mode == "--publish-partial-terminal-and-crash") {
+        const auto marker = trusted_base / "terminal-crash-must-not-launch";
+        auto deployment = make_runner_deployment(trusted_base, test_executable, marker);
+        rebind_probe_kind(deployment, SIQSShadowProofRssProbeKind::production_holdout);
+        const auto policy = policy_for(deployment);
+        const auto facts = facts_for(deployment);
+        if (mode == "--commit-terminal-and-crash") {
+            CrashAfterDurableTerminalPublishOps ops;
+            deployment.publication_ops = &ops;
+            (void)evaluate_terminal_gate_private(&policy, &facts, deployment);
+        } else if (mode == "--confirm-terminal-and-crash") {
+            CrashAfterDurableTerminalConfirmOps ops;
+            deployment.publication_ops = &ops;
+            (void)evaluate_terminal_gate_private(&policy, &facts, deployment);
+        } else {
+            CrashAfterPartialTerminalPublishOps ops;
+            deployment.publication_ops = &ops;
+            (void)evaluate_terminal_gate_private(&policy, &facts, deployment);
+        }
+        return 72;
+    }
+
     const auto policy = make_policy();
     const auto facts = make_facts();
     const auto deployment = make_deployment(trusted_base);
@@ -5016,6 +5873,17 @@ void test_windows_private_boundary_is_unavailable() {
     CHECK(!reconciliation.confirmed_observation().has_value());
     CHECK(reconciliation.store_diagnostic().error == StoreError::platform_unavailable);
     CHECK(reconciliation.store_diagnostic().object == StoreObject::none);
+
+    auto terminal_deployment = make_deployment("C:\\gnfs-test-terminal-deployment");
+    terminal_deployment.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
+    const auto terminal_policy = policy_for(terminal_deployment);
+    const auto terminal_facts = facts_for(terminal_deployment);
+    const auto terminal =
+        evaluate_terminal_gate_private(&terminal_policy, &terminal_facts, terminal_deployment);
+    CHECK(terminal.outcome() == store_detail::TerminalGateTransactionOutcome::reconcile_required);
+    CHECK(!terminal.confirmed_observation().has_value());
+    CHECK(terminal.store_diagnostic().error == StoreError::platform_unavailable);
+    CHECK(terminal.store_diagnostic().object == StoreObject::none);
 }
 
 #endif
@@ -5027,8 +5895,12 @@ int main(int argc, char** argv) {
     if (argc == 3 && (std::string_view(argv[1]) == "--expect-lock-busy" ||
                       std::string_view(argv[1]) == "--open-and-crash" ||
                       std::string_view(argv[1]) == "--begin-and-crash" ||
-                      std::string_view(argv[1]) == "--publish-artifacts-and-crash")) {
-        return run_child_mode(argv[1], std::filesystem::path(argv[2]));
+                      std::string_view(argv[1]) == "--publish-artifacts-and-crash" ||
+                      std::string_view(argv[1]) == "--commit-terminal-and-crash" ||
+                      std::string_view(argv[1]) == "--confirm-terminal-and-crash" ||
+                      std::string_view(argv[1]) == "--publish-partial-terminal-and-crash")) {
+        return run_child_mode(argv[1], std::filesystem::path(argv[2]),
+                              std::filesystem::absolute(std::filesystem::path(argv[0])));
     }
 #else
     (void)argc;
@@ -5040,6 +5912,7 @@ int main(int argc, char** argv) {
         test_diagnostic_name_contracts();
         test_serial_campaign_transition_predicates_are_fail_closed();
         test_reconciliation_authority_free_contract();
+        test_terminal_gate_authority_free_contract();
 #ifndef _WIN32
         CHECK(argc == 1 || argc == 6);
         const auto test_executable = std::filesystem::absolute(std::filesystem::path(argv[0]));
@@ -5072,6 +5945,14 @@ int main(int argc, char** argv) {
         test_reconciliation_complete_confirmation_key_failures();
         test_reconciliation_complete_confirmation_without_launch(test_executable);
         test_reconciliation_ignores_launch_capability_without_launching(test_executable);
+        test_terminal_gate_pristine_and_prefix_are_no_write(test_executable);
+        test_terminal_gate_complete_commit_and_idempotent_reopen(test_executable);
+        test_terminal_gate_crash_after_durable_publish_reopens(test_executable);
+        test_terminal_gate_crash_after_terminal_confirmation_reopens(test_executable);
+        test_terminal_gate_partial_crash_residue_is_never_repaired(test_executable);
+        test_terminal_gate_confirmation_failures_and_reopen(test_executable);
+        test_terminal_gate_publication_recovery_matrix(test_executable);
+        test_terminal_gate_preexisting_leaf_rejection(test_executable);
         test_trusted_base_component_walk_is_fail_closed();
         test_untrusted_owner_and_write_permissions_fail_closed();
         test_empty_store_lease_move_and_release(executable);

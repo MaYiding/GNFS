@@ -104,8 +104,11 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `src/siqs/shadow_proof_rss_campaign_controller_internal.hpp` | Source-private fresh-only 80-slot controller and authority-free terminal projection |
 | `src/siqs/shadow_proof_rss_campaign_entry_internal.hpp` | Default-closed source-private production composition through the public store-open boundary |
 | `src/siqs/shadow_proof_rss_campaign_reconciliation_internal.hpp` | Source-private claims-only recovery boundary with authority-free confirmed-state projections |
+| `src/siqs/shadow_proof_rss_terminal_gate_internal.hpp` | Source-private claims-only terminal gate transaction and authority-free durable outcome projection |
+| `src/siqs/shadow_proof_rss_terminal_gate_record_internal.hpp` | Fixed 192-byte immutable terminal outcome record with policy, plan, journal, and executable identity binding |
 | `tests/test_siqs_shadow_proof_rss_campaign_artifact_layout.cpp` | Canonical leaf grammar, bounded sizes, deterministic diagnostics, and journal-to-artifact consistency |
-| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, authenticated Linux same-child commits, actual 80-child synthetic controller completion, nonfresh rejection, authority-free reconciliation, slot-41 uncertainty stop and reopen, crash recovery, and platform fallback |
+| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, authenticated Linux same-child commits, actual 80-child synthetic controller completion, nonfresh rejection, authority-free reconciliation and terminal gate transactions, slot-41 uncertainty stop and reopen, crash recovery, and platform fallback |
+| `tests/test_siqs_shadow_proof_rss_terminal_gate_record.cpp` | Fixed-width terminal record round trip and fail-closed field, tag, reserved-byte, length, and digest validation |
 | `tests/test_siqs_shadow_proof_rss_campaign_entry.cpp` | Cross-platform preflight, production-classification, empty-registry, zero-side-effect, and authority-free result contract |
 | `src/siqs/shadow_proof_rss_holdout_probe_record_codec_internal.hpp` | Source-private strict owning decoder for one canonical holdout-probe stdout record |
 | `src/siqs/shadow_proof_rss_holdout_stream_join_internal.hpp` | Source-private approved-policy, runtime-facts, slot, and two-stream validation into a V3 identity-bound authority-free draft |
@@ -406,6 +409,43 @@ confirmed status, reason, committed count, and plan digest. It has no session,
 active slot, action, next-slot, retry, reopen, callback, controller, executable,
 or gate projection. The header is not installed, and the default production
 registry remains empty.
+
+A separate source-private terminal gate transaction consumes another move-only
+deployment binding from that same closed registry. It never launches a child.
+A pristine namespace or a nonterminal prefix returns `gate_not_ready` without
+creating a lock or terminal leaf. A complete `production_holdout` journal is
+eligible only after the transaction holds a fresh lease, confirms the header
+and all 400 per-slot objects, strictly rereads every journal and artifact leaf,
+reconstructs all 80 samples, and evaluates the existing pure gate under the
+deployment-owned policy.
+
+The transaction commits exactly one immutable 192-byte
+`terminal-gate.rtgr` record. The record binds the plan digest, final journal
+record digest, gate outcome, policy-binding digest, both executable identity
+digests, fixed sample counts, RSS limit, and maximum observed peak. It accepts
+only `limit_exceeded/observe_peak_over_limit` or
+`manual_review_candidate/all_observe_peaks_within_limit`; routing and promotion
+remain false. A newly published record is returned only after its own durability
+confirmation and a strict post-confirmation reread. Reopening an exact record
+reconfirms the 401 predecessors and then the terminal leaf as durability object
+402 before returning the same observation.
+
+Any malformed terminal bytes fail as `layout_invalid`; canonical bytes that do
+not equal the one record derivable from the leased journal and approved binding
+fail as `publication_conflict`. A same-call `already_exists`, a failed
+post-publication confirmation, or any state drift after a durability action
+returns `outcome_uncertain` without an observation. A failure proven to occur
+before creation returns `reconcile_required`; a later invocation must reopen
+and revalidate the namespace. Session open, reconciliation, and terminal
+evaluation all recognize the terminal leaf and fail closed on malformed or
+conflicting state. The copyable successful result contains only the outcome
+and the four bound data fields; it exposes no samples, policy, deployment row,
+path, session, retry, callback, routing, or promotion authority.
+Native integration tests also terminate a real subprocess immediately after
+durable terminal publication, immediately after the reopened terminal's
+durability confirmation, and after a durable half-frame publication. Exact
+records converge through a fresh reopen; the half frame remains unchanged and
+is rejected by session, reconciliation, and terminal evaluation.
 
 A source-private production composition now compiles with `gnfs_core`, including
 when tests are disabled. It performs the exact pure absent-journal preflight,

@@ -154,6 +154,7 @@ enum class SIQSShadowProofRssCampaignJournalStoreObject : uint8_t {
     directory,
     journal_header,
     journal_record,
+    terminal_gate_record,
 };
 
 [[nodiscard]] constexpr std::string_view siqs_shadow_proof_rss_campaign_journal_store_object_name(
@@ -181,6 +182,8 @@ enum class SIQSShadowProofRssCampaignJournalStoreObject : uint8_t {
         return "journal_header";
     case SIQSShadowProofRssCampaignJournalStoreObject::journal_record:
         return "journal_record";
+    case SIQSShadowProofRssCampaignJournalStoreObject::terminal_gate_record:
+        return "terminal_gate_record";
     }
     return "unknown";
 }

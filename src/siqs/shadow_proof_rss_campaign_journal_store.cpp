@@ -4,6 +4,7 @@
 
 #include "shadow_proof_rss_campaign_journal_store_internal.hpp"
 #include "shadow_proof_rss_probe_execution_identity_internal.hpp"
+#include "shadow_proof_rss_terminal_gate_record_internal.hpp"
 
 #include "../util/authenticated_bounded_child_process_capability_internal.hpp"
 
@@ -217,6 +218,7 @@ namespace shadow_proof_rss_campaign_journal_store_detail {
 namespace {
 
 using StoreError = SIQSShadowProofRssCampaignJournalStoreError;
+namespace terminal_gate_record = gnfs::siqs::shadow_proof_rss_terminal_gate_record_detail;
 
 /// Sole production deployment registry provider. The default build keeps it
 /// empty, and no injection, installation, or exported registry surface exists.
@@ -399,6 +401,7 @@ production_launch_profile_is_supported_on_host(const DeploymentEntry& deployment
 enum class DeploymentAdmissionPurpose : std::uint8_t {
     launch_capable_session,
     reconciliation,
+    terminal_gate,
 };
 
 struct DeploymentSelectionResult final {
@@ -483,6 +486,13 @@ select_deployment(const SIQSShadowProofRssGatePolicy* policy,
                                    SIQSShadowProofRssCampaignJournalStoreObject::probe_executable);
         return result;
     }
+    if (purpose == DeploymentAdmissionPurpose::terminal_gate &&
+        selected->probe_kind != SIQSShadowProofRssProbeKind::production_holdout) {
+        result.diagnostic = make_common_diagnostic(
+            StoreError::registry_binding_mismatch,
+            SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry);
+        return result;
+    }
 
     result.deployment = selected;
     return result;
@@ -537,6 +547,55 @@ core_reconciliation_result_is_valid(const CoreReconciliationResult& result,
     return false;
 }
 
+[[nodiscard]] bool terminal_gate_observation_is_valid(
+    const TerminalGateObservation& observation, SIQSShadowProofRssCorpusDigest expected_plan_digest,
+    SIQSShadowProofRssCorpusDigest expected_policy_binding_digest,
+    SIQSShadowProofRssProbeExecutionIdentity expected_probe_execution_identity,
+    std::uint64_t expected_rss_limit_bytes) noexcept {
+    if (expected_plan_digest == SIQSShadowProofRssCorpusDigest{} ||
+        expected_policy_binding_digest == SIQSShadowProofRssCorpusDigest{} ||
+        expected_rss_limit_bytes == 0 ||
+        !siqs_shadow_proof_rss_probe_execution_identity_is_valid(
+            expected_probe_execution_identity) ||
+        observation.plan_digest != expected_plan_digest ||
+        observation.terminal_journal_record_digest == SIQSShadowProofRssCorpusDigest{} ||
+        observation.terminal_gate_record_digest == SIQSShadowProofRssCorpusDigest{} ||
+        observation.gate_outcome.policy_binding_digest != expected_policy_binding_digest ||
+        observation.gate_outcome.probe_execution_identity != expected_probe_execution_identity ||
+        observation.gate_outcome.rss_limit_bytes != expected_rss_limit_bytes) {
+        return false;
+    }
+    const auto record = terminal_gate_record::make_terminal_gate_record(
+        observation.plan_digest, observation.terminal_journal_record_digest,
+        observation.gate_outcome);
+    return record.has_value() && record->record_digest == observation.terminal_gate_record_digest;
+}
+
+[[nodiscard]] bool core_terminal_gate_result_is_valid(
+    const CoreTerminalGateResult& result, SIQSShadowProofRssCorpusDigest expected_plan_digest,
+    SIQSShadowProofRssCorpusDigest expected_policy_binding_digest,
+    SIQSShadowProofRssProbeExecutionIdentity expected_probe_execution_identity,
+    std::uint64_t expected_rss_limit_bytes) noexcept {
+    const bool diagnostic_clear = result.diagnostic.error == StoreError::none;
+    const bool has_observation = result.confirmed_observation.has_value();
+    switch (result.outcome) {
+    case TerminalGateTransactionOutcome::gate_not_ready:
+        return diagnostic_clear && !has_observation;
+    case TerminalGateTransactionOutcome::durable_outcome_confirmed:
+        return diagnostic_clear && has_observation &&
+               terminal_gate_observation_is_valid(
+                   *result.confirmed_observation, expected_plan_digest,
+                   expected_policy_binding_digest, expected_probe_execution_identity,
+                   expected_rss_limit_bytes);
+    case TerminalGateTransactionOutcome::outcome_uncertain:
+    case TerminalGateTransactionOutcome::reconcile_required:
+        return !diagnostic_clear && !has_observation;
+    case TerminalGateTransactionOutcome::admission_rejected:
+        return false;
+    }
+    return false;
+}
+
 } // namespace
 
 SIQSShadowProofRssCampaignJournalStoreOpenResult
@@ -576,6 +635,23 @@ CampaignReconciliationResult ReconciliationResultProjector::project(
     SIQSShadowProofRssCorpusDigest expected_plan_digest) noexcept {
     if (!core_reconciliation_result_is_valid(core_result, expected_plan_digest)) {
         return {CampaignReconciliationOutcome::reconcile_required,
+                make_common_diagnostic(StoreError::unexpected_failure)};
+    }
+    if (core_result.confirmed_observation.has_value()) {
+        return {core_result.outcome, *core_result.confirmed_observation};
+    }
+    return {core_result.outcome, std::move(core_result.diagnostic)};
+}
+
+TerminalGateTransactionResult TerminalGateResultProjector::project(
+    CoreTerminalGateResult core_result, SIQSShadowProofRssCorpusDigest expected_plan_digest,
+    SIQSShadowProofRssCorpusDigest expected_policy_binding_digest,
+    SIQSShadowProofRssProbeExecutionIdentity expected_probe_execution_identity,
+    std::uint64_t expected_rss_limit_bytes) noexcept {
+    if (!core_terminal_gate_result_is_valid(
+            core_result, expected_plan_digest, expected_policy_binding_digest,
+            expected_probe_execution_identity, expected_rss_limit_bytes)) {
+        return {TerminalGateTransactionOutcome::reconcile_required,
                 make_common_diagnostic(StoreError::unexpected_failure)};
     }
     if (core_result.confirmed_observation.has_value()) {
@@ -657,6 +733,103 @@ ReconciliationOrchestrator::reconcile_approved(ApprovedReconciliationBinding bin
     }
 }
 
+TerminalGateTransactionResult TerminalGateOrchestrator::evaluate_claims(
+    const SIQSShadowProofRssGatePolicy* policy,
+    const SIQSShadowProofRssCampaignRuntimeFacts* runtime_facts) noexcept {
+    try {
+        DeploymentSelectionResult selected =
+            select_deployment(policy, runtime_facts, production_deployments(),
+                              DeploymentAdmissionPurpose::terminal_gate);
+        if (!selected) {
+            return {TerminalGateTransactionOutcome::admission_rejected,
+                    std::move(selected.diagnostic)};
+        }
+
+        ApprovedTerminalGateBinding binding;
+        binding.deployment_ = *selected.deployment;
+        binding.bind_approved_views();
+        const auto approved_preflight = resume_siqs_shadow_proof_rss_campaign_journal(
+            &binding.approved_policy_, &binding.approved_runtime_facts_,
+            SIQSShadowProofRssJournalPresence::absent, nullptr, {});
+        if (!absent_journal_preflight_is_ready(approved_preflight) ||
+            approved_preflight.plan_digest == SIQSShadowProofRssCorpusDigest{} ||
+            !binding.approved_policy_.deployment_budget_bytes.has_value() ||
+            !binding.approved_policy_.reserved_headroom_bytes.has_value() ||
+            *binding.approved_policy_.deployment_budget_bytes <=
+                *binding.approved_policy_.reserved_headroom_bytes) {
+            return {TerminalGateTransactionOutcome::admission_rejected,
+                    make_common_diagnostic(
+                        StoreError::registry_binding_mismatch,
+                        SIQSShadowProofRssCampaignJournalStoreObject::deployment_registry)};
+        }
+        binding.expected_plan_digest_ = approved_preflight.plan_digest;
+        return evaluate_approved(std::move(binding));
+    } catch (const std::bad_alloc&) {
+        return {TerminalGateTransactionOutcome::admission_rejected,
+                make_common_diagnostic(StoreError::resource_exhausted)};
+    } catch (...) {
+        return {TerminalGateTransactionOutcome::admission_rejected,
+                make_common_diagnostic(StoreError::unexpected_failure)};
+    }
+}
+
+TerminalGateTransactionResult
+TerminalGateOrchestrator::evaluate_approved(ApprovedTerminalGateBinding binding) noexcept {
+    const auto expected_plan_digest = binding.expected_plan_digest_;
+    const auto expected_policy_binding_digest =
+        siqs_shadow_proof_rss_policy_binding_digest(binding.approved_policy_);
+    const auto expected_probe_execution_identity =
+        binding.approved_policy_.probe_execution_identity;
+    const std::uint64_t expected_rss_limit_bytes =
+        *binding.approved_policy_.deployment_budget_bytes -
+        *binding.approved_policy_.reserved_headroom_bytes;
+    const auto project = [&](CoreTerminalGateResult result) noexcept {
+        return TerminalGateResultProjector::project(
+            std::move(result), expected_plan_digest, expected_policy_binding_digest,
+            expected_probe_execution_identity, expected_rss_limit_bytes);
+    };
+
+    try {
+        PlatformTerminalGateOpenResult platform =
+            open_siqs_shadow_proof_rss_campaign_journal_platform_terminal_gate(std::move(binding));
+        if (platform.no_persistent_state && platform.diagnostic.error == StoreError::none &&
+            platform.core == nullptr) {
+            CoreTerminalGateResult result;
+            result.outcome = TerminalGateTransactionOutcome::gate_not_ready;
+            return project(std::move(result));
+        }
+        if (!platform) {
+            if (platform.diagnostic.error == StoreError::none) {
+                platform.diagnostic = make_common_diagnostic(StoreError::unexpected_failure);
+            }
+            CoreTerminalGateResult result;
+            result.outcome = TerminalGateTransactionOutcome::reconcile_required;
+            result.diagnostic = std::move(platform.diagnostic);
+            return project(std::move(result));
+        }
+        if (platform.no_persistent_state) {
+            CoreTerminalGateResult result;
+            result.outcome = TerminalGateTransactionOutcome::reconcile_required;
+            result.diagnostic = make_common_diagnostic(StoreError::unexpected_failure);
+            return project(std::move(result));
+        }
+
+        CoreTerminalGateResult evaluated = std::move(*platform.core).evaluate_and_commit();
+        platform.core.reset();
+        return project(std::move(evaluated));
+    } catch (const std::bad_alloc&) {
+        CoreTerminalGateResult result;
+        result.outcome = TerminalGateTransactionOutcome::reconcile_required;
+        result.diagnostic = make_common_diagnostic(StoreError::resource_exhausted);
+        return project(std::move(result));
+    } catch (...) {
+        CoreTerminalGateResult result;
+        result.outcome = TerminalGateTransactionOutcome::reconcile_required;
+        result.diagnostic = make_common_diagnostic(StoreError::unexpected_failure);
+        return project(std::move(result));
+    }
+}
+
 SessionArtifactBatchResult
 SessionFactory::publish_artifact_batch(SIQSShadowProofRssCampaignJournalActiveSlot& active_slot,
                                        std::string_view stdout_bytes, std::string_view stderr_bytes,
@@ -677,8 +850,8 @@ open_siqs_shadow_proof_rss_campaign_journal_session(
     const SIQSShadowProofRssGatePolicy* policy,
     const SIQSShadowProofRssCampaignRuntimeFacts* runtime_facts) noexcept {
     // Production provisioning is deliberately closed in the default build.
-    // Both session admission and reconciliation consult the same private
-    // provider; callers cannot populate it through the public API.
+    // Session admission, reconciliation, and terminal evaluation consult the
+    // same private provider; callers cannot populate it through the public API.
     return detail::SessionFactory::open_with_deployments(policy, runtime_facts,
                                                          detail::production_deployments());
 }

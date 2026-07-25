@@ -236,8 +236,9 @@ authenticated launch；该可移植性边界不会修改现有 transport ID。
 当前 hardened probe 链接的 Homebrew GMP 与主 binary 使用不同 signing identity，
 无法形成统一 loaded-code signer chain。因此 macOS production row 会在 journal
 filesystem I/O 前返回 unavailable；private test 才能使用 synthetic path profile。
-Windows 继续显式 fail closed。authority-held gate evaluation 和 serial 80-slot
-production entry point 仍待实现。
+Windows 继续显式 fail closed。authority-held terminal gate transaction 已按默认关闭
+方式实现；serial 80-slot production entry point 和首个 production deployment row
+仍待单独批准。
 
 编译进 `gnfs_core`、但不安装 internal header 的 source-private 层已经有 fresh-only
 serial controller。它只接收空 journal 的
@@ -284,6 +285,28 @@ status/reason/committed-count/plan-digest。类型不暴露 session、active slo
 next slot、retry、reopen、callback、controller、executable 或 gate。internal header
 不安装，默认 production registry 继续为空。
 
+同一 closed registry 还供 source-private terminal gate transaction 唯一选择
+deployment。调用方只能提交 policy/runtime claims；测试部署桥只进入 native-store
+测试二进制。pristine namespace 或未完成 prefix 返回 `gate_not_ready`，不创建 lock
+或 terminal leaf。只有完整 `production_holdout` journal 才会在 fresh lease 下确认
+header 和 400 个 slot 对象、严格 reread 全部 journal/artifact、重建 80 个样本并调用
+pure gate。
+
+成功结果固定写入 192-byte `terminal-gate.rtgr`。该 immutable record 绑定 plan、
+最终 journal record、policy、probe executable、execution contract、样本计数、RSS
+limit、max observe peak 和 gate outcome；只允许 `limit_exceeded` 或
+`manual_review_candidate`，并保持 route/promotion 为 false。首次提交只有在 terminal
+leaf 自身确认 durable 且 strict reread 精确匹配后才返回 observation。精确重开会先
+确认 401 个 predecessor，再把 terminal leaf 作为第 402 个对象确认。
+
+malformed bytes 返回 `layout_invalid`；可正常解码但不等于当前 approved binding 与
+leased journal 唯一推导值的 record 返回 `publication_conflict`。同次调用观察到
+`already_exists`、发布后确认失败或 durability action 后发生 drift 时，只返回
+`outcome_uncertain` 且不携带 observation；可证明发生在创建前的失败返回
+`reconcile_required`。session、reconciliation、terminal 三条 open 路径都会识别该
+leaf 并对异常状态 fail closed。最终 copyable result 不含 samples、policy、
+deployment、path、session、retry、callback、routing 或 promotion authority。
+
 同一私有层还包含默认关闭的 production composition。它先复用 journal 的精确
 absent-state preflight，随后在 registry lookup 前拒绝 synthetic claim；production
 claim 只能调用一次公开 store-open boundary，成功得到的 session 必须立刻被 controller
@@ -308,7 +331,8 @@ source-private artifact-batch receipt 更严格：它只在持有 lease 的 core
 当前没有批准的 per-platform policy，也没有实际 budget、headroom 或阈值。
 production deployment registry 仍为空，sealed holdout 尚未运行，80-process
 campaign 仍是 `blocked` / `pending`。policy 获批前不得构造或启动 campaign，也不得
-写入任何 holdout 结果。
+写入任何 holdout 结果。terminal transaction 的存在不激活 production entry，也不
+产生真实 gate outcome。
 
 ### Pure V2 `prefer` Decision Contract
 
@@ -414,9 +438,13 @@ invariant failure 同样继续 legacy。默认模式仍是 `off`，且 future `p
   confirmation fault、dangling 精确 taint、uncertain publication 后 reopen、explicit
   taint 和完整 80-slot/401-confirmation 终态，以及 recovery 与 launch capability
   解耦；还覆盖第 41 槽 commit 确认失败后不启动第 42 槽并由 reopen 观察真实前缀、
-  restart relabel rejection，以及 execution identity 与完整 approval/runtime 字段
-  错配的 journal 零写入拒绝。
+  terminal 第 402 次确认、durable publish/confirm 后真实进程崩溃重开、durable
+  half-frame 残留的三入口零修复拒绝、restart relabel rejection，以及 execution
+  identity 与完整 approval/runtime 字段错配的 journal 零写入拒绝。
   测试只启动 synthetic child，不运行 production probe 或打开 sealed holdout。
+- `tests/test_siqs_shadow_proof_rss_terminal_gate_record.cpp` 只覆盖 synthetic
+  fixed-width record 的 round trip，以及 length、magic、version、reserved/tag、
+  terminal outcome、identity 和 digest 的 fail-closed 解码。
 - `tests/test_siqs_shadow_proof_rss_campaign_entry.cpp` 独立覆盖 source-private
   composition 的 policy-first preflight、synthetic classification 拒绝、默认空
   registry 的两次一致拒绝和递归目录快照不变；它不注入 deployment、session、
