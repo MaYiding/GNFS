@@ -1,6 +1,6 @@
 # Distributed Sieve Durable Wave Resume
 
-Status: implementation in progress (M0 complete)
+Status: implementation in progress (M0 complete, M1 underway)
 
 Branch: `codex/parallel-structured-filter`
 
@@ -1345,15 +1345,15 @@ checks passed in Debug.
 ### M1: Generic Durable Handoff
 
 - [x] Add the relative-dirfd immutable record publisher.
-- [ ] Add an opaque no-delete auxiliary record inside a private lease.
-- [ ] Make canonical handoff dominate recovery, revoke/consume `RESERVED`, and
+- [x] Add an opaque no-delete auxiliary record inside a private lease.
+- [x] Make canonical handoff dominate recovery, revoke/consume `RESERVED`, and
   invalidate stale writer/private-lease receipts.
 - [ ] Add locked cross-process adoption plus a two-capability
   application-authorization conversion into canonical cleanup intent.
 - [ ] Add owned-handle `MmapFile`, `OOCRelationReader`, and non-armable corpus
   view APIs; preserve Windows compilation and fail unsupported durability
   semantics closed.
-- [ ] Cover pending/canonical, rollback, link, replacement, and lock crash
+- [x] Cover pending/canonical, rollback, link, replacement, and lock crash
   points in relation tests.
 
 Publisher foundation completed on 2026-07-26. The production path is
@@ -1363,14 +1363,25 @@ identity, and durability across every recovery boundary. Its core/crash suites,
 the complete utility module, dependency-deep changed selection, GNFS E2E,
 Harness checks, and the independent security review passed in Debug.
 
-The M1 handoff protocol foundation also completed on 2026-07-26. The pure
-`OOCPrivateHandoffV1` codec binds the complete lease generation, native
+The M1 handoff protocol and relation-layer phase transition completed on
+2026-07-26. `OOCPrivateHandoffV1` binds the complete lease generation, native
 identities, finalized V3 pair and extents, payload kind/version, and a bounded
 opaque payload through canonical little-endian bytes and independent payload
-and record digests. It grants no filesystem, adoption, or cleanup authority.
-The locked classifier, publication transition, move-only adoption receipt, and
-two-capability cleanup conversion remain required before the next M1 checkbox
-or exit criterion is complete.
+and record digests. The production classifier uses the bounded relative reader
+under the held private-directory handle. Canonical publication now precedes
+durable `RESERVED` revocation, blocks stale writer and lease receipts, and
+preserves corrupt, foreign, or ambiguous state without mutation. Existing
+cleanup intent remains a separate authority.
+
+The focused lease-crash target, the relation module, dependency-deep changed
+selection, API contract regression, GNFS E2E, Harness checks, and the
+independent security review passed. The security review reported no P0, P1, or
+P2 findings after the final receipt-gating regressions. Linux and Windows
+generic handoff operations still fail closed before filesystem action.
+
+Locked cross-process adoption, owned-handle read-only views, and the
+two-capability cleanup conversion remain required before the M1 exit criterion
+is complete.
 
 Exit criterion: a finalized synthetic private OOC corpus can survive owner
 death, reject every stale cleanup receipt, be adopted without deletion
