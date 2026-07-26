@@ -1568,17 +1568,44 @@ adapter; the union observer does not introduce a private `openat` reader.
 Known foreign cleanup, malformed markers, and V2 retain their precedence
 before an action returns `PlatformUnsupported`.
 
-This slice hardens read-only admission only. The test seam returns raw enum
-facts and exposes neither handles, bytes, snapshots, nor a construction path
-for mutation authority. Recovery and removal still delegate to the existing
-C1 runtime, which performs another observation and reconciliation after the
-preflight. The next slice must introduce a production-only, move-only,
-action-bound permit that retains the private-directory handle, both
-inventories, cleanup snapshots, and the C1 canonical/pending witness through
-the selected mutation. Only that permit migration may claim that duplicate
-observation and witness loss are closed. None of these checks claims protection
-against deliberate same-user inode cycling outside the documented threat
-boundary.
+The first action-bound permit migration now closes this witness-loss boundary
+for `RecoverPrivateLease`. The source-private permit cannot be defaulted,
+copied, move-assigned, or constructed from a path, record, receipt, digest, raw
+test observation, or public result. Its production mint binds the exact action,
+frozen paths, creator process, and a shared held `BaseLock`. On macOS it also
+retains the same private-directory handle, both complete 11-slot inventories,
+the four cleanup-leaf bytes and exact record snapshots, the canonical and
+pending C1 leaves, their context classification, and the external lease-marker
+facts used by that classification. The raw observer test seam still projects
+only enums and cannot construct a permit.
+
+The Recover consumer commits one consumption attempt before its first possible
+mutation and keeps the moved permit alive until the complete recovery action
+returns. Immediately before C1 reconciliation it proves that the retained
+inventory, cleanup snapshots, handoff snapshots, lease context, directory, and
+lock remain unchanged. Canonical confirmation and exact preactive-pending
+removal then use the retained directory handle and C1 snapshot; they do not run
+an independent handoff observer. A deterministic regression replaces the
+pending leaf with a byte-identical new inode after permit acquisition on macOS.
+Recovery returns `ForeignReplacementPreserved`, and the complete namespace
+remains exactly at the injected post-replacement snapshot. Direct guard tests
+also freeze blocked admission, action and path mismatch, moved-from and repeated
+consumption, C1 single consumption, and POSIX fork-child rejection. A public
+post-mint interruption snapshots zero mutation and proves that a later retry
+still reaches the established recovery result, while a cross-platform injected
+handoff leaf proves final revalidation before recovery mutation.
+
+Linux and Windows retain the explicit path-limited branch. A handoff leaf still
+prevents permit minting with `PlatformUnsupported` or the stronger applicable
+blocker; a handoff-absent Recover action carries only the path-limited facts and
+revalidates them before mutation. This does not claim same-handle closure on
+those platforms. `RemovePrivateLease` and the remaining action groups still use
+their existing preflight and C1 paths. They require separate fresh permits;
+neither a Recover permit nor the deferred writer's pre-finalize admission may
+cross an action or state-changing boundary. None of these checks claims
+protection against deliberate same-user inode cycling between a final
+revalidation and the following syscall, which remains outside the documented
+threat boundary.
 
 The policy implementation is compiled into `gnfs_core`. Its 60,025 closed leaf
 combinations, all current entry groups, out-of-range enum values, and

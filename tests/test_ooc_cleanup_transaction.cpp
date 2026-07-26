@@ -5,7 +5,7 @@
 #include <gnfs/relation/ooc_relation_format.hpp>
 #include <gnfs/relation/ooc_relation_store.hpp>
 
-#include <ooc_private_cleanup_union_internal.hpp>
+#include <ooc_private_cleanup_action_permit_internal.hpp>
 
 #include "support/child_process.hpp"
 
@@ -21,11 +21,13 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -81,6 +83,11 @@ using gnfs::relation::OOCRelationReader;
 using gnfs::relation::OOCRelationStoreFormat;
 using gnfs::relation::OOCRelationWriter;
 using gnfs::relation::OOCSnapshotDescriptor;
+using gnfs::relation::ooc_cleanup_detail::admit_private_cleanup_action_locked;
+using gnfs::relation::ooc_cleanup_detail::BaseLock;
+using gnfs::relation::ooc_cleanup_detail::begin_private_cleanup_action;
+using gnfs::relation::ooc_cleanup_detail::PrivateCleanupActionAdmission;
+using gnfs::relation::ooc_cleanup_detail::PrivateCleanupActionPermit;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupMarkerObservationKind;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupMarkerSlot;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionBlock;
@@ -92,6 +99,7 @@ using gnfs::relation::ooc_cleanup_detail::PrivateHandoffLeafObservationKind;
 using gnfs::relation::ooc_cleanup_detail::PrivateHandoffLeafSlot;
 using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceAction;
 using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceActionDisposition;
+using gnfs::relation::ooc_cleanup_detail::reconcile_recovery_handoff_from_permit;
 
 static_assert(!std::is_default_constructible_v<OOCCleanupOwnershipReceipt>);
 static_assert(!std::is_copy_constructible_v<OOCCleanupOwnershipReceipt>);
@@ -111,6 +119,16 @@ static_assert(!std::is_default_constructible_v<OOCPrivateHandoffReader>);
 static_assert(!std::is_copy_constructible_v<OOCPrivateHandoffReader>);
 static_assert(std::is_nothrow_move_constructible_v<OOCPrivateHandoffReader>);
 static_assert(!std::is_move_assignable_v<OOCPrivateHandoffReader>);
+static_assert(!std::is_default_constructible_v<PrivateCleanupActionPermit>);
+static_assert(!std::is_copy_constructible_v<PrivateCleanupActionPermit>);
+static_assert(!std::is_copy_assignable_v<PrivateCleanupActionPermit>);
+static_assert(std::is_nothrow_move_constructible_v<PrivateCleanupActionPermit>);
+static_assert(!std::is_move_assignable_v<PrivateCleanupActionPermit>);
+static_assert(!std::is_default_constructible_v<PrivateCleanupActionAdmission>);
+static_assert(!std::is_copy_constructible_v<PrivateCleanupActionAdmission>);
+static_assert(!std::is_copy_assignable_v<PrivateCleanupActionAdmission>);
+static_assert(std::is_nothrow_move_constructible_v<PrivateCleanupActionAdmission>);
+static_assert(!std::is_move_assignable_v<PrivateCleanupActionAdmission>);
 
 int checks_passed = 0;
 int checks_failed = 0;
@@ -467,6 +485,171 @@ private:
     std::filesystem::path path_;
 };
 
+template <typename Operation>
+[[nodiscard]] bool rejects_invalid_private_cleanup_permit(Operation&& operation) {
+    try {
+        std::forward<Operation>(operation)();
+    } catch (const gnfs::relation::ooc_cleanup_detail::Failure& failure) {
+        return failure.status == OOCCleanupStatus::InvalidRequest &&
+               failure.stage == OOCCleanupStage::None &&
+               failure.error == std::make_error_code(std::errc::invalid_argument);
+    } catch (...) {
+    }
+    return false;
+}
+
+struct PrivateCleanupPermitFixture final {
+    PrivateCleanupPermitFixture(const std::filesystem::path& root, std::string_view label,
+                                PrivateNamespaceAction action)
+        : paths(OOCCleanupTransaction::paths_for(root / (std::string(label) + ".gnfs-sink-lease") /
+                                                 "corpus")),
+          lock(std::make_shared<BaseLock>(paths.lock_path)),
+          admission(admit_private_cleanup_action_locked(paths, lock, action)) {}
+
+    OOCCleanupPaths paths;
+    std::shared_ptr<BaseLock> lock;
+    PrivateCleanupActionAdmission admission;
+};
+
+void test_private_cleanup_action_permit_runtime_guards() {
+    TempDirectory temp;
+
+    {
+        PrivateCleanupPermitFixture blocked(temp.path(), "permit-blocked",
+                                            PrivateNamespaceAction::Count);
+        CHECK(blocked.admission.blocked.has_value());
+        CHECK(!blocked.admission.permit.has_value());
+        if (blocked.admission.blocked) {
+            CHECK(blocked.admission.blocked->status ==
+                  OOCCleanupStatus::ForeignReplacementPreserved);
+        }
+    }
+
+    {
+        PrivateCleanupPermitFixture fixture(temp.path(), "permit-action",
+                                            PrivateNamespaceAction::RecoverPrivateLease);
+        CHECK(!fixture.admission.blocked.has_value());
+        CHECK(fixture.admission.permit.has_value());
+        if (!fixture.admission.permit) {
+            return;
+        }
+        auto permit = std::move(*fixture.admission.permit);
+        fixture.admission.permit.reset();
+        CHECK(rejects_invalid_private_cleanup_permit([&] {
+            (void)begin_private_cleanup_action(permit, fixture.paths,
+                                               PrivateNamespaceAction::RemovePrivateLease);
+        }));
+        CHECK(rejects_invalid_private_cleanup_permit([&] {
+            (void)begin_private_cleanup_action(permit, fixture.paths,
+                                               PrivateNamespaceAction::RecoverPrivateLease);
+        }));
+    }
+
+    {
+        PrivateCleanupPermitFixture fixture(temp.path(), "permit-path",
+                                            PrivateNamespaceAction::RecoverPrivateLease);
+        CHECK(fixture.admission.permit.has_value());
+        if (!fixture.admission.permit) {
+            return;
+        }
+        auto permit = std::move(*fixture.admission.permit);
+        fixture.admission.permit.reset();
+        auto wrong_paths = fixture.paths;
+        wrong_paths.data_path += ".replacement";
+        CHECK(rejects_invalid_private_cleanup_permit([&] {
+            (void)begin_private_cleanup_action(permit, wrong_paths,
+                                               PrivateNamespaceAction::RecoverPrivateLease);
+        }));
+        CHECK(rejects_invalid_private_cleanup_permit([&] {
+            (void)begin_private_cleanup_action(permit, fixture.paths,
+                                               PrivateNamespaceAction::RecoverPrivateLease);
+        }));
+    }
+
+    {
+        PrivateCleanupPermitFixture fixture(temp.path(), "permit-move",
+                                            PrivateNamespaceAction::RecoverPrivateLease);
+        CHECK(fixture.admission.permit.has_value());
+        if (!fixture.admission.permit) {
+            return;
+        }
+        auto moved_from = std::move(*fixture.admission.permit);
+        fixture.admission.permit.reset();
+        auto permit = std::move(moved_from);
+        CHECK(rejects_invalid_private_cleanup_permit([&] {
+            (void)begin_private_cleanup_action(moved_from, fixture.paths,
+                                               PrivateNamespaceAction::RecoverPrivateLease);
+        }));
+        const auto& lock = begin_private_cleanup_action(
+            permit, fixture.paths, PrivateNamespaceAction::RecoverPrivateLease);
+        CHECK(lock.matches(fixture.paths.lock_path));
+    }
+
+    {
+        PrivateCleanupPermitFixture fixture(temp.path(), "permit-repeat",
+                                            PrivateNamespaceAction::RecoverPrivateLease);
+        CHECK(fixture.admission.permit.has_value());
+        if (!fixture.admission.permit) {
+            return;
+        }
+        auto permit = std::move(*fixture.admission.permit);
+        fixture.admission.permit.reset();
+        (void)begin_private_cleanup_action(permit, fixture.paths,
+                                           PrivateNamespaceAction::RecoverPrivateLease);
+        CHECK(rejects_invalid_private_cleanup_permit([&] {
+            (void)begin_private_cleanup_action(permit, fixture.paths,
+                                               PrivateNamespaceAction::RecoverPrivateLease);
+        }));
+    }
+
+    {
+        PrivateCleanupPermitFixture fixture(temp.path(), "permit-handoff-once",
+                                            PrivateNamespaceAction::RecoverPrivateLease);
+        CHECK(fixture.admission.permit.has_value());
+        if (!fixture.admission.permit) {
+            return;
+        }
+        auto permit = std::move(*fixture.admission.permit);
+        fixture.admission.permit.reset();
+        (void)begin_private_cleanup_action(permit, fixture.paths,
+                                           PrivateNamespaceAction::RecoverPrivateLease);
+        CHECK(reconcile_recovery_handoff_from_permit(permit).state == OOCPrivateHandoffState::None);
+        CHECK(rejects_invalid_private_cleanup_permit(
+            [&] { (void)reconcile_recovery_handoff_from_permit(permit); }));
+    }
+
+#if !defined(_WIN32)
+    {
+        PrivateCleanupPermitFixture fixture(temp.path(), "permit-process",
+                                            PrivateNamespaceAction::RecoverPrivateLease);
+        CHECK(fixture.admission.permit.has_value());
+        if (!fixture.admission.permit) {
+            return;
+        }
+        auto permit = std::move(*fixture.admission.permit);
+        fixture.admission.permit.reset();
+        const pid_t child = ::fork();
+        CHECK(child >= 0);
+        if (child == 0) {
+            const bool rejected = rejects_invalid_private_cleanup_permit([&] {
+                (void)begin_private_cleanup_action(permit, fixture.paths,
+                                                   PrivateNamespaceAction::RecoverPrivateLease);
+            });
+            ::_exit(rejected ? 0 : 91);
+        }
+        if (child > 0) {
+            int status = 0;
+            CHECK(::waitpid(child, &status, 0) == child);
+            CHECK(WIFEXITED(status));
+            CHECK(WEXITSTATUS(status) == 0);
+            const auto& lock = begin_private_cleanup_action(
+                permit, fixture.paths, PrivateNamespaceAction::RecoverPrivateLease);
+            CHECK(lock.matches(fixture.paths.lock_path));
+        }
+    }
+#endif
+}
+
 [[nodiscard]] std::filesystem::file_status
 symlink_status_no_follow(const std::filesystem::path& path) {
     std::error_code error;
@@ -640,6 +823,17 @@ using NamespaceTreeSnapshot = std::vector<NamespaceTreeEntrySnapshot>;
     }
     std::sort(snapshot.begin(), snapshot.end(), [](const auto& left, const auto& right) {
         return left.relative_path < right.relative_path;
+    });
+    return snapshot;
+}
+
+[[nodiscard]] NamespaceTreeSnapshot
+without_namespace_subtree_contents(NamespaceTreeSnapshot snapshot,
+                                   const std::filesystem::path& relative_subtree) {
+    auto descendant_prefix = relative_subtree.generic_string();
+    descendant_prefix.push_back('/');
+    std::erase_if(snapshot, [&](const NamespaceTreeEntrySnapshot& entry) {
+        return entry.relative_path.starts_with(descendant_prefix);
     });
     return snapshot;
 }
@@ -4017,6 +4211,115 @@ struct PrivateLeaseStopOnceContext final {
     return false;
 }
 
+struct RecoveryPermitNewHandoffContext final {
+    std::filesystem::path handoff_path;
+    std::filesystem::path snapshot_root;
+    std::optional<NamespaceTreeSnapshot> expected_after_hook;
+    bool invoked = false;
+    bool created = false;
+};
+
+[[nodiscard]] bool inject_handoff_after_recovery_permit_acquired(OOCPrivateLeaseFaultPoint point,
+                                                                 void* opaque) noexcept {
+    auto& context = *static_cast<RecoveryPermitNewHandoffContext*>(opaque);
+    if (context.invoked || point != OOCPrivateLeaseFaultPoint::RecoveryPermitAcquired) {
+        return false;
+    }
+    context.invoked = true;
+    try {
+        write_test_leaf(context.handoff_path, "post-permit foreign handoff");
+        context.created = true;
+        context.expected_after_hook = capture_namespace_tree(context.snapshot_root);
+    } catch (...) {
+        context.created = false;
+        context.expected_after_hook.reset();
+    }
+    return false;
+}
+
+void test_private_lease_recovery_permit_interrupt_is_non_mutating(const std::string& executable) {
+    TempDirectory temp;
+    constexpr std::uint64_t store_id = 0xd0d0'e1e1'f2f2'a3a3ULL;
+    const auto base = temp.path() / "permit-interrupt.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    const auto child =
+        gnfs::test::run_child_process(executable, {"--abandon-private-lease", "pending-only",
+                                                   base.string(), std::to_string(store_id)});
+    CHECK(child.exited);
+    CHECK(!child.signaled);
+    CHECK(child.exit_code == PRIVATE_LEASE_ABANDONED_EXIT);
+
+    const auto before = capture_namespace_tree(temp.path());
+    PrivateLeaseStopOnceContext interruption{
+        .target = OOCPrivateLeaseFaultPoint::RecoveryPermitAcquired,
+    };
+    const auto interrupted = OOCCleanupTransaction::recover_private_lease(
+        base, OOCPrivateLeaseTestHooks{
+                  .stop_after = stop_private_lease_once,
+                  .context = &interruption,
+              });
+    CHECK(interruption.stopped);
+    CHECK(interrupted.status == OOCCleanupStatus::Interrupted);
+    CHECK(capture_namespace_tree(temp.path()) == before);
+
+    const auto retried = OOCCleanupTransaction::recover_private_lease(base);
+    CHECK(retried.status == OOCCleanupStatus::RecoveryRequired);
+    CHECK(entry_exists_no_follow(paths.intent_pending_path));
+    CHECK(entry_exists_no_follow(paths.index_path));
+    CHECK(entry_exists_no_follow(paths.data_path));
+}
+
+void test_private_lease_recovery_permit_revalidates_new_handoff(const std::string& executable) {
+    TempDirectory temp;
+    constexpr std::uint64_t store_id = 0xe0e0'f1f1'a2a2'b3b3ULL;
+    const auto base = temp.path() / "permit-new-handoff.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    const auto child =
+        gnfs::test::run_child_process(executable, {"--abandon-private-lease", "pending-only",
+                                                   base.string(), std::to_string(store_id)});
+    CHECK(child.exited);
+    CHECK(!child.signaled);
+    CHECK(child.exit_code == PRIVATE_LEASE_ABANDONED_EXIT);
+
+    const auto external_root = paths.private_directory.parent_path();
+    const auto external_before = without_namespace_subtree_contents(
+        capture_namespace_tree(external_root), paths.private_directory.filename());
+    const auto lock_bytes = read_test_bytes(paths.lock_path);
+    const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
+    RecoveryPermitNewHandoffContext injection{
+        .handoff_path = paths.private_handoff_pending_path,
+        .snapshot_root = paths.private_directory,
+    };
+    const auto rejected = OOCCleanupTransaction::recover_private_lease(
+        base, OOCPrivateLeaseTestHooks{
+                  .stop_after = inject_handoff_after_recovery_permit_acquired,
+                  .context = &injection,
+              });
+    CHECK(injection.invoked);
+    CHECK(injection.created);
+    CHECK(injection.expected_after_hook.has_value());
+    CHECK(rejected.status == OOCCleanupStatus::ForeignReplacementPreserved);
+    CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+    if (injection.expected_after_hook) {
+        CHECK(capture_namespace_tree(paths.private_directory) == *injection.expected_after_hook);
+    }
+    const auto external_after = without_namespace_subtree_contents(
+        capture_namespace_tree(external_root), paths.private_directory.filename());
+    CHECK(external_after == external_before);
+    CHECK(read_test_bytes(paths.lock_path) == lock_bytes);
+    CHECK(read_test_bytes(paths.lease_owned_path) == owned_bytes);
+    CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+
+    std::error_code error;
+    CHECK(std::filesystem::remove(paths.private_handoff_pending_path, error));
+    CHECK(!error);
+    CHECK(OOCCleanupTransaction::recover_private_lease(base).status ==
+          OOCCleanupStatus::RecoveryRequired);
+    CHECK(entry_exists_no_follow(paths.intent_pending_path));
+    CHECK(entry_exists_no_follow(paths.index_path));
+    CHECK(entry_exists_no_follow(paths.data_path));
+}
+
 struct PrivateLeasePostSyncReplacementContext final {
     std::filesystem::path reserved_path;
     bool invoked = false;
@@ -5687,6 +5990,72 @@ void test_private_handoff_writer_round_trip() {
     }
 }
 
+struct RecoveryPermitReplacementContext final {
+    std::filesystem::path pending_path;
+    std::filesystem::path saved_path;
+    std::filesystem::path snapshot_root;
+    std::vector<std::byte> bytes;
+    std::optional<NamespaceTreeSnapshot> expected_after_hook;
+    bool invoked = false;
+    bool replaced = false;
+};
+
+[[nodiscard]] bool replace_handoff_after_recovery_permit_acquired(OOCPrivateLeaseFaultPoint point,
+                                                                  void* opaque) noexcept {
+    auto& context = *static_cast<RecoveryPermitReplacementContext*>(opaque);
+    if (context.invoked || point != OOCPrivateLeaseFaultPoint::RecoveryPermitAcquired) {
+        return false;
+    }
+    context.invoked = true;
+    context.replaced =
+        replace_test_leaf_with_bytes(context.pending_path, context.saved_path, context.bytes);
+    if (context.replaced) {
+        try {
+            context.expected_after_hook = capture_namespace_tree(context.snapshot_root);
+        } catch (...) {
+            context.expected_after_hook.reset();
+        }
+    }
+    return false;
+}
+
+void test_recovery_permit_rejects_byte_identical_pending_replacement() {
+    TempDirectory temp;
+    const auto base =
+        temp.path() / "recovery-permit-pending-replacement.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    create_abandoned_private_handoff_pending(base, false);
+
+    const auto pending_bytes = read_test_bytes(paths.private_handoff_pending_path);
+    RecoveryPermitReplacementContext context{
+        .pending_path = paths.private_handoff_pending_path,
+        .saved_path = temp.path() / "saved-original-handoff-pending",
+        .snapshot_root = temp.path(),
+        .bytes = pending_bytes,
+    };
+    const auto recovered = OOCCleanupTransaction::recover_private_lease(
+        base, OOCPrivateLeaseTestHooks{
+                  .stop_after = replace_handoff_after_recovery_permit_acquired,
+                  .context = &context,
+              });
+
+    CHECK(context.invoked);
+    CHECK(context.replaced);
+    CHECK(context.expected_after_hook.has_value());
+    CHECK(recovered.status == OOCCleanupStatus::ForeignReplacementPreserved);
+    CHECK(entry_exists_no_follow(context.saved_path));
+    CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+    CHECK(read_test_bytes(context.saved_path) == pending_bytes);
+    CHECK(read_test_bytes(paths.private_handoff_pending_path) == pending_bytes);
+    std::error_code equivalent_error;
+    CHECK(!std::filesystem::equivalent(context.saved_path, paths.private_handoff_pending_path,
+                                       equivalent_error));
+    CHECK(!equivalent_error);
+    if (context.expected_after_hook) {
+        CHECK(capture_namespace_tree(temp.path()) == *context.expected_after_hook);
+    }
+}
+
 void test_private_handoff_pending_only_never_authorizes_cleanup() {
     TempDirectory temp;
     const auto base = temp.path() / "pending-private-handoff.gnfs-sink-lease" / "corpus";
@@ -6810,6 +7179,7 @@ void run_authority_union_suite() {
 }
 
 void run_authority_observer_suite() {
+    test_private_cleanup_action_permit_runtime_guards();
     test_private_cleanup_union_observer_baseline_and_exact_names();
 #if defined(__APPLE__)
     test_private_cleanup_union_same_handle_inventory();
@@ -6840,6 +7210,8 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_private_lease_unknown_scan_precedes_legacy_intent_publication();
     test_private_lease_activation_interrupt_after_commit_preserves_pair();
     test_private_lease_activation_post_sync_failure_preserves_pair();
+    test_private_lease_recovery_permit_interrupt_is_non_mutating(executable);
+    test_private_lease_recovery_permit_revalidates_new_handoff(executable);
 #if !defined(__APPLE__)
     test_private_handoff_unsupported_publish_is_non_mutating();
 #endif
@@ -6858,6 +7230,7 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_private_handoff_adoption_rejects_namespace_drift(executable);
     test_private_handoff_publish_rejects_replaced_held_lock();
     test_private_handoff_writer_round_trip();
+    test_recovery_permit_rejects_byte_identical_pending_replacement();
     test_private_handoff_pending_only_never_authorizes_cleanup();
     test_private_handoff_pending_without_reserved_is_preserved();
     test_private_handoff_missing_lock_conflicts_before_mutation();

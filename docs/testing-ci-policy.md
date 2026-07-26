@@ -217,9 +217,20 @@ unlink. The deferred-writer integration additionally snapshots an open pair
 and V2 leaf around rejection, proving its public cleanup-handoff preflight runs
 before `finalize()` changes pair bytes; marker publication repeats the check.
 The current runtime adapter combines all six logical leaf facts before
-reduction. Recovery and removal still re-observe the C1 handoff after this
-preflight; eliminating that duplicate observation requires the later
-move-only, action-bound permit.
+reduction. Recovery now receives a production-only, move-only,
+`RecoverPrivateLease`-bound permit that retains the union observation and C1
+witness through the complete action. Direct permit tests cover blocked
+admission, wrong action and frozen paths, moved-from and repeated consumption,
+C1 single consumption, and POSIX fork-child rejection. A public interruption
+test proves that `RecoveryPermitAcquired` returns `Interrupted` without changing
+the namespace and that a later recovery remains possible. A cross-platform
+post-acquisition test inserts a previously absent handoff leaf and proves that
+the macOS held-handle witness or Linux/Windows path-limited raw re-observation
+rejects it without mutation beyond the injected namespace snapshot. The
+stronger macOS-only regression replaces an exact pending handoff with a
+byte-identical new inode and proves the same preservation result. Removal still
+re-observes the C1 handoff after its preflight and requires a separate
+action-bound migration.
 `OOCCleanupPrivateLeaseCrash` is a `fast` self-exec suite from the same
 binary. It terminates children at each durable private-lease marker, rename,
 and teardown boundary. It also covers writer termination after the first and
