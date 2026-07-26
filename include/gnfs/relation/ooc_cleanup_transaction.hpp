@@ -429,22 +429,27 @@ public:
         : base_path_(std::move(other.base_path_)),
           private_directory_(std::move(other.private_directory_)),
           lock_path_(std::move(other.lock_path_)), record_(std::move(other.record_)),
-          handoff_snapshot_(other.handoff_snapshot_), live_lock_(std::move(other.live_lock_)),
+          handoff_snapshot_(other.handoff_snapshot_),
+          pending_handoff_snapshot_(other.pending_handoff_snapshot_),
+          live_lock_(std::move(other.live_lock_)),
           parent_directory_(std::move(other.parent_directory_)),
           private_directory_handle_(std::move(other.private_directory_handle_)),
           index_(std::move(other.index_)), data_(std::move(other.data_)),
+          adopter_process_id_(other.adopter_process_id_),
           spent_(std::exchange(other.spent_, true)) {
         other.base_path_.clear();
         other.private_directory_.clear();
         other.lock_path_.clear();
         other.handoff_snapshot_ = {};
+        other.pending_handoff_snapshot_.reset();
+        other.adopter_process_id_ = 0;
     }
 
     OOCPrivateHandoffAdoptionReceipt& operator=(OOCPrivateHandoffAdoptionReceipt&&) = delete;
 
     [[nodiscard]] bool spent() const noexcept {
         return spent_ || !live_lock_ || !parent_directory_ || !private_directory_handle_ ||
-               !index_.file.valid() || !data_.file.valid();
+               !index_.file.valid() || !data_.file.valid() || !owned_by_current_process();
     }
 
     [[nodiscard]] const OOCPrivateHandoffRecordV1& record() const noexcept {
@@ -467,33 +472,41 @@ public:
     }
 
 private:
+    [[nodiscard]] bool owned_by_current_process() const noexcept {
+        return adopter_process_id_ != 0 &&
+               adopter_process_id_ == static_cast<std::uint64_t>(gnfs::util::process_id());
+    }
+
     OOCPrivateHandoffAdoptionReceipt(
         std::filesystem::path base_path, std::filesystem::path private_directory,
         std::filesystem::path lock_path, OOCPrivateHandoffRecordV1 record,
         util::durable_immutable_record::RecordSnapshot handoff_snapshot,
+        std::optional<util::durable_immutable_record::RecordSnapshot> pending_handoff_snapshot,
         util::durable_immutable_record::OpenedOwnedFile&& index,
         util::durable_immutable_record::OpenedOwnedFile&& data,
         std::shared_ptr<ooc_cleanup_detail::BaseLock> live_lock,
         std::shared_ptr<ooc_cleanup_detail::AdoptionParentDirectoryHandle> parent_directory,
-        std::shared_ptr<ooc_cleanup_detail::PrivateDirectoryHandle>
-            private_directory_handle) noexcept
+        std::shared_ptr<ooc_cleanup_detail::PrivateDirectoryHandle> private_directory_handle,
+        std::uint64_t adopter_process_id) noexcept
         : base_path_(std::move(base_path)), private_directory_(std::move(private_directory)),
           lock_path_(std::move(lock_path)), record_(std::move(record)),
-          handoff_snapshot_(handoff_snapshot), live_lock_(std::move(live_lock)),
-          parent_directory_(std::move(parent_directory)),
+          handoff_snapshot_(handoff_snapshot), pending_handoff_snapshot_(pending_handoff_snapshot),
+          live_lock_(std::move(live_lock)), parent_directory_(std::move(parent_directory)),
           private_directory_handle_(std::move(private_directory_handle)), index_(std::move(index)),
-          data_(std::move(data)) {}
+          data_(std::move(data)), adopter_process_id_(adopter_process_id) {}
 
     std::filesystem::path base_path_;
     std::filesystem::path private_directory_;
     std::filesystem::path lock_path_;
     OOCPrivateHandoffRecordV1 record_;
     util::durable_immutable_record::RecordSnapshot handoff_snapshot_;
+    std::optional<util::durable_immutable_record::RecordSnapshot> pending_handoff_snapshot_;
     std::shared_ptr<ooc_cleanup_detail::BaseLock> live_lock_;
     std::shared_ptr<ooc_cleanup_detail::AdoptionParentDirectoryHandle> parent_directory_;
     std::shared_ptr<ooc_cleanup_detail::PrivateDirectoryHandle> private_directory_handle_;
     util::durable_immutable_record::OpenedOwnedFile index_;
     util::durable_immutable_record::OpenedOwnedFile data_;
+    std::uint64_t adopter_process_id_ = 0;
     bool spent_ = false;
 
     friend class OOCCleanupTransaction;

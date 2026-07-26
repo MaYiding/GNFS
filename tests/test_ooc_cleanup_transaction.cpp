@@ -3302,6 +3302,112 @@ void test_private_handoff_cross_process_adoption(const std::string& executable) 
     check_protected_private_handoff_bytes(paths, expected);
 }
 
+struct PrivateHandoffAdoptionForkContext final {
+    OOCPrivateHandoffAdoptionFaultPoint target =
+        OOCPrivateHandoffAdoptionFaultPoint::BeforeReceiptCommitRevalidation;
+    pid_t child_process = -1;
+    bool invoked = false;
+    bool fork_failed = false;
+    bool is_child = false;
+};
+
+[[nodiscard]] bool fork_during_private_handoff_adoption(OOCPrivateHandoffAdoptionFaultPoint point,
+                                                        void* opaque) noexcept {
+    auto& context = *static_cast<PrivateHandoffAdoptionForkContext*>(opaque);
+    if (context.invoked || point != context.target) {
+        return false;
+    }
+    context.invoked = true;
+    context.child_process = ::fork();
+    if (context.child_process < 0) {
+        context.fork_failed = true;
+        return true;
+    }
+    context.is_child = context.child_process == 0;
+    return false;
+}
+
+void test_private_handoff_adoption_is_process_bound(const std::string& executable) {
+    TempDirectory temp;
+    const auto base = temp.path() / "process-bound-adoption.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    const auto publisher = gnfs::test::run_child_process(
+        executable, {"--private-handoff-adoption-child", "publish-exit", base.string()});
+    CHECK(publisher.exited);
+    CHECK(!publisher.signaled);
+    CHECK(publisher.exit_code == 0);
+    const auto expected = capture_protected_private_handoff_bytes(paths);
+
+    const pid_t original_process = ::getpid();
+    PrivateHandoffAdoptionForkContext adoption_fork;
+    auto adopted = OOCCleanupTransaction::adopt_private_handoff(
+        base, OOCPrivateHandoffAdoptionTestHooks{
+                  .stop_after = fork_during_private_handoff_adoption,
+                  .context = &adoption_fork,
+              });
+    if (::getpid() != original_process) {
+        const bool rejected = adoption_fork.invoked && adoption_fork.is_child &&
+                              !adopted.adopted() && !adopted.adoption.has_value() &&
+                              adopted.result.status == OOCCleanupStatus::InvalidRequest;
+        ::_exit(rejected ? 0 : 89);
+    }
+    CHECK(adoption_fork.invoked);
+    CHECK(!adoption_fork.fork_failed);
+    CHECK(!adoption_fork.is_child);
+    CHECK(adoption_fork.child_process > 0);
+    CHECK(adopted.adopted());
+    CHECK(adopted.adoption.has_value());
+    int adoption_child_status = 0;
+    CHECK(::waitpid(adoption_fork.child_process, &adoption_child_status, 0) ==
+          adoption_fork.child_process);
+    CHECK(WIFEXITED(adoption_child_status));
+    CHECK(WEXITSTATUS(adoption_child_status) == 0);
+    OOCPrivateHandoffAdoptionReceipt receipt(std::move(*adopted.adoption));
+    CHECK(!receipt.spent());
+
+    const pid_t receipt_child = ::fork();
+    CHECK(receipt_child >= 0);
+    if (receipt_child == 0) {
+        bool rejected = receipt.spent();
+        try {
+            OOCPrivateHandoffReader forbidden(std::move(receipt));
+            (void)forbidden;
+            rejected = false;
+        } catch (const std::invalid_argument&) {
+        } catch (...) {
+            rejected = false;
+        }
+        ::_exit(rejected ? 0 : 90);
+    }
+    int receipt_status = 0;
+    CHECK(::waitpid(receipt_child, &receipt_status, 0) == receipt_child);
+    CHECK(WIFEXITED(receipt_status));
+    CHECK(WEXITSTATUS(receipt_status) == 0);
+    CHECK(!receipt.spent());
+
+    OOCPrivateHandoffReader reader(std::move(receipt));
+    check_adopted_private_handoff_reader(reader, 1);
+    const pid_t reader_child = ::fork();
+    CHECK(reader_child >= 0);
+    if (reader_child == 0) {
+        bool rejected = !reader.valid();
+        try {
+            (void)reader.reader();
+            rejected = false;
+        } catch (const std::logic_error&) {
+        } catch (...) {
+            rejected = false;
+        }
+        ::_exit(rejected ? 0 : 91);
+    }
+    int reader_status = 0;
+    CHECK(::waitpid(reader_child, &reader_status, 0) == reader_child);
+    CHECK(WIFEXITED(reader_status));
+    CHECK(WEXITSTATUS(reader_status) == 0);
+    check_adopted_private_handoff_reader(reader, 1);
+    check_protected_private_handoff_bytes(paths, expected);
+}
+
 void test_private_handoff_adopter_owner_death(const std::string& executable) {
     TempDirectory temp;
     const auto base = temp.path() / "adopter-owner-death.gnfs-sink-lease" / "corpus";
@@ -5107,6 +5213,7 @@ void run_private_lease_crash_suite(const std::string& executable) {
 #endif
 #if defined(__APPLE__)
     test_private_handoff_cross_process_adoption(executable);
+    test_private_handoff_adoption_is_process_bound(executable);
     test_private_handoff_adopter_owner_death(executable);
     test_private_handoff_zero_row_adoption(executable);
     test_private_handoff_adoption_publication_prefixes(executable);

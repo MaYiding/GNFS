@@ -1368,6 +1368,8 @@ checks passed in Debug.
 - [x] Make canonical handoff dominate recovery, revoke/consume `RESERVED`, and
   invalidate stale writer/private-lease receipts.
 - [x] Add locked cross-process adoption with no cleanup authority.
+- [x] Bind each adoption capability to its adopter process and retain the
+  optional duplicate-pending observation for private conversion.
 - [x] Freeze the role-separated V2 authorized-cleanup marker codec and exact
   canonical/optional-pending handoff bindings without enabling runtime use.
 - [ ] Add the two-capability application-authorization conversion into
@@ -1465,6 +1467,18 @@ replacement before and after exact open, owner/owned replacement, unknown and
 legacy leaves, directory replacement, lock replacement, descriptor balance,
 and retry after non-mutating interruption. Non-macOS platforms return
 unsupported after pure request validation and before filesystem observation.
+
+The first M1.7b capability-hardening slice completed on 2026-07-26. The
+move-only adoption receipt now captures the adopter PID and the exact optional
+duplicate-pending observation from the final locked witness. A forked
+copy reports spent before it can construct a reader, and a reader inherited
+after construction rejects new access through its process-checked owner. The
+PID is captured before any adoption hook, so a fork during adoption cannot mint
+a second valid capability. A const reader reference borrowed before fork
+remains ordinary read-only data and grants no conversion or cleanup authority.
+The parent receipt or reader remains valid because the child changes only its
+copy-on-write state. The pending observation stays private and grants no
+unlink, intent, or cleanup authority.
 
 The M1.7a pure authorized-cleanup marker codec completed on 2026-07-26. Its
 480-byte frame has independent magic, schema, phase kind, and digest domain.

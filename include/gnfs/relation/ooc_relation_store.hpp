@@ -2448,14 +2448,16 @@ private:
     friend class ReadOnlyRelationCorpusView;
 };
 
-/// Move-only same-handle reader for one adopted private handoff.
+/// Move-only same-handle reader owner for one adopted private handoff.
 ///
 /// Construction commits both exact files into OOCRelationReader together,
 /// validates the complete finalized V3 corpus, and retains the adoption
 /// receipt's parent/private-directory bindings and BaseLock for the reader
 /// lifetime. The reader is destroyed before the receipt releases those
 /// handles. This owner exposes no path, native handle, cleanup receipt, or arm
-/// operation.
+/// operation. Access through this owner is process-checked. A const reader
+/// reference borrowed before fork remains ordinary read-only data in the child
+/// and carries no cleanup or conversion authority.
 class OOCPrivateHandoffReader final {
 public:
     explicit OOCPrivateHandoffReader(OOCPrivateHandoffAdoptionReceipt&& adoption)
@@ -2468,7 +2470,8 @@ public:
 
     [[nodiscard]] bool valid() const noexcept {
         return adoption_.live_lock_ != nullptr && adoption_.parent_directory_ != nullptr &&
-               adoption_.private_directory_handle_ != nullptr && reader_.valid();
+               adoption_.private_directory_handle_ != nullptr &&
+               adoption_.owned_by_current_process() && reader_.valid();
     }
 
     [[nodiscard]] const OOCRelationReader& reader() const {

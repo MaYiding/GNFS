@@ -182,8 +182,11 @@ unlock a still-running child. On macOS it also self-executes publisher and
 adopter owner-death cases for exact private-handoff adoption, including
 zero-row and partial-publication prefixes. Every adoption interruption and
 namespace-replacement case checks fail-closed status, descriptor release, and
-preservation of the no-delete handoff. Other platforms verify that adoption
-returns unsupported before observing or changing the filesystem. The broader
+preservation of the no-delete handoff. It also proves that fork-inherited
+adoption receipts and reader owners fail their current-process checks, that a
+fork inside adoption cannot mint a second valid capability, and that the
+parent capability remains valid. Other platforms verify that adoption returns
+unsupported before observing or changing the filesystem. The broader
 `RelationReductionEngine`
 integration target is `fast`: it repeatedly
 creates and removes durable OOC leases, so its Debug single-run cost includes

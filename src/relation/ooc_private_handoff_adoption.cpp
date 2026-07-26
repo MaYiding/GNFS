@@ -706,6 +706,7 @@ OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_p
                             OOCPrivateHandoffState::TaintedPreserved,
                             std::make_error_code(std::errc::operation_not_supported));
 #else
+    const auto adopter_process_id = static_cast<std::uint64_t>(gnfs::util::process_id());
     std::optional<OOCPrivateHandoffAdoptionResult> adoption;
     bool assigned = false;
     const auto assign = [&](OOCPrivateHandoffAdoptionResult value) {
@@ -789,6 +790,10 @@ OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_p
         observe_adoption_boundary(paths, *parent, *directory, *lock, hooks,
                                   OOCPrivateHandoffAdoptionFaultPoint::BeforeFinalRevalidation);
         const auto revalidate_before_receipt = [&] {
+            if (static_cast<std::uint64_t>(gnfs::util::process_id()) != adopter_process_id) {
+                ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                         ooc_cleanup_detail::invalid_argument_error());
+            }
             const auto current = classify_adoption_locked(paths, *parent, *directory, *lock);
             if (!current.inspection.canonical() || !current.witness) {
                 const auto& failed = current.inspection.result;
@@ -825,10 +830,15 @@ OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_p
             paths, *parent, *directory, *lock, hooks,
             OOCPrivateHandoffAdoptionFaultPoint::BeforeReceiptCommitRevalidation);
         revalidate_before_receipt();
+        const auto pending_handoff_snapshot =
+            classified.witness->pending
+                ? std::optional<RecordSnapshot>(classified.witness->pending->snapshot)
+                : std::nullopt;
         OOCPrivateHandoffAdoptionReceipt receipt(
             paths.base_path, paths.private_directory, paths.lock_path, classified.witness->record,
-            classified.witness->canonical.snapshot, std::move(index), std::move(data),
-            std::move(lock), std::move(parent), std::move(directory));
+            classified.witness->canonical.snapshot, pending_handoff_snapshot, std::move(index),
+            std::move(data), std::move(lock), std::move(parent), std::move(directory),
+            adopter_process_id);
         return assign(OOCPrivateHandoffAdoptionResult{
             .result =
                 {
