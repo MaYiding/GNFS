@@ -52,10 +52,13 @@
 namespace gnfs::relation {
 
 class OOCRelationWriter;
+class OOCPrivateHandoffReader;
 class OOCCleanupTransaction;
 namespace ooc_cleanup_detail {
+class AdoptionParentDirectoryHandle;
 class BaseLock;
-}
+class PrivateDirectoryHandle;
+} // namespace ooc_cleanup_detail
 
 /// Last durable cleanup boundary reached by an OOC cleanup transaction.
 enum class OOCCleanupStage : std::uint8_t {
@@ -390,6 +393,124 @@ struct OOCPrivateHandoffInspectResult final {
 };
 
 using OOCPrivateHandoffPublishResult = OOCPrivateHandoffInspectResult;
+
+/// Trusted test-only observation boundaries for exact private-handoff
+/// adoption. Each boundary runs while the canonical BaseLock remains held.
+enum class OOCPrivateHandoffAdoptionFaultPoint : std::uint8_t {
+    CanonicalClassified,
+    IndexInitialValidationComplete,
+    IndexOpened,
+    DataInitialValidationComplete,
+    DataOpened,
+    BeforeFinalRevalidation,
+    BeforeReceiptCommitRevalidation,
+};
+
+struct OOCPrivateHandoffAdoptionTestHooks final {
+    using StopAfter = bool (*)(OOCPrivateHandoffAdoptionFaultPoint point, void* context) noexcept;
+
+    StopAfter stop_after = nullptr;
+    void* context = nullptr;
+};
+
+/// Current-process read authority for one exact canonical private handoff.
+///
+/// The receipt owns two exact read-only native files, the held parent and
+/// private-directory bindings, and the matching persistent BaseLock. It grants
+/// no cleanup, intent-publication, lease activation, or namespace-mutation
+/// authority. Destruction closes the files and directories before releasing
+/// the lock.
+class OOCPrivateHandoffAdoptionReceipt final {
+public:
+    OOCPrivateHandoffAdoptionReceipt(const OOCPrivateHandoffAdoptionReceipt&) = delete;
+    OOCPrivateHandoffAdoptionReceipt& operator=(const OOCPrivateHandoffAdoptionReceipt&) = delete;
+
+    OOCPrivateHandoffAdoptionReceipt(OOCPrivateHandoffAdoptionReceipt&& other) noexcept
+        : base_path_(std::move(other.base_path_)),
+          private_directory_(std::move(other.private_directory_)),
+          lock_path_(std::move(other.lock_path_)), record_(std::move(other.record_)),
+          handoff_snapshot_(other.handoff_snapshot_), live_lock_(std::move(other.live_lock_)),
+          parent_directory_(std::move(other.parent_directory_)),
+          private_directory_handle_(std::move(other.private_directory_handle_)),
+          index_(std::move(other.index_)), data_(std::move(other.data_)),
+          spent_(std::exchange(other.spent_, true)) {
+        other.base_path_.clear();
+        other.private_directory_.clear();
+        other.lock_path_.clear();
+        other.handoff_snapshot_ = {};
+    }
+
+    OOCPrivateHandoffAdoptionReceipt& operator=(OOCPrivateHandoffAdoptionReceipt&&) = delete;
+
+    [[nodiscard]] bool spent() const noexcept {
+        return spent_ || !live_lock_ || !parent_directory_ || !private_directory_handle_ ||
+               !index_.file.valid() || !data_.file.valid();
+    }
+
+    [[nodiscard]] const OOCPrivateHandoffRecordV1& record() const noexcept {
+        return record_;
+    }
+
+    [[nodiscard]] const util::durable_immutable_record::RecordSnapshot&
+    handoff_snapshot() const noexcept {
+        return handoff_snapshot_;
+    }
+
+    [[nodiscard]] const util::durable_immutable_record::RecordSnapshot&
+    index_snapshot() const noexcept {
+        return index_.snapshot;
+    }
+
+    [[nodiscard]] const util::durable_immutable_record::RecordSnapshot&
+    data_snapshot() const noexcept {
+        return data_.snapshot;
+    }
+
+private:
+    OOCPrivateHandoffAdoptionReceipt(
+        std::filesystem::path base_path, std::filesystem::path private_directory,
+        std::filesystem::path lock_path, OOCPrivateHandoffRecordV1 record,
+        util::durable_immutable_record::RecordSnapshot handoff_snapshot,
+        util::durable_immutable_record::OpenedOwnedFile&& index,
+        util::durable_immutable_record::OpenedOwnedFile&& data,
+        std::shared_ptr<ooc_cleanup_detail::BaseLock> live_lock,
+        std::shared_ptr<ooc_cleanup_detail::AdoptionParentDirectoryHandle> parent_directory,
+        std::shared_ptr<ooc_cleanup_detail::PrivateDirectoryHandle>
+            private_directory_handle) noexcept
+        : base_path_(std::move(base_path)), private_directory_(std::move(private_directory)),
+          lock_path_(std::move(lock_path)), record_(std::move(record)),
+          handoff_snapshot_(handoff_snapshot), live_lock_(std::move(live_lock)),
+          parent_directory_(std::move(parent_directory)),
+          private_directory_handle_(std::move(private_directory_handle)), index_(std::move(index)),
+          data_(std::move(data)) {}
+
+    std::filesystem::path base_path_;
+    std::filesystem::path private_directory_;
+    std::filesystem::path lock_path_;
+    OOCPrivateHandoffRecordV1 record_;
+    util::durable_immutable_record::RecordSnapshot handoff_snapshot_;
+    std::shared_ptr<ooc_cleanup_detail::BaseLock> live_lock_;
+    std::shared_ptr<ooc_cleanup_detail::AdoptionParentDirectoryHandle> parent_directory_;
+    std::shared_ptr<ooc_cleanup_detail::PrivateDirectoryHandle> private_directory_handle_;
+    util::durable_immutable_record::OpenedOwnedFile index_;
+    util::durable_immutable_record::OpenedOwnedFile data_;
+    bool spent_ = false;
+
+    friend class OOCCleanupTransaction;
+    friend class OOCPrivateHandoffReader;
+};
+
+struct OOCPrivateHandoffAdoptionResult final {
+    OOCCleanupResult result;
+    OOCPrivateHandoffState state = OOCPrivateHandoffState::TaintedPreserved;
+    std::optional<OOCPrivateHandoffAdoptionReceipt> adoption;
+
+    [[nodiscard]] bool adopted() const noexcept {
+        return result.status == OOCCleanupStatus::HandoffPresent &&
+               state == OOCPrivateHandoffState::Canonical && adoption.has_value() &&
+               !adoption->spent();
+    }
+};
 
 struct OOCCleanupPaths final {
     std::filesystem::path base_path;
@@ -5169,6 +5290,16 @@ public:
         }
         return observation;
     }
+
+    /// Adopt one exact canonical generic handoff under its persistent lock.
+    ///
+    /// Success retains the lock, both directory bindings, and both exact
+    /// same-handle validated files in a move-only receipt. The operation never
+    /// creates, removes, or rewrites a namespace entry and grants no cleanup
+    /// authority.
+    [[nodiscard]] static OOCPrivateHandoffAdoptionResult
+    adopt_private_handoff(const std::filesystem::path& base_path,
+                          OOCPrivateHandoffAdoptionTestHooks hooks = {}) noexcept;
 
     /// Publish an immutable application payload bound to one exact finalized V3
     /// pair and its still-preactive private lease. Canonical durability consumes

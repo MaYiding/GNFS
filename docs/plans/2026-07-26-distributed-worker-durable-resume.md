@@ -1348,8 +1348,9 @@ checks passed in Debug.
 - [x] Add an opaque no-delete auxiliary record inside a private lease.
 - [x] Make canonical handoff dominate recovery, revoke/consume `RESERVED`, and
   invalidate stale writer/private-lease receipts.
-- [ ] Add locked cross-process adoption plus a two-capability
-  application-authorization conversion into canonical cleanup intent.
+- [x] Add locked cross-process adoption with no cleanup authority.
+- [ ] Add the two-capability application-authorization conversion into
+  canonical cleanup intent.
 - [x] Add owned-handle `MmapFile`, `OOCRelationReader`, and non-armable corpus
   view APIs; preserve Windows compilation and fail unsupported durability
   semantics closed.
@@ -1425,8 +1426,27 @@ pure request validation and before filesystem observation. This utility grants
 read ownership for one leaf only: it does not bind the directory's named path,
 commit an index/data pair, classify a handoff, or mint adoption authority.
 
-Locked cross-process adoption and the two-capability cleanup conversion remain
-required before the M1 exit criterion is complete.
+Locked cross-process adoption completed on 2026-07-26. The macOS classifier
+holds one parent directory, one private directory, and one persistent
+`BaseLock` throughout the operation. It reads every control marker and handoff
+relative to those handles, scans through a separately opened directory
+description, and opens both OOC files by exact native identity and extent.
+Initial and final witnesses bind raw record bytes, snapshots, marker chains,
+the allowlist, both directory identities, and the lock leaf. A move-only
+receipt retains all handles but exposes neither a path nor cleanup authority.
+`OOCPrivateHandoffReader` then consumes both files into the existing
+same-handle V3 validator while keeping the directory and lock authority alive.
+
+The lease-crash suite now covers self-exec publisher and adopter death,
+zero-row corpora, pending-only and canonical-with-`RESERVED` prefixes, every
+adoption interruption boundary, byte-identical inode replacement, pair
+replacement before and after exact open, owner/owned replacement, unknown and
+legacy leaves, directory replacement, lock replacement, descriptor balance,
+and retry after non-mutating interruption. Non-macOS platforms return
+unsupported after pure request validation and before filesystem observation.
+
+The two-capability cleanup conversion remains required before the M1 exit
+criterion is complete.
 
 Exit criterion: a finalized synthetic private OOC corpus can survive owner
 death, reject every stale cleanup receipt, be adopted without deletion

@@ -311,6 +311,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/ooc_durable_handoff.cpp")
     target_sources(gnfs_core PRIVATE src/relation/ooc_durable_handoff.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/ooc_private_handoff_adoption.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/ooc_private_handoff_adoption.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/filter.cpp")
     target_sources(gnfs_core PRIVATE src/relation/filter.cpp)
 endif()
@@ -815,7 +819,7 @@ if(GNFS_BUILD_TESTS)
     )
     set_tests_properties(
         OOCCleanupPrivateLeaseCrash
-        PROPERTIES LABELS "fast" TIMEOUT 30
+        PROPERTIES LABELS "fast" TIMEOUT 90
     )
 
     # ── W6 T4: relation collector memory pool ──

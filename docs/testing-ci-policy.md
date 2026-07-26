@@ -163,7 +163,7 @@ cross-process contender reports `Busy`, and that the same base is reusable
 without replacing that lock after a completed lease removal. It also replaces
 an owned empty lease with a different live directory and verifies that the old
 identity-bound receipt rejects the ABA target. The no-argument binary runs all
-suites, so its `scripts/test.sh` tier and timeout are `fast` and 60 seconds.
+suites, so its `scripts/test.sh` tier and timeout are `fast` and 120 seconds.
 `OOCCleanupPrivateLeaseCrash` is a `fast` self-exec suite from the same
 binary. It terminates children at each durable private-lease marker, rename,
 and teardown boundary. It also covers writer termination after the first and
@@ -175,7 +175,13 @@ remain preserved, while a crash after activation keeps the live pair. The
 suite also covers deferred worker cleanup handoff, pending-intent rollback,
 canonical-intent cleanup, canonical intent with an unknown sibling, creator-PID
 enforcement, and the POSIX fork rule that closing the parent receipt does not
-unlock a still-running child. The broader `RelationReductionEngine`
+unlock a still-running child. On macOS it also self-executes publisher and
+adopter owner-death cases for exact private-handoff adoption, including
+zero-row and partial-publication prefixes. Every adoption interruption and
+namespace-replacement case checks fail-closed status, descriptor release, and
+preservation of the no-delete handoff. Other platforms verify that adoption
+returns unsupported before observing or changing the filesystem. The broader
+`RelationReductionEngine`
 integration target is `fast`: it repeatedly
 creates and removes durable OOC leases, so its Debug single-run cost includes
 the required file and parent-directory barriers.

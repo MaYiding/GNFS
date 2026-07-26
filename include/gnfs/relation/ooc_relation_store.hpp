@@ -2448,6 +2448,101 @@ private:
     friend class ReadOnlyRelationCorpusView;
 };
 
+/// Move-only same-handle reader for one adopted private handoff.
+///
+/// Construction commits both exact files into OOCRelationReader together,
+/// validates the complete finalized V3 corpus, and retains the adoption
+/// receipt's parent/private-directory bindings and BaseLock for the reader
+/// lifetime. The reader is destroyed before the receipt releases those
+/// handles. This owner exposes no path, native handle, cleanup receipt, or arm
+/// operation.
+class OOCPrivateHandoffReader final {
+public:
+    explicit OOCPrivateHandoffReader(OOCPrivateHandoffAdoptionReceipt&& adoption)
+        : OOCPrivateHandoffReader(commit_adoption(adoption)) {}
+
+    OOCPrivateHandoffReader(const OOCPrivateHandoffReader&) = delete;
+    OOCPrivateHandoffReader& operator=(const OOCPrivateHandoffReader&) = delete;
+    OOCPrivateHandoffReader(OOCPrivateHandoffReader&&) noexcept = default;
+    OOCPrivateHandoffReader& operator=(OOCPrivateHandoffReader&&) = delete;
+
+    [[nodiscard]] bool valid() const noexcept {
+        return adoption_.live_lock_ != nullptr && adoption_.parent_directory_ != nullptr &&
+               adoption_.private_directory_handle_ != nullptr && reader_.valid();
+    }
+
+    [[nodiscard]] const OOCRelationReader& reader() const {
+        if (!valid()) {
+            throw std::logic_error("OOCPrivateHandoffReader: reader is moved-from or invalid");
+        }
+        return reader_;
+    }
+
+    [[nodiscard]] const OOCPrivateHandoffRecordV1& record() const noexcept {
+        return adoption_.record_;
+    }
+
+    [[nodiscard]] const util::durable_immutable_record::RecordSnapshot&
+    handoff_snapshot() const noexcept {
+        return adoption_.handoff_snapshot_;
+    }
+
+    [[nodiscard]] const util::durable_immutable_record::RecordSnapshot&
+    index_snapshot() const noexcept {
+        return adoption_.index_.snapshot;
+    }
+
+    [[nodiscard]] const util::durable_immutable_record::RecordSnapshot&
+    data_snapshot() const noexcept {
+        return adoption_.data_.snapshot;
+    }
+
+private:
+    struct CommittedAdoption final {
+        OOCPrivateHandoffAdoptionReceipt adoption;
+        OOCSnapshotDescriptor descriptor;
+    };
+
+    [[nodiscard]] static CommittedAdoption
+    commit_adoption(OOCPrivateHandoffAdoptionReceipt& adoption) {
+        if (adoption.spent() ||
+            adoption.record_.index.identity != adoption.index_.snapshot.identity ||
+            adoption.record_.index.extent != adoption.index_.snapshot.size ||
+            adoption.record_.data.identity != adoption.data_.snapshot.identity ||
+            adoption.record_.data.extent != adoption.data_.snapshot.size ||
+            !validate_ooc_private_handoff_record(adoption.record_, true)) {
+            throw std::invalid_argument(
+                "OOCPrivateHandoffReader: invalid or spent adoption receipt");
+        }
+        const OOCSnapshotDescriptor descriptor{
+            .format_version = adoption.record_.pair.format_version,
+            .store_id = adoption.record_.pair.store_id,
+            .generation = adoption.record_.pair.generation,
+            .count = adoption.record_.pair.count,
+            .data_end = adoption.record_.pair.data_extent,
+        };
+        return CommittedAdoption{
+            .adoption = std::move(adoption),
+            .descriptor = descriptor,
+        };
+    }
+
+    explicit OOCPrivateHandoffReader(CommittedAdoption committed)
+        : adoption_(std::move(committed.adoption)),
+          reader_(std::move(adoption_.index_.file), std::move(adoption_.data_.file),
+                  committed.descriptor) {
+        if (!reader_.valid()) {
+            throw std::runtime_error(
+                "OOCPrivateHandoffReader: same-handle reader validation failed");
+        }
+    }
+
+    // Declaration order is the authority order: reverse destruction closes
+    // both reader mappings before releasing the adoption receipt's BaseLock.
+    OOCPrivateHandoffAdoptionReceipt adoption_;
+    OOCRelationReader reader_;
+};
+
 /// Trusted reader for a single flushed prefix of an otherwise incomplete OOC
 /// store. Construction requires an explicit descriptor and performs all
 /// boundary validation with runtime checks that remain active in Release.

@@ -689,7 +689,7 @@ TEST_TIMEOUT=(
     test_relation_sink       10
     test_ooc_store_integrity 10
     test_ooc_durable_handoff 10
-    test_ooc_cleanup_transaction 60
+    test_ooc_cleanup_transaction 120
     test_cofactor            10
     test_candidate_chunk_plan 10
     test_candidate_batch     10
