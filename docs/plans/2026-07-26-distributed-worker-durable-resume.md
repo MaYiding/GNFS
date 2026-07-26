@@ -1547,7 +1547,16 @@ inventory; the final inventory, directory identity and policy, and inherited
 `BaseLock` must remain stable. A byte-identical inode replacement before a read
 or after all reads therefore reduces to foreign evidence. The scan duplicates
 the held directory description only for `fdopendir`; all six record reads use
-the original handle and the audited durable-record reader.
+the original handle and the audited durable-record reader. Handoff leaves are
+projected independently: invalid metadata or rejected bytes taint only their
+own slot, while a policy-compatible companion still undergoes its strict
+context check. If two independently exact leaves disagree, the canonical fact
+is retained and the inconsistent pending slot is malformed, so raw diagnostics
+never move pending pollution onto canonical state. Once either slot has
+established foreign or unsupported evidence, later sibling reads and
+diagnostic context refinement are error-contained: they may sharpen the
+companion fact, but cannot replace the established terminal precedence with a
+secondary I/O or decode failure.
 
 Linux and Windows deliberately retain the earlier path-limited adapter. The
 four V1 cleanup markers continue through their established stable path reader.

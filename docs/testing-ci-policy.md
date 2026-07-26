@@ -184,9 +184,19 @@ crash suites.
 same binary. It proves that exact canonical leaf spelling is required on every
 platform. On macOS, it also replaces a byte-identical cleanup leaf after the
 initial inventory and after all six logical reads, replaces the named private
-directory at both boundaries, and supplies invalid hard-link metadata. The
-observer either reduces the changed inventory to foreign evidence or rejects
-the directory ABA before returning. The macOS production path reads all four
+directory at both boundaries, and supplies invalid hard-link metadata. It
+exercises both cleanup-marker and generic-handoff inode replacement. Per-slot
+handoff cases cover corrupt bytes, invalid canonical or pending link metadata,
+wrong-context canonical bytes beside a valid preactive pending record, and two
+individually valid but inconsistent records. The valid companion retains its
+own exact fact while rejected leaves are foreign and a decoded pair conflict is
+malformed; without the exact preactive reservation, a duplicate foreign
+pending record remains foreign. A corrupt lease context beside already-foreign
+handoff metadata, a known inventory replacement, or an exact byte conflict
+also proves that diagnostic refinement cannot override foreign-first
+precedence. The observer either reduces the changed inventory to foreign
+evidence or rejects the directory ABA before returning. The macOS production
+path reads all four
 cleanup markers and both generic-handoff leaves through one held no-follow
 directory handle, with complete 11-slot inventories before and after. Linux
 and Windows retain the explicit path-limited adapter; nonempty deterministic

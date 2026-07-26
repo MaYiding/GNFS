@@ -4362,6 +4362,10 @@ inspect_private_handoff_directory_entries(const OOCCleanupPaths& paths) {
 #ifndef _WIN32
 struct PrivateHandoffLeafClassification final {
     OOCPrivateHandoffInspectResult inspection;
+    /// True after the canonical record independently passed its complete
+    /// lease, directory, and pair context, even if a conflicting pending leaf
+    /// makes the aggregate state tainted.
+    bool canonical_context_valid = false;
     bool pending_is_preactive = false;
 };
 
@@ -4403,10 +4407,12 @@ classify_private_handoff_leaves_locked(const OOCCleanupPaths& paths, const BaseL
             return {
                 .inspection = handoff_failure(OOCCleanupStatus::ForeignReplacementPreserved,
                                               OOCPrivateHandoffState::TaintedPreserved),
+                .canonical_context_valid = true,
             };
         }
         return {
             .inspection = handoff_present(*canonical.record, *canonical.snapshot),
+            .canonical_context_valid = true,
         };
     }
 

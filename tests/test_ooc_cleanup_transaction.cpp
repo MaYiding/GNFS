@@ -42,6 +42,7 @@
 #else
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -88,6 +89,7 @@ using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionObservationPoint;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionObservationTestHooks;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionRawObservation;
 using gnfs::relation::ooc_cleanup_detail::PrivateHandoffLeafObservationKind;
+using gnfs::relation::ooc_cleanup_detail::PrivateHandoffLeafSlot;
 using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceAction;
 using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceActionDisposition;
 
@@ -558,29 +560,64 @@ using NamespaceTreeSnapshot = std::vector<NamespaceTreeEntrySnapshot>;
         };
         if (std::filesystem::is_regular_file(status)) {
             const auto metadata = gnfs::relation::ooc_cleanup_detail::inspect_file(path, 0, false);
-            if (metadata.kind != gnfs::relation::ooc_cleanup_detail::InspectKind::Present ||
-                metadata.identity.size >
+            if (metadata.kind == gnfs::relation::ooc_cleanup_detail::InspectKind::Present &&
+                metadata.identity.size <=
                     static_cast<std::uint64_t>((std::numeric_limits<std::size_t>::max)())) {
+                auto exact = gnfs::relation::ooc_cleanup_detail::inspect_file(
+                    path, static_cast<std::size_t>(metadata.identity.size), true);
+                if (exact.kind != gnfs::relation::ooc_cleanup_detail::InspectKind::Present ||
+                    exact.identity != metadata.identity) {
+                    throw std::runtime_error("namespace snapshot file changed during capture");
+                }
+                entry.hard_link_count = std::filesystem::hard_link_count(path, error);
+                if (error) {
+                    throw std::filesystem::filesystem_error("inspect namespace snapshot link count",
+                                                            path, error);
+                }
+                entry.identity = {
+                    exact.identity.first,
+                    exact.identity.second,
+                    exact.identity.third,
+                    exact.identity.size,
+                };
+                entry.bytes = std::move(exact.bytes);
+            } else {
+#ifdef _WIN32
                 throw std::runtime_error("could not inspect namespace snapshot file");
+#else
+                const auto inspect_native = [&path] {
+                    struct stat result{};
+                    int inspected = -1;
+                    do {
+                        inspected = ::lstat(path.c_str(), &result);
+                    } while (inspected != 0 && errno == EINTR);
+                    if (inspected != 0) {
+                        throw std::filesystem::filesystem_error(
+                            "inspect rejected namespace snapshot file", path,
+                            std::error_code(errno, std::generic_category()));
+                    }
+                    return result;
+                };
+                const auto before = inspect_native();
+                if (!S_ISREG(before.st_mode) || before.st_size < 0) {
+                    throw std::runtime_error("rejected namespace snapshot leaf was not regular");
+                }
+                entry.bytes = read_test_bytes(path);
+                const auto after = inspect_native();
+                if (before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
+                    before.st_mode != after.st_mode || before.st_nlink != after.st_nlink ||
+                    before.st_size != after.st_size) {
+                    throw std::runtime_error("namespace snapshot file changed during capture");
+                }
+                entry.hard_link_count = static_cast<std::uintmax_t>(after.st_nlink);
+                entry.identity = {
+                    static_cast<std::uint64_t>(after.st_dev),
+                    static_cast<std::uint64_t>(after.st_ino),
+                    0,
+                    static_cast<std::uint64_t>(after.st_size),
+                };
+#endif
             }
-            auto exact = gnfs::relation::ooc_cleanup_detail::inspect_file(
-                path, static_cast<std::size_t>(metadata.identity.size), true);
-            if (exact.kind != gnfs::relation::ooc_cleanup_detail::InspectKind::Present ||
-                exact.identity != metadata.identity) {
-                throw std::runtime_error("namespace snapshot file changed during capture");
-            }
-            entry.hard_link_count = std::filesystem::hard_link_count(path, error);
-            if (error) {
-                throw std::filesystem::filesystem_error("inspect namespace snapshot link count",
-                                                        path, error);
-            }
-            entry.identity = {
-                exact.identity.first,
-                exact.identity.second,
-                exact.identity.third,
-                exact.identity.size,
-            };
-            entry.bytes = std::move(exact.bytes);
         } else if (std::filesystem::is_directory(status)) {
             const auto identity =
                 gnfs::relation::ooc_cleanup_detail::inspect_directory_identity_locked(path);
@@ -1777,6 +1814,10 @@ void test_private_cleanup_union_observer_baseline_and_exact_names() {
         CHECK(!raw.namespace_foreign);
         CHECK(raw.cleanup_markers[static_cast<std::size_t>(PrivateCleanupMarkerSlot::Intent)] ==
               PrivateCleanupMarkerObservationKind::LegacyV1);
+        CHECK(raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical)] ==
+              PrivateHandoffLeafObservationKind::Missing);
+        CHECK(raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending)] ==
+              PrivateHandoffLeafObservationKind::Missing);
         const auto classified =
             gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw);
         CHECK(classified.block == PrivateCleanupUnionBlock::None);
@@ -1864,6 +1905,8 @@ struct PrivateCleanupUnionMutationContext final {
     PrivateCleanupUnionMutationKind kind = PrivateCleanupUnionMutationKind::ReplaceLeaf;
     std::filesystem::path target_path;
     std::filesystem::path saved_path;
+    std::filesystem::path snapshot_root;
+    std::optional<NamespaceTreeSnapshot> expected_after_mutation;
     bool fired = false;
 };
 
@@ -1903,6 +1946,9 @@ void mutate_private_cleanup_union_observation(PrivateCleanupUnionObservationPoin
                                                 context.target_path, error);
     }
     context.fired = true;
+    if (!context.snapshot_root.empty()) {
+        context.expected_after_mutation = capture_namespace_tree(context.snapshot_root);
+    }
 }
 
 void test_private_cleanup_union_same_handle_inventory() {
@@ -1910,6 +1956,8 @@ void test_private_cleanup_union_same_handle_inventory() {
         PrivateCleanupUnionObservationPoint::InitialInventoryComplete,
         PrivateCleanupUnionObservationPoint::LeafReadsComplete,
     };
+    constexpr auto canonical_slot = static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical);
+    constexpr auto pending_slot = static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending);
 
     for (std::size_t index = 0; index < observation_points.size(); ++index) {
         TempDirectory temp;
@@ -1926,6 +1974,7 @@ void test_private_cleanup_union_same_handle_inventory() {
             .kind = PrivateCleanupUnionMutationKind::ReplaceLeaf,
             .target_path = paths.intent_path,
             .saved_path = temp.path() / ("saved-intent-" + std::to_string(index)),
+            .snapshot_root = temp.path(),
         };
         const auto raw = gnfs::relation::ooc_cleanup_detail::observe_private_cleanup_union_for_test(
             base, PrivateCleanupUnionObservationTestHooks{
@@ -1933,11 +1982,109 @@ void test_private_cleanup_union_same_handle_inventory() {
                       .context = &context,
                   });
         CHECK(context.fired);
+        CHECK(context.expected_after_mutation.has_value());
+        if (context.expected_after_mutation) {
+            CHECK(capture_namespace_tree(temp.path()) == *context.expected_after_mutation);
+        }
         CHECK(raw.namespace_foreign);
+        CHECK(raw.handoff_markers[canonical_slot] == PrivateHandoffLeafObservationKind::Missing);
+        CHECK(raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Missing);
         CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
               PrivateCleanupUnionBlock::Foreign);
         CHECK(entry_exists_no_follow(context.target_path));
         CHECK(entry_exists_no_follow(context.saved_path));
+        CHECK(read_test_bytes(context.target_path) == read_test_bytes(context.saved_path));
+        std::error_code equivalent_error;
+        CHECK(!std::filesystem::equivalent(context.target_path, context.saved_path,
+                                           equivalent_error));
+        CHECK(!equivalent_error);
+    }
+
+    for (std::size_t index = 0; index < observation_points.size(); ++index) {
+        TempDirectory temp;
+        const auto base =
+            temp.path() /
+            ("private-observer-pending-replacement-" + std::to_string(index) + ".gnfs-sink-lease") /
+            "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        {
+            auto prepared = prepare_private_handoff(base);
+            PrivateHandoffStopContext stop{
+                .target = OOCPrivateHandoffFaultPoint::PendingDurable,
+            };
+            const auto interrupted =
+                publish_private_handoff(prepared, private_handoff_stop_hooks(stop));
+            CHECK(stop.stopped);
+            CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+            CHECK(interrupted.state == OOCPrivateHandoffState::PendingOnly);
+        }
+
+        PrivateCleanupUnionMutationContext context{
+            .target_point = observation_points[index],
+            .kind = PrivateCleanupUnionMutationKind::ReplaceLeaf,
+            .target_path = paths.private_handoff_pending_path,
+            .saved_path = temp.path() / ("saved-pending-" + std::to_string(index)),
+            .snapshot_root = temp.path(),
+        };
+        const auto raw = gnfs::relation::ooc_cleanup_detail::observe_private_cleanup_union_for_test(
+            base, PrivateCleanupUnionObservationTestHooks{
+                      .observe = mutate_private_cleanup_union_observation,
+                      .context = &context,
+                  });
+        CHECK(context.fired);
+        CHECK(context.expected_after_mutation.has_value());
+        if (context.expected_after_mutation) {
+            CHECK(capture_namespace_tree(temp.path()) == *context.expected_after_mutation);
+        }
+        CHECK(raw.namespace_foreign);
+        CHECK(raw.handoff_markers[canonical_slot] == PrivateHandoffLeafObservationKind::Missing);
+        CHECK(raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Exact);
+        CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+              PrivateCleanupUnionBlock::Foreign);
+        CHECK(entry_exists_no_follow(context.target_path));
+        CHECK(entry_exists_no_follow(context.saved_path));
+        CHECK(read_test_bytes(context.target_path) == read_test_bytes(context.saved_path));
+        std::error_code equivalent_error;
+        CHECK(!std::filesystem::equivalent(context.target_path, context.saved_path,
+                                           equivalent_error));
+        CHECK(!equivalent_error);
+    }
+
+    for (std::size_t index = 0; index < observation_points.size(); ++index) {
+        TempDirectory temp;
+        const auto base =
+            temp.path() /
+            ("private-observer-handoff-replacement-" + std::to_string(index) + ".gnfs-sink-lease") /
+            "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(prepared).canonical());
+
+        PrivateCleanupUnionMutationContext context{
+            .target_point = observation_points[index],
+            .kind = PrivateCleanupUnionMutationKind::ReplaceLeaf,
+            .target_path = paths.private_handoff_path,
+            .saved_path = temp.path() / ("saved-handoff-" + std::to_string(index)),
+            .snapshot_root = temp.path(),
+        };
+        const auto raw = gnfs::relation::ooc_cleanup_detail::observe_private_cleanup_union_for_test(
+            base, PrivateCleanupUnionObservationTestHooks{
+                      .observe = mutate_private_cleanup_union_observation,
+                      .context = &context,
+                  });
+        CHECK(context.fired);
+        CHECK(context.expected_after_mutation.has_value());
+        if (context.expected_after_mutation) {
+            CHECK(capture_namespace_tree(temp.path()) == *context.expected_after_mutation);
+        }
+        CHECK(raw.namespace_foreign);
+        CHECK(raw.handoff_markers[canonical_slot] == PrivateHandoffLeafObservationKind::Exact);
+        CHECK(raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Missing);
+        CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+              PrivateCleanupUnionBlock::Foreign);
+        CHECK(entry_exists_no_follow(context.target_path));
+        CHECK(entry_exists_no_follow(context.saved_path));
+        CHECK(read_test_bytes(context.target_path) == read_test_bytes(context.saved_path));
         std::error_code equivalent_error;
         CHECK(!std::filesystem::equivalent(context.target_path, context.saved_path,
                                            equivalent_error));
@@ -1959,6 +2106,7 @@ void test_private_cleanup_union_same_handle_inventory() {
             .kind = PrivateCleanupUnionMutationKind::ReplaceDirectory,
             .target_path = paths.private_directory,
             .saved_path = temp.path() / ("saved-private-directory-" + std::to_string(index)),
+            .snapshot_root = temp.path(),
         };
         std::optional<gnfs::relation::ooc_cleanup_detail::Failure> rejected;
         try {
@@ -1971,6 +2119,10 @@ void test_private_cleanup_union_same_handle_inventory() {
             rejected = failure;
         }
         CHECK(context.fired);
+        CHECK(context.expected_after_mutation.has_value());
+        if (context.expected_after_mutation) {
+            CHECK(capture_namespace_tree(temp.path()) == *context.expected_after_mutation);
+        }
         CHECK(rejected.has_value());
         if (rejected) {
             CHECK(rejected->status == OOCCleanupStatus::NamespaceConflict);
@@ -1994,6 +2146,297 @@ void test_private_cleanup_union_same_handle_inventory() {
             CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
                   PrivateCleanupUnionBlock::MarkerCorrupt);
         }
+    }
+}
+
+void test_private_cleanup_union_handoff_slots_are_independent() {
+    const auto observe_preserving = [](const std::filesystem::path& base,
+                                       const std::filesystem::path& root) {
+        const auto before = capture_namespace_tree(root);
+        const auto raw =
+            gnfs::relation::ooc_cleanup_detail::observe_private_cleanup_union_for_test(base);
+        CHECK(capture_namespace_tree(root) == before);
+        return raw;
+    };
+    const auto canonical_slot = static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical);
+    const auto pending_slot = static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending);
+
+    {
+        TempDirectory temp;
+        const auto base =
+            temp.path() / "private-observer-duplicate-pending.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        write_private_control_bytes(paths.private_handoff_pending_path,
+                                    read_test_bytes(paths.private_handoff_path));
+
+        const auto raw = observe_preserving(base, temp.path());
+        CHECK(!raw.namespace_foreign);
+        CHECK(raw.handoff_markers[canonical_slot] == PrivateHandoffLeafObservationKind::Exact);
+        CHECK(raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Exact);
+        CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+              PrivateCleanupUnionBlock::None);
+    }
+
+    {
+        TempDirectory temp;
+        const auto base =
+            temp.path() / "private-observer-corrupt-pending.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        constexpr std::array corrupt{
+            std::byte{0xde},
+            std::byte{0xad},
+            std::byte{0xbe},
+            std::byte{0xef},
+        };
+        write_private_control_bytes(paths.private_handoff_pending_path, corrupt);
+
+        const auto raw = observe_preserving(base, temp.path());
+        CHECK(!raw.namespace_foreign);
+        CHECK(raw.handoff_markers[canonical_slot] == PrivateHandoffLeafObservationKind::Exact);
+        CHECK(raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Foreign);
+        CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+              PrivateCleanupUnionBlock::Foreign);
+    }
+
+    {
+        TempDirectory temp;
+        const auto base =
+            temp.path() / "private-observer-corrupt-canonical.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        {
+            auto prepared = prepare_private_handoff(base);
+            PrivateHandoffStopContext stop{
+                .target = OOCPrivateHandoffFaultPoint::PendingDurable,
+            };
+            const auto interrupted =
+                publish_private_handoff(prepared, private_handoff_stop_hooks(stop));
+            CHECK(stop.stopped);
+            CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+            CHECK(interrupted.state == OOCPrivateHandoffState::PendingOnly);
+        }
+        write_private_control_bytes(paths.private_handoff_path,
+                                    read_test_bytes(paths.private_handoff_pending_path));
+        flip_last_byte(paths.private_handoff_path);
+
+        const auto raw = observe_preserving(base, temp.path());
+        CHECK(!raw.namespace_foreign);
+        CHECK(raw.handoff_markers[canonical_slot] == PrivateHandoffLeafObservationKind::Foreign);
+        CHECK(raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Exact);
+        CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+              PrivateCleanupUnionBlock::Foreign);
+    }
+
+    {
+        TempDirectory temp;
+        const auto base =
+            temp.path() / "private-observer-foreign-canonical.gnfs-sink-lease" / "corpus";
+        const auto foreign_base =
+            temp.path() / "private-observer-foreign-canonical-source.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        const auto foreign_paths = OOCCleanupTransaction::paths_for(foreign_base);
+        {
+            auto prepared = prepare_private_handoff(base);
+            PrivateHandoffStopContext stop{
+                .target = OOCPrivateHandoffFaultPoint::PendingDurable,
+            };
+            const auto interrupted =
+                publish_private_handoff(prepared, private_handoff_stop_hooks(stop));
+            CHECK(stop.stopped);
+            CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+            CHECK(interrupted.state == OOCPrivateHandoffState::PendingOnly);
+        }
+        auto foreign_prepared = prepare_private_handoff(foreign_base);
+        CHECK(publish_private_handoff(foreign_prepared).canonical());
+        write_private_control_bytes(paths.private_handoff_path,
+                                    read_test_bytes(foreign_paths.private_handoff_path));
+
+        const auto raw = observe_preserving(base, temp.path());
+        CHECK(!raw.namespace_foreign);
+        CHECK(raw.handoff_markers[canonical_slot] == PrivateHandoffLeafObservationKind::Foreign);
+        CHECK(raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Exact);
+        CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+              PrivateCleanupUnionBlock::Foreign);
+    }
+
+    {
+        TempDirectory temp;
+        const auto base =
+            temp.path() / "private-observer-unreserved-foreign-pair.gnfs-sink-lease" / "corpus";
+        const auto foreign_base =
+            temp.path() / "private-observer-unreserved-foreign-source.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        const auto foreign_paths = OOCCleanupTransaction::paths_for(foreign_base);
+        auto prepared = prepare_private_handoff(base);
+        auto foreign_prepared = prepare_private_handoff(foreign_base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        CHECK(publish_private_handoff(foreign_prepared).canonical());
+        const auto foreign_bytes = read_test_bytes(foreign_paths.private_handoff_path);
+        write_private_control_bytes(paths.private_handoff_path, foreign_bytes);
+        write_private_control_bytes(paths.private_handoff_pending_path, foreign_bytes);
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+
+        const auto raw = observe_preserving(base, temp.path());
+        CHECK(!raw.namespace_foreign);
+        CHECK(raw.handoff_markers[canonical_slot] == PrivateHandoffLeafObservationKind::Foreign);
+        CHECK(raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Foreign);
+        CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+              PrivateCleanupUnionBlock::Foreign);
+    }
+
+    {
+        TempDirectory temp;
+        const auto base =
+            temp.path() / "private-observer-hardlink-pending.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        write_private_control_bytes(paths.private_handoff_pending_path,
+                                    read_test_bytes(paths.private_handoff_path));
+        if (create_hard_link_checked(paths.private_handoff_pending_path,
+                                     temp.path() / "pending-hard-link")) {
+            const auto raw = observe_preserving(base, temp.path());
+            CHECK(!raw.namespace_foreign);
+            CHECK(raw.handoff_markers[canonical_slot] == PrivateHandoffLeafObservationKind::Exact);
+            CHECK(raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Foreign);
+            CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+                  PrivateCleanupUnionBlock::Foreign);
+        }
+    }
+
+    {
+        TempDirectory temp;
+        const auto base =
+            temp.path() / "private-observer-foreign-first-context.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        write_private_control_bytes(paths.private_handoff_pending_path,
+                                    read_test_bytes(paths.private_handoff_path));
+        if (create_hard_link_checked(paths.private_handoff_pending_path,
+                                     temp.path() / "foreign-first-pending-hard-link")) {
+            flip_last_byte(paths.lease_owned_path);
+            const auto raw = observe_preserving(base, temp.path());
+            CHECK(!raw.namespace_foreign);
+            CHECK(raw.handoff_markers[canonical_slot] ==
+                  PrivateHandoffLeafObservationKind::Foreign);
+            CHECK(raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Foreign);
+            CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+                  PrivateCleanupUnionBlock::Foreign);
+        }
+    }
+
+    {
+        TempDirectory temp;
+        const auto base =
+            temp.path() / "private-observer-inventory-first-context.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        flip_last_byte(paths.lease_owned_path);
+
+        PrivateCleanupUnionMutationContext context{
+            .target_point = PrivateCleanupUnionObservationPoint::InitialInventoryComplete,
+            .kind = PrivateCleanupUnionMutationKind::ReplaceLeaf,
+            .target_path = paths.private_handoff_path,
+            .saved_path = temp.path() / "saved-inventory-first-handoff",
+            .snapshot_root = temp.path(),
+        };
+        const auto raw = gnfs::relation::ooc_cleanup_detail::observe_private_cleanup_union_for_test(
+            base, PrivateCleanupUnionObservationTestHooks{
+                      .observe = mutate_private_cleanup_union_observation,
+                      .context = &context,
+                  });
+        CHECK(context.fired);
+        CHECK(context.expected_after_mutation.has_value());
+        if (context.expected_after_mutation) {
+            CHECK(capture_namespace_tree(temp.path()) == *context.expected_after_mutation);
+        }
+        CHECK(raw.namespace_foreign);
+        CHECK(raw.handoff_markers[canonical_slot] == PrivateHandoffLeafObservationKind::Foreign);
+        CHECK(raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Missing);
+        CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+              PrivateCleanupUnionBlock::Foreign);
+    }
+
+    {
+        TempDirectory temp;
+        const auto base =
+            temp.path() / "private-observer-hardlink-canonical.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        {
+            auto prepared = prepare_private_handoff(base);
+            PrivateHandoffStopContext stop{
+                .target = OOCPrivateHandoffFaultPoint::PendingDurable,
+            };
+            const auto interrupted =
+                publish_private_handoff(prepared, private_handoff_stop_hooks(stop));
+            CHECK(stop.stopped);
+            CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+            CHECK(interrupted.state == OOCPrivateHandoffState::PendingOnly);
+        }
+        write_private_control_bytes(paths.private_handoff_path,
+                                    read_test_bytes(paths.private_handoff_pending_path));
+        if (create_hard_link_checked(paths.private_handoff_path,
+                                     temp.path() / "canonical-hard-link")) {
+            const auto raw = observe_preserving(base, temp.path());
+            CHECK(!raw.namespace_foreign);
+            CHECK(raw.handoff_markers[canonical_slot] ==
+                  PrivateHandoffLeafObservationKind::Foreign);
+            CHECK(raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Exact);
+            CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+                  PrivateCleanupUnionBlock::Foreign);
+        }
+    }
+
+    {
+        TempDirectory temp;
+        const auto base =
+            temp.path() / "private-observer-conflicting-pending.gnfs-sink-lease" / "corpus";
+        const auto foreign_base =
+            temp.path() / "private-observer-conflicting-source.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        const auto foreign_paths = OOCCleanupTransaction::paths_for(foreign_base);
+        auto prepared = prepare_private_handoff(base);
+        auto foreign_prepared = prepare_private_handoff(foreign_base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        CHECK(publish_private_handoff(foreign_prepared).canonical());
+        write_private_control_bytes(paths.private_handoff_pending_path,
+                                    read_test_bytes(foreign_paths.private_handoff_path));
+
+        const auto raw = observe_preserving(base, temp.path());
+        CHECK(!raw.namespace_foreign);
+        CHECK(raw.handoff_markers[canonical_slot] == PrivateHandoffLeafObservationKind::Exact);
+        CHECK(raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Malformed);
+        CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+              PrivateCleanupUnionBlock::Foreign);
+    }
+
+    {
+        TempDirectory temp;
+        const auto base =
+            temp.path() / "private-observer-conflict-first-context.gnfs-sink-lease" / "corpus";
+        const auto foreign_base =
+            temp.path() / "private-observer-conflict-first-source.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        const auto foreign_paths = OOCCleanupTransaction::paths_for(foreign_base);
+        auto prepared = prepare_private_handoff(base);
+        auto foreign_prepared = prepare_private_handoff(foreign_base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        CHECK(publish_private_handoff(foreign_prepared).canonical());
+        write_private_control_bytes(paths.private_handoff_pending_path,
+                                    read_test_bytes(foreign_paths.private_handoff_path));
+        flip_last_byte(paths.lease_owned_path);
+
+        const auto raw = observe_preserving(base, temp.path());
+        CHECK(!raw.namespace_foreign);
+        CHECK(raw.handoff_markers[canonical_slot] == PrivateHandoffLeafObservationKind::Foreign);
+        CHECK(raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Malformed);
+        CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+              PrivateCleanupUnionBlock::Foreign);
     }
 }
 #endif
@@ -6370,6 +6813,7 @@ void run_authority_observer_suite() {
     test_private_cleanup_union_observer_baseline_and_exact_names();
 #if defined(__APPLE__)
     test_private_cleanup_union_same_handle_inventory();
+    test_private_cleanup_union_handoff_slots_are_independent();
 #else
     test_private_cleanup_union_limited_platform_rejects_hooks();
 #endif

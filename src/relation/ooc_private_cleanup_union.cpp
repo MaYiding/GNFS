@@ -653,30 +653,158 @@ scan_private_cleanup_union_directory(const OOCCleanupPaths& paths,
     return false;
 }
 
-void project_strict_handoff_classification(const PrivateHandoffLeafClassification& classified,
-                                           const LoadedPrivateHandoffLeaf& pending,
-                                           PrivateCleanupUnionRawObservation& raw) {
-    switch (classified.inspection.state) {
-    case OOCPrivateHandoffState::None:
-        break;
-    case OOCPrivateHandoffState::Canonical:
-        raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical)] =
-            PrivateHandoffLeafObservationKind::Exact;
-        if (pending.state == PrivateHandoffLeafState::Exact) {
-            raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending)] =
-                PrivateHandoffLeafObservationKind::Exact;
+[[nodiscard]] PrivateHandoffLeafObservationKind
+project_tainted_handoff_leaf(const PrivateHandoffLeafClassification& classified) noexcept {
+    return classified.inspection.result.status == OOCCleanupStatus::ForeignReplacementPreserved
+               ? PrivateHandoffLeafObservationKind::Foreign
+               : PrivateHandoffLeafObservationKind::Malformed;
+}
+
+enum class StrictHandoffObservationBlocker : std::uint8_t {
+    None,
+    Unsupported,
+    Foreign,
+};
+
+[[nodiscard]] StrictHandoffObservationBlocker
+strict_handoff_observation_blocker(const PrivateCleanupUnionRawObservation& raw) noexcept {
+    if (raw.namespace_foreign) {
+        return StrictHandoffObservationBlocker::Foreign;
+    }
+    StrictHandoffObservationBlocker blocker = StrictHandoffObservationBlocker::None;
+    for (const auto marker : raw.handoff_markers) {
+        switch (marker) {
+        case PrivateHandoffLeafObservationKind::Missing:
+        case PrivateHandoffLeafObservationKind::Exact:
+            break;
+        case PrivateHandoffLeafObservationKind::Unsupported:
+            if (blocker == StrictHandoffObservationBlocker::None) {
+                blocker = StrictHandoffObservationBlocker::Unsupported;
+            }
+            break;
+        case PrivateHandoffLeafObservationKind::Malformed:
+        case PrivateHandoffLeafObservationKind::Foreign:
+        case PrivateHandoffLeafObservationKind::Count:
+            return StrictHandoffObservationBlocker::Foreign;
         }
-        break;
+    }
+    return blocker;
+}
+
+[[nodiscard]] PrivateHandoffLeafObservationKind
+strict_handoff_blocker_fallback(StrictHandoffObservationBlocker blocker) noexcept {
+    return blocker == StrictHandoffObservationBlocker::Foreign
+               ? PrivateHandoffLeafObservationKind::Foreign
+               : PrivateHandoffLeafObservationKind::Unsupported;
+}
+
+void project_strict_handoff_leaves(const OOCCleanupPaths& paths, const BaseLock& lock,
+                                   const std::array<std::uint64_t, 3>& directory_identity,
+                                   const std::optional<LoadedPrivateHandoffLeaf>& canonical,
+                                   const std::optional<LoadedPrivateHandoffLeaf>& pending,
+                                   PrivateCleanupUnionRawObservation& raw) {
+    const auto canonical_slot = static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical);
+    const auto pending_slot = static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending);
+    if (!canonical && !pending) {
+        return;
+    }
+
+    const LoadedPrivateHandoffLeaf missing{
+        .state = PrivateHandoffLeafState::Missing,
+    };
+    const auto& canonical_leaf = canonical ? *canonical : missing;
+    const auto& pending_leaf = pending ? *pending : missing;
+    if (canonical_leaf.state == PrivateHandoffLeafState::Exact &&
+        pending_leaf.state == PrivateHandoffLeafState::Exact &&
+        canonical_leaf.bytes != pending_leaf.bytes) {
+        raw.handoff_markers[pending_slot] = PrivateHandoffLeafObservationKind::Malformed;
+    }
+    const auto existing_blocker = strict_handoff_observation_blocker(raw);
+    std::optional<PrivateHandoffLeafClassification> classified;
+    try {
+        classified = classify_private_handoff_leaves_locked(paths, lock, directory_identity,
+                                                            canonical_leaf, pending_leaf);
+    } catch (const Failure&) {
+        if (existing_blocker == StrictHandoffObservationBlocker::None) {
+            throw;
+        }
+        const auto fallback = strict_handoff_blocker_fallback(existing_blocker);
+        if (canonical_leaf.state == PrivateHandoffLeafState::Exact &&
+            raw.handoff_markers[canonical_slot] == PrivateHandoffLeafObservationKind::Missing) {
+            raw.handoff_markers[canonical_slot] = fallback;
+        }
+        if (pending_leaf.state == PrivateHandoffLeafState::Exact &&
+            raw.handoff_markers[pending_slot] == PrivateHandoffLeafObservationKind::Missing) {
+            raw.handoff_markers[pending_slot] = fallback;
+        }
+        return;
+    }
+    switch (classified->inspection.state) {
+    case OOCPrivateHandoffState::None:
+        if (canonical_leaf.state == PrivateHandoffLeafState::Exact) {
+            raw.handoff_markers[canonical_slot] = PrivateHandoffLeafObservationKind::Foreign;
+        }
+        if (pending_leaf.state == PrivateHandoffLeafState::Exact) {
+            raw.handoff_markers[pending_slot] = PrivateHandoffLeafObservationKind::Foreign;
+        }
+        return;
+    case OOCPrivateHandoffState::Canonical:
+        if (canonical_leaf.state != PrivateHandoffLeafState::Exact) {
+            raw.handoff_markers[canonical_slot] = PrivateHandoffLeafObservationKind::Foreign;
+            if (pending_leaf.state == PrivateHandoffLeafState::Exact) {
+                raw.handoff_markers[pending_slot] = PrivateHandoffLeafObservationKind::Foreign;
+            }
+            return;
+        }
+        raw.handoff_markers[canonical_slot] = PrivateHandoffLeafObservationKind::Exact;
+        if (pending_leaf.state == PrivateHandoffLeafState::Exact) {
+            raw.handoff_markers[pending_slot] = PrivateHandoffLeafObservationKind::Exact;
+        }
+        return;
     case OOCPrivateHandoffState::PendingOnly:
-        raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending)] =
-            PrivateHandoffLeafObservationKind::Exact;
-        break;
+        if (pending_leaf.state != PrivateHandoffLeafState::Exact) {
+            raw.handoff_markers[pending_slot] = PrivateHandoffLeafObservationKind::Foreign;
+            if (canonical_leaf.state == PrivateHandoffLeafState::Exact) {
+                raw.handoff_markers[canonical_slot] = PrivateHandoffLeafObservationKind::Foreign;
+            }
+            return;
+        }
+        raw.handoff_markers[pending_slot] = PrivateHandoffLeafObservationKind::Exact;
+        return;
     case OOCPrivateHandoffState::TaintedPreserved:
-        raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical)] =
-            classified.inspection.result.status == OOCCleanupStatus::ForeignReplacementPreserved
-                ? PrivateHandoffLeafObservationKind::Foreign
-                : PrivateHandoffLeafObservationKind::Malformed;
         break;
+    }
+
+    const bool canonical_exact = canonical_leaf.state == PrivateHandoffLeafState::Exact;
+    const bool pending_exact = pending_leaf.state == PrivateHandoffLeafState::Exact;
+    if (canonical_exact && pending_exact) {
+        if (classified->canonical_context_valid) {
+            raw.handoff_markers[canonical_slot] = PrivateHandoffLeafObservationKind::Exact;
+            raw.handoff_markers[pending_slot] = PrivateHandoffLeafObservationKind::Malformed;
+            return;
+        }
+        raw.handoff_markers[canonical_slot] = project_tainted_handoff_leaf(*classified);
+        raw.handoff_markers[pending_slot] = canonical_leaf.bytes == pending_leaf.bytes
+                                                ? project_tainted_handoff_leaf(*classified)
+                                                : PrivateHandoffLeafObservationKind::Malformed;
+        try {
+            const auto pending_only = classify_private_handoff_leaves_locked(
+                paths, lock, directory_identity, missing, pending_leaf);
+            if (pending_only.inspection.state == OOCPrivateHandoffState::PendingOnly &&
+                pending_only.pending_is_preactive) {
+                raw.handoff_markers[pending_slot] = PrivateHandoffLeafObservationKind::Exact;
+            }
+        } catch (const Failure&) {
+            // The aggregate is already terminal. Companion refinement is
+            // diagnostic only and may not replace the established blocker.
+        }
+        return;
+    }
+    if (canonical_exact) {
+        raw.handoff_markers[canonical_slot] = project_tainted_handoff_leaf(*classified);
+    }
+    if (pending_exact) {
+        raw.handoff_markers[pending_slot] = project_tainted_handoff_leaf(*classified);
     }
 }
 
@@ -747,55 +875,67 @@ observe_private_cleanup_union_locked(const OOCCleanupPaths& paths, const BaseLoc
                 directory, paths.staged_pending_path.filename(), true, STAGED_MAGIC,
                 OOCAuthorizedCleanupMarkerKindV2::staged,
                 metadata(PrivateCleanupUnionDirectoryEntry::StagedPending), inventory_mismatch);
+        raw.namespace_foreign = inventory_mismatch;
 
         const auto handoff_metadata = metadata(PrivateCleanupUnionDirectoryEntry::Handoff);
         const auto handoff_pending_metadata =
             metadata(PrivateCleanupUnionDirectoryEntry::HandoffPending);
-        const bool handoff_metadata_foreign =
-            (handoff_metadata && !private_cleanup_union_leaf_has_file_policy(*handoff_metadata)) ||
-            (handoff_pending_metadata &&
-             !private_cleanup_union_leaf_has_file_policy(*handoff_pending_metadata));
-        if (handoff_metadata_foreign) {
-            if (handoff_metadata &&
-                !private_cleanup_union_leaf_has_file_policy(*handoff_metadata)) {
-                raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical)] =
-                    PrivateHandoffLeafObservationKind::Foreign;
-            }
-            if (handoff_pending_metadata &&
-                !private_cleanup_union_leaf_has_file_policy(*handoff_pending_metadata)) {
-                raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending)] =
-                    PrivateHandoffLeafObservationKind::Foreign;
-            }
-        } else {
-            try {
-                const auto canonical = read_private_handoff_leaf(
-                    directory.native_handle(), paths.private_handoff_path.filename());
-                const auto pending = read_private_handoff_leaf(
-                    directory.native_handle(), paths.private_handoff_pending_path.filename());
-                inventory_mismatch =
-                    inventory_mismatch ||
-                    !private_handoff_leaf_matches_inventory(canonical, handoff_metadata) ||
-                    !private_handoff_leaf_matches_inventory(pending, handoff_pending_metadata);
-                const auto classified = classify_private_handoff_leaves_locked(
-                    paths, lock, directory.identity(), canonical, pending);
-                project_strict_handoff_classification(classified, pending, raw);
-            } catch (const Failure& failure) {
-                if (failure.status != OOCCleanupStatus::PlatformUnsupported) {
-                    throw;
-                }
-                raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical)] =
-                    handoff_metadata ? PrivateHandoffLeafObservationKind::Unsupported
-                                     : PrivateHandoffLeafObservationKind::Missing;
-                raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending)] =
-                    handoff_pending_metadata ? PrivateHandoffLeafObservationKind::Unsupported
-                                             : PrivateHandoffLeafObservationKind::Missing;
-            }
+        const auto canonical_slot = static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical);
+        const auto pending_slot = static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending);
+        if (handoff_metadata && !private_cleanup_union_leaf_has_file_policy(*handoff_metadata)) {
+            raw.handoff_markers[canonical_slot] = PrivateHandoffLeafObservationKind::Foreign;
         }
+        if (handoff_pending_metadata &&
+            !private_cleanup_union_leaf_has_file_policy(*handoff_pending_metadata)) {
+            raw.handoff_markers[pending_slot] = PrivateHandoffLeafObservationKind::Foreign;
+        }
+        const auto read_handoff_leaf =
+            [&](const std::optional<PrivateCleanupUnionLeafMetadata>& leaf_metadata,
+                const std::filesystem::path& leaf,
+                PrivateHandoffLeafSlot slot) -> std::optional<LoadedPrivateHandoffLeaf> {
+            const auto raw_slot = static_cast<std::size_t>(slot);
+            if (raw.handoff_markers[raw_slot] == PrivateHandoffLeafObservationKind::Foreign) {
+                return std::nullopt;
+            }
+            try {
+                auto loaded = read_private_handoff_leaf(directory.native_handle(), leaf);
+                const bool matches_inventory =
+                    private_handoff_leaf_matches_inventory(loaded, leaf_metadata);
+                inventory_mismatch = inventory_mismatch || !matches_inventory;
+                raw.namespace_foreign = raw.namespace_foreign || !matches_inventory;
+                if (loaded.state == PrivateHandoffLeafState::Rejected) {
+                    raw.handoff_markers[raw_slot] = PrivateHandoffLeafObservationKind::Foreign;
+                    return std::nullopt;
+                }
+                return loaded;
+            } catch (const Failure& failure) {
+                if (failure.status == OOCCleanupStatus::PlatformUnsupported) {
+                    raw.handoff_markers[raw_slot] =
+                        leaf_metadata ? PrivateHandoffLeafObservationKind::Unsupported
+                                      : PrivateHandoffLeafObservationKind::Missing;
+                    return std::nullopt;
+                }
+                const auto blocker = strict_handoff_observation_blocker(raw);
+                if (blocker != StrictHandoffObservationBlocker::None) {
+                    raw.handoff_markers[raw_slot] = strict_handoff_blocker_fallback(blocker);
+                    return std::nullopt;
+                }
+                throw;
+            }
+        };
+        const auto canonical =
+            read_handoff_leaf(handoff_metadata, paths.private_handoff_path.filename(),
+                              PrivateHandoffLeafSlot::Canonical);
+        const auto pending = read_handoff_leaf(handoff_pending_metadata,
+                                               paths.private_handoff_pending_path.filename(),
+                                               PrivateHandoffLeafSlot::Pending);
+        project_strict_handoff_leaves(paths, lock, directory.identity(), canonical, pending, raw);
         if (hooks.observe != nullptr) {
             hooks.observe(PrivateCleanupUnionObservationPoint::LeafReadsComplete, hooks.context);
         }
         const auto after = scan_private_cleanup_union_directory(paths, directory);
-        raw.namespace_foreign = inventory_mismatch || after.foreign || before != after;
+        raw.namespace_foreign =
+            raw.namespace_foreign || inventory_mismatch || after.foreign || before != after;
         directory.require_stable();
         directory.require_private_policy();
         return raw;

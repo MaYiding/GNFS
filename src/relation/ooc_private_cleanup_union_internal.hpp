@@ -58,8 +58,10 @@ enum class PrivateCleanupMarkerObservationKind : std::uint8_t {
 /// Result of validating one generic-handoff leaf.
 ///
 /// `Exact` is reserved for a context-bound, protocol-valid observation.
-/// Inconsistent canonical/pending records are reported as `Malformed` before
-/// this pure policy is called.
+/// Each policy-compatible leaf is validated independently, so a rejected
+/// sibling cannot erase an exact fact. If two independently exact records
+/// disagree, canonical remains `Exact` and pending is `Malformed` before this
+/// pure policy is called.
 enum class PrivateHandoffLeafObservationKind : std::uint8_t {
     Missing,
     Exact,
@@ -82,7 +84,10 @@ observe_platform_limited_handoff_leaf(const std::filesystem::path& path);
 
 struct PrivateCleanupUnionRawObservation final {
     /// Unknown/case-fold duplicate leaves or a replaced/unstable namespace.
-    /// I/O failures short-circuit before the pure reducer.
+    /// On macOS, during strict handoff diagnostics, a sibling I/O failure
+    /// short-circuits only when no terminal namespace or handoff-leaf fact is
+    /// already established. Cleanup-marker and platform-limited reads retain
+    /// their existing failure semantics.
     bool namespace_foreign = false;
     std::array<PrivateCleanupMarkerObservationKind,
                static_cast<std::size_t>(PrivateCleanupMarkerSlot::Count)>
