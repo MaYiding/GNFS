@@ -2113,6 +2113,27 @@ public:
         initialize(&expected);
     }
 
+    /// Adopt a caller-validated exact finalized V3 pair without reopening a
+    /// path.
+    ///
+    /// The caller must establish native identity, no-follow, owner/mode/link,
+    /// and exact-extent policy before transferring these handles. This reader
+    /// grants no adoption, cleanup, or arm authority; it validates only the V3
+    /// format, paired store identity, descriptor, offsets, sentinel, and
+    /// extents through the same handles that serve subsequent reads. Native
+    /// identity and policy are therefore transfer-time obligations of the
+    /// caller, not facts inferred by this constructor.
+    ///
+    /// Generation is caller-domain freshness metadata: V3 does not persist it,
+    /// so this constructor can require only that it is nonzero. Both wrappers
+    /// remain caller-owned if descriptor or wrapper prevalidation fails. Once
+    /// both are committed, any mapping or corpus-validation failure closes
+    /// both handles.
+    OOCRelationReader(gnfs::util::OwnedNativeFile&& index_file,
+                      gnfs::util::OwnedNativeFile&& data_file,
+                      const OOCSnapshotDescriptor& expected)
+        : OOCRelationReader(commit_owned_v3_pair(index_file, data_file, expected), expected) {}
+
     /// Number of stored relations.
     [[nodiscard]] size_t count() const noexcept {
         return count_;
@@ -2161,6 +2182,20 @@ public:
     }
 
 private:
+    struct OwnedExactPair final {
+        OwnedExactPair(gnfs::util::OwnedNativeFile&& index_file,
+                       gnfs::util::OwnedNativeFile&& data_file) noexcept
+            : index(std::move(index_file)), data(std::move(data_file)) {}
+
+        gnfs::util::OwnedNativeFile index;
+        gnfs::util::OwnedNativeFile data;
+    };
+
+    OOCRelationReader(OwnedExactPair pair, const OOCSnapshotDescriptor& expected)
+        : idx_file_(std::move(pair.index)), data_file_(std::move(pair.data)) {
+        initialize(&expected);
+    }
+
     static void validate_expected_descriptor(const OOCSnapshotDescriptor& expected) {
         if (expected.format_version != OOCRelationWriter::FORMAT_VERSION_V2 &&
             expected.format_version != OOCRelationWriter::FORMAT_VERSION_V3) {
@@ -2174,6 +2209,37 @@ private:
             throw std::invalid_argument("OOCRelationReader: expected generation is zero");
         }
         (void)OOCRelationWriter::index_size_for_count(expected.count);
+    }
+
+    [[nodiscard]] static OwnedExactPair
+    commit_owned_v3_pair(gnfs::util::OwnedNativeFile& index_file,
+                         gnfs::util::OwnedNativeFile& data_file,
+                         const OOCSnapshotDescriptor& expected) {
+        validate_owned_v3_descriptor(expected);
+        if (&index_file == &data_file || !index_file.valid() || !data_file.valid()) {
+            throw std::invalid_argument(
+                "OOCRelationReader: owned exact pair requires two distinct valid wrappers");
+        }
+
+        // This is the sole dual-handle commit point. Both moves are noexcept;
+        // after it returns the caller wrappers are invalid, and pair/member
+        // unwinding closes both handles on every later failure.
+        return OwnedExactPair(std::move(index_file), std::move(data_file));
+    }
+
+    static void validate_owned_v3_descriptor(const OOCSnapshotDescriptor& expected) {
+        validate_expected_descriptor(expected);
+        if (expected.format_version != OOCRelationWriter::FORMAT_VERSION_V3) {
+            throw std::invalid_argument(
+                "OOCRelationReader: owned exact pair requires finalized V3");
+        }
+        if (expected.data_end < OOCRelationWriter::DATA_HEADER_BYTES ||
+            (expected.count == 0 && expected.data_end != OOCRelationWriter::DATA_HEADER_BYTES) ||
+            (expected.count != 0 && expected.data_end <= OOCRelationWriter::DATA_HEADER_BYTES) ||
+            expected.data_end > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+            throw std::invalid_argument(
+                "OOCRelationReader: owned exact pair descriptor has invalid data extent");
+        }
     }
 
     void initialize(const OOCSnapshotDescriptor* expected) {
