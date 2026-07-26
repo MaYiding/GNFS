@@ -30,10 +30,16 @@ inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PREFIX
 inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_ORDINAL_SEPARATOR = "-a";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PENDING_SUFFIX =
     ".pending";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_DIRECTORY_SUFFIX =
+    ".gnfs-sink-lease";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_BASE_LOCK_SUFFIX =
+    ".gnfs-sink-lease.gnfs-ooc-cleanup-v1.lock";
 inline constexpr std::uint32_t DISTRIBUTED_SIEVE_WAVE_LOCK_SEMANTICS_VERSION_V1 = 1;
 
 struct DistributedSieveWorkerAttemptNamesV1 final {
     std::string relative_lease_stem;
+    std::string private_directory_leaf;
+    std::string base_lock_leaf;
     std::string canonical_record_leaf;
     std::string pending_record_leaf;
 
@@ -51,8 +57,9 @@ struct DistributedSieveParsedWorkerAttemptLeafV1 final {
                const DistributedSieveParsedWorkerAttemptLeafV1&) noexcept = default;
 };
 
-/// Derive the exact V1 lease stem and immutable record leaves for one bounded
-/// worker attempt. This is naming only and grants no filesystem authority.
+/// Derive the exact V1 lease stem, private directory, permanent BaseLock, and
+/// immutable record leaves for one bounded worker attempt. This is naming only
+/// and grants no filesystem authority.
 [[nodiscard]] std::optional<DistributedSieveWorkerAttemptNamesV1>
 distributed_sieve_worker_attempt_names_v1(std::string_view chunk_relative_artifact_stem,
                                           std::uint32_t chunk_id, std::uint32_t attempt_ordinal);
@@ -150,6 +157,13 @@ struct DistributedSieveWaveStoreTestHooks final {
     void* context = nullptr;
 };
 
+struct DistributedSieveWaveStoreInventoryTestHooks final {
+    using AfterFirstValidation = void (*)(void* context) noexcept;
+
+    AfterFirstValidation after_first_validation = nullptr;
+    void* context = nullptr;
+};
+
 struct DistributedSieveWaveStoreDiagnostic final {
     DistributedSieveWaveStoreStatus status = DistributedSieveWaveStoreStatus::ready;
     std::error_code native_error;
@@ -201,8 +215,10 @@ public:
     manifest_snapshot() const noexcept;
 
     /// Re-establish every held/named identity and immutable manifest binding.
-    /// This operation never repairs or mutates the namespace.
-    [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate() const noexcept;
+    /// This operation never repairs or mutates the namespace. The optional
+    /// source-private test hook runs between the two inventory snapshots.
+    [[nodiscard]] DistributedSieveWaveStoreDiagnostic
+    revalidate(DistributedSieveWaveStoreInventoryTestHooks hooks = {}) const noexcept;
 
     /// Exclusively claim this exact shared WaveStore state for one future
     /// private-lease root action. The claim is process-bound, keeps the
@@ -215,6 +231,7 @@ private:
     struct State;
 
     explicit DistributedSieveWaveStore(std::shared_ptr<const State> state) noexcept;
+    [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate_authority() const noexcept;
 
     std::shared_ptr<const State> state_;
 
@@ -245,8 +262,15 @@ public:
     [[nodiscard]] bool owned_by_current_process() const noexcept;
 
     /// Re-establish the exact WaveStore authority while retaining the claim.
-    /// This operation never repairs or mutates the namespace.
+    /// The full check also requires the manifest-bound root inventory to be
+    /// closed. This operation never repairs or mutates the namespace.
     [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate() const noexcept;
+
+    /// Re-establish only process, root, permanent-lock, and immutable-manifest
+    /// authority. Ordinary root children are deliberately not enumerated, so
+    /// this result is never sufficient mutation authority without a separate
+    /// phase-aware inventory check.
+    [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate_authority() const noexcept;
 
 private:
     explicit DistributedSievePrivateLeaseRootClaim(
