@@ -1,30 +1,52 @@
 #include <gnfs/relation/ooc_cleanup_transaction.hpp>
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
 
+#include "distributed_sieve_wave_store_internal.hpp"
 #include "ooc_private_handoff_cleanup_authorization_internal.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
+#include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+#if defined(__APPLE__)
+#include <membership.h>
+#include <sys/acl.h>
+#elif defined(__linux__)
+#include <sys/xattr.h>
+#endif
+
 namespace {
 
 namespace sieve = gnfs::sieve;
 namespace cleanup_detail = gnfs::relation::ooc_cleanup_detail;
+namespace wave_detail = gnfs::sieve::distributed_sieve_resume_detail;
 using Digest = gnfs::util::Sha256Digest;
 using Record = sieve::DistributedSieveProtocolRecordV1;
 using Status = sieve::DistributedSieveProtocolStatus;
@@ -70,6 +92,29 @@ static_assert(!std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupA
                                        std::filesystem::path>);
 static_assert(
     !std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt, Digest>);
+static_assert(!std::is_default_constructible_v<wave_detail::DistributedSieveWaveStore>);
+static_assert(!std::is_copy_constructible_v<wave_detail::DistributedSieveWaveStore>);
+static_assert(!std::is_copy_assignable_v<wave_detail::DistributedSieveWaveStore>);
+static_assert(!std::is_move_constructible_v<wave_detail::DistributedSieveWaveStore>);
+static_assert(!std::is_move_assignable_v<wave_detail::DistributedSieveWaveStore>);
+
+constexpr std::array WAVE_STORE_FAULT_POINTS{
+    wave_detail::DistributedSieveWaveStoreFaultPoint::RootDurable,
+    wave_detail::DistributedSieveWaveStoreFaultPoint::LockDurable,
+    wave_detail::DistributedSieveWaveStoreFaultPoint::ManifestPendingDurable,
+    wave_detail::DistributedSieveWaveStoreFaultPoint::ManifestCanonicalPromoted,
+    wave_detail::DistributedSieveWaveStoreFaultPoint::ManifestCanonicalDurable,
+};
+static_assert(WAVE_STORE_FAULT_POINTS.size() ==
+              static_cast<std::size_t>(wave_detail::DistributedSieveWaveStoreFaultPoint::Count));
+static_assert([] {
+    for (std::size_t index = 0; index < WAVE_STORE_FAULT_POINTS.size(); ++index) {
+        if (static_cast<std::size_t>(WAVE_STORE_FAULT_POINTS[index]) != index) {
+            return false;
+        }
+    }
+    return true;
+}());
 
 class TestFailure final : public std::runtime_error {
 public:
@@ -3395,6 +3440,1220 @@ void test_empty_chunk_projection_and_merge() {
                "trailing empty chunk reaches WaveCompleted without cleanup authority");
 }
 
+class WaveStoreTempDirectory final {
+public:
+    WaveStoreTempDirectory() {
+        static std::atomic<std::uint64_t> sequence{0};
+        const auto tick =
+            static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+        for (std::uint64_t attempt = 0; attempt < 100; ++attempt) {
+            path_ = std::filesystem::temp_directory_path() /
+                    ("gnfs-distributed-wave-store-" + std::to_string(tick) + "-" +
+                     std::to_string(sequence.fetch_add(1)) + "-" + std::to_string(attempt));
+            std::error_code error;
+            if (std::filesystem::create_directory(path_, error)) {
+#ifndef _WIN32
+                if (::chmod(path_.c_str(), 0700) != 0) {
+                    const int saved_errno = errno;
+                    std::filesystem::remove_all(path_, error);
+                    throw std::system_error(saved_errno, std::generic_category(),
+                                            "chmod wave-store temp directory");
+                }
+#endif
+                const auto canonical_path = std::filesystem::canonical(path_, error);
+                if (error) {
+                    std::error_code ignored;
+                    (void)std::filesystem::remove_all(path_, ignored);
+                    throw std::filesystem::filesystem_error(
+                        "canonicalize wave-store temp directory", path_, error);
+                }
+                path_ = canonical_path;
+                return;
+            }
+            if (error && error != std::errc::file_exists) {
+                throw std::filesystem::filesystem_error("create wave-store temp directory", path_,
+                                                        error);
+            }
+        }
+        throw TestFailure("could not reserve a wave-store temporary directory");
+    }
+
+    WaveStoreTempDirectory(const WaveStoreTempDirectory&) = delete;
+    WaveStoreTempDirectory& operator=(const WaveStoreTempDirectory&) = delete;
+
+    ~WaveStoreTempDirectory() {
+        std::error_code ignored;
+        (void)std::filesystem::remove_all(path_, ignored);
+    }
+
+    [[nodiscard]] const std::filesystem::path& path() const noexcept {
+        return path_;
+    }
+
+private:
+    std::filesystem::path path_;
+};
+
+[[nodiscard]] std::filesystem::path wave_lock_path(const std::filesystem::path& root) {
+    return root / wave_detail::DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF;
+}
+
+[[nodiscard]] std::filesystem::path wave_manifest_path(const std::filesystem::path& root) {
+    return root / wave_detail::DISTRIBUTED_SIEVE_WAVE_MANIFEST_LEAF;
+}
+
+[[nodiscard]] std::filesystem::path wave_manifest_pending_path(const std::filesystem::path& root) {
+    return root / wave_detail::DISTRIBUTED_SIEVE_WAVE_MANIFEST_PENDING_LEAF;
+}
+
+[[nodiscard]] bool entry_exists_no_follow(const std::filesystem::path& path) {
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(path, error);
+    if (error == std::errc::no_such_file_or_directory) {
+        return false;
+    }
+    if (error) {
+        throw std::filesystem::filesystem_error("inspect wave-store leaf", path, error);
+    }
+    return status.type() != std::filesystem::file_type::not_found;
+}
+
+[[nodiscard]] std::vector<std::byte> read_file_bytes(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) {
+        throw TestFailure("cannot open wave-store file for reading: " + path.string());
+    }
+    const auto end = input.tellg();
+    if (end < 0) {
+        throw TestFailure("cannot size wave-store file: " + path.string());
+    }
+    std::vector<std::byte> bytes(static_cast<std::size_t>(end));
+    input.seekg(0);
+    if (!bytes.empty()) {
+        input.read(reinterpret_cast<char*>(bytes.data()),
+                   static_cast<std::streamsize>(bytes.size()));
+    }
+    if (!input) {
+        throw TestFailure("cannot read complete wave-store file: " + path.string());
+    }
+    return bytes;
+}
+
+void write_file_bytes(const std::filesystem::path& path, std::span<const std::byte> bytes) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw TestFailure("cannot open wave-store file for writing: " + path.string());
+    }
+    if (!bytes.empty()) {
+        output.write(reinterpret_cast<const char*>(bytes.data()),
+                     static_cast<std::streamsize>(bytes.size()));
+    }
+    if (!output) {
+        throw TestFailure("cannot write complete wave-store file: " + path.string());
+    }
+}
+
+void write_foreign_leaf(const std::filesystem::path& path) {
+    constexpr std::array<std::byte, 7> bytes{
+        std::byte{0x66}, std::byte{0x6f}, std::byte{0x72}, std::byte{0x65},
+        std::byte{0x69}, std::byte{0x67}, std::byte{0x6e},
+    };
+    write_file_bytes(path, bytes);
+#ifndef _WIN32
+    if (::chmod(path.c_str(), 0600) != 0) {
+        throw std::system_error(errno, std::generic_category(), "chmod foreign wave-store leaf");
+    }
+#endif
+}
+
+void write_empty_foreign_leaf(const std::filesystem::path& path) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw TestFailure("cannot create empty wave-store file: " + path.string());
+    }
+    output.close();
+    if (!output) {
+        throw TestFailure("cannot close empty wave-store file: " + path.string());
+    }
+#ifndef _WIN32
+    if (::chmod(path.c_str(), 0600) != 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "chmod empty foreign wave-store leaf");
+    }
+#endif
+}
+
+[[nodiscard]] sieve::WaveManifestV1 wave_manifest_draft() {
+    auto draft = ProtocolFixture{}.manifest;
+    draft.wave_root_identity = {};
+    draft.permanent_lock_identity = {};
+    draft.lock_semantics_version = 0;
+    draft.self_digest = {};
+    return draft;
+}
+
+[[nodiscard]] std::string
+wave_diagnostic_detail(const wave_detail::DistributedSieveWaveStoreDiagnostic& diagnostic) {
+    std::string detail(wave_detail::distributed_sieve_wave_store_status_name(diagnostic.status));
+    if (diagnostic.native_error) {
+        detail.append(": ");
+        detail.append(diagnostic.native_error.message());
+    }
+    return detail;
+}
+
+void require_wave_status(const wave_detail::DistributedSieveWaveStoreDiagnostic& diagnostic,
+                         wave_detail::DistributedSieveWaveStoreStatus expected,
+                         std::string_view context) {
+    if (diagnostic.status != expected) {
+        fail(context, __LINE__, wave_diagnostic_detail(diagnostic));
+    }
+}
+
+[[nodiscard]] wave_detail::DistributedSieveWaveStore&
+require_wave_ready(wave_detail::DistributedSieveWaveStoreOpenResult& result,
+                   std::string_view context) {
+    if (!result || result.store == nullptr) {
+        fail(context, __LINE__, wave_diagnostic_detail(result.diagnostic));
+    }
+    return *result.store;
+}
+
+[[nodiscard]] Digest create_closed_wave(const std::filesystem::path& root) {
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create closed wave fixture");
+    const Digest digest = store.manifest_digest();
+    created.store.reset();
+    return digest;
+}
+
+[[nodiscard]] Digest manifest_digest_from_file(const std::filesystem::path& path) {
+    const auto bytes = read_file_bytes(path);
+    const auto decoded = sieve::decode_distributed_sieve_record(bytes);
+    if (!decoded) {
+        fail("decode wave manifest prefix", __LINE__,
+             sieve::distributed_sieve_protocol_error_name(decoded.status.error));
+    }
+    const auto* manifest = std::get_if<sieve::WaveManifestV1>(&*decoded.value);
+    if (manifest == nullptr) {
+        fail("wave manifest prefix record kind", __LINE__);
+    }
+    return manifest->self_digest;
+}
+
+struct WaveFaultStopContext final {
+    wave_detail::DistributedSieveWaveStoreFaultPoint target =
+        wave_detail::DistributedSieveWaveStoreFaultPoint::RootDurable;
+    std::array<bool, WAVE_STORE_FAULT_POINTS.size()> observed{};
+};
+
+[[nodiscard]] bool stop_at_wave_fault(wave_detail::DistributedSieveWaveStoreFaultPoint point,
+                                      void* opaque) noexcept {
+    auto& context = *static_cast<WaveFaultStopContext*>(opaque);
+    const auto index = static_cast<std::size_t>(point);
+    if (index < context.observed.size()) {
+        context.observed[index] = true;
+    }
+    return point == context.target;
+}
+
+#if !defined(_WIN32)
+
+struct WaveForkFaultContext final {
+    wave_detail::DistributedSieveWaveStoreFaultPoint target =
+        wave_detail::DistributedSieveWaveStoreFaultPoint::RootDurable;
+    pid_t original_process = -1;
+    pid_t child_process = -1;
+    bool invoked = false;
+};
+
+[[nodiscard]] bool fork_at_wave_fault(wave_detail::DistributedSieveWaveStoreFaultPoint point,
+                                      void* opaque) noexcept {
+    auto& context = *static_cast<WaveForkFaultContext*>(opaque);
+    if (point != context.target || context.invoked) {
+        return false;
+    }
+    context.invoked = true;
+    const pid_t child = ::fork();
+    if (child == 0) {
+        return false;
+    }
+    context.child_process = child;
+    return true;
+}
+
+struct WaveUnknownFaultContext final {
+    wave_detail::DistributedSieveWaveStoreFaultPoint target =
+        wave_detail::DistributedSieveWaveStoreFaultPoint::RootDurable;
+    std::filesystem::path unknown_leaf;
+    bool inserted = false;
+};
+
+[[nodiscard]] bool
+insert_unknown_at_wave_fault(wave_detail::DistributedSieveWaveStoreFaultPoint point,
+                             void* opaque) noexcept {
+    auto& context = *static_cast<WaveUnknownFaultContext*>(opaque);
+    if (point != context.target || context.inserted) {
+        return false;
+    }
+    const int descriptor =
+        ::open(context.unknown_leaf.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (descriptor < 0) {
+        return false;
+    }
+    constexpr char byte = 'x';
+    ssize_t count = -1;
+    do {
+        count = ::write(descriptor, &byte, 1);
+    } while (count < 0 && errno == EINTR);
+    const int saved_errno = errno;
+    (void)::close(descriptor);
+    errno = saved_errno;
+    context.inserted = count == 1;
+    return false;
+}
+
+#endif
+
+void check_wave_fault_prefix(const std::filesystem::path& root,
+                             wave_detail::DistributedSieveWaveStoreFaultPoint point) {
+    const bool root_present = entry_exists_no_follow(root);
+    const bool lock_present = root_present && entry_exists_no_follow(wave_lock_path(root));
+    const bool pending_present =
+        root_present && entry_exists_no_follow(wave_manifest_pending_path(root));
+    const bool canonical_present = root_present && entry_exists_no_follow(wave_manifest_path(root));
+
+    CHECK(root_present);
+    switch (point) {
+    case wave_detail::DistributedSieveWaveStoreFaultPoint::RootDurable:
+        CHECK(!lock_present);
+        CHECK(!pending_present);
+        CHECK(!canonical_present);
+        return;
+    case wave_detail::DistributedSieveWaveStoreFaultPoint::LockDurable:
+        CHECK(lock_present);
+        CHECK(!pending_present);
+        CHECK(!canonical_present);
+        return;
+    case wave_detail::DistributedSieveWaveStoreFaultPoint::ManifestPendingDurable:
+        CHECK(lock_present);
+        CHECK(pending_present);
+        CHECK(!canonical_present);
+        return;
+    case wave_detail::DistributedSieveWaveStoreFaultPoint::ManifestCanonicalPromoted:
+    case wave_detail::DistributedSieveWaveStoreFaultPoint::ManifestCanonicalDurable:
+        CHECK(lock_present);
+        CHECK(!pending_present);
+        CHECK(canonical_present);
+        return;
+    case wave_detail::DistributedSieveWaveStoreFaultPoint::Count:
+        break;
+    }
+    fail("closed wave fault point", __LINE__);
+}
+
+void test_wave_store_create_open_revalidate_and_exact_manifest() {
+    CHECK(wave_detail::DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF == ".gnfs-wave-v1.lock");
+    CHECK(wave_detail::DISTRIBUTED_SIEVE_WAVE_MANIFEST_LEAF == ".gnfs-wave-v1.manifest");
+    CHECK(wave_detail::DISTRIBUTED_SIEVE_WAVE_MANIFEST_PENDING_LEAF ==
+          ".gnfs-wave-v1.manifest.pending");
+
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "create-open";
+    const auto draft = wave_manifest_draft();
+    CHECK(draft.wave_root_identity == sieve::NativeIdentityV1{});
+    CHECK(draft.permanent_lock_identity == sieve::NativeIdentityV1{});
+    CHECK(draft.lock_semantics_version == 0);
+    CHECK(draft.self_digest == Digest{});
+
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, draft);
+    auto& store = require_wave_ready(created, "create wave store");
+    CHECK(store.absolute_root() == root);
+    CHECK(store.manifest().wave_root_identity == store.wave_root_identity());
+    CHECK(store.manifest().permanent_lock_identity == store.permanent_lock_identity());
+    CHECK(store.manifest().lock_semantics_version ==
+          wave_detail::DISTRIBUTED_SIEVE_WAVE_LOCK_SEMANTICS_VERSION_V1);
+    CHECK(store.manifest().self_digest == store.manifest_digest());
+    CHECK(store.manifest_digest() != Digest{});
+
+    auto independently_sealed = store.manifest();
+    independently_sealed.self_digest = {};
+    independently_sealed = seal_value(std::move(independently_sealed));
+    CHECK(encode_or_fail(Record{independently_sealed}) == encode_or_fail(Record{store.manifest()}));
+    CHECK(record_digest_or_fail(Record{store.manifest()}) == store.manifest_digest());
+
+    const auto exact_manifest_bytes = encode_or_fail(Record{store.manifest()});
+    CHECK(read_file_bytes(wave_manifest_path(root)) == exact_manifest_bytes);
+    CHECK(store.manifest_snapshot().size == exact_manifest_bytes.size());
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "revalidate newly created wave");
+
+    const Digest digest = store.manifest_digest();
+    const auto root_identity = store.wave_root_identity();
+    const auto lock_identity = store.permanent_lock_identity();
+    const auto manifest_snapshot = store.manifest_snapshot();
+    created.store.reset();
+
+    auto opened = wave_detail::DistributedSieveWaveStore::open(root, digest);
+    auto& reopened = require_wave_ready(opened, "open exact wave store");
+    CHECK(reopened.manifest_digest() == digest);
+    CHECK(reopened.wave_root_identity() == root_identity);
+    CHECK(reopened.permanent_lock_identity() == lock_identity);
+    CHECK(reopened.manifest_snapshot() == manifest_snapshot);
+    CHECK(read_file_bytes(wave_manifest_path(root)) == exact_manifest_bytes);
+    require_wave_status(reopened.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "revalidate reopened wave");
+}
+
+void test_wave_store_rejects_non_draft_store_owned_fields() {
+    WaveStoreTempDirectory temp;
+    std::uint64_t index = 0;
+    const auto reject = [&](auto mutate) {
+        auto draft = wave_manifest_draft();
+        mutate(draft);
+        const auto root = temp.path() / ("forged-draft-" + std::to_string(index++));
+        auto result = wave_detail::DistributedSieveWaveStore::create(root, std::move(draft));
+        CHECK(!result);
+        CHECK(result.store == nullptr);
+        require_wave_status(result.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::invalid_request,
+                            "reject invalid wave manifest draft");
+        CHECK(!entry_exists_no_follow(root));
+    };
+
+    reject([](auto& draft) { draft.wave_root_identity = native_identity(8000); });
+    reject([](auto& draft) { draft.permanent_lock_identity = native_identity(8010); });
+    reject([](auto& draft) { draft.lock_semantics_version = 1; });
+    reject([](auto& draft) { draft.self_digest = digest_with_seed(55); });
+    reject([](auto& draft) { draft.worker_count = 0; });
+}
+
+void test_wave_store_rejects_zero_open_digest_without_observation() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "zero-open-digest";
+    auto opened = wave_detail::DistributedSieveWaveStore::open(root, Digest{});
+    CHECK(!opened);
+    CHECK(opened.store == nullptr);
+    require_wave_status(opened.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::invalid_request,
+                        "zero manifest digest is not open authority");
+    CHECK(!entry_exists_no_follow(root));
+
+#if !defined(_WIN32)
+    const auto existing_root = temp.path() / "zero-open-digest-existing";
+    (void)create_closed_wave(existing_root);
+    const auto manifest_before = read_file_bytes(wave_manifest_path(existing_root));
+    auto existing_opened = wave_detail::DistributedSieveWaveStore::open(existing_root, Digest{});
+    CHECK(!existing_opened);
+    CHECK(existing_opened.store == nullptr);
+    require_wave_status(existing_opened.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::invalid_request,
+                        "zero manifest digest does not inspect an existing wave");
+    CHECK(read_file_bytes(wave_manifest_path(existing_root)) == manifest_before);
+#endif
+}
+
+void test_wave_store_all_durable_prefixes_recover_exactly() {
+    for (const auto point : WAVE_STORE_FAULT_POINTS) {
+        WaveStoreTempDirectory temp;
+        const auto root =
+            temp.path() / ("fault-" + std::to_string(static_cast<std::size_t>(point)));
+        WaveFaultStopContext context{.target = point};
+        auto interrupted = wave_detail::DistributedSieveWaveStore::create(
+            root, wave_manifest_draft(),
+            wave_detail::DistributedSieveWaveStoreTestHooks{
+                .stop_after = stop_at_wave_fault,
+                .context = &context,
+            });
+        CHECK(!interrupted);
+        CHECK(interrupted.store == nullptr);
+        require_wave_status(interrupted.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                            "fault point interrupts create");
+        CHECK(interrupted.diagnostic.last_durable_fault_point == point);
+        CHECK(context.observed[static_cast<std::size_t>(point)]);
+        check_wave_fault_prefix(root, point);
+
+        wave_detail::DistributedSieveWaveStoreOpenResult recovered =
+            point == wave_detail::DistributedSieveWaveStoreFaultPoint::RootDurable ||
+                    point == wave_detail::DistributedSieveWaveStoreFaultPoint::LockDurable
+                ? wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft())
+                : wave_detail::DistributedSieveWaveStore::open(
+                      root, manifest_digest_from_file(
+                                point == wave_detail::DistributedSieveWaveStoreFaultPoint::
+                                             ManifestPendingDurable
+                                    ? wave_manifest_pending_path(root)
+                                    : wave_manifest_path(root)));
+        auto& store = require_wave_ready(recovered, "recover durable create prefix");
+        CHECK(entry_exists_no_follow(wave_lock_path(root)));
+        CHECK(entry_exists_no_follow(wave_manifest_path(root)));
+        CHECK(!entry_exists_no_follow(wave_manifest_pending_path(root)));
+        const auto exact_bytes = encode_or_fail(Record{store.manifest()});
+        CHECK(read_file_bytes(wave_manifest_path(root)) == exact_bytes);
+        const Digest digest = store.manifest_digest();
+        recovered.store.reset();
+
+        auto reopened = wave_detail::DistributedSieveWaveStore::open(root, digest);
+        auto& exact = require_wave_ready(reopened, "open recovered durable prefix");
+        CHECK(exact.manifest_digest() == digest);
+        require_wave_status(exact.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "revalidate recovered durable prefix");
+    }
+}
+
+#if !defined(_WIN32)
+
+void test_wave_store_revalidates_after_root_and_lock_hooks() {
+    const std::array points{
+        wave_detail::DistributedSieveWaveStoreFaultPoint::RootDurable,
+        wave_detail::DistributedSieveWaveStoreFaultPoint::LockDurable,
+    };
+    for (const auto point : points) {
+        WaveStoreTempDirectory temp;
+        const auto root =
+            temp.path() / ("hook-drift-" + std::to_string(static_cast<std::size_t>(point)));
+        const auto unknown = root / "unexpected.control";
+        WaveUnknownFaultContext context{
+            .target = point,
+            .unknown_leaf = unknown,
+        };
+        auto result = wave_detail::DistributedSieveWaveStore::create(
+            root, wave_manifest_draft(),
+            wave_detail::DistributedSieveWaveStoreTestHooks{
+                .stop_after = insert_unknown_at_wave_fault,
+                .context = &context,
+            });
+        CHECK(context.inserted);
+        CHECK(!result);
+        CHECK(result.store == nullptr);
+        require_wave_status(result.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "hook namespace drift blocks the next mutation");
+        CHECK(entry_exists_no_follow(unknown));
+        CHECK(!entry_exists_no_follow(wave_manifest_pending_path(root)));
+        CHECK(!entry_exists_no_follow(wave_manifest_path(root)));
+        CHECK(entry_exists_no_follow(wave_lock_path(root)) ==
+              (point == wave_detail::DistributedSieveWaveStoreFaultPoint::LockDurable));
+    }
+}
+
+#endif
+
+void test_wave_store_unknown_leaf_and_wrong_digest_are_preserved() {
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "unknown-leaf";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create unknown-leaf fixture");
+        const Digest digest = store.manifest_digest();
+        const auto manifest_before = read_file_bytes(wave_manifest_path(root));
+        const auto unknown = root / "unexpected.control";
+        write_foreign_leaf(unknown);
+        const auto unknown_before = read_file_bytes(unknown);
+
+        require_wave_status(store.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "unknown leaf taints live wave");
+        CHECK(read_file_bytes(wave_manifest_path(root)) == manifest_before);
+        CHECK(read_file_bytes(unknown) == unknown_before);
+        created.store.reset();
+
+        auto opened = wave_detail::DistributedSieveWaveStore::open(root, digest);
+        CHECK(!opened);
+        require_wave_status(opened.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "unknown leaf taints reopened wave");
+        CHECK(read_file_bytes(wave_manifest_path(root)) == manifest_before);
+        CHECK(read_file_bytes(unknown) == unknown_before);
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "wrong-expected-digest";
+        const Digest digest = create_closed_wave(root);
+        const auto manifest_before = read_file_bytes(wave_manifest_path(root));
+        auto wrong_digest = digest;
+        perturb_digest(wrong_digest);
+        auto opened = wave_detail::DistributedSieveWaveStore::open(root, wrong_digest);
+        CHECK(!opened);
+        require_wave_status(opened.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::manifest_conflict,
+                            "wrong expected manifest digest");
+        CHECK(read_file_bytes(wave_manifest_path(root)) == manifest_before);
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "wrong-on-disk-digest";
+        const Digest digest = create_closed_wave(root);
+        auto corrupted = read_file_bytes(wave_manifest_path(root));
+        CHECK(!corrupted.empty());
+        corrupted.back() ^= std::byte{0x40};
+        write_file_bytes(wave_manifest_path(root), corrupted);
+        auto opened = wave_detail::DistributedSieveWaveStore::open(root, digest);
+        CHECK(!opened);
+        require_wave_status(opened.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::manifest_invalid,
+                            "wrong on-disk manifest digest");
+        CHECK(read_file_bytes(wave_manifest_path(root)) == corrupted);
+    }
+}
+
+#if !defined(_WIN32)
+
+void require_chmod(const std::filesystem::path& path, mode_t mode, std::string_view context) {
+    if (::chmod(path.c_str(), mode) != 0) {
+        throw std::system_error(errno, std::generic_category(), std::string(context));
+    }
+}
+
+void require_rename(const std::filesystem::path& source, const std::filesystem::path& target,
+                    std::string_view context) {
+    std::error_code error;
+    std::filesystem::rename(source, target, error);
+    if (error) {
+        throw std::filesystem::filesystem_error(std::string(context), source, target, error);
+    }
+}
+
+#if defined(__APPLE__)
+
+void install_wave_extended_read_acl(int descriptor) {
+    acl_t acl = ::acl_init(1);
+    if (acl == nullptr) {
+        throw TestFailure("cannot allocate wave-store test ACL");
+    }
+
+    acl_entry_t entry = nullptr;
+    acl_permset_t permissions = nullptr;
+    uuid_t owner_uuid{};
+    const int membership_error = ::mbr_uid_to_uuid(::geteuid(), owner_uuid);
+    const bool configured = membership_error == 0 && ::acl_create_entry(&acl, &entry) == 0 &&
+                            ::acl_set_tag_type(entry, ACL_EXTENDED_ALLOW) == 0 &&
+                            ::acl_set_qualifier(entry, owner_uuid) == 0 &&
+                            ::acl_get_permset(entry, &permissions) == 0 &&
+                            ::acl_clear_perms(permissions) == 0 &&
+                            ::acl_add_perm(permissions, ACL_READ_DATA) == 0 &&
+                            ::acl_set_permset(entry, permissions) == 0 && ::acl_valid(acl) == 0 &&
+                            ::acl_set_fd_np(descriptor, acl, ACL_TYPE_EXTENDED) == 0;
+    const int saved_errno = errno;
+    (void)::acl_free(acl);
+    if (!configured) {
+        throw TestFailure("cannot install wave-store test ACL: " +
+                          std::error_code(membership_error != 0 ? membership_error : saved_errno,
+                                          std::generic_category())
+                              .message());
+    }
+}
+
+void install_wave_extended_read_acl(const std::filesystem::path& path) {
+    const int descriptor = ::open(path.c_str(), O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+    if (descriptor < 0) {
+        throw std::system_error(errno, std::generic_category(), "open wave-store ACL test target");
+    }
+    try {
+        install_wave_extended_read_acl(descriptor);
+    } catch (...) {
+        (void)::close(descriptor);
+        throw;
+    }
+    if (::close(descriptor) != 0) {
+        throw std::system_error(errno, std::generic_category(), "close wave-store ACL test target");
+    }
+}
+
+#elif defined(__linux__)
+
+void install_wave_extended_read_acl(const std::filesystem::path& path) {
+    constexpr std::uint16_t ACL_USER_OBJ = 0x01;
+    constexpr std::uint16_t ACL_USER = 0x02;
+    constexpr std::uint16_t ACL_GROUP_OBJ = 0x04;
+    constexpr std::uint16_t ACL_MASK = 0x10;
+    constexpr std::uint16_t ACL_OTHER = 0x20;
+    constexpr std::uint32_t ACL_UNDEFINED_ID = 0xffffffffU;
+    constexpr std::size_t HEADER_BYTES = 4;
+    constexpr std::size_t ENTRY_BYTES = 8;
+    std::array<std::byte, HEADER_BYTES + 5 * ENTRY_BYTES> acl{};
+    struct stat metadata{};
+    if (::lstat(path.c_str(), &metadata) != 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "inspect wave-store Linux ACL target");
+    }
+    const auto owner_permissions = static_cast<std::uint16_t>((metadata.st_mode >> 6U) & 07U);
+    const auto group_permissions = static_cast<std::uint16_t>((metadata.st_mode >> 3U) & 07U);
+    const auto other_permissions = static_cast<std::uint16_t>(metadata.st_mode & 07U);
+
+    const auto put_u16_le = [&](std::size_t offset, std::uint16_t value) {
+        acl[offset] = static_cast<std::byte>(value & 0xffU);
+        acl[offset + 1] = static_cast<std::byte>((value >> 8U) & 0xffU);
+    };
+    const auto put_u32_le = [&](std::size_t offset, std::uint32_t value) {
+        for (std::size_t index = 0; index < 4; ++index) {
+            acl[offset + index] =
+                static_cast<std::byte>((value >> static_cast<unsigned>(index * 8U)) & 0xffU);
+        }
+    };
+    const auto put_entry = [&](std::size_t index, std::uint16_t tag, std::uint16_t permissions,
+                               std::uint32_t id) {
+        const std::size_t offset = HEADER_BYTES + index * ENTRY_BYTES;
+        put_u16_le(offset, tag);
+        put_u16_le(offset + 2, permissions);
+        put_u32_le(offset + 4, id);
+    };
+
+    put_u32_le(0, 2);
+    put_entry(0, ACL_USER_OBJ, owner_permissions, ACL_UNDEFINED_ID);
+    put_entry(1, ACL_USER, 0, static_cast<std::uint32_t>(::geteuid()) ^ 1U);
+    put_entry(2, ACL_GROUP_OBJ, group_permissions, ACL_UNDEFINED_ID);
+    put_entry(3, ACL_MASK, group_permissions, ACL_UNDEFINED_ID);
+    put_entry(4, ACL_OTHER, other_permissions, ACL_UNDEFINED_ID);
+    if (::setxattr(path.c_str(), "system.posix_acl_access", acl.data(), acl.size(), 0) != 0) {
+        throw std::system_error(errno, std::generic_category(), "install wave-store Linux ACL");
+    }
+}
+
+#endif
+
+void test_wave_store_rejects_noncanonical_and_intermediate_symlink_paths() {
+    WaveStoreTempDirectory temp;
+    const std::string base = temp.path().string();
+    const std::array malformed_roots{
+        std::filesystem::path(base + "//double-separator"),
+        std::filesystem::path(base + "/./dot-component"),
+        std::filesystem::path(base + "/missing/../dot-dot-component"),
+        std::filesystem::path(base + "/trailing-separator/"),
+    };
+    for (const auto& root : malformed_roots) {
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        CHECK(!created);
+        CHECK(created.store == nullptr);
+        require_wave_status(created.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::invalid_request,
+                            "reject noncanonical absolute wave path");
+    }
+    CHECK(!entry_exists_no_follow(temp.path() / "double-separator"));
+    CHECK(!entry_exists_no_follow(temp.path() / "dot-component"));
+    CHECK(!entry_exists_no_follow(temp.path() / "dot-dot-component"));
+    CHECK(!entry_exists_no_follow(temp.path() / "trailing-separator"));
+
+    const auto unsafe_parent = temp.path() / "unsafe-parent";
+    std::error_code error;
+    CHECK(std::filesystem::create_directory(unsafe_parent, error));
+    CHECK(!error);
+    require_chmod(unsafe_parent, 0777, "weaken wave parent mode");
+    auto unsafe_create = wave_detail::DistributedSieveWaveStore::create(unsafe_parent / "wave",
+                                                                        wave_manifest_draft());
+    CHECK(!unsafe_create);
+    require_wave_status(unsafe_create.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                        "reject writable direct parent before mutation");
+    CHECK(!entry_exists_no_follow(unsafe_parent / "wave"));
+    require_chmod(unsafe_parent, 0700, "restore wave parent mode");
+
+    const auto real_parent = temp.path() / "real-parent";
+    error.clear();
+    CHECK(std::filesystem::create_directory(real_parent, error));
+    CHECK(!error);
+    require_chmod(real_parent, 0700, "chmod real wave parent");
+    const auto alias = temp.path() / "parent-alias";
+    CHECK(::symlink(real_parent.c_str(), alias.c_str()) == 0);
+
+    auto aliased_create =
+        wave_detail::DistributedSieveWaveStore::create(alias / "new-wave", wave_manifest_draft());
+    CHECK(!aliased_create);
+    require_wave_status(aliased_create.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                        "reject intermediate parent symlink on create");
+    CHECK(!entry_exists_no_follow(real_parent / "new-wave"));
+
+    const auto real_root = real_parent / "existing-wave";
+    const Digest digest = create_closed_wave(real_root);
+    const auto manifest_before = read_file_bytes(wave_manifest_path(real_root));
+    auto aliased_open =
+        wave_detail::DistributedSieveWaveStore::open(alias / "existing-wave", digest);
+    CHECK(!aliased_open);
+    require_wave_status(aliased_open.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                        "reject intermediate parent symlink on open");
+    CHECK(read_file_bytes(wave_manifest_path(real_root)) == manifest_before);
+
+    const auto stable_ancestor = temp.path() / "stable-ancestor";
+    const auto held_parent = stable_ancestor / "held-parent";
+    CHECK(std::filesystem::create_directories(held_parent, error));
+    CHECK(!error);
+    require_chmod(stable_ancestor, 0700, "chmod stable wave ancestor");
+    require_chmod(held_parent, 0700, "chmod held wave parent");
+    const auto held_root = held_parent / "held-wave";
+    auto held = wave_detail::DistributedSieveWaveStore::create(held_root, wave_manifest_draft());
+    auto& held_store = require_wave_ready(held, "create ancestor-replacement fixture");
+    const auto held_manifest_before = read_file_bytes(wave_manifest_path(held_root));
+    const auto original_ancestor = temp.path() / "stable-ancestor-original";
+    require_rename(stable_ancestor, original_ancestor, "move held wave ancestor");
+    CHECK(::symlink(original_ancestor.c_str(), stable_ancestor.c_str()) == 0);
+
+    require_wave_status(held_store.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                        "reject intermediate ancestor symlink after acquisition");
+    CHECK(read_file_bytes(wave_manifest_path(held_root)) == held_manifest_before);
+}
+
+void test_wave_store_root_and_lock_replacement() {
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "root-replacement";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create root-replacement fixture");
+        const auto original_root = temp.path() / "root-replacement-original";
+        const auto manifest_before = read_file_bytes(wave_manifest_path(root));
+        require_rename(root, original_root, "move original wave root");
+        std::error_code error;
+        CHECK(std::filesystem::create_directory(root, error));
+        CHECK(!error);
+        require_chmod(root, 0700, "chmod replacement wave root");
+
+        require_wave_status(store.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                            "revalidate replaced wave root");
+        CHECK(std::filesystem::is_empty(root));
+        CHECK(read_file_bytes(wave_manifest_path(original_root)) == manifest_before);
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "lock-replacement";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create lock-replacement fixture");
+        const auto original_lock = temp.path() / "original-wave-lock";
+        require_rename(wave_lock_path(root), original_lock, "move original wave lock");
+        write_foreign_leaf(wave_lock_path(root));
+        const auto replacement_before = read_file_bytes(wave_lock_path(root));
+
+        require_wave_status(store.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::lock_invalid,
+                            "revalidate replaced wave lock");
+        CHECK(read_file_bytes(wave_lock_path(root)) == replacement_before);
+        CHECK(entry_exists_no_follow(original_lock));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "live-lock-replacement";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create live-lock-replacement fixture");
+        const Digest digest = store.manifest_digest();
+        const auto manifest_before = read_file_bytes(wave_manifest_path(root));
+        const auto original_lock = temp.path() / "live-original-wave-lock";
+        require_rename(wave_lock_path(root), original_lock, "move live original wave lock");
+        write_empty_foreign_leaf(wave_lock_path(root));
+
+        auto replacement_opener = wave_detail::DistributedSieveWaveStore::open(root, digest);
+        CHECK(!replacement_opener);
+        require_wave_status(replacement_opener.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::manifest_conflict,
+                            "replacement lock cannot satisfy manifest identity");
+        CHECK(read_file_bytes(wave_manifest_path(root)) == manifest_before);
+        CHECK(read_file_bytes(wave_lock_path(root)).empty());
+        CHECK(!entry_exists_no_follow(wave_manifest_pending_path(root)));
+        CHECK(entry_exists_no_follow(original_lock));
+        require_wave_status(store.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::lock_invalid,
+                            "old owner rejects replaced named lock");
+    }
+}
+
+void test_wave_store_mode_symlink_and_hardlink_rejections() {
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "root-mode";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create root-mode fixture");
+        require_chmod(root, 0755, "weaken wave root mode");
+        require_wave_status(store.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                            "reject weakened wave root mode");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "lock-mode";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create lock-mode fixture");
+        require_chmod(wave_lock_path(root), 0644, "weaken wave lock mode");
+        require_wave_status(store.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::lock_invalid,
+                            "reject weakened wave lock mode");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "manifest-mode";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create manifest-mode fixture");
+        require_chmod(wave_manifest_path(root), 0644, "weaken manifest mode");
+        require_wave_status(store.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::manifest_invalid,
+                            "reject weakened manifest mode");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "root-symlink";
+        const Digest digest = create_closed_wave(root);
+        const auto original_root = temp.path() / "root-symlink-original";
+        require_rename(root, original_root, "move root before symlink replacement");
+        CHECK(::symlink(original_root.c_str(), root.c_str()) == 0);
+        auto opened = wave_detail::DistributedSieveWaveStore::open(root, digest);
+        CHECK(!opened);
+        require_wave_status(opened.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                            "reject wave root symlink");
+        CHECK(std::filesystem::is_symlink(std::filesystem::symlink_status(root)));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "lock-symlink";
+        const Digest digest = create_closed_wave(root);
+        const auto original_lock = temp.path() / "lock-symlink-original";
+        require_rename(wave_lock_path(root), original_lock, "move lock before symlink replacement");
+        CHECK(::symlink(original_lock.c_str(), wave_lock_path(root).c_str()) == 0);
+        auto opened = wave_detail::DistributedSieveWaveStore::open(root, digest);
+        CHECK(!opened);
+        require_wave_status(opened.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::lock_invalid,
+                            "reject wave lock symlink");
+        CHECK(std::filesystem::is_symlink(std::filesystem::symlink_status(wave_lock_path(root))));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "manifest-symlink";
+        const Digest digest = create_closed_wave(root);
+        const auto original_manifest = temp.path() / "manifest-symlink-original";
+        require_rename(wave_manifest_path(root), original_manifest,
+                       "move manifest before symlink replacement");
+        CHECK(::symlink(original_manifest.c_str(), wave_manifest_path(root).c_str()) == 0);
+        auto opened = wave_detail::DistributedSieveWaveStore::open(root, digest);
+        CHECK(!opened);
+        require_wave_status(opened.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::manifest_invalid,
+                            "reject manifest symlink");
+        CHECK(
+            std::filesystem::is_symlink(std::filesystem::symlink_status(wave_manifest_path(root))));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "lock-hardlink";
+        const Digest digest = create_closed_wave(root);
+        const auto original_lock = temp.path() / "lock-hardlink-original";
+        require_rename(wave_lock_path(root), original_lock,
+                       "move lock before hardlink replacement");
+        CHECK(::link(original_lock.c_str(), wave_lock_path(root).c_str()) == 0);
+        auto opened = wave_detail::DistributedSieveWaveStore::open(root, digest);
+        CHECK(!opened);
+        require_wave_status(opened.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::lock_invalid,
+                            "reject wave lock hardlink");
+        CHECK(entry_exists_no_follow(original_lock));
+        CHECK(entry_exists_no_follow(wave_lock_path(root)));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "manifest-hardlink";
+        const Digest digest = create_closed_wave(root);
+        const auto original_manifest = temp.path() / "manifest-hardlink-original";
+        require_rename(wave_manifest_path(root), original_manifest,
+                       "move manifest before hardlink replacement");
+        CHECK(::link(original_manifest.c_str(), wave_manifest_path(root).c_str()) == 0);
+        auto opened = wave_detail::DistributedSieveWaveStore::open(root, digest);
+        CHECK(!opened);
+        require_wave_status(opened.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::manifest_invalid,
+                            "reject manifest hardlink");
+        CHECK(entry_exists_no_follow(original_manifest));
+        CHECK(entry_exists_no_follow(wave_manifest_path(root)));
+    }
+
+#if defined(__APPLE__) || defined(__linux__)
+    {
+        WaveStoreTempDirectory temp;
+        install_wave_extended_read_acl(temp.path());
+        const auto root = temp.path() / "parent-acl";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        CHECK(!created);
+        require_wave_status(created.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                            "reject extended parent ACL before mutation");
+        CHECK(!entry_exists_no_follow(root));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "root-acl";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create root-ACL fixture");
+        install_wave_extended_read_acl(root);
+        require_wave_status(store.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                            "reject extended root ACL");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "lock-acl";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create lock-ACL fixture");
+        install_wave_extended_read_acl(wave_lock_path(root));
+        require_wave_status(store.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::lock_invalid,
+                            "reject extended lock ACL");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "manifest-acl";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create manifest-ACL fixture");
+        install_wave_extended_read_acl(wave_manifest_path(root));
+        require_wave_status(store.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::manifest_invalid,
+                            "reject extended manifest ACL");
+    }
+#endif
+}
+
+[[nodiscard]] bool write_pipe_byte(int descriptor, char value) noexcept {
+    ssize_t count = -1;
+    do {
+        count = ::write(descriptor, &value, 1);
+    } while (count < 0 && errno == EINTR);
+    return count == 1;
+}
+
+[[nodiscard]] bool read_pipe_byte(int descriptor, char& value) noexcept {
+    ssize_t count = -1;
+    do {
+        count = ::read(descriptor, &value, 1);
+    } while (count < 0 && errno == EINTR);
+    return count == 1;
+}
+
+[[nodiscard]] bool wait_for_child(pid_t child, int& status) noexcept {
+    pid_t waited = -1;
+    do {
+        waited = ::waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    return waited == child;
+}
+
+void test_wave_store_fault_hooks_cannot_fork_store_authority() {
+    for (const auto point : WAVE_STORE_FAULT_POINTS) {
+        WaveStoreTempDirectory temp;
+        const auto root =
+            temp.path() / ("fork-fault-" + std::to_string(static_cast<std::size_t>(point)));
+        WaveForkFaultContext context{
+            .target = point,
+            .original_process = ::getpid(),
+        };
+        auto result = wave_detail::DistributedSieveWaveStore::create(
+            root, wave_manifest_draft(),
+            wave_detail::DistributedSieveWaveStoreTestHooks{
+                .stop_after = fork_at_wave_fault,
+                .context = &context,
+            });
+
+        if (::getpid() != context.original_process) {
+            const bool rejected = !result && result.store == nullptr &&
+                                  result.diagnostic.status ==
+                                      wave_detail::DistributedSieveWaveStoreStatus::invalid_request;
+            ::_exit(rejected ? 0 : 91);
+        }
+
+        CHECK(context.invoked);
+        CHECK(context.child_process > 0);
+        CHECK(!result);
+        CHECK(result.store == nullptr);
+        require_wave_status(result.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                            "parent interrupts after forking inside fault hook");
+
+        int child_status = 0;
+        CHECK(wait_for_child(context.child_process, child_status));
+        CHECK(WIFEXITED(child_status));
+        CHECK(WEXITSTATUS(child_status) == 0);
+        check_wave_fault_prefix(root, point);
+    }
+}
+
+void test_wave_store_deterministic_busy_with_fork_and_pipes() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "busy";
+    const Digest digest = create_closed_wave(root);
+    int ready_pipe[2]{-1, -1};
+    int release_pipe[2]{-1, -1};
+    CHECK(::pipe(ready_pipe) == 0);
+    CHECK(::pipe(release_pipe) == 0);
+    const pid_t child = ::fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        (void)::close(ready_pipe[0]);
+        (void)::close(release_pipe[1]);
+        auto held = wave_detail::DistributedSieveWaveStore::open(root, digest);
+        const char ready = held ? 'r' : 'f';
+        const bool signalled = write_pipe_byte(ready_pipe[1], ready);
+        char release = '\0';
+        const bool released = read_pipe_byte(release_pipe[0], release);
+        held.store.reset();
+        ::_exit(signalled && released && release == 'x' && ready == 'r' ? 0 : 81);
+    }
+
+    (void)::close(ready_pipe[1]);
+    (void)::close(release_pipe[0]);
+    char ready = '\0';
+    const bool received = read_pipe_byte(ready_pipe[0], ready);
+    auto busy = wave_detail::DistributedSieveWaveStore::open(root, digest);
+    const bool released = write_pipe_byte(release_pipe[1], 'x');
+    (void)::close(ready_pipe[0]);
+    (void)::close(release_pipe[1]);
+    int child_status = 0;
+    const bool waited = wait_for_child(child, child_status);
+
+    CHECK(received);
+    CHECK(ready == 'r');
+    CHECK(!busy);
+    require_wave_status(busy.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::lock_busy,
+                        "concurrent wave opener is busy");
+    CHECK(released);
+    CHECK(waited);
+    CHECK(WIFEXITED(child_status));
+    CHECK(WEXITSTATUS(child_status) == 0);
+
+    auto reopened = wave_detail::DistributedSieveWaveStore::open(root, digest);
+    (void)require_wave_ready(reopened, "wave opens after lock owner exits");
+}
+
+void test_wave_store_inherited_lock_is_process_bound_and_close_only() {
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "child-close-only";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create child-close-only fixture");
+        const Digest digest = store.manifest_digest();
+        int ready_pipe[2]{-1, -1};
+        int release_pipe[2]{-1, -1};
+        CHECK(::pipe(ready_pipe) == 0);
+        CHECK(::pipe(release_pipe) == 0);
+        const pid_t child = ::fork();
+        CHECK(child >= 0);
+        if (child == 0) {
+            (void)::close(ready_pipe[0]);
+            (void)::close(release_pipe[1]);
+            const auto inherited = store.revalidate();
+            const bool process_bound =
+                inherited.status == wave_detail::DistributedSieveWaveStoreStatus::invalid_request;
+            created.store.reset();
+            const bool signalled = write_pipe_byte(ready_pipe[1], process_bound ? 'r' : 'f');
+            char release = '\0';
+            const bool released = read_pipe_byte(release_pipe[0], release);
+            ::_exit(process_bound && signalled && released && release == 'x' ? 0 : 82);
+        }
+
+        (void)::close(ready_pipe[1]);
+        (void)::close(release_pipe[0]);
+        char ready = '\0';
+        const bool received = read_pipe_byte(ready_pipe[0], ready);
+        auto busy = wave_detail::DistributedSieveWaveStore::open(root, digest);
+        const bool released = write_pipe_byte(release_pipe[1], 'x');
+        (void)::close(ready_pipe[0]);
+        (void)::close(release_pipe[1]);
+        int child_status = 0;
+        const bool waited = wait_for_child(child, child_status);
+
+        CHECK(received);
+        CHECK(ready == 'r');
+        CHECK(!busy);
+        require_wave_status(busy.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::lock_busy,
+                            "fork copy close cannot unlock parent wave");
+        CHECK(released);
+        CHECK(waited);
+        CHECK(WIFEXITED(child_status));
+        CHECK(WEXITSTATUS(child_status) == 0);
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "parent wave remains valid after child close");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "child-retains-inherited-lock";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create inherited-lock fixture");
+        const Digest digest = store.manifest_digest();
+        int ready_pipe[2]{-1, -1};
+        int release_pipe[2]{-1, -1};
+        CHECK(::pipe(ready_pipe) == 0);
+        CHECK(::pipe(release_pipe) == 0);
+        const pid_t child = ::fork();
+        CHECK(child >= 0);
+        if (child == 0) {
+            (void)::close(ready_pipe[0]);
+            (void)::close(release_pipe[1]);
+            const auto inherited = store.revalidate();
+            const bool process_bound =
+                inherited.status == wave_detail::DistributedSieveWaveStoreStatus::invalid_request;
+            const bool signalled = write_pipe_byte(ready_pipe[1], process_bound ? 'r' : 'f');
+            char release = '\0';
+            const bool released = read_pipe_byte(release_pipe[0], release);
+            created.store.reset();
+            ::_exit(process_bound && signalled && released && release == 'x' ? 0 : 83);
+        }
+
+        (void)::close(ready_pipe[1]);
+        (void)::close(release_pipe[0]);
+        char ready = '\0';
+        const bool received = read_pipe_byte(ready_pipe[0], ready);
+        created.store.reset();
+        auto busy = wave_detail::DistributedSieveWaveStore::open(root, digest);
+        const bool released = write_pipe_byte(release_pipe[1], 'x');
+        (void)::close(ready_pipe[0]);
+        (void)::close(release_pipe[1]);
+        int child_status = 0;
+        const bool waited = wait_for_child(child, child_status);
+
+        CHECK(received);
+        CHECK(ready == 'r');
+        CHECK(!busy);
+        require_wave_status(busy.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::lock_busy,
+                            "inherited child descriptor retains wave lock");
+        CHECK(released);
+        CHECK(waited);
+        CHECK(WIFEXITED(child_status));
+        CHECK(WEXITSTATUS(child_status) == 0);
+
+        auto reopened = wave_detail::DistributedSieveWaveStore::open(root, digest);
+        (void)require_wave_ready(reopened, "wave opens after inherited descriptor closes");
+    }
+}
+
+#else
+
+void test_wave_store_platform_fail_closed() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "unsupported";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    CHECK(!created);
+    CHECK(created.store == nullptr);
+    require_wave_status(created.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::platform_unsupported,
+                        "unsupported platform rejects wave-store creation");
+    CHECK(!entry_exists_no_follow(root));
+}
+
+#endif
+
 using TestFunction = void (*)();
 
 void run_core_suite() {
@@ -3421,12 +4680,47 @@ void run_core_suite() {
     std::cout << "===== Distributed Sieve Resume Core Tests PASSED =====\n";
 }
 
+void run_wave_store_suite() {
+#if !defined(_WIN32)
+    const std::array<std::pair<std::string_view, TestFunction>, 12> tests = {{
+        {"create, open, revalidate, and exact manifest",
+         test_wave_store_create_open_revalidate_and_exact_manifest},
+        {"store-owned draft fields", test_wave_store_rejects_non_draft_store_owned_fields},
+        {"zero open digest", test_wave_store_rejects_zero_open_digest_without_observation},
+        {"canonical no-follow paths",
+         test_wave_store_rejects_noncanonical_and_intermediate_symlink_paths},
+        {"all durable fault prefixes", test_wave_store_all_durable_prefixes_recover_exactly},
+        {"post-hook namespace revalidation", test_wave_store_revalidates_after_root_and_lock_hooks},
+        {"fault-hook fork authority", test_wave_store_fault_hooks_cannot_fork_store_authority},
+        {"unknown leaf and wrong digest",
+         test_wave_store_unknown_leaf_and_wrong_digest_are_preserved},
+        {"root and lock replacement", test_wave_store_root_and_lock_replacement},
+        {"mode, symlink, and hardlink", test_wave_store_mode_symlink_and_hardlink_rejections},
+        {"deterministic busy", test_wave_store_deterministic_busy_with_fork_and_pipes},
+        {"inherited lock", test_wave_store_inherited_lock_is_process_bound_and_close_only},
+    }};
+#else
+    const std::array<std::pair<std::string_view, TestFunction>, 2> tests = {{
+        {"zero open digest", test_wave_store_rejects_zero_open_digest_without_observation},
+        {"unsupported platform fails closed", test_wave_store_platform_fail_closed},
+    }};
+#endif
+
+    std::cout << "===== Distributed Sieve Wave Store Tests =====\n";
+    for (const auto& [name, function] : tests) {
+        function();
+        std::cout << "  " << name << ": PASS\n";
+    }
+    std::cout << "===== Distributed Sieve Wave Store Tests PASSED =====\n";
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     try {
         if (argc == 1) {
             run_core_suite();
+            run_wave_store_suite();
             return 0;
         }
         if (argc == 3 && std::string_view(argv[1]) == "--suite" &&
@@ -3434,11 +4728,16 @@ int main(int argc, char** argv) {
             run_core_suite();
             return 0;
         }
+        if (argc == 3 && std::string_view(argv[1]) == "--suite" &&
+            std::string_view(argv[2]) == "wave-store") {
+            run_wave_store_suite();
+            return 0;
+        }
 
-        std::cerr << "usage: " << argv[0] << " [--suite core]\n";
+        std::cerr << "usage: " << argv[0] << " [--suite core|wave-store]\n";
         return 2;
     } catch (const std::exception& error) {
-        std::cerr << "Distributed sieve resume core test failure: " << error.what() << '\n';
+        std::cerr << "Distributed sieve resume test failure: " << error.what() << '\n';
         return 1;
     }
 }

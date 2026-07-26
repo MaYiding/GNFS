@@ -750,7 +750,7 @@ TEST_TIMEOUT=(
     test_sieve_basic         120
     test_sieve_checkpoint    10
     test_distributed_sieve   180
-    test_distributed_sieve_resume 20
+    test_distributed_sieve_resume 60
     test_kleinjung           360
     test_kleinjung_large     600
     test_factor_with_kleinjung 900
@@ -975,7 +975,7 @@ TEST_TIER=(
     test_sieve_basic         "fast"
     test_sieve_checkpoint    "instant"
     test_distributed_sieve   "fast"
-    test_distributed_sieve_resume "instant"
+    test_distributed_sieve_resume "fast"
     test_kleinjung           "slow"
     test_kleinjung_large     "heavy"
     test_factor_with_kleinjung "slow"

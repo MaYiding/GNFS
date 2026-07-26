@@ -352,12 +352,21 @@ receipt after its descriptor-bound read. The test does not claim that a
 completed worker can be adopted after a master crash; the current contract
 invalidates and recomputes the whole distributed wave.
 
-`test_distributed_sieve_resume` is currently an `instant` pure protocol and
-compile-boundary contract. Besides the closed record/dependency tests, it
-compiles the source-private cleanup-authorization passkey and receipt traits.
-The passkey and receipt have no production or test mint route, so these checks
-freeze only the inaccessible capability surface; they are not evidence of a
-durable WaveStore or cleanup authority.
+`test_distributed_sieve_resume` is a split protocol and WaveStore contract.
+`DistributedSieveResumeCore` remains an `instant` pure record, dependency, and
+compile-boundary test. It also compiles the source-private cleanup-authorization
+passkey and receipt traits. The passkey and receipt have no production or test
+mint route, so those checks freeze only the inaccessible capability surface
+and are not evidence of cleanup authority.
+
+`DistributedSieveWaveStore` is the `fast` durable ownership contract. It
+creates and reopens the source-private store, checks exact manifest identity
+injection and bytes, recovers every durable publication prefix, rejects
+noncanonical or symlinked ancestor paths, ACL and namespace drift, and
+native-identity replacement. Fork-and-pipe probes cover hook-time PID
+separation, concurrent exclusion, and inherited-open-description lock
+lifetime. The binary catalog is therefore `fast`; its no-argument form runs
+both sub-suites.
 
 `test_local_sieve_thread_budget` is the `instant` contract for balanced lane
 allocation, invalid limits, and a bounded property grid. The 64-special-Q probe

@@ -1786,14 +1786,41 @@ is converted into intent. Legacy cleanup tests remain unchanged.
 
 ### M2: Wave Ownership and Attempts
 
-- [ ] Add stable wave root validation and permanent inherited lock.
-- [ ] Publish/recover `WaveManifestV1`.
+- [x] Add stable wave root validation and permanent inherited lock.
+- [x] Publish/recover `WaveManifestV1`.
 - [ ] Reserve each actual lease before publishing/reconciling the bounded
   attempt predecessor chain.
 - [ ] Freeze and explicitly thread the parsed execution/randomness policy
   before hashing or forking; durable callees perform zero `getenv` reads.
 - [ ] Add lock/root replacement, live-child, descriptor-hygiene, and
   concurrent-resumer tests.
+
+The WaveStore foundation now freezes an explicit component-canonical absolute
+root. It rejects empty, dot, dot-dot, repeated-separator, trailing-separator,
+and NUL-bearing requests instead of silently rewriting them. Initial open and
+revalidation walk from the filesystem root with per-component no-follow
+directory opens, then create the owner-only wave directory relative to the held
+parent descriptor. The trust check rejects effective Apple ACLs and Linux
+access or default ACL xattrs; an unavailable ACL adapter fails closed before
+the first namespace mutation.
+
+The store retains one process-bound inherited-open-description lock for its
+lifetime. It captures the creator PID before filesystem access, rechecks it
+around every fault hook and mutation boundary, and never lets a forked hook
+continuation mint a store. Creation injects the held root and lock identities
+into `WaveManifestV1`, seals the canonical digest, and publishes through the
+shared immutable pending-to-canonical record primitive. Open requires the
+expected nonzero manifest digest and either confirms the canonical record or
+converges an exact interrupted publication while holding the permanent lock.
+Unknown leaves, identity replacement, policy drift, conflicting records, and
+forked store use all fail closed without cleanup authority.
+
+The dedicated WaveStore suite covers every durable root, lock, and manifest
+publication prefix; exact recovery; post-hook namespace drift; root, ancestor,
+and lock replacement; mode, ACL, symlink, and hardlink rejection; hook-time
+fork rejection; concurrent opener exclusion; and inherited lock lifetime. This
+foundation still exposes no deletion, handoff conversion, or
+attempt-reconciliation capability.
 
 Exit criterion: two masters cannot both act, and restart cannot exceed the
 manifest retry budget. This milestone remains test/internal and exposes no

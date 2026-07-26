@@ -295,6 +295,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_protocol.cpp"
     target_sources(gnfs_core PRIVATE src/sieve/distributed_sieve_protocol.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_wave_store.cpp")
+    target_sources(gnfs_core PRIVATE src/sieve/distributed_sieve_wave_store.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cofactor/cofactorizer.cpp")
     target_sources(gnfs_core PRIVATE src/cofactor/cofactorizer.cpp)
 endif()
@@ -952,6 +956,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_include_directories(test_distributed_sieve_resume PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
     )
     target_link_libraries(test_distributed_sieve_resume PRIVATE gnfs_core Threads::Threads)
     add_test(
@@ -961,6 +966,14 @@ if(GNFS_BUILD_TESTS)
     set_tests_properties(
         DistributedSieveResumeCore
         PROPERTIES LABELS "instant" TIMEOUT 20
+    )
+    add_test(
+        NAME DistributedSieveWaveStore
+        COMMAND test_distributed_sieve_resume --suite wave-store
+    )
+    set_tests_properties(
+        DistributedSieveWaveStore
+        PROPERTIES LABELS "fast" TIMEOUT 60
     )
 
     add_executable(test_poly_checkpoint
