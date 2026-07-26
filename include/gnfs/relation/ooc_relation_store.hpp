@@ -1005,6 +1005,15 @@ public:
             throw std::logic_error("OOCRelationWriter: cleanup handoff ownership is unavailable");
         }
 
+        const auto preflight = OOCCleanupTransaction::preflight_private_lease_cleanup_handoff(
+            *deferred_private_lease_);
+        if (!preflight.completed()) {
+            const auto error = preflight.native_error
+                                   ? preflight.native_error
+                                   : std::make_error_code(std::errc::protocol_error);
+            throw std::system_error(error, "OOCRelationWriter: cleanup handoff preflight failed");
+        }
+
         const OOCSnapshotDescriptor descriptor = finalize();
         if (descriptor.store_id != store_id_) {
             throw std::runtime_error(

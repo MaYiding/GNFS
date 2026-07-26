@@ -1506,18 +1506,53 @@ observations return without a namespace operation. Regression coverage proves
 that inspect, ordinary cleanup resume, and pair-reuse confirmation retain an
 exact duplicate pending leaf while legacy recovery converges it.
 
-The source-private authority-union policy is also frozen, but is not yet a
-runtime gate. It retains independent V1, V2, and generic-handoff facts across
-the four cleanup-marker roles and two handoff roles. A closed disposition table
-rejects foreign evidence first, malformed or wrong-role markers second,
-role-correct V2 records third, and mixed legacy authorities fourth. No V2
-executor exists. Unblocked observations only delegate to the existing V1/C1
-runtime, which must still prove its own exact witness and context. The policy
-implementation is compiled into `gnfs_core` and its 20,736 leaf combinations,
-all current entry groups, out-of-range enum values, and namespace-foreign
-dominance are independently tested. The next milestone must build the
-handle-relative raw observer and place this decision before every first
-namespace mutation.
+The source-private authority-union policy is now the zero-mutation preflight for
+legacy private cleanup, cleanup-handoff publication, lease recovery/removal,
+and lease reservation. It retains independent V1, V2, and generic-handoff facts
+across the four cleanup-marker roles and two handoff roles. A closed
+disposition table rejects foreign evidence first, malformed or wrong-role
+markers second, role-correct V2 records third, a platform-limited handoff
+observation fourth, and mixed legacy authorities fifth. No V2 executor exists.
+Unblocked observations only delegate to the existing V1/C1 runtime, which must
+still prove its own exact witness and context.
+
+The first runtime adapter keeps repair-compatible V1 pending bytes neutral.
+`LegacyPendingCandidate` is not cleanup authority: it represents a regular,
+single-link pending leaf within the V1 extent whose exact repair or
+preservation outcome still depends on the expected transaction record.
+Expected-role V1 bytes remain `LegacyV1`; opposite-role V1 pending bytes remain
+foreign. Any nonempty crash prefix of the independent V2 magic fails closed, so
+a partial V2 publication cannot be rewritten as V1. Role-correct private V2
+records return `PlatformUnsupported` before a sync, rename, rewrite, or unlink.
+The public deferred-writer cleanup-handoff workflow runs this read-only
+admission before `finalize()` can change pair metadata, then repeats it under
+the same inherited `BaseLock` immediately before legacy intent publication.
+Ordinary non-private V1 paths retain their existing `IntentCorrupt` result for
+raw V2 bytes.
+
+The adapter combines the cleanup facts, generic-handoff facts, and unknown or
+case-fold-duplicate directory facts before one reduction. This preserves the
+frozen precedence rather than serializing two collapsed classifiers. On macOS,
+the handoff read retains C1's held private-directory handle. On a platform
+without the strict production handoff reader, a stable policy-compatible
+regular handoff leaf is an explicit `Unsupported` raw fact; directories,
+links, reparse points, invalid POSIX owner/mode, and unstable replacements are
+foreign. Known foreign cleanup, malformed markers, and V2 still retain their
+precedence before the action returns `PlatformUnsupported`. The four cleanup
+marker reads still use the portable stable path reader. Therefore this is a
+runtime safety gate, not yet the final same-handle six-leaf observer. The next
+slice must move the cleanup reads and the before/after allowlist inventory
+behind the same held directory handle, then migrate the remaining private
+entry groups.
+
+The policy implementation is compiled into `gnfs_core`. Its 60,025 closed leaf
+combinations, all current entry groups, out-of-range enum values, and
+namespace-foreign dominance are independently tested. Filesystem regressions
+freeze complete namespace trees, including type, permissions, native identity,
+link count, and bytes. They prove V2 rejection precedes pair quarantine,
+staged-tail removal, lease-pending convergence, handoff reconciliation, and
+fresh reservation, while foreign handoff evidence and malformed markers retain
+their higher precedence.
 
 The M1.7a pure authorized-cleanup marker codec completed on 2026-07-26. Its
 480-byte frame has independent magic, schema, phase kind, and digest domain.
@@ -1532,9 +1567,10 @@ reuses the private-lease `frozen_path_digest()` rule over raw `path.native()`
 code units. Pure tests freeze the complete layout and platform-specific
 self-digests, mutate every authority field, cover zero rows, bounds, overflow,
 aliases, framing, required expected-kind decoding, and phase separation, and
-prove that V1 and V2 codecs cannot reinterpret each other. Legacy cleanup
-recovery also rejects raw V2 intent or staged bytes while preserving the pair
-and every marker.
+prove that V1 and V2 codecs cannot reinterpret each other. Private cleanup
+entry points recognize role-correct V2 records as a deliberately unsupported
+authority family and preserve the complete namespace without mutation; the
+ordinary non-private V1 runtime continues to reject raw V2 bytes as corrupt.
 
 The M1.7b two-capability cleanup conversion remains required before the M1
 exit criterion is complete. It must use a WaveStore-only mint key, creator-PID

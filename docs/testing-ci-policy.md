@@ -168,14 +168,29 @@ an owned empty lease with a different live directory and verifies that the old
 identity-bound receipt rejects the ABA target. The no-argument binary runs all
 suites, so its `scripts/test.sh` tier and timeout are `fast` and 120 seconds.
 `OOCCleanupAuthorityUnion` is an `instant` pure-policy suite from the same
-binary. It exhaustively reduces all 20,736 combinations of four cleanup-marker
+binary. It exhaustively reduces all 60,025 combinations of four cleanup-marker
 leaf states and two generic-handoff leaf states, plus namespace-foreign
 dominance over the complete matrix. Foreign evidence precedes malformed or
-wrong-role markers, which precede role-correct V2 records and mixed legacy
-authorities. Every V2-family observation rejects all current entry groups;
+wrong-role markers, which precede role-correct V2 records,
+platform-limited handoff observations, and mixed legacy authorities. Every
+V2-family or platform-limited observation rejects all current entry groups;
 only an unblocked state delegates to the existing V1/C1 runtime. This suite
-freezes the policy contract only. Raw filesystem observation and entry-point
-integration remain separate required coverage.
+also freezes the pending-only `LegacyPendingCandidate` state: it carries no
+cleanup authority and is valid only in the two pending slots. Raw filesystem
+integration is covered separately by the core and private-lease crash suites.
+The platform-limited metadata adapter is exercised directly for missing,
+policy-compatible regular, invalid-mode POSIX, directory, hard-link, and
+symlink leaves; it never reports `Exact`.
+Those tests snapshot the complete test namespace and prove that role-correct
+V2 records, malformed markers, foreign handoffs, exact handoff/V1 conflicts,
+and partial V2 magic prefixes leave no namespace mutation. Static entry
+placement keeps the preflight before sync, rename, rewrite, reconciliation, or
+unlink. The deferred-writer integration additionally snapshots an open pair
+and V2 leaf around rejection, proving its public cleanup-handoff preflight runs
+before `finalize()` changes pair bytes; marker publication repeats the check.
+The current runtime adapter combines all six logical leaf facts before
+reduction, but its four cleanup-marker reads are not yet behind the same
+private-directory handle as C1's handoff reads.
 `OOCCleanupPrivateLeaseCrash` is a `fast` self-exec suite from the same
 binary. It terminates children at each durable private-lease marker, rename,
 and teardown boundary. It also covers writer termination after the first and

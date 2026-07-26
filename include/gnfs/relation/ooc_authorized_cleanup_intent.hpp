@@ -20,6 +20,9 @@ namespace gnfs::relation {
 
 inline constexpr std::uint32_t OOC_AUTHORIZED_CLEANUP_INTENT_SCHEMA_VERSION_V2 = 2;
 inline constexpr std::uint32_t OOC_AUTHORIZED_CLEANUP_INTENT_WIRE_VERSION_V1 = 1;
+inline constexpr std::array<char, 8> OOC_AUTHORIZED_CLEANUP_INTENT_MAGIC_V2{
+    'G', 'N', 'F', 'S', 'A', 'C', 'I', '2',
+};
 inline constexpr std::uint64_t OOC_AUTHORIZED_CLEANUP_INTENT_PLATFORM_POSIX_V1 = 1;
 inline constexpr std::uint64_t OOC_AUTHORIZED_CLEANUP_INTENT_PLATFORM_WINDOWS_V1 = 2;
 #ifdef _WIN32

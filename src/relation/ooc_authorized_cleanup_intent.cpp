@@ -19,7 +19,7 @@ using Code = OOCAuthorizedCleanupIntentProtocolCode;
 using NativeIdentity = util::durable_immutable_record::NativeIdentity;
 using Status = OOCAuthorizedCleanupIntentProtocolStatus;
 
-constexpr std::array<char, 8> RECORD_MAGIC{'G', 'N', 'F', 'S', 'A', 'C', 'I', '2'};
+constexpr auto& RECORD_MAGIC = OOC_AUTHORIZED_CLEANUP_INTENT_MAGIC_V2;
 constexpr std::string_view RECORD_DIGEST_DOMAIN = "GNFS-OOC-AUTHORIZED-CLEANUP-INTENT-V2";
 constexpr std::array<std::byte, 1> DIGEST_DOMAIN_SEPARATOR{std::byte{0}};
 

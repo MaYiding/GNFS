@@ -549,6 +549,19 @@ namespace ooc_cleanup_detail {
 
 [[nodiscard]] OOCPrivateHandoffInspectResult
 classify_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& lock);
+[[nodiscard]] std::optional<OOCCleanupResult>
+preflight_private_cleanup_union_for_transaction_locked(const OOCCleanupPaths& paths,
+                                                       const BaseLock& lock,
+                                                       bool publish_intent_only);
+[[nodiscard]] std::optional<OOCCleanupResult>
+preflight_private_cleanup_union_for_recovery_locked(const OOCCleanupPaths& paths,
+                                                    const BaseLock& lock);
+[[nodiscard]] std::optional<OOCCleanupResult>
+preflight_private_cleanup_union_for_removal_locked(const OOCCleanupPaths& paths,
+                                                   const BaseLock& lock);
+[[nodiscard]] std::optional<OOCCleanupResult>
+preflight_private_cleanup_union_for_reservation_locked(const OOCCleanupPaths& paths,
+                                                       const BaseLock& lock);
 [[nodiscard]] inline std::optional<std::array<std::uint64_t, 3>>
 inspect_directory_identity_locked(const std::filesystem::path& directory_path);
 inline void inspect_private_lease_transaction_entries(const std::filesystem::path& directory_path,
@@ -3284,6 +3297,10 @@ run_transaction_locked(const OOCCleanupPaths& paths, const BaseLock& held_lock,
         (!allow_begin && ownership_proof != nullptr)) {
         fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
     }
+    if (const auto blocked = preflight_private_cleanup_union_for_transaction_locked(
+            paths, held_lock, publish_intent_only)) {
+        return *blocked;
+    }
     if (!paths.private_directory.empty() &&
         inspect_directory_identity_locked(paths.private_directory)) {
         inspect_private_lease_transaction_entries(paths.private_directory, paths);
@@ -3448,6 +3465,10 @@ run_transaction(const std::filesystem::path& requested_base, const OOCCleanupReq
     const OOCCleanupPaths paths = freeze_paths(requested_base);
     BaseLock lock(paths.lock_path, paths.private_directory.empty());
     if (!paths.private_directory.empty()) {
+        if (const auto blocked =
+                preflight_private_cleanup_union_for_transaction_locked(paths, lock, false)) {
+            return *blocked;
+        }
         const auto handoff = classify_private_handoff_locked(paths, lock);
         if (handoff.state != OOCPrivateHandoffState::None) {
             return handoff.result;
@@ -4352,7 +4373,8 @@ struct PrivateHandoffObservationWitness final {
 /// record seam is deliberately unavailable here, and it never publishes,
 /// removes, or rewrites a namespace leaf.
 [[nodiscard]] inline PrivateHandoffObservationWitness
-observe_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& lock) {
+observe_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& lock,
+                               bool allow_cleanup_markers = false) {
     if (paths.private_directory.empty() || !lock.matches(paths.lock_path)) {
         fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
     }
@@ -4413,7 +4435,7 @@ observe_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& loc
                                           OOCPrivateHandoffState::TaintedPreserved),
         });
     }
-    if (entries.legacy_authority) {
+    if (entries.legacy_authority && !allow_cleanup_markers) {
         return finish({
             .inspection = handoff_failure(OOCCleanupStatus::NamespaceConflict,
                                           OOCPrivateHandoffState::TaintedPreserved),
@@ -5192,6 +5214,9 @@ recover_private_lease_locked(const OOCCleanupPaths& paths, const BaseLock& lock,
         fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
     }
     lock.require_stable();
+    if (const auto blocked = preflight_private_cleanup_union_for_recovery_locked(paths, lock)) {
+        return *blocked;
+    }
     const auto handoff = reconcile_legacy_private_handoff_publication_locked(paths, lock);
     if (handoff.state != OOCPrivateHandoffState::None) {
         return handoff.result;
@@ -5702,6 +5727,11 @@ public:
             }
 
             auto live_lock = std::make_shared<ooc_cleanup_detail::BaseLock>(paths.lock_path);
+            if (const auto blocked =
+                    ooc_cleanup_detail::preflight_private_cleanup_union_for_reservation_locked(
+                        paths, *live_lock)) {
+                return *blocked;
+            }
             const auto recovered =
                 ooc_cleanup_detail::recover_private_lease_locked(paths, *live_lock);
             if (!recovered.transaction_terminal()) {
@@ -5869,6 +5899,11 @@ public:
                 ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
                                          ooc_cleanup_detail::invalid_argument_error());
             }
+            if (const auto blocked =
+                    ooc_cleanup_detail::preflight_private_cleanup_union_for_removal_locked(
+                        paths, *held_lock)) {
+                return *blocked;
+            }
             const auto handoff =
                 ooc_cleanup_detail::reconcile_legacy_private_handoff_publication_locked(paths,
                                                                                         *held_lock);
@@ -5987,6 +6022,38 @@ public:
     }
 
 private:
+    /// Read-only authority-union admission before the public deferred writer
+    /// finalizes its pair. The publication path repeats the same admission
+    /// immediately before creating a legacy cleanup marker.
+    [[nodiscard]] static OOCCleanupResult
+    preflight_private_lease_cleanup_handoff(const OOCPrivateLeaseOwnershipReceipt& lease) noexcept {
+        if (lease.spent_ || lease.active_ || !lease.live_lock_ || lease.base_path_.empty() ||
+            lease.private_directory_.empty() || lease.lock_path_.empty()) {
+            return OOCCleanupResult{
+                .status = OOCCleanupStatus::InvalidRequest,
+                .stage = OOCCleanupStage::None,
+                .native_error = ooc_cleanup_detail::invalid_argument_error(),
+            };
+        }
+        return invoke([&] {
+            const auto paths = ooc_cleanup_detail::freeze_paths(lease.base_path_);
+            if (paths.base_path != lease.base_path_ ||
+                paths.private_directory != lease.private_directory_ ||
+                paths.lock_path != lease.lock_path_ ||
+                !lease.live_lock_->matches(paths.lock_path)) {
+                ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                         ooc_cleanup_detail::invalid_argument_error());
+            }
+            if (const auto blocked =
+                    ooc_cleanup_detail::preflight_private_cleanup_union_for_transaction_locked(
+                        paths, *lease.live_lock_, true)) {
+                return *blocked;
+            }
+            lease.live_lock_->require_stable();
+            return ooc_cleanup_detail::private_lease_completed();
+        });
+    }
+
     /// Zero-mutation preflight used immediately before a fresh private writer
     /// reserves either pair leaf. The receipt, durable marker chain, exact
     /// directory identity, canonical owner marker, and owner-only child
@@ -6126,6 +6193,11 @@ private:
             }
 
             auto& lock = *lease.live_lock_;
+            if (const auto blocked =
+                    ooc_cleanup_detail::preflight_private_cleanup_union_for_transaction_locked(
+                        paths, lock, true)) {
+                return *blocked;
+            }
             const auto handoff = ooc_cleanup_detail::classify_private_handoff_locked(paths, lock);
             if (handoff.state != OOCPrivateHandoffState::None) {
                 return handoff.result;
