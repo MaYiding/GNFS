@@ -1372,6 +1372,8 @@ checks passed in Debug.
   optional duplicate-pending observation for private conversion.
 - [x] Freeze a source-private, non-instantiable mint-key/receipt type seam
   without adding a production or test mint path.
+- [x] Split generic-handoff classification from the explicit legacy
+  pending-reconciliation transition.
 - [x] Freeze the role-separated V2 authorized-cleanup marker codec and exact
   canonical/optional-pending handoff bindings without enabling runtime use.
 - [ ] Add the two-capability application-authorization conversion into
@@ -1490,6 +1492,17 @@ instantiate a valid receipt. This is compile-time authority-surface groundwork,
 not durable cleanup authority: minting remains blocked until a stable WaveStore
 root, held permanent lock, canonical same-handle record confirmation, and
 creator-process binding exist together.
+
+The generic-handoff classifier is now a zero-mutation observation boundary. It
+accepts no action flag and returns a move-only internal witness that retains the
+same no-follow private-directory handle plus exact canonical/pending bytes and
+snapshots. Only the two legacy lease recovery/removal callers can invoke the
+separate reconciliation transition. That transition may durably confirm an
+exact canonical record and converge its byte-identical pending duplicate, or
+remove an exact still-preactive pending-only publication. All other
+observations return without a namespace operation. Regression coverage proves
+that inspect, ordinary cleanup resume, and pair-reuse confirmation retain an
+exact duplicate pending leaf while legacy recovery converges it.
 
 The M1.7a pure authorized-cleanup marker codec completed on 2026-07-26. Its
 480-byte frame has independent magic, schema, phase kind, and digest domain.

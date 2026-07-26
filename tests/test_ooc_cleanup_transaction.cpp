@@ -4403,6 +4403,13 @@ void test_private_handoff_canonical_pending_convergence_and_taint() {
         const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
         CHECK(inspected.canonical());
         CHECK(inspected.state == OOCPrivateHandoffState::Canonical);
+        CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(read_test_bytes(paths.private_handoff_pending_path) == canonical_bytes);
+        CHECK(OOCCleanupTransaction::resume(base).status == OOCCleanupStatus::HandoffPresent);
+        CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(OOCCleanupTransaction::confirm_pair_namespace_reusable(base).status ==
+              OOCCleanupStatus::HandoffPresent);
+        CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
         CHECK(OOCCleanupTransaction::recover_private_lease(base).status ==
               OOCCleanupStatus::HandoffPresent);
         CHECK(entry_exists_no_follow(paths.private_handoff_path));
@@ -4410,6 +4417,29 @@ void test_private_handoff_canonical_pending_convergence_and_taint() {
         CHECK(read_test_bytes(paths.private_handoff_path) == canonical_bytes);
         CHECK(entry_exists_no_follow(paths.index_path));
         CHECK(entry_exists_no_follow(paths.data_path));
+    }
+
+    {
+        const auto base =
+            temp.path() / "canonical-duplicate-pending-remove.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        const auto canonical_bytes = read_test_bytes(paths.private_handoff_path);
+        const auto index_bytes = read_test_bytes(paths.index_path);
+        const auto data_bytes = read_test_bytes(paths.data_path);
+        const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
+        write_private_control_bytes(paths.private_handoff_pending_path, canonical_bytes);
+
+        CHECK(OOCCleanupTransaction::remove_private_lease(prepared.lease_ownership).status ==
+              OOCCleanupStatus::HandoffPresent);
+        CHECK(!prepared.lease_ownership.spent());
+        CHECK(entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+        check_test_bytes_preserved(paths.private_handoff_path, canonical_bytes);
+        check_test_bytes_preserved(paths.index_path, index_bytes);
+        check_test_bytes_preserved(paths.data_path, data_bytes);
+        check_test_bytes_preserved(paths.lease_owned_path, owned_bytes);
     }
 
     {

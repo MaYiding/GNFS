@@ -548,8 +548,7 @@ struct OOCCleanupPaths final {
 namespace ooc_cleanup_detail {
 
 [[nodiscard]] OOCPrivateHandoffInspectResult
-classify_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& lock,
-                                bool discard_exact_preactive_pending);
+classify_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& lock);
 [[nodiscard]] inline std::optional<std::array<std::uint64_t, 3>>
 inspect_directory_identity_locked(const std::filesystem::path& directory_path);
 inline void inspect_private_lease_transaction_entries(const std::filesystem::path& directory_path,
@@ -3449,7 +3448,7 @@ run_transaction(const std::filesystem::path& requested_base, const OOCCleanupReq
     const OOCCleanupPaths paths = freeze_paths(requested_base);
     BaseLock lock(paths.lock_path, paths.private_directory.empty());
     if (!paths.private_directory.empty()) {
-        const auto handoff = classify_private_handoff_locked(paths, lock, false);
+        const auto handoff = classify_private_handoff_locked(paths, lock);
         if (handoff.state != OOCPrivateHandoffState::None) {
             return handoff.result;
         }
@@ -4335,23 +4334,36 @@ inspect_private_handoff_directory_entries(const OOCCleanupPaths& paths) {
     return result;
 }
 
-/// Single reusable authority gate for every generic-handoff-aware cleanup or
-/// lease recovery entry point. It is production-reader-only: the injectable
-/// durable-record seam is deliberately unavailable here.
-[[nodiscard]] inline OOCPrivateHandoffInspectResult
-classify_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& lock,
-                                bool discard_exact_preactive_pending) {
+/// Move-only result from one pure generic-handoff namespace observation.
+/// Exact POSIX witnesses retain the same no-follow directory handle so the
+/// separate legacy transition can consume only what this observation proved.
+struct PrivateHandoffObservationWitness final {
+    OOCPrivateHandoffInspectResult inspection;
+#ifndef _WIN32
+    std::unique_ptr<PrivateDirectoryHandle> directory;
+    std::optional<LoadedPrivateHandoffLeaf> canonical;
+    std::optional<LoadedPrivateHandoffLeaf> pending;
+    bool pending_is_preactive = false;
+#endif
+};
+
+/// Pure reusable classifier for every generic-handoff-aware cleanup or lease
+/// recovery entry point. It is production-reader-only: the injectable durable
+/// record seam is deliberately unavailable here, and it never publishes,
+/// removes, or rewrites a namespace leaf.
+[[nodiscard]] inline PrivateHandoffObservationWitness
+observe_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& lock) {
     if (paths.private_directory.empty() || !lock.matches(paths.lock_path)) {
         fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
     }
     lock.require_stable();
-    const auto finish = [&lock](OOCPrivateHandoffInspectResult result) {
+    const auto finish = [&lock](PrivateHandoffObservationWitness result) {
         lock.require_stable();
         return result;
     };
     const auto directory_identity = inspect_directory_identity_locked(paths.private_directory);
     if (!directory_identity) {
-        return finish(handoff_none());
+        return finish({.inspection = handoff_none()});
     }
 
 #ifdef _WIN32
@@ -4362,42 +4374,50 @@ classify_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& lo
              canonical.kind == InspectKind::Error ? canonical.error : pending.error);
     }
     if (canonical.kind == InspectKind::Missing && pending.kind == InspectKind::Missing) {
-        return finish(handoff_none());
+        return finish({.inspection = handoff_none()});
     }
-    return finish(handoff_failure(OOCCleanupStatus::PlatformUnsupported,
-                                  OOCPrivateHandoffState::TaintedPreserved,
-                                  std::make_error_code(std::errc::operation_not_supported)));
+    return finish({
+        .inspection = handoff_failure(OOCCleanupStatus::PlatformUnsupported,
+                                      OOCPrivateHandoffState::TaintedPreserved,
+                                      std::make_error_code(std::errc::operation_not_supported)),
+    });
 #else
-    PrivateDirectoryHandle directory(paths.private_directory);
-    if (directory.identity() != *directory_identity) {
+    auto directory = std::make_unique<PrivateDirectoryHandle>(paths.private_directory);
+    if (directory->identity() != *directory_identity) {
         fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
     }
     const auto canonical_leaf = paths.private_handoff_path.filename();
     const auto pending_leaf = paths.private_handoff_pending_path.filename();
-    const bool canonical_exists = directory.leaf_exists(canonical_leaf);
-    const bool pending_exists = directory.leaf_exists(pending_leaf);
+    const bool canonical_exists = directory->leaf_exists(canonical_leaf);
+    const bool pending_exists = directory->leaf_exists(pending_leaf);
     if (!canonical_exists && !pending_exists) {
-        return finish(handoff_none());
+        return finish({.inspection = handoff_none()});
     }
-    directory.require_private_policy();
+    directory->require_private_policy();
 
-    const auto canonical = read_private_handoff_leaf(directory.native_handle(), canonical_leaf);
-    const auto pending = read_private_handoff_leaf(directory.native_handle(), pending_leaf);
-    directory.require_private_policy();
+    auto canonical = read_private_handoff_leaf(directory->native_handle(), canonical_leaf);
+    auto pending = read_private_handoff_leaf(directory->native_handle(), pending_leaf);
+    directory->require_private_policy();
     if (canonical.state == PrivateHandoffLeafState::Rejected ||
         pending.state == PrivateHandoffLeafState::Rejected) {
-        return finish(handoff_failure(OOCCleanupStatus::ForeignReplacementPreserved,
-                                      OOCPrivateHandoffState::TaintedPreserved));
+        return finish({
+            .inspection = handoff_failure(OOCCleanupStatus::ForeignReplacementPreserved,
+                                          OOCPrivateHandoffState::TaintedPreserved),
+        });
     }
     const auto entries = inspect_private_handoff_directory_entries(paths);
-    directory.require_private_policy();
+    directory->require_private_policy();
     if (!entries.valid) {
-        return finish(handoff_failure(OOCCleanupStatus::ForeignReplacementPreserved,
-                                      OOCPrivateHandoffState::TaintedPreserved));
+        return finish({
+            .inspection = handoff_failure(OOCCleanupStatus::ForeignReplacementPreserved,
+                                          OOCPrivateHandoffState::TaintedPreserved),
+        });
     }
     if (entries.legacy_authority) {
-        return finish(handoff_failure(OOCCleanupStatus::NamespaceConflict,
-                                      OOCPrivateHandoffState::TaintedPreserved));
+        return finish({
+            .inspection = handoff_failure(OOCCleanupStatus::NamespaceConflict,
+                                          OOCPrivateHandoffState::TaintedPreserved),
+        });
     }
 
     const auto reserved = load_optional_private_lease_marker(paths.lease_reserved_path);
@@ -4406,68 +4426,129 @@ classify_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& lo
         if (!canonical.record || !canonical.snapshot ||
             !handoff_record_matches_context(*canonical.record, paths, lock, *directory_identity,
                                             reserved, owned, false)) {
-            directory.require_private_policy();
-            return finish(handoff_failure(OOCCleanupStatus::ForeignReplacementPreserved,
-                                          OOCPrivateHandoffState::TaintedPreserved));
+            directory->require_private_policy();
+            return finish({
+                .inspection = handoff_failure(OOCCleanupStatus::ForeignReplacementPreserved,
+                                              OOCPrivateHandoffState::TaintedPreserved),
+            });
         }
         if (pending.state == PrivateHandoffLeafState::Exact) {
             if (!pending.record || !pending.snapshot || pending.bytes != canonical.bytes) {
-                directory.require_private_policy();
-                return finish(handoff_failure(OOCCleanupStatus::ForeignReplacementPreserved,
-                                              OOCPrivateHandoffState::TaintedPreserved));
+                directory->require_private_policy();
+                return finish({
+                    .inspection = handoff_failure(OOCCleanupStatus::ForeignReplacementPreserved,
+                                                  OOCPrivateHandoffState::TaintedPreserved),
+                });
             }
         }
-        if (discard_exact_preactive_pending) {
-            const auto confirmed = invoke_with_stable_base_lock(lock, [&] {
-                return util::durable_immutable_record::publish_at(
-                    directory.native_handle(), pending_leaf, canonical_leaf, canonical.bytes);
-            });
-            if (!confirmed.is_durable() || !confirmed.canonical_snapshot()) {
-                const auto status = confirmed.status() ==
-                                            util::durable_immutable_record::RecordPublishStatus::
-                                                platform_unsupported
-                                        ? OOCCleanupStatus::PlatformUnsupported
-                                        : OOCCleanupStatus::DurabilityFailure;
-                return finish(handoff_failure(status, OOCPrivateHandoffState::TaintedPreserved,
-                                              confirmed.native_error()));
-            }
-            directory.require_stable();
-            directory.require_private_policy();
-            return finish(handoff_present(*canonical.record, *confirmed.canonical_snapshot()));
-        }
-        directory.require_private_policy();
-        return finish(handoff_present(*canonical.record, *canonical.snapshot));
+        directory->require_private_policy();
+        return finish({
+            .inspection = handoff_present(*canonical.record, *canonical.snapshot),
+            .directory = std::move(directory),
+            .canonical = std::move(canonical),
+            .pending = pending.state == PrivateHandoffLeafState::Exact
+                           ? std::optional<LoadedPrivateHandoffLeaf>(std::move(pending))
+                           : std::nullopt,
+        });
     }
 
     if (pending.state == PrivateHandoffLeafState::Exact) {
         if (!pending.record || !pending.snapshot) {
-            directory.require_private_policy();
-            return finish(handoff_failure(OOCCleanupStatus::ForeignReplacementPreserved,
-                                          OOCPrivateHandoffState::TaintedPreserved));
+            directory->require_private_policy();
+            return finish({
+                .inspection = handoff_failure(OOCCleanupStatus::ForeignReplacementPreserved,
+                                              OOCPrivateHandoffState::TaintedPreserved),
+            });
         }
         if (!reserved) {
-            directory.require_private_policy();
-            return finish(handoff_pending(*pending.record, *pending.snapshot));
+            directory->require_private_policy();
+            return finish({
+                .inspection = handoff_pending(*pending.record, *pending.snapshot),
+                .directory = std::move(directory),
+                .pending = std::move(pending),
+            });
         }
         if (!handoff_record_matches_context(*pending.record, paths, lock, *directory_identity,
                                             reserved, owned, true)) {
-            directory.require_private_policy();
-            return finish(handoff_failure(OOCCleanupStatus::ForeignReplacementPreserved,
-                                          OOCPrivateHandoffState::TaintedPreserved));
-        }
-        if (discard_exact_preactive_pending) {
-            invoke_with_stable_base_lock(lock, [&] {
-                remove_exact_private_handoff_pending(directory, *pending.snapshot, pending_leaf);
+            directory->require_private_policy();
+            return finish({
+                .inspection = handoff_failure(OOCCleanupStatus::ForeignReplacementPreserved,
+                                              OOCPrivateHandoffState::TaintedPreserved),
             });
-            directory.require_private_policy();
-            return finish(handoff_none());
         }
-        directory.require_private_policy();
-        return finish(handoff_pending(*pending.record, *pending.snapshot));
+        directory->require_private_policy();
+        return finish({
+            .inspection = handoff_pending(*pending.record, *pending.snapshot),
+            .directory = std::move(directory),
+            .pending = std::move(pending),
+            .pending_is_preactive = true,
+        });
     }
-    directory.require_private_policy();
-    return finish(handoff_none());
+    directory->require_private_policy();
+    return finish({.inspection = handoff_none()});
 #endif
+}
+
+/// Authority-free projection used by every observation-only caller.
+[[nodiscard]] inline OOCPrivateHandoffInspectResult
+classify_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& lock) {
+    auto observed = observe_private_handoff_locked(paths, lock);
+    return std::move(observed.inspection);
+}
+
+/// Legacy recovery transition for the two callers that previously requested
+/// classifier-side pending cleanup. It consumes only the exact witnesses held
+/// by one pure observation: an exact canonical record is durably confirmed and
+/// its byte-identical pending duplicate is converged, while an exact
+/// still-preactive pending-only publication is removed. No other observation
+/// permits a namespace action.
+[[nodiscard]] inline OOCPrivateHandoffInspectResult
+reconcile_legacy_private_handoff_publication_locked(const OOCCleanupPaths& paths,
+                                                    const BaseLock& lock) {
+    auto observed = observe_private_handoff_locked(paths, lock);
+#ifndef _WIN32
+    if (observed.inspection.state == OOCPrivateHandoffState::Canonical) {
+        if (!observed.directory || !observed.canonical || !observed.canonical->record ||
+            !observed.canonical->snapshot) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        const auto confirmed = invoke_with_stable_base_lock(lock, [&] {
+            return util::durable_immutable_record::publish_at(
+                observed.directory->native_handle(), paths.private_handoff_pending_path.filename(),
+                paths.private_handoff_path.filename(), observed.canonical->bytes);
+        });
+        if (!confirmed.is_durable() || !confirmed.canonical_snapshot()) {
+            const auto status =
+                confirmed.status() ==
+                        util::durable_immutable_record::RecordPublishStatus::platform_unsupported
+                    ? OOCCleanupStatus::PlatformUnsupported
+                    : OOCCleanupStatus::DurabilityFailure;
+            return handoff_failure(status, OOCPrivateHandoffState::TaintedPreserved,
+                                   confirmed.native_error());
+        }
+        observed.directory->require_stable();
+        observed.directory->require_private_policy();
+        lock.require_stable();
+        return handoff_present(*observed.canonical->record, *confirmed.canonical_snapshot());
+    }
+
+    if (observed.inspection.state == OOCPrivateHandoffState::PendingOnly &&
+        observed.pending_is_preactive) {
+        if (!observed.directory || !observed.pending || !observed.pending->snapshot) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        invoke_with_stable_base_lock(lock, [&] {
+            remove_exact_private_handoff_pending(*observed.directory, *observed.pending->snapshot,
+                                                 paths.private_handoff_pending_path.filename());
+        });
+        observed.directory->require_private_policy();
+        lock.require_stable();
+        return handoff_none();
+    }
+#endif
+    return std::move(observed.inspection);
 }
 
 [[nodiscard]] inline bool
@@ -5111,7 +5192,7 @@ recover_private_lease_locked(const OOCCleanupPaths& paths, const BaseLock& lock,
         fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
     }
     lock.require_stable();
-    const auto handoff = classify_private_handoff_locked(paths, lock, true);
+    const auto handoff = reconcile_legacy_private_handoff_publication_locked(paths, lock);
     if (handoff.state != OOCPrivateHandoffState::None) {
         return handoff.result;
     }
@@ -5293,7 +5374,7 @@ public:
                                          ooc_cleanup_detail::protocol_error());
             }
             ooc_cleanup_detail::BaseLock lock(paths.lock_path, false);
-            observation = ooc_cleanup_detail::classify_private_handoff_locked(paths, lock, false);
+            observation = ooc_cleanup_detail::classify_private_handoff_locked(paths, lock);
             assigned = true;
             return observation.result;
         });
@@ -5789,7 +5870,8 @@ public:
                                          ooc_cleanup_detail::invalid_argument_error());
             }
             const auto handoff =
-                ooc_cleanup_detail::classify_private_handoff_locked(paths, *held_lock, true);
+                ooc_cleanup_detail::reconcile_legacy_private_handoff_publication_locked(paths,
+                                                                                        *held_lock);
             if (handoff.state != OOCPrivateHandoffState::None) {
                 return handoff.result;
             }
@@ -5889,7 +5971,7 @@ public:
             ooc_cleanup_detail::BaseLock lock(paths.lock_path, paths.private_directory.empty());
             if (!paths.private_directory.empty()) {
                 const auto handoff =
-                    ooc_cleanup_detail::classify_private_handoff_locked(paths, lock, false);
+                    ooc_cleanup_detail::classify_private_handoff_locked(paths, lock);
                 if (handoff.state != OOCPrivateHandoffState::None) {
                     return handoff.result;
                 }
@@ -5928,8 +6010,8 @@ private:
                 ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
                                          ooc_cleanup_detail::invalid_argument_error());
             }
-            const auto handoff = ooc_cleanup_detail::classify_private_handoff_locked(
-                paths, *lease.live_lock_, false);
+            const auto handoff =
+                ooc_cleanup_detail::classify_private_handoff_locked(paths, *lease.live_lock_);
             if (handoff.state != OOCPrivateHandoffState::None) {
                 return handoff.result;
             }
@@ -6044,8 +6126,7 @@ private:
             }
 
             auto& lock = *lease.live_lock_;
-            const auto handoff =
-                ooc_cleanup_detail::classify_private_handoff_locked(paths, lock, false);
+            const auto handoff = ooc_cleanup_detail::classify_private_handoff_locked(paths, lock);
             if (handoff.state != OOCPrivateHandoffState::None) {
                 return handoff.result;
             }
@@ -6113,8 +6194,7 @@ private:
             }
             auto& lock = *lease.live_lock_;
             lock.require_stable();
-            const auto handoff =
-                ooc_cleanup_detail::classify_private_handoff_locked(paths, lock, false);
+            const auto handoff = ooc_cleanup_detail::classify_private_handoff_locked(paths, lock);
             if (handoff.state != OOCPrivateHandoffState::None) {
                 return handoff.result;
             }

@@ -185,8 +185,13 @@ namespace-replacement case checks fail-closed status, descriptor release, and
 preservation of the no-delete handoff. It also proves that fork-inherited
 adoption receipts and reader owners fail their current-process checks, that a
 fork inside adoption cannot mint a second valid capability, and that the
-parent capability remains valid. Other platforms verify that adoption returns
-unsupported before observing or changing the filesystem. The broader
+parent capability remains valid. The generic-handoff classifier itself is
+zero-mutation and accepts no cleanup flag; inspect, ordinary resume, and
+pair-reuse checks preserve an exact duplicate pending leaf. Only the explicit
+legacy lease recovery/removal transition may converge that exact duplicate or
+discard an exact still-preactive pending-only publication. Other platforms
+verify that adoption returns unsupported before observing or changing the
+filesystem. The broader
 `RelationReductionEngine`
 integration target is `fast`: it repeatedly
 creates and removes durable OOC leases, so its Debug single-run cost includes
