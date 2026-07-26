@@ -228,9 +228,22 @@ post-acquisition test inserts a previously absent handoff leaf and proves that
 the macOS held-handle witness or Linux/Windows path-limited raw re-observation
 rejects it without mutation beyond the injected namespace snapshot. The
 stronger macOS-only regression replaces an exact pending handoff with a
-byte-identical new inode and proves the same preservation result. Removal still
-re-observes the C1 handoff after its preflight and requires a separate
-action-bound migration.
+byte-identical new inode and proves the same preservation result.
+`RemovePrivateLease` has a separate permit and retained C1 consumer; its tests
+prove its exact receipt generation is bound before C1 mutation, pre-mutation
+interruption is namespace-neutral and retryable, a post-acquisition handoff
+insertion is preserved on every platform, a macOS byte-identical pending
+replacement is rejected, and a matching pending leaf is reconciled
+successfully. The proof also binds both external lease-pending siblings; tests
+cover pre-existing foreign siblings and a post-acquisition byte-identical inode
+replacement before C1. Two macOS stale-generation cases preserve the full
+new-generation snapshot for pending-only and canonical-plus-duplicate C1
+states. Malformed cleanup-marker precedence remains `IntentCorrupt`, and only
+successful completion consumes the lease receipt. The blocker-precedence test
+pairs that malformed marker with deliberately mismatched generation inputs, so
+generation validation cannot mask the retained union result. `RunLegacyCleanup`
+still requires a separate action-bound migration with its observation-only C1
+behavior preserved.
 `OOCCleanupPrivateLeaseCrash` is a `fast` self-exec suite from the same
 binary. It terminates children at each durable private-lease marker, rename,
 and teardown boundary. It also covers writer termination after the first and

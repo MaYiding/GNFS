@@ -84,8 +84,11 @@ using gnfs::relation::OOCRelationStoreFormat;
 using gnfs::relation::OOCRelationWriter;
 using gnfs::relation::OOCSnapshotDescriptor;
 using gnfs::relation::ooc_cleanup_detail::admit_private_cleanup_action_locked;
+using gnfs::relation::ooc_cleanup_detail::admit_private_lease_removal_locked;
 using gnfs::relation::ooc_cleanup_detail::BaseLock;
 using gnfs::relation::ooc_cleanup_detail::begin_private_cleanup_action;
+using gnfs::relation::ooc_cleanup_detail::bind_private_lease_removal_generation;
+using gnfs::relation::ooc_cleanup_detail::capture_private_lease_removal_generation_locked;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupActionAdmission;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupActionPermit;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupMarkerObservationKind;
@@ -97,9 +100,10 @@ using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionObservationTestHook
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionRawObservation;
 using gnfs::relation::ooc_cleanup_detail::PrivateHandoffLeafObservationKind;
 using gnfs::relation::ooc_cleanup_detail::PrivateHandoffLeafSlot;
+using gnfs::relation::ooc_cleanup_detail::PrivateLeaseRemovalAdmission;
 using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceAction;
 using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceActionDisposition;
-using gnfs::relation::ooc_cleanup_detail::reconcile_recovery_handoff_from_permit;
+using gnfs::relation::ooc_cleanup_detail::reconcile_private_handoff_from_permit;
 
 static_assert(!std::is_default_constructible_v<OOCCleanupOwnershipReceipt>);
 static_assert(!std::is_copy_constructible_v<OOCCleanupOwnershipReceipt>);
@@ -129,6 +133,11 @@ static_assert(!std::is_copy_constructible_v<PrivateCleanupActionAdmission>);
 static_assert(!std::is_copy_assignable_v<PrivateCleanupActionAdmission>);
 static_assert(std::is_nothrow_move_constructible_v<PrivateCleanupActionAdmission>);
 static_assert(!std::is_move_assignable_v<PrivateCleanupActionAdmission>);
+static_assert(!std::is_default_constructible_v<PrivateLeaseRemovalAdmission>);
+static_assert(!std::is_copy_constructible_v<PrivateLeaseRemovalAdmission>);
+static_assert(!std::is_copy_assignable_v<PrivateLeaseRemovalAdmission>);
+static_assert(std::is_nothrow_move_constructible_v<PrivateLeaseRemovalAdmission>);
+static_assert(!std::is_move_assignable_v<PrivateLeaseRemovalAdmission>);
 
 int checks_passed = 0;
 int checks_failed = 0;
@@ -613,9 +622,116 @@ void test_private_cleanup_action_permit_runtime_guards() {
         fixture.admission.permit.reset();
         (void)begin_private_cleanup_action(permit, fixture.paths,
                                            PrivateNamespaceAction::RecoverPrivateLease);
-        CHECK(reconcile_recovery_handoff_from_permit(permit).state == OOCPrivateHandoffState::None);
+        CHECK(reconcile_private_handoff_from_permit(permit,
+                                                    PrivateNamespaceAction::RecoverPrivateLease)
+                  .state == OOCPrivateHandoffState::None);
+        CHECK(rejects_invalid_private_cleanup_permit([&] {
+            (void)reconcile_private_handoff_from_permit(
+                permit, PrivateNamespaceAction::RecoverPrivateLease);
+        }));
+    }
+
+    {
+        PrivateCleanupPermitFixture fixture(temp.path(), "permit-handoff-action",
+                                            PrivateNamespaceAction::RemovePrivateLease);
+        CHECK(fixture.admission.permit.has_value());
+        if (!fixture.admission.permit) {
+            return;
+        }
+        auto permit = std::move(*fixture.admission.permit);
+        fixture.admission.permit.reset();
+        (void)begin_private_cleanup_action(permit, fixture.paths,
+                                           PrivateNamespaceAction::RemovePrivateLease);
+        CHECK(rejects_invalid_private_cleanup_permit([&] {
+            (void)reconcile_private_handoff_from_permit(
+                permit, PrivateNamespaceAction::RecoverPrivateLease);
+        }));
+        CHECK(rejects_invalid_private_cleanup_permit([&] {
+            (void)reconcile_private_handoff_from_permit(permit,
+                                                        PrivateNamespaceAction::RemovePrivateLease);
+        }));
+    }
+
+    {
+        PrivateCleanupPermitFixture fixture(temp.path(), "permit-removal-unbound",
+                                            PrivateNamespaceAction::RemovePrivateLease);
+        CHECK(fixture.admission.permit.has_value());
+        if (!fixture.admission.permit) {
+            return;
+        }
+        auto permit = std::move(*fixture.admission.permit);
+        fixture.admission.permit.reset();
+        (void)begin_private_cleanup_action(permit, fixture.paths,
+                                           PrivateNamespaceAction::RemovePrivateLease);
+        CHECK(rejects_invalid_private_cleanup_permit([&] {
+            (void)reconcile_private_handoff_from_permit(permit,
+                                                        PrivateNamespaceAction::RemovePrivateLease);
+        }));
+    }
+
+    {
+        const auto paths = OOCCleanupTransaction::paths_for(
+            temp.path() / "permit-removal-handoff-once.gnfs-sink-lease" / "corpus");
+        auto lock = std::make_shared<BaseLock>(paths.lock_path);
+        const auto generation =
+            capture_private_lease_removal_generation_locked(paths, *lock, {}, {}, {}, {});
+        auto admission = admit_private_cleanup_action_locked(
+            paths, lock, PrivateNamespaceAction::RemovePrivateLease);
+        CHECK(admission.permit.has_value());
+        if (!admission.permit) {
+            return;
+        }
+        auto permit = std::move(*admission.permit);
+        admission.permit.reset();
+        (void)begin_private_cleanup_action(permit, paths,
+                                           PrivateNamespaceAction::RemovePrivateLease);
+        bind_private_lease_removal_generation(permit, generation);
         CHECK(rejects_invalid_private_cleanup_permit(
-            [&] { (void)reconcile_recovery_handoff_from_permit(permit); }));
+            [&] { bind_private_lease_removal_generation(permit, generation); }));
+        CHECK(reconcile_private_handoff_from_permit(permit,
+                                                    PrivateNamespaceAction::RemovePrivateLease)
+                  .state == OOCPrivateHandoffState::None);
+        CHECK(rejects_invalid_private_cleanup_permit([&] {
+            (void)reconcile_private_handoff_from_permit(permit,
+                                                        PrivateNamespaceAction::RemovePrivateLease);
+        }));
+    }
+
+    {
+        const auto paths = OOCCleanupTransaction::paths_for(
+            temp.path() / "permit-removal-failed-bind.gnfs-sink-lease" / "corpus");
+        auto lock = std::make_shared<BaseLock>(paths.lock_path);
+        auto admission = admit_private_lease_removal_locked(paths, lock, {}, {}, {}, {});
+        CHECK(admission.permit.has_value());
+        CHECK(admission.generation.has_value());
+        if (!admission.permit || !admission.generation) {
+            return;
+        }
+        auto permit = std::move(*admission.permit);
+        admission.permit.reset();
+        const auto generation = std::move(*admission.generation);
+        admission.generation.reset();
+        (void)begin_private_cleanup_action(permit, paths,
+                                           PrivateNamespaceAction::RemovePrivateLease);
+
+        std::error_code error;
+        CHECK(std::filesystem::create_directory(paths.private_directory, error));
+        CHECK(!error);
+        bool failed_bind = false;
+        try {
+            bind_private_lease_removal_generation(permit, generation);
+        } catch (const gnfs::relation::ooc_cleanup_detail::Failure& failure) {
+            failed_bind = failure.status == OOCCleanupStatus::NamespaceConflict;
+        }
+        CHECK(failed_bind);
+        CHECK(std::filesystem::remove(paths.private_directory, error));
+        CHECK(!error);
+        CHECK(rejects_invalid_private_cleanup_permit(
+            [&] { bind_private_lease_removal_generation(permit, generation); }));
+        CHECK(rejects_invalid_private_cleanup_permit([&] {
+            (void)reconcile_private_handoff_from_permit(permit,
+                                                        PrivateNamespaceAction::RemovePrivateLease);
+        }));
     }
 
 #if !defined(_WIN32)
@@ -718,7 +834,9 @@ struct NamespaceTreeEntrySnapshot final {
 
 using NamespaceTreeSnapshot = std::vector<NamespaceTreeEntrySnapshot>;
 
-[[nodiscard]] NamespaceTreeSnapshot capture_namespace_tree(const std::filesystem::path& root) {
+[[nodiscard]] NamespaceTreeSnapshot capture_namespace_tree(
+    const std::filesystem::path& root,
+    const std::optional<std::filesystem::path>& excluded_relative_path = std::nullopt) {
     NamespaceTreeSnapshot snapshot;
     std::error_code error;
     std::filesystem::recursive_directory_iterator cursor(root, error);
@@ -731,13 +849,18 @@ using NamespaceTreeSnapshot = std::vector<NamespaceTreeEntrySnapshot>;
             throw std::filesystem::filesystem_error("advance namespace snapshot", root, error);
         }
         const auto path = cursor->path();
+        const auto relative_path = path.lexically_relative(root);
+        if (excluded_relative_path && relative_path == *excluded_relative_path) {
+            cursor.disable_recursion_pending();
+            continue;
+        }
         const auto status = std::filesystem::symlink_status(path, error);
         if (error) {
             throw std::filesystem::filesystem_error("inspect namespace snapshot leaf", path, error);
         }
 
         NamespaceTreeEntrySnapshot entry{
-            .relative_path = path.lexically_relative(root).generic_string(),
+            .relative_path = relative_path.generic_string(),
             .type = status.type(),
             .permissions = status.permissions(),
         };
@@ -836,6 +959,14 @@ without_namespace_subtree_contents(NamespaceTreeSnapshot snapshot,
         return entry.relative_path.starts_with(descendant_prefix);
     });
     return snapshot;
+}
+
+[[nodiscard]] NamespaceTreeSnapshot
+capture_private_lease_external_namespace_without_lock(const OOCCleanupPaths& paths) {
+    const auto root = paths.private_directory.parent_path();
+    return without_namespace_subtree_contents(
+        capture_namespace_tree(root, paths.lock_path.filename()),
+        paths.private_directory.filename());
 }
 
 [[maybe_unused]] void write_test_bytes(const std::filesystem::path& path,
@@ -4211,7 +4342,8 @@ struct PrivateLeaseStopOnceContext final {
     return false;
 }
 
-struct RecoveryPermitNewHandoffContext final {
+struct PrivateCleanupPermitNewHandoffContext final {
+    OOCPrivateLeaseFaultPoint target = OOCPrivateLeaseFaultPoint::RecoveryPermitAcquired;
     std::filesystem::path handoff_path;
     std::filesystem::path snapshot_root;
     std::optional<NamespaceTreeSnapshot> expected_after_hook;
@@ -4219,10 +4351,11 @@ struct RecoveryPermitNewHandoffContext final {
     bool created = false;
 };
 
-[[nodiscard]] bool inject_handoff_after_recovery_permit_acquired(OOCPrivateLeaseFaultPoint point,
-                                                                 void* opaque) noexcept {
-    auto& context = *static_cast<RecoveryPermitNewHandoffContext*>(opaque);
-    if (context.invoked || point != OOCPrivateLeaseFaultPoint::RecoveryPermitAcquired) {
+[[nodiscard]] bool
+inject_handoff_after_private_cleanup_permit_acquired(OOCPrivateLeaseFaultPoint point,
+                                                     void* opaque) noexcept {
+    auto& context = *static_cast<PrivateCleanupPermitNewHandoffContext*>(opaque);
+    if (context.invoked || point != context.target) {
         return false;
     }
     context.invoked = true;
@@ -4286,13 +4419,13 @@ void test_private_lease_recovery_permit_revalidates_new_handoff(const std::strin
         capture_namespace_tree(external_root), paths.private_directory.filename());
     const auto lock_bytes = read_test_bytes(paths.lock_path);
     const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
-    RecoveryPermitNewHandoffContext injection{
+    PrivateCleanupPermitNewHandoffContext injection{
         .handoff_path = paths.private_handoff_pending_path,
         .snapshot_root = paths.private_directory,
     };
     const auto rejected = OOCCleanupTransaction::recover_private_lease(
         base, OOCPrivateLeaseTestHooks{
-                  .stop_after = inject_handoff_after_recovery_permit_acquired,
+                  .stop_after = inject_handoff_after_private_cleanup_permit_acquired,
                   .context = &injection,
               });
     CHECK(injection.invoked);
@@ -4318,6 +4451,153 @@ void test_private_lease_recovery_permit_revalidates_new_handoff(const std::strin
     CHECK(entry_exists_no_follow(paths.intent_pending_path));
     CHECK(entry_exists_no_follow(paths.index_path));
     CHECK(entry_exists_no_follow(paths.data_path));
+}
+
+void test_private_lease_removal_permit_interrupt_is_non_mutating() {
+    TempDirectory temp;
+    const auto base = temp.path() / "removal-permit-interrupt.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+    if (!reservation.completed()) {
+        return;
+    }
+
+    const auto private_before = capture_namespace_tree(paths.private_directory);
+    const auto external_before = capture_private_lease_external_namespace_without_lock(paths);
+    PrivateLeaseStopOnceContext interruption{
+        .target = OOCPrivateLeaseFaultPoint::RemovalPermitAcquired,
+    };
+    const auto interrupted = OOCCleanupTransaction::remove_private_lease(
+        *reservation.ownership, OOCPrivateLeaseTestHooks{
+                                    .stop_after = stop_private_lease_once,
+                                    .context = &interruption,
+                                });
+    CHECK(interruption.stopped);
+    CHECK(interrupted.status == OOCCleanupStatus::Interrupted);
+    CHECK(!reservation.ownership->spent());
+    CHECK(capture_namespace_tree(paths.private_directory) == private_before);
+    CHECK(capture_private_lease_external_namespace_without_lock(paths) == external_before);
+
+    CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
+    CHECK(reservation.ownership->spent());
+    CHECK(!entry_exists_no_follow(paths.private_directory));
+    CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+    CHECK(!entry_exists_no_follow(paths.lease_owned_path));
+    CHECK(entry_exists_no_follow(paths.lock_path));
+}
+
+void test_private_lease_removal_permit_revalidates_new_handoff() {
+    TempDirectory temp;
+    const auto base = temp.path() / "removal-permit-new-handoff.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+    if (!reservation.completed()) {
+        return;
+    }
+
+    const auto external_before = capture_private_lease_external_namespace_without_lock(paths);
+    PrivateCleanupPermitNewHandoffContext injection{
+        .target = OOCPrivateLeaseFaultPoint::RemovalPermitAcquired,
+        .handoff_path = paths.private_handoff_pending_path,
+        .snapshot_root = paths.private_directory,
+    };
+    const auto rejected = OOCCleanupTransaction::remove_private_lease(
+        *reservation.ownership,
+        OOCPrivateLeaseTestHooks{
+            .stop_after = inject_handoff_after_private_cleanup_permit_acquired,
+            .context = &injection,
+        });
+    CHECK(injection.invoked);
+    CHECK(injection.created);
+    CHECK(injection.expected_after_hook.has_value());
+    CHECK(rejected.status == OOCCleanupStatus::ForeignReplacementPreserved);
+    CHECK(!reservation.ownership->spent());
+    CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+    if (injection.expected_after_hook) {
+        CHECK(capture_namespace_tree(paths.private_directory) == *injection.expected_after_hook);
+    }
+    CHECK(capture_private_lease_external_namespace_without_lock(paths) == external_before);
+
+    std::error_code error;
+    CHECK(std::filesystem::remove(paths.private_handoff_pending_path, error));
+    CHECK(!error);
+    CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
+    CHECK(reservation.ownership->spent());
+    CHECK(!entry_exists_no_follow(paths.private_directory));
+    CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+    CHECK(!entry_exists_no_follow(paths.lease_owned_path));
+    CHECK(entry_exists_no_follow(paths.lock_path));
+}
+
+void test_private_lease_removal_preserves_corrupt_cleanup_marker() {
+    TempDirectory temp;
+    const auto base = temp.path() / "removal-permit-corrupt-intent.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+    if (!reservation.completed()) {
+        return;
+    }
+
+    constexpr std::array corrupt_intent{
+        std::byte{0xde},
+        std::byte{0xad},
+        std::byte{0xbe},
+        std::byte{0xef},
+    };
+    write_private_control_bytes(paths.intent_path, corrupt_intent);
+    const auto private_before = capture_namespace_tree(paths.private_directory);
+    const auto external_before = capture_private_lease_external_namespace_without_lock(paths);
+
+    const auto rejected = OOCCleanupTransaction::remove_private_lease(*reservation.ownership);
+    CHECK(rejected.status == OOCCleanupStatus::IntentCorrupt);
+    CHECK(!reservation.ownership->spent());
+    CHECK(capture_namespace_tree(paths.private_directory) == private_before);
+    CHECK(capture_private_lease_external_namespace_without_lock(paths) == external_before);
+
+    std::error_code error;
+    CHECK(std::filesystem::remove(paths.intent_path, error));
+    CHECK(!error);
+    CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
+    CHECK(reservation.ownership->spent());
+    CHECK(!entry_exists_no_follow(paths.private_directory));
+    CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+    CHECK(!entry_exists_no_follow(paths.lease_owned_path));
+    CHECK(entry_exists_no_follow(paths.lock_path));
+}
+
+void test_private_lease_removal_admission_projects_union_blocker_first() {
+    TempDirectory temp;
+    const auto base = temp.path() / "removal-admission-blocker-first.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+    if (!reservation.completed()) {
+        return;
+    }
+    reservation.ownership.reset();
+
+    constexpr std::array corrupt_intent{
+        std::byte{0xde},
+        std::byte{0xad},
+        std::byte{0xbe},
+        std::byte{0xef},
+    };
+    write_private_control_bytes(paths.intent_path, corrupt_intent);
+    const auto before = capture_namespace_tree(temp.path());
+
+    auto lock = std::make_shared<BaseLock>(paths.lock_path);
+    auto admission = admit_private_lease_removal_locked(paths, lock, {}, {}, {}, {});
+    CHECK(admission.blocked.has_value());
+    CHECK(!admission.permit.has_value());
+    CHECK(!admission.generation.has_value());
+    if (admission.blocked) {
+        CHECK(admission.blocked->status == OOCCleanupStatus::IntentCorrupt);
+        CHECK(admission.blocked->stage == OOCCleanupStage::None);
+    }
+    CHECK(capture_namespace_tree(temp.path()) == before);
 }
 
 struct PrivateLeasePostSyncReplacementContext final {
@@ -5990,7 +6270,8 @@ void test_private_handoff_writer_round_trip() {
     }
 }
 
-struct RecoveryPermitReplacementContext final {
+struct PrivateCleanupPermitReplacementContext final {
+    OOCPrivateLeaseFaultPoint target = OOCPrivateLeaseFaultPoint::RecoveryPermitAcquired;
     std::filesystem::path pending_path;
     std::filesystem::path saved_path;
     std::filesystem::path snapshot_root;
@@ -6000,10 +6281,11 @@ struct RecoveryPermitReplacementContext final {
     bool replaced = false;
 };
 
-[[nodiscard]] bool replace_handoff_after_recovery_permit_acquired(OOCPrivateLeaseFaultPoint point,
-                                                                  void* opaque) noexcept {
-    auto& context = *static_cast<RecoveryPermitReplacementContext*>(opaque);
-    if (context.invoked || point != OOCPrivateLeaseFaultPoint::RecoveryPermitAcquired) {
+[[nodiscard]] bool
+replace_handoff_after_private_cleanup_permit_acquired(OOCPrivateLeaseFaultPoint point,
+                                                      void* opaque) noexcept {
+    auto& context = *static_cast<PrivateCleanupPermitReplacementContext*>(opaque);
+    if (context.invoked || point != context.target) {
         return false;
     }
     context.invoked = true;
@@ -6027,7 +6309,7 @@ void test_recovery_permit_rejects_byte_identical_pending_replacement() {
     create_abandoned_private_handoff_pending(base, false);
 
     const auto pending_bytes = read_test_bytes(paths.private_handoff_pending_path);
-    RecoveryPermitReplacementContext context{
+    PrivateCleanupPermitReplacementContext context{
         .pending_path = paths.private_handoff_pending_path,
         .saved_path = temp.path() / "saved-original-handoff-pending",
         .snapshot_root = temp.path(),
@@ -6035,7 +6317,7 @@ void test_recovery_permit_rejects_byte_identical_pending_replacement() {
     };
     const auto recovered = OOCCleanupTransaction::recover_private_lease(
         base, OOCPrivateLeaseTestHooks{
-                  .stop_after = replace_handoff_after_recovery_permit_acquired,
+                  .stop_after = replace_handoff_after_private_cleanup_permit_acquired,
                   .context = &context,
               });
 
@@ -6053,6 +6335,237 @@ void test_recovery_permit_rejects_byte_identical_pending_replacement() {
     CHECK(!equivalent_error);
     if (context.expected_after_hook) {
         CHECK(capture_namespace_tree(temp.path()) == *context.expected_after_hook);
+    }
+}
+
+void test_removal_permit_rejects_byte_identical_pending_replacement() {
+    TempDirectory temp;
+    const auto base = temp.path() / "removal-permit-pending-replacement.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto prepared = prepare_private_handoff(base);
+    PrivateHandoffStopContext stop{
+        .target = OOCPrivateHandoffFaultPoint::PendingDurable,
+    };
+    const auto interrupted = publish_private_handoff(prepared, private_handoff_stop_hooks(stop));
+    CHECK(stop.stopped);
+    CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+    CHECK(interrupted.state == OOCPrivateHandoffState::PendingOnly);
+
+    const auto pending_bytes = read_test_bytes(paths.private_handoff_pending_path);
+    PrivateCleanupPermitReplacementContext context{
+        .target = OOCPrivateLeaseFaultPoint::RemovalPermitAcquired,
+        .pending_path = paths.private_handoff_pending_path,
+        .saved_path = temp.path() / "saved-removal-handoff-pending",
+        .snapshot_root = temp.path(),
+        .bytes = pending_bytes,
+    };
+    const auto removed = OOCCleanupTransaction::remove_private_lease(
+        prepared.lease_ownership,
+        OOCPrivateLeaseTestHooks{
+            .stop_after = replace_handoff_after_private_cleanup_permit_acquired,
+            .context = &context,
+        });
+
+    CHECK(context.invoked);
+    CHECK(context.replaced);
+    CHECK(context.expected_after_hook.has_value());
+    CHECK(removed.status == OOCCleanupStatus::ForeignReplacementPreserved);
+    CHECK(!prepared.lease_ownership.spent());
+    CHECK(entry_exists_no_follow(context.saved_path));
+    CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+    CHECK(read_test_bytes(context.saved_path) == pending_bytes);
+    CHECK(read_test_bytes(paths.private_handoff_pending_path) == pending_bytes);
+    std::error_code equivalent_error;
+    CHECK(!std::filesystem::equivalent(context.saved_path, paths.private_handoff_pending_path,
+                                       equivalent_error));
+    CHECK(!equivalent_error);
+    if (context.expected_after_hook) {
+        CHECK(capture_namespace_tree(temp.path()) == *context.expected_after_hook);
+    }
+}
+
+void test_private_lease_removal_reconciles_matching_pending_handoff() {
+    TempDirectory temp;
+    const auto base = temp.path() / "removal-permit-matching-pending.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto prepared = prepare_private_handoff(base);
+    PrivateHandoffStopContext stop{
+        .target = OOCPrivateHandoffFaultPoint::PendingDurable,
+    };
+    const auto interrupted = publish_private_handoff(prepared, private_handoff_stop_hooks(stop));
+    CHECK(stop.stopped);
+    CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+    CHECK(interrupted.state == OOCPrivateHandoffState::PendingOnly);
+    CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+
+    const auto removed = OOCCleanupTransaction::remove_private_lease(prepared.lease_ownership);
+    CHECK(removed.completed());
+    CHECK(prepared.lease_ownership.spent());
+    CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+    CHECK(!entry_exists_no_follow(paths.private_directory));
+    CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+    CHECK(!entry_exists_no_follow(paths.lease_owned_path));
+    CHECK(entry_exists_no_follow(paths.lock_path));
+}
+
+void test_private_lease_removal_preserves_foreign_lease_pending_siblings() {
+    TempDirectory temp;
+    constexpr std::array corrupt_pending{
+        std::byte{0xba},
+        std::byte{0xad},
+        std::byte{0xf0},
+        std::byte{0x0d},
+    };
+
+    enum class Case : std::uint8_t {
+        PendingWithOwnedPending,
+        PendingWithReservedPending,
+        CanonicalDuplicateWithOwnedPending,
+    };
+    for (const auto test_case : {Case::PendingWithOwnedPending, Case::PendingWithReservedPending,
+                                 Case::CanonicalDuplicateWithOwnedPending}) {
+        const auto label = test_case == Case::PendingWithOwnedPending
+                               ? "removal-foreign-owned-pending"
+                               : (test_case == Case::PendingWithReservedPending
+                                      ? "removal-foreign-reserved-pending"
+                                      : "removal-canonical-duplicate-foreign-owned-pending");
+        const auto base = temp.path() / (std::string(label) + ".gnfs-sink-lease") / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+
+        if (test_case == Case::CanonicalDuplicateWithOwnedPending) {
+            CHECK(publish_private_handoff(prepared).canonical());
+            const auto canonical_bytes = read_test_bytes(paths.private_handoff_path);
+            write_private_control_bytes(paths.private_handoff_pending_path, canonical_bytes);
+        } else {
+            PrivateHandoffStopContext stop{
+                .target = OOCPrivateHandoffFaultPoint::PendingDurable,
+            };
+            const auto interrupted =
+                publish_private_handoff(prepared, private_handoff_stop_hooks(stop));
+            CHECK(stop.stopped);
+            CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+            CHECK(interrupted.state == OOCPrivateHandoffState::PendingOnly);
+        }
+
+        const auto blocker = test_case == Case::PendingWithReservedPending
+                                 ? paths.lease_reserved_pending_path
+                                 : paths.lease_owned_pending_path;
+        write_private_control_bytes(blocker, corrupt_pending);
+        CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+        const auto before = capture_namespace_tree(temp.path());
+
+        const auto rejected = OOCCleanupTransaction::remove_private_lease(prepared.lease_ownership);
+        CHECK(rejected.status == OOCCleanupStatus::IntentCorrupt);
+        CHECK(!prepared.lease_ownership.spent());
+        CHECK(capture_namespace_tree(temp.path()) == before);
+    }
+}
+
+void test_removal_permit_rejects_byte_identical_owned_pending_replacement() {
+    TempDirectory temp;
+    const auto base =
+        temp.path() / "removal-permit-owned-pending-replacement.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto prepared = prepare_private_handoff(base);
+    PrivateHandoffStopContext stop{
+        .target = OOCPrivateHandoffFaultPoint::PendingDurable,
+    };
+    const auto interrupted = publish_private_handoff(prepared, private_handoff_stop_hooks(stop));
+    CHECK(stop.stopped);
+    CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+    CHECK(interrupted.state == OOCPrivateHandoffState::PendingOnly);
+
+    const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
+    write_private_control_bytes(paths.lease_owned_pending_path, owned_bytes);
+    PrivateCleanupPermitReplacementContext context{
+        .target = OOCPrivateLeaseFaultPoint::RemovalPermitAcquired,
+        .pending_path = paths.lease_owned_pending_path,
+        .saved_path = temp.path() / "saved-removal-owned-pending",
+        .snapshot_root = temp.path(),
+        .bytes = owned_bytes,
+    };
+    const auto removed = OOCCleanupTransaction::remove_private_lease(
+        prepared.lease_ownership,
+        OOCPrivateLeaseTestHooks{
+            .stop_after = replace_handoff_after_private_cleanup_permit_acquired,
+            .context = &context,
+        });
+
+    CHECK(context.invoked);
+    CHECK(context.replaced);
+    CHECK(context.expected_after_hook.has_value());
+    CHECK(removed.status == OOCCleanupStatus::ForeignReplacementPreserved);
+    CHECK(!prepared.lease_ownership.spent());
+    CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+    CHECK(entry_exists_no_follow(context.saved_path));
+    CHECK(entry_exists_no_follow(paths.lease_owned_pending_path));
+    CHECK(read_test_bytes(context.saved_path) == owned_bytes);
+    CHECK(read_test_bytes(paths.lease_owned_pending_path) == owned_bytes);
+    std::error_code equivalent_error;
+    CHECK(!std::filesystem::equivalent(context.saved_path, paths.lease_owned_pending_path,
+                                       equivalent_error));
+    CHECK(!equivalent_error);
+    if (context.expected_after_hook) {
+        CHECK(capture_namespace_tree(temp.path()) == *context.expected_after_hook);
+    }
+}
+
+void test_stale_private_lease_receipt_cannot_mutate_new_handoff_generation(
+    const std::string& executable) {
+    TempDirectory temp;
+
+    for (const bool canonical_with_duplicate : {false, true}) {
+        const auto base =
+            temp.path() /
+            (std::string(canonical_with_duplicate ? "stale-removal-canonical-duplicate"
+                                                  : "stale-removal-pending-only") +
+             ".gnfs-sink-lease") /
+            "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto stale = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(stale).canonical());
+        CHECK(!stale.lease_ownership.spent());
+
+        // Model the externally authorized consumer completing generation A:
+        // it consumes the canonical handoff and its exact pair, after which
+        // ordinary lease recovery removes only A's remaining lease controls.
+        for (const auto& path : {paths.private_handoff_path, paths.index_path, paths.data_path}) {
+            std::error_code error;
+            CHECK(std::filesystem::remove(path, error));
+            CHECK(!error);
+        }
+        CHECK(OOCCleanupTransaction::recover_private_lease(base).completed());
+        CHECK(!entry_exists_no_follow(paths.private_directory));
+        CHECK(!entry_exists_no_follow(paths.lease_owned_path));
+
+        const auto operation = canonical_with_duplicate ? "publish-exit" : "publish-pending-exit";
+        const auto publisher = gnfs::test::run_child_process(
+            executable, {"--private-handoff-adoption-child", operation, base.string()});
+        CHECK(publisher.exited);
+        CHECK(!publisher.signaled);
+        CHECK(publisher.exit_code == 0);
+        CHECK(entry_exists_no_follow(paths.lease_owned_path));
+
+        if (canonical_with_duplicate) {
+            const auto canonical_bytes = read_test_bytes(paths.private_handoff_path);
+            write_private_control_bytes(paths.private_handoff_pending_path, canonical_bytes);
+            CHECK(entry_exists_no_follow(paths.private_handoff_path));
+        } else {
+            CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+        }
+        CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+
+        const auto before = capture_namespace_tree(temp.path());
+        const auto rejected = OOCCleanupTransaction::remove_private_lease(stale.lease_ownership);
+        CHECK(rejected.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(!stale.lease_ownership.spent());
+        CHECK(capture_namespace_tree(temp.path()) == before);
+
+        if (!canonical_with_duplicate) {
+            CHECK(OOCCleanupTransaction::recover_private_lease(base).completed());
+        }
     }
 }
 
@@ -7212,6 +7725,10 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_private_lease_activation_post_sync_failure_preserves_pair();
     test_private_lease_recovery_permit_interrupt_is_non_mutating(executable);
     test_private_lease_recovery_permit_revalidates_new_handoff(executable);
+    test_private_lease_removal_permit_interrupt_is_non_mutating();
+    test_private_lease_removal_permit_revalidates_new_handoff();
+    test_private_lease_removal_preserves_corrupt_cleanup_marker();
+    test_private_lease_removal_admission_projects_union_blocker_first();
 #if !defined(__APPLE__)
     test_private_handoff_unsupported_publish_is_non_mutating();
 #endif
@@ -7231,6 +7748,11 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_private_handoff_publish_rejects_replaced_held_lock();
     test_private_handoff_writer_round_trip();
     test_recovery_permit_rejects_byte_identical_pending_replacement();
+    test_removal_permit_rejects_byte_identical_pending_replacement();
+    test_private_lease_removal_reconciles_matching_pending_handoff();
+    test_private_lease_removal_preserves_foreign_lease_pending_siblings();
+    test_removal_permit_rejects_byte_identical_owned_pending_replacement();
+    test_stale_private_lease_receipt_cannot_mutate_new_handoff_generation(executable);
     test_private_handoff_pending_only_never_authorizes_cleanup();
     test_private_handoff_pending_without_reserved_is_preserved();
     test_private_handoff_missing_lock_conflicts_before_mutation();

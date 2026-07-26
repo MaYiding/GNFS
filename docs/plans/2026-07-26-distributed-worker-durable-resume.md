@@ -1599,10 +1599,32 @@ Linux and Windows retain the explicit path-limited branch. A handoff leaf still
 prevents permit minting with `PlatformUnsupported` or the stronger applicable
 blocker; a handoff-absent Recover action carries only the path-limited facts and
 revalidates them before mutation. This does not claim same-handle closure on
-those platforms. `RemovePrivateLease` and the remaining action groups still use
-their existing preflight and C1 paths. They require separate fresh permits;
-neither a Recover permit nor the deferred writer's pre-finalize admission may
-cross an action or state-changing boundary. None of these checks claims
+those platforms.
+
+`RemovePrivateLease` now uses a dedicated admission. It first freezes the
+shared union witness and returns any union blocker, before inspecting receipt
+generation. An unblocked admission then proves the caller receipt against the
+current OWNED/RESERVED chain, private-directory generation, and owner marker
+while holding the shared `BaseLock`, before it mints its own action-bound
+permit. The proof also binds the exact missing-or-present state of
+`OWNED.pending` and `RESERVED.pending`. It must revalidate the complete proof
+both when the proof is bound and immediately before its one-shot C1 consumer. A
+fully absent retry is valid only when the directory, lease markers, and
+generation-specific staging directory are all absent. It then emits a
+pre-mutation interruption boundary and keeps the permit alive through the
+complete removal executor. Only `Completed` consumes the receipt. Deterministic
+regressions cover interruption and retry, post-mint handoff insertion on every
+platform, macOS byte-identical C1 and lease-pending replacement, matching
+pending reconciliation, foreign lease-pending blockers, stale-receipt rejection
+against a new generation's pending-only and canonical-plus-duplicate C1 states,
+and a malformed cleanup-marker blocker paired with a deliberately mismatched
+generation. The old standalone C1 mutator was removed, so Recover and Remove
+can no longer reconcile from a fresh path observation.
+
+`RunLegacyCleanup` and the remaining action groups still use their existing
+preflight paths. They require separate fresh permits; neither a Recover or
+Remove permit nor the deferred writer's pre-finalize admission may cross an
+action or state-changing boundary. None of these checks claims
 protection against deliberate same-user inode cycling between a final
 revalidation and the following syscall, which remains outside the documented
 threat boundary.

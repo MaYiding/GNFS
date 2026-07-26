@@ -348,6 +348,9 @@ enum class OOCPrivateLeaseFaultPoint : std::uint8_t {
     /// started. A true test callback interrupts without consuming namespace
     /// state; a false callback may exercise final witness revalidation.
     RecoveryPermitAcquired,
+    /// A removal permit is fully acquired and retained, but no handoff
+    /// reconciliation or lease mutation has started.
+    RemovalPermitAcquired,
 };
 
 struct OOCPrivateLeaseTestHooks final {
@@ -557,9 +560,6 @@ classify_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& lo
 preflight_private_cleanup_union_for_transaction_locked(const OOCCleanupPaths& paths,
                                                        const BaseLock& lock,
                                                        bool publish_intent_only);
-[[nodiscard]] std::optional<OOCCleanupResult>
-preflight_private_cleanup_union_for_removal_locked(const OOCCleanupPaths& paths,
-                                                   const BaseLock& lock);
 [[nodiscard]] std::optional<OOCCleanupResult>
 preflight_private_cleanup_union_for_reservation_locked(const OOCCleanupPaths& paths,
                                                        const BaseLock& lock);
@@ -3986,6 +3986,9 @@ inline void remove_owner_marker_durable_locked(const std::filesystem::path& dire
 struct LoadedPrivateLeaseMarker final {
     PrivateLeaseRecord record;
     std::array<std::uint64_t, 3> identity{};
+
+    friend bool operator==(const LoadedPrivateLeaseMarker&,
+                           const LoadedPrivateLeaseMarker&) = default;
 };
 
 [[nodiscard]] inline std::optional<LoadedPrivateLeaseMarker>
@@ -4574,61 +4577,6 @@ observe_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& loc
 [[nodiscard]] inline OOCPrivateHandoffInspectResult
 classify_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& lock) {
     auto observed = observe_private_handoff_locked(paths, lock);
-    return std::move(observed.inspection);
-}
-
-/// Legacy recovery transition for the two callers that previously requested
-/// classifier-side pending cleanup. It consumes only the exact witnesses held
-/// by one pure observation: an exact canonical record is durably confirmed and
-/// its byte-identical pending duplicate is converged, while an exact
-/// still-preactive pending-only publication is removed. No other observation
-/// permits a namespace action.
-[[nodiscard]] inline OOCPrivateHandoffInspectResult
-reconcile_legacy_private_handoff_publication_locked(const OOCCleanupPaths& paths,
-                                                    const BaseLock& lock) {
-    auto observed = observe_private_handoff_locked(paths, lock);
-#ifndef _WIN32
-    if (observed.inspection.state == OOCPrivateHandoffState::Canonical) {
-        if (!observed.directory || !observed.canonical || !observed.canonical->record ||
-            !observed.canonical->snapshot) {
-            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
-                 protocol_error());
-        }
-        const auto confirmed = invoke_with_stable_base_lock(lock, [&] {
-            return util::durable_immutable_record::publish_at(
-                observed.directory->native_handle(), paths.private_handoff_pending_path.filename(),
-                paths.private_handoff_path.filename(), observed.canonical->bytes);
-        });
-        if (!confirmed.is_durable() || !confirmed.canonical_snapshot()) {
-            const auto status =
-                confirmed.status() ==
-                        util::durable_immutable_record::RecordPublishStatus::platform_unsupported
-                    ? OOCCleanupStatus::PlatformUnsupported
-                    : OOCCleanupStatus::DurabilityFailure;
-            return handoff_failure(status, OOCPrivateHandoffState::TaintedPreserved,
-                                   confirmed.native_error());
-        }
-        observed.directory->require_stable();
-        observed.directory->require_private_policy();
-        lock.require_stable();
-        return handoff_present(*observed.canonical->record, *confirmed.canonical_snapshot());
-    }
-
-    if (observed.inspection.state == OOCPrivateHandoffState::PendingOnly &&
-        observed.pending_is_preactive) {
-        if (!observed.directory || !observed.pending || !observed.pending->snapshot) {
-            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
-                 protocol_error());
-        }
-        invoke_with_stable_base_lock(lock, [&] {
-            remove_exact_private_handoff_pending(*observed.directory, *observed.pending->snapshot,
-                                                 paths.private_handoff_pending_path.filename());
-        });
-        observed.directory->require_private_policy();
-        lock.require_stable();
-        return handoff_none();
-    }
-#endif
     return std::move(observed.inspection);
 }
 
@@ -5857,93 +5805,7 @@ public:
     /// cannot create a second simultaneously valid lock inode.
     [[nodiscard]] static OOCCleanupResult
     remove_private_lease(OOCPrivateLeaseOwnershipReceipt& ownership,
-                         OOCPrivateLeaseTestHooks hooks = {}) noexcept {
-        if (ownership.spent_ || ownership.base_path_.empty() ||
-            ownership.private_directory_.empty() || ownership.lock_path_.empty() ||
-            ownership.owner_process_id_ != static_cast<std::uint64_t>(gnfs::util::process_id())) {
-            return OOCCleanupResult{
-                .status = OOCCleanupStatus::InvalidRequest,
-                .stage = OOCCleanupStage::None,
-                .native_error = ooc_cleanup_detail::invalid_argument_error(),
-            };
-        }
-
-        const auto result = invoke([&] {
-            const auto paths = ooc_cleanup_detail::freeze_paths(ownership.base_path_);
-            if (paths.private_directory.empty() || paths.base_path != ownership.base_path_ ||
-                paths.private_directory != ownership.private_directory_ ||
-                paths.lock_path != ownership.lock_path_) {
-                ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
-                                         ooc_cleanup_detail::invalid_argument_error());
-            }
-            std::shared_ptr<ooc_cleanup_detail::BaseLock> held_lock = ownership.live_lock_;
-            if (!held_lock) {
-                held_lock = std::make_shared<ooc_cleanup_detail::BaseLock>(paths.lock_path, false);
-            }
-            if (!held_lock->matches(paths.lock_path)) {
-                ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
-                                         ooc_cleanup_detail::invalid_argument_error());
-            }
-            if (const auto blocked =
-                    ooc_cleanup_detail::preflight_private_cleanup_union_for_removal_locked(
-                        paths, *held_lock)) {
-                return *blocked;
-            }
-            const auto handoff =
-                ooc_cleanup_detail::reconcile_legacy_private_handoff_publication_locked(paths,
-                                                                                        *held_lock);
-            if (handoff.state != OOCPrivateHandoffState::None) {
-                return handoff.result;
-            }
-            const auto parent_identity = ooc_cleanup_detail::capture_directory_identity_locked(
-                paths.private_directory.parent_path());
-
-            auto loaded_owned =
-                ooc_cleanup_detail::load_optional_private_lease_marker(paths.lease_owned_path);
-            const auto current_directory =
-                ooc_cleanup_detail::inspect_directory_identity_locked(paths.private_directory);
-            if (!loaded_owned) {
-                if (current_directory || ooc_cleanup_detail::load_optional_private_lease_marker(
-                                             paths.lease_reserved_path)) {
-                    ooc_cleanup_detail::fail(OOCCleanupStatus::NamespaceConflict,
-                                             OOCCleanupStage::None,
-                                             ooc_cleanup_detail::protocol_error());
-                }
-                ooc_cleanup_detail::invoke_with_stable_base_lock(*held_lock, [&] {
-                    ooc_cleanup_detail::sync_parent_directory(paths.private_directory.parent_path(),
-                                                              OOCCleanupStage::None);
-                });
-                return ooc_cleanup_detail::private_lease_completed();
-            }
-            if (loaded_owned->record.lease_id != ownership.lease_id_ ||
-                loaded_owned->record.directory_identity != ownership.directory_identity_ ||
-                loaded_owned->record.owner_identity != ownership.owner_identity_ ||
-                loaded_owned->identity != ownership.owned_identity_) {
-                ooc_cleanup_detail::fail(OOCCleanupStatus::ForeignReplacementPreserved,
-                                         OOCCleanupStage::None,
-                                         ooc_cleanup_detail::protocol_error());
-            }
-            ooc_cleanup_detail::validate_private_lease_record_context(
-                loaded_owned->record, paths, parent_identity, held_lock->identity());
-
-            auto loaded_reserved =
-                ooc_cleanup_detail::load_optional_private_lease_marker(paths.lease_reserved_path);
-            if (loaded_reserved) {
-                ooc_cleanup_detail::validate_private_lease_record_context(
-                    loaded_reserved->record, paths, parent_identity, held_lock->identity());
-                ooc_cleanup_detail::validate_private_lease_record_chain(loaded_reserved->record,
-                                                                        loaded_owned->record);
-            }
-
-            return ooc_cleanup_detail::recover_owned_private_lease_locked(
-                paths, *held_lock, parent_identity, *loaded_owned, loaded_reserved, hooks);
-        });
-        if (result.completed()) {
-            ownership.spent_ = true;
-            ownership.live_lock_.reset();
-        }
-        return result;
-    }
+                         OOCPrivateLeaseTestHooks hooks = {}) noexcept;
 
     /// Recover a crash-left lease only through durable protocol authority.
     /// A new-capability lease with RESERVED still present may quarantine and
