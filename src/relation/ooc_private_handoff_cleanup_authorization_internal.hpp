@@ -5,7 +5,6 @@
 // public API and deliberately provides no production mint function.
 
 #include <gnfs/relation/ooc_durable_handoff.hpp>
-#include <gnfs/util/process.hpp>
 #include <gnfs/util/sha256.hpp>
 
 #include <array>
@@ -16,7 +15,10 @@
 
 namespace gnfs::sieve::distributed_sieve_resume_detail {
 
+class DistributedSieveExternalCleanupAuthorizationState;
 class DistributedSieveWaveStore;
+[[nodiscard]] bool distributed_sieve_external_cleanup_authorization_state_owned_by_current_process(
+    const DistributedSieveExternalCleanupAuthorizationState& state) noexcept;
 
 } // namespace gnfs::sieve::distributed_sieve_resume_detail
 
@@ -80,39 +82,36 @@ public:
         OOCPrivateHandoffCleanupAuthorizationReceipt&& other) noexcept
         : binding_(std::move(other.binding_)),
           live_wave_authority_(std::move(other.live_wave_authority_)),
-          creator_process_id_(other.creator_process_id_),
-          spent_(std::exchange(other.spent_, true)) {
-        other.creator_process_id_ = 0;
-    }
+          spent_(std::exchange(other.spent_, true)) {}
 
     OOCPrivateHandoffCleanupAuthorizationReceipt&
     operator=(OOCPrivateHandoffCleanupAuthorizationReceipt&&) = delete;
     ~OOCPrivateHandoffCleanupAuthorizationReceipt() = default;
 
     [[nodiscard]] bool spent() const noexcept {
-        return spent_ || !live_wave_authority_ || !owned_by_current_process();
+        return spent_ || !live_wave_authority_ ||
+               !gnfs::sieve::distributed_sieve_resume_detail::
+                   distributed_sieve_external_cleanup_authorization_state_owned_by_current_process(
+                       *live_wave_authority_);
     }
 
 private:
     OOCPrivateHandoffCleanupAuthorizationReceipt(
         OOCPrivateHandoffCleanupAuthorizationMintKey&&,
         OOCPrivateHandoffCleanupAuthorizationBinding binding,
-        std::shared_ptr<const void> live_wave_authority, std::uint64_t creator_process_id) noexcept
-        : binding_(std::move(binding)), live_wave_authority_(std::move(live_wave_authority)),
-          creator_process_id_(creator_process_id) {}
-
-    [[nodiscard]] bool owned_by_current_process() const noexcept {
-        return creator_process_id_ != 0 &&
-               creator_process_id_ == static_cast<std::uint64_t>(gnfs::util::process_id());
-    }
+        std::shared_ptr<const gnfs::sieve::distributed_sieve_resume_detail::
+                            DistributedSieveExternalCleanupAuthorizationState>
+            live_wave_authority) noexcept
+        : binding_(std::move(binding)), live_wave_authority_(std::move(live_wave_authority)) {}
 
     void commit_spend() noexcept {
         spent_ = true;
     }
 
     OOCPrivateHandoffCleanupAuthorizationBinding binding_;
-    std::shared_ptr<const void> live_wave_authority_;
-    std::uint64_t creator_process_id_ = 0;
+    std::shared_ptr<const gnfs::sieve::distributed_sieve_resume_detail::
+                        DistributedSieveExternalCleanupAuthorizationState>
+        live_wave_authority_;
     bool spent_ = false;
 
     friend class gnfs::sieve::distributed_sieve_resume_detail::DistributedSieveWaveStore;

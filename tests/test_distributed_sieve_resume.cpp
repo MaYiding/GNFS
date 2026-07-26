@@ -18,6 +18,7 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -50,6 +51,8 @@ namespace wave_detail = gnfs::sieve::distributed_sieve_resume_detail;
 using Digest = gnfs::util::Sha256Digest;
 using Record = sieve::DistributedSieveProtocolRecordV1;
 using Status = sieve::DistributedSieveProtocolStatus;
+using ExternalCleanupAuthorizationState =
+    wave_detail::DistributedSieveExternalCleanupAuthorizationState;
 
 static_assert(!noexcept(sieve::distributed_sieve_record_kind(std::declval<const Record&>())));
 static_assert(
@@ -77,11 +80,18 @@ static_assert(
 static_assert(
     !std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt,
                              cleanup_detail::OOCPrivateHandoffCleanupAuthorizationBinding>);
+static_assert(!std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt,
+                                       std::shared_ptr<const ExternalCleanupAuthorizationState>>);
 static_assert(
     !std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt,
                              cleanup_detail::OOCPrivateHandoffCleanupAuthorizationMintKey&&,
                              cleanup_detail::OOCPrivateHandoffCleanupAuthorizationBinding,
-                             std::shared_ptr<const void>, std::uint64_t>);
+                             std::shared_ptr<const ExternalCleanupAuthorizationState>>);
+static_assert(!std::is_constructible_v<
+              cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt,
+              cleanup_detail::OOCPrivateHandoffCleanupAuthorizationMintKey&&,
+              cleanup_detail::OOCPrivateHandoffCleanupAuthorizationBinding,
+              std::shared_ptr<const ExternalCleanupAuthorizationState>, std::uint64_t>);
 static_assert(!std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt,
                                        sieve::ArtifactCleanupAuthorizedV1>);
 static_assert(!std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt,
@@ -92,6 +102,26 @@ static_assert(!std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupA
                                        std::filesystem::path>);
 static_assert(
     !std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt, Digest>);
+static_assert(!std::is_default_constructible_v<ExternalCleanupAuthorizationState>);
+static_assert(!std::is_copy_constructible_v<ExternalCleanupAuthorizationState>);
+static_assert(!std::is_copy_assignable_v<ExternalCleanupAuthorizationState>);
+static_assert(!std::is_move_constructible_v<ExternalCleanupAuthorizationState>);
+static_assert(!std::is_move_assignable_v<ExternalCleanupAuthorizationState>);
+static_assert(!std::is_constructible_v<ExternalCleanupAuthorizationState,
+                                       sieve::ArtifactCleanupAuthorizedV1>);
+static_assert(!std::is_constructible_v<ExternalCleanupAuthorizationState,
+                                       gnfs::relation::OOCPrivateHandoffRecordV1>);
+static_assert(!std::is_constructible_v<ExternalCleanupAuthorizationState,
+                                       gnfs::relation::OOCPrivateHandoffAdoptionReceipt>);
+static_assert(
+    !std::is_constructible_v<ExternalCleanupAuthorizationState,
+                             cleanup_detail::OOCPrivateHandoffCleanupAuthorizationBinding>);
+static_assert(!std::is_constructible_v<ExternalCleanupAuthorizationState, std::filesystem::path>);
+static_assert(!std::is_constructible_v<ExternalCleanupAuthorizationState, Digest>);
+static_assert(
+    !std::is_constructible_v<ExternalCleanupAuthorizationState, std::shared_ptr<const void>>);
+static_assert(!std::is_constructible_v<ExternalCleanupAuthorizationState,
+                                       std::shared_ptr<const void>, std::uint64_t>);
 static_assert(!std::is_default_constructible_v<wave_detail::DistributedSieveWaveStore>);
 static_assert(!std::is_copy_constructible_v<wave_detail::DistributedSieveWaveStore>);
 static_assert(!std::is_copy_assignable_v<wave_detail::DistributedSieveWaveStore>);

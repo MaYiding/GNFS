@@ -1772,6 +1772,16 @@ entry points recognize role-correct V2 records as a deliberately unsupported
 authority family and preserve the complete namespace without mutation; the
 ordinary non-private V1 runtime continues to reject raw V2 bytes as corrupt.
 
+The source-private external-authorization lifetime foundation now uses a
+dedicated, nonconstructible typed state instead of a type-erased pointer. The
+state retains the exact shared WaveStore backing object, so any future receipt
+will extend the permanent wave-lock lifetime and will become invalid after
+fork through the creator-process binding. It has no record publisher, reader,
+factory, mint route, namespace operation, converter, or deletion entry point.
+Those operations remain deliberately unreachable until the WaveStore can
+reopen and validate the canonical commit or ACK dependency chain from its own
+held handles.
+
 The M1.7b two-capability cleanup conversion remains required before the M1
 exit criterion is complete. It must use a WaveStore-only mint key, creator-PID
 checks, the fixed lock order `wave lock -> target BaseLock`, and a private

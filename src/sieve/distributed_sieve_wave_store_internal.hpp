@@ -5,6 +5,7 @@
 
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
 #include <gnfs/util/durable_immutable_record.hpp>
+#include <gnfs/util/process.hpp>
 
 #include <cstdint>
 #include <filesystem>
@@ -14,6 +15,10 @@
 #include <system_error>
 
 namespace gnfs::sieve::distributed_sieve_resume_detail {
+
+class DistributedSieveExternalCleanupAuthorizationState;
+[[nodiscard]] bool distributed_sieve_external_cleanup_authorization_state_owned_by_current_process(
+    const DistributedSieveExternalCleanupAuthorizationState& state) noexcept;
 
 inline constexpr std::string_view DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF = ".gnfs-wave-v1.lock";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_WAVE_MANIFEST_LEAF = ".gnfs-wave-v1.manifest";
@@ -116,8 +121,9 @@ struct DistributedSieveWaveStoreOpenResult;
 
 /// A process-bound lease on one frozen wave root and its permanent lock.
 ///
-/// The object is deliberately non-copyable and non-movable: closing its lock
-/// descriptor is the only release operation. `revalidate()` is fail-closed and
+/// The object is deliberately non-copyable and non-movable. Its shared backing
+/// state closes the lock descriptor only after the store and any future typed
+/// authorization anchors have released it. `revalidate()` is fail-closed and
 /// rejects use after fork.
 class DistributedSieveWaveStore final {
 public:
@@ -158,9 +164,50 @@ public:
 private:
     struct State;
 
-    explicit DistributedSieveWaveStore(std::unique_ptr<State> state) noexcept;
+    explicit DistributedSieveWaveStore(std::shared_ptr<const State> state) noexcept;
 
-    std::unique_ptr<State> state_;
+    std::shared_ptr<const State> state_;
+
+    friend class DistributedSieveExternalCleanupAuthorizationState;
+};
+
+/// Source-private lifetime anchor for one future external cleanup
+/// authorization.
+///
+/// This type deliberately has no factory, mint route, record accessor, or
+/// namespace operation. Its only future constructor authority is the WaveStore,
+/// and retaining it keeps the exact shared WaveStore backing state (including
+/// the permanent wave lock) alive. The creator PID makes an inherited
+/// post-fork copy invalid even though its descriptors still refer to the same
+/// open file descriptions.
+class DistributedSieveExternalCleanupAuthorizationState final {
+public:
+    DistributedSieveExternalCleanupAuthorizationState() = delete;
+    DistributedSieveExternalCleanupAuthorizationState(
+        const DistributedSieveExternalCleanupAuthorizationState&) = delete;
+    DistributedSieveExternalCleanupAuthorizationState&
+    operator=(const DistributedSieveExternalCleanupAuthorizationState&) = delete;
+    DistributedSieveExternalCleanupAuthorizationState(
+        DistributedSieveExternalCleanupAuthorizationState&&) = delete;
+    DistributedSieveExternalCleanupAuthorizationState&
+    operator=(DistributedSieveExternalCleanupAuthorizationState&&) = delete;
+    ~DistributedSieveExternalCleanupAuthorizationState() = default;
+
+private:
+    DistributedSieveExternalCleanupAuthorizationState(
+        std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state) noexcept;
+
+    [[nodiscard]] bool owned_by_current_process() const noexcept {
+        return wave_store_state_ != nullptr && creator_process_id_ != 0 &&
+               creator_process_id_ == static_cast<std::uint64_t>(gnfs::util::process_id());
+    }
+
+    std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state_;
+    std::uint64_t creator_process_id_ = 0;
+
+    friend class DistributedSieveWaveStore;
+    friend bool distributed_sieve_external_cleanup_authorization_state_owned_by_current_process(
+        const DistributedSieveExternalCleanupAuthorizationState& state) noexcept;
 };
 
 struct DistributedSieveWaveStoreOpenResult final {

@@ -1485,7 +1485,19 @@ DistributedSieveWaveStore::State::~State() {
 #endif
 }
 
-DistributedSieveWaveStore::DistributedSieveWaveStore(std::unique_ptr<State> state) noexcept
+DistributedSieveExternalCleanupAuthorizationState::
+    DistributedSieveExternalCleanupAuthorizationState(
+        std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state) noexcept
+    : wave_store_state_(std::move(wave_store_state)),
+      creator_process_id_(wave_store_state_ != nullptr ? wave_store_state_->creator_process_id
+                                                       : 0) {}
+
+bool distributed_sieve_external_cleanup_authorization_state_owned_by_current_process(
+    const DistributedSieveExternalCleanupAuthorizationState& state) noexcept {
+    return state.owned_by_current_process();
+}
+
+DistributedSieveWaveStore::DistributedSieveWaveStore(std::shared_ptr<const State> state) noexcept
     : state_(std::move(state)) {}
 
 DistributedSieveWaveStore::~DistributedSieveWaveStore() = default;
@@ -1691,7 +1703,7 @@ DistributedSieveWaveStore::create(const std::filesystem::path& absolute_root,
             return open_failure(process_mismatch());
         }
 
-        auto state = std::make_unique<State>();
+        auto state = std::make_shared<State>();
         state->absolute_root = std::move(frozen->absolute);
         state->root_leaf = std::move(frozen->leaf);
         state->parent_components = std::move(frozen->parent_components);
@@ -1848,7 +1860,7 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
             return open_failure(process_mismatch());
         }
 
-        auto state = std::make_unique<State>();
+        auto state = std::make_shared<State>();
         state->absolute_root = std::move(frozen->absolute);
         state->root_leaf = std::move(frozen->leaf);
         state->parent_components = std::move(frozen->parent_components);
