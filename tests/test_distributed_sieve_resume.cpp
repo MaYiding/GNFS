@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <barrier>
 #include <bit>
 #include <cerrno>
 #include <chrono>
@@ -25,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -53,6 +55,7 @@ using Record = sieve::DistributedSieveProtocolRecordV1;
 using Status = sieve::DistributedSieveProtocolStatus;
 using ExternalCleanupAuthorizationState =
     wave_detail::DistributedSieveExternalCleanupAuthorizationState;
+using PrivateLeaseRootClaim = wave_detail::DistributedSievePrivateLeaseRootClaim;
 
 static_assert(!noexcept(sieve::distributed_sieve_record_kind(std::declval<const Record&>())));
 static_assert(
@@ -127,6 +130,18 @@ static_assert(!std::is_copy_constructible_v<wave_detail::DistributedSieveWaveSto
 static_assert(!std::is_copy_assignable_v<wave_detail::DistributedSieveWaveStore>);
 static_assert(!std::is_move_constructible_v<wave_detail::DistributedSieveWaveStore>);
 static_assert(!std::is_move_assignable_v<wave_detail::DistributedSieveWaveStore>);
+static_assert(std::is_final_v<PrivateLeaseRootClaim>);
+static_assert(!std::is_default_constructible_v<PrivateLeaseRootClaim>);
+static_assert(!std::is_copy_constructible_v<PrivateLeaseRootClaim>);
+static_assert(!std::is_copy_assignable_v<PrivateLeaseRootClaim>);
+static_assert(!std::is_move_constructible_v<PrivateLeaseRootClaim>);
+static_assert(!std::is_move_assignable_v<PrivateLeaseRootClaim>);
+static_assert(
+    !std::is_constructible_v<PrivateLeaseRootClaim, wave_detail::DistributedSieveWaveStore&>);
+static_assert(!std::is_constructible_v<PrivateLeaseRootClaim, std::filesystem::path>);
+static_assert(!std::is_constructible_v<PrivateLeaseRootClaim, Digest>);
+static_assert(!std::is_constructible_v<PrivateLeaseRootClaim, std::shared_ptr<const void>>);
+static_assert(!std::is_constructible_v<PrivateLeaseRootClaim, int>);
 
 constexpr std::array WAVE_STORE_FAULT_POINTS{
     wave_detail::DistributedSieveWaveStoreFaultPoint::RootDurable,
@@ -3923,6 +3938,14 @@ require_wave_ready(wave_detail::DistributedSieveWaveStoreOpenResult& result,
     return *result.store;
 }
 
+[[nodiscard]] PrivateLeaseRootClaim& require_private_lease_root_claim_ready(
+    wave_detail::DistributedSievePrivateLeaseRootClaimResult& result, std::string_view context) {
+    if (!result || result.claim == nullptr) {
+        fail(context, __LINE__, wave_diagnostic_detail(result.diagnostic));
+    }
+    return *result.claim;
+}
+
 [[nodiscard]] Digest create_closed_wave(const std::filesystem::path& root) {
     auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
     auto& store = require_wave_ready(created, "create closed wave fixture");
@@ -4942,6 +4965,249 @@ void test_wave_store_inherited_lock_is_process_bound_and_close_only() {
     }
 }
 
+void test_wave_store_private_lease_root_claim_traits_and_lifetime() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "private-lease-root-claim";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create private-lease-root claim fixture");
+    const Digest digest = store.manifest_digest();
+
+    std::array<std::unique_ptr<PrivateLeaseRootClaim>, 2> claims;
+    std::array<wave_detail::DistributedSieveWaveStoreDiagnostic, 2> diagnostics;
+    std::barrier<> claim_phases(3);
+    const auto claim_once = [&](std::size_t index) {
+        claim_phases.arrive_and_wait();
+        auto result = store.claim_private_lease_root();
+        diagnostics[index] = result.diagnostic;
+        claims[index] = std::move(result.claim);
+        claim_phases.arrive_and_wait();
+    };
+
+    std::thread first(claim_once, 0);
+    std::thread second(claim_once, 1);
+    claim_phases.arrive_and_wait();
+    claim_phases.arrive_and_wait();
+    first.join();
+    second.join();
+
+    const std::size_t success_count = static_cast<std::size_t>(claims[0] != nullptr) +
+                                      static_cast<std::size_t>(claims[1] != nullptr);
+    CHECK(success_count == 1);
+    const std::size_t winner = claims[0] != nullptr ? 0 : 1;
+    const std::size_t loser = 1 - winner;
+    require_wave_status(diagnostics[winner], wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "same-State private-lease-root claim winner");
+    require_wave_status(diagnostics[loser],
+                        wave_detail::DistributedSieveWaveStoreStatus::private_lease_root_busy,
+                        "same-State private-lease-root claim loser");
+    CHECK(claims[winner]->owned_by_current_process());
+    require_wave_status(claims[winner]->revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "winning private-lease-root claim revalidates");
+
+    claims[winner].reset();
+    auto reacquired = store.claim_private_lease_root();
+    auto& retained_claim = require_private_lease_root_claim_ready(
+        reacquired, "reacquire released private-lease-root claim");
+    require_wave_status(retained_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "reacquired private-lease-root claim revalidates");
+
+    const auto independent_root = temp.path() / "independent-private-lease-root-claim";
+    auto independent =
+        wave_detail::DistributedSieveWaveStore::create(independent_root, wave_manifest_draft());
+    auto& independent_store =
+        require_wave_ready(independent, "create independent private-lease-root claim fixture");
+    auto independent_claimed = independent_store.claim_private_lease_root();
+    auto& independent_claim = require_private_lease_root_claim_ready(
+        independent_claimed, "different wave root claims independently");
+    require_wave_status(independent_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "different wave root claim revalidates while first is held");
+    require_wave_status(retained_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "first wave root claim remains valid while second is held");
+
+    created.store.reset();
+    require_wave_status(retained_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "private-lease-root claim outlives store");
+    auto busy = wave_detail::DistributedSieveWaveStore::open(root, digest);
+    CHECK(!busy);
+    CHECK(busy.store == nullptr);
+    require_wave_status(busy.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::lock_busy,
+                        "retained private-lease-root claim keeps wave lock");
+
+    reacquired.claim.reset();
+    auto reopened = wave_detail::DistributedSieveWaveStore::open(root, digest);
+    (void)require_wave_ready(reopened, "wave opens after private-lease-root claim release");
+}
+
+void test_wave_store_private_lease_root_claim_process_and_namespace_binding() {
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "private-lease-root-fork";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create private-lease-root fork fixture");
+        auto claimed = store.claim_private_lease_root();
+        auto& claim =
+            require_private_lease_root_claim_ready(claimed, "claim private-lease-root before fork");
+
+        int ready_pipe[2]{-1, -1};
+        int release_pipe[2]{-1, -1};
+        CHECK(::pipe(ready_pipe) == 0);
+        CHECK(::pipe(release_pipe) == 0);
+        const pid_t child = ::fork();
+        CHECK(child >= 0);
+        if (child == 0) {
+            (void)::close(ready_pipe[0]);
+            (void)::close(release_pipe[1]);
+            const auto inherited_claim = claim.revalidate();
+            auto inherited_store_claim = store.claim_private_lease_root();
+            const bool rejected =
+                !claim.owned_by_current_process() &&
+                inherited_claim.status ==
+                    wave_detail::DistributedSieveWaveStoreStatus::invalid_request &&
+                !inherited_store_claim && inherited_store_claim.claim == nullptr &&
+                inherited_store_claim.diagnostic.status ==
+                    wave_detail::DistributedSieveWaveStoreStatus::invalid_request;
+            claimed.claim.reset();
+            const bool signalled = write_pipe_byte(ready_pipe[1], rejected ? 'r' : 'f');
+            char release = '\0';
+            const bool released = read_pipe_byte(release_pipe[0], release);
+            ::_exit(rejected && signalled && released && release == 'x' ? 0 : 84);
+        }
+
+        (void)::close(ready_pipe[1]);
+        (void)::close(release_pipe[0]);
+        char ready = '\0';
+        const bool received = read_pipe_byte(ready_pipe[0], ready);
+        require_wave_status(claim.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "parent claim remains valid while child is alive");
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "parent store remains valid while child is alive");
+        const bool released = write_pipe_byte(release_pipe[1], 'x');
+        (void)::close(ready_pipe[0]);
+        (void)::close(release_pipe[1]);
+        int child_status = 0;
+        const bool waited = wait_for_child(child, child_status);
+
+        CHECK(received);
+        CHECK(ready == 'r');
+        CHECK(released);
+        CHECK(waited);
+        CHECK(WIFEXITED(child_status));
+        CHECK(WEXITSTATUS(child_status) == 0);
+        require_wave_status(claim.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "parent claim remains valid after child exits");
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "parent store remains valid after child exits");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "private-lease-root-replacement";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create private-lease-root replacement fixture");
+        auto claimed = store.claim_private_lease_root();
+        auto& claim =
+            require_private_lease_root_claim_ready(claimed, "claim before wave-root replacement");
+
+        const auto original_root = temp.path() / "private-lease-root-original";
+        require_rename(root, original_root, "move claimed wave root");
+        std::error_code error;
+        CHECK(std::filesystem::create_directory(root, error));
+        CHECK(!error);
+        require_chmod(root, 0700, "chmod replacement claimed wave root");
+        const auto sentinel = root / "replacement-sentinel";
+        write_foreign_leaf(sentinel);
+        const auto sentinel_before = read_file_bytes(sentinel);
+
+        require_wave_status(claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                            "claim rejects replaced wave root");
+        auto contended = store.claim_private_lease_root();
+        CHECK(!contended);
+        CHECK(contended.claim == nullptr);
+        require_wave_status(contended.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::private_lease_root_busy,
+                            "held claim hides transitional wave-root namespace");
+        claimed.claim.reset();
+        auto rejected_after_release = store.claim_private_lease_root();
+        CHECK(!rejected_after_release);
+        CHECK(rejected_after_release.claim == nullptr);
+        require_wave_status(rejected_after_release.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                            "released claim exposes replaced wave root");
+        CHECK(read_file_bytes(sentinel) == sentinel_before);
+        CHECK(!entry_exists_no_follow(wave_lock_path(root)));
+        CHECK(!entry_exists_no_follow(wave_manifest_path(root)));
+        CHECK(!entry_exists_no_follow(wave_manifest_pending_path(root)));
+
+        const auto displaced_replacement = temp.path() / "private-lease-root-replacement-observed";
+        require_rename(root, displaced_replacement, "preserve replacement wave root");
+        require_rename(original_root, root, "restore claimed wave root");
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "store revalidates after wave-root restoration");
+        CHECK(read_file_bytes(displaced_replacement / sentinel.filename()) == sentinel_before);
+
+        auto reacquired = store.claim_private_lease_root();
+        auto& restored_claim = require_private_lease_root_claim_ready(
+            reacquired, "claim succeeds after wave-root restoration");
+        require_wave_status(restored_claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "new claim revalidates after wave-root restoration");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "private-lease-lock-replacement";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create private-lease lock-replacement fixture");
+        auto claimed = store.claim_private_lease_root();
+        auto& claim =
+            require_private_lease_root_claim_ready(claimed, "claim before wave-lock replacement");
+
+        const auto original_lock = temp.path() / "private-lease-original-lock";
+        require_rename(wave_lock_path(root), original_lock, "move claimed wave lock");
+        write_foreign_leaf(wave_lock_path(root));
+        const auto replacement_before = read_file_bytes(wave_lock_path(root));
+
+        require_wave_status(claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::lock_invalid,
+                            "claim rejects replaced wave lock");
+        auto contended = store.claim_private_lease_root();
+        CHECK(!contended);
+        CHECK(contended.claim == nullptr);
+        require_wave_status(contended.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::private_lease_root_busy,
+                            "held claim hides transitional wave-lock namespace");
+        claimed.claim.reset();
+        auto rejected_after_release = store.claim_private_lease_root();
+        CHECK(!rejected_after_release);
+        CHECK(rejected_after_release.claim == nullptr);
+        require_wave_status(rejected_after_release.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::lock_invalid,
+                            "released claim exposes replaced wave lock");
+        CHECK(read_file_bytes(wave_lock_path(root)) == replacement_before);
+
+        const auto displaced_replacement = temp.path() / "private-lease-lock-replacement-observed";
+        require_rename(wave_lock_path(root), displaced_replacement,
+                       "preserve replacement wave lock");
+        require_rename(original_lock, wave_lock_path(root), "restore claimed wave lock");
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "store revalidates after wave-lock restoration");
+        CHECK(read_file_bytes(displaced_replacement) == replacement_before);
+
+        auto reacquired = store.claim_private_lease_root();
+        auto& restored_claim = require_private_lease_root_claim_ready(
+            reacquired, "claim succeeds after wave-lock restoration");
+        require_wave_status(restored_claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "new claim revalidates after wave-lock restoration");
+    }
+}
+
 #else
 
 void test_wave_store_platform_fail_closed() {
@@ -4987,7 +5253,7 @@ void run_core_suite() {
 
 void run_wave_store_suite() {
 #if !defined(_WIN32)
-    const std::array<std::pair<std::string_view, TestFunction>, 12> tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 14> tests = {{
         {"create, open, revalidate, and exact manifest",
          test_wave_store_create_open_revalidate_and_exact_manifest},
         {"store-owned draft fields", test_wave_store_rejects_non_draft_store_owned_fields},
@@ -5003,6 +5269,10 @@ void run_wave_store_suite() {
         {"mode, symlink, and hardlink", test_wave_store_mode_symlink_and_hardlink_rejections},
         {"deterministic busy", test_wave_store_deterministic_busy_with_fork_and_pipes},
         {"inherited lock", test_wave_store_inherited_lock_is_process_bound_and_close_only},
+        {"typed claim lifetime and exclusion",
+         test_wave_store_private_lease_root_claim_traits_and_lifetime},
+        {"typed claim process and namespace binding",
+         test_wave_store_private_lease_root_claim_process_and_namespace_binding},
     }};
 #else
     const std::array<std::pair<std::string_view, TestFunction>, 2> tests = {{

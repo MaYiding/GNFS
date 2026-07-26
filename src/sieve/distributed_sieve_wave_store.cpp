@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -1550,6 +1551,7 @@ struct DistributedSieveWaveStore::State final {
     NativeIdentityV1 lock_identity;
     std::vector<std::byte> manifest_bytes;
     std::uint64_t creator_process_id = 0;
+    mutable std::atomic_flag private_lease_root_action_claimed = ATOMIC_FLAG_INIT;
 #if !defined(_WIN32)
     int parent_fd = -1;
     int root_fd = -1;
@@ -1589,6 +1591,41 @@ DistributedSieveWaveStore::DistributedSieveWaveStore(std::shared_ptr<const State
     : state_(std::move(state)) {}
 
 DistributedSieveWaveStore::~DistributedSieveWaveStore() = default;
+
+DistributedSievePrivateLeaseRootClaim::DistributedSievePrivateLeaseRootClaim(
+    std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state) noexcept
+    : wave_store_state_(std::move(wave_store_state)),
+      creator_process_id_(wave_store_state_ != nullptr ? wave_store_state_->creator_process_id
+                                                       : 0) {}
+
+DistributedSievePrivateLeaseRootClaim::~DistributedSievePrivateLeaseRootClaim() noexcept {
+    if (wave_store_state_ != nullptr && creator_process_id_ != 0 &&
+        creator_process_id_ == static_cast<std::uint64_t>(gnfs::util::process_id())) {
+        wave_store_state_->private_lease_root_action_claimed.clear(std::memory_order_release);
+    }
+}
+
+bool DistributedSievePrivateLeaseRootClaim::owned_by_current_process() const noexcept {
+    return wave_store_state_ != nullptr && creator_process_id_ != 0 &&
+           creator_process_id_ == static_cast<std::uint64_t>(gnfs::util::process_id()) &&
+           wave_store_state_->private_lease_root_action_claimed.test(std::memory_order_acquire);
+}
+
+DistributedSieveWaveStoreDiagnostic
+DistributedSievePrivateLeaseRootClaim::revalidate() const noexcept {
+    if (!owned_by_current_process()) {
+        return process_mismatch();
+    }
+    DistributedSieveWaveStore view(wave_store_state_);
+    auto validated = view.revalidate();
+    if (validated.status != DistributedSieveWaveStoreStatus::ready) {
+        return validated;
+    }
+    if (!owned_by_current_process()) {
+        return process_mismatch();
+    }
+    return {};
+}
 
 DistributedSieveWaveStoreOpenResult
 DistributedSieveWaveStore::create(const std::filesystem::path& absolute_root,
@@ -2077,6 +2114,41 @@ DistributedSieveWaveStoreDiagnostic DistributedSieveWaveStore::revalidate() cons
     }
     return {};
 #endif
+}
+
+DistributedSievePrivateLeaseRootClaimResult
+DistributedSieveWaveStore::claim_private_lease_root() const noexcept {
+    if (state_ == nullptr) {
+        return {nullptr, diagnostic(DistributedSieveWaveStoreStatus::invalid_request,
+                                    invalid_argument_error())};
+    }
+    if (state_->creator_process_id == 0 || !process_matches(state_->creator_process_id)) {
+        return {nullptr, process_mismatch()};
+    }
+
+    if (state_->private_lease_root_action_claimed.test_and_set(std::memory_order_acq_rel)) {
+        return {nullptr, diagnostic(DistributedSieveWaveStoreStatus::private_lease_root_busy,
+                                    std::make_error_code(std::errc::device_or_resource_busy))};
+    }
+
+    std::unique_ptr<DistributedSievePrivateLeaseRootClaim> claim;
+    try {
+        claim.reset(new DistributedSievePrivateLeaseRootClaim(state_));
+    } catch (const std::bad_alloc&) {
+        state_->private_lease_root_action_claimed.clear(std::memory_order_release);
+        return {nullptr, diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                    std::make_error_code(std::errc::not_enough_memory))};
+    } catch (...) {
+        state_->private_lease_root_action_claimed.clear(std::memory_order_release);
+        return {nullptr, diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                    std::make_error_code(std::errc::io_error))};
+    }
+
+    auto validated = claim->revalidate();
+    if (validated.status != DistributedSieveWaveStoreStatus::ready) {
+        return {nullptr, std::move(validated)};
+    }
+    return {std::move(claim), {}};
 }
 
 } // namespace gnfs::sieve::distributed_sieve_resume_detail

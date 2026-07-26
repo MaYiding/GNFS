@@ -73,6 +73,7 @@ enum class DistributedSieveWaveStoreStatus : std::uint8_t {
     root_invalid,
     lock_missing,
     lock_busy,
+    private_lease_root_busy,
     lock_invalid,
     namespace_conflict,
     manifest_missing,
@@ -104,6 +105,8 @@ distributed_sieve_wave_store_status_name(DistributedSieveWaveStoreStatus status)
         return "lock_missing";
     case DistributedSieveWaveStoreStatus::lock_busy:
         return "lock_busy";
+    case DistributedSieveWaveStoreStatus::private_lease_root_busy:
+        return "private_lease_root_busy";
     case DistributedSieveWaveStoreStatus::lock_invalid:
         return "lock_invalid";
     case DistributedSieveWaveStoreStatus::namespace_conflict:
@@ -156,6 +159,8 @@ struct DistributedSieveWaveStoreDiagnostic final {
 };
 
 struct DistributedSieveWaveStoreOpenResult;
+struct DistributedSievePrivateLeaseRootClaimResult;
+class DistributedSievePrivateLeaseRootClaim;
 
 /// A process-bound lease on one frozen wave root and its permanent lock.
 ///
@@ -199,6 +204,13 @@ public:
     /// This operation never repairs or mutates the namespace.
     [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate() const noexcept;
 
+    /// Exclusively claim this exact shared WaveStore state for one future
+    /// private-lease root action. The claim is process-bound, keeps the
+    /// permanent wave lock alive, and exposes no descriptor, path, or
+    /// caller-chosen namespace operation.
+    [[nodiscard]] DistributedSievePrivateLeaseRootClaimResult
+    claim_private_lease_root() const noexcept;
+
 private:
     struct State;
 
@@ -207,6 +219,53 @@ private:
     std::shared_ptr<const State> state_;
 
     friend class DistributedSieveExternalCleanupAuthorizationState;
+    friend class DistributedSievePrivateLeaseRootClaim;
+};
+
+/// Source-private, process-bound exclusive authority for one private-lease
+/// root action.
+///
+/// Only the owning WaveStore can mint this opaque claim. It deliberately
+/// exposes no filesystem handle, path, manifest, record, or arbitrary-name
+/// primitive. Destruction releases the same-State claim slot.
+class DistributedSievePrivateLeaseRootClaim final {
+public:
+    DistributedSievePrivateLeaseRootClaim() = delete;
+    DistributedSievePrivateLeaseRootClaim(const DistributedSievePrivateLeaseRootClaim&) = delete;
+    DistributedSievePrivateLeaseRootClaim&
+    operator=(const DistributedSievePrivateLeaseRootClaim&) = delete;
+    DistributedSievePrivateLeaseRootClaim(DistributedSievePrivateLeaseRootClaim&&) = delete;
+    DistributedSievePrivateLeaseRootClaim&
+    operator=(DistributedSievePrivateLeaseRootClaim&&) = delete;
+    ~DistributedSievePrivateLeaseRootClaim() noexcept;
+
+    /// Report only process ownership and live claim-slot ownership. This is
+    /// not a namespace revalidation and is never sufficient mutation
+    /// authority by itself.
+    [[nodiscard]] bool owned_by_current_process() const noexcept;
+
+    /// Re-establish the exact WaveStore authority while retaining the claim.
+    /// This operation never repairs or mutates the namespace.
+    [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate() const noexcept;
+
+private:
+    explicit DistributedSievePrivateLeaseRootClaim(
+        std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state) noexcept;
+
+    std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state_;
+    std::uint64_t creator_process_id_ = 0;
+
+    friend class DistributedSieveWaveStore;
+};
+
+struct DistributedSievePrivateLeaseRootClaimResult final {
+    std::unique_ptr<DistributedSievePrivateLeaseRootClaim> claim;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return claim != nullptr && diagnostic.status == DistributedSieveWaveStoreStatus::ready &&
+               claim->owned_by_current_process();
+    }
 };
 
 /// Source-private lifetime anchor for one future external cleanup
