@@ -5,6 +5,7 @@
 #include <gnfs/util/temp_path.hpp>
 
 #include <atomic>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -26,18 +27,87 @@ using gnfs::relation::CollectorConfig;
 using gnfs::relation::materialize_selected;
 using gnfs::relation::OOCCleanupPolicy;
 using gnfs::relation::OOCCleanupTransaction;
+using gnfs::relation::OOCRelationReader;
 using gnfs::relation::OOCRelationWriter;
 using gnfs::relation::OOCSnapshotDescriptor;
+using gnfs::relation::ReadOnlyRelationCorpusView;
 using gnfs::relation::RelationCollector;
 using gnfs::relation::RelationCorpus;
 using gnfs::relation::RelationSelection;
 using gnfs::relation::RelationStorageKind;
+using gnfs::util::OwnedNativeFile;
 
 static_assert(!std::is_copy_constructible_v<RelationCorpus>);
 static_assert(!std::is_copy_assignable_v<RelationCorpus>);
 static_assert(std::is_nothrow_move_constructible_v<RelationCorpus>);
 static_assert(std::is_nothrow_move_assignable_v<RelationCorpus>);
 static_assert(gnfs::linalg::RelationSource<RelationCorpus>);
+
+struct ReadOnlyViewVisitorProbe final {
+    void operator()(const Relation&, size_t) const {}
+};
+
+template <typename View>
+concept HasReadOnlyViewSurface =
+    requires(const View& view, size_t ordinal, ReadOnlyViewVisitorProbe visitor) {
+        { view.count() } -> std::same_as<size_t>;
+        { view.read(ordinal) } -> std::same_as<Relation>;
+        view.for_each(visitor);
+    };
+
+template <typename View>
+concept ExposesCleanupArm = requires(View& view) { view.arm_ooc_cleanup(); };
+
+template <typename View>
+concept ExposesArtifactScope = requires(const View& view) { view.ooc_artifact_scope(); };
+
+template <typename View>
+concept ExposesBasePathMethod = requires(const View& view) { view.base_path(); };
+
+template <typename View>
+concept ExposesBasePathField = requires(const View& view) { view.base_path; };
+
+template <typename View>
+concept ExposesNativeHandle = requires(const View& view) { view.native_handle(); };
+
+template <typename View>
+concept ExposesIndexHandle = requires(const View& view) { view.index_handle(); };
+
+template <typename View>
+concept ExposesDataHandle = requires(const View& view) { view.data_handle(); };
+
+template <typename View>
+concept ExposesHasCleanupReceipt = requires(View& view) { view.has_cleanup_ownership_receipt(); };
+
+template <typename View>
+concept ExposesTakeCleanupReceipt = requires(View& view) { view.take_cleanup_ownership_receipt(); };
+
+static_assert(HasReadOnlyViewSurface<ReadOnlyRelationCorpusView>);
+static_assert(gnfs::linalg::RelationSource<ReadOnlyRelationCorpusView>);
+static_assert(std::same_as<gnfs::linalg::OOCRelationSource, ReadOnlyRelationCorpusView>);
+static_assert(!std::is_default_constructible_v<ReadOnlyRelationCorpusView>);
+static_assert(std::is_constructible_v<ReadOnlyRelationCorpusView, OOCRelationReader&>);
+static_assert(std::is_constructible_v<ReadOnlyRelationCorpusView, const OOCRelationReader&>);
+static_assert(!std::is_nothrow_constructible_v<ReadOnlyRelationCorpusView, OOCRelationReader&>);
+static_assert(!std::is_constructible_v<ReadOnlyRelationCorpusView, OOCRelationReader&&>);
+static_assert(!std::is_constructible_v<ReadOnlyRelationCorpusView, const OOCRelationReader&&>);
+static_assert(!std::is_constructible_v<ReadOnlyRelationCorpusView, const std::string&>);
+static_assert(!std::is_constructible_v<ReadOnlyRelationCorpusView, const std::filesystem::path&>);
+static_assert(!std::is_constructible_v<ReadOnlyRelationCorpusView, const OOCSnapshotDescriptor&>);
+static_assert(!std::is_constructible_v<ReadOnlyRelationCorpusView, const std::string&,
+                                       const OOCSnapshotDescriptor&>);
+static_assert(!std::is_constructible_v<ReadOnlyRelationCorpusView, OwnedNativeFile&&,
+                                       OwnedNativeFile&&, const OOCSnapshotDescriptor&>);
+static_assert(std::is_copy_constructible_v<ReadOnlyRelationCorpusView>);
+static_assert(!ExposesCleanupArm<ReadOnlyRelationCorpusView>);
+static_assert(!ExposesArtifactScope<ReadOnlyRelationCorpusView>);
+static_assert(!ExposesBasePathMethod<ReadOnlyRelationCorpusView>);
+static_assert(!ExposesBasePathField<ReadOnlyRelationCorpusView>);
+static_assert(!ExposesNativeHandle<ReadOnlyRelationCorpusView>);
+static_assert(!ExposesIndexHandle<ReadOnlyRelationCorpusView>);
+static_assert(!ExposesDataHandle<ReadOnlyRelationCorpusView>);
+static_assert(!ExposesHasCleanupReceipt<ReadOnlyRelationCorpusView>);
+static_assert(!ExposesTakeCleanupReceipt<ReadOnlyRelationCorpusView>);
 
 [[noreturn]] void fail(const char* expression, int line) {
     throw std::runtime_error(std::string("CHECK failed at line ") + std::to_string(line) + ": " +
@@ -179,6 +249,142 @@ RelationCorpus collect_owned_corpus(uint64_t logical_generation, const std::stri
         CHECK(collector.add(Relation(relation)));
     }
     return collector.handoff_ooc_corpus(logical_generation, OOCCleanupPolicy::RemoveArtifacts);
+}
+
+void test_read_only_ooc_view_nonempty_and_empty() {
+    TestArtifactCleanup populated_artifacts(unique_base("readonly_view_populated"));
+    const auto expected = make_relations(3);
+    const auto populated_descriptor = write_finalized_store(populated_artifacts.base, expected);
+    OOCRelationReader populated_reader(populated_artifacts.base, populated_descriptor);
+    ReadOnlyRelationCorpusView populated_view(populated_reader);
+
+    CHECK(populated_view.count() == expected.size());
+    CHECK(relations_equal(populated_view.read(0), expected[0]));
+    CHECK(relations_equal(populated_view.read(2), expected[2]));
+    expect_throws<std::out_of_range>([&] { (void)populated_view.read(populated_view.count()); });
+
+    std::vector<size_t> visited_ordinals;
+    std::vector<Relation> visited_relations;
+    populated_view.for_each([&](const Relation& relation, size_t ordinal) {
+        visited_ordinals.push_back(ordinal);
+        visited_relations.push_back(relation);
+    });
+    CHECK(visited_ordinals == std::vector<size_t>({0, 1, 2}));
+    CHECK(visited_relations.size() == expected.size());
+    for (size_t ordinal = 0; ordinal < expected.size(); ++ordinal) {
+        CHECK(relations_equal(visited_relations[ordinal], expected[ordinal]));
+    }
+
+    TestArtifactCleanup empty_artifacts(unique_base("readonly_view_empty"));
+    const auto empty_descriptor = write_finalized_store(empty_artifacts.base, {});
+    OOCRelationReader empty_reader(empty_artifacts.base, empty_descriptor);
+    ReadOnlyRelationCorpusView empty_view(empty_reader);
+
+    CHECK(empty_view.count() == 0);
+    size_t empty_visits = 0;
+    empty_view.for_each([&](const Relation&, size_t) { ++empty_visits; });
+    CHECK(empty_visits == 0);
+    expect_throws<std::out_of_range>([&] { (void)empty_view.read(0); });
+}
+
+void test_read_only_ooc_view_for_each_exception_short_circuits() {
+    struct StopVisit final {};
+
+    TestArtifactCleanup artifacts(unique_base("readonly_view_short_circuit"));
+    const auto expected = make_relations(4);
+    const auto descriptor = write_finalized_store(artifacts.base, expected);
+    OOCRelationReader reader(artifacts.base, descriptor);
+    ReadOnlyRelationCorpusView view(reader);
+
+    std::vector<size_t> visited;
+    bool rows_match = true;
+    expect_throws<StopVisit>([&] {
+        view.for_each([&](const Relation& relation, size_t ordinal) {
+            visited.push_back(ordinal);
+            rows_match = rows_match && relations_equal(relation, expected[ordinal]);
+            if (ordinal == 1) {
+                throw StopVisit{};
+            }
+        });
+    });
+
+    CHECK(rows_match);
+    CHECK(visited == std::vector<size_t>({0, 1}));
+    CHECK(relations_equal(view.read(2), expected[2]));
+}
+
+void test_read_only_ooc_view_borrowed_lifetime_has_no_cleanup_side_effects() {
+    TestArtifactCleanup artifacts(unique_base("readonly_view_borrowed_lifetime"));
+    const auto expected = make_relations(2);
+    const auto descriptor = write_finalized_store(artifacts.base, expected);
+
+    {
+        OOCRelationReader reader(artifacts.base, descriptor);
+        {
+            ReadOnlyRelationCorpusView view(reader);
+            const ReadOnlyRelationCorpusView copied_view = view;
+            CHECK(copied_view.count() == expected.size());
+            CHECK(relations_equal(copied_view.read(1), expected[1]));
+            CHECK(artifacts_exist(artifacts.base));
+        }
+
+        CHECK(reader.count() == expected.size());
+        CHECK(relations_equal(reader.read(0), expected[0]));
+        CHECK(artifacts_exist(artifacts.base));
+    }
+
+    CHECK(artifacts_exist(artifacts.base));
+}
+
+void test_read_only_ooc_view_rejects_invalid_and_detects_reader_move() {
+    OOCRelationReader default_reader;
+    CHECK(!default_reader.valid());
+    expect_throws<std::invalid_argument>([&] { (void)ReadOnlyRelationCorpusView(default_reader); });
+
+    TestArtifactCleanup artifacts(unique_base("readonly_view_reader_move"));
+    const auto expected = make_relations(2);
+    const auto descriptor = write_finalized_store(artifacts.base, expected);
+    OOCRelationReader reader(artifacts.base, descriptor);
+    ReadOnlyRelationCorpusView view(reader);
+
+    OOCRelationReader moved_reader(std::move(reader));
+    CHECK(!reader.valid());
+    CHECK(moved_reader.valid());
+    expect_throws<std::invalid_argument>([&] { (void)ReadOnlyRelationCorpusView(reader); });
+    expect_throws<std::logic_error>([&] { (void)view.count(); });
+    expect_throws<std::logic_error>([&] { (void)view.read(0); });
+
+    size_t visits = 0;
+    expect_throws<std::logic_error>(
+        [&] { view.for_each([&](const Relation&, size_t) { ++visits; }); });
+    CHECK(visits == 0);
+
+    ReadOnlyRelationCorpusView moved_reader_view(moved_reader);
+    CHECK(moved_reader_view.count() == expected.size());
+    CHECK(relations_equal(moved_reader_view.read(1), expected[1]));
+    CHECK(artifacts_exist(artifacts.base));
+
+    TestArtifactCleanup replacement_artifacts(unique_base("readonly_view_rebound_target"));
+    const auto replacement_expected = make_relations(3);
+    const auto replacement_descriptor =
+        write_finalized_store(replacement_artifacts.base, replacement_expected);
+    OOCRelationReader replacement_reader(replacement_artifacts.base, replacement_descriptor);
+
+    moved_reader = std::move(replacement_reader);
+    CHECK(!replacement_reader.valid());
+    CHECK(moved_reader.valid());
+    expect_throws<std::logic_error>([&] { (void)moved_reader_view.count(); });
+    expect_throws<std::logic_error>([&] { (void)moved_reader_view.read(0); });
+
+    size_t rebound_visits = 0;
+    expect_throws<std::logic_error>(
+        [&] { moved_reader_view.for_each([&](const Relation&, size_t) { ++rebound_visits; }); });
+    CHECK(rebound_visits == 0);
+
+    ReadOnlyRelationCorpusView rebound_view(moved_reader);
+    CHECK(rebound_view.count() == replacement_expected.size());
+    CHECK(relations_equal(rebound_view.read(2), replacement_expected[2]));
+    CHECK(artifacts_exist(replacement_artifacts.base));
 }
 
 void test_in_memory_move_generation_and_bounds() {
@@ -611,6 +817,10 @@ void test_collector_handoff_and_independent_cleanup() {
 
 int main() {
     try {
+        test_read_only_ooc_view_nonempty_and_empty();
+        test_read_only_ooc_view_for_each_exception_short_circuits();
+        test_read_only_ooc_view_borrowed_lifetime_has_no_cleanup_side_effects();
+        test_read_only_ooc_view_rejects_invalid_and_detects_reader_move();
         test_in_memory_move_generation_and_bounds();
         test_freeze_ooc_path_does_not_follow_namespace_leaf();
         test_finalized_ooc_roundtrip_and_preserve_lifetime();

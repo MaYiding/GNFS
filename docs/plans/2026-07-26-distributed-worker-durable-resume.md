@@ -1350,7 +1350,7 @@ checks passed in Debug.
   invalidate stale writer/private-lease receipts.
 - [ ] Add locked cross-process adoption plus a two-capability
   application-authorization conversion into canonical cleanup intent.
-- [ ] Add owned-handle `MmapFile`, `OOCRelationReader`, and non-armable corpus
+- [x] Add owned-handle `MmapFile`, `OOCRelationReader`, and non-armable corpus
   view APIs; preserve Windows compilation and fail unsupported durability
   semantics closed.
 - [x] Cover pending/canonical, rollback, link, replacement, and lock crash
@@ -1379,9 +1379,24 @@ independent security review passed. The security review reported no P0, P1, or
 P2 findings after the final receipt-gating regressions. Linux and Windows
 generic handoff operations still fail closed before filesystem action.
 
-Locked cross-process adoption, owned-handle read-only views, and the
-two-capability cleanup conversion remain required before the M1 exit criterion
-is complete.
+The owned-handle read-only slice completed on 2026-07-26. `OwnedNativeFile`
+provides move-only native-handle ownership, and `MmapFile` maps the same
+validated handle without reopening a path. The V3-only `OOCRelationReader`
+constructor commits both exact handles together, validates paired identity and
+extents through those mappings, and closes both handles after any post-commit
+failure. `ReadOnlyRelationCorpusView` exposes only `count()`, `read()`, and
+`for_each()`. It captures an opaque reader binding, so default, moved-from, or
+rebound readers fail closed instead of appearing as an empty or replacement
+corpus. Linear algebra reuses that exact type rather than maintaining a second
+adapter with weaker lifetime rules.
+
+The focused reader, corpus, streaming SGE, relation-sink, and large-prime
+contract tests passed. The complete relation module and dependency-deep changed
+selection also passed, including the API contract regression and GNFS E2E. The
+final independent security review reported no P0, P1, or P2 findings.
+
+Locked cross-process adoption and the two-capability cleanup conversion remain
+required before the M1 exit criterion is complete.
 
 Exit criterion: a finalized synthetic private OOC corpus can survive owner
 death, reject every stale cleanup receipt, be adopted without deletion

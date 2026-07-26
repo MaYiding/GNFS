@@ -1,7 +1,6 @@
 #pragma once
 
 #include "../core/relation.hpp"
-#include "../relation/ooc_relation_store.hpp"
 #include "../relation/relation_corpus.hpp"
 #include "../relation/relation_source.hpp"
 
@@ -50,29 +49,24 @@ concept OrdinalRelationSource = RelationSource<Source> && requires(const Source&
 ///      matrices (after deterministic LP ordering)
 class VectorRelationSource {
 public:
-    explicit VectorRelationSource(const std::vector<core::Relation>& v) noexcept
-        : v_(&v) {}
+    explicit VectorRelationSource(const std::vector<core::Relation>& v) noexcept : v_(&v) {}
 
-    [[nodiscard]] std::size_t count() const noexcept { return v_->size(); }
-    [[nodiscard]] core::Relation read(std::size_t i) const { return (*v_)[i]; }
+    [[nodiscard]] std::size_t count() const noexcept {
+        return v_->size();
+    }
+    [[nodiscard]] core::Relation read(std::size_t i) const {
+        return (*v_)[i];
+    }
 
 private:
     const std::vector<core::Relation>* v_;
 };
 
-/// Adapter exposing OOCRelationReader as a RelationSource.
-/// Reader must outlive the adapter (which itself outlives the streaming builder).
-class OOCRelationSource {
-public:
-    explicit OOCRelationSource(const relation::OOCRelationReader& reader) noexcept
-        : reader_(&reader) {}
-
-    [[nodiscard]] std::size_t count() const noexcept { return reader_->count(); }
-    [[nodiscard]] core::Relation read(std::size_t i) const { return reader_->read(i); }
-
-private:
-    const relation::OOCRelationReader* reader_;
-};
+/// Canonical non-armable borrowed view of an OOC relation reader.
+///
+/// Keeping the linalg name as an alias gives streaming consumers the same
+/// lifetime checks and capability surface as every other OOC corpus consumer.
+using OOCRelationSource = relation::ReadOnlyRelationCorpusView;
 
 /// Adapter exposing an immutable RelationSelection as a RelationSource while
 /// preserving the selected rows' ordinals in the owning RelationCorpus.
@@ -105,8 +99,7 @@ private:
 // Concept conformance checks (compile-time)
 static_assert(RelationSource<VectorRelationSource>,
               "VectorRelationSource must satisfy RelationSource");
-static_assert(RelationSource<OOCRelationSource>,
-              "OOCRelationSource must satisfy RelationSource");
+static_assert(RelationSource<OOCRelationSource>, "OOCRelationSource must satisfy RelationSource");
 static_assert(RelationSource<RelationSelectionSource>,
               "RelationSelectionSource must satisfy RelationSource");
 static_assert(OrdinalRelationSource<RelationSelectionSource>,

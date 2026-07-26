@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -286,6 +287,61 @@ struct OOCCorpusArtifactScope final {
     std::string base_path;
     OOCSnapshotDescriptor descriptor{};
     std::string cleanup_directory;
+};
+
+/// Non-owning read-only view over one initialized OOC relation reader.
+///
+/// The reader must have completed construction successfully and must remain
+/// alive at the same address, without being moved, for the complete lifetime
+/// of every copied view. Each view captures the reader's opaque binding, so
+/// move-construction from the reader or move-assignment into it invalidates the
+/// old view instead of silently rebinding that view to another corpus. Rvalue
+/// construction is deleted to prevent immediately dangling views. This adapter
+/// carries no path, native handle, receipt, or cleanup authority.
+class ReadOnlyRelationCorpusView final {
+public:
+    explicit ReadOnlyRelationCorpusView(const OOCRelationReader& reader)
+        : reader_(reader), binding_(reader.binding_) {
+        if (!reader.valid()) {
+            throw std::invalid_argument(
+                "ReadOnlyRelationCorpusView: reader must be fully initialized");
+        }
+    }
+
+    ReadOnlyRelationCorpusView(OOCRelationReader&&) = delete;
+    ReadOnlyRelationCorpusView(const OOCRelationReader&&) = delete;
+
+    [[nodiscard]] size_t count() const {
+        return require_reader().count();
+    }
+
+    [[nodiscard]] core::Relation read(size_t ordinal) const {
+        return require_reader().read(ordinal);
+    }
+
+    /// Visit decoded relations in stable ordinal order. Visitor exceptions are
+    /// propagated immediately, so no later ordinal is decoded or visited. The
+    /// callback receives a const reference valid only for that invocation and
+    /// must not retain it.
+    template <typename Visitor> void for_each(Visitor&& visitor) const {
+        for (size_t ordinal = 0; ordinal < count(); ++ordinal) {
+            const core::Relation relation = read(ordinal);
+            visitor(relation, ordinal);
+        }
+    }
+
+private:
+    [[nodiscard]] const OOCRelationReader& require_reader() const {
+        const OOCRelationReader& reader = reader_.get();
+        if (!reader.valid() || reader.binding_.get() != binding_.get()) {
+            throw std::logic_error(
+                "ReadOnlyRelationCorpusView: borrowed reader binding changed or was invalidated");
+        }
+        return reader;
+    }
+
+    std::reference_wrapper<const OOCRelationReader> reader_;
+    std::shared_ptr<const void> binding_;
 };
 
 class RelationSelection;

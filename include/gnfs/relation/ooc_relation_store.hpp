@@ -2094,9 +2094,28 @@ class OOCRelationReader {
 public:
     OOCRelationReader() = default;
 
+    OOCRelationReader(const OOCRelationReader&) = delete;
+    OOCRelationReader& operator=(const OOCRelationReader&) = delete;
+
+    OOCRelationReader(OOCRelationReader&& other) noexcept
+        : idx_file_(std::move(other.idx_file_)), data_file_(std::move(other.data_file_)),
+          count_(std::exchange(other.count_, 0)), offsets_(std::exchange(other.offsets_, nullptr)),
+          binding_(std::move(other.binding_)) {}
+
+    OOCRelationReader& operator=(OOCRelationReader&& other) noexcept {
+        if (this != &other) {
+            idx_file_ = std::move(other.idx_file_);
+            data_file_ = std::move(other.data_file_);
+            count_ = std::exchange(other.count_, 0);
+            offsets_ = std::exchange(other.offsets_, nullptr);
+            binding_ = std::move(other.binding_);
+        }
+        return *this;
+    }
+
     explicit OOCRelationReader(const std::string& base_path)
         : idx_file_(base_path + ".relidx"), data_file_(base_path + ".reldata") {
-        initialize(nullptr);
+        initialize_bound(nullptr);
     }
 
     /// Open a descriptor-bound finalized V2 or V3 corpus.
@@ -2110,7 +2129,7 @@ public:
     OOCRelationReader(const std::string& base_path, const OOCSnapshotDescriptor& expected)
         : idx_file_(base_path + ".relidx"), data_file_(base_path + ".reldata") {
         validate_expected_descriptor(expected);
-        initialize(&expected);
+        initialize_bound(&expected);
     }
 
     /// Adopt a caller-validated exact finalized V3 pair without reopening a
@@ -2133,6 +2152,15 @@ public:
                       gnfs::util::OwnedNativeFile&& data_file,
                       const OOCSnapshotDescriptor& expected)
         : OOCRelationReader(commit_owned_v3_pair(index_file, data_file, expected), expected) {}
+
+    /// Whether this object owns one fully initialized mapped relation pair.
+    ///
+    /// Default-constructed and moved-from readers are invalid. A finalized
+    /// zero-row corpus is valid because its index still contains the sentinel.
+    [[nodiscard]] bool valid() const noexcept {
+        return binding_ != nullptr && idx_file_.is_open() && data_file_.is_open() &&
+               offsets_ != nullptr;
+    }
 
     /// Number of stored relations.
     [[nodiscard]] size_t count() const noexcept {
@@ -2193,7 +2221,7 @@ private:
 
     OOCRelationReader(OwnedExactPair pair, const OOCSnapshotDescriptor& expected)
         : idx_file_(std::move(pair.index)), data_file_(std::move(pair.data)) {
-        initialize(&expected);
+        initialize_bound(&expected);
     }
 
     static void validate_expected_descriptor(const OOCSnapshotDescriptor& expected) {
@@ -2240,6 +2268,11 @@ private:
             throw std::invalid_argument(
                 "OOCRelationReader: owned exact pair descriptor has invalid data extent");
         }
+    }
+
+    void initialize_bound(const OOCSnapshotDescriptor* expected) {
+        initialize(expected);
+        binding_ = std::make_shared<const BindingIdentity>();
     }
 
     void initialize(const OOCSnapshotDescriptor* expected) {
@@ -2376,6 +2409,10 @@ private:
     gnfs::util::MmapFile data_file_;
     size_t count_ = 0;
     const uint64_t* offsets_ = nullptr;
+    struct BindingIdentity final {};
+    std::shared_ptr<const BindingIdentity> binding_;
+
+    friend class ReadOnlyRelationCorpusView;
 };
 
 /// Trusted reader for a single flushed prefix of an otherwise incomplete OOC

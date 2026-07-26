@@ -478,6 +478,39 @@ void test_owned_pair_reader_zero_and_two_rows() {
     TEST_PASS("owned exact pair supports zero and two rows");
 }
 
+void test_reader_validity_and_move_state() {
+    TempFiles pair(gnfs::util::temp_path("gnfs_test_ooc_reader_move_state"));
+    const std::vector<Relation> expected{
+        make_relation(-91, 17, 2, 1),
+        make_relation(92, 18, 1, 2),
+    };
+    const auto descriptor = write_finalized_pair(pair.base, expected);
+
+    OOCRelationReader unbound;
+    TEST_ASSERT(!unbound.valid(), "default reader should be invalid");
+
+    OOCRelationReader source(pair.base, descriptor);
+    TEST_ASSERT(source.valid(), "initialized reader should be valid");
+
+    OOCRelationReader moved(std::move(source));
+    TEST_ASSERT(!source.valid() && source.count() == 0,
+                "move construction should clear the source reader state");
+    TEST_ASSERT(moved.valid() && moved.count() == expected.size(),
+                "move construction should preserve the mapped corpus");
+    TEST_ASSERT(relations_equal(moved.read(1), expected[1]),
+                "move-constructed reader should preserve row access");
+
+    unbound = std::move(moved);
+    TEST_ASSERT(!moved.valid() && moved.count() == 0,
+                "move assignment should clear the source reader state");
+    TEST_ASSERT(unbound.valid() && unbound.count() == expected.size(),
+                "move assignment should transfer the mapped corpus");
+    TEST_ASSERT(relations_equal(unbound.read(0), expected[0]),
+                "move-assigned reader should preserve row access");
+
+    TEST_PASS("reader validity distinguishes initialized and moved-from state");
+}
+
 void test_owned_pair_reader_rejects_cross_pair() {
     TempFiles pair_a(gnfs::util::temp_path("gnfs_test_ooc_owned_cross_a"));
     TempFiles pair_b(gnfs::util::temp_path("gnfs_test_ooc_owned_cross_b"));
@@ -856,6 +889,7 @@ int main() {
     test_merged_relation_with_extras();
     test_owned_pair_reader_survives_path_replacement();
     test_owned_pair_reader_zero_and_two_rows();
+    test_reader_validity_and_move_state();
     test_owned_pair_reader_rejects_cross_pair();
     test_owned_pair_reader_rejects_wrong_descriptors();
     test_owned_pair_reader_rejects_invalid_handles_safely();
