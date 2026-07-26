@@ -817,6 +817,14 @@ if(GNFS_BUILD_TESTS)
         PROPERTIES LABELS "instant" TIMEOUT 20
     )
     add_test(
+        NAME OOCCleanupAuthorityObserver
+        COMMAND test_ooc_cleanup_transaction --suite authority-observer
+    )
+    set_tests_properties(
+        OOCCleanupAuthorityObserver
+        PROPERTIES LABELS "instant" TIMEOUT 30
+    )
+    add_test(
         NAME OOCCleanupTransactionCore
         COMMAND test_ooc_cleanup_transaction --suite core
     )

@@ -95,6 +95,28 @@ struct PrivateCleanupUnionRawObservation final {
                                      const PrivateCleanupUnionRawObservation&) noexcept = default;
 };
 
+enum class PrivateCleanupUnionObservationPoint : std::uint8_t {
+    InitialInventoryComplete,
+    LeafReadsComplete,
+    Count,
+};
+
+struct PrivateCleanupUnionObservationTestHooks final {
+    using Observe = void (*)(PrivateCleanupUnionObservationPoint point, void* context);
+
+    Observe observe = nullptr;
+    void* context = nullptr;
+};
+
+/// Source-private deterministic observation seam. On macOS, tests may replace
+/// names between the held-handle inventory and relative reads. Other platforms
+/// retain the explicitly path-limited observer and reject non-empty hooks.
+/// The returned raw facts are not an authority permit and no mutator accepts
+/// them. Production entry points always pass an empty hook.
+[[nodiscard]] PrivateCleanupUnionRawObservation
+observe_private_cleanup_union_for_test(const std::filesystem::path& base_path,
+                                       PrivateCleanupUnionObservationTestHooks hooks = {});
+
 /// Closed precedence result plus the independent axes needed by future V2
 /// crash-prefix handling.
 enum class PrivateCleanupUnionBlock : std::uint8_t {

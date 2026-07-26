@@ -1376,6 +1376,8 @@ checks passed in Debug.
   pending-reconciliation transition.
 - [x] Freeze the source-private six-leaf union reduction and legacy-only
   disposition table, including exhaustive policy coverage.
+- [x] Bind the macOS six-leaf union observation to one held private-directory
+  handle and one before/after namespace inventory.
 - [x] Freeze the role-separated V2 authorized-cleanup marker codec and exact
   canonical/optional-pending handoff bindings without enabling runtime use.
 - [ ] Add the two-capability application-authorization conversion into
@@ -1531,19 +1533,43 @@ Ordinary non-private V1 paths retain their existing `IntentCorrupt` result for
 raw V2 bytes.
 
 The adapter combines the cleanup facts, generic-handoff facts, and unknown or
-case-fold-duplicate directory facts before one reduction. This preserves the
-frozen precedence rather than serializing two collapsed classifiers. On macOS,
-the handoff read retains C1's held private-directory handle. On a platform
-without the strict production handoff reader, a stable policy-compatible
-regular handoff leaf is an explicit `Unsupported` raw fact; directories,
-links, reparse points, invalid POSIX owner/mode, and unstable replacements are
-foreign. Known foreign cleanup, malformed markers, and V2 still retain their
-precedence before the action returns `PlatformUnsupported`. The four cleanup
-marker reads still use the portable stable path reader. Therefore this is a
-runtime safety gate, not yet the final same-handle six-leaf observer. The next
-slice must move the cleanup reads and the before/after allowlist inventory
-behind the same held directory handle, then migrate the remaining private
-entry groups.
+case-fold-colliding directory facts before one reduction. This preserves the
+frozen precedence rather than serializing two collapsed classifiers. Allowed
+leaves require exact native spelling; ASCII case folding is used only to
+recognize and reject a reserved-name alias or duplicate.
+
+On macOS, the six-leaf observer now holds one no-follow private-directory
+handle throughout the operation. It scans all 11 allowed namespace slots before
+and after the four cleanup-marker and two handoff reads. Each inventory binds
+device, inode, type and mode, owner and group, link count, extent, modification
+time, and change time. Cleanup and handoff snapshots must match the initial
+inventory; the final inventory, directory identity and policy, and inherited
+`BaseLock` must remain stable. A byte-identical inode replacement before a read
+or after all reads therefore reduces to foreign evidence. The scan duplicates
+the held directory description only for `fdopendir`; all six record reads use
+the original handle and the audited durable-record reader.
+
+Linux and Windows deliberately retain the earlier path-limited adapter. The
+four V1 cleanup markers continue through their established stable path reader.
+A stable policy-compatible regular handoff leaf remains an explicit
+`Unsupported` fact; directories, links, reparse points, invalid POSIX
+owner/mode, and unstable replacements are foreign. Adding Linux same-handle
+authority requires a separately audited durable-record ACL and parent-policy
+adapter; the union observer does not introduce a private `openat` reader.
+Known foreign cleanup, malformed markers, and V2 retain their precedence
+before an action returns `PlatformUnsupported`.
+
+This slice hardens read-only admission only. The test seam returns raw enum
+facts and exposes neither handles, bytes, snapshots, nor a construction path
+for mutation authority. Recovery and removal still delegate to the existing
+C1 runtime, which performs another observation and reconciliation after the
+preflight. The next slice must introduce a production-only, move-only,
+action-bound permit that retains the private-directory handle, both
+inventories, cleanup snapshots, and the C1 canonical/pending witness through
+the selected mutation. Only that permit migration may claim that duplicate
+observation and witness loss are closed. None of these checks claims protection
+against deliberate same-user inode cycling outside the documented threat
+boundary.
 
 The policy implementation is compiled into `gnfs_core`. Its 60,025 closed leaf
 combinations, all current entry groups, out-of-range enum values, and

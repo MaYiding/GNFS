@@ -4,10 +4,23 @@
 #include <gnfs/relation/ooc_cleanup_transaction.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cerrno>
+#include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <span>
 #include <system_error>
+
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+#if defined(__APPLE__)
+#include <dirent.h>
+#endif
 
 namespace gnfs::relation::ooc_cleanup_detail {
 
@@ -285,10 +298,9 @@ inline void reject_v2_decoder_infrastructure_failure(OOCAuthorizedCleanupIntentP
 }
 
 [[nodiscard]] PrivateCleanupMarkerObservationKind
-decode_cleanup_marker_leaf(const std::filesystem::path& path, bool pending,
-                           std::uint64_t expected_v1_magic,
-                           OOCAuthorizedCleanupMarkerKindV2 expected_v2_kind) {
-    const auto inspected = inspect_pending_file(path, OOC_AUTHORIZED_CLEANUP_INTENT_WIRE_BYTES_V2);
+decode_cleanup_marker_inspection(const InspectResult& inspected, bool pending,
+                                 std::uint64_t expected_v1_magic,
+                                 OOCAuthorizedCleanupMarkerKindV2 expected_v2_kind) {
     switch (inspected.kind) {
     case InspectKind::Missing:
         return PrivateCleanupMarkerObservationKind::Missing;
@@ -354,20 +366,440 @@ decode_cleanup_marker_leaf(const std::filesystem::path& path, bool pending,
                : PrivateCleanupMarkerObservationKind::Foreign;
 }
 
+#if !defined(__APPLE__)
+[[nodiscard]] PrivateCleanupMarkerObservationKind
+decode_cleanup_marker_leaf(const std::filesystem::path& path, bool pending,
+                           std::uint64_t expected_v1_magic,
+                           OOCAuthorizedCleanupMarkerKindV2 expected_v2_kind) {
+    return decode_cleanup_marker_inspection(
+        inspect_pending_file(path, OOC_AUTHORIZED_CLEANUP_INTENT_WIRE_BYTES_V2), pending,
+        expected_v1_magic, expected_v2_kind);
+}
+#endif
+
+#if defined(__APPLE__)
+
+enum class PrivateCleanupUnionDirectoryEntry : std::size_t {
+    Owner,
+    Index,
+    Data,
+    Handoff,
+    HandoffPending,
+    Intent,
+    IntentPending,
+    Staged,
+    StagedPending,
+    QuarantineIndex,
+    QuarantineData,
+    Count,
+};
+
+struct PrivateCleanupUnionLeafMetadata final {
+    std::uint64_t device = 0;
+    std::uint64_t inode = 0;
+    std::uint64_t mode = 0;
+    std::uint64_t owner = 0;
+    std::uint64_t group = 0;
+    std::uint64_t link_count = 0;
+    std::int64_t size = 0;
+    std::int64_t modified_seconds = 0;
+    std::int64_t modified_nanoseconds = 0;
+    std::int64_t changed_seconds = 0;
+    std::int64_t changed_nanoseconds = 0;
+
+    friend bool operator==(const PrivateCleanupUnionLeafMetadata&,
+                           const PrivateCleanupUnionLeafMetadata&) = default;
+};
+
+struct PrivateCleanupUnionDirectoryInventory final {
+    bool foreign = false;
+    std::array<std::optional<PrivateCleanupUnionLeafMetadata>,
+               static_cast<std::size_t>(PrivateCleanupUnionDirectoryEntry::Count)>
+        leaves{};
+
+    friend bool operator==(const PrivateCleanupUnionDirectoryInventory&,
+                           const PrivateCleanupUnionDirectoryInventory&) = default;
+};
+
+[[nodiscard]] PrivateCleanupUnionLeafMetadata
+private_cleanup_union_leaf_metadata(const struct stat& metadata) noexcept {
+    const auto modified = metadata.st_mtimespec;
+    const auto changed = metadata.st_ctimespec;
+    return {
+        .device = static_cast<std::uint64_t>(metadata.st_dev),
+        .inode = static_cast<std::uint64_t>(metadata.st_ino),
+        .mode = static_cast<std::uint64_t>(metadata.st_mode),
+        .owner = static_cast<std::uint64_t>(metadata.st_uid),
+        .group = static_cast<std::uint64_t>(metadata.st_gid),
+        .link_count = static_cast<std::uint64_t>(metadata.st_nlink),
+        .size = static_cast<std::int64_t>(metadata.st_size),
+        .modified_seconds = static_cast<std::int64_t>(modified.tv_sec),
+        .modified_nanoseconds = static_cast<std::int64_t>(modified.tv_nsec),
+        .changed_seconds = static_cast<std::int64_t>(changed.tv_sec),
+        .changed_nanoseconds = static_cast<std::int64_t>(changed.tv_nsec),
+    };
+}
+
+[[nodiscard]] bool private_cleanup_union_leaf_has_file_policy(
+    const PrivateCleanupUnionLeafMetadata& metadata) noexcept {
+    return (metadata.mode & static_cast<std::uint64_t>(S_IFMT)) ==
+               static_cast<std::uint64_t>(S_IFREG) &&
+           metadata.link_count == 1 && metadata.owner == static_cast<std::uint64_t>(::geteuid()) &&
+           (metadata.mode & static_cast<std::uint64_t>(07777)) ==
+               static_cast<std::uint64_t>(S_IRUSR | S_IWUSR) &&
+           metadata.size >= 0;
+}
+
+[[nodiscard]] std::array<std::filesystem::path,
+                         static_cast<std::size_t>(PrivateCleanupUnionDirectoryEntry::Count)>
+private_cleanup_union_allowed_leaves(const OOCCleanupPaths& paths) {
+    return {
+        std::filesystem::path(".gnfs-private-lease-v1.owner"),
+        paths.index_path.filename(),
+        paths.data_path.filename(),
+        paths.private_handoff_path.filename(),
+        paths.private_handoff_pending_path.filename(),
+        paths.intent_path.filename(),
+        paths.intent_pending_path.filename(),
+        paths.staged_path.filename(),
+        paths.staged_pending_path.filename(),
+        paths.quarantine_index_path.filename(),
+        paths.quarantine_data_path.filename(),
+    };
+}
+
+[[nodiscard]] PrivateCleanupUnionDirectoryInventory
+scan_private_cleanup_union_directory(const OOCCleanupPaths& paths,
+                                     const PrivateDirectoryHandle& directory) {
+    directory.require_stable();
+    const int held_descriptor = static_cast<int>(directory.native_handle());
+    int scan_descriptor = -1;
+    do {
+        scan_descriptor =
+            ::openat(held_descriptor, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (scan_descriptor < 0 && errno == EINTR);
+    if (scan_descriptor < 0) {
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
+    }
+
+    struct stat scan_metadata{};
+    if (::fstat(scan_descriptor, &scan_metadata) != 0 ||
+        stable_identity(posix_identity(scan_metadata)) != directory.identity()) {
+        const int saved_errno = errno == 0 ? EACCES : errno;
+        (void)::close(scan_descriptor);
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, posix_error(saved_errno));
+    }
+
+    DIR* raw_stream = ::fdopendir(scan_descriptor);
+    if (raw_stream == nullptr) {
+        const int saved_errno = errno;
+        (void)::close(scan_descriptor);
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(saved_errno));
+    }
+    std::unique_ptr<DIR, decltype(&::closedir)> stream(raw_stream, &::closedir);
+    const auto allowed = private_cleanup_union_allowed_leaves(paths);
+
+    PrivateCleanupUnionDirectoryInventory inventory;
+    errno = 0;
+    while (const auto* entry = ::readdir(stream.get())) {
+        const std::filesystem::path leaf(entry->d_name);
+        if (leaf == std::filesystem::path(".") || leaf == std::filesystem::path("..")) {
+            errno = 0;
+            continue;
+        }
+
+        std::size_t slot = allowed.size();
+        for (std::size_t index = 0; index < allowed.size(); ++index) {
+            if (path_leaf_equals(leaf, allowed[index])) {
+                slot = index;
+                break;
+            }
+        }
+        if (slot == allowed.size() || leaf.native() != allowed[slot].native() ||
+            inventory.leaves[slot]) {
+            inventory.foreign = true;
+            errno = 0;
+            continue;
+        }
+
+        struct stat metadata{};
+        int inspected = -1;
+        do {
+            inspected = ::fstatat(held_descriptor, leaf.c_str(), &metadata, AT_SYMLINK_NOFOLLOW);
+        } while (inspected != 0 && errno == EINTR);
+        if (inspected != 0) {
+            if (errno == ENOENT) {
+                inventory.foreign = true;
+                errno = 0;
+                continue;
+            }
+            fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
+        }
+        inventory.leaves[slot] = private_cleanup_union_leaf_metadata(metadata);
+        errno = 0;
+    }
+    if (errno != 0) {
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
+    }
+
+    struct stat final_metadata{};
+    if (::fstat(::dirfd(stream.get()), &final_metadata) != 0 ||
+        stable_identity(posix_identity(final_metadata)) != directory.identity()) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+             errno == 0 ? protocol_error() : posix_error(errno));
+    }
+    DIR* close_stream = stream.release();
+    if (::closedir(close_stream) != 0) {
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
+    }
+    directory.require_stable();
+    return inventory;
+}
+
+[[nodiscard]] InspectResult inspect_relative_cleanup_leaf(const PrivateDirectoryHandle& directory,
+                                                          const std::filesystem::path& leaf,
+                                                          std::size_t maximum_bytes) {
+    using namespace util::durable_immutable_record;
+    const auto read = read_bounded_at(directory.native_handle(), leaf, 0, maximum_bytes);
+    switch (read.state()) {
+    case BoundedReadState::missing:
+        return InspectResult{
+            .kind = InspectKind::Missing,
+            .identity = {},
+            .bytes = {},
+            .error = {},
+        };
+    case BoundedReadState::exact:
+        if (!read.bytes() || !read.snapshot()) {
+            fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+        }
+        return InspectResult{
+            .kind = InspectKind::Present,
+            .identity =
+                {
+                    .first = read.snapshot()->identity.first,
+                    .second = read.snapshot()->identity.second,
+                    .third = read.snapshot()->identity.third,
+                    .size = read.snapshot()->size,
+                },
+            .bytes = *read.bytes(),
+            .error = {},
+        };
+    case BoundedReadState::rejected:
+        return InspectResult{
+            .kind = InspectKind::Rejected,
+            .identity = {},
+            .bytes = {},
+            .error = read.native_error(),
+        };
+    case BoundedReadState::interrupted:
+    case BoundedReadState::failed:
+        return InspectResult{
+            .kind = InspectKind::Error,
+            .identity = {},
+            .bytes = {},
+            .error = read.native_error(),
+        };
+    case BoundedReadState::unsupported:
+        fail(OOCCleanupStatus::PlatformUnsupported, OOCCleanupStage::None, read.native_error());
+    }
+    fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+}
+
+[[nodiscard]] bool private_cleanup_union_inspection_matches_inventory(
+    const InspectResult& inspection,
+    const std::optional<PrivateCleanupUnionLeafMetadata>& metadata) noexcept {
+    switch (inspection.kind) {
+    case InspectKind::Missing:
+        return !metadata;
+    case InspectKind::Present:
+        return metadata && metadata->device == inspection.identity.first &&
+               metadata->inode == inspection.identity.second && metadata->size >= 0 &&
+               static_cast<std::uint64_t>(metadata->size) == inspection.identity.size;
+    case InspectKind::Rejected:
+        return metadata.has_value();
+    case InspectKind::Error:
+        return false;
+    }
+    return false;
+}
+
+[[nodiscard]] PrivateCleanupMarkerObservationKind decode_relative_cleanup_marker_leaf(
+    const PrivateDirectoryHandle& directory, const std::filesystem::path& leaf, bool pending,
+    std::uint64_t expected_v1_magic, OOCAuthorizedCleanupMarkerKindV2 expected_v2_kind,
+    const std::optional<PrivateCleanupUnionLeafMetadata>& inventory_metadata,
+    bool& inventory_mismatch) {
+    const auto inspected =
+        inspect_relative_cleanup_leaf(directory, leaf, OOC_AUTHORIZED_CLEANUP_INTENT_WIRE_BYTES_V2);
+    inventory_mismatch = inventory_mismatch || !private_cleanup_union_inspection_matches_inventory(
+                                                   inspected, inventory_metadata);
+    return decode_cleanup_marker_inspection(inspected, pending, expected_v1_magic,
+                                            expected_v2_kind);
+}
+
+[[nodiscard]] bool private_handoff_leaf_matches_inventory(
+    const LoadedPrivateHandoffLeaf& leaf,
+    const std::optional<PrivateCleanupUnionLeafMetadata>& metadata) noexcept {
+    switch (leaf.state) {
+    case PrivateHandoffLeafState::Missing:
+        return !metadata;
+    case PrivateHandoffLeafState::Exact:
+        return metadata && leaf.snapshot && metadata->device == leaf.snapshot->identity.first &&
+               metadata->inode == leaf.snapshot->identity.second && metadata->size >= 0 &&
+               static_cast<std::uint64_t>(metadata->size) == leaf.snapshot->size;
+    case PrivateHandoffLeafState::Rejected:
+        return metadata.has_value();
+    }
+    return false;
+}
+
+void project_strict_handoff_classification(const PrivateHandoffLeafClassification& classified,
+                                           const LoadedPrivateHandoffLeaf& pending,
+                                           PrivateCleanupUnionRawObservation& raw) {
+    switch (classified.inspection.state) {
+    case OOCPrivateHandoffState::None:
+        break;
+    case OOCPrivateHandoffState::Canonical:
+        raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical)] =
+            PrivateHandoffLeafObservationKind::Exact;
+        if (pending.state == PrivateHandoffLeafState::Exact) {
+            raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending)] =
+                PrivateHandoffLeafObservationKind::Exact;
+        }
+        break;
+    case OOCPrivateHandoffState::PendingOnly:
+        raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending)] =
+            PrivateHandoffLeafObservationKind::Exact;
+        break;
+    case OOCPrivateHandoffState::TaintedPreserved:
+        raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical)] =
+            classified.inspection.result.status == OOCCleanupStatus::ForeignReplacementPreserved
+                ? PrivateHandoffLeafObservationKind::Foreign
+                : PrivateHandoffLeafObservationKind::Malformed;
+        break;
+    }
+}
+
+#endif
+
 [[nodiscard]] PrivateCleanupUnionRawObservation
-observe_private_cleanup_union_locked(const OOCCleanupPaths& paths, const BaseLock& lock) {
+observe_private_cleanup_union_locked(const OOCCleanupPaths& paths, const BaseLock& lock,
+                                     PrivateCleanupUnionObservationTestHooks hooks = {}) {
     if (!lock.matches(paths.lock_path)) {
         fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
     }
+#if !defined(__APPLE__)
+    if (hooks.observe != nullptr) {
+        fail(OOCCleanupStatus::PlatformUnsupported, OOCCleanupStage::None,
+             std::make_error_code(std::errc::operation_not_supported));
+    }
+#endif
     lock.require_stable();
 
-    // This is the first runtime slice of the authority-union observer. It is
-    // intentionally read-only. Cleanup leaves still use the portable stable
-    // path reader, while the generic handoff witness retains C1's held private
-    // directory handle. A later slice will move all six reads behind that same
-    // handle and share one before/after inventory.
     auto observation = invoke_with_stable_base_lock(lock, [&] {
         PrivateCleanupUnionRawObservation raw;
+#if defined(__APPLE__)
+        const auto directory_identity = inspect_directory_identity_locked(paths.private_directory);
+        if (!directory_identity) {
+            return raw;
+        }
+
+        PrivateDirectoryHandle directory(paths.private_directory);
+        if (directory.identity() != *directory_identity) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+        }
+        // Enumerating names and no-follow metadata grants no record authority.
+        // Do it before the private-mode check so a concrete foreign leaf keeps
+        // the established ForeignReplacementPreserved precedence. No leaf
+        // bytes are read until the directory policy has passed.
+        const auto before = scan_private_cleanup_union_directory(paths, directory);
+        if (before.foreign) {
+            raw.namespace_foreign = true;
+            return raw;
+        }
+        directory.require_private_policy();
+        if (hooks.observe != nullptr) {
+            hooks.observe(PrivateCleanupUnionObservationPoint::InitialInventoryComplete,
+                          hooks.context);
+        }
+        const auto metadata = [&](PrivateCleanupUnionDirectoryEntry entry)
+            -> const std::optional<PrivateCleanupUnionLeafMetadata>& {
+            return before.leaves[static_cast<std::size_t>(entry)];
+        };
+        bool inventory_mismatch = false;
+        raw.cleanup_markers[static_cast<std::size_t>(PrivateCleanupMarkerSlot::Intent)] =
+            decode_relative_cleanup_marker_leaf(
+                directory, paths.intent_path.filename(), false, INTENT_MAGIC,
+                OOCAuthorizedCleanupMarkerKindV2::intent,
+                metadata(PrivateCleanupUnionDirectoryEntry::Intent), inventory_mismatch);
+        raw.cleanup_markers[static_cast<std::size_t>(PrivateCleanupMarkerSlot::IntentPending)] =
+            decode_relative_cleanup_marker_leaf(
+                directory, paths.intent_pending_path.filename(), true, INTENT_MAGIC,
+                OOCAuthorizedCleanupMarkerKindV2::intent,
+                metadata(PrivateCleanupUnionDirectoryEntry::IntentPending), inventory_mismatch);
+        raw.cleanup_markers[static_cast<std::size_t>(PrivateCleanupMarkerSlot::Staged)] =
+            decode_relative_cleanup_marker_leaf(
+                directory, paths.staged_path.filename(), false, STAGED_MAGIC,
+                OOCAuthorizedCleanupMarkerKindV2::staged,
+                metadata(PrivateCleanupUnionDirectoryEntry::Staged), inventory_mismatch);
+        raw.cleanup_markers[static_cast<std::size_t>(PrivateCleanupMarkerSlot::StagedPending)] =
+            decode_relative_cleanup_marker_leaf(
+                directory, paths.staged_pending_path.filename(), true, STAGED_MAGIC,
+                OOCAuthorizedCleanupMarkerKindV2::staged,
+                metadata(PrivateCleanupUnionDirectoryEntry::StagedPending), inventory_mismatch);
+
+        const auto handoff_metadata = metadata(PrivateCleanupUnionDirectoryEntry::Handoff);
+        const auto handoff_pending_metadata =
+            metadata(PrivateCleanupUnionDirectoryEntry::HandoffPending);
+        const bool handoff_metadata_foreign =
+            (handoff_metadata && !private_cleanup_union_leaf_has_file_policy(*handoff_metadata)) ||
+            (handoff_pending_metadata &&
+             !private_cleanup_union_leaf_has_file_policy(*handoff_pending_metadata));
+        if (handoff_metadata_foreign) {
+            if (handoff_metadata &&
+                !private_cleanup_union_leaf_has_file_policy(*handoff_metadata)) {
+                raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical)] =
+                    PrivateHandoffLeafObservationKind::Foreign;
+            }
+            if (handoff_pending_metadata &&
+                !private_cleanup_union_leaf_has_file_policy(*handoff_pending_metadata)) {
+                raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending)] =
+                    PrivateHandoffLeafObservationKind::Foreign;
+            }
+        } else {
+            try {
+                const auto canonical = read_private_handoff_leaf(
+                    directory.native_handle(), paths.private_handoff_path.filename());
+                const auto pending = read_private_handoff_leaf(
+                    directory.native_handle(), paths.private_handoff_pending_path.filename());
+                inventory_mismatch =
+                    inventory_mismatch ||
+                    !private_handoff_leaf_matches_inventory(canonical, handoff_metadata) ||
+                    !private_handoff_leaf_matches_inventory(pending, handoff_pending_metadata);
+                const auto classified = classify_private_handoff_leaves_locked(
+                    paths, lock, directory.identity(), canonical, pending);
+                project_strict_handoff_classification(classified, pending, raw);
+            } catch (const Failure& failure) {
+                if (failure.status != OOCCleanupStatus::PlatformUnsupported) {
+                    throw;
+                }
+                raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical)] =
+                    handoff_metadata ? PrivateHandoffLeafObservationKind::Unsupported
+                                     : PrivateHandoffLeafObservationKind::Missing;
+                raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending)] =
+                    handoff_pending_metadata ? PrivateHandoffLeafObservationKind::Unsupported
+                                             : PrivateHandoffLeafObservationKind::Missing;
+            }
+        }
+        if (hooks.observe != nullptr) {
+            hooks.observe(PrivateCleanupUnionObservationPoint::LeafReadsComplete, hooks.context);
+        }
+        const auto after = scan_private_cleanup_union_directory(paths, directory);
+        raw.namespace_foreign = inventory_mismatch || after.foreign || before != after;
+        directory.require_stable();
+        directory.require_private_policy();
+        return raw;
+#else
         raw.cleanup_markers[static_cast<std::size_t>(PrivateCleanupMarkerSlot::Intent)] =
             decode_cleanup_marker_leaf(paths.intent_path, false, INTENT_MAGIC,
                                        OOCAuthorizedCleanupMarkerKindV2::intent);
@@ -380,7 +812,6 @@ observe_private_cleanup_union_locked(const OOCCleanupPaths& paths, const BaseLoc
         raw.cleanup_markers[static_cast<std::size_t>(PrivateCleanupMarkerSlot::StagedPending)] =
             decode_cleanup_marker_leaf(paths.staged_pending_path, true, STAGED_MAGIC,
                                        OOCAuthorizedCleanupMarkerKindV2::staged);
-
         if (inspect_directory_identity_locked(paths.private_directory)) {
             const auto entries = inspect_private_handoff_directory_entries(paths);
             raw.namespace_foreign = !entries.valid;
@@ -388,42 +819,12 @@ observe_private_cleanup_union_locked(const OOCCleanupPaths& paths, const BaseLoc
         if (raw.namespace_foreign) {
             return raw;
         }
-
-#if defined(__APPLE__)
-        auto handoff = observe_private_handoff_locked(paths, lock, true);
-        switch (handoff.inspection.state) {
-        case OOCPrivateHandoffState::None:
-            break;
-        case OOCPrivateHandoffState::Canonical:
-            raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical)] =
-                PrivateHandoffLeafObservationKind::Exact;
-            if (handoff.pending) {
-                raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending)] =
-                    PrivateHandoffLeafObservationKind::Exact;
-            }
-            break;
-        case OOCPrivateHandoffState::PendingOnly:
-            raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending)] =
-                PrivateHandoffLeafObservationKind::Exact;
-            break;
-        case OOCPrivateHandoffState::TaintedPreserved:
-            if (handoff.inspection.result.status == OOCCleanupStatus::PlatformUnsupported) {
-                fail(OOCCleanupStatus::PlatformUnsupported, OOCCleanupStage::None,
-                     handoff.inspection.result.native_error);
-            }
-            raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical)] =
-                handoff.inspection.result.status == OOCCleanupStatus::ForeignReplacementPreserved
-                    ? PrivateHandoffLeafObservationKind::Foreign
-                    : PrivateHandoffLeafObservationKind::Malformed;
-            break;
-        }
-#else
         raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical)] =
             observe_platform_limited_handoff_leaf(paths.private_handoff_path);
         raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending)] =
             observe_platform_limited_handoff_leaf(paths.private_handoff_pending_path);
-#endif
         return raw;
+#endif
     });
     lock.require_stable();
     return observation;
@@ -476,6 +877,17 @@ project_private_cleanup_union_preflight(const OOCCleanupPaths& paths, const Base
 }
 
 } // namespace
+
+PrivateCleanupUnionRawObservation
+observe_private_cleanup_union_for_test(const std::filesystem::path& base_path,
+                                       PrivateCleanupUnionObservationTestHooks hooks) {
+    const auto paths = freeze_paths(base_path);
+    if (paths.private_directory.empty()) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    BaseLock lock(paths.lock_path, false);
+    return observe_private_cleanup_union_locked(paths, lock, hooks);
+}
 
 std::optional<OOCCleanupResult> preflight_private_cleanup_union_for_transaction_locked(
     const OOCCleanupPaths& paths, const BaseLock& lock, bool publish_intent_only) {

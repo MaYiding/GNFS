@@ -143,7 +143,7 @@ versions, marker kinds, identities, extents, digests, truncation, trailing
 bytes, and V1/V2 reinterpretation. This target is a pure protocol test: it
 performs no filesystem mutation and grants no adoption or cleanup authority.
 
-`test_ooc_cleanup_transaction` is split into four CTest entries.
+`test_ooc_cleanup_transaction` is split into five CTest entries.
 `OOCCleanupTransactionCore` is an `instant` ownership and state-machine
 contract covering move-only receipt consumption, repairable pending
 publication, exact finalized expectations, a production writer/reader fixture,
@@ -177,20 +177,39 @@ V2-family or platform-limited observation rejects all current entry groups;
 only an unblocked state delegates to the existing V1/C1 runtime. This suite
 also freezes the pending-only `LegacyPendingCandidate` state: it carries no
 cleanup authority and is valid only in the two pending slots. Raw filesystem
-integration is covered separately by the core and private-lease crash suites.
+integration is covered separately by the observer, core, and private-lease
+crash suites.
+
+`OOCCleanupAuthorityObserver` is an `instant` raw-filesystem suite from the
+same binary. It proves that exact canonical leaf spelling is required on every
+platform. On macOS, it also replaces a byte-identical cleanup leaf after the
+initial inventory and after all six logical reads, replaces the named private
+directory at both boundaries, and supplies invalid hard-link metadata. The
+observer either reduces the changed inventory to foreign evidence or rejects
+the directory ABA before returning. The macOS production path reads all four
+cleanup markers and both generic-handoff leaves through one held no-follow
+directory handle, with complete 11-slot inventories before and after. Linux
+and Windows retain the explicit path-limited adapter; nonempty deterministic
+observation hooks are unsupported there. The returned raw facts contain no
+handle or record snapshot, are accepted by no mutator, and are not an
+authority permit.
+
 The platform-limited metadata adapter is exercised directly for missing,
 policy-compatible regular, invalid-mode POSIX, directory, hard-link, and
 symlink leaves; it never reports `Exact`.
 Those tests snapshot the complete test namespace and prove that role-correct
 V2 records, malformed markers, foreign handoffs, exact handoff/V1 conflicts,
-and partial V2 magic prefixes leave no namespace mutation. Static entry
+and partial V2 magic prefixes leave no namespace mutation. A dedicated C1
+regression also proves that a rejected generic-handoff leaf retains
+foreign-preservation precedence when legacy V1 markers coexist. Static entry
 placement keeps the preflight before sync, rename, rewrite, reconciliation, or
 unlink. The deferred-writer integration additionally snapshots an open pair
 and V2 leaf around rejection, proving its public cleanup-handoff preflight runs
 before `finalize()` changes pair bytes; marker publication repeats the check.
 The current runtime adapter combines all six logical leaf facts before
-reduction, but its four cleanup-marker reads are not yet behind the same
-private-directory handle as C1's handoff reads.
+reduction. Recovery and removal still re-observe the C1 handoff after this
+preflight; eliminating that duplicate observation requires the later
+move-only, action-bound permit.
 `OOCCleanupPrivateLeaseCrash` is a `fast` self-exec suite from the same
 binary. It terminates children at each durable private-lease marker, rename,
 and teardown boundary. It also covers writer termination after the first and

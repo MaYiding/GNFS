@@ -81,8 +81,11 @@ using gnfs::relation::OOCRelationStoreFormat;
 using gnfs::relation::OOCRelationWriter;
 using gnfs::relation::OOCSnapshotDescriptor;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupMarkerObservationKind;
+using gnfs::relation::ooc_cleanup_detail::PrivateCleanupMarkerSlot;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionBlock;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionClassification;
+using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionObservationPoint;
+using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionObservationTestHooks;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionRawObservation;
 using gnfs::relation::ooc_cleanup_detail::PrivateHandoffLeafObservationKind;
 using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceAction;
@@ -1761,6 +1764,239 @@ void test_platform_limited_handoff_leaf_metadata_observer() {
               PrivateHandoffLeafObservationKind::Foreign);
     }
 }
+
+void test_private_cleanup_union_observer_baseline_and_exact_names() {
+    {
+        TempDirectory temp;
+        const auto base = temp.path() / "private-observer-baseline.gnfs-sink-lease" / "corpus";
+        auto reservation = prepare_private_legacy_cleanup_intent(base);
+        reservation.ownership.reset();
+
+        const auto raw =
+            gnfs::relation::ooc_cleanup_detail::observe_private_cleanup_union_for_test(base);
+        CHECK(!raw.namespace_foreign);
+        CHECK(raw.cleanup_markers[static_cast<std::size_t>(PrivateCleanupMarkerSlot::Intent)] ==
+              PrivateCleanupMarkerObservationKind::LegacyV1);
+        const auto classified =
+            gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw);
+        CHECK(classified.block == PrivateCleanupUnionBlock::None);
+        CHECK(classified.has_legacy_v1);
+    }
+
+    {
+        TempDirectory temp;
+        const auto base = temp.path() / "private-observer-wrong-case.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = prepare_private_legacy_cleanup_intent(base);
+        reservation.ownership.reset();
+
+        auto wrong_case_name = paths.intent_path.filename().string();
+        const auto changed = wrong_case_name.find_first_of("abcdefghijklmnopqrstuvwxyz");
+        CHECK(changed != std::string::npos);
+        if (changed == std::string::npos) {
+            return;
+        }
+        wrong_case_name[changed] = static_cast<char>(wrong_case_name[changed] - 'a' + 'A');
+        const auto wrong_case_path = paths.intent_path.parent_path() / wrong_case_name;
+        const auto transfer_path = temp.path() / "saved-case-variant";
+        std::error_code error;
+        std::filesystem::rename(paths.intent_path, transfer_path, error);
+        CHECK(!error);
+        if (error) {
+            return;
+        }
+        std::filesystem::rename(transfer_path, wrong_case_path, error);
+        CHECK(!error);
+        if (error) {
+            return;
+        }
+
+        const auto raw =
+            gnfs::relation::ooc_cleanup_detail::observe_private_cleanup_union_for_test(base);
+        CHECK(raw.namespace_foreign);
+        CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+              PrivateCleanupUnionBlock::Foreign);
+        CHECK(entry_exists_no_follow(wrong_case_path));
+    }
+}
+
+#if !defined(__APPLE__)
+void record_unexpected_private_cleanup_union_hook(PrivateCleanupUnionObservationPoint,
+                                                  void* opaque) {
+    *static_cast<bool*>(opaque) = true;
+}
+
+void test_private_cleanup_union_limited_platform_rejects_hooks() {
+    TempDirectory temp;
+    const auto base = temp.path() / "private-observer-limited-hook.gnfs-sink-lease" / "corpus";
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+    reservation.ownership.reset();
+
+    bool callback_invoked = false;
+    std::optional<gnfs::relation::ooc_cleanup_detail::Failure> rejected;
+    try {
+        (void)gnfs::relation::ooc_cleanup_detail::observe_private_cleanup_union_for_test(
+            base, PrivateCleanupUnionObservationTestHooks{
+                      .observe = record_unexpected_private_cleanup_union_hook,
+                      .context = &callback_invoked,
+                  });
+    } catch (const gnfs::relation::ooc_cleanup_detail::Failure& failure) {
+        rejected = failure;
+    }
+    CHECK(!callback_invoked);
+    CHECK(rejected.has_value());
+    if (rejected) {
+        CHECK(rejected->status == OOCCleanupStatus::PlatformUnsupported);
+    }
+}
+#endif
+
+#if defined(__APPLE__)
+enum class PrivateCleanupUnionMutationKind : std::uint8_t {
+    ReplaceLeaf,
+    ReplaceDirectory,
+};
+
+struct PrivateCleanupUnionMutationContext final {
+    PrivateCleanupUnionObservationPoint target_point =
+        PrivateCleanupUnionObservationPoint::InitialInventoryComplete;
+    PrivateCleanupUnionMutationKind kind = PrivateCleanupUnionMutationKind::ReplaceLeaf;
+    std::filesystem::path target_path;
+    std::filesystem::path saved_path;
+    bool fired = false;
+};
+
+void mutate_private_cleanup_union_observation(PrivateCleanupUnionObservationPoint point,
+                                              void* opaque) {
+    auto& context = *static_cast<PrivateCleanupUnionMutationContext*>(opaque);
+    if (context.fired || point != context.target_point) {
+        return;
+    }
+
+    std::error_code error;
+    std::filesystem::rename(context.target_path, context.saved_path, error);
+    if (error) {
+        throw std::filesystem::filesystem_error("save private observer target", context.target_path,
+                                                context.saved_path, error);
+    }
+
+    if (context.kind == PrivateCleanupUnionMutationKind::ReplaceLeaf) {
+        std::filesystem::copy_file(context.saved_path, context.target_path, error);
+        if (error) {
+            throw std::filesystem::filesystem_error("replace private observer leaf",
+                                                    context.saved_path, context.target_path, error);
+        }
+        std::filesystem::permissions(context.target_path,
+                                     std::filesystem::perms::owner_read |
+                                         std::filesystem::perms::owner_write,
+                                     std::filesystem::perm_options::replace, error);
+    } else {
+        (void)std::filesystem::create_directory(context.target_path, error);
+        if (!error) {
+            std::filesystem::permissions(context.target_path, std::filesystem::perms::owner_all,
+                                         std::filesystem::perm_options::replace, error);
+        }
+    }
+    if (error) {
+        throw std::filesystem::filesystem_error("finish private observer replacement",
+                                                context.target_path, error);
+    }
+    context.fired = true;
+}
+
+void test_private_cleanup_union_same_handle_inventory() {
+    constexpr std::array observation_points{
+        PrivateCleanupUnionObservationPoint::InitialInventoryComplete,
+        PrivateCleanupUnionObservationPoint::LeafReadsComplete,
+    };
+
+    for (std::size_t index = 0; index < observation_points.size(); ++index) {
+        TempDirectory temp;
+        const auto base =
+            temp.path() /
+            ("private-observer-leaf-replacement-" + std::to_string(index) + ".gnfs-sink-lease") /
+            "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = prepare_private_legacy_cleanup_intent(base);
+        reservation.ownership.reset();
+
+        PrivateCleanupUnionMutationContext context{
+            .target_point = observation_points[index],
+            .kind = PrivateCleanupUnionMutationKind::ReplaceLeaf,
+            .target_path = paths.intent_path,
+            .saved_path = temp.path() / ("saved-intent-" + std::to_string(index)),
+        };
+        const auto raw = gnfs::relation::ooc_cleanup_detail::observe_private_cleanup_union_for_test(
+            base, PrivateCleanupUnionObservationTestHooks{
+                      .observe = mutate_private_cleanup_union_observation,
+                      .context = &context,
+                  });
+        CHECK(context.fired);
+        CHECK(raw.namespace_foreign);
+        CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+              PrivateCleanupUnionBlock::Foreign);
+        CHECK(entry_exists_no_follow(context.target_path));
+        CHECK(entry_exists_no_follow(context.saved_path));
+        std::error_code equivalent_error;
+        CHECK(!std::filesystem::equivalent(context.target_path, context.saved_path,
+                                           equivalent_error));
+        CHECK(!equivalent_error);
+    }
+
+    for (std::size_t index = 0; index < observation_points.size(); ++index) {
+        TempDirectory temp;
+        const auto base = temp.path() /
+                          ("private-observer-directory-replacement-" + std::to_string(index) +
+                           ".gnfs-sink-lease") /
+                          "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = prepare_private_legacy_cleanup_intent(base);
+        reservation.ownership.reset();
+
+        PrivateCleanupUnionMutationContext context{
+            .target_point = observation_points[index],
+            .kind = PrivateCleanupUnionMutationKind::ReplaceDirectory,
+            .target_path = paths.private_directory,
+            .saved_path = temp.path() / ("saved-private-directory-" + std::to_string(index)),
+        };
+        std::optional<gnfs::relation::ooc_cleanup_detail::Failure> rejected;
+        try {
+            (void)gnfs::relation::ooc_cleanup_detail::observe_private_cleanup_union_for_test(
+                base, PrivateCleanupUnionObservationTestHooks{
+                          .observe = mutate_private_cleanup_union_observation,
+                          .context = &context,
+                      });
+        } catch (const gnfs::relation::ooc_cleanup_detail::Failure& failure) {
+            rejected = failure;
+        }
+        CHECK(context.fired);
+        CHECK(rejected.has_value());
+        if (rejected) {
+            CHECK(rejected->status == OOCCleanupStatus::NamespaceConflict);
+        }
+        CHECK(entry_exists_no_follow(context.target_path));
+        CHECK(entry_exists_no_follow(context.saved_path));
+    }
+
+    {
+        TempDirectory temp;
+        const auto base = temp.path() / "private-observer-hard-link.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = prepare_private_legacy_cleanup_intent(base);
+        reservation.ownership.reset();
+        if (create_hard_link_checked(paths.intent_path, temp.path() / "intent-hard-link")) {
+            const auto raw =
+                gnfs::relation::ooc_cleanup_detail::observe_private_cleanup_union_for_test(base);
+            CHECK(!raw.namespace_foreign);
+            CHECK(raw.cleanup_markers[static_cast<std::size_t>(PrivateCleanupMarkerSlot::Intent)] ==
+                  PrivateCleanupMarkerObservationKind::Malformed);
+            CHECK(gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(raw).block ==
+                  PrivateCleanupUnionBlock::MarkerCorrupt);
+        }
+    }
+}
+#endif
 
 void test_private_authority_union_preflight_is_zero_mutation() {
     const auto v2_intent =
@@ -5395,6 +5631,57 @@ void test_private_handoff_mixed_with_legacy_authority_is_preserved() {
     CHECK(!entry_exists_no_follow(paths.quarantine_data_path));
 }
 
+void test_private_handoff_corruption_precedes_legacy_authority() {
+    TempDirectory temp;
+    const auto base = temp.path() / "corrupt-generic-and-legacy.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto prepared = prepare_private_handoff(base);
+    const pid_t child = ::fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        const auto published = publish_private_handoff(prepared);
+        ::_exit(published.canonical() ? 0 : 82);
+    }
+    int status = 0;
+    CHECK(::waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+    CHECK(!prepared.pair_ownership.spent());
+    CHECK(!prepared.lease_ownership.spent());
+
+    const auto legacy = gnfs::relation::ooc_cleanup_detail::capture_source_pair(
+        paths, prepared.descriptor.store_id);
+    write_private_control_bytes(paths.intent_path,
+                                gnfs::relation::ooc_cleanup_detail::serialize_marker(
+                                    legacy, gnfs::relation::ooc_cleanup_detail::INTENT_MAGIC));
+    write_private_control_bytes(paths.staged_path,
+                                gnfs::relation::ooc_cleanup_detail::serialize_marker(
+                                    legacy, gnfs::relation::ooc_cleanup_detail::STAGED_MAGIC));
+    flip_last_byte(paths.private_handoff_path);
+    const auto before = capture_namespace_tree(temp.path());
+
+    CHECK(OOCCleanupTransaction::remove_private_lease(prepared.lease_ownership).status ==
+          OOCCleanupStatus::ForeignReplacementPreserved);
+    CHECK(!prepared.lease_ownership.spent());
+    std::optional<OOCPrivateLeaseOwnershipReceipt> stale_lease;
+    stale_lease.emplace(std::move(prepared.lease_ownership));
+    stale_lease.reset();
+
+    const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+    CHECK(inspected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+    CHECK(inspected.state == OOCPrivateHandoffState::TaintedPreserved);
+    CHECK(!inspected.canonical());
+
+    CHECK(OOCCleanupTransaction::begin_or_resume(prepared.pair_ownership).status ==
+          OOCCleanupStatus::ForeignReplacementPreserved);
+    CHECK(!prepared.pair_ownership.spent());
+    CHECK(OOCCleanupTransaction::resume(base).status ==
+          OOCCleanupStatus::ForeignReplacementPreserved);
+    CHECK(OOCCleanupTransaction::recover_private_lease(base).status ==
+          OOCCleanupStatus::ForeignReplacementPreserved);
+    CHECK(capture_namespace_tree(temp.path()) == before);
+}
+
 void test_private_authority_union_handoff_precedence_is_zero_mutation() {
     const auto v2_staged =
         authorized_cleanup_v2_marker_bytes(OOCAuthorizedCleanupMarkerKindV2::staged);
@@ -6079,6 +6366,15 @@ void run_authority_union_suite() {
     test_private_cleanup_union_policy_exhaustive();
 }
 
+void run_authority_observer_suite() {
+    test_private_cleanup_union_observer_baseline_and_exact_names();
+#if defined(__APPLE__)
+    test_private_cleanup_union_same_handle_inventory();
+#else
+    test_private_cleanup_union_limited_platform_rejects_hooks();
+#endif
+}
+
 void run_private_lease_crash_suite(const std::string& executable) {
     test_private_lease_process_crash_recovery(executable);
     test_private_lease_preactive_rollback_crash_recovery(executable);
@@ -6125,6 +6421,7 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_private_handoff_canonical_corruption_is_preserved();
     test_private_handoff_macos_path_policy_is_fail_closed();
     test_private_handoff_mixed_with_legacy_authority_is_preserved();
+    test_private_handoff_corruption_precedes_legacy_authority();
     test_private_authority_union_handoff_precedence_is_zero_mutation();
     test_private_handoff_canonical_blocks_stale_pair_receipt();
     test_private_handoff_process_crash_and_cow_retry();
@@ -6206,18 +6503,22 @@ int main(int argc, char* argv[]) {
     bool run_crash = argc == 1;
     bool run_private_lease_crash = argc == 1;
     bool run_authority_union = argc == 1;
+    bool run_authority_observer = argc == 1;
     if (argc == 3 && std::string_view(argv[1]) == "--suite") {
         const std::string_view suite(argv[2]);
         run_core = suite == "core";
         run_crash = suite == "crash";
         run_private_lease_crash = suite == "lease-crash";
         run_authority_union = suite == "authority-union";
-        if (!run_core && !run_crash && !run_private_lease_crash && !run_authority_union) {
+        run_authority_observer = suite == "authority-observer";
+        if (!run_core && !run_crash && !run_private_lease_crash && !run_authority_union &&
+            !run_authority_observer) {
             std::cerr << "unknown suite: " << suite << '\n';
             return 64;
         }
     } else if (argc != 1) {
-        std::cerr << "usage: " << argv[0] << " [--suite authority-union|core|crash|lease-crash]\n";
+        std::cerr << "usage: " << argv[0]
+                  << " [--suite authority-observer|authority-union|core|crash|lease-crash]\n";
         return 64;
     }
 
@@ -6234,6 +6535,9 @@ int main(int argc, char* argv[]) {
         }
         if (run_authority_union) {
             run_authority_union_suite();
+        }
+        if (run_authority_observer) {
+            run_authority_observer_suite();
         }
     } catch (const std::exception& error) {
         ++checks_failed;
