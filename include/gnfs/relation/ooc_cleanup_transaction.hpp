@@ -58,6 +58,7 @@ struct OOCCleanupPaths;
 namespace ooc_cleanup_detail {
 class AdoptionParentDirectoryHandle;
 class BaseLock;
+class PrivateCleanupActionPermit;
 class PrivateCleanupMutationGate;
 class PrivateDirectoryHandle;
 enum class PrivateCleanupMutationBoundary : std::uint8_t {
@@ -373,6 +374,15 @@ enum class OOCPrivateLeaseFaultPoint : std::uint8_t {
     /// A removal permit is fully acquired and retained, but no handoff
     /// reconciliation or lease mutation has started.
     RemovalPermitAcquired,
+    /// Recovery has converged, and a separate reservation permit now retains
+    /// the exact empty namespace before RESERVED publication starts.
+    ReservationPermitAcquired,
+    /// A fresh-writer permit retains the exact preactive lease and empty pair
+    /// before the first O_EXCL reservation.
+    FreshWriterPermitAcquired,
+    /// A distinct activation permit retains the exact lease generation and
+    /// fresh pair before RESERVED convergence or removal.
+    ActivationPermitAcquired,
 };
 
 struct OOCPrivateLeaseTestHooks final {
@@ -582,9 +592,6 @@ classify_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& lo
 preflight_private_cleanup_union_for_transaction_locked(const OOCCleanupPaths& paths,
                                                        const BaseLock& lock,
                                                        bool publish_intent_only);
-[[nodiscard]] std::optional<OOCCleanupResult>
-preflight_private_cleanup_union_for_reservation_locked(const OOCCleanupPaths& paths,
-                                                       const BaseLock& lock);
 [[nodiscard]] OOCCleanupResult
 recover_private_lease_locked(const OOCCleanupPaths& paths, std::shared_ptr<BaseLock> lock,
                              const OOCPrivateLeaseTestHooks& hooks = {});
@@ -2721,10 +2728,52 @@ struct PrivateLeasePublication final {
     bool interrupted = false;
 };
 
+enum class PrivateLeaseMarkerPublicationPoint : std::uint8_t {
+    BeforePendingPreparation,
+    PendingDurable,
+    BeforeCanonicalRename,
+    CanonicalDurable,
+    BeforeDuplicatePendingRemoval,
+    Complete,
+};
+
+/// Source-owned phase callback used only when a retained action permit drives
+/// lease-marker publication. Recording happens before user hooks so a hook
+/// cannot replace an inode and teach the action a forged successor.
+struct PrivateLeaseMarkerPublicationGuard final {
+    using Transition = void (*)(PrivateLeaseMarkerPublicationPoint point,
+                                const std::filesystem::path& canonical_path,
+                                const std::filesystem::path& pending_path,
+                                const PrivateLeaseRecord& record, const FileIdentity* identity,
+                                void* context);
+
+    Transition transition = nullptr;
+    void* context = nullptr;
+};
+
+inline void transition_private_lease_marker_guard(const PrivateLeaseMarkerPublicationGuard* guard,
+                                                  PrivateLeaseMarkerPublicationPoint point,
+                                                  const std::filesystem::path& canonical_path,
+                                                  const std::filesystem::path& pending_path,
+                                                  const PrivateLeaseRecord& record,
+                                                  const FileIdentity* identity = nullptr) {
+    if (guard == nullptr) {
+        return;
+    }
+    if (guard->transition == nullptr || guard->context == nullptr) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    guard->transition(point, canonical_path, pending_path, record, identity, guard->context);
+}
+
 [[nodiscard]] inline PrivateLeasePublication publish_private_lease_marker_durable(
     const std::filesystem::path& canonical_path, const std::filesystem::path& pending_path,
     const PrivateLeaseRecord& record, const BaseLock& lock, const OOCPrivateLeaseTestHooks& hooks,
-    OOCPrivateLeaseFaultPoint pending_fault_point) {
+    OOCPrivateLeaseFaultPoint pending_fault_point,
+    const PrivateLeaseMarkerPublicationGuard* guard = nullptr) {
+    if (guard != nullptr && (guard->transition == nullptr || guard->context == nullptr)) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
     const auto expected = serialize_private_lease_marker(record);
     auto canonical = inspect_private_lease_marker(canonical_path);
     if (canonical.kind == InspectKind::Error) {
@@ -2734,11 +2783,18 @@ struct PrivateLeasePublication final {
         fail(OOCCleanupStatus::IntentCorrupt, OOCCleanupStage::None, protocol_error());
     }
     if (canonical.kind == InspectKind::Present) {
+        if (guard != nullptr) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
         if (!marker_bytes_equal(canonical.bytes, expected)) {
             fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None, protocol_error());
         }
         invoke_with_stable_base_lock(lock,
                                      [&] { confirm_private_lease_marker(canonical_path, record); });
+        transition_private_lease_marker_guard(
+            guard, PrivateLeaseMarkerPublicationPoint::CanonicalDurable, canonical_path,
+            pending_path, record, &canonical.identity);
         const auto pending = inspect_pending_file(pending_path, PRIVATE_LEASE_MARKER_BYTES);
         if (pending.kind == InspectKind::Error) {
             fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, pending.error);
@@ -2750,6 +2806,9 @@ struct PrivateLeasePublication final {
                  protocol_error());
         }
         if (pending.kind == InspectKind::Present) {
+            transition_private_lease_marker_guard(
+                guard, PrivateLeaseMarkerPublicationPoint::BeforeDuplicatePendingRemoval,
+                canonical_path, pending_path, record, &pending.identity);
             invoke_with_stable_base_lock(lock,
                                          [&] { remove_file(pending_path, OOCCleanupStage::None); });
             invoke_with_stable_base_lock(lock, [&] {
@@ -2758,6 +2817,9 @@ struct PrivateLeasePublication final {
             invoke_with_stable_base_lock(
                 lock, [&] { confirm_private_lease_marker(canonical_path, record); });
         }
+        transition_private_lease_marker_guard(guard, PrivateLeaseMarkerPublicationPoint::Complete,
+                                              canonical_path, pending_path, record,
+                                              &canonical.identity);
         return PrivateLeasePublication{
             .identity = stable_identity(canonical.identity),
             .interrupted = false,
@@ -2772,11 +2834,22 @@ struct PrivateLeasePublication final {
         fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
              protocol_error());
     }
+    if (guard != nullptr && pending.kind == InspectKind::Present) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
     bool newly_durable = false;
     if (pending.kind == InspectKind::Missing) {
+        transition_private_lease_marker_guard(
+            guard, PrivateLeaseMarkerPublicationPoint::BeforePendingPreparation, canonical_path,
+            pending_path, record);
         const auto published = invoke_with_stable_base_lock(
             lock, [&] { return util::durable_immutable_file::publish(pending_path, expected); });
         if (!published.is_durable()) {
+            if (guard != nullptr) {
+                fail(publish_failure_status(published.status()), OOCCleanupStage::None,
+                     published.native_error());
+            }
             pending = inspect_pending_file(pending_path, PRIVATE_LEASE_MARKER_BYTES);
             if (pending.kind != InspectKind::Present ||
                 !marker_bytes_equal(pending.bytes, expected)) {
@@ -2795,7 +2868,11 @@ struct PrivateLeasePublication final {
     if (ready != record) {
         fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None, protocol_error());
     }
-    invoke_with_stable_base_lock(lock, [&] { confirm_private_lease_marker(pending_path, record); });
+    invoke_with_stable_base_lock(lock, [&] {
+        confirm_private_lease_marker(pending_path, record, stable_identity(pending_identity));
+    });
+    transition_private_lease_marker_guard(guard, PrivateLeaseMarkerPublicationPoint::PendingDurable,
+                                          canonical_path, pending_path, record, &pending_identity);
     const bool stop_after_pending =
         newly_durable && invoke_with_stable_base_lock(lock, [&] {
             return should_interrupt_private_lease(hooks, pending_fault_point);
@@ -2807,6 +2884,9 @@ struct PrivateLeasePublication final {
         };
     }
 
+    transition_private_lease_marker_guard(guard,
+                                          PrivateLeaseMarkerPublicationPoint::BeforeCanonicalRename,
+                                          canonical_path, pending_path, record, &pending_identity);
     const auto renamed = invoke_with_stable_base_lock(
         lock, [&] { return rename_no_replace(pending_path, canonical_path); });
     switch (renamed.result) {
@@ -2816,6 +2896,10 @@ struct PrivateLeasePublication final {
         });
         break;
     case RenameResult::DestinationExists:
+        if (guard != nullptr) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 renamed.error ? renamed.error : protocol_error());
+        }
         invoke_with_stable_base_lock(lock,
                                      [&] { confirm_private_lease_marker(canonical_path, record); });
         break;
@@ -2830,8 +2914,15 @@ struct PrivateLeasePublication final {
     if (persisted != record || !same_native_file(canonical_identity, pending_identity)) {
         fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None, protocol_error());
     }
-    invoke_with_stable_base_lock(lock,
-                                 [&] { confirm_private_lease_marker(canonical_path, record); });
+    invoke_with_stable_base_lock(lock, [&] {
+        confirm_private_lease_marker(canonical_path, record, stable_identity(canonical_identity));
+    });
+    transition_private_lease_marker_guard(
+        guard, PrivateLeaseMarkerPublicationPoint::CanonicalDurable, canonical_path, pending_path,
+        record, &canonical_identity);
+    transition_private_lease_marker_guard(guard, PrivateLeaseMarkerPublicationPoint::Complete,
+                                          canonical_path, pending_path, record,
+                                          &canonical_identity);
     return PrivateLeasePublication{
         .identity = stable_identity(canonical_identity),
         .interrupted = false,
@@ -3841,6 +3932,37 @@ public:
                          }) {
             fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
         }
+    }
+
+    /// Rebind the same held directory handle after one verified no-replace
+    /// rename. The old name must already be absent, and the new name must name
+    /// the exact held inode before the handle accepts the successor path.
+    void rebind_after_rename(const std::filesystem::path& old_path,
+                             const std::filesystem::path& new_path) {
+        if (path_ != old_path) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        struct stat held{};
+        struct stat old_named{};
+        struct stat new_named{};
+        int old_result = -1;
+        do {
+            old_result = ::lstat(old_path.c_str(), &old_named);
+        } while (old_result != 0 && errno == EINTR);
+        const int old_error = old_result == 0 ? 0 : errno;
+        if (::fstat(descriptor_, &held) != 0 || old_result == 0 || old_error != ENOENT ||
+            ::lstat(new_path.c_str(), &new_named) != 0 || !S_ISDIR(held.st_mode) ||
+            !S_ISDIR(new_named.st_mode) || held.st_dev != new_named.st_dev ||
+            held.st_ino != new_named.st_ino ||
+            identity_ != std::array<std::uint64_t, 3>{
+                             static_cast<std::uint64_t>(held.st_dev),
+                             static_cast<std::uint64_t>(held.st_ino),
+                             0,
+                         }) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+        }
+        path_ = new_path;
+        require_stable();
     }
 
 private:
@@ -5382,6 +5504,102 @@ recover_owned_private_lease_locked(const OOCCleanupPaths& paths, const BaseLock&
 /// control remains a trusted boundary; this prototype does not promise
 /// non-interference against a malicious same-user process.
 class OOCCleanupTransaction final {
+private:
+    struct PrivateLeaseActionAdmission final {
+        OOCCleanupResult result;
+        std::shared_ptr<ooc_cleanup_detail::PrivateCleanupActionPermit> permit;
+
+        PrivateLeaseActionAdmission(OOCCleanupResult admitted_result,
+                                    std::shared_ptr<ooc_cleanup_detail::PrivateCleanupActionPermit>
+                                        admitted_permit = nullptr) noexcept
+            : result(admitted_result), permit(std::move(admitted_permit)) {}
+        PrivateLeaseActionAdmission(const PrivateLeaseActionAdmission&) = delete;
+        PrivateLeaseActionAdmission& operator=(const PrivateLeaseActionAdmission&) = delete;
+        PrivateLeaseActionAdmission(PrivateLeaseActionAdmission&&) noexcept = default;
+        PrivateLeaseActionAdmission& operator=(PrivateLeaseActionAdmission&&) noexcept = default;
+
+        [[nodiscard]] bool admitted() const noexcept {
+            return result.completed() && permit != nullptr;
+        }
+    };
+
+    enum class PrivateFreshWriterBoundary : std::uint8_t {
+        BeforeIndexReservation,
+        IndexReserved,
+        BeforeDataReservation,
+        DataReserved,
+        BeforeHeaderWrite,
+        HeadersValidated,
+        PairOwnershipCaptured,
+        Complete,
+    };
+
+    enum class PrivateLeaseActivationBoundary : std::uint8_t {
+        BeforeReservedRemoval,
+        Complete,
+    };
+
+    struct PrivateLeaseMarkerGuardContext final {
+        ooc_cleanup_detail::PrivateCleanupActionPermit* permit = nullptr;
+        const OOCCleanupPaths* paths = nullptr;
+        const ooc_cleanup_detail::BaseLock* lock = nullptr;
+    };
+
+    [[nodiscard]] static PrivateLeaseActionAdmission admit_private_lease_reservation_action(
+        const OOCCleanupPaths& paths, std::shared_ptr<ooc_cleanup_detail::BaseLock> lock) noexcept;
+    [[nodiscard]] static OOCCleanupResult initialize_private_lease_reservation_action(
+        ooc_cleanup_detail::PrivateCleanupActionPermit& permit, const OOCCleanupPaths& paths,
+        const ooc_cleanup_detail::BaseLock& lock,
+        const ooc_cleanup_detail::PrivateLeaseRecord& reserved) noexcept;
+    static void private_lease_reservation_marker_transition(
+        ooc_cleanup_detail::PrivateLeaseMarkerPublicationPoint point,
+        const std::filesystem::path& canonical_path, const std::filesystem::path& pending_path,
+        const ooc_cleanup_detail::PrivateLeaseRecord& record,
+        const ooc_cleanup_detail::FileIdentity* identity, void* context);
+    [[nodiscard]] static OOCCleanupResult record_private_lease_reservation_directory(
+        ooc_cleanup_detail::PrivateCleanupActionPermit& permit, const OOCCleanupPaths& paths,
+        const ooc_cleanup_detail::BaseLock& lock, const std::filesystem::path& directory_path,
+        const std::array<std::uint64_t, 3>& identity, bool final_directory) noexcept;
+    [[nodiscard]] static OOCCleanupResult authorize_private_lease_reservation_staging_directory(
+        ooc_cleanup_detail::PrivateCleanupActionPermit& permit, const OOCCleanupPaths& paths,
+        const ooc_cleanup_detail::BaseLock& lock) noexcept;
+    [[nodiscard]] static OOCCleanupResult authorize_private_lease_reservation_final_rename(
+        ooc_cleanup_detail::PrivateCleanupActionPermit& permit, const OOCCleanupPaths& paths,
+        const ooc_cleanup_detail::BaseLock& lock) noexcept;
+    [[nodiscard]] static OOCCleanupResult complete_private_lease_reservation_action(
+        ooc_cleanup_detail::PrivateCleanupActionPermit& permit, const OOCCleanupPaths& paths,
+        const ooc_cleanup_detail::BaseLock& lock) noexcept;
+
+    [[nodiscard]] static PrivateLeaseActionAdmission
+    admit_private_fresh_writer_action(const OOCPrivateLeaseOwnershipReceipt& lease,
+                                      bool deferred_mode) noexcept;
+    [[nodiscard]] static OOCCleanupResult advance_private_fresh_writer_action(
+        ooc_cleanup_detail::PrivateCleanupActionPermit& permit,
+        const OOCPrivateLeaseOwnershipReceipt& lease, PrivateFreshWriterBoundary boundary,
+        std::optional<std::array<std::uint64_t, 3>> index_identity = std::nullopt,
+        std::optional<std::array<std::uint64_t, 3>> data_identity = std::nullopt,
+        std::uint64_t store_id = 0) noexcept;
+    [[nodiscard]] static bool private_fresh_writer_rollback_allowed(
+        ooc_cleanup_detail::PrivateCleanupActionPermit& permit,
+        const OOCPrivateLeaseOwnershipReceipt& lease,
+        std::optional<std::array<std::uint64_t, 3>> index_identity,
+        std::optional<std::array<std::uint64_t, 3>> data_identity) noexcept;
+
+    [[nodiscard]] static PrivateLeaseActionAdmission admit_private_lease_activation_action(
+        const OOCPrivateLeaseOwnershipReceipt& lease,
+        const OOCCleanupOwnershipReceipt& pair_ownership) noexcept;
+    [[nodiscard]] static OOCCleanupResult
+    advance_private_lease_activation_action(ooc_cleanup_detail::PrivateCleanupActionPermit& permit,
+                                            const OOCPrivateLeaseOwnershipReceipt& lease,
+                                            const OOCCleanupOwnershipReceipt& pair_ownership,
+                                            PrivateLeaseActivationBoundary boundary) noexcept;
+    [[nodiscard]] static OOCCleanupResult
+    commit_private_lease_activation_action(ooc_cleanup_detail::PrivateCleanupActionPermit& permit,
+                                           OOCPrivateLeaseOwnershipReceipt& lease,
+                                           OOCPrivateLeaseTestHooks hooks) noexcept;
+    [[nodiscard]] static bool commit_private_lease_activation_noexcept(
+        ooc_cleanup_detail::PrivateCleanupActionPermit& permit) noexcept;
+
 public:
     [[nodiscard]] static OOCCleanupResult
     begin_or_resume(OOCCleanupOwnershipReceipt& ownership,
@@ -5809,11 +6027,6 @@ public:
             }
 
             auto live_lock = std::make_shared<ooc_cleanup_detail::BaseLock>(paths.lock_path);
-            if (const auto blocked =
-                    ooc_cleanup_detail::preflight_private_cleanup_union_for_reservation_locked(
-                        paths, *live_lock)) {
-                return *blocked;
-            }
             const auto recovered =
                 ooc_cleanup_detail::recover_private_lease_locked(paths, live_lock);
             if (!recovered.transaction_terminal()) {
@@ -5845,10 +6058,36 @@ public:
             }
             const auto reserved = ooc_cleanup_detail::make_private_lease_reserved_record(
                 paths, lease_id, parent_identity, live_lock->identity());
+            auto reservation_admission = admit_private_lease_reservation_action(paths, live_lock);
+            if (!reservation_admission.admitted()) {
+                return reservation_admission.result;
+            }
+            auto& reservation_permit = *reservation_admission.permit;
+            const auto initialized = initialize_private_lease_reservation_action(
+                reservation_permit, paths, *live_lock, reserved);
+            if (!initialized.completed()) {
+                return initialized;
+            }
+            if (ooc_cleanup_detail::invoke_with_stable_base_lock(*live_lock, [&] {
+                    return ooc_cleanup_detail::should_interrupt_private_lease(
+                        hooks, OOCPrivateLeaseFaultPoint::ReservationPermitAcquired);
+                })) {
+                return ooc_cleanup_detail::private_lease_interrupted();
+            }
+            PrivateLeaseMarkerGuardContext marker_guard_context{
+                .permit = &reservation_permit,
+                .paths = &paths,
+                .lock = live_lock.get(),
+            };
+            const ooc_cleanup_detail::PrivateLeaseMarkerPublicationGuard marker_guard{
+                .transition = &private_lease_reservation_marker_transition,
+                .context = &marker_guard_context,
+            };
             const auto reserved_publication =
                 ooc_cleanup_detail::publish_private_lease_marker_durable(
                     paths.lease_reserved_path, paths.lease_reserved_pending_path, reserved,
-                    *live_lock, hooks, OOCPrivateLeaseFaultPoint::ReservedPendingDurable);
+                    *live_lock, hooks, OOCPrivateLeaseFaultPoint::ReservedPendingDurable,
+                    &marker_guard);
             if (reserved_publication.interrupted) {
                 return ooc_cleanup_detail::private_lease_interrupted();
             }
@@ -5858,11 +6097,21 @@ public:
                 })) {
                 return ooc_cleanup_detail::private_lease_interrupted();
             }
+            const auto staging_authorized = authorize_private_lease_reservation_staging_directory(
+                reservation_permit, paths, *live_lock);
+            if (!staging_authorized.completed()) {
+                return staging_authorized;
+            }
             ooc_cleanup_detail::invoke_with_stable_base_lock(*live_lock, [&] {
                 ooc_cleanup_detail::create_directory_durable_locked(staging_path);
             });
             const auto directory_identity =
                 ooc_cleanup_detail::capture_directory_identity_locked(staging_path);
+            const auto staging_recorded = record_private_lease_reservation_directory(
+                reservation_permit, paths, *live_lock, staging_path, directory_identity, false);
+            if (!staging_recorded.completed()) {
+                return staging_recorded;
+            }
             if (ooc_cleanup_detail::invoke_with_stable_base_lock(*live_lock, [&] {
                     return ooc_cleanup_detail::should_interrupt_private_lease(
                         hooks, OOCPrivateLeaseFaultPoint::StagingDirectoryDurable);
@@ -5875,7 +6124,7 @@ public:
             const auto owner_publication = ooc_cleanup_detail::publish_private_lease_marker_durable(
                 ooc_cleanup_detail::private_lease_owner_path(staging_path),
                 ooc_cleanup_detail::private_lease_owner_pending_path(staging_path), owner,
-                *live_lock, hooks, OOCPrivateLeaseFaultPoint::OwnerPendingDurable);
+                *live_lock, hooks, OOCPrivateLeaseFaultPoint::OwnerPendingDurable, &marker_guard);
             if (owner_publication.interrupted) {
                 return ooc_cleanup_detail::private_lease_interrupted();
             }
@@ -5890,7 +6139,7 @@ public:
                 owner, owner_publication.identity);
             const auto owned_publication = ooc_cleanup_detail::publish_private_lease_marker_durable(
                 paths.lease_owned_path, paths.lease_owned_pending_path, owned, *live_lock, hooks,
-                OOCPrivateLeaseFaultPoint::OwnedPendingDurable);
+                OOCPrivateLeaseFaultPoint::OwnedPendingDurable, &marker_guard);
             if (owned_publication.interrupted) {
                 return ooc_cleanup_detail::private_lease_interrupted();
             }
@@ -5901,6 +6150,11 @@ public:
                 return ooc_cleanup_detail::private_lease_interrupted();
             }
 
+            const auto final_rename_authorized = authorize_private_lease_reservation_final_rename(
+                reservation_permit, paths, *live_lock);
+            if (!final_rename_authorized.completed()) {
+                return final_rename_authorized;
+            }
             const auto renamed = ooc_cleanup_detail::invoke_with_stable_base_lock(*live_lock, [&] {
                 return ooc_cleanup_detail::rename_no_replace(staging_path, paths.private_directory);
             });
@@ -5927,6 +6181,12 @@ public:
                                          ooc_cleanup_detail::protocol_error());
             }
             ooc_cleanup_detail::validate_private_lease_owner_at(paths.private_directory, owned);
+            const auto final_recorded = record_private_lease_reservation_directory(
+                reservation_permit, paths, *live_lock, paths.private_directory, directory_identity,
+                true);
+            if (!final_recorded.completed()) {
+                return final_recorded;
+            }
             if (ooc_cleanup_detail::invoke_with_stable_base_lock(*live_lock, [&] {
                     return ooc_cleanup_detail::should_interrupt_private_lease(
                         hooks, OOCPrivateLeaseFaultPoint::FinalRenameDurable);
@@ -5934,6 +6194,11 @@ public:
                 return ooc_cleanup_detail::private_lease_interrupted();
             }
 
+            const auto reservation_completed =
+                complete_private_lease_reservation_action(reservation_permit, paths, *live_lock);
+            if (!reservation_completed.completed()) {
+                return reservation_completed;
+            }
             live_lock->require_stable();
             OOCPrivateLeaseOwnershipReceipt candidate(
                 paths.base_path, paths.private_directory, paths.lock_path, directory_identity,
@@ -6051,93 +6316,6 @@ private:
         });
     }
 
-    /// Zero-mutation preflight used immediately before a fresh private writer
-    /// reserves either pair leaf. The receipt, durable marker chain, exact
-    /// directory identity, canonical owner marker, and owner-only child
-    /// allowlist must all agree under the inherited live BaseLock.
-    [[nodiscard]] static OOCCleanupResult
-    validate_private_lease_for_fresh_writer(const OOCPrivateLeaseOwnershipReceipt& lease) noexcept {
-        if (lease.spent_ || lease.active_ || !lease.live_lock_ || lease.base_path_.empty() ||
-            lease.private_directory_.empty() || lease.lock_path_.empty()) {
-            return OOCCleanupResult{
-                .status = OOCCleanupStatus::InvalidRequest,
-                .stage = OOCCleanupStage::None,
-                .native_error = ooc_cleanup_detail::invalid_argument_error(),
-            };
-        }
-        return invoke([&] {
-            const auto paths = ooc_cleanup_detail::freeze_paths(lease.base_path_);
-            if (paths.base_path != lease.base_path_ ||
-                paths.private_directory != lease.private_directory_ ||
-                paths.lock_path != lease.lock_path_ ||
-                !lease.live_lock_->matches(paths.lock_path)) {
-                ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
-                                         ooc_cleanup_detail::invalid_argument_error());
-            }
-            const auto handoff =
-                ooc_cleanup_detail::classify_private_handoff_locked(paths, *lease.live_lock_);
-            if (handoff.state != OOCPrivateHandoffState::None) {
-                return handoff.result;
-            }
-
-            const auto parent_identity = ooc_cleanup_detail::capture_directory_identity_locked(
-                paths.private_directory.parent_path());
-            const auto reserved =
-                ooc_cleanup_detail::load_optional_private_lease_marker(paths.lease_reserved_path);
-            const auto owned =
-                ooc_cleanup_detail::load_optional_private_lease_marker(paths.lease_owned_path);
-            if (!reserved || !owned || reserved->record.lease_id != lease.lease_id_ ||
-                owned->record.lease_id != lease.lease_id_ ||
-                owned->record.directory_identity != lease.directory_identity_ ||
-                owned->record.owner_identity != lease.owner_identity_ ||
-                owned->identity != lease.owned_identity_) {
-                ooc_cleanup_detail::fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None,
-                                         ooc_cleanup_detail::protocol_error());
-            }
-            ooc_cleanup_detail::validate_private_lease_record_context(
-                reserved->record, paths, parent_identity, lease.live_lock_->identity());
-            ooc_cleanup_detail::validate_private_lease_record_context(
-                owned->record, paths, parent_identity, lease.live_lock_->identity());
-            ooc_cleanup_detail::validate_private_lease_record_chain(reserved->record,
-                                                                    owned->record);
-            ooc_cleanup_detail::validate_private_lease_owner_at(paths.private_directory,
-                                                                owned->record);
-            if (ooc_cleanup_detail::capture_directory_identity_locked(paths.private_directory) !=
-                    lease.directory_identity_ ||
-                ooc_cleanup_detail::inspect_directory_identity_locked(
-                    ooc_cleanup_detail::private_lease_staging_path(paths, lease.lease_id_))) {
-                ooc_cleanup_detail::fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
-                                         ooc_cleanup_detail::protocol_error());
-            }
-
-            const auto entries =
-                ooc_cleanup_detail::inspect_private_lease_control_entries(paths.private_directory);
-            if (!entries.owner || entries.owner_pending) {
-                ooc_cleanup_detail::fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
-                                         ooc_cleanup_detail::protocol_error());
-            }
-            const std::array<const std::filesystem::path*, 2> marker_pending_leaves{
-                &paths.lease_reserved_pending_path,
-                &paths.lease_owned_pending_path,
-            };
-            for (const auto* leaf : marker_pending_leaves) {
-                const auto inspected = ooc_cleanup_detail::inspect_file(*leaf, 0, false);
-                if (inspected.kind == ooc_cleanup_detail::InspectKind::Error) {
-                    ooc_cleanup_detail::fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None,
-                                             inspected.error);
-                }
-                if (inspected.kind != ooc_cleanup_detail::InspectKind::Missing) {
-                    ooc_cleanup_detail::fail(OOCCleanupStatus::NamespaceConflict,
-                                             OOCCleanupStage::None,
-                                             ooc_cleanup_detail::protocol_error());
-                }
-            }
-            ooc_cleanup_detail::require_pair_namespace_reusable_locked(paths);
-            lease.live_lock_->require_stable();
-            return ooc_cleanup_detail::private_lease_completed();
-        });
-    }
-
     /// Publish the exact fresh pair's canonical cleanup intent while retaining
     /// the private lease's RESERVED predecessor and held BaseLock. The
     /// out-of-line implementation owns the source-private post-finalize permit.
@@ -6158,8 +6336,7 @@ private:
                 .native_error = ooc_cleanup_detail::invalid_argument_error(),
             };
         }
-        bool activation_committed = false;
-        const auto result = invoke([&] {
+        return invoke([&] {
             const auto paths = ooc_cleanup_detail::freeze_paths(lease.base_path_);
             if (paths.base_path != lease.base_path_ ||
                 paths.private_directory != lease.private_directory_ ||
@@ -6168,112 +6345,39 @@ private:
                 ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
                                          ooc_cleanup_detail::invalid_argument_error());
             }
-            auto& lock = *lease.live_lock_;
-            lock.require_stable();
-            const auto handoff = ooc_cleanup_detail::classify_private_handoff_locked(paths, lock);
-            if (handoff.state != OOCPrivateHandoffState::None) {
-                return handoff.result;
+            auto activation_admission =
+                admit_private_lease_activation_action(lease, pair_ownership);
+            if (!activation_admission.admitted()) {
+                return activation_admission.result;
             }
-            const auto parent_identity = ooc_cleanup_detail::capture_directory_identity_locked(
-                paths.private_directory.parent_path());
-            auto reserved =
-                ooc_cleanup_detail::load_optional_private_lease_marker(paths.lease_reserved_path);
-            auto owned =
-                ooc_cleanup_detail::load_optional_private_lease_marker(paths.lease_owned_path);
-            if (!reserved || !owned || reserved->record.lease_id != lease.lease_id_ ||
-                owned->record.lease_id != lease.lease_id_ ||
-                owned->record.directory_identity != lease.directory_identity_ ||
-                owned->record.owner_identity != lease.owner_identity_ ||
-                owned->identity != lease.owned_identity_) {
-                ooc_cleanup_detail::fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None,
-                                         ooc_cleanup_detail::protocol_error());
+            auto& activation_permit = *activation_admission.permit;
+            auto retained_lock = lease.live_lock_;
+            auto& lock = *retained_lock;
+            if (ooc_cleanup_detail::invoke_with_stable_base_lock(lock, [&] {
+                    return ooc_cleanup_detail::should_interrupt_private_lease(
+                        hooks, OOCPrivateLeaseFaultPoint::ActivationPermitAcquired);
+                })) {
+                return ooc_cleanup_detail::private_lease_interrupted();
             }
-            ooc_cleanup_detail::validate_private_lease_record_context(
-                reserved->record, paths, parent_identity, lock.identity());
-            ooc_cleanup_detail::validate_private_lease_record_context(
-                owned->record, paths, parent_identity, lock.identity());
-            ooc_cleanup_detail::validate_private_lease_record_chain(reserved->record,
-                                                                    owned->record);
-            ooc_cleanup_detail::validate_private_lease_owner_at(paths.private_directory,
-                                                                owned->record);
-            ooc_cleanup_detail::inspect_private_lease_transaction_entries(paths.private_directory,
-                                                                          paths);
-            if (ooc_cleanup_detail::inspect_directory_identity_locked(
-                    ooc_cleanup_detail::private_lease_staging_path(paths, lease.lease_id_))) {
-                ooc_cleanup_detail::fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
-                                         ooc_cleanup_detail::protocol_error());
+            const auto removal_authorized = advance_private_lease_activation_action(
+                activation_permit, lease, pair_ownership,
+                PrivateLeaseActivationBoundary::BeforeReservedRemoval);
+            if (!removal_authorized.completed()) {
+                return removal_authorized;
             }
-
-            const ooc_cleanup_detail::OwnershipProof proof{
-                .base_path = pair_ownership.base_path_,
-                .store_id = pair_ownership.store_id_,
-                .index_identity =
-                    {
-                        pair_ownership.index_identity_.first,
-                        pair_ownership.index_identity_.second,
-                        pair_ownership.index_identity_.third,
-                    },
-                .data_identity =
-                    {
-                        pair_ownership.data_identity_.first,
-                        pair_ownership.data_identity_.second,
-                        pair_ownership.data_identity_.third,
-                    },
-            };
-            const auto pair =
-                ooc_cleanup_detail::capture_source_pair(paths, pair_ownership.store_id_);
-            if (!ooc_cleanup_detail::ownership_proof_matches(proof, paths, pair)) {
-                ooc_cleanup_detail::fail(OOCCleanupStatus::SourcePairInvalid, OOCCleanupStage::None,
-                                         ooc_cleanup_detail::protocol_error());
-            }
-            ooc_cleanup_detail::require_source_pair_unchanged(paths, pair);
-            const std::array<const std::filesystem::path*, 6> no_authority_leaves{
-                &paths.intent_path,           &paths.intent_pending_path,
-                &paths.staged_path,           &paths.staged_pending_path,
-                &paths.quarantine_index_path, &paths.quarantine_data_path,
-            };
-            for (const auto* leaf : no_authority_leaves) {
-                const auto inspected = ooc_cleanup_detail::inspect_file(*leaf, 0, false);
-                if (inspected.kind == ooc_cleanup_detail::InspectKind::Error) {
-                    ooc_cleanup_detail::fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None,
-                                             inspected.error);
-                }
-                if (inspected.kind != ooc_cleanup_detail::InspectKind::Missing) {
-                    ooc_cleanup_detail::fail(OOCCleanupStatus::NamespaceConflict,
-                                             OOCCleanupStage::None,
-                                             ooc_cleanup_detail::protocol_error());
-                }
-            }
-
-            ooc_cleanup_detail::invoke_with_stable_base_lock(lock, [&] {
-                ooc_cleanup_detail::remove_matching_private_lease_pending(
-                    paths.lease_reserved_pending_path, reserved->record);
-            });
-            bool stop_after_commit = false;
-            ooc_cleanup_detail::invoke_with_stable_base_lock(lock, [&] {
-                ooc_cleanup_detail::remove_private_lease_marker_durable_impl(
-                    paths.lease_reserved_path, reserved->record, reserved->identity,
-                    [&]() noexcept {
-                        activation_committed = true;
-                        stop_after_commit = ooc_cleanup_detail::should_interrupt_private_lease(
-                            hooks, OOCPrivateLeaseFaultPoint::ReservedRemovedDurable);
-                    });
-            });
+            const auto committed =
+                commit_private_lease_activation_action(activation_permit, lease, hooks);
             // Durable RESERVED removal is the capability commit point. From
             // here onward OWNED alone cannot authorize preactivation pair
             // rollback, even when a test interruption or later lock-identity
             // failure makes the activation call return non-success.
-            if (stop_after_commit) {
-                return ooc_cleanup_detail::private_lease_interrupted();
+            if (!committed.completed()) {
+                return committed;
             }
-            lock.require_stable();
-            return ooc_cleanup_detail::private_lease_completed();
+            const auto completed = advance_private_lease_activation_action(
+                activation_permit, lease, pair_ownership, PrivateLeaseActivationBoundary::Complete);
+            return completed;
         });
-        if (activation_committed) {
-            lease.active_ = true;
-            lease.live_lock_.reset();
-        }
-        return result;
     }
 
     [[nodiscard]] static OOCCleanupOwnershipReceipt

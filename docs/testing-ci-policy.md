@@ -281,6 +281,29 @@ same-byte pending replacement at rename and unlink seams, duplicate-pending
 unlink and parent-sync failures, nested actions, canonical interruption, claim
 release, `DestinationExists` convergence, and a POSIX fork-copy publisher.
 Every failure comparison uses a complete namespace snapshot.
+
+Fresh private-lease construction now uses three independent action permits.
+`ReservePrivateLease` is minted only after legacy recovery has finished and
+released its permit. It retains exact marker and directory successors through
+`RESERVED`, staging-owner, `OWNED`, and final-directory publication.
+`ValidateFreshWriter` retains a separate permit across both `O_EXCL`
+reservations, exact zero-byte pre-header states, paired V3 header validation,
+and cleanup-receipt capture. The permit ends before
+`ActivateFreshLease` is minted. Activation binds the exact preactive lease
+generation and pair receipt, then treats durable `RESERVED` removal as the
+sticky capability commit point.
+
+The lease-crash suite interrupts all three permits before their first
+mutation. Reservation and fresh-writer interruption preserve the complete
+pre-action namespace and permit retry. Activation interruption occurs after
+Fresh has ended, so it preserves the exact preactive pair for explicit
+lease-receipt recovery rather than recreating Fresh rollback authority. The
+suite also covers marker and directory phase prefixes, same-identity size
+drift before header validation, post-phase foreign insertion, process
+termination, and recovery of every retained prefix. Linux and Windows keep
+the path-limited union observer and reject a present generic handoff as
+unsupported before mutation.
+
 `OOCCleanupPrivateLeaseCrash` is a `fast` self-exec suite from the same
 binary. It terminates children at each durable private-lease marker, rename,
 and teardown boundary. It also covers writer termination after the first and

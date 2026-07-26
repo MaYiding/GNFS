@@ -1084,6 +1084,7 @@ enum class PrivateHandoffConsumptionState : std::uint8_t {
     LegacyMutationAuthorized,
     PublicationObserved,
     PublicationMutationAuthorized,
+    LifecycleObserved,
     RecoverConsumed,
     RemoveConsumed,
     Failed,
@@ -1124,6 +1125,34 @@ struct PrivateCleanupActionPermit::State final {
     std::optional<PrivateLeaseRemovalGenerationProof> publication_generation;
     std::optional<IntentRecord> publication_intent;
     std::optional<FileIdentity> publication_original_canonical_identity;
+    std::optional<PrivateCleanupUnionObservationWitness> lifecycle_phase_witness;
+    PrivateLeaseReservationPermitPhase reservation_phase =
+        PrivateLeaseReservationPermitPhase::Fresh;
+    std::optional<PrivateLeaseRecord> reservation_reserved;
+    std::optional<PrivateLeaseRecord> reservation_owner;
+    std::optional<PrivateLeaseRecord> reservation_owned;
+    std::optional<std::array<std::uint64_t, 3>> reservation_parent_identity;
+    std::optional<std::array<std::uint64_t, 3>> reservation_reserved_pending_identity;
+    std::optional<std::array<std::uint64_t, 3>> reservation_reserved_identity;
+    std::optional<std::array<std::uint64_t, 3>> reservation_owner_pending_identity;
+    std::optional<std::array<std::uint64_t, 3>> reservation_owner_identity;
+    std::optional<std::array<std::uint64_t, 3>> reservation_owned_pending_identity;
+    std::optional<std::array<std::uint64_t, 3>> reservation_owned_identity;
+    std::optional<std::array<std::uint64_t, 3>> reservation_directory_identity;
+    std::filesystem::path reservation_staging_path;
+#ifndef _WIN32
+    std::unique_ptr<PrivateDirectoryHandle> reservation_directory;
+#endif
+    PrivateFreshWriterPermitPhase fresh_writer_phase = PrivateFreshWriterPermitPhase::Fresh;
+    std::optional<PrivateLeaseRemovalGenerationProof> fresh_writer_generation;
+    std::optional<std::array<std::uint64_t, 3>> fresh_index_identity;
+    std::optional<std::array<std::uint64_t, 3>> fresh_data_identity;
+    std::optional<IntentRecord> fresh_pair;
+    std::uint64_t fresh_store_id = 0;
+    PrivateLeaseActivationPermitPhase activation_phase = PrivateLeaseActivationPermitPhase::Fresh;
+    std::optional<PrivateLeaseRemovalGenerationProof> activation_generation;
+    std::optional<OwnershipProof> activation_pair_ownership;
+    std::optional<IntentRecord> activation_pair;
     bool removal_generation_binding_attempted = false;
     bool action_started = false;
     PrivateHandoffConsumptionState handoff_state = PrivateHandoffConsumptionState::Fresh;
@@ -1791,7 +1820,457 @@ inspect_private_handoff_from_permit(PrivateCleanupActionPermit& permit) {
     return handoff_none();
 }
 
+OOCPrivateHandoffInspectResult
+inspect_private_handoff_for_action_from_permit(PrivateCleanupActionPermit& permit,
+                                               PrivateNamespaceAction expected_action) {
+    if (!permit.state_) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    auto& state = *permit.state_;
+    if (!state.action_started || state.handoff_state != PrivateHandoffConsumptionState::Fresh) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    state.handoff_state = PrivateHandoffConsumptionState::Failed;
+    const bool lifecycle_action = expected_action == PrivateNamespaceAction::ReservePrivateLease ||
+                                  expected_action == PrivateNamespaceAction::ValidateFreshWriter ||
+                                  expected_action == PrivateNamespaceAction::ActivateFreshLease;
+    if (!lifecycle_action || state.decision.action != expected_action ||
+        state.creator_process_id != static_cast<std::uint64_t>(gnfs::util::process_id()) ||
+        !state.lock) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    state.lock->require_stable();
+    require_private_cleanup_action_witness_unchanged(state);
+
+#if defined(__APPLE__)
+    if (state.witness.handoff_classification) {
+        const auto inspection = state.witness.handoff_classification->inspection;
+        if (inspection.state != OOCPrivateHandoffState::None) {
+            return inspection;
+        }
+    }
+#endif
+    state.handoff_state = PrivateHandoffConsumptionState::LifecycleObserved;
+    return handoff_none();
+}
+
 namespace {
+
+[[nodiscard]] bool
+private_lifecycle_union_is_clear(const PrivateCleanupUnionRawObservation& raw) noexcept {
+    return raw == PrivateCleanupUnionRawObservation{};
+}
+
+void require_private_lifecycle_common(PrivateCleanupActionPermit::State& state,
+                                      PrivateNamespaceAction expected_action) {
+    if (!state.action_started ||
+        state.handoff_state != PrivateHandoffConsumptionState::LifecycleObserved ||
+        state.decision.action != expected_action ||
+        state.creator_process_id != static_cast<std::uint64_t>(gnfs::util::process_id()) ||
+        !state.lock || !state.lock->matches(state.paths.lock_path)) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    state.lock->require_stable();
+}
+
+void require_private_lifecycle_phase_witness(PrivateCleanupActionPermit::State& state) {
+    if (!state.lifecycle_phase_witness || !state.lock) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    require_private_cleanup_witness_unchanged(state.paths, *state.lock,
+                                              *state.lifecycle_phase_witness);
+    state.lock->require_stable();
+}
+
+void record_private_lifecycle_successor(PrivateCleanupActionPermit::State& state) {
+    if (!state.lock) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    auto successor = observe_private_cleanup_union_locked(state.paths, *state.lock);
+    if (!private_lifecycle_union_is_clear(successor.raw)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    state.lock->require_stable();
+    state.lifecycle_phase_witness = std::move(successor);
+}
+
+[[nodiscard]] LoadedPrivateLeaseMarker require_private_lease_marker_exact(
+    const std::filesystem::path& path, const PrivateLeaseRecord& record,
+    std::optional<std::array<std::uint64_t, 3>> identity = std::nullopt) {
+    const auto loaded = load_optional_private_lease_marker(path);
+    if (!loaded || loaded->record != record || (identity && loaded->identity != *identity)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    return *loaded;
+}
+
+void require_private_lease_marker_missing(const std::filesystem::path& path) {
+    if (load_optional_private_lease_marker(path)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+}
+
+void require_private_artifact_identity(const std::filesystem::path& path,
+                                       const std::array<std::uint64_t, 3>& identity,
+                                       std::optional<std::uint64_t> expected_size = std::nullopt) {
+    const auto inspected = inspect_file(path, 0, false);
+    if (inspected.kind == InspectKind::Error) {
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, inspected.error);
+    }
+    if (inspected.kind != InspectKind::Present || stable_identity(inspected.identity) != identity ||
+        (expected_size && inspected.identity.size != *expected_size)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+}
+
+void require_private_lease_generation_shape(const OOCCleanupPaths& paths,
+                                            const PrivateLeaseRemovalGenerationProof& proof,
+                                            bool require_reserved) {
+    if (!proof.owned || !proof.final_directory_identity || proof.staging_directory_identity ||
+        !proof.owner_present || proof.owned_pending || proof.reserved_pending ||
+        proof.owned->record.lease_id != proof.expected_lease_id ||
+        proof.owned->record.directory_identity != proof.expected_directory_identity ||
+        proof.owned->record.owner_identity != proof.expected_owner_identity ||
+        proof.owned->identity != proof.expected_owned_identity ||
+        *proof.final_directory_identity != proof.expected_directory_identity ||
+        (require_reserved && !proof.reserved) || (!require_reserved && proof.reserved)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    const auto entries = inspect_private_lease_preactive_entries(paths.private_directory, paths);
+    if (!entries.owner) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+}
+
+void require_private_reservation_authority_chain(PrivateCleanupActionPermit::State& state,
+                                                 PrivateLeaseReservationPermitPhase phase) {
+    const auto require_saved_marker =
+        [&](const std::filesystem::path& canonical_path, const std::filesystem::path& pending_path,
+            const std::optional<PrivateLeaseRecord>& record,
+            const std::optional<std::array<std::uint64_t, 3>>& canonical_identity,
+            const std::optional<std::array<std::uint64_t, 3>>& pending_identity,
+            bool canonical_present, bool pending_present) {
+            if (!record) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            if (canonical_present) {
+                if (!canonical_identity) {
+                    fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                         invalid_argument_error());
+                }
+                (void)require_private_lease_marker_exact(canonical_path, *record,
+                                                         *canonical_identity);
+            } else {
+                require_private_lease_marker_missing(canonical_path);
+            }
+            if (pending_present) {
+                if (!pending_identity) {
+                    fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                         invalid_argument_error());
+                }
+                (void)require_private_lease_marker_exact(pending_path, *record, *pending_identity);
+            } else {
+                require_private_lease_marker_missing(pending_path);
+            }
+        };
+
+    const bool reserved_pending =
+        phase == PrivateLeaseReservationPermitPhase::ReservedPending ||
+        phase == PrivateLeaseReservationPermitPhase::ReservedCanonicalAuthorized;
+    const bool reserved_canonical =
+        phase >= PrivateLeaseReservationPermitPhase::ReservedCanonical &&
+        phase < PrivateLeaseReservationPermitPhase::Failed;
+    require_saved_marker(state.paths.lease_reserved_path, state.paths.lease_reserved_pending_path,
+                         state.reservation_reserved, state.reservation_reserved_identity,
+                         state.reservation_reserved_pending_identity, reserved_canonical,
+                         reserved_pending);
+
+    const bool owner_started =
+        phase >= PrivateLeaseReservationPermitPhase::OwnerPendingAuthorized &&
+        phase < PrivateLeaseReservationPermitPhase::Failed;
+    if (owner_started) {
+        const bool owner_pending =
+            phase == PrivateLeaseReservationPermitPhase::OwnerPending ||
+            phase == PrivateLeaseReservationPermitPhase::OwnerCanonicalAuthorized;
+        const bool owner_canonical = phase >= PrivateLeaseReservationPermitPhase::OwnerCanonical &&
+                                     phase < PrivateLeaseReservationPermitPhase::Failed;
+        const auto owner_directory = phase >= PrivateLeaseReservationPermitPhase::FinalDirectory
+                                         ? state.paths.private_directory
+                                         : state.reservation_staging_path;
+        require_saved_marker(private_lease_owner_path(owner_directory),
+                             private_lease_owner_pending_path(owner_directory),
+                             state.reservation_owner, state.reservation_owner_identity,
+                             state.reservation_owner_pending_identity, owner_canonical,
+                             owner_pending);
+    }
+
+    const bool owned_started =
+        phase >= PrivateLeaseReservationPermitPhase::OwnedPendingAuthorized &&
+        phase < PrivateLeaseReservationPermitPhase::Failed;
+    if (owned_started) {
+        const bool owned_pending =
+            phase == PrivateLeaseReservationPermitPhase::OwnedPending ||
+            phase == PrivateLeaseReservationPermitPhase::OwnedCanonicalAuthorized;
+        const bool owned_canonical = phase >= PrivateLeaseReservationPermitPhase::OwnedCanonical &&
+                                     phase < PrivateLeaseReservationPermitPhase::Failed;
+        require_saved_marker(state.paths.lease_owned_path, state.paths.lease_owned_pending_path,
+                             state.reservation_owned, state.reservation_owned_identity,
+                             state.reservation_owned_pending_identity, owned_canonical,
+                             owned_pending);
+    }
+}
+
+void require_private_reservation_phase_shape(PrivateCleanupActionPermit::State& state,
+                                             PrivateLeaseReservationPermitPhase phase,
+                                             bool require_prior_witness = true) {
+    require_private_lifecycle_common(state, PrivateNamespaceAction::ReservePrivateLease);
+    if (state.reservation_phase != phase || !state.reservation_reserved ||
+        !state.reservation_parent_identity || state.reservation_staging_path.empty()) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    if (require_prior_witness) {
+        require_private_lifecycle_phase_witness(state);
+    }
+    const bool staging_present = phase >= PrivateLeaseReservationPermitPhase::StagingDirectory &&
+                                 phase < PrivateLeaseReservationPermitPhase::FinalDirectory;
+    const bool final_present = phase >= PrivateLeaseReservationPermitPhase::FinalDirectory &&
+                               phase < PrivateLeaseReservationPermitPhase::Failed;
+    if (capture_directory_identity_locked(state.paths.private_directory.parent_path()) !=
+            *state.reservation_parent_identity ||
+        inspect_directory_identity_locked(state.reservation_staging_path) !=
+            (staging_present ? state.reservation_directory_identity : std::nullopt) ||
+        inspect_directory_identity_locked(state.paths.private_directory) !=
+            (final_present ? state.reservation_directory_identity : std::nullopt)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    require_private_reservation_authority_chain(state, phase);
+    if (staging_present) {
+        const auto entries = inspect_private_lease_control_entries(state.reservation_staging_path);
+        const bool expect_owner_pending =
+            phase == PrivateLeaseReservationPermitPhase::OwnerPending ||
+            phase == PrivateLeaseReservationPermitPhase::OwnerCanonicalAuthorized;
+        const bool expect_owner = phase >= PrivateLeaseReservationPermitPhase::OwnerCanonical;
+        if (entries.owner != expect_owner || entries.owner_pending != expect_owner_pending) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+    }
+    if (final_present) {
+        const auto entries = inspect_private_lease_control_entries(state.paths.private_directory);
+        if (!entries.owner || entries.owner_pending) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+    }
+    state.lock->require_stable();
+}
+
+enum class PrivateReservationMarkerRole : std::uint8_t {
+    Reserved,
+    Owner,
+    Owned,
+};
+
+struct PrivateReservationMarkerBinding final {
+    PrivateReservationMarkerRole role;
+    PrivateLeaseReservationPermitPhase prior_phase;
+    PrivateLeaseReservationPermitPhase pending_authorized_phase;
+    PrivateLeaseReservationPermitPhase pending_phase;
+    PrivateLeaseReservationPermitPhase canonical_authorized_phase;
+    PrivateLeaseReservationPermitPhase canonical_phase;
+    std::optional<PrivateLeaseRecord>* record = nullptr;
+    std::optional<std::array<std::uint64_t, 3>>* pending_identity = nullptr;
+    std::optional<std::array<std::uint64_t, 3>>* canonical_identity = nullptr;
+};
+
+[[nodiscard]] PrivateReservationMarkerBinding
+reservation_marker_binding(PrivateCleanupActionPermit::State& state,
+                           const std::filesystem::path& canonical_path,
+                           const std::filesystem::path& pending_path) {
+    if (canonical_path == state.paths.lease_reserved_path &&
+        pending_path == state.paths.lease_reserved_pending_path) {
+        return PrivateReservationMarkerBinding{
+            .role = PrivateReservationMarkerRole::Reserved,
+            .prior_phase = PrivateLeaseReservationPermitPhase::Empty,
+            .pending_authorized_phase =
+                PrivateLeaseReservationPermitPhase::ReservedPendingAuthorized,
+            .pending_phase = PrivateLeaseReservationPermitPhase::ReservedPending,
+            .canonical_authorized_phase =
+                PrivateLeaseReservationPermitPhase::ReservedCanonicalAuthorized,
+            .canonical_phase = PrivateLeaseReservationPermitPhase::ReservedCanonical,
+            .record = &state.reservation_reserved,
+            .pending_identity = &state.reservation_reserved_pending_identity,
+            .canonical_identity = &state.reservation_reserved_identity,
+        };
+    }
+    if (canonical_path == private_lease_owner_path(state.reservation_staging_path) &&
+        pending_path == private_lease_owner_pending_path(state.reservation_staging_path)) {
+        return PrivateReservationMarkerBinding{
+            .role = PrivateReservationMarkerRole::Owner,
+            .prior_phase = PrivateLeaseReservationPermitPhase::StagingDirectory,
+            .pending_authorized_phase = PrivateLeaseReservationPermitPhase::OwnerPendingAuthorized,
+            .pending_phase = PrivateLeaseReservationPermitPhase::OwnerPending,
+            .canonical_authorized_phase =
+                PrivateLeaseReservationPermitPhase::OwnerCanonicalAuthorized,
+            .canonical_phase = PrivateLeaseReservationPermitPhase::OwnerCanonical,
+            .record = &state.reservation_owner,
+            .pending_identity = &state.reservation_owner_pending_identity,
+            .canonical_identity = &state.reservation_owner_identity,
+        };
+    }
+    if (canonical_path == state.paths.lease_owned_path &&
+        pending_path == state.paths.lease_owned_pending_path) {
+        return PrivateReservationMarkerBinding{
+            .role = PrivateReservationMarkerRole::Owned,
+            .prior_phase = PrivateLeaseReservationPermitPhase::OwnerCanonical,
+            .pending_authorized_phase = PrivateLeaseReservationPermitPhase::OwnedPendingAuthorized,
+            .pending_phase = PrivateLeaseReservationPermitPhase::OwnedPending,
+            .canonical_authorized_phase =
+                PrivateLeaseReservationPermitPhase::OwnedCanonicalAuthorized,
+            .canonical_phase = PrivateLeaseReservationPermitPhase::OwnedCanonical,
+            .record = &state.reservation_owned,
+            .pending_identity = &state.reservation_owned_pending_identity,
+            .canonical_identity = &state.reservation_owned_identity,
+        };
+    }
+    fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+}
+
+void validate_reservation_marker_record(PrivateCleanupActionPermit::State& state,
+                                        PrivateReservationMarkerBinding binding,
+                                        const PrivateLeaseRecord& record) {
+    switch (binding.role) {
+    case PrivateReservationMarkerRole::Reserved:
+        if (!state.reservation_reserved || record != *state.reservation_reserved) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        return;
+    case PrivateReservationMarkerRole::Owner:
+        if (!state.reservation_reserved || !state.reservation_directory_identity ||
+            record != make_private_lease_owner_record(*state.reservation_reserved,
+                                                      *state.reservation_directory_identity)) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        return;
+    case PrivateReservationMarkerRole::Owned:
+        if (!state.reservation_owner || !state.reservation_owner_identity ||
+            record != make_private_lease_owned_record(*state.reservation_owner,
+                                                      *state.reservation_owner_identity)) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        return;
+    }
+    fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+}
+
+void require_reservation_marker_parent_stable(PrivateCleanupActionPermit::State& state,
+                                              PrivateReservationMarkerRole role) {
+#ifndef _WIN32
+    if ((role == PrivateReservationMarkerRole::Owner) &&
+        (!state.reservation_directory || !state.reservation_directory_identity ||
+         state.reservation_directory->identity() != *state.reservation_directory_identity)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    if (role == PrivateReservationMarkerRole::Owner) {
+        state.reservation_directory->require_stable();
+        state.reservation_directory->require_private_policy();
+    }
+#else
+    (void)state;
+    (void)role;
+#endif
+}
+
+void require_fresh_writer_generation(PrivateCleanupActionPermit::State& state,
+                                     PrivateFreshWriterPermitPhase phase,
+                                     bool require_prior_witness = true) {
+    require_private_lifecycle_common(state, PrivateNamespaceAction::ValidateFreshWriter);
+    if (state.fresh_writer_phase != phase || !state.fresh_writer_generation || !state.lock) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    if (require_prior_witness) {
+        require_private_lifecycle_phase_witness(state);
+    }
+    const auto& expected = *state.fresh_writer_generation;
+    const auto current = capture_private_lease_removal_generation_locked(
+        state.paths, *state.lock, expected.expected_lease_id, expected.expected_directory_identity,
+        expected.expected_owner_identity, expected.expected_owned_identity);
+    if (current != expected) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    require_private_lease_generation_shape(state.paths, current, true);
+
+    const auto entries =
+        inspect_private_lease_preactive_entries(state.paths.private_directory, state.paths);
+    const bool expect_index = phase >= PrivateFreshWriterPermitPhase::IndexReserved;
+    const bool expect_data = phase >= PrivateFreshWriterPermitPhase::PairReserved;
+    if (entries.owner != true || entries.index != expect_index || entries.data != expect_data) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    if (expect_index) {
+        if (!state.fresh_index_identity) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        const auto expected_size = phase >= PrivateFreshWriterPermitPhase::HeadersExact
+                                       ? OOCRelationStoreFormat::INDEX_HEADER_BYTES
+                                       : 0;
+        require_private_artifact_identity(state.paths.index_path, *state.fresh_index_identity,
+                                          expected_size);
+    }
+    if (expect_data) {
+        if (!state.fresh_data_identity || state.fresh_data_identity == state.fresh_index_identity) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        const auto expected_size = phase >= PrivateFreshWriterPermitPhase::HeadersExact
+                                       ? OOCRelationStoreFormat::DATA_HEADER_BYTES
+                                       : 0;
+        require_private_artifact_identity(state.paths.data_path, *state.fresh_data_identity,
+                                          expected_size);
+    }
+    if (phase >= PrivateFreshWriterPermitPhase::HeadersExact) {
+        if (!state.fresh_pair || state.fresh_store_id == 0) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        require_source_pair_unchanged(state.paths, *state.fresh_pair);
+    }
+    state.lock->require_stable();
+}
+
+void require_activation_generation(PrivateCleanupActionPermit::State& state,
+                                   bool reserved_present) {
+    require_private_lifecycle_common(state, PrivateNamespaceAction::ActivateFreshLease);
+    if (!state.activation_generation || !state.activation_pair ||
+        !state.activation_pair_ownership || !state.lock) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    require_private_lifecycle_phase_witness(state);
+    const auto& expected = *state.activation_generation;
+    auto current = capture_private_lease_removal_generation_locked(
+        state.paths, *state.lock, expected.expected_lease_id, expected.expected_directory_identity,
+        expected.expected_owner_identity, expected.expected_owned_identity);
+    require_private_lease_generation_shape(state.paths, current, reserved_present);
+    if (reserved_present && current != expected) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    if (!ownership_proof_matches(*state.activation_pair_ownership, state.paths,
+                                 *state.activation_pair)) {
+        fail(OOCCleanupStatus::SourcePairInvalid, OOCCleanupStage::None, protocol_error());
+    }
+    require_source_pair_unchanged(state.paths, *state.activation_pair);
+    state.lock->require_stable();
+}
 
 void require_private_lease_cleanup_handoff_bindings_unchanged(
     PrivateCleanupActionPermit::State& state) {
@@ -1981,6 +2460,647 @@ void require_publication_pending_owned_or_missing(const OOCCleanupPaths& paths,
 }
 
 } // namespace
+
+void initialize_private_lease_reservation_permit(PrivateCleanupActionPermit& permit,
+                                                 const PrivateLeaseRecord& reserved) {
+    if (!permit.state_) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    auto& state = *permit.state_;
+    const auto prior = state.reservation_phase;
+    state.reservation_phase = PrivateLeaseReservationPermitPhase::Failed;
+    try {
+        if (prior != PrivateLeaseReservationPermitPhase::Fresh) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        require_private_lifecycle_common(state, PrivateNamespaceAction::ReservePrivateLease);
+        require_private_cleanup_action_witness_unchanged(state);
+        if (!private_lifecycle_union_is_clear(state.witness.raw)) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        require_pair_namespace_reusable_locked(state.paths);
+        require_private_lease_marker_missing(state.paths.lease_reserved_path);
+        require_private_lease_marker_missing(state.paths.lease_reserved_pending_path);
+        require_private_lease_marker_missing(state.paths.lease_owned_path);
+        require_private_lease_marker_missing(state.paths.lease_owned_pending_path);
+        if (inspect_directory_identity_locked(state.paths.private_directory)) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+
+        const auto parent_identity =
+            capture_directory_identity_locked(state.paths.private_directory.parent_path());
+        validate_private_lease_record_context(reserved, state.paths, parent_identity,
+                                              state.lock->identity());
+        const auto staging_path = private_lease_staging_path(state.paths, reserved.lease_id);
+        if (inspect_directory_identity_locked(staging_path)) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        state.reservation_reserved = reserved;
+        state.reservation_parent_identity = parent_identity;
+        state.reservation_staging_path = staging_path;
+        state.reservation_phase = PrivateLeaseReservationPermitPhase::Empty;
+        record_private_lifecycle_successor(state);
+    } catch (...) {
+        state.reservation_phase = PrivateLeaseReservationPermitPhase::Failed;
+        throw;
+    }
+}
+
+void advance_private_lease_reservation_marker(PrivateCleanupActionPermit& permit,
+                                              PrivateLeaseMarkerPublicationPoint point,
+                                              const std::filesystem::path& canonical_path,
+                                              const std::filesystem::path& pending_path,
+                                              const PrivateLeaseRecord& record,
+                                              const FileIdentity* identity) {
+    if (!permit.state_) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    auto& state = *permit.state_;
+    const auto prior = state.reservation_phase;
+    state.reservation_phase = PrivateLeaseReservationPermitPhase::Failed;
+    try {
+        state.reservation_phase = prior;
+        require_private_lifecycle_common(state, PrivateNamespaceAction::ReservePrivateLease);
+        auto binding = reservation_marker_binding(state, canonical_path, pending_path);
+        validate_reservation_marker_record(state, binding, record);
+        require_reservation_marker_parent_stable(state, binding.role);
+
+        switch (point) {
+        case PrivateLeaseMarkerPublicationPoint::BeforePendingPreparation:
+            require_private_reservation_phase_shape(state, binding.prior_phase);
+            require_private_lease_marker_missing(canonical_path);
+            require_private_lease_marker_missing(pending_path);
+            if (binding.role != PrivateReservationMarkerRole::Reserved) {
+                *binding.record = record;
+            }
+            state.reservation_phase = binding.pending_authorized_phase;
+            require_private_reservation_phase_shape(state, binding.pending_authorized_phase);
+            return;
+        case PrivateLeaseMarkerPublicationPoint::PendingDurable: {
+            if (identity == nullptr) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            require_private_lifecycle_common(state, PrivateNamespaceAction::ReservePrivateLease);
+            if (state.reservation_phase != binding.pending_authorized_phase) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            const auto stable = stable_identity(*identity);
+            require_private_lease_marker_missing(canonical_path);
+            (void)require_private_lease_marker_exact(pending_path, record, stable);
+            if (binding.role != PrivateReservationMarkerRole::Reserved) {
+                *binding.record = record;
+            }
+            *binding.pending_identity = stable;
+            state.reservation_phase = binding.pending_phase;
+            require_private_reservation_phase_shape(state, binding.pending_phase, false);
+            record_private_lifecycle_successor(state);
+            return;
+        }
+        case PrivateLeaseMarkerPublicationPoint::BeforeCanonicalRename:
+            require_private_reservation_phase_shape(state, binding.pending_phase);
+            if (!*binding.pending_identity) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            require_private_lease_marker_missing(canonical_path);
+            (void)require_private_lease_marker_exact(pending_path, record,
+                                                     **binding.pending_identity);
+            state.reservation_phase = binding.canonical_authorized_phase;
+            require_private_reservation_phase_shape(state, binding.canonical_authorized_phase);
+            return;
+        case PrivateLeaseMarkerPublicationPoint::CanonicalDurable: {
+            if (identity == nullptr || !*binding.pending_identity) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            require_private_lifecycle_common(state, PrivateNamespaceAction::ReservePrivateLease);
+            if (state.reservation_phase != binding.canonical_authorized_phase) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            const auto stable = stable_identity(*identity);
+            if (stable != **binding.pending_identity) {
+                fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                     protocol_error());
+            }
+            require_private_lease_marker_missing(pending_path);
+            (void)require_private_lease_marker_exact(canonical_path, record, stable);
+            *binding.canonical_identity = stable;
+            state.reservation_phase = binding.canonical_phase;
+            require_private_reservation_phase_shape(state, binding.canonical_phase, false);
+            record_private_lifecycle_successor(state);
+            return;
+        }
+        case PrivateLeaseMarkerPublicationPoint::BeforeDuplicatePendingRemoval:
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        case PrivateLeaseMarkerPublicationPoint::Complete:
+            require_private_reservation_phase_shape(state, binding.canonical_phase);
+            if (!*binding.canonical_identity) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            require_private_lease_marker_missing(pending_path);
+            (void)require_private_lease_marker_exact(canonical_path, record,
+                                                     **binding.canonical_identity);
+            return;
+        }
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    } catch (...) {
+        state.reservation_phase = PrivateLeaseReservationPermitPhase::Failed;
+        throw;
+    }
+}
+
+void record_private_lease_reservation_directory_successor(
+    PrivateCleanupActionPermit& permit, const std::filesystem::path& directory_path,
+    const std::array<std::uint64_t, 3>& identity, bool final_directory) {
+    if (!permit.state_) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    auto& state = *permit.state_;
+    const auto prior = state.reservation_phase;
+    state.reservation_phase = PrivateLeaseReservationPermitPhase::Failed;
+    try {
+        state.reservation_phase = prior;
+        const auto expected_phase =
+            final_directory ? PrivateLeaseReservationPermitPhase::FinalRenameAuthorized
+                            : PrivateLeaseReservationPermitPhase::StagingDirectoryAuthorized;
+        require_private_lifecycle_common(state, PrivateNamespaceAction::ReservePrivateLease);
+        if (state.reservation_phase != expected_phase) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        if (directory_path !=
+            (final_directory ? state.paths.private_directory : state.reservation_staging_path)) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        if (capture_directory_identity_locked(directory_path) != identity) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        if (!final_directory) {
+            const auto entries = inspect_private_lease_control_entries(directory_path);
+            if (entries.owner || entries.owner_pending ||
+                inspect_directory_identity_locked(state.paths.private_directory)) {
+                fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                     protocol_error());
+            }
+            state.reservation_directory_identity = identity;
+#ifndef _WIN32
+            state.reservation_directory = std::make_unique<PrivateDirectoryHandle>(directory_path);
+            if (state.reservation_directory->identity() != identity) {
+                fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                     protocol_error());
+            }
+            state.reservation_directory->require_private_policy();
+#endif
+            state.reservation_phase = PrivateLeaseReservationPermitPhase::StagingDirectory;
+        } else {
+            if (inspect_directory_identity_locked(state.reservation_staging_path)) {
+                fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                     protocol_error());
+            }
+#ifndef _WIN32
+            if (!state.reservation_directory) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            state.reservation_directory->rebind_after_rename(state.reservation_staging_path,
+                                                             state.paths.private_directory);
+#endif
+            if (!state.reservation_owned || !state.reservation_owner ||
+                !state.reservation_owner_identity || !state.reservation_owned_identity) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            const auto entries = inspect_private_lease_control_entries(directory_path);
+            if (!entries.owner || entries.owner_pending) {
+                fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                     protocol_error());
+            }
+            (void)require_private_lease_marker_exact(private_lease_owner_path(directory_path),
+                                                     *state.reservation_owner,
+                                                     *state.reservation_owner_identity);
+            state.reservation_phase = PrivateLeaseReservationPermitPhase::FinalDirectory;
+        }
+        require_private_reservation_phase_shape(state, state.reservation_phase, false);
+        record_private_lifecycle_successor(state);
+    } catch (...) {
+        state.reservation_phase = PrivateLeaseReservationPermitPhase::Failed;
+        throw;
+    }
+}
+
+void authorize_private_lease_reservation_staging_directory(PrivateCleanupActionPermit& permit) {
+    if (!permit.state_) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    auto& state = *permit.state_;
+    const auto prior = state.reservation_phase;
+    state.reservation_phase = PrivateLeaseReservationPermitPhase::Failed;
+    try {
+        state.reservation_phase = prior;
+        require_private_reservation_phase_shape(
+            state, PrivateLeaseReservationPermitPhase::ReservedCanonical);
+        if (inspect_directory_identity_locked(state.reservation_staging_path) ||
+            inspect_directory_identity_locked(state.paths.private_directory)) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        state.reservation_phase = PrivateLeaseReservationPermitPhase::StagingDirectoryAuthorized;
+        require_private_reservation_phase_shape(
+            state, PrivateLeaseReservationPermitPhase::StagingDirectoryAuthorized);
+    } catch (...) {
+        state.reservation_phase = PrivateLeaseReservationPermitPhase::Failed;
+        throw;
+    }
+}
+
+void authorize_private_lease_reservation_final_rename(PrivateCleanupActionPermit& permit) {
+    if (!permit.state_) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    auto& state = *permit.state_;
+    const auto prior = state.reservation_phase;
+    state.reservation_phase = PrivateLeaseReservationPermitPhase::Failed;
+    try {
+        state.reservation_phase = prior;
+        require_private_reservation_phase_shape(state,
+                                                PrivateLeaseReservationPermitPhase::OwnedCanonical);
+        if (!state.reservation_directory_identity || !state.reservation_owner ||
+            !state.reservation_owner_identity || !state.reservation_owned ||
+            !state.reservation_owned_identity ||
+            inspect_directory_identity_locked(state.paths.private_directory) ||
+            capture_directory_identity_locked(state.reservation_staging_path) !=
+                *state.reservation_directory_identity) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        const auto entries = inspect_private_lease_control_entries(state.reservation_staging_path);
+        if (!entries.owner || entries.owner_pending) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        (void)require_private_lease_marker_exact(
+            private_lease_owner_path(state.reservation_staging_path), *state.reservation_owner,
+            *state.reservation_owner_identity);
+        (void)require_private_lease_marker_exact(state.paths.lease_owned_path,
+                                                 *state.reservation_owned,
+                                                 *state.reservation_owned_identity);
+        require_private_lease_marker_missing(state.paths.lease_owned_pending_path);
+#ifndef _WIN32
+        if (!state.reservation_directory) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        state.reservation_directory->require_stable();
+        state.reservation_directory->require_private_policy();
+#endif
+        state.reservation_phase = PrivateLeaseReservationPermitPhase::FinalRenameAuthorized;
+        record_private_lifecycle_successor(state);
+    } catch (...) {
+        state.reservation_phase = PrivateLeaseReservationPermitPhase::Failed;
+        throw;
+    }
+}
+
+void complete_private_lease_reservation_permit(PrivateCleanupActionPermit& permit) {
+    if (!permit.state_) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    auto& state = *permit.state_;
+    const auto prior = state.reservation_phase;
+    state.reservation_phase = PrivateLeaseReservationPermitPhase::Failed;
+    try {
+        state.reservation_phase = prior;
+        require_private_reservation_phase_shape(state,
+                                                PrivateLeaseReservationPermitPhase::FinalDirectory);
+        if (!state.reservation_reserved || !state.reservation_reserved_identity ||
+            !state.reservation_owned || !state.reservation_owned_identity ||
+            !state.reservation_owner || !state.reservation_owner_identity ||
+            !state.reservation_directory_identity ||
+            capture_directory_identity_locked(state.paths.private_directory) !=
+                *state.reservation_directory_identity) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        (void)require_private_lease_marker_exact(state.paths.lease_reserved_path,
+                                                 *state.reservation_reserved,
+                                                 *state.reservation_reserved_identity);
+        (void)require_private_lease_marker_exact(state.paths.lease_owned_path,
+                                                 *state.reservation_owned,
+                                                 *state.reservation_owned_identity);
+        (void)require_private_lease_marker_exact(
+            private_lease_owner_path(state.paths.private_directory), *state.reservation_owner,
+            *state.reservation_owner_identity);
+        require_private_lease_marker_missing(state.paths.lease_reserved_pending_path);
+        require_private_lease_marker_missing(state.paths.lease_owned_pending_path);
+        state.reservation_phase = PrivateLeaseReservationPermitPhase::ReceiptCommitted;
+    } catch (...) {
+        state.reservation_phase = PrivateLeaseReservationPermitPhase::Failed;
+        throw;
+    }
+}
+
+void initialize_private_fresh_writer_permit(
+    PrivateCleanupActionPermit& permit, const std::array<std::uint64_t, 2>& expected_lease_id,
+    const std::array<std::uint64_t, 3>& expected_directory_identity,
+    const std::array<std::uint64_t, 3>& expected_owner_identity,
+    const std::array<std::uint64_t, 3>& expected_owned_identity, bool deferred_mode,
+    std::uint64_t receipt_owner_process_id) {
+    if (!permit.state_) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    auto& state = *permit.state_;
+    const auto prior = state.fresh_writer_phase;
+    state.fresh_writer_phase = PrivateFreshWriterPermitPhase::Failed;
+    try {
+        if (prior != PrivateFreshWriterPermitPhase::Fresh ||
+            (receipt_owner_process_id != static_cast<std::uint64_t>(gnfs::util::process_id()) &&
+             !deferred_mode)) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        require_private_lifecycle_common(state, PrivateNamespaceAction::ValidateFreshWriter);
+        require_private_cleanup_action_witness_unchanged(state);
+        if (!private_lifecycle_union_is_clear(state.witness.raw)) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        auto generation = capture_private_lease_removal_generation_locked(
+            state.paths, *state.lock, expected_lease_id, expected_directory_identity,
+            expected_owner_identity, expected_owned_identity);
+        require_private_lease_generation_shape(state.paths, generation, true);
+        const auto entries =
+            inspect_private_lease_preactive_entries(state.paths.private_directory, state.paths);
+        if (!entries.owner || entries.index || entries.data) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        require_pair_namespace_reusable_locked(state.paths);
+        state.fresh_writer_generation = std::move(generation);
+        state.fresh_writer_phase = PrivateFreshWriterPermitPhase::LeaseOnly;
+        record_private_lifecycle_successor(state);
+    } catch (...) {
+        state.fresh_writer_phase = PrivateFreshWriterPermitPhase::Failed;
+        throw;
+    }
+}
+
+void advance_private_fresh_writer_permit(PrivateCleanupActionPermit& permit,
+                                         PrivateFreshWriterPermitBoundary boundary,
+                                         std::optional<std::array<std::uint64_t, 3>> index_identity,
+                                         std::optional<std::array<std::uint64_t, 3>> data_identity,
+                                         std::uint64_t store_id) {
+    if (!permit.state_) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    auto& state = *permit.state_;
+    const auto prior = state.fresh_writer_phase;
+    state.fresh_writer_phase = PrivateFreshWriterPermitPhase::Failed;
+    try {
+        state.fresh_writer_phase = prior;
+        switch (boundary) {
+        case PrivateFreshWriterPermitBoundary::BeforeIndexReservation:
+            require_fresh_writer_generation(state, PrivateFreshWriterPermitPhase::LeaseOnly);
+            state.fresh_writer_phase = PrivateFreshWriterPermitPhase::IndexReservationAuthorized;
+            require_fresh_writer_generation(
+                state, PrivateFreshWriterPermitPhase::IndexReservationAuthorized);
+            return;
+        case PrivateFreshWriterPermitBoundary::IndexReserved:
+            if (!index_identity || data_identity || store_id != 0) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            require_private_lifecycle_common(state, PrivateNamespaceAction::ValidateFreshWriter);
+            if (prior != PrivateFreshWriterPermitPhase::IndexReservationAuthorized) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            state.fresh_index_identity = *index_identity;
+            state.fresh_writer_phase = PrivateFreshWriterPermitPhase::IndexReserved;
+            require_fresh_writer_generation(state, PrivateFreshWriterPermitPhase::IndexReserved,
+                                            false);
+            record_private_lifecycle_successor(state);
+            return;
+        case PrivateFreshWriterPermitBoundary::BeforeDataReservation:
+            require_fresh_writer_generation(state, PrivateFreshWriterPermitPhase::IndexReserved);
+            state.fresh_writer_phase = PrivateFreshWriterPermitPhase::DataReservationAuthorized;
+            require_fresh_writer_generation(
+                state, PrivateFreshWriterPermitPhase::DataReservationAuthorized);
+            return;
+        case PrivateFreshWriterPermitBoundary::DataReserved:
+            if (!index_identity || !data_identity || *index_identity == *data_identity ||
+                store_id != 0 || state.fresh_index_identity != index_identity ||
+                prior != PrivateFreshWriterPermitPhase::DataReservationAuthorized) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            state.fresh_data_identity = *data_identity;
+            state.fresh_writer_phase = PrivateFreshWriterPermitPhase::PairReserved;
+            require_fresh_writer_generation(state, PrivateFreshWriterPermitPhase::PairReserved,
+                                            false);
+            record_private_lifecycle_successor(state);
+            return;
+        case PrivateFreshWriterPermitBoundary::BeforeHeaderWrite:
+            require_fresh_writer_generation(state, PrivateFreshWriterPermitPhase::PairReserved);
+            state.fresh_writer_phase = PrivateFreshWriterPermitPhase::HeaderWriteAuthorized;
+            require_fresh_writer_generation(state,
+                                            PrivateFreshWriterPermitPhase::HeaderWriteAuthorized);
+            return;
+        case PrivateFreshWriterPermitBoundary::HeadersValidated: {
+            if (!index_identity || !data_identity || store_id == 0 ||
+                state.fresh_index_identity != index_identity ||
+                state.fresh_data_identity != data_identity ||
+                prior != PrivateFreshWriterPermitPhase::HeaderWriteAuthorized) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            auto pair = capture_source_pair(state.paths, store_id);
+            if (stable_identity(pair.index.identity) != *index_identity ||
+                stable_identity(pair.data.identity) != *data_identity) {
+                fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                     protocol_error());
+            }
+            state.fresh_store_id = store_id;
+            state.fresh_pair = std::move(pair);
+            state.fresh_writer_phase = PrivateFreshWriterPermitPhase::HeadersExact;
+            require_fresh_writer_generation(state, PrivateFreshWriterPermitPhase::HeadersExact,
+                                            false);
+            record_private_lifecycle_successor(state);
+            return;
+        }
+        case PrivateFreshWriterPermitBoundary::PairOwnershipCaptured:
+            if (!index_identity || !data_identity || store_id == 0 ||
+                state.fresh_index_identity != index_identity ||
+                state.fresh_data_identity != data_identity || state.fresh_store_id != store_id ||
+                prior != PrivateFreshWriterPermitPhase::HeadersExact) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            state.fresh_writer_phase = PrivateFreshWriterPermitPhase::PairReceiptCandidate;
+            require_fresh_writer_generation(state,
+                                            PrivateFreshWriterPermitPhase::PairReceiptCandidate);
+            record_private_lifecycle_successor(state);
+            return;
+        case PrivateFreshWriterPermitBoundary::Complete:
+            if (index_identity || data_identity || store_id != 0) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            require_fresh_writer_generation(state,
+                                            PrivateFreshWriterPermitPhase::PairReceiptCandidate);
+            state.fresh_writer_phase = PrivateFreshWriterPermitPhase::Complete;
+            return;
+        }
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    } catch (...) {
+        state.fresh_writer_phase = PrivateFreshWriterPermitPhase::Failed;
+        throw;
+    }
+}
+
+bool private_fresh_writer_permit_allows_rollback(
+    PrivateCleanupActionPermit& permit, std::optional<std::array<std::uint64_t, 3>> index_identity,
+    std::optional<std::array<std::uint64_t, 3>> data_identity) noexcept {
+    try {
+        if (!permit.state_) {
+            return false;
+        }
+        auto& state = *permit.state_;
+        if (state.fresh_writer_phase == PrivateFreshWriterPermitPhase::Fresh ||
+            state.fresh_writer_phase == PrivateFreshWriterPermitPhase::Failed ||
+            state.creator_process_id != static_cast<std::uint64_t>(gnfs::util::process_id()) ||
+            state.fresh_index_identity != index_identity ||
+            state.fresh_data_identity != data_identity) {
+            return false;
+        }
+        require_fresh_writer_generation(state, state.fresh_writer_phase);
+        // This is a one-shot authorization for the caller's existing
+        // same-identity reservation handles. A repeated rollback query must
+        // fail closed.
+        state.fresh_writer_phase = PrivateFreshWriterPermitPhase::Failed;
+        return true;
+    } catch (...) {
+        if (permit.state_) {
+            permit.state_->fresh_writer_phase = PrivateFreshWriterPermitPhase::Failed;
+        }
+        return false;
+    }
+}
+
+void initialize_private_lease_activation_permit(
+    PrivateCleanupActionPermit& permit, const std::array<std::uint64_t, 2>& expected_lease_id,
+    const std::array<std::uint64_t, 3>& expected_directory_identity,
+    const std::array<std::uint64_t, 3>& expected_owner_identity,
+    const std::array<std::uint64_t, 3>& expected_owned_identity,
+    const OwnershipProof& pair_ownership) {
+    if (!permit.state_) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    auto& state = *permit.state_;
+    const auto prior = state.activation_phase;
+    state.activation_phase = PrivateLeaseActivationPermitPhase::Failed;
+    try {
+        if (prior != PrivateLeaseActivationPermitPhase::Fresh ||
+            pair_ownership.base_path != state.paths.base_path || pair_ownership.store_id == 0) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        require_private_lifecycle_common(state, PrivateNamespaceAction::ActivateFreshLease);
+        require_private_cleanup_action_witness_unchanged(state);
+        if (!private_lifecycle_union_is_clear(state.witness.raw)) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        auto generation = capture_private_lease_removal_generation_locked(
+            state.paths, *state.lock, expected_lease_id, expected_directory_identity,
+            expected_owner_identity, expected_owned_identity);
+        require_private_lease_generation_shape(state.paths, generation, true);
+        auto pair = capture_source_pair(state.paths, pair_ownership.store_id);
+        if (!ownership_proof_matches(pair_ownership, state.paths, pair)) {
+            fail(OOCCleanupStatus::SourcePairInvalid, OOCCleanupStage::None, protocol_error());
+        }
+        require_source_pair_unchanged(state.paths, pair);
+        state.activation_generation = std::move(generation);
+        state.activation_pair_ownership = pair_ownership;
+        state.activation_pair = std::move(pair);
+        state.activation_phase = PrivateLeaseActivationPermitPhase::ExactPreactive;
+        record_private_lifecycle_successor(state);
+    } catch (...) {
+        state.activation_phase = PrivateLeaseActivationPermitPhase::Failed;
+        throw;
+    }
+}
+
+void advance_private_lease_activation_permit(PrivateCleanupActionPermit& permit,
+                                             PrivateLeaseActivationPermitBoundary boundary) {
+    if (!permit.state_) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    auto& state = *permit.state_;
+    const auto prior = state.activation_phase;
+    state.activation_phase = PrivateLeaseActivationPermitPhase::Failed;
+    try {
+        state.activation_phase = prior;
+        switch (boundary) {
+        case PrivateLeaseActivationPermitBoundary::BeforeReservedRemoval:
+            if (prior != PrivateLeaseActivationPermitPhase::ExactPreactive) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            require_activation_generation(state, true);
+            state.activation_phase = PrivateLeaseActivationPermitPhase::ReservedRemovalAuthorized;
+            return;
+        case PrivateLeaseActivationPermitBoundary::Complete:
+            if (prior != PrivateLeaseActivationPermitPhase::ReservedRevokedCommitted) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+            require_activation_generation(state, false);
+            state.activation_phase = PrivateLeaseActivationPermitPhase::Complete;
+            return;
+        }
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    } catch (...) {
+        state.activation_phase = PrivateLeaseActivationPermitPhase::Failed;
+        throw;
+    }
+}
+
+bool commit_private_lease_activation_permit_noexcept(PrivateCleanupActionPermit& permit) noexcept {
+    if (!permit.state_) {
+        return false;
+    }
+    auto& state = *permit.state_;
+    if (state.activation_phase != PrivateLeaseActivationPermitPhase::ReservedRemovalAuthorized ||
+        !state.action_started ||
+        state.handoff_state != PrivateHandoffConsumptionState::LifecycleObserved ||
+        state.decision.action != PrivateNamespaceAction::ActivateFreshLease ||
+        state.creator_process_id != static_cast<std::uint64_t>(gnfs::util::process_id()) ||
+        !state.lock) {
+        state.activation_phase = PrivateLeaseActivationPermitPhase::Failed;
+        return false;
+    }
+    state.activation_phase = PrivateLeaseActivationPermitPhase::ReservedRevokedCommitted;
+    return true;
+}
+
+LoadedPrivateLeaseMarker
+private_lease_activation_reserved_removal_proof(PrivateCleanupActionPermit& permit) {
+    if (!permit.state_) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    auto& state = *permit.state_;
+    if (state.activation_phase != PrivateLeaseActivationPermitPhase::ReservedRemovalAuthorized ||
+        !state.activation_generation || !state.activation_generation->reserved) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    require_activation_generation(state, true);
+    return *state.activation_generation->reserved;
+}
 
 OOCPrivateHandoffInspectResult
 inspect_private_lease_cleanup_handoff_from_permit(PrivateCleanupActionPermit& permit) {
@@ -2363,16 +3483,376 @@ std::optional<OOCCleanupResult> preflight_private_cleanup_union_for_transaction_
                             : PrivateNamespaceAction::RunLegacyCleanup);
 }
 
-std::optional<OOCCleanupResult>
-preflight_private_cleanup_union_for_reservation_locked(const OOCCleanupPaths& paths,
-                                                       const BaseLock& lock) {
-    return project_private_cleanup_union_preflight(paths, lock,
-                                                   PrivateNamespaceAction::ReservePrivateLease);
-}
-
 } // namespace gnfs::relation::ooc_cleanup_detail
 
 namespace gnfs::relation {
+
+OOCCleanupTransaction::PrivateLeaseActionAdmission
+OOCCleanupTransaction::admit_private_lease_reservation_action(
+    const OOCCleanupPaths& paths, std::shared_ptr<ooc_cleanup_detail::BaseLock> lock) noexcept {
+    std::shared_ptr<ooc_cleanup_detail::PrivateCleanupActionPermit> retained;
+    const auto result = invoke([&] {
+        if (paths.private_directory.empty() || !lock || !lock->matches(paths.lock_path)) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        auto admission = ooc_cleanup_detail::admit_private_cleanup_action_locked(
+            paths, lock, ooc_cleanup_detail::PrivateNamespaceAction::ReservePrivateLease);
+        if (admission.blocked) {
+            return *admission.blocked;
+        }
+        if (!admission.permit) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::protocol_error());
+        }
+        auto permit = std::move(*admission.permit);
+        admission.permit.reset();
+        (void)ooc_cleanup_detail::begin_private_cleanup_action(
+            permit, paths, ooc_cleanup_detail::PrivateNamespaceAction::ReservePrivateLease);
+        const auto handoff = ooc_cleanup_detail::inspect_private_handoff_for_action_from_permit(
+            permit, ooc_cleanup_detail::PrivateNamespaceAction::ReservePrivateLease);
+        if (handoff.state != OOCPrivateHandoffState::None) {
+            return handoff.result;
+        }
+        retained =
+            std::make_shared<ooc_cleanup_detail::PrivateCleanupActionPermit>(std::move(permit));
+        return ooc_cleanup_detail::private_lease_completed();
+    });
+    return PrivateLeaseActionAdmission(result, std::move(retained));
+}
+
+OOCCleanupResult OOCCleanupTransaction::initialize_private_lease_reservation_action(
+    ooc_cleanup_detail::PrivateCleanupActionPermit& permit, const OOCCleanupPaths& paths,
+    const ooc_cleanup_detail::BaseLock& lock,
+    const ooc_cleanup_detail::PrivateLeaseRecord& reserved) noexcept {
+    return invoke([&] {
+        if (!lock.matches(paths.lock_path)) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        ooc_cleanup_detail::initialize_private_lease_reservation_permit(permit, reserved);
+        lock.require_stable();
+        return ooc_cleanup_detail::private_lease_completed();
+    });
+}
+
+void OOCCleanupTransaction::private_lease_reservation_marker_transition(
+    ooc_cleanup_detail::PrivateLeaseMarkerPublicationPoint point,
+    const std::filesystem::path& canonical_path, const std::filesystem::path& pending_path,
+    const ooc_cleanup_detail::PrivateLeaseRecord& record,
+    const ooc_cleanup_detail::FileIdentity* identity, void* context) {
+    auto* guard = static_cast<PrivateLeaseMarkerGuardContext*>(context);
+    if (guard == nullptr || guard->permit == nullptr || guard->paths == nullptr ||
+        guard->lock == nullptr || !guard->lock->matches(guard->paths->lock_path)) {
+        ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                 ooc_cleanup_detail::invalid_argument_error());
+    }
+    ooc_cleanup_detail::advance_private_lease_reservation_marker(
+        *guard->permit, point, canonical_path, pending_path, record, identity);
+    guard->lock->require_stable();
+}
+
+OOCCleanupResult OOCCleanupTransaction::record_private_lease_reservation_directory(
+    ooc_cleanup_detail::PrivateCleanupActionPermit& permit, const OOCCleanupPaths& paths,
+    const ooc_cleanup_detail::BaseLock& lock, const std::filesystem::path& directory_path,
+    const std::array<std::uint64_t, 3>& identity, bool final_directory) noexcept {
+    return invoke([&] {
+        if (!lock.matches(paths.lock_path)) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        ooc_cleanup_detail::record_private_lease_reservation_directory_successor(
+            permit, directory_path, identity, final_directory);
+        lock.require_stable();
+        return ooc_cleanup_detail::private_lease_completed();
+    });
+}
+
+OOCCleanupResult OOCCleanupTransaction::authorize_private_lease_reservation_staging_directory(
+    ooc_cleanup_detail::PrivateCleanupActionPermit& permit, const OOCCleanupPaths& paths,
+    const ooc_cleanup_detail::BaseLock& lock) noexcept {
+    return invoke([&] {
+        if (!lock.matches(paths.lock_path)) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        ooc_cleanup_detail::authorize_private_lease_reservation_staging_directory(permit);
+        lock.require_stable();
+        return ooc_cleanup_detail::private_lease_completed();
+    });
+}
+
+OOCCleanupResult OOCCleanupTransaction::authorize_private_lease_reservation_final_rename(
+    ooc_cleanup_detail::PrivateCleanupActionPermit& permit, const OOCCleanupPaths& paths,
+    const ooc_cleanup_detail::BaseLock& lock) noexcept {
+    return invoke([&] {
+        if (!lock.matches(paths.lock_path)) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        ooc_cleanup_detail::authorize_private_lease_reservation_final_rename(permit);
+        lock.require_stable();
+        return ooc_cleanup_detail::private_lease_completed();
+    });
+}
+
+OOCCleanupResult OOCCleanupTransaction::complete_private_lease_reservation_action(
+    ooc_cleanup_detail::PrivateCleanupActionPermit& permit, const OOCCleanupPaths& paths,
+    const ooc_cleanup_detail::BaseLock& lock) noexcept {
+    return invoke([&] {
+        if (!lock.matches(paths.lock_path)) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        ooc_cleanup_detail::complete_private_lease_reservation_permit(permit);
+        lock.require_stable();
+        return ooc_cleanup_detail::private_lease_completed();
+    });
+}
+
+OOCCleanupTransaction::PrivateLeaseActionAdmission
+OOCCleanupTransaction::admit_private_fresh_writer_action(
+    const OOCPrivateLeaseOwnershipReceipt& lease, bool deferred_mode) noexcept {
+    std::shared_ptr<ooc_cleanup_detail::PrivateCleanupActionPermit> retained;
+    const auto result = invoke([&] {
+        if (lease.spent_ || lease.active_ || !lease.live_lock_ || lease.base_path_.empty() ||
+            lease.private_directory_.empty() || lease.lock_path_.empty()) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        const auto paths = ooc_cleanup_detail::freeze_paths(lease.base_path_);
+        if (paths.base_path != lease.base_path_ ||
+            paths.private_directory != lease.private_directory_ ||
+            paths.lock_path != lease.lock_path_ || !lease.live_lock_->matches(paths.lock_path)) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        auto admission = ooc_cleanup_detail::admit_private_cleanup_action_locked(
+            paths, lease.live_lock_,
+            ooc_cleanup_detail::PrivateNamespaceAction::ValidateFreshWriter);
+        if (admission.blocked) {
+            return *admission.blocked;
+        }
+        if (!admission.permit) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::protocol_error());
+        }
+        auto permit = std::move(*admission.permit);
+        admission.permit.reset();
+        (void)ooc_cleanup_detail::begin_private_cleanup_action(
+            permit, paths, ooc_cleanup_detail::PrivateNamespaceAction::ValidateFreshWriter);
+        const auto handoff = ooc_cleanup_detail::inspect_private_handoff_for_action_from_permit(
+            permit, ooc_cleanup_detail::PrivateNamespaceAction::ValidateFreshWriter);
+        if (handoff.state != OOCPrivateHandoffState::None) {
+            return handoff.result;
+        }
+        ooc_cleanup_detail::initialize_private_fresh_writer_permit(
+            permit, lease.lease_id_, lease.directory_identity_, lease.owner_identity_,
+            lease.owned_identity_, deferred_mode, lease.owner_process_id_);
+        retained =
+            std::make_shared<ooc_cleanup_detail::PrivateCleanupActionPermit>(std::move(permit));
+        return ooc_cleanup_detail::private_lease_completed();
+    });
+    return PrivateLeaseActionAdmission(result, std::move(retained));
+}
+
+OOCCleanupResult OOCCleanupTransaction::advance_private_fresh_writer_action(
+    ooc_cleanup_detail::PrivateCleanupActionPermit& permit,
+    const OOCPrivateLeaseOwnershipReceipt& lease, PrivateFreshWriterBoundary boundary,
+    std::optional<std::array<std::uint64_t, 3>> index_identity,
+    std::optional<std::array<std::uint64_t, 3>> data_identity, std::uint64_t store_id) noexcept {
+    return invoke([&] {
+        if (!lease.live_lock_) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        ooc_cleanup_detail::PrivateFreshWriterPermitBoundary internal_boundary;
+        switch (boundary) {
+        case PrivateFreshWriterBoundary::BeforeIndexReservation:
+            internal_boundary =
+                ooc_cleanup_detail::PrivateFreshWriterPermitBoundary::BeforeIndexReservation;
+            break;
+        case PrivateFreshWriterBoundary::IndexReserved:
+            internal_boundary = ooc_cleanup_detail::PrivateFreshWriterPermitBoundary::IndexReserved;
+            break;
+        case PrivateFreshWriterBoundary::BeforeDataReservation:
+            internal_boundary =
+                ooc_cleanup_detail::PrivateFreshWriterPermitBoundary::BeforeDataReservation;
+            break;
+        case PrivateFreshWriterBoundary::DataReserved:
+            internal_boundary = ooc_cleanup_detail::PrivateFreshWriterPermitBoundary::DataReserved;
+            break;
+        case PrivateFreshWriterBoundary::BeforeHeaderWrite:
+            internal_boundary =
+                ooc_cleanup_detail::PrivateFreshWriterPermitBoundary::BeforeHeaderWrite;
+            break;
+        case PrivateFreshWriterBoundary::HeadersValidated:
+            internal_boundary =
+                ooc_cleanup_detail::PrivateFreshWriterPermitBoundary::HeadersValidated;
+            break;
+        case PrivateFreshWriterBoundary::PairOwnershipCaptured:
+            internal_boundary =
+                ooc_cleanup_detail::PrivateFreshWriterPermitBoundary::PairOwnershipCaptured;
+            break;
+        case PrivateFreshWriterBoundary::Complete:
+            internal_boundary = ooc_cleanup_detail::PrivateFreshWriterPermitBoundary::Complete;
+            break;
+        default:
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        ooc_cleanup_detail::advance_private_fresh_writer_permit(
+            permit, internal_boundary, index_identity, data_identity, store_id);
+        lease.live_lock_->require_stable();
+        return ooc_cleanup_detail::private_lease_completed();
+    });
+}
+
+bool OOCCleanupTransaction::private_fresh_writer_rollback_allowed(
+    ooc_cleanup_detail::PrivateCleanupActionPermit& permit,
+    const OOCPrivateLeaseOwnershipReceipt& lease,
+    std::optional<std::array<std::uint64_t, 3>> index_identity,
+    std::optional<std::array<std::uint64_t, 3>> data_identity) noexcept {
+    return lease.live_lock_ && ooc_cleanup_detail::private_fresh_writer_permit_allows_rollback(
+                                   permit, index_identity, data_identity);
+}
+
+OOCCleanupTransaction::PrivateLeaseActionAdmission
+OOCCleanupTransaction::admit_private_lease_activation_action(
+    const OOCPrivateLeaseOwnershipReceipt& lease,
+    const OOCCleanupOwnershipReceipt& pair_ownership) noexcept {
+    std::shared_ptr<ooc_cleanup_detail::PrivateCleanupActionPermit> retained;
+    const auto result = invoke([&] {
+        if (lease.spent_ || lease.active_ || !lease.live_lock_ || pair_ownership.spent_ ||
+            pair_ownership.store_id_ == 0 ||
+            lease.owner_process_id_ != static_cast<std::uint64_t>(gnfs::util::process_id())) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        const auto paths = ooc_cleanup_detail::freeze_paths(lease.base_path_);
+        if (paths.base_path != lease.base_path_ ||
+            paths.private_directory != lease.private_directory_ ||
+            paths.lock_path != lease.lock_path_ || pair_ownership.base_path_ != lease.base_path_ ||
+            !lease.live_lock_->matches(paths.lock_path)) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        auto admission = ooc_cleanup_detail::admit_private_cleanup_action_locked(
+            paths, lease.live_lock_,
+            ooc_cleanup_detail::PrivateNamespaceAction::ActivateFreshLease);
+        if (admission.blocked) {
+            return *admission.blocked;
+        }
+        if (!admission.permit) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::protocol_error());
+        }
+        auto permit = std::move(*admission.permit);
+        admission.permit.reset();
+        (void)ooc_cleanup_detail::begin_private_cleanup_action(
+            permit, paths, ooc_cleanup_detail::PrivateNamespaceAction::ActivateFreshLease);
+        const auto handoff = ooc_cleanup_detail::inspect_private_handoff_for_action_from_permit(
+            permit, ooc_cleanup_detail::PrivateNamespaceAction::ActivateFreshLease);
+        if (handoff.state != OOCPrivateHandoffState::None) {
+            return handoff.result;
+        }
+        const ooc_cleanup_detail::OwnershipProof proof{
+            .base_path = pair_ownership.base_path_,
+            .store_id = pair_ownership.store_id_,
+            .index_identity =
+                {
+                    pair_ownership.index_identity_.first,
+                    pair_ownership.index_identity_.second,
+                    pair_ownership.index_identity_.third,
+                },
+            .data_identity =
+                {
+                    pair_ownership.data_identity_.first,
+                    pair_ownership.data_identity_.second,
+                    pair_ownership.data_identity_.third,
+                },
+        };
+        ooc_cleanup_detail::initialize_private_lease_activation_permit(
+            permit, lease.lease_id_, lease.directory_identity_, lease.owner_identity_,
+            lease.owned_identity_, proof);
+        retained =
+            std::make_shared<ooc_cleanup_detail::PrivateCleanupActionPermit>(std::move(permit));
+        return ooc_cleanup_detail::private_lease_completed();
+    });
+    return PrivateLeaseActionAdmission(result, std::move(retained));
+}
+
+OOCCleanupResult OOCCleanupTransaction::advance_private_lease_activation_action(
+    ooc_cleanup_detail::PrivateCleanupActionPermit& permit,
+    const OOCPrivateLeaseOwnershipReceipt& lease, const OOCCleanupOwnershipReceipt& pair_ownership,
+    PrivateLeaseActivationBoundary boundary) noexcept {
+    return invoke([&] {
+        if ((boundary == PrivateLeaseActivationBoundary::BeforeReservedRemoval &&
+             !lease.live_lock_) ||
+            pair_ownership.spent_) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        ooc_cleanup_detail::PrivateLeaseActivationPermitBoundary internal_boundary;
+        switch (boundary) {
+        case PrivateLeaseActivationBoundary::BeforeReservedRemoval:
+            internal_boundary =
+                ooc_cleanup_detail::PrivateLeaseActivationPermitBoundary::BeforeReservedRemoval;
+            break;
+        case PrivateLeaseActivationBoundary::Complete:
+            internal_boundary = ooc_cleanup_detail::PrivateLeaseActivationPermitBoundary::Complete;
+            break;
+        default:
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        ooc_cleanup_detail::advance_private_lease_activation_permit(permit, internal_boundary);
+        if (lease.live_lock_) {
+            lease.live_lock_->require_stable();
+        }
+        return ooc_cleanup_detail::private_lease_completed();
+    });
+}
+
+bool OOCCleanupTransaction::commit_private_lease_activation_noexcept(
+    ooc_cleanup_detail::PrivateCleanupActionPermit& permit) noexcept {
+    return ooc_cleanup_detail::commit_private_lease_activation_permit_noexcept(permit);
+}
+
+OOCCleanupResult OOCCleanupTransaction::commit_private_lease_activation_action(
+    ooc_cleanup_detail::PrivateCleanupActionPermit& permit, OOCPrivateLeaseOwnershipReceipt& lease,
+    OOCPrivateLeaseTestHooks hooks) noexcept {
+    return invoke([&] {
+        if (!lease.live_lock_) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        auto retained_lock = lease.live_lock_;
+        const auto removal =
+            ooc_cleanup_detail::private_lease_activation_reserved_removal_proof(permit);
+        bool stop_after_commit = false;
+        bool permit_commit_ok = false;
+        ooc_cleanup_detail::invoke_with_stable_base_lock(*retained_lock, [&] {
+            ooc_cleanup_detail::remove_private_lease_marker_durable_impl(
+                ooc_cleanup_detail::freeze_paths(lease.base_path_).lease_reserved_path,
+                removal.record, removal.identity, [&]() noexcept {
+                    permit_commit_ok = commit_private_lease_activation_noexcept(permit);
+                    lease.active_ = true;
+                    lease.live_lock_.reset();
+                    stop_after_commit = ooc_cleanup_detail::should_interrupt_private_lease(
+                        hooks, OOCPrivateLeaseFaultPoint::ReservedRemovedDurable);
+                });
+        });
+        if (stop_after_commit) {
+            return ooc_cleanup_detail::private_lease_interrupted();
+        }
+        if (!permit_commit_ok) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::ForeignReplacementPreserved,
+                                     OOCCleanupStage::None, ooc_cleanup_detail::protocol_error());
+        }
+        return ooc_cleanup_detail::private_lease_completed();
+    });
+}
 
 OOCCleanupResult OOCCleanupTransaction::publish_private_lease_cleanup_handoff(
     OOCCleanupOwnershipReceipt& pair_ownership, OOCPrivateLeaseOwnershipReceipt& lease,

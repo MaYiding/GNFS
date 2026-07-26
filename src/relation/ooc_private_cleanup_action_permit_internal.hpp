@@ -45,6 +45,68 @@ struct PrivateLeaseRemovalGenerationProof final {
                            const PrivateLeaseRemovalGenerationProof&) = default;
 };
 
+enum class PrivateLeaseReservationPermitPhase : std::uint8_t {
+    Fresh,
+    Empty,
+    ReservedPendingAuthorized,
+    ReservedPending,
+    ReservedCanonicalAuthorized,
+    ReservedCanonical,
+    StagingDirectoryAuthorized,
+    StagingDirectory,
+    OwnerPendingAuthorized,
+    OwnerPending,
+    OwnerCanonicalAuthorized,
+    OwnerCanonical,
+    OwnedPendingAuthorized,
+    OwnedPending,
+    OwnedCanonicalAuthorized,
+    OwnedCanonical,
+    FinalRenameAuthorized,
+    FinalDirectory,
+    ReceiptCommitted,
+    Failed,
+};
+
+enum class PrivateFreshWriterPermitPhase : std::uint8_t {
+    Fresh,
+    LeaseOnly,
+    IndexReservationAuthorized,
+    IndexReserved,
+    DataReservationAuthorized,
+    PairReserved,
+    HeaderWriteAuthorized,
+    HeadersExact,
+    PairReceiptCandidate,
+    Complete,
+    Failed,
+};
+
+enum class PrivateFreshWriterPermitBoundary : std::uint8_t {
+    BeforeIndexReservation,
+    IndexReserved,
+    BeforeDataReservation,
+    DataReserved,
+    BeforeHeaderWrite,
+    HeadersValidated,
+    PairOwnershipCaptured,
+    Complete,
+};
+
+enum class PrivateLeaseActivationPermitPhase : std::uint8_t {
+    Fresh,
+    ExactPreactive,
+    ReservedRemovalAuthorized,
+    ReservedRevokedCommitted,
+    Complete,
+    Failed,
+};
+
+enum class PrivateLeaseActivationPermitBoundary : std::uint8_t {
+    BeforeReservedRemoval,
+    Complete,
+};
+
 /// A non-forgeable, move-only capability for one private-namespace action.
 ///
 /// The implementation retains the BaseLock and the observation witnesses. It
@@ -111,6 +173,50 @@ private:
                                                  const FileIdentity& durable_identity,
                                                  bool renamed_from_pending,
                                                  bool pending_must_remain);
+    friend OOCPrivateHandoffInspectResult
+    inspect_private_handoff_for_action_from_permit(PrivateCleanupActionPermit& permit,
+                                                   PrivateNamespaceAction expected_action);
+    friend void initialize_private_lease_reservation_permit(PrivateCleanupActionPermit& permit,
+                                                            const PrivateLeaseRecord& reserved);
+    friend void advance_private_lease_reservation_marker(
+        PrivateCleanupActionPermit& permit, PrivateLeaseMarkerPublicationPoint point,
+        const std::filesystem::path& canonical_path, const std::filesystem::path& pending_path,
+        const PrivateLeaseRecord& record, const FileIdentity* identity);
+    friend void record_private_lease_reservation_directory_successor(
+        PrivateCleanupActionPermit& permit, const std::filesystem::path& directory_path,
+        const std::array<std::uint64_t, 3>& identity, bool final_directory);
+    friend void
+    authorize_private_lease_reservation_staging_directory(PrivateCleanupActionPermit& permit);
+    friend void
+    authorize_private_lease_reservation_final_rename(PrivateCleanupActionPermit& permit);
+    friend void complete_private_lease_reservation_permit(PrivateCleanupActionPermit& permit);
+    friend void initialize_private_fresh_writer_permit(
+        PrivateCleanupActionPermit& permit, const std::array<std::uint64_t, 2>& expected_lease_id,
+        const std::array<std::uint64_t, 3>& expected_directory_identity,
+        const std::array<std::uint64_t, 3>& expected_owner_identity,
+        const std::array<std::uint64_t, 3>& expected_owned_identity, bool deferred_mode,
+        std::uint64_t receipt_owner_process_id);
+    friend void advance_private_fresh_writer_permit(
+        PrivateCleanupActionPermit& permit, PrivateFreshWriterPermitBoundary boundary,
+        std::optional<std::array<std::uint64_t, 3>> index_identity,
+        std::optional<std::array<std::uint64_t, 3>> data_identity, std::uint64_t store_id);
+    friend bool private_fresh_writer_permit_allows_rollback(
+        PrivateCleanupActionPermit& permit,
+        std::optional<std::array<std::uint64_t, 3>> index_identity,
+        std::optional<std::array<std::uint64_t, 3>> data_identity) noexcept;
+    friend void initialize_private_lease_activation_permit(
+        PrivateCleanupActionPermit& permit, const std::array<std::uint64_t, 2>& expected_lease_id,
+        const std::array<std::uint64_t, 3>& expected_directory_identity,
+        const std::array<std::uint64_t, 3>& expected_owner_identity,
+        const std::array<std::uint64_t, 3>& expected_owned_identity,
+        const OwnershipProof& pair_ownership);
+    friend void
+    advance_private_lease_activation_permit(PrivateCleanupActionPermit& permit,
+                                            PrivateLeaseActivationPermitBoundary boundary);
+    friend LoadedPrivateLeaseMarker
+    private_lease_activation_reserved_removal_proof(PrivateCleanupActionPermit& permit);
+    friend bool
+    commit_private_lease_activation_permit_noexcept(PrivateCleanupActionPermit& permit) noexcept;
 };
 
 /// Source-private bridge from the public inline executor to the retained
@@ -293,6 +399,55 @@ inspect_private_handoff_from_permit(PrivateCleanupActionPermit& permit);
 /// reconciling either leaf. Only an absent C1 state may reach its phase gate.
 [[nodiscard]] OOCPrivateHandoffInspectResult
 inspect_private_lease_cleanup_handoff_from_permit(PrivateCleanupActionPermit& permit);
+
+/// Observation-only C1 consumer for one of the fresh-writer lifecycle actions.
+/// Exact canonical or pending evidence terminates the permit without mutation.
+[[nodiscard]] OOCPrivateHandoffInspectResult
+inspect_private_handoff_for_action_from_permit(PrivateCleanupActionPermit& permit,
+                                               PrivateNamespaceAction expected_action);
+
+void initialize_private_lease_reservation_permit(PrivateCleanupActionPermit& permit,
+                                                 const PrivateLeaseRecord& reserved);
+void advance_private_lease_reservation_marker(PrivateCleanupActionPermit& permit,
+                                              PrivateLeaseMarkerPublicationPoint point,
+                                              const std::filesystem::path& canonical_path,
+                                              const std::filesystem::path& pending_path,
+                                              const PrivateLeaseRecord& record,
+                                              const FileIdentity* identity);
+void record_private_lease_reservation_directory_successor(
+    PrivateCleanupActionPermit& permit, const std::filesystem::path& directory_path,
+    const std::array<std::uint64_t, 3>& identity, bool final_directory);
+void authorize_private_lease_reservation_staging_directory(PrivateCleanupActionPermit& permit);
+void authorize_private_lease_reservation_final_rename(PrivateCleanupActionPermit& permit);
+void complete_private_lease_reservation_permit(PrivateCleanupActionPermit& permit);
+
+void initialize_private_fresh_writer_permit(
+    PrivateCleanupActionPermit& permit, const std::array<std::uint64_t, 2>& expected_lease_id,
+    const std::array<std::uint64_t, 3>& expected_directory_identity,
+    const std::array<std::uint64_t, 3>& expected_owner_identity,
+    const std::array<std::uint64_t, 3>& expected_owned_identity, bool deferred_mode,
+    std::uint64_t receipt_owner_process_id);
+void advance_private_fresh_writer_permit(PrivateCleanupActionPermit& permit,
+                                         PrivateFreshWriterPermitBoundary boundary,
+                                         std::optional<std::array<std::uint64_t, 3>> index_identity,
+                                         std::optional<std::array<std::uint64_t, 3>> data_identity,
+                                         std::uint64_t store_id);
+[[nodiscard]] bool private_fresh_writer_permit_allows_rollback(
+    PrivateCleanupActionPermit& permit, std::optional<std::array<std::uint64_t, 3>> index_identity,
+    std::optional<std::array<std::uint64_t, 3>> data_identity) noexcept;
+
+void initialize_private_lease_activation_permit(
+    PrivateCleanupActionPermit& permit, const std::array<std::uint64_t, 2>& expected_lease_id,
+    const std::array<std::uint64_t, 3>& expected_directory_identity,
+    const std::array<std::uint64_t, 3>& expected_owner_identity,
+    const std::array<std::uint64_t, 3>& expected_owned_identity,
+    const OwnershipProof& pair_ownership);
+void advance_private_lease_activation_permit(PrivateCleanupActionPermit& permit,
+                                             PrivateLeaseActivationPermitBoundary boundary);
+[[nodiscard]] LoadedPrivateLeaseMarker
+private_lease_activation_reserved_removal_proof(PrivateCleanupActionPermit& permit);
+[[nodiscard]] bool
+commit_private_lease_activation_permit_noexcept(PrivateCleanupActionPermit& permit) noexcept;
 
 /// Bind the exact pending inode produced or confirmed by this action before any
 /// pending-durable test callback runs.

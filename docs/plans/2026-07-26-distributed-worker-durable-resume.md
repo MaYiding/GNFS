@@ -1701,13 +1701,49 @@ lock-description publication. Complete namespace snapshots prove that every
 rejected prefix preserves the exact observed state. The same matrix directly
 covers `DestinationExists` convergence.
 
+The fresh private-lease lifecycle action migration completed next.
+`ReservePrivateLease` now runs legacy recovery to a terminal state before it
+mints a new permit. Its create-only phase machine retains the exact
+`RESERVED.pending`, `RESERVED`, staging directory, owner marker,
+`OWNED.pending`, `OWNED`, and final-directory successors. Each durable helper
+records an exact successor before its test callback. Staging creation and final
+rename require separate one-shot authorization phases. On macOS, the same held
+directory handle is rebound only after the old staging name is absent and the
+final name identifies the held inode.
+
+Fresh writer construction mints a distinct `ValidateFreshWriter` permit. It
+binds the exact lease generation, creator process, full union witness, and
+owner-only directory. Separate authorized phases precede index creation, data
+creation, and header writes. The successor proof requires zero-byte files
+before headers and exact V3 header extents afterward, so same-inode tail
+injection cannot become a learned successor. The permit remains live through
+pair-receipt capture, then ends before activation admission.
+
+`ActivateFreshLease` uses a third permit and revalidates the exact pair plus
+preactive lease generation. It accepts no pending-marker convergence. The
+permit supplies the exact retained `RESERVED` record and native identity to
+the durable removal helper. Parent-synchronized absence commits activation,
+marks the receipt active, and releases its live lock before any callback.
+Later interruption or witness failure cannot restore preactive rollback
+authority. If activation stops before that commit, the completed Fresh action
+is not revived: the exact pair remains under `RESERVED` and requires explicit
+lease-receipt recovery before a new reservation.
+
+Deterministic coverage includes zero-mutation interruption at all three permit
+boundaries, every durable reservation and writer prefix, post-permit foreign
+insertion, exact marker and pair identity replacement, same-inode size drift,
+nested action claims, creator-PID rejection, inherited deferred-writer use,
+and sticky activation after the durability callback. The focused
+`lease-crash` suite passes with complete namespace snapshots.
+
 Nested Recover and Remove execution inside their existing executors remains
 under the outer action permit. Public nested actions cannot mint a second
 permit on the same live lock. No action may mint or borrow a
-`RunLegacyCleanup` permit. The remaining action groups still require separate
-migrations. None of these checks claims protection against deliberate
-same-user inode cycling between a final revalidation and the following syscall,
-which remains outside the documented threat boundary.
+`RunLegacyCleanup` permit. Inspection and pair-reuse confirmation remain
+read-only. Generic handoff publication and adoption retain their own
+action-specific capabilities. None of these checks claims protection against
+deliberate same-user inode cycling between a final revalidation and the
+following syscall, which remains outside the documented threat boundary.
 
 The policy implementation is compiled into `gnfs_core`. Its 60,025 closed leaf
 combinations, all current entry groups, out-of-range enum values, and

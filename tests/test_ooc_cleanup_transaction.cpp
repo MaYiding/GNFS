@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -3761,6 +3762,7 @@ void test_private_lease_receipt_rejects_replacement_directory() {
 }
 
 constexpr std::array PRIVATE_LEASE_RESERVE_FAULT_POINTS{
+    OOCPrivateLeaseFaultPoint::ReservationPermitAcquired,
     OOCPrivateLeaseFaultPoint::ReservedPendingDurable,
     OOCPrivateLeaseFaultPoint::ReservedDurable,
     OOCPrivateLeaseFaultPoint::StagingDirectoryDurable,
@@ -3779,10 +3781,12 @@ constexpr std::array PRIVATE_LEASE_REMOVE_FAULT_POINTS{
 };
 
 constexpr std::array PRIVATE_WRITER_FAULT_POINTS{
+    OOCPrivateLeaseFaultPoint::FreshWriterPermitAcquired,
     OOCPrivateLeaseFaultPoint::FreshIndexReserved,
     OOCPrivateLeaseFaultPoint::FreshDataReserved,
     OOCPrivateLeaseFaultPoint::FreshHeadersValidated,
     OOCPrivateLeaseFaultPoint::FreshPairOwnershipCaptured,
+    OOCPrivateLeaseFaultPoint::ActivationPermitAcquired,
     OOCPrivateLeaseFaultPoint::ReservedRemovedDurable,
 };
 
@@ -6084,6 +6088,162 @@ void test_legacy_cleanup_mutation_gate_defers_for_exact_pending() {
     }
 }
 
+void test_private_lease_reservation_permit_interrupt_is_non_mutating_and_retryable() {
+    TempDirectory temp;
+    const auto base = temp.path() / "reservation-permit-interrupt.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+
+    // Seed the permanent sibling lock so the operation-level snapshot starts
+    // at the exact empty namespace retained by the reservation permit.
+    auto seed = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(seed.completed());
+    if (!seed.completed()) {
+        return;
+    }
+    CHECK(OOCCleanupTransaction::remove_private_lease(*seed.ownership).completed());
+    CHECK(entry_exists_no_follow(paths.lock_path));
+    CHECK(!entry_exists_no_follow(paths.private_directory));
+
+    const auto before = capture_namespace_tree(temp.path());
+    PrivateLeaseStopOnceContext interruption{
+        .target = OOCPrivateLeaseFaultPoint::ReservationPermitAcquired,
+    };
+    const auto interrupted = OOCCleanupTransaction::reserve_private_lease(
+        base, OOCPrivateLeaseTestHooks{
+                  .stop_after = stop_private_lease_once,
+                  .context = &interruption,
+              });
+    CHECK(interruption.stopped);
+    CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+    CHECK(!interrupted.ownership.has_value());
+    CHECK(capture_namespace_tree(temp.path()) == before);
+
+    auto retried = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(retried.completed());
+    if (!retried.completed()) {
+        return;
+    }
+    CHECK(OOCCleanupTransaction::remove_private_lease(*retried.ownership).completed());
+    CHECK(retried.ownership->spent());
+    CHECK(!entry_exists_no_follow(paths.private_directory));
+    CHECK(entry_exists_no_follow(paths.lock_path));
+}
+
+void test_private_fresh_writer_permit_interrupt_is_non_mutating_and_retryable() {
+    TempDirectory temp;
+    const auto base = temp.path() / "fresh-writer-permit-interrupt.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+    if (!reservation.completed()) {
+        return;
+    }
+
+    const auto before = capture_namespace_tree(temp.path());
+    PrivateLeaseStopOnceContext interruption{
+        .target = OOCPrivateLeaseFaultPoint::FreshWriterPermitAcquired,
+    };
+    bool rejected = false;
+    std::optional<OOCRelationWriter> writer;
+    try {
+        writer.emplace(base.string(), *reservation.ownership,
+                       OOCPrivateLeaseTestHooks{
+                           .stop_after = stop_private_lease_once,
+                           .context = &interruption,
+                       });
+    } catch (const std::system_error&) {
+        rejected = true;
+    }
+    CHECK(interruption.stopped);
+    CHECK(rejected);
+    CHECK(!writer.has_value());
+    CHECK(!reservation.ownership->spent());
+    CHECK(capture_namespace_tree(temp.path()) == before);
+    CHECK(!entry_exists_no_follow(paths.index_path));
+    CHECK(!entry_exists_no_follow(paths.data_path));
+    if (!rejected) {
+        writer.reset();
+        return;
+    }
+
+    {
+        OOCRelationWriter retried(base.string(), *reservation.ownership);
+        CHECK(retried.has_cleanup_ownership_receipt());
+    }
+    CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+    CHECK(entry_exists_no_follow(paths.lease_owned_path));
+    CHECK(entry_exists_no_follow(paths.index_path));
+    CHECK(entry_exists_no_follow(paths.data_path));
+}
+
+void test_private_lease_activation_permit_interrupt_preserves_pair_for_recovery() {
+    TempDirectory temp;
+    const auto base = temp.path() / "activation-permit-interrupt.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+    if (!reservation.completed()) {
+        return;
+    }
+
+    const auto reserved_bytes = read_test_bytes(paths.lease_reserved_path);
+    const auto owned_bytes = read_test_bytes(paths.lease_owned_path);
+    const auto owner_path = paths.private_directory / ".gnfs-private-lease-v1.owner";
+    const auto owner_bytes = read_test_bytes(owner_path);
+    PrivateLeaseStopOnceContext interruption{
+        .target = OOCPrivateLeaseFaultPoint::ActivationPermitAcquired,
+    };
+    bool rejected = false;
+    std::optional<OOCRelationWriter> writer;
+    try {
+        writer.emplace(base.string(), *reservation.ownership,
+                       OOCPrivateLeaseTestHooks{
+                           .stop_after = stop_private_lease_once,
+                           .context = &interruption,
+                       });
+    } catch (const std::system_error&) {
+        rejected = true;
+    }
+    CHECK(interruption.stopped);
+    CHECK(rejected);
+    CHECK(!writer.has_value());
+    CHECK(!reservation.ownership->spent());
+    CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+    CHECK(entry_exists_no_follow(paths.lease_owned_path));
+    CHECK(entry_exists_no_follow(paths.index_path));
+    CHECK(entry_exists_no_follow(paths.data_path));
+    check_test_bytes_preserved(paths.lease_reserved_path, reserved_bytes);
+    check_test_bytes_preserved(paths.lease_owned_path, owned_bytes);
+    check_test_bytes_preserved(owner_path, owner_bytes);
+    if (!rejected) {
+        writer.reset();
+        return;
+    }
+
+    // Activation admission is a separate action from fresh construction.
+    // Once Fresh has completed, a pre-commit activation interruption retains
+    // the exact pair for durable RESERVED recovery instead of reviving an
+    // already-ended Fresh rollback authority.
+    CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
+    CHECK(reservation.ownership->spent());
+    CHECK(!entry_exists_no_follow(paths.index_path));
+    CHECK(!entry_exists_no_follow(paths.data_path));
+
+    auto retried_reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(retried_reservation.completed());
+    if (!retried_reservation.completed()) {
+        return;
+    }
+    {
+        OOCRelationWriter retried(base.string(), *retried_reservation.ownership);
+        CHECK(retried.has_cleanup_ownership_receipt());
+    }
+    CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+    CHECK(entry_exists_no_follow(paths.lease_owned_path));
+    CHECK(entry_exists_no_follow(paths.index_path));
+    CHECK(entry_exists_no_follow(paths.data_path));
+}
+
 void test_private_lease_recovery_permit_interrupt_is_non_mutating(const std::string& executable) {
     TempDirectory temp;
     constexpr std::uint64_t store_id = 0xd0d0'e1e1'f2f2'a3a3ULL;
@@ -6474,6 +6634,152 @@ struct FreshWriterBoundaryContext final {
     return point == OOCPrivateLeaseFaultPoint::FreshIndexReserved;
 }
 
+struct FreshWriterSameInodeSizeDriftContext final {
+    OOCPrivateLeaseFaultPoint target = OOCPrivateLeaseFaultPoint::FreshIndexReserved;
+    std::filesystem::path mutation_path;
+    std::filesystem::path snapshot_root;
+    std::optional<std::array<std::uint64_t, 3>> identity_before;
+    std::optional<std::array<std::uint64_t, 3>> identity_after;
+    std::optional<NamespaceTreeSnapshot> expected_failure_scene;
+    std::uint64_t size_before = 0;
+    std::uint64_t size_after = 0;
+    bool invoked = false;
+    bool appended = false;
+    bool injection_failed = false;
+};
+
+[[nodiscard]] bool append_same_inode_at_fresh_writer_boundary(OOCPrivateLeaseFaultPoint point,
+                                                              void* opaque) noexcept {
+    auto& context = *static_cast<FreshWriterSameInodeSizeDriftContext*>(opaque);
+    if (context.invoked || point != context.target) {
+        return false;
+    }
+    context.invoked = true;
+    try {
+        const auto before =
+            gnfs::relation::ooc_cleanup_detail::inspect_file(context.mutation_path, 0, false);
+        if (before.kind != gnfs::relation::ooc_cleanup_detail::InspectKind::Present) {
+            context.injection_failed = true;
+            return false;
+        }
+        context.identity_before =
+            gnfs::relation::ooc_cleanup_detail::stable_identity(before.identity);
+        context.size_before = before.identity.size;
+
+        std::fstream stream(context.mutation_path,
+                            std::ios::binary | std::ios::in | std::ios::out | std::ios::ate);
+        constexpr char APPENDED_BYTE = '\x5a';
+        stream.write(&APPENDED_BYTE, 1);
+        stream.flush();
+        stream.close();
+        if (!stream) {
+            context.injection_failed = true;
+            return false;
+        }
+
+        const auto after =
+            gnfs::relation::ooc_cleanup_detail::inspect_file(context.mutation_path, 0, false);
+        if (after.kind != gnfs::relation::ooc_cleanup_detail::InspectKind::Present) {
+            context.injection_failed = true;
+            return false;
+        }
+        context.identity_after =
+            gnfs::relation::ooc_cleanup_detail::stable_identity(after.identity);
+        context.size_after = after.identity.size;
+        context.appended = context.identity_before == context.identity_after &&
+                           context.size_before < (std::numeric_limits<std::uint64_t>::max)() &&
+                           context.size_after == context.size_before + 1;
+        context.expected_failure_scene = capture_namespace_tree(context.snapshot_root);
+    } catch (...) {
+        context.injection_failed = true;
+        context.expected_failure_scene.reset();
+    }
+    // Continue into the next Authorized boundary. It must reject this exact
+    // inode's unapproved size drift instead of recording that size as a
+    // successor.
+    return false;
+}
+
+void test_private_fresh_writer_authorized_gate_rejects_same_inode_size_drift() {
+    constexpr std::array TARGETS{
+        OOCPrivateLeaseFaultPoint::FreshIndexReserved,
+        OOCPrivateLeaseFaultPoint::FreshDataReserved,
+    };
+
+    for (std::size_t index = 0; index < TARGETS.size(); ++index) {
+        TempDirectory temp;
+        const auto base = temp.path() /
+                          ("fresh-size-drift-" + std::to_string(index) + ".gnfs-sink-lease") /
+                          "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+        CHECK(reservation.completed());
+        if (!reservation.completed()) {
+            continue;
+        }
+
+        const auto mutation_path = TARGETS[index] == OOCPrivateLeaseFaultPoint::FreshIndexReserved
+                                       ? paths.index_path
+                                       : paths.data_path;
+        FreshWriterSameInodeSizeDriftContext injection{
+            .target = TARGETS[index],
+            .mutation_path = mutation_path,
+            .snapshot_root = temp.path(),
+        };
+        bool rejected = false;
+        std::optional<OOCRelationWriter> writer;
+        try {
+            writer.emplace(base.string(), *reservation.ownership,
+                           OOCPrivateLeaseTestHooks{
+                               .stop_after = append_same_inode_at_fresh_writer_boundary,
+                               .context = &injection,
+                           });
+        } catch (const std::system_error&) {
+            rejected = true;
+        }
+
+        CHECK(injection.invoked);
+        CHECK(injection.appended);
+        CHECK(!injection.injection_failed);
+        CHECK(injection.identity_before.has_value());
+        CHECK(injection.identity_before == injection.identity_after);
+        CHECK(injection.size_before == 0);
+        CHECK(injection.size_after == 1);
+        CHECK(injection.expected_failure_scene.has_value());
+        CHECK(rejected);
+        CHECK(!writer.has_value());
+        CHECK(!reservation.ownership->spent());
+        if (injection.expected_failure_scene) {
+            CHECK(capture_namespace_tree(temp.path()) == *injection.expected_failure_scene);
+        }
+        CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(entry_exists_no_follow(paths.lease_owned_path));
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(std::filesystem::file_size(paths.index_path) ==
+              (TARGETS[index] == OOCPrivateLeaseFaultPoint::FreshIndexReserved ? 1U : 0U));
+        CHECK(entry_exists_no_follow(mutation_path));
+        CHECK(read_test_bytes(mutation_path) == std::vector<std::byte>{std::byte{0x5a}});
+        if (TARGETS[index] == OOCPrivateLeaseFaultPoint::FreshIndexReserved) {
+            // The next DataReservationAuthorized gate rejected before the
+            // second O_EXCL mutation.
+            CHECK(!entry_exists_no_follow(paths.data_path));
+        } else {
+            // The next HeaderWriteAuthorized gate rejected before either
+            // protocol header was written.
+            CHECK(entry_exists_no_follow(paths.data_path));
+            CHECK(std::filesystem::file_size(paths.data_path) == 1);
+        }
+
+        if (!rejected) {
+            writer.reset();
+            continue;
+        }
+        reservation.ownership.reset();
+        CHECK(!reservation.ownership.has_value());
+        check_empty_private_lease_recovery(base);
+    }
+}
+
 void test_private_lease_unknown_scan_precedes_writer_mutation() {
     TempDirectory temp;
 
@@ -6541,8 +6847,8 @@ void test_private_lease_unknown_scan_precedes_writer_mutation() {
         CHECK(boundary.injected);
         CHECK(!boundary.injection_failed);
         CHECK(rejected);
-        CHECK(!entry_exists_no_follow(paths.index_path));
-        CHECK(!entry_exists_no_follow(paths.data_path));
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(entry_exists_no_follow(paths.data_path));
         check_test_bytes_preserved(paths.lease_reserved_path, reserved_bytes);
         check_test_bytes_preserved(paths.lease_owned_path, owned_bytes);
         check_test_bytes_preserved(owner_path, owner_bytes);
@@ -9586,6 +9892,7 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_private_handoff_missing_lock_orphan_stage_is_preserved();
     test_private_handoff_invalid_orphan_stage_names_are_ignored();
     test_private_lease_unknown_child_preserves_matching_pending();
+    test_private_fresh_writer_authorized_gate_rejects_same_inode_size_drift();
     test_private_lease_unknown_scan_precedes_writer_mutation();
     test_unscoped_writer_rejects_existing_preactive_private_lease();
     test_private_lease_unknown_scan_precedes_legacy_intent_publication();
@@ -9598,6 +9905,9 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_legacy_cleanup_empty_terminal_consumes_private_receipt();
     test_legacy_cleanup_marker_rename_failure_is_retryable();
     test_legacy_cleanup_mutation_gate_defers_for_exact_pending();
+    test_private_lease_reservation_permit_interrupt_is_non_mutating_and_retryable();
+    test_private_fresh_writer_permit_interrupt_is_non_mutating_and_retryable();
+    test_private_lease_activation_permit_interrupt_preserves_pair_for_recovery();
     test_private_lease_recovery_permit_interrupt_is_non_mutating(executable);
     test_private_lease_recovery_permit_revalidates_new_handoff(executable);
     test_private_lease_removal_permit_interrupt_is_non_mutating();
